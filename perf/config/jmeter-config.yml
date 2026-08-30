@@ -1,0 +1,282 @@
+# ============================================================================
+# 26_MTask 后端 API 性能压测配置（jmeter-performance-test，配置驱动）
+# 被测目标：Express + better-sqlite3 后端（独立沙箱实例，绝不连生产库）
+# 开发端口 39876；生产/打包实例在 39877（F:\Program Files\MTask），不触碰。
+# ============================================================================
+
+# 无 Java/JMeter（已探测），强制使用内置 Python 回放引擎
+mode: python_replay
+
+# ---------------------------------------------------------------------------
+# JMeter 原生模式配置（不使用，保留为空）
+# ---------------------------------------------------------------------------
+jmeter:
+  bin: ""
+  java_home: ""
+  jvm_args:
+    - "-Xms512m"
+    - "-Xmx2048m"
+  properties_file: ""
+  cli_extra_args: ""
+
+# ---------------------------------------------------------------------------
+# 沙箱隔离：独立数据目录 + 独立端口，引擎自动拉起 / 回收
+# ---------------------------------------------------------------------------
+sandbox:
+  enabled: true
+  cwd: "D:/code/otherProjects/26_MTask/perf/sandbox"
+  # SUT = 编译产物 server/dist/index.js（dist 已是最新），由 managed Node 22.22.2 启动
+  # 路径用正斜杠（shlex.split 会把反斜杠当转义吞掉），node.exe 接受正斜杠路径
+  startup_cmd: "C:/Users/hspcadmin/.workbuddy/binaries/node/versions/22.22.2/node.exe D:/code/otherProjects/26_MTask/server/dist/index.js"
+  pkg: ""
+  port: 39876
+  health_path: "/api/health"
+  health_retries: 180          # CPU 饱和+杀毒扫描下 SUT 冷启动约 110s，需足够重试
+
+  # 启动前清空 39876 上可能残留的孤儿进程，避免请求打到旧实例
+  port_kill_retries: 3
+  port_kill_wait_ms: 500
+  require_new_instance: true
+
+  # 关键：注入独立数据目录，绝不连生产库（%APPDATA%\mtask\data 与 server/src/data）
+  env_overrides:
+    MTask_PORT: "39876"
+    MTask_DATA_DIR: "D:/code/otherProjects/26_MTask/perf/sandbox/data"
+
+  preflight:
+    enabled: true
+    rate_limit_burst: 20        # 本地无限流，突发探测仅做安全闸门
+    burst_path: "/api/health"
+    abort_on_rate_limit: true
+    login_warmup: false
+
+  min_output_lines: 5
+
+  # 资源监控 sidecar 用 cmd_substr 定位 SUT 进程
+  process_match:
+    mode: cmd_substr
+    cmd_substr: "server/dist/index.js"
+
+  lifecycle:
+    never_global_kill: true     # 只定向终止引擎 spawn 的进程，绝不全局杀 node.exe
+    kill_tree: true
+    kill_retries: 5
+    kill_wait_ms: 500
+
+# ---------------------------------------------------------------------------
+# 资源监控 sidecar（量化 SUT 在负载下的内存 / CPU）
+# 启动：python scripts/monitor_sut.py --config perf/config/jmeter-config.yml
+# ---------------------------------------------------------------------------
+resource_monitor:
+  enabled: true
+  # 用 pid_file 精确定位 SUT（wmic/psutil 的 cmd_substr 匹配受斜杠方向影响不稳定）
+  match:
+    mode: pid_file
+    pid_file: "D:/code/otherProjects/26_MTask/perf/output/sut.pid"
+    name: ""
+    cmd_substr: ""
+  sample_interval_sec: 3
+  duration_samples: 0           # 0 = 一直采样直到 Ctrl+C
+  metrics: ["rss_mb", "private_mb", "cpu_percent", "handles", "threads"]
+  output_csv: "D:/code/otherProjects/26_MTask/perf/output/sut_resource.csv"
+  alert:
+    enabled: true
+    max_rss_mb: 1500
+    on_exceed: warn
+
+# ---------------------------------------------------------------------------
+# 目标服务
+# ---------------------------------------------------------------------------
+target:
+  base_url: "http://127.0.0.1:39876"
+  default_timeout_sec: 60
+  ramp_stagger: true
+  fixed_headers: { "Accept": "application/json" }
+  auth:
+    type: none                  # accessToken 未配置（tunnel-config.json 不存在），整体放行
+
+# ---------------------------------------------------------------------------
+# 压测阶段（先 smoke 后 full；同一 JMX 用 threads_override 覆盖线程档）
+# ---------------------------------------------------------------------------
+phases:
+  - name: "smoke"              # 冒烟：1 线程，验证采样器正确性
+    jmx: "jmeter/reads.jmx"
+    enabled: true
+    threads_override: 1
+    duration_override: 25
+  - name: "reads_baseline"     # 读基准：5 并发（同机+CPU 饱和，低并发代表真实服务延迟）
+    jmx: "jmeter/reads.jmx"
+    enabled: true
+    threads_override: 5
+    duration_override: 60
+  - name: "reads_mid"          # 读中等：15 并发
+    jmx: "jmeter/reads.jmx"
+    enabled: true
+    threads_override: 15
+    duration_override: 60
+  - name: "reads_stress"       # 读压力：30 并发（受同机 CPU 饱和影响，标注环境限制）
+    jmx: "jmeter/reads.jmx"
+    enabled: true
+    threads_override: 30
+    duration_override: 60
+  - name: "writes_baseline"    # 写基准：5 并发
+    jmx: "jmeter/writes.jmx"
+    enabled: true
+    threads_override: 5
+    duration_override: 60
+  - name: "writes_mid"         # 写中等：10 并发（SQLite 单写者，观察锁竞争）
+    jmx: "jmeter/writes.jmx"
+    enabled: true
+    threads_override: 10
+    duration_override: 60
+  - name: "report_diag"        # 重端点诊断：report_generate 单发真实耗时（排除 CPU 排队干扰）
+    jmx: "jmeter/heavy.jmx"
+    enabled: true
+    threads_override: 1
+    duration_override: 45
+  - name: "stability"          # 稳定性：10 并发 × 120s，观察长时间错误率
+    jmx: "jmeter/reads.jmx"
+    enabled: true
+    threads_override: 10
+    duration_override: 120
+
+# ---------------------------------------------------------------------------
+# 场景生成（配置驱动）：fixtures 放固定种子 id，gen_jmx.py 生成 JMX
+# ---------------------------------------------------------------------------
+scenarios:
+  enabled: true
+  output_jmx_dir: "jmeter"
+  default_protocol: "http"
+  default_method: "GET"
+  fixtures:
+    project_id:   "proj-main"
+    project_id2:  "proj-secondary"
+    task_id:      "task-0001"
+    task_id2:     "task-0002"
+    task_ids:     "task-0001,task-0002,task-0003"
+    category_id:  "cat-perf"
+    queue_id:     "queue-perf"
+    prompt_cat_id: "cat-prompt-perf"
+    prompt_id:    "prompt-perf"
+    tool_id:      "tool-perf"
+  thread_profiles:
+    smoke:  { threads: 1,  ramp: 1,  duration: 30 }
+    load10: { threads: 10, ramp: 5,  duration: 60 }
+  list:
+    # ---- 读端点（本地纯查询，无外部副作用）----
+    - name: "reads"
+      profile: "load10"
+      samplers:
+        - { name: "health",           path: "/api/health", method: "GET" }
+        - { name: "projects",         path: "/api/projects", method: "GET" }
+        - { name: "tasks",            path: "/api/tasks", method: "GET" }
+        - { name: "tasks_archived",   path: "/api/tasks", method: "GET", params: { archived: "1" } }
+        - { name: "task_categories",  path: "/api/task-categories", method: "GET" }
+        - { name: "queues",           path: "/api/queues", method: "GET" }
+        - { name: "queue_detail",     path: "/api/queues/{{queue_id}}", method: "GET" }
+        - { name: "prompt_categories",path: "/api/prompt-categories", method: "GET" }
+        - { name: "prompts",          path: "/api/prompts", method: "GET" }
+        - { name: "aitools",          path: "/api/aitools", method: "GET" }
+        - { name: "aitools_types",    path: "/api/aitools/types", method: "GET" }
+        - { name: "aitools_defaults", path: "/api/aitools/defaults", method: "GET" }
+        - { name: "note_project",     path: "/api/settings/note-project", method: "GET" }
+        - { name: "logs",             path: "/api/logs", method: "GET" }
+        - { name: "report_templates", path: "/api/report/templates", method: "GET" }
+    # ---- 写端点（本地 DB 写；独立沙箱库，压完丢弃）----
+    - name: "writes"
+      profile: "load10"
+      samplers:
+        - { name: "create_project", path: "/api/projects", method: "POST",
+            body: '{"name":"perf-project","description":"perf write load"}' }
+        - { name: "create_task", path: "/api/tasks", method: "POST",
+            body: '{"projectId":"{{project_id}}","title":"perf-task","description":"perf write load","priority":"high","status":"todo"}' }
+        - { name: "patch_task", path: "/api/tasks/{{task_id}}", method: "PATCH",
+            body: '{"title":"perf-task-updated","status":"done","verified":true}' }
+        - { name: "move_tasks", path: "/api/tasks/move", method: "POST",
+            body: '{"taskIds":["{{task_id2}}"],"projectId":"{{project_id2}}"}' }
+        - { name: "archive", path: "/api/archive", method: "POST",
+            body: '{"taskIds":["{{task_id2}}"]}' }
+        - { name: "adopt", path: "/api/tasks/{{task_id2}}/adopt", method: "POST",
+            body: '{"content":"perf-adopted-content"}' }
+        - { name: "create_category", path: "/api/task-categories", method: "POST",
+            body: '{"name":"perf-cat"}' }
+        - { name: "patch_category", path: "/api/task-categories/{{category_id}}", method: "PATCH",
+            body: '{"name":"perf-cat-renamed"}' }
+        - { name: "create_queue", path: "/api/queues", method: "POST",
+            body: '{"name":"perf-queue","date":"2026-08-28"}' }
+        - { name: "add_jobs", path: "/api/queues/{{queue_id}}/jobs", method: "POST",
+            body: '{"items":[{"taskId":"{{task_id}}","toolId":"{{tool_id}}"}]}' }
+        - { name: "create_prompt", path: "/api/prompts", method: "POST",
+            body: '{"categoryId":"{{prompt_cat_id}}","title":"perf-prompt","content":"perf content"}' }
+        - { name: "patch_prompt", path: "/api/prompts/{{prompt_id}}", method: "PATCH",
+            body: '{"title":"perf-prompt-updated","content":"perf content updated"}' }
+        - { name: "set_note_project", path: "/api/settings/note-project", method: "POST",
+            body: '{"projectId":"{{project_id}}"}' }
+    # ---- 重端点（CPU 密集 / 大数据量）----
+    - name: "heavy"
+      profile: "smoke"
+      samplers:
+        - { name: "report_generate", path: "/api/report/generate", method: "POST",
+            body: '{"period":"week","format":"xlsx","projectId":"{{project_id}}"}' }
+        - { name: "tasks_large_project", path: "/api/tasks", method: "GET",
+            params: { projectId: "{{project_id}}" } }
+        - { name: "queue_detail_grown", path: "/api/queues/{{queue_id}}", method: "GET" }
+
+# ---------------------------------------------------------------------------
+# 缺陷判定规则
+# ---------------------------------------------------------------------------
+defect_rules:
+  defect_codes: ["000", "405"]
+  defect_prefixes: ["5"]
+  expected_codes: ["404"]
+  assertion_mismatch_is_defect: false
+
+# ---------------------------------------------------------------------------
+# 回归对比（本轮无基线，关闭）
+# ---------------------------------------------------------------------------
+comparison:
+  enabled: false
+  baseline_jtl: ""
+  key_endpoints:
+    - { title: "任务列表",  method: "GET",  path_substr: "/api/tasks" }
+    - { title: "创建任务",  method: "POST", path_substr: "/api/tasks" }
+    - { title: "报表生成",  method: "POST", path_substr: "/api/report/generate" }
+  baseline_integrity:
+    enforce_same_endpoints: true
+    doc_fallback_allowed: true
+
+# ---------------------------------------------------------------------------
+# 基线对比分析（关闭）
+# ---------------------------------------------------------------------------
+analysis:
+  enabled: false
+  inputs: []
+  endpoint_groups: []
+  percentiles: [50, 90, 95, 99]
+  output_report: "output/results/comparison_report.md"
+
+# ---------------------------------------------------------------------------
+# 报告
+# ---------------------------------------------------------------------------
+report:
+  formats: ["markdown"]
+  output_dir: "D:/code/otherProjects/26_MTask/perf/output"
+  percentiles: [50, 95, 99]
+  endpoint_table: true
+  group_label_prefixes: []
+
+# ---------------------------------------------------------------------------
+# 结果文件
+# ---------------------------------------------------------------------------
+results:
+  output_dir: "D:/code/otherProjects/26_MTask/perf/output"
+  format: csv
+  keep_count: 10
+
+# ---------------------------------------------------------------------------
+# 日志
+# ---------------------------------------------------------------------------
+logging:
+  level: INFO
+  file: "perf/output/perf.log"
+  verbose: false

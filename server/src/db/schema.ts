@@ -1,0 +1,220 @@
+import { getDb } from './connection';
+
+/** 首次启动建表。DDL 与 docs/技术设计.md 第 3 节保持一致。 */
+export function initSchema(): void {
+  const db = getDb();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      sort_weight INTEGER DEFAULT 0,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS tasks (
+      id          TEXT PRIMARY KEY,
+      project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      title       TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      priority    TEXT NOT NULL DEFAULT 'normal',
+      status      TEXT NOT NULL DEFAULT 'todo',
+      verified    INTEGER NOT NULL DEFAULT 0,
+      archived    INTEGER NOT NULL DEFAULT 0,
+      archived_at TEXT,
+      ai_summary  TEXT,
+      pinned      INTEGER NOT NULL DEFAULT 0,
+      category_id TEXT,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
+    CREATE INDEX IF NOT EXISTS idx_tasks_archived ON tasks(archived);
+    -- 复合索引：贴合列表查询的实际 WHERE/ORDER 组合（按项目列归档 / 全库按归档+时间排序），
+    -- 覆盖原单列索引，减少大数据量下的回表与文件排序
+    CREATE INDEX IF NOT EXISTS idx_tasks_project_archived ON tasks(project_id, archived);
+    CREATE INDEX IF NOT EXISTS idx_tasks_archived_created ON tasks(archived, created_at);
+
+    -- 任务分类：供任务归类使用；删除分类时由服务层把所属任务 category_id 置空（任务保留、回到未分类）
+    CREATE TABLE IF NOT EXISTS task_categories (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,
+      sort_weight INTEGER DEFAULT 0,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    );
+
+    -- 任务截图/图片附件（粘贴截图以 BLOB 落库，保持 SQLite 单文件可移植）
+    CREATE TABLE IF NOT EXISTS task_images (
+      id         TEXT PRIMARY KEY,
+      task_id    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      mime_type  TEXT NOT NULL DEFAULT 'image/png',
+      data       BLOB NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_images_task ON task_images(task_id);
+
+    CREATE TABLE IF NOT EXISTS ai_tools (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,
+      type        TEXT NOT NULL,
+      purpose     TEXT NOT NULL DEFAULT 'develop',
+      endpoint    TEXT NOT NULL,
+      api_key_enc TEXT,
+      model       TEXT,
+      model_notes TEXT DEFAULT '',
+      temperature REAL DEFAULT 0.2,
+      max_tokens  INTEGER DEFAULT 4096,
+      timeout_ms  INTEGER DEFAULT 60000,
+      enabled     INTEGER NOT NULL DEFAULT 1,
+      is_default_organize INTEGER NOT NULL DEFAULT 0,
+      is_default_develop  INTEGER NOT NULL DEFAULT 0,
+      remark      TEXT DEFAULT '',
+      console_url TEXT DEFAULT '',
+      pinned      INTEGER NOT NULL DEFAULT 0,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS queues (
+      id         TEXT PRIMARY KEY,
+      name       TEXT NOT NULL,
+      date       TEXT NOT NULL,
+      status     TEXT NOT NULL DEFAULT 'draft',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS queue_jobs (
+      id               TEXT PRIMARY KEY,
+      queue_id         TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+      task_id          TEXT NOT NULL REFERENCES tasks(id),
+      tool_id          TEXT NOT NULL REFERENCES ai_tools(id),
+      order_index      INTEGER NOT NULL DEFAULT 0,
+      status           TEXT NOT NULL DEFAULT 'queued',
+      request_payload  TEXT,
+      response_payload TEXT,
+      error            TEXT,
+      sent_at          TEXT,
+      finished_at      TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_jobs_queue ON queue_jobs(queue_id);
+    -- 复合索引：重试/查询按 队列+状态 过滤，覆盖单列 idx_jobs_queue
+    CREATE INDEX IF NOT EXISTS idx_jobs_queue_status ON queue_jobs(queue_id, status);
+
+    -- 提示词仓库：分类 + 提示词条目（提示词管理功能）
+    CREATE TABLE IF NOT EXISTS prompt_categories (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      sort_weight INTEGER DEFAULT 0,
+      builtin     INTEGER NOT NULL DEFAULT 0,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS prompts (
+      id          TEXT PRIMARY KEY,
+      category_id TEXT NOT NULL REFERENCES prompt_categories(id) ON DELETE CASCADE,
+      title       TEXT NOT NULL,
+      content     TEXT NOT NULL DEFAULT '',
+      pinned      INTEGER NOT NULL DEFAULT 0,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_prompts_category ON prompts(category_id);
+    -- 复合索引：分类内按 置顶+更新时间 排序（GET /prompts 的常见查询路径）
+    CREATE INDEX IF NOT EXISTS idx_prompts_category_order ON prompts(category_id, pinned, updated_at);
+
+    -- 应用级键值设置：当前仅承载移动端「默认记事项目」指针（defaultNoteProjectId）。
+    -- KV 结构便于未来扩展其它轻量偏好，且随数据迁移整体导出/导入。
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT
+    );
+  `);
+
+  // 迁移兜底：老库缺列时补列（CREATE TABLE IF NOT EXISTS 对已存在表不生效）
+  ensureColumn('ai_tools', 'is_default_organize', 'is_default_organize INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('ai_tools', 'is_default_develop', 'is_default_develop INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('ai_tools', 'model_notes', "model_notes TEXT DEFAULT ''");
+  ensureColumn('ai_tools', 'remark', "remark TEXT DEFAULT ''");
+  ensureColumn('ai_tools', 'console_url', "console_url TEXT DEFAULT ''");
+  ensureColumn('tasks', 'verified', 'verified INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('tasks', 'pinned', 'pinned INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('tasks', 'category_id', 'category_id TEXT');
+  ensureColumn('ai_tools', 'pinned', 'pinned INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('prompts', 'pinned', 'pinned INTEGER NOT NULL DEFAULT 0');
+  // 异步队列回执：ticket=平台受理标识，submitted_at=提交时间（配合 polling 判超时用）
+  ensureColumn('queue_jobs', 'ticket', 'ticket TEXT');
+  ensureColumn('queue_jobs', 'submitted_at', 'submitted_at TEXT');
+
+  seedPromptCategories();
+  // 移动端随手记默认归属项目（收件箱）：确定性 id，保证每次启动只创建一次
+  seedInboxProject();
+}
+
+/**
+ * 种子「收件箱」系统项目：移动端随手记在用户未指定默认记事项目时，任务落入此处，
+ * 与桌面端共享同一 SQLite，避免引入独立移动库。id 固定，幂等。
+ */
+function seedInboxProject(): void {
+  const db = getDb();
+  const id = 'sys-inbox';
+  if (db.prepare('SELECT 1 FROM projects WHERE id = ?').get(id)) return;
+  const t = new Date().toISOString();
+  db.prepare('INSERT INTO projects (id, name, description, sort_weight, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, '收件箱', '移动端随手记默认归属项目（系统）', -1000, t, t);
+}
+
+/** 首次启动预制通用提示词分类与示例提示词（仅分类表为空时播种） */
+function seedPromptCategories(): void {
+  const db = getDb();
+  const { c } = db.prepare('SELECT COUNT(*) AS c FROM prompt_categories').get() as { c: number };
+  if (c > 0) return;
+
+  const t = new Date().toISOString();
+  const insertCat = db.prepare(
+    'INSERT INTO prompt_categories (id, name, description, sort_weight, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)',
+  );
+  const insertPrompt = db.prepare(
+    'INSERT INTO prompts (id, category_id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+  );
+  const rnd = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+
+  const seed = (name: string, description: string, weight: number, prompts: [string, string][]) => {
+    const catId = rnd();
+    insertCat.run(catId, name, description, weight, t, t);
+    for (const [title, content] of prompts) insertPrompt.run(rnd(), catId, title, content, t, t);
+  };
+
+  const tx = db.transaction(() => {
+    seed('通用提示词', '适用于日常对话、角色设定与通用任务的基础模板', 0, [
+      ['万能 AI 助手', '你是一位博学、严谨、耐心的 AI 助手。回答问题时请遵循：1. 先给出直接结论；2. 再展开关键依据与推理过程；3. 如信息不足，明确列出需要补充的信息而不是臆测。回答使用与提问相同的语言。'],
+      ['结构化思考', '请以结构化方式分析以下问题：先拆解问题要素，再逐一分析，最后给出综合结论与可执行建议。问题：{在此填写问题}'],
+    ]);
+    seed('编程开发', '面向编码、调试与技术方案设计的提示词', 1, [
+      ['代码实现', '你是资深软件工程师。请根据以下需求实现代码：{需求描述}。要求：遵循语言惯用写法，添加必要注释，考虑边界情况与错误处理，并附上简要使用说明。'],
+      ['Bug 排查', '以下代码出现了异常行为：{异常描述}。请分析可能的根因，按可能性从高到低列出，并给出对应的修复方案与验证方法。相关代码：\n{粘贴代码}'],
+    ]);
+    seed('代码评审', '用于 AI 辅助 Code Review 的提示词', 2, [
+      ['代码评审', '请以严格评审者的视角审查以下代码，重点关注：1. 逻辑正确性与边界情况；2. 安全漏洞（注入、越权、敏感信息泄露）；3. 性能问题；4. 可读性与可维护性。对每个问题标注严重程度（高/中/低）并给出修改建议。代码：\n{粘贴代码}'],
+    ]);
+    seed('文档写作', '技术文档、需求说明与变更记录类提示词', 3, [
+      ['README 生成', '请根据以下项目信息生成一份 README：包含项目简介、核心功能、技术栈、快速开始、目录结构说明。语言简洁专业。项目信息：{填写项目信息}'],
+    ]);
+    seed('翻译润色', '中英互译与文案润色类提示词', 4, [
+      ['专业翻译', '请将以下内容翻译为{目标语言}，保持专业术语准确、语句通顺自然，不遗漏也不添加信息。原文：\n{粘贴原文}'],
+    ]);
+  });
+  tx();
+}
+
+/** 幂等补列：列不存在时 ALTER TABLE 添加 */
+function ensureColumn(table: string, column: string, ddl: string): void {
+  const db = getDb();
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  }
+}

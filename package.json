@@ -1,0 +1,75 @@
+{
+  "name": "mtask",
+  "version": "0.1.0830.19",
+  "private": true,
+  "main": "electron/main.js",
+  "description": "AI 任务开发管理工具：项目维度任务管理 + AI 梳理 + 队列分发（Electron + React + Express + SQLite）",
+  "workspaces": [
+    "server",
+    "web",
+    "electron"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev -w mtask-server",
+    "dev:web": "npm run dev -w mtask-web",
+    "build:server": "npm run build -w mtask-server",
+    "build:web": "npm run build -w mtask-web",
+    "typecheck": "npm run typecheck -w mtask-server",
+    "electron": "electron electron/main.js",
+    "dist": "electron-builder --win",
+    "dist:dir": "electron-builder --win --dir",
+    "make:icon": "electron scripts/make-icon.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.0.0",
+    "express": "^4.21.2",
+    "uuid": "^11.0.5",
+    "docx": "^9.7.1",
+    "docxtemplater": "^3.69.3",
+    "exceljs": "^4.4.0",
+    "pizzip": "^3.2.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "pdfkit": "^0.20.1",
+    "pptxgenjs": "^4.0.1"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.mtask.desktop",
+    "productName": "MTask",
+    "directories": {
+      "output": "release"
+    },
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**/*"
+    ],
+    "npmRebuild": false,
+    "afterPack": "scripts/trim-locales.js",
+    "files": [
+      "electron/main.js",
+      "electron/splash.html",
+      "electron/icon.png",
+      "web/dist/**/*",
+      "server/dist/**/*",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "installerIcon": "build/icon.ico",
+      "include": "electron/nsis-kill-process.nsh",
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

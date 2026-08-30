@@ -1,0 +1,19 @@
+# 依赖 / 构建产物
+node_modules/
+dist/
+server/dist/
+web/dist/
+release/
+build/pkg-out/
+
+# 运行时数据与数据库（用户数据）
+server/data/
+logs/
+perf/output/
+perf/sandbox/
+
+# 日志 / 测试临时输出
+*.log
+
+# 环境变量
+.env

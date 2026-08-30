@@ -1,0 +1,195 @@
+/** 轻量 API 客户端：统一前缀 /api，错误统一抛出 */
+
+/** Electron 壳（file:// 页面）走 api:// 自定义协议，由主进程转发到本地服务；浏览器访问用同源相对路径 */
+const apiBase =
+  typeof location !== 'undefined' && !/^https?:$/.test(location.protocol) ? 'api://mtask' : '/api';
+
+// 访问令牌：启用内网穿透后，所有数据接口需携带 X-Access-Token。模块加载时从本地恢复，重启后仍生效
+const TOKEN_KEY = 'mtask.accessToken';
+let accessToken = (() => {
+  try { return localStorage.getItem(TOKEN_KEY) ?? ''; } catch { return ''; }
+})();
+
+export function setAccessToken(token: string): void {
+  accessToken = token;
+  try { token ? localStorage.setItem(TOKEN_KEY, token) : localStorage.removeItem(TOKEN_KEY); } catch { /* 忽略 */ }
+}
+
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const res = await fetch(`${apiBase}${path}`, {
+    headers: { 'Content-Type': 'application/json', ...(accessToken ? { 'X-Access-Token': accessToken } : {}) },
+    ...options,
+  });
+  if (res.status === 204) return undefined as T;
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+  return body as T;
+}
+
+export const api = {
+  get: <T>(path: string) => request<T>(path),
+  post: <T>(path: string, data?: unknown, signal?: AbortSignal) =>
+    request<T>(path, { method: 'POST', body: data === undefined ? undefined : JSON.stringify(data), ...(signal ? { signal } : {}) }),
+  patch: <T>(path: string, data?: unknown) =>
+    request<T>(path, { method: 'PATCH', body: JSON.stringify(data ?? {}) }),
+  del: <T>(path: string, data?: unknown) =>
+    request<T>(path, { method: 'DELETE', body: data === undefined ? undefined : JSON.stringify(data) }),
+  /** 生成类接口的二进制下载：POST 返回文件流，附带 Content-Disposition 文件名 */
+  async download(path: string, data: unknown): Promise<{ blob: Blob; filename: string }> {
+    const res = await fetch(`${apiBase}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data ?? {}),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get('Content-Disposition') ?? '';
+    const m = cd.match(/filename\*=UTF-8''([^;]+)/i);
+    let filename = m ? decodeURIComponent(m[1]) : '';
+    // 代理未透传 Content-Disposition 时按内容类型兜底命名，避免下载成 report.bin
+    if (!filename) {
+      const ct = res.headers.get('Content-Type') ?? '';
+      const ext = ct.includes('spreadsheet') ? 'xlsx' : ct.includes('wordprocessing') ? 'docx' : ct.includes('presentation') ? 'pptx' : ct.includes('pdf') ? 'pdf' : 'bin';
+      filename = `report.${ext}`;
+    }
+    return { blob, filename };
+  },
+};
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  sort_weight: number;
+}
+
+export interface TaskImage {
+  id: string;
+  task_id: string;
+  mime_type: string;
+  size: number;
+  created_at: string;
+}
+
+/** 图片直链（<img src> 直接用；Electron 壳内由 api:// 协议转发到本地服务） */
+export const imageUrl = (id: string) => `${apiBase}/images/${id}`;
+
+/** 取图片 blob（复制到剪贴板用）。经 api:// 代理返回，代理已加 CORS 头，渲染进程可跨源读取 */
+export async function fetchImage(id: string): Promise<Blob> {
+  const res = await fetch(imageUrl(id));
+  if (!res.ok) throw new Error(`图片加载失败 HTTP ${res.status}`);
+  return res.blob();
+}
+
+/** 取图片 dataURL（富文本复制时内嵌到 HTML 用） */
+export async function imageDataURL(id: string): Promise<string> {
+  const blob = await fetchImage(id);
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(typeof r.result === "string" ? r.result : "");
+    r.onerror = () => reject(new Error("图片转 dataURL 失败"));
+    r.readAsDataURL(blob);
+  });
+}
+
+export interface Task {
+  id: string;
+  project_id: string;
+  title: string;
+  description: string;
+  priority: string;
+  status: 'todo' | 'done';
+  /** 已完成任务的验证状态：true=已验证，false=未验证 */
+  verified: boolean;
+  archived: boolean;
+  archived_at: string | null;
+  ai_summary: string | null;
+  /** 置顶：true=固定到列表顶部 */
+  pinned: boolean;
+  /** 所属任务分类 id；null 表示未分类 */
+  category_id: string | null;
+  created_at: string;
+  updated_at: string;
+  images: TaskImage[];
+}
+
+export interface TaskCategory {
+  id: string;
+  name: string;
+  sort_weight: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AITool {
+  id: string;
+  name: string;
+  type: string;
+  purpose: string;
+  endpoint: string;
+  model: string | null;
+  /** 模型配置说明 */
+  model_notes: string;
+  temperature: number;
+  max_tokens: number;
+  timeout_ms: number;
+  enabled: boolean;
+  isDefaultOrganize: boolean;
+  isDefaultDevelop: boolean;
+  /** 置顶：true=固定到列表顶部 */
+  pinned: boolean;
+  /** 备注 */
+  remark: string;
+  /** 厂商官方控制台页面 URL */
+  console_url: string | null;
+  hasApiKey: boolean;
+  apiKeyMasked: string | null;
+}
+
+export interface QueueJob {
+  id: string;
+  queue_id: string;
+  task_id: string;
+  tool_id: string;
+  order_index: number;
+  status: string;
+  request_payload: string | null;
+  response_payload: string | null;
+  error: string | null;
+  /** 队列详情接口 JOIN 附带（可能为 null） */
+  task_title?: string | null;
+  tool_name?: string | null;
+}
+
+export interface Queue {
+  id: string;
+  name: string;
+  date: string;
+  status: string;
+  created_at: string;
+  jobs?: QueueJob[];
+}
+
+export interface PromptCategory {
+  id: string;
+  name: string;
+  description: string;
+  sort_weight: number;
+  builtin: boolean;
+  /** 分类列表接口附带的提示词数量 */
+  promptCount?: number;
+}
+
+export interface Prompt {
+  id: string;
+  category_id: string;
+  title: string;
+  content: string;
+  /** 置顶：true=固定到列表顶部（后端返回 0/1，前端按布尔使用） */
+  pinned: boolean;
+  created_at: string;
+  updated_at: string;
+}

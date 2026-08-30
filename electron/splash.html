@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>MTask 启动中</title>
+  <style>
+    /* 启动窗：独立于应用主题的固定品牌配色，保证任意阶段观感一致 */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      background: radial-gradient(120% 120% at 50% 0%, #1f2937 0%, #111827 70%);
+      color: #e5e7eb;
+      font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .logo { width: 64px; height: 64px; border-radius: 14px; }
+    .title { font-size: 16px; font-weight: 600; color: #f9fafb; letter-spacing: 0.5px; }
+    .bar-wrap {
+      width: 260px;
+      height: 6px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.12);
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 3px;
+      background: linear-gradient(90deg, #3b82f6, #2563eb);
+      transition: width 0.2s ease;
+    }
+    .meta {
+      display: flex;
+      justify-content: space-between;
+      width: 260px;
+      font-size: 11px;
+      color: #9ca3af;
+    }
+    .per { color: #d1d5db; font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <img class="logo" src="./icon.png" alt="MTask" />
+  <div class="title">MTask</div>
+  <!-- 进度条与状态文案由主进程通过 window.__setProgress 驱动更新 -->
+  <div class="bar-wrap"><div class="bar-fill" id="fill"></div></div>
+  <div class="meta">
+    <span id="status">正在启动…</span>
+    <span class="per" id="percent">0%</span>
+  </div>
+  <script>
+    // 主进程经 webContents.executeJavaScript 调用，实时更新进度与阶段文案
+    window.__setProgress = function (progress, status) {
+      var p = Math.max(0, Math.min(100, Math.round(progress)));
+      var fill = document.getElementById('fill');
+      var st = document.getElementById('status');
+      var pc = document.getElementById('percent');
+      if (fill) fill.style.width = p + '%';
+      if (st) st.textContent = status || '正在启动…';
+      if (pc) pc.textContent = p + '%';
+    };
+  </script>
+</body>
+</html>

@@ -1,0 +1,159 @@
+@echo off
+setlocal
+cd /d "%~dp0.."
+
+REM MTask build script: install deps, typecheck, build server, build web, package exe.
+REM This file is pure ASCII on purpose so cmd (ANSI codepage) parses it reliably.
+
+REM Prefer the WorkBuddy managed Node (matches better-sqlite3 ABI).
+set "MGNode=C:\Users\hspcadmin\.workbuddy\binaries\node\versions\22.22.2"
+if exist "%MGNode%\node.exe" set "PATH=%MGNode%;%PATH%"
+
+REM Use npmmirror so electron + electron-builder binaries can be downloaded.
+set "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/"
+set "ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/"
+
+echo ============================================
+echo  MTask Build
+echo ============================================
+echo.
+
+node --version >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] node not found. Install Node or configure managed node.
+    pause
+    exit /b 1
+)
+
+REM [1/6] dependency check (npm workspaces installs node_modules at root)
+echo [1/6] Check dependencies...
+if not exist "node_modules" (
+    echo   node_modules missing, running npm install...
+    call npm install --no-audit --no-fund
+    if errorlevel 1 (
+        echo [ERROR] npm install failed
+        pause
+        exit /b 1
+    )
+) else (
+    echo   [OK] node_modules exists
+)
+
+REM [2/6] ensure electron binary is downloaded
+echo [2/6] Check electron binary...
+if not exist "node_modules\electron\dist\electron.exe" (
+    echo   electron.exe missing, downloading...
+    call node "node_modules\electron\install.js"
+    if errorlevel 1 (
+        echo [ERROR] electron binary download failed
+        pause
+        exit /b 1
+    )
+) else (
+    echo   [OK] electron.exe exists
+)
+
+REM [3/6] typecheck server
+echo [3/6] Typecheck server...
+pushd server
+call npm run typecheck
+if errorlevel 1 (
+    popd
+    echo [ERROR] server typecheck failed
+    pause
+    exit /b 1
+)
+popd
+
+REM [4/6] build server
+echo [4/6] Build server...
+pushd server
+call npm run build
+if errorlevel 1 (
+    popd
+    echo [ERROR] server build failed
+    pause
+    exit /b 1
+)
+popd
+
+REM [5/6] build web
+echo [5/6] Build web...
+pushd web
+call npm run build
+if errorlevel 1 (
+    popd
+    echo [ERROR] web build failed
+    pause
+    exit /b 1
+)
+popd
+
+REM [6/6] package electron exe.
+REM Bump version first so each build gets a distinct version.
+REM bump-version.js writes <major>.<minor>.<MMDD>.<seq>; both segments stay
+REM within Windows' 0..65535 per-segment limit (a raw 8-digit date would overflow).
+echo [6/6] Package electron exe...
+node "scripts\bump-version.js"
+if errorlevel 1 (
+    echo [ERROR] version bump failed
+    pause
+    exit /b 1
+)
+
+REM Backup the dev-state (Node ABI) native binary first, then force a rebuild
+REM for the Electron ABI. npmRebuild is off, so the rebuild must happen here.
+REM Guard: abort early if better_sqlite3.node is locked by a running dev process.
+REM A loaded native DLL cannot be deleted by electron-rebuild (EPERM on unlink).
+set "BSQLITE_CHECK=node_modules\better-sqlite3\build\Release\better_sqlite3.node"
+powershell -NoProfile -Command "if(Test-Path '%BSQLITE_CHECK%'){try{[IO.File]::Open('%BSQLITE_CHECK%','Open','ReadWrite','None').Close();'UNLOCKED'}catch{'LOCKED'}}else{'UNLOCKED'}" > "%TEMP%\mtask_bslock.txt" 2>nul
+set /p "BSLOCK=" < "%TEMP%\mtask_bslock.txt"
+del "%TEMP%\mtask_bslock.txt" >nul 2>nul
+if /i not "%BSLOCK%"=="UNLOCKED" (
+    echo [ERROR] better_sqlite3.node is locked by a running dev process.
+    echo   Close the dev server and any running MTask app first, then rerun.
+    echo   [WARN] version was bumped already but no artifact was produced this run.
+    pause
+    exit /b 1
+)
+REM Put the Electron-state binary in place BEFORE electron-builder packages node_modules.
+REM The cached build\native\electron binary guarantees the Electron ABI (130) without a
+REM C++ toolchain and without depending on an earlier build's win-unpacked output.
+call scripts\native-switch.bat electron
+if errorlevel 1 (
+    echo [ERROR] failed to switch better-sqlite3 to Electron ABI.
+    echo   Make sure build\native\electron\better_sqlite3.node exists. Recreate the
+    echo   cache with:  scripts\native-switch.bat dev  then a prebuild-install download.
+    pause
+    exit /b 1
+)
+
+call npx electron-builder --win
+if errorlevel 1 (
+    echo [ERROR] electron-builder failed
+    pause
+    exit /b 1
+)
+
+REM After packaging, restore the dev-state binary so the workspace stays dev-ready.
+call scripts\native-switch.bat dev
+if errorlevel 1 (
+    echo [ERROR] failed to restore dev-state better-sqlite3.
+    echo   Run:  scripts\native-switch.bat dev
+    pause
+    exit /b 1
+)
+
+echo.
+echo ============================================
+echo  Build done
+echo ============================================
+echo  server:  server\dist
+echo  web:     web\dist
+echo  exe:     release\
+REM Print the actual version used this run so each artifact can be traced back.
+for /f "usebackq delims=" %%v in (`node -p "require('./package.json').version"`) do set "APPVER=%%v"
+if defined APPVER echo  version: %APPVER%
+echo.
+pause
+exit /b 0
