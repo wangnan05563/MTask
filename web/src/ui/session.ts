@@ -64,7 +64,8 @@ function isCompatible(parsed: unknown, initial: unknown): boolean {
   }
   if (Array.isArray(initial)) return false;
   if (typeof initial === 'object') {
-    for (const k of Object.keys(initial as object)) {
+    // typeof 守卫 + 前置 null 排除已将 initial 窄化为 object，无需再断言
+    for (const k of Object.keys(initial)) {
       if (!(k in (parsed as object))) return false;
       if (!isCompatible((parsed as Record<string, unknown>)[k], (initial as Record<string, unknown>)[k])) return false;
     }

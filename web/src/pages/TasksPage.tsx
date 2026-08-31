@@ -7,10 +7,45 @@ import { clearSessionState, usePersistentState, useSessionState } from '../ui/se
 import { useBusy, setBusy } from '../ui/busy';
 import { AlignLeft, Archive, Check, ChevronDown, ChevronUp, Copy, CopyPlus, ImagePlus, Loader2, Plus, Save, Sparkles, SquarePen, Wand2, X } from 'lucide-react';
 
-/** 描述编辑中的图片草稿：added 为待上传的粘贴截图 dataURL，removed 为待删除的已有图片 id */
+/** 粘贴截图项：id 为入列时生成的稳定唯一标识，供列表 key 使用，删除中间项不会导致其余项身份错位 */
+interface PastedImage {
+  id: string;
+  url: string;
+}
+
+/** 描述编辑中的图片草稿：added 为待上传的粘贴截图，removed 为待删除的已有图片 id */
 interface ImageDraft {
-  added: string[];
+  added: PastedImage[];
   removed: string[];
+}
+
+/** 剥离 AI 外层的 ```markdown ``` 代码围栏：仅当围栏包裹整段文本时去除，保留内部 Markdown 内容，异常情况原样返回 */
+function stripCodeFence(text: string): string {
+  const m = /^\s*```(?:markdown|md)?\s*\n?([\s\S]*?)\n?```\s*$/.exec(text);
+  return m ? m[1] : text;
+}
+
+/** 为粘贴截图生成稳定唯一 id：时间戳 + 随机段，同一毫秒内多次粘贴也不冲突 */
+function newPastedImageId(): string {
+  return `paste-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** 从剪贴板读取图片；有图片时阻止默认粘贴并回调 dataURL，无图片则放行文本粘贴（纯函数，提到组件外避免闭包重创建） */
+function readClipboardImages(e: ClipboardEvent<HTMLTextAreaElement>, onImages: (url: string) => void): boolean {
+  const files = Array.from(e.clipboardData.items)
+    .filter((i) => i.type.startsWith('image/'))
+    .map((i) => i.getAsFile())
+    .filter((f): f is File => f !== null);
+  if (files.length === 0) return false;
+  e.preventDefault();
+  for (const file of files) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') onImages(reader.result);
+    };
+    reader.readAsDataURL(file);
+  }
+  return true;
 }
 
 export function TasksPage() {
@@ -19,10 +54,11 @@ export function TasksPage() {
   const [newPriority, setNewPriority] = useSessionState<string>('tasks.new.priority', 'normal');
   const [newDescOpen, setNewDescOpen] = useSessionState('tasks.new.descOpen', false);
   const [newDesc, setNewDesc] = useSessionState('tasks.new.desc', '');
-  const [newImages, setNewImages] = useSessionState<string[]>('tasks.new.images', []);
+  const [newImages, setNewImages] = useSessionState<PastedImage[]>('tasks.new.images', []);
   const [projects, setProjects] = useState<Project[]>([]);
   // 复用（复制）任务弹窗状态：reuseOpen 存待复制任务 id（null 关闭）；projectId 为选中的目标项目
   const [reuseOpen, setReuseOpen] = useState<string | null>(null);
+  const reusePanelRef = useRef<HTMLDivElement>(null);
   const [reuseProjectId, setReuseProjectId] = useState('');
   const [reuseSearch, setReuseSearch] = useState('');
   // 复用目标：project=复制到项目（原有能力保持不变）；prompt=打包为 JSON 资产复制到提示词页
@@ -81,6 +117,8 @@ export function TasksPage() {
   // 待办/已完成区块排序：会话级偏好，默认保持后端顺序
   const [todoSort, setTodoSort] = useSessionState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc'>('tasks.todoSort', 'default');
   const [doneSort, setDoneSort] = useSessionState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc'>('tasks.doneSort', 'default');
+  // AI 美化工具下拉容器：焦点移出检测用（替代容器 tabIndex+onBlur，避免在非交互容器上挂交互属性）
+  const toolSelectRef = useRef<HTMLDivElement>(null);
 
   const flash = (msg: string) => {
     setNotice(msg);
@@ -122,7 +160,7 @@ export function TasksPage() {
     await fetchTasks(projectId, 0, true);
   }, [fetchTasks]);
 
-  /** 加载更多：从已加载总数偏移处追加下一页（todo/done 最新长度在依赖中保证闭包最新） */
+  /** 加载更多：从已加载总数偏移处追加下一页（待办与已完成列表的最新长度在依赖中保证闭包最新） */
   const loadMore = useCallback(async () => {
     if (!activeProject || loadingMore || !hasMore) return;
     setLoadingMore(true);
@@ -165,6 +203,16 @@ export function TasksPage() {
   }, [activeProject, loadTasks]);
   useEffect(() => { void loadTools(); }, [loadTools]);
   useEffect(() => { void loadCategories(); }, [loadCategories]);
+  // 工具下拉展开期间监听全局焦点移出：内部元素间切换时 relatedTarget 仍在容器内不收起，移出容器才收起。
+  // 挂在 document 上而非容器 div，可避免为挂 onBlur 而给非交互容器加 tabIndex/role
+  useEffect(() => {
+    if (!toolOpen) return;
+    const onDocFocusOut = (e: FocusEvent) => {
+      if (toolSelectRef.current && !toolSelectRef.current.contains(e.relatedTarget as Node)) setToolOpen(false);
+    };
+    document.addEventListener('focusout', onDocFocusOut);
+    return () => document.removeEventListener('focusout', onDocFocusOut);
+  }, [toolOpen]);
 
   async function createProject() {
     const name = await askInput({ title: '新项目名称', placeholder: '请输入项目名称' });
@@ -209,8 +257,8 @@ export function TasksPage() {
         description: newDesc.trim() || undefined,
       });
       // 创建时粘贴的截图随后上传到新任务
-      for (const url of newImages) {
-        await api.post(`/tasks/${created.id}/images`, { data: url });
+      for (const img of newImages) {
+        await api.post(`/tasks/${created.id}/images`, { data: img.url });
       }
       setNewTitle('');
       setNewDesc('');
@@ -247,24 +295,6 @@ export function TasksPage() {
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
     }
-  }
-
-  /** 从剪贴板读取图片；有图片时阻止默认粘贴并回调 dataURL，无图片则放行文本粘贴 */
-  function readClipboardImages(e: ClipboardEvent<HTMLTextAreaElement>, onImages: (url: string) => void): boolean {
-    const files = Array.from(e.clipboardData.items)
-      .filter((i) => i.type.startsWith('image/'))
-      .map((i) => i.getAsFile())
-      .filter((f): f is File => Boolean(f));
-    if (files.length === 0) return false;
-    e.preventDefault();
-    for (const file of files) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') onImages(reader.result);
-      };
-      reader.readAsDataURL(file);
-    }
-    return true;
   }
 
   async function setStatus(task: Task, status: 'todo' | 'done') {
@@ -377,10 +407,13 @@ export function TasksPage() {
     }
   }
 
-  /** 剥离 AI 外层的 ```markdown ``` 代码围栏：仅当围栏包裹整段文本时去除，保留内部 Markdown 内容，异常情况原样返回 */
-  function stripCodeFence(text: string): string {
-    const m = text.match(/^\s*```(?:markdown|md)?\s*\n?([\s\S]*?)\n?```\s*$/);
-    return m ? m[1] : text;
+  /** 工具栏美化按钮统一入口：进行中点击=取消全部，否则批量美化（独立函数保持 JSX 简洁且避免表达式内 void） */
+  function handleBeautifyToggle() {
+    if (anyBeautify) {
+      cancelBeautify();
+      return;
+    }
+    beautifyAll();
   }
 
   /** 提示词优化：调 AI 把当前描述草稿改写为结构化提示词，结果写回草稿供确认后保存。
@@ -442,8 +475,8 @@ export function TasksPage() {
   function toggleTitleEdit(task: Task) {
     setTitleDrafts((prev) => {
       const next = { ...prev };
-      if (next[task.id] !== undefined) delete next[task.id];
-      else next[task.id] = task.title;
+      if (next[task.id] === undefined) next[task.id] = task.title;
+      else delete next[task.id];
       return next;
     });
   }
@@ -515,17 +548,18 @@ export function TasksPage() {
     if (!text.trim()) return flash('无内容可复制');
     const ok = () => {
       setCopiedId(t.id);
-      setTimeout(() => setCopiedId((cur) => (cur === t.id ? '' : cur)), 1800);
+      // 1.8s 后复位「已复制」反馈：经独立函数按 id 比对，仅当仍展示本任务时才清空
+      setTimeout(() => clearCopiedIfMatching(t.id), 1800);
       flash('任务内容已复制');
     };
     // 组装富文本 HTML（含任务截图 dataURL），便于在 Word/富文本编辑器粘贴时带上截图
     const buildHtml = async (): Promise<string> => {
-      const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const esc = (s: string) => s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
       // 内联 dataURL 体积上限：累计超过即跳过剩余图片，避免 ClipboardItem 写入超限使整份复制降级为纯文本
       const MAX_INLINED_BYTES = 12 * 1024 * 1024;
       let html = `<h1>${esc(t.title)}</h1>`;
-      if (t.description) html += `<p>${esc(t.description).replace(/\n/g, '<br/>')}</p>`;
-      if (t.ai_summary) html += `<p><b>AI 梳理摘要：</b><br/>${esc(t.ai_summary).replace(/\n/g, '<br/>')}</p>`;
+      if (t.description) html += `<p>${esc(t.description).replaceAll('\n', '<br/>')}</p>`;
+      if (t.ai_summary) html += `<p><b>AI 梳理摘要：</b><br/>${esc(t.ai_summary).replaceAll('\n', '<br/>')}</p>`;
       let inlinedBytes = 0;
       for (const img of t.images) {
         if (inlinedBytes >= MAX_INLINED_BYTES) break;   // 超限则放弃剩余截图，保持单次粘贴可行
@@ -555,7 +589,8 @@ export function TasksPage() {
       document.body.appendChild(ta);
       ta.select();
       try {
-        document.execCommand('copy');
+        // Clipboard API 不可用时的降级复制：execCommand 虽已废弃，但仍是浏览器仅存的同步复制手段
+        document.execCommand('copy'); // NOSONAR - 降级路径无未废弃替代 API
         ok();
       } catch {
         flash('复制失败，请手动选择文本复制');
@@ -564,19 +599,24 @@ export function TasksPage() {
     }
   }
 
+  /** 「已复制」反馈复位：仅当当前展示的仍是该任务时才清空，避免覆盖用户随后复制的其他任务 */
+  function clearCopiedIfMatching(taskId: string) {
+    setCopiedId((cur) => (cur === taskId ? '' : cur));
+  }
+
   /** FR1.3 描述编辑：展开/收起描述编辑区（收起时丢弃图片草稿） */
   function toggleDescEdit(task: Task) {
     setDescDrafts((prev) => {
       const next = { ...prev };
-      if (next[task.id] !== undefined) {
+      if (next[task.id] === undefined) {
+        next[task.id] = task.description ?? '';
+      } else {
         delete next[task.id];
         setImgDrafts((p) => {
           const n = { ...p };
           delete n[task.id];
           return n;
         });
-      } else {
-        next[task.id] = task.description ?? '';
       }
       return next;
     });
@@ -590,7 +630,7 @@ export function TasksPage() {
     try {
       await api.patch(`/tasks/${task.id}`, { description: content });
       if (imgDraft) {
-        for (const url of imgDraft.added) await api.post(`/tasks/${task.id}/images`, { data: url });
+        for (const img of imgDraft.added) await api.post(`/tasks/${task.id}/images`, { data: img.url });
         for (const id of imgDraft.removed) await api.del(`/images/${id}`);
       }
     } catch (e) {
@@ -619,21 +659,342 @@ export function TasksPage() {
     });
   }
 
-  /** 编辑态：移除尚未上传的粘贴截图 */
-  function removeAddedImage(taskId: string, index: number) {
+  /** 编辑态：把粘贴截图加入待上传草稿（入列时生成稳定 id，供列表 key 使用） */
+  function addPastedImage(taskId: string, url: string) {
+    setImgDrafts((prev) => {
+      const cur = prev[taskId] ?? { added: [], removed: [] };
+      return { ...prev, [taskId]: { ...cur, added: [...cur.added, { id: newPastedImageId(), url }] } };
+    });
+  }
+
+  /** 编辑态：移除尚未上传的粘贴截图（按稳定 id 而非下标定位，删除中间项不影响其余项身份） */
+  function removeAddedImage(taskId: string, pasteId: string) {
     setImgDrafts((prev) => {
       const cur = prev[taskId];
       if (!cur) return prev;
-      return { ...prev, [taskId]: { ...cur, added: cur.added.filter((_, i) => i !== index) } };
+      return { ...prev, [taskId]: { ...cur, added: cur.added.filter((p) => p.id !== pasteId) } };
     });
+  }
+
+  /** 新建任务区：把粘贴截图加入待上传列表 */
+  function addNewImage(url: string) {
+    setNewImages((prev) => [...prev, { id: newPastedImageId(), url }]);
+  }
+
+  /** 新建任务区：移除尚未上传的粘贴截图 */
+  function removeNewImage(pasteId: string) {
+    setNewImages((prev) => prev.filter((p) => p.id !== pasteId));
   }
 
   /** 紧凑时间：ISO → 'MM-DD HH:mm'，用于列表行内展示，减少同屏重复信息的视觉重量 */
   const fmtShort = (iso: string) => (iso ? iso.slice(5, 16).replace('T', ' ') : '');
 
+  /** 任务行顶部操作条：完成状态/验证/置顶/标题/优先级/分类/标题操作/复制/描述/复用/归档 */
+  function renderTaskActions(t: Task, titleEditing: boolean, descEditing: boolean) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <button title="切换任务完成状态" aria-label="切换任务完成状态" onClick={() => void setStatus(t, t.status === 'todo' ? 'done' : 'todo')} style={{ cursor: 'pointer' }}>
+          {t.status === 'todo' ? '☐' : '☑'}
+        </button>
+        {/* 仅已完成任务展示验证状态 */}
+        {t.status === 'done' && renderVerifyButton(t)}
+        {/* 置顶/取消置顶图标：置于标题最左侧 */}
+        <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
+          <PinToggle pinned={t.pinned} onToggle={() => void togglePin(t)} />
+        </span>
+        {renderTaskTitle(t, titleEditing)}
+        {/* 优先级三级（低/中/高）：置于 AI 梳理按钮之前，便于优先调整重要度 */}
+        <select
+          value={t.priority}
+          onChange={(e) => void setPriority(t, e.target.value)}
+          className="task-op"
+          style={{ fontSize: 12, padding: 2, border: '1px solid var(--border-strong)', borderRadius: 4 }}
+        >
+          <option value="low">低</option>
+          <option value="normal">中</option>
+          <option value="high">高</option>
+        </select>
+        {/* 行内切换任务分类：'none' 仅作展示用不可选；空串回到未分类 */}
+        <select
+          value={t.category_id ?? ''}
+          onChange={(e) => void setTaskCategory(t, e.target.value)}
+          title="分类 — 切换该任务所属分类"
+          aria-label="切换任务分类"
+          className="task-op"
+          style={{ fontSize: 12, padding: 2, border: '1px solid var(--border-strong)', borderRadius: 4 }}
+        >
+          <option value="">未分类</option>
+          {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        {t.status === 'todo' && renderTitleActions(t, titleEditing)}
+        <button
+          onClick={() => void copyTaskContent(t)}
+          title="复制 — 复制该任务标题、描述与 AI 摘要到剪贴板"
+          aria-label="复制：复制该任务内容到剪贴板"
+          className="task-op"
+          style={{ fontSize: 12, color: copiedId === t.id ? 'var(--success)' : undefined, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        >
+          {copiedId === t.id ? <Check size={13} /> : <Copy size={13} />}
+        </button>
+        <button onClick={() => toggleDescEdit(t)} title={descEditing ? '收起描述 — 收起描述编辑区' : '描述 — 编辑该任务描述'} aria-label={descEditing ? '收起描述' : '编辑该任务描述'} className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{descEditing ? <ChevronUp size={13} /> : <AlignLeft size={13} />}</button>
+        <button
+          onClick={() => { setReuseOpen(t.id); setReuseProjectId(''); setReuseSearch(''); setReuseCategoryId(''); void loadPromptCats(); }}
+          title="复用此任务 — 将该任务复制到其他项目，或打包为资产复制到提示词页"
+          aria-label="复用此任务：将该任务复制到其他项目"
+          className="task-op"
+          style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        >
+          <CopyPlus size={13} />
+        </button>
+        <button onClick={() => void archive(t)} title="归档 — 将该任务移入归档" aria-label="归档：将该任务移入归档" className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Archive size={13} /></button>
+      </div>
+    );
+  }
+
+  /** 已完成任务验证状态切换按钮：未验证=空心圆，已验证=打勾；key 变化触发重挂载以播放弹出动画 */
+  function renderVerifyButton(t: Task) {
+    return (
+      <button
+        onClick={() => void toggleVerified(t)}
+        title={t.verified ? '已验证，点击取消验证' : '未验证，点击标记已验证'}
+        aria-label={t.verified ? '取消验证' : '标记为已验证'}
+        key={t.verified ? 'v-ok' : 'v-no'}
+        className="verify-icon"
+        style={{ cursor: 'pointer', fontSize: 16, lineHeight: 1, border: 'none', background: 'transparent', color: t.verified ? 'var(--success)' : 'var(--border-strong)' }}
+      >
+        {t.verified ? '✓' : '○'}
+      </button>
+    );
+  }
+
+  /** 标题区：编辑态输入框 / 展示态文本 + 描述展开按钮 */
+  function renderTaskTitle(t: Task, titleEditing: boolean) {
+    return (
+      <>
+        {titleEditing ? (
+          <input
+            value={titleDrafts[t.id]}
+            onChange={(e) => setTitleDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
+            onKeyDown={(e) => e.key === 'Enter' && void saveTitle(t)}
+            placeholder="任务标题"
+            autoFocus
+            style={{ flex: 1, padding: '4px 6px', border: '1px solid var(--accent)', borderRadius: 4, fontSize: 13, boxSizing: 'border-box' }}
+          />
+        ) : (
+          <span style={{ flex: 1, textDecoration: t.status === 'done' ? 'line-through' : 'none', color: 'var(--text)' }}>
+            {t.title}
+          </span>
+        )}
+        {/* 展开/收起按钮紧跟标题：有描述才显示，点击展开完整描述（默认收起不展示摘要，保持简洁） */}
+        {t.description && (
+          <button
+            onClick={() => setDescExpanded((p) => ({ ...p, [t.id]: !p[t.id] }))}
+            title={descExpanded[t.id] ? '收起 — 收起任务描述' : '展开 — 展开查看完整任务描述'}
+            aria-label={descExpanded[t.id] ? '收起：收起任务描述' : '展开：展开查看完整任务描述'}
+            className="task-op"
+            style={{ fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+          >
+            {descExpanded[t.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          </button>
+        )}
+      </>
+    );
+  }
+
+  /** 待办任务标题操作：保存编辑中的标题 / AI 美化 + 重命名切换（仅待办任务渲染） */
+  function renderTitleActions(t: Task, titleEditing: boolean) {
+    return (
+      <>
+        {titleEditing ? (
+          <button onClick={() => void saveTitle(t)} disabled={!titleDrafts[t.id]?.trim()} title="保存 — 保存修改后的任务标题" aria-label="保存：保存修改后的任务标题" className="task-op" style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Save size={13} /></button>
+        ) : (
+          renderBeautifyButton(t)
+        )}
+        <button onClick={() => toggleTitleEdit(t)} title={titleEditing ? '取消 — 取消重命名' : '改名 — 重命名该任务标题'} aria-label={titleEditing ? '取消重命名' : '重命名该任务标题'} className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{titleEditing ? <X size={13} /> : <SquarePen size={13} />}</button>
+      </>
+    );
+  }
+
+  /** AI 美化单条按钮：进行中高亮呼吸，批量独占期间禁用，提示文案区分状态 */
+  function renderBeautifyButton(t: Task) {
+    const busy = beautifyBusy[t.id];
+    return (
+      <button
+        onClick={() => void beautify(t)}
+        disabled={batchBusy && !busy}
+        title={busy ? 'AI 美化进行中，请在工具栏点击「取消」' : 'AI 美化 — 润色该任务标题，使其语义更清晰表达更规范'}
+        aria-label={busy ? 'AI 美化进行中' : 'AI 美化：润色该任务标题'}
+        className={`task-op${busy ? ' task-breathe' : ''}`}
+        style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', background: busy ? 'var(--accent)' : 'transparent', color: busy ? 'var(--accent-text)' : 'var(--text)', opacity: batchBusy && !busy ? 0.4 : 1 }}
+      >
+        <Sparkles size={13} />
+      </button>
+    );
+  }
+
+  /** 描述展开区（查看态）：Markdown 正文在上、截图缩略图紧随其后显示在同一容器内，
+   *  二者共同构成"描述区"；未展开/编辑时不展示，避免截图独立浮在标题栏 */
+  function renderTaskDescView(t: Task) {
+    return (
+      <div style={{ marginLeft: 32, marginTop: 6 }}>
+        {t.description && (
+          // MarkdownContent 提供「渲染/源码」切换，样式与提示词管理页一致；
+          // 外层不再设高度/滚动限制，避免渲染视图被截断而出现差异（滚动由组件内部处理）
+          <MarkdownContent content={t.description} showCopy />
+        )}
+        {t.images.length > 0 && (
+          <div style={{ marginTop: t.description ? 8 : 0, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {t.images.map((img) => (
+              <div key={img.id} style={{ position: 'relative', display: 'inline-block' }}>
+                {/* 截图缩略图用原生 button 包裹 img（S6819/S6842）：原生可交互元素自带键盘激活，无需 role/tabIndex */}
+                <button
+                  type="button"
+                  title="放大预览 — 点击放大或收起截图"
+                  aria-label="任务截图：点击放大预览"
+                  onClick={() => setPreviewId(previewId === img.id ? '' : img.id)}
+                  style={{ padding: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'block', lineHeight: 0 }}
+                >
+                <img
+                  src={imageUrl(img.id)}
+                  alt="任务截图"
+                  style={{
+                    height: 64,
+                    borderRadius: 4,
+                    display: 'block',
+                    border: previewId === img.id ? '2px solid var(--accent)' : '1px solid var(--border)',
+                  }}
+                />
+                </button>
+                {/* 独立复制按钮：不干扰点击放大预览 */}
+                <button
+                  onClick={() => void copyImage(img)}
+                  title="复制图片 — 复制该截图到剪贴板"
+                  aria-label="复制图片：复制该截图到剪贴板"
+                  className="task-op"
+                  style={{ position: 'absolute', right: -6, bottom: -6, fontSize: 12, lineHeight: '16px', padding: '0 4px', display: 'inline-flex', alignItems: 'center', background: 'var(--surface-2)' }}
+                >
+                  <Copy size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /** 大图预览：点击缩略图后展示，附复制入口 */
+  function renderTaskPreview(t: Task) {
+    return (
+      <div style={{ marginLeft: 32, marginTop: 6 }}>
+        <img
+          src={imageUrl(previewId)}
+          alt="任务截图预览"
+          style={{ maxWidth: '100%', maxHeight: 480, border: '1px solid var(--border-strong)', borderRadius: 6 }}
+        />
+        <div style={{ marginTop: 4 }}>
+          <button onClick={() => void copyImage(t.images.find((i) => i.id === previewId)!)} title="复制图片 — 复制该截图到剪贴板" aria-label="复制图片：复制该截图到剪贴板" className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px' }}><Copy size={13} />复制图片</button>
+        </div>
+      </div>
+    );
+  }
+
+  /** 描述编辑区：已有/新增截图草稿 + 描述输入框 + 保存/优化/取消 */
+  function renderTaskDescEditor(t: Task, descDraft: string) {
+    const imgDraft = imgDrafts[t.id] ?? { added: [], removed: [] };
+    const kept = t.images.filter((i) => !imgDraft.removed.includes(i.id));
+    return (
+      <div style={{ marginLeft: 32, marginTop: 6 }}>
+        {(kept.length > 0 || imgDraft.added.length > 0) && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+            {kept.map((img) => (
+              <div key={img.id} style={{ position: 'relative' }}>
+                <img src={imageUrl(img.id)} alt="任务截图" style={{ height: 64, borderRadius: 4, border: '1px solid var(--border)' }} />
+                <button
+                  onClick={() => markImageRemoved(t.id, img.id)}
+                  title="删除截图"
+                  style={{ position: 'absolute', top: -6, right: -6, fontSize: 10, lineHeight: '16px', padding: '0 4px', cursor: 'pointer' }}
+                >✕</button>
+              </div>
+            ))}
+            {imgDraft.added.map((p) => (
+              <div key={p.id} style={{ position: 'relative' }}>
+                <img src={p.url} alt="待上传截图" style={{ height: 64, borderRadius: 4, border: '1px dashed var(--accent)' }} />
+                <button
+                  onClick={() => removeAddedImage(t.id, p.id)}
+                  title="移除截图"
+                  style={{ position: 'absolute', top: -6, right: -6, fontSize: 10, lineHeight: '16px', padding: '0 4px', cursor: 'pointer' }}
+                >✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+        <textarea
+          value={descDraft}
+          onChange={(e) => setDescDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
+          onPaste={(e) => readClipboardImages(e, (url) => addPastedImage(t.id, url))}
+          rows={3}
+          placeholder="任务描述（支持 Markdown 风格纯文本，可在框内 Ctrl+V 粘贴截图）"
+          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, boxSizing: 'border-box' }}
+        />
+        <div style={{ marginTop: 4, display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button onClick={() => void saveDesc(t)} title="保存描述 — 保存修改后的任务描述" aria-label="保存描述：保存修改后的任务描述" style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Save size={13} /></button>
+          <button onClick={() => void optimizeDesc(t)} title={optimizingMap[t.id] ? '取消 — 停止当前提示词优化' : '提示词优化 — 用选中工具把描述改写为结构化提示词'} aria-label={optimizingMap[t.id] ? '取消提示词优化' : '提示词优化：用选中工具优化描述草稿'} className={optimizingMap[t.id] ? 'task-breathe' : undefined} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', background: optimizingMap[t.id] ? 'var(--accent)' : 'transparent', color: optimizingMap[t.id] ? 'var(--accent-text)' : 'var(--text)' }}><Wand2 size={13} /></button>
+          <button onClick={() => toggleDescEdit(t)} title="取消 — 收起描述编辑区，放弃未保存的修改" aria-label="取消：收起描述编辑区" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><X size={13} /></button>
+          {optimizingMap[t.id] && <span className="task-breathe" style={{ fontSize: 12, color: 'var(--accent)' }}>正在生成优化文案…</span>}
+        </div>
+      </div>
+    );
+  }
+
+  /** AI 梳理摘要区：展开/收起查看（与描述展开同风格，默认收起） */
+  function renderTaskSummary(t: Task) {
+    return (
+      <div style={{ marginLeft: 32, marginTop: 4 }}>
+        <button
+          onClick={() => setSummaryExpanded((p) => ({ ...p, [t.id]: !p[t.id] }))}
+          title={summaryExpanded[t.id] ? '收起摘要 — 收起 AI 梳理摘要' : '展开摘要 — 展开查看 AI 梳理摘要'}
+          aria-label={summaryExpanded[t.id] ? '收起：收起 AI 梳理摘要' : '展开：展开查看 AI 梳理摘要'}
+          style={{ fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 0', cursor: 'pointer' }}
+        >
+          {summaryExpanded[t.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          AI 梳理摘要
+        </button>
+        {summaryExpanded[t.id] && (
+          <pre style={{ margin: '4px 0 0', padding: 8, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, whiteSpace: 'pre-wrap' }}>
+            {t.ai_summary}
+          </pre>
+        )}
+      </div>
+    );
+  }
+
+  /** AI 梳理结果确认区：草稿可编辑，保存回填 ai_summary 或放弃 */
+  function renderTaskDraft(t: Task, draft: string) {
+    return (
+      <div style={{ marginLeft: 32, marginTop: 6 }}>
+        <textarea
+          value={draft}
+          onChange={(e) => setDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
+          rows={8}
+          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, fontFamily: 'monospace', boxSizing: 'border-box' }}
+        />
+        <div style={{ marginTop: 4, display: 'flex', gap: 8 }}>
+          <button onClick={() => void saveDraft(t)} title="保存到任务 — 将梳理结果回填为任务摘要" aria-label="保存到任务" style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', gap: 4 }}><Check size={13} />保存到任务</button>
+          <button onClick={() => setDrafts((prev) => {
+            const next = { ...prev };
+            delete next[t.id];
+            return next;
+          })} title="放弃 — 丢弃本次梳理草稿" aria-label="放弃梳理草稿" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><X size={13} /></button>
+        </div>
+      </div>
+    );
+  }
+
   /** 渲染单个任务行。
    *  注意：必须用普通函数调用（renderTaskItem(t)）而非组件，否则定义在渲染函数内会每次重渲染都生成新组件类型，
-   *  导致整个任务项（含描述/梳理 textarea）反复卸载重建、光标焦点丢失。普通函数把 JSX 内联进父组件树，按位置复用 DOM，焦点稳定。 */
+   *  导致整个任务项（含描述/梳理 textarea）反复卸载重建、光标焦点丢失。普通函数把 JSX 内联进父组件树，按位置复用 DOM，焦点稳定。
+   *  同理，行内各区块也拆为普通渲染函数调用，保持单函数复杂度可控。 */
   function renderTaskItem(t: Task) {
     const draft = drafts[t.id];
     const descDraft = descDrafts[t.id];
@@ -644,254 +1005,356 @@ export function TasksPage() {
         className={`task-item${titleEditing || descEditing ? ' task-editing' : ''}`}
         style={{ borderBottom: '1px solid var(--surface-2)', padding: '6px 0' }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <button title="切换任务完成状态" aria-label="切换任务完成状态" onClick={() => void setStatus(t, t.status === 'todo' ? 'done' : 'todo')} style={{ cursor: 'pointer' }}>
-            {t.status === 'todo' ? '☐' : '☑'}
-          </button>
-          {/* 仅已完成任务展示验证状态：未验证=空心圆，已验证=打勾；key 变化触发重挂载以播放弹出动画 */}
-          {t.status === 'done' && (
-            <button
-              onClick={() => void toggleVerified(t)}
-              title={t.verified ? '已验证，点击取消验证' : '未验证，点击标记已验证'}
-              aria-label={t.verified ? '取消验证' : '标记为已验证'}
-              key={t.verified ? 'v-ok' : 'v-no'}
-              className="verify-icon"
-              style={{ cursor: 'pointer', fontSize: 16, lineHeight: 1, border: 'none', background: 'transparent', color: t.verified ? 'var(--success)' : 'var(--border-strong)' }}
-            >
-              {t.verified ? '✓' : '○'}
-            </button>
-          )}
-          {/* 置顶/取消置顶图标：置于标题最左侧 */}
-          <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
-            <PinToggle pinned={t.pinned} onToggle={() => void togglePin(t)} />
-          </span>
-          {titleEditing ? (
-            <input
-              value={titleDrafts[t.id]}
-              onChange={(e) => setTitleDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
-              onKeyDown={(e) => e.key === 'Enter' && void saveTitle(t)}
-              placeholder="任务标题"
-              autoFocus
-              style={{ flex: 1, padding: '4px 6px', border: '1px solid var(--accent)', borderRadius: 4, fontSize: 13, boxSizing: 'border-box' }}
-            />
-          ) : (
-            <span style={{ flex: 1, textDecoration: t.status === 'done' ? 'line-through' : 'none', color: 'var(--text)' }}>
-              {t.title}
-            </span>
-          )}
-          {/* 展开/收起按钮紧跟标题：有描述才显示，点击展开完整描述（默认收起不展示摘要，保持简洁） */}
-          {t.description && (
-            <button
-              onClick={() => setDescExpanded((p) => ({ ...p, [t.id]: !p[t.id] }))}
-              title={descExpanded[t.id] ? '收起 — 收起任务描述' : '展开 — 展开查看完整任务描述'}
-              aria-label={descExpanded[t.id] ? '收起：收起任务描述' : '展开：展开查看完整任务描述'}
-              className="task-op"
-              style={{ fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-            >
-              {descExpanded[t.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-            </button>
-          )}
-          {/* 优先级三级（低/中/高）：置于 AI 梳理按钮之前，便于优先调整重要度 */}
-          <select
-            value={t.priority}
-            onChange={(e) => void setPriority(t, e.target.value)}
-            className="task-op"
-            style={{ fontSize: 12, padding: 2, border: '1px solid var(--border-strong)', borderRadius: 4 }}
-          >
-            <option value="low">低</option>
-            <option value="normal">中</option>
-            <option value="high">高</option>
-          </select>
-          {/* 行内切换任务分类：'none' 仅作展示用不可选；空串回到未分类 */}
-          <select
-            value={t.category_id ?? ''}
-            onChange={(e) => void setTaskCategory(t, e.target.value)}
-            title="分类 — 切换该任务所属分类"
-            aria-label="切换任务分类"
-            className="task-op"
-            style={{ fontSize: 12, padding: 2, border: '1px solid var(--border-strong)', borderRadius: 4 }}
-          >
-            <option value="">未分类</option>
-            {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-          {t.status === 'todo' && titleEditing ? (
-            <button onClick={() => void saveTitle(t)} disabled={!titleDrafts[t.id]?.trim()} title="保存 — 保存修改后的任务标题" aria-label="保存：保存修改后的任务标题" className="task-op" style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Save size={13} /></button>
-          ) : t.status === 'todo' && (
-            <button onClick={() => void beautify(t)} disabled={batchBusy && !beautifyBusy[t.id]} title={beautifyBusy[t.id] ? 'AI 美化进行中，请在工具栏点击「取消」' : 'AI 美化 — 润色该任务标题，使其语义更清晰表达更规范'} aria-label={beautifyBusy[t.id] ? 'AI 美化进行中' : 'AI 美化：润色该任务标题'} className={`task-op${beautifyBusy[t.id] ? ' task-breathe' : ''}`} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', background: beautifyBusy[t.id] ? 'var(--accent)' : 'transparent', color: beautifyBusy[t.id] ? 'var(--accent-text)' : 'var(--text)', opacity: batchBusy && !beautifyBusy[t.id] ? 0.4 : 1 }}><Sparkles size={13} /></button>
-          )}
-          {t.status === 'todo' && (
-            <button onClick={() => toggleTitleEdit(t)} title={titleEditing ? '取消 — 取消重命名' : '改名 — 重命名该任务标题'} aria-label={titleEditing ? '取消重命名' : '重命名该任务标题'} className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{titleEditing ? <X size={13} /> : <SquarePen size={13} />}</button>
-          )}
-          <button
-            onClick={() => void copyTaskContent(t)}
-            title="复制 — 复制该任务标题、描述与 AI 摘要到剪贴板"
-            aria-label="复制：复制该任务内容到剪贴板"
-            className="task-op"
-            style={{ fontSize: 12, color: copiedId === t.id ? 'var(--success)' : undefined, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-          >
-            {copiedId === t.id ? <Check size={13} /> : <Copy size={13} />}
-          </button>
-          <button onClick={() => toggleDescEdit(t)} title={descEditing ? '收起描述 — 收起描述编辑区' : '描述 — 编辑该任务描述'} aria-label={descEditing ? '收起描述' : '编辑该任务描述'} className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{descEditing ? <ChevronUp size={13} /> : <AlignLeft size={13} />}</button>
-          <button
-            onClick={() => { setReuseOpen(t.id); setReuseProjectId(''); setReuseSearch(''); setReuseCategoryId(''); void loadPromptCats(); }}
-            title="复用此任务 — 将该任务复制到其他项目，或打包为资产复制到提示词页"
-            aria-label="复用此任务：将该任务复制到其他项目"
-            className="task-op"
-            style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-          >
-            <CopyPlus size={13} />
-          </button>
-          <button onClick={() => void archive(t)} title="归档 — 将该任务移入归档" aria-label="归档：将该任务移入归档" className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Archive size={13} /></button>
-        </div>
+        {renderTaskActions(t, titleEditing, descEditing)}
         {/* 记录时间：悬停才显示（task-op），紧凑格式，创建/编辑并排一行靠右浅灰 */}
         <div className="task-op" style={{ marginLeft: 32, marginTop: 2, display: 'flex', justifyContent: 'flex-end', gap: 10, fontSize: 11, color: 'var(--text-muted)' }}>
           <span>{fmtShort(t.created_at)} 创建</span>
           <span>{fmtShort(t.updated_at)} 编辑</span>
         </div>
-        {/* 描述板块：描述展开时，Markdown 正文在上、截图缩略图紧随其后显示在同一容器内，
-            二者共同构成“描述区”；未展开/编辑时不展示，避免截图独立浮在标题栏 */}
-        {descExpanded[t.id] && !descEditing && (t.description || t.images.length > 0) && (
-          <div style={{ marginLeft: 32, marginTop: 6 }}>
-            {t.description && (
-              // MarkdownContent 提供「渲染/源码」切换，样式与提示词管理页一致；
-              // 外层不再设高度/滚动限制，避免渲染视图被截断而出现差异（滚动由组件内部处理）
-              <MarkdownContent content={t.description} showCopy />
-            )}
-            {t.images.length > 0 && (
-              <div style={{ marginTop: t.description ? 8 : 0, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {t.images.map((img) => (
-                  <div key={img.id} style={{ position: 'relative', display: 'inline-block' }}>
-                    <img
-                      src={imageUrl(img.id)}
-                      alt="任务截图"
-                      onClick={() => setPreviewId(previewId === img.id ? '' : img.id)}
-                      style={{
-                        height: 64,
-                        borderRadius: 4,
-                        cursor: 'pointer',
-                        display: 'block',
-                        border: previewId === img.id ? '2px solid var(--accent)' : '1px solid var(--border)',
-                      }}
-                    />
-                    {/* 独立复制按钮：不干扰点击放大预览 */}
+        {/* 描述板块：描述展开时，Markdown 正文在上、截图缩略图紧随其后显示在同一容器内 */}
+        {descExpanded[t.id] && !descEditing && (t.description || t.images.length > 0) && renderTaskDescView(t)}
+        {/* 大图预览独立于查看态条件：编辑态下已打开的预览不因进入编辑而消失 */}
+        {previewId && descExpanded[t.id] && t.images.some((i) => i.id === previewId) && renderTaskPreview(t)}
+        {descEditing && renderTaskDescEditor(t, descDraft)}
+        {t.ai_summary && !draft && renderTaskSummary(t)}
+        {draft && renderTaskDraft(t, draft)}
+      </li>
+    );
+  }
+
+  /** AI 美化工具下拉：收起态只显示模型名（未配置则回退厂商名）以收紧宽度；
+   *  展开面板展示"厂商名（厂商类型）+ 模型名"；焦点移出下拉区域即收起（见 focusout 监听） */
+  function renderToolSelector() {
+    const current = tools.find((x) => x.id === organizeToolId);
+    return (
+      <div ref={toolSelectRef} style={{ position: 'relative', marginLeft: 12 }}>
+        <button
+          onClick={() => setToolOpen((o) => !o)}
+          title={current ? `当前工具：${current.name}（${current.type}）· ${current.model ?? '未配置模型'}` : '选择 AI 美化工具'}
+          aria-label="选择 AI 美化工具"
+          aria-haspopup="listbox"
+          aria-expanded={toolOpen}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', fontSize: 12, borderRadius: 4, background: 'var(--card-bg)', cursor: 'pointer' }}
+        >
+          {current ? (current.model ?? current.name) : '选择 AI 美化工具…'}
+          <ChevronDown size={12} />
+        </button>
+        {toolOpen && (
+          <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 30, minWidth: 240, maxHeight: 260, overflowY: 'auto', background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: 'var(--overlay)' }}>
+            {tools.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => { setOrganizeToolId(t.id); setToolOpen(false); }}
+                title={`选择 ${t.name}（${t.type}）· ${t.model ?? '未配置模型'}`}
+                aria-label={`选择工具 ${t.name}`}
+                style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', border: 'none', cursor: 'pointer', fontSize: 12, background: t.id === organizeToolId ? 'var(--accent-soft)' : 'transparent', color: t.id === organizeToolId ? 'var(--accent)' : 'var(--text)' }}
+              >
+                {/* 展开面板展示厂商名（厂商类型），模型名以浅色/告警色区分是否已配置 */}
+                {t.name}（{t.type}）
+                <span style={{ color: t.model ? 'var(--text-secondary)' : 'var(--danger)', marginLeft: 6 }}>{t.model ?? '未配置模型'}</span>
+              </button>
+            ))}
+            {tools.length === 0 && <div style={{ padding: '8px 10px', color: 'var(--text-muted)', fontSize: 12 }}>暂无工具，请先在「模型管理」中添加</div>}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /** 返显当前选中工具的模型；未配置模型时给出醒目提示，避免触发 AI 功能后才失败 */
+  function renderModelHint() {
+    const tool = tools.find((t) => t.id === organizeToolId);
+    if (!tool) return null;
+    return tool.model
+      ? <span style={{ fontSize: 12, color: 'var(--accent)' }}>模型：{tool.model}</span>
+      : <span style={{ fontSize: 12, color: 'var(--danger)' }}>⚠ 该工具未配置模型，AI 功能暂不可用</span>;
+  }
+
+  /** 工具条 AI 美化按钮：进行中变为「取消」，否则批量美化全部待办 */
+  function renderBeautifyToolbarButton() {
+    return (
+      <>
+        <button
+          onClick={handleBeautifyToggle}
+          disabled={!anyBeautify && todo.length === 0}
+          title={anyBeautify ? '取消 — 停止当前批量美化' : 'AI 美化全部待办 — 批量润色所有待办任务标题'}
+          aria-label={anyBeautify ? '取消批量美化' : 'AI 美化全部待办'}
+          className={anyBeautify ? 'task-breathe' : undefined}
+          style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: anyBeautify ? 'var(--accent)' : 'transparent', color: anyBeautify ? 'var(--accent-text)' : 'var(--text)' }}
+        >
+          <Wand2 size={13} />
+          {anyBeautify ? '取消' : todo.length}
+        </button>
+        {/* 工具条整体连贯进度提示：单条/批量美化进行中展示（优化进行中文案在各任务描述区展示），完成/取消后清空 */}
+        {anyBeautify && <span className="task-breathe" style={{ fontSize: 12, color: 'var(--accent)' }}>{batchBusy ? '正在批量美化标题…' : '正在美化标题…'}</span>}
+      </>
+    );
+  }
+
+  /** 顶部工具条：项目切换、工具选择、批量美化、分类筛选、搜索 */
+  function renderToolbar() {
+    return (
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <select value={activeProject} onChange={(e) => setActiveProject(e.target.value)} style={{ padding: 6 }}>
+          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <button onClick={() => void createProject()}>+ 新项目</button>
+        {renderToolSelector()}
+        {renderModelHint()}
+        {renderBeautifyToolbarButton()}
+        <select
+          value={catFilter}
+          onChange={(e) => setCatFilter(e.target.value)}
+          title="分类筛选 — 按任务分类筛选列表"
+          aria-label="分类筛选：按任务分类筛选列表"
+          style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6 }}
+        >
+          <option value="">全部分类</option>
+          <option value="none">未分类</option>
+          {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="搜索标题/描述…"
+          style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, marginLeft: 'auto' }}
+        />
+        {notice && <span style={{ fontSize: 13, color: 'var(--accent)' }}>{notice}</span>}
+      </div>
+    );
+  }
+
+  /** 新建任务表单行 + 可选的描述/截图粘贴区 */
+  function renderNewTaskForm() {
+    return (
+      <>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+          <input
+            value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !creating) void createTask(); }}
+            placeholder="输入任务标题，回车创建"
+            style={{ flex: 1, padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}
+          />
+          <select value={newPriority} onChange={(e) => setNewPriority(e.target.value)} style={{ padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}>
+            <option value="low">低</option>
+            <option value="normal">中</option>
+            <option value="high">高</option>
+          </select>
+          <select value={newCategory} onChange={(e) => setNewCategory(e.target.value)} title="分类" aria-label="新建任务分类选择" style={{ padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}>
+            <option value="">未分类</option>
+            {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <label title="智能分类 — 按标题智能匹配任务类型（默认启用）" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
+            {/* 间距用显式 margin 表达，不依赖源码换行空白（对渲染引擎不可靠） */}
+            <input type="checkbox" checked={smartCat} onChange={(e) => setSmartCat(e.target.checked)} />
+            <span style={{ marginLeft: 3 }}>智能分类</span>
+          </label>
+          <button onClick={() => setNewDescOpen(!newDescOpen)} title="描述/截图 — 展开或收起描述与截图上传区" aria-label={newDescOpen ? '收起描述与截图编辑区' : '展开描述与截图编辑区'} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{newDescOpen ? <ChevronUp size={13} /> : <ImagePlus size={13} />}</button>
+          <button onClick={() => void createTask()} disabled={creating} title={creating ? '添加中 — 正在智能分类并保存任务' : '添加任务 — 创建新任务并保存到当前项目'} aria-label={creating ? '添加中：正在智能分类并保存任务' : '添加任务：创建新任务并保存到当前项目'} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 4px', color: creating ? 'var(--text-muted)' : 'var(--text)' }}>
+            {creating ? <Loader2 size={13} className="aispin" /> : <Plus size={13} />}
+            {creating ? '分类中…' : '添加'}
+          </button>
+        </div>
+        {/* 创建时可选的描述 + 截图粘贴区 */}
+        {newDescOpen && (
+          <div style={{ marginBottom: 16, marginLeft: 8 }}>
+            {newImages.length > 0 && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                {newImages.map((img) => (
+                  <div key={img.id} style={{ position: 'relative' }}>
+                    <img src={img.url} alt="待上传截图" style={{ height: 64, borderRadius: 4, border: '1px dashed var(--accent)' }} />
                     <button
-                      onClick={() => void copyImage(img)}
-                      title="复制图片 — 复制该截图到剪贴板"
-                      aria-label="复制图片：复制该截图到剪贴板"
-                      className="task-op"
-                      style={{ position: 'absolute', right: -6, bottom: -6, fontSize: 12, lineHeight: '16px', padding: '0 4px', display: 'inline-flex', alignItems: 'center', background: 'var(--surface-2)' }}
-                    >
-                      <Copy size={12} />
-                    </button>
+                      onClick={() => removeNewImage(img.id)}
+                      title="移除截图 — 移除本次粘贴的待上传截图"
+                      aria-label="移除截图"
+                      style={{ position: 'absolute', top: -6, right: -6, fontSize: 10, lineHeight: '16px', padding: '0 4px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}
+                    ><X size={11} /></button>
                   </div>
                 ))}
               </div>
             )}
-          </div>
-        )}
-        {previewId && descExpanded[t.id] && t.images.some((i) => i.id === previewId) && (
-          <div style={{ marginLeft: 32, marginTop: 6 }}>
-            <img
-              src={imageUrl(previewId)}
-              alt="任务截图预览"
-              style={{ maxWidth: '100%', maxHeight: 480, border: '1px solid var(--border-strong)', borderRadius: 6 }}
+            <textarea
+              value={newDesc}
+              onChange={(e) => setNewDesc(e.target.value)}
+              onPaste={(e) => readClipboardImages(e, addNewImage)}
+              rows={2}
+              placeholder="任务描述（可在框内 Ctrl+V 粘贴截图）"
+              style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, boxSizing: 'border-box' }}
             />
-            <div style={{ marginTop: 4 }}>
-              <button onClick={() => void copyImage(t.images.find((i) => i.id === previewId)!)} title="复制图片 — 复制该截图到剪贴板" aria-label="复制图片：复制该截图到剪贴板" className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px' }}><Copy size={13} />复制图片</button>
-            </div>
           </div>
         )}
-        {descEditing && (() => {
-          const imgDraft = imgDrafts[t.id] ?? { added: [], removed: [] };
-          const kept = t.images.filter((i) => !imgDraft.removed.includes(i.id));
-          return (
-            <div style={{ marginLeft: 32, marginTop: 6 }}>
-              {(kept.length > 0 || imgDraft.added.length > 0) && (
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-                  {kept.map((img) => (
-                    <div key={img.id} style={{ position: 'relative' }}>
-                      <img src={imageUrl(img.id)} alt="任务截图" style={{ height: 64, borderRadius: 4, border: '1px solid var(--border)' }} />
-                      <button
-                        onClick={() => markImageRemoved(t.id, img.id)}
-                        title="删除截图"
-                        style={{ position: 'absolute', top: -6, right: -6, fontSize: 10, lineHeight: '16px', padding: '0 4px', cursor: 'pointer' }}
-                      >✕</button>
-                    </div>
-                  ))}
-                  {imgDraft.added.map((url, idx) => (
-                    <div key={`new-${idx}`} style={{ position: 'relative' }}>
-                      <img src={url} alt="待上传截图" style={{ height: 64, borderRadius: 4, border: '1px dashed var(--accent)' }} />
-                      <button
-                        onClick={() => removeAddedImage(t.id, idx)}
-                        title="移除截图"
-                        style={{ position: 'absolute', top: -6, right: -6, fontSize: 10, lineHeight: '16px', padding: '0 4px', cursor: 'pointer' }}
-                      >✕</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <textarea
-                value={descDraft}
-                onChange={(e) => setDescDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
-                onPaste={(e) => {
-                  readClipboardImages(e, (url) => {
-                    setImgDrafts((prev) => {
-                      const cur = prev[t.id] ?? { added: [], removed: [] };
-                      return { ...prev, [t.id]: { ...cur, added: [...cur.added, url] } };
-                    });
-                  });
-                }}
-                rows={3}
-                placeholder="任务描述（支持 Markdown 风格纯文本，可在框内 Ctrl+V 粘贴截图）"
-                style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, boxSizing: 'border-box' }}
-              />
-              <div style={{ marginTop: 4, display: 'flex', gap: 8, alignItems: 'center' }}>
-                <button onClick={() => void saveDesc(t)} title="保存描述 — 保存修改后的任务描述" aria-label="保存描述：保存修改后的任务描述" style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Save size={13} /></button>
-                <button onClick={() => void optimizeDesc(t)} title={optimizingMap[t.id] ? '取消 — 停止当前提示词优化' : '提示词优化 — 用选中工具把描述改写为结构化提示词'} aria-label={optimizingMap[t.id] ? '取消提示词优化' : '提示词优化：用选中工具优化描述草稿'} className={optimizingMap[t.id] ? 'task-breathe' : undefined} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', background: optimizingMap[t.id] ? 'var(--accent)' : 'transparent', color: optimizingMap[t.id] ? 'var(--accent-text)' : 'var(--text)' }}><Wand2 size={13} /></button>
-                <button onClick={() => toggleDescEdit(t)} title="取消 — 收起描述编辑区，放弃未保存的修改" aria-label="取消：收起描述编辑区" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><X size={13} /></button>
-                {optimizingMap[t.id] && <span className="task-breathe" style={{ fontSize: 12, color: 'var(--accent)' }}>正在生成优化文案…</span>}
-              </div>
-            </div>
-          );
-        })()}
-        {t.ai_summary && !draft && (
-          <div style={{ marginLeft: 32, marginTop: 4 }}>
-            {/* AI 摘要展开/收起：与描述展开同风格（lucide 蓝色箭头），默认收起 */}
+      </>
+    );
+  }
+
+  /** 任务列表区块（FR1.4 检索 + 排序 + 验证状态过滤） */
+  function renderTaskLists() {
+    const kw = search.trim().toLowerCase();
+    const matches = (t: Task) => {
+      // 分类筛选：'none' 表示未分类；指定分类则精确匹配；空串为全部
+      if (catFilter === 'none') { if (t.category_id) return false; }
+      else if (catFilter && t.category_id !== catFilter) return false;
+      return !kw || t.title.toLowerCase().includes(kw) || (t.description ?? '').toLowerCase().includes(kw);
+    };
+    // 已完成栏验证状态过滤：all=全部，verified=仅已验证，unverified=仅未验证（拆出避免嵌套三元）
+    const matchDoneFilter = (t: Task) => {
+      if (doneFilter === 'all') return true;
+      if (doneFilter === 'verified') return t.verified;
+      return !t.verified;
+    };
+    const visibleTodo = sortTasks(todo.filter(matches), todoSort);
+    const visibleDone = sortTasks(done.filter(matches).filter(matchDoneFilter), doneSort);
+    return (
+      <>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
+          <h3 style={{ fontSize: 15, margin: 0 }}>待办（{visibleTodo.length}/{todo.length}）</h3>
+          {/* 按修改时间/优先级排序：会话级偏好，选项见 sortOptions */}
+          <select
+            value={todoSort}
+            onChange={(e) => setTodoSort(e.target.value as SortKey)}
+            title="待办排序 — 按修改时间或优先级排序"
+            aria-label="待办排序：按修改时间或优先级排序"
+            style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4 }}
+          >
+            {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleTodo.map((t) => <Fragment key={t.id}>{renderTaskItem(t)}</Fragment>)}</ul>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '16px 0 8px' }}>
+          {/* 提示未验证数量：默认过滤「仅未验证」时，让用户意识到已验证项只是被过滤而非丢失 */}
+          <h3 style={{ fontSize: 15, margin: 0 }}>已完成（{visibleDone.length}/{done.length}，未验证 {done.filter((t) => !t.verified).length}）</h3>
+          <select
+            value={doneSort}
+            onChange={(e) => setDoneSort(e.target.value as SortKey)}
+            title="已完成排序 — 按修改时间或优先级排序"
+            aria-label="已完成排序：按修改时间或优先级排序"
+            style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4 }}
+          >
+            {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          <select
+            value={doneFilter}
+            onChange={(e) => setDoneFilter(e.target.value as 'all' | 'unverified' | 'verified')}
+            title="验证状态过滤 — 筛选已完成任务的验证状态显示范围"
+            aria-label="验证状态过滤：筛选已完成任务的验证状态显示范围"
+            style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4 }}
+          >
+            <option value="unverified">仅未验证</option>
+            <option value="verified">仅已验证</option>
+            <option value="all">全部</option>
+          </select>
+        </div>
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleDone.map((t) => <Fragment key={t.id}>{renderTaskItem(t)}</Fragment>)}</ul>
+      </>
+    );
+  }
+
+  /** 分页加载更多：当前页满页时追加下一页；hasMore=false 表示已到底 */
+  function renderLoadMore() {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', margin: '12px 0' }}>
+        <button
+          onClick={() => void loadMore()}
+          disabled={loadingMore}
+          title={loadingMore ? '加载中 — 正在拉取更多任务' : '加载更多 — 拉取下一页任务'}
+          aria-label={loadingMore ? '加载更多：正在拉取更多任务' : '加载更多：拉取下一页任务'}
+          style={{ padding: '6px 16px', fontSize: 12, borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--surface-2)' }}
+        >
+          {loadingMore ? '加载中…' : '加载更多'}
+        </button>
+      </div>
+    );
+  }
+
+  /** 复用任务弹窗：项目=复制到其他项目；提示词=打包为 JSON 资产存入提示词分类 */
+  function renderReuseDialog() {
+    return (
+      // 遮罩点击/Escape 关闭由组件层 document 委托处理（S6847/S6819）：
+      // 容器为纯布局 div，不挂交互 handler 也不声明 dialog role
+      <div
+        style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+      >
+        <div ref={reusePanelRef} style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 8, padding: 16, width: 380, maxWidth: '90vw', boxShadow: '0 10px 30px rgba(0,0,0,.2)' }}>
+          <div style={{ fontSize: 14, marginBottom: 10 }}>复用任务</div>
+          {/* 目标切换：项目（原有能力）/ 提示词（打包为 JSON 资产） */}
+          <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
             <button
-              onClick={() => setSummaryExpanded((p) => ({ ...p, [t.id]: !p[t.id] }))}
-              title={summaryExpanded[t.id] ? '收起摘要 — 收起 AI 梳理摘要' : '展开摘要 — 展开查看 AI 梳理摘要'}
-              aria-label={summaryExpanded[t.id] ? '收起：收起 AI 梳理摘要' : '展开：展开查看 AI 梳理摘要'}
-              style={{ fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 0', cursor: 'pointer' }}
-            >
-              {summaryExpanded[t.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-              AI 梳理摘要
-            </button>
-            {summaryExpanded[t.id] && (
-              <pre style={{ margin: '4px 0 0', padding: 8, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, whiteSpace: 'pre-wrap' }}>
-                {t.ai_summary}
-              </pre>
+              onClick={() => setReuseTarget('project')}
+              title="复制到项目 — 将任务原样复制到其他项目"
+              aria-label="复制到项目：将任务原样复制到其他项目"
+              style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'project' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'project' ? 'var(--accent-text)' : 'var(--text)' }}
+            >复制到项目</button>
+            <button
+              onClick={() => setReuseTarget('prompt')}
+              title="复制到提示词 — 将任务打包为 JSON 资产存入提示词页分类"
+              aria-label="复制到提示词：将任务打包为 JSON 资产存入提示词页分类"
+              style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'prompt' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'prompt' ? 'var(--accent-text)' : 'var(--text)' }}
+            >复制到提示词</button>
+          </div>
+          {reuseTarget === 'project' ? (
+            <>
+              <input
+                autoFocus
+                value={reuseSearch}
+                onChange={(e) => setReuseSearch(e.target.value)}
+                placeholder="搜索项目…"
+                aria-label="搜索项目"
+                style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' }}
+              />
+              <div style={{ marginTop: 8, maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {projects.filter((p) => p.name.toLowerCase().includes(reuseSearch.trim().toLowerCase())).map((p) => (
+                  <button key={p.id} onClick={() => setReuseProjectId(p.id)}
+                    style={{ textAlign: 'left', padding: '6px 8px', borderRadius: 6, cursor: 'pointer', background: reuseProjectId === p.id ? 'var(--accent)' : 'transparent', color: reuseProjectId === p.id ? 'var(--accent-text)' : 'var(--text)' }}>
+                    {p.name}
+                  </button>
+                ))}
+                {projects.filter((p) => p.name.toLowerCase().includes(reuseSearch.trim().toLowerCase())).length === 0 && (
+                  <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>无匹配项目</div>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                将任务打包为 JSON 资产，存入所选提示词分类（标题沿用任务名，内容含描述与 AI 摘要）。
+              </div>
+              {promptCats.length === 0 ? (
+                <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>暂无可用的提示词分类，请先新建。</p>
+              ) : (
+                <select
+                  autoFocus
+                  value={reuseCategoryId}
+                  onChange={(e) => setReuseCategoryId(e.target.value)}
+                  aria-label="选择提示词分类"
+                  style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14 }}
+                >
+                  <option value="">请选择分类</option>
+                  {promptCats.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.promptCount ?? 0}）</option>)}
+                </select>
+              )}
+              <button onClick={() => void addPromptCat()} title="新建分类 — 在提示词页新建一个分类用于存放任务资产"
+                aria-label="新建分类：在提示词页新建一个分类用于存放任务资产"
+                style={{ marginTop: 8, fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
+                <Plus size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 新建分类
+              </button>
+            </>
+          )}
+          <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button className="ghost" onClick={() => setReuseOpen(null)} style={{ padding: '6px 14px' }}>取消</button>
+            {reuseTarget === 'project' ? (
+              <button onClick={() => void reuseTask()} disabled={!reuseProjectId || reuseBusy} style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)' }}>
+                {reuseBusy ? '复用中…' : '复用'}
+              </button>
+            ) : (
+              <button onClick={() => void reuseTask()} disabled={!reuseCategoryId || reuseBusy} style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)' }}>
+                {reuseBusy ? '复制中…' : '复制到提示词'}
+              </button>
             )}
           </div>
-        )}
-        {draft && (
-          <div style={{ marginLeft: 32, marginTop: 6 }}>
-            <textarea
-              value={draft}
-              onChange={(e) => setDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
-              rows={8}
-              style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, fontFamily: 'monospace', boxSizing: 'border-box' }}
-            />
-            <div style={{ marginTop: 4, display: 'flex', gap: 8 }}>
-              <button onClick={() => void saveDraft(t)} title="保存到任务 — 将梳理结果回填为任务摘要" aria-label="保存到任务" style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', gap: 4 }}><Check size={13} />保存到任务</button>
-              <button onClick={() => setDrafts((prev) => {
-                const next = { ...prev };
-                delete next[t.id];
-                return next;
-              })} title="放弃 — 丢弃本次梳理草稿" aria-label="放弃梳理草稿" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><X size={13} /></button>
-            </div>
-          </div>
-        )}
-      </li>
+        </div>
+      </div>
     );
   }
 
@@ -951,309 +1414,11 @@ export function TasksPage() {
           50% { transform: scale(1.06); box-shadow: 0 0 0 5px rgba(37, 99, 235, 0); }
         }
       `}</style>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <select value={activeProject} onChange={(e) => setActiveProject(e.target.value)} style={{ padding: 6 }}>
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-        <button onClick={() => void createProject()}>+ 新项目</button>
-        {/* AI 美化工具下拉：收起态只显示模型名（未配置则回退厂商名）以收紧宽度；
-            展开面板展示“厂商名（厂商类型）+ 模型名”；onBlur 判断焦点是否仍在面板内，否则收起 */}
-        <div
-          tabIndex={0}
-          onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setToolOpen(false); }}
-          style={{ position: 'relative', marginLeft: 12, outline: 'none' }}
-        >
-          <button
-            onClick={() => setToolOpen((o) => !o)}
-            title={(() => { const t = tools.find((x) => x.id === organizeToolId); return t ? `当前工具：${t.name}（${t.type}）· ${t.model ?? '未配置模型'}` : '选择 AI 美化工具'; })()}
-            aria-label="选择 AI 美化工具"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', fontSize: 12, borderRadius: 4, background: 'var(--card-bg)', cursor: 'pointer' }}
-          >
-            {(() => { const t = tools.find((x) => x.id === organizeToolId); return t ? (t.model ?? t.name) : '选择 AI 美化工具…'; })()}
-            <ChevronDown size={12} />
-          </button>
-          {toolOpen && (
-            <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 30, minWidth: 240, maxHeight: 260, overflowY: 'auto', background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: 'var(--overlay)' }}>
-              {tools.map((t) => (
-                <button
-                  key={t.id}
-                  onClick={() => { setOrganizeToolId(t.id); setToolOpen(false); }}
-                  title={`选择 ${t.name}（${t.type}）· ${t.model ?? '未配置模型'}`}
-                  aria-label={`选择工具 ${t.name}`}
-                  style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', border: 'none', cursor: 'pointer', fontSize: 12, background: t.id === organizeToolId ? 'var(--accent-soft)' : 'transparent', color: t.id === organizeToolId ? 'var(--accent)' : 'var(--text)' }}
-                >
-                  {/* 展开面板展示厂商名（厂商类型），模型名以浅色/告警色区分是否已配置 */}
-                  {t.name}（{t.type}）
-                  <span style={{ color: t.model ? 'var(--text-secondary)' : 'var(--danger)', marginLeft: 6 }}>{t.model ?? '未配置模型'}</span>
-                </button>
-              ))}
-              {tools.length === 0 && <div style={{ padding: '8px 10px', color: 'var(--text-muted)', fontSize: 12 }}>暂无工具，请先在「模型管理」中添加</div>}
-            </div>
-          )}
-        </div>
-        {(() => {
-          // 返显当前选中工具的模型；未配置模型时给出醒目提示，避免触发 AI 功能后才失败
-          const tool = tools.find((t) => t.id === organizeToolId);
-          if (!tool) return null;
-          return tool.model
-            ? <span style={{ fontSize: 12, color: 'var(--accent)' }}>模型：{tool.model}</span>
-            : <span style={{ fontSize: 12, color: 'var(--danger)' }}>⚠ 该工具未配置模型，AI 功能暂不可用</span>;
-        })()}
-        <button
-          onClick={() => (anyBeautify ? void cancelBeautify() : void beautifyAll())}
-          disabled={!anyBeautify && todo.length === 0}
-          title={anyBeautify ? '取消 — 停止当前批量美化' : 'AI 美化全部待办 — 批量润色所有待办任务标题'}
-          aria-label={anyBeautify ? '取消批量美化' : 'AI 美化全部待办'}
-          className={anyBeautify ? 'task-breathe' : undefined}
-          style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: anyBeautify ? 'var(--accent)' : 'transparent', color: anyBeautify ? 'var(--accent-text)' : 'var(--text)' }}
-        >
-          <Wand2 size={13} />
-          {anyBeautify ? '取消' : todo.length}
-        </button>
-        {/* 工具条整体连贯进度提示：单条/批量美化进行中展示（优化进行中文案在各任务描述区展示），完成/取消后清空 */}
-        {anyBeautify && <span className="task-breathe" style={{ fontSize: 12, color: 'var(--accent)' }}>{batchBusy ? '正在批量美化标题…' : '正在美化标题…'}</span>}
-        <select
-          value={catFilter}
-          onChange={(e) => setCatFilter(e.target.value)}
-          title="分类筛选 — 按任务分类筛选列表"
-          aria-label="分类筛选：按任务分类筛选列表"
-          style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6 }}
-        >
-          <option value="">全部分类</option>
-          <option value="none">未分类</option>
-          {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="搜索标题/描述…"
-          style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, marginLeft: 'auto' }}
-        />
-        {notice && <span style={{ fontSize: 13, color: 'var(--accent)' }}>{notice}</span>}
-      </div>
-
-      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-        <input
-          value={newTitle}
-          onChange={(e) => setNewTitle(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && !creating) void createTask(); }}
-          placeholder="输入任务标题，回车创建"
-          style={{ flex: 1, padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}
-        />
-        <select value={newPriority} onChange={(e) => setNewPriority(e.target.value)} style={{ padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}>
-          <option value="low">低</option>
-          <option value="normal">中</option>
-          <option value="high">高</option>
-        </select>
-        <select value={newCategory} onChange={(e) => setNewCategory(e.target.value)} title="分类" aria-label="新建任务分类选择" style={{ padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}>
-          <option value="">未分类</option>
-          {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-        <label title="智能分类 — 按标题智能匹配任务类型（默认启用）" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 3, cursor: 'pointer' }}>
-          <input type="checkbox" checked={smartCat} onChange={(e) => setSmartCat(e.target.checked)} />
-          智能分类
-        </label>
-        <button onClick={() => setNewDescOpen(!newDescOpen)} title="描述/截图 — 展开或收起描述与截图上传区" aria-label={newDescOpen ? '收起描述与截图编辑区' : '展开描述与截图编辑区'} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{newDescOpen ? <ChevronUp size={13} /> : <ImagePlus size={13} />}</button>
-        <button onClick={() => void createTask()} disabled={creating} title={creating ? '添加中 — 正在智能分类并保存任务' : '添加任务 — 创建新任务并保存到当前项目'} aria-label={creating ? '添加中：正在智能分类并保存任务' : '添加任务：创建新任务并保存到当前项目'} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 4px', color: creating ? 'var(--text-muted)' : 'var(--text)' }}>
-          {creating ? <Loader2 size={13} className="aispin" /> : <Plus size={13} />}
-          {creating ? '分类中…' : '添加'}
-        </button>
-      </div>
-
-      {/* 创建时可选的描述 + 截图粘贴区 */}
-      {newDescOpen && (
-        <div style={{ marginBottom: 16, marginLeft: 8 }}>
-          {newImages.length > 0 && (
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-              {newImages.map((url, idx) => (
-                <div key={idx} style={{ position: 'relative' }}>
-                  <img src={url} alt="待上传截图" style={{ height: 64, borderRadius: 4, border: '1px dashed var(--accent)' }} />
-                  <button
-                    onClick={() => setNewImages((prev) => prev.filter((_, i) => i !== idx))}
-                    title="移除截图 — 移除本次粘贴的待上传截图"
-                    aria-label="移除截图"
-                    style={{ position: 'absolute', top: -6, right: -6, fontSize: 10, lineHeight: '16px', padding: '0 4px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}
-                  ><X size={11} /></button>
-                </div>
-              ))}
-            </div>
-          )}
-          <textarea
-            value={newDesc}
-            onChange={(e) => setNewDesc(e.target.value)}
-            onPaste={(e) => {
-              readClipboardImages(e, (url) => setNewImages((prev) => [...prev, url]));
-            }}
-            rows={2}
-            placeholder="任务描述（可在框内 Ctrl+V 粘贴截图）"
-            style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, boxSizing: 'border-box' }}
-          />
-        </div>
-      )}
-
-      {/* FR1.4 检索：按标题/描述过滤（大小写不敏感）；已完成栏再叠加验证状态过滤 */}
-      {(() => {
-        const kw = search.trim().toLowerCase();
-        const matches = (t: Task) => {
-          // 分类筛选：'none' 表示未分类；指定分类则精确匹配；空串为全部
-          if (catFilter === 'none') { if (t.category_id) return false; }
-          else if (catFilter && t.category_id !== catFilter) return false;
-          return !kw || t.title.toLowerCase().includes(kw) || (t.description ?? '').toLowerCase().includes(kw);
-        };
-        const visibleTodo = sortTasks(todo.filter(matches), todoSort);
-        // doneFilter 应用于已完成项：'unverified' 仅显示未验证，'verified' 仅显示已验证，'all' 显示全部
-        const visibleDone = sortTasks(
-          done
-            .filter(matches)
-            .filter((t) =>
-              doneFilter === 'all' ? true : doneFilter === 'verified' ? t.verified : !t.verified,
-            ),
-          doneSort,
-        );
-        return (
-          <>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
-              <h3 style={{ fontSize: 15, margin: 0 }}>待办（{visibleTodo.length}/{todo.length}）</h3>
-              {/* 按修改时间/优先级排序：会话级偏好，选项见 sortOptions */}
-              <select
-                value={todoSort}
-                onChange={(e) => setTodoSort(e.target.value as SortKey)}
-                title="待办排序 — 按修改时间或优先级排序"
-                aria-label="待办排序：按修改时间或优先级排序"
-                style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4 }}
-              >
-                {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
-            </div>
-            <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleTodo.map((t) => <Fragment key={t.id}>{renderTaskItem(t)}</Fragment>)}</ul>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '16px 0 8px' }}>
-              {/* 提示未验证数量：默认过滤「仅未验证」时，让用户意识到已验证项只是被过滤而非丢失 */}
-              <h3 style={{ fontSize: 15, margin: 0 }}>已完成（{visibleDone.length}/{done.length}，未验证 {done.filter((t) => !t.verified).length}）</h3>
-              <select
-                value={doneSort}
-                onChange={(e) => setDoneSort(e.target.value as SortKey)}
-                title="已完成排序 — 按修改时间或优先级排序"
-                aria-label="已完成排序：按修改时间或优先级排序"
-                style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4 }}
-              >
-                {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
-              <select
-                value={doneFilter}
-                onChange={(e) => setDoneFilter(e.target.value as 'all' | 'unverified' | 'verified')}
-                title="验证状态过滤 — 筛选已完成任务的验证状态显示范围"
-                aria-label="验证状态过滤：筛选已完成任务的验证状态显示范围"
-                style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4 }}
-              >
-                <option value="unverified">仅未验证</option>
-                <option value="verified">仅已验证</option>
-                <option value="all">全部</option>
-              </select>
-            </div>
-            <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleDone.map((t) => <Fragment key={t.id}>{renderTaskItem(t)}</Fragment>)}</ul>
-          </>
-        );
-      })()}
-      {/* 分页加载更多：当前页满页时追加下一页；hasMore=false 表示已到底 */}
-      {hasMore && (
-        <div style={{ display: 'flex', justifyContent: 'center', margin: '12px 0' }}>
-          <button
-            onClick={() => void loadMore()}
-            disabled={loadingMore}
-            title={loadingMore ? '加载中 — 正在拉取更多任务' : '加载更多 — 拉取下一页任务'}
-            aria-label={loadingMore ? '加载更多：正在拉取更多任务' : '加载更多：拉取下一页任务'}
-            style={{ padding: '6px 16px', fontSize: 12, borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--surface-2)' }}
-          >
-            {loadingMore ? '加载中…' : '加载更多'}
-          </button>
-        </div>
-      )}
-      {reuseOpen && (
-        <div
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
-          onMouseDown={(e) => { if (e.target === e.currentTarget) setReuseOpen(null); }}
-        >
-          <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 8, padding: 16, width: 380, maxWidth: '90vw', boxShadow: '0 10px 30px rgba(0,0,0,.2)' }}>
-            <div style={{ fontSize: 14, marginBottom: 10 }}>复用任务</div>
-            {/* 目标切换：项目（原有能力）/ 提示词（打包为 JSON 资产） */}
-            <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
-              <button
-                onClick={() => setReuseTarget('project')}
-                title="复制到项目 — 将任务原样复制到其他项目"
-                aria-label="复制到项目：将任务原样复制到其他项目"
-                style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'project' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'project' ? 'var(--accent-text)' : 'var(--text)' }}
-              >复制到项目</button>
-              <button
-                onClick={() => setReuseTarget('prompt')}
-                title="复制到提示词 — 将任务打包为 JSON 资产存入提示词页分类"
-                aria-label="复制到提示词：将任务打包为 JSON 资产存入提示词页分类"
-                style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'prompt' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'prompt' ? 'var(--accent-text)' : 'var(--text)' }}
-              >复制到提示词</button>
-            </div>
-            {reuseTarget === 'project' ? (
-              <>
-                <input
-                  autoFocus
-                  value={reuseSearch}
-                  onChange={(e) => setReuseSearch(e.target.value)}
-                  placeholder="搜索项目…"
-                  aria-label="搜索项目"
-                  style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' }}
-                />
-                <div style={{ marginTop: 8, maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {projects.filter((p) => p.name.toLowerCase().includes(reuseSearch.trim().toLowerCase())).map((p) => (
-                    <button key={p.id} onClick={() => setReuseProjectId(p.id)}
-                      style={{ textAlign: 'left', padding: '6px 8px', borderRadius: 6, cursor: 'pointer', background: reuseProjectId === p.id ? 'var(--accent)' : 'transparent', color: reuseProjectId === p.id ? 'var(--accent-text)' : 'var(--text)' }}>
-                      {p.name}
-                    </button>
-                  ))}
-                  {projects.filter((p) => p.name.toLowerCase().includes(reuseSearch.trim().toLowerCase())).length === 0 && (
-                    <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>无匹配项目</div>
-                  )}
-                </div>
-              </>
-            ) : (
-              <>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
-                  将任务打包为 JSON 资产，存入所选提示词分类（标题沿用任务名，内容含描述与 AI 摘要）。
-                </div>
-                {promptCats.length === 0 ? (
-                  <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>暂无可用的提示词分类，请先新建。</p>
-                ) : (
-                  <select
-                    autoFocus
-                    value={reuseCategoryId}
-                    onChange={(e) => setReuseCategoryId(e.target.value)}
-                    aria-label="选择提示词分类"
-                    style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14 }}
-                  >
-                    <option value="">请选择分类</option>
-                    {promptCats.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.promptCount ?? 0}）</option>)}
-                  </select>
-                )}
-                <button onClick={() => void addPromptCat()} title="新建分类 — 在提示词页新建一个分类用于存放任务资产"
-                  aria-label="新建分类：在提示词页新建一个分类用于存放任务资产"
-                  style={{ marginTop: 8, fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
-                  <Plus size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 新建分类
-                </button>
-              </>
-            )}
-            <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button className="ghost" onClick={() => setReuseOpen(null)} style={{ padding: '6px 14px' }}>取消</button>
-              {reuseTarget === 'project' ? (
-                <button onClick={() => void reuseTask()} disabled={!reuseProjectId || reuseBusy} style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)' }}>
-                  {reuseBusy ? '复用中…' : '复用'}
-                </button>
-              ) : (
-                <button onClick={() => void reuseTask()} disabled={!reuseCategoryId || reuseBusy} style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)' }}>
-                  {reuseBusy ? '复制中…' : '复制到提示词'}
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {renderToolbar()}
+      {renderNewTaskForm()}
+      {renderTaskLists()}
+      {hasMore && renderLoadMore()}
+      {reuseOpen && renderReuseDialog()}
     </section>
   );
 }

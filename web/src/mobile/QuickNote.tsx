@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, type Project, type Task, type TaskCategory, type Prompt } from '../api/client';
 import { addDraft, submitQuickNote } from './offline';
-import { Mic, FileText, ImagePlus, Paperclip, X, Check } from 'lucide-react';
+import { Mic, FileText, ImagePlus, Paperclip, Check } from 'lucide-react';
 
 // Web Speech API 最小类型（浏览器原生，TS 未内置）
 interface SpeechRecognitionLike {
@@ -29,9 +29,9 @@ const PRIORITIES = [
 ];
 
 interface Props {
-  onDone: (task: Task) => void;
-  onCancel: () => void;
-  notify: (msg: string) => void;
+  readonly onDone: (task: Task) => void;
+  readonly onCancel: () => void;
+  readonly notify: (msg: string) => void;
 }
 
 export function QuickNote({ onDone, onCancel, notify }: Props) {
@@ -72,8 +72,8 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
 
   // 初始化语音识别（不支持则隐藏入口）
   useEffect(() => {
-    const Ctor = (window as unknown as { SpeechRecognition?: SpeechCtor; webkitSpeechRecognition?: SpeechCtor }).SpeechRecognition
-      || (window as unknown as { webkitSpeechRecognition?: SpeechCtor }).webkitSpeechRecognition;
+    const Ctor = (globalThis as unknown as { SpeechRecognition?: SpeechCtor; webkitSpeechRecognition?: SpeechCtor }).SpeechRecognition
+      || (globalThis as unknown as { webkitSpeechRecognition?: SpeechCtor }).webkitSpeechRecognition;
     if (!Ctor) return;
     setSpeechSupported(true);
     const rec = new Ctor();
@@ -120,6 +120,11 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
     setTplOpen(false);
   }
 
+  // 移除图片：提出为具名函数，避免 JSX 内 map → onClick → setState → filter 多层嵌套回调
+  function removeImageAt(i: number) {
+    setImages((prev) => prev.filter((_, j) => j !== i));
+  }
+
   async function submit() {
     if (!title.trim() || busy) return;
     setBusy(true);
@@ -135,8 +140,9 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
       const task = await submitQuickNote(payload);
       notify('已记录');
       onDone(task);
-    } catch (e) {
+    } catch {
       // 任何提交失败（离线 / 网络抖动 / 服务器暂不可达）均落本地草稿，联网后自动补提（§3.4），避免内容丢失
+      // 异常对象本身无需使用，统一按「已存草稿」反馈，不区分失败原因
       addDraft(payload);
       notify('提交失败，已存为草稿（联网后自动补提）');
       onDone(null as unknown as Task);
@@ -211,9 +217,9 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
         {images.length > 0 && (
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0' }}>
             {images.map((url, i) => (
-              <div key={i} style={{ position: 'relative' }}>
+              <div key={url} style={{ position: 'relative' }}>
                 <img src={url} alt="待上传" style={{ height: 64, borderRadius: 6, border: '1px dashed var(--accent)' }} />
-                <button onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))} title="移除图片" aria-label="移除图片"
+                <button onClick={() => removeImageAt(i)} title="移除图片" aria-label="移除图片"
                   style={{ position: 'absolute', top: -6, right: -6, fontSize: 10, lineHeight: '16px', padding: '0 4px', background: 'var(--danger)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' }}>✕</button>
               </div>
             ))}

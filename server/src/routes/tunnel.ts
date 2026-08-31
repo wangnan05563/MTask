@@ -19,7 +19,6 @@ import {
 } from '../tunnel/tunnel-service';
 import {
   type TunnelConfig,
-  TunnelProvider,
   loadTunnelConfig,
   saveTunnelConfig,
   saveTunnelField,
@@ -55,22 +54,25 @@ router.post('/start', async (_req, res) => {
   } catch (err) {
     // 二进制下载失败：返回结构化指引，前端渲染手动下载链接
     if (err instanceof BinaryDownloadError) {
-      return void res.status(500).json({
+      res.status(500).json({
         detail: err.message,
         errorType: 'binary_download_failed',
         manualPath: err.manualPath,
         downloadUrls: err.downloadUrls,
       });
+      return;
     }
     // Tailscale Funnel 首次授权：返回授权链接，前端渲染授权向导
     if (err instanceof TailscaleFunnelAuthError) {
-      return void res.status(500).json({
+      res.status(500).json({
         detail: err.message,
         errorType: 'tailscale_funnel_auth',
         authUrl: err.authUrl,
       });
+      return;
     }
-    return void res.status(500).json({ detail: `隧道启动失败: ${err instanceof Error ? err.message : String(err)}` });
+    res.status(500).json({ detail: `隧道启动失败: ${err instanceof Error ? err.message : String(err)}` });
+    return;
   }
 });
 
@@ -109,7 +111,8 @@ router.post('/reset-token', (_req, res) => {
 router.post('/config', (req, res) => {
   const body = (req.body ?? {}) as Partial<TunnelConfig>;
   if (body.provider && body.provider !== 'cloudflare' && body.provider !== 'cpolar' && body.provider !== 'tailscale') {
-    return void res.status(400).json({ detail: `不支持的 provider: ${body.provider}` });
+    res.status(400).json({ detail: `不支持的 provider: ${body.provider}` });
+    return;
   }
   try {
     saveTunnelConfig(body);
@@ -148,10 +151,16 @@ router.get('/cloudflare/login/status', async (_req, res) => {
 
 router.post('/cloudflare/create', async (req, res) => {
   const body = (req.body ?? {}) as { tunnelName?: string; certFile?: string };
-  if (!body.tunnelName?.trim()) return void res.status(400).json({ detail: '请输入隧道名称' });
+  if (!body.tunnelName?.trim()) {
+    res.status(400).json({ detail: '请输入隧道名称' });
+    return;
+  }
   const config = loadTunnelConfig();
   const certFile = body.certFile || config.certFile;
-  if (!certFile) return void res.status(400).json({ detail: '请先执行 login 步骤获取 cert.pem' });
+  if (!certFile) {
+    res.status(400).json({ detail: '请先执行 login 步骤获取 cert.pem' });
+    return;
+  }
   try {
     const result = await getLoginService().createTunnel(body.tunnelName.trim(), certFile, config.binaryPath);
     saveTunnelField('tunnelId', result.tunnelId);
@@ -165,12 +174,21 @@ router.post('/cloudflare/create', async (req, res) => {
 
 router.post('/cloudflare/route-dns', async (req, res) => {
   const body = (req.body ?? {}) as { hostname?: string; certFile?: string };
-  if (!body.hostname?.trim()) return void res.status(400).json({ detail: '请输入固定域名' });
+  if (!body.hostname?.trim()) {
+    res.status(400).json({ detail: '请输入固定域名' });
+    return;
+  }
   const config = loadTunnelConfig();
   const certFile = body.certFile || config.certFile;
-  if (!certFile) return void res.status(400).json({ detail: '请先执行 login 步骤获取 cert.pem' });
+  if (!certFile) {
+    res.status(400).json({ detail: '请先执行 login 步骤获取 cert.pem' });
+    return;
+  }
   const tunnelNameOrId = config.tunnelName || config.tunnelId;
-  if (!tunnelNameOrId) return void res.status(400).json({ detail: '请先执行创建隧道步骤' });
+  if (!tunnelNameOrId) {
+    res.status(400).json({ detail: '请先执行创建隧道步骤' });
+    return;
+  }
   try {
     const publicUrl = await getLoginService().routeDns(tunnelNameOrId, body.hostname.trim(), certFile, config.binaryPath);
     saveTunnelField('hostname', body.hostname.trim());
@@ -188,5 +206,6 @@ function maskToken(token: string): string {
   return token.slice(-4).padStart(token.length, '?');
 }
 
-export { TunnelProvider };
+// 保持既有导出面不变：TunnelProvider 仅供本路由的消费者透传使用
+export { TunnelProvider } from '../tunnel/tunnel-config';
 export default router;

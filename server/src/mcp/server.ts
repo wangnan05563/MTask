@@ -61,7 +61,8 @@ export async function createMCPServer(): Promise<McpServer> {
     },
   }, async (a) => {
     try {
-      if (!a.title || !a.title.trim()) return err('title 必填');
+      // 可选链：title 为空时 ?. 短路返回 undefined，与原「判空 || trim 判空」逻辑等价
+      if (!a.title?.trim()) return err('title 必填');
       const task = TaskService.create({
         projectId: a.projectId,
         title: a.title,
@@ -194,7 +195,9 @@ export async function createMCPServer(): Promise<McpServer> {
       const values: unknown[] = [];
       if (a.categoryId) { where.push('category_id = ?'); values.push(a.categoryId); }
       if (a.keyword) { where.push('(title LIKE ? OR content LIKE ?)'); values.push(`%${a.keyword}%`, `%${a.keyword}%`); }
-      const sql = `SELECT * FROM prompts${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY pinned DESC, updated_at DESC`;
+      // WHERE 子句提取为独立变量：避免模板字面量嵌套，拼接逻辑也更易读
+      const whereClause = where.length ? ` WHERE ${where.join(' AND ')}` : '';
+      const sql = `SELECT * FROM prompts${whereClause} ORDER BY pinned DESC, updated_at DESC`;
       const rows = getDb().prepare(sql).all(...values);
       return ok(json(rows), { prompts: rows });
     } catch (e) { return err((e as Error).message); }

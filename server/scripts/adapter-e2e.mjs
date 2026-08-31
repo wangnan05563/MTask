@@ -153,4 +153,10 @@ async function main() {
   process.exit(fail === 0 ? 0 : 1);
 }
 
-main().catch((e) => { console.error('联调异常:', e); process.exit(1); });
+// 顶层 await：ESM 脚本可直接等待 main，替代 promise 链；异常路径行为与原 .catch 一致
+try {
+  await main();
+} catch (e) {
+  console.error('联调异常:', e);
+  process.exit(1);
+}

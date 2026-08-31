@@ -46,9 +46,16 @@ function mountDialog(render: (close: () => void) => ReactElement): void {
   root.render(render(close));
 }
 
-function InputDialog({ options, onSubmit }: { options: AskInputOptions; onSubmit: (value: string | null) => void }) {
+/** 输入弹窗 props：readonly 修饰（S6759），与 ConfirmDialogProps 保持一致 */
+interface InputDialogProps {
+  readonly options: AskInputOptions;
+  readonly onSubmit: (value: string | null) => void;
+}
+
+function InputDialog({ options, onSubmit }: InputDialogProps) {
   const [value, setValue] = useState(options.defaultValue ?? '');
   const ref = useRef<HTMLInputElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     ref.current?.focus();
@@ -58,9 +65,18 @@ function InputDialog({ options, onSubmit }: { options: AskInputOptions; onSubmit
   const ok = () => onSubmit(value.trim() ? value.trim() : null);
   const cancel = () => onSubmit(null);
 
+  // 遮罩点击关闭用文档级事件委托 + ref 包含性判断（S6848），避免在非交互遮罩上挂交互 handler
+  useEffect(() => {
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (panelRef.current && e.target instanceof Node && !panelRef.current.contains(e.target)) cancel();
+    };
+    document.addEventListener('mousedown', onDocMouseDown);
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
+  });
+
   return (
-    <div style={overlayStyle} onMouseDown={(e) => e.target === e.currentTarget && cancel()}>
-      <div style={panelStyle}>
+    <div style={overlayStyle}>
+      <div ref={panelRef} style={panelStyle}>
         <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>{options.title}</div>
         <input
           ref={ref}
@@ -89,18 +105,35 @@ function InputDialog({ options, onSubmit }: { options: AskInputOptions; onSubmit
   );
 }
 
-function ConfirmDialog({ message, onSubmit }: { message: string; onSubmit: (ok: boolean) => void }) {
+/** 确认弹窗 props：readonly 修饰（S6759） */
+interface ConfirmDialogProps {
+  readonly message: string;
+  readonly onSubmit: (ok: boolean) => void;
+}
+
+function ConfirmDialog({ message, onSubmit }: ConfirmDialogProps) {
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Escape 关闭用 globalThis 监听（S7764，环境无关的全局对象）；
+  // 遮罩点击关闭同 InputDialog 改为文档级事件委托（S6848），resolve(false) 行为不变
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onSubmit(false);
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (panelRef.current && e.target instanceof Node && !panelRef.current.contains(e.target)) onSubmit(false);
+    };
+    globalThis.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onDocMouseDown);
+    return () => {
+      globalThis.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onDocMouseDown);
+    };
   }, [onSubmit]);
 
   return (
-    <div style={overlayStyle} onMouseDown={(e) => e.target === e.currentTarget && onSubmit(false)}>
-      <div style={panelStyle}>
+    <div style={overlayStyle}>
+      <div ref={panelRef} style={panelStyle}>
         <div style={{ fontSize: 14, marginBottom: 16, whiteSpace: 'pre-wrap' }}>{message}</div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button className="ghost" onClick={() => onSubmit(false)} title="取消 — 取消并关闭确认" aria-label="取消：取消并关闭确认" style={{ padding: '6px 14px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}><X size={14} style={{ verticalAlign: '-2px' }} />取消</button>

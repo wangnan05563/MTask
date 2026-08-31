@@ -88,8 +88,8 @@ export function initSchema(): void {
     CREATE TABLE IF NOT EXISTS queue_jobs (
       id               TEXT PRIMARY KEY,
       queue_id         TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
-      task_id          TEXT NOT NULL REFERENCES tasks(id),
-      tool_id          TEXT NOT NULL REFERENCES ai_tools(id),
+      task_id          TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      tool_id          TEXT NOT NULL REFERENCES ai_tools(id) ON DELETE CASCADE,
       order_index      INTEGER NOT NULL DEFAULT 0,
       status           TEXT NOT NULL DEFAULT 'queued',
       request_payload  TEXT,
@@ -148,6 +148,9 @@ export function initSchema(): void {
   // 异步队列回执：ticket=平台受理标识，submitted_at=提交时间（配合 polling 判超时用）
   ensureColumn('queue_jobs', 'ticket', 'ticket TEXT');
   ensureColumn('queue_jobs', 'submitted_at', 'submitted_at TEXT');
+  // 老库 queue_jobs 的 task_id/tool_id 外键缺 ON DELETE CASCADE，删除关联任务/工具/项目时
+  // 会被外键约束阻断（500）。SQLite 不支持 ALTER 外键，需整表重建，按幂等方式检测后执行
+  ensureQueueJobsCascade();
 
   seedPromptCategories();
   // 移动端随手记默认归属项目（收件箱）：确定性 id，保证每次启动只创建一次
@@ -217,4 +220,55 @@ function ensureColumn(table: string, column: string, ddl: string): void {
   if (!cols.some((c) => c.name === column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
   }
+}
+
+/**
+ * 幂等迁移：老库 queue_jobs 外键缺 ON DELETE CASCADE 时整表重建。
+ * SQLite 无法 ALTER 外键，唯一途径是 rename → create → copy → drop；
+ * 全程包在事务里，任一步失败回滚保留原表，避免迁移中途崩溃丢数据。
+ */
+function ensureQueueJobsCascade(): void {
+  const db = getDb();
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'queue_jobs'").get() as
+    | { sql: string }
+    | undefined;
+  if (!row) return; // 表不存在：本次 create 已按新定义建表
+  // 检测必须针对 task_id/tool_id 两列本身：旧表 queue_id 已带 CASCADE 且 REFERENCES 共 3 处，
+  // 仅按「含 CASCADE + 引用计数」判断会把旧定义误判为新定义
+  const ok = row.sql.includes('REFERENCES tasks(id) ON DELETE CASCADE')
+    && row.sql.includes('REFERENCES ai_tools(id) ON DELETE CASCADE');
+  if (ok) return;
+  const tx = db.transaction(() => {
+    db.exec('ALTER TABLE queue_jobs RENAME TO queue_jobs_old');
+    db.exec(`
+      CREATE TABLE queue_jobs_new (
+        id               TEXT PRIMARY KEY,
+        queue_id         TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+        task_id          TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        tool_id          TEXT NOT NULL REFERENCES ai_tools(id) ON DELETE CASCADE,
+        order_index      INTEGER NOT NULL DEFAULT 0,
+        status           TEXT NOT NULL DEFAULT 'queued',
+        request_payload  TEXT,
+        response_payload TEXT,
+        error            TEXT,
+        sent_at          TEXT,
+        finished_at      TEXT,
+        ticket           TEXT,
+        submitted_at     TEXT
+      );
+    `);
+    db.exec(`
+      INSERT INTO queue_jobs_new (id, queue_id, task_id, tool_id, order_index, status,
+                                  request_payload, response_payload, error, sent_at, finished_at, ticket, submitted_at)
+      SELECT id, queue_id, task_id, tool_id, order_index, status,
+             request_payload, response_payload, error, sent_at, finished_at, ticket, submitted_at
+      FROM queue_jobs_old;
+    `);
+    db.exec('DROP TABLE queue_jobs_old');
+    db.exec('ALTER TABLE queue_jobs_new RENAME TO queue_jobs');
+  });
+  tx();
+  // 重建后恢复索引（索引随 DROP 一并消失）
+  db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_queue ON queue_jobs(queue_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_queue_status ON queue_jobs(queue_id, status)');
 }

@@ -32,8 +32,10 @@ const EXPORT_TABLES: (keyof ExportBundle['data'])[] = [
 function aiToolExportRow(r: Record<string, unknown>): Record<string, unknown> {
   const { api_key_enc, ...rest } = r;
   let apiKey: string | null = null;
-  if (api_key_enc) {
-    try { apiKey = decrypt(String(api_key_enc)); } catch { /* 密钥不匹配时留空，提示重录 */ }
+  // 显式收窄为 string 而非 String() 强转：密文列来自 SQLite 文本列，
+  // 异常类型值直接按无密钥处理，避免被隐式转成 "[object Object]" 去解密
+  if (typeof api_key_enc === 'string' && api_key_enc) {
+    try { apiKey = decrypt(api_key_enc); } catch { /* 密钥不匹配时留空，提示重录 */ }
   }
   return { ...rest, apiKey };
 }
@@ -41,7 +43,9 @@ function aiToolExportRow(r: Record<string, unknown>): Record<string, unknown> {
 /** 构造真正可写入 ai_tools 表的行：把导出行的 apiKey 明文重新加密回 api_key_enc */
 function aiToolImportRow(r: Record<string, unknown>): Record<string, unknown> {
   const { apiKey, ...rest } = r;
-  return { ...rest, api_key_enc: apiKey ? encrypt(String(apiKey)) : null };
+  // 明文 key 仅接受 string，与导出行结构一一对应，避免隐式对象字符串化
+  const enc = typeof apiKey === 'string' && apiKey ? encrypt(apiKey) : null;
+  return { ...rest, api_key_enc: enc };
 }
 
 /** 全量导出 */
@@ -89,7 +93,9 @@ function upsertRows(db: Database.Database, table: string, rows: unknown[], mode:
   const update = (row: Record<string, unknown>) => {
     const cols = Object.keys(row).filter((c) => c !== keyCol);
     if (cols.length === 0) return;
-    const sql = `UPDATE ${table} SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE ${keyCol} = ?`;
+    // SET 子句先独立拼接，避免模板字面量嵌套（嵌套模板难以阅读且易漏转义）
+    const setSql = cols.map((c) => `${c} = ?`).join(', ');
+    const sql = `UPDATE ${table} SET ${setSql} WHERE ${keyCol} = ?`;
     db.prepare(sql).run(...cols.map((c) => row[c]), row[keyCol]);
   };
   for (const raw of rows) {
@@ -140,9 +146,11 @@ function insertAll(db: Database.Database, table: string, rows: unknown[]): numbe
     const ins = db.prepare('INSERT OR IGNORE INTO task_images (id, task_id, mime_type, data, created_at) VALUES (?, ?, ?, ?, ?)');
     for (const r of rows as Record<string, unknown>[]) {
       if (typeof r.id !== 'string') continue;
-      ins.run(r.id, r.task_id, r.mime_type, Buffer.from(String(r.data ?? ''), 'base64'), r.created_at);
+      // 图片 data 仅接受 string（base64），异常类型按空图处理而非隐式 "[object Object]"
+      const data = typeof r.data === 'string' ? r.data : '';
+      ins.run(r.id, r.task_id, r.mime_type, Buffer.from(data, 'base64'), r.created_at);
     }
-    return (rows as unknown[]).length;
+    return rows.length;
   }
   if (table === 'ai_tools') {
     const dbRows = (rows as Record<string, unknown>[]).map(aiToolImportRow);
@@ -169,7 +177,8 @@ function normalize(db: Database.Database, table: string, rows: unknown[]): unkno
   if (table === 'task_images') {
     // 校验 base64 合法性：解码再回卷不相等即为损坏数据，置空该图（保留记录、丢图）而非写入乱码
     return (rows as Record<string, unknown>[]).map((r) => {
-      const b64 = String(r.data ?? '').replace(/\s+/g, '');
+      // data 仅接受 string；replaceAll 需全局正则，语义与原 replace(/\s+/g) 一致
+      const b64 = (typeof r.data === 'string' ? r.data : '').replaceAll(/\s+/g, '');
       let buf = Buffer.alloc(0);
       try {
         const decoded = Buffer.from(b64, 'base64');

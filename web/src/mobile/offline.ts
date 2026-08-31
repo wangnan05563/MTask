@@ -99,15 +99,15 @@ export async function flushDrafts(): Promise<number> {
 
 /** 实时在线状态（监听 online/offline 事件） */
 export function useOnlineStatus(): boolean {
-  const [online, setOnline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine : true));
+  const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
   useEffect(() => {
     const on = () => setOnline(true);
     const off = () => setOnline(false);
-    window.addEventListener('online', on);
-    window.addEventListener('offline', off);
+    globalThis.addEventListener('online', on);
+    globalThis.addEventListener('offline', off);
     return () => {
-      window.removeEventListener('online', on);
-      window.removeEventListener('offline', off);
+      globalThis.removeEventListener('online', on);
+      globalThis.removeEventListener('offline', off);
     };
   }, []);
   return online;

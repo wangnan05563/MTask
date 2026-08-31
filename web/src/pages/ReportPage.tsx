@@ -43,7 +43,7 @@ function bytesToBase64(bytes: Uint8Array): string {
   let bin = '';
   const chunk = 0x8000;
   for (let i = 0; i < bytes.length; i += chunk) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    bin += String.fromCodePoint(...bytes.subarray(i, i + chunk));
   }
   return btoa(bin);
 }
@@ -83,19 +83,22 @@ export function ReportPage() {
     }
   }, []);
 
+  // 加载已配置模型的 AI 工具，默认选中第一个，供 AI 周报生成使用。
+  // 提取为组件级函数：避免 then 回调内再嵌套 setState 回调导致函数嵌套过深
+  const loadAiTools = useCallback(async () => {
+    try {
+      const list = await api.get<AITool[]>('/aitools');
+      const valid = list.filter((t) => t.model);
+      setAiTools(valid);
+      if (valid.length) setAiToolId((cur) => (valid.some((t) => t.id === cur) ? cur : valid[0].id));
+    } catch { /* 工具列表加载失败静默：aiToolId 为空时由 UI 提示先配置模型 */ }
+  }, [setAiToolId]);
+
   useEffect(() => {
     void api.get<Project[]>('/projects').then(setProjects).catch(() => {});
     void loadTemplates();
-    // 加载已配置模型的 AI 工具，默认选中第一个，供 AI 周报生成使用
-    void api
-      .get<AITool[]>('/aitools')
-      .then((list) => {
-        const valid = list.filter((t) => t.model);
-        setAiTools(valid);
-        if (valid.length) setAiToolId((cur) => (valid.some((t) => t.id === cur) ? cur : valid[0].id));
-      })
-      .catch(() => {});
-  }, [loadTemplates]);
+    void loadAiTools();
+  }, [loadTemplates, loadAiTools]);
 
   /** 生成报表并下载（后端按周期聚合任务数据，xlsx/docx） */
   async function generate() {

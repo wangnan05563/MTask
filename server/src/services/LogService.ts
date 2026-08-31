@@ -23,7 +23,8 @@ function formatArgs(args: unknown[]): string {
     .map((a) => {
       if (a instanceof Error) return `${a.message}\n${a.stack ?? ''}`;
       if (typeof a === 'object' && a !== null) {
-        try { return JSON.stringify(a); } catch { return String(a); }
+        // JSON.stringify 失败（循环引用等）时 String(a) 只会得到 [object Object]，改为可读占位
+        try { return JSON.stringify(a); } catch { return '[unserializable object]'; }
       }
       return String(a);
     })
@@ -32,7 +33,7 @@ function formatArgs(args: unknown[]): string {
 
 class LogService {
   private seq = 0;
-  private buffer: LogEntry[] = [];
+  private readonly buffer: LogEntry[] = [];
   private initd = false;
 
   init(): void {
@@ -65,7 +66,8 @@ class LogService {
   }
 
   latestSeq(): number {
-    return this.buffer.length ? this.buffer[this.buffer.length - 1].seq : 0;
+    // .at(-1) 取末尾元素，缓冲为空时回退 0，语义与 buffer[length-1] 一致
+    return this.buffer.at(-1)?.seq ?? 0;
   }
 
   /** 返回 seq 大于 since 的增量日志（首次传 0 返回全量缓冲） */

@@ -33,11 +33,12 @@ export function QueuePage() {
     setActive(await api.get<Queue>(`/queues/${id}`));
   }
 
-  const refreshTimer = useRef<number | null>(null);
+  // 定时器句柄类型跟随 globalThis.setInterval 返回值：浏览器为 number、Node 类型环境为 Timeout，两者都兼容
+  const refreshTimer = useRef<ReturnType<typeof globalThis.setInterval> | null>(null);
   /** 异步提交后定时刷新当前队列，直至无在途（sending/queued）Job，再提示完成 */
   function startPolling(queueId: string) {
     stopPolling();
-    refreshTimer.current = window.setInterval(async () => {
+    refreshTimer.current = globalThis.setInterval(async () => {
       try {
         const q = await api.get<Queue>(`/queues/${queueId}`);
         setActive(q);
@@ -52,7 +53,7 @@ export function QueuePage() {
   }
   function stopPolling() {
     if (refreshTimer.current != null) {
-      window.clearInterval(refreshTimer.current);
+      globalThis.clearInterval(refreshTimer.current);
       refreshTimer.current = null;
     }
   }
@@ -225,14 +226,14 @@ export function QueuePage() {
 }
 
 function JobRow(props: {
-  job: QueueJob;
-  taskTitle: string;
-  toolName: string;
-  statusColor: string;
-  expanded: boolean;
-  onToggle: () => void;
-  onAdopt: () => void;
-  onCopy: () => void;
+  readonly job: QueueJob;
+  readonly taskTitle: string;
+  readonly toolName: string;
+  readonly statusColor: string;
+  readonly expanded: boolean;
+  readonly onToggle: () => void;
+  readonly onAdopt: () => void;
+  readonly onCopy: () => void;
 }) {
   const { job, taskTitle, toolName, statusColor, expanded, onToggle, onAdopt, onCopy } = props;
   const canAdopt = job.status === 'success' && !!job.response_payload;

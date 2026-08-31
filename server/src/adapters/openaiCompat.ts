@@ -24,7 +24,7 @@ export class OpenAICompatAdapter implements AIAdapter {
       const url = `${this.baseUrl(config.endpoint)}/models`;
       const res = await withTimeout(fetch(url, {
         headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {},
-      }), config.timeoutMs ?? 10000) as Response;
+      }), config.timeoutMs ?? 10000);
       return res.ok
         ? { ok: true, message: '连接成功' }
         : { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
@@ -39,7 +39,7 @@ export class OpenAICompatAdapter implements AIAdapter {
       const url = `${this.baseUrl(config.endpoint)}/models`;
       const res = await withTimeout(fetch(url, {
         headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {},
-      }), config.timeoutMs ?? 15000) as Response;
+      }), config.timeoutMs ?? 15000);
       if (!res.ok) return { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
       const models = normalizeModels(await res.json().catch(() => null));
       if (models.length === 0) return { ok: false, message: '服务商未返回模型列表（可能不支持 /models 接口）' };
@@ -90,7 +90,7 @@ export class OpenAICompatAdapter implements AIAdapter {
           }),
         }),
         config.timeoutMs ?? 60000,
-      ) as Response;
+      );
 
       const data = (await res.json()) as ChatCompletionResp;
       if (!res.ok || data.error) {

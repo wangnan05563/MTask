@@ -16,7 +16,8 @@ const arg = (name) => {
   return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : undefined;
 };
 
-const NODE = arg('node') ?? 'C:\\Users\\hspcadmin\\.workbuddy\\binaries\\node\\versions\\22.22.2\\node.exe';
+// String.raw 避免 Windows 路径的反斜杠转义，路径含义一目了然
+const NODE = arg('node') ?? String.raw`C:\Users\hspcadmin\.workbuddy\binaries\node\versions\22.22.2\node.exe`;
 const ROOT = 'D:/code/otherProjects/26_MTask';
 const PORT = arg('port') ?? '39876';
 const DATA = arg('data') ?? `${ROOT}/logs/mcp-run/data`;

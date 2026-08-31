@@ -103,8 +103,8 @@ export const TaskService = {
     if (opts.projectId) { where.push('project_id = ?'); values.push(opts.projectId); }
     if (opts.keyword) {
       // 转义 LIKE 通配符（%/_），让搜索词按字面匹配而非被误当通配
-      const kw = `%${opts.keyword.replace(/[%_]/g, (m) => `\\${m}`)}%`;
-      where.push("(title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')");
+      const kw = `%${opts.keyword.replaceAll(/[%_]/g, (m) => '\\' + m)}%`;
+      where.push(String.raw`(title LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\')`);
       values.push(kw, kw);
     }
     if (opts.categoryId === 'none') where.push('category_id IS NULL');
@@ -216,7 +216,8 @@ export const TaskService = {
    * 采纳语义 = 仅保存文本待人工合并，不自动写入代码（FR4.4/FR5.1）。
    */
   adoptContent(id: string, content: string): TaskView {
-    if (!content || !content.trim()) throw new Error('采纳内容不能为空');
+    // 可选链一步覆盖「未传内容」与「空白内容」，与原 !content || !content.trim() 语义一致
+    if (!content?.trim()) throw new Error('采纳内容不能为空');
     if (!this.getById(id)) throw new Error('任务不存在');
     const db = getDb();
     db.prepare('UPDATE tasks SET ai_summary = ?, status = ?, updated_at = ? WHERE id = ?')

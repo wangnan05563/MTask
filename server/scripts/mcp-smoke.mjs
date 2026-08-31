@@ -51,7 +51,8 @@ if (TOKEN) {
 // ---------- 握手（MCP 层） ----------
 let client;
 {
-  const c = new Client({ name: 'mtask-smoke' }, { capabilities: {} });
+// clientInfo.version 为新 SDK 必填项（缺省会被服务端 isInitializeRequest 校验拒绝）
+  const c = new Client({ name: 'mtask-smoke', version: '1.0' }, { capabilities: {} });
   const ok = await c.connect(new StreamableHTTPClientTransport(new URL(MCP_URL), { requestInit: { headers } }))
     .then(() => true).catch(() => false);
   check(`握手${TOKEN ? '（带令牌）' : '（公开端点）'}`, ok);
@@ -119,8 +120,9 @@ const badProj = await call('mtask_create_task', { projectId: 'no-such-project', 
 check('不存在的项目 id 报错', badProj.isError, badProj.text.slice(0, 60));
 
 const badPeriod = await (async () => {
-  try { await call('mtask_gather_report_data', { period: 'year' }); return { isError: false }; }
-  catch (e) { return { isError: true }; }
+  // 新 SDK 对入参校验失败返回 isError=true 的结果而非抛异常；保留 catch 兼容旧协议错误抛出路径
+  try { return await call('mtask_gather_report_data', { period: 'year' }); }
+  catch { return { isError: true }; }
 })();
 check('非法周期参数被拒', badPeriod.isError);
 

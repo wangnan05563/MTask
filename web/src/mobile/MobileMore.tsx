@@ -8,7 +8,7 @@ import { api, setAccessToken, type AITool, type Project, type Task } from '../ap
 import { useSettings } from '../settings';
 import { Boxes, Archive, BarChart3, Terminal, Settings, ExternalLink, LogOut, Moon, Sun, ChevronRight } from 'lucide-react';
 
-interface Props { notify: (msg: string) => void; openDesktop: () => void; }
+interface Props { readonly notify: (msg: string) => void; readonly openDesktop: () => void; }
 
 type Sub = 'root' | 'aitools' | 'archive' | 'report' | 'logs' | 'settings';
 
@@ -53,8 +53,14 @@ export function MobileMore({ notify, openDesktop }: Props) {
 
 const SUB_TITLE: Record<Sub, string> = { root: '更多', aitools: '配置记录管理', archive: '归档', report: '周报', logs: '日志', settings: '设置' };
 
+// 退出仅清本机令牌并刷新页面，不依赖任何组件状态，置于模块顶层避免每次渲染重建函数
+function logout() {
+  setAccessToken('');
+  location.reload();
+}
+
 // ---------- 配置记录管理（只读） ----------
-function AitoolsView({ notify }: { notify: (msg: string) => void }) {
+function AitoolsView({ notify }: { readonly notify: (msg: string) => void }) {
   const [tools, setTools] = useState<AITool[]>([]);
   useEffect(() => { api.get<AITool[]>('/aitools').then(setTools).catch((e) => notify(e instanceof Error ? e.message : String(e))); }, [notify]);
   return (
@@ -72,7 +78,7 @@ function AitoolsView({ notify }: { notify: (msg: string) => void }) {
 }
 
 // ---------- 归档（只读） ----------
-function ArchiveView({ notify }: { notify: (msg: string) => void }) {
+function ArchiveView({ notify }: { readonly notify: (msg: string) => void }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   useEffect(() => { api.get<Task[]>('/tasks?archived=1').then(setTasks).catch((e) => notify(e instanceof Error ? e.message : String(e))); }, [notify]);
   return (
@@ -90,7 +96,7 @@ function ArchiveView({ notify }: { notify: (msg: string) => void }) {
 }
 
 // ---------- 周报（引导桌面端） ----------
-function ReportView({ openDesktop }: { openDesktop: () => void }) {
+function ReportView({ openDesktop }: { readonly openDesktop: () => void }) {
   return (
     <div style={card}>
       <div style={{ fontSize: 14, marginBottom: 8 }}>周报生成涉及模板与报表渲染，建议在桌面端完成。</div>
@@ -100,7 +106,7 @@ function ReportView({ openDesktop }: { openDesktop: () => void }) {
 }
 
 // ---------- 日志（只读） ----------
-function LogsView({ notify }: { notify: (msg: string) => void }) {
+function LogsView({ notify }: { readonly notify: (msg: string) => void }) {
   const [logs, setLogs] = useState<string>('');
   useEffect(() => {
     api.get<{ items?: { message: string }[]; log?: string }>('/logs').then((r) => {
@@ -112,7 +118,7 @@ function LogsView({ notify }: { notify: (msg: string) => void }) {
 }
 
 // ---------- 设置 ----------
-function SettingsView({ notify, openDesktop, theme, setTheme }: { notify: (msg: string) => void; openDesktop: () => void; theme: string; setTheme: (t: 'light' | 'dark') => void }) {
+function SettingsView({ notify, openDesktop, theme, setTheme }: { readonly notify: (msg: string) => void; readonly openDesktop: () => void; readonly theme: string; readonly setTheme: (t: 'light' | 'dark') => void }) {
   const [status, setStatus] = useState<{ status: string; publicUrl: string | null }>({ status: 'stopped', publicUrl: null });
   const [projects, setProjects] = useState<Project[]>([]);
   const [noteProject, setNoteProject] = useState('');
@@ -134,11 +140,6 @@ function SettingsView({ notify, openDesktop, theme, setTheme }: { notify: (msg: 
       setNoteProject(pid);
       notify('默认记事项目已更新');
     } catch (err) { notify(err instanceof Error ? err.message : String(err)); }
-  }
-
-  function logout() {
-    setAccessToken('');
-    location.reload();
   }
 
   return (

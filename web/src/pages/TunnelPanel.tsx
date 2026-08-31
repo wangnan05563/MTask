@@ -32,7 +32,8 @@ export function TunnelPanel() {
     try {
       const c = await api.get<Record<string, unknown>>('/tunnel/config');
       setProvider((c.provider ?? 'cloudflare') as typeof provider);
-      setLocalPort(String(c.localPort ?? 0));
+      // localPort 来自 JSON 反序列化的 unknown 值，typeof 收窄后再转字符串，避免 [object Object]
+      setLocalPort(String(typeof c.localPort === 'number' || typeof c.localPort === 'string' ? c.localPort : 0));
       setBinaryPath((c.binaryPath as string) ?? '');
       setAutoStart(Boolean(c.autoStart));
       setTokenConfigured(Boolean(c.cpolarAuthtokenConfigured));
@@ -51,7 +52,7 @@ export function TunnelPanel() {
     setBusy(true);
     try {
       await api.post('/tunnel/config', {
-        provider, localPort: Number(localPort) > 0 ? Number(localPort) : 0,
+        provider, localPort: Math.max(Number(localPort) || 0, 0),
         binaryPath, autoStart, tunnelMode, tunnelName: cfName || undefined,
         hostname: cfHostname || undefined, pathPrefix: pathPrefix || undefined,
         certFile: undefined,
@@ -68,7 +69,8 @@ export function TunnelPanel() {
       setStatus(r);
       flash('隧道已启动');
     } catch (e) {
-      const err = e as unknown as { message?: string; errorType?: string; authUrl?: string; manualPath?: string; downloadUrls?: string[] };
+      // catch 的 e 已是 unknown，直接断言到目标类型即可，先转 unknown 属于冗余断言（S4325）
+      const err = e as { message?: string; errorType?: string; authUrl?: string; manualPath?: string; downloadUrls?: string[] };
       const msg = err.message ?? String(e);
       if (err.errorType === 'tailscale_funnel_auth') {
         setAuthUrl(err.authUrl ?? '');
@@ -189,20 +191,20 @@ export function TunnelPanel() {
         <div style={{ fontWeight: 600, marginBottom: 10 }}>隧道配置</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           <div>
-            <label style={label}>提供方</label>
-            <select value={provider} onChange={(e) => setProvider(e.target.value as typeof provider)} style={field}>
+            <label htmlFor="tunnel-provider" style={label}>提供方</label>
+            <select id="tunnel-provider" value={provider} onChange={(e) => setProvider(e.target.value as typeof provider)} style={field}>
               <option value="cloudflare">Cloudflare（免注册）</option>
               <option value="cpolar">cpolar（需注册）</option>
               <option value="tailscale">Tailscale Funnel（需安装）</option>
             </select>
           </div>
           <div>
-            <label style={label}>本地端口（0=后端端口）</label>
-            <input value={localPort} onChange={(e) => setLocalPort(e.target.value)} style={field} inputMode="numeric" />
+            <label htmlFor="tunnel-local-port" style={label}>本地端口（0=后端端口）</label>
+            <input id="tunnel-local-port" value={localPort} onChange={(e) => setLocalPort(e.target.value)} style={field} inputMode="numeric" />
           </div>
           <div style={{ gridColumn: '1 / -1' }}>
-            <label style={label}>隧道二进制路径（可选，留空自动下载）</label>
-            <input value={binaryPath} onChange={(e) => setBinaryPath(e.target.value)} style={field} placeholder="如 D:\tools\cloudflared.exe" />
+            <label htmlFor="tunnel-binary-path" style={label}>隧道二进制路径（可选，留空自动下载）</label>
+            <input id="tunnel-binary-path" value={binaryPath} onChange={(e) => setBinaryPath(e.target.value)} style={field} placeholder="如 D:\tools\cloudflared.exe" />
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10 }}>
@@ -221,17 +223,17 @@ export function TunnelPanel() {
           {tunnelMode === 'named' && (
             <div style={{ display: 'grid', gap: 8 }}>
               <div>
-                <label style={label}>隧道名称</label>
+                <label htmlFor="tunnel-cf-name" style={label}>隧道名称</label>
                 <div style={{ display: 'flex', gap: 6 }}>
-                  <input value={cfName} onChange={(e) => setCfName(e.target.value)} style={field} placeholder="如 my-tunnel" />
+                  <input id="tunnel-cf-name" value={cfName} onChange={(e) => setCfName(e.target.value)} style={field} placeholder="如 my-tunnel" />
                   <button onClick={() => void cfLogin()} title="授权 — 登录 Cloudflare 获取 cert.pem" aria-label="Cloudflare 授权登录" style={{ fontSize: 12, padding: '4px 10px', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}><KeyRound size={13} />登录</button>
                   <button onClick={() => void cfCreate()} title="创建 — 创建命名隧道" aria-label="创建命名隧道" style={{ fontSize: 12, padding: '4px 10px', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}><PlugZap size={13} />创建</button>
                 </div>
               </div>
               <div>
-                <label style={label}>固定域名</label>
+                <label htmlFor="tunnel-cf-hostname" style={label}>固定域名</label>
                 <div style={{ display: 'flex', gap: 6 }}>
-                  <input value={cfHostname} onChange={(e) => setCfHostname(e.target.value)} style={field} placeholder="如 tunnel.example.com" />
+                  <input id="tunnel-cf-hostname" value={cfHostname} onChange={(e) => setCfHostname(e.target.value)} style={field} placeholder="如 tunnel.example.com" />
                   <button onClick={() => void cfRouteDns()} title="路由 — 配置 DNS CNAME 指向该域名" aria-label="配置DNS路由" style={{ fontSize: 12, padding: '4px 10px', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}><Network size={13} />路由</button>
                 </div>
               </div>
@@ -254,8 +256,8 @@ export function TunnelPanel() {
         <div style={card}>
           <div style={{ fontWeight: 600, marginBottom: 4 }}>Tailscale Funnel</div>
           <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 8 }}>需本机已安装并登录 Tailscale、启用 MagicDNS，可获取固定 <code>*.ts.net</code> 地址。</div>
-          <label style={label}>路径前缀（可选，空=根路径）</label>
-          <input value={pathPrefix} onChange={(e) => setPathPrefix(e.target.value)} style={field} placeholder="如 /mtask" />
+          <label htmlFor="tunnel-path-prefix" style={label}>路径前缀（可选，空=根路径）</label>
+          <input id="tunnel-path-prefix" value={pathPrefix} onChange={(e) => setPathPrefix(e.target.value)} style={field} placeholder="如 /mtask" />
         </div>
       )}
 

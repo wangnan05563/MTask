@@ -47,10 +47,15 @@ app.use((req, res, next) => {
 // 所有 /api 数据接口都必须携带匹配的 X-Access-Token，防止公网穿透后未授权读写数据。
 // 未配置令牌（纯本地单机）时整体放行，保持既有行为零回归。
 function accessTokenGuard(req: express.Request, res: express.Response, next: express.NextFunction): void {
-  if (req.path.startsWith('/tunnel')) return void next();
+  // 隧道管理端点自身放行：若被 401 拦截，用户将无法在公网输入令牌完成解锁
+  if (req.path.startsWith('/tunnel')) {
+    next();
+    return;
+  }
   const token = loadTunnelConfig().accessToken;
   if (token && req.headers['x-access-token'] !== token) {
-    return void res.status(401).json({ error: 'unauthorized' });
+    res.status(401).json({ error: 'unauthorized' });
+    return;
   }
   next();
 }

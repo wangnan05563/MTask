@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, type TaskCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { FONT_OPTIONS, FONT_SIZE_OPTIONS, useSettings, type ImportMode } from '../settings';
-import { Download, FileUp, FolderPlus, Info, Moon, Network, Pencil, Save, Settings, Sun, Trash2 } from 'lucide-react';
+import { Download, FileUp, FolderPlus, Info, Moon, Pencil, Save, Settings, Sun, Trash2 } from 'lucide-react';
 import { TunnelPanel } from './TunnelPanel';
 
 /** 应用信息（与根 package.json 保持一致） */
@@ -11,6 +11,9 @@ const APP_VERSION = '0.1.0';
 const APP_DESC = 'AI 任务开发管理工具：项目维度任务管理 + AI 梳理 + 队列分发。';
 
 type STab = 'general' | 'migration' | 'categories' | 'tunnel' | 'about';
+
+/** 导入策略文案映射：显式枚举映射替代嵌套三元，新增策略时只需补一行 */
+const IMPORT_MODE_LABELS: Record<ImportMode, string> = { merge: '合并', keep: '保留', overwrite: '覆盖' };
 
 const SUB_TABS: { key: STab; label: string }[] = [
   { key: 'general', label: '通用设置' },
@@ -248,7 +251,7 @@ function MigrationTab() {
     if (!file) return;
     setFname(file.name);
     const ok = await askConfirm(
-      `将从「${file.name}」导入备份数据（策略：${mode === 'overwrite' ? '覆盖' : mode === 'keep' ? '保留' : '合并'}）。\n` +
+      `将从「${file.name}」导入备份数据（策略：${IMPORT_MODE_LABELS[mode]}）。\n` +
       (mode === 'overwrite' ? '覆盖会清空并替换当前应用内的全部数据，此操作不可恢复，确认继续？' : '确认继续？'),
     );
     if (!ok) return;
@@ -268,7 +271,8 @@ function MigrationTab() {
   }
 
   const subOpts = (active: (m: ImportMode) => boolean, label: string, desc: string, m: ImportMode) => (
-    <label key={m} style={{ display: 'flex', gap: 8, padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card-bg)', cursor: 'pointer', alignItems: 'flex-start' }}>
+    // aria-label 显式提供可访问名称：label 文本嵌在 span 内，部分辅助技术难以聚合
+    <label key={m} aria-label={`${label}：${desc}`} style={{ display: 'flex', gap: 8, padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card-bg)', cursor: 'pointer', alignItems: 'flex-start' }}>
       <input type="radio" name="mode" checked={active(m)} onChange={() => setMode(m)} />
       <span>
         <span style={{ fontWeight: 600 }}>{label}</span>
@@ -329,11 +333,10 @@ function AboutTab() {
           <div>开发者：MTask 开发团队</div>
           <div>技术栈：Electron · React · Express · SQLite</div>
         </div>
-        <div style={{ marginTop: 14, fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>
-          本应用基于 MIT 协议开源，界面组件使用开源图标库 lucide-react。
-          <span style={{ display: 'block', marginTop: 4 }}>
-            如有问题与建议，请在项目仓库提交 Issue。
-          </span>
+        {/* 纵向 flex + gap 提供显式间距：两个文本都包 span，消除 JSX 换行产生的歧义空格 */}
+        <div style={{ marginTop: 14, fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span>本应用基于 MIT 协议开源，界面组件使用开源图标库 lucide-react。</span>
+          <span>如有问题与建议，请在项目仓库提交 Issue。</span>
         </div>
       </div>
     </div>

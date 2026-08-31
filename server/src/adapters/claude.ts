@@ -31,7 +31,7 @@ export class ClaudeAdapter implements AIAdapter {
           body: JSON.stringify({ model: config.model ?? 'claude-3-5-sonnet-latest', max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] }),
         }),
         config.timeoutMs ?? 10000,
-      ) as Response;
+      );
       return res.ok
         ? { ok: true, message: '连接成功' }
         : { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
@@ -53,7 +53,7 @@ export class ClaudeAdapter implements AIAdapter {
           },
         }),
         config.timeoutMs ?? 15000,
-      ) as Response;
+      );
       if (!res.ok) return { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
       const models = normalizeModels(await res.json().catch(() => null));
       if (models.length === 0) return { ok: false, message: '服务商未返回模型列表（可能不支持 /v1/models 接口）' };
@@ -99,7 +99,7 @@ export class ClaudeAdapter implements AIAdapter {
           }),
         }),
         config.timeoutMs ?? 60000,
-      ) as Response;
+      );
 
       const data = (await res.json()) as MessagesResp;
       if (!res.ok || data.error) {

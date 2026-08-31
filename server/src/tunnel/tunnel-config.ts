@@ -73,8 +73,12 @@ export function loadTunnelConfig(): TunnelConfig {
   if (configCache) return configCache;
   let cfg: TunnelConfig;
   try {
-    if (!existsSync(configPath())) cfg = { ...DEFAULT };
-    else cfg = { ...DEFAULT, ...JSON.parse(readFileSync(configPath(), 'utf8')) as Partial<TunnelConfig> };
+    // 肯定形式分支：配置文件存在则读取合并，否则用默认值（缓存与写后失效逻辑保持不变）
+    if (existsSync(configPath())) {
+      cfg = { ...DEFAULT, ...JSON.parse(readFileSync(configPath(), 'utf8')) as Partial<TunnelConfig> };
+    } else {
+      cfg = { ...DEFAULT };
+    }
   } catch {
     cfg = { ...DEFAULT };
   }

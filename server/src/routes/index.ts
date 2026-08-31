@@ -88,7 +88,8 @@ api.get('/tasks', (req, res) => {
     projectId: projectId as string | undefined,
     archived: archived === '1' || archived === 'true',
     limit: limitN,
-    offset: offset !== undefined ? Math.max(0, Math.floor(Number(offset) || 0)) : undefined,
+    // 肯定形式分支：先处理缺省（undefined），避免否定条件与 else 并存造成误读
+    offset: offset === undefined ? undefined : Math.max(0, Math.floor(Number(offset) || 0)),
     keyword: keyword as string | undefined,
     categoryId: categoryId as string | undefined,
     sort: sort as TaskListOptions['sort'],
@@ -627,8 +628,15 @@ api.get('/prompts', (req, res) => {
   const where: string[] = [];
   const values: unknown[] = [];
   if (categoryId) { where.push('category_id = ?'); values.push(categoryId); }
-  if (keyword) { where.push('(title LIKE ? OR content LIKE ?)'); values.push(`%${keyword}%`, `%${keyword}%`); }
-  const sql = `SELECT * FROM prompts${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY pinned DESC, updated_at DESC`;
+  // keyword 显式收窄为 string：query 值可能是数组/对象，隐式字符串化会得到 "[object Object]" 污染 LIKE 条件
+  if (typeof keyword === 'string' && keyword) {
+    const kw = keyword;
+    where.push('(title LIKE ? OR content LIKE ?)');
+    values.push(`%${kw}%`, `%${kw}%`);
+  }
+  // WHERE 子句先独立拼接，避免模板字面量嵌套
+  const whereSql = where.length ? ` WHERE ${where.join(' AND ')}` : '';
+  const sql = `SELECT * FROM prompts${whereSql} ORDER BY pinned DESC, updated_at DESC`;
   res.json(getDb().prepare(sql).all(...values));
 });
 

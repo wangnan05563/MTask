@@ -44,6 +44,17 @@ function Shell() {
       .catch(() => { /* 后端不可用时忽略 */ });
   }, []);
 
+  // 连接状态三态（未知/正常/异常）的色值与文案：用 if 显式分支而非嵌套三元，可读性更好
+  let statusColor = 'var(--text-muted)';
+  let statusText = '连接后端中…';
+  if (serverOk === true) {
+    statusColor = 'var(--success)';
+    statusText = '● 后端已连接';
+  } else if (serverOk === false) {
+    statusColor = 'var(--danger)';
+    statusText = '● 后端未连接（请先启动 server）';
+  }
+
   return (
     <div
       style={{
@@ -90,11 +101,12 @@ function Shell() {
             </button>
           );
         })}
-        {/* 后端连接状态：随 serverOk 动态更新，常驻菜单行最右侧 */}
+        {/* 后端连接状态：随 serverOk 动态更新，常驻菜单行最右侧。
+            色值与文案按三态（未知/正常/异常）显式计算，避免 JSX 中嵌套三元 */}
         <span
-          style={{ fontSize: 12, marginLeft: 'auto', color: serverOk ? 'var(--success)' : serverOk === false ? 'var(--danger)' : 'var(--text-muted)' }}
+          style={{ fontSize: 12, marginLeft: 'auto', color: statusColor }}
         >
-          {serverOk === null ? '连接后端中…' : serverOk ? '● 后端已连接' : '● 后端未连接（请先启动 server）'}
+          {statusText}
         </span>
       </nav>
 
@@ -123,8 +135,8 @@ function resolveUiMode(): 'mobile' | 'desktop' {
     const stored = localStorage.getItem('mtask.uiMode');
     if (stored === 'mobile' || stored === 'desktop') return stored;
   } catch { /* 忽略 */ }
-  const touch = 'ontouchstart' in window || (navigator.maxTouchPoints ?? 0) > 0;
-  const small = window.matchMedia('(max-width: 820px)').matches;
+  const touch = 'ontouchstart' in globalThis || (navigator.maxTouchPoints ?? 0) > 0;
+  const small = globalThis.matchMedia('(max-width: 820px)').matches;
   return touch && small ? 'mobile' : 'desktop';
 }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type AITool } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
 import { useSessionState } from '../ui/session';
@@ -30,14 +30,14 @@ export function ReportConsole({
   logs = [],
   streamText = '',
 }: {
-  tools: AITool[];
-  toolId: string;
-  onToolIdChange: (id: string) => void;
+  readonly tools: AITool[];
+  readonly toolId: string;
+  readonly onToolIdChange: (id: string) => void;
   /** 当前分析周期；周期类预设（汇总/风险/建议）据此附带周期让后端注入真实数据 */
-  period?: 'day' | 'week' | 'month';
-  streaming?: boolean;
-  logs?: string[];
-  streamText?: string;
+  readonly period?: 'day' | 'week' | 'month';
+  readonly streaming?: boolean;
+  readonly logs?: string[];
+  readonly streamText?: string;
 }) {
   // 分析选项与已产生答案改为会话级持久化（useSessionState）：切换页面返回保留输入选择与上次分析结果
   const [category, setCategory] = useSessionState<(typeof CATEGORIES)[number]['key']>('rptconsole.category', 'summary');
@@ -50,6 +50,17 @@ export function ReportConsole({
   useEffect(() => {
     bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
   }, [answer, logs, streamText]);
+
+  // 阶段日志没有天然 id，按「内容 + 同内容出现序号」派生稳定 key：
+  // 追加式日志的前缀条目 key 不变，避免用数组索引作 key 在重排时错误复用 DOM
+  const logItems = useMemo(() => {
+    const seen = new Map<string, number>();
+    return logs.map((log) => {
+      const n = (seen.get(log) ?? 0) + 1;
+      seen.set(log, n);
+      return { id: n > 1 ? `${log}#${n}` : log, log };
+    });
+  }, [logs]);
 
   const ask = useCallback(async () => {
     if (!toolId) {
@@ -145,8 +156,8 @@ export function ReportConsole({
               <Sparkles size={13} style={{ color: 'var(--accent)' }} /> AI 周报生成
               {streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
             </div>
-            {logs.map((log, i) => (
-              <div key={i} style={{ fontSize: 11, color: 'var(--text-secondary)', padding: '2px 0' }}>• {log}</div>
+            {logItems.map(({ id, log }) => (
+              <div key={id} style={{ fontSize: 11, color: 'var(--text-secondary)', padding: '2px 0' }}>• {log}</div>
             ))}
             {/* AI 洞察正文：流式增量实时渲染 */}
             {streamText && (

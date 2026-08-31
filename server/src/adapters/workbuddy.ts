@@ -30,7 +30,7 @@ export class WorkBuddyAdapter implements AIAdapter {
           body: JSON.stringify({ action: 'ping' }),
         }),
         config.timeoutMs ?? 10000,
-      ) as Response;
+      );
       if (!res.ok) return { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
       const data = (await res.json()) as { ok?: boolean; message?: string };
       return data.ok
@@ -115,7 +115,7 @@ export class WorkBuddyAdapter implements AIAdapter {
         body: JSON.stringify(body),
       }),
       config.timeoutMs ?? 60000,
-    ) as Response;
+    );
     const text = await res.text().catch(() => '');
     let data: unknown = null;
     try { data = text ? JSON.parse(text) : null; } catch { data = null; }
@@ -131,7 +131,9 @@ export class WorkBuddyAdapter implements AIAdapter {
       if (d.ok === false) return { ok: false, error: d.error ?? `HTTP ${res.status}` };
       // accepted：已提交、结果依赖平台回调，返回明确占位，避免把"已受理"误当"已完成"
       if (d.accepted) {
-        const hint = String(body.taskTitle ?? body.system ?? '');
+        // typeof 收窄：body 字段为 unknown，直接 String() 会把对象字符串化成 [object Object]
+        const raw: unknown = body.taskTitle ?? body.system;
+        const hint = typeof raw === 'string' ? raw : '';
         return { ok: true, content: `已提交至 WorkBuddy（结果待回调）：${hint}` };
       }
       if (typeof d.content === 'string' && d.content) return { ok: true, content: d.content };

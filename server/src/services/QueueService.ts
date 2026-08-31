@@ -1,6 +1,6 @@
 import { getDb } from '../db/connection';
 import { v4 as uuid } from 'uuid';
-import { TaskService, type TaskView } from './TaskService';
+import { type TaskView } from './TaskService';
 import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
 import type { SubmitResult, PollResult } from '../adapters/types';
 
@@ -38,6 +38,42 @@ export interface QueueItemInput {
 
 function now(): string {
   return new Date().toISOString();
+}
+
+/**
+ * 提交单个 Job 并落库状态；返回该 Job 是否进入异步在途（受理 ticket，等待 poller 收敛）。
+ * 从 submitAll 拆出以降低其认知复杂度；单 Job 提交异常按 failed 落库而不上抛，
+ * 保证队列循环内单点失败不影响其余 Job（与拆分前行为一致）。
+ */
+async function submitOneJob(
+  job: QueueJobRow,
+  submit: (job: QueueJobRow) => Promise<SubmitResult>,
+): Promise<boolean> {
+  const db = getDb();
+  db.prepare("UPDATE queue_jobs SET status = 'sending', sent_at = ? WHERE id = ?").run(now(), job.id);
+  try {
+    const result = await submit(job);
+    if (result.ok && typeof result.content === 'string') {
+      // 同步完成：直接置 success（ticket 清空、submitted_at 记为完成时刻）
+      db.prepare(
+        "UPDATE queue_jobs SET status = 'success', response_payload = ?, error = NULL, ticket = NULL, submitted_at = ?, finished_at = ? WHERE id = ?",
+      ).run(result.content, now(), now(), job.id);
+      return false;
+    }
+    if (result.ok && result.accepted) {
+      // 异步受理：记录回执标识与提交时间，等待 poller 收敛
+      db.prepare("UPDATE queue_jobs SET status = 'sending', ticket = ?, submitted_at = ? WHERE id = ?")
+        .run(result.ticket ?? null, now(), job.id);
+      return true;
+    }
+    db.prepare("UPDATE queue_jobs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?")
+      .run(result.error ?? '提交失败', now(), job.id);
+    return false;
+  } catch (e) {
+    db.prepare("UPDATE queue_jobs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?")
+      .run(e instanceof Error ? e.message : String(e), now(), job.id);
+    return false;
+  }
 }
 
 /**
@@ -167,27 +203,8 @@ export const QueueService = {
     let anySending = false;
     try {
       for (const job of jobs) {
-        if (job.status === 'success') continue;
-        db.prepare("UPDATE queue_jobs SET status = 'sending', sent_at = ? WHERE id = ?").run(now(), job.id);
-        try {
-          const result = await submit(job);
-          if (result.ok && typeof result.content === 'string') {
-            db.prepare(
-              "UPDATE queue_jobs SET status = 'success', response_payload = ?, error = NULL, ticket = NULL, submitted_at = ?, finished_at = ? WHERE id = ?",
-            ).run(result.content, now(), now(), job.id);
-          } else if (result.ok && result.accepted) {
-            // 异步受理：记录回执标识与提交时间，等待 poller 收敛
-            db.prepare("UPDATE queue_jobs SET status = 'sending', ticket = ?, submitted_at = ? WHERE id = ?")
-              .run(result.ticket ?? null, now(), job.id);
-            anySending = true;
-          } else {
-            db.prepare("UPDATE queue_jobs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?")
-              .run(result.error ?? '提交失败', now(), job.id);
-          }
-        } catch (e) {
-          db.prepare("UPDATE queue_jobs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?")
-            .run(e instanceof Error ? e.message : String(e), now(), job.id);
-        }
+        if (job.status === 'success') continue; // 已成功的不重复提交
+        if (await submitOneJob(job, submit)) anySending = true;
       }
       // 仍有异步在途 → 队列保持 running，待 poller 收敛后再置 finished
       db.prepare("UPDATE queues SET status = ? WHERE id = ?").run(anySending ? 'running' : 'finished', queueId);

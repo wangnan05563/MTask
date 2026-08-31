@@ -7,8 +7,8 @@ import { api, imageUrl, type Project, type Task, type TaskCategory } from '../ap
 import { Plus } from 'lucide-react';
 
 interface Props {
-  onQuickNote: () => void;
-  notify: (msg: string) => void;
+  readonly onQuickNote: () => void;
+  readonly notify: (msg: string) => void;
 }
 
 const PRIO_COLOR: Record<string, string> = {
@@ -27,6 +27,9 @@ export function MobileHome({ onQuickNote, notify }: Props) {
   const startY = useRef<number | null>(null);
 
   const catName = (id: string | null) => categories.find((c) => c.id === id)?.name ?? '';
+
+  // 展开/收起任务详情：click 与键盘激活共用，保证键盘可达性
+  const toggleExpand = (id: string) => setExpanded((cur) => (cur === id ? null : id));
 
   const load = useCallback(async (pid: string) => {
     if (!pid) return;
@@ -110,7 +113,13 @@ export function MobileHome({ onQuickNote, notify }: Props) {
               <button onClick={() => void toggleDone(t)} title="切换完成" aria-label="切换完成" style={checkBtn}>
                 {t.status === 'todo' ? '☐' : '☑'}
               </button>
-              <div style={{ flex: 1, minWidth: 0 }} onClick={() => setExpanded((cur) => (cur === t.id ? null : t.id))}>
+              {/* 用原生 button 并重置默认样式：既保留行内排版，又天然满足可交互性（S6819） */}
+              <button
+                type="button"
+                aria-label={`任务详情：${t.title}，点按展开或收起`}
+                style={{ flex: 1, minWidth: 0, cursor: 'pointer', background: 'none', border: 'none', padding: 0, textAlign: 'left', font: 'inherit', color: 'inherit' }}
+                onClick={() => toggleExpand(t.id)}
+              >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   {t.pinned && <span style={{ fontSize: 11 }}>📌</span>}
                   <span style={{ flex: 1, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</span>
@@ -132,7 +141,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
                     )}
                   </div>
                 )}
-              </div>
+              </button>
             </li>
           ))}
         </ul>

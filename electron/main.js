@@ -149,11 +149,25 @@ function killServerProc() {
       resolve();
     };
     // 3s 后仍未退出则升级为强杀，避免优雅退出被挂起
-    const escalate = setTimeout(() => { try { proc.kill('SIGKILL'); } catch (_) {} }, 3000);
+    const escalate = setTimeout(() => {
+      try {
+        proc.kill('SIGKILL');
+      } catch (err) {
+        // 强杀失败多因进程恰好自行退出或句柄失效，已无升级手段；
+        // 留日志便于排查"后端为何未在优雅期内退出"（如 DLL 占用残留）
+        console.warn('[mtask] SIGKILL 强杀后端子进程失败:', err.message);
+      }
+    }, 3000);
     // 兜底：最迟 6s 放行退出，不阻塞应用关闭
     const force = setTimeout(finish, 6000);
     proc.once('exit', finish);
-    try { proc.kill(); } catch (_) { finish(); }
+    try {
+      proc.kill();
+    } catch (err) {
+      // 优雅终止失败（进程可能已退出）：记录原因后直接放行退出流程，避免阻塞应用关闭
+      console.warn('[mtask] 优雅终止后端子进程失败:', err.message);
+      finish();
+    }
   });
 }
 
@@ -310,32 +324,73 @@ function stopTicker() {
 // 打包态回退端口：首位默认/覆盖端口被占时依次尝试这些高位端口，保证不与外部/旧实例抢占。
 const PACKED_FALLBACK_PORTS = [39882, 39883, 39884, 39885];
 
+/** 终止并清空上一轮尝试残留的后端子进程。
+ *  kill 失败仅告警不阻断：多因进程恰好自行退出或句柄失效，已无进一步手段，
+ *  留日志便于定位"端口仍被占用"一类残留问题。 */
+function stopStaleServerProc() {
+  if (!serverProc) return;
+  try {
+    serverProc.kill();
+  } catch (err) {
+    console.warn('[mtask] 终止旧后端子进程失败:', err.message);
+  }
+  serverProc = null;
+}
+
+/** 在单个候选端口上尝试自起并验证后端；成功返回 true。
+ *  端口被占时我们拉起的子进程会因 EADDRINUSE 立即退出，据此判定并换下一个端口。 */
+async function tryStartOnPort(port) {
+  SERVER_PORT = port;
+  stopStaleServerProc();
+  startServer();
+  let exited = false;
+  serverProc.once('exit', () => { exited = true; });
+  // 留一个短窗口让 EADDRINUSE 导致的退出显现，避免把“被占端口误判为自起成功”
+  await new Promise((r) => setTimeout(r, 300));
+  if (exited) { stopStaleServerProc(); return false; } // 我们拉起的进程已退出 -> 端口被占
+  try {
+    await waitForServer(30);
+    // 二次确认：探到健康的是“我们自起的进程”而非他人占用的端口，
+    // 消除 300ms 窗口内子进程迟到退出造成的误判
+    if (serverProc && serverProc.exitCode === null && !serverProc.killed) return true;
+  } catch {
+    // 该端口未探到健康服务——换下一个候选端口
+  }
+  // 本次端口未成功：清理仍存活的子进程，避免残留进程占用端口
+  stopStaleServerProc();
+  return false;
+}
+
 /** 打包态后端启动：从候选端口逐个自起服务。
- *  端口若被其它程序/旧实例占用，我们拉起的子进程会因 EADDRINUSE 立即退出；
- *  据此判定端口被占并换下一个，实现真正隔离——既不侵占他人端口，也不再隐式复用外部后端。 */
+ *  端口若被其它程序/旧实例占用则换下一个，实现真正隔离——既不侵占他人端口，也不再隐式复用外部后端。 */
 async function startPackedBackend() {
   const candidates = [...new Set([SERVER_PORT, ...PACKED_FALLBACK_PORTS])];
   for (const port of candidates) {
-    SERVER_PORT = port;
-    if (serverProc) { try { serverProc.kill(); } catch (_) {} serverProc = null; }
-    startServer();
-    let exited = false;
-    serverProc.once('exit', () => { exited = true; });
-    // 留一个短窗口让 EADDRINUSE 导致的退出显现，避免把“被占端口误判为自起成功”
-    await new Promise((r) => setTimeout(r, 300));
-    if (exited) continue; // 我们拉起的进程已退出 -> 端口被占，试下一个
-    try {
-      await waitForServer(30);
-      // 二次确认：探到健康的是“我们自起的进程”而非他人占用的端口，
-      // 消除 300ms 窗口内子进程迟到退出造成的误判
-      if (serverProc && serverProc.exitCode === null && !serverProc.killed) return true;
-    } catch {
-      // 该端口未探到健康服务——继续尝试下一端口
-    }
-    // 走到这说明本次端口未成功：清理本次进程（若仍存活）再试下一个候选
-    if (serverProc) { try { serverProc.kill(); } catch (_) {} serverProc = null; }
+    if (await tryStartOnPort(port)) return true;
   }
   return false;
+}
+
+/** 打包态启动内嵌后端并推进启动窗进度 */
+async function bootPackedBackend() {
+  const ok = await startPackedBackend();
+  stopTicker();
+  updateSplash(ok ? 62 : 66, ok ? '后端服务就绪' : '后端启动失败');
+  if (!ok) console.error('[mtask] 打包内嵌服务在各候选端口均启动失败');
+}
+
+/** 开发态启动 tsx 后端并推进启动窗进度 */
+async function bootDevBackend() {
+  startServer();
+  try {
+    await waitForServer();
+    stopTicker();
+    updateSplash(62, '后端服务就绪');
+  } catch (e) {
+    stopTicker();
+    updateSplash(66, '后端启动失败');
+    console.error('[mtask] 内嵌服务启动失败:', e.message);
+  }
 }
 
 /** 推进真实后端启动进度：结果决定阶段落点 */
@@ -350,21 +405,9 @@ async function ensureBackend() {
     updateSplash(18, '启动后端服务');
     startTicker(58);
     if (app.isPackaged) {
-      const ok = await startPackedBackend();
-      stopTicker();
-      updateSplash(ok ? 62 : 66, ok ? '后端服务就绪' : '后端启动失败');
-      if (!ok) console.error('[mtask] 打包内嵌服务在各候选端口均启动失败');
+      await bootPackedBackend();
     } else {
-      startServer();
-      try {
-        await waitForServer();
-        stopTicker();
-        updateSplash(62, '后端服务就绪');
-      } catch (e) {
-        stopTicker();
-        updateSplash(66, '后端启动失败');
-        console.error('[mtask] 内嵌服务启动失败:', e.message);
-      }
+      await bootDevBackend();
     }
   }
   backendReady = true;
@@ -383,7 +426,9 @@ function maybeFinishSplash() {
   }, 400);
 }
 
-app.whenReady().then(async () => {
+// 主进程为 CommonJS 入口（electron/package.json 未启用 "type":"module"），顶层 await 语法非法；
+// 改 ESM 需把全部 require 重写为 import 并调整打包入口，风险远大于收益，维持 promise 链是 CJS 主进程的标准写法
+app.whenReady().then(async () => { // NOSONAR - S7785 顶层 await 在 CommonJS 中不可用，原因见上
   setupApiProxy();
   setupWebProtocol();
 

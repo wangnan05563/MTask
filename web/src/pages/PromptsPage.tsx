@@ -81,9 +81,9 @@ export function PromptsPage() {
 
   async function removeCategory(cat: PromptCategory) {
     const cnt = cat.promptCount ?? 0;
-    const ok = await askConfirm(
-      `确认删除分类「${cat.name}」？${cnt > 0 ? `其下 ${cnt} 条提示词将一并删除，` : ''}此操作不可恢复。`,
-    );
+    // 影响面文案先算好再插值：避免模板字面量嵌套（内层模板写在外层 ${} 里）
+    const impact = cnt > 0 ? `其下 ${cnt} 条提示词将一并删除，` : '';
+    const ok = await askConfirm(`确认删除分类「${cat.name}」？${impact}此操作不可恢复。`);
     if (!ok) return;
     try {
       await api.del(`/prompt-categories/${cat.id}`);
@@ -114,7 +114,8 @@ export function PromptsPage() {
 
   async function saveDraft(p: Prompt) {
     const d = drafts[p.id];
-    if (!d || !d.title.trim()) return;
+    // 可选链一步覆盖「无草稿」与「标题为空」两种返回条件
+    if (!d?.title.trim()) return;
     try {
       await api.patch(`/prompts/${p.id}`, { title: d.title.trim(), content: d.content, categoryId: d.categoryId });
       setDrafts((prev) => {
@@ -154,7 +155,7 @@ export function PromptsPage() {
       document.body.appendChild(ta);
       ta.select();
       try {
-        document.execCommand('copy');
+        document.execCommand('copy'); // NOSONAR - Clipboard API 受限环境（Electron/file://）的降级路径无未废弃替代 API
         flash('已复制到剪贴板');
       } catch {
         flash('复制失败，请手动选择文本复制');
@@ -166,7 +167,7 @@ export function PromptsPage() {
   /** 置顶/取消置顶：切换后重新拉取，置顶项经前端排序始终排在最前 */
   async function togglePin(p: Prompt) {
     try {
-      await api.patch(`/prompts/${p.id}`, { pinned: !Boolean(p.pinned) });
+      await api.patch(`/prompts/${p.id}`, { pinned: !p.pinned });
       void loadPrompts(activeCat, search);
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));

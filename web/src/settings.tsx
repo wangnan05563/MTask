@@ -4,7 +4,7 @@
  * - 偏好持久化到 localStorage，刷新/重开应用后保留；
  * - 字号档位通过覆盖 `--fs-*` 变量实现，凡使用这些变量的字号都会随之变化。
  */
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 export type Theme = 'light' | 'dark';
 export type FontKey = 'default' | 'mono' | 'kai' | 'song';
@@ -122,23 +122,28 @@ const Ctx = createContext<SettingsCtx>({
   update: () => {},
 });
 
-export function SettingsProvider({ children }: { children: ReactNode }) {
+export function SettingsProvider({ children }: { readonly children: ReactNode }) {
   const [prefs, setPrefs] = useState<SettingsPrefs>(loadPrefs);
 
-  // 偏好变化即持久化 + 应用主题与字体
+  // 偏好变化即持久化 + 应用主题与字体。data-theme 用 dataset 写入（S7761）
   useEffect(() => {
     try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch { /* 忽略配额等写入失败 */ }
-    document.documentElement.setAttribute('data-theme', prefs.theme);
+    document.documentElement.dataset.theme = prefs.theme;
     document.documentElement.style.setProperty('--font-family', FONT_MAP[prefs.font]);
     const vars = FONT_SIZE_MAP[prefs.fontSize];
     for (const [k, v] of Object.entries(vars)) document.documentElement.style.setProperty(k, v);
   }, [prefs]);
 
-  const update: SettingsCtx['update'] = (key, value) =>
-    setPrefs((prev) => ({ ...prev, [key]: value }));
+  // update 用 useCallback 稳定引用：setPrefs 本身稳定，避免 value 因函数重建而每次渲染变化
+  const update = useCallback<SettingsCtx['update']>(
+    (key, value) => setPrefs((prev) => ({ ...prev, [key]: value })),
+    [],
+  );
+  // Context value 用 useMemo 稳定：仅 prefs 变化时才生成新对象，避免所有订阅组件无谓重渲染
+  const value = useMemo<SettingsCtx>(() => ({ prefs, update }), [prefs, update]);
 
   return (
-    <Ctx.Provider value={{ prefs, update }}>
+    <Ctx.Provider value={value}>
       {/* 主题变量在应用根统一注入一次；Markdown 样式另由 MarkdownStyles 注入 */}
       <style>{themeCss}</style>
       {children}

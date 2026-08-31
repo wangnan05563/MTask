@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react';
 import { api, type Queue, type QueueJob, type Task } from '../api/client';
 import { Copy, ExternalLink } from 'lucide-react';
 
-interface Props { notify: (msg: string) => void; openDesktop: () => void; }
+interface Props { readonly notify: (msg: string) => void; readonly openDesktop: () => void; }
 
 const STATUS_LABEL: Record<string, string> = {
   queued: '排队', sending: '发送中', success: '成功', failed: '失败', timeout: '超时', draft: '草稿', running: '进行中', finished: '已完成',

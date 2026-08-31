@@ -8,7 +8,7 @@ import {
   Document, Packer, Paragraph, TextRun, HeadingLevel,
   Table, TableRow, TableCell, WidthType, AlignmentType,
 } from 'docx';
-import type { ReportData, ReportFormat } from './ReportService';
+import type { ReportData } from './ReportService';
 
 /** 报表标题行 */
 function titleLine(data: ReportData): string {
@@ -83,7 +83,7 @@ function addInsightSheet(ai: any, insight: string): void {
   const THIN = { style: 'thin', color: { argb: 'D9DEE7' } } as const;
   const fill = (c: any, color: string) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: color } }; };
   // 剥离 markdown 内联符号：去掉粗体/行内码标记，返回纯文本
-  const stripMd = (t: string) => t.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/`([^`]+)`/g, '$1').trim();
+  const stripMd = (t: string) => t.replaceAll(/\*\*([^*]+)\*\*/g, '$1').replaceAll(/`([^`]+)`/g, '$1').trim();
   const hasBold = (t: string) => /\*\*/.test(t);
   let r = 1;
 
@@ -126,7 +126,7 @@ function addInsightSheet(ai: any, insight: string): void {
   const tableBuf: string[][] = [];
   for (const raw of insight.split('\n')) {
     const line = raw.trim();
-    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
     const isTableSep = /^\|[\s:|-]+\|$/.test(line);
     if (/^\|.*\|$/.test(line)) { // 表格数据行
       if (!isTableSep) tableBuf.push(line.split('|').slice(1, -1).map(stripMd));
@@ -252,7 +252,7 @@ export async function buildPptx(data: ReportData, aiInsight?: string): Promise<B
   if (aiInsight) {
     const s3 = pptx.addSlide();
     s3.addText('AI 洞察', { x: 0.5, y: 0.35, w: 9, h: 0.6, fontSize: 20, bold: true });
-    s3.addText(aiInsight.split('\n').slice(0, 14).join('\n'), { x: 0.5, y: 1.1, w: 9, h: 4.0, fontSize: 11 });
+    s3.addText(aiInsight.split('\n').slice(0, 14).join('\n'), { x: 0.5, y: 1.1, w: 9, h: 4, fontSize: 11 });
   }
   const out = await pptx.write({ outputType: 'nodebuffer' });
   return Buffer.from(out as unknown as ArrayBuffer);

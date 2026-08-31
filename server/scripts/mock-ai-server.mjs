@@ -27,6 +27,50 @@ function readBody(req) {
   });
 }
 
+// 各协议端点的响应逻辑拆为独立函数：路由回调只做分发，避免单函数认知复杂度过高
+function handleOpenAI(body, res) {
+  if (body?.model === 'mock-error') return send(res, 500, { error: { message: 'mock upstream error' } });
+  if (body?.model === 'mock-slow') {
+    setTimeout(() => send(res, 200, { choices: [{ message: { content: 'delayed' } }] }), 2500);
+    return;
+  }
+  const userMsg = body?.messages?.findLast?.((m) => m.role === 'user')?.content ?? '';
+  const title = String(userMsg).split('\n')[1] ?? '未知';
+  return send(res, 200, { choices: [{ message: { content: `[mock-openai] 已处理任务: ${title}` } }] });
+}
+
+function handleClaude(body, res) {
+  if (body?.model === 'mock-error') return send(res, 400, { error: { message: 'mock claude error' } });
+  return send(res, 200, { content: [{ type: 'text', text: `[mock-claude] 模型=${body?.model}` }] });
+}
+
+function handleOllama(body, res) {
+  if (body?.model === 'mock-error') return send(res, 500, { error: 'mock ollama error' });
+  return send(res, 200, { message: { content: '[mock-ollama] 本地推理结果' } });
+}
+
+function handleWorkBuddy(body, res) {
+  if (body?.action === 'ping') return send(res, 200, { ok: true, message: 'mock workbuddy ok' });
+  // 异步提交：默认返回受理+ticket；user 含 submit-error 时报错
+  if (body?.action === 'send_submit') {
+    if (String(body?.user ?? '').includes('submit-error')) return send(res, 400, { ok: false, error: 'mock submit error' });
+    return send(res, 200, { ok: true, accepted: true, ticket: `tkt-${Date.now()}` });
+  }
+  // 异步轮询：按 ticket 关键字区分 running / failed / success
+  if (body?.action === 'send_poll') {
+    const t = String(body?.ticket ?? '');
+    if (t.includes('fail')) return send(res, 200, { status: 'failed', error: 'mock poll failed' });
+    if (t.includes('running')) return send(res, 200, { status: 'running' });
+    return send(res, 200, { status: 'success', content: `[mock-workbuddy] poll done: ${t}` });
+  }
+  // 触发异步占位：user 内容含 accepted
+  if (String(body?.user ?? '').includes('accepted')) return send(res, 200, { ok: true, accepted: true });
+  // 触发错误：user 内容含 mock-error
+  if (String(body?.user ?? '').includes('mock-error')) return send(res, 400, { ok: false, error: 'mock workbuddy error' });
+  const title = String(body?.taskTitle ?? '') || (String(body?.user ?? '').split('\n')[1] ?? '未知');
+  return send(res, 200, { ok: true, content: `[mock-workbuddy] 已派发: ${title}` });
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const body = req.method === 'POST' ? await readBody(req) : null;
@@ -39,52 +83,11 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/v1/models') return send(res, 200, { object: 'list', data: [{ id: 'mock-model' }] });
   if (url.pathname === '/api/tags') return send(res, 200, { models: [{ name: 'mock:latest' }] });
 
-  // OpenAI 兼容 /chat/completions
-  if (url.pathname === '/v1/chat/completions') {
-    if (body?.model === 'mock-error') return send(res, 500, { error: { message: 'mock upstream error' } });
-    if (body?.model === 'mock-slow') {
-      setTimeout(() => send(res, 200, { choices: [{ message: { content: 'delayed' } }] }), 2500);
-      return;
-    }
-    const userMsg = body?.messages?.findLast?.((m) => m.role === 'user')?.content ?? '';
-    const title = String(userMsg).split('\n')[1] ?? '未知';
-    return send(res, 200, { choices: [{ message: { content: `[mock-openai] 已处理任务: ${title}` } }] });
-  }
-
-  // Claude /v1/messages
-  if (url.pathname === '/v1/messages') {
-    if (body?.model === 'mock-error') return send(res, 400, { error: { message: 'mock claude error' } });
-    return send(res, 200, { content: [{ type: 'text', text: `[mock-claude] 模型=${body?.model}` }] });
-  }
-
-  // Ollama /api/chat
-  if (url.pathname === '/api/chat') {
-    if (body?.model === 'mock-error') return send(res, 500, { error: 'mock ollama error' });
-    return send(res, 200, { message: { content: '[mock-ollama] 本地推理结果' } });
-  }
-
-  // WorkBuddy 中继 mock 端点：遵循 workbuddy 适配器的约定 JSON 契约
-  if (url.pathname === '/mock/workbuddy') {
-    if (body?.action === 'ping') return send(res, 200, { ok: true, message: 'mock workbuddy ok' });
-    // 异步提交：默认返回受理+ticket；user 含 submit-error 时报错
-    if (body?.action === 'send_submit') {
-      if (String(body?.user ?? '').includes('submit-error')) return send(res, 400, { ok: false, error: 'mock submit error' });
-      return send(res, 200, { ok: true, accepted: true, ticket: `tkt-${Date.now()}` });
-    }
-    // 异步轮询：按 ticket 关键字区分 running / failed / success
-    if (body?.action === 'send_poll') {
-      const t = String(body?.ticket ?? '');
-      if (t.includes('fail')) return send(res, 200, { status: 'failed', error: 'mock poll failed' });
-      if (t.includes('running')) return send(res, 200, { status: 'running' });
-      return send(res, 200, { status: 'success', content: `[mock-workbuddy] poll done: ${t}` });
-    }
-    // 触发异步占位：user 内容含 accepted
-    if (String(body?.user ?? '').includes('accepted')) return send(res, 200, { ok: true, accepted: true });
-    // 触发错误：user 内容含 mock-error
-    if (String(body?.user ?? '').includes('mock-error')) return send(res, 400, { ok: false, error: 'mock workbuddy error' });
-    const title = String(body?.taskTitle ?? '') || (String(body?.user ?? '').split('\n')[1] ?? '未知');
-    return send(res, 200, { ok: true, content: `[mock-workbuddy] 已派发: ${title}` });
-  }
+  // 协议端点：命中即交给对应处理函数
+  if (url.pathname === '/v1/chat/completions') return handleOpenAI(body, res);
+  if (url.pathname === '/v1/messages') return handleClaude(body, res);
+  if (url.pathname === '/api/chat') return handleOllama(body, res);
+  if (url.pathname === '/mock/workbuddy') return handleWorkBuddy(body, res);
 
   send(res, 404, { error: 'not found' });
 });

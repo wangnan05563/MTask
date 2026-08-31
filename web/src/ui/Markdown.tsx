@@ -47,9 +47,9 @@ export function Markdown({
   style,
   className,
 }: {
-  content: string;
-  style?: React.CSSProperties;
-  className?: string;
+  readonly content: string;
+  readonly style?: React.CSSProperties;
+  readonly className?: string;
 }) {
   const html = useMemo(() => md.render(content || ''), [content]);
   return (
@@ -74,7 +74,7 @@ function copyText(text: string): boolean {
     ta.style.opacity = '0';
     document.body.appendChild(ta);
     ta.select();
-    const ok = document.execCommand('copy');
+    const ok = document.execCommand('copy'); // NOSONAR - Clipboard API 受限环境（Electron/file://）的降级路径无未废弃替代 API
     ta.remove();
     return ok;
   } catch {
@@ -124,11 +124,11 @@ export function MarkdownContent({
   className,
   showCopy,
 }: {
-  content: string;
-  style?: React.CSSProperties;
-  className?: string;
+  readonly content: string;
+  readonly style?: React.CSSProperties;
+  readonly className?: string;
   /** 是否在预览视图右上角显示「复制」按钮（默认关闭，避免与源码视图自带复制重复） */
-  showCopy?: boolean;
+  readonly showCopy?: boolean;
 }) {
   const [view, setView] = useState<'preview' | 'source'>('preview');
   const [copied, setCopied] = useState(false);

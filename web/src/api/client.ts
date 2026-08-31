@@ -26,6 +26,21 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return body as T;
 }
 
+/** 从 Content-Disposition 提取 RFC 5987 的 UTF-8 文件名（filename*=UTF-8''… 格式） */
+function filenameFromDisposition(cd: string): string {
+  const m = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  return m ? decodeURIComponent(m[1]) : '';
+}
+
+/** 代理未透传 Content-Disposition 时按内容类型兜底扩展名，避免下载成 report.bin */
+function extFromContentType(ct: string): string {
+  if (ct.includes('spreadsheet')) return 'xlsx';
+  if (ct.includes('wordprocessing')) return 'docx';
+  if (ct.includes('presentation')) return 'pptx';
+  if (ct.includes('pdf')) return 'pdf';
+  return 'bin';
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, data?: unknown, signal?: AbortSignal) =>
@@ -46,15 +61,8 @@ export const api = {
       throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
     }
     const blob = await res.blob();
-    const cd = res.headers.get('Content-Disposition') ?? '';
-    const m = cd.match(/filename\*=UTF-8''([^;]+)/i);
-    let filename = m ? decodeURIComponent(m[1]) : '';
-    // 代理未透传 Content-Disposition 时按内容类型兜底命名，避免下载成 report.bin
-    if (!filename) {
-      const ct = res.headers.get('Content-Type') ?? '';
-      const ext = ct.includes('spreadsheet') ? 'xlsx' : ct.includes('wordprocessing') ? 'docx' : ct.includes('presentation') ? 'pptx' : ct.includes('pdf') ? 'pdf' : 'bin';
-      filename = `report.${ext}`;
-    }
+    let filename = filenameFromDisposition(res.headers.get('Content-Disposition') ?? '');
+    if (!filename) filename = `report.${extFromContentType(res.headers.get('Content-Type') ?? '')}`;
     return { blob, filename };
   },
 };

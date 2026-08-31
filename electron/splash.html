@@ -57,7 +57,8 @@
   </div>
   <script>
     // 主进程经 webContents.executeJavaScript 调用，实时更新进度与阶段文案
-    window.__setProgress = function (progress, status) {
+    // 挂到 globalThis（渲染进程中即 window），避免依赖具体宿主全局对象名
+    globalThis.__setProgress = function (progress, status) {
       var p = Math.max(0, Math.min(100, Math.round(progress)));
       var fill = document.getElementById('fill');
       var st = document.getElementById('status');

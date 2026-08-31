@@ -2,7 +2,7 @@
  * 验证 SettingsService.importBundle 的 keep/merge 修复（含 app_settings 的 key 主键分支）。
  * 用 tsx 运行源码，避开外部 report 重构导致的整仓 tsc 类型错误。
  */
-process.env.MTask_DATA_DIR = require('fs').mkdtempSync(require('os').tmpdir() + '/vimp-');
+process.env.MTask_DATA_DIR = require('node:fs').mkdtempSync(require('node:os').tmpdir() + '/vimp-');
 
 import { initSchema } from '../src/db/schema';
 import { getDb } from '../src/db/connection';

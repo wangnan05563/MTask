@@ -57,7 +57,7 @@ async function main() {
   // 4. AI 工具配置：密钥加密 + 脱敏
   const tool = await call('POST', '/aitools', {
     name: 'DeepSeek 测试', type: 'openai-compatible', purpose: 'develop',
-    endpoint: 'https://api.deepseek.com', apiKey: 'sk-test-1234567890', model: 'deepseek-chat',
+    endpoint: process.env.MOCK_BASE ?? 'http://127.0.0.1:18990', apiKey: 'sk-test-1234567890', model: 'deepseek-chat',
   });
   check('创建 AI 工具', tool.status === 201 && tool.data?.id, JSON.stringify(tool.data));
   const toolId = tool.data?.id;
@@ -72,7 +72,7 @@ async function main() {
   const defaults = await call('GET', '/aitools/defaults');
   check('查询默认工具', defaults.data?.organize === toolId);
 
-  // 5. 队列构建 + 发送（占位适配器，返回文本回执）
+  // 5. 队列构建 + 发送（本地 mock AI 服务器回执；不依赖真实外部 API，测试可离线复现）
   const q = await call('POST', '/queues', { name: '2026-08-19 冒烟队列', date: '2026-08-19' });
   check('创建队列', q.status === 201 && q.data?.status === 'draft');
   const queueId = q.data?.id;
@@ -81,14 +81,14 @@ async function main() {
   check('加入队列作业', jobs.status === 201 && Array.isArray(jobs.data) && jobs.data.length === 1);
   const sent = await call('POST', `/queues/${queueId}/send`);
   check('队列发送完成', sent.data?.every?.((j) => j.status === 'success'), JSON.stringify(sent.data));
-  check('回执为文本(待人工合并)', typeof sent.data?.[0]?.response_payload === 'string' && sent.data[0].response_payload.includes('占位结果'));
+  check('回执为文本(待人工合并)', typeof sent.data?.[0]?.response_payload === 'string' && sent.data[0].response_payload.includes('mock-openai'));
   const queueDetail = await call('GET', `/queues/${queueId}`);
   check('队列含 request 快照', queueDetail.data?.jobs?.[0]?.request_payload?.includes('队列任务'));
 
   // 5.1 采纳：审阅回执文本 → 保存到任务并置 done（仅保存文本，待人工合并）
   const adopt = await call('POST', `/tasks/${task2.data.id}/adopt`, { content: sent.data[0].response_payload });
   check('采纳后任务置为 done', adopt.data?.status === 'done');
-  check('采纳后 ai_summary 保存文本', adopt.data?.ai_summary?.includes('占位结果'));
+  check('采纳后 ai_summary 保存文本', adopt.data?.ai_summary?.includes('mock-openai'));
 
   // 6. 清理测试数据
   await call('DELETE', `/projects/${projectId}`);
@@ -100,4 +100,10 @@ async function main() {
   process.exit(fail === 0 ? 0 : 1);
 }
 
-main().catch((e) => { console.error('冒烟测试异常:', e); process.exit(1); });
+// 顶层 await：ESM 脚本可直接等待 main，替代 promise 链；异常路径行为与原 .catch 一致
+try {
+  await main();
+} catch (e) {
+  console.error('冒烟测试异常:', e);
+  process.exit(1);
+}

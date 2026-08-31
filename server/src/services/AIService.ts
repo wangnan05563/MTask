@@ -24,7 +24,7 @@ function stripPromptHeading(md: string): string {
   return md
     .split('\n')
     .filter((line) => {
-      const m = line.match(/^\s*#{1,6}\s+(.*)$/);
+      const m = /^\s*#{1,6}\s+(.*)$/.exec(line);
       if (!m) return true; // 非标题行保留
       const text = m[1].trim();
       // 仅去掉“任务 / 描述”类文档标题（含“提示词”或“任务描述/标题”等元标记），
@@ -112,7 +112,7 @@ export const AIService = {
     ].join('\n');
     const res = await adapter.chat(system, `【任务标题】${title}`, config);
     // 兜底折叠换行/多余空白并去除首尾空格，确保回填为标题时是干净的单行文本
-    if (res.ok && res.content) res.content = res.content.replace(/\s+/g, ' ').trim();
+    if (res.ok && res.content) res.content = res.content.replaceAll(/\s+/g, ' ').trim();
     return res;
   },
 
@@ -129,7 +129,7 @@ export const AIService = {
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     // 长耗时任务（如 AI 周报洞察生成）由调用方显式传入更大的超时，覆盖该工具的默认 timeoutMs，避免中途被掐断
-    const effective = timeoutMs != null ? { ...config, timeoutMs } : config;
+    const effective = timeoutMs == null ? config : { ...config, timeoutMs };
     return adapter.chat(system, user, effective);
   },
 
@@ -147,7 +147,7 @@ export const AIService = {
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     // 长耗时流式调用同样由调用方传入更大的超时，避免中途被掐断
-    const effective = timeoutMs != null ? { ...config, timeoutMs } : config;
+    const effective = timeoutMs == null ? config : { ...config, timeoutMs };
     return adapter.chatStream(system, user, effective, onDelta);
   },
 

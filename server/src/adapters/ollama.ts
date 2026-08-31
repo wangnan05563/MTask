@@ -17,7 +17,7 @@ export class OllamaAdapter implements AIAdapter {
   async testConnection(config: ToolConfig) {
     try {
       const url = `${this.baseUrl(config.endpoint)}/api/tags`;
-      const res = await withTimeout(fetch(url), config.timeoutMs ?? 10000) as Response;
+      const res = await withTimeout(fetch(url), config.timeoutMs ?? 10000);
       return res.ok
         ? { ok: true, message: '连接成功' }
         : { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
@@ -30,7 +30,7 @@ export class OllamaAdapter implements AIAdapter {
   async listModels(config: ToolConfig): Promise<ModelsResult> {
     try {
       const url = `${this.baseUrl(config.endpoint)}/api/tags`;
-      const res = await withTimeout(fetch(url), config.timeoutMs ?? 15000) as Response;
+      const res = await withTimeout(fetch(url), config.timeoutMs ?? 15000);
       if (!res.ok) return { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
       const models = normalizeModels(await res.json().catch(() => null));
       if (models.length === 0) return { ok: false, message: 'Ollama 未返回模型列表（可能尚未拉取任何模型）' };
@@ -70,7 +70,7 @@ export class OllamaAdapter implements AIAdapter {
           }),
         }),
         config.timeoutMs ?? 60000,
-      ) as Response;
+      );
 
       const data = (await res.json()) as ChatResp;
       if (!res.ok || data.error) {

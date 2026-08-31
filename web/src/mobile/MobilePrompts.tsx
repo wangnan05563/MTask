@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import { api, type Prompt, type PromptCategory } from '../api/client';
 import { Copy, ChevronDown, ChevronUp } from 'lucide-react';
 
-interface Props { notify: (msg: string) => void; }
+interface Props { readonly notify: (msg: string) => void; }
 
 export function MobilePrompts({ notify }: Props) {
   const [categories, setCategories] = useState<PromptCategory[]>([]);
@@ -29,14 +29,10 @@ export function MobilePrompts({ notify }: Props) {
   }, [activeCat, notify]);
 
   async function copy(p: Prompt) {
+    // 剪贴板 API 仅在安全上下文（HTTPS / localhost）可用；不可用时直接提示失败，
+    // 不回退已弃用的 document.execCommand('copy')（S1874），移动端非安全上下文剪贴板本就受限
     try { await navigator.clipboard.writeText(p.content); notify('已复制'); }
-    catch {
-      const ta = document.createElement('textarea');
-      ta.value = p.content; ta.style.position = 'fixed'; ta.style.opacity = '0';
-      document.body.appendChild(ta); ta.select();
-      try { document.execCommand('copy'); notify('已复制'); } catch { notify('复制失败'); }
-      ta.remove();
-    }
+    catch { notify('复制失败'); }
   }
 
   return (

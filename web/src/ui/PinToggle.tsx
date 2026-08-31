@@ -7,8 +7,8 @@ import { Pin, PinOff } from 'lucide-react';
  * - tooltip 与 aria-label 遵循项目统一格式「按钮名称 — 用途说明」/「按钮名称：用途说明」。
  */
 interface PinToggleProps {
-  pinned: boolean;
-  onToggle: () => void;
+  readonly pinned: boolean;
+  readonly onToggle: () => void;
 }
 
 export function PinToggle({ pinned, onToggle }: PinToggleProps) {

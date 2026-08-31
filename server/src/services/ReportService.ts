@@ -218,7 +218,8 @@ function ensureWorker(): Worker {
   w.on('error', (e) => {
     building = false;
     buildQueue.shift()?.reject(e);
-    try { w.terminate(); } catch { /* 忽略 */ }
+    // terminate() 返回 Promise，同步 try/catch 捕不到其 rejection，必须用 .catch 兜底
+    w.terminate().catch(() => { /* worker 已异常退出，销毁失败无需处理，下次请求会重建 */ });
     buildWorker = null;
     pump();
   });
@@ -258,7 +259,6 @@ export async function generateReport(
   if (opts.templateId) {
     const tpl = join(templatesDir(), opts.templateId);
     templateBuf = readFileOrUndefined(tpl);
-    if (!templateBuf) templateBuf = undefined;
   }
   const buffer = await buildInWorker({ format, data, templateBuf });
   const ext = format;
@@ -378,7 +378,7 @@ export function listTemplates(): ReportTemplateMeta[] {
 
 /** 校验并保存导入模板；非法格式返回 false */
 export function saveTemplate(filename: string, data: Buffer): boolean {
-  const base = filename.replace(/\\/g, '/').split('/').pop() ?? filename;
+  const base = filename.replaceAll('\\', '/').split('/').pop() ?? filename;
   if (!/\.(xlsx|docx)$/i.test(base)) return false;
   // 仅允许安全字符，避免路径穿越
   if (!/^[\w\-.()·\u4e00-\u9fa5 ]+\.(xlsx|docx)$/i.test(base)) return false;
