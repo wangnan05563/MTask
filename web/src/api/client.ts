@@ -53,7 +53,8 @@ export const api = {
   async download(path: string, data: unknown): Promise<{ blob: Blob; filename: string }> {
     const res = await fetch(`${apiBase}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // 与 request() 一致地附带访问令牌：启用内网穿透后 accessTokenGuard 校验 X-Access-Token，缺失会返回 401 报 unauthorized
+      headers: { 'Content-Type': 'application/json', ...(accessToken ? { 'X-Access-Token': accessToken } : {}) },
       body: JSON.stringify(data ?? {}),
     });
     if (!res.ok) {
@@ -105,6 +106,8 @@ export async function imageDataURL(id: string): Promise<string> {
 
 export interface Task {
   id: string;
+  /** 任务编号：全局唯一（T+5位数字），供 AI Agent 通过 MCP 按编号定位 */
+  task_no: string | null;
   project_id: string;
   title: string;
   description: string;
@@ -115,6 +118,8 @@ export interface Task {
   archived: boolean;
   archived_at: string | null;
   ai_summary: string | null;
+  /** 处理结果：AI 分析结论（根因/解决方案）等，可查看/编辑 */
+  handle_result: string | null;
   /** 置顶：true=固定到列表顶部 */
   pinned: boolean;
   /** 所属任务分类 id；null 表示未分类 */

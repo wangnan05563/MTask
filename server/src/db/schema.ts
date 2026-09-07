@@ -15,6 +15,7 @@ export function initSchema(): void {
 
     CREATE TABLE IF NOT EXISTS tasks (
       id          TEXT PRIMARY KEY,
+      task_no     TEXT UNIQUE,
       project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       title       TEXT NOT NULL,
       description TEXT DEFAULT '',
@@ -35,6 +36,8 @@ export function initSchema(): void {
     -- 覆盖原单列索引，减少大数据量下的回表与文件排序
     CREATE INDEX IF NOT EXISTS idx_tasks_project_archived ON tasks(project_id, archived);
     CREATE INDEX IF NOT EXISTS idx_tasks_archived_created ON tasks(archived, created_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_archived_pinned_created ON tasks(archived, pinned, created_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(project_id, archived, pinned, created_at);
 
     -- 任务分类：供任务归类使用；删除分类时由服务层把所属任务 category_id 置空（任务保留、回到未分类）
     CREATE TABLE IF NOT EXISTS task_categories (
@@ -143,6 +146,11 @@ export function initSchema(): void {
   ensureColumn('tasks', 'verified', 'verified INTEGER NOT NULL DEFAULT 0');
   ensureColumn('tasks', 'pinned', 'pinned INTEGER NOT NULL DEFAULT 0');
   ensureColumn('tasks', 'category_id', 'category_id TEXT');
+  // 任务编号：供 AI Agent 通过 MCP 按编号定位任务；老库先补列再用现有存量回填编号
+  ensureColumn('tasks', 'task_no', 'task_no TEXT');
+  // 处理结果：AI 可把根因分析/解决方案等结论同步到任务（MCP mtask_update_task_result 写入），前端查看/编辑
+  ensureColumn('tasks', 'handle_result', 'handle_result TEXT');
+  backfillTaskNo();
   ensureColumn('ai_tools', 'pinned', 'pinned INTEGER NOT NULL DEFAULT 0');
   ensureColumn('prompts', 'pinned', 'pinned INTEGER NOT NULL DEFAULT 0');
   // 异步队列回执：ticket=平台受理标识，submitted_at=提交时间（配合 polling 判超时用）
@@ -220,6 +228,35 @@ function ensureColumn(table: string, column: string, ddl: string): void {
   if (!cols.some((c) => c.name === column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
   }
+}
+
+/**
+ * 老库任务编号回填：仅给 task_no 为空的存量任务补发编号。
+ * 编号从当前已有编号的最大序号 +1 起递增，保证与后续新任务的编号不冲突。
+ * 事务内逐条 UPDATE，幂等（空编号才处理，重启不重复发号）。
+ */
+function backfillTaskNo(): void {
+  const db = getDb();
+  const exist = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tasks'").get();
+  if (!exist) return;
+  const cols = db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[];
+  if (!cols.some((c) => c.name === 'task_no')) return;
+  // 取当前最大序号（T 前缀后数字），纯数字正则防脏数据干扰；无存量则从 1 起
+  const m = db.prepare("SELECT task_no FROM tasks WHERE task_no IS NOT NULL").all() as { task_no: string }[];
+  let max = 0;
+  for (const r of m) {
+    const n = /^T(\d+)$/.exec(r.task_no);
+    if (n) max = Math.max(max, Number(n[1]));
+  }
+  const rows = db.prepare('SELECT id FROM tasks WHERE task_no IS NULL').all() as { id: string }[];
+  if (rows.length === 0) return;
+  const upd = db.prepare('UPDATE tasks SET task_no = ? WHERE id = ?');
+  db.transaction(() => {
+    for (const { id } of rows) {
+      max += 1;
+      upd.run(`T${String(max).padStart(5, '0')}`, id);
+    }
+  })();
 }
 
 /**

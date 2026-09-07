@@ -5,7 +5,7 @@ import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { useBusy, setBusy } from '../ui/busy';
-import { AlignLeft, Archive, Check, ChevronDown, ChevronUp, Copy, CopyPlus, ImagePlus, Loader2, Plus, Save, Sparkles, SquarePen, Wand2, X } from 'lucide-react';
+import { AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, Loader2, Plus, Save, Sparkles, SquarePen, Tags, Trash2, Wand2, X } from 'lucide-react';
 
 /** 粘贴截图项：id 为入列时生成的稳定唯一标识，供列表 key 使用，删除中间项不会导致其余项身份错位 */
 interface PastedImage {
@@ -93,6 +93,8 @@ export function TasksPage() {
   const [optimizingMap, setOptimizingMap] = useState<Record<string, boolean>>({});
   // 批量美化独占标识：批量进行期间不与单条并行，避免相互覆盖
   const [batchBusy, setBatchBusy] = useState(false);
+  // 批量智能分类进行中标识：驱动工具条「批量分类」按钮的忙碌态
+  const [classifyBusy, setClassifyBusy] = useState(false);
   // 进行中请求的取消控制器（按 taskId 隔离）：中断某任务不误伤其它并行任务；批量用固定键 '__batch__'
   const beautifyAborts = useRef<Record<string, AbortController>>({});
   const optimizeAborts = useRef<Record<string, AbortController>>({});
@@ -110,6 +112,10 @@ export function TasksPage() {
   const [descExpanded, setDescExpanded] = useState<Record<string, boolean>>({});
   // AI 梳理摘要 展开/收起：与描述展开同风格（lucide 蓝色箭头），默认收起
   const [summaryExpanded, setSummaryExpanded] = useState<Record<string, boolean>>({});
+  // 处理结果 草稿/展开状态：resultDrafts 存在即进入编辑态（有值时可点击「编辑」重新编辑）
+  const [resultDrafts, setResultDrafts] = useState<Record<string, string>>({});
+  // 处理结果 展开/收起：随任务行详情一起收起/展开，默认收起（有值也收起，点操作行图标展开）
+  const [resultOpen, setResultOpen] = useState<Record<string, boolean>>({});
   // 「已完成」栏验证状态过滤：默认仅展示未验证，便于优先处理待核对的完成项；all=全部
   const [doneFilter, setDoneFilter] = useState<'all' | 'unverified' | 'verified'>('unverified');
   // AI 梳理工具下拉展开态：收起只显模型名收紧宽度，展开面板展示厂商名与厂商类型
@@ -220,6 +226,28 @@ export function TasksPage() {
     await api.post('/projects', { name });
     setActiveProject('');
     void loadProjects();
+  }
+
+  /** 删除项目：风险操作。先弹确认框（说明不可恢复 + 任务将一并删除），确认后再删除。
+   *  删除成功后当前项目已被移除：清空 activeProject 使 loadProjects 自动回退到首个有效项目，避免挂到不存在的项目上。 */
+  async function deleteProject() {
+    if (!activeProject) return flash('请先选择要删除的项目');
+    const proj = projects.find((p) => p.id === activeProject);
+    if (!proj) return;
+    // 系统收件箱是移动端随手记默认归属，后端已禁止删除；前端提前拦截给出与后端一致的明确提示
+    if (proj.id === 'sys-inbox') return flash('系统收件箱项目不可删除');
+    const ok = await askConfirm(
+      `确定要删除项目「${proj.name}」吗？\n\n⚠️ 风险提醒：\n该操作不可恢复，项目及其全部任务、截图将一并删除！\n建议先通过「任务 → 复用」将重要任务复制到其他项目再删除。`,
+    );
+    if (!ok) return;
+    try {
+      await api.del(`/projects/${proj.id}`);
+    } catch (e) {
+      return flash(e instanceof Error ? e.message : String(e));
+    }
+    setActiveProject('');
+    void loadProjects();
+    flash(`已删除项目「${proj.name}」`);
   }
 
   /** 拉取提示词分类供复用弹窗选择（懒加载：仅在需要展示时调用，失败不阻塞任务页） */
@@ -414,6 +442,33 @@ export function TasksPage() {
       return;
     }
     beautifyAll();
+  }
+
+  /** 批量智能分类：一键对当前项目全部未分类待办任务做 AI 语义识别自动分到已有分类。
+   *  逐个复用 matchCategory 得到最贴切分类，命中即写回 category_id；无工具/无未分类任务/全失败都给明确反馈。 */
+  async function batchClassify() {
+    if (classifyBusy) return flash('正在批量分类中，请稍候');
+    if (!organizeToolId) return flash('请先在「模型管理」页添加并选择整理工具');
+    const target = todo.filter((t) => !t.category_id && t.title.trim());
+    if (target.length === 0) return flash('当前项目没有未分类的待办任务');
+    if (!(await askConfirm(`将对 ${target.length} 个未分类任务执行批量智能分类，确认？`))) return;
+    setClassifyBusy(true);
+    let hit = 0;
+    try {
+      // 逐个识别并写回：命中才算成功，未命中保持未分类状态，不中断批量
+      for (const t of target) {
+        const catId = await matchCategory(t.title);
+        if (!catId) continue;
+        await api.patch(`/tasks/${t.id}`, { categoryId: catId });
+        hit++;
+      }
+      flash(hit > 0 ? `批量分类完成 ${hit}/${target.length} 条` : '未能为这些任务匹配到合适分类');
+      void loadTasks(activeProject);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setClassifyBusy(false);
+    }
   }
 
   /** 提示词优化：调 AI 把当前描述草稿改写为结构化提示词，结果写回草稿供确认后保存。
@@ -650,6 +705,30 @@ export function TasksPage() {
     flash('任务描述已保存');
   }
 
+  /** 保存处理结果：PATCH handleResult 落库后清空草稿退出编辑态。
+   *  支持空值保存（清空处理结果），故不判空；失败回显后端错误。 */
+  async function saveResult(task: Task) {
+    const content = resultDrafts[task.id];
+    if (content === undefined) return;
+    try {
+      await api.patch(`/tasks/${task.id}`, { handleResult: content });
+    } catch (e) {
+      return flash(e instanceof Error ? e.message : String(e));
+    }
+    setResultDrafts((prev) => {
+      const next = { ...prev };
+      delete next[task.id];
+      return next;
+    });
+    void loadTasks(activeProject);
+    flash('处理结果已保存');
+  }
+
+  /** 进入处理结果编辑态：草稿预填现有值，便于基于原内容修改 */
+  function startEditResult(task: Task) {
+    setResultDrafts((prev) => ({ ...prev, [task.id]: task.handle_result ?? '' }));
+  }
+
   /** 编辑态：标记删除已有图片（保存后生效，替换 = 删除后重新粘贴） */
   function markImageRemoved(taskId: string, imageId: string) {
     setImgDrafts((prev) => {
@@ -689,8 +768,8 @@ export function TasksPage() {
   /** 紧凑时间：ISO → 'MM-DD HH:mm'，用于列表行内展示，减少同屏重复信息的视觉重量 */
   const fmtShort = (iso: string) => (iso ? iso.slice(5, 16).replace('T', ' ') : '');
 
-  /** 任务行顶部操作条：完成状态/验证/置顶/标题/优先级/分类/标题操作/复制/描述/复用/归档 */
-  function renderTaskActions(t: Task, titleEditing: boolean, descEditing: boolean) {
+  /** 任务行标题行：完成状态/验证/置顶/标题，标题独占剩余宽度以示强调 */
+  function renderTaskTitleRow(t: Task, titleEditing: boolean) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <button title="切换任务完成状态" aria-label="切换任务完成状态" onClick={() => void setStatus(t, t.status === 'todo' ? 'done' : 'todo')} style={{ cursor: 'pointer' }}>
@@ -702,12 +781,42 @@ export function TasksPage() {
         <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
           <PinToggle pinned={t.pinned} onToggle={() => void togglePin(t)} />
         </span>
+        {/* 任务编号徽标：全局唯一，供 AI Agent 通过 MCP 按编号定位任务（titletip 说明可复制） */}
+        {t.task_no && (
+          <span /* NOSONAR - 任务编号徽标「双击复制」为便捷操作，文本可选中复制，无需拉链为可聚焦交互控件 */
+            title={`任务编号 ${t.task_no} — 供 MCP 按编号定位任务；双击复制`}
+            aria-label={`任务编号 ${t.task_no}`}
+            onDoubleClick={() => void navigator.clipboard.writeText(t.task_no!).then(() => flash(`已复制任务编号 ${t.task_no}`))}
+            style={{ fontSize: 11, color: 'var(--accent)', background: 'var(--accent-soft)', padding: '0 5px', borderRadius: 4, lineHeight: '18px', whiteSpace: 'nowrap', cursor: 'default', userSelect: 'text' }}
+          >
+            {t.task_no}
+          </span>
+        )}
         {renderTaskTitle(t, titleEditing)}
+      </div>
+    );
+  }
+
+  /** 任务行元信息/操作行：优先级/分类/功能按钮组靠右，与记录时间同行。
+   *  标题行的按钮与下拉整体从标题行下移到此，标题占满整行更醒目，功能按钮也获得更多横向空间。 */
+  function renderTaskMetaRow(t: Task, titleEditing: boolean, descEditing: boolean) {
+    // 处理结果按钮文案/无障碍标签：未编辑→(已录入=修改，未录入=添加)、编辑中→取消；顺序 if 避免嵌套三元与否定条件
+    const resultBtnLbl = (() => {
+      if (resultDrafts[t.id] === undefined) {
+        return t.handle_result
+          ? { title: '修改处理结果 — 编辑该任务已录入的处理结果（取消可恢复原内容）', aria: '修改处理结果：编辑该任务已录入的处理结果' }
+          : { title: '添加处理结果 — 记录根因/解决方案等处理结论', aria: '添加处理结果：记录根因/解决方案等处理结论' };
+      }
+      return { title: '取消编辑处理结果 — 放弃未保存的修改', aria: '取消编辑处理结果：放弃未保存的修改' };
+    })();
+    return (
+      <div className="task-op" style={{ marginLeft: 32, marginTop: 2, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, fontSize: 11, color: 'var(--text-muted)' }}>
         {/* 优先级三级（低/中/高）：置于 AI 梳理按钮之前，便于优先调整重要度 */}
         <select
           value={t.priority}
           onChange={(e) => void setPriority(t, e.target.value)}
           className="task-op"
+          aria-label="切换任务优先级"
           style={{ fontSize: 12, padding: 2, border: '1px solid var(--border-strong)', borderRadius: 4 }}
         >
           <option value="low">低</option>
@@ -726,7 +835,8 @@ export function TasksPage() {
           <option value="">未分类</option>
           {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
-        {t.status === 'todo' && renderTitleActions(t, titleEditing)}
+        {/* 待办/已完成任务：AI 美化 + 重命名（编辑中保留保存/取消收尾） */}
+        {renderTitleActions(t, titleEditing, true)}
         <button
           onClick={() => void copyTaskContent(t)}
           title="复制 — 复制该任务标题、描述与 AI 摘要到剪贴板"
@@ -737,6 +847,31 @@ export function TasksPage() {
           {copiedId === t.id ? <Check size={13} /> : <Copy size={13} />}
         </button>
         <button onClick={() => toggleDescEdit(t)} title={descEditing ? '收起描述 — 收起描述编辑区' : '描述 — 编辑该任务描述'} aria-label={descEditing ? '收起描述' : '编辑该任务描述'} className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{descEditing ? <ChevronUp size={13} /> : <AlignLeft size={13} />}</button>
+        {/* 处理结果编辑入口：与描述按钮保持一致的交互样式（点按展开编辑器，再点取消）。
+        已录入（有 handle_result）→ 剪贴板编辑「修改」，未录入 → 剪贴板「添加」。
+        仅做录入/修改；纯查看用标题区「处理结果展开图标」，此处不做收起，避免与查看态冲突 */}
+        <button
+          onClick={() => {
+            // 未在编辑中：展开编辑器并读取已保存值；否则取消并丢弃草稿，无已保存值则收起零占位
+            if (resultDrafts[t.id] === undefined) {
+              setResultOpen((p) => ({ ...p, [t.id]: true }));
+              startEditResult(t);
+            } else {
+              setResultDrafts((prev) => {
+                const next = { ...prev };
+                delete next[t.id];
+                return next;
+              });
+              if (!t.handle_result) setResultOpen((p) => ({ ...p, [t.id]: false }));
+            }
+          }}
+          title={resultBtnLbl.title}
+          aria-label={resultBtnLbl.aria}
+          className="task-op"
+          style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        >
+          {t.handle_result ? <ClipboardEdit size={13} /> : <ClipboardList size={13} />}
+        </button>
         <button
           onClick={() => { setReuseOpen(t.id); setReuseProjectId(''); setReuseSearch(''); setReuseCategoryId(''); void loadPromptCats(); }}
           title="复用此任务 — 将该任务复制到其他项目，或打包为资产复制到提示词页"
@@ -747,6 +882,11 @@ export function TasksPage() {
           <CopyPlus size={13} />
         </button>
         <button onClick={() => void archive(t)} title="归档 — 将该任务移入归档" aria-label="归档：将该任务移入归档" className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Archive size={13} /></button>
+        {/* 记录时间：与操作按钮同行的最右侧，紧凑格式，创建/编辑并排 */}
+        <span style={{ display: 'inline-flex', gap: 10 }}>
+          <span>{fmtShort(t.created_at)} 创建</span>
+          <span>{fmtShort(t.updated_at)} 编辑</span>
+        </span>
       </div>
     );
   }
@@ -797,12 +937,27 @@ export function TasksPage() {
             {descExpanded[t.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
           </button>
         )}
+        {/* 处理结果展开图标：紧随任务详情（描述）展开图标之后，作为第二个交互图标。
+            有已录入结果才显示；仅切换 resultOpen 的查看态（不进入编辑），与描述展开相互独立，
+            两个面板可分别展开/收起，也可同时展开/收起。收起态用上箭头以区分展开态 */} 
+        {t.handle_result && (
+          <button
+            onClick={() => setResultOpen((p) => ({ ...p, [t.id]: !p[t.id] }))}
+            title={resultOpen[t.id] ? '收起处理结果 — 收起该任务的处理结果' : '展开处理结果 — 展开查看该任务的处理结果'}
+            aria-label={resultOpen[t.id] ? '收起处理结果：收起该任务的处理结果' : '展开处理结果：展开查看该任务的处理结果'}
+            className="task-op"
+            style={{ fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+          >
+            {resultOpen[t.id] ? <ChevronUp size={13} /> : <ClipboardList size={13} />}
+          </button>
+        )}
       </>
     );
   }
 
-  /** 待办任务标题操作：保存编辑中的标题 / AI 美化 + 重命名切换（仅待办任务渲染） */
-  function renderTitleActions(t: Task, titleEditing: boolean) {
+  /** 标题操作：保存编辑中的标题 / AI 美化 + 重命名切换。
+   *  待办与已完成任务均展示重命名；编辑中保留保存/取消以收尾美化或改名结果。 */
+  function renderTitleActions(t: Task, titleEditing: boolean, includeRename = true) {
     return (
       <>
         {titleEditing ? (
@@ -810,7 +965,7 @@ export function TasksPage() {
         ) : (
           renderBeautifyButton(t)
         )}
-        <button onClick={() => toggleTitleEdit(t)} title={titleEditing ? '取消 — 取消重命名' : '改名 — 重命名该任务标题'} aria-label={titleEditing ? '取消重命名' : '重命名该任务标题'} className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{titleEditing ? <X size={13} /> : <SquarePen size={13} />}</button>
+        {includeRename && <button onClick={() => toggleTitleEdit(t)} title={titleEditing ? '取消 — 取消重命名' : '改名 — 重命名该任务标题'} aria-label={titleEditing ? '取消重命名' : '重命名该任务标题'} className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{titleEditing ? <X size={13} /> : <SquarePen size={13} />}</button>}
       </>
     );
   }
@@ -969,6 +1124,101 @@ export function TasksPage() {
     );
   }
 
+  /** 处理结果展开区：随任务行详情收起/展开（resultOpen 控制），展示态 Markdown + 编辑图标，
+   *  编辑态 textarea + 纯图标保存/取消（悬浮提示）。由 MCP（mtask_update_task_result）同步的
+   *  根因/解决方案直接落 handle_result，此处可人工改。 */
+  function renderTaskResult(t: Task) {
+    // 展开区仅在用户点开处理结果图标（或处于编辑态）时渲染，收起时零占位
+    if (!resultOpen[t.id] && resultDrafts[t.id] === undefined) return null;
+    const editing = resultDrafts[t.id] !== undefined;
+    return (
+      <div style={{ marginLeft: 32, marginTop: 4, border: '1px solid var(--border)', borderRadius: 6 }}>
+        {/* 标题栏：左「处理结果」，右编辑/关闭图标（纯图标 + 悬浮提示） */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 6px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', borderTopLeftRadius: 6, borderTopRightRadius: 6 }}>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>处理结果</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            {!editing && (
+              <button
+                onClick={() => startEditResult(t)}
+                title="编辑处理结果 — 修改该任务的处理结果"
+                aria-label="编辑处理结果：修改该任务的处理结果"
+                className="task-op"
+                style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+              >
+                <ClipboardEdit size={12} />
+              </button>
+            )}
+            <button
+              onClick={() => {
+                // 收起时同步丢弃未保存草稿：若有已完成录入则展示区回读已保存值 = 恢复原录入，无则收起为零占位
+                setResultOpen((p) => ({ ...p, [t.id]: false }));
+                setResultDrafts((prev) => {
+                  const next = { ...prev };
+                  delete next[t.id];
+                  return next;
+                });
+              }}
+              title="收起处理结果 — 收起该任务的处理结果（未保存修改将丢弃并恢复已保存录入）"
+              aria-label="收起处理结果：收起该任务的处理结果"
+              className="task-op"
+              style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+            >
+              <ChevronUp size={12} />
+            </button>
+          </span>
+        </div>
+        {editing ? (
+          <div style={{ padding: 6 }}>
+            <textarea
+              value={resultDrafts[t.id]}
+              onChange={(e) => setResultDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
+              rows={6}
+              placeholder="处理结果：记录根因分析、解决方案或结论（支持 Markdown）"
+              style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, boxSizing: 'border-box' }}
+            />
+            <div style={{ marginTop: 4, display: 'flex', gap: 4, alignItems: 'center' }}>
+              <button
+                onClick={() => void saveResult(t)}
+                title="保存处理结果 — 保存修改后的处理结果"
+                aria-label="保存处理结果：保存修改后的处理结果"
+                className="task-op"
+                style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+              >
+                <Save size={13} />
+              </button>
+              <button
+                onClick={() => {
+                  // 放弃未保存修改：清草稿退出编辑态；若曾有已保存录入则留在展开态显示原值（恢复），否则收起空态
+                  setResultDrafts((prev) => {
+                    const next = { ...prev };
+                    delete next[t.id];
+                    return next;
+                  });
+                  if (!t.handle_result) setResultOpen((p) => ({ ...p, [t.id]: false }));
+                }}
+                title="放弃修改 — 放弃未保存的修改并恢复之前已保存的处理结果"
+                aria-label="放弃修改：放弃未保存的修改并恢复之前已保存的处理结果"
+                className="task-op"
+                style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+              >
+                <X size={13} />
+              </button>
+            </div>
+          </div>
+        ) : (
+          // 有值展示 Markdown；无值且展开（理论上按钮点击即进入编辑，此处为收起按钮单独状态兜底）
+          <div style={{ padding: 6 }}>
+            {t.handle_result ? (
+              <MarkdownContent content={t.handle_result} showCopy />
+            ) : (
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>暂无处理结果</span>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   /** AI 梳理结果确认区：草稿可编辑，保存回填 ai_summary 或放弃 */
   function renderTaskDraft(t: Task, draft: string) {
     return (
@@ -1005,12 +1255,9 @@ export function TasksPage() {
         className={`task-item${titleEditing || descEditing ? ' task-editing' : ''}`}
         style={{ borderBottom: '1px solid var(--surface-2)', padding: '6px 0' }}
       >
-        {renderTaskActions(t, titleEditing, descEditing)}
-        {/* 记录时间：悬停才显示（task-op），紧凑格式，创建/编辑并排一行靠右浅灰 */}
-        <div className="task-op" style={{ marginLeft: 32, marginTop: 2, display: 'flex', justifyContent: 'flex-end', gap: 10, fontSize: 11, color: 'var(--text-muted)' }}>
-          <span>{fmtShort(t.created_at)} 创建</span>
-          <span>{fmtShort(t.updated_at)} 编辑</span>
-        </div>
+        {renderTaskTitleRow(t, titleEditing)}
+        {/* 元信息/操作行：优先级/分类/功能按钮 + 记录时间，全部靠右同行 */}
+        {renderTaskMetaRow(t, titleEditing, descEditing)}
         {/* 描述板块：描述展开时，Markdown 正文在上、截图缩略图紧随其后显示在同一容器内 */}
         {descExpanded[t.id] && !descEditing && (t.description || t.images.length > 0) && renderTaskDescView(t)}
         {/* 大图预览独立于查看态条件：编辑态下已打开的预览不因进入编辑而消失 */}
@@ -1018,6 +1265,7 @@ export function TasksPage() {
         {descEditing && renderTaskDescEditor(t, descDraft)}
         {t.ai_summary && !draft && renderTaskSummary(t)}
         {draft && renderTaskDraft(t, draft)}
+        {renderTaskResult(t)}
       </li>
     );
   }
@@ -1095,13 +1343,42 @@ export function TasksPage() {
   function renderToolbar() {
     return (
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <select value={activeProject} onChange={(e) => setActiveProject(e.target.value)} style={{ padding: 6 }}>
+        <select value={activeProject} onChange={(e) => setActiveProject(e.target.value)} style={{ padding: 6 }} aria-label="切换项目">
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
-        <button onClick={() => void createProject()}>+ 新项目</button>
+        <button
+          onClick={() => void createProject()}
+          title="新项目 — 新建一个任务项目"
+          aria-label="新项目：新建一个任务项目"
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}
+        >
+          <FolderPlus size={13} />
+        </button>
+        {/* 删除当前项目：风险操作，点击后弹确认框，确认才执行；危险色标示 */}
+        <button
+          onClick={() => void deleteProject()}
+          disabled={!activeProject}
+          title="删除项目 — 删除当前选中项目及其全部任务（不可恢复，需二次确认）"
+          aria-label="删除项目：删除当前选中项目及其全部任务"
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, color: 'var(--danger)', background: 'transparent', border: '1px solid var(--danger)', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed', opacity: activeProject ? 1 : 0.5 }}
+        >
+          <Trash2 size={13} />
+        </button>
         {renderToolSelector()}
         {renderModelHint()}
         {renderBeautifyToolbarButton()}
+        {/* 一键批量分类：对当前项目全部未分类待办任务做 AI 语义识别自动分类，风格与批量美化按钮一致 */}
+        <button
+          onClick={() => void batchClassify()}
+          disabled={classifyBusy || todo.length === 0}
+          className={classifyBusy ? 'task-breathe' : undefined}
+          title={classifyBusy ? '批量分类进行中…' : 'AI 批量分类 — 对未分类待办任务智能识别自动分到已有分类'}
+          aria-label={classifyBusy ? '批量分类进行中' : 'AI 批量分类：对未分类待办任务自动分类'}
+          style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: classifyBusy ? 'var(--accent)' : 'transparent', color: classifyBusy ? 'var(--accent-text)' : 'var(--text)' }}
+        >
+          <Tags size={13} />
+          {classifyBusy ? '分类中' : '分类'}
+        </button>
         <select
           value={catFilter}
           onChange={(e) => setCatFilter(e.target.value)}

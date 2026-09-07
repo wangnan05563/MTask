@@ -5,6 +5,8 @@ import { TaskImageService, type TaskImageMeta } from './TaskImageService';
 /** DB 原始行：archived 为 number（SQLite 0/1） */
 export interface TaskRow {
   id: string;
+  /** 任务编号：全局唯一 T+5位数字递增，供 AI Agent 通过 MCP 按编号定位任务 */
+  task_no: string | null;
   project_id: string;
   title: string;
   description: string;
@@ -14,6 +16,8 @@ export interface TaskRow {
   archived: number;
   archived_at: string | null;
   ai_summary: string | null;
+  /** 处理结果：AI 分析结论（根因/解决方案）等，由 MCP 或前端编辑写入 */
+  handle_result: string | null;
   pinned: number;
   category_id: string | null;
   created_at: string;
@@ -23,6 +27,7 @@ export interface TaskRow {
 /** 对外输出视图：archived 转为 boolean（API 返回）；images 为截图附件元信息 */
 export interface TaskView {
   id: string;
+  task_no: string | null;
   project_id: string;
   title: string;
   description: string;
@@ -32,6 +37,7 @@ export interface TaskView {
   archived: boolean;
   archived_at: string | null;
   ai_summary: string | null;
+  handle_result: string | null;
   pinned: boolean;
   category_id: string | null;
   created_at: string;
@@ -69,6 +75,19 @@ function now(): string {
   return new Date().toISOString();
 }
 
+/** 分配下一个任务编号：取库中当前最大的 T+数字 序号 +1，包在写事务外由 create 事务整体提交。
+ *  为何自行分配而非 SQLite 自增：task_no 需对外暴露为稳定业务编号（T00001 可读）且删除任务后不复用。 */
+function nextTaskNo(): string {
+  const db = getDb();
+  const rows = db.prepare('SELECT task_no FROM tasks WHERE task_no IS NOT NULL').all() as { task_no: string }[];
+  let max = 0;
+  for (const r of rows) {
+    const m = /^T(\d+)$/.exec(r.task_no);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return `T${String(max + 1).padStart(5, '0')}`;
+}
+
 function rowToTask(r: TaskRow, images: TaskImageMeta[] = []): TaskView {
   return { ...r, verified: Boolean(r.verified), archived: Boolean(r.archived), pinned: Boolean(r.pinned), images };
 }
@@ -80,9 +99,9 @@ export const TaskService = {
     const id = uuid();
     const t = now();
     const r = db.prepare(
-      `INSERT INTO tasks (id, project_id, title, description, priority, status, category_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(id, input.projectId, input.title, input.description ?? '', input.priority ?? 'normal', input.status ?? 'todo', input.categoryId ?? null, t, t);
+      `INSERT INTO tasks (id, task_no, project_id, title, description, priority, status, category_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, nextTaskNo(), input.projectId, input.title, input.description ?? '', input.priority ?? 'normal', input.status ?? 'todo', input.categoryId ?? null, t, t);
     if (r.changes !== 1) throw new Error('创建任务失败');
     return this.getById(id)!;
   },
@@ -90,6 +109,12 @@ export const TaskService = {
   getById(id: string): TaskView | null {
     const row = getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(id) as TaskRow | undefined;
     return row ? rowToTask(row, TaskImageService.listByTask(id)) : null;
+  },
+
+  /** 按编号查找任务：供 AI Agent 通过 MCP 的 taskNo 参数定位。不存在返回 null。 */
+  findByNo(taskNo: string): TaskView | null {
+    const row = getDb().prepare('SELECT * FROM tasks WHERE task_no = ?').get(taskNo) as TaskRow | undefined;
+    return row ? rowToTask(row, TaskImageService.listByTask(row.id)) : null;
   },
 
   /** 按项目/条件列出；archived=false 为活跃列表（待办/已完成由 status 区分）。支持可选分页/搜索/分类/排序 */
@@ -129,7 +154,7 @@ export const TaskService = {
     return rows.map((r) => rowToTask(r, imageMap.get(r.id) ?? []));
   },
 
-  update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'pinned' | 'category_id'>>): TaskView {
+  update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id'>>): TaskView {
     const db = getDb();
     // better-sqlite3 不支持 boolean 绑定且 SQLite 无布尔型，verified/pinned 先归一整型 0/1 再落库
     if (patch.verified !== undefined) {
@@ -177,10 +202,11 @@ export const TaskService = {
     const id = uuid();
     const t = now();
     db.transaction(() => {
+      // 复用生成新 id 但保留原任务编号？不复用：新任务需全局唯一编号，重新分配避免重复
       db.prepare(
-        `INSERT INTO tasks (id, project_id, title, description, priority, status, verified, archived, archived_at, ai_summary, pinned, category_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?)`
-      ).run(id, projectId, src.title, src.description, src.priority, src.status, src.verified, src.ai_summary, src.pinned ? 1 : 0, src.category_id, t, t);
+        `INSERT INTO tasks (id, task_no, project_id, title, description, priority, status, verified, archived, archived_at, ai_summary, handle_result, pinned, category_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)`
+      ).run(id, nextTaskNo(), projectId, src.title, src.description, src.priority, src.status, src.verified, src.ai_summary, src.handle_result, src.pinned ? 1 : 0, src.category_id, t, t);
       // 复制截图：读取原图二进制，为新任务建立相同图片元信息与内容
       const imgs = db.prepare('SELECT mime_type, data FROM task_images WHERE task_id = ?').all(taskId) as { mime_type: string; data: Buffer }[];
       const ins = db.prepare('INSERT INTO task_images (id, task_id, mime_type, data, created_at) VALUES (?, ?, ?, ?, ?)');
@@ -191,7 +217,8 @@ export const TaskService = {
 
   /**
    * 将任务复制为提示词页可复用的结构化资产：把任务核心字段（标题/优先级/状态/描述/AI 摘要）
-   * 打包成单份 JSON 文本写入 prompts 表（资产存储复用现有管理页字段，不新建表/不改架构）。
+   * 拼为单份可读 Markdown 文本写入 prompts 表（资产存储复用现有管理页字段，不新建表/不改架构）。
+   * 不再用 JSON 序列化：JSON 转义/引号/嵌套对用户阅读与直接复用都不友好。
    * 不做自动价值打分——「有价值」由用户在任务页手动确认；仅读取源任务，不改动其归属。
    */
   toPromptAsset(taskId: string, categoryId: string): { id: string; category_id: string; title: string; content: string } {
@@ -199,14 +226,18 @@ export const TaskService = {
     const src = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as TaskRow | undefined;
     if (!src) throw new Error('任务不存在');
     if (!db.prepare('SELECT 1 FROM prompt_categories WHERE id = ?').get(categoryId)) throw new Error('目标提示词分类不存在');
-    // 仅纳入非空字段，避免空描述/空 AI 摘要污染资产的 JSON 结构
-    const body: Record<string, string> = { type: 'task', title: src.title, priority: src.priority, status: src.status };
-    if (src.description) body.description = src.description;
-    if (src.ai_summary) body.ai_summary = src.ai_summary;
+    // 直接组织为可读的纯文本（Markdown 友好），不再 JSON 序列化：
+    // JSON 结构对用户观感差（转义、引号、嵌套），提示词页按 Markdown 渲染 content，
+    // 用「标题 + 分块」的平铺文本既保留完整信息，又方便直接复用/粘贴给 AI。
+    const parts: string[] = [`**任务标题**：${src.title}`];
+    if (src.priority) parts.push(`**优先级**：${src.priority}`);
+    if (src.status) parts.push(`**状态**：${src.status === 'done' ? '已完成' : '待办'}`);
+    if (src.description) parts.push(`**任务描述**：\n${src.description}`);
+    if (src.ai_summary) parts.push(`**AI 梳理摘要**：\n${src.ai_summary}`);
     const id = uuid();
     const t = now();
     db.prepare('INSERT INTO prompts (id, category_id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(id, categoryId, src.title, JSON.stringify(body, null, 2), t, t);
+      .run(id, categoryId, src.title, parts.join('\n\n'), t, t);
     return db.prepare('SELECT id, category_id, title, content FROM prompts WHERE id = ?')
       .get(id) as { id: string; category_id: string; title: string; content: string };
   },

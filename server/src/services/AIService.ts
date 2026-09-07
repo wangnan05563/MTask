@@ -36,6 +36,21 @@ function stripPromptHeading(md: string): string {
 }
 
 /**
+ * 剥离模型输出里的思考过程块。
+ * 部分思考型模型会在 content 里附带“内心推理”，常包裹在 思考/蒂 response-delimited 标记内，
+ * 若直接回填标题会污染标题输入框，因此做确定性兜底去除（不依赖模型是否遵守“只输出标题”的约束）。
+ */
+function stripThinking(text: string): string {
+  // 依次剔除常见思考分界标记的内层（支持 中文/英文 与 反引号 变体），提纯后剩正文
+  // 注：以下均为跨度未知内容的全局正则替换，String#replaceAll 只能按字面字符串替换无法表达通配，属 S7781 误报
+  return text
+    .replace(/\s*```\s*(?:thinking|reasoning|thought)\s*[\s\S]*?```\s*/gi, '') // NOSONAR - 通配跨行正则，无法用 replaceAll
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '') // NOSONAR - 通配跨行正则，无法用 replaceAll
+    .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '') // NOSONAR - 通配跨行正则，无法用 replaceAll
+    .trim();
+}
+
+/**
  * FR2 协助整理 与 FR4 队列分发的 AI 调用层。
  * 梳理结果回填 ai_summary（用户确认后保存）；分发结果仅保存文本（待人工合并）。
  */
@@ -111,8 +126,9 @@ export const AIService = {
       '3. 输出统一使用简体中文（简体字），严禁任何繁体字',
     ].join('\n');
     const res = await adapter.chat(system, `【任务标题】${title}`, config);
-    // 兜底折叠换行/多余空白并去除首尾空格，确保回填为标题时是干净的单行文本
-    if (res.ok && res.content) res.content = res.content.replaceAll(/\s+/g, ' ').trim();
+    // 先剥离思考过程（部分思考型模型会附带内心推理），再折叠空白为单行干净标题，
+    // 确保回填标题输入框时不会污染（双保险，不依赖模型是否遵守“只输出标题”约束）
+    if (res.ok && res.content) res.content = stripThinking(res.content).replaceAll(/\s+/g, ' ').trim();
     return res;
   },
 

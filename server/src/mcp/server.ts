@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { McpServer, type CallToolResult } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { getDb } from '../db/connection';
+import { getDefaultNoteProjectId } from '../services/AppSettings';
 import { TaskService } from '../services/TaskService';
 import { ArchiveService } from '../services/ArchiveService';
 import {
@@ -33,6 +34,21 @@ const json = (d: unknown) => JSON.stringify(d, null, 2);
 const PERIODS = ['day', 'week', 'month'] as const;
 const FORMATS = ['xlsx', 'docx', 'pdf', 'pptx'] as const;
 
+/**
+ * 按 id 或 taskNo 解析任务：二选一必传。
+ * 返回 null 表示既未提供定位参数，也代表参数提供但任务不存在（调用方据文案区分）。
+ */
+function resolveTask({ id, taskNo }: { id?: string; taskNo?: string }) {
+  if (id) return TaskService.getById(id);
+  if (taskNo) return TaskService.findByNo(taskNo);
+  return null;
+}
+
+/** 任务定位参数的缺省提示（缺失时返回错误信息） */
+function taskLocateError(): string {
+  return 'id 与 taskNo 至少提供一个；id 为任务内部 id，taskNo 为任务编号（如 T00001）';
+}
+
 /** 创建 MCP server 并注册全部工具 */
 export async function createMCPServer(): Promise<McpServer> {
   const server = new McpServer({ name: 'mtask', version: '1.0.0' });
@@ -52,7 +68,7 @@ export async function createMCPServer(): Promise<McpServer> {
     title: '创建任务',
     description: '在指定项目下新建任务；projectId 缺省时落到默认记事项目。title 必填。',
     inputSchema: {
-      projectId: z.string().describe('目标项目 id，缺省用默认记事项目'),
+      projectId: z.string().optional().describe('目标项目 id，缺省用默认记事项目'),
       title: z.string().describe('任务标题（必填）'),
       description: z.string().optional().describe('任务描述'),
       priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('优先级'),
@@ -63,8 +79,13 @@ export async function createMCPServer(): Promise<McpServer> {
     try {
       // 可选链：title 为空时 ?. 短路返回 undefined，与原「判空 || trim 判空」逻辑等价
       if (!a.title?.trim()) return err('title 必填');
+      // projectId 缺省落「默认记事项目」：用户设置优先，否则收件箱系统项目；与 REST /tasks 行为保持一致
+      const pid = a.projectId?.trim() || getDefaultNoteProjectId();
+      if (!getDb().prepare('SELECT 1 FROM projects WHERE id = ?').get(pid)) {
+        return err(`归属项目不存在：${pid}`);
+      }
       const task = TaskService.create({
-        projectId: a.projectId,
+        projectId: pid,
         title: a.title,
         description: a.description,
         priority: a.priority,
@@ -77,9 +98,10 @@ export async function createMCPServer(): Promise<McpServer> {
 
   server.registerTool('mtask_update_task', {
     title: '更新任务',
-    description: '按 id 更新任务字段（title/description/priority/status/verified/pinned/categoryId）；未提供的字段保持不变。',
+    description: '按 id 或任务编号 taskNo 更新任务字段（title/description/priority/status/verified/pinned/categoryId）；未提供的字段保持不变。',
     inputSchema: {
-      id: z.string().describe('任务 id（必填）'),
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
       title: z.string().optional(),
       description: z.string().optional(),
       priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
@@ -90,7 +112,9 @@ export async function createMCPServer(): Promise<McpServer> {
     },
   }, async (a) => {
     try {
-      const task = TaskService.update(a.id, {
+      const target = resolveTask(a);
+      if (!target) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
+      const task = TaskService.update(target.id, {
         title: a.title, description: a.description, priority: a.priority,
         status: a.status, verified: a.verified, pinned: a.pinned, category_id: a.categoryId,
       });
@@ -100,28 +124,57 @@ export async function createMCPServer(): Promise<McpServer> {
 
   server.registerTool('mtask_list_tasks', {
     title: '列出任务',
-    description: '按项目/归档态列出任务；projectId 为空列出全部项目。',
+    description: '按项目/归档态列出任务；projectId 或 projectName 二者可选其一过滤项目，都不传则列出全部项目。',
     inputSchema: {
       projectId: z.string().optional().describe('项目 id，缺省列出全部项目任务'),
+      projectName: z.string().optional().describe('项目名称（如 MTask/wiki/xianyu），按名称解析为项目 id 过滤，与 projectId 二选一'),
       archived: z.boolean().optional().default(false).describe('是否列出已归档任务'),
     },
   }, async (a) => {
     try {
+      // AI Agent 更习惯直接给项目名称而非 UUID：projectName 存在时先解析成 project_id 再过滤
+      let pid = a.projectId;
+      if (!pid && a.projectName?.trim()) {
+        const p = getDb().prepare('SELECT id FROM projects WHERE name = ? ORDER BY sort_weight, created_at LIMIT 1').get(a.projectName.trim()) as { id: string } | undefined;
+        if (!p) return err(`项目不存在：${a.projectName}`);
+        pid = p.id;
+      }
       // list 已重构为单一选项对象签名（支持分页/搜索/分类/排序）
-      const tasks = TaskService.list({ projectId: a.projectId, archived: a.archived ?? false });
+      const tasks = TaskService.list({ projectId: pid, archived: a.archived ?? false });
       return ok(json(tasks), { tasks });
     } catch (e) { return err((e as Error).message); }
   });
 
   server.registerTool('mtask_get_task', {
     title: '查询任务',
-    description: '按 id 返回单个任务详情（含截图元信息）。不存在返回错误。',
-    inputSchema: { id: z.string().describe('任务 id') },
+    description: '按 id 或任务编号 taskNo 返回单个任务详情（含 task_no 与截图元信息）。不存在返回错误。',
+    inputSchema: {
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
+    },
   }, async (a) => {
     try {
-      const task = TaskService.getById(a.id);
-      if (!task) return err(`任务不存在：${a.id}`);
+      const task = resolveTask(a);
+      if (!task) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
       return ok(json(task), { task });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_update_task_result', {
+    title: '同步任务处理结果',
+    description: '把 AI 总结的根因分析与解决方案等结论写入指定任务的「处理结果」字段（Markdown 文本）。按 id 或任务编号 taskNo 定位。适合在排查结束后将结论回写到 MTask 对应任务，供用户在任务「处理结果」区块查看/编辑。',
+    inputSchema: {
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一），来自 mtask_list_tasks / mtask_get_task 的 id'),
+      taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
+      result: z.string().describe('处理结果正文（Markdown）：根因分析、解决方案、验证结论等'),
+    },
+  }, async (a) => {
+    try {
+      const target = resolveTask(a);
+      if (!target) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
+      if (!a.result) return err('result 必填');
+      const task = TaskService.update(target.id, { handle_result: a.result });
+      return ok(`已同步处理结果到任务 ${target.task_no ?? target.id}`, { task });
     } catch (e) { return err((e as Error).message); }
   });
 
@@ -173,6 +226,8 @@ export async function createMCPServer(): Promise<McpServer> {
     inputSchema: { name: z.string().describe('分类名称'), description: z.string().optional().describe('分类说明') },
   }, async (a) => {
     try {
+      // 与 create_task 一致：空名 trim 判空，拒绝生成空名分类
+      if (!a.name?.trim()) return err('name 必填');
       const id = randomUUID();
       const t = new Date().toISOString();
       getDb().prepare('INSERT INTO prompt_categories (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
@@ -213,6 +268,8 @@ export async function createMCPServer(): Promise<McpServer> {
     },
   }, async (a) => {
     try {
+      // 与 create_task 一致：title 判空，拒绝空标题提示词
+      if (!a.title?.trim()) return err('title 必填');
       const id = randomUUID();
       const t = new Date().toISOString();
       getDb().prepare('INSERT INTO prompts (id, category_id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')

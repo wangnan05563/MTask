@@ -128,7 +128,19 @@ if errorlevel 1 (
     exit /b 1
 )
 
-call npx electron-builder --win
+REM Clean up a stale unpack dir so electron-builder can unpack into a clean tree.
+REM Without this EnsureEmptyDir fails when a leftover file is held open by Explorer/antivirus.
+set  "OUTDIR=release"
+if exist "release\win-unpacked" (
+    powershell -NoProfile -Command "try{[IO.Directory]::Delete('%CD%\release\win-unpacked',$true);exit 0}catch{exit 1}" >nul 2>&1
+    if errorlevel 1 (
+        echo   [WARN] release\win-unpacked still in use, packaging into release2 to bypass the lock.
+        set  "OUTDIR=release2"
+    )
+)
+REM disable publish so CI-detected electron-builder does not try to push to GitHub
+REM (would otherwise fail with "GH_TOKEN is not set" after the artifact is fully built)
+call npx electron-builder --win --config.directories.output=%OUTDIR% --publish=never
 if errorlevel 1 (
     echo [ERROR] electron-builder failed
     pause

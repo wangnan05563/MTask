@@ -12,7 +12,7 @@
  * 运行前提：server/ 与 web/ 依赖已安装、web 已构建（scripts\构建打包.bat）。
  */
 
-const { app, BrowserWindow, protocol, shell } = require('electron');
+const { app, BrowserWindow, Menu, protocol, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const http = require('node:http');
@@ -26,6 +26,20 @@ const VITE_PORT = 5175;
 // 允许用 MTask_PORT 显式覆盖（开发/打包均生效），打包态默认 39877。
 let SERVER_PORT = Number(process.env.MTask_PORT ?? (app.isPackaged ? 39877 : 39876));
 const SERVER_HOST = '127.0.0.1';
+
+// 单实例锁：应用持有唯一用户数据目录（%APPDATA%\MTask\data）。多个实例并发打开并写入
+// 同一 SQLite 库时，Windows 文件锁偶发触发 SQLITE_IOERR_TRUNCATE 崩溃（表现即「后端未连接」）。
+// 同一时间只保留一个实例，从源头避免并发写同一数据库文件。
+if (app.requestSingleInstanceLock()) {
+  app.on('second-instance', () => {
+    if (mainWin) {
+      if (mainWin.isMinimized()) mainWin.restore();
+      mainWin.focus();
+    }
+  });
+} else {
+  app.quit();
+}
 
 let serverProc = null;
 let splashWin = null;
@@ -324,30 +338,55 @@ function stopTicker() {
 // 打包态回退端口：首位默认/覆盖端口被占时依次尝试这些高位端口，保证不与外部/旧实例抢占。
 const PACKED_FALLBACK_PORTS = [39882, 39883, 39884, 39885];
 
-/** 终止并清空上一轮尝试残留的后端子进程。
+/** 终止并清空上一轮尝试残留的后端子进程，等其真正退出后再返回。
  *  kill 失败仅告警不阻断：多因进程恰好自行退出或句柄失效，已无进一步手段，
- *  留日志便于定位"端口仍被占用"一类残留问题。 */
+ *  留日志便于定位"端口仍被占用"一类残留问题。
+ *  为什么要等退出而不是立刻放行：被杀的进程可能仍持有 SQLite 数据库文件句柄
+ *  （WAL 的 -shm/-wal 也在被占用），旧句柄未释放就启动新后端，新进程打开同一
+ *  数据库会抛 SQLITE_IOERR_TRUNCATE 崩溃，UI 表现即"后端未连接"。 */
 function stopStaleServerProc() {
-  if (!serverProc) return;
-  try {
-    serverProc.kill();
-  } catch (err) {
-    console.warn('[mtask] 终止旧后端子进程失败:', err.message);
-  }
+  if (!serverProc) return Promise.resolve();
+  const proc = serverProc;
   serverProc = null;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(force);
+      clearTimeout(escalate);
+      resolve();
+    };
+    // 3s 内未自然退出则升级强杀；兜底 6s 无论如何放行，避免卡死启动流程
+    const escalate = setTimeout(() => {
+      try { proc.kill('SIGKILL'); } catch (err) {
+        console.warn('[mtask] SIGKILL 强杀旧后端子进程失败:', err.message);
+      }
+    }, 3000);
+    const force = setTimeout(finish, 6000);
+    if (proc.exitCode !== null || proc.signalCode !== null) { finish(); return; }
+    proc.once('exit', finish);
+    try {
+      proc.kill();
+    } catch (err) {
+      // 优雅终止失败（进程可能已退出）：记录原因后直接放行
+      console.warn('[mtask] 终止旧后端子进程失败:', err.message);
+      finish();
+    }
+  });
 }
 
 /** 在单个候选端口上尝试自起并验证后端；成功返回 true。
  *  端口被占时我们拉起的子进程会因 EADDRINUSE 立即退出，据此判定并换下一个端口。 */
 async function tryStartOnPort(port) {
   SERVER_PORT = port;
-  stopStaleServerProc();
+  await stopStaleServerProc();
   startServer();
   let exited = false;
   serverProc.once('exit', () => { exited = true; });
   // 留一个短窗口让 EADDRINUSE 导致的退出显现，避免把“被占端口误判为自起成功”
   await new Promise((r) => setTimeout(r, 300));
-  if (exited) { stopStaleServerProc(); return false; } // 我们拉起的进程已退出 -> 端口被占
+  if (exited) { await stopStaleServerProc(); return false; } // 我们拉起的进程已退出 -> 端口被占
   try {
     await waitForServer(30);
     // 二次确认：探到健康的是“我们自起的进程”而非他人占用的端口，
@@ -357,7 +396,7 @@ async function tryStartOnPort(port) {
     // 该端口未探到健康服务——换下一个候选端口
   }
   // 本次端口未成功：清理仍存活的子进程，避免残留进程占用端口
-  stopStaleServerProc();
+  await stopStaleServerProc();
   return false;
 }
 
@@ -461,6 +500,21 @@ app.whenReady().then(async () => { // NOSONAR - S7785 顶层 await 在 CommonJS 
   mainWin.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
+  });
+
+  // 全局右键菜单（webContents 级监听，覆盖 SPA 内所有页面）：
+  // 选中文字时弹「复制」（含输入框内的选中场景）；可编辑且未选中时弹「粘贴」；其余场景不弹菜单。
+  // Electron 不像浏览器自带右键菜单，必须显式构建，否则选取文字后无法右键复制。
+  mainWin.webContents.on('context-menu', (_event, params) => {
+    const template = [];
+    if (params.selectionText?.trim()) {
+      template.push({ label: '复制', role: 'copy' });
+    }
+    if (params.isEditable) {
+      if (template.length) template.push({ type: 'separator' });
+      template.push({ label: '粘贴', role: 'paste' });
+    }
+    if (template.length) Menu.buildFromTemplate(template).popup({ window: mainWin });
   });
 
   // 界面资源加载完成 → 进入 80% 阶段；两端就绪即可收尾

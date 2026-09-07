@@ -52,6 +52,13 @@ function accessTokenGuard(req: express.Request, res: express.Response, next: exp
     next();
     return;
   }
+  // 健康检查放行：仅返回存活状态，无敏感数据。Electron 主进程/运维探针探测后端存活
+  // 时不携带 X-Access-Token（否则 401 被误判为"后端未就绪"，触发杀子进程+换端口循环，
+  // 表现即"后端未连接"）。真实数据接口不受影响。
+  if (req.path === '/health') {
+    next();
+    return;
+  }
   const token = loadTunnelConfig().accessToken;
   if (token && req.headers['x-access-token'] !== token) {
     res.status(401).json({ error: 'unauthorized' });

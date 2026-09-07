@@ -45,7 +45,8 @@ const waitReady = async (timeoutMs = 25000) => {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      const r = await fetch(`http://127.0.0.1:${PORT}/api/health`);
+      const h = TOKEN ? { 'X-Access-Token': TOKEN } : undefined;
+      const r = await fetch(`http://127.0.0.1:${PORT}/api/health`, { headers: h });
       if (r.ok) return true;
     } catch { /* 服务未就绪，重试 */ }
     await sleep(500);
@@ -64,8 +65,10 @@ try {
     console.log('--- end ---');
     throw new Error('server did not become ready');
   }
+  // 默认跑轻量冒烟 mcp-smoke.mjs；可用 --script 指定其它客户端脚本（如 mcp-full-test.mjs）
+  const script = arg('script') ?? `${ROOT}/server/scripts/mcp-smoke.mjs`;
   const smokeArgs = [TOKEN ? ['--url', URL, '--token', TOKEN] : ['--url', URL]].flat();
-  const smoke = spawn(NODE, [`${ROOT}/server/scripts/mcp-smoke.mjs`, ...smokeArgs], { stdio: 'inherit', shell: false });
+  const smoke = spawn(NODE, [script, ...smokeArgs], { stdio: 'inherit', shell: false });
   code = await new Promise((resolve) => smoke.on('exit', (c) => resolve(c ?? 1)));
 } catch (e) {
   console.error('[mcp-run] error:', e.message);

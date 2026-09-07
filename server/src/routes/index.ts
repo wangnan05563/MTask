@@ -9,6 +9,7 @@ import { TaskImageService } from '../services/TaskImageService';
 import { TaskCategoryService } from '../services/TaskCategoryService';
 import { exportBundle, importBundle } from '../services/SettingsService';
 import { getDefaultNoteProjectId, INBOX_PROJECT_ID, setSetting } from '../services/AppSettings';
+import { getConfig as getUpdateConfig, saveConfig as saveUpdateConfig, testConfig as testUpdateConfig, checkUpdate, currentVersion as currentAppVersion } from '../services/UpdateService';
 import { logService } from '../services/LogService';
 import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, gatherReportData, type ReportPeriod } from '../services/ReportService';
 import { Buffer } from 'node:buffer';
@@ -71,6 +72,11 @@ api.patch('/projects/:id', (req, res) => {
 });
 
 api.delete('/projects/:id', (req, res) => {
+  // 系统收件箱是移动端随手记的默认归属（schema 启动时种子，非用户创建）：
+  // 运行中删除会让 getDefaultNoteProjectId 回退到已不存在的 id，随手记落库直接失败，故禁止删除
+  if (req.params.id === INBOX_PROJECT_ID) {
+    return res.status(400).json({ error: '系统收件箱项目不可删除' });
+  }
   getDb().prepare('DELETE FROM projects WHERE id = ?').run(req.params.id); // 级联删任务
   cacheClear('projects');
   res.status(204).end();
@@ -96,6 +102,13 @@ api.get('/tasks', (req, res) => {
   }));
 });
 
+// 按任务编号查询单个任务：AI Agent / 前端凭 task_no 定位（编号全局唯一）
+api.get('/tasks/by-no/:taskNo', (req, res) => {
+  const task = TaskService.findByNo(req.params.taskNo);
+  if (!task) return res.status(404).json({ error: `任务「${req.params.taskNo}」不存在` });
+  res.json(task);
+});
+
 api.post('/tasks', (req, res) => {
   const { projectId, title, description, priority, status, categoryId } = req.body ?? {};
   if (!title || typeof title !== 'string' || !title.trim()) return res.status(400).json({ error: 'title 必填' });
@@ -110,8 +123,8 @@ api.post('/tasks', (req, res) => {
 });
 
 api.patch('/tasks/:id', (req, res) => {
-  const { title, description, priority, status, verified, aiSummary, pinned, categoryId } = req.body ?? {};
-  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, pinned, category_id: categoryId }));
+  const { title, description, priority, status, verified, aiSummary, handleResult, pinned, categoryId } = req.body ?? {};
+  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId }));
 });
 
 api.post('/tasks/move', (req, res) => {
@@ -707,6 +720,48 @@ api.post('/settings/import', (req, res) => {
   }
   try {
     res.json(importBundle(data, mode));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---------- 版本更新（关于页）：GitHub Releases 检测最新版本 ----------
+// 当前运行版本：回显关于页真实版本（与 package.json 一致），不依赖仓库配置，仅供展示
+api.get('/update/version', (_req, res) => {
+  res.json({ version: currentAppVersion() });
+});
+
+// 配置读取：token 绝不回传明文，只回「是否已配置 + 掩码」
+api.get('/update/config', (_req, res) => {
+  res.json(getUpdateConfig());
+});
+
+// 配置保存：repo 必填且规范化为 owner/repo；token 可选（undefined=不改动，空串=清除）
+api.post('/update/config', (req, res) => {
+  const { repo, token } = req.body ?? {};
+  if (repo !== undefined && (typeof repo !== 'string' || !repo.trim())) {
+    return res.status(400).json({ error: '仓库地址非法：请填「owner/repo」或 GitHub 仓库完整 URL' });
+  }
+  if (token !== undefined && typeof token !== 'string') return res.status(400).json({ error: 'token 非法' });
+  try {
+    res.json(saveUpdateConfig({ repo, token }));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// 连通性测试：用表单未保存的草稿配置拉一次 releases/latest（不落库），返回最新版本号或错误
+api.post('/update/test', async (req, res) => {
+  const { repo, token } = req.body ?? {};
+  if (typeof repo !== 'string') return res.status(400).json({ error: 'repo 必填' });
+  res.json(await testUpdateConfig({ repo, token }));
+});
+
+// 检查更新：与当前版本比较，返回是否可更新 + 最新版本 + 更新日志 + 下载地址；带 5 分钟缓存
+api.post('/update/check', async (req, res) => {
+  const force = Boolean(req.body?.force);
+  try {
+    res.json(await checkUpdate(force));
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }

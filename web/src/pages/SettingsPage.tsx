@@ -2,15 +2,16 @@ import { useEffect, useRef, useState } from 'react';
 import { api, type TaskCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { FONT_OPTIONS, FONT_SIZE_OPTIONS, useSettings, type ImportMode } from '../settings';
-import { Download, FileUp, FolderPlus, Info, Moon, Pencil, Save, Settings, Sun, Trash2 } from 'lucide-react';
+import { Download, ExternalLink, FileUp, FolderPlus, Info, Moon, Pencil, RefreshCw, Save, Settings, ShieldCheck, Sun, Trash2 } from 'lucide-react';
 import { TunnelPanel } from './TunnelPanel';
+import { HelpTab } from './HelpTab';
 
 /** 应用信息（与根 package.json 保持一致） */
 const APP_NAME = 'MTask';
 const APP_VERSION = '0.1.0';
 const APP_DESC = 'AI 任务开发管理工具：项目维度任务管理 + AI 梳理 + 队列分发。';
 
-type STab = 'general' | 'migration' | 'categories' | 'tunnel' | 'about';
+type STab = 'general' | 'migration' | 'categories' | 'tunnel' | 'help' | 'about';
 
 /** 导入策略文案映射：显式枚举映射替代嵌套三元，新增策略时只需补一行 */
 const IMPORT_MODE_LABELS: Record<ImportMode, string> = { merge: '合并', keep: '保留', overwrite: '覆盖' };
@@ -20,6 +21,7 @@ const SUB_TABS: { key: STab; label: string }[] = [
   { key: 'migration', label: '数据迁移' },
   { key: 'categories', label: '任务分类' },
   { key: 'tunnel', label: '内网穿透' },
+  { key: 'help', label: '帮助文档' },
   { key: 'about', label: '关于' },
 ];
 
@@ -28,7 +30,7 @@ export function SettingsPage() {
   const [st, setSt] = useState<STab>('general');
   return (
     <section>
-      <nav style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
+      <nav style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 12 }}>
         {SUB_TABS.map((t) => (
           <button
             key={t.key}
@@ -51,6 +53,7 @@ export function SettingsPage() {
       {st === 'migration' && <MigrationTab />}
       {st === 'categories' && <CategoriesTab />}
       {st === 'tunnel' && <TunnelPanel />}
+      {st === 'help' && <HelpTab />}
       {st === 'about' && <AboutTab />}
     </section>
   );
@@ -320,8 +323,20 @@ function MigrationTab() {
   );
 }
 
-/** 关于：应用信息、团队与开源协议 */
+/** 关于：应用信息、版本更新（GitHub Releases 自动检测）、团队与开源协议 */
 function AboutTab() {
+  const [version, setVersion] = useState(APP_VERSION);
+
+  // 回显真实版本：从后端 /update/version 读取（与 package.json 一致），失败回退编译期常量
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await api.get<{ version: string }>('/update/version');
+        if (r.version && r.version !== '0.0.0') setVersion(r.version);
+      } catch { /* 接口异常时保留编译期常量，不影响页面展示 */ }
+    })();
+  }, []);
+
   return (
     <div style={{ maxWidth: 520 }}>
       <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}><Info size={14} /> 关于</div>
@@ -329,7 +344,7 @@ function AboutTab() {
         <div style={{ fontSize: 18, fontWeight: 600 }}>{APP_NAME}</div>
         <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginTop: 4 }}>{APP_DESC}</div>
         <div style={{ marginTop: 10, display: 'grid', gap: 4, fontSize: 'var(--fs-m)' }}>
-          <div>版本：v{APP_VERSION}</div>
+          <div>版本：v{version}</div>
           <div>开发者：MTask 开发团队</div>
           <div>技术栈：Electron · React · Express · SQLite</div>
         </div>
@@ -339,6 +354,195 @@ function AboutTab() {
           <span>如有问题与建议，请在项目仓库提交 Issue。</span>
         </div>
       </div>
+
+      {/* 版本更新模块：GitHub 仓库配置 + 自动检测最新 Release */}
+      <UpdateSection />
+    </div>
+  );
+}
+
+/** 版本更新接口返回结构（与后端 UpdateService.checkUpdate 对齐） */
+interface UpdateCheckInfo {
+  currentVersion: string;
+  latestVersion: string;
+  hasUpdate: boolean;
+  releaseName: string;
+  releaseUrl: string;
+  publishedAt: string;
+  downloadUrl: string;
+  changelog: string;
+}
+
+interface UpdateConfigView {
+  repo: string;
+  tokenConfigured: boolean;
+  tokenMasked: string;
+}
+
+/** 版本更新模块：仓库地址 + 可选 Token 配置（加密存储、不回显明文），一键检测 GitHub 最新 Release */
+function UpdateSection() {
+  const [cfg, setCfg] = useState<UpdateConfigView>({ repo: '', tokenConfigured: false, tokenMasked: '' });
+  const [repoDraft, setRepoDraft] = useState('');
+  const [tokenDraft, setTokenDraft] = useState('');
+  const [busy, setBusy] = useState<'save' | 'test' | 'check' | null>(null);
+  const [notice, setNotice] = useState('');
+  const [result, setResult] = useState<UpdateCheckInfo | null>(null);
+
+  const flash = (msg: string) => {
+    setNotice(msg);
+    setTimeout(() => setNotice(''), 5000);
+  };
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const c = await api.get<UpdateConfigView>('/update/config');
+        setCfg(c);
+        setRepoDraft(c.repo);
+      } catch { /* 配置读取失败不阻塞页面，检查更新时会有明确提示 */ }
+    })();
+  }, []);
+
+  /** 保存配置：token 留空=不改动已保存值；填入新值=覆盖；私有仓库才需要 Token */
+  async function doSave() {
+    try {
+      setBusy('save');
+      const body: Record<string, string> = { repo: repoDraft };
+      if (tokenDraft.trim()) body.token = tokenDraft.trim();
+      const c = await api.post<UpdateConfigView>('/update/config', body);
+      setCfg(c);
+      setRepoDraft(c.repo);
+      setTokenDraft('');
+      flash('配置已保存');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** 连通性测试：用当前表单草稿验证仓库可达（不落库），保存前建议先测试 */
+  async function doTest() {
+    try {
+      setBusy('test');
+      const r = await api.post<{ ok: boolean; latestVersion?: string; error?: string }>('/update/test', { repo: repoDraft, token: tokenDraft || undefined });
+      flash(r.ok ? `连接成功，最新 Release 版本：v${r.latestVersion}` : `连接失败：${r.error ?? '未知错误'}`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** 检查更新：与当前版本比较，展示最新版本、更新日志与下载入口 */
+  async function doCheck() {
+    try {
+      setBusy('check');
+      setResult(null);
+      const r = await api.post<UpdateCheckInfo>('/update/check', { force: true });
+      setResult(r);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const inputStyle: React.CSSProperties = {
+    flex: 1, minWidth: 0, fontSize: 'var(--fs-m)', padding: '6px 10px',
+    border: '1px solid var(--border-strong)', borderRadius: 6,
+    background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box',
+  };
+  const btnStyle = (primary: boolean): React.CSSProperties => ({
+    fontSize: 'var(--fs-m)', padding: '6px 14px', borderRadius: 6, cursor: 'pointer',
+    whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4,
+    background: primary ? 'var(--accent)' : 'var(--card-bg)',
+    color: primary ? 'var(--accent-text)' : 'var(--text)',
+    border: primary ? 'none' : '1px solid var(--border-strong)',
+  });
+
+  return (
+    <div style={{ marginTop: 14, padding: 16, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)' }}>
+      <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}><RefreshCw size={14} /> 版本更新</div>
+      <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginTop: 4 }}>
+        通过 GitHub Releases 自动检测新版本。公开仓库无需认证；私有仓库请配置具有读取权限的 Token（加密存储，不会回显明文）。
+      </div>
+
+      {/* 仓库地址 */}
+      <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <label style={{ fontSize: 'var(--fs-m)', whiteSpace: 'nowrap' }} htmlFor="update-repo">仓库地址</label>
+        <input
+          id="update-repo"
+          value={repoDraft}
+          onChange={(e) => setRepoDraft(e.target.value)}
+          placeholder="owner/repo 或 https://github.com/owner/repo"
+          style={inputStyle}
+        />
+      </div>
+      {/* 认证凭据（可选）：password 型避免旁观泄露；已配置时 placeholder 展示掩码 */}
+      <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <label style={{ fontSize: 'var(--fs-m)', whiteSpace: 'nowrap' }} htmlFor="update-token">访问令牌</label>
+        <input
+          id="update-token"
+          type="password"
+          value={tokenDraft}
+          onChange={(e) => setTokenDraft(e.target.value)}
+          placeholder={cfg.tokenConfigured ? `已配置（${cfg.tokenMasked}），留空表示不修改` : '可选：私有仓库填 GitHub Token（公开仓库留空）'}
+          style={inputStyle}
+          autoComplete="new-password"
+        />
+      </div>
+
+      <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button onClick={() => void doSave()} disabled={busy !== null || !repoDraft.trim()} title="保存配置 — 保存仓库地址与访问令牌" aria-label="保存更新配置" style={btnStyle(true)}>
+          <Save size={13} /> {busy === 'save' ? '保存中…' : '保存配置'}
+        </button>
+        <button onClick={() => void doTest()} disabled={busy !== null || !repoDraft.trim()} title="测试连接 — 验证仓库可达并读取最新 Release 版本号" aria-label="测试 GitHub 连接" style={btnStyle(false)}>
+          <ShieldCheck size={13} /> {busy === 'test' ? '测试中…' : '测试连接'}
+        </button>
+        <button onClick={() => void doCheck()} disabled={busy !== null} title="检查更新 — 拉取 GitHub 最新 Release 并与当前版本比较" aria-label="检查更新" style={btnStyle(false)}>
+          <RefreshCw size={13} /> {busy === 'check' ? '检查中…' : '检查更新'}
+        </button>
+      </div>
+
+      {/* 检查结果卡片 */}
+      {result && (
+        <div style={{
+          marginTop: 12, padding: 12, borderRadius: 6, fontSize: 'var(--fs-m)',
+          border: `1px solid ${result.hasUpdate ? 'var(--success, #2e7d32)' : 'var(--border)'}`,
+          background: result.hasUpdate ? 'rgba(46, 125, 50, 0.06)' : 'transparent',
+        }}>
+          {result.hasUpdate ? (
+            <>
+              <div style={{ fontWeight: 600 }}>
+                发现新版本：v{result.latestVersion}（当前 v{result.currentVersion}）
+              </div>
+              {result.publishedAt && (
+                <div style={{ color: 'var(--text-secondary)', marginTop: 4 }}>
+                  发布时间：{result.publishedAt.slice(0, 10)}
+                </div>
+              )}
+              {result.changelog && (
+                <div style={{ marginTop: 8, whiteSpace: 'pre-wrap', color: 'var(--text-secondary)', maxHeight: 220, overflowY: 'auto', lineHeight: 1.6 }}>
+                  {result.changelog}
+                </div>
+              )}
+              <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button onClick={() => window.open(result.downloadUrl, '_blank')} title="下载安装包 — 打开最新 Windows 安装包下载地址" aria-label="下载最新安装包" style={btnStyle(true)}>
+                  <Download size={13} /> 下载新版本
+                </button>
+                <button onClick={() => window.open(result.releaseUrl, '_blank')} title="查看 Release 页 — 浏览完整更新说明与历史版本" aria-label="查看 Release 页面" style={btnStyle(false)}>
+                  <ExternalLink size={13} /> 查看发布页
+                </button>
+              </div>
+            </>
+          ) : (
+            <div>当前已是最新版本：v{result.currentVersion}（远端最新 v{result.latestVersion}）</div>
+          )}
+        </div>
+      )}
+
+      {notice && <div style={{ marginTop: 8, fontSize: 'var(--fs-m)', color: 'var(--accent)' }}>{notice}</div>}
     </div>
   );
 }

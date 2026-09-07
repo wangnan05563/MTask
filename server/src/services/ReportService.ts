@@ -20,6 +20,8 @@ export interface ReportTaskRow {
   category: string;
   updatedAt: string;
   summary: string;
+  /** 任务「处理结果」：AI 回传的根因/方案/验证结论，供经验教训类分析提炼复用 */
+  handleResult: string;
 }
 
 export interface ReportProject {
@@ -116,6 +118,7 @@ interface TaskRow {
   verified: number;
   updated_at: string;
   ai_summary: string | null;
+  handle_result: string | null;
   category: string | null;
 }
 
@@ -129,7 +132,7 @@ export function gatherReportData(period: ReportPeriod, projectId?: string): Repo
   const params = projectId ? [s, e, projectId] : [s, e];
   const rows = db
     .prepare(
-      `SELECT t.id, t.title, t.priority, t.status, t.verified, t.updated_at, t.ai_summary, t.category_id,
+      `SELECT t.id, t.title, t.priority, t.status, t.verified, t.updated_at, t.ai_summary, t.handle_result, t.category_id,
               p.name AS project, c.name AS category
        FROM tasks t
        JOIN projects p ON p.id = t.project_id
@@ -161,6 +164,8 @@ export function gatherReportData(period: ReportPeriod, projectId?: string): Repo
       category: r.category ?? '',
       updatedAt: r.updated_at,
       summary: r.ai_summary ?? '',
+      // 处理结果通常较长，注入时截断到 600 字内防止 prompt 长度失控，同时保留提炼所需核心信息
+      handleResult: (r.handle_result ?? '').slice(0, 600),
     };
   });
 

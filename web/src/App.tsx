@@ -17,10 +17,10 @@ type Tab = 'tasks' | 'aitools' | 'prompts' | 'queue' | 'archive' | 'report' | 's
 
 const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: 'tasks', label: '任务', icon: ListTodo },
-  { key: 'aitools', label: '模型管理', icon: Boxes },
-  { key: 'prompts', label: '提示词管理', icon: ScrollText },
-  { key: 'queue', label: '队列', icon: ListOrdered },
+  { key: 'aitools', label: '模型', icon: Boxes },
+  { key: 'prompts', label: '提示词', icon: ScrollText },
   { key: 'report', label: '周报', icon: BarChart3 },
+  { key: 'queue', label: '队列', icon: ListOrdered },
   { key: 'archive', label: '归档', icon: Archive },
   { key: 'logs', label: '日志', icon: Terminal },
   { key: 'settings', label: '设置', icon: Settings },
@@ -59,8 +59,11 @@ function Shell() {
     <div
       style={{
         fontFamily: 'var(--font-family)',
-        maxWidth: 1080,
+        // 自适应尽量占满屏幕：width:100% 让小屏贴合，上限 1600px 让大屏充分铺展避免原 1080 固定宽度造成两侧大块空白
+        width: '100%',
+        maxWidth: 1600,
         margin: '0 auto',
+        boxSizing: 'border-box',
         padding: '0 16px 40px',
         background: 'var(--app-bg)',
         color: 'var(--text)',

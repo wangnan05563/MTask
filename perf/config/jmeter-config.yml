@@ -27,7 +27,7 @@ sandbox:
   cwd: "D:/code/otherProjects/26_MTask/perf/sandbox"
   # SUT = 编译产物 server/dist/index.js（dist 已是最新），由 managed Node 22.22.2 启动
   # 路径用正斜杠（shlex.split 会把反斜杠当转义吞掉），node.exe 接受正斜杠路径
-  startup_cmd: "C:/Users/hspcadmin/.workbuddy/binaries/node/versions/22.22.2/node.exe D:/code/otherProjects/26_MTask/server/dist/index.js"
+  startup_cmd: "C:/Users/hspcadmin/.workbuddy/binaries/node/versions/22.22.2-2/node.exe D:/code/otherProjects/26_MTask/server/dist/index.js"
   pkg: ""
   port: 39876
   health_path: "/api/health"
@@ -71,8 +71,9 @@ resource_monitor:
   enabled: true
   # 用 pid_file 精确定位 SUT（wmic/psutil 的 cmd_substr 匹配受斜杠方向影响不稳定）
   match:
-    mode: pid_file
-    pid_file: "D:/code/otherProjects/26_MTask/perf/output/sut.pid"
+    mode: cmd_substr
+    cmd_substr: "server/dist/index.js"
+    name: ""
     name: ""
     cmd_substr: ""
   sample_interval_sec: 3
@@ -169,7 +170,7 @@ scenarios:
       samplers:
         - { name: "health",           path: "/api/health", method: "GET" }
         - { name: "projects",         path: "/api/projects", method: "GET" }
-        - { name: "tasks",            path: "/api/tasks", method: "GET" }
+        - { name: "tasks",            path: "/api/tasks", method: "GET", params: { limit: "200" } }
         - { name: "tasks_archived",   path: "/api/tasks", method: "GET", params: { archived: "1" } }
         - { name: "task_categories",  path: "/api/task-categories", method: "GET" }
         - { name: "queues",           path: "/api/queues", method: "GET" }
@@ -182,12 +183,19 @@ scenarios:
         - { name: "note_project",     path: "/api/settings/note-project", method: "GET" }
         - { name: "logs",             path: "/api/logs", method: "GET" }
         - { name: "report_templates", path: "/api/report/templates", method: "GET" }
+        - { name: "update_version",   path: "/api/update/version", method: "GET" }
+        - { name: "update_config",    path: "/api/update/config", method: "GET" }
+        - { name: "tunnel_status",    path: "/api/tunnel/status", method: "GET" }
+        - { name: "tunnel_config",    path: "/api/tunnel/config", method: "GET" }
+        - { name: "settings_export",  path: "/api/settings/export", method: "GET" }
     # ---- 写端点（本地 DB 写；独立沙箱库，压完丢弃）----
     - name: "writes"
       profile: "load10"
       samplers:
         - { name: "create_project", path: "/api/projects", method: "POST",
             body: '{"name":"perf-project","description":"perf write load"}' }
+        - { name: "patch_project", path: "/api/projects/proj-main", method: "PATCH",
+            body: '{"name":"perf-project-updated","description":"perf write load updated"}' }
         - { name: "create_task", path: "/api/tasks", method: "POST",
             body: '{"projectId":"{{project_id}}","title":"perf-task","description":"perf write load","priority":"high","status":"todo"}' }
         - { name: "patch_task", path: "/api/tasks/{{task_id}}", method: "PATCH",
@@ -234,29 +242,33 @@ defect_rules:
 # ---------------------------------------------------------------------------
 # 回归对比（本轮无基线，关闭）
 # ---------------------------------------------------------------------------
+# 回归对比基线（A 项固化）：索引前 stability 大库 作 baseline，/ --report 时校验完整性
 comparison:
-  enabled: false
-  baseline_jtl: ""
+  enabled: true
+  baseline_jtl: "D:/code/otherProjects/26_MTask/perf/output/stability_preIndex.jtl"
   key_endpoints:
-    - { title: "任务列表",  method: "GET",  path_substr: "/api/tasks" }
-    - { title: "创建任务",  method: "POST", path_substr: "/api/tasks" }
-    - { title: "报表生成",  method: "POST", path_substr: "/api/report/generate" }
+    - { title: "任务列表(分页)", method: "GET", path_substr: "/api/tasks" }
   baseline_integrity:
     enforce_same_endpoints: true
     doc_fallback_allowed: true
 
 # ---------------------------------------------------------------------------
-# 基线对比分析（关闭）
+# 基线对比分析（A 项固化）：索引前/后 stability 对照表，analyze_jtl.py 一键生成
 # ---------------------------------------------------------------------------
 analysis:
-  enabled: false
-  inputs: []
-  endpoint_groups: []
-  percentiles: [50, 90, 95, 99]
-  output_report: "output/results/comparison_report.md"
+  enabled: true
+  inputs:
+    - file: "D:/code/otherProjects/26_MTask/perf/output/stability_preIndex.jtl"
+      tag: "索引前(stability 大库)"
+    - file: "D:/code/otherProjects/26_MTask/perf/output/stability_postIndex.jtl"
+      tag: "索引后(stability 大库)"
+  endpoint_groups:
+    - { title: "任务列表(分页)", label_match: "^tasks$" }
+    - { title: "归档列表", label_match: "^tasks_archived$" }
+    - { title: "健康检查", label_match: "^health$" }
+  percentiles: [50, 95, 99]
+  output_report: "D:/code/otherProjects/26_MTask/perf/output/comparison_report.md"
 
-# ---------------------------------------------------------------------------
-# 报告
 # ---------------------------------------------------------------------------
 report:
   formats: ["markdown"]

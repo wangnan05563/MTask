@@ -4,7 +4,7 @@ import { streamEvents } from '../api/sse';
 import { reportStream, useReportStream } from '../reportStream';
 import { ReportConsole } from './ReportConsole';
 import { useSessionState } from '../ui/session';
-import { Download, Plus, RefreshCw, Trash2, Upload, Sparkles } from 'lucide-react';
+import { Download, Plus, Trash2, Upload, Sparkles, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 
 interface ReportTemplate {
   id: string;
@@ -62,6 +62,8 @@ export function ReportPage() {
   const [templateId, setTemplateId] = useSessionState('report.template', '');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
+  // 文档区收起态：为让 AI 控制台全屏浏览，提供收起/展开动态按钮切换左侧文档区显隐
+  const [splitCollapsed, setSplitCollapsed] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   // AI 周报：AI 工具选择会话级保留；生成运行态打入模块级 store（useReportStream），
@@ -219,12 +221,22 @@ export function ReportPage() {
 
   return (
     <section>
-      {/* 左主区 + 右侧 AI 控制台：两栏布局，参考企业对比工具 AI 分析栏 */}
+      {/* 左主区 + 右侧 AI 控制台：两栏布局，参考企业对比工具 AI 分析栏。
+          收起文档区后左侧主区隐藏，控制台 flex 自动占满整行，实现全屏浏览 AI 洞察 */}
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ flex: 1, minWidth: 0, display: splitCollapsed ? 'none' : 'block' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
         <h2 style={{ fontSize: 16, margin: 0 }}>周报 / 报表</h2>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>按周期聚合任务数据生成 Excel / Word 报表</span>
+        <span style={{ flex: 1 }} />
+        <button
+          onClick={() => setSplitCollapsed(true)}
+          title="收起文档区 — 全屏显示 AI 控制台"
+          aria-label="收起文档区：全屏显示 AI 控制台"
+          style={{ display: 'inline-flex', alignItems: 'center', padding: 4, borderRadius: 6, cursor: 'pointer', background: 'var(--card-bg)', color: 'var(--text)' }}
+        >
+          <PanelLeftClose size={14} />
+        </button>
       </div>
 
       {/* 公共配置：周期 / 格式 / 项目范围，离线与 AI 两条路径共用 */}
@@ -358,9 +370,6 @@ export function ReportPage() {
           <button onClick={() => fileRef.current?.click()} title="导入模板 — 上传 .xlsx / .docx 模板文件" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', padding: '4px 10px', borderRadius: 6, background: 'var(--card-bg)', border: '1px solid var(--border-strong)' }}>
             <Upload size={13} /> 导入模板
           </button>
-          <button onClick={() => void loadTemplates()} title="刷新模板列表" aria-label="刷新模板列表" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', cursor: 'pointer', padding: '4px 8px', borderRadius: 6 }}>
-            <RefreshCw size={13} />
-          </button>
           <input ref={fileRef} type="file" accept=".xlsx,.docx" style={{ display: 'none' }} onChange={(e) => void onUpload(e)} />
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>仅支持 .xlsx / .docx（≤10MB）。Word 模板中可用 {'{period}'}、{'{tasks}'} 等占位符。</span>
         </div>
@@ -392,7 +401,20 @@ export function ReportPage() {
         说明：报表按本周期内更新过的任务（未归档）聚合，包含各项目汇总与任务明细；选用 Word 模板时以 {`{period}`}、{`{periodLabel}`}、{`{startDate}`}、{`{endDate}`}、{`{projects}`}、{`{tasks}`} 占位符渲染。
       </div>
         </div>
-        <aside style={{ flex: '0 0 360px', maxWidth: '44vw', alignSelf: 'stretch' }}>
+        <aside style={{ boxSizing: 'border-box', alignSelf: 'stretch', ...(splitCollapsed ? { width: '100%' } : { flex: '0 0 360px', maxWidth: '44vw' }) }}>
+          {/* 收起态下提供恢复入口：在控制台上方显示「展开文档区」，避免收起后无路可回 */}
+          {splitCollapsed && (
+            <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 6 }}>
+              <button
+                onClick={() => setSplitCollapsed(false)}
+                title="展开文档区 — 恢复展示周报 / 报表配置面板"
+                aria-label="展开文档区：恢复展示周报/报表配置面板"
+                style={{ display: 'inline-flex', alignItems: 'center', padding: 4, borderRadius: 6, cursor: 'pointer', background: 'var(--card-bg)', color: 'var(--text)' }}
+              >
+                <PanelLeftOpen size={14} />
+              </button>
+            </div>
+          )}
           <ReportConsole tools={aiTools} toolId={aiToolId} onToolIdChange={setAiToolId} period={period} streaming={aiStreaming} logs={aiLogs} streamText={aiStreamText} />
         </aside>
       </div>
