@@ -1,5 +1,6 @@
-import { Fragment, useCallback, useEffect, useRef, useState, type ClipboardEvent } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore, type ClipboardEvent } from 'react';
 import { api, imageUrl, fetchImage, imageDataURL, type AITool, type Project, type PromptCategory, type Task, type TaskCategory, type TaskImage } from '../api/client';
+import { beautifyStore } from '../stores/beautifyStore';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
@@ -88,21 +89,23 @@ export function TasksPage() {
   // 新建任务进行中：全局 busy store，切页不丢失，防止请求进行中切页后再点重复插入
   const creating = useBusy('tasks.create');
   // 「AI 美化」按任务隔离的进行中集合：不同任务并行互不干扰，动画只作用于触发任务
-  const [beautifyBusy, setBeautifyBusy] = useState<Record<string, boolean>>({});
+  // 美化运行态/批量独占/标题草稿提升到模块级 store（T00396 路径2）：切页卸载不销毁，
+  // in-flight 请求完成后回调照常写 store，回切页面即见最新运行指示与待确认草稿
+  const beautifySnap = useSyncExternalStore(beautifyStore.subscribe, beautifyStore.getSnapshot);
+  const beautifyBusy = beautifySnap.busy;
   // 「提示词优化」按任务隔离的进行中集合：作用域精准到单任务描述区，支持并行
   const [optimizingMap, setOptimizingMap] = useState<Record<string, boolean>>({});
   // 批量美化独占标识：批量进行期间不与单条并行，避免相互覆盖
-  const [batchBusy, setBatchBusy] = useState(false);
+  const batchBusy = beautifySnap.batchBusy;
   // 批量智能分类进行中标识：驱动工具条「批量分类」按钮的忙碌态
   const [classifyBusy, setClassifyBusy] = useState(false);
-  // 进行中请求的取消控制器（按 taskId 隔离）：中断某任务不误伤其它并行任务；批量用固定键 '__batch__'
-  const beautifyAborts = useRef<Record<string, AbortController>>({});
+  // 进行中请求的取消控制器：美化已入 beautifyStore.aborts（模块级，切页存活）；提示词优化仍按页内隔离
   const optimizeAborts = useRef<Record<string, AbortController>>({});
   // 是否有美化类操作进行中（单条或批量）：驱动工具条「取消/批量美化」按钮
   const anyBeautify = batchBusy || Object.values(beautifyBusy).some(Boolean);
   const [drafts, setDrafts] = useState<Record<string, string>>({}); // taskId -> 待确认的梳理结果
   const [descDrafts, setDescDrafts] = useState<Record<string, string>>({}); // taskId -> 描述编辑草稿
-  const [titleDrafts, setTitleDrafts] = useState<Record<string, string>>({}); // taskId -> 标题编辑草稿
+  const titleDrafts = beautifySnap.drafts; // taskId -> 标题编辑草稿（美化结果/手动编辑共用，切页保留）
   const [imgDrafts, setImgDrafts] = useState<Record<string, ImageDraft>>({}); // taskId -> 图片增删草稿
   const [previewId, setPreviewId] = useState(''); // 当前放大预览的图片 id
   const [notice, setNotice] = useState('');
@@ -209,6 +212,8 @@ export function TasksPage() {
   }, [activeProject, loadTasks]);
   useEffect(() => { void loadTools(); }, [loadTools]);
   useEffect(() => { void loadCategories(); }, [loadCategories]);
+  // 美化运行态已提升至 beautifyStore（模块级）：切页不取消、不清理——in-flight 请求继续，
+  // 完成回调写 store 草稿/运行态，回切即见（T00396 路径2，替代原「卸载即取消」方案）
   // 工具下拉展开期间监听全局焦点移出：内部元素间切换时 relatedTarget 仍在容器内不收起，移出容器才收起。
   // 挂在 document 上而非容器 div，可避免为挂 onBlur 而给非交互容器加 tabIndex/role
   useEffect(() => {
@@ -373,33 +378,30 @@ export function TasksPage() {
     if (!organizeToolId) return flash('请先在「模型管理」页添加并选择美化工具');
     if (!task.title.trim()) return flash('该任务无标题可美化');
     const ac = new AbortController();
-    beautifyAborts.current[task.id] = ac;
-    setBeautifyBusy((p) => ({ ...p, [task.id]: true }));
+    beautifyStore.aborts[task.id] = ac;
+    beautifyStore.setBusy(task.id);
     try {
       const result = await api.post<{ ok: boolean; content?: string; error?: string }>('/ai/beautify', {
         toolId: organizeToolId, title: task.title,
       }, ac.signal);
       if (!result.ok) return flash(result.error ?? '美化失败');
       if (!result.content?.trim()) return flash('AI 未返回美化标题');
-      // 进入标题编辑态，让用户确认后保存（复用 titleDrafts + saveTitle）
-      setTitleDrafts((prev) => ({ ...prev, [task.id]: result.content!.trim() }));
+      // 进入标题编辑态，让用户确认后保存（复用 titleDrafts + saveTitle）；写模块级 store，切页后草稿仍保留
+      beautifyStore.setDraft(task.id, result.content!.trim());
       flash('美化完成，可编辑后保存');
     } catch (e) {
       // 用户主动取消时静默，不弹错误
       if ((e as Error).name !== 'AbortError') flash(e instanceof Error ? e.message : String(e));
     } finally {
-      setBeautifyBusy((p) => { const n = { ...p }; delete n[task.id]; return n; });
-      delete beautifyAborts.current[task.id];
+      beautifyStore.clearBusy(task.id);
+      delete beautifyStore.aborts[task.id];
     }
   }
 
-  /** 取消全部 AI 美化（单条 + 批量）：统一从工具栏入口调用，遍历各任务独立中止。 */
+  /** 取消全部 AI 美化（单条 + 批量）：统一从工具栏入口调用，遍历各任务独立中止；已编辑草稿保留 */
   function cancelBeautify() {
     if (!anyBeautify) return;
-    Object.values(beautifyAborts.current).forEach((ac) => ac.abort());
-    beautifyAborts.current = {};
-    setBeautifyBusy({});
-    setBatchBusy(false);
+    beautifyStore.cancelAll();
     flash('已取消美化');
   }
 
@@ -411,8 +413,8 @@ export function TasksPage() {
     if (todo.length === 0) return flash('当前项目没有待办任务');
     if (!(await askConfirm(`将对 ${todo.length} 个待办任务执行标题美化，确认？`))) return;
     const ac = new AbortController();
-    beautifyAborts.current['__batch__'] = ac;
-    setBatchBusy(true);
+    beautifyStore.aborts['__batch__'] = ac;
+    beautifyStore.setBatchBusy(true);
     try {
       const tasks = [...todo];
       const results = await Promise.all(tasks.map(async (t) => {
@@ -425,13 +427,13 @@ export function TasksPage() {
       const ok = results.filter((r) => r.ok && r.content?.trim());
       const next: Record<string, string> = {};
       for (const r of ok) next[r.taskId] = r.content!.trim();
-      setTitleDrafts((prev) => ({ ...prev, ...next }));
+      beautifyStore.mergeDrafts(next);
       flash(`美化完成 ${ok.length}/${tasks.length} 条，请逐条确认保存`);
     } catch (e) {
       if ((e as Error).name !== 'AbortError') flash(e instanceof Error ? e.message : String(e));
     } finally {
-      setBatchBusy(false);
-      delete beautifyAborts.current['__batch__'];
+      beautifyStore.setBatchBusy(false);
+      delete beautifyStore.aborts['__batch__'];
     }
   }
 
@@ -526,14 +528,10 @@ export function TasksPage() {
     flash('梳理结果已保存到任务');
   }
 
-  /** FR1.3 标题编辑：展开/收起标题编辑态（有草稿视为编辑中） */
+  /** FR1.3 标题编辑：展开/收起标题编辑态（有草稿视为编辑中）；草稿入 beautifyStore，切页保留 */
   function toggleTitleEdit(task: Task) {
-    setTitleDrafts((prev) => {
-      const next = { ...prev };
-      if (next[task.id] === undefined) next[task.id] = task.title;
-      else delete next[task.id];
-      return next;
-    });
+    const prev = beautifyStore.getSnapshot().drafts[task.id];
+    beautifyStore.setDraft(task.id, prev === undefined ? task.title : undefined);
   }
 
   /** FR1.3 保存标题 */
@@ -546,11 +544,7 @@ export function TasksPage() {
     } catch (e) {
       return flash(e instanceof Error ? e.message : String(e));
     }
-    setTitleDrafts((prev) => {
-      const next = { ...prev };
-      delete next[task.id];
-      return next;
-    });
+    beautifyStore.setDraft(task.id, undefined); // 保存成功即退出编辑态（清草稿）
     void loadTasks(activeProject);
     flash('任务标题已更新');
   }
@@ -931,7 +925,7 @@ export function TasksPage() {
         {titleEditing ? (
           <input
             value={titleDrafts[t.id]}
-            onChange={(e) => setTitleDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
+            onChange={(e) => beautifyStore.setDraft(t.id, e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && void saveTitle(t)}
             placeholder="任务标题"
             autoFocus
