@@ -5,7 +5,7 @@ import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { useBusy, setBusy } from '../ui/busy';
-import { AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, Loader2, Plus, Save, Sparkles, SquarePen, Tags, Trash2, Wand2, X } from 'lucide-react';
+import { AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, Loader2, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X } from 'lucide-react';
 
 /** 粘贴截图项：id 为入列时生成的稳定唯一标识，供列表 key 使用，删除中间项不会导致其余项身份错位 */
 interface PastedImage {
@@ -777,6 +777,23 @@ export function TasksPage() {
         </button>
         {/* 仅已完成任务展示验证状态 */}
         {t.status === 'done' && renderVerifyButton(t)}
+        {/* AI 回写待审核图标：标题带【AI回写待审核】前缀的任务展示（视觉基准对齐验证图标），
+            点击同时展开任务描述与处理结果，便于人工审核 AI 回写的修复建议 */}
+        {t.title.startsWith('【AI回写待审核】') && (
+          <button
+            onClick={() => {
+              setDescExpanded((p) => ({ ...p, [t.id]: true }));
+              setResultOpen((p) => ({ ...p, [t.id]: true }));
+              flash('已展开描述与处理结果，审核通过后请编辑标题移除「【AI回写待审核】」前缀');
+            }}
+            title="AI 回写待审核 — 点击展开该任务的描述与处理结果；审核通过后编辑标题移除前缀即可恢复正常展示"
+            aria-label="AI 回写待审核：展开描述与处理结果供人工审核"
+            className="verify-icon"
+            style={{ cursor: 'pointer', fontSize: 16, lineHeight: 1, border: 'none', background: 'transparent', color: 'var(--accent)' }}
+          >
+            <ScanSearch size={13} style={{ verticalAlign: '-2px' }} />
+          </button>
+        )}
         {/* 置顶/取消置顶图标：置于标题最左侧 */}
         <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
           <PinToggle pinned={t.pinned} onToggle={() => void togglePin(t)} />

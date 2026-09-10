@@ -124,10 +124,12 @@ export async function createMCPServer(): Promise<McpServer> {
 
   server.registerTool('mtask_list_tasks', {
     title: '列出任务',
-    description: '按项目/归档态列出任务；projectId 或 projectName 二者可选其一过滤项目，都不传则列出全部项目。',
+    description: '按项目/状态/归档态列出任务；projectId 或 projectName 二者可选其一过滤项目，都不传则列出全部项目。默认只返回「待处理 或 未验证」的任务（利于 AI 分析决策）；需查其他需显式传 status。',
     inputSchema: {
       projectId: z.string().optional().describe('项目 id，缺省列出全部项目任务'),
       projectName: z.string().optional().describe('项目名称（如 MTask/wiki/xianyu），按名称解析为项目 id 过滤，与 projectId 二选一'),
+      status: z.enum(['todo', 'done']).optional().describe('按状态精确过滤（todo/done）；status 与 scope 均不传时默认返回「待处理+未验证」'),
+      scope: z.enum(['pending', 'all']).optional().describe('查询范围：pending=待处理或未验证（默认）；all=该范围内全部任务（等价旧行为）'),
       archived: z.boolean().optional().default(false).describe('是否列出已归档任务'),
     },
   }, async (a) => {
@@ -139,8 +141,11 @@ export async function createMCPServer(): Promise<McpServer> {
         if (!p) return err(`项目不存在：${a.projectName}`);
         pid = p.id;
       }
-      // list 已重构为单一选项对象签名（支持分页/搜索/分类/排序）
-      const tasks = TaskService.list({ projectId: pid, archived: a.archived ?? false });
+      // 范围解析：显式 status 按状态精确过滤；否则 scope=all 表示全量，scope=pending 或未说明时默认「待处理+未验证」分析范围
+      let listOpts: Parameters<typeof TaskService.list>[0] = { projectId: pid, archived: a.archived ?? false };
+      if (a.status) listOpts.status = a.status;
+      else if (a.scope !== 'all') listOpts.pending = true;
+      const tasks = TaskService.list(listOpts);
       return ok(json(tasks), { tasks });
     } catch (e) { return err((e as Error).message); }
   });

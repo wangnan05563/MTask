@@ -5,13 +5,14 @@ import { FONT_OPTIONS, FONT_SIZE_OPTIONS, useSettings, type ImportMode } from '.
 import { Download, ExternalLink, FileUp, FolderPlus, Info, Moon, Pencil, RefreshCw, Save, Settings, ShieldCheck, Sun, Trash2 } from 'lucide-react';
 import { TunnelPanel } from './TunnelPanel';
 import { HelpTab } from './HelpTab';
+import { DbAdminTab } from './DbAdminTab';
 
 /** 应用信息（与根 package.json 保持一致） */
 const APP_NAME = 'MTask';
 const APP_VERSION = '0.1.0';
 const APP_DESC = 'AI 任务开发管理工具：项目维度任务管理 + AI 梳理 + 队列分发。';
 
-type STab = 'general' | 'migration' | 'categories' | 'tunnel' | 'help' | 'about';
+type STab = 'general' | 'migration' | 'dbadmin' | 'categories' | 'tunnel' | 'help' | 'about';
 
 /** 导入策略文案映射：显式枚举映射替代嵌套三元，新增策略时只需补一行 */
 const IMPORT_MODE_LABELS: Record<ImportMode, string> = { merge: '合并', keep: '保留', overwrite: '覆盖' };
@@ -19,6 +20,7 @@ const IMPORT_MODE_LABELS: Record<ImportMode, string> = { merge: '合并', keep: 
 const SUB_TABS: { key: STab; label: string }[] = [
   { key: 'general', label: '通用设置' },
   { key: 'migration', label: '数据迁移' },
+  { key: 'dbadmin', label: '数据维护' },
   { key: 'categories', label: '任务分类' },
   { key: 'tunnel', label: '内网穿透' },
   { key: 'help', label: '帮助文档' },
@@ -51,6 +53,7 @@ export function SettingsPage() {
 
       {st === 'general' && <GeneralTab />}
       {st === 'migration' && <MigrationTab />}
+      {st === 'dbadmin' && <DbAdminTab />}
       {st === 'categories' && <CategoriesTab />}
       {st === 'tunnel' && <TunnelPanel />}
       {st === 'help' && <HelpTab />}

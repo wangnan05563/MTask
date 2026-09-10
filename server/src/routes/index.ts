@@ -11,6 +11,7 @@ import { exportBundle, importBundle } from '../services/SettingsService';
 import { getDefaultNoteProjectId, INBOX_PROJECT_ID, setSetting } from '../services/AppSettings';
 import { getConfig as getUpdateConfig, saveConfig as saveUpdateConfig, testConfig as testUpdateConfig, checkUpdate, currentVersion as currentAppVersion } from '../services/UpdateService';
 import { logService } from '../services/LogService';
+import { dbAdminApi } from './dbadmin';
 import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, gatherReportData, type ReportPeriod } from '../services/ReportService';
 import { Buffer } from 'node:buffer';
 import { v4 as uuid } from 'uuid';
@@ -766,3 +767,6 @@ api.post('/update/check', async (req, res) => {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
+
+// ---------- 数据库维护（设置 > 数据维护 Tab） ----------
+api.use('/dbadmin', dbAdminApi);
