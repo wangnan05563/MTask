@@ -1,0 +1,11 @@
+# 清理技能自动生成 (2026-09-10)：历史遗留垃圾保留在版本库中（可追溯），
+# 但通过 export-ignore 排除出 git archive 交付包。
+.scannerwork/** export-ignore
+sonar-issues.json export-ignore
+web/tsconfig.tsbuildinfo export-ignore
+scripts/.build-pipe.txt export-ignore
+.check_asar.cjs export-ignore
+.list_c.cjs export-ignore
+.main_check.txt export-ignore
+TMP_init.json export-ignore
+.workbuddy/** export-ignore

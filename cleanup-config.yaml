@@ -1,0 +1,402 @@
+# ============================================================
+# 26_MTask 工作空间清理配置（2026-09-10 基于示例模板裁剪）
+# 项目形态：Electron + React + Express + SQLite 桌面应用（npm workspaces）
+# ============================================================
+
+workspace:
+  root: "."
+  script_dir: "scripts"
+  docs_dir: "docs"
+  logs_dir: "cleanup-logs"
+  frontend_dir: "web"
+  frontend_src_dir: "src"
+  scan_roots:
+    - "server"
+    - "web"
+    - "electron"
+    - "scripts"
+    - "perf"
+    - "docs"
+    - "build"
+
+root_allowlist:
+  extensions:
+    - ".md"
+    - ".json"
+    - ".properties"
+    - ".yaml"
+    - ".yml"
+  files:
+    - "README.md"
+    - "package.json"
+    - "package-lock.json"
+    - "cleanup-config.yaml"
+    - ".gitignore"
+    - ".gitattributes"
+    - ".check_asar.cjs"      # 跟踪中，review 档处置，先放行避免误判
+    - ".list_c.cjs"
+    - "main.js"              # 根目录 Electron 壳（与 electron/main.js 重复，review 档）
+  allowed_root_scripts: []
+
+preserve_roots:
+  - "server/src/"            # 服务端源码
+  - "server/src/data/"       # dev 运行时数据库（connection.ts 解析 __dirname/../data）
+  - "server/dist/data/"      # dist 运行时数据库（2026-09-09 22:22 仍在写入）
+  - "server/data/"           # 声明的数据目录
+  - "web/src/"               # 前端源码
+  - "web/public/"            # 静态资源（含 skills/*.zip 应用资源）
+  - "electron/"              # 桌面壳源码
+  - "docs/"                  # 文档
+  - "perf/config/"           # JMeter 配置
+  - "perf/seed/"             # 种子脚本
+  - "perf/output/"           # .gitignore 注释标记为运行时数据（含性能测试报告）
+  - "perf/sandbox/"          # 压测沙箱（含 data/mtask.db）
+  - "build/"                 # 构建资源根（icon.* 被 package.json 引用；native/ 被 native-switch.bat 引用）
+  - "build/native/"          # better-sqlite3 ABI 缓存二进制
+  - ".workbuddy/"            # 项目数据目录（系统规则：非临时缓存，禁删）
+  - "node_modules/"          # 声明依赖目录
+
+preserve_paths:
+  dirs: []
+  files:
+    - "build/icon.ico"
+    - "build/icon.png"
+    - "build/icon.svg"
+  mirror_to_gitignore: true
+
+semantic_divergence:
+  enabled: true
+  ambiguous_names:
+    - "build"
+    - "dist"
+    - "out"
+    - "release"
+    - "public"
+    - "static"
+  reference_sources:
+    extensions: [".json", ".yaml", ".yml", ".md", ".bat", ".ps1", ".sh", ".js", ".ts"]
+    exclude_dirs: ["node_modules/", ".git/", ".cleanup-quarantine/", "cleanup-logs/"]
+  diverge_signals:
+    - "referenced_by_manifest"
+    - "contains_handwritten_file"
+    - "contains_no_build_manifest"
+    - "has_vcs_tracked_members"
+  on_ambiguous: "review"
+  report_findings: true
+
+script_extensions: [".py", ".ps1", ".bat", ".sh", ".js", ".vbs", ".cjs", ".mjs"]
+script_exclude_dirs:
+  - "server/src/"
+  - "web/src/"
+  - "electron/"
+  - "scripts/tests/"
+  - "node_modules/"
+
+garbage_patterns:
+  redirect_artifacts: []
+  tmp_suffixes: ["*.tmp", "*.bak", "*.orig", "*.swp"]
+  os_junk: ["Thumbs.db", ".DS_Store", "desktop.ini"]
+  build_intermediates: ["*.pyc", "*.class"]
+  test_outputs:
+    - "/scan-output*.log"
+    - "/build-pack*.log"
+  coverage_artifacts: []
+  cache_dirs:
+    - "build/pkg-out/"       # electron-builder --dir 输出（builder-debug.yml 自我排除确认）
+    - "release/"             # electron-builder directories.output
+    - ".scannerwork/"        # SonarQube 扫描缓存
+    - "logs/"                # 空运行时日志目录
+    - "web/dist/"            # vite 构建输出
+    - "server/dist-except-data"  # 特殊处理：server/dist 除 data/ 外可重建（见 preserve_roots）
+  runtime_logs:
+    - "/.workbuddy/tmp/smoke-server.log"
+  frontend_build_temp: []
+
+detection:
+  enabled: true
+  prefix_indicators: ["_"]
+  name_keywords: ["tmp", "bak", "debug", "diag", "smoke", "verify", "check"]
+  name_patterns: ["check_*.cjs", "list_*.cjs", "*_check.txt", "TMP_*.json"]
+  infer_confidence_threshold: 0.7
+  auto_add_inferred_to_gitignore: false   # 推断对象多为 git 跟踪文件，走 review 档而非 ignore
+
+actions:
+  tiers:
+    delete:
+      description: "高置信度、可重建、未被版本控制跟踪"
+      min_confidence: 0.8
+      method: "remove"
+      require_confirm: false
+    quarantine:
+      description: "中/高风险：源码类、疑似残留、软删除项"
+      min_confidence: 0.5
+      method: "move"
+      require_confirm: false
+    review:
+      description: "版本控制内 / 数据目录 / 依赖目录"
+      method: "report_only"
+      require_confirm: true
+  force_review_when:
+    - "git_tracked"
+    - "in_preserve_roots"
+    - "in_preserve_paths"
+    - "ambiguous_dir_name"
+    - "is_data_store"
+    - "declared_dependency_dir"
+    - "irreversibility_at_threshold"
+
+quarantine:
+  enabled: true
+  dir: ".cleanup-quarantine"
+  retention_hours: 24
+  write_manifest: true
+  write_restore_script: true
+  manifest_fields: ["original_path", "size", "mtime", "sha256", "quarantined_at", "expires"]
+  gitignore: true
+  gitignore_pattern: "/.cleanup-quarantine/"
+
+evidence_gate:
+  enabled: true
+  applies_to_name_patterns: ["data", "*db*", "*cache*", "*store*"]
+  required_checks:
+    - "zero_code_reference"
+    - "content_inventory"
+    - "git_ignored"
+    - "explicit_user_confirm"
+  empty_row_threshold: 0
+  require_snapshot_archive: true
+  on_insufficient_evidence: "keep_and_report"
+
+recovery:
+  enabled: true
+  irreversibility_factors:
+    - "not_vcs_tracked"
+    - "no_snapshot_available"
+    - "delete_bypasses_trash"
+  quarantine_if_factors_at_least: 2
+  search_ladder:
+    - "config_reference_scan"
+    - "vcs_full_history"
+    - "editor_snapshot_stores"
+    - "quarantine_and_backup_dirs"
+    - "trash_bin"
+    - "filesystem_wide_search"
+  on_irrecoverable: "stop_and_report"
+
+ignored_audit:
+  enabled: true
+  report_only: true
+  stale_days: 30
+  runtime_evidence_patterns: ["logs/*.log", "**/*.sqlite3", "**/*.db"]
+  evidence_requirements: ["zero_code_reference", "stale_beyond_days", "content_empty_or_default"]
+  exclude_dirs: ["node_modules/", ".git/"]
+
+diagnostics:
+  reference_scan:
+    enabled: true
+    extensions: [".ts", ".tsx", ".js", ".jsx", ".json", ".yaml", ".yml", ".bat", ".ps1", ".md", ".cjs", ".mjs"]
+    exclude_dirs: ["node_modules/", ".git/", "build/", "release/", "cleanup-logs/", ".cleanup-quarantine/"]
+    exclude_self_output: true
+    case_sensitive: false
+    background_after_seconds: 60
+    timeout_seconds: 1800
+  encoding_check:
+    enabled: false
+  config_drift_check:
+    enabled: true
+    checks: ["changelog_path_exists", "file_existence_checks_present"]
+    on_drift: "report"
+    autofixable: ["changelog_path_exists"]
+  path_normalization:
+    enabled: true
+    normalize: "normcase_then_normpath"
+    resolve_relative_against: "workspace.root"
+    duplicate_policy: "item"
+
+service_indicators:
+  pid_files: ["perf/output/sut.pid"]
+  ports: [39876]
+  process_names: ["MTask.exe", "electron.exe", "node.exe"]
+  command_line_probe:
+    enabled: true
+    include_patterns: ["26_MTask", "electron/main.js", "server/dist/index.js"]
+    exclude_patterns: ["npx-cli.js", "_npx", "mcp", "WorkBuddy"]
+    on_unavailable: "treat_as_unknown"
+  file_occupancy_probes:
+    - "server/data/mtask.db"
+    - "server/dist/data/mtask.db"
+    - "build/pkg-out/win-unpacked/MTask.exe"
+
+stability_check:
+  enabled: true
+  wait_seconds: 5
+  max_recurrence: 3
+  recurrence_patterns: ["*.log", "scan-output*.log", "build-pack*.log"]
+  recurrence_action: "warn"
+
+sizing:
+  method: "python_scandir"
+  fallback_method: "du_sh"
+  scandir_threshold_files: 2000
+  timeout_seconds: 120
+  continue_on_timeout: true
+
+capability_probe:
+  enabled: true
+  probes:
+    - { name: "size_measurement", fallback: "python_scandir" }
+    - { name: "hash_tool", fallback: "python_hashlib" }
+    - { name: "vcs_cli", fallback: "manual_review" }
+    - { name: "glob_tool", fallback: "python_glob" }
+    - { name: "external_build_tool", fallback: "static_syntax_check" }
+    - { name: "package_manager", fallback: "report_only" }
+  on_missing: "report_and_degrade"
+  blocked_signals: ["permission_denied_by_sandbox", "operation_not_permitted", "hook_intercepted", "process_killed_by_wall_clock"]
+  degraded_verification:
+    enabled: true
+    methods: ["parse_check", "targeted_unit_run", "diff_against_baseline"]
+    must_declare_gaps: true
+
+platform:
+  current: "windows"
+  file_hash:
+    windows: 'Get-FileHash -LiteralPath "{path}" -Algorithm SHA256'
+  remove_file_python_s:
+    windows: 'python -S -c "import os; os.remove(r\"{path}\")"'
+  remove_dir_python_s:
+    windows: 'python -S -c "import shutil; shutil.rmtree(r\"{path}\")"'
+
+execution:
+  remove_method: "python_s"
+  verify_without_bytecode: true
+  max_files_per_batch: 50
+  max_files_per_call: 200
+  parallel_delete: false
+  large_file_sequential: true
+  locked_file_strategy: "report"
+  locked_file_retry: 3
+  locked_file_retry_delay_seconds: 2
+  schedule_delete_on_reboot: false
+  assert_exists_before_create: true
+  assert_target_absent_on_move: true
+
+audit:
+  hash_algorithm: "sha256"
+  targets_file: "cleanup-logs/cleanup-targets.txt"
+  backup_log_format: "cleanup-{YYYYMMDD-HHmmss}.log"
+  hash_dir_members: true
+  slice_size: 200
+  hash_policy:
+    quarantine: "full"
+    delete: "full_or_sampled"
+    full_max_bytes: 1048576
+    sample_bytes: 65536
+    workers: 8
+    sampled_prefix: "P:"
+    sampled_also_record: ["size", "mtime"]
+
+verification:
+  python_imports: []
+  command: ""
+  venv_python: { windows: "", linux: "", macos: "" }
+  file_existence_checks:
+    - "package.json"
+    - "electron/main.js"
+    - "server/src/db/connection.ts"
+    - "web/src/App.tsx"
+    - "build/icon.ico"
+    - "build/native/electron/better_sqlite3.node"
+    - "server/data/mtask.db"
+    - "server/dist/data/mtask.db"
+  optional_generated_checks:
+    - "web/dist/"
+    - "server/dist/index.js"
+    - "build/pkg-out/"
+    - "release/"
+  on_failure:
+    - "检查 cleanup-logs/cleanup-*.log 中的 hash 记录"
+    - "从 git 恢复：git checkout HEAD -- <file>"
+    - "重建产物：npm run build:web / build:server / dist:dir"
+  test_command: ""
+
+report:
+  formats: ["markdown", "json"]
+  output_dir: "cleanup-logs"
+  sections:
+    - "summary_before_after"
+    - "by_category"
+    - "by_directory"
+    - "disposition_buckets"
+    - "recovery_risk"
+    - "not_cleaned_risky"
+    - "dependency_analysis"
+    - "recurrence_prevention"
+    - "audit_trail"
+    - "verification"
+  require_reason_for_skipped: true
+  filename_template: "cleanup-report-{YYYYMMDD}"
+  size_metric: "logical_bytes"
+  also_report_disk_usage: true
+  annotate_metric_delta: true
+  group_by: "item"
+  dedup_by: "normalized_abs_path"
+
+dependency_check:
+  enabled: true
+  auto_remove: false
+  python: { manifest: "", scan_dirs: [], indirect_allowlist: [] }
+  frontend:
+    manifest: "package.json"
+    scan_dirs: ["server/src/", "electron/", "web/src/"]
+    indirect_allowlist: ["electron", "electron-builder", "@types/*", "typescript", "vite"]
+  report_when: "zero_references"
+  require_second_pass_review: true
+
+archive:
+  changelog_path: "docs/清理报告-20260910.md"
+  gitignore_path: ".gitignore"
+  precommit_path: ".pre-commit-config.yaml"
+  gitattributes_path: ".gitattributes"
+  auto_update_gitignore: true
+  auto_update_precommit: false
+  gitignore_group_comments:
+    - "# ---------- 清理技能自动生成规则 (2026-09-10) ----------"
+  gitattributes_export_ignore:
+    - ".scannerwork/**"
+    - "sonar-issues.json"
+    - "web/tsconfig.tsbuildinfo"
+    - "scripts/.build-pipe.txt"
+    - ".check_asar.cjs"
+    - ".list_c.cjs"
+    - ".main_check.txt"
+    - "TMP_init.json"
+    - ".workbuddy/**"
+
+git_integration:
+  enabled: true
+  tracked_deleted_check: "git ls-files --deleted"
+  unstage_command: "git rm --cached --ignore-unmatch {files}"
+  delete_index_command: "git rm --cached --ignore-unmatch {file}"
+  delete_physical_template: "remove_file_{backend}"
+  add_gitignore_patterns: true
+  auto_commit: true
+  commit_message_template: "chore(cleanup): round-{round} workspace cleanup - freed {freed_mb} MB build/cache artifacts"
+  tracked_ignored_detect: "git ls-files | git check-ignore --stdin --no-index"
+  tracked_ignored_disposition: "export_ignore"
+  commit_pathspec_only: true
+  stage_before_commit: true
+  warn_on_preexisting_staged: true
+  index_write_probe: true
+
+safety:
+  require_stopped_service: true
+  dry_run: false
+  min_confidence_to_delete: 0.8
+  max_files_per_batch: 50
+  large_file_threshold_mb: 5
+  max_non_regenerable_share: 0
+  flatten_directories: true
+  empty_dir_cleanup: true
+  special_filename_handling: "safe"
+  verify_after_each_batch: true
+  soft_delete_suffix: ".trash"

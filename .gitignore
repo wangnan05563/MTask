@@ -17,3 +17,12 @@ perf/sandbox/
 
 # 环境变量
 .env
+
+# ---------- 清理技能自动生成规则 (2026-09-10) ----------
+# 注意：server/dist/data/ 与 server/src/data/ 为运行时数据库目录
+# （server/src/db/connection.ts 按 __dirname 解析），清理时不得随 dist 删除。
+/.cleanup-quarantine/
+/cleanup-logs/
+.scannerwork/
+*.tsbuildinfo
+
