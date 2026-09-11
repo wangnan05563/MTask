@@ -26,3 +26,15 @@ perf/sandbox/
 .scannerwork/
 *.tsbuildinfo
 
+# ---------- review 档 untrack 后的本地留存件 (2026-09-11) ----------
+# 以下文件已 git rm --cached 取消跟踪（物理文件保留在磁盘，可自行删除）
+/main.js
+/.check_asar.cjs
+/.list_c.cjs
+/.main_check.txt
+/TMP_init.json
+/sonar-issues.json
+/scripts/.build-pipe.txt
+/.workbuddy/tmp/
+
+
