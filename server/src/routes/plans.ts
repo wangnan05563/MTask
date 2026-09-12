@@ -90,6 +90,27 @@ planApi.post('/batch', (req, res) => {
   wrap(res, () => PlanService.createBatch(projectId, items as Parameters<typeof PlanService.createBatch>[1]));
 });
 
+// ---------- 需求文档 AI 拆分（T00439）：Word/Markdown → WBS → 标准计划草稿 ----------
+planApi.post('/ai-parse-doc', raw({ type: () => true, limit: '30mb' }), (req, res) => {
+  const projectId = req.query.projectId;
+  const toolId = req.query.toolId;
+  const filename = typeof req.query.filename === 'string' ? req.query.filename : 'doc.md';
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (typeof toolId !== 'string' || !toolId) return res.status(400).json({ error: 'toolId 必填（AI 拆分需要模型工具）' });
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: '请求体应为文档二进制' });
+  const lower = filename.toLowerCase();
+  // 按扩展名分派文本提取：md 原样（层级天然保留）/ docx 提取段落与标题样式；其余提示
+  const textP = lower.endsWith('.md') || lower.endsWith('.markdown')
+    ? Promise.resolve((req.body as Buffer).toString('utf-8'))
+    : lower.endsWith('.docx')
+      ? Promise.resolve(PlanService.docxToMarkdown(req.body))
+      : Promise.reject(new Error('仅支持 .md / .markdown / .docx；老式 .doc 请先用 Word 另存为 .docx'));
+  textP
+    .then((text) => PlanService.aiParseWbs(toolId, text))
+    .then((r) => res.json({ ok: true, ...r }))
+    .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
+});
+
 // ---------- 计划任务 CRUD ----------
 planApi.get('/', (req, res) => wrap(res, () => PlanService.list(pid(req))));
 

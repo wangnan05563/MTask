@@ -6,6 +6,8 @@ import { getDb } from '../db/connection';
 import { v4 as uuid } from 'uuid';
 import ExcelJS from 'exceljs';
 import { AIService } from './AIService';
+// pizzip：docxtemplater 既有依赖，用于解压 .docx 提取 word/document.xml（T00439）
+import PizZip from 'pizzip';
 
 export interface PlanTaskRow {
   id: string;
@@ -35,6 +37,33 @@ const PLAN_STATUSES: PlanStatus[] = ['todo', 'doing', 'done', 'blocked'];
 
 /** AI 解析输入的行数上限：超出的内容截断，避免超大文件拖垮模型上下文（T00438） */
 const MAX_PARSE_ROWS = 300;
+
+/**
+ * 从 AI 输出中提取 JSON 数组，带截断恢复（T00439）：
+ * 大文档拆分时输出可能被 max_tokens 截断（JSON 未闭合），此时退化到
+ * 「最后一个完整对象 + ]」补全重试，尽量抢救已生成的大部分条目。
+ */
+function parseJsonArrayWithRecovery(text: string, notFoundMsg: string): unknown[] {
+  const bare = text.replace(/```json/gi, '').replace(/```/gi, '').trim();
+  const start = bare.indexOf('[');
+  if (start === -1) throw new Error(notFoundMsg);
+  const end = bare.lastIndexOf(']');
+  let arr: unknown;
+  try {
+    arr = JSON.parse(bare.slice(start, end > start ? end + 1 : start + 1));
+  } catch {
+    // 截断恢复：JSON.parse 完整数组失败，尝试到「最后一个 }」为止补 ]
+    const lastObj = bare.lastIndexOf('}');
+    if (lastObj <= start) throw new Error(notFoundMsg);
+    try {
+      arr = JSON.parse(bare.slice(start, lastObj + 1) + ']');
+    } catch {
+      throw new Error(notFoundMsg);
+    }
+  }
+  if (!Array.isArray(arr)) throw new Error(notFoundMsg);
+  return arr;
+}
 
 /** CSV 行文本：按行拆分 + 逗号切分（含引号单元格原样保留，粒度足够 AI 理解） */
 function csvToText(buffer: Buffer): string {
@@ -474,6 +503,90 @@ export const PlanService = {
     return lines.join('\n');
   },
 
+  // ---------- 需求文档 → WBS → 项目计划（T00439）：Word/Markdown → 层级文本 → AI 拆分 → 标准草稿 ----------
+
+  /**
+   * Word(.docx) → Markdown 层级文本：pizzip 解压 OOXML，从 word/document.xml 提取段落；
+   * 标题样式（Heading1-4/内置中文标题）转 # 前缀，保留文档层级供 AI 识别 WBS 结构。
+   * 老式 .doc（BIFF 二进制）不支持，抛友好提示。零新依赖（pizzip 为 docxtemplater 既有依赖）。
+   */
+  docxToMarkdown(buffer: Buffer): string {
+    let zip: { file: (name: string) => { asText: () => string } | null };
+    try {
+      zip = new PizZip(buffer);
+    } catch {
+      throw new Error('Word 文档解析失败：仅支持 .docx；老式 .doc 请先用 Word 另存为 .docx 再导入');
+    }
+    const doc = zip.file('word/document.xml');
+    if (!doc) throw new Error('Word 文档结构异常（缺少 document.xml），请确认文件为有效的 .docx');
+    const xml = doc.asText();
+    // 按段落切分：<w:p ...>...</w:p>；每段提取样式与全部 <w:t> 文本
+    const paras = xml.match(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g) ?? [];
+    const lines: string[] = [];
+    for (const p of paras) {
+      const style = /<w:pStyle\s+w:val="([^"]+)"/.exec(p)?.[1] ?? '';
+      const text = (p.match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g) ?? [])
+        .map((t) => t.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>'))
+        .join('')
+        .trim();
+      if (!text) continue;
+      // 标题样式识别：Heading1-4 / 纯数字 / 中文「标题N」——统一转 # 前缀保留文档层级
+      const level = Number((/^Heading(\d)$/i.exec(style) ?? /^(\d)$/.exec(style) ?? /(\d)/.exec(style))?.[1] ?? 0);
+      if (level >= 1 && level <= 4) {
+        lines.push(`${'#'.repeat(level)} ${text}`);
+      } else {
+        // 非标题段落直接保留文本（列表编号在文本内，AI 可从编号语义识别层级）
+        lines.push(text);
+      }
+      if (lines.length >= MAX_PARSE_ROWS) break;
+    }
+    if (lines.length === 0) throw new Error('Word 文档中未提取到任何文本内容');
+    return lines.join('\n');
+  },
+
+  /**
+   * AI WBS 拆分：需求文档（Markdown 层级文本）→ 有序计划条目。
+   * 要求 AI 按 WBS 规范拆分（编号表达层级）、估算工期、保留原文关键信息、不虚构。
+   * startDate 不输出——保存后由系统工作日串行排期统一生成。
+   */
+  async aiParseWbs(toolId: string, docText: string): Promise<{
+    drafts: Array<{ title: string; description: string; startDate: string; durationDays: number; assignee: string; status: PlanStatus }>;
+  }> {
+    const system = [
+      '你是 MTask 的项目计划 WBS 拆分助手。给定一份需求文档（Markdown 层级文本，# 数量表示标题层级），请：',
+      '1. 按 WBS（工作分解结构）规范把文档内容拆分为有序的计划任务：从需求中识别阶段/功能模块/具体任务，用标题编号表达层级（如 "1 项目启动"、"1.1 需求评审"）',
+      '2. 为每个任务估算工期（工作日数，依据任务范围合理估计）',
+      '3. 输出 JSON 数组，每元素为：',
+      '{"title":"WBS 编号+任务名","description":"该任务对应的需求要点（保留原文关键信息，Markdown）","durationDays":工期工作日数,"assignee":"","status":"todo"}',
+      '要求：',
+      '1. 只输出 JSON 数组本身，不要任何解释或 Markdown 代码围栏',
+      '2. 保留原文关键信息，不虚构、不删改事实内容；文档中没有的负责人/日期字段留空',
+      '3. 粒度适中：建议 5~30 条，任务应可在数个工作日内完成',
+      '4. startDate 一律输出空串（保存后由系统按工作日串行排期自动生成）',
+      '5. status 一律输出 "todo"',
+    ].join('\n');
+    const ai = await AIService.ask(toolId, system, `【需求文档】\n${docText}`);
+    if (!ai.ok || !ai.content) throw new Error(`AI 拆分失败：${ai.error ?? '模型未返回结果'}`);
+    const drafts = parseJsonArrayWithRecovery(ai.content, 'AI 未返回有效的 WBS 数组，请检查文档内容或更换模型');
+    const items: Array<{ title: string; description: string; startDate: string; durationDays: number; assignee: string; status: PlanStatus }> = [];
+    for (const r of drafts) {
+      if (!r || typeof r !== 'object') continue;
+      const o = r as Record<string, unknown>;
+      const title = typeof o.title === 'string' ? o.title.trim() : '';
+      if (!title) continue;
+      items.push({
+        title,
+        description: typeof o.description === 'string' ? o.description : '',
+        startDate: '',
+        durationDays: Math.max(1, Math.floor(Number(o.durationDays) || 1)),
+        assignee: typeof o.assignee === 'string' ? o.assignee : '',
+        status: 'todo',
+      });
+    }
+    if (items.length === 0) throw new Error('AI 未能从文档中拆分出任何任务，请确认文档内容或更换模型');
+    return { drafts: items };
+  },
+
   /**
    * AI 解析：把表格文本交给所选模型，识别计划条目并输出标准结构草稿（不入库，返回前端预览确认）。
    * 校验与归一化在服务端完成：title 必填、startDate 规范化（非法置空由重排兜底）、durationDays≥1、status 枚举。
@@ -494,14 +607,8 @@ export const PlanService = {
     ].join('\n');
     const ai = await AIService.ask(toolId, system, `【Excel 表格文本】\n${tableText}`);
     if (!ai.ok || !ai.content) throw new Error(`AI 解析失败：${ai.error ?? '模型未返回结果'}`);
-    // 剥离可能的代码围栏后提取 JSON 数组
-    const bare = ai.content.replace(/```json/gi, '').replace(/```/gi, '').trim();
-    const start = bare.indexOf('[');
-    const end = bare.lastIndexOf(']');
-    if (start === -1 || end <= start) throw new Error('AI 未返回有效的计划数组，请检查文件内容或更换模型');
-    let arr: unknown;
-    try { arr = JSON.parse(bare.slice(start, end + 1)); } catch { throw new Error('AI 返回的 JSON 无法解析，请重试或更换模型'); }
-    if (!Array.isArray(arr)) throw new Error('AI 返回的不是数组，请重试');
+    // 剥离代码围栏后提取 JSON 数组（带截断恢复，同 aiParseWbs）
+    const arr = parseJsonArrayWithRecovery(ai.content, 'AI 未返回有效的计划数组，请检查文件内容或更换模型');
     const drafts: Array<{ title: string; description: string; startDate: string; durationDays: number; assignee: string; status: PlanStatus }> = [];
     for (const r of arr) {
       if (!r || typeof r !== 'object') continue;

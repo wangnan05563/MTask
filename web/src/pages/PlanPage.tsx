@@ -190,7 +190,7 @@ export function PlanPage() {
     setAiFileName('');
   }
 
-  /** 上传文件 → 后端表格文本化 → AI 语义解析 → 返回标准草稿行（可编辑预览） */
+  /** 上传文件 → 后端解析（Excel 走表格文本+AI 识别；md/docx 走 WBS 拆分）→ 返回标准草稿行（可编辑预览） */
   async function aiParse(file: File) {
     if (!aiToolId) return setAiError('请先选择 AI 模型');
     setAiFileName(file.name);
@@ -199,9 +199,13 @@ export function PlanPage() {
     setAiRows([]);
     try {
       const buf = await file.arrayBuffer();
+      const lower = file.name.toLowerCase();
+      // T00439：需求文档（md/docx）走 WBS 拆分端点；其余（xlsx/csv）走 Excel 表格解析端点
+      const isDoc = lower.endsWith('.md') || lower.endsWith('.markdown') || lower.endsWith('.docx');
+      const endpoint = isDoc ? `/plans/ai-parse-doc` : `/plans/ai-parse`;
       const r = await api.postBinary<{ ok: boolean; drafts: Array<Omit<PlanDraft, 'include'>> }>(
-        `/plans/ai-parse?projectId=${projectId}&toolId=${aiToolId}&filename=${encodeURIComponent(file.name)}`, buf);
-      setAiRows(r.drafts.map((d) => ({ ...d, include: true })));
+        `${endpoint}?projectId=${projectId}&toolId=${aiToolId}&filename=${encodeURIComponent(file.name)}`, buf);
+      setAiRows(r.drafts.map((d) => ({ ...d, include: true, startDate: d.startDate || '' })));
       if (r.drafts.length === 0) setAiError('AI 未识别出计划条目');
     } catch (e) {
       setAiError(String((e as Error).message ?? e));
@@ -378,16 +382,16 @@ export function PlanPage() {
                 <select value={aiToolId} onChange={(e) => setAiToolId(e.target.value)} style={inputStyle} aria-label="选择 AI 模型">
                   {tools.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
-                <label style={{ ...btnStyle, cursor: aiBusy ? 'default' : 'pointer' }} title="选择任意格式的计划 Excel（.xlsx/.csv）">
+                <label style={{ ...btnStyle, cursor: aiBusy ? 'default' : 'pointer' }} title="选择计划 Excel（.xlsx/.csv）或需求文档（.md/.docx）">
                   <Upload size={13} />选择文件
-                  <input type="file" accept=".xlsx,.csv" style={{ display: 'none' }}
+                  <input type="file" accept=".xlsx,.csv,.md,.markdown,.docx" style={{ display: 'none' }}
                     onChange={(e) => { const f = e.target.files?.[0]; if (f) void aiParse(f); e.target.value = ''; }} />
                 </label>
                 {aiFileName && <span style={{ color: 'var(--text-muted)' }}>{aiFileName}</span>}
                 {aiBusy && <span style={{ color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Sparkles size={12} />AI 解析中…</span>}
               </div>
               <div style={{ color: 'var(--text-muted)', fontSize: 11, lineHeight: 1.6 }}>
-                上传任意格式的计划 Excel，AI 自动识别任务名称、起止日期、工期、负责人与状态，并重组为标准计划格式。解析结果先在此预览，可编辑后勾选保存；保存后时间线统一重排。
+                上传任意格式的计划 Excel，AI 自动识别任务名称、起止日期、工期、负责人与状态并重组为标准格式；或上传 Markdown / Word 需求文档（.md/.docx），AI 按 WBS 规范自动拆分任务并估算工期。解析结果先在此预览，可编辑后勾选保存；保存后时间线统一重排。
               </div>
               {aiError && <div style={{ color: 'var(--danger)' }}>{aiError}</div>}
               {aiRows.length > 0 && (
