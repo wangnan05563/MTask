@@ -1,0 +1,108 @@
+import { Router, raw } from 'express';
+import { PlanService } from '../services/PlanService';
+
+/**
+ * 项目计划路由（T00431，菜单位于周报前）。
+ * 数据模型与流程见 docs/PRD-项目计划.md；导入为「任一行失败整体不入库」的事务语义。
+ * 注意：/holidays 系列必须注册在 /:id 之前，否则 DELETE /holidays/:date 会被 DELETE /:id 抢占。
+ */
+export const planApi = Router();
+
+/** 统一错误包装：业务错误 → 400 + { error } */
+function wrap(res: import('express').Response, fn: () => unknown): void {
+  try {
+    res.json(fn());
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+/** projectId 必填校验 */
+function pid(req: import('express').Request): string {
+  const v = req.query.projectId;
+  const s = typeof v === 'string' ? v : '';
+  if (!s) throw new Error('projectId 必填');
+  return s;
+}
+
+// ---------- 节假日（须先于 /:id 注册） ----------
+planApi.get('/holidays', (_req, res) => wrap(res, () => PlanService.listHolidays()));
+
+planApi.post('/holidays', (req, res) => {
+  const { date, name } = (req.body ?? {}) as { date?: unknown; name?: unknown };
+  if (!date || typeof date !== 'string') return res.status(400).json({ error: 'date 必填（YYYY-MM-DD）' });
+  wrap(res, () => { PlanService.addHoliday(date, String(name ?? '')); return { ok: true }; });
+});
+
+planApi.delete('/holidays/:date', (req, res) => wrap(res, () => PlanService.removeHoliday(req.params.date)));
+
+// ---------- Excel 导入 / 导出 / 模板（静态路径，同样先于 /:id） ----------
+// 导入用 raw 收集 xlsx 二进制：全局 express.json 仅解析 application/json，octet-stream 上传会跳过，由这里收集
+// importExcel 为 async（exceljs 解析），需 await 后再响应，不能走同步 wrap（Promise 会被序列化成 {}）
+planApi.post('/import', raw({ type: () => true, limit: '30mb' }), (req, res) => {
+  const projectId = req.query.projectId;
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: '请求体应为 xlsx 文件二进制' });
+  PlanService.importExcel(projectId, req.body)
+    .then((r) => res.json(r))
+    .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
+});
+
+planApi.get('/export', (req, res) => {
+  const projectId = req.query.projectId;
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+  PlanService.exportExcel(projectId).then((buf) => {
+    const ts = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="plan-${ts}.xlsx"`);
+    res.send(buf);
+  }).catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
+});
+
+planApi.get('/template', (_req, res) => {
+  PlanService.templateExcel().then((buf) => {
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="plan-template.xlsx"');
+    res.send(buf);
+  }).catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
+});
+
+// ---------- 计划任务 CRUD ----------
+planApi.get('/', (req, res) => wrap(res, () => PlanService.list(pid(req))));
+
+planApi.post('/', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  if (!b.projectId || !b.title) return res.status(400).json({ error: 'projectId 与 title 必填' });
+  wrap(res, () => PlanService.create({
+    projectId: String(b.projectId),
+    title: String(b.title),
+    description: b.description != null ? String(b.description) : undefined,
+    startDate: b.startDate != null ? String(b.startDate) : undefined,
+    durationDays: b.durationDays != null ? Number(b.durationDays) : undefined,
+    assignee: b.assignee != null ? String(b.assignee) : undefined,
+    status: b.status as Parameters<typeof PlanService.create>[0]['status'],
+  }));
+});
+
+planApi.patch('/:id', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  wrap(res, () => PlanService.update(req.params.id, {
+    title: b.title != null ? String(b.title) : undefined,
+    description: b.description != null ? String(b.description) : undefined,
+    startDate: b.startDate != null ? String(b.startDate) : undefined,
+    durationDays: b.durationDays != null ? Number(b.durationDays) : undefined,
+    progress: b.progress != null ? Number(b.progress) : undefined,
+    status: b.status as Parameters<typeof PlanService.update>[1]['status'],
+    assignee: b.assignee != null ? String(b.assignee) : undefined,
+  }));
+});
+
+planApi.delete('/:id', (req, res) => wrap(res, () => PlanService.remove(req.params.id)));
+
+// ---------- 待办联动 ----------
+planApi.post('/:id/link', (req, res) => {
+  const { taskId } = (req.body ?? {}) as { taskId?: unknown };
+  wrap(res, () => PlanService.linkTodo(req.params.id, taskId ? String(taskId) : null));
+});
+
+planApi.post('/:id/create-todo', (req, res) => wrap(res, () => PlanService.createLinkedTodo(req.params.id)));

@@ -2,16 +2,19 @@ import { Router } from 'express';
 import { getDb } from '../db/connection';
 import { TaskService, type TaskListOptions } from '../services/TaskService';
 import { ConfigService } from '../services/ConfigService';
+import { ConsoleJobService } from '../services/ConsoleJobService';
 import { QueueService } from '../services/QueueService';
 import { AIService } from '../services/AIService';
 import { ArchiveService } from '../services/ArchiveService';
 import { TaskImageService } from '../services/TaskImageService';
 import { TaskCategoryService } from '../services/TaskCategoryService';
+import { ReqCategoryService, ReqEntryService } from '../services/ReqService';
 import { exportBundle, importBundle } from '../services/SettingsService';
 import { getDefaultNoteProjectId, INBOX_PROJECT_ID, setSetting } from '../services/AppSettings';
 import { getConfig as getUpdateConfig, saveConfig as saveUpdateConfig, testConfig as testUpdateConfig, checkUpdate, currentVersion as currentAppVersion } from '../services/UpdateService';
 import { logService } from '../services/LogService';
 import { dbAdminApi } from './dbadmin';
+import { planApi } from './plans';
 import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, gatherReportData, type ReportPeriod } from '../services/ReportService';
 import { Buffer } from 'node:buffer';
 import { v4 as uuid } from 'uuid';
@@ -22,6 +25,33 @@ const LIST_TTL_MS = 5000;
 
 function now(): string {
   return new Date().toISOString();
+}
+
+/**
+ * 解析模型返回的「通用需求分组草案」JSON。
+ * 兼容 ```json 代码围栏与裸 JSON 数组：先剥围栏，再取首个 '[' 到末尾 ']' 之间的片段解析，
+ * 逐条兜底校验 title 必填，其余字段缺失以空串回填（AI 输出不可靠，宁缺毋滥）。
+ */
+function parseReqDraft(text: string): { title: string; content: string; category: string }[] {
+  const bare = text.replace(/```json/gi, '').replace(/```/gi, '').trim();
+  const start = bare.indexOf('[');
+  const end = bare.lastIndexOf(']');
+  if (start === -1 || end <= start) return [];
+  let arr: unknown;
+  try { arr = JSON.parse(bare.slice(start, end + 1)); } catch { return []; }
+  if (!Array.isArray(arr)) return [];
+  const out: { title: string; content: string; category: string }[] = [];
+  for (const r of arr) {
+    if (!r || typeof r !== 'object') continue;
+    const o = r as Record<string, unknown>;
+    if (typeof o.title !== 'string' || !o.title.trim()) continue;
+    out.push({
+      title: o.title.trim(),
+      content: typeof o.content === 'string' ? o.content : '',
+      category: typeof o.category === 'string' ? o.category.trim() : '',
+    });
+  }
+  return out;
 }
 
 export const api = Router();
@@ -152,6 +182,17 @@ api.post('/tasks/:id/to-prompt', (req, res) => {
   if (!categoryId) return res.status(400).json({ error: 'categoryId 必填' });
   try {
     res.status(201).json(TaskService.toPromptAsset(req.params.id, categoryId));
+  } catch (e) {
+    res.status(409).json({ error: (e as Error).message });
+  }
+});
+
+api.post('/tasks/:id/to-req', (req, res) => {
+  const { categoryId } = req.body ?? {};
+  if (!categoryId) return res.status(400).json({ error: 'categoryId 必填' });
+  try {
+    res.status(201).json(TaskService.toReqAsset(req.params.id, categoryId));
+    cacheClear('req-categories'); // 新增条目使分类计数变化
   } catch (e) {
     res.status(409).json({ error: (e as Error).message });
   }
@@ -551,6 +592,52 @@ api.post('/ai/chat', async (req, res) => {
   }
 });
 
+// ---------- AI 控制台持久化并行任务（T00417） ----------
+// 与上面同步问答不同：这里 POST 受理后即返回 {id}，真正执行由后台不 await 的 promise 完成并回写库，
+// 任务运行不依赖前端会话（页面切换/刷新仍继续），前端靠 GET 轮询收敛为完成态。
+const CONSOLE_PERIODS = new Set(['day', 'week', 'month']);
+api.post('/console-jobs', (req, res) => {
+  const { title, prompt, category, period, toolId } = req.body ?? {};
+  if (!title || typeof title !== 'string' || !title.trim()) return res.status(400).json({ error: 'title 必填' });
+  if (!prompt || typeof prompt !== 'string' || !prompt.trim()) return res.status(400).json({ error: 'prompt 必填' });
+  if (!toolId || typeof toolId !== 'string') return res.status(400).json({ error: 'toolId 必填' });
+  const p = typeof period === 'string' && CONSOLE_PERIODS.has(period) ? (period as 'day' | 'week' | 'month') : null;
+  const job = ConsoleJobService.create({
+    title: title.trim(),
+    prompt: prompt.trim(),
+    category: typeof category === 'string' && category ? category : 'custom',
+    period: p,
+  });
+  // 不 await：受理即返回，后台 promise 完成后 markDone/markError 回写库
+  void ConsoleJobService.runJob(job.id, toolId);
+  res.status(201).json({ id: job.id });
+});
+
+api.get('/console-jobs', (_req, res) => {
+  res.json(ConsoleJobService.list());
+});
+
+api.post('/console-jobs/:id/restart', (req, res) => {
+  const { toolId } = req.body ?? {};
+  if (!toolId || typeof toolId !== 'string') return res.status(400).json({ error: 'toolId 必填' });
+  const job = ConsoleJobService.get(req.params.id);
+  if (!job) return res.status(404).json({ error: '任务不存在' });
+  ConsoleJobService.reset(req.params.id); // 复用固化 prompt/周期重跑
+  void ConsoleJobService.runJob(req.params.id, toolId);
+  res.json({ id: job.id });
+});
+
+api.delete('/console-jobs/:id', (req, res) => {
+  if (!ConsoleJobService.remove(req.params.id)) return res.status(404).json({ error: '任务不存在' });
+  res.status(204).end();
+});
+
+// 清空全部（「重置控制台」语义）：与 /console-jobs/:id 路径不同，无 id 时不冲突
+api.delete('/console-jobs', (_req, res) => {
+  ConsoleJobService.clear();
+  res.status(204).end();
+});
+
 // ---------- 任务智能分类 ----------
 api.post('/tasks/classify', async (req, res) => {
   const { title, toolId, categories } = req.body ?? {};
@@ -570,6 +657,76 @@ api.post('/ai/optimize', async (req, res) => {
   if (!toolId) return res.status(400).json({ error: 'toolId 必填' });
   try {
     res.json(await AIService.optimizeText(title ?? '', description ?? '', toolId));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---------- 通用需求：AI 智能分组 / 批量转存 ----------
+// mode='ai'：AI 从 answer（通用需求清单 Markdown）抽取若干条通用需求，自动归入/新建最贴切分类后批量写入 req_entries；
+// mode='manual'：按 items [{title,content}] 批量写入指定分类 categoryId。
+// 复用 AIService.ask（已有的单轮对话封装），不再引入新的 AI 编排。
+api.post('/ai/generalize-to-req', async (req, res) => {
+  const { toolId, answer, mode = 'ai', categoryId, items } = req.body ?? {};
+  try {
+    // 分类名 -> id 缓存：AI 输出同名分类会重复出现，一次解析后复用，避免重复建分类
+    const cats = new Map<string, string>();
+    const ensureCat = (name: string): string => {
+      const trimmed = name.trim();
+      if (!trimmed) return '';
+      const hit = cats.get(trimmed);
+      if (hit) return hit;
+      const exist = getDb().prepare('SELECT id FROM req_categories WHERE name = ?').get(trimmed) as { id: string } | undefined;
+      const id = exist?.id ?? ReqCategoryService.create(trimmed).id;
+      cats.set(trimmed, id);
+      return id;
+    };
+    const created: { title: string; content: string; categoryId: string; categoryName: string }[] = [];
+
+    if (mode === 'manual') {
+      // 手动分组：目标分类 + 前端解析好的 items，整批落入同一分类
+      if (typeof categoryId !== 'string' || !categoryId) return res.status(400).json({ error: 'categoryId 必填' });
+      const catRow = getDb().prepare('SELECT id, name FROM req_categories WHERE id = ?').get(categoryId) as { id: string; name: string } | undefined;
+      if (!catRow) return res.status(400).json({ error: '归属分类不存在' });
+      if (!Array.isArray(items)) return res.status(400).json({ error: 'items 必填' });
+      for (const it of items) {
+        if (!it || typeof it.title !== 'string' || !it.title.trim()) continue;
+        const e = ReqEntryService.create({ categoryId, title: it.title.trim(), content: typeof it.content === 'string' ? it.content : '' });
+        created.push({ title: e.title, content: e.content, categoryId: e.category_id, categoryName: catRow.name });
+      }
+    } else {
+      // AI 智能分组：让模型把清单拆成多条并归入最贴切分类，缺失匹配时兜底到「通用」分类
+      if (typeof answer !== 'string' || !answer.trim()) return res.status(400).json({ error: 'answer 必填' });
+      if (typeof toolId !== 'string' || !toolId) return res.status(400).json({ error: 'toolId 必填（AI 智能分组需要模型工具）' });
+      const candidate = ReqCategoryService.list().map((c) => c.name);
+      if (!candidate.includes('通用')) candidate.push('通用');
+      const system = [
+        '你是 MTask 的通用需求提炼助手。给定一份“通用需求清单”Markdown，抽取其中具备跨项目复用价值的若干条通用需求（结合“需求标题/适用场景/实现要点/复用价值”四要素），为每一条输出 JSON。',
+        '要求：',
+        '1. 输出一个 JSON 数组，每元素为 {"title":"需求标题","content":"完整需求描述(Markdown，含适用场景/实现要点/复用价值)","category":"归类分类名"}',
+        '2. category 必须从候选分类名中选择最贴切的一个；若无合适分类，选“通用”',
+        '3. 只输出 JSON 数组本身，不要任何解释、前后缀、Markdown 代码围栏',
+        `候选分类：${candidate.join('、')}`,
+      ].join('\n');
+      const ai = await AIService.ask(toolId, system, `【通用需求清单】\n${answer.trim()}`);
+      if (!ai.ok || !ai.content) {
+        return res.status(400).json({ error: `AI 分组失败：${ai.error ?? '模型未返回结果'}` });
+      }
+      const drafts = parseReqDraft(ai.content);
+      if (!drafts.length) {
+        return res.status(400).json({ error: 'AI 未能从清单中解析出通用需求条目，请检查清单格式或改用手动分组' });
+      }
+      for (const d of drafts) {
+        const cid = ensureCat(d.category || '通用');
+        if (!cid) continue;
+        const e = ReqEntryService.create({ categoryId: cid, title: d.title, content: d.content });
+        const nm = getDb().prepare('SELECT name FROM req_categories WHERE id = ?').get(cid) as { name: string };
+        created.push({ title: e.title, content: e.content, categoryId: e.category_id, categoryName: nm.name });
+      }
+    }
+
+    cacheClear('req-categories'); // 新增/新建分类影响分类计数与列表
+    res.status(201).json({ ok: true, count: created.length, entries: created });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -686,6 +843,73 @@ api.delete('/prompts/:id', (req, res) => {
   res.status(204).end();
 });
 
+// ---------- 通用需求仓库 ----------
+// 分类列表带条目计数（与提示词分类一致，缓存 5s；写端点主动 cacheClear）
+api.get('/req-categories', (_req, res) => {
+  const cached = cacheGet<unknown[]>('req-categories');
+  if (cached) return res.json(cached);
+  const out = ReqCategoryService.list();
+  cacheSet('req-categories', out, LIST_TTL_MS);
+  res.json(out);
+});
+
+api.post('/req-categories', (req, res) => {
+  const { name } = req.body ?? {};
+  if (!name || typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name 必填' });
+  cacheClear('req-categories');
+  res.status(201).json(ReqCategoryService.create(name));
+});
+
+api.patch('/req-categories/:id', (req, res) => {
+  const { name } = req.body ?? {};
+  if (!name || typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name 必填' });
+  const cat = ReqCategoryService.rename(req.params.id, name);
+  if (!cat) return res.status(404).json({ error: '分类不存在' });
+  cacheClear('req-categories');
+  res.json(cat);
+});
+
+api.delete('/req-categories/:id', (req, res) => {
+  // 删除分类会级联删除其下条目（req_entries 外键 ON DELETE CASCADE）
+  if (!ReqCategoryService.remove(req.params.id)) return res.status(404).json({ error: '分类不存在' });
+  cacheClear('req-categories');
+  res.status(204).end();
+});
+
+api.get('/req-entries', (req, res) => {
+  const { categoryId, keyword } = req.query;
+  res.json(ReqEntryService.listByCategory(categoryId as string | undefined, keyword as string | undefined));
+});
+
+api.post('/req-entries', (req, res) => {
+  const { categoryId, title, content = '' } = req.body ?? {};
+  if (!categoryId || !title || typeof title !== 'string') return res.status(400).json({ error: 'categoryId 与 title 必填' });
+  // 分类不存在直接映射 400，避免写入悬空外键
+  const catExists = getDb().prepare('SELECT 1 FROM req_categories WHERE id = ?').get(categoryId);
+  if (!catExists) return res.status(400).json({ error: '归属分类不存在' });
+  const entry = ReqEntryService.create({ categoryId, title, content });
+  cacheClear('req-categories'); // 分类计数变化
+  res.status(201).json(entry);
+});
+
+api.patch('/req-entries/:id', (req, res) => {
+  const { title, content, categoryId, pinned } = req.body ?? {};
+  // 移动分组时校验目标分类存在，避免写入悬空外键
+  if (categoryId !== undefined && !getDb().prepare('SELECT 1 FROM req_categories WHERE id = ?').get(categoryId)) {
+    return res.status(400).json({ error: '归属分类不存在' });
+  }
+  const entry = ReqEntryService.update(req.params.id, { title, content, categoryId, pinned });
+  if (!entry) return res.status(404).json({ error: '条目不存在' });
+  cacheClear('req-categories'); // 改分类/置顶影响分类计数与顺序
+  res.json(entry);
+});
+
+api.delete('/req-entries/:id', (req, res) => {
+  if (!ReqEntryService.remove(req.params.id)) return res.status(404).json({ error: '条目不存在' });
+  cacheClear('req-categories'); // 分类计数变化
+  res.status(204).end();
+});
+
 // ---------- 移动端：默认记事项目设置 ----------
 // 读取当前默认记事项目（用户设置优先，否则收件箱系统项目）
 api.get('/settings/note-project', (_req, res) => {
@@ -770,3 +994,6 @@ api.post('/update/check', async (req, res) => {
 
 // ---------- 数据库维护（设置 > 数据维护 Tab） ----------
 api.use('/dbadmin', dbAdminApi);
+
+// ---------- 项目计划（T00431，菜单位于周报前） ----------
+api.use('/plans', planApi);

@@ -4,21 +4,25 @@ import { AIToolsPage } from './pages/AIToolsPage';
 import { QueuePage } from './pages/QueuePage';
 import { ArchivePage } from './pages/ArchivePage';
 import { PromptsPage } from './pages/PromptsPage';
+import { ReqPage } from './pages/ReqPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { LogsPage } from './pages/LogsPage';
 import { ReportPage } from './pages/ReportPage';
+import { PlanPage } from './pages/PlanPage';
 import { api, setAccessToken } from './api/client';
 import { MarkdownStyles } from './ui/Markdown';
 import { SettingsProvider } from './settings';
 import { MobileShell } from './mobile/MobileShell';
-import { Archive, BarChart3, Boxes, ListOrdered, ListTodo, ScrollText, Settings, Terminal, type LucideIcon } from 'lucide-react';
+import { Archive, BarChart3, Boxes, CalendarRange, Lightbulb, ListOrdered, ListTodo, ScrollText, Settings, Terminal, type LucideIcon } from 'lucide-react';
 
-type Tab = 'tasks' | 'aitools' | 'prompts' | 'queue' | 'archive' | 'report' | 'settings' | 'logs';
+type Tab = 'tasks' | 'aitools' | 'prompts' | 'req' | 'plan' | 'queue' | 'archive' | 'report' | 'settings' | 'logs';
 
 const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: 'tasks', label: '任务', icon: ListTodo },
   { key: 'aitools', label: '模型', icon: Boxes },
   { key: 'prompts', label: '提示词', icon: ScrollText },
+  { key: 'req', label: '通用需求', icon: Lightbulb },
+  { key: 'plan', label: '项目计划', icon: CalendarRange },
   { key: 'report', label: '周报', icon: BarChart3 },
   { key: 'queue', label: '队列', icon: ListOrdered },
   { key: 'archive', label: '归档', icon: Archive },
@@ -116,7 +120,9 @@ function Shell() {
       {tab === 'tasks' && <TasksPage />}
       {tab === 'aitools' && <AIToolsPage />}
       {tab === 'prompts' && <PromptsPage />}
+      {tab === 'req' && <ReqPage />}
       {tab === 'queue' && <QueuePage />}
+      {tab === 'plan' && <PlanPage />}
       {tab === 'report' && <ReportPage />}
       {tab === 'archive' && <ArchivePage />}
       {tab === 'logs' && <LogsPage />}

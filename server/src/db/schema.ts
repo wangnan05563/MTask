@@ -129,11 +129,77 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     -- 复合索引：分类内按 置顶+更新时间 排序（GET /prompts 的常见查询路径）
     CREATE INDEX IF NOT EXISTS idx_prompts_category_order ON prompts(category_id, pinned, updated_at);
 
+    -- 通用需求仓库：分类 + 条目（沉淀"通用优秀实现/解决方案"，三级组织：分类 → 条目）
+    CREATE TABLE IF NOT EXISTS req_categories (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,
+      sort_weight INTEGER DEFAULT 0,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS req_entries (
+      id          TEXT PRIMARY KEY,
+      category_id TEXT NOT NULL REFERENCES req_categories(id) ON DELETE CASCADE,
+      title       TEXT NOT NULL,
+      content     TEXT NOT NULL DEFAULT '',
+      pinned      INTEGER NOT NULL DEFAULT 0,
+      sort_weight INTEGER DEFAULT 0,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_req_entries_category ON req_entries(category_id);
+    -- 复合索引：分类内按 置顶+更新时间 排序（GET /req-entries 的常见查询路径）
+    CREATE INDEX IF NOT EXISTS idx_req_entries_category_order ON req_entries(category_id, pinned, updated_at);
+
     -- 应用级键值设置：当前仅承载移动端「默认记事项目」指针（defaultNoteProjectId）。
     -- KV 结构便于未来扩展其它轻量偏好，且随数据迁移整体导出/导入。
     CREATE TABLE IF NOT EXISTS app_settings (
       key   TEXT PRIMARY KEY,
       value TEXT
+    );
+
+    -- AI 控制台持久化并行任务（T00417）：分析任务落库后由后端异步运行，
+    -- 即使前端页面切换/刷新也不中断；运行中任务切回页面仍可恢复与查看结果。
+    CREATE TABLE IF NOT EXISTS console_jobs (
+      id         TEXT PRIMARY KEY,
+      title      TEXT NOT NULL,
+      prompt     TEXT NOT NULL,
+      category   TEXT NOT NULL DEFAULT 'custom',
+      period     TEXT,
+      status     TEXT NOT NULL DEFAULT 'busy',
+      answer     TEXT,
+      error      TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    -- 列表按创建时间排序（GET /console-jobs 返回顺序即 tab 展示顺序）
+    CREATE INDEX IF NOT EXISTS idx_console_jobs_created ON console_jobs(created_at);
+
+    -- 项目计划任务（T00431）：按项目隔离的计划条目，串行瀑布时间线（见 docs/PRD-项目计划.md）。
+    -- end_date 冗余存储重排结果（= start_date 起 duration_days 个工作日的含尾日），由服务层保证一致。
+    CREATE TABLE IF NOT EXISTS plan_tasks (
+      id             TEXT PRIMARY KEY,
+      project_id     TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      title          TEXT NOT NULL,
+      description    TEXT DEFAULT '',
+      start_date     TEXT NOT NULL,
+      end_date       TEXT NOT NULL,
+      duration_days  INTEGER NOT NULL DEFAULT 1,
+      progress       INTEGER NOT NULL DEFAULT 0,
+      status         TEXT NOT NULL DEFAULT 'todo',
+      assignee       TEXT DEFAULT '',
+      sort_order     INTEGER NOT NULL DEFAULT 0,
+      linked_task_id TEXT,
+      created_at     TEXT NOT NULL,
+      updated_at     TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_plan_tasks_project ON plan_tasks(project_id, sort_order);
+
+    -- 节假日表（T00431）：工作日判定排除项（周末固定排除，此处存法定节假日/调休上班以外的休息日）
+    CREATE TABLE IF NOT EXISTS holidays (
+      date TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT ''
     );
   `);
 

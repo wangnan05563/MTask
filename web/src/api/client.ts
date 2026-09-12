@@ -49,6 +49,26 @@ export const api = {
     request<T>(path, { method: 'PATCH', body: JSON.stringify(data ?? {}) }),
   del: <T>(path: string, data?: unknown) =>
     request<T>(path, { method: 'DELETE', body: data === undefined ? undefined : JSON.stringify(data) }),
+  /** GET 二进制下载（xlsx 导出/模板等）：返回原始 ArrayBuffer，由调用方触发保存 */
+  async getBinary(path: string): Promise<ArrayBuffer> {
+    const res = await fetch(`${apiBase}${path}`, { headers: accessToken ? { 'X-Access-Token': accessToken } : {} });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+    }
+    return res.arrayBuffer();
+  },
+  /** POST 二进制上传（xlsx 导入等），Content-Type 固定 octet-stream 以跳过全局 JSON 解析 */
+  async postBinary<T>(path: string, data: ArrayBuffer): Promise<T> {
+    const res = await fetch(`${apiBase}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', ...(accessToken ? { 'X-Access-Token': accessToken } : {}) },
+      body: data,
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+    return body as T;
+  },
   /** 生成类接口的二进制下载：POST 返回文件流，附带 Content-Disposition 文件名 */
   async download(path: string, data: unknown): Promise<{ blob: Blob; filename: string }> {
     const res = await fetch(`${apiBase}${path}`, {
@@ -197,6 +217,27 @@ export interface PromptCategory {
 }
 
 export interface Prompt {
+  id: string;
+  category_id: string;
+  title: string;
+  content: string;
+  /** 置顶：true=固定到列表顶部（后端返回 0/1，前端按布尔使用） */
+  pinned: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReqCategory {
+  id: string;
+  name: string;
+  sort_weight: number;
+  created_at: string;
+  updated_at: string;
+  /** 分类列表接口附带的条目数量 */
+  reqCount?: number;
+}
+
+export interface ReqEntry {
   id: string;
   category_id: string;
   title: string;
