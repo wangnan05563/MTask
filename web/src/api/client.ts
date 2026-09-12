@@ -158,6 +158,8 @@ export interface Task {
   pinned: boolean;
   /** 所属任务分类 id；null 表示未分类 */
   category_id: string | null;
+  /** T00450：父任务 id（epic→task 两级层级） */
+  parent_id: string | null;
   created_at: string;
   updated_at: string;
   images: TaskImage[];

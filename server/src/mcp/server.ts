@@ -75,6 +75,7 @@ export async function createMCPServer(): Promise<McpServer> {
       priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('优先级'),
       status: z.enum(['todo', 'done']).optional().describe('状态'),
       categoryId: z.string().optional().describe('任务分类 id'),
+      parentId: z.string().optional().describe('父任务 id（T00450：创建子任务挂到 epic→task 层级；须与目标项目一致）'),
       dedupe: z.boolean().optional().describe('同项目同标题查重（默认开启；命中时返回既有任务且 reused=true，不新建）'),
     },
   }, async (a) => {
@@ -95,6 +96,13 @@ export async function createMCPServer(): Promise<McpServer> {
         const exist = rows.find((r) => String(r.title ?? '').replace(/\s+/g, '') === normTitle);
         if (exist) return ok(json({ reused: true, task: exist }), { reused: true, task: exist });
       }
+      // T00450：父子层级——父任务校验（存在且同项目）
+      let parentId = a.parentId?.trim() || undefined;
+      if (parentId) {
+        const parent = getDb().prepare('SELECT id, project_id FROM tasks WHERE id = ?').get(parentId) as { project_id: string } | undefined;
+        if (!parent) return err('父任务不存在');
+        if (parent.project_id !== pid) return err('子任务与父任务必须同项目');
+      }
       const task = TaskService.create({
         projectId: pid,
         title: a.title,
@@ -102,6 +110,7 @@ export async function createMCPServer(): Promise<McpServer> {
         priority: a.priority,
         status: a.status,
         categoryId: a.categoryId,
+        parentId,
       });
       return ok(json(task), { task });
     } catch (e) { return err((e as Error).message); }

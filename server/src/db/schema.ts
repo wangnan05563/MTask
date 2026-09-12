@@ -243,6 +243,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // 项目计划归档（删除改归档）：archived=1 的计划从时间线移除但在归档菜单可恢复/彻底删除
   ensureColumn('plan_tasks', 'archived', 'archived INTEGER NOT NULL DEFAULT 0');
   ensureColumn('plan_tasks', 'archived_at', 'archived_at TEXT');
+  // 任务父子层级（T00450 / PRD UX-3）：parent_id 指向父任务（epic→task 两级）；子任务紧随父任务展示
+  ensureColumn('tasks', 'parent_id', 'parent_id TEXT');
   // 老库 queue_jobs 的 task_id/tool_id 外键缺 ON DELETE CASCADE，删除关联任务/工具/项目时
   // 会被外键约束阻断（500）。SQLite 不支持 ALTER 外键，需整表重建，按幂等方式检测后执行
   ensureQueueJobsCascade();

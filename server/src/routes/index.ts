@@ -143,7 +143,7 @@ api.get('/tasks/by-no/:taskNo', (req, res) => {
 });
 
 api.post('/tasks', (req, res) => {
-  const { projectId, title, description, priority, status, categoryId } = req.body ?? {};
+  const { projectId, title, description, priority, status, categoryId, parentId } = req.body ?? {};
   if (!title || typeof title !== 'string' || !title.trim()) return res.status(400).json({ error: 'title 必填' });
   // 移动端随手记：projectId 可选（§3.1/§3.3）。缺省落"默认记事项目"（用户设置优先，否则收件箱系统项目）
   const pid = projectId && typeof projectId === 'string' && projectId.trim()
@@ -152,12 +152,26 @@ api.post('/tasks', (req, res) => {
   if (!getDb().prepare('SELECT 1 FROM projects WHERE id = ?').get(pid)) {
     return res.status(400).json({ error: '归属项目不存在' });
   }
-  res.status(201).json(TaskService.create({ projectId: pid, title: title.trim(), description, priority, status, categoryId }));
+  // T00450：父子层级——父任务必须存在且同项目（防跨项目挂接）
+  let parent = undefined;
+  if (parentId && typeof parentId === 'string') {
+    parent = getDb().prepare('SELECT id, project_id FROM tasks WHERE id = ?').get(parentId) as { id: string; project_id: string } | undefined;
+    if (!parent) return res.status(400).json({ error: '父任务不存在' });
+    if (parent.project_id !== pid) return res.status(400).json({ error: '子任务与父任务必须同项目' });
+  }
+  res.status(201).json(TaskService.create({ projectId: pid, title: title.trim(), description, priority, status, categoryId, parentId: parent?.id }));
 });
 
 api.patch('/tasks/:id', (req, res) => {
-  const { title, description, priority, status, verified, aiSummary, handleResult, pinned, categoryId } = req.body ?? {};
-  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId }));
+  const { title, description, priority, status, verified, aiSummary, handleResult, pinned, categoryId, parentId } = req.body ?? {};
+  // T00450：parentId 挂接/换父/解除（null）——同项目校验；父任务不可挂到自己或其后代（两级层级下后代不存在，仅防自挂）
+  if (parentId !== undefined) {
+    if (parentId === req.params.id) return res.status(400).json({ error: '父任务不能是任务自身' });
+    if (parentId && !getDb().prepare('SELECT id, project_id FROM tasks WHERE id = ?').get(parentId)) {
+      return res.status(400).json({ error: '父任务不存在' });
+    }
+  }
+  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId, parent_id: parentId === undefined ? undefined : (parentId || null) }));
 });
 
 api.post('/tasks/move', (req, res) => {

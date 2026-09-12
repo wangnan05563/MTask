@@ -6,7 +6,7 @@ import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { useBusy, setBusy } from '../ui/busy';
-import { AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, Loader2, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X } from 'lucide-react';
+import { AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, ListTodo, Loader2, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X } from 'lucide-react';
 
 /** 粘贴截图项：id 为入列时生成的稳定唯一标识，供列表 key 使用，删除中间项不会导致其余项身份错位 */
 interface PastedImage {
@@ -532,6 +532,17 @@ export function TasksPage() {
     beautifyAll();
   }
 
+  /** T00450：创建子任务——挂到父任务下，渲染时缩进紧随父行 */
+  async function createSubTask(parent: Task) {
+    const title = await askInput({ title: `为「${parent.title}」创建子任务`, placeholder: '子任务标题' });
+    if (!title?.trim()) return;
+    try {
+      await api.post('/tasks', { projectId: parent.project_id, title: title.trim(), parentId: parent.id });
+      void loadTasks(activeProject);
+      flash('子任务已创建');
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
+  }
+
   // ---------- T00457：批量操作（多选后批量改状态/分类/归档，单事务整体回滚） ----------
 
   async function batchApply(action: 'status' | 'category' | 'archive', value?: string) {
@@ -977,6 +988,11 @@ export function TasksPage() {
           <option value="normal">中</option>
           <option value="high">高</option>
         </select>
+        {/* T00450：创建子任务——两级 epic→task 层级 */}
+        <button onClick={() => void createSubTask(t)} title="创建子任务 — 在该任务下创建子任务（层级展示）" aria-label="创建子任务"
+          className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--text-muted)' }}>
+          <ListTodo size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+        </button>
         {/* 行内切换任务分类：'none' 仅作展示用不可选；空串回到未分类 */}
         <select
           value={t.category_id ?? ''}
@@ -1407,7 +1423,7 @@ export function TasksPage() {
     return (
       <li
         className={`task-item${titleEditing || descEditing ? ' task-editing' : ''}`}
-        style={{ borderBottom: '1px solid var(--surface-2)', padding: '6px 0' }}
+        style={{ borderBottom: '1px solid var(--surface-2)', padding: '6px 0', marginLeft: t.parent_id ? 28 : 0, borderLeft: t.parent_id ? '2px solid var(--border-strong)' : undefined, paddingLeft: t.parent_id ? 10 : undefined }}
       >
         {renderTaskTitleRow(t, titleEditing)}
         {/* 元信息/操作行：优先级/分类/功能按钮 + 记录时间，全部靠右同行 */}
@@ -1653,8 +1669,22 @@ export function TasksPage() {
       if (doneFilter === 'verified') return t.verified;
       return !t.verified;
     };
-    const visibleTodo = sortTasks(todo.filter(matches), todoSort);
-    const visibleDone = sortTasks(done.filter(matches).filter(matchDoneFilter), doneSort);
+    // T00450：父子层级——子任务紧随父任务之后（缩进渲染），其余排序规则不变
+    const arrange = (list: Task[]): Task[] => {
+      const kids = new Map<string, Task[]>();
+      const roots: Task[] = [];
+      for (const t of list) {
+        if (t.parent_id && list.some((x) => x.id === t.parent_id)) {
+          const arr = kids.get(t.parent_id) ?? [];
+          arr.push(t); kids.set(t.parent_id, arr);
+        } else roots.push(t);
+      }
+      const out: Task[] = [];
+      for (const t of roots) { out.push(t); const k = kids.get(t.id); if (k) out.push(...k); }
+      return out;
+    };
+    const visibleTodo = arrange(sortTasks(todo.filter(matches), todoSort));
+    const visibleDone = arrange(sortTasks(done.filter(matches).filter(matchDoneFilter), doneSort));
     return (
       <>
         {batchBar}
