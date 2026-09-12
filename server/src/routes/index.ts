@@ -167,8 +167,11 @@ api.patch('/tasks/:id', (req, res) => {
   // T00450：parentId 挂接/换父/解除（null）——同项目校验；父任务不可挂到自己或其后代（两级层级下后代不存在，仅防自挂）
   if (parentId !== undefined) {
     if (parentId === req.params.id) return res.status(400).json({ error: '父任务不能是任务自身' });
-    if (parentId && !getDb().prepare('SELECT id, project_id FROM tasks WHERE id = ?').get(parentId)) {
-      return res.status(400).json({ error: '父任务不存在' });
+    if (parentId) {
+      const parent = getDb().prepare('SELECT id, project_id, parent_id FROM tasks WHERE id = ?').get(parentId) as { id: string; project_id: string; parent_id: string | null } | undefined;
+      if (!parent) return res.status(400).json({ error: '父任务不存在' });
+      // T00450 评审修复：两级层级约束——父任务本身不可是子任务（防 A→B→C 三级链破坏 arrange 分组渲染）
+      if (parent.parent_id) return res.status(400).json({ error: '父任务已是子任务，层级限制两级' });
     }
   }
   res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId, parent_id: parentId === undefined ? undefined : (parentId || null) }));

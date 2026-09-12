@@ -231,6 +231,14 @@ export function PlanPage() {
   function renderGantt() {
     if (plans.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 12, padding: 16 }}>暂无计划任务，先创建或导入。</div>;
     const dates = plans.flatMap((p) => [p.start_date, p.end_date]).filter(Boolean).sort();
+    // 评审 P2-3：边界防护——全部计划无日期（如批量导入未带排期）时避免 NaN 渲染异常
+    if (!dates[0]) {
+      return (
+        <div style={{ padding: 16, color: 'var(--text-muted)', fontSize: 12, border: '1px dashed var(--border-strong)', borderRadius: 8 }}>
+          计划任务尚未生成排期——在列表视图编辑任意任务后自动生成，或导入含日期的 Excel。
+        </div>
+      );
+    }
     const rangeStart = dates[0];
     const rangeEnd = dates[dates.length - 1];
     const dayMs = 86400000;

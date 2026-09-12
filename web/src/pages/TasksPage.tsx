@@ -255,21 +255,21 @@ export function TasksPage() {
     if (!activeProject) return;
     return api.openChangeStream((kind) => {
       if (kind === 'tasks' || kind === 'queue' || kind === 'plans') {
-        setSelectedIds((prev) => {
-          if (prev.size === 0) return prev;
-          // 外部变更后清掉可能已失效的选中项，避免批量操作打到不存在的任务
-          const next = new Set<string>();
+        void loadTasks(activeProject);
+        // 评审 P2-1 修复：选中项有效性校验移出 setState updater（原嵌套异步 setState 为反模式）；
+        // 串行 SSE 通知下幂等：重复校验以 alive 集合为准，size 不变时返回原引用避免重渲染
+        if (selectedIds.size > 0) {
           void api.get<Task[]>(`/tasks?projectId=${activeProject}&archived=false`).then((list) => {
             const alive = new Set(list.map((t) => t.id));
-            prev.forEach((id) => { if (alive.has(id)) next.add(id); });
-            setSelectedIds(next);
-          });
-          return next;
-        });
-        void loadTasks(activeProject);
+            setSelectedIds((prev) => {
+              const next = new Set([...prev].filter((id) => alive.has(id)));
+              return next.size === prev.size ? prev : next;
+            });
+          }).catch(() => undefined);
+        }
       }
     });
-  }, [activeProject, loadTasks]);
+  }, [activeProject, loadTasks, selectedIds]);
   // 工具下拉展开期间监听全局焦点移出：内部元素间切换时 relatedTarget 仍在容器内不收起，移出容器才收起。
   // 挂在 document 上而非容器 div，可避免为挂 onBlur 而给非交互容器加 tabIndex/role
   useEffect(() => {
