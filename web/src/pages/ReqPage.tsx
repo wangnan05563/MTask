@@ -258,6 +258,10 @@ export function ReqPage() {
       {/* 悬浮操作按钮 + 行 hover 高亮 + 记录高亮动画：类名与任务页体验一致 */}
       <style>{`
         .arena-row { transition: background-color .15s ease, transform .12s ease; }
+        /* T00467/T00468：图标按钮 hover 动画 */
+        .tbtn-anim svg { transition: transform .18s ease; }
+        .tbtn-anim:hover svg { transform: scale(1.2) rotate(8deg); }
+        .tbtn-anim:active svg { transform: scale(.88); }
         .arena-row:active { transform: scale(.985); }
         .arena-row:hover { background: var(--surface-2); }
         .abtn { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
@@ -274,7 +278,7 @@ export function ReqPage() {
           {categories.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.reqCount ?? 0}）</option>)}
         </select>
         <button onClick={() => void addCategory()} title="新建分类 — 新增一个通用需求分类" aria-label="新建分类：新增一个通用需求分类"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 8px' }}>
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 8px', borderRadius: 6 }}>
           <Plus size={13} style={{ verticalAlign: '-2px' }} /> 新建分类
         </button>
         {activeCat && (
