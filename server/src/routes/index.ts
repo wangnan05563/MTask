@@ -759,6 +759,34 @@ function createTaskFromSource(table: 'prompts' | 'req_entries', sourceId: string
   return { taskId: id, projectId, reused: false };
 }
 
+/** AI 用量聚合（T00448 / PRD AI-1）：近 N 天概览（按天/按工具）+ 最近明细 */
+api.get('/ai/usage', (req, res) => {
+  const days = Math.min(90, Math.max(1, Number(req.query.days) || 7));
+  const since = new Date(Date.now() - days * 86400000).toISOString();
+  const db = getDb();
+  const summary = db.prepare(
+    `SELECT substr(created_at, 1, 10) AS day,
+            COUNT(*) AS calls,
+            SUM(ok) AS okCalls,
+            SUM(1 - ok) AS failCalls,
+            CAST(AVG(duration_ms) AS INTEGER) AS avgMs,
+            SUM(content_chars) AS contentChars
+     FROM ai_usage WHERE created_at >= ? GROUP BY day ORDER BY day`,
+  ).all(since);
+  const byTool = db.prepare(
+    `SELECT tool_name, model, kind, COUNT(*) AS calls,
+            SUM(ok) AS okCalls, SUM(1 - ok) AS failCalls,
+            CAST(AVG(duration_ms) AS INTEGER) AS avgMs,
+            SUM(content_chars) AS contentChars
+     FROM ai_usage WHERE created_at >= ? GROUP BY tool_name, model, kind ORDER BY calls DESC`,
+  ).all(since);
+  const recent = db.prepare(
+    `SELECT tool_name, model, kind, ok, duration_ms, content_chars, error, created_at
+     FROM ai_usage ORDER BY created_at DESC LIMIT 30`,
+  ).all();
+  res.json({ days, summary, byTool, recent });
+});
+
 api.post('/prompts/:id/to-task', (req, res) => {
   try { res.status(201).json({ ok: true, ...createTaskFromSource('prompts', req.params.id) }); }
   catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }

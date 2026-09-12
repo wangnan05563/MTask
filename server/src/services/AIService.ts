@@ -3,6 +3,7 @@ import { ConfigService } from './ConfigService';
 import { QueueService, type QueueJobRow } from './QueueService';
 import { TaskService } from './TaskService';
 import { logService } from './LogService';
+import { v4 as uuid } from 'uuid';
 import { getAdapter } from '../adapters';
 import type { StreamResult, SubmitResult, PollResult } from '../adapters/types';
 
@@ -14,6 +15,32 @@ function runtimeWithModel(toolId: string) {
   const { type, config } = ConfigService.getRuntimeConfig(toolId);
   if (!config.model) throw new Error(MODEL_UNCONFIGURED);
   return { type, config };
+}
+
+/** AI 工具名缓存查询（用量记录用） */
+function toolNameOf(toolId: string): string {
+  try {
+    const r = getDb().prepare('SELECT name FROM ai_tools WHERE id = ?').get(toolId) as { name: string } | undefined;
+    return r?.name ?? toolId;
+  } catch { return toolId; }
+}
+
+/** AI 用量记录（T00448 / PRD AI-1）：每次模型调用落一行，供「模型」页用量面板聚合展示 */
+function recordUsage(
+  kind: string,
+  toolId: string,
+  model: string | undefined,
+  ok: boolean,
+  startedAt: number,
+  contentChars = 0,
+  error?: string,
+): void {
+  try {
+    getDb().prepare(
+      `INSERT INTO ai_usage (id, tool_id, tool_name, model, kind, ok, duration_ms, content_chars, error, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(uuid(), toolId, toolNameOf(toolId), model ?? '', kind, ok ? 1 : 0, Date.now() - startedAt, contentChars, (error ?? '').slice(0, 300) || null, new Date().toISOString());
+  } catch { /* 用量记录失败不影响主流程 */ }
 }
 
 /**
@@ -62,6 +89,7 @@ export const AIService = {
    */
   async organize(taskIds: string[], toolId: string): Promise<Record<string, string>> {
     const db = getDb();
+    const startedAt = Date.now();
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     const results: Record<string, string> = {};
@@ -79,6 +107,7 @@ export const AIService = {
         config,
       );
       if (result.ok && result.content) results[taskId] = result.content;
+      recordUsage('organize', toolId, config.model, result.ok, startedAt, result.content?.length ?? 0, result.error);
     }
     return results;
   },
@@ -114,6 +143,7 @@ export const AIService = {
     const cost = Date.now() - startedAt;
     if (res.ok) logService.log('INFO', 'ai', `[提示词优化] 成功 耗时=${cost}ms`);
     else logService.log('ERROR', 'ai', `[提示词优化] 失败 耗时=${cost}ms ${res.error ?? ''}`);
+    recordUsage('optimize', toolId, config.model, res.ok, startedAt, res.content?.length ?? 0, res.error);
     return res;
   },
 
@@ -124,6 +154,7 @@ export const AIService = {
   async beautifyTitle(title: string, toolId: string): Promise<{ ok: boolean; content?: string; error?: string }> {
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
+    const startedAt = Date.now();
     const system = [
       '你是 MTask 的标题美化专家。给定一条任务标题，将其润色为一则语义清晰、表达规范、简洁得体的任务标题。',
       '要求：',
@@ -136,6 +167,7 @@ export const AIService = {
     // 先剥离思考过程（部分思考型模型会附带内心推理），再折叠空白为单行干净标题，
     // 确保回填标题输入框时不会污染（双保险，不依赖模型是否遵守“只输出标题”约束）
     if (res.ok && res.content) res.content = stripThinking(res.content).replaceAll(/\s+/g, ' ').trim();
+    recordUsage('beautify', toolId, config.model, res.ok, startedAt, res.content?.length ?? 0, res.error);
     return res;
   },
 
@@ -153,7 +185,10 @@ export const AIService = {
     const adapter = getAdapter(type);
     // 长耗时任务（如 AI 周报洞察生成）由调用方显式传入更大的超时，覆盖该工具的默认 timeoutMs，避免中途被掐断
     const effective = timeoutMs == null ? config : { ...config, timeoutMs };
-    return adapter.chat(system, user, effective);
+    const startedAt = Date.now();
+    const res = await adapter.chat(system, user, effective);
+    recordUsage('ask', toolId, config.model, res.ok, startedAt, res.content?.length ?? 0, res.error);
+    return res;
   },
 
   /**
@@ -171,7 +206,12 @@ export const AIService = {
     const adapter = getAdapter(type);
     // 长耗时流式调用同样由调用方传入更大的超时，避免中途被掐断
     const effective = timeoutMs == null ? config : { ...config, timeoutMs };
-    return adapter.chatStream(system, user, effective, onDelta);
+    const startedAt = Date.now();
+    let chars = 0;
+    const wrapped = (text: string) => { chars += text.length; onDelta(text); };
+    const res = await adapter.chatStream(system, user, effective, wrapped);
+    recordUsage('stream', toolId, config.model, res.ok, startedAt, chars, res.error);
+    return res;
   },
 
   /**
@@ -186,16 +226,18 @@ export const AIService = {
     if (!categories.length) return { ok: true, categoryId: null };
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
+    const startedAt = Date.now();
     const system =
       '你是任务智能分类助手。给定一个任务标题和一组候选分类名，选出与标题主题最贴切的一个分类名作为该任务的类型。只输出匹配到的分类名本身（不加任何标点或解释）；若都不合适，只输出 NONE。';
     const user = `候选分类：${categories.map((c) => c.name).join('、')}\n任务标题：${title}`;
     const res = await adapter.chat(system, user, config);
-    if (!res.ok) return { ok: false, error: res.error };
+    if (!res.ok) { recordUsage('classify', toolId, config.model, false, startedAt, 0, res.error); return { ok: false, error: res.error }; }
     const out = (res.content ?? '').trim();
     // 精确匹配优先；无精确命中时按「最长名称包含」兜底，避免分类名互为子串（如“开发/开发优化”）误配到较短分类
     const hit =
       categories.find((c) => c.name.trim() === out) ??
       [...categories].sort((a, b) => b.name.length - a.name.length).find((c) => out.includes(c.name));
+    recordUsage('classify', toolId, config.model, true, startedAt, res.content?.length ?? 0, undefined);
     return { ok: true, content: res.content, categoryId: hit ? hit.id : null };
   },
 

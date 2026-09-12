@@ -201,6 +201,22 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       date TEXT PRIMARY KEY,
       name TEXT NOT NULL DEFAULT ''
     );
+
+    -- AI 用量记录（T00448 / PRD AI-1）：每次模型调用一行，供「模型」页用量面板聚合
+    CREATE TABLE IF NOT EXISTS ai_usage (
+      id            TEXT PRIMARY KEY,
+      tool_id       TEXT,
+      tool_name     TEXT NOT NULL,
+      model         TEXT DEFAULT '',
+      kind          TEXT NOT NULL,
+      ok            INTEGER NOT NULL DEFAULT 1,
+      duration_ms   INTEGER NOT NULL DEFAULT 0,
+      content_chars INTEGER NOT NULL DEFAULT 0,
+      error         TEXT,
+      created_at    TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage(created_at);
+    CREATE INDEX IF NOT EXISTS idx_ai_usage_tool ON ai_usage(tool_id, created_at);
   `);
 
   // 迁移兜底：老库缺列时补列（CREATE TABLE IF NOT EXISTS 对已存在表不生效）

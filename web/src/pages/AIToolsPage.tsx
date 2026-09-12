@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { ChevronDown, ChevronUp, Code2, Cpu, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, Save, Star, Trash2, X } from 'lucide-react';
 import { api, type AITool } from '../api/client';
+import { UsagePanel } from './UsagePanel';
 import { askConfirm } from '../ui/dialogs';
 import { PinToggle } from '../ui/PinToggle';
 
@@ -737,6 +738,9 @@ export function AIToolsPage() {
           onFetchModels={() => void fetchFormModels()}
         />
       )}
+
+      {/* T00448 / PRD AI-1：AI 用量统计面板（近 N 天概览+按工具分组+最近明细） */}
+      <UsagePanel />
     </section>
   );
 }
