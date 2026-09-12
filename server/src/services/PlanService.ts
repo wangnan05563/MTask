@@ -5,6 +5,7 @@
 import { getDb } from '../db/connection';
 import { v4 as uuid } from 'uuid';
 import ExcelJS from 'exceljs';
+import { AIService } from './AIService';
 
 export interface PlanTaskRow {
   id: string;
@@ -31,6 +32,19 @@ export interface PlanTaskRow {
 export type PlanStatus = 'todo' | 'doing' | 'done' | 'blocked';
 
 const PLAN_STATUSES: PlanStatus[] = ['todo', 'doing', 'done', 'blocked'];
+
+/** AI 解析输入的行数上限：超出的内容截断，避免超大文件拖垮模型上下文（T00438） */
+const MAX_PARSE_ROWS = 300;
+
+/** CSV 行文本：按行拆分 + 逗号切分（含引号单元格原样保留，粒度足够 AI 理解） */
+function csvToText(buffer: Buffer): string {
+  return buffer.toString('utf-8')
+    .split(/\r?\n/)
+    .filter((l) => l.trim())
+    .slice(0, MAX_PARSE_ROWS)
+    .map((l) => l.split(',').map((c) => c.trim()).join(' | '))
+    .join('\n');
+}
 
 function now(): string {
   return new Date().toISOString();
@@ -410,8 +424,7 @@ export const PlanService = {
   },
 
   /** 模板：表头 + 1 行示例（与导入列序一致） */
-  async templateExcel(): Promise<Buffer> {
-    const wb = new ExcelJS.Workbook();
+  async templateExcel(): Promise<Buffer> {    const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('项目计划');
     ws.columns = [
       { header: '标题', key: 'title', width: 36 },
@@ -424,5 +437,119 @@ export const PlanService = {
     ws.addRow({ title: '示例：完成登录模块联调', description: '示例描述（导入前请删除本行）', start_date: '2026-09-14', duration_days: 3, assignee: '张三', status: 'todo' });
     const out = await wb.xlsx.writeBuffer();
     return Buffer.from(out);
+  },
+
+  // ---------- AI 导入（T00438）：任意格式 Excel → 表格文本 → AI 语义解析 → 标准草稿 ----------
+
+  /**
+   * xlsx/csv → 行文本（每行一条、单元格以「 | 」分隔），交由 AI 做语义解析。
+   * 刻意不做任何字段映射假设——列的含义完全由 AI 识别（任务约束：不得硬编码字段映射）。
+   * 老式 .xls（BIFF 二进制）exceljs 不支持，抛出友好提示引导另存为 .xlsx。
+   */
+  async tableToTextAsync(buffer: Buffer, filename: string): Promise<string> {
+    const lower = filename.toLowerCase();
+    if (lower.endsWith('.csv')) return csvToText(buffer);
+    const wb = new ExcelJS.Workbook();
+    try {
+      await wb.xlsx.load(buffer as unknown as ExcelJS.Buffer);
+    } catch {
+      throw new Error('文件解析失败：仅支持 .xlsx / .csv；老式 .xls 请先用 Excel 另存为 .xlsx 再导入');
+    }
+    const ws = wb.worksheets[0];
+    if (!ws) throw new Error('Excel 中无工作表');
+    const lines: string[] = [];
+    ws.eachRow((row) => {
+      if (lines.length >= MAX_PARSE_ROWS) return;
+      const cells: string[] = [];
+      row.eachCell({ includeEmpty: false }, (cell) => {
+        const v = cell.value;
+        if (v == null) { cells.push(''); return; }
+        if (v instanceof Date) { cells.push(fmt(v)); return; }
+        const text = typeof v === 'object' && 'text' in (v as object) ? String((v as { text: unknown }).text) : String(v);
+        cells.push(text.trim().replace(/\s*\n\s*/g, ' '));
+      });
+      const line = cells.join(' | ').replace(/(\s*\|\s*)+$/, '').trim();
+      if (line) lines.push(line);
+    });
+    return lines.join('\n');
+  },
+
+  /**
+   * AI 解析：把表格文本交给所选模型，识别计划条目并输出标准结构草稿（不入库，返回前端预览确认）。
+   * 校验与归一化在服务端完成：title 必填、startDate 规范化（非法置空由重排兜底）、durationDays≥1、status 枚举。
+   */
+  async aiParseDrafts(toolId: string, tableText: string): Promise<{
+    drafts: Array<{ title: string; description: string; startDate: string; durationDays: number; assignee: string; status: PlanStatus }>;
+  }> {
+    const system = [
+      '你是 MTask 的项目计划解析助手。给定来自用户上传 Excel 的表格文本（每行一条记录，单元格以「 | 」分隔，列含义未知，可能含表头/说明/汇总行）。',
+      '请识别其中的项目计划条目，输出 JSON 数组，每元素为：',
+      '{"title":"任务名称(必填)","description":"描述(无则空串)","startDate":"YYYY-MM-DD(无法识别则空串)","durationDays":工期工作日数(默认1),"assignee":"负责人(无则空串)","status":"todo|doing|done|blocked(默认todo)"}',
+      '要求：',
+      '1. 只输出 JSON 数组本身，不要任何解释或 Markdown 代码围栏',
+      '2. 中文/异构日期（如 9月14日、2026.9.14、14/9）转换为 YYYY-MM-DD；无法可靠识别则 startDate 置空串',
+      '3. 工期/天数/持续列给出 durationDays；缺失默认 1；不允许小于 1',
+      '4. 状态列映射到 todo/doing/done/blocked；无法识别默认 todo',
+      '5. 跳过表头行、空行、纯说明/汇总行；不要虚构任务',
+    ].join('\n');
+    const ai = await AIService.ask(toolId, system, `【Excel 表格文本】\n${tableText}`);
+    if (!ai.ok || !ai.content) throw new Error(`AI 解析失败：${ai.error ?? '模型未返回结果'}`);
+    // 剥离可能的代码围栏后提取 JSON 数组
+    const bare = ai.content.replace(/```json/gi, '').replace(/```/gi, '').trim();
+    const start = bare.indexOf('[');
+    const end = bare.lastIndexOf(']');
+    if (start === -1 || end <= start) throw new Error('AI 未返回有效的计划数组，请检查文件内容或更换模型');
+    let arr: unknown;
+    try { arr = JSON.parse(bare.slice(start, end + 1)); } catch { throw new Error('AI 返回的 JSON 无法解析，请重试或更换模型'); }
+    if (!Array.isArray(arr)) throw new Error('AI 返回的不是数组，请重试');
+    const drafts: Array<{ title: string; description: string; startDate: string; durationDays: number; assignee: string; status: PlanStatus }> = [];
+    for (const r of arr) {
+      if (!r || typeof r !== 'object') continue;
+      const o = r as Record<string, unknown>;
+      const title = typeof o.title === 'string' ? o.title.trim() : '';
+      if (!title) continue;
+      const status = ['todo', 'doing', 'done', 'blocked'].includes(String(o.status)) ? (String(o.status) as PlanStatus) : 'todo';
+      const duration = Math.max(1, Math.floor(Number(o.durationDays) || 1));
+      const sd = typeof o.startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(o.startDate.trim()) ? o.startDate.trim() : '';
+      drafts.push({
+        title,
+        description: typeof o.description === 'string' ? o.description : '',
+        startDate: sd,
+        durationDays: duration,
+        assignee: typeof o.assignee === 'string' ? o.assignee : '',
+        status,
+      });
+    }
+    if (drafts.length === 0) throw new Error('AI 未能从文件中识别出任何计划条目，请确认文件内容或更换模型');
+    return { drafts };
+  },
+
+  /** 批量创建（AI 导入确认保存/其他批量来源）：事务插入后统一重排；首条用其 startDate 作锚点 */
+  createBatch(projectId: string, items: Array<{ title: string; description?: string; startDate?: string; durationDays?: number; assignee?: string; status?: PlanStatus }>): { inserted: number } {
+    if (!getDb().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
+    const clean = items.filter((it) => it.title && it.title.trim());
+    if (clean.length === 0) throw new Error('没有可创建的计划条目');
+    if (clean.length > 5000) throw new Error('单次创建上限 5000 条');
+    const db = getDb();
+    const t = now();
+    const holidays = loadHolidaySet();
+    db.transaction(() => {
+      const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ?').get(projectId) as { m: number }).m;
+      const existingCount = maxOrder + 1;
+      clean.forEach((it, i) => {
+        const first = existingCount === 0 && i === 0;
+        const duration = Math.max(1, Math.floor(Number(it.durationDays) || 1));
+        const status = PLAN_STATUSES.includes(it.status as PlanStatus) ? (it.status as PlanStatus) : 'todo';
+        const start = first && it.startDate && /^\d{4}-\d{2}-\d{2}$/.test(it.startDate) ? it.startDate : '';
+        const end = start ? calcEndDate(start, duration, holidays) : '';
+        db.prepare(
+          `INSERT INTO plan_tasks (id, project_id, title, description, start_date, end_date, duration_days,
+             progress, status, assignee, sort_order, linked_task_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?)`,
+        ).run(uuid(), projectId, it.title.trim(), it.description ?? '', start, end, duration, status, it.assignee ?? '', maxOrder + 1 + i, t, t);
+      });
+      rescheduleAll(db, projectId);
+    })();
+    return { inserted: clean.length };
   },
 };

@@ -67,6 +67,29 @@ planApi.get('/template', (_req, res) => {
   }).catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
 });
 
+// ---------- AI 导入（T00438）：任意格式 Excel → AI 语义解析 → 草稿预览 → 确认批量创建 ----------
+// raw 收集文件二进制；projectId/toolId/filename 走 query（raw body 无法再携带 JSON 元数据）
+planApi.post('/ai-parse', raw({ type: () => true, limit: '30mb' }), (req, res) => {
+  const projectId = req.query.projectId;
+  const toolId = req.query.toolId;
+  const filename = typeof req.query.filename === 'string' ? req.query.filename : 'upload.xlsx';
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (typeof toolId !== 'string' || !toolId) return res.status(400).json({ error: 'toolId 必填（AI 解析需要模型工具）' });
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: '请求体应为文件二进制' });
+  PlanService.tableToTextAsync(req.body, filename)
+    .then((text) => PlanService.aiParseDrafts(toolId, text))
+    .then((r) => res.json({ ok: true, ...r }))
+    .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
+});
+
+// AI 导入确认保存：批量创建 + 统一重排（首条带 startDate 时作时间线锚点）
+planApi.post('/batch', (req, res) => {
+  const { projectId, items } = (req.body ?? {}) as { projectId?: unknown; items?: unknown };
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (!Array.isArray(items)) return res.status(400).json({ error: 'items 必填（计划条目数组）' });
+  wrap(res, () => PlanService.createBatch(projectId, items as Parameters<typeof PlanService.createBatch>[1]));
+});
+
 // ---------- 计划任务 CRUD ----------
 planApi.get('/', (req, res) => wrap(res, () => PlanService.list(pid(req))));
 

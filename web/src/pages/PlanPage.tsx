@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { CalendarPlus, Download, FileSpreadsheet, Link2, Link2Off, RefreshCw, Trash2, Upload } from 'lucide-react';
-import { api } from '../api/client';
+import { CalendarPlus, Download, FileSpreadsheet, Link2, Link2Off, RefreshCw, Sparkles, Trash2, Upload } from 'lucide-react';
+import { api, type AITool } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
+import { usePersistentState } from '../ui/session';
 
 /** 项目计划页（T00431，菜单位于周报前）：串行瀑布时间线 + Excel 导入导出 + 待办联动。 */
 
@@ -22,6 +23,17 @@ interface PlanTask {
 }
 
 interface ProjectRow { id: string; name: string }
+
+/** AI 导入解析出的标准计划草稿（可编辑行，include 控制是否保存） */
+interface PlanDraft {
+  title: string;
+  description: string;
+  startDate: string;
+  durationDays: number;
+  assignee: string;
+  status: PlanTask['status'];
+  include: boolean;
+}
 
 const STATUS_META: Record<PlanTask['status'], { label: string; color: string }> = {
   todo: { label: '待开始', color: 'var(--text-muted)' },
@@ -52,10 +64,20 @@ export function PlanPage() {
   const [holidays, setHolidays] = useState<Array<{ date: string; name: string }>>([]);
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
+  // T00438 AI 导入：模型列表与选中工具（持久化）、解析弹窗状态、可编辑草稿行
+  const [tools, setTools] = useState<AITool[]>([]);
+  const [aiToolId, setAiToolId] = usePersistentState('plan.aiToolId', '');
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiFileName, setAiFileName] = useState('');
+  const [aiRows, setAiRows] = useState<PlanDraft[]>([]);
+  const [aiError, setAiError] = useState('');
 
   const flash = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(''), 3000); };
 
   useEffect(() => { void api.get<ProjectRow[]>('/projects').then((ps) => { setProjects(ps); if (ps.length > 0) setProjectId((cur) => cur || ps[0].id); }); }, []);
+  // T00438：AI 模型列表（默认整理工具排最前，与任务页模型选择一致）
+  useEffect(() => { void api.get<AITool[]>('/aitools').then((list) => { const sorted = [...list].sort((a, b) => Number(b.isDefaultOrganize) - Number(a.isDefaultOrganize)); setTools(sorted); setAiToolId((cur) => (sorted.some((t) => t.id === cur) ? cur : (sorted[0]?.id ?? ''))); }); }, []);
 
   const reload = useCallback(() => {
     if (!projectId) return;
@@ -157,8 +179,56 @@ export function PlanPage() {
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
   }
 
-  // ---------- 节假日 ----------
+  // ---------- T00438：AI 导入（任意格式 Excel → AI 解析 → 预览确认 → 批量创建） ----------
 
+  function openAiImport() {
+    if (!projectId) return flash('请先选择项目');
+    if (tools.length === 0) return flash('请先在「模型」页添加 AI 模型工具');
+    setAiOpen(true);
+    setAiRows([]);
+    setAiError('');
+    setAiFileName('');
+  }
+
+  /** 上传文件 → 后端表格文本化 → AI 语义解析 → 返回标准草稿行（可编辑预览） */
+  async function aiParse(file: File) {
+    if (!aiToolId) return setAiError('请先选择 AI 模型');
+    setAiFileName(file.name);
+    setAiBusy(true);
+    setAiError('');
+    setAiRows([]);
+    try {
+      const buf = await file.arrayBuffer();
+      const r = await api.postBinary<{ ok: boolean; drafts: Array<Omit<PlanDraft, 'include'>> }>(
+        `/plans/ai-parse?projectId=${projectId}&toolId=${aiToolId}&filename=${encodeURIComponent(file.name)}`, buf);
+      setAiRows(r.drafts.map((d) => ({ ...d, include: true })));
+      if (r.drafts.length === 0) setAiError('AI 未识别出计划条目');
+    } catch (e) {
+      setAiError(String((e as Error).message ?? e));
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
+  /** 确认保存：勾选行批量创建，时间线统一重排 */
+  async function aiSave() {
+    const items = aiRows.filter((r) => r.include && r.title.trim());
+    if (items.length === 0) return setAiError('请至少勾选一条要保存的条目');
+    setAiBusy(true);
+    setAiError('');
+    try {
+      const r = await api.post<{ inserted: number }>('/plans/batch', { projectId, items });
+      setAiOpen(false);
+      reload();
+      flash(`AI 导入完成：已创建 ${r.inserted} 条计划，时间线已重排`);
+    } catch (e) {
+      setAiError(String((e as Error).message ?? e));
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
+  // ---------- 节假日 ----------
   async function addHoliday() {
     const date = await askInput({ title: '添加节假日（YYYY-MM-DD）', placeholder: todayStr() });
     if (!date?.trim()) return;
@@ -197,6 +267,7 @@ export function PlanPage() {
         </label>
         <button onClick={() => void exportExcel()} style={btnStyle}><Download size={13} />导出 Excel</button>
         <button onClick={() => void downloadTemplate()} style={btnStyle}><FileSpreadsheet size={13} />下载模板</button>
+        <button onClick={openAiImport} style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }} title="AI 导入 — 上传任意格式计划 Excel，AI 自动识别字段并重组为标准计划"><Sparkles size={13} />AI 导入</button>
         <button onClick={() => void addHoliday()} style={btnStyle} title="维护节假日：时间线自动避开">+节假日</button>
         <button onClick={reload} style={btnStyle} title="刷新"><RefreshCw size={13} /></button>
         {notice && <span style={{ fontSize: 12, color: 'var(--accent)' }}>{notice}</span>}
@@ -289,6 +360,88 @@ export function PlanPage() {
           )}
         </tbody>
       </table>
+
+      {/* T00438 AI 导入弹窗：模型选择 + 文件上传 → AI 解析草稿表格（可编辑/勾选）→ 批量保存 */}
+      {aiOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={() => { if (!aiBusy) setAiOpen(false); }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(720px, 94vw)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
+              <Sparkles size={14} style={{ color: 'var(--accent)' }} /> AI 导入计划
+              <span style={{ flex: 1 }} />
+              <button onClick={() => setAiOpen(false)} disabled={aiBusy} title="关闭" aria-label="关闭 AI 导入弹窗"
+                style={{ display: 'inline-flex', alignItems: 'center', cursor: aiBusy ? 'default' : 'pointer', background: 'transparent', border: 'none', color: 'var(--text)' }}>×</button>
+            </div>
+            <div style={{ padding: 14, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <label style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>AI 模型：</label>
+                <select value={aiToolId} onChange={(e) => setAiToolId(e.target.value)} style={inputStyle} aria-label="选择 AI 模型">
+                  {tools.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+                <label style={{ ...btnStyle, cursor: aiBusy ? 'default' : 'pointer' }} title="选择任意格式的计划 Excel（.xlsx/.csv）">
+                  <Upload size={13} />选择文件
+                  <input type="file" accept=".xlsx,.csv" style={{ display: 'none' }}
+                    onChange={(e) => { const f = e.target.files?.[0]; if (f) void aiParse(f); e.target.value = ''; }} />
+                </label>
+                {aiFileName && <span style={{ color: 'var(--text-muted)' }}>{aiFileName}</span>}
+                {aiBusy && <span style={{ color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Sparkles size={12} />AI 解析中…</span>}
+              </div>
+              <div style={{ color: 'var(--text-muted)', fontSize: 11, lineHeight: 1.6 }}>
+                上传任意格式的计划 Excel，AI 自动识别任务名称、起止日期、工期、负责人与状态，并重组为标准计划格式。解析结果先在此预览，可编辑后勾选保存；保存后时间线统一重排。
+              </div>
+              {aiError && <div style={{ color: 'var(--danger)' }}>{aiError}</div>}
+              {aiRows.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ color: 'var(--text-secondary)' }}>
+                    解析到 {aiRows.length} 条（已勾选 {aiRows.filter((r) => r.include).length} 条）——可编辑后保存：
+                  </div>
+                  <div style={{ maxHeight: '42vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {aiRows.map((row, i) => (
+                      <div key={i} style={{ border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <input type="checkbox" checked={row.include} aria-label={`勾选第 ${i + 1} 条`}
+                            onChange={(e) => setAiRows((prev) => prev.map((r, j) => (j === i ? { ...r, include: e.target.checked } : r)))} />
+                          <input value={row.title} aria-label={`第 ${i + 1} 条标题`}
+                            onChange={(e) => setAiRows((prev) => prev.map((r, j) => (j === i ? { ...r, title: e.target.value } : r)))}
+                            style={{ ...inputStyle, flex: 1, minWidth: 160, fontWeight: 600 }} />
+                          <input type="date" value={row.startDate} aria-label={`第 ${i + 1} 条开始日期`}
+                            onChange={(e) => setAiRows((prev) => prev.map((r, j) => (j === i ? { ...r, startDate: e.target.value } : r)))}
+                            style={inputStyle} />
+                          <input type="number" min={1} value={row.durationDays} aria-label={`第 ${i + 1} 条工期`}
+                            onChange={(e) => setAiRows((prev) => prev.map((r, j) => (j === i ? { ...r, durationDays: Math.max(1, Number(e.target.value) || 1) } : r)))}
+                            style={{ ...inputStyle, width: 60 }} />
+                          <input value={row.assignee} placeholder="负责人" aria-label={`第 ${i + 1} 条负责人`}
+                            onChange={(e) => setAiRows((prev) => prev.map((r, j) => (j === i ? { ...r, assignee: e.target.value } : r)))}
+                            style={{ ...inputStyle, width: 80 }} />
+                          <select value={row.status} aria-label={`第 ${i + 1} 条状态`}
+                            onChange={(e) => setAiRows((prev) => prev.map((r, j) => (j === i ? { ...r, status: e.target.value as PlanDraft['status'] } : r)))}
+                            style={inputStyle}>
+                            <option value="todo">待开始</option>
+                            <option value="doing">进行中</option>
+                            <option value="done">已完成</option>
+                            <option value="blocked">受阻</option>
+                          </select>
+                        </div>
+                        <input value={row.description} placeholder="描述（可空）" aria-label={`第 ${i + 1} 条描述`}
+                          onChange={(e) => setAiRows((prev) => prev.map((r, j) => (j === i ? { ...r, description: e.target.value } : r)))}
+                          style={{ ...inputStyle, color: 'var(--text-muted)' }} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
+              <button onClick={() => setAiOpen(false)} disabled={aiBusy} title="取消"
+                style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)' }}>取消</button>
+              <button onClick={() => void aiSave()} disabled={aiBusy || aiRows.length === 0} title="保存勾选的条目为项目计划"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 12px', borderRadius: 6, cursor: aiRows.length === 0 ? 'default' : 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', opacity: aiRows.length === 0 ? 0.5 : 1 }}>
+                <Sparkles size={12} />保存 {aiRows.filter((r) => r.include).length} 条
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
