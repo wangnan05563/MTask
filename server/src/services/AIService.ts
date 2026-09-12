@@ -237,7 +237,7 @@ export const AIService = {
     const hit =
       categories.find((c) => c.name.trim() === out) ??
       [...categories].sort((a, b) => b.name.length - a.name.length).find((c) => out.includes(c.name));
-    recordUsage('classify', toolId, config.model, true, startedAt, res.content?.length ?? 0, undefined);
+    recordUsage('classify', toolId, config.model, true, startedAt, res.content?.length ?? 0);
     return { ok: true, content: res.content, categoryId: hit ? hit.id : null };
   },
 

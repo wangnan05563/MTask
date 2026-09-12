@@ -249,6 +249,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('tasks', 'parent_id', 'parent_id TEXT');
   // 手动排序权重（T00446）：拖拽排序结果；REAL 支持插入中间位置无需整体重编；pinned 组内生效
   ensureColumn('tasks', 'user_sort', 'user_sort REAL');
+  // T00463：提示词/通用需求条目拖拽排序权重（与 req_entries 既有列对齐）
+  ensureColumn('prompts', 'sort_weight', 'sort_weight INTEGER NOT NULL DEFAULT 0');
   // 老库 queue_jobs 的 task_id/tool_id 外键缺 ON DELETE CASCADE，删除关联任务/工具/项目时
   // 会被外键约束阻断（500）。SQLite 不支持 ALTER 外键，需整表重建，按幂等方式检测后执行
   ensureQueueJobsCascade();

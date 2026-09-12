@@ -5,8 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { AIService } from './AIService';
 import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
-import { getSetting } from './AppSettings';
-import { INBOX_PROJECT_ID } from './AppSettings';
+import { getSetting, INBOX_PROJECT_ID } from './AppSettings';
 import { logService } from './LogService';
 
 /** 报表周期：day=日报 / week=周报 / month=月报 */

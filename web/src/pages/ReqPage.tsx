@@ -28,6 +28,23 @@ export function ReqPage() {
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
   // 记录高亮：保存/新增成功后对目标行打标记，flashAt 值变化触发行动画重放
   const [flashAt, setFlashAt] = useState<Record<string, number>>({});
+  function dropReorder(targetId: string) {
+    if (!dragId || dragId === targetId) { setDragId(''); setOverId(''); return; }
+    const ids = entries.map((x) => x.id);
+    const from = ids.indexOf(dragId);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    ids.splice(to, 0, ids.splice(from, 1)[0]);
+    setDragId(''); setOverId('');
+    void api.post('/req-entries/reorder', { categoryId: activeCat, orderedIds: ids }).then(() => {
+      flash('顺序已保存');
+      void loadEntries(activeCat, search);
+    }).catch((e) => flash(String((e as Error).message ?? e)));
+  }
+
+  // T00463：条目拖拽排序状态
+  const [dragId, setDragId] = useState('');
+  const [overId, setOverId] = useState('');
   // 调整分组：moveOpenId 记录当前展开分组选择器的条目 id（单开），'' 表示全部收起
   const [moveOpenId, setMoveOpenId] = useState('');
   // 分组选择器容器引用：用于判断点击是否落在菜单外部（点击外部收起）

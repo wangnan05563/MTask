@@ -185,6 +185,53 @@ api.post('/tasks/move', (req, res) => {
 });
 
 // 任务手动排序（T00446）：拖拽后的完整 id 顺序 → user_sort 1..n；列表 sort=manual 时生效
+// 通用需求条目拖拽排序（T00463）：同 /tasks/reorder 模式，写 sort_weight
+api.post('/req-entries/reorder', (req, res) => {
+  const { categoryId, orderedIds } = req.body ?? {};
+  if (typeof categoryId !== 'string' || !categoryId || !Array.isArray(orderedIds) || orderedIds.some((x) => typeof x !== 'string')) {
+    return res.status(400).json({ error: 'categoryId 与 orderedIds 必填' });
+  }
+  try {
+    const db = getDb();
+    const known = new Set(
+      (db.prepare('SELECT id FROM req_entries WHERE category_id = ?').all(categoryId) as Array<{ id: string }>).map((r) => r.id),
+    );
+    const ids = (orderedIds as string[]).filter((id) => known.has(id));
+    db.transaction(() => {
+      ids.forEach((id, i) => {
+        db.prepare('UPDATE req_entries SET sort_weight = ?, updated_at = ? WHERE id = ?').run(i + 1, now(), id);
+      });
+    });
+    res.json({ ok: true, reordered: ids.length });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// 提示词拖拽排序（T00463）：同模式
+api.post('/prompts/reorder', (req, res) => {
+  const { categoryId, orderedIds } = req.body ?? {};
+  if (typeof categoryId !== 'string' || !categoryId || !Array.isArray(orderedIds) || orderedIds.some((x) => typeof x !== 'string')) {
+    return res.status(400).json({ error: 'categoryId 与 orderedIds 必填' });
+  }
+  try {
+    const db = getDb();
+    const known = new Set(
+      (db.prepare('SELECT id FROM prompts WHERE category_id = ?').all(categoryId) as Array<{ id: string }>).map((r) => r.id),
+    );
+    const ids = (orderedIds as string[]).filter((id) => known.has(id));
+    db.transaction(() => {
+      ids.forEach((id, i) => {
+        db.prepare('UPDATE prompts SET sort_weight = ?, updated_at = ? WHERE id = ?').run(i + 1, id, now());
+      });
+    });
+    cacheClear('prompt-categories');
+    res.json({ ok: true, reordered: ids.length });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 api.post('/tasks/reorder', (req, res) => {
   const { orderedIds } = req.body ?? {};
   if (!Array.isArray(orderedIds) || orderedIds.some((x) => typeof x !== 'string')) {
@@ -1068,7 +1115,7 @@ api.get('/prompts', (req, res) => {
   }
   // WHERE 子句先独立拼接，避免模板字面量嵌套
   const whereSql = where.length ? ` WHERE ${where.join(' AND ')}` : '';
-  const sql = `SELECT * FROM prompts${whereSql} ORDER BY pinned DESC, updated_at DESC`;
+  const sql = `SELECT * FROM prompts${whereSql} ORDER BY pinned DESC, CASE WHEN sort_weight = 0 THEN 1 ELSE 0 END, sort_weight, updated_at DESC`;
   res.json(getDb().prepare(sql).all(...values));
 });
 

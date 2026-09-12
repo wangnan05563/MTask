@@ -79,9 +79,9 @@ export interface TaskListOptions {
   keyword?: string;
   /** 分类筛选；'none' 表示未分类任务 */
   categoryId?: string;
-  /** 状态筛选（todo/done）；不传返回该范围内全部状态。供 MCP/AI 按待办/已完成精确拉取，减少返回量 */
+  /** 状态筛选（todo/done）；不传返回该范围内全部状态。供 MCP/AI 按待办/已完成精确拉取，减少返回量。NOSONAR - todo 为状态枚举值，非待办标记 */
   status?: 'todo' | 'done';
-  /** 分析范围：只返回「待处理(todo) 或 未验证(verified=0)」的任务。与 status 互斥（优先 pending）。
+  /** 分析范围：只返回「待处理(todo) 或 未验证(verified=0)」的任务。与 status 互斥（优先 pending）。NOSONAR - todo 为状态枚举值，非待办标记
    *  未验证任务即便已 done，其处理结果可能仍需关联判断，纳入便于 AI 分析上下文 */
   pending?: boolean;
   /** 排序键；默认 pinned（置顶优先+创建时间倒序），与旧行为一致 */
@@ -107,6 +107,26 @@ function nextTaskNo(): string {
 
 function rowToTask(r: TaskRow, images: TaskImageMeta[] = []): TaskView {
   return { ...r, verified: Boolean(r.verified), archived: Boolean(r.archived), pinned: Boolean(r.pinned), images };
+}
+
+/** 待办状态变更后反向同步关联的计划任务（done↔done，todo→doing），并按完成比例汇总父任务进度 */
+function syncPlanOnStatusChange(id: string, status: 'todo' | 'done'): void {
+  const db = getDb();
+  const planStatus = status === 'done' ? 'done' : 'doing';
+  db.prepare('UPDATE plan_tasks SET status = ?, progress = CASE WHEN ? = 100 THEN 100 ELSE progress END, updated_at = ? WHERE linked_task_id = ?')
+    .run(planStatus, planStatus === 'done' ? 100 : -1, now(), id);
+  // T00450 配套：子任务状态变更后汇总父任务进度（按子任务完成比例），全完成时父自动 done
+  const childRow = db.prepare('SELECT parent_id FROM tasks WHERE id = ?').get(id) as { parent_id: string | null } | undefined;
+  if (childRow?.parent_id) {
+    const stat = db.prepare(
+      "SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done FROM tasks WHERE parent_id = ? AND archived = 0",
+    ).get(childRow.parent_id) as { total: number; done: number };
+    if (stat.total > 0) {
+      const progress = Math.round((stat.done / stat.total) * 100);
+      const parentStatus = stat.done === stat.total ? 'done' : 'todo';
+      db.prepare("UPDATE tasks SET progress = ?, status = ?, updated_at = ? WHERE id = ? AND status != 'done'").run(progress, parentStatus, now(), childRow.parent_id);
+    }
+  }
 }
 
 /** FR1.2 / FR1.3 / FR1.4 / FR5 */
@@ -207,24 +227,8 @@ export const TaskService = {
     const sets = keys.map((k) => `${k} = ?`).join(', ');
     const values = keys.map((k) => patch[k]);
     db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`).run(...values, now(), id);
-    // 反向计划联动（T00436）：待办被项目计划关联时，状态变更同步回计划任务（done↔done，todo→doing 进行中）
-    if (patch.status !== undefined) {
-      const planStatus = patch.status === 'done' ? 'done' : 'doing';
-      db.prepare('UPDATE plan_tasks SET status = ?, progress = CASE WHEN ? = 100 THEN 100 ELSE progress END, updated_at = ? WHERE linked_task_id = ?')
-        .run(planStatus, planStatus === 'done' ? 100 : -1, now(), id);
-      // T00450 配套：子任务状态变更后汇总父任务进度（按子任务完成比例），全完成时父自动 done
-      const childRow = db.prepare('SELECT parent_id FROM tasks WHERE id = ?').get(id) as { parent_id: string | null } | undefined;
-      if (childRow?.parent_id) {
-        const stat = db.prepare(
-          "SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done FROM tasks WHERE parent_id = ? AND archived = 0",
-        ).get(childRow.parent_id) as { total: number; done: number };
-        if (stat.total > 0) {
-          const progress = Math.round((stat.done / stat.total) * 100);
-          const parentStatus = stat.done === stat.total ? 'done' : 'todo';
-          db.prepare("UPDATE tasks SET progress = ?, status = ?, updated_at = ? WHERE id = ? AND status != 'done'").run(progress, parentStatus, now(), childRow.parent_id);
-        }
-      }
-    }
+    // 反向计划联动（T00436）：待办被项目计划关联时，状态变更同步回计划任务（done↔done，todo→doing 进行中） NOSONAR - todo 为状态枚举值，非待办标记
+    if (patch.status !== undefined) syncPlanOnStatusChange(id, patch.status);
     notifyChange('tasks');
     return this.getById(id)!;
   },

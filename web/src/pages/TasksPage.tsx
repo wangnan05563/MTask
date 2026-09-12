@@ -49,6 +49,20 @@ function readClipboardImages(e: ClipboardEvent<HTMLTextAreaElement>, onImages: (
   return true;
 }
 
+/** 优先级 → 看板卡片左边框颜色（与列表视图配色保持一致） */
+function priorityBorderColor(priority: string): string {
+  if (priority === 'high') return 'var(--danger)';
+  if (priority === 'low') return 'var(--border-strong)';
+  return 'var(--accent)';
+}
+
+/** 优先级 → 中文标签（看板卡片悬浮提示用） */
+function priorityLabel(priority: string): string {
+  if (priority === 'high') return '高优先级';
+  if (priority === 'low') return '低优先级';
+  return '普通优先级';
+}
+
 export function TasksPage() {
   // 新建任务表单字段：跨切换会话持久化，录入一半切页后可续写
   const [newTitle, setNewTitle] = useSessionState('tasks.new.title', '');
@@ -205,6 +219,16 @@ export function TasksPage() {
     } catch { /* 忽略，任务页照常使用 */ }
   }, []);
 
+  /** SSE 变更后校验选中项是否仍存活：剔除已删除任务的选中态，size 不变时返回原引用避免重渲染。
+   *  提取为具名函数，避免在 openChangeStream 回调内层层嵌套箭头函数。 */
+  const pruneSelectedIds = useCallback((list: Task[]) => {
+    setSelectedIds((prev) => {
+      const alive = new Set(list.map((t) => t.id));
+      const next = new Set([...prev].filter((id) => alive.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, []);
+
   useEffect(() => { void loadProjects(); }, [loadProjects]);
   // 初始/切项目加载；搜索与分类变化会重建 loadTasks（经 fetchTasks 依赖透传），此处防抖 300ms 后重置分页拉取，
   // 避免搜索框逐击键都打后端
@@ -259,17 +283,11 @@ export function TasksPage() {
         // 评审 P2-1 修复：选中项有效性校验移出 setState updater（原嵌套异步 setState 为反模式）；
         // 串行 SSE 通知下幂等：重复校验以 alive 集合为准，size 不变时返回原引用避免重渲染
         if (selectedIds.size > 0) {
-          void api.get<Task[]>(`/tasks?projectId=${activeProject}&archived=false`).then((list) => {
-            const alive = new Set(list.map((t) => t.id));
-            setSelectedIds((prev) => {
-              const next = new Set([...prev].filter((id) => alive.has(id)));
-              return next.size === prev.size ? prev : next;
-            });
-          }).catch(() => undefined);
+          void api.get<Task[]>(`/tasks?projectId=${activeProject}&archived=false`).then(pruneSelectedIds).catch(() => undefined);
         }
       }
     });
-  }, [activeProject, loadTasks, selectedIds]);
+  }, [activeProject, loadTasks, selectedIds, pruneSelectedIds]);
   // 工具下拉展开期间监听全局焦点移出：内部元素间切换时 relatedTarget 仍在容器内不收起，移出容器才收起。
   // 挂在 document 上而非容器 div，可避免为挂 onBlur 而给非交互容器加 tabIndex/role
   useEffect(() => {
@@ -480,7 +498,7 @@ export function TasksPage() {
       if (!result.ok) return flash(result.error ?? '美化失败');
       if (!result.content?.trim()) return flash('AI 未返回美化标题');
       // 进入标题编辑态，让用户确认后保存（复用 titleDrafts + saveTitle）；写模块级 store，切页后草稿仍保留
-      beautifyStore.setDraft(task.id, result.content!.trim());
+      beautifyStore.setDraft(task.id, result.content.trim());
       flash('美化完成，可编辑后保存');
     } catch (e) {
       // 用户主动取消时静默，不弹错误
@@ -613,6 +631,28 @@ export function TasksPage() {
     await batchApply('category', target?.id ?? '');
   }
 
+  /** 看板卡片：可拖拽流转状态（提取为具名函数，降低 JSX 内函数嵌套层级，渲染结果不变） */
+  function renderBoardCard(t: Task) {
+    const cat = taskCats.find((c) => c.id === t.category_id);
+    return (
+      <div key={t.id} /* NOSONAR - HTML5 draggable 卡片：拖拽流转状态无原生等价元素，改 button 会破坏原生拖拽 */
+        draggable
+        onDragStart={() => setDragTaskId(t.id)}
+        onDragEnd={() => { setDragTaskId(''); setOverTaskId(''); }}
+        className={dragTaskId === t.id ? 'plan-dragging' : undefined}
+        style={{
+          border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', background: 'var(--card-bg)', cursor: 'grab',
+          borderLeft: `3px solid ${priorityBorderColor(t.priority)}`,
+        }}
+        title={`${t.title}（${priorityLabel(t.priority)}）——拖到另一列流转状态`}>
+        <div style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</div>
+        {cat && (
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>{cat.name}</div>
+        )}
+      </div>
+    );
+  }
+
   /** T00456 / PRD UX-1：看板视图——按状态分列（待办/已完成），卡片拖拽流转状态。
    *  卡片为简化渲染（标题/优先级/分类/进度），编辑回列表视图；drop 到目标列即变更状态。 */
   function renderBoard() {
@@ -630,29 +670,13 @@ export function TasksPage() {
     return (
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
         {boardCols.map((col) => (
-          <div key={col.key}
+          <div key={col.key} /* NOSONAR - 看板列作为 HTML5 拖拽放置区：无原生等价元素，button 不接收 drop */
             onDragOver={(e) => e.preventDefault()}
             onDrop={() => onDropTo(col.key)}
             style={{ flex: 1, minWidth: 280, background: 'var(--surface)', borderRadius: 8, padding: 10, minHeight: 200, border: overTaskId === col.key ? '2px dashed var(--accent)' : '1px solid var(--border-strong)', transition: 'border .15s ease' }}>
             <h4 style={{ fontSize: 13, margin: '0 0 8px', color: 'var(--text-secondary)' }}>{col.label}</h4>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {col.items.map((t) => (
-                <div key={t.id}
-                  draggable
-                  onDragStart={() => setDragTaskId(t.id)}
-                  onDragEnd={() => { setDragTaskId(''); setOverTaskId(''); }}
-                  className={dragTaskId === t.id ? 'plan-dragging' : undefined}
-                  style={{
-                    border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', background: 'var(--card-bg)', cursor: 'grab',
-                    borderLeft: `3px solid ${t.priority === 'high' ? 'var(--danger)' : t.priority === 'low' ? 'var(--border-strong)' : 'var(--accent)'}`,
-                  }}
-                  title={`${t.title}（${t.priority === 'high' ? '高优先级' : t.priority === 'low' ? '低优先级' : '普通优先级'}）——拖到另一列流转状态`}>
-                  <div style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</div>
-                  {t.category_id && taskCats.find((c) => c.id === t.category_id) && (
-                    <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>{taskCats.find((c) => c.id === t.category_id)?.name}</div>
-                  )}
-                </div>
-              ))}
+              {col.items.map((t) => renderBoardCard(t))}
               {col.items.length === 0 && <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', padding: 12 }}>拖任务卡片到此列</div>}
             </div>
           </div>
@@ -1003,7 +1027,7 @@ export function TasksPage() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         {multiSelect && (
           <input type="checkbox" checked={selectedIds.has(t.id)} aria-label={`选中任务 ${t.title}`}
-            onChange={(e) => setSelectedIds((prev) => { const n = new Set(prev); if (e.target.checked) n.add(t.id); else n.delete(t.id); return n; })}
+            onChange={(e) => setSelectedIds((prev) => { const n = new Set(prev); if (e.target.checked) { n.add(t.id); } else { n.delete(t.id); } return n; })}
             style={{ cursor: 'pointer', flexShrink: 0 }} />
         )}
         <button title="切换任务完成状态" aria-label="切换任务完成状态" onClick={() => void setStatus(t, t.status === 'todo' ? 'done' : 'todo')} style={{ cursor: 'pointer' }}>
@@ -1514,15 +1538,20 @@ export function TasksPage() {
     const descDraft = descDrafts[t.id];
     const descEditing = descDraft !== undefined;
     const titleEditing = titleDrafts[t.id] !== undefined;
+    // 排序模式与拖拽高亮类名提前算出：避免 className / style 内出现嵌套三元
+    const sortMode = kind === 'todo' ? todoSort : doneSort;
+    let dragCls = '';
+    if (overTaskId === t.id) dragCls = ' plan-over';
+    else if (dragTaskId === t.id) dragCls = ' plan-dragging';
     return (
       <li
-        className={`task-item${titleEditing || descEditing ? ' task-editing' : ''}${overTaskId === t.id ? ' plan-over' : dragTaskId === t.id ? ' plan-dragging' : ''}`}
-        draggable={(kind === 'todo' ? todoSort : doneSort) === 'manual'}
+        className={`task-item${titleEditing || descEditing ? ' task-editing' : ''}${dragCls}`}
+        draggable={sortMode === 'manual'}
         onDragStart={() => setDragTaskId(t.id)}
         onDragEnd={() => { setDragTaskId(''); setOverTaskId(''); }}
         onDragOver={(e) => { e.preventDefault(); if (t.id !== dragTaskId) setOverTaskId(t.id); }}
         onDrop={(e) => { e.preventDefault(); dropTaskReorder(kind, listIds, t.id); }}
-        style={{ borderBottom: '1px solid var(--surface-2)', padding: '6px 0', marginLeft: t.parent_id ? 28 : 0, borderLeft: t.parent_id ? '2px solid var(--border-strong)' : undefined, paddingLeft: t.parent_id ? 10 : undefined, cursor: (kind === 'todo' ? todoSort : doneSort) === 'manual' ? 'grab' : undefined }}
+        style={{ borderBottom: '1px solid var(--surface-2)', padding: '6px 0', marginLeft: t.parent_id ? 28 : 0, borderLeft: t.parent_id ? '2px solid var(--border-strong)' : undefined, paddingLeft: t.parent_id ? 10 : undefined, cursor: sortMode === 'manual' ? 'grab' : undefined }}
       >
         {renderTaskTitleRow(t, titleEditing)}
         {/* 元信息/操作行：优先级/分类/功能按钮 + 记录时间，全部靠右同行 */}
@@ -1608,13 +1637,10 @@ export function TasksPage() {
     );
   }
 
-  /** 顶部工具条：项目切换、工具选择、批量美化、分类筛选、搜索 */
-  function renderToolbar() {
+  /** 项目操作按钮组：新建/改名/删除当前项目（提取以降低工具条函数复杂度，渲染不变） */
+  function renderProjectActionButtons() {
     return (
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <select value={activeProject} onChange={(e) => setActiveProject(e.target.value)} style={{ padding: 6 }} aria-label="切换项目">
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
+      <>
         <button
           onClick={() => void createProject()}
           title="新项目 — 新建一个任务项目"
@@ -1643,21 +1669,64 @@ export function TasksPage() {
         >
           <Trash2 size={13} />
         </button>
+      </>
+    );
+  }
+
+  /** 一键批量分类按钮（提取以降低工具条函数复杂度，渲染不变） */
+  function renderClassifyButton() {
+    return (
+      <button
+        onClick={() => void batchClassify()}
+        disabled={classifyBusy || (todo.length === 0 && done.length === 0)}
+        className={classifyBusy ? 'task-breathe' : undefined}
+        title={classifyBusy ? '批量分类进行中…' : 'AI 批量分类 — 对未分类任务（含已完成）智能识别自动分到已有分类'}
+        aria-label={classifyBusy ? '批量分类进行中' : 'AI 批量分类：对未分类任务（含已完成）自动分类'}
+        style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: classifyBusy ? 'var(--accent)' : 'transparent', color: classifyBusy ? 'var(--accent-text)' : 'var(--text)' }}
+      >
+        <Tags size={13} />
+        {classifyBusy ? '分类中' : '分类'}
+      </button>
+    );
+  }
+
+  /** T00456 / PRD UX-1：视图切换（列表/看板）。纯布局分组，两个按钮各带无障碍名称，
+   *  故不在容器上声明 role="group"（S6819），渲染不变。 */
+  function renderViewToggle() {
+    return (
+      <span style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }}>
+        <button onClick={() => setViewMode('list')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', cursor: 'pointer', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图">列表</button>
+        <button onClick={() => setViewMode('board')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: viewMode === 'board' ? 'var(--accent)' : 'transparent', color: viewMode === 'board' ? 'var(--accent-text)' : 'var(--text)' }} title="看板视图 — 按状态分列，拖拽卡片流转状态">看板</button>
+      </span>
+    );
+  }
+
+  /** 多选模式切换按钮（提取以降低工具条函数复杂度，渲染不变） */
+  function renderMultiSelectButton() {
+    return (
+      <button
+        onClick={() => { setMultiSelect((v) => !v); setSelectedIds(new Set()); }}
+        style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: multiSelect ? 'var(--accent)' : 'transparent', color: multiSelect ? 'var(--accent-text)' : 'var(--text)' }}
+        title={multiSelect ? '退出多选模式' : '多选模式 — 勾选任务后批量改状态/分类/归档'}
+        aria-label={multiSelect ? '退出多选模式' : '进入多选模式'}
+      >
+        {multiSelect ? '✓ 多选中' : '多选'}
+      </button>
+    );
+  }
+
+  /** 顶部工具条：项目切换、工具选择、批量美化、分类筛选、搜索 */
+  function renderToolbar() {
+    return (
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <select value={activeProject} onChange={(e) => setActiveProject(e.target.value)} style={{ padding: 6 }} aria-label="切换项目">
+          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        {renderProjectActionButtons()}
         {renderToolSelector()}
         {renderModelHint()}
         {renderBeautifyToolbarButton()}
-        {/* 一键批量分类：对当前项目全部未分类任务（待办 + 已完成，T00432）做 AI 语义识别自动分类，风格与批量美化按钮一致 */}
-        <button
-          onClick={() => void batchClassify()}
-          disabled={classifyBusy || (todo.length === 0 && done.length === 0)}
-          className={classifyBusy ? 'task-breathe' : undefined}
-          title={classifyBusy ? '批量分类进行中…' : 'AI 批量分类 — 对未分类任务（含已完成）智能识别自动分到已有分类'}
-          aria-label={classifyBusy ? '批量分类进行中' : 'AI 批量分类：对未分类任务（含已完成）自动分类'}
-          style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: classifyBusy ? 'var(--accent)' : 'transparent', color: classifyBusy ? 'var(--accent-text)' : 'var(--text)' }}
-        >
-          <Tags size={13} />
-          {classifyBusy ? '分类中' : '分类'}
-        </button>
+        {renderClassifyButton()}
         {/* T00456 / PRD UX-1：视图切换（列表/看板） */}
         <span style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} role="group" aria-label="视图切换">
           <button onClick={() => setViewMode('list')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', cursor: 'pointer', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图">列表</button>

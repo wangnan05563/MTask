@@ -17,6 +17,18 @@ function wrap(res: import('express').Response, fn: () => unknown): void {
   }
 }
 
+/** 未知值显式字符串化：object 走 JSON，避免默认的 "[object Object]"（S6551） */
+function toStr(v: unknown): string {
+  if (v == null) return '';
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
+}
+
+/** 可选字符串参数：null/undefined → undefined，其余同 toStr（保持原字段可选语义） */
+function optStr(v: unknown): string | undefined {
+  return v == null ? undefined : toStr(v);
+}
+
 /** projectId 必填校验 */
 function pid(req: import('express').Request): string {
   const v = req.query.projectId;
@@ -62,7 +74,7 @@ planApi.get('/export', (req, res) => {
   const projectId = req.query.projectId;
   if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
   PlanService.exportExcel(projectId).then((buf) => {
-    const ts = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
+    const ts = new Date().toISOString().slice(0, 19).replaceAll(/[-:T]/g, '');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="plan-${ts}.xlsx"`);
     res.send(buf);
@@ -110,11 +122,14 @@ planApi.post('/ai-parse-doc', raw({ type: () => true, limit: '30mb' }), (req, re
   if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: '请求体应为文档二进制' });
   const lower = filename.toLowerCase();
   // 按扩展名分派文本提取：md 原样（层级天然保留）/ docx 提取段落与标题样式；其余提示
-  const textP = lower.endsWith('.md') || lower.endsWith('.markdown')
-    ? Promise.resolve((req.body as Buffer).toString('utf-8'))
-    : lower.endsWith('.docx')
-      ? Promise.resolve(PlanService.docxToMarkdown(req.body))
-      : Promise.reject(new Error('仅支持 .md / .markdown / .docx；老式 .doc 请先用 Word 另存为 .docx'));
+  let textP: Promise<string>;
+  if (lower.endsWith('.md') || lower.endsWith('.markdown')) {
+    textP = Promise.resolve(req.body.toString('utf-8'));
+  } else if (lower.endsWith('.docx')) {
+    textP = Promise.resolve(PlanService.docxToMarkdown(req.body));
+  } else {
+    textP = Promise.reject(new Error('仅支持 .md / .markdown / .docx；老式 .doc 请先用 Word 另存为 .docx'));
+  }
   textP
     .then((text) => PlanService.aiParseWbs(toolId, text))
     .then((r) => res.json({ ok: true, ...r }))
@@ -130,10 +145,10 @@ planApi.post('/', (req, res) => {
   wrap(res, () => PlanService.create({
     projectId: String(b.projectId),
     title: String(b.title),
-    description: b.description != null ? String(b.description) : undefined,
-    startDate: b.startDate != null ? String(b.startDate) : undefined,
-    durationDays: b.durationDays != null ? Number(b.durationDays) : undefined,
-    assignee: b.assignee != null ? String(b.assignee) : undefined,
+    description: optStr(b.description),
+    startDate: optStr(b.startDate),
+    durationDays: b.durationDays == null ? undefined : Number(b.durationDays),
+    assignee: optStr(b.assignee),
     status: b.status as Parameters<typeof PlanService.create>[0]['status'],
   }));
 });
@@ -141,13 +156,13 @@ planApi.post('/', (req, res) => {
 planApi.patch('/:id', (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   wrap(res, () => PlanService.update(req.params.id, {
-    title: b.title != null ? String(b.title) : undefined,
-    description: b.description != null ? String(b.description) : undefined,
-    startDate: b.startDate != null ? String(b.startDate) : undefined,
-    durationDays: b.durationDays != null ? Number(b.durationDays) : undefined,
-    progress: b.progress != null ? Number(b.progress) : undefined,
+    title: optStr(b.title),
+    description: optStr(b.description),
+    startDate: optStr(b.startDate),
+    durationDays: b.durationDays == null ? undefined : Number(b.durationDays),
+    progress: b.progress == null ? undefined : Number(b.progress),
     status: b.status as Parameters<typeof PlanService.update>[1]['status'],
-    assignee: b.assignee != null ? String(b.assignee) : undefined,
+    assignee: optStr(b.assignee),
   }));
 });
 

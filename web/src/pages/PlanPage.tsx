@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, CalendarPlus, CalendarRange, Download, FileSpreadsheet, Link2, Link2Off, Plus, RefreshCw, Sparkles, Trash2, Upload } from 'lucide-react';
+import { Archive, CalendarPlus, Download, FileSpreadsheet, Link2, Link2Off, Plus, RefreshCw, Sparkles, Trash2, Upload } from 'lucide-react';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { usePersistentState, useSessionState } from '../ui/session';
@@ -57,6 +57,48 @@ function todayStr(): string {
 const inputStyle: React.CSSProperties = { border: '1px solid var(--border-strong)', borderRadius: 4, padding: '3px 6px', background: 'var(--bg)', color: 'var(--text)', fontSize: 12 };
 const btnStyle: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 12, padding: '3px 8px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'transparent', color: 'var(--text)' };
 
+/** AI 草稿行：附加仅用于 React key 的稳定行键（提交时剥离） */
+type AiRow = PlanDraft & { rowKey: string };
+
+/** 按行打补丁的不可变更新（提取到模块作用域，避免 JSX 内多层嵌套闭包） */
+function updateAiRow(rows: AiRow[], idx: number, patch: Partial<PlanDraft>): AiRow[] {
+  return rows.map((r, j) => (j === idx ? { ...r, ...patch } : r));
+}
+
+/** 剥离 rowKey，保持提交请求体与既有协议字段完全一致 */
+function toPlanDraft(r: AiRow): PlanDraft {
+  return {
+    title: r.title, description: r.description, startDate: r.startDate,
+    durationDays: r.durationDays, assignee: r.assignee, status: r.status, include: r.include,
+  };
+}
+
+/** AI 模型默认整理工具优先排序 */
+function compareOrganize(a: AITool, b: AITool): number {
+  return Number(b.isDefaultOrganize) - Number(a.isDefaultOrganize);
+}
+
+/** 保持当前选中工具（若仍存在），否则回退到首个 */
+function pickToolId(sorted: AITool[], cur: string): string {
+  return sorted.some((t) => t.id === cur) ? cur : (sorted[0]?.id ?? '');
+}
+
+/** 计划行拖拽/高亮类名（原嵌套三元等价改写） */
+function planRowClass(dragId: string, overId: string, newRowId: string, id: string): string | undefined {
+  if (dragId === id) return 'plan-dragging';
+  if (overId === id) return 'plan-over';
+  if (newRowId === id) return 'plan-new';
+  return undefined;
+}
+
+/** 浏览器下载 ArrayBuffer 为 xlsx（原为组件内函数，不依赖组件闭包，上提到模块作用域） */
+function downloadBlob(buf: ArrayBuffer, name: string) {
+  const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.click();
+  URL.revokeObjectURL(url);
+}
+
 export function PlanPage() {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   // T00460：切页保状态——项目选择会话级持久化，切回不重置
@@ -80,7 +122,7 @@ export function PlanPage() {
 
   useEffect(() => { void api.get<ProjectRow[]>('/projects').then((ps) => { setProjects(ps); if (ps.length > 0) setProjectId((cur) => cur || ps[0].id); }); }, []);
   // T00438：AI 模型列表（默认整理工具排最前，与任务页模型选择一致）
-  useEffect(() => { void api.get<AITool[]>('/aitools').then((list) => { const sorted = [...list].sort((a, b) => Number(b.isDefaultOrganize) - Number(a.isDefaultOrganize)); setTools(sorted); setAiToolId((cur) => (sorted.some((t) => t.id === cur) ? cur : (sorted[0]?.id ?? ''))); }); }, []);
+  useEffect(() => { void api.get<AITool[]>('/aitools').then((list) => { const sorted = [...list].sort(compareOrganize); setTools(sorted); setAiToolId((cur) => pickToolId(sorted, cur)); }); }, []);
 
   const reload = useCallback(() => {
     if (!projectId) return;
@@ -194,15 +236,8 @@ export function PlanPage() {
   async function exportExcel() {
     if (!projectId) return flash('请先选择项目');
     const buf = await api.getBinary(`/plans/export?projectId=${projectId}`);
-    const ts = todayStr().replace(/-/g, '');
+    const ts = todayStr().replaceAll(/-/g, '');
     downloadBlob(buf, `项目计划-${ts}.xlsx`);
-  }
-
-  function downloadBlob(buf: ArrayBuffer, name: string) {
-    const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
-    const a = document.createElement('a');
-    a.href = url; a.download = name; a.click();
-    URL.revokeObjectURL(url);
   }
 
   async function importExcel(file: File) {
@@ -260,8 +295,8 @@ export function PlanPage() {
           <div style={{ width: 220 + totalDays * DAY_W, minWidth: '100%' }}>
             {/* 月份刻度 */}
             <div style={{ display: 'flex', marginLeft: 220, height: 22, position: 'relative', borderBottom: '1px solid var(--border-strong)', fontSize: 11, color: 'var(--text-muted)' }}>
-              {monthTicks.map((m, i) => (
-                <span key={i} style={{ position: 'absolute', left: m.left + 4 }}>{m.label}</span>
+              {monthTicks.map((m) => (
+                <span key={`${m.label}-${m.left}`} style={{ position: 'absolute', left: m.left + 4 }}>{m.label}</span>
               ))}
             </div>
             {/* 任务行 */}
@@ -355,7 +390,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
 
   /** 确认保存：勾选行批量创建，时间线统一重排 */
   async function aiSave() {
-    const items = aiRows.filter((r) => r.include && r.title.trim());
+    const items = aiRows.filter((r) => r.include && r.title.trim()).map(toPlanDraft);
     if (items.length === 0) return setAiError('请至少勾选一条要保存的条目');
     setAiBusy(true);
     setAiError('');
@@ -447,17 +482,22 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         <div style={{ fontSize: 12, fontWeight: 600, textAlign: 'center', marginBottom: 4 }}>{month + 1} 月</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 1, fontSize: 10, textAlign: 'center' }}>
           {['日', '一', '二', '三', '四', '五', '六'].map((w) => <span key={w} style={{ color: 'var(--text-muted)' }}>{w}</span>)}
-          {cells.map((c, i) => (
-            <span key={i} title={c.hol ? `节假日：${c.hol}` : undefined}
-              style={{
-                padding: '2px 0', borderRadius: 3,
-                color: c.hol ? 'var(--danger)' : (c.weekend ? 'var(--text-muted)' : 'var(--text)'),
-                background: c.hol ? 'var(--danger-soft, rgba(220,38,38,.12))' : 'transparent',
-                fontWeight: c.hol ? 600 : 400,
-              }}>
-              {c.day ?? ''}
-            </span>
-          ))}
+          {cells.map((c, i) => {
+            let color = 'var(--text)';
+            if (c.hol) color = 'var(--danger)';
+            else if (c.weekend) color = 'var(--text-muted)';
+            return (
+              <span key={c.day ?? `pad-${i}`} title={c.hol ? `节假日：${c.hol}` : undefined}
+                style={{
+                  padding: '2px 0', borderRadius: 3,
+                  color,
+                  background: c.hol ? 'var(--danger-soft, rgba(220,38,38,.12))' : 'transparent',
+                  fontWeight: c.hol ? 600 : 400,
+                }}>
+                {c.day ?? ''}
+              </span>
+            );
+          })}
         </div>
       </div>
     );
@@ -496,15 +536,15 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         <label style={{ ...btnStyle, cursor: busy ? 'default' : 'pointer' }} title="导入 Excel（任一行校验失败则整体不入库）">
           <Upload size={13} />导入 Excel
           <input type="file" accept=".xlsx" style={{ display: 'none' }}
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) void importExcel(f); e.target.value = ''; }} />
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) { void importExcel(f); e.target.value = ''; } }} />
         </label>
         <button onClick={() => void exportExcel()} style={btnStyle}><Download size={13} />导出 Excel</button>
         <button onClick={() => void downloadTemplate()} style={btnStyle}><FileSpreadsheet size={13} />下载模板</button>
         <button onClick={openAiImport} style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }} title="AI 导入 — 上传任意格式计划 Excel，AI 自动识别字段并重组为标准计划"><Sparkles size={13} />AI 导入</button>
-        <span style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} role="group" aria-label="视图切换">
+        <fieldset style={{ display: 'inline-flex', margin: 0, padding: 0, minWidth: 0, border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} aria-label="视图切换">
           <button onClick={() => setViewMode('list')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', cursor: 'pointer', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图">列表</button>
           <button onClick={() => setViewMode('gantt')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: viewMode === 'gantt' ? 'var(--accent)' : 'transparent', color: viewMode === 'gantt' ? 'var(--accent-text)' : 'var(--text)' }} title="甘特图视图 — 按串行瀑布时间线可视化">甘特</button>
-        </span>
+        </fieldset>
         <button onClick={openHolidayManager} style={btnStyle} title="节假日管理 — 手动维护 / 联网导入法定节假日 / 万年历视图">节假日（{holidays.length}）</button>
         <button onClick={reload} style={btnStyle} title="刷新"><RefreshCw size={13} /></button>
         {notice && <span style={{ fontSize: 12, color: 'var(--accent)' }}>{notice}</span>}
@@ -547,7 +587,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               onDragEnd={() => { setDragId(''); setOverId(''); }}
               onDragOver={(e) => { e.preventDefault(); if (p.id !== dragId) setOverId(p.id); }}
               onDrop={() => onDropReorder(p.id)}
-              className={dragId === p.id ? 'plan-dragging' : overId === p.id ? 'plan-over' : newRowId === p.id ? 'plan-new' : undefined}
+              className={planRowClass(dragId, overId, newRowId, p.id)}
               style={{ borderBottom: '1px solid var(--border)', transition: 'box-shadow .15s ease, transform .15s ease, background .15s ease' }}>
               <td style={{ padding: 6, color: 'var(--text-muted)' }}>{i + 1}</td>
               <td style={{ padding: 6, minWidth: 220 }}>
@@ -609,9 +649,10 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
 
       {/* T00438 AI 导入弹窗：模型选择 + 文件上传 → AI 解析草稿表格（可编辑/勾选）→ 批量保存 */}
       {aiOpen && (
-        <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          onClick={() => { if (!aiBusy) setAiOpen(false); }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(720px, 94vw)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
+        <div /* NOSONAR - 弹窗外层全屏遮罩需保持 div 布局；点击遮罩仅为鼠标便捷操作，弹窗内原生关闭按钮提供键盘可达通路 */
+          style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={(e) => { if (e.target === e.currentTarget && !aiBusy) setAiOpen(false); }}>
+          <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(720px, 94vw)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
               <Sparkles size={14} style={{ color: 'var(--accent)' }} /> AI 导入计划
               <span style={{ flex: 1 }} />
@@ -620,14 +661,14 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             </div>
             <div style={{ padding: 14, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <label style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>AI 模型：</label>
-                <select value={aiToolId} onChange={(e) => setAiToolId(e.target.value)} style={inputStyle} aria-label="选择 AI 模型">
+                <label htmlFor="plan-ai-tool" style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>AI 模型：</label>
+                <select id="plan-ai-tool" value={aiToolId} onChange={(e) => setAiToolId(e.target.value)} style={inputStyle} aria-label="选择 AI 模型">
                   {tools.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
                 <label style={{ ...btnStyle, cursor: aiBusy ? 'default' : 'pointer' }} title="选择计划 Excel（.xlsx/.csv）或需求文档（.md/.docx）">
                   <Upload size={13} />选择文件
                   <input type="file" accept=".xlsx,.csv,.md,.markdown,.docx" style={{ display: 'none' }}
-                    onChange={(e) => { const f = e.target.files?.[0]; if (f) void aiParse(f); e.target.value = ''; }} />
+                    onChange={(e) => { const f = e.target.files?.[0]; if (f) { void aiParse(f); e.target.value = ''; } }} />
                 </label>
                 {aiFileName && <span style={{ color: 'var(--text-muted)' }}>{aiFileName}</span>}
                 {aiBusy && <span style={{ color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Sparkles size={12} />AI 解析中…</span>}
@@ -643,24 +684,24 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                   </div>
                   <div style={{ maxHeight: '42vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {aiRows.map((row, i) => (
-                      <div key={i} style={{ border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <div key={row.rowKey} style={{ border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 4 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                           <input type="checkbox" checked={row.include} aria-label={`勾选第 ${i + 1} 条`}
-                            onChange={(e) => setAiRows((prev) => prev.map((r, j) => (j === i ? { ...r, include: e.target.checked } : r)))} />
+                            onChange={(e) => setAiRows((prev) => updateAiRow(prev, i, { include: e.target.checked }))} />
                           <input value={row.title} aria-label={`第 ${i + 1} 条标题`}
-                            onChange={(e) => setAiRows((prev) => prev.map((r, j) => (j === i ? { ...r, title: e.target.value } : r)))}
+                            onChange={(e) => setAiRows((prev) => updateAiRow(prev, i, { title: e.target.value }))}
                             style={{ ...inputStyle, flex: 1, minWidth: 160, fontWeight: 600 }} />
                           <input type="date" value={row.startDate} aria-label={`第 ${i + 1} 条开始日期`}
-                            onChange={(e) => setAiRows((prev) => prev.map((r, j) => (j === i ? { ...r, startDate: e.target.value } : r)))}
+                            onChange={(e) => setAiRows((prev) => updateAiRow(prev, i, { startDate: e.target.value }))}
                             style={inputStyle} />
                           <input type="number" min={1} value={row.durationDays} aria-label={`第 ${i + 1} 条工期`}
-                            onChange={(e) => setAiRows((prev) => prev.map((r, j) => (j === i ? { ...r, durationDays: Math.max(1, Number(e.target.value) || 1) } : r)))}
+                            onChange={(e) => setAiRows((prev) => updateAiRow(prev, i, { durationDays: Math.max(1, Number(e.target.value) || 1) }))}
                             style={{ ...inputStyle, width: 60 }} />
                           <input value={row.assignee} placeholder="负责人" aria-label={`第 ${i + 1} 条负责人`}
-                            onChange={(e) => setAiRows((prev) => prev.map((r, j) => (j === i ? { ...r, assignee: e.target.value } : r)))}
+                            onChange={(e) => setAiRows((prev) => updateAiRow(prev, i, { assignee: e.target.value }))}
                             style={{ ...inputStyle, width: 80 }} />
                           <select value={row.status} aria-label={`第 ${i + 1} 条状态`}
-                            onChange={(e) => setAiRows((prev) => prev.map((r, j) => (j === i ? { ...r, status: e.target.value as PlanDraft['status'] } : r)))}
+                            onChange={(e) => setAiRows((prev) => updateAiRow(prev, i, { status: e.target.value as PlanDraft['status'] }))}
                             style={inputStyle}>
                             <option value="todo">待开始</option>
                             <option value="doing">进行中</option>
@@ -669,7 +710,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                           </select>
                         </div>
                         <input value={row.description} placeholder="描述（可空）" aria-label={`第 ${i + 1} 条描述`}
-                          onChange={(e) => setAiRows((prev) => prev.map((r, j) => (j === i ? { ...r, description: e.target.value } : r)))}
+                          onChange={(e) => setAiRows((prev) => updateAiRow(prev, i, { description: e.target.value }))}
                           style={{ ...inputStyle, color: 'var(--text-muted)' }} />
                       </div>
                     ))}
@@ -690,11 +731,12 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       )}
       {/* T00442 节假日多功能弹窗：手动维护 / 联网导入法定节假日 / 万年历 */}
       {holiOpen && (
-        <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          onClick={() => { if (!holiBusy) setHoliOpen(false); }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(760px, 94vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
+        <div /* NOSONAR - 弹窗外层全屏遮罩需保持 div 布局；点击遮罩仅为鼠标便捷操作，弹窗内原生关闭按钮提供键盘可达通路 */
+          style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={(e) => { if (e.target === e.currentTarget && !holiBusy) setHoliOpen(false); }}>
+          <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(760px, 94vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
-              节假日管理
+              <span>节假日管理</span>
               <span style={{ flex: 1 }} />
               <button onClick={() => setHoliOpen(false)} disabled={holiBusy} title="关闭" aria-label="关闭节假日管理"
                 style={{ display: 'inline-flex', alignItems: 'center', cursor: holiBusy ? 'default' : 'pointer', background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 14 }}>×</button>

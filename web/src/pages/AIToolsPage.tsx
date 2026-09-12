@@ -190,9 +190,13 @@ interface ToolRowProps {
 /** 表格行（S3776 拆分）：单行渲染逻辑从页面组件抽出，API Key 列与操作列再下沉到单元格组件 */
 function ToolRow(props: ToolRowProps) {
   const { tool } = props;
+  const flushClass = props.flushed ? ' flush' : '';
+  let dragClass = '';
+  if (props.dragId === tool.id) dragClass = ' tool-dragging';
+  else if (props.overId === tool.id) dragClass = ' tool-over';
   return (
     <tr
-      className={`arena-row${props.flushed ? ' flush' : ''}${props.dragId === tool.id ? ' tool-dragging' : props.overId === tool.id ? ' tool-over' : ''}`}
+      className={`arena-row${flushClass}${dragClass}`}
       draggable
       onDragStart={() => props.onDragStart?.(tool.id)}
       onDragEnd={() => { props.onDragEnd?.(); }}

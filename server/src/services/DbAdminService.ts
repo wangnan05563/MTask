@@ -45,7 +45,7 @@ const TABLE_LABELS: Record<string, string> = {
   app_settings: '应用设置',
 };
 
-const IDENT_RE = /^[\w]+$/;
+const IDENT_RE = /^\w+$/;
 
 function assertIdent(name: string, kind = '标识符'): void {
   if (!IDENT_RE.test(name)) throw new Error(`非法${kind}: ${name}`);
@@ -166,13 +166,13 @@ export const DbAdminService = {
   /** 新增一行：仅接受表中真实存在的列名；自增/主键留空由 SQLite 处理 */
   insertRow(table: string, data: Record<string, unknown>): void {
     assertTable(table);
-    const cols = this.getColumns(table);
     const keys = Object.keys(data).filter((k) => {
       assertColumn(table, k);
       return data[k] !== undefined;
     });
     if (keys.length === 0) throw new Error('无有效字段');
-    const sql = `INSERT INTO "${table}" (${keys.map((k) => `"${k}"`).join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`;
+    const collist = keys.map((k) => `"${k}"`).join(', ');
+    const sql = `INSERT INTO "${table}" (${collist}) VALUES (${keys.map(() => '?').join(', ')})`;
     getDb().prepare(sql).run(...keys.map((k) => data[k]));
   },
 
@@ -185,7 +185,8 @@ export const DbAdminService = {
       return data[k] !== undefined;
     });
     if (keys.length === 0) throw new Error('无有效字段');
-    const sql = `UPDATE "${table}" SET ${keys.map((k) => `"${k}" = ?`).join(', ')} WHERE "${pk}" = ?`;
+    const setClause = keys.map((k) => `"${k}" = ?`).join(', ');
+    const sql = `UPDATE "${table}" SET ${setClause} WHERE "${pk}" = ?`;
     const r = getDb().prepare(sql).run(...keys.map((k) => data[k]), pkValue);
     if (r.changes === 0) throw new Error('记录不存在或未变更');
   },
@@ -226,7 +227,8 @@ export const DbAdminService = {
     const insertOne = (data: Record<string, unknown>) => {
       const keys = Object.keys(data).filter((k) => validCols.has(k) && data[k] !== undefined);
       if (keys.length === 0) throw new Error('无有效字段');
-      const sql = `INSERT INTO "${table}" (${keys.map((k) => `"${k}"`).join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`;
+      const collist = keys.map((k) => `"${k}"`).join(', ');
+      const sql = `INSERT INTO "${table}" (${collist}) VALUES (${keys.map(() => '?').join(', ')})`;
       db.prepare(sql).run(...keys.map((k) => data[k]));
     };
 

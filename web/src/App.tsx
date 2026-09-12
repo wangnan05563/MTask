@@ -12,7 +12,7 @@ import { MarkdownStyles } from './ui/Markdown';
 import { CommandPalette } from './pages/CommandPalette';
 import { SettingsProvider } from './settings';
 import { MobileShell } from './mobile/MobileShell';
-import { Archive, BarChart3, Boxes, CalendarRange, Lightbulb, ListOrdered, ListTodo, ScrollText, Settings, type LucideIcon } from 'lucide-react';
+import { BarChart3, Boxes, CalendarRange, Lightbulb, ListOrdered, ListTodo, ScrollText, Settings, type LucideIcon } from 'lucide-react';
 
 // T00441：日志/归档入口从顶部菜单移入「设置」（内网穿透下方），顶部菜单收敛为高频功能
 type Tab = 'tasks' | 'aitools' | 'prompts' | 'req' | 'plan' | 'queue' | 'report' | 'settings';

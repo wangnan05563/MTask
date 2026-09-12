@@ -12,8 +12,6 @@ interface LogEntry {
 }
 
 type LevelFilter = 'all' | 'ERROR' | 'WARN' | 'INFO' | 'DEBUG';
-/** 来源筛选：all + 数据中动态聚合出的来源（T00440 扩展：新增来源无需改此处代码） */
-type SourceFilter = string;
 
 /** 已知来源的显示名；未列出的来源直接以来源名显示（来源→标签的映射可按需补充） */
 const SOURCE_LABELS: Record<string, string> = {
@@ -140,7 +138,7 @@ export function LogsPage() {
           <option value="INFO">INFO</option>
           <option value="DEBUG">DEBUG</option>
         </select>
-        <select value={source} onChange={(e) => setSource(e.target.value as SourceFilter)} title="来源筛选 — 按日志来源过滤显示（AI 使用/队列等便于排错）" aria-label="来源筛选" style={controlStyle}>
+        <select value={source} onChange={(e) => setSource(e.target.value)} title="来源筛选 — 按日志来源过滤显示（AI 使用/队列等便于排错）" aria-label="来源筛选" style={controlStyle}>
           <option value="all">全部来源</option>
           {sourceOptions.map((s) => <option key={s} value={s}>{SOURCE_LABELS[s] ?? s}</option>)}
         </select>

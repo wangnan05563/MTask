@@ -90,10 +90,10 @@ export async function createMCPServer(): Promise<McpServer> {
       // 查重（T00445 教训：MCP 回传/计划镜像/手动创建多渠道并存，无查重会产生重复待办）
       // 规范化在 JS 侧统一做（SQLite 无 regexp）：比对「去所有空白」后的标题，避免空格差异漏配
       const dedupe = a.dedupe !== false;
-      const normTitle = a.title.replace(/\s+/g, '');
+      const normTitle = a.title.replaceAll(/\s+/g, '');
       if (dedupe) {
         const rows = getDb().prepare('SELECT * FROM tasks WHERE project_id = ?').all(pid) as Array<Record<string, unknown>>;
-        const exist = rows.find((r) => String(r.title ?? '').replace(/\s+/g, '') === normTitle);
+        const exist = rows.find((r) => (typeof r.title === 'string' ? r.title : '').replaceAll(/\s+/g, '') === normTitle);
         if (exist) return ok(json({ reused: true, task: exist }), { reused: true, task: exist });
       }
       // T00450：父子层级——父任务校验（存在且同项目）

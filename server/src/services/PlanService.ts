@@ -37,7 +37,7 @@ export interface PlanTaskRow {
 
 export type PlanStatus = 'todo' | 'doing' | 'done' | 'blocked';
 
-const PLAN_STATUSES: PlanStatus[] = ['todo', 'doing', 'done', 'blocked'];
+const PLAN_STATUSES = new Set<PlanStatus>(['todo', 'doing', 'done', 'blocked']);
 
 /** AI 解析输入的行数上限：超出的内容截断，避免超大文件拖垮模型上下文（T00438） */
 const MAX_PARSE_ROWS = 300;
@@ -98,6 +98,18 @@ function parseDate(s: string): Date {
 function fmt(d: Date): string {
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/**
+ * Excel 单元格值 → 文本：Date 走 fmt，富文本对象取其 text，其余 object 显式 JSON 化
+ * （避免隐式 String() 得到 "[object Object]"）。
+ */
+function cellValueText(v: unknown): string {
+  if (v == null) return '';
+  if (v instanceof Date) return fmt(v);
+  if (typeof v === 'object' && 'text' in (v as object)) return String((v as { text: unknown }).text);
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
 }
 
 function loadHolidaySet(): Set<string> {

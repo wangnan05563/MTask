@@ -75,7 +75,8 @@ export const api = {
    * （EventSource 无法自定义请求头）；EventSource 原生断线重连。返回取消订阅函数。
    */
   openChangeStream(onChange: (kind: string) => void): () => void {
-    const url = `${apiBase}/events${accessToken ? `?token=${encodeURIComponent(accessToken)}` : ''}`;
+    const tokenQuery = accessToken ? `?token=${encodeURIComponent(accessToken)}` : '';
+    const url = `${apiBase}/events${tokenQuery}`;
     const es = new EventSource(url);
     es.onmessage = (ev) => {
       try { onChange(String(JSON.parse(ev.data).kind ?? '')); } catch { onChange(''); }

@@ -47,7 +47,8 @@ type CellValue = string | number | boolean | null;
 function formatCell(v: unknown): string {
   if (v === null || v === undefined) return '';
   if (typeof v === 'object') return JSON.stringify(v);
-  return String(v);
+  if (typeof v === 'string') return v;
+  return String(v); // NOSONAR - 前置 typeof 已排除 object 分支，此处仅剩 number/boolean 等基本类型
 }
 
 /** 按列类型推断表单控件类型（编辑/新增弹窗用） */
@@ -59,25 +60,47 @@ function inferFormType(colType: string): 'number' | 'checkbox' | 'textarea' | 't
   return 'text';
 }
 
+/** 去掉可能存在 UTF-8 BOM 的首字符 */
+function stripBom(text: string): string {
+  return text.codePointAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+/** 字段内的转义双引号（连续的 "" 且处于引号段内） */
+function isEscapedQuote(text: string, i: number, inQuote: boolean): boolean {
+  return inQuote && text[i + 1] === '"';
+}
+
+/** 行分隔符判定：CR/LF 且不在引号段内 */
+function isRowBreak(ch: string, inQuote: boolean): boolean {
+  return (ch === '\n' || ch === '\r') && !inQuote;
+}
+
+/** 行分隔为 CRLF 时跳过紧随的 \n，返回下一个游标位置 */
+function afterRowBreak(text: string, i: number, ch: string): number {
+  return ch === '\r' && text[i + 1] === '\n' ? i + 1 : i;
+}
+
 /** 简易 CSV 解析：支持双引号转义与 CRLF；首行表头，返回 [表头, ...行] */
 function parseCSV(text: string): string[][] {
+  const src = stripBom(text);
   const rows: string[][] = [];
   let cur: string[] = [];
   let val = '';
   let inQuote = false;
-  if (text.codePointAt(0) === 0xfeff) text = text.slice(1);
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
     if (ch === '"') {
-      if (inQuote && text[i + 1] === '"') { val += '"'; i++; }
+      if (isEscapedQuote(src, i, inQuote)) { val += '"'; i++; }
       else inQuote = !inQuote;
     } else if (ch === ',' && !inQuote) {
       cur.push(val); val = '';
-    } else if ((ch === '\n' || ch === '\r') && !inQuote) {
-      if (ch === '\r' && text[i + 1] === '\n') i++;
+    } else if (isRowBreak(ch, inQuote)) {
+      i = afterRowBreak(src, i, ch);
       cur.push(val); val = '';
       rows.push(cur); cur = [];
     } else val += ch;
+    i++;
   }
   if (val !== '' || cur.length > 0) { cur.push(val); rows.push(cur); }
   return rows.filter((r) => r.length > 1 || (r.length === 1 && r[0] !== ''));
@@ -102,13 +125,18 @@ function download(name: string, content: string, mime: string): void {
   URL.revokeObjectURL(url);
 }
 
-const btnStyle = (primary = false, danger = false): React.CSSProperties => ({
-  fontSize: 'var(--fs-m)', padding: '5px 12px', borderRadius: 6, cursor: 'pointer',
-  display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap',
-  background: primary ? 'var(--accent)' : 'var(--card-bg)',
-  color: danger ? 'var(--danger)' : primary ? 'var(--accent-text)' : 'var(--text)',
-  border: primary ? 'none' : '1px solid var(--border-strong)',
-});
+const btnStyle = (primary = false, danger = false): React.CSSProperties => {
+  let color = 'var(--text)';
+  if (danger) color = 'var(--danger)';
+  else if (primary) color = 'var(--accent-text)';
+  return {
+    fontSize: 'var(--fs-m)', padding: '5px 12px', borderRadius: 6, cursor: 'pointer',
+    display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap',
+    background: primary ? 'var(--accent)' : 'var(--card-bg)',
+    color,
+    border: primary ? 'none' : '1px solid var(--border-strong)',
+  };
+};
 
 export function DbAdminTab() {
   const [tables, setTables] = useState<DbTableInfo[]>([]);
@@ -239,7 +267,8 @@ export function DbAdminTab() {
       const ok = await askConfirm(`将向表「${active}」导入 ${data.length} 行（单行失败自动跳过）。确认继续？`);
       if (!ok) return;
       const r = await api.post<{ inserted: number; skipped: number; errors: string[] }>(`/dbadmin/tables/${active}/import`, { rows: data });
-      flash(`导入完成：${r.inserted} 成功，${r.skipped} 跳过${r.errors.length ? `；首条错误：${r.errors[0]}` : ''}`);
+      const errHint = r.errors.length ? `；首条错误：${r.errors[0]}` : '';
+      flash(`导入完成：${r.inserted} 成功，${r.skipped} 跳过${errHint}`);
       await Promise.all([loadRows(), loadTables()]);
     } catch (err) {
       flash(err instanceof Error ? err.message : String(err));
@@ -401,8 +430,10 @@ export function DbAdminTab() {
       )}
 
       {schemaOpen && active && (
-        <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setSchemaOpen(false)}>
-          <div style={{ background: 'var(--card-bg)', borderRadius: 8, padding: 16, minWidth: 420, maxWidth: 640, maxHeight: '70vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
+        <div /* NOSONAR - 遮罩点击空白关闭为便捷辅助，正式关闭入口为弹窗内原生按钮，无需对背景遮罩聚焦键盘 */
+          style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setSchemaOpen(false)}>
+          <div /* NOSONAR - 阻断点击冒泡属事件传递逻辑而非独立交互控件，可访问关闭入口仍为原生按钮 */
+            style={{ background: 'var(--card-bg)', borderRadius: 8, padding: 16, minWidth: 420, maxWidth: 640, maxHeight: '70vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
               <div style={{ fontWeight: 600 }}>表结构 - {active}</div>
               <button style={{ ...btnStyle(false), padding: '2px 6px' }} onClick={() => setSchemaOpen(false)}><X size={13} /></button>
@@ -436,6 +467,14 @@ export function DbAdminTab() {
   );
 }
 
+/** 表单值 → 提交值：checkbox 归一为 0/1；非 checkbox 空串返回 undefined 表示不提交（走列默认/可空语义） */
+function formValue(v: string | boolean | undefined, type: 'number' | 'checkbox' | 'textarea' | 'text'): unknown {
+  if (type === 'checkbox') return v ? 1 : 0;
+  const s = typeof v === 'string' ? v.trim() : '';
+  if (s === '') return undefined;
+  return type === 'number' ? Number(s) : s;
+}
+
 /** 编辑/新增弹窗：按列类型动态生成表单项 */
 function EditModal(props: {
   readonly table: string;
@@ -452,7 +491,7 @@ function EditModal(props: {
     for (const c of columns) {
       const v = row?.[c.name];
       const type = inferFormType(c.type);
-      init[c.name] = type === 'checkbox' ? Boolean(v) : v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+      init[c.name] = type === 'checkbox' ? Boolean(v) : formatCell(v);
     }
     return init;
   });
@@ -465,13 +504,8 @@ function EditModal(props: {
     try {
       const data: Record<string, unknown> = {};
       for (const c of columns) {
-        const v = values[c.name];
-        const type = inferFormType(c.type);
-        if (type === 'checkbox') { data[c.name] = v ? 1 : 0; continue; }
-        const s = typeof v === 'string' ? v.trim() : '';
-        if (s === '') continue; // 空串不提交，走列默认/可空语义
-        if (type === 'number') data[c.name] = Number(s);
-        else data[c.name] = s;
+        const v = formValue(values[c.name], inferFormType(c.type));
+        if (v !== undefined) data[c.name] = v;
       }
       if (mode === 'create') {
         await api.post(`/dbadmin/tables/${table}/rows`, data);
@@ -493,13 +527,36 @@ function EditModal(props: {
     background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box',
   };
 
+  // 「保存/更新」按钮文案：busy 优先展示保存中，其余按模式
+  let submitLabel = mode === 'create' ? '新增' : '更新';
+  if (busy) submitLabel = '保存中…';
+
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
-      <div style={{ background: 'var(--card-bg)', borderRadius: 8, padding: 20, minWidth: 380, maxWidth: 560, maxHeight: '80vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
+    <div /* NOSONAR - 遮罩点击空白关闭为便捷辅助，正式关闭入口为弹窗内原生按钮，无需对背景遮罩聚焦键盘 */
+      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
+      <div /* NOSONAR - 阻断点击冒泡属事件传递逻辑而非独立交互控件，可访问关闭入口仍为原生按钮 */
+        style={{ background: 'var(--card-bg)', borderRadius: 8, padding: 20, minWidth: 380, maxWidth: 560, maxHeight: '80vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
         <div style={{ fontWeight: 600, marginBottom: 12 }}>{mode === 'create' ? `新增 → ${table}` : `编辑 → ${table}`}</div>
         {columns.map((c) => {
           const type = inferFormType(c.type);
           const editable = !(mode === 'update' && c.primary_key);
+          let control: React.ReactNode;
+          if (type === 'checkbox') {
+            control = <input type="checkbox" disabled={!editable} checked={Boolean(values[c.name])} onChange={(e) => setValues((p) => ({ ...p, [c.name]: e.target.checked }))} />;
+          } else if (type === 'textarea') {
+            control = <textarea rows={3} disabled={!editable} value={String(values[c.name])} onChange={(e) => setValues((p) => ({ ...p, [c.name]: e.target.value }))} style={fieldStyle} />;
+          } else {
+            control = (
+              <input
+                type={type === 'number' ? 'number' : 'text'}
+                step="any"
+                disabled={!editable}
+                value={String(values[c.name])}
+                onChange={(e) => setValues((p) => ({ ...p, [c.name]: e.target.value }))}
+                style={fieldStyle}
+              />
+            );
+          }
           return (
             <div key={c.name} style={{ marginBottom: 10 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-m)', marginBottom: 3 }}>
@@ -507,27 +564,14 @@ function EditModal(props: {
                 {c.primary_key && <span style={{ fontSize: 10, color: 'var(--accent)' }}>PK</span>}
                 <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{c.type}</span>
               </label>
-              {type === 'checkbox' ? (
-                <input type="checkbox" disabled={!editable} checked={Boolean(values[c.name])} onChange={(e) => setValues((p) => ({ ...p, [c.name]: e.target.checked }))} />
-              ) : type === 'textarea' ? (
-                <textarea rows={3} disabled={!editable} value={String(values[c.name])} onChange={(e) => setValues((p) => ({ ...p, [c.name]: e.target.value }))} style={fieldStyle} />
-              ) : (
-                <input
-                  type={type === 'number' ? 'number' : 'text'}
-                  step="any"
-                  disabled={!editable}
-                  value={String(values[c.name])}
-                  onChange={(e) => setValues((p) => ({ ...p, [c.name]: e.target.value }))}
-                  style={fieldStyle}
-                />
-              )}
+              {control}
             </div>
           );
         })}
         {err && <div style={{ color: 'var(--danger)', fontSize: 'var(--fs-m)', marginBottom: 8 }}>{err}</div>}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button style={btnStyle(false)} onClick={onClose}>取消</button>
-          <button style={btnStyle(true)} disabled={busy} onClick={() => void submit()}>{busy ? '保存中…' : mode === 'create' ? '新增' : '更新'}</button>
+          <button style={btnStyle(true)} disabled={busy} onClick={() => void submit()}>{submitLabel}</button>
         </div>
       </div>
     </div>

@@ -82,6 +82,12 @@ const FEATURES: FeatureModule[] = [
     tips: ['提交前会固化任务上下文快照，避免任务被改导致回执错位', '采纳仅保存文本并把任务置为完成', '异步任务超时（按工具 timeoutMs）会置为 timeout，可重置重发'],
   },
   {
+    name: '项目计划（甘特）',
+    overview: '以「串行瀑布」时间线管理项目计划：任务按工作日自动顺排（跳过周末与节假日），支持列表/甘特视图、关联待办、Excel 导入导出与 AI 解析（文档/表格 → WBS 草稿）。',
+    steps: ['进入「项目计划」选择项目', '新建计划任务（填工期天数，时间线自动重排）', '维护节假日或联网导入法定节假日，时间线随之重算', 'Excel 模板导入/导出，或 AI 解析 Word/表格生成草稿后批量确认'],
+    tips: ['计划状态变更会同步关联待办（linked_task_id）', '任务层级仅两级（parent_id），已禁用三级链', '节假日变更后全量重排在同一事务内完成'],
+  },
+  {
     name: '归档与删除（FR6）',
     overview: '归档任务统一管理、可还原；仅已归档任务允许删除。',
     steps: ['在任务页批量勾选「归档」', '归档页可「还原」或「删除」'],
@@ -91,6 +97,12 @@ const FEATURES: FeatureModule[] = [
     name: '提示词库',
     overview: '按分类维护可复用的提示词模板，任务页可快速插入，支持智能分类。',
     steps: ['在「提示词」页新建分类与条目', '任务页标题分类下拉可启用智能分类'],
+  },
+  {
+    name: '通用需求仓库',
+    overview: '沉淀「优秀实现 / 解决方案」类通用需求，按分类维护条目，可一键转待办或转化为项目计划草稿，支持内容指纹查重避免重复。',
+    steps: ['在「通用需求」页新建分类与条目', '条目可「转待办」落到收件箱，或「转化为计划」生成项目计划草稿', 'AI 控制台「提炼通用需求」可批量将任务洞察存为需求条目'],
+    tips: ['条目带内容指纹（sha256 前 24 位），重复提炼/转存会提示已存在', '通用需求 → 计划草稿带「[需求]」前缀并自动查重'],
   },
   {
     name: '周报与 AI 控制台',
@@ -109,6 +121,24 @@ const FEATURES: FeatureModule[] = [
     overview: '将本地服务暴露到公网（Tailscale / Cloudflare / cpolar），便于远程访问 API 或 Web 界面；配置访问令牌可防止未授权读写。',
     steps: ['进入「内网穿透」配置 provider 与令牌', '启动后获得公网 URL', '远程访问时需携带 X-Access-Token'],
     tips: ['已配置令牌时，所有 /api 数据接口需携带 X-Access-Token', '打包版使用独立端口 39877，开发版 39876'],
+  },
+  {
+    name: '命令面板（Ctrl+K）',
+    overview: '全局命令面板：跨实体搜索任务/提示词，并支持页面跳转。桌面端按 Ctrl/Cmd+K 唤起。',
+    steps: ['按 Ctrl/Cmd+K 打开面板', '输入关键字模糊匹配任务（标题/编号）或提示词', '↑↓ 选择、Enter 执行（跳转页面或复制任务号）、Esc 关闭'],
+    tips: ['任务搜索结果选中后自动复制任务编号并跳转到任务页', '也可用于快速跳转到 任务/提示词/队列 页面'],
+  },
+  {
+    name: '数据维护（DB Admin）',
+    overview: '设置 → 数据维护：对任意业务表在线增删改查、批量删除、CSV/JSON 导入导出，并查看表结构。供高级用户直接维护数据。',
+    steps: ['进入「设置 → 数据维护」', '选择表后分页查看行、编辑或新增', '危险操作（删行/批删/导入覆盖）需输入确认码 CONFIRM_DELETE'],
+    tips: ['表名/列名经白名单正则校验，防注入', '图片 BLOB 以元信息展示，避免列表卡顿'],
+  },
+  {
+    name: '移动端（随手记）',
+    overview: '移动 Web 适配：底部 5 Tab（任务/随手记/队列/提示词/更多）。随手记支持文本/语音/模板/图片，离线时存本地草稿，重连自动同步。',
+    steps: ['移动端自动按视口/触摸判定加载移动布局（或 URL 加 ?m=1 强制）', '「随手记」≤3 步建任务，支持语音与图片附件', '离线创建的任务存为草稿，恢复网络后自动 flush'],
+    tips: ['只读模块（队列/配置/归档）编辑引导回桌面端', '访问令牌缺失时弹出令牌输入框（/health 返回 unauthorized）'],
   },
 ];
 
@@ -133,6 +163,9 @@ const MCP_TOOLS: McpTool[] = [
   { name: 'mtask_ai_generate_report', title: 'AI 生成周报', desc: '基于周期真实数据由 AI 撰写洞察并合成文件', params: 'period*；format*；toolId*；projectId?' },
   { name: 'mtask_export_data', title: '导出全量数据', desc: '导出全部业务数据为 bundle JSON', params: '—' },
   { name: 'mtask_import_data', title: '导入全量数据', desc: '导入 export 产物；overwrite/keep/merge 策略，单事务回滚', params: 'data（bundle 对象）*；mode*（overwrite|keep|merge）' },
+  { name: 'mtask_list_plans', title: '列出项目计划', desc: '返回项目计划（串行瀑布时间线 + 关联待办号）', params: 'projectId?；projectName?；includeArchived?' },
+  { name: 'mtask_create_plans', title: '批量建计划', desc: 'WBS 拆行批量建计划，首条 startDate 作锚点，其余按工作日顺排', params: 'projectId?；projectName?；items[]*（title/durationDays/...）' },
+  { name: 'mtask_update_task_result', title: '同步处理结果', desc: '把 AI 执行结果写回任务 handle_result 字段', params: 'id?；taskNo?；result*' },
 ];
 
 const humanStr = (s: string) => s.replace(/\*\*/g, '');
@@ -185,7 +218,7 @@ function McpScreen() {
         ['结束', 'DELETE /api/mcp', '终止会话并释放连接'],
       ]} />
 
-      <div style={{ fontWeight: 600, fontSize: 'var(--fs-l)', margin: '12px 0 4px' }}>工具清单（18 个）</div>
+      <div style={{ fontWeight: 600, fontSize: 'var(--fs-l)', margin: '12px 0 4px' }}>工具清单（21 个）</div>
       <FieldTable head={['工具名', '功能', '参数（* 为必填）']} rows={MCP_TOOLS.map((t) => [t.name, `${t.title} · ${t.desc}`, humanStr(t.params)])} />
 
       <div style={{ fontWeight: 600, fontSize: 'var(--fs-l)', margin: '12px 0 4px' }}>请求示例</div>

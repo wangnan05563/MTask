@@ -80,7 +80,7 @@ export const ReqEntryService = {
       values.push(`%${kw}%`, `%${kw}%`);
     }
     const whereSql = where.length ? ` WHERE ${where.join(' AND ')}` : '';
-    return db.prepare(`SELECT * FROM req_entries${whereSql} ORDER BY pinned DESC, updated_at DESC`).all(...values) as ReqEntryRow[];
+    return db.prepare(`SELECT * FROM req_entries${whereSql} ORDER BY pinned DESC, CASE WHEN sort_weight = 0 THEN 1 ELSE 0 END, sort_weight, updated_at DESC`).all(...values) as ReqEntryRow[];
   },
 
   create(input: { categoryId: string; title: string; content: string; fingerprint?: string }): ReqEntryRow {
