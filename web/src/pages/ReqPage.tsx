@@ -265,6 +265,10 @@ export function ReqPage() {
         .arena-row:active { transform: scale(.985); }
         .arena-row:hover { background: var(--surface-2); }
         .abtn { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
+        /* T00469：操作图标按钮 hover 动效（lucide 图标微缩放反馈） */
+        .abtn svg { transition: transform .15s ease; }
+        .abtn:hover svg { transform: scale(1.15); }
+        .abtn:active svg { transform: scale(.9); }
         .arena-row:hover .abtn, .arena-row:focus-within .abtn { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
         @keyframes rowflush { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
         .arena-row.flush { animation: rowflush 1.4s ease; }
