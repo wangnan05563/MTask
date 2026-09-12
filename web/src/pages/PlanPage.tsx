@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CalendarPlus, Download, FileSpreadsheet, Link2, Link2Off, RefreshCw, Sparkles, Trash2, Upload } from 'lucide-react';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
@@ -233,27 +233,95 @@ export function PlanPage() {
   }
 
   // ---------- 节假日 ----------
-  async function addHoliday() {
-    const date = await askInput({ title: '添加节假日（YYYY-MM-DD）', placeholder: todayStr() });
-    if (!date?.trim()) return;
-    const name = await askInput({ title: '节假日名称（可空）', placeholder: '如：国庆节' });
-    setBusy(true);
+  // ---------- T00442：节假日多功能弹窗（手动维护 / 联网导入法定节假日 / 万年历视图） ----------
+
+  const [holiOpen, setHoliOpen] = useState(false);
+  const [holiTab, setHoliTab] = useState<'manage' | 'national' | 'calendar'>('manage');
+  const [holiNewDate, setHoliNewDate] = useState('');
+  const [holiNewName, setHoliNewName] = useState('');
+  const [holiBusy, setHoliBusy] = useState(false);
+  const [natYear, setNatYear] = useState(new Date().getFullYear());
+  const [natMsg, setNatMsg] = useState('');
+  const [calYear, setCalYear] = useState(new Date().getFullYear());
+
+  const holidayMap = useMemo(() => new Map(holidays.map((h) => [h.date, h.name])), [holidays]);
+
+  function openHolidayManager() {
+    setHoliOpen(true);
+    setHoliTab('manage');
+    setHoliNewDate('');
+    setHoliNewName('');
+    setNatMsg('');
+  }
+
+  async function addHolidayInModal() {
+    if (!holiNewDate) return flash('请先选择节假日日期');
+    setHoliBusy(true);
     try {
-      await api.post('/plans/holidays', { date: date.trim(), name: name?.trim() ?? '' });
+      await api.post('/plans/holidays', { date: holiNewDate, name: holiNewName });
       setHolidays(await api.get('/plans/holidays'));
       reload();
       flash('节假日已添加，相关时间线已重排');
-    } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
+      setHoliNewDate(''); setHoliNewName('');
+    } catch (e) { flash(String((e as Error).message ?? e)); } finally { setHoliBusy(false); }
   }
 
   async function removeHoliday(date: string) {
     if (!(await askConfirm(`移除节假日 ${date}？受影响时间线将自动重排。`))) return;
-    setBusy(true);
+    setHoliBusy(true);
     try {
       await api.del(`/plans/holidays/${date}`);
       setHolidays(await api.get('/plans/holidays'));
       reload();
-    } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
+    } catch (e) { flash(String((e as Error).message ?? e)); } finally { setHoliBusy(false); }
+  }
+
+  /** 联网导入国家法定节假日（后端代理 timor.tech 数据源，upsert 幂等） */
+  async function importNational() {
+    setHoliBusy(true);
+    setNatMsg('');
+    try {
+      const r = await api.post<{ imported: number; items: Array<{ date: string; name: string }> }>('/plans/holidays/import-national', { year: natYear });
+      setHolidays(await api.get('/plans/holidays'));
+      reload();
+      setNatMsg(`✓ 已导入 ${r.imported} 条 ${natYear} 年法定节假日（重复日期自动合并），时间线已重排`);
+    } catch (e) {
+      setNatMsg(`✗ ${String((e as Error).message ?? e)}`);
+    } finally { setHoliBusy(false); }
+  }
+
+  /** 万年历月网格：法定节假日（红）与周末（灰）着色区分 */
+  function renderMonthGrid(year: number, month: number) {
+    const first = new Date(year, month, 1);
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const startWd = first.getDay(); // 0=周日
+    const cells: Array<{ day: number | null; hol: string | null; weekend: boolean }> = [];
+    for (let i = 0; i < startWd; i++) cells.push({ day: null, hol: null, weekend: false });
+    for (let d = 1; d <= daysInMonth; d++) {
+      const p = (n: number) => String(n).padStart(2, '0');
+      const ds = `${year}-${p(month + 1)}-${p(d)}`;
+      const wd = new Date(year, month, d).getDay();
+      cells.push({ day: d, hol: holidayMap.get(ds) ?? null, weekend: wd === 0 || wd === 6 });
+    }
+    return (
+      <div key={month} style={{ minWidth: 190, flex: '1 1 190px' }}>
+        <div style={{ fontSize: 12, fontWeight: 600, textAlign: 'center', marginBottom: 4 }}>{month + 1} 月</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 1, fontSize: 10, textAlign: 'center' }}>
+          {['日', '一', '二', '三', '四', '五', '六'].map((w) => <span key={w} style={{ color: 'var(--text-muted)' }}>{w}</span>)}
+          {cells.map((c, i) => (
+            <span key={i} title={c.hol ? `节假日：${c.hol}` : undefined}
+              style={{
+                padding: '2px 0', borderRadius: 3,
+                color: c.hol ? 'var(--danger)' : (c.weekend ? 'var(--text-muted)' : 'var(--text)'),
+                background: c.hol ? 'var(--danger-soft, rgba(220,38,38,.12))' : 'transparent',
+                fontWeight: c.hol ? 600 : 400,
+              }}>
+              {c.day ?? ''}
+            </span>
+          ))}
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -272,21 +340,20 @@ export function PlanPage() {
         <button onClick={() => void exportExcel()} style={btnStyle}><Download size={13} />导出 Excel</button>
         <button onClick={() => void downloadTemplate()} style={btnStyle}><FileSpreadsheet size={13} />下载模板</button>
         <button onClick={openAiImport} style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }} title="AI 导入 — 上传任意格式计划 Excel，AI 自动识别字段并重组为标准计划"><Sparkles size={13} />AI 导入</button>
-        <button onClick={() => void addHoliday()} style={btnStyle} title="维护节假日：时间线自动避开">+节假日</button>
+        <button onClick={openHolidayManager} style={btnStyle} title="节假日管理 — 手动维护 / 联网导入法定节假日 / 万年历视图">节假日（{holidays.length}）</button>
         <button onClick={reload} style={btnStyle} title="刷新"><RefreshCw size={13} /></button>
         {notice && <span style={{ fontSize: 12, color: 'var(--accent)' }}>{notice}</span>}
       </div>
 
-      {/* 节假日摘要 */}
+      {/* 节假日摘要（快速可见；完整管理进弹窗） */}
       {holidays.length > 0 && (
         <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           <span>节假日（时间线自动避开）：</span>
-          {holidays.map((h) => (
-            <span key={h.date} style={{ border: '1px solid var(--border)', borderRadius: 4, padding: '0 6px' }}>
-              {h.date} {h.name}
-              <button onClick={() => void removeHoliday(h.date)} title="移除该节假日" style={{ border: 'none', background: 'transparent', color: 'var(--danger)', cursor: 'pointer', marginLeft: 4 }}>×</button>
-            </span>
+          {holidays.slice(0, 6).map((h) => (
+            <span key={h.date} style={{ border: '1px solid var(--border)', borderRadius: 4, padding: '0 6px' }}>{h.date} {h.name}</span>
           ))}
+          {holidays.length > 6 && <span>… 共 {holidays.length} 条</span>}
+          <button onClick={openHolidayManager} style={{ border: 'none', background: 'transparent', color: 'var(--accent)', cursor: 'pointer', fontSize: 11 }}>管理…</button>
         </div>
       )}
 
@@ -442,6 +509,77 @@ export function PlanPage() {
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 12px', borderRadius: 6, cursor: aiRows.length === 0 ? 'default' : 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', opacity: aiRows.length === 0 ? 0.5 : 1 }}>
                 <Sparkles size={12} />保存 {aiRows.filter((r) => r.include).length} 条
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* T00442 节假日多功能弹窗：手动维护 / 联网导入法定节假日 / 万年历 */}
+      {holiOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={() => { if (!holiBusy) setHoliOpen(false); }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(760px, 94vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
+              节假日管理
+              <span style={{ flex: 1 }} />
+              <button onClick={() => setHoliOpen(false)} disabled={holiBusy} title="关闭" aria-label="关闭节假日管理"
+                style={{ display: 'inline-flex', alignItems: 'center', cursor: holiBusy ? 'default' : 'pointer', background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 14 }}>×</button>
+            </div>
+            <div style={{ display: 'flex', gap: 4, padding: '8px 14px 0' }}>
+              {([['manage', '手动维护'], ['national', '联网导入'], ['calendar', '万年历']] as const).map(([k, label]) => (
+                <button key={k} onClick={() => setHoliTab(k)}
+                  style={{ padding: '5px 12px', borderRadius: '6px 6px 0 0', cursor: 'pointer', border: '1px solid var(--border-strong)', borderBottom: holiTab === k ? 'none' : '1px solid var(--border-strong)', background: holiTab === k ? 'var(--surface)' : 'var(--card-bg)', color: holiTab === k ? 'var(--accent)' : 'var(--text)', fontSize: 12 }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div style={{ padding: 14, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
+              {holiTab === 'manage' && (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    <input type="date" value={holiNewDate} onChange={(e) => setHoliNewDate(e.target.value)} style={inputStyle} aria-label="节假日日期" />
+                    <input value={holiNewName} placeholder="名称（如：国庆节）" onChange={(e) => setHoliNewName(e.target.value)} style={{ ...inputStyle, width: 140 }} aria-label="节假日名称" />
+                    <button onClick={() => void addHolidayInModal()} disabled={holiBusy} style={btnStyle}>添加</button>
+                    <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>共 {holidays.length} 条</span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: '44vh', overflowY: 'auto' }}>
+                    {holidays.length === 0 && <div style={{ color: 'var(--text-muted)' }}>暂无节假日。可手动添加，或在「联网导入」页签拉取国家法定节假日。</div>}
+                    {holidays.map((h) => (
+                      <div key={h.date} style={{ display: 'flex', alignItems: 'center', gap: 8, border: '1px solid var(--border)', borderRadius: 4, padding: '4px 8px' }}>
+                        <span style={{ fontWeight: 600, minWidth: 90 }}>{h.date}</span>
+                        <span style={{ flex: 1, color: 'var(--text-secondary)' }}>{h.name || '—'}</span>
+                        <button onClick={() => void removeHoliday(h.date)} disabled={holiBusy} title="移除该节假日"
+                          style={{ border: 'none', background: 'transparent', color: 'var(--danger)', cursor: 'pointer', display: 'inline-flex' }}><Trash2 size={13} /></button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+              {holiTab === 'national' && (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <label style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>导入年份：</label>
+                    <input type="number" min={2000} max={2100} value={natYear} onChange={(e) => setNatYear(Number(e.target.value) || new Date().getFullYear())} style={{ ...inputStyle, width: 90 }} aria-label="导入年份" />
+                    <button onClick={() => void importNational()} disabled={holiBusy} style={btnStyle}>导入 {natYear} 年法定节假日</button>
+                  </div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11, lineHeight: 1.6 }}>
+                    从国家法定节假日公开数据源拉取全年放假安排（元旦/春节/清明/劳动/端午/中秋/国庆等）。导入为 upsert 幂等——重复导入自动合并；仅导入法定放假日，调休补班日暂不处理。导入后所有项目计划时间线自动重排。
+                  </div>
+                  {natMsg && <div style={{ color: natMsg.startsWith('✓') ? 'var(--success)' : 'var(--danger)' }}>{natMsg}</div>}
+                </>
+              )}
+              {holiTab === 'calendar' && (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <button onClick={() => setCalYear((y) => y - 1)} disabled={holiBusy} style={btnStyle}>←</button>
+                    <span style={{ fontSize: 14, fontWeight: 600 }}>{calYear} 年万年历</span>
+                    <button onClick={() => setCalYear((y) => y + 1)} disabled={holiBusy} style={btnStyle}>→</button>
+                    <span style={{ color: 'var(--text-muted)', fontSize: 11 }}><span style={{ color: 'var(--danger)', fontWeight: 600 }}>■</span> 法定节假日　<span style={{ color: 'var(--text-muted)' }}>■</span> 周末</span>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                    {Array.from({ length: 12 }, (_, m) => renderMonthGrid(calYear, m))}
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>

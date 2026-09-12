@@ -36,6 +36,16 @@ planApi.post('/holidays', (req, res) => {
 
 planApi.delete('/holidays/:date', (req, res) => wrap(res, () => PlanService.removeHoliday(req.params.date)));
 
+// 联网导入国家法定节假日（T00442）：后端代理 timor.tech 免费数据源（避开浏览器 CORS），upsert 幂等
+planApi.post('/holidays/import-national', (req, res) => {
+  const { year } = (req.body ?? {}) as { year?: unknown };
+  const y = Number(year);
+  if (!Number.isInteger(y)) return res.status(400).json({ error: 'year 必填（数字年份）' });
+  PlanService.importNationalHolidays(y)
+    .then((r) => res.json({ ok: true, ...r }))
+    .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
+});
+
 // ---------- Excel 导入 / 导出 / 模板（静态路径，同样先于 /:id） ----------
 // 导入用 raw 收集 xlsx 二进制：全局 express.json 仅解析 application/json，octet-stream 上传会跳过，由这里收集
 // importExcel 为 async（exceljs 解析），需 await 后再响应，不能走同步 wrap（Promise 会被序列化成 {}）

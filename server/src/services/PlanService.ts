@@ -343,6 +343,39 @@ export const PlanService = {
     return r.changes > 0;
   },
 
+  /**
+   * 联网导入国家法定节假日（T00442）：后端代理请求 timor.tech 免费节假日 API（避免浏览器 CORS），
+   * 仅导入法定放假日期（holiday=true；调休补班日不导入——当前 isWorkday 把周末固定排除，无法表达补班）。
+   * upsert 幂等：重复导入同一年不产生脏数据；导入后全量重排受影响时间线。
+   */
+  async importNationalHolidays(year: number): Promise<{ imported: number; items: Array<{ date: string; name: string }> }> {
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) throw new Error('年份非法（应为 2000-2100）');
+    const resp = await fetch(`https://timor.tech/api/holiday/year/${year}`, { signal: AbortSignal.timeout(15000) });
+    if (!resp.ok) throw new Error(`节假日数据源请求失败：HTTP ${resp.status}（请检查网络）`);
+    const data = (await resp.json()) as {
+      code?: number;
+      holiday?: Record<string, { holiday?: boolean; name?: string; date?: string } | undefined>;
+    };
+    if (!data || data.code !== 0 || !data.holiday) throw new Error('节假日数据源返回异常');
+    const items: Array<{ date: string; name: string }> = [];
+    for (const [k, v] of Object.entries(data.holiday)) {
+      if (!v || v.holiday !== true) continue; // 跳过调休补班日
+      const date = (v.date && /^\d{4}-\d{2}-\d{2}$/.test(v.date)) ? v.date : `${year}-${k}`;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+      items.push({ date, name: (v.name ?? '').trim() });
+    }
+    if (items.length === 0) throw new Error('数据源未返回法定节假日，请稍后重试');
+    const db = getDb();
+    db.transaction(() => {
+      for (const it of items) {
+        db.prepare('INSERT INTO holidays (date, name) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET name = excluded.name')
+          .run(it.date, it.name);
+      }
+    })();
+    this.rescheduleAllProjects();
+    return { imported: items.length, items };
+  },
+
   /** 节假日变更影响所有项目的时间线，全量重排 */
   rescheduleAllProjects(): void {
     const db = getDb();
