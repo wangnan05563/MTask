@@ -57,6 +57,16 @@ function todayStr(): string {
 const inputStyle: React.CSSProperties = { border: '1px solid var(--border-strong)', borderRadius: 4, padding: '3px 6px', background: 'var(--bg)', color: 'var(--text)', fontSize: 12 };
 const btnStyle: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 12, padding: '3px 8px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'transparent', color: 'var(--text)' };
 
+/** T00471：计划行「默认只读展示 + 悬浮编辑」交互——CSS 驱动不改数据流：
+ *  默认 input 边框透明呈文本观感，行 hover/focus-within 时显示编辑框边框背景；
+ *  行操作按钮（关联/插入/归档等 task-op）默认隐藏，悬浮或键盘聚焦时显示（保键盘可访问）。 */
+const planTableCss = `
+  .plan-table input { border-color: transparent; background: transparent; }
+  .plan-table tr:hover input, .plan-table tr:focus-within input { border-color: var(--border-strong); background: var(--bg); }
+  .plan-table .task-op { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
+  .plan-table tr:hover .task-op, .plan-table tr:focus-within .task-op { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
+`;
+
 /** AI 草稿行：附加仅用于 React key 的稳定行键（提交时剥离） */
 type AiRow = PlanDraft & { rowKey: string };
 
@@ -528,6 +538,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         @keyframes plan-new-pop { 0% { background: var(--accent-soft, rgba(9,105,218,.15)); box-shadow: 0 0 0 3px var(--accent-soft, rgba(9,105,218,.2)); } 100% { background: transparent; box-shadow: none; } }
         .plan-new { animation: plan-new-pop 2.4s ease; }
       `}</style>
+      <style>{planTableCss}</style>
       {/* 工具条：项目选择 + 增删导入导出 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
         <select value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ ...inputStyle, minWidth: 140 }} aria-label="选择项目">
@@ -565,7 +576,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
 
       {/* 计划表格：串行瀑布，起止由服务端按工作日推算 */}
       {viewMode === 'gantt' ? renderGantt() : (
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+      <table className="plan-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
         <thead>
           <tr style={{ textAlign: 'left', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-strong)' }}>
             <th style={{ padding: 6 }}>#</th>
