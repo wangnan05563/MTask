@@ -125,8 +125,8 @@ export function TasksPage() {
   // AI 梳理工具下拉展开态：收起只显模型名收紧宽度，展开面板展示厂商名与厂商类型
   const [toolOpen, setToolOpen] = useState(false);
   // 待办/已完成区块排序：会话级偏好，默认保持后端顺序
-  const [todoSort, setTodoSort] = useSessionState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc'>('tasks.todoSort', 'default');
-  const [doneSort, setDoneSort] = useSessionState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc'>('tasks.doneSort', 'default');
+  const [todoSort, setTodoSort] = useSessionState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.todoSort', 'default');
+  const [doneSort, setDoneSort] = useSessionState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.doneSort', 'default');
   // AI 美化工具下拉容器：焦点移出检测用（替代容器 tabIndex+onBlur，避免在非交互容器上挂交互属性）
   const toolSelectRef = useRef<HTMLDivElement>(null);
 
@@ -219,6 +219,9 @@ export function TasksPage() {
   const [multiSelect, setMultiSelect] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchOpBusy, setBatchOpBusy] = useState(false);
+  // T00446：任务列表拖拽排序（manual 排序模式下启用）
+  const [dragTaskId, setDragTaskId] = useState('');
+  const [overTaskId, setOverTaskId] = useState('');
   const externalSigRef = useRef('');
   useEffect(() => {
     if (!activeProject) return;
@@ -544,6 +547,20 @@ export function TasksPage() {
   }
 
   // ---------- T00457：批量操作（多选后批量改状态/分类/归档，单事务整体回滚） ----------
+
+  function dropTaskReorder(kind: 'todo' | 'done', listIds: string[], targetId: string) {
+    if (!dragTaskId || dragTaskId === targetId) { setDragTaskId(''); setOverTaskId(''); return; }
+    const ids = [...listIds];
+    const from = ids.indexOf(dragTaskId);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    ids.splice(to, 0, ids.splice(from, 1)[0]);
+    setDragTaskId(''); setOverTaskId('');
+    void api.post('/tasks/reorder', { orderedIds: ids }).then(() => {
+      flash('顺序已保存（手动排序模式下持久生效）');
+      void loadTasks(activeProject);
+    }).catch((e) => flash(String((e as Error).message ?? e)));
+  }
 
   async function batchApply(action: 'status' | 'category' | 'archive', value?: string) {
     const ids = [...selectedIds];
@@ -1415,15 +1432,20 @@ export function TasksPage() {
    *  注意：必须用普通函数调用（renderTaskItem(t)）而非组件，否则定义在渲染函数内会每次重渲染都生成新组件类型，
    *  导致整个任务项（含描述/梳理 textarea）反复卸载重建、光标焦点丢失。普通函数把 JSX 内联进父组件树，按位置复用 DOM，焦点稳定。
    *  同理，行内各区块也拆为普通渲染函数调用，保持单函数复杂度可控。 */
-  function renderTaskItem(t: Task) {
+  function renderTaskItem(t: Task, kind: 'todo' | 'done', listIds: string[]) {
     const draft = drafts[t.id];
     const descDraft = descDrafts[t.id];
     const descEditing = descDraft !== undefined;
     const titleEditing = titleDrafts[t.id] !== undefined;
     return (
       <li
-        className={`task-item${titleEditing || descEditing ? ' task-editing' : ''}`}
-        style={{ borderBottom: '1px solid var(--surface-2)', padding: '6px 0', marginLeft: t.parent_id ? 28 : 0, borderLeft: t.parent_id ? '2px solid var(--border-strong)' : undefined, paddingLeft: t.parent_id ? 10 : undefined }}
+        className={`task-item${titleEditing || descEditing ? ' task-editing' : ''}${overTaskId === t.id ? ' plan-over' : dragTaskId === t.id ? ' plan-dragging' : ''}`}
+        draggable={(kind === 'todo' ? todoSort : doneSort) === 'manual'}
+        onDragStart={() => setDragTaskId(t.id)}
+        onDragEnd={() => { setDragTaskId(''); setOverTaskId(''); }}
+        onDragOver={(e) => { e.preventDefault(); if (t.id !== dragTaskId) setOverTaskId(t.id); }}
+        onDrop={(e) => { e.preventDefault(); dropTaskReorder(kind, listIds, t.id); }}
+        style={{ borderBottom: '1px solid var(--surface-2)', padding: '6px 0', marginLeft: t.parent_id ? 28 : 0, borderLeft: t.parent_id ? '2px solid var(--border-strong)' : undefined, paddingLeft: t.parent_id ? 10 : undefined, cursor: (kind === 'todo' ? todoSort : doneSort) === 'manual' ? 'grab' : undefined }}
       >
         {renderTaskTitleRow(t, titleEditing)}
         {/* 元信息/操作行：优先级/分类/功能按钮 + 记录时间，全部靠右同行 */}
@@ -1701,7 +1723,7 @@ export function TasksPage() {
             {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </div>
-        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleTodo.map((t) => <Fragment key={t.id}>{renderTaskItem(t)}</Fragment>)}</ul>
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleTodo.map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'todo', visibleTodo.map((x) => x.id))}</Fragment>)}</ul>
         {visibleTodo.length === 0 && !multiSelect && (
           <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12, border: '1px dashed var(--border-strong)', borderRadius: 8, margin: '8px 0', lineHeight: 1.8 }}>
             当前项目暂无待办任务——在上方输入框输入标题回车即可创建；
@@ -1735,7 +1757,7 @@ export function TasksPage() {
             <option value="all">全部</option>
           </select>
         </div>
-        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleDone.map((t) => <Fragment key={t.id}>{renderTaskItem(t)}</Fragment>)}</ul>
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleDone.map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'done', visibleDone.map((x) => x.id))}</Fragment>)}</ul>
         {visibleDone.length === 0 && (
           <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>暂无已完成任务——完成任务后在此集中查看与验证。</div>
         )}
@@ -1888,8 +1910,9 @@ export function TasksPage() {
     { value: 'timeasc', label: '修改时间（旧→新）' },
     { value: 'pdesc', label: '优先级（高→低）' },
     { value: 'pasc', label: '优先级（低→高）' },
+    { value: 'manual', label: '手动排序' },
   ] as const;
-  type SortKey = (typeof sortOptions)[number]['value'];
+  type SortKey = (typeof sortOptions)[number]['value'] | 'manual';
 
   /** 对待办/已完成列表应用排序（返回新数组，不改动原数组） */
   const sortTasks = (list: Task[], sort: SortKey): Task[] => {
@@ -1901,6 +1924,17 @@ export function TasksPage() {
     if (sort === 'timedesc') return arr.sort((a, b) => ts(b) - ts(a));
     if (sort === 'timeasc') return arr.sort((a, b) => ts(a) - ts(b));
     if (sort === 'pdesc') return arr.sort((a, b) => pr(b.priority) - pr(a.priority));
+    if (sort === 'pasc') return arr.sort((a, b) => pr(a.priority) - pr(b.priority));
+    // T00446：手动排序——pinned 优先，user_sort 空值排最后（与后端 sort=manual 一致）
+    if (sort === 'manual') {
+      return arr.sort((a, b) => {
+        const pd = (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
+        if (pd !== 0) return pd;
+        const ua = a.user_sort ?? Number.MAX_SAFE_INTEGER;
+        const ub = b.user_sort ?? Number.MAX_SAFE_INTEGER;
+        return ua - ub || new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      });
+    }
     return arr.sort((a, b) => pr(a.priority) - pr(b.priority)); // pasc 低→高
   };
 

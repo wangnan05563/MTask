@@ -154,6 +154,8 @@ export interface Task {
   handle_result: string | null;
   /** T00462/T00451：项目计划联动任务——值为来源计划标题（区分徽标+反向引用） */
   fromPlanTitle?: string;
+  /** T00446：手动排序权重（拖拽排序结果；manual 排序模式生效） */
+  user_sort: number | null;
   /** 置顶：true=固定到列表顶部 */
   pinned: boolean;
   /** 所属任务分类 id；null 表示未分类 */

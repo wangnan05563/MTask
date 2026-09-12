@@ -181,6 +181,15 @@ api.post('/tasks/move', (req, res) => {
   res.status(204).end();
 });
 
+// 任务手动排序（T00446）：拖拽后的完整 id 顺序 → user_sort 1..n；列表 sort=manual 时生效
+api.post('/tasks/reorder', (req, res) => {
+  const { orderedIds } = req.body ?? {};
+  if (!Array.isArray(orderedIds) || orderedIds.some((x) => typeof x !== 'string')) {
+    return res.status(400).json({ error: 'orderedIds 必填（id 字符串数组，按新顺序）' });
+  }
+  res.json(TaskService.reorder(orderedIds as string[]));
+});
+
 // 批量操作（T00457 / PRD UX-5）：多选后批量改状态/分类/归档——单事务，任一失败整体回滚
 api.post('/tasks/batch', (req, res) => {
   const { ids, action, value } = req.body ?? {};

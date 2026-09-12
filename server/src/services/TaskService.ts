@@ -23,6 +23,7 @@ export interface TaskRow {
   pinned: number;
   category_id: string | null;
   parent_id: string | null;
+  user_sort: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -45,6 +46,8 @@ export interface TaskView {
   category_id: string | null;
   /** T00450：父任务 id（两级的 epic→task 层级） */
   parent_id: string | null;
+  /** T00446：手动排序权重（拖拽排序结果；pinned 组内生效） */
+  user_sort: number | null;
   created_at: string;
   updated_at: string;
   images: TaskImageMeta[];
@@ -82,7 +85,7 @@ export interface TaskListOptions {
    *  未验证任务即便已 done，其处理结果可能仍需关联判断，纳入便于 AI 分析上下文 */
   pending?: boolean;
   /** 排序键；默认 pinned（置顶优先+创建时间倒序），与旧行为一致 */
-  sort?: 'pinned' | 'created_desc' | 'created_asc' | 'priority_desc' | 'priority_asc';
+  sort?: 'pinned' | 'created_desc' | 'created_asc' | 'priority_desc' | 'priority_asc' | 'manual';
 }
 
 function now(): string {
@@ -162,6 +165,8 @@ export const TaskService = {
       created_asc: 'created_at ASC',
       priority_desc: "CASE priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 ELSE 1 END DESC, created_at DESC",
       priority_asc: "CASE priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 ELSE 1 END ASC, created_at ASC",
+      // T00446：手动排序（拖拽结果）——pinned 优先，user_sort 空值排最后
+      manual: "pinned DESC, CASE WHEN user_sort IS NULL THEN 1 ELSE 0 END, user_sort, created_at DESC",
     };
     let sql = `SELECT * FROM tasks WHERE ${where.join(' AND ')} ORDER BY ${orderBy[opts.sort ?? 'pinned']}`;
     if (opts.limit) {
@@ -207,6 +212,18 @@ export const TaskService = {
       const planStatus = patch.status === 'done' ? 'done' : 'doing';
       db.prepare('UPDATE plan_tasks SET status = ?, progress = CASE WHEN ? = 100 THEN 100 ELSE progress END, updated_at = ? WHERE linked_task_id = ?')
         .run(planStatus, planStatus === 'done' ? 100 : -1, now(), id);
+      // T00450 配套：子任务状态变更后汇总父任务进度（按子任务完成比例），全完成时父自动 done
+      const childRow = db.prepare('SELECT parent_id FROM tasks WHERE id = ?').get(id) as { parent_id: string | null } | undefined;
+      if (childRow?.parent_id) {
+        const stat = db.prepare(
+          "SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done FROM tasks WHERE parent_id = ? AND archived = 0",
+        ).get(childRow.parent_id) as { total: number; done: number };
+        if (stat.total > 0) {
+          const progress = Math.round((stat.done / stat.total) * 100);
+          const parentStatus = stat.done === stat.total ? 'done' : 'todo';
+          db.prepare("UPDATE tasks SET progress = ?, status = ?, updated_at = ? WHERE id = ? AND status != 'done'").run(progress, parentStatus, now(), childRow.parent_id);
+        }
+      }
     }
     notifyChange('tasks');
     return this.getById(id)!;
@@ -215,6 +232,21 @@ export const TaskService = {
   /** FR5.1 / FR5.3：完成或退回待办 */
   setStatus(id: string, status: 'todo' | 'done'): TaskView {
     return this.update(id, { status });
+  },
+
+  /**
+   * 手动排序（T00446）：前端传拖拽后的完整 id 顺序（限定同一项目），事务内写入 user_sort（1..n）。
+   * 列表 sort='manual' 时 pinned 优先、user_sort 空值排后——与拖拽结果一致。
+   */
+  reorder(orderedIds: string[]): { reordered: number } {
+    if (orderedIds.length === 0) throw new Error('orderedIds 必填');
+    const db = getDb();
+    db.transaction(() => {
+      orderedIds.forEach((id, i) => {
+        db.prepare('UPDATE tasks SET user_sort = ?, updated_at = ? WHERE id = ?').run(i + 1, now(), id);
+      });
+    })();
+    return { reordered: orderedIds.length };
   },
 
   /** FR1.3：批量移动项目 */
