@@ -743,7 +743,7 @@ export function ReportConsole({
                 <X size={15} />
               </button>
             </div>
-            <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12 }}>
+            <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12, flex: 1, overflowY: 'auto', minHeight: 0 }}>
               {/* 分组模式选择 */}
               <div style={{ display: 'flex', gap: 6 }}>
                 <button
