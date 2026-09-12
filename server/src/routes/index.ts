@@ -1,6 +1,6 @@
-import { Router } from 'express';
+import { Router, raw } from 'express';
 import { getDb } from '../db/connection';
-import { TaskService, type TaskListOptions } from '../services/TaskService';
+import { TaskService, type TaskInput, type TaskListOptions } from '../services/TaskService';
 import { ConfigService } from '../services/ConfigService';
 import { ConsoleJobService } from '../services/ConsoleJobService';
 import { QueueService } from '../services/QueueService';
@@ -189,6 +189,118 @@ api.post('/tasks/reorder', (req, res) => {
   }
   res.json(TaskService.reorder(orderedIds as string[]));
 });
+
+// ---------- CSV 任务导入（INT-6 最小可用版）：preview 解析校验 / confirm 确认导入 ----------
+/** CSV 简易解析：RFC4180 引号感知，返回二维单元格数组 */
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let cur: string[] = [];
+  let field = '';
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQuotes = false; }
+      else field += ch;
+    } else if (ch === '"') inQuotes = true;
+    else if (ch === ',') { cur.push(field); field = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      cur.push(field); field = '';
+      if (cur.some((c) => c.trim())) rows.push(cur);
+      cur = [];
+    } else field += ch;
+  }
+  if (field || cur.length) { cur.push(field); if (cur.some((c) => c.trim())) rows.push(cur); }
+  return rows;
+}
+
+/** 表头映射：宽松匹配常见列名 */
+function mapCsvColumns(headers: string[]): Record<string, number> {
+  const alias: Record<string, string> = {
+    标题: 'title', 名称: 'title', 任务: 'title', 任务名称: 'title', 任务标题: 'title',
+    描述: 'description', 内容: 'description', 说明: 'description', 详情: 'description',
+    优先级: 'priority', 状态: 'status', 分类: 'category', 备注: 'description',
+  };
+  const map: Record<string, number> = {};
+  headers.forEach((h, i) => {
+    const key = alias[h.trim()] ?? alias[h.trim().toLowerCase()];
+    if (key !== undefined && !(key in map)) map[key] = i;
+  });
+  return map;
+}
+
+const PRIORITY_ALIAS: Record<string, string> = { 高: 'high', 中: 'normal', 普通: 'normal', 低: 'low', high: 'high', normal: 'normal', low: 'low', urgent: 'urgent' };
+const STATUS_ALIAS: Record<string, string> = { 完成: 'done', 已完成: 'done', 待办: 'todo', 未开始: 'todo', done: 'done', todo: 'todo' };
+
+// 预览：解析 CSV → 校验 → 返回映射结果与行级错误（不入库）
+api.post('/tasks/import-csv/preview', raw({ type: () => true, limit: '20mb' }), (req, res) => {
+  const projectId = req.query.projectId;
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: '请求体应为 CSV 文本' });
+  try {
+    const text = (req.body as Buffer).toString('utf-8').replace(/^\ufeff/, '');
+    const rows = parseCsv(text);
+    if (rows.length < 2) return res.json({ headers: [], items: [], errors: [{ row: 1, message: 'CSV 至少需要表头与一行数据' }] });
+    const headers = rows[0].map((h) => h.trim());
+    const map = mapCsvColumns(headers);
+    if (map.title === undefined) return res.status(400).json({ error: '未找到标题列（支持列名：标题/名称/任务/任务名称/任务标题）' });
+    const catRows = getDb().prepare('SELECT id, name FROM task_categories').all() as Array<{ id: string; name: string }>;
+    const catByName = new Map(catRows.map((c) => [c.name.trim(), c.id]));
+    const items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null }> = [];
+    const errors: Array<{ row: number; message: string }> = [];
+    const seen = new Set<string>();
+    const existTitles = new Set(
+      (getDb().prepare('SELECT title FROM tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ title: string }>).map((r) => r.title),
+    );
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i];
+      const rowNo = i + 1;
+      const get = (key: string) => (map[key] !== undefined ? (r[map[key]] ?? '').trim() : '');
+      const title = get('title');
+      if (!title && !r.some((c) => c.trim())) continue;
+      if (!title) { errors.push({ row: rowNo, message: '标题必填' }); continue; }
+      if (existTitles.has(title) || seen.has(title)) { errors.push({ row: rowNo, message: '标题重复：' + title }); continue; }
+      const priority = PRIORITY_ALIAS[get('priority').toLowerCase()] ?? 'normal';
+      const statusRaw = get('status').toLowerCase();
+      const status = STATUS_ALIAS[statusRaw] ?? (statusRaw === 'completed' ? 'done' : 'todo');
+      if (statusRaw && !STATUS_ALIAS[statusRaw]) { errors.push({ row: rowNo, message: '状态非法：' + get('status') }); continue; }
+      const categoryName = get('category');
+      let categoryId: string | null = null;
+      if (categoryName) {
+        const hit = catByName.get(categoryName);
+        if (!hit) { errors.push({ row: rowNo, message: '分类不存在：' + categoryName }); continue; }
+        categoryId = hit;
+      }
+      seen.add(title);
+      items.push({ title, description: get('description'), priority, status, categoryId });
+    }
+    res.json({ headers, items, errors });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// 确认导入：复用 TaskService.create（task_no 分配/计划联动一致），跳过已存在标题
+api.post('/tasks/import-csv/confirm', (req, res) => {
+  const { projectId, items } = req.body ?? {};
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'items 必填' });
+  try {
+    const created: string[] = [];
+    for (const it of items as Array<{ title: string; description?: string; priority?: string; status?: string; categoryId?: string | null }>) {
+      if (!it.title?.trim()) continue;
+      if (getDb().prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? AND archived = 0').get(projectId, it.title)) continue;
+      TaskService.create({ projectId, title: it.title, description: it.description, priority: (it.priority as TaskInput['priority']) ?? 'normal', status: (it.status as TaskInput['status']) ?? undefined, categoryId: it.categoryId ?? null });
+      created.push(it.title);
+    }
+    notifyChange('tasks');
+    res.status(201).json({ ok: true, count: created.length });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 
 // 批量操作（T00457 / PRD UX-5）：多选后批量改状态/分类/归档——单事务，任一失败整体回滚
 api.post('/tasks/batch', (req, res) => {

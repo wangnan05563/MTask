@@ -219,6 +219,8 @@ export function TasksPage() {
   // 保护条件：任何未保存草稿或 AI 操作进行中时跳过本轮，避免打断用户编辑（变化留待下一轮干净窗口）。
   // T00457：批量操作——多选模式 + 选中任务集合（跨待办/已完成统一 id 集合）
   const [multiSelect, setMultiSelect] = useState(false);
+  // T00446 / INT-6：CSV 导入预览状态
+  const [csvPreview, setCsvPreview] = useState<{ items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>; errors: Array<{ row: number; message: string }> } | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchOpBusy, setBatchOpBusy] = useState(false);
   // T00446：任务列表拖拽排序（manual 排序模式下启用）
@@ -562,6 +564,31 @@ export function TasksPage() {
       flash('顺序已保存（手动排序模式下持久生效）');
       void loadTasks(activeProject);
     }).catch((e) => flash(String((e as Error).message ?? e)));
+  }
+
+  // ---------- T00446 / INT-6：CSV 任务导入（预览 → 确认） ----------
+
+  async function onCsvFile(file: File) {
+    if (!activeProject) return flash('请先选择项目');
+    setBatchOpBusy(true);
+    try {
+      const text = await file.text();
+      const r = await api.post<{ items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>; errors: Array<{ row: number; message: string }> }>(`/tasks/import-csv/preview?projectId=${activeProject}`, { csvText: text });
+      setCsvPreview(r);
+      if (r.errors.length > 0) flash(`CSV 解析：${r.items.length} 条可导入，${r.errors.length} 行有问题——修正后重新上传`);
+      else flash(`CSV 解析完成：${r.items.length} 条待确认导入`);
+    } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBatchOpBusy(false); }
+  }
+
+  async function confirmCsvImport() {
+    if (!csvPreview || !activeProject) return;
+    setBatchOpBusy(true);
+    try {
+      const r = await api.post<{ ok: boolean; count: number }>('/tasks/import-csv/confirm', { projectId: activeProject, items: csvPreview.items });
+      setCsvPreview(null);
+      void loadTasks(activeProject);
+      flash(`CSV 导入完成：${r.count} 条任务已创建`);
+    } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBatchOpBusy(false); }
   }
 
   async function batchApply(action: 'status' | 'category' | 'archive', value?: string) {
@@ -1644,6 +1671,12 @@ export function TasksPage() {
         >
           {multiSelect ? '✓ 多选中' : '多选'}
         </button>
+        <label className="task-op" title="导入 CSV — 批量导入任务（预览确认后入库）"
+          style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', display: 'inline-block' }}>
+          导入 CSV
+          <input type="file" accept=".csv" style={{ display: 'none' }}
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) void onCsvFile(f); e.target.value = ''; }} />
+        </label>
         <select
           value={catFilter}
           onChange={(e) => setCatFilter(e.target.value)}
@@ -1734,6 +1767,41 @@ export function TasksPage() {
   function renderTaskLists() {
     const kw = search.trim().toLowerCase();
     const batchBar = renderBatchBar();
+    // T00446 / INT-6：CSV 导入预览确认块
+    const csvBlock = csvPreview && (
+      <div style={{ border: '1px solid var(--accent)', borderRadius: 8, padding: 12, margin: '8px 0', background: 'var(--card-bg)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <strong style={{ fontSize: 13 }}>CSV 导入预览</strong>
+          <span style={{ fontSize: 12, color: 'var(--success)' }}>可导入 {csvPreview.items.length} 条</span>
+          {csvPreview.errors.length > 0 && <span style={{ fontSize: 12, color: 'var(--danger)' }}>问题 {csvPreview.errors.length} 行</span>}
+          <span style={{ flex: 1 }} />
+          <button onClick={() => setCsvPreview(null)} className="task-op" style={{ cursor: 'pointer', padding: '3px 8px' }}>取消</button>
+          <button onClick={() => void confirmCsvImport()} disabled={batchOpBusy || csvPreview.items.length === 0}
+            style={{ padding: '4px 12px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12 }}>
+            确认导入
+          </button>
+        </div>
+        {csvPreview.errors.length > 0 && (
+          <div style={{ marginBottom: 8, fontSize: 11, color: 'var(--danger)', maxHeight: 80, overflowY: 'auto' }}>
+            {csvPreview.errors.map((e, i) => <div key={i}>第 {e.row} 行：{e.message}</div>)}
+          </div>
+        )}
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead><tr>{['标题', '描述', '优先级', '状态', '分类'].map((h) => <th key={h} style={{ padding: '4px 6px', fontSize: 11, color: 'var(--text-muted)', textAlign: 'left', borderBottom: '1px solid var(--border-strong)' }}>{h}</th>)}</tr></thead>
+          <tbody>
+            {csvPreview.items.map((it, i) => (
+              <tr key={i}>
+                <td style={{ padding: '4px 6px' }}>{it.title}</td>
+                <td style={{ padding: '4px 6px', color: 'var(--text-muted)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.description}</td>
+                <td style={{ padding: '4px 6px' }}>{it.priority}</td>
+                <td style={{ padding: '4px 6px' }}>{it.status}</td>
+                <td style={{ padding: '4px 6px' }}>{it.categoryName || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
     const matches = (t: Task) => {
       // 分类筛选：'none' 表示未分类；指定分类则精确匹配；空串为全部
       if (catFilter === 'none') { if (t.category_id) return false; }
@@ -1765,6 +1833,7 @@ export function TasksPage() {
     return (
       <>
         {batchBar}
+        {csvBlock}
         {viewMode === 'board' && renderBoard()}
         {viewMode === 'board' && <div style={{ height: 8 }} />}
         {viewMode === 'list' && (<>

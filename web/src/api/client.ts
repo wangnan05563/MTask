@@ -1,7 +1,8 @@
 /** 轻量 API 客户端：统一前缀 /api，错误统一抛出 */
 
 /** Electron 壳（file:// 页面）走 api:// 自定义协议，由主进程转发到本地服务；浏览器访问用同源相对路径 */
-const apiBase =
+/** API 基础路径导出：供 EventSource/文件下载等无法走统一 request 的场景构建 URL */
+export const apiBase =
   typeof location !== 'undefined' && !/^https?:$/.test(location.protocol) ? 'api://mtask' : '/api';
 
 // 访问令牌：启用内网穿透后，所有数据接口需携带 X-Access-Token。模块加载时从本地恢复，重启后仍生效
