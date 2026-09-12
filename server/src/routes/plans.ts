@@ -1,5 +1,6 @@
 import { Router, raw } from 'express';
 import { PlanService } from '../services/PlanService';
+import { AIService } from '../services/AIService';
 
 /**
  * 项目计划路由（T00431，菜单位于周报前）。
@@ -206,3 +207,30 @@ planApi.post('/:id/link', (req, res) => {
 });
 
 planApi.post('/:id/create-todo', (req, res) => wrap(res, () => PlanService.createLinkedTodo(req.params.id)));
+
+// T00472：计划条目 AI 评估——逐条串行评估（可行性/工期/风险），返回每条评估文本
+planApi.post('/ai-evaluate', async (req, res) => {
+  const { toolId, items } = (req.body ?? {}) as { toolId?: unknown; items?: unknown };
+  if (typeof toolId !== 'string' || !toolId) { res.status(400).json({ error: 'toolId 必填' }); return; }
+  if (!Array.isArray(items) || items.length === 0 || items.some((x) => typeof x !== 'object' || x === null)) {
+    res.status(400).json({ error: 'items 必须为非空对象数组' }); return;
+  }
+  type Item = { id?: unknown; title?: unknown; duration_days?: unknown; progress?: unknown; assignee?: unknown };
+  const results: Array<{ id: string; ok: boolean; evaluation?: string; error?: string }> = [];
+  for (const it of items as Item[]) {
+    const id = typeof it.id === 'string' ? it.id : '';
+    const title = typeof it.title === 'string' ? it.title : '';
+    if (!id || !title) { results.push({ id, ok: false, error: 'id/title 必填' }); continue; }
+    const r = await AIService.evaluatePlan(
+      {
+        title,
+        duration_days: Number(it.duration_days) || 1,
+        progress: Math.min(100, Math.max(0, Number(it.progress) || 0)),
+        assignee: typeof it.assignee === 'string' ? it.assignee : null,
+      },
+      toolId,
+    );
+    results.push({ id, ok: r.ok, evaluation: r.evaluation, error: r.error });
+  }
+  res.json({ ok: true, results });
+});

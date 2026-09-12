@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, CalendarPlus, Download, FileSpreadsheet, Link2, Link2Off, Plus, RefreshCw, Sparkles, Trash2, Upload } from 'lucide-react';
+import { Archive, CalendarPlus, Download, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap } from 'lucide-react';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { usePersistentState, useSessionState } from '../ui/session';
@@ -126,6 +126,9 @@ export function PlanPage() {
   // T00438 AI 导入：模型列表与选中工具（持久化）、解析弹窗状态、可编辑草稿行
   const [tools, setTools] = useState<AITool[]>([]);
   const [aiToolId, setAiToolId] = usePersistentState('plan.aiToolId', '');
+  // T00472：AI 评估状态（批量进度动态计数，单条/批量共用）
+  const [evalBusy, setEvalBusy] = useState(false);
+  const [evalLabel, setEvalLabel] = useState('');
   // T00449：视图模式（列表/甘特）会话级保持
   const [viewMode, setViewMode] = useSessionState<'list' | 'gantt'>('plan.viewMode', 'list');
   const [aiOpen, setAiOpen] = useState(false);
@@ -170,6 +173,46 @@ export function PlanPage() {
       });
       reload();
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
+  }
+
+  // ---------- T00472：AI 评估 ----------
+  /** 单条评估：调 AI 生成评估文本，追加到该行描述（[AI评估 日期] 前缀），返回是否成功 */
+  async function evaluateOnePlan(p: PlanTask): Promise<boolean> {
+    try {
+      const r = await api.post<{ ok: boolean; results: Array<{ id: string; ok: boolean; evaluation?: string; error?: string }> }>(
+        '/plans/ai-evaluate',
+        { toolId: aiToolId, items: [{ id: p.id, title: p.title, duration_days: p.duration_days, progress: p.progress, assignee: p.assignee }] },
+      );
+      const first = r.results?.[0];
+      if (!first?.ok || !first.evaluation) { flash(first?.error ?? 'AI 评估失败'); return false; }
+      const stamp = new Date().toISOString().slice(5, 10).replace('-', '/');
+      const merged = p.description ? p.description + '\n' + `[AI评估 ${stamp}] ${first.evaluation}` : `[AI评估 ${stamp}] ${first.evaluation}`;
+      await updatePlan(p, { description: merged });
+      return true;
+    } catch (e) { flash(String((e as Error).message ?? e)); return false; }
+  }
+
+  /** 批量评估：确认后逐条串行评估并自动录入描述，进度动态计数（k/N） */
+  function batchEvaluatePlans() {
+    if (evalBusy) return;
+    if (!aiToolId) { flash('请先选择 AI 模型（AI 导入旁的模型下拉）'); return; }
+    const target = plans;
+    if (target.length === 0) { flash('当前项目暂无计划条目'); return; }
+    setEvalLabel(`0/${target.length}`);
+    const msg = `将对 ${target.length} 条计划逐条 AI 评估（工期合理性/风险/建议），结果自动录入各条描述（可后续手动编辑或删除），确认开始？`;
+    void askConfirm(msg).then(async (go) => {
+      if (!go) { setEvalLabel(''); return; }
+      setEvalBusy(true);
+      let done = 0;
+      for (const p of target) {
+        await evaluateOnePlan(p);
+        done += 1;
+        setEvalLabel(`${done}/${target.length}`);
+      }
+      setEvalBusy(false);
+      setTimeout(() => setEvalLabel(''), 2500);
+      flash(`AI 评估完成：${done} 条结果已写入描述`);
+    });
   }
 
   // ---------- T00459：拖拽排序（HTML5 DnD，drop 后整体重写顺序并重排时间线） ----------
@@ -558,6 +601,9 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         <button onClick={() => void exportExcel()} style={btnStyle}><Download size={13} />导出 Excel</button>
         <button onClick={() => void downloadTemplate()} style={btnStyle}><FileSpreadsheet size={13} />下载模板</button>
         <button onClick={openAiImport} style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }} title="AI 导入 — 上传任意格式计划 Excel，AI 自动识别字段并重组为标准计划"><Sparkles size={13} />AI 导入</button>
+        <button onClick={() => batchEvaluatePlans()} disabled={evalBusy || busy} title="AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）" aria-label="批量 AI 评估" style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }}>
+          {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}AI 评估{evalLabel && plans.length > 0 ? `（${evalLabel}）` : ''}
+        </button>
         <fieldset style={{ display: 'inline-flex', margin: 0, padding: 0, minWidth: 0, border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} aria-label="视图切换">
           <button onClick={() => setViewMode('list')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', cursor: 'pointer', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图">列表</button>
           <button onClick={() => setViewMode('gantt')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: viewMode === 'gantt' ? 'var(--accent)' : 'transparent', color: viewMode === 'gantt' ? 'var(--accent-text)' : 'var(--text)' }} title="甘特图视图 — 按串行瀑布时间线可视化">甘特</button>
@@ -654,6 +700,10 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                   )}
                 <button onClick={() => void insertAfter(p)} title="在此行后插入新任务 — 后续排期自动重排" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--text-muted)', padding: 2 }}><Plus size={13} /></button>
                 <button onClick={() => void archivePlan(p)} title="归档计划任务 — 从时间线移除，可在「归档」菜单恢复或彻底删除" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--danger)', padding: 2 }}><Archive size={13} /></button>
+                {/* T00472：单条 AI 评估——结果自动录入该行描述（保存）或取消不写 */}
+                <button onClick={() => { if (evalBusy) return; if (!aiToolId) { flash('请先选择 AI 模型'); return; } void evaluateOnePlan(p).then((okk) => { if (okk) flash('AI 评估已写入该行描述'); }); }} disabled={evalBusy || busy} title="AI 评估 — 评估该条工期合理性/风险与建议，结果自动录入描述" aria-label="AI 评估该条" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--accent)', padding: 2 }}>
+                  {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}
+                </button>
               </td>
             </tr>
           ))}

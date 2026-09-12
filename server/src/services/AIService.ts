@@ -247,6 +247,26 @@ export const AIService = {
     return { ok: true, content: res.content, categoryId: hit ? hit.id : null, priority };
   },
 
+  /** T00472：计划条目 AI 评估——输出简短评估（可行性/工期合理性/风险与建议），≤60 字 */
+  async evaluatePlan(
+    plan: { title: string; duration_days: number; progress: number; assignee?: string | null },
+    toolId: string,
+  ): Promise<{ ok: boolean; evaluation?: string; error?: string }> {
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    const startedAt = Date.now();
+    const system =
+      '你是项目计划评审助手。对给定的计划任务条目给出简短评估：工期是否合理、当前进度是否匹配、主要风险与一条建议。只输出评估正文，不超过60字，不加标题或编号。';
+    const user = `任务：${plan.title}
+工期（工作日）：${plan.duration_days}
+进度：${plan.progress}%
+负责人：${plan.assignee || '未指派'}`;
+    const res = await adapter.chat(system, user, config);
+    if (!res.ok) { recordUsage('plan-evaluate', toolId, config.model, false, startedAt, 0, res.error); return { ok: false, error: res.error }; }
+    recordUsage('plan-evaluate', toolId, config.model, true, startedAt, res.content?.length ?? 0);
+    return { ok: true, evaluation: (res.content ?? '').trim() };
+  },
+
   /** 供 QueueService.sendAll 使用：将单个 Job 发送到其绑定的 AI 工具 */
   buildSender() {
     return async (job: QueueJobRow) => {
