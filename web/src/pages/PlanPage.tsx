@@ -68,6 +68,8 @@ export function PlanPage() {
   // T00438 AI 导入：模型列表与选中工具（持久化）、解析弹窗状态、可编辑草稿行
   const [tools, setTools] = useState<AITool[]>([]);
   const [aiToolId, setAiToolId] = usePersistentState('plan.aiToolId', '');
+  // T00449：视图模式（列表/甘特）会话级保持
+  const [viewMode, setViewMode] = useSessionState<'list' | 'gantt'>('plan.viewMode', 'list');
   const [aiOpen, setAiOpen] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiFileName, setAiFileName] = useState('');
@@ -181,6 +183,96 @@ export function PlanPage() {
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
   }
 
+  // ---------- T00449：甘特图视图（纯 CSS/SVG 零依赖） ----------
+
+  const DAY_W = 18; // 每天列宽 px
+  const STATUS_BAR: Record<PlanTask['status'], string> = {
+    todo: 'var(--accent)', doing: 'var(--success)', done: 'var(--text-muted)', blocked: 'var(--danger)',
+  };
+
+  /** 甘特主视图：横向日轴 + 串行任务条 + 周末/节假日底纹 + 今日线 + 进度内嵌 */
+  function renderGantt() {
+    if (plans.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 12, padding: 16 }}>暂无计划任务，先创建或导入。</div>;
+    const dates = plans.flatMap((p) => [p.start_date, p.end_date]).filter(Boolean).sort();
+    const rangeStart = dates[0];
+    const rangeEnd = dates[dates.length - 1];
+    const dayMs = 86400000;
+    const toIdx = (d: string) => Math.round((new Date(d + 'T00:00:00').getTime() - new Date(rangeStart + 'T00:00:00').getTime()) / dayMs);
+    const totalDays = toIdx(rangeEnd) + 1;
+    const todayIdx = toIdx(todayStr());
+    const holSet = new Set(holidays.map((h) => h.date));
+
+    // 顶部月份刻度
+    const monthTicks: Array<{ label: string; left: number }> = [];
+    for (let i = 0; i < totalDays; i++) {
+      const d = new Date(new Date(rangeStart + 'T00:00:00').getTime() + i * dayMs);
+      if (d.getDate() === 1) monthTicks.push({ label: `${d.getMonth() + 1}月`, left: i * DAY_W });
+    }
+
+    return (
+      <div style={{ border: '1px solid var(--border-strong)', borderRadius: 8, overflow: 'hidden' }}>
+        <div style={{ overflowX: 'auto' }}>
+          <div style={{ width: 220 + totalDays * DAY_W, minWidth: '100%' }}>
+            {/* 月份刻度 */}
+            <div style={{ display: 'flex', marginLeft: 220, height: 22, position: 'relative', borderBottom: '1px solid var(--border-strong)', fontSize: 11, color: 'var(--text-muted)' }}>
+              {monthTicks.map((m, i) => (
+                <span key={i} style={{ position: 'absolute', left: m.left + 4 }}>{m.label}</span>
+              ))}
+            </div>
+            {/* 任务行 */}
+            {plans.map((p, i) => {
+              if (!p.start_date || !p.end_date) return null;
+              const left = toIdx(p.start_date) * DAY_W;
+              const width = Math.max(DAY_W, (toIdx(p.end_date) - toIdx(p.start_date) + 1) * DAY_W);
+              return (
+                <div key={p.id} style={{ display: 'flex', alignItems: 'center', height: 30, borderBottom: '1px solid var(--surface-2)', fontSize: 12 }}>
+                  <div style={{ width: 220, flexShrink: 0, padding: '0 8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }} title={p.title}>
+                    {i + 1}. {p.title}
+                  </div>
+                  <div style={{ position: 'relative', height: '100%', flex: 1 }}>
+                    {/* 日历底纹：周末/节假日 */}
+                    {Array.from({ length: totalDays }, (_, di) => {
+                      const d = new Date(new Date(rangeStart + 'T00:00:00').getTime() + di * dayMs);
+                      const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                      const weekend = d.getDay() === 0 || d.getDay() === 6;
+                      const hol = holSet.has(ds);
+                      if (!weekend && !hol) return null;
+                      return <div key={di} style={{ position: 'absolute', left: di * DAY_W, width: DAY_W, height: '100%', background: hol ? 'var(--danger-soft, rgba(220,38,38,.10))' : 'var(--surface-2)' }} />;
+                    })}
+                    {/* 今日线 */}
+                    {todayIdx >= 0 && todayIdx < totalDays && (
+                      <div style={{ position: 'absolute', left: todayIdx * DAY_W + DAY_W / 2, top: 0, bottom: 0, width: 1, background: 'var(--accent)', opacity: 0.6 }} />
+                    )}
+                    {/* 任务条 */}
+                    <div title={`${p.title}
+${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.progress}% · ${p.assignee || '未分配'}`}
+                      style={{
+                        position: 'absolute', left, width, top: 5, height: 18, borderRadius: 4,
+                        background: STATUS_BAR[p.status], opacity: 0.85, cursor: 'default', overflow: 'hidden',
+                      }}>
+                      <div style={{ width: `${p.progress}%`, height: '100%', background: 'rgba(255,255,255,.35)' }} />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '6px 10px', borderTop: '1px solid var(--border)', display: 'flex', gap: 14 }}>
+          {Object.entries(STATUS_BAR).map(([k, c]) => (
+            <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ width: 10, height: 10, borderRadius: 2, background: c, display: 'inline-block' }} />
+              {{ todo: '待开始', doing: '进行中', done: '已完成', blocked: '受阻' }[k as PlanTask['status']]}
+            </span>
+          ))}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 1, height: 10, background: 'var(--accent)', display: 'inline-block' }} />今天</span>
+          <span>灰底=周末　红底=节假日</span>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------- T00438：AI 导入
   // ---------- T00438：AI 导入（任意格式 Excel → AI 解析 → 预览确认 → 批量创建） ----------
 
   function openAiImport() {
@@ -358,6 +450,10 @@ export function PlanPage() {
         <button onClick={() => void exportExcel()} style={btnStyle}><Download size={13} />导出 Excel</button>
         <button onClick={() => void downloadTemplate()} style={btnStyle}><FileSpreadsheet size={13} />下载模板</button>
         <button onClick={openAiImport} style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }} title="AI 导入 — 上传任意格式计划 Excel，AI 自动识别字段并重组为标准计划"><Sparkles size={13} />AI 导入</button>
+        <span style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} role="group" aria-label="视图切换">
+          <button onClick={() => setViewMode('list')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', cursor: 'pointer', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图">列表</button>
+          <button onClick={() => setViewMode('gantt')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: viewMode === 'gantt' ? 'var(--accent)' : 'transparent', color: viewMode === 'gantt' ? 'var(--accent-text)' : 'var(--text)' }} title="甘特图视图 — 按串行瀑布时间线可视化">甘特</button>
+        </span>
         <button onClick={openHolidayManager} style={btnStyle} title="节假日管理 — 手动维护 / 联网导入法定节假日 / 万年历视图">节假日（{holidays.length}）</button>
         <button onClick={reload} style={btnStyle} title="刷新"><RefreshCw size={13} /></button>
         {notice && <span style={{ fontSize: 12, color: 'var(--accent)' }}>{notice}</span>}
@@ -376,6 +472,7 @@ export function PlanPage() {
       )}
 
       {/* 计划表格：串行瀑布，起止由服务端按工作日推算 */}
+      {viewMode === 'gantt' ? renderGantt() : (
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
         <thead>
           <tr style={{ textAlign: 'left', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-strong)' }}>
@@ -449,6 +546,7 @@ export function PlanPage() {
           )}
         </tbody>
       </table>
+      )}
 
       {/* T00438 AI 导入弹窗：模型选择 + 文件上传 → AI 解析草稿表格（可编辑/勾选）→ 批量保存 */}
       {aiOpen && (
