@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type AITool, type ReqCategory } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
 import { useSessionState } from '../ui/session';
-import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput } from 'lucide-react';
+import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput, GitCompare } from 'lucide-react';
 
 const CATEGORIES = [
   { key: 'summary', label: '周期要点汇总' },
@@ -226,6 +226,9 @@ export function ReportConsole({
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
   const [saveError, setSaveError] = useState('');
+  // T00443 / PRD AI-6：多模型对比模式——勾选的对比模型与主模型并行运行同一分析，结果 tab 并列对比
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareIds, setCompareIds] = useState<string[]>([]);
   // T00437：手动模式的可交互条目表格（标题/内容可编辑、勾选控制是否转存）与「本次已转存」标记
   const [saveRows, setSaveRows] = useState<Array<{ title: string; content: string; include: boolean }>>([]);
   const [saveDone, setSaveDone] = useState(false);
@@ -293,6 +296,16 @@ export function ReportConsole({
       const task: AnalysisTask = { id: r.id, title, prompt: user, category: cat, period: per, status: 'busy', answer: '', error: '' };
       setTasks((prev) => [...prev, task]);
       setActiveId(r.id);
+      // T00443 / PRD AI-6：对比模式——为每个勾选的对比模型创建同 prompt 任务并行运行（结果 tab 并列对比）
+      for (const ct of compareIds) {
+        if (ct === toolId) continue;
+        const ctool = tools.find((x) => x.id === ct);
+        if (!ctool) continue;
+        const cbody = { ...body, title: `${title}【对比·${ctool.name}】`, toolId: ct };
+        void api.post<{ id: string }>('/console-jobs', cbody).then((cr) => {
+          setTasks((prev) => [...prev, { id: cr.id, title: cbody.title as string, prompt: user, category: cat, period: per, status: 'busy', answer: '', error: '' }]);
+        }).catch(() => undefined);
+      }
     } catch {
       // 创建失败（如后端未就绪）：不写入本地视图，避免出现无后端实体的假任务，等待用户重试
     }
@@ -537,6 +550,23 @@ export function ReportConsole({
         >
           <Plus size={13} />
         </button>
+        {compareMode && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', flex: '1 1 auto' }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>对比模型：</span>
+            {tools.filter((t) => t.id !== toolId).map((t) => {
+              const on = compareIds.includes(t.id);
+              return (
+                <button key={t.id}
+                  onClick={() => setCompareIds((prev) => (on ? prev.filter((x) => x !== t.id) : [...prev, t.id]))}
+                  title={on ? `取消对比：${t.name}` : `加入对比：${t.name}`}
+                  style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, cursor: 'pointer', border: `1px solid ${on ? 'var(--accent)' : 'var(--border-strong)'}`, background: on ? 'var(--accent)' : 'transparent', color: on ? 'var(--accent-text)' : 'var(--text)' }}>
+                  {t.name}
+                </button>
+              );
+            })}
+            {compareIds.length === 0 && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>点击模型名加入对比</span>}
+          </div>
+        )}
         <button
           onClick={resetConsole}
           title="重置 — 清空全部分析任务并恢复默认设置"
@@ -544,6 +574,15 @@ export function ReportConsole({
           style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '5px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', flex: '0 0 auto' }}
         >
           <RefreshCw size={13} />
+        </button>
+        {/* T00443 / PRD AI-6：多模型对比模式开关 */}
+        <button
+          onClick={() => { setCompareMode((v) => !v); setCompareIds([]); }}
+          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 5, borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: compareMode ? 'var(--accent-soft, rgba(9,105,218,.10))' : 'var(--card-bg)', color: compareMode ? 'var(--accent)' : 'var(--text)', flex: '0 0 auto' }}
+          title="多模型对比 — 同一问题并行发给多个模型，结果并列对比"
+          aria-label="多模型对比模式"
+        >
+          <GitCompare size={13} />
         </button>
       </div>
       {category === 'custom' && (
