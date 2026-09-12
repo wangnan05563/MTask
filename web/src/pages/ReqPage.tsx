@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, X } from 'lucide-react';
+import { CalendarRange, ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, X } from 'lucide-react';
 import { api, type ReqCategory, type ReqEntry } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { clearSessionState, useSessionState } from '../ui/session';
@@ -140,6 +140,16 @@ export function ReqPage() {
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
     }
+  }
+
+  /** 转计划草稿（T00456 / PRD INT-5）：把通用需求转为目标项目的计划任务（追加尾部自动排期） */
+  async function toPlan(p: ReqEntry) {
+    const pid = await askInput({ title: '转计划 — 输入目标项目名称', placeholder: '如：MTask' });
+    if (!pid?.trim()) return;
+    try {
+      await api.post('/plans/from-req', { reqEntryId: p.id, projectId: pid.trim() });
+      flash(`已将「${p.title}」转存到「${pid.trim()}」的项目计划`);
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
   }
 
   /** 复制到待办任务（T00436）：把通用需求转成待办，落到默认记事项目（收件箱），不改动需求本身 */
@@ -402,6 +412,11 @@ export function ReqPage() {
                     <button className="abtn" onClick={() => void copyToTask(p)} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="复制到待办任务 — 以该通用需求创建一条待办任务（收件箱项目）" aria-label="复制到待办任务">
                       <ListTodo size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                    </button>
+                    {/* T00456 / PRD INT-5：转计划 — 把通用需求转为目标项目的计划任务 */}
+                    <button className="abtn" onClick={() => void toPlan(p)} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                      title="转计划 — 把该通用需求转为目标项目的计划任务（输入目标项目名）" aria-label="转计划：转为目标项目的计划任务">
+                      <CalendarRange size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
                     <button
                       className="abtn"

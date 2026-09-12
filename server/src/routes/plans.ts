@@ -158,6 +158,15 @@ planApi.get('/archived', (_req, res) => wrap(res, () => PlanService.listArchived
 planApi.post('/:id/archive', (req, res) => wrap(res, () => PlanService.archive(req.params.id)));
 planApi.post('/:id/restore', (req, res) => wrap(res, () => PlanService.restore(req.params.id)));
 
+// 通用需求 → 计划草稿（PRD INT-5）：把通用需求条目转为计划任务
+planApi.post('/from-req', (req, res) => {
+  const { reqEntryId, projectId } = (req.body ?? {}) as { reqEntryId?: unknown; projectId?: unknown };
+  if (typeof reqEntryId !== 'string' || !reqEntryId || typeof projectId !== 'string' || !projectId) {
+    return res.status(400).json({ error: 'reqEntryId 与 projectId 必填' });
+  }
+  wrap(res, () => PlanService.createFromReq(reqEntryId, projectId));
+});
+
 // 拖拽排序（T00459）：前端传拖拽后的完整活跃计划 id 顺序，事务重写 sort_order 并重排时间线
 planApi.post('/reorder', (req, res) => {
   const { projectId, orderedIds } = (req.body ?? {}) as { projectId?: unknown; orderedIds?: unknown };

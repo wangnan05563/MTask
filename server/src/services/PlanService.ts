@@ -154,7 +154,7 @@ function rescheduleFrom(db: ReturnType<typeof getDb>, projectId: string, fromOrd
     const r = rows[i];
     let start: string;
     if (i === 0) {
-      start = opts.firstStartDate ?? (opts.afterEndDate ? nextWorkday(opts.afterEndDate, holidays) : r.start_date);
+      start = opts.firstStartDate ?? (opts.afterEndDate ? nextWorkday(opts.afterEndDate, holidays) : (r.start_date || fmt(new Date())));
     } else {
       start = nextWorkday(prevEnd!, holidays);
     }
@@ -347,6 +347,23 @@ export const PlanService = {
       rescheduleAll(db, projectId);
     })();
     return { reordered: orderedIds.length };
+  },
+
+  /**
+   * 通用需求 → 计划草稿（PRD INT-5）：把通用需求条目转为计划任务（追加到目标项目计划尾部）。
+   * 标题带 [需求] 前缀；同项目查重（同标题已存在则报错提示）。
+   */
+  createFromReq(reqEntryId: string, projectId: string): { plan: PlanTaskRow } {
+    const db = getDb();
+    const entry = db.prepare('SELECT title, content FROM req_entries WHERE id = ?').get(reqEntryId) as { title: string; content: string } | undefined;
+    if (!entry) throw new Error('通用需求不存在');
+    if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error('目标项目不存在');
+    const dup = db.prepare(
+      "SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0",
+    ).get(projectId, `[需求] ${entry.title}`) as { id: string } | undefined;
+    if (dup) throw new Error('该需求已转存为计划任务，请勿重复转存');
+    const r = this.createBatch(projectId, [{ title: `[需求] ${entry.title}`, description: entry.content }]);
+    return { plan: this.list(projectId).slice(-1)[0] };
   },
 
   /** 关联待办：同项目校验 + 按当前计划状态立即同步该待办状态 */
