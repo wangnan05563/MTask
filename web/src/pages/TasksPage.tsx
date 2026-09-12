@@ -6,7 +6,7 @@ import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { useBusy, setBusy } from '../ui/busy';
-import { AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, ListTodo, Loader2, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X } from 'lucide-react';
+import { AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X } from 'lucide-react';
 
 /** 粘贴截图项：id 为入列时生成的稳定唯一标识，供列表 key 使用，删除中间项不会导致其余项身份错位 */
 interface PastedImage {
@@ -1683,13 +1683,12 @@ export function TasksPage() {
       <button
         onClick={() => void batchClassify()}
         disabled={classifyBusy || (todo.length === 0 && done.length === 0)}
-        className={classifyBusy ? 'task-breathe' : undefined}
+        className={`tbtn-anim${classifyBusy ? ' task-breathe' : ''}`}
         title={classifyBusy ? '批量分类进行中…' : 'AI 批量分类 — 对未分类任务（含已完成）智能识别自动分到已有分类'}
         aria-label={classifyBusy ? '批量分类进行中' : 'AI 批量分类：对未分类任务（含已完成）自动分类'}
         style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: classifyBusy ? 'var(--accent)' : 'transparent', color: classifyBusy ? 'var(--accent-text)' : 'var(--text)' }}
       >
-        <Tags size={13} />
-        {classifyBusy ? '分类中' : '分类'}
+        {classifyBusy ? <Loader2 size={13} className="aispin" /> : <Tags size={13} />}
       </button>
     );
   }
@@ -1699,8 +1698,8 @@ export function TasksPage() {
   function renderViewToggle() {
     return (
       <span style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }}>
-        <button onClick={() => setViewMode('list')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', cursor: 'pointer', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图">列表</button>
-        <button onClick={() => setViewMode('board')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: viewMode === 'board' ? 'var(--accent)' : 'transparent', color: viewMode === 'board' ? 'var(--accent-text)' : 'var(--text)' }} title="看板视图 — 按状态分列，拖拽卡片流转状态">看板</button>
+        <button className="tbtn-anim" onClick={() => setViewMode('list')} aria-label="列表视图" style={{ padding: '5px 9px', border: 'none', cursor: 'pointer', display: 'inline-flex', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图"><ListTodo size={13} /></button>
+        <button className="tbtn-anim" onClick={() => setViewMode('board')} aria-label="看板视图" style={{ padding: '5px 9px', border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', display: 'inline-flex', background: viewMode === 'board' ? 'var(--accent)' : 'transparent', color: viewMode === 'board' ? 'var(--accent-text)' : 'var(--text)' }} title="看板视图 — 按状态分列，拖拽卡片流转状态"><LayoutGrid size={13} /></button>
       </span>
     );
   }
@@ -1710,11 +1709,12 @@ export function TasksPage() {
     return (
       <button
         onClick={() => { setMultiSelect((v) => !v); setSelectedIds(new Set()); }}
-        style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: multiSelect ? 'var(--accent)' : 'transparent', color: multiSelect ? 'var(--accent-text)' : 'var(--text)' }}
+        className="tbtn-anim"
+        style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', border: '1px solid var(--border-strong)', background: multiSelect ? 'var(--accent)' : 'transparent', color: multiSelect ? 'var(--accent-text)' : 'var(--text)' }}
         title={multiSelect ? '退出多选模式' : '多选模式 — 勾选任务后批量改状态/分类/归档'}
         aria-label={multiSelect ? '退出多选模式' : '进入多选模式'}
       >
-        {multiSelect ? '✓ 多选中' : '多选'}
+        {multiSelect ? <Check size={13} /> : <ListChecks size={13} />}
       </button>
     );
   }
@@ -1788,9 +1788,8 @@ export function TasksPage() {
             <span style={{ marginLeft: 3 }}>智能分类</span>
           </label>
           <button onClick={() => setNewDescOpen(!newDescOpen)} title="描述/截图 — 展开或收起描述与截图上传区" aria-label={newDescOpen ? '收起描述与截图编辑区' : '展开描述与截图编辑区'} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{newDescOpen ? <ChevronUp size={13} /> : <ImagePlus size={13} />}</button>
-          <button onClick={() => void createTask()} disabled={creating} title={creating ? '添加中 — 正在智能分类并保存任务' : '添加任务 — 创建新任务并保存到当前项目'} aria-label={creating ? '添加中：正在智能分类并保存任务' : '添加任务：创建新任务并保存到当前项目'} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 4px', color: creating ? 'var(--text-muted)' : 'var(--text)' }}>
+          <button className="tbtn-anim" onClick={() => void createTask()} disabled={creating} title={creating ? '添加中 — 正在智能分类并保存任务' : '添加任务 — 创建新任务并保存到当前项目'} aria-label={creating ? '添加中：正在智能分类并保存任务' : '添加任务：创建新任务并保存到当前项目'} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 4px', color: creating ? 'var(--text-muted)' : 'var(--text)' }}>
             {creating ? <Loader2 size={13} className="aispin" /> : <Plus size={13} />}
-            {creating ? '分类中…' : '添加'}
           </button>
         </div>
         {/* 创建时可选的描述 + 截图粘贴区 */}
@@ -2179,6 +2178,10 @@ export function TasksPage() {
         .task-item:active { transform: scale(.985); }
         @keyframes taskflush { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
         .task-item.flush { animation: taskflush 1.4s ease; }
+        /* T00467：工具栏图标按钮 hover 动画（开源 lucide 图标 + 缩放旋转反馈） */
+        .tbtn-anim svg { transition: transform .18s ease; }
+        .tbtn-anim:hover svg { transform: scale(1.2) rotate(8deg); }
+        .tbtn-anim:active svg { transform: scale(.88); }
         .task-op {
           opacity: 0;
           visibility: hidden;
