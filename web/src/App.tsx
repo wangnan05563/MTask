@@ -9,6 +9,7 @@ import { ReportPage } from './pages/ReportPage';
 import { PlanPage } from './pages/PlanPage';
 import { api, setAccessToken } from './api/client';
 import { MarkdownStyles } from './ui/Markdown';
+import { CommandPalette } from './pages/CommandPalette';
 import { SettingsProvider } from './settings';
 import { MobileShell } from './mobile/MobileShell';
 import { Archive, BarChart3, Boxes, CalendarRange, Lightbulb, ListOrdered, ListTodo, ScrollText, Settings, type LucideIcon } from 'lucide-react';
@@ -31,6 +32,19 @@ const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
 function Shell() {
   const [tab, setTab] = useState<Tab>('tasks');
   const [serverOk, setServerOk] = useState<boolean | null>(null);
+  // T00443 / PRD UX-4：全局命令面板（Ctrl+K）
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  // T00443 / PRD UX-4：Ctrl+K 唤起/关闭命令面板
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   useEffect(() => {
     api.get<{ ok: boolean }>('/health')
@@ -73,6 +87,13 @@ function Shell() {
     >
       {/* Markdown 作用域样式在应用根统一注入一次，供全部页面共享 */}
       <MarkdownStyles />
+      {paletteOpen && (
+        <CommandPalette
+          open
+          onClose={() => setPaletteOpen(false)}
+          onNavigate={(t) => { setPaletteOpen(false); setTab(t); }}
+        />
+      )}
       {/* 全局按钮去边框：扁平简约统一视觉，显式边框按钮随后逐个移除 */}
       <style>{`button { border: none; cursor: pointer; transition: transform .12s ease; }
         button:disabled { cursor: default; opacity: .6; }
