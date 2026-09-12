@@ -1728,9 +1728,11 @@ export function TasksPage() {
   function renderToolbar() {
     return (
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span className="toolbar-reveal" style={{ display: 'inline-flex' }}>
         <select value={activeProject} onChange={(e) => setActiveProject(e.target.value)} style={{ padding: 6 }} aria-label="切换项目">
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
+        </span>
         {renderProjectActionButtons()}
         {renderToolSelector()}
         {renderModelHint()}
@@ -1793,6 +1795,7 @@ export function TasksPage() {
             placeholder="输入任务标题，回车创建"
             style={{ flex: 1, padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}
           />
+          <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
           <select value={newPriority} onChange={(e) => setNewPriority(e.target.value)} style={{ padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}>
             <option value="low">低</option>
             <option value="normal">中</option>
@@ -1808,6 +1811,7 @@ export function TasksPage() {
             <span style={{ marginLeft: 3 }}>智能分类</span>
           </label>
           <button onClick={() => setNewDescOpen(!newDescOpen)} title="描述/截图 — 展开或收起描述与截图上传区" aria-label={newDescOpen ? '收起描述与截图编辑区' : '展开描述与截图编辑区'} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{newDescOpen ? <ChevronUp size={13} /> : <ImagePlus size={13} />}</button>
+          </span>
           <button className="tbtn-anim" onClick={() => void createTask()} disabled={creating} title={creating ? '添加中 — 正在智能分类并保存任务' : '添加任务 — 创建新任务并保存到当前项目'} aria-label={creating ? '添加中：正在智能分类并保存任务' : '添加任务：创建新任务并保存到当前项目'} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 4px', color: creating ? 'var(--text-muted)' : 'var(--text)' }}>
             {creating ? <Loader2 size={13} className="aispin" /> : <Plus size={13} />}
           </button>

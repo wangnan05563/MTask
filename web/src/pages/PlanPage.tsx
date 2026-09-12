@@ -542,9 +542,13 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       <style>{planTableCss}</style>
       {/* 工具条：项目选择 + 增删导入导出 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-        <select value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ ...inputStyle, minWidth: 140 }} aria-label="选择项目">
+        <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <select value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ ...inputStyle, minWidth: 140 }} aria-label="选择项目">
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
+        </span>
+        </span>
         <button onClick={() => void createPlan()} disabled={busy} style={btnStyle}><CalendarPlus size={13} />新建任务</button>
         <label style={{ ...btnStyle, cursor: busy ? 'default' : 'pointer' }} title="导入 Excel（任一行校验失败则整体不入库）">
           <Upload size={13} />导入 Excel

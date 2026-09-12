@@ -270,6 +270,8 @@ export function PromptsPage() {
       `}</style>
       {/* 工具栏：分类切换与管理 */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+        <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
         <select value={activeCat} onChange={(e) => setActiveCat(e.target.value)} style={{ padding: 6, minWidth: 180 }}>
           {categories.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.promptCount ?? 0}）</option>)}
         </select>
@@ -277,6 +279,8 @@ export function PromptsPage() {
           style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 8px', borderRadius: 6 }}>
           <Plus size={13} style={{ verticalAlign: '-2px' }} /> 新建分类
         </button>
+        </span>
+        </span>
         {activeCatObj && (
           <>
             <button onClick={() => { void api.post('/prompts/reorder/reset', { categoryId: activeCat }).then((r) => { const reset = (r as { reset?: number })?.reset;
@@ -307,7 +311,9 @@ export function PromptsPage() {
         >
           <Plus size={13} />
         </button>
-        <select
+        <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <select
           value={sortKey}
           onChange={(e) => setSortKey(e.target.value as 'updated_at' | 'created_at' | 'title')}
           title="排序字段"
@@ -317,7 +323,11 @@ export function PromptsPage() {
           <option value="created_at">创建时间</option>
           <option value="title">名称</option>
         </select>
-        <select
+        </span>
+        </span>
+        <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <select
           value={sortDir}
           onChange={(e) => setSortDir(e.target.value as 'asc' | 'desc')}
           title="排序方式"
@@ -326,6 +336,8 @@ export function PromptsPage() {
           <option value="desc">降序</option>
           <option value="asc">升序</option>
         </select>
+        </span>
+        </span>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
