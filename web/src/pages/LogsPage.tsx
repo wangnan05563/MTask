@@ -46,7 +46,7 @@ export function LogsPage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [paused, setPaused] = useState(false);
   const [level, setLevel] = useState<LevelFilter>('all');
-  const [source, setSource] = useState<SourceFilter>('all');
+  const [source, setSource] = useState<string>('all');
   const [keyword, setKeyword] = useState('');
   const [pollMs, setPollMs] = useState(2000);
 

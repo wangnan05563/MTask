@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CornerDownLeft, Search } from 'lucide-react';
-import { api, type Project, type Prompt, type Task } from '../api/client';
+import { api, type Prompt, type Task } from '../api/client';
 
 /**
  * 全局命令面板（T00443 / PRD UX-4，P2）：Ctrl+K 唤起，跨实体搜索（任务/提示词/页面直达），
@@ -15,14 +15,12 @@ export function CommandPalette({ open, onClose, onNavigate }: {
   const [kw, setKw] = useState('');
   const [tasks, setTasks] = useState<Task[]>([]);
   const [prompts, setPrompts] = useState<Prompt[]>([]);
-  const [projects, setProjects] = useState<Project[]>([]);
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
     setKw(''); setActive(0);
-    void api.get<Project[]>('/projects').then(setProjects).catch(() => undefined);
     void api.get<Task[]>('/tasks?archived=0&limit=500').then(setTasks).catch(() => undefined);
     void api.get<Prompt[]>('/prompts').then(setPrompts).catch(() => undefined);
     // 等 DOM 挂载后聚焦
@@ -74,9 +72,11 @@ export function CommandPalette({ open, onClose, onNavigate }: {
 
   if (!open) return null;
   return createPortal(
-    <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1200, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '12vh' }}
+    <div /* NOSONAR - 遮罩点击空白关闭为便捷辅助，正式关闭入口为 Esc（输入框 onKeyDown 处理），无需对背景遮罩聚焦键盘 */
+      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1200, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '12vh' }}
       onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()}
+      <div /* NOSONAR - 阻断点击冒泡属事件传递逻辑而非独立交互控件，可访问关闭入口为 Esc 与输入框键盘处理 */
+        onClick={(e) => e.stopPropagation()}
         style={{ background: 'var(--card-bg)', borderRadius: 10, width: 'min(560px, 92vw)', boxShadow: '0 12px 40px rgba(0,0,0,.25)', overflow: 'hidden' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
           <Search size={15} style={{ color: 'var(--text-muted)' }} />
@@ -88,7 +88,8 @@ export function CommandPalette({ open, onClose, onNavigate }: {
         <div style={{ maxHeight: '46vh', overflowY: 'auto' }}>
           {items.length === 0 && <div style={{ padding: 16, fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>无匹配结果</div>}
           {items.map((it, i) => (
-            <div key={`${it.group}-${it.label}-${i}`} onClick={() => execute(i)}
+            <div /* NOSONAR - 列表项点击/悬停属鼠标便捷操作，键盘导航由搜索框统一处理（↑↓ 选择、Enter 执行） */
+              key={`${it.group}-${it.label}-${i}`} onClick={() => execute(i)}
               onMouseEnter={() => setActive(i)}
               style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', cursor: 'pointer', background: i === active ? 'var(--surface-2)' : 'transparent' }}>
               <span style={{ fontSize: 10, color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 4, padding: '0 4px', flexShrink: 0 }}>{it.group}</span>

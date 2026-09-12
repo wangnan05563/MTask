@@ -189,6 +189,191 @@ function rowToTask(r: {
   };
 }
 
+/** 是否正在生成内容（AI 周报流式或手动任务进行中）：驱动结果区自动滚动 */
+function isLive(onReportTab: boolean, streaming: boolean, streamText: string, activeTask: AnalysisTask | null): boolean {
+  if (onReportTab) return streaming || (streamText?.length ?? 0) > 0;
+  return activeTask?.status === 'busy';
+}
+
+/** 周期 key → 中文名（未选周期时返回 undefined，供预设提示词与选项文案引用） */
+function periodLabelOf(period?: ReportPeriod): string | undefined {
+  return period ? PERIOD_LABEL[period] : undefined;
+}
+
+/** 手动分组表格行：id 为列表内稳定唯一键（避免用数组索引作 React key） */
+interface SaveRow {
+  id: string;
+  title: string;
+  content: string;
+  include: boolean;
+}
+
+/** 手动模式的目标分类选择：加载中 / 无分类 / 正常三态；label 通过 htmlFor 与 select 关联 */
+function CategoryPicker({
+  loading,
+  cats,
+  value,
+  onChange,
+}: {
+  readonly loading: boolean;
+  readonly cats: ReqCategory[];
+  readonly value: string;
+  readonly onChange: (id: string) => void;
+}) {
+  let control: React.ReactNode;
+  if (loading) {
+    control = (
+      <div style={{ color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+        <Loader2 size={12} style={{ animation: 'mconsole-spin 1s linear infinite' }} /> 加载分类…
+      </div>
+    );
+  } else if (cats.length === 0) {
+    control = <div style={{ color: 'var(--danger)' }}>暂无分类，请先在「通用需求」菜单新建分类。</div>;
+  } else {
+    control = (
+      <select
+        id="rpt-save-category"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        style={{ flex: 1, padding: 6, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12 }}
+      >
+        {cats.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.reqCount ?? 0}）</option>)}
+      </select>
+    );
+  }
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <label htmlFor="rpt-save-category" style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>目标分类：</label>
+      {control}
+    </div>
+  );
+}
+
+/** 「转存到通用需求」弹窗：AI 智能分组 / 手动分组两模式；手动模式为可交互条目表格 */
+function SaveReqModal({
+  saveMode,
+  onSaveModeChange,
+  saveLoading,
+  reqCats,
+  saveCategoryId,
+  onCategoryChange,
+  saveRows,
+  onPatchRow,
+  saveMsg,
+  saveError,
+  saving,
+  saveDone,
+  onSave,
+  onClose,
+}: {
+  readonly saveMode: 'ai' | 'manual';
+  readonly onSaveModeChange: (mode: 'ai' | 'manual') => void;
+  readonly saveLoading: boolean;
+  readonly reqCats: ReqCategory[];
+  readonly saveCategoryId: string;
+  readonly onCategoryChange: (id: string) => void;
+  readonly saveRows: SaveRow[];
+  readonly onPatchRow: (i: number, patch: Partial<SaveRow>) => void;
+  readonly saveMsg: string;
+  readonly saveError: string;
+  readonly saving: boolean;
+  readonly saveDone: boolean;
+  readonly onSave: () => void;
+  readonly onClose: () => void;
+}) {
+  return (
+    <div /* NOSONAR - 遮罩点击空白关闭为便捷辅助，正式关闭入口为弹窗内原生按钮，无需对背景遮罩聚焦键盘 */
+      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={() => { if (!saving) onClose(); }}>
+      <div /* NOSONAR - 阻断点击冒泡属事件传递逻辑而非独立交互控件，可访问关闭入口仍为原生按钮 */
+        onClick={(e) => e.stopPropagation()} style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(640px, 92vw)', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
+          <FolderInput size={14} style={{ color: 'var(--accent)' }} /> 转存到通用需求
+          <span style={{ flex: 1 }} />
+          <button
+            onClick={onClose}
+            disabled={saving}
+            title="关闭 — 取消转存"
+            aria-label="关闭转存弹窗"
+            style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', background: 'transparent', border: 'none', color: 'var(--text)' }}
+          >
+            <X size={15} />
+          </button>
+        </div>
+        <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12, flex: 1, overflowY: 'auto', minHeight: 0 }}>
+          {/* 分组模式选择 */}
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              onClick={() => onSaveModeChange('ai')}
+              style={{ flex: '40%', padding: '6px 0', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: saveMode === 'ai' ? 'var(--accent)' : 'var(--card-bg)', color: saveMode === 'ai' ? 'var(--accent-text)' : 'var(--text)' }}
+              title="AI 智能分组 — 由 AI 自动把清单拆成多条并归入最贴切分类"
+            >
+              AI 智能分组
+            </button>
+            <button
+              onClick={() => onSaveModeChange('manual')}
+              style={{ flex: '60%', padding: '6px 0', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: saveMode === 'manual' ? 'var(--accent)' : 'var(--card-bg)', color: saveMode === 'manual' ? 'var(--accent-text)' : 'var(--text)' }}
+              title="手动分组 — 选择目标分类，把清单按标题分节批量写入"
+            >
+              手动分组
+            </button>
+          </div>
+          {saveMode === 'ai' ? (
+            <div style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+              由 AI 解析当前清单，抽取其中的通用需求，为每条自动归入最贴切分类（必要时自动新建分类），批量写入「通用需求」菜单。需使用当前已选 AI 工具。内容重复的条目会被自动跳过。
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <CategoryPicker loading={saveLoading} cats={reqCats} value={saveCategoryId} onChange={onCategoryChange} />
+              {/* T00437：可交互条目表格——勾选控制是否转存，标题/内容可在线编辑 */}
+              {saveRows.map((row, i) => (
+                <div key={row.id} style={{ border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <input type="checkbox" checked={row.include} aria-label={`勾选第 ${i + 1} 条`}
+                      onChange={(e) => onPatchRow(i, { include: e.target.checked })} />
+                    <input value={row.title} aria-label={`第 ${i + 1} 条标题`}
+                      onChange={(e) => onPatchRow(i, { title: e.target.value })}
+                      style={{ flex: 1, padding: '3px 6px', borderRadius: 4, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, fontWeight: 600 }} />
+                  </div>
+                  <textarea value={row.content} rows={3} aria-label={`第 ${i + 1} 条内容`}
+                    onChange={(e) => onPatchRow(i, { content: e.target.value })}
+                    style={{ width: '100%', boxSizing: 'border-box', padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text-secondary)', fontSize: 11, resize: 'vertical' }} />
+                </div>
+              ))}
+              <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                勾选要转存的条目（共 {saveRows.filter((r) => r.include).length}/{saveRows.length} 条）；内容重复的条目转存时会被自动跳过。
+              </div>
+            </div>
+          )}
+          {saveMsg && <div style={{ color: 'var(--success)' }}>✓ {saveMsg}</div>}
+          {saveError && <div style={{ color: 'var(--danger)' }}>{saveError}</div>}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
+          <button
+            onClick={onClose}
+            disabled={saving}
+            title="取消 — 放弃本次转存"
+            aria-label="取消转存"
+            style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)' }}
+          >
+            取消
+          </button>
+          <button
+            onClick={onSave}
+            disabled={saving || saveDone || (saveMode === 'manual' && (!saveCategoryId || reqCats.length === 0))}
+            title={saveDone ? '已转存完成' : '确认转存 — 写入通用需求菜单'}
+            aria-label="确认转存"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)' }}
+          >
+            {saving && <Loader2 size={12} style={{ animation: 'mconsole-spin 1s linear infinite' }} />}
+            确认转存
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ReportConsole({
   tools,
   toolId,
@@ -230,7 +415,7 @@ export function ReportConsole({
   const [compareMode, setCompareMode] = useState(false);
   const [compareIds, setCompareIds] = useState<string[]>([]);
   // T00437：手动模式的可交互条目表格（标题/内容可编辑、勾选控制是否转存）与「本次已转存」标记
-  const [saveRows, setSaveRows] = useState<Array<{ title: string; content: string; include: boolean }>>([]);
+  const [saveRows, setSaveRows] = useState<SaveRow[]>([]);
   const [saveDone, setSaveDone] = useState(false);
 
   const activeTask = tasks.find((t) => t.id === activeId) ?? null;
@@ -251,7 +436,7 @@ export function ReportConsole({
   }, [logs]);
 
   // 正在生成（AI 周报流式或手动任务进行中）时随内容滚到底部，保证流式输出始终跟随最新内容
-  const live = onReportTab ? (streaming || (streamText?.length ?? 0) > 0) : activeTask?.status === 'busy';
+  const live = isLive(onReportTab, streaming, streamText, activeTask);
   useEffect(() => {
     if (live) bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
   }, [live, streamText, streamsLen(activeTask)]);
@@ -303,7 +488,7 @@ export function ReportConsole({
         if (!ctool) continue;
         const cbody = { ...body, title: `${title}【对比·${ctool.name}】`, toolId: ct };
         void api.post<{ id: string }>('/console-jobs', cbody).then((cr) => {
-          setTasks((prev) => [...prev, { id: cr.id, title: cbody.title as string, prompt: user, category: cat, period: per, status: 'busy', answer: '', error: '' }]);
+          setTasks((prev) => [...prev, { id: cr.id, title: cbody.title, prompt: user, category: cat, period: per, status: 'busy', answer: '', error: '' }]);
         }).catch(() => undefined);
       }
     } catch {
@@ -343,6 +528,16 @@ export function ReportConsole({
     setCustom('');
   }
 
+  /** 对比模型勾选切换：已选则移除，未选则追加 */
+  function toggleCompareModel(id: string) {
+    setCompareIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  /** 更新手动分组表格中的某一行：仅替换目标行，保持其余行对象引用不变 */
+  function patchSaveRow(i: number, patch: Partial<SaveRow>) {
+    setSaveRows((prev) => prev.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  }
+
   /** 打开预览：全屏遮罩渲染当前聚焦内容（AI 周报流式正文或手动任务结论） */
   function openPreview() {
     const md = onReportTab ? streamText : activeTask?.answer;
@@ -378,7 +573,7 @@ export function ReportConsole({
     setSaving(false);
     setSaveDone(false);
     setSaveLoading(true);
-    setSaveRows(parseAnswerItems(activeTask.answer).map((it) => ({ ...it, include: true })));
+    setSaveRows(parseAnswerItems(activeTask.answer).map((it, i) => ({ ...it, id: `rpt-row-${i}`, include: true })));
     try {
       const cats = await api.get<ReqCategory[]>('/req-categories');
       setReqCats(cats);
@@ -417,7 +612,8 @@ export function ReportConsole({
       }
       if (r.ok) {
         const skipN = r.skipped?.length ?? 0;
-        setSaveMsg(`已转存 ${r.count} 条通用需求${skipN > 0 ? `，跳过重复 ${skipN} 条` : ''}到「通用需求」菜单`);
+        const dupHint = skipN > 0 ? `，跳过重复 ${skipN} 条` : '';
+        setSaveMsg(`已转存 ${r.count} 条通用需求${dupHint}到「通用需求」菜单`);
         setSaveDone(true);
         // T00434：成功后延迟自动关闭（留出结果可见时间），杜绝未关弹窗导致的重复点击二次转存
         setTimeout(() => setSaveOpen(false), 1500);
@@ -504,7 +700,7 @@ export function ReportConsole({
     }
   }
 
-  const periodLabel = (period && PERIOD_LABEL[period]) || undefined;
+  const periodLabel = periodLabelOf(period);
   // 当前聚焦内容是否有正文：AI 周报 tab 看流式洞察正文，手动任务看其 answer；驱动预览/下载按钮可用性
   const hasAnswer = onReportTab ? !!streamText : !!activeTask?.answer;
   // 「开始分析」按钮文案：无工具 / 自定义问题为空 / 正常三种状态，顺序判断避免嵌套三元
@@ -512,88 +708,97 @@ export function ReportConsole({
   if (noTool) startBtnTitle = '开始分析 — 请先选择 AI 工具';
   else if (customInvalid) startBtnTitle = '开始分析 — 请先输入分析问题';
 
+  /** 头部与操作栏：AI 工具 / 分析内容 / 开始分析 / 对比 / 重置；自定义提问时文本框另起一行 */
+  function renderToolbar() {
+    return (
+      <>
+        {/* 头部 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600 }}>
+          <Terminal size={14} /> AI 控制台
+          {runningCount > 0 && (
+            <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>{runningCount} 进行中</span>
+          )}
+        </div>
+
+        {/* 操作栏：AI 工具 / 分析内容 / 开始分析 / 重置 合并为一行；自定义提问时文本框另起一行 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <ToolSelect tools={tools} toolId={toolId} onChange={onToolIdChange} />
+          <select
+            value={category}
+            onChange={(e) => setCategory(e.target.value as typeof category)}
+            title="分析内容 — 选择本次分析的问题类型"
+            aria-label="分析内容：选择本次分析的问题类型"
+            style={{ flex: '0 1 auto', padding: '5px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, background: 'var(--card-bg)', color: 'var(--text)', maxWidth: 150 }}
+          >
+            {CATEGORIES.map((c) => (
+              <option key={c.key} value={c.key}>
+                {/* 汇总类选项文案随所选报表周期联动：日报→「日报要点汇总」、周报→「周报要点汇总」、月报→「月报要点汇总」 */}
+                {c.key === 'summary' && periodLabel ? `${periodLabel}要点汇总` : c.label}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={() => void newAnalysis()}
+            disabled={noTool || customInvalid}
+            title={startBtnTitle}
+            aria-label="开始分析：发起并行分析任务"
+            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '5px', background: 'var(--accent)', color: 'var(--accent-text)', borderRadius: 6, cursor: 'pointer', border: 'none', flex: '0 0 auto' }}
+          >
+            <Plus size={13} />
+          </button>
+          {compareMode && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', flex: '1 1 auto' }}>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>对比模型：</span>
+              {tools.filter((t) => t.id !== toolId).map((t) => {
+                const on = compareIds.includes(t.id);
+                return (
+                  <button key={t.id}
+                    onClick={() => toggleCompareModel(t.id)}
+                    title={on ? `取消对比：${t.name}` : `加入对比：${t.name}`}
+                    style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, cursor: 'pointer', border: `1px solid ${on ? 'var(--accent)' : 'var(--border-strong)'}`, background: on ? 'var(--accent)' : 'transparent', color: on ? 'var(--accent-text)' : 'var(--text)' }}>
+                    {t.name}
+                  </button>
+                );
+              })}
+              {compareIds.length === 0 && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>点击模型名加入对比</span>}
+            </div>
+          )}
+          <button
+            onClick={resetConsole}
+            title="重置 — 清空全部分析任务并恢复默认设置"
+            aria-label="重置：清空全部分析任务并恢复默认设置"
+            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '5px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', flex: '0 0 auto' }}
+          >
+            <RefreshCw size={13} />
+          </button>
+          {/* T00443 / PRD AI-6：多模型对比模式开关 */}
+          <button
+            onClick={() => { setCompareMode((v) => !v); setCompareIds([]); }}
+            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 5, borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: compareMode ? 'var(--accent-soft, rgba(9,105,218,.10))' : 'var(--card-bg)', color: compareMode ? 'var(--accent)' : 'var(--text)', flex: '0 0 auto' }}
+            title="多模型对比 — 同一问题并行发给多个模型，结果并列对比"
+            aria-label="多模型对比模式"
+          >
+            <GitCompare size={13} />
+          </button>
+        </div>
+        {category === 'custom' && (
+          <textarea
+            value={custom}
+            onChange={(e) => setCustom(e.target.value)}
+            rows={2}
+            placeholder="输入你的分析问题…"
+            style={{ width: '100%', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, boxSizing: 'border-box', background: 'var(--card-bg)', color: 'var(--text)' }}
+          />
+        )}
+      </>
+    );
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, border: '1px solid var(--border)', borderRadius: 8, padding: 12, background: 'var(--card-bg)', height: '100%', minHeight: 420 }}>
       <style>{'@keyframes mconsole-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }'}</style>
 
-      {/* 头部 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600 }}>
-        <Terminal size={14} /> AI 控制台
-        {runningCount > 0 && (
-          <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>{runningCount} 进行中</span>
-        )}
-      </div>
-
-      {/* 操作栏：AI 工具 / 分析内容 / 开始分析 / 重置 合并为一行；自定义提问时文本框另起一行 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-        <ToolSelect tools={tools} toolId={toolId} onChange={onToolIdChange} />
-        <select
-          value={category}
-          onChange={(e) => setCategory(e.target.value as typeof category)}
-          title="分析内容 — 选择本次分析的问题类型"
-          aria-label="分析内容：选择本次分析的问题类型"
-          style={{ flex: '0 1 auto', padding: '5px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, background: 'var(--card-bg)', color: 'var(--text)', maxWidth: 150 }}
-        >
-          {CATEGORIES.map((c) => (
-            <option key={c.key} value={c.key}>
-              {/* 汇总类选项文案随所选报表周期联动：日报→「日报要点汇总」、周报→「周报要点汇总」、月报→「月报要点汇总」 */}
-              {c.key === 'summary' && periodLabel ? `${periodLabel}要点汇总` : c.label}
-            </option>
-          ))}
-        </select>
-        <button
-          onClick={() => void newAnalysis()}
-          disabled={noTool || customInvalid}
-          title={startBtnTitle}
-          aria-label="开始分析：发起并行分析任务"
-          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '5px', background: 'var(--accent)', color: 'var(--accent-text)', borderRadius: 6, cursor: 'pointer', border: 'none', flex: '0 0 auto' }}
-        >
-          <Plus size={13} />
-        </button>
-        {compareMode && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', flex: '1 1 auto' }}>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>对比模型：</span>
-            {tools.filter((t) => t.id !== toolId).map((t) => {
-              const on = compareIds.includes(t.id);
-              return (
-                <button key={t.id}
-                  onClick={() => setCompareIds((prev) => (on ? prev.filter((x) => x !== t.id) : [...prev, t.id]))}
-                  title={on ? `取消对比：${t.name}` : `加入对比：${t.name}`}
-                  style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, cursor: 'pointer', border: `1px solid ${on ? 'var(--accent)' : 'var(--border-strong)'}`, background: on ? 'var(--accent)' : 'transparent', color: on ? 'var(--accent-text)' : 'var(--text)' }}>
-                  {t.name}
-                </button>
-              );
-            })}
-            {compareIds.length === 0 && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>点击模型名加入对比</span>}
-          </div>
-        )}
-        <button
-          onClick={resetConsole}
-          title="重置 — 清空全部分析任务并恢复默认设置"
-          aria-label="重置：清空全部分析任务并恢复默认设置"
-          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '5px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', flex: '0 0 auto' }}
-        >
-          <RefreshCw size={13} />
-        </button>
-        {/* T00443 / PRD AI-6：多模型对比模式开关 */}
-        <button
-          onClick={() => { setCompareMode((v) => !v); setCompareIds([]); }}
-          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 5, borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: compareMode ? 'var(--accent-soft, rgba(9,105,218,.10))' : 'var(--card-bg)', color: compareMode ? 'var(--accent)' : 'var(--text)', flex: '0 0 auto' }}
-          title="多模型对比 — 同一问题并行发给多个模型，结果并列对比"
-          aria-label="多模型对比模式"
-        >
-          <GitCompare size={13} />
-        </button>
-      </div>
-      {category === 'custom' && (
-        <textarea
-          value={custom}
-          onChange={(e) => setCustom(e.target.value)}
-          rows={2}
-          placeholder="输入你的分析问题…"
-          style={{ width: '100%', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, boxSizing: 'border-box', background: 'var(--card-bg)', color: 'var(--text)' }}
-        />
-      )}
+      {renderToolbar()}
 
       {/* 并行任务 tab 栏：AI 周报固定 + 各分析任务（可关闭），超出换行 */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
@@ -725,112 +930,24 @@ export function ReportConsole({
         </div>
       )}
 
-      {/* 转存到通用需求弹窗：软件态选择 AI 智能分组 / 手动分组，确认后写入 req_entries */}
+      {/* 转存到通用需求弹窗：AI 智能分组 / 手动分组，确认后写入 req_entries */}
       {saveOpen && (
-        <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          onClick={() => { if (!saving) setSaveOpen(false); }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(640px, 92vw)', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
-              <FolderInput size={14} style={{ color: 'var(--accent)' }} /> 转存到通用需求
-              <span style={{ flex: 1 }} />
-              <button
-                onClick={() => setSaveOpen(false)}
-                disabled={saving}
-                title="关闭 — 取消转存"
-                aria-label="关闭转存弹窗"
-                style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', background: 'transparent', border: 'none', color: 'var(--text)' }}
-              >
-                <X size={15} />
-              </button>
-            </div>
-            <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12, flex: 1, overflowY: 'auto', minHeight: 0 }}>
-              {/* 分组模式选择 */}
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button
-                  onClick={() => setSaveMode('ai')}
-                  style={{ flex: '40%', padding: '6px 0', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: saveMode === 'ai' ? 'var(--accent)' : 'var(--card-bg)', color: saveMode === 'ai' ? 'var(--accent-text)' : 'var(--text)' }}
-                  title="AI 智能分组 — 由 AI 自动把清单拆成多条并归入最贴切分类"
-                >
-                  AI 智能分组
-                </button>
-                <button
-                  onClick={() => setSaveMode('manual')}
-                  style={{ flex: '60%', padding: '6px 0', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: saveMode === 'manual' ? 'var(--accent)' : 'var(--card-bg)', color: saveMode === 'manual' ? 'var(--accent-text)' : 'var(--text)' }}
-                  title="手动分组 — 选择目标分类，把清单按标题分节批量写入"
-                >
-                  手动分组
-                </button>
-              </div>
-              {saveMode === 'ai' ? (
-                <div style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                  由 AI 解析当前清单，抽取其中的通用需求，为每条自动归入最贴切分类（必要时自动新建分类），批量写入「通用需求」菜单。需使用当前已选 AI 工具。内容重复的条目会被自动跳过。
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <label style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>目标分类：</label>
-                    {saveLoading ? (
-                      <div style={{ color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                        <Loader2 size={12} style={{ animation: 'mconsole-spin 1s linear infinite' }} /> 加载分类…
-                      </div>
-                    ) : reqCats.length === 0 ? (
-                      <div style={{ color: 'var(--danger)' }}>暂无分类，请先在「通用需求」菜单新建分类。</div>
-                    ) : (
-                      <select
-                        value={saveCategoryId}
-                        onChange={(e) => setSaveCategoryId(e.target.value)}
-                        style={{ flex: 1, padding: 6, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12 }}
-                      >
-                        {reqCats.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.reqCount ?? 0}）</option>)}
-                      </select>
-                    )}
-                  </div>
-                  {/* T00437：可交互条目表格——勾选控制是否转存，标题/内容可在线编辑 */}
-                  {saveRows.map((row, i) => (
-                    <div key={i} style={{ border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <input type="checkbox" checked={row.include} aria-label={`勾选第 ${i + 1} 条`}
-                          onChange={(e) => setSaveRows((prev) => prev.map((r, j) => (j === i ? { ...r, include: e.target.checked } : r)))} />
-                        <input value={row.title} aria-label={`第 ${i + 1} 条标题`}
-                          onChange={(e) => setSaveRows((prev) => prev.map((r, j) => (j === i ? { ...r, title: e.target.value } : r)))}
-                          style={{ flex: 1, padding: '3px 6px', borderRadius: 4, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, fontWeight: 600 }} />
-                      </div>
-                      <textarea value={row.content} rows={3} aria-label={`第 ${i + 1} 条内容`}
-                        onChange={(e) => setSaveRows((prev) => prev.map((r, j) => (j === i ? { ...r, content: e.target.value } : r)))}
-                        style={{ width: '100%', boxSizing: 'border-box', padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text-secondary)', fontSize: 11, resize: 'vertical' }} />
-                    </div>
-                  ))}
-                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
-                    勾选要转存的条目（共 {saveRows.filter((r) => r.include).length}/{saveRows.length} 条）；内容重复的条目转存时会被自动跳过。
-                  </div>
-                </div>
-              )}
-              {saveMsg && <div style={{ color: 'var(--success)' }}>✓ {saveMsg}</div>}
-              {saveError && <div style={{ color: 'var(--danger)' }}>{saveError}</div>}
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
-              <button
-                onClick={() => setSaveOpen(false)}
-                disabled={saving}
-                title="取消 — 放弃本次转存"
-                aria-label="取消转存"
-                style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)' }}
-              >
-                取消
-              </button>
-              <button
-                onClick={() => void doSave()}
-                disabled={saving || saveDone || (saveMode === 'manual' && (!saveCategoryId || reqCats.length === 0))}
-                title={saveDone ? '已转存完成' : '确认转存 — 写入通用需求菜单'}
-                aria-label="确认转存"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)' }}
-              >
-                {saving && <Loader2 size={12} style={{ animation: 'mconsole-spin 1s linear infinite' }} />}
-                确认转存
-              </button>
-            </div>
-          </div>
-        </div>
+        <SaveReqModal
+          saveMode={saveMode}
+          onSaveModeChange={setSaveMode}
+          saveLoading={saveLoading}
+          reqCats={reqCats}
+          saveCategoryId={saveCategoryId}
+          onCategoryChange={setSaveCategoryId}
+          saveRows={saveRows}
+          onPatchRow={patchSaveRow}
+          saveMsg={saveMsg}
+          saveError={saveError}
+          saving={saving}
+          saveDone={saveDone}
+          onSave={() => void doSave()}
+          onClose={() => setSaveOpen(false)}
+        />
       )}
     </div>
   );

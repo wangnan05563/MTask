@@ -99,6 +99,12 @@ function downloadBlob(buf: ArrayBuffer, name: string) {
   URL.revokeObjectURL(url);
 }
 
+/** 下载空白计划模板（不依赖组件闭包，模块作用域） */
+async function downloadTemplate() {
+  const buf = await api.getBinary('/plans/template');
+  downloadBlob(buf, 'plan-template.xlsx');
+}
+
 export function PlanPage() {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   // T00460：切页保状态——项目选择会话级持久化，切回不重置
@@ -115,7 +121,7 @@ export function PlanPage() {
   const [aiOpen, setAiOpen] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiFileName, setAiFileName] = useState('');
-  const [aiRows, setAiRows] = useState<PlanDraft[]>([]);
+  const [aiRows, setAiRows] = useState<AiRow[]>([]);
   const [aiError, setAiError] = useState('');
 
   const flash = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(''), 3000); };
@@ -187,7 +193,7 @@ export function PlanPage() {
     try {
       const r = await api.post<{ plan: { id: string } }>(`/plans/${p.id}/insert-after`, { title: title.trim() });
       setNewRowId(r.plan.id);
-      void reload();
+      reload();
       flash('已插入，排期时间已自动重排');
       setTimeout(() => setNewRowId((cur) => (cur === r.plan.id ? '' : cur)), 3000);
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
@@ -228,15 +234,10 @@ export function PlanPage() {
 
   // ---------- Excel ----------
 
-  async function downloadTemplate() {
-    const buf = await api.getBinary('/plans/template');
-    downloadBlob(buf, 'plan-template.xlsx');
-  }
-
   async function exportExcel() {
     if (!projectId) return flash('请先选择项目');
     const buf = await api.getBinary(`/plans/export?projectId=${projectId}`);
-    const ts = todayStr().replaceAll(/-/g, '');
+    const ts = todayStr().replaceAll('-', '');
     downloadBlob(buf, `项目计划-${ts}.xlsx`);
   }
 
@@ -265,7 +266,7 @@ export function PlanPage() {
   /** 甘特主视图：横向日轴 + 串行任务条 + 周末/节假日底纹 + 今日线 + 进度内嵌 */
   function renderGantt() {
     if (plans.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 12, padding: 16 }}>暂无计划任务，先创建或导入。</div>;
-    const dates = plans.flatMap((p) => [p.start_date, p.end_date]).filter(Boolean).sort();
+    const dates = plans.flatMap((p) => [p.start_date, p.end_date]).filter(Boolean).sort((a, b) => a.localeCompare(b));
     // 评审 P2-3：边界防护——全部计划无日期（如批量导入未带排期）时避免 NaN 渲染异常
     if (!dates[0]) {
       return (
@@ -275,7 +276,7 @@ export function PlanPage() {
       );
     }
     const rangeStart = dates[0];
-    const rangeEnd = dates[dates.length - 1];
+    const rangeEnd = dates.at(-1) ?? '';
     const dayMs = 86400000;
     const toIdx = (d: string) => Math.round((new Date(d + 'T00:00:00').getTime() - new Date(rangeStart + 'T00:00:00').getTime()) / dayMs);
     const totalDays = toIdx(rangeEnd) + 1;
@@ -379,7 +380,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       const endpoint = isDoc ? `/plans/ai-parse-doc` : `/plans/ai-parse`;
       const r = await api.postBinary<{ ok: boolean; drafts: Array<Omit<PlanDraft, 'include'>> }>(
         `${endpoint}?projectId=${projectId}&toolId=${aiToolId}&filename=${encodeURIComponent(file.name)}`, buf);
-      setAiRows(r.drafts.map((d) => ({ ...d, include: true, startDate: d.startDate || '' })));
+      setAiRows(r.drafts.map((d, i) => ({ ...d, include: true, startDate: d.startDate || '', rowKey: `ai-${Date.now()}-${i}` })));
       if (r.drafts.length === 0) setAiError('AI 未识别出计划条目');
     } catch (e) {
       setAiError(String((e as Error).message ?? e));
@@ -505,7 +506,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
 
   // T00460：滚动位置保活（离开页时保存，切回恢复）
   const scrollRef = useRef<HTMLDivElement>(null);
-  const scrollSaveTimer = useRef<number | undefined>(undefined);
+  const scrollSaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => {
     const saved = sessionStorage.getItem('plan.scrollY');
     if (saved && scrollRef.current) scrollRef.current.scrollTop = Number(saved);
@@ -513,7 +514,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
   }, []);
   const onScrollSave = () => {
     if (scrollSaveTimer.current) return;
-    scrollSaveTimer.current = window.setTimeout(() => {
+    scrollSaveTimer.current = globalThis.setTimeout(() => {
       scrollSaveTimer.current = undefined;
       if (scrollRef.current) sessionStorage.setItem('plan.scrollY', String(scrollRef.current.scrollTop));
     }, 300);
@@ -610,7 +611,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                   style={{ ...inputStyle, width: 56 }} aria-label="进度百分比" />
               </td>
               <td style={{ padding: 6 }}>
-                {/* 点击状态徽标流转到下一状态：todo→doing→done→todo；blocked 经 done 后回 todo */}
+                {/* 点击状态徽标流转到下一状态：待办→进行中→已完成→待办；blocked 经已完成 后回待办 */}
                 <button onClick={() => void updatePlan(p, { status: NEXT_STATUS[p.status] })}
                   title="点击流转到下一状态" aria-label={`状态：${STATUS_META[p.status].label}，点击流转`}
                   style={{ ...btnStyle, color: STATUS_META[p.status].color, borderColor: STATUS_META[p.status].color }}>
@@ -774,8 +775,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               {holiTab === 'national' && (
                 <>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <label style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>导入年份：</label>
-                    <input type="number" min={2000} max={2100} value={natYear} onChange={(e) => setNatYear(Number(e.target.value) || new Date().getFullYear())} style={{ ...inputStyle, width: 90 }} aria-label="导入年份" />
+                    <label htmlFor="plan-nat-year" style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>导入年份：</label>
+                    <input id="plan-nat-year" type="number" min={2000} max={2100} value={natYear} onChange={(e) => setNatYear(Number(e.target.value) || new Date().getFullYear())} style={{ ...inputStyle, width: 90 }} aria-label="导入年份" />
                     <button onClick={() => void importNational()} disabled={holiBusy} style={btnStyle}>导入 {natYear} 年法定节假日</button>
                   </div>
                   <div style={{ color: 'var(--text-muted)', fontSize: 11, lineHeight: 1.6 }}>

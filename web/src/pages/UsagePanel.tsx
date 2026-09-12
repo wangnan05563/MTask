@@ -106,8 +106,8 @@ export function UsagePanel() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead><tr>{['工具', '模型', '类型', '调用', '成功', '失败', '平均耗时', '输出字符'].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
             <tbody>
-              {byTool.map((r, i) => (
-                <tr key={i}>
+              {byTool.map((r) => (
+                <tr key={`${r.tool_name}|${r.model}|${r.kind}`}>
                   <td style={cellStyle}>{r.tool_name}</td><td style={{ ...cellStyle, color: 'var(--text-muted)' }}>{r.model || '—'}</td>
                   <td style={{ ...cellStyle, color: KIND_COLOR[r.kind] ?? 'var(--text)' }}>{KIND_LABELS[r.kind] ?? r.kind}</td>
                   <td style={cellStyle}>{r.calls}</td><td style={cellStyle}>{r.okCalls}</td>
@@ -127,8 +127,8 @@ export function UsagePanel() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead><tr>{['时间', '工具', '类型', '状态', '耗时', '输出', '错误'].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
             <tbody>
-              {recent.map((r, i) => (
-                <tr key={i}>
+              {recent.map((r) => (
+                <tr key={`${r.created_at}|${r.tool_name}|${r.kind}|${r.duration_ms}|${r.content_chars}`}>
                   <td style={{ ...cellStyle, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{relTime(r.created_at)}</td>
                   <td style={cellStyle}>{r.tool_name}</td>
                   <td style={{ ...cellStyle, color: KIND_COLOR[r.kind] ?? 'var(--text)' }}>{KIND_LABELS[r.kind] ?? r.kind}</td>

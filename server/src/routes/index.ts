@@ -208,6 +208,19 @@ api.post('/req-entries/reorder', (req, res) => {
   }
 });
 
+// 重置提示词为默认排序（T00465）：清空 sort_weight，回落到 updated_at DESC
+api.post('/prompts/reorder/reset', (req, res) => {
+  const { categoryId } = req.body ?? {};
+  if (typeof categoryId !== 'string' || !categoryId) return res.status(400).json({ error: 'categoryId 必填' });
+  try {
+    const r = getDb().prepare('UPDATE prompts SET sort_weight = 0, updated_at = ? WHERE category_id = ? AND sort_weight != 0').run(now(), categoryId);
+    cacheClear('prompt-categories');
+    res.json({ ok: true, reset: r.changes });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 // 提示词拖拽排序（T00463）：同模式
 api.post('/prompts/reorder', (req, res) => {
   const { categoryId, orderedIds } = req.body ?? {};

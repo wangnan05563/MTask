@@ -1727,24 +1727,13 @@ export function TasksPage() {
         {renderModelHint()}
         {renderBeautifyToolbarButton()}
         {renderClassifyButton()}
-        {/* T00456 / PRD UX-1：视图切换（列表/看板） */}
-        <span style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} role="group" aria-label="视图切换">
-          <button onClick={() => setViewMode('list')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', cursor: 'pointer', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图">列表</button>
-          <button onClick={() => setViewMode('board')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: viewMode === 'board' ? 'var(--accent)' : 'transparent', color: viewMode === 'board' ? 'var(--accent-text)' : 'var(--text)' }} title="看板视图 — 按状态分列，拖拽卡片流转状态">看板</button>
-        </span>
-        <button
-          onClick={() => { setMultiSelect((v) => !v); setSelectedIds(new Set()); }}
-          style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: multiSelect ? 'var(--accent)' : 'transparent', color: multiSelect ? 'var(--accent-text)' : 'var(--text)' }}
-          title={multiSelect ? '退出多选模式' : '多选模式 — 勾选任务后批量改状态/分类/归档'}
-          aria-label={multiSelect ? '退出多选模式' : '进入多选模式'}
-        >
-          {multiSelect ? '✓ 多选中' : '多选'}
-        </button>
+        {renderViewToggle()}
+        {renderMultiSelectButton()}
         <label className="task-op" title="导入 CSV — 批量导入任务（预览确认后入库）"
           style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', display: 'inline-block' }}>
-          导入 CSV
+          <span>导入 CSV</span>
           <input type="file" accept=".csv" style={{ display: 'none' }}
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) void onCsvFile(f); e.target.value = ''; }} />
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) { void onCsvFile(f); } e.target.value = ''; }} />
         </label>
         <select
           value={catFilter}
@@ -1852,14 +1841,14 @@ export function TasksPage() {
         </div>
         {csvPreview.errors.length > 0 && (
           <div style={{ marginBottom: 8, fontSize: 11, color: 'var(--danger)', maxHeight: 80, overflowY: 'auto' }}>
-            {csvPreview.errors.map((e, i) => <div key={i}>第 {e.row} 行：{e.message}</div>)}
+            {csvPreview.errors.map((e) => <div key={`${e.row}-${e.message}`}>第 {e.row} 行：{e.message}</div>)}
           </div>
         )}
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead><tr>{['标题', '描述', '优先级', '状态', '分类'].map((h) => <th key={h} style={{ padding: '4px 6px', fontSize: 11, color: 'var(--text-muted)', textAlign: 'left', borderBottom: '1px solid var(--border-strong)' }}>{h}</th>)}</tr></thead>
           <tbody>
-            {csvPreview.items.map((it, i) => (
-              <tr key={i}>
+            {csvPreview.items.map((it) => (
+              <tr key={`${it.title}|${it.description}|${it.priority}|${it.status}|${it.categoryId ?? ''}`}>
                 <td style={{ padding: '4px 6px' }}>{it.title}</td>
                 <td style={{ padding: '4px 6px', color: 'var(--text-muted)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.description}</td>
                 <td style={{ padding: '4px 6px' }}>{it.priority}</td>
@@ -1981,6 +1970,138 @@ export function TasksPage() {
     );
   }
 
+  /** 复用弹窗目标切换按钮组（提取以降低弹窗函数复杂度，渲染不变） */
+  function renderReuseTargetButtons() {
+    return (
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+        <button
+          onClick={() => setReuseTarget('project')}
+          title="复制到项目 — 将任务原样复制到其他项目"
+          aria-label="复制到项目：将任务原样复制到其他项目"
+          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'project' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'project' ? 'var(--accent-text)' : 'var(--text)' }}
+        >复制到项目</button>
+        <button
+          onClick={() => setReuseTarget('prompt')}
+          title="复制到提示词 — 将任务打包为 JSON 资产存入提示词页分类"
+          aria-label="复制到提示词：将任务打包为 JSON 资产存入提示词页分类"
+          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'prompt' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'prompt' ? 'var(--accent-text)' : 'var(--text)' }}
+        >复制到提示词</button>
+        <button
+          onClick={() => setReuseTarget('req')}
+          title="复制到通用需求 — 将任务打包为通用需求条目存入需求页分类"
+          aria-label="复制到通用需求：将任务打包为通用需求条目存入需求页分类"
+          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'req' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'req' ? 'var(--accent-text)' : 'var(--text)' }}
+        >复制到通用需求</button>
+      </div>
+    );
+  }
+
+  /** 复用目标=项目：搜索框 + 项目列表（提取以降低弹窗函数复杂度，渲染不变） */
+  function renderReuseProjectPicker() {
+    const matched = projects.filter((p) => p.name.toLowerCase().includes(reuseSearch.trim().toLowerCase()));
+    return (
+      <>
+        <input
+          autoFocus
+          value={reuseSearch}
+          onChange={(e) => setReuseSearch(e.target.value)}
+          placeholder="搜索项目…"
+          aria-label="搜索项目"
+          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' }}
+        />
+        <div style={{ marginTop: 8, maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {matched.map((p) => (
+            <button key={p.id} onClick={() => setReuseProjectId(p.id)}
+              style={{ textAlign: 'left', padding: '6px 8px', borderRadius: 6, cursor: 'pointer', background: reuseProjectId === p.id ? 'var(--accent)' : 'transparent', color: reuseProjectId === p.id ? 'var(--accent-text)' : 'var(--text)' }}>
+              {p.name}
+            </button>
+          ))}
+          {matched.length === 0 && (
+            <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>无匹配项目</div>
+          )}
+        </div>
+      </>
+    );
+  }
+
+  /** 复用目标=通用需求：说明 + 分类选择 + 新建分类（提取以降低弹窗函数复杂度，渲染不变） */
+  function renderReuseReqPicker() {
+    return (
+      <>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+          将任务打包为通用需求条目，存入所选需求分类（标题沿用任务名，内容含描述与 AI 摘要）。
+        </div>
+        {reqCats.length === 0 ? (
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>暂无可用的通用需求分类，请先新建。</p>
+        ) : (
+          <select
+            autoFocus
+            value={reuseCategoryId}
+            onChange={(e) => setReuseCategoryId(e.target.value)}
+            aria-label="选择通用需求分类"
+            style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14 }}
+          >
+            <option value="">请选择分类</option>
+            {reqCats.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.reqCount ?? 0}）</option>)}
+          </select>
+        )}
+        <button onClick={() => void addReqCat()} title="新建分类 — 在通用需求页新建一个分类用于存放任务资产"
+          aria-label="新建分类：在通用需求页新建一个分类用于存放任务资产"
+          style={{ marginTop: 8, fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
+          <Plus size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 新建分类
+        </button>
+      </>
+    );
+  }
+
+  /** 复用目标=提示词：说明 + 分类选择 + 新建分类（提取以降低弹窗函数复杂度，渲染不变） */
+  function renderReusePromptPicker() {
+    return (
+      <>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+          将任务打包为 JSON 资产，存入所选提示词分类（标题沿用任务名，内容含描述与 AI 摘要）。
+        </div>
+        {promptCats.length === 0 ? (
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>暂无可用的提示词分类，请先新建。</p>
+        ) : (
+          <select
+            autoFocus
+            value={reuseCategoryId}
+            onChange={(e) => setReuseCategoryId(e.target.value)}
+            aria-label="选择提示词分类"
+            style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14 }}
+          >
+            <option value="">请选择分类</option>
+            {promptCats.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.promptCount ?? 0}）</option>)}
+          </select>
+        )}
+        <button onClick={() => void addPromptCat()} title="新建分类 — 在提示词页新建一个分类用于存放任务资产"
+          aria-label="新建分类：在提示词页新建一个分类用于存放任务资产"
+          style={{ marginTop: 8, fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
+          <Plus size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 新建分类
+        </button>
+      </>
+    );
+  }
+
+  /** 复用弹窗底部：取消 + 提交（按目标切换文案与禁用条件；用 if/else 避免嵌套三元，行为不变） */
+  function renderReuseFooter() {
+    const disabled = (reuseTarget === 'project' ? !reuseProjectId : !reuseCategoryId) || reuseBusy;
+    let label: string;
+    if (reuseTarget === 'project') label = reuseBusy ? '复用中…' : '复用';
+    else if (reuseBusy) label = '复制中…';
+    else if (reuseTarget === 'req') label = '复制到通用需求';
+    else label = '复制到提示词';
+    return (
+      <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <button className="ghost" onClick={() => setReuseOpen(null)} style={{ padding: '6px 14px' }}>取消</button>
+        <button onClick={() => void reuseTask()} disabled={disabled} style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)' }}>
+          {label}
+        </button>
+      </div>
+    );
+  }
+
   /** 复用任务弹窗：项目=复制到其他项目；提示词=打包为 JSON 资产存入提示词分类 */
   function renderReuseDialog() {
     return (
@@ -1991,112 +2112,11 @@ export function TasksPage() {
       >
         <div ref={reusePanelRef} style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 8, padding: 16, width: 380, maxWidth: '90vw', boxShadow: '0 10px 30px rgba(0,0,0,.2)' }}>
           <div style={{ fontSize: 14, marginBottom: 10 }}>复用任务</div>
-          {/* 目标切换：项目（原有能力）/ 提示词（打包为 JSON 资产） */}
-          <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
-            <button
-              onClick={() => setReuseTarget('project')}
-              title="复制到项目 — 将任务原样复制到其他项目"
-              aria-label="复制到项目：将任务原样复制到其他项目"
-              style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'project' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'project' ? 'var(--accent-text)' : 'var(--text)' }}
-            >复制到项目</button>
-            <button
-              onClick={() => setReuseTarget('prompt')}
-              title="复制到提示词 — 将任务打包为 JSON 资产存入提示词页分类"
-              aria-label="复制到提示词：将任务打包为 JSON 资产存入提示词页分类"
-              style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'prompt' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'prompt' ? 'var(--accent-text)' : 'var(--text)' }}
-            >复制到提示词</button>
-            <button
-              onClick={() => setReuseTarget('req')}
-              title="复制到通用需求 — 将任务打包为通用需求条目存入需求页分类"
-              aria-label="复制到通用需求：将任务打包为通用需求条目存入需求页分类"
-              style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'req' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'req' ? 'var(--accent-text)' : 'var(--text)' }}
-            >复制到通用需求</button>
-          </div>
-          {reuseTarget === 'project' ? (
-            <>
-              <input
-                autoFocus
-                value={reuseSearch}
-                onChange={(e) => setReuseSearch(e.target.value)}
-                placeholder="搜索项目…"
-                aria-label="搜索项目"
-                style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' }}
-              />
-              <div style={{ marginTop: 8, maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {projects.filter((p) => p.name.toLowerCase().includes(reuseSearch.trim().toLowerCase())).map((p) => (
-                  <button key={p.id} onClick={() => setReuseProjectId(p.id)}
-                    style={{ textAlign: 'left', padding: '6px 8px', borderRadius: 6, cursor: 'pointer', background: reuseProjectId === p.id ? 'var(--accent)' : 'transparent', color: reuseProjectId === p.id ? 'var(--accent-text)' : 'var(--text)' }}>
-                    {p.name}
-                  </button>
-                ))}
-                {projects.filter((p) => p.name.toLowerCase().includes(reuseSearch.trim().toLowerCase())).length === 0 && (
-                  <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>无匹配项目</div>
-                )}
-              </div>
-            </>
-          ) : reuseTarget === 'req' ? (
-            <>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
-                将任务打包为通用需求条目，存入所选需求分类（标题沿用任务名，内容含描述与 AI 摘要）。
-              </div>
-              {reqCats.length === 0 ? (
-                <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>暂无可用的通用需求分类，请先新建。</p>
-              ) : (
-                <select
-                  autoFocus
-                  value={reuseCategoryId}
-                  onChange={(e) => setReuseCategoryId(e.target.value)}
-                  aria-label="选择通用需求分类"
-                  style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14 }}
-                >
-                  <option value="">请选择分类</option>
-                  {reqCats.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.reqCount ?? 0}）</option>)}
-                </select>
-              )}
-              <button onClick={() => void addReqCat()} title="新建分类 — 在通用需求页新建一个分类用于存放任务资产"
-                aria-label="新建分类：在通用需求页新建一个分类用于存放任务资产"
-                style={{ marginTop: 8, fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
-                <Plus size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 新建分类
-              </button>
-            </>
-          ) : (
-            <>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
-                将任务打包为 JSON 资产，存入所选提示词分类（标题沿用任务名，内容含描述与 AI 摘要）。
-              </div>
-              {promptCats.length === 0 ? (
-                <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>暂无可用的提示词分类，请先新建。</p>
-              ) : (
-                <select
-                  autoFocus
-                  value={reuseCategoryId}
-                  onChange={(e) => setReuseCategoryId(e.target.value)}
-                  aria-label="选择提示词分类"
-                  style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14 }}
-                >
-                  <option value="">请选择分类</option>
-                  {promptCats.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.promptCount ?? 0}）</option>)}
-                </select>
-              )}
-              <button onClick={() => void addPromptCat()} title="新建分类 — 在提示词页新建一个分类用于存放任务资产"
-                aria-label="新建分类：在提示词页新建一个分类用于存放任务资产"
-                style={{ marginTop: 8, fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
-                <Plus size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 新建分类
-              </button>
-            </>
-          )}
-          <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <button className="ghost" onClick={() => setReuseOpen(null)} style={{ padding: '6px 14px' }}>取消</button>
-            {reuseTarget === 'project' ? (
-              <button onClick={() => void reuseTask()} disabled={!reuseProjectId || reuseBusy} style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)' }}>
-                {reuseBusy ? '复用中…' : '复用'}
-              </button>
-            ) : (
-              <button onClick={() => void reuseTask()} disabled={!reuseCategoryId || reuseBusy} style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)' }}>
-                {reuseBusy ? '复制中…' : reuseTarget === 'req' ? '复制到通用需求' : '复制到提示词'}
-              </button>
-            )}
-          </div>
+          {renderReuseTargetButtons()}
+          {reuseTarget === 'project' && renderReuseProjectPicker()}
+          {reuseTarget === 'req' && renderReuseReqPicker()}
+          {reuseTarget === 'prompt' && renderReusePromptPicker()}
+          {renderReuseFooter()}
         </div>
       </div>
     );

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, X } from 'lucide-react';
+import { ArrowDownUp, ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, X } from 'lucide-react';
 import { api, type Prompt, type PromptCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { clearSessionState, useSessionState } from '../ui/session';
@@ -270,6 +270,14 @@ export function PromptsPage() {
         </button>
         {activeCatObj && (
           <>
+            <button onClick={() => { void api.post('/prompts/reorder/reset', { categoryId: activeCat }).then((r) => { const reset = (r as { reset?: number })?.reset;
+              flash(reset ? `已重置 ${reset} 条为默认排序` : '当前已是默认排序');
+              void loadPrompts(activeCat, search);
+            }).catch((e) => flash(String((e as Error).message ?? e))); }}
+              title="重置排序 — 恢复按更新时间倒序的默认排列" aria-label="重置排序：恢复默认排列"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 4px', fontSize: 12 }}>
+              <ArrowDownUp size={13} /> 重置排序
+            </button>
             <button onClick={() => void renameCategory(activeCatObj)} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
               title="重命名 — 修改当前分类名称" aria-label="重命名：修改当前分类名称">
               <SquarePen size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />

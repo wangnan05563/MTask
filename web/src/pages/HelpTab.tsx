@@ -15,7 +15,7 @@ const SUBS: { key: Sub; label: string }[] = [
 ];
 
 /** 代码块：横向可滚动、随主题配色，保持窄屏下不破坏排版 */
-function Code({ title, lang, code }: { title?: string; lang?: string; code: string }) {
+function Code({ title, lang, code }: { readonly title?: string; readonly lang?: string; readonly code: string }) {
   return (
     <div style={{ margin: '8px 0', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', background: 'var(--card-bg)' }}>
       {title && (
@@ -29,7 +29,7 @@ function Code({ title, lang, code }: { title?: string; lang?: string; code: stri
 }
 
 /** 字段/行数据表：列 = 项目 | 说明（可选字段列） */
-function FieldTable({ head, rows }: { head: string[]; rows: string[][] }) {
+function FieldTable({ head, rows }: { readonly head: string[]; readonly rows: string[][] }) {
   return (
     <div style={{ overflowX: 'auto', margin: '8px 0' }}>
       <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 'var(--fs-m)', minWidth: 420 }}>
@@ -41,10 +41,10 @@ function FieldTable({ head, rows }: { head: string[]; rows: string[][] }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, i) => (
-            <tr key={i}>
-              {r.map((c, j) => (
-                <td key={j} style={{ padding: '6px 10px', border: '1px solid var(--border)', verticalAlign: 'top' }}>{c}</td>
+          {rows.map((r) => (
+            <tr key={r.join('|')}>
+              {r.map((c) => (
+                <td key={c} style={{ padding: '6px 10px', border: '1px solid var(--border)', verticalAlign: 'top' }}>{c}</td>
               ))}
             </tr>
           ))}
@@ -168,7 +168,7 @@ const MCP_TOOLS: McpTool[] = [
   { name: 'mtask_update_task_result', title: '同步处理结果', desc: '把 AI 执行结果写回任务 handle_result 字段', params: 'id?；taskNo?；result*' },
 ];
 
-const humanStr = (s: string) => s.replace(/\*\*/g, '');
+const humanStr = (s: string) => s.replaceAll('**', '');
 
 function FeaturesScreen() {
   return (
@@ -181,7 +181,7 @@ function FeaturesScreen() {
             <div style={{ marginBottom: 6 }}>
               <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, marginBottom: 4 }}>操作步骤</div>
               <ol style={{ margin: 0, paddingLeft: 20, fontSize: 'var(--fs-m)' }}>
-                {f.steps.map((s, i) => <li key={i} style={{ marginBottom: 2 }}>{s}</li>)}
+                {f.steps.map((s) => <li key={s} style={{ marginBottom: 2 }}>{s}</li>)}
               </ol>
             </div>
           )}
@@ -189,7 +189,7 @@ function FeaturesScreen() {
             <div>
               <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, marginBottom: 4 }}>注意事项</div>
               <ul style={{ margin: 0, paddingLeft: 20, fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>
-                {f.tips.map((t, i) => <li key={i} style={{ marginBottom: 2 }}>{t}</li>)}
+                {f.tips.map((t) => <li key={t} style={{ marginBottom: 2 }}>{t}</li>)}
               </ul>
             </div>
           )}
@@ -203,11 +203,9 @@ function McpScreen() {
   return (
     <div style={{ maxWidth: 860 }}>
       <p style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>
-        MTask 通过 <strong>MCP（Model Context Protocol）Streamable HTTP</strong> 暴露能力给外部 AI agent。
-        端点 <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>/api/mcp</code>，开发版端口
-        <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>39876</code>，打包版
-        <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>39877</code>。
-        已配置访问令牌时，需携带 <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>X-Access-Token</code> 请求头。
+        MTask 通过 <strong>MCP（Model Context Protocol）Streamable HTTP</strong> 暴露能力给外部 AI agent。端点{' '}
+        <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>/api/mcp</code>，开发版端口<code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>39876</code>，打包版<code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>39877</code>。已配置访问令牌时，需携带{' '}
+        <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>X-Access-Token</code> 请求头。
       </p>
 
       <div style={{ fontWeight: 600, fontSize: 'var(--fs-l)', margin: '6px 0 4px' }}>协议与会话</div>
