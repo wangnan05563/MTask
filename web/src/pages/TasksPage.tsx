@@ -215,6 +215,10 @@ export function TasksPage() {
   useEffect(() => { void loadCategories(); }, [loadCategories]);
   // T00433：MCP 回传 / 队列执行 / 其他窗口改任务状态时，前端无感知——轻量轮询对比签名，有变化才刷新。
   // 保护条件：任何未保存草稿或 AI 操作进行中时跳过本轮，避免打断用户编辑（变化留待下一轮干净窗口）。
+  // T00457：批量操作——多选模式 + 选中任务集合（跨待办/已完成统一 id 集合）
+  const [multiSelect, setMultiSelect] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchOpBusy, setBatchOpBusy] = useState(false);
   const externalSigRef = useRef('');
   useEffect(() => {
     if (!activeProject) return;
@@ -243,7 +247,20 @@ export function TasksPage() {
   useEffect(() => {
     if (!activeProject) return;
     return api.openChangeStream((kind) => {
-      if (kind === 'tasks' || kind === 'queue' || kind === 'plans') void loadTasks(activeProject);
+      if (kind === 'tasks' || kind === 'queue' || kind === 'plans') {
+        setSelectedIds((prev) => {
+          if (prev.size === 0) return prev;
+          // 外部变更后清掉可能已失效的选中项，避免批量操作打到不存在的任务
+          const next = new Set<string>();
+          void api.get<Task[]>(`/tasks?projectId=${activeProject}&archived=false`).then((list) => {
+            const alive = new Set(list.map((t) => t.id));
+            prev.forEach((id) => { if (alive.has(id)) next.add(id); });
+            setSelectedIds(next);
+          });
+          return next;
+        });
+        void loadTasks(activeProject);
+      }
     });
   }, [activeProject, loadTasks]);
   // 工具下拉展开期间监听全局焦点移出：内部元素间切换时 relatedTarget 仍在容器内不收起，移出容器才收起。
@@ -513,6 +530,45 @@ export function TasksPage() {
       return;
     }
     beautifyAll();
+  }
+
+  // ---------- T00457：批量操作（多选后批量改状态/分类/归档，单事务整体回滚） ----------
+
+  async function batchApply(action: 'status' | 'category' | 'archive', value?: string) {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return flash('请先勾选任务');
+    setBatchOpBusy(true);
+    try {
+      const r = await api.post<{ ok: boolean; affected: number }>('/tasks/batch', { ids, action, value });
+      flash(`批量操作完成：${r.affected} 条已更新`);
+      setSelectedIds(new Set());
+      void loadTasks(activeProject);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally { setBatchOpBusy(false); }
+  }
+
+  async function batchSetCategory() {
+    const cat = await askInput({ title: `为选中的 ${selectedIds.size} 个任务设置分类（输入分类名，留空=未分类）`, placeholder: '如：开发' });
+    if (cat === null) return;
+    const target = taskCats.find((c) => c.name.trim() === cat.trim());
+    if (cat.trim() && !target) return flash(`分类「${cat}」不存在，请先在「任务分类」中创建`);
+    await batchApply('category', target?.id ?? '');
+  }
+
+  /** 批量操作条：multiSelect 且有选中时浮出（样式与任务行一致） */
+  function renderBatchBar() {
+    if (!multiSelect || selectedIds.size === 0) return null;
+    return (
+      <div style={{ position: 'sticky', top: 0, zIndex: 50, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: '1px solid var(--accent)', boxShadow: '0 4px 12px rgba(0,0,0,.12)', fontSize: 12 }}>
+        <strong>已选 {selectedIds.size} 条</strong>
+        <button onClick={() => void batchApply('status', 'done')} disabled={batchOpBusy} className="task-op" style={{ cursor: 'pointer', padding: '3px 8px' }}>✓ 完成</button>
+        <button onClick={() => void batchApply('status', 'todo')} disabled={batchOpBusy} className="task-op" style={{ cursor: 'pointer', padding: '3px 8px' }}>↩ 重开</button>
+        <button onClick={() => void batchSetCategory()} disabled={batchOpBusy} className="task-op" style={{ cursor: 'pointer', padding: '3px 8px' }}>设分类</button>
+        <button onClick={() => void batchApply('archive')} disabled={batchOpBusy} className="task-op" style={{ cursor: 'pointer', padding: '3px 8px', color: 'var(--danger)' }}>归档</button>
+        <button onClick={() => setSelectedIds(new Set())} disabled={batchOpBusy} className="task-op" style={{ cursor: 'pointer', padding: '3px 8px', marginLeft: 'auto' }}>取消选择</button>
+      </div>
+    );
   }
 
   /** 批量智能分类：一键对当前项目全部未分类任务（待办 + 已完成，T00432）做 AI 语义识别自动分到已有分类。
@@ -840,6 +896,11 @@ export function TasksPage() {
   function renderTaskTitleRow(t: Task, titleEditing: boolean) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {multiSelect && (
+          <input type="checkbox" checked={selectedIds.has(t.id)} aria-label={`选中任务 ${t.title}`}
+            onChange={(e) => setSelectedIds((prev) => { const n = new Set(prev); if (e.target.checked) n.add(t.id); else n.delete(t.id); return n; })}
+            style={{ cursor: 'pointer', flexShrink: 0 }} />
+        )}
         <button title="切换任务完成状态" aria-label="切换任务完成状态" onClick={() => void setStatus(t, t.status === 'todo' ? 'done' : 'todo')} style={{ cursor: 'pointer' }}>
           {t.status === 'todo' ? '☐' : '☑'}
         </button>
@@ -1482,6 +1543,14 @@ export function TasksPage() {
           <Tags size={13} />
           {classifyBusy ? '分类中' : '分类'}
         </button>
+        <button
+          onClick={() => { setMultiSelect((v) => !v); setSelectedIds(new Set()); }}
+          style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: multiSelect ? 'var(--accent)' : 'transparent', color: multiSelect ? 'var(--accent-text)' : 'var(--text)' }}
+          title={multiSelect ? '退出多选模式' : '多选模式 — 勾选任务后批量改状态/分类/归档'}
+          aria-label={multiSelect ? '退出多选模式' : '进入多选模式'}
+        >
+          {multiSelect ? '✓ 多选中' : '多选'}
+        </button>
         <select
           value={catFilter}
           onChange={(e) => setCatFilter(e.target.value)}
@@ -1571,6 +1640,7 @@ export function TasksPage() {
   /** 任务列表区块（FR1.4 检索 + 排序 + 验证状态过滤） */
   function renderTaskLists() {
     const kw = search.trim().toLowerCase();
+    const batchBar = renderBatchBar();
     const matches = (t: Task) => {
       // 分类筛选：'none' 表示未分类；指定分类则精确匹配；空串为全部
       if (catFilter === 'none') { if (t.category_id) return false; }
@@ -1587,6 +1657,7 @@ export function TasksPage() {
     const visibleDone = sortTasks(done.filter(matches).filter(matchDoneFilter), doneSort);
     return (
       <>
+        {batchBar}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
           <h3 style={{ fontSize: 15, margin: 0 }}>待办（{visibleTodo.length}/{todo.length}）</h3>
           {/* 按修改时间/优先级排序：会话级偏好，选项见 sortOptions */}
@@ -1601,6 +1672,14 @@ export function TasksPage() {
           </select>
         </div>
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleTodo.map((t) => <Fragment key={t.id}>{renderTaskItem(t)}</Fragment>)}</ul>
+        {visibleTodo.length === 0 && !multiSelect && (
+          <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12, border: '1px dashed var(--border-strong)', borderRadius: 8, margin: '8px 0', lineHeight: 1.8 }}>
+            当前项目暂无待办任务——在上方输入框输入标题回车即可创建；
+            {tools.length === 0
+              ? <>先到「模型」页添加 AI 模型，即可使用 AI 梳理 / 美化 / 分类等能力。</>
+              : <>也可使用上方 AI 梳理、美化、批量分类等能力。</>}
+          </div>
+        )}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '16px 0 8px' }}>
           {/* 提示未验证数量：默认过滤「仅未验证」时，让用户意识到已验证项只是被过滤而非丢失 */}
@@ -1627,6 +1706,9 @@ export function TasksPage() {
           </select>
         </div>
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleDone.map((t) => <Fragment key={t.id}>{renderTaskItem(t)}</Fragment>)}</ul>
+        {visibleDone.length === 0 && (
+          <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>暂无已完成任务——完成任务后在此集中查看与验证。</div>
+        )}
       </>
     );
   }

@@ -18,6 +18,7 @@ import { planApi } from './plans';
 import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, gatherReportData, type ReportPeriod } from '../services/ReportService';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
+import { notifyChange } from '../services/ChangeBus';
 import { v4 as uuid } from 'uuid';
 import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
 
@@ -164,6 +165,39 @@ api.post('/tasks/move', (req, res) => {
   if (!Array.isArray(taskIds) || !projectId) return res.status(400).json({ error: 'taskIds 数组与 projectId 必填' });
   TaskService.moveProject(taskIds, projectId);
   res.status(204).end();
+});
+
+// 批量操作（T00457 / PRD UX-5）：多选后批量改状态/分类/归档——单事务，任一失败整体回滚
+api.post('/tasks/batch', (req, res) => {
+  const { ids, action, value } = req.body ?? {};
+  if (!Array.isArray(ids) || ids.length === 0 || ids.some((x) => typeof x !== 'string')) {
+    return res.status(400).json({ error: 'ids 必填（任务 id 字符串数组）' });
+  }
+  try {
+    const db = getDb();
+    const affected: string[] = [];
+    db.transaction(() => {
+      for (const id of ids as string[]) {
+        if (!db.prepare('SELECT id FROM tasks WHERE id = ?').get(id)) continue;
+        if (action === 'status') {
+          if (value !== 'todo' && value !== 'done') throw new Error('status 值非法');
+          TaskService.setStatus(id, value);
+        } else if (action === 'category') {
+          if (value && !db.prepare('SELECT id FROM task_categories WHERE id = ?').get(value)) throw new Error('分类不存在');
+          db.prepare('UPDATE tasks SET category_id = ?, updated_at = ? WHERE id = ?').run(value || null, now(), id);
+        } else if (action === 'archive') {
+          ArchiveService.archive([id]);
+        } else {
+          throw new Error(`不支持的批量操作：${action}`);
+        }
+        affected.push(id);
+      }
+    })();
+    notifyChange('tasks');
+    res.json({ ok: true, affected: affected.length });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 // 复用（复制）任务到目标项目；同名冲突 / 目标不存在映射为 409
