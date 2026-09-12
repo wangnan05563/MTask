@@ -366,6 +366,35 @@ export const PlanService = {
     return { plan: this.list(projectId).slice(-1)[0] };
   },
 
+  /**
+   * 任意位置插入（T00459）：在指定行之后插入新计划任务——
+   * 事务内后续行 sort_order+1 顺移、新行插入 after+1、全量重排时间线（新行无日期由锚点推导）。
+   */
+  insertAfter(afterId: string, title: string, description?: string): PlanTaskRow {
+    const db = getDb();
+    const after = this.get(afterId);
+    if (!after || after.archived) throw new Error('插入位置任务不存在或已归档');
+    const trimmed = title.trim();
+    if (!trimmed) throw new Error('标题必填');
+    const id = uuid();
+    const t = now();
+    db.transaction(() => {
+      db.prepare('UPDATE plan_tasks SET sort_order = sort_order + 1 WHERE project_id = ? AND archived = 0 AND sort_order > ?')
+        .run(after.project_id, after.sort_order);
+      db.prepare(
+        `INSERT INTO plan_tasks (id, project_id, title, description, start_date, end_date, duration_days,
+           progress, status, assignee, sort_order, linked_task_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, '', '', 1, 0, 'todo', '', ?, NULL, ?, ?)`,
+      ).run(id, after.project_id, trimmed, description ?? '', after.sort_order + 1, t, t);
+      // 重排：从插入位置起衔接（after 行自身日期不变作锚点——afterEndDate 语义为“之后”）
+      const afterEnd = after.end_date || fmt(new Date());
+      rescheduleFrom(db, after.project_id, after.sort_order + 1, { afterEndDate: afterEnd });
+    })();
+    return this.get(id)!;
+  },
+
+  /**
+
   /** 关联待办：同项目校验 + 按当前计划状态立即同步该待办状态 */
   linkTodo(id: string, taskId: string | null): PlanTaskRow | null {
     const db = getDb();

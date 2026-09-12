@@ -158,6 +158,13 @@ planApi.get('/archived', (_req, res) => wrap(res, () => PlanService.listArchived
 planApi.post('/:id/archive', (req, res) => wrap(res, () => PlanService.archive(req.params.id)));
 planApi.post('/:id/restore', (req, res) => wrap(res, () => PlanService.restore(req.params.id)));
 
+// 任意位置插入（T00459）：在指定行之后插入新计划任务，后续排期自动重排
+planApi.post('/:id/insert-after', (req, res) => {
+  const { title, description } = (req.body ?? {}) as { title?: unknown; description?: unknown };
+  if (typeof title !== 'string' || !title.trim()) return res.status(400).json({ error: 'title 必填' });
+  wrap(res, () => PlanService.insertAfter(req.params.id, title, typeof description === 'string' ? description : undefined));
+});
+
 // 通用需求 → 计划草稿（PRD INT-5）：把通用需求条目转为计划任务
 planApi.post('/from-req', (req, res) => {
   const { reqEntryId, projectId } = (req.body ?? {}) as { reqEntryId?: unknown; projectId?: unknown };

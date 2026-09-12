@@ -134,6 +134,23 @@ export function PlanPage() {
       .finally(() => setBusy(false));
   }
 
+  // ---------- T00459：任意位置插入（在该行后插入新计划任务，后续排期自动重排） ----------
+
+  const [newRowId, setNewRowId] = useState('');
+
+  async function insertAfter(p: PlanTask) {
+    const title = await askInput({ title: `在「${p.title}」后插入新任务`, placeholder: '新任务标题' });
+    if (!title?.trim()) return;
+    setBusy(true);
+    try {
+      const r = await api.post<{ plan: { id: string } }>(`/plans/${p.id}/insert-after`, { title: title.trim() });
+      setNewRowId(r.plan.id);
+      void loadTasks(activeProject);
+      flash('已插入，排期时间已自动重排');
+      setTimeout(() => setNewRowId((cur) => (cur === r.plan.id ? '' : cur)), 3000);
+    } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
+  }
+
   /** 归档计划任务（T00442：删除改归档）——从时间线移除但可在「归档」菜单恢复，后续时间线自动重排 */
   async function archivePlan(p: PlanTask) {
     if (!(await askConfirm(`归档计划任务「${p.title}」？将自动从时间线移除并重排；可在「归档」菜单恢复或彻底删除。`))) return;
@@ -459,6 +476,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       <style>{`
         .plan-dragging { opacity: .55; transform: scale(1.01) rotate(.4deg); box-shadow: 0 6px 18px rgba(0,0,0,.22); background: var(--surface-2); }
         .plan-over { box-shadow: inset 0 3px 0 var(--accent); background: var(--accent-soft, rgba(9,105,218,.08)); }
+        @keyframes plan-new-pop { 0% { background: var(--accent-soft, rgba(9,105,218,.15)); box-shadow: 0 0 0 3px var(--accent-soft, rgba(9,105,218,.2)); } 100% { background: transparent; box-shadow: none; } }
+        .plan-new { animation: plan-new-pop 2.4s ease; }
       `}</style>
       {/* 工具条：项目选择 + 增删导入导出 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -520,7 +539,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               onDragEnd={() => { setDragId(''); setOverId(''); }}
               onDragOver={(e) => { e.preventDefault(); if (p.id !== dragId) setOverId(p.id); }}
               onDrop={() => onDropReorder(p.id)}
-              className={dragId === p.id ? 'plan-dragging' : overId === p.id ? 'plan-over' : undefined}
+              className={dragId === p.id ? 'plan-dragging' : overId === p.id ? 'plan-over' : newRowId === p.id ? 'plan-new' : undefined}
               style={{ borderBottom: '1px solid var(--border)', transition: 'box-shadow .15s ease, transform .15s ease, background .15s ease' }}>
               <td style={{ padding: 6, color: 'var(--text-muted)' }}>{i + 1}</td>
               <td style={{ padding: 6, minWidth: 220 }}>
@@ -568,6 +587,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                       <button onClick={() => void createLinkedTodo(p)} title="由本计划创建新待办并关联" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', padding: 2 }}><CalendarPlus size={13} /></button>
                     </>
                   )}
+                <button onClick={() => void insertAfter(p)} title="在此行后插入新任务 — 后续排期自动重排" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--text-muted)', padding: 2 }}><Plus size={13} /></button>
                 <button onClick={() => void archivePlan(p)} title="归档计划任务 — 从时间线移除，可在「归档」菜单恢复或彻底删除" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--danger)', padding: 2 }}><Archive size={13} /></button>
               </td>
             </tr>
