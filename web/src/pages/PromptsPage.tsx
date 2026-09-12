@@ -249,7 +249,8 @@ export function PromptsPage() {
     <section>
       {/* 悬浮操作按钮 + 行 hover 高亮 + 记录高亮动画：类名与任务页体验一致 */}
       <style>{`
-        .arena-row { transition: background-color .15s ease; }
+        .arena-row { transition: background-color .15s ease, transform .12s ease; }
+        .arena-row:active { transform: scale(.985); }
         .arena-row:hover { background: var(--surface-2); }
         .abtn { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
         .arena-row:hover .abtn, .arena-row:focus-within .abtn { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }

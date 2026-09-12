@@ -662,6 +662,8 @@ export function AIToolsPage() {
     <section>
       {/* 按钮加载旋转动画：供连接测试 / 模型获取等按钮 loading 图标使用 */}
       <style>{`@keyframes aispin{to{transform:rotate(360deg)}}.aispin{animation:aispin .8s linear infinite;display:inline-block}
+        .arena-row { transition: transform .12s ease; }
+        .arena-row:active { transform: scale(.985); }
         .arena-row:hover td { background: var(--surface-2); }
         .abtn { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
         .arena-row:hover .abtn, .arena-row:focus-within .abtn { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }

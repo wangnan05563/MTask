@@ -146,7 +146,9 @@ export function TasksPage() {
   // AI 美化工具下拉容器：焦点移出检测用（替代容器 tabIndex+onBlur，避免在非交互容器上挂交互属性）
   const toolSelectRef = useRef<HTMLDivElement>(null);
 
-  const flash = (msg: string) => {
+  // T00466：数据刷新时间戳——刷新后 updated_at 晚于该值的行闪烁一次（与提示词页 flush 动效统一）
+  const [refreshFlash, setRefreshFlash] = useState(0);
+    const flash = (msg: string) => {
     setNotice(msg);
     setTimeout(() => setNotice(''), 2500);
   };
@@ -184,6 +186,8 @@ export function TasksPage() {
   const loadTasks = useCallback(async (projectId: string) => {
     if (!projectId) return;
     await fetchTasks(projectId, 0, true);
+    // T00466：刷新后打时间戳，updated_at 晚于该值的行播 flush 动画（与提示词页统一）
+    setRefreshFlash(Date.now());
   }, [fetchTasks]);
 
   /** 加载更多：从已加载总数偏移处追加下一页（待办与已完成列表的最新长度在依赖中保证闭包最新） */
@@ -1545,7 +1549,7 @@ export function TasksPage() {
     else if (dragTaskId === t.id) dragCls = ' plan-dragging';
     return (
       <li
-        className={`task-item${titleEditing || descEditing ? ' task-editing' : ''}${dragCls}`}
+        className={`task-item${titleEditing || descEditing ? ' task-editing' : ''}${dragCls}${refreshFlash && t.updated_at && Date.parse(t.updated_at) >= refreshFlash ? ' flush' : ''}`}
         draggable={sortMode === 'manual'}
         onDragStart={() => setDragTaskId(t.id)}
         onDragEnd={() => { setDragTaskId(''); setOverTaskId(''); }}
@@ -2169,8 +2173,12 @@ export function TasksPage() {
         .verify-icon { animation: verify-pop 0.35s ease; }
         @keyframes aispin { to { transform: rotate(360deg); } }
         .aispin { animation: aispin 0.8s linear infinite; display: inline-block; }
-        .task-item { border-radius: 4px; transition: background-color 0.15s ease; }
+        /* T00466：与提示词页 arena-row 特效统一——边框、刷新 flush、点击微缩放 */
+        .task-item { border: 1px solid var(--border); border-radius: 8px; margin: 6px 0; transition: background-color 0.15s ease, transform .12s ease; }
         .task-item:hover { background: var(--surface-2); }
+        .task-item:active { transform: scale(.985); }
+        @keyframes taskflush { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
+        .task-item.flush { animation: taskflush 1.4s ease; }
         .task-op {
           opacity: 0;
           visibility: hidden;
