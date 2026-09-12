@@ -222,23 +222,29 @@ export const AIService = {
     title: string,
     categories: { id: string; name: string }[],
     toolId: string,
-  ): Promise<{ ok: boolean; content?: string; categoryId?: string | null; error?: string }> {
+  ): Promise<{ ok: boolean; content?: string; categoryId?: string | null; priority?: 'urgent' | 'high' | 'normal' | 'low' | null; error?: string }> {
     if (!categories.length) return { ok: true, categoryId: null };
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     const startedAt = Date.now();
     const system =
-      '你是任务智能分类助手。给定一个任务标题和一组候选分类名，选出与标题主题最贴切的一个分类名作为该任务的类型。只输出匹配到的分类名本身（不加任何标点或解释）；若都不合适，只输出 NONE。';
+      '你是任务智能分类助手。给定一个任务标题和一组候选分类名，选出与标题主题最贴切的一个分类名作为该任务的类型，并按紧急重要程度给出优先级标注（U=极高、H=高、N=普通、L=低）。只输出一行：分类名|优先级字母（如：开发|H），不加任何解释；若分类都不合适，只输出 NONE|N。';
     const user = `候选分类：${categories.map((c) => c.name).join('、')}\n任务标题：${title}`;
     const res = await adapter.chat(system, user, config);
     if (!res.ok) { recordUsage('classify', toolId, config.model, false, startedAt, 0, res.error); return { ok: false, error: res.error }; }
-    const out = (res.content ?? '').trim();
+    const raw = (res.content ?? '').trim();
+    // T00473：解析「分类名|优先级」；无 | 时兼容旧格式（仅分类名，优先级为 null 不写回）
+    const sep = raw.lastIndexOf('|');
+    const out = sep >= 0 ? raw.slice(0, sep).trim() : raw;
+    const PRIORITY_MAP: Record<string, 'urgent' | 'high' | 'normal' | 'low'> = { U: 'urgent', H: 'high', N: 'normal', L: 'low' };
+    const pLetter = sep >= 0 ? raw.slice(sep + 1).trim().toUpperCase() : '';
+    const priority = PRIORITY_MAP[pLetter] ?? null;
     // 精确匹配优先；无精确命中时按「最长名称包含」兜底，避免分类名互为子串（如“开发/开发优化”）误配到较短分类
     const hit =
       categories.find((c) => c.name.trim() === out) ??
       [...categories].sort((a, b) => b.name.length - a.name.length).find((c) => out.includes(c.name));
     recordUsage('classify', toolId, config.model, true, startedAt, res.content?.length ?? 0);
-    return { ok: true, content: res.content, categoryId: hit ? hit.id : null };
+    return { ok: true, content: res.content, categoryId: hit ? hit.id : null, priority };
   },
 
   /** 供 QueueService.sendAll 使用：将单个 Job 发送到其绑定的 AI 工具 */

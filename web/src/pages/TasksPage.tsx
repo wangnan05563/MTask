@@ -401,12 +401,15 @@ export function TasksPage() {
     setBusy('tasks.create', true);
     try {
       // 智能分类开启时：按标题自动匹配分类；未匹配/失败则回退用户手动选择的分类（不阻塞创建）
+      // T00473：AI 自动标注优先级——仅当用户未显式调整（默认 normal）时采用 AI 建议，用户可手动覆盖
       const autoCat = smartCat ? await matchCategory(newTitle) : undefined;
+      const aiPriority = autoCat?.priority;
+      const finalPriority = newPriority === 'normal' && aiPriority ? aiPriority : newPriority;
       const created = await api.post<Task>('/tasks', {
         projectId: activeProject,
         title: newTitle.trim(),
-        priority: newPriority,
-        categoryId: (autoCat ?? newCategory) || undefined,
+        priority: finalPriority,
+        categoryId: (autoCat?.catId ?? newCategory) || undefined,
         description: newDesc.trim() || undefined,
       });
       // 创建时粘贴的截图随后上传到新任务
@@ -476,15 +479,16 @@ export function TasksPage() {
   }
 
   /** 智能分类（静默）：按标题从候选分类匹配最贴切分类 id；未配工具/未填标题/失败均返回 undefined，不打断创建流程 */
-  async function matchCategory(title: string): Promise<string | undefined> {
+  async function matchCategory(title: string): Promise<{ catId: string; priority?: string } | undefined> {
     if (!organizeToolId || !title.trim() || taskCats.length === 0) return undefined;
     try {
-      const r = await api.post<{ ok: boolean; categoryId?: string | null; error?: string }>('/tasks/classify', {
+      const r = await api.post<{ ok: boolean; categoryId?: string | null; priority?: string | null; error?: string }>('/tasks/classify', {
         title: title.trim(),
         toolId: organizeToolId,
         categories: taskCats.map((c) => ({ id: c.id, name: c.name })),
       });
-      return r.ok && r.categoryId ? r.categoryId : undefined;
+      // T00473：返回 { catId, priority }——priority 为 AI 自动标注（urgent/high/normal/low 或 undefined）
+      return r.ok && r.categoryId ? { catId: r.categoryId, priority: r.priority ?? undefined } : undefined;
     } catch {
       return undefined;
     }
@@ -720,15 +724,19 @@ export function TasksPage() {
     if (!(await askConfirm(`将对 ${target.length} 个未分类任务（含已完成）执行批量智能分类，确认？`))) return;
     setClassifyBusy(true);
     let hit = 0;
+    let prio = 0;
     try {
       // 逐个识别并写回：命中才算成功，未命中保持未分类状态，不中断批量
       for (const t of target) {
-        const catId = await matchCategory(t.title);
-        if (!catId) continue;
-        await api.patch(`/tasks/${t.id}`, { categoryId: catId });
+        const m = await matchCategory(t.title);
+        if (!m) continue;
+        // T00473：自动标注优先级——仅对默认 normal 的任务写 AI 建议，已有显式优先级不动（可手动覆盖）
+        const patch: { categoryId: string; priority?: string } = { categoryId: m.catId };
+        if (t.priority === 'normal' && m.priority) { patch.priority = m.priority; prio++; }
+        await api.patch(`/tasks/${t.id}`, patch);
         hit++;
       }
-      flash(hit > 0 ? `批量分类完成 ${hit}/${target.length} 条` : '未能为这些任务匹配到合适分类');
+      flash(hit > 0 ? `批量分类完成 ${hit}/${target.length} 条${prio > 0 ? `，自动标注优先级 ${prio} 条` : ''}` : '未能为这些任务匹配到合适分类');
       void loadTasks(activeProject);
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
@@ -1796,10 +1804,11 @@ export function TasksPage() {
             style={{ flex: 1, padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}
           />
           <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
-          <select value={newPriority} onChange={(e) => setNewPriority(e.target.value)} style={{ padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}>
+          <select value={newPriority} onChange={(e) => setNewPriority(e.target.value)} title="优先级" aria-label="新建任务优先级" style={{ padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}>
             <option value="low">低</option>
             <option value="normal">中</option>
             <option value="high">高</option>
+            <option value="urgent">极高</option>
           </select>
           <select value={newCategory} onChange={(e) => setNewCategory(e.target.value)} title="分类" aria-label="新建任务分类选择" style={{ padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}>
             <option value="">未分类</option>
