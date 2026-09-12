@@ -118,7 +118,7 @@ api.delete('/projects/:id', (req, res) => {
 // ---------- 任务 ----------
 // 可选参数：projectId / archived / limit / offset / keyword / categoryId / sort（全部向后兼容，缺省=全量）
 api.get('/tasks', (req, res) => {
-  const { projectId, archived, limit, offset, keyword, categoryId, sort } = req.query;
+  const { projectId, archived, limit, offset, keyword, categoryId, priority, sort } = req.query;
   // limit 仅接受 1~500 的正整数，非法则忽略（保持全量语义），避免恶意超大分页拖垮查询
   let limitN: number | undefined;
   const limitRaw = Number(limit);
@@ -126,6 +126,7 @@ api.get('/tasks', (req, res) => {
   res.json(TaskService.list({
     projectId: projectId as string | undefined,
     archived: archived === '1' || archived === 'true',
+    priority: priority as string | undefined,
     limit: limitN,
     // 肯定形式分支：先处理缺省（undefined），避免否定条件与 else 并存造成误读
     offset: offset === undefined ? undefined : Math.max(0, Math.floor(Number(offset) || 0)),

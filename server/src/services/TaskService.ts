@@ -82,6 +82,8 @@ export interface TaskListOptions {
   keyword?: string;
   /** 分类筛选；'none' 表示未分类任务 */
   categoryId?: string;
+  /** T00474：优先级精确过滤（urgent/high/normal/low），非法值忽略 */
+  priority?: string;
   /** 状态筛选（待办/已完成）；不传返回该范围内全部状态。供 MCP/AI 按待办/已完成精确拉取，减少返回量 */
   status?: 'todo' | 'done';
   /** 分析范围：只返回「待处理 或 未验证(verified=0)」的任务。与 status 互斥（优先 pending）
@@ -177,6 +179,10 @@ export const TaskService = {
     }
     if (opts.categoryId === 'none') where.push('category_id IS NULL');
     else if (opts.categoryId) { where.push('category_id = ?'); values.push(opts.categoryId); }
+    // T00474：优先级筛选——合法值白名单校验，非法值忽略保持全量
+    if (opts.priority && ['urgent', 'high', 'normal', 'low'].includes(opts.priority)) {
+      where.push('priority = ?'); values.push(opts.priority);
+    }
     // 状态/范围筛选：MCP/AI 拉指定范围时在服务端过滤，避免全量下发再本地筛，省 Token。
     // pending 优先于 status：返回「待处理 或 未验证」任务的并集。
     if (opts.pending) { where.push('(status = ? OR verified = 0)'); values.push('todo'); }

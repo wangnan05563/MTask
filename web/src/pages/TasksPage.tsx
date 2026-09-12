@@ -51,13 +51,15 @@ function readClipboardImages(e: ClipboardEvent<HTMLTextAreaElement>, onImages: (
 
 /** 优先级 → 看板卡片左边框颜色（与列表视图配色保持一致） */
 function priorityBorderColor(priority: string): string {
-  if (priority === 'high') return 'var(--danger)';
+  if (priority === 'urgent') return 'var(--danger)';
+  if (priority === 'high') return 'var(--warning, #d97706)';
   if (priority === 'low') return 'var(--border-strong)';
   return 'var(--accent)';
 }
 
 /** 优先级 → 中文标签（看板卡片悬浮提示用） */
 function priorityLabel(priority: string): string {
+  if (priority === 'urgent') return '极高优先级';
   if (priority === 'high') return '高优先级';
   if (priority === 'low') return '低优先级';
   return '普通优先级';
@@ -98,6 +100,8 @@ export function TasksPage() {
   // 任务分类：分类列表 + 顶部筛选（会话级）+ 新建任务所选分类（会话级）
   const [taskCats, setTaskCats] = useState<TaskCategory[]>([]);
   const [catFilter, setCatFilter] = useSessionState('tasks.catFilter', '');
+  // T00474：优先级筛选（urgent/high/normal/low，会话级保持；空=全部）
+  const [priorityFilter, setPriorityFilter] = useSessionState('tasks.priorityFilter', '');
   const [newCategory, setNewCategory] = useSessionState<string>('tasks.new.category', '');
   // 智能分类：默认启用，根据标题智能匹配任务类型（应用于新建任务的自动分类）
   const [smartCat, setSmartCat] = usePersistentState('tasks.smartCat', true);
@@ -175,13 +179,14 @@ export function TasksPage() {
     if (kw) p.set('keyword', kw);
     if (catFilter === 'none') p.set('categoryId', 'none');
     else if (catFilter) p.set('categoryId', catFilter);
+    if (priorityFilter) p.set('priority', priorityFilter);
     const list = await api.get<Task[]>(`/tasks?${p.toString()}`);
     const nextTodo = list.filter((t) => t.status === 'todo');
     const nextDone = list.filter((t) => t.status === 'done');
     setTodo((prev) => (replace ? nextTodo : [...prev, ...nextTodo]));
     setDone((prev) => (replace ? nextDone : [...prev, ...nextDone]));
     setHasMore(list.length === PAGE_SIZE);
-  }, [search, catFilter]);
+  }, [search, catFilter, priorityFilter]);
 
   const loadTasks = useCallback(async (projectId: string) => {
     if (!projectId) return;
@@ -1739,17 +1744,32 @@ export function TasksPage() {
           <input type="file" accept=".csv" style={{ display: 'none' }}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void onCsvFile(f); } e.target.value = ''; }} />
         </label>
-        <select
-          value={catFilter}
-          onChange={(e) => setCatFilter(e.target.value)}
-          title="分类筛选 — 按任务分类筛选列表"
-          aria-label="分类筛选：按任务分类筛选列表"
-          style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6 }}
-        >
-          <option value="">全部分类</option>
-          <option value="none">未分类</option>
-          {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
+        <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <select
+            value={catFilter}
+            onChange={(e) => setCatFilter(e.target.value)}
+            title="分类筛选 — 按任务分类筛选列表"
+            aria-label="分类筛选：按任务分类筛选列表"
+            style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6 }}
+          >
+            <option value="">全部分类</option>
+            <option value="none">未分类</option>
+            {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <select
+            value={priorityFilter}
+            onChange={(e) => setPriorityFilter(e.target.value)}
+            title="优先级筛选 — 按任务优先级筛选列表"
+            aria-label="优先级筛选：按任务优先级筛选列表"
+            style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6 }}
+          >
+            <option value="">全部优先级</option>
+            <option value="urgent">极高</option>
+            <option value="high">高</option>
+            <option value="normal">普通</option>
+            <option value="low">低</option>
+          </select>
+        </span>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -2182,6 +2202,9 @@ export function TasksPage() {
         .tbtn-anim svg { transition: transform .18s ease; }
         .tbtn-anim:hover svg { transform: scale(1.2) rotate(8deg); }
         .tbtn-anim:active svg { transform: scale(.88); }
+        /* T00474：筛选条件悬浮展示——默认淡化降权重，工具栏悬浮/键盘聚焦时完全显示 */
+        .toolbar-reveal { opacity: .35; transition: opacity .18s ease; }
+        .toolbar-reveal:hover, .toolbar-reveal:focus-within { opacity: 1; }
         .task-op {
           opacity: 0;
           visibility: hidden;
