@@ -98,6 +98,9 @@ function Shell() {
       <style>{`button { border: none; cursor: pointer; transition: transform .12s ease; }
         button:disabled { cursor: default; opacity: .6; }
         button:active:not(:disabled) { transform: scale(0.95); }
+        /* T00475：导航默认大图标、悬浮整项平滑展开图标+文字（键盘 focus-visible 同样展开） */
+        .nav-btn .nav-label { display: inline-block; max-width: 0; opacity: 0; overflow: hidden; white-space: nowrap; transition: max-width .25s ease, opacity .2s ease; }
+        .nav-btn:hover .nav-label, .nav-btn:focus-visible .nav-label { max-width: 120px; opacity: 1; }
         .abtn:hover, .ghost:hover { background: var(--surface-2); }`}</style>
 
       {/* 菜单行：置顶，导航项居左；后端连接状态用 margin-left:auto 推到右端且垂直居中，与菜单项同行 */}
@@ -108,10 +111,12 @@ function Shell() {
           return (
             <button
               key={t.key}
+              className="nav-btn"
               onClick={() => setTab(t.key)}
               title={t.label}
+              aria-label={t.label}
               style={{
-                padding: '6px 14px',
+                padding: '7px 10px',
                 borderRadius: 6,
                 background: tab === t.key ? 'var(--accent)' : 'var(--card-bg)',
                 color: tab === t.key ? 'var(--accent-text)' : 'var(--text)',
@@ -121,8 +126,8 @@ function Shell() {
                 gap: 6,
               }}
             >
-              <Icon size={14} />
-              {t.label}
+              <Icon size={18} />
+              <span className="nav-label">{t.label}</span>
             </button>
           );
         })}
