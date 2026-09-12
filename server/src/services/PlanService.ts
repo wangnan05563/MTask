@@ -23,6 +23,9 @@ export interface PlanTaskRow {
   sort_order: number;
   /** 关联待办 tasks.id；待办已删除时保留原值并由查询附带 linked_task_missing 提示 */
   linked_task_id: string | null;
+  /** 归档标记（T00442 扩展）：1=已归档（时间线移除，归档菜单可恢复/彻底删除） */
+  archived: number;
+  archived_at: string | null;
   created_at: string;
   updated_at: string;
   /** 查询附带：关联待办标题（不存在则为 null） */
@@ -143,7 +146,7 @@ interface RescheduleOpts {
 function rescheduleFrom(db: ReturnType<typeof getDb>, projectId: string, fromOrder: number, opts: RescheduleOpts = {}): void {
   const holidays = loadHolidaySet();
   const rows = db.prepare(
-    'SELECT id, start_date, duration_days, sort_order FROM plan_tasks WHERE project_id = ? AND sort_order >= ? ORDER BY sort_order',
+    'SELECT id, start_date, duration_days, sort_order FROM plan_tasks WHERE project_id = ? AND archived = 0 AND sort_order >= ? ORDER BY sort_order',
   ).all(projectId, fromOrder) as Array<Pick<PlanTaskRow, 'id' | 'start_date' | 'duration_days' | 'sort_order'>>;
   let prevEnd: string | null = null;
   for (let i = 0; i < rows.length; i++) {
@@ -174,16 +177,28 @@ function taskStatusForPlan(ps: PlanStatus): 'todo' | 'done' {
 // ---------- 服务 ----------
 
 export const PlanService = {
+  /** 活跃计划列表（排除已归档；归档条目走 listArchived，T00442 语义：删除=归档） */
   list(projectId: string): PlanTaskRow[] {
     const rows = getDb().prepare(
       `SELECT p.*, t.title AS linked_task_title
        FROM plan_tasks p LEFT JOIN tasks t ON t.id = p.linked_task_id
-       WHERE p.project_id = ? ORDER BY p.sort_order`,
+       WHERE p.project_id = ? AND p.archived = 0 ORDER BY p.sort_order`,
     ).all(projectId) as Array<PlanTaskRow & { linked_task_title: string | null }>;
     return rows.map((r) => ({
       ...r,
       linked_task_missing: r.linked_task_id != null && r.linked_task_title == null,
     }));
+  },
+
+  /** 归档计划列表（全库，含项目名）——供「归档」菜单的恢复/彻底删除操作（T00442 扩展） */
+  listArchived(): Array<PlanTaskRow & { project_name: string }> {
+    return getDb().prepare(
+      `SELECT p.*, pr.name AS project_name, t.title AS linked_task_title
+       FROM plan_tasks p
+       JOIN projects pr ON pr.id = p.project_id
+       LEFT JOIN tasks t ON t.id = p.linked_task_id
+       WHERE p.archived = 1 ORDER BY p.archived_at DESC, p.project_id, p.sort_order`,
+    ).all() as Array<PlanTaskRow & { project_name: string; linked_task_title: string | null }>;
   },
 
   get(id: string): PlanTaskRow | null {
@@ -198,7 +213,7 @@ export const PlanService = {
     if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(input.projectId)) throw new Error('项目不存在');
     const status = PLAN_STATUSES.includes(input.status as PlanStatus) ? (input.status as PlanStatus) : 'todo';
     const duration = Math.max(1, Math.floor(Number(input.durationDays) || 1));
-    const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ?').get(input.projectId) as { m: number }).m;
+    const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ? AND archived = 0').get(input.projectId) as { m: number }).m;
     const first = maxOrder < 0;
     const dateRe = /^\d{4}-\d{2}-\d{2}$/;
     const start = first
@@ -272,19 +287,39 @@ export const PlanService = {
     return this.get(id);
   },
 
-  /** 删除：事务内从删除位置衔接重排（取删除位前一个任务的结束日作顺延锚点） */
-  remove(id: string): boolean {
+  /** 归档（原「删除」语义，T00442 扩展）：软删——从时间线移除并衔接重排，可在归档菜单恢复 */
+  archive(id: string): boolean {
     const db = getDb();
     const row = this.get(id);
-    if (!row) return false;
+    if (!row || row.archived) return false;
     db.transaction(() => {
-      db.prepare('DELETE FROM plan_tasks WHERE id = ?').run(id);
+      db.prepare('UPDATE plan_tasks SET archived = 1, archived_at = ?, updated_at = ? WHERE id = ?').run(now(), now(), id);
       const prev = db.prepare(
-        'SELECT end_date FROM plan_tasks WHERE project_id = ? AND sort_order < ? ORDER BY sort_order DESC LIMIT 1',
+        'SELECT end_date FROM plan_tasks WHERE project_id = ? AND archived = 0 AND sort_order < ? ORDER BY sort_order DESC LIMIT 1',
       ).get(row.project_id, row.sort_order) as { end_date: string } | undefined;
       rescheduleFrom(db, row.project_id, row.sort_order, prev ? { afterEndDate: prev.end_date } : {});
     })();
     return true;
+  },
+
+  /** 恢复：取消归档并插回原排序位衔接重排（前序取恢复位之前最近的未归档任务） */
+  restore(id: string): boolean {
+    const db = getDb();
+    const row = this.get(id);
+    if (!row || !row.archived) return false;
+    db.transaction(() => {
+      db.prepare('UPDATE plan_tasks SET archived = 0, archived_at = NULL, updated_at = ? WHERE id = ?').run(now(), id);
+      const prev = db.prepare(
+        'SELECT end_date FROM plan_tasks WHERE project_id = ? AND archived = 0 AND sort_order < ? ORDER BY sort_order DESC LIMIT 1',
+      ).get(row.project_id, row.sort_order) as { end_date: string } | undefined;
+      rescheduleFrom(db, row.project_id, row.sort_order, prev ? { afterEndDate: prev.end_date } : { firstStartDate: row.start_date });
+    })();
+    return true;
+  },
+
+  /** 彻底删除（归档菜单专用）：物理删除行；已归档行不参与时间线，无需重排。恢复关联待办不受影响 */
+  purge(id: string): boolean {
+    return getDb().prepare('DELETE FROM plan_tasks WHERE id = ? AND archived = 1').run(id).changes > 0;
   },
 
   /** 关联待办：同项目校验 + 按当前计划状态立即同步该待办状态 */
@@ -446,7 +481,7 @@ export const PlanService = {
     const db = getDb();
     const t = now();
     db.transaction(() => {
-      const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ?').get(projectId) as { m: number }).m;
+      const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ? AND archived = 0').get(projectId) as { m: number }).m;
       const existingCount = maxOrder + 1;
       parsed.forEach((p, i) => {
         // 首行（项目内第一条）用自己的开始日作时间线锚点；其余行 start_date 先置空，由重排统一推导
@@ -674,7 +709,7 @@ export const PlanService = {
     const t = now();
     const holidays = loadHolidaySet();
     db.transaction(() => {
-      const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ?').get(projectId) as { m: number }).m;
+      const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ? AND archived = 0').get(projectId) as { m: number }).m;
       const existingCount = maxOrder + 1;
       clean.forEach((it, i) => {
         const first = existingCount === 0 && i === 0;

@@ -151,7 +151,12 @@ planApi.patch('/:id', (req, res) => {
   }));
 });
 
-planApi.delete('/:id', (req, res) => wrap(res, () => PlanService.remove(req.params.id)));
+planApi.delete('/:id', (req, res) => wrap(res, () => PlanService.purge(req.params.id)));
+
+// ---------- 归档（T00442 扩展：删除改归档，归档菜单提供恢复/彻底删除） ----------
+planApi.get('/archived', (_req, res) => wrap(res, () => PlanService.listArchived()));
+planApi.post('/:id/archive', (req, res) => wrap(res, () => PlanService.archive(req.params.id)));
+planApi.post('/:id/restore', (req, res) => wrap(res, () => PlanService.restore(req.params.id)));
 
 // ---------- 待办联动 ----------
 planApi.post('/:id/link', (req, res) => {
