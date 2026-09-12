@@ -35,6 +35,17 @@ export interface ReportProject {
   low: number;
 }
 
+export interface ReportPlanRow {
+  title: string;
+  status: string;
+  startDate: string;
+  endDate: string;
+  progress: number;
+  project: string;
+  /** 已过期（end_date < 今天）且未完成 */
+  overdue: boolean;
+}
+
 export interface ReportData {
   period: ReportPeriod;
   periodLabel: string;
@@ -43,6 +54,8 @@ export interface ReportData {
   generatedAt: string;
   projects: ReportProject[];
   tasks: ReportTaskRow[];
+  /** T00452 / PRD INT-3：项目计划执行情况（本期有活动或已过期未完成），供周报联动展示 */
+  plans: ReportPlanRow[];
 }
 
 /** 用户导入模板存放目录（与应用数据同目录，避免重装丢失） */
@@ -169,6 +182,27 @@ export function gatherReportData(period: ReportPeriod, projectId?: string): Repo
     };
   });
 
+  // T00452 / PRD INT-3：项目计划执行情况——本期有变动的计划 + 已过期未完成的计划（延期）
+  const planRows = db
+    .prepare(
+      `SELECT pt.title, pt.status, pt.start_date, pt.end_date, pt.progress, pt.updated_at, pr.name AS project
+       FROM plan_tasks pt
+       JOIN projects pr ON pr.id = pt.project_id
+       WHERE pt.archived = 0
+       ${projectId ? 'AND pt.project_id = ?' : ''}
+       ORDER BY pr.sort_weight, pt.sort_order`,
+    )
+    .all(...(projectId ? [projectId] : [])) as Array<{
+    title: string; status: string; start_date: string; end_date: string; progress: number; updated_at: string; project: string;
+  }>;
+  const todayStr = ymd(new Date());
+  const plans: ReportPlanRow[] = planRows
+    .filter((r) => r.updated_at >= s || (r.status !== 'done' && r.end_date < todayStr))
+    .map((r) => ({
+      title: r.title, status: r.status, startDate: r.start_date, endDate: r.end_date,
+      progress: r.progress, project: r.project, overdue: r.status !== 'done' && r.end_date < todayStr,
+    }));
+
   return {
     period,
     periodLabel: PERIOD_LABEL[period],
@@ -177,6 +211,7 @@ export function gatherReportData(period: ReportPeriod, projectId?: string): Repo
     generatedAt: nowStr(),
     projects: [...projMap.values()],
     tasks,
+    plans,
   };
 }
 
@@ -296,6 +331,7 @@ export async function aiGenerateReport(
     `【周期】${data.periodLabel} ${data.startDate} ~ ${data.endDate}`,
     `【项目汇总】${JSON.stringify(data.projects)}`,
     `【任务明细】${JSON.stringify(data.tasks)}`,
+    ...(data.plans.length > 0 ? [`【项目计划执行情况】${JSON.stringify(data.plans)}（含延期标记 overdue，请纳入进展要点与风险分析）`] : []),
   ].join('\n\n');
   const res = await AIService.ask(opts.toolId, system, user, AI_REPORT_TIMEOUT);
   if (!res.ok || !res.content?.trim()) throw new Error(res.error ?? 'AI 生成失败');
@@ -335,6 +371,7 @@ export async function aiGenerateReportStream(
     `【周期】${data.periodLabel} ${data.startDate} ~ ${data.endDate}`,
     `【项目汇总】${JSON.stringify(data.projects)}`,
     `【任务明细】${JSON.stringify(data.tasks)}`,
+    ...(data.plans.length > 0 ? [`【项目计划执行情况】${JSON.stringify(data.plans)}（含延期标记 overdue，请纳入进展要点与风险分析）`] : []),
   ].join('\n\n');
   const res = await AIService.askStream(opts.toolId, system, user, onChunk, AI_REPORT_TIMEOUT);
   if (!res.ok || !res.content?.trim()) throw new Error(res.error ?? 'AI 生成失败');

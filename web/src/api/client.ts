@@ -152,8 +152,8 @@ export interface Task {
   ai_summary: string | null;
   /** 处理结果：AI 分析结论（根因/解决方案）等，可查看/编辑 */
   handle_result: string | null;
-  /** T00462：项目计划联动任务（由计划创建/关联），前端显示区分徽标 */
-  fromPlan?: boolean;
+  /** T00462/T00451：项目计划联动任务——值为来源计划标题（区分徽标+反向引用） */
+  fromPlanTitle?: string;
   /** 置顶：true=固定到列表顶部 */
   pinned: boolean;
   /** 所属任务分类 id；null 表示未分类 */

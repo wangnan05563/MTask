@@ -45,8 +45,8 @@ export interface TaskView {
   created_at: string;
   updated_at: string;
   images: TaskImageMeta[];
-  /** T00462：任务由项目计划联动创建/关联（linked_task_id 反查），前端据此显示区分徽标 */
-  fromPlan?: boolean;
+  /** T00462/T00451：任务由项目计划联动创建/关联——值为来源计划标题，前端据此显示区分徽标与来源引用 */
+  fromPlanTitle?: string;
 }
 
 export interface TaskInput {
@@ -164,15 +164,16 @@ export const TaskService = {
     const rows = db.prepare(sql).all(...values) as TaskRow[];
     // 一次批量查图片，避免逐任务 N+1（内部已按 ≤200/批规避 SQLite 参数上限）
     const imageMap = TaskImageService.mapByTasks(rows.map((r) => r.id));
-    // T00462：批量反查项目计划关联（linked_task_id 命中即「计划联动任务」），供前端区分徽标
-    const planLinked = new Set(
+    // T00462/T00451：批量反查项目计划关联（linked_task_id 命中即「计划联动任务」），值=来源计划标题
+    const planLinked = new Map(
       (db.prepare(
-        `SELECT linked_task_id AS id FROM plan_tasks WHERE archived = 0 AND linked_task_id IN (${rows.map(() => '?').join(',') || "''"})`,
-      ).all(...rows.map((r) => r.id)) as Array<{ id: string }>).map((x) => x.id),
+        `SELECT pt.linked_task_id AS id, pt.title FROM plan_tasks pt WHERE pt.archived = 0 AND pt.linked_task_id IN (${rows.map(() => '?').join(',') || "''"})`,
+      ).all(...rows.map((r) => r.id)) as Array<{ id: string; title: string }>).map((x) => [x.id, x.title]),
     );
     return rows.map((r) => {
       const view = rowToTask(r, imageMap.get(r.id) ?? []);
-      if (planLinked.has(r.id)) view.fromPlan = true;
+      const planTitle = planLinked.get(r.id);
+      if (planTitle) view.fromPlanTitle = planTitle;
       return view;
     });
   },

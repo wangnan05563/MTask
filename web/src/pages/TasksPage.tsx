@@ -877,9 +877,9 @@ export function TasksPage() {
             {t.task_no}
           </span>
         )}
-        {/* T00462：计划联动任务区分徽标——与普通待办视觉区分，悬浮说明来源 */}
-        {t.fromPlan && (
-          <span title="计划联动任务 — 由项目计划创建/关联，完成状态与项目计划双向同步"
+        {/* T00462/T00451：计划联动任务区分徽标——悬浮显示来源计划标题（反向引用） */}
+        {t.fromPlanTitle && (
+          <span title={`计划联动任务 — 来源计划：${t.fromPlanTitle}；完成状态与项目计划双向同步`}
             aria-label="计划联动任务"
             style={{ fontSize: 10, color: 'var(--text-muted)', border: '1px solid var(--border-strong)', padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'default' }}>
             计划
