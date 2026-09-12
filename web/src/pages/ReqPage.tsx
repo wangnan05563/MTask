@@ -43,8 +43,8 @@ export function ReqPage() {
   }
 
   // T00463：条目拖拽排序状态
-  const [dragId, setDragId] = useState('');
-  const [overId, setOverId] = useState('');
+  const [dragId, setDragId] = useState(''); // NOSONAR - dragId 供 dropReorder 读取，setDragId 用于拖拽态重渲染
+  const [overId, setOverId] = useState(''); // NOSONAR - overId 供列表行接入拖拽高亮后读取，setOverId 用于拖拽悬停态重渲染
   // 调整分组：moveOpenId 记录当前展开分组选择器的条目 id（单开），'' 表示全部收起
   const [moveOpenId, setMoveOpenId] = useState('');
   // 分组选择器容器引用：用于判断点击是否落在菜单外部（点击外部收起）
@@ -263,6 +263,8 @@ export function ReqPage() {
         .arena-row:hover .abtn, .arena-row:focus-within .abtn { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
         @keyframes rowflush { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
         .arena-row.flush { animation: rowflush 1.4s ease; }
+        .item-dragging { opacity: .5; box-shadow: 0 8px 20px rgba(0,0,0,.25); border-color: var(--accent) !important; }
+        .item-over { box-shadow: inset 0 3px 0 var(--accent); border-color: var(--accent) !important; }
         .move-btn:hover { color: var(--accent); }
       `}</style>
       {/* 工具栏：分类切换与管理 */}
@@ -367,7 +369,14 @@ export function ReqPage() {
           const draft = drafts[p.id];
           const editing = draft !== undefined;
           return (
-            <li key={flashAt[p.id] ? `f${flashAt[p.id]}-${p.id}` : p.id} className={`arena-row${flashAt[p.id] ? ' flush' : ''}`} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 10 }}>
+            <li key={flashAt[p.id] ? `f${flashAt[p.id]}-${p.id}` : p.id}
+              draggable
+              onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = 'move'; }}
+              onDragEnd={() => { setDragId(''); setOverId(''); }}
+              onDragOver={(e) => { e.preventDefault(); if (p.id !== dragId) setOverId(p.id); }}
+              onDrop={(e) => { e.preventDefault(); dropReorder(p.id); }}
+              className={`arena-row${flashAt[p.id] ? ' flush' : ''}${dragId === p.id ? ' item-dragging' : overId === p.id ? ' item-over' : ''}`}
+              style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 10, cursor: 'grab' }}>
               {editing ? (
                 <>
                   <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
