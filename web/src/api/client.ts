@@ -69,6 +69,18 @@ export const api = {
     if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
     return body as T;
   },
+  /**
+   * T00444：订阅后端数据变更 SSE 通知（/api/events）。token 经 query 传递
+   * （EventSource 无法自定义请求头）；EventSource 原生断线重连。返回取消订阅函数。
+   */
+  openChangeStream(onChange: (kind: string) => void): () => void {
+    const url = `${apiBase}/events${accessToken ? `?token=${encodeURIComponent(accessToken)}` : ''}`;
+    const es = new EventSource(url);
+    es.onmessage = (ev) => {
+      try { onChange(String(JSON.parse(ev.data).kind ?? '')); } catch { onChange(''); }
+    };
+    return () => es.close();
+  },
   /** 生成类接口的二进制下载：POST 返回文件流，附带 Content-Disposition 文件名 */
   async download(path: string, data: unknown): Promise<{ blob: Blob; filename: string }> {
     const res = await fetch(`${apiBase}${path}`, {
@@ -140,6 +152,8 @@ export interface Task {
   ai_summary: string | null;
   /** 处理结果：AI 分析结论（根因/解决方案）等，可查看/编辑 */
   handle_result: string | null;
+  /** T00462：项目计划联动任务（由计划创建/关联），前端显示区分徽标 */
+  fromPlan?: boolean;
   /** 置顶：true=固定到列表顶部 */
   pinned: boolean;
   /** 所属任务分类 id；null 表示未分类 */

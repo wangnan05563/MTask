@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, CalendarPlus, Download, FileSpreadsheet, Link2, Link2Off, RefreshCw, Sparkles, Trash2, Upload } from 'lucide-react';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
-import { usePersistentState } from '../ui/session';
+import { usePersistentState, useSessionState } from '../ui/session';
 
 /** 项目计划页（T00431，菜单位于周报前）：串行瀑布时间线 + Excel 导入导出 + 待办联动。 */
 
@@ -59,7 +59,8 @@ const btnStyle: React.CSSProperties = { display: 'inline-flex', alignItems: 'cen
 
 export function PlanPage() {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
-  const [projectId, setProjectId] = useState('');
+  // T00460：切页保状态——项目选择会话级持久化，切回不重置
+  const [projectId, setProjectId] = useSessionState('plan.projectId', '');
   const [plans, setPlans] = useState<PlanTask[]>([]);
   const [holidays, setHolidays] = useState<Array<{ date: string; name: string }>>([]);
   const [notice, setNotice] = useState('');
@@ -325,8 +326,24 @@ export function PlanPage() {
     );
   }
 
+  // T00460：滚动位置保活（离开页时保存，切回恢复）
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollSaveTimer = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    const saved = sessionStorage.getItem('plan.scrollY');
+    if (saved && scrollRef.current) scrollRef.current.scrollTop = Number(saved);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅挂载时恢复一次
+  }, []);
+  const onScrollSave = () => {
+    if (scrollSaveTimer.current) return;
+    scrollSaveTimer.current = window.setTimeout(() => {
+      scrollSaveTimer.current = undefined;
+      if (scrollRef.current) sessionStorage.setItem('plan.scrollY', String(scrollRef.current.scrollTop));
+    }, 300);
+  };
+
   return (
-    <div style={{ padding: 16, color: 'var(--text)' }}>
+    <div ref={scrollRef} onScroll={onScrollSave} style={{ padding: 16, color: 'var(--text)', maxHeight: 'calc(100vh - 60px)', overflowY: 'auto' }}>
       {/* 工具条：项目选择 + 增删导入导出 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
         <select value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ ...inputStyle, minWidth: 140 }} aria-label="选择项目">

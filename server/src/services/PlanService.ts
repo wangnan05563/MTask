@@ -6,6 +6,7 @@ import { getDb } from '../db/connection';
 import { v4 as uuid } from 'uuid';
 import ExcelJS from 'exceljs';
 import { AIService } from './AIService';
+import { notifyChange } from './ChangeBus';
 // pizzip：docxtemplater 既有依赖，用于解压 .docx 提取 word/document.xml（T00439）
 import PizZip from 'pizzip';
 
@@ -299,6 +300,7 @@ export const PlanService = {
       ).get(row.project_id, row.sort_order) as { end_date: string } | undefined;
       rescheduleFrom(db, row.project_id, row.sort_order, prev ? { afterEndDate: prev.end_date } : {});
     })();
+    notifyChange('plans');
     return true;
   },
 
@@ -314,6 +316,7 @@ export const PlanService = {
       ).get(row.project_id, row.sort_order) as { end_date: string } | undefined;
       rescheduleFrom(db, row.project_id, row.sort_order, prev ? { afterEndDate: prev.end_date } : { firstStartDate: row.start_date });
     })();
+    notifyChange('plans');
     return true;
   },
 
@@ -737,6 +740,7 @@ export const PlanService = {
       });
       rescheduleAll(db, projectId);
     })();
+    notifyChange('plans');
     return { inserted: clean.length };
   },
 };

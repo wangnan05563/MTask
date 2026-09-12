@@ -3,6 +3,9 @@ import { v4 as uuid } from 'uuid';
 import { type TaskView } from './TaskService';
 import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
 import { logService } from './LogService';
+import { getSetting } from './AppSettings';
+import { TaskService } from './TaskService';
+import { notifyChange } from './ChangeBus';
 import type { SubmitResult, PollResult } from '../adapters/types';
 
 /** 队列列表 TTL：读多写少，5s 内允许过期值，写操作会主动 cacheClear 保证一致 */
@@ -46,6 +49,23 @@ function now(): string {
  * 从 submitAll 拆出以降低其认知复杂度；单 Job 提交异常按 failed 落库而不上抛，
  * 保证队列循环内单点失败不影响其余 Job（与拆分前行为一致）。
  */
+/**
+ * 队列自动回写（T00453 / PRD INT-4）：Job 成功后把关联待办置为 done——
+ * 触发 TaskService 内部的计划反向联动（linked plan 同步 done）。
+ * 设置项 queue.autoCompleteTask=0 可关闭（KV：AppSettings）；默认开启。
+ */
+function autoCompleteQueueTask(taskId: string): void {
+  if (getSetting('queue.autoCompleteTask') === '0') return;
+  try {
+    const t = getDb().prepare('SELECT status FROM tasks WHERE id = ?').get(taskId) as { status: string } | undefined;
+    if (!t || t.status === 'done') return;
+    TaskService.setStatus(taskId, 'done');
+    logService.log('INFO', 'queue', `队列自动回写：task=${taskId.slice(0, 8)} → done（queue.autoCompleteTask 开启）`);
+  } catch (e) {
+    logService.log('ERROR', 'queue', `队列自动回写失败：task=${taskId.slice(0, 8)}，${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 async function submitOneJob(
   job: QueueJobRow,
   submit: (job: QueueJobRow) => Promise<SubmitResult>,
@@ -61,6 +81,8 @@ async function submitOneJob(
         "UPDATE queue_jobs SET status = 'success', response_payload = ?, error = NULL, ticket = NULL, submitted_at = ?, finished_at = ? WHERE id = ?",
       ).run(result.content, now(), now(), job.id);
       logService.log('INFO', 'queue', `队列任务同步完成：job=${job.id.slice(0, 8)}（响应 ${result.content.length} 字符）`);
+      autoCompleteQueueTask(job.task_id);
+      notifyChange('queue');
       return false;
     }
     if (result.ok && result.accepted) {
@@ -174,6 +196,8 @@ export const QueueService = {
           db.prepare(
             "UPDATE queue_jobs SET status = ?, response_payload = ?, error = ?, finished_at = ? WHERE id = ?"
           ).run(result.ok ? 'success' : 'failed', result.content ?? null, result.error ?? null, now(), job.id);
+          if (result.ok) autoCompleteQueueTask(job.task_id);
+          notifyChange('queue');
         } catch (e) {
           db.prepare("UPDATE queue_jobs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?")
             .run(e instanceof Error ? e.message : String(e), now(), job.id);
@@ -242,6 +266,8 @@ export const QueueService = {
         if (result.status === 'success') {
           db.prepare("UPDATE queue_jobs SET status = 'success', response_payload = ?, error = NULL, finished_at = ? WHERE id = ?")
             .run(result.content ?? null, now(), job.id);
+          autoCompleteQueueTask(job.task_id);
+          notifyChange('queue');
         } else if (result.status === 'failed' || result.status === 'timeout') {
           db.prepare("UPDATE queue_jobs SET status = ?, error = ?, finished_at = ? WHERE id = ?")
             .run(result.status, result.error ?? null, now(), job.id);

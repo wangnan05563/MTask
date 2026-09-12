@@ -237,6 +237,15 @@ export function TasksPage() {
     document.addEventListener('visibilitychange', onVisible);
     return () => { clearInterval(id); document.removeEventListener('visibilitychange', onVisible); };
   }, [activeProject, loadTasks, titleDrafts, descDrafts, resultDrafts, drafts, imgDrafts, anyBeautify, classifyBusy, optimizingMap]);
+
+  // T00444：SSE 实时变更通知——MCP 回传/队列自动回写/其他窗口的写库变更即时推送刷新，
+  // 10s 轮询保留作断线兜底。React 渲染机制天然保护编辑态（行 key=id 稳定、受控草稿独立 state）
+  useEffect(() => {
+    if (!activeProject) return;
+    return api.openChangeStream((kind) => {
+      if (kind === 'tasks' || kind === 'queue' || kind === 'plans') void loadTasks(activeProject);
+    });
+  }, [activeProject, loadTasks]);
   // 工具下拉展开期间监听全局焦点移出：内部元素间切换时 relatedTarget 仍在容器内不收起，移出容器才收起。
   // 挂在 document 上而非容器 div，可避免为挂 onBlur 而给非交互容器加 tabIndex/role
   useEffect(() => {
@@ -866,6 +875,14 @@ export function TasksPage() {
             style={{ fontSize: 11, color: 'var(--accent)', background: 'var(--accent-soft)', padding: '0 5px', borderRadius: 4, lineHeight: '18px', whiteSpace: 'nowrap', cursor: 'default', userSelect: 'text' }}
           >
             {t.task_no}
+          </span>
+        )}
+        {/* T00462：计划联动任务区分徽标——与普通待办视觉区分，悬浮说明来源 */}
+        {t.fromPlan && (
+          <span title="计划联动任务 — 由项目计划创建/关联，完成状态与项目计划双向同步"
+            aria-label="计划联动任务"
+            style={{ fontSize: 10, color: 'var(--text-muted)', border: '1px solid var(--border-strong)', padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'default' }}>
+            计划
           </span>
         )}
         {renderTaskTitle(t, titleEditing)}

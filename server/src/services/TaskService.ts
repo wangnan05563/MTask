@@ -1,4 +1,5 @@
 import { getDb } from '../db/connection';
+import { notifyChange } from './ChangeBus';
 import { v4 as uuid } from 'uuid';
 import { TaskImageService, type TaskImageMeta } from './TaskImageService';
 import { ReqEntryService } from './ReqService';
@@ -44,6 +45,8 @@ export interface TaskView {
   created_at: string;
   updated_at: string;
   images: TaskImageMeta[];
+  /** T00462：任务由项目计划联动创建/关联（linked_task_id 反查），前端据此显示区分徽标 */
+  fromPlan?: boolean;
 }
 
 export interface TaskInput {
@@ -161,7 +164,17 @@ export const TaskService = {
     const rows = db.prepare(sql).all(...values) as TaskRow[];
     // 一次批量查图片，避免逐任务 N+1（内部已按 ≤200/批规避 SQLite 参数上限）
     const imageMap = TaskImageService.mapByTasks(rows.map((r) => r.id));
-    return rows.map((r) => rowToTask(r, imageMap.get(r.id) ?? []));
+    // T00462：批量反查项目计划关联（linked_task_id 命中即「计划联动任务」），供前端区分徽标
+    const planLinked = new Set(
+      (db.prepare(
+        `SELECT linked_task_id AS id FROM plan_tasks WHERE archived = 0 AND linked_task_id IN (${rows.map(() => '?').join(',') || "''"})`,
+      ).all(...rows.map((r) => r.id)) as Array<{ id: string }>).map((x) => x.id),
+    );
+    return rows.map((r) => {
+      const view = rowToTask(r, imageMap.get(r.id) ?? []);
+      if (planLinked.has(r.id)) view.fromPlan = true;
+      return view;
+    });
   },
 
   update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id'>>): TaskView {
@@ -186,6 +199,7 @@ export const TaskService = {
       db.prepare('UPDATE plan_tasks SET status = ?, progress = CASE WHEN ? = 100 THEN 100 ELSE progress END, updated_at = ? WHERE linked_task_id = ?')
         .run(planStatus, planStatus === 'done' ? 100 : -1, now(), id);
     }
+    notifyChange('tasks');
     return this.getById(id)!;
   },
 

@@ -9,6 +9,7 @@ import { logService } from './services/LogService';
 import { QueueService } from './services/QueueService';
 import { AIService } from './services/AIService';
 import { loadTunnelConfig } from './tunnel/tunnel-config';
+import { changeBus } from './services/ChangeBus';
 
 const PORT = Number(process.env.MTask_PORT ?? 39876);
 const HOST = '127.0.0.1';
@@ -60,6 +61,12 @@ function accessTokenGuard(req: express.Request, res: express.Response, next: exp
     return;
   }
   const token = loadTunnelConfig().accessToken;
+  // T00444：SSE 变更通知端点支持 query token——EventSource 无法自定义请求头，
+  // 前端以 ?token= 携带访问令牌（与 X-Access-Token 同值），仅此路径接受 query 形式
+  if (req.path.startsWith('/events') && token && req.query.token === token) {
+    next();
+    return;
+  }
   if (token && req.headers['x-access-token'] !== token) {
     res.status(401).json({ error: 'unauthorized' });
     return;
@@ -70,6 +77,30 @@ function accessTokenGuard(req: express.Request, res: express.Response, next: exp
 app.use('/api', accessTokenGuard, api);
 // MCP streamable HTTP 端点：与 REST 一致受 accessTokenGuard（X-Access-Token）保护
 app.use('/api/mcp', accessTokenGuard, mcpRouter());
+
+// T00444：SSE 数据变更通知端点——前端 EventSource 订阅后，任务/计划/队列的外部变更
+//（MCP 回传、队列自动回写、其他窗口操作）即时推送，替代纯轮询的延迟
+app.get('/api/events', accessTokenGuard, (req: express.Request, res: express.Response) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.write(`data: ${JSON.stringify({ kind: 'hello' })}\n\n`);
+  const onChange = (kind: string) => {
+    try { res.write(`data: ${JSON.stringify({ kind })}\n\n`); } catch { /* 客户端已断开 */ }
+  };
+  changeBus.on('change', onChange);
+  // 心跳：防止代理/系统空闲超时断开 SSE 连接
+  const heartbeat = setInterval(() => {
+    try { res.write(': hb\n\n'); } catch { /* ignore */ }
+  }, 25000);
+  req.on('close', () => {
+    changeBus.off('change', onChange);
+    clearInterval(heartbeat);
+  });
+});
 // 内网穿透路由：暴露后端 HTTP 服务到公网（对应 /api/tunnel/*）
 app.use('/api/tunnel', tunnelRouter);
 
