@@ -48,11 +48,20 @@ function aiToolImportRow(r: Record<string, unknown>): Record<string, unknown> {
   return { ...rest, api_key_enc: enc };
 }
 
-/** 全量导出 */
-export function exportBundle(): ExportBundle {
+/**
+ * 导出配置包。默认全量（与历史行为一致，供「导出配置」按钮使用）。
+ *
+ * 传入 tables 时只导出白名单内的子集——用于「只看/只迁移配置类表」等场景（显著减小体积：
+ * 全量包中 task_images 的 base64 二进制往往是体积大头）。
+ * ⚠️ 子集包**不满足 importBundle 的 CORE_TABLES 校验**，仅作查看/局部迁移用途，不能直接整体回导。
+ */
+export function exportBundle(tables?: string[]): ExportBundle {
   const db = getDb();
+  const requested = tables?.length
+    ? EXPORT_TABLES.filter((t) => tables.includes(t))
+    : EXPORT_TABLES;
   const data: ExportBundle['data'] = {} as ExportBundle['data'];
-  for (const table of EXPORT_TABLES) {
+  for (const table of requested) {
     const rows = db.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
     data[table] = rows.map((r) => {
       if (table === 'task_images') return { ...r, data: r.data instanceof Buffer ? r.data.toString('base64') : r.data };
@@ -61,6 +70,11 @@ export function exportBundle(): ExportBundle {
     });
   }
   return { app: 'mtask', version: 1, exportedAt: new Date().toISOString(), data };
+}
+
+/** 合法导出表名白名单（供路由校验 ?tables=，拒绝未知表名而非静默忽略） */
+export function isExportTable(name: string): boolean {
+  return EXPORT_TABLES.includes(name);
 }
 
 /** 结构校验：仅对 bundle 大纲做防御性检查，避免导入任意/损坏文件破坏库 */

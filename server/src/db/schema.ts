@@ -38,6 +38,9 @@ export function initSchema(): void {
     CREATE INDEX IF NOT EXISTS idx_tasks_archived_created ON tasks(archived, created_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_archived_pinned_created ON tasks(archived, pinned, created_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(project_id, archived, pinned, created_at);
+    -- 分类维度：按分类筛选任务列表、删除分类时把所属任务 category_id 置空（UPDATE ... WHERE category_id=?）
+    -- 原先无索引 → 全表扫描；实测「删除任务分类」单发 331ms，加索引后应降至 <10ms
+    CREATE INDEX IF NOT EXISTS idx_tasks_category ON tasks(category_id);
 
     -- 任务分类：供任务归类使用；删除分类时由服务层把所属任务 category_id 置空（任务保留、回到未分类）
     CREATE TABLE IF NOT EXISTS task_categories (
@@ -195,6 +198,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       updated_at     TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_plan_tasks_project ON plan_tasks(project_id, sort_order);
+    -- 任务列表批量反查「计划联动」来源（plan_tasks.linked_task_id IN (...)：无索引时全表扫描）
+    CREATE INDEX IF NOT EXISTS idx_plan_tasks_linked ON plan_tasks(linked_task_id);
 
     -- 节假日表（T00431）：工作日判定排除项（周末固定排除，此处存法定节假日/调休上班以外的休息日）
     CREATE TABLE IF NOT EXISTS holidays (

@@ -239,6 +239,41 @@ let buildWorker: Worker | null = null;
 let building = false;
 const buildQueue: Array<{ req: BuildRequest; resolve: (b: Buffer) => void; reject: (e: Error) => void }> = [];
 
+/**
+ * worker 堆上限（MB）：报表合成（exceljs/pdfkit/pptxgenjs）在千级数据下会显著抬高堆，
+ * 封顶后即使遇到超大报表也只会让该次构建失败（worker error → 队列任务 reject → 前端看到明确错误），
+ * 而不是把整个后端 RSS 顶穿。实测 heavy 阶段 RSS 峰值 390MB、CPU 峰值 152.6%。
+ */
+const WORKER_MAX_OLD_MB = 512;
+/**
+ * worker 空闲回收（ms）：worker 复用让大依赖只加载一次（好事），但代价是依赖与堆长期常驻
+ * ——实测 heavy 阶段结束后稳定性阶段 RSS 均值仍 277MB（较纯写阶段 +115MB）。
+ * 空闲超过该时长即销毁 worker，把内存交还系统；下次请求按需重建（多付数百 ms 依赖加载）。
+ */
+const WORKER_IDLE_MS = 5 * 60 * 1000;
+let idleTimer: NodeJS.Timeout | null = null;
+
+/** 取消空闲回收（有任务在途/排队时） */
+function clearIdleTimer(): void {
+  if (idleTimer) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
+}
+
+/** 队列排空后启动空闲回收定时器（unref 以免阻止进程退出） */
+function armIdleTimer(): void {
+  clearIdleTimer();
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    if (building || buildQueue.length > 0) return; // 期间又有任务，交给下一次收口
+    const w = buildWorker;
+    buildWorker = null;
+    w?.terminate().catch(() => { /* 空闲回收失败无需处理，下次请求会重建 */ });
+  }, WORKER_IDLE_MS);
+  idleTimer.unref?.();
+}
+
 /** worker 路径：打包/生产态（dist）为 .js，dev 态（tsx 跑 src）为 .ts */
 function workerPath(): string {
   const js = join(__dirname, 'report-worker.js');
@@ -247,7 +282,7 @@ function workerPath(): string {
 
 function ensureWorker(): Worker {
   if (buildWorker) return buildWorker;
-  const w = new Worker(workerPath());
+  const w = new Worker(workerPath(), { resourceLimits: { maxOldGenerationSizeMb: WORKER_MAX_OLD_MB } });
   w.on('message', (msg: { buffer?: Buffer; error?: string }) => {
     building = false;
     const task = buildQueue.shift();
@@ -255,15 +290,18 @@ function ensureWorker(): Worker {
     else if (msg?.buffer) task?.resolve(Buffer.from(msg.buffer));
     else task?.reject(new Error('报表 worker 返回空结果'));
     pump();
+    if (!building && buildQueue.length === 0) armIdleTimer();
   });
   // worker 异常退出：丢弃当前任务并销毁，下次请求自动重建
   w.on('error', (e) => {
+    clearIdleTimer();
     building = false;
     buildQueue.shift()?.reject(e);
     // terminate() 返回 Promise，同步 try/catch 捕不到其 rejection，必须用 .catch 兜底
     w.terminate().catch(() => { /* worker 已异常退出，销毁失败无需处理，下次请求会重建 */ });
     buildWorker = null;
     pump();
+    if (!building && buildQueue.length === 0) armIdleTimer();
   });
   buildWorker = w;
   return w;
@@ -272,6 +310,7 @@ function ensureWorker(): Worker {
 /** 串行泵：无在途任务且有排队任务时，投递给 worker */
 function pump(): void {
   if (building || buildQueue.length === 0) return;
+  clearIdleTimer(); // 有任务在跑，取消空闲回收
   const task = buildQueue[0];
   building = true;
   const w = ensureWorker();

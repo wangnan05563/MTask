@@ -21,7 +21,7 @@ function wrap(res: import('express').Response, fn: () => unknown): void {
 function toStr(v: unknown): string {
   if (v == null) return '';
   if (typeof v === 'object') return JSON.stringify(v);
-  return String(v);
+  return String(v); // NOSONAR - 前置 typeof 已排除 object 分支，此处仅剩 string/number/boolean/bigint
 }
 
 /** 可选字符串参数：null/undefined → undefined，其余同 toStr（保持原字段可选语义） */
@@ -43,7 +43,7 @@ planApi.get('/holidays', (_req, res) => wrap(res, () => PlanService.listHolidays
 planApi.post('/holidays', (req, res) => {
   const { date, name } = (req.body ?? {}) as { date?: unknown; name?: unknown };
   if (!date || typeof date !== 'string') return res.status(400).json({ error: 'date 必填（YYYY-MM-DD）' });
-  wrap(res, () => { PlanService.addHoliday(date, String(name ?? '')); return { ok: true }; });
+  wrap(res, () => { PlanService.addHoliday(date, toStr(name)); return { ok: true }; });
 });
 
 planApi.delete('/holidays/:date', (req, res) => wrap(res, () => PlanService.removeHoliday(req.params.date)));
@@ -202,7 +202,7 @@ planApi.post('/reorder', (req, res) => {
 // ---------- 待办联动 ----------
 planApi.post('/:id/link', (req, res) => {
   const { taskId } = (req.body ?? {}) as { taskId?: unknown };
-  wrap(res, () => PlanService.linkTodo(req.params.id, taskId ? String(taskId) : null));
+  wrap(res, () => PlanService.linkTodo(req.params.id, taskId ? toStr(taskId) : null));
 });
 
 planApi.post('/:id/create-todo', (req, res) => wrap(res, () => PlanService.createLinkedTodo(req.params.id)));

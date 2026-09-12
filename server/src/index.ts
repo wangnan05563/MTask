@@ -10,6 +10,7 @@ import { QueueService } from './services/QueueService';
 import { AIService } from './services/AIService';
 import { loadTunnelConfig } from './tunnel/tunnel-config';
 import { changeBus } from './services/ChangeBus';
+import { reconcileLinkedPlanStatuses } from './services/PlanService';
 
 const PORT = Number(process.env.MTask_PORT ?? 39876);
 const HOST = '127.0.0.1';
@@ -123,6 +124,13 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 initSchema();
+// T00470：启动对账——直写库场景（AI 脚本回写）绕过同步钩子时，兜底对齐待办→计划状态
+try {
+  const fixed = reconcileLinkedPlanStatuses();
+  if (fixed > 0) console.log(`[mtask] plan-task reconcile: ${fixed} plan record(s) aligned to done`);
+} catch (e) {
+  console.error('[mtask] plan-task reconcile failed:', e);
+}
 app.listen(PORT, HOST, () => {
   console.log(`[mtask] server ready at http://${HOST}:${PORT}`);
   console.log(`[mtask] health: http://${HOST}:${PORT}/api/health`);

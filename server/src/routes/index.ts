@@ -9,7 +9,7 @@ import { ArchiveService } from '../services/ArchiveService';
 import { TaskImageService } from '../services/TaskImageService';
 import { TaskCategoryService } from '../services/TaskCategoryService';
 import { ReqCategoryService, ReqEntryService } from '../services/ReqService';
-import { exportBundle, importBundle } from '../services/SettingsService';
+import { exportBundle, importBundle, isExportTable } from '../services/SettingsService';
 import { getDefaultNoteProjectId, INBOX_PROJECT_ID, setSetting } from '../services/AppSettings';
 import { getConfig as getUpdateConfig, saveConfig as saveUpdateConfig, testConfig as testUpdateConfig, checkUpdate, currentVersion as currentAppVersion } from '../services/UpdateService';
 import { logService } from '../services/LogService';
@@ -35,7 +35,7 @@ function now(): string {
  * 逐条兜底校验 title 必填，其余字段缺失以空串回填（AI 输出不可靠，宁缺毋滥）。
  */
 function parseReqDraft(text: string): { title: string; content: string; category: string }[] {
-  const bare = text.replace(/```json/gi, '').replace(/```/gi, '').trim();
+  const bare = text.replaceAll(/```json/gi, '').replaceAll(/```/gi, '').trim();
   const start = bare.indexOf('[');
   const end = bare.lastIndexOf(']');
   if (start === -1 || end <= start) return [];
@@ -241,27 +241,48 @@ api.post('/tasks/reorder', (req, res) => {
 });
 
 // ---------- CSV 任务导入（INT-6 最小可用版）：preview 解析校验 / confirm 确认导入 ----------
+/** 收尾当前行：拼接末尾字段并按「非空则入行」规则推送；供 parseCsv 复用 */
+function flushCsvRow(rows: string[][], cur: string[], field: string): void {
+  const cells = cur.concat(field);
+  if (cells.some((c) => c.trim())) rows.push(cells);
+}
+
+/** CSV 状态机单步：消费 text[i] 并推进状态，返回下一个索引（供 parseCsv 复用） */
+function consumeCsvChar(text: string, i: number, st: { cur: string[]; field: string; inQuotes: boolean }, rows: string[][]): number {
+  const ch = text[i];
+  const next = text[i + 1];
+  if (st.inQuotes) {
+    if (ch === '"' && next === '"') { // 连续双引号：转义为一个引号
+      st.field += '"';
+      return i + 2;
+    }
+    if (ch === '"') { // 引号结束
+      st.inQuotes = false;
+      return i + 1;
+    }
+    st.field += ch; // 引号内普通字符
+    return i + 1;
+  }
+  if (ch === '"') st.inQuotes = true;
+  else if (ch === ',') { st.cur.push(st.field); st.field = ''; }
+  else if (ch === '\n' || ch === '\r') {
+    if (ch === '\r' && next === '\n') i++;
+    flushCsvRow(rows, st.cur, st.field);
+    st.cur = [];
+    st.field = '';
+  } else st.field += ch;
+  return i + 1;
+}
+
 /** CSV 简易解析：RFC4180 引号感知，返回二维单元格数组 */
 function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
-  let cur: string[] = [];
-  let field = '';
-  let inQuotes = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (inQuotes) {
-      if (ch === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQuotes = false; }
-      else field += ch;
-    } else if (ch === '"') inQuotes = true;
-    else if (ch === ',') { cur.push(field); field = ''; }
-    else if (ch === '\n' || ch === '\r') {
-      if (ch === '\r' && text[i + 1] === '\n') i++;
-      cur.push(field); field = '';
-      if (cur.some((c) => c.trim())) rows.push(cur);
-      cur = [];
-    } else field += ch;
+  const st = { cur: [] as string[], field: '', inQuotes: false };
+  let i = 0;
+  while (i < text.length) {
+    i = consumeCsvChar(text, i, st, rows);
   }
-  if (field || cur.length) { cur.push(field); if (cur.some((c) => c.trim())) rows.push(cur); }
+  if (st.field || st.cur.length) flushCsvRow(rows, st.cur, st.field);
   return rows;
 }
 
@@ -283,13 +304,49 @@ function mapCsvColumns(headers: string[]): Record<string, number> {
 const PRIORITY_ALIAS: Record<string, string> = { 高: 'high', 中: 'normal', 普通: 'normal', 低: 'low', high: 'high', normal: 'normal', low: 'low', urgent: 'urgent' };
 const STATUS_ALIAS: Record<string, string> = { 完成: 'done', 已完成: 'done', 待办: 'todo', 未开始: 'todo', done: 'done', todo: 'todo' };
 
+/** CSV 单行导入结果：skip=整行空跳过 */
+type CsvImportResult =
+  | { kind: 'skip' }
+  | { kind: 'error'; message: string }
+  | { kind: 'item'; item: { title: string; description: string; priority: string; status: string; categoryId: string | null } };
+
+/** 分类名 → 分类 id；名称缺失返回 null，不存在则给出错误 */
+function resolveCsvCategory(name: string, catByName: Map<string, string>): { id: string | null; error?: string } {
+  if (!name) return { id: null };
+  const hit = catByName.get(name);
+  return hit ? { id: hit } : { id: null, error: '分类不存在：' + name };
+}
+
+/** 校验并归一化一行 CSV（标题/去重/状态/分类），供 /tasks/import-csv/preview 复用 */
+function buildCsvImportRow(
+  r: string[],
+  map: Record<string, number>,
+  catByName: Map<string, string>,
+  existTitles: Set<string>,
+  seen: Set<string>,
+): CsvImportResult {
+  const get = (key: string) => (map[key] === undefined ? '' : (r[map[key]] ?? '').trim());
+  const title = get('title');
+  if (!title && !r.some((c) => c.trim())) return { kind: 'skip' };
+  if (!title) return { kind: 'error', message: '标题必填' };
+  if (existTitles.has(title) || seen.has(title)) return { kind: 'error', message: '标题重复：' + title };
+  const priority = PRIORITY_ALIAS[get('priority').toLowerCase()] ?? 'normal';
+  const statusRaw = get('status').toLowerCase();
+  const status = STATUS_ALIAS[statusRaw] ?? (statusRaw === 'completed' ? 'done' : 'todo');
+  if (statusRaw && !STATUS_ALIAS[statusRaw]) return { kind: 'error', message: '状态非法：' + get('status') };
+  const cat = resolveCsvCategory(get('category'), catByName);
+  if (cat.error) return { kind: 'error', message: cat.error };
+  seen.add(title);
+  return { kind: 'item', item: { title, description: get('description'), priority, status, categoryId: cat.id } };
+}
+
 // 预览：解析 CSV → 校验 → 返回映射结果与行级错误（不入库）
 api.post('/tasks/import-csv/preview', raw({ type: () => true, limit: '20mb' }), (req, res) => {
   const projectId = req.query.projectId;
   if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
   if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: '请求体应为 CSV 文本' });
   try {
-    const text = (req.body as Buffer).toString('utf-8').replace(/^\ufeff/, '');
+    const text = req.body.toString('utf-8').replace(/^\ufeff/, '');
     const rows = parseCsv(text);
     if (rows.length < 2) return res.json({ headers: [], items: [], errors: [{ row: 1, message: 'CSV 至少需要表头与一行数据' }] });
     const headers = rows[0].map((h) => h.trim());
@@ -304,26 +361,9 @@ api.post('/tasks/import-csv/preview', raw({ type: () => true, limit: '20mb' }), 
       (getDb().prepare('SELECT title FROM tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ title: string }>).map((r) => r.title),
     );
     for (let i = 1; i < rows.length; i++) {
-      const r = rows[i];
-      const rowNo = i + 1;
-      const get = (key: string) => (map[key] !== undefined ? (r[map[key]] ?? '').trim() : '');
-      const title = get('title');
-      if (!title && !r.some((c) => c.trim())) continue;
-      if (!title) { errors.push({ row: rowNo, message: '标题必填' }); continue; }
-      if (existTitles.has(title) || seen.has(title)) { errors.push({ row: rowNo, message: '标题重复：' + title }); continue; }
-      const priority = PRIORITY_ALIAS[get('priority').toLowerCase()] ?? 'normal';
-      const statusRaw = get('status').toLowerCase();
-      const status = STATUS_ALIAS[statusRaw] ?? (statusRaw === 'completed' ? 'done' : 'todo');
-      if (statusRaw && !STATUS_ALIAS[statusRaw]) { errors.push({ row: rowNo, message: '状态非法：' + get('status') }); continue; }
-      const categoryName = get('category');
-      let categoryId: string | null = null;
-      if (categoryName) {
-        const hit = catByName.get(categoryName);
-        if (!hit) { errors.push({ row: rowNo, message: '分类不存在：' + categoryName }); continue; }
-        categoryId = hit;
-      }
-      seen.add(title);
-      items.push({ title, description: get('description'), priority, status, categoryId });
+      const res = buildCsvImportRow(rows[i], map, catByName, existTitles, seen);
+      if (res.kind === 'error') { errors.push({ row: i + 1, message: res.message }); continue; }
+      if (res.kind === 'item') items.push(res.item);
     }
     res.json({ headers, items, errors });
   } catch (e) {
@@ -352,6 +392,25 @@ api.post('/tasks/import-csv/confirm', (req, res) => {
 });
 
 
+/** 单个任务的批量操作分派（T00457）；未知 action 抛错，由路由统一映射 400 */
+function applyBatchAction(db: ReturnType<typeof getDb>, id: string, action: string | undefined, value: string | undefined): void {
+  if (action === 'status') {
+    if (value !== 'todo' && value !== 'done') throw new Error('status 值非法');
+    TaskService.setStatus(id, value);
+    return;
+  }
+  if (action === 'category') {
+    if (value && !db.prepare('SELECT id FROM task_categories WHERE id = ?').get(value)) throw new Error('分类不存在');
+    db.prepare('UPDATE tasks SET category_id = ?, updated_at = ? WHERE id = ?').run(value || null, now(), id);
+    return;
+  }
+  if (action === 'archive') {
+    ArchiveService.archive([id]);
+    return;
+  }
+  throw new Error(`不支持的批量操作：${action}`);
+}
+
 // 批量操作（T00457 / PRD UX-5）：多选后批量改状态/分类/归档——单事务，任一失败整体回滚
 api.post('/tasks/batch', (req, res) => {
   const { ids, action, value } = req.body ?? {};
@@ -364,17 +423,7 @@ api.post('/tasks/batch', (req, res) => {
     db.transaction(() => {
       for (const id of ids as string[]) {
         if (!db.prepare('SELECT id FROM tasks WHERE id = ?').get(id)) continue;
-        if (action === 'status') {
-          if (value !== 'todo' && value !== 'done') throw new Error('status 值非法');
-          TaskService.setStatus(id, value);
-        } else if (action === 'category') {
-          if (value && !db.prepare('SELECT id FROM task_categories WHERE id = ?').get(value)) throw new Error('分类不存在');
-          db.prepare('UPDATE tasks SET category_id = ?, updated_at = ? WHERE id = ?').run(value || null, now(), id);
-        } else if (action === 'archive') {
-          ArchiveService.archive([id]);
-        } else {
-          throw new Error(`不支持的批量操作：${action}`);
-        }
+        applyBatchAction(db, id, action, value);
         affected.push(id);
       }
     })();
@@ -906,6 +955,69 @@ api.post('/ai/optimize', async (req, res) => {
   }
 });
 
+/** 内容指纹（T00435）：规范化标题+正文后哈希，用于转存查重 */
+function contentFingerprint(title: string, content: string): string {
+  return createHash('sha256').update(`${title.trim()}\n${content.replaceAll(/\s+/g, ' ').trim()}`).digest('hex').slice(0, 24);
+}
+
+/** 分类名 → id（带缓存；空名返回空串；不存在则新建），供 AI 分组复用 */
+function ensureReqCategory(cats: Map<string, string>, name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return '';
+  const hit = cats.get(trimmed);
+  if (hit) return hit;
+  const exist = getDb().prepare('SELECT id FROM req_categories WHERE name = ?').get(trimmed) as { id: string } | undefined;
+  const id = exist?.id ?? ReqCategoryService.create(trimmed).id;
+  cats.set(trimmed, id);
+  return id;
+}
+
+type CreatedReq = { title: string; content: string; categoryId: string; categoryName: string };
+
+/** 手动分组：整批写入指定分类（参数/分类非法抛错，由路由统一映射 400） */
+function generalizeManualReq(categoryId: unknown, items: unknown, skipped: string[], created: CreatedReq[]): void {
+  if (typeof categoryId !== 'string' || !categoryId) throw new Error('categoryId 必填');
+  const catRow = getDb().prepare('SELECT id, name FROM req_categories WHERE id = ?').get(categoryId) as { id: string; name: string } | undefined;
+  if (!catRow) throw new Error('归属分类不存在');
+  if (!Array.isArray(items)) throw new Error('items 必填');
+  for (const it of items) {
+    if (!it || typeof it.title !== 'string' || !it.title.trim()) continue;
+    const fp = contentFingerprint(it.title, typeof it.content === 'string' ? it.content : '');
+    if (ReqEntryService.existsByFingerprint(fp)) { skipped.push(it.title.trim()); continue; }
+    const e = ReqEntryService.create({ categoryId, title: it.title.trim(), content: typeof it.content === 'string' ? it.content : '', fingerprint: fp });
+    created.push({ title: e.title, content: e.content, categoryId: e.category_id, categoryName: catRow.name });
+  }
+}
+
+/** AI 智能分组：抽取通用需求并归入最贴切分类（AI/参数异常抛错，由路由统一映射 400） */
+async function generalizeAiReq(toolId: unknown, answer: unknown, cats: Map<string, string>, skipped: string[], created: CreatedReq[]): Promise<void> {
+  if (typeof answer !== 'string' || !answer.trim()) throw new Error('answer 必填');
+  if (typeof toolId !== 'string' || !toolId) throw new Error('toolId 必填（AI 智能分组需要模型工具）');
+  const candidate = ReqCategoryService.list().map((c) => c.name);
+  if (!candidate.includes('通用')) candidate.push('通用');
+  const system = [
+    '你是 MTask 的通用需求提炼助手。给定一份“通用需求清单”Markdown，抽取其中具备跨项目复用价值的若干条通用需求（结合“需求标题/适用场景/实现要点/复用价值”四要素），为每一条输出 JSON。',
+    '要求：',
+    '1. 输出一个 JSON 数组，每元素为 {"title":"需求标题","content":"完整需求描述(Markdown，含适用场景/实现要点/复用价值)","category":"归类分类名"}',
+    '2. category 必须从候选分类名中选择最贴切的一个；若无合适分类，选“通用”',
+    '3. 只输出 JSON 数组本身，不要任何解释、前后缀、Markdown 代码围栏',
+    `候选分类：${candidate.join('、')}`,
+  ].join('\n');
+  const ai = await AIService.ask(toolId, system, `【通用需求清单】\n${answer.trim()}`);
+  if (!ai.ok || !ai.content) throw new Error(`AI 分组失败：${ai.error ?? '模型未返回结果'}`);
+  const drafts = parseReqDraft(ai.content);
+  if (!drafts.length) throw new Error('AI 未能从清单中解析出通用需求条目，请检查清单格式或改用手动分组');
+  for (const d of drafts) {
+    const cid = ensureReqCategory(cats, d.category || '通用');
+    if (!cid) continue;
+    const fp = contentFingerprint(d.title, d.content);
+    if (ReqEntryService.existsByFingerprint(fp)) { skipped.push(d.title); continue; }
+    const e = ReqEntryService.create({ categoryId: cid, title: d.title, content: d.content, fingerprint: fp });
+    const nm = getDb().prepare('SELECT name FROM req_categories WHERE id = ?').get(cid) as { name: string };
+    created.push({ title: e.title, content: e.content, categoryId: e.category_id, categoryName: nm.name });
+  }
+}
+
 // ---------- 通用需求：AI 智能分组 / 批量转存 ----------
 // mode='ai'：AI 从 answer（通用需求清单 Markdown）抽取若干条通用需求，自动归入/新建最贴切分类后批量写入 req_entries；
 // mode='manual'：按 items [{title,content}] 批量写入指定分类 categoryId。
@@ -913,68 +1025,17 @@ api.post('/ai/optimize', async (req, res) => {
 api.post('/ai/generalize-to-req', async (req, res) => {
   const { toolId, answer, mode = 'ai', categoryId, items } = req.body ?? {};
   try {
-    // 内容指纹（T00435）：规范化标题+正文后哈希；转存前查重，命中即跳过，防止重复提炼转存
-    const fingerprintOf = (title: string, content: string): string =>
-      createHash('sha256').update(`${title.trim()}\n${content.replace(/\s+/g, ' ').trim()}`).digest('hex').slice(0, 24);
     const skipped: string[] = [];
     // 分类名 -> id 缓存：AI 输出同名分类会重复出现，一次解析后复用，避免重复建分类
     const cats = new Map<string, string>();
-    const ensureCat = (name: string): string => {
-      const trimmed = name.trim();
-      if (!trimmed) return '';
-      const hit = cats.get(trimmed);
-      if (hit) return hit;
-      const exist = getDb().prepare('SELECT id FROM req_categories WHERE name = ?').get(trimmed) as { id: string } | undefined;
-      const id = exist?.id ?? ReqCategoryService.create(trimmed).id;
-      cats.set(trimmed, id);
-      return id;
-    };
-    const created: { title: string; content: string; categoryId: string; categoryName: string }[] = [];
+    const created: CreatedReq[] = [];
 
     if (mode === 'manual') {
       // 手动分组：目标分类 + 前端解析好的 items，整批落入同一分类
-      if (typeof categoryId !== 'string' || !categoryId) return res.status(400).json({ error: 'categoryId 必填' });
-      const catRow = getDb().prepare('SELECT id, name FROM req_categories WHERE id = ?').get(categoryId) as { id: string; name: string } | undefined;
-      if (!catRow) return res.status(400).json({ error: '归属分类不存在' });
-      if (!Array.isArray(items)) return res.status(400).json({ error: 'items 必填' });
-      for (const it of items) {
-        if (!it || typeof it.title !== 'string' || !it.title.trim()) continue;
-        const fp = fingerprintOf(it.title, typeof it.content === 'string' ? it.content : '');
-        if (ReqEntryService.existsByFingerprint(fp)) { skipped.push(it.title.trim()); continue; }
-        const e = ReqEntryService.create({ categoryId, title: it.title.trim(), content: typeof it.content === 'string' ? it.content : '', fingerprint: fp });
-        created.push({ title: e.title, content: e.content, categoryId: e.category_id, categoryName: catRow.name });
-      }
+      generalizeManualReq(categoryId, items, skipped, created);
     } else {
       // AI 智能分组：让模型把清单拆成多条并归入最贴切分类，缺失匹配时兜底到「通用」分类
-      if (typeof answer !== 'string' || !answer.trim()) return res.status(400).json({ error: 'answer 必填' });
-      if (typeof toolId !== 'string' || !toolId) return res.status(400).json({ error: 'toolId 必填（AI 智能分组需要模型工具）' });
-      const candidate = ReqCategoryService.list().map((c) => c.name);
-      if (!candidate.includes('通用')) candidate.push('通用');
-      const system = [
-        '你是 MTask 的通用需求提炼助手。给定一份“通用需求清单”Markdown，抽取其中具备跨项目复用价值的若干条通用需求（结合“需求标题/适用场景/实现要点/复用价值”四要素），为每一条输出 JSON。',
-        '要求：',
-        '1. 输出一个 JSON 数组，每元素为 {"title":"需求标题","content":"完整需求描述(Markdown，含适用场景/实现要点/复用价值)","category":"归类分类名"}',
-        '2. category 必须从候选分类名中选择最贴切的一个；若无合适分类，选“通用”',
-        '3. 只输出 JSON 数组本身，不要任何解释、前后缀、Markdown 代码围栏',
-        `候选分类：${candidate.join('、')}`,
-      ].join('\n');
-      const ai = await AIService.ask(toolId, system, `【通用需求清单】\n${answer.trim()}`);
-      if (!ai.ok || !ai.content) {
-        return res.status(400).json({ error: `AI 分组失败：${ai.error ?? '模型未返回结果'}` });
-      }
-      const drafts = parseReqDraft(ai.content);
-      if (!drafts.length) {
-        return res.status(400).json({ error: 'AI 未能从清单中解析出通用需求条目，请检查清单格式或改用手动分组' });
-      }
-      for (const d of drafts) {
-        const cid = ensureCat(d.category || '通用');
-        if (!cid) continue;
-        const fp = fingerprintOf(d.title, d.content);
-        if (ReqEntryService.existsByFingerprint(fp)) { skipped.push(d.title); continue; }
-        const e = ReqEntryService.create({ categoryId: cid, title: d.title, content: d.content, fingerprint: fp });
-        const nm = getDb().prepare('SELECT name FROM req_categories WHERE id = ?').get(cid) as { name: string };
-        created.push({ title: e.title, content: e.content, categoryId: e.category_id, categoryName: nm.name });
-      }
+      await generalizeAiReq(toolId, answer, cats, skipped, created);
     }
 
     cacheClear('req-categories'); // 新增/新建分类影响分类计数与列表
@@ -1238,8 +1299,16 @@ api.post('/settings/note-project', (req, res) => {
 });
 
 // ---------- 设置中心：数据迁移（换机重装用） ----------
-api.get('/settings/export', (_req, res) => {
+api.get('/settings/export', (req, res) => {
   try {
+    // 可选 ?tables=a,b,c 子集导出（默认全量）。未知表名直接 400，避免静默产出空包。
+    const raw = typeof req.query.tables === 'string' ? req.query.tables.trim() : '';
+    if (raw) {
+      const names = raw.split(',').map((s) => s.trim()).filter(Boolean);
+      const bad = names.filter((n) => !isExportTable(n));
+      if (bad.length) return res.status(400).json({ error: `未知导出表：${bad.join(', ')}` });
+      return res.json(exportBundle(names));
+    }
     res.json(exportBundle());
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });

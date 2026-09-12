@@ -4,6 +4,9 @@ import { v4 as uuid } from 'uuid';
 import { TaskImageService, type TaskImageMeta } from './TaskImageService';
 import { ReqEntryService } from './ReqService';
 
+/** 批量 IN 查询的每批 id 数：SQLite 变量上限 999，留足余量并与图片批量查询（≤200）同量级 */
+const PLAN_LOOKUP_BATCH = 200;
+
 /** DB 原始行：archived 为 number（SQLite 0/1） */
 export interface TaskRow {
   id: string;
@@ -79,9 +82,9 @@ export interface TaskListOptions {
   keyword?: string;
   /** 分类筛选；'none' 表示未分类任务 */
   categoryId?: string;
-  /** 状态筛选（todo/done）；不传返回该范围内全部状态。供 MCP/AI 按待办/已完成精确拉取，减少返回量。NOSONAR - todo 为状态枚举值，非待办标记 */
+  /** 状态筛选（待办/已完成）；不传返回该范围内全部状态。供 MCP/AI 按待办/已完成精确拉取，减少返回量 */
   status?: 'todo' | 'done';
-  /** 分析范围：只返回「待处理(todo) 或 未验证(verified=0)」的任务。与 status 互斥（优先 pending）。NOSONAR - todo 为状态枚举值，非待办标记
+  /** 分析范围：只返回「待处理 或 未验证(verified=0)」的任务。与 status 互斥（优先 pending）
    *  未验证任务即便已 done，其处理结果可能仍需关联判断，纳入便于 AI 分析上下文 */
   pending?: boolean;
   /** 排序键；默认 pinned（置顶优先+创建时间倒序），与旧行为一致 */
@@ -109,8 +112,8 @@ function rowToTask(r: TaskRow, images: TaskImageMeta[] = []): TaskView {
   return { ...r, verified: Boolean(r.verified), archived: Boolean(r.archived), pinned: Boolean(r.pinned), images };
 }
 
-/** 待办状态变更后反向同步关联的计划任务（done↔done，todo→doing），并按完成比例汇总父任务进度 */
-function syncPlanOnStatusChange(id: string, status: 'todo' | 'done'): void {
+/** 待办状态变更后反向同步关联的计划任务（已完成↔已完成，待办→进行中），并按完成比例汇总父任务进度 */
+function syncPlanOnStatusChange(id: string, status: string): void {
   const db = getDb();
   const planStatus = status === 'done' ? 'done' : 'doing';
   db.prepare('UPDATE plan_tasks SET status = ?, progress = CASE WHEN ? = 100 THEN 100 ELSE progress END, updated_at = ? WHERE linked_task_id = ?')
@@ -197,12 +200,20 @@ export const TaskService = {
     const rows = db.prepare(sql).all(...values) as TaskRow[];
     // 一次批量查图片，避免逐任务 N+1（内部已按 ≤200/批规避 SQLite 参数上限）
     const imageMap = TaskImageService.mapByTasks(rows.map((r) => r.id));
-    // T00462/T00451：批量反查项目计划关联（linked_task_id 命中即「计划联动任务」），值=来源计划标题
-    const planLinked = new Map(
-      (db.prepare(
-        `SELECT pt.linked_task_id AS id, pt.title FROM plan_tasks pt WHERE pt.archived = 0 AND pt.linked_task_id IN (${rows.map(() => '?').join(',') || "''"})`,
-      ).all(...rows.map((r) => r.id)) as Array<{ id: string; title: string }>).map((x) => [x.id, x.title]),
-    );
+    // T00462/T00451：批量反查项目计划关联（linked_task_id 命中即「计划联动任务」），值=来源计划标题。
+    // 必须分批：SQLite 变量上限 999，而无 limit 的调用（移动端/归档/队列页）会传入全量任务 id，
+    // 单条 IN (?,?,...) 在任务数 >999 时直接抛错（真实缺陷）；分批后同时把 SQL 文本长度控制住。
+    const planLinked = new Map<string, string>();
+    for (let i = 0; i < rows.length; i += PLAN_LOOKUP_BATCH) {
+      const chunk = rows.slice(i, i + PLAN_LOOKUP_BATCH);
+      if (chunk.length === 0) continue;
+      const placeholders = chunk.map(() => '?').join(',');
+      const hits = db.prepare(
+        `SELECT pt.linked_task_id AS id, pt.title FROM plan_tasks pt
+         WHERE pt.archived = 0 AND pt.linked_task_id IN (${placeholders})`,
+      ).all(...chunk.map((r) => r.id)) as Array<{ id: string; title: string }>;
+      for (const h of hits) planLinked.set(h.id, h.title);
+    }
     return rows.map((r) => {
       const view = rowToTask(r, imageMap.get(r.id) ?? []);
       const planTitle = planLinked.get(r.id);
@@ -227,7 +238,7 @@ export const TaskService = {
     const sets = keys.map((k) => `${k} = ?`).join(', ');
     const values = keys.map((k) => patch[k]);
     db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`).run(...values, now(), id);
-    // 反向计划联动（T00436）：待办被项目计划关联时，状态变更同步回计划任务（done↔done，todo→doing 进行中） NOSONAR - todo 为状态枚举值，非待办标记
+    // 反向计划联动（T00436）：待办被项目计划关联时，状态变更同步回计划任务（已完成↔已完成，待办→进行中）
     if (patch.status !== undefined) syncPlanOnStatusChange(id, patch.status);
     notifyChange('tasks');
     return this.getById(id)!;
