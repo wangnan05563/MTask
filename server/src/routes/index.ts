@@ -328,6 +328,30 @@ api.get('/aitools/types', (_req, res) => {
 });
 
 // 草稿连接测试：用表单未保存的 type/endpoint/apiKey/model 提前验证连通性（不落库）
+// 模型拖拽排序（T00446）：orderedIds 全量校验后事务重写 sort_weight
+api.post('/aitools/reorder', (req, res) => {
+  const { orderedIds } = (req.body ?? {}) as { orderedIds?: unknown };
+  if (!Array.isArray(orderedIds) || orderedIds.some((x) => typeof x !== 'string')) {
+    return res.status(400).json({ error: 'orderedIds 必填（id 字符串数组，按新顺序）' });
+  }
+  try {
+    const db = getDb();
+    const known = new Set(
+      (db.prepare('SELECT id FROM ai_tools').all() as Array<{ id: string }>).map((r) => r.id),
+    );
+    const ids = (orderedIds as string[]).filter((id) => known.has(id));
+    db.transaction(() => {
+      ids.forEach((id, i) => {
+        db.prepare('UPDATE ai_tools SET sort_weight = ? WHERE id = ?').run(i, id);
+      });
+    })();
+    cacheClear('aitools');
+    res.json({ ok: true, reordered: ids.length });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 api.post('/aitools/test', async (req, res) => {
   try {
     res.json(await ConfigService.testDraft(req.body ?? {}));

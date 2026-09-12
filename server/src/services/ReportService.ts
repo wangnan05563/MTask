@@ -5,6 +5,9 @@ import { randomUUID } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { AIService } from './AIService';
 import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
+import { getSetting } from './AppSettings';
+import { INBOX_PROJECT_ID } from './AppSettings';
+import { logService } from './LogService';
 
 /** 报表周期：day=日报 / week=周报 / month=月报 */
 export type ReportPeriod = 'day' | 'week' | 'month';
@@ -339,6 +342,21 @@ export async function aiGenerateReport(
   const buffer = await buildInWorker({ format, data, aiInsight: insight });
   const token = randomUUID();
   writeFileSync(join(reportTmpDir(), token), buffer);
+  // T00443 / PRD AI-5：摘要推送（可配置，默认关）——AI 周报生成后把摘要写入收件箱项目任务
+  if (getSetting('report.aiSummaryToInbox') === '1') {
+    try {
+      const db = getDb();
+      const tid = randomUUID();
+      const t = new Date().toISOString();
+      db.prepare(
+        `INSERT INTO tasks (id, project_id, title, description, priority, status, verified, archived, pinned, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'normal', 'todo', 0, 0, 0, ?, ?)`,
+      ).run(tid, INBOX_PROJECT_ID, `[周报摘要] ${data.periodLabel} ${data.startDate}~${data.endDate}`, insight.slice(0, 4000), t, t);
+      logService.log('INFO', 'ai', `[周报摘要推送] 已写入收件箱任务（${data.periodLabel}）`);
+    } catch (e) {
+      logService.log('ERROR', 'ai', `[周报摘要推送] 失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
   return { token, filename: `MTask-AI-${data.periodLabel}-${data.startDate}.${format}`, insight };
 }
 
@@ -382,6 +400,21 @@ export async function aiGenerateReportStream(
   const token = randomUUID();
   writeFileSync(join(reportTmpDir(), token), buffer);
   onStage('文件已生成，可在左侧下载。');
+  // T00443 / PRD AI-5：流式版同样支持摘要推送（可配置）
+  if (getSetting('report.aiSummaryToInbox') === '1') {
+    try {
+      const db = getDb();
+      const tid = randomUUID();
+      const t = new Date().toISOString();
+      db.prepare(
+        `INSERT INTO tasks (id, project_id, title, description, priority, status, verified, archived, pinned, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'normal', 'todo', 0, 0, 0, ?, ?)`,
+      ).run(tid, INBOX_PROJECT_ID, `[周报摘要] ${data.periodLabel} ${data.startDate}~${data.endDate}`, insight.slice(0, 4000), t, t);
+      logService.log('INFO', 'ai', `[周报摘要推送] 已写入收件箱任务（${data.periodLabel}，流式）`);
+    } catch (e) {
+      logService.log('ERROR', 'ai', `[周报摘要推送] 失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
   return { token, filename: `MTask-AI-${data.periodLabel}-${data.startDate}.${format}`, insight };
 }
 

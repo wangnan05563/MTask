@@ -178,13 +178,27 @@ interface ToolRowProps {
   readonly onFetchRowModels: (t: AITool) => void;
   readonly onSetDefault: (t: AITool, kind: 'organize' | 'develop') => void;
   readonly onRemove: (t: AITool) => void;
+  /** T00446：拖拽排序回调 */
+  readonly onDragStart?: (id: string) => void;
+  readonly onDragOver?: (id: string) => void;
+  readonly onDrop?: (id: string) => void;
+  readonly onDragEnd?: () => void;
+  readonly dragId?: string;
+  readonly overId?: string;
 }
 
 /** 表格行（S3776 拆分）：单行渲染逻辑从页面组件抽出，API Key 列与操作列再下沉到单元格组件 */
 function ToolRow(props: ToolRowProps) {
   const { tool } = props;
   return (
-    <tr className={`arena-row${props.flushed ? ' flush' : ''}`}>
+    <tr
+      className={`arena-row${props.flushed ? ' flush' : ''}${props.dragId === tool.id ? ' tool-dragging' : props.overId === tool.id ? ' tool-over' : ''}`}
+      draggable
+      onDragStart={() => props.onDragStart?.(tool.id)}
+      onDragEnd={() => { props.onDragEnd?.(); }}
+      onDragOver={(e) => { e.preventDefault(); props.onDragOver?.(tool.id); }}
+      onDrop={() => props.onDrop?.(tool.id)}
+    >
       <td style={cellStyle}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <PinToggle pinned={tool.pinned} onToggle={() => props.onTogglePin(tool)} />
@@ -374,6 +388,9 @@ function ToolFormDialog(props: ToolFormDialogProps) {
 
 /** 模型管理：集中记录各 AI 厂商的 API Key、模型配置等连接信息（复用 ai_tools 体系） */
 export function AIToolsPage() {
+  // T00446：模型拖拽排序状态
+  const [toolDragId, setToolDragId] = useState('');
+  const [toolOverId, setToolOverId] = useState('');
   const [tools, setTools] = useState<AITool[]>([]);
   const [types, setTypes] = useState<string[]>([]);
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; msg: string }>>({});
@@ -645,7 +662,9 @@ export function AIToolsPage() {
         .abtn { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
         .arena-row:hover .abtn, .arena-row:focus-within .abtn { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
         @keyframes rowflush { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
-        .arena-row.flush td { animation: rowflush 1.4s ease; }`}</style>
+        .arena-row.flush td { animation: rowflush 1.4s ease; }
+        .tool-dragging { opacity: .5; transform: scale(1.01); box-shadow: 0 6px 18px rgba(0,0,0,.22); background: var(--surface-2); }
+        .tool-over { box-shadow: inset 0 3px 0 var(--accent); background: var(--accent-soft, rgba(9,105,218,.08)); }`}</style>
       {/* 工具栏 */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <h3 style={{ fontSize: 15, margin: 0 }}>配置记录（{filtered.length}/{tools.length}）</h3>
@@ -696,6 +715,21 @@ export function AIToolsPage() {
               // key 携带 flashAt 时间戳：保存高亮时强制 React 重建该行，重放 flush 动画
               key={flashAt[t.id] ? `f${flashAt[t.id]}-${t.id}` : t.id}
               tool={t}
+              dragId={toolDragId}
+              overId={toolOverId}
+              onDragStart={setToolDragId}
+              onDragOver={setToolOverId}
+              onDragEnd={() => { setToolDragId(''); setToolOverId(''); }}
+              onDrop={(targetId) => {
+                if (!toolDragId || toolDragId === targetId) { setToolDragId(''); setToolOverId(''); return; }
+                const ids = filtered.map((x) => x.id);
+                const from = ids.indexOf(toolDragId);
+                const to = ids.indexOf(targetId);
+                if (from < 0 || to < 0) return;
+                ids.splice(to, 0, ids.splice(from, 1)[0]);
+                void api.post('/aitools/reorder', { orderedIds: ids }).then(() => { void load(); });
+                setToolDragId(''); setToolOverId('');
+              }}
               testing={testing}
               fetchingModels={fetchingModels}
               testResult={testResult}

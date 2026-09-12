@@ -95,7 +95,7 @@ export const ConfigService = {
   list() {
     const cached = cacheGet<ReturnType<typeof toSafe>[]>('aitools');
     if (cached) return cached;
-    const rows = getDb().prepare('SELECT * FROM ai_tools ORDER BY pinned DESC, created_at DESC').all() as AIToolRow[];
+    const rows = getDb().prepare('SELECT * FROM ai_tools ORDER BY pinned DESC, sort_weight ASC, created_at DESC').all() as AIToolRow[];
     const safe = rows.map(toSafe);
     cacheSet('aitools', safe, 5000); // 读多写少，5s TTL；写操作会主动失效
     return safe;

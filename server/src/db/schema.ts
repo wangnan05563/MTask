@@ -234,6 +234,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('tasks', 'handle_result', 'handle_result TEXT');
   backfillTaskNo();
   ensureColumn('ai_tools', 'pinned', 'pinned INTEGER NOT NULL DEFAULT 0');
+  // T00446：模型拖拽排序权重（小值在前）
+  ensureColumn('ai_tools', 'sort_weight', 'sort_weight INTEGER NOT NULL DEFAULT 0');
   ensureColumn('prompts', 'pinned', 'pinned INTEGER NOT NULL DEFAULT 0');
   // 异步队列回执：ticket=平台受理标识，submitted_at=提交时间（配合 polling 判超时用）
   ensureColumn('queue_jobs', 'ticket', 'ticket TEXT');
