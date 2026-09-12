@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore, type ClipboardEvent } from 'react';
-import { api, imageUrl, fetchImage, imageDataURL, type AITool, type Project, type PromptCategory, type Task, type TaskCategory, type TaskImage } from '../api/client';
+import { api, imageUrl, fetchImage, imageDataURL, type AITool, type Project, type PromptCategory, type ReqCategory, type Task, type TaskCategory, type TaskImage } from '../api/client';
 import { beautifyStore } from '../stores/beautifyStore';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown';
@@ -62,11 +62,12 @@ export function TasksPage() {
   const reusePanelRef = useRef<HTMLDivElement>(null);
   const [reuseProjectId, setReuseProjectId] = useState('');
   const [reuseSearch, setReuseSearch] = useState('');
-  // 复用目标：project=复制到项目（原有能力保持不变）；prompt=打包为 JSON 资产复制到提示词页
-  const [reuseTarget, setReuseTarget] = useState<'project' | 'prompt'>('project');
-  // 复制到提示词时选中的目标分类；promptCats 为可选提示词分类（懒加载，打开弹窗时拉取）
+  // 复用目标：project=复制到项目；prompt=打包为 JSON 资产复制到提示词页；req=打包为通用需求条目
+  const [reuseTarget, setReuseTarget] = useState<'project' | 'prompt' | 'req'>('project');
+  // 复制到提示词/通用需求时选中的目标分类；promptCats 为可选提示词分类、reqCats 为可选通用需求分类（均懒加载）
   const [reuseCategoryId, setReuseCategoryId] = useState('');
   const [promptCats, setPromptCats] = useState<PromptCategory[]>([]);
+  const [reqCats, setReqCats] = useState<ReqCategory[]>([]);
   // 复用（创建副本）操作进行中：全局 busy store，切页不丢失，防止请求进行中重复提交
   const reuseBusy = useBusy('tasks.reuse');
   // 项目/模型为长期偏好，用 localStorage 持久化，切页与刷新后均保留；未选状态透传空串，不强制填充
@@ -212,8 +213,30 @@ export function TasksPage() {
   }, [activeProject, loadTasks]);
   useEffect(() => { void loadTools(); }, [loadTools]);
   useEffect(() => { void loadCategories(); }, [loadCategories]);
-  // 美化运行态已提升至 beautifyStore（模块级）：切页不取消、不清理——in-flight 请求继续，
-  // 完成回调写 store 草稿/运行态，回切即见（T00396 路径2，替代原「卸载即取消」方案）
+  // T00433：MCP 回传 / 队列执行 / 其他窗口改任务状态时，前端无感知——轻量轮询对比签名，有变化才刷新。
+  // 保护条件：任何未保存草稿或 AI 操作进行中时跳过本轮，避免打断用户编辑（变化留待下一轮干净窗口）。
+  const externalSigRef = useRef('');
+  useEffect(() => {
+    if (!activeProject) return;
+    const tick = async () => {
+      const editing = Object.keys(titleDrafts).length > 0 || Object.keys(descDrafts).length > 0
+        || Object.keys(resultDrafts).length > 0 || Object.keys(drafts).length > 0
+        || Object.keys(imgDrafts).length > 0
+        || anyBeautify || classifyBusy || Object.keys(optimizingMap).some(Boolean);
+      if (editing) return;
+      try {
+        const list = await api.get<Task[]>(`/tasks?projectId=${activeProject}&archived=false`);
+        const sig = list.map((t) => `${t.id}:${t.status}:${t.verified ? 1 : 0}:${t.updated_at}:${t.category_id ?? ''}:${t.priority}`).join('|');
+        if (sig === externalSigRef.current) return;
+        externalSigRef.current = sig;
+        await loadTasks(activeProject);
+      } catch { /* 后端瞬时不可达：忽略本轮 */ }
+    };
+    const id = setInterval(() => void tick(), 10000);
+    const onVisible = () => { if (document.visibilityState === 'visible') void tick(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', onVisible); };
+  }, [activeProject, loadTasks, titleDrafts, descDrafts, resultDrafts, drafts, imgDrafts, anyBeautify, classifyBusy, optimizingMap]);
   // 工具下拉展开期间监听全局焦点移出：内部元素间切换时 relatedTarget 仍在容器内不收起，移出容器才收起。
   // 挂在 document 上而非容器 div，可避免为挂 onBlur 而给非交互容器加 tabIndex/role
   useEffect(() => {
@@ -231,6 +254,23 @@ export function TasksPage() {
     await api.post('/projects', { name });
     setActiveProject('');
     void loadProjects();
+  }
+
+  /** 修改当前项目名称：弹输入框预填当前名称，确认后 PATCH 更新并刷新列表。
+   *  项目 id 不变故不改 activeProject，仅由 loadProjects 反映到下拉框名称。 */
+  async function renameProject() {
+    if (!activeProject) return flash('请先选择要修改的项目');
+    const proj = projects.find((p) => p.id === activeProject);
+    if (!proj) return;
+    const name = await askInput({ title: '修改项目名称', placeholder: '请输入项目名称', defaultValue: proj.name });
+    if (!name || name.trim() === proj.name) return;
+    try {
+      await api.patch(`/projects/${proj.id}`, { name: name.trim() });
+      void loadProjects();
+      flash(`已修改项目名称为「${name.trim()}」`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
   }
 
   /** 删除项目：风险操作。先弹确认框（说明不可恢复 + 任务将一并删除），确认后再删除。
@@ -262,6 +302,13 @@ export function TasksPage() {
     } catch { /* 提示词分类加载失败仅导致无法复制到提示词，不影响原有任务功能 */ }
   }, []);
 
+  /** 拉取通用需求分类供复用弹窗选择（懒加载，打开弹窗时拉取；失败不阻塞任务页） */
+  const loadReqCats = useCallback(async () => {
+    try {
+      setReqCats(await api.get<ReqCategory[]>('/req-categories'));
+    } catch { /* 通用需求分类加载失败仅导致无法复制到通用需求 */ }
+  }, []);
+
   /** 复用弹窗内新建提示词分类：建好后自动选中，便于把任务资产立即落入新分类 */
   async function addPromptCat() {
     const name = await askInput({ title: '新建提示词分类', placeholder: '请输入分类名称' });
@@ -269,6 +316,19 @@ export function TasksPage() {
     try {
       const created = await api.post<PromptCategory>('/prompt-categories', { name });
       await loadPromptCats();
+      setReuseCategoryId(created.id);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** 复用弹窗内新建通用需求分类：建好后自动选中，便于把任务资产立即落入新分类 */
+  async function addReqCat() {
+    const name = await askInput({ title: '新建通用需求分类', placeholder: '请输入分类名称' });
+    if (!name) return;
+    try {
+      const created = await api.post<ReqCategory>('/req-categories', { name });
+      await loadReqCats();
       setReuseCategoryId(created.id);
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
@@ -446,14 +506,15 @@ export function TasksPage() {
     beautifyAll();
   }
 
-  /** 批量智能分类：一键对当前项目全部未分类待办任务做 AI 语义识别自动分到已有分类。
+  /** 批量智能分类：一键对当前项目全部未分类任务（待办 + 已完成，T00432）做 AI 语义识别自动分到已有分类。
    *  逐个复用 matchCategory 得到最贴切分类，命中即写回 category_id；无工具/无未分类任务/全失败都给明确反馈。 */
   async function batchClassify() {
     if (classifyBusy) return flash('正在批量分类中，请稍候');
     if (!organizeToolId) return flash('请先在「模型管理」页添加并选择整理工具');
-    const target = todo.filter((t) => !t.category_id && t.title.trim());
-    if (target.length === 0) return flash('当前项目没有未分类的待办任务');
-    if (!(await askConfirm(`将对 ${target.length} 个未分类任务执行批量智能分类，确认？`))) return;
+    // T00432：分类范围包含已完成任务——未分类的待办与已完成一并纳入
+    const target = [...todo, ...done].filter((t) => !t.category_id && t.title.trim());
+    if (target.length === 0) return flash('当前项目没有未分类的任务');
+    if (!(await askConfirm(`将对 ${target.length} 个未分类任务（含已完成）执行批量智能分类，确认？`))) return;
     setClassifyBusy(true);
     let hit = 0;
     try {
@@ -549,7 +610,7 @@ export function TasksPage() {
     flash('任务标题已更新');
   }
 
-  /** 复用任务到所选目标：项目=原有复制逻辑保持不变；提示词=将任务打包为 JSON 资产写入提示词分类 */
+  /** 复用任务到所选目标：项目=复制；提示词=打包为 JSON 资产写入提示词分类；需求=打包为通用需求条目 */
   async function reuseTask() {
     // 未选中目标任务或所选目标对应选择为空时直接返回，提前避免无效请求
     if (!reuseOpen || (reuseTarget === 'project' ? !reuseProjectId : !reuseCategoryId)) return;
@@ -559,10 +620,14 @@ export function TasksPage() {
         await api.post(`/tasks/${reuseOpen}/reuse`, { projectId: reuseProjectId });
         const target = projects.find((p) => p.id === reuseProjectId)?.name ?? '';
         flash(`已复用任务到「${target || '目标项目'}」`);
-      } else {
+      } else if (reuseTarget === 'prompt') {
         await api.post(`/tasks/${reuseOpen}/to-prompt`, { categoryId: reuseCategoryId });
         const cat = promptCats.find((c) => c.id === reuseCategoryId)?.name ?? '';
         flash(`已复制任务到提示词「${cat || '该分类'}」`);
+      } else {
+        await api.post(`/tasks/${reuseOpen}/to-req`, { categoryId: reuseCategoryId });
+        const cat = reqCats.find((c) => c.id === reuseCategoryId)?.name ?? '';
+        flash(`已复制任务到通用需求「${cat || '该分类'}」`);
       }
       setReuseOpen(null);
       setReuseProjectId('');
@@ -884,9 +949,9 @@ export function TasksPage() {
           {t.handle_result ? <ClipboardEdit size={13} /> : <ClipboardList size={13} />}
         </button>
         <button
-          onClick={() => { setReuseOpen(t.id); setReuseProjectId(''); setReuseSearch(''); setReuseCategoryId(''); void loadPromptCats(); }}
-          title="复用此任务 — 将该任务复制到其他项目，或打包为资产复制到提示词页"
-          aria-label="复用此任务：将该任务复制到其他项目"
+          onClick={() => { setReuseOpen(t.id); setReuseProjectId(''); setReuseSearch(''); setReuseCategoryId(''); void loadPromptCats(); void loadReqCats(); }}
+          title="复用此任务 — 将该任务复制到其他项目，或打包为资产复制到提示词/通用需求页"
+          aria-label="复用此任务：将该任务复制到其他项目或资产页"
           className="task-op"
           style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
         >
@@ -1365,6 +1430,16 @@ export function TasksPage() {
         >
           <FolderPlus size={13} />
         </button>
+        {/* 修改当前项目名称：轻量操作，弹输入框预填当前名称；置于删除按钮前，与删除同属「当前项目」操作区 */}
+        <button
+          onClick={() => void renameProject()}
+          disabled={!activeProject}
+          title="修改项目名称 — 重命名当前选中项目"
+          aria-label="修改项目名称：重命名当前选中项目"
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed', opacity: activeProject ? 1 : 0.5 }}
+        >
+          <SquarePen size={13} />
+        </button>
         {/* 删除当前项目：风险操作，点击后弹确认框，确认才执行；危险色标示 */}
         <button
           onClick={() => void deleteProject()}
@@ -1378,13 +1453,13 @@ export function TasksPage() {
         {renderToolSelector()}
         {renderModelHint()}
         {renderBeautifyToolbarButton()}
-        {/* 一键批量分类：对当前项目全部未分类待办任务做 AI 语义识别自动分类，风格与批量美化按钮一致 */}
+        {/* 一键批量分类：对当前项目全部未分类任务（待办 + 已完成，T00432）做 AI 语义识别自动分类，风格与批量美化按钮一致 */}
         <button
           onClick={() => void batchClassify()}
-          disabled={classifyBusy || todo.length === 0}
+          disabled={classifyBusy || (todo.length === 0 && done.length === 0)}
           className={classifyBusy ? 'task-breathe' : undefined}
-          title={classifyBusy ? '批量分类进行中…' : 'AI 批量分类 — 对未分类待办任务智能识别自动分到已有分类'}
-          aria-label={classifyBusy ? '批量分类进行中' : 'AI 批量分类：对未分类待办任务自动分类'}
+          title={classifyBusy ? '批量分类进行中…' : 'AI 批量分类 — 对未分类任务（含已完成）智能识别自动分到已有分类'}
+          aria-label={classifyBusy ? '批量分类进行中' : 'AI 批量分类：对未分类任务（含已完成）自动分类'}
           style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: classifyBusy ? 'var(--accent)' : 'transparent', color: classifyBusy ? 'var(--accent-text)' : 'var(--text)' }}
         >
           <Tags size={13} />
@@ -1580,6 +1655,12 @@ export function TasksPage() {
               aria-label="复制到提示词：将任务打包为 JSON 资产存入提示词页分类"
               style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'prompt' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'prompt' ? 'var(--accent-text)' : 'var(--text)' }}
             >复制到提示词</button>
+            <button
+              onClick={() => setReuseTarget('req')}
+              title="复制到通用需求 — 将任务打包为通用需求条目存入需求页分类"
+              aria-label="复制到通用需求：将任务打包为通用需求条目存入需求页分类"
+              style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'req' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'req' ? 'var(--accent-text)' : 'var(--text)' }}
+            >复制到通用需求</button>
           </div>
           {reuseTarget === 'project' ? (
             <>
@@ -1602,6 +1683,31 @@ export function TasksPage() {
                   <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>无匹配项目</div>
                 )}
               </div>
+            </>
+          ) : reuseTarget === 'req' ? (
+            <>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                将任务打包为通用需求条目，存入所选需求分类（标题沿用任务名，内容含描述与 AI 摘要）。
+              </div>
+              {reqCats.length === 0 ? (
+                <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>暂无可用的通用需求分类，请先新建。</p>
+              ) : (
+                <select
+                  autoFocus
+                  value={reuseCategoryId}
+                  onChange={(e) => setReuseCategoryId(e.target.value)}
+                  aria-label="选择通用需求分类"
+                  style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14 }}
+                >
+                  <option value="">请选择分类</option>
+                  {reqCats.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.reqCount ?? 0}）</option>)}
+                </select>
+              )}
+              <button onClick={() => void addReqCat()} title="新建分类 — 在通用需求页新建一个分类用于存放任务资产"
+                aria-label="新建分类：在通用需求页新建一个分类用于存放任务资产"
+                style={{ marginTop: 8, fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
+                <Plus size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 新建分类
+              </button>
             </>
           ) : (
             <>
@@ -1637,7 +1743,7 @@ export function TasksPage() {
               </button>
             ) : (
               <button onClick={() => void reuseTask()} disabled={!reuseCategoryId || reuseBusy} style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)' }}>
-                {reuseBusy ? '复制中…' : '复制到提示词'}
+                {reuseBusy ? '复制中…' : reuseTarget === 'req' ? '复制到通用需求' : '复制到提示词'}
               </button>
             )}
           </div>
