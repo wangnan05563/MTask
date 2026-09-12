@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, CalendarPlus, Download, FileSpreadsheet, Link2, Link2Off, RefreshCw, Sparkles, Trash2, Upload } from 'lucide-react';
+import { Archive, CalendarPlus, CalendarRange, Download, FileSpreadsheet, Link2, Link2Off, Plus, RefreshCw, Sparkles, Trash2, Upload } from 'lucide-react';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { usePersistentState, useSessionState } from '../ui/session';
@@ -145,7 +145,7 @@ export function PlanPage() {
     try {
       const r = await api.post<{ plan: { id: string } }>(`/plans/${p.id}/insert-after`, { title: title.trim() });
       setNewRowId(r.plan.id);
-      void loadTasks(activeProject);
+      void reload();
       flash('已插入，排期时间已自动重排');
       setTimeout(() => setNewRowId((cur) => (cur === r.plan.id ? '' : cur)), 3000);
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
