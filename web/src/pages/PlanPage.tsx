@@ -539,6 +539,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         .plan-new { animation: plan-new-pop 2.4s ease; }
       `}</style>
       <style>{planTableCss}</style>
+      <style>{planTableCss}</style>
       {/* 工具条：项目选择 + 增删导入导出 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
         <select value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ ...inputStyle, minWidth: 140 }} aria-label="选择项目">
