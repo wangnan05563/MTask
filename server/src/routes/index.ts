@@ -743,17 +743,20 @@ api.post('/ai/generalize-to-req', async (req, res) => {
 
 // ---------- 复制到待办（T00436）：提示词 / 通用需求 一键转待办，落到默认记事项目（收件箱） ----------
 /** 通用实现：按来源表取标题/内容，创建 tasks 行；目标项目=移动端随手记默认项目（收件箱兜底） */
-function createTaskFromSource(table: 'prompts' | 'req_entries', sourceId: string): { taskId: string; projectId: string } {
+function createTaskFromSource(table: 'prompts' | 'req_entries', sourceId: string): { taskId: string; projectId: string; reused: boolean } {
   const src = getDb().prepare(`SELECT id, title, content FROM ${table} WHERE id = ?`).get(sourceId) as { title: string; content: string } | undefined;
   if (!src) throw new Error('来源内容不存在');
   const projectId = getDefaultNoteProjectId();
-  const id = uuid();
   const prefix = table === 'prompts' ? '[提示词]' : '[通用需求]';
+  // T00445 教训：多渠道创建易重复——同项目同标题已存在则直接返回既有任务，不重复插入
+  const exist = getDb().prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? LIMIT 1').get(projectId, `${prefix} ${src.title}`) as { id: string } | undefined;
+  if (exist) return { taskId: exist.id, projectId, reused: true };
+  const id = uuid();
   getDb().prepare(
     `INSERT INTO tasks (id, project_id, title, description, priority, status, verified, archived, pinned, created_at, updated_at)
      VALUES (?, ?, ?, ?, 'normal', 'todo', 0, 0, 0, ?, ?)`,
   ).run(id, projectId, `${prefix} ${src.title}`, src.content || '', now(), now());
-  return { taskId: id, projectId };
+  return { taskId: id, projectId, reused: false };
 }
 
 api.post('/prompts/:id/to-task', (req, res) => {

@@ -11,6 +11,7 @@ import { McpServer, type CallToolResult } from '@modelcontextprotocol/sdk/server
 import { getDb } from '../db/connection';
 import { getDefaultNoteProjectId } from '../services/AppSettings';
 import { TaskService } from '../services/TaskService';
+import { PlanService } from '../services/PlanService';
 import { ArchiveService } from '../services/ArchiveService';
 import {
   gatherReportData,
@@ -66,7 +67,7 @@ export async function createMCPServer(): Promise<McpServer> {
 
   server.registerTool('mtask_create_task', {
     title: '创建任务',
-    description: '在指定项目下新建任务；projectId 缺省时落到默认记事项目。title 必填。',
+    description: '在指定项目下新建任务；projectId 缺省时落到默认记事项目。title 必填。默认开启查重：同项目存在同标题任务时不再新建，直接返回既有任务（reused=true），避免多渠道回写产生重复待办。',
     inputSchema: {
       projectId: z.string().optional().describe('目标项目 id，缺省用默认记事项目'),
       title: z.string().describe('任务标题（必填）'),
@@ -74,6 +75,7 @@ export async function createMCPServer(): Promise<McpServer> {
       priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('优先级'),
       status: z.enum(['todo', 'done']).optional().describe('状态'),
       categoryId: z.string().optional().describe('任务分类 id'),
+      dedupe: z.boolean().optional().describe('同项目同标题查重（默认开启；命中时返回既有任务且 reused=true，不新建）'),
     },
   }, async (a) => {
     try {
@@ -84,6 +86,15 @@ export async function createMCPServer(): Promise<McpServer> {
       if (!getDb().prepare('SELECT 1 FROM projects WHERE id = ?').get(pid)) {
         return err(`归属项目不存在：${pid}`);
       }
+      // 查重（T00445 教训：MCP 回传/计划镜像/手动创建多渠道并存，无查重会产生重复待办）
+      // 规范化在 JS 侧统一做（SQLite 无 regexp）：比对「去所有空白」后的标题，避免空格差异漏配
+      const dedupe = a.dedupe !== false;
+      const normTitle = a.title.replace(/\s+/g, '');
+      if (dedupe) {
+        const rows = getDb().prepare('SELECT * FROM tasks WHERE project_id = ?').all(pid) as Array<Record<string, unknown>>;
+        const exist = rows.find((r) => String(r.title ?? '').replace(/\s+/g, '') === normTitle);
+        if (exist) return ok(json({ reused: true, task: exist }), { reused: true, task: exist });
+      }
       const task = TaskService.create({
         projectId: pid,
         title: a.title,
@@ -93,6 +104,77 @@ export async function createMCPServer(): Promise<McpServer> {
         categoryId: a.categoryId,
       });
       return ok(json(task), { task });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_list_plans', {
+    title: '列出项目计划',
+    description: '列出指定项目的计划任务（串行瀑布时间线，含起止日期/工期/状态/进度/关联待办编号）。Agent 用于了解项目排期与规划上下文，避免与既有计划重复回写。includeArchived=true 时返回已归档计划。',
+    inputSchema: {
+      projectId: z.string().optional().describe('项目 id，与 projectName 二选一'),
+      projectName: z.string().optional().describe('项目名称（如 MTask），按名称解析'),
+      includeArchived: z.boolean().optional().describe('是否包含已归档计划（默认否）'),
+    },
+  }, async (a) => {
+    try {
+      let pid = a.projectId?.trim() || '';
+      if (!pid && a.projectName?.trim()) {
+        const p = getDb().prepare('SELECT id FROM projects WHERE name = ?').get(a.projectName.trim()) as { id: string } | undefined;
+        if (!p) return err(`项目不存在：${a.projectName}`);
+        pid = p.id;
+      }
+      if (!pid) return err('projectId 或 projectName 必填');
+      if (a.includeArchived) {
+        const all = PlanService.listArchived().filter((r) => r.project_id === pid);
+        return ok(json(all.map((r) => ({
+          title: r.title, startDate: r.start_date, endDate: r.end_date,
+          durationDays: r.duration_days, status: r.status, progress: r.progress, assignee: r.assignee, archived: true,
+        }))), { plans: all });
+      }
+      const rows = PlanService.list(pid);
+      const plans = rows.map((r) => ({
+        title: r.title, description: r.description, startDate: r.start_date, endDate: r.end_date,
+        durationDays: r.duration_days, progress: r.progress, status: r.status, assignee: r.assignee,
+        linkedTaskNo: null as string | null,
+      }));
+      // 附关联待办编号（Agent 回传时需要 taskNo 而非内部 id）
+      for (let i = 0; i < rows.length; i++) {
+        const lid = rows[i].linked_task_id;
+        if (lid) {
+          const t = getDb().prepare('SELECT task_no FROM tasks WHERE id = ?').get(lid) as { task_no: string | null } | undefined;
+          plans[i].linkedTaskNo = t?.task_no ?? null;
+        }
+      }
+      return ok(json(plans), { plans });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_create_plans', {
+    title: '批量创建项目计划',
+    description: '把 WBS/需求拆解结果批量写入指定项目的计划时间线（串行瀑布：任务按顺序自动按工作日排期，跳过周末与节假日；首条可带 startDate 作锚点）。适用于「把需求文档/PRD 拆分为项目计划」类回写。',
+    inputSchema: {
+      projectId: z.string().optional().describe('目标项目 id，与 projectName 二选一'),
+      projectName: z.string().optional().describe('项目名称，按名称解析'),
+      items: z.array(z.object({
+        title: z.string().describe('任务标题（必填，建议带 WBS 编号）'),
+        description: z.string().optional().describe('描述'),
+        startDate: z.string().optional().describe('开始日期 YYYY-MM-DD（仅首条生效作时间线锚点，其余由串行排期推导）'),
+        durationDays: z.number().optional().describe('工期（工作日数，默认 1）'),
+        assignee: z.string().optional().describe('负责人'),
+        status: z.enum(['todo', 'doing', 'done', 'blocked']).optional().describe('状态，默认 todo'),
+      })).describe('计划条目数组（按执行顺序排列）'),
+    },
+  }, async (a) => {
+    try {
+      let pid = a.projectId?.trim() || '';
+      if (!pid && a.projectName?.trim()) {
+        const p = getDb().prepare('SELECT id FROM projects WHERE name = ?').get(a.projectName.trim()) as { id: string } | undefined;
+        if (!p) return err(`项目不存在：${a.projectName}`);
+        pid = p.id;
+      }
+      if (!pid) return err('projectId 或 projectName 必填');
+      const r = PlanService.createBatch(pid, a.items);
+      return ok(json(r), { ok: true, ...r });
     } catch (e) { return err((e as Error).message); }
   });
 

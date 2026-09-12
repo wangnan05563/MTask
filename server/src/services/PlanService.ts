@@ -341,14 +341,25 @@ export const PlanService = {
     return this.get(id);
   },
 
-  /** 由计划任务创建新待办（接收计划标题/描述），并直接关联 */
-  createLinkedTodo(id: string): { plan: PlanTaskRow; taskId: string } {
+  /** 由计划任务创建新待办（接收计划标题/描述），并直接关联。
+   *  T00445 教训：多渠道创建易产生重复待办——创建前查同项目同标题，已存在则直接关联既有任务。 */
+  createLinkedTodo(id: string): { plan: PlanTaskRow; taskId: string; reused: boolean } {
     const db = getDb();
     const row = this.get(id);
     if (!row) throw new Error('计划任务不存在');
     if (row.linked_task_id) throw new Error('已关联待办，请先解除关联');
-    const taskId = uuid();
+    // 同项目查重：规范化标题一致的待办视为已存在，直接关联（避免重复创建）
+    const exist = db.prepare('SELECT id FROM tasks WHERE project_id = ? AND REPLACE(title, char(10), \'\') = ? LIMIT 1')
+      .get(row.project_id, `[计划] ${row.title}`) as { id: string } | undefined;
     const t = now();
+    if (exist) {
+      db.transaction(() => {
+        db.prepare('UPDATE plan_tasks SET linked_task_id = ?, updated_at = ? WHERE id = ?').run(exist.id, now(), id);
+        db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?').run(taskStatusForPlan(row.status), now(), exist.id);
+      })();
+      return { plan: this.get(id)!, taskId: exist.id, reused: true };
+    }
+    const taskId = uuid();
     db.transaction(() => {
       db.prepare(
         `INSERT INTO tasks (id, project_id, title, description, priority, status, verified, archived, pinned, created_at, updated_at)
@@ -356,7 +367,7 @@ export const PlanService = {
       ).run(taskId, row.project_id, `[计划] ${row.title}`, row.description || '', taskStatusForPlan(row.status), t, t);
       db.prepare('UPDATE plan_tasks SET linked_task_id = ?, updated_at = ? WHERE id = ?').run(taskId, now(), id);
     })();
-    return { plan: this.get(id)!, taskId };
+    return { plan: this.get(id)!, taskId, reused: false };
   },
 
   // ---------- 节假日 ----------
@@ -622,7 +633,8 @@ export const PlanService = {
   }> {
     const system = [
       '你是 MTask 的项目计划 WBS 拆分助手。给定一份需求文档（Markdown 层级文本，# 数量表示标题层级），请：',
-      '1. 按 WBS（工作分解结构）规范把文档内容拆分为有序的计划任务：从需求中识别阶段/功能模块/具体任务，用标题编号表达层级（如 "1 项目启动"、"1.1 需求评审"）',
+      '0. 先识别文档类型：若为「调研报告/PRD/优化建议」类文档（内含多条编号的优化需求/建议清单，如 P0/P1/P2 或 UX-1/AI-1 等），应拆分的是**文档中提出的需求条目**（每条建议=一个任务），而非文档的撰写步骤；若为「功能需求/说明书」类文档，才按功能模块拆分实施任务。',
+      '1. 按 WBS（工作分解结构）规范把识别出的内容拆分为有序的计划任务：用标题编号表达层级（如 "1 项目启动"、"1.1 需求评审"）',
       '2. 为每个任务估算工期（工作日数，依据任务范围合理估计）',
       '3. 输出 JSON 数组，每元素为：',
       '{"title":"WBS 编号+任务名","description":"该任务对应的需求要点（保留原文关键信息，Markdown）","durationDays":工期工作日数,"assignee":"","status":"todo"}',
