@@ -325,6 +325,30 @@ export const PlanService = {
     return getDb().prepare('DELETE FROM plan_tasks WHERE id = ? AND archived = 1').run(id).changes > 0;
   },
 
+  /**
+   * 拖拽排序（T00459）：前端传拖拽后的完整 id 顺序，事务内校验覆盖一致后重写 sort_order
+   * （0..n 连续化），再全量重排时间线。仅接受活跃计划，防止把归档行卷入。
+   */
+  reorder(projectId: string, orderedIds: string[]): { reordered: number } {
+    if (!getDb().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
+    const active = getDb().prepare(
+      "SELECT id FROM plan_tasks WHERE project_id = ? AND archived = 0 ORDER BY sort_order",
+    ).all(projectId) as Array<{ id: string }>;
+    const activeIds = new Set(active.map((r) => r.id));
+    if (orderedIds.length !== activeIds.size || !orderedIds.every((id) => activeIds.has(id))) {
+      throw new Error('orderedIds 必须与当前活跃计划一一对应（数量与成员一致）');
+    }
+    const db = getDb();
+    const t = now();
+    db.transaction(() => {
+      orderedIds.forEach((id, i) => {
+        db.prepare('UPDATE plan_tasks SET sort_order = ?, updated_at = ? WHERE id = ?').run(i, t, id);
+      });
+      rescheduleAll(db, projectId);
+    })();
+    return { reordered: orderedIds.length };
+  },
+
   /** 关联待办：同项目校验 + 按当前计划状态立即同步该待办状态 */
   linkTodo(id: string, taskId: string | null): PlanTaskRow | null {
     const db = getDb();

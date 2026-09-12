@@ -130,12 +130,28 @@ if errorlevel 1 (
 
 REM Clean up a stale unpack dir so electron-builder can unpack into a clean tree.
 REM Without this EnsureEmptyDir fails when a leftover file is held open by Explorer/antivirus.
+REM T00442: fall forward through release2..9 until an unlocked dir is found (antivirus may
+REM hold handles on a freshly packed asar for minutes, so a single fallback is not enough).
 set  "OUTDIR=release"
 if exist "release\win-unpacked" (
     powershell -NoProfile -Command "try{[IO.Directory]::Delete('%CD%\release\win-unpacked',$true);exit 0}catch{exit 1}" >nul 2>&1
     if errorlevel 1 (
-        echo   [WARN] release\win-unpacked still in use, packaging into release2 to bypass the lock.
-        set  "OUTDIR=release2"
+        set "OUTDIR="
+        setlocal enabledelayedexpansion
+        for %%N in (2 3 4 5 6 7 8 9) do (
+            if not defined OUTDIR (
+                if not exist "release%%N\win-unpacked" (
+                    set "OUTDIR=release%%N"
+                    echo   [WARN] release\win-unpacked still in use, packaging into !OUTDIR! to bypass the lock.
+                )
+            )
+        )
+        endlocal & set "OUTDIR=%OUTDIR%"
+        if not defined OUTDIR (
+            echo   [ERROR] all release dirs (2-9) are locked. Close apps using them or add an antivirus exclusion for this project folder, then rerun.
+            pause
+            exit /b 1
+        )
     )
 )
 REM disable publish so CI-detected electron-builder does not try to push to GitHub

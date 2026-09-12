@@ -114,6 +114,26 @@ export function PlanPage() {
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
   }
 
+  // ---------- T00459：拖拽排序（HTML5 DnD，drop 后整体重写顺序并重排时间线） ----------
+
+  const [dragId, setDragId] = useState('');
+  const [overId, setOverId] = useState('');
+
+  function onDropReorder(targetId: string) {
+    if (!dragId || dragId === targetId) { setDragId(''); setOverId(''); return; }
+    const ids = plans.map((p) => p.id);
+    const from = ids.indexOf(dragId);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    ids.splice(to, 0, ids.splice(from, 1)[0]);
+    setDragId(''); setOverId('');
+    setBusy(true);
+    void api.post<{ reordered: number }>('/plans/reorder', { projectId, orderedIds: ids })
+      .then(() => { reload(); flash('顺序已调整，时间线已自动重排'); })
+      .catch((e) => flash(String((e as Error).message ?? e)))
+      .finally(() => setBusy(false));
+  }
+
   /** 归档计划任务（T00442：删除改归档）——从时间线移除但可在「归档」菜单恢复，后续时间线自动重排 */
   async function archivePlan(p: PlanTask) {
     if (!(await askConfirm(`归档计划任务「${p.title}」？将自动从时间线移除并重排；可在「归档」菜单恢复或彻底删除。`))) return;
@@ -436,6 +456,10 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
 
   return (
     <div ref={scrollRef} onScroll={onScrollSave} style={{ padding: 16, color: 'var(--text)', maxHeight: 'calc(100vh - 60px)', overflowY: 'auto' }}>
+      <style>{`
+        .plan-dragging { opacity: .55; transform: scale(1.01) rotate(.4deg); box-shadow: 0 6px 18px rgba(0,0,0,.22); background: var(--surface-2); }
+        .plan-over { box-shadow: inset 0 3px 0 var(--accent); background: var(--accent-soft, rgba(9,105,218,.08)); }
+      `}</style>
       {/* 工具条：项目选择 + 增删导入导出 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
         <select value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ ...inputStyle, minWidth: 140 }} aria-label="选择项目">
@@ -490,7 +514,14 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         </thead>
         <tbody>
           {plans.map((p, i) => (
-            <tr key={p.id} style={{ borderBottom: '1px solid var(--border)' }}>
+            <tr key={p.id}
+              draggable
+              onDragStart={() => setDragId(p.id)}
+              onDragEnd={() => { setDragId(''); setOverId(''); }}
+              onDragOver={(e) => { e.preventDefault(); if (p.id !== dragId) setOverId(p.id); }}
+              onDrop={() => onDropReorder(p.id)}
+              className={dragId === p.id ? 'plan-dragging' : overId === p.id ? 'plan-over' : undefined}
+              style={{ borderBottom: '1px solid var(--border)', transition: 'box-shadow .15s ease, transform .15s ease, background .15s ease' }}>
               <td style={{ padding: 6, color: 'var(--text-muted)' }}>{i + 1}</td>
               <td style={{ padding: 6, minWidth: 220 }}>
                 <input defaultValue={p.title} onBlur={(e) => { if (e.target.value.trim() && e.target.value !== p.title) void updatePlan(p, { title: e.target.value.trim() }); }}

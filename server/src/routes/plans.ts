@@ -158,6 +158,16 @@ planApi.get('/archived', (_req, res) => wrap(res, () => PlanService.listArchived
 planApi.post('/:id/archive', (req, res) => wrap(res, () => PlanService.archive(req.params.id)));
 planApi.post('/:id/restore', (req, res) => wrap(res, () => PlanService.restore(req.params.id)));
 
+// 拖拽排序（T00459）：前端传拖拽后的完整活跃计划 id 顺序，事务重写 sort_order 并重排时间线
+planApi.post('/reorder', (req, res) => {
+  const { projectId, orderedIds } = (req.body ?? {}) as { projectId?: unknown; orderedIds?: unknown };
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (!Array.isArray(orderedIds) || orderedIds.some((x) => typeof x !== 'string')) {
+    return res.status(400).json({ error: 'orderedIds 必填（id 字符串数组，按新顺序）' });
+  }
+  wrap(res, () => PlanService.reorder(projectId, orderedIds as string[]));
+});
+
 // ---------- 待办联动 ----------
 planApi.post('/:id/link', (req, res) => {
   const { taskId } = (req.body ?? {}) as { taskId?: unknown };
