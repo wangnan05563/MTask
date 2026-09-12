@@ -2,6 +2,7 @@ import { getDb } from '../db/connection';
 import { v4 as uuid } from 'uuid';
 import { type TaskView } from './TaskService';
 import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
+import { logService } from './LogService';
 import type { SubmitResult, PollResult } from '../adapters/types';
 
 /** 队列列表 TTL：读多写少，5s 内允许过期值，写操作会主动 cacheClear 保证一致 */
@@ -51,6 +52,7 @@ async function submitOneJob(
 ): Promise<boolean> {
   const db = getDb();
   db.prepare("UPDATE queue_jobs SET status = 'sending', sent_at = ? WHERE id = ?").run(now(), job.id);
+  logService.log('INFO', 'queue', `队列任务提交：job=${job.id.slice(0, 8)}（task=${job.task_id.slice(0, 8)}）`);
   try {
     const result = await submit(job);
     if (result.ok && typeof result.content === 'string') {
@@ -58,20 +60,25 @@ async function submitOneJob(
       db.prepare(
         "UPDATE queue_jobs SET status = 'success', response_payload = ?, error = NULL, ticket = NULL, submitted_at = ?, finished_at = ? WHERE id = ?",
       ).run(result.content, now(), now(), job.id);
+      logService.log('INFO', 'queue', `队列任务同步完成：job=${job.id.slice(0, 8)}（响应 ${result.content.length} 字符）`);
       return false;
     }
     if (result.ok && result.accepted) {
       // 异步受理：记录回执标识与提交时间，等待 poller 收敛
       db.prepare("UPDATE queue_jobs SET status = 'sending', ticket = ?, submitted_at = ? WHERE id = ?")
         .run(result.ticket ?? null, now(), job.id);
+      logService.log('INFO', 'queue', `队列任务已受理（异步）：job=${job.id.slice(0, 8)}，等待回执收敛`);
       return true;
     }
     db.prepare("UPDATE queue_jobs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?")
       .run(result.error ?? '提交失败', now(), job.id);
+    logService.log('ERROR', 'queue', `队列任务提交失败：job=${job.id.slice(0, 8)}，原因=${result.error ?? '提交失败'}`);
     return false;
   } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
     db.prepare("UPDATE queue_jobs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?")
-      .run(e instanceof Error ? e.message : String(e), now(), job.id);
+      .run(msg, now(), job.id);
+    logService.log('ERROR', 'queue', `队列任务提交异常：job=${job.id.slice(0, 8)}，${msg}`);
     return false;
   }
 }

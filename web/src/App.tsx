@@ -2,20 +2,19 @@ import { useEffect, useState } from 'react';
 import { TasksPage } from './pages/TasksPage';
 import { AIToolsPage } from './pages/AIToolsPage';
 import { QueuePage } from './pages/QueuePage';
-import { ArchivePage } from './pages/ArchivePage';
 import { PromptsPage } from './pages/PromptsPage';
 import { ReqPage } from './pages/ReqPage';
 import { SettingsPage } from './pages/SettingsPage';
-import { LogsPage } from './pages/LogsPage';
 import { ReportPage } from './pages/ReportPage';
 import { PlanPage } from './pages/PlanPage';
 import { api, setAccessToken } from './api/client';
 import { MarkdownStyles } from './ui/Markdown';
 import { SettingsProvider } from './settings';
 import { MobileShell } from './mobile/MobileShell';
-import { Archive, BarChart3, Boxes, CalendarRange, Lightbulb, ListOrdered, ListTodo, ScrollText, Settings, Terminal, type LucideIcon } from 'lucide-react';
+import { Archive, BarChart3, Boxes, CalendarRange, Lightbulb, ListOrdered, ListTodo, ScrollText, Settings, type LucideIcon } from 'lucide-react';
 
-type Tab = 'tasks' | 'aitools' | 'prompts' | 'req' | 'plan' | 'queue' | 'archive' | 'report' | 'settings' | 'logs';
+// T00441：日志/归档入口从顶部菜单移入「设置」（内网穿透下方），顶部菜单收敛为高频功能
+type Tab = 'tasks' | 'aitools' | 'prompts' | 'req' | 'plan' | 'queue' | 'report' | 'settings';
 
 const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: 'tasks', label: '任务', icon: ListTodo },
@@ -25,8 +24,6 @@ const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: 'plan', label: '项目计划', icon: CalendarRange },
   { key: 'report', label: '周报', icon: BarChart3 },
   { key: 'queue', label: '队列', icon: ListOrdered },
-  { key: 'archive', label: '归档', icon: Archive },
-  { key: 'logs', label: '日志', icon: Terminal },
   { key: 'settings', label: '设置', icon: Settings },
 ];
 
@@ -124,8 +121,7 @@ function Shell() {
       {tab === 'queue' && <QueuePage />}
       {tab === 'plan' && <PlanPage />}
       {tab === 'report' && <ReportPage />}
-      {tab === 'archive' && <ArchivePage />}
-      {tab === 'logs' && <LogsPage />}
+      {/* T00441：日志/归档入口移至「设置」页（内网穿透下方） */}
       {tab === 'settings' && <SettingsPage />}
     </div>
   );

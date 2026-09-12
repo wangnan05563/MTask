@@ -6,13 +6,15 @@ import { Download, ExternalLink, FileUp, FolderPlus, Info, Moon, Pencil, Refresh
 import { TunnelPanel } from './TunnelPanel';
 import { HelpTab } from './HelpTab';
 import { DbAdminTab } from './DbAdminTab';
+import { LogsPage } from './LogsPage';
+import { ArchivePage } from './ArchivePage';
 
 /** 应用信息（与根 package.json 保持一致） */
 const APP_NAME = 'MTask';
 const APP_VERSION = '0.1.0';
 const APP_DESC = 'AI 任务开发管理工具：项目维度任务管理 + AI 梳理 + 队列分发。';
 
-type STab = 'general' | 'migration' | 'dbadmin' | 'categories' | 'tunnel' | 'help' | 'about';
+type STab = 'general' | 'migration' | 'dbadmin' | 'categories' | 'tunnel' | 'logs' | 'archive' | 'help' | 'about';
 
 /** 导入策略文案映射：显式枚举映射替代嵌套三元，新增策略时只需补一行 */
 const IMPORT_MODE_LABELS: Record<ImportMode, string> = { merge: '合并', keep: '保留', overwrite: '覆盖' };
@@ -23,6 +25,8 @@ const SUB_TABS: { key: STab; label: string }[] = [
   { key: 'dbadmin', label: '数据维护' },
   { key: 'categories', label: '任务分类' },
   { key: 'tunnel', label: '内网穿透' },
+  { key: 'logs', label: '日志' },
+  { key: 'archive', label: '归档' },
   { key: 'help', label: '帮助文档' },
   { key: 'about', label: '关于' },
 ];
@@ -56,6 +60,9 @@ export function SettingsPage() {
       {st === 'dbadmin' && <DbAdminTab />}
       {st === 'categories' && <CategoriesTab />}
       {st === 'tunnel' && <TunnelPanel />}
+      {/* T00441：日志/归档入口从顶部菜单迁入设置页（内网穿透下方） */}
+      {st === 'logs' && <LogsPage />}
+      {st === 'archive' && <ArchivePage />}
       {st === 'help' && <HelpTab />}
       {st === 'about' && <AboutTab />}
     </section>

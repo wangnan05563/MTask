@@ -1,6 +1,7 @@
 import { getDb } from '../db/connection';
 import { v4 as uuid } from 'uuid';
 import { TaskImageService, type TaskImageMeta } from './TaskImageService';
+import { ReqEntryService } from './ReqService';
 
 /** DB 原始行：archived 为 number（SQLite 0/1） */
 export interface TaskRow {
@@ -179,6 +180,12 @@ export const TaskService = {
     const sets = keys.map((k) => `${k} = ?`).join(', ');
     const values = keys.map((k) => patch[k]);
     db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`).run(...values, now(), id);
+    // 反向计划联动（T00436）：待办被项目计划关联时，状态变更同步回计划任务（done↔done，todo→doing 进行中）
+    if (patch.status !== undefined) {
+      const planStatus = patch.status === 'done' ? 'done' : 'doing';
+      db.prepare('UPDATE plan_tasks SET status = ?, progress = CASE WHEN ? = 100 THEN 100 ELSE progress END, updated_at = ? WHERE linked_task_id = ?')
+        .run(planStatus, planStatus === 'done' ? 100 : -1, now(), id);
+    }
     return this.getById(id)!;
   },
 
@@ -249,6 +256,24 @@ export const TaskService = {
       .run(id, categoryId, src.title, parts.join('\n\n'), t, t);
     return db.prepare('SELECT id, category_id, title, content FROM prompts WHERE id = ?')
       .get(id) as { id: string; category_id: string; title: string; content: string };
+  },
+
+  /**
+   * 将任务复制为「通用需求」条目：与 toPromptAsset 同构，但写入 req_entries 表，
+   * 便于把有跨项目复用价值的优秀任务沉淀到「通用需求」菜单做分类管理。
+   * 仅读取源任务，不改动其归属；内容组织为可读 Markdown 平铺文本，方便在需求页直接查看/复用。
+   */
+  toReqAsset(taskId: string, categoryId: string): { id: string; category_id: string; title: string; content: string } {
+    const src = this.getById(taskId);
+    if (!src) throw new Error('任务不存在');
+    if (!getDb().prepare('SELECT 1 FROM req_categories WHERE id = ?').get(categoryId)) throw new Error('目标通用需求分类不存在');
+    const parts: string[] = [`**任务标题**：${src.title}`];
+    if (src.priority) parts.push(`**优先级**：${src.priority}`);
+    if (src.status) parts.push(`**状态**：${src.status === 'done' ? '已完成' : '待办'}`);
+    if (src.description) parts.push(`**任务描述**：\n${src.description}`);
+    if (src.ai_summary) parts.push(`**AI 梳理摘要**：\n${src.ai_summary}`);
+    const entry = ReqEntryService.create({ categoryId, title: src.title, content: parts.join('\n\n') });
+    return { id: entry.id, category_id: entry.category_id, title: entry.title, content: entry.content };
   },
 
   /**

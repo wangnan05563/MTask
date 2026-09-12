@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, type AITool } from '../api/client';
+import { api, type AITool, type ReqCategory } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
 import { useSessionState } from '../ui/session';
-import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown } from 'lucide-react';
+import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput } from 'lucide-react';
 
 const CATEGORIES = [
   { key: 'summary', label: '周期要点汇总' },
@@ -141,6 +141,54 @@ function ToolSelect({
  * 承载父级传进的 SSE 流式生成（阶段日志 + 实时洞察）。选中任务的内容在下方滚动窗口展示，
  * 底部右下角提供「打开预览」「下载」两个操作按钮。
  */
+/**
+ * 把「提炼通用需求」清单按 Markdown 二级以上标题切分为若干条 {title, content}。
+ * generalize 预设的输出以“需求标题/适用场景/实现要点/复用价值”分节组织；若清单不含任何标题分节，
+ * 则整份退回为单条（title 取首个非空行），保证手动分组在任何输出形态下都可用。
+ */
+function parseAnswerItems(md: string): { title: string; content: string }[] {
+  const lines = md.split('\n');
+  const items: { title: string; content: string }[] = [];
+  let cur: { title: string; body: string[] } | null = null;
+  for (const line of lines) {
+    const m = /^\s*(#{2,4})\s+(.+?)\s*$/.exec(line);
+    if (m) {
+      if (cur) items.push({ title: cur.title, content: cur.body.join('\n').trim() });
+      cur = { title: m[2].trim(), body: [] };
+    } else if (cur) {
+      cur.body.push(line);
+    }
+  }
+  if (cur) items.push({ title: cur.title, content: cur.body.join('\n').trim() });
+  if (items.some((i) => i.title) && items.some((i) => i.content)) return items.filter((i) => i.title && i.content);
+  // 无有效标题分节：整份作为单条转存，标题取首个非空行兜底
+  const first = lines.find((l) => l.trim()) ?? '通用需求清单';
+  return [{ title: first.replace(/^\s*#+\s*/, '').slice(0, 40), content: md }];
+}
+
+/** 后端持久化任务行 → 前端任务快照：字段一一对应，仅做空值归一（answer/error 为 null 时置空串） */
+function rowToTask(r: {
+  id: string;
+  title: string;
+  prompt: string;
+  category: string;
+  period: string | null;
+  status: 'busy' | 'done' | 'error';
+  answer: string | null;
+  error: string | null;
+}): AnalysisTask {
+  return {
+    id: r.id,
+    title: r.title,
+    prompt: r.prompt,
+    category: r.category as AnalysisTask['category'],
+    period: r.period ? (r.period as ReportPeriod) : undefined,
+    status: r.status,
+    answer: r.answer ?? '',
+    error: r.error ?? '',
+  };
+}
+
 export function ReportConsole({
   tools,
   toolId,
@@ -169,7 +217,18 @@ export function ReportConsole({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewMd, setPreviewMd] = useState('');
   const bodyRef = useRef<HTMLDivElement>(null);
-  const seqRef = useRef(0);
+  // 「转存到通用需求」弹窗状态：打开时懒加载 req 分类，支持 AI 智能分组 / 手动选分组两种模式
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [saveMode, setSaveMode] = useState<'ai' | 'manual'>('ai');
+  const [reqCats, setReqCats] = useState<ReqCategory[]>([]);
+  const [saveLoading, setSaveLoading] = useState(false);
+  const [saveCategoryId, setSaveCategoryId] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState('');
+  const [saveError, setSaveError] = useState('');
+  // T00437：手动模式的可交互条目表格（标题/内容可编辑、勾选控制是否转存）与「本次已转存」标记
+  const [saveRows, setSaveRows] = useState<Array<{ title: string; content: string; include: boolean }>>([]);
+  const [saveDone, setSaveDone] = useState(false);
 
   const activeTask = tasks.find((t) => t.id === activeId) ?? null;
   const onReportTab = activeId === REPORT_TAB;
@@ -199,45 +258,56 @@ export function ReportConsole({
     setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   }, []);
 
-  /** 发起一次 /ai/chat 请求并回写到对应任务（独立异步，可并行；互不阻塞其它任务） */
-  const runQuery = useCallback(async (id: string, prompt: string, cat: (typeof CATEGORIES)[number]['key'], per?: ReportPeriod) => {
-    updateTask(id, { status: 'busy', answer: '', error: '' });
-    const body: Record<string, unknown> = {
-      toolId,
-      system: '你是 MTask 的 AI 助手，基于任务与报表背景，用简洁专业的中文回答，并使用 Markdown 组织输出。',
-      user: prompt,
-    };
-    // 周期类预设（非自定义）附带当前周期，后端据此聚合真实任务数据注入；自定义问答不附带以保持纯对话
-    if (cat !== 'custom' && per) body.period = per;
+  // 后端持久化任务快照：任务存服务器，本地 tasks 仅作为「已展示的 job 快照」。
+  // 切换/刷新页面后运行中的任务后端照常继续，挂载时重新拉取即可恢复
+  const refreshJobs = useCallback(async () => {
     try {
-      const r = await api.post<{ ok: boolean; content?: string; error?: string }>('/ai/chat', body);
-      if (r.ok && r.content) updateTask(id, { status: 'done', answer: r.content });
-      else updateTask(id, { status: 'error', error: r.error ?? 'AI 未返回结果' });
-    } catch (e) {
-      updateTask(id, { status: 'error', error: e instanceof Error ? e.message : String(e) });
+      const jobs = await api.get<Parameters<typeof rowToTask>[0][]>('/console-jobs');
+      setTasks(jobs.map(rowToTask));
+    } catch {
+      // 后端暂不可用：静默，等待下次轮询再试，不打断既有展示
     }
-  }, [toolId, updateTask]);
+  }, []);
 
-  /** 新建一个并行分析任务并聚焦它。发起时固化 prompt 与周期，供「重新分析」复用。 */
-  function newAnalysis() {
+  // 挂载即恢复全部任务；此后每 2s 轮询一次，让运行中任务的 status/answer/error 实时收敛为完成态。
+  // 组件卸载会取消本定时器，但任务已在后端持久化并继续运行——这正是「切页不中断」的落点
+  useEffect(() => {
+    void refreshJobs();
+    const timer = setInterval(() => void refreshJobs(), 2000);
+    return () => clearInterval(timer);
+  }, [refreshJobs]);
+
+  /** 新建一个并行分析任务：创建持久化 job 并聚焦它。发起时固化 prompt 与周期，供「重新分析」复用 */
+  async function newAnalysis() {
     const user = category === 'custom' ? custom.trim() : presetPrompt(category, periodLabel);
-    seqRef.current += 1;
-    const id = 'ai-' + seqRef.current;
     const cat = category;
     const per = cat === 'custom' ? undefined : period;
     const title = cat === 'custom' ? `自定义：${user.slice(0, 18)}` : (CATEGORIES.find((c) => c.key === cat)?.label ?? cat);
-    const task: AnalysisTask = { id, title, prompt: user, category: cat, period: per, status: 'busy', answer: '', error: '' };
-    setTasks((prev) => [...prev, task]);
-    setActiveId(id);
-    void runQuery(id, user, cat, per);
+    const body: Record<string, unknown> = { title, prompt: user, category: cat };
+    // 周期类预设（非自定义）附带当前周期，后端据此聚合真实任务数据注入；自定义问答不附带以保持纯对话
+    if (cat !== 'custom' && per) body.period = per;
+    if (toolId) body.toolId = toolId;
+    try {
+      // 后端受理即创建 busy job 并后台异步运行；本地仅持有其 id 作为展示快照
+      const r = await api.post<{ id: string }>('/console-jobs', body);
+      const task: AnalysisTask = { id: r.id, title, prompt: user, category: cat, period: per, status: 'busy', answer: '', error: '' };
+      setTasks((prev) => [...prev, task]);
+      setActiveId(r.id);
+    } catch {
+      // 创建失败（如后端未就绪）：不写入本地视图，避免出现无后端实体的假任务，等待用户重试
+    }
   }
 
-  /** 重新分析某任务：复用其固化 prompt 与周期重置后重跑 */
-  function restart(id: string) {
-    const t = tasks.find((x) => x.id === id);
-    if (!t) return;
+  /** 重新分析某任务：后端将该 job 复位并异步重跑（复用其固化 prompt 与周期） */
+  async function restart(id: string) {
+    // 先把本地重置为 busy 即时反馈，最终结果由轮询收敛
+    updateTask(id, { status: 'busy', answer: '', error: '' });
     setActiveId(id);
-    void runQuery(t.id, t.prompt, t.category, t.period);
+    try {
+      await api.post(`/console-jobs/${id}/restart`, { toolId });
+    } catch {
+      // 重跑受理失败：本地保持 busy 交由后端兜底，不做回滚以免闪跳
+    }
   }
 
   /** 关闭某任务 tab：若关的是当前聚焦则激活邻居（优先前一个，否则后一个），没有其它任务则回到 AI 周报 tab */
@@ -248,10 +318,12 @@ export function ReportConsole({
       const prevT = idx > 0 ? tasks[idx - 1] : tasks[idx + 1];
       setActiveId(prevT ? prevT.id : REPORT_TAB);
     }
+    void api.del(`/console-jobs/${id}`).catch(() => { /* 删除失败：本地先移除，残留由下次轮询/重置兜底 */ });
   }
 
-  /** 重置控制台：清空全部分析任务、回到 AI 周报 tab，并恢复默认类别与自定义提问 */
+  /** 重置控制台：清空后端全部持久化任务、回到 AI 周报 tab，并恢复默认类别与自定义提问 */
   function resetConsole() {
+    void api.del('/console-jobs').catch(() => { /* 清空失败：本地已清，残留由用户再次重置兜底 */ });
     setTasks([]);
     setActiveId(REPORT_TAB);
     setCategory('summary');
@@ -280,6 +352,70 @@ export function ReportConsole({
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  /** 打开「转存到通用需求」弹窗：懒加载 req 分类（每次打开重拉保证分类新鲜）；
+   *  同时预解析清单条目供手动模式的可交互表格使用（T00437） */
+  async function openSave() {
+    if (!activeTask?.answer) return;
+    setSaveOpen(true);
+    setSaveMode('ai');
+    setSaveMsg('');
+    setSaveError('');
+    setSaving(false);
+    setSaveDone(false);
+    setSaveLoading(true);
+    setSaveRows(parseAnswerItems(activeTask.answer).map((it) => ({ ...it, include: true })));
+    try {
+      const cats = await api.get<ReqCategory[]>('/req-categories');
+      setReqCats(cats);
+      setSaveCategoryId((cur) => (cats.some((c) => c.id === cur) ? cur : (cats[0]?.id ?? '')));
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaveLoading(false);
+    }
+  }
+
+  /** 提交转存：AI 模式走后端智能分组解析+归类；手动模式提交表格中勾选的条目（可编辑标题/内容）。
+   *  成功后短暂展示结果并自动关闭弹窗（T00434：防重复点击二次转存）；后端按内容指纹跳过重复条目（T00435）。 */
+  async function doSave() {
+    if (!activeTask?.answer || saving || saveDone) return;
+    setSaving(true);
+    setSaveMsg('');
+    setSaveError('');
+    try {
+      let r: { ok: boolean; count: number; skipped?: string[]; error?: string };
+      if (saveMode === 'ai') {
+        r = await api.post<{ ok: boolean; count: number; skipped?: string[]; error?: string }>('/ai/generalize-to-req', { mode: 'ai', toolId, answer: activeTask.answer });
+      } else {
+        if (!saveCategoryId) {
+          setSaveError('请先选择目标分类');
+          setSaving(false);
+          return;
+        }
+        const items = saveRows.filter((row) => row.include && row.title.trim());
+        if (items.length === 0) {
+          setSaveError('请至少勾选一条要转存的条目');
+          setSaving(false);
+          return;
+        }
+        r = await api.post<{ ok: boolean; count: number; skipped?: string[]; error?: string }>('/ai/generalize-to-req', { mode: 'manual', categoryId: saveCategoryId, items });
+      }
+      if (r.ok) {
+        const skipN = r.skipped?.length ?? 0;
+        setSaveMsg(`已转存 ${r.count} 条通用需求${skipN > 0 ? `，跳过重复 ${skipN} 条` : ''}到「通用需求」菜单`);
+        setSaveDone(true);
+        // T00434：成功后延迟自动关闭（留出结果可见时间），杜绝未关弹窗导致的重复点击二次转存
+        setTimeout(() => setSaveOpen(false), 1500);
+      } else {
+        setSaveError(r.error ?? '转存失败');
+      }
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
   }
 
   function statusIcon(s: AnalysisTask['status']) {
@@ -393,7 +529,7 @@ export function ReportConsole({
           ))}
         </select>
         <button
-          onClick={() => newAnalysis()}
+          onClick={() => void newAnalysis()}
           disabled={noTool || customInvalid}
           title={startBtnTitle}
           aria-label="开始分析：发起并行分析任务"
@@ -481,14 +617,24 @@ export function ReportConsole({
         <span style={{ color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center' }}>{statusText()}</span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           {!onReportTab && activeTask?.status === 'done' && (
-            <button
-              onClick={() => restart(activeTask.id)}
-              title="重新分析 — 复用相同问题与周期重新发起"
-              aria-label="重新分析"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)' }}
-            >
-              <RotateCw size={12} /> 重跑
-            </button>
+            <>
+              <button
+                onClick={() => void openSave()}
+                title="转存到通用需求 — 把这份通用需求清单写入「通用需求」菜单的指定分组"
+                aria-label="转存到通用需求"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--accent)' }}
+              >
+                <FolderInput size={12} /> 转存需求
+              </button>
+              <button
+                onClick={() => void restart(activeTask.id)}
+                title="重新分析 — 复用相同问题与周期重新发起"
+                aria-label="重新分析"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)' }}
+              >
+                <RotateCw size={12} /> 重跑
+              </button>
+            </>
           )}
           <button
             onClick={openPreview}
@@ -535,6 +681,114 @@ export function ReportConsole({
             </div>
             <div style={{ flex: 1, overflowY: 'auto', padding: 14, background: 'var(--surface)' }}>
               <MarkdownContent content={previewMd} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 转存到通用需求弹窗：软件态选择 AI 智能分组 / 手动分组，确认后写入 req_entries */}
+      {saveOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={() => { if (!saving) setSaveOpen(false); }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(640px, 92vw)', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
+              <FolderInput size={14} style={{ color: 'var(--accent)' }} /> 转存到通用需求
+              <span style={{ flex: 1 }} />
+              <button
+                onClick={() => setSaveOpen(false)}
+                disabled={saving}
+                title="关闭 — 取消转存"
+                aria-label="关闭转存弹窗"
+                style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', background: 'transparent', border: 'none', color: 'var(--text)' }}
+              >
+                <X size={15} />
+              </button>
+            </div>
+            <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12 }}>
+              {/* 分组模式选择 */}
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  onClick={() => setSaveMode('ai')}
+                  style={{ flex: '40%', padding: '6px 0', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: saveMode === 'ai' ? 'var(--accent)' : 'var(--card-bg)', color: saveMode === 'ai' ? 'var(--accent-text)' : 'var(--text)' }}
+                  title="AI 智能分组 — 由 AI 自动把清单拆成多条并归入最贴切分类"
+                >
+                  AI 智能分组
+                </button>
+                <button
+                  onClick={() => setSaveMode('manual')}
+                  style={{ flex: '60%', padding: '6px 0', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: saveMode === 'manual' ? 'var(--accent)' : 'var(--card-bg)', color: saveMode === 'manual' ? 'var(--accent-text)' : 'var(--text)' }}
+                  title="手动分组 — 选择目标分类，把清单按标题分节批量写入"
+                >
+                  手动分组
+                </button>
+              </div>
+              {saveMode === 'ai' ? (
+                <div style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                  由 AI 解析当前清单，抽取其中的通用需求，为每条自动归入最贴切分类（必要时自动新建分类），批量写入「通用需求」菜单。需使用当前已选 AI 工具。内容重复的条目会被自动跳过。
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <label style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>目标分类：</label>
+                    {saveLoading ? (
+                      <div style={{ color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <Loader2 size={12} style={{ animation: 'mconsole-spin 1s linear infinite' }} /> 加载分类…
+                      </div>
+                    ) : reqCats.length === 0 ? (
+                      <div style={{ color: 'var(--danger)' }}>暂无分类，请先在「通用需求」菜单新建分类。</div>
+                    ) : (
+                      <select
+                        value={saveCategoryId}
+                        onChange={(e) => setSaveCategoryId(e.target.value)}
+                        style={{ flex: 1, padding: 6, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12 }}
+                      >
+                        {reqCats.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.reqCount ?? 0}）</option>)}
+                      </select>
+                    )}
+                  </div>
+                  {/* T00437：可交互条目表格——勾选控制是否转存，标题/内容可在线编辑 */}
+                  {saveRows.map((row, i) => (
+                    <div key={i} style={{ border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <input type="checkbox" checked={row.include} aria-label={`勾选第 ${i + 1} 条`}
+                          onChange={(e) => setSaveRows((prev) => prev.map((r, j) => (j === i ? { ...r, include: e.target.checked } : r)))} />
+                        <input value={row.title} aria-label={`第 ${i + 1} 条标题`}
+                          onChange={(e) => setSaveRows((prev) => prev.map((r, j) => (j === i ? { ...r, title: e.target.value } : r)))}
+                          style={{ flex: 1, padding: '3px 6px', borderRadius: 4, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, fontWeight: 600 }} />
+                      </div>
+                      <textarea value={row.content} rows={3} aria-label={`第 ${i + 1} 条内容`}
+                        onChange={(e) => setSaveRows((prev) => prev.map((r, j) => (j === i ? { ...r, content: e.target.value } : r)))}
+                        style={{ width: '100%', boxSizing: 'border-box', padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text-secondary)', fontSize: 11, resize: 'vertical' }} />
+                    </div>
+                  ))}
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                    勾选要转存的条目（共 {saveRows.filter((r) => r.include).length}/{saveRows.length} 条）；内容重复的条目转存时会被自动跳过。
+                  </div>
+                </div>
+              )}
+              {saveMsg && <div style={{ color: 'var(--success)' }}>✓ {saveMsg}</div>}
+              {saveError && <div style={{ color: 'var(--danger)' }}>{saveError}</div>}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
+              <button
+                onClick={() => setSaveOpen(false)}
+                disabled={saving}
+                title="取消 — 放弃本次转存"
+                aria-label="取消转存"
+                style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)' }}
+              >
+                取消
+              </button>
+              <button
+                onClick={() => void doSave()}
+                disabled={saving || saveDone || (saveMode === 'manual' && (!saveCategoryId || reqCats.length === 0))}
+                title={saveDone ? '已转存完成' : '确认转存 — 写入通用需求菜单'}
+                aria-label="确认转存"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)' }}
+              >
+                {saving && <Loader2 size={12} style={{ animation: 'mconsole-spin 1s linear infinite' }} />}
+                确认转存
+              </button>
             </div>
           </div>
         </div>

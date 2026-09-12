@@ -2,6 +2,7 @@ import { getDb } from '../db/connection';
 import { ConfigService } from './ConfigService';
 import { QueueService, type QueueJobRow } from './QueueService';
 import { TaskService } from './TaskService';
+import { logService } from './LogService';
 import { getAdapter } from '../adapters';
 import type { StreamResult, SubmitResult, PollResult } from '../adapters/types';
 
@@ -89,6 +90,9 @@ export const AIService = {
   async optimizeText(title: string, description: string, toolId: string): Promise<{ ok: boolean; content?: string; error?: string }> {
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
+    // 记录 AI 使用日志（供日志菜单按 source=ai 筛选排错）：记录工具/模型/启始，便于对应用时与结果
+    const startedAt = Date.now();
+    logService.log('INFO', 'ai', `[提示词优化] tool=${toolId} type=${type} model=${config.model ?? ''}`);
     const system = [
       '你是 MTask 的提示词优化专家。给定一个任务的标题与描述，将其优化为一则清晰、具体、结构化、可直接交由大模型或他人执行的任务提示词。',
       '要求：',
@@ -107,6 +111,9 @@ export const AIService = {
     const res = await adapter.chat(system, user, config);
     // 兜底剥离文档级标题，确保回填为任务描述后不会被误判成提示词任务
     if (res.ok && res.content) res.content = stripPromptHeading(res.content);
+    const cost = Date.now() - startedAt;
+    if (res.ok) logService.log('INFO', 'ai', `[提示词优化] 成功 耗时=${cost}ms`);
+    else logService.log('ERROR', 'ai', `[提示词优化] 失败 耗时=${cost}ms ${res.error ?? ''}`);
     return res;
   },
 

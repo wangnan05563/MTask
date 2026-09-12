@@ -17,6 +17,7 @@ import { dbAdminApi } from './dbadmin';
 import { planApi } from './plans';
 import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, gatherReportData, type ReportPeriod } from '../services/ReportService';
 import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import { v4 as uuid } from 'uuid';
 import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
 
@@ -669,6 +670,10 @@ api.post('/ai/optimize', async (req, res) => {
 api.post('/ai/generalize-to-req', async (req, res) => {
   const { toolId, answer, mode = 'ai', categoryId, items } = req.body ?? {};
   try {
+    // 内容指纹（T00435）：规范化标题+正文后哈希；转存前查重，命中即跳过，防止重复提炼转存
+    const fingerprintOf = (title: string, content: string): string =>
+      createHash('sha256').update(`${title.trim()}\n${content.replace(/\s+/g, ' ').trim()}`).digest('hex').slice(0, 24);
+    const skipped: string[] = [];
     // 分类名 -> id 缓存：AI 输出同名分类会重复出现，一次解析后复用，避免重复建分类
     const cats = new Map<string, string>();
     const ensureCat = (name: string): string => {
@@ -691,7 +696,9 @@ api.post('/ai/generalize-to-req', async (req, res) => {
       if (!Array.isArray(items)) return res.status(400).json({ error: 'items 必填' });
       for (const it of items) {
         if (!it || typeof it.title !== 'string' || !it.title.trim()) continue;
-        const e = ReqEntryService.create({ categoryId, title: it.title.trim(), content: typeof it.content === 'string' ? it.content : '' });
+        const fp = fingerprintOf(it.title, typeof it.content === 'string' ? it.content : '');
+        if (ReqEntryService.existsByFingerprint(fp)) { skipped.push(it.title.trim()); continue; }
+        const e = ReqEntryService.create({ categoryId, title: it.title.trim(), content: typeof it.content === 'string' ? it.content : '', fingerprint: fp });
         created.push({ title: e.title, content: e.content, categoryId: e.category_id, categoryName: catRow.name });
       }
     } else {
@@ -719,17 +726,44 @@ api.post('/ai/generalize-to-req', async (req, res) => {
       for (const d of drafts) {
         const cid = ensureCat(d.category || '通用');
         if (!cid) continue;
-        const e = ReqEntryService.create({ categoryId: cid, title: d.title, content: d.content });
+        const fp = fingerprintOf(d.title, d.content);
+        if (ReqEntryService.existsByFingerprint(fp)) { skipped.push(d.title); continue; }
+        const e = ReqEntryService.create({ categoryId: cid, title: d.title, content: d.content, fingerprint: fp });
         const nm = getDb().prepare('SELECT name FROM req_categories WHERE id = ?').get(cid) as { name: string };
         created.push({ title: e.title, content: e.content, categoryId: e.category_id, categoryName: nm.name });
       }
     }
 
     cacheClear('req-categories'); // 新增/新建分类影响分类计数与列表
-    res.status(201).json({ ok: true, count: created.length, entries: created });
+    res.status(201).json({ ok: true, count: created.length, skipped, entries: created });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
+});
+
+// ---------- 复制到待办（T00436）：提示词 / 通用需求 一键转待办，落到默认记事项目（收件箱） ----------
+/** 通用实现：按来源表取标题/内容，创建 tasks 行；目标项目=移动端随手记默认项目（收件箱兜底） */
+function createTaskFromSource(table: 'prompts' | 'req_entries', sourceId: string): { taskId: string; projectId: string } {
+  const src = getDb().prepare(`SELECT id, title, content FROM ${table} WHERE id = ?`).get(sourceId) as { title: string; content: string } | undefined;
+  if (!src) throw new Error('来源内容不存在');
+  const projectId = getDefaultNoteProjectId();
+  const id = uuid();
+  const prefix = table === 'prompts' ? '[提示词]' : '[通用需求]';
+  getDb().prepare(
+    `INSERT INTO tasks (id, project_id, title, description, priority, status, verified, archived, pinned, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'normal', 'todo', 0, 0, 0, ?, ?)`,
+  ).run(id, projectId, `${prefix} ${src.title}`, src.content || '', now(), now());
+  return { taskId: id, projectId };
+}
+
+api.post('/prompts/:id/to-task', (req, res) => {
+  try { res.status(201).json({ ok: true, ...createTaskFromSource('prompts', req.params.id) }); }
+  catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+
+api.post('/req-entries/:id/to-task', (req, res) => {
+  try { res.status(201).json({ ok: true, ...createTaskFromSource('req_entries', req.params.id) }); }
+  catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 
 // ---------- 归档（FR6） ----------

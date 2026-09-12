@@ -12,6 +12,15 @@ interface LogEntry {
 }
 
 type LevelFilter = 'all' | 'ERROR' | 'WARN' | 'INFO' | 'DEBUG';
+/** 来源筛选：all + 数据中动态聚合出的来源（T00440 扩展：新增来源无需改此处代码） */
+type SourceFilter = string;
+
+/** 已知来源的显示名；未列出的来源直接以来源名显示（来源→标签的映射可按需补充） */
+const SOURCE_LABELS: Record<string, string> = {
+  server: '服务',
+  ai: 'AI 使用',
+  queue: '队列',
+};
 
 const LEVEL_COLOR: Record<LogEntry['level'], string> = {
   ERROR: 'var(--danger)',
@@ -39,6 +48,7 @@ export function LogsPage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [paused, setPaused] = useState(false);
   const [level, setLevel] = useState<LevelFilter>('all');
+  const [source, setSource] = useState<SourceFilter>('all');
   const [keyword, setKeyword] = useState('');
   const [pollMs, setPollMs] = useState(2000);
 
@@ -82,14 +92,22 @@ export function LogsPage() {
     atBottomRef.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
   };
 
-  // 可见日志 = 级别筛选 ∩ 关键词搜索（内存中过滤，不重新请求）
+  // 可见日志 = 级别筛选 ∩ 来源筛选 ∩ 关键词搜索（内存中过滤，不重新请求）
   const visible = useMemo(() => {
     const kw = keyword.trim().toLowerCase();
     return logs.filter((e) => {
       if (level !== 'all' && e.level !== level) return false;
+      if (source !== 'all' && e.source !== source) return false;
       return !kw || e.message.toLowerCase().includes(kw) || e.source.toLowerCase().includes(kw);
     });
-  }, [logs, level, keyword]);
+  }, [logs, level, source, keyword]);
+
+  // T00440：从当前日志数据动态聚合来源清单（新来源写入后自动出现在筛选下拉，无需改代码）
+  const sourceOptions = useMemo(() => {
+    const set = new Set<string>(['server', 'ai', 'queue']);
+    for (const e of logs) if (e.source) set.add(e.source);
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [logs]);
 
   const clear = () => { setLogs([]); lastSeqRef.current = 0; };
 
@@ -121,6 +139,10 @@ export function LogsPage() {
           <option value="WARN">WARN</option>
           <option value="INFO">INFO</option>
           <option value="DEBUG">DEBUG</option>
+        </select>
+        <select value={source} onChange={(e) => setSource(e.target.value as SourceFilter)} title="来源筛选 — 按日志来源过滤显示（AI 使用/队列等便于排错）" aria-label="来源筛选" style={controlStyle}>
+          <option value="all">全部来源</option>
+          {sourceOptions.map((s) => <option key={s} value={s}>{SOURCE_LABELS[s] ?? s}</option>)}
         </select>
         <select value={pollMs} onChange={(e) => setPollMs(Number(e.target.value))} title="刷新间隔 — 自动拉取新日志的间隔" aria-label="刷新间隔" style={controlStyle}>
           {POLL_OPTIONS.map((o) => <option key={o.ms} value={o.ms}>刷新 {o.label}</option>)}

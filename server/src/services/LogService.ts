@@ -65,6 +65,11 @@ class LogService {
     this.buffer.push({ seq: this.seq, time: new Date().toISOString(), level, source, message: formatArgs(args) });
   }
 
+  /** 业务结构化日志入口：供非 console 来源（AI 调用等模块）写入带独立 source 的日志，便于前端按来源筛选 */
+  log(level: LogLevel, source: string, message: unknown): void {
+    this.push(level, source, [message]);
+  }
+
   latestSeq(): number {
     // .at(-1) 取末尾元素，缓冲为空时回退 0，语义与 buffer[length-1] 一致
     return this.buffer.at(-1)?.seq ?? 0;
