@@ -127,6 +127,8 @@ export function TasksPage() {
   // 待办/已完成区块排序：会话级偏好，默认保持后端顺序
   const [todoSort, setTodoSort] = useSessionState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.todoSort', 'default');
   const [doneSort, setDoneSort] = useSessionState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.doneSort', 'default');
+  // T00456 / PRD UX-1：视图模式（列表/看板）会话级保持
+  const [viewMode, setViewMode] = useSessionState<'list' | 'board'>('tasks.viewMode', 'list');
   // AI 美化工具下拉容器：焦点移出检测用（替代容器 tabIndex+onBlur，避免在非交互容器上挂交互属性）
   const toolSelectRef = useRef<HTMLDivElement>(null);
 
@@ -582,6 +584,54 @@ export function TasksPage() {
     const target = taskCats.find((c) => c.name.trim() === cat.trim());
     if (cat.trim() && !target) return flash(`分类「${cat}」不存在，请先在「任务分类」中创建`);
     await batchApply('category', target?.id ?? '');
+  }
+
+  /** T00456 / PRD UX-1：看板视图——按状态分列（待办/已完成），卡片拖拽流转状态。
+   *  卡片为简化渲染（标题/优先级/分类/进度），编辑回列表视图；drop 到目标列即变更状态。 */
+  function renderBoard() {
+    const boardCols: Array<{ key: 'todo' | 'done'; label: string; items: Task[] }> = [
+      { key: 'todo', label: `待办（${todo.length}）`, items: todo },
+      { key: 'done', label: `已完成（${done.length}）`, items: done },
+    ];
+    const onDropTo = (target: 'todo' | 'done') => {
+      if (!dragTaskId) return;
+      const t = [...todo, ...done].find((x) => x.id === dragTaskId);
+      if (!t) return;
+      if (t.status !== target) void setStatus(t, target);
+      setDragTaskId(''); setOverTaskId('');
+    };
+    return (
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+        {boardCols.map((col) => (
+          <div key={col.key}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={() => onDropTo(col.key)}
+            style={{ flex: 1, minWidth: 280, background: 'var(--surface)', borderRadius: 8, padding: 10, minHeight: 200, border: overTaskId === col.key ? '2px dashed var(--accent)' : '1px solid var(--border-strong)', transition: 'border .15s ease' }}>
+            <h4 style={{ fontSize: 13, margin: '0 0 8px', color: 'var(--text-secondary)' }}>{col.label}</h4>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {col.items.map((t) => (
+                <div key={t.id}
+                  draggable
+                  onDragStart={() => setDragTaskId(t.id)}
+                  onDragEnd={() => { setDragTaskId(''); setOverTaskId(''); }}
+                  className={dragTaskId === t.id ? 'plan-dragging' : undefined}
+                  style={{
+                    border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', background: 'var(--card-bg)', cursor: 'grab',
+                    borderLeft: `3px solid ${t.priority === 'high' ? 'var(--danger)' : t.priority === 'low' ? 'var(--border-strong)' : 'var(--accent)'}`,
+                  }}
+                  title={`${t.title}（${t.priority === 'high' ? '高优先级' : t.priority === 'low' ? '低优先级' : '普通优先级'}）——拖到另一列流转状态`}>
+                  <div style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</div>
+                  {t.category_id && taskCats.find((c) => c.id === t.category_id) && (
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>{taskCats.find((c) => c.id === t.category_id)?.name}</div>
+                  )}
+                </div>
+              ))}
+              {col.items.length === 0 && <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', padding: 12 }}>拖任务卡片到此列</div>}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
   }
 
   /** 批量操作条：multiSelect 且有选中时浮出（样式与任务行一致） */
@@ -1581,6 +1631,11 @@ export function TasksPage() {
           <Tags size={13} />
           {classifyBusy ? '分类中' : '分类'}
         </button>
+        {/* T00456 / PRD UX-1：视图切换（列表/看板） */}
+        <span style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} role="group" aria-label="视图切换">
+          <button onClick={() => setViewMode('list')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', cursor: 'pointer', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图">列表</button>
+          <button onClick={() => setViewMode('board')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: viewMode === 'board' ? 'var(--accent)' : 'transparent', color: viewMode === 'board' ? 'var(--accent-text)' : 'var(--text)' }} title="看板视图 — 按状态分列，拖拽卡片流转状态">看板</button>
+        </span>
         <button
           onClick={() => { setMultiSelect((v) => !v); setSelectedIds(new Set()); }}
           style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: multiSelect ? 'var(--accent)' : 'transparent', color: multiSelect ? 'var(--accent-text)' : 'var(--text)' }}
@@ -1710,6 +1765,9 @@ export function TasksPage() {
     return (
       <>
         {batchBar}
+        {viewMode === 'board' && renderBoard()}
+        {viewMode === 'board' && <div style={{ height: 8 }} />}
+        {viewMode === 'list' && (<>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
           <h3 style={{ fontSize: 15, margin: 0 }}>待办（{visibleTodo.length}/{todo.length}）</h3>
           {/* 按修改时间/优先级排序：会话级偏好，选项见 sortOptions */}
@@ -1732,7 +1790,9 @@ export function TasksPage() {
               : <>也可使用上方 AI 梳理、美化、批量分类等能力。</>}
           </div>
         )}
+        </>)}
 
+        {viewMode === 'list' && (<>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '16px 0 8px' }}>
           {/* 提示未验证数量：默认过滤「仅未验证」时，让用户意识到已验证项只是被过滤而非丢失 */}
           <h3 style={{ fontSize: 15, margin: 0 }}>已完成（{visibleDone.length}/{done.length}，未验证 {done.filter((t) => !t.verified).length}）</h3>
@@ -1761,6 +1821,7 @@ export function TasksPage() {
         {visibleDone.length === 0 && (
           <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>暂无已完成任务——完成任务后在此集中查看与验证。</div>
         )}
+        </>)}
       </>
     );
   }
