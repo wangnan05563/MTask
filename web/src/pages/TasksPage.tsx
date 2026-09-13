@@ -1944,10 +1944,10 @@ export function TasksPage() {
     );
   }
 
-  /** 顶部工具条：项目切换、工具选择、批量美化、分类筛选、搜索 */
+  /** 顶部工具条：项目切换、工具选择、批量美化、分类筛选、搜索（T00522 修正：顶层补 op-host 宿主，筛选/搜索默认隐藏悬浮显示才生效） */
   function renderToolbar() {
     return (
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+      <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <span className="op-host" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
         <div ref={projDropRef} style={{ position: 'relative', display: 'inline-flex' }}>
           <button onClick={() => setProjOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={projOpen}

@@ -677,19 +677,20 @@ export function AIToolsPage() {
         .arena-row.flush td { animation: rowflush 1.4s ease; }
         .tool-dragging { opacity: .5; transform: scale(1.01); box-shadow: 0 6px 18px rgba(0,0,0,.22); background: var(--surface-2); }
         .tool-over { box-shadow: inset 0 3px 0 var(--accent); background: var(--accent-soft, rgba(9,105,218,.08)); }`}</style>
-      {/* 工具栏 */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+      {/* 工具栏（T00522 修正：op-host 宿主 + 筛选下拉/搜索框默认隐藏悬浮显示） */}
+      <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <h3 style={{ fontSize: 15, margin: 0 }}>配置记录（{filtered.length}/{tools.length}）</h3>
-        <select value={filterType} onChange={(e) => setFilterType(e.target.value)} style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+        <select className="op-hidden" value={filterType} onChange={(e) => setFilterType(e.target.value)} style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">全部厂商类型</option>
           {types.map((tp) => <option key={tp} value={tp}>{tp}</option>)}
         </select>
-        <select value={filterPurpose} onChange={(e) => setFilterPurpose(e.target.value)} style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+        <select className="op-hidden" value={filterPurpose} onChange={(e) => setFilterPurpose(e.target.value)} style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">全部用途</option>
           <option value="organize">整理</option>
           <option value="develop">开发</option>
         </select>
         <input
+          className="op-hidden"
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
           placeholder="搜索名称/厂商/Endpoint/备注…"
