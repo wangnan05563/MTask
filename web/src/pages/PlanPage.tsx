@@ -191,11 +191,19 @@ export function PlanPage() {
 
   async function createPlan() {
     if (!projectId) return flash('请先选择项目');
-    const title = await askInput({ title: '新计划任务', placeholder: '任务标题' });
+    const title = await askInput({ title: newKind === 'milestone' ? '新里程碑' : newKind === 'daily' ? '新日常任务' : '新计划任务', placeholder: '任务标题' });
     if (!title?.trim()) return;
+    // T00506 验证修正：日常任务为周期性任务，创建时必须填写工时估算（工期/工作日）
+    let durationDays = 1;
+    if (newKind === 'daily') {
+      const d = await askInput({ title: `工时估算（工作日）— ${title.trim()}`, placeholder: '请填写工时估算，如 3' });
+      const n = Number(d);
+      if (d === null || !Number.isFinite(n) || n < 1) { flash('日常任务必须填写工时估算（≥1 工作日），已取消创建'); return; }
+      durationDays = Math.round(n);
+    }
     setBusy(true);
     try {
-      await api.post('/plans', { projectId, title: title.trim(), startDate: todayStr(), durationDays: 1, kind: newKind });
+      await api.post('/plans', { projectId, title: title.trim(), startDate: todayStr(), durationDays, kind: newKind });
       reload();
       flash('已创建，时间线已自动重排');
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
@@ -915,10 +923,10 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                     </button>
                   </span>
                 )}
-                <input defaultValue={p.title} title={`全量标题：${p.title}`} onBlur={(e) => { if (e.target.value.trim() && e.target.value !== p.title) void updatePlan(p, { title: e.target.value.trim() }); }}
-                  style={{ ...inputStyle, width: '100%', color: p.color || 'var(--text)', fontWeight: p.kind === 'milestone' ? 700 : undefined, fontSize: p.kind === 'milestone' ? 14 : 12 }} aria-label="计划标题" />
-                <input defaultValue={p.description} title={`全量描述：${p.description || '（无描述）'}`} placeholder="描述（可空）" className="plan-desc-ph" onBlur={(e) => { if (e.target.value !== p.description) void updatePlan(p, { description: e.target.value }); }}
-                  style={{ ...inputStyle, width: '100%', marginTop: 2, color: 'var(--text-muted)' }} aria-label="计划描述" />
+                <input defaultValue={p.title} readOnly={p.kind === 'milestone'} title={p.kind === 'milestone' ? '里程碑标题 — 由系统汇总其下任务，不可手动编辑' : `全量标题：${p.title}`} onBlur={(e) => { if (p.kind !== 'milestone' && e.target.value.trim() && e.target.value !== p.title) void updatePlan(p, { title: e.target.value.trim() }); }}
+                  style={{ ...inputStyle, width: '100%', color: p.color || 'var(--text)', fontWeight: p.kind === 'milestone' ? 700 : undefined, fontSize: p.kind === 'milestone' ? 14 : 12, cursor: p.kind === 'milestone' ? 'default' : undefined }} aria-label="计划标题" />
+                <input defaultValue={p.description} readOnly={p.kind === 'milestone'} title={p.kind === 'milestone' ? '里程碑描述 — 不可手动编辑' : `全量描述：${p.description || '（无描述）'}`} placeholder="描述（可空）" className="plan-desc-ph" onBlur={(e) => { if (p.kind !== 'milestone' && e.target.value !== p.description) void updatePlan(p, { description: e.target.value }); }}
+                  style={{ ...inputStyle, width: '100%', marginTop: 2, color: 'var(--text-muted)', cursor: p.kind === 'milestone' ? 'default' : undefined }} aria-label="计划描述" />
               </td>
               <td style={{ padding: 6 }}>
                 {isMilestone ? <span style={{ color: 'var(--text-muted)' }}>{p.start_date}</span> : (
@@ -944,7 +952,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               </td>
               <td style={{ padding: 6 }}>
                 {isMilestone ? <span title={`汇总：${innerCount} 项普通/日常任务，合计 ${innerDays} 工作日`} style={{ color: 'var(--accent)', fontWeight: 600 }}>Σ {innerCount} 项 · {innerDays} 天</span> : (
-                <input type="number" min={1} defaultValue={p.duration_days} onBlur={(e) => { const v = Number(e.target.value); if (v >= 1 && v !== p.duration_days) void updatePlan(p, { duration_days: v }); }}
+                <input type="number" min={1} defaultValue={p.duration_days} onBlur={(e) => { const v = Number(e.target.value); if (v >= 1 && v !== p.duration_days) void updatePlan(p, { duration_days: v }); else if (p.kind === 'daily' && v < 1) flash('日常任务必须填写工时估算（≥1 工作日）'); }}
                   style={{ ...inputStyle, width: 40 }} aria-label="工期（工作日）" />)}
               </td>
               <td style={{ padding: 6 }}>
