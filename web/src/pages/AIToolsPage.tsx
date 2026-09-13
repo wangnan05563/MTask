@@ -190,13 +190,19 @@ interface ToolRowProps {
 /** 表格行（S3776 拆分）：单行渲染逻辑从页面组件抽出，API Key 列与操作列再下沉到单元格组件 */
 function ToolRow(props: ToolRowProps) {
   const { tool } = props;
+  // T00489：按住行 200ms 才缩放（组件内自管状态）
+  const [pressOn, setPressOn] = useState(false);
+  const pressTimer = useRef<number | undefined>(undefined);
   const flushClass = props.flushed ? ' flush' : '';
   let dragClass = '';
   if (props.dragId === tool.id) dragClass = ' tool-dragging';
   else if (props.overId === tool.id) dragClass = ' tool-over';
   return (
     <tr
-      className={`arena-row${flushClass}${dragClass}`}
+      className={`arena-row${flushClass}${dragClass}${pressOn ? ' item-pressing' : ''}`}
+      onMouseDown={(e) => { if ((e.target as HTMLElement).closest('button, input, select, a, textarea, label')) return; pressTimer.current = window.setTimeout(() => setPressOn(true), 200); }}
+      onMouseUp={() => { clearTimeout(pressTimer.current); setPressOn(false); }}
+      onMouseLeave={() => { clearTimeout(pressTimer.current); setPressOn(false); }}
       draggable
       onDragStart={() => props.onDragStart?.(tool.id)}
       onDragEnd={() => { props.onDragEnd?.(); }}
@@ -663,7 +669,7 @@ export function AIToolsPage() {
       {/* 按钮加载旋转动画：供连接测试 / 模型获取等按钮 loading 图标使用 */}
       <style>{`@keyframes aispin{to{transform:rotate(360deg)}}.aispin{animation:aispin .8s linear infinite;display:inline-block}
         .arena-row { transition: transform .12s ease; }
-        .arena-row:active { transform: scale(.985); }
+        .arena-row.item-pressing { transform: scale(.985); } /* T00489：仅按住行触发 */
         .arena-row:hover td { background: var(--surface-2); }
         .abtn { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
         .arena-row:hover .abtn, .arena-row:focus-within .abtn { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }

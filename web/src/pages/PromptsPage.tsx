@@ -44,7 +44,10 @@ export function PromptsPage() {
   }
 
   // T00463：条目拖拽排序状态
-  const [dragId, setDragId] = useState(''); // NOSONAR - dragId 供 dropReorder 读取，setDragId 用于拖拽态重渲染
+  const [dragId, setDragId] = useState('');
+  // T00489：按住行 200ms 才缩放（快速点击/点行内按钮不触发）
+  const [pressId, setPressId] = useState('');
+  const pressTimer = useRef<Record<string, number>>({}); // NOSONAR - dragId 供 dropReorder 读取，setDragId 用于拖拽态重渲染
   const [overId, setOverId] = useState(''); // NOSONAR - overId 供列表行接入拖拽高亮后读取，setOverId 用于拖拽悬停态重渲染
   // 调整分组：moveOpenId 记录当前展开分组选择器的提示词 id（单开），'' 表示全部收起
   const [moveOpenId, setMoveOpenId] = useState('');
@@ -262,7 +265,7 @@ export function PromptsPage() {
         .tbtn-anim svg { transition: transform .18s ease; }
         .tbtn-anim:hover svg { transform: scale(1.2) rotate(8deg); }
         .tbtn-anim:active svg { transform: scale(.88); }
-        .arena-row:active { transform: scale(.985); }
+        .arena-row.item-pressing { transform: scale(.985); } /* T00489：仅按住行触发 */
         .arena-row:hover { background: var(--surface-2); }
         .abtn { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
         /* T00469：操作图标按钮 hover 动效（lucide 图标微缩放反馈） */
@@ -410,12 +413,15 @@ export function PromptsPage() {
           const editing = draft !== undefined;
           return (
             <li key={flashAt[p.id] ? `f${flashAt[p.id]}-${p.id}` : p.id}
+              onMouseDown={(e) => { if ((e.target as HTMLElement).closest('button, input, select, a, textarea, label')) return; pressTimer.current[p.id] = window.setTimeout(() => setPressId(p.id), 200); }}
+              onMouseUp={() => { clearTimeout(pressTimer.current[p.id]); if (pressId) setPressId(''); }}
+              onMouseLeave={() => { clearTimeout(pressTimer.current[p.id]); if (pressId === p.id) setPressId(''); }}
               draggable={sortKey === 'manual'}
               onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = 'move'; }}
               onDragEnd={() => { setDragId(''); setOverId(''); }}
               onDragOver={(e) => { e.preventDefault(); if (p.id !== dragId) setOverId(p.id); }}
               onDrop={(e) => { e.preventDefault(); dropReorder(p.id); }}
-              className={`arena-row${flashAt[p.id] ? ' flush' : ''}${dragId === p.id ? ' item-dragging' : overId === p.id ? ' item-over' : ''}`}
+              className={`arena-row${flashAt[p.id] ? ' flush' : ''}${dragId === p.id ? ' item-dragging' : overId === p.id ? ' item-over' : ''}${pressId === p.id ? ' item-pressing' : ''}`}
               style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 10, cursor: 'grab' }}>
               {editing ? (
                 <>
