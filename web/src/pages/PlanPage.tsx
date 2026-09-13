@@ -656,9 +656,9 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               style={{ borderBottom: '1px solid var(--border)', transition: 'box-shadow .15s ease, transform .15s ease, background .15s ease' }}>
               <td style={{ padding: 6, color: 'var(--text-muted)' }}>{i + 1}</td>
               <td style={{ padding: 6, minWidth: 220 }}>
-                <input defaultValue={p.title} onBlur={(e) => { if (e.target.value.trim() && e.target.value !== p.title) void updatePlan(p, { title: e.target.value.trim() }); }}
+                <input defaultValue={p.title} title={`全量标题：${p.title}`} onBlur={(e) => { if (e.target.value.trim() && e.target.value !== p.title) void updatePlan(p, { title: e.target.value.trim() }); }}
                   style={{ ...inputStyle, width: '100%', color: p.color || 'var(--text)' }} aria-label="计划标题" />
-                <input defaultValue={p.description} placeholder="描述（可空）" onBlur={(e) => { if (e.target.value !== p.description) void updatePlan(p, { description: e.target.value }); }}
+                <input defaultValue={p.description} title={`全量描述：${p.description || '（无描述）'}`} placeholder="描述（可空）" onBlur={(e) => { if (e.target.value !== p.description) void updatePlan(p, { description: e.target.value }); }}
                   style={{ ...inputStyle, width: '100%', marginTop: 2, color: 'var(--text-muted)' }} aria-label="计划描述" />
               </td>
               <td style={{ padding: 6 }}>
