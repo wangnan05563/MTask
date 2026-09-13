@@ -480,7 +480,17 @@ export function TasksPage() {
 
   /** FR5 已完成任务：切换未验证/已验证。图标每次变化用起局部重挂载播放弹出动画 */
   async function toggleVerified(task: Task) {
-    await api.patch(`/tasks/${task.id}`, { verified: !task.verified });
+    // T00502：取消验证（标记失败）时录入失败反馈——以【验证失败】前缀追加处理结果，任务自动回退待办
+    if (task.verified) {
+      const fb = await askInput({ title: `验证失败反馈 — ${task.title}`, placeholder: '请描述验证失败的原因（将回退到待办）' });
+      if (fb === null) return; // 取消
+      const stamp = new Date().toISOString().slice(0, 10);
+      const merged = `${task.handle_result ?? ''}\n\n【验证失败 ${stamp}】${fb.trim()}`.trim();
+      await api.patch(`/tasks/${task.id}`, { verified: false, status: 'todo', handle_result: merged });
+      flash('已标记验证失败并回退待办');
+    } else {
+      await api.patch(`/tasks/${task.id}`, { verified: true });
+    }
     void loadTasks(activeProject);
   }
 
@@ -1212,11 +1222,11 @@ export function TasksPage() {
         >
           <CopyPlus size={13} />
         </button>
-        <button onClick={() => void archive(t)} title="归档 — 将该任务移入归档" aria-label="归档：将该任务移入归档" className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Archive size={13} /></button>
-        {/* T00490：字体颜色——Excel 风格按钮，点击直接应用当前色，箭头展开色板 */}
+        {/* T00501：字体颜色按钮置于按钮栏最前 */}
         <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
           <FontColorButton current={t.color ?? ''} onApply={(c) => { void api.patch(`/tasks/${t.id}`, { color: c }).then(() => { flash(c ? '字体颜色已应用' : '已恢复默认颜色'); void loadTasks(activeProject); }); }} />
         </span>
+        <button onClick={() => void archive(t)} title="归档 — 将该任务移入归档" aria-label="归档：将该任务移入归档" className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Archive size={13} /></button>
         {/* 记录时间：与操作按钮同行的最右侧，紧凑格式，创建/编辑并排 */}
         <span style={{ display: 'inline-flex', gap: 10 }}>
           <span>{fmtShort(t.created_at)} 创建</span>

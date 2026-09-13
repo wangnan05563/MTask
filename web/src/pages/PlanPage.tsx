@@ -129,6 +129,15 @@ async function downloadTemplate() {
   downloadBlob(buf, 'plan-template.xlsx');
 }
 
+/** T00508：取记录挂接的里程碑（deps 中 type=child），无则 null */
+function childMilestoneOf(p: PlanTask, plans: PlanTask[]): PlanTask | null {
+  try {
+    const deps = p.deps ? JSON.parse(p.deps) as Array<{ id: string; type: string }> : [];
+    const hit = deps.find((d) => d.type === 'child');
+    return hit ? plans.find((x) => x.id === hit.id) ?? null : null;
+  } catch { return null; }
+}
+
 export function PlanPage() {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   // T00460：切页保状态——项目选择会话级持久化，切回不重置
@@ -150,6 +159,8 @@ export function PlanPage() {
   const [projOpen, setProjOpen] = useState(false);
   const projDropRef = useRef<HTMLDivElement | null>(null);
   const [depEditor, setDepEditor] = useState<{ id: string; seq: number } | null>(null);
+  // T00508：里程碑收起状态（记录其下子任务是否折叠）
+  const [collapsedMs, setCollapsedMs] = useState<Record<string, boolean>>({});
   const [depSel, setDepSel] = useState<Record<string, 'serial' | 'parallel'>>({});
   // T00449：视图模式（列表/甘特）会话级保持
   const [viewMode, setViewMode] = useSessionState<'list' | 'gantt'>('plan.viewMode', 'list');
@@ -756,6 +767,9 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             const innerCount = inner.length;
             const innerDays = inner.reduce((acc, x) => acc + (x.duration_days || 0), 0);
             const innerAvg = innerCount ? Math.round(inner.reduce((acc, x) => acc + (x.progress || 0), 0) / innerCount) : 0;
+            // T00508：挂接里程碑的子任务——父里程碑收起时整行隐藏
+            const parentMs = childMilestoneOf(p, plans);
+            if (parentMs && collapsedMs[parentMs.id]) return null;
             return (
             <tr key={p.id}
               draggable
@@ -776,7 +790,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                   );
                   return (
                     <span style={{ display: 'inline-flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
-                      {depList.map((d) => {
+                      {depList.filter((d) => d.type !== 'child').map((d) => {
                         const seq = plans.findIndex((x) => x.id === d.id) + 1;
                         return (
                           <button key={d.id} onClick={() => openDepEditor(p)}
@@ -791,11 +805,19 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 })()}
               </td>
               <td style={{ padding: 6, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                {p.kind === 'milestone' ? <span title="阶段里程碑 — 汇总其下普通/日常任务，不可手动调整" style={{ color: 'var(--accent)', fontWeight: 700 }}>◆</span> : p.kind === 'daily' ? <span title="日常任务" style={{ color: 'var(--text-muted)' }}>◇</span> : i + 1}
+                {p.kind === 'milestone' ? (
+                  <span title="阶段里程碑 — 汇总其下普通/日常任务，不可手动调整；点击标题旁箭头收起/展开子任务" style={{ color: 'var(--accent)', fontWeight: 700, fontSize: 13 }}>◆ {i + 1}</span>
+                ) : childMilestoneOf(p, plans) ? (() => {
+                  const pm = childMilestoneOf(p, plans)!;
+                  const pSeq = plans.findIndex((x) => x.id === pm.id) + 1;
+                  const children = plans.filter((x) => childMilestoneOf(x, plans)?.id === pm.id);
+                  const cSeq = children.findIndex((x) => x.id === p.id) + 1;
+                  return <span style={{ marginLeft: 16 }}>{pSeq}.{cSeq}</span>;
+                })() : p.kind === 'daily' ? <span title="日常任务" style={{ color: 'var(--text-muted)' }}>◇ {i + 1}</span> : i + 1}
               </td>
-              <td style={{ padding: 6, minWidth: 220 }}>
+              <td style={{ padding: 6, minWidth: 220, paddingLeft: childMilestoneOf(p, plans) ? 24 : 6 }}>
                 <input defaultValue={p.title} title={`全量标题：${p.title}`} onBlur={(e) => { if (e.target.value.trim() && e.target.value !== p.title) void updatePlan(p, { title: e.target.value.trim() }); }}
-                  style={{ ...inputStyle, width: '100%', color: p.color || 'var(--text)' }} aria-label="计划标题" />
+                  style={{ ...inputStyle, width: '100%', color: p.color || 'var(--text)', fontWeight: p.kind === 'milestone' ? 700 : undefined, fontSize: p.kind === 'milestone' ? 14 : 12 }} aria-label="计划标题" />
                 <input defaultValue={p.description} title={`全量描述：${p.description || '（无描述）'}`} placeholder="描述（可空）" onBlur={(e) => { if (e.target.value !== p.description) void updatePlan(p, { description: e.target.value }); }}
                   style={{ ...inputStyle, width: '100%', marginTop: 2, color: 'var(--text-muted)' }} aria-label="计划描述" />
               </td>
