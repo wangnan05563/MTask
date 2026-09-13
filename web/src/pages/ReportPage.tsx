@@ -345,7 +345,7 @@ export function ReportPage() {
         </div>
       </div>
 
-      {notice && <div style={{ marginBottom: 10, fontSize: 13, color: 'var(--accent)' }}>{notice}</div>}
+      {notice && <span className="flash-toast" role="status">{notice}</span>}
 
       {/* 内置技能：标准版式生成的依据 */}
       <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 14, background: 'var(--card-bg)', marginBottom: 12 }}>

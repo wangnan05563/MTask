@@ -689,7 +689,7 @@ export function AIToolsPage() {
           placeholder="搜索名称/厂商/Endpoint/备注…"
           style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, flex: 1, minWidth: 180 }}
         />
-        {notice && <span style={{ fontSize: 13, color: 'var(--accent)' }}>{notice}</span>}
+        {notice && <span className="flash-toast" role="status">{notice}</span>}
         <button
           onClick={openCreate}
           title="新增配置 — 新增一条 AI 厂商配置记录"

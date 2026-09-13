@@ -353,7 +353,7 @@ export function ReqPage() {
           placeholder="搜索标题/内容…"
           style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, marginLeft: 'auto' }}
         />
-        {notice && <span style={{ fontSize: 13, color: 'var(--accent)' }}>{notice}</span>}
+        {notice && <span className="flash-toast" role="status">{notice}</span>}
       </div>
 
       {/* 新建条目表单 */}

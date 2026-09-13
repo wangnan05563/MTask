@@ -462,7 +462,7 @@ export function DbAdminTab() {
         </div>
       )}
 
-      {notice && <div style={{ marginTop: 10, fontSize: 'var(--fs-m)', color: 'var(--accent)' }}>{notice}</div>}
+      {notice && <span className="flash-toast" role="status">{notice}</span>}
     </div>
   );
 }

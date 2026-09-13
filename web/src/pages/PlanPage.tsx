@@ -613,7 +613,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         </fieldset>
         <button onClick={openHolidayManager} style={btnStyle} title="节假日管理 — 手动维护 / 联网导入法定节假日 / 万年历视图">节假日（{holidays.length}）</button>
         <button onClick={reload} style={btnStyle} title="刷新"><RefreshCw size={13} /></button>
-        {notice && <span style={{ fontSize: 12, color: 'var(--accent)' }}>{notice}</span>}
+        {notice && <span className="flash-toast" role="status">{notice}</span>}
       </div>
 
       {/* 节假日摘要（快速可见；完整管理进弹窗） */}

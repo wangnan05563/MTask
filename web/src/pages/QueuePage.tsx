@@ -165,7 +165,7 @@ export function QueuePage() {
             <RotateCcw size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 重试失败
           </button>
         )}
-        {notice && <span style={{ alignSelf: 'center', fontSize: 13, color: 'var(--accent)' }}>{notice}</span>}
+        {notice && <span className="flash-toast" role="status">{notice}</span>}
       </div>
 
       {active && (
