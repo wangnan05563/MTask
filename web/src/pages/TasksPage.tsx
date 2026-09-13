@@ -152,6 +152,9 @@ export function TasksPage() {
 
   // T00466：数据刷新时间戳——刷新后 updated_at 晚于该值的行闪烁一次（与提示词页 flush 动效统一）
   const [refreshFlash, setRefreshFlash] = useState(0);
+  // T00489：按住行 200ms 才触发缩放（快速点击不缩放，点行内按钮不触发——消除按钮点击漂移感）
+  const [pressId, setPressId] = useState('');
+  const pressTimer = useRef<Record<string, number>>({});
     const flash = (msg: string) => {
     setNotice(msg);
     setTimeout(() => setNotice(''), 2500);
@@ -1563,7 +1566,14 @@ export function TasksPage() {
     else if (dragTaskId === t.id) dragCls = ' plan-dragging';
     return (
       <li
-        className={`task-item${titleEditing || descEditing ? ' task-editing' : ''}${dragCls}${refreshFlash && t.updated_at && Date.parse(t.updated_at) >= refreshFlash ? ' flush' : ''}`}
+        className={`task-item${titleEditing || descEditing ? ' task-editing' : ''}${dragCls}${refreshFlash && t.updated_at && Date.parse(t.updated_at) >= refreshFlash ? ' flush' : ''}${pressId === t.id ? ' item-pressing' : ''}`}
+        onMouseDown={(e) => {
+          // T00489：交互元素上按下不触发行缩放；非交互区按住 200ms 才缩放（快速点击不缩放）
+          if ((e.target as HTMLElement).closest('button, input, select, a, textarea, label')) return;
+          pressTimer.current[t.id] = window.setTimeout(() => setPressId(t.id), 200);
+        }}
+        onMouseUp={() => { clearTimeout(pressTimer.current[t.id]); if (pressId) setPressId(''); }}
+        onMouseLeave={() => { clearTimeout(pressTimer.current[t.id]); if (pressId === t.id) setPressId(''); }}
         draggable={sortMode === 'manual'}
         onDragStart={() => setDragTaskId(t.id)}
         onDragEnd={() => { setDragTaskId(''); setOverTaskId(''); }}
@@ -1745,8 +1755,10 @@ export function TasksPage() {
         {renderProjectActionButtons()}
         </span>
         </span>
+        <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
         {renderToolSelector()}
         {renderModelHint()}
+        </span>
         {renderBeautifyToolbarButton()}
         {renderClassifyButton()}
         {renderViewToggle()}
@@ -1771,7 +1783,7 @@ export function TasksPage() {
           <input type="file" accept=".csv" style={{ display: 'none' }}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void onCsvFile(f); } e.target.value = ''; }} />
         </label>
-        <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+        <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <select
             value={catFilter}
             onChange={(e) => setCatFilter(e.target.value)}
@@ -1798,6 +1810,7 @@ export function TasksPage() {
           </select>
         </span>
         <input
+          className="op-hidden"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="搜索标题/描述…"
@@ -1948,10 +1961,11 @@ export function TasksPage() {
         {viewMode === 'board' && renderBoard()}
         {viewMode === 'board' && <div style={{ height: 8 }} />}
         {viewMode === 'list' && (<>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
+        <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
           <h3 style={{ fontSize: 15, margin: 0 }}>待办（{visibleTodo.length}/{todo.length}）</h3>
           {/* 按修改时间/优先级排序：会话级偏好，选项见 sortOptions */}
           <select
+            className="op-hidden"
             value={todoSort}
             onChange={(e) => setTodoSort(e.target.value as SortKey)}
             title="待办排序 — 按修改时间或优先级排序"
@@ -1973,10 +1987,11 @@ export function TasksPage() {
         </>)}
 
         {viewMode === 'list' && (<>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '16px 0 8px' }}>
+        <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '16px 0 8px' }}>
           {/* 提示未验证数量：默认过滤「仅未验证」时，让用户意识到已验证项只是被过滤而非丢失 */}
           <h3 style={{ fontSize: 15, margin: 0 }}>已完成（{visibleDone.length}/{done.length}，未验证 {done.filter((t) => !t.verified).length}）</h3>
           <select
+            className="op-hidden"
             value={doneSort}
             onChange={(e) => setDoneSort(e.target.value as SortKey)}
             title="已完成排序 — 按修改时间或优先级排序"
@@ -1986,6 +2001,7 @@ export function TasksPage() {
             {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
           <select
+            className="op-hidden"
             value={doneFilter}
             onChange={(e) => setDoneFilter(e.target.value as 'all' | 'unverified' | 'verified')}
             title="验证状态过滤 — 筛选已完成任务的验证状态显示范围"
@@ -2225,7 +2241,7 @@ export function TasksPage() {
         /* T00466：与提示词页 arena-row 特效统一——边框、刷新 flush、点击微缩放 */
         .task-item { border: 1px solid var(--border); border-radius: 8px; margin: 6px 0; transition: background-color 0.15s ease, transform .12s ease; }
         .task-item:hover { background: var(--surface-2); }
-        .task-item:active { transform: scale(.985); }
+        .task-item.item-pressing { transform: scale(.985); } /* T00489：仅按住行（非交互区 200ms）时缩放 */
         @keyframes taskflush { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
         .task-item.flush { animation: taskflush 1.4s ease; }
         /* T00467：工具栏图标按钮 hover 动画（开源 lucide 图标 + 缩放旋转反馈） */
@@ -2238,7 +2254,6 @@ export function TasksPage() {
         .op-host:hover > .op-hidden, .op-host:focus-within > .op-hidden { opacity: 1; visibility: visible; transition: opacity .2s ease, visibility 0s; }
         .task-item .title-op { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
         .task-item:hover .title-op, .task-item:focus-within .title-op { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
-        .toolbar-reveal:hover, .toolbar-reveal:focus-within { opacity: 1; }
         .task-op {
           opacity: 0;
           visibility: hidden;
