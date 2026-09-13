@@ -6,7 +6,7 @@ import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { useBusy, setBusy } from '../ui/busy';
-import { AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
+import { AlertTriangle, AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 
 /** 粘贴截图项：id 为入列时生成的稳定唯一标识，供列表 key 使用，删除中间项不会导致其余项身份错位 */
@@ -139,6 +139,10 @@ export function TasksPage() {
   const [resultDrafts, setResultDrafts] = useState<Record<string, string>>({});
   // 处理结果 展开/收起：随任务行详情一起收起/展开，默认收起（有值也收起，点操作行图标展开）
   const [resultOpen, setResultOpen] = useState<Record<string, boolean>>({});
+  // T00521 调整：验证失败反馈展开态（查看/修改窗口与处理结果同款，展示态聚焦【验证失败】段）
+  const [failbackOpen, setFailbackOpen] = useState<Record<string, boolean>>({});
+  // 验证失败反馈编辑草稿：存在即编辑态，保存写回 handle_result 全文
+  const [fbDrafts, setFbDrafts] = useState<Record<string, string>>({});
   // 「已完成」栏验证状态过滤：默认仅展示未验证，便于优先处理待核对的完成项；all=全部
   const [doneFilter, setDoneFilter] = useState<'all' | 'unverified' | 'verified'>('unverified');
   // AI 梳理工具下拉展开态：收起只显模型名收紧宽度，展开面板展示厂商名与厂商类型
@@ -1125,10 +1129,10 @@ export function TasksPage() {
             {t.task_no}
           </span>
         )}
-        {/* T00502：验证失败徽标——处理结果含【验证失败】时显示，点击展开处理结果查看失败反馈 */}
+        {/* T00502/T00521 调整：验证失败徽标——点击展开「验证失败反馈」窗口（聚焦失败段查看/修改） */}
         {t.handle_result?.includes('【验证失败') && (
-          <span title="验证失败 — 点击查看失败反馈（处理结果）" aria-label="验证失败"
-            onClick={() => setResultOpen((p) => ({ ...p, [t.id]: true }))}
+          <span title="验证失败 — 点击查看/修改失败反馈" aria-label="验证失败"
+            onClick={() => setFailbackOpen((p) => ({ ...p, [t.id]: true }))}
             style={{ fontSize: 10, color: 'var(--danger)', border: '1px solid var(--danger)', padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'pointer' }}>
             验证失败
           </span>
@@ -1236,6 +1240,19 @@ export function TasksPage() {
         >
           <CopyPlus size={13} />
         </button>
+        {/* T00521 调整：验证失败反馈查看/修改入口（处理结果按钮后）——仅当处理结果含【验证失败】段时显示，
+            点击展开与处理结果同款的查看/修改窗口（展示态聚焦失败反馈段，编辑态全文可改） */}
+        {t.handle_result?.includes('【验证失败') && (
+          <button
+            onClick={() => setFailbackOpen((p) => ({ ...p, [t.id]: !p[t.id] }))}
+            title="验证失败反馈 — 展开查看/修改该任务的验证失败反馈"
+            aria-label="验证失败反馈：展开查看或修改"
+            className="task-op"
+            style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--danger)' }}
+          >
+            {failbackOpen[t.id] ? <ChevronUp size={13} /> : <AlertTriangle size={13} />}
+          </button>
+        )}
         {/* T00501：字体颜色按钮置于按钮栏最前 */}
         <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
           <FontColorButton current={t.color ?? ''} onApply={(c) => { void api.patch(`/tasks/${t.id}`, { color: c }).then(() => { flash(c ? '字体颜色已应用' : '已恢复默认颜色'); void loadTasks(activeProject); }); }} />
@@ -1604,7 +1621,123 @@ export function TasksPage() {
     );
   }
 
-  /** AI 梳理结果确认区：草稿可编辑，保存回填 ai_summary 或放弃 */
+  /** T00521 调整：从 handle_result 提取【验证失败 …】反馈段（支持多段，段止于下一个【开头行） */
+  function getFailbackText(t: Task): string {
+    const out: string[] = [];
+    let cap = false;
+    for (const ln of (t.handle_result ?? '').split('\n')) {
+      if (ln.includes('【验证失败')) { cap = true; out.push(ln); continue; }
+      if (cap) {
+        if (/^【/.test(ln.trim())) break; // 下一段标记开始，失败反馈段结束
+        out.push(ln);
+      }
+    }
+    return out.join('\n').trim();
+  }
+
+  /** 保存验证失败反馈编辑（草稿为 handle_result 全文，写回全文——失败段与处理结果同窗维护） */
+  async function saveFailback(task: Task) {
+    const content = fbDrafts[task.id];
+    if (content === undefined) return;
+    try {
+      await api.patch(`/tasks/${task.id}`, { handleResult: content });
+    } catch (e) {
+      return flash(e instanceof Error ? e.message : String(e));
+    }
+    setFbDrafts((prev) => {
+      const next = { ...prev };
+      delete next[task.id];
+      return next;
+    });
+    void loadTasks(activeProject);
+    flash('验证失败反馈已保存');
+  }
+
+  /** T00521 调整：验证失败反馈展开区——与处理结果同款交互窗口（展示态聚焦失败反馈段，编辑态全文可改写回） */
+  function renderTaskFailback(t: Task) {
+    if (!failbackOpen[t.id] && fbDrafts[t.id] === undefined) return null; // 收起零占位
+    const editing = fbDrafts[t.id] !== undefined;
+    const fbText = getFailbackText(t);
+    return (
+      <div style={{ marginLeft: 32, marginTop: 4, border: '1px solid var(--danger)', borderRadius: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 6px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', borderTopLeftRadius: 6, borderTopRightRadius: 6 }}>
+          <span style={{ fontSize: 11, color: 'var(--danger)' }}>验证失败反馈</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            {!editing && (
+              <button
+                onClick={() => setFbDrafts((prev) => ({ ...prev, [t.id]: t.handle_result ?? '' }))}
+                title="编辑反馈 — 修改该任务的处理结果全文（含验证失败反馈）"
+                aria-label="编辑验证失败反馈：修改处理结果全文"
+                className="task-op"
+                style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+              >
+                <ClipboardEdit size={12} />
+              </button>
+            )}
+            <button
+              onClick={() => {
+                setFailbackOpen((p) => ({ ...p, [t.id]: false }));
+                setFbDrafts((prev) => {
+                  const next = { ...prev };
+                  delete next[t.id];
+                  return next;
+                });
+              }}
+              title="收起验证失败反馈 — 未保存修改将丢弃"
+              aria-label="收起验证失败反馈"
+              className="task-op"
+              style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+            >
+              <ChevronUp size={12} />
+            </button>
+          </span>
+        </div>
+        {editing ? (
+          <div style={{ padding: 6 }}>
+            <textarea
+              value={fbDrafts[t.id]}
+              onChange={(e) => setFbDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
+              rows={6}
+              placeholder="处理结果全文（含【验证失败】反馈段，支持 Markdown）"
+              style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, boxSizing: 'border-box' }}
+            />
+            <div style={{ marginTop: 4, display: 'flex', gap: 4, alignItems: 'center' }}>
+              <button
+                onClick={() => void saveFailback(t)}
+                title="保存 — 保存修改后的处理结果（含验证失败反馈）"
+                aria-label="保存验证失败反馈"
+                className="task-op"
+                style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+              >
+                <Save size={13} />
+              </button>
+              <button
+                onClick={() => setFbDrafts((prev) => {
+                  const next = { ...prev };
+                  delete next[t.id];
+                  return next;
+                })}
+                title="放弃修改 — 恢复已保存内容"
+                aria-label="放弃修改：恢复已保存内容"
+                className="task-op"
+                style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+              >
+                <X size={13} />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ padding: 6 }}>
+            {fbText ? (
+              <MarkdownContent content={fbText} showCopy />
+            ) : (
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>未找到验证失败反馈段</span>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
   function renderTaskDraft(t: Task, draft: string) {
     return (
       <div style={{ marginLeft: 32, marginTop: 6 }}>
@@ -1668,6 +1801,7 @@ export function TasksPage() {
         {t.ai_summary && !draft && renderTaskSummary(t)}
         {draft && renderTaskDraft(t, draft)}
         {renderTaskResult(t)}
+        {renderTaskFailback(t)}
       </li>
     );
   }
