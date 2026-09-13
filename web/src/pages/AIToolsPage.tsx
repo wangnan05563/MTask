@@ -179,6 +179,12 @@ interface ToolRowProps {
   readonly onFetchRowModels: (t: AITool) => void;
   readonly onSetDefault: (t: AITool, kind: 'organize' | 'develop') => void;
   readonly onRemove: (t: AITool) => void;
+  /** T00542：模型无框下拉（选择后直接持久化） */
+  readonly modelMenuId: string;
+  readonly modelMenuPos: { top: number; left: number } | null;
+  readonly modelMenuRef: React.MutableRefObject<HTMLSpanElement | null>;
+  readonly onToggleModelMenu: (t: AITool, anchor: HTMLElement) => void;
+  readonly onSelectModel: (t: AITool, model: string) => void;
   /** T00446：拖拽排序回调 */
   readonly onDragStart?: (id: string) => void;
   readonly onDragOver?: (id: string) => void;
@@ -233,7 +239,40 @@ function ToolRow(props: ToolRowProps) {
       <td style={cellStyle} draggable={false}>{PURPOSE_LABEL[tool.purpose] ?? tool.purpose}</td>
       <td style={{ ...cellStyle, wordBreak: 'break-all', maxWidth: 220 }} draggable={false}>{tool.endpoint}</td>
       <td style={cellStyle} draggable={false}>
-        <div>{tool.model ?? '-'}</div>
+        {/* T00542：模型字段无框下拉条——点击触发展开（未拉取则自动拉取模型列表），选择后直接持久化 */}
+        <span ref={props.modelMenuId === tool.id ? (props.modelMenuRef as unknown as React.RefObject<HTMLSpanElement>) : undefined} style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 2, maxWidth: 220 }}>
+          <button
+            onClick={(e) => props.onToggleModelMenu(tool, e.currentTarget as HTMLElement)}
+            title={tool.model ? `模型：${tool.model} — 点击选择可用模型` : '选择模型 — 点击拉取并选择可用模型'}
+            aria-label="选择模型" aria-haspopup="listbox" aria-expanded={props.modelMenuId === tool.id}
+            className="task-op"
+            style={{ cursor: 'pointer', border: 'none', background: 'transparent', padding: 0, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 3, color: tool.model ? 'var(--text)' : 'var(--text-muted)', fontFamily: 'inherit' }}
+          >
+            {props.fetchingModels[tool.id] ? <Loader2 size={11} className="aispin" /> : null}
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 170 }}>{tool.model ?? '选择模型'}</span>
+            <ChevronDown size={11} />
+          </button>
+          {props.modelMenuId === tool.id && props.modelMenuPos && (
+            <div role="listbox" aria-label="可用模型列表"
+              style={{ position: 'fixed', top: props.modelMenuPos.top, left: props.modelMenuPos.left, zIndex: 70, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 6px 16px rgba(0,0,0,.16)', maxHeight: 200, overflowY: 'auto', minWidth: 220 }}>
+              {props.fetchingModels[tool.id] ? (
+                <div style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}><Loader2 size={12} className="aispin" /> 获取模型列表中…</div>
+              ) : (props.modelsResult[tool.id]?.length ?? 0) > 0 ? (
+                props.modelsResult[tool.id]!.map((m) => (
+                  <button key={m} role="option" aria-selected={m === tool.model}
+                    onClick={() => props.onSelectModel(tool, m)}
+                    title={m}
+                    style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '5px 10px', fontSize: 12, border: 'none', cursor: 'pointer', background: m === tool.model ? 'var(--accent-soft)' : 'transparent', color: m === tool.model ? 'var(--accent)' : 'var(--text)' }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m}</span>
+                    {m === tool.model && <span style={{ fontSize: 10 }}>当前</span>}
+                  </button>
+                ))
+              ) : (
+                <div style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-muted)' }}>暂无模型列表，请先点击「拉取模型」获取</div>
+              )}
+            </div>
+          )}
+        </span>
         {tool.model_notes && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{tool.model_notes}</div>}
       </td>
       {/* 默认仅展示掩码；点击「查看原文」按需拉取明文，再点隐藏即从内存移除（FR3.5） */}
@@ -414,6 +453,10 @@ export function AIToolsPage() {
   // 记录高亮：保存更新成功后对目标行打标记，flashAt 值变化触发行动画重放
   const [flashAt, setFlashAt] = useState<Record<string, number>>({});
   // 列表行「可用模型」拉取结果（按工具 id）
+  // T00542：模型无框下拉状态（展开任务 id / fixed 坐标 / 外点收起 ref）
+  const [modelMenuId, setModelMenuId] = useState('');
+  const [modelMenuPos, setModelMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const modelMenuRef = useRef<HTMLSpanElement | null>(null);
   const [modelsResult, setModelsResult] = useState<Record<string, string[]>>({});
   // API Key 查看原文：仅点击后按需拉取明文，隐藏时立即从状态移除（仅内存保留）
   const [revealed, setRevealed] = useState<Record<string, string>>({});
@@ -447,6 +490,15 @@ export function AIToolsPage() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+  // T00542：模型无框下拉外点收起
+  useEffect(() => {
+    if (!modelMenuId) return;
+    const onDoc = (e: MouseEvent) => {
+      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) setModelMenuId('');
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [modelMenuId]);
 
   // ---------- 增删改 ----------
   function openCreate() {
@@ -583,6 +635,25 @@ export function AIToolsPage() {
     } finally {
       setFetchingModels((prev) => ({ ...prev, [t.id]: false }));
     }
+  }
+
+  // T00542：展开/收起模型无框下拉——首展开且未拉取过则自动拉取模型列表
+  function toggleModelMenu(t: AITool, anchorEl: HTMLElement) {
+    const rect = anchorEl.getBoundingClientRect();
+    setModelMenuPos({ top: rect.bottom + 4, left: rect.left });
+    const next = modelMenuId === t.id ? '' : t.id;
+    setModelMenuId(next);
+    if (next && !modelsResult[t.id]) void fetchRowModels(t);
+  }
+
+  // T00542：选择可用模型并直接持久化
+  async function selectRowModel(t: AITool, model: string) {
+    try {
+      await api.patch(`/aitools/${t.id}`, { model });
+      setTools((prev) => prev.map((x) => (x.id === t.id ? { ...x, model } : x)));
+      setModelMenuId('');
+      flash(`模型已设为 ${model}`);
+    } catch (e) { flash(String((e as Error).message ?? e)); }
   }
 
   /** 表单内草稿连接测试：用未保存的当前表单值提前验证，避免保存后才发现配置错误 */
@@ -746,6 +817,11 @@ export function AIToolsPage() {
               }}
               testing={testing}
               fetchingModels={fetchingModels}
+              modelMenuId={modelMenuId}
+              modelMenuPos={modelMenuPos}
+              modelMenuRef={modelMenuRef}
+              onToggleModelMenu={toggleModelMenu}
+              onSelectModel={selectRowModel}
               testResult={testResult}
               modelsResult={modelsResult}
               revealed={revealed}
