@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CalendarRange, ChevronDown, ChevronUp, Copy, FolderInput, FolderPlus, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
+import { CopyButton } from '../ui/CopyButton';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type ReqCategory, type ReqEntry } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
@@ -483,10 +484,7 @@ export function ReqPage() {
                     <span className="abtn" style={{ display: 'inline-flex', alignItems: 'center' }}>
                       <FontColorButton current={p.color ?? ''} onApply={(c) => { void api.patch(`/req-entries/${p.id}`, { color: c }).then(() => { void loadEntries(activeCat, search); }); }} />
                     </span>
-                    <button className="abtn" onClick={() => void copyEntry(p)} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-                      title="复制 — 复制通用需求内容到剪贴板" aria-label="复制：复制通用需求内容到剪贴板">
-                      <Copy size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-                    </button>
+                    <CopyButton getText={() => p.title + (p.content ? '\n' + p.content : '')} title="复制 — 复制通用需求内容到剪贴板" ariaLabel="复制：复制通用需求内容" />
                     {/* T00436：复制到待办任务 — 转成收件箱项目的待办，悬浮提示按任务规格 */}
                     <button className="abtn" onClick={() => void copyToTask(p)} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="复制到待办任务 — 以该通用需求创建一条待办任务（收件箱项目）" aria-label="复制到待办任务">

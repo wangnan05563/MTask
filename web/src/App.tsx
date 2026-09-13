@@ -130,6 +130,12 @@ function Shell() {
         /* 文字/功能按钮：整体轻微倾斜（幅度收敛避免文本难读），active 缩放 */
         button:hover:not(:disabled):not(.tbtn-anim):not(.nav-btn):not(.abtn):not(.ghost):not(.row-title-btn):not(.task-op) { transform: rotate(-1.5deg); } /* T00494：记录标题按钮不参与悬浮旋转；T00513：task-op 行内按钮走倾斜缩放基准 */
         button { transition: transform .18s ease, background-color .15s ease; }
+        /* T00530：请求进行中的呼吸反馈上提为全局（任务页/计划页共用） */
+        .task-breathe { animation: task-breathe 1.3s ease-in-out infinite; }
+        @keyframes task-breathe {
+          0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.35); }
+          50% { transform: scale(1.06); box-shadow: 0 0 0 5px rgba(37, 99, 235, 0); }
+        }
         /* T00491：菜单操作控件/搜索框统一「默认隐藏、悬浮宿主区显示」（后代选择器支持嵌套组） */
         .op-host .op-hidden { opacity: 0; visibility: hidden; transition: opacity .2s ease, visibility 0s linear .2s; }
         .op-host:hover .op-hidden, .op-host:focus-within .op-hidden { opacity: 1; visibility: visible; transition: opacity .2s ease, visibility 0s; }

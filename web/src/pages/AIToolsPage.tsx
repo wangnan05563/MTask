@@ -121,8 +121,9 @@ function ToolActionsCell({ tool, testing, fetchingModels, testResult, modelsResu
         </div>
       )}
       {modelsResult && (
-        <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4, whiteSpace: 'normal', maxWidth: 220 }}>
-          可用模型：{modelsResult.slice(0, 15).join('、')}{modelsResult.length > 15 ? `…共 ${modelsResult.length} 个` : ''}
+        // T00532：可滚动查看全部模型，超出 160px 内部滚动不再截断
+        <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4, whiteSpace: 'normal', maxWidth: 220, maxHeight: 160, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 4, padding: 4 }}>
+          可用模型（{modelsResult.length} 个）：{modelsResult.join('、')}
         </div>
       )}
     </td>
@@ -228,10 +229,10 @@ function ToolRow(props: ToolRowProps) {
         {/* 备注默认收缩，仅展开时显示完整内容 */}
         {tool.remark && props.remarkExpanded[tool.id] && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{tool.remark}</div>}
       </td>
-      <td style={cellStyle}>{tool.type}</td>
-      <td style={cellStyle}>{PURPOSE_LABEL[tool.purpose] ?? tool.purpose}</td>
-      <td style={{ ...cellStyle, wordBreak: 'break-all', maxWidth: 220 }}>{tool.endpoint}</td>
-      <td style={cellStyle}>
+      <td style={cellStyle} draggable={false}>{tool.type}</td>
+      <td style={cellStyle} draggable={false}>{PURPOSE_LABEL[tool.purpose] ?? tool.purpose}</td>
+      <td style={{ ...cellStyle, wordBreak: 'break-all', maxWidth: 220 }} draggable={false}>{tool.endpoint}</td>
+      <td style={cellStyle} draggable={false}>
         <div>{tool.model ?? '-'}</div>
         {tool.model_notes && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{tool.model_notes}</div>}
       </td>

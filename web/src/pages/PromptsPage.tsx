@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowDownUp, ChevronDown, ChevronUp, Copy, FolderInput, FolderPlus, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, UnfoldVertical, FoldVertical, X, Archive } from 'lucide-react';
+import { CopyButton } from '../ui/CopyButton';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type Prompt, type PromptCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
@@ -317,14 +318,6 @@ export function PromptsPage() {
               style={{ display: 'inline-flex', alignItems: 'center', padding: '4px 8px', borderRadius: 6 }}>
               {prompts.length > 0 && prompts.every((x) => expandedIds[x.id]) ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />}
             </button>
-            <button onClick={() => { void api.post('/prompts/reorder/reset', { categoryId: activeCat }).then((r) => { const reset = (r as { reset?: number })?.reset;
-              flash(reset ? `已重置 ${reset} 条为默认排序` : '当前已是默认排序');
-              void loadPrompts(activeCat, search);
-            }).catch((e) => flash(String((e as Error).message ?? e))); }}
-              title="重置排序 — 恢复按更新时间倒序的默认排列" aria-label="重置排序：恢复默认排列"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 4px', fontSize: 12 }}>
-              <ArrowDownUp size={13} /> 重置排序
-            </button>
           </>
         )}
         <button
@@ -490,10 +483,7 @@ export function PromptsPage() {
                     <span className="abtn" style={{ display: 'inline-flex', alignItems: 'center' }}>
                       <FontColorButton current={p.color ?? ''} onApply={(c) => { void api.patch(`/prompts/${p.id}`, { color: c }).then(() => { void loadPrompts(activeCat, search); }); }} />
                     </span>
-                    <button className="abtn" onClick={() => void copyPrompt(p)} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-                      title="复制 — 复制提示词内容到剪贴板" aria-label="复制：复制提示词内容到剪贴板">
-                      <Copy size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-                    </button>
+                    <CopyButton getText={() => p.title + (p.content ? '\n' + p.content : '')} title="复制 — 复制提示词内容到剪贴板" ariaLabel="复制：复制提示词内容" />
                     {/* T00436：复制到待办任务 — 转成收件箱项目的待办，悬浮提示按任务规格 */}
                     <button className="abtn" onClick={() => void copyToTask(p)} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="复制到待办任务 — 以该提示词创建一条待办任务（收件箱项目）" aria-label="复制到待办任务">

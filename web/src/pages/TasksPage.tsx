@@ -118,7 +118,8 @@ export function TasksPage() {
   // 批量美化独占标识：批量进行期间不与单条并行，避免相互覆盖
   const batchBusy = beautifySnap.batchBusy;
   // 批量智能分类进行中标识：驱动工具条「批量分类」按钮的忙碌态
-  const [classifyBusy, setClassifyBusy] = useState(false);
+  // T00535：改会话级持久化——切页后回来按钮忙碌态不丢失
+  const [classifyBusy, setClassifyBusy] = useSessionState<boolean>('tasks.classifyBusy', false);
   // 进行中请求的取消控制器：美化已入 beautifyStore.aborts（模块级，切页存活）；提示词优化仍按页内隔离
   const optimizeAborts = useRef<Record<string, AbortController>>({});
   // 是否有美化类操作进行中（单条或批量）：驱动工具条「取消/批量美化」按钮
@@ -145,15 +146,11 @@ export function TasksPage() {
   const [fbDrafts, setFbDrafts] = useState<Record<string, string>>({});
   // 「已完成」栏验证状态过滤：默认仅展示未验证，便于优先处理待核对的完成项；all=全部
   const [doneFilter, setDoneFilter] = useState<'all' | 'unverified' | 'verified'>('unverified');
-  // AI 梳理工具下拉展开态：收起只显模型名收紧宽度，展开面板展示厂商名与厂商类型
-  const [toolOpen, setToolOpen] = useState(false);
   // 待办/已完成区块排序：会话级偏好，默认保持后端顺序
   const [todoSort, setTodoSort] = useSessionState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.todoSort', 'default');
   const [doneSort, setDoneSort] = useSessionState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.doneSort', 'default');
   // T00456 / PRD UX-1：视图模式（列表/看板）会话级保持
   const [viewMode, setViewMode] = useSessionState<'list' | 'board'>('tasks.viewMode', 'list');
-  // AI 美化工具下拉容器：焦点移出检测用（替代容器 tabIndex+onBlur，避免在非交互容器上挂交互属性）
-  const toolSelectRef = useRef<HTMLDivElement>(null);
 
   // T00466：数据刷新时间戳——刷新后 updated_at 晚于该值的行闪烁一次（与提示词页 flush 动效统一）
   const [refreshFlash, setRefreshFlash] = useState(0);
@@ -244,16 +241,13 @@ export function TasksPage() {
     const list = await api.get<AITool[]>('/aitools');
     // 默认整理工具排最前，便于选择
     setTools([...list].sort((a, b) => Number(b.isDefaultOrganize) - Number(a.isDefaultOrganize)));
-    // 持久化的 organizeToolId 可能已失效（工具被删）：不在列表内则回退默认整理工具，避免下拉空选
-    const valid = list.some((t) => t.id === organizeToolId);
-    if (!valid) {
-      try {
-        const defaults = await api.get<{ organize: string | null; develop: string | null }>('/aitools/defaults');
-        const def = list.find((t) => t.id === defaults.organize) ?? list[0];
-        if (def) setOrganizeToolId(def.id);
-      } catch { /* 默认查询失败则保持空选 */ }
-    }
-  }, [organizeToolId]);
+    // T00534：统一以模型菜单配置为准——始终使用默认整理工具，不再由本页下拉选择
+    try {
+      const defaults = await api.get<{ organize: string | null; develop: string | null }>('/aitools/defaults');
+      const def = list.find((t) => t.id === defaults.organize) ?? list[0];
+      if (def) setOrganizeToolId(def.id);
+    } catch { /* 默认查询失败则保持空选 */ }
+  }, []);
 
   const loadCategories = useCallback(async () => {
     // 分类下拉不因加载失败而阻塞任务页：失败时保持空列表，仅分类功能不可用
@@ -333,14 +327,6 @@ export function TasksPage() {
   }, [activeProject, loadTasks, selectedIds, pruneSelectedIds]);
   // 工具下拉展开期间监听全局焦点移出：内部元素间切换时 relatedTarget 仍在容器内不收起，移出容器才收起。
   // 挂在 document 上而非容器 div，可避免为挂 onBlur 而给非交互容器加 tabIndex/role
-  useEffect(() => {
-    if (!toolOpen) return;
-    const onDocFocusOut = (e: FocusEvent) => {
-      if (toolSelectRef.current && !toolSelectRef.current.contains(e.relatedTarget as Node)) setToolOpen(false);
-    };
-    document.addEventListener('focusout', onDocFocusOut);
-    return () => document.removeEventListener('focusout', onDocFocusOut);
-  }, [toolOpen]);
 
   async function createProject() {
     const name = await askInput({ title: '新项目名称', placeholder: '请输入项目名称' });
@@ -1298,6 +1284,12 @@ export function TasksPage() {
               <Check size={14} /> 验证通过
             </button>
             <button role="menuitem"
+              onClick={() => { setVerifyMenuId(''); void api.patch(`/tasks/${t.id}`, { verified: false }).then(() => { flash('已置为未验证'); void loadTasks(activeProject); }); }}
+              title="置为未验证 — 保持在已完成列表，等待再次核对"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)' }}>
+              ○ 未验证
+            </button>
+            <button role="menuitem"
               onClick={() => { setVerifyMenuId(''); void markVerifyFailed(t); }}
               title="标记验证失败 — 录入失败反馈，任务将回退到待办列表"
               style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--danger)' }}>
@@ -1806,45 +1798,6 @@ export function TasksPage() {
     );
   }
 
-  /** AI 美化工具下拉：收起态只显示模型名（未配置则回退厂商名）以收紧宽度；
-   *  展开面板展示"厂商名（厂商类型）+ 模型名"；焦点移出下拉区域即收起（见 focusout 监听） */
-  function renderToolSelector() {
-    const current = tools.find((x) => x.id === organizeToolId);
-    return (
-      <div ref={toolSelectRef} style={{ position: 'relative', marginLeft: 12 }}>
-        <button
-          onClick={() => setToolOpen((o) => !o)}
-          title={current ? `当前工具：${current.name}（${current.type}）· ${current.model ?? '未配置模型'}` : '选择 AI 美化工具'}
-          aria-label="选择 AI 美化工具"
-          aria-haspopup="listbox"
-          aria-expanded={toolOpen}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', fontSize: 12, borderRadius: 4, background: 'var(--card-bg)', cursor: 'pointer' }}
-        >
-          {current ? (current.model ?? current.name) : '选择 AI 美化工具…'}
-          <ChevronDown size={12} />
-        </button>
-        {toolOpen && (
-          <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 30, minWidth: 240, maxHeight: 260, overflowY: 'auto', background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: 'var(--overlay)' }}>
-            {tools.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => { setOrganizeToolId(t.id); setToolOpen(false); }}
-                title={`选择 ${t.name}（${t.type}）· ${t.model ?? '未配置模型'}`}
-                aria-label={`选择工具 ${t.name}`}
-                style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', border: 'none', cursor: 'pointer', fontSize: 12, background: t.id === organizeToolId ? 'var(--accent-soft)' : 'transparent', color: t.id === organizeToolId ? 'var(--accent)' : 'var(--text)' }}
-              >
-                {/* 展开面板展示厂商名（厂商类型），模型名以浅色/告警色区分是否已配置 */}
-                {t.name}（{t.type}）
-                <span style={{ color: t.model ? 'var(--text-secondary)' : 'var(--danger)', marginLeft: 6 }}>{t.model ?? '未配置模型'}</span>
-              </button>
-            ))}
-            {tools.length === 0 && <div style={{ padding: '8px 10px', color: 'var(--text-muted)', fontSize: 12 }}>暂无工具，请先在「模型管理」中添加</div>}
-          </div>
-        )}
-      </div>
-    );
-  }
-
   /** 工具条 AI 美化按钮：进行中变为「取消」，否则批量美化全部待办 */
   function renderBeautifyToolbarButton() {
     return (
@@ -1981,9 +1934,6 @@ export function TasksPage() {
         <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
         {renderProjectActionButtons()}
         </span>
-        </span>
-        <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
-        {renderToolSelector()}
         </span>
         {renderBeautifyToolbarButton()}
         {renderClassifyButton()}

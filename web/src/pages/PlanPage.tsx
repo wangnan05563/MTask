@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, CalendarPlus, Download, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap, ChevronDown, ChevronRight } from 'lucide-react';
+import { Archive, CalendarPlus, Download, MoreHorizontal, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap, ChevronDown, ChevronRight } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
@@ -102,11 +102,6 @@ function compareOrganize(a: AITool, b: AITool): number {
   return Number(b.isDefaultOrganize) - Number(a.isDefaultOrganize);
 }
 
-/** 保持当前选中工具（若仍存在），否则回退到首个 */
-function pickToolId(sorted: AITool[], cur: string): string {
-  return sorted.some((t) => t.id === cur) ? cur : (sorted[0]?.id ?? '');
-}
-
 /** 计划行拖拽/高亮类名（原嵌套三元等价改写） */
 function planRowClass(dragId: string, overId: string, newRowId: string, id: string): string | undefined {
   if (dragId === id) return 'plan-dragging';
@@ -149,11 +144,13 @@ export function PlanPage() {
   // T00438 AI 导入：模型列表与选中工具（持久化）、解析弹窗状态、可编辑草稿行
   const [tools, setTools] = useState<AITool[]>([]);
   const [aiToolId, setAiToolId] = usePersistentState('plan.aiToolId', '');
-  // T00526 调整：AI 模型下拉展开态（与任务菜单一致——收起只显模型名，展开显示厂商+模型）
-  const [aiToolOpen, setAiToolOpen] = useState(false);
   // T00472：AI 评估状态（批量进度动态计数，单条/批量共用）
   const [evalBusy, setEvalBusy] = useState(false);
   const [evalLabel, setEvalLabel] = useState('');
+  // T00529：操作列省略号菜单（依赖维护等）——展开任务 id 与 fixed 坐标
+  const [depMenuId, setDepMenuId] = useState('');
+  const [depMenuPos, setDepMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const depMenuRef = useRef<HTMLSpanElement | null>(null);
   // T00499：前置依赖配置弹窗（depEditor=正在编辑的记录；depSel=选择集 {任务id: 依赖类型}）
   // T00505：项目自绘下拉（三色徽标：绿=已完成、蓝=进行中、灰=待开始）
   const [projOpen, setProjOpen] = useState(false);
@@ -176,7 +173,16 @@ export function PlanPage() {
 
   useEffect(() => { void api.get<ProjectRow[]>('/projects').then((ps) => { setProjects(ps); if (ps.length > 0) setProjectId((cur) => cur || ps[0].id); }); }, []);
   // T00438：AI 模型列表（默认整理工具排最前，与任务页模型选择一致）
-  useEffect(() => { void api.get<AITool[]>('/aitools').then((list) => { const sorted = [...list].sort(compareOrganize); setTools(sorted); setAiToolId((cur) => pickToolId(sorted, cur)); }); }, []);
+  // T00534：统一以模型菜单配置为准——AI 导入/评估固定使用默认整理工具，不再由本页选择
+  useEffect(() => { void api.get<AITool[]>('/aitools').then((list) => { const sorted = [...list].sort(compareOrganize); setTools(sorted); setAiToolId(sorted[0]?.id ?? ''); }); }, []);
+  useEffect(() => {
+    if (!depMenuId) return;
+    const onDoc = (e: MouseEvent) => {
+      if (depMenuRef.current && !depMenuRef.current.contains(e.target as Node)) setDepMenuId('');
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [depMenuId]);
 
   const reload = useCallback(() => {
     if (!projectId) return;
@@ -294,38 +300,6 @@ export function PlanPage() {
       await updatePlan(p, { description: merged });
       return true;
     } catch (e) { flash(String((e as Error).message ?? e)); return false; }
-  }
-
-  /** T00526 调整：AI 模型下拉——与任务菜单（TasksPage renderToolSelector）同款：
-   *  收起只显示模型名（未配置回退厂商名）收紧宽度；展开面板显示「厂商名（厂商类型）+ 模型名」；
-   *  焦点移出下拉区域即收起。工具栏与 AI 导入弹窗复用同一份状态。 */
-  function renderAiToolDropdown(styleOverride?: React.CSSProperties) {
-    const current = tools.find((x) => x.id === aiToolId);
-    return (
-      <div style={{ position: 'relative' }}
-        onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setAiToolOpen(false); }}>
-        <button onClick={() => setAiToolOpen((o) => !o)} className="tbtn-anim"
-          title={current ? `当前工具：${current.name}（${current.type}）· ${current.model ?? '未配置模型'}` : 'AI 模型选择 — AI 导入与 AI 评估使用该工具配置的模型'}
-          aria-label="AI 模型选择" aria-haspopup="listbox" aria-expanded={aiToolOpen}
-          style={{ ...btnStyle, display: 'inline-flex', alignItems: 'center', gap: 4, ...(styleOverride ?? {}) }}>
-          {current ? (current.model ?? current.name) : 'AI 模型…'}
-          <ChevronDown size={12} />
-        </button>
-        {aiToolOpen && (
-          <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 40, minWidth: 240, maxHeight: 260, overflowY: 'auto', background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: 'var(--overlay)' }}>
-            {tools.map((t) => (
-              <button key={t.id} onClick={() => { setAiToolId(t.id); setAiToolOpen(false); }}
-                title={`选择 ${t.name}（${t.type}）· ${t.model ?? '未配置模型'}`} aria-label={`选择 AI 模型 ${t.name}`}
-                style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', border: 'none', cursor: 'pointer', fontSize: 12, background: t.id === aiToolId ? 'var(--accent-soft)' : 'transparent', color: t.id === aiToolId ? 'var(--accent)' : 'var(--text)' }}>
-                {t.name}（{t.type}）
-                <span style={{ color: t.model ? 'var(--text-secondary)' : 'var(--danger)', marginLeft: 6 }}>{t.model ?? '未配置模型'}</span>
-              </button>
-            ))}
-            {tools.length === 0 && <div style={{ padding: '8px 10px', color: 'var(--text-muted)', fontSize: 12 }}>暂无工具，请先在「模型管理」中添加</div>}
-          </div>
-        )}
-      </div>
-    );
   }
 
   /** 批量评估：确认后逐条串行评估并自动录入描述，进度动态计数（k/N） */
@@ -767,12 +741,11 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         </label>
         <button className="tbtn-anim" onClick={() => void exportExcel()} title="导出 Excel — 导出当前项目全部计划" aria-label="导出 Excel" style={{ ...btnStyle, padding: '6px 8px' }}><Download size={13} /></button>
         <button className="tbtn-anim" onClick={() => void downloadTemplate()} title="下载模板 — 获取导入用 Excel 模板" aria-label="下载导入模板" style={{ ...btnStyle, padding: '6px 8px' }}><FileSpreadsheet size={13} /></button>
-        {/* T00526 调整：模型选择与任务菜单同款——收起只显模型名，展开显示厂商+模型 */}
-        {renderAiToolDropdown({ minWidth: 110 })}
         <button className="tbtn-anim" onClick={openAiImport} title="AI 导入 — 上传任意格式计划 Excel，AI 自动识别字段并重组为标准计划" aria-label="AI 导入" style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)', padding: '6px 8px' }}><Sparkles size={13} /></button>
-        <button onClick={() => batchEvaluatePlans()} disabled={evalBusy || busy} title="AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）" aria-label="批量 AI 评估" style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }}>
+        <button onClick={() => batchEvaluatePlans()} disabled={evalBusy || busy} title="AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）" aria-label="批量 AI 评估" className={evalBusy ? 'task-breathe' : undefined} style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }}>
           {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}AI 评估{evalLabel && plans.length > 0 ? `（${evalLabel}）` : ''}
         </button>
+        {evalBusy && <span className="flash-toast" role="status"><span className="task-breathe" style={{ color: 'var(--accent)' }}>AI 评估中{evalLabel ? `（${evalLabel}）` : ''}…</span></span>}
         <fieldset style={{ display: 'inline-flex', margin: 0, padding: 0, minWidth: 0, border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} aria-label="视图切换">
           <button onClick={() => setViewMode('list')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', cursor: 'pointer', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图">列表</button>
           <button onClick={() => setViewMode('gantt')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: viewMode === 'gantt' ? 'var(--accent)' : 'transparent', color: viewMode === 'gantt' ? 'var(--accent-text)' : 'var(--text)' }} title="甘特图视图 — 按串行瀑布时间线可视化">甘特</button>
@@ -806,7 +779,6 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       <table className="plan-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
         <thead>
           <tr style={{ textAlign: 'left', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-strong)' }}>
-            <th style={{ padding: 6, minWidth: 64 }}>前置依赖</th>
             <th style={{ padding: 6 }}>#</th>
             <th style={{ padding: 6 }}>标题 / 描述</th>
             <th style={{ padding: 6 }}>开始</th>
@@ -875,39 +847,6 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               }}
               className={planRowClass(dragId, overId, newRowId, p.id)}
               style={{ borderBottom: '1px solid var(--border)', transition: 'box-shadow .15s ease, transform .15s ease, background .15s ease' }}>
-              {/* T00499：前置依赖列——显示前置任务序号（可点配置），serial=串行 predecessor 之后自动排期 */}
-              <td style={{ padding: 6, fontSize: 11 }}>
-                {(() => {
-                  let depList: Array<{ id: string; type: string }> = [];
-                  try { depList = p.deps ? JSON.parse(p.deps) : []; } catch { depList = []; }
-                  // T00518：挂接里程碑的记录（deps 仅含 child）也保留管理入口
-                  const hasOnlyChild = depList.length > 0 && depList.every((d) => d.type === 'child');
-                  if (hasOnlyChild) return (
-                    <button onClick={() => openDepEditor(p)} title="已挂接里程碑 — 点击维护依赖/挂接关系" aria-label="已挂接里程碑：维护依赖"
-                      style={{ border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 10, padding: '0 4px', borderRadius: 4 }}>◈ 维护</button>
-                  );
-                  if (depList.length === 0) return (
-                    <button onClick={() => openDepEditor(p)} title="配置前置依赖 — 选择前置任务并标记串行/并行" aria-label="配置前置依赖"
-                      style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 13, padding: 0 }}>＋</button>
-                  );
-                  return (
-                    <span style={{ display: 'inline-flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
-                      {depList.filter((d) => d.type !== 'child').map((d) => {
-                        // T00527 修正：依赖序号也用顺延 seqs，与序号列一致
-                        const seqStr = seqs.get(d.id);
-                        const seq = seqStr ? parseInt(seqStr, 10) : 0;
-                        return (
-                          <button key={d.id} onClick={() => openDepEditor(p)}
-                            title={`${d.type === 'serial' ? '串行' : '并行'}依赖：${plans.find((x) => x.id === d.id)?.title ?? '已删除'}（点击调整）`}
-                            style={{ border: '1px solid var(--border-strong)', background: d.type === 'serial' ? 'var(--accent-soft)' : 'transparent', color: d.type === 'serial' ? 'var(--accent)' : 'var(--text-muted)', borderRadius: 4, fontSize: 10, padding: '0 4px', cursor: 'pointer' }}>
-                            {seq > 0 ? `#${seq}` : '?'}{d.type === 'serial' ? '串' : '并'}
-                          </button>
-                        );
-                      })}
-                    </span>
-                  );
-                })()}
-              </td>
               <td style={{ padding: 6, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
                 {p.kind === 'milestone' ? (
                   <span title="阶段里程碑 — 汇总其下普通/日常任务，不可手动调整；点击标题旁箭头收起/展开子任务" style={{ color: 'var(--accent)', fontWeight: 700, fontSize: 13 }}>◆ {seqs.get(p.id) ?? i + 1}</span>
@@ -996,6 +935,27 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
                   <FontColorButton current={p.color ?? ''} onApply={(c) => { void updatePlan(p, { color: c }); }} />
                 </span>
+                {/* T00529：省略号菜单——依赖维护等操作收纳入操作列（默认隐藏，悬浮显示） */}
+                <span ref={depMenuId === p.id ? depMenuRef : undefined} style={{ position: 'relative', display: 'inline-flex' }}>
+                  <button onClick={(e) => {
+                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    setDepMenuPos({ top: rect.bottom + 4, left: rect.left });
+                    setDepMenuId(depMenuId === p.id ? '' : p.id);
+                  }} title="更多操作 — 依赖维护等" aria-label="更多操作" aria-haspopup="menu" aria-expanded={depMenuId === p.id}
+                    className="task-op"
+                    style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--text-muted)', padding: 2, display: 'inline-flex' }}>
+                    <MoreHorizontal size={13} />
+                  </button>
+                  {depMenuId === p.id && depMenuPos && (
+                    <div role="menu" style={{ position: 'fixed', top: depMenuPos.top, left: depMenuPos.left, zIndex: 70, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 6px 16px rgba(0,0,0,.16)', padding: 4, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 150 }}>
+                      <button role="menuitem" onClick={() => { setDepMenuId(''); openDepEditor(p); }}
+                        title="维护前置依赖 — 选择前置任务并标记串行/并行，或调整里程碑挂接"
+                        style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text)' }}>
+                        <Link2 size={13} /> 维护依赖 / 挂接
+                      </button>
+                    </div>
+                  )}
+                </span>
 <button onClick={() => void archivePlan(p)} title="归档计划任务 — 从时间线移除，可在「归档」菜单恢复或彻底删除" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--danger)', padding: 2 }}><Archive size={13} /></button>
                 {/* T00472：单条 AI 评估——结果自动录入该行描述（保存）或取消不写 */}
                 <button onClick={() => { if (evalBusy) return; if (!aiToolId) { flash('请先选择 AI 模型'); return; } void evaluateOnePlan(p).then((okk) => { if (okk) flash('AI 评估已写入该行描述'); }); }} disabled={evalBusy || busy} title="AI 评估 — 评估该条工期合理性/风险与建议，结果自动录入描述" aria-label="AI 评估该条" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--accent)', padding: 2 }}>
@@ -1027,8 +987,6 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             </div>
             <div style={{ padding: 14, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <label style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>AI 模型：</label>
-                {renderAiToolDropdown()}
                 <label style={{ ...btnStyle, cursor: aiBusy ? 'default' : 'pointer' }} title="选择计划 Excel（.xlsx/.csv）或需求文档（.md/.docx）">
                   <Upload size={13} />选择文件
                   <input type="file" accept=".xlsx,.csv,.md,.markdown,.docx" style={{ display: 'none' }}

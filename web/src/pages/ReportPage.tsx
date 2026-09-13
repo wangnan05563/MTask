@@ -92,7 +92,8 @@ export function ReportPage() {
       const list = await api.get<AITool[]>('/aitools');
       const valid = list.filter((t) => t.model);
       setAiTools(valid);
-      if (valid.length) setAiToolId((cur) => (valid.some((t) => t.id === cur) ? cur : valid[0].id));
+      // T00534：统一以模型菜单配置为准——固定默认整理工具，不再由本页选择
+      if (valid.length) setAiToolId(valid[0].id);
     } catch { /* 工具列表加载失败静默：aiToolId 为空时由 UI 提示先配置模型 */ }
   }, [setAiToolId]);
 
@@ -312,10 +313,7 @@ export function ReportPage() {
           </div>
           <div style={{ marginBottom: 12 }}>
             <div style={labelStyle}>AI 工具</div>
-            <select value={aiToolId} onChange={(e) => setAiToolId(e.target.value)} style={{ ...fieldStyle, width: '100%' }}>
-              {aiTools.length === 0 && <option value="">（未配置可用工具）</option>}
-              {aiTools.map((t) => <option key={t.id} value={t.id}>{t.name}（{t.type}）· {t.model}</option>)}
-            </select>
+{/* T00534：模型选择已统一至模型菜单默认配置（AI 周报固定使用默认整理工具） */}
           </div>
           <button
             onClick={() => void aiGenerate()}
