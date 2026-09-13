@@ -223,6 +223,19 @@ export function TasksPage() {
     return () => document.removeEventListener('mousedown', onDoc);
   }, [projOpen]);
 
+  // T00521 调整：验证结果选择面板（通过/失败合一入口）点击外部关闭
+  const [verifyMenuId, setVerifyMenuId] = useState('');
+  const [verifyMenuPos, setVerifyMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const verifyMenuRef = useRef<HTMLSpanElement | null>(null);
+  useEffect(() => {
+    if (!verifyMenuId) return;
+    const onDoc = (e: MouseEvent) => {
+      if (verifyMenuRef.current && !verifyMenuRef.current.contains(e.target as Node)) setVerifyMenuId('');
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [verifyMenuId]);
+
   const loadTools = useCallback(async () => {
     const list = await api.get<AITool[]>('/aitools');
     // 默认整理工具排最前，便于选择
@@ -478,9 +491,8 @@ export function TasksPage() {
     void loadTasks(activeProject);
   }
 
-  /** FR5 已完成任务：切换未验证/已验证。图标每次变化用起局部重挂载播放弹出动画 */
+  /** FR5 已完成任务：标记验证通过（T00521 调整：验证失败路径统一走 markVerifyFailed，由验证选择面板入口触发） */
   async function toggleVerified(task: Task) {
-    if (task.verified) return markVerifyFailed(task); // T00502：取消验证 = 标记验证失败（录反馈回退待办）
     await api.patch(`/tasks/${task.id}`, { verified: true });
     void loadTasks(activeProject);
   }
@@ -1238,35 +1250,45 @@ export function TasksPage() {
     );
   }
 
-  /** 已完成任务验证状态切换按钮：未验证=空心圆，已验证=打勾；key 变化触发重挂载以播放弹出动画。
-   *  T00521：done 任务旁增加显式「验证失败」按钮（✗ 危险色）——语义明确的失败标记入口，
-   *  点击弹输入框录失败反馈并回退待办；保持 title-op 悬浮显示体系。 */
+  /** 已完成任务验证入口（合一）：单按钮展开动画选择面板——✓ 验证通过 / ✗ 验证失败（T00521 调整，用户 19:33 反馈）。
+   *  面板 fixed 定位（脱离父容器 overflow 裁剪）+ 弹出动画；外点收起。 */
   function renderVerifyButton(t: Task) {
+    const open = verifyMenuId === t.id;
     return (
-      <>
+      <span ref={open ? verifyMenuRef : undefined} style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
         <button
-          onClick={() => void toggleVerified(t)}
-          title={t.verified ? '已验证，点击取消验证' : '未验证，点击标记已验证'}
-          aria-label={t.verified ? '取消验证' : '标记为已验证'}
+          onClick={(e) => {
+            const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            setVerifyMenuPos({ top: r.bottom + 4, left: r.left });
+            setVerifyMenuId(open ? '' : t.id);
+          }}
+          title="验证结果 — 选择验证通过或标记验证失败"
+          aria-label="验证结果" aria-haspopup="menu" aria-expanded={open}
           key={t.verified ? 'v-ok' : 'v-no'}
           className="verify-icon title-op" /* T00487：悬浮显示替代常显 */
 
-          style={{ cursor: 'pointer', fontSize: 16, lineHeight: 1, border: 'none', background: 'transparent', color: t.verified ? 'var(--success)' : 'var(--border-strong)' }}
+          style={{ cursor: 'pointer', fontSize: 14, lineHeight: 1, border: 'none', background: 'transparent', color: t.verified ? 'var(--success)' : 'var(--border-strong)', display: 'inline-flex', alignItems: 'center', gap: 2 }}
         >
-          {t.verified ? '✓' : '○'}
+          {t.verified ? '✓' : '○'}<ChevronDown size={10} />
         </button>
-        {t.status === 'done' && (
-          <button
-            onClick={() => void markVerifyFailed(t)}
-            title="验证失败 — 录入失败反馈，任务将回退到待办列表"
-            aria-label="标记验证失败"
-            className="verify-icon title-op task-op"
-            style={{ cursor: 'pointer', fontSize: 14, lineHeight: 1, border: 'none', background: 'transparent', color: 'var(--danger)' }}
-          >
-            ✗
-          </button>
+        {open && verifyMenuPos && (
+          <div role="menu" aria-label="验证结果选择"
+            style={{ position: 'fixed', top: verifyMenuPos.top, left: verifyMenuPos.left, zIndex: 70, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 6px 16px rgba(0,0,0,.16)', padding: 4, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 128, animation: 'verify-pop .18s ease' }}>
+            <button role="menuitem"
+              onClick={() => { setVerifyMenuId(''); void toggleVerified(t); }}
+              title="标记验证通过"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--success)' }}>
+              <Check size={14} /> 验证通过
+            </button>
+            <button role="menuitem"
+              onClick={() => { setVerifyMenuId(''); void markVerifyFailed(t); }}
+              title="标记验证失败 — 录入失败反馈，任务将回退到待办列表"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--danger)' }}>
+              <X size={14} /> 验证失败
+            </button>
+          </div>
         )}
-      </>
+      </span>
     );
   }
 
@@ -2312,6 +2334,8 @@ export function TasksPage() {
         .task-item { border: 1px solid var(--border); border-radius: 8px; margin: 6px 0; transition: background-color 0.15s ease, transform .12s ease; }
         .task-item:hover { background: var(--surface-2); }
         .task-item.item-pressing { transform: scale(.985); } /* T00489：仅按住行（非交互区 200ms）时缩放 */
+        /* T00521 调整：验证结果选择面板弹出动画（缩放+下移淡入，与 toast-in 同族节奏） */
+        @keyframes verify-pop { from { opacity: 0; transform: translateY(-6px) scale(.92); } to { opacity: 1; transform: none; } }
         @keyframes taskflush { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
         .task-item.flush { animation: taskflush 1.4s ease; }
         /* T00467：工具栏图标按钮 hover 动画（开源 lucide 图标 + 缩放旋转反馈） */
