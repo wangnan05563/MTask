@@ -165,6 +165,7 @@ planApi.patch('/:id', (req, res) => {
     status: b.status as Parameters<typeof PlanService.update>[1]['status'],
     assignee: optStr(b.assignee),
     color: optStr(b.color), // T00490
+    deps: optStr(b.deps), // T00499
   }));
 });
 

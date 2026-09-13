@@ -23,6 +23,8 @@ interface PlanTask {
   linked_task_missing?: boolean;
   /** T00490：记录字体颜色，空串=默认色 */
   color?: string;
+  /** T00499：前置依赖 JSON [{id,type:'serial'|'parallel'}]，空=无依赖 */
+  deps?: string;
 }
 
 interface ProjectRow { id: string; name: string }
@@ -132,6 +134,9 @@ export function PlanPage() {
   // T00472：AI 评估状态（批量进度动态计数，单条/批量共用）
   const [evalBusy, setEvalBusy] = useState(false);
   const [evalLabel, setEvalLabel] = useState('');
+  // T00499：前置依赖配置弹窗（depEditor=正在编辑的记录；depSel=选择集 {任务id: 依赖类型}）
+  const [depEditor, setDepEditor] = useState<{ id: string; seq: number } | null>(null);
+  const [depSel, setDepSel] = useState<Record<string, 'serial' | 'parallel'>>({});
   // T00449：视图模式（列表/甘特）会话级保持
   const [viewMode, setViewMode] = useSessionState<'list' | 'gantt'>('plan.viewMode', 'list');
   const [aiOpen, setAiOpen] = useState(false);
@@ -167,15 +172,48 @@ export function PlanPage() {
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
   }
 
-  async function updatePlan(p: PlanTask, patch: Partial<Pick<PlanTask, 'title' | 'description' | 'duration_days' | 'assignee' | 'progress' | 'status' | 'start_date' | 'color'>>) {
+  async function updatePlan(p: PlanTask, patch: Partial<Pick<PlanTask, 'title' | 'description' | 'duration_days' | 'assignee' | 'progress' | 'status' | 'start_date' | 'color' | 'deps'>>) {
     setBusy(true);
     try {
       await api.patch(`/plans/${p.id}`, {
         title: patch.title, description: patch.description, assignee: patch.assignee, status: patch.status,
-        progress: patch.progress, durationDays: patch.duration_days, startDate: patch.start_date, color: patch.color,
+        progress: patch.progress, durationDays: patch.duration_days, startDate: patch.start_date, color: patch.color, deps: patch.deps,
       });
       reload();
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
+  }
+
+  // ---------- T00499：前置依赖配置 ----------
+  /** 打开依赖配置弹窗：预填该记录既有依赖（排除自身） */
+  function openDepEditor(p: PlanTask) {
+    let cur: Array<{ id: string; type: 'serial' | 'parallel' }> = [];
+    try { cur = p.deps ? JSON.parse(p.deps) : []; } catch { cur = []; }
+    const sel: Record<string, 'serial' | 'parallel'> = {};
+    cur.forEach((d) => { if (d.id !== p.id) sel[d.id] = d.type === 'parallel' ? 'parallel' : 'serial'; });
+    setDepSel(sel);
+    setDepEditor({ id: p.id, seq: plans.findIndex((x) => x.id === p.id) + 1 });
+  }
+
+  /** 保存依赖：写 deps；存在串行依赖时自动把开始日调到最晚串行前置结束日的次工作日（自动调整工期/时间线，后端串行重排） */
+  function saveDeps() {
+    if (!depEditor) return;
+    const p = plans.find((x) => x.id === depEditor.id);
+    if (!p) { setDepEditor(null); return; }
+    const deps = Object.entries(depSel).map(([id, type]) => ({ id, type }));
+    const serialEnds = deps
+      .filter((d) => d.type === 'serial')
+      .map((d) => plans.find((x) => x.id === d.id)?.end_date)
+      .filter(Boolean) as string[];
+    let startDate: string | undefined;
+    if (serialEnds.length > 0) {
+      const maxEnd = serialEnds.sort().at(-1)!;
+      const next = new Date(maxEnd);
+      do { next.setDate(next.getDate() + 1); } while ([0, 6].includes(next.getDay()));
+      startDate = next.toISOString().slice(0, 10);
+    }
+    void updatePlan(p, { deps: JSON.stringify(deps), ...(startDate && startDate !== p.start_date ? { startDate } : {}) });
+    setDepEditor(null);
+    flash(startDate ? `依赖已保存：串行前置后开始日自动调整为 ${startDate}` : '依赖已保存');
   }
 
   // ---------- T00472：AI 评估 ----------
@@ -632,6 +670,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       <table className="plan-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
         <thead>
           <tr style={{ textAlign: 'left', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-strong)' }}>
+            <th style={{ padding: 6, minWidth: 64 }}>前置依赖</th>
             <th style={{ padding: 6 }}>#</th>
             <th style={{ padding: 6 }}>标题 / 描述</th>
             <th style={{ padding: 6 }}>开始</th>
@@ -654,6 +693,31 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               onDrop={() => onDropReorder(p.id)}
               className={planRowClass(dragId, overId, newRowId, p.id)}
               style={{ borderBottom: '1px solid var(--border)', transition: 'box-shadow .15s ease, transform .15s ease, background .15s ease' }}>
+              {/* T00499：前置依赖列——显示前置任务序号（可点配置），serial=串行 predecessor 之后自动排期 */}
+              <td style={{ padding: 6, fontSize: 11 }}>
+                {(() => {
+                  let depList: Array<{ id: string; type: string }> = [];
+                  try { depList = p.deps ? JSON.parse(p.deps) : []; } catch { depList = []; }
+                  if (depList.length === 0) return (
+                    <button onClick={() => openDepEditor(p)} title="配置前置依赖 — 选择前置任务并标记串行/并行" aria-label="配置前置依赖"
+                      style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11, padding: 0 }}>+ 依赖</button>
+                  );
+                  return (
+                    <span style={{ display: 'inline-flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
+                      {depList.map((d) => {
+                        const seq = plans.findIndex((x) => x.id === d.id) + 1;
+                        return (
+                          <button key={d.id} onClick={() => openDepEditor(p)}
+                            title={`${d.type === 'serial' ? '串行' : '并行'}依赖：${plans.find((x) => x.id === d.id)?.title ?? '已删除'}（点击调整）`}
+                            style={{ border: '1px solid var(--border-strong)', background: d.type === 'serial' ? 'var(--accent-soft)' : 'transparent', color: d.type === 'serial' ? 'var(--accent)' : 'var(--text-muted)', borderRadius: 4, fontSize: 10, padding: '0 4px', cursor: 'pointer' }}>
+                            {seq > 0 ? `#${seq}` : '?'}{d.type === 'serial' ? '串' : '并'}
+                          </button>
+                        );
+                      })}
+                    </span>
+                  );
+                })()}
+              </td>
               <td style={{ padding: 6, color: 'var(--text-muted)' }}>{i + 1}</td>
               <td style={{ padding: 6, minWidth: 220 }}>
                 <input defaultValue={p.title} title={`全量标题：${p.title}`} onBlur={(e) => { if (e.target.value.trim() && e.target.value !== p.title) void updatePlan(p, { title: e.target.value.trim() }); }}
@@ -668,11 +732,11 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               <td style={{ padding: 6, color: 'var(--text-muted)' }}>{p.end_date}</td>
               <td style={{ padding: 6 }}>
                 <input type="number" min={1} defaultValue={p.duration_days} onBlur={(e) => { const v = Number(e.target.value); if (v >= 1 && v !== p.duration_days) void updatePlan(p, { duration_days: v }); }}
-                  style={{ ...inputStyle, width: 56 }} aria-label="工期（工作日）" />
+                  style={{ ...inputStyle, width: 40 }} aria-label="工期（工作日）" />
               </td>
               <td style={{ padding: 6 }}>
                 <input type="number" min={0} max={100} defaultValue={p.progress} onBlur={(e) => { const v = Number(e.target.value); if (v >= 0 && v <= 100 && v !== p.progress) void updatePlan(p, { progress: v }); }}
-                  style={{ ...inputStyle, width: 56 }} aria-label="进度百分比" />
+                  style={{ ...inputStyle, width: 40 }} aria-label="进度百分比" />
               </td>
               <td style={{ padding: 6 }}>
                 {/* 点击状态徽标流转到下一状态：待办→进行中→已完成→待办；blocked 经已完成 后回待办 */}
@@ -870,6 +934,48 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                   </div>
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* T00499 前置依赖配置弹窗：任务列表多选 + 串行/并行标记 */}
+      {depEditor && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', zIndex: 80, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onMouseDown={(e) => { if (e.target === e.currentTarget) setDepEditor(null); }}>
+          <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 10, padding: 16, width: 460, maxHeight: '72vh', display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12, boxShadow: '0 8px 28px rgba(0,0,0,.2)' }}>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>配置前置依赖 —— #{depEditor.seq} {plans.find((x) => x.id === depEditor.id)?.title}</div>
+            <div style={{ color: 'var(--text-muted)' }}>
+              勾选前置任务并标记依赖类型：<span style={{ color: 'var(--accent)' }}>串行</span> = 前置完成后自动接续开始；<span style={{ color: 'var(--text)' }}>并行</span> = 仅标记关系，不自动调整开始日。
+            </div>
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4, border: '1px solid var(--border)', borderRadius: 6, padding: 8 }}>
+              {plans.filter((x) => x.id !== depEditor.id).map((x) => {
+                const seq = plans.findIndex((y) => y.id === x.id) + 1;
+                const selType = depSel[x.id];
+                return (
+                  <div key={x.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 6px', borderRadius: 6, background: selType ? 'var(--accent-soft)' : 'transparent' }}>
+                    <input type="checkbox" checked={Boolean(selType)} aria-label={`选择前置任务 ${x.title}`}
+                      onChange={(e) => setDepSel((prev) => { const n = { ...prev }; if (e.target.checked) { n[x.id] = 'serial'; } else { delete n[x.id]; } return n; })}
+                      style={{ cursor: 'pointer', flexShrink: 0 }} />
+                    <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>#{seq}</span>
+                    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={x.title}>{x.title}</span>
+                    {selType && (
+                      <span style={{ display: 'inline-flex', gap: 4, flexShrink: 0 }}>
+                        {(['serial', 'parallel'] as const).map((tp) => (
+                          <button key={tp} onClick={() => setDepSel((prev) => ({ ...prev, [x.id]: tp }))}
+                            title={tp === 'serial' ? '串行：前置完成后自动接续' : '并行：仅标记关系'}
+                            style={{ padding: '1px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid var(--border-strong)', background: selType === tp ? 'var(--accent)' : 'transparent', color: selType === tp ? 'var(--accent-text)' : 'var(--text)' }}>
+                            {tp === 'serial' ? '串行' : '并行'}
+                          </button>
+                        ))}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button onClick={() => setDepEditor(null)} title="取消 — 不保存本次调整" aria-label="取消配置依赖" style={{ ...btnStyle }}>取消</button>
+              <button onClick={() => saveDeps()} title="保存 — 写入依赖并按串行前置自动调整开始日" aria-label="保存依赖配置" style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }}>保存</button>
             </div>
           </div>
         </div>

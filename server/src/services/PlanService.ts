@@ -26,6 +26,8 @@ export interface PlanTaskRow {
   linked_task_id: string | null;
   /** T00490：记录字体颜色，空串=默认色 */
   color: string;
+  /** T00499：前置依赖 JSON [{id,type:'serial'|'parallel'}]，空=无依赖 */
+  deps: string;
   /** 归档标记（T00442 扩展）：1=已归档（时间线移除，归档菜单可恢复/彻底删除） */
   archived: number;
   archived_at: string | null;
@@ -325,7 +327,7 @@ export const PlanService = {
   },
 
   /** 更新：标题/描述/工期/进度/状态/负责人；开始日与工期变化会触发从该任务起的时间线重排 */
-  update(id: string, patch: { title?: string; description?: string; startDate?: string; durationDays?: number; progress?: number; status?: PlanStatus; assignee?: string; color?: string }): PlanTaskRow | null {
+  update(id: string, patch: { title?: string; description?: string; startDate?: string; durationDays?: number; progress?: number; status?: PlanStatus; assignee?: string; color?: string; deps?: string }): PlanTaskRow | null {
     const db = getDb();
     const row = this.get(id);
     if (!row) return null;
@@ -340,7 +342,7 @@ export const PlanService = {
       const startDateChanged = patch.startDate !== undefined && patch.startDate !== row.start_date;
       db.prepare(
         `UPDATE plan_tasks SET title = ?, description = ?, start_date = ?, duration_days = ?,
-           progress = ?, status = ?, assignee = ?, color = ?, updated_at = ? WHERE id = ?`,
+           progress = ?, status = ?, assignee = ?, color = ?, deps = ?, updated_at = ? WHERE id = ?`,
       ).run(
         title,
         patch.description ?? row.description,
@@ -350,6 +352,7 @@ export const PlanService = {
         status,
         patch.assignee ?? row.assignee,
         patch.color === undefined ? (row.color ?? '') : patch.color,
+        patch.deps === undefined ? (row.deps ?? '') : patch.deps,
         now(),
         id,
       );
@@ -719,7 +722,7 @@ export const PlanService = {
 
   /** 模板：表头 + 1 行示例（与导入列序一致） */
   async templateExcel(): Promise<Buffer> {    const wb = new ExcelJS.Workbook();
-    const ws = wb.addWorksheet('项目计划');
+    const ws = wb.addWorksheet('项目计划', { views: [{ state: 'frozen', ySplit: 1 }] }); // T00500：冻结表头
     ws.columns = [
       { header: '标题', key: 'title', width: 36 },
       { header: '描述', key: 'description', width: 40 },
@@ -729,6 +732,22 @@ export const PlanService = {
       { header: '状态', key: 'status', width: 10 },
     ];
     ws.addRow({ title: '示例：完成登录模块联调', description: '示例描述（导入前请删除本行）', start_date: '2026-09-14', duration_days: 3, assignee: '张三', status: 'todo' });
+    // T00500：商务风表头（深蓝底白字加粗，黑白打印仍可读）
+    const header = ws.getRow(1);
+    header.height = 22;
+    header.eachCell((c) => {
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E79' } };
+      c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      c.alignment = { vertical: 'middle', horizontal: 'center' };
+      c.border = { bottom: { style: 'thin', color: { argb: 'FF1F4E79' } } };
+    });
+    // 示例行：斜体灰字提示 + 浅分隔线
+    const sample = ws.getRow(2);
+    sample.font = { italic: true, color: { argb: 'FF808080' }, size: 10 };
+    sample.eachCell((c) => { c.border = { bottom: { style: 'hair', color: { argb: 'FFD9D9D9' } } }; });
+    ws.getColumn('start_date').alignment = { horizontal: 'center' };
+    ws.getColumn('duration_days').alignment = { horizontal: 'center' };
+    ws.getColumn('status').alignment = { horizontal: 'center' };
     const out = await wb.xlsx.writeBuffer();
     return Buffer.from(out);
   },

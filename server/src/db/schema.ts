@@ -236,6 +236,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('prompts', 'color', "color TEXT DEFAULT ''");
   ensureColumn('req_entries', 'color', "color TEXT DEFAULT ''");
   ensureColumn('plan_tasks', 'color', "color TEXT DEFAULT ''");
+  ensureColumn('plan_tasks', 'deps', "deps TEXT DEFAULT ''"); // T00499：前置依赖 JSON [{id,type:'serial'|'parallel'}]
   ensureColumn('tasks', 'pinned', 'pinned INTEGER NOT NULL DEFAULT 0');
   ensureColumn('tasks', 'category_id', 'category_id TEXT');
   // 任务编号：供 AI Agent 通过 MCP 按编号定位任务；老库先补列再用现有存量回填编号
