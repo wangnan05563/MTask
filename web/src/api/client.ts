@@ -107,6 +107,9 @@ export interface Project {
   name: string;
   description: string;
   sort_weight: number;
+  /** T00496：每项目待办/未验证计数（徽标展示） */
+  todo_count?: number;
+  unverified_count?: number;
 }
 
 export interface TaskImage {

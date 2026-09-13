@@ -585,25 +585,24 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         .plan-new { animation: plan-new-pop 2.4s ease; }
       `}</style>
       <style>{planTableCss}</style>
-      <style>{planTableCss}</style>
-      {/* 工具条：项目选择 + 增删导入导出 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-        <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-          <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+      {/* 工具条：项目选择 + 增删导入导出（T00491：操作控件/下拉默认隐藏，悬浮工具条显示） */}
+      <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+        <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <select value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ ...inputStyle, minWidth: 140 }} aria-label="选择项目">
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         </span>
         </span>
-        <button onClick={() => void createPlan()} disabled={busy} style={btnStyle}><CalendarPlus size={13} />新建任务</button>
-        <label style={{ ...btnStyle, cursor: busy ? 'default' : 'pointer' }} title="导入 Excel（任一行校验失败则整体不入库）">
-          <Upload size={13} />导入 Excel
+        <button className="tbtn-anim" onClick={() => void createPlan()} disabled={busy} title="新建任务 — 在当前项目创建一条计划任务" aria-label="新建计划任务" style={{ ...btnStyle, padding: '6px 8px' }}><CalendarPlus size={13} /></button>
+        <label className="tbtn-anim" style={{ ...btnStyle, cursor: busy ? 'default' : 'pointer', padding: '6px 8px' }} title="导入 Excel — 批量导入计划任务（任一行校验失败则整体不入库）" aria-label="导入 Excel">
+          <Upload size={13} />
           <input type="file" accept=".xlsx" style={{ display: 'none' }}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void importExcel(f); e.target.value = ''; } }} />
         </label>
-        <button onClick={() => void exportExcel()} style={btnStyle}><Download size={13} />导出 Excel</button>
-        <button onClick={() => void downloadTemplate()} style={btnStyle}><FileSpreadsheet size={13} />下载模板</button>
-        <button onClick={openAiImport} style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }} title="AI 导入 — 上传任意格式计划 Excel，AI 自动识别字段并重组为标准计划"><Sparkles size={13} />AI 导入</button>
+        <button className="tbtn-anim" onClick={() => void exportExcel()} title="导出 Excel — 导出当前项目全部计划" aria-label="导出 Excel" style={{ ...btnStyle, padding: '6px 8px' }}><Download size={13} /></button>
+        <button className="tbtn-anim" onClick={() => void downloadTemplate()} title="下载模板 — 获取导入用 Excel 模板" aria-label="下载导入模板" style={{ ...btnStyle, padding: '6px 8px' }}><FileSpreadsheet size={13} /></button>
+        <button className="tbtn-anim" onClick={openAiImport} title="AI 导入 — 上传任意格式计划 Excel，AI 自动识别字段并重组为标准计划" aria-label="AI 导入" style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)', padding: '6px 8px' }}><Sparkles size={13} /></button>
         <button onClick={() => batchEvaluatePlans()} disabled={evalBusy || busy} title="AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）" aria-label="批量 AI 评估" style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }}>
           {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}AI 评估{evalLabel && plans.length > 0 ? `（${evalLabel}）` : ''}
         </button>

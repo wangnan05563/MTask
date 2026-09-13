@@ -115,9 +115,9 @@ function Shell() {
         /* 文字/功能按钮：整体轻微倾斜（幅度收敛避免文本难读），active 缩放 */
         button:hover:not(:disabled):not(.tbtn-anim):not(.nav-btn):not(.abtn):not(.ghost) { transform: rotate(-1.5deg); }
         button { transition: transform .18s ease, background-color .15s ease; }
-        /* T00477：菜单下拉/过滤条件悬浮展示（默认淡化，悬浮或聚焦完全显示） */
-        .toolbar-reveal { opacity: .35; transition: opacity .18s ease; }
-        .toolbar-reveal:hover, .toolbar-reveal:focus-within { opacity: 1; }
+        /* T00491：菜单操作控件/搜索框统一「默认隐藏、悬浮宿主区显示」（后代选择器支持嵌套组） */
+        .op-host .op-hidden { opacity: 0; visibility: hidden; transition: opacity .2s ease, visibility 0s linear .2s; }
+        .op-host:hover .op-hidden, .op-host:focus-within .op-hidden { opacity: 1; visibility: visible; transition: opacity .2s ease, visibility 0s; }
         /* T00477：菜单下拉/过滤条件悬浮展示（默认淡化，悬浮或聚焦完全显示） */
         .toolbar-reveal { opacity: .35; transition: opacity .18s ease; }
         .toolbar-reveal:hover, .toolbar-reveal:focus-within { opacity: 1; }

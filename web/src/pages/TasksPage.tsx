@@ -155,6 +155,9 @@ export function TasksPage() {
   const [refreshFlash, setRefreshFlash] = useState(0);
   // T00489：按住行 200ms 才触发缩放（快速点击不缩放，点行内按钮不触发——消除按钮点击漂移感）
   const [pressId, setPressId] = useState('');
+  // T00496：项目自绘下拉展开态（项目名后动态徽标：橙=待办数、黄=未验证数）
+  const [projOpen, setProjOpen] = useState(false);
+  const projDropRef = useRef<HTMLDivElement | null>(null);
   const pressTimer = useRef<Record<string, number>>({});
     const flash = (msg: string) => {
     setNotice(msg);
@@ -209,6 +212,16 @@ export function TasksPage() {
       setLoadingMore(false);
     }
   }, [activeProject, loadingMore, hasMore, todo.length, done.length, fetchTasks]);
+
+  // T00496：项目下拉点击外部关闭
+  useEffect(() => {
+    if (!projOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (projDropRef.current && !projDropRef.current.contains(e.target as Node)) setProjOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [projOpen]);
 
   const loadTools = useCallback(async () => {
     const list = await api.get<AITool[]>('/aitools');
@@ -1754,9 +1767,35 @@ export function TasksPage() {
     return (
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <span className="op-host" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
-        <select value={activeProject} onChange={(e) => setActiveProject(e.target.value)} style={{ padding: 6 }} aria-label="切换项目">
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
+        <div ref={projDropRef} style={{ position: 'relative', display: 'inline-flex' }}>
+          <button onClick={() => setProjOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={projOpen}
+            title="切换项目 — 项目名后徽标：红=待办数、黄=未验证数（悬浮查看详情）"
+            aria-label="切换项目"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, cursor: 'pointer' }}>
+            {projects.find((p) => p.id === activeProject)?.name ?? '选择项目'}
+            {(() => { const cur = projects.find((p) => p.id === activeProject); return cur ? (
+              <>
+                <span title={`待办 ${cur.todo_count ?? 0} 条`} style={{ minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{cur.todo_count ?? 0}</span>
+                <span title={`未验证 ${cur.unverified_count ?? 0} 条`} style={{ minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{cur.unverified_count ?? 0}</span>
+              </>
+            ) : null; })()}
+            <ChevronDown size={12} />
+          </button>
+          {projOpen && (
+            <div role="listbox" style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 30, minWidth: 220 }}>
+              {projects.map((p) => (
+                <button key={p.id} role="option" aria-selected={p.id === activeProject}
+                  onClick={() => { setActiveProject(p.id); setProjOpen(false); }}
+                  title={`${p.name}：待办 ${p.todo_count ?? 0} 条，未验证 ${p.unverified_count ?? 0} 条`}
+                  style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, background: p.id === activeProject ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer' }}>
+                  <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+                  <span title={`待办 ${p.todo_count ?? 0} 条`} style={{ minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{p.todo_count ?? 0}</span>
+                  <span title={`未验证 ${p.unverified_count ?? 0} 条`} style={{ minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.unverified_count ?? 0}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
         {renderProjectActionButtons()}
         </span>
@@ -2256,8 +2295,6 @@ export function TasksPage() {
         .tbtn-anim:active svg { transform: scale(.88); }
         /* T00474：筛选条件悬浮展示——默认淡化降权重，工具栏悬浮/键盘聚焦时完全显示 */
         /* T00487：悬浮显示替代灰显——默认完全隐藏（占位不抖动），宿主悬浮/键盘聚焦时 200ms 平滑显示 */
-        .op-hidden { opacity: 0; visibility: hidden; transition: opacity .2s ease, visibility 0s linear .2s; }
-        .op-host:hover > .op-hidden, .op-host:focus-within > .op-hidden { opacity: 1; visibility: visible; transition: opacity .2s ease, visibility 0s; }
         .task-item .title-op { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
         .task-item:hover .title-op, .task-item:focus-within .title-op { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
         .task-op {

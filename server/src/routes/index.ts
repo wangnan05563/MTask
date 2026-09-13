@@ -74,9 +74,21 @@ api.get('/logs', (req, res) => {
 api.get('/projects', (_req, res) => {
   const cached = cacheGet<unknown[]>('projects');
   if (cached) return res.json(cached);
-  const rows = getDb().prepare('SELECT * FROM projects ORDER BY sort_weight, created_at').all();
-  cacheSet('projects', rows, LIST_TTL_MS);
-  res.json(rows);
+  const rows = getDb().prepare('SELECT * FROM projects ORDER BY sort_weight, created_at').all() as Array<Record<string, unknown>>;
+  // T00496：附每项目待办/未验证计数（供项目下拉徽标展示）
+  const counts = getDb().prepare(
+    `SELECT project_id,
+            SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) AS todo_count,
+            SUM(CASE WHEN verified = 0 THEN 1 ELSE 0 END) AS unverified_count
+     FROM tasks WHERE archived = 0 GROUP BY project_id`,
+  ).all() as Array<{ project_id: string; todo_count: number; unverified_count: number }>;
+  const byPid = new Map(counts.map((c) => [c.project_id, c]));
+  const rowsWithCounts = rows.map((r) => {
+    const c = byPid.get(r.id as string);
+    return { ...r, todo_count: c?.todo_count ?? 0, unverified_count: c?.unverified_count ?? 0 };
+  });
+  cacheSet('projects', rowsWithCounts, LIST_TTL_MS);
+  res.json(rowsWithCounts);
 });
 
 api.post('/projects', (req, res) => {

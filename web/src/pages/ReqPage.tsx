@@ -284,9 +284,9 @@ export function ReqPage() {
         .move-btn:hover { color: var(--accent); }
       `}</style>
       {/* 工具栏：分类切换与管理 */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-        <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+      <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+        <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
         <select value={activeCat} onChange={(e) => setActiveCat(e.target.value)} style={{ padding: 6, minWidth: 180 }}>
           {categories.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.reqCount ?? 0}）</option>)}
         </select>
@@ -326,8 +326,8 @@ export function ReqPage() {
         >
           <Plus size={13} />
         </button>
-        <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-          <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+        <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <select
           value={sortKey}
           onChange={(e) => setSortKey(e.target.value as 'updated_at' | 'created_at' | 'title')}
@@ -341,8 +341,8 @@ export function ReqPage() {
         </select>
         </span>
         </span>
-        <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-          <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+        <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <select
           value={sortDir}
           onChange={(e) => setSortDir(e.target.value as 'asc' | 'desc')}
