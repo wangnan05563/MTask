@@ -150,6 +150,7 @@ planApi.post('/', (req, res) => {
     startDate: optStr(b.startDate),
     durationDays: b.durationDays == null ? undefined : Number(b.durationDays),
     assignee: optStr(b.assignee),
+    kind: optStr(b.kind), // T00506
     status: b.status as Parameters<typeof PlanService.create>[0]['status'],
   }));
 });
@@ -166,6 +167,7 @@ planApi.patch('/:id', (req, res) => {
     assignee: optStr(b.assignee),
     color: optStr(b.color), // T00490
     deps: optStr(b.deps), // T00499
+    kind: optStr(b.kind), // T00506
   }));
 });
 

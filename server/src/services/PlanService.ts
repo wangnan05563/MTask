@@ -28,6 +28,8 @@ export interface PlanTaskRow {
   color: string;
   /** T00499：前置依赖 JSON [{id,type:'serial'|'parallel'}]，空=无依赖 */
   deps: string;
+  /** T00506：任务类型 normal=普通、milestone=阶段里程碑、daily=日常任务 */
+  kind: string;
   /** 归档标记（T00442 扩展）：1=已归档（时间线移除，归档菜单可恢复/彻底删除） */
   archived: number;
   archived_at: string | null;
@@ -290,7 +292,7 @@ export const PlanService = {
   },
 
   /** 新建：追加到序列尾部；首任务用传入 start_date 作锚点，否则全量重排 */
-  create(input: { projectId: string; title: string; description?: string; startDate?: string; durationDays?: number; assignee?: string; status?: PlanStatus }): PlanTaskRow {
+  create(input: { projectId: string; title: string; description?: string; startDate?: string; durationDays?: number; assignee?: string; status?: PlanStatus; kind?: string }): PlanTaskRow {
     const db = getDb();
     const title = String(input.title ?? '').trim();
     if (!title) throw new Error('标题必填');
@@ -309,9 +311,9 @@ export const PlanService = {
     db.transaction(() => {
       db.prepare(
         `INSERT INTO plan_tasks (id, project_id, title, description, start_date, end_date, duration_days,
-           progress, status, assignee, sort_order, linked_task_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?)`,
-      ).run(id, input.projectId, title, input.description ?? '', start, start, duration, status, input.assignee ?? '', maxOrder + 1, t, t);
+           progress, status, assignee, sort_order, linked_task_id, kind, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?, ?)`,
+      ).run(id, input.projectId, title, input.description ?? '', start, start, duration, status, input.assignee ?? '', maxOrder + 1, (input as { kind?: string }).kind ?? 'normal', t, t);
       // 重排范围收敛（原实现无条件 rescheduleAll，即每次新增都重排整条时间线 → O(n)，
       // 连续新增 N 条的计划场景退化为 O(n²)；实测 2400+ 计划时单次 create 达 169ms）：
       //  · 首任务：以自身 start_date 为锚点，只需重排本项目（此时仅此一行）
@@ -327,7 +329,7 @@ export const PlanService = {
   },
 
   /** 更新：标题/描述/工期/进度/状态/负责人；开始日与工期变化会触发从该任务起的时间线重排 */
-  update(id: string, patch: { title?: string; description?: string; startDate?: string; durationDays?: number; progress?: number; status?: PlanStatus; assignee?: string; color?: string; deps?: string }): PlanTaskRow | null {
+  update(id: string, patch: { title?: string; description?: string; startDate?: string; durationDays?: number; progress?: number; status?: PlanStatus; assignee?: string; color?: string; deps?: string; kind?: string }): PlanTaskRow | null {
     const db = getDb();
     const row = this.get(id);
     if (!row) return null;
@@ -342,7 +344,7 @@ export const PlanService = {
       const startDateChanged = patch.startDate !== undefined && patch.startDate !== row.start_date;
       db.prepare(
         `UPDATE plan_tasks SET title = ?, description = ?, start_date = ?, duration_days = ?,
-           progress = ?, status = ?, assignee = ?, color = ?, deps = ?, updated_at = ? WHERE id = ?`,
+           progress = ?, status = ?, assignee = ?, color = ?, deps = ?, kind = ?, updated_at = ? WHERE id = ?`,
       ).run(
         title,
         patch.description ?? row.description,
@@ -353,6 +355,7 @@ export const PlanService = {
         patch.assignee ?? row.assignee,
         patch.color === undefined ? (row.color ?? '') : patch.color,
         patch.deps === undefined ? (row.deps ?? '') : patch.deps,
+        patch.kind === undefined ? (row.kind ?? 'normal') : patch.kind,
         now(),
         id,
       );

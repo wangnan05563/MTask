@@ -25,6 +25,8 @@ interface PlanTask {
   color?: string;
   /** T00499：前置依赖 JSON [{id,type:'serial'|'parallel'}]，空=无依赖 */
   deps?: string;
+  /** T00506：任务类型 normal=普通、milestone=阶段里程碑、daily=日常任务 */
+  kind?: string;
 }
 
 interface ProjectRow {
@@ -142,6 +144,8 @@ export function PlanPage() {
   const [evalBusy, setEvalBusy] = useState(false);
   const [evalLabel, setEvalLabel] = useState('');
   // T00499：前置依赖配置弹窗（depEditor=正在编辑的记录；depSel=选择集 {任务id: 依赖类型}）
+  // T00506：新建任务类型（normal=普通、milestone=阶段里程碑、daily=日常）
+  const [newKind, setNewKind] = useSessionState<'normal' | 'milestone' | 'daily'>('plan.newKind', 'normal');
   // T00505：项目自绘下拉（三色徽标：绿=已完成、蓝=进行中、灰=待开始）
   const [projOpen, setProjOpen] = useState(false);
   const projDropRef = useRef<HTMLDivElement | null>(null);
@@ -176,7 +180,7 @@ export function PlanPage() {
     if (!title?.trim()) return;
     setBusy(true);
     try {
-      await api.post('/plans', { projectId, title: title.trim(), startDate: todayStr(), durationDays: 1 });
+      await api.post('/plans', { projectId, title: title.trim(), startDate: todayStr(), durationDays: 1, kind: newKind });
       reload();
       flash('已创建，时间线已自动重排');
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
@@ -676,7 +680,15 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             </div>
           )}
         </div>
-        <button className="tbtn-anim" onClick={() => void createPlan()} disabled={busy} title="新建任务 — 在当前项目创建一条计划任务" aria-label="新建计划任务" style={{ ...btnStyle, padding: '6px 8px' }}><CalendarPlus size={13} /></button>
+        {/* T00506：新建任务类型选择（普通/阶段里程碑/日常任务） */}
+        <select value={newKind} onChange={(e) => setNewKind(e.target.value as 'normal' | 'milestone' | 'daily')}
+          title="新建任务类型 — 普通=标准计划项；里程碑=阶段节点（汇总其下任务）；日常=日常事务"
+          aria-label="新建任务类型" style={{ ...inputStyle, minWidth: 96 }}>
+          <option value="normal">普通任务</option>
+          <option value="milestone">阶段里程碑</option>
+          <option value="daily">日常任务</option>
+        </select>
+        <button className="tbtn-anim" onClick={() => void createPlan()} disabled={busy} title={`新建${newKind === 'milestone' ? '里程碑' : newKind === 'daily' ? '日常任务' : '任务'} — 按上方所选类型创建`} aria-label="新建计划任务" style={{ ...btnStyle, padding: '6px 8px' }}><CalendarPlus size={13} /></button>
         <label className="tbtn-anim" style={{ ...btnStyle, cursor: busy ? 'default' : 'pointer', padding: '6px 8px' }} title="导入 Excel — 批量导入计划任务（任一行校验失败则整体不入库）" aria-label="导入 Excel">
           <Upload size={13} />
           <input type="file" accept=".xlsx" style={{ display: 'none' }}
@@ -735,7 +747,16 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
           </tr>
         </thead>
         <tbody>
-          {plans.map((p, i) => (
+          {plans.map((p, i) => {
+            // T00506：里程碑汇总——本里程碑到下一里程碑之间的普通/日常任务（count/Σ工期/平均进度）
+            const isMilestone = p.kind === 'milestone';
+            let mEnd = plans.length;
+            for (let j = i + 1; j < plans.length; j++) { if (plans[j].kind === 'milestone') { mEnd = j; break; } }
+            const inner = isMilestone ? plans.slice(i + 1, mEnd).filter((x) => x.kind !== 'milestone') : [];
+            const innerCount = inner.length;
+            const innerDays = inner.reduce((acc, x) => acc + (x.duration_days || 0), 0);
+            const innerAvg = innerCount ? Math.round(inner.reduce((acc, x) => acc + (x.progress || 0), 0) / innerCount) : 0;
+            return (
             <tr key={p.id}
               draggable
               onDragStart={() => setDragId(p.id)}
@@ -769,7 +790,9 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                   );
                 })()}
               </td>
-              <td style={{ padding: 6, color: 'var(--text-muted)' }}>{i + 1}</td>
+              <td style={{ padding: 6, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                {p.kind === 'milestone' ? <span title="阶段里程碑 — 汇总其下普通/日常任务，不可手动调整" style={{ color: 'var(--accent)', fontWeight: 700 }}>◆</span> : p.kind === 'daily' ? <span title="日常任务" style={{ color: 'var(--text-muted)' }}>◇</span> : i + 1}
+              </td>
               <td style={{ padding: 6, minWidth: 220 }}>
                 <input defaultValue={p.title} title={`全量标题：${p.title}`} onBlur={(e) => { if (e.target.value.trim() && e.target.value !== p.title) void updatePlan(p, { title: e.target.value.trim() }); }}
                   style={{ ...inputStyle, width: '100%', color: p.color || 'var(--text)' }} aria-label="计划标题" />
@@ -777,29 +800,34 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                   style={{ ...inputStyle, width: '100%', marginTop: 2, color: 'var(--text-muted)' }} aria-label="计划描述" />
               </td>
               <td style={{ padding: 6 }}>
+                {isMilestone ? <span style={{ color: 'var(--text-muted)' }}>{p.start_date}</span> : (
                 <input type="date" defaultValue={p.start_date} onBlur={(e) => { if (e.target.value && e.target.value !== p.start_date) void updatePlan(p, { start_date: e.target.value }); }}
-                  style={inputStyle} aria-label="开始日期" />
+                  style={inputStyle} aria-label="开始日期" />)}
               </td>
               <td style={{ padding: 6, color: 'var(--text-muted)' }}>{p.end_date}</td>
               <td style={{ padding: 6 }}>
+                {isMilestone ? <span title={`汇总：${innerCount} 项普通/日常任务，合计 ${innerDays} 工作日`} style={{ color: 'var(--accent)', fontWeight: 600 }}>Σ {innerCount} 项 · {innerDays} 天</span> : (
                 <input type="number" min={1} defaultValue={p.duration_days} onBlur={(e) => { const v = Number(e.target.value); if (v >= 1 && v !== p.duration_days) void updatePlan(p, { duration_days: v }); }}
-                  style={{ ...inputStyle, width: 40 }} aria-label="工期（工作日）" />
+                  style={{ ...inputStyle, width: 40 }} aria-label="工期（工作日）" />)}
               </td>
               <td style={{ padding: 6 }}>
+                {isMilestone ? <span title={`汇总：${innerCount} 项平均进度 ${innerAvg}%`} style={{ color: 'var(--accent)', fontWeight: 600 }}>{innerAvg}%</span> : (
                 <input type="number" min={0} max={100} defaultValue={p.progress} onBlur={(e) => { const v = Number(e.target.value); if (v >= 0 && v <= 100 && v !== p.progress) void updatePlan(p, { progress: v }); }}
-                  style={{ ...inputStyle, width: 40 }} aria-label="进度百分比" />
+                  style={{ ...inputStyle, width: 40 }} aria-label="进度百分比" />)}
               </td>
               <td style={{ padding: 6 }}>
+                {isMilestone ? <span style={{ color: 'var(--text-muted)' }}>—</span> : (<>
                 {/* 点击状态徽标流转到下一状态：待办→进行中→已完成→待办；blocked 经已完成 后回待办 */}
                 <button onClick={() => void updatePlan(p, { status: NEXT_STATUS[p.status] })}
                   title="点击流转到下一状态" aria-label={`状态：${STATUS_META[p.status].label}，点击流转`}
                   style={{ ...btnStyle, color: STATUS_META[p.status].color, borderColor: STATUS_META[p.status].color }}>
                   {STATUS_META[p.status].label}
-                </button>
+                </button></>)}
               </td>
               <td style={{ padding: 6 }}>
+                {isMilestone ? <span style={{ color: 'var(--text-muted)' }}>—</span> : (
                 <input defaultValue={p.assignee} placeholder="—" onBlur={(e) => { if (e.target.value !== p.assignee) void updatePlan(p, { assignee: e.target.value }); }}
-                  style={{ ...inputStyle, width: 80 }} aria-label="负责人" />
+                  style={{ ...inputStyle, width: 80 }} aria-label="负责人" />)}
               </td>
               <td style={{ padding: 6, minWidth: 150 }}>
                 {p.linked_task_id && !p.linked_task_missing && <span style={{ color: 'var(--success)' }}>✓ {p.linked_task_title}</span>}
@@ -827,7 +855,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 </button>
               </td>
             </tr>
-          ))}
+          );})}
           {plans.length === 0 && (
             <tr><td colSpan={10} style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)' }}>当前项目暂无计划任务：可「新建任务」或「导入 Excel」批量创建</td></tr>
           )}
