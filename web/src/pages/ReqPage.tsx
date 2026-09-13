@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CalendarRange, ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
+import { CalendarRange, ChevronDown, ChevronUp, Copy, FolderInput, FolderPlus, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type ReqCategory, type ReqEntry } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
@@ -291,11 +291,26 @@ export function ReqPage() {
         <select value={activeCat} onChange={(e) => setActiveCat(e.target.value)} style={{ padding: 6, minWidth: 180 }}>
           {categories.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.reqCount ?? 0}）</option>)}
         </select>
-        <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+        {/* T00510 调整：分类管理三按钮与任务菜单项目按钮组同款——纯图标+边框、同组紧跟下拉、悬浮显示 */}
+        <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
         <button onClick={() => void addCategory()} title="新建分类 — 新增一个通用需求分类" aria-label="新建分类：新增一个通用需求分类"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 8px', borderRadius: 6 }}>
-          <Plus size={13} style={{ verticalAlign: '-2px' }} /> 新建分类
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
+          <FolderPlus size={13} />
         </button>
+        {activeCat && (
+          <>
+          <button onClick={() => { const c = categories.find((c) => c.id === activeCat); if (c) void renameCategory(c); }}
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}
+            title="重命名 — 修改当前分类名称" aria-label="重命名：修改当前分类名称">
+            <SquarePen size={13} />
+          </button>
+          <button onClick={() => { const c = categories.find((c) => c.id === activeCat); if (c) void removeCategory(c); }}
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, color: 'var(--danger)', background: 'transparent', border: '1px solid var(--danger)', borderRadius: 6, cursor: 'pointer' }}
+            title="删除分类 — 删除当前分类及其下通用需求" aria-label="删除分类：删除当前分类及其下通用需求">
+            <Trash2 size={13} />
+          </button>
+          </>
+        )}
         </span>
         {activeCat && (
           <>
@@ -307,16 +322,6 @@ export function ReqPage() {
               style={{ display: 'inline-flex', alignItems: 'center', padding: '4px 8px', borderRadius: 6 }}>
               {entries.length > 0 && entries.every((x) => expandedIds[x.id]) ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />}
             </button>
-            <span className="op-hidden" style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
-            <button onClick={() => { const c = categories.find((c) => c.id === activeCat); if (c) void renameCategory(c); }} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-              title="重命名 — 修改当前分类名称" aria-label="重命名：修改当前分类名称">
-              <SquarePen size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-            </button>
-            <button onClick={() => { const c = categories.find((c) => c.id === activeCat); if (c) void removeCategory(c); }} style={{ fontSize: 12, color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-              title="删除分类 — 删除当前分类及其下通用需求" aria-label="删除分类：删除当前分类及其下通用需求">
-              <Trash2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-            </button>
-            </span>
           </>
         )}
         <button
