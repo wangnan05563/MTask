@@ -224,7 +224,7 @@ api.post('/req-entries/reorder', (req, res) => {
       ids.forEach((id, i) => {
         db.prepare('UPDATE req_entries SET sort_weight = ?, updated_at = ? WHERE id = ?').run(i + 1, now(), id);
       });
-    });
+    })(); // T00516 修正：transaction 必须立即调用（此前漏 ()，包装函数创建后从未执行，整个 UPDATE 静默跳过）
     res.json({ ok: true, reordered: ids.length });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
@@ -258,9 +258,9 @@ api.post('/prompts/reorder', (req, res) => {
     const ids = (orderedIds as string[]).filter((id) => known.has(id));
     db.transaction(() => {
       ids.forEach((id, i) => {
-        db.prepare('UPDATE prompts SET sort_weight = ?, updated_at = ? WHERE id = ?').run(i + 1, now(), id); // T00494 修正：参数错位（此前 updated_at 收到 id、WHERE 收到时间戳，匹配 0 行导致拖拽不落库）
+        db.prepare('UPDATE prompts SET sort_weight = ?, updated_at = ? WHERE id = ?').run(i + 1, now(), id); // T00494 修正：参数错位
       });
-    });
+    })(); // T00516 修正：transaction 必须立即调用（此前漏 ()，UPDATE 体从未执行）
     cacheClear('prompt-categories');
     res.json({ ok: true, reordered: ids.length });
   } catch (e) {
