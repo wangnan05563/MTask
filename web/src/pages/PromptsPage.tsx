@@ -17,7 +17,7 @@ export function PromptsPage() {
   const [search, setSearch] = useState('');
   const [notice, setNotice] = useState('');
   // 排序条件：sortKey 排序字段，sortDir 升降序（默认时间降序，与后端默认一致）
-  const [sortKey, setSortKey] = useState<'updated_at' | 'created_at' | 'title'>('updated_at');
+  const [sortKey, setSortKey] = useState<'updated_at' | 'created_at' | 'title' | 'manual'>('updated_at');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   // 新建提示词表单：录入状态跨会话持久化，切页后可续写
   const [creating, setCreating] = useSessionState('prompts.new.creating', false);
@@ -239,6 +239,13 @@ export function PromptsPage() {
     const pa = Boolean(a.pinned);
     const pb = Boolean(b.pinned);
     if (pa !== pb) return pa ? -1 : 1;
+    // T00494：手动排序——按拖拽保存的 sort_weight（0/空=默认序，排最后按更新时间）
+    if (sortKey === 'manual') {
+      const wa = a.sort_weight || 0;
+      const wb = b.sort_weight || 0;
+      if (wa !== wb) return wa === 0 ? 1 : wb === 0 ? -1 : wa - wb;
+      return (b.updated_at || '').localeCompare(a.updated_at || '');
+    }
     // 时间字段为 ISO 字符串可直接比较；名称按中文语言规则比较（数字感知）
     const cmp = sortKey === 'title'
       ? a.title.localeCompare(b.title, 'zh-Hans-CN', { numeric: true })
@@ -328,6 +335,7 @@ export function PromptsPage() {
           title="排序字段"
           style={{ padding: 6, fontSize: 12 }}
         >
+          <option value="manual">手动排序</option>
           <option value="updated_at">更新时间</option>
           <option value="created_at">创建时间</option>
           <option value="title">名称</option>

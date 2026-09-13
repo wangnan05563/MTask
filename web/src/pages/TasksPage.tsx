@@ -1115,7 +1115,7 @@ export function TasksPage() {
     })();
     return (
       <div className="task-op" style={{ marginLeft: 32, marginTop: 2, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, fontSize: 11, color: 'var(--text-muted)' }}>
-        {/* 优先级三级（低/中/高）：置于 AI 梳理按钮之前，便于优先调整重要度 */}
+        {/* 优先级四级（T00495：与筛选/录入对齐）：置于 AI 梳理按钮之前，便于优先调整重要度 */}
         <select
           value={t.priority}
           onChange={(e) => void setPriority(t, e.target.value)}
@@ -1126,6 +1126,7 @@ export function TasksPage() {
           <option value="low">低</option>
           <option value="normal">中</option>
           <option value="high">高</option>
+          <option value="urgent">极高</option>
         </select>
         {/* T00450：创建子任务——两级 epic→task 层级 */}
         <button onClick={() => void createSubTask(t)} title="创建子任务 — 在该任务下创建子任务（层级展示）" aria-label="创建子任务"

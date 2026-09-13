@@ -245,6 +245,8 @@ export interface Prompt {
   content: string;
   /** 置顶：true=固定到列表顶部（后端返回 0/1，前端按布尔使用） */
   pinned: boolean;
+  /** T00494：手动排序权重（拖拽保存；0=默认序） */
+  sort_weight: number;
   /** T00490：记录字体颜色，空串=默认色 */
   color?: string;
   created_at: string;
@@ -268,6 +270,8 @@ export interface ReqEntry {
   content: string;
   /** 置顶：true=固定到列表顶部（后端返回 0/1，前端按布尔使用） */
   pinned: boolean;
+  /** T00494：手动排序权重（拖拽保存；0=默认序） */
+  sort_weight: number;
   /** T00490：记录字体颜色，空串=默认色 */
   color?: string;
   created_at: string;
