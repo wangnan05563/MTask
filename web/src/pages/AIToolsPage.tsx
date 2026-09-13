@@ -207,7 +207,7 @@ function ToolRow(props: ToolRowProps) {
   return (
     <tr
       className={`arena-row${flushClass}${dragClass}${pressOn ? ' item-pressing' : ''}`}
-      onMouseDown={(e) => { if ((e.target as HTMLElement).closest('button, input, select, a, textarea, label')) return; pressTimer.current = window.setTimeout(() => setPressOn(true), 200); }}
+      onMouseDown={(e) => { if ((e.target as HTMLElement).closest('button, input, select, a, textarea, label, [data-noscale]')) return; pressTimer.current = window.setTimeout(() => setPressOn(true), 200); }}
       onMouseUp={() => { clearTimeout(pressTimer.current); setPressOn(false); }}
       onMouseLeave={() => { clearTimeout(pressTimer.current); setPressOn(false); }}
       draggable
@@ -235,9 +235,9 @@ function ToolRow(props: ToolRowProps) {
         {/* 备注默认收缩，仅展开时显示完整内容 */}
         {tool.remark && props.remarkExpanded[tool.id] && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{tool.remark}</div>}
       </td>
-      <td style={cellStyle} draggable={false}>{tool.type}</td>
-      <td style={cellStyle} draggable={false}>{PURPOSE_LABEL[tool.purpose] ?? tool.purpose}</td>
-      <td style={{ ...cellStyle, wordBreak: 'break-all', maxWidth: 220 }} draggable={false}>{tool.endpoint}</td>
+      <td data-noscale="1" style={cellStyle} draggable={false}>{tool.type}</td>
+      <td data-noscale="1" style={cellStyle} draggable={false}>{PURPOSE_LABEL[tool.purpose] ?? tool.purpose}</td>
+      <td data-noscale="1" style={{ ...cellStyle, wordBreak: 'break-all', maxWidth: 220 }} draggable={false}>{tool.endpoint}</td>
       <td style={cellStyle} draggable={false}>
         {/* T00542：模型字段无框下拉条——点击触发展开（未拉取则自动拉取模型列表），选择后直接持久化 */}
         <span ref={props.modelMenuId === tool.id ? (props.modelMenuRef as unknown as React.RefObject<HTMLSpanElement>) : undefined} style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 2, maxWidth: 220 }}>

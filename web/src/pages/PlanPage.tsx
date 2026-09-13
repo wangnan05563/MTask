@@ -334,11 +334,37 @@ export function PlanPage() {
 
   function onDropReorder(targetId: string) {
     if (!dragId || dragId === targetId) { setDragId(''); setOverId(''); return; }
+    const dragged = plans.find((x) => x.id === dragId);
+    const target = plans.find((x) => x.id === targetId);
+    if (!dragged || !target) return;
+    const dragIsMs = dragged.kind === 'milestone';
+    // T00554：里程碑只能排在里程碑之间的顶层位置——拖到普通/日常任务行上（或其区间）会被
+    // childMilestoneOf 按区间判定为他人子任务，导致层级卡死。统一拦截并提示。
+    if (dragIsMs && target.kind !== 'milestone') {
+      flash('里程碑不能拖到任务行上——请拖到两个里程碑之间的位置排序');
+      setDragId(''); setOverId('');
+      return;
+    }
     const ids = plans.map((p) => p.id);
     const from = ids.indexOf(dragId);
     const to = ids.indexOf(targetId);
     if (from < 0 || to < 0) return;
     ids.splice(to, 0, ids.splice(from, 1)[0]);
+    // 排序后校验：里程碑的新位置若落在另一里程碑的子任务区间内 → 回退提示
+    if (dragIsMs) {
+      const seq = ids.indexOf(dragId);
+      let msIdx = -1;
+      for (let k = 0; k < seq; k++) { if (plans.find((x) => x.id === ids[k])?.kind === 'milestone') msIdx = k; }
+      for (let k = msIdx + 1; k < seq; k++) {
+        if (plans.find((x) => x.id === ids[k])?.kind === 'milestone') { msIdx = k; break; }
+      }
+      if (msIdx >= 0 && msIdx < seq) {
+        const owner = plans.find((x) => x.id === ids[msIdx]);
+        flash(`里程碑不能放入里程碑「${owner?.title ?? '?'}」的任务区间内——请拖到两个里程碑之间`);
+        setDragId(''); setOverId('');
+        return;
+      }
+    }
     setDragId(''); setOverId('');
     setBusy(true);
     void api.post<{ reordered: number }>('/plans/reorder', { projectId, orderedIds: ids })
