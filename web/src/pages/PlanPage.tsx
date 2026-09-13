@@ -145,13 +145,13 @@ export function PlanPage() {
   const [tools, setTools] = useState<AITool[]>([]);
   const [aiToolId, setAiToolId] = usePersistentState('plan.aiToolId', '');
   // T00472：AI 评估状态（批量进度动态计数，单条/批量共用）
-  const [evalBusy, setEvalBusy] = useState(false);
-  const [evalLabel, setEvalLabel] = useState('');
+  const [evalBusy, setEvalBusy] = useSessionState<boolean>('plan.evalBusy', false); // T00550：切页保持
+  const [evalLabel, setEvalLabel] = useSessionState<string>('plan.evalLabel', ''); // T00550：切页保持
   // T00544：工期显示模式——「工期/日」与「工期/时」切换（会话级保持；持久化仍为工作日，8 小时/天换算）
   const [durationUnit, setDurationUnit] = useSessionState<'day' | 'hour'>('plan.durationUnit', 'day');
   // T00529：操作列省略号菜单（依赖维护等）——展开任务 id 与 fixed 坐标
   const [depMenuId, setDepMenuId] = useState('');
-  const [depMenuPos, setDepMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const [depMenuPos, setDepMenuPos] = useState<{ top: number; right: number } | null>(null);
   const depMenuRef = useRef<HTMLSpanElement | null>(null);
   // T00499：前置依赖配置弹窗（depEditor=正在编辑的记录；depSel=选择集 {任务id: 依赖类型}）
   // T00505：项目自绘下拉（三色徽标：绿=已完成、蓝=进行中、灰=待开始）
@@ -895,14 +895,13 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                   return (
                     <span style={{ display: 'inline-flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
                       {deps.map((d) => {
-                        const seqStr = seqs.get(d.id);
-                        const seq = seqStr ? parseInt(seqStr, 10) : 0;
+                        const seqStr = seqs.get(d.id); // T00548：显示完整序号（parseInt 会把 1.1 截成 1）
                         const pre = plans.find((x) => x.id === d.id);
                         return (
                           <button key={d.id} onClick={() => openDepEditor(p)}
                             title={`${d.type === 'serial' ? '串行' : '并行'}依赖：${pre?.title ?? '已删除'}${pre?.end_date ? `（其结束 ${pre.end_date}）` : ''} — 点击调整`}
                             style={{ border: '1px solid var(--border-strong)', background: d.type === 'serial' ? 'var(--accent-soft)' : 'transparent', color: d.type === 'serial' ? 'var(--accent)' : 'var(--text-muted)', borderRadius: 4, fontSize: 10, padding: '0 4px', cursor: 'pointer' }}>
-                            {seq > 0 ? `#${seq}` : '?'}{d.type === 'serial' ? '串' : '并'}
+                            {seqStr ? `#${seqStr}` : '?'}{d.type === 'serial' ? '串' : '并'}
                           </button>
                         );
                       })}
@@ -990,29 +989,27 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 {!p.linked_task_id && <span style={{ color: 'var(--text-muted)' }}>未关联</span>}
               </td>
               <td style={{ padding: 6, whiteSpace: 'nowrap' }}>
-                {p.linked_task_id
-                  ? <button onClick={() => void unlinkTodo(p)} title="解除关联" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', padding: 2 }}><Link2Off size={13} /></button>
-                  : (
-                    <>
-                      <button onClick={() => void linkTodo(p)} title="关联既有待办" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', padding: 2 }}><Link2 size={13} /></button>
-                      <button onClick={() => void createLinkedTodo(p)} title="由本计划创建新待办并关联" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', padding: 2 }}><CalendarPlus size={13} /></button>
-                    </>
-                  )}
+                {p.linked_task_id && <button onClick={() => void unlinkTodo(p)} title="解除关联" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', padding: 2 }}><Link2Off size={13} /></button>}
+                {/* T00550：关联既有待办/新建待办关联两按钮已迁入操作列 ⋯ 图标工具栏 */}
                 {/* T00529 二轮：插入/字体颜色按钮已迁入操作列 ⋯ 图标工具栏 */}
                 {/* T00529：省略号菜单——依赖维护等操作收纳入操作列（默认隐藏，悬浮显示） */}
                 <span ref={depMenuId === p.id ? depMenuRef : undefined} style={{ position: 'relative', display: 'inline-flex' }}>
                   <button onClick={(e) => {
                     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                    setDepMenuPos({ top: rect.bottom + 4, left: rect.left });
+                    setDepMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right }); // T00549：右缘与 ⋯ 对齐靠左展开
                     setDepMenuId(depMenuId === p.id ? '' : p.id);
                   }} title="更多操作 — 依赖维护等" aria-label="更多操作" aria-haspopup="menu" aria-expanded={depMenuId === p.id}
                     className="task-op"
                     style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--text-muted)', padding: 2, display: 'inline-flex' }}>
                     <MoreHorizontal size={13} />
                   </button>
+                  {/* T00550：单条 AI 评估——挪出 ⋯ 菜单，置于 ⋯ 前常显 */}
+                  <button onClick={() => { if (evalBusy) return; if (!aiToolId) { flash('请先在模型菜单配置默认 AI 工具'); return; } void evaluateOnePlan(p).then((okk) => { if (okk) flash('AI 评估已写入该行描述'); }); }} disabled={evalBusy || busy} title="AI 评估 — 评估该条工期合理性/风险与建议，结果自动录入描述" aria-label="AI 评估该条" className={"task-op" + (evalBusy ? " task-breathe" : "")} style={{ cursor: evalBusy ? "not-allowed" : "pointer", border: "none", background: "transparent", color: "var(--accent)", padding: 2, display: "inline-flex" }}>
+                    {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}
+                  </button>
                   {depMenuId === p.id && depMenuPos && (
                     /* T00529 二轮：交互图标工具栏——一行并列、无中文、悬浮提示保留 */
-                    <div role="menu" style={{ position: 'fixed', top: depMenuPos.top, left: depMenuPos.left, zIndex: 70, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 6px 16px rgba(0,0,0,.16)', padding: 4, display: 'flex', flexDirection: 'row', gap: 2, alignItems: 'center' }}>
+                    <div role="menu" style={{ position: 'fixed', top: depMenuPos.top, right: depMenuPos.right, zIndex: 70, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 6px 16px rgba(0,0,0,.16)', padding: 4, display: 'flex', flexDirection: 'row', gap: 2, alignItems: 'center' }}>
                       <button role="menuitem" onClick={() => { setDepMenuId(''); openDepEditor(p); }}
                         title="维护依赖/挂接 — 选择前置任务并标记串行/并行（GitBranch 图标与关联待办 Link 图标区分）"
                         className="task-op"
@@ -1025,16 +1022,21 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                         style={{ display: 'inline-flex', alignItems: 'center', padding: 4, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)' }}>
                         <Plus size={14} />
                       </button>
+                      {!p.linked_task_id && <button role="menuitem" onClick={() => { setDepMenuId(''); void linkTodo(p); }}
+                        title="关联既有待办 — 选择本项目的待办与该计划互相关联"
+                        className="task-op"
+                        style={{ display: 'inline-flex', alignItems: 'center', padding: 4, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text)' }}>
+                        <Link2 size={14} />
+                      </button>}
+                      {!p.linked_task_id && <button role="menuitem" onClick={() => { setDepMenuId(''); void createLinkedTodo(p); }}
+                        title="新建待办关联 — 由本计划创建新待办并关联"
+                        className="task-op"
+                        style={{ display: 'inline-flex', alignItems: 'center', padding: 4, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text)' }}>
+                        <CalendarPlus size={14} />
+                      </button>}
                       <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
                         <FontColorButton current={p.color ?? ''} onApply={(c) => { void updatePlan(p, { color: c }); }} />
                       </span>
-                      <button role="menuitem" onClick={() => { if (evalBusy) return; if (!aiToolId) { setDepMenuId(''); flash('请先在模型菜单配置默认 AI 工具'); return; } setDepMenuId(''); void evaluateOnePlan(p).then((okk) => { if (okk) flash('AI 评估已写入该行描述'); }); }}
-                        disabled={evalBusy || busy}
-                        title="AI 评估 — 评估该条工期合理性/风险与建议，结果自动录入描述"
-                        className="task-op"
-                        style={{ display: 'inline-flex', alignItems: 'center', padding: 4, border: 'none', borderRadius: 4, cursor: evalBusy ? 'not-allowed' : 'pointer', background: 'transparent', color: 'var(--accent)' }}>
-                        {evalBusy ? <Loader2 size={14} className="aispin" /> : <Zap size={14} />}
-                      </button>
                       <button role="menuitem" onClick={() => { setDepMenuId(''); void archivePlan(p); }}
                         title="归档计划任务 — 从时间线移除，可在「归档」菜单恢复"
                         className="task-op"
