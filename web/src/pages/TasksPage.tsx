@@ -1069,10 +1069,9 @@ export function TasksPage() {
   /** 紧凑时间：ISO → 'MM-DD HH:mm'，用于列表行内展示，减少同屏重复信息的视觉重量 */
   const fmtShort = (iso: string) => (iso ? iso.slice(5, 16).replace('T', ' ') : '');
 
-  /** 任务行标题行：置顶/编号/徽标/标题一行；完成状态与验证按钮挪到标题下方靠左一行（T00541） */
+  /** 任务行标题行：置顶/编号/徽标/标题（T00547：完成状态/验证按钮移至下方元信息行左侧，不独立占行） */
   function renderTaskTitleRow(t: Task, titleEditing: boolean) {
     return (
-      <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         {multiSelect && (
           <input type="checkbox" checked={selectedIds.has(t.id)} aria-label={`选中任务 ${t.title}`}
@@ -1129,14 +1128,6 @@ export function TasksPage() {
         )}
         {renderTaskTitle(t, titleEditing)}
       </div>
-      {/* T00541：完成状态/验证结果按钮——标题下方靠左一行 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, marginLeft: 2 }}>
-        <button className="title-op" title="切换任务完成状态" aria-label="切换任务完成状态" onClick={() => void setStatus(t, t.status === 'todo' ? 'done' : 'todo')} style={{ cursor: 'pointer' }}>
-          {t.status === 'todo' ? '☐' : '☑'}
-        </button>
-        {t.status === 'done' && renderVerifyButton(t)}
-      </div>
-      </div>
     );
   }
 
@@ -1154,6 +1145,13 @@ export function TasksPage() {
     })();
     return (
       <div className="task-op" style={{ marginLeft: 32, marginTop: 2, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, fontSize: 11, color: 'var(--text-muted)' }}>
+        {/* T00547：完成状态/验证结果控件——与工具栏同行、靠左显示（marginRight auto 分隔左右两组） */}
+        <span style={{ marginRight: 'auto', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          <button className="title-op" title="切换任务完成状态" aria-label="切换任务完成状态" onClick={() => void setStatus(t, t.status === 'todo' ? 'done' : 'todo')} style={{ cursor: 'pointer', fontSize: 14, lineHeight: 1 }}>
+            {t.status === 'todo' ? '☐' : '☑'}
+          </button>
+          {t.status === 'done' && renderVerifyButton(t)}
+        </span>
         {/* 优先级四级（T00495：与筛选/录入对齐）：置于 AI 梳理按钮之前，便于优先调整重要度 */}
         <select
           value={t.priority}
