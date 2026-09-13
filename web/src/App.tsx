@@ -115,6 +115,11 @@ function Shell() {
         .task-op button:hover:not(:disabled), .task-op .tbtn-anim:hover { transform: scale(1.15) rotate(8deg); }
         .task-op button:active:not(:disabled), .task-op .tbtn-anim:active { transform: scale(.88); }
         .task-op button, .task-op .tbtn-anim { transition: transform .18s ease; }
+        /* T00513 修正：task-op 同时被用作行内操作按钮自身的类名（后代选择器不命中）——补自身形式选择器 */
+        button.task-op, select.task-op, a.task-op { transition: transform .18s ease; }
+        button.task-op:hover:not(:disabled) { transform: scale(1.15) rotate(8deg); }
+        button.task-op:active:not(:disabled) { transform: scale(.88); }
+        select.task-op:hover:not(:disabled) { transform: scale(1.05); }
         /* T00513：标题行状态/验证按钮（title-op）同样悬浮倾斜缩放 */
         .title-op { transition: transform .18s ease; }
         .title-op:hover:not(:disabled) { transform: scale(1.15) rotate(8deg); }
@@ -123,7 +128,7 @@ function Shell() {
         .task-op select:hover { transform: scale(1.05); }
         .task-op select { transition: transform .18s ease; }
         /* 文字/功能按钮：整体轻微倾斜（幅度收敛避免文本难读），active 缩放 */
-        button:hover:not(:disabled):not(.tbtn-anim):not(.nav-btn):not(.abtn):not(.ghost):not(.row-title-btn) { transform: rotate(-1.5deg); } /* T00494：记录标题按钮不参与悬浮旋转 */
+        button:hover:not(:disabled):not(.tbtn-anim):not(.nav-btn):not(.abtn):not(.ghost):not(.row-title-btn):not(.task-op) { transform: rotate(-1.5deg); } /* T00494：记录标题按钮不参与悬浮旋转；T00513：task-op 行内按钮走倾斜缩放基准 */
         button { transition: transform .18s ease, background-color .15s ease; }
         /* T00491：菜单操作控件/搜索框统一「默认隐藏、悬浮宿主区显示」（后代选择器支持嵌套组） */
         .op-host .op-hidden { opacity: 0; visibility: hidden; transition: opacity .2s ease, visibility 0s linear .2s; }
