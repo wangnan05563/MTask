@@ -278,16 +278,14 @@ export function PromptsPage() {
       `}</style>
       {/* 工具栏：分类切换与管理 */}
       <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-        <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
         <select value={activeCat} onChange={(e) => setActiveCat(e.target.value)} style={{ padding: 6, minWidth: 180 }}>
           {categories.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.promptCount ?? 0}）</option>)}
         </select>
+        <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
         <button onClick={() => void addCategory()} title="新建分类 — 新增一个提示词分类" aria-label="新建分类：新增一个提示词分类"
           style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 8px', borderRadius: 6 }}>
           <Plus size={13} style={{ verticalAlign: '-2px' }} /> 新建分类
         </button>
-        </span>
         </span>
         {activeCatObj && (
           <>
@@ -412,7 +410,7 @@ export function PromptsPage() {
           const editing = draft !== undefined;
           return (
             <li key={flashAt[p.id] ? `f${flashAt[p.id]}-${p.id}` : p.id}
-              draggable
+              draggable={sortKey === 'manual'}
               onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = 'move'; }}
               onDragEnd={() => { setDragId(''); setOverId(''); }}
               onDragOver={(e) => { e.preventDefault(); if (p.id !== dragId) setOverId(p.id); }}

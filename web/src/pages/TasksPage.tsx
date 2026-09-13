@@ -1679,7 +1679,7 @@ export function TasksPage() {
           {anyBeautify ? '取消' : todo.length}
         </button>
         {/* 工具条整体连贯进度提示：单条/批量美化进行中展示（优化进行中文案在各任务描述区展示），完成/取消后清空 */}
-        {anyBeautify && <span className="task-breathe" style={{ fontSize: 12, color: 'var(--accent)' }}>{batchBusy ? '正在批量美化标题…' : '正在美化标题…'}</span>}
+        {anyBeautify && <span className="flash-toast" role="status" style={{ top: 48 }}><span className="task-breathe" style={{ color: 'var(--accent)' }}>{batchBusy ? '正在批量美化标题…' : '正在美化标题…'}</span></span>}
       </>
     );
   }

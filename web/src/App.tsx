@@ -112,6 +112,9 @@ function Shell() {
         .abtn svg, .ghost svg { transition: transform .18s ease; }
         .abtn:hover:not(:disabled) svg, .ghost:hover:not(:disabled) svg { transform: scale(1.15) rotate(8deg); }
         .abtn:active svg, .ghost:active svg { transform: scale(.88); }
+        .task-op button:hover:not(:disabled), .task-op .tbtn-anim:hover { transform: scale(1.15) rotate(8deg); }
+        .task-op button:active:not(:disabled), .task-op .tbtn-anim:active { transform: scale(.88); }
+        .task-op button, .task-op .tbtn-anim { transition: transform .18s ease; }
         /* 文字/功能按钮：整体轻微倾斜（幅度收敛避免文本难读），active 缩放 */
         button:hover:not(:disabled):not(.tbtn-anim):not(.nav-btn):not(.abtn):not(.ghost) { transform: rotate(-1.5deg); }
         button { transition: transform .18s ease, background-color .15s ease; }

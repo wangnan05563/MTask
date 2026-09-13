@@ -625,13 +625,9 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       <style>{planTableCss}</style>
       {/* 工具条：项目选择 + 增删导入导出（T00491：操作控件/下拉默认隐藏，悬浮工具条显示） */}
       <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-        <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-          <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-          <select value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ ...inputStyle, minWidth: 140 }} aria-label="选择项目">
+        <select value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ ...inputStyle, minWidth: 140 }} aria-label="选择项目">
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
-        </span>
-        </span>
         <button className="tbtn-anim" onClick={() => void createPlan()} disabled={busy} title="新建任务 — 在当前项目创建一条计划任务" aria-label="新建计划任务" style={{ ...btnStyle, padding: '6px 8px' }}><CalendarPlus size={13} /></button>
         <label className="tbtn-anim" style={{ ...btnStyle, cursor: busy ? 'default' : 'pointer', padding: '6px 8px' }} title="导入 Excel — 批量导入计划任务（任一行校验失败则整体不入库）" aria-label="导入 Excel">
           <Upload size={13} />
