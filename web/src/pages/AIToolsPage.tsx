@@ -680,11 +680,11 @@ export function AIToolsPage() {
       {/* 工具栏 */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <h3 style={{ fontSize: 15, margin: 0 }}>配置记录（{filtered.length}/{tools.length}）</h3>
-        <select value={filterType} onChange={(e) => setFilterType(e.target.value)} style={{ padding: 6 }}>
+        <select value={filterType} onChange={(e) => setFilterType(e.target.value)} style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">全部厂商类型</option>
           {types.map((tp) => <option key={tp} value={tp}>{tp}</option>)}
         </select>
-        <select value={filterPurpose} onChange={(e) => setFilterPurpose(e.target.value)} style={{ padding: 6 }}>
+        <select value={filterPurpose} onChange={(e) => setFilterPurpose(e.target.value)} style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">全部用途</option>
           <option value="organize">整理</option>
           <option value="develop">开发</option>
