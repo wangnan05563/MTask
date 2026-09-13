@@ -9,6 +9,34 @@ import { useBusy, setBusy } from '../ui/busy';
 import { AlertTriangle, AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 
+// ---------- T00552：批量分类运行态模块级化——切页后循环继续、返回不卡死 ----------
+export const classifyStore: { busy: boolean; hit: number; total: number; done: boolean } = { busy: false, hit: 0, total: 0, done: false };
+async function runBatchClassifyModule(target: Array<{ id: string; title: string; priority: string }>, toolId: string, cats: Array<{ id: string; name: string }>): Promise<void> {
+  if (classifyStore.busy) return;
+  classifyStore.busy = true;
+  classifyStore.hit = 0; classifyStore.total = target.length; classifyStore.done = false;
+  let prio = 0;
+  try {
+    for (const t of target) {
+      if (!classifyStore.busy) break; // 防御：外部复位即中止
+      try {
+        const r = await api.post<{ ok: boolean; categoryId?: string | null; priority?: string | null }>('/tasks/classify', {
+          title: t.title.trim(), toolId, categories: cats,
+        });
+        if (!(r.ok && r.categoryId)) continue;
+        const patch: { categoryId: string; priority?: string } = { categoryId: r.categoryId };
+        if (t.priority === 'normal' && r.priority) { patch.priority = r.priority; prio++; }
+        await api.patch(`/tasks/${t.id}`, patch);
+        classifyStore.hit += 1;
+      } catch { /* 单条失败不中断批量 */ }
+    }
+  } finally {
+    classifyStore.done = true;
+    classifyStore.busy = false;
+  }
+  void prio;
+}
+
 /** 粘贴截图项：id 为入列时生成的稳定唯一标识，供列表 key 使用，删除中间项不会导致其余项身份错位 */
 interface PastedImage {
   id: string;
@@ -120,6 +148,19 @@ export function TasksPage() {
   // 批量智能分类进行中标识：驱动工具条「批量分类」按钮的忙碌态
   // T00535：改会话级持久化——切页后回来按钮忙碌态不丢失
   const [classifyBusy, setClassifyBusy] = useSessionState<boolean>('tasks.classifyBusy', false);
+  // T00552：classifyBusy 与模块级 store 同步——运行中保持显示，完成自动复位并提示
+  useEffect(() => {
+    if (classifyBusy && !classifyStore.busy) { setClassifyBusy(false); return; }
+    if (!classifyBusy) return;
+    const timer = window.setInterval(() => {
+      if (!classifyStore.busy) {
+        setClassifyBusy(false);
+        flash(classifyStore.hit > 0 ? `批量分类完成 ${classifyStore.hit}/${classifyStore.total} 条` : '未能为这些任务匹配到合适分类');
+        void loadTasks(activeProject);
+      }
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [classifyBusy, activeProject]);
   // 进行中请求的取消控制器：美化已入 beautifyStore.aborts（模块级，切页存活）；提示词优化仍按页内隔离
   const optimizeAborts = useRef<Record<string, AbortController>>({});
   // 是否有美化类操作进行中（单条或批量）：驱动工具条「取消/批量美化」按钮
@@ -753,27 +794,9 @@ export function TasksPage() {
     const target = [...todo, ...done].filter((t) => !t.category_id && t.title.trim());
     if (target.length === 0) return flash('当前项目没有未分类的任务');
     if (!(await askConfirm(`将对 ${target.length} 个未分类任务（含已完成）执行批量智能分类，确认？`))) return;
+    // T00552：循环移入模块级 runner——切页后继续执行，返回时自动同步状态（不再卡在运行中动画）
     setClassifyBusy(true);
-    let hit = 0;
-    let prio = 0;
-    try {
-      // 逐个识别并写回：命中才算成功，未命中保持未分类状态，不中断批量
-      for (const t of target) {
-        const m = await matchCategory(t.title);
-        if (!m) continue;
-        // T00473：自动标注优先级——仅对默认 normal 的任务写 AI 建议，已有显式优先级不动（可手动覆盖）
-        const patch: { categoryId: string; priority?: string } = { categoryId: m.catId };
-        if (t.priority === 'normal' && m.priority) { patch.priority = m.priority; prio++; }
-        await api.patch(`/tasks/${t.id}`, patch);
-        hit++;
-      }
-      flash(hit > 0 ? `批量分类完成 ${hit}/${target.length} 条${prio > 0 ? `，自动标注优先级 ${prio} 条` : ''}` : '未能为这些任务匹配到合适分类');
-      void loadTasks(activeProject);
-    } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
-    } finally {
-      setClassifyBusy(false);
-    }
+    void runBatchClassifyModule(target.map((t) => ({ id: t.id, title: t.title, priority: t.priority })), organizeToolId, taskCats.map((c) => ({ id: c.id, name: c.name })));
   }
 
   /** 提示词优化：调 AI 把当前描述草稿改写为结构化提示词，结果写回草稿供确认后保存。

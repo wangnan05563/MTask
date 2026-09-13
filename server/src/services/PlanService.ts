@@ -656,6 +656,22 @@ export const PlanService = {
 
     const errors: Array<{ row: number; message: string }> = [];
     const parsed: Array<{ title: string; description: string; startDate: string; durationDays: number; assignee: string; status: PlanStatus }> = [];
+
+    // T00553：按表头名映射列（兼容任意列序）——导出列序调整后固定列序解析会把日期当工期
+    const colMap: Record<string, number> = {};
+    ws.getRow(1).eachCell((c, n) => {
+      const h = cellValueText(c.value).trim();
+      if (!h) return;
+      if (h.includes('标题') || h.includes('任务名称')) colMap['title'] = n;
+      else if (h.includes('描述')) colMap['description'] = n;
+      else if (h.includes('开始')) colMap['start'] = n;
+      else if (h.includes('结束')) colMap['end'] = n;
+      else if (h.includes('工期') || h.includes('工时')) colMap['duration'] = n;
+      else if (h.includes('进度')) colMap['progress'] = n;
+      else if (h.includes('状态')) colMap['status'] = n;
+      else if (h.includes('负责人')) colMap['assignee'] = n;
+    });
+    if (!colMap['title'] || !colMap['start']) throw new Error('表头缺少「标题」或「开始日期」列，请使用导出/模板同构的文件');
     const existingTitles = new Set(
       (getDb().prepare('SELECT title FROM plan_tasks WHERE project_id = ?').all(projectId) as Array<{ title: string }>).map((r) => r.title),
     );
@@ -663,22 +679,33 @@ export const PlanService = {
 
     ws.eachRow((row, rowNumber) => {
       if (rowNumber === 1) return; // 表头
-      const cell = (n: number): string => cellValueText(row.getCell(n).value).trim();
-      const title = cell(1);
-      const description = cell(2);
-      const startDate = cell(3);
-      const durationRaw = cell(4);
-      const assignee = cell(5);
-      const statusRaw = cell(6).toLowerCase() || 'todo';
-      if (!title && !description && !startDate && !durationRaw) return; // 整行空跳过
+      const cell = (name: string): string => (colMap[name] ? cellValueText(row.getCell(colMap[name]).value).trim() : '');
+      const title = cell('title');
+      const description = cell('description');
+      const startDate = cell('start');
+      const endDate = cell('end');
+      const durationRaw = cell('duration');
+      const assignee = cell('assignee');
+      const statusRaw = cell('status').toLowerCase() || 'todo';
+      if (!title && !description && !startDate && !durationRaw && !endDate) return; // 整行空跳过
       const fail = (message: string) => errors.push({ row: rowNumber, message });
 
       if (!title) { fail('标题必填'); return; }
       if (existingTitles.has(title) || seenTitles.has(title)) { fail(`标题与现有/前文计划重复：${title}`); return; }
       let start: string;
       try { start = fmt(parseDate(startDate)); } catch { fail(`开始日期非法：${startDate || '(空)'}（应为 YYYY-MM-DD）`); return; }
-      const duration = Number(durationRaw);
-      if (!Number.isInteger(duration) || duration < 1) { fail(`工期非法：${durationRaw || '(空)'}（应为 ≥1 的整数）`); return; }
+      // T00553：工期缺失/非法但起止齐全时按自然日差换算（≥1）
+      let duration = Number(durationRaw);
+      if (!Number.isInteger(duration) || duration < 1) {
+        if (endDate) {
+          try {
+            const s0 = new Date(start).getTime();
+            const e0 = new Date(fmt(parseDate(endDate))).getTime();
+            if (Number.isFinite(s0) && Number.isFinite(e0) && e0 >= s0) duration = Math.max(1, Math.round((e0 - s0) / 86400000) + 1);
+          } catch { /* 保持非法判定 */ }
+        }
+      }
+      if (!Number.isInteger(duration) || duration < 1) { fail(`工期非法：${durationRaw || '(空)'}（应为 ≥1 的整数，或提供开始/结束日期自动换算）`); return; }
       if (!PLAN_STATUSES.has(statusRaw as PlanStatus)) { fail(`状态非法：${statusRaw}（应为 todo/doing/done/blocked）`); return; }
       seenTitles.add(title);
       parsed.push({ title, description, startDate: start, durationDays: duration, assignee, status: statusRaw as PlanStatus });
@@ -896,14 +923,24 @@ export const PlanService = {
       '4. 状态列映射到 todo/doing/done/blocked；无法识别默认 todo',
       '5. 跳过表头行、空行、纯说明/汇总行；不要虚构任务',
     ].join('\n');
-    const ai = await AIService.ask(toolId, system, `【Excel 表格文本】\n${tableText}`);
-    if (!ai.ok || !ai.content) throw new Error(`AI 解析失败：${ai.error ?? '模型未返回结果'}`);
-    // 剥离代码围栏后提取 JSON 数组（带截断恢复，同 aiParseWbs）
-    const arr = parseJsonArrayWithRecovery(ai.content, 'AI 未返回有效的计划数组，请检查文件内容或更换模型');
+    // T00551：分块解析——整表一次性交给模型会被 max_tokens 截断（19 条只回 7 条），
+    // 按行分块（每块 ≤15 行）逐块解析合并，块间按 title 去重
+    const tLines = tableText.split('\n').map((x) => x.trim()).filter(Boolean);
+    const CHUNK = 15;
+    const chunks: string[] = [];
+    for (let i = 0; i < tLines.length; i += CHUNK) chunks.push(tLines.slice(i, i + CHUNK).join('\nn'));
+    if (chunks.length === 0) throw new Error('Excel 中未解析到任何数据行');
+
     const drafts: PlanDraft[] = [];
-    for (const r of arr) {
-      const d = normalizeDraft(r);
-      if (d) drafts.push(d);
+    const seen = new Set<string>();
+    for (const chunk of chunks) {
+      const ai = await AIService.ask(toolId, system, `【Excel 表格文本】\n${chunk}`);
+      if (!ai.ok || !ai.content) continue; // 单块失败跳过，不拖垮整体
+      const arr = parseJsonArrayWithRecovery(ai.content, '');
+      for (const r of arr) {
+        const d = normalizeDraft(r);
+        if (d && !seen.has(d.title)) { seen.add(d.title); drafts.push(d); }
+      }
     }
     if (drafts.length === 0) throw new Error('AI 未能从文件中识别出任何计划条目，请确认文件内容或更换模型');
     return { drafts };
