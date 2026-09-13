@@ -480,17 +480,19 @@ export function TasksPage() {
 
   /** FR5 已完成任务：切换未验证/已验证。图标每次变化用起局部重挂载播放弹出动画 */
   async function toggleVerified(task: Task) {
-    // T00502：取消验证（标记失败）时录入失败反馈——以【验证失败】前缀追加处理结果，任务自动回退待办
-    if (task.verified) {
-      const fb = await askInput({ title: `验证失败反馈 — ${task.title}`, placeholder: '请描述验证失败的原因（将回退到待办）' });
-      if (fb === null) return; // 取消
-      const stamp = new Date().toISOString().slice(0, 10);
-      const merged = `${task.handle_result ?? ''}\n\n【验证失败 ${stamp}】${fb.trim()}`.trim();
-      await api.patch(`/tasks/${task.id}`, { verified: false, status: 'todo', handle_result: merged });
-      flash('已标记验证失败并回退待办');
-    } else {
-      await api.patch(`/tasks/${task.id}`, { verified: true });
-    }
+    if (task.verified) return markVerifyFailed(task); // T00502：取消验证 = 标记验证失败（录反馈回退待办）
+    await api.patch(`/tasks/${task.id}`, { verified: true });
+    void loadTasks(activeProject);
+  }
+
+  /** T00521：手动标记验证失败——录失败反馈 → verified=false + status=todo 回退待办 + 【验证失败】追加处理结果 */
+  async function markVerifyFailed(task: Task) {
+    const fb = await askInput({ title: `验证失败反馈 — ${task.title}`, placeholder: '请描述验证失败的原因（将回退到待办）' });
+    if (fb === null) return; // 取消
+    const stamp = new Date().toISOString().slice(0, 10);
+    const merged = `${task.handle_result ?? ''}\n\n【验证失败 ${stamp}】${fb.trim()}`.trim();
+    await api.patch(`/tasks/${task.id}`, { verified: false, status: 'todo', handle_result: merged });
+    flash('已标记验证失败并回退待办');
     void loadTasks(activeProject);
   }
 
@@ -1236,20 +1238,35 @@ export function TasksPage() {
     );
   }
 
-  /** 已完成任务验证状态切换按钮：未验证=空心圆，已验证=打勾；key 变化触发重挂载以播放弹出动画 */
+  /** 已完成任务验证状态切换按钮：未验证=空心圆，已验证=打勾；key 变化触发重挂载以播放弹出动画。
+   *  T00521：done 任务旁增加显式「验证失败」按钮（✗ 危险色）——语义明确的失败标记入口，
+   *  点击弹输入框录失败反馈并回退待办；保持 title-op 悬浮显示体系。 */
   function renderVerifyButton(t: Task) {
     return (
-      <button
-        onClick={() => void toggleVerified(t)}
-        title={t.verified ? '已验证，点击取消验证' : '未验证，点击标记已验证'}
-        aria-label={t.verified ? '取消验证' : '标记为已验证'}
-        key={t.verified ? 'v-ok' : 'v-no'}
-        className="verify-icon title-op" /* T00487：悬浮显示替代常显 */
+      <>
+        <button
+          onClick={() => void toggleVerified(t)}
+          title={t.verified ? '已验证，点击取消验证' : '未验证，点击标记已验证'}
+          aria-label={t.verified ? '取消验证' : '标记为已验证'}
+          key={t.verified ? 'v-ok' : 'v-no'}
+          className="verify-icon title-op" /* T00487：悬浮显示替代常显 */
 
-        style={{ cursor: 'pointer', fontSize: 16, lineHeight: 1, border: 'none', background: 'transparent', color: t.verified ? 'var(--success)' : 'var(--border-strong)' }}
-      >
-        {t.verified ? '✓' : '○'}
-      </button>
+          style={{ cursor: 'pointer', fontSize: 16, lineHeight: 1, border: 'none', background: 'transparent', color: t.verified ? 'var(--success)' : 'var(--border-strong)' }}
+        >
+          {t.verified ? '✓' : '○'}
+        </button>
+        {t.status === 'done' && (
+          <button
+            onClick={() => void markVerifyFailed(t)}
+            title="验证失败 — 录入失败反馈，任务将回退到待办列表"
+            aria-label="标记验证失败"
+            className="verify-icon title-op task-op"
+            style={{ cursor: 'pointer', fontSize: 14, lineHeight: 1, border: 'none', background: 'transparent', color: 'var(--danger)' }}
+          >
+            ✗
+          </button>
+        )}
+      </>
     );
   }
 
