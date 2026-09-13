@@ -6,7 +6,7 @@ import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { useBusy, setBusy } from '../ui/busy';
-import { AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X } from 'lucide-react';
+import { AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
 
 /** 粘贴截图项：id 为入列时生成的稳定唯一标识，供列表 key 使用，删除中间项不会导致其余项身份错位 */
 interface PastedImage {
@@ -1748,6 +1748,20 @@ export function TasksPage() {
         {renderClassifyButton()}
         {renderViewToggle()}
         {renderMultiSelectButton()}
+        {/* T00481：全部展开/收起——描述与 AI 摘要两组折叠状态联动 */}
+        <button className="tbtn-anim" onClick={() => {
+          const ids = [...todo, ...done].map((t) => t.id);
+          const allExpanded = ids.length > 0 && ids.every((id) => descExpanded[id] && summaryExpanded[id]);
+          const v = allExpanded ? {} : Object.fromEntries(ids.map((id) => [id, true]));
+          setDescExpanded(v); setSummaryExpanded(v);
+        }} title="全部展开/收起 — 一键展开或收起全部任务的描述与 AI 摘要" aria-label="全部展开或收起任务详情"
+          style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}>
+          {(() => {
+            const ids = [...todo, ...done];
+            const allExpanded = ids.length > 0 && ids.every((t) => descExpanded[t.id] && summaryExpanded[t.id]);
+            return allExpanded ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />;
+          })()}
+        </button>
         <label className="task-op" title="导入 CSV — 批量导入任务（预览确认后入库）"
           style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', display: 'inline-block' }}>
           <span>导入 CSV</span>

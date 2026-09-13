@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowDownUp, ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, X } from 'lucide-react';
+import { ArrowDownUp, ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, UnfoldVertical, FoldVertical, X } from 'lucide-react';
 import { api, type Prompt, type PromptCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { clearSessionState, useSessionState } from '../ui/session';
@@ -283,6 +283,14 @@ export function PromptsPage() {
         </span>
         {activeCatObj && (
           <>
+            <button className="tbtn-anim" onClick={() => {
+              const ids = prompts.map((x) => x.id);
+              const allExpanded = ids.length > 0 && ids.every((id) => expandedIds[id]);
+              setExpandedIds(allExpanded ? {} : Object.fromEntries(ids.map((id) => [id, true])));
+            }} title={prompts.length > 0 && prompts.every((x) => expandedIds[x.id]) ? '全部收起 — 收起全部提示词内容' : '全部展开 — 展开全部提示词内容'} aria-label="全部展开或收起提示词内容"
+              style={{ display: 'inline-flex', alignItems: 'center', padding: '4px 8px', borderRadius: 6 }}>
+              {prompts.length > 0 && prompts.every((x) => expandedIds[x.id]) ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />}
+            </button>
             <button onClick={() => { void api.post('/prompts/reorder/reset', { categoryId: activeCat }).then((r) => { const reset = (r as { reset?: number })?.reset;
               flash(reset ? `已重置 ${reset} 条为默认排序` : '当前已是默认排序');
               void loadPrompts(activeCat, search);

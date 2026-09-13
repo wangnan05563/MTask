@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CalendarRange, ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, X } from 'lucide-react';
+import { CalendarRange, ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
 import { api, type ReqCategory, type ReqEntry } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { clearSessionState, useSessionState } from '../ui/session';
@@ -291,6 +291,14 @@ export function ReqPage() {
         </span>
         {activeCat && (
           <>
+            <button className="tbtn-anim" onClick={() => {
+              const ids = entries.map((x) => x.id);
+              const allExpanded = ids.length > 0 && ids.every((id) => expandedIds[id]);
+              setExpandedIds(allExpanded ? {} : Object.fromEntries(ids.map((id) => [id, true])));
+            }} title={entries.length > 0 && entries.every((x) => expandedIds[x.id]) ? '全部收起 — 收起全部通用需求内容' : '全部展开 — 展开全部通用需求内容'} aria-label="全部展开或收起通用需求内容"
+              style={{ display: 'inline-flex', alignItems: 'center', padding: '4px 8px', borderRadius: 6 }}>
+              {entries.length > 0 && entries.every((x) => expandedIds[x.id]) ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />}
+            </button>
             <button onClick={() => { const c = categories.find((c) => c.id === activeCat); if (c) void renameCategory(c); }} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
               title="重命名 — 修改当前分类名称" aria-label="重命名：修改当前分类名称">
               <SquarePen size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
