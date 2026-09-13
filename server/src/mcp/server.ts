@@ -67,9 +67,10 @@ export async function createMCPServer(): Promise<McpServer> {
 
   server.registerTool('mtask_create_task', {
     title: '创建任务',
-    description: '在指定项目下新建任务；projectId 缺省时落到默认记事项目。title 必填。默认开启查重：同项目存在同标题任务时不再新建，直接返回既有任务（reused=true），避免多渠道回写产生重复待办。',
+    description: '在指定项目下新建任务；projectId/projectName 均缺省时落到默认记事项目（附日志警告）。建议传 projectName 按名路由。title 必填。默认开启查重：同项目存在同标题任务时不再新建，直接返回既有任务（reused=true），避免多渠道回写产生重复待办。',
     inputSchema: {
-      projectId: z.string().optional().describe('目标项目 id，缺省用默认记事项目'),
+      projectId: z.string().optional().describe('目标项目 id；与 projectName 二选一，都在时 projectId 优先'),
+      projectName: z.string().optional().describe('目标项目名称（T00482：按名路由到对应项目，大小写不敏感；无命中/多命中时报错并列出候选）'),
       title: z.string().describe('任务标题（必填）'),
       description: z.string().optional().describe('任务描述'),
       priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('优先级'),
@@ -82,8 +83,24 @@ export async function createMCPServer(): Promise<McpServer> {
     try {
       // 可选链：title 为空时 ?. 短路返回 undefined，与原「判空 || trim 判空」逻辑等价
       if (!a.title?.trim()) return err('title 必填');
-      // projectId 缺省落「默认记事项目」：用户设置优先，否则收件箱系统项目；与 REST /tasks 行为保持一致
-      const pid = a.projectId?.trim() || getDefaultNoteProjectId();
+      // T00482：项目归属路由——projectId 优先；其次 projectName 按名解析（精确 → 大小写不敏感）；
+      // 都未提供才缺省「默认记事项目」（用户设置优先，否则收件箱），并打日志警告便于排查误入收件箱
+      let pid = a.projectId?.trim() || '';
+      if (!pid && a.projectName?.trim()) {
+        const name = a.projectName.trim();
+        const all = getDb().prepare('SELECT id, name FROM projects').all() as Array<{ id: string; name: string }>;
+        const exact = all.find((p) => p.name === name);
+        const ci = all.find((p) => p.name.toLowerCase() === name.toLowerCase());
+        const hit = exact ?? ci;
+        if (!hit) {
+          return err(`项目「${name}」不存在。候选：${all.slice(0, 10).map((p) => p.name).join('、')}（可先调 mtask_list_projects 查询）`);
+        }
+        pid = hit.id;
+      }
+      if (!pid) {
+        pid = getDefaultNoteProjectId();
+        console.warn(`[mtask-mcp] mtask_create_task 缺少项目归属（projectId/projectName 均未提供），任务「${a.title?.trim()}」落入默认记事项目 ${pid}`);
+      }
       if (!getDb().prepare('SELECT 1 FROM projects WHERE id = ?').get(pid)) {
         return err(`归属项目不存在：${pid}`);
       }
