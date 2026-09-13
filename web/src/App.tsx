@@ -123,7 +123,7 @@ function Shell() {
         .task-op select:hover { transform: scale(1.05); }
         .task-op select { transition: transform .18s ease; }
         /* 文字/功能按钮：整体轻微倾斜（幅度收敛避免文本难读），active 缩放 */
-        button:hover:not(:disabled):not(.tbtn-anim):not(.nav-btn):not(.abtn):not(.ghost) { transform: rotate(-1.5deg); }
+        button:hover:not(:disabled):not(.tbtn-anim):not(.nav-btn):not(.abtn):not(.ghost):not(.row-title-btn) { transform: rotate(-1.5deg); } /* T00494：记录标题按钮不参与悬浮旋转 */
         button { transition: transform .18s ease, background-color .15s ease; }
         /* T00491：菜单操作控件/搜索框统一「默认隐藏、悬浮宿主区显示」（后代选择器支持嵌套组） */
         .op-host .op-hidden { opacity: 0; visibility: hidden; transition: opacity .2s ease, visibility 0s linear .2s; }

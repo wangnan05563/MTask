@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CalendarRange, ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, X, UnfoldVertical, FoldVertical, GripVertical } from 'lucide-react';
+import { CalendarRange, ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type ReqCategory, type ReqEntry } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
@@ -31,7 +31,7 @@ export function ReqPage() {
   const [flashAt, setFlashAt] = useState<Record<string, number>>({});
   function dropReorder(targetId: string) {
     if (!dragId || dragId === targetId) { setDragId(''); setOverId(''); return; }
-    const ids = entries.map((x) => x.id);
+    const ids = sortedEntries.map((x) => x.id); // T00494 修正：按显示顺序计算拖拽映射（此前用原始数组顺序，与界面所见不一致导致拖拽错乱）
     const from = ids.indexOf(dragId);
     const to = ids.indexOf(targetId);
     if (from < 0 || to < 0) return;
@@ -459,15 +459,14 @@ export function ReqPage() {
                 </>
               ) : (
                 <>
-                                      {sortKey === 'manual' && (
-                      <span title="手动排序模式 — 拖拽本行调整顺序" style={{ color: 'var(--text-muted)', cursor: 'grab', display: 'inline-flex', flexShrink: 0 }}><GripVertical size={13} /></span>
-                    )}
+                  {/* T00494 调整：去掉拖拽把手图标（整行即可拖拽） */}
 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     {/* 标题可点击，切换内容展开/收起（默认收起，降低信息密度） */}
                     <button
                       onClick={() => setExpandedIds((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
                       title={expandedIds[p.id] ? '点击收起通用需求内容' : '点击展开通用需求内容'}
                       aria-label={expandedIds[p.id] ? '收起：收起通用需求内容' : '展开：展开通用需求内容'}
+                      className="row-title-btn"
                       style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6, border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', minWidth: 0 }}
                     >
                       <PinToggle pinned={Boolean(p.pinned)} onToggle={() => void togglePin(p)} />

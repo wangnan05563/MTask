@@ -258,7 +258,7 @@ api.post('/prompts/reorder', (req, res) => {
     const ids = (orderedIds as string[]).filter((id) => known.has(id));
     db.transaction(() => {
       ids.forEach((id, i) => {
-        db.prepare('UPDATE prompts SET sort_weight = ?, updated_at = ? WHERE id = ?').run(i + 1, id, now());
+        db.prepare('UPDATE prompts SET sort_weight = ?, updated_at = ? WHERE id = ?').run(i + 1, now(), id); // T00494 修正：参数错位（此前 updated_at 收到 id、WHERE 收到时间戳，匹配 0 行导致拖拽不落库）
       });
     });
     cacheClear('prompt-categories');
