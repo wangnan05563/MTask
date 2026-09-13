@@ -930,11 +930,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                       <button onClick={() => void createLinkedTodo(p)} title="由本计划创建新待办并关联" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', padding: 2 }}><CalendarPlus size={13} /></button>
                     </>
                   )}
-                <button onClick={() => void insertAfter(p)} title="在此行后插入新任务 — 后续排期自动重排" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--text-muted)', padding: 2 }}><Plus size={13} /></button>
-                                {/* T00501：字体颜色按钮置于按钮栏最前 */}
-                <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
-                  <FontColorButton current={p.color ?? ''} onApply={(c) => { void updatePlan(p, { color: c }); }} />
-                </span>
+                {/* T00529 二轮：插入/字体颜色按钮已迁入操作列 ⋯ 图标工具栏 */}
                 {/* T00529：省略号菜单——依赖维护等操作收纳入操作列（默认隐藏，悬浮显示） */}
                 <span ref={depMenuId === p.id ? depMenuRef : undefined} style={{ position: 'relative', display: 'inline-flex' }}>
                   <button onClick={(e) => {
@@ -947,20 +943,39 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                     <MoreHorizontal size={13} />
                   </button>
                   {depMenuId === p.id && depMenuPos && (
-                    <div role="menu" style={{ position: 'fixed', top: depMenuPos.top, left: depMenuPos.left, zIndex: 70, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 6px 16px rgba(0,0,0,.16)', padding: 4, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 150 }}>
+                    /* T00529 二轮：交互图标工具栏——一行并列、无中文、悬浮提示保留 */
+                    <div role="menu" style={{ position: 'fixed', top: depMenuPos.top, left: depMenuPos.left, zIndex: 70, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 6px 16px rgba(0,0,0,.16)', padding: 4, display: 'flex', flexDirection: 'row', gap: 2, alignItems: 'center' }}>
                       <button role="menuitem" onClick={() => { setDepMenuId(''); openDepEditor(p); }}
-                        title="维护前置依赖 — 选择前置任务并标记串行/并行，或调整里程碑挂接"
-                        style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text)' }}>
-                        <Link2 size={13} /> 维护依赖 / 挂接
+                        title="维护依赖/挂接 — 选择前置任务并标记串行/并行"
+                        className="task-op"
+                        style={{ display: 'inline-flex', alignItems: 'center', padding: 4, fontSize: 12, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text)' }}>
+                        <Link2 size={14} />
+                      </button>
+                      <button role="menuitem" onClick={() => { setDepMenuId(''); void insertAfter(p); }}
+                        title="在此行后插入新任务 — 后续排期自动重排"
+                        className="task-op"
+                        style={{ display: 'inline-flex', alignItems: 'center', padding: 4, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)' }}>
+                        <Plus size={14} />
+                      </button>
+                      <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
+                        <FontColorButton current={p.color ?? ''} onApply={(c) => { void updatePlan(p, { color: c }); }} />
+                      </span>
+                      <button role="menuitem" onClick={() => { if (evalBusy) return; if (!aiToolId) { setDepMenuId(''); flash('请先在模型菜单配置默认 AI 工具'); return; } setDepMenuId(''); void evaluateOnePlan(p).then((okk) => { if (okk) flash('AI 评估已写入该行描述'); }); }}
+                        disabled={evalBusy || busy}
+                        title="AI 评估 — 评估该条工期合理性/风险与建议，结果自动录入描述"
+                        className="task-op"
+                        style={{ display: 'inline-flex', alignItems: 'center', padding: 4, border: 'none', borderRadius: 4, cursor: evalBusy ? 'not-allowed' : 'pointer', background: 'transparent', color: 'var(--accent)' }}>
+                        {evalBusy ? <Loader2 size={14} className="aispin" /> : <Zap size={14} />}
+                      </button>
+                      <button role="menuitem" onClick={() => { setDepMenuId(''); void archivePlan(p); }}
+                        title="归档计划任务 — 从时间线移除，可在「归档」菜单恢复"
+                        className="task-op"
+                        style={{ display: 'inline-flex', alignItems: 'center', padding: 4, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--danger)' }}>
+                        <Archive size={14} />
                       </button>
                     </div>
                   )}
                 </span>
-<button onClick={() => void archivePlan(p)} title="归档计划任务 — 从时间线移除，可在「归档」菜单恢复或彻底删除" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--danger)', padding: 2 }}><Archive size={13} /></button>
-                {/* T00472：单条 AI 评估——结果自动录入该行描述（保存）或取消不写 */}
-                <button onClick={() => { if (evalBusy) return; if (!aiToolId) { flash('请先选择 AI 模型'); return; } void evaluateOnePlan(p).then((okk) => { if (okk) flash('AI 评估已写入该行描述'); }); }} disabled={evalBusy || busy} title="AI 评估 — 评估该条工期合理性/风险与建议，结果自动录入描述" aria-label="AI 评估该条" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--accent)', padding: 2 }}>
-                  {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}
-                </button>
               </td>
             </tr>
           );
