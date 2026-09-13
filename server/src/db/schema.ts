@@ -231,6 +231,11 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('ai_tools', 'remark', "remark TEXT DEFAULT ''");
   ensureColumn('ai_tools', 'console_url', "console_url TEXT DEFAULT ''");
   ensureColumn('tasks', 'verified', 'verified INTEGER NOT NULL DEFAULT 0');
+  // T00490：记录字体颜色（Excel 风格颜色按钮）——空串=默认色
+  ensureColumn('tasks', 'color', "color TEXT DEFAULT ''");
+  ensureColumn('prompts', 'color', "color TEXT DEFAULT ''");
+  ensureColumn('req_entries', 'color', "color TEXT DEFAULT ''");
+  ensureColumn('plan_tasks', 'color', "color TEXT DEFAULT ''");
   ensureColumn('tasks', 'pinned', 'pinned INTEGER NOT NULL DEFAULT 0');
   ensureColumn('tasks', 'category_id', 'category_id TEXT');
   // 任务编号：供 AI Agent 通过 MCP 按编号定位任务；老库先补列再用现有存量回填编号

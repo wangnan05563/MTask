@@ -23,6 +23,8 @@ export interface TaskRow {
   ai_summary: string | null;
   /** 处理结果：AI 分析结论（根因/解决方案）等，由 MCP 或前端编辑写入 */
   handle_result: string | null;
+  /** T00490：记录字体颜色（Excel 风格颜色按钮），空串=默认色 */
+  color: string;
   pinned: number;
   category_id: string | null;
   parent_id: string | null;
@@ -228,7 +230,7 @@ export const TaskService = {
     });
   },
 
-  update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id'>>): TaskView {
+  update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color'>>): TaskView {
     const db = getDb();
     // better-sqlite3 不支持 boolean 绑定且 SQLite 无布尔型，verified/pinned 先归一整型 0/1 再落库
     if (patch.verified !== undefined) {

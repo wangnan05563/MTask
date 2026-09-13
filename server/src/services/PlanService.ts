@@ -24,6 +24,8 @@ export interface PlanTaskRow {
   sort_order: number;
   /** 关联待办 tasks.id；待办已删除时保留原值并由查询附带 linked_task_missing 提示 */
   linked_task_id: string | null;
+  /** T00490：记录字体颜色，空串=默认色 */
+  color: string;
   /** 归档标记（T00442 扩展）：1=已归档（时间线移除，归档菜单可恢复/彻底删除） */
   archived: number;
   archived_at: string | null;
@@ -323,7 +325,7 @@ export const PlanService = {
   },
 
   /** 更新：标题/描述/工期/进度/状态/负责人；开始日与工期变化会触发从该任务起的时间线重排 */
-  update(id: string, patch: { title?: string; description?: string; startDate?: string; durationDays?: number; progress?: number; status?: PlanStatus; assignee?: string }): PlanTaskRow | null {
+  update(id: string, patch: { title?: string; description?: string; startDate?: string; durationDays?: number; progress?: number; status?: PlanStatus; assignee?: string; color?: string }): PlanTaskRow | null {
     const db = getDb();
     const row = this.get(id);
     if (!row) return null;
@@ -338,7 +340,7 @@ export const PlanService = {
       const startDateChanged = patch.startDate !== undefined && patch.startDate !== row.start_date;
       db.prepare(
         `UPDATE plan_tasks SET title = ?, description = ?, start_date = ?, duration_days = ?,
-           progress = ?, status = ?, assignee = ?, updated_at = ? WHERE id = ?`,
+           progress = ?, status = ?, assignee = ?, color = ?, updated_at = ? WHERE id = ?`,
       ).run(
         title,
         patch.description ?? row.description,
@@ -347,6 +349,7 @@ export const PlanService = {
         patch.progress === undefined ? row.progress : Math.min(100, Math.max(0, Math.floor(Number(patch.progress) || 0))),
         status,
         patch.assignee ?? row.assignee,
+        patch.color === undefined ? (row.color ?? '') : patch.color,
         now(),
         id,
       );

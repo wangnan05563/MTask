@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowDownUp, ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, UnfoldVertical, FoldVertical, X } from 'lucide-react';
+import { FontColorButton } from '../ui/FontColorButton';
 import { api, type Prompt, type PromptCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { clearSessionState, useSessionState } from '../ui/session';
@@ -458,11 +459,14 @@ export function PromptsPage() {
                       style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6, border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', minWidth: 0 }}
                     >
                       <PinToggle pinned={Boolean(p.pinned)} onToggle={() => void togglePin(p)} />
-                      <span style={{ fontWeight: 600, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title}</span>
+                      <span style={{ fontWeight: 600, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: p.color || undefined }}>{p.title}</span>
                       {/* 展开/收起箭头：与任务页统一使用 lucide 图标，蓝色 13px */}
                       <span style={{ color: 'var(--accent)', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>{expandedIds[p.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}</span>
                     </button>
                     <span className="abtn" style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }} title={`更新于 ${p.updated_at}`}>{relTime(p.updated_at)}</span>
+                    <span className="abtn" style={{ display: 'inline-flex', alignItems: 'center' }}>
+                      <FontColorButton current={p.color ?? ''} onApply={(c) => { void api.patch(`/prompts/${p.id}`, { color: c }).then(() => { void loadPrompts(activeCat, search); }); }} />
+                    </span>
                     <button className="abtn" onClick={() => void copyPrompt(p)} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="复制 — 复制提示词内容到剪贴板" aria-label="复制：复制提示词内容到剪贴板">
                       <Copy size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />

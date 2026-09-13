@@ -164,6 +164,8 @@ export interface Task {
   category_id: string | null;
   /** T00450：父任务 id（epic→task 两级层级） */
   parent_id: string | null;
+  /** T00490：记录字体颜色（Excel 风格颜色按钮），空串=默认色 */
+  color?: string;
   created_at: string;
   updated_at: string;
   images: TaskImage[];
@@ -243,6 +245,8 @@ export interface Prompt {
   content: string;
   /** 置顶：true=固定到列表顶部（后端返回 0/1，前端按布尔使用） */
   pinned: boolean;
+  /** T00490：记录字体颜色，空串=默认色 */
+  color?: string;
   created_at: string;
   updated_at: string;
 }
@@ -264,6 +268,8 @@ export interface ReqEntry {
   content: string;
   /** 置顶：true=固定到列表顶部（后端返回 0/1，前端按布尔使用） */
   pinned: boolean;
+  /** T00490：记录字体颜色，空串=默认色 */
+  color?: string;
   created_at: string;
   updated_at: string;
 }

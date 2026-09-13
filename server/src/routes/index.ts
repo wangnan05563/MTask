@@ -164,7 +164,7 @@ api.post('/tasks', (req, res) => {
 });
 
 api.patch('/tasks/:id', (req, res) => {
-  const { title, description, priority, status, verified, aiSummary, handleResult, pinned, categoryId, parentId } = req.body ?? {};
+  const { title, description, priority, status, verified, aiSummary, handleResult, pinned, categoryId, parentId, color } = req.body ?? {}; // T00490：color 记录字体颜色
   // T00450：parentId 挂接/换父/解除（null）——同项目校验；父任务不可挂到自己或其后代（两级层级下后代不存在，仅防自挂）
   if (parentId !== undefined) {
     if (parentId === req.params.id) return res.status(400).json({ error: '父任务不能是任务自身' });
@@ -175,7 +175,7 @@ api.patch('/tasks/:id', (req, res) => {
       if (parent.parent_id) return res.status(400).json({ error: '父任务已是子任务，层级限制两级' });
     }
   }
-  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId, parent_id: parentId === undefined ? undefined : (parentId || null) }));
+  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId, parent_id: parentId === undefined ? undefined : (parentId || null), color }));
 });
 
 api.post('/tasks/move', (req, res) => {
@@ -1205,7 +1205,7 @@ api.post('/prompts', (req, res) => {
 });
 
 api.patch('/prompts/:id', (req, res) => {
-  const { title, content, categoryId, pinned } = req.body ?? {};
+  const { title, content, categoryId, pinned, color } = req.body ?? {}; // T00490
   const db = getDb();
   const sets: string[] = [];
   const values: unknown[] = [];
@@ -1213,6 +1213,7 @@ api.patch('/prompts/:id', (req, res) => {
   if (content !== undefined) { sets.push('content = ?'); values.push(content); }
   if (categoryId !== undefined) { sets.push('category_id = ?'); values.push(categoryId); }
   if (pinned !== undefined) { sets.push('pinned = ?'); values.push(pinned ? 1 : 0); }
+  if (color !== undefined) { sets.push('color = ?'); values.push(String(color)); } // T00490
   if (sets.length === 0) return res.status(400).json({ error: '无更新字段' });
   sets.push('updated_at = ?'); values.push(now());
   db.prepare(`UPDATE prompts SET ${sets.join(', ')} WHERE id = ?`).run(...values, req.params.id);
@@ -1276,12 +1277,12 @@ api.post('/req-entries', (req, res) => {
 });
 
 api.patch('/req-entries/:id', (req, res) => {
-  const { title, content, categoryId, pinned } = req.body ?? {};
+  const { title, content, categoryId, pinned, color } = req.body ?? {}; // T00490：color
   // 移动分组时校验目标分类存在，避免写入悬空外键
   if (categoryId !== undefined && !getDb().prepare('SELECT 1 FROM req_categories WHERE id = ?').get(categoryId)) {
     return res.status(400).json({ error: '归属分类不存在' });
   }
-  const entry = ReqEntryService.update(req.params.id, { title, content, categoryId, pinned });
+  const entry = ReqEntryService.update(req.params.id, { title, content, categoryId, pinned, color });
   if (!entry) return res.status(404).json({ error: '条目不存在' });
   cacheClear('req-categories'); // 改分类/置顶影响分类计数与顺序
   res.json(entry);

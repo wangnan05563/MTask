@@ -102,12 +102,16 @@ function Shell() {
         .nav-btn .nav-label { display: inline-block; max-width: 0; opacity: 0; overflow: hidden; white-space: nowrap; transition: max-width .25s ease, opacity .2s ease; }
         .nav-btn:hover .nav-label, .nav-btn:focus-visible .nav-label { max-width: 120px; opacity: 1; }
         /* T00486：全系统控件交互动画统一（参照任务菜单多选按钮 tbtn-anim 基准） */
-        input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); cursor: pointer; transition: transform .15s ease; }
-        input[type="checkbox"]:hover, input[type="radio"]:hover { transform: scale(1.12); }
+        /* T00486：全系统按钮悬浮倾斜 + 点击缩放（对齐 tbtn-anim 基准：.18s ease，hover 倾斜、active 缩放） */
+        input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); cursor: pointer; transition: transform .18s ease; }
+        input[type="checkbox"]:hover, input[type="radio"]:hover { transform: scale(1.12) rotate(8deg); }
         input[type="checkbox"]:active, input[type="radio"]:active { transform: scale(.88); }
         .abtn svg, .ghost svg { transition: transform .18s ease; }
-        .abtn:hover:not(:disabled) svg, .ghost:hover:not(:disabled) svg { transform: scale(1.15); }
+        .abtn:hover:not(:disabled) svg, .ghost:hover:not(:disabled) svg { transform: scale(1.15) rotate(8deg); }
         .abtn:active svg, .ghost:active svg { transform: scale(.88); }
+        /* 文字/功能按钮：整体轻微倾斜（幅度收敛避免文本难读），active 缩放 */
+        button:hover:not(:disabled):not(.tbtn-anim):not(.nav-btn):not(.abtn):not(.ghost) { transform: rotate(-1.5deg); }
+        button { transition: transform .18s ease, background-color .15s ease; }
         /* T00477：菜单下拉/过滤条件悬浮展示（默认淡化，悬浮或聚焦完全显示） */
         .toolbar-reveal { opacity: .35; transition: opacity .18s ease; }
         .toolbar-reveal:hover, .toolbar-reveal:focus-within { opacity: 1; }

@@ -7,6 +7,7 @@ import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { useBusy, setBusy } from '../ui/busy';
 import { AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
+import { FontColorButton } from '../ui/FontColorButton';
 
 /** 粘贴截图项：id 为入列时生成的稳定唯一标识，供列表 key 使用，删除中间项不会导致其余项身份错位 */
 interface PastedImage {
@@ -1190,6 +1191,10 @@ export function TasksPage() {
           <CopyPlus size={13} />
         </button>
         <button onClick={() => void archive(t)} title="归档 — 将该任务移入归档" aria-label="归档：将该任务移入归档" className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Archive size={13} /></button>
+        {/* T00490：字体颜色——Excel 风格按钮，点击直接应用当前色，箭头展开色板 */}
+        <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
+          <FontColorButton current={t.color ?? ''} onApply={(c) => { void api.patch(`/tasks/${t.id}`, { color: c }).then(() => { flash(c ? '字体颜色已应用' : '已恢复默认颜色'); void loadTasks(activeProject); }); }} />
+        </span>
         {/* 记录时间：与操作按钮同行的最右侧，紧凑格式，创建/编辑并排 */}
         <span style={{ display: 'inline-flex', gap: 10 }}>
           <span>{fmtShort(t.created_at)} 创建</span>
@@ -1230,7 +1235,7 @@ export function TasksPage() {
             style={{ flex: 1, padding: '4px 6px', border: '1px solid var(--accent)', borderRadius: 4, fontSize: 13, boxSizing: 'border-box' }}
           />
         ) : (
-          <span style={{ flex: 1, textDecoration: t.status === 'done' ? 'line-through' : 'none', color: 'var(--text)' }}>
+          <span style={{ flex: 1, textDecoration: t.status === 'done' ? 'line-through' : 'none', color: t.color || 'var(--text)' }}>
             {t.title}
           </span>
         )}

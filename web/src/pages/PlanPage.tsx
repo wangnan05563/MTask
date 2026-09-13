@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, CalendarPlus, Download, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap } from 'lucide-react';
+import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { usePersistentState, useSessionState } from '../ui/session';
@@ -20,6 +21,8 @@ interface PlanTask {
   linked_task_id: string | null;
   linked_task_title?: string | null;
   linked_task_missing?: boolean;
+  /** T00490：记录字体颜色，空串=默认色 */
+  color?: string;
 }
 
 interface ProjectRow { id: string; name: string }
@@ -164,12 +167,12 @@ export function PlanPage() {
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
   }
 
-  async function updatePlan(p: PlanTask, patch: Partial<Pick<PlanTask, 'title' | 'description' | 'duration_days' | 'assignee' | 'progress' | 'status' | 'start_date'>>) {
+  async function updatePlan(p: PlanTask, patch: Partial<Pick<PlanTask, 'title' | 'description' | 'duration_days' | 'assignee' | 'progress' | 'status' | 'start_date' | 'color'>>) {
     setBusy(true);
     try {
       await api.patch(`/plans/${p.id}`, {
         title: patch.title, description: patch.description, assignee: patch.assignee, status: patch.status,
-        progress: patch.progress, durationDays: patch.duration_days, startDate: patch.start_date,
+        progress: patch.progress, durationDays: patch.duration_days, startDate: patch.start_date, color: patch.color,
       });
       reload();
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
@@ -655,7 +658,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               <td style={{ padding: 6, color: 'var(--text-muted)' }}>{i + 1}</td>
               <td style={{ padding: 6, minWidth: 220 }}>
                 <input defaultValue={p.title} onBlur={(e) => { if (e.target.value.trim() && e.target.value !== p.title) void updatePlan(p, { title: e.target.value.trim() }); }}
-                  style={{ ...inputStyle, width: '100%' }} aria-label="计划标题" />
+                  style={{ ...inputStyle, width: '100%', color: p.color || 'var(--text)' }} aria-label="计划标题" />
                 <input defaultValue={p.description} placeholder="描述（可空）" onBlur={(e) => { if (e.target.value !== p.description) void updatePlan(p, { description: e.target.value }); }}
                   style={{ ...inputStyle, width: '100%', marginTop: 2, color: 'var(--text-muted)' }} aria-label="计划描述" />
               </td>
@@ -700,6 +703,10 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                   )}
                 <button onClick={() => void insertAfter(p)} title="在此行后插入新任务 — 后续排期自动重排" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--text-muted)', padding: 2 }}><Plus size={13} /></button>
                 <button onClick={() => void archivePlan(p)} title="归档计划任务 — 从时间线移除，可在「归档」菜单恢复或彻底删除" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--danger)', padding: 2 }}><Archive size={13} /></button>
+                {/* T00490：字体颜色——Excel 风格按钮，点击直接应用当前色，箭头展开色板 */}
+                <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
+                  <FontColorButton current={p.color ?? ''} onApply={(c) => { void updatePlan(p, { color: c }); }} />
+                </span>
                 {/* T00472：单条 AI 评估——结果自动录入该行描述（保存）或取消不写 */}
                 <button onClick={() => { if (evalBusy) return; if (!aiToolId) { flash('请先选择 AI 模型'); return; } void evaluateOnePlan(p).then((okk) => { if (okk) flash('AI 评估已写入该行描述'); }); }} disabled={evalBusy || busy} title="AI 评估 — 评估该条工期合理性/风险与建议，结果自动录入描述" aria-label="AI 评估该条" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--accent)', padding: 2 }}>
                   {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}

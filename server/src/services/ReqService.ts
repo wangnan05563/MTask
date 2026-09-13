@@ -98,7 +98,7 @@ export const ReqEntryService = {
     return !!getDb().prepare('SELECT id FROM req_entries WHERE fingerprint = ?').get(fingerprint);
   },
 
-  update(id: string, input: { title?: string; content?: string; categoryId?: string; pinned?: boolean }): ReqEntryRow | null {
+  update(id: string, input: { title?: string; content?: string; categoryId?: string; pinned?: boolean; color?: string }): ReqEntryRow | null {
     const db = getDb();
     if (!db.prepare('SELECT id FROM req_entries WHERE id = ?').get(id)) return null;
     const sets: string[] = [];
@@ -107,6 +107,7 @@ export const ReqEntryService = {
     if (input.content !== undefined) { sets.push('content = ?'); values.push(input.content); }
     if (input.categoryId !== undefined) { sets.push('category_id = ?'); values.push(input.categoryId); }
     if (input.pinned !== undefined) { sets.push('pinned = ?'); values.push(input.pinned ? 1 : 0); }
+    if (input.color !== undefined) { sets.push('color = ?'); values.push(input.color); } // T00490
     if (sets.length > 0) {
       sets.push('updated_at = ?'); values.push(now());
       db.prepare(`UPDATE req_entries SET ${sets.join(', ')} WHERE id = ?`).run(...values, id);

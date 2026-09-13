@@ -164,6 +164,7 @@ planApi.patch('/:id', (req, res) => {
     progress: b.progress == null ? undefined : Number(b.progress),
     status: b.status as Parameters<typeof PlanService.update>[1]['status'],
     assignee: optStr(b.assignee),
+    color: optStr(b.color), // T00490
   }));
 });
 
