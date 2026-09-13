@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, CalendarPlus, Download, MoreHorizontal, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap, ChevronDown, ChevronRight } from 'lucide-react';
+import { Archive, CalendarPlus, Download, GitBranch, MoreHorizontal, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap, ChevronDown, ChevronRight } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
@@ -147,6 +147,8 @@ export function PlanPage() {
   // T00472：AI 评估状态（批量进度动态计数，单条/批量共用）
   const [evalBusy, setEvalBusy] = useState(false);
   const [evalLabel, setEvalLabel] = useState('');
+  // T00544：工期显示模式——「工期/日」与「工期/时」切换（会话级保持；持久化仍为工作日，8 小时/天换算）
+  const [durationUnit, setDurationUnit] = useSessionState<'day' | 'hour'>('plan.durationUnit', 'day');
   // T00529：操作列省略号菜单（依赖维护等）——展开任务 id 与 fixed 坐标
   const [depMenuId, setDepMenuId] = useState('');
   const [depMenuPos, setDepMenuPos] = useState<{ top: number; left: number } | null>(null);
@@ -781,9 +783,17 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
           <tr style={{ textAlign: 'left', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-strong)' }}>
             <th style={{ padding: 6 }}>#</th>
             <th style={{ padding: 6 }}>标题 / 描述</th>
+            <th style={{ padding: 6, fontSize: 11 }}>依赖</th>
             <th style={{ padding: 6 }}>开始</th>
             <th style={{ padding: 6 }}>结束</th>
-            <th style={{ padding: 6 }}>工期</th>
+            <th style={{ padding: 6 }}>
+              <button onClick={() => setDurationUnit((u) => (u === 'day' ? 'hour' : 'day'))}
+                title="点击切换工期显示模式：工期/日（工作日）与 工期/时（按 8 小时/天换算持久化）"
+                className="task-op"
+                style={{ border: '1px solid var(--border-strong)', borderRadius: 4, background: 'transparent', color: 'var(--text)', fontSize: 11, padding: '1px 6px', cursor: 'pointer' }}>
+                {durationUnit === 'day' ? '工期/日' : '工期/时'}
+              </button>
+            </th>
             <th style={{ padding: 6 }}>进度</th>
             <th style={{ padding: 6 }}>状态</th>
             <th style={{ padding: 6 }}>负责人</th>
@@ -870,9 +880,54 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 <input defaultValue={p.description} readOnly={p.kind === 'milestone'} title={p.kind === 'milestone' ? '里程碑描述 — 不可手动编辑' : `全量描述：${p.description || '（无描述）'}`} placeholder="描述（可空）" className="plan-desc-ph" onBlur={(e) => { if (p.kind !== 'milestone' && e.target.value !== p.description) void updatePlan(p, { description: e.target.value }); }}
                   style={{ ...inputStyle, width: '100%', marginTop: 2, color: 'var(--text-muted)', cursor: p.kind === 'milestone' ? 'default' : undefined }} aria-label="计划描述" />
               </td>
+              {/* T00545：依赖列——前置任务序号 + 串/并徽标，点击维护；空依赖显示快捷添加 */}
+              <td style={{ padding: 6, fontSize: 11 }}>
+                {(() => {
+                  let depList: Array<{ id: string; type: string }> = [];
+                  try { depList = p.deps ? JSON.parse(p.deps) as Array<{ id: string; type: string }> : []; } catch { depList = []; }
+                  const deps = depList.filter((d) => d.type !== 'child');
+                  if (deps.length === 0) return (
+                    <button onClick={() => openDepEditor(p)} title="配置依赖 — 无前置依赖，点击添加前置任务"
+                      className="task-op" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, display: 'inline-flex', fontSize: 11 }}>
+                      <Plus size={12} />
+                    </button>
+                  );
+                  return (
+                    <span style={{ display: 'inline-flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
+                      {deps.map((d) => {
+                        const seqStr = seqs.get(d.id);
+                        const seq = seqStr ? parseInt(seqStr, 10) : 0;
+                        const pre = plans.find((x) => x.id === d.id);
+                        return (
+                          <button key={d.id} onClick={() => openDepEditor(p)}
+                            title={`${d.type === 'serial' ? '串行' : '并行'}依赖：${pre?.title ?? '已删除'}${pre?.end_date ? `（其结束 ${pre.end_date}）` : ''} — 点击调整`}
+                            style={{ border: '1px solid var(--border-strong)', background: d.type === 'serial' ? 'var(--accent-soft)' : 'transparent', color: d.type === 'serial' ? 'var(--accent)' : 'var(--text-muted)', borderRadius: 4, fontSize: 10, padding: '0 4px', cursor: 'pointer' }}>
+                            {seq > 0 ? `#${seq}` : '?'}{d.type === 'serial' ? '串' : '并'}
+                          </button>
+                        );
+                      })}
+                    </span>
+                  );
+                })()}
+              </td>
               <td style={{ padding: 6 }}>
                 {isMilestone ? <span style={{ color: 'var(--text-muted)' }}>{p.start_date}</span> : (
-                <input type="date" defaultValue={p.start_date} onBlur={(e) => { if (e.target.value && e.target.value !== p.start_date) void updatePlan(p, { start_date: e.target.value }); }}
+                <input type="date" defaultValue={p.start_date} onBlur={(e) => {
+                  if (!e.target.value || e.target.value === p.start_date) return;
+                  // T00545：串行依赖约束——开始日期不得早于前置任务（serial）的结束日期
+                  let depList: Array<{ id: string; type: string }> = [];
+                  try { depList = p.deps ? JSON.parse(p.deps) as Array<{ id: string; type: string }> : []; } catch { depList = []; }
+                  const serialDep = depList.find((d) => d.type === 'serial');
+                  if (serialDep) {
+                    const pre = plans.find((x) => x.id === serialDep.id);
+                    if (pre?.end_date && e.target.value < pre.end_date) {
+                      flash(`串行依赖约束：开始日期不能早于前置任务「${pre.title}」的结束日期（${pre.end_date}）`);
+                      e.target.value = p.start_date;
+                      return;
+                    }
+                  }
+                  void updatePlan(p, { start_date: e.target.value });
+                }}
                   style={inputStyle} aria-label="开始日期" />)}
               </td>
               <td style={{ padding: 6 }}>
@@ -893,9 +948,22 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 })()}
               </td>
               <td style={{ padding: 6 }}>
-                {isMilestone ? <span title={`汇总：${innerCount} 项普通/日常任务，合计 ${innerDays} 工作日`} style={{ color: 'var(--accent)', fontWeight: 600 }}>Σ {innerCount} 项 · {innerDays} 天</span> : (
-                <input type="number" min={1} defaultValue={p.duration_days} onBlur={(e) => { const v = Number(e.target.value); if (v >= 1 && v !== p.duration_days) void updatePlan(p, { duration_days: v }); else if (p.kind === 'daily' && v < 1) flash('日常任务必须填写工时估算（≥1 工作日）'); }}
-                  style={{ ...inputStyle, width: 40 }} aria-label="工期（工作日）" />)}
+                {isMilestone ? <span title={`汇总：${innerCount} 项普通/日常任务，合计 ${innerDays} 工作日`} style={{ color: 'var(--accent)', fontWeight: 600 }}>Σ {innerCount} 项 · {durationUnit === 'hour' ? `${innerDays * 8} 时` : `${innerDays} 天`}</span> : (
+                <input type="number" min={durationUnit === 'hour' ? 8 : 1} key={durationUnit} defaultValue={durationUnit === 'hour' ? p.duration_days * 8 : p.duration_days}
+                  onBlur={(e) => {
+                    const v = Number(e.target.value);
+                    if (durationUnit === 'hour') {
+                      // T00544：工期/时模式——按 8 小时/天换算为工作日持久化
+                      const days = Math.max(1, Math.round(v / 8));
+                      if (days !== p.duration_days) void updatePlan(p, { duration_days: days });
+                      else e.target.value = String(p.duration_days * 8);
+                    } else {
+                      if (v >= 1 && v !== p.duration_days) void updatePlan(p, { duration_days: v });
+                      else if (p.kind === 'daily' && v < 1) flash('日常任务必须填写工时估算（≥1 工作日）');
+                    }
+                  }}
+                  title={durationUnit === 'hour' ? '按小时填写（8 小时 = 1 工作日，自动换算持久化）' : '按工作日填写'}
+                  style={{ ...inputStyle, width: durationUnit === 'hour' ? 56 : 40 }} aria-label={durationUnit === 'hour' ? '工期（小时）' : '工期（工作日）'} />)}
               </td>
               <td style={{ padding: 6 }}>
                 {isMilestone ? <span title={`汇总：${innerCount} 项平均进度 ${innerAvg}%`} style={{ color: 'var(--accent)', fontWeight: 600 }}>{innerAvg}%</span> : (
@@ -946,10 +1014,10 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                     /* T00529 二轮：交互图标工具栏——一行并列、无中文、悬浮提示保留 */
                     <div role="menu" style={{ position: 'fixed', top: depMenuPos.top, left: depMenuPos.left, zIndex: 70, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 6px 16px rgba(0,0,0,.16)', padding: 4, display: 'flex', flexDirection: 'row', gap: 2, alignItems: 'center' }}>
                       <button role="menuitem" onClick={() => { setDepMenuId(''); openDepEditor(p); }}
-                        title="维护依赖/挂接 — 选择前置任务并标记串行/并行"
+                        title="维护依赖/挂接 — 选择前置任务并标记串行/并行（GitBranch 图标与关联待办 Link 图标区分）"
                         className="task-op"
                         style={{ display: 'inline-flex', alignItems: 'center', padding: 4, fontSize: 12, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text)' }}>
-                        <Link2 size={14} />
+                        <GitBranch size={14} />
                       </button>
                       <button role="menuitem" onClick={() => { setDepMenuId(''); void insertAfter(p); }}
                         title="在此行后插入新任务 — 后续排期自动重排"
