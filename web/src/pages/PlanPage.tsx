@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, CalendarPlus, Download, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap, ChevronDown } from 'lucide-react';
+import { Archive, CalendarPlus, Download, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap, ChevronDown, ChevronRight } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
@@ -68,7 +68,7 @@ function todayStr(): string {
 }
 
 /** 通用行内输入样式（与全站 task-op 风格一致） */
-const inputStyle: React.CSSProperties = { border: '1px solid var(--border-strong)', borderRadius: 4, padding: '3px 6px', background: 'var(--bg)', color: 'var(--text)', fontSize: 12 };
+const inputStyle: React.CSSProperties = { border: '1px solid var(--border-strong)', borderRadius: 6, padding: '3px 6px', background: 'var(--bg)', color: 'var(--text)', fontSize: 12 };
 const btnStyle: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 12, padding: '3px 8px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'transparent', color: 'var(--text)' };
 
 /** T00471：计划行「默认只读展示 + 悬浮编辑」交互——CSS 驱动不改数据流：
@@ -260,7 +260,13 @@ export function PlanPage() {
         { toolId: aiToolId, items: [{ id: p.id, title: p.title, duration_days: p.duration_days, progress: p.progress, assignee: p.assignee }] },
       );
       const first = r.results?.[0];
-      if (!first?.ok || !first.evaluation) { flash(first?.error ?? 'AI 评估失败'); return false; }
+      if (!first?.ok || !first.evaluation) {
+        const rawErr = first?.error ?? '';
+        // T00515：HTTP 402 = AI 服务余额不足/欠费——给出可操作的提示
+        const hint = rawErr.includes('402') ? '（AI 服务返回 402：余额不足或欠费，请检查「模型管理」中该工具配置的服务商账户余额）' : '';
+        flash(`AI 评估失败：${rawErr}${hint}`);
+        return false;
+      }
       const stamp = new Date().toISOString().slice(5, 10).replace('-', '/');
       const merged = p.description ? p.description + '\n' + `[AI评估 ${stamp}] ${first.evaluation}` : `[AI评估 ${stamp}] ${first.evaluation}`;
       await updatePlan(p, { description: merged });
@@ -658,6 +664,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         .plan-new { animation: plan-new-pop 2.4s ease; }
       `}</style>
       <style>{planTableCss}</style>
+      {/* T00519：描述为空时提示信息调浅 + 倾斜 */}
+      <style>{`.plan-desc-ph::placeholder { color: var(--text-muted); opacity: .55; font-style: italic; }`}</style>
       {/* 工具条：项目选择 + 增删导入导出（T00491：操作控件/下拉默认隐藏，悬浮工具条显示） */}
       <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
         <div ref={projDropRef} style={{ position: 'relative', display: 'inline-flex' }}>
@@ -767,6 +775,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             const innerCount = inner.length;
             const innerDays = inner.reduce((acc, x) => acc + (x.duration_days || 0), 0);
             const innerAvg = innerCount ? Math.round(inner.reduce((acc, x) => acc + (x.progress || 0), 0) / innerCount) : 0;
+            const innerLatestEnd = inner.map((x) => x.end_date).filter(Boolean).sort().at(-1) ?? ''; // T00514：里程碑结束=子任务最晚结束
             // T00508：挂接里程碑的子任务——父里程碑收起时整行隐藏
             const parentMs = childMilestoneOf(p, plans);
             if (parentMs && collapsedMs[parentMs.id]) return null;
@@ -776,7 +785,22 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               onDragStart={() => setDragId(p.id)}
               onDragEnd={() => { setDragId(''); setOverId(''); }}
               onDragOver={(e) => { e.preventDefault(); if (p.id !== dragId) setOverId(p.id); }}
-              onDrop={() => onDropReorder(p.id)}
+              onDrop={(e) => {
+                e.preventDefault();
+                // T00508：拖到里程碑行上 = 挂接为子任务；拖到普通行 = 排序
+                if (p.kind === 'milestone' && dragId && dragId !== p.id) {
+                  const dragged = plans.find((x) => x.id === dragId);
+                  if (!dragged || dragged.kind === 'milestone') { setDragId(''); setOverId(''); return; }
+                  let oldDeps: Array<{ id: string; type: string }> = [];
+                  try { oldDeps = dragged.deps ? JSON.parse(dragged.deps) : []; } catch { oldDeps = []; }
+                  const kept = oldDeps.filter((d) => d.type !== 'child');
+                  void updatePlan(dragged, { deps: JSON.stringify([...kept, { id: p.id, type: 'child' }]) });
+                  flash(`已挂到里程碑「${p.title}」下`);
+                  setDragId(''); setOverId('');
+                  return;
+                }
+                onDropReorder(p.id);
+              }}
               className={planRowClass(dragId, overId, newRowId, p.id)}
               style={{ borderBottom: '1px solid var(--border)', transition: 'box-shadow .15s ease, transform .15s ease, background .15s ease' }}>
               {/* T00499：前置依赖列——显示前置任务序号（可点配置），serial=串行 predecessor 之后自动排期 */}
@@ -784,9 +808,15 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 {(() => {
                   let depList: Array<{ id: string; type: string }> = [];
                   try { depList = p.deps ? JSON.parse(p.deps) : []; } catch { depList = []; }
+                  // T00518：挂接里程碑的记录（deps 仅含 child）也保留管理入口
+                  const hasOnlyChild = depList.length > 0 && depList.every((d) => d.type === 'child');
+                  if (hasOnlyChild) return (
+                    <button onClick={() => openDepEditor(p)} title="已挂接里程碑 — 点击维护依赖/挂接关系" aria-label="已挂接里程碑：维护依赖"
+                      style={{ border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 10, padding: '0 4px', borderRadius: 4 }}>◈ 维护</button>
+                  );
                   if (depList.length === 0) return (
                     <button onClick={() => openDepEditor(p)} title="配置前置依赖 — 选择前置任务并标记串行/并行" aria-label="配置前置依赖"
-                      style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11, padding: 0 }}>+ 依赖</button>
+                      style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 13, padding: 0 }}>＋</button>
                   );
                   return (
                     <span style={{ display: 'inline-flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -816,6 +846,15 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 })() : p.kind === 'daily' ? <span title="日常任务" style={{ color: 'var(--text-muted)' }}>◇ {i + 1}</span> : i + 1}
               </td>
               <td style={{ padding: 6, minWidth: 220, paddingLeft: childMilestoneOf(p, plans) ? 24 : 6 }}>
+                {p.kind === 'milestone' && (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', verticalAlign: 'middle', marginRight: 4 }}>
+                    <button onClick={() => setCollapsedMs((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
+                      title={collapsedMs[p.id] ? '展开子任务' : '收起子任务'} aria-label={collapsedMs[p.id] ? '展开子任务' : '收起子任务'}
+                      style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--accent)', padding: 0, display: 'inline-flex' }}>
+                      {collapsedMs[p.id] ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                    </button>
+                  </span>
+                )}
                 <input defaultValue={p.title} title={`全量标题：${p.title}`} onBlur={(e) => { if (e.target.value.trim() && e.target.value !== p.title) void updatePlan(p, { title: e.target.value.trim() }); }}
                   style={{ ...inputStyle, width: '100%', color: p.color || 'var(--text)', fontWeight: p.kind === 'milestone' ? 700 : undefined, fontSize: p.kind === 'milestone' ? 14 : 12 }} aria-label="计划标题" />
                 <input defaultValue={p.description} title={`全量描述：${p.description || '（无描述）'}`} placeholder="描述（可空）" onBlur={(e) => { if (e.target.value !== p.description) void updatePlan(p, { description: e.target.value }); }}
@@ -826,7 +865,23 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 <input type="date" defaultValue={p.start_date} onBlur={(e) => { if (e.target.value && e.target.value !== p.start_date) void updatePlan(p, { start_date: e.target.value }); }}
                   style={inputStyle} aria-label="开始日期" />)}
               </td>
-              <td style={{ padding: 6, color: 'var(--text-muted)' }}>{p.end_date}</td>
+              <td style={{ padding: 6 }}>
+                {(() => {
+                  // T00514：里程碑结束时间 = 关联子任务最晚结束（只读）；普通任务可编辑（自然日差换算工期）
+                  if (isMilestone) {
+                    const latest = inner.map((x) => x.end_date).filter(Boolean).sort().at(-1) ?? p.end_date;
+                    return <span title={`关联任务最晚结束：${latest}`} style={{ color: 'var(--text-muted)' }}>{latest}</span>;
+                  }
+                  return (
+                    <input type="date" defaultValue={p.end_date} onBlur={(e) => {
+                      const v = e.target.value;
+                      if (!v || v === p.end_date) return;
+                      const days = Math.max(1, Math.round((new Date(v).getTime() - new Date(p.start_date).getTime()) / 86400000));
+                      void updatePlan(p, { duration_days: days });
+                    }} style={{ ...inputStyle, width: 108 }} aria-label="结束日期" />
+                  );
+                })()}
+              </td>
               <td style={{ padding: 6 }}>
                 {isMilestone ? <span title={`汇总：${innerCount} 项普通/日常任务，合计 ${innerDays} 工作日`} style={{ color: 'var(--accent)', fontWeight: 600 }}>Σ {innerCount} 项 · {innerDays} 天</span> : (
                 <input type="number" min={1} defaultValue={p.duration_days} onBlur={(e) => { const v = Number(e.target.value); if (v >= 1 && v !== p.duration_days) void updatePlan(p, { duration_days: v }); }}

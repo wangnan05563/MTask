@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CalendarRange, ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
+import { CalendarRange, ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, X, UnfoldVertical, FoldVertical, GripVertical } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type ReqCategory, type ReqEntry } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
@@ -307,6 +307,7 @@ export function ReqPage() {
               style={{ display: 'inline-flex', alignItems: 'center', padding: '4px 8px', borderRadius: 6 }}>
               {entries.length > 0 && entries.every((x) => expandedIds[x.id]) ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />}
             </button>
+            <span className="op-hidden" style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
             <button onClick={() => { const c = categories.find((c) => c.id === activeCat); if (c) void renameCategory(c); }} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
               title="重命名 — 修改当前分类名称" aria-label="重命名：修改当前分类名称">
               <SquarePen size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
@@ -315,6 +316,7 @@ export function ReqPage() {
               title="删除分类 — 删除当前分类及其下通用需求" aria-label="删除分类：删除当前分类及其下通用需求">
               <Trash2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
             </button>
+            </span>
           </>
         )}
         <button
@@ -457,7 +459,10 @@ export function ReqPage() {
                 </>
               ) : (
                 <>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                      {sortKey === 'manual' && (
+                      <span title="手动排序模式 — 拖拽本行调整顺序" style={{ color: 'var(--text-muted)', cursor: 'grab', display: 'inline-flex', flexShrink: 0 }}><GripVertical size={13} /></span>
+                    )}
+<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     {/* 标题可点击，切换内容展开/收起（默认收起，降低信息密度） */}
                     <button
                       onClick={() => setExpandedIds((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}

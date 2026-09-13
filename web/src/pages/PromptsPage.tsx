@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowDownUp, ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, UnfoldVertical, FoldVertical, X } from 'lucide-react';
+import { ArrowDownUp, ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, UnfoldVertical, FoldVertical, X, GripVertical } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type Prompt, type PromptCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
@@ -308,6 +308,7 @@ export function PromptsPage() {
               style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 4px', fontSize: 12 }}>
               <ArrowDownUp size={13} /> 重置排序
             </button>
+            <span className="op-hidden" style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
             <button onClick={() => void renameCategory(activeCatObj)} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
               title="重命名 — 修改当前分类名称" aria-label="重命名：修改当前分类名称">
               <SquarePen size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
@@ -316,6 +317,7 @@ export function PromptsPage() {
               title="删除分类 — 删除当前分类及其下提示词" aria-label="删除分类：删除当前分类及其下提示词">
               <Trash2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
             </button>
+          </span>
           </>
         )}
         <button
@@ -462,7 +464,10 @@ export function PromptsPage() {
                 </>
               ) : (
                 <>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                      {sortKey === 'manual' && (
+                      <span title="手动排序模式 — 拖拽本行调整顺序" style={{ color: 'var(--text-muted)', cursor: 'grab', display: 'inline-flex', flexShrink: 0 }}><GripVertical size={13} /></span>
+                    )}
+<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     {/* 标题可点击，切换内容展开/收起（默认收起，降低信息密度） */}
                     <button
                       onClick={() => setExpandedIds((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}

@@ -1159,11 +1159,6 @@ export function TasksPage() {
           <option value="high">高</option>
           <option value="urgent">极高</option>
         </select>
-        {/* T00450：创建子任务——两级 epic→task 层级 */}
-        <button onClick={() => void createSubTask(t)} title="创建子任务 — 在该任务下创建子任务（层级展示）" aria-label="创建子任务"
-          className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--text-muted)' }}>
-          <ListTodo size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-        </button>
         {/* 行内切换任务分类：'none' 仅作展示用不可选；空串回到未分类 */}
         <select
           value={t.category_id ?? ''}
@@ -1176,6 +1171,11 @@ export function TasksPage() {
           <option value="">未分类</option>
           {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
+        {/* T00450/T00512：创建子任务——移到分类下拉条之后 */}
+        <button onClick={() => void createSubTask(t)} title="创建子任务 — 在该任务下创建子任务（层级展示）" aria-label="创建子任务"
+          className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--text-muted)' }}>
+          <ListTodo size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+        </button>
         {/* 待办/已完成任务：AI 美化 + 重命名（编辑中保留保存/取消收尾） */}
         {renderTitleActions(t, titleEditing, true)}
         <button

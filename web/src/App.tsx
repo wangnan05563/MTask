@@ -115,6 +115,13 @@ function Shell() {
         .task-op button:hover:not(:disabled), .task-op .tbtn-anim:hover { transform: scale(1.15) rotate(8deg); }
         .task-op button:active:not(:disabled), .task-op .tbtn-anim:active { transform: scale(.88); }
         .task-op button, .task-op .tbtn-anim { transition: transform .18s ease; }
+        /* T00513：标题行状态/验证按钮（title-op）同样悬浮倾斜缩放 */
+        .title-op { transition: transform .18s ease; }
+        .title-op:hover:not(:disabled) { transform: scale(1.15) rotate(8deg); }
+        .title-op:active:not(:disabled) { transform: scale(.88); }
+        /* T00522：行内下拉/原生 select 悬浮轻反馈（与自绘下拉一致的体系） */
+        .task-op select:hover { transform: scale(1.05); }
+        .task-op select { transition: transform .18s ease; }
         /* 文字/功能按钮：整体轻微倾斜（幅度收敛避免文本难读），active 缩放 */
         button:hover:not(:disabled):not(.tbtn-anim):not(.nav-btn):not(.abtn):not(.ghost) { transform: rotate(-1.5deg); }
         button { transition: transform .18s ease, background-color .15s ease; }
