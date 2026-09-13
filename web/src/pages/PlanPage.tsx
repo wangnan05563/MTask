@@ -875,9 +875,9 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                     </button>
                   </span>
                 )}
-                <input defaultValue={p.title} readOnly={p.kind === 'milestone'} title={p.kind === 'milestone' ? '里程碑标题 — 由系统汇总其下任务，不可手动编辑' : `全量标题：${p.title}`} onBlur={(e) => { if (p.kind !== 'milestone' && e.target.value.trim() && e.target.value !== p.title) void updatePlan(p, { title: e.target.value.trim() }); }}
+                <input key={'t' + p.title} defaultValue={p.title} readOnly={p.kind === 'milestone'} title={p.kind === 'milestone' ? '里程碑标题 — 由系统汇总其下任务，不可手动编辑' : `全量标题：${p.title}`} onBlur={(e) => { if (p.kind !== 'milestone' && e.target.value.trim() && e.target.value !== p.title) void updatePlan(p, { title: e.target.value.trim() }); }}
                   style={{ ...inputStyle, width: '100%', color: p.color || 'var(--text)', fontWeight: p.kind === 'milestone' ? 700 : undefined, fontSize: p.kind === 'milestone' ? 14 : 12, cursor: p.kind === 'milestone' ? 'default' : undefined }} aria-label="计划标题" />
-                <input defaultValue={p.description} readOnly={p.kind === 'milestone'} title={p.kind === 'milestone' ? '里程碑描述 — 不可手动编辑' : `全量描述：${p.description || '（无描述）'}`} placeholder="描述（可空）" className="plan-desc-ph" onBlur={(e) => { if (p.kind !== 'milestone' && e.target.value !== p.description) void updatePlan(p, { description: e.target.value }); }}
+                <input key={'d' + (p.description ?? '')} defaultValue={p.description} readOnly={p.kind === 'milestone'} title={p.kind === 'milestone' ? '里程碑描述 — 不可手动编辑' : `全量描述：${p.description || '（无描述）'}`} placeholder="描述（可空）" className="plan-desc-ph" onBlur={(e) => { if (p.kind !== 'milestone' && e.target.value !== p.description) void updatePlan(p, { description: e.target.value }); }}
                   style={{ ...inputStyle, width: '100%', marginTop: 2, color: 'var(--text-muted)', cursor: p.kind === 'milestone' ? 'default' : undefined }} aria-label="计划描述" />
               </td>
               {/* T00545：依赖列——前置任务序号 + 串/并徽标，点击维护；空依赖显示快捷添加 */}
@@ -912,7 +912,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               </td>
               <td style={{ padding: 6 }}>
                 {isMilestone ? <span style={{ color: 'var(--text-muted)' }}>{p.start_date}</span> : (
-                <input type="date" defaultValue={p.start_date} onBlur={(e) => {
+                <input key={'s' + p.start_date} type="date" defaultValue={p.start_date} onBlur={(e) => {
                   if (!e.target.value || e.target.value === p.start_date) return;
                   // T00545：串行依赖约束——开始日期不得早于前置任务（serial）的结束日期
                   let depList: Array<{ id: string; type: string }> = [];
@@ -938,7 +938,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                     return <span title={`关联任务最晚结束：${latest}`} style={{ color: 'var(--text-muted)' }}>{latest}</span>;
                   }
                   return (
-                    <input type="date" defaultValue={p.end_date} onBlur={(e) => {
+                    <input key={'e' + p.end_date} type="date" defaultValue={p.end_date} onBlur={(e) => {
                       const v = e.target.value;
                       if (!v || v === p.end_date) return;
                       const days = Math.max(1, Math.round((new Date(v).getTime() - new Date(p.start_date).getTime()) / 86400000));
@@ -949,7 +949,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               </td>
               <td style={{ padding: 6 }}>
                 {isMilestone ? <span title={`汇总：${innerCount} 项普通/日常任务，合计 ${innerDays} 工作日`} style={{ color: 'var(--accent)', fontWeight: 600 }}>Σ {innerCount} 项 · {durationUnit === 'hour' ? `${innerDays * 8} 时` : `${innerDays} 天`}</span> : (
-                <input type="number" min={durationUnit === 'hour' ? 8 : 1} key={durationUnit} defaultValue={durationUnit === 'hour' ? p.duration_days * 8 : p.duration_days}
+                <input type="number" min={durationUnit === 'hour' ? 8 : 1} key={durationUnit + p.duration_days} defaultValue={durationUnit === 'hour' ? p.duration_days * 8 : p.duration_days}
                   onBlur={(e) => {
                     const v = Number(e.target.value);
                     if (durationUnit === 'hour') {
@@ -967,7 +967,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               </td>
               <td style={{ padding: 6 }}>
                 {isMilestone ? <span title={`汇总：${innerCount} 项平均进度 ${innerAvg}%`} style={{ color: 'var(--accent)', fontWeight: 600 }}>{innerAvg}%</span> : (
-                <input type="number" min={0} max={100} defaultValue={p.progress} onBlur={(e) => { const v = Number(e.target.value); if (v >= 0 && v <= 100 && v !== p.progress) void updatePlan(p, { progress: v }); }}
+                <input key={'p' + p.progress} type="number" min={0} max={100} defaultValue={p.progress} onBlur={(e) => { const v = Number(e.target.value); if (v >= 0 && v <= 100 && v !== p.progress) void updatePlan(p, { progress: v }); }}
                   style={{ ...inputStyle, width: 40 }} aria-label="进度百分比" />)}
               </td>
               <td style={{ padding: 6 }}>
@@ -981,7 +981,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               </td>
               <td style={{ padding: 6 }}>
                 {isMilestone ? <span style={{ color: 'var(--text-muted)' }}>—</span> : (
-                <input defaultValue={p.assignee} placeholder="—" onBlur={(e) => { if (e.target.value !== p.assignee) void updatePlan(p, { assignee: e.target.value }); }}
+                <input key={'a' + (p.assignee ?? '')} defaultValue={p.assignee} placeholder="—" onBlur={(e) => { if (e.target.value !== p.assignee) void updatePlan(p, { assignee: e.target.value }); }}
                   style={{ ...inputStyle, width: 80 }} aria-label="负责人" />)}
               </td>
               <td style={{ padding: 6, minWidth: 150 }}>
