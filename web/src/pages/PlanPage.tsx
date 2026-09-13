@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, CalendarPlus, Download, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap, ChevronDown, ChevronRight } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
-import { askConfirm, askInput } from '../ui/dialogs';
+import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
 import { usePersistentState, useSessionState } from '../ui/session';
 
 /** 项目计划页（T00431，菜单位于周报前）：串行瀑布时间线 + Excel 导入导出 + 待办联动。 */
@@ -155,8 +155,6 @@ export function PlanPage() {
   const [evalBusy, setEvalBusy] = useState(false);
   const [evalLabel, setEvalLabel] = useState('');
   // T00499：前置依赖配置弹窗（depEditor=正在编辑的记录；depSel=选择集 {任务id: 依赖类型}）
-  // T00506：新建任务类型（normal=普通、milestone=阶段里程碑、daily=日常）
-  const [newKind, setNewKind] = useSessionState<'normal' | 'milestone' | 'daily'>('plan.newKind', 'normal');
   // T00505：项目自绘下拉（三色徽标：绿=已完成、蓝=进行中、灰=待开始）
   const [projOpen, setProjOpen] = useState(false);
   const projDropRef = useRef<HTMLDivElement | null>(null);
@@ -191,19 +189,31 @@ export function PlanPage() {
 
   async function createPlan() {
     if (!projectId) return flash('请先选择项目');
-    const title = await askInput({ title: newKind === 'milestone' ? '新里程碑' : newKind === 'daily' ? '新日常任务' : '新计划任务', placeholder: '任务标题' });
-    if (!title?.trim()) return;
-    // T00506 验证修正：日常任务为周期性任务，创建时必须填写工时估算（工期/工作日）
-    let durationDays = 1;
-    if (newKind === 'daily') {
-      const d = await askInput({ title: `工时估算（工作日）— ${title.trim()}`, placeholder: '请填写工时估算，如 3' });
-      const n = Number(d);
-      if (d === null || !Number.isFinite(n) || n < 1) { flash('日常任务必须填写工时估算（≥1 工作日），已取消创建'); return; }
-      durationDays = Math.round(n);
-    }
+    // T00506 调整：类型选择移入新建弹窗（默认普通任务）；日常任务为周期性任务，弹窗内强制填写工时估算
+    const r = await askInputEx({
+      title: '新建计划任务',
+      placeholder: '任务标题',
+      select: {
+        label: '任务类型',
+        defaultValue: 'normal',
+        options: [
+          { value: 'normal', label: '普通任务' },
+          { value: 'milestone', label: '阶段里程碑' },
+          { value: 'daily', label: '日常任务' },
+        ],
+      },
+      numberField: {
+        label: '工时估算（工作日）',
+        placeholder: '请填写工时估算，如 3',
+        min: 1,
+        required: true,
+        showIf: (sv) => sv === 'daily',
+      },
+    });
+    if (!r) return;
     setBusy(true);
     try {
-      await api.post('/plans', { projectId, title: title.trim(), startDate: todayStr(), durationDays, kind: newKind });
+      await api.post('/plans', { projectId, title: r.text, startDate: todayStr(), durationDays: r.numberValue ?? 1, kind: r.selectValue });
       reload();
       flash('已创建，时间线已自动重排');
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
@@ -748,15 +758,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             </div>
           )}
         </div>
-        {/* T00506：新建任务类型选择（普通/阶段里程碑/日常任务） */}
-        <select value={newKind} onChange={(e) => setNewKind(e.target.value as 'normal' | 'milestone' | 'daily')}
-          title="新建任务类型 — 普通=标准计划项；里程碑=阶段节点（汇总其下任务）；日常=日常事务"
-          aria-label="新建任务类型" style={{ ...inputStyle, minWidth: 96 }}>
-          <option value="normal">普通任务</option>
-          <option value="milestone">阶段里程碑</option>
-          <option value="daily">日常任务</option>
-        </select>
-        <button className="tbtn-anim" onClick={() => void createPlan()} disabled={busy} title={`新建${newKind === 'milestone' ? '里程碑' : newKind === 'daily' ? '日常任务' : '任务'} — 按上方所选类型创建`} aria-label="新建计划任务" style={{ ...btnStyle, padding: '6px 8px' }}><CalendarPlus size={13} /></button>
+        {/* T00506 调整：任务类型选择移入「新建计划任务」弹窗（默认普通任务），工具栏不再展示 */}
+        <button className="tbtn-anim" onClick={() => void createPlan()} disabled={busy} title="新建计划任务 — 弹窗中选择任务类型（普通/里程碑/日常）" aria-label="新建计划任务" style={{ ...btnStyle, padding: '6px 8px' }}><CalendarPlus size={13} /></button>
         <label className="tbtn-anim" style={{ ...btnStyle, cursor: busy ? 'default' : 'pointer', padding: '6px 8px' }} title="导入 Excel — 批量导入计划任务（任一行校验失败则整体不入库）" aria-label="导入 Excel">
           <Upload size={13} />
           <input type="file" accept=".xlsx" style={{ display: 'none' }}
