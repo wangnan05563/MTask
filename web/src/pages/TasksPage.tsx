@@ -1101,6 +1101,14 @@ export function TasksPage() {
             {t.task_no}
           </span>
         )}
+        {/* T00502：验证失败徽标——处理结果含【验证失败】时显示，点击展开处理结果查看失败反馈 */}
+        {t.handle_result?.includes('【验证失败') && (
+          <span title="验证失败 — 点击查看失败反馈（处理结果）" aria-label="验证失败"
+            onClick={() => setResultOpen((p) => ({ ...p, [t.id]: true }))}
+            style={{ fontSize: 10, color: 'var(--danger)', border: '1px solid var(--danger)', padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'pointer' }}>
+            验证失败
+          </span>
+        )}
         {/* T00462/T00451：计划联动任务区分徽标——悬浮显示来源计划标题（反向引用） */}
         {t.fromPlanTitle && (
           <span title={`计划联动任务 — 来源计划：${t.fromPlanTitle}；完成状态与项目计划双向同步`}

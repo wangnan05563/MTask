@@ -82,10 +82,20 @@ api.get('/projects', (_req, res) => {
             SUM(CASE WHEN verified = 0 THEN 1 ELSE 0 END) AS unverified_count
      FROM tasks WHERE archived = 0 GROUP BY project_id`,
   ).all() as Array<{ project_id: string; todo_count: number; unverified_count: number }>;
+  // T00505：计划菜单项目下拉统计（按 plan_tasks.status：todo=待开始、doing=进行中、done=已完成）
+  const planCounts = getDb().prepare(
+    `SELECT project_id,
+            SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS plan_done,
+            SUM(CASE WHEN status = 'doing' THEN 1 ELSE 0 END) AS plan_doing,
+            SUM(CASE WHEN status NOT IN ('done') THEN 1 ELSE 0 END) AS plan_open
+     FROM plan_tasks WHERE archived = 0 GROUP BY project_id`,
+  ).all() as Array<{ project_id: string; plan_done: number; plan_doing: number; plan_open: number }>;
+  const planByPid = new Map(planCounts.map((c) => [c.project_id, c]));
   const byPid = new Map(counts.map((c) => [c.project_id, c]));
   const rowsWithCounts = rows.map((r) => {
     const c = byPid.get(r.id as string);
-    return { ...r, todo_count: c?.todo_count ?? 0, unverified_count: c?.unverified_count ?? 0 };
+    const pc = planByPid.get(r.id as string);
+    return { ...r, todo_count: c?.todo_count ?? 0, unverified_count: c?.unverified_count ?? 0, plan_done: pc?.plan_done ?? 0, plan_doing: pc?.plan_doing ?? 0, plan_open: pc?.plan_open ?? 0 };
   });
   cacheSet('projects', rowsWithCounts, LIST_TTL_MS);
   res.json(rowsWithCounts);

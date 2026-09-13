@@ -206,7 +206,7 @@ export async function createMCPServer(): Promise<McpServer> {
 
   server.registerTool('mtask_update_task', {
     title: '更新任务',
-    description: '按 id 或任务编号 taskNo 更新任务字段（title/description/priority/status/verified/pinned/categoryId）；未提供的字段保持不变。',
+    description: '按 id 或任务编号 taskNo 更新任务字段（title/description/priority/status/verified/pinned/categoryId）；未提供的字段保持不变。T00502：verified=false + feedback 时自动回退待办并把失败反馈写入处理结果。',
     inputSchema: {
       id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
       taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
@@ -215,6 +215,7 @@ export async function createMCPServer(): Promise<McpServer> {
       priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
       status: z.enum(['todo', 'done']).optional(),
       verified: z.boolean().optional().describe('验证完成标记'),
+      feedback: z.string().optional().describe('T00502：验证失败反馈——verified=false 时建议提供，将自动回退待办并以【验证失败】前缀写入处理结果'),
       pinned: z.boolean().optional().describe('置顶'),
       categoryId: z.string().nullish().describe('任务分类 id，传 null 清除分类'),
     },
@@ -222,9 +223,18 @@ export async function createMCPServer(): Promise<McpServer> {
     try {
       const target = resolveTask(a);
       if (!target) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
+      // T00502：验证失败闭环——verified=false 时强制回退待办，feedback 以【验证失败】前缀追加到处理结果
+      const failRollback = a.verified === false;
+      const status = failRollback ? 'todo' as const : a.status;
+      let handle_result: string | undefined = undefined;
+      if (failRollback && a.feedback?.trim()) {
+        const stamp = new Date().toISOString().slice(0, 10);
+        handle_result = `${target.handle_result ?? ''}\n\n【验证失败 ${stamp}】${a.feedback.trim()}`.trim();
+      }
       const task = TaskService.update(target.id, {
         title: a.title, description: a.description, priority: a.priority,
-        status: a.status, verified: a.verified, pinned: a.pinned, category_id: a.categoryId,
+        status, verified: a.verified, pinned: a.pinned, category_id: a.categoryId,
+        handle_result,
       });
       return ok(json(task), { task });
     } catch (e) { return err((e as Error).message); }

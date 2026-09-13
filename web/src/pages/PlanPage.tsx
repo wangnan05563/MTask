@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, CalendarPlus, Download, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap } from 'lucide-react';
+import { Archive, CalendarPlus, Download, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap, ChevronDown } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
@@ -27,7 +27,14 @@ interface PlanTask {
   deps?: string;
 }
 
-interface ProjectRow { id: string; name: string }
+interface ProjectRow {
+  id: string;
+  name: string;
+  /** T00505：计划任务统计（下拉徽标） */
+  plan_done?: number;
+  plan_doing?: number;
+  plan_open?: number;
+}
 
 /** AI 导入解析出的标准计划草稿（可编辑行，include 控制是否保存） */
 interface PlanDraft {
@@ -135,6 +142,9 @@ export function PlanPage() {
   const [evalBusy, setEvalBusy] = useState(false);
   const [evalLabel, setEvalLabel] = useState('');
   // T00499：前置依赖配置弹窗（depEditor=正在编辑的记录；depSel=选择集 {任务id: 依赖类型}）
+  // T00505：项目自绘下拉（三色徽标：绿=已完成、蓝=进行中、灰=待开始）
+  const [projOpen, setProjOpen] = useState(false);
+  const projDropRef = useRef<HTMLDivElement | null>(null);
   const [depEditor, setDepEditor] = useState<{ id: string; seq: number } | null>(null);
   const [depSel, setDepSel] = useState<Record<string, 'serial' | 'parallel'>>({});
   // T00449：视图模式（列表/甘特）会话级保持
@@ -182,6 +192,16 @@ export function PlanPage() {
       reload();
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
   }
+
+  // T00505：项目下拉点击外部关闭
+  useEffect(() => {
+    if (!projOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (projDropRef.current && !projDropRef.current.contains(e.target as Node)) setProjOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [projOpen]);
 
   // ---------- T00499：前置依赖配置 ----------
   /** 打开依赖配置弹窗：预填该记录既有依赖（排除自身） */
@@ -625,9 +645,37 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       <style>{planTableCss}</style>
       {/* 工具条：项目选择 + 增删导入导出（T00491：操作控件/下拉默认隐藏，悬浮工具条显示） */}
       <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-        <select value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ ...inputStyle, minWidth: 140 }} aria-label="选择项目">
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
+        <div ref={projDropRef} style={{ position: 'relative', display: 'inline-flex' }}>
+          <button onClick={() => setProjOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={projOpen}
+            title="选择项目 — 项目名后徽标：绿=已完成、蓝=进行中、灰=待开始（悬浮查看详情）"
+            aria-label="选择项目"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 8px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, cursor: 'pointer' }}>
+            {projects.find((p) => p.id === projectId)?.name ?? '选择项目'}
+            {(() => { const cur = projects.find((p) => p.id === projectId); return cur ? (
+              <>
+                <span title={`已完成 ${cur.plan_done ?? 0}`} style={{ minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success)' }}>{cur.plan_done ?? 0}</span>
+                <span title={`进行中 ${cur.plan_doing ?? 0}`} style={{ minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{cur.plan_doing ?? 0}</span>
+                <span title={`待开始 ${cur.plan_open ?? 0}`} style={{ minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>{cur.plan_open ?? 0}</span>
+              </>
+            ) : null; })()}
+            <ChevronDown size={12} />
+          </button>
+          {projOpen && (
+            <div role="listbox" style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 30, minWidth: 240 }}>
+              {projects.map((p) => (
+                <button key={p.id} role="option" aria-selected={p.id === projectId}
+                  onClick={() => { setProjectId(p.id); setProjOpen(false); }}
+                  title={`${p.name}：已完成 ${p.plan_done ?? 0}，进行中 ${p.plan_doing ?? 0}，待开始 ${p.plan_open ?? 0}`}
+                  style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, background: p.id === projectId ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer' }}>
+                  <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+                  <span title={`已完成 ${p.plan_done ?? 0}`} style={{ minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success)' }}>{p.plan_done ?? 0}</span>
+                  <span title={`进行中 ${p.plan_doing ?? 0}`} style={{ minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.plan_doing ?? 0}</span>
+                  <span title={`待开始 ${p.plan_open ?? 0}`} style={{ minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>{p.plan_open ?? 0}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <button className="tbtn-anim" onClick={() => void createPlan()} disabled={busy} title="新建任务 — 在当前项目创建一条计划任务" aria-label="新建计划任务" style={{ ...btnStyle, padding: '6px 8px' }}><CalendarPlus size={13} /></button>
         <label className="tbtn-anim" style={{ ...btnStyle, cursor: busy ? 'default' : 'pointer', padding: '6px 8px' }} title="导入 Excel — 批量导入计划任务（任一行校验失败则整体不入库）" aria-label="导入 Excel">
           <Upload size={13} />
@@ -649,17 +697,24 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         {notice && <span className="flash-toast" role="status">{notice}</span>}
       </div>
 
-      {/* 节假日摘要（快速可见；完整管理进弹窗） */}
-      {holidays.length > 0 && (
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-          <span>节假日（时间线自动避开）：</span>
-          {holidays.slice(0, 6).map((h) => (
-            <span key={h.date} style={{ border: '1px solid var(--border)', borderRadius: 4, padding: '0 6px' }}>{h.date} {h.name}</span>
-          ))}
-          {holidays.length > 6 && <span>… 共 {holidays.length} 条</span>}
-          <button onClick={openHolidayManager} style={{ border: 'none', background: 'transparent', color: 'var(--accent)', cursor: 'pointer', fontSize: 11 }}>管理…</button>
-        </div>
-      )}
+      {/* T00507：项目整体统计（原节假日摘要栏位置；节假日管理保留按钮弹窗） */}
+      {plans.length > 0 && (() => {
+        const starts = plans.map((p) => p.start_date).filter(Boolean).sort();
+        const ends = plans.map((p) => p.end_date).filter(Boolean).sort();
+        const totalDays = plans.reduce((acc, p) => acc + (p.duration_days || 0), 0);
+        const doneCount = plans.filter((p) => p.status === 'done').length;
+        const doingCount = plans.filter((p) => p.status === 'doing').length;
+        const milestoneCount = plans.filter((p) => (p as PlanTask & { kind?: string }).kind === 'milestone').length;
+        return (
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+            <span title={`起 ${starts[0] ?? '—'} · 止 ${ends.at(-1) ?? '—'}`}>项目周期：{starts[0] ?? '—'} ~ {ends.at(-1) ?? '—'}</span>
+            <span title="全部任务工期（工作日）合计">工作量：{totalDays} 人天</span>
+            <span title={`共 ${plans.length} 条计划任务`}>任务：{plans.length} 条</span>
+            <span title={`已完成 ${doneCount} · 进行中 ${doingCount}`} style={{ color: doneCount === plans.length ? 'var(--success)' : undefined }}>完成 {doneCount}/{plans.length}</span>
+            {milestoneCount > 0 && <span title={`里程碑 ${milestoneCount} 个`}>里程碑：{milestoneCount}</span>}
+          </div>
+        );
+      })()}
 
       {/* 计划表格：串行瀑布，起止由服务端按工作日推算 */}
       {viewMode === 'gantt' ? renderGantt() : (
@@ -761,11 +816,11 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                     </>
                   )}
                 <button onClick={() => void insertAfter(p)} title="在此行后插入新任务 — 后续排期自动重排" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--text-muted)', padding: 2 }}><Plus size={13} /></button>
-                <button onClick={() => void archivePlan(p)} title="归档计划任务 — 从时间线移除，可在「归档」菜单恢复或彻底删除" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--danger)', padding: 2 }}><Archive size={13} /></button>
-                {/* T00490：字体颜色——Excel 风格按钮，点击直接应用当前色，箭头展开色板 */}
+                                {/* T00501：字体颜色按钮置于按钮栏最前 */}
                 <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
                   <FontColorButton current={p.color ?? ''} onApply={(c) => { void updatePlan(p, { color: c }); }} />
                 </span>
+<button onClick={() => void archivePlan(p)} title="归档计划任务 — 从时间线移除，可在「归档」菜单恢复或彻底删除" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--danger)', padding: 2 }}><Archive size={13} /></button>
                 {/* T00472：单条 AI 评估——结果自动录入该行描述（保存）或取消不写 */}
                 <button onClick={() => { if (evalBusy) return; if (!aiToolId) { flash('请先选择 AI 模型'); return; } void evaluateOnePlan(p).then((okk) => { if (okk) flash('AI 评估已写入该行描述'); }); }} disabled={evalBusy || busy} title="AI 评估 — 评估该条工期合理性/风险与建议，结果自动录入描述" aria-label="AI 评估该条" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--accent)', padding: 2 }}>
                   {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}

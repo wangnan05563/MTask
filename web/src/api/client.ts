@@ -110,6 +110,10 @@ export interface Project {
   /** T00496：每项目待办/未验证计数（徽标展示） */
   todo_count?: number;
   unverified_count?: number;
+  /** T00505：计划任务统计（计划菜单下拉徽标） */
+  plan_done?: number;
+  plan_doing?: number;
+  plan_open?: number;
 }
 
 export interface TaskImage {
