@@ -132,28 +132,35 @@ REM Clean up a stale unpack dir so electron-builder can unpack into a clean tree
 REM Without this EnsureEmptyDir fails when a leftover file is held open by Explorer/antivirus.
 REM T00442: fall forward through release2..9 until an unlocked dir is found (antivirus may
 REM hold handles on a freshly packed asar for minutes, so a single fallback is not enough).
-set  "OUTDIR=release"
+REM
+REM BUGFIX (build 0.1.0913.63 aborted with cmd error "unexpected token are"):
+REM   1) the old "[ERROR] all release dirs (2-9) are locked." echo had UNESCAPED parens - inside
+REM      a ( ... ) block cmd treats the ")" of "(2-9)" as the block terminator, so the following
+REM      text became an unexpected token and the whole script aborted at parse time. Echo text
+REM      inside a block must be paren-free (or use ^( ^) escapes).
+REM   2) "endlocal & set OUTDIR=%OUTDIR%" expanded %OUTDIR% at BLOCK-PARSE time, i.e. the value
+REM      set before the block ("release") - so a chosen fallback dir never propagated out.
+REM Rewritten without setlocal/delayed expansion: "if defined" is evaluated at runtime, so the
+REM loop below correctly sees the value assigned by the previous iteration.
+REM T00528: stop any MTask.exe instances running from this project's release
+REM dirs first - their open app.asar handle makes the cleanup below fail and
+REM pushes every build into fallback dirs. Only project-release instances are
+REM killed (installed copies are left alone).
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='MTask.exe'\" | Where-Object { $_.ExecutablePath -like '*\26_MTask\release*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+set "OUTDIR=release"
 if exist "release\win-unpacked" (
     powershell -NoProfile -Command "try{[IO.Directory]::Delete('%CD%\release\win-unpacked',$true);exit 0}catch{exit 1}" >nul 2>&1
     if errorlevel 1 (
         set "OUTDIR="
-        setlocal enabledelayedexpansion
-        for %%N in (2 3 4 5 6 7 8 9) do (
-            if not defined OUTDIR (
-                if not exist "release%%N\win-unpacked" (
-                    set "OUTDIR=release%%N"
-                    echo   [WARN] release\win-unpacked still in use, packaging into !OUTDIR! to bypass the lock.
-                )
-            )
-        )
-        endlocal & set "OUTDIR=%OUTDIR%"
+        for %%N in (2 3 4 5 6 7 8 9) do if not defined OUTDIR if not exist "release%%N\win-unpacked" set "OUTDIR=release%%N"
         if not defined OUTDIR (
-            echo   [ERROR] all release dirs (2-9) are locked. Close apps using them or add an antivirus exclusion for this project folder, then rerun.
+            echo   [ERROR] all fallback release dirs 2-9 are still locked. Close apps using them or add an antivirus exclusion for this project folder, then rerun.
             pause
             exit /b 1
         )
     )
 )
+if not "%OUTDIR%"=="release" echo   [WARN] release\win-unpacked still in use, packaging into %OUTDIR% to bypass the lock.
 REM disable publish so CI-detected electron-builder does not try to push to GitHub
 REM (would otherwise fail with "GH_TOKEN is not set" after the artifact is fully built)
 call npx electron-builder --win --config.directories.output=%OUTDIR% --publish=never
@@ -173,6 +180,19 @@ if errorlevel 1 (
 )
 
 echo.
+REM T00528: after packaging, remove the win-unpacked tree so the release dir
+REM only holds the setup exe - the unpacked copy is what users run for quick
+REM tests and what locks the asar, making the next cleanup fail. Failure here
+REM is non-fatal (a warning is printed and the tree is left in place).
+if exist "%OUTDIR%\win-unpacked" (
+    powershell -NoProfile -Command "try{[IO.Directory]::Delete('%CD%\%OUTDIR%\win-unpacked',$true);exit 0}catch{exit 1}" >nul 2>&1
+    if errorlevel 1 (
+        echo   [WARN] could not remove %OUTDIR%\win-unpacked - a process still holds it. Delete it manually before the next build.
+    ) else (
+        echo   [OK] removed %OUTDIR%\win-unpacked - release dir now holds only the installer.
+    )
+)
+
 echo ============================================
 echo  Build done
 echo ============================================
