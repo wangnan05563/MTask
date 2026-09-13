@@ -1069,20 +1069,16 @@ export function TasksPage() {
   /** 紧凑时间：ISO → 'MM-DD HH:mm'，用于列表行内展示，减少同屏重复信息的视觉重量 */
   const fmtShort = (iso: string) => (iso ? iso.slice(5, 16).replace('T', ' ') : '');
 
-  /** 任务行标题行：完成状态/验证/置顶/标题，标题独占剩余宽度以示强调 */
+  /** 任务行标题行：置顶/编号/徽标/标题一行；完成状态与验证按钮挪到标题下方靠左一行（T00541） */
   function renderTaskTitleRow(t: Task, titleEditing: boolean) {
     return (
+      <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         {multiSelect && (
           <input type="checkbox" checked={selectedIds.has(t.id)} aria-label={`选中任务 ${t.title}`}
             onChange={(e) => setSelectedIds((prev) => { const n = new Set(prev); if (e.target.checked) { n.add(t.id); } else { n.delete(t.id); } return n; })}
             style={{ cursor: 'pointer', flexShrink: 0 }} />
         )}
-        <button className="title-op" title="切换任务完成状态" aria-label="切换任务完成状态" onClick={() => void setStatus(t, t.status === 'todo' ? 'done' : 'todo')} style={{ cursor: 'pointer' }}>
-          {t.status === 'todo' ? '☐' : '☑'}
-        </button>
-        {/* 仅已完成任务展示验证状态 */}
-        {t.status === 'done' && renderVerifyButton(t)}
         {/* AI 回写待审核图标：标题带【AI回写待审核】前缀的任务展示（视觉基准对齐验证图标），
             点击同时展开任务描述与处理结果，便于人工审核 AI 回写的修复建议 */}
         {t.title.startsWith('【AI回写待审核】') && (
@@ -1132,6 +1128,14 @@ export function TasksPage() {
           </span>
         )}
         {renderTaskTitle(t, titleEditing)}
+      </div>
+      {/* T00541：完成状态/验证结果按钮——标题下方靠左一行 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, marginLeft: 2 }}>
+        <button className="title-op" title="切换任务完成状态" aria-label="切换任务完成状态" onClick={() => void setStatus(t, t.status === 'todo' ? 'done' : 'todo')} style={{ cursor: 'pointer' }}>
+          {t.status === 'todo' ? '☐' : '☑'}
+        </button>
+        {t.status === 'done' && renderVerifyButton(t)}
+      </div>
       </div>
     );
   }
