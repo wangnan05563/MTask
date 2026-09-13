@@ -48,6 +48,20 @@ const PLAN_STATUSES = new Set<PlanStatus>(['todo', 'doing', 'done', 'blocked']);
 /** AI 解析输入的行数上限：超出的内容截断，避免超大文件拖垮模型上下文（T00438） */
 const MAX_PARSE_ROWS = 300;
 
+/** T00500 验证修正：计划表共用美化（模板/导出同源）——冻结首行由 addWorksheet views 配置，
+ *  此处负责深蓝表头白字加粗 + 指定列居中；centerKeys 由调用方显式传入（getColumn 对未知 key 会新建列导致越界，T00516 冒烟实测） */
+function applyPlanSheetStyle(ws: ExcelJS.Worksheet, centerKeys: string[]): void {
+  const header = ws.getRow(1);
+  header.height = 22;
+  header.eachCell((c) => {
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E79' } };
+    c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+    c.alignment = { vertical: 'middle', horizontal: 'center' };
+    c.border = { bottom: { style: 'thin', color: { argb: 'FF1F4E79' } } };
+  });
+  for (const key of centerKeys) ws.getColumn(key).alignment = { horizontal: 'center' };
+}
+
 /**
  * 从 AI 输出中提取 JSON 数组，带截断恢复（T00439）：
  * 大文档拆分时输出可能被 max_tokens 截断（JSON 未闭合），此时退化到
@@ -700,11 +714,11 @@ export const PlanService = {
     return { inserted: parsed.length, errors: [] };
   },
 
-  /** 导出：sheet1=计划任务（与模板同列序），sheet2=节假日 */
+  /** 导出：sheet1=计划任务（与模板同列序同样式，T00500 验证修正），sheet2=节假日 */
   async exportExcel(projectId: string): Promise<Buffer> {
     const rows = this.list(projectId);
     const wb = new ExcelJS.Workbook();
-    const ws = wb.addWorksheet('项目计划');
+    const ws = wb.addWorksheet('项目计划', { views: [{ state: 'frozen', ySplit: 1 }] });
     ws.columns = [
       { header: '标题', key: 'title', width: 36 },
       { header: '描述', key: 'description', width: 40 },
@@ -716,41 +730,34 @@ export const PlanService = {
       { header: '负责人', key: 'assignee', width: 14 },
     ];
     for (const r of rows) ws.addRow({ title: r.title, description: r.description, start_date: r.start_date, end_date: r.end_date, duration_days: r.duration_days, progress: r.progress, status: r.status, assignee: r.assignee });
-    const hws = wb.addWorksheet('节假日');
+    applyPlanSheetStyle(ws, ['start_date', 'end_date', 'duration_days', 'progress', 'status']);
+    const hws = wb.addWorksheet('节假日', { views: [{ state: 'frozen', ySplit: 1 }] });
     hws.columns = [{ header: '日期', key: 'date', width: 14 }, { header: '名称', key: 'name', width: 24 }];
     for (const h of this.listHolidays()) hws.addRow(h);
+    applyPlanSheetStyle(hws, ['date']);
     const out = await wb.xlsx.writeBuffer();
     return Buffer.from(out);
   },
 
-  /** 模板：表头 + 1 行示例（与导入列序一致） */
+  /** 模板：表头 + 1 行示例（列序与导出完全一致 8 列，T00500 验证修正：字段/样式三路径一致） */
   async templateExcel(): Promise<Buffer> {    const wb = new ExcelJS.Workbook();
-    const ws = wb.addWorksheet('项目计划', { views: [{ state: 'frozen', ySplit: 1 }] }); // T00500：冻结表头
+    const ws = wb.addWorksheet('项目计划', { views: [{ state: 'frozen', ySplit: 1 }] }); // 冻结表头
     ws.columns = [
       { header: '标题', key: 'title', width: 36 },
       { header: '描述', key: 'description', width: 40 },
       { header: '开始日期', key: 'start_date', width: 14 },
+      { header: '结束日期', key: 'end_date', width: 14 },
       { header: '工期(工作日)', key: 'duration_days', width: 14 },
-      { header: '负责人', key: 'assignee', width: 14 },
+      { header: '进度(%)', key: 'progress', width: 10 },
       { header: '状态', key: 'status', width: 10 },
+      { header: '负责人', key: 'assignee', width: 14 },
     ];
-    ws.addRow({ title: '示例：完成登录模块联调', description: '示例描述（导入前请删除本行）', start_date: '2026-09-14', duration_days: 3, assignee: '张三', status: 'todo' });
-    // T00500：商务风表头（深蓝底白字加粗，黑白打印仍可读）
-    const header = ws.getRow(1);
-    header.height = 22;
-    header.eachCell((c) => {
-      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E79' } };
-      c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
-      c.alignment = { vertical: 'middle', horizontal: 'center' };
-      c.border = { bottom: { style: 'thin', color: { argb: 'FF1F4E79' } } };
-    });
-    // 示例行：斜体灰字提示 + 浅分隔线
+    ws.addRow({ title: '示例：完成登录模块联调', description: '示例描述（导入前请删除本行）', start_date: '2026-09-14', end_date: '2026-09-16', duration_days: 3, progress: 0, assignee: '张三', status: 'todo' });
+    applyPlanSheetStyle(ws, ['start_date', 'end_date', 'duration_days', 'progress', 'status']);
+    // 示例行：斜体灰字提示 + 浅分隔线（模板专属）
     const sample = ws.getRow(2);
     sample.font = { italic: true, color: { argb: 'FF808080' }, size: 10 };
     sample.eachCell((c) => { c.border = { bottom: { style: 'hair', color: { argb: 'FFD9D9D9' } } }; });
-    ws.getColumn('start_date').alignment = { horizontal: 'center' };
-    ws.getColumn('duration_days').alignment = { horizontal: 'center' };
-    ws.getColumn('status').alignment = { horizontal: 'center' };
     const out = await wb.xlsx.writeBuffer();
     return Buffer.from(out);
   },
