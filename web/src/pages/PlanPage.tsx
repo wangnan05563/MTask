@@ -773,7 +773,23 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
           </tr>
         </thead>
         <tbody>
-          {plans.map((p, i) => {
+          {(() => {
+            // T00527：层次显示序号——顶层任务序号顺延（里程碑占一个序号，子任务 N.x 不占顶层计数）
+            const seqs = new Map<string, string>();
+            const childCounts = new Map<string, number>();
+            let top = 0;
+            for (const p of plans) {
+              const pm = childMilestoneOf(p, plans);
+              if (pm) {
+                const c = (childCounts.get(pm.id) ?? 0) + 1;
+                childCounts.set(pm.id, c);
+                seqs.set(p.id, `${seqs.get(pm.id) ?? ''}.${c}`);
+              } else {
+                top += 1;
+                seqs.set(p.id, String(top));
+              }
+            }
+            return plans.map((p, i) => {
             // T00506：里程碑汇总——本里程碑到下一里程碑之间的普通/日常任务（count/Σ工期/平均进度）
             const isMilestone = p.kind === 'milestone';
             let mEnd = plans.length;
@@ -795,14 +811,16 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               onDrop={(e) => {
                 e.preventDefault();
                 // T00508：拖到里程碑行上 = 挂接为子任务；拖到普通行 = 排序
-                if (p.kind === 'milestone' && dragId && dragId !== p.id) {
+                // T00527：挂接目标=里程碑行 或 里程碑的子任务行（挂到其父里程碑）
+                const attachTarget = p.kind === 'milestone' ? p : childMilestoneOf(p, plans);
+                if (attachTarget && dragId && dragId !== p.id) {
                   const dragged = plans.find((x) => x.id === dragId);
                   if (!dragged || dragged.kind === 'milestone') { setDragId(''); setOverId(''); return; }
                   let oldDeps: Array<{ id: string; type: string }> = [];
                   try { oldDeps = dragged.deps ? JSON.parse(dragged.deps) : []; } catch { oldDeps = []; }
                   const kept = oldDeps.filter((d) => d.type !== 'child');
-                  void updatePlan(dragged, { deps: JSON.stringify([...kept, { id: p.id, type: 'child' }]) });
-                  flash(`已挂到里程碑「${p.title}」下`);
+                  void updatePlan(dragged, { deps: JSON.stringify([...kept, { id: attachTarget.id, type: 'child' }]) });
+                  flash(`已挂到里程碑「${attachTarget.title}」下`);
                   setDragId(''); setOverId('');
                   return;
                 }
@@ -939,7 +957,9 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 </button>
               </td>
             </tr>
-          );})}
+          );
+          });
+          })()}
           {plans.length === 0 && (
             <tr><td colSpan={10} style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)' }}>当前项目暂无计划任务：可「新建任务」或「导入 Excel」批量创建</td></tr>
           )}
