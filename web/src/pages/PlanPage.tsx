@@ -910,7 +910,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 )}
                 <input defaultValue={p.title} title={`全量标题：${p.title}`} onBlur={(e) => { if (e.target.value.trim() && e.target.value !== p.title) void updatePlan(p, { title: e.target.value.trim() }); }}
                   style={{ ...inputStyle, width: '100%', color: p.color || 'var(--text)', fontWeight: p.kind === 'milestone' ? 700 : undefined, fontSize: p.kind === 'milestone' ? 14 : 12 }} aria-label="计划标题" />
-                <input defaultValue={p.description} title={`全量描述：${p.description || '（无描述）'}`} placeholder="描述（可空）" onBlur={(e) => { if (e.target.value !== p.description) void updatePlan(p, { description: e.target.value }); }}
+                <input defaultValue={p.description} title={`全量描述：${p.description || '（无描述）'}`} placeholder="描述（可空）" className="plan-desc-ph" onBlur={(e) => { if (e.target.value !== p.description) void updatePlan(p, { description: e.target.value }); }}
                   style={{ ...inputStyle, width: '100%', marginTop: 2, color: 'var(--text-muted)' }} aria-label="计划描述" />
               </td>
               <td style={{ padding: 6 }}>
@@ -1055,7 +1055,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                             <option value="blocked">受阻</option>
                           </select>
                         </div>
-                        <input value={row.description} placeholder="描述（可空）" aria-label={`第 ${i + 1} 条描述`}
+                        <input value={row.description} placeholder="描述（可空）" className="plan-desc-ph" aria-label={`第 ${i + 1} 条描述`}
                           onChange={(e) => setAiRows((prev) => updateAiRow(prev, i, { description: e.target.value }))}
                           style={{ ...inputStyle, color: 'var(--text-muted)' }} />
                       </div>
