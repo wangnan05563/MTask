@@ -846,7 +846,9 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                   return (
                     <span style={{ display: 'inline-flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
                       {depList.filter((d) => d.type !== 'child').map((d) => {
-                        const seq = plans.findIndex((x) => x.id === d.id) + 1;
+                        // T00527 修正：依赖序号也用顺延 seqs，与序号列一致
+                        const seqStr = seqs.get(d.id);
+                        const seq = seqStr ? parseInt(seqStr, 10) : 0;
                         return (
                           <button key={d.id} onClick={() => openDepEditor(p)}
                             title={`${d.type === 'serial' ? '串行' : '并行'}依赖：${plans.find((x) => x.id === d.id)?.title ?? '已删除'}（点击调整）`}
@@ -861,14 +863,11 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               </td>
               <td style={{ padding: 6, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
                 {p.kind === 'milestone' ? (
-                  <span title="阶段里程碑 — 汇总其下普通/日常任务，不可手动调整；点击标题旁箭头收起/展开子任务" style={{ color: 'var(--accent)', fontWeight: 700, fontSize: 13 }}>◆ {i + 1}</span>
-                ) : childMilestoneOf(p, plans) ? (() => {
-                  const pm = childMilestoneOf(p, plans)!;
-                  const pSeq = plans.findIndex((x) => x.id === pm.id) + 1;
-                  const children = plans.filter((x) => childMilestoneOf(x, plans)?.id === pm.id);
-                  const cSeq = children.findIndex((x) => x.id === p.id) + 1;
-                  return <span style={{ marginLeft: 16 }}>{pSeq}.{cSeq}</span>;
-                })() : p.kind === 'daily' ? <span title="日常任务" style={{ color: 'var(--text-muted)' }}>◇ {i + 1}</span> : i + 1}
+                  <span title="阶段里程碑 — 汇总其下普通/日常任务，不可手动调整；点击标题旁箭头收起/展开子任务" style={{ color: 'var(--accent)', fontWeight: 700, fontSize: 13 }}>◆ {seqs.get(p.id) ?? i + 1}</span>
+                ) : childMilestoneOf(p, plans) ? (
+                  // T00527 修正：子任务序号直接用预计算 seqs（N.c 格式，N=父里程碑顺延序号），修复外面普通任务被 index 顶到 6 的显示 bug
+                  <span style={{ marginLeft: 16 }}>{seqs.get(p.id) ?? ''}</span>
+                ) : p.kind === 'daily' ? <span title="日常任务" style={{ color: 'var(--text-muted)' }}>◇ {seqs.get(p.id) ?? i + 1}</span> : seqs.get(p.id) ?? i + 1}
               </td>
               <td style={{ padding: 6, minWidth: 220, paddingLeft: childMilestoneOf(p, plans) ? 24 : 6 }}>
                 {p.kind === 'milestone' && (
