@@ -149,6 +149,8 @@ export function PlanPage() {
   // T00438 AI 导入：模型列表与选中工具（持久化）、解析弹窗状态、可编辑草稿行
   const [tools, setTools] = useState<AITool[]>([]);
   const [aiToolId, setAiToolId] = usePersistentState('plan.aiToolId', '');
+  // T00526 调整：AI 模型下拉展开态（与任务菜单一致——收起只显模型名，展开显示厂商+模型）
+  const [aiToolOpen, setAiToolOpen] = useState(false);
   // T00472：AI 评估状态（批量进度动态计数，单条/批量共用）
   const [evalBusy, setEvalBusy] = useState(false);
   const [evalLabel, setEvalLabel] = useState('');
@@ -272,6 +274,38 @@ export function PlanPage() {
       await updatePlan(p, { description: merged });
       return true;
     } catch (e) { flash(String((e as Error).message ?? e)); return false; }
+  }
+
+  /** T00526 调整：AI 模型下拉——与任务菜单（TasksPage renderToolSelector）同款：
+   *  收起只显示模型名（未配置回退厂商名）收紧宽度；展开面板显示「厂商名（厂商类型）+ 模型名」；
+   *  焦点移出下拉区域即收起。工具栏与 AI 导入弹窗复用同一份状态。 */
+  function renderAiToolDropdown(styleOverride?: React.CSSProperties) {
+    const current = tools.find((x) => x.id === aiToolId);
+    return (
+      <div style={{ position: 'relative' }}
+        onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setAiToolOpen(false); }}>
+        <button onClick={() => setAiToolOpen((o) => !o)} className="tbtn-anim"
+          title={current ? `当前工具：${current.name}（${current.type}）· ${current.model ?? '未配置模型'}` : 'AI 模型选择 — AI 导入与 AI 评估使用该工具配置的模型'}
+          aria-label="AI 模型选择" aria-haspopup="listbox" aria-expanded={aiToolOpen}
+          style={{ ...btnStyle, display: 'inline-flex', alignItems: 'center', gap: 4, ...(styleOverride ?? {}) }}>
+          {current ? (current.model ?? current.name) : 'AI 模型…'}
+          <ChevronDown size={12} />
+        </button>
+        {aiToolOpen && (
+          <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 40, minWidth: 240, maxHeight: 260, overflowY: 'auto', background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: 'var(--overlay)' }}>
+            {tools.map((t) => (
+              <button key={t.id} onClick={() => { setAiToolId(t.id); setAiToolOpen(false); }}
+                title={`选择 ${t.name}（${t.type}）· ${t.model ?? '未配置模型'}`} aria-label={`选择 AI 模型 ${t.name}`}
+                style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', border: 'none', cursor: 'pointer', fontSize: 12, background: t.id === aiToolId ? 'var(--accent-soft)' : 'transparent', color: t.id === aiToolId ? 'var(--accent)' : 'var(--text)' }}>
+                {t.name}（{t.type}）
+                <span style={{ color: t.model ? 'var(--text-secondary)' : 'var(--danger)', marginLeft: 6 }}>{t.model ?? '未配置模型'}</span>
+              </button>
+            ))}
+            {tools.length === 0 && <div style={{ padding: '8px 10px', color: 'var(--text-muted)', fontSize: 12 }}>暂无工具，请先在「模型管理」中添加</div>}
+          </div>
+        )}
+      </div>
+    );
   }
 
   /** 批量评估：确认后逐条串行评估并自动录入描述，进度动态计数（k/N） */
@@ -715,13 +749,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         </label>
         <button className="tbtn-anim" onClick={() => void exportExcel()} title="导出 Excel — 导出当前项目全部计划" aria-label="导出 Excel" style={{ ...btnStyle, padding: '6px 8px' }}><Download size={13} /></button>
         <button className="tbtn-anim" onClick={() => void downloadTemplate()} title="下载模板 — 获取导入用 Excel 模板" aria-label="下载导入模板" style={{ ...btnStyle, padding: '6px 8px' }}><FileSpreadsheet size={13} /></button>
-        {/* T00526：模型选择（参考任务菜单）——AI 导入/评估均使用所选工具 */}
-        <select value={aiToolId} onChange={(e) => setAiToolId(e.target.value)} className="tbtn-anim"
-          title="AI 模型选择 — AI 导入与 AI 评估使用该工具配置的模型" aria-label="AI 模型选择"
-          style={{ ...btnStyle, minWidth: 110 }}>
-          <option value="">AI 模型…</option>
-          {tools.map((t) => <option key={t.id} value={t.id}>{t.name}{t.model ? `（${t.model}）` : ''}</option>)}
-        </select>
+        {/* T00526 调整：模型选择与任务菜单同款——收起只显模型名，展开显示厂商+模型 */}
+        {renderAiToolDropdown({ minWidth: 110 })}
         <button className="tbtn-anim" onClick={openAiImport} title="AI 导入 — 上传任意格式计划 Excel，AI 自动识别字段并重组为标准计划" aria-label="AI 导入" style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)', padding: '6px 8px' }}><Sparkles size={13} /></button>
         <button onClick={() => batchEvaluatePlans()} disabled={evalBusy || busy} title="AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）" aria-label="批量 AI 评估" style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }}>
           {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}AI 评估{evalLabel && plans.length > 0 ? `（${evalLabel}）` : ''}
@@ -980,10 +1009,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             </div>
             <div style={{ padding: 14, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <label htmlFor="plan-ai-tool" style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>AI 模型：</label>
-                <select id="plan-ai-tool" value={aiToolId} onChange={(e) => setAiToolId(e.target.value)} style={inputStyle} aria-label="选择 AI 模型">
-                  {tools.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                </select>
+                <label style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>AI 模型：</label>
+                {renderAiToolDropdown()}
                 <label style={{ ...btnStyle, cursor: aiBusy ? 'default' : 'pointer' }} title="选择计划 Excel（.xlsx/.csv）或需求文档（.md/.docx）">
                   <Upload size={13} />选择文件
                   <input type="file" accept=".xlsx,.csv,.md,.markdown,.docx" style={{ display: 'none' }}

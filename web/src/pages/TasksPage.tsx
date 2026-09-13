@@ -1672,15 +1672,6 @@ export function TasksPage() {
     );
   }
 
-  /** 返显当前选中工具的模型；未配置模型时给出醒目提示，避免触发 AI 功能后才失败 */
-  function renderModelHint() {
-    const tool = tools.find((t) => t.id === organizeToolId);
-    if (!tool) return null;
-    return tool.model
-      ? <span style={{ fontSize: 12, color: 'var(--accent)' }}>模型：{tool.model}</span>
-      : <span style={{ fontSize: 12, color: 'var(--danger)' }}>⚠ 该工具未配置模型，AI 功能暂不可用</span>;
-  }
-
   /** 工具条 AI 美化按钮：进行中变为「取消」，否则批量美化全部待办 */
   function renderBeautifyToolbarButton() {
     return (
@@ -1820,7 +1811,6 @@ export function TasksPage() {
         </span>
         <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
         {renderToolSelector()}
-        {renderModelHint()}
         </span>
         {renderBeautifyToolbarButton()}
         {renderClassifyButton()}
