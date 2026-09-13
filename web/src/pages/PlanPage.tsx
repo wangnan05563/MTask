@@ -160,6 +160,8 @@ export function PlanPage() {
   // T00505：项目自绘下拉（三色徽标：绿=已完成、蓝=进行中、灰=待开始）
   const [projOpen, setProjOpen] = useState(false);
   const projDropRef = useRef<HTMLDivElement | null>(null);
+  // T00520：项目下拉面板 fixed 定位坐标（脱离父容器 overflow 裁剪，不受窗口大小限制）
+  const [projDropPos, setProjDropPos] = useState<{ top: number; left: number } | null>(null);
   const [depEditor, setDepEditor] = useState<{ id: string; seq: number } | null>(null);
   // T00508：里程碑收起状态（记录其下子任务是否折叠）
   const [collapsedMs, setCollapsedMs] = useState<Record<string, boolean>>({});
@@ -703,7 +705,12 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       {/* 工具条：项目选择 + 增删导入导出（T00491：操作控件/下拉默认隐藏，悬浮工具条显示） */}
       <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
         <div ref={projDropRef} style={{ position: 'relative', display: 'inline-flex' }}>
-          <button onClick={() => setProjOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={projOpen}
+          <button onClick={(e) => {
+            // T00520：展开时以按钮视口坐标 fixed 定位面板——脱离父容器 overflow 裁剪，不受窗口/容器大小限制
+            const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            setProjDropPos({ top: r.bottom + 4, left: r.left });
+            setProjOpen((o) => !o);
+          }} aria-haspopup="listbox" aria-expanded={projOpen}
             title="选择项目 — 项目名后徽标：绿=已完成、蓝=进行中、灰=待开始（悬浮查看详情）"
             aria-label="选择项目"
             style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 8px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, cursor: 'pointer' }}>
@@ -717,8 +724,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             ) : null; })()}
             <ChevronDown size={12} />
           </button>
-          {projOpen && (
-            <div role="listbox" style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 30, minWidth: 240 }}>
+          {projOpen && projDropPos && (
+            <div role="listbox" style={{ position: 'fixed', top: projDropPos.top, left: projDropPos.left, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 60, minWidth: 240, maxHeight: `calc(100vh - ${projDropPos.top + 12}px)`, overflowY: 'auto' }}>
               {projects.map((p) => (
                 <button key={p.id} role="option" aria-selected={p.id === projectId}
                   onClick={() => { setProjectId(p.id); setProjOpen(false); }}
