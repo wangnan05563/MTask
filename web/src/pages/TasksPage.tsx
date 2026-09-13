@@ -1047,7 +1047,7 @@ export function TasksPage() {
             onChange={(e) => setSelectedIds((prev) => { const n = new Set(prev); if (e.target.checked) { n.add(t.id); } else { n.delete(t.id); } return n; })}
             style={{ cursor: 'pointer', flexShrink: 0 }} />
         )}
-        <button title="切换任务完成状态" aria-label="切换任务完成状态" onClick={() => void setStatus(t, t.status === 'todo' ? 'done' : 'todo')} style={{ cursor: 'pointer' }}>
+        <button className="title-op" title="切换任务完成状态" aria-label="切换任务完成状态" onClick={() => void setStatus(t, t.status === 'todo' ? 'done' : 'todo')} style={{ cursor: 'pointer' }}>
           {t.status === 'todo' ? '☐' : '☑'}
         </button>
         {/* 仅已完成任务展示验证状态 */}
@@ -1204,7 +1204,8 @@ export function TasksPage() {
         title={t.verified ? '已验证，点击取消验证' : '未验证，点击标记已验证'}
         aria-label={t.verified ? '取消验证' : '标记为已验证'}
         key={t.verified ? 'v-ok' : 'v-no'}
-        className="verify-icon"
+        className="verify-icon title-op" /* T00487：悬浮显示替代常显 */
+
         style={{ cursor: 'pointer', fontSize: 16, lineHeight: 1, border: 'none', background: 'transparent', color: t.verified ? 'var(--success)' : 'var(--border-strong)' }}
       >
         {t.verified ? '✓' : '○'}
@@ -1736,12 +1737,14 @@ export function TasksPage() {
   function renderToolbar() {
     return (
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span className="toolbar-reveal" style={{ display: 'inline-flex' }}>
+        <span className="op-host" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
         <select value={activeProject} onChange={(e) => setActiveProject(e.target.value)} style={{ padding: 6 }} aria-label="切换项目">
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
-        </span>
+        <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
         {renderProjectActionButtons()}
+        </span>
+        </span>
         {renderToolSelector()}
         {renderModelHint()}
         {renderBeautifyToolbarButton()}
@@ -1809,7 +1812,7 @@ export function TasksPage() {
   function renderNewTaskForm() {
     return (
       <>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+        <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
           <input
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
@@ -1817,7 +1820,7 @@ export function TasksPage() {
             placeholder="输入任务标题，回车创建"
             style={{ flex: 1, padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}
           />
-          <span className="toolbar-reveal" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+          <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
           <select value={newPriority} onChange={(e) => setNewPriority(e.target.value)} title="优先级" aria-label="新建任务优先级" style={{ padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}>
             <option value="low">低</option>
             <option value="normal">中</option>
@@ -2230,7 +2233,11 @@ export function TasksPage() {
         .tbtn-anim:hover svg { transform: scale(1.2) rotate(8deg); }
         .tbtn-anim:active svg { transform: scale(.88); }
         /* T00474：筛选条件悬浮展示——默认淡化降权重，工具栏悬浮/键盘聚焦时完全显示 */
-        .toolbar-reveal { opacity: .35; transition: opacity .18s ease; }
+        /* T00487：悬浮显示替代灰显——默认完全隐藏（占位不抖动），宿主悬浮/键盘聚焦时 200ms 平滑显示 */
+        .op-hidden { opacity: 0; visibility: hidden; transition: opacity .2s ease, visibility 0s linear .2s; }
+        .op-host:hover > .op-hidden, .op-host:focus-within > .op-hidden { opacity: 1; visibility: visible; transition: opacity .2s ease, visibility 0s; }
+        .task-item .title-op { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
+        .task-item:hover .title-op, .task-item:focus-within .title-op { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
         .toolbar-reveal:hover, .toolbar-reveal:focus-within { opacity: 1; }
         .task-op {
           opacity: 0;
