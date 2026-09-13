@@ -1162,7 +1162,7 @@ api.get('/prompt-categories', (_req, res) => {
   const cached = cacheGet<unknown[]>('prompt-categories');
   if (cached) return res.json(cached);
   const cats = getDb().prepare('SELECT * FROM prompt_categories ORDER BY sort_weight, created_at').all() as { id: string }[];
-  const counts = getDb().prepare('SELECT category_id, COUNT(*) AS c FROM prompts GROUP BY category_id').all() as { category_id: string; c: number }[];
+  const counts = getDb().prepare('SELECT category_id, COUNT(*) AS c FROM prompts WHERE archived = 0 GROUP BY category_id').all() as { category_id: string; c: number }[];
   const countMap = new Map(counts.map((r) => [r.category_id, r.c]));
   const out = cats.map((c) => ({ ...c, promptCount: countMap.get(c.id) ?? 0 }));
   cacheSet('prompt-categories', out, LIST_TTL_MS);
@@ -1203,6 +1203,7 @@ api.get('/prompts', (req, res) => {
   const { categoryId, keyword } = req.query;
   const where: string[] = [];
   const values: unknown[] = [];
+  where.push('archived = 0'); // T00525：已归档默认不列出
   if (categoryId) { where.push('category_id = ?'); values.push(categoryId); }
   // keyword 显式收窄为 string：query 值可能是数组/对象，隐式字符串化会得到 "[object Object]" 污染 LIKE 条件
   if (typeof keyword === 'string' && keyword) {
@@ -1227,7 +1228,7 @@ api.post('/prompts', (req, res) => {
 });
 
 api.patch('/prompts/:id', (req, res) => {
-  const { title, content, categoryId, pinned, color } = req.body ?? {}; // T00490
+  const { title, content, categoryId, pinned, color, archived } = req.body ?? {}; // T00490/T00525
   const db = getDb();
   const sets: string[] = [];
   const values: unknown[] = [];
@@ -1236,6 +1237,7 @@ api.patch('/prompts/:id', (req, res) => {
   if (categoryId !== undefined) { sets.push('category_id = ?'); values.push(categoryId); }
   if (pinned !== undefined) { sets.push('pinned = ?'); values.push(pinned ? 1 : 0); }
   if (color !== undefined) { sets.push('color = ?'); values.push(String(color)); } // T00490
+  if (archived !== undefined) { sets.push('archived = ?'); values.push(archived ? 1 : 0); } // T00525：删除改归档
   if (sets.length === 0) return res.status(400).json({ error: '无更新字段' });
   sets.push('updated_at = ?'); values.push(now());
   db.prepare(`UPDATE prompts SET ${sets.join(', ')} WHERE id = ?`).run(...values, req.params.id);

@@ -234,6 +234,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // T00490：记录字体颜色（Excel 风格颜色按钮）——空串=默认色
   ensureColumn('tasks', 'color', "color TEXT DEFAULT ''");
   ensureColumn('prompts', 'color', "color TEXT DEFAULT ''");
+  ensureColumn('prompts', 'archived', 'archived INTEGER NOT NULL DEFAULT 0'); // T00525：删除改归档
   ensureColumn('req_entries', 'color', "color TEXT DEFAULT ''");
   ensureColumn('plan_tasks', 'color', "color TEXT DEFAULT ''");
   ensureColumn('plan_tasks', 'deps', "deps TEXT DEFAULT ''"); // T00499：前置依赖 JSON [{id,type:'serial'|'parallel'}]

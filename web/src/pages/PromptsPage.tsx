@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowDownUp, ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, UnfoldVertical, FoldVertical, X, GripVertical } from 'lucide-react';
+import { ArrowDownUp, ChevronDown, ChevronUp, Copy, FolderInput, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, UnfoldVertical, FoldVertical, X, GripVertical, Archive } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type Prompt, type PromptCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
@@ -152,10 +152,12 @@ export function PromptsPage() {
     }
   }
 
-  async function removePrompt(p: Prompt) {
-    if (!(await askConfirm(`删除提示词「${p.title}」？此操作不可恢复。`))) return;
+  // T00525：删除改归档——数据保留，可后续恢复
+  async function archivePrompt(p: Prompt) {
+    if (!(await askConfirm(`归档提示词「${p.title}」？归档后列表不再显示（数据保留）。`))) return;
     try {
-      await api.del(`/prompts/${p.id}`);
+      await api.patch(`/prompts/${p.id}`, { archived: true });
+      flash('已归档');
       void loadPrompts(activeCat, search);
       void loadCategories();
     } catch (e) {
@@ -519,9 +521,9 @@ export function PromptsPage() {
                         </div>
                       )}
                     </div>
-                    <button className="abtn" onClick={() => void removePrompt(p)} style={{ fontSize: 12, color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-                      title="删除 — 删除这条提示词" aria-label="删除：删除这条提示词">
-                      <Trash2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                    <button className="abtn" onClick={() => void archivePrompt(p)} style={{ fontSize: 12, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                      title="归档 — 归档这条提示词（数据保留，列表不再显示）" aria-label="归档：归档这条提示词">
+                      <Archive size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
                   </div>
                   {expandedIds[p.id] && (
