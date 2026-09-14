@@ -1185,6 +1185,13 @@ export function TasksPage() {
             计划
           </span>
         )}
+        {/* T00577：派生单溯源徽标——AI 处理完成后结论自动整合回原任务 */}
+        {t.derived_from && (
+          <span title={`派生自原任务 ${t.derived_from} — 处理完成后结论自动整合回原任务`}
+            style={{ fontSize: 10, color: 'var(--text-muted)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0 }}>
+            派生自 {t.derived_from}
+          </span>
+        )}
         {renderTaskTitle(t, titleEditing)}
       </div>
     );

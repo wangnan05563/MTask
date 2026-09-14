@@ -78,6 +78,7 @@ export async function createMCPServer(): Promise<McpServer> {
       categoryId: z.string().optional().describe('任务分类 id'),
       parentId: z.string().optional().describe('父任务 id（T00450：创建子任务挂到 epic→task 层级；须与目标项目一致）'),
       dedupe: z.boolean().optional().describe('同项目同标题查重（默认开启；命中时返回既有任务且 reused=true，不新建）'),
+      derivedFrom: z.string().optional().describe('T00577：原任务编号（如 T00422）——本单为该任务派生出的待办单时传入，便于处理后自动把结论整合回原任务，避免单子过多'),
     },
   }, async (a) => {
     try {
@@ -120,7 +121,7 @@ export async function createMCPServer(): Promise<McpServer> {
         if (!parent) return err('父任务不存在');
         if (parent.project_id !== pid) return err('子任务与父任务必须同项目');
       }
-      const task = TaskService.create({
+      const task = TaskService.create({ derived_from: a.derivedFrom?.trim() || null, /* T00577 */
         projectId: pid,
         title: a.title,
         description: a.description,
@@ -297,7 +298,26 @@ export async function createMCPServer(): Promise<McpServer> {
       if (!target) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
       if (!a.result) return err('result 必填');
       const task = TaskService.update(target.id, { handle_result: a.result });
-      return ok(`已同步处理结果到任务 ${target.task_no ?? target.id}`, { task });
+      // T00577：派生单整合——本任务若为派生单（derived_from 有值），把结论同时追加回原任务处理结果，
+      // 让原任务成为唯一信息汇聚点，避免派生单越积越多
+      const row = getDb().prepare('SELECT derived_from FROM tasks WHERE id = ?').get(target.id) as { derived_from: string | null } | undefined;
+      const originNo = row?.derived_from?.trim();
+      let merged = '';
+      if (originNo) {
+        const origin = TaskService.findByNo(originNo);
+        if (origin) {
+          const stamp = new Date().toISOString().slice(0, 10);
+          const originText = (origin.handle_result ?? '').trim();
+          const mergedText = `${originText ? `${originText}
+
+` : ''}---
+【派生单 ${task.task_no ?? target.id} 处理结果 ${stamp}】
+${a.result}`;
+          TaskService.update(origin.id, { handle_result: mergedText });
+          merged = `；并已整合回原任务 ${originNo}`;
+        }
+      }
+      return ok(`已同步处理结果到任务 ${task.task_no ?? target.id}${merged}`, { task, mergedTo: originNo || undefined });
     } catch (e) { return err((e as Error).message); }
   });
 

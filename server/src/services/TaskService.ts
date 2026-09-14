@@ -25,6 +25,8 @@ export interface TaskRow {
   handle_result: string | null;
   /** T00566：AI 处理状态动画（'' 已读/无 | running 运行中 | failed 运行失败 | unread 未读） */
   ai_state: string;
+  /** T00577：派生单溯源——原任务编号（如 T00422）；处理完成后结论自动整合回原任务 */
+  derived_from: string | null;
   /** T00490：记录字体颜色（Excel 风格颜色按钮），空串=默认色 */
   color: string;
   pinned: number;
@@ -51,6 +53,8 @@ export interface TaskView {
   handle_result: string | null;
   /** T00566：AI 处理状态动画（'' 已读/无 | running failed unread） */
   ai_state: string;
+  /** T00577：派生单溯源——原任务编号 */
+  derived_from: string | null;
   pinned: boolean;
   category_id: string | null;
   /** T00450：父任务 id（两级的 epic→task 层级） */
@@ -75,6 +79,8 @@ export interface TaskInput {
   categoryId?: string | null;
   /** T00450：父任务 id（两级的 epic→task 层级）；创建子任务时传入 */
   parentId?: string | null;
+  /** T00577：派生单溯源——原任务编号（如 T00422） */
+  derived_from?: string | null;
 }
 
 /** 任务列表查询选项：全部可选。不传 limit/offset 时保持"一次返回全量"的既有行为 */
@@ -150,9 +156,9 @@ export const TaskService = {
       throw new Error('父任务不存在');
     }
     const r = db.prepare(
-      `INSERT INTO tasks (id, task_no, project_id, title, description, priority, status, category_id, parent_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(id, nextTaskNo(), input.projectId, input.title, input.description ?? '', input.priority ?? 'normal', input.status ?? 'todo', input.categoryId ?? null, input.parentId ?? null, t, t);
+      `INSERT INTO tasks (id, task_no, project_id, title, description, priority, status, category_id, parent_id, derived_from, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, nextTaskNo(), input.projectId, input.title, input.description ?? '', input.priority ?? 'normal', input.status ?? 'todo', input.categoryId ?? null, input.parentId ?? null, input.derived_from ?? null, t, t);
     if (r.changes !== 1) throw new Error('创建任务失败');
     return this.getById(id)!;
   },
@@ -241,7 +247,7 @@ export const TaskService = {
     });
   },
 
-  update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state'>>): TaskView {
+  update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state' | 'derived_from'>>): TaskView {
     const db = getDb();
     // better-sqlite3 不支持 boolean 绑定且 SQLite 无布尔型，verified/pinned 先归一整型 0/1 再落库
     if (patch.verified !== undefined) {

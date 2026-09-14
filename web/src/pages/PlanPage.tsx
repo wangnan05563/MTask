@@ -156,8 +156,8 @@ export function PlanPage(props: { aiImportSignal?: number; onAiImportHandled?: (
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.aiImportSignal]);
   // T00564：多选模式（参考任务菜单）——批量勾选后执行归档/状态/AI 评估等批量操作
-  const [planMulti, setPlanMulti] = useState(false);
-  const [planSelIds, setPlanSelIds] = useState<Set<string>>(new Set());
+  const [planMulti, setPlanMulti] = useSessionState<boolean>('plan.multi', false); // T00570：切页保持
+  const [planSelIds, setPlanSelIds] = useSessionState<string[]>('plan.selIds', []); // T00570：切页保持（数组形态便于序列化）
   const [planBatchStatus, setPlanBatchStatus] = useState('');
   const [planBatchAttach, setPlanBatchAttach] = useState(''); // T00550：切页保持
   // T00544：工期显示模式——「工期/日」与「工期/时」切换（会话级保持；持久化仍为工作日，8 小时/天换算）
@@ -174,7 +174,7 @@ export function PlanPage(props: { aiImportSignal?: number; onAiImportHandled?: (
   const [projDropPos, setProjDropPos] = useState<{ top: number; left: number } | null>(null);
   const [depEditor, setDepEditor] = useState<{ id: string; seq: number } | null>(null);
   // T00508：里程碑收起状态（记录其下子任务是否折叠）
-  const [collapsedMs, setCollapsedMs] = useState<Record<string, boolean>>({});
+  const [collapsedMs, setCollapsedMs] = useSessionState<Record<string, boolean>>('plan.collapsedMs', {}); // T00570：里程碑收起态切页保持
   const [depSel, setDepSel] = useState<Record<string, 'serial' | 'parallel'>>({});
   // T00449：视图模式（列表/甘特）会话级保持
   const [viewMode, setViewMode] = useSessionState<'list' | 'gantt'>('plan.viewMode', 'list');
@@ -342,14 +342,10 @@ export function PlanPage(props: { aiImportSignal?: number; onAiImportHandled?: (
 
   // ---------- T00564：多选批量操作 ----------
   function togglePlanSel(id: string) {
-    setPlanSelIds((prev) => {
-      const n = new Set(prev);
-      if (n.has(id)) n.delete(id); else n.add(id);
-      return n;
-    });
+    setPlanSelIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
   function selectAllPlans() {
-    setPlanSelIds((prev) => (prev.size === plans.length ? new Set() : new Set(plans.map((p) => p.id))));
+    setPlanSelIds((prev) => (prev.length === plans.length ? [] : plans.map((p) => p.id)));
   }
   async function batchArchivePlans() {
     const ids = [...planSelIds];
@@ -358,7 +354,7 @@ export function PlanPage(props: { aiImportSignal?: number; onAiImportHandled?: (
     setBusy(true);
     try {
       for (const id of ids) await api.post(`/plans/${id}/archive`);
-      setPlanSelIds(new Set());
+      setPlanSelIds([]);
       reload();
       flash(`已归档 ${ids.length} 条计划`);
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
@@ -369,16 +365,16 @@ export function PlanPage(props: { aiImportSignal?: number; onAiImportHandled?: (
     setBusy(true);
     try {
       for (const id of ids) await api.patch(`/plans/${id}`, { status: st });
-      setPlanSelIds(new Set());
+      setPlanSelIds([]);
       setPlanBatchStatus('');
       reload();
       flash(`已把 ${ids.length} 条计划状态设为 ${st}`);
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
   }
   function batchEvaluateSelected() {
-    if (planSelIds.size === 0) return;
-    batchEvaluatePlans([...planSelIds]);
-    setPlanSelIds(new Set());
+    if (planSelIds.length === 0) return;
+    batchEvaluatePlans(planSelIds);
+    setPlanSelIds([]);
   }
   // T00564 扩展：批量挂接到里程碑（deps child 统一替换，已挂其他里程碑的会被覆盖）
   async function batchAttach(msId: string) {
@@ -395,7 +391,7 @@ export function PlanPage(props: { aiImportSignal?: number; onAiImportHandled?: (
         kept.push({ id: msId, type: 'child' });
         await api.patch(`/plans/${id}`, { deps: JSON.stringify(kept) });
       }
-      setPlanSelIds(new Set());
+      setPlanSelIds([]);
       setPlanBatchAttach('');
       reload();
       flash(`已把 ${ids.length} 条计划挂到里程碑「${ms?.title ?? '?'}」下`);
@@ -416,7 +412,7 @@ export function PlanPage(props: { aiImportSignal?: number; onAiImportHandled?: (
         if (!row || row.linked_task_id) continue;
         try { await api.post(`/plans/${id}/create-todo`); ok += 1; } catch { /* 单条失败继续 */ }
       }
-      setPlanSelIds(new Set());
+      setPlanSelIds([]);
       reload();
       flash(`已创建并关联 ${ok} 条待办`);
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
@@ -428,7 +424,7 @@ export function PlanPage(props: { aiImportSignal?: number; onAiImportHandled?: (
     setBusy(true);
     try {
       for (const id of ids) await api.patch(`/plans/${id}`, { color });
-      setPlanSelIds(new Set());
+      setPlanSelIds([]);
       reload();
       flash(`已为 ${ids.length} 条计划应用字体颜色`);
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
@@ -723,8 +719,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
   // ---------- 节假日 ----------
   // ---------- T00442：节假日多功能弹窗（手动维护 / 联网导入法定节假日 / 万年历视图） ----------
 
-  const [holiOpen, setHoliOpen] = useState(false);
-  const [holiTab, setHoliTab] = useState<'manage' | 'national' | 'calendar'>('manage');
+  const [holiOpen, setHoliOpen] = useSessionState<boolean>('plan.holiOpen', false); // T00570：切页保持
+  const [holiTab, setHoliTab] = useSessionState<'manage' | 'national' | 'calendar'>('plan.holiTab', 'manage'); // T00570：切页保持
   const [holiNewDate, setHoliNewDate] = useState('');
   const [holiNewName, setHoliNewName] = useState('');
   const [holiBusy, setHoliBusy] = useState(false);
@@ -896,15 +892,15 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
           {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}AI 评估{evalLabel && plans.length > 0 ? `（${evalLabel}）` : ''}
         </button>
         {/* T00564：多选模式（参考任务菜单）——批量勾选后执行归档/状态/AI 评估 */}
-        <button onClick={() => { setPlanMulti((m) => !m); setPlanSelIds(new Set()); }} title={planMulti ? '退出多选模式' : '多选模式 — 勾选计划后批量改状态/挂接/归档/评估'} aria-label={planMulti ? '退出多选模式' : '进入多选模式'}
+        <button onClick={() => { setPlanMulti((m) => !m); setPlanSelIds([]); }} title={planMulti ? '退出多选模式' : '多选模式 — 勾选计划后批量改状态/挂接/归档/评估'} aria-label={planMulti ? '退出多选模式' : '进入多选模式'}
           className="tbtn-anim"
           style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', border: '1px solid var(--border-strong)', background: planMulti ? 'var(--accent)' : 'transparent', color: planMulti ? 'var(--accent-text)' : 'var(--text)' }}>
           {planMulti ? <Check size={13} /> : <ListChecks size={13} />}
         </button>
-        {planMulti && planSelIds.size > 0 && (
+        {planMulti && planSelIds.length > 0 && (
           <span className="op-host" style={{ display: 'inline-flex', gap: 6, alignItems: 'center', border: '1px solid var(--accent)', borderRadius: 6, padding: '3px 8px', background: 'var(--card-bg)' }}>
-            <span style={{ fontSize: 12, color: 'var(--accent)' }}>已选 {planSelIds.size}</span>
-            <button onClick={selectAllPlans} className="task-op" title={planSelIds.size === plans.length ? '取消全选' : '全选本页计划'} style={{ fontSize: 12, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)' }}>{planSelIds.size === plans.length ? '取消全选' : '全选'}</button>
+            <span style={{ fontSize: 12, color: 'var(--accent)' }}>已选 {planSelIds.length}</span>
+            <button onClick={selectAllPlans} className="task-op" title={planSelIds.length === plans.length ? '取消全选' : '全选本页计划'} style={{ fontSize: 12, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)' }}>{planSelIds.length === plans.length ? '取消全选' : '全选'}</button>
             <select value={planBatchStatus} onChange={(e) => { const v = e.target.value; if (v) { void batchSetStatus(v as PlanTask['status']); } }} title="批量设置状态" aria-label="批量设置状态" style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
               <option value="">批量状态…</option>
               <option value="todo">待开始</option>
@@ -1058,7 +1054,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               style={{ borderBottom: '1px solid var(--border)', transition: 'box-shadow .15s ease, transform .15s ease, background .15s ease' }}>
               <td style={{ padding: 6, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
                 {planMulti && (
-                  <input type="checkbox" checked={planSelIds.has(p.id)} aria-label={`选中计划 ${p.title}`}
+                  <input type="checkbox" checked={planSelIds.includes(p.id)} aria-label={`选中计划 ${p.title}`}
                     onChange={() => togglePlanSel(p.id)}
                     style={{ cursor: 'pointer', marginRight: 4, verticalAlign: 'middle' }} />
                 )}
