@@ -1252,19 +1252,7 @@ export function TasksPage() {
         >
           <CopyPlus size={13} />
         </button>
-        {/* T00521 调整：验证失败反馈查看/修改入口（处理结果按钮后）——仅当处理结果含【验证失败】段时显示，
-            点击展开与处理结果同款的查看/修改窗口（展示态聚焦失败反馈段，编辑态全文可改） */}
-        {t.handle_result?.includes('【验证失败') && (
-          <button
-            onClick={() => setFailbackOpen((p) => ({ ...p, [t.id]: !p[t.id] }))}
-            title="验证失败反馈 — 展开查看/修改该任务的验证失败反馈"
-            aria-label="验证失败反馈：展开查看或修改"
-            className="task-op"
-            style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--danger)' }}
-          >
-            {failbackOpen[t.id] ? <ChevronUp size={13} /> : <AlertTriangle size={13} />}
-          </button>
-        )}
+        {/* T00531 布局调整：验证失败反馈按钮已移至标题行「展开处理结果」图标后方 */}
         {/* T00501：字体颜色按钮置于按钮栏最前 */}
         <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
           <FontColorButton current={t.color ?? ''} onApply={(c) => { void api.patch(`/tasks/${t.id}`, { color: c }).then(() => { flash(c ? '字体颜色已应用' : '已恢复默认颜色'); void loadTasks(activeProject); }); }} />
@@ -1371,6 +1359,18 @@ export function TasksPage() {
             style={{ fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
           >
             {resultOpen[t.id] ? <ChevronUp size={13} /> : <ClipboardList size={13} />}
+          </button>
+        )}
+        {/* T00531 布局调整：验证失败反馈按钮移至「展开处理结果」图标后方（标题行）——点击展开反馈窗口 */}
+        {t.handle_result?.includes('【验证失败') && (
+          <button
+            onClick={() => setFailbackOpen((p) => ({ ...p, [t.id]: !p[t.id] }))}
+            title="验证失败反馈 — 展开查看/修改该任务的验证失败反馈"
+            aria-label="验证失败反馈：展开查看或修改"
+            className="task-op"
+            style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--danger)' }}
+          >
+            {failbackOpen[t.id] ? <ChevronUp size={13} /> : <AlertTriangle size={13} />}
           </button>
         )}
       </>
