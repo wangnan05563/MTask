@@ -150,7 +150,8 @@ export function PlanPage() {
   // T00564：多选模式（参考任务菜单）——批量勾选后执行归档/状态/AI 评估等批量操作
   const [planMulti, setPlanMulti] = useState(false);
   const [planSelIds, setPlanSelIds] = useState<Set<string>>(new Set());
-  const [planBatchStatus, setPlanBatchStatus] = useState(''); // T00550：切页保持
+  const [planBatchStatus, setPlanBatchStatus] = useState('');
+  const [planBatchAttach, setPlanBatchAttach] = useState(''); // T00550：切页保持
   // T00544：工期显示模式——「工期/日」与「工期/时」切换（会话级保持；持久化仍为工作日，8 小时/天换算）
   const [durationUnit, setDurationUnit] = useSessionState<'day' | 'hour'>('plan.durationUnit', 'day');
   // T00529：操作列省略号菜单（依赖维护等）——展开任务 id 与 fixed 坐标
@@ -370,6 +371,59 @@ export function PlanPage() {
     if (planSelIds.size === 0) return;
     batchEvaluatePlans([...planSelIds]);
     setPlanSelIds(new Set());
+  }
+  // T00564 扩展：批量挂接到里程碑（deps child 统一替换，已挂其他里程碑的会被覆盖）
+  async function batchAttach(msId: string) {
+    const ids = [...planSelIds].filter((id) => id !== msId);
+    if (!msId || ids.length === 0) { setPlanBatchAttach(''); return; }
+    const ms = plans.find((x) => x.id === msId);
+    setBusy(true);
+    try {
+      for (const id of ids) {
+        const row = plans.find((x) => x.id === id);
+        let deps: Array<{ id: string; type: string }> = [];
+        try { deps = JSON.parse(row?.deps || '[]') as Array<{ id: string; type: string }>; } catch { deps = []; }
+        const kept = deps.filter((d) => d.type !== 'child');
+        kept.push({ id: msId, type: 'child' });
+        await api.patch(`/plans/${id}`, { deps: JSON.stringify(kept) });
+      }
+      setPlanSelIds(new Set());
+      setPlanBatchAttach('');
+      reload();
+      flash(`已把 ${ids.length} 条计划挂到里程碑「${ms?.title ?? '?'}」下`);
+    } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
+  }
+  // T00564 扩展：批量新建待办关联（逐条 create-todo，整体 confirm 一次）
+  async function batchCreateLinkedTodos() {
+    const ids = [...planSelIds];
+    if (ids.length === 0) return;
+    const titles = plans.filter((p) => ids.includes(p.id) && !p.linked_task_id).map((p) => p.title);
+    if (titles.length === 0) { flash('选中计划均已关联待办'); return; }
+    if (!(await askConfirm(`为选中的 ${titles.length} 条计划各创建一条新待办并关联？`))) return;
+    setBusy(true);
+    let ok = 0;
+    try {
+      for (const id of ids) {
+        const row = plans.find((x) => x.id === id);
+        if (!row || row.linked_task_id) continue;
+        try { await api.post(`/plans/${id}/create-todo`); ok += 1; } catch { /* 单条失败继续 */ }
+      }
+      setPlanSelIds(new Set());
+      reload();
+      flash(`已创建并关联 ${ok} 条待办`);
+    } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
+  }
+  // T00564 扩展：批量字体颜色（色板选一次应用到全部选中）
+  async function batchApplyColor(color: string) {
+    const ids = [...planSelIds];
+    if (ids.length === 0) return;
+    setBusy(true);
+    try {
+      for (const id of ids) await api.patch(`/plans/${id}`, { color });
+      setPlanSelIds(new Set());
+      reload();
+      flash(`已为 ${ids.length} 条计划应用字体颜色`);
+    } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
   }
 
   // ---------- T00459：拖拽排序（HTML5 DnD，drop 后整体重写顺序并重排时间线） ----------
@@ -857,6 +911,25 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               style={{ display: 'inline-flex', alignItems: 'center', fontSize: 12, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)' }}>
               <Archive size={12} />归档
             </button>
+            {/* T00564 扩展：批量挂接 / 新建待办关联 / 字体颜色 */}
+            {(() => {
+              const milestones = plans.filter((x) => x.kind === 'milestone');
+              if (milestones.length === 0) return null;
+              return (
+                <select value={planBatchAttach} onChange={(e) => { const v = e.target.value; if (v) { void batchAttach(v); } }} title="批量挂接到里程碑 — 选中计划统一挂到所选里程碑下"
+                  aria-label="批量挂接到里程碑" style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+                  <option value="">批量挂接…</option>
+                  {milestones.map((m) => <option key={m.id} value={m.id}>{m.title}</option>)}
+                </select>
+              );
+            })()}
+            <button onClick={() => void batchCreateLinkedTodos()} disabled={busy} title="新建待办关联 — 为每条选中计划各创建一条新待办并关联" className="task-op"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 12, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)' }}>
+              <CalendarPlus size={12} />新建待办关联
+            </button>
+            <span style={{ display: 'inline-flex', alignItems: 'center' }} title="批量字体颜色 — 选色后应用到全部选中计划">
+              <FontColorButton current="" onApply={(c) => { void batchApplyColor(c); }} label="批量字体颜色" />
+            </span>
           </span>
         )}
         {evalBusy && <span className="flash-toast" role="status"><span className="task-breathe" style={{ color: 'var(--accent)' }}>AI 评估中{evalLabel ? `（${evalLabel}）` : ''}…</span></span>}
