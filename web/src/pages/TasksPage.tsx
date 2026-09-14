@@ -534,7 +534,8 @@ export function TasksPage() {
     if (fb === null) return; // 取消
     const stamp = new Date().toISOString().slice(0, 10);
     const merged = `${task.handle_result ?? ''}\n\n【验证失败 ${stamp}】${fb.trim()}`.trim();
-    await api.patch(`/tasks/${task.id}`, { verified: false, status: 'todo', handle_result: merged });
+    // T00531 真根因修复：服务端 PATCH 只认 camelCase handleResult——此前发 handle_result 被静默忽略，反馈从未落库
+    await api.patch(`/tasks/${task.id}`, { verified: false, status: 'todo', handleResult: merged });
     flash('已标记验证失败并回退待办');
     void loadTasks(activeProject);
   }
