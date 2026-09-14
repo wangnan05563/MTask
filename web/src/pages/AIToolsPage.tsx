@@ -185,6 +185,7 @@ interface ToolRowProps {
   readonly modelMenuRef: React.MutableRefObject<HTMLSpanElement | null>;
   readonly onToggleModelMenu: (t: AITool, anchor: HTMLElement) => void;
   readonly onSelectModel: (t: AITool, model: string) => void;
+  readonly flash: (msg: string) => void;
   /** T00446：拖拽排序回调 */
   readonly onDragStart?: (id: string) => void;
   readonly onDragOver?: (id: string) => void;
@@ -235,9 +236,15 @@ function ToolRow(props: ToolRowProps) {
         {/* 备注默认收缩，仅展开时显示完整内容 */}
         {tool.remark && props.remarkExpanded[tool.id] && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{tool.remark}</div>}
       </td>
-      <td data-noscale="1" style={cellStyle} draggable={false}>{tool.type}</td>
-      <td data-noscale="1" style={cellStyle} draggable={false}>{PURPOSE_LABEL[tool.purpose] ?? tool.purpose}</td>
-      <td data-noscale="1" style={{ ...cellStyle, wordBreak: 'break-all', maxWidth: 220 }} draggable={false}>{tool.endpoint}</td>
+      <td data-noscale="1" style={{ ...cellStyle, cursor: 'copy', userSelect: 'text' }} draggable={false}
+        onDoubleClick={() => { void navigator.clipboard.writeText(tool.type).then(() => props.flash?.(`已复制厂商类型：${tool.type}`)); }}
+        title={`双击复制整个字段：${tool.type}`}>{tool.type}</td>
+      <td data-noscale="1" style={{ ...cellStyle, cursor: 'copy', userSelect: 'text' }} draggable={false}
+        onDoubleClick={() => { const v = PURPOSE_LABEL[tool.purpose] ?? tool.purpose; void navigator.clipboard.writeText(v).then(() => props.flash?.(`已复制用途：${v}`)); }}
+        title={`双击复制整个字段：${PURPOSE_LABEL[tool.purpose] ?? tool.purpose}`}>{PURPOSE_LABEL[tool.purpose] ?? tool.purpose}</td>
+      <td data-noscale="1" style={{ ...cellStyle, wordBreak: 'break-all', maxWidth: 220, cursor: 'copy', userSelect: 'text' }} draggable={false}
+        onDoubleClick={() => { void navigator.clipboard.writeText(tool.endpoint).then(() => props.flash?.('已复制 Endpoint')); }}
+        title={`双击复制整个字段：${tool.endpoint}`}>{tool.endpoint}</td>
       <td style={cellStyle} draggable={false}>
         {/* T00542：模型字段无框下拉条——点击触发展开（未拉取则自动拉取模型列表），选择后直接持久化 */}
         <span ref={props.modelMenuId === tool.id ? (props.modelMenuRef as unknown as React.RefObject<HTMLSpanElement>) : undefined} style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 2, maxWidth: 220 }}>
@@ -822,6 +829,7 @@ export function AIToolsPage() {
               modelMenuRef={modelMenuRef}
               onToggleModelMenu={toggleModelMenu}
               onSelectModel={selectRowModel}
+              flash={flash}
               testResult={testResult}
               modelsResult={modelsResult}
               revealed={revealed}
