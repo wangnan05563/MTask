@@ -355,7 +355,8 @@ function AboutTab() {
         <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginTop: 4 }}>{APP_DESC}</div>
         <div style={{ marginTop: 10, display: 'grid', gap: 4, fontSize: 'var(--fs-m)' }}>
           <div>版本：v{version}</div>
-          <div>开发者：MTask 开发团队</div>
+          <div>开发者：南屿轻舟</div>
+          <div>邮箱：<a href="mailto:107038953@qq.com" style={{ color: 'var(--accent)' }}>107038953@qq.com</a></div>
           <div>技术栈：Electron · React · Express · SQLite</div>
         </div>
         {/* 纵向 flex + gap 提供显式间距：两个文本都包 span，消除 JSX 换行产生的歧义空格 */}
