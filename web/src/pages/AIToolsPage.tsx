@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { ChevronDown, ChevronUp, Code2, Cpu, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, Save, Star, Trash2, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, Code2, Cpu, Copy, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, Save, Star, Trash2, X } from 'lucide-react';
 import { api, type AITool } from '../api/client';
 import { UsagePanel } from './UsagePanel';
 import { askConfirm } from '../ui/dialogs';
@@ -138,10 +138,14 @@ interface ToolKeyCellProps {
 }
 
 /** API Key 列（S3776 拆分）：默认仅展示掩码，点击按钮按需拉取明文 */
-function ToolKeyCell({ tool, revealed, onToggleReveal }: ToolKeyCellProps) {
+function ToolKeyCell({ tool, revealed, onToggleReveal, flash }: ToolKeyCellProps & { flash: (msg: string) => void }) {
   return (
     <td style={cellStyle}>
-      <div style={revealed ? { fontFamily: 'monospace', wordBreak: 'break-all', maxWidth: 200 } : undefined}>
+      <div
+        style={revealed ? { fontFamily: 'monospace', wordBreak: 'break-all', maxWidth: 200, cursor: 'copy', userSelect: 'text' } : undefined}
+        onDoubleClick={revealed ? () => { void navigator.clipboard.writeText(revealed).then(() => flash?.('已复制 API Key')); } : undefined}
+        title={revealed ? '双击复制完整 API Key' : undefined}
+      >
         {revealed ?? (tool.apiKeyMasked ?? '未配置')}
       </div>
       {tool.hasApiKey && (
@@ -283,7 +287,7 @@ function ToolRow(props: ToolRowProps) {
         {tool.model_notes && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{tool.model_notes}</div>}
       </td>
       {/* 默认仅展示掩码；点击「查看原文」按需拉取明文，再点隐藏即从内存移除（FR3.5） */}
-      <ToolKeyCell tool={tool} revealed={props.revealed[tool.id]} onToggleReveal={props.onToggleReveal} />
+      <ToolKeyCell tool={tool} revealed={props.revealed[tool.id]} onToggleReveal={props.onToggleReveal} flash={props.flash} />
       <td style={cellStyle}>
         <button
           onClick={() => props.onToggleEnabled(tool)}

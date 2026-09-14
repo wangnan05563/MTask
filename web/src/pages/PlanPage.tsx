@@ -1032,6 +1032,10 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 if (attachTarget && dragId && dragId !== p.id) {
                   const dragged = plans.find((x) => x.id === dragId);
                   if (!dragged || dragged.kind === 'milestone') { setDragId(''); setOverId(''); return; }
+                  // T00563 反馈修正：拖拽物已挂接同一里程碑（区间内自有顺序调整）→ 走排序，
+                  // 不走挂接分支（此前 deps 同值替换后 return，顺序从未改变）
+                  const draggedOwner = childMilestoneOf(dragged, plans);
+                  if (draggedOwner?.id === attachTarget.id) { onDropReorder(p.id); return; }
                   let oldDeps: Array<{ id: string; type: string }> = [];
                   try { oldDeps = dragged.deps ? JSON.parse(dragged.deps) : []; } catch { oldDeps = []; }
                   const kept = oldDeps.filter((d) => d.type !== 'child');
