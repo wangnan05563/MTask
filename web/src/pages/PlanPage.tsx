@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, CalendarPlus, CheckSquare, Download, GitBranch, MoreHorizontal, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap, ChevronDown, ChevronRight } from 'lucide-react';
+import { Archive, CalendarPlus, Check, CheckSquare, Download, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap, ChevronDown, ChevronRight } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
@@ -888,9 +888,10 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
           {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}AI 评估{evalLabel && plans.length > 0 ? `（${evalLabel}）` : ''}
         </button>
         {/* T00564：多选模式（参考任务菜单）——批量勾选后执行归档/状态/AI 评估 */}
-        <button onClick={() => { setPlanMulti((m) => !m); setPlanSelIds(new Set()); }} title={planMulti ? '退出多选模式' : '多选模式 — 批量勾选计划后执行归档/状态/AI 评估等批量操作'} aria-label="多选模式" aria-pressed={planMulti}
-          style={{ ...btnStyle, color: planMulti ? 'var(--accent-text)' : 'var(--text)', background: planMulti ? 'var(--accent)' : 'transparent', borderColor: planMulti ? 'var(--accent)' : 'var(--border-strong)' }}>
-          <CheckSquare size={13} /> 多选
+        <button onClick={() => { setPlanMulti((m) => !m); setPlanSelIds(new Set()); }} title={planMulti ? '退出多选模式' : '多选模式 — 勾选计划后批量改状态/挂接/归档/评估'} aria-label={planMulti ? '退出多选模式' : '进入多选模式'}
+          className="tbtn-anim"
+          style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', border: '1px solid var(--border-strong)', background: planMulti ? 'var(--accent)' : 'transparent', color: planMulti ? 'var(--accent-text)' : 'var(--text)' }}>
+          {planMulti ? <Check size={13} /> : <ListChecks size={13} />}
         </button>
         {planMulti && planSelIds.size > 0 && (
           <span className="op-host" style={{ display: 'inline-flex', gap: 6, alignItems: 'center', border: '1px solid var(--accent)', borderRadius: 6, padding: '3px 8px', background: 'var(--card-bg)' }}>
@@ -903,13 +904,14 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               <option value="done">已完成</option>
               <option value="blocked">阻塞</option>
             </select>
+            
             <button onClick={() => void batchEvaluateSelected()} disabled={evalBusy || busy} title="AI 评估选中条目 — 结果自动录入各条描述" className="task-op"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 12, border: 'none', background: 'transparent', cursor: evalBusy ? 'not-allowed' : 'pointer', color: 'var(--accent)' }}>
-              {evalBusy ? <Loader2 size={12} className="aispin" /> : <Zap size={12} />}评估选中
+              style={{ display: 'inline-flex', alignItems: 'center', fontSize: 12, border: 'none', background: 'transparent', cursor: evalBusy ? 'not-allowed' : 'pointer', color: 'var(--accent)', padding: 2 }}>
+              {evalBusy ? <Loader2 size={14} className="aispin" /> : <Zap size={14} />}
             </button>
             <button onClick={() => void batchArchivePlans()} disabled={busy} title="归档选中计划 — 可在「归档」菜单恢复" className="task-op"
-              style={{ display: 'inline-flex', alignItems: 'center', fontSize: 12, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)' }}>
-              <Archive size={12} />归档
+              style={{ display: 'inline-flex', alignItems: 'center', fontSize: 12, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)', padding: 2 }}>
+              <Archive size={14} />
             </button>
             {/* T00564 扩展：批量挂接 / 新建待办关联 / 字体颜色 */}
             {(() => {
@@ -924,8 +926,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               );
             })()}
             <button onClick={() => void batchCreateLinkedTodos()} disabled={busy} title="新建待办关联 — 为每条选中计划各创建一条新待办并关联" className="task-op"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 12, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)' }}>
-              <CalendarPlus size={12} />新建待办关联
+              style={{ display: 'inline-flex', alignItems: 'center', fontSize: 12, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)', padding: 2 }}>
+              <CalendarPlus size={14} />
             </button>
             <span style={{ display: 'inline-flex', alignItems: 'center' }} title="批量字体颜色 — 选色后应用到全部选中计划">
               <FontColorButton current="" onApply={(c) => { void batchApplyColor(c); }} label="批量字体颜色" />
@@ -1043,6 +1045,11 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               className={planRowClass(dragId, overId, newRowId, p.id)}
               style={{ borderBottom: '1px solid var(--border)', transition: 'box-shadow .15s ease, transform .15s ease, background .15s ease' }}>
               <td style={{ padding: 6, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                {planMulti && (
+                  <input type="checkbox" checked={planSelIds.has(p.id)} aria-label={`选中计划 ${p.title}`}
+                    onChange={() => togglePlanSel(p.id)}
+                    style={{ cursor: 'pointer', marginRight: 4, verticalAlign: 'middle' }} />
+                )}
                 {p.kind === 'milestone' ? (
                   <span title="阶段里程碑 — 汇总其下普通/日常任务，不可手动调整；点击标题旁箭头收起/展开子任务" style={{ color: 'var(--accent)', fontWeight: 700, fontSize: 13 }}>◆ {seqs.get(p.id) ?? i + 1}</span>
                 ) : childMilestoneOf(p, plans) ? (
@@ -1051,11 +1058,6 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 ) : p.kind === 'daily' ? <span title="日常任务" style={{ color: 'var(--text-muted)' }}>◇ {seqs.get(p.id) ?? i + 1}</span> : seqs.get(p.id) ?? i + 1}
               </td>
               <td style={{ padding: 6, minWidth: 220, paddingLeft: childMilestoneOf(p, plans) ? 24 : 6 }}>
-                {planMulti && (
-                  <input type="checkbox" checked={planSelIds.has(p.id)} aria-label={`选中计划 ${p.title}`}
-                    onChange={() => togglePlanSel(p.id)}
-                    style={{ cursor: 'pointer', marginRight: 6, verticalAlign: 'middle' }} />
-                )}
                 {p.kind === 'milestone' && (
                   <span style={{ display: 'inline-flex', alignItems: 'center', verticalAlign: 'middle', marginRight: 4 }}>
                     <button onClick={() => setCollapsedMs((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
