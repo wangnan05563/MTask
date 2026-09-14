@@ -124,7 +124,7 @@ export function TasksPage() {
     const clear = (arr: Task[]) => arr.map((x) => (x.id === id && x.ai_state ? { ...x, ai_state: '' } : x));
     setTodo(clear); setDone(clear);
   };
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useSessionState<string>('tasks.search', ''); // T00560：命令面板跳转写入搜索词
   // 主列表分页：后端按页拉取 + 加载更多；hasMore=true 表示当前页刚好满页、可能还有更多
   const PAGE_SIZE = 200;
   const [hasMore, setHasMore] = useState(false);
@@ -328,6 +328,7 @@ export function TasksPage() {
   const [multiSelect, setMultiSelect] = useState(false);
   // T00446 / INT-6：CSV 导入预览状态
   const [csvPreview, setCsvPreview] = useState<{ items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>; errors: Array<{ row: number; message: string }> } | null>(null);
+  const [csvImportKind, setCsvImportKind] = useState<'csv' | 'json'>('csv'); // T00556：导入类型分流
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchOpBusy, setBatchOpBusy] = useState(false);
   // T00446：任务列表拖拽排序（manual 排序模式下启用）
@@ -681,11 +682,23 @@ export function TasksPage() {
     if (!activeProject) return flash('请先选择项目');
     setBatchOpBusy(true);
     try {
-      const text = await file.text();
-      const r = await api.post<{ items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>; errors: Array<{ row: number; message: string }> }>(`/tasks/import-csv/preview?projectId=${activeProject}`, { csvText: text });
-      setCsvPreview(r);
-      if (r.errors.length > 0) flash(`CSV 解析：${r.items.length} 条可导入，${r.errors.length} 行有问题——修正后重新上传`);
-      else flash(`CSV 解析完成：${r.items.length} 条待确认导入`);
+      // T00556 / PRD INT-6：按扩展名分流——.json 走 JSON 导入（Trello 导出/JSON 数组），其余走 CSV
+      const isJson = /\.json$/i.test(file.name);
+      if (isJson) {
+        const buf = await file.arrayBuffer();
+        const r = await api.postBinary<{ items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>; errors: Array<{ row: number; message: string }> }>(`/tasks/import-json/preview?projectId=${activeProject}`, buf);
+        setCsvPreview(r);
+        setCsvImportKind('json');
+        if (r.errors.length > 0) flash(`JSON 解析：${r.items.length} 条可导入，${r.errors.length} 条有问题——修正后重新上传`);
+        else flash(`JSON 解析完成：${r.items.length} 条待确认导入`);
+      } else {
+        const text = await file.text();
+        const r = await api.post<{ items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>; errors: Array<{ row: number; message: string }> }>(`/tasks/import-csv/preview?projectId=${activeProject}`, { csvText: text });
+        setCsvPreview(r);
+        setCsvImportKind('csv');
+        if (r.errors.length > 0) flash(`CSV 解析：${r.items.length} 条可导入，${r.errors.length} 行有问题——修正后重新上传`);
+        else flash(`CSV 解析完成：${r.items.length} 条待确认导入`);
+      }
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBatchOpBusy(false); }
   }
 
@@ -693,10 +706,11 @@ export function TasksPage() {
     if (!csvPreview || !activeProject) return;
     setBatchOpBusy(true);
     try {
-      const r = await api.post<{ ok: boolean; count: number }>('/tasks/import-csv/confirm', { projectId: activeProject, items: csvPreview.items });
+      const path = csvImportKind === 'json' ? '/tasks/import-json/confirm' : '/tasks/import-csv/confirm';
+      const r = await api.post<{ ok: boolean; count: number }>(path, { projectId: activeProject, items: csvPreview.items });
       setCsvPreview(null);
       void loadTasks(activeProject);
-      flash(`CSV 导入完成：${r.count} 条任务已创建`);
+      flash(`${csvImportKind === 'json' ? 'JSON' : 'CSV'} 导入完成：${r.count} 条任务已创建`);
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBatchOpBusy(false); }
   }
 
@@ -2002,10 +2016,11 @@ export function TasksPage() {
             return allExpanded ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />;
           })()}
         </button>
-        <label className="task-op" title="导入 CSV — 批量导入任务（预览确认后入库）"
+        <label className="task-op" title="导入数据 — CSV/JSON（JSON 支持 Trello 导出与 JSON 数组），预览确认后入库"
           style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', display: 'inline-block' }}>
-          <span>导入 CSV</span>
-          <input type="file" accept=".csv" style={{ display: 'none' }}
+          <span>导入数据</span>
+          {/* T00556：扩展为 CSV/JSON 双格式导入（Trello 导出 / JSON 数组） */}
+          <input type="file" accept=".csv,.json" style={{ display: 'none' }}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void onCsvFile(f); } e.target.value = ''; }} />
         </label>
         <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>

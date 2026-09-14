@@ -3,6 +3,16 @@ import { createPortal } from 'react-dom';
 import { CornerDownLeft, Search } from 'lucide-react';
 import { api, type Prompt, type Task } from '../api/client';
 
+
+/** T00560：命令面板可直达的页面（与 App Tab 对齐的子集） */
+type AppTab = 'tasks' | 'aitools' | 'prompts' | 'req' | 'plan' | 'queue' | 'report' | 'settings';
+
+/** 与 useSessionState 同格式写入会话存储（JSON）——供目标页 useSessionState 读取初始搜索词 */
+function setSessionState(key: string, value: unknown): void {
+  try { sessionStorage.setItem(key, JSON.stringify(value)); } catch { /* 配额异常静默 */ }
+}
+interface ProjectLite { id: string; name: string }
+
 /**
  * 全局命令面板（T00443 / PRD UX-4，P2）：Ctrl+K 唤起，跨实体搜索（任务/提示词/页面直达），
  * ↑↓ 选择、Enter 执行、Esc 关闭。数据在打开时一次性并行拉取（前端过滤，量级可控）。
@@ -10,11 +20,12 @@ import { api, type Prompt, type Task } from '../api/client';
 export function CommandPalette({ open, onClose, onNavigate }: {
   readonly open: boolean;
   readonly onClose: () => void;
-  readonly onNavigate: (tab: 'tasks' | 'prompts' | 'queue') => void;
+  readonly onNavigate: (tab: AppTab) => void;
 }) {
   const [kw, setKw] = useState('');
   const [tasks, setTasks] = useState<Task[]>([]);
   const [prompts, setPrompts] = useState<Prompt[]>([]);
+  const [projects, setProjects] = useState<ProjectLite[]>([]);
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -23,6 +34,7 @@ export function CommandPalette({ open, onClose, onNavigate }: {
     setKw(''); setActive(0);
     void api.get<Task[]>('/tasks?archived=0&limit=500').then(setTasks).catch(() => undefined);
     void api.get<Prompt[]>('/prompts').then(setPrompts).catch(() => undefined);
+    void api.get<ProjectLite[]>('/projects').then(setProjects).catch(() => undefined);
     // 等 DOM 挂载后聚焦
     setTimeout(() => inputRef.current?.focus(), 30);
   }, [open]);
@@ -33,10 +45,23 @@ export function CommandPalette({ open, onClose, onNavigate }: {
   const items = useMemo<Item[]>(() => {
     const out: Item[] = [];
     // 页面直达
-    const pages: Array<[string, 'tasks' | 'prompts' | 'queue']> = [['任务', 'tasks'], ['提示词', 'prompts'], ['队列', 'queue']];
+    // T00560：页面直达覆盖全部主菜单
+    const pages: Array<[string, AppTab]> = [
+      ['任务', 'tasks'], ['模型菜单', 'aitools'], ['提示词', 'prompts'], ['通用需求', 'req'],
+      ['项目计划', 'plan'], ['队列', 'queue'], ['AI 工作台', 'report'], ['设置', 'settings'],
+    ];
     for (const [label, tab] of pages) {
       if (!kwLower || label.toLowerCase().includes(kwLower)) {
         out.push({ group: '页面', label, hint: '跳转到该页面', action: () => onNavigate(tab) });
+      }
+    }
+    // T00560：项目搜索——跳任务页并写入搜索词（任务页按名称过滤展示）
+    for (const pr of projects) {
+      if (!kwLower || pr.name.toLowerCase().includes(kwLower)) {
+        out.push({
+          group: '项目', label: pr.name, hint: '跳任务页并按项目名过滤',
+          action: () => { setSessionState('tasks.search', pr.name); onNavigate('tasks'); },
+        });
       }
     }
     // 任务（跨项目）
@@ -44,8 +69,8 @@ export function CommandPalette({ open, onClose, onNavigate }: {
       const label = `${t.task_no ?? 'T?????'} ${t.title}（${t.status === 'done' ? '已完成' : '待办'}）`;
       if (!kwLower || t.title.toLowerCase().includes(kwLower) || (t.task_no ?? '').toLowerCase().includes(kwLower)) {
         out.push({
-          group: '任务', label, hint: '跳转到任务页并复制任务编号',
-          action: () => { void navigator.clipboard.writeText(t.task_no ?? '').catch(() => undefined); onNavigate('tasks'); },
+          group: '任务', label, hint: '跳任务页并定位该任务（搜索编号）',
+          action: () => { setSessionState('tasks.search', t.task_no ?? t.title); onNavigate('tasks'); },
         });
       }
     }
@@ -56,7 +81,7 @@ export function CommandPalette({ open, onClose, onNavigate }: {
       }
     }
     return out;
-  }, [kwLower, tasks, prompts, onNavigate]);
+  }, [kwLower, tasks, prompts, projects, onNavigate]);
 
   const execute = useCallback((i: number) => {
     const it = items[i];
@@ -99,7 +124,7 @@ export function CommandPalette({ open, onClose, onNavigate }: {
           ))}
         </div>
         <div style={{ padding: '6px 14px', borderTop: '1px solid var(--border)', fontSize: 10, color: 'var(--text-muted)' }}>
-          ↑↓ 选择 · Enter 执行 · Esc 关闭 —— 选中任务会跳转任务页并复制任务编号
+          ↑↓ 选择 · Enter 执行 · Esc 关闭 —— 选中任务/项目/提示词会跳转对应页面并自动定位
         </div>
       </div>
     </div>,

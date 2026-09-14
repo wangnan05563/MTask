@@ -508,7 +508,8 @@ export const PlanService = {
       "SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0",
     ).get(projectId, `[需求] ${entry.title}`) as { id: string } | undefined;
     if (dup) throw new Error('该需求已转存为计划任务，请勿重复转存');
-    this.createBatch(projectId, [{ title: `[需求] ${entry.title}`, description: entry.content }]);
+    // T00555 / PRD INT-5：来源标注——描述首行标注来源通用需求，便于计划侧溯源
+    this.createBatch(projectId, [{ title: `[需求] ${entry.title}`, description: `来源：通用需求「${entry.title}」\n\n${entry.content ?? ''}` }]);
     return { plan: this.list(projectId).at(-1)! };
   },
 
@@ -951,7 +952,7 @@ export const PlanService = {
       '{"title":"任务名称(必填)","description":"描述(无则空串)","startDate":"YYYY-MM-DD(无法识别则空串)","durationDays":工期工作日数(默认1),"assignee":"负责人(无则空串)","status":"todo|doing|done|blocked(默认todo)"}',
       '要求：',
       '1. 只输出 JSON 数组本身，不要任何解释或 Markdown 代码围栏',
-      '2. 中文/异构日期（如 9月14日、2026.9.14、14/9）转换为 YYYY-MM-DD；无法可靠识别则 startDate 置空串',
+      '2. 中文/异构日期（如 9月14日、2026.9.14、14/9）转换为 YYYY-MM-DD；无法可靠识别则**给出合理日程建议**：以今天为基准，按条目顺序与工期并行/串行关系推算 startDate（如多条无日期任务可按顺序依次排开），建议值同样输出 YYYY-MM-DD；完全无法推断时才置空串',
       '3. 工期/天数/持续列给出 durationDays；缺失默认 1；不允许小于 1',
       '4. 状态列映射到 todo/doing/done/blocked；无法识别默认 todo',
       '5. 跳过表头行、空行、纯说明/汇总行；不要虚构任务',

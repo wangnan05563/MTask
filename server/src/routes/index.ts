@@ -10,7 +10,7 @@ import { TaskImageService } from '../services/TaskImageService';
 import { TaskCategoryService } from '../services/TaskCategoryService';
 import { ReqCategoryService, ReqEntryService } from '../services/ReqService';
 import { exportBundle, importBundle, isExportTable } from '../services/SettingsService';
-import { getDefaultNoteProjectId, INBOX_PROJECT_ID, setSetting } from '../services/AppSettings';
+import { getDefaultNoteProjectId, getSetting, INBOX_PROJECT_ID, setSetting } from '../services/AppSettings';
 import { getConfig as getUpdateConfig, saveConfig as saveUpdateConfig, testConfig as testUpdateConfig, checkUpdate, currentVersion as currentAppVersion } from '../services/UpdateService';
 import { logService } from '../services/LogService';
 import { dbAdminApi } from './dbadmin';
@@ -422,6 +422,81 @@ api.post('/tasks/import-csv/confirm', (req, res) => {
     }
     notifyChange('tasks');
     res.status(201).json({ ok: true, count: created.length });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---------- T00556 / PRD INT-6：JSON 任务导入（Trello 导出 / 通用 JSON 数组，preview + confirm） ----------
+/** 把多种 JSON 形态归一为任务条目：数组 / {cards|tasks|items|issues:[]} / Trello board {lists:[{cards:[]}]} */
+function extractJsonImportItems(data: unknown): Array<{ title: string; description: string; priority?: string }> {
+  const toItem = (o: Record<string, unknown>): { title: string; description: string; priority?: string } | null => {
+    const title = String(o.title ?? o.name ?? o.summary ?? '').trim();
+    if (!title) return null;
+    const description = String(o.description ?? o.desc ?? o.details ?? o.content ?? '').trim();
+    const pr = String(o.priority ?? '').toLowerCase();
+    const priority = PRIORITY_ALIAS[pr] ? pr : undefined;
+    return priority ? { title, description, priority } : { title, description };
+  };
+  const fromArray = (arr: unknown[]) => arr
+    .filter((x) => x !== null && typeof x === 'object')
+    .map((x) => toItem(x as Record<string, unknown>))
+    .filter((x): x is { title: string; description: string; priority?: string } => x !== null);
+  if (Array.isArray(data)) return fromArray(data);
+  if (data !== null && typeof data === 'object') {
+    const o = data as Record<string, unknown>;
+    for (const k of ['cards', 'tasks', 'items', 'issues']) {
+      if (Array.isArray(o[k])) return fromArray(o[k] as unknown[]);
+    }
+    if (Array.isArray(o.lists)) {
+      return (o.lists as unknown[]).flatMap((l) => {
+        const lo = (l ?? {}) as Record<string, unknown>;
+        return Array.isArray(lo.cards) ? fromArray(lo.cards as unknown[]) : [];
+      });
+    }
+  }
+  return [];
+}
+
+api.post('/tasks/import-json/preview', raw({ type: () => true, limit: '20mb' }), (req, res) => {
+  const projectId = req.query.projectId;
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: '请求体应为 JSON 文件二进制' });
+  let data: unknown;
+  try {
+    data = JSON.parse(req.body.toString('utf8'));
+  } catch {
+    return res.status(400).json({ error: 'JSON 解析失败：请上传有效的 Trello 导出或 JSON 数组文件' });
+  }
+  const items = extractJsonImportItems(data);
+  if (items.length === 0) return res.status(400).json({ error: '未从 JSON 中识别到任务：支持数组、cards[]、tasks[]、Trello board lists[].cards[]' });
+  const existing = new Set((getDb().prepare('SELECT title FROM tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ title: string }>).map((r) => r.title));
+  const errors: Array<{ row: number; message: string }> = [];
+  const seen = new Set<string>();
+  const valid: typeof items = [];
+  items.forEach((it, i) => {
+    if (existing.has(it.title)) { errors.push({ row: i + 1, message: `标题已存在：${it.title}` }); return; }
+    if (seen.has(it.title)) { errors.push({ row: i + 1, message: `标题重复：${it.title}` }); return; }
+    seen.add(it.title);
+    valid.push(it);
+  });
+  res.json({ items: valid.map((it) => ({ ...it, priority: it.priority ?? 'normal', status: 'todo', categoryId: null, categoryName: '' })), errors });
+});
+
+api.post('/tasks/import-json/confirm', (req, res) => {
+  const { projectId, items } = req.body ?? {};
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'items 必填' });
+  try {
+    let count = 0;
+    for (const it of items as Array<{ title: string; description?: string; priority?: string }>) {
+      if (!it.title?.trim()) continue;
+      if (getDb().prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? AND archived = 0').get(projectId, it.title)) continue;
+      TaskService.create({ projectId, title: it.title, description: it.description, priority: (it.priority as TaskInput['priority']) ?? 'normal' });
+      count += 1;
+    }
+    notifyChange('tasks');
+    res.status(201).json({ ok: true, count });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -1335,6 +1410,15 @@ api.post('/settings/note-project', (req, res) => {
   }
   setSetting('defaultNoteProjectId', projectId.trim());
   res.json({ projectId: projectId.trim() });
+});
+
+// ---------- T00558 / PRD AI-5：周报摘要写入收件箱开关 ----------
+api.get('/settings/ai-summary-inbox', (_req, res) => {
+  res.json({ enabled: getSetting('report.aiSummaryToInbox') === '1' });
+});
+api.post('/settings/ai-summary-inbox', (req, res) => {
+  setSetting('report.aiSummaryToInbox', req.body?.enabled ? '1' : '0');
+  res.json({ ok: true, enabled: Boolean(req.body?.enabled) });
 });
 
 // ---------- 设置中心：数据迁移（换机重装用） ----------

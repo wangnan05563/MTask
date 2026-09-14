@@ -15,7 +15,7 @@ export function PromptsPage() {
   // 当前分类：跨切换会话记忆用户选择，便于切回后继续操作
   const [activeCat, setActiveCat] = useSessionState('prompts.activeCat', '');
   const [prompts, setPrompts] = useState<Prompt[]>([]);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useSessionState<string>('prompts.search', ''); // T00560：命令面板跳转写入搜索词
   const [notice, setNotice] = useState('');
   // 排序条件：sortKey 排序字段，sortDir 升降序（默认时间降序，与后端默认一致）
   const [sortKey, setSortKey] = useState<'updated_at' | 'created_at' | 'title' | 'manual'>('updated_at');

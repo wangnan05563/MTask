@@ -70,6 +70,11 @@ export function ReportPage(props: { onOpenAiPlanImport?: () => void } = {}) {
   // 以便切页期间 SSE 照常写入、返回后立即恢复进度（见 reportStream.ts 设计说明）
   const [aiTools, setAiTools] = useState<AITool[]>([]);
   const [aiToolId, setAiToolId] = useSessionState('report.aiTool', '');
+  // T00558 / PRD AI-5：周报摘要写入收件箱开关（服务端 report.aiSummaryToInbox）——开关状态持久于服务端
+  const [summaryToInbox, setSummaryToInbox] = useState(false);
+  useEffect(() => {
+    void api.get<{ enabled: boolean }>('/settings/ai-summary-inbox').then((r) => setSummaryToInbox(r.enabled)).catch(() => undefined);
+  }, []);
   const { streaming: aiStreaming, logs: aiLogs, streamText: aiStreamText, result: aiResult } = useReportStream();
 
   const flash = (m: string) => {
@@ -324,6 +329,17 @@ export function ReportPage(props: { onOpenAiPlanImport?: () => void } = {}) {
           >
             <Sparkles size={14} /> {aiStreaming ? 'AI 生成中…' : 'AI 周报生成'}
           </button>
+          {/* T00558 / PRD AI-5：生成后把 AI 洞察摘要写入收件箱任务 */}
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 10, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}
+            title="勾选后，AI 周报生成时会把洞察摘要写入「收件箱」项目的一条待办任务（便于后续跟进）">
+            <input type="checkbox" checked={summaryToInbox} style={{ cursor: 'pointer' }}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setSummaryToInbox(v);
+                void api.post('/settings/ai-summary-inbox', { enabled: v }).catch(() => setSummaryToInbox(!v));
+              }} />
+            生成后把摘要写入收件箱任务
+          </label>
           {/* AI 洞察已移至右侧控制台流式展示，左侧仅在生成成功后保留下载入口 */}
           {aiResult && (
             <div style={{ marginTop: 12, borderTop: '1px solid var(--surface-2)', paddingTop: 10 }}>
