@@ -365,6 +365,21 @@ export function PlanPage() {
         return;
       }
     }
+    // T00563：拖拽落点决定挂接状态——拖到里程碑/其子任务后 = 挂接该里程碑；
+    // 拖到顶层（无挂接）任务后 = 自动解除挂接。deps child 项随落点同步，序号随区间自动重排。
+    if (!dragIsMs) {
+      const targetOwner = target.kind === 'milestone' ? target : childMilestoneOf(target, plans);
+      const curOwner = childMilestoneOf(dragged, plans);
+      const newOwnerId = targetOwner?.id ?? '';
+      if ((curOwner?.id ?? '') !== newOwnerId) {
+        let depList: Array<{ id: string; type: string }> = [];
+        try { depList = JSON.parse(dragged.deps || '[]') as Array<{ id: string; type: string }>; } catch { depList = []; }
+        const kept = depList.filter((d) => d.type !== 'child');
+        if (newOwnerId) kept.push({ id: newOwnerId, type: 'child' });
+        void api.patch(`/plans/${dragId}`, { deps: JSON.stringify(kept) });
+        flash(newOwnerId ? `已挂到里程碑「${targetOwner?.title}」下` : '已解除里程碑挂接，恢复为普通任务');
+      }
+    }
     setDragId(''); setOverId('');
     setBusy(true);
     void api.post<{ reordered: number }>('/plans/reorder', { projectId, orderedIds: ids })
