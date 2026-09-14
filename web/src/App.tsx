@@ -12,7 +12,7 @@ import { MarkdownStyles } from './ui/Markdown';
 import { CommandPalette } from './pages/CommandPalette';
 import { SettingsProvider } from './settings';
 import { MobileShell } from './mobile/MobileShell';
-import { BarChart3, Boxes, CalendarRange, Lightbulb, ListOrdered, ListTodo, ScrollText, Settings, type LucideIcon } from 'lucide-react';
+import { Boxes, CalendarRange, Lightbulb, ListOrdered, ListTodo, ScrollText, Settings, Sparkles, type LucideIcon } from 'lucide-react';
 
 // T00441：日志/归档入口从顶部菜单移入「设置」（内网穿透下方），顶部菜单收敛为高频功能
 type Tab = 'tasks' | 'aitools' | 'prompts' | 'req' | 'plan' | 'queue' | 'report' | 'settings';
@@ -23,7 +23,7 @@ const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: 'prompts', label: '提示词', icon: ScrollText },
   { key: 'req', label: '通用需求', icon: Lightbulb },
   { key: 'plan', label: '项目计划', icon: CalendarRange },
-  { key: 'report', label: '周报', icon: BarChart3 },
+  { key: 'report', label: 'AI 工作台', icon: Sparkles }, // T00569：周报改名 AI 工作台（卡片化入口）
   { key: 'queue', label: '队列', icon: ListOrdered },
   { key: 'settings', label: '设置', icon: Settings },
 ];
@@ -31,6 +31,8 @@ const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
 /** 应用外壳：导航 + 主题变量容器。颜色取自 CSS 变量，主题切换即时全局生效 */
 function Shell() {
   const [tab, setTab] = useState<Tab>('tasks');
+  // T00569：AI 项目计划导入跨页触发——AI 工作台卡片点击 → 切到项目计划并打开 AI 导入弹窗
+  const [planAiImport, setPlanAiImport] = useState(0);
   const [serverOk, setServerOk] = useState<boolean | null>(null);
   // T00443 / PRD UX-4：全局命令面板（Ctrl+K）
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -186,8 +188,8 @@ function Shell() {
       {tab === 'prompts' && <PromptsPage />}
       {tab === 'req' && <ReqPage />}
       {tab === 'queue' && <QueuePage />}
-      {tab === 'plan' && <PlanPage />}
-      {tab === 'report' && <ReportPage />}
+      {tab === 'plan' && <PlanPage aiImportSignal={planAiImport} onAiImportHandled={() => setPlanAiImport(0)} />}
+      {tab === 'report' && <ReportPage onOpenAiPlanImport={() => { setPlanAiImport(Date.now()); setTab('plan'); }} />}
       {/* T00441：日志/归档入口移至「设置」页（内网穿透下方） */}
       {tab === 'settings' && <SettingsPage />}
     </div>

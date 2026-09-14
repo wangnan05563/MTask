@@ -133,7 +133,7 @@ function childMilestoneOf(p: PlanTask, plans: PlanTask[]): PlanTask | null {
   } catch { return null; }
 }
 
-export function PlanPage() {
+export function PlanPage(props: { aiImportSignal?: number; onAiImportHandled?: () => void } = {}) {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   // T00460：切页保状态——项目选择会话级持久化，切回不重置
   const [projectId, setProjectId] = useSessionState('plan.projectId', '');
@@ -147,6 +147,14 @@ export function PlanPage() {
   // T00472：AI 评估状态（批量进度动态计数，单条/批量共用）
   const [evalBusy, setEvalBusy] = useSessionState<boolean>('plan.evalBusy', false); // T00550：切页保持
   const [evalLabel, setEvalLabel] = useSessionState<string>('plan.evalLabel', '');
+  // T00569：跨页触发——AI 工作台「AI 项目计划导入」卡片点击后切到本页并自动打开 AI 导入弹窗
+  useEffect(() => {
+    if (props.aiImportSignal) {
+      setAiOpen(true);
+      props.onAiImportHandled?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.aiImportSignal]);
   // T00564：多选模式（参考任务菜单）——批量勾选后执行归档/状态/AI 评估等批量操作
   const [planMulti, setPlanMulti] = useState(false);
   const [planSelIds, setPlanSelIds] = useState<Set<string>>(new Set());

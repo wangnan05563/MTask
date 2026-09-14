@@ -52,7 +52,7 @@ const labelStyle: CSSProperties = { fontSize: 12, color: 'var(--text-secondary)'
 const fieldStyle: CSSProperties = { padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 13 };
 
 /** 周报/报表页面：按周期与格式生成报表，支持模板导入与管理 */
-export function ReportPage() {
+export function ReportPage(props: { onOpenAiPlanImport?: () => void } = {}) {
   // 用户选项与已产生结果改为会话级持久化（useSessionState）：切换页面返回后仍保留选择与上次分析结果
   const [period, setPeriod] = useSessionState<'day' | 'week' | 'month'>('report.period', 'week');
   const [format, setFormat] = useSessionState<ReportFormat>('report.format', 'xlsx');
