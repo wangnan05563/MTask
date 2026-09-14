@@ -162,6 +162,60 @@ function nextWorkday(after: string, holidays: Set<string>): string {
   return fmt(d);
 }
 
+// ---------- T00561：显式依赖驱动排期（去掉默认串行链） ----------
+// 旧行为：rescheduleFrom 把全部任务按串行瀑布隐式串联——任意任务日期/工期变动，后续全部顺延。
+// 新行为：任务默认无依赖（各自保持日期）；仅当显式配置 deps（serial/parallel 指向前置任务）时联动：
+//   serial：start = 全部串行前置 end 的下一工作日；parallel：start = 前置任务 start。
+// 传播：从变更任务出发沿 deps 引用关系 BFS，日期有变化才继续向下传播。
+
+/** 单任务工期收尾：end = start 起按工作日计 duration 天 */
+function refreshTaskEnd(db: ReturnType<typeof getDb>, id: string, start: string, duration: number): void {
+  const end = calcEndDate(start, Math.max(1, duration), loadHolidaySet());
+  db.prepare("UPDATE plan_tasks SET start_date = COALESCE(NULLIF(?, ''), start_date), end_date = ?, updated_at = ? WHERE id = ?")
+    .run(start, end, now(), id);
+}
+
+/** 沿显式 deps 依赖图传播重算（BFS）：serial 后移 / parallel 对齐前置开始日 */
+function rescheduleDependents(db: ReturnType<typeof getDb>, projectId: string, seedId: string): void {
+  const holidays = loadHolidaySet();
+  const all = db.prepare(
+    'SELECT id, title, start_date, end_date, duration_days, deps, kind FROM plan_tasks WHERE project_id = ? AND archived = 0',
+  ).all(projectId) as Array<{ id: string; title: string; start_date: string; end_date: string; duration_days: number; deps: string; kind: string }>;
+  const map = new Map(all.map((r) => [r.id, { ...r }]));
+  const upd = db.prepare('UPDATE plan_tasks SET start_date = ?, end_date = ?, updated_at = ? WHERE id = ?');
+  const t = now();
+  const queue = [seedId];
+  const touched = new Set<string>([seedId]);
+  while (queue.length > 0) {
+    const seed = map.get(queue.shift()!);
+    if (!seed) continue;
+    for (const row of all) {
+      if (touched.has(row.id)) continue;
+      let deps: Array<{ id: string; type: string }> = [];
+      try { deps = JSON.parse(row.deps || '[]') as Array<{ id: string; type: string }>; } catch { deps = []; }
+      const rel = deps.find((d) => d.id === seed.id);
+      if (!rel) continue;
+      let start = row.start_date;
+      if (rel.type === 'serial') {
+        const ends = deps.filter((d) => d.type === 'serial')
+          .map((d) => map.get(d.id)?.end_date)
+          .filter(isDate).sort();
+        if (ends.length > 0) start = nextWorkday(ends[ends.length - 1], holidays);
+        else continue; // 串行前置已缺失：保持现状（徽标已标注「已删除」）
+      } else {
+        if (!isDate(seed.start_date)) continue;
+        start = seed.start_date; // parallel：与前置同日开工
+      }
+      const end = calcEndDate(start, Math.max(1, row.duration_days), holidays);
+      if (start !== row.start_date || end !== row.end_date) {
+        upd.run(start, end, t, row.id);
+        row.start_date = start; row.end_date = end;
+        touched.add(row.id); queue.push(row.id);
+      }
+    }
+  }
+}
+
 // ---------- 时间线重排 ----------
 
 interface RescheduleOpts {
@@ -328,16 +382,8 @@ export const PlanService = {
            progress, status, assignee, sort_order, linked_task_id, kind, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?, ?)`,
       ).run(id, input.projectId, title, input.description ?? '', start, start, duration, status, input.assignee ?? '', maxOrder + 1, (input as { kind?: string }).kind ?? 'normal', t, t);
-      // 重排范围收敛（原实现无条件 rescheduleAll，即每次新增都重排整条时间线 → O(n)，
-      // 连续新增 N 条的计划场景退化为 O(n²)；实测 2400+ 计划时单次 create 达 169ms）：
-      //  · 首任务：以自身 start_date 为锚点，只需重排本项目（此时仅此一行）
-      //  · 追加任务：新行排在末尾，只需从上一末行的结束日之后顺延新行
-      if (first) {
-        rescheduleFrom(db, input.projectId, 0, {});
-      } else {
-        const anchor = prevEndBefore(db, input.projectId, maxOrder + 1);
-        rescheduleFrom(db, input.projectId, maxOrder + 1, anchor ? { afterEndDate: anchor } : {});
-      }
+      // T00561：去掉默认串行依赖——新任务保持自身日期，不重排他人；显式依赖者（若引用新任务）传播
+      refreshTaskEnd(db, id, start, duration);
     })();
     return this.get(id)!;
   },
@@ -373,24 +419,11 @@ export const PlanService = {
         now(),
         id,
       );
-      if (startDateChanged) {
-        // 用户显式改开始日：以新开始日为该任务锚点，后续串行顺延
-        rescheduleFrom(db, row.project_id, row.sort_order, { firstStartDate: patch.startDate });
-      } else if (duration === row.duration_days) {
-        // 未动排期也要刷新自身 end_date（纯状态/文本编辑的兜底）
-        const holidays = loadHolidaySet();
-        const cur = this.get(id)!;
-        db.prepare('UPDATE plan_tasks SET end_date = ? WHERE id = ?').run(calcEndDate(cur.start_date, cur.duration_days, holidays), id);
-      } else if (row.sort_order === 0) {
-        // 工期变化且为首个任务：开始日不变，后续从本任务新结束日顺延
-        rescheduleFrom(db, row.project_id, 0, {});
-      } else {
-        // 工期变化：开始日不变（中间任务由前序决定），后续从本任务新结束日顺延
-        const prev = db.prepare(
-          'SELECT end_date FROM plan_tasks WHERE project_id = ? AND sort_order < ? ORDER BY sort_order DESC LIMIT 1',
-        ).get(row.project_id, row.sort_order) as { end_date: string } | undefined;
-        rescheduleFrom(db, row.project_id, row.sort_order, prev ? { afterEndDate: prev.end_date } : {});
-      }
+      // T00561：去掉默认串行链——变更只影响本任务（end 重算），仅显式配置依赖的任务联动传播
+      const cur = this.get(id)!;
+      db.prepare('UPDATE plan_tasks SET end_date = ? WHERE id = ?')
+        .run(calcEndDate(cur.start_date, cur.duration_days, loadHolidaySet()), id);
+      rescheduleDependents(db, row.project_id, id);
       if (linkedTaskId) {
         db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?').run(taskStatusForPlan(status), now(), linkedTaskId);
       }
@@ -408,7 +441,6 @@ export const PlanService = {
       const prev = db.prepare(
         'SELECT end_date FROM plan_tasks WHERE project_id = ? AND archived = 0 AND sort_order < ? ORDER BY sort_order DESC LIMIT 1',
       ).get(row.project_id, row.sort_order) as { end_date: string } | undefined;
-      rescheduleFrom(db, row.project_id, row.sort_order, prev ? { afterEndDate: prev.end_date } : {});
     })();
     notifyChange('plans');
     return true;
@@ -424,7 +456,6 @@ export const PlanService = {
       const prev = db.prepare(
         'SELECT end_date FROM plan_tasks WHERE project_id = ? AND archived = 0 AND sort_order < ? ORDER BY sort_order DESC LIMIT 1',
       ).get(row.project_id, row.sort_order) as { end_date: string } | undefined;
-      rescheduleFrom(db, row.project_id, row.sort_order, prev ? { afterEndDate: prev.end_date } : { firstStartDate: row.start_date });
     })();
     notifyChange('plans');
     return true;
@@ -459,8 +490,7 @@ export const PlanService = {
       const upd = db.prepare('UPDATE plan_tasks SET sort_order = ?, updated_at = ? WHERE id = ?');
       orderedIds.forEach((id, i) => upd.run(i, t, id));
       // 从首个变化位置起衔接：锚点取该位置前一行的结束日；位置 0 变化时保留首行自身 start_date
-      const anchor = firstChanged > 0 ? prevEndBefore(db, projectId, firstChanged) : null;
-      rescheduleFrom(db, projectId, firstChanged, anchor ? { afterEndDate: anchor } : {});
+      // T00561：排序仅改展示顺序，不再联动日期（去默认串行链）
     })();
     return { reordered: orderedIds.length };
   },
@@ -497,14 +527,14 @@ export const PlanService = {
     db.transaction(() => {
       db.prepare('UPDATE plan_tasks SET sort_order = sort_order + 1 WHERE project_id = ? AND archived = 0 AND sort_order > ?')
         .run(after.project_id, after.sort_order);
+      const start = fmt(new Date());
       db.prepare(
         `INSERT INTO plan_tasks (id, project_id, title, description, start_date, end_date, duration_days,
            progress, status, assignee, sort_order, linked_task_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, '', '', 1, 0, 'todo', '', ?, NULL, ?, ?)`,
-      ).run(id, after.project_id, trimmed, description ?? '', after.sort_order + 1, t, t);
-      // 重排：从插入位置起衔接（after 行自身日期不变作锚点——afterEndDate 语义为“之后”）
-      const afterEnd = after.end_date || fmt(new Date());
-      rescheduleFrom(db, after.project_id, after.sort_order + 1, { afterEndDate: afterEnd });
+         VALUES (?, ?, ?, ?, ?, ?, 1, 0, 'todo', '', ?, NULL, ?, ?)`,
+      ).run(id, after.project_id, trimmed, description ?? '', start, start, after.sort_order + 1, t, t);
+      // T00561：新插入行保持自身日期（今天起 1 天），不重排后续
+      refreshTaskEnd(db, id, start, 1);
     })();
     return this.get(id)!;
   },
@@ -626,9 +656,17 @@ export const PlanService = {
     const ids = (db.prepare('SELECT DISTINCT project_id FROM plan_tasks WHERE archived = 0').all() as Array<{ project_id: string }>)
       .map((r) => r.project_id);
     for (const pid of ids) {
-      const from = sinceDate ? firstAffectedOrder(db, pid, sinceDate) : 0;
-      if (from === null) continue; // 该项目全部计划在该日期前结束，不受影响
-      db.transaction(() => rescheduleFrom(db, pid, from, {}))();
+      // T00561：新排期模型下任务日期独立——节假日变更只刷新各行 end（start 不动），不触发串行顺延
+      const rows = db.prepare('SELECT id, start_date, duration_days FROM plan_tasks WHERE project_id = ? AND archived = 0').all(pid) as Array<{ id: string; start_date: string; duration_days: number }>;
+      const holidays = loadHolidaySet();
+      const upd = db.prepare('UPDATE plan_tasks SET end_date = ?, updated_at = ? WHERE id = ?');
+      const t = now();
+      db.transaction(() => {
+        for (const r of rows) {
+          if (!isDate(r.start_date)) continue;
+          upd.run(calcEndDate(r.start_date, Math.max(1, r.duration_days), holidays), t, r.id);
+        }
+      })();
     }
   },
 
@@ -725,18 +763,13 @@ export const PlanService = {
            progress, status, assignee, sort_order, linked_task_id, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, '', ?, 0, ?, ?, ?, NULL, ?, ?)`,
       );
+      const holidays = loadHolidaySet();
       parsed.forEach((p, i) => {
-        // 首行（项目内第一条）用自己的开始日作时间线锚点；其余行 start_date 先置空，由重排统一推导
-        const start = existingCount === 0 && i === 0 ? p.startDate : '';
-        ins.run(uuid(), projectId, p.title, p.description, start, p.durationDays, p.status, p.assignee, maxOrder + 1 + i, t, t);
+        // T00561：各行日期独立——开始日用自己的（空则今天），end 按工作日计算，不联动他人
+        const start = p.startDate || fmt(new Date());
+        const end = calcEndDate(start, p.durationDays, holidays);
+        ins.run(uuid(), projectId, p.title, p.description, start, end, p.durationDays, p.status, p.assignee, maxOrder + 1 + i, t, t);
       });
-      // 导入行统一追加尾部 → 只需从追加起点重排（无需连历史全量重算）
-      if (existingCount === 0) {
-        rescheduleFrom(db, projectId, 0, {});
-      } else {
-        const anchor = prevEndBefore(db, projectId, existingCount);
-        rescheduleFrom(db, projectId, existingCount, anchor ? { afterEndDate: anchor } : {});
-      }
     })();
     return { inserted: parsed.length, errors: [] };
   },
@@ -964,20 +997,13 @@ export const PlanService = {
          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?)`,
       );
       clean.forEach((it, i) => {
-        const first = existingCount === 0 && i === 0;
         const duration = Math.max(1, Math.floor(Number(it.durationDays) || 1));
         const status = PLAN_STATUSES.has(it.status as PlanStatus) ? (it.status as PlanStatus) : 'todo';
-        const start = first && it.startDate && DATE_RE.test(it.startDate) ? it.startDate : '';
-        const end = start ? calcEndDate(start, duration, holidays) : '';
+        // T00561：各行日期独立——开始日用自己的（空则今天），end 按工作日计算
+        const start = it.startDate && DATE_RE.test(it.startDate) ? it.startDate : fmt(new Date());
+        const end = calcEndDate(start, duration, holidays);
         ins.run(uuid(), projectId, it.title.trim(), it.description ?? '', start, end, duration, status, it.assignee ?? '', maxOrder + 1 + i, t, t);
       });
-      // 新条目统一追加在尾部 → 只需从追加起点重排（原实现 rescheduleAll 会连历史全量重算）
-      if (existingCount === 0) {
-        rescheduleFrom(db, projectId, 0, {});
-      } else {
-        const anchor = prevEndBefore(db, projectId, existingCount);
-        rescheduleFrom(db, projectId, existingCount, anchor ? { afterEndDate: anchor } : {});
-      }
     })();
     notifyChange('plans');
     return { inserted: clean.length };

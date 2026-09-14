@@ -368,7 +368,7 @@ export function PlanPage() {
     setDragId(''); setOverId('');
     setBusy(true);
     void api.post<{ reordered: number }>('/plans/reorder', { projectId, orderedIds: ids })
-      .then(() => { reload(); flash('顺序已调整，时间线已自动重排'); })
+      .then(() => { reload(); flash('顺序已调整'); })
       .catch((e) => flash(String((e as Error).message ?? e)))
       .finally(() => setBusy(false));
   }
@@ -1043,7 +1043,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                         <GitBranch size={14} />
                       </button>
                       <button role="menuitem" onClick={() => { setDepMenuId(''); void insertAfter(p); }}
-                        title="在此行后插入新任务 — 后续排期自动重排"
+                        title="在此行后插入新任务 — 插入行从今天起 1 天，不影响其他任务日期"
                         className="task-op"
                         style={{ display: 'inline-flex', alignItems: 'center', padding: 4, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)' }}>
                         <Plus size={14} />
