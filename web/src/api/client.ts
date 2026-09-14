@@ -125,7 +125,9 @@ export interface TaskImage {
 }
 
 /** 图片直链（<img src> 直接用；Electron 壳内由 api:// 协议转发到本地服务） */
-export const imageUrl = (id: string) => `${apiBase}/images/${id}`;
+// T00580：<img src> 无法自定义请求头，携带 ?token= 通过服务端图片路径的 query 授权
+// （accessToken 为空即纯本地模式，服务端 guard 整体放行，拼空串不影响）
+export let imageUrl = (id: string) => `${apiBase}/images/${id}${accessToken ? `?token=${encodeURIComponent(accessToken)}` : ''}`;
 
 /** 取图片 blob（复制到剪贴板用）。经 api:// 代理返回，代理已加 CORS 头，渲染进程可跨源读取 */
 export async function fetchImage(id: string): Promise<Blob> {

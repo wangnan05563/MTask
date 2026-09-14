@@ -68,6 +68,12 @@ function accessTokenGuard(req: express.Request, res: express.Response, next: exp
     next();
     return;
   }
+  // T00580：图片直链支持 query token——<img src> 无法自定义请求头，前端以 ?token= 携带
+  // （与 X-Access-Token 同值）；图片 id 为 uuid 不可枚举，仅此路径接受 query 形式
+  if (req.path.startsWith('/images/') && token && req.query.token === token) {
+    next();
+    return;
+  }
   if (token && req.headers['x-access-token'] !== token) {
     res.status(401).json({ error: 'unauthorized' });
     return;
