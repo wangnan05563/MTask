@@ -1287,7 +1287,9 @@ export function TasksPage() {
         <button
           onClick={(e) => {
             const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-            setVerifyMenuPos({ top: r.bottom + 4, left: r.left });
+            // T00565：接近视口底部时向上弹出，避免最后一个任务处截断（面板约 110px 高）
+            const up = r.bottom + 130 > window.innerHeight;
+            setVerifyMenuPos({ top: up ? Math.max(8, r.top - 114) : r.bottom + 4, left: r.left });
             setVerifyMenuId(open ? '' : t.id);
           }}
           title="验证结果 — 选择验证通过或标记验证失败"

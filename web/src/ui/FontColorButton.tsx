@@ -21,8 +21,18 @@ export function FontColorButton({ current, onApply, label = '字体颜色' }: {
   label?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [dropUp, setDropUp] = useState(false);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const barColor = current || 'var(--text)';
+
+  // T00565：接近视口底部时色板向上弹出，避免最后一个任务处截断
+  const togglePalette = () => {
+    if (!open && hostRef.current) {
+      const r = hostRef.current.getBoundingClientRect();
+      setDropUp(r.bottom + 180 > window.innerHeight); // 色板约 170px 高（两行色块）
+    }
+    setOpen((o) => !o);
+  };
 
   // 点击组件外部关闭色板
   useEffect(() => {
@@ -51,7 +61,7 @@ export function FontColorButton({ current, onApply, label = '字体颜色' }: {
       </span>
       <button
         className="tbtn-anim"
-        onClick={() => setOpen((o) => !o)}
+        onClick={togglePalette}
         title={`${label}选择 — 展开颜色面板`}
         aria-label={`${label}：展开颜色面板`}
         aria-haspopup="listbox"
@@ -63,7 +73,7 @@ export function FontColorButton({ current, onApply, label = '字体颜色' }: {
       {open && (
         <div
           role="listbox"
-          style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', padding: 6, zIndex: 20, display: 'grid', gridTemplateColumns: 'repeat(8, 18px)', gap: 4 }}
+          style={{ position: 'absolute', ...(dropUp ? { bottom: '100%', marginBottom: 4 } : { top: '100%', marginTop: 4 }), right: 0, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', padding: 6, zIndex: 20, display: 'grid', gridTemplateColumns: 'repeat(8, 18px)', gap: 4 }}
         >
           {PALETTE.map((c) => (
             <button
