@@ -23,6 +23,8 @@ export interface TaskRow {
   ai_summary: string | null;
   /** 处理结果：AI 分析结论（根因/解决方案）等，由 MCP 或前端编辑写入 */
   handle_result: string | null;
+  /** T00566：AI 处理状态动画（'' 已读/无 | running 运行中 | failed 运行失败 | unread 未读） */
+  ai_state: string;
   /** T00490：记录字体颜色（Excel 风格颜色按钮），空串=默认色 */
   color: string;
   pinned: number;
@@ -47,6 +49,8 @@ export interface TaskView {
   archived_at: string | null;
   ai_summary: string | null;
   handle_result: string | null;
+  /** T00566：AI 处理状态动画（'' 已读/无 | running failed unread） */
+  ai_state: string;
   pinned: boolean;
   category_id: string | null;
   /** T00450：父任务 id（两级的 epic→task 层级） */
@@ -158,6 +162,13 @@ export const TaskService = {
     return row ? rowToTask(row, TaskImageService.listByTask(id)) : null;
   },
 
+  /** T00566：AI 处理状态回写（running/failed/unread；'' = 已读清空）。非法值忽略。 */
+  setAiState(id: string, state: string): TaskView | null {
+    const allowed = new Set(['running', 'failed', 'unread', '']);
+    if (!allowed.has(state)) return this.getById(id);
+    return this.update(id, { ai_state: state });
+  },
+
   /** 按编号查找任务：供 AI Agent 通过 MCP 的 taskNo 参数定位。不存在返回 null。 */
   findByNo(taskNo: string): TaskView | null {
     const row = getDb().prepare('SELECT * FROM tasks WHERE task_no = ?').get(taskNo) as TaskRow | undefined;
@@ -230,7 +241,7 @@ export const TaskService = {
     });
   },
 
-  update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color'>>): TaskView {
+  update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state'>>): TaskView {
     const db = getDb();
     // better-sqlite3 不支持 boolean 绑定且 SQLite 无布尔型，verified/pinned 先归一整型 0/1 再落库
     if (patch.verified !== undefined) {
@@ -238,6 +249,10 @@ export const TaskService = {
     }
     if (patch.pinned !== undefined) {
       (patch as { pinned: number }).pinned = patch.pinned ? 1 : 0;
+    }
+    // T00566：ai_state 白名单防御（PATCH 直传路径）——非法值静默忽略
+    if (patch.ai_state !== undefined && !['running', 'failed', 'unread', ''].includes(patch.ai_state)) {
+      delete (patch as { ai_state?: string }).ai_state;
     }
     // 路由层会把未提供的字段用 undefined 塞进 patch，若全部纳入会把该列置为 NULL
     //（例如只 PATCH status 时 title 被清空，触发 NOT NULL）。因此过滤掉值为 undefined 的键。

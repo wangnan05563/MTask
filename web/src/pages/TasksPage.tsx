@@ -119,6 +119,11 @@ export function TasksPage() {
   const [activeProject, setActiveProject] = usePersistentState('tasks.activeProject', '');
   const [todo, setTodo] = useState<Task[]>([]);
   const [done, setDone] = useState<Task[]>([]);
+  // T00566：本地静默清空某任务 ai_state（已读）——不打断列表，不触发全表刷新
+  const setTasksStateRead = (id: string) => {
+    const clear = (arr: Task[]) => arr.map((x) => (x.id === id && x.ai_state ? { ...x, ai_state: '' } : x));
+    setTodo(clear); setDone(clear);
+  };
   const [search, setSearch] = useState('');
   // 主列表分页：后端按页拉取 + 加载更多；hasMore=true 表示当前页刚好满页、可能还有更多
   const PAGE_SIZE = 200;
@@ -1123,6 +1128,22 @@ export function TasksPage() {
         <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
           <PinToggle pinned={t.pinned} onToggle={() => void togglePin(t)} />
         </span>
+        {/* T00566：AI 处理状态动画（编号前）——running 转圈 / failed 红色警示脉动 / unread 未读圆点呼吸 / 已读或无状态不渲染 */}
+        {t.ai_state === 'running' && (
+          <span title="AI 正在处理此任务" aria-label="AI 处理中" style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--accent)' }}>
+            <Loader2 size={13} className="aispin" />
+          </span>
+        )}
+        {t.ai_state === 'failed' && (
+          <span className="ai-failed-pulse" title="AI 处理中断/失败 — 可重新处理或查看处理结果" aria-label="AI 处理失败" style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--danger)' }}>
+            <AlertTriangle size={13} />
+          </span>
+        )}
+        {t.ai_state === 'unread' && (
+          <span className="ai-unread-breathe" title="AI 处理完成 — 点击展开任务详情查看结果" aria-label="AI 处理完成未读" style={{ display: 'inline-flex', alignItems: 'center' }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)', display: 'inline-block' }} />
+          </span>
+        )}
         {/* 任务编号徽标：全局唯一，供 AI Agent 通过 MCP 按编号定位任务（titletip 说明可复制） */}
         {t.task_no && (
           <span /* NOSONAR - 任务编号徽标「双击复制」为便捷操作，文本可选中复制，无需拉链为可聚焦交互控件 */
@@ -1338,7 +1359,7 @@ export function TasksPage() {
         {/* 展开/收起按钮紧跟标题：有描述才显示，点击展开完整描述（默认收起不展示摘要，保持简洁） */}
         {t.description && (
           <button
-            onClick={() => setDescExpanded((p) => ({ ...p, [t.id]: !p[t.id] }))}
+            onClick={() => { setDescExpanded((p) => ({ ...p, [t.id]: !p[t.id] })); if (t.ai_state === 'unread') { void api.patch(`/tasks/${t.id}`, { aiState: '' }).then(() => setTasksStateRead(t.id)); } }}
             title={descExpanded[t.id] ? '收起 — 收起任务描述' : '展开 — 展开查看完整任务描述'}
             aria-label={descExpanded[t.id] ? '收起：收起任务描述' : '展开：展开查看完整任务描述'}
             className="task-op"
@@ -1352,7 +1373,7 @@ export function TasksPage() {
             两个面板可分别展开/收起，也可同时展开/收起。收起态用上箭头以区分展开态 */} 
         {t.handle_result && (
           <button
-            onClick={() => setResultOpen((p) => ({ ...p, [t.id]: !p[t.id] }))}
+            onClick={() => { setResultOpen((p) => ({ ...p, [t.id]: !p[t.id] })); if (t.ai_state === 'unread') { void api.patch(`/tasks/${t.id}`, { aiState: '' }).then(() => setTasksStateRead(t.id)); } }}
             title={resultOpen[t.id] ? '收起处理结果 — 收起该任务的处理结果' : '展开处理结果 — 展开查看该任务的处理结果'}
             aria-label={resultOpen[t.id] ? '收起处理结果：收起该任务的处理结果' : '展开处理结果：展开查看该任务的处理结果'}
             className="task-op"

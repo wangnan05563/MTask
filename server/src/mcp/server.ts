@@ -301,6 +301,28 @@ export async function createMCPServer(): Promise<McpServer> {
     } catch (e) { return err((e as Error).message); }
   });
 
+  // T00566：AI 处理状态回写——AIAgent 生命周期专用（running 处理中 / failed 中断失败 / unread 完成待查看）
+  // 状态机：running → failed | unread；failed → running（重试）；unread →（用户查看）→ ''（已读隐藏）
+  server.registerTool('mtask_write_task_status', {
+    title: '回写任务 AI 处理状态',
+    description: '按 id 或任务编号 taskNo 回写任务的 AI 处理状态动画（任务编号前显示）。state=running 表示 Agent 开始处理（旋转动画）；state=failed 表示处理中断/异常（红色警示）；state=unread 表示处理完成等待用户查看（未读圆点）；用户查看后前端自动清空（已读隐藏）。',
+    inputSchema: {
+      taskNo: z.string().optional().describe('任务编号（如 T00001），与 id 二选一'),
+      id: z.string().optional().describe('任务内部 id，与 taskNo 二选一'),
+      state: z.enum(['running', 'failed', 'unread']).describe('目标状态：running=开始处理；failed=处理中断/异常；unread=处理完成待查看'),
+    },
+  }, async (a) => {
+    try {
+      const target = resolveTask(a);
+      if (!target) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
+      const task = TaskService.setAiState(target.id, a.state);
+      if (!task) return err('任务不存在');
+      return ok(JSON.stringify({ id: task.id, task_no: task.task_no, ai_state: task.ai_state }), { task });
+    } catch (e) {
+      return err((e as Error).message);
+    }
+  });
+
   server.registerTool('mtask_move_tasks', {
     title: '批量移动项目',
     description: '把一组任务移动到目标项目（taskIds 与 projectId 均必填）。',

@@ -161,6 +161,8 @@ export interface Task {
   ai_summary: string | null;
   /** 处理结果：AI 分析结论（根因/解决方案）等，可查看/编辑 */
   handle_result: string | null;
+  /** T00566：AI 处理状态动画（'' 已读/无 | running 运行中 | failed 运行失败 | unread 未读） */
+  ai_state: string;
   /** T00462/T00451：项目计划联动任务——值为来源计划标题（区分徽标+反向引用） */
   fromPlanTitle?: string;
   /** T00446：手动排序权重（拖拽排序结果；manual 排序模式生效） */

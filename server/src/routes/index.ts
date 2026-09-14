@@ -186,7 +186,7 @@ api.post('/tasks', (req, res) => {
 });
 
 api.patch('/tasks/:id', (req, res) => {
-  const { title, description, priority, status, verified, aiSummary, handleResult, pinned, categoryId, parentId, color } = req.body ?? {}; // T00490：color 记录字体颜色
+  const { title, description, priority, status, verified, aiSummary, handleResult, pinned, categoryId, parentId, color, aiState } = req.body ?? {}; // T00566：aiState AI 处理状态 // T00490：color 记录字体颜色
   // T00450：parentId 挂接/换父/解除（null）——同项目校验；父任务不可挂到自己或其后代（两级层级下后代不存在，仅防自挂）
   if (parentId !== undefined) {
     if (parentId === req.params.id) return res.status(400).json({ error: '父任务不能是任务自身' });
@@ -197,7 +197,7 @@ api.patch('/tasks/:id', (req, res) => {
       if (parent.parent_id) return res.status(400).json({ error: '父任务已是子任务，层级限制两级' });
     }
   }
-  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId, parent_id: parentId === undefined ? undefined : (parentId || null), color }));
+  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId, parent_id: parentId === undefined ? undefined : (parentId || null), color, ai_state: aiState }));
 });
 
 api.post('/tasks/move', (req, res) => {
