@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, CalendarPlus, Download, GitBranch, MoreHorizontal, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap, ChevronDown, ChevronRight } from 'lucide-react';
+import { Archive, CalendarPlus, CheckSquare, Download, GitBranch, MoreHorizontal, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap, ChevronDown, ChevronRight } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
@@ -146,7 +146,11 @@ export function PlanPage() {
   const [aiToolId, setAiToolId] = usePersistentState('plan.aiToolId', '');
   // T00472：AI 评估状态（批量进度动态计数，单条/批量共用）
   const [evalBusy, setEvalBusy] = useSessionState<boolean>('plan.evalBusy', false); // T00550：切页保持
-  const [evalLabel, setEvalLabel] = useSessionState<string>('plan.evalLabel', ''); // T00550：切页保持
+  const [evalLabel, setEvalLabel] = useSessionState<string>('plan.evalLabel', '');
+  // T00564：多选模式（参考任务菜单）——批量勾选后执行归档/状态/AI 评估等批量操作
+  const [planMulti, setPlanMulti] = useState(false);
+  const [planSelIds, setPlanSelIds] = useState<Set<string>>(new Set());
+  const [planBatchStatus, setPlanBatchStatus] = useState(''); // T00550：切页保持
   // T00544：工期显示模式——「工期/日」与「工期/时」切换（会话级保持；持久化仍为工作日，8 小时/天换算）
   const [durationUnit, setDurationUnit] = useSessionState<'day' | 'hour'>('plan.durationUnit', 'day');
   // T00529：操作列省略号菜单（依赖维护等）——展开任务 id 与 fixed 坐标
@@ -305,10 +309,10 @@ export function PlanPage() {
   }
 
   /** 批量评估：确认后逐条串行评估并自动录入描述，进度动态计数（k/N） */
-  function batchEvaluatePlans() {
+  function batchEvaluatePlans(targetIds?: string[]) {
     if (evalBusy) return;
     if (!aiToolId) { flash('请先选择 AI 模型（AI 导入旁的模型下拉）'); return; }
-    const target = plans;
+    const target = targetIds ? plans.filter((p) => targetIds.includes(p.id)) : plans;
     if (target.length === 0) { flash('当前项目暂无计划条目'); return; }
     setEvalLabel(`0/${target.length}`);
     const msg = `将对 ${target.length} 条计划逐条 AI 评估（工期合理性/风险/建议），结果自动录入各条描述（可后续手动编辑或删除），确认开始？`;
@@ -325,6 +329,47 @@ export function PlanPage() {
       setTimeout(() => setEvalLabel(''), 2500);
       flash(`AI 评估完成：${done} 条结果已写入描述`);
     });
+  }
+
+  // ---------- T00564：多选批量操作 ----------
+  function togglePlanSel(id: string) {
+    setPlanSelIds((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }
+  function selectAllPlans() {
+    setPlanSelIds((prev) => (prev.size === plans.length ? new Set() : new Set(plans.map((p) => p.id))));
+  }
+  async function batchArchivePlans() {
+    const ids = [...planSelIds];
+    if (ids.length === 0) return;
+    if (!(await askConfirm(`归档选中的 ${ids.length} 条计划？（可在「归档」菜单恢复）`))) return;
+    setBusy(true);
+    try {
+      for (const id of ids) await api.post(`/plans/${id}/archive`);
+      setPlanSelIds(new Set());
+      reload();
+      flash(`已归档 ${ids.length} 条计划`);
+    } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
+  }
+  async function batchSetStatus(st: PlanTask['status']) {
+    const ids = [...planSelIds];
+    if (ids.length === 0 || !st) return;
+    setBusy(true);
+    try {
+      for (const id of ids) await api.patch(`/plans/${id}`, { status: st });
+      setPlanSelIds(new Set());
+      setPlanBatchStatus('');
+      reload();
+      flash(`已把 ${ids.length} 条计划状态设为 ${st}`);
+    } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
+  }
+  function batchEvaluateSelected() {
+    if (planSelIds.size === 0) return;
+    batchEvaluatePlans([...planSelIds]);
+    setPlanSelIds(new Set());
   }
 
   // ---------- T00459：拖拽排序（HTML5 DnD，drop 后整体重写顺序并重排时间线） ----------
@@ -788,6 +833,32 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         <button onClick={() => batchEvaluatePlans()} disabled={evalBusy || busy} title="AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）" aria-label="批量 AI 评估" className={evalBusy ? 'task-breathe' : undefined} style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }}>
           {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}AI 评估{evalLabel && plans.length > 0 ? `（${evalLabel}）` : ''}
         </button>
+        {/* T00564：多选模式（参考任务菜单）——批量勾选后执行归档/状态/AI 评估 */}
+        <button onClick={() => { setPlanMulti((m) => !m); setPlanSelIds(new Set()); }} title={planMulti ? '退出多选模式' : '多选模式 — 批量勾选计划后执行归档/状态/AI 评估等批量操作'} aria-label="多选模式" aria-pressed={planMulti}
+          style={{ ...btnStyle, color: planMulti ? 'var(--accent-text)' : 'var(--text)', background: planMulti ? 'var(--accent)' : 'transparent', borderColor: planMulti ? 'var(--accent)' : 'var(--border-strong)' }}>
+          <CheckSquare size={13} /> 多选
+        </button>
+        {planMulti && planSelIds.size > 0 && (
+          <span className="op-host" style={{ display: 'inline-flex', gap: 6, alignItems: 'center', border: '1px solid var(--accent)', borderRadius: 6, padding: '3px 8px', background: 'var(--card-bg)' }}>
+            <span style={{ fontSize: 12, color: 'var(--accent)' }}>已选 {planSelIds.size}</span>
+            <button onClick={selectAllPlans} className="task-op" title={planSelIds.size === plans.length ? '取消全选' : '全选本页计划'} style={{ fontSize: 12, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)' }}>{planSelIds.size === plans.length ? '取消全选' : '全选'}</button>
+            <select value={planBatchStatus} onChange={(e) => { const v = e.target.value; if (v) { void batchSetStatus(v as PlanTask['status']); } }} title="批量设置状态" aria-label="批量设置状态" style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+              <option value="">批量状态…</option>
+              <option value="todo">待开始</option>
+              <option value="doing">进行中</option>
+              <option value="done">已完成</option>
+              <option value="blocked">阻塞</option>
+            </select>
+            <button onClick={() => void batchEvaluateSelected()} disabled={evalBusy || busy} title="AI 评估选中条目 — 结果自动录入各条描述" className="task-op"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 12, border: 'none', background: 'transparent', cursor: evalBusy ? 'not-allowed' : 'pointer', color: 'var(--accent)' }}>
+              {evalBusy ? <Loader2 size={12} className="aispin" /> : <Zap size={12} />}评估选中
+            </button>
+            <button onClick={() => void batchArchivePlans()} disabled={busy} title="归档选中计划 — 可在「归档」菜单恢复" className="task-op"
+              style={{ display: 'inline-flex', alignItems: 'center', fontSize: 12, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)' }}>
+              <Archive size={12} />归档
+            </button>
+          </span>
+        )}
         {evalBusy && <span className="flash-toast" role="status"><span className="task-breathe" style={{ color: 'var(--accent)' }}>AI 评估中{evalLabel ? `（${evalLabel}）` : ''}…</span></span>}
         <fieldset style={{ display: 'inline-flex', margin: 0, padding: 0, minWidth: 0, border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} aria-label="视图切换">
           <button onClick={() => setViewMode('list')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', cursor: 'pointer', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图">列表</button>
@@ -907,6 +978,11 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 ) : p.kind === 'daily' ? <span title="日常任务" style={{ color: 'var(--text-muted)' }}>◇ {seqs.get(p.id) ?? i + 1}</span> : seqs.get(p.id) ?? i + 1}
               </td>
               <td style={{ padding: 6, minWidth: 220, paddingLeft: childMilestoneOf(p, plans) ? 24 : 6 }}>
+                {planMulti && (
+                  <input type="checkbox" checked={planSelIds.has(p.id)} aria-label={`选中计划 ${p.title}`}
+                    onChange={() => togglePlanSel(p.id)}
+                    style={{ cursor: 'pointer', marginRight: 6, verticalAlign: 'middle' }} />
+                )}
                 {p.kind === 'milestone' && (
                   <span style={{ display: 'inline-flex', alignItems: 'center', verticalAlign: 'middle', marginRight: 4 }}>
                     <button onClick={() => setCollapsedMs((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
