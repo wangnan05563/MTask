@@ -238,7 +238,11 @@ export async function createMCPServer(): Promise<McpServer> {
         status, verified: a.verified, pinned: a.pinned, category_id: a.categoryId,
         handle_result,
       });
-      return ok(json(task), { task });
+      // T00566 二轮：状态**自动驱动**（不依赖技能显式调用）——验证失败→failed；标记完成→unread（待查看）
+      if (failRollback) TaskService.setAiState(target.id, 'failed');
+      else if (a.status === 'done') TaskService.setAiState(target.id, 'unread');
+      const fresh = TaskService.getById(target.id) ?? task;
+      return ok(json(fresh), { task: fresh });
     } catch (e) { return err((e as Error).message); }
   });
 
@@ -281,7 +285,12 @@ export async function createMCPServer(): Promise<McpServer> {
     try {
       const task = resolveTask(a);
       if (!task) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
-      return ok(json(task), { task });
+      // T00566 二轮：状态**自动驱动**（不依赖技能显式调用）——Agent 读取待办任务详情即视为开始处理
+      if (task.status === 'todo' && task.ai_state !== 'running') {
+        TaskService.setAiState(task.id, 'running');
+      }
+      const fresh = TaskService.getById(task.id) ?? task;
+      return ok(json(fresh), { task: fresh });
     } catch (e) { return err((e as Error).message); }
   });
 
@@ -332,6 +341,8 @@ export async function createMCPServer(): Promise<McpServer> {
       if (!target) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
       if (!a.result) return err('result 必填');
       const task = TaskService.update(target.id, { handle_result: a.result });
+      // T00566 二轮：状态**自动驱动**——回传处理结果 = 处理完成待用户查看（unread）
+      TaskService.setAiState(target.id, 'unread');
       // T00577：派生单整合——本任务若为派生单（derived_from 有值），把结论同时追加回原任务处理结果，
       // 让原任务成为唯一信息汇聚点，避免派生单越积越多
       const row = getDb().prepare('SELECT derived_from FROM tasks WHERE id = ?').get(target.id) as { derived_from: string | null } | undefined;

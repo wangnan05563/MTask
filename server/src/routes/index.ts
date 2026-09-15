@@ -198,7 +198,15 @@ api.patch('/tasks/:id', (req, res) => {
       if (parent.parent_id) return res.status(400).json({ error: '父任务已是子任务，层级限制两级' });
     }
   }
-  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId, parent_id: parentId === undefined ? undefined : (parentId || null), color, ai_state: aiState, derived_from: derivedFrom }));
+  // T00566 二轮：状态**自动驱动**（REST 侧同样不依赖技能）——显式 aiState 优先；
+  // 否则按语义推导：验证失败→failed；标记完成→unread；回传处理结果→unread
+  const autoAiState = aiState !== undefined
+    ? aiState
+    : verified === false ? 'failed'
+      : status === 'done' ? 'unread'
+        : handleResult !== undefined ? 'unread'
+          : undefined;
+  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId, parent_id: parentId === undefined ? undefined : (parentId || null), color, ai_state: autoAiState, derived_from: derivedFrom }));
 });
 
 api.post('/tasks/move', (req, res) => {
