@@ -5,7 +5,7 @@ import { reportStream, useReportStream } from '../reportStream';
 import { ReportConsole } from './ReportConsole';
 import { AiPlanImportPanel } from './AiPlanImportPanel';
 import { useSessionState } from '../ui/session';
-import { Download, Plus, Trash2, Upload, Sparkles, PanelLeftClose, PanelLeftOpen, FileSpreadsheet } from 'lucide-react';
+import { Download, Plus, Trash2, Upload, Sparkles, PanelLeftClose, PanelLeftOpen, FileSpreadsheet, FileUp } from 'lucide-react';
 
 interface ReportTemplate {
   id: string;
@@ -71,6 +71,9 @@ export function ReportPage() {
   // 以便切页期间 SSE 照常写入、返回后立即恢复进度（见 reportStream.ts 设计说明）
   // T00569 二轮：AI 项目计划导入面板展开态
   const [showAiImport, setShowAiImport] = useState(false);
+  // T00621：三卡片各自的工作面板展开态（互斥，保持左侧简洁）
+  const [showOffline, setShowOffline] = useState(false);
+  const [showAiLive, setShowAiLive] = useState(false);
   const [aiTools, setAiTools] = useState<AITool[]>([]);
   const [aiToolId, setAiToolId] = useSessionState('report.aiTool', '');
   // T00558 / PRD AI-5：周报摘要写入收件箱开关（服务端 report.aiSummaryToInbox）——开关状态持久于服务端
@@ -248,28 +251,61 @@ export function ReportPage() {
         </button>
       </div>
 
-      {/* T00569：AI 能力入口卡片网格——点击卡片直达对应功能 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12, margin: '14px 0 0' }}>
+      {/* T00621：AI 能力入口**三卡片同行**（统一风格：图标 + 标题 + 描述 + 底部展开提示） */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, margin: '14px 0 0' }}>
+        {/* 卡片 1：AI 项目计划导入 */}
         <button
-          onClick={() => setShowAiImport((v) => !v)}
+          onClick={() => { setShowAiImport((v) => !v); setShowOffline(false); setShowAiLive(false); }}
           className="tbtn-anim"
           title="AI 项目计划导入 — 上传 Excel/需求文档，AI 解析为计划草稿并批量入库（本页直接执行）"
           aria-label="AI 项目计划导入"
-          style={{ textAlign: 'left', padding: 14, border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', cursor: 'pointer', display: 'flex', gap: 10, alignItems: 'flex-start' }}
+          style={{ textAlign: 'left', padding: 14, border: showAiImport ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', cursor: 'pointer', display: 'flex', gap: 10, alignItems: 'flex-start' }}
         >
-          <Sparkles size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />
-          <span>
+          <FileUp size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />
+          <span style={{ flex: 1 }}>
             <span style={{ display: 'block', fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>AI 项目计划导入</span>
             <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
               上传 Excel/需求文档，AI 解析为项目计划草稿（工期/依赖/负责人），确认后批量入库
             </span>
-            <span style={{ display: 'inline-block', fontSize: 11, color: 'var(--accent)', marginTop: 8 }}>{showAiImport ? '收起导入面板 ↑' : '展开导入面板（本页直接执行）↓'}</span>
+            <span style={{ display: 'block', fontSize: 11, color: 'var(--accent)', marginTop: 8 }}>{showAiImport ? '收起工作面板 ↑' : '点击展开工作面板 ↓'}</span>
           </span>
         </button>
-        <div style={{ padding: 14, border: '1px dashed var(--border-strong)', borderRadius: 10, fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 10, alignItems: 'center' }}>
-          <Sparkles size={18} style={{ opacity: 0.5, flexShrink: 0 }} />
-          <span>更多 AI 能力卡片规划中（智能日程建议 / 每周 AI 摘要推送 / 多模型对比等，见项目计划 P2 阶段）</span>
-        </div>
+
+        {/* 卡片 2：离线周报生成（点击展开工作面板：含模板管理） */}
+        <button
+          onClick={() => { setShowOffline((v) => !v); setShowAiImport(false); setShowAiLive(false); }}
+          className="tbtn-anim"
+          title="离线周报生成 — 本地聚合数据按模板合成报表（工作面板内含模板管理）"
+          aria-label="离线周报生成"
+          style={{ textAlign: 'left', padding: 14, border: showOffline ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', cursor: 'pointer', display: 'flex', gap: 10, alignItems: 'flex-start' }}
+        >
+          <FileSpreadsheet size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />
+          <span style={{ flex: 1 }}>
+            <span style={{ display: 'block', fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>离线周报生成</span>
+            <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              本地聚合本周期任务数据，按模板或标准版式直接合成文件（无需联网）；含模板管理与导入
+            </span>
+            <span style={{ display: 'block', fontSize: 11, color: 'var(--accent)', marginTop: 8 }}>{showOffline ? '收起工作面板 ↑' : '点击展开工作面板 ↓'}</span>
+          </span>
+        </button>
+
+        {/* 卡片 3：AI 周报生成（点击展开工作面板：含内置技能说明） */}
+        <button
+          onClick={() => { setShowAiLive((v) => !v); setShowAiImport(false); setShowOffline(false); }}
+          className="tbtn-anim"
+          title="AI 周报生成 — 结合真实数据由 AI 撰写洞察并按内置 skill 版式合成"
+          aria-label="AI 周报生成"
+          style={{ textAlign: 'left', padding: 14, border: showAiLive ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', cursor: 'pointer', display: 'flex', gap: 10, alignItems: 'flex-start' }}
+        >
+          <Sparkles size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />
+          <span style={{ flex: 1 }}>
+            <span style={{ display: 'block', fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>AI 周报生成</span>
+            <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              结合真实任务数据调用 AI 生成洞察，按内置 skill「{SKILL_BY_FORMAT[format]}」版式智能合成
+            </span>
+            <span style={{ display: 'block', fontSize: 11, color: 'var(--accent)', marginTop: 8 }}>{showAiLive ? '收起工作面板 ↑' : '点击展开工作面板 ↓'}</span>
+          </span>
+        </button>
       </div>
 
       {/* T00569 二轮：AI 项目计划导入面板——功能完整迁移至本页内联执行（含控制台滚动输出） */}
@@ -313,13 +349,16 @@ export function ReportPage() {
         </div>
       </div>
 
-      {/* 离线 / AI 两个独立生成入口 */}
+      {/* T00621：工作面板区——由上方三卡片点击展开（互斥，默认收起保持页面简洁） */}
       <div style={{ display: 'flex', gap: 16, margin: '12px 0', flexWrap: 'wrap' }}>
-        {/* 离线周报生成：保留原有离线逻辑，本地聚合并按模板/标准版式合成文件 */}
-        <div style={{ flex: '1 1 300px', border: '1px solid var(--border)', borderRadius: 10, padding: 14, background: 'var(--card-bg)' }}>
-          {/* T00569 三轮：两生成入口统一为卡片风格（与 AI 能力入口卡片一致：图标 + 标题 + 描述） */}
+        {/* 离线周报生成工作面板：本地聚合 + 模板管理（模板列表/导入整合于此） */}
+        {showOffline && (
+        <div style={{ flex: '1 1 320px', border: '1px solid var(--accent)', borderRadius: 10, padding: 14, background: 'var(--card-bg)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
-            <FileSpreadsheet size={15} style={{ color: 'var(--accent)' }} /> 离线周报生成
+            <FileSpreadsheet size={15} style={{ color: 'var(--accent)' }} /> 离线周报生成 · 工作面板
+            <span style={{ flex: 1 }} />
+            <button onClick={() => setShowOffline(false)} className="tbtn-anim" title="收起工作面板" aria-label="收起离线周报工作面板"
+              style={{ border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 11, padding: '1px 6px' }}>收起 ↑</button>
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>本地聚合本周期任务数据，按模板或标准版式直接合成文件，无需联网。</div>
           <div style={{ marginBottom: 12 }}>
@@ -334,6 +373,35 @@ export function ReportPage() {
               </div>
             )}
           </div>
+          {/* T00621：模板管理整合到离线周报工作面板（导入 / 列表 / 删除） */}
+          <div style={{ marginBottom: 12, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-2, transparent)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)' }}>模板管理（{templates.length}）</span>
+              <span style={{ flex: 1 }} />
+              <button onClick={() => fileRef.current?.click()} className="tbtn-anim"
+                title="导入模板 — 选择 .xlsx / .docx 模板文件上传" aria-label="导入模板"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', cursor: 'pointer' }}>
+                <Upload size={11} /> 导入模板
+              </button>
+            </div>
+            {templates.length === 0
+              ? <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>暂无自定义模板，可导入 .xlsx/.docx 模板文件后在上方「模板」下拉中选择。</div>
+              : (
+                <ul style={{ listStyle: 'none', margin: 0, padding: 0, maxHeight: 120, overflowY: 'auto' }}>
+                  {templates.map((t) => (
+                    <li key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '2px 0', borderBottom: '1px solid var(--border)' }}>
+                      <FileSpreadsheet size={11} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.filename}</span>
+                      <button onClick={() => void removeTemplate(t.id, t.filename)} className="tbtn-anim"
+                        title="删除该模板" aria-label={`删除模板 ${t.filename}`}
+                        style={{ border: 'none', background: 'transparent', color: 'var(--danger)', cursor: 'pointer', display: 'inline-flex', padding: 0 }}>
+                        <Trash2 size={12} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+          </div>
           <button
             onClick={() => void generate()}
             disabled={busy}
@@ -344,18 +412,36 @@ export function ReportPage() {
             <Download size={14} /> {busy ? '生成中…' : `离线生成${scoped.label} ${PERIODS.find((p) => p.key === period)?.label}（${scoped.value}）`}
           </button>
         </div>
+        )}
 
-        {/* AI 周报生成：真实周期任务数据 + AI 洞察，按匹配的内置 skill 版式智能合成 */}
-        <div style={{ flex: '1 1 300px', border: '1px solid var(--border)', borderRadius: 10, padding: 14, background: 'var(--card-bg)' }}>
+        {/* AI 周报生成工作面板：AI 洞察 + 内置技能说明（技能依据整合于此） */}
+        {showAiLive && (
+        <div style={{ flex: '1 1 320px', border: '1px solid var(--accent)', borderRadius: 10, padding: 14, background: 'var(--card-bg)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
-            <Sparkles size={15} style={{ color: 'var(--accent)' }} /> AI 周报生成
+            <Sparkles size={15} style={{ color: 'var(--accent)' }} /> AI 周报生成 · 工作面板
+            <span style={{ flex: 1 }} />
+            <button onClick={() => setShowAiLive(false)} className="tbtn-anim" title="收起工作面板" aria-label="收起 AI 周报工作面板"
+              style={{ border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 11, padding: '1px 6px' }}>收起 ↑</button>
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
-            结合真实任务数据调用 AI 生成洞察，按内置 skill「{SKILL_BY_FORMAT[format]}」版式智能合成。
+            结合真实任务数据调用 AI 生成洞察，按内置 skill 版式智能合成；洞察生成过程在右侧 AI 控制台实时滚动展示。
           </div>
-          <div style={{ marginBottom: 12 }}>
-            <div style={labelStyle}>AI 工具</div>
-{/* T00534：模型选择已统一至模型菜单默认配置（AI 周报固定使用默认整理工具） */}
+          {/* T00621：内置技能整合到 AI 周报工作面板 */}
+          <div style={{ marginBottom: 12, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-2, transparent)' }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6 }}>内置技能（标准版式依据）</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text)' }}>
+              <Sparkles size={12} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+              <code style={{ fontSize: 12, color: 'var(--accent)' }}>{SKILL_BY_FORMAT[format]}</code>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                — 当前报表格式 {format.toUpperCase()} 对应的内置版式技能；AI 生成时按该 skill 的标准结构组织内容
+              </span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+              切换上方「报表格式」即自动匹配对应技能：xlsx-trae / docx-trae / pdf-trae / pptx-trae
+            </div>
+          </div>
+          <div style={{ marginBottom: 12, fontSize: 11, color: 'var(--text-muted)' }}>
+            AI 工具统一使用「模型菜单」的默认整理工具（无需在此重复选择）。
           </div>
           <button
             onClick={() => void aiGenerate()}
@@ -394,62 +480,16 @@ export function ReportPage() {
             </div>
           )}
         </div>
+        )}
       </div>
 
       {notice && <span className="flash-toast" role="status">{notice}</span>}
 
-      {/* 内置技能：标准版式生成的依据 */}
-      <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 14, background: 'var(--card-bg)', marginBottom: 12 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>内置技能</div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          {BUILTIN_SKILLS.map((s) => (
-            <span key={s.id} title={s.desc} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 6, background: 'var(--surface-2)', color: 'var(--text)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ fontWeight: 600 }}>{s.name}</span>
-              <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>.{s.format}</span>
-            </span>
-          ))}
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
-          标准模板按对应内置 skill 的版式规范生成（xlsx→xlsx-trae，docx→docx-trae）；pdf/pptx 技能作为内置资源随应用提供。
-        </div>
-      </div>
-
-      {/* 模板管理 */}
-      <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 14, background: 'var(--card-bg)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          <span style={{ fontSize: 14, fontWeight: 600 }}>模板管理</span>
-          <button onClick={() => fileRef.current?.click()} title="导入模板 — 上传 .xlsx / .docx 模板文件" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', padding: '4px 10px', borderRadius: 6, background: 'var(--card-bg)', border: '1px solid var(--border-strong)' }}>
-            <Upload size={13} /> 导入模板
-          </button>
-          <input ref={fileRef} type="file" accept=".xlsx,.docx" style={{ display: 'none' }} onChange={(e) => void onUpload(e)} />
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>仅支持 .xlsx / .docx（≤10MB）。Word 模板中可用 {'{period}'}、{'{tasks}'} 等占位符。</span>
-        </div>
-        {templates.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>暂无导入模板，系统将使用标准版式生成报表。</div>
-        ) : (
-          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-            {templates.map((t) => (
-              <li key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--surface-2)' }}>
-                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.filename}</span>
-                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{(t.size / 1024).toFixed(1)} KB</span>
-                <button
-                  onClick={() => { setTemplateId(t.id); }}
-                  title="选用模板 — 生成时可参考该模板结构"
-                  style={{ fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', color: templateId === t.id ? 'var(--accent)' : 'var(--text)' }}
-                >
-                  <Plus size={12} /> {templateId === t.id ? '已选用' : '选用'}
-                </button>
-                <button onClick={() => void removeTemplate(t.id, t.filename)} title="删除模板" aria-label="删除模板" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', cursor: 'pointer', color: 'var(--danger)' }}>
-                  <Trash2 size={13} />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      {/* T00621：原「内置技能」「模板管理」独立区块已整合进各自工作面板（AI 周报面板=内置技能；离线周报面板=模板管理），此处仅保留隐藏的上传入口与占位符说明 */}
+      <input ref={fileRef} type="file" accept=".xlsx,.docx" style={{ display: 'none' }} onChange={(e) => void onUpload(e)} />
 
       <div style={{ marginTop: 12, fontSize: 11, color: 'var(--text-muted)' }}>
-        说明：报表按本周期内更新过的任务（未归档）聚合，包含各项目汇总与任务明细；选用 Word 模板时以 {`{period}`}、{`{periodLabel}`}、{`{startDate}`}、{`{endDate}`}、{`{projects}`}、{`{tasks}`} 占位符渲染。
+        说明：报表按本周期内更新过的任务（未归档）聚合，包含各项目汇总与任务明细；选用 Word 模板时以 {`{period}`}、{`{periodLabel}`}、{`{startDate}`}、{`{endDate}`}、{`{projects}`}、{`{tasks}`} 占位符渲染。模板导入入口在「离线周报生成」工作面板内（仅支持 .xlsx / .docx，≤10MB）。
       </div>
         </div>
         <aside style={{ boxSizing: 'border-box', alignSelf: 'stretch', ...(splitCollapsed ? { width: '100%' } : { flex: '0 0 360px', maxWidth: '44vw' }) }}>

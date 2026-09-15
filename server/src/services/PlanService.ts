@@ -945,6 +945,8 @@ export const PlanService = {
    */
   async aiParseDrafts(toolId: string, tableText: string): Promise<{
     drafts: Array<{ title: string; description: string; startDate: string; durationDays: number; assignee: string; status: PlanStatus }>;
+    /** T00620：行数守恒提示（输入行数与解析条数差异过大时给出，供前端提示可能被归纳合并） */
+    coverageWarn?: string;
   }> {
     const system = [
       '你是 MTask 的项目计划解析助手。给定来自用户上传 Excel 的表格文本（每行一条记录，单元格以「 | 」分隔，列含义未知，可能含表头/说明/汇总行）。',
@@ -956,16 +958,25 @@ export const PlanService = {
       '3. 工期/天数/持续列给出 durationDays；缺失默认 1；不允许小于 1',
       '4. 状态列映射到 todo/doing/done/blocked；无法识别默认 todo',
       '5. 跳过表头行、空行、纯说明/汇总行；不要虚构任务',
+      // T00620：行数守恒——源表常出现「同一工作项多行（不同产出物/阶段）」，严禁按标题合并归纳
+      '6. **逐行输出：表格中每个数据行都必须生成一个独立条目，严禁把同一工作项的多行合并成一条**；',
+      '   同一「工作项」出现多行时，用产出物/阶段信息区分标题（如「XX工具开发（bemp-test-common）」），确保每行可独立识别；',
+      '7. 输出条目数应尽量与表格数据行数一致（仅允许因表头/空行/汇总行而减少）',
     ].join('\n');
     // T00551：分块解析——整表一次性交给模型会被 max_tokens 截断（19 条只回 7 条），
-    // 按行分块（每块 ≤15 行）逐块解析合并，块间按 title 去重
+    // 按行分块（每块 ≤15 行）逐块解析合并
+    // T00620 修复：块内分隔符原为 '\nn'（「换行 + 字母 n」），使除首行外每行开头被字符 n 污染，
+    // 干扰 AI 逐行识别——修正为标准换行分隔
     const tLines = tableText.split('\n').map((x) => x.trim()).filter(Boolean);
     const CHUNK = 15;
     const chunks: string[] = [];
-    for (let i = 0; i < tLines.length; i += CHUNK) chunks.push(tLines.slice(i, i + CHUNK).join('\nn'));
+    for (let i = 0; i < tLines.length; i += CHUNK) chunks.push(tLines.slice(i, i + CHUNK).join('\n'));
     if (chunks.length === 0) throw new Error('Excel 中未解析到任何数据行');
 
     const drafts: PlanDraft[] = [];
+    // T00620 修复：原按 title 去重，会把「同一工作项的多行」（源表常见：同工作项 × 多产出物/多阶段）
+    // 误合并成一条——这是「54 行只解析出 17 条」的根因之一。改为**行级指纹去重**
+    // （标题+开始日期+描述+负责人），仅消除跨块重复的同一条记录，保留同工作项的不同行。
     const seen = new Set<string>();
     for (const chunk of chunks) {
       const ai = await AIService.ask(toolId, system, `【Excel 表格文本】\n${chunk}`);
@@ -973,11 +984,17 @@ export const PlanService = {
       const arr = parseJsonArrayWithRecovery(ai.content, '');
       for (const r of arr) {
         const d = normalizeDraft(r);
-        if (d && !seen.has(d.title)) { seen.add(d.title); drafts.push(d); }
+        if (!d) continue;
+        const fingerprint = `${d.title}|${d.startDate ?? ''}|${(d.description ?? '').slice(0, 40)}|${d.assignee ?? ''}`;
+        if (!seen.has(fingerprint)) { seen.add(fingerprint); drafts.push(d); }
       }
     }
     if (drafts.length === 0) throw new Error('AI 未能从文件中识别出任何计划条目，请确认文件内容或更换模型');
-    return { drafts };
+    // T00620：行数守恒提示——输入数据行与解析条数差异过大时附诊断信息（前端可据此提示「可能被模型归纳合并」）
+    const coverageWarn = tLines.length > 0 && drafts.length < tLines.length * 0.6
+      ? `本次输入 ${tLines.length} 行，解析出 ${drafts.length} 条；若与源表条目数不符，可能被模型归纳合并——请核对后手动补充`
+      : '';
+    return { drafts, coverageWarn };
   },
 
   /** 批量创建（AI 导入确认保存/其他批量来源）：事务插入后统一重排；首条用其 startDate 作锚点 */
