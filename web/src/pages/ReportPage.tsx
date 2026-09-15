@@ -232,8 +232,8 @@ export function ReportPage(props: { onOpenAiPlanImport?: () => void } = {}) {
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
         <div style={{ flex: 1, minWidth: 0, display: splitCollapsed ? 'none' : 'block' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-        <h2 style={{ fontSize: 16, margin: 0 }}>周报 / 报表</h2>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>按周期聚合任务数据生成 Excel / Word 报表</span>
+        <h2 style={{ fontSize: 16, margin: 0 }}>AI 工作台</h2>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>AI 能力入口与报表生成（按周期聚合任务数据生成 Excel / Word 报表）</span>
         <span style={{ flex: 1 }} />
         <button
           onClick={() => setSplitCollapsed(true)}
@@ -243,6 +243,30 @@ export function ReportPage(props: { onOpenAiPlanImport?: () => void } = {}) {
         >
           <PanelLeftClose size={14} />
         </button>
+      </div>
+
+      {/* T00569：AI 能力入口卡片网格——点击卡片直达对应功能 */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12, margin: '14px 0 0' }}>
+        <button
+          onClick={() => props.onOpenAiPlanImport?.()}
+          className="tbtn-anim"
+          title="AI 项目计划导入 — 上传需求文档，AI 解析为计划草稿并导入项目计划"
+          aria-label="AI 项目计划导入"
+          style={{ textAlign: 'left', padding: 14, border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', cursor: 'pointer', display: 'flex', gap: 10, alignItems: 'flex-start' }}
+        >
+          <Sparkles size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />
+          <span>
+            <span style={{ display: 'block', fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>AI 项目计划导入</span>
+            <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              上传 Excel/需求文档，AI 解析为项目计划草稿（工期/依赖/负责人），确认后批量入库
+            </span>
+            <span style={{ display: 'inline-block', fontSize: 11, color: 'var(--accent)', marginTop: 8 }}>前往项目计划导入 →</span>
+          </span>
+        </button>
+        <div style={{ padding: 14, border: '1px dashed var(--border-strong)', borderRadius: 10, fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 10, alignItems: 'center' }}>
+          <Sparkles size={18} style={{ opacity: 0.5, flexShrink: 0 }} />
+          <span>更多 AI 能力卡片规划中（智能日程建议 / 每周 AI 摘要推送 / 多模型对比等，见项目计划 P2 阶段）</span>
+        </div>
       </div>
 
       {/* 公共配置：周期 / 格式 / 项目范围，离线与 AI 两条路径共用 */}
