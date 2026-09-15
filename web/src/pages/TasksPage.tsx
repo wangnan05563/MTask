@@ -188,6 +188,10 @@ export function TasksPage() {
   const [resultOpen, setResultOpen] = useState<Record<string, boolean>>({});
   // T00521 调整：验证失败反馈展开态（查看/修改窗口与处理结果同款，展示态聚焦【验证失败】段）
   const [failbackOpen, setFailbackOpen] = useState<Record<string, boolean>>({});
+
+  // T00610：验证失败反馈录入弹窗（文本 + 截图）与提交忙碌态
+  const [failDialog, setFailDialog] = useState<{ taskId: string; title: string; text: string; images: PastedImage[] } | null>(null);
+  const [failBusy, setFailBusy] = useState(false);
   // 验证失败反馈编辑草稿：存在即编辑态，保存写回 handle_result 全文
   const [fbDrafts, setFbDrafts] = useState<Record<string, string>>({});
   // 「已完成」栏验证状态过滤：默认仅展示未验证，便于优先处理待核对的完成项；all=全部
@@ -534,16 +538,37 @@ export function TasksPage() {
     void loadTasks(activeProject);
   }
 
-  /** T00521：手动标记验证失败——录失败反馈 → verified=false + status=todo 回退待办 + 【验证失败】追加处理结果 */
-  async function markVerifyFailed(task: Task) {
-    const fb = await askInput({ title: `验证失败反馈 — ${task.title}`, placeholder: '请描述验证失败的原因（将回退到待办）' });
-    if (fb === null) return; // 取消
-    const stamp = new Date().toISOString().slice(0, 10);
-    const merged = `${task.handle_result ?? ''}\n\n【验证失败 ${stamp}】${fb.trim()}`.trim();
-    // T00531 真根因修复：服务端 PATCH 只认 camelCase handleResult——此前发 handle_result 被静默忽略，反馈从未落库
-    await api.patch(`/tasks/${task.id}`, { verified: false, status: 'todo', handleResult: merged });
-    flash('已标记验证失败并回退待办');
-    void loadTasks(activeProject);
+  /** T00521/T00610：手动标记验证失败——打开专属录入弹窗（支持截图上传/粘贴）→ 提交后回退待办 */
+  function markVerifyFailed(task: Task) {
+    setFailDialog({ taskId: task.id, title: task.title, text: '', images: [] });
+  }
+
+  /** T00610：提交验证失败反馈——文本追加【验证失败】段 + 截图逐张上传到任务（MCP 可读取识别） */
+  async function submitVerifyFailed() {
+    if (!failDialog) return;
+    const fb = failDialog.text.trim();
+    if (!fb && failDialog.images.length === 0) { flash('请填写失败原因或上传截图'); return; }
+    const task = [...todo, ...done].find((x) => x.id === failDialog.taskId);
+    if (!task) { setFailDialog(null); return; }
+    setFailBusy(true);
+    try {
+      const stamp = new Date().toISOString().slice(0, 10);
+      const tail = fb ? `\n\n【验证失败 ${stamp}】${fb}` : `\n\n【验证失败 ${stamp}】（附截图）`;
+      const merged = `${task.handle_result ?? ''}${tail}`.trim();
+      // T00531：服务端 PATCH 只认 camelCase handleResult
+      await api.patch(`/tasks/${task.id}`, { verified: false, status: 'todo', handleResult: merged });
+      // T00610：截图随反馈一并落库（复用任务图片通道，MCP/前端均可读取）
+      for (const img of failDialog.images) {
+        await api.post(`/tasks/${task.id}/images`, { data: img.url });
+      }
+      flash(`已标记验证失败并回退待办${failDialog.images.length > 0 ? `（附 ${failDialog.images.length} 张截图）` : ''}`);
+      setFailDialog(null);
+      void loadTasks(activeProject);
+    } catch (e) {
+      flash(String((e as Error).message ?? e));
+    } finally {
+      setFailBusy(false);
+    }
   }
 
   /** FR1.3 修改优先级 */
@@ -1884,6 +1909,21 @@ export function TasksPage() {
             ) : (
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>未找到验证失败反馈段</span>
             )}
+            {/* T00610：反馈窗口内直接查看随反馈提交的截图（点击放大） */}
+            {t.images.length > 0 && (
+              <div style={{ marginTop: 8, borderTop: '1px solid var(--border)', paddingTop: 6 }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>反馈截图（{t.images.length}）— 点击放大；AI 可经 MCP 读取识别</div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {t.images.map((img) => (
+                    <button key={img.id} type="button" onClick={() => setPreviewId(img.id)}
+                      title="放大预览该反馈截图" aria-label="放大预览反馈截图"
+                      style={{ padding: 0, background: 'none', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', lineHeight: 0 }}>
+                      <img src={imageUrl(img.id)} alt="反馈截图" style={{ height: 64, borderRadius: 3, display: 'block' }} />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -2627,6 +2667,79 @@ export function TasksPage() {
       {renderTaskLists()}
       {hasMore && renderLoadMore()}
       {reuseOpen && renderReuseDialog()}
+      {/* T00610：验证失败反馈录入弹窗——支持截图（粘贴/选择文件），截图随反馈落库供 MCP 读取识别 */}
+      {failDialog && (
+        <div /* NOSONAR - 弹窗遮罩为鼠标便捷关闭，Esc/取消按钮提供键盘可达通路 */
+          style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={(e) => { if (e.target === e.currentTarget && !failBusy) setFailDialog(null); }}>
+          <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(560px, 94vw)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
+              <AlertTriangle size={14} style={{ color: 'var(--danger)' }} /> 验证失败反馈
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 300 }}>{failDialog.title}</span>
+              <span style={{ flex: 1 }} />
+              <button onClick={() => setFailDialog(null)} disabled={failBusy} title="关闭" aria-label="关闭验证失败反馈弹窗"
+                style={{ display: 'inline-flex', alignItems: 'center', cursor: failBusy ? 'default' : 'pointer', background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 14 }}>×</button>
+            </div>
+            <div style={{ padding: 14, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12 }}>
+              <div style={{ color: 'var(--text-muted)' }}>
+                请描述验证失败的原因（可粘贴或选择截图辅助说明）；提交后任务将回退待办，截图可由 AI 通过 MCP 读取识别。
+              </div>
+              <textarea
+                autoFocus
+                value={failDialog.text}
+                onChange={(e) => setFailDialog((d) => (d ? { ...d, text: e.target.value } : d))}
+                onPaste={(e) => readClipboardImages(e, (url) => setFailDialog((d) => (d ? { ...d, images: [...d.images, { id: newPastedImageId(), url }] } : d)))}
+                placeholder="请描述验证失败的原因…（可直接 Ctrl+V 粘贴截图）"
+                aria-label="验证失败反馈内容"
+                rows={5}
+                style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, resize: 'vertical' }}
+              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <label className="tbtn-anim" title="选择截图文件（可多选）"
+                  style={{ cursor: failBusy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border-strong)', fontSize: 12, color: 'var(--text)' }}>
+                  <ImagePlus size={13} /> 选择截图
+                  <input type="file" accept="image/*" multiple style={{ display: 'none' }}
+                    onChange={(e) => {
+                      const fs = [...(e.target.files ?? [])];
+                      for (const f of fs) {
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                          if (typeof reader.result === 'string') {
+                            setFailDialog((d) => (d ? { ...d, images: [...d.images, { id: newPastedImageId(), url: reader.result as string }] } : d));
+                          }
+                        };
+                        reader.readAsDataURL(f);
+                      }
+                      e.target.value = '';
+                    }} />
+                </label>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>已附 {failDialog.images.length} 张截图</span>
+              </div>
+              {failDialog.images.length > 0 && (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {failDialog.images.map((img) => (
+                    <span key={img.id} style={{ position: 'relative', display: 'inline-flex' }}>
+                      <img src={img.url} alt="待上传截图预览" style={{ height: 64, borderRadius: 4, border: '1px solid var(--border)' }} />
+                      <button onClick={() => setFailDialog((d) => (d ? { ...d, images: d.images.filter((x) => x.id !== img.id) } : d))}
+                        title="移除该截图" aria-label="移除该截图"
+                        style={{ position: 'absolute', top: -6, right: -6, width: 16, height: 16, borderRadius: '50%', border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 11, lineHeight: '16px', cursor: 'pointer', padding: 0 }}>×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
+              <button onClick={() => setFailDialog(null)} disabled={failBusy} className="tbtn-anim"
+                style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>取消</button>
+              <button onClick={() => void submitVerifyFailed()} disabled={failBusy} className="tbtn-anim"
+                title="提交反馈并回退待办" aria-label="提交验证失败反馈"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: failBusy ? 'default' : 'pointer', border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 12 }}>
+                {failBusy ? <><Loader2 size={12} className="aispin" />提交中…</> : '提交并回退待办'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

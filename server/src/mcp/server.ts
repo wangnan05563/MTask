@@ -11,6 +11,7 @@ import { McpServer, type CallToolResult } from '@modelcontextprotocol/sdk/server
 import { getDb } from '../db/connection';
 import { getDefaultNoteProjectId } from '../services/AppSettings';
 import { TaskService } from '../services/TaskService';
+import { TaskImageService } from '../services/TaskImageService'; // T00610：截图读取（供 AI 识别验证失败反馈截图）
 import { PlanService } from '../services/PlanService';
 import { ArchiveService } from '../services/ArchiveService';
 import {
@@ -281,6 +282,39 @@ export async function createMCPServer(): Promise<McpServer> {
       const task = resolveTask(a);
       if (!task) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
       return ok(json(task), { task });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // T00610：读取任务截图（含 base64 dataURL）——供 AI 识别验证失败反馈中的截图内容
+  server.registerTool('mtask_get_task_images', {
+    title: '读取任务截图',
+    description: '按 id 或任务编号 taskNo 读取该任务的全部截图（含验证失败反馈随附的截图）。默认返回 base64 dataURL，AI 可直接识别图片内容（如报错弹窗、异常界面）。单张超过 3MB 时仅返回元信息（避免超出上下文）。',
+    inputSchema: {
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
+      includeData: z.boolean().optional().describe('是否返回 base64 图片数据（默认 true 供 AI 识别；仅需元信息时传 false）'),
+    },
+  }, async (a) => {
+    try {
+      const task = resolveTask(a);
+      if (!task) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
+      const metas = TaskImageService.listByTask(task.id);
+      if (metas.length === 0) return ok(JSON.stringify({ count: 0, images: [], note: '该任务没有截图' }), { count: 0, images: [] });
+      const includeData = a.includeData !== false;
+      const maxBytes = 3 * 1024 * 1024;
+      const images = metas.map((m) => {
+        const base: Record<string, unknown> = { id: m.id, mime_type: m.mime_type, size: m.size, created_at: m.created_at };
+        if (!includeData) return base;
+        if (m.size > maxBytes) {
+          base.note = `图片 ${(m.size / 1024 / 1024).toFixed(1)}MB 超过 3MB 上限，未返回数据（可用 GET /api/images/${m.id} 下载后本地查看）`;
+          return base;
+        }
+        const data = TaskImageService.getData(m.id);
+        if (!data) { base.note = '图片数据缺失'; return base; }
+        base.dataUrl = `data:${data.mime_type};base64,${data.data.toString('base64')}`;
+        return base;
+      });
+      return ok(JSON.stringify({ task_no: task.task_no, count: images.length, images }), { task_no: task.task_no, count: images.length, images });
     } catch (e) { return err((e as Error).message); }
   });
 
