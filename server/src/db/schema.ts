@@ -247,6 +247,13 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('tasks', 'handle_result', 'handle_result TEXT');
   // T00566：AI 处理状态动画（'' 已读/无 | running 运行中 | failed 运行失败 | unread 未读）
   ensureColumn('tasks', 'ai_state', "ai_state TEXT DEFAULT ''");
+  // T00620：AI 状态变更时间（ISO 字符串）——两个用途：
+  // 1) running 超时（Agent 中断/崩溃无兜底）→ 读取时惰性置 failed；
+  // 2) 标记"是否被 AI 处理过"——'' 状态（用户已读清空）时保留该时间戳不丢，
+  //    据此让 MCP 只在"从未处理过"的任务上自动置 running（避免抹掉 unread/failed 终态）。
+  ensureColumn('tasks', 'ai_state_at', "ai_state_at TEXT DEFAULT ''");
+  // T00620：ai_state 索引——支撑 running 超时的轻量探测（读取路径每次都要判断是否有过期项）
+  db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_ai_state ON tasks(ai_state)");
   // T00577：派生待办溯源——记录原任务编号（如 T00422），AI 处理完成后自动把派生单结论整合回原任务
   ensureColumn('tasks', 'derived_from', 'derived_from TEXT');
   // T00587：模型配置归档（删除按钮改归档）——软删保留记录，列表默认隐藏

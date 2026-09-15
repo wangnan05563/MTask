@@ -6,6 +6,9 @@ import { ReqEntryService } from './ReqService';
 
 /** 批量 IN 查询的每批 id 数：SQLite 变量上限 999，留足余量并与图片批量查询（≤200）同量级 */
 const PLAN_LOOKUP_BATCH = 200;
+/** T00620：running 状态超时阈值——超过则视为 AI 中断并自动置 failed（可用环境变量覆盖，便于调试） */
+const AI_STATE_STALE_MS = Number(process.env.MTASK_AI_STATE_STALE_MS ?? 10 * 60 * 1000);
+
 
 /** DB 原始行：archived 为 number（SQLite 0/1） */
 export interface TaskRow {
@@ -27,6 +30,8 @@ export interface TaskRow {
   handle_result: string | null;
   /** T00566：AI 处理状态动画（'' 已读/无 | running 运行中 | failed 运行失败 | unread 未读） */
   ai_state: string;
+  /** T00620：AI 状态变更时间（ISO）；'' 状态（已读清空）时保留历史值，用于判断"是否被处理过" */
+  ai_state_at: string;
   /** T00577：派生单溯源——原任务编号（如 T00422）；处理完成后结论自动整合回原任务 */
   derived_from: string | null;
   /** T00490：记录字体颜色（Excel 风格颜色按钮），空串=默认色 */
@@ -57,6 +62,8 @@ export interface TaskView {
   handle_result: string | null;
   /** T00566：AI 处理状态动画（'' 已读/无 | running failed unread） */
   ai_state: string;
+  /** T00620：AI 状态变更时间（ISO）；'' 状态（已读清空）时保留历史值 */
+  ai_state_at: string;
   /** T00577：派生单溯源——原任务编号 */
   derived_from: string | null;
   pinned: boolean;
@@ -168,6 +175,8 @@ export const TaskService = {
   },
 
   getById(id: string): TaskView | null {
+    // T00620：读取路径惰性过期 running（AI 中断兜底）——放在取行之前，保证返回值已是终态
+    this.expireStaleRunning();
     const row = getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(id) as TaskRow | undefined;
     return row ? rowToTask(row, TaskImageService.listByTask(id)) : null;
   },
@@ -176,7 +185,46 @@ export const TaskService = {
   setAiState(id: string, state: string): TaskView | null {
     const allowed = new Set(['running', 'failed', 'unread', '']);
     if (!allowed.has(state)) return this.getById(id);
-    return this.update(id, { ai_state: state });
+    // T00620：同步记录状态变更时间。
+    // - 置 ''（用户已读清空）时**保留**原 ai_state_at：它是"该任务是否被 AI 处理过"的判据，
+    //   丢掉会让 MCP 的"读取即开始处理"再次误判，把已完成的卡片重新转圈；
+    // - 其余状态（含 failed/超时兜底）刷新时间戳，供 running 超时判断使用。
+    if (state === '') {
+      return this.update(id, { ai_state: state });
+    }
+    return this.update(id, { ai_state: state, ai_state_at: new Date().toISOString() });
+  },
+
+  /**
+   * T00620：running 超时兜底——AI Agent 中断（进程被杀/会话结束/网络断开）时
+   * 不会有任何回调来收尾，任务会永远停在转圈态。这里在读取路径上**惰性过期**：
+   * 把 running 且超过 maxAgeMs 未更新的任务置为 failed（红色警示，用户可据此重试）。
+   *
+   * 实现要点：
+   * - **探测优先**：先用一次轻量 SELECT 判断是否存在过期项（配 idx_tasks_ai_state 索引），
+   *   无过期项直接返回——避免每次 list/get 都做写事务；
+   * - **不做时间节流**：曾经加过 30s 节流，结果中断检测被最长延迟 30s（验证脚本当场暴露），
+   *   而探测本身已足够便宜（真实库 619 任务、running 通常 0~2 条），故直接去掉；
+   * - 时间戳缺失的历史数据回退用 updated_at 判断年龄（否则老数据永远不过期）；
+   * - 直接 SQL 更新（只改 ai_state/ai_state_at，**不动 updated_at**），避免污染"最近更新"排序。
+   */
+  expireStaleRunning(maxAgeMs: number = AI_STATE_STALE_MS, force = false): number {
+    const db = getDb();
+    const nowMs = Date.now();
+    const cutoff = new Date(nowMs - maxAgeMs).toISOString();
+    const ageExpr = "CASE WHEN COALESCE(ai_state_at, '') <> '' THEN ai_state_at ELSE COALESCE(updated_at, '') END";
+    const stale = db.prepare(
+      `SELECT id FROM tasks WHERE ai_state = 'running' AND ${ageExpr} < ? LIMIT 1`,
+    ).get(cutoff) as { id: string } | undefined;
+    if (!stale && !force) return 0;
+
+    const r = db.prepare(
+      `UPDATE tasks SET ai_state = 'failed', ai_state_at = ? WHERE ai_state = 'running' AND ${ageExpr} < ?`,
+    ).run(new Date(nowMs).toISOString(), cutoff);
+    if (r.changes > 0) {
+      console.warn(`[TaskService] ${r.changes} 个 running 任务超过 ${Math.round(maxAgeMs / 60000)} 分钟未更新，自动置 failed（AI 中断兜底）`);
+    }
+    return r.changes;
   },
 
   /** 按编号查找任务：供 AI Agent 通过 MCP 的 taskNo 参数定位。不存在返回 null。 */
@@ -187,6 +235,8 @@ export const TaskService = {
 
   /** 按项目/条件列出；archived=false 为活跃列表（待办/已完成由 status 区分）。支持可选分页/搜索/分类/排序 */
   list(opts: TaskListOptions = {}): TaskView[] {
+    // T00620：列表读取路径惰性过期 running（AI 中断兜底；内部 30s 节流）
+    this.expireStaleRunning();
     const db = getDb();
     // 动态 WHERE：分页/搜索/分类需精确拼条件，全部走参数绑定防注入
     const where: string[] = [];
@@ -253,7 +303,7 @@ export const TaskService = {
     });
   },
 
-  update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state' | 'derived_from'>>): TaskView {
+  update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state' | 'ai_state_at' | 'derived_from'>>): TaskView {
     const db = getDb();
     // better-sqlite3 不支持 boolean 绑定且 SQLite 无布尔型，verified/pinned 先归一整型 0/1 再落库
     if (patch.verified !== undefined) {

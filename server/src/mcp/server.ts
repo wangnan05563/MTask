@@ -276,17 +276,24 @@ export async function createMCPServer(): Promise<McpServer> {
 
   server.registerTool('mtask_get_task', {
     title: '查询任务',
-    description: '按 id 或任务编号 taskNo 返回单个任务详情（含 task_no 与截图元信息）。不存在返回错误。',
+    description: '按 id 或任务编号 taskNo 返回单个任务详情（含 task_no 与截图元信息）。不存在返回错误。'
+      + '【状态不再自动驱动】T00620：读取详情**不会**自动置 running（原行为导致"仅查看也转圈、处理完仍转圈"）；'
+      + 'Agent 确实开始处理时请显式调用 mtask_write_task_status({state:"running"})，或本次读取传 markRunning:true。',
     inputSchema: {
       id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
       taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
+      markRunning: z.boolean().optional().describe('T00620：显式声明"本次读取即开始处理"，仅在任务从未被处理过（ai_state 与 ai_state_at 均空）时置 running；默认 false'),
     },
   }, async (a) => {
     try {
       const task = resolveTask(a);
       if (!task) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
-      // T00566 二轮：状态**自动驱动**（不依赖技能显式调用）——Agent 读取待办任务详情即视为开始处理
-      if (task.status === 'todo' && task.ai_state !== 'running') {
+      // T00620：状态**不再自动驱动**。原实现「读取待办即置 running」会把
+      // ①仅查看/三查的任务钉成转圈、②已完成的 unread 与中断后的 failed 抹回 running
+      // （用户实测："任务处理结束后状态还是运行态"）。
+      // 现在：状态只由显式写入驱动（mtask_write_task_status / markRunning:true），
+      // 且 running 超时（默认 10 分钟，见 TaskService.expireStaleRunning）自动兜底为 failed。
+      if (a.markRunning && task.status === 'todo' && task.ai_state === '' && !task.ai_state_at) {
         TaskService.setAiState(task.id, 'running');
       }
       const fresh = TaskService.getById(task.id) ?? task;
