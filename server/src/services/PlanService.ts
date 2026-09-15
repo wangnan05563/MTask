@@ -336,7 +336,7 @@ export const PlanService = {
     const rows = getDb().prepare(
       `SELECT p.*, t.title AS linked_task_title
        FROM plan_tasks p LEFT JOIN tasks t ON t.id = p.linked_task_id
-       WHERE p.project_id = ? AND p.archived = 0 ORDER BY p.sort_order`,
+       WHERE p.project_id = ? AND p.archived = 0 AND COALESCE(p.history_at, '') = '' ORDER BY p.sort_order`,
     ).all(projectId) as Array<PlanTaskRow & { linked_task_title: string | null }>;
     return rows.map((r) => ({
       ...r,

@@ -20,6 +20,8 @@ export interface TaskRow {
   verified: number;
   archived: number;
   archived_at: string | null;
+  /** T00589：历史资产时间（非空即已沉淀至历史资产，与归档独立） */
+  history_at: string | null;
   ai_summary: string | null;
   /** 处理结果：AI 分析结论（根因/解决方案）等，由 MCP 或前端编辑写入 */
   handle_result: string | null;
@@ -49,6 +51,8 @@ export interface TaskView {
   verified: boolean;
   archived: boolean;
   archived_at: string | null;
+  /** T00589：历史资产时间（非空即已沉淀，与归档独立） */
+  history_at: string | null;
   ai_summary: string | null;
   handle_result: string | null;
   /** T00566：AI 处理状态动画（'' 已读/无 | running failed unread） */
@@ -189,6 +193,8 @@ export const TaskService = {
     const values: unknown[] = [];
     where.push('archived = ?');
     values.push(opts.archived ? 1 : 0);
+    // T00589：活跃列表排除已入历史资产的内容（历史资产为独立沉淀区，不与活跃/归档混排）
+    if (!opts.archived) where.push("COALESCE(history_at, '') = ''");
     if (opts.projectId) { where.push('project_id = ?'); values.push(opts.projectId); }
     if (opts.keyword) {
       // 转义 LIKE 通配符（%/_），让搜索词按字面匹配而非被误当通配

@@ -251,6 +251,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('tasks', 'derived_from', 'derived_from TEXT');
   // T00587：模型配置归档（删除按钮改归档）——软删保留记录，列表默认隐藏
   ensureColumn('ai_tools', 'archived', 'archived INTEGER NOT NULL DEFAULT 0');
+  // T00589：历史资产（组织过程资产沉淀，与归档=软删除语义区分）——history_at 非空即已入历史资产
+  ensureColumn('tasks', 'history_at', 'history_at TEXT');
+  ensureColumn('plan_tasks', 'history_at', 'history_at TEXT');
   backfillTaskNo();
   ensureColumn('ai_tools', 'pinned', 'pinned INTEGER NOT NULL DEFAULT 0');
   // T00446：模型拖拽排序权重（小值在前）
