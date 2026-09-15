@@ -254,6 +254,10 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // T00589：历史资产（组织过程资产沉淀，与归档=软删除语义区分）——history_at 非空即已入历史资产
   ensureColumn('tasks', 'history_at', 'history_at TEXT');
   ensureColumn('plan_tasks', 'history_at', 'history_at TEXT');
+  // T00589 二轮：**项目级快照**——projects.history_at 非空即整个项目已沉淀为历史资产快照
+  // （该项目在任务/计划菜单的项目列表中不再出现，内容随项目快照整体恢复或归档）
+  ensureColumn('projects', 'history_at', 'history_at TEXT');
+  ensureColumn('projects', 'archived', 'archived INTEGER NOT NULL DEFAULT 0');
   backfillTaskNo();
   ensureColumn('ai_tools', 'pinned', 'pinned INTEGER NOT NULL DEFAULT 0');
   // T00446：模型拖拽排序权重（小值在前）

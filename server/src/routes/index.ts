@@ -72,10 +72,18 @@ api.get('/logs', (req, res) => {
 });
 
 // ---------- 项目 ----------
-api.get('/projects', (_req, res) => {
+api.get('/projects', (req, res) => {
+  // T00589 二轮：默认**排除**已沉淀为历史资产快照的项目与已归档项目（任务/计划菜单的项目列表不再出现）；
+  // 历史资产页以 ?includeHistory=1 取全量（含历史/归档、并带 history_at 供分区展示）
+  const includeHistory = req.query.includeHistory === '1';
+  if (includeHistory) {
+    const all = getDb().prepare('SELECT * FROM projects ORDER BY sort_weight, created_at').all() as Array<Record<string, unknown>>;
+    res.json(all);
+    return;
+  }
   const cached = cacheGet<unknown[]>('projects');
   if (cached) return res.json(cached);
-  const rows = getDb().prepare('SELECT * FROM projects ORDER BY sort_weight, created_at').all() as Array<Record<string, unknown>>;
+  const rows = getDb().prepare("SELECT * FROM projects WHERE COALESCE(history_at,'') = '' AND COALESCE(archived,0) = 0 ORDER BY sort_weight, created_at").all() as Array<Record<string, unknown>>;
   // T00496：附每项目待办/未验证计数（供项目下拉徽标展示）
   const counts = getDb().prepare(
     `SELECT project_id,
@@ -105,6 +113,11 @@ api.get('/projects', (_req, res) => {
 api.post('/projects', (req, res) => {
   const { name, description = '' } = req.body ?? {};
   if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name 必填' });
+  // T00589 二轮：项目名全局唯一——**含历史资产快照中的项目名**与已归档项目（避免与沉淀快照重名混淆）
+  const dup = getDb().prepare('SELECT name, history_at FROM projects WHERE name = ?').get(name.trim()) as { name: string; history_at: string | null } | undefined;
+  if (dup) {
+    return res.status(400).json({ error: dup.history_at ? `项目名「${name.trim()}」已被历史资产中的项目使用，请换名` : `项目名「${name.trim()}」已存在` });
+  }
   const id = uuid();
   getDb().prepare('INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
     .run(id, name, description, now(), now());

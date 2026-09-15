@@ -9,7 +9,7 @@ export const changeBus = new EventEmitter();
 changeBus.setMaxListeners(50);
 
 /** 变更类型：tasks=任务增改 | plans=项目计划增改 | queue=队列收敛 */
-export type ChangeKind = 'tasks' | 'plans' | 'queue';
+export type ChangeKind = 'tasks' | 'plans' | 'queue' | 'projects'; // T00589 二轮：项目级变更（沉淀/恢复/归档）通知
 
 export function notifyChange(kind: ChangeKind): void {
   changeBus.emit('change', kind);
