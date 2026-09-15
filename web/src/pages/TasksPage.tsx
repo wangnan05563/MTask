@@ -535,6 +535,13 @@ export function TasksPage() {
   /** FR5 已完成任务：标记验证通过（T00521 调整：验证失败路径统一走 markVerifyFailed，由验证选择面板入口触发） */
   async function toggleVerified(task: Task) {
     await api.patch(`/tasks/${task.id}`, { verified: true });
+    // T00623：验证通过后收起该任务的「验证失败反馈」展开区（徽标随 verified 隐藏，展开区不应残留）
+    setFailbackOpen((p) => ({ ...p, [task.id]: false }));
+    setFbDrafts((prev) => {
+      const next = { ...prev };
+      delete next[task.id];
+      return next;
+    });
     void loadTasks(activeProject);
   }
 
@@ -1258,8 +1265,9 @@ export function TasksPage() {
             {t.task_no}
           </span>
         )}
-        {/* T00502/T00521 调整：验证失败徽标——点击展开「验证失败反馈」窗口（聚焦失败段查看/修改） */}
-        {t.handle_result?.includes('【验证失败') && (
+        {/* T00502/T00521 调整：验证失败徽标——点击展开「验证失败反馈」窗口（聚焦失败段查看/修改）
+            T00623：验证通过（verified=true）后隐藏该标签——历史【验证失败】段仍在 handle_result（供追溯），但不再作为当前状态提示 */}
+        {t.handle_result?.includes('【验证失败') && !t.verified && (
           <span title="验证失败 — 点击查看/修改失败反馈" aria-label="验证失败"
             onClick={() => setFailbackOpen((p) => ({ ...p, [t.id]: true }))}
             style={{ fontSize: 10, color: 'var(--danger)', border: '1px solid var(--danger)', padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'pointer' }}>
@@ -1492,8 +1500,9 @@ export function TasksPage() {
             {resultOpen[t.id] ? <ChevronUp size={13} /> : <ClipboardList size={13} />}
           </button>
         )}
-        {/* T00531 布局调整：验证失败反馈按钮移至「展开处理结果」图标后方（标题行）——点击展开反馈窗口 */}
-        {t.handle_result?.includes('【验证失败') && (
+        {/* T00531 布局调整：验证失败反馈按钮移至「展开处理结果」图标后方（标题行）——点击展开反馈窗口
+            T00623：验证通过（verified=true）后同样隐藏该入口（与失败徽标一致，避免残留入口） */}
+        {t.handle_result?.includes('【验证失败') && !t.verified && (
           <button
             onClick={() => setFailbackOpen((p) => ({ ...p, [t.id]: !p[t.id] }))}
             title="验证失败反馈 — 展开查看/修改该任务的验证失败反馈"
