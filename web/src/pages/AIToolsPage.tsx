@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { Archive, ChevronDown, ChevronUp, Code2, Cpu, Copy, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, Save, Star, Trash2, X } from 'lucide-react';
+import { Archive, ChevronDown, ChevronUp, Code2, Cpu, Copy, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, Save, Star, Trash2, X, Check } from 'lucide-react';
 import { api, type AITool } from '../api/client';
 import { UsagePanel } from './UsagePanel';
 import { askConfirm } from '../ui/dialogs';
@@ -51,6 +51,8 @@ interface ToolActionsCellProps {
 
 /** 操作列（S3776 拆分）：集中放置悬停显现按钮与测试/模型结果，独立成组件后行组件与页面组件复杂度均降至阈值内 */
 function ToolActionsCell({ tool, testing, fetchingModels, testResult, modelsResult, onOpenEdit, onTest, onFetchRowModels, onSetDefault, onRemove, flash }: ToolActionsCellProps) {
+  // T00587：复制反馈——点击后图标切换为对勾并弹入，1.5s 复原（与其他复制交互一致）
+  const [copied, setCopied] = useState(false);
   return (
     <td style={{ ...cellStyle, whiteSpace: 'nowrap' }}>
       {tool.console_url ? (
@@ -108,15 +110,24 @@ function ToolActionsCell({ tool, testing, fetchingModels, testResult, modelsResu
           <Code2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
         </button>
       )}
-      {/* T00587：模型复制按钮——与其他复制图标同款交互动画，点击复制当前模型名称 */}
+      {/* T00587：模型复制按钮——与其他操作列按钮样式对齐（abtn），点击后图标切换为对勾（弹入动画）1.5s 复原 */}
       <button
-        className="abtn tbtn-anim" onClick={() => { if (tool.model) void navigator.clipboard.writeText(tool.model).then(() => flash(`已复制模型：${tool.model}`)); }}
+        className="abtn" onClick={() => {
+          if (!tool.model) return;
+          void navigator.clipboard.writeText(tool.model).then(() => {
+            flash(`已复制模型：${tool.model}`);
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1500);
+          });
+        }}
         disabled={!tool.model}
         title={tool.model ? `复制模型 — 复制当前选择的模型名称（${tool.model}）` : '复制模型 — 当前未选择模型'}
-        aria-label="复制模型名称"
-        style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', cursor: tool.model ? 'pointer' : 'not-allowed', opacity: tool.model ? 1 : 0.4 }}
+        aria-label={copied ? '已复制模型名称' : '复制模型名称'}
+        style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', cursor: tool.model ? 'pointer' : 'not-allowed', opacity: tool.model ? 1 : 0.4, color: copied ? 'var(--success, var(--accent))' : undefined }}
       >
-        <Copy size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+        {copied
+          ? <Check size={13} className="copy-pop" style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+          : <Copy size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
       </button>
       {/* T00587：删除改为归档——软删保留记录，列表默认隐藏 */}
       <button
@@ -766,6 +777,9 @@ export function AIToolsPage() {
     <section>
       {/* 按钮加载旋转动画：供连接测试 / 模型获取等按钮 loading 图标使用 */}
       <style>{`@keyframes aispin{to{transform:rotate(360deg)}}.aispin{animation:aispin .8s linear infinite;display:inline-block}
+        /* T00587：复制成功图标弹入动画（对齐全局 tbtn-anim 交互动画基调） */
+        @keyframes copy-pop{0%{transform:scale(.5);opacity:.4}60%{transform:scale(1.25)}100%{transform:scale(1);opacity:1}}
+        .copy-pop{animation:copy-pop .28s ease-out;display:inline-block}
         .arena-row { transition: transform .12s ease; }
         .arena-row.item-pressing { transform: scale(.985); } /* T00489：仅按住行触发 */
         .arena-row:hover td { background: var(--surface-2); }

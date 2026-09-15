@@ -14,7 +14,7 @@ function setSessionState(key: string, value: unknown): void {
 interface ProjectLite { id: string; name: string }
 
 /**
- * 全局命令面板（T00443 / PRD UX-4，P2）：Ctrl+K 唤起，跨实体搜索（任务/提示词/页面直达），
+ * 全局命令面板（T00443 / PRD UX-4，P2）：Ctrl+F 唤起（T00560 调整），跨实体搜索（任务/提示词/页面直达），
  * ↑↓ 选择、Enter 执行、Esc 关闭。数据在打开时一次性并行拉取（前端过滤，量级可控）。
  */
 export function CommandPalette({ open, onClose, onNavigate }: {

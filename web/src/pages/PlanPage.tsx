@@ -163,6 +163,58 @@ export function PlanPage(props: { aiImportSignal?: number; onAiImportHandled?: (
   // T00590：列字段名可交互过滤——标题/描述列点击列名展开输入框，输入即过滤（会话级保持）
   const [titleFilter, setTitleFilter] = useSessionState<string>('plan.titleFilter', '');
   const [titleFilterOpen, setTitleFilterOpen] = useSessionState<boolean>('plan.titleFilterOpen', false);
+  // T00590 扩展：开始/结束/状态/进度/负责人列的可交互过滤（会话级保持；openCol 记录当前展开的列）
+  const [colFilters, setColFilters] = useSessionState<Record<string, string>>('plan.colFilters', {});
+  const [openCol, setOpenCol] = useSessionState<string>('plan.openCol', '');
+
+  /** T00590：通用列头过滤控件——点击列名展开（文本输入或下拉），选中即过滤，× / Esc 清除并收起 */
+  function renderColFilter(key: string, label: string, type: 'text' | 'select', options?: Array<{ v: string; l: string }>) {
+    const val = colFilters[key] ?? '';
+    const open = openCol === key;
+    const setVal = (v: string) => setColFilters((prev) => ({ ...prev, [key]: v }));
+    const clear = () => { setVal(''); setOpenCol(''); };
+    if (open) {
+      return (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          {type === 'text' ? (
+            <input
+              autoFocus
+              value={val}
+              onChange={(e) => setVal(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Escape') clear(); }}
+              placeholder={`过滤${label}…`}
+              aria-label={`按${label}过滤计划`}
+              style={{ width: 92, padding: '2px 6px', fontSize: 11, border: '1px solid var(--accent)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}
+            />
+          ) : (
+            <select
+              autoFocus
+              value={val}
+              onChange={(e) => setVal(e.target.value)}
+              aria-label={`按${label}过滤计划`}
+              style={{ padding: 2, fontSize: 11, border: '1px solid var(--accent)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}
+            >
+              <option value="">全部</option>
+              {(options ?? []).map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
+            </select>
+          )}
+          <button onClick={clear} title="清除过滤并收起" aria-label={`清除${label}过滤`}
+            style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11, padding: '0 2px' }}>×</button>
+        </span>
+      );
+    }
+    return (
+      <button onClick={() => setOpenCol(key)}
+        className="tbtn-anim"
+        title={`点击输入过滤${label}`}
+        aria-label={`过滤${label}`}
+        style={{ border: '1px solid transparent', borderRadius: 4, background: 'transparent', color: val ? 'var(--accent)' : 'var(--text)', fontSize: 13, padding: '1px 4px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+        {label}
+        <Search size={11} />
+        {val && <span style={{ fontSize: 10, color: 'var(--accent)' }}>已过滤</span>}
+      </button>
+    );
+  }
   // T00544：工期显示模式——「工期/日」与「工期/时」切换（会话级保持；持久化仍为工作日，8 小时/天换算）
   const [durationUnit, setDurationUnit] = useSessionState<'day' | 'hour'>('plan.durationUnit', 'day');
   // T00529：操作列省略号菜单（依赖维护等）——展开任务 id 与 fixed 坐标
@@ -1006,8 +1058,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               )}
             </th>
             <th style={{ padding: 6, fontSize: 11 }}>依赖</th>
-            <th style={{ padding: 6 }}>开始</th>
-            <th style={{ padding: 6 }}>结束</th>
+            <th style={{ padding: 6 }}>{renderColFilter('start', '开始', 'text')}</th>
+            <th style={{ padding: 6 }}>{renderColFilter('end', '结束', 'text')}</th>
             <th style={{ padding: 6 }}>
               <button onClick={() => setDurationUnit((u) => (u === 'day' ? 'hour' : 'day'))}
                 title="点击切换工期显示模式：工期/日（工作日）与 工期/时（按 8 小时/天换算持久化）"
@@ -1016,9 +1068,13 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 {durationUnit === 'day' ? '工期/日' : '工期/时'}
               </button>
             </th>
-            <th style={{ padding: 6 }}>进度</th>
-            <th style={{ padding: 6 }}>状态</th>
-            <th style={{ padding: 6 }}>负责人</th>
+            <th style={{ padding: 6 }}>{renderColFilter('progress', '进度', 'select', [
+              { v: 'none', l: '未开始' }, { v: 'doing', l: '进行中' }, { v: 'done', l: '已完成' },
+            ])}</th>
+            <th style={{ padding: 6 }}>{renderColFilter('status', '状态', 'select', [
+              { v: 'todo', l: '待开始' }, { v: 'doing', l: '进行中' }, { v: 'done', l: '已完成' }, { v: 'blocked', l: '阻塞' },
+            ])}</th>
+            <th style={{ padding: 6 }}>{renderColFilter('assignee', '负责人', 'text')}</th>
             <th style={{ padding: 6 }}>待办联动</th>
             <th style={{ padding: 6 }}>操作</th>
           </tr>
@@ -1043,6 +1099,17 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             return plans.map((p, i) => {
             // T00590：标题/描述过滤——不匹配行返回 null（序号与里程碑区间仍按全量计算保持正确）
             if (titleFilter && !(`${p.title} ${p.description ?? ''}`.toLowerCase().includes(titleFilter.toLowerCase()))) return null;
+            // T00590 扩展：列过滤（开始/结束/负责人=包含匹配；状态=精确；进度=三档）——同样仅隐藏行
+            const cf = colFilters;
+            if (cf.start && !(p.start_date ?? '').includes(cf.start)) return null;
+            if (cf.end && !(p.end_date ?? '').includes(cf.end)) return null;
+            if (cf.assignee && !(p.assignee ?? '').toLowerCase().includes(cf.assignee.toLowerCase())) return null;
+            if (cf.status && p.status !== cf.status) return null;
+            if (cf.progress) {
+              const pg = p.progress ?? 0;
+              const bucket = pg >= 100 ? 'done' : pg > 0 ? 'doing' : 'none';
+              if (bucket !== cf.progress) return null;
+            }
             // T00506：里程碑汇总——本里程碑到下一里程碑之间的普通/日常任务（count/Σ工期/平均进度）
             const isMilestone = p.kind === 'milestone';
             let mEnd = plans.length;

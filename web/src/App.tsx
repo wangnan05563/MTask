@@ -36,12 +36,12 @@ function Shell() {
   // T00569：AI 项目计划导入跨页触发——AI 工作台卡片点击 → 切到项目计划并打开 AI 导入弹窗
   const [planAiImport, setPlanAiImport] = useState(0);
   const [serverOk, setServerOk] = useState<boolean | null>(null);
-  // T00443 / PRD UX-4：全局命令面板（Ctrl+K）
+  // T00443 / PRD UX-4：全局命令面板（T00560：快捷键 Ctrl+F）
   const [paletteOpen, setPaletteOpen] = useState(false);
-  // T00443 / PRD UX-4：Ctrl+K 唤起/关闭命令面板
+  // T00443 / PRD UX-4：Ctrl+F 唤起/关闭命令面板（T00560：由 Ctrl+K 调整为更符合操作习惯的 Ctrl+F）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
         e.preventDefault();
         setPaletteOpen((v) => !v);
       }
