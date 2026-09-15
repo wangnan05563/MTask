@@ -15,6 +15,7 @@ import { getConfig as getUpdateConfig, saveConfig as saveUpdateConfig, testConfi
 import { logService } from '../services/LogService';
 import { dbAdminApi } from './dbadmin';
 import { planApi } from './plans';
+import { historyApi } from './history'; // T00589：历史资产（转移/统计）
 import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, gatherReportData, type ReportPeriod } from '../services/ReportService';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
@@ -854,6 +855,21 @@ api.post('/ai/organize', async (req, res) => {
 });
 
 // ---------- 标题美化 ----------
+// T00597：AI 简化标题——依据任务详情高度总结（限 40 字），需有详情内容方可触发
+api.post('/ai/simplify', async (req, res) => {
+  const { toolId, title, description } = req.body ?? {};
+  if (!toolId || typeof toolId !== 'string') return res.status(400).json({ error: 'toolId 必填' });
+  if (!title || typeof title !== 'string' || !title.trim()) return res.status(400).json({ error: '标题为空，无可简化内容' });
+  if (!description || typeof description !== 'string' || !description.trim()) {
+    return res.status(400).json({ error: '任务详情为空——AI 简化需依据详情内容总结标题，请先补充任务详情' });
+  }
+  try {
+    res.json(await AIService.simplifyTitle(title.trim(), description.trim(), toolId));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 api.post('/ai/beautify', async (req, res) => {
   const { toolId, title } = req.body ?? {};
   if (!toolId) return res.status(400).json({ error: 'toolId 必填' });
@@ -1520,3 +1536,4 @@ api.use('/dbadmin', dbAdminApi);
 
 // ---------- 项目计划（T00431，菜单位于周报前） ----------
 api.use('/plans', planApi);
+api.use('/history', historyApi); // T00589：历史资产页面后端（转移 + 统计）

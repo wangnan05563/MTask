@@ -6,7 +6,7 @@ import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { useBusy, setBusy } from '../ui/busy';
-import { AlertTriangle, AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
+import { AlertTriangle, AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 
 // ---------- T00552：批量分类运行态模块级化——切页后循环继续、返回不卡死 ----------
@@ -606,6 +606,35 @@ export function TasksPage() {
     if (!anyBeautify) return;
     beautifyStore.cancelAll();
     flash('已取消美化');
+  }
+
+  /** T00597：AI 简化标题——依据任务详情高度总结（限 40 字），结果写入标题草稿待用户确认保存。
+   *  前置校验：任务须有详情内容（description 非空），否则友好提示不触发（避免无来源的语义丢失）。 */
+  async function simplify(task: Task) {
+    if (batchBusy) return flash('正在进行批量处理，请先在工具栏取消');
+    if (beautifyBusy[task.id]) return flash('该任务正在处理，请稍候');
+    if (!organizeToolId) return flash('请先在「模型管理」页添加并选择工具');
+    if (!task.title.trim()) return flash('该任务无标题可简化');
+    if (!(task.description ?? '').trim()) {
+      return flash('AI 简化需依据任务详情总结标题——请先补充该任务的详情内容，避免语义丢失');
+    }
+    const ac = new AbortController();
+    beautifyStore.aborts[task.id] = ac;
+    beautifyStore.setBusy(task.id);
+    try {
+      const result = await api.post<{ ok: boolean; content?: string; error?: string }>('/ai/simplify', {
+        toolId: organizeToolId, title: task.title, description: task.description ?? '',
+      }, ac.signal);
+      if (!result.ok) return flash(result.error ?? '简化失败');
+      if (!result.content?.trim()) return flash('AI 未返回简化标题');
+      beautifyStore.setDraft(task.id, result.content.trim());
+      flash('已简化（限 40 字），可编辑后保存');
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      beautifyStore.clearBusy(task.id);
+      delete beautifyStore.aborts[task.id];
+    }
   }
 
   /** 批量美化项目全部待办标题：逐条调用，结果分别写入各标题编辑草稿供逐条确认。
@@ -1462,7 +1491,11 @@ export function TasksPage() {
         {titleEditing ? (
           <button onClick={() => void saveTitle(t)} disabled={!titleDrafts[t.id]?.trim()} title="保存 — 保存修改后的任务标题" aria-label="保存：保存修改后的任务标题" className="task-op" style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Save size={13} /></button>
         ) : (
-          renderBeautifyButton(t)
+          <>
+            {renderBeautifyButton(t)}
+            {/* T00597：AI 简化置于 AI 美化图标之后 */}
+            {renderSimplifyButton(t)}
+          </>
         )}
         {includeRename && <button onClick={() => toggleTitleEdit(t)} title={titleEditing ? '取消 — 取消重命名' : '改名 — 重命名该任务标题'} aria-label={titleEditing ? '取消重命名' : '重命名该任务标题'} className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{titleEditing ? <X size={13} /> : <SquarePen size={13} />}</button>}
       </>
@@ -1482,6 +1515,27 @@ export function TasksPage() {
         style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', background: busy ? 'var(--accent)' : 'transparent', color: busy ? 'var(--accent-text)' : 'var(--text)', opacity: batchBusy && !busy ? 0.4 : 1 }}
       >
         <Sparkles size={13} />
+      </button>
+    );
+  }
+
+  /** T00597：AI 简化单条按钮——置于 AI 美化之后；图标 Minimize2（收缩）与美化的 Sparkles 区分度高。
+   *  简化会压缩语义（限 40 字），必须依据任务详情内容，无详情时友好提示不触发。 */
+  function renderSimplifyButton(t: Task) {
+    const busy = beautifyBusy[t.id];
+    const hasDesc = Boolean((t.description ?? '').trim());
+    return (
+      <button
+        onClick={() => void simplify(t)}
+        disabled={(batchBusy && !busy) || busy}
+        title={busy ? 'AI 处理进行中，请在工具栏点击「取消」'
+          : hasDesc ? 'AI 简化 — 依据任务详情高度总结为简洁标题（限 40 字，细节会精简）'
+            : 'AI 简化不可用 — 该任务暂无详情内容，请先补充详情后再简化（避免语义丢失）'}
+        aria-label={busy ? 'AI 处理进行中' : 'AI 简化：依据任务详情总结为简洁标题'}
+        className={`task-op${busy ? ' task-breathe' : ''}`}
+        style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', background: busy ? 'var(--accent)' : 'transparent', color: busy ? 'var(--accent-text)' : 'var(--text)', opacity: (!hasDesc || (batchBusy && !busy)) ? 0.45 : 1 }}
+      >
+        <Minimize2 size={13} />
       </button>
     );
   }

@@ -175,6 +175,34 @@ export const AIService = {
   },
 
   /**
+   * T00597：AI 简化标题——依据任务详情**高度总结**为简洁标题（限 40 字内）。
+   * 与 beautifyTitle 的差异：美化保留全部语义只做表达规范化；简化允许丢失细节，追求标题简洁。
+   * 前置要求：任务需有详情内容（description 非空）——语义来源，避免"无中生有"式丢失。
+   */
+  async simplifyTitle(title: string, description: string, toolId: string): Promise<{ ok: boolean; content?: string; error?: string }> {
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    const startedAt = Date.now();
+    const system = [
+      '你是 MTask 的标题简化专家。给定一条任务标题与其详情内容，将其**高度总结**为一则简洁标题。',
+      '要求：',
+      '1. 以任务详情为核心语义来源，凝练出最核心的功能点/对象/结果，允许省略次要细节与修饰（与"美化"不同：简化有意压缩语义，追求简洁）',
+      '2. 标题长度**严格控制在 40 个字符以内**（含标点），超出即视为失败，必须进一步精简',
+      '3. 保持可读与专业：不虚构详情中不存在的事实，不使用"等"字堆砌，不做无意义缩写',
+      '4. 只输出简化后的标题文本（单行），不要任何解释、序号、引号或 Markdown 标记',
+      '5. 输出统一使用简体中文（简体字），严禁任何繁体字',
+    ].join('\n');
+    const res = await adapter.chat(system, `【任务标题】${title}\n\n【任务详情】${description}`, config);
+    if (res.ok && res.content) {
+      res.content = stripThinking(res.content).replaceAll(/\s+/g, ' ').trim();
+      // 双保险：模型未严格遵守 40 字约束时强制截断到 40 字（不截断则在半个词处收尾）
+      if (res.content.length > 40) res.content = res.content.slice(0, 40).trim();
+    }
+    recordUsage('simplify', toolId, config.model, res.ok, startedAt, res.content?.length ?? 0, res.error);
+    return res;
+  },
+
+  /**
    * 通用单轮对话：供「AI 控制台」等自由问答场景使用（system + user 单条文本）。
    * 不做固定整理指令，交由调用方构造 system 上下文。
    */
