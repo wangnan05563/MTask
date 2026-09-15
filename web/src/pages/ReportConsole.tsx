@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { api, type AITool, type ReqCategory } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
 import { useSessionState } from '../ui/session';
-import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput, GitCompare } from 'lucide-react';
+import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput, GitCompare, FileUp } from 'lucide-react';
+import { aiImportStore } from '../stores/aiImportStore';
 
 const CATEGORIES = [
   { key: 'summary', label: '周期要点汇总' },
@@ -48,6 +49,9 @@ interface AnalysisTask {
 
 /** 内置「AI 周报」tab 固定 id：始终存在，内容由父级传入的 SSE 流式状态驱动 */
 const REPORT_TAB = '__report__';
+
+/** T00569 三轮：内置「AI 项目计划导入」tab 固定 id——导入执行日志统一在此滚动输出（与周报/分析并列） */
+const AI_IMPORT_TAB = '__aiimport__';
 
 /**
  * 自定义 AI 工具选择器：收拢时仅显示已选工具的「模型名」（节省单行空间），
@@ -418,6 +422,9 @@ export function ReportConsole({
   const [saveRows, setSaveRows] = useState<SaveRow[]>([]);
   const [saveDone, setSaveDone] = useState(false);
 
+  // T00569 三轮：AI 项目计划导入——模块级 store 订阅（切页保持，日志统一在本控制台 tab 输出）
+  const aiSnap = useSyncExternalStore(aiImportStore.subscribe, aiImportStore.getSnapshot);
+  const onAiImportTab = activeId === AI_IMPORT_TAB;
   const activeTask = tasks.find((t) => t.id === activeId) ?? null;
   const onReportTab = activeId === REPORT_TAB;
   const runningCount = tasks.filter((t) => t.status === 'busy').length;
@@ -435,8 +442,16 @@ export function ReportConsole({
     });
   }, [logs]);
 
+  // T00569 三轮：AI 导入首次产生日志时自动切到该 tab（保证执行过程可见）
+  const aiLogCount = aiSnap.logs.length;
+  const prevAiLogCount = useRef(0);
+  useEffect(() => {
+    if (aiLogCount > 0 && prevAiLogCount.current === 0) setActiveId(AI_IMPORT_TAB);
+    prevAiLogCount.current = aiLogCount;
+  }, [aiLogCount]);
+
   // 正在生成（AI 周报流式或手动任务进行中）时随内容滚到底部，保证流式输出始终跟随最新内容
-  const live = isLive(onReportTab, streaming, streamText, activeTask);
+  const live = isLive(onReportTab, streaming, streamText, activeTask) || onAiImportTab;
   useEffect(() => {
     if (live) bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
   }, [live, streamText, streamsLen(activeTask)]);
@@ -637,6 +652,28 @@ export function ReportConsole({
 
   /** 结果区内容：AI 周报流或聚焦任务按 tab 分支渲染 */
   function renderBody() {
+    // T00569 三轮：AI 项目计划导入 tab——控制台式滚动输出执行日志（与导入面板深度整合）
+    if (onAiImportTab) {
+      const lv = (level: string) => (level === 'ok' ? 'var(--success, #16a34a)' : level === 'error' ? 'var(--danger)' : 'var(--text-secondary)');
+      return (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+            <FileUp size={13} style={{ color: 'var(--accent)' }} /> AI 项目计划导入
+            {aiSnap.busy && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>执行中…</span>}
+            {aiSnap.fileName && <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>{aiSnap.fileName}</span>}
+            {aiSnap.rows.length > 0 && <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>草稿 {aiSnap.rows.length} 条</span>}
+            {aiSnap.lastSaved > 0 && <span style={{ fontSize: 11, color: 'var(--success, var(--accent))', fontWeight: 400 }}>最近保存 {aiSnap.lastSaved} 条</span>}
+          </div>
+          {aiSnap.logs.length === 0
+            ? <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>在「AI 工作台」展开「AI 项目计划导入」卡片并选择文件后，解析与入库过程将在此逐行滚动输出。</span>
+            : aiSnap.logs.map((l, i) => (
+              <div key={`${l.t}-${i}`} style={{ fontSize: 11, color: lv(l.level), padding: '2px 0', fontFamily: 'monospace' }}>
+                [{l.t}] {l.msg}
+              </div>
+            ))}
+        </div>
+      );
+    }
     if (onReportTab) {
       const hasStream = streaming || logs.length > 0 || !!streamText;
       if (!hasStream) {
@@ -815,6 +852,23 @@ export function ReportConsole({
           <Sparkles size={11} />
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>AI 周报</span>
         </button>
+        {/* T00569 三轮：AI 项目计划导入 tab——有执行记录或进行中时显示 */}
+        {(aiSnap.logs.length > 0 || aiSnap.busy) && (
+          <button
+            onClick={() => setActiveId(AI_IMPORT_TAB)}
+            title="AI 项目计划导入 — 导入执行日志在此滚动输出"
+            aria-label="AI 项目计划导入 tab"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+              border: '1px solid var(--border-strong)', background: onAiImportTab ? 'var(--accent)' : 'var(--card-bg)',
+              color: onAiImportTab ? 'var(--accent-text)' : 'var(--text)', maxWidth: 150,
+            }}
+          >
+            <FileUp size={11} />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>AI 项目计划导入</span>
+            {aiSnap.busy && <Loader2 size={10} className="aispin" />}
+          </button>
+        )}
         {tasks.map((t) => (
           <div
             key={t.id}

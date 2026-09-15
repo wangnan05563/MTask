@@ -5,7 +5,7 @@ import { reportStream, useReportStream } from '../reportStream';
 import { ReportConsole } from './ReportConsole';
 import { AiPlanImportPanel } from './AiPlanImportPanel';
 import { useSessionState } from '../ui/session';
-import { Download, Plus, Trash2, Upload, Sparkles, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Download, Plus, Trash2, Upload, Sparkles, PanelLeftClose, PanelLeftOpen, FileSpreadsheet } from 'lucide-react';
 
 interface ReportTemplate {
   id: string;
@@ -274,7 +274,7 @@ export function ReportPage() {
 
       {/* T00569 二轮：AI 项目计划导入面板——功能完整迁移至本页内联执行（含控制台滚动输出） */}
       {showAiImport && (
-        <AiPlanImportPanel onClose={() => setShowAiImport(false)} onSaved={(n) => flash(`AI 导入完成：已创建 ${n} 条计划（可在「项目计划」查看）`)} />
+        <AiPlanImportPanel toolId={aiToolId} onClose={() => setShowAiImport(false)} onSaved={(n) => flash(`AI 导入完成：已创建 ${n} 条计划（可在「项目计划」查看）`)} />
       )}
 
       {/* 公共配置：周期 / 格式 / 项目范围，离线与 AI 两条路径共用 */}
@@ -316,8 +316,11 @@ export function ReportPage() {
       {/* 离线 / AI 两个独立生成入口 */}
       <div style={{ display: 'flex', gap: 16, margin: '12px 0', flexWrap: 'wrap' }}>
         {/* 离线周报生成：保留原有离线逻辑，本地聚合并按模板/标准版式合成文件 */}
-        <div style={{ flex: '1 1 300px', border: '1px solid var(--border)', borderRadius: 8, padding: 14, background: 'var(--card-bg)' }}>
-          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>离线周报生成</div>
+        <div style={{ flex: '1 1 300px', border: '1px solid var(--border)', borderRadius: 10, padding: 14, background: 'var(--card-bg)' }}>
+          {/* T00569 三轮：两生成入口统一为卡片风格（与 AI 能力入口卡片一致：图标 + 标题 + 描述） */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+            <FileSpreadsheet size={15} style={{ color: 'var(--accent)' }} /> 离线周报生成
+          </div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>本地聚合本周期任务数据，按模板或标准版式直接合成文件，无需联网。</div>
           <div style={{ marginBottom: 12 }}>
             <div style={labelStyle}>模板</div>
@@ -343,8 +346,10 @@ export function ReportPage() {
         </div>
 
         {/* AI 周报生成：真实周期任务数据 + AI 洞察，按匹配的内置 skill 版式智能合成 */}
-        <div style={{ flex: '1 1 300px', border: '1px solid var(--border)', borderRadius: 8, padding: 14, background: 'var(--card-bg)' }}>
-          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>AI 周报生成</div>
+        <div style={{ flex: '1 1 300px', border: '1px solid var(--border)', borderRadius: 10, padding: 14, background: 'var(--card-bg)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+            <Sparkles size={15} style={{ color: 'var(--accent)' }} /> AI 周报生成
+          </div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
             结合真实任务数据调用 AI 生成洞察，按内置 skill「{SKILL_BY_FORMAT[format]}」版式智能合成。
           </div>
