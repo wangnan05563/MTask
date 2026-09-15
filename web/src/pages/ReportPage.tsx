@@ -3,6 +3,7 @@ import { api, type Project, type AITool } from '../api/client';
 import { streamEvents } from '../api/sse';
 import { reportStream, useReportStream } from '../reportStream';
 import { ReportConsole } from './ReportConsole';
+import { AiPlanImportPanel } from './AiPlanImportPanel';
 import { useSessionState } from '../ui/session';
 import { Download, Plus, Trash2, Upload, Sparkles, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 
@@ -52,7 +53,7 @@ const labelStyle: CSSProperties = { fontSize: 12, color: 'var(--text-secondary)'
 const fieldStyle: CSSProperties = { padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 13 };
 
 /** 周报/报表页面：按周期与格式生成报表，支持模板导入与管理 */
-export function ReportPage(props: { onOpenAiPlanImport?: () => void } = {}) {
+export function ReportPage() {
   // 用户选项与已产生结果改为会话级持久化（useSessionState）：切换页面返回后仍保留选择与上次分析结果
   const [period, setPeriod] = useSessionState<'day' | 'week' | 'month'>('report.period', 'week');
   const [format, setFormat] = useSessionState<ReportFormat>('report.format', 'xlsx');
@@ -68,6 +69,8 @@ export function ReportPage(props: { onOpenAiPlanImport?: () => void } = {}) {
 
   // AI 周报：AI 工具选择会话级保留；生成运行态打入模块级 store（useReportStream），
   // 以便切页期间 SSE 照常写入、返回后立即恢复进度（见 reportStream.ts 设计说明）
+  // T00569 二轮：AI 项目计划导入面板展开态
+  const [showAiImport, setShowAiImport] = useState(false);
   const [aiTools, setAiTools] = useState<AITool[]>([]);
   const [aiToolId, setAiToolId] = useSessionState('report.aiTool', '');
   // T00558 / PRD AI-5：周报摘要写入收件箱开关（服务端 report.aiSummaryToInbox）——开关状态持久于服务端
@@ -248,9 +251,9 @@ export function ReportPage(props: { onOpenAiPlanImport?: () => void } = {}) {
       {/* T00569：AI 能力入口卡片网格——点击卡片直达对应功能 */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12, margin: '14px 0 0' }}>
         <button
-          onClick={() => props.onOpenAiPlanImport?.()}
+          onClick={() => setShowAiImport((v) => !v)}
           className="tbtn-anim"
-          title="AI 项目计划导入 — 上传需求文档，AI 解析为计划草稿并导入项目计划"
+          title="AI 项目计划导入 — 上传 Excel/需求文档，AI 解析为计划草稿并批量入库（本页直接执行）"
           aria-label="AI 项目计划导入"
           style={{ textAlign: 'left', padding: 14, border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', cursor: 'pointer', display: 'flex', gap: 10, alignItems: 'flex-start' }}
         >
@@ -260,7 +263,7 @@ export function ReportPage(props: { onOpenAiPlanImport?: () => void } = {}) {
             <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
               上传 Excel/需求文档，AI 解析为项目计划草稿（工期/依赖/负责人），确认后批量入库
             </span>
-            <span style={{ display: 'inline-block', fontSize: 11, color: 'var(--accent)', marginTop: 8 }}>前往项目计划导入 →</span>
+            <span style={{ display: 'inline-block', fontSize: 11, color: 'var(--accent)', marginTop: 8 }}>{showAiImport ? '收起导入面板 ↑' : '展开导入面板（本页直接执行）↓'}</span>
           </span>
         </button>
         <div style={{ padding: 14, border: '1px dashed var(--border-strong)', borderRadius: 10, fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 10, alignItems: 'center' }}>
@@ -268,6 +271,11 @@ export function ReportPage(props: { onOpenAiPlanImport?: () => void } = {}) {
           <span>更多 AI 能力卡片规划中（智能日程建议 / 每周 AI 摘要推送 / 多模型对比等，见项目计划 P2 阶段）</span>
         </div>
       </div>
+
+      {/* T00569 二轮：AI 项目计划导入面板——功能完整迁移至本页内联执行（含控制台滚动输出） */}
+      {showAiImport && (
+        <AiPlanImportPanel onClose={() => setShowAiImport(false)} onSaved={(n) => flash(`AI 导入完成：已创建 ${n} 条计划（可在「项目计划」查看）`)} />
+      )}
 
       {/* 公共配置：周期 / 格式 / 项目范围，离线与 AI 两条路径共用 */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, margin: '14px 0 0', padding: '10px 14px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)' }}>

@@ -38,16 +38,6 @@ interface ProjectRow {
   plan_open?: number;
 }
 
-/** AI 导入解析出的标准计划草稿（可编辑行，include 控制是否保存） */
-interface PlanDraft {
-  title: string;
-  description: string;
-  startDate: string;
-  durationDays: number;
-  assignee: string;
-  status: PlanTask['status'];
-  include: boolean;
-}
 
 const STATUS_META: Record<PlanTask['status'], { label: string; color: string }> = {
   todo: { label: '待开始', color: 'var(--text-muted)' },
@@ -80,22 +70,6 @@ const planTableCss = `
   .plan-table .task-op { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
   .plan-table tr:hover .task-op, .plan-table tr:focus-within .task-op { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
 `;
-
-/** AI 草稿行：附加仅用于 React key 的稳定行键（提交时剥离） */
-type AiRow = PlanDraft & { rowKey: string };
-
-/** 按行打补丁的不可变更新（提取到模块作用域，避免 JSX 内多层嵌套闭包） */
-function updateAiRow(rows: AiRow[], idx: number, patch: Partial<PlanDraft>): AiRow[] {
-  return rows.map((r, j) => (j === idx ? { ...r, ...patch } : r));
-}
-
-/** 剥离 rowKey，保持提交请求体与既有协议字段完全一致 */
-function toPlanDraft(r: AiRow): PlanDraft {
-  return {
-    title: r.title, description: r.description, startDate: r.startDate,
-    durationDays: r.durationDays, assignee: r.assignee, status: r.status, include: r.include,
-  };
-}
 
 /** AI 模型默认整理工具优先排序 */
 function compareOrganize(a: AITool, b: AITool): number {
@@ -133,7 +107,7 @@ function childMilestoneOf(p: PlanTask, plans: PlanTask[]): PlanTask | null {
   } catch { return null; }
 }
 
-export function PlanPage(props: { aiImportSignal?: number; onAiImportHandled?: () => void } = {}) {
+export function PlanPage() {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   // T00460：切页保状态——项目选择会话级持久化，切回不重置
   const [projectId, setProjectId] = useSessionState('plan.projectId', '');
@@ -147,14 +121,6 @@ export function PlanPage(props: { aiImportSignal?: number; onAiImportHandled?: (
   // T00472：AI 评估状态（批量进度动态计数，单条/批量共用）
   const [evalBusy, setEvalBusy] = useSessionState<boolean>('plan.evalBusy', false); // T00550：切页保持
   const [evalLabel, setEvalLabel] = useSessionState<string>('plan.evalLabel', '');
-  // T00569：跨页触发——AI 工作台「AI 项目计划导入」卡片点击后切到本页并自动打开 AI 导入弹窗
-  useEffect(() => {
-    if (props.aiImportSignal) {
-      openAiImport();
-      props.onAiImportHandled?.();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.aiImportSignal]);
   // T00564：多选模式（参考任务菜单）——批量勾选后执行归档/状态/AI 评估等批量操作
   const [planMulti, setPlanMulti] = useSessionState<boolean>('plan.multi', false); // T00570：切页保持
   const [planSelIds, setPlanSelIds] = useSessionState<string[]>('plan.selIds', []); // T00570：切页保持（数组形态便于序列化）
@@ -233,11 +199,6 @@ export function PlanPage(props: { aiImportSignal?: number; onAiImportHandled?: (
   const [depSel, setDepSel] = useState<Record<string, 'serial' | 'parallel'>>({});
   // T00449：视图模式（列表/甘特）会话级保持
   const [viewMode, setViewMode] = useSessionState<'list' | 'gantt'>('plan.viewMode', 'list');
-  const [aiOpen, setAiOpen] = useState(false);
-  const [aiBusy, setAiBusy] = useState(false);
-  const [aiFileName, setAiFileName] = useState('');
-  const [aiRows, setAiRows] = useState<AiRow[]>([]);
-  const [aiError, setAiError] = useState('');
 
   const flash = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(''), 3000); };
 
@@ -715,60 +676,6 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         </div>
       </div>
     );
-  }
-
-  // ---------- T00438：AI 导入
-  // ---------- T00438：AI 导入（任意格式 Excel → AI 解析 → 预览确认 → 批量创建） ----------
-
-  function openAiImport() {
-    if (!projectId) return flash('请先选择项目');
-    if (tools.length === 0) return flash('请先在「模型」页添加 AI 模型工具');
-    setAiOpen(true);
-    setAiRows([]);
-    setAiError('');
-    setAiFileName('');
-  }
-
-  /** 上传文件 → 后端解析（Excel 走表格文本+AI 识别；md/docx 走 WBS 拆分）→ 返回标准草稿行（可编辑预览） */
-  async function aiParse(file: File) {
-    if (!aiToolId) return setAiError('请先选择 AI 模型');
-    setAiFileName(file.name);
-    setAiBusy(true);
-    setAiError('');
-    setAiRows([]);
-    try {
-      const buf = await file.arrayBuffer();
-      const lower = file.name.toLowerCase();
-      // T00439：需求文档（md/docx）走 WBS 拆分端点；其余（xlsx/csv）走 Excel 表格解析端点
-      const isDoc = lower.endsWith('.md') || lower.endsWith('.markdown') || lower.endsWith('.docx');
-      const endpoint = isDoc ? `/plans/ai-parse-doc` : `/plans/ai-parse`;
-      const r = await api.postBinary<{ ok: boolean; drafts: Array<Omit<PlanDraft, 'include'>> }>(
-        `${endpoint}?projectId=${projectId}&toolId=${aiToolId}&filename=${encodeURIComponent(file.name)}`, buf);
-      setAiRows(r.drafts.map((d, i) => ({ ...d, include: true, startDate: d.startDate || '', rowKey: `ai-${Date.now()}-${i}` })));
-      if (r.drafts.length === 0) setAiError('AI 未识别出计划条目');
-    } catch (e) {
-      setAiError(String((e as Error).message ?? e));
-    } finally {
-      setAiBusy(false);
-    }
-  }
-
-  /** 确认保存：勾选行批量创建，时间线统一重排 */
-  async function aiSave() {
-    const items = aiRows.filter((r) => r.include && r.title.trim()).map(toPlanDraft);
-    if (items.length === 0) return setAiError('请至少勾选一条要保存的条目');
-    setAiBusy(true);
-    setAiError('');
-    try {
-      const r = await api.post<{ inserted: number }>('/plans/batch', { projectId, items });
-      setAiOpen(false);
-      reload();
-      flash(`AI 导入完成：已创建 ${r.inserted} 条计划，时间线已重排`);
-    } catch (e) {
-      setAiError(String((e as Error).message ?? e));
-    } finally {
-      setAiBusy(false);
-    }
   }
 
   // ---------- 节假日 ----------
@@ -1359,83 +1266,6 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       )}
 
       {/* T00438 AI 导入弹窗：模型选择 + 文件上传 → AI 解析草稿表格（可编辑/勾选）→ 批量保存 */}
-      {aiOpen && (
-        <div /* NOSONAR - 弹窗外层全屏遮罩需保持 div 布局；点击遮罩仅为鼠标便捷操作，弹窗内原生关闭按钮提供键盘可达通路 */
-          style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          onClick={(e) => { if (e.target === e.currentTarget && !aiBusy) setAiOpen(false); }}>
-          <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(720px, 94vw)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
-              <Sparkles size={14} style={{ color: 'var(--accent)' }} /> AI 导入计划
-              <span style={{ flex: 1 }} />
-              <button onClick={() => setAiOpen(false)} disabled={aiBusy} title="关闭" aria-label="关闭 AI 导入弹窗"
-                style={{ display: 'inline-flex', alignItems: 'center', cursor: aiBusy ? 'default' : 'pointer', background: 'transparent', border: 'none', color: 'var(--text)' }}>×</button>
-            </div>
-            <div style={{ padding: 14, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <label style={{ ...btnStyle, cursor: aiBusy ? 'default' : 'pointer' }} title="选择计划 Excel（.xlsx/.csv）或需求文档（.md/.docx）">
-                  <Upload size={13} />选择文件
-                  <input type="file" accept=".xlsx,.csv,.md,.markdown,.docx" style={{ display: 'none' }}
-                    onChange={(e) => { const f = e.target.files?.[0]; if (f) { void aiParse(f); e.target.value = ''; } }} />
-                </label>
-                {aiFileName && <span style={{ color: 'var(--text-muted)' }}>{aiFileName}</span>}
-                {aiBusy && <span style={{ color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Sparkles size={12} />AI 解析中…</span>}
-              </div>
-              <div style={{ color: 'var(--text-muted)', fontSize: 11, lineHeight: 1.6 }}>
-                上传任意格式的计划 Excel，AI 自动识别任务名称、起止日期、工期、负责人与状态并重组为标准格式；或上传 Markdown / Word 需求文档（.md/.docx），AI 按 WBS 规范自动拆分任务并估算工期。解析结果先在此预览，可编辑后勾选保存；保存后时间线统一重排。
-              </div>
-              {aiError && <div style={{ color: 'var(--danger)' }}>{aiError}</div>}
-              {aiRows.length > 0 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <div style={{ color: 'var(--text-secondary)' }}>
-                    解析到 {aiRows.length} 条（已勾选 {aiRows.filter((r) => r.include).length} 条）——可编辑后保存：
-                  </div>
-                  <div style={{ maxHeight: '42vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {aiRows.map((row, i) => (
-                      <div key={row.rowKey} style={{ border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                          <input type="checkbox" checked={row.include} aria-label={`勾选第 ${i + 1} 条`}
-                            onChange={(e) => setAiRows((prev) => updateAiRow(prev, i, { include: e.target.checked }))} />
-                          <input value={row.title} aria-label={`第 ${i + 1} 条标题`}
-                            onChange={(e) => setAiRows((prev) => updateAiRow(prev, i, { title: e.target.value }))}
-                            style={{ ...inputStyle, flex: 1, minWidth: 160, fontWeight: 600 }} />
-                          <input type="date" value={row.startDate} aria-label={`第 ${i + 1} 条开始日期`}
-                            onChange={(e) => setAiRows((prev) => updateAiRow(prev, i, { startDate: e.target.value }))}
-                            style={inputStyle} />
-                          <input type="number" min={1} value={row.durationDays} aria-label={`第 ${i + 1} 条工期`}
-                            onChange={(e) => setAiRows((prev) => updateAiRow(prev, i, { durationDays: Math.max(1, Number(e.target.value) || 1) }))}
-                            style={{ ...inputStyle, width: 60 }} />
-                          <input value={row.assignee} placeholder="负责人" aria-label={`第 ${i + 1} 条负责人`}
-                            onChange={(e) => setAiRows((prev) => updateAiRow(prev, i, { assignee: e.target.value }))}
-                            style={{ ...inputStyle, width: 80 }} />
-                          <select value={row.status} aria-label={`第 ${i + 1} 条状态`}
-                            onChange={(e) => setAiRows((prev) => updateAiRow(prev, i, { status: e.target.value as PlanDraft['status'] }))}
-                            style={inputStyle}>
-                            <option value="todo">待开始</option>
-                            <option value="doing">进行中</option>
-                            <option value="done">已完成</option>
-                            <option value="blocked">受阻</option>
-                          </select>
-                        </div>
-                        <input value={row.description} placeholder="描述（可空）" className="plan-desc-ph" aria-label={`第 ${i + 1} 条描述`}
-                          onChange={(e) => setAiRows((prev) => updateAiRow(prev, i, { description: e.target.value }))}
-                          style={{ ...inputStyle, color: 'var(--text-muted)' }} />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
-              <button onClick={() => setAiOpen(false)} disabled={aiBusy} title="取消"
-                style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)' }}>取消</button>
-              <button onClick={() => void aiSave()} disabled={aiBusy || aiRows.length === 0} title="保存勾选的条目为项目计划"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 12px', borderRadius: 6, cursor: aiRows.length === 0 ? 'default' : 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', opacity: aiRows.length === 0 ? 0.5 : 1 }}>
-                <Sparkles size={12} />保存 {aiRows.filter((r) => r.include).length} 条
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       {/* T00442 节假日多功能弹窗：手动维护 / 联网导入法定节假日 / 万年历 */}
       {holiOpen && (
         <div /* NOSONAR - 弹窗外层全屏遮罩需保持 div 布局；点击遮罩仅为鼠标便捷操作，弹窗内原生关闭按钮提供键盘可达通路 */

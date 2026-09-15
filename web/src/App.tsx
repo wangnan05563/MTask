@@ -33,8 +33,6 @@ const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
 /** 应用外壳：导航 + 主题变量容器。颜色取自 CSS 变量，主题切换即时全局生效 */
 function Shell() {
   const [tab, setTab] = useState<Tab>('tasks');
-  // T00569：AI 项目计划导入跨页触发——AI 工作台卡片点击 → 切到项目计划并打开 AI 导入弹窗
-  const [planAiImport, setPlanAiImport] = useState(0);
   const [serverOk, setServerOk] = useState<boolean | null>(null);
   // T00443 / PRD UX-4：全局命令面板（T00560：快捷键 Ctrl+F）
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -190,8 +188,8 @@ function Shell() {
       {tab === 'prompts' && <PromptsPage />}
       {tab === 'req' && <ReqPage />}
       {tab === 'queue' && <QueuePage />}
-      {tab === 'plan' && <PlanPage aiImportSignal={planAiImport} onAiImportHandled={() => setPlanAiImport(0)} />}
-      {tab === 'report' && <ReportPage onOpenAiPlanImport={() => { setPlanAiImport(Date.now()); setTab('plan'); }} />}
+      {tab === 'plan' && <PlanPage />}
+      {tab === 'report' && <ReportPage />}
       {tab === 'history' && <HistoryPage />}
       {/* T00441：日志/归档入口移至「设置」页（内网穿透下方） */}
       {tab === 'settings' && <SettingsPage />}
