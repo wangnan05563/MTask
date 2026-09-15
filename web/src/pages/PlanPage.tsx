@@ -69,6 +69,42 @@ const planTableCss = `
   .plan-table tr:hover input, .plan-table tr:focus-within input { border-color: var(--border-strong); background: var(--bg); }
   .plan-table .task-op { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
   .plan-table tr:hover .task-op, .plan-table tr:focus-within .task-op { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
+
+  /* T00622：默认简洁展示——仅保留「# / 标题 / 状态」三列（依赖/开始/结束/工期/进度/负责人/待办联动/操作默认收起）；
+     悬浮（或键盘聚焦）该行时展开全部列并进入可编辑态；表头经 :has 同步展开，避免列错位。
+     列显隐仅切换 display，行高不变 → 无换行堆叠、无布局抖动；附加列淡入过渡。 */
+  .plan-table th:nth-child(3), .plan-table th:nth-child(4), .plan-table th:nth-child(5),
+  .plan-table th:nth-child(6), .plan-table th:nth-child(7), .plan-table th:nth-child(9),
+  .plan-table th:nth-child(10), .plan-table th:nth-child(11),
+  .plan-table tbody td:nth-child(3), .plan-table tbody td:nth-child(4), .plan-table tbody td:nth-child(5),
+  .plan-table tbody td:nth-child(6), .plan-table tbody td:nth-child(7), .plan-table tbody td:nth-child(9),
+  .plan-table tbody td:nth-child(10), .plan-table tbody td:nth-child(11) { display: none; }
+  .plan-table tbody tr:hover td:nth-child(3), .plan-table tbody tr:hover td:nth-child(4), .plan-table tbody tr:hover td:nth-child(5),
+  .plan-table tbody tr:hover td:nth-child(6), .plan-table tbody tr:hover td:nth-child(7), .plan-table tbody tr:hover td:nth-child(9),
+  .plan-table tbody tr:hover td:nth-child(10), .plan-table tbody tr:hover td:nth-child(11),
+  .plan-table tbody tr:focus-within td:nth-child(3), .plan-table tbody tr:focus-within td:nth-child(4), .plan-table tbody tr:focus-within td:nth-child(5),
+  .plan-table tbody tr:focus-within td:nth-child(6), .plan-table tbody tr:focus-within td:nth-child(7), .plan-table tbody tr:focus-within td:nth-child(9),
+  .plan-table tbody tr:focus-within td:nth-child(10), .plan-table tbody tr:focus-within td:nth-child(11) {
+    display: table-cell;
+    animation: plan-col-in .16s ease-out;
+  }
+  .plan-table:has(tbody tr:hover) th:nth-child(3), .plan-table:has(tbody tr:hover) th:nth-child(4), .plan-table:has(tbody tr:hover) th:nth-child(5),
+  .plan-table:has(tbody tr:hover) th:nth-child(6), .plan-table:has(tbody tr:hover) th:nth-child(7), .plan-table:has(tbody tr:hover) th:nth-child(9),
+  .plan-table:has(tbody tr:hover) th:nth-child(10), .plan-table:has(tbody tr:hover) th:nth-child(11),
+  .plan-table:has(tbody tr:focus-within) th:nth-child(3), .plan-table:has(tbody tr:focus-within) th:nth-child(4), .plan-table:has(tbody tr:focus-within) th:nth-child(5),
+  .plan-table:has(tbody tr:focus-within) th:nth-child(6), .plan-table:has(tbody tr:focus-within) th:nth-child(7), .plan-table:has(tbody tr:focus-within) th:nth-child(9),
+  .plan-table:has(tbody tr:focus-within) th:nth-child(10), .plan-table:has(tbody tr:focus-within) th:nth-child(11) { display: table-cell; }
+  @keyframes plan-col-in { from { opacity: 0 } to { opacity: 1 } }
+
+  /* T00622：紧凑行高（覆盖行内 padding 以统一节奏）；附加列展开时行高保持不变 */
+  .plan-table th, .plan-table td { padding: 2px 5px !important; }
+  .plan-table td { white-space: nowrap; }
+
+  /* T00622：状态列默认仅渲染颜色圆点（不显示文字标签）；悬浮行切换为文字标签（可编辑/可流转态） */
+  .plan-status-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; vertical-align: middle; }
+  .plan-status-text { display: none; }
+  .plan-table tbody tr:hover .plan-status-dot, .plan-table tbody tr:focus-within .plan-status-dot { display: none; }
+  .plan-table tbody tr:hover .plan-status-text, .plan-table tbody tr:focus-within .plan-status-text { display: inline; }
 `;
 
 /** AI 模型默认整理工具优先排序 */
@@ -1178,11 +1214,12 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               </td>
               <td style={{ padding: 6 }}>
                 {isMilestone ? <span style={{ color: 'var(--text-muted)' }}>—</span> : (<>
-                {/* 点击状态徽标流转到下一状态：待办→进行中→已完成→待办；blocked 经已完成 后回待办 */}
+                {/* T00622：默认仅渲染状态颜色圆点（无文字），悬浮行显示文字标签（可点击流转到下一状态） */}
                 <button onClick={() => void updatePlan(p, { status: NEXT_STATUS[p.status] })}
-                  title="点击流转到下一状态" aria-label={`状态：${STATUS_META[p.status].label}，点击流转`}
-                  style={{ ...btnStyle, color: STATUS_META[p.status].color, borderColor: STATUS_META[p.status].color }}>
-                  {STATUS_META[p.status].label}
+                  title={`状态：${STATUS_META[p.status].label} — 点击流转到下一状态`} aria-label={`状态：${STATUS_META[p.status].label}，点击流转`}
+                  style={{ ...btnStyle, border: '1px solid transparent', background: 'transparent', padding: '1px 3px', color: STATUS_META[p.status].color }}>
+                  <span className="plan-status-dot" style={{ background: STATUS_META[p.status].color }} aria-hidden="true" />
+                  <span className="plan-status-text" style={{ color: STATUS_META[p.status].color }}>{STATUS_META[p.status].label}</span>
                 </button></>)}
               </td>
               <td style={{ padding: 6 }}>
