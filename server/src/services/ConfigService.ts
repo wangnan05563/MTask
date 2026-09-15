@@ -95,7 +95,8 @@ export const ConfigService = {
   list() {
     const cached = cacheGet<ReturnType<typeof toSafe>[]>('aitools');
     if (cached) return cached;
-    const rows = getDb().prepare('SELECT * FROM ai_tools ORDER BY pinned DESC, sort_weight ASC, created_at DESC').all() as AIToolRow[];
+    // T00587：归档记录默认不在列表展示（删除按钮改归档后的软删语义）
+    const rows = getDb().prepare('SELECT * FROM ai_tools WHERE COALESCE(archived, 0) = 0 ORDER BY pinned DESC, sort_weight ASC, created_at DESC').all() as AIToolRow[];
     const safe = rows.map(toSafe);
     cacheSet('aitools', safe, 5000); // 读多写少，5s TTL；写操作会主动失效
     return safe;
@@ -134,6 +135,24 @@ export const ConfigService = {
     }
     cacheClear('aitools'); // 编辑/置顶影响列表展示，失效缓存
     return this.getById(id);
+  },
+
+  /** T00587：归档（软删）——记录保留在库中，列表默认隐藏；可经 restore 恢复 */
+  archive(id: string): void {
+    getDb().prepare('UPDATE ai_tools SET archived = 1 WHERE id = ?').run(id);
+    cacheClear('aitools');
+  },
+
+  /** T00587：从归档恢复 */
+  restore(id: string): void {
+    getDb().prepare('UPDATE ai_tools SET archived = 0 WHERE id = ?').run(id);
+    cacheClear('aitools');
+  },
+
+  /** 归档列表（供恢复入口使用） */
+  listArchived(): unknown[] {
+    const rows = getDb().prepare('SELECT * FROM ai_tools WHERE COALESCE(archived, 0) = 1 ORDER BY created_at DESC').all() as AIToolRow[];
+    return rows.map(toSafe);
   },
 
   remove(id: string): void {

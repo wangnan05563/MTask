@@ -249,6 +249,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('tasks', 'ai_state', "ai_state TEXT DEFAULT ''");
   // T00577：派生待办溯源——记录原任务编号（如 T00422），AI 处理完成后自动把派生单结论整合回原任务
   ensureColumn('tasks', 'derived_from', 'derived_from TEXT');
+  // T00587：模型配置归档（删除按钮改归档）——软删保留记录，列表默认隐藏
+  ensureColumn('ai_tools', 'archived', 'archived INTEGER NOT NULL DEFAULT 0');
   backfillTaskNo();
   ensureColumn('ai_tools', 'pinned', 'pinned INTEGER NOT NULL DEFAULT 0');
   // T00446：模型拖拽排序权重（小值在前）

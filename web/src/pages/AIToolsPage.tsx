@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { ChevronDown, ChevronUp, Code2, Cpu, Copy, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, Save, Star, Trash2, X } from 'lucide-react';
+import { Archive, ChevronDown, ChevronUp, Code2, Cpu, Copy, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, Save, Star, Trash2, X } from 'lucide-react';
 import { api, type AITool } from '../api/client';
 import { UsagePanel } from './UsagePanel';
 import { askConfirm } from '../ui/dialogs';
@@ -46,10 +46,11 @@ interface ToolActionsCellProps {
   readonly onFetchRowModels: (t: AITool) => void;
   readonly onSetDefault: (t: AITool, kind: 'organize' | 'develop') => void;
   readonly onRemove: (t: AITool) => void;
+  readonly flash: (msg: string) => void;
 }
 
 /** 操作列（S3776 拆分）：集中放置悬停显现按钮与测试/模型结果，独立成组件后行组件与页面组件复杂度均降至阈值内 */
-function ToolActionsCell({ tool, testing, fetchingModels, testResult, modelsResult, onOpenEdit, onTest, onFetchRowModels, onSetDefault, onRemove }: ToolActionsCellProps) {
+function ToolActionsCell({ tool, testing, fetchingModels, testResult, modelsResult, onOpenEdit, onTest, onFetchRowModels, onSetDefault, onRemove, flash }: ToolActionsCellProps) {
   return (
     <td style={{ ...cellStyle, whiteSpace: 'nowrap' }}>
       {tool.console_url ? (
@@ -107,13 +108,24 @@ function ToolActionsCell({ tool, testing, fetchingModels, testResult, modelsResu
           <Code2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
         </button>
       )}
+      {/* T00587：模型复制按钮——与其他复制图标同款交互动画，点击复制当前模型名称 */}
+      <button
+        className="abtn tbtn-anim" onClick={() => { if (tool.model) void navigator.clipboard.writeText(tool.model).then(() => flash(`已复制模型：${tool.model}`)); }}
+        disabled={!tool.model}
+        title={tool.model ? `复制模型 — 复制当前选择的模型名称（${tool.model}）` : '复制模型 — 当前未选择模型'}
+        aria-label="复制模型名称"
+        style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', cursor: tool.model ? 'pointer' : 'not-allowed', opacity: tool.model ? 1 : 0.4 }}
+      >
+        <Copy size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+      </button>
+      {/* T00587：删除改为归档——软删保留记录，列表默认隐藏 */}
       <button
         className="abtn" onClick={() => onRemove(tool)}
-        title="删除 — 删除该配置，此操作不可恢复"
-        aria-label="删除：删除该配置，此操作不可恢复"
-        style={{ fontSize: 12, color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        title="归档 — 归档该配置记录（列表不再显示，记录保留在库中）"
+        aria-label="归档：归档该配置记录"
+        style={{ fontSize: 12, color: 'var(--warning, var(--danger))', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
       >
-        <Trash2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+        <Archive size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
       </button>
       {testResult && (
         <div style={{ fontSize: 11, color: testResult.ok ? 'var(--success)' : 'var(--danger)', marginTop: 4, whiteSpace: 'normal', maxWidth: 200 }}>
@@ -314,6 +326,7 @@ function ToolRow(props: ToolRowProps) {
         onFetchRowModels={props.onFetchRowModels}
         onSetDefault={props.onSetDefault}
         onRemove={props.onRemove}
+        flash={props.flash}
       />
     </tr>
   );
@@ -576,11 +589,13 @@ export function AIToolsPage() {
     }
   }
 
+  // T00587：归档（软删）——记录保留在库中，列表默认隐藏
   async function remove(t: AITool) {
-    if (!(await askConfirm(`删除配置记录「${t.name}」？此操作不可恢复。`))) return;
+    if (!(await askConfirm(`归档配置记录「${t.name}」？归档后列表不再显示（记录保留在库中）。`))) return;
     try {
-      await api.del(`/aitools/${t.id}`);
+      await api.post(`/aitools/${t.id}/archive`);
       void load();
+      flash('已归档，列表不再显示该配置');
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
     }

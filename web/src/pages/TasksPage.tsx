@@ -6,7 +6,7 @@ import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { useBusy, setBusy } from '../ui/busy';
-import { AlertTriangle, AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
+import { AlertTriangle, AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 
 // ---------- T00552：批量分类运行态模块级化——切页后循环继续、返回不卡死 ----------
@@ -714,7 +714,7 @@ export function TasksPage() {
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBatchOpBusy(false); }
   }
 
-  async function batchApply(action: 'status' | 'category' | 'archive', value?: string) {
+  async function batchApply(action: 'status' | 'category' | 'priority' | 'color' | 'archive', value?: string) {
     const ids = [...selectedIds];
     if (ids.length === 0) return flash('请先勾选任务');
     setBatchOpBusy(true);
@@ -795,12 +795,47 @@ export function TasksPage() {
     if (!multiSelect || selectedIds.size === 0) return null;
     return (
       <div style={{ position: 'sticky', top: 0, zIndex: 50, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: '1px solid var(--accent)', boxShadow: '0 4px 12px rgba(0,0,0,.12)', fontSize: 12 }}>
-        <strong>已选 {selectedIds.size} 条</strong>
-        <button onClick={() => void batchApply('status', 'done')} disabled={batchOpBusy} className="task-op" style={{ cursor: 'pointer', padding: '3px 8px' }}>✓ 完成</button>
-        <button onClick={() => void batchApply('status', 'todo')} disabled={batchOpBusy} className="task-op" style={{ cursor: 'pointer', padding: '3px 8px' }}>↩ 重开</button>
-        <button onClick={() => void batchSetCategory()} disabled={batchOpBusy} className="task-op" style={{ cursor: 'pointer', padding: '3px 8px' }}>设分类</button>
-        <button onClick={() => void batchApply('archive')} disabled={batchOpBusy} className="task-op" style={{ cursor: 'pointer', padding: '3px 8px', color: 'var(--danger)' }}>归档</button>
-        <button onClick={() => setSelectedIds(new Set())} disabled={batchOpBusy} className="task-op" style={{ cursor: 'pointer', padding: '3px 8px', marginLeft: 'auto' }}>取消选择</button>
+        <strong style={{ color: 'var(--accent)' }}>已选 {selectedIds.size} 条</strong>
+        {/* T00588：批量操作对齐计划页风格——纯图标 + 下拉相邻 + 悬浮提示 */}
+        <button onClick={() => void batchApply('status', 'done')} disabled={batchOpBusy} className="task-op tbtn-anim"
+          title="批量完成 — 选中任务标记为已完成" aria-label="批量完成"
+          style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', color: 'var(--success, var(--text))' }}>
+          <Check size={14} />
+        </button>
+        <button onClick={() => void batchApply('status', 'todo')} disabled={batchOpBusy} className="task-op tbtn-anim"
+          title="批量重开 — 选中任务退回待办" aria-label="批量重开"
+          style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center' }}>
+          <RotateCcw size={14} />
+        </button>
+        <select value="" disabled={batchOpBusy} aria-label="批量设置优先级" title="批量设置优先级"
+          onChange={(e) => { const v = e.target.value; if (v) void batchApply('priority', v); }}
+          style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          <option value="">批量优先级…</option>
+          <option value="urgent">紧急</option>
+          <option value="high">高</option>
+          <option value="normal">普通</option>
+          <option value="low">低</option>
+        </select>
+        <select value="" disabled={batchOpBusy} aria-label="批量设置分类" title="批量设置分类"
+          onChange={(e) => { const v = e.target.value; if (v !== '') void batchApply('category', v === '__none__' ? '' : v); }}
+          style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          <option value="">批量分类…</option>
+          {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          <option value="__none__">（清除分类）</option>
+        </select>
+        <span style={{ display: 'inline-flex', alignItems: 'center' }} title="批量字体颜色 — 选色后应用到全部选中任务">
+          <FontColorButton current="" onApply={(col) => { void batchApply('color', col); }} label="批量字体颜色" />
+        </span>
+        <button onClick={() => void batchApply('archive')} disabled={batchOpBusy} className="task-op tbtn-anim"
+          title="批量归档 — 选中任务移入归档（可恢复）" aria-label="批量归档"
+          style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', color: 'var(--danger)' }}>
+          <Archive size={14} />
+        </button>
+        <button onClick={() => setSelectedIds(new Set())} disabled={batchOpBusy} className="task-op tbtn-anim"
+          title="取消选择" aria-label="取消选择"
+          style={{ cursor: 'pointer', padding: '2px 4px', marginLeft: 'auto', display: 'inline-flex', alignItems: 'center' }}>
+          <X size={14} />
+        </button>
       </div>
     );
   }
@@ -1210,7 +1245,7 @@ export function TasksPage() {
       return { title: '取消编辑处理结果 — 放弃未保存的修改', aria: '取消编辑处理结果：放弃未保存的修改' };
     })();
     return (
-      <div className="task-op" style={{ marginLeft: 32, marginTop: 2, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, fontSize: 11, color: 'var(--text-muted)' }}>
+      <div className="task-op task-toolbar" style={{ marginLeft: 32, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, fontSize: 11, color: 'var(--text-muted)' }}>
         {/* T00547：完成状态/验证结果控件——与工具栏同行、靠左显示（marginRight auto 分隔左右两组） */}
         <span style={{ marginRight: 'auto', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
           <button className="title-op" title="切换任务完成状态" aria-label="切换任务完成状态" onClick={() => void setStatus(t, t.status === 'todo' ? 'done' : 'todo')} style={{ cursor: 'pointer', fontSize: 14, lineHeight: 1 }}>
@@ -2512,6 +2547,19 @@ export function TasksPage() {
           opacity: 1;
           visibility: visible;
           transition: opacity 0.15s ease, visibility 0s;
+        }
+        /* T00591：任务标题下方工具栏默认自动收起（高度折叠使标题更紧凑），鼠标悬浮任务标题/行后平滑展开 */
+        .task-toolbar {
+          max-height: 0;
+          margin-top: 0;
+          overflow: hidden;
+          transition: max-height 0.18s ease, margin-top 0.18s ease;
+        }
+        .task-item:hover .task-toolbar,
+        .task-item:focus-within .task-toolbar,
+        .task-item.task-editing .task-toolbar {
+          max-height: 96px;
+          margin-top: 2px;
         }
         /* 请求进行中的呼吸反馈：缩放 + 外发光脉冲，与主题主色一致 */
         .task-breathe { animation: task-breathe 1.3s ease-in-out infinite; }

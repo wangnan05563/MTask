@@ -515,6 +515,16 @@ function applyBatchAction(db: ReturnType<typeof getDb>, id: string, action: stri
     db.prepare('UPDATE tasks SET category_id = ?, updated_at = ? WHERE id = ?').run(value || null, now(), id);
     return;
   }
+  // T00588：批量优先级 / 字体颜色（与计划页批量能力对齐）
+  if (action === 'priority') {
+    if (!value || !['low', 'normal', 'high', 'urgent'].includes(value)) throw new Error('priority 值非法');
+    db.prepare('UPDATE tasks SET priority = ?, updated_at = ? WHERE id = ?').run(value, now(), id);
+    return;
+  }
+  if (action === 'color') {
+    db.prepare('UPDATE tasks SET color = ?, updated_at = ? WHERE id = ?').run(value ?? '', now(), id);
+    return;
+  }
   if (action === 'archive') {
     ArchiveService.archive([id]);
     return;
@@ -714,6 +724,19 @@ api.patch('/aitools/:id', (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
+});
+
+// T00587：模型配置归档 / 恢复（删除按钮改归档后的服务端支持）
+api.post('/aitools/:id/archive', (req, res) => {
+  ConfigService.archive(req.params.id);
+  res.json({ ok: true });
+});
+api.post('/aitools/:id/restore', (req, res) => {
+  ConfigService.restore(req.params.id);
+  res.json({ ok: true });
+});
+api.get('/aitools/archived', (_req, res) => {
+  res.json(ConfigService.listArchived());
 });
 
 api.delete('/aitools/:id', (req, res) => {

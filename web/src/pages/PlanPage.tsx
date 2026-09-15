@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, CalendarPlus, Check, CheckSquare, Download, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap, ChevronDown, ChevronRight } from 'lucide-react';
+import { Archive, CalendarPlus, Check, CheckSquare, Download, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
@@ -160,6 +160,9 @@ export function PlanPage(props: { aiImportSignal?: number; onAiImportHandled?: (
   const [planSelIds, setPlanSelIds] = useSessionState<string[]>('plan.selIds', []); // T00570：切页保持（数组形态便于序列化）
   const [planBatchStatus, setPlanBatchStatus] = useState('');
   const [planBatchAttach, setPlanBatchAttach] = useState(''); // T00550：切页保持
+  // T00590：列字段名可交互过滤——标题/描述列点击列名展开输入框，输入即过滤（会话级保持）
+  const [titleFilter, setTitleFilter] = useSessionState<string>('plan.titleFilter', '');
+  const [titleFilterOpen, setTitleFilterOpen] = useSessionState<boolean>('plan.titleFilterOpen', false);
   // T00544：工期显示模式——「工期/日」与「工期/时」切换（会话级保持；持久化仍为工作日，8 小时/天换算）
   const [durationUnit, setDurationUnit] = useSessionState<'day' | 'hour'>('plan.durationUnit', 'day');
   // T00529：操作列省略号菜单（依赖维护等）——展开任务 id 与 fixed 坐标
@@ -973,7 +976,35 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         <thead>
           <tr style={{ textAlign: 'left', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-strong)' }}>
             <th style={{ padding: 6 }}>#</th>
-            <th style={{ padding: 6 }}>标题 / 描述</th>
+            <th style={{ padding: 6 }}>
+              {/* T00590：列字段名可交互——点击展开过滤输入框，输入即过滤标题/描述 */}
+              {titleFilterOpen ? (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <input
+                    autoFocus
+                    value={titleFilter}
+                    onChange={(e) => setTitleFilter(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Escape') { setTitleFilter(''); setTitleFilterOpen(false); } }}
+                    placeholder="过滤标题/描述…"
+                    aria-label="按标题或描述过滤计划"
+                    style={{ width: 130, padding: '2px 6px', fontSize: 11, border: '1px solid var(--accent)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}
+                  />
+                  <button onClick={() => { setTitleFilter(''); setTitleFilterOpen(false); }}
+                    title="清除过滤并收起" aria-label="清除标题过滤"
+                    style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11, padding: '0 2px' }}>×</button>
+                </span>
+              ) : (
+                <button onClick={() => setTitleFilterOpen(true)}
+                  className="tbtn-anim"
+                  title="点击输入搜索/过滤标题与描述（Esc 清除，× 收起）"
+                  aria-label="过滤标题或描述"
+                  style={{ border: '1px solid transparent', borderRadius: 4, background: 'transparent', color: titleFilter ? 'var(--accent)' : 'var(--text)', fontSize: 13, padding: '1px 4px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                  标题 / 描述
+                  <Search size={11} />
+                  {titleFilter && <span style={{ fontSize: 10, color: 'var(--accent)' }}>已过滤</span>}
+                </button>
+              )}
+            </th>
             <th style={{ padding: 6, fontSize: 11 }}>依赖</th>
             <th style={{ padding: 6 }}>开始</th>
             <th style={{ padding: 6 }}>结束</th>
@@ -1010,6 +1041,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               }
             }
             return plans.map((p, i) => {
+            // T00590：标题/描述过滤——不匹配行返回 null（序号与里程碑区间仍按全量计算保持正确）
+            if (titleFilter && !(`${p.title} ${p.description ?? ''}`.toLowerCase().includes(titleFilter.toLowerCase()))) return null;
             // T00506：里程碑汇总——本里程碑到下一里程碑之间的普通/日常任务（count/Σ工期/平均进度）
             const isMilestone = p.kind === 'milestone';
             let mEnd = plans.length;
