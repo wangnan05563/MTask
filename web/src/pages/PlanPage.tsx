@@ -124,6 +124,8 @@ export function PlanPage() {
   // T00564：多选模式（参考任务菜单）——批量勾选后执行归档/状态/AI 评估等批量操作
   const [planMulti, setPlanMulti] = useSessionState<boolean>('plan.multi', false); // T00570：切页保持
   const [planSelIds, setPlanSelIds] = useSessionState<string[]>('plan.selIds', []); // T00570：切页保持（数组形态便于序列化）
+  // T00658：标题旁全选框（半选态用 indeterminate 属性表达）
+  const allPlansRef = useRef<HTMLInputElement | null>(null);
   const [planBatchStatus, setPlanBatchStatus] = useState('');
   const [planBatchAttach, setPlanBatchAttach] = useState(''); // T00550：切页保持
   // T00590：列字段名可交互过滤——标题/描述列点击列名展开输入框，输入即过滤（会话级保持）
@@ -202,7 +204,23 @@ export function PlanPage() {
 
   const flash = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(''), 3000); };
 
-  useEffect(() => { void api.get<ProjectRow[]>('/projects').then((ps) => { setProjects(ps); if (ps.length > 0) setProjectId((cur) => cur || ps[0].id); }); }, []);
+  /** T00657：项目列表（下拉徽标含待办/未验证与计划计数）——抽为可重复调用的加载函数 */
+  const loadProjects = useCallback(async () => {
+    const ps = await api.get<ProjectRow[]>('/projects');
+    setProjects(ps);
+    if (ps.length > 0) setProjectId((cur) => cur || ps[0].id);
+  }, []);
+  useEffect(() => { void loadProjects(); }, [loadProjects]);
+  // T00657：任务与计划变更会改变项目下拉计数 → 订阅变更实时刷新（服务端同步失效项目列表缓存）
+  useEffect(() => api.openChangeStream((kind) => {
+    if (kind === 'tasks' || kind === 'plans') void loadProjects();
+  }), [loadProjects]);
+  // T00658：全选框半选态（部分勾选）
+  useEffect(() => {
+    if (!allPlansRef.current) return;
+    const sel = plans.filter((x) => planSelIds.includes(x.id)).length;
+    allPlansRef.current.indeterminate = sel > 0 && sel < plans.length;
+  }, [planSelIds, plans]);
   // T00438：AI 模型列表（默认整理工具排最前，与任务页模型选择一致）
   // T00534：统一以模型菜单配置为准——AI 导入/评估固定使用默认整理工具，不再由本页选择
   useEffect(() => { void api.get<AITool[]>('/aitools').then((list) => { const sorted = [...list].sort(compareOrganize); setTools(sorted); setAiToolId(sorted[0]?.id ?? ''); }); }, []);
@@ -936,6 +954,14 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
           <tr style={{ textAlign: 'left', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-strong)' }}>
             <th style={{ padding: 6 }}>#</th>
             <th style={{ padding: 6 }}>
+              {/* T00658：多选模式下标题字段旁「全选框」——全选/全不选当前列表（含半选态） */}
+              {planMulti && (
+                <input ref={allPlansRef} type="checkbox"
+                  checked={plans.length > 0 && plans.every((x) => planSelIds.includes(x.id))}
+                  onChange={(e) => setPlanSelIds(e.target.checked ? plans.map((x) => x.id) : [])}
+                  title="全选/全不选当前计划列表" aria-label="全选计划任务"
+                  style={{ cursor: 'pointer', marginRight: 4, verticalAlign: 'middle' }} />
+              )}
               {/* T00590：列字段名可交互——点击展开过滤输入框，输入即过滤标题/描述 */}
               {titleFilterOpen ? (
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>

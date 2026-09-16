@@ -65,6 +65,26 @@ interface ImageDraft {
   removed: string[];
 }
 
+/** T00658：三态复选框（支持半选态）——原生 indeterminate 只能经属性设置，封装为受控组件。
+ *  用于多选模式标题旁的「全选框」：全选=checked、部分选中=indeterminate、未选=空。 */
+function TriCheckbox({ checked, indeterminate, onChange, title, label, style }: {
+  readonly checked: boolean;
+  readonly indeterminate: boolean;
+  readonly onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  readonly title: string;
+  readonly label: string;
+  readonly style?: React.CSSProperties;
+}) {
+  const ref = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = !checked && indeterminate;
+  }, [checked, indeterminate]);
+  return (
+    <input ref={ref} type="checkbox" checked={checked} onChange={onChange}
+      title={title} aria-label={label} style={style} />
+  );
+}
+
 /** 剥离 AI 外层的 ```markdown ``` 代码围栏：仅当围栏包裹整段文本时去除，保留内部 Markdown 内容，异常情况原样返回 */
 function stripCodeFence(text: string): string {
   const m = /^\s*```(?:markdown|md)?\s*\n?([\s\S]*?)\n?```\s*$/.exec(text);
@@ -415,6 +435,8 @@ export function TasksPage() {
     return api.openChangeStream((kind) => {
       if (kind === 'tasks' || kind === 'queue' || kind === 'plans') {
         void loadTasks(activeProject);
+        // T00657：项目下拉的待办/未验证计数随任务变化 → 实时刷新项目列表
+        void loadProjects();
         // 评审 P2-1 修复：选中项有效性校验移出 setState updater（原嵌套异步 setState 为反模式）；
         // 串行 SSE 通知下幂等：重复校验以 alive 集合为准，size 不变时返回原引用避免重渲染
         if (selectedIds.size > 0) {
@@ -766,6 +788,15 @@ export function TasksPage() {
       void loadTasks(activeProject);
       flash('子任务已创建');
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
+  }
+
+  /** T00658：分区全选/全不选（半选态由 checked/indeterminate 双属性表达） */
+  function toggleSelectAll(items: Task[], on: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const t of items) { if (on) next.add(t.id); else next.delete(t.id); }
+      return next;
+    });
   }
 
   // ---------- T00457：批量操作（多选后批量改状态/分类/归档，单事务整体回滚） ----------
@@ -2432,6 +2463,14 @@ export function TasksPage() {
         {viewMode === 'board' && <div style={{ height: 8 }} />}
         {viewMode === 'list' && (<>
         <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
+          {multiSelect && (
+            <TriCheckbox
+              checked={visibleTodo.length > 0 && visibleTodo.every((t) => selectedIds.has(t.id))}
+              indeterminate={visibleTodo.some((t) => selectedIds.has(t.id))}
+              onChange={(e) => toggleSelectAll(visibleTodo, e.target.checked)}
+              title="全选/全不选待办列表" label="全选待办任务"
+              style={{ cursor: 'pointer' }} />
+          )}
           <h3 style={{ fontSize: 15, margin: 0 }}>待办（{visibleTodo.length}/{todo.length}）</h3>
           {/* 按修改时间/优先级排序：会话级偏好，选项见 sortOptions */}
           <select
@@ -2459,6 +2498,14 @@ export function TasksPage() {
         {viewMode === 'list' && (<>
         <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '16px 0 8px' }}>
           {/* 提示未验证数量：默认过滤「仅未验证」时，让用户意识到已验证项只是被过滤而非丢失 */}
+          {multiSelect && (
+            <TriCheckbox
+              checked={visibleDone.length > 0 && visibleDone.every((t) => selectedIds.has(t.id))}
+              indeterminate={visibleDone.some((t) => selectedIds.has(t.id))}
+              onChange={(e) => toggleSelectAll(visibleDone, e.target.checked)}
+              title="全选/全不选已完成列表" label="全选已完成任务"
+              style={{ cursor: 'pointer' }} />
+          )}
           <h3 style={{ fontSize: 15, margin: 0 }}>已完成（{visibleDone.length}/{done.length}，未验证 {done.filter((t) => !t.verified).length}）</h3>
           <select
             className="op-hidden"
