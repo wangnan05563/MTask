@@ -11,6 +11,7 @@ const CATEGORIES = [
   { key: 'suggestion', label: '改进建议与优先级' },
   { key: 'lessons', label: '经验教训提炼' },
   { key: 'generalize', label: '提炼通用需求' },
+  { key: 'clean', label: '数据清洗（去重合并）' },
   { key: 'custom', label: '自定义提问…' },
 ] as const;
 
@@ -31,6 +32,13 @@ function presetPrompt(key: (typeof CATEGORIES)[number]['key'], periodLabel = '�
     case 'suggestion': return `请基于当前任务信息（${periodLabel}），给出下一个周期的改进建议、优先级安排与资源投入建议（Markdown）。`;
     case 'lessons': return `请基于当前任务的「处理结果」与 AI 摘要（${periodLabel}），提炼本周期可复用的经验教训：按问题类型归纳根因与解法、识别成功实践与踩坑点，输出为准 QA/经验教训知识文档（Markdown，含「经验」「教训」「可复用方法」分节）。`;
     case 'generalize': return `请筛选当前${periodLabel}任务中属于「优化/改进」类型的任务（尤其含处理结果或 AI 摘要的），提炼其诉求与方案为不绑定具体项目的通用需求：归纳共性、剥离项目特有细节，识别具备跨项目复用价值的优秀功能与优化点，输出为通用需求清单（Markdown，含「需求标题」「适用场景」「实现要点」「复用价值」）。`;
+    case 'clean': return [
+      '请基于随附的「已完成任务」数据做数据清洗：仅在同一项目内识别语义重复或高度相似的任务（含措辞不同但目标相同的同类改写）。要求：',
+      '1. 先输出一个 ```json 代码块，内容为数组，每元素形如 {"project":"项目名","keep":"保留的代表任务号","merge":["被合并任务号"],"reason":"判定重复的理由"}；',
+      '2. 只在同一个项目内合并，跨项目的相似任务一律不要合并；同一目标的多步迭代（同一功能的不同阶段）可合并为一组，保留更完整的那条作为代表；',
+      '3. 无法确定重复时不要勉强成组，宁缺毋滥；keep 必须是组内真实存在的任务号；',
+      '4. 分组 JSON 之后，再用 Markdown 简要说明：共发现多少组、涉及多少条任务、合并后预计减少多少条，以及各组的一句话理由。',
+    ].join('\n');
     default: return '';
   }
 }
@@ -139,6 +147,104 @@ function ToolSelect({
 }
 
 /**
+ * T00652 数据清洗弹窗：列出 AI 判定的重复分组，勾选确认后合并（保留代表任务、把关键信息并入其处理结果）
+ * 并归档被合并任务。归档可逆（归档菜单可还原），故此处不做二次危险确认，仅展示影响条数。
+ */
+function CleanModal({
+  rows,
+  onPatch,
+  cleanMsg,
+  cleanError,
+  cleaning,
+  cleanDone,
+  onClean,
+  onClose,
+}: {
+  readonly rows: CleanRow[];
+  readonly onPatch: (i: number, patch: Partial<CleanRow>) => void;
+  readonly cleanMsg: string;
+  readonly cleanError: string;
+  readonly cleaning: boolean;
+  readonly cleanDone: boolean;
+  readonly onClean: () => void;
+  readonly onClose: () => void;
+}) {
+  const picked = rows.filter((r) => r.include);
+  const archiveCount = picked.reduce((n, r) => n + r.merge.length, 0);
+  return (
+    <div /* NOSONAR - 遮罩点击空白关闭为便捷辅助，正式关闭入口为弹窗内原生按钮 */
+      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={() => { if (!cleaning) onClose(); }}>
+      <div /* NOSONAR - 阻断点击冒泡属事件传递逻辑而非独立交互控件，可访问关闭入口仍为原生按钮 */
+        onClick={(e) => e.stopPropagation()}
+        style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(680px, 92vw)', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
+          <Sparkles size={14} style={{ color: 'var(--accent)' }} /> 数据清洗 — 合并重复任务
+          <span style={{ flex: 1 }} />
+          <button
+            onClick={onClose}
+            disabled={cleaning}
+            title="关闭 — 取消本次清洗"
+            aria-label="关闭清洗弹窗"
+            style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', background: 'transparent', border: 'none', color: 'var(--text)' }}
+          >
+            <X size={15} />
+          </button>
+        </div>
+        <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12, flex: 1, overflowY: 'auto', minHeight: 0 }}>
+          {rows.length === 0 ? (
+            <div style={{ color: 'var(--text-muted)' }}>
+              未从 AI 结论中解析到可执行的合并分组（需要含 keep 与非空 merge 的 JSON 数组）。可重跑分析，或改用自定义提问让模型严格按格式输出。
+            </div>
+          ) : (
+            rows.map((row, i) => (
+              <div key={row.id} style={{ border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <input type="checkbox" checked={row.include} aria-label={`勾选第 ${i + 1} 组`}
+                    onChange={(e) => onPatch(i, { include: e.target.checked })} />
+                  <span style={{ fontWeight: 600 }}>保留 {row.keep}</span>
+                  {row.project && <span style={{ color: 'var(--text-muted)' }}>（{row.project}）</span>}
+                  <span style={{ flex: 1 }} />
+                  <span style={{ color: 'var(--text-muted)' }}>归档 {row.merge.length} 条</span>
+                </div>
+                <div style={{ color: 'var(--text-secondary)' }}>合并归档：{row.merge.join('、')}</div>
+                {row.reason && <div style={{ color: 'var(--text-muted)' }}>理由：{row.reason}</div>}
+              </div>
+            ))
+          )}
+          {cleanMsg && <div style={{ color: 'var(--success)' }}>✓ {cleanMsg}</div>}
+          {cleanError && <div style={{ color: 'var(--danger)' }}>{cleanError}</div>}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8, padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
+          <span style={{ flex: 1, fontSize: 11, color: 'var(--text-muted)' }}>
+            共 {rows.length} 组，已选 {picked.length} 组（将归档 {archiveCount} 条重复任务，可在归档菜单还原）
+          </span>
+          <button
+            onClick={onClose}
+            disabled={cleaning}
+            title="取消 — 放弃本次清洗"
+            aria-label="取消清洗"
+            style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)' }}
+          >
+            取消
+          </button>
+          <button
+            onClick={onClean}
+            disabled={cleaning || cleanDone || picked.length === 0}
+            title={cleanDone ? '本次清洗已执行' : '确认合并 — 归档被合并任务并把关键信息并入代表任务'}
+            aria-label="确认合并"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)' }}
+          >
+            {cleaning && <Loader2 size={12} style={{ animation: 'mconsole-spin 1s linear infinite' }} />}
+            确认合并
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * 右侧 AI 控制台：受控组件，AI 工具列表/选中项由父级（ReportPage）统一持有。
  * 参考 18_comparePakage 的 AI 分析栏实现：普通手动分析采用「并行多任务 tab」模型，
  * 每次「开始分析」生成一个独立任务 tab，各请求互不阻塞并行执行；内置「AI 周报」tab
@@ -168,6 +274,51 @@ function parseAnswerItems(md: string): { title: string; content: string }[] {
   // 无有效标题分节：整份作为单条转存，标题取首个非空行兜底
   const first = lines.find((l) => l.trim()) ?? '通用需求清单';
   return [{ title: first.replace(/^\s*#+\s*/, '').slice(0, 40), content: md }];
+}
+
+/** T00652 数据清洗：AI 结论中的一个合并分组（keep=保留的代表任务号，merge=被判定重复、将归档的任务号） */
+interface CleanRow {
+  id: string;
+  project: string;
+  keep: string;
+  merge: string[];
+  reason: string;
+  include: boolean;
+}
+
+/**
+ * T00652 数据清洗：从 AI 结论中解析合并分组。
+ * 兼容 ```json 代码围栏与裸 JSON 数组：先剥围栏，再取首个 '[' 到末尾 ']' 之间解析；
+ * 逐组校验 keep 非空且 merge 非空（AI 输出不可靠，宁缺毋滥）。
+ */
+function parseCleanGroups(md: string): CleanRow[] {
+  const bare = md.replaceAll(/```json/gi, '').replaceAll(/```/gi, '').trim();
+  const start = bare.indexOf('[');
+  const end = bare.lastIndexOf(']');
+  if (start === -1 || end <= start) return [];
+  let arr: unknown;
+  try { arr = JSON.parse(bare.slice(start, end + 1)); } catch { return []; }
+  if (!Array.isArray(arr)) return [];
+  const out: CleanRow[] = [];
+  for (const r of arr) {
+    if (!r || typeof r !== 'object') continue;
+    const o = r as Record<string, unknown>;
+    const keep = typeof o.keep === 'string' ? o.keep.trim() : '';
+    const merge = (Array.isArray(o.merge) ? o.merge : [])
+      .filter((x): x is string => typeof x === 'string' && !!x.trim())
+      .map((x) => x.trim())
+      .filter((x) => x !== keep);
+    if (!keep || merge.length === 0) continue;
+    out.push({
+      id: `clean-${out.length}`,
+      project: typeof o.project === 'string' ? o.project.trim() : '',
+      keep,
+      merge: Array.from(new Set(merge)),
+      reason: typeof o.reason === 'string' ? o.reason.trim() : '',
+      include: true,
+    });
+  }
+  return out;
 }
 
 /** 后端持久化任务行 → 前端任务快照：字段一一对应，仅做空值归一（answer/error 为 null 时置空串） */
@@ -421,6 +572,13 @@ export function ReportConsole({
   // T00437：手动模式的可交互条目表格（标题/内容可编辑、勾选控制是否转存）与「本次已转存」标记
   const [saveRows, setSaveRows] = useState<SaveRow[]>([]);
   const [saveDone, setSaveDone] = useState(false);
+  // T00652：数据清洗弹窗状态（AI 判定重复分组 → 勾选确认 → 合并并归档）
+  const [cleanOpen, setCleanOpen] = useState(false);
+  const [cleanRows, setCleanRows] = useState<CleanRow[]>([]);
+  const [cleanMsg, setCleanMsg] = useState('');
+  const [cleanError, setCleanError] = useState('');
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanDone, setCleanDone] = useState(false);
 
   // T00569 三轮：AI 项目计划导入——模块级 store 订阅（切页保持，日志统一在本控制台 tab 输出）
   const aiSnap = useSyncExternalStore(aiImportStore.subscribe, aiImportStore.getSnapshot);
@@ -484,11 +642,13 @@ export function ReportConsole({
   async function newAnalysis() {
     const user = category === 'custom' ? custom.trim() : presetPrompt(category, periodLabel);
     const cat = category;
-    const per = cat === 'custom' ? undefined : period;
+    // T00652：数据清洗不依赖报表周期，后端改按「全量已完成任务」注入数据，故不附带 period
+    const per = cat === 'custom' || cat === 'clean' ? undefined : period;
     const title = cat === 'custom' ? `自定义：${user.slice(0, 18)}` : (CATEGORIES.find((c) => c.key === cat)?.label ?? cat);
     const body: Record<string, unknown> = { title, prompt: user, category: cat };
-    // 周期类预设（非自定义）附带当前周期，后端据此聚合真实任务数据注入；自定义问答不附带以保持纯对话
-    if (cat !== 'custom' && per) body.period = per;
+    // 周期类预设（非自定义）附带当前周期，后端据此聚合真实任务数据注入；自定义问答不附带以保持纯对话；
+    // T00652 数据清洗同理不附带周期（改用全量已完成任务数据）
+    if (cat !== 'custom' && cat !== 'clean' && per) body.period = per;
     if (toolId) body.toolId = toolId;
     try {
       // 后端受理即创建 busy job 并后台异步运行；本地仅持有其 id 作为展示快照
@@ -639,6 +799,51 @@ export function ReportConsole({
       setSaveError(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);
+    }
+  }
+
+  /** T00652：打开「数据清洗」弹窗——解析 AI 结论中的合并分组，供勾选确认后执行 */
+  function openClean() {
+    if (!activeTask?.answer) return;
+    setCleanRows(parseCleanGroups(activeTask.answer));
+    setCleanOpen(true);
+    setCleanMsg('');
+    setCleanError('');
+    setCleaning(false);
+    setCleanDone(false);
+  }
+
+  /** T00652：更新清洗分组某一行（仅勾选状态需要变更） */
+  function patchCleanRow(i: number, patch: Partial<CleanRow>) {
+    setCleanRows((prev) => prev.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  }
+
+  /**
+   * T00652：提交数据清洗——按勾选分组调用 /ai/clean-tasks 合并并归档。
+   * 后端写入走 TaskService.update（合并内容）+ ArchiveService.archive（归档，可还原），前端仅展示结果计数。
+   */
+  async function doClean() {
+    const picked = cleanRows.filter((r) => r.include);
+    if (picked.length === 0) {
+      setCleanError('请至少勾选一个合并分组');
+      return;
+    }
+    setCleaning(true);
+    setCleanMsg('');
+    setCleanError('');
+    try {
+      const r = await api.post<{ ok: boolean; merged: number; archived: number; missing?: string[] }>('/ai/clean-tasks', {
+        groups: picked.map(({ keep, merge, reason }) => ({ keep, merge, reason })),
+      });
+      const skipHint = r.missing?.length ? `，${r.missing.length} 个任务号未匹配已跳过` : '';
+      setCleanMsg(`已合并 ${r.merged} 组，归档重复任务 ${r.archived} 条${skipHint}`);
+      setCleanDone(true);
+      // 成功后延迟自动关闭，留出结果可见时间（与转存需求弹窗一致）
+      setTimeout(() => setCleanOpen(false), 2000);
+    } catch (e) {
+      setCleanError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCleaning(false);
     }
   }
 
@@ -916,6 +1121,17 @@ export function ReportConsole({
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           {!onReportTab && activeTask?.status === 'done' && (
             <>
+              {/* T00652：仅「数据清洗」分析完成后提供执行入口——按 AI 分组合并重复任务 */}
+              {activeTask.category === 'clean' && (
+                <button
+                  onClick={() => openClean()}
+                  title="执行清洗 — 按 AI 判定的重复分组合并，归档重复任务（可在归档菜单还原）"
+                  aria-label="执行清洗"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--accent)' }}
+                >
+                  <Sparkles size={12} /> 执行清洗
+                </button>
+              )}
               <button
                 onClick={() => void openSave()}
                 title="转存到通用需求 — 把这份通用需求清单写入「通用需求」菜单的指定分组"
@@ -1001,6 +1217,20 @@ export function ReportConsole({
           saveDone={saveDone}
           onSave={() => void doSave()}
           onClose={() => setSaveOpen(false)}
+        />
+      )}
+
+      {/* T00652：数据清洗弹窗——AI 判定的重复分组，勾选确认后合并并归档 */}
+      {cleanOpen && (
+        <CleanModal
+          rows={cleanRows}
+          onPatch={patchCleanRow}
+          cleanMsg={cleanMsg}
+          cleanError={cleanError}
+          cleaning={cleaning}
+          cleanDone={cleanDone}
+          onClean={() => void doClean()}
+          onClose={() => setCleanOpen(false)}
         />
       )}
     </div>

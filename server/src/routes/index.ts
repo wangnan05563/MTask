@@ -1216,6 +1216,99 @@ api.post('/ai/generalize-to-req', async (req, res) => {
   }
 });
 
+// ---------- T00652 数据清洗：AI 控制台「数据清洗」选项的合并执行端 ----------
+/** 清洗分组：keep=保留的代表任务号；merge=判定为重复、将被合并并归档的任务号 */
+interface CleanGroup {
+  keep: string;
+  merge: string[];
+  reason: string;
+}
+
+/** 任务号 -> {id,title}：仅活跃（未归档/非历史）任务参与清洗，避免误伤归档区数据 */
+function resolveCleanRefs(taskNos: string[]): Map<string, { id: string; title: string }> {
+  const out = new Map<string, { id: string; title: string }>();
+  const uniq = Array.from(new Set(taskNos));
+  if (uniq.length === 0) return out;
+  const placeholders = uniq.map(() => '?').join(',');
+  const rows = getDb()
+    .prepare(`SELECT id, task_no, title FROM tasks WHERE task_no IN (${placeholders}) AND archived = 0 AND COALESCE(history_at, '') = ''`)
+    .all(...uniq) as { id: string; task_no: string; title: string }[];
+  for (const r of rows) out.set(r.task_no, { id: r.id, title: r.title });
+  return out;
+}
+
+/**
+ * 执行数据清洗：把同一项目内判定为重复的任务，按其分组并入代表任务后归档被合并任务。
+ * 写入严格走 TaskService.update（合并内容）与 ArchiveService.archive（归档，可 restore 还原），
+ * 不直写 sqlite——绕过 Service 会丢关联同步（技能红线）。归档本身即可逆，误合并可还原。
+ */
+api.post('/ai/clean-tasks', (req, res) => {
+  const { groups } = req.body ?? {};
+  if (!Array.isArray(groups) || groups.length === 0) {
+    return res.status(400).json({ error: 'groups 必填且为非空数组' });
+  }
+  // 逐组兜底校验：AI 输出不可靠，缺代表任务号或无可合并项时整组跳过（宁缺毋滥）
+  const parsed: CleanGroup[] = [];
+  for (const g of groups) {
+    if (!g || typeof g !== 'object') continue;
+    const o = g as Record<string, unknown>;
+    const keep = typeof o.keep === 'string' ? o.keep.trim() : '';
+    const merge = (Array.isArray(o.merge) ? o.merge : [])
+      .filter((x): x is string => typeof x === 'string' && !!x.trim())
+      .map((x) => x.trim())
+      .filter((x) => x !== keep);
+    if (!keep || merge.length === 0) continue;
+    parsed.push({ keep, merge: Array.from(new Set(merge)), reason: typeof o.reason === 'string' ? o.reason.trim() : '' });
+  }
+  if (parsed.length === 0) return res.status(400).json({ error: '没有可执行的合并分组（每组需提供 keep 与非空 merge）' });
+
+  const refs = resolveCleanRefs(parsed.flatMap((g) => [g.keep, ...g.merge]));
+  const details: { keep: string; keepTitle: string; archived: string[]; reason: string }[] = [];
+  const missing: string[] = [];
+  let archivedCount = 0;
+
+  try {
+    for (const g of parsed) {
+      const keepRef = refs.get(g.keep);
+      if (!keepRef) { missing.push(g.keep); continue; }
+      const ids: string[] = [];
+      const archivedNos: string[] = [];
+      for (const no of g.merge) {
+        const ref = refs.get(no);
+        if (!ref) { missing.push(no); continue; }
+        ids.push(ref.id);
+        archivedNos.push(no);
+      }
+      if (ids.length === 0) continue;
+
+      // 1) 合并：被合并任务的关键信息追加进代表任务的「处理结果」，保证信息不丢
+      const keepTask = TaskService.getById(keepRef.id);
+      if (keepTask) {
+        const stamp = new Date().toISOString().slice(0, 10);
+        const note = [
+          '## 数据清洗合并记录',
+          `- 合并时间：${stamp}（AI 控制台「数据清洗」）`,
+          `- 代表任务：${g.keep} ${keepRef.title}`,
+          '- 被合并并归档的任务：',
+          ...archivedNos.map((no) => `  - ${no}（${refs.get(no)?.title ?? ''}）`),
+          ...(g.reason ? [`- 合并理由：${g.reason}`] : []),
+          '- 说明：被合并任务已归档（可在归档菜单还原），关键信息已并入本条。',
+        ].join('\n');
+        const prev = keepTask.handle_result?.trim() ?? '';
+        TaskService.update(keepRef.id, { handle_result: prev ? `${prev}\n\n${note}` : note });
+      }
+      // 2) 归档被合并任务：走 ArchiveService（可逆，误合并可 restore）
+      ArchiveService.archive(ids);
+      archivedCount += ids.length;
+      details.push({ keep: g.keep, keepTitle: keepRef.title, archived: archivedNos, reason: g.reason });
+    }
+    notifyChange('tasks'); // 归档由 ArchiveService 直接写库，补发变更通知让前端列表即时刷新
+    res.status(201).json({ ok: true, merged: details.length, archived: archivedCount, missing, details });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 // ---------- 复制到待办（T00436）：提示词 / 通用需求 一键转待办，落到默认记事项目（收件箱） ----------
 /** 通用实现：按来源表取标题/内容，创建 tasks 行；目标项目=移动端随手记默认项目（收件箱兜底） */
 function createTaskFromSource(table: 'prompts' | 'req_entries', sourceId: string, targetProjectId?: string): { taskId: string; projectId: string; reused: boolean } {

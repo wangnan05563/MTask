@@ -33,6 +33,32 @@ function now(): string {
   return new Date().toISOString();
 }
 
+/** T00652 数据清洗随附数据的条数上限：已完成任务可能成百上千，截断以控制提示词体积 */
+const CLEAN_DATA_LIMIT = 400;
+
+/**
+ * T00652 数据清洗：抓取「已完成且未归档」的任务（任务号 + 所属项目 + 标题）供 AI 识别同项目重复。
+ * 只读查询，不做任何写入；写入（合并/归档）一律由 /ai/clean-tasks 经 ArchiveService 与 TaskService 完成。
+ */
+function gatherCleanData(limit = CLEAN_DATA_LIMIT): {
+  total: number;
+  tasks: { taskNo: string; project: string; title: string }[];
+} {
+  const db = getDb();
+  const where = "t.status = 'done' AND t.archived = 0 AND COALESCE(t.history_at, '') = ''";
+  const total = (db.prepare(`SELECT COUNT(*) AS c FROM tasks t WHERE ${where}`).get() as { c: number }).c;
+  const tasks = db
+    .prepare(
+      `SELECT t.task_no AS taskNo, COALESCE(p.name, t.project_id) AS project, t.title AS title
+         FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+        WHERE ${where}
+        ORDER BY t.project_id, t.task_no
+        LIMIT ?`,
+    )
+    .all(limit) as { taskNo: string; project: string; title: string }[];
+  return { total, tasks };
+}
+
 /**
  * 组装每次对话的 system/user（周期类任务按所选周期注入真实任务数据）。
  * 逻辑与 /ai/chat 路由保持一致，使「持久化任务」与「同步问答」的回答口径完全一致。
@@ -41,6 +67,17 @@ function buildConsoleChat(job: ConsoleJobRow): { sys: string; usr: string } {
   let sys = CHAT_SYSTEM;
   let usr = job.prompt;
   const per = job.period as ReportPeriod | null;
+  // T00652 数据清洗：不依赖报表周期，改为随附全量「已完成且未归档」任务，让 AI 在同一项目内识别重复
+  if (job.category === 'clean') {
+    const data = gatherCleanData();
+    sys = `${sys}\n本次必须严格依据随附的真实已完成任务数据作答，不得虚构任务或任务号；只在「同一个项目内」判定重复与合并，跨项目的相似任务一律不要合并。`.trim();
+    usr = [
+      `【已完成任务数据（status=done、未归档，共 ${data.total} 条，本次随附 ${data.tasks.length} 条）】`,
+      `【任务明细】${JSON.stringify(data.tasks)}`,
+      `\n问题：${usr}`,
+    ].join('\n\n');
+    return { sys, usr };
+  }
   if (per && REPORT_PERIODS.has(per)) {
     const data = gatherReportData(per);
     // 限定模型必须依据随附真实数据作答，提示所依据周期，避免常识性发挥与用户预期不符
