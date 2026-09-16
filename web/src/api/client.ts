@@ -107,6 +107,8 @@ export interface Project {
   name: string;
   description: string;
   sort_weight: number;
+  /** T00655：创建时间（项目排序「创建时间」维度用） */
+  created_at?: string;
   /** T00496：每项目待办/未验证计数（徽标展示） */
   todo_count?: number;
   unverified_count?: number;

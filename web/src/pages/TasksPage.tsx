@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore, type ClipboardEvent } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent } from 'react';
 import { api, imageUrl, fetchImage, imageDataURL, type AITool, type Project, type PromptCategory, type ReqCategory, type Task, type TaskCategory, type TaskImage } from '../api/client';
 import { beautifyStore } from '../stores/beautifyStore';
 import { askConfirm, askInput } from '../ui/dialogs';
@@ -6,7 +6,7 @@ import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { useBusy, setBusy } from '../ui/busy';
-import { AlertTriangle, AlignLeft, Archive, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
+import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, Pin, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 
 // ---------- T00552：批量分类运行态模块级化——切页后循环继续、返回不卡死 ----------
@@ -36,6 +36,22 @@ async function runBatchClassifyModule(target: Array<{ id: string; title: string;
   }
   void prio;
 }
+
+// T00655：项目排序方式（会话级持久）与菜单选项
+type ProjectSortMode = 'default' | 'alpha-asc' | 'alpha-desc' | 'created-desc' | 'created-asc' | 'todo-desc' | 'todo-asc';
+/** T00655：置顶权重——服务端按 sort_weight 升序排列，置顶写极小值确保排最前（收件箱 -1000 为其默认位次） */
+const PROJ_PIN_WEIGHT = -9999;
+/** 是否处于置顶态（精确匹配置顶权重，避免把收件箱等系统权重误判为置顶） */
+const isProjectPinned = (pj: { sort_weight?: number }) => (pj.sort_weight ?? 0) === PROJ_PIN_WEIGHT;
+const PROJ_SORT_OPTIONS: Array<{ key: ProjectSortMode; label: string; hint: string }> = [
+  { key: 'default', label: '默认（置顶优先）', hint: '按置顶权重与创建顺序排列（不改变原有排序规则）' },
+  { key: 'alpha-asc', label: '名称 A → Z', hint: '按项目名称升序' },
+  { key: 'alpha-desc', label: '名称 Z → A', hint: '按项目名称降序' },
+  { key: 'created-desc', label: '创建时间：最新在前', hint: '新建的项目排在最前' },
+  { key: 'created-asc', label: '创建时间：最早在前', hint: '最早创建的项目排在最前' },
+  { key: 'todo-desc', label: '待办数量：多 → 少', hint: '待办越多的项目越靠前' },
+  { key: 'todo-asc', label: '待办数量：少 → 多', hint: '待办越少的项目越靠前' },
+];
 
 /** 粘贴截图项：id 为入列时生成的稳定唯一标识，供列表 key 使用，删除中间项不会导致其余项身份错位 */
 interface PastedImage {
@@ -208,6 +224,35 @@ export function TasksPage() {
   const [pressId, setPressId] = useState('');
   // T00496：项目自绘下拉展开态（项目名后动态徽标：橙=待办数、黄=未验证数）
   const [projOpen, setProjOpen] = useState(false);
+
+  // T00655：项目排序与置顶——排序方式会话级持久（下次进入恢复）；置顶经项目 sort_weight 持久到后端
+  const [projSortMode, setProjSortMode] = useSessionState<ProjectSortMode>('tasks.projectSort', 'default');
+  const [projSortOpen, setProjSortOpen] = useState(false);
+  const projSortRef = useRef<HTMLSpanElement | null>(null); // T00655：排序菜单外部点击收起
+  const sortedProjects = useMemo(() => {
+    const list = [...projects];
+    switch (projSortMode) {
+      case 'alpha-asc': return list.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));
+      case 'alpha-desc': return list.sort((a, b) => b.name.localeCompare(a.name, 'zh-Hans-CN'));
+      case 'created-desc': return list.sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''));
+      case 'created-asc': return list.sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''));
+      case 'todo-desc': return list.sort((a, b) => (b.todo_count ?? 0) - (a.todo_count ?? 0));
+      case 'todo-asc': return list.sort((a, b) => (a.todo_count ?? 0) - (b.todo_count ?? 0));
+      default: return list; // 默认序：沿用后端排序（sort_weight 置顶权重优先生效），不改变核心业务规则
+    }
+  }, [projects, projSortMode]);
+
+  /** T00655：置顶/取消置顶——置顶写入较大 sort_weight（默认序下排最前），取消归零 */
+  async function toggleProjectPin(pj: Project) {
+    try {
+      const pinned = isProjectPinned(pj);
+      await api.patch(`/projects/${pj.id}`, { sortWeight: pinned ? 0 : PROJ_PIN_WEIGHT });
+      flash(pinned ? `已取消置顶「${pj.name}」` : `已置顶「${pj.name}」（默认排序下排最前）`);
+      void loadProjects();
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
   const projDropRef = useRef<HTMLDivElement | null>(null);
   const pressTimer = useRef<Record<string, number>>({});
     const flash = (msg: string) => {
@@ -269,6 +314,8 @@ export function TasksPage() {
     if (!projOpen) return;
     const onDoc = (e: MouseEvent) => {
       if (projDropRef.current && !projDropRef.current.contains(e.target as Node)) setProjOpen(false);
+      // T00655：排序菜单与项目下拉共用外部点击收起（保守：点击非排序区即收起）
+      if (projSortRef.current && !projSortRef.current.contains(e.target as Node)) setProjSortOpen(false);
     };
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
@@ -2126,11 +2173,23 @@ export function TasksPage() {
           </button>
           {projOpen && (
             <div role="listbox" style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 30, minWidth: 220 }}>
-              {projects.map((p) => (
+              {sortedProjects.map((p) => (
                 <button key={p.id} role="option" aria-selected={p.id === activeProject}
                   onClick={() => { setActiveProject(p.id); setProjOpen(false); }}
                   title={`${p.name}：待办 ${p.todo_count ?? 0} 条，未验证 ${p.unverified_count ?? 0} 条`}
                   style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, background: p.id === activeProject ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer' }}>
+                  {/* T00655：置顶图标——位于项目名称之前，点击切换置顶（已置顶=实心 accent + 弹入动画） */}
+                  <span
+                    role="button" tabIndex={0}
+                    onClick={(e) => { e.stopPropagation(); void toggleProjectPin(p); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); void toggleProjectPin(p); } }}
+                    title={isProjectPinned(p) ? `已置顶「${p.name}」— 点击取消置顶` : `置顶「${p.name}」— 点击后在默认排序下排最前`}
+                    aria-label={isProjectPinned(p) ? `取消置顶 ${p.name}` : `置顶 ${p.name}`}
+                    className={isProjectPinned(p) ? 'pin-pop tbtn-anim' : 'tbtn-anim'}
+                    style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0, color: isProjectPinned(p) ? 'var(--accent)' : 'var(--text-muted)', cursor: 'pointer' }}
+                  >
+                    <Pin size={12} style={{ transform: isProjectPinned(p) ? 'rotate(-45deg)' : 'none', transition: 'transform .18s ease, color .18s ease', fill: isProjectPinned(p) ? 'currentColor' : 'none' }} />
+                  </span>
                   <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
                   <span title={`待办 ${p.todo_count ?? 0} 条`} style={{ minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{p.todo_count ?? 0}</span>
                   <span title={`未验证 ${p.unverified_count ?? 0} 条`} style={{ minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.unverified_count ?? 0}</span>
@@ -2139,6 +2198,32 @@ export function TasksPage() {
             </div>
           )}
         </div>
+        {/* T00655：项目排序图标——位于项目选择框之后、新建项目图标之前（悬浮/点击交互动画由 tbtn-anim 提供） */}
+        <span ref={projSortRef} style={{ position: 'relative', display: 'inline-flex' }}>
+          <button
+            onClick={() => setProjSortOpen((v) => !v)}
+            className="tbtn-anim"
+            title={`项目排序 — 当前：${PROJ_SORT_OPTIONS.find((o) => o.key === projSortMode)?.label ?? '默认'}`}
+            aria-label="项目排序" aria-haspopup="menu" aria-expanded={projSortOpen}
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: projSortOpen ? 'var(--accent)' : 'transparent', color: projSortOpen ? 'var(--accent-text)' : 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}
+          >
+            <ArrowUpDown size={13} />
+          </button>
+          {projSortOpen && (
+            <div role="menu" aria-label="项目排序方式"
+              style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 40, minWidth: 200, padding: 4 }}>
+              {PROJ_SORT_OPTIONS.map((o) => (
+                <button key={o.key} role="menuitemradio" aria-checked={projSortMode === o.key}
+                  onClick={() => { setProjSortMode(o.key); setProjSortOpen(false); }}
+                  title={o.hint}
+                  style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px 8px', fontSize: 12, textAlign: 'left', border: 'none', borderRadius: 4, cursor: 'pointer', background: projSortMode === o.key ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)' }}>
+                  <span style={{ width: 14, display: 'inline-flex', flexShrink: 0 }}>{projSortMode === o.key ? <Check size={12} style={{ color: 'var(--accent)' }} /> : null}</span>
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </span>
         <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
         {renderProjectActionButtons()}
         </span>
@@ -2630,6 +2715,9 @@ export function TasksPage() {
         /* T00521 调整：验证结果选择面板弹出动画（缩放+下移淡入，与 toast-in 同族节奏） */
         @keyframes verify-pop { from { opacity: 0; transform: translateY(-6px) scale(.92); } to { opacity: 1; transform: none; } }
         @keyframes taskflush { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
+        /* T00655：项目置顶图标状态切换弹入动画（未置顶 → 已置顶） */
+        @keyframes pin-pop { 0% { transform: scale(.6) rotate(-45deg); opacity: .5; } 60% { transform: scale(1.25) rotate(-45deg); } 100% { transform: scale(1) rotate(-45deg); opacity: 1; } }
+        .pin-pop { animation: pin-pop .28s ease-out; }
         .task-item.flush { animation: taskflush 1.4s ease; }
         /* T00467：工具栏图标按钮 hover 动画（开源 lucide 图标 + 缩放旋转反馈） */
         .tbtn-anim svg { transition: transform .18s ease; }
