@@ -1,13 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowDownUp, ChevronDown, ChevronUp, Copy, FolderInput, FolderPlus, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, UnfoldVertical, FoldVertical, X, Archive } from 'lucide-react';
+import { ArrowDownUp, ChevronDown, ChevronUp, Copy, FolderInput, FolderPlus, ListTodo, Loader2, Pencil, Plus, Save, SquarePen, Trash2, UnfoldVertical, FoldVertical, Wand2, X, Archive } from 'lucide-react';
 import { CopyButton } from '../ui/CopyButton';
 import { FontColorButton } from '../ui/FontColorButton';
-import { api, type Prompt, type PromptCategory } from '../api/client';
+import { api, type Project, type Prompt, type PromptCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { clearSessionState, useSessionState } from '../ui/session';
 import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { relTime } from '../ui/format';
+
+/** T00636：剥离大模型常见 ``` 代码围栏（仅整段包裹时），供提示词优化结果回写前清洗 */
+function stripFence(text: string): string {
+  const m = /^\s*```(?:markdown|md)?\s*\n?([\s\S]*?)\n?```\s*$/.exec(text);
+  return m ? m[1] : text;
+}
 
 /** 提示词仓库：按分类管理提示词，支持增删改查与一键复制 */
 export function PromptsPage() {
@@ -26,6 +32,16 @@ export function PromptsPage() {
   const [newContent, setNewContent] = useSessionState('prompts.new.content', '');
   // 编辑草稿：promptId -> 草稿
   const [drafts, setDrafts] = useState<Record<string, { title: string; content: string; categoryId: string }>>({});
+
+  // T00636：提示词优化——与任务页「提示词优化」同款能力（复用 AI 整理工具把内容改写为结构化提示词）
+  const [organizeToolId, setOrganizeToolId] = useState('');
+  const [optimizing, setOptimizing] = useState<Record<string, boolean>>({}); // key: 'new' 或 提示词 id
+
+  // T00629：复制到待办任务——目标项目选择弹窗（不选则落默认记事项目/收件箱）
+  const [taskCopyPrompt, setTaskCopyPrompt] = useState<Prompt | null>(null);
+  const [taskCopyProjectId, setTaskCopyProjectId] = useState('');
+  const [taskCopyBusy, setTaskCopyBusy] = useState(false);
+  const [projects, setProjects] = useState<Project[]>([]);
   // 内容 展开/收起：expandedIds 记录已展开的提示词 id，默认全部收起（点击标题切换，降低信息密度）
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
   // 记录高亮：保存/新增成功后对目标行打标记，flashAt 值变化触发行动画重放
@@ -59,6 +75,40 @@ export function PromptsPage() {
     setNotice(msg);
     setTimeout(() => setNotice(''), 2500);
   };
+
+  // T00636：加载 AI 整理工具（模型菜单默认配置优先）——提示词优化使用
+  useEffect(() => {
+    void api.get<Array<{ id: string; isDefaultOrganize?: boolean }>>('/aitools')
+      .then((ts) => {
+        const def = ts.find((t) => t.isDefaultOrganize) ?? ts[0];
+        if (def) setOrganizeToolId(def.id);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  /** T00636：提示词优化——把标题/内容交给 AI 改写为结构化提示词，结果回写草稿供确认后保存。
+   *  与任务页「提示词优化」同款：内容为空时回退用标题作输入；结果剥离代码围栏。 */
+  async function optimizeContent(key: string, title: string, content: string, apply: (v: string) => void) {
+    if (optimizing[key]) return;
+    if (!organizeToolId) return flash('请先在「模型菜单」添加并选择工具');
+    let text = content.trim();
+    const source = text ? '内容' : '标题';
+    if (!text) text = title.trim();
+    if (!text) return flash('请先填写标题或内容再优化');
+    setOptimizing((p) => ({ ...p, [key]: true }));
+    try {
+      const r = await api.post<{ ok: boolean; content?: string; error?: string }>('/ai/optimize', {
+        toolId: organizeToolId, title, description: text,
+      });
+      if (!r.ok) return flash(r.error ?? '优化失败');
+      apply(stripFence(r.content ?? ''));
+      flash(`提示词优化完成（输入来源：${source}），可编辑后保存`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setOptimizing((p) => { const n = { ...p }; delete n[key]; return n; });
+    }
+  }
 
   const loadCategories = useCallback(async () => {
     const cats = await api.get<PromptCategory[]>('/prompt-categories');
@@ -166,14 +216,34 @@ export function PromptsPage() {
     }
   }
 
-  /** 复制到待办任务（T00436）：把提示词转成待办，落到默认记事项目（收件箱），不改动提示词本身 */
+  /** T00629：复制到待办任务——支持**指定目标项目**（弹窗选择；不选则落默认记事项目/收件箱） */
   async function copyToTask(p: Prompt) {
-    if (!(await askConfirm(`把提示词「${p.title}」复制为待办任务？目标项目为默认记事项目（收件箱）。`))) return;
+    setTaskCopyPrompt(p);
+    setTaskCopyProjectId('');
     try {
-      await api.post(`/prompts/${p.id}/to-task`);
-      flash(`已复制「${p.title}」到待办任务（收件箱）`);
+      setProjects(await api.get<Project[]>('/projects'));
+    } catch { /* 项目列表加载失败时仍可用默认收件箱 */ }
+  }
+
+  /** T00629：确认复制到待办（目标项目可选） */
+  async function confirmCopyToTask() {
+    if (!taskCopyPrompt) return;
+    const p = taskCopyPrompt;
+    const targetName = taskCopyProjectId
+      ? (projects.find((x) => x.id === taskCopyProjectId)?.name ?? '所选项目')
+      : '默认记事项目（收件箱）';
+    setTaskCopyBusy(true);
+    try {
+      const r = await api.post<{ ok: boolean; reused: boolean }>(`/prompts/${p.id}/to-task`,
+        taskCopyProjectId ? { projectId: taskCopyProjectId } : {});
+      flash(r.reused
+        ? `目标项目已有同标题待办，已复用（${targetName}）`
+        : `已复制「${p.title}」到待办任务（${targetName}）`);
+      setTaskCopyPrompt(null);
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTaskCopyBusy(false);
     }
   }
 
@@ -397,6 +467,17 @@ export function PromptsPage() {
             >
               <Save size={13} />
             </button>
+            {/* T00636：提示词优化（与任务页同款）——置于保存按钮旁 */}
+            <button
+              onClick={() => void optimizeContent('new', newTitle, newContent, setNewContent)}
+              disabled={optimizing['new']}
+              className={optimizing['new'] ? 'task-breathe' : undefined}
+              title={optimizing['new'] ? '提示词优化进行中…' : '提示词优化 — 用默认模型把当前内容改写为结构化提示词（结果回填，可编辑后保存）'}
+              aria-label={optimizing['new'] ? '提示词优化进行中' : '提示词优化：改写为结构化提示词'}
+              style={{ background: optimizing['new'] ? 'var(--accent)' : 'transparent', color: optimizing['new'] ? 'var(--accent-text)' : 'var(--accent)', border: '1px solid var(--accent)', padding: '5px 8px', borderRadius: 6, cursor: optimizing['new'] ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12 }}
+            >
+              {optimizing['new'] ? <Loader2 size={13} className="aispin" /> : <Wand2 size={13} />} 提示词优化
+            </button>
             <button onClick={() => setCreating(false)} title="取消 — 放弃新建并收起表单" aria-label="取消：放弃新建并收起表单"
               style={{ display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
               <X size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
@@ -451,6 +532,17 @@ export function PromptsPage() {
                     <button onClick={() => void saveDraft(p)} disabled={!draft.title.trim()} style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="保存 — 保存对这条提示词的修改" aria-label="保存：保存对这条提示词的修改">
                       <Save size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                    </button>
+                    {/* T00636：提示词优化（与任务页同款）——置于保存按钮旁，结果回填当前编辑草稿 */}
+                    <button
+                      onClick={() => void optimizeContent(p.id, draft.title, draft.content, (v) => setDrafts((prev) => ({ ...prev, [p.id]: { ...(prev[p.id] ?? draft), content: v } })))}
+                      disabled={optimizing[p.id]}
+                      title={optimizing[p.id] ? '提示词优化进行中…' : '提示词优化 — 用默认模型把当前内容改写为结构化提示词（结果回填草稿）'}
+                      aria-label={optimizing[p.id] ? '提示词优化进行中' : '提示词优化：改写为结构化提示词'}
+                      style={{ fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 4px', background: 'transparent', border: 'none', cursor: optimizing[p.id] ? 'default' : 'pointer' }}
+                      className={optimizing[p.id] ? 'task-breathe' : undefined}
+                    >
+                      {optimizing[p.id] ? <Loader2 size={13} className="aispin" /> : <Wand2 size={13} />}
                     </button>
                     <button onClick={() => setDrafts((prev) => {
                       const next = { ...prev };
@@ -532,6 +624,48 @@ export function PromptsPage() {
           );
         })}
       </ul>
+
+      {/* T00629：复制到待办任务——目标项目选择弹窗（不选则落默认记事项目/收件箱） */}
+      {taskCopyPrompt && (
+        <div /* NOSONAR - 遮罩点击为鼠标便捷关闭，取消按钮提供键盘可达通路 */
+          style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={(e) => { if (e.target === e.currentTarget && !taskCopyBusy) setTaskCopyPrompt(null); }}>
+          <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(420px, 92vw)', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
+              <ListTodo size={14} style={{ color: 'var(--accent)' }} /> 复制到待办任务
+              <span style={{ flex: 1 }} />
+              <button onClick={() => setTaskCopyPrompt(null)} disabled={taskCopyBusy} title="关闭" aria-label="关闭复制到待办弹窗"
+                style={{ background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 14, cursor: taskCopyBusy ? 'default' : 'pointer' }}>×</button>
+            </div>
+            <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12 }}>
+              <div style={{ color: 'var(--text-muted)' }}>
+                将提示词「<strong style={{ color: 'var(--text)' }}>{taskCopyPrompt.title}</strong>」复制为一条**待办任务**（内容写入任务描述，不改动提示词本身）。
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>目标项目</div>
+                <select value={taskCopyProjectId} onChange={(e) => setTaskCopyProjectId(e.target.value)} disabled={taskCopyBusy}
+                  aria-label="目标项目" title="选择待办任务落到哪个项目"
+                  style={{ width: '100%', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12 }}>
+                  <option value="">默认记事项目（收件箱）</option>
+                  {projects.map((pj) => <option key={pj.id} value={pj.id}>{pj.name}</option>)}
+                </select>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                  目标项目若已存在同标题待办，将自动复用（不重复创建）。
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
+              <button onClick={() => setTaskCopyPrompt(null)} disabled={taskCopyBusy} className="tbtn-anim"
+                style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>取消</button>
+              <button onClick={() => void confirmCopyToTask()} disabled={taskCopyBusy} className="tbtn-anim"
+                title="确认复制到所选项目的待办任务" aria-label="确认复制到待办"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: taskCopyBusy ? 'default' : 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12 }}>
+                {taskCopyBusy ? <><Loader2 size={12} className="aispin" />复制中…</> : '复制到待办'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

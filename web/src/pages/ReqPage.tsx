@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CalendarRange, ChevronDown, ChevronUp, Copy, FolderInput, FolderPlus, ListTodo, Pencil, Plus, Save, SquarePen, Trash2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
+import { CalendarRange, ChevronDown, ChevronUp, Copy, FolderInput, FolderPlus, ListTodo, Loader2, Pencil, Plus, Save, SquarePen, Trash2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
 import { CopyButton } from '../ui/CopyButton';
 import { FontColorButton } from '../ui/FontColorButton';
-import { api, type ReqCategory, type ReqEntry } from '../api/client';
+import { api, type Project, type ReqCategory, type ReqEntry } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { clearSessionState, useSessionState } from '../ui/session';
 import { MarkdownContent } from '../ui/Markdown';
@@ -17,6 +17,12 @@ export function ReqPage() {
   const [entries, setEntries] = useState<ReqEntry[]>([]);
   const [search, setSearch] = useState('');
   const [notice, setNotice] = useState('');
+
+  // T00629：复制到待办任务——目标项目选择弹窗（与提示词页一致）
+  const [taskCopyEntry, setTaskCopyEntry] = useState<ReqEntry | null>(null);
+  const [taskCopyProjectId, setTaskCopyProjectId] = useState('');
+  const [taskCopyBusy, setTaskCopyBusy] = useState(false);
+  const [projects, setProjects] = useState<Project[]>([]);
   // 排序条件：sortKey 排序字段，sortDir 升降序（默认时间降序，与后端默认一致）
   const [sortKey, setSortKey] = useState<'updated_at' | 'created_at' | 'title' | 'manual'>('updated_at');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
@@ -174,14 +180,34 @@ export function ReqPage() {
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
   }
 
-  /** 复制到待办任务（T00436）：把通用需求转成待办，落到默认记事项目（收件箱），不改动需求本身 */
+  /** T00629：复制到待办任务——支持**指定目标项目**（弹窗选择；不选则落默认记事项目/收件箱） */
   async function copyToTask(p: ReqEntry) {
-    if (!(await askConfirm(`把通用需求「${p.title}」复制为待办任务？目标项目为默认记事项目（收件箱）。`))) return;
+    setTaskCopyEntry(p);
+    setTaskCopyProjectId('');
     try {
-      await api.post(`/req-entries/${p.id}/to-task`);
-      flash(`已复制「${p.title}」到待办任务（收件箱）`);
+      setProjects(await api.get<Project[]>('/projects'));
+    } catch { /* 加载失败仍可用默认收件箱 */ }
+  }
+
+  /** T00629：确认复制到待办（目标项目可选） */
+  async function confirmCopyToTask() {
+    if (!taskCopyEntry) return;
+    const p = taskCopyEntry;
+    const targetName = taskCopyProjectId
+      ? (projects.find((x) => x.id === taskCopyProjectId)?.name ?? '所选项目')
+      : '默认记事项目（收件箱）';
+    setTaskCopyBusy(true);
+    try {
+      const r = await api.post<{ ok: boolean; reused: boolean }>(`/req-entries/${p.id}/to-task`,
+        taskCopyProjectId ? { projectId: taskCopyProjectId } : {});
+      flash(r.reused
+        ? `目标项目已有同标题待办，已复用（${targetName}）`
+        : `已复制「${p.title}」到待办任务（${targetName}）`);
+      setTaskCopyEntry(null);
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTaskCopyBusy(false);
     }
   }
 
@@ -538,6 +564,48 @@ export function ReqPage() {
           );
         })}
       </ul>
+
+      {/* T00629：复制到待办任务——目标项目选择弹窗（与提示词页一致） */}
+      {taskCopyEntry && (
+        <div /* NOSONAR - 遮罩点击为鼠标便捷关闭，取消按钮提供键盘可达通路 */
+          style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={(e) => { if (e.target === e.currentTarget && !taskCopyBusy) setTaskCopyEntry(null); }}>
+          <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(420px, 92vw)', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
+              <ListTodo size={14} style={{ color: 'var(--accent)' }} /> 复制到待办任务
+              <span style={{ flex: 1 }} />
+              <button onClick={() => setTaskCopyEntry(null)} disabled={taskCopyBusy} title="关闭" aria-label="关闭复制到待办弹窗"
+                style={{ background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 14, cursor: taskCopyBusy ? 'default' : 'pointer' }}>×</button>
+            </div>
+            <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12 }}>
+              <div style={{ color: 'var(--text-muted)' }}>
+                将通用需求「<strong style={{ color: 'var(--text)' }}>{taskCopyEntry.title}</strong>」复制为一条**待办任务**（内容写入任务描述，不改动需求本身）。
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>目标项目</div>
+                <select value={taskCopyProjectId} onChange={(e) => setTaskCopyProjectId(e.target.value)} disabled={taskCopyBusy}
+                  aria-label="目标项目" title="选择待办任务落到哪个项目"
+                  style={{ width: '100%', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12 }}>
+                  <option value="">默认记事项目（收件箱）</option>
+                  {projects.map((pj) => <option key={pj.id} value={pj.id}>{pj.name}</option>)}
+                </select>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                  目标项目若已存在同标题待办，将自动复用（不重复创建）。
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
+              <button onClick={() => setTaskCopyEntry(null)} disabled={taskCopyBusy} className="tbtn-anim"
+                style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>取消</button>
+              <button onClick={() => void confirmCopyToTask()} disabled={taskCopyBusy} className="tbtn-anim"
+                title="确认复制到所选项目的待办任务" aria-label="确认复制到待办"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: taskCopyBusy ? 'default' : 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12 }}>
+                {taskCopyBusy ? <><Loader2 size={12} className="aispin" />复制中…</> : '复制到待办'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

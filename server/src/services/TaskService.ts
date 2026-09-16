@@ -374,10 +374,13 @@ export const TaskService = {
     const t = now();
     db.transaction(() => {
       // 复用生成新 id 但保留原任务编号？不复用：新任务需全局唯一编号，重新分配避免重复
+      // T00631：复用需**适度清洗**，使新任务开箱可执行——
+      //   status 固定 todo（不继承源任务的完成态）、verified 归零、清空 handle_result（原任务产物）、取消置顶；
+      //   保留 title/description/priority/category_id/ai_summary（内容与参考信息）与截图附件。
       db.prepare(
         `INSERT INTO tasks (id, task_no, project_id, title, description, priority, status, verified, archived, archived_at, ai_summary, handle_result, pinned, category_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)`
-      ).run(id, nextTaskNo(), projectId, src.title, src.description, src.priority, src.status, src.verified, src.ai_summary, src.handle_result, src.pinned ? 1 : 0, src.category_id, t, t);
+         VALUES (?, ?, ?, ?, ?, ?, 'todo', 0, 0, NULL, ?, NULL, 0, ?, ?, ?)`
+      ).run(id, nextTaskNo(), projectId, src.title, src.description, src.priority, src.ai_summary, src.category_id, t, t);
       // 复制截图：读取原图二进制，为新任务建立相同图片元信息与内容
       const imgs = db.prepare('SELECT mime_type, data FROM task_images WHERE task_id = ?').all(taskId) as { mime_type: string; data: Buffer }[];
       const ins = db.prepare('INSERT INTO task_images (id, task_id, mime_type, data, created_at) VALUES (?, ?, ?, ?, ?)');

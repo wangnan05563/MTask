@@ -1218,10 +1218,12 @@ api.post('/ai/generalize-to-req', async (req, res) => {
 
 // ---------- 复制到待办（T00436）：提示词 / 通用需求 一键转待办，落到默认记事项目（收件箱） ----------
 /** 通用实现：按来源表取标题/内容，创建 tasks 行；目标项目=移动端随手记默认项目（收件箱兜底） */
-function createTaskFromSource(table: 'prompts' | 'req_entries', sourceId: string): { taskId: string; projectId: string; reused: boolean } {
+function createTaskFromSource(table: 'prompts' | 'req_entries', sourceId: string, targetProjectId?: string): { taskId: string; projectId: string; reused: boolean } {
   const src = getDb().prepare(`SELECT id, title, content FROM ${table} WHERE id = ?`).get(sourceId) as { title: string; content: string } | undefined;
   if (!src) throw new Error('来源内容不存在');
-  const projectId = getDefaultNoteProjectId();
+  // T00629：支持指定目标项目（提示词/通用需求「复制到待办任务」可选择落到哪个项目）；缺省仍为默认记事项目（收件箱）
+  const projectId = targetProjectId ?? getDefaultNoteProjectId();
+  if (!getDb().prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('目标项目不存在');
   const prefix = table === 'prompts' ? '[提示词]' : '[通用需求]';
   // T00445 教训：多渠道创建易重复——同项目同标题已存在则直接返回既有任务，不重复插入
   const exist = getDb().prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? LIMIT 1').get(projectId, `${prefix} ${src.title}`) as { id: string } | undefined;
@@ -1263,12 +1265,16 @@ api.get('/ai/usage', (req, res) => {
 });
 
 api.post('/prompts/:id/to-task', (req, res) => {
-  try { res.status(201).json({ ok: true, ...createTaskFromSource('prompts', req.params.id) }); }
+  // T00629：可选 projectId——指定待办落到哪个项目（不传则默认记事项目/收件箱）
+  const { projectId } = (req.body ?? {}) as { projectId?: unknown };
+  try { res.status(201).json({ ok: true, ...createTaskFromSource('prompts', req.params.id, typeof projectId === 'string' && projectId ? projectId : undefined) }); }
   catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 
 api.post('/req-entries/:id/to-task', (req, res) => {
-  try { res.status(201).json({ ok: true, ...createTaskFromSource('req_entries', req.params.id) }); }
+  // T00629：可选 projectId（与提示词页一致，支持指定目标项目）
+  const { projectId } = (req.body ?? {}) as { projectId?: unknown };
+  try { res.status(201).json({ ok: true, ...createTaskFromSource('req_entries', req.params.id, typeof projectId === 'string' && projectId ? projectId : undefined) }); }
   catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 
