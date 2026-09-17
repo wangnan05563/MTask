@@ -998,7 +998,7 @@ export const PlanService = {
       '1. **需求逐条提取，严禁合并**——PRD 中每条可跟踪的需求（功能/非功能/约束/验收要点）各生成一条 requirements，reqNo 从 REQ-001 顺序编号；',
       '2. plans 按 WBS 规范拆分（标题带编号如 "1 项目启动"、"1.1 需求评审"），每个节点的 reqNos 只填**该节点直接实现/覆盖的需求编号**；',
       '   ——管理类节点（项目启动/计划/评审/验收等）若确实不直接对应某条需求，reqNos 输出空数组 []，**不要把所有需求都挂上**（关联过宽会让需求跟踪矩阵失去意义）；',
-      '3. startDate 一律空串（保存后由系统按工作日串行排期）；status 一律 "todo"；durationDays 缺失默认 1；',
+      '3. startDate 一律空串（保存后系统按导入当日并行排布：各行独立取导入日为开始日，不做串行顺延）；status 一律 "todo"；durationDays 缺失默认 1；',
       '4. 只输出 JSON 对象本身，不要任何解释或 Markdown 代码围栏；不虚构文档中没有的内容。',
       '5. 若文档过长，优先保证**需求提取完整**（宁多勿漏），计划可适度归并。',
     ].join('\n');
@@ -1050,11 +1050,12 @@ export const PlanService = {
   },
 
   /** T00662：导入 PRD 解析结果——事务创建需求项 + 计划（含 req_ids 关联）+ 可选同步生成待办任务。 */
+  /** T00712（D-5）：返回 unlinkedReqNos——reqNos 引用了本次导入中不存在的需求编号时不再静默丢弃。 */
   importPrd(projectId: string, input: {
     requirements?: Array<{ reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string }>;
     plans?: Array<{ title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string }>;
     createTasks?: boolean;
-  }): { requirements: number; plans: number; tasks: number } {
+  }): { requirements: number; plans: number; tasks: number; unlinkedReqNos: string[] } {
     const db = getDb();
     if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
     const reqs = (input.requirements ?? []).filter((r) => r?.title?.trim());
@@ -1062,6 +1063,7 @@ export const PlanService = {
     if (reqs.length === 0 && planItems.length === 0) throw new Error('没有可导入的需求或计划条目');
     const t = now();
     let taskCount = 0;
+    const unlinkedReqNos = new Set<string>();
     db.transaction(() => {
       // 1) 需求项（矩阵行）——reqNo → id 映射供计划/待办关联
       const noToId = new Map<string, string>();
@@ -1096,7 +1098,10 @@ export const PlanService = {
         created.ids.forEach((planId, i) => {
           const p = planItems[i];
           if (!p) return;
-          const ids = (p.reqNos ?? []).map((n) => noToId.get(n)).filter((x): x is string => !!x);
+          const rawNos = p.reqNos ?? [];
+          // T00712（D-5）：引用了不存在的需求编号 → 记入 unlinkedReqNos 供调用方提示
+          for (const n of rawNos) if (!noToId.has(n)) unlinkedReqNos.add(n);
+          const ids = rawNos.map((n) => noToId.get(n)).filter((x): x is string => !!x);
           if (ids.length > 0) updPlan.run(JSON.stringify(ids), t, planId);
         });
       }
@@ -1116,7 +1121,7 @@ export const PlanService = {
         // 仅导入需求（无计划）时属合法场景，不抛错
       }
     })();
-    return { requirements: reqs.length, plans: planItems.length, tasks: taskCount };
+    return { requirements: reqs.length, plans: planItems.length, tasks: taskCount, unlinkedReqNos: [...unlinkedReqNos] };
   },
 
   // ---------- T00662：需求跟踪矩阵 CRUD ----------

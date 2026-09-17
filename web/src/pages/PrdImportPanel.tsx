@@ -73,13 +73,17 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     try {
       // 勾选过滤：仅提交勾选项；reqNos 需与提交的需求编号保持一致（未勾选需求的引用自动丢弃）
       const keptNos = new Set(rq.map((x) => x.reqNo));
-      const r = await api.post<{ requirements: number; plans: number; tasks: number }>('/plans/import-prd', {
+      const r = await api.post<{ requirements: number; plans: number; tasks: number; unlinkedReqNos?: string[] }>('/plans/import-prd', {
         projectId,
         createTasks,
         requirements: rq.map(({ include, key, ...rest }) => { void include; void key; return rest; }),
         plans: pl.map(({ include, key, ...rest }) => { void include; void key; return { ...rest, reqNos: rest.reqNos.filter((n) => keptNos.has(n)) }; }),
       });
       aiImportStore.log(`导入完成：需求 ${r.requirements} 条（已入需求跟踪矩阵）、计划 ${r.plans} 条${r.tasks ? `、待办任务 ${r.tasks} 条` : ''}`, 'ok');
+      // T00712（D-5）：无效需求编号不再静默丢弃——服务端返回 unlinkedReqNos 时在控制台给出可感知告警
+      if (r.unlinkedReqNos?.length) {
+        aiImportStore.log(`告警：${r.unlinkedReqNos.length} 个需求编号未命中本次导入的需求（${r.unlinkedReqNos.join('、')}），其计划/待办关联已被忽略，请核对编号或先补导对应需求`, 'error');
+      }
       aiImportStore.patch({ lastSaved: r.plans });
       setReqs([]); setPlans([]);
       onSaved?.(r);
