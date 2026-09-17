@@ -125,6 +125,11 @@ if (existsSync(path.join(webDist, 'index.html'))) {
 
 // 统一错误兜底
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  // T00711（D-3 修复）：请求体超限（如 PRD 上传 > 30mb）映射 413 + 可操作中文提示，不再冒 500
+  const payloadErr = err as Error & { type?: string; status?: number; statusCode?: number };
+  if (payloadErr?.type === 'entity.too.large' || payloadErr?.status === 413 || payloadErr?.statusCode === 413) {
+    return res.status(413).json({ error: '文件超过 30MB 上限，请拆分或压缩后再上传' });
+  }
   console.error('[mtask] unhandled error:', err);
   res.status(500).json({ error: err.message ?? 'internal error' });
 });
