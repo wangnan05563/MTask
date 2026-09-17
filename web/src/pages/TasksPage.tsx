@@ -908,13 +908,15 @@ export function TasksPage() {
     return (
       <div style={{ position: 'sticky', top: 0, zIndex: 50, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: '1px solid var(--accent)', boxShadow: '0 4px 12px rgba(0,0,0,.12)', fontSize: 12 }}>
         <strong style={{ color: 'var(--accent)' }}>已选 {selectedIds.size} 条</strong>
-        {/* T00588：批量操作对齐计划页风格——纯图标 + 下拉相邻 + 悬浮提示 */}
-        <button onClick={() => void batchApply('status', 'done')} disabled={batchOpBusy} className="task-op tbtn-anim"
+        {/* T00588：批量操作对齐计划页风格——纯图标 + 下拉相邻 + 悬浮提示。
+            T00704：批量条按钮**移除 task-op**（悬浮显隐依赖任务行 hover，批量条浮于列表上方无 hover 触发，
+            导致归档等按钮不可见、被误判「缺少」）——批量条出现即全部常显。 */}
+        <button onClick={() => void batchApply('status', 'done')} disabled={batchOpBusy} className="tbtn-anim"
           title="批量完成 — 选中任务标记为已完成" aria-label="批量完成"
           style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', color: 'var(--success, var(--text))' }}>
           <Check size={14} />
         </button>
-        <button onClick={() => void batchApply('status', 'todo')} disabled={batchOpBusy} className="task-op tbtn-anim"
+        <button onClick={() => void batchApply('status', 'todo')} disabled={batchOpBusy} className="tbtn-anim"
           title="批量重开 — 选中任务退回待办" aria-label="批量重开"
           style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center' }}>
           <RotateCcw size={14} />
@@ -938,12 +940,13 @@ export function TasksPage() {
         <span style={{ display: 'inline-flex', alignItems: 'center' }} title="批量字体颜色 — 选色后应用到全部选中任务">
           <FontColorButton current="" onApply={(col) => { void batchApply('color', col); }} label="批量字体颜色" />
         </span>
-        <button onClick={() => void batchApply('archive')} disabled={batchOpBusy} className="task-op tbtn-anim"
+        {/* T00704：批量归档——位于批量字体颜色之后（功能已存在，本次修复其可见性） */}
+        <button onClick={() => void batchApply('archive')} disabled={batchOpBusy} className="tbtn-anim"
           title="批量归档 — 选中任务移入归档（可恢复）" aria-label="批量归档"
           style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', color: 'var(--danger)' }}>
           <Archive size={14} />
         </button>
-        <button onClick={() => setSelectedIds(new Set())} disabled={batchOpBusy} className="task-op tbtn-anim"
+        <button onClick={() => setSelectedIds(new Set())} disabled={batchOpBusy} className="tbtn-anim"
           title="取消选择" aria-label="取消选择"
           style={{ cursor: 'pointer', padding: '2px 4px', marginLeft: 'auto', display: 'inline-flex', alignItems: 'center' }}>
           <X size={14} />
