@@ -188,17 +188,17 @@ function Shell() {
         >
           {statusText}
         </span>
-        {/* T00706：常驻「向导」按钮（菜单行最右）——参考项目管理向导（T00665），呼吸动画吸引注意 */}
+        {/* T00706：常驻「向导」按钮（菜单行最右）——参考项目管理向导（T00665）。
+            T00735：去掉呼吸动画（task-breathe）改为静态、并去掉文字仅保留图标——
+            项目管理页曾出现「全局 + 页内」两个向导按钮，统一保留本按钮（页内重复项已删除） */}
         {guide && (
           <button
-            className="task-breathe"
             onClick={() => setGuideOpen(true)}
             title={`使用向导 — 查看「${guide.title.split(' · ')[0]}」菜单各功能的使用说明与要点`}
             aria-label="打开当前菜单使用向导"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 10px', marginLeft: 10, borderRadius: 6, cursor: 'pointer', border: '1px solid var(--accent)', background: 'var(--card-bg)', color: 'var(--accent)' }}
+            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', marginLeft: 10, borderRadius: 6, cursor: 'pointer', border: '1px solid var(--accent)', background: 'var(--card-bg)', color: 'var(--accent)' }}
           >
             <Compass size={15} />
-            向导
           </button>
         )}
       </nav>

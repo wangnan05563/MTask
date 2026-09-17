@@ -1023,14 +1023,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         </button>
         <button onClick={openHolidayManager} style={btnStyle} title="节假日管理 — 手动维护 / 联网导入法定节假日 / 万年历视图">节假日（{holidays.length}）</button>
         <button onClick={reload} style={btnStyle} title="刷新"><RefreshCw size={13} /></button>
-        {/* T00665：常驻向导按钮（页面右上角）——呼吸动画吸引注意，点击随时重新唤起使用向导；
-            状态持久化于 localStorage：看过之后不再自动弹出，清缓存后恢复初始引导 */}
-        <button onClick={() => setGuideOpen(true)} className="task-breathe"
-          title="使用向导 — 查看项目管理各子功能的使用说明与交互演示"
-          aria-label="打开项目管理使用向导"
-          style={{ ...btnStyle, marginLeft: 'auto', borderColor: 'var(--accent)', color: 'var(--accent)' }}>
-          <Compass size={13} /> 向导
-        </button>
+        {/* T00735：移除本页原有的「向导」按钮——与全局导航右上角常驻按钮重复（两者打开同一份项目管理向导内容），
+            统一保留全局那个（已改为静态图标、无呼吸动画） */}
         {notice && <span className="flash-toast" role="status">{notice}</span>}
       </div>
 
