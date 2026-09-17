@@ -1090,15 +1090,15 @@ export const PlanService = {
           status: 'todo' as PlanStatus,
         })));
         insertedPlans = created.inserted;
-        // 关联回写：按标题匹配刚创建的计划行，写入 req_ids
-        const rows = db.prepare('SELECT id, title FROM plan_tasks WHERE project_id = ? AND archived = 0 ORDER BY sort_order DESC LIMIT ?').all(projectId, planItems.length) as Array<{ id: string; title: string }>;
+        // T00709（D-1 修复）：按 createBatch 返回的 id（与 planItems 同一下标序，两侧 title 过滤口径一致）回写 req_ids，
+        // 废弃按标题 find 匹配——同名计划会命中同一行导致关联互相覆盖丢失
         const updPlan = db.prepare('UPDATE plan_tasks SET req_ids = ?, updated_at = ? WHERE id = ?');
-        for (const p of planItems) {
-          const hit = rows.find((x) => x.title === p.title);
-          if (!hit) continue;
+        created.ids.forEach((planId, i) => {
+          const p = planItems[i];
+          if (!p) return;
           const ids = (p.reqNos ?? []).map((n) => noToId.get(n)).filter((x): x is string => !!x);
-          if (ids.length > 0) updPlan.run(JSON.stringify(ids), t, hit.id);
-        }
+          if (ids.length > 0) updPlan.run(JSON.stringify(ids), t, planId);
+        });
       }
       // 3) 可选：WBS → 待办任务（便于 AI 推进执行），待办同样携带 req_ids
       if (input.createTasks && planItems.length > 0) {
@@ -1260,8 +1260,10 @@ export const PlanService = {
     return { drafts, coverageWarn };
   },
 
-  /** 批量创建（AI 导入确认保存/其他批量来源）：事务插入后统一重排；首条用其 startDate 作锚点 */
-  createBatch(projectId: string, items: Array<{ title: string; description?: string; startDate?: string; durationDays?: number; assignee?: string; status?: PlanStatus }>): { inserted: number } {
+  /** 批量创建（AI 导入确认保存/其他批量来源）：事务插入后统一重排；首条用其 startDate 作锚点。
+   *  T00709（D-1 修复）：返回 ids 按输入顺序对齐（经 title 清洗过滤后的 clean 数组下标），
+   *  供调用方（importPrd）按 id 回写 req_ids 关联——废弃按标题 find 匹配（同名计划会互相覆盖）。 */
+  createBatch(projectId: string, items: Array<{ title: string; description?: string; startDate?: string; durationDays?: number; assignee?: string; status?: PlanStatus }>): { inserted: number; ids: string[] } {
     if (!getDb().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
     const clean = items.filter((it) => it.title?.trim());
     if (clean.length === 0) throw new Error('没有可创建的计划条目');
@@ -1269,6 +1271,7 @@ export const PlanService = {
     const db = getDb();
     const t = now();
     const holidays = loadHolidaySet();
+    const ids: string[] = [];
     db.transaction(() => {
       const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ? AND archived = 0').get(projectId) as { m: number }).m;
       const existingCount = maxOrder + 1;
@@ -1283,10 +1286,12 @@ export const PlanService = {
         // T00561：各行日期独立——开始日用自己的（空则今天），end 按工作日计算
         const start = it.startDate && DATE_RE.test(it.startDate) ? it.startDate : fmt(new Date());
         const end = calcEndDate(start, duration, holidays);
-        ins.run(uuid(), projectId, it.title.trim(), it.description ?? '', start, end, duration, status, it.assignee ?? '', maxOrder + 1 + i, t, t);
+        const id = uuid();
+        ids.push(id);
+        ins.run(id, projectId, it.title.trim(), it.description ?? '', start, end, duration, status, it.assignee ?? '', maxOrder + 1 + i, t, t);
       });
     })();
     notifyChange('plans');
-    return { inserted: clean.length };
+    return { inserted: clean.length, ids };
   },
 };
