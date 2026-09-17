@@ -26,6 +26,8 @@ export interface AiImportDraftRow {
 }
 
 interface AiImportState {
+  /** T00662：当前导入类型——控制台 tab 标题随类型变化（plan=AI 项目计划导入 / prd=从 PRD 导入） */
+  kind: 'plan' | 'prd';
   busy: boolean;
   fileName: string;
   error: string;
@@ -35,7 +37,7 @@ interface AiImportState {
   lastSaved: number;
 }
 
-const initial: AiImportState = { busy: false, fileName: '', error: '', logs: [], rows: [], lastSaved: 0 };
+const initial: AiImportState = { kind: 'plan', busy: false, fileName: '', error: '', logs: [], rows: [], lastSaved: 0 };
 
 let state: AiImportState = { ...initial };
 const listeners = new Set<() => void>();
@@ -66,9 +68,13 @@ export const aiImportStore = {
     state = { ...state, rows };
     emit();
   },
-  /** 重置执行区（保留面板选择态，如项目由会话级状态承载） */
-  reset(): void {
-    state = { ...initial };
+  /** 重置执行区（保留面板选择态，如项目由会话级状态承载）。T00662：可指定导入类型。 */
+  reset(kind: AiImportState['kind'] = 'plan'): void {
+    state = { ...initial, kind };
     emit();
+  },
+  /** T00662：控制台 tab 标题（随导入类型变化） */
+  label(): string {
+    return state.kind === 'prd' ? 'PRD 导入' : 'AI 项目计划导入';
   },
 };

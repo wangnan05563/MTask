@@ -4,6 +4,7 @@ import { streamEvents } from '../api/sse';
 import { reportStream, useReportStream } from '../reportStream';
 import { ReportConsole } from './ReportConsole';
 import { AiPlanImportPanel } from './AiPlanImportPanel';
+import { PrdImportPanel } from './PrdImportPanel'; // T00662：从 PRD 导入项目计划
 import { useSessionState } from '../ui/session';
 import { Download, Plus, Trash2, Upload, Sparkles, PanelLeftClose, PanelLeftOpen, FileSpreadsheet, FileUp } from 'lucide-react';
 
@@ -74,6 +75,8 @@ export function ReportPage() {
   // T00621：三卡片各自的工作面板展开态（互斥，保持左侧简洁）
   const [showOffline, setShowOffline] = useState(false);
   const [showAiLive, setShowAiLive] = useState(false);
+  // T00662：从 PRD 导入面板展开态（与其余三卡互斥）
+  const [showPrdImport, setShowPrdImport] = useState(false);
   const [aiTools, setAiTools] = useState<AITool[]>([]);
   const [aiToolId, setAiToolId] = useSessionState('report.aiTool', '');
   // T00558 / PRD AI-5：周报摘要写入收件箱开关（服务端 report.aiSummaryToInbox）——开关状态持久于服务端
@@ -306,7 +309,31 @@ export function ReportPage() {
             <span style={{ display: 'block', fontSize: 11, color: 'var(--accent)', marginTop: 8 }}>{showAiLive ? '收起工作面板 ↑' : '点击展开工作面板 ↓'}</span>
           </span>
         </button>
+
+        {/* 卡片 4：从 PRD 导入项目计划（T00662）——AI 拆 WBS + 需求跟踪矩阵 */}
+        <button
+          onClick={() => { setShowPrdImport((v) => !v); setShowAiImport(false); setShowOffline(false); setShowAiLive(false); }}
+          className="tbtn-anim"
+          title="从 PRD 导入项目计划 — 上传 PRD（Word/Excel/Markdown/文本/PDF），AI 拆分 WBS 并逐条提取需求，确认后导入计划与需求跟踪矩阵"
+          aria-label="从 PRD 导入项目计划"
+          style={{ textAlign: 'left', padding: 14, border: showPrdImport ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', cursor: 'pointer', display: 'flex', gap: 10, alignItems: 'flex-start' }}
+        >
+          <FileUp size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />
+          <span style={{ flex: 1 }}>
+            <span style={{ display: 'block', fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>从 PRD 导入项目计划</span>
+            <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              AI 拆分 WBS + 逐条提取需求 → 生成计划与需求跟踪矩阵（可选同步待办任务）
+            </span>
+            <span style={{ display: 'block', fontSize: 11, color: 'var(--accent)', marginTop: 8 }}>{showPrdImport ? '收起工作面板 ↑' : '点击展开工作面板 ↓'}</span>
+          </span>
+        </button>
       </div>
+
+      {/* T00662：从 PRD 导入面板——AI 拆 WBS + 需求跟踪矩阵（日志同走控制台） */}
+      {showPrdImport && (
+        <PrdImportPanel toolId={aiToolId} onClose={() => setShowPrdImport(false)}
+          onSaved={(r) => flash(`PRD 导入完成：需求 ${r.requirements} 条、计划 ${r.plans} 条${r.tasks ? `、待办任务 ${r.tasks} 条` : ''}（矩阵见项目计划页「需求跟踪矩阵」）`)} />
+      )}
 
       {/* T00569 二轮：AI 项目计划导入面板——功能完整迁移至本页内联执行（含控制台滚动输出） */}
       {showAiImport && (

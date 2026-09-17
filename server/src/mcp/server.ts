@@ -334,6 +334,117 @@ export async function createMCPServer(): Promise<McpServer> {
     } catch (e) { return err((e as Error).message); }
   });
 
+  // ---------- T00662：PRD 导入 + 需求跟踪矩阵（外部 AI Agent 全链路） ----------
+
+  /** 项目解析辅助（projectId 优先；projectName 精确 → 大小写不敏感），供 PRD/矩阵系列工具复用 */
+  const resolveProjectIdOf = (projectId?: string, projectName?: string): { id?: string; error?: string } => {
+    const pid = projectId?.trim();
+    if (pid) {
+      const hit = getDb().prepare('SELECT id FROM projects WHERE id = ?').get(pid) as { id: string } | undefined;
+      return hit ? { id: hit.id } : { error: `项目 id 不存在：${pid}` };
+    }
+    const name = projectName?.trim();
+    if (!name) return { error: 'projectId 或 projectName 必填' };
+    const all = getDb().prepare('SELECT id, name FROM projects').all() as Array<{ id: string; name: string }>;
+    const hit = all.find((p) => p.name === name) ?? all.find((p) => p.name.toLowerCase() === name.toLowerCase());
+    return hit ? { id: hit.id } : { error: `项目「${name}」不存在。候选：${all.slice(0, 10).map((p) => p.name).join('、')}` };
+  };
+
+  server.registerTool('mtask_import_prd', {
+    title: '从 PRD 导入项目计划',
+    description: '上传 PRD 文件（base64）：自动提取文本（.docx/.md/.txt/.xlsx/.csv/.pdf）→ AI 拆分 WBS 并**逐条提取可跟踪需求** → 事务创建需求项（需求跟踪矩阵行）+ 项目计划（自动关联需求）+ 可选同步生成待办任务。返回导入统计与清单摘要。',
+    inputSchema: {
+      projectId: z.string().optional().describe('目标项目 id（与 projectName 二选一）'),
+      projectName: z.string().optional().describe('目标项目名称（与 projectId 二选一）'),
+      toolId: z.string().describe('AI 模型工具 id（必填——PRD 解析需要模型）'),
+      filename: z.string().describe('原始文件名（决定解析方式，如 prd.docx / prd.pdf）'),
+      fileBase64: z.string().describe('文件内容的 base64（不含 data: 前缀）'),
+      createTasks: z.boolean().optional().describe('是否同时把 WBS 节点转为待办任务（默认 false，便于 AI 推进执行）'),
+    },
+  }, async (a) => {
+    try {
+      const loc = resolveProjectIdOf(a.projectId, a.projectName);
+      if (!loc.id) return err(loc.error ?? '项目未指定');
+      const buf = Buffer.from(a.fileBase64, 'base64');
+      if (buf.length === 0) return err('fileBase64 解析为空');
+      const text = await PlanService.extractPrdText(buf, a.filename);
+      const parsed = await PlanService.aiParsePrd(a.toolId, text);
+      const r = PlanService.importPrd(loc.id, { requirements: parsed.requirements, plans: parsed.drafts, createTasks: a.createTasks === true });
+      const summary = {
+        projectId: loc.id,
+        imported: r,
+        requirements: parsed.requirements.slice(0, 20),
+        plans: parsed.drafts.slice(0, 20).map((d) => ({ title: d.title, durationDays: d.durationDays, reqNos: d.reqNos })),
+        truncated: parsed.requirements.length > 20 || parsed.drafts.length > 20,
+        coverageWarn: parsed.coverageWarn || undefined,
+      };
+      return ok(JSON.stringify(summary), summary);
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_list_matrix', {
+    title: '查询需求跟踪矩阵',
+    description: '按项目返回需求跟踪矩阵：每条需求（reqNo/标题/状态/原文定位）及其**关联的计划与待办任务**（含状态、是否已验证）。供 AI 核对需求覆盖与进度。',
+    inputSchema: {
+      projectId: z.string().optional().describe('项目 id（与 projectName 二选一）'),
+      projectName: z.string().optional().describe('项目名称（与 projectId 二选一）'),
+    },
+  }, async (a) => {
+    try {
+      const loc = resolveProjectIdOf(a.projectId, a.projectName);
+      if (!loc.id) return err(loc.error ?? '项目未指定');
+      const rows = PlanService.listRequirements(loc.id);
+      return ok(JSON.stringify({ projectId: loc.id, count: rows.length, requirements: rows }), { projectId: loc.id, count: rows.length, requirements: rows });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_update_matrix', {
+    title: '更新需求跟踪矩阵',
+    description: '维护需求跟踪矩阵：action=create（新建需求，需 projectId/projectName + title）/ update（改需求字段，需 reqId）/ delete（删需求并清理关联）/ link（调整需求与计划或待办的关联，需 reqId + kind + targetId + linked）。',
+    inputSchema: {
+      action: z.enum(['create', 'update', 'delete', 'link']).describe('操作类型'),
+      projectId: z.string().optional().describe('create 时使用：项目 id'),
+      projectName: z.string().optional().describe('create 时使用：项目名称'),
+      reqId: z.string().optional().describe('update/delete/link 时使用：需求 id（可由 mtask_list_matrix 获取）'),
+      reqNo: z.string().optional().describe('create/update：需求编号（留空自动生成 REQ-xxx）'),
+      title: z.string().optional().describe('create 必填 / update 可选：需求标题'),
+      content: z.string().optional().describe('需求描述/原文要点'),
+      sourceRef: z.string().optional().describe('PRD 原文定位（章节/段落）'),
+      priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('优先级'),
+      status: z.enum(['todo', 'doing', 'done', 'changed']).optional().describe('需求状态'),
+      kind: z.enum(['plan', 'task']).optional().describe('link 时使用：关联目标类型'),
+      targetId: z.string().optional().describe('link 时使用：计划或待办的任务 id'),
+      linked: z.boolean().optional().describe('link 时使用：true 建立关联 / false 解除（默认 true）'),
+    },
+  }, async (a) => {
+    try {
+      if (a.action === 'create') {
+        const loc = resolveProjectIdOf(a.projectId, a.projectName);
+        if (!loc.id) return err(loc.error ?? '项目未指定');
+        if (!a.title?.trim()) return err('create 需要 title');
+        const row = PlanService.createRequirement(loc.id, {
+          reqNo: a.reqNo, title: a.title, content: a.content, sourceRef: a.sourceRef, priority: a.priority, status: a.status,
+        });
+        return ok(JSON.stringify(row), row);
+      }
+      if (!a.reqId) return err(`${a.action} 需要 reqId`);
+      if (a.action === 'update') {
+        const row = PlanService.updateRequirement(a.reqId, {
+          title: a.title, content: a.content, reqNo: a.reqNo, sourceRef: a.sourceRef, priority: a.priority, status: a.status,
+        });
+        return ok(JSON.stringify(row), row);
+      }
+      if (a.action === 'delete') {
+        PlanService.deleteRequirement(a.reqId);
+        return ok(JSON.stringify({ ok: true, deleted: a.reqId }), { ok: true, deleted: a.reqId });
+      }
+      // link
+      if (!a.kind || !a.targetId) return err('link 需要 kind(plan|task) 与 targetId');
+      PlanService.linkRequirement(a.reqId, { kind: a.kind, targetId: a.targetId, linked: a.linked !== false });
+      return ok(JSON.stringify({ ok: true, reqId: a.reqId, kind: a.kind, targetId: a.targetId, linked: a.linked !== false }), { ok: true });
+    } catch (e) { return err((e as Error).message); }
+  });
+
   server.registerTool('mtask_update_task_result', {
     title: '同步任务处理结果',
     description: '把 AI 总结的根因分析与解决方案等结论写入指定任务的「处理结果」字段（Markdown 文本）。按 id 或任务编号 taskNo 定位。适合在排查结束后将结论回写到 MTask 对应任务，供用户在任务「处理结果」区块查看/编辑。',

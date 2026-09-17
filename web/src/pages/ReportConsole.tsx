@@ -863,7 +863,7 @@ export function ReportConsole({
       return (
         <div>
           <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-            <FileUp size={13} style={{ color: 'var(--accent)' }} /> AI 项目计划导入
+            <FileUp size={13} style={{ color: 'var(--accent)' }} /> {aiImportStore.label()}
             {aiSnap.busy && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>执行中…</span>}
             {aiSnap.fileName && <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>{aiSnap.fileName}</span>}
             {aiSnap.rows.length > 0 && <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>草稿 {aiSnap.rows.length} 条</span>}
@@ -1070,7 +1070,7 @@ export function ReportConsole({
             }}
           >
             <FileUp size={11} />
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>AI 项目计划导入</span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{aiImportStore.label()}</span>
             {aiSnap.busy && <Loader2 size={10} className="aispin" />}
           </button>
         )}

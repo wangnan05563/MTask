@@ -137,6 +137,68 @@ planApi.post('/ai-parse-doc', raw({ type: () => true, limit: '30mb' }), (req, re
     .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
 });
 
+// ---------- T00662：从 PRD 导入（AI 拆 WBS + 需求跟踪矩阵） ----------
+
+/** PRD 解析：上传文件 → 提取文本（多格式）→ AI 输出 {requirements, plans}（未落库，供预览确认） */
+planApi.post('/ai-parse-prd', raw({ type: () => true, limit: '30mb' }), (req, res) => {
+  const projectId = req.query.projectId;
+  const toolId = req.query.toolId;
+  const filename = typeof req.query.filename === 'string' ? req.query.filename : 'prd.md';
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (typeof toolId !== 'string' || !toolId) return res.status(400).json({ error: 'toolId 必填（PRD 解析需要模型工具）' });
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: '请求体应为文件二进制' });
+  PlanService.extractPrdText(req.body, filename)
+    .then((text) => PlanService.aiParsePrd(toolId, text))
+    .then((r) => res.json({ ok: true, ...r }))
+    .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
+});
+
+/** PRD 确认导入：事务创建需求项 + 计划（含关联）+ 可选同步生成待办任务 */
+planApi.post('/import-prd', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof b.projectId !== 'string' || !b.projectId) return res.status(400).json({ error: 'projectId 必填' });
+  wrap(res, () => PlanService.importPrd(b.projectId as string, {
+    requirements: Array.isArray(b.requirements) ? b.requirements as Parameters<typeof PlanService.importPrd>[1]['requirements'] : undefined,
+    plans: Array.isArray(b.plans) ? b.plans as Parameters<typeof PlanService.importPrd>[1]['plans'] : undefined,
+    createTasks: b.createTasks === true,
+  }));
+});
+
+// ---------- T00662：需求跟踪矩阵 CRUD ----------
+
+planApi.get('/prd-requirements', (req, res) => wrap(res, () => PlanService.listRequirements(pid(req))));
+
+planApi.post('/prd-requirements', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof b.projectId !== 'string' || !b.projectId || typeof b.title !== 'string' || !b.title.trim()) {
+    return res.status(400).json({ error: 'projectId 与 title 必填' });
+  }
+  wrap(res, () => PlanService.createRequirement(b.projectId as string, {
+    reqNo: optStr(b.reqNo), title: b.title as string, content: optStr(b.content),
+    sourceRef: optStr(b.sourceRef), priority: optStr(b.priority), status: optStr(b.status),
+  }));
+});
+
+planApi.patch('/prd-requirements/:id', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  wrap(res, () => PlanService.updateRequirement(req.params.id, {
+    title: optStr(b.title), content: b.content === undefined ? undefined : String(b.content),
+    reqNo: optStr(b.reqNo), sourceRef: b.sourceRef === undefined ? undefined : String(b.sourceRef),
+    priority: optStr(b.priority), status: optStr(b.status),
+    sortOrder: b.sortOrder === undefined ? undefined : Number(b.sortOrder),
+  }));
+});
+
+planApi.delete('/prd-requirements/:id', (req, res) => wrap(res, () => { PlanService.deleteRequirement(req.params.id); return { ok: true }; }));
+
+/** 关联调整：需求 ↔ 计划/待办（linked=true 建立关联，false 解除） */
+planApi.post('/prd-requirements/:id/link', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const kind = b.kind === 'task' ? 'task' : b.kind === 'plan' ? 'plan' : null;
+  if (!kind || typeof b.targetId !== 'string' || !b.targetId) return res.status(400).json({ error: 'kind(plan|task) 与 targetId 必填' });
+  wrap(res, () => { PlanService.linkRequirement(req.params.id, { kind, targetId: b.targetId as string, linked: b.linked !== false }); return { ok: true }; });
+});
+
 // ---------- 计划任务 CRUD ----------
 planApi.get('/', (req, res) => wrap(res, () => PlanService.list(pid(req))));
 

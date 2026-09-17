@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, CalendarPlus, Check, CheckSquare, Download, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search } from 'lucide-react';
+import { Archive, CalendarPlus, Check, CheckSquare, Download, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Table2, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search } from 'lucide-react';
+import { ReqMatrixPanel } from './ReqMatrixPanel'; // T00662：需求跟踪矩阵
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
@@ -201,6 +202,8 @@ export function PlanPage() {
   const [depSel, setDepSel] = useState<Record<string, 'serial' | 'parallel'>>({});
   // T00449：视图模式（列表/甘特）会话级保持
   const [viewMode, setViewMode] = useSessionState<'list' | 'gantt'>('plan.viewMode', 'list');
+  // T00662：需求跟踪矩阵面板展开态（甘特按钮旁入口）
+  const [showMatrix, setShowMatrix] = useSessionState<boolean>('plan.showMatrix', false);
 
   const flash = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(''), 3000); };
 
@@ -923,6 +926,13 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
           <button onClick={() => setViewMode('list')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', cursor: 'pointer', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图">列表</button>
           <button onClick={() => setViewMode('gantt')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: viewMode === 'gantt' ? 'var(--accent)' : 'transparent', color: viewMode === 'gantt' ? 'var(--accent-text)' : 'var(--text)' }} title="甘特图视图 — 按串行瀑布时间线可视化">甘特</button>
         </fieldset>
+        {/* T00662：需求跟踪矩阵入口——位于甘特图按钮旁 */}
+        <button onClick={() => setShowMatrix((v) => !v)} className="tbtn-anim"
+          title="需求跟踪矩阵 — 展示 PRD 需求与计划/待办的关联及状态，支持增删改与关联调整"
+          aria-label="需求跟踪矩阵" aria-expanded={showMatrix}
+          style={{ ...btnStyle, background: showMatrix ? 'var(--accent)' : 'transparent', color: showMatrix ? 'var(--accent-text)' : 'var(--text)', borderColor: showMatrix ? 'var(--accent)' : 'var(--border-strong)' }}>
+          <Table2 size={13} /> 需求跟踪矩阵
+        </button>
         <button onClick={openHolidayManager} style={btnStyle} title="节假日管理 — 手动维护 / 联网导入法定节假日 / 万年历视图">节假日（{holidays.length}）</button>
         <button onClick={reload} style={btnStyle} title="刷新"><RefreshCw size={13} /></button>
         {notice && <span className="flash-toast" role="status">{notice}</span>}
@@ -948,6 +958,9 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       })()}
 
       {/* 计划表格：串行瀑布，起止由服务端按工作日推算 */}
+      {/* T00662：需求跟踪矩阵面板（甘特按钮旁入口展开） */}
+      {showMatrix && projectId && <ReqMatrixPanel projectId={projectId} onClose={() => setShowMatrix(false)} />}
+
       {viewMode === 'gantt' ? renderGantt() : (
       <table className="plan-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
         <thead>

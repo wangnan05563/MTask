@@ -122,7 +122,8 @@ function now(): string {
 
 /** 分配下一个任务编号：取库中当前最大的 T+数字 序号 +1，包在写事务外由 create 事务整体提交。
  *  为何自行分配而非 SQLite 自增：task_no 需对外暴露为稳定业务编号（T00001 可读）且删除任务后不复用。 */
-function nextTaskNo(): string {
+/** 任务编号生成（T00662 起对外导出：PRD 导入建待办时复用，保证编号单一来源） */
+export function nextTaskNo(): string {
   const db = getDb();
   const rows = db.prepare('SELECT task_no FROM tasks WHERE task_no IS NOT NULL').all() as { task_no: string }[];
   let max = 0;

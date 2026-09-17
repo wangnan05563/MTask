@@ -6,6 +6,7 @@ import { getDb } from '../db/connection';
 import { v4 as uuid } from 'uuid';
 import ExcelJS from 'exceljs';
 import { AIService } from './AIService';
+import { nextTaskNo } from './TaskService'; // T00662：PRD 导入生成待办复用统一编号生成器
 import { notifyChange } from './ChangeBus';
 // pizzip：docxtemplater 既有依赖，用于解压 .docx 提取 word/document.xml（T00439）
 import PizZip from 'pizzip';
@@ -87,6 +88,23 @@ function parseJsonArrayWithRecovery(text: string, notFoundMsg: string): unknown[
   }
   if (!Array.isArray(arr)) throw new Error(notFoundMsg);
   return arr;
+}
+
+/** T00662：对象型 JSON 恢复解析（PRD 解析返回 {requirements, plans}）——剥离围栏、截断续补 */
+function parseJsonObjectWithRecovery(text: string, notFoundMsg: string): Record<string, unknown> {
+  const bare = text.replaceAll(/```json/gi, '').replaceAll(/```/gi, '').trim();
+  const start = bare.indexOf('{');
+  if (start === -1) throw new Error(notFoundMsg);
+  const end = bare.lastIndexOf('}');
+  if (end <= start) throw new Error(notFoundMsg);
+  let obj: unknown;
+  try {
+    obj = JSON.parse(bare.slice(start, end + 1));
+  } catch {
+    throw new Error(notFoundMsg);
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new Error(notFoundMsg);
+  return obj as Record<string, unknown>;
 }
 
 /** CSV 行文本：按行拆分 + 逗号切分（含引号单元格原样保留，粒度足够 AI 理解） */
@@ -937,6 +955,251 @@ export const PlanService = {
     }
     if (items.length === 0) throw new Error('AI 未能从文档中拆分出任何任务，请确认文档内容或更换模型');
     return { drafts: items };
+  },
+
+  // ---------- T00662：从 PRD 导入（AI 拆 WBS + 需求跟踪矩阵） ----------
+
+  /** T00662：PRD 文档 → 文本（多格式分派）。老式 .doc/.xls 与不可解析 PDF 给出可操作的友好提示。 */
+  async extractPrdText(buffer: Buffer, filename: string): Promise<string> {
+    const lower = filename.toLowerCase();
+    if (lower.endsWith('.md') || lower.endsWith('.markdown') || lower.endsWith('.txt')) return buffer.toString('utf-8');
+    if (lower.endsWith('.docx')) return this.docxToMarkdown(buffer);
+    if (lower.endsWith('.xlsx') || lower.endsWith('.csv')) return this.tableToTextAsync(buffer, filename);
+    if (lower.endsWith('.pdf')) {
+      try {
+        // 动态导入（编译为 CJS 时保留原生动态 import）：pdf-parse 为纯 JS 解析库，无原生依赖
+        const mod = (await import('pdf-parse')) as unknown as { default?: (b: Buffer) => Promise<{ text?: string }> } & ((b: Buffer) => Promise<{ text?: string }>);
+        const parse = mod.default ?? mod;
+        const r = await parse(buffer);
+        const text = String(r?.text ?? '').trim();
+        if (!text) throw new Error('未提取到可读文本（可能是扫描件/图片型 PDF）');
+        return text;
+      } catch (e) {
+        throw new Error(`PDF 解析失败：${e instanceof Error ? e.message : String(e)}。可将 PDF 另存为 .docx 或 .md 后重试`);
+      }
+    }
+    if (lower.endsWith('.doc')) throw new Error('老式 .doc 暂不支持，请用 Word 另存为 .docx 后导入');
+    if (lower.endsWith('.xls')) throw new Error('老式 .xls 暂不支持，请用 Excel 另存为 .xlsx 后导入');
+    throw new Error('不支持的文件格式（支持 .docx / .md / .markdown / .txt / .xlsx / .csv / .pdf）');
+  },
+
+  /** T00662：AI 解析 PRD →（需求清单 + WBS 计划草稿，含需求关联）。 */
+  async aiParsePrd(toolId: string, docText: string): Promise<{
+    requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>;
+    drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus }>;
+    coverageWarn?: string;
+  }> {
+    const system = [
+      '你是 MTask 的 PRD 解析助手：既要拆分 WBS 计划，也要**逐条提取可跟踪需求**（用于生成需求跟踪矩阵）。',
+      '给定一份 PRD / 需求文档（Markdown 或纯文本），输出**一个 JSON 对象**（不是数组），结构：',
+      '{"requirements":[{"reqNo":"REQ-001","title":"需求简述","content":"需求原文要点","sourceRef":"原文定位（章节/小节/段落号）","priority":"low|normal|high|urgent"}],',
+      ' "plans":[{"title":"WBS 编号 + 任务名","description":"该节点要做的事（保留原文关键信息）","durationDays":工期工作日数,"startDate":"","reqNos":["REQ-001"]}]}',
+      '要求：',
+      '1. **需求逐条提取，严禁合并**——PRD 中每条可跟踪的需求（功能/非功能/约束/验收要点）各生成一条 requirements，reqNo 从 REQ-001 顺序编号；',
+      '2. plans 按 WBS 规范拆分（标题带编号如 "1 项目启动"、"1.1 需求评审"），每个节点的 reqNos 只填**该节点直接实现/覆盖的需求编号**；',
+      '   ——管理类节点（项目启动/计划/评审/验收等）若确实不直接对应某条需求，reqNos 输出空数组 []，**不要把所有需求都挂上**（关联过宽会让需求跟踪矩阵失去意义）；',
+      '3. startDate 一律空串（保存后由系统按工作日串行排期）；status 一律 "todo"；durationDays 缺失默认 1；',
+      '4. 只输出 JSON 对象本身，不要任何解释或 Markdown 代码围栏；不虚构文档中没有的内容。',
+      '5. 若文档过长，优先保证**需求提取完整**（宁多勿漏），计划可适度归并。',
+    ].join('\n');
+    const ai = await AIService.ask(toolId, system, `【PRD 文档】\n${docText}`);
+    if (!ai.ok || !ai.content) throw new Error(`AI 解析失败：${ai.error ?? '模型未返回结果'}`);
+    const obj = parseJsonObjectWithRecovery(ai.content, 'AI 未返回有效的 PRD 解析结果（需 JSON 对象），请检查文档内容或更换模型');
+    const rawReqs = Array.isArray(obj.requirements) ? obj.requirements : [];
+    const requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }> = [];
+    const seenNo = new Set<string>();
+    for (const r of rawReqs) {
+      if (!r || typeof r !== 'object') continue;
+      const o = r as Record<string, unknown>;
+      const title = typeof o.title === 'string' ? o.title.trim() : '';
+      if (!title) continue;
+      let reqNo = typeof o.reqNo === 'string' && o.reqNo.trim() ? o.reqNo.trim() : `REQ-${String(requirements.length + 1).padStart(3, '0')}`;
+      if (seenNo.has(reqNo)) reqNo = `${reqNo}-${requirements.length + 1}`;
+      seenNo.add(reqNo);
+      const pr = typeof o.priority === 'string' && ['low', 'normal', 'high', 'urgent'].includes(o.priority) ? o.priority : 'normal';
+      requirements.push({
+        reqNo,
+        title,
+        content: typeof o.content === 'string' ? o.content : '',
+        sourceRef: typeof o.sourceRef === 'string' ? o.sourceRef : '',
+        priority: pr,
+      });
+    }
+    const rawPlans = Array.isArray(obj.plans) ? obj.plans : [];
+    const drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus }> = [];
+    for (const r of rawPlans) {
+      if (!r || typeof r !== 'object') continue;
+      const o = r as Record<string, unknown>;
+      const title = typeof o.title === 'string' ? o.title.trim() : '';
+      if (!title) continue;
+      const reqNos = Array.isArray(o.reqNos) ? o.reqNos.filter((x): x is string => typeof x === 'string') : [];
+      drafts.push({
+        title,
+        description: typeof o.description === 'string' ? o.description : '',
+        durationDays: Math.max(1, Math.floor(Number(o.durationDays) || 1)),
+        startDate: '',
+        reqNos,
+        status: 'todo',
+      });
+    }
+    if (requirements.length === 0 && drafts.length === 0) throw new Error('AI 未能从 PRD 中解析出需求或计划，请确认文档内容或更换模型');
+    const coverageWarn = drafts.length > 0 && requirements.length > 0 && drafts.every((d) => d.reqNos.length === 0)
+      ? '本次解析的计划节点未关联到需求编号——可在矩阵面板中手动建立关联'
+      : '';
+    return { requirements, drafts, coverageWarn };
+  },
+
+  /** T00662：导入 PRD 解析结果——事务创建需求项 + 计划（含 req_ids 关联）+ 可选同步生成待办任务。 */
+  importPrd(projectId: string, input: {
+    requirements?: Array<{ reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string }>;
+    plans?: Array<{ title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string }>;
+    createTasks?: boolean;
+  }): { requirements: number; plans: number; tasks: number } {
+    const db = getDb();
+    if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
+    const reqs = (input.requirements ?? []).filter((r) => r?.title?.trim());
+    const planItems = (input.plans ?? []).filter((p) => p?.title?.trim());
+    if (reqs.length === 0 && planItems.length === 0) throw new Error('没有可导入的需求或计划条目');
+    const t = now();
+    let taskCount = 0;
+    db.transaction(() => {
+      // 1) 需求项（矩阵行）——reqNo → id 映射供计划/待办关联
+      const noToId = new Map<string, string>();
+      const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM prd_requirements WHERE project_id = ?').get(projectId) as { m: number }).m;
+      let order = maxOrder;
+      const insReq = db.prepare(
+        `INSERT INTO prd_requirements (id, project_id, req_no, title, content, source_ref, priority, status, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?)`,
+      );
+      for (const r of reqs) {
+        const id = uuid();
+        const reqNo = (r.reqNo ?? '').trim() || `REQ-${String(order + 1).padStart(3, '0')}`;
+        order += 1;
+        insReq.run(id, projectId, reqNo, r.title.trim(), r.content ?? '', r.sourceRef ?? '', r.priority ?? 'normal', order, t, t);
+        noToId.set(reqNo, id);
+      }
+      // 2) 计划（含 req_ids 关联）
+      let insertedPlans = 0;
+      if (planItems.length > 0) {
+        const created = this.createBatch(projectId, planItems.map((p) => ({
+          title: p.title,
+          description: p.description,
+          startDate: p.startDate,
+          durationDays: p.durationDays,
+          assignee: p.assignee,
+          status: 'todo' as PlanStatus,
+        })));
+        insertedPlans = created.inserted;
+        // 关联回写：按标题匹配刚创建的计划行，写入 req_ids
+        const rows = db.prepare('SELECT id, title FROM plan_tasks WHERE project_id = ? AND archived = 0 ORDER BY sort_order DESC LIMIT ?').all(projectId, planItems.length) as Array<{ id: string; title: string }>;
+        const updPlan = db.prepare('UPDATE plan_tasks SET req_ids = ?, updated_at = ? WHERE id = ?');
+        for (const p of planItems) {
+          const hit = rows.find((x) => x.title === p.title);
+          if (!hit) continue;
+          const ids = (p.reqNos ?? []).map((n) => noToId.get(n)).filter((x): x is string => !!x);
+          if (ids.length > 0) updPlan.run(JSON.stringify(ids), t, hit.id);
+        }
+      }
+      // 3) 可选：WBS → 待办任务（便于 AI 推进执行），待办同样携带 req_ids
+      if (input.createTasks && planItems.length > 0) {
+        const insTask = db.prepare(
+          `INSERT INTO tasks (id, task_no, project_id, title, description, priority, status, verified, archived, pinned, req_ids, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'todo', 0, 0, 0, ?, ?, ?)`,
+        );
+        for (const p of planItems) {
+          const ids = (p.reqNos ?? []).map((n) => noToId.get(n)).filter((x): x is string => !!x);
+          insTask.run(uuid(), nextTaskNo(), projectId, `[PRD] ${p.title}`, p.description ?? '', 'normal', ids.length ? JSON.stringify(ids) : null, t, t);
+          taskCount += 1;
+        }
+      }
+      if (insertedPlans === 0 && reqs.length > 0) {
+        // 仅导入需求（无计划）时属合法场景，不抛错
+      }
+    })();
+    return { requirements: reqs.length, plans: planItems.length, tasks: taskCount };
+  },
+
+  // ---------- T00662：需求跟踪矩阵 CRUD ----------
+
+  /** 矩阵行列表（按项目；含关联的计划与待办摘要，供矩阵展示「需求 ← 计划/任务」关联关系） */
+  listRequirements(projectId: string): Array<Record<string, unknown>> {
+    const db = getDb();
+    const reqs = db.prepare('SELECT * FROM prd_requirements WHERE project_id = ? ORDER BY sort_order, created_at').all(projectId) as Array<Record<string, unknown>>;
+    const plans = db.prepare('SELECT id, title, status, req_ids FROM plan_tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ id: string; title: string; status: string; req_ids: string | null }>;
+    const tasks = db.prepare('SELECT id, task_no, title, status, verified, req_ids FROM tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ id: string; task_no: string | null; title: string; status: string; verified: number; req_ids: string | null }>;
+    const parse = (v: string | null): string[] => {
+      if (!v) return [];
+      try { const a = JSON.parse(v) as unknown; return Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string') : []; } catch { return []; }
+    };
+    return reqs.map((r) => {
+      const rid = String(r.id);
+      const linkedPlans = plans.filter((p) => parse(p.req_ids).includes(rid)).map((p) => ({ id: p.id, title: p.title, status: p.status }));
+      const linkedTasks = tasks.filter((x) => parse(x.req_ids).includes(rid)).map((x) => ({ id: x.id, taskNo: x.task_no, title: x.title, status: x.status, verified: !!x.verified }));
+      return { ...r, linkedPlans, linkedTasks };
+    });
+  },
+
+  createRequirement(projectId: string, input: { reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string; status?: string }): Record<string, unknown> {
+    const db = getDb();
+    if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
+    const t = now();
+    const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM prd_requirements WHERE project_id = ?').get(projectId) as { m: number }).m;
+    const id = uuid();
+    const reqNo = (input.reqNo ?? '').trim() || `REQ-${String(maxOrder + 1).padStart(3, '0')}`;
+    db.prepare(
+      `INSERT INTO prd_requirements (id, project_id, req_no, title, content, source_ref, priority, status, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, projectId, reqNo, input.title.trim(), input.content ?? '', input.sourceRef ?? '', input.priority ?? 'normal', input.status ?? 'todo', maxOrder + 1, t, t);
+    return db.prepare('SELECT * FROM prd_requirements WHERE id = ?').get(id) as Record<string, unknown>;
+  },
+
+  updateRequirement(id: string, patch: { title?: string; content?: string; reqNo?: string; sourceRef?: string; priority?: string; status?: string; sortOrder?: number }): Record<string, unknown> {
+    const db = getDb();
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    const map: Array<[keyof typeof patch, string]> = [['title', 'title'], ['content', 'content'], ['reqNo', 'req_no'], ['sourceRef', 'source_ref'], ['priority', 'priority'], ['status', 'status'], ['sortOrder', 'sort_order']];
+    for (const [k, col] of map) {
+      const v = patch[k];
+      if (v !== undefined) { sets.push(`${col} = ?`); vals.push(v); }
+    }
+    if (sets.length === 0) return db.prepare('SELECT * FROM prd_requirements WHERE id = ?').get(id) as Record<string, unknown>;
+    sets.push('updated_at = ?');
+    vals.push(now(), id);
+    const r = db.prepare(`UPDATE prd_requirements SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+    if (r.changes === 0) throw new Error('需求不存在');
+    return db.prepare('SELECT * FROM prd_requirements WHERE id = ?').get(id) as Record<string, unknown>;
+  },
+
+  deleteRequirement(id: string): void {
+    const db = getDb();
+    // 同步清理计划/待办上的关联引用（避免矩阵残留悬空 id）
+    const plans = db.prepare("SELECT id, req_ids FROM plan_tasks WHERE COALESCE(req_ids,'') != ''").all() as Array<{ id: string; req_ids: string }>;
+    const tasks = db.prepare("SELECT id, req_ids FROM tasks WHERE COALESCE(req_ids,'') != ''").all() as Array<{ id: string; req_ids: string }>;
+    const strip = (json: string): string | null => {
+      try {
+        const a = (JSON.parse(json) as unknown[]).filter((x) => x !== id);
+        return a.length > 0 ? JSON.stringify(a) : null;
+      } catch { return null; }
+    };
+    db.transaction(() => {
+      for (const p of plans) { const n = strip(p.req_ids); if (n !== p.req_ids) db.prepare('UPDATE plan_tasks SET req_ids = ?, updated_at = ? WHERE id = ?').run(n, now(), p.id); }
+      for (const x of tasks) { const n = strip(x.req_ids); if (n !== x.req_ids) db.prepare('UPDATE tasks SET req_ids = ?, updated_at = ? WHERE id = ?').run(n, now(), x.id); }
+      db.prepare('DELETE FROM prd_requirements WHERE id = ?').run(id);
+    })();
+  },
+
+  /** 关联调整：把需求关联到计划/待办（或解除）——矩阵面板的「关联调整」编辑入口 */
+  linkRequirement(reqId: string, target: { kind: 'plan' | 'task'; targetId: string; linked: boolean }): void {
+    const db = getDb();
+    const table = target.kind === 'plan' ? 'plan_tasks' : 'tasks';
+    const row = db.prepare(`SELECT req_ids FROM ${table} WHERE id = ?`).get(target.targetId) as { req_ids: string | null } | undefined;
+    if (!row) throw new Error(target.kind === 'plan' ? '计划不存在' : '任务不存在');
+    let ids: string[] = [];
+    try { const a = row.req_ids ? (JSON.parse(row.req_ids) as unknown) : []; ids = Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string') : []; } catch { ids = []; }
+    const has = ids.includes(reqId);
+    if (target.linked && !has) ids.push(reqId);
+    if (!target.linked && has) ids = ids.filter((x) => x !== reqId);
+    db.prepare(`UPDATE ${table} SET req_ids = ?, updated_at = ? WHERE id = ?`).run(ids.length > 0 ? JSON.stringify(ids) : null, now(), target.targetId);
   },
 
   /**

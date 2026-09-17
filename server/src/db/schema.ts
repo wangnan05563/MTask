@@ -198,6 +198,22 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       updated_at     TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_plan_tasks_project ON plan_tasks(project_id, sort_order);
+
+    -- T00662：PRD 需求跟踪矩阵——需求项（矩阵行），与计划/待办经 req_ids 多对多关联
+    CREATE TABLE IF NOT EXISTS prd_requirements (
+      id          TEXT PRIMARY KEY,
+      project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      req_no      TEXT DEFAULT '',
+      title       TEXT NOT NULL,
+      content     TEXT DEFAULT '',
+      source_ref  TEXT DEFAULT '',
+      priority    TEXT NOT NULL DEFAULT 'normal',
+      status      TEXT NOT NULL DEFAULT 'todo',
+      sort_order  INTEGER NOT NULL DEFAULT 0,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_prd_req_project ON prd_requirements(project_id, sort_order);
     -- 任务列表批量反查「计划联动」来源（plan_tasks.linked_task_id IN (...)：无索引时全表扫描）
     CREATE INDEX IF NOT EXISTS idx_plan_tasks_linked ON plan_tasks(linked_task_id);
 
@@ -261,6 +277,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // T00589：历史资产（组织过程资产沉淀，与归档=软删除语义区分）——history_at 非空即已入历史资产
   ensureColumn('tasks', 'history_at', 'history_at TEXT');
   ensureColumn('plan_tasks', 'history_at', 'history_at TEXT');
+  // T00662：需求跟踪矩阵关联——计划/待办以 JSON 数组保存关联的需求 id（多对多）
+  ensureColumn('plan_tasks', 'req_ids', 'req_ids TEXT');
+  ensureColumn('tasks', 'req_ids', 'req_ids TEXT');
   // T00589 二轮：**项目级快照**——projects.history_at 非空即整个项目已沉淀为历史资产快照
   // （该项目在任务/计划菜单的项目列表中不再出现，内容随项目快照整体恢复或归档）
   ensureColumn('projects', 'history_at', 'history_at TEXT');
