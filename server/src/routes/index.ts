@@ -125,6 +125,32 @@ api.post('/projects', (req, res) => {
   res.status(201).json(getDb().prepare('SELECT * FROM projects WHERE id = ?').get(id));
 });
 
+/** T00663：用户置顶权重（与前端 web/src/ui/projectOrder.ts 的 PROJ_PIN_WEIGHT 对齐） */
+const PROJ_PIN_WEIGHT = -9999;
+
+// T00663：项目自定义排序（拖拽后按序保存）——仅重排传入 id 的顺序号，置顶项（负权重）保持不动
+api.post('/projects/reorder', (req, res) => {
+  const { ids } = (req.body ?? {}) as { ids?: unknown };
+  if (!Array.isArray(ids) || ids.some((x) => typeof x !== 'string')) return res.status(400).json({ error: 'ids 必须为项目 id 字符串数组' });
+  const db = getDb();
+  const valid = (ids as string[]).filter((id) => db.prepare('SELECT 1 FROM projects WHERE id = ?').get(id));
+  if (valid.length === 0) return res.status(400).json({ error: '没有有效的项目 id' });
+  const t = now();
+  const upd = db.prepare('UPDATE projects SET sort_weight = ?, updated_at = ? WHERE id = ?');
+  db.transaction(() => {
+    valid.forEach((id, i) => {
+      const cur = db.prepare('SELECT sort_weight FROM projects WHERE id = ?').get(id) as { sort_weight: number } | undefined;
+      // 仅**用户置顶项**（精确 -9999）不参与自定义排序，避免拖拽把置顶顺序打散；
+      // 收件箱等系统权重（-1000）仍可被用户拖拽调整（与前端 PROJ_PIN_WEIGHT 保持一致）
+      if ((cur?.sort_weight ?? 0) === PROJ_PIN_WEIGHT) return;
+      upd.run(i + 1, t, id);
+    });
+  })();
+  cacheClear('projects');
+  notifyChange('projects');
+  res.json({ ok: true, reordered: valid.length });
+});
+
 api.patch('/projects/:id', (req, res) => {
   const { name, description, sortWeight } = req.body ?? {};
   const db = getDb();

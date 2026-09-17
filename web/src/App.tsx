@@ -23,7 +23,7 @@ const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: 'aitools', label: '模型', icon: Boxes },
   { key: 'prompts', label: '提示词', icon: ScrollText },
   { key: 'req', label: '通用需求', icon: Lightbulb },
-  { key: 'plan', label: '项目计划', icon: CalendarRange },
+  { key: 'plan', label: '项目管理', icon: CalendarRange }, // T00664：更名——后续定位为项目管理模块
   { key: 'report', label: 'AI 工作台', icon: Sparkles }, // T00569：周报改名 AI 工作台（卡片化入口）
   { key: 'history', label: '历史资产', icon: History }, // T00589：历史资产页（转移/沉淀/追溯）
   { key: 'queue', label: '队列', icon: ListOrdered },

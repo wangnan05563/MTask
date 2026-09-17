@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, CalendarPlus, Check, CheckSquare, Download, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, Link2, Link2Off, Loader2, Plus, RefreshCw, Sparkles, Table2, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search } from 'lucide-react';
+import { Archive, ArrowUpDown, CalendarPlus, Check, CheckSquare, Download, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Sparkles, Table2, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { ReqMatrixPanel } from './ReqMatrixPanel'; // T00662：需求跟踪矩阵
+import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin, reorderProjects, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
@@ -37,6 +38,11 @@ interface ProjectRow {
   plan_done?: number;
   plan_doing?: number;
   plan_open?: number;
+  /** T00663：排序/置顶所需字段（与服务端 GET /projects 返回对齐） */
+  sort_weight?: number;
+  created_at?: string;
+  todo_count?: number;
+  unverified_count?: number;
 }
 
 
@@ -202,6 +208,13 @@ export function PlanPage() {
   const [depSel, setDepSel] = useState<Record<string, 'serial' | 'parallel'>>({});
   // T00449：视图模式（列表/甘特）会话级保持
   const [viewMode, setViewMode] = useSessionState<'list' | 'gantt'>('plan.viewMode', 'list');
+  // T00663：项目排序与置顶（复用共享模块）——排序方式会话级持久；拖拽排序仅在默认序下启用
+  const [projSortMode, setProjSortMode] = useSessionState<ProjectSortMode>('plan.projectSort', 'default');
+  const [projSortOpen, setProjSortOpen] = useState(false);
+  const [sortDropRef, setSortDropRef] = useState<HTMLSpanElement | null>(null);
+  const [dragProjId, setDragProjId] = useState('');
+  const [overProjId, setOverProjId] = useState('');
+
   // T00662：需求跟踪矩阵面板展开态（甘特按钮旁入口）
   const [showMatrix, setShowMatrix] = useSessionState<boolean>('plan.showMatrix', false);
 
@@ -218,6 +231,34 @@ export function PlanPage() {
   useEffect(() => api.openChangeStream((kind) => {
     if (kind === 'tasks' || kind === 'plans') void loadProjects();
   }), [loadProjects]);
+
+  /** T00663：按所选排序方式排列项目（默认序=后端顺序，置顶权重优先生效） */
+  const sortedProjects = useMemo(() => sortProjects(projects, projSortMode), [projects, projSortMode]);
+
+  /** T00663：置顶/取消置顶（复用共享模块；默认序下置顶项目排最前） */
+  async function togglePin(p: ProjectRow) {
+    try {
+      const pinned = await toggleProjectPin(p);
+      flash(pinned ? `已置顶「${p.name}」（默认排序下排最前）` : `已取消置顶「${p.name}」`);
+      await loadProjects();
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
+  }
+
+  /** T00663：拖拽排序落库（仅默认序启用；置顶项由服务端跳过保持置顶） */
+  async function dropReorder(targetId: string) {
+    if (!dragProjId || dragProjId === targetId) { setDragProjId(''); setOverProjId(''); return; }
+    const ids = sortedProjects.map((x) => x.id);
+    const from = ids.indexOf(dragProjId);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) { setDragProjId(''); setOverProjId(''); return; }
+    ids.splice(to, 0, ...ids.splice(from, 1));
+    setDragProjId(''); setOverProjId('');
+    try {
+      await reorderProjects(ids);
+      flash('项目顺序已保存');
+      await loadProjects();
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
+  }
   // T00658：全选框半选态（部分勾选）
   useEffect(() => {
     if (!allPlansRef.current) return;
@@ -845,13 +886,55 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             ) : null; })()}
             <ChevronDown size={12} />
           </button>
+          {/* T00663：项目排序按钮（复用任务菜单同款排序方式与逻辑；默认隐藏、悬浮工具条显示） */}
+          <span ref={(el) => { setSortDropRef(el); }} style={{ position: 'relative', display: 'inline-flex' }}>
+            <button onClick={() => setProjSortOpen((v) => !v)} className="op-hidden tbtn-anim"
+              title={`项目排序 — 当前：${PROJ_SORT_LABEL(projSortMode)}（拖拽排序需切到「默认（置顶优先）」）`}
+              aria-label="项目排序" aria-haspopup="menu" aria-expanded={projSortOpen}
+              style={{ display: 'inline-flex', alignItems: 'center', padding: '5px 8px', fontSize: 12, background: projSortOpen ? 'var(--accent)' : 'transparent', color: projSortOpen ? 'var(--accent-text)' : 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 4, cursor: 'pointer' }}>
+              <ArrowUpDown size={13} />
+            </button>
+            {projSortOpen && (
+              <div role="menu" aria-label="项目排序方式"
+                style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 70, minWidth: 200, padding: 4 }}>
+                {PROJ_SORT_OPTIONS.map((o) => (
+                  <button key={o.key} role="menuitemradio" aria-checked={projSortMode === o.key}
+                    onClick={() => { setProjSortMode(o.key); setProjSortOpen(false); }}
+                    title={o.hint}
+                    style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px 8px', fontSize: 12, textAlign: 'left', border: 'none', borderRadius: 4, cursor: 'pointer', background: projSortMode === o.key ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)' }}>
+                    <span style={{ width: 14, display: 'inline-flex', flexShrink: 0 }}>{projSortMode === o.key ? <Check size={12} style={{ color: 'var(--accent)' }} /> : null}</span>
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </span>
           {projOpen && projDropPos && (
             <div role="listbox" style={{ position: 'fixed', top: projDropPos.top, left: projDropPos.left, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 60, minWidth: 240, maxHeight: `calc(100vh - ${projDropPos.top + 12}px)`, overflowY: 'auto' }}>
-              {projects.map((p) => (
+              {/* T00663：项目下拉项——置顶图标在名称前；默认序下支持拖拽排序（持久化到服务端） */}
+              {sortedProjects.map((p) => (
                 <button key={p.id} role="option" aria-selected={p.id === projectId}
+                  draggable={projSortMode === 'default'}
+                  onDragStart={() => setDragProjId(p.id)}
+                  onDragOver={(e) => { if (projSortMode === 'default' && dragProjId) { e.preventDefault(); setOverProjId(p.id); } }}
+                  onDragLeave={() => setOverProjId((cur) => (cur === p.id ? '' : cur))}
+                  onDrop={(e) => { e.preventDefault(); void dropReorder(p.id); }}
+                  onDragEnd={() => { setDragProjId(''); setOverProjId(''); }}
                   onClick={() => { setProjectId(p.id); setProjOpen(false); }}
-                  title={`${p.name}：已完成 ${p.plan_done ?? 0}，进行中 ${p.plan_doing ?? 0}，待开始 ${p.plan_open ?? 0}`}
-                  style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, background: p.id === projectId ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer' }}>
+                  title={projSortMode === 'default'
+                    ? `${p.name}：已完成 ${p.plan_done ?? 0}，进行中 ${p.plan_doing ?? 0}，待开始 ${p.plan_open ?? 0}（可拖拽调整顺序）`
+                    : `${p.name}：已完成 ${p.plan_done ?? 0}，进行中 ${p.plan_doing ?? 0}，待开始 ${p.plan_open ?? 0}（拖拽排序请切换到「默认（置顶优先）」）`}
+                  style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, opacity: dragProjId === p.id ? 0.5 : 1, borderTop: overProjId === p.id ? '2px solid var(--accent)' : '2px solid transparent', background: p.id === projectId ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', cursor: projSortMode === 'default' ? 'grab' : 'pointer' }}>
+                  <span
+                    role="button" tabIndex={0}
+                    onClick={(e) => { e.stopPropagation(); void togglePin(p); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); void togglePin(p); } }}
+                    title={isProjectPinned(p) ? `已置顶「${p.name}」— 点击取消置顶` : `置顶「${p.name}」— 点击后在默认排序下排最前`}
+                    aria-label={isProjectPinned(p) ? `取消置顶 ${p.name}` : `置顶 ${p.name}`}
+                    style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0, color: isProjectPinned(p) ? 'var(--accent)' : 'var(--text-muted)', cursor: 'pointer' }}
+                  >
+                    <Pin size={12} style={{ transform: isProjectPinned(p) ? 'rotate(-45deg)' : 'none', transition: 'transform .18s ease, color .18s ease', fill: isProjectPinned(p) ? 'currentColor' : 'none' }} />
+                  </span>
                   <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
                   <span title={`已完成 ${p.plan_done ?? 0}`} style={{ minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success)' }}>{p.plan_done ?? 0}</span>
                   <span title={`进行中 ${p.plan_doing ?? 0}`} style={{ minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.plan_doing ?? 0}</span>

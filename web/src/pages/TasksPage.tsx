@@ -5,6 +5,7 @@ import { askConfirm, askInput } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
+import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { useBusy, setBusy } from '../ui/busy';
 import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, Pin, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
@@ -36,22 +37,6 @@ async function runBatchClassifyModule(target: Array<{ id: string; title: string;
   }
   void prio;
 }
-
-// T00655：项目排序方式（会话级持久）与菜单选项
-type ProjectSortMode = 'default' | 'alpha-asc' | 'alpha-desc' | 'created-desc' | 'created-asc' | 'todo-desc' | 'todo-asc';
-/** T00655：置顶权重——服务端按 sort_weight 升序排列，置顶写极小值确保排最前（收件箱 -1000 为其默认位次） */
-const PROJ_PIN_WEIGHT = -9999;
-/** 是否处于置顶态（精确匹配置顶权重，避免把收件箱等系统权重误判为置顶） */
-const isProjectPinned = (pj: { sort_weight?: number }) => (pj.sort_weight ?? 0) === PROJ_PIN_WEIGHT;
-const PROJ_SORT_OPTIONS: Array<{ key: ProjectSortMode; label: string; hint: string }> = [
-  { key: 'default', label: '默认（置顶优先）', hint: '按置顶权重与创建顺序排列（不改变原有排序规则）' },
-  { key: 'alpha-asc', label: '名称 A → Z', hint: '按项目名称升序' },
-  { key: 'alpha-desc', label: '名称 Z → A', hint: '按项目名称降序' },
-  { key: 'created-desc', label: '创建时间：最新在前', hint: '新建的项目排在最前' },
-  { key: 'created-asc', label: '创建时间：最早在前', hint: '最早创建的项目排在最前' },
-  { key: 'todo-desc', label: '待办数量：多 → 少', hint: '待办越多的项目越靠前' },
-  { key: 'todo-asc', label: '待办数量：少 → 多', hint: '待办越少的项目越靠前' },
-];
 
 /** 粘贴截图项：id 为入列时生成的稳定唯一标识，供列表 key 使用，删除中间项不会导致其余项身份错位 */
 interface PastedImage {
@@ -249,25 +234,13 @@ export function TasksPage() {
   const [projSortMode, setProjSortMode] = useSessionState<ProjectSortMode>('tasks.projectSort', 'default');
   const [projSortOpen, setProjSortOpen] = useState(false);
   const projSortRef = useRef<HTMLSpanElement | null>(null); // T00655：排序菜单外部点击收起
-  const sortedProjects = useMemo(() => {
-    const list = [...projects];
-    switch (projSortMode) {
-      case 'alpha-asc': return list.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));
-      case 'alpha-desc': return list.sort((a, b) => b.name.localeCompare(a.name, 'zh-Hans-CN'));
-      case 'created-desc': return list.sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''));
-      case 'created-asc': return list.sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''));
-      case 'todo-desc': return list.sort((a, b) => (b.todo_count ?? 0) - (a.todo_count ?? 0));
-      case 'todo-asc': return list.sort((a, b) => (a.todo_count ?? 0) - (b.todo_count ?? 0));
-      default: return list; // 默认序：沿用后端排序（sort_weight 置顶权重优先生效），不改变核心业务规则
-    }
-  }, [projects, projSortMode]);
+  const sortedProjects = useMemo(() => sortProjects(projects, projSortMode), [projects, projSortMode]); // T00663：排序逻辑复用共享模块
 
   /** T00655：置顶/取消置顶——置顶写入较大 sort_weight（默认序下排最前），取消归零 */
   async function toggleProjectPin(pj: Project) {
     try {
-      const pinned = isProjectPinned(pj);
-      await api.patch(`/projects/${pj.id}`, { sortWeight: pinned ? 0 : PROJ_PIN_WEIGHT });
-      flash(pinned ? `已取消置顶「${pj.name}」` : `已置顶「${pj.name}」（默认排序下排最前）`);
+      const nowPinned = await togglePinShared(pj); // T00663：置顶逻辑复用共享模块
+      flash(nowPinned ? `已置顶「${pj.name}」（默认排序下排最前）` : `已取消置顶「${pj.name}」`);
       void loadProjects();
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
@@ -2233,8 +2206,8 @@ export function TasksPage() {
         <span ref={projSortRef} style={{ position: 'relative', display: 'inline-flex' }}>
           <button
             onClick={() => setProjSortOpen((v) => !v)}
-            className="tbtn-anim"
-            title={`项目排序 — 当前：${PROJ_SORT_OPTIONS.find((o) => o.key === projSortMode)?.label ?? '默认'}`}
+            className="op-hidden tbtn-anim"
+            title={`项目排序 — 当前：${PROJ_SORT_LABEL(projSortMode)}（默认隐藏，悬浮工具栏显示）`}
             aria-label="项目排序" aria-haspopup="menu" aria-expanded={projSortOpen}
             style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: projSortOpen ? 'var(--accent)' : 'transparent', color: projSortOpen ? 'var(--accent-text)' : 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}
           >
