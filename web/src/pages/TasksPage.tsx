@@ -2265,23 +2265,29 @@ export function TasksPage() {
         {renderClassifyButton()}
         {renderViewToggle()}
         {renderMultiSelectButton()}
-        {/* T00481/T00720：全部展开/收起——描述、AI 摘要、处理结果三组折叠状态联动，覆盖待办+已完成全部列表
-            （此前只联动前两组，已完成列表的主要展示内容「处理结果」不受控，观感上按钮只对待办生效） */}
+        {/* T00481/T00720/T00728：全部收起/展开——描述、AI 摘要、处理结果三组折叠状态联动，覆盖待办+已完成全部列表；
+            T00728：收起为高频操作优先——有展开内容时点击一律收起，全部收起后点击才展开 */}
         <button className="tbtn-anim" onClick={() => {
           const all = [...todo, ...done];
           const ids = all.map((t) => t.id);
           const resultIds = all.filter((t) => t.handle_result).map((t) => t.id);
-          const allExpanded = ids.length > 0 && ids.every((id) => descExpanded[id] && summaryExpanded[id]);
-          const v = allExpanded ? {} : Object.fromEntries(ids.map((id) => [id, true]));
-          setDescExpanded(v); setSummaryExpanded(v);
-          // 处理结果仅对有内容的任务展开（无 handle_result 的任务展开后无渲染块）
-          setResultOpen(allExpanded ? {} : Object.fromEntries(resultIds.map((id) => [id, true])));
-        }} title="全部展开/收起 — 一键展开或收起全部列表任务的描述、AI 摘要与处理结果" aria-label="全部展开或收起任务详情"
-          style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}>
+          const hasExpanded = ids.some((id) => descExpanded[id] || summaryExpanded[id] || resultOpen[id]);
+          if (hasExpanded) {
+            // 收起（高频优先）
+            setDescExpanded({}); setSummaryExpanded({}); setResultOpen({});
+          } else {
+            // 展开：处理结果仅对有内容的任务展开（无 handle_result 的任务展开后无渲染块）
+            const v = Object.fromEntries(ids.map((id) => [id, true]));
+            setDescExpanded(v); setSummaryExpanded(v);
+            setResultOpen(Object.fromEntries(resultIds.map((id) => [id, true])));
+          }
+        }} title="全部收起/展开 — 收起为高频操作优先：有展开内容时点击收起，全部收起后点击展开" aria-label="全部收起或展开任务详情"
+          style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}>
           {(() => {
             const ids = [...todo, ...done];
-            const allExpanded = ids.length > 0 && ids.every((t) => descExpanded[t.id] && summaryExpanded[t.id]);
-            return allExpanded ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />;
+            const hasExpanded = ids.some((t) => descExpanded[t.id] || summaryExpanded[t.id] || resultOpen[t.id]);
+            // 图标指示下一步动作：有展开内容 → 将收起（折叠图标）；全部收起 → 将展开（展开图标）
+            return <>{hasExpanded ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />}<span>全部收起/展开</span></>;
           })()}
         </button>
         <label className="task-op" title="导入数据 — CSV/JSON（JSON 支持 Trello 导出与 JSON 数组），预览确认后入库"
