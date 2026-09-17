@@ -97,14 +97,15 @@ export class OpenAICompatAdapter implements AIAdapter {
         return { ok: false, error: data.error?.message ?? `HTTP ${res.status}` };
       }
       const choice = data.choices?.[0];
-      const content = choice?.message?.content;
-      if (!content) return { ok: false, error: 'AI 返回内容为空' };
+      const content = choice?.message?.content ?? '';
       // T00714（D-6 修复）：输出被 token 上限截断（finish_reason=length）时显式报错——
-      // 不再把残缺输出静默交给上层做 JSON 解析（曾表现为「AI 未返回有效的 PRD 解析结果」误导排障）；
-      // 记 ok=false 进 ai_usage，错误文案可区分「输出被截断」与「模型不行」
+      // 不再把残缺/空输出静默交给上层做 JSON 解析（曾表现为「AI 未返回有效的 PRD 解析结果」误导排障）；
+      // 记 ok=false 进 ai_usage，错误文案可区分「输出被截断」与「模型不行」。
+      // 注意顺序：触顶时 content 可能为空串，必须先判 finish_reason 再判空（maxTokens 极小时实测）
       if (choice?.finish_reason === 'length') {
-        return { ok: false, error: `AI 输出超长被截断（finish_reason=length，已输出 ${content.length} 字符）——请精简文档内容或分块解析后重试` };
+        return { ok: false, error: `AI 输出超长被截断（finish_reason=length，已输出 ${content.length} 字符）——请精简文档内容或调大输出上限/分块解析后重试` };
       }
+      if (!content) return { ok: false, error: 'AI 返回内容为空' };
       return { ok: true, content };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
