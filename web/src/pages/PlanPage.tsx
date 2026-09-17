@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ArrowUpDown, CalendarPlus, Check, CheckSquare, Download, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Sparkles, Table2, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search } from 'lucide-react';
+import { Archive, ArrowUpDown, CalendarPlus, Check, CheckSquare, Compass, Download, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Sparkles, Table2, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { ReqMatrixPanel } from './ReqMatrixPanel'; // T00662：需求跟踪矩阵
+import { ProjectGuideDialog, hasSeenProjectGuide } from './ProjectGuide'; // T00665：项目管理向导
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin, reorderProjects, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
@@ -208,6 +209,10 @@ export function PlanPage() {
   const [depSel, setDepSel] = useState<Record<string, 'serial' | 'parallel'>>({});
   // T00449：视图模式（列表/甘特）会话级保持
   const [viewMode, setViewMode] = useSessionState<'list' | 'gantt'>('plan.viewMode', 'list');
+  // T00665：使用向导——首次进入模块自动弹出（依据 localStorage 标记），常驻按钮可随时重看
+  const [guideOpen, setGuideOpen] = useState(false);
+  useEffect(() => { if (!hasSeenProjectGuide()) setGuideOpen(true); }, []);
+
   // T00663：项目排序与置顶（复用共享模块）——排序方式会话级持久；拖拽排序仅在默认序下启用
   const [projSortMode, setProjSortMode] = useSessionState<ProjectSortMode>('plan.projectSort', 'default');
   const [projSortOpen, setProjSortOpen] = useState(false);
@@ -1018,6 +1023,14 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         </button>
         <button onClick={openHolidayManager} style={btnStyle} title="节假日管理 — 手动维护 / 联网导入法定节假日 / 万年历视图">节假日（{holidays.length}）</button>
         <button onClick={reload} style={btnStyle} title="刷新"><RefreshCw size={13} /></button>
+        {/* T00665：常驻向导按钮（页面右上角）——呼吸动画吸引注意，点击随时重新唤起使用向导；
+            状态持久化于 localStorage：看过之后不再自动弹出，清缓存后恢复初始引导 */}
+        <button onClick={() => setGuideOpen(true)} className="task-breathe"
+          title="使用向导 — 查看项目管理各子功能的使用说明与交互演示"
+          aria-label="打开项目管理使用向导"
+          style={{ ...btnStyle, marginLeft: 'auto', borderColor: 'var(--accent)', color: 'var(--accent)' }}>
+          <Compass size={13} /> 向导
+        </button>
         {notice && <span className="flash-toast" role="status">{notice}</span>}
       </div>
 
@@ -1041,6 +1054,9 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       })()}
 
       {/* 计划表格：串行瀑布，起止由服务端按工作日推算 */}
+      {/* T00665：项目管理使用向导（首次自动弹出 / 右上角常驻按钮唤起） */}
+      <ProjectGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} />
+
       {/* T00662：需求跟踪矩阵面板（甘特按钮旁入口展开） */}
       {showMatrix && projectId && <ReqMatrixPanel projectId={projectId} onClose={() => setShowMatrix(false)} />}
 
