@@ -5,6 +5,11 @@ import {
 } from 'lucide-react';
 import type { GuideStep } from './PageGuide';
 import { PROJECT_GUIDE_STEPS, GUIDE_SEEN_KEY } from './ProjectGuide';
+import {
+  AiStateDemo, ArchiveBoxDemo, BackupDemo, BatchDemo, ConsoleLogDemo, DefaultToggleDemo,
+  LibraryDemo, PrdFlowDemo, QueueRunDemo, ReportGenDemo, RetryDemo, SnapshotDemo,
+  TaskRowsDemo, ThemeToggleDemo, ToolCardDemo, ToTaskFlowDemo,
+} from './GuideDemos'; // T00708：各菜单向导的 CSS 动画演示（对齐 T00665 StepDemo 水准）
 
 /**
  * T00706：各菜单使用向导的内容配置（壳组件见 PageGuide.tsx）。
@@ -48,7 +53,7 @@ const TASK_STEPS: GuideStep[] = [
       '列表分「待办」与「已完成」两区，支持多选批量操作与优先级筛选',
       '每条任务可展开查看描述与 AI 处理结果，行内直接编辑保存',
     ],
-    visual: <Chips items={[chip(<ListTodo size={13} />, '待办 / 已完成'), chip(<Layers size={13} />, '多选批量'), chip(<Wand2 size={13} />, 'AI 状态流转')]} />,
+    visual: <><Chips items={[chip(<ListTodo size={13} />, '待办 / 已完成'), chip(<Layers size={13} />, '多选批量'), chip(<Wand2 size={13} />, 'AI 状态流转')]} /><TaskRowsDemo /></>,
   },
   {
     title: 'AI 状态与审核',
@@ -59,6 +64,7 @@ const TASK_STEPS: GuideStep[] = [
       '「AI回写待审核」前缀的任务：点击展开描述与处理结果，审核通过后编辑标题去掉前缀即恢复正常',
       '「验证失败」反馈会随处理结果一起保存，修复后重新处理即可',
     ],
+    visual: <AiStateDemo />,
   },
   {
     title: '效率技巧',
@@ -69,6 +75,7 @@ const TASK_STEPS: GuideStep[] = [
       '批量操作：多选任务后可一次性修改状态 / 归档 / 调整优先级',
       '「全部展开 / 收起」一键查看所有任务的描述与 AI 摘要',
     ],
+    visual: <BatchDemo />,
   },
 ];
 
@@ -83,7 +90,7 @@ const AITOOLS_STEPS: GuideStep[] = [
       '编辑配置时保留原 API Key，不必重复粘贴密钥',
       '不再使用的配置可归档：列表不再显示，记录保留在库中',
     ],
-    visual: <Chips items={[chip(<Boxes size={13} />, '厂商配置'), chip(<Database size={13} />, 'API Key 保管'), chip(<Archive size={13} />, '归档保留')]} />,
+    visual: <><Chips items={[chip(<Boxes size={13} />, '厂商配置'), chip(<Database size={13} />, 'API Key 保管'), chip(<Archive size={13} />, '归档保留')]} /><ToolCardDemo /></>,
   },
   {
     title: '默认工具设定',
@@ -94,6 +101,7 @@ const AITOOLS_STEPS: GuideStep[] = [
       '「默认整理」：整理类 AI 功能（摘要 / 回写整理）使用的配置',
       '切换默认只需在对应配置上点一次，立即全局生效',
     ],
+    visual: <DefaultToggleDemo />,
   },
 ];
 
@@ -108,7 +116,7 @@ const PROMPTS_STEPS: GuideStep[] = [
       '每条提示词支持新建 / 编辑 / 归档（数据保留，列表不再显示）',
       '「复制」把内容送入剪贴板，随时粘贴到任何地方使用',
     ],
-    visual: <Chips items={[chip(<ScrollText size={13} />, '分类组织'), chip(<ClipboardList size={13} />, '一键复制'), chip(<Archive size={13} />, '归档保留')]} />,
+    visual: <><Chips items={[chip(<ScrollText size={13} />, '分类组织'), chip(<ClipboardList size={13} />, '一键复制'), chip(<Archive size={13} />, '归档保留')]} /><LibraryDemo noun="提示词" /></>,
   },
   {
     title: '复制到待办任务',
@@ -119,6 +127,7 @@ const PROMPTS_STEPS: GuideStep[] = [
       '支持选择目标项目后再确认复制',
       '配合任务菜单的 AI 处理流程，实现「提示词 → 待办 → AI 执行」链路',
     ],
+    visual: <ToTaskFlowDemo noun="提示词" />,
   },
 ];
 
@@ -133,7 +142,7 @@ const REQ_STEPS: GuideStep[] = [
       '每条需求支持新建 / 编辑 / 删除 / 复制',
       '排序字段与排序方式可自由组合，跨会话保持',
     ],
-    visual: <Chips items={[chip(<Lightbulb size={13} />, '需求条目'), chip(<Layers size={13} />, '分类分组'), chip(<RefreshCw size={13} />, '组合排序')]} />,
+    visual: <><Chips items={[chip(<Lightbulb size={13} />, '需求条目'), chip(<Layers size={13} />, '分类分组'), chip(<RefreshCw size={13} />, '组合排序')]} /><LibraryDemo noun="需求" /></>,
   },
   {
     title: '复制到待办任务',
@@ -144,6 +153,7 @@ const REQ_STEPS: GuideStep[] = [
       '支持选择目标项目后再确认复制',
       '与「从 PRD 导入」（项目管理）互补：零散需求走这里，整份 PRD 走项目管理',
     ],
+    visual: <ToTaskFlowDemo noun="需求" />,
   },
 ];
 
@@ -158,7 +168,7 @@ const REPORT_STEPS: GuideStep[] = [
       '「离线周报生成」：本地聚合数据按模板合成报表，不调用 AI',
       '生成的洞察摘要可勾选写入「收件箱」项目的一条待办，便于后续跟进',
     ],
-    visual: <Chips items={[chip(<Sparkles size={13} />, 'AI 周报'), chip(<Table2 size={13} />, '离线报表'), chip(<ListTodo size={13} />, '洞察写回待办')]} />,
+    visual: <><Chips items={[chip(<Sparkles size={13} />, 'AI 周报'), chip(<Table2 size={13} />, '离线报表'), chip(<ListTodo size={13} />, '洞察写回待办')]} /><ReportGenDemo /></>,
   },
   {
     title: '模板与导入',
@@ -169,6 +179,7 @@ const REPORT_STEPS: GuideStep[] = [
       '「AI 项目计划导入」：上传 Excel / 需求文档，AI 解析为计划草稿并批量入库（本页直接执行）',
       '「从 PRD 导入项目计划」：AI 拆分 WBS + 逐条提取需求，生成计划与需求跟踪矩阵（可选同步待办）',
     ],
+    visual: <PrdFlowDemo />,
   },
   {
     title: '控制台与文档区',
@@ -179,6 +190,7 @@ const REPORT_STEPS: GuideStep[] = [
       '「下载 AI 周报」经令牌从后台取回，下载即删（不留存服务器）',
       '控制台日志同时服务周报生成与 PRD 导入等长任务，阶段 + 时间戳可追溯',
     ],
+    visual: <ConsoleLogDemo />,
   },
 ];
 
@@ -193,7 +205,7 @@ const HISTORY_STEPS: GuideStep[] = [
       '「恢复」把快照整体还原为活跃项目，重新出现在任务 / 项目管理菜单',
       '支持搜索快照定位历史项目',
     ],
-    visual: <Chips items={[chip(<History size={13} />, '快照沉淀'), chip(<RefreshCw size={13} />, '一键恢复'), chip(<Upload size={13} />, '搜索追溯')]} />,
+    visual: <><Chips items={[chip(<History size={13} />, '快照沉淀'), chip(<RefreshCw size={13} />, '一键恢复'), chip(<Upload size={13} />, '搜索追溯')]} /><SnapshotDemo /></>,
   },
   {
     title: '归档与软删除',
@@ -204,6 +216,7 @@ const HISTORY_STEPS: GuideStep[] = [
       '任何沉淀 / 恢复操作都保留完整的操作痕迹，不丢数据',
       '建议节奏：项目收口 → 沉淀快照 → 确认无需高频查阅后归档',
     ],
+    visual: <ArchiveBoxDemo />,
   },
 ];
 
@@ -218,7 +231,7 @@ const QUEUE_STEPS: GuideStep[] = [
       '「加入队列」把选中的任务与 AI 工具送入当前队列',
       '队列按序执行：适合把一批机械性任务（批量回传 / 批量处理）交给 AI 跑',
     ],
-    visual: <Chips items={[chip(<CalendarClock size={13} />, '今日队列'), chip(<ListTodo size={13} />, '任务 + 工具'), chip(<Rocket size={13} />, '按序执行')]} />,
+    visual: <><Chips items={[chip(<CalendarClock size={13} />, '今日队列'), chip(<ListTodo size={13} />, '任务 + 工具'), chip(<Rocket size={13} />, '按序执行')]} /><QueueRunDemo /></>,
   },
   {
     title: '结果采纳与重试',
@@ -229,6 +242,7 @@ const QUEUE_STEPS: GuideStep[] = [
       '「重试失败」把队列中失败 / 超时的任务重置为待发送，再次执行',
       '「复制」可把任务内容取出到剪贴板，便于人工介入处理',
     ],
+    visual: <RetryDemo />,
   },
 ];
 
@@ -243,7 +257,7 @@ const SETTINGS_STEPS: GuideStep[] = [
       '任务分类：新增 / 编辑 / 删除分类（删除后其下任务回到未分类）',
       '日志 / 归档入口也收敛在本页（内网穿透下方）',
     ],
-    visual: <Chips items={[chip(<Settings size={13} />, '主题切换'), chip(<Layers size={13} />, '任务分类'), chip(<Download size={13} />, '备份恢复')]} />,
+    visual: <><Chips items={[chip(<Settings size={13} />, '主题切换'), chip(<Layers size={13} />, '任务分类'), chip(<Download size={13} />, '备份恢复')]} /><ThemeToggleDemo /></>,
   },
   {
     title: '数据备份与更新',
@@ -254,6 +268,7 @@ const SETTINGS_STEPS: GuideStep[] = [
       '「选择备份文件」从 JSON 备份恢复数据（覆盖现有数据，请谨慎）',
       '「检查更新」拉取 GitHub 最新 Release 与当前版本比较；也可下载安装包 / 查看 Release 页',
     ],
+    visual: <BackupDemo />,
   },
 ];
 
