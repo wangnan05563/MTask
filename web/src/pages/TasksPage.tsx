@@ -2239,13 +2239,18 @@ export function TasksPage() {
         {renderClassifyButton()}
         {renderViewToggle()}
         {renderMultiSelectButton()}
-        {/* T00481：全部展开/收起——描述与 AI 摘要两组折叠状态联动 */}
+        {/* T00481/T00720：全部展开/收起——描述、AI 摘要、处理结果三组折叠状态联动，覆盖待办+已完成全部列表
+            （此前只联动前两组，已完成列表的主要展示内容「处理结果」不受控，观感上按钮只对待办生效） */}
         <button className="tbtn-anim" onClick={() => {
-          const ids = [...todo, ...done].map((t) => t.id);
+          const all = [...todo, ...done];
+          const ids = all.map((t) => t.id);
+          const resultIds = all.filter((t) => t.handle_result).map((t) => t.id);
           const allExpanded = ids.length > 0 && ids.every((id) => descExpanded[id] && summaryExpanded[id]);
           const v = allExpanded ? {} : Object.fromEntries(ids.map((id) => [id, true]));
           setDescExpanded(v); setSummaryExpanded(v);
-        }} title="全部展开/收起 — 一键展开或收起全部任务的描述与 AI 摘要" aria-label="全部展开或收起任务详情"
+          // 处理结果仅对有内容的任务展开（无 handle_result 的任务展开后无渲染块）
+          setResultOpen(allExpanded ? {} : Object.fromEntries(resultIds.map((id) => [id, true])));
+        }} title="全部展开/收起 — 一键展开或收起全部列表任务的描述、AI 摘要与处理结果" aria-label="全部展开或收起任务详情"
           style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}>
           {(() => {
             const ids = [...todo, ...done];
