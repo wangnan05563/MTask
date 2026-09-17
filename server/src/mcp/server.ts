@@ -131,7 +131,13 @@ export async function createMCPServer(): Promise<McpServer> {
         categoryId: a.categoryId,
         parentId,
       });
-      return ok(json(task), { task });
+      // T00713：AI 建单（含回写派生单）后置 unread 未读圆点——否则派生单在列表中与手工单无异，
+      // 用户无从感知「AI 产生了新单待处理」（T00620 显式驱动后不再有读取自动置 running 的兜底表现）
+      let fresh = task;
+      if ((task.status ?? 'todo') === 'todo') {
+        fresh = TaskService.setAiState(task.id, 'unread') ?? task;
+      }
+      return ok(json(fresh), { task: fresh });
     } catch (e) { return err((e as Error).message); }
   });
 
@@ -477,6 +483,9 @@ export async function createMCPServer(): Promise<McpServer> {
 【派生单 ${task.task_no ?? target.id} 处理结果 ${stamp}】
 ${a.result}`;
           TaskService.update(origin.id, { handle_result: mergedText });
+          // T00713：结论归并进原单后置原单 unread——用户在列表上能看到「原单有新内容待查看」，
+          // 否则回流结论只躺在处理结果里无人知晓
+          TaskService.setAiState(origin.id, 'unread');
           merged = `；并已整合回原任务 ${originNo}`;
         }
       }
