@@ -1192,8 +1192,12 @@ export const PlanService = {
   linkRequirement(reqId: string, target: { kind: 'plan' | 'task'; targetId: string; linked: boolean }): void {
     const db = getDb();
     const table = target.kind === 'plan' ? 'plan_tasks' : 'tasks';
-    const row = db.prepare(`SELECT req_ids FROM ${table} WHERE id = ?`).get(target.targetId) as { req_ids: string | null } | undefined;
+    // T00710（D-2 修复）：校验需求与目标同项目（对齐 linkTodo 的同项目约束），防矩阵跨项目混入脏关联
+    const req = db.prepare('SELECT project_id FROM prd_requirements WHERE id = ?').get(reqId) as { project_id: string } | undefined;
+    if (!req) throw new Error('需求不存在');
+    const row = db.prepare(`SELECT req_ids, project_id FROM ${table} WHERE id = ?`).get(target.targetId) as { req_ids: string | null; project_id: string } | undefined;
     if (!row) throw new Error(target.kind === 'plan' ? '计划不存在' : '任务不存在');
+    if (req.project_id !== row.project_id) throw new Error(target.kind === 'plan' ? '仅可关联同项目的计划' : '仅可关联同项目的待办');
     let ids: string[] = [];
     try { const a = row.req_ids ? (JSON.parse(row.req_ids) as unknown) : []; ids = Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string') : []; } catch { ids = []; }
     const has = ids.includes(reqId);
