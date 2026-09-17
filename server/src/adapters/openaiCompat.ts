@@ -2,7 +2,7 @@ import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, Models
 import { withTimeout, formatHttpError, normalizeModels, readStreamLines } from './netutil';
 
 interface ChatCompletionResp {
-  choices?: { message?: { content?: string }; finish_reason?: string }[];
+  choices?: { message?: { content?: string; reasoning_content?: string }; finish_reason?: string }[];
   error?: { message?: string };
 }
 
@@ -105,7 +105,15 @@ export class OpenAICompatAdapter implements AIAdapter {
       if (choice?.finish_reason === 'length') {
         return { ok: false, error: `AI 输出超长被截断（finish_reason=length，已输出 ${content.length} 字符）——请精简文档内容或调大输出上限/分块解析后重试` };
       }
-      if (!content) return { ok: false, error: 'AI 返回内容为空' };
+      if (!content) {
+        // T00721：思考型模型（如 agnes-2.5-flash）可能把输出预算全部耗在 reasoning_content（思考）上，
+        // 正文为空（实测 20~44s 长耗时 + 0 字符）。给出可操作提示而非笼统的「AI 返回内容为空」
+        const reasoning = choice?.message?.reasoning_content;
+        if (reasoning) {
+          return { ok: false, error: `模型仅输出了思考过程（reasoning ${reasoning.length} 字符），正文为空——多为思考耗尽输出上限所致，请调大该工具的 max_tokens 或更换非思考型模型后重试` };
+        }
+        return { ok: false, error: 'AI 返回内容为空' };
+      }
       return { ok: true, content };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
