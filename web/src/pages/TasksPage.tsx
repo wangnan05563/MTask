@@ -7,7 +7,7 @@ import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { useBusy, setBusy } from '../ui/busy';
-import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, ChevronDown, ChevronUp, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, Pin, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
+import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, ChevronDown, ChevronUp, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, Pin, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 
 // ---------- T00552：批量分类运行态模块级化——切页后循环继续、返回不卡死 ----------
@@ -140,6 +140,9 @@ export function TasksPage() {
   const [activeProject, setActiveProject] = usePersistentState('tasks.activeProject', '');
   const [todo, setTodo] = useState<Task[]>([]);
   const [done, setDone] = useState<Task[]>([]);
+  // T00719：搁置任务列表（页面最下方独立区块，与待办/已完成隔离；MCP 处理待办时自动忽略）
+  const [shelvedTasks, setShelvedTasks] = useState<Task[]>([]);
+  const [shelvedSort, setShelvedSort] = useState<SortKey>('default');
   // T00566：本地静默清空某任务 ai_state（已读）——不打断列表，不触发全表刷新
   const setTasksStateRead = (id: string) => {
     const clear = (arr: Task[]) => arr.map((x) => (x.id === id && x.ai_state ? { ...x, ai_state: '' } : x));
@@ -282,6 +285,13 @@ export function TasksPage() {
     setTodo((prev) => (replace ? nextTodo : [...prev, ...nextTodo]));
     setDone((prev) => (replace ? nextDone : [...prev, ...nextDone]));
     setHasMore(list.length === PAGE_SIZE);
+    // T00719：搁置列表随同一套查询条件（关键词/分类/优先级）刷新；搁置量通常较少，直接全量拉取（无 offset）
+    try {
+      const ps = new URLSearchParams(p);
+      ps.set('shelved', '1');
+      ps.delete('offset');
+      setShelvedTasks(await api.get<Task[]>(`/tasks?${ps.toString()}`));
+    } catch { /* 搁置列表拉取失败不打断主列表 */ }
   }, [search, catFilter, priorityFilter]);
 
   const loadTasks = useCallback(async (projectId: string) => {
@@ -631,6 +641,14 @@ export function TasksPage() {
     void loadTasks(activeProject);
   }
 
+  /** T00719：搁置 / 恢复——搁置后任务从待办/已完成列表隔离进搁置列表，恢复回到原列表 */
+  async function toggleShelve(task: Task) {
+    await api.post(`/tasks/${task.id}/shelve`, { shelved: !task.shelved });
+    flash(task.shelved ? '任务已恢复到原列表' : '任务已搁置——AI 处理待办时将自动忽略');
+    void loadTasks(activeProject);
+    void loadProjects();
+  }
+
   /** 智能分类（静默）：按标题从候选分类匹配最贴切分类 id；未配工具/未填标题/失败均返回 undefined，不打断创建流程 */
   async function matchCategory(title: string): Promise<{ catId: string; priority?: string } | undefined> {
     if (!organizeToolId || !title.trim() || taskCats.length === 0) return undefined;
@@ -774,7 +792,7 @@ export function TasksPage() {
 
   // ---------- T00457：批量操作（多选后批量改状态/分类/归档，单事务整体回滚） ----------
 
-  function dropTaskReorder(kind: 'todo' | 'done', listIds: string[], targetId: string) {
+  function dropTaskReorder(kind: 'todo' | 'done' | 'shelved', listIds: string[], targetId: string) {
     if (!dragTaskId || dragTaskId === targetId) { setDragTaskId(''); setOverTaskId(''); return; }
     const ids = [...listIds];
     const from = ids.indexOf(dragTaskId);
@@ -1450,6 +1468,13 @@ export function TasksPage() {
         <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
           <FontColorButton current={t.color ?? ''} onApply={(c) => { void api.patch(`/tasks/${t.id}`, { color: c }).then(() => { flash(c ? '字体颜色已应用' : '已恢复默认颜色'); void loadTasks(activeProject); }); }} />
         </span>
+        {/* T00719：搁置/恢复按钮——位于归档按钮之前；搁置后任务进搁置列表（MCP 处理待办自动忽略） */}
+        <button onClick={() => void toggleShelve(t)}
+          title={t.shelved ? '恢复 — 将该任务恢复到待办/已完成列表' : '搁置 — 将该任务移入搁置列表（AI 处理待办时自动忽略）'}
+          aria-label={t.shelved ? '恢复任务' : '搁置任务'}
+          className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
+          {t.shelved ? <RotateCcw size={13} /> : <CirclePause size={13} />}
+        </button>
         <button onClick={() => void archive(t)} title="归档 — 将该任务移入归档" aria-label="归档：将该任务移入归档" className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Archive size={13} /></button>
         {/* 记录时间：与操作按钮同行的最右侧，紧凑格式，创建/编辑并排 */}
         <span style={{ display: 'inline-flex', gap: 10 }}>
@@ -2017,13 +2042,14 @@ export function TasksPage() {
    *  注意：必须用普通函数调用（renderTaskItem(t)）而非组件，否则定义在渲染函数内会每次重渲染都生成新组件类型，
    *  导致整个任务项（含描述/梳理 textarea）反复卸载重建、光标焦点丢失。普通函数把 JSX 内联进父组件树，按位置复用 DOM，焦点稳定。
    *  同理，行内各区块也拆为普通渲染函数调用，保持单函数复杂度可控。 */
-  function renderTaskItem(t: Task, kind: 'todo' | 'done', listIds: string[]) {
+  function renderTaskItem(t: Task, kind: 'todo' | 'done' | 'shelved', listIds: string[]) {
     const draft = drafts[t.id];
     const descDraft = descDrafts[t.id];
     const descEditing = descDraft !== undefined;
     const titleEditing = titleDrafts[t.id] !== undefined;
     // 排序模式与拖拽高亮类名提前算出：避免 className / style 内出现嵌套三元
-    const sortMode = kind === 'todo' ? todoSort : doneSort;
+    // T00719：shelved 列表拖拽重排沿用 manual 排序链路（dropTaskReorder 按列表 id 序写 user_sort）
+    const sortMode = kind === 'todo' ? todoSort : kind === 'shelved' ? shelvedSort : doneSort;
     let dragCls = '';
     if (overTaskId === t.id) dragCls = ' plan-over';
     else if (dragTaskId === t.id) dragCls = ' plan-dragging';
@@ -2436,6 +2462,8 @@ export function TasksPage() {
     };
     const visibleTodo = arrange(sortTasks(todo.filter(matches), todoSort));
     const visibleDone = arrange(sortTasks(done.filter(matches).filter(matchDoneFilter), doneSort));
+    // T00719：搁置列表沿用同一套搜索/分类/优先级过滤（fetchTasks 已按同参拉取），本地再按排序键排序
+    const visibleShelved = arrange(sortTasks(shelvedTasks.filter(matches), shelvedSort));
     return (
       <>
         {batchBar}
@@ -2514,6 +2542,36 @@ export function TasksPage() {
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleDone.map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'done', visibleDone.map((x) => x.id))}</Fragment>)}</ul>
         {visibleDone.length === 0 && (
           <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>暂无已完成任务——完成任务后在此集中查看与验证。</div>
+        )}
+        </>)}
+
+        {/* T00719：搁置任务列表——页面最下方独立区块，与待办/已完成隔离（MCP 处理待办时自动忽略搁置任务）；
+            工具条与查询条件对齐待办/已完成（多选全选 + 排序 + 同一套关键词/分类/优先级过滤） */}
+        {viewMode === 'list' && (<>
+        <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '16px 0 8px' }}>
+          {multiSelect && (
+            <TriCheckbox
+              checked={visibleShelved.length > 0 && visibleShelved.every((t) => selectedIds.has(t.id))}
+              indeterminate={visibleShelved.some((t) => selectedIds.has(t.id))}
+              onChange={(e) => toggleSelectAll(visibleShelved, e.target.checked)}
+              title="全选/全不选搁置列表" label="全选搁置任务"
+              style={{ cursor: 'pointer' }} />
+          )}
+          <h3 style={{ fontSize: 15, margin: 0, color: 'var(--text-secondary)' }}>搁置（{visibleShelved.length}）</h3>
+          <select
+            className="op-hidden"
+            value={shelvedSort}
+            onChange={(e) => setShelvedSort(e.target.value as SortKey)}
+            title="搁置排序 — 按修改时间或优先级排序"
+            aria-label="搁置排序：按修改时间或优先级排序"
+            style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4 }}
+          >
+            {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleShelved.map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'shelved', visibleShelved.map((x) => x.id))}</Fragment>)}</ul>
+        {visibleShelved.length === 0 && (
+          <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>暂无搁置任务——点击任务行的「搁置」按钮（归档按钮前）可把任务移到这里，AI 处理待办时自动忽略。</div>
         )}
         </>)}
       </>

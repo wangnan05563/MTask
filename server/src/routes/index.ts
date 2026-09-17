@@ -89,7 +89,7 @@ api.get('/projects', (req, res) => {
     `SELECT project_id,
             SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) AS todo_count,
             SUM(CASE WHEN verified = 0 THEN 1 ELSE 0 END) AS unverified_count
-     FROM tasks WHERE archived = 0 GROUP BY project_id`,
+     FROM tasks WHERE archived = 0 AND COALESCE(shelved, 0) = 0 GROUP BY project_id`,
   ).all() as Array<{ project_id: string; todo_count: number; unverified_count: number }>;
   // T00505：计划菜单项目下拉统计（按 plan_tasks.status：todo=待开始、doing=进行中、done=已完成）
   const planCounts = getDb().prepare(
@@ -180,7 +180,7 @@ api.delete('/projects/:id', (req, res) => {
 // ---------- 任务 ----------
 // 可选参数：projectId / archived / limit / offset / keyword / categoryId / sort（全部向后兼容，缺省=全量）
 api.get('/tasks', (req, res) => {
-  const { projectId, archived, limit, offset, keyword, categoryId, priority, sort } = req.query;
+  const { projectId, archived, limit, offset, keyword, categoryId, priority, sort, shelved } = req.query;
   // limit 仅接受 1~500 的正整数，非法则忽略（保持全量语义），避免恶意超大分页拖垮查询
   let limitN: number | undefined;
   const limitRaw = Number(limit);
@@ -189,6 +189,8 @@ api.get('/tasks', (req, res) => {
     projectId: projectId as string | undefined,
     archived: archived === '1' || archived === 'true',
     priority: priority as string | undefined,
+    // T00719：shelved=1 时只返回搁置任务（前端搁置列表）；缺省排除搁置任务（默认隔离）
+    shelved: shelved === '1' || shelved === 'true',
     limit: limitN,
     // 肯定形式分支：先处理缺省（undefined），避免否定条件与 else 并存造成误读
     offset: offset === undefined ? undefined : Math.max(0, Math.floor(Number(offset) || 0)),
@@ -253,6 +255,13 @@ api.post('/tasks/move', (req, res) => {
   if (!Array.isArray(taskIds) || !projectId) return res.status(400).json({ error: 'taskIds 数组与 projectId 必填' });
   TaskService.moveProject(taskIds, projectId);
   res.status(204).end();
+});
+
+// T00719：搁置 / 恢复任务——shelved=true 从待办/已完成列表隔离进搁置列表，false 恢复
+api.post('/tasks/:id/shelve', (req, res) => {
+  const { shelved } = req.body ?? {};
+  if (typeof shelved !== 'boolean') return res.status(400).json({ error: 'shelved 布尔值必填' });
+  res.json(TaskService.setShelved(req.params.id, shelved));
 });
 
 // 任务手动排序（T00446）：拖拽后的完整 id 顺序 → user_sort 1..n；列表 sort=manual 时生效

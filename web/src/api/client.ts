@@ -171,6 +171,8 @@ export interface Task {
   derived_from: string | null;
   /** T00589：历史资产时间（非空即已沉淀至历史资产，与归档独立） */
   history_at?: string | null;
+  /** T00719：搁置标记——true 时任务从待办/已完成列表与 MCP 查询隔离，仅出现在搁置列表 */
+  shelved?: boolean;
   /** T00462/T00451：项目计划联动任务——值为来源计划标题（区分徽标+反向引用） */
   fromPlanTitle?: string;
   /** T00446：手动排序权重（拖拽排序结果；manual 排序模式生效） */

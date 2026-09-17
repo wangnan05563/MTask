@@ -34,6 +34,8 @@ export interface TaskRow {
   ai_state_at: string;
   /** T00577：派生单溯源——原任务编号（如 T00422）；处理完成后结论自动整合回原任务 */
   derived_from: string | null;
+  /** T00719：搁置标记（1=已搁置）——搁置任务从待办/已完成列表与 MCP 查询隔离，仅出现在搁置列表 */
+  shelved: number;
   /** T00490：记录字体颜色（Excel 风格颜色按钮），空串=默认色 */
   color: string;
   pinned: number;
@@ -66,6 +68,8 @@ export interface TaskView {
   ai_state_at: string;
   /** T00577：派生单溯源——原任务编号 */
   derived_from: string | null;
+  /** T00719：搁置标记 */
+  shelved: boolean;
   pinned: boolean;
   category_id: string | null;
   /** T00450：父任务 id（两级的 epic→task 层级） */
@@ -109,6 +113,8 @@ export interface TaskListOptions {
   priority?: string;
   /** 状态筛选（待办/已完成）；不传返回该范围内全部状态。供 MCP/AI 按待办/已完成精确拉取，减少返回量 */
   status?: 'todo' | 'done';
+  /** T00719：搁置筛选——不传/false 排除搁置任务（默认隔离，MCP 处理待办自动忽略搁置）；true 只返回搁置任务 */
+  shelved?: boolean;
   /** 分析范围：只返回「待处理 或 未验证(verified=0)」的任务。与 status 互斥（优先 pending）
    *  未验证任务即便已 done，其处理结果可能仍需关联判断，纳入便于 AI 分析上下文 */
   pending?: boolean;
@@ -135,7 +141,7 @@ export function nextTaskNo(): string {
 }
 
 function rowToTask(r: TaskRow, images: TaskImageMeta[] = []): TaskView {
-  return { ...r, verified: Boolean(r.verified), archived: Boolean(r.archived), pinned: Boolean(r.pinned), images };
+  return { ...r, verified: Boolean(r.verified), archived: Boolean(r.archived), pinned: Boolean(r.pinned), shelved: Boolean(r.shelved), images };
 }
 
 /** 待办状态变更后反向同步关联的计划任务（已完成↔已完成，待办→进行中），并按完成比例汇总父任务进度 */
@@ -246,6 +252,10 @@ export const TaskService = {
     values.push(opts.archived ? 1 : 0);
     // T00589：活跃列表排除已入历史资产的内容（历史资产为独立沉淀区，不与活跃/归档混排）
     if (!opts.archived) where.push("COALESCE(history_at, '') = ''");
+    // T00719：搁置隔离——默认活跃列表（含 MCP pending/status 查询）一律排除搁置任务；
+    // 搁置列表（shelved=true）只返回搁置任务；归档列表不过滤（先搁置后归档的任务仍可在归档区找到）
+    if (opts.shelved) where.push('shelved = 1');
+    else if (!opts.archived) where.push('COALESCE(shelved, 0) = 0');
     if (opts.projectId) { where.push('project_id = ?'); values.push(opts.projectId); }
     if (opts.keyword) {
       // 转义 LIKE 通配符（%/_），让搜索词按字面匹配而非被误当通配
@@ -304,7 +314,7 @@ export const TaskService = {
     });
   },
 
-  update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state' | 'ai_state_at' | 'derived_from'>>): TaskView {
+  update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state' | 'ai_state_at' | 'derived_from' | 'shelved'>>): TaskView {
     const db = getDb();
     // better-sqlite3 不支持 boolean 绑定且 SQLite 无布尔型，verified/pinned 先归一整型 0/1 再落库
     if (patch.verified !== undefined) {
@@ -312,6 +322,10 @@ export const TaskService = {
     }
     if (patch.pinned !== undefined) {
       (patch as { pinned: number }).pinned = patch.pinned ? 1 : 0;
+    }
+    // T00719：搁置标记同样归一整型
+    if (patch.shelved !== undefined) {
+      (patch as { shelved: number }).shelved = patch.shelved ? 1 : 0;
     }
     // T00566：ai_state 白名单防御（PATCH 直传路径）——非法值静默忽略
     if (patch.ai_state !== undefined && !['running', 'failed', 'unread', ''].includes(patch.ai_state)) {
@@ -333,6 +347,13 @@ export const TaskService = {
   /** FR5.1 / FR5.3：完成或退回待办 */
   setStatus(id: string, status: 'todo' | 'done'): TaskView {
     return this.update(id, { status });
+  },
+
+  /** T00719：搁置 / 恢复——搁置任务从待办/已完成列表与 MCP 查询隔离（shelved=1），恢复即回到原列表 */
+  setShelved(id: string, shelved: boolean): TaskView {
+    if (!this.getById(id)) throw new Error('任务不存在');
+    // update 的 patch 类型按 TaskRow（number），这里先归一 0/1（update 内 boolean 归一为冗余兜底）
+    return this.update(id, { shelved: shelved ? 1 : 0 });
   },
 
   /**
