@@ -1003,11 +1003,20 @@ export const PlanService = {
       '   ——管理类节点（项目启动/计划/评审/验收等）若确实不直接对应某条需求，reqNos 输出空数组 []，**不要把所有需求都挂上**（关联过宽会让需求跟踪矩阵失去意义）；',
       '3. startDate 一律空串（保存后系统按导入当日并行排布：各行独立取导入日为开始日，不做串行顺延）；status 一律 "todo"；durationDays 缺失默认 1；',
       '4. 只输出 JSON 对象本身，不要任何解释或 Markdown 代码围栏；不虚构文档中没有的内容。',
-      '5. 若文档过长，优先保证**需求提取完整**（宁多勿漏），计划可适度归并。',
+      // T00707：原「宁多勿漏」会把长文档的输出顶到 token 上限而截断（用户实测导入报错），改为规模约束
+      '5. **输出规模控制（必须遵守）**：requirements 最多 40 条、plans 最多 25 条；title ≤30 字、content/description ≤40 字。'
+      + '文档过长时合并同类需求，宁可少几条也必须保证 JSON 完整闭合——输出被截断会导致整个导入失败。',
+    ].join('\n');
+    // T00707：首轮若被截断/解析失败，重试改用精简提示词（压缩到更小规模，确保能完整闭合）
+    const systemCompact = [
+      system,
+      '【精简模式·仅本次重试】上次输出超出长度被截断。本次请大幅压缩：requirements ≤20 条（只输出 reqNo 与 title，content 与 sourceRef 输出空串）、'
+      + 'plans ≤12 条（只输出 title 与 reqNos，description 空串）；标题 ≤20 字。宁可少，也必须输出完整可解析的 JSON 对象。',
     ].join('\n');
     // T00723：JSON 解析失败/输出截断自动重试 1 次，且解析成败计入 ai_usage（ask-json）
     const ai = await AIService.askJson(toolId, system, `【PRD 文档】\n${docText}`, (content) =>
       parseJsonObjectWithRecovery(content, 'AI 未返回有效的 PRD 解析结果（需 JSON 对象），请检查文档内容或更换模型'),
+      undefined, systemCompact,
     );
     if (!ai.ok) throw new Error(`AI 解析失败：${ai.error}`);
     const obj = ai.data as Record<string, unknown>;

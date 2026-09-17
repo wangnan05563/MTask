@@ -234,6 +234,8 @@ export const AIService = {
     user: string,
     parse: (content: string) => T,
     timeoutMs?: number,
+    /** T00707：重试时改用的「精简提示词」——首次输出被截断/解析失败时用它压缩输出规模再试 */
+    retrySystem?: string,
   ): Promise<{ ok: boolean; data?: T; error?: string }> {
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
@@ -243,7 +245,8 @@ export const AIService = {
       const startedAt = Date.now();
       // 重试降 temperature=0：降低输出随机性，提高结构化 JSON 命中率
       const useConfig = attempt === 1 ? effective : { ...effective, temperature: 0 };
-      const res = await adapter.chat(system, user, useConfig);
+      const useSystem = attempt === 1 || !retrySystem ? system : retrySystem;
+      const res = await adapter.chat(useSystem, user, useConfig);
       if (!res.ok || !res.content) {
         lastError = res.error ?? 'AI 返回内容为空';
         recordUsage('ask-json', toolId, config.model, false, startedAt, 0, lastError);
