@@ -935,9 +935,12 @@ export const PlanService = {
       '4. startDate 一律输出空串（保存后由系统按工作日串行排期自动生成）',
       '5. status 一律输出 "todo"',
     ].join('\n');
-    const ai = await AIService.ask(toolId, system, `【需求文档】\n${docText}`);
-    if (!ai.ok || !ai.content) throw new Error(`AI 拆分失败：${ai.error ?? '模型未返回结果'}`);
-    const drafts = parseJsonArrayWithRecovery(ai.content, 'AI 未返回有效的 WBS 数组，请检查文档内容或更换模型');
+    // T00723：JSON 解析失败/输出截断自动重试 1 次，且解析成败计入 ai_usage（ask-json）
+    const ai = await AIService.askJson(toolId, system, `【需求文档】\n${docText}`, (content) =>
+      parseJsonArrayWithRecovery(content, 'AI 未返回有效的 WBS 数组，请检查文档内容或更换模型'),
+    );
+    if (!ai.ok) throw new Error(`AI 拆分失败：${ai.error}`);
+    const drafts = ai.data as unknown[];
     const items: Array<{ title: string; description: string; startDate: string; durationDays: number; assignee: string; status: PlanStatus }> = [];
     for (const r of drafts) {
       if (!r || typeof r !== 'object') continue;
@@ -1002,9 +1005,12 @@ export const PlanService = {
       '4. 只输出 JSON 对象本身，不要任何解释或 Markdown 代码围栏；不虚构文档中没有的内容。',
       '5. 若文档过长，优先保证**需求提取完整**（宁多勿漏），计划可适度归并。',
     ].join('\n');
-    const ai = await AIService.ask(toolId, system, `【PRD 文档】\n${docText}`);
-    if (!ai.ok || !ai.content) throw new Error(`AI 解析失败：${ai.error ?? '模型未返回结果'}`);
-    const obj = parseJsonObjectWithRecovery(ai.content, 'AI 未返回有效的 PRD 解析结果（需 JSON 对象），请检查文档内容或更换模型');
+    // T00723：JSON 解析失败/输出截断自动重试 1 次，且解析成败计入 ai_usage（ask-json）
+    const ai = await AIService.askJson(toolId, system, `【PRD 文档】\n${docText}`, (content) =>
+      parseJsonObjectWithRecovery(content, 'AI 未返回有效的 PRD 解析结果（需 JSON 对象），请检查文档内容或更换模型'),
+    );
+    if (!ai.ok) throw new Error(`AI 解析失败：${ai.error}`);
+    const obj = ai.data as Record<string, unknown>;
     const rawReqs = Array.isArray(obj.requirements) ? obj.requirements : [];
     const requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }> = [];
     const seenNo = new Set<string>();

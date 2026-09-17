@@ -223,6 +223,45 @@ export const AIService = {
   },
 
   /**
+   * T00723：要求 JSON 输出的 ask——把「解析是否成功」纳入调用成败判定与 ai_usage 记录，
+   * 并对失败（输出截断 / 内容为空 / JSON 解析失败）自动重试 1 次（重试降 temperature=0）。
+   * parse 抛错即视为本次输出无效。返回 { ok, data, error }；失败时 error 末尾注明已重试。
+   * 供 aiParsePrd / aiParseWbs 等结构化解析场景使用（普通对话仍走 ask）。
+   */
+  async askJson<T>(
+    toolId: string,
+    system: string,
+    user: string,
+    parse: (content: string) => T,
+    timeoutMs?: number,
+  ): Promise<{ ok: boolean; data?: T; error?: string }> {
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    const effective = timeoutMs == null ? config : { ...config, timeoutMs };
+    let lastError = '';
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const startedAt = Date.now();
+      // 重试降 temperature=0：降低输出随机性，提高结构化 JSON 命中率
+      const useConfig = attempt === 1 ? effective : { ...effective, temperature: 0 };
+      const res = await adapter.chat(system, user, useConfig);
+      if (!res.ok || !res.content) {
+        lastError = res.error ?? 'AI 返回内容为空';
+        recordUsage('ask-json', toolId, config.model, false, startedAt, 0, lastError);
+        continue;
+      }
+      try {
+        const data = parse(res.content);
+        recordUsage('ask-json', toolId, config.model, true, startedAt, res.content.length);
+        return { ok: true, data };
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : String(e);
+        recordUsage('ask-json', toolId, config.model, false, startedAt, res.content.length, `JSON 解析失败：${lastError.slice(0, 200)}`);
+      }
+    }
+    return { ok: false, error: `${lastError}（已自动重试 1 次）` };
+  },
+
+  /**
    * 流式通用单轮对话：逐文本增量回调（供 AI 周报 SSE 实时透传），收敛后返回完整结果。
    * 供 ReportService 在生成过程中将洞察内容逐步推送给前端控制台。
    */
