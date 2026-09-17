@@ -68,26 +68,66 @@ function applyPlanSheetStyle(ws: ExcelJS.Worksheet, centerKeys: string[]): void 
  * 大文档拆分时输出可能被 max_tokens 截断（JSON 未闭合），此时退化到
  * 「最后一个完整对象 + ]」补全重试，尽量抢救已生成的大部分条目。
  */
+/** T00652+：扫描文本中所有**顶层 {...} 对象**（括号配平，跳过字符串与转义）。
+ *  兼容大模型 JSON 瑕疵：数组元素间缺逗号、NDJSON、夹杂说明文字、尾部截断。 */
+function extractTopLevelObjects(text: string): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  let depth = 0;
+  let startIdx = -1;
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === String.fromCharCode(92)) esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{') {
+      if (depth === 0) startIdx = i;
+      depth += 1;
+      continue;
+    }
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0 && startIdx >= 0) {
+        try {
+          const o = JSON.parse(text.slice(startIdx, i + 1)) as unknown;
+          if (o && typeof o === 'object' && !Array.isArray(o)) out.push(o as Record<string, unknown>);
+        } catch { /* 跳过损坏对象 */ }
+        startIdx = -1;
+      }
+      if (depth < 0) depth = 0;
+    }
+  }
+  return out;
+}
+
 function parseJsonArrayWithRecovery(text: string, notFoundMsg: string): unknown[] {
   const bare = text.replaceAll(/```json/gi, '').replaceAll(/```/gi, '').trim();
   const start = bare.indexOf('[');
   if (start === -1) throw new Error(notFoundMsg);
   const end = bare.lastIndexOf(']');
-  let arr: unknown;
   try {
-    arr = JSON.parse(bare.slice(start, end > start ? end + 1 : start + 1));
+    const arr: unknown = JSON.parse(bare.slice(start, end > start ? end + 1 : start + 1));
+    if (Array.isArray(arr)) return arr;
   } catch {
     // 截断恢复：JSON.parse 完整数组失败，尝试到「最后一个 }」为止补 ]
     const lastObj = bare.lastIndexOf('}');
-    if (lastObj <= start) throw new Error(notFoundMsg);
-    try {
-      arr = JSON.parse(bare.slice(start, lastObj + 1) + ']');
-    } catch {
-      throw new Error(notFoundMsg);
+    if (lastObj > start) {
+      try {
+        const arr: unknown = JSON.parse(bare.slice(start, lastObj + 1) + ']');
+        if (Array.isArray(arr)) return arr;
+      } catch { /* 落到对象扫描回退 */ }
     }
   }
-  if (!Array.isArray(arr)) throw new Error(notFoundMsg);
-  return arr;
+  // T00652+ 回退：逐对象扫描——模型常在数组元素间**漏写逗号**（整体 parse 必失败），
+  // 逐对象提取可完整救回（原实现直接抛错，导致「有结论却无数据」）
+  const objs = extractTopLevelObjects(bare);
+  if (objs.length > 0) return objs;
+  throw new Error(notFoundMsg);
 }
 
 /** T00662：对象型 JSON 恢复解析（PRD 解析返回 {requirements, plans}）——剥离围栏、截断续补 */

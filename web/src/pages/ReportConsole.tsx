@@ -291,14 +291,65 @@ interface CleanRow {
  * 兼容 ```json 代码围栏与裸 JSON 数组：先剥围栏，再取首个 '[' 到末尾 ']' 之间解析；
  * 逐组校验 keep 非空且 merge 非空（AI 输出不可靠，宁缺毋滥）。
  */
+/**
+ * 扫描文本中所有**顶层 {...} 对象**（括号配平，正确跳过字符串与转义）。
+ * 用于兼容大模型常见的 JSON 格式瑕疵：数组元素间缺逗号、NDJSON（每行一个对象）、
+ * 结果中夹杂说明文字、末尾对象被截断（自动丢弃不完整者）——比整体 JSON.parse 鲁棒得多。
+ */
+function extractTopLevelObjects(text: string): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  let depth = 0;
+  let startIdx = -1;
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === String.fromCharCode(92)) esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{') {
+      if (depth === 0) startIdx = i;
+      depth += 1;
+      continue;
+    }
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0 && startIdx >= 0) {
+        try {
+          const o = JSON.parse(text.slice(startIdx, i + 1)) as unknown;
+          if (o && typeof o === 'object' && !Array.isArray(o)) out.push(o as Record<string, unknown>);
+        } catch { /* 跳过损坏对象，继续扫描后续 */ }
+        startIdx = -1;
+      }
+      if (depth < 0) depth = 0;
+    }
+  }
+  return out;
+}
+
+/**
+ * 解析 AI 结论中的「合并分组」。
+ * ① 快路径：整段含合法 JSON 数组 → 直接使用；
+ * ② 回退：逐对象扫描（兼容**数组元素间缺逗号**、NDJSON、夹杂说明文本、尾部截断）——
+ *    T00652 修复：模型输出常缺元素间逗号，原实现整体 parse 失败后静默返回空数组，
+ *    导致「控制台有结论、点击执行清洗弹窗却无数据」。
+ */
 function parseCleanGroups(md: string): CleanRow[] {
   const bare = md.replaceAll(/```json/gi, '').replaceAll(/```/gi, '').trim();
+  let arr: unknown[] | null = null;
   const start = bare.indexOf('[');
   const end = bare.lastIndexOf(']');
-  if (start === -1 || end <= start) return [];
-  let arr: unknown;
-  try { arr = JSON.parse(bare.slice(start, end + 1)); } catch { return []; }
-  if (!Array.isArray(arr)) return [];
+  if (start !== -1 && end > start) {
+    try {
+      const parsed = JSON.parse(bare.slice(start, end + 1)) as unknown;
+      if (Array.isArray(parsed)) arr = parsed;
+    } catch { arr = null; }
+  }
+  if (!arr) arr = extractTopLevelObjects(bare);
   const out: CleanRow[] = [];
   for (const r of arr) {
     if (!r || typeof r !== 'object') continue;
