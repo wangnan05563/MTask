@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { ArrowUpDown, CalendarRange, Check, Compass, FileSpreadsheet, Link2, Table2, X } from 'lucide-react';
+import { ArrowUpDown, CalendarRange, Compass, FileSpreadsheet, Link2, Table2 } from 'lucide-react';
+import { PageGuideDialog, type GuideStep } from './PageGuide'; // T00706：向导弹窗壳抽取为通用组件，本文件只保留项目管理内容
 
 /** T00665：项目管理向导已读状态（localStorage——清除浏览器缓存后自动恢复初始引导） */
 export const GUIDE_SEEN_KEY = 'mtask.projectGuide.seen';
@@ -190,84 +190,21 @@ function StepDemo({ kind }: { readonly kind: Step['demo'] }) {
  * T00665：项目管理菜单向导引导弹窗。
  * - 首次进入项目管理模块自动弹出（由调用方依据 hasSeenProjectGuide 判定）；
  * - 右上角常驻向导按钮可随时重新唤起；
- * - 「开始体验」/「跳过」均记录已看状态（localStorage，清缓存后恢复初始引导）；
+ * - 「开始体验」/「跳过」均由调用方记录已看状态（localStorage，清缓存后恢复初始引导）；
  * - 每步内嵌轻量 CSS 演示动画（可复用演示素材，无需录屏）；
- * - 移动端：宽度 min(560px, 92vw)、内容可滚动、按钮可换行。
+ * - T00706：弹窗壳（步骤指示/翻页/跳过）委托给通用 PageGuideDialog，本文件只保留步骤内容。
  */
+export const PROJECT_GUIDE_STEPS: GuideStep[] = STEPS.map((s) => ({
+  title: s.title,
+  icon: s.icon,
+  desc: s.desc,
+  points: s.points,
+  visual: <StepDemo kind={s.demo} />,
+}));
+
 export function ProjectGuideDialog({ open, onClose }: {
   readonly open: boolean;
   readonly onClose: () => void;
 }) {
-  const [step, setStep] = useState(0);
-  useEffect(() => { if (open) setStep(0); }, [open]);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
-
-  if (!open) return null;
-  const cur = STEPS[step];
-  const Icon = cur.icon;
-  const last = step === STEPS.length - 1;
-  const finish = () => { markProjectGuideSeen(); onClose(); };
-
-  return (
-    <div /* NOSONAR - 遮罩点击为鼠标便捷关闭，关闭按钮提供键盘可达通路 */
-      style={{ position: 'fixed', inset: 0, background: 'var(--overlay, rgba(0,0,0,.45))', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12 }}
-      onClick={(e) => { if (e.target === e.currentTarget) finish(); }}>
-      <div role="dialog" aria-modal="true" aria-label="项目管理向导"
-        style={{ background: 'var(--card-bg)', borderRadius: 10, width: 'min(560px, 92vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 12px 40px rgba(0,0,0,.22)' }}>
-        {/* 头部 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
-          <Compass size={16} style={{ color: 'var(--accent)' }} />
-          <strong style={{ fontSize: 14 }}>项目管理 · 使用向导</strong>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{step + 1} / {STEPS.length}</span>
-          <span style={{ flex: 1 }} />
-          <button onClick={finish} title="关闭向导（不再自动弹出）" aria-label="关闭向导"
-            style={{ display: 'inline-flex', alignItems: 'center', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', padding: '2px 6px' }}>
-            <X size={13} />
-          </button>
-        </div>
-
-        {/* 步骤指示 */}
-        <div style={{ display: 'flex', gap: 4, padding: '8px 14px 0' }}>
-          {STEPS.map((s, i) => (
-            <button key={s.title} onClick={() => setStep(i)} title={s.title} aria-label={`第 ${i + 1} 步：${s.title}`}
-              style={{ flex: 1, height: 4, border: 'none', borderRadius: 2, cursor: 'pointer', background: i <= step ? 'var(--accent)' : 'var(--border-strong)', transition: 'background .2s ease' }} />
-          ))}
-        </div>
-
-        {/* 内容 */}
-        <div style={{ padding: 14, overflowY: 'auto' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-            <Icon size={16} style={{ color: 'var(--accent)' }} />
-            <strong style={{ fontSize: 14 }}>{cur.title}</strong>
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10 }}>{cur.desc}</div>
-          <ul style={{ margin: '0 0 12px', paddingLeft: 18, fontSize: 12, color: 'var(--text)' }}>
-            {cur.points.map((p) => <li key={p} style={{ marginBottom: 4 }}>{p}</li>)}
-          </ul>
-          <StepDemo kind={cur.demo} />
-        </div>
-
-        {/* 底部操作 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderTop: '1px solid var(--border)', flexWrap: 'wrap' }}>
-          <button onClick={finish} title="跳过向导（记录已看状态，不再自动弹出）" aria-label="跳过向导"
-            style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text-muted)', fontSize: 12 }}>跳过</button>
-          <span style={{ flex: 1 }} />
-          <button onClick={() => setStep((s) => Math.max(0, s - 1))} disabled={step === 0} className="tbtn-anim"
-            style={{ padding: '5px 12px', borderRadius: 6, cursor: step === 0 ? 'default' : 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12, opacity: step === 0 ? .5 : 1 }}>上一步</button>
-          {last
-            ? <button onClick={finish} className="tbtn-anim" title="开始体验 — 关闭向导并记住已看过" aria-label="开始体验"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12 }}>
-              <Check size={13} /> 开始体验
-            </button>
-            : <button onClick={() => setStep((s) => Math.min(STEPS.length - 1, s + 1))} className="tbtn-anim"
-              style={{ padding: '5px 14px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12 }}>下一步</button>}
-        </div>
-      </div>
-    </div>
-  );
+  return <PageGuideDialog open={open} onClose={onClose} title="项目管理 · 使用向导" steps={PROJECT_GUIDE_STEPS} />;
 }

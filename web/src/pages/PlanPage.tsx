@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, ArrowUpDown, CalendarPlus, Check, CheckSquare, Compass, Download, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Sparkles, Table2, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { ReqMatrixPanel } from './ReqMatrixPanel'; // T00662：需求跟踪矩阵
-import { ProjectGuideDialog, hasSeenProjectGuide } from './ProjectGuide'; // T00665：项目管理向导
+import { ProjectGuideDialog, hasSeenProjectGuide, markProjectGuideSeen } from './ProjectGuide'; // T00665：项目管理向导（T00706：已看状态改由调用方在关闭时记录）
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin, reorderProjects, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
@@ -1055,7 +1055,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
 
       {/* 计划表格：串行瀑布，起止由服务端按工作日推算 */}
       {/* T00665：项目管理使用向导（首次自动弹出 / 右上角常驻按钮唤起） */}
-      <ProjectGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} />
+      <ProjectGuideDialog open={guideOpen} onClose={() => { markProjectGuideSeen(); setGuideOpen(false); }} />
 
       {/* T00662：需求跟踪矩阵面板（甘特按钮旁入口展开） */}
       {showMatrix && projectId && <ReqMatrixPanel projectId={projectId} onClose={() => setShowMatrix(false)} />}

@@ -13,7 +13,9 @@ import { MarkdownStyles } from './ui/Markdown';
 import { CommandPalette } from './pages/CommandPalette';
 import { SettingsProvider } from './settings';
 import { MobileShell } from './mobile/MobileShell';
-import { Boxes, CalendarRange, Lightbulb, ListOrdered, ListTodo, ScrollText, Settings, Sparkles, type LucideIcon, History } from 'lucide-react';
+import { Boxes, CalendarRange, Compass, Lightbulb, ListOrdered, ListTodo, ScrollText, Settings, Sparkles, type LucideIcon, History } from 'lucide-react';
+import { PageGuideDialog, hasSeenGuide, markGuideSeen } from './pages/PageGuide'; // T00706：通用使用向导
+import { GUIDES } from './pages/guides'; // T00706：各菜单向导内容配置
 
 // T00441：日志/归档入口从顶部菜单移入「设置」（内网穿透下方），顶部菜单收敛为高频功能
 type Tab = 'tasks' | 'aitools' | 'prompts' | 'req' | 'plan' | 'queue' | 'report' | 'history' | 'settings';
@@ -36,6 +38,11 @@ function Shell() {
   const [serverOk, setServerOk] = useState<boolean | null>(null);
   // T00443 / PRD UX-4：全局命令面板（T00560：快捷键 Ctrl+F）
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // T00706：全菜单使用向导——当前菜单首次进入自动弹出，导航右侧常驻「向导」按钮随时唤起
+  const guide = GUIDES[tab];
+  const [guideOpen, setGuideOpen] = useState(false);
+  const closeGuide = () => { if (guide) markGuideSeen(guide.seenKey); setGuideOpen(false); };
+  useEffect(() => { if (guide && !hasSeenGuide(guide.seenKey)) setGuideOpen(true); }, [guide]);
   // T00443 / PRD UX-4：Ctrl+F 唤起/关闭命令面板（T00560：由 Ctrl+K 调整为更符合操作习惯的 Ctrl+F）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -181,6 +188,19 @@ function Shell() {
         >
           {statusText}
         </span>
+        {/* T00706：常驻「向导」按钮（菜单行最右）——参考项目管理向导（T00665），呼吸动画吸引注意 */}
+        {guide && (
+          <button
+            className="task-breathe"
+            onClick={() => setGuideOpen(true)}
+            title={`使用向导 — 查看「${guide.title.split(' · ')[0]}」菜单各功能的使用说明与要点`}
+            aria-label="打开当前菜单使用向导"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 10px', marginLeft: 10, borderRadius: 6, cursor: 'pointer', border: '1px solid var(--accent)', background: 'var(--card-bg)', color: 'var(--accent)' }}
+          >
+            <Compass size={15} />
+            向导
+          </button>
+        )}
       </nav>
 
       {tab === 'tasks' && <TasksPage />}
@@ -193,6 +213,9 @@ function Shell() {
       {tab === 'history' && <HistoryPage />}
       {/* T00441：日志/归档入口移至「设置」页（内网穿透下方） */}
       {tab === 'settings' && <SettingsPage />}
+
+      {/* T00706：当前菜单的使用向导弹窗（首次进入自动弹出 / 导航右侧按钮唤起） */}
+      {guide && <PageGuideDialog open={guideOpen} onClose={closeGuide} title={guide.title} steps={guide.steps} />}
     </div>
   );
 }
