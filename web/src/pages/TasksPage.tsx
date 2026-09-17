@@ -2266,7 +2266,8 @@ export function TasksPage() {
         {renderViewToggle()}
         {renderMultiSelectButton()}
         {/* T00481/T00720/T00728：全部收起/展开——描述、AI 摘要、处理结果三组折叠状态联动，覆盖待办+已完成全部列表；
-            T00728：收起为高频操作优先——有展开内容时点击一律收起，全部收起后点击才展开 */}
+            T00728：收起为高频操作优先——有展开内容时点击一律收起，全部收起后点击才展开；
+            T00728 二轮（用户反馈）：按钮去掉中文名字，仅保留图标简化显示（语义由 title/aria 承载） */}
         <button className="tbtn-anim" onClick={() => {
           const all = [...todo, ...done];
           const ids = all.map((t) => t.id);
@@ -2282,12 +2283,12 @@ export function TasksPage() {
             setResultOpen(Object.fromEntries(resultIds.map((id) => [id, true])));
           }
         }} title="全部收起/展开 — 收起为高频操作优先：有展开内容时点击收起，全部收起后点击展开" aria-label="全部收起或展开任务详情"
-          style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}>
+          style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}>
           {(() => {
             const ids = [...todo, ...done];
             const hasExpanded = ids.some((t) => descExpanded[t.id] || summaryExpanded[t.id] || resultOpen[t.id]);
             // 图标指示下一步动作：有展开内容 → 将收起（折叠图标）；全部收起 → 将展开（展开图标）
-            return <>{hasExpanded ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />}<span>全部收起/展开</span></>;
+            return hasExpanded ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />;
           })()}
         </button>
         <label className="task-op" title="导入数据 — CSV/JSON（JSON 支持 Trello 导出与 JSON 数组），预览确认后入库"
