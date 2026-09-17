@@ -2,7 +2,7 @@ import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, Models
 import { withTimeout, formatHttpError, normalizeModels, readStreamLines } from './netutil';
 
 interface ChatCompletionResp {
-  choices?: { message?: { content?: string } }[];
+  choices?: { message?: { content?: string }; finish_reason?: string }[];
   error?: { message?: string };
 }
 
@@ -96,8 +96,15 @@ export class OpenAICompatAdapter implements AIAdapter {
       if (!res.ok || data.error) {
         return { ok: false, error: data.error?.message ?? `HTTP ${res.status}` };
       }
-      const content = data.choices?.[0]?.message?.content;
+      const choice = data.choices?.[0];
+      const content = choice?.message?.content;
       if (!content) return { ok: false, error: 'AI 返回内容为空' };
+      // T00714（D-6 修复）：输出被 token 上限截断（finish_reason=length）时显式报错——
+      // 不再把残缺输出静默交给上层做 JSON 解析（曾表现为「AI 未返回有效的 PRD 解析结果」误导排障）；
+      // 记 ok=false 进 ai_usage，错误文案可区分「输出被截断」与「模型不行」
+      if (choice?.finish_reason === 'length') {
+        return { ok: false, error: `AI 输出超长被截断（finish_reason=length，已输出 ${content.length} 字符）——请精简文档内容或分块解析后重试` };
+      }
       return { ok: true, content };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
