@@ -53,6 +53,7 @@ export class WorkBuddyAdapter implements AIAdapter {
       `【任务】${context.title}`,
       context.description ? `【描述】${context.description}` : '',
       context.aiSummary ? `【AI 梳理摘要】${context.aiSummary}` : '',
+      context.prdContext ? `【PRD 需求上下文】${context.prdContext}` : '', // T00763
     ].filter(Boolean).join('\n');
     return this.post({ action: 'send', jobId: context.taskId, taskTitle: context.title, user }, config);
   }
@@ -75,6 +76,7 @@ export class WorkBuddyAdapter implements AIAdapter {
       `【任务】${context.title}`,
       context.description ? `【描述】${context.description}` : '',
       context.aiSummary ? `【AI 梳理摘要】${context.aiSummary}` : '',
+      context.prdContext ? `【PRD 需求上下文】${context.prdContext}` : '', // T00763
     ].filter(Boolean).join('\n');
     const body = { action: 'send_submit', jobId: context.taskId, taskTitle: context.title, user };
     try {

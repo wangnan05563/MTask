@@ -214,6 +214,18 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       updated_at  TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_prd_req_project ON prd_requirements(project_id, sort_order);
+
+    -- T00763：PRD 原文文档——导入时完整保留 Markdown 原文（不截断不丢内容），
+    -- 需求行经 prd_requirements.prd_id 关联到文档；矩阵面板可弹窗查看，AI 上下文可反查注入
+    CREATE TABLE IF NOT EXISTS prd_docs (
+      id          TEXT PRIMARY KEY,
+      project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      filename    TEXT DEFAULT '',
+      content_md  TEXT NOT NULL,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_prd_docs_project ON prd_docs(project_id);
     -- 任务列表批量反查「计划联动」来源（plan_tasks.linked_task_id IN (...)：无索引时全表扫描）
     CREATE INDEX IF NOT EXISTS idx_plan_tasks_linked ON plan_tasks(linked_task_id);
 
@@ -284,6 +296,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // T00662：需求跟踪矩阵关联——计划/待办以 JSON 数组保存关联的需求 id（多对多）
   ensureColumn('plan_tasks', 'req_ids', 'req_ids TEXT');
   ensureColumn('tasks', 'req_ids', 'req_ids TEXT');
+  // T00763：需求行关联的 PRD 文档 id（导入时若携带 PRD 原文则回填，供矩阵查看与 AI 上下文反查）
+  ensureColumn('prd_requirements', 'prd_id', 'prd_id TEXT');
   // T00589 二轮：**项目级快照**——projects.history_at 非空即整个项目已沉淀为历史资产快照
   // （该项目在任务/计划菜单的项目列表中不再出现，内容随项目快照整体恢复或归档）
   ensureColumn('projects', 'history_at', 'history_at TEXT');

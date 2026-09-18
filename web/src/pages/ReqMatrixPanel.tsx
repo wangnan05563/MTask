@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
-import { Check, ChevronDown, ChevronUp, Link2, Loader2, Plus, RefreshCw, Table2, Trash2, X } from 'lucide-react'; // T00765：标题点击查询详情
+import { MarkdownContent } from '../ui/Markdown'; // T00763：PRD 原文 Markdown 渲染弹窗
+import { Check, ChevronDown, ChevronUp, FileText, Link2, Loader2, Plus, RefreshCw, Table2, Trash2, X } from 'lucide-react'; // T00765：标题点击查询详情；T00763：查看PRD
 
 /** 矩阵行：需求 + 其关联的计划与待办（T00662） */
 interface MatrixReq {
@@ -13,6 +14,8 @@ interface MatrixReq {
   source_ref: string;
   priority: string;
   status: string;
+  /** T00763：需求关联的 PRD 原文文档摘要（null=该需求未挂 PRD） */
+  prdDoc: { id: string; filename: string } | null;
   linkedPlans: Array<{ id: string; title: string; status: string }>;
   linkedTasks: Array<{ id: string; taskNo: string | null; title: string; status: string; verified: boolean }>;
 }
@@ -41,7 +44,20 @@ export function ReqMatrixPanel({ projectId, onClose }: {
   const [linkFor, setLinkFor] = useState<string>('');       // 正在调整关联的需求 id
   const [linkKind, setLinkKind] = useState<'plan' | 'task'>('plan');
   const [queryId, setQueryId] = useState<string>(''); // T00765：正在查看详情的需求 id（点击标题旁 chevron 切换）
+  const [prdModal, setPrdModal] = useState<{ filename: string; content: string } | null | undefined>(undefined); // T00763：undefined=关闭，null=加载中，对象=展示中
   const [newTitle, setNewTitle] = useState('');
+
+  /** T00763：查看 PRD 原文——拉取完整 Markdown 后弹窗渲染 */
+  async function openPrd(doc: { id: string; filename: string }) {
+    setPrdModal(null); // null = 加载中
+    try {
+      const d = await api.get<{ filename: string; content_md: string }>(`/plans/prd-docs/${doc.id}`);
+      setPrdModal({ filename: d.filename || doc.filename || '未命名 PRD', content: d.content_md });
+    } catch (e) {
+      setPrdModal(undefined);
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
 
@@ -170,6 +186,17 @@ export function ReqMatrixPanel({ projectId, onClose }: {
                         <div style={{ marginTop: 4, padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface-2)', fontSize: 11, color: 'var(--text)' }}>
                           <div style={{ whiteSpace: 'pre-wrap' }}>{r.content ? r.content : '（无内容）'}</div>
                           <div style={{ marginTop: 4, color: 'var(--text-muted)' }}>来源：{r.source_ref || '—'} · 优先级：{r.priority || 'normal'} · 状态：{r.status || 'todo'}</div>
+                          {/* T00763：需求关联了 PRD 原文文档 → 提供弹窗查看完整 Markdown */}
+                          {r.prdDoc && (
+                            <div style={{ marginTop: 6 }}>
+                              <button onClick={() => void openPrd(r.prdDoc!)} className="tbtn-anim"
+                                title={`查看 PRD 原文：${r.prdDoc.filename || '未命名'}`}
+                                aria-label={`查看需求 ${r.title} 关联的 PRD 原文`}
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, border: '1px solid var(--accent)', borderRadius: 5, background: 'transparent', color: 'var(--accent)', cursor: 'pointer', padding: '2px 8px' }}>
+                                <FileText size={11} /> 查看PRD
+                              </button>
+                            </div>
+                          )}
                         </div>
                       )}
                     </td>
@@ -261,6 +288,32 @@ export function ReqMatrixPanel({ projectId, onClose }: {
               </div>
             );
           })()}
+        </div>
+      )}
+      {/* T00763：PRD 原文弹窗——模态覆盖层，Markdown 渲染 + 滚动查看长文档 */}
+      {prdModal !== undefined && (
+        <div onClick={() => setPrdModal(undefined)}
+          role="dialog" aria-modal="true" aria-label={`PRD 原文：${prdModal === null ? '加载中' : prdModal.filename}`}
+          style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ width: 'min(860px, 100%)', maxHeight: '82vh', display: 'flex', flexDirection: 'column', background: 'var(--card-bg)', color: 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 12px 40px rgba(0,0,0,0.25)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+              <FileText size={15} style={{ color: 'var(--accent)' }} />
+              <strong style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                PRD 原文：{prdModal === null ? '加载中…' : prdModal.filename}
+              </strong>
+              <span style={{ flex: 1 }} />
+              <button onClick={() => setPrdModal(undefined)} className="tbtn-anim" title="关闭" aria-label="关闭 PRD 原文弹窗"
+                style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', padding: '3px 6px' }}>
+                <X size={13} />
+              </button>
+            </div>
+            <div style={{ padding: '12px 16px', overflowY: 'auto', fontSize: 13 }}>
+              {prdModal === null
+                ? <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)' }}><Loader2 size={14} className="aispin" /> 加载 PRD 原文…</div>
+                : <MarkdownContent content={prdModal.content} />}
+            </div>
+          </div>
         </div>
       )}
     </div>

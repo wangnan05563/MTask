@@ -1,6 +1,7 @@
 import { Router, raw } from 'express';
 import { PlanService } from '../services/PlanService';
 import { AIService } from '../services/AIService';
+import { resolvePrdContext } from '../util/prdContext'; // T00763：计划关联 PRD → 评估上下文
 
 /**
  * 项目计划路由（T00431，菜单位于周报前）。
@@ -163,6 +164,23 @@ planApi.post('/import-prd', (req, res) => {
     requirements: Array.isArray(b.requirements) ? b.requirements as Parameters<typeof PlanService.importPrd>[1]['requirements'] : undefined,
     plans: Array.isArray(b.plans) ? b.plans as Parameters<typeof PlanService.importPrd>[1]['plans'] : undefined,
     createTasks: b.createTasks === true,
+    prdMd: typeof b.prdMd === 'string' ? b.prdMd : undefined, // T00763：PRD Markdown 原文完整落库
+    prdFilename: typeof b.prdFilename === 'string' ? b.prdFilename : undefined,
+  }));
+});
+
+// ---------- T00763：PRD 原文文档（查看 / 反向更新） ----------
+
+planApi.get('/prd-docs', (req, res) => wrap(res, () => PlanService.listPrdDocs(pid(req))));
+
+planApi.get('/prd-docs/:id', (req, res) => wrap(res, () => PlanService.getPrdDoc(req.params.id)));
+
+/** 反向更新 PRD 原文（全量覆盖）：AI 修订或用户编辑后的完整 Markdown 回写 */
+planApi.put('/prd-docs/:id', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  wrap(res, () => PlanService.updatePrdDoc(req.params.id, {
+    contentMd: typeof b.contentMd === 'string' ? b.contentMd : undefined,
+    filename: typeof b.filename === 'string' ? b.filename : undefined,
   }));
 });
 
@@ -289,6 +307,8 @@ planApi.post('/ai-evaluate', async (req, res) => {
     const id = typeof it.id === 'string' ? it.id : '';
     const title = typeof it.title === 'string' ? it.title : '';
     if (!id || !title) { results.push({ id, ok: false, error: 'id/title 必填' }); continue; }
+    // T00763：计划条目关联了 PRD 时自动加载原文作为评估上下文（评估依据可追溯至 PRD 条目）
+    const prd = resolvePrdContext({ planId: id });
     const r = await AIService.evaluatePlan(
       {
         title,
@@ -297,6 +317,7 @@ planApi.post('/ai-evaluate', async (req, res) => {
         assignee: typeof it.assignee === 'string' ? it.assignee : null,
       },
       toolId,
+      prd ? `PRD 文档《${prd.filename || '未命名'}》相关原文：\n${prd.content}` : undefined,
     );
     results.push({ id, ok: r.ok, evaluation: r.evaluation, error: r.error });
   }

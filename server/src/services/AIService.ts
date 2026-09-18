@@ -5,6 +5,7 @@ import { TaskService } from './TaskService';
 import { logService } from './LogService';
 import { v4 as uuid } from 'uuid';
 import { getAdapter } from '../adapters';
+import { resolvePrdContext } from '../util/prdContext'; // T00763：任务关联 PRD → AI 上下文自动注入（util 独立避免循环依赖）
 import type { StreamResult, SubmitResult, PollResult } from '../adapters/types';
 
 /** 模型未配置时的统一提示，保持与产品语境一致的表达 */
@@ -97,12 +98,15 @@ export const AIService = {
       const task = TaskService.getById(taskId);
       if (!task) continue;
       const project = db.prepare('SELECT name FROM projects WHERE id = ?').get(task.project_id) as { name: string } | undefined;
+      // T00763：任务关联了 PRD（req_ids → prd_requirements.prd_id）时自动加载原文作为上下文注入
+      const prd = resolvePrdContext({ taskId });
       const result = await adapter.send(
         {
           taskId: task.id,
           title: task.title,
           description: task.description,
           projectName: project?.name ?? '',
+          prdContext: prd ? `PRD 文档《${prd.filename || '未命名'}》相关原文：\n${prd.content}` : undefined,
         },
         config,
       );
@@ -321,9 +325,11 @@ export const AIService = {
   },
 
   /** T00472：计划条目 AI 评估——输出简短评估（可行性/工期合理性/风险与建议），≤60 字 */
+  /** T00763：可选 prdContext——计划关联 PRD 时自动注入，评估依据可追溯至 PRD 条目 */
   async evaluatePlan(
     plan: { title: string; duration_days: number; progress: number; assignee?: string | null },
     toolId: string,
+    prdContext?: string,
   ): Promise<{ ok: boolean; evaluation?: string; error?: string }> {
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
@@ -333,7 +339,7 @@ export const AIService = {
     const user = `任务：${plan.title}
 工期（工作日）：${plan.duration_days}
 进度：${plan.progress}%
-负责人：${plan.assignee || '未指派'}`;
+负责人：${plan.assignee || '未指派'}${prdContext ? `\n\n【PRD 需求上下文（评估依据）】\n${prdContext}` : ''}`;
     const res = await adapter.chat(system, user, config);
     if (!res.ok) { recordUsage('plan-evaluate', toolId, config.model, false, startedAt, 0, res.error); return { ok: false, error: res.error }; }
     recordUsage('plan-evaluate', toolId, config.model, true, startedAt, res.content?.length ?? 0);
@@ -350,12 +356,15 @@ export const AIService = {
       const task = TaskService.getById(job.task_id);
       if (!task) return { ok: false, error: '任务不存在' };
       const project = db.prepare('SELECT name FROM projects WHERE id = ?').get(task.project_id) as { name: string } | undefined;
+      // T00763：队列发送同样自动携带关联 PRD 上下文
+      const prd = resolvePrdContext({ taskId: task.id });
       const context = {
         taskId: task.id,
         title: task.title,
         description: task.description,
         aiSummary: task.ai_summary ?? undefined,
         projectName: project?.name ?? '',
+        prdContext: prd ? `PRD 文档《${prd.filename || '未命名'}》相关原文：\n${prd.content}` : undefined,
       };
       // 发送前固化上下文快照（FR4.4）
       db.prepare('UPDATE queue_jobs SET request_payload = ? WHERE id = ?')
@@ -372,12 +381,15 @@ export const AIService = {
       const task = TaskService.getById(job.task_id);
       if (!task) return { ok: false, error: '任务不存在' };
       const project = db.prepare('SELECT name FROM projects WHERE id = ?').get(task.project_id) as { name: string } | undefined;
+      // T00763：异步提交同样自动携带关联 PRD 上下文
+      const prd = resolvePrdContext({ taskId: task.id });
       const context = {
         taskId: task.id,
         title: task.title,
         description: task.description,
         aiSummary: task.ai_summary ?? undefined,
         projectName: project?.name ?? '',
+        prdContext: prd ? `PRD 文档《${prd.filename || '未命名'}》相关原文：\n${prd.content}` : undefined,
       };
       // 与 buildSender 一致：提交前固化上下文快照，避免任务被改导致回执错位
       db.prepare('UPDATE queue_jobs SET request_payload = ? WHERE id = ?')

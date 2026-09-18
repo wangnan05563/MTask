@@ -13,6 +13,7 @@ import { getDefaultNoteProjectId } from '../services/AppSettings';
 import { TaskService } from '../services/TaskService';
 import { TaskImageService } from '../services/TaskImageService'; // T00610：截图读取（供 AI 识别验证失败反馈截图）
 import { PlanService } from '../services/PlanService';
+import { resolvePrdContext } from '../util/prdContext'; // T00763：PRD 上下文反查
 import { ArchiveService } from '../services/ArchiveService';
 import {
   gatherReportData,
@@ -375,7 +376,8 @@ export async function createMCPServer(): Promise<McpServer> {
       if (buf.length === 0) return err('fileBase64 解析为空');
       const text = await PlanService.extractPrdText(buf, a.filename);
       const parsed = await PlanService.aiParsePrd(a.toolId, text);
-      const r = PlanService.importPrd(loc.id, { requirements: parsed.requirements, plans: parsed.drafts, createTasks: a.createTasks === true });
+      // T00763：PRD 原文（提取后的 Markdown）随导入完整落库，需求行回填 prd_id
+      const r = PlanService.importPrd(loc.id, { requirements: parsed.requirements, plans: parsed.drafts, createTasks: a.createTasks === true, prdMd: text, prdFilename: a.filename });
       const summary = {
         projectId: loc.id,
         imported: r,
@@ -448,6 +450,62 @@ export async function createMCPServer(): Promise<McpServer> {
       if (!a.kind || !a.targetId) return err('link 需要 kind(plan|task) 与 targetId');
       PlanService.linkRequirement(a.reqId, { kind: a.kind, targetId: a.targetId, linked: a.linked !== false });
       return ok(JSON.stringify({ ok: true, reqId: a.reqId, kind: a.kind, targetId: a.targetId, linked: a.linked !== false }), { ok: true });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // ---------- T00763：PRD 原文文档（查询 / 反向更新） ----------
+
+  server.registerTool('mtask_get_prd', {
+    title: '查询关联的 PRD 原文',
+    description: '按任务 id/编号、计划 id 或需求 id 反查其关联的 PRD 文档完整 Markdown 原文（导入时保留）；也可按项目列出全部 PRD 文档。AI 处理待办/评估时应先调用本工具获取需求背景作为上下文。',
+    inputSchema: {
+      taskId: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      taskNo: z.string().optional().describe('任务编号（如 T00763，与 taskId 二选一）'),
+      planId: z.string().optional().describe('计划条目 id'),
+      reqId: z.string().optional().describe('需求 id（矩阵行）'),
+      prdId: z.string().optional().describe('PRD 文档 id（直接取全文）'),
+      projectId: z.string().optional().describe('按项目列出全部 PRD 文档（与 projectName 二选一；仅列表元信息不含正文）'),
+      projectName: z.string().optional().describe('按项目列出全部 PRD 文档'),
+    },
+  }, async (a) => {
+    try {
+      const db = getDb();
+      if (a.prdId) {
+        const doc = PlanService.getPrdDoc(a.prdId);
+        return ok(JSON.stringify(doc), doc);
+      }
+      // 任务编号 → 内部 id
+      let taskId = a.taskId;
+      if (!taskId && a.taskNo) {
+        const row = db.prepare('SELECT id FROM tasks WHERE task_no = ?').get(a.taskNo) as { id: string } | undefined;
+        if (!row) return err(`任务不存在：${a.taskNo}`);
+        taskId = row.id;
+      }
+      if (taskId || a.planId || a.reqId) {
+        const ctx = resolvePrdContext({ taskId, planId: a.planId, requirementId: a.reqId });
+        if (!ctx) return ok(JSON.stringify({ found: false, message: '该对象未关联 PRD 文档' }), { found: false });
+        const doc = { ...ctx, content: PlanService.getPrdDoc(ctx.prdId).content_md };
+        return ok(JSON.stringify({ found: true, ...doc }), { found: true, ...doc });
+      }
+      const loc = resolveProjectIdOf(a.projectId, a.projectName);
+      if (!loc.id) return err('需提供 taskId/taskNo/planId/reqId/prdId 之一，或 projectId/projectName 列出项目文档');
+      const docs = PlanService.listPrdDocs(loc.id);
+      return ok(JSON.stringify({ projectId: loc.id, count: docs.length, docs }), { projectId: loc.id, count: docs.length, docs });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_update_prd', {
+    title: '反向更新 PRD 原文',
+    description: '把修订后的 PRD 内容（完整 Markdown）反向覆盖到指定 PRD 文档（全量覆盖，非增量）。用于 AI 依据实施结论修订需求文档等场景。',
+    inputSchema: {
+      prdId: z.string().describe('PRD 文档 id（可由 mtask_get_prd 获取）'),
+      contentMd: z.string().describe('修订后的完整 Markdown 原文（全量覆盖，不能为空）'),
+      filename: z.string().optional().describe('可选：更新文档名'),
+    },
+  }, async (a) => {
+    try {
+      const doc = PlanService.updatePrdDoc(a.prdId, { contentMd: a.contentMd, filename: a.filename });
+      return ok(JSON.stringify({ ok: true, id: doc.id, updated_at: doc.updated_at, content_chars: String(doc.content_md ?? '').length }), { ok: true, id: doc.id });
     } catch (e) { return err((e as Error).message); }
   });
 

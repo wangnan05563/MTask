@@ -46,6 +46,7 @@ export class OllamaAdapter implements AIAdapter {
       `【任务】${context.title}`,
       context.description ? `【描述】${context.description}` : '',
       context.aiSummary ? `【AI 梳理摘要】${context.aiSummary}` : '',
+      context.prdContext ? `【PRD 需求上下文】${context.prdContext}` : '', // T00763
       '',
       '你是 MTask 的开发任务执行者。请产出可直接交付的开发成果文本：实现思路(简短)、完整代码/配置/操作步骤(可复制)、关键风险与验证方式。只输出最终成果。',
     ].filter(Boolean).join('\n');

@@ -1110,13 +1110,16 @@ export const PlanService = {
     return { requirements, drafts, coverageWarn };
   },
 
-  /** T00662：导入 PRD 解析结果——事务创建需求项 + 计划（含 req_ids 关联）+ 可选同步生成待办任务。 */
+  /** T00763：导入 PRD 解析结果——事务创建需求项 + 计划（含 req_ids 关联）+ 可选同步生成待办任务。 */
   /** T00712（D-5）：返回 unlinkedReqNos——reqNos 引用了本次导入中不存在的需求编号时不再静默丢弃。 */
+  /** T00763：input.prdMd（PRD Markdown 原文）非空时完整落库 prd_docs，并回填需求行 prd_id——供矩阵「查看PRD」与 AI 上下文反查。 */
   importPrd(projectId: string, input: {
     requirements?: Array<{ reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string }>;
     plans?: Array<{ title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string }>;
     createTasks?: boolean;
-  }): { requirements: number; plans: number; tasks: number; unlinkedReqNos: string[] } {
+    prdMd?: string;
+    prdFilename?: string;
+  }): { requirements: number; plans: number; tasks: number; unlinkedReqNos: string[]; prdId?: string } {
     const db = getDb();
     if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
     const reqs = (input.requirements ?? []).filter((r) => r?.title?.trim());
@@ -1125,20 +1128,29 @@ export const PlanService = {
     const t = now();
     let taskCount = 0;
     const unlinkedReqNos = new Set<string>();
+    // T00763：PRD 原文完整保留（Markdown 不截断），导入即生成文档记录并关联需求行
+    const prdMd = typeof input.prdMd === 'string' ? input.prdMd : '';
+    let prdId: string | undefined;
+    if (prdMd.trim()) {
+      prdId = uuid();
+      db.prepare(
+        `INSERT INTO prd_docs (id, project_id, filename, content_md, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(prdId, projectId, (input.prdFilename ?? '').trim(), prdMd, t, t);
+    }
     db.transaction(() => {
       // 1) 需求项（矩阵行）——reqNo → id 映射供计划/待办关联
       const noToId = new Map<string, string>();
       const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM prd_requirements WHERE project_id = ?').get(projectId) as { m: number }).m;
       let order = maxOrder;
       const insReq = db.prepare(
-        `INSERT INTO prd_requirements (id, project_id, req_no, title, content, source_ref, priority, status, sort_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?)`,
+        `INSERT INTO prd_requirements (id, project_id, req_no, title, content, source_ref, priority, status, sort_order, prd_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?)`,
       );
       for (const r of reqs) {
         const id = uuid();
         const reqNo = (r.reqNo ?? '').trim() || `REQ-${String(order + 1).padStart(3, '0')}`;
         order += 1;
-        insReq.run(id, projectId, reqNo, r.title.trim(), r.content ?? '', r.sourceRef ?? '', r.priority ?? 'normal', order, t, t);
+        insReq.run(id, projectId, reqNo, r.title.trim(), r.content ?? '', r.sourceRef ?? '', r.priority ?? 'normal', order, prdId ?? null, t, t);
         noToId.set(reqNo, id);
       }
       // 2) 计划（含 req_ids 关联）
@@ -1192,7 +1204,38 @@ export const PlanService = {
         // 仅导入需求（无计划）时属合法场景，不抛错
       }
     })();
-    return { requirements: reqs.length, plans: planItems.length, tasks: taskCount, unlinkedReqNos: [...unlinkedReqNos] };
+    return { requirements: reqs.length, plans: planItems.length, tasks: taskCount, unlinkedReqNos: [...unlinkedReqNos], prdId };
+  },
+
+  // ---------- T00763：PRD 原文文档（存储 / 查看 / 反向更新 / AI 上下文反查） ----------
+
+  /** PRD 文档列表（按项目；不含正文，列表轻量） */
+  listPrdDocs(projectId: string): Array<Record<string, unknown>> {
+    const db = getDb();
+    return db.prepare(
+      `SELECT id, project_id, filename, LENGTH(content_md) AS content_chars, created_at, updated_at
+       FROM prd_docs WHERE project_id = ? ORDER BY created_at DESC`,
+    ).all(projectId) as Array<Record<string, unknown>>;
+  },
+
+  /** PRD 文档详情（含完整 Markdown 原文） */
+  getPrdDoc(id: string): Record<string, unknown> {
+    const db = getDb();
+    const row = db.prepare('SELECT * FROM prd_docs WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) throw new Error('PRD 文档不存在');
+    return row;
+  },
+
+  /** 反向更新 PRD 内容（全量覆盖）：AI 或用户经接口把修订后的 Markdown 回写原文 */
+  updatePrdDoc(id: string, patch: { contentMd?: string; filename?: string }): Record<string, unknown> {
+    const db = getDb();
+    const row = db.prepare('SELECT id FROM prd_docs WHERE id = ?').get(id);
+    if (!row) throw new Error('PRD 文档不存在');
+    const contentMd = typeof patch.contentMd === 'string' ? patch.contentMd : '';
+    if (!contentMd.trim()) throw new Error('contentMd 不能为空（反向更新为全量覆盖，请传入完整 Markdown 原文）');
+    db.prepare('UPDATE prd_docs SET content_md = ?, filename = COALESCE(?, filename), updated_at = ? WHERE id = ?')
+      .run(contentMd, typeof patch.filename === 'string' ? patch.filename : null, now(), id);
+    return this.getPrdDoc(id);
   },
 
   // ---------- T00662：需求跟踪矩阵 CRUD ----------
@@ -1207,11 +1250,16 @@ export const PlanService = {
       if (!v) return [];
       try { const a = JSON.parse(v) as unknown; return Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string') : []; } catch { return []; }
     };
+    // T00763：项目内 PRD 文档摘要——矩阵行经 prd_id 关联，前端「查看PRD」按钮按此取文档
+    const prdDocs = db.prepare('SELECT id, filename FROM prd_docs WHERE project_id = ?').all(projectId) as Array<{ id: string; filename: string }>;
+    const docById = new Map(prdDocs.map((d) => [d.id, d]));
     return reqs.map((r) => {
       const rid = String(r.id);
       const linkedPlans = plans.filter((p) => parse(p.req_ids).includes(rid)).map((p) => ({ id: p.id, title: p.title, status: p.status }));
       const linkedTasks = tasks.filter((x) => parse(x.req_ids).includes(rid)).map((x) => ({ id: x.id, taskNo: x.task_no, title: x.title, status: x.status, verified: !!x.verified }));
-      return { ...r, linkedPlans, linkedTasks };
+      const prdId = typeof r.prd_id === 'string' ? r.prd_id : null;
+      const prdDoc = prdId ? docById.get(prdId) : undefined;
+      return { ...r, linkedPlans, linkedTasks, prdDoc: prdDoc ?? null };
     });
   },
 

@@ -10,6 +10,8 @@ export interface TaskContext {
   aiSummary?: string;
   projectName: string;
   attachments?: string[];
+  /** T00763：任务关联 PRD 的原文上下文（自动注入，适配器拼入用户消息） */
+  prdContext?: string;
 }
 
 export interface ToolConfig {
