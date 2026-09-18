@@ -2095,7 +2095,7 @@ export function TasksPage() {
           disabled={!anyBeautify && todo.length === 0}
           title={anyBeautify ? '取消 — 停止当前批量美化' : 'AI 美化全部待办 — 批量润色所有待办任务标题'}
           aria-label={anyBeautify ? '取消批量美化' : 'AI 美化全部待办'}
-          className={anyBeautify ? 'task-breathe' : undefined}
+          className={anyBeautify ? 'task-breathe' : 'op-hidden'} // T00759：默认隐藏悬浮显示；批量进行中保持可见
           style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: anyBeautify ? 'var(--accent)' : 'transparent', color: anyBeautify ? 'var(--accent-text)' : 'var(--text)' }}
         >
           <Wand2 size={13} />
@@ -2149,7 +2149,7 @@ export function TasksPage() {
       <button
         onClick={() => void batchClassify()}
         disabled={classifyBusy || (todo.length === 0 && done.length === 0)}
-        className={`tbtn-anim${classifyBusy ? ' task-breathe' : ''}`}
+        className={`tbtn-anim op-hidden${classifyBusy ? ' task-breathe' : ''}`} // T00759：默认隐藏悬浮显示；批量进行中保持可见
         title={classifyBusy ? '批量分类进行中…' : 'AI 批量分类 — 对未分类任务（含已完成）智能识别自动分到已有分类'}
         aria-label={classifyBusy ? '批量分类进行中' : 'AI 批量分类：对未分类任务（含已完成）自动分类'}
         style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: classifyBusy ? 'var(--accent)' : 'transparent', color: classifyBusy ? 'var(--accent-text)' : 'var(--text)' }}
@@ -2163,7 +2163,7 @@ export function TasksPage() {
    *  故不在容器上声明 role="group"（S6819），渲染不变。 */
   function renderViewToggle() {
     return (
-      <span style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }}>
+      <span className={`op-host${viewMode === 'board' ? '' : ' op-hidden'}`} style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }}>
         <button className="tbtn-anim" onClick={() => setViewMode('list')} aria-label="列表视图" style={{ padding: '5px 9px', border: 'none', cursor: 'pointer', display: 'inline-flex', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图"><ListTodo size={13} /></button>
         <button className="tbtn-anim" onClick={() => setViewMode('board')} aria-label="看板视图" style={{ padding: '5px 9px', border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', display: 'inline-flex', background: viewMode === 'board' ? 'var(--accent)' : 'transparent', color: viewMode === 'board' ? 'var(--accent-text)' : 'var(--text)' }} title="看板视图 — 按状态分列，拖拽卡片流转状态"><LayoutGrid size={13} /></button>
       </span>
@@ -2175,7 +2175,7 @@ export function TasksPage() {
     return (
       <button
         onClick={() => { setMultiSelect((v) => !v); setSelectedIds(new Set()); }}
-        className="tbtn-anim"
+        className={`tbtn-anim${multiSelect ? '' : ' op-hidden'}`} // T00759：默认隐藏悬浮显示；多选模式下保持可见（退出入口）
         style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', border: '1px solid var(--border-strong)', background: multiSelect ? 'var(--accent)' : 'transparent', color: multiSelect ? 'var(--accent-text)' : 'var(--text)' }}
         title={multiSelect ? '退出多选模式' : '多选模式 — 勾选任务后批量改状态/分类/归档'}
         aria-label={multiSelect ? '退出多选模式' : '进入多选模式'}
@@ -2268,7 +2268,7 @@ export function TasksPage() {
         {/* T00481/T00720/T00728：全部收起/展开——描述、AI 摘要、处理结果三组折叠状态联动，覆盖待办+已完成全部列表；
             T00728：收起为高频操作优先——有展开内容时点击一律收起，全部收起后点击才展开；
             T00728 二轮（用户反馈）：按钮去掉中文名字，仅保留图标简化显示（语义由 title/aria 承载） */}
-        <button className="tbtn-anim" onClick={() => {
+        <button className="tbtn-anim op-hidden" onClick={() => {
           const all = [...todo, ...done];
           const ids = all.map((t) => t.id);
           const resultIds = all.filter((t) => t.handle_result).map((t) => t.id);
