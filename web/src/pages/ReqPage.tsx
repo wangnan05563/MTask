@@ -341,7 +341,7 @@ export function ReqPage() {
         </span>
         {activeCat && (
           <>
-            <button className="tbtn-anim" onClick={() => {
+            <button className="tbtn-anim op-hidden" onClick={() => { // T00760：默认隐藏悬浮显示
               const ids = entries.map((x) => x.id);
               const allExpanded = ids.length > 0 && ids.every((id) => expandedIds[id]);
               setExpandedIds(allExpanded ? {} : Object.fromEntries(ids.map((id) => [id, true])));
@@ -355,8 +355,10 @@ export function ReqPage() {
           onClick={() => { setCreating(!creating); setNewTitle(''); setNewContent(''); }}
           disabled={!activeCat}
           // 无文字纯图标按钮：悬浮提示随状态切换（新建/收起），点击动画由全局 button:active 提供
+          // T00760：默认隐藏悬浮显示
           title={creating ? '收起 — 收起新建通用需求表单' : '新建通用需求 — 展开新建通用需求表单'}
           aria-label={creating ? '收起：收起新建通用需求表单' : '新建通用需求：展开新建通用需求表单'}
+          className="op-hidden"
           style={{ marginLeft: 12, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', padding: '6px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}
         >
           <Plus size={13} />
