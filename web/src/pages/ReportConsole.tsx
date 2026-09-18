@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { parseCleanGroups, type CleanRow } from '../utils/cleanGroups'; // T00751：清洗分组解析抽为可测模块
 import { api, type AITool, type ReqCategory } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
 import { useSessionState } from '../ui/session';
@@ -277,59 +278,7 @@ function parseAnswerItems(md: string): { title: string; content: string }[] {
 }
 
 /** T00652 数据清洗：AI 结论中的一个合并分组（keep=保留的代表任务号，merge=被判定重复、将归档的任务号） */
-interface CleanRow {
-  id: string;
-  project: string;
-  keep: string;
-  merge: string[];
-  reason: string;
-  include: boolean;
-}
 
-/**
- * T00652 数据清洗：从 AI 结论中解析合并分组。
- * 兼容 ```json 代码围栏与裸 JSON 数组：先剥围栏，再取首个 '[' 到末尾 ']' 之间解析；
- * 逐组校验 keep 非空且 merge 非空（AI 输出不可靠，宁缺毋滥）。
- */
-/**
- * 扫描文本中所有**顶层 {...} 对象**（括号配平，正确跳过字符串与转义）。
- * 用于兼容大模型常见的 JSON 格式瑕疵：数组元素间缺逗号、NDJSON（每行一个对象）、
- * 结果中夹杂说明文字、末尾对象被截断（自动丢弃不完整者）——比整体 JSON.parse 鲁棒得多。
- */
-function extractTopLevelObjects(text: string): Record<string, unknown>[] {
-  const out: Record<string, unknown>[] = [];
-  let depth = 0;
-  let startIdx = -1;
-  let inStr = false;
-  let esc = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (ch === String.fromCharCode(92)) esc = true;
-      else if (ch === '"') inStr = false;
-      continue;
-    }
-    if (ch === '"') { inStr = true; continue; }
-    if (ch === '{') {
-      if (depth === 0) startIdx = i;
-      depth += 1;
-      continue;
-    }
-    if (ch === '}') {
-      depth -= 1;
-      if (depth === 0 && startIdx >= 0) {
-        try {
-          const o = JSON.parse(text.slice(startIdx, i + 1)) as unknown;
-          if (o && typeof o === 'object' && !Array.isArray(o)) out.push(o as Record<string, unknown>);
-        } catch { /* 跳过损坏对象，继续扫描后续 */ }
-        startIdx = -1;
-      }
-      if (depth < 0) depth = 0;
-    }
-  }
-  return out;
-}
 
 /**
  * 解析 AI 结论中的「合并分组」。
@@ -338,39 +287,7 @@ function extractTopLevelObjects(text: string): Record<string, unknown>[] {
  *    T00652 修复：模型输出常缺元素间逗号，原实现整体 parse 失败后静默返回空数组，
  *    导致「控制台有结论、点击执行清洗弹窗却无数据」。
  */
-function parseCleanGroups(md: string): CleanRow[] {
-  const bare = md.replaceAll(/```json/gi, '').replaceAll(/```/gi, '').trim();
-  let arr: unknown[] | null = null;
-  const start = bare.indexOf('[');
-  const end = bare.lastIndexOf(']');
-  if (start !== -1 && end > start) {
-    try {
-      const parsed = JSON.parse(bare.slice(start, end + 1)) as unknown;
-      if (Array.isArray(parsed)) arr = parsed;
-    } catch { arr = null; }
-  }
-  if (!arr) arr = extractTopLevelObjects(bare);
-  const out: CleanRow[] = [];
-  for (const r of arr) {
-    if (!r || typeof r !== 'object') continue;
-    const o = r as Record<string, unknown>;
-    const keep = typeof o.keep === 'string' ? o.keep.trim() : '';
-    const merge = (Array.isArray(o.merge) ? o.merge : [])
-      .filter((x): x is string => typeof x === 'string' && !!x.trim())
-      .map((x) => x.trim())
-      .filter((x) => x !== keep);
-    if (!keep || merge.length === 0) continue;
-    out.push({
-      id: `clean-${out.length}`,
-      project: typeof o.project === 'string' ? o.project.trim() : '',
-      keep,
-      merge: Array.from(new Set(merge)),
-      reason: typeof o.reason === 'string' ? o.reason.trim() : '',
-      include: true,
-    });
-  }
-  return out;
-}
+
 
 /** 后端持久化任务行 → 前端任务快照：字段一一对应，仅做空值归一（answer/error 为 null 时置空串） */
 function rowToTask(r: {
