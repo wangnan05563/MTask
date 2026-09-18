@@ -7,7 +7,7 @@ import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { useBusy, setBusy } from '../ui/busy';
-import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, ChevronDown, ChevronUp, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, Pin, Plus, Save, ScanSearch, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
+import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, ChevronDown, ChevronUp, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, Pin, Plus, Save, ScanSearch, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 
 // ---------- T00552：批量分类运行态模块级化——切页后循环继续、返回不卡死 ----------
@@ -2359,11 +2359,17 @@ export function TasksPage() {
             <option value="">未分类</option>
             {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
-          <label title="智能分类 — 按标题智能匹配任务类型（默认启用）" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
-            {/* 间距用显式 margin 表达，不依赖源码换行空白（对渲染引擎不可靠） */}
-            <input type="checkbox" checked={smartCat} onChange={(e) => setSmartCat(e.target.checked)} />
-            <span style={{ marginLeft: 3 }}>智能分类</span>
-          </label>
+          {/* T00758：智能分类由「勾选框+中文」改为无中文动画图标按钮——开启=Sparkles 高亮呼吸动画，关闭=Sparkle 灰显静态；
+              语义由 title/aria-pressed 承载 */}
+          <button
+            onClick={() => setSmartCat(!smartCat)}
+            aria-pressed={smartCat}
+            title={smartCat ? '智能分类（已开启）— 新建任务按标题智能匹配分类，点击关闭' : '智能分类（已关闭）— 点击开启新建任务的标题智能分类'}
+            aria-label={smartCat ? '智能分类：已开启，点击关闭' : '智能分类：已关闭，点击开启'}
+            style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', border: 'none', background: 'transparent', cursor: 'pointer', color: smartCat ? 'var(--accent)' : 'var(--text-muted)' }}
+          >
+            {smartCat ? <Sparkles size={13} className="task-breathe" /> : <Sparkle size={13} />}
+          </button>
           <button onClick={() => setNewDescOpen(!newDescOpen)} title="描述/截图 — 展开或收起描述与截图上传区" aria-label={newDescOpen ? '收起描述与截图编辑区' : '展开描述与截图编辑区'} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{newDescOpen ? <ChevronUp size={13} /> : <ImagePlus size={13} />}</button>
           </span>
           <button className="tbtn-anim" onClick={() => void createTask()} disabled={creating} title={creating ? '添加中 — 正在智能分类并保存任务' : '添加任务 — 创建新任务并保存到当前项目'} aria-label={creating ? '添加中：正在智能分类并保存任务' : '添加任务：创建新任务并保存到当前项目'} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 4px', color: creating ? 'var(--text-muted)' : 'var(--text)' }}>
