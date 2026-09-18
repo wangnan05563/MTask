@@ -266,7 +266,8 @@ function ToolRow(props: ToolRowProps) {
       <td data-noscale="1" style={{ ...cellStyle, cursor: 'copy', userSelect: 'text' }} draggable={false}
         onDoubleClick={() => { void navigator.clipboard.writeText(tool.type).then(() => props.flash?.(`已复制厂商类型：${tool.type}`)); }}
         title={`双击复制整个字段：${tool.type}`}>{tool.type}</td>
-      <td data-noscale="1" style={{ ...cellStyle, cursor: 'copy', userSelect: 'text' }} draggable={false}
+      {/* T00768：用途/状态列默认宽度 + 不换行——笔记本屏幕下保持一行显示 */}
+      <td data-noscale="1" style={{ ...cellStyle, minWidth: 64, whiteSpace: 'nowrap', cursor: 'copy', userSelect: 'text' }} draggable={false}
         onDoubleClick={() => { const v = PURPOSE_LABEL[tool.purpose] ?? tool.purpose; void navigator.clipboard.writeText(v).then(() => props.flash?.(`已复制用途：${v}`)); }}
         title={`双击复制整个字段：${PURPOSE_LABEL[tool.purpose] ?? tool.purpose}`}>{PURPOSE_LABEL[tool.purpose] ?? tool.purpose}</td>
       <td data-noscale="1" style={{ ...cellStyle, wordBreak: 'break-all', maxWidth: 220, cursor: 'copy', userSelect: 'text' }} draggable={false}
@@ -311,7 +312,7 @@ function ToolRow(props: ToolRowProps) {
       </td>
       {/* 默认仅展示掩码；点击「查看原文」按需拉取明文，再点隐藏即从内存移除（FR3.5） */}
       <ToolKeyCell tool={tool} revealed={props.revealed[tool.id]} onToggleReveal={props.onToggleReveal} flash={props.flash} />
-      <td style={cellStyle}>
+      <td style={{ ...cellStyle, whiteSpace: 'nowrap' }}>
         <button
           onClick={() => props.onToggleEnabled(tool)}
           title={tool.enabled ? '停用 — 停用该配置文件' : '启用 — 启用该配置文件'}
@@ -825,11 +826,11 @@ export function AIToolsPage() {
           <tr style={{ textAlign: 'left', color: 'var(--text-secondary)' }}>
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>名称</th>
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>厂商类型</th>
-            <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>用途</th>
+            <th style={{ padding: 8, borderBottom: '1px solid var(--border)', minWidth: 64, whiteSpace: 'nowrap' }}>用途</th>
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>Endpoint</th>
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>默认模型</th>
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>API Key</th>
-            <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>状态</th>
+            <th style={{ padding: 8, borderBottom: '1px solid var(--border)', minWidth: 48, whiteSpace: 'nowrap' }}>状态</th>
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>默认</th>
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>操作</th>
           </tr>

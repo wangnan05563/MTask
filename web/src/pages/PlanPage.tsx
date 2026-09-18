@@ -1116,7 +1116,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             <th style={{ padding: 6 }}>{renderColFilter('progress', '进度', 'select', [
               { v: 'none', l: '未开始' }, { v: 'doing', l: '进行中' }, { v: 'done', l: '已完成' },
             ])}</th>
-            <th style={{ padding: 6 }}>{renderColFilter('status', '状态', 'select', [
+            <th style={{ padding: 6, minWidth: 70, whiteSpace: 'nowrap' }}>{renderColFilter('status', '状态', 'select', [
               { v: 'todo', l: '待开始' }, { v: 'doing', l: '进行中' }, { v: 'done', l: '已完成' }, { v: 'blocked', l: '阻塞' },
             ])}</th>
             <th style={{ padding: 6 }}>{renderColFilter('assignee', '负责人', 'text')}</th>
@@ -1314,12 +1314,13 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 <input key={'p' + p.progress} type="number" min={0} max={100} defaultValue={p.progress} onBlur={(e) => { const v = Number(e.target.value); if (v >= 0 && v <= 100 && v !== p.progress) void updatePlan(p, { progress: v }); }}
                   style={{ ...inputStyle, width: 40 }} aria-label="进度百分比" />)}
               </td>
-              <td style={{ padding: 6 }}>
+              {/* T00768：状态列默认宽度 + 不换行——笔记本屏幕下状态徽标保持一行显示 */}
+              <td style={{ padding: 6, minWidth: 70, whiteSpace: 'nowrap' }}>
                 {isMilestone ? <span style={{ color: 'var(--text-muted)' }}>—</span> : (<>
                 {/* 点击状态徽标流转到下一状态：待办→进行中→已完成→待办；blocked 经已完成 后回待办 */}
                 <button onClick={() => void updatePlan(p, { status: NEXT_STATUS[p.status] })}
                   title="点击流转到下一状态" aria-label={`状态：${STATUS_META[p.status].label}，点击流转`}
-                  style={{ ...btnStyle, color: STATUS_META[p.status].color, borderColor: STATUS_META[p.status].color }}>
+                  style={{ ...btnStyle, color: STATUS_META[p.status].color, borderColor: STATUS_META[p.status].color, whiteSpace: 'nowrap' }}>
                   {STATUS_META[p.status].label}
                 </button></>)}
               </td>
