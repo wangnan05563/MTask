@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
-import { Check, Link2, Loader2, Plus, RefreshCw, Table2, Trash2, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronUp, Link2, Loader2, Plus, RefreshCw, Table2, Trash2, X } from 'lucide-react'; // T00765：标题点击查询详情
 
 /** 矩阵行：需求 + 其关联的计划与待办（T00662） */
 interface MatrixReq {
@@ -40,6 +40,7 @@ export function ReqMatrixPanel({ projectId, onClose }: {
   const [notice, setNotice] = useState('');
   const [linkFor, setLinkFor] = useState<string>('');       // 正在调整关联的需求 id
   const [linkKind, setLinkKind] = useState<'plan' | 'task'>('plan');
+  const [queryId, setQueryId] = useState<string>(''); // T00765：正在查看详情的需求 id（点击标题旁 chevron 切换）
   const [newTitle, setNewTitle] = useState('');
 
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
@@ -152,10 +153,25 @@ export function ReqMatrixPanel({ projectId, onClose }: {
                         style={{ width: 88, border: '1px solid transparent', borderRadius: 4, background: 'transparent', color: 'var(--accent)', fontSize: 12, padding: '1px 4px' }} />
                     </td>
                     <td style={{ padding: '4px 6px' }}>
-                      <input defaultValue={r.title} aria-label="需求标题" title={r.content || r.source_ref || '（无详情）'}
-                        onBlur={(e) => { if (e.target.value !== r.title) void updateReq(r.id, { title: e.target.value }); }}
-                        style={{ width: '100%', minWidth: 180, border: '1px solid transparent', borderRadius: 4, background: 'transparent', color: 'var(--text)', fontSize: 12, padding: '1px 4px' }} />
+                      {/* T00765：标题字段带交互点击查询——chevron 展开需求详情（内容/来源/优先级），标题输入框编辑能力不变 */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                        <input defaultValue={r.title} aria-label="需求标题" title={r.content || r.source_ref || '（无详情）'}
+                          onBlur={(e) => { if (e.target.value !== r.title) void updateReq(r.id, { title: e.target.value }); }}
+                          style={{ flex: 1, minWidth: 150, border: '1px solid transparent', borderRadius: 4, background: 'transparent', color: 'var(--text)', fontSize: 12, padding: '1px 4px' }} />
+                        <button onClick={() => setQueryId(queryId === r.id ? '' : r.id)} className="tbtn-anim"
+                          title={queryId === r.id ? '收起需求详情' : '查询需求详情（内容/来源/优先级）'}
+                          aria-label={`查询需求 ${r.title} 详情`} aria-expanded={queryId === r.id}
+                          style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: queryId === r.id ? 'var(--accent)' : 'var(--text-muted)', padding: 2, display: 'inline-flex', flexShrink: 0 }}>
+                          {queryId === r.id ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                        </button>
+                      </div>
                       {r.source_ref && <div style={{ fontSize: 10, color: 'var(--text-muted)', paddingLeft: 4 }}>{r.source_ref}</div>}
+                      {queryId === r.id && (
+                        <div style={{ marginTop: 4, padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface-2)', fontSize: 11, color: 'var(--text)' }}>
+                          <div style={{ whiteSpace: 'pre-wrap' }}>{r.content ? r.content : '（无内容）'}</div>
+                          <div style={{ marginTop: 4, color: 'var(--text-muted)' }}>来源：{r.source_ref || '—'} · 优先级：{r.priority || 'normal'} · 状态：{r.status || 'todo'}</div>
+                        </div>
+                      )}
                     </td>
                     <td style={{ padding: '4px 6px', width: 96 }}>
                       <select value={r.status} onChange={(e) => void updateReq(r.id, { status: e.target.value })}
