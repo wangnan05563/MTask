@@ -149,6 +149,8 @@ export function TasksPage() {
     setTodo(clear); setDone(clear);
   };
   const [search, setSearch] = useSessionState<string>('tasks.search', ''); // T00560：命令面板跳转写入搜索词
+  // T00757：列表 tab——待办/已完成/搁置三个列表标题并排为 tab，仅渲染激活 tab 的列表（会话级保持）
+  const [activeTab, setActiveTab] = useSessionState<'todo' | 'done' | 'shelved'>('tasks.activeTab', 'todo');
   // 主列表分页：后端按页拉取 + 加载更多；hasMore=true 表示当前页刚好满页、可能还有更多
   const PAGE_SIZE = 200;
   const [hasMore, setHasMore] = useState(false);
@@ -2484,6 +2486,22 @@ export function TasksPage() {
         {viewMode === 'board' && renderBoard()}
         {viewMode === 'board' && <div style={{ height: 8 }} />}
         {viewMode === 'list' && (<>
+        {/* T00757：待办/已完成/搁置 三个标题并排为 tab——激活项加粗+下方横线，未激活常规字重；仅渲染激活 tab 的列表 */}
+        <div className="op-host" style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--border-strong)', marginBottom: 8 }}>
+          {([['todo', `待办（${visibleTodo.length}/${todo.length}）`],
+             ['done', `已完成（${visibleDone.length}/${done.length}，未验证 ${done.filter((t) => !t.verified).length}）`],
+             ['shelved', `搁置（${visibleShelved.length}）`]] as const).map(([key, label]) => (
+            <button key={key} onClick={() => setActiveTab(key)} aria-pressed={activeTab === key}
+              title={`${label} — 点击切换到该列表`}
+              style={{ fontSize: 14, padding: '6px 12px', border: 'none', background: 'transparent', cursor: 'pointer',
+                fontWeight: activeTab === key ? 700 : 400,
+                color: activeTab === key ? 'var(--text)' : 'var(--text-muted)',
+                borderBottom: activeTab === key ? '2px solid var(--accent)' : '2px solid transparent' }}>
+              {label}
+            </button>
+          ))}
+        </div>
+        {activeTab === 'todo' && (<>
         <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
           {multiSelect && (
             <TriCheckbox
@@ -2493,7 +2511,6 @@ export function TasksPage() {
               title="全选/全不选待办列表" label="全选待办任务"
               style={{ cursor: 'pointer' }} />
           )}
-          <h3 style={{ fontSize: 15, margin: 0 }}>待办（{visibleTodo.length}/{todo.length}）</h3>
           {/* 按修改时间/优先级排序：会话级偏好，选项见 sortOptions */}
           <select
             className="op-hidden"
@@ -2517,8 +2534,8 @@ export function TasksPage() {
         )}
         </>)}
 
-        {viewMode === 'list' && (<>
-        <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '16px 0 8px' }}>
+        {activeTab === 'done' && (<>
+        <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
           {/* 提示未验证数量：默认过滤「仅未验证」时，让用户意识到已验证项只是被过滤而非丢失 */}
           {multiSelect && (
             <TriCheckbox
@@ -2528,7 +2545,6 @@ export function TasksPage() {
               title="全选/全不选已完成列表" label="全选已完成任务"
               style={{ cursor: 'pointer' }} />
           )}
-          <h3 style={{ fontSize: 15, margin: 0 }}>已完成（{visibleDone.length}/{done.length}，未验证 {done.filter((t) => !t.verified).length}）</h3>
           <select
             className="op-hidden"
             value={doneSort}
@@ -2560,8 +2576,8 @@ export function TasksPage() {
 
         {/* T00719：搁置任务列表——页面最下方独立区块，与待办/已完成隔离（MCP 处理待办时自动忽略搁置任务）；
             工具条与查询条件对齐待办/已完成（多选全选 + 排序 + 同一套关键词/分类/优先级过滤） */}
-        {viewMode === 'list' && (<>
-        <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '16px 0 8px' }}>
+        {activeTab === 'shelved' && (<>
+        <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
           {multiSelect && (
             <TriCheckbox
               checked={visibleShelved.length > 0 && visibleShelved.every((t) => selectedIds.has(t.id))}
@@ -2570,7 +2586,6 @@ export function TasksPage() {
               title="全选/全不选搁置列表" label="全选搁置任务"
               style={{ cursor: 'pointer' }} />
           )}
-          <h3 style={{ fontSize: 15, margin: 0, color: 'var(--text-secondary)' }}>搁置（{visibleShelved.length}）</h3>
           <select
             className="op-hidden"
             value={shelvedSort}
@@ -2586,6 +2601,7 @@ export function TasksPage() {
         {visibleShelved.length === 0 && (
           <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>暂无搁置任务——点击任务行的「搁置」按钮（归档按钮前）可把任务移到这里，AI 处理待办时自动忽略。</div>
         )}
+        </>)}
         </>)}
       </>
     );
