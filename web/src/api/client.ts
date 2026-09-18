@@ -116,6 +116,8 @@ export interface Project {
   plan_done?: number;
   plan_doing?: number;
   plan_open?: number;
+  /** T00771：项目工作空间根路径（空=未绑定；任务菜单工作空间下拉条 / AI 上下文消费） */
+  workspace_path?: string;
 }
 
 export interface TaskImage {

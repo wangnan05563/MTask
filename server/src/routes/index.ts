@@ -19,6 +19,7 @@ import { historyApi } from './history'; // T00589：历史资产（转移/统计
 import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, gatherReportData, type ReportPeriod } from '../services/ReportService';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { notifyChange } from '../services/ChangeBus';
 import { v4 as uuid } from 'uuid';
 import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
@@ -152,18 +153,75 @@ api.post('/projects/reorder', (req, res) => {
 });
 
 api.patch('/projects/:id', (req, res) => {
-  const { name, description, sortWeight } = req.body ?? {};
+  const { name, description, sortWeight, workspacePath } = req.body ?? {};
   const db = getDb();
   const sets: string[] = [];
   const values: unknown[] = [];
   if (name !== undefined) { sets.push('name = ?'); values.push(name); }
   if (description !== undefined) { sets.push('description = ?'); values.push(description); }
   if (sortWeight !== undefined) { sets.push('sort_weight = ?'); values.push(sortWeight); }
+  // T00771：工作空间绑定——路径必须存在且为文件夹（服务端本机校验），多项目可指向同一路径（仅存引用）
+  if (workspacePath !== undefined) {
+    const wp = typeof workspacePath === 'string' ? workspacePath.trim() : '';
+    if (wp) {
+      if (!/^[a-zA-Z]:[\\/]/.test(wp) && !wp.startsWith('/')) {
+        return res.status(400).json({ error: `工作空间路径须为绝对路径（收到：${wp}）` });
+      }
+      if (!existsSync(wp) || !statSync(wp).isDirectory()) {
+        return res.status(400).json({ error: `工作空间路径不存在或不是文件夹：${wp}` });
+      }
+      sets.push('workspace_path = ?'); values.push(wp);
+      recordWorkspaceHistory(wp);
+    } else {
+      sets.push("workspace_path = ''"); // 空串 = 解绑（字面量无占位符，不入 values）
+    }
+  }
   if (sets.length === 0) return res.status(400).json({ error: '无更新字段' });
   sets.push('updated_at = ?'); values.push(now());
   db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = ?`).run(...values, req.params.id);
   cacheClear('projects'); // 改名/排序影响列表展示
   res.json(db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id));
+});
+
+// ---------- T00771：工作空间（项目上下文根路径） ----------
+
+/** 工作空间历史（全局最近使用，app_settings JSON 数组，最新在前，去重封顶 12 条） */
+const WS_HISTORY_KEY = 'workspaceHistory';
+function recordWorkspaceHistory(path: string): void {
+  try {
+    const prev = JSON.parse(getSetting(WS_HISTORY_KEY) ?? '[]') as unknown;
+    const list = Array.isArray(prev) ? prev.filter((x): x is string => typeof x === 'string' && x !== path) : [];
+    list.unshift(path);
+    setSetting(WS_HISTORY_KEY, JSON.stringify(list.slice(0, 12)));
+  } catch { /* 历史损坏时重建 */ setSetting(WS_HISTORY_KEY, JSON.stringify([path])); }
+}
+
+api.get('/projects/workspace-history', (_req, res) => {
+  let history: string[] = [];
+  try {
+    const prev = JSON.parse(getSetting(WS_HISTORY_KEY) ?? '[]') as unknown;
+    if (Array.isArray(prev)) history = prev.filter((x): x is string => typeof x === 'string');
+  } catch { /* 忽略 */ }
+  res.json({ history });
+});
+
+/** 新建工作空间：递归创建目录（已存在视为成功——幂等，便于「新建」与「选择已有」合一） */
+api.post('/projects/workspace-create', (req, res) => {
+  const { path } = (req.body ?? {}) as { path?: unknown };
+  const p = typeof path === 'string' ? path.trim() : '';
+  if (!p) return res.status(400).json({ error: 'path 必填（新工作空间的完整文件夹路径）' });
+  if (!/^[a-zA-Z]:[\\/]/.test(p) && !p.startsWith('/')) {
+    return res.status(400).json({ error: `路径须为绝对路径（收到：${p}）` });
+  }
+  try {
+    if (existsSync(p) && !statSync(p).isDirectory()) {
+      return res.status(400).json({ error: `同路径已存在文件（非文件夹）：${p}` });
+    }
+    mkdirSync(p, { recursive: true });
+    res.status(201).json({ ok: true, path: p });
+  } catch (e) {
+    res.status(400).json({ error: `创建目录失败：${e instanceof Error ? e.message : String(e)}` });
+  }
 });
 
 api.delete('/projects/:id', (req, res) => {

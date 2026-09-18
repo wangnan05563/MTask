@@ -97,7 +97,7 @@ export const AIService = {
     for (const taskId of taskIds) {
       const task = TaskService.getById(taskId);
       if (!task) continue;
-      const project = db.prepare('SELECT name FROM projects WHERE id = ?').get(task.project_id) as { name: string } | undefined;
+      const project = db.prepare('SELECT name, workspace_path FROM projects WHERE id = ?').get(task.project_id) as { name: string; workspace_path: string | null } | undefined;
       // T00763：任务关联了 PRD（req_ids → prd_requirements.prd_id）时自动加载原文作为上下文注入
       const prd = resolvePrdContext({ taskId });
       const result = await adapter.send(
@@ -107,6 +107,7 @@ export const AIService = {
           description: task.description,
           projectName: project?.name ?? '',
           prdContext: prd ? `PRD 文档《${prd.filename || '未命名'}》相关原文：\n${prd.content}` : undefined,
+          workspacePath: project?.workspace_path || undefined, // T00771
         },
         config,
       );
@@ -355,7 +356,7 @@ export const AIService = {
       const adapter = getAdapter(type);
       const task = TaskService.getById(job.task_id);
       if (!task) return { ok: false, error: '任务不存在' };
-      const project = db.prepare('SELECT name FROM projects WHERE id = ?').get(task.project_id) as { name: string } | undefined;
+      const project = db.prepare('SELECT name, workspace_path FROM projects WHERE id = ?').get(task.project_id) as { name: string; workspace_path: string | null } | undefined;
       // T00763：队列发送同样自动携带关联 PRD 上下文
       const prd = resolvePrdContext({ taskId: task.id });
       const context = {
@@ -365,6 +366,7 @@ export const AIService = {
         aiSummary: task.ai_summary ?? undefined,
         projectName: project?.name ?? '',
         prdContext: prd ? `PRD 文档《${prd.filename || '未命名'}》相关原文：\n${prd.content}` : undefined,
+        workspacePath: project?.workspace_path || undefined, // T00771
       };
       // 发送前固化上下文快照（FR4.4）
       db.prepare('UPDATE queue_jobs SET request_payload = ? WHERE id = ?')
@@ -380,7 +382,7 @@ export const AIService = {
       const db = getDb();
       const task = TaskService.getById(job.task_id);
       if (!task) return { ok: false, error: '任务不存在' };
-      const project = db.prepare('SELECT name FROM projects WHERE id = ?').get(task.project_id) as { name: string } | undefined;
+      const project = db.prepare('SELECT name, workspace_path FROM projects WHERE id = ?').get(task.project_id) as { name: string; workspace_path: string | null } | undefined;
       // T00763：异步提交同样自动携带关联 PRD 上下文
       const prd = resolvePrdContext({ taskId: task.id });
       const context = {
@@ -390,6 +392,7 @@ export const AIService = {
         aiSummary: task.ai_summary ?? undefined,
         projectName: project?.name ?? '',
         prdContext: prd ? `PRD 文档《${prd.filename || '未命名'}》相关原文：\n${prd.content}` : undefined,
+        workspacePath: project?.workspace_path || undefined, // T00771
       };
       // 与 buildSender 一致：提交前固化上下文快照，避免任务被改导致回执错位
       db.prepare('UPDATE queue_jobs SET request_payload = ? WHERE id = ?')

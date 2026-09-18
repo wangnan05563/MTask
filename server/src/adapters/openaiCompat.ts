@@ -64,6 +64,7 @@ export class OpenAICompatAdapter implements AIAdapter {
       context.description ? `【描述】${context.description}` : '',
       context.aiSummary ? `【AI 梳理摘要】${context.aiSummary}` : '',
       context.prdContext ? `【PRD 需求上下文】${context.prdContext}` : '', // T00763
+      context.workspacePath ? `【工作空间】${context.workspacePath}（项目上下文根路径）` : '', // T00771
       context.attachments?.length ? `【附件】${context.attachments.join(', ')}` : '',
     ].filter(Boolean).join('\n');
     return this.chat(system, user, config);

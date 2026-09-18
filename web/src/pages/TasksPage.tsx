@@ -9,6 +9,7 @@ import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, togg
 import { useBusy, setBusy } from '../ui/busy';
 import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, ChevronDown, ChevronUp, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, Pin, Plus, Save, ScanSearch, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
+import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00771：工作空间选择器（项目上下文根路径）
 
 // ---------- T00552：批量分类运行态模块级化——切页后循环继续、返回不卡死 ----------
 export const classifyStore: { busy: boolean; hit: number; total: number; done: boolean } = { busy: false, hit: 0, total: 0, done: false };
@@ -118,6 +119,7 @@ function priorityLabel(priority: string): string {
 export function TasksPage() {
   // 新建任务表单字段：跨切换会话持久化，录入一半切页后可续写
   const [newTitle, setNewTitle] = useSessionState('tasks.new.title', '');
+  const [wsPickForNew, setWsPickForNew] = useState<Project | null>(null); // T00771：新建项目后的工作空间绑定弹窗（可跳过）
   const [newPriority, setNewPriority] = useSessionState<string>('tasks.new.priority', 'normal');
   const [newDescOpen, setNewDescOpen] = useSessionState('tasks.new.descOpen', false);
   const [newDesc, setNewDesc] = useSessionState('tasks.new.desc', '');
@@ -436,9 +438,18 @@ export function TasksPage() {
   async function createProject() {
     const name = await askInput({ title: '新项目名称', placeholder: '请输入项目名称' });
     if (!name) return;
-    await api.post('/projects', { name });
+    const created = await api.post<Project>('/projects', { name });
     setActiveProject('');
     void loadProjects();
+    // T00771：新建项目后顺带弹出工作空间绑定（可跳过）——建立项目名与工作空间路径的绑定关系
+    if (created?.id) setWsPickForNew(created);
+  }
+
+  /** T00771：绑定工作空间到项目（PATCH + 本地状态同步，项目切换时下拉条自动联动回显） */
+  async function bindWorkspace(projectId: string, path: string) {
+    const updated = await api.patch<Project>(`/projects/${projectId}`, { workspacePath: path });
+    setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, workspace_path: updated?.workspace_path ?? path } : p)));
+    flash(`已绑定工作空间：${path}`);
   }
 
   /** 修改当前项目名称：弹输入框预填当前名称，确认后 PATCH 更新并刷新列表。
@@ -2233,6 +2244,15 @@ export function TasksPage() {
             </div>
           )}
         </div>
+        {/* T00771：工作空间下拉条——紧接「项目」下拉条之后（无框样式）；绑定项目上下文根路径，切换项目自动联动回显 */}
+        <WorkspaceSelect
+          project={projects.find((p) => p.id === activeProject) ?? null}
+          onBind={(path) => {
+            if (!activeProject) { flash('请先选择要绑定工作空间的项目'); return Promise.resolve(); }
+            return bindWorkspace(activeProject, path);
+          }}
+          flash={flash}
+        />
         {/* T00655：项目排序图标——位于项目选择框之后、新建项目图标之前（悬浮/点击交互动画由 tbtn-anim 提供） */}
         <span ref={projSortRef} style={{ position: 'relative', display: 'inline-flex' }}>
           <button
@@ -2875,6 +2895,29 @@ export function TasksPage() {
         }
       `}</style>
       {renderToolbar()}
+      {/* T00771：新建项目后的工作空间绑定弹窗——内嵌同款选择面板（历史/新建/打开本地文件夹），可跳过 */}
+      {wsPickForNew && (
+        <div onClick={() => setWsPickForNew(null)} role="dialog" aria-modal="true" aria-label="绑定工作空间"
+          style={{ position: 'fixed', inset: 0, zIndex: 900, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '18vh' }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ width: 300, background: 'var(--card-bg)', color: 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 12px 40px rgba(0,0,0,.25)', padding: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>为「{wsPickForNew.name}」选择工作空间</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>工作空间是项目的上下文根路径，AI 功能将以此路径加载上下文；可跳过稍后在任务菜单绑定。</div>
+            <div style={{ position: 'relative' }}>
+              <WorkspaceSelect
+                variant="bare"
+                project={wsPickForNew}
+                onBind={async (path) => { await bindWorkspace(wsPickForNew.id, path); setWsPickForNew(null); }}
+                flash={flash}
+              />
+            </div>
+            <button onClick={() => setWsPickForNew(null)}
+              style={{ marginTop: 8, width: '100%', fontSize: 12, padding: '5px 0', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}>
+              跳过，稍后绑定
+            </button>
+          </div>
+        </div>
+      )}
       {renderNewTaskForm()}
       {renderTaskLists()}
       {hasMore && renderLoadMore()}

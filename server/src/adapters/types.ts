@@ -12,6 +12,8 @@ export interface TaskContext {
   attachments?: string[];
   /** T00763：任务关联 PRD 的原文上下文（自动注入，适配器拼入用户消息） */
   prdContext?: string;
+  /** T00771：项目工作空间根路径——AI 据此定位项目上下文（为空不注入） */
+  workspacePath?: string;
 }
 
 export interface ToolConfig {

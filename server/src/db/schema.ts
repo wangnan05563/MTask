@@ -298,6 +298,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('tasks', 'req_ids', 'req_ids TEXT');
   // T00763：需求行关联的 PRD 文档 id（导入时若携带 PRD 原文则回填，供矩阵查看与 AI 上下文反查）
   ensureColumn('prd_requirements', 'prd_id', 'prd_id TEXT');
+  // T00771：项目工作空间根路径——项目上下文锚点（多项目可指向同一目录，仅存路径引用）；
+  // 为空表示未绑定。任务菜单工作空间下拉条 / AI 上下文注入 / MCP 项目列表均消费该字段
+  ensureColumn('projects', 'workspace_path', "workspace_path TEXT DEFAULT ''");
   // T00589 二轮：**项目级快照**——projects.history_at 非空即整个项目已沉淀为历史资产快照
   // （该项目在任务/计划菜单的项目列表中不再出现，内容随项目快照整体恢复或归档）
   ensureColumn('projects', 'history_at', 'history_at TEXT');
