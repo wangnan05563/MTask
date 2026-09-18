@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown'; // T00763：PRD 原文 Markdown 渲染弹窗
-import { Check, ChevronDown, ChevronUp, FileText, Link2, Loader2, Plus, RefreshCw, Table2, Trash2, X } from 'lucide-react'; // T00765：标题点击查询详情；T00763：查看PRD
+import { Check, ChevronDown, ChevronUp, FileText, Link2, ListChecks, Loader2, Plus, RefreshCw, Table2, Trash2, X } from 'lucide-react'; // T00765：标题点击查询详情；T00763：查看PRD；T00773：多选模式
 
 /** 矩阵行：需求 + 其关联的计划与待办（T00662） */
 interface MatrixReq {
@@ -46,6 +46,10 @@ export function ReqMatrixPanel({ projectId, onClose }: {
   const [queryId, setQueryId] = useState<string>(''); // T00765：正在查看详情的需求 id（点击标题旁 chevron 切换）
   const [prdModal, setPrdModal] = useState<{ filename: string; content: string } | null | undefined>(undefined); // T00763：undefined=关闭，null=加载中，对象=展示中
   const [newTitle, setNewTitle] = useState('');
+  // T00773：多选模式（参考项目计划 T00564）——批量更改状态 / 批量删除
+  const [multi, setMulti] = useState(false);
+  const [selIds, setSelIds] = useState<string[]>([]);
+  const allRef = useRef<HTMLInputElement>(null);
 
   /** T00763：查看 PRD 原文——拉取完整 Markdown 后弹窗渲染 */
   async function openPrd(doc: { id: string; filename: string }) {
@@ -110,7 +114,39 @@ export function ReqMatrixPanel({ projectId, onClose }: {
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
   }
 
+  /** T00773：批量更改选中需求的状态（复用单条 PATCH，循环提交） */
+  async function batchSetStatus(st: string) {
+    const ids = [...selIds];
+    if (ids.length === 0 || !st) return;
+    setBusy(true);
+    try {
+      for (const id of ids) await api.patch(`/plans/prd-requirements/${id}`, { status: st });
+      setSelIds([]);
+      flash(`已把 ${ids.length} 条需求状态设为 ${STATUS_OPTIONS.find((s) => s.key === st)?.label ?? st}`);
+      await load();
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
+  }
+
+  /** T00773：批量删除选中需求（逐条清理关联，与单条删除同语义） */
+  async function batchDeleteReqs() {
+    const ids = [...selIds];
+    if (ids.length === 0) return;
+    const victims = rows.filter((r) => ids.includes(r.id));
+    if (!(await askConfirm(`删除选中的 ${ids.length} 条需求？\n\n其与计划/待办的关联将一并清理（计划与任务本身不受影响）。`))) return;
+    setBusy(true);
+    try {
+      for (const id of ids) await api.del(`/plans/prd-requirements/${id}`);
+      setSelIds([]);
+      flash(`已删除 ${ids.length} 条需求并清理关联`);
+      await load();
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
+  }
+
   const covered = rows.filter((r) => r.linkedPlans.length > 0 || r.linkedTasks.length > 0).length;
+  // T00773：全选框半选态（部分选中时显示短横线）
+  useEffect(() => {
+    if (allRef.current) allRef.current.indeterminate = selIds.length > 0 && selIds.length < rows.length;
+  }, [selIds, rows]);
 
   return (
     <div style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 14 }}>
@@ -121,6 +157,32 @@ export function ReqMatrixPanel({ projectId, onClose }: {
           共 {rows.length} 条需求，已关联计划/待办 {covered} 条；可增删改与调整关联
         </span>
         <span style={{ flex: 1 }} />
+        {/* T00773：多选模式开关（参考项目计划 T00564）——勾选需求后批量改状态/删除 */}
+        <button onClick={() => { setMulti((m) => !m); setSelIds([]); }} className="tbtn-anim"
+          title={multi ? '退出多选模式' : '多选模式 — 勾选需求后批量更改状态/删除'} aria-label={multi ? '退出多选模式' : '进入多选模式'}
+          style={{ display: 'inline-flex', alignItems: 'center', fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 6, background: multi ? 'var(--accent)' : 'transparent', color: multi ? 'var(--accent-text)' : 'var(--text)', cursor: 'pointer', padding: '3px 7px' }}>
+          {multi ? <Check size={12} /> : <ListChecks size={12} />}
+        </button>
+        {multi && selIds.length > 0 && (
+          <span className="op-host" style={{ display: 'inline-flex', gap: 6, alignItems: 'center', border: '1px solid var(--accent)', borderRadius: 6, padding: '2px 8px', background: 'var(--card-bg)' }}>
+            <span style={{ fontSize: 11, color: 'var(--accent)' }}>已选 {selIds.length}</span>
+            <button onClick={() => setSelIds(selIds.length === rows.length ? [] : rows.map((r) => r.id))} className="task-op"
+              title={selIds.length === rows.length ? '取消全选' : '全选当前需求'} style={{ fontSize: 11, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)' }}>
+              {selIds.length === rows.length ? '取消全选' : '全选'}
+            </button>
+            <select value="" onChange={(e) => { const v = e.target.value; if (v) void batchSetStatus(v); }}
+              title="批量设置状态" aria-label="批量设置需求状态"
+              style={{ padding: 2, fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+              <option value="">批量状态…</option>
+              {STATUS_OPTIONS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+            </select>
+            <button onClick={() => void batchDeleteReqs()} disabled={busy} className="task-op"
+              title="删除选中需求 — 一并清理其与计划/待办的关联" aria-label="批量删除选中需求"
+              style={{ display: 'inline-flex', alignItems: 'center', fontSize: 11, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)', padding: 2 }}>
+              <Trash2 size={13} />
+            </button>
+          </span>
+        )}
         <button onClick={() => void load()} className="tbtn-anim" title="刷新矩阵" aria-label="刷新矩阵"
           style={{ display: 'inline-flex', alignItems: 'center', gap: 3, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 11, padding: '2px 8px' }}>
           <RefreshCw size={12} /> 刷新
@@ -152,6 +214,16 @@ export function ReqMatrixPanel({ projectId, onClose }: {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ color: 'var(--text-muted)', textAlign: 'left', background: 'var(--surface-2, transparent)' }}>
+                  {/* T00773：多选模式勾选列——表头全选（含半选态） */}
+                  {multi && (
+                    <th style={{ padding: '5px 6px', width: 30 }}>
+                      <input ref={allRef} type="checkbox"
+                        checked={rows.length > 0 && selIds.length === rows.length}
+                        onChange={(e) => setSelIds(e.target.checked ? rows.map((r) => r.id) : [])}
+                        title="全选/全不选当前需求" aria-label="全选需求"
+                        style={{ cursor: 'pointer' }} />
+                    </th>
+                  )}
                   <th style={{ padding: '5px 6px' }}>需求编号</th>
                   <th style={{ padding: '5px 6px' }}>需求标题</th>
                   <th style={{ padding: '5px 6px' }}>状态</th>
@@ -163,6 +235,15 @@ export function ReqMatrixPanel({ projectId, onClose }: {
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.id} style={{ borderTop: '1px solid var(--border)' }}>
+                    {/* T00773：行内勾选框（多选模式下出现） */}
+                    {multi && (
+                      <td style={{ padding: '4px 6px' }}>
+                        <input type="checkbox" checked={selIds.includes(r.id)}
+                          onChange={(e) => setSelIds(e.target.checked ? [...selIds, r.id] : selIds.filter((x) => x !== r.id))}
+                          aria-label={`选中需求 ${r.title}`} title={`选中 ${r.req_no || ''} ${r.title}`}
+                          style={{ cursor: 'pointer' }} />
+                      </td>
+                    )}
                     <td style={{ padding: '4px 6px', width: 100 }}>
                       <input defaultValue={r.req_no} aria-label="需求编号" title="需求编号（失焦保存）"
                         onBlur={(e) => { if (e.target.value !== r.req_no) void updateReq(r.id, { req_no: e.target.value }); }}
