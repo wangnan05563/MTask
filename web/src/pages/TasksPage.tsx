@@ -2282,7 +2282,7 @@ export function TasksPage() {
             setDescExpanded(v); setSummaryExpanded(v);
             setResultOpen(Object.fromEntries(resultIds.map((id) => [id, true])));
           }
-        }} title="全部收起/展开 — 收起为高频操作优先：有展开内容时点击收起，全部收起后点击展开" aria-label="全部收起或展开任务详情"
+        }} title="一键收起或展开全部任务的描述、AI 摘要与处理结果（收起为高频操作优先）" aria-label="一键收起或展开全部任务详情"
           style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}>
           {(() => {
             const ids = [...todo, ...done];
