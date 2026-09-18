@@ -120,7 +120,7 @@ export function PlanPage() {
   // T00460：切页保状态——项目选择会话级持久化，切回不重置
   const [projectId, setProjectId] = useSessionState('plan.projectId', '');
   const [plans, setPlans] = useState<PlanTask[]>([]);
-  const [holidays, setHolidays] = useState<Array<{ date: string; name: string }>>([]);
+  const [holidays, setHolidays] = useState<Array<{ date: string; name: string; kind: string }>>([]); // T00764：kind= holiday 放假日 | overtime 加班日
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   // T00438 AI 导入：模型列表与选中工具（持久化）、解析弹窗状态、可编辑草稿行
@@ -287,7 +287,7 @@ export function PlanPage() {
     void api.get<PlanTask[]>(`/plans?projectId=${projectId}`).then(setPlans).catch((e) => flash(String(e.message ?? e)));
   }, [projectId]);
   useEffect(() => { reload(); }, [reload]);
-  useEffect(() => { void api.get<Array<{ date: string; name: string }>>('/plans/holidays').then(setHolidays).catch(() => undefined); }, []);
+  useEffect(() => { void api.get<Array<{ date: string; name: string; kind: string }>>('/plans/holidays').then(setHolidays).catch(() => undefined); }, []);
 
   // ---------- 计划任务操作 ----------
 
@@ -674,7 +674,7 @@ export function PlanPage() {
     const toIdx = (d: string) => Math.round((new Date(d + 'T00:00:00').getTime() - new Date(rangeStart + 'T00:00:00').getTime()) / dayMs);
     const totalDays = toIdx(rangeEnd) + 1;
     const todayIdx = toIdx(todayStr());
-    const holSet = new Set(holidays.map((h) => h.date));
+    const holSet = new Set(holidays.filter((h) => h.kind !== 'overtime').map((h) => h.date)); // T00764：加班日不标休
 
     // 顶部月份刻度
     const monthTicks: Array<{ label: string; left: number }> = [];
@@ -752,6 +752,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
   const [holiOpen, setHoliOpen] = useSessionState<boolean>('plan.holiOpen', false); // T00570：切页保持
   const [holiTab, setHoliTab] = useSessionState<'manage' | 'national' | 'calendar'>('plan.holiTab', 'manage'); // T00570：切页保持
   const [holiNewDate, setHoliNewDate] = useState('');
+  const [holiNewKind, setHoliNewKind] = useState<'holiday' | 'overtime'>('holiday'); // T00764
   const [holiNewName, setHoliNewName] = useState('');
   const [holiBusy, setHoliBusy] = useState(false);
   const [natYear, setNatYear] = useState(new Date().getFullYear());
@@ -769,13 +770,14 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
   }
 
   async function addHolidayInModal() {
-    if (!holiNewDate) return flash('请先选择节假日日期');
+    if (!holiNewDate) return flash('请先选择日期');
     setHoliBusy(true);
     try {
-      await api.post('/plans/holidays', { date: holiNewDate, name: holiNewName });
+      // T00764：kind= holiday 节假日 | overtime 加班日（周末/节假日调来上班，排期按工作日处理）
+      await api.post('/plans/holidays', { date: holiNewDate, name: holiNewName, kind: holiNewKind });
       setHolidays(await api.get('/plans/holidays'));
       reload();
-      flash('节假日已添加，相关时间线已重排');
+      flash(holiNewKind === 'overtime' ? '加班日已添加，排期时按工作日处理' : '节假日已添加，相关时间线已重排');
       setHoliNewDate(''); setHoliNewName('');
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setHoliBusy(false); }
   }
@@ -823,16 +825,19 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 1, fontSize: 10, textAlign: 'center' }}>
           {['日', '一', '二', '三', '四', '五', '六'].map((w) => <span key={w} style={{ color: 'var(--text-muted)' }}>{w}</span>)}
           {cells.map((c, i) => {
+            // T00764：加班日（kind=overtime）绿色标记——排期按工作日处理
+            const ot = c.day != null && holidays.some((h) => h.date === `${year}-${String(month + 1).padStart(2, '0')}-${String(c.day).padStart(2, '0')}` && h.kind === 'overtime');
             let color = 'var(--text)';
-            if (c.hol) color = 'var(--danger)';
+            if (ot) color = 'var(--success, #16a34a)';
+            else if (c.hol) color = 'var(--danger)';
             else if (c.weekend) color = 'var(--text-muted)';
             return (
-              <span key={c.day ?? `pad-${i}`} title={c.hol ? `节假日：${c.hol}` : undefined}
+              <span key={c.day ?? `pad-${i}`} title={ot ? '加班日 — 排期按工作日处理' : (c.hol ? `节假日：${c.hol}` : undefined)}
                 style={{
                   padding: '2px 0', borderRadius: 3,
                   color,
-                  background: c.hol ? 'var(--danger-soft, rgba(220,38,38,.12))' : 'transparent',
-                  fontWeight: c.hol ? 600 : 400,
+                  background: ot ? 'var(--success-soft, rgba(22,163,74,.12))' : (c.hol ? 'var(--danger-soft, rgba(220,38,38,.12))' : 'transparent'),
+                  fontWeight: c.hol || ot ? 600 : 400,
                 }}>
                 {c.day ?? ''}
               </span>
@@ -1422,19 +1427,29 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             <div style={{ padding: 14, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
               {holiTab === 'manage' && (
                 <>
+                  {/* T00764：类型下拉（节假日/加班日）——加班日按工作日参与排期 */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                    <input type="date" value={holiNewDate} onChange={(e) => setHoliNewDate(e.target.value)} style={inputStyle} aria-label="节假日日期" />
-                    <input value={holiNewName} placeholder="名称（如：国庆节）" onChange={(e) => setHoliNewName(e.target.value)} style={{ ...inputStyle, width: 140 }} aria-label="节假日名称" />
+                    <select value={holiNewKind} onChange={(e) => setHoliNewKind(e.target.value as 'holiday' | 'overtime')}
+                      aria-label="维护类型" title="节假日=放假日；加班日=周末/节假日调来上班，排期按工作日处理"
+                      style={{ ...inputStyle, width: 96 }}>
+                      <option value="holiday">节假日</option>
+                      <option value="overtime">加班日</option>
+                    </select>
+                    <input type="date" value={holiNewDate} onChange={(e) => setHoliNewDate(e.target.value)} style={inputStyle} aria-label="日期" />
+                    <input value={holiNewName} placeholder={holiNewKind === 'overtime' ? '备注（如：项目冲刺加班）' : '名称（如：国庆节）'} onChange={(e) => setHoliNewName(e.target.value)} style={{ ...inputStyle, width: 140 }} aria-label="名称" />
                     <button onClick={() => void addHolidayInModal()} disabled={holiBusy} style={btnStyle}>添加</button>
-                    <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>共 {holidays.length} 条</span>
+                    <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>共 {holidays.length} 条（加班日 {holidays.filter((h) => h.kind === 'overtime').length}）</span>
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: '44vh', overflowY: 'auto' }}>
-                    {holidays.length === 0 && <div style={{ color: 'var(--text-muted)' }}>暂无节假日。可手动添加，或在「联网导入」页签拉取国家法定节假日。</div>}
+                    {holidays.length === 0 && <div style={{ color: 'var(--text-muted)' }}>暂无节假日/加班日。可手动添加，或在「联网导入」页签拉取国家法定节假日。</div>}
                     {holidays.map((h) => (
                       <div key={h.date} style={{ display: 'flex', alignItems: 'center', gap: 8, border: '1px solid var(--border)', borderRadius: 4, padding: '4px 8px' }}>
                         <span style={{ fontWeight: 600, minWidth: 90 }}>{h.date}</span>
+                        <span style={{ fontSize: 10, border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: h.kind === 'overtime' ? 'var(--success, #16a34a)' : 'var(--danger)', flexShrink: 0 }}>
+                          {h.kind === 'overtime' ? '加班日' : '节假日'}
+                        </span>
                         <span style={{ flex: 1, color: 'var(--text-secondary)' }}>{h.name || '—'}</span>
-                        <button onClick={() => void removeHoliday(h.date)} disabled={holiBusy} title="移除该节假日"
+                        <button onClick={() => void removeHoliday(h.date)} disabled={holiBusy} title={h.kind === 'overtime' ? '移除该加班日' : '移除该节假日'}
                           style={{ border: 'none', background: 'transparent', color: 'var(--danger)', cursor: 'pointer', display: 'inline-flex' }}><Trash2 size={13} /></button>
                       </div>
                     ))}

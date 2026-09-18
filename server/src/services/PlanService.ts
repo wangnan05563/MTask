@@ -190,33 +190,39 @@ function cellValueText(v: unknown): string {
   return String(v); // NOSONAR - 前置 typeof 已排除 object 分支，此处仅剩 string/number/boolean/bigint
 }
 
-function loadHolidaySet(): Set<string> {
-  const rows = getDb().prepare('SELECT date FROM holidays').all() as { date: string }[];
-  return new Set(rows.map((r) => r.date));
+/** T00764：日历上下文——holidays=放假日（工作日排除），overtime=加班日（周末/节假日上班，强制算工作日） */
+interface WorkdayCal { holidays: Set<string>; overtime: Set<string>; }
+
+function loadCalendar(): WorkdayCal {
+  const rows = getDb().prepare('SELECT date, kind FROM holidays').all() as { date: string; kind: string | null }[];
+  const cal: WorkdayCal = { holidays: new Set(), overtime: new Set() };
+  for (const r of rows) (r.kind === 'overtime' ? cal.overtime : cal.holidays).add(r.date);
+  return cal;
 }
 
-/** 工作日 = 非周六日 且 不在节假日表 */
-function isWorkday(d: Date, holidays: Set<string>): boolean {
+/** 工作日 = 加班日优先视为工作日；否则非周六日 且 不在节假日表 */
+function isWorkday(d: Date, cal: WorkdayCal): boolean {
+  if (cal.overtime.has(fmt(d))) return true;
   const wd = d.getDay();
   if (wd === 0 || wd === 6) return false;
-  return !holidays.has(fmt(d));
+  return !cal.holidays.has(fmt(d));
 }
 
 /** 起始日起 duration_days 个工作日的含尾结束日 */
-function calcEndDate(start: string, durationDays: number, holidays: Set<string>): string {
+function calcEndDate(start: string, durationDays: number, cal: WorkdayCal): string {
   const d = parseDate(start);
   let left = durationDays;
   while (left > 0) {
-    if (isWorkday(d, holidays)) left -= 1;
+    if (isWorkday(d, cal)) left -= 1;
     if (left > 0) d.setDate(d.getDate() + 1);
   }
   return fmt(d);
 }
 
 /** 某结束日之后的下一个工作日（串行重排用） */
-function nextWorkday(after: string, holidays: Set<string>): string {
+function nextWorkday(after: string, cal: WorkdayCal): string {
   const d = parseDate(after);
-  do { d.setDate(d.getDate() + 1); } while (!isWorkday(d, holidays));
+  do { d.setDate(d.getDate() + 1); } while (!isWorkday(d, cal));
   return fmt(d);
 }
 
@@ -228,14 +234,14 @@ function nextWorkday(after: string, holidays: Set<string>): string {
 
 /** 单任务工期收尾：end = start 起按工作日计 duration 天 */
 function refreshTaskEnd(db: ReturnType<typeof getDb>, id: string, start: string, duration: number): void {
-  const end = calcEndDate(start, Math.max(1, duration), loadHolidaySet());
+  const end = calcEndDate(start, Math.max(1, duration), loadCalendar());
   db.prepare("UPDATE plan_tasks SET start_date = COALESCE(NULLIF(?, ''), start_date), end_date = ?, updated_at = ? WHERE id = ?")
     .run(start, end, now(), id);
 }
 
 /** 沿显式 deps 依赖图传播重算（BFS）：serial 后移 / parallel 对齐前置开始日 */
 function rescheduleDependents(db: ReturnType<typeof getDb>, projectId: string, seedId: string): void {
-  const holidays = loadHolidaySet();
+  const cal = loadCalendar();
   const all = db.prepare(
     'SELECT id, title, start_date, end_date, duration_days, deps, kind FROM plan_tasks WHERE project_id = ? AND archived = 0',
   ).all(projectId) as Array<{ id: string; title: string; start_date: string; end_date: string; duration_days: number; deps: string; kind: string }>;
@@ -258,13 +264,13 @@ function rescheduleDependents(db: ReturnType<typeof getDb>, projectId: string, s
         const ends = deps.filter((d) => d.type === 'serial')
           .map((d) => map.get(d.id)?.end_date)
           .filter(isDate).sort();
-        if (ends.length > 0) start = nextWorkday(ends[ends.length - 1], holidays);
+        if (ends.length > 0) start = nextWorkday(ends[ends.length - 1], cal);
         else continue; // 串行前置已缺失：保持现状（徽标已标注「已删除」）
       } else {
         if (!isDate(seed.start_date)) continue;
         start = seed.start_date; // parallel：与前置同日开工
       }
-      const end = calcEndDate(start, Math.max(1, row.duration_days), holidays);
+      const end = calcEndDate(start, Math.max(1, row.duration_days), cal);
       if (start !== row.start_date || end !== row.end_date) {
         upd.run(start, end, t, row.id);
         row.start_date = start; row.end_date = end;
@@ -292,7 +298,7 @@ interface RescheduleOpts {
  * 在 2000+ 计划规模下是主要开销）；updated_at 取同一次 now()，避免逐行构造时间戳。
  */
 function rescheduleFrom(db: ReturnType<typeof getDb>, projectId: string, fromOrder: number, opts: RescheduleOpts = {}): void {
-  const holidays = loadHolidaySet();
+  const cal = loadCalendar();
   const rows = db.prepare(
     'SELECT id, start_date, duration_days, sort_order FROM plan_tasks WHERE project_id = ? AND archived = 0 AND sort_order >= ? ORDER BY sort_order',
   ).all(projectId, fromOrder) as Array<Pick<PlanTaskRow, 'id' | 'start_date' | 'duration_days' | 'sort_order'>>;
@@ -304,11 +310,11 @@ function rescheduleFrom(db: ReturnType<typeof getDb>, projectId: string, fromOrd
     const r = rows[i];
     let start: string;
     if (i === 0) {
-      start = opts.firstStartDate ?? (opts.afterEndDate ? nextWorkday(opts.afterEndDate, holidays) : (r.start_date || fmt(new Date())));
+      start = opts.firstStartDate ?? (opts.afterEndDate ? nextWorkday(opts.afterEndDate, cal) : (r.start_date || fmt(new Date())));
     } else {
-      start = nextWorkday(prevEnd!, holidays);
+      start = nextWorkday(prevEnd!, cal);
     }
-    const end = calcEndDate(start, Math.max(1, r.duration_days), holidays);
+    const end = calcEndDate(start, Math.max(1, r.duration_days), cal);
     upd.run(start, end, t, r.id);
     prevEnd = end;
   }
@@ -426,12 +432,10 @@ export const PlanService = {
     const status = PLAN_STATUSES.has(input.status as PlanStatus) ? (input.status as PlanStatus) : 'todo';
     const duration = Math.max(1, Math.floor(Number(input.durationDays) || 1));
     const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ? AND archived = 0').get(input.projectId) as { m: number }).m;
-    const first = maxOrder < 0;
     const dateRe = /^\d{4}-\d{2}-\d{2}$/;
-    let start = '';
-    if (first) {
-      start = input.startDate && dateRe.test(input.startDate) ? input.startDate : fmt(new Date());
-    }
+    // T00764 顺带修复（T00561 引入的缺陷）：非首条计划 start 误置空串 → refreshTaskEnd 抛「日期格式非法」，
+    // 同项目第二条计划经 POST /plans 无法创建。各行独立语义下 startDate 恒被尊重，缺省今天。
+    let start = input.startDate && dateRe.test(input.startDate) ? input.startDate : fmt(new Date());
     const id = uuid();
     const t = now();
     db.transaction(() => {
@@ -480,7 +484,7 @@ export const PlanService = {
       // T00561：去掉默认串行链——变更只影响本任务（end 重算），仅显式配置依赖的任务联动传播
       const cur = this.get(id)!;
       db.prepare('UPDATE plan_tasks SET end_date = ? WHERE id = ?')
-        .run(calcEndDate(cur.start_date, cur.duration_days, loadHolidaySet()), id);
+        .run(calcEndDate(cur.start_date, cur.duration_days, loadCalendar()), id);
       rescheduleDependents(db, row.project_id, id);
       if (linkedTaskId) {
         db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?').run(taskStatusForPlan(status), now(), linkedTaskId);
@@ -650,14 +654,16 @@ export const PlanService = {
 
   // ---------- 节假日 ----------
 
-  listHolidays(): Array<{ date: string; name: string }> {
-    return getDb().prepare('SELECT date, name FROM holidays ORDER BY date').all() as Array<{ date: string; name: string }>;
+  listHolidays(): Array<{ date: string; name: string; kind: string }> {
+    return getDb().prepare('SELECT date, name, kind FROM holidays ORDER BY date').all() as Array<{ date: string; name: string; kind: string }>;
   },
 
-  addHoliday(date: string, name: string): void {
+  /** T00764：kind='holiday' 放假日 | 'overtime' 加班日（同日重复添加视为切换类型，upsert 覆盖） */
+  addHoliday(date: string, name: string, kind: 'holiday' | 'overtime' = 'holiday'): void {
     if (!DATE_RE.test(date)) throw new Error('日期格式应为 YYYY-MM-DD');
-    getDb().prepare('INSERT INTO holidays (date, name) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET name = excluded.name')
-      .run(date, name.trim());
+    if (kind !== 'holiday' && kind !== 'overtime') throw new Error('类型非法：应为 holiday 或 overtime');
+    getDb().prepare("INSERT INTO holidays (date, name, kind) VALUES (?, ?, ?) ON CONFLICT(date) DO UPDATE SET name = excluded.name, kind = excluded.kind")
+      .run(date, name.trim(), kind);
     // 只有「结束日 ≥ 该日期」的计划行可能受影响（该日期前已结束的行工作日计数不变）
     this.rescheduleFromDate(date);
   },
@@ -717,13 +723,13 @@ export const PlanService = {
     for (const pid of ids) {
       // T00561：新排期模型下任务日期独立——节假日变更只刷新各行 end（start 不动），不触发串行顺延
       const rows = db.prepare('SELECT id, start_date, duration_days FROM plan_tasks WHERE project_id = ? AND archived = 0').all(pid) as Array<{ id: string; start_date: string; duration_days: number }>;
-      const holidays = loadHolidaySet();
+      const cal = loadCalendar();
       const upd = db.prepare('UPDATE plan_tasks SET end_date = ?, updated_at = ? WHERE id = ?');
       const t = now();
       db.transaction(() => {
         for (const r of rows) {
           if (!isDate(r.start_date)) continue;
-          upd.run(calcEndDate(r.start_date, Math.max(1, r.duration_days), holidays), t, r.id);
+          upd.run(calcEndDate(r.start_date, Math.max(1, r.duration_days), cal), t, r.id);
         }
       })();
     }
@@ -822,11 +828,11 @@ export const PlanService = {
            progress, status, assignee, sort_order, linked_task_id, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, '', ?, 0, ?, ?, ?, NULL, ?, ?)`,
       );
-      const holidays = loadHolidaySet();
+      const cal = loadCalendar();
       parsed.forEach((p, i) => {
         // T00561：各行日期独立——开始日用自己的（空则今天），end 按工作日计算，不联动他人
         const start = p.startDate || fmt(new Date());
-        const end = calcEndDate(start, p.durationDays, holidays);
+        const end = calcEndDate(start, p.durationDays, cal);
         ins.run(uuid(), projectId, p.title, p.description, start, end, p.durationDays, p.status, p.assignee, maxOrder + 1 + i, t, t);
       });
     })();
@@ -1344,7 +1350,7 @@ export const PlanService = {
     if (clean.length > 5000) throw new Error('单次创建上限 5000 条');
     const db = getDb();
     const t = now();
-    const holidays = loadHolidaySet();
+    const cal = loadCalendar();
     const ids: string[] = [];
     db.transaction(() => {
       const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ? AND archived = 0').get(projectId) as { m: number }).m;
@@ -1359,7 +1365,7 @@ export const PlanService = {
         const status = PLAN_STATUSES.has(it.status as PlanStatus) ? (it.status as PlanStatus) : 'todo';
         // T00561：各行日期独立——开始日用自己的（空则今天），end 按工作日计算
         const start = it.startDate && DATE_RE.test(it.startDate) ? it.startDate : fmt(new Date());
-        const end = calcEndDate(start, duration, holidays);
+        const end = calcEndDate(start, duration, cal);
         const id = uuid();
         ids.push(id);
         ins.run(id, projectId, it.title.trim(), it.description ?? '', start, end, duration, status, it.assignee ?? '', maxOrder + 1 + i, t, t);

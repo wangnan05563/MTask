@@ -274,6 +274,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('tasks', 'derived_from', 'derived_from TEXT');
   // T00719：搁置任务——shelved=1 的任务从待办/已完成列表与 MCP 查询中隔离（不计入待办上下文），仅出现在搁置列表
   ensureColumn('tasks', 'shelved', 'shelved INTEGER DEFAULT 0');
+  // T00764：节假日类型（'holiday'=放假日 | 'overtime'=加班日，周末/节假日调来上班按工作日排期）
+  ensureColumn('holidays', 'kind', "kind TEXT DEFAULT 'holiday'");
   // T00587：模型配置归档（删除按钮改归档）——软删保留记录，列表默认隐藏
   ensureColumn('ai_tools', 'archived', 'archived INTEGER NOT NULL DEFAULT 0');
   // T00589：历史资产（组织过程资产沉淀，与归档=软删除语义区分）——history_at 非空即已入历史资产

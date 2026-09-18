@@ -42,9 +42,11 @@ function pid(req: import('express').Request): string {
 planApi.get('/holidays', (_req, res) => wrap(res, () => PlanService.listHolidays()));
 
 planApi.post('/holidays', (req, res) => {
-  const { date, name } = (req.body ?? {}) as { date?: unknown; name?: unknown };
+  const { date, name, kind } = (req.body ?? {}) as { date?: unknown; name?: unknown; kind?: unknown };
   if (!date || typeof date !== 'string') return res.status(400).json({ error: 'date 必填（YYYY-MM-DD）' });
-  wrap(res, () => { PlanService.addHoliday(date, toStr(name)); return { ok: true }; });
+  // T00764：kind='holiday' 放假日 | 'overtime' 加班日（默认节假日）
+  const k = kind === 'overtime' ? 'overtime' : 'holiday';
+  wrap(res, () => { PlanService.addHoliday(date, toStr(name), k); return { ok: true }; });
 });
 
 planApi.delete('/holidays/:date', (req, res) => wrap(res, () => PlanService.removeHoliday(req.params.date)));
