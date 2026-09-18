@@ -1267,7 +1267,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                   }
                   void updatePlan(p, { start_date: e.target.value });
                 }}
-                  style={inputStyle} aria-label="开始日期" />)}
+                  style={{ ...inputStyle, color: p.status === 'todo' && p.start_date && p.start_date < todayStr() ? 'var(--danger, #dc2626)' : inputStyle.color }} aria-label="开始日期（超期未开始标红）" />)}
               </td>
               <td style={{ padding: 6 }}>
                 {(() => {
