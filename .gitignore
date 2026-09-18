@@ -26,6 +26,19 @@ perf/sandbox/
 .scannerwork/
 *.tsbuildinfo
 
+# ---------- 清理 round-4 自动生成规则 (2026-09-18) ----------
+# electron-builder 输出：package.json build.directories.output=release，
+# 历史轮次改过输出目录产生 release2~release6，均为可重建产物
+/release*/
+# 重定向产物：误用 `> c:/Users/...` 形式在工作区建出的镜像目录
+/c/Users/
+# 打包/扫描日志（*.log 已覆盖，此处显式锚定根目录便于回溯）
+/pack-*.log
+/scan-output*.log
+# SonarQube 分析批次输出（MCP 会话分批落盘，分析结束后可整体删除）
+/.sonar-batch-*.txt
+/.sonar-issues-*
+
 # ---------- review 档 untrack 后的本地留存件 (2026-09-11) ----------
 # 以下文件已 git rm --cached 取消跟踪（物理文件保留在磁盘，可自行删除）
 /main.js
