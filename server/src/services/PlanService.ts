@@ -1137,6 +1137,7 @@ export const PlanService = {
       }
       // 2) 计划（含 req_ids 关联）
       let insertedPlans = 0;
+      let planIds: string[] = []; // T00754：新建计划的 id（与 planItems 下标对齐），供建待办时回写关联
       if (planItems.length > 0) {
         const created = this.createBatch(projectId, planItems.map((p) => ({
           title: p.title,
@@ -1147,10 +1148,11 @@ export const PlanService = {
           status: 'todo' as PlanStatus,
         })));
         insertedPlans = created.inserted;
+        planIds = created.ids;
         // T00709（D-1 修复）：按 createBatch 返回的 id（与 planItems 同一下标序，两侧 title 过滤口径一致）回写 req_ids，
         // 废弃按标题 find 匹配——同名计划会命中同一行导致关联互相覆盖丢失
         const updPlan = db.prepare('UPDATE plan_tasks SET req_ids = ?, updated_at = ? WHERE id = ?');
-        created.ids.forEach((planId, i) => {
+        planIds.forEach((planId, i) => {
           const p = planItems[i];
           if (!p) return;
           const rawNos = p.reqNos ?? [];
@@ -1166,11 +1168,19 @@ export const PlanService = {
           `INSERT INTO tasks (id, task_no, project_id, title, description, priority, status, verified, archived, pinned, req_ids, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, 'todo', 0, 0, 0, ?, ?, ?)`,
         );
-        for (const p of planItems) {
+        // T00754：导入的待办必须与计划建立关联（plan_tasks.linked_task_id）——
+        // 任务列表的「计划」徽标（TaskService.list 反查）与项目管理页「待办联动」均依赖该字段，
+        // 缺失会导致任务无「计划」标签、项目管理页显示「未关联」
+        const linkPlan = db.prepare('UPDATE plan_tasks SET linked_task_id = ?, updated_at = ? WHERE id = ? AND linked_task_id IS NULL');
+        planIds.forEach((planId, i) => {
+          const p = planItems[i];
+          if (!p) return;
           const ids = (p.reqNos ?? []).map((n) => noToId.get(n)).filter((x): x is string => !!x);
-          insTask.run(uuid(), nextTaskNo(), projectId, `[PRD] ${p.title}`, p.description ?? '', 'normal', ids.length ? JSON.stringify(ids) : null, t, t);
+          const taskId = uuid();
+          insTask.run(taskId, nextTaskNo(), projectId, `[PRD] ${p.title}`, p.description ?? '', 'normal', ids.length ? JSON.stringify(ids) : null, t, t);
+          linkPlan.run(taskId, t, planId);
           taskCount += 1;
-        }
+        });
       }
       if (insertedPlans === 0 && reqs.length > 0) {
         // 仅导入需求（无计划）时属合法场景，不抛错
