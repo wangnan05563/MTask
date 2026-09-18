@@ -182,8 +182,15 @@ export interface AskInputExOptions {
   placeholder?: string;
   /** 下拉选择字段（如任务类型） */
   select: { label: string; options: Array<{ value: string; label: string }>; defaultValue: string };
-  /** 条件数字字段（如日常任务的工时估算）；showIf 依据下拉值决定是否显示 */
-  numberField?: { label: string; placeholder?: string; min?: number; required?: boolean; showIf?: (selectValue: string) => boolean };
+  /** 条件数字字段（如日常任务的工时估算）；showIf 依据下拉值决定是否显示。
+   *  T00750：label/required 支持函数形式——按所选类型给出不同文案与必填性（工期字段默认可见） */
+  numberField?: {
+    label: string | ((selectValue: string) => string);
+    placeholder?: string;
+    min?: number;
+    required?: boolean | ((selectValue: string) => boolean);
+    showIf?: (selectValue: string) => boolean;
+  };
 }
 
 export interface AskInputExResult {
@@ -204,7 +211,12 @@ function InputDialogEx({ options, onSubmit }: InputDialogExProps) {
   const ref = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const showNum = options.numberField ? (options.numberField.showIf?.(sel) ?? true) : false;
-  const numOk = !options.numberField || !showNum || !options.numberField.required || (Number(num) >= (options.numberField.min ?? Number.NEGATIVE_INFINITY) && num.trim() !== '');
+  // T00750：required/label 支持函数形式（如「工期」对日常任务必填、对普通任务选填）
+  const numRequiredRaw = options.numberField?.required;
+  const numRequired = typeof numRequiredRaw === 'function' ? numRequiredRaw(sel) : !!numRequiredRaw;
+  const labelRaw = options.numberField?.label;
+  const numLabel = typeof labelRaw === 'function' ? labelRaw(sel) : (labelRaw ?? '');
+  const numOk = !options.numberField || !showNum || !numRequired || (Number(num) >= (options.numberField.min ?? Number.NEGATIVE_INFINITY) && num.trim() !== '');
 
   useEffect(() => { ref.current?.focus(); }, []);
   useEffect(() => {
@@ -237,7 +249,7 @@ function InputDialogEx({ options, onSubmit }: InputDialogExProps) {
         />
         {options.numberField && showNum && (
           <>
-            <label style={{ ...fieldLabel, marginTop: 12 }}>{options.numberField.label}{options.numberField.required ? '（必填）' : ''}</label>
+            <label style={{ ...fieldLabel, marginTop: 12 }}>{numLabel}{numRequired ? '（必填）' : ''}</label>
             <input type="number" value={num} min={options.numberField.min} onChange={(e) => setNum(e.target.value)}
               placeholder={options.numberField.placeholder}
               style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' }}

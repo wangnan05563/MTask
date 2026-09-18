@@ -307,11 +307,12 @@ export function PlanPage() {
         ],
       },
       numberField: {
-        label: '工时估算（工作日）',
-        placeholder: '请填写工时估算，如 3',
+        // T00750：工期字段**默认可见**（原先 showIf 只在「日常任务」时显示，用户反馈默认被隐藏）；
+        // 文案与必填随类型变化：日常任务=「工时估算」（必填），普通/里程碑=「工期」（选填，空则默认 1 天）
+        label: (sv) => (sv === 'daily' ? '工时估算（工作日）' : '工期（工作日）'),
+        placeholder: '如 3（留空按 1 天）',
         min: 1,
-        required: true,
-        showIf: (sv) => sv === 'daily',
+        required: (sv) => sv === 'daily',
       },
     });
     if (!r) return;
