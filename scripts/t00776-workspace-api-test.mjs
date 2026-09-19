@@ -41,24 +41,24 @@ const bind = await api('PATCH', `/api/projects/${pid}`, { workspacePath: WS });
 check('P-02 绑定工作空间', bind.status === 200, `status=${bind.status}`);
 
 // ---- 搜索 ----
-const hit = (await api('GET', `/api/workspace/search?projectId=${pid}&q=token`)).json ?? [];
+const hit = (await api('GET', `/api/workspace/search?projectId=${pid}&q=token`)).json?.items ?? [];
 check('S-1 全文关键词命中多文件', Array.isArray(hit) && hit.some((h) => h.path === 'src/auth/login.ts') && hit.some((h) => h.path === 'src/auth/jwt.ts'),
   `hits=${JSON.stringify(hit.map((h) => h.path))}`);
 check('S-2 命中带行号与片段', hit.some((h) => h.path === 'src/auth/login.ts' && h.line === 2 && h.snippet.includes('JWT')),
   JSON.stringify(hit.find((h) => h.path === 'src/auth/login.ts')));
 check('S-3 node_modules 被忽略', !(hit ?? []).some((h) => h.path.includes('node_modules')), '');
-const fileNameHit = (await api('GET', `/api/workspace/search?projectId=${pid}&q=login`)).json ?? [];
+const fileNameHit = (await api('GET', `/api/workspace/search?projectId=${pid}&q=login`)).json?.items ?? [];
 check('S-4 文件名命中', fileNameHit.some((h) => h.path === 'src/auth/login.ts' && h.line === 0), JSON.stringify(fileNameHit.map((h) => h.path)));
-const globHit = (await api('GET', `/api/workspace/search?projectId=${pid}&q=token&glob=*.ts`)).json ?? [];
+const globHit = (await api('GET', `/api/workspace/search?projectId=${pid}&q=token&glob=*.ts`)).json?.items ?? [];
 check('S-5 glob 限定文件类型', (globHit ?? []).every((h) => h.path.endsWith('.ts')), JSON.stringify(globHit.map((h) => h.path)));
-const noHit = (await api('GET', `/api/workspace/search?projectId=${pid}&q=zzzznotexist`)).json ?? [];
+const noHit = (await api('GET', `/api/workspace/search?projectId=${pid}&q=zzzznotexist`)).json?.items ?? [];
 check('S-6 无命中返回空数组', Array.isArray(noHit) && noHit.length === 0, `count=${noHit.length}`);
 const shortQ = await api('GET', `/api/workspace/search?projectId=${pid}&q=a`);
 check('S-7 q 过短 400', shortQ.status === 400, `error=${shortQ.json?.error}`);
 
 // ---- 忽略配置 ----
 check('I-1 内置忽略：node_modules 不可见', !(hit ?? []).some((h) => h.path.includes('node_modules')), '');
-const secretHit = (await api('GET', `/api/workspace/search?projectId=${pid}&q=API_KEY`)).json ?? [];
+const secretHit = (await api('GET', `/api/workspace/search?projectId=${pid}&q=API_KEY`)).json?.items ?? [];
 check('I-2 .mtaskignore 生效：secrets/ 不可见', Array.isArray(secretHit) && secretHit.length === 0, JSON.stringify(secretHit));
 const secretRead = await api('GET', `/api/workspace/file?projectId=${pid}&path=secrets/api-key.txt`);
 check('I-3 忽略列表内文件不可读', secretRead.status === 400 && (secretRead.json?.error ?? '').includes('忽略'), `error=${secretRead.json?.error}`);
@@ -81,10 +81,10 @@ const evilGlob = await api('GET', `/api/workspace/search?projectId=${pid}&q=toke
 check('F-1 ReDoS glob 被拒 400', evilGlob.status === 400 && (evilGlob.json?.error ?? '').includes('glob'), `error=${evilGlob.json?.error}`);
 const longGlob = await api('GET', `/api/workspace/search?projectId=${pid}&q=token&glob=${encodeURIComponent('*'.repeat(200))}`);
 check('F-2 超长 glob 被拒 400', longGlob.status === 400, `error=${longGlob.json?.error}`);
-const globMd = (await api('GET', `/api/workspace/search?projectId=${pid}&q=login&glob=*.md`)).json ?? [];
+const globMd = (await api('GET', `/api/workspace/search?projectId=${pid}&q=login&glob=*.md`)).json?.items ?? [];
 check('F-3 glob 过滤对文件名命中生效（H-3）', Array.isArray(globMd) && globMd.every((h) => h.path.endsWith('.md')),
   JSON.stringify((globMd ?? []).map((h) => h.path)));
-const selfHit = (await api('GET', `/api/workspace/search?projectId=${pid}&q=secrets`)).json ?? [];
+const selfHit = (await api('GET', `/api/workspace/search?projectId=${pid}&q=secrets`)).json?.items ?? [];
 check('F-4 .mtaskignore 自身被默认忽略（L-1）', Array.isArray(selfHit) && selfHit.length === 0, JSON.stringify(selfHit));
 
 console.log(`==== T00776 SUMMARY: ${pass}/${pass + fail} passed ====`);
