@@ -205,6 +205,49 @@ api.get('/projects/workspace-history', (_req, res) => {
   res.json({ history });
 });
 
+// ---------- T00776：工作空间文件搜索 / 按需读文件（本地检索边界，忽略配置共用） ----------
+/** 同步服务包装：成功 json / 业务错 400（与 plans.ts wrap 同语义） */
+function wsWrap(res: import('express').Response, fn: () => unknown): void {
+  try { res.json(fn()); } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+}
+
+api.get('/workspace/search', (req, res) => {
+  const { projectId, q, glob } = req.query as Record<string, string | undefined>;
+  if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
+  // T00786：search 返回的数组上挂有 partial / scannedFiles 元信息，JSON 序列化会丢弃
+  // 非索引属性，故这里显式以 { items, partial, scannedFiles } 形式回传；
+  // 同时保留 items 为原数组结构，前端兼容无改动。
+  wsWrap(res, () => {
+    const hits = WorkspaceService.search(projectId, q ?? '', glob);
+    return {
+      items: hits,
+      count: hits.length,
+      partial: hits.partial === true,
+      scannedFiles: hits.scannedFiles ?? 0,
+    };
+  });
+});
+
+api.get('/workspace/file', (req, res) => {
+  const { projectId, path, offset, limit } = req.query as Record<string, string | undefined>;
+  if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
+  if (!path) { res.status(400).json({ error: 'path 必填（工作空间内相对路径）' }); return; }
+  wsWrap(res, () => WorkspaceService.readFile(projectId, path, Number(offset ?? 0), Number(limit ?? 200)));
+});
+
+// ---------- T00777：轻量符号索引 ----------
+api.post('/workspace/symbols/refresh', (req, res) => {
+  const { projectId } = (req.body ?? {}) as Record<string, string | undefined>;
+  if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
+  wsWrap(res, () => WorkspaceService.refreshSymbols(projectId));
+});
+
+api.get('/workspace/symbols', (req, res) => {
+  const { projectId, q, limit } = req.query as Record<string, string | undefined>;
+  if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
+  wsWrap(res, () => WorkspaceService.querySymbols(projectId, q ?? '', Number(limit ?? 30)));
+});
+
 /** 新建工作空间：递归创建目录（已存在视为成功——幂等，便于「新建」与「选择已有」合一） */
 api.post('/projects/workspace-create', (req, res) => {
   const { path } = (req.body ?? {}) as { path?: unknown };
