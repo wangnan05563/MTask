@@ -37,13 +37,47 @@ historyApi.get('/summary', (_req, res) => {
   });
 });
 
-/** 历史快照列表：每个快照项目 + 其全部任务与计划（供项目级查看视图）+ 汇总统计 */
+/** 历史快照列表：每个快照项目 + 其全部任务与计划（供项目级查看视图）+ 汇总统计
+ *
+ *  T00788：原实现为 N+1——对每个快照项目各执行 2 次全列查询（tasks + plans）。
+ *  改为一次取全部快照项目 → 各一条 IN 查询取回相关任务/计划 → 内存按 project_id 分组。
+ *  查询数由 1+2N 降为 3（与快照数无关），快照量增长后不再线性劣化。
+ *  注：任务/计划的 description 与 handle_result 为前端 tooltip 实际消费字段（HistoryPage
+ *  第 237/250 行），不可省略；本优化针对查询次数而非列裁剪。 */
 historyApi.get('/list', (_req, res) => {
   const db = getDb();
   const projects = db.prepare("SELECT id, name, description, history_at FROM projects WHERE COALESCE(history_at,'') != '' ORDER BY history_at DESC").all() as Array<{ id: string; name: string; description: string; history_at: string }>;
+  if (projects.length === 0) return res.json({ snapshots: [] });
+
+  // 占位符按项目数动态生成；IN 查询一次取回全部快照的任务/计划
+  const ids = projects.map((p) => p.id);
+  const ph = ids.map(() => '?').join(',');
+  const allTasks = db
+    .prepare(`SELECT id, project_id, task_no, title, description, status, verified, priority, category_id, handle_result, created_at FROM tasks WHERE project_id IN (${ph}) ORDER BY task_no`)
+    .all(...ids) as Array<Record<string, unknown> & { project_id: string }>;
+  const allPlans = db
+    .prepare(`SELECT id, project_id, title, description, kind, status, progress, start_date, end_date, duration_days FROM plan_tasks WHERE project_id IN (${ph}) ORDER BY sort_order`)
+    .all(...ids) as Array<Record<string, unknown> & { project_id: string }>;
+
+  // 内存分组：每组保持查询的 ORDER BY 顺序（任务按 task_no，计划按 sort_order）
+  const tasksByProject = new Map<string, Array<Record<string, unknown>>>();
+  for (const t of allTasks) {
+    const { project_id, ...rest } = t;
+    const bucket = tasksByProject.get(project_id);
+    if (bucket) bucket.push(rest);
+    else tasksByProject.set(project_id, [rest]);
+  }
+  const plansByProject = new Map<string, Array<Record<string, unknown>>>();
+  for (const p of allPlans) {
+    const { project_id, ...rest } = p;
+    const bucket = plansByProject.get(project_id);
+    if (bucket) bucket.push(rest);
+    else plansByProject.set(project_id, [rest]);
+  }
+
   const snapshots = projects.map((p) => {
-    const tasks = db.prepare('SELECT id, task_no, title, description, status, verified, priority, category_id, handle_result, created_at FROM tasks WHERE project_id = ? ORDER BY task_no').all(p.id) as Array<Record<string, unknown>>;
-    const plans = db.prepare('SELECT id, title, description, kind, status, progress, start_date, end_date, duration_days FROM plan_tasks WHERE project_id = ? ORDER BY sort_order').all(p.id) as Array<Record<string, unknown>>;
+    const tasks = tasksByProject.get(p.id) ?? [];
+    const plans = plansByProject.get(p.id) ?? [];
     return {
       ...p,
       stats: {
