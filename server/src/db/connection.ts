@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
+import { clearStmtCache } from '../util/stmt-cache'; // T00792：连接生命周期联动语句缓存
 
 /** 打开库失败时是否属于可重试的瞬时问题（文件被占用/杀软扫描/残留句柄）。
  *  非瞬时错误（如 SQL 语法错、盘满）应直接抛出，避免无意义重试掩盖真因。 */
@@ -63,6 +64,8 @@ export function getDb(): Database.Database {
   mkdirSync(dir, { recursive: true });
   const file = join(dir, 'mtask.db');
   db = openDatabase(file);
+  // T00792：连接（重）建时丢弃语句缓存——旧 Statement 绑定在已关闭的连接上，不可复用
+  clearStmtCache();
 
   db.pragma('foreign_keys = ON');
   // 写锁竞争时等待而非立即报 SQLITE_BUSY（better-sqlite3 默认即 5000ms，显式声明避免未来误改）
@@ -83,5 +86,7 @@ export function closeDb(): void {
   if (db) {
     db.close();
     db = null;
+    // T00792：连接关闭后语句缓存必须失效（否则下次 getDb 前若被调用会持有已关闭连接的 Statement）
+    clearStmtCache();
   }
 }
