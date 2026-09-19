@@ -1,7 +1,18 @@
 import { getDb } from '../db/connection';
 import { v4 as uuid } from 'uuid';
+import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
 import { AIService } from './AIService';
 import { gatherReportData, type ReportPeriod } from './ReportService';
+
+/**
+ * 列表缓存键（T00787）：前端以轮询方式反复 GET /console-jobs，而该查询是
+ * `SELECT *`（含完整 answer 长文本）全表扫——空查询也需读全部行并做 JSON 序列化。
+ * 5s TTL 与 projects / prompt-categories 等低频集合列表口径一致；所有写路径
+ * （create / markDone / markError / reset / remove / clear）均在此服务内收敛，
+ * 因此失效逻辑放在服务层可保证任何调用方都不会读到脏数据。
+ */
+const LIST_CACHE_KEY = 'console-jobs';
+const LIST_TTL_MS = 5000;
 
 /** AI 控制台任务统一系统提示：与 /ai/chat 保持一致的助手设定，保证并行任务回答风格稳定 */
 const CHAT_SYSTEM = '你是 MTask 的 AI 助手，基于任务与报表背景，用简洁专业的中文回答，并使用 Markdown 组织输出。';
@@ -115,6 +126,7 @@ export const ConsoleJobService = {
       `INSERT INTO console_jobs (id, title, prompt, category, period, status, answer, error, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, 'busy', NULL, NULL, ?, ?)`,
     ).run(id, input.title, input.prompt, input.category, input.period, t, t);
+    cacheClear(LIST_CACHE_KEY); // 新建任务后列表立刻可见（不等 5s TTL）
     return this.get(id)!;
   },
 
@@ -123,35 +135,46 @@ export const ConsoleJobService = {
     return row ?? null;
   },
 
-  /** 全部任务按创建时间排序：即前端 tab 的展示顺序，切页回来顺序保持一致 */
+  /** 全部任务按创建时间排序：即前端 tab 的展示顺序，切页回来顺序保持一致。
+   *  T00787：结果缓存 5s——轮询场景下 DB 行读与长文本 JSON 序列化成本≈0；
+   *  任何写操作都会 cacheClear，因此轮询方在写入后立即（下一个请求）读到新状态。 */
   list(): ConsoleJobRow[] {
-    return getDb().prepare('SELECT * FROM console_jobs ORDER BY created_at').all() as ConsoleJobRow[];
+    const cached = cacheGet<ConsoleJobRow[]>(LIST_CACHE_KEY);
+    if (cached) return cached;
+    const rows = getDb().prepare('SELECT * FROM console_jobs ORDER BY created_at').all() as ConsoleJobRow[];
+    cacheSet(LIST_CACHE_KEY, rows, LIST_TTL_MS);
+    return rows;
   },
 
   markDone(id: string, answer: string): void {
     getDb().prepare("UPDATE console_jobs SET status = 'done', answer = ?, error = NULL, updated_at = ? WHERE id = ?")
       .run(answer, now(), id);
+    cacheClear(LIST_CACHE_KEY); // 后台任务完成 → 轮询方需立刻看到 done 与 answer
   },
 
   markError(id: string, error: string): void {
     getDb().prepare("UPDATE console_jobs SET status = 'error', error = ?, updated_at = ? WHERE id = ?")
       .run(error, now(), id);
+    cacheClear(LIST_CACHE_KEY);
   },
 
   /** 置回 busy 并清空旧结果，供「重新分析」复用固化 prompt/周期重跑 */
   reset(id: string): void {
     getDb().prepare("UPDATE console_jobs SET status = 'busy', answer = NULL, error = NULL, updated_at = ? WHERE id = ?")
       .run(now(), id);
+    cacheClear(LIST_CACHE_KEY);
   },
 
   remove(id: string): boolean {
     const info = getDb().prepare('DELETE FROM console_jobs WHERE id = ?').run(id);
+    if (info.changes > 0) cacheClear(LIST_CACHE_KEY);
     return info.changes > 0;
   },
 
   /** 清空全部任务（「重置控制台」使用） */
   clear(): void {
     getDb().prepare('DELETE FROM console_jobs').run();
+    cacheClear(LIST_CACHE_KEY);
   },
 
   /**
