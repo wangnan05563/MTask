@@ -51,3 +51,6 @@ perf/sandbox/
 /.workbuddy/tmp/
 
 
+
+# 走查修复（H-2）：隔离测试误用相对路径时在 server/ 下生成的数据目录
+server/MTask_DATA_DIR/
