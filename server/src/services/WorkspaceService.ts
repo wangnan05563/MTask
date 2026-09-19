@@ -163,8 +163,11 @@ function getProjectWorkspace(projectId: string): { workspace: string; rules: Ign
 function safeResolve(workspace: string, relPath: string): string {
   const abs = resolve(workspace, relPath);
   const root = resolve(workspace);
-  // T00783-N7：Windows 卷名/盘符大小写不敏感（c:\ws vs C:\ws），比较前统一小写；POSIX 无影响
-  const inside = abs === root || abs.toLowerCase().startsWith(root.toLowerCase() + sep);
+  // T00783-N7：Windows 卷名/盘符大小写不敏感（c:\ws vs C:\ws），比较前统一小写。
+  // 走查 L-3 纠正：仅 Win32 做小写比较——POSIX 文件系统大小写敏感，
+  // 全平台 toLowerCase 会把 /ws/Data 项目对 /ws/data/* 的访问放行（越界检查失效）
+  const norm = (p: string): string => (process.platform === 'win32' ? p.toLowerCase() : p);
+  const inside = abs === root || norm(abs).startsWith(norm(root) + sep);
   if (!inside) throw new Error('路径越界：目标不在工作空间内');
   return abs;
 }
@@ -473,9 +476,11 @@ export const WorkspaceService = {
     if (!query || query.length < 2) throw new Error('q 必填且至少 2 个字符');
     const { workspace } = getProjectWorkspace(projectId); // 项目/工作空间校验
     const db = getDb();
+    // 走查 L-1：SQL 层先按建索引时的根路径过滤（T00780 workspace 列）——
+    // 换绑残留行（含 workspace='' 的历史行）在库层即被排除，statSync 只兜「文件被外部删除」一种场景
     const rows = db.prepare(
-      'SELECT path, symbol, line, kind FROM workspace_symbols WHERE project_id = ? AND symbol LIKE ? ORDER BY path, line LIMIT ?',
-    ).all(projectId, `%${query}%`, Math.min(Math.trunc(limit), 100)) as Array<{ path: string; symbol: string; line: number; kind: string }>;
+      'SELECT path, symbol, line, kind FROM workspace_symbols WHERE project_id = ? AND workspace = ? AND symbol LIKE ? ORDER BY path, line LIMIT ?',
+    ).all(projectId, resolve(workspace), `%${query}%`, Math.min(Math.trunc(limit), 100)) as Array<{ path: string; symbol: string; line: number; kind: string }>;
     // T00780：孤儿防护——索引行存在但文件已不在当前工作空间（换绑未刷新/文件被删）时过滤掉，
     // 避免把已不属于本项目的路径返回给调用方
     return rows.filter((r) => {
