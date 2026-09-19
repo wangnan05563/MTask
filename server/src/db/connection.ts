@@ -23,6 +23,13 @@ function openDatabase(file: string): Database.Database {
     try {
       const d = new Database(file);
       d.pragma('journal_mode = WAL');
+      // T00785：WAL 模式下 synchronous 保持默认 FULL 会对**每次事务提交**都做一次
+      // fsync（写 WAL 文件 + 必要时刷主库），是写吞吐随并发上升不增反降的主要成因
+      // （压测实测写阶段 533→454→372 req/s）。WAL + NORMAL 是 SQLite 官方推荐组合：
+      // 仅在 checkpoint 时 fsync，正常 commit 不做同步刷盘；崩溃最多丢失最近若干事务
+      // （不损坏库，WAL 仍可回放）。桌面单用户场景「性能 vs 极端掉电丢最后几笔写」
+      // 的权衡明确偏向性能，故显式设 NORMAL。
+      d.pragma('synchronous = NORMAL');
       return d;
     } catch (err) {
       if (!isRetryable(err) || i === 2) {
@@ -40,6 +47,10 @@ function fallbackOpen(file: string): Database.Database {
   const d = new Database(file);
   // DELETE 模式没有 -shm，天然避开 WAL 的截断/共享内存失败点；写锁竞争仍由 busy_timeout 兜底
   d.pragma('journal_mode = DELETE');
+  // T00785：兜底路径同样显式声明 NORMAL——DELETE 模式下 NORMAL 的 fsync 次数少于 FULL，
+  // 且本路径本身已是「WAL 不可用」的降级形态，一致性诉求已让位于可用性。
+  // 显式写出而非依赖默认值，避免未来 SQLite / better-sqlite3 升级改变默认行为时静默劣化。
+  d.pragma('synchronous = NORMAL');
   return d;
 }
 
