@@ -226,6 +226,37 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       updated_at  TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_prd_docs_project ON prd_docs(project_id);
+
+    -- T00770：PRD 待确认问题——挂在某份 PRD 文档下（prd_id 可空=项目级泛问题），
+    -- 确认（status=resolved 且填了 answer）后可回写到对应 PRD 文档的「待确认问题结论」节
+    CREATE TABLE IF NOT EXISTS prd_issues (
+      id          TEXT PRIMARY KEY,
+      project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      prd_id      TEXT REFERENCES prd_docs(id) ON DELETE CASCADE,
+      question    TEXT NOT NULL,
+      answer      TEXT NOT NULL DEFAULT '',
+      status      TEXT NOT NULL DEFAULT 'open',
+      sort_order  INTEGER NOT NULL DEFAULT 0,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_prd_issues_project ON prd_issues(project_id, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_prd_issues_prd ON prd_issues(prd_id);
+
+    -- T00777：轻量符号索引——正则提取源码文件的函数/类/导出声明，mtime 增量刷新，
+    -- 供 AI 卡片先看「项目有哪些符号」再点名读文件（P1：读得懂；向量语义检索留 P2）
+    CREATE TABLE IF NOT EXISTS workspace_symbols (
+      id          TEXT PRIMARY KEY,
+      project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      path        TEXT NOT NULL,
+      symbol      TEXT NOT NULL,
+      line        INTEGER NOT NULL DEFAULT 0,
+      kind        TEXT NOT NULL DEFAULT 'function',
+      file_mtime  INTEGER NOT NULL DEFAULT 0,
+      workspace   TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_ws_sym ON workspace_symbols(project_id, symbol);
+    CREATE INDEX IF NOT EXISTS idx_ws_sym_path ON workspace_symbols(project_id, path);
     -- 任务列表批量反查「计划联动」来源（plan_tasks.linked_task_id IN (...)：无索引时全表扫描）
     CREATE INDEX IF NOT EXISTS idx_plan_tasks_linked ON plan_tasks(linked_task_id);
 
@@ -284,6 +315,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_ai_state ON tasks(ai_state)");
   // T00577：派生待办溯源——记录原任务编号（如 T00422），AI 处理完成后自动把派生单结论整合回原任务
   ensureColumn('tasks', 'derived_from', 'derived_from TEXT');
+  // T00776：父子任务进度汇总（TaskService.syncPlanOnStatusChange 按子任务完成比例回写父任务 progress）——
+  // T00450 引入父子层级时漏加该列，首个「有父任务的任务标 done」即触发 no such column: progress 500
+  ensureColumn('tasks', 'progress', 'progress INTEGER NOT NULL DEFAULT 0');
   // T00719：搁置任务——shelved=1 的任务从待办/已完成列表与 MCP 查询中隔离（不计入待办上下文），仅出现在搁置列表
   ensureColumn('tasks', 'shelved', 'shelved INTEGER DEFAULT 0');
   // T00764：节假日类型（'holiday'=放假日 | 'overtime'=加班日，周末/节假日调来上班按工作日排期）
@@ -298,6 +332,12 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('tasks', 'req_ids', 'req_ids TEXT');
   // T00763：需求行关联的 PRD 文档 id（导入时若携带 PRD 原文则回填，供矩阵查看与 AI 上下文反查）
   ensureColumn('prd_requirements', 'prd_id', 'prd_id TEXT');
+  // T00770：PRD 文档状态流转——'prd'=草稿/评审中 | 'confirmed'=确认版（进入需求跟踪矩阵的正式基线）
+  ensureColumn('prd_docs', 'status', "status TEXT NOT NULL DEFAULT 'prd'");
+  // T00769：问题级别——blocker=🔴阻塞 | suggested=🟡建议 | info=🟢提示 | custom=用户自定义（空=未分级）
+  ensureColumn('prd_issues', 'level', "level TEXT DEFAULT ''");
+  // T00780：符号索引生命周期——记录建索引时的工作空间根路径，换绑/解绑时据此判定旧索引失效需清理
+  ensureColumn('workspace_symbols', 'workspace', "workspace TEXT NOT NULL DEFAULT ''");
   // T00771：项目工作空间根路径——项目上下文锚点（多项目可指向同一目录，仅存路径引用）；
   // 为空表示未绑定。任务菜单工作空间下拉条 / AI 上下文注入 / MCP 项目列表均消费该字段
   ensureColumn('projects', 'workspace_path', "workspace_path TEXT DEFAULT ''");
