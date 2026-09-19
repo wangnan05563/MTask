@@ -87,3 +87,20 @@ export interface AIAdapter {
 
 /** 由 AI 工具类型映射到适配器实例 */
 export type AdapterType = 'openai-compatible' | 'claude' | 'ollama' | 'workbuddy';
+
+/**
+ * T00779：流式输出触顶截断的统一错误文案（与 T00714 非流式 finish_reason=length 判定同语义）。
+ * 各 adapter 流式收尾检测到截断标志时统一用它返回 ok:false——避免半截内容被上层当成完整结果写入库
+ * （曾表现为：PRD 生成被 max_tokens 切断却 ok:true，半截文档可被直接录入 PRD 管理视图）。
+ */
+export function streamTruncatedError(chars: number): string {
+  return `AI 输出超长被截断（已输出 ${chars} 字符）——请调大该工具的 max_tokens 或精简输入后重试`;
+}
+
+/**
+ * 走查 M-3：输出被内容安全策略/模型拒绝提前终止（content_filter / refusal）——
+ * 与触顶截断同类：半截内容不得当完整结果入库。与 streamTruncatedError 分文案以区分成因。
+ */
+export function outputStoppedError(label: string, chars: number): string {
+  return `AI 输出提前终止（${label}，已输出 ${chars} 字符）——半截内容不作完整结果，请调整输入内容或更换模型后重试`;
+}

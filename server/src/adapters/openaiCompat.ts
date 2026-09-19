@@ -1,5 +1,6 @@
 import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult } from './types';
 import { withTimeout, formatHttpError, normalizeModels, readStreamLines } from './netutil';
+import { streamTruncatedError, outputStoppedError } from './types'; // T00779：流式截断统一错误文案
 
 interface ChatCompletionResp {
   choices?: { message?: { content?: string; reasoning_content?: string }; finish_reason?: string }[];
@@ -104,8 +105,13 @@ export class OpenAICompatAdapter implements AIAdapter {
       // 不再把残缺/空输出静默交给上层做 JSON 解析（曾表现为「AI 未返回有效的 PRD 解析结果」误导排障）；
       // 记 ok=false 进 ai_usage，错误文案可区分「输出被截断」与「模型不行」。
       // 注意顺序：触顶时 content 可能为空串，必须先判 finish_reason 再判空（maxTokens 极小时实测）
+      // 走查 M-2：文案统一改调 streamTruncatedError（与流式/claude/ollama 一套口径）
+      // 走查 M-3：content_filter（安全策略切断）与截断同类，半截内容同样不作完整结果
       if (choice?.finish_reason === 'length') {
-        return { ok: false, error: `AI 输出超长被截断（finish_reason=length，已输出 ${content.length} 字符）——请精简文档内容或调大输出上限/分块解析后重试` };
+        return { ok: false, error: streamTruncatedError(content.length) };
+      }
+      if (choice?.finish_reason === 'content_filter') {
+        return { ok: false, error: outputStoppedError('finish_reason=content_filter', content.length) };
       }
       if (!content) {
         // T00721：思考型模型（如 agnes-2.5-flash）可能把输出预算全部耗在 reasoning_content（思考）上，
@@ -152,6 +158,7 @@ export class OpenAICompatAdapter implements AIAdapter {
         return { ok: false, error: res.ok ? 'AI 未返回流式内容' : formatHttpError(res.status, await res.text().catch(() => '')) };
       }
       let text = '';
+      let finish = '';
       await readStreamLines(res, (line) => {
         const trimmed = line.trim();
         // OpenAI 兼容以 data: 前缀承载事件；跳过注释/id 等无内容行
@@ -159,8 +166,12 @@ export class OpenAICompatAdapter implements AIAdapter {
         const payload = trimmed.slice(5).trim();
         if (!payload || payload === '[DONE]') return;
         try {
-          const json = JSON.parse(payload) as { choices?: { delta?: { content?: string } }[]; error?: { message?: string } };
+          const json = JSON.parse(payload) as { choices?: { delta?: { content?: string }; finish_reason?: string | null }[]; error?: { message?: string } };
           if (json.error?.message) throw new Error(json.error.message);
+          // T00779：记录最后一个 finish_reason——触顶截断（length）时流里已有大量内容，
+          // 若只看 text 非空会误判成功，导致半截结果被上层当完整结果入库
+          const fr = json.choices?.[0]?.finish_reason;
+          if (typeof fr === 'string' && fr) finish = fr;
           const delta = json.choices?.[0]?.delta?.content;
           if (typeof delta === 'string' && delta) {
             text += delta;
@@ -171,6 +182,8 @@ export class OpenAICompatAdapter implements AIAdapter {
         }
       });
       if (!text) return { ok: false, error: 'AI 返回内容为空' };
+      if (finish === 'length') return { ok: false, error: streamTruncatedError(text.length) }; // T00779
+      if (finish === 'content_filter') return { ok: false, error: outputStoppedError('finish_reason=content_filter', text.length) }; // 走查 M-3
       return { ok: true, content: text };
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') return { ok: false, error: `连接超时（超过 ${config.timeoutMs ?? 60000}ms）` };

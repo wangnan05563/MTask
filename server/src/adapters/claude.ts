@@ -1,8 +1,10 @@
 import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult } from './types';
 import { withTimeout, formatHttpError, normalizeModels, readStreamLines } from './netutil';
+import { streamTruncatedError, outputStoppedError } from './types'; // T00779：流式截断统一错误文案
 
 interface MessagesResp {
   content?: { type: string; text?: string }[];
+  stop_reason?: string | null; // 走查 M-2/M-3：非流式同样判定触顶/拒绝
   error?: { message?: string };
 }
 
@@ -108,6 +110,10 @@ export class ClaudeAdapter implements AIAdapter {
         return { ok: false, error: data.error?.message ?? `HTTP ${res.status}` };
       }
       const text = data.content?.filter((b) => b.type === 'text').map((b) => b.text ?? '').join('\n');
+      // 走查 M-2/M-3：非流式补齐截断/拒绝判定（原先只有 openai 侧 T00714 有）——
+      // 先判 stop_reason 再判空：maxTokens 极小时 content 为空但 stop_reason=max_tokens，报「截断」比「内容为空」更可排障
+      if (data.stop_reason === 'max_tokens') return { ok: false, error: streamTruncatedError(text?.length ?? 0) };
+      if (data.stop_reason === 'refusal') return { ok: false, error: outputStoppedError('stop_reason=refusal', text?.length ?? 0) };
       if (!text) return { ok: false, error: 'AI 返回内容为空' };
       return { ok: true, content: text };
     } catch (e) {
@@ -145,6 +151,7 @@ export class ClaudeAdapter implements AIAdapter {
         return { ok: false, error: res.ok ? 'AI 未返回流式内容' : formatHttpError(res.status, await res.text().catch(() => '')) };
       }
       let text = '';
+      let stopReason = ''; // T00779：Anthropic 侧截断标志（max_tokens）
       await readStreamLines(res, (line) => {
         const trimmed = line.trim();
         // Anthropic 事件以 data: 前缀承载 JSON；跳过 event 行为减少无意义解析
@@ -152,8 +159,12 @@ export class ClaudeAdapter implements AIAdapter {
         const payload = trimmed.slice(5).trim();
         if (!payload) return;
         try {
-          const json = JSON.parse(payload) as { type?: string; delta?: { type?: string; text?: string }; error?: { message?: string } };
+          const json = JSON.parse(payload) as { type?: string; delta?: { type?: string; text?: string; stop_reason?: string | null }; error?: { message?: string } };
           if (json.error?.message) throw new Error(json.error.message);
+          // T00779：message_delta 事件携带 stop_reason，max_tokens 表示触顶截断
+          if (json.type === 'message_delta' && typeof json.delta?.stop_reason === 'string' && json.delta.stop_reason) {
+            stopReason = json.delta.stop_reason;
+          }
           // 仅取文本增量块：content_block_delta 且 delta 类型为 text_delta
           if (json.type === 'content_block_delta' && json.delta?.type === 'text_delta' && json.delta.text) {
             text += json.delta.text;
@@ -164,6 +175,8 @@ export class ClaudeAdapter implements AIAdapter {
         }
       });
       if (!text) return { ok: false, error: 'AI 返回内容为空' };
+      if (stopReason === 'max_tokens') return { ok: false, error: streamTruncatedError(text.length) }; // T00779
+      if (stopReason === 'refusal') return { ok: false, error: outputStoppedError('stop_reason=refusal', text.length) }; // 走查 M-3
       return { ok: true, content: text };
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') return { ok: false, error: `连接超时（超过 ${config.timeoutMs ?? 60000}ms）` };

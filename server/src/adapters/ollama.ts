@@ -1,8 +1,10 @@
 import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult } from './types';
 import { withTimeout, formatHttpError, normalizeModels, readStreamLines } from './netutil';
+import { streamTruncatedError } from './types'; // T00779：流式截断统一错误文案
 
 interface ChatResp {
   message?: { content?: string };
+  done_reason?: string; // 走查 M-2：非流式同样判定触顶（length）
   error?: string;
 }
 
@@ -78,6 +80,8 @@ export class OllamaAdapter implements AIAdapter {
       if (!res.ok || data.error) {
         return { ok: false, error: data.error ?? `HTTP ${res.status}` };
       }
+      // 走查 M-2：非流式触顶判定（done_reason=length），与流式口径一致——先判 done_reason 再判空
+      if (data.done_reason === 'length') return { ok: false, error: streamTruncatedError(data.message?.content?.length ?? 0) };
       if (!data.message?.content) return { ok: false, error: 'AI 返回内容为空' };
       return { ok: true, content: data.message.content };
     } catch (e) {
@@ -109,12 +113,14 @@ export class OllamaAdapter implements AIAdapter {
         return { ok: false, error: res.ok ? 'AI 未返回流式内容' : formatHttpError(res.status, await res.text().catch(() => '')) };
       }
       let text = '';
+      let doneReason = ''; // T00779：Ollama 侧截断标志（done_reason=length）
       await readStreamLines(res, (line) => {
         const trimmed = line.trim();
         if (!trimmed) return;
         try {
-          const json = JSON.parse(trimmed) as { message?: { content?: string }; error?: string; done?: boolean };
+          const json = JSON.parse(trimmed) as { message?: { content?: string }; error?: string; done?: boolean; done_reason?: string };
           if (json.error) throw new Error(json.error);
+          if (typeof json.done_reason === 'string' && json.done_reason) doneReason = json.done_reason;
           const delta = json.message?.content;
           // Ollama 增量与最终残留都可能为空，仅对非空增量回调
           if (typeof delta === 'string' && delta) {
@@ -126,6 +132,7 @@ export class OllamaAdapter implements AIAdapter {
         }
       });
       if (!text) return { ok: false, error: 'AI 返回内容为空' };
+      if (doneReason === 'length') return { ok: false, error: streamTruncatedError(text.length) }; // T00779
       return { ok: true, content: text };
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') return { ok: false, error: `连接超时（超过 ${config.timeoutMs ?? 60000}ms）` };
