@@ -1989,6 +1989,15 @@ export function TasksPage() {
               style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, boxSizing: 'border-box' }}
             />
             <div style={{ marginTop: 4, display: 'flex', gap: 4, alignItems: 'center' }}>
+              {/* T00796 补漏：用户反馈「修改入口看不到 AI 美化」——行内反馈编辑态此前漏接，
+                  与录入弹窗/处理结果/通用需求共用同一组件，结果只回填草稿，仍需点保存落库 */}
+              <AiPolishButton
+                value={fbDrafts[t.id] ?? ''}
+                onPolished={(text) => setFbDrafts((prev) => ({ ...prev, [t.id]: text }))}
+                toolId={organizeToolId}
+                flash={flash}
+                title="AI 美化 — 润色这份验证失败反馈（保留现象/环境/期望等全部事实要素，仅规范表达），结果回填后请核对再保存"
+              />
               <button
                 onClick={() => void saveFailback(t)}
                 title="保存 — 保存修改后的处理结果（含验证失败反馈）"

@@ -73,20 +73,25 @@ export function AiPolishButton({ value, onPolished, toolId, disabled, flash, tit
     }
   }
 
-  const idle = !busy && !disabled && !!text;
+  // 可用性只体现在颜色与指针上，不再把不透明度压到 0.45 ——
+  // 用户反馈「找不到 AI 美化按钮」：空文本时按钮几乎隐形（0.45 下 13px 描边图标在浅色背景上不可辨），
+  // 按钮本身必须始终清晰可见，否则功能等于不存在。
+  const noText = !text;
+  const idle = !busy && !disabled && !noText;
+  const label = busy ? 'AI 美化进行中…' : (noText ? `${title}（请先填写内容）` : title);
   return (
     <button
       onClick={() => void run()}
-      disabled={busy || disabled || !text}
-      title={busy ? 'AI 美化进行中…' : title}
+      disabled={busy || disabled || noText}
+      title={label}
       aria-label={busy ? 'AI 美化进行中' : 'AI 美化：润色正文'}
       className={`task-op tbtn-anim${busy ? ' task-breathe' : ''}`}
       style={{
         fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', border: 'none',
         cursor: idle ? 'pointer' : 'default',
         background: busy ? 'var(--accent)' : 'transparent',
-        color: busy ? 'var(--accent-text)' : 'var(--text)',
-        opacity: busy || !text || disabled ? 0.45 : 1,
+        color: busy ? 'var(--accent-text)' : (idle ? 'var(--text)' : 'var(--text-muted)'),
+        opacity: idle || busy ? 1 : 0.75,
       }}
     >
       {busy ? <Loader2 size={13} className="aispin" /> : <Sparkles size={13} />}
