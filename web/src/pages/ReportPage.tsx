@@ -70,13 +70,15 @@ export function ReportPage() {
 
   // AI 周报：AI 工具选择会话级保留；生成运行态打入模块级 store（useReportStream），
   // 以便切页期间 SSE 照常写入、返回后立即恢复进度（见 reportStream.ts 设计说明）
+  // T00769 二轮：工作面板展开态改为会话级持久化 —— 反馈「点击展开工作面板需要页面切换状态保持」，
+  // 此前 useState 在切页卸载组件后丢失，切回即收起（生成/填写中途切页回到面板会看不到内容与进度）。
   // T00569 二轮：AI 项目计划导入面板展开态
-  const [showAiImport, setShowAiImport] = useState(false);
+  const [showAiImport, setShowAiImport] = useSessionState('report.showAiImport', false);
   // T00621：三卡片各自的工作面板展开态（互斥，保持左侧简洁）
-  const [showOffline, setShowOffline] = useState(false);
-  const [showAiLive, setShowAiLive] = useState(false);
+  const [showOffline, setShowOffline] = useSessionState('report.showOffline', false);
+  const [showAiLive, setShowAiLive] = useSessionState('report.showAiLive', false);
   // T00662：从 PRD 导入面板展开态（与其余三卡互斥）
-  const [showPrdImport, setShowPrdImport] = useState(false);
+  const [showPrdImport, setShowPrdImport] = useSessionState('report.showPrdImport', false);
   const [aiTools, setAiTools] = useState<AITool[]>([]);
   const [aiToolId, setAiToolId] = useSessionState('report.aiTool', '');
   // T00558 / PRD AI-5：周报摘要写入收件箱开关（服务端 report.aiSummaryToInbox）——开关状态持久于服务端

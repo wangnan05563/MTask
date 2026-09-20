@@ -4,7 +4,8 @@ import { streamEvents } from '../api/sse';
 import { useSessionState } from '../ui/session';
 import { MarkdownContent } from '../ui/Markdown';
 import { prdGenStore, usePrdGen, type PrdGenIssue } from '../stores/prdGenStore';
-import { CircleCheck, FileText, Loader2, Plus, Save, Sparkles, Trash2, Upload, X } from 'lucide-react';
+import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00769 二轮：未绑定工作空间时原位提供绑定入口
+import { CircleCheck, FileText, FolderOpen, Loader2, Plus, Save, Sparkles, Trash2, Upload, X } from 'lucide-react';
 
 /** T00769：交互确认表格行（AI 生成问题 + 用户自定义），answer 非空视为已确认 */
 interface IssueRow extends PrdGenIssue { answer: string; key: string; }
@@ -56,6 +57,23 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // T00769 二轮：工作空间绑定状态——未绑定时缺少项目源码上下文，待确认问题识别质量显著下降
+  const activeProject = projects.find((p) => p.id === projectId) ?? null;
+  const wsPath = activeProject?.workspace_path ?? '';
+  const wsMissing = !!projectId && !wsPath;
+
+  /** 绑定工作空间（PATCH 持久化 + 本地列表回显，与任务菜单同语义） */
+  async function bindWorkspace(path: string) {
+    if (!projectId) { flash('请先选择目标项目'); return; }
+    try {
+      const updated = await api.patch<Project>(`/projects/${projectId}`, { workspacePath: path });
+      setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, workspace_path: updated?.workspace_path ?? path } : p)));
+      flash(`已绑定工作空间：${path} —— 重新生成即可带上项目源码上下文`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   /** 生成完成 → 问题清单填充交互表格 */
   useEffect(() => {
     if (result) {
@@ -74,6 +92,8 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
     if (!/\.(docx|xlsx|csv|md|markdown|txt)$/i.test(lower)) { flash('支持的格式：.docx/.xlsx/.csv/.md/.txt'); return; }
     prdGenStore.begin();
     prdGenStore.pushLog(`已选择原始需求文件：${file.name}（${(file.size / 1024).toFixed(1)} KB）`);
+    // 未绑定工作空间时把影响写进控制台，避免用户事后才发现"上下文没加载"
+    if (!wsPath) prdGenStore.pushLog('⚠ 当前项目未绑定工作空间 —— 本次缺少项目源码上下文，待确认问题识别质量会下降（建议先在上方绑定工作空间）');
     let errMsg = '';
     try {
       const buf = await file.arrayBuffer();
@@ -160,6 +180,16 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
           <input type="file" accept=".doc,.docx,.xls,.xlsx,.csv,.md,.markdown,.txt" style={{ display: 'none' }}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void generate(f); } e.target.value = ''; }} />
         </label>
+        {/* T00769 二轮：未绑定工作空间 → 原位警示 + 绑定入口（不阻断生成，但明确告知质量影响） */}
+        {wsMissing && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', width: '100%', padding: '6px 8px', marginBottom: 4, border: '1px solid var(--warning, #c80)', borderRadius: 6, background: 'var(--card-bg)', fontSize: 11, color: 'var(--warning, #c80)' }}>
+            <FolderOpen size={13} style={{ flexShrink: 0 }} />
+            <span>当前项目未绑定工作空间 —— 缺少项目源码上下文，待确认问题的识别质量会明显下降。</span>
+            <span style={{ flex: 1 }} />
+            <span style={{ color: 'var(--text-muted)' }}>绑定后再生成：</span>
+            <WorkspaceSelect project={activeProject} onBind={bindWorkspace} flash={flash} />
+          </div>
+        )}
         {streaming && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--accent)' }}><Loader2 size={13} className="task-breathe" /> 生成中…（正文实时滚动至右侧控制台）</span>}
       </div>
 

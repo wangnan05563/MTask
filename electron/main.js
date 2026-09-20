@@ -12,7 +12,7 @@
  * 运行前提：server/ 与 web/ 依赖已安装、web 已构建（scripts\构建打包.bat）。
  */
 
-const { app, BrowserWindow, Menu, protocol, shell } = require('electron');
+const { app, BrowserWindow, Menu, protocol, shell, dialog, ipcMain } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const http = require('node:http');
@@ -269,6 +269,22 @@ const WEB_MIME = {
  *  原因：loadFile 在安装到含空格的路径（如 F:\Program Files\...）时，以 file://
  *  加载 index.html 会抛 ERR_FAILED 导致白屏；改用 app:// 协议从磁盘读取即可规避，
  *  无需放开 webSecurity。同时校验路径禁止 ../ 越权读取打包目录之外的文件。 */
+/**
+ * T00771 修复：系统「选择文件夹」对话框。
+ * 原先前端只能用 <input type="file">，Windows 下弹出的是文件选择框（只能选文件，选不了文件夹），
+ * 工作空间绑定因此走不通。这里经 IPC 调主进程 dialog.showOpenDialog({openDirectory})，
+ * 返回所选目录绝对路径（取消返回 null）；渲染进程经 preload 的 contextBridge 调用。
+ */
+ipcMain.handle('dialog:open-directory', async () => {
+  const win = BrowserWindow.getFocusedWindow() ?? mainWin;
+  const r = await dialog.showOpenDialog(win, {
+    title: '选择工作空间目录',
+    properties: ['openDirectory', 'createDirectory', 'dontAddToRecent'],
+  });
+  if (r.canceled || !r.filePaths?.length) return null;
+  return r.filePaths[0];
+});
+
 function setupWebProtocol() {
   const root = path.resolve(__dirname, '..', 'web', 'dist');
   protocol.handle('app', (request) => {
@@ -494,6 +510,9 @@ app.whenReady().then(async () => { // NOSONAR - S7785 顶层 await 在 CommonJS 
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      // T00771：preload 暴露 mtaskDesktop.openDirectory（系统目录选择对话框）。
+      // 路径随 __dirname 解析：开发态为 electron/ 目录，打包态为 app.asar/electron，两态一致。
+      preload: path.join(__dirname, 'preload.js'),
     },
   });
 

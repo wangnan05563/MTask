@@ -1,4 +1,6 @@
 import type { AIAdapter, ToolConfig } from './types';
+
+export type { AIAdapter, ToolConfig };
 import { OpenAICompatAdapter } from './openaiCompat';
 import { ClaudeAdapter } from './claude';
 import { OllamaAdapter } from './ollama';

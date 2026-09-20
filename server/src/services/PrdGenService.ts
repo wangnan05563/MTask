@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { getDb } from '../db/connection';
-import { getAdapter } from '../adapters';
+import { getAdapter, type AIAdapter, type ToolConfig } from '../adapters';
 import { ConfigService } from './ConfigService';
 import { PlanService } from './PlanService';
 import { logService } from './LogService';
@@ -87,6 +87,16 @@ export function loadWorkspaceContext(workspacePath: string): string {
   return ContextBudget.headTail(parts.join('\n\n'), ContextBudget.treeChars + ContextBudget.fileSnippetChars, '项目上下文 ');
 }
 
+/**
+ * T00769 验证失败修复：PRD 生成的输出预算下限。
+ * 全库 AI 工具默认 max_tokens=4096，而本场景要一次产出「完整 PRD 正文」，思考型模型的
+ * 思维链还会占用同一预算 —— 实测 DeepSeek 上仅输出 1775 字符即触顶截断（finish_reason=length），
+ * 上层按 T00779 判定失败，表现即「右侧控制台无输出 + 未识别出待确认问题」。
+ * 这里按场景抬到下限值（仍尊重用户更高的自定义配置），超时同理放宽到 5 分钟。
+ */
+const PRD_MIN_OUTPUT_TOKENS = 8192;
+const PRD_MIN_TIMEOUT_MS = 300_000;
+
 export interface PrdGenIssue { level: string; question: string; context: string }
 
 /**
@@ -107,6 +117,81 @@ function buildRetrieveBlock(
     input.onStage(block ? `检索增强：按关键词 [${kws.slice(0, 6).join(', ')}] 命中代码片段已注入上下文` : '检索增强：无命中片段，跳过注入');
     return block;
   } catch { return ''; /* 检索增强失败不阻塞主流程 */ }
+}
+
+/**
+ * T00769 验证失败修复：工作空间未绑定时的友好提示（控制台 stage 日志可见）。
+ * 未绑定工作空间 → 缺少源码上下文 → AI 只能依据原始需求文本生成，待确认问题识别质量显著下降。
+ * 这里给出可操作提示（去任务菜单绑定），而不是「静默跳过上下文」。
+ */
+function workspaceStage(path: string | null | undefined): { ok: boolean; msg: string } {
+  if (!path) {
+    return {
+      ok: false,
+      msg: '⚠ 当前项目未绑定工作空间 —— 将仅依据原始需求文本生成，缺少项目源码上下文，待确认问题的识别质量会明显下降。建议先到「任务」菜单为该项目绑定工作空间（项目下拉条右侧的「工作空间」）后重新生成。',
+    };
+  }
+  try {
+    statSync(path);
+    return { ok: true, msg: '' };
+  } catch {
+    return { ok: false, msg: `⚠ 工作空间「${path}」不可读（已移动/删除或无权限）—— 本次跳过源码上下文，待确认问题识别质量会下降。请到「任务」菜单重新绑定有效路径。` };
+  }
+}
+
+/**
+ * T00769 验证失败修复：问题清单兜底补问。
+ * 主流程未解析出任何待确认问题时，基于已生成的 PRD 发起一次轻量提问，只求 JSON 问题清单；
+ * 失败或仍为空则放弃（保持原「AI 未生成待确认问题」提示，用户可手动补自定义问题）。
+ */
+async function fallbackIssues(
+  project: { name: string },
+  prdMd: string,
+  source: string,
+  adapter: AIAdapter,
+  config: ToolConfig,
+  onStage: (msg: string) => void,
+): Promise<PrdGenIssue[]> {
+  onStage('未解析到待确认问题 —— 发起一次补充提问（基于已生成 PRD 反推待确认项）…');
+  const system = '你是资深需求分析师。只输出 JSON 数组，不要任何解释、不要 Markdown 代码块。';
+  const user = [
+    `【目标项目】${project.name}`,
+    '【已生成的 PRD 摘要】\n' + ContextBudget.headTail(prdMd, 4000, 'PRD '),
+    '【原始需求片段】\n' + ContextBudget.headTail(source, 2000, '需求 '),
+    '请基于上述 PRD 与原始需求，列出 5~10 条仍需与业务方确认的问题（缺失即阻塞落地的关键信息）。',
+    '输出格式：[{"level":"blocker|suggested|info","question":"…","context":"…"}]',
+    'level 语义：blocker=不确认无法开工；suggested=影响方案选择；info=补充说明。',
+  ].join('\n\n');
+  try {
+    const r = await adapter.chat(system, user, config);
+    if (!r.ok || !r.content) { onStage('补充提问失败，本次未产出待确认问题（可手动新增自定义问题）'); return []; }
+    const issues = parseIssuesJson(r.content);
+    onStage(issues.length > 0 ? `补充提问完成：新增 ${issues.length} 条待确认问题` : '补充提问未产出问题清单（可手动新增自定义问题）');
+    return issues;
+  } catch {
+    onStage('补充提问异常，本次未产出待确认问题（可手动新增自定义问题）');
+    return [];
+  }
+}
+
+/** 从任意文本中截取并解析 JSON 数组形式的问题清单（容忍模型前后包裹解释文字/代码块） */
+function parseIssuesJson(text: string): PrdGenIssue[] {
+  const start = text.indexOf('[');
+  const end = text.lastIndexOf(']');
+  if (start < 0 || end <= start) return [];
+  try {
+    const raw = JSON.parse(text.slice(start, end + 1)) as Array<Partial<PrdGenIssue>>;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((x) => typeof x.question === 'string' && x.question.trim())
+      .map((x) => ({
+        level: ['blocker', 'suggested', 'info'].includes(String(x.level)) ? String(x.level) : 'info',
+        question: String(x.question).trim(),
+        context: typeof x.context === 'string' ? x.context.trim() : '',
+      }));
+  } catch {
+    return [];
+  }
 }
 
 /** 解析 AI 输出中的待确认问题清单：优先 <<<ISSUES>>> JSON 协议，回退从正文「待确认问题汇总」节提取（level 默认 info） */
@@ -155,6 +240,12 @@ export async function generatePrdStream(input: {
   const { type, config } = runtimeWithModel(input.toolId);
   const adapter = getAdapter(type);
   const startedAt = Date.now();
+  // 仅在本次生成调用上抬高输出/超时预算，不改动工具本身配置（其余场景不受影响）
+  const genConfig: ToolConfig = {
+    ...config,
+    maxTokens: Math.max(config.maxTokens ?? 4096, PRD_MIN_OUTPUT_TOKENS),
+    timeoutMs: Math.max(config.timeoutMs ?? 60_000, PRD_MIN_TIMEOUT_MS),
+  };
 
   input.onStage('加载内置技能「prd-generate」（原 bemp-generate-prd 已转内置）…');
   const SKILL_DIR = skillDir();
@@ -166,13 +257,26 @@ export async function generatePrdStream(input: {
     })
     .join('\n');
 
+  // T00769 验证失败修复：工作空间状态显式检测 + 友好提示（未绑定/不可读都能在控制台看到可操作指引）
+  const wsStatus = workspaceStage(project.workspace_path);
+  if (!wsStatus.ok) input.onStage(wsStatus.msg);
+
   input.onStage('加载项目源码上下文…');
   const ws = loadWorkspaceContext(project.workspace_path ?? '');
-  input.onStage(ws ? '项目源码上下文已加载（目录树 + 说明文件片段）' : '未配置工作空间或目录不可读，跳过源码上下文');
+  input.onStage(ws ? '项目源码上下文已加载（目录树 + 说明文件片段）' : '跳过源码上下文（工作空间未绑定或不可读）');
 
   const retrieveBlock = buildRetrieveBlock(project, input);
 
   input.onStage(`原始需求文本提取完成：${input.filename}（${input.content.length} 字符），开始 AI 生成…`);
+
+  // T00769 验证失败修复：把「必须输出待确认问题清单」写成硬约束，避免无上下文时模型只写正文不产问题
+  const ISSUE_RULE = [
+    '【输出硬性要求（务必遵守）】',
+    '1. 先输出完整 PRD 正文；',
+    '2. 正文结束后另起一行输出分隔符 <<<ISSUES>>>，其后紧跟 JSON 数组，列出 5~10 条待确认问题；',
+    '3. 每条格式：{"level":"blocker|suggested|info","question":"…","context":"…"}；',
+    '4. 即使项目源码上下文缺失，也必须基于原始需求本身列出阻塞落地的关键未知项，不得省略该 JSON 段。',
+  ].join('\n');
 
   const system = `${skill}\n\n# 三角色审查规则库（审查时逐条对照）\n${rules}`;
   const user = [
@@ -181,16 +285,21 @@ export async function generatePrdStream(input: {
     retrieveBlock ? `【工作空间检索片段（T00777 自动检索）】\n${retrieveBlock}` : '',
     `【原始需求文件】${input.filename}`,
     `【原始需求全文】\n${input.content}`,
+    ISSUE_RULE,
   ].filter(Boolean).join('\n\n');
 
-  const result = await adapter.chatStream(system, user, config, input.onDelta);
+  const result = await adapter.chatStream(system, user, genConfig, input.onDelta);
   if (!result.ok) throw new Error(result.error ?? 'AI 生成失败');
 
   input.onStage('AI 生成完成，解析待确认问题清单…');
   const text = result.content ?? '';
   const sep = text.indexOf('<<<ISSUES>>>');
   const prdMd = (sep >= 0 ? text.slice(0, sep) : text).replace(/<<<PRD>>>\s*/, '').trim();
-  const issues = parsePrdIssues(text, prdMd, input.onStage);
+  let issues = parsePrdIssues(text, prdMd, input.onStage);
+  // 兜底补问：主流程未产出任何问题时，基于已生成 PRD 反推一份问题清单（失败不影响主流程）
+  if (issues.length === 0) {
+    issues = await fallbackIssues(project, prdMd, input.content, adapter, genConfig, input.onStage);
+  }
   input.onStage(`解析完成：PRD ${prdMd.length} 字符、待确认问题 ${issues.length} 条（🔴 阻塞 ${issues.filter((i) => i.level === 'blocker').length} / 🟡 建议 ${issues.filter((i) => i.level === 'suggested').length} / 🟢 提示 ${issues.filter((i) => i.level === 'info').length}）`);
   // T00783-L3：startedAt 此前只 void 掉（死代码）——真实记录耗时，便于排查长耗时生成
   logService.log('INFO', 'ai', `[PRD生成] project=${input.projectId} file=${input.filename} prd=${prdMd.length}ch issues=${issues.length} 耗时=${Date.now() - startedAt}ms`);

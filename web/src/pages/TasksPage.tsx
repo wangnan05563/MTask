@@ -220,6 +220,8 @@ export function TasksPage() {
   // T00610：验证失败反馈录入弹窗（文本 + 截图）与提交忙碌态
   const [failDialog, setFailDialog] = useState<{ taskId: string; title: string; text: string; images: PastedImage[] } | null>(null);
   const [failBusy, setFailBusy] = useState(false);
+  // T00796：验证失败反馈录入框的「AI 美化」执行态（与提交互斥，避免并发写同一份草稿）
+  const [failPolishing, setFailPolishing] = useState(false);
   // 验证失败反馈编辑草稿：存在即编辑态，保存写回 handle_result 全文
   const [fbDrafts, setFbDrafts] = useState<Record<string, string>>({});
   // 「已完成」栏验证状态过滤：默认仅展示未验证，便于优先处理待核对的完成项；all=全部
@@ -640,6 +642,29 @@ export function TasksPage() {
       flash(String((e as Error).message ?? e));
     } finally {
       setFailBusy(false);
+    }
+  }
+
+  /**
+   * T00796：验证失败反馈正文的「AI 美化」——把口语化随手记润色为规范书面反馈。
+   * 不直接提交：结果回填输入框供用户确认后再提交，避免 AI 改写覆盖掉用户本意。
+   */
+  async function polishFailFeedback() {
+    if (!failDialog || failPolishing) return;
+    const src = failDialog.text.trim();
+    if (!src) return flash('请先填写失败原因，再点击 AI 美化');
+    if (!organizeToolId) return flash('请先在「模型管理」页添加并选择 AI 工具');
+    setFailPolishing(true);
+    try {
+      const r = await api.post<{ ok: boolean; content?: string; error?: string }>('/ai/polish', { toolId: organizeToolId, text: src });
+      if (!r.ok) return flash(r.error ?? 'AI 美化失败');
+      if (!r.content?.trim()) return flash('AI 未返回美化结果');
+      setFailDialog((d) => (d ? { ...d, text: r.content!.trim() } : d));
+      flash('已美化，请核对后提交');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFailPolishing(false);
     }
   }
 
@@ -2969,6 +2994,17 @@ export function TasksPage() {
                     }} />
                 </label>
                 <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>已附 {failDialog.images.length} 张截图</span>
+                <span style={{ flex: 1 }} />
+                {/* T00796：AI 美化图标按钮——沿用任务行 AI 美化同款交互（task-op + tbtn-anim + Sparkles，
+                    进行中高亮呼吸），仅作用于反馈正文，回填输入框后仍需用户确认提交 */}
+                <button onClick={() => void polishFailFeedback()}
+                  disabled={failPolishing || failBusy || !failDialog.text.trim()}
+                  title={failPolishing ? 'AI 美化进行中…' : 'AI 美化 — 润色这段失败反馈（保留全部事实要素，仅规范表达），结果回填后请核对再提交'}
+                  aria-label={failPolishing ? 'AI 美化进行中' : 'AI 美化：润色失败反馈正文'}
+                  className={`task-op tbtn-anim${failPolishing ? ' task-breathe' : ''}`}
+                  style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', cursor: failPolishing ? 'default' : 'pointer', background: failPolishing ? 'var(--accent)' : 'transparent', color: failPolishing ? 'var(--accent-text)' : 'var(--text)', opacity: failPolishing || !failDialog.text.trim() ? 0.45 : 1, border: 'none' }}>
+                  {failPolishing ? <Loader2 size={13} className="aispin" /> : <Sparkles size={13} />}
+                </button>
               </div>
               {failDialog.images.length > 0 && (
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>

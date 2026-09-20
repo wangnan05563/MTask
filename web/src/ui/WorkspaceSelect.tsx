@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Folder, FolderOpen, Plus, Search } from 'lucide-react';
 import { api } from '../api/client';
 import { askInput } from './dialogs';
+import { desktopApi } from './desktop';
 
 /**
  * T00771：工作空间选择器（参考 workbuddy 工作空间下拉）。
@@ -94,7 +95,26 @@ export function WorkspaceSelect({ project, onBind, flash, variant = 'trigger' }:
     } finally { setBusy(false); }
   }
 
-  function pickLocalFolder() {
+  /**
+   * 「打开本地文件夹」：优先走 Electron 原生目录对话框（IPC → dialog.showOpenDialog）。
+   * T00771 修复点：此前只有 <input type="file">，Windows 下弹出的是**文件**选择框，
+   * 用户根本无法选中文件夹；无桌面壳时降级为 webkitdirectory 输入（浏览器目录选择），
+   * 再兜底提示手工输入完整路径。
+   */
+  async function pickLocalFolder() {
+    const shell = desktopApi();
+    if (shell) {
+      setBusy(true);
+      try {
+        const dir = await shell.openDirectory();
+        if (dir) await bind(dir);
+      } catch (e) {
+        flash?.(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     dirInputRef.current?.click();
   }
 
@@ -144,7 +164,8 @@ export function WorkspaceSelect({ project, onBind, flash, variant = 'trigger' }:
         style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px', fontSize: 12, border: 'none', borderRadius: 5, cursor: 'pointer', textAlign: 'left', background: 'transparent', color: 'var(--text)' }}>
         <FolderOpen size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} /> 打开本地文件夹
       </button>
-      <input ref={dirInputRef} type="file" onChange={onDirPicked} style={{ display: 'none' }} aria-hidden="true" />
+      {/* 无桌面壳时的降级通道：webkitdirectory 让 Chromium 弹出目录选择（React 无该属性声明，故用展开传入） */}
+      <input ref={dirInputRef} type="file" {...{ webkitdirectory: '', directory: '' }} onChange={onDirPicked} style={{ display: 'none' }} aria-hidden="true" />
     </div>
   );
 

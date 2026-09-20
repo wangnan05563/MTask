@@ -13,12 +13,14 @@ const KIND_LABELS: Record<string, string> = {
   optimize: '提示词优化', beautify: '标题美化', ask: '通用对话', stream: '流式生成',
   organize: '任务梳理', classify: '智能分类', send: '队列发送', wbs: 'WBS 拆分',
   'parse-doc': '文档解析', report: '周报生成',
+  // T00796：验证失败反馈等正文的 AI 美化（与 beautify 的「标题美化」区分）
+  polish: '正文美化',
 };
 
 const KIND_COLOR: Record<string, string> = {
   optimize: 'var(--accent)', beautify: 'var(--accent)', ask: 'var(--text)', stream: 'var(--accent)',
   organize: 'var(--text)', classify: 'var(--text)', send: 'var(--text)', wbs: 'var(--accent)',
-  'parse-doc': 'var(--accent)', report: 'var(--accent)',
+  'parse-doc': 'var(--accent)', report: 'var(--accent)', polish: 'var(--accent)',
 };
 
 const cellStyle: React.CSSProperties = { padding: '5px 8px', borderBottom: '1px solid var(--surface-2)', fontSize: 12 };

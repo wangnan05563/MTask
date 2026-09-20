@@ -180,6 +180,32 @@ export const AIService = {
   },
 
   /**
+   * T00796：通用文本美化——把一段**口语化/随手记的正文**（当前用于「验证失败反馈」录入）润色为
+   * 表达规范、结构清晰、可直接归档复现的书面文本。
+   * 与 beautifyTitle 的差异：标题美化只处理单行标题并要求单行输出；这里处理多句正文，
+   * 必须保留全部事实要素（现象、复现步骤、环境、报错原文、期望结果），只做表达规范化。
+   */
+  async polishText(text: string, toolId: string): Promise<{ ok: boolean; content?: string; error?: string }> {
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    const startedAt = Date.now();
+    const system = [
+      '你是 MTask 的文本润色专家。给定一段用户随手写的反馈/说明文本，将其润色为表达规范、结构清晰、便于他人复现与归档的书面文本。',
+      '要求：',
+      '1. 严禁语义丢失：现象、复现步骤、环境/版本、报错原文、期望结果等事实要素必须逐项保留，不得删改、不得虚构',
+      '2. 只做表达规范化：修正错别字、语序、标点、用词，必要时用短句分条陈述，不改叙事顺序之外的信息',
+      '3. 保留原文的 Markdown 结构与换行习惯（原文无 Markdown 标记时不要擅自加标题层级）',
+      '4. 输出统一使用简体中文（简体字），严禁任何繁体字',
+      '5. 只输出润色后的正文文本，不要「润色结果如下」这类前置说明、不要代码块包裹',
+    ].join('\n');
+    const res = await adapter.chat(system, `【原文】\n${text}`, config);
+    // 与标题美化同款双保险：剥离思考过程并去掉首尾空白，避免思考型模型的推理内容回填进输入框
+    if (res.ok && res.content) res.content = stripThinking(res.content).trim();
+    recordUsage('polish', toolId, config.model, res.ok, startedAt, res.content?.length ?? 0, res.error);
+    return res;
+  },
+
+  /**
    * T00597：AI 简化标题——依据任务详情**高度总结**为简洁标题（限 40 字内）。
    * 与 beautifyTitle 的差异：美化保留全部语义只做表达规范化；简化允许丢失细节，追求标题简洁。
    * 前置要求：任务需有详情内容（description 非空）——语义来源，避免"无中生有"式丢失。

@@ -3,8 +3,9 @@ import { parseCleanGroups, type CleanRow } from '../utils/cleanGroups'; // T0075
 import { api, type AITool, type ReqCategory } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
 import { useSessionState } from '../ui/session';
-import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput, GitCompare, FileUp } from 'lucide-react';
+import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput, GitCompare, FileUp, FilePlus2 } from 'lucide-react';
 import { aiImportStore } from '../stores/aiImportStore';
+import { prdGenStore } from '../stores/prdGenStore'; // T00769 二轮：原始需求生成 PRD 的过程输出
 
 const CATEGORIES = [
   { key: 'summary', label: '周期要点汇总' },
@@ -61,6 +62,9 @@ const REPORT_TAB = '__report__';
 
 /** T00569 三轮：内置「AI 项目计划导入」tab 固定 id——导入执行日志统一在此滚动输出（与周报/分析并列） */
 const AI_IMPORT_TAB = '__aiimport__';
+
+/** T00769 二轮：内置「原始需求生成 PRD」tab 固定 id——此前该卡片只写模块级 store、控制台无订阅，表现即「右侧控制台无任何输出」 */
+const PRD_GEN_TAB = '__prdgen__';
 
 /**
  * 自定义 AI 工具选择器：收拢时仅显示已选工具的「模型名」（节省单行空间），
@@ -551,6 +555,9 @@ export function ReportConsole({
   // T00569 三轮：AI 项目计划导入——模块级 store 订阅（切页保持，日志统一在本控制台 tab 输出）
   const aiSnap = useSyncExternalStore(aiImportStore.subscribe, aiImportStore.getSnapshot);
   const onAiImportTab = activeId === AI_IMPORT_TAB;
+  // T00769 二轮：订阅 PRD 生成 store（流式正文 + 阶段日志在此滚动，修复「右侧控制台无任何输出」）
+  const prdSnap = useSyncExternalStore(prdGenStore.subscribe, prdGenStore.get);
+  const onPrdGenTab = activeId === PRD_GEN_TAB;
   const activeTask = tasks.find((t) => t.id === activeId) ?? null;
   const onReportTab = activeId === REPORT_TAB;
   const runningCount = tasks.filter((t) => t.status === 'busy').length;
@@ -576,11 +583,19 @@ export function ReportConsole({
     prevAiLogCount.current = aiLogCount;
   }, [aiLogCount]);
 
+  // T00769 二轮：PRD 生成首次产生日志时自动切到该 tab（与 AI 导入同款可见性保障）
+  const prdLogCount = prdSnap.logs.length;
+  const prevPrdLogCount = useRef(0);
+  useEffect(() => {
+    if (prdLogCount > 0 && prevPrdLogCount.current === 0) setActiveId(PRD_GEN_TAB);
+    prevPrdLogCount.current = prdLogCount;
+  }, [prdLogCount]);
+
   // 正在生成（AI 周报流式或手动任务进行中）时随内容滚到底部，保证流式输出始终跟随最新内容
-  const live = isLive(onReportTab, streaming, streamText, activeTask) || onAiImportTab;
+  const live = isLive(onReportTab, streaming, streamText, activeTask) || onAiImportTab || onPrdGenTab;
   useEffect(() => {
     if (live) bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
-  }, [live, streamText, streamsLen(activeTask)]);
+  }, [live, streamText, streamsLen(activeTask), prdSnap.streamText, prdSnap.logs.length]);
 
   // 统一按 id 局部更新任务字段，避免在并发更新中因闭包持有旧 tasks 而互相覆盖
   const updateTask = useCallback((id: string, patch: Partial<AnalysisTask>) => {
@@ -825,6 +840,32 @@ export function ReportConsole({
 
   /** 结果区内容：AI 周报流或聚焦任务按 tab 分支渲染 */
   function renderBody() {
+    // T00769 二轮：原始需求生成 PRD tab——阶段日志 + 正文增量实时滚动（修复「右侧控制台无任何输出」）
+    if (onPrdGenTab) {
+      return (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+            <FilePlus2 size={13} style={{ color: 'var(--accent)' }} /> 原始需求生成 PRD
+            {prdSnap.streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
+            {prdSnap.result && <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>PRD {prdSnap.result.prdMd.length} 字符 / 待确认问题 {prdSnap.result.issues.length} 条</span>}
+          </div>
+          {prdSnap.logs.map((l, i) => (
+            <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|失败|错误/.test(l) ? 'var(--warning, #c80)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
+          ))}
+          {!!prdSnap.streamText && (
+            <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>PRD 正文（实时）</div>
+              <div style={{ fontSize: 12, color: 'var(--text)' }}>
+                <MarkdownContent content={prdSnap.streamText} />
+              </div>
+            </div>
+          )}
+          {!prdSnap.streaming && prdSnap.result && (
+            <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧交互表格填写问题结论后录入 PRD 管理视图。</div>
+          )}
+        </div>
+      );
+    }
     // T00569 三轮：AI 项目计划导入 tab——控制台式滚动输出执行日志（与导入面板深度整合）
     if (onAiImportTab) {
       const lv = (level: string) => (level === 'ok' ? 'var(--success, #16a34a)' : level === 'error' ? 'var(--danger)' : 'var(--text-secondary)');
@@ -1040,6 +1081,23 @@ export function ReportConsole({
             <FileUp size={11} />
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{aiImportStore.label()}</span>
             {aiSnap.busy && <Loader2 size={10} className="aispin" />}
+          </button>
+        )}
+        {/* T00769 二轮：原始需求生成 PRD tab——有日志或生成中时显示，流式正文与阶段日志在此滚动 */}
+        {(prdSnap.logs.length > 0 || prdSnap.streaming) && (
+          <button
+            onClick={() => setActiveId(PRD_GEN_TAB)}
+            title="原始需求生成 PRD — 生成过程与正文增量在此实时滚动输出"
+            aria-label="原始需求生成 PRD tab"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+              border: '1px solid var(--border-strong)', background: onPrdGenTab ? 'var(--accent)' : 'var(--card-bg)',
+              color: onPrdGenTab ? 'var(--accent-text)' : 'var(--text)', maxWidth: 150,
+            }}
+          >
+            <FilePlus2 size={11} />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>原始需求生成 PRD</span>
+            {prdSnap.streaming && <Loader2 size={10} className="aispin" />}
           </button>
         )}
         {tasks.map((t) => (

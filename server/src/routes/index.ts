@@ -10,6 +10,7 @@ import { TaskImageService } from '../services/TaskImageService';
 import { TaskCategoryService } from '../services/TaskCategoryService';
 import { ReqCategoryService, ReqEntryService } from '../services/ReqService';
 import { exportBundle, importBundle, isExportTable } from '../services/SettingsService';
+import { WorkspaceService } from '../services/WorkspaceService'; // T00776：工作空间搜索/读文件/符号索引（HEAD 缺此导入导致编译不过）
 import { getDefaultNoteProjectId, getSetting, INBOX_PROJECT_ID, setSetting } from '../services/AppSettings';
 import { getConfig as getUpdateConfig, saveConfig as saveUpdateConfig, testConfig as testUpdateConfig, checkUpdate, currentVersion as currentAppVersion } from '../services/UpdateService';
 import { logService } from '../services/LogService';
@@ -1034,6 +1035,18 @@ api.post('/ai/beautify', async (req, res) => {
   if (!title) return res.status(400).json({ error: 'title 必填' });
   try {
     res.json(await AIService.beautifyTitle(title, toolId));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// T00796：通用正文美化——验证失败反馈录入框等场景的 AI 美化（保留全部事实要素，仅做表达规范化）
+api.post('/ai/polish', async (req, res) => {
+  const { toolId, text } = req.body ?? {};
+  if (!toolId) return res.status(400).json({ error: 'toolId 必填' });
+  if (!text || !String(text).trim()) return res.status(400).json({ error: '待美化文本为空' });
+  try {
+    res.json(await AIService.polishText(String(text), toolId));
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }

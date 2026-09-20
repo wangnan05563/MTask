@@ -48,6 +48,8 @@ export const api = {
     request<T>(path, { method: 'POST', body: data === undefined ? undefined : JSON.stringify(data), ...(signal ? { signal } : {}) }),
   patch: <T>(path: string, data?: unknown) =>
     request<T>(path, { method: 'PATCH', body: JSON.stringify(data ?? {}) }),
+  put: <T>(path: string, data?: unknown) =>
+    request<T>(path, { method: 'PUT', body: JSON.stringify(data ?? {}) }), // T00770：PRD 反向更新走全量覆盖 PUT
   del: <T>(path: string, data?: unknown) =>
     request<T>(path, { method: 'DELETE', body: data === undefined ? undefined : JSON.stringify(data) }),
   /** GET 二进制下载（xlsx 导出/模板等）：返回原始 ArrayBuffer，由调用方触发保存 */
