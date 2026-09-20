@@ -7,6 +7,7 @@ import { v4 as uuid } from 'uuid';
 import { getAdapter } from '../adapters';
 import { resolvePrdContext } from '../util/prdContext'; // T00763：任务关联 PRD → AI 上下文自动注入（util 独立避免循环依赖）
 import type { StreamResult, SubmitResult, PollResult } from '../adapters/types';
+import type { ToolConfig } from '../adapters';
 
 /** 模型未配置时的统一提示，保持与产品语境一致的表达 */
 const MODEL_UNCONFIGURED = '所选模型未配置，请先在「模型管理」为该工具填写默认模型';
@@ -180,15 +181,27 @@ export const AIService = {
   },
 
   /**
-   * T00796：通用文本美化——把一段**口语化/随手记的正文**（当前用于「验证失败反馈」录入）润色为
-   * 表达规范、结构清晰、可直接归档复现的书面文本。
+   * T00796：通用文本美化——把一段**口语化/随手记的正文**（验证失败反馈 / 处理结果 / 通用需求内容）
+   * 润色为表达规范、结构清晰、可直接归档复现的书面文本。
    * 与 beautifyTitle 的差异：标题美化只处理单行标题并要求单行输出；这里处理多句正文，
    * 必须保留全部事实要素（现象、复现步骤、环境、报错原文、期望结果），只做表达规范化。
+   *
+   * 输出预算按原文规模给足（润色输出与原文等长）：默认 4096 tokens 在长正文上会触顶截断，
+   * adapter.chat 会按 finish_reason=length 判失败（不会静默回填半截文本），但用户侧只看到「美化失败」，
+   * 故这里按字数预判给足预算，并对超长正文提前给出「建议分段」的可操作提示。
    */
   async polishText(text: string, toolId: string): Promise<{ ok: boolean; content?: string; error?: string }> {
+    // 一次润色的字符上限：超出后即使给足预算也极易触顶，直接引导分段，避免白调一次模型
+    const MAX_CHARS = 6000;
+    if (text.length > MAX_CHARS) {
+      return { ok: false, error: `正文较长（${text.length} 字符），单次润色建议不超过 ${MAX_CHARS} 字符 —— 请分段润色后再合并` };
+    }
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     const startedAt = Date.now();
+    // 预算 = 原文字数 ×0.8（中文保守折算）+ 余量，取「用户配置 / 下限 4096 / 预算」的最大值，封顶 8192
+    const budget = Math.min(Math.max(config.maxTokens ?? 4096, 4096, Math.ceil(text.length * 0.8) + 512), 8192);
+    const polishConfig: ToolConfig = { ...config, maxTokens: budget, timeoutMs: Math.max(config.timeoutMs ?? 60_000, 120_000) };
     const system = [
       '你是 MTask 的文本润色专家。给定一段用户随手写的反馈/说明文本，将其润色为表达规范、结构清晰、便于他人复现与归档的书面文本。',
       '要求：',
@@ -198,7 +211,7 @@ export const AIService = {
       '4. 输出统一使用简体中文（简体字），严禁任何繁体字',
       '5. 只输出润色后的正文文本，不要「润色结果如下」这类前置说明、不要代码块包裹',
     ].join('\n');
-    const res = await adapter.chat(system, `【原文】\n${text}`, config);
+    const res = await adapter.chat(system, `【原文】\n${text}`, polishConfig);
     // 与标题美化同款双保险：剥离思考过程并去掉首尾空白，避免思考型模型的推理内容回填进输入框
     if (res.ok && res.content) res.content = stripThinking(res.content).trim();
     recordUsage('polish', toolId, config.model, res.ok, startedAt, res.content?.length ?? 0, res.error);

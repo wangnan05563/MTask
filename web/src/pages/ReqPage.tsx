@@ -7,6 +7,7 @@ import { askConfirm, askInput } from '../ui/dialogs';
 import { clearSessionState, useSessionState } from '../ui/session';
 import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
+import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：通用需求正文 AI 美化
 import { relTime } from '../ui/format';
 
 /** 通用需求仓库：按分类管理"通用优秀实现/解决方案"，支持增删改查与一键复制 */
@@ -417,6 +418,13 @@ export function ReqPage() {
             style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit' }}
           />
           <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+            {/* T00796 二轮：新建内容接入正文美化（工具缺省时自动取模型管理首个已配置工具） */}
+            <AiPolishButton
+              value={newContent}
+              onPolished={setNewContent}
+              flash={flash}
+              title="AI 美化 — 润色这段通用需求正文（保留全部实现要点，仅规范表达），结果回填后请核对再保存"
+            />
             <button
               onClick={() => void createEntry()}
               disabled={!newTitle.trim()}
@@ -477,6 +485,13 @@ export function ReqPage() {
                     style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit' }}
                   />
                   <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+                    {/* T00796 二轮：编辑态同样接入正文美化，结果只回填草稿不直接落库 */}
+                    <AiPolishButton
+                      value={draft.content}
+                      onPolished={(text) => setDrafts((prev) => ({ ...prev, [p.id]: { ...draft, content: text } }))}
+                      flash={flash}
+                      title="AI 美化 — 润色这段通用需求正文（保留全部实现要点，仅规范表达），结果回填后请核对再保存"
+                    />
                     <button onClick={() => void saveDraft(p)} disabled={!draft.title.trim()} style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="保存 — 保存对这条通用需求的修改" aria-label="保存：保存对这条通用需求的修改">
                       <Save size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
