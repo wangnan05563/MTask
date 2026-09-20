@@ -8,6 +8,7 @@ import { getAdapter } from '../adapters';
 import { resolvePrdContext } from '../util/prdContext'; // T00763：任务关联 PRD → AI 上下文自动注入（util 独立避免循环依赖）
 import type { StreamResult, SubmitResult, PollResult } from '../adapters/types';
 import type { ToolConfig } from '../adapters';
+import { stripThinking } from '../util/thinking'; // T00814：思考块剥离上移共享
 
 /** 模型未配置时的统一提示，保持与产品语境一致的表达 */
 const MODEL_UNCONFIGURED = '所选模型未配置，请先在「模型管理」为该工具填写默认模型';
@@ -65,20 +66,7 @@ function stripPromptHeading(md: string): string {
     .trim();
 }
 
-/**
- * 剥离模型输出里的思考过程块。
- * 部分思考型模型会在 content 里附带“内心推理”，常包裹在 思考/蒂 response-delimited 标记内，
- * 若直接回填标题会污染标题输入框，因此做确定性兜底去除（不依赖模型是否遵守“只输出标题”的约束）。
- */
-function stripThinking(text: string): string {
-  // 依次剔除常见思考分界标记的内层（支持 中文/英文 与 反引号 变体），提纯后剩正文
-  // 注：以下均为跨度未知内容的全局正则替换，String#replaceAll 只能按字面字符串替换无法表达通配，属 S7781 误报
-  return text
-    .replace(/\s*```\s*(?:thinking|reasoning|thought)\s*[\s\S]*?```\s*/gi, '') // NOSONAR - 通配跨行正则，无法用 replaceAll
-    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '') // NOSONAR - 通配跨行正则，无法用 replaceAll
-    .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '') // NOSONAR - 通配跨行正则，无法用 replaceAll
-    .trim();
-}
+// T00814：stripThinking 已上移 `../util/thinking`（标题美化/简化与 PRD 问题清单解析共用同一口径）
 
 /**
  * FR2 协助整理 与 FR4 队列分发的 AI 调用层。

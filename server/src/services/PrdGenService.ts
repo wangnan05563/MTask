@@ -6,6 +6,8 @@ import { ConfigService } from './ConfigService';
 import { PlanService } from './PlanService';
 import { logService } from './LogService';
 import { ContextBudget, WorkspaceService, loadIgnoreRules, isIgnored } from './WorkspaceService';
+import { stripThinking } from '../util/thinking'; // T00814：解析问题清单前剔除思考块
+import { parseIssuesJson, parsePrdIssues, splitPrdBody, type PrdGenIssue } from './prdIssues'; // T00814：问题清单解析抽为可测模块
 
 /**
  * T00769：原始需求生成 PRD（AI 控制台卡片「原始需求生成PRD」后端）。
@@ -94,10 +96,12 @@ export function loadWorkspaceContext(workspacePath: string): string {
  * 上层按 T00779 判定失败，表现即「右侧控制台无输出 + 未识别出待确认问题」。
  * 这里按场景抬到下限值（仍尊重用户更高的自定义配置），超时同理放宽到 5 分钟。
  */
-const PRD_MIN_OUTPUT_TOKENS = 8192;
+const PRD_MIN_OUTPUT_TOKENS = 16_384;
+/** 提供商不接受 16K 输出上限时的回退值（原先的下限，能跑通但长文档可能触顶） */
+const PRD_FALLBACK_OUTPUT_TOKENS = 8192;
 const PRD_MIN_TIMEOUT_MS = 300_000;
 
-export interface PrdGenIssue { level: string; question: string; context: string }
+export type { PrdGenIssue }; // T00814：类型定义随解析模块迁移
 
 /**
  * 流式生成 PRD：内置技能 prompt + 原始需求 + 项目上下文 → adapter.chatStream。
@@ -174,56 +178,6 @@ async function fallbackIssues(
   }
 }
 
-/** 从任意文本中截取并解析 JSON 数组形式的问题清单（容忍模型前后包裹解释文字/代码块） */
-function parseIssuesJson(text: string): PrdGenIssue[] {
-  const start = text.indexOf('[');
-  const end = text.lastIndexOf(']');
-  if (start < 0 || end <= start) return [];
-  try {
-    const raw = JSON.parse(text.slice(start, end + 1)) as Array<Partial<PrdGenIssue>>;
-    if (!Array.isArray(raw)) return [];
-    return raw
-      .filter((x) => typeof x.question === 'string' && x.question.trim())
-      .map((x) => ({
-        level: ['blocker', 'suggested', 'info'].includes(String(x.level)) ? String(x.level) : 'info',
-        question: String(x.question).trim(),
-        context: typeof x.context === 'string' ? x.context.trim() : '',
-      }));
-  } catch {
-    return [];
-  }
-}
-
-/** 解析 AI 输出中的待确认问题清单：优先 <<<ISSUES>>> JSON 协议，回退从正文「待确认问题汇总」节提取（level 默认 info） */
-function parsePrdIssues(text: string, prdMd: string, onStage: (msg: string) => void): PrdGenIssue[] {
-  const sep = text.indexOf('<<<ISSUES>>>');
-  if (sep >= 0) {
-    try {
-      const raw = JSON.parse(text.slice(sep + '<<<ISSUES>>>'.length).trim()) as Array<Partial<PrdGenIssue>>;
-      if (Array.isArray(raw)) {
-        const issues = raw
-          .filter((x) => typeof x.question === 'string' && x.question.trim())
-          .map((x) => ({
-            level: ['blocker', 'suggested', 'info'].includes(String(x.level)) ? String(x.level) : 'info',
-            question: String(x.question).trim(),
-            context: typeof x.context === 'string' ? x.context.trim() : '',
-          }));
-        if (issues.length > 0) return issues;
-      }
-    } catch {
-      onStage('问题清单 JSON 协议解析失败，回退从 PRD 正文「待确认问题汇总」节提取…');
-    }
-  }
-  // 回退提取：模型未按 JSON 协议输出时，从主文档「待确认问题汇总」节的列表项提取
-  const m = /#+\s*待确认问题汇总?\s*\n([\s\S]*)$/.exec(prdMd);
-  if (!m) return [];
-  return [...m[1].matchAll(/^\s*(?:[-*]|\d+[.、])\s*(.+)$/gm)]
-    .map((x) => x[1].replaceAll('**', '').trim())
-    .filter((q) => q.length > 4 && !q.startsWith('---'))
-    .slice(0, 20)
-    .map((q) => ({ level: 'info', question: q, context: '' }));
-}
-
 export async function generatePrdStream(input: {
   projectId: string;
   toolId: string;
@@ -276,6 +230,9 @@ export async function generatePrdStream(input: {
     '2. 正文结束后另起一行输出分隔符 <<<ISSUES>>>，其后紧跟 JSON 数组，列出 5~10 条待确认问题；',
     '3. 每条格式：{"level":"blocker|suggested|info","question":"…","context":"…"}；',
     '4. 即使项目源码上下文缺失，也必须基于原始需求本身列出阻塞落地的关键未知项，不得省略该 JSON 段。',
+    // T00814：长文档实测会在 8K 输出上限处被截断，导致整份 PRD 作废；这里给出篇幅边界，
+    // 把预算花在变更点/字段/验收标准上，而不是无节制铺陈
+    '5. 篇幅控制：PRD 正文不超过 6000 字，聚焦「变更点、字段清单、业务规则、验收标准、影响面」；不要复述原始需求全文，不要输出目录。',
   ].join('\n');
 
   const system = `${skill}\n\n# 三角色审查规则库（审查时逐条对照）\n${rules}`;
@@ -288,13 +245,30 @@ export async function generatePrdStream(input: {
     ISSUE_RULE,
   ].filter(Boolean).join('\n\n');
 
-  const result = await adapter.chatStream(system, user, genConfig, input.onDelta);
-  if (!result.ok) throw new Error(result.error ?? 'AI 生成失败');
+  let result = await adapter.chatStream(system, user, genConfig, input.onDelta);
+  // T00814：个别提供商不接受 16K 输出上限（请求直接 400）——此时回退到 8K 重试一次，
+  // 避免"提高了预算反而整个功能不可用"。仅在错误文本确指 max_tokens 时回退，其余错误照旧抛出。
+  if (!result.ok && /max_tokens|max_completion_tokens|too large|invalid/i.test(result.error ?? '')) {
+    input.onStage(`模型未接受 ${genConfig.maxTokens} tokens 输出上限，回退 ${PRD_FALLBACK_OUTPUT_TOKENS} 重试…`);
+    result = await adapter.chatStream(system, user, { ...genConfig, maxTokens: PRD_FALLBACK_OUTPUT_TOKENS }, input.onDelta);
+  }
+  // T00814：长文档实测即使预算给到 16K/32K，部分思考型模型仍会在自身上限处截断
+  // （流出的正文 9~10K 字符即 finish_reason=length）。此时整份作废太浪费 ——
+  // 改为「保留已生成部分 + 显式告警」，问题清单随后由补问兜底；其它失败仍原样抛出。
+  let text = '';
+  if (result.ok) {
+    text = result.content ?? '';
+  } else if (result.partial && /超长被截断/.test(result.error ?? '')) {
+    text = result.partial;
+    input.onStage(`⚠ AI 输出触及上限，已保留当前 ${text.length} 字符继续 —— PRD 末尾可能不完整，请在交互表格中核对内容；待确认问题将由补充提问补齐`);
+  } else {
+    throw new Error(result.error ?? 'AI 生成失败');
+  }
 
   input.onStage('AI 生成完成，解析待确认问题清单…');
-  const text = result.content ?? '';
-  const sep = text.indexOf('<<<ISSUES>>>');
-  const prdMd = (sep >= 0 ? text.slice(0, sep) : text).replace(/<<<PRD>>>\s*/, '').trim();
+  // T00814：标记识别放宽（`<<<ISSUES>>>` / `<ISSUES>` / 带空格变体），避免模型写了别的写法时
+  // 把 JSON 段当成 PRD 正文留在文档里
+  const prdMd = splitPrdBody(text);
   let issues = parsePrdIssues(text, prdMd, input.onStage);
   // 兜底补问：主流程未产出任何问题时，基于已生成 PRD 反推一份问题清单（失败不影响主流程）
   if (issues.length === 0) {

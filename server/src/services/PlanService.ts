@@ -10,6 +10,7 @@ import { nextTaskNo } from './TaskService'; // T00662：PRD 导入生成待办�
 import { notifyChange } from './ChangeBus';
 // pizzip：docxtemplater 既有依赖，用于解压 .docx 提取 word/document.xml（T00439）
 import PizZip from 'pizzip';
+import { stripWordFieldCodes } from '../util/wordFields'; // T00814：清洗 Word 域代码（目录/页码/交叉引用）
 
 export interface PlanTaskRow {
   id: string;
@@ -945,13 +946,19 @@ export const PlanService = {
         .join('')
         .trim();
       if (!text) continue;
-      // 标题样式识别：Heading1-4 / 纯数字 / 中文「标题N」——统一转 # 前缀保留文档层级
-      const level = Number((/^Heading(\d)$/i.exec(style) ?? /^(\d)$/.exec(style) ?? /(\d)/.exec(style))?.[1] ?? 0);
+      // T00814：清洗 Word 域代码（目录/页码/交叉引用），并把「整行都是域码」的行丢弃
+      const cleanText = stripWordFieldCodes(text);
+      if (!cleanText.trim()) continue;
+      // 标题样式识别：Heading1-4 或**纯数字** styleId（中文版 Word 把「标题2」存为 styleId "2"）——统一转 # 前缀保留层级。
+      // T00814 修复：原先的 `/(\d)/`（任意位置含数字）兜底会把普通段落样式误判成标题——
+      // 实测「编号/日期/描述」（styleId 149）、封面（214）、目录行（49/58/36）全部被标成 #~#### 标题，正文结构被污染。
+      // 这里只接受「恰好一位数字」的 styleId，不再做模糊兜底。
+      const level = Number((/^Heading\s*(\d)$/i.exec(style) ?? /^([1-9])$/.exec(style))?.[1] ?? 0);
       if (level >= 1 && level <= 4) {
-        lines.push(`${'#'.repeat(level)} ${text}`);
+        lines.push(`${'#'.repeat(level)} ${cleanText}`);
       } else {
         // 非标题段落直接保留文本（列表编号在文本内，AI 可从编号语义识别层级）
-        lines.push(text);
+        lines.push(cleanText);
       }
       if (lines.length >= MAX_PARSE_ROWS) break;
     }

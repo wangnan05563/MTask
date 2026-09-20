@@ -175,7 +175,7 @@ export class ClaudeAdapter implements AIAdapter {
         }
       });
       if (!text) return { ok: false, error: 'AI 返回内容为空' };
-      if (stopReason === 'max_tokens') return { ok: false, error: streamTruncatedError(text.length) }; // T00779
+      if (stopReason === 'max_tokens') return { ok: false, error: streamTruncatedError(text.length), partial: text }; // T00779 + T00814 partial
       if (stopReason === 'refusal') return { ok: false, error: outputStoppedError('stop_reason=refusal', text.length) }; // 走查 M-3
       return { ok: true, content: text };
     } catch (e) {

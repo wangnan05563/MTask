@@ -67,6 +67,12 @@ export interface StreamResult {
   ok: boolean;
   content?: string;
   error?: string;
+  /**
+   * T00814：ok=false 时仍可带出的「已收到部分」——用于输出触顶（finish_reason=length）场景。
+   * 默认调用方仍应把 ok=false 当失败（T00779 的防半截入库语义不变）；
+   * 只有明确"用户会逐条复核"的长文生成（当前仅 PRD 生成）才可选择性采纳，并必须显式告警。
+   */
+  partial?: string;
 }
 
 export interface AIAdapter {

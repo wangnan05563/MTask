@@ -132,7 +132,7 @@ export class OllamaAdapter implements AIAdapter {
         }
       });
       if (!text) return { ok: false, error: 'AI 返回内容为空' };
-      if (doneReason === 'length') return { ok: false, error: streamTruncatedError(text.length) }; // T00779
+      if (doneReason === 'length') return { ok: false, error: streamTruncatedError(text.length), partial: text }; // T00779 + T00814 partial
       return { ok: true, content: text };
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') return { ok: false, error: `连接超时（超过 ${config.timeoutMs ?? 60000}ms）` };

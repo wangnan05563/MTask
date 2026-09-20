@@ -182,8 +182,10 @@ export class OpenAICompatAdapter implements AIAdapter {
         }
       });
       if (!text) return { ok: false, error: 'AI 返回内容为空' };
-      if (finish === 'length') return { ok: false, error: streamTruncatedError(text.length) }; // T00779
-      if (finish === 'content_filter') return { ok: false, error: outputStoppedError('finish_reason=content_filter', text.length) }; // 走查 M-3
+      // T00779：触顶截断仍按失败处理（防半截结果入库）；T00814 起额外携带 partial，
+      // 供"用户会逐条复核"的长文场景（当前仅 PRD 生成）选择性采纳
+      if (finish === 'length') return { ok: false, error: streamTruncatedError(text.length), partial: text };
+      if (finish === 'content_filter') return { ok: false, error: outputStoppedError('finish_reason=content_filter', text.length), partial: text }; // 走查 M-3
       return { ok: true, content: text };
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') return { ok: false, error: `连接超时（超过 ${config.timeoutMs ?? 60000}ms）` };

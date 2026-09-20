@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve, sep, extname } from 'node:path';
 import { getDb } from '../db/connection';
 import { v4 as uuid } from 'uuid';
+import { isWordFieldToken } from '../util/wordFields'; // T00814：关键词提取排除 Word 域代码标识符
 
 /**
  * T00776（P0）：工作空间文件搜索 / 按需读文件 / 忽略配置 / 上下文预算。
@@ -546,9 +547,16 @@ export const WorkspaceService = {
   extractKeywords(text: string): string[] {
     if (!text) return [];
     const out: string[] = [];
+    const stop = new Set(['the', 'and', 'for', 'with', 'const', 'let', 'function', 'return', 'this']);
     for (const m of text.matchAll(/[A-Za-z_]\w{2,}/g)) {
       const w = m[0];
-      if (!out.includes(w) && !['the', 'and', 'for', 'with', 'const', 'let', 'function', 'return', 'this'].includes(w.toLowerCase())) out.push(w);
+      // T00814：排除 Word 域代码标识符（HYPERLINK/PAGEREF/_Toc18264…）——它们不是需求里的业务词，
+      // 一旦被当成检索关键词，注入的代码片段与需求完全无关（实测控制台出现
+      // `[HYPERLINK, _Toc18264, PAGEREF, _Toc14244, …]` 这种 6 个词全是域码的情况）
+      if (isWordFieldToken(w)) continue;
+      // 排除「数字为主」的串（版本号/哈希/编号），它们对代码检索没有区分度
+      if ((w.match(/\d/g)?.length ?? 0) >= Math.ceil(w.length / 2)) continue;
+      if (!out.includes(w) && !stop.has(w.toLowerCase())) out.push(w);
       if (out.length >= 6) break;
     }
     // T00783-N9：英文标识符已足够（≥3 个）时不再补中文词——中文 2~4 字滑窗会产生「需求/模块/功能」等泛词噪声
