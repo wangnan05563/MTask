@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { parseCleanGroups, type CleanRow } from '../utils/cleanGroups'; // T00751：清洗分组解析抽为可测模块
+import { cleanPrdStreamText } from '../utils/prdFence'; // T00815：控制台 PRD 实时正文去标记/解围栏
 import { api, type AITool, type ReqCategory } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
 import { useSessionState } from '../ui/session';
@@ -856,7 +857,7 @@ export function ReportConsole({
             <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
               <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>PRD 正文（实时）</div>
               <div style={{ fontSize: 12, color: 'var(--text)' }}>
-                <MarkdownContent content={prdSnap.streamText} />
+                <MarkdownContent content={cleanPrdStreamText(prdSnap.streamText)} />
               </div>
             </div>
           )}
