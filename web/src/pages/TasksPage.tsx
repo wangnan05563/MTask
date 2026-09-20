@@ -2208,6 +2208,25 @@ export function TasksPage() {
     );
   }
 
+  /**
+   * T00797：一键收起/展开的作用域与判定（单一来源，避免按钮 onClick 与图标两次各算一遍而漂移）。
+   * 覆盖待办 / 已完成 / 搁置三个列表 —— 三者共用同一套折叠状态；展开时只对有内容的分组展开
+   * （处理结果要有 handle_result、验证失败反馈要满足与失败徽标同条件）。
+   */
+  function foldScope() {
+    const all = [...todo, ...done, ...shelvedTasks];
+    return {
+      ids: all.map((t) => t.id),
+      resultIds: all.filter((t) => t.handle_result).map((t) => t.id),
+      failbackIds: all.filter((t) => t.handle_result?.includes('【验证失败') && !t.verified).map((t) => t.id),
+    };
+  }
+
+  /** 是否存在任一展开中的任务详情分组（描述 / AI 摘要 / 处理结果 / 验证失败反馈） */
+  function anyFoldOpen() {
+    return foldScope().ids.some((id) => descExpanded[id] || summaryExpanded[id] || resultOpen[id] || failbackOpen[id]);
+  }
+
   /** 顶部工具条：项目切换、工具选择、批量美化、分类筛选、搜索（T00522 修正：顶层补 op-host 宿主，筛选/搜索默认隐藏悬浮显示才生效） */
   function renderToolbar() {
     return (
@@ -2301,27 +2320,24 @@ export function TasksPage() {
             T00728：收起为高频操作优先——有展开内容时点击一律收起，全部收起后点击才展开；
             T00728 二轮（用户反馈）：按钮去掉中文名字，仅保留图标简化显示（语义由 title/aria 承载） */}
         <button className="tbtn-anim op-hidden" onClick={() => {
-          const all = [...todo, ...done];
-          const ids = all.map((t) => t.id);
-          const resultIds = all.filter((t) => t.handle_result).map((t) => t.id);
-          const hasExpanded = ids.some((id) => descExpanded[id] || summaryExpanded[id] || resultOpen[id]);
-          if (hasExpanded) {
-            // 收起（高频优先）
-            setDescExpanded({}); setSummaryExpanded({}); setResultOpen({});
+          const { ids, resultIds, failbackIds } = foldScope();
+          if (anyFoldOpen()) {
+            // 收起（高频优先）：验证失败反馈的未保存草稿一并丢弃——与单个反馈窗口「收起（未保存修改将丢弃）」
+            // 同语义，否则草稿存在时反馈窗口仍会渲染，收起就"没生效"
+            setDescExpanded({}); setSummaryExpanded({}); setResultOpen({}); setFailbackOpen({});
+            setFbDrafts({});
           } else {
-            // 展开：处理结果仅对有内容的任务展开（无 handle_result 的任务展开后无渲染块）
+            // 展开：处理结果仅对有内容的任务展开、验证失败反馈仅对有失败反馈的任务展开
+            // （无对应内容时展开会渲染出空块）
             const v = Object.fromEntries(ids.map((id) => [id, true]));
             setDescExpanded(v); setSummaryExpanded(v);
             setResultOpen(Object.fromEntries(resultIds.map((id) => [id, true])));
+            setFailbackOpen(Object.fromEntries(failbackIds.map((id) => [id, true])));
           }
-        }} title="一键收起或展开全部任务的描述、AI 摘要与处理结果（收起为高频操作优先）" aria-label="一键收起或展开全部任务详情"
+        }} title="一键收起或展开全部任务的描述、AI 摘要、处理结果与验证失败反馈（收起为高频操作优先）" aria-label="一键收起或展开全部任务详情"
           style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}>
-          {(() => {
-            const ids = [...todo, ...done];
-            const hasExpanded = ids.some((t) => descExpanded[t.id] || summaryExpanded[t.id] || resultOpen[t.id]);
-            // 图标指示下一步动作：有展开内容 → 将收起（折叠图标）；全部收起 → 将展开（展开图标）
-            return hasExpanded ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />;
-          })()}
+          {/* 图标指示下一步动作：有展开内容 → 将收起（折叠图标）；全部收起 → 将展开（展开图标） */}
+          {anyFoldOpen() ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />}
         </button>
         <label className="task-op" title="导入数据 — CSV/JSON（JSON 支持 Trello 导出与 JSON 数组），预览确认后入库"
           style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', display: 'inline-block' }}>

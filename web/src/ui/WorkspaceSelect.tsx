@@ -3,6 +3,7 @@ import { ChevronDown, Folder, FolderOpen, Plus, Search } from 'lucide-react';
 import { api } from '../api/client';
 import { askInput } from './dialogs';
 import { desktopApi } from './desktop';
+import { pickServerDirectory } from './DirBrowser'; // T00771 二轮：无桌面壳时的服务端目录浏览
 
 /**
  * T00771：工作空间选择器（参考 workbuddy 工作空间下拉）。
@@ -18,24 +19,6 @@ export function wsBasename(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
-/** 从 Electron 目录选择结果推导所选文件夹（File.path 仅 Electron 提供；浏览器环境返回 null） */
-export function dirFromDirInput(files: FileList | null): string | null {
-  const f = files?.[0] as (File & { path?: string }) | undefined;
-  if (!f) return null;
-  const anyF = f as unknown as { path?: string; webkitRelativePath?: string };
-  if (!anyF.path) return null; // 非 Electron（无 Node 路径暴露）→ 无法取得本地绝对路径
-  const rel = anyF.webkitRelativePath ?? '';
-  const path = anyF.path as string;
-  if (rel) {
-    const root = path.slice(0, path.length - rel.length);
-    const top = rel.split('/')[0] ?? '';
-    return root + top;
-  }
-  // 单文件兜底：取其所在目录
-  const idx = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
-  return idx > 0 ? path.slice(0, idx) : path;
-}
-
 export function WorkspaceSelect({ project, onBind, flash, variant = 'trigger' }: {
   /** 当前项目（读取已绑定路径做回显；切项目由父组件换 props 自动联动） */
   readonly project?: { id: string; workspace_path?: string | null } | null;
@@ -49,7 +32,6 @@ export function WorkspaceSelect({ project, onBind, flash, variant = 'trigger' }:
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
-  const dirInputRef = useRef<HTMLInputElement>(null);
 
   const bound = project?.workspace_path ?? '';
 
@@ -96,36 +78,24 @@ export function WorkspaceSelect({ project, onBind, flash, variant = 'trigger' }:
   }
 
   /**
-   * 「打开本地文件夹」：优先走 Electron 原生目录对话框（IPC → dialog.showOpenDialog）。
-   * T00771 修复点：此前只有 <input type="file">，Windows 下弹出的是**文件**选择框，
-   * 用户根本无法选中文件夹；无桌面壳时降级为 webkitdirectory 输入（浏览器目录选择），
-   * 再兜底提示手工输入完整路径。
+   * 「打开本地文件夹」两级通道：
+   * ① Electron 壳内 → 原生目录对话框（IPC → dialog.showOpenDialog），体验最好；
+   * ② 无桌面壳（Vite dev / 浏览器）→ 服务端目录浏览器（GET /api/fs/dirs 逐层枚举）。
+   * T00771 二轮：原先 ② 走的是 `<input webkitdirectory>` + `File.path` 反推目录，而 `File.path`
+   * 只在 Electron 中存在，纯浏览器必然取不到绝对路径（点了等于没点）—— 故改用服务端枚举，
+   * 这条路在两种环境下都能真正选中文件夹。
    */
   async function pickLocalFolder() {
     const shell = desktopApi();
-    if (shell) {
-      setBusy(true);
-      try {
-        const dir = await shell.openDirectory();
-        if (dir) await bind(dir);
-      } catch (e) {
-        flash?.(e instanceof Error ? e.message : String(e));
-      } finally {
-        setBusy(false);
-      }
-      return;
+    setBusy(true);
+    try {
+      const dir = shell ? await shell.openDirectory() : await pickServerDirectory();
+      if (dir) await bind(dir);
+    } catch (e) {
+      flash?.(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
     }
-    dirInputRef.current?.click();
-  }
-
-  function onDirPicked() {
-    const dir = dirFromDirInput(dirInputRef.current?.files ?? null);
-    dirInputRef.current!.value = ''; // 允许重复选同一目录
-    if (!dir) {
-      flash?.('当前环境无法读取本地路径 — 请改用「新建工作空间」输入完整路径');
-      return;
-    }
-    void bind(dir);
   }
 
   const filtered = search.trim()
@@ -164,8 +134,6 @@ export function WorkspaceSelect({ project, onBind, flash, variant = 'trigger' }:
         style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px', fontSize: 12, border: 'none', borderRadius: 5, cursor: 'pointer', textAlign: 'left', background: 'transparent', color: 'var(--text)' }}>
         <FolderOpen size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} /> 打开本地文件夹
       </button>
-      {/* 无桌面壳时的降级通道：webkitdirectory 让 Chromium 弹出目录选择（React 无该属性声明，故用展开传入） */}
-      <input ref={dirInputRef} type="file" {...{ webkitdirectory: '', directory: '' }} onChange={onDirPicked} style={{ display: 'none' }} aria-hidden="true" />
     </div>
   );
 

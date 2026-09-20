@@ -25,6 +25,7 @@ import { notifyChange } from '../services/ChangeBus';
 import { v4 as uuid } from 'uuid';
 import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
 import { exportGate } from '../util/export-gate'; // T00789：导出类端点并发闸
+import { listDirectories } from '../services/FsBrowseService'; // T00771 二轮：服务端目录枚举（工作空间降级选择）
 
 /** 低频集合列表 TTL（5s）：读多写少，写端点会主动 cacheClear 保持一致性 */
 const LIST_TTL_MS = 5000;
@@ -266,6 +267,21 @@ api.post('/projects/workspace-create', (req, res) => {
     res.status(201).json({ ok: true, path: p });
   } catch (e) {
     res.status(400).json({ error: `创建目录失败：${e instanceof Error ? e.message : String(e)}` });
+  }
+});
+
+/**
+ * T00771 二轮：服务端目录浏览（工作空间「打开本地文件夹」的降级通道）。
+ * 纯浏览器环境调不到原生目录对话框、也拿不到 File.path，此前该入口形同虚设；
+ * 这里只枚举目录（不读文件内容），供前端目录浏览器逐层选择。
+ * path 省略/为空 → 返回磁盘根 + 主目录的快捷列表。
+ */
+api.get('/fs/dirs', (req, res) => {
+  const { path } = req.query as { path?: string };
+  try {
+    res.json(listDirectories(typeof path === 'string' ? path : ''));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
 
