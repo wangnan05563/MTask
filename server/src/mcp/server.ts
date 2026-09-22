@@ -775,7 +775,7 @@ ${a.result}`;
     description: '导出 MTask 全部业务数据为 bundle JSON（任务/项目/提示词/AI 工具等），用于换机迁移或备份。',
   }, async () => {
     try {
-      const bundle = exportBundle();
+      const bundle = await exportBundle();
       return ok('', { bundle });
     } catch (e) { return err((e as Error).message); }
   });

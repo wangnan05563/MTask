@@ -17,12 +17,27 @@
  *   无需跨进程协调；进程重启计数归零，符合「瞬时过载保护」语义。
  */
 import type { Request, Response, NextFunction } from 'express';
+import { getSetting } from '../services/AppSettings';
 
-/** 闸门默认上限：同时 2 个导出在跑，第 3 个起拒绝 */
+/** 闸门默认上限：同时 2 个导出在跑，第 3 个起拒绝（app_settings 未配置时的回退值） */
 export const EXPORT_GATE_LIMIT = 2;
 
 /** 进行中计数：闸名 → 当前执行数 */
 const inflight = new Map<string, number>();
+
+/**
+ * 各闸可调上限（T00789 建议①）：优先读 app_settings 的 `exportGateLimit.<name>`，
+ * 未配置或值非法时回退到 {@link EXPORT_GATE_LIMIT}。
+ * 每次请求读取一次——导出是低频重活，一次 SELECT 开销可忽略，换来配置即时生效、无需改代码调优。
+ */
+function resolveGateLimit(name: string, fallback: number): number {
+  const raw = getSetting(`exportGateLimit.${name}`);
+  if (raw !== null) {
+    const n = Number(raw);
+    if (Number.isInteger(n) && n >= 1) return n;
+  }
+  return fallback;
+}
 
 /** 暴露给测试/诊断：当前各闸进行中计数快照 */
 export function gateSnapshot(): Record<string, number> {
@@ -52,8 +67,9 @@ export function gateSnapshot(): Record<string, number> {
 export function exportGate(name: string, limit: number = EXPORT_GATE_LIMIT, opts?: { defer?: boolean }) {
   const defer = opts?.defer === true;
   return function exportGateMiddleware(_req: Request, res: Response, next: NextFunction): void {
+    const effective = resolveGateLimit(name, limit);
     const cur = inflight.get(name) ?? 0;
-    if (cur >= limit) {
+    if (cur >= effective) {
       res.status(429).json({ error: '导出任务过多，请稍后再试' });
       return;
     }

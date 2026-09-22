@@ -1748,9 +1748,10 @@ api.post('/settings/ai-summary-inbox', (req, res) => {
 });
 
 // ---------- 设置中心：数据迁移（换机重装用） ----------
-// T00789：exportBundle() 为同步重活（4.4MB 全量序列化，实测 122ms/次）→ defer 令其让出事件循环，
-// 否则同步执行期间无法接受后续请求、闸门计数永远到不了上限（实测 10 路并发 0×429、线性叠加至 946ms）
-api.get('/settings/export', exportGate('settings-export', undefined, { defer: true }), (req, res) => {
+// T00789：exportBundle() 曾为纯同步重活（4.4MB 全量序列化，实测 122ms/次），同步期间无法接受后续请求、
+// 闸门计数到不了上限（实测 10 路并发 0×429、线性叠加至 946ms）。现在 exportBundle 已建议②分表让出
+// （每导一表 await setImmediate），但 defer 仍保留兜底，保证闸门在最坏情况（首表即大表）下依然可见。
+api.get('/settings/export', exportGate('settings-export', undefined, { defer: true }), async (req, res) => {
   try {
     // 可选 ?tables=a,b,c 子集导出（默认全量）。未知表名直接 400，避免静默产出空包。
     const raw = typeof req.query.tables === 'string' ? req.query.tables.trim() : '';
@@ -1758,9 +1759,9 @@ api.get('/settings/export', exportGate('settings-export', undefined, { defer: tr
       const names = raw.split(',').map((s) => s.trim()).filter(Boolean);
       const bad = names.filter((n) => !isExportTable(n));
       if (bad.length) return res.status(400).json({ error: `未知导出表：${bad.join(', ')}` });
-      return res.json(exportBundle(names));
+      return res.json(await exportBundle(names));
     }
-    res.json(exportBundle());
+    res.json(await exportBundle());
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }

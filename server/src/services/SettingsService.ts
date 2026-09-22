@@ -55,7 +55,7 @@ function aiToolImportRow(r: Record<string, unknown>): Record<string, unknown> {
  * 全量包中 task_images 的 base64 二进制往往是体积大头）。
  * ⚠️ 子集包**不满足 importBundle 的 CORE_TABLES 校验**，仅作查看/局部迁移用途，不能直接整体回导。
  */
-export function exportBundle(tables?: string[]): ExportBundle {
+export async function exportBundle(tables?: string[]): Promise<ExportBundle> {
   const db = getDb();
   const requested = tables?.length
     ? EXPORT_TABLES.filter((t) => tables.includes(t))
@@ -68,6 +68,9 @@ export function exportBundle(tables?: string[]): ExportBundle {
       if (table === 'ai_tools') return aiToolExportRow(r);
       return r;
     });
+    // T00789 建议②：每导完一表让出事件循环，把单次同步阻塞切成多段，
+    // 避免全量导出（实测 4.4MB / 122ms）长时间占住主线程拖慢无关请求。
+    await new Promise<void>((r) => setImmediate(r));
   }
   return { app: 'mtask', version: 1, exportedAt: new Date().toISOString(), data };
 }
