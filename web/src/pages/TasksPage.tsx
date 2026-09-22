@@ -10,6 +10,7 @@ import { useBusy, setBusy } from '../ui/busy';
 import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, ChevronDown, ChevronUp, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, Pin, Plus, Save, ScanSearch, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00771：工作空间选择器（项目上下文根路径）
+import { WorkspaceSearchPanel } from '../ui/WorkspaceSearchPanel'; // T00786：工作空间全文检索面板（partial 提示）
 import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：正文 AI 美化（反馈/处理结果共用）
 
 // ---------- T00552：批量分类运行态模块级化——切页后循环继续、返回不卡死 ----------
@@ -141,6 +142,8 @@ export function TasksPage() {
   const reuseBusy = useBusy('tasks.reuse');
   // 项目/模型为长期偏好，用 localStorage 持久化，切页与刷新后均保留；未选状态透传空串，不强制填充
   const [activeProject, setActiveProject] = usePersistentState('tasks.activeProject', '');
+  // T00786：工作空间全文检索面板显隐（建议相对工作空间选择器就近放置）
+  const [wsSearchOpen, setWsSearchOpen] = useState(false);
   const [todo, setTodo] = useState<Task[]>([]);
   const [done, setDone] = useState<Task[]>([]);
   // T00719：搁置任务列表（页面最下方独立区块，与待办/已完成隔离；MCP 处理待办时自动忽略）
@@ -2291,6 +2294,17 @@ export function TasksPage() {
           }}
           flash={flash}
         />
+        {/* T00786：工作空间全文检索入口——语义紧跟工作空间，键入关键词全文检索并展示 partial 提示 */}
+        <button
+          onClick={() => setWsSearchOpen(true)}
+          className="tbtn-anim"
+          disabled={!activeProject}
+          title={activeProject ? '工作空间全文检索 — 在绑定工作空间内检索关键词，结果可能不完整的 partial 状态会提示' : '请先选择项目再检索工作空间'}
+          aria-label="工作空间全文检索"
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed', opacity: activeProject ? 1 : 0.4 }}
+        >
+          <ScanSearch size={13} style={{ flexShrink: 0 }} />
+        </button>
         {/* T00655：项目排序图标——位于项目选择框之后、新建项目图标之前（悬浮/点击交互动画由 tbtn-anim 提供） */}
         <span ref={projSortRef} style={{ position: 'relative', display: 'inline-flex' }}>
           <button
@@ -3040,6 +3054,14 @@ export function TasksPage() {
             </div>
           </div>
         </div>
+      )}
+      {/* T00786：工作空间全文检索面板（挂载于页面级，随主 section 渲染；floating overlay 关闭即卸载） */}
+      {wsSearchOpen && (
+        <WorkspaceSearchPanel
+          project={projects.find((p) => p.id === activeProject) ?? null}
+          flash={flash}
+          onClose={() => setWsSearchOpen(false)}
+        />
       )}
     </section>
   );
