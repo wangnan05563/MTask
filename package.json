@@ -1,6 +1,6 @@
 {
   "name": "mtask",
-  "version": "0.1.0920.124",
+  "version": "0.1.0923.130",
   "private": true,
   "main": "electron/main.js",
   "description": "AI 任务开发管理工具：项目维度任务管理 + AI 梳理 + 队列分发（Electron + React + Express + SQLite）",
