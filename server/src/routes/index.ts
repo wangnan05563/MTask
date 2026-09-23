@@ -1629,8 +1629,13 @@ api.post('/prompts', (req, res) => {
 });
 
 api.patch('/prompts/:id', (req, res) => {
-  const { title, content, categoryId, pinned, color, archived } = req.body ?? {}; // T00490/T00525
+  const { title, content, categoryId, pinned, color, archived, reqCategoryId } = req.body ?? {}; // T00490/T00525；T00837
   const db = getDb();
+  // T00837：分组/通用需求分类调整前记录原归属，用于审计与前端可感知的「原→目标」日志
+  const before = categoryId !== undefined || reqCategoryId !== undefined
+    ? db.prepare('SELECT category_id, req_category_id, title FROM prompts WHERE id = ?').get(req.params.id) as
+      { category_id: string | null; req_category_id: string | null; title: string } | undefined
+    : undefined;
   const sets: string[] = [];
   const values: unknown[] = [];
   if (title !== undefined) { sets.push('title = ?'); values.push(title); }
@@ -1639,10 +1644,16 @@ api.patch('/prompts/:id', (req, res) => {
   if (pinned !== undefined) { sets.push('pinned = ?'); values.push(pinned ? 1 : 0); }
   if (color !== undefined) { sets.push('color = ?'); values.push(String(color)); } // T00490
   if (archived !== undefined) { sets.push('archived = ?'); values.push(archived ? 1 : 0); } // T00525：删除改归档
+  if (reqCategoryId !== undefined) { sets.push('req_category_id = ?'); values.push(String(reqCategoryId)); } // T00837：通用需求分类归属（归入/解除）
   if (sets.length === 0) return res.status(400).json({ error: '无更新字段' });
   sets.push('updated_at = ?'); values.push(now());
   db.prepare(`UPDATE prompts SET ${sets.join(', ')} WHERE id = ?`).run(...values, req.params.id);
   cacheClear('prompt-categories'); // 改分类/置顶影响分类计数与顺序
+  // T00837：分组/通用需求分类调整审计——记录调整时间与原/目标分类，操作人单机环境留空
+  if (before && (categoryId !== undefined || reqCategoryId !== undefined)) {
+    logService.log('INFO', 'prompt',
+      `[提示词分组调整] "${before.title}" 原(提示词分类=${before.category_id ?? '无'}，通用需求分类=${before.req_category_id ?? '无'}) → 目标(提示词分类=${categoryId ?? (before.category_id ?? '无')}，通用需求分类=${reqCategoryId ?? (before.req_category_id ?? '无')})（操作人留空）`);
+  }
   res.json(db.prepare('SELECT * FROM prompts WHERE id = ?').get(req.params.id));
 });
 

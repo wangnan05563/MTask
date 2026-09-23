@@ -272,6 +272,8 @@ export interface Prompt {
   sort_weight: number;
   /** T00490：记录字体颜色，空串=默认色 */
   color?: string;
+  /** T00837：可选的「通用需求分类」归属（指向 req_categories；空=未归属） */
+  req_category_id?: string;
   created_at: string;
   updated_at: string;
 }
