@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown'; // T00763：PRD 原文 Markdown 渲染弹窗
-import { Check, ChevronDown, ChevronUp, FileText, Link2, ListChecks, Loader2, Plus, RefreshCw, Table2, Trash2, X } from 'lucide-react'; // T00765：标题点击查询详情；T00763：查看PRD；T00773：多选模式
+import { Check, ChevronDown, ChevronUp, FileSpreadsheet, FileText, Link2, ListChecks, Loader2, Plus, RefreshCw, Table2, Trash2, X } from 'lucide-react'; // T00765：标题点击查询详情；T00763：查看PRD；T00773：多选模式；T00959：导出 Excel
+import { EXPORT_MIME, safeExportName, saveBinary } from '../utils/download'; // T00959：导出下载
 
 /** 矩阵行：需求 + 其关联的计划与待办（T00662） */
 interface MatrixReq {
@@ -40,6 +41,8 @@ export function ReqMatrixPanel({ projectId, onClose }: {
   const [plans, setPlans] = useState<PlanLite[]>([]);
   const [tasks, setTasks] = useState<Array<{ id: string; taskNo: string | null; title: string }>>([]);
   const [busy, setBusy] = useState(false);
+  // T00959：导出 Excel 的进行态（与 busy 分开，避免导出时禁用新增/批量等其它操作）
+  const [exporting, setExporting] = useState(false);
   const [notice, setNotice] = useState('');
   const [linkFor, setLinkFor] = useState<string>('');       // 正在调整关联的需求 id
   const [linkKind, setLinkKind] = useState<'plan' | 'task'>('plan');
@@ -64,6 +67,26 @@ export function ReqMatrixPanel({ projectId, onClose }: {
   }
 
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
+
+  /**
+   * T00959：导出当前项目的需求跟踪矩阵为 Excel。
+   * 数据由服务端按同一 service 重新取（与界面同源，避免用前端过滤后的子集导出），
+   * 列序/中文标签由服务端 prdExport.buildMatrixXlsx 统一，客户端只负责下载落盘。
+   */
+  async function exportMatrix() {
+    if (exporting || rows.length === 0) return;
+    setExporting(true);
+    try {
+      const buf = await api.getBinary(`/plans/prd-requirements/export?projectId=${encodeURIComponent(projectId)}`);
+      const ts = new Date().toISOString().slice(0, 10);
+      saveBinary(buf, `${safeExportName(`需求跟踪矩阵-${ts}`, '需求跟踪矩阵')}.xlsx`, EXPORT_MIME.xlsx);
+      flash(`已导出需求跟踪矩阵（${rows.length} 条需求）`);
+    } catch (e) {
+      flash(`导出失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const load = useCallback(async () => {
     if (!projectId) return;
@@ -183,6 +206,13 @@ export function ReqMatrixPanel({ projectId, onClose }: {
             </button>
           </span>
         )}
+        {/* T00959：导出 Excel——无文字图标按钮 + 悬浮倾斜 + 两行中文浮层；导出当前项目矩阵（与界面同源数据） */}
+        <button onClick={() => void exportMatrix()} disabled={exporting || rows.length === 0} className="tbtn-anim prd-tilt-btn"
+          title={rows.length === 0 ? '导出 Excel\n当前项目没有需求可导出' : '导出 Excel\n下载需求跟踪矩阵表格（含关联计划/待办）'}
+          aria-label="导出需求跟踪矩阵 Excel"
+          style={{ display: 'inline-flex', alignItems: 'center', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: (exporting || rows.length === 0) ? 'default' : 'pointer', padding: '3px 6px', opacity: rows.length === 0 ? 0.45 : 1 }}>
+          {exporting ? <Loader2 size={13} className="aispin" /> : <FileSpreadsheet size={13} />}
+        </button>
         <button onClick={() => void load()} className="tbtn-anim" title="刷新矩阵" aria-label="刷新矩阵"
           style={{ display: 'inline-flex', alignItems: 'center', gap: 3, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 11, padding: '2px 8px' }}>
           <RefreshCw size={12} /> 刷新

@@ -186,9 +186,85 @@ planApi.put('/prd-docs/:id', (req, res) => {
   }));
 });
 
+/** 导出文件名安全化：去掉路径分隔与非法字符（与前端 safeFilename 同口径，避免下载文件名带斜杠） */
+function safeExportName(name: string, fallback: string): string {
+  const s = name.replaceAll(/[\\/:*?"<>|\n\r\t]/g, '-').replaceAll(/\s+/g, ' ').trim().slice(0, 80);
+  return s || fallback;
+}
+
+/**
+ * T00959：PRD 文档下载——按 format 产出 md/docx/pdf 三种格式。
+ * md 直接回正文原文；docx/pdf 由服务端合成（docx / pdfkit + 系统中文黑体，与报表构建器同口径），
+ * 客户端只负责触发下载，保证两处入口导出结果一致、不依赖浏览器端能力。
+ */
+planApi.get('/prd-docs/:id/export', exportGate('prd-doc-export', undefined, { defer: true }), async (req, res) => {
+  const format = String(req.query.format ?? 'md').toLowerCase();
+  if (!['md', 'docx', 'pdf'].includes(format)) return res.status(400).json({ error: 'format 仅支持 md / docx / pdf' });
+  try {
+    const doc = PlanService.getPrdDoc(req.params.id) as { filename?: string; content_md?: string } | undefined;
+    if (!doc) return res.status(404).json({ error: 'PRD 文档不存在' });
+    const base = safeExportName((doc.filename ?? '').replace(/\.[^.]+$/, ''), 'PRD');
+    const md = doc.content_md ?? '';
+    if (format === 'md') {
+      res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`${base}.md`)}`);
+      res.send(Buffer.from(md, 'utf8'));
+      return;
+    }
+    const { buildPrdDocx, buildPrdPdf } = await import('../services/prdExport'); // 按需加载：docx/pdfkit 较重，仅导出时引入
+    const buf = format === 'docx' ? await buildPrdDocx(md, base) : await buildPrdPdf(md, base);
+    res.setHeader('Content-Type', format === 'docx'
+      ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      : 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`${base}.${format}`)}`);
+    res.send(buf);
+  } catch (e: unknown) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 // ---------- T00662：需求跟踪矩阵 CRUD ----------
 
 planApi.get('/prd-requirements', (req, res) => wrap(res, () => PlanService.listRequirements(pid(req))));
+
+/**
+ * T00959：需求跟踪矩阵导出 Excel——数据与界面同源（PlanService.listRequirements），
+ * 列序与界面一致；状态/优先级转中文标签，关联计划/待办多条以「；」拼接。
+ */
+planApi.get('/prd-requirements/export', exportGate('req-matrix-export', undefined, { defer: true }), async (req, res) => {
+  const projectId = pid(req);
+  const STATUS_LABEL: Record<string, string> = { todo: '待开始', doing: '进行中', done: '已完成', changed: '已变更' };
+  const PRIORITY_LABEL: Record<string, string> = { high: '高', medium: '中', normal: '普通', low: '低' };
+  try {
+    const rows = PlanService.listRequirements(projectId) as Array<Record<string, unknown>>;
+    const project = PlanService.getProjectBrief(projectId);
+    const { buildMatrixXlsx } = await import('../services/prdExport'); // 按需加载 exceljs
+    const data = rows.map((r) => {
+      const prd = r.prdDoc as { filename?: string } | null;
+      const plans = (r.linkedPlans as Array<{ title?: string }> | undefined) ?? [];
+      const tasks = (r.linkedTasks as Array<{ taskNo?: string | null; title?: string }> | undefined) ?? [];
+      return {
+        reqNo: String(r.req_no ?? ''),
+        title: String(r.title ?? ''),
+        content: String(r.content ?? ''),
+        priority: PRIORITY_LABEL[String(r.priority ?? '')] ?? String(r.priority ?? ''),
+        status: STATUS_LABEL[String(r.status ?? '')] ?? String(r.status ?? ''),
+        source: String(r.source_ref ?? ''),
+        prdDoc: prd?.filename ?? '',
+        plans: plans.map((p) => p.title ?? '').filter(Boolean).join('；'),
+        tasks: tasks.map((t) => `${t.taskNo ? `${t.taskNo} ` : ''}${t.title ?? ''}`.trim()).filter(Boolean).join('；'),
+      };
+    });
+    const buf = await buildMatrixXlsx(data, project.name);
+    const ts = new Date().toISOString().slice(0, 10);
+    const fname = `${safeExportName(`需求跟踪矩阵-${project.name}-${ts}`, '需求跟踪矩阵')}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fname)}`);
+    res.send(buf);
+  } catch (e: unknown) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
 
 planApi.post('/prd-requirements', (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;

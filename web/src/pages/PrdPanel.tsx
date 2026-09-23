@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
+import { EXPORT_MIME, safeExportName, saveBinary } from '../utils/download'; // T00959：导出下载
 import { askConfirm, askInput } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown';
-import { Check, FilePenLine, FilePlus2, Loader2, Pencil, Plus, RefreshCw, SendToBack, Trash2, Undo2, Upload, X } from 'lucide-react'; // T00770：PRD 管理视图
+import { Check, FileDown, FilePenLine, FilePlus2, FileText, FileType, Loader2, Pencil, Plus, RefreshCw, SendToBack, Trash2, Undo2, Upload, X } from 'lucide-react'; // T00770：PRD 管理视图；T00959：下载格式菜单图标
 
 /** PRD 文档行（列表轻量；T00770 增加 status 流转） */
 interface PrdDoc {
@@ -22,6 +23,75 @@ interface PrdIssue {
   /** 'open'=待确认 | 'resolved'=已确认 */
   status: string;
   updated_at: string;
+}
+
+/** T00959：PRD 下载支持的格式（选项菜单顺序与图标） */
+const PRD_DOWNLOAD_FORMATS = [
+  { key: 'md', label: 'Markdown（.md）', desc: '导出 PRD 正文原文，便于二次编辑与纳入版本管理', Icon: FileText },
+  { key: 'docx', label: 'Word（.docx）', desc: '按文档结构排版导出，可直接评审/批注', Icon: FileType },
+  { key: 'pdf', label: 'PDF（.pdf）', desc: '固定版式导出，便于对外发送与留档', Icon: FileDown },
+] as const;
+
+/**
+ * T00959：PRD 文档下载按钮——无文字图标按钮 + 悬浮倾斜动效（prd-tilt-btn）+ 两行中文浮层提示；
+ * 点击弹出格式菜单（md / docx / pdf），由服务端合成文件后触发下载。
+ * 未选中文档时按钮禁用，浮层说明原因（避免"点了没反应"）。
+ */
+function PrdDownloadButton({ doc, onError }: {
+  readonly doc: { id: string; filename: string } | null;
+  readonly onError: (msg: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState('');
+  const hostRef = useRef<HTMLSpanElement>(null);
+  // 点击面板外部关闭菜单（菜单是轻量浮层，不做模态遮挡）
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (hostRef.current && !hostRef.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  async function download(format: string) {
+    if (!doc) return;
+    setBusy(format);
+    try {
+      const buf = await api.getBinary(`/plans/prd-docs/${doc.id}/export?format=${format}`);
+      const base = safeExportName((doc.filename || 'PRD').replace(/\.[^.]+$/, ''), 'PRD');
+      saveBinary(buf, `${base}.${format}`, EXPORT_MIME[format as keyof typeof EXPORT_MIME] ?? 'application/octet-stream');
+      setOpen(false);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy('');
+    }
+  }
+
+  return (
+    <span ref={hostRef} style={{ position: 'relative', display: 'inline-flex' }}>
+      <button onClick={() => setOpen((v) => !v)} disabled={!doc || !!busy} className="tbtn-anim prd-tilt-btn"
+        title={doc ? 'PRD 文档下载\n选择格式导出需求文档' : 'PRD 文档下载\n请先在上方文档列表中选中一份 PRD'}
+        aria-label="PRD 文档下载" aria-expanded={open}
+        style={{ display: 'inline-flex', alignItems: 'center', fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: doc ? 'pointer' : 'not-allowed', padding: '3px 7px', opacity: doc ? 1 : 0.45 }}>
+        {busy ? <Loader2 size={12} className="aispin" /> : <FileDown size={12} />}
+      </button>
+      {open && doc && (
+        <div style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, zIndex: 60, minWidth: 214, padding: 4,
+          background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,.16)' }}>
+          {PRD_DOWNLOAD_FORMATS.map((f) => (
+            <button key={f.key} onClick={() => void download(f.key)} disabled={!!busy}
+              title={`${f.label}\n${f.desc}`} aria-label={`导出 ${f.label}`}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left', padding: '6px 8px', fontSize: 12,
+                border: 'none', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: busy ? 'default' : 'pointer' }}>
+              <f.Icon size={13} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+              {f.label}
+              {busy === f.key && <Loader2 size={12} className="aispin" style={{ marginLeft: 'auto' }} />}
+            </button>
+          ))}
+        </div>
+      )}
+    </span>
+  );
 }
 
 /**
@@ -223,6 +293,8 @@ export function PrdPanel({ projectId, onClose }: {
           共 {docs.length} 份文档（确认版 {confirmedCount} 份），待确认问题 {openIssues} 个；PRD → 确认版 → 需求跟踪矩阵
         </span>
         <span style={{ flex: 1 }} />
+        {/* T00959：PRD 下载（md/docx/pdf 三格式菜单）——作用于当前选中的文档 */}
+        <PrdDownloadButton doc={selected} onError={(m) => flash(`导出失败：${m}`)} />
         <button onClick={() => { void createDoc(); }} className="tbtn-anim" title="新建 PRD 文档" style={opBtn}><FilePlus2 size={12} /> 新建</button>
         <label className="tbtn-anim" title="导入 PRD 文档（.md / .markdown / .txt；.docx 请用 AI PRD 导入）"
           style={{ ...opBtn, display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>

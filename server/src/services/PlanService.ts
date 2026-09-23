@@ -1225,6 +1225,12 @@ export const PlanService = {
     ).all(projectId) as Array<Record<string, unknown>>;
   },
 
+  /** T00959：导出件头部需要的项目简要信息（名称缺失时回退「未命名项目」，不抛错以不阻断导出） */
+  getProjectBrief(projectId: string): { id: string; name: string } {
+    const row = getDb().prepare('SELECT id, name FROM projects WHERE id = ?').get(projectId) as { id: string; name: string } | undefined;
+    return row ?? { id: projectId, name: '未命名项目' };
+  },
+
   /** PRD 文档详情（含完整 Markdown 原文） */
   getPrdDoc(id: string): Record<string, unknown> {
     const db = getDb();
