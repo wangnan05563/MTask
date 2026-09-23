@@ -59,16 +59,19 @@ async function readStream(
 /**
  * 建立流式 POST 请求并按 SSE 事件分发给 onEvent(eventName, payload)。
  * 承诺：读取完整个流后 resolve；HTTP 错误时 reject 并携带后端 error 文案。
+ * T00838：可选 signal——调用方点「停止」时 abort 该连接（触发后端 res.close → 中止底层 AI 请求）。
  */
 export async function streamEvents(
   path: string,
   data: unknown,
   onEvent: (name: string, payload: unknown) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(`${apiBase}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(getAccessToken() ? { 'X-Access-Token': getAccessToken() } : {}) },
     body: JSON.stringify(data ?? {}),
+    ...(signal ? { signal } : {}),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
