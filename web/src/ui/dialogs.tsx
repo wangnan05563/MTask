@@ -13,6 +13,12 @@ export interface AskInputOptions {
   placeholder?: string;
   okText?: string;
   cancelText?: string;
+  /**
+   * T00964：允许"空输入提交"。默认 false —— 空输入点确定等同取消（resolve null），
+   * 调用方无法区分"用户清空后确认"与"取消"，导致"用默认值导入"这类场景静默无响应。
+   * 为 true 时空输入点确定 resolve ''（取消仍是 null），由调用方决定回退到默认值。
+   */
+  allowEmpty?: boolean;
 }
 
 const overlayStyle: CSSProperties = {
@@ -62,7 +68,8 @@ function InputDialog({ options, onSubmit }: InputDialogProps) {
     ref.current?.select();
   }, []);
 
-  const ok = () => onSubmit(value.trim() ? value.trim() : null);
+  // T00964：allowEmpty 时空输入 resolve ''（仍可与取消 null 区分），否则维持"空=取消"老语义
+  const ok = () => onSubmit(value.trim() ? value.trim() : (options.allowEmpty ? '' : null));
   const cancel = () => onSubmit(null);
 
   // 遮罩点击关闭用文档级事件委托 + ref 包含性判断（S6848），避免在非交互遮罩上挂交互 handler

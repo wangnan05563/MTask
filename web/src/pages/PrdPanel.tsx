@@ -165,7 +165,14 @@ export function PrdPanel({ projectId, onClose }: {
       flash('仅支持 .md / .markdown / .txt 纯文本导入；.docx 请用「AI PRD 导入」解析后落库');
       return;
     }
-    const name = await askInput({ title: '导入 PRD 文档', placeholder: '文档名（默认取文件名）' });
+    // T00964：命名弹窗预填文件原始名（不含路径）；allowEmpty 让"清空后直接确认"也走默认名导入，
+    // 修复原先空输入被 InputDialog 当成取消（resolve null）→ 直接 return 的静默无响应
+    const name = await askInput({
+      title: '导入 PRD 文档',
+      defaultValue: file.name,
+      placeholder: '文档名（默认取文件名）',
+      allowEmpty: true,
+    });
     if (name === null) return;
     try {
       const text = await file.text();
