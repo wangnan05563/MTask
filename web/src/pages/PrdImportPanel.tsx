@@ -6,7 +6,33 @@ import { aiImportStore } from '../stores/aiImportStore';
 
 /** T00662：PRD 解析结果（需求项 + WBS 计划草稿） */
 interface PrdReq { reqNo: string; title: string; content: string; sourceRef: string; priority: string; include: boolean; key: string; }
-interface PrdPlan { title: string; description: string; durationDays: number; reqNos: string[]; include: boolean; key: string; }
+/** T01001：kind 可选——AI 解析出的里程碑/普通任务类型（后端可能未返回时缺省），编辑也是普通任务 */
+interface PrdPlan { title: string; description: string; durationDays: number; reqNos: string[]; kind?: 'milestone' | 'normal' | 'daily'; include: boolean; key: string; }
+
+/**
+ * T01001 二轮：里程碑工期 = 其下明细任务工期之和。
+ * 口径与项目管理页「里程碑汇总」一致：本里程碑之后、下一个里程碑之前的非里程碑行即其明细；
+ * 只统计勾选（include）的明细，正好等于最终会导入的那些行（未勾选不入计划表）。
+ * 里程碑自身工期不可手工调整，改任一明细即联动重算——修复「M1 工期 4、子任务合计 5 不相等」。
+ */
+function isMilestoneRow(p: Pick<PrdPlan, 'kind'>): boolean {
+  return p.kind === 'milestone';
+}
+
+/** 重算全部里程碑工期（返回新数组；无明细的里程碑保留原值） */
+function recalcMilestoneDurations(list: PrdPlan[]): PrdPlan[] {
+  const out = list.map((p) => ({ ...p }));
+  for (let i = 0; i < out.length; i++) {
+    if (!isMilestoneRow(out[i])) continue;
+    let sum = 0;
+    for (let j = i + 1; j < out.length; j++) {
+      if (isMilestoneRow(out[j])) break;
+      if (out[j].include) sum += Math.max(1, Math.round(Number(out[j].durationDays) || 1));
+    }
+    if (sum > 0) out[i] = { ...out[i], durationDays: sum };
+  }
+  return out;
+}
 
 /** T00982：解析结果落盘键（与 useSessionState 同键）——切页恢复靠它们，改键名需同步改面板的读取键 */
 const PERSIST_KEYS = {
@@ -38,7 +64,7 @@ function persistParseResult(
 /** T00662：单文件解析响应（/plans/ai-parse-prd） */
 interface PrdParseResult {
   requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>;
-  drafts: Array<{ title: string; description: string; durationDays: number; reqNos: string[] }>;
+  drafts: Array<{ title: string; description: string; durationDays: number; reqNos: string[]; kind?: 'milestone' | 'normal' | 'daily' }>;
   coverageWarn?: string;
   /** T00908：后端随解析返回的 PRD 提取全文，供确认导入时落库到 PRD 管理视图 */
   textMd?: string;
@@ -111,7 +137,9 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
 
   // S2004：行字段更新回调下沉为组件级函数，避免 JSX 深层嵌套箭头
   const patchReq = (i: number, patch: Partial<PrdReq>) => setReqs((p) => p.map((x, j) => (j === i ? { ...x, ...patch } : x)));
-  const patchPlan = (i: number, patch: Partial<PrdPlan>) => setPlans((prev) => prev.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+  // T01001 二轮：任何行变更（工期/勾选/类型）后都重算里程碑工期，保证"里程碑 = 其下明细之和"
+  const patchPlan = (i: number, patch: Partial<PrdPlan>) =>
+    setPlans((prev) => recalcMilestoneDurations(prev.map((x, j) => (j === i ? { ...x, ...patch } : x))));
   const { busy, fileName, error } = snap;
 
   useEffect(() => {
@@ -190,7 +218,8 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     const { requirements, drafts } = mergePrdResults(results);
     const stamp = Date.now();
     const reqRows = requirements.map((x, i) => ({ ...x, include: true, key: `pr-${stamp}-${i}` }));
-    const planRows = drafts.map((x, i) => ({ ...x, include: true, key: `pp-${stamp}-${i}` }));
+    // T01001 二轮：解析出来就先汇总一次里程碑工期（AI 给的里程碑工期与其明细合计常不相等）
+    const planRows = recalcMilestoneDurations(drafts.map((x, i) => ({ ...x, include: true, key: `pp-${stamp}-${i}` })));
     setReqs(reqRows);
     setPlans(planRows);
     // T00982：同步落盘 + 递增完成戳（解析期间切页导致组件卸载时，这两处是结果不丢的关键）
@@ -371,7 +400,8 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
           {/* WBS 计划草稿（含需求关联） */}
           <div>
             <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6 }}>
-              WBS 计划 {plans.length} 条（勾选 {includedPlans}）——关联需求编号显示在标题后
+              WBS 计划 {plans.length} 条（勾选 {includedPlans}，其中里程碑 {plans.filter((x) => isMilestoneRow(x)).length} 条）——
+              关联需求编号显示在标题后；里程碑工期为其下任务工期汇总，改任务即联动，不可手工调整
             </div>
             <div style={{ maxHeight: 260, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -379,13 +409,16 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
                   <tr style={{ color: 'var(--text-muted)', textAlign: 'left' }}>
                     <th style={{ padding: 4 }}>选</th>
                     <th style={{ padding: 4 }}>WBS 任务</th>
+                    <th style={{ padding: 4 }}>类型</th>
                     <th style={{ padding: 4 }}>工期</th>
                     <th style={{ padding: 4 }}>关联需求</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {plans.map((p, i) => (
-                    <tr key={p.key} style={{ borderTop: '1px solid var(--border)' }}>
+                  {plans.map((p, i) => {
+                    const ms = isMilestoneRow(p);
+                    return (
+                    <tr key={p.key} style={{ borderTop: '1px solid var(--border)', background: ms ? 'var(--border-weak, rgba(0,0,0,.03))' : undefined }}>
                       <td style={{ padding: 4 }}>
                         <input type="checkbox" checked={p.include} aria-label={`选中计划 ${p.title}`}
                           onChange={(e) => patchPlan(i, { include: e.target.checked })} />
@@ -393,18 +426,30 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
                       <td style={{ padding: 4 }}>
                         <input value={p.title} aria-label="WBS 标题" title={p.description}
                           onChange={(e) => patchPlan(i, { title: e.target.value })}
-                          style={{ width: '100%', border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 12 }} />
+                          style={{ width: '100%', border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 12, fontWeight: ms ? 700 : undefined }} />
+                      </td>
+                      {/* T01001 二轮：草稿表单标注任务类型（里程碑/任务），可手动纠正 AI 判定 */}
+                      <td style={{ padding: 4, width: 78 }}>
+                        <select value={p.kind ?? 'normal'} aria-label={`计划类型 ${p.title}`}
+                          title={ms ? '里程碑 — 工期由其下任务汇总，不可手工调整' : '普通任务 — 工期可手工调整'}
+                          onChange={(e) => patchPlan(i, { kind: e.target.value as PrdPlan['kind'] })}
+                          style={{ width: 72, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: ms ? 'var(--accent)' : 'var(--text)', fontSize: 11, padding: '1px 2px' }}>
+                          <option value="normal">任务</option>
+                          <option value="milestone">里程碑</option>
+                        </select>
                       </td>
                       <td style={{ padding: 4, width: 70 }}>
-                        <input type="number" min={1} value={p.durationDays} aria-label="工期"
+                        <input type="number" min={1} value={p.durationDays} aria-label="工期" readOnly={ms}
+                          title={ms ? '里程碑工期 = 其下任务工期汇总（不可手工调整，改子任务即联动）' : '工期（天）'}
                           onChange={(e) => patchPlan(i, { durationDays: Number(e.target.value) || 1 })}
-                          style={{ width: 50, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, padding: '1px 4px' }} />
+                          style={{ width: 50, border: '1px solid var(--border)', borderRadius: 4, background: ms ? 'transparent' : 'var(--card-bg)', color: ms ? 'var(--text-muted)' : 'var(--text)', fontSize: 12, padding: '1px 4px', fontWeight: ms ? 700 : undefined }} />
                       </td>
                       <td style={{ padding: 4, fontSize: 11, color: 'var(--accent)', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.reqNos.join('、')}>
                         {p.reqNos.length > 0 ? p.reqNos.join('、') : '—'}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

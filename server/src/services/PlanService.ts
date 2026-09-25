@@ -11,6 +11,7 @@ import { notifyChange } from './ChangeBus';
 // pizzip：docxtemplater 既有依赖，用于解压 .docx 提取 word/document.xml（T00439）
 import PizZip from 'pizzip';
 import { stripWordFieldCodes } from '../util/wordFields'; // T00814：清洗 Word 域代码（目录/页码/交叉引用）
+import { logService } from './LogService'; // T00821：覆盖录入行为留痕（覆盖时间/文件名/项目，单机无账号故操作人留空）
 
 export interface PlanTaskRow {
   id: string;
@@ -44,6 +45,9 @@ export interface PlanTaskRow {
 }
 
 export type PlanStatus = 'todo' | 'doing' | 'done' | 'blocked';
+
+/** T01001：计划条目类型——normal=普通任务、milestone=阶段里程碑、daily=日常任务（对齐 plan_tasks.kind） */
+export type PlanKind = 'normal' | 'milestone' | 'daily';
 
 const PLAN_STATUSES = new Set<PlanStatus>(['todo', 'doing', 'done', 'blocked']);
 
@@ -80,9 +84,9 @@ function extractTopLevelObjects(text: string): Record<string, unknown>[] {
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i];
     if (inStr) {
-      if (esc) esc = false;
-      else if (ch === String.fromCharCode(92)) esc = true;
-      else if (ch === '"') inStr = false;
+      const next = nextStringState(ch, inStr, esc);
+      inStr = next.inStr;
+      esc = next.esc;
       continue;
     }
     if (ch === '"') { inStr = true; continue; }
@@ -92,18 +96,39 @@ function extractTopLevelObjects(text: string): Record<string, unknown>[] {
       continue;
     }
     if (ch === '}') {
-      depth -= 1;
-      if (depth === 0 && startIdx >= 0) {
-        try {
-          const o = JSON.parse(text.slice(startIdx, i + 1)) as unknown;
-          if (o && typeof o === 'object' && !Array.isArray(o)) out.push(o as Record<string, unknown>);
-        } catch { /* 跳过损坏对象 */ }
-        startIdx = -1;
-      }
-      if (depth < 0) depth = 0;
+      const r = flushCloseBrace(text, depth, startIdx, i, out);
+      depth = r.depth;
+      startIdx = r.startIdx;
     }
   }
   return out;
+}
+
+/** 字符串内逐字符推进状态机（跳过转义）：返回新的 inStr/esc */
+function nextStringState(ch: string, inStr: boolean, esc: boolean): { inStr: boolean; esc: boolean } {
+  if (esc) return { inStr, esc: false };
+  if (ch === String.fromCodePoint(92)) return { inStr, esc: true };
+  if (ch === '"') return { inStr: false, esc };
+  return { inStr, esc };
+}
+
+/** 解析 [startIdx, endIdx] 区间内的顶层对象并追加到 out（解析失败则跳过） */
+function pushTopLevelObject(text: string, startIdx: number, endIdx: number, out: Record<string, unknown>[]): void {
+  try {
+    const o = JSON.parse(text.slice(startIdx, endIdx + 1)) as unknown;
+    if (o && typeof o === 'object' && !Array.isArray(o)) out.push(o as Record<string, unknown>);
+  } catch { /* 跳过损坏对象 */ }
+}
+
+/** 处理右花括号：depth-1 后若闭合顶层对象则解析入列；越界 depth 归零 */
+function flushCloseBrace(text: string, depth: number, startIdx: number, endIdx: number, out: Record<string, unknown>[]): { depth: number; startIdx: number } {
+  const newDepth = depth - 1;
+  if (newDepth === 0 && startIdx >= 0) {
+    pushTopLevelObject(text, startIdx, endIdx, out);
+    return { depth: newDepth, startIdx: -1 };
+  }
+  if (newDepth < 0) return { depth: 0, startIdx };
+  return { depth: newDepth, startIdx };
 }
 
 function parseJsonArrayWithRecovery(text: string, notFoundMsg: string): unknown[] {
@@ -251,32 +276,50 @@ function rescheduleDependents(db: ReturnType<typeof getDb>, projectId: string, s
   const t = now();
   const queue = [seedId];
   const touched = new Set<string>([seedId]);
+
+  const parseDeps = (raw: string): Array<{ id: string; type: string }> => {
+    try {
+      return JSON.parse(raw || '[]') as Array<{ id: string; type: string }>;
+    } catch {
+      return [];
+    }
+  };
+  const dependStart = (
+    rel: { id: string; type: string },
+    seed: { id: string; start_date: string; end_date: string },
+    deps: Array<{ id: string; type: string }>,
+  ): string | null => {
+    if (rel.type === 'serial') {
+      const ends = deps.filter((d) => d.type === 'serial')
+        .map((d) => map.get(d.id)?.end_date)
+        .filter(isDate)
+        .sort((a, b) => a.localeCompare(b));
+      if (ends.length > 0) return nextWorkday(ends.at(-1)!, cal);
+      return null;
+    }
+    if (!isDate(seed.start_date)) return null;
+    return seed.start_date;
+  };
+  const commit = (row: { id: string; start_date: string; end_date: string }, start: string, end: string): void => {
+    if (start !== row.start_date || end !== row.end_date) {
+      upd.run(start, end, t, row.id);
+      row.start_date = start; row.end_date = end;
+      touched.add(row.id); queue.push(row.id);
+    }
+  };
+
   while (queue.length > 0) {
     const seed = map.get(queue.shift()!);
     if (!seed) continue;
     for (const row of all) {
       if (touched.has(row.id)) continue;
-      let deps: Array<{ id: string; type: string }> = [];
-      try { deps = JSON.parse(row.deps || '[]') as Array<{ id: string; type: string }>; } catch { deps = []; }
+      const deps = parseDeps(row.deps);
       const rel = deps.find((d) => d.id === seed.id);
       if (!rel) continue;
-      let start = row.start_date;
-      if (rel.type === 'serial') {
-        const ends = deps.filter((d) => d.type === 'serial')
-          .map((d) => map.get(d.id)?.end_date)
-          .filter(isDate).sort();
-        if (ends.length > 0) start = nextWorkday(ends[ends.length - 1], cal);
-        else continue; // 串行前置已缺失：保持现状（徽标已标注「已删除」）
-      } else {
-        if (!isDate(seed.start_date)) continue;
-        start = seed.start_date; // parallel：与前置同日开工
-      }
+      const start = dependStart(rel, seed, deps);
+      if (start === null) continue;
       const end = calcEndDate(start, Math.max(1, row.duration_days), cal);
-      if (start !== row.start_date || end !== row.end_date) {
-        upd.run(start, end, t, row.id);
-        row.start_date = start; row.end_date = end;
-        touched.add(row.id); queue.push(row.id);
-      }
+      commit(row, start, end);
     }
   }
 }
@@ -353,7 +396,7 @@ function prevEndBefore(db: ReturnType<typeof getDb>, projectId: string, sortOrde
  * T00470：启动对账——待办与计划状态一致性兜底。
  * 背景：AI/脚本可能直写 sqlite（绕过 TaskService.update 的 syncPlanOnStatusChange），
  * 导致 task=done 而关联 plan 仍非 done。启动时按「task done → plan done + progress 100」
- * 单向对齐（保守：不反向改写 plan→todo/doing，避免覆盖用户手动排期语义）。
+ * 单向对齐（保守：不反向改写 plan→待办/doing，避免覆盖用户手动排期语义）。
  * 返回对齐行数（用于启动日志观测）。
  */
 export function reconcileLinkedPlanStatuses(): number {
@@ -394,6 +437,120 @@ function normalizeDraft(entry: unknown): PlanDraft | null {
 }
 
 // ---------- 服务 ----------
+
+/** 工期归一：直接整数≥1 或 由 开始/结束日期 自然日差换算（≥1）；否则返回 null（调用方报错） */
+function resolveDuration(durationRaw: string, start: string, endDate: string): number | null {
+  let duration = Number(durationRaw);
+  if (!Number.isInteger(duration) || duration < 1) {
+    if (endDate) {
+      try {
+        const s0 = new Date(start).getTime();
+        const e0 = new Date(fmt(parseDate(endDate))).getTime();
+        if (Number.isFinite(s0) && Number.isFinite(e0) && e0 >= s0) duration = Math.max(1, Math.round((e0 - s0) / 86400000) + 1);
+      } catch { /* 保持非法判定 */ }
+    }
+  }
+  return (!Number.isInteger(duration) || duration < 1) ? null : duration;
+}
+
+/** 解析 req_ids JSON 字段为字符串数组（非法/空 → 空数组） */
+function parseLinkIds(json: string | null): string[] {
+  try {
+    const a = json ? (JSON.parse(json) as unknown) : [];
+    return Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** PRD 解析：单条原始需求 → 归一化需求（reqNo 查重去重 + priority 枚举兜底；标题缺失返回 null） */
+function normalizeRequirement(
+  r: unknown,
+  requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>,
+  seenNo: Set<string>,
+): void {
+  if (!r || typeof r !== 'object') return;
+  const o = r as Record<string, unknown>;
+  const title = typeof o.title === 'string' ? o.title.trim() : '';
+  if (!title) return;
+  let reqNo = typeof o.reqNo === 'string' && o.reqNo.trim() ? o.reqNo.trim() : `REQ-${String(requirements.length + 1).padStart(3, '0')}`;
+  if (seenNo.has(reqNo)) reqNo = `${reqNo}-${requirements.length + 1}`;
+  seenNo.add(reqNo);
+  const pr = typeof o.priority === 'string' && ['low', 'normal', 'high', 'urgent'].includes(o.priority) ? o.priority : 'normal';
+  requirements.push({
+    reqNo,
+    title,
+    content: typeof o.content === 'string' ? o.content : '',
+    sourceRef: typeof o.sourceRef === 'string' ? o.sourceRef : '',
+    priority: pr,
+  });
+}
+
+/** PRD 解析：原始需求条目 → 归一化需求数组（reqNo 顺序编号 + 查重去重，priority 枚举兜底） */
+function normalizeRequirements(raw: unknown[]): Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }> {
+  const requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }> = [];
+  const seenNo = new Set<string>();
+  for (const r of raw) {
+    normalizeRequirement(r, requirements, seenNo);
+  }
+  return requirements;
+}
+
+/** T01001：解析 AI 是否已明确给出计划类型；未给时按 WBS 编号的层级结构兜底判定里程碑。
+ *  多级编号（如 "1.1 需求评审"）必为明细任务；一级编号开头（如 "1 M1 平台搭建"）即顶层=阶段里程碑。
+ *  用结构（WBS 层级）而非关键词识别，避免把普通任务误判为里程碑。 */
+function resolvePrdKind(title: string, kindRaw: unknown): PlanKind {
+  const k = String(kindRaw ?? '').trim().toLowerCase();
+  if (k === 'milestone' || k === 'normal' || k === 'daily') return k as PlanKind;
+  // 多级编号（1.1/2.3）→ 明细任务
+  if (/^\s*\d+(\.\d+)+\s*[.\sA-Za-z0-9]/.test(title)) return 'normal';
+  // 单级编号开头（1 xxx / M1 xxx）→ 该 PRD 的两级结构中顶层即阶段里程碑
+  if (/^\s*(?:\d+|M\d+)\s+/.test(title)) return 'milestone';
+  return 'normal';
+}
+
+/**
+ * T01001 二轮：里程碑工期汇总——里程碑的工期 = 其下明细任务工期之和（原地改写）。
+ * 口径与项目管理页「里程碑汇总（milestoneMeta）」一致：本里程碑之后、下一里程碑之前的非里程碑条目即其明细。
+ * 目的：AI 给出的里程碑工期常与其明细合计不相等（实测 M1=4、明细合计 5），导入后两边对不上；
+ * 这里在落库前统一按明细汇总，保证里程碑工期与其子任务合计恒等（无明细时保留原值）。
+ */
+function milestoneDurations(items: Array<{ kind?: PlanKind; durationDays?: number }>): number[] {
+  const out = items.map((it) => Math.max(1, Math.floor(Number(it?.durationDays) || 1)));
+  for (let i = 0; i < items.length; i++) {
+    if (items[i]?.kind !== 'milestone') continue;
+    let sum = 0;
+    for (let j = i + 1; j < items.length; j++) {
+      if (items[j]?.kind === 'milestone') break;
+      sum += out[j] ?? 1;
+    }
+    if (sum > 0) out[i] = sum; // 无明细的里程碑保留 AI 给的工期
+  }
+  return out;
+}
+
+/** PRD 解析：原始计划条目 → 归一化计划草稿数组（reqNos 字符串过滤，durationDays≥1，status 固定为待办初始态）
+ *  T01001：新增 kind 字段——AI 显式输出优先，否则按 WBS 层级推断里程碑。 */
+function normalizePrdPlans(raw: unknown[]): Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind }> {
+  const drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind }> = [];
+  for (const r of raw) {
+    if (!r || typeof r !== 'object') continue;
+    const o = r as Record<string, unknown>;
+    const title = typeof o.title === 'string' ? o.title.trim() : '';
+    if (!title) continue;
+    const reqNos = Array.isArray(o.reqNos) ? o.reqNos.filter((x): x is string => typeof x === 'string') : [];
+    drafts.push({
+      title,
+      description: typeof o.description === 'string' ? o.description : '',
+      durationDays: Math.max(1, Math.floor(Number(o.durationDays) || 1)),
+      startDate: '',
+      reqNos,
+      status: 'todo',
+      kind: resolvePrdKind(title, o.kind),
+    });
+  }
+  return drafts;
+}
 
 export const PlanService = {
   /** 活跃计划列表（排除已归档；归档条目走 listArchived，T00442 语义：删除=归档） */
@@ -464,7 +621,6 @@ export const PlanService = {
     db.transaction(() => {
       // 状态变更先落列，再同步关联待办（同步读取最新 plan 状态）
       if (patch.status !== undefined && PLAN_STATUSES.has(patch.status)) status = patch.status;
-      const startDateChanged = patch.startDate !== undefined && patch.startDate !== row.start_date;
       db.prepare(
         `UPDATE plan_tasks SET title = ?, description = ?, start_date = ?, duration_days = ?,
            progress = ?, status = ?, assignee = ?, color = ?, deps = ?, kind = ?, updated_at = ? WHERE id = ?`,
@@ -476,9 +632,9 @@ export const PlanService = {
         patch.progress === undefined ? row.progress : Math.min(100, Math.max(0, Math.floor(Number(patch.progress) || 0))),
         status,
         patch.assignee ?? row.assignee,
-        patch.color === undefined ? (row.color ?? '') : patch.color,
-        patch.deps === undefined ? (row.deps ?? '') : patch.deps,
-        patch.kind === undefined ? (row.kind ?? 'normal') : patch.kind,
+        patch.color ?? (row.color ?? ''),
+        patch.deps ?? (row.deps ?? ''),
+        patch.kind ?? (row.kind ?? 'normal'),
         now(),
         id,
       );
@@ -501,9 +657,6 @@ export const PlanService = {
     if (!row || row.archived) return false;
     db.transaction(() => {
       db.prepare('UPDATE plan_tasks SET archived = 1, archived_at = ?, updated_at = ? WHERE id = ?').run(now(), now(), id);
-      const prev = db.prepare(
-        'SELECT end_date FROM plan_tasks WHERE project_id = ? AND archived = 0 AND sort_order < ? ORDER BY sort_order DESC LIMIT 1',
-      ).get(row.project_id, row.sort_order) as { end_date: string } | undefined;
     })();
     notifyChange('plans');
     return true;
@@ -516,9 +669,6 @@ export const PlanService = {
     if (!row?.archived) return false;
     db.transaction(() => {
       db.prepare('UPDATE plan_tasks SET archived = 0, archived_at = NULL, updated_at = ? WHERE id = ?').run(now(), id);
-      const prev = db.prepare(
-        'SELECT end_date FROM plan_tasks WHERE project_id = ? AND archived = 0 AND sort_order < ? ORDER BY sort_order DESC LIMIT 1',
-      ).get(row.project_id, row.sort_order) as { end_date: string } | undefined;
     })();
     notifyChange('plans');
     return true;
@@ -799,17 +949,8 @@ export const PlanService = {
       let start: string;
       try { start = fmt(parseDate(startDate)); } catch { fail(`开始日期非法：${startDate || '(空)'}（应为 YYYY-MM-DD）`); return; }
       // T00553：工期缺失/非法但起止齐全时按自然日差换算（≥1）
-      let duration = Number(durationRaw);
-      if (!Number.isInteger(duration) || duration < 1) {
-        if (endDate) {
-          try {
-            const s0 = new Date(start).getTime();
-            const e0 = new Date(fmt(parseDate(endDate))).getTime();
-            if (Number.isFinite(s0) && Number.isFinite(e0) && e0 >= s0) duration = Math.max(1, Math.round((e0 - s0) / 86400000) + 1);
-          } catch { /* 保持非法判定 */ }
-        }
-      }
-      if (!Number.isInteger(duration) || duration < 1) { fail(`工期非法：${durationRaw || '(空)'}（应为 ≥1 的整数，或提供开始/结束日期自动换算）`); return; }
+      const duration = resolveDuration(durationRaw, start, endDate);
+      if (duration === null) { fail(`工期非法：${durationRaw || '(空)'}（应为 ≥1 的整数，或提供开始/结束日期自动换算）`); return; }
       if (!PLAN_STATUSES.has(statusRaw as PlanStatus)) { fail(`状态非法：${statusRaw}（应为 todo/doing/done/blocked）`); return; }
       seenTitles.add(title);
       parsed.push({ title, description, startDate: start, durationDays: duration, assignee, status: statusRaw as PlanStatus });
@@ -823,7 +964,6 @@ export const PlanService = {
     const t = now();
     db.transaction(() => {
       const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ? AND archived = 0').get(projectId) as { m: number }).m;
-      const existingCount = maxOrder + 1;
       const ins = db.prepare(
         `INSERT INTO plan_tasks (id, project_id, title, description, start_date, end_date, duration_days,
            progress, status, assignee, sort_order, linked_task_id, created_at, updated_at)
@@ -950,9 +1090,9 @@ export const PlanService = {
       const cleanText = stripWordFieldCodes(text);
       if (!cleanText.trim()) continue;
       // 标题样式识别：Heading1-4 或**纯数字** styleId（中文版 Word 把「标题2」存为 styleId "2"）——统一转 # 前缀保留层级。
-      // T00814 修复：原先的 `/(\d)/`（任意位置含数字）兜底会把普通段落样式误判成标题——
-      // 实测「编号/日期/描述」（styleId 149）、封面（214）、目录行（49/58/36）全部被标成 #~#### 标题，正文结构被污染。
-      // 这里只接受「恰好一位数字」的 styleId，不再做模糊兜底。
+      // T00814 修复：原文案里的 `/(\d)/`（任意位置含数字）会把普通段落样式误判成标题——
+      // 实测「编号/日期/描述」（styleId 149）、封面（214）、目录行（49/58/36）全部被标成 #~#### 标题，
+      // 正文结构被污染。这里只接受「恰好一位数字」的 styleId，不再做模糊兜底。
       const level = Number((/^Heading\s*(\d)$/i.exec(style) ?? /^([1-9])$/.exec(style))?.[1] ?? 0);
       if (level >= 1 && level <= 4) {
         lines.push(`${'#'.repeat(level)} ${cleanText}`);
@@ -1039,32 +1179,42 @@ export const PlanService = {
     throw new Error('不支持的文件格式（支持 .docx / .md / .markdown / .txt / .xlsx / .csv / .pdf）');
   },
 
+  /** PRD 解析：原始计划条目 → 归一化计划草稿数组（reqNos 字符串过滤，durationDays≥1，status 固定为待办初始态）——实现见模块底部 normalizePrdPlans */
+
   /** T00662：AI 解析 PRD →（需求清单 + WBS 计划草稿，含需求关联）。 */
   async aiParsePrd(toolId: string, docText: string): Promise<{
     requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>;
-    drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus }>;
+    drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind }>;
     coverageWarn?: string;
   }> {
     const system = [
       '你是 MTask 的 PRD 解析助手：既要拆分 WBS 计划，也要**逐条提取可跟踪需求**（用于生成需求跟踪矩阵）。',
       '给定一份 PRD / 需求文档（Markdown 或纯文本），输出**一个 JSON 对象**（不是数组），结构：',
       '{"requirements":[{"reqNo":"REQ-001","title":"需求简述","content":"需求原文要点","sourceRef":"原文定位（章节/小节/段落号）","priority":"low|normal|high|urgent"}],',
-      ' "plans":[{"title":"WBS 编号 + 任务名","description":"该节点要做的事（保留原文关键信息）","durationDays":工期工作日数,"startDate":"","reqNos":["REQ-001"]}]}',
+      // T01001：plans 每行必须给出 kind，用于导入时区分「里程碑」与「普通任务」——顶层里程碑 kind="milestone"，明细任务 kind="normal"
+      ' "plans":[{"title":"WBS编号+任务名","description":"该节点要做的事（保留原文关键信息）","durationDays":工期工作日数,"startDate":"","reqNos":["REQ-001"],"kind":"milestone|normal"}]}',
+      // T00979：此前只让 AI 按 WBS 编号扁平输出，模型常停在里程碑层（如 M1-M4）不再向下拆明细。
+      // 现强制「里程碑 + 每个里程碑下的明细任务」两级展开，且顶层保留原文里程碑名，杜绝只出里程碑不出任务。
       '要求：',
       '1. **需求逐条提取，严禁合并**——PRD 中每条可跟踪的需求（功能/非功能/约束/验收要点）各生成一条 requirements，reqNo 从 REQ-001 顺序编号；',
-      '2. plans 按 WBS 规范拆分（标题带编号如 "1 项目启动"、"1.1 需求评审"），每个节点的 reqNos 只填**该节点直接实现/覆盖的需求编号**；',
-      '   ——管理类节点（项目启动/计划/评审/验收等）若确实不直接对应某条需求，reqNos 输出空数组 []，**不要把所有需求都挂上**（关联过宽会让需求跟踪矩阵失去意义）；',
+      '2. **plans 必须是「里程碑 + 里程碑下的明细任务」两级展开的扁平数组，每行一条**：',
+      '   - 顶层：PRD 中定义的里程碑/阶段（如 M1/M2/M3/M4 或「项目启动」「开发实施」「测试验收」等），标题写带编号的里程碑名（例：「1 M1 平台搭建」），**务必保留原文里程碑名称、不得重命名**；',
+      '   - 每个顶层里程碑之下，必须继续拆出该阶段可直接执行的任务明细（如 1 之下拆出「1.1 需求评审」「1.2 概要设计」，2 之下拆出「2.1 …」），用 WBS 编号表达层级（1 → 1.1、1.2；2 → 2.1 …），全部行放进同一个 plans 数组；',
+      '   - **绝对禁止只输出里程碑而不拆明细任务**；若某里程碑在原文确无可落实的独立任务，才允许仅保留该里程碑一行；',
+      '   - **每行必须填 kind**：顶层里程碑行填 "milestone"，其下的明细任务行填 "normal"（使用述求准确、不遗漏的这两类取值，不要用其它写法）；',
+      '   - 每行 reqNos 只填**该节点直接实现/覆盖的需求编号**；管理类节点（启动/计划/评审/验收等）若不对应具体需求，reqNos 输出 []，**不要把所有需求挂上**（关联过宽会让需求跟踪矩阵失去意义）；',
       '3. startDate 一律空串（保存后系统按导入当日并行排布：各行独立取导入日为开始日，不做串行顺延）；status 一律 "todo"；durationDays 缺失默认 1；',
       '4. 只输出 JSON 对象本身，不要任何解释或 Markdown 代码围栏；不虚构文档中没有的内容。',
       // T00707：原「宁多勿漏」会把长文档的输出顶到 token 上限而截断（用户实测导入报错），改为规模约束
-      '5. **输出规模控制（必须遵守）**：requirements 最多 40 条、plans 最多 25 条；title ≤30 字、content/description ≤40 字。'
-      + '文档过长时合并同类需求，宁可少几条也必须保证 JSON 完整闭合——输出被截断会导致整个导入失败。',
+      // T00979：上限从 25 条放宽到 60 条，以满足「里程碑 + 明细」两层组织；仍强制 JSON 完整闭合优先
+      '5. **输出规模控制（必须遵守）**：requirements 最多 40 条；plans 最多 60 条（需容纳里程碑与明细两级，先保证每个里程碑至少带其直接明细任务，再取舍更细的层级）；title ≤30 字、content/description ≤40 字。'
+      + '文档过长时合并同类需求与同级任务，**宁可少几条也不得把里程碑降级为无明细**，同时必须保证 JSON 完整闭合——输出被截断会导致整个导入失败。',
     ].join('\n');
     // T00707：首轮若被截断/解析失败，重试改用精简提示词（压缩到更小规模，确保能完整闭合）
     const systemCompact = [
       system,
       '【精简模式·仅本次重试】上次输出超出长度被截断。本次请大幅压缩：requirements ≤20 条（只输出 reqNo 与 title，content 与 sourceRef 输出空串）、'
-      + 'plans ≤12 条（只输出 title 与 reqNos，description 空串）；标题 ≤20 字。宁可少，也必须输出完整可解析的 JSON 对象。',
+      + 'plans ≤24 条（只输出 title 与 reqNos，description 空串，**仍须保留里程碑并尽量带出各里程碑下最重要的 1~2 条明细**）；标题 ≤20 字。宁可少，也必须输出完整可解析的 JSON 对象。',
     ].join('\n');
     // T00723：JSON 解析失败/输出截断自动重试 1 次，且解析成败计入 ai_usage（ask-json）
     const ai = await AIService.askJson(toolId, system, `【PRD 文档】\n${docText}`, (content) =>
@@ -1074,42 +1224,9 @@ export const PlanService = {
     if (!ai.ok) throw new Error(`AI 解析失败：${ai.error}`);
     const obj = ai.data as Record<string, unknown>;
     const rawReqs = Array.isArray(obj.requirements) ? obj.requirements : [];
-    const requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }> = [];
-    const seenNo = new Set<string>();
-    for (const r of rawReqs) {
-      if (!r || typeof r !== 'object') continue;
-      const o = r as Record<string, unknown>;
-      const title = typeof o.title === 'string' ? o.title.trim() : '';
-      if (!title) continue;
-      let reqNo = typeof o.reqNo === 'string' && o.reqNo.trim() ? o.reqNo.trim() : `REQ-${String(requirements.length + 1).padStart(3, '0')}`;
-      if (seenNo.has(reqNo)) reqNo = `${reqNo}-${requirements.length + 1}`;
-      seenNo.add(reqNo);
-      const pr = typeof o.priority === 'string' && ['low', 'normal', 'high', 'urgent'].includes(o.priority) ? o.priority : 'normal';
-      requirements.push({
-        reqNo,
-        title,
-        content: typeof o.content === 'string' ? o.content : '',
-        sourceRef: typeof o.sourceRef === 'string' ? o.sourceRef : '',
-        priority: pr,
-      });
-    }
+    const requirements = normalizeRequirements(rawReqs);
     const rawPlans = Array.isArray(obj.plans) ? obj.plans : [];
-    const drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus }> = [];
-    for (const r of rawPlans) {
-      if (!r || typeof r !== 'object') continue;
-      const o = r as Record<string, unknown>;
-      const title = typeof o.title === 'string' ? o.title.trim() : '';
-      if (!title) continue;
-      const reqNos = Array.isArray(o.reqNos) ? o.reqNos.filter((x): x is string => typeof x === 'string') : [];
-      drafts.push({
-        title,
-        description: typeof o.description === 'string' ? o.description : '',
-        durationDays: Math.max(1, Math.floor(Number(o.durationDays) || 1)),
-        startDate: '',
-        reqNos,
-        status: 'todo',
-      });
-    }
+    const drafts = normalizePrdPlans(rawPlans);
     if (requirements.length === 0 && drafts.length === 0) throw new Error('AI 未能从 PRD 中解析出需求或计划，请确认文档内容或更换模型');
     const coverageWarn = drafts.length > 0 && requirements.length > 0 && drafts.every((d) => d.reqNos.length === 0)
       ? '本次解析的计划节点未关联到需求编号——可在矩阵面板中手动建立关联'
@@ -1122,7 +1239,8 @@ export const PlanService = {
   /** T00763：input.prdMd（PRD Markdown 原文）非空时完整落库 prd_docs，并回填需求行 prd_id——供矩阵「查看PRD」与 AI 上下文反查。 */
   importPrd(projectId: string, input: {
     requirements?: Array<{ reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string }>;
-    plans?: Array<{ title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string }>;
+    // T01001：plans 行支持 kind（milestone=里程碑 / normal=普通任务），导入时据此区分，不再全部转成普通任务
+    plans?: Array<{ title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string; kind?: PlanKind }>;
     createTasks?: boolean;
     prdMd?: string;
     prdFilename?: string;
@@ -1132,6 +1250,9 @@ export const PlanService = {
     const reqs = (input.requirements ?? []).filter((r) => r?.title?.trim());
     const planItems = (input.plans ?? []).filter((p) => p?.title?.trim());
     if (reqs.length === 0 && planItems.length === 0) throw new Error('没有可导入的需求或计划条目');
+    // T01001 二轮：落库前统一汇总里程碑工期（= 其下明细之和），覆盖直接调 import-prd / MCP 未做汇总的路径
+    const planKinds = planItems.map((p) => (p.kind ?? resolvePrdKind(p.title, p.kind)) as PlanKind);
+    const planDurations = milestoneDurations(planItems.map((p, i) => ({ kind: planKinds[i], durationDays: p.durationDays })));
     const t = now();
     let taskCount = 0;
     const unlinkedReqNos = new Set<string>();
@@ -1164,13 +1285,17 @@ export const PlanService = {
       let insertedPlans = 0;
       let planIds: string[] = []; // T00754：新建计划的 id（与 planItems 下标对齐），供建待办时回写关联
       if (planItems.length > 0) {
-        const created = this.createBatch(projectId, planItems.map((p) => ({
+        const created = this.createBatch(projectId, planItems.map((p, i) => ({
           title: p.title,
           description: p.description,
           startDate: p.startDate,
-          durationDays: p.durationDays,
+          // T01001 二轮：工期用汇总后的值（里程碑 = 其下明细之和），保证导���后两边对得上
+          durationDays: planDurations[i],
           assignee: p.assignee,
           status: 'todo' as PlanStatus,
+          // T01001：里程碑/普通任务在导入时确定类型，避免全部落入默认 normal；
+          // AI 解析路径已由 normalizePrdPlans 推好 kind，此处的兜底覆盖直接调 import-prd/MCP 未显式传 kind 的场景
+          kind: planKinds[i],
         })));
         insertedPlans = created.inserted;
         planIds = created.ids;
@@ -1220,7 +1345,7 @@ export const PlanService = {
   listPrdDocs(projectId: string): Array<Record<string, unknown>> {
     const db = getDb();
     return db.prepare(
-      `SELECT id, project_id, filename, LENGTH(content_md) AS content_chars, created_at, updated_at
+      `SELECT id, project_id, filename, status, LENGTH(content_md) AS content_chars, created_at, updated_at
        FROM prd_docs WHERE project_id = ? ORDER BY created_at DESC`,
     ).all(projectId) as Array<Record<string, unknown>>;
   },
@@ -1249,6 +1374,186 @@ export const PlanService = {
     db.prepare('UPDATE prd_docs SET content_md = ?, filename = COALESCE(?, filename), updated_at = ? WHERE id = ?')
       .run(contentMd, typeof patch.filename === 'string' ? patch.filename : null, now(), id);
     return this.getPrdDoc(id);
+  },
+
+  // ---------- T00770：PRD 管理视图（新建 / 删除 / 状态流转 / 待确认问题） ----------
+
+  /** 新建 PRD 文档（空白或导入的 Markdown 原文）；status 缺省 'prd'（草稿/评审中） */
+  createPrdDoc(input: { projectId: string; filename: string; contentMd: string; status?: string; originHash?: string }): Record<string, unknown> {
+    const db = getDb();
+    if (!input.projectId) throw new Error('projectId 必填');
+    if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(input.projectId)) throw new Error('项目不存在');
+    const status = input.status === 'confirmed' ? 'confirmed' : 'prd';
+    const originHash = input.originHash?.trim() ?? '';
+    // T00821：覆盖模式——按同源生成批次(origin_hash)识别已录入的 PRD，命中则覆盖该条（更新正文/文件名/状态）
+    // 并替换其待确认问题（先删旧，由调用方随后重新批量插入），不新建记录、不产生重复。
+    if (originHash) {
+      const existing = db.prepare('SELECT id FROM prd_docs WHERE project_id = ? AND origin_hash = ?').get(input.projectId, originHash) as { id: string } | undefined;
+      if (existing) {
+        const t = now();
+        db.prepare('UPDATE prd_docs SET content_md = ?, filename = ?, status = ?, updated_at = ? WHERE id = ?')
+          .run(input.contentMd ?? '', input.filename ?? '', status, t, existing.id);
+        db.prepare('DELETE FROM prd_issues WHERE prd_id = ?').run(existing.id);
+        logService.log('INFO', 'prd', `[PRD覆盖] project=${input.projectId} doc=${existing.id} filename=${input.filename} 覆盖时间=${t}（操作人留空）`);
+        return this.getPrdDoc(existing.id);
+      }
+    }
+    const id = uuid();
+    const t = now();
+    db.prepare('INSERT INTO prd_docs (id, project_id, filename, content_md, status, origin_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, input.projectId, input.filename ?? '', input.contentMd ?? '', status, originHash, t, t);
+    return this.getPrdDoc(id);
+  },
+
+  /** 删除 PRD 文档（其待确认问题经 FK CASCADE 一并清理） */
+  deletePrdDoc(id: string): void {
+    const db = getDb();
+    if (!db.prepare('SELECT id FROM prd_docs WHERE id = ?').get(id)) throw new Error('PRD 文档不存在');
+    db.prepare('DELETE FROM prd_issues WHERE prd_id = ?').run(id);
+    db.prepare('DELETE FROM prd_docs WHERE id = ?').run(id);
+  },
+
+  /** 状态流转：'prd'（草稿/评审中）↔ 'confirmed'（确认版） */
+  setPrdDocStatus(id: string, status: string): Record<string, unknown> {
+    const db = getDb();
+    if (status !== 'prd' && status !== 'confirmed') throw new Error("status 仅支持 'prd' | 'confirmed'");
+    if (!db.prepare('SELECT id FROM prd_docs WHERE id = ?').get(id)) throw new Error('PRD 文档不存在');
+    db.prepare('UPDATE prd_docs SET status = ?, updated_at = ? WHERE id = ?').run(status, now(), id);
+    return this.getPrdDoc(id);
+  },
+
+  /** 待确认问题列表（按项目；可按文档过滤） */
+  listIssues(projectId: string, prdId?: string): Array<Record<string, unknown>> {
+    const db = getDb();
+    if (prdId) {
+      return db.prepare('SELECT * FROM prd_issues WHERE project_id = ? AND prd_id = ? ORDER BY sort_order, created_at').all(projectId, prdId) as Array<Record<string, unknown>>;
+    }
+    return db.prepare('SELECT * FROM prd_issues WHERE project_id = ? ORDER BY sort_order, created_at').all(projectId) as Array<Record<string, unknown>>;
+  },
+
+  /** 新增待确认问题（prd_id 可空=项目级泛问题） */
+  addIssue(input: { projectId: string; prdId?: string; question: string }): Record<string, unknown> {
+    const db = getDb();
+    if (!input.projectId) throw new Error('projectId 必填');
+    if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(input.projectId)) throw new Error('项目不存在');
+    if (!input.question?.trim()) throw new Error('question 必填');
+    if (input.prdId && !db.prepare('SELECT id FROM prd_docs WHERE id = ?').get(input.prdId)) throw new Error('PRD 文档不存在');
+    const id = uuid();
+    const t = now();
+    const max = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM prd_issues WHERE project_id = ?').get(input.projectId) as { m: number };
+    db.prepare('INSERT INTO prd_issues (id, project_id, prd_id, question, answer, status, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, \'\', \'open\', ?, ?, ?)')
+      .run(id, input.projectId, input.prdId ?? null, input.question.trim(), max.m + 1, t, t);
+    return db.prepare('SELECT * FROM prd_issues WHERE id = ?').get(id) as Record<string, unknown>;
+  },
+
+  /** 编辑待确认问题（问题内容 / 结论 / 状态 open↔resolved / AI建议） */
+  updateIssue(id: string, patch: { question?: string; answer?: string; status?: string; suggestion?: string }): Record<string, unknown> {
+    const db = getDb();
+    const row = db.prepare('SELECT * FROM prd_issues WHERE id = ?').get(id) as
+      { status: string; answer: string } | undefined;
+    if (!row) throw new Error('待确认问题不存在');
+    if (patch.status !== undefined && patch.status !== 'open' && patch.status !== 'resolved') {
+      throw new Error("status 仅支持 'open' | 'resolved'");
+    }
+    // H-1 修复：以「本次请求生效后的最终 answer」判空——传空串 + resolved 也必须拒绝（原先只查 patch.answer===undefined 分支，空串可绕过并清空已确认结论）
+    const finalAnswer = patch.answer ?? row.answer;
+    if (patch.status === 'resolved' && !String(finalAnswer).trim()) {
+      throw new Error('标记为已确认前请先填写结论（answer）');
+    }
+    db.prepare('UPDATE prd_issues SET question = COALESCE(?, question), answer = COALESCE(?, answer), status = COALESCE(?, status), suggestion = COALESCE(?, suggestion), updated_at = ? WHERE id = ?')
+      .run(patch.question?.trim() ?? null, patch.answer ?? null, patch.status ?? null, patch.suggestion?.trim() ?? null, now(), id);
+    return db.prepare('SELECT * FROM prd_issues WHERE id = ?').get(id) as Record<string, unknown>;
+  },
+
+  /** 删除待确认问题 */
+  deleteIssue(id: string): void {
+    const db = getDb();
+    if (!db.prepare('SELECT id FROM prd_issues WHERE id = ?').get(id)) throw new Error('待确认问题不存在');
+    db.prepare('DELETE FROM prd_issues WHERE id = ?').run(id);
+  },
+
+  /** T00769：批量录入待确认问题（AI 生成的问题清单 + 用户自定义一次入库），返回新建行 */
+  addIssuesBatch(input: { projectId: string; prdId?: string; items: Array<{ question: string; answer?: string; level?: string; suggestion?: string }> }): Array<Record<string, unknown>> {
+    const db = getDb();
+    if (!input.projectId) throw new Error('projectId 必填');
+    if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(input.projectId)) throw new Error('项目不存在');
+    if (input.prdId && !db.prepare('SELECT id FROM prd_docs WHERE id = ?').get(input.prdId)) throw new Error('PRD 文档不存在');
+    const items = (input.items ?? []).filter((x) => typeof x.question === 'string' && x.question.trim());
+    if (items.length === 0) throw new Error('items 不能为空（至少一条非空 question）');
+    const LEVELS = new Set(['blocker', 'suggested', 'info', 'custom', '']);
+    const max = (db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM prd_issues WHERE project_id = ?').get(input.projectId) as { m: number }).m;
+    const out: Array<Record<string, unknown>> = [];
+    const t = now();
+    items.forEach((x, i) => {
+      const level = typeof x.level === 'string' && LEVELS.has(x.level) ? x.level : '';
+      const id = uuid();
+      // T00822：结转状态按「是否已填结论」区分——有 answer → resolved(已确认)，空 answer → open(待确认)。
+      // 此前统一写死 'open' 导致「已录结论的问题在 PRD 管理视图仍显示待确认」，反馈明确。
+      const answer = x.answer?.trim() ?? '';
+      const status = answer ? 'resolved' : 'open';
+      db.prepare("INSERT INTO prd_issues (id, project_id, prd_id, question, answer, status, level, suggestion, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(id, input.projectId, input.prdId ?? null, x.question.trim(), answer, status, level, x.suggestion?.trim() ?? '', max + 1 + i, t, t);
+      out.push(db.prepare('SELECT * FROM prd_issues WHERE id = ?').get(id) as Record<string, unknown>);
+    });
+    return out;
+  },
+
+  /**
+   * 回写：把已确认问题的「问题 + 结论」写入对应 PRD 文档的 Markdown。
+   * 规则：文档含「## 待确认问题结论」节 → 条目插入该节标题后（节内最前，保证节内聚合）；
+   *       无该节 → 在文档末尾追加节 + 条目。重复回写同一问题会被拒绝（按问题文本判重）。
+   */
+  writebackIssue(id: string): { doc: Record<string, unknown>; issue: Record<string, unknown> } {
+    const db = getDb();
+    const issue = db.prepare('SELECT * FROM prd_issues WHERE id = ?').get(id) as
+      { id: string; prd_id: string | null; question: string; answer: string; status: string } | undefined;
+    if (!issue) throw new Error('待确认问题不存在');
+    if (issue.status !== 'resolved') throw new Error('问题尚未确认（status=resolved）——请先填写结论并确认');
+    if (!issue.answer.trim()) throw new Error('结论（answer）为空，无法回写');
+    if (!issue.prd_id) throw new Error('该问题未关联 PRD 文档，无法回写');
+    const prdId: string = issue.prd_id; // 属性收窄不入闭包（事务回调内引用），此处固化
+    const anchor = `<!-- issue:${issue.id} -->`;
+
+    // 走查 L-2：历史数据迁移——文档里已有同文条目但无锚点（锚点机制上线前的历史回写）时，
+    // 就地补锚后再判重拒绝。否则该问题日后被编辑文本，锚点/文本双不匹配会写出重复条目。
+    // （单条 UPDATE 自身原子，独立于下方写入事务执行——避免迁移随判重 throw 一起回滚）
+    const preDoc = this.getPrdDoc(issue.prd_id) as { content_md: string };
+    if (!preDoc.content_md.includes(anchor) && preDoc.content_md.includes(`### Q：${issue.question}\n`)) {
+      const qIdx = preDoc.content_md.indexOf(`### Q：${issue.question}\n`);
+      db.prepare('UPDATE prd_docs SET content_md = ?, updated_at = ? WHERE id = ?')
+        .run(preDoc.content_md.slice(0, qIdx) + `${anchor}\n` + preDoc.content_md.slice(qIdx), now(), issue.prd_id);
+      throw new Error('该问题的结论已回写至 PRD（历史条目已补锚点），无需重复回写');
+    }
+
+    // 走查 M-1：写入包事务——better-sqlite3 同步驱动下当前无让位点，此处为将来引入异步 IO 的防御，
+    // 保证「读全文→拼装→写回」不被未来的 await 打断产生丢失更新
+    const ts = now();
+    const write = db.transaction((): { doc: Record<string, unknown>; issue: Record<string, unknown> } => {
+      const doc = this.getPrdDoc(prdId) as { id: string; content_md: string };
+      const SECTION = '## 待确认问题结论';
+      // T00781：稳定锚点判重——以 issue id 为锚（不依赖可变的 question 文本），
+      // 问题被编辑后仍能识别「已回写」，避免同一问题重复写入导致正文堆积重复结论。
+      // 兼容：历史数据无锚点时回退按问题文本判定（L-2 已在上一步为命中的历史条目补锚）。
+      const entry = `\n\n${anchor}\n### Q：${issue.question}\n\n**结论**：${issue.answer.trim()}\n`;
+      if (doc.content_md.includes(anchor) || doc.content_md.includes(`### Q：${issue.question}\n`)) {
+        throw new Error('该问题的结论已回写至 PRD（按问题锚点判重），无需重复回写');
+      }
+      let next: string;
+      // T00781：节定位改行首正则——原先 indexOf('\n'+SECTION+'\n') 在「该节位于文档首行」时判不到，
+      // 会走到 else 分支追加第二个同名节；正则匹配行首可覆盖该边缘。
+      const secMatch = /^##[ \t]+待确认问题结论[ \t]*$/m.exec(doc.content_md);
+      if (secMatch) {
+        const lineEnd = secMatch.index + secMatch[0].length;
+        const insertAt = Math.min(lineEnd + 1, doc.content_md.length); // 越过标题行换行
+        next = doc.content_md.slice(0, insertAt) + entry.replace(/^\n\n/, '') + '\n' + doc.content_md.slice(insertAt);
+      } else {
+        next = `${doc.content_md.replace(/\n*$/, '\n\n')}${SECTION}\n${entry.replace(/^\n\n/, '')}\n`;
+      }
+      db.prepare('UPDATE prd_docs SET content_md = ?, updated_at = ? WHERE id = ?').run(next, ts, prdId);
+      // 走查 L-4：issue 本函数未修改、doc 仅 content_md/updated_at 变化——复用事务内首读对象，省两次查询
+      return { doc: { ...doc, content_md: next, updated_at: ts } as Record<string, unknown>, issue: issue as Record<string, unknown> };
+    });
+    return write();
   },
 
   // ---------- T00662：需求跟踪矩阵 CRUD ----------
@@ -1310,11 +1615,11 @@ export const PlanService = {
     return db.prepare('SELECT * FROM prd_requirements WHERE id = ?').get(id) as Record<string, unknown>;
   },
 
-  updateRequirement(id: string, patch: { title?: string; content?: string; reqNo?: string; sourceRef?: string; priority?: string; status?: string; sortOrder?: number }): Record<string, unknown> {
+  updateRequirement(id: string, patch: { title?: string; content?: string; reqNo?: string; sourceRef?: string; priority?: string; status?: string; sortOrder?: number; prdId?: string }): Record<string, unknown> {
     const db = getDb();
     const sets: string[] = [];
     const vals: unknown[] = [];
-    const map: Array<[keyof typeof patch, string]> = [['title', 'title'], ['content', 'content'], ['reqNo', 'req_no'], ['sourceRef', 'source_ref'], ['priority', 'priority'], ['status', 'status'], ['sortOrder', 'sort_order']];
+    const map: Array<[keyof typeof patch, string]> = [['title', 'title'], ['content', 'content'], ['reqNo', 'req_no'], ['sourceRef', 'source_ref'], ['priority', 'priority'], ['status', 'status'], ['sortOrder', 'sort_order'], ['prdId', 'prd_id']];
     for (const [k, col] of map) {
       const v = patch[k];
       if (v !== undefined) { sets.push(`${col} = ?`); vals.push(v); }
@@ -1355,11 +1660,10 @@ export const PlanService = {
     const row = db.prepare(`SELECT req_ids, project_id FROM ${table} WHERE id = ?`).get(target.targetId) as { req_ids: string | null; project_id: string } | undefined;
     if (!row) throw new Error(target.kind === 'plan' ? '计划不存在' : '任务不存在');
     if (req.project_id !== row.project_id) throw new Error(target.kind === 'plan' ? '仅可关联同项目的计划' : '仅可关联同项目的待办');
-    let ids: string[] = [];
-    try { const a = row.req_ids ? (JSON.parse(row.req_ids) as unknown) : []; ids = Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string') : []; } catch { ids = []; }
+    const ids = parseLinkIds(row.req_ids);
     const has = ids.includes(reqId);
     if (target.linked && !has) ids.push(reqId);
-    if (!target.linked && has) ids = ids.filter((x) => x !== reqId);
+    if (!target.linked && has) ids.splice(ids.indexOf(reqId), 1);
     db.prepare(`UPDATE ${table} SET req_ids = ?, updated_at = ? WHERE id = ?`).run(ids.length > 0 ? JSON.stringify(ids) : null, now(), target.targetId);
   },
 
@@ -1402,16 +1706,21 @@ export const PlanService = {
     // 误合并成一条——这是「54 行只解析出 17 条」的根因之一。改为**行级指纹去重**
     // （标题+开始日期+描述+负责人），仅消除跨块重复的同一条记录，保留同工作项的不同行。
     const seen = new Set<string>();
-    for (const chunk of chunks) {
+    const parseChunk = async (chunk: string, toolId: string, system: string, dedup: Set<string>): Promise<PlanDraft[]> => {
       const ai = await AIService.ask(toolId, system, `【Excel 表格文本】\n${chunk}`);
-      if (!ai.ok || !ai.content) continue; // 单块失败跳过，不拖垮整体
+      if (!ai.ok || !ai.content) return []; // 单块失败跳过，不拖垮整体
       const arr = parseJsonArrayWithRecovery(ai.content, '');
+      const out: PlanDraft[] = [];
       for (const r of arr) {
         const d = normalizeDraft(r);
         if (!d) continue;
         const fingerprint = `${d.title}|${d.startDate ?? ''}|${(d.description ?? '').slice(0, 40)}|${d.assignee ?? ''}`;
-        if (!seen.has(fingerprint)) { seen.add(fingerprint); drafts.push(d); }
+        if (!dedup.has(fingerprint)) { dedup.add(fingerprint); out.push(d); }
       }
+      return out;
+    };
+    for (const chunk of chunks) {
+      drafts.push(...await parseChunk(chunk, toolId, system, seen));
     }
     if (drafts.length === 0) throw new Error('AI 未能从文件中识别出任何计划条目，请确认文件内容或更换模型');
     // T00620：行数守恒提示——输入数据行与解析条数差异过大时附诊断信息（前端可据此提示「可能被模型归纳合并」）
@@ -1424,7 +1733,7 @@ export const PlanService = {
   /** 批量创建（AI 导入确认保存/其他批量来源）：事务插入后统一重排；首条用其 startDate 作锚点。
    *  T00709（D-1 修复）：返回 ids 按输入顺序对齐（经 title 清洗过滤后的 clean 数组下标），
    *  供调用方（importPrd）按 id 回写 req_ids 关联——废弃按标题 find 匹配（同名计划会互相覆盖）。 */
-  createBatch(projectId: string, items: Array<{ title: string; description?: string; startDate?: string; durationDays?: number; assignee?: string; status?: PlanStatus }>): { inserted: number; ids: string[] } {
+  createBatch(projectId: string, items: Array<{ title: string; description?: string; startDate?: string; durationDays?: number; assignee?: string; status?: PlanStatus; kind?: PlanKind }>): { inserted: number; ids: string[] } {
     if (!getDb().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
     const clean = items.filter((it) => it.title?.trim());
     if (clean.length === 0) throw new Error('没有可创建的计划条目');
@@ -1435,21 +1744,22 @@ export const PlanService = {
     const ids: string[] = [];
     db.transaction(() => {
       const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ? AND archived = 0').get(projectId) as { m: number }).m;
-      const existingCount = maxOrder + 1;
       const ins = db.prepare(
         `INSERT INTO plan_tasks (id, project_id, title, description, start_date, end_date, duration_days,
-           progress, status, assignee, sort_order, linked_task_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?)`,
+           progress, status, assignee, sort_order, linked_task_id, kind, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?, ?)`,
       );
       clean.forEach((it, i) => {
         const duration = Math.max(1, Math.floor(Number(it.durationDays) || 1));
         const status = PLAN_STATUSES.has(it.status as PlanStatus) ? (it.status as PlanStatus) : 'todo';
+        // T01001：kind 仅接受里程碑/普通/日常三类，非法值兜底为 normal（不破坏其它批量创建调用）
+        const kind = it.kind === 'milestone' || it.kind === 'daily' ? it.kind : 'normal';
         // T00561：各行日期独立——开始日用自己的（空则今天），end 按工作日计算
         const start = it.startDate && DATE_RE.test(it.startDate) ? it.startDate : fmt(new Date());
         const end = calcEndDate(start, duration, cal);
         const id = uuid();
         ids.push(id);
-        ins.run(id, projectId, it.title.trim(), it.description ?? '', start, end, duration, status, it.assignee ?? '', maxOrder + 1 + i, t, t);
+        ins.run(id, projectId, it.title.trim(), it.description ?? '', start, end, duration, status, it.assignee ?? '', maxOrder + 1 + i, kind, t, t);
       });
     })();
     notifyChange('plans');

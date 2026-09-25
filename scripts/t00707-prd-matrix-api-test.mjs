@@ -177,6 +177,66 @@ const main = async () => {
   const md = await api('POST', '/api/plans/ai-parse-prd?projectId=x&toolId=nonexistent-tool&filename=prd.md', Buffer.from('# PRD\n需求一'));
   ok('TC-17', 'AI 工具无效时返回 400 且不落库', md.status === 400, `status=${md.status} error=${String(md.json?.error).slice(0, 80)}`);
 
+  // TC-18 里程碑识别（T01001）：显式 kind 正确落库，未给 kind 时按 WBS 层级兜底推断
+  const projMs = (await api('POST', '/api/projects', { name: `T01001-里程碑识别-${Date.now() % 100000}` })).json;
+  await api('POST', '/api/plans/import-prd', {
+    projectId: projMs.id,
+    plans: [
+      { title: '1 M1 平台搭建', description: '顶层里程碑（显式）', durationDays: 1, reqNos: [], kind: 'milestone' },
+      { title: '1.1 需求评审', description: '明细任务（显式）', durationDays: 1, reqNos: [], kind: 'normal' },
+      { title: '2 M2 联调测试', description: '顶层里程碑（未给 kind，靠编号兜底）', durationDays: 1, reqNos: [] },
+      { title: '2.1 联调验证', description: '明细任务（未给 kind）', durationDays: 1, reqNos: [] },
+      { title: '独立汇总节点', description: '无编号普通任务', durationDays: 1, reqNos: [] },
+    ],
+  });
+  const msPlans = ((await api('GET', `/api/plans?projectId=${projMs.id}`)).json ?? []).filter((p) => ['1 M1 平台搭建', '1.1 需求评审', '2 M2 联调测试', '2.1 联调验证', '独立汇总节点'].includes(p.title));
+  const kindOf = (title) => msPlans.find((p) => p.title === title)?.kind;
+  const msOk = kindOf('1 M1 平台搭建') === 'milestone'
+    && kindOf('1.1 需求评审') === 'normal'
+    && kindOf('2 M2 联调测试') === 'milestone'   // 未给 kind：单级编号顶层 → milestone
+    && kindOf('2.1 联调验证') === 'normal'        // 未给 kind：多级编号 → normal
+    && kindOf('独立汇总节点') === 'normal';       // 无编号 → 默认普通
+  ok('TC-18', '导入区分里程碑/普通任务：显式 kind 落库 + WBS 层级兜底推断',
+    msOk,
+    msPlans.map((p) => `"${p.title}"→${p.kind}`).join(' | '));
+
+  // TC-19 里程碑不影响既有导入语义：仍需 req_ids 关联 & 只落计划不建错待办
+  const importDecl = await api('POST', '/api/plans/import-prd', {
+    projectId: projMs.id,
+    requirements: [{ reqNo: 'REQ-001', title: '里程碑识别需求' }],
+    plans: [
+      { title: '3 M3 验收发布', description: '里程碑', durationDays: 1, reqNos: ['REQ-001'], kind: 'milestone' },
+      { title: '3.1 验收测试', description: '明细', durationDays: 1, reqNos: ['REQ-001'], kind: 'normal' },
+    ],
+  });
+  const msPlans2 = ((await api('GET', `/api/plans?projectId=${projMs.id}`)).json ?? []);
+  const ms3 = msPlans2.find((p) => p.title === '3 M3 验收发布');
+  const ms31 = msPlans2.find((p) => p.title === '3.1 验收测试');
+  const reqIdsOfP = (p) => (p?.req_ids ? JSON.parse(p.req_ids) : []);
+  ok('TC-19', '里程碑带需求关联仍生效（T01001 不回归）', importDecl.status === 200 && ms3?.kind === 'milestone' && ms31?.kind === 'normal' && reqIdsOfP(ms3).length === 1 && reqIdsOfP(ms31).length === 1,
+    `里程碑 kind=${ms3?.kind} req_ids=${reqIdsOfP(ms3).length}；明细 kind=${ms31?.kind} req_ids=${reqIdsOfP(ms31).length}`);
+
+  // TC-20 里程碑工期汇总（T01001 二轮）：里程碑工期 = 其下明细之和，且随明细变化（AI 估值不一致时以明细为准）
+  const projMs2 = (await api('POST', '/api/projects', { name: `T01001-里程碑工期-${Date.now() % 100000}` })).json;
+  await api('POST', '/api/plans/import-prd', {
+    projectId: projMs2.id,
+    plans: [
+      { title: '1 M1 设计阶段', description: '里程碑（AI 给 4，明细合计 5）', durationDays: 4, reqNos: [], kind: 'milestone' },
+      { title: '1.1 交互稿', description: '明细', durationDays: 2, reqNos: [], kind: 'normal' },
+      { title: '1.2 视觉稿', description: '明细', durationDays: 3, reqNos: [], kind: 'normal' },
+      { title: '2 M2 开发阶段', description: '里程碑（AI 给 1，明细合计 6）', durationDays: 1, reqNos: [], kind: 'milestone' },
+      { title: '2.1 接口开发', description: '明细', durationDays: 4, reqNos: [], kind: 'normal' },
+      { title: '2.2 前端开发', description: '明细', durationDays: 2, reqNos: [], kind: 'normal' },
+    ],
+  });
+  const msPlans3 = (await api('GET', `/api/plans?projectId=${projMs2.id}`)).json ?? [];
+  const daysOf = (t) => msPlans3.find((p) => p.title === t)?.duration_days;
+  const kinds3 = (t) => msPlans3.find((p) => p.title === t)?.kind;
+  ok('TC-20', '里程碑工期 = 其下明细工期之和（AI 估值不一致时以明细汇总为准）',
+    kinds3('1 M1 设计阶段') === 'milestone' && daysOf('1 M1 设计阶段') === 5
+    && kinds3('2 M2 开发阶段') === 'milestone' && daysOf('2 M2 开发阶段') === 6,
+    `M1=${daysOf('1 M1 设计阶段')}（明细 2+3=5）| M2=${daysOf('2 M2 开发阶段')}（明细 4+2=6）`);
+
   // 汇总
   const fail = results.filter((r) => r.status === 'FAIL');
   console.log(`\n==== SUMMARY: ${results.length - fail.length}/${results.length} passed ====${fail.length ? '\nFAIL: ' + fail.map((f) => f.id).join(', ') : ''}`);
