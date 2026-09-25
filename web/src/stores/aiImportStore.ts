@@ -35,6 +35,12 @@ interface AiImportState {
   rows: AiImportDraftRow[];
   /** 最近一次保存成功条数（用于控制台摘要展示） */
   lastSaved: number;
+  /**
+   * T00982：解析结果完成戳（ms）——解析结果写入会话存储后递增。
+   * 解析期间切换页面会让面板组件卸载，若解析在卸载之后才完成，已挂载的实例看不到那次 setState；
+   * 面板据此戳重新从会话存储载入结果，避免"控制台显示解析完成、结果却一条都没有"。
+   */
+  parseStamp?: number;
 }
 
 const initial: AiImportState = { kind: 'plan', busy: false, fileName: '', error: '', logs: [], rows: [], lastSaved: 0 };

@@ -1,12 +1,70 @@
-import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { api, type Project } from '../api/client';
-import { FileUp, Loader2, Save, Sparkles, Upload, X } from 'lucide-react';
+import { FileUp, Loader2, Save, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import { useSessionState } from '../ui/session';
 import { aiImportStore } from '../stores/aiImportStore';
 
 /** T00662：PRD 解析结果（需求项 + WBS 计划草稿） */
 interface PrdReq { reqNo: string; title: string; content: string; sourceRef: string; priority: string; include: boolean; key: string; }
 interface PrdPlan { title: string; description: string; durationDays: number; reqNos: string[]; include: boolean; key: string; }
+
+/** T00982：解析结果落盘键（与 useSessionState 同键）——切页恢复靠它们，改键名需同步改面板的读取键 */
+const PERSIST_KEYS = {
+  reqs: 'prd-import.reqs',
+  plans: 'prd-import.plans',
+  sources: 'prd-import.sources',
+} as const;
+
+/**
+ * T00982：解析结果同步落盘。
+ * 解析期间切页会让本面板卸载：React 会丢弃卸载后的 setState，而 useSessionState 的持久化写在
+ * useEffect 里（卸载后不再执行）→ 解析出的需求/计划整批丢失，控制台却仍显示「解析完成」
+ * （store 是模块级的，日志不受影响）。这里在解析完成时同步写一次会话存储，切回即可恢复。
+ */
+function persistParseResult(
+  reqs: PrdReq[],
+  plans: PrdPlan[],
+  sources: { readonly name: string; readonly text: string }[],
+): void {
+  try {
+    sessionStorage.setItem(PERSIST_KEYS.reqs, JSON.stringify(reqs));
+    sessionStorage.setItem(PERSIST_KEYS.plans, JSON.stringify(plans));
+    sessionStorage.setItem(PERSIST_KEYS.sources, JSON.stringify(sources));
+  } catch {
+    /* 配额不足等写入失败静默忽略，不阻塞解析流程 */
+  }
+}
+
+/** T00662：单文件解析响应（/plans/ai-parse-prd） */
+interface PrdParseResult {
+  requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>;
+  drafts: Array<{ title: string; description: string; durationDays: number; reqNos: string[] }>;
+  coverageWarn?: string;
+  /** T00908：后端随解析返回的 PRD 提取全文，供确认导入时落库到 PRD 管理视图 */
+  textMd?: string;
+}
+
+/** T00824：多文件解析结果合并——统一重编号 REQ-001…（各文件 AI 都从 REQ-001 起号，直接拼接会重号），
+ *  并把每份 WBS 草稿的 reqNos 经 old→new 映射转换，保证计划/需求关联在合并后仍指向正确的需求 */
+function mergePrdResults(list: PrdParseResult[]): { requirements: PrdParseResult['requirements']; drafts: PrdParseResult['drafts'] } {
+  const map = new Map<string, string>();
+  const requirements: PrdParseResult['requirements'] = [];
+  let n = 1;
+  for (const r of list) {
+    for (const x of r.requirements) {
+      const nn = `REQ-${String(n++).padStart(3, '0')}`;
+      map.set(x.reqNo, nn);
+      requirements.push({ ...x, reqNo: nn });
+    }
+  }
+  const drafts: PrdParseResult['drafts'] = [];
+  for (const r of list) {
+    for (const d of r.drafts) {
+      drafts.push({ ...d, reqNos: d.reqNos.map((x) => map.get(x) ?? x) });
+    }
+  }
+  return { requirements, drafts };
+}
 
 /**
  * 从 PRD 导入项目计划面板（T00662）：上传 PRD → AI 拆 WBS + 逐条提取需求 →
@@ -24,44 +82,122 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   const [createTasks, setCreateTasks] = useSessionState<boolean>('prd-import.createTasks', true);
   const [reqs, setReqs] = useSessionState<PrdReq[]>('prd-import.reqs', []);
   const [plans, setPlans] = useSessionState<PrdPlan[]>('prd-import.plans', []);
+  // T00841：待解析的已选 PRD 文件——选择仅追加到列表，用户点「确认」才触发 parseAll；确认前可增删
+  const [pickedFiles, setPickedFiles] = useState<File[]>([]);
+
+  // T00907：跳转自动带入标记——一次消费（读取即清），避免每次展开面板都重复触发
+  const autoPullDone = useRef<boolean>(false);
+
+  /** T00907：从 PRD 管理视图「从PRD导入项目计划」跳转而来时，自动读取所选 PRD 文档内容，
+   *  构造为 File 填充「已选文件」确认栏（不自动触发 AI 解析，沿用 T00841「确认才解析」） */
+  const autoPullDoc = useCallback(async (docId: string) => {
+    try {
+      const d = await api.get<{ filename: string; content_md: string }>(`/plans/prd-docs/${docId}`);
+      const ext = (d.filename.match(/\.([a-z0-9]+)$/i)?.[1] ?? 'md').toLowerCase();
+      const file = new File([d.content_md], d.filename || `PRD-${docId}.md`,
+        { type: ext === 'md' || ext === 'markdown' ? 'text/markdown' : 'text/plain' });
+      setPickedFiles((prev) => (prev.some((f) => f.name === file.name) ? prev : [...prev, file]));
+      aiImportStore.log(`已自动带入所选 PRD：${file.name}——确认内容后点「确认」开始解析导入`, 'ok');
+    } catch (e) {
+      const msg = String((e as Error).message ?? e);
+      aiImportStore.patch({ error: `自动带入所选 PRD 失败：${msg}` });
+      aiImportStore.log(`自动带入所选 PRD 失败（已中止，可在面板内手动选择文件）：${msg}`, 'error');
+    }
+  }, []);
+
+  // T00908：各源文件的 PRD 全文（解析时从 textMd 暂存）——确认导入时拼为 prdMd 落库 PRD 管理视图并关联需求矩阵
+  // T00982：改会话级持久化——切页后回来仍要带着源文入库，否则会导入成"无 PRD 关联"的需求
+  const [prdSources, setPrdSources] = useSessionState<{ name: string; text: string }[]>(PERSIST_KEYS.sources, []);
+
+  // S2004：行字段更新回调下沉为组件级函数，避免 JSX 深层嵌套箭头
+  const patchReq = (i: number, patch: Partial<PrdReq>) => setReqs((p) => p.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+  const patchPlan = (i: number, patch: Partial<PrdPlan>) => setPlans((prev) => prev.map((x, j) => (j === i ? { ...x, ...patch } : x)));
   const { busy, fileName, error } = snap;
 
   useEffect(() => {
     aiImportStore.patch({ kind: 'prd' });
     void api.get<Project[]>('/projects').then(setProjects).catch(() => undefined);
+    // T00907：消费「从 PRD 管理视图」跳转自动带入的文档标记（一次性，读取即清不重复触发）
+    const docId = sessionStorage.getItem('prd-import.docId');
+    if (docId && !autoPullDone.current) {
+      autoPullDone.current = true;
+      sessionStorage.removeItem('prd-import.docId');
+      void autoPullDoc(docId);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** 上传 PRD → 文本提取（服务端多格式）→ AI 解析（需求 + WBS） */
-  const parse = useCallback(async (file: File) => {
+  // T00982：解析完成戳变化 → 重新从会话存储载入结果。
+  // 覆盖两类切页时序：① 解析在卸载期间完成（切回来时挂载读取已在存储里）；
+  // ② 已切回页面、解析随后完成（旧实例的 setState 被丢弃，靠本戳把结果拉回当前实例）。
+  const parseStamp = snap.parseStamp ?? 0;
+  useEffect(() => {
+    if (!parseStamp) return;
+    try {
+      const r: unknown = JSON.parse(sessionStorage.getItem(PERSIST_KEYS.reqs) ?? '[]');
+      const p: unknown = JSON.parse(sessionStorage.getItem(PERSIST_KEYS.plans) ?? '[]');
+      const s: unknown = JSON.parse(sessionStorage.getItem(PERSIST_KEYS.sources) ?? '[]');
+      if (Array.isArray(r) && r.length > 0) setReqs(r as PrdReq[]);
+      if (Array.isArray(p) && p.length > 0) setPlans(p as PrdPlan[]);
+      if (Array.isArray(s) && s.length > 0) setPrdSources(s as { name: string; text: string }[]);
+    } catch {
+      /* 脏数据忽略：保留界面现有内容 */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parseStamp]);
+
+  /** T00824：多文件批量解析——逐文件调用单文件接口（串行避免激增 AI 并发），
+   *  单文件失败记录日志并跳过其余继续；合并后统一重编号，供下方交互表格编辑/勾选 */
+  const parseAll = useCallback(async (files: File[]) => {
     if (!projectId) { aiImportStore.patch({ error: '请先选择目标项目' }); aiImportStore.log('缺少目标项目，已中止', 'error'); return; }
     if (!toolId) { aiImportStore.patch({ error: '请先在控制台选择 AI 模型（顶部模型下拉）' }); aiImportStore.log('缺少 AI 模型（控制台未选择），已中止', 'error'); return; }
+    if (files.length === 0) return;
     aiImportStore.reset('prd');
-    aiImportStore.patch({ fileName: file.name, busy: true });
-    aiImportStore.log(`已选择 PRD 文件：${file.name}（${(file.size / 1024).toFixed(1)} KB）`);
-    try {
-      const buf = await file.arrayBuffer();
-      aiImportStore.log('提取文档文本（支持 docx/md/txt/xlsx/csv/pdf）…');
-      aiImportStore.log('调用 AI 拆分 WBS 并逐条提取需求，请稍候…');
-      const r = await api.postBinary<{
-        ok: boolean;
-        requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>;
-        drafts: Array<{ title: string; description: string; durationDays: number; reqNos: string[] }>;
-        coverageWarn?: string;
-      }>(`/plans/ai-parse-prd?projectId=${projectId}&toolId=${toolId}&filename=${encodeURIComponent(file.name)}`, buf);
-      const stamp = Date.now();
-      setReqs(r.requirements.map((x, i) => ({ ...x, include: true, key: `pr-${stamp}-${i}` })));
-      setPlans(r.drafts.map((x, i) => ({ ...x, include: true, key: `pp-${stamp}-${i}` })));
-      aiImportStore.log(`解析完成：需求 ${r.requirements.length} 条、WBS 计划 ${r.drafts.length} 条（可编辑后导入）`, 'ok');
-      if (r.coverageWarn) { aiImportStore.log(r.coverageWarn, 'error'); }
-    } catch (e) {
-      const msg = String((e as Error).message ?? e);
-      aiImportStore.patch({ error: msg });
-      aiImportStore.log(`解析失败：${msg}`, 'error');
-    } finally {
-      aiImportStore.patch({ busy: false });
+    setPrdSources([]); // T00908：重新解析即作废上一批暂存的 PRD 全文
+    const total = files.length;
+    aiImportStore.patch({ fileName: total > 1 ? `${total} 个文件` : files[0].name, busy: true });
+    aiImportStore.log(`已选择 ${total} 个 PRD 文件：${files.map((f) => f.name).join('、')}`);
+    const results: PrdParseResult[] = [];
+    const sources: { name: string; text: string }[] = [];
+    let firstError = '';
+    for (let i = 0; i < total; i++) {
+      const file = files[i];
+      aiImportStore.log(`提取并解析（${i + 1}/${total}）：${file.name}…`);
+      try {
+        const buf = await file.arrayBuffer();
+        const r = await api.postBinary<{ ok: boolean } & PrdParseResult>(
+          `/plans/ai-parse-prd?projectId=${projectId}&toolId=${toolId}&filename=${encodeURIComponent(file.name)}`,
+          buf,
+        );
+        results.push({ requirements: r.requirements ?? [], drafts: r.drafts ?? [], coverageWarn: r.coverageWarn });
+        // T00908：暂存每份文件的 PRD 全文（供确认导入时落库 PRD 管理视图）
+        if (r.textMd) sources.push({ name: file.name, text: r.textMd });
+        aiImportStore.log(`✓ ${file.name}：需求 ${r.requirements?.length ?? 0} 条、WBS ${r.drafts?.length ?? 0} 条`, 'ok');
+        if (r.coverageWarn) aiImportStore.log(r.coverageWarn, 'error');
+      } catch (e) {
+        const msg = String((e as Error).message ?? e);
+        firstError ||= msg;
+        aiImportStore.log(`✗ ${file.name} 解析失败（已跳过，其余文件继续）：${msg}`, 'error');
+      }
     }
-  }, [projectId, toolId, setReqs, setPlans]);
+    if (results.length === 0) {
+      aiImportStore.patch({ error: firstError || '全部文件解析失败' });
+      aiImportStore.log(`解析失败：${firstError || '全部文件解析失败'}`, 'error');
+      aiImportStore.patch({ busy: false });
+      return;
+    }
+    if (sources.length > 0) setPrdSources(sources);
+    const { requirements, drafts } = mergePrdResults(results);
+    const stamp = Date.now();
+    const reqRows = requirements.map((x, i) => ({ ...x, include: true, key: `pr-${stamp}-${i}` }));
+    const planRows = drafts.map((x, i) => ({ ...x, include: true, key: `pp-${stamp}-${i}` }));
+    setReqs(reqRows);
+    setPlans(planRows);
+    // T00982：同步落盘 + 递增完成戳（解析期间切页导致组件卸载时，这两处是结果不丢的关键）
+    persistParseResult(reqRows, planRows, sources);
+    aiImportStore.log(`解析完成（${results.length}/${total} 个文件）：合并需求 ${requirements.length} 条、WBS 计划 ${drafts.length} 条，编号已全局重排（REQ-001…），可编辑后导入`, 'ok');
+    aiImportStore.patch({ busy: false, parseStamp: stamp });
+  }, [projectId, toolId, setReqs, setPlans, setPrdSources]);
 
   /** 确认导入：事务创建需求项（矩阵）+ 计划（关联需求）+ 可选待办任务 */
   async function doImport() {
@@ -73,19 +209,27 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     try {
       // 勾选过滤：仅提交勾选项；reqNos 需与提交的需求编号保持一致（未勾选需求的引用自动丢弃）
       const keptNos = new Set(rq.map((x) => x.reqNo));
-      const r = await api.post<{ requirements: number; plans: number; tasks: number; unlinkedReqNos?: string[] }>('/plans/import-prd', {
+      // T00908：把暂存的源文件 PRD 全文拼为 prdMd 一并入库——后端落库 prd_docs（PRD 管理视图）并为需求行回填 prd_id 建立关联
+      const prdMd = prdSources.map((s) => `# 来源：${s.name}\n\n${s.text}`).join('\n\n---\n\n');
+      const prdFilename = prdSources.length > 1 ? `${prdSources.length} 个来源文件` : prdSources[0]?.name;
+      const r = await api.post<{ requirements: number; plans: number; tasks: number; unlinkedReqNos?: string[]; prdId?: string }>('/plans/import-prd', {
         projectId,
         createTasks,
-        requirements: rq.map(({ include, key, ...rest }) => { void include; void key; return rest; }),
-        plans: pl.map(({ include, key, ...rest }) => { void include; void key; return { ...rest, reqNos: rest.reqNos.filter((n) => keptNos.has(n)) }; }),
+        requirements: rq.map(({ include: _inc, key: _key, ...rest }) => rest),
+        plans: pl.map(({ include: _inc, key: _key, ...rest }) => ({ ...rest, reqNos: rest.reqNos.filter((n) => keptNos.has(n)) })),
+        prdMd: prdMd || undefined,
+        prdFilename: prdFilename || undefined,
       });
-      aiImportStore.log(`导入完成：需求 ${r.requirements} 条（已入需求跟踪矩阵）、计划 ${r.plans} 条${r.tasks ? `、待办任务 ${r.tasks} 条` : ''}`, 'ok');
+      const taskPart = r.tasks ? `、待办任务 ${r.tasks} 条` : '';
+      const prdPart = r.prdId ? '；源 PRD 已录入「PRD 管理」并关联本次需求矩阵记录' : '';
+      aiImportStore.log(`导入完成：需求 ${r.requirements} 条（已入需求跟踪矩阵）、计划 ${r.plans} 条${taskPart}${prdPart}`, 'ok');
       // T00712（D-5）：无效需求编号不再静默丢弃——服务端返回 unlinkedReqNos 时在控制台给出可感知告警
       if (r.unlinkedReqNos?.length) {
         aiImportStore.log(`告警：${r.unlinkedReqNos.length} 个需求编号未命中本次导入的需求（${r.unlinkedReqNos.join('、')}），其计划/待办关联已被忽略，请核对编号或先补导对应需求`, 'error');
       }
-      aiImportStore.patch({ lastSaved: r.plans });
-      setReqs([]); setPlans([]);
+      // T00982：导入成功即清空完成戳，避免后续再按旧戳把已导入的结果拉回界面
+      aiImportStore.patch({ lastSaved: r.plans, parseStamp: 0 });
+      setReqs([]); setPlans([]); setPrdSources([]);
       onSaved?.(r);
     } catch (e) {
       const msg = String((e as Error).message ?? e);
@@ -123,15 +267,22 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
           <option value="">选择目标项目…</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
-        <label className="tbtn-anim" title="选择 PRD 文件（.docx/.md/.markdown/.txt/.xlsx/.csv/.pdf）"
+        <label className="tbtn-anim" title="选择 PRD 文件（可多选 .docx/.md/.markdown/.txt/.xlsx/.csv/.pdf，将合并分析为单一需求矩阵与项目计划）"
           style={{ cursor: busy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--accent)', color: 'var(--accent)', fontSize: 12 }}>
-          <Upload size={13} /> 选择 PRD 文件
-          <input type="file" accept=".docx,.md,.markdown,.txt,.xlsx,.csv,.pdf" style={{ display: 'none' }}
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) { void parse(f); } e.target.value = ''; }} />
+          <Upload size={13} /> 选择 PRD 文件{pickedFiles.length > 0 ? `（已选 ${pickedFiles.length}）` : ''}
+          <input type="file" multiple accept=".docx,.md,.markdown,.txt,.xlsx,.csv,.pdf" style={{ display: 'none' }}
+            onChange={(e) => {
+              const fs = e.target.files ? Array.from(e.target.files) : [];
+              e.target.value = '';
+              if (fs.length === 0) return;
+              // 选择仅追加到待解析列表、不立即解析；确认后统一走 parseAll（T00841）
+              setPickedFiles((prev) => [...prev, ...fs]);
+            }} />
         </label>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}
           title="勾选后：WBS 节点同时生成待办任务（携带需求关联），便于 AI 推进执行">
           <input type="checkbox" checked={createTasks} onChange={(e) => setCreateTasks(e.target.checked)} style={{ cursor: 'pointer' }} />
+          {' '}
           同步生成待办任务
         </label>
         {fileName && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{fileName}</span>}
@@ -142,6 +293,33 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       </div>
 
       {error && <div style={{ color: 'var(--danger)', fontSize: 12, marginBottom: 8 }}>{error}</div>}
+
+      {/* T00841：已选文件列表——选择仅入列表不解析，用户点「确认」才触发 parseAll；确认前可增删 */}
+      {pickedFiles.length > 0 && (
+        <div style={{ marginBottom: 10, border: '1px solid var(--border-strong)', borderRadius: 8, padding: '8px 10px', background: 'var(--card-bg)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <strong style={{ fontSize: 12 }}>已选文件（{pickedFiles.length}）</strong>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>确认后合并解析，可同步生成待办</span>
+            <span style={{ flex: 1 }} />
+            <button onClick={() => { const fs = pickedFiles; setPickedFiles([]); void parseAll(fs); }} disabled={busy} className="tbtn-anim"
+              title="确认 — 用已选文件开始解析并导入项目计划" aria-label="确认：开始解析并导入"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, border: 'none', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: busy ? 'default' : 'pointer', padding: '4px 10px' }}>
+              <Sparkles size={12} /> 确认
+            </button>
+          </div>
+          {pickedFiles.map((f, i) => (
+            <div key={`${f.name}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
+              <FileUp size={12} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+              <span style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={f.name}>{f.name}</span>
+              <button onClick={() => setPickedFiles((prev) => prev.filter((_, j) => j !== i))} className="tbtn-anim"
+                title="删除 — 从已选列表中移除该文件，不再参与解析" aria-label="删除：移除已选文件"
+                style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px' }}>
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {(reqs.length > 0 || plans.length > 0) && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
@@ -170,16 +348,16 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
                     <tr key={r.key} style={{ borderTop: '1px solid var(--border)' }}>
                       <td style={{ padding: 4 }}>
                         <input type="checkbox" checked={r.include} aria-label={`选中需求 ${r.title}`}
-                          onChange={(e) => setReqs((p) => p.map((x, j) => (j === i ? { ...x, include: e.target.checked } : x)))} />
+                          onChange={(e) => patchReq(i, { include: e.target.checked })} />
                       </td>
                       <td style={{ padding: 4, width: 88 }}>
                         <input value={r.reqNo} aria-label="需求编号" title={r.content || '（无详细描述）'}
-                          onChange={(e) => setReqs((p) => p.map((x, j) => (j === i ? { ...x, reqNo: e.target.value } : x)))}
+                          onChange={(e) => patchReq(i, { reqNo: e.target.value })}
                           style={{ width: 80, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 11, padding: '1px 4px' }} />
                       </td>
                       <td style={{ padding: 4 }}>
                         <input value={r.title} aria-label="需求标题" title={r.content}
-                          onChange={(e) => setReqs((p) => p.map((x, j) => (j === i ? { ...x, title: e.target.value } : x)))}
+                          onChange={(e) => patchReq(i, { title: e.target.value })}
                           style={{ width: '100%', border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 12 }} />
                       </td>
                       <td style={{ padding: 4, fontSize: 11, color: 'var(--text-muted)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.sourceRef}>{r.sourceRef || '—'}</td>
@@ -210,16 +388,16 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
                     <tr key={p.key} style={{ borderTop: '1px solid var(--border)' }}>
                       <td style={{ padding: 4 }}>
                         <input type="checkbox" checked={p.include} aria-label={`选中计划 ${p.title}`}
-                          onChange={(e) => setPlans((prev) => prev.map((x, j) => (j === i ? { ...x, include: e.target.checked } : x)))} />
+                          onChange={(e) => patchPlan(i, { include: e.target.checked })} />
                       </td>
                       <td style={{ padding: 4 }}>
                         <input value={p.title} aria-label="WBS 标题" title={p.description}
-                          onChange={(e) => setPlans((prev) => prev.map((x, j) => (j === i ? { ...x, title: e.target.value } : x)))}
+                          onChange={(e) => patchPlan(i, { title: e.target.value })}
                           style={{ width: '100%', border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 12 }} />
                       </td>
                       <td style={{ padding: 4, width: 70 }}>
                         <input type="number" min={1} value={p.durationDays} aria-label="工期"
-                          onChange={(e) => setPlans((prev) => prev.map((x, j) => (j === i ? { ...x, durationDays: Number(e.target.value) || 1 } : x)))}
+                          onChange={(e) => patchPlan(i, { durationDays: Number(e.target.value) || 1 })}
                           style={{ width: 50, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, padding: '1px 4px' }} />
                       </td>
                       <td style={{ padding: 4, fontSize: 11, color: 'var(--accent)', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.reqNos.join('、')}>
