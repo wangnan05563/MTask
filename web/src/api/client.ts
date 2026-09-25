@@ -179,6 +179,8 @@ export interface Task {
   shelved?: boolean;
   /** T00462/T00451：项目计划联动任务——值为来源计划标题（区分徽标+反向引用） */
   fromPlanTitle?: string;
+  /** T01037：来源计划类型——milestone=里程碑联动任务（徽标显示「里程碑」），其余显示「计划」 */
+  fromPlanKind?: string;
   /** T00446：手动排序权重（拖拽排序结果；manual 排序模式生效） */
   user_sort: number | null;
   /** 置顶：true=固定到列表顶部 */

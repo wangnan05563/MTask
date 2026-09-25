@@ -1363,14 +1363,20 @@ export function TasksPage() {
             验证失败
           </span>
         )}
-        {/* T00462/T00451：计划联动任务区分徽标——悬浮显示来源计划标题（反向引用） */}
-        {t.fromPlanTitle && (
-          <span title={`计划联动任务 — 来源计划：${t.fromPlanTitle}；完成状态与项目计划双向同步`}
-            aria-label="计划联动任务"
-            style={{ fontSize: 10, color: 'var(--text-muted)', border: '1px solid var(--border-strong)', padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'default' }}>
-            计划
-          </span>
-        )}
+        {/* T00462/T00451：计划联动任务区分徽标——悬浮显示来源计划标题（反向引用）
+            T01037：来源计划是里程碑时徽标显示「里程碑」，不再一律显示「计划」（里程碑≠普通计划条目） */}
+        {t.fromPlanTitle && (() => {
+          const isMs = t.fromPlanKind === 'milestone';
+          return (
+            <span title={isMs
+              ? `里程碑联动任务 — 来源里程碑：${t.fromPlanTitle}；请先处理其下子任务，全部完成后由里程碑汇总状态`
+              : `计划联动任务 — 来源计划：${t.fromPlanTitle}；完成状态与项目计划双向同步`}
+              aria-label={isMs ? '里程碑联动任务' : '计划联动任务'}
+              style={{ fontSize: 10, color: isMs ? 'var(--accent)' : 'var(--text-muted)', border: `1px solid ${isMs ? 'var(--accent)' : 'var(--border-strong)'}`, padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'default', fontWeight: isMs ? 600 : undefined }}>
+              {isMs ? '里程碑' : '计划'}
+            </span>
+          );
+        })()}
         {/* T00577：派生单溯源徽标——AI 处理完成后结论自动整合回原任务 */}
         {t.derived_from && (
           <span title={`派生自原任务 ${t.derived_from} — 处理完成后结论自动整合回原任务`}

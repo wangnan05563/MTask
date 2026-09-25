@@ -82,6 +82,9 @@ export interface TaskView {
   images: TaskImageMeta[];
   /** T00462/T00451：任务由项目计划联动创建/关联——值为来源计划标题，前端据此显示区分徽标与来源引用 */
   fromPlanTitle?: string;
+  /** T01037：来源计划的类型（milestone=里程碑 / normal=普通 / daily=日常）——
+   *  里程碑联动的待办此前与普通计划一样显示「计划」徽标，无法区分；前端据此显示「里程碑」。 */
+  fromPlanKind?: string;
 }
 
 export interface TaskInput {
@@ -298,21 +301,25 @@ export const TaskService = {
     // T00462/T00451：批量反查项目计划关联（linked_task_id 命中即「计划联动任务」），值=来源计划标题。
     // 必须分批：SQLite 变量上限 999，而无 limit 的调用（移动端/归档/队列页）会传入全量任务 id，
     // 单条 IN (?,?,...) 在任务数 >999 时直接抛错（真实缺陷）；分批后同时把 SQL 文本长度控制住。
-    const planLinked = new Map<string, string>();
+    const planLinked = new Map<string, { title: string; kind: string }>();
     for (let i = 0; i < rows.length; i += PLAN_LOOKUP_BATCH) {
       const chunk = rows.slice(i, i + PLAN_LOOKUP_BATCH);
       if (chunk.length === 0) continue;
       const placeholders = chunk.map(() => '?').join(',');
+      // T01037：连 kind 一并带出（COALESCE 兜底 normal）——里程碑联动任务据此显示「里程碑」徽标
       const hits = db.prepare(
-        `SELECT pt.linked_task_id AS id, pt.title FROM plan_tasks pt
+        `SELECT pt.linked_task_id AS id, pt.title, COALESCE(pt.kind, 'normal') AS kind FROM plan_tasks pt
          WHERE pt.archived = 0 AND pt.linked_task_id IN (${placeholders})`,
-      ).all(...chunk.map((r) => r.id)) as Array<{ id: string; title: string }>;
-      for (const h of hits) planLinked.set(h.id, h.title);
+      ).all(...chunk.map((r) => r.id)) as Array<{ id: string; title: string; kind: string }>;
+      for (const h of hits) planLinked.set(h.id, { title: h.title, kind: h.kind });
     }
     return rows.map((r) => {
       const view = rowToTask(r, imageMap.get(r.id) ?? []);
-      const planTitle = planLinked.get(r.id);
-      if (planTitle) view.fromPlanTitle = planTitle;
+      const link = planLinked.get(r.id);
+      if (link) {
+        view.fromPlanTitle = link.title;
+        view.fromPlanKind = link.kind; // T01037：里程碑联动任务要显示「里程碑」而非「计划」
+      }
       return view;
     });
   },
