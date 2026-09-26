@@ -1,15 +1,13 @@
 # ============================================================================
-# 26_MTask 后端 API 性能压测配置（jmeter-performance-test，配置驱动）
+# 26_MTask 后端 API 全端点性能压测配置（jmeter-performance-test，配置驱动）
 # 被测目标：Express + better-sqlite3 后端（独立沙箱实例，绝不连生产库）
 # 开发端口 39876；生产/打包实例在 39877（F:\Program Files\MTask），不触碰。
+# 数据目录：perf/sandbox/data2（由 perf/seed/seed-v2.js 播种的确定性夹具集）
 # ============================================================================
 
 # 无 Java/JMeter（已探测），强制使用内置 Python 回放引擎
 mode: python_replay
 
-# ---------------------------------------------------------------------------
-# JMeter 原生模式配置（不使用，保留为空）
-# ---------------------------------------------------------------------------
 jmeter:
   bin: ""
   java_home: ""
@@ -25,34 +23,33 @@ jmeter:
 sandbox:
   enabled: true
   cwd: "D:/code/otherProjects/26_MTask/perf/sandbox"
-  # SUT = 编译产物 server/dist/index.js（dist 已是最新），由 managed Node 22.22.2 启动
-  # 路径用正斜杠（shlex.split 会把反斜杠当转义吞掉），node.exe 接受正斜杠路径
+  # SUT = 编译产物 server/dist/index.js（与 src 同步重建），由 managed Node 22.22.2 启动
   startup_cmd: "C:/Users/hspcadmin/.workbuddy/binaries/node/versions/22.22.2-2/node.exe D:/code/otherProjects/26_MTask/server/dist/index.js"
   pkg: ""
-  port: 39876
+  port: 39899
   health_path: "/api/health"
-  health_retries: 180          # CPU 饱和+杀毒扫描下 SUT 冷启动约 110s，需足够重试
+  health_retries: 200          # CPU 饱和 + 杀软扫描下 SUT 冷启动可能 >110s
 
-  # 启动前清空 39876 上可能残留的孤儿进程，避免请求打到旧实例
   port_kill_retries: 3
   port_kill_wait_ms: 500
   require_new_instance: true
 
   # 关键：注入独立数据目录，绝不连生产库（%APPDATA%\mtask\data 与 server/src/data）
+  # 端口 39899：与 dev 工具链(39876)/打包生产(39877) 隔离——dev 启动脚本会清空 39876，
+  # 若共用同一端口会导致沙箱 SUT 被 dev 实例顶掉、压测流量打到带 accessToken 的 dev 服务（整批 401）。
   env_overrides:
-    MTask_PORT: "39876"
-    MTask_DATA_DIR: "D:/code/otherProjects/26_MTask/perf/sandbox/data"
+    MTask_PORT: "39899"
+    MTask_DATA_DIR: "D:/code/otherProjects/26_MTask/perf/sandbox/data2"
 
   preflight:
     enabled: true
-    rate_limit_burst: 20        # 本地无限流，突发探测仅做安全闸门
+    rate_limit_burst: 20        # 本地无限流，突发探测仅作安全闸门
     burst_path: "/api/health"
     abort_on_rate_limit: true
     login_warmup: false
 
-  min_output_lines: 5
+  min_output_lines: 10
 
-  # 资源监控 sidecar 用 cmd_substr 定位 SUT 进程
   process_match:
     mode: cmd_substr
     cmd_substr: "server/dist/index.js"
@@ -65,47 +62,51 @@ sandbox:
 
 # ---------------------------------------------------------------------------
 # 资源监控 sidecar（量化 SUT 在负载下的内存 / CPU）
-# 启动：python scripts/monitor_sut.py --config perf/config/jmeter-config.yml
 # ---------------------------------------------------------------------------
 resource_monitor:
   enabled: true
-  # 用 pid_file 精确定位 SUT（wmic/psutil 的 cmd_substr 匹配受斜杠方向影响不稳定）
+  # 用 pid_file 精确定位 SUT：cmd_substr 依赖 WMI 命令行枚举，在本机实测未命中
+  # （监听 pid 的命令行为 `.../node.exe D:/.../server/dist/index.js`，含正斜杠），
+  # 故改由压测编排在 SUT 就绪后写入监听 pid（perf/out3/sut.pid），最精确无歧义。
   match:
-    mode: cmd_substr
-    cmd_substr: "server/dist/index.js"
-    name: ""
-    name: ""
-    cmd_substr: ""
+    mode: pid_file
+    pid_file: "D:/code/otherProjects/26_MTask/perf/out3/sut.pid"
   sample_interval_sec: 3
-  duration_samples: 0           # 0 = 一直采样直到 Ctrl+C
+  duration_samples: 270         # 覆盖「启动(~110s) + 全阶段负载(~510s)」并留余量，自动落盘退出
   metrics: ["rss_mb", "private_mb", "cpu_percent", "handles", "threads"]
-  output_csv: "D:/code/otherProjects/26_MTask/perf/output/sut_resource.csv"
+  output_csv: "D:/code/otherProjects/26_MTask/perf/out3/sut_resource.csv"
   alert:
     enabled: true
-    max_rss_mb: 1500
+    max_rss_mb: 600
     on_exceed: warn
 
 # ---------------------------------------------------------------------------
 # 目标服务
 # ---------------------------------------------------------------------------
 target:
-  base_url: "http://127.0.0.1:39876"
+  base_url: "http://127.0.0.1:39899"
   default_timeout_sec: 60
   ramp_stagger: true
   fixed_headers: { "Accept": "application/json" }
   auth:
-    type: none                  # accessToken 未配置（tunnel-config.json 不存在），整体放行
+    type: none                  # accessToken 未配置，整体放行
 
 # ---------------------------------------------------------------------------
 # 压测阶段（先 smoke 后 full；同一 JMX 用 threads_override 覆盖线程档）
+# 顺序原则：先读后写（保证读基线不被写膨胀污染），重端点与稳定性收尾。
 # ---------------------------------------------------------------------------
 phases:
-  - name: "smoke"              # 冒烟：1 线程，验证采样器正确性
+  - name: "smoke_reads"        # 冒烟：读端点单线程，验证采样器/路径正确
     jmx: "jmeter/reads.jmx"
     enabled: true
     threads_override: 1
-    duration_override: 25
-  - name: "reads_baseline"     # 读基准：5 并发（同机+CPU 饱和，低并发代表真实服务延迟）
+    duration_override: 20
+  - name: "smoke_writes"       # 冒烟：写端点单线程，早期暴露系统性 4xx
+    jmx: "jmeter/writes.jmx"
+    enabled: true
+    threads_override: 1
+    duration_override: 12
+  - name: "reads_baseline"     # 读基准：5 并发（低并发代表真实服务延迟）
     jmx: "jmeter/reads.jmx"
     enabled: true
     threads_override: 5
@@ -115,7 +116,7 @@ phases:
     enabled: true
     threads_override: 15
     duration_override: 60
-  - name: "reads_stress"       # 读压力：30 并发（受同机 CPU 饱和影响，标注环境限制）
+  - name: "reads_stress"       # 读压力：30 并发
     jmx: "jmeter/reads.jmx"
     enabled: true
     threads_override: 30
@@ -124,25 +125,30 @@ phases:
     jmx: "jmeter/writes.jmx"
     enabled: true
     threads_override: 5
-    duration_override: 60
+    duration_override: 45
   - name: "writes_mid"         # 写中等：10 并发（SQLite 单写者，观察锁竞争）
     jmx: "jmeter/writes.jmx"
     enabled: true
     threads_override: 10
-    duration_override: 60
-  - name: "report_diag"        # 重端点诊断：report_generate 单发真实耗时（排除 CPU 排队干扰）
+    duration_override: 45
+  - name: "writes_stress"      # 写压力：20 并发
+    jmx: "jmeter/writes.jmx"
+    enabled: true
+    threads_override: 20
+    duration_override: 45
+  - name: "heavy"              # 重端点：报表/导出/大数据量，单线程
     jmx: "jmeter/heavy.jmx"
     enabled: true
     threads_override: 1
     duration_override: 45
-  - name: "stability"          # 稳定性：10 并发 × 120s，观察长时间错误率
-    jmx: "jmeter/reads.jmx"
+  - name: "stability"          # 稳定性：读写混合，10 并发 × 120s
+    jmx: "jmeter/mixed.jmx"
     enabled: true
     threads_override: 10
     duration_override: 120
 
 # ---------------------------------------------------------------------------
-# 场景生成（配置驱动）：fixtures 放固定种子 id，gen_jmx.py 生成 JMX
+# 场景生成（配置驱动）：gen_jmx.py 按 scenarios 段批量生成 JMX
 # ---------------------------------------------------------------------------
 scenarios:
   enabled: true
@@ -150,85 +156,251 @@ scenarios:
   default_protocol: "http"
   default_method: "GET"
   fixtures:
-    project_id:   "proj-main"
-    project_id2:  "proj-secondary"
-    task_id:      "task-0001"
-    task_id2:     "task-0002"
-    task_ids:     "task-0001,task-0002,task-0003"
-    category_id:  "cat-perf"
-    queue_id:     "queue-perf"
+    project_id:    "proj-main"
+    project_id2:   "proj-secondary"
+    project_id3:   "proj-tri"
+    project_del:   "proj-del-001"
+    task_id:       "task-0001"
+    task_id2:      "task-0002"
+    task_id3:      "task-0003"
+    task_arch:     "task-0004"
+    task_restore:  "task-a001"
+    task_no:       "T00001"
+    # 中文查询值必须预编码：回放引擎按原样拼 query，非 ASCII 直接进 URL 会被 urllib 拒绝（000 伪故障）。
+    # 「压测」的 UTF-8 百分号编码；Express 侧解码后仍为中文，等价于前端真实输入。
+    keyword_q:     "%E5%8E%8B%E6%B5%8B"
+    category_id:   "cat-perf"
+    category_extra: "cat-extra-001"
+    category_del:  "cat-del-001"
+    tool_id:       "tool-perf"
+    tool_id2:      "tool-claude"
+    tool_id3:      "tool-ollama"
+    tool_del:      "tool-del-001"
+    queue_id:      "queue-perf"
+    queue_id2:     "queue-2"
     prompt_cat_id: "cat-prompt-perf"
-    prompt_id:    "prompt-perf"
-    tool_id:      "tool-perf"
+    prompt_cat_del: "cat-prompt-del-001"
+    prompt_id:     "prompt-perf"
+    prompt_del:    "prompt-del-001"
+    req_cat_id:    "req-cat-perf"
+    req_cat_del:   "req-cat-del-001"
+    req_id:        "req-perf"
+    req_del:       "req-del-001"
+    plan_id:       "plan-001"
+    plan_id2:      "plan-002"
+    plan_del:      "plan-del-001"
+    console_job_id: "console-001"
+    image_id:      "img-0001"
+    table:         "tasks"
+    table2:        "task_categories"
+    holiday_date:  "2026-12-25"
   thread_profiles:
-    smoke:  { threads: 1,  ramp: 1,  duration: 30 }
-    load10: { threads: 10, ramp: 5,  duration: 60 }
+    smoke: { threads: 1,  ramp: 1, duration: 30 }
   list:
-    # ---- 读端点（本地纯查询，无外部副作用）----
+    # =================== 读端点（本地纯查询，无外部副作用）===================
     - name: "reads"
-      profile: "load10"
+      profile: "smoke"
       samplers:
-        - { name: "health",           path: "/api/health", method: "GET" }
-        - { name: "projects",         path: "/api/projects", method: "GET" }
-        - { name: "tasks",            path: "/api/tasks", method: "GET", params: { limit: "200" } }
-        - { name: "tasks_archived",   path: "/api/tasks", method: "GET", params: { archived: "1" } }
-        - { name: "task_categories",  path: "/api/task-categories", method: "GET" }
-        - { name: "queues",           path: "/api/queues", method: "GET" }
-        - { name: "queue_detail",     path: "/api/queues/{{queue_id}}", method: "GET" }
-        - { name: "prompt_categories",path: "/api/prompt-categories", method: "GET" }
-        - { name: "prompts",          path: "/api/prompts", method: "GET" }
-        - { name: "aitools",          path: "/api/aitools", method: "GET" }
-        - { name: "aitools_types",    path: "/api/aitools/types", method: "GET" }
-        - { name: "aitools_defaults", path: "/api/aitools/defaults", method: "GET" }
-        - { name: "note_project",     path: "/api/settings/note-project", method: "GET" }
-        - { name: "logs",             path: "/api/logs", method: "GET" }
-        - { name: "report_templates", path: "/api/report/templates", method: "GET" }
-        - { name: "update_version",   path: "/api/update/version", method: "GET" }
-        - { name: "update_config",    path: "/api/update/config", method: "GET" }
-        - { name: "tunnel_status",    path: "/api/tunnel/status", method: "GET" }
-        - { name: "tunnel_config",    path: "/api/tunnel/config", method: "GET" }
-        - { name: "settings_export",  path: "/api/settings/export", method: "GET" }
-    # ---- 写端点（本地 DB 写；独立沙箱库，压完丢弃）----
+        - { name: "health",             path: "/api/health", method: "GET" }
+        - { name: "logs",               path: "/api/logs", method: "GET", params: { since: "0" } }
+        - { name: "projects",           path: "/api/projects", method: "GET" }
+        - { name: "tasks_page",         path: "/api/tasks", method: "GET", params: { limit: "200" } }
+        - { name: "tasks_archived",     path: "/api/tasks", method: "GET", params: { archived: "1" } }
+        - { name: "tasks_by_project",   path: "/api/tasks", method: "GET", params: { projectId: "{{project_id}}" } }
+        - { name: "tasks_keyword",      path: "/api/tasks", method: "GET", params: { keyword: "{{keyword_q}}", limit: "100" } }
+        - { name: "tasks_by_category",  path: "/api/tasks", method: "GET", params: { categoryId: "{{category_id}}", limit: "100" } }
+        - { name: "tasks_sort_manual",  path: "/api/tasks", method: "GET", params: { sort: "manual", limit: "100" } }
+        - { name: "tasks_by_no",        path: "/api/tasks/by-no/{{task_no}}", method: "GET" }
+        - { name: "task_categories",    path: "/api/task-categories", method: "GET" }
+        - { name: "task_images",        path: "/api/tasks/{{task_id}}/images", method: "GET" }
+        - { name: "image_by_id",        path: "/api/images/{{image_id}}", method: "GET" }
+        - { name: "aitools",            path: "/api/aitools", method: "GET" }
+        - { name: "aitools_types",      path: "/api/aitools/types", method: "GET" }
+        - { name: "aitools_defaults",   path: "/api/aitools/defaults", method: "GET" }
+        - { name: "aitools_apikey",     path: "/api/aitools/{{tool_id}}/api-key", method: "GET" }
+        - { name: "queues",             path: "/api/queues", method: "GET" }
+        - { name: "queue_detail",       path: "/api/queues/{{queue_id}}", method: "GET" }
+        - { name: "report_templates",   path: "/api/report/templates", method: "GET" }
+        - { name: "console_jobs",       path: "/api/console-jobs", method: "GET" }
+        - { name: "ai_usage",           path: "/api/ai/usage", method: "GET", params: { days: "7" } }
+        - { name: "prompt_categories",  path: "/api/prompt-categories", method: "GET" }
+        - { name: "prompts",            path: "/api/prompts", method: "GET" }
+        - { name: "prompts_by_cat",     path: "/api/prompts", method: "GET", params: { categoryId: "{{prompt_cat_id}}" } }
+        - { name: "req_categories",     path: "/api/req-categories", method: "GET" }
+        - { name: "req_entries",        path: "/api/req-entries", method: "GET" }
+        - { name: "req_entries_by_cat", path: "/api/req-entries", method: "GET", params: { categoryId: "{{req_cat_id}}" } }
+        - { name: "plans",              path: "/api/plans", method: "GET", params: { projectId: "{{project_id}}" } }
+        - { name: "plans_archived",     path: "/api/plans/archived", method: "GET" }
+        - { name: "plans_holidays",     path: "/api/plans/holidays", method: "GET" }
+        - { name: "settings_note_proj", path: "/api/settings/note-project", method: "GET" }
+        - { name: "update_version",     path: "/api/update/version", method: "GET" }
+        - { name: "update_config",      path: "/api/update/config", method: "GET" }
+        - { name: "tunnel_status",      path: "/api/tunnel/status", method: "GET" }
+        - { name: "tunnel_config",      path: "/api/tunnel/config", method: "GET" }
+        - { name: "tunnel_cf_status",   path: "/api/tunnel/cloudflare/login/status", method: "GET" }
+        - { name: "db_tables",          path: "/api/dbadmin/tables", method: "GET" }
+        - { name: "db_schema",          path: "/api/dbadmin/tables/{{table}}/schema", method: "GET" }
+        - { name: "db_rows",            path: "/api/dbadmin/tables/{{table}}/rows", method: "GET", params: { limit: "50" } }
+
+    # =================== 写端点（本地 DB 写；独立沙箱库，压完丢弃）===================
     - name: "writes"
-      profile: "load10"
+      profile: "smoke"
       samplers:
-        - { name: "create_project", path: "/api/projects", method: "POST",
+        - { name: "create_project",       path: "/api/projects", method: "POST",
             body: '{"name":"perf-project","description":"perf write load"}' }
-        - { name: "patch_project", path: "/api/projects/proj-main", method: "PATCH",
-            body: '{"name":"perf-project-updated","description":"perf write load updated"}' }
-        - { name: "create_task", path: "/api/tasks", method: "POST",
+        - { name: "patch_project",        path: "/api/projects/{{project_id}}", method: "PATCH",
+            body: '{"description":"perf write load updated"}' }
+        - { name: "create_task",          path: "/api/tasks", method: "POST",
             body: '{"projectId":"{{project_id}}","title":"perf-task","description":"perf write load","priority":"high","status":"todo"}' }
-        - { name: "patch_task", path: "/api/tasks/{{task_id}}", method: "PATCH",
-            body: '{"title":"perf-task-updated","status":"done","verified":true}' }
-        - { name: "move_tasks", path: "/api/tasks/move", method: "POST",
-            body: '{"taskIds":["{{task_id2}}"],"projectId":"{{project_id2}}"}' }
-        - { name: "archive", path: "/api/archive", method: "POST",
-            body: '{"taskIds":["{{task_id2}}"]}' }
-        - { name: "adopt", path: "/api/tasks/{{task_id2}}/adopt", method: "POST",
+        - { name: "patch_task",           path: "/api/tasks/{{task_id}}", method: "PATCH",
+            body: '{"priority":"normal","verified":true}' }
+        - { name: "move_tasks",           path: "/api/tasks/move", method: "POST",
+            body: '{"taskIds":["{{task_id3}}"],"projectId":"{{project_id2}}"}' }
+        - { name: "reorder_tasks",        path: "/api/tasks/reorder", method: "POST",
+            body: '{"orderedIds":["{{task_id}}","{{task_id2}}","{{task_id3}}"]}' }
+        - { name: "batch_tasks",          path: "/api/tasks/batch", method: "POST",
+            body: '{"ids":["{{task_id2}}"],"action":"status","value":"done"}' }
+        - { name: "adopt_task",           path: "/api/tasks/{{task_id2}}/adopt", method: "POST",
             body: '{"content":"perf-adopted-content"}' }
-        - { name: "create_category", path: "/api/task-categories", method: "POST",
+        - { name: "task_to_prompt",       path: "/api/tasks/{{task_id2}}/to-prompt", method: "POST",
+            body: '{"categoryId":"{{prompt_cat_id}}"}' }
+        - { name: "task_to_req",          path: "/api/tasks/{{task_id3}}/to-req", method: "POST",
+            body: '{"categoryId":"{{req_cat_id}}"}' }
+        - { name: "archive_task",         path: "/api/archive", method: "POST",
+            body: '{"taskIds":["{{task_arch}}"]}' }
+        - { name: "restore_task",         path: "/api/archive/restore", method: "POST",
+            body: '{"taskIds":["{{task_restore}}"]}' }
+        - { name: "create_category",      path: "/api/task-categories", method: "POST",
             body: '{"name":"perf-cat"}' }
-        - { name: "patch_category", path: "/api/task-categories/{{category_id}}", method: "PATCH",
-            body: '{"name":"perf-cat-renamed"}' }
-        - { name: "create_queue", path: "/api/queues", method: "POST",
-            body: '{"name":"perf-queue","date":"2026-08-28"}' }
-        - { name: "add_jobs", path: "/api/queues/{{queue_id}}/jobs", method: "POST",
+        - { name: "patch_category",       path: "/api/task-categories/{{category_id}}", method: "PATCH",
+            body: '{"name":"压测分类"}' }
+        - { name: "create_aitool",        path: "/api/aitools", method: "POST",
+            body: '{"name":"perf-tool","type":"openaiCompat","purpose":"develop","endpoint":"http://127.0.0.1:9","model":"gpt-4o"}' }
+        - { name: "patch_aitool",         path: "/api/aitools/{{tool_id}}", method: "PATCH",
+            body: '{"model":"gpt-4o","enabled":true}' }
+        - { name: "reorder_aitools",      path: "/api/aitools/reorder", method: "POST",
+            body: '{"orderedIds":["{{tool_id}}","{{tool_id2}}","{{tool_id3}}"]}' }
+        - { name: "set_default_tool",     path: "/api/aitools/{{tool_id}}/set-default", method: "POST",
+            body: '{"kind":"develop"}' }
+        - { name: "create_queue",         path: "/api/queues", method: "POST",
+            body: '{"name":"perf-queue","date":"2026-09-13"}' }
+        - { name: "add_queue_jobs",       path: "/api/queues/{{queue_id}}/jobs", method: "POST",
             body: '{"items":[{"taskId":"{{task_id}}","toolId":"{{tool_id}}"}]}' }
-        - { name: "create_prompt", path: "/api/prompts", method: "POST",
+        - { name: "reset_queue",          path: "/api/queues/{{queue_id}}/reset", method: "POST",
+            body: '{}' }
+        - { name: "create_prompt",        path: "/api/prompts", method: "POST",
             body: '{"categoryId":"{{prompt_cat_id}}","title":"perf-prompt","content":"perf content"}' }
-        - { name: "patch_prompt", path: "/api/prompts/{{prompt_id}}", method: "PATCH",
-            body: '{"title":"perf-prompt-updated","content":"perf content updated"}' }
-        - { name: "set_note_project", path: "/api/settings/note-project", method: "POST",
+        - { name: "patch_prompt",         path: "/api/prompts/{{prompt_id}}", method: "PATCH",
+            body: '{"content":"perf content updated"}' }
+        - { name: "prompt_to_task",       path: "/api/prompts/{{prompt_id}}/to-task", method: "POST",
+            body: '{}' }
+        - { name: "create_prompt_cat",    path: "/api/prompt-categories", method: "POST",
+            body: '{"name":"perf-prompt-cat"}' }
+        - { name: "patch_prompt_cat",     path: "/api/prompt-categories/{{prompt_cat_id}}", method: "PATCH",
+            body: '{"name":"压测提示词分类"}' }
+        - { name: "create_req_cat",       path: "/api/req-categories", method: "POST",
+            body: '{"name":"perf-req-cat"}' }
+        - { name: "patch_req_cat",        path: "/api/req-categories/{{req_cat_id}}", method: "PATCH",
+            body: '{"name":"压测需求分类"}' }
+        - { name: "create_req_entry",     path: "/api/req-entries", method: "POST",
+            body: '{"categoryId":"{{req_cat_id}}","title":"perf-req","content":"perf req content"}' }
+        - { name: "patch_req_entry",      path: "/api/req-entries/{{req_id}}", method: "PATCH",
+            body: '{"content":"perf req content updated"}' }
+        - { name: "req_to_task",          path: "/api/req-entries/{{req_id}}/to-task", method: "POST",
+            body: '{}' }
+        - { name: "note_project",         path: "/api/settings/note-project", method: "POST",
             body: '{"projectId":"{{project_id}}"}' }
-    # ---- 重端点（CPU 密集 / 大数据量）----
+        - { name: "update_config",        path: "/api/update/config", method: "POST",
+            body: '{"repo":"owner/repo"}' }
+        - { name: "create_plan",          path: "/api/plans", method: "POST",
+            body: '{"projectId":"{{project_id}}","title":"perf-plan","durationDays":2}' }
+        - { name: "patch_plan",           path: "/api/plans/{{plan_id}}", method: "PATCH",
+            body: '{"progress":50}' }
+        - { name: "batch_plans",          path: "/api/plans/batch", method: "POST",
+            body: '{"projectId":"{{project_id}}","items":[{"title":"perf-batch-plan","durationDays":1}]}' }
+        - { name: "plan_insert_after",    path: "/api/plans/{{plan_id}}/insert-after", method: "POST",
+            body: '{"title":"perf-inserted-plan","description":"inserted"}' }
+        - { name: "plan_link",            path: "/api/plans/{{plan_id2}}/link", method: "POST",
+            body: '{"taskId":"{{task_id2}}"}' }
+        - { name: "add_holiday",          path: "/api/plans/holidays", method: "POST",
+            body: '{"date":"2026-11-11","name":"perf-holiday"}' }
+
+    # =================== 重端点（CPU 密集 / 大数据量）单线程 ===================
     - name: "heavy"
       profile: "smoke"
       samplers:
-        - { name: "report_generate", path: "/api/report/generate", method: "POST",
+        - { name: "report_generate_xlsx", path: "/api/report/generate", method: "POST",
             body: '{"period":"week","format":"xlsx","projectId":"{{project_id}}"}' }
-        - { name: "tasks_large_project", path: "/api/tasks", method: "GET",
-            params: { projectId: "{{project_id}}" } }
-        - { name: "queue_detail_grown", path: "/api/queues/{{queue_id}}", method: "GET" }
+        - { name: "report_generate_pdf",  path: "/api/report/generate", method: "POST",
+            body: '{"period":"week","format":"pdf","projectId":"{{project_id}}"}' }
+        - { name: "plans_export",         path: "/api/plans/export", method: "GET", params: { projectId: "{{project_id}}" } }
+        - { name: "plans_template",       path: "/api/plans/template", method: "GET" }
+        - { name: "settings_export",      path: "/api/settings/export", method: "GET" }
+        - { name: "db_export",            path: "/api/dbadmin/tables/{{table}}/export", method: "GET" }
+        - { name: "tasks_large_project",  path: "/api/tasks", method: "GET", params: { projectId: "{{project_id}}" } }
+        - { name: "queue_detail_grown",   path: "/api/queues/{{queue_id}}", method: "GET" }
+        - { name: "ai_usage_90d",         path: "/api/ai/usage", method: "GET", params: { days: "90" } }
+
+    # =================== 稳定性混合（读为主 + 少量写，控制数据膨胀）===================
+    - name: "mixed"
+      profile: "smoke"
+      samplers:
+        - { name: "health",            path: "/api/health", method: "GET" }
+        - { name: "tasks_page",        path: "/api/tasks", method: "GET", params: { limit: "200" } }
+        - { name: "tasks_archived",    path: "/api/tasks", method: "GET", params: { archived: "1" } }
+        - { name: "projects",          path: "/api/projects", method: "GET" }
+        - { name: "queue_detail",      path: "/api/queues/{{queue_id}}", method: "GET" }
+        - { name: "aitools",           path: "/api/aitools", method: "GET" }
+        - { name: "plans",             path: "/api/plans", method: "GET", params: { projectId: "{{project_id}}" } }
+        - { name: "prompts",           path: "/api/prompts", method: "GET" }
+        - { name: "console_jobs",      path: "/api/console-jobs", method: "GET" }
+        - { name: "db_rows",           path: "/api/dbadmin/tables/{{table}}/rows", method: "GET", params: { limit: "50" } }
+        - { name: "create_task",       path: "/api/tasks", method: "POST",
+            body: '{"projectId":"{{project_id}}","title":"stability-task","priority":"normal","status":"todo"}' }
+        - { name: "patch_task",        path: "/api/tasks/{{task_id}}", method: "PATCH",
+            body: '{"priority":"high"}' }
+
+# ---------------------------------------------------------------------------
+# 单发探针（破坏性/一次性端点）：不走负载阶段，由 perf/probe_endpoints.py 逐端点单发
+# 目的：测量删除类、需全量前置数据类、外部依赖类的真实响应与延迟，
+#       避免固定夹具在负载循环中反复触发 404/409 而污染错误率口径。
+# ---------------------------------------------------------------------------
+probes:
+  timeout_sec: 120
+  list:
+    - { name: "task_category_delete", path: "/api/task-categories/{{category_del}}", method: "DELETE" }
+    - { name: "prompt_category_delete", path: "/api/prompt-categories/{{prompt_cat_del}}", method: "DELETE" }
+    - { name: "prompt_delete", path: "/api/prompts/{{prompt_del}}", method: "DELETE" }
+    - { name: "req_category_delete", path: "/api/req-categories/{{req_cat_del}}", method: "DELETE" }
+    - { name: "req_entry_delete", path: "/api/req-entries/{{req_del}}", method: "DELETE" }
+    - { name: "aitool_delete", path: "/api/aitools/{{tool_del}}", method: "DELETE" }
+    - { name: "project_delete", path: "/api/projects/{{project_del}}", method: "DELETE" }
+    - { name: "plan_delete", path: "/api/plans/{{plan_del}}", method: "DELETE" }
+    - { name: "plan_archive", path: "/api/plans/{{plan_id2}}/archive", method: "POST", body: '{}' }
+    - { name: "plan_restore", path: "/api/plans/{{plan_id2}}/restore", method: "POST", body: '{}' }
+    - { name: "plan_create_todo", path: "/api/plans/{{plan_id}}/create-todo", method: "POST", body: '{}' }
+    - { name: "holiday_add", path: "/api/plans/holidays", method: "POST", body: '{"date":"{{holiday_date}}","name":"probe-holiday"}' }
+    - { name: "holiday_delete", path: "/api/plans/holidays/{{holiday_date}}", method: "DELETE" }
+    - { name: "queue_job_delete", path: "/api/queues/{{queue_id}}/jobs/job-perf-050", method: "DELETE" }
+    - { name: "console_job_delete", path: "/api/console-jobs/{{console_job_id}}", method: "DELETE" }
+    - { name: "archive_delete", path: "/api/archive", method: "DELETE", body: '{"taskIds":["task-a050"]}' }
+    - { name: "image_delete", path: "/api/images/{{image_id}}", method: "DELETE" }
+    - { name: "task_reuse", path: "/api/tasks/{{task_id2}}/reuse", method: "POST", body: '{"projectId":"{{project_id3}}"}' }
+    - { name: "csv_import_preview", path: "/api/tasks/import-csv/preview", method: "POST", query: "?projectId={{project_id}}",
+        body: '标题,描述,优先级\nprobe-csv-1,来自压测,high\nprobe-csv-2,来自压测,normal\n', content_type: "text/csv" }
+    - { name: "csv_import_confirm", path: "/api/tasks/import-csv/confirm", method: "POST",
+        body: '{"projectId":"{{project_id}}","items":[{"title":"probe-csv-1","priority":"high"},{"title":"probe-csv-2"}]}' }
+    - { name: "plans_reorder", path: "/api/plans/reorder", method: "POST", dynamic: "plans_reorder" }
+    - { name: "plans_from_req", path: "/api/plans/from-req", method: "POST",
+        body: '{"reqEntryId":"{{req_id}}","projectId":"{{project_id}}"}' }
+    - { name: "db_insert_row", path: "/api/dbadmin/tables/{{table2}}/rows", method: "POST", dynamic: "db_insert_row" }
+    - { name: "db_patch_row", path: "/api/dbadmin/tables/{{table2}}/rows/{{category_extra}}", method: "PATCH",
+        body: '{"name":"probe-patched-category"}' }
+    - { name: "db_delete_row", path: "/api/dbadmin/tables/{{table2}}/rows/cat-del-002", method: "DELETE" }
+    - { name: "db_batch_delete", path: "/api/dbadmin/tables/{{table2}}/batch-delete", method: "POST",
+        body: '{"pks":["cat-del-003","cat-del-004"]}' }
+    - { name: "console_jobs_clear", path: "/api/console-jobs", method: "DELETE" }
+    - { name: "settings_import", path: "/api/settings/import", method: "POST", dynamic: "settings_import" }
 
 # ---------------------------------------------------------------------------
 # 缺陷判定规则
@@ -240,55 +412,38 @@ defect_rules:
   assertion_mismatch_is_defect: false
 
 # ---------------------------------------------------------------------------
-# 回归对比（本轮无基线，关闭）
+# 回归对比：本轮为全新确定性数据集，无同构历史基线 → 关闭
+# （组内并发梯度对比由引擎 --report 的总览 + 本报告自建端点表完成）
 # ---------------------------------------------------------------------------
-# 回归对比基线（A 项固化）：索引前 stability 大库 作 baseline，/ --report 时校验完整性
 comparison:
-  enabled: true
-  baseline_jtl: "D:/code/otherProjects/26_MTask/perf/output/stability_preIndex.jtl"
-  key_endpoints:
-    - { title: "任务列表(分页)", method: "GET", path_substr: "/api/tasks" }
+  enabled: false
+  baseline_jtl: ""
+  key_endpoints: []
   baseline_integrity:
-    enforce_same_endpoints: true
-    doc_fallback_allowed: true
+    enforce_same_endpoints: false
+    doc_fallback_allowed: false
 
-# ---------------------------------------------------------------------------
-# 基线对比分析（A 项固化）：索引前/后 stability 对照表，analyze_jtl.py 一键生成
-# ---------------------------------------------------------------------------
 analysis:
-  enabled: true
-  inputs:
-    - file: "D:/code/otherProjects/26_MTask/perf/output/stability_preIndex.jtl"
-      tag: "索引前(stability 大库)"
-    - file: "D:/code/otherProjects/26_MTask/perf/output/stability_postIndex.jtl"
-      tag: "索引后(stability 大库)"
-  endpoint_groups:
-    - { title: "任务列表(分页)", label_match: "^tasks$" }
-    - { title: "归档列表", label_match: "^tasks_archived$" }
-    - { title: "健康检查", label_match: "^health$" }
+  enabled: false
+  inputs: []
+  endpoint_groups: []
   percentiles: [50, 95, 99]
-  output_report: "D:/code/otherProjects/26_MTask/perf/output/comparison_report.md"
+  output_report: ""
 
 # ---------------------------------------------------------------------------
 report:
   formats: ["markdown"]
-  output_dir: "D:/code/otherProjects/26_MTask/perf/output"
+  output_dir: "D:/code/otherProjects/26_MTask/perf/out3"
   percentiles: [50, 95, 99]
   endpoint_table: true
   group_label_prefixes: []
 
-# ---------------------------------------------------------------------------
-# 结果文件
-# ---------------------------------------------------------------------------
 results:
-  output_dir: "D:/code/otherProjects/26_MTask/perf/output"
+  output_dir: "D:/code/otherProjects/26_MTask/perf/out3"
   format: csv
   keep_count: 10
 
-# ---------------------------------------------------------------------------
-# 日志
-# ---------------------------------------------------------------------------
 logging:
   level: INFO
-  file: "perf/output/perf.log"
+  file: "perf/out3/perf.log"
   verbose: false

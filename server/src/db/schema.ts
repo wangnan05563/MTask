@@ -215,6 +215,54 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     );
     CREATE INDEX IF NOT EXISTS idx_prd_req_project ON prd_requirements(project_id, sort_order);
 
+    -- T01064-FR1.4/1.5：任务事件流——状态/验证/AI 状态/回传结果变更埋点（通知中心 + 任务时间线数据源）
+    CREATE TABLE IF NOT EXISTS task_events (
+      id          TEXT PRIMARY KEY,
+      task_id     TEXT NOT NULL,
+      task_no     TEXT,
+      project_id  TEXT NOT NULL,
+      kind        TEXT NOT NULL,
+      detail      TEXT DEFAULT '',
+      created_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_events_proj ON task_events(project_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, created_at DESC);
+
+    -- T01072-FR1.9：处理结果历史——handle_result 每次被覆盖前留档（diff 视图与一键回滚数据源）
+    CREATE TABLE IF NOT EXISTS task_result_history (
+      id          TEXT PRIMARY KEY,
+      task_id     TEXT NOT NULL,
+      prev_result TEXT DEFAULT '',
+      replaced_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_result_hist_task ON task_result_history(task_id, replaced_at DESC);
+
+    -- T01073-FR5.5（REQ-037）：循环任务规则——到期自动生成任务副本（pull 模式下由 server 定时 tick）
+    CREATE TABLE IF NOT EXISTS recurring_rules (
+      id          TEXT PRIMARY KEY,
+      project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      title       TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      priority    TEXT NOT NULL DEFAULT 'normal',
+      category_id TEXT,
+      freq        TEXT NOT NULL DEFAULT 'weekly',
+      next_run_at TEXT NOT NULL,
+      last_task_no TEXT,
+      enabled     INTEGER NOT NULL DEFAULT 1,
+      created_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_recurring_due ON recurring_rules(enabled, next_run_at);
+
+    -- T01073-FR5.6（REQ-038）：API Token——外部脚本经 X-Access-Token 调用 REST 的具名凭据（可启停/撤销/记录最近使用）
+    CREATE TABLE IF NOT EXISTS api_tokens (
+      id           TEXT PRIMARY KEY,
+      name         TEXT NOT NULL,
+      token        TEXT NOT NULL UNIQUE,
+      enabled      INTEGER NOT NULL DEFAULT 1,
+      created_at   TEXT NOT NULL,
+      last_used_at TEXT
+    );
+
     -- T00763：PRD 原文文档——导入时完整保留 Markdown 原文（不截断不丢内容），
     -- 需求行经 prd_requirements.prd_id 关联到文档；矩阵面板可弹窗查看，AI 上下文可反查注入
     CREATE TABLE IF NOT EXISTS prd_docs (
@@ -293,9 +341,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // T00490：记录字体颜色（Excel 风格颜色按钮）——空串=默认色
   ensureColumn('tasks', 'color', "color TEXT DEFAULT ''");
   ensureColumn('prompts', 'color', "color TEXT DEFAULT ''");
-  // T00837：可选的「通用需求分类」归属——指向 req_categories（独立于自身提示词分类；空=未归属）
-  ensureColumn('prompts', 'req_category_id', "req_category_id TEXT DEFAULT ''");
   ensureColumn('prompts', 'archived', 'archived INTEGER NOT NULL DEFAULT 0'); // T00525：删除改归档
+  // T00872：归档时间——归档页据此展示「归档于」时间（还原时置空），与任务/计划归档一致
+  ensureColumn('prompts', 'archived_at', 'archived_at TEXT');
   ensureColumn('req_entries', 'color', "color TEXT DEFAULT ''");
   ensureColumn('plan_tasks', 'color', "color TEXT DEFAULT ''");
   ensureColumn('plan_tasks', 'deps', "deps TEXT DEFAULT ''"); // T00499：前置依赖 JSON [{id,type:'serial'|'parallel'}]
@@ -308,6 +356,10 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('tasks', 'handle_result', 'handle_result TEXT');
   // T00566：AI 处理状态动画（'' 已读/无 | running 运行中 | failed 运行失败 | unread 未读）
   ensureColumn('tasks', 'ai_state', "ai_state TEXT DEFAULT ''");
+  // T01057-FR1.2：失败重试计数——手动重试时 +1，任务行显示「重试×N」，历史保留在 handle_result 追加段
+  ensureColumn('tasks', 'retry_count', 'retry_count INTEGER NOT NULL DEFAULT 0');
+  // T01058-FR2.1：计划行 AI 复杂度评级（1~5，≥4 标红提示建议拆分）；PRD 导入时 AI 输出
+  ensureColumn('plan_tasks', 'complexity', 'complexity INTEGER');
   // T00620：AI 状态变更时间（ISO 字符串）——两个用途：
   // 1) running 超时（Agent 中断/崩溃无兜底）→ 读取时惰性置 failed；
   // 2) 标记"是否被 AI 处理过"——'' 状态（用户已读清空）时保留该时间戳不丢，
@@ -336,8 +388,12 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('prd_requirements', 'prd_id', 'prd_id TEXT');
   // T00770：PRD 文档状态流转——'prd'=草稿/评审中 | 'confirmed'=确认版（进入需求跟踪矩阵的正式基线）
   ensureColumn('prd_docs', 'status', "status TEXT NOT NULL DEFAULT 'prd'");
+  // T00821：同源生成批次标识——同一份 AI 生成多次「确认录入」据此覆盖同一条而非重复新建；空=未参与覆盖（不改动其它业务）
+  ensureColumn('prd_docs', 'origin_hash', "origin_hash TEXT DEFAULT ''");
   // T00769：问题级别——blocker=🔴阻塞 | suggested=🟡建议 | info=🟢提示 | custom=用户自定义（空=未分级）
   ensureColumn('prd_issues', 'level', "level TEXT DEFAULT ''");
+  // T00817：AI 建议——针对该问题的建议选项（"选项A：… / 选项B：…"），辅助决策；空=暂无建议
+  ensureColumn('prd_issues', 'suggestion', "suggestion TEXT DEFAULT ''");
   // T00780：符号索引生命周期——记录建索引时的工作空间根路径，换绑/解绑时据此判定旧索引失效需清理
   ensureColumn('workspace_symbols', 'workspace', "workspace TEXT NOT NULL DEFAULT ''");
   // T00771：项目工作空间根路径——项目上下文锚点（多项目可指向同一目录，仅存路径引用）；
@@ -366,6 +422,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('tasks', 'user_sort', 'user_sort REAL');
   // T00463：提示词/通用需求条目拖拽排序权重（与 req_entries 既有列对齐）
   ensureColumn('prompts', 'sort_weight', 'sort_weight INTEGER NOT NULL DEFAULT 0');
+  // T00837：可选的「通用需求分类」归属——指向 req_categories（独立于自身提示词分类；空=未归属）
+  ensureColumn('prompts', 'req_category_id', "req_category_id TEXT DEFAULT ''");
   // 老库 queue_jobs 的 task_id/tool_id 外键缺 ON DELETE CASCADE，删除关联任务/工具/项目时
   // 会被外键约束阻断（500）。SQLite 不支持 ALTER 外键，需整表重建，按幂等方式检测后执行
   ensureQueueJobsCascade();

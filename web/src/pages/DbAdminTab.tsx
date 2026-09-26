@@ -158,6 +158,43 @@ export function DbAdminTab() {
     setTimeout(() => setNotice(''), 4000);
   };
 
+  // T01061-FR5.1：数据库自动备份/恢复（BackupService online backup，不停机）
+  const [backups, setBackups] = useState<Array<{ name: string; size: number; mtime: string }>>([]);
+  const [lastBackup, setLastBackup] = useState('暂无');
+  const [lastError, setLastError] = useState('');
+  const [bkBusy, setBkBusy] = useState('');
+  const loadBackups = useCallback(async () => {
+    try {
+      const d = await api.get<{ backups: Array<{ name: string; size: number; mtime: string }>; status: { lastRun: { file: string; at: string; reason: string } | null; lastError: string | null } }>('/backups');
+      setBackups(d.backups);
+      setLastBackup(d.status.lastRun ? `${d.status.lastRun.file}（${d.status.lastRun.reason === 'manual' ? '手动' : '自动'}，${d.status.lastRun.at.slice(0, 19).replace('T', ' ')}）` : '暂无');
+      setLastError(d.status.lastError ?? '');
+    } catch { /* 加载失败不打断页面 */ }
+  }, []);
+  useEffect(() => { void loadBackups(); }, [loadBackups]);
+  async function backupNow() {
+    setBkBusy('now');
+    try {
+      const d = await api.post<{ backups: typeof backups; status: { lastRun: { file: string } | null } }>('/backups/now', {});
+      setBackups(d.backups); setLastBackup(d.status.lastRun ? d.status.lastRun.file : '暂无');
+      flash('备份完成（online 备份，无需停机）');
+    } catch (e) {
+      flash(`备份失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally { setBkBusy(''); }
+  }
+  async function restoreBackup(name: string) {
+    if (bkBusy) return;
+    if (!(await askConfirm(`从快照「${name}」恢复整个数据库？\n\n恢复前会先自动备份当前状态；恢复将覆盖当前全部数据。`))) return;
+    setBkBusy(name);
+    try {
+      const d = await api.post<{ message: string }>('/backups/restore', { name });
+      flash(d.message);
+      await loadBackups();
+    } catch (e) {
+      flash(`恢复失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally { setBkBusy(''); }
+  }
+
   const pkCol = useMemo(() => columns.find((c) => c.primary_key)?.name ?? 'id', [columns]);
 
   const loadTables = useCallback(async (keepActive = true) => {
@@ -287,6 +324,37 @@ export function DbAdminTab() {
       </div>
       <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 12 }}>
         业务表在线增删改查。删除操作需确认码 <b>{CONFIRM_TOKEN}</b>；建议先「导出」备份再修改。
+      </div>
+
+      {/* T01061-FR5.1：自动备份/恢复区——每日自动备份（保留 14 份），手动备份/恢复不停机 */}
+      <div style={{ border: '1px solid var(--accent)', borderRadius: 8, padding: 12, marginBottom: 16, background: 'var(--accent-soft)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Database size={14} /> 自动备份
+          </div>
+          <span style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>每日自动备份一次，保留最近 14 份；最近：{lastBackup}{lastError && <span style={{ color: 'var(--danger)' }}>　⚠ 最近失败：{lastError}</span>}</span>
+          <span style={{ flex: 1 }} />
+          <button onClick={() => void backupNow()} disabled={bkBusy === 'now'} title="立即备份 — online 备份，无需停机"
+            style={{ fontSize: 'var(--fs-m)', padding: '5px 12px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: bkBusy === 'now' ? 'wait' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            {bkBusy === 'now' ? '备份中…' : '立即备份'}
+          </button>
+        </div>
+        {backups.length > 0 && (
+          <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {backups.slice(0, 5).map((b) => (
+              <div key={b.name} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 'var(--fs-m)' }}>
+                <span style={{ color: 'var(--text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</span>
+                <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{(b.size / 1048576).toFixed(1)} MB</span>
+                <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{b.mtime.slice(0, 19).replace('T', ' ')}</span>
+                <button onClick={() => void restoreBackup(b.name)} disabled={bkBusy !== ''}
+                  title="从该快照恢复整个数据库 — 恢复前会先自动备份当前状态"
+                  style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--danger)', cursor: bkBusy ? 'wait' : 'pointer', whiteSpace: 'nowrap' }}>
+                  {bkBusy === b.name ? '恢复中…' : '恢复'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
@@ -462,7 +530,7 @@ export function DbAdminTab() {
         </div>
       )}
 
-      {notice && <span className="flash-toast" role="status">{notice}</span>}
+      {notice && <output className="flash-toast">{notice}</output>}
     </div>
   );
 }

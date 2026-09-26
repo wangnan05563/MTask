@@ -95,6 +95,7 @@ function StepDemo({ kind }: { readonly kind: Step['demo'] }) {
           <ArrowUpDown size={12} /> 排序菜单
           <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             图钉置顶
+            {' '}
             <span className="pg-anim-pin" aria-hidden>📌</span>
           </span>
         </div>
@@ -115,7 +116,7 @@ function StepDemo({ kind }: { readonly kind: Step['demo'] }) {
         <style>{`@keyframes pg-bar { 0%,10% { width:18% } 60%,100% { width:62% } } .pg-anim-bar { animation: pg-bar 4s ease-in-out infinite; }`}</style>
         <div style={{ display: 'flex', gap: 4, fontSize: 10, color: 'var(--text-muted)' }}>
           {['一', '二', '三', '四', '五', '六', '日', '一', '二'].map((d, i) => (
-            <span key={i} style={{ flex: 1, textAlign: 'center', background: (i === 5 || i === 6) ? 'var(--danger-soft, rgba(220,38,38,.10))' : 'transparent', borderRadius: 3 }}>{d}</span>
+            <span key={`${d}-${i}`} style={{ flex: 1, textAlign: 'center', background: (i === 5 || i === 6) ? 'var(--danger-soft, rgba(220,38,38,.10))' : 'transparent', borderRadius: 3 }}>{d}</span>
           ))}
         </div>
         <div style={{ marginTop: 8, height: 16, background: 'var(--accent-soft)', borderRadius: 4, width: '62%' }}>

@@ -1,6 +1,6 @@
 {
   "name": "mtask",
-  "version": "0.1.0925.137",
+  "version": "0.1.0926.147",
   "private": true,
   "main": "electron/main.js",
   "description": "AI 任务开发管理工具：项目维度任务管理 + AI 梳理 + 队列分发（Electron + React + Express + SQLite）",
@@ -15,6 +15,7 @@
     "build:server": "npm run build -w mtask-server",
     "build:web": "npm run build -w mtask-web",
     "typecheck": "npm run typecheck -w mtask-server",
+    "test:api": "node scripts/run-api-tests.mjs",
     "electron": "electron electron/main.js",
     "dist": "electron-builder --win",
     "dist:dir": "electron-builder --win --dir",

@@ -8,7 +8,11 @@ import { ReqEntryService } from './ReqService';
 /** 批量 IN 查询的每批 id 数：SQLite 变量上限 999，留足余量并与图片批量查询（≤200）同量级 */
 const PLAN_LOOKUP_BATCH = 200;
 /** T00620：running 状态超时阈值——超过则视为 AI 中断并自动置 failed（可用环境变量覆盖，便于调试） */
-const AI_STATE_STALE_MS = Number(process.env.MTASK_AI_STATE_STALE_MS ?? 10 * 60 * 1000);
+// T00868：running 超时兜底阈值——默认从 10 分钟放宽到 30 分钟。
+// 原 10 分钟在「长任务执行中无续期」时（如文档识别/AI 生成本身耗时超阈值且期间与 MTask 零交互）
+// 会把仍在执行的任务误置 failed（T00851 曾因此"未执行完就被标中断"）。30 分钟覆盖绝大多数长任务，
+// 真正的超长任务仍由 Agent 中途重写 running 续期兜底（见 mtask 技能状态机）。
+const AI_STATE_STALE_MS = Number(process.env.MTASK_AI_STATE_STALE_MS ?? 30 * 60 * 1000);
 
 
 /** DB 原始行：archived 为 number（SQLite 0/1） */
@@ -65,6 +69,8 @@ export interface TaskView {
   handle_result: string | null;
   /** T00566：AI 处理状态动画（'' 已读/无 | running failed unread） */
   ai_state: string;
+  /** T01057-FR1.2：失败重试次数（手动重试 +1，历史在 handle_result 追加段） */
+  retry_count?: number;
   /** T00620：AI 状态变更时间（ISO）；'' 状态（已读清空）时保留历史值 */
   ai_state_at: string;
   /** T00577：派生单溯源——原任务编号 */
@@ -144,6 +150,13 @@ export function nextTaskNo(): string {
   return `T${String(max + 1).padStart(5, '0')}`;
 }
 
+/** T01064-FR1.4/1.5：任务事件埋点——通知中心与任务时间线的统一数据源（kind: status/verified/ai_state/result） */
+function logEvent(db: ReturnType<typeof getDb>, taskId: string, kind: string, detail: string): void {
+  const row = db.prepare('SELECT task_no, project_id FROM tasks WHERE id = ?').get(taskId) as { task_no: string | null; project_id: string } | undefined;
+  db.prepare('INSERT INTO task_events (id, task_id, task_no, project_id, kind, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(uuid(), taskId, row?.task_no ?? null, row?.project_id ?? '', kind, detail, now());
+}
+
 function rowToTask(r: TaskRow, images: TaskImageMeta[] = []): TaskView {
   return { ...r, verified: Boolean(r.verified), archived: Boolean(r.archived), pinned: Boolean(r.pinned), shelved: Boolean(r.shelved), images };
 }
@@ -156,19 +169,83 @@ function syncPlanOnStatusChange(id: string, status: string): void {
     .run(planStatus, planStatus === 'done' ? 100 : -1, now(), id);
   // T00450 配套：子任务状态变更后汇总父任务进度（按子任务完成比例），全完成时父自动 done
   const childRow = db.prepare('SELECT parent_id FROM tasks WHERE id = ?').get(id) as { parent_id: string | null } | undefined;
-  if (childRow?.parent_id) {
-    const stat = db.prepare(
-      "SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done FROM tasks WHERE parent_id = ? AND archived = 0",
-    ).get(childRow.parent_id) as { total: number; done: number };
-    if (stat.total > 0) {
-      const progress = Math.round((stat.done / stat.total) * 100);
-      const parentStatus = stat.done === stat.total ? 'done' : 'todo';
-      db.prepare("UPDATE tasks SET progress = ?, status = ?, updated_at = ? WHERE id = ? AND status != 'done'").run(progress, parentStatus, now(), childRow.parent_id);
-    }
+  if (childRow?.parent_id) recalcParentProgress(childRow.parent_id);
+}
+
+/** M-5：按子任务完成比例重算父任务 progress（全完成时父自动 done；未全完成时回退待办）。
+ *  从 syncPlanOnStatusChange 抽出复用——T00776 评审发现新增子任务不重算会导致父进度失真（done/100% 下再添子任务）。 */
+function recalcParentProgress(parentId: string): void {
+  const db = getDb();
+  const stat = db.prepare(
+    "SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done FROM tasks WHERE parent_id = ? AND archived = 0",
+  ).get(parentId) as { total: number; done: number };
+  if (stat.total > 0) {
+    const progress = Math.round((stat.done / stat.total) * 100);
+    const parentStatus = stat.done === stat.total ? 'done' : 'todo';
+    db.prepare("UPDATE tasks SET progress = ?, status = ?, updated_at = ? WHERE id = ? AND status != 'done'").run(progress, parentStatus, now(), parentId);
   }
 }
 
 /** FR1.2 / FR1.3 / FR1.4 / FR5 */
+/** 动态 WHERE 构建：分页/搜索/分类需精确拼条件，全部走参数绑定防注入 */
+function buildTaskFilter(opts: TaskListOptions): { where: string[]; values: unknown[] } {
+  const where: string[] = [];
+  const values: unknown[] = [];
+  where.push('archived = ?');
+  values.push(opts.archived ? 1 : 0);
+  // T00589：活跃列表排除已入历史资产的内容（历史资产为独立沉淀区，不与活跃/归档混排）
+  if (!opts.archived) where.push("COALESCE(history_at, '') = ''");
+  // T00719：搁置隔离——默认活跃列表（含 MCP pending/status 查询）一律排除搁置任务；
+  // 搁置列表（shelved=true）只返回搁置任务；归档列表不过滤（先搁置后归档的任务仍可在归档区找到）
+  if (opts.shelved) where.push('shelved = 1');
+  else if (!opts.archived) where.push('COALESCE(shelved, 0) = 0');
+  if (opts.projectId) { where.push('project_id = ?'); values.push(opts.projectId); }
+  if (opts.keyword) {
+    // 转义 LIKE 通配符（%/_），让搜索词按字面匹配而非被误当通配
+    const kw = `%${opts.keyword.replaceAll(/[%_]/g, (m) => '\\' + m)}%`;
+    where.push(String.raw`(title LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\')`);
+    values.push(kw, kw);
+  }
+  if (opts.categoryId === 'none') where.push('category_id IS NULL');
+  else if (opts.categoryId) { where.push('category_id = ?'); values.push(opts.categoryId); }
+  // T00474：优先级筛选——合法值白名单校验，非法值忽略保持全量
+  if (opts.priority && ['urgent', 'high', 'normal', 'low'].includes(opts.priority)) {
+    where.push('priority = ?'); values.push(opts.priority);
+  }
+  // 状态/范围筛选：MCP/AI 拉指定范围时在服务端过滤，避免全量下发再本地筛，省 Token。
+  // pending 优先于 status：返回「待处理 或 未验证」任务的并集。
+  if (opts.pending) { where.push('(status = ? OR verified = 0)'); values.push('todo'); }
+  else if (opts.status) { where.push('status = ?'); values.push(opts.status); }
+  return { where, values };
+}
+
+/** T00462/T00451：批量反查项目计划关联（linked_task_id 命中即「计划联动任务」），值=来源计划标题。
+ *  必须分批：SQLite 变量上限 999，而无 limit 的调用（移动端/归档/队列页）会传入全量任务 id，
+ *  单条 IN (?,?,...) 在任务数 >999 时直接抛错（真实缺陷）；分批后同时把 SQL 文本长度控制住。 */
+/** T01037：返回 { taskId → { title, kind } }——kind 一并带出，供前端区分「计划」与「里程碑」徽标 */
+function loadPlanLinked(db: ReturnType<typeof getDb>, rows: TaskRow[]): Map<string, { title: string; kind: string }> {
+  const planLinked = new Map<string, { title: string; kind: string }>();
+  for (let i = 0; i < rows.length; i += PLAN_LOOKUP_BATCH) {
+    const chunk = rows.slice(i, i + PLAN_LOOKUP_BATCH);
+    if (chunk.length === 0) continue;
+    const placeholders = chunk.map(() => '?').join(',');
+    const hits = db.prepare(
+      `SELECT pt.linked_task_id AS id, pt.title, COALESCE(pt.kind, 'normal') AS kind FROM plan_tasks pt
+       WHERE pt.archived = 0 AND pt.linked_task_id IN (${placeholders})`,
+    ).all(...chunk.map((r) => r.id)) as Array<{ id: string; title: string; kind: string }>;
+    for (const h of hits) planLinked.set(h.id, { title: h.title, kind: h.kind });
+  }
+  return planLinked;
+}
+
+/** PATCH 布尔列归一：verified/pinned/shelved/archived 统一转 0/1（better-sqlite3 不支持 boolean 绑定）。
+ *  T00779：archived 原先不在白名单，REST/MCP 归档请求被静默忽略（派生单闭环「归并后归档」依赖此路径）。 */
+function normalizeBoolPatch(patch: Record<string, unknown>): void {
+  for (const k of ['verified', 'pinned', 'shelved', 'archived']) {
+    if (patch[k] !== undefined) patch[k] = patch[k] ? 1 : 0;
+  }
+}
+
 export const TaskService = {
   create(input: TaskInput): TaskView {
     const db = getDb();
@@ -182,6 +259,7 @@ export const TaskService = {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(id, nextTaskNo(), input.projectId, input.title, input.description ?? '', input.priority ?? 'normal', input.status ?? 'todo', input.categoryId ?? null, input.parentId ?? null, input.derived_from ?? null, t, t);
     if (r.changes !== 1) throw new Error('创建任务失败');
+    if (input.parentId) recalcParentProgress(input.parentId); // M-5：新增子任务后父进度同步重算（done/100% 下再添子任务不再失真）
     return this.getById(id)!;
   },
 
@@ -190,6 +268,53 @@ export const TaskService = {
     this.expireStaleRunning();
     const row = getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(id) as TaskRow | undefined;
     return row ? rowToTask(row, TaskImageService.listByTask(id)) : null;
+  },
+
+  /** T01064-FR1.4：通知中心数据源——项目（或全部）最近事件；since（ISO）只取其后（未读增量） */
+  listEvents(opts: { projectId?: string; limit?: number; since?: string }): Array<{ id: string; task_no: string | null; task_id: string; kind: string; detail: string; title: string; created_at: string }> {
+    const lim = Math.min(200, Math.max(1, opts.limit ?? 50));
+    if (opts.projectId) {
+      const sinceWhere = opts.since ? 'AND e.created_at > ?' : '';
+      const args: unknown[] = [opts.projectId, ...(opts.since ? [opts.since] : []), lim];
+      return getDb().prepare(
+        `SELECT e.id, e.task_no, e.task_id, e.kind, e.detail, e.created_at, t.title
+           FROM task_events e LEFT JOIN tasks t ON t.id = e.task_id
+          WHERE e.project_id = ? ${sinceWhere}
+          ORDER BY e.created_at DESC LIMIT ?`,
+      ).all(...args) as Array<{ id: string; task_no: string | null; task_id: string; kind: string; detail: string; title: string; created_at: string }>;
+    }
+    const sinceWhere = opts.since ? 'WHERE e.created_at > ?' : '';
+    const args: unknown[] = [...(opts.since ? [opts.since] : []), lim];
+    return getDb().prepare(
+      `SELECT e.id, e.task_no, e.task_id, e.kind, e.detail, e.created_at, t.title
+         FROM task_events e LEFT JOIN tasks t ON t.id = e.task_id
+         ${sinceWhere}
+        ORDER BY e.created_at DESC LIMIT ?`,
+    ).all(...args) as Array<{ id: string; task_no: string | null; task_id: string; kind: string; detail: string; title: string; created_at: string }>;
+  },
+
+  /** T01064-FR1.5：单任务事件时间线（状态流转/回传/验证历史，正序） */
+  listTaskEvents(taskId: string): Array<{ kind: string; detail: string; created_at: string }> {
+    return getDb().prepare(
+      'SELECT kind, detail, created_at FROM task_events WHERE task_id = ? ORDER BY created_at, rowid',
+    ).all(taskId) as Array<{ kind: string; detail: string; created_at: string }>;
+  },
+
+  /** T01072-FR1.9：处理结果历史（新→旧，diff 视图与回滚数据源） */
+  listResultHistory(taskId: string): Array<{ id: string; prev_result: string; replaced_at: string }> {
+    return getDb().prepare(
+      'SELECT id, prev_result, replaced_at FROM task_result_history WHERE task_id = ? ORDER BY replaced_at DESC LIMIT 10',
+    ).all(taskId) as Array<{ id: string; prev_result: string; replaced_at: string }>;
+  },
+
+  /** T01072-FR1.9：回滚到历史版本——当前结果先入历史（可再回滚回来），再将 handle_result 置为历史值 */
+  rollbackResult(taskNo: string, historyId: string): TaskView | null {
+    const db = getDb();
+    const task = db.prepare('SELECT id FROM tasks WHERE task_no = ?').get(taskNo) as { id: string } | undefined;
+    if (!task) throw new Error(`任务「${taskNo}」不存在`);
+    const h = db.prepare('SELECT prev_result FROM task_result_history WHERE id = ? AND task_id = ?').get(historyId, task.id) as { prev_result: string } | undefined;
+    if (!h) throw new Error('历史版本不存在');
+    return this.update(task.id, { handle_result: h.prev_result });
   },
 
   /** T00566：AI 处理状态回写（running/failed/unread；'' = 已读清空）。非法值忽略。 */
@@ -204,6 +329,36 @@ export const TaskService = {
       return this.update(id, { ai_state: state });
     }
     return this.update(id, { ai_state: state, ai_state_at: new Date().toISOString() });
+  },
+
+  /** T01057-FR1.1：系统通知轮询数据源——ai_state 处于 unread/failed 的任务（跨项目，按处理时间倒序）。
+   *  主进程 30s 轮询 diff 快照后发 OS 通知；仅返回轻量字段，避免把整表拉进主进程。 */
+  listAiPending(): Array<{ task_no: string; title: string; ai_state: string; project_name: string; state_at: string }> {
+    return getDb().prepare(
+      `SELECT t.task_no, t.title, t.ai_state, t.ai_state_at AS state_at, p.name AS project_name
+         FROM tasks t JOIN projects p ON p.id = t.project_id
+        WHERE t.ai_state IN ('unread','failed') AND t.archived = 0
+        ORDER BY t.ai_state_at DESC LIMIT 20`,
+    ).all() as Array<{ task_no: string; title: string; ai_state: string; project_name: string; state_at: string }>;
+  },
+
+  /** T01057-FR1.2：失败一键重试——ai_state=failed 的任务回待办并累计重试次数；
+   *  历史结果保留在 handle_result 追加段（历次尝试链），重试后由 AI Agent 重新领取执行。 */
+  retryTask(taskNo: string): TaskView | null {
+    const db = getDb();
+    const row = db.prepare('SELECT id, handle_result, retry_count FROM tasks WHERE task_no = ?').get(taskNo) as
+      | { id: string; handle_result: string | null; retry_count: number }
+      | undefined;
+    if (!row) throw new Error(`任务「${taskNo}」不存在`);
+    const cur = db.prepare('SELECT ai_state FROM tasks WHERE id = ?').get(row.id) as { ai_state: string };
+    if (cur.ai_state !== 'failed') throw new Error('仅 AI 处理失败（failed）的任务可重试');
+    const n = (row.retry_count ?? 0) + 1;
+    const stamp = new Date().toISOString();
+    const marker = `${(row.handle_result ?? '').trimEnd()}${row.handle_result ? '\n\n' : ''}---\n[重试 #${n}] ${stamp}：任务被手动重试，已回到待办，等待 AI 重新领取执行。`;
+    db.prepare(
+      `UPDATE tasks SET status = 'todo', ai_state = '', ai_state_at = ?, retry_count = ?, handle_result = ?, updated_at = ? WHERE id = ?`,
+    ).run(stamp, n, marker, stamp, row.id);
+    return this.getById(row.id);
   },
 
   /**
@@ -249,34 +404,7 @@ export const TaskService = {
     // T00620：列表读取路径惰性过期 running（AI 中断兜底；内部 30s 节流）
     this.expireStaleRunning();
     const db = getDb();
-    // 动态 WHERE：分页/搜索/分类需精确拼条件，全部走参数绑定防注入
-    const where: string[] = [];
-    const values: unknown[] = [];
-    where.push('archived = ?');
-    values.push(opts.archived ? 1 : 0);
-    // T00589：活跃列表排除已入历史资产的内容（历史资产为独立沉淀区，不与活跃/归档混排）
-    if (!opts.archived) where.push("COALESCE(history_at, '') = ''");
-    // T00719：搁置隔离——默认活跃列表（含 MCP pending/status 查询）一律排除搁置任务；
-    // 搁置列表（shelved=true）只返回搁置任务；归档列表不过滤（先搁置后归档的任务仍可在归档区找到）
-    if (opts.shelved) where.push('shelved = 1');
-    else if (!opts.archived) where.push('COALESCE(shelved, 0) = 0');
-    if (opts.projectId) { where.push('project_id = ?'); values.push(opts.projectId); }
-    if (opts.keyword) {
-      // 转义 LIKE 通配符（%/_），让搜索词按字面匹配而非被误当通配
-      const kw = `%${opts.keyword.replaceAll(/[%_]/g, (m) => '\\' + m)}%`;
-      where.push(String.raw`(title LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\')`);
-      values.push(kw, kw);
-    }
-    if (opts.categoryId === 'none') where.push('category_id IS NULL');
-    else if (opts.categoryId) { where.push('category_id = ?'); values.push(opts.categoryId); }
-    // T00474：优先级筛选——合法值白名单校验，非法值忽略保持全量
-    if (opts.priority && ['urgent', 'high', 'normal', 'low'].includes(opts.priority)) {
-      where.push('priority = ?'); values.push(opts.priority);
-    }
-    // 状态/范围筛选：MCP/AI 拉指定范围时在服务端过滤，避免全量下发再本地筛，省 Token。
-    // pending 优先于 status：返回「待处理 或 未验证」任务的并集。
-    if (opts.pending) { where.push('(status = ? OR verified = 0)'); values.push('todo'); }
-    else if (opts.status) { where.push('status = ?'); values.push(opts.status); }
+    const { where, values } = buildTaskFilter(opts);
     // 排序映射：优先级按业务档位映射数值，保证 urgent>high>normal>low
     const orderBy: Record<NonNullable<TaskListOptions['sort']>, string> = {
       pinned: 'pinned DESC, created_at DESC',
@@ -298,21 +426,7 @@ export const TaskService = {
     const rows = cachedPrepare(db, sql).all(...values) as TaskRow[];
     // 一次批量查图片，避免逐任务 N+1（内部已按 ≤200/批规避 SQLite 参数上限）
     const imageMap = TaskImageService.mapByTasks(rows.map((r) => r.id));
-    // T00462/T00451：批量反查项目计划关联（linked_task_id 命中即「计划联动任务」），值=来源计划标题。
-    // 必须分批：SQLite 变量上限 999，而无 limit 的调用（移动端/归档/队列页）会传入全量任务 id，
-    // 单条 IN (?,?,...) 在任务数 >999 时直接抛错（真实缺陷）；分批后同时把 SQL 文本长度控制住。
-    const planLinked = new Map<string, { title: string; kind: string }>();
-    for (let i = 0; i < rows.length; i += PLAN_LOOKUP_BATCH) {
-      const chunk = rows.slice(i, i + PLAN_LOOKUP_BATCH);
-      if (chunk.length === 0) continue;
-      const placeholders = chunk.map(() => '?').join(',');
-      // T01037：连 kind 一并带出（COALESCE 兜底 normal）——里程碑联动任务据此显示「里程碑」徽标
-      const hits = db.prepare(
-        `SELECT pt.linked_task_id AS id, pt.title, COALESCE(pt.kind, 'normal') AS kind FROM plan_tasks pt
-         WHERE pt.archived = 0 AND pt.linked_task_id IN (${placeholders})`,
-      ).all(...chunk.map((r) => r.id)) as Array<{ id: string; title: string; kind: string }>;
-      for (const h of hits) planLinked.set(h.id, { title: h.title, kind: h.kind });
-    }
+    const planLinked = loadPlanLinked(db, rows);
     return rows.map((r) => {
       const view = rowToTask(r, imageMap.get(r.id) ?? []);
       const link = planLinked.get(r.id);
@@ -324,18 +438,13 @@ export const TaskService = {
     });
   },
 
-  update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state' | 'ai_state_at' | 'derived_from' | 'shelved'>>): TaskView {
+  update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state' | 'ai_state_at' | 'derived_from' | 'shelved' | 'archived'>>): TaskView {
     const db = getDb();
-    // better-sqlite3 不支持 boolean 绑定且 SQLite 无布尔型，verified/pinned 先归一整型 0/1 再落库
-    if (patch.verified !== undefined) {
-      (patch as { verified: number }).verified = patch.verified ? 1 : 0;
-    }
-    if (patch.pinned !== undefined) {
-      (patch as { pinned: number }).pinned = patch.pinned ? 1 : 0;
-    }
-    // T00719：搁置标记同样归一整型
-    if (patch.shelved !== undefined) {
-      (patch as { shelved: number }).shelved = patch.shelved ? 1 : 0;
+    // better-sqlite3 不支持 boolean 绑定且 SQLite 无布尔型，布尔列先归一整型 0/1 再落库
+    normalizeBoolPatch(patch as Record<string, unknown>);
+    // T00779：归档时间联动——取消归档时清空 archived_at（archived 白名单见 normalizeBoolPatch 上方注释）
+    if (patch.archived !== undefined) {
+      db.prepare("UPDATE tasks SET archived_at = ? WHERE id = ?").run(patch.archived ? now() : null, id);
     }
     // T00566：ai_state 白名单防御（PATCH 直传路径）——非法值静默忽略
     if (patch.ai_state !== undefined && !['running', 'failed', 'unread', ''].includes(patch.ai_state)) {
@@ -345,9 +454,32 @@ export const TaskService = {
     //（例如只 PATCH status 时 title 被清空，触发 NOT NULL）。因此过滤掉值为 undefined 的键。
     const keys = (Object.keys(patch) as (keyof typeof patch)[]).filter((k) => patch[k] !== undefined);
     if (keys.length === 0) return this.getById(id)!;
+    // T01064：事件埋点基线——变更前快照，写库后 diff 生成事件（仅记录有实际变化的字段）
+    const before = db.prepare('SELECT status, verified, ai_state, handle_result FROM tasks WHERE id = ?').get(id) as
+      | { status: string; verified: number; ai_state: string; handle_result: string | null }
+      | undefined;
     const sets = keys.map((k) => `${k} = ?`).join(', ');
     const values = keys.map((k) => patch[k]);
     db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`).run(...values, now(), id);
+    // T01064-FR1.4/1.5：事件埋点——状态/验证/AI 状态/回传结果变更写 task_events；running 态不记（避免开工噪声）
+    if (before) {
+      const ev: Array<[string, string]> = [];
+      if (patch.status !== undefined && patch.status !== before.status) ev.push(['status', `${before.status} → ${patch.status}`]);
+      if (patch.verified !== undefined && patch.verified !== before.verified) ev.push(['verified', patch.verified ? '验证通过' : '验证未通过 / 退回']);
+      if (patch.ai_state !== undefined && patch.ai_state !== before.ai_state && patch.ai_state !== 'running') {
+        ev.push(['ai_state', patch.ai_state === 'unread' ? 'AI 处理完成' : patch.ai_state === 'failed' ? 'AI 处理失败' : `AI 状态：${patch.ai_state}`]);
+      }
+      if (patch.handle_result !== undefined && patch.handle_result !== before.handle_result) {
+        ev.push(['result', '处理结果回传/更新']);
+        // T01072-FR1.9：旧结果留档（diff/回滚数据源）——每任务保留最近 10 条
+        db.prepare('INSERT INTO task_result_history (id, task_id, prev_result, replaced_at) VALUES (?, ?, ?, ?)')
+          .run(uuid(), id, before.handle_result ?? '', now());
+        db.prepare(
+          `DELETE FROM task_result_history WHERE task_id = ? AND id NOT IN (SELECT id FROM task_result_history WHERE task_id = ? ORDER BY replaced_at DESC LIMIT 10)`,
+        ).run(id, id);
+      }
+      for (const [kind, detail] of ev) logEvent(db, id, kind, detail);
+    }
     // 反向计划联动（T00436）：待办被项目计划关联时，状态变更同步回计划任务（已完成↔已完成，待办→进行中）
     if (patch.status !== undefined) syncPlanOnStatusChange(id, patch.status);
     notifyChange('tasks');
@@ -407,7 +539,7 @@ export const TaskService = {
     db.transaction(() => {
       // 复用生成新 id 但保留原任务编号？不复用：新任务需全局唯一编号，重新分配避免重复
       // T00631：复用需**适度清洗**，使新任务开箱可执行——
-      //   status 固定 todo（不继承源任务的完成态）、verified 归零、清空 handle_result（原任务产物）、取消置顶；
+      //   status 固定 待办（不继承源任务的完成态）、verified 归零、清空 handle_result（原任务产物）、取消置顶；
       //   保留 title/description/priority/category_id/ai_summary（内容与参考信息）与截图附件。
       db.prepare(
         `INSERT INTO tasks (id, task_no, project_id, title, description, priority, status, verified, archived, archived_at, ai_summary, handle_result, pinned, category_id, created_at, updated_at)

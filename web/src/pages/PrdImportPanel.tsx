@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { api, type Project } from '../api/client';
-import { FileUp, Loader2, Save, Sparkles, Trash2, Upload, X } from 'lucide-react';
+import { FileUp, Save, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import { useSessionState } from '../ui/session';
 import { aiImportStore } from '../stores/aiImportStore';
 
@@ -315,7 +315,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
           同步生成待办任务
         </label>
         {fileName && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{fileName}</span>}
-        {busy && <span style={{ fontSize: 11, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Loader2 size={12} className="aispin" />处理中…</span>}
+        {busy && <span className="ai-shimmer" style={{ fontSize: 11, fontWeight: 600, ['--ai-shimmer-color' as never]: 'var(--accent)' }}>处理中…</span>}
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
           {snap.logs.length > 0 ? `控制台已输出 ${snap.logs.length} 条执行日志 →` : '执行过程将在右侧 AI 控制台逐行输出'}
         </span>

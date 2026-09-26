@@ -15,37 +15,56 @@ export interface CleanRow {
  * 用于兼容大模型常见的 JSON 格式瑕疵：数组元素间缺逗号、NDJSON（每行一个对象）、
  * 结果中夹杂说明文字、末尾对象被截断（自动丢弃不完整者）——比整体 JSON.parse 鲁棒得多。
  */
+/** 跳过一段字符串字面量（含转义），返回结束引号之后一个字符的下标 */
+function advanceThroughString(text: string, i: number): number {
+  let idx = i + 1;
+  while (idx < text.length) {
+    const c = text[idx];
+    if (c === '\\') { idx += 2; continue; }
+    if (c === '"') return idx + 1;
+    idx += 1;
+  }
+  return idx;
+}
+
+/** 将扫描到的顶层对象切片解析并追加（损坏对象静默跳过） */
+function pushTopObject(out: Record<string, unknown>[], text: string, start: number, end: number): void {
+  try {
+    const o = JSON.parse(text.slice(start, end + 1)) as unknown;
+    if (o && typeof o === 'object' && !Array.isArray(o)) out.push(o as Record<string, unknown>);
+  } catch { /* 跳过损坏对象，继续扫描后续 */ }
+}
+
+/** 处理右花括号：depth-1 后若闭合顶层对象则解析入列；越界 depth 归零 */
+function closeTopObject(out: Record<string, unknown>[], text: string, startIdx: number, endIdx: number, depth: number): { depth: number; startIdx: number } {
+  const newDepth = depth > 0 ? depth - 1 : 0;
+  if (newDepth === 0 && startIdx >= 0) {
+    pushTopObject(out, text, startIdx, endIdx);
+    return { depth: newDepth, startIdx: -1 };
+  }
+  return { depth: newDepth, startIdx };
+}
+
 export function extractTopLevelObjects(text: string): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   let depth = 0;
   let startIdx = -1;
-  let inStr = false;
-  let esc = false;
-  for (let i = 0; i < text.length; i += 1) {
+  let i = 0;
+  while (i < text.length) {
     const ch = text[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (ch === String.fromCharCode(92)) esc = true;
-      else if (ch === '"') inStr = false;
-      continue;
-    }
-    if (ch === '"') { inStr = true; continue; }
+    if (ch === '"') { i = advanceThroughString(text, i); continue; }
     if (ch === '{') {
       if (depth === 0) startIdx = i;
       depth += 1;
+      i += 1;
       continue;
     }
     if (ch === '}') {
-      depth -= 1;
-      if (depth === 0 && startIdx >= 0) {
-        try {
-          const o = JSON.parse(text.slice(startIdx, i + 1)) as unknown;
-          if (o && typeof o === 'object' && !Array.isArray(o)) out.push(o as Record<string, unknown>);
-        } catch { /* 跳过损坏对象，继续扫描后续 */ }
-        startIdx = -1;
-      }
-      if (depth < 0) depth = 0;
+      const r = closeTopObject(out, text, startIdx, i, depth);
+      depth = r.depth;
+      startIdx = r.startIdx;
     }
+    i += 1;
   }
   return out;
 }
@@ -77,6 +96,35 @@ export function expandTaskNoRanges(list: string[]): string[] {
  * T00751：兼容模型给出的替代字段形状（tasks/taskNos/items/list 数组 → 首个=保留、其余=合并），
  * 并展开 "T00056-T00080" 这类区间简写（此前模型这样输出会导致执行清洗弹窗无数据）。
  */
+/** 将任意值中可识别的字符串数组去空白、去空串，归一为 string[]（供 keep/merge/listed 复用） */
+function asStrings(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v
+    .filter((x): x is string => typeof x === 'string' && !!x.trim())
+    .map((x) => x.trim());
+}
+
+/** 将单条记录解析为 CleanRow；字段不合法（无保留项或无合并项）时返回 null */
+function buildCleanRow(r: unknown, index: number): CleanRow | null {
+  if (!r || typeof r !== 'object') return null;
+  const o = r as Record<string, unknown>;
+  // T00751：keep/merge 缺失时，尝试从 tasks/taskNos/items/list 数组取（首个=保留，其余=合并）
+  const rawList = [o.tasks, o.taskNos, o.items, o.list].find((v) => Array.isArray(v)) as unknown[] | undefined;
+  const listed = asStrings(rawList);
+  const keep = (typeof o.keep === 'string' ? o.keep.trim() : '') || listed[0] || '';
+  const mergeSource = Array.isArray(o.merge) && o.merge.length > 0 ? o.merge : listed.slice(1);
+  const merge = expandTaskNoRanges(asStrings(mergeSource)).filter((x) => x !== keep);
+  if (!keep || merge.length === 0) return null;
+  return {
+    id: `clean-${index}`,
+    project: typeof o.project === 'string' ? o.project.trim() : '',
+    keep,
+    merge: Array.from(new Set(merge)),
+    reason: typeof o.reason === 'string' ? o.reason.trim() : '',
+    include: true,
+  };
+}
+
 export function parseCleanGroups(md: string): CleanRow[] {
   const bare = md.replaceAll(/```json/gi, '').replaceAll(/```/gi, '').trim();
   let arr: unknown[] | null = null;
@@ -88,31 +136,11 @@ export function parseCleanGroups(md: string): CleanRow[] {
       if (Array.isArray(parsed)) arr = parsed;
     } catch { arr = null; }
   }
-  if (!arr) arr = extractTopLevelObjects(bare);
+  arr ??= extractTopLevelObjects(bare);
   const out: CleanRow[] = [];
   for (const r of arr) {
-    if (!r || typeof r !== 'object') continue;
-    const o = r as Record<string, unknown>;
-    // T00751：keep/merge 缺失时，尝试从 tasks/taskNos/items/list 数组取（首个=保留，其余=合并）
-    const rawList = [o.tasks, o.taskNos, o.items, o.list].find((v) => Array.isArray(v)) as unknown[] | undefined;
-    const listed = (rawList ?? [])
-      .filter((x): x is string => typeof x === 'string' && !!x.trim())
-      .map((x) => x.trim());
-    const keep = (typeof o.keep === 'string' ? o.keep.trim() : '') || listed[0] || '';
-    const mergeSource = Array.isArray(o.merge) && o.merge.length > 0 ? o.merge : listed.slice(1);
-    const merge = expandTaskNoRanges(mergeSource
-      .filter((x): x is string => typeof x === 'string' && !!x.trim())
-      .map((x) => x.trim()))
-      .filter((x) => x !== keep);
-    if (!keep || merge.length === 0) continue;
-    out.push({
-      id: `clean-${out.length}`,
-      project: typeof o.project === 'string' ? o.project.trim() : '',
-      keep,
-      merge: Array.from(new Set(merge)),
-      reason: typeof o.reason === 'string' ? o.reason.trim() : '',
-      include: true,
-    });
+    const row = buildCleanRow(r, out.length);
+    if (row) out.push(row);
   }
   return out;
 }

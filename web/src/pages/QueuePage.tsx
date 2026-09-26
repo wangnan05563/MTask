@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, type Queue, type QueueJob, type Task, type AITool } from '../api/client';
-import { Plus, ListPlus, RotateCcw, Send, Eye, ChevronUp, Check, Copy } from 'lucide-react';
+import { Plus, ListPlus, RotateCcw, Send, Eye, ChevronUp, Check, Copy, Layers, Loader2 } from 'lucide-react';
+import { EmptyState } from '../ui/EmptyState'; // T01072-FR1.10：统一空态组件
+
+/** T01066-FR1.8：并行任务池状态（running 槽位 + 上限 + 排队计数） */
+interface PoolStatus {
+  limit: number;
+  queued: number;
+  running: Array<{ id: string; task_no: string | null; title: string; ai_state_at: string; project_name: string }>;
+}
 
 export function QueuePage() {
   const [queues, setQueues] = useState<Queue[]>([]);
@@ -17,6 +25,28 @@ export function QueuePage() {
     setNotice(msg);
     setTimeout(() => setNotice(''), 2500);
   };
+
+  // T01066-FR1.8：任务池状态轮询（15s）+ 上限调整 + 单任务暂停（移出分发池 = 搁置）
+  const [pool, setPool] = useState<PoolStatus | null>(null);
+  const loadPool = useCallback(async () => {
+    try { setPool(await api.get<PoolStatus>('/pool/status')); } catch { /* 服务未就绪等：保留上次 */ }
+  }, []);
+  useEffect(() => {
+    void loadPool();
+    const t = setInterval(() => void loadPool(), 15000);
+    return () => clearInterval(t);
+  }, [loadPool]);
+  async function changePoolLimit(n: number) {
+    if (n < 1 || n > 10) return;
+    try { await api.put('/pool/limit', { limit: n }); await loadPool(); } catch (e) { flash(String((e as Error).message ?? e)); }
+  }
+  async function pauseRunning(taskId: string) {
+    try {
+      await api.post(`/tasks/${taskId}/shelve`, { shelved: true });
+      flash('已暂停：任务移出分发池（搁置），可在任务菜单搁置列表恢复');
+      void loadPool();
+    } catch (e) { flash(String((e as Error).message ?? e)); }
+  }
 
   const load = useCallback(async () => {
     setQueues(await api.get<Queue[]>('/queues'));
@@ -165,8 +195,67 @@ export function QueuePage() {
             <RotateCcw size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 重试失败
           </button>
         )}
-        {notice && <span className="flash-toast" role="status">{notice}</span>}
+        {notice && <output className="flash-toast">{notice}</output>}
       </div>
+
+      {/* T01066-FR1.8：并行任务池——运行中槽位可视化（running/上限）+ 排队计数 + 单任务暂停（移出分发池=搁置） */}
+      <div style={{ border: '1px solid var(--accent)', borderRadius: 10, padding: 12, margin: '12px 0', background: 'var(--accent-soft)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Layers size={14} style={{ color: 'var(--accent)' }} /> 任务池
+          </div>
+          {/* 槽位格：实心=占用（running），空心=空闲 */}
+          <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }} title={`并行槽位：${pool?.running.length ?? 0}/${pool?.limit ?? 3}`}>
+            {Array.from({ length: pool?.limit ?? 3 }, (_, i) => (
+              <span key={i} style={{ width: 12, height: 12, borderRadius: '50%', border: '1px solid var(--accent)', background: i < (pool?.running.length ?? 0) ? 'var(--accent)' : 'transparent', display: 'inline-block' }} />
+            ))}
+            <span style={{ fontSize: 12, color: 'var(--text)', marginLeft: 4 }}>{pool?.running.length ?? 0}/{pool?.limit ?? 3} 运行中</span>
+          </span>
+          <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>排队就绪 {pool?.queued ?? 0} 条</span>
+          <span style={{ flex: 1 }} />
+          {/* 并发上限调整（1~10，存 app_settings） */}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--text-secondary)' }}>
+            并行上限
+            <button onClick={() => void changePoolLimit((pool?.limit ?? 3) - 1)} disabled={!pool || pool.limit <= 1}
+              title="下调并行上限" aria-label="下调并行上限"
+              style={{ width: 22, height: 22, borderRadius: 5, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}>−</button>
+            <b style={{ color: 'var(--accent)' }}>{pool?.limit ?? 3}</b>
+            <button onClick={() => void changePoolLimit((pool?.limit ?? 3) + 1)} disabled={!pool || pool.limit >= 10}
+              title="上调并行上限" aria-label="上调并行上限"
+              style={{ width: 22, height: 22, borderRadius: 5, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}>＋</button>
+          </span>
+        </div>
+        {(pool?.running.length ?? 0) > 0 && (
+          <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {(pool?.running ?? []).map((r) => (
+              <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12 }}>
+                <Loader2 size={12} className="aispin" style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                <span style={{ color: 'var(--accent)', flexShrink: 0 }}>{r.task_no ?? '—'}</span>
+                <span style={{ color: 'var(--text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${r.title}（${r.project_name}）`}>{r.title}</span>
+                <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{r.project_name} · 运行 {Math.max(1, Math.round((Date.now() - new Date(r.ai_state_at).getTime()) / 60000))} 分钟</span>
+                <button onClick={() => void pauseRunning(r.id)} title="暂停 — 将任务移出分发池（转为搁置）；已在 Agent 侧执行的动作无法强制中断"
+                  aria-label={`暂停任务 ${r.task_no ?? ''}`}
+                  style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                  ⏸ 暂停
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+          暂停 = 移出分发池（转搁置，恢复请在任务菜单搁置列表操作）；Agent 侧已开始执行的动作不受影响。
+        </div>
+      </div>
+
+      {/* T01072-FR1.10：统一空态——无队列时动作直达新建 */}
+      {queues.length === 0 && (
+        <EmptyState
+          icon={<ListPlus size={18} />}
+          title="暂无开发队列"
+          hint="队列用于把任务批量交付 AI 工具并留存回执；新建今日队列后选择任务与 AI 工具即可加入。"
+          action={{ label: '新建今日队列', onClick: () => void createQueue() }}
+        />
+      )}
 
       {active && (
         <>

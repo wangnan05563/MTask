@@ -1,6 +1,8 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { App } from './App';
+// T00840：挂载关闭前「运行中任务」查询桥到 window，供桌面壳主进程 executeJavaScript 调用
+import './ui/runningTasks';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

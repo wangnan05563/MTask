@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { TasksPage } from './pages/TasksPage';
 import { AIToolsPage } from './pages/AIToolsPage';
 import { QueuePage } from './pages/QueuePage';
@@ -7,17 +7,23 @@ import { ReqPage } from './pages/ReqPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { ReportPage } from './pages/ReportPage';
 import { PlanPage } from './pages/PlanPage';
+import { DashboardPage } from './pages/DashboardPage';
+import { NotifyBell } from './ui/NotifyBell'; // T01064-FR1.4：全局通知中心
 import { api, setAccessToken } from './api/client';
 import { MarkdownStyles } from './ui/Markdown';
 import { CommandPalette } from './pages/CommandPalette';
 import { SettingsProvider } from './settings';
 import { MobileShell } from './mobile/MobileShell';
-import { Boxes, CalendarRange, Compass, Lightbulb, ListOrdered, ListTodo, ScrollText, Settings, Sparkles, type LucideIcon } from 'lucide-react';
+import { BarChart3, Boxes, CalendarRange, Compass, Lightbulb, ListOrdered, ListTodo, ScrollText, Settings, Sparkles, type LucideIcon } from 'lucide-react';
 import { PageGuideDialog, hasSeenGuide, markGuideSeen } from './pages/PageGuide'; // T00706：通用使用向导
 import { GUIDES } from './pages/guides'; // T00706：各菜单向导内容配置
+import { useReportStream } from './reportStream'; // T01038：AI 工作台运行态（周报生成）
+import { usePrdGen } from './stores/prdGenStore'; // T01038：原始需求生成 PRD 运行态
+import { aiImportStore } from './stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
+import { Loader2 } from 'lucide-react'; // T01038：Tab 运行指示旋转图标
 
 // T00441：日志/归档入口从顶部菜单移入「设置」（内网穿透下方），顶部菜单收敛为高频功能
-type Tab = 'tasks' | 'aitools' | 'prompts' | 'req' | 'plan' | 'queue' | 'report' | 'settings';
+type Tab = 'tasks' | 'aitools' | 'prompts' | 'req' | 'plan' | 'dashboard' | 'queue' | 'report' | 'settings';
 
 const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: 'tasks', label: '任务', icon: ListTodo },
@@ -25,6 +31,7 @@ const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: 'prompts', label: '提示词', icon: ScrollText },
   { key: 'req', label: '通用需求', icon: Lightbulb },
   { key: 'plan', label: '项目管理', icon: CalendarRange }, // T00664：更名——后续定位为项目管理模块
+  { key: 'dashboard', label: '仪表盘', icon: BarChart3 }, // T01059-FR2.2：吞吐/AI 成功率/耗时/验证通过率
   { key: 'report', label: 'AI 工作台', icon: Sparkles }, // T00569：周报改名 AI 工作台（卡片化入口）
   { key: 'queue', label: '队列', icon: ListOrdered },
   { key: 'settings', label: '设置', icon: Settings },
@@ -39,8 +46,27 @@ function Shell() {
   // T00706：全菜单使用向导——当前菜单首次进入自动弹出，导航右侧常驻「向导」按钮随时唤起
   const guide = GUIDES[tab];
   const [guideOpen, setGuideOpen] = useState(false);
-  const closeGuide = () => { if (guide) markGuideSeen(guide.seenKey); setGuideOpen(false); };
+  const closeGuide = () => { if (guide) { markGuideSeen(guide.seenKey); } setGuideOpen(false); };
   useEffect(() => { if (guide && !hasSeenGuide(guide.seenKey)) setGuideOpen(true); }, [guide]);
+  // T00821：全局 Tab 导航事件——供深层页面（如 AI 工作台确认录入成功）跨 Tab 跳转到目标菜单
+  useEffect(() => {
+    const onNavigate = (e: Event) => {
+      const d = (e as CustomEvent).detail as { tab?: string } | undefined;
+      if (d?.tab && typeof d.tab === 'string' && TABS.some((t) => t.key === d.tab)) setTab(d.tab as Tab);
+    };
+    globalThis.addEventListener('mtaskNavigate', onNavigate);
+    return () => globalThis.removeEventListener('mtaskNavigate', onNavigate);
+  }, []);
+  // T01057-FR1.1：OS 通知点击 → 聚焦窗口后定位到对应任务（写 focusId 供任务页定位，再切到任务菜单）
+  useEffect(() => {
+    const desktop = (window as unknown as { mtaskDesktop?: { onNavigateTask?: (cb: (taskNo: string) => void) => () => void } }).mtaskDesktop;
+    if (!desktop?.onNavigateTask) return; // 浏览器环境无桌面桥，跳过
+    const off = desktop.onNavigateTask((taskNo) => {
+      try { sessionStorage.setItem('tasks.focusId', JSON.stringify(taskNo)); } catch { /* 忽略 */ }
+      setTab('tasks');
+    });
+    return off;
+  }, []);
   // T00443 / PRD UX-4：Ctrl+F 唤起/关闭命令面板（T00560：由 Ctrl+K 调整为更符合操作习惯的 Ctrl+F）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -65,6 +91,12 @@ function Shell() {
       .then((c) => { if (c.accessToken) setAccessToken(c.accessToken); })
       .catch(() => { /* 后端不可用时忽略 */ });
   }, []);
+
+  // T01038：AI 工作台（report）任一能力卡片运行中时，导航 Tab 同步显示旋转指示
+  const rs = useReportStream();
+  const pg = usePrdGen();
+  const aiImp = useSyncExternalStore(aiImportStore.subscribe, aiImportStore.getSnapshot);
+  const workbenchRunning = rs.streaming || pg.streaming || aiImp.busy;
 
   // 连接状态三态（未知/正常/异常）的色值与文案：用 if 显式分支而非嵌套三元，可读性更好
   let statusColor = 'var(--text-muted)';
@@ -116,12 +148,28 @@ function Shell() {
         input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); cursor: pointer; transition: transform .18s ease; }
         input[type="checkbox"]:hover, input[type="radio"]:hover { transform: scale(1.12) rotate(8deg); }
         input[type="checkbox"]:active, input[type="radio"]:active { transform: scale(.88); }
+        /* T00908：AI 工作台「已上传 PRD 文档」入口——3D 透视倾斜悬浮（perspective 仿立体凸起），无文字图标按钮 */
+        .prd-tilt-btn { transform: perspective(420px) rotateX(0deg) rotateY(0deg); transition: transform .22s ease, box-shadow .22s ease; }
+        .prd-tilt-btn:hover:not(:disabled) { transform: perspective(420px) rotateX(-8deg) rotateY(8deg) scale(1.1); box-shadow: 0 6px 14px rgba(0,0,0,.14); }
+        .prd-tilt-btn:active:not(:disabled) { transform: perspective(420px) scale(.9); }
         .abtn svg, .ghost svg { transition: transform .18s ease; }
         .abtn:hover:not(:disabled) svg, .ghost:hover:not(:disabled) svg { transform: scale(1.15) rotate(8deg); }
         .abtn:active svg, .ghost:active svg { transform: scale(.88); }
         .task-op button:hover:not(:disabled), .task-op .tbtn-anim:hover { transform: scale(1.15) rotate(8deg); }
         .task-op button:active:not(:disabled), .task-op .tbtn-anim:active { transform: scale(.88); }
         .task-op button, .task-op .tbtn-anim { transition: transform .18s ease; }
+        /* T00770：PRD 管理入口——开源 SVG 笔迹流动动画（文档书写意象），无文字标签；悬浮加速 */
+        @keyframes prd-doc-flow { 0% { stroke-dashoffset: 26; } 100% { stroke-dashoffset: 0; } }
+        .prd-ico-anim svg { overflow: visible; }
+        .prd-ico-anim svg path, .prd-ico-anim svg polyline, .prd-ico-anim svg line, .prd-ico-anim svg circle {
+          stroke-dasharray: 26; animation: prd-doc-flow 2.6s linear infinite;
+        }
+        .prd-ico-anim:hover svg path, .prd-ico-anim:hover svg polyline, .prd-ico-anim:hover svg line, .prd-ico-anim:hover svg circle {
+          animation-duration: 1s;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .prd-ico-anim svg path, .prd-ico-anim svg polyline, .prd-ico-anim svg line, .prd-ico-anim svg circle { animation: none; stroke-dasharray: none; }
+        }
         /* T00513 修正：task-op 同时被用作行内操作按钮自身的类名（后代选择器不命中）——补自身形式选择器 */
         button.task-op, a.task-op { transition: transform .18s ease; }
         button.task-op:hover:not(:disabled) { transform: scale(1.15) rotate(8deg); }
@@ -136,6 +184,10 @@ function Shell() {
         .title-op:active:not(:disabled) { transform: scale(.88); }
         /* 文字/功能按钮：整体轻微倾斜（幅度收敛避免文本难读），active 缩放 */
         button:hover:not(:disabled):not(.tbtn-anim):not(.nav-btn):not(.abtn):not(.ghost):not(.row-title-btn):not(.task-op) { transform: rotate(-1.5deg); } /* T00494：记录标题按钮不参与悬浮旋转；T00513：task-op 行内按钮走倾斜缩放基准 */
+        /* T00890：导航与行标题按钮补齐悬浮微倾斜——两者被上方兜底 :not() 排除，需各自独立声明才具备「所有页面按钮悬浮微倾斜」的统一反馈。
+           nav-btn 含文字标签，幅度略大带缩放；row-title-btn 是标题，幅度轻微避免文字难读。 */
+        .nav-btn:hover:not(:disabled) { transform: scale(1.06) rotate(-2deg); }
+        button.row-title-btn:hover:not(:disabled) { transform: scale(1.02) rotate(-1deg); }
         button { transition: transform .18s ease, background-color .15s ease; }
         /* T00530：请求进行中的呼吸反馈上提为全局（任务页/计划页共用） */
         .task-breathe { animation: task-breathe 1.3s ease-in-out infinite; }
@@ -176,9 +228,13 @@ function Shell() {
             >
               <Icon size={18} />
               <span className="nav-label">{t.label}</span>
+              {/* T01038：AI 工作台 Tab 运行中旋转指示（与卡片/控制台状态联动） */}
+              {t.key === 'report' && workbenchRunning && <Loader2 size={12} className="aispin" style={{ color: tab === t.key ? 'var(--accent-text)' : 'var(--accent)' }} />}
             </button>
           );
         })}
+        {/* T01064-FR1.4：全局通知中心（铃铛 + 未读角标 + 事件下拉） */}
+        <NotifyBell />
         {/* 后端连接状态：随 serverOk 动态更新，常驻菜单行最右侧。
             色值与文案按三态（未知/正常/异常）显式计算，避免 JSX 中嵌套三元 */}
         <span
@@ -207,6 +263,7 @@ function Shell() {
       {tab === 'req' && <ReqPage />}
       {tab === 'queue' && <QueuePage />}
       {tab === 'plan' && <PlanPage />}
+      {tab === 'dashboard' && <DashboardPage />}
       {tab === 'report' && <ReportPage />}
       {/* T00441：日志/归档入口移至「设置」页（内网穿透下方） */}
       {tab === 'settings' && <SettingsPage />}

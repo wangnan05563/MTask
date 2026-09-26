@@ -59,13 +59,13 @@ export class WorkBuddyAdapter implements AIAdapter {
     return this.post({ action: 'send', jobId: context.taskId, taskTitle: context.title, user }, config);
   }
 
-  async chat(system: string, user: string, config: ToolConfig): Promise<JobResult> {
-    return this.post({ action: 'chat', system, user }, config);
+  async chat(system: string, user: string, config: ToolConfig, signal?: AbortSignal): Promise<JobResult> {
+    return this.post({ action: 'chat', system, user }, config, signal);
   }
 
   /** 流式：中继器通常为异步 Agent，不实现增量流，回退为完整结果一次性回调（见 types.ts 契约注释） */
-  async chatStream(system: string, user: string, config: ToolConfig, onDelta: (text: string) => void): Promise<StreamResult> {
-    const r = await this.chat(system, user, config);
+  async chatStream(system: string, user: string, config: ToolConfig, onDelta: (text: string) => void, signal?: AbortSignal): Promise<StreamResult> {
+    const r = await this.chat(system, user, config, signal);
     if (r.ok && r.content) onDelta(r.content);
     return r as StreamResult;
   }
@@ -111,12 +111,13 @@ export class WorkBuddyAdapter implements AIAdapter {
   }
 
   /** 统一请求：返回响应对象与解析后的 JSON（可能为 null）、原始文本，供 post/submit/poll 各自解释 */
-  private async request(body: Record<string, unknown>, config: ToolConfig): Promise<{ res: Response; data: unknown; text: string }> {
+  private async request(body: Record<string, unknown>, config: ToolConfig, signal?: AbortSignal): Promise<{ res: Response; data: unknown; text: string }> {
     const res = await withTimeout(
       fetch(this.endpoint(config.endpoint), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        ...(signal ? { signal } : {}),
       }),
       config.timeoutMs ?? 60000,
     );
@@ -126,9 +127,9 @@ export class WorkBuddyAdapter implements AIAdapter {
     return { res, data, text };
   }
 
-  private async post(body: Record<string, unknown>, config: ToolConfig): Promise<JobResult> {
+  private async post(body: Record<string, unknown>, config: ToolConfig, signal?: AbortSignal): Promise<JobResult> {
     try {
-      const { res, data, text } = await this.request(body, config);
+      const { res, data, text } = await this.request(body, config, signal);
       if (!res.ok) return { ok: false, error: formatHttpError(res.status, text) };
       const d = data as { ok?: boolean; content?: string; error?: string; accepted?: boolean } | null;
       if (!d) return { ok: false, error: '中继返回空响应' };
@@ -143,6 +144,8 @@ export class WorkBuddyAdapter implements AIAdapter {
       if (typeof d.content === 'string' && d.content) return { ok: true, content: d.content };
       return { ok: false, error: d.error ?? '中继返回异常（缺少 content）' };
     } catch (e) {
+      // T00838：外部主动中止归因到「任务已停止」
+      if (signal?.aborted) return { ok: false, error: '任务已停止' };
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
   }

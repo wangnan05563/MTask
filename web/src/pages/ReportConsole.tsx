@@ -4,9 +4,12 @@ import { cleanPrdStreamText } from '../utils/prdFence'; // T00815：控制台 PR
 import { api, type AITool, type ReqCategory } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
 import { useSessionState } from '../ui/session';
-import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput, GitCompare, FileUp, FilePlus2 } from 'lucide-react';
+import { RunStatusBadge } from '../ui/runStatus'; // T01038：统一运行状态徽标（动画图标 + 实时秒数 + 最终耗时）
+import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput, GitCompare, FileUp, FilePlus2, Maximize, PanelLeftOpen, OctagonX } from 'lucide-react';
 import { aiImportStore } from '../stores/aiImportStore';
 import { prdGenStore } from '../stores/prdGenStore'; // T00769 二轮：原始需求生成 PRD 的过程输出
+import { reportStream, useReportStream } from '../reportStream'; // T00838：停止按钮需订阅周报流状态
+import { resetWorkbenchArtifacts, RESET_CONFIRM_CONSOLE, CONSOLE_RESET_EVENT } from '../ui/consoleReset'; // T01042：控制台/卡片共用重置核心
 
 const CATEGORIES = [
   { key: 'summary', label: '周期要点汇总' },
@@ -56,6 +59,8 @@ interface AnalysisTask {
   status: 'busy' | 'done' | 'error';
   answer: string;
   error: string;
+  /** T00839：本次发起的本地时间戳（ms），供 busy tab 展示实时耗时；轮询刷新不覆盖 */
+  readonly startAt?: number;
 }
 
 /** 内置「AI 周报」tab 固定 id：始终存在，内容由父级传入的 SSE 流式状态驱动 */
@@ -328,6 +333,16 @@ function periodLabelOf(period?: ReportPeriod): string | undefined {
   return period ? PERIOD_LABEL[period] : undefined;
 }
 
+/** T00839：运行耗时短格式——45s / 1m05s / 2h03m，供运行 tab 紧凑展示「已运行」 */
+function fmtElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rs = s % 60;
+  if (m < 60) return rs ? `${m}m${String(rs).padStart(2, '0')}s` : `${m}m`;
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`;
+}
+
 /** 手动分组表格行：id 为列表内稳定唯一键（避免用数组索引作 React key） */
 interface SaveRow {
   id: string;
@@ -414,7 +429,7 @@ function SaveReqModal({
       style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
       onClick={() => { if (!saving) onClose(); }}>
       <div /* NOSONAR - 阻断点击冒泡属事件传递逻辑而非独立交互控件，可访问关闭入口仍为原生按钮 */
-        onClick={(e) => e.stopPropagation()} style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(640px, 92vw)', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
+        onClick={(e) => e.stopPropagation()} style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(640px, 92vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
           <FolderInput size={14} style={{ color: 'var(--accent)' }} /> 转存到通用需求
           <span style={{ flex: 1 }} />
@@ -510,6 +525,8 @@ export function ReportConsole({
   streaming = false,
   logs = [],
   streamText = '',
+  onCollapse,
+  collapsed = false,
 }: {
   readonly tools: AITool[];
   readonly toolId: string;
@@ -519,6 +536,10 @@ export function ReportConsole({
   readonly streaming?: boolean;
   readonly logs?: string[];
   readonly streamText?: string;
+  /** T00816：控制台窗格全屏切换回调（触发后由父级隐藏另一侧，实现本窗格全屏） */
+  readonly onCollapse?: () => void;
+  /** T00816：是否处于全屏态（父级传入，决定按钮图标与呼吸动画） */
+  readonly collapsed?: boolean;
 }) {
   // 分析选项与自定义问题改为会话级持久化（useSessionState）：切换页面返回保留输入选择
   const [category, setCategory] = useSessionState<(typeof CATEGORIES)[number]['key']>('rptconsole.category', 'summary');
@@ -565,6 +586,44 @@ export function ReportConsole({
   const noTool = !toolId;
   const customInvalid = category === 'custom' && !custom.trim();
 
+  // T00838：停止按钮订阅各运行态（周报流 / PRD 流 / AI 导入 / 手动 job），据此判断可用与逐项停止
+  const report = useReportStream();
+  const [stopping, setStopping] = useState(false);
+  const [notice, setNotice] = useState('');
+  // 轻量 toast：本面板无全局 flash，就近以底部 transient 文本反馈结果/失败
+  const flash = (m: string) => { setNotice(m); window.setTimeout(() => setNotice(''), 3000); };
+  const canStop = report.streaming || prdSnap.streaming || aiSnap.busy || runningCount > 0;
+
+  // T00839：1s 心跳触发重渲染，使运行中 tab 的「已运行 xx」实时增长（store 变更不会带动计时刷新）
+  const [, setClock] = useState(0);
+  useEffect(() => {
+    const t = window.setInterval(() => setClock((c) => c + 1), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  const stopAll = useCallback(async () => {
+    if (stopping) return; // busy 防御：进行中再置 loading，避免重复点击并发
+    setStopping(true);
+    try {
+      // 1) 运行中的手动分析 job：调后端 stop 真实中止并清理记录，幂等
+      const busy = tasks.filter((t) => t.status === 'busy');
+      await Promise.allSettled(busy.map((t) => api.post(`/console-jobs/${t.id}/stop`)));
+      // 本地移除对应 tab（后端记录已删）
+      if (busy.length > 0) setTasks((prev) => prev.filter((t) => t.status !== 'busy'));
+      // 2) PRD 生成流：abort SSE + 清 store
+      if (prdSnap.streaming) prdGenStore.abort();
+      // 3) PRD 导入单次请求：本请求未 job 化，前端清 store 结束等待，后端自然结束
+      if (aiSnap.busy) aiImportStore.reset();
+      // 4) 周报生成流：abort SSE + 清 store
+      if (report.streaming) reportStream.abort();
+      flash('已停止并清理相关产物');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStopping(false);
+    }
+  }, [stopping, tasks, prdSnap.streaming, aiSnap.busy, report.streaming]);
+
   // 阶段日志没有天然 id，按「内容 + 同内容出现序号」派生稳定 key：
   // 追加式日志的前缀条目 key 不变，避免用数组索引作 key 在重排时错误复用 DOM
   const logItems = useMemo(() => {
@@ -608,7 +667,12 @@ export function ReportConsole({
   const refreshJobs = useCallback(async () => {
     try {
       const jobs = await api.get<Parameters<typeof rowToTask>[0][]>('/console-jobs');
-      setTasks(jobs.map(rowToTask));
+      // T00839：轮询重建快照时保留上一次的本地发起时间（startAt），使耗时全程连续、不随刷新重置
+      setTasks((prev) => jobs.map((rj) => {
+        const old = prev.find((p) => p.id === rj.id);
+        const t = rowToTask(rj);
+        return old?.startAt ? { ...t, startAt: old.startAt } : t;
+      }));
     } catch {
       // 后端暂不可用：静默，等待下次轮询再试，不打断既有展示
     }
@@ -637,7 +701,7 @@ export function ReportConsole({
     try {
       // 后端受理即创建 busy job 并后台异步运行；本地仅持有其 id 作为展示快照
       const r = await api.post<{ id: string }>('/console-jobs', body);
-      const task: AnalysisTask = { id: r.id, title, prompt: user, category: cat, period: per, status: 'busy', answer: '', error: '' };
+      const task: AnalysisTask = { id: r.id, title, prompt: user, category: cat, period: per, status: 'busy', answer: '', error: '', startAt: Date.now() }; // T00839：记录发起时间以展示耗时
       setTasks((prev) => [...prev, task]);
       setActiveId(r.id);
       // T00443 / PRD AI-6：对比模式——为每个勾选的对比模型创建同 prompt 任务并行运行（结果 tab 并列对比）
@@ -647,7 +711,7 @@ export function ReportConsole({
         if (!ctool) continue;
         const cbody = { ...body, title: `${title}【对比·${ctool.name}】`, toolId: ct };
         void api.post<{ id: string }>('/console-jobs', cbody).then((cr) => {
-          setTasks((prev) => [...prev, { id: cr.id, title: cbody.title, prompt: user, category: cat, period: per, status: 'busy', answer: '', error: '' }]);
+          setTasks((prev) => [...prev, { id: cr.id, title: cbody.title, prompt: user, category: cat, period: per, status: 'busy', answer: '', error: '', startAt: Date.now() }]);
         }).catch(() => undefined);
       }
     } catch {
@@ -658,7 +722,7 @@ export function ReportConsole({
   /** 重新分析某任务：后端将该 job 复位并异步重跑（复用其固化 prompt 与周期） */
   async function restart(id: string) {
     // 先把本地重置为 busy 即时反馈，最终结果由轮询收敛
-    updateTask(id, { status: 'busy', answer: '', error: '' });
+    updateTask(id, { status: 'busy', answer: '', error: '', startAt: Date.now() }); // T00839：重跑视为新一次运行，重置耗时起点
     setActiveId(id);
     try {
       await api.post(`/console-jobs/${id}/restart`, { toolId });
@@ -678,14 +742,29 @@ export function ReportConsole({
     void api.del(`/console-jobs/${id}`).catch(() => { /* 删除失败：本地先移除，残留由下次轮询/重置兜底 */ });
   }
 
-  /** 重置控制台：清空后端全部持久化任务、回到 AI 周报 tab，并恢复默认类别与自定义提问 */
-  function resetConsole() {
-    void api.del('/console-jobs').catch(() => { /* 清空失败：本地已清，残留由用户再次重置兜底 */ });
-    setTasks([]);
-    setActiveId(REPORT_TAB);
-    setCategory('summary');
-    setCustom('');
+  /** 重置控制台（T01042 增强）：二次确认 → 共享清理核心（后端任务/三能力 store/草稿产物，DRY 复用）
+   *  → 本地 state 由 CONSOLE_RESET_EVENT 监听器统一重置；异步期间按钮呈加载态防重复触发 */
+  const [resetting, setResetting] = useState(false);
+  async function resetConsole() {
+    if (resetting) return;
+    if (!window.confirm(RESET_CONFIRM_CONSOLE)) return;
+    setResetting(true);
+    const r = await resetWorkbenchArtifacts();
+    setResetting(false);
+    if (!r.ok) { window.alert(`重置失败：${r.error ?? '未知错误'}（本地状态已清理，可再次重置兜底）`); return; }
   }
+
+  // T01042：监听重置广播（控制台自身按钮与工作台卡片侧入口共用）——同步重置本地 state
+  useEffect(() => {
+    const onReset = () => {
+      setTasks([]);
+      setActiveId(REPORT_TAB);
+      setCategory('summary');
+      setCustom('');
+    };
+    window.addEventListener(CONSOLE_RESET_EVENT, onReset);
+    return () => window.removeEventListener(CONSOLE_RESET_EVENT, onReset);
+  }, [setCategory, setCustom]);
 
   /** 对比模型勾选切换：已选则移除，未选则追加 */
   function toggleCompareModel(id: string) {
@@ -869,7 +948,7 @@ export function ReportConsole({
     }
     // T00569 三轮：AI 项目计划导入 tab——控制台式滚动输出执行日志（与导入面板深度整合）
     if (onAiImportTab) {
-      const lv = (level: string) => (level === 'ok' ? 'var(--success, #16a34a)' : level === 'error' ? 'var(--danger)' : 'var(--text-secondary)');
+      const lv = logLevelColor;
       return (
         <div>
           <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
@@ -940,12 +1019,12 @@ export function ReportConsole({
   /** 底部状态文案 */
   function statusText() {
     if (onReportTab) {
-      if (streaming) return <><Loader2 size={12} style={{ animation: 'mconsole-spin 1s linear infinite', verticalAlign: '-2px', marginRight: 4 }} />AI 周报生成中…</>;
+      if (streaming) return <span className="ai-shimmer" style={{ fontWeight: 600, fontSize: 12 }}>AI 周报生成中…</span>;
       if (logs.length > 0 || (streamText?.length ?? 0) > 0) return <span style={{ color: 'var(--accent)' }}>✓ 生成完成</span>;
       return <span>就绪</span>;
     }
     switch (activeTask?.status) {
-      case 'busy': return <><Loader2 size={12} style={{ animation: 'mconsole-spin 1s linear infinite', verticalAlign: '-2px', marginRight: 4 }} />分析中…</>;
+      case 'busy': return <span className="ai-shimmer" style={{ fontWeight: 600, fontSize: 12 }}>分析中…</span>;
       case 'done': return <span style={{ color: 'var(--accent)' }}>✓ 分析完成</span>;
       case 'error': return <span style={{ color: 'var(--danger)' }}>失败</span>;
       default: return <span>就绪</span>;
@@ -969,6 +1048,20 @@ export function ReportConsole({
           <Terminal size={14} /> AI 控制台
           {runningCount > 0 && (
             <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>{runningCount} 进行中</span>
+          )}
+          <span style={{ flex: 1 }} />
+          {/* T00816：去掉收起按钮，改为「AI 控制台」窗格单一全屏切换按钮（无文字、带动画）——
+              onCollapse 由父级切换本窗格全屏/还原；图标在 Maximize 与还原间切换，breathe 表示全屏态 */}
+          {onCollapse && (
+            <button
+              onClick={onCollapse}
+              title={collapsed ? '还原 — 退出全屏，并排展示 AI 工作台与控制台' : '全屏 — 隐藏左侧 AI 工作台，让 AI 控制台占满整行'}
+              aria-label={collapsed ? '还原：退出全屏' : '全屏：隐藏 AI 工作台'}
+              className={`tbtn-anim${collapsed ? ' task-breathe' : ''}`}
+              style={{ display: 'inline-flex', alignItems: 'center', padding: 4, borderRadius: 6, cursor: 'pointer', background: 'var(--card-bg)', color: 'var(--text)' }}
+            >
+              {collapsed ? <PanelLeftOpen size={14} /> : <Maximize size={14} />}
+            </button>
           )}
         </div>
 
@@ -1017,11 +1110,12 @@ export function ReportConsole({
           )}
           <button
             onClick={resetConsole}
-            title="重置 — 清空全部分析任务并恢复默认设置"
-            aria-label="重置：清空全部分析任务并恢复默认设置"
-            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '5px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', flex: '0 0 auto' }}
+            disabled={resetting}
+            title={resetting ? '重置中…' : '重置 — 清空全部分析任务、各能力运行状态与关联草稿产物'}
+            aria-label="重置：清空全部分析任务、各能力运行状态与关联草稿产物"
+            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '5px', borderRadius: 6, cursor: resetting ? 'wait' : 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', flex: '0 0 auto', opacity: resetting ? 0.6 : 1 }}
           >
-            <RefreshCw size={13} />
+            {resetting ? <Loader2 size={13} className="aispin" /> : <RefreshCw size={13} />}
           </button>
           {/* T00443 / PRD AI-6：多模型对比模式开关 */}
           <button
@@ -1056,7 +1150,7 @@ export function ReportConsole({
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
         <button
           onClick={() => setActiveId(REPORT_TAB)}
-          title="AI 周报 — 左侧生成触发的流式过程在此展示"
+          title={report.streaming ? `AI 周报生成中 · 已运行 ${report.startedAt != null ? fmtElapsed(Date.now() - report.startedAt) : ''} · 已输出 ${streamText.length} 字符（切换卡片不中断，返回即恢复）` : 'AI 周报 — 左侧生成触发的流式过程在此展示'}
           aria-label="AI 周报 tab"
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
@@ -1066,12 +1160,20 @@ export function ReportConsole({
         >
           <Sparkles size={11} />
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>AI 周报</span>
+          {/* T01038：运行中显示统一动画图标 + 实时秒数；结束后保留最终耗时 */}
+          <RunStatusBadge
+            status={report.streaming ? 'running' : (report.finalElapsed != null ? 'success' : 'idle')}
+            startedAt={report.startedAt}
+            finalElapsed={report.finalElapsed}
+            size={10}
+            showLabel={false}
+          />
         </button>
         {/* T00569 三轮：AI 项目计划导入 tab——有执行记录或进行中时显示 */}
         {(aiSnap.logs.length > 0 || aiSnap.busy) && (
           <button
             onClick={() => setActiveId(AI_IMPORT_TAB)}
-            title="AI 项目计划导入 — 导入执行日志在此滚动输出"
+            title={aiSnap.busy ? `AI 项目计划导入执行中 · 已运行 ${aiSnap.startedAt != null ? fmtElapsed(Date.now() - aiSnap.startedAt) : ''}（切换卡片不中断，返回即恢复）` : 'AI 项目计划导入 — 导入执行日志在此滚动输出'}
             aria-label="AI 项目计划导入 tab"
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
@@ -1081,14 +1183,21 @@ export function ReportConsole({
           >
             <FileUp size={11} />
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{aiImportStore.label()}</span>
-            {aiSnap.busy && <Loader2 size={10} className="aispin" />}
+            {/* T01038：统一运行状态徽标 */}
+            <RunStatusBadge
+              status={aiSnap.busy ? 'running' : (aiSnap.finalElapsed != null ? 'success' : 'idle')}
+              startedAt={aiSnap.startedAt}
+              finalElapsed={aiSnap.finalElapsed}
+              size={10}
+              showLabel={false}
+            />
           </button>
         )}
         {/* T00769 二轮：原始需求生成 PRD tab——有日志或生成中时显示，流式正文与阶段日志在此滚动 */}
         {(prdSnap.logs.length > 0 || prdSnap.streaming) && (
           <button
             onClick={() => setActiveId(PRD_GEN_TAB)}
-            title="原始需求生成 PRD — 生成过程与正文增量在此实时滚动输出"
+            title={prdSnap.streaming ? `生成 PRD 中 · 已运行 ${prdSnap.startedAt != null ? fmtElapsed(Date.now() - prdSnap.startedAt) : ''} · 已输出 ${prdSnap.streamText.length} 字符（切换卡片不中断，返回即恢复）` : '原始需求生成 PRD — 生成过程与正文增量在此实时滚动输出'}
             aria-label="原始需求生成 PRD tab"
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
@@ -1098,13 +1207,22 @@ export function ReportConsole({
           >
             <FilePlus2 size={11} />
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>原始需求生成 PRD</span>
-            {prdSnap.streaming && <Loader2 size={10} className="aispin" />}
+            {/* T01038：统一运行状态徽标 */}
+            <RunStatusBadge
+              status={prdSnap.streaming ? 'running' : (prdSnap.finalElapsed != null ? 'success' : 'idle')}
+              startedAt={prdSnap.startedAt}
+              finalElapsed={prdSnap.finalElapsed}
+              size={10}
+              showLabel={false}
+            />
           </button>
         )}
         {tasks.map((t) => (
           <div
             key={t.id}
-            title={t.title}
+            title={t.status === 'busy'
+              ? `${t.title} · 运行中 · 已运行 ${t.startAt != null ? fmtElapsed(Date.now() - t.startAt) : ''}（切换卡片不中断，返回即恢复）`
+              : `${t.title} · ${t.status === 'done' ? '已完成' : '失败'}`}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 4px', borderRadius: 6,
               border: '1px solid var(--border-strong)', background: activeId === t.id ? 'var(--accent)' : 'var(--card-bg)',
@@ -1121,6 +1239,7 @@ export function ReportConsole({
               {statusIcon(t.status)}
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</span>
             </button>
+            {t.status === 'busy' && t.startAt != null && <span style={{ fontSize: 9, opacity: 0.85 }}>{fmtElapsed(Date.now() - t.startAt)}</span>}
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); closeTask(t.id); }}
@@ -1145,7 +1264,18 @@ export function ReportConsole({
       {/* 底部：状态在左，预览/下载/重跑在右 */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, fontSize: 11 }}>
         <span style={{ color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center' }}>{statusText()}</span>
+        <span style={{ color: 'var(--accent)', opacity: notice ? 1 : 0, transition: 'opacity .2s', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 180 }}>{notice}</span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          {/* T00838：停止按钮——任一任务运行中即可用，点击中止对应后端 AI 请求并清理产物（幂等） */}
+          <button
+            onClick={() => void stopAll()}
+            disabled={!canStop}
+            title="停止 — 中止正在进行的 PRD 生成 / 周报生成 / 手动分析 / PRD 导入，并清理相关产物"
+            aria-label="停止：中止运行中的 AI 任务并清理相关产物"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: canStop ? 'pointer' : 'not-allowed', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: canStop ? 'var(--danger, #dc2626)' : 'var(--text-muted)', opacity: canStop ? 1 : 0.5 }}
+          >
+            {stopping ? <Loader2 size={12} className="aispin" /> : <OctagonX size={12} />} 停止
+          </button>
           {!onReportTab && activeTask?.status === 'done' && (
             <>
               {/* T00652：仅「数据清洗」分析完成后提供执行入口——按 AI 分组合并重复任务 */}
@@ -1267,4 +1397,11 @@ export function ReportConsole({
 /** 供 useEffect 依赖计算活跃手动任务的内容长度；仅作用依赖值，避免流式时每次整数组重建触发额外滚动 */
 function streamsLen(t: AnalysisTask | null): string {
   return t ? (t.answer.length + '|' + t.status) : '';
+}
+
+/** 阶段日志级别 → 颜色样式（抽离嵌套三元，便于阅读与复用） */
+function logLevelColor(level: string): string {
+  if (level === 'ok') return 'var(--success, #16a34a)';
+  if (level === 'error') return 'var(--danger)';
+  return 'var(--text-secondary)';
 }

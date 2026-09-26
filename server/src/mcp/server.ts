@@ -52,6 +52,26 @@ function taskLocateError(): string {
   return 'id 与 taskNo 至少提供一个；id 为任务内部 id，taskNo 为任务编号（如 T00001）';
 }
 
+/** 按项目名解析 id（精确 → 大小写不敏感），供 MCP 工具复用；返回 {id} 或 {error} */
+function resolveProjectByName(name: string): { id?: string; error?: string } {
+  const all = getDb().prepare('SELECT id, name FROM projects').all() as Array<{ id: string; name: string }>;
+  const exact = all.find((p) => p.name === name);
+  const ci = all.find((p) => p.name.toLowerCase() === name.toLowerCase());
+  const hit = exact ?? ci;
+  if (!hit) return { error: `项目「${name}」不存在。候选：${all.slice(0, 10).map((p) => p.name).join('、')}（可先调 mtask_list_projects 查询）` };
+  return { id: hit.id };
+}
+
+/** 父任务校验（存在且同项目）；通过返回 null，否则返回错误文案 */
+function validateParent(parentId: string | undefined, pid: string): string | null {
+  if (parentId) {
+    const parent = getDb().prepare('SELECT id, project_id FROM tasks WHERE id = ?').get(parentId) as { project_id: string } | undefined;
+    if (!parent) return '父任务不存在';
+    if (parent.project_id !== pid) return '子任务与父任务必须同项目';
+  }
+  return null;
+}
+
 /** 创建 MCP server 并注册全部工具 */
 export async function createMCPServer(): Promise<McpServer> {
   const server = new McpServer({ name: 'mtask', version: '1.0.0' });
@@ -90,15 +110,9 @@ export async function createMCPServer(): Promise<McpServer> {
       // 都未提供才缺省「默认记事项目」（用户设置优先，否则收件箱），并打日志警告便于排查误入收件箱
       let pid = a.projectId?.trim() || '';
       if (!pid && a.projectName?.trim()) {
-        const name = a.projectName.trim();
-        const all = getDb().prepare('SELECT id, name FROM projects').all() as Array<{ id: string; name: string }>;
-        const exact = all.find((p) => p.name === name);
-        const ci = all.find((p) => p.name.toLowerCase() === name.toLowerCase());
-        const hit = exact ?? ci;
-        if (!hit) {
-          return err(`项目「${name}」不存在。候选：${all.slice(0, 10).map((p) => p.name).join('、')}（可先调 mtask_list_projects 查询）`);
-        }
-        pid = hit.id;
+        const r = resolveProjectByName(a.projectName.trim());
+        if (r.error) return err(r.error);
+        pid = r.id ?? '';
       }
       if (!pid) {
         pid = getDefaultNoteProjectId();
@@ -118,11 +132,8 @@ export async function createMCPServer(): Promise<McpServer> {
       }
       // T00450：父子层级——父任务校验（存在且同项目）
       let parentId = a.parentId?.trim() || undefined;
-      if (parentId) {
-        const parent = getDb().prepare('SELECT id, project_id FROM tasks WHERE id = ?').get(parentId) as { project_id: string } | undefined;
-        if (!parent) return err('父任务不存在');
-        if (parent.project_id !== pid) return err('子任务与父任务必须同项目');
-      }
+      const perr = validateParent(parentId, pid);
+      if (perr) return err(perr);
       const task = TaskService.create({ derived_from: a.derivedFrom?.trim() || null, /* T00577 */
         projectId: pid,
         title: a.title,
@@ -505,7 +516,8 @@ export async function createMCPServer(): Promise<McpServer> {
   }, async (a) => {
     try {
       const doc = PlanService.updatePrdDoc(a.prdId, { contentMd: a.contentMd, filename: a.filename });
-      return ok(JSON.stringify({ ok: true, id: doc.id, updated_at: doc.updated_at, content_chars: String(doc.content_md ?? '').length }), { ok: true, id: doc.id });
+      const contentMd: string = (doc.content_md ?? '') as string;
+      return ok(JSON.stringify({ ok: true, id: doc.id, updated_at: doc.updated_at, content_chars: contentMd.length }), { ok: true, id: doc.id });
     } catch (e) { return err((e as Error).message); }
   });
 
@@ -535,9 +547,8 @@ export async function createMCPServer(): Promise<McpServer> {
         if (origin) {
           const stamp = new Date().toISOString().slice(0, 10);
           const originText = (origin.handle_result ?? '').trim();
-          const mergedText = `${originText ? `${originText}
-
-` : ''}---
+          const prefix = originText ? originText + '\n\n' : '';
+          const mergedText = `${prefix}---
 【派生单 ${task.task_no ?? target.id} 处理结果 ${stamp}】
 ${a.result}`;
           TaskService.update(origin.id, { handle_result: mergedText });

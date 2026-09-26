@@ -250,7 +250,7 @@ export function HistoryPage() {
                       <div key={p.id} title={p.description ?? ''} style={{ fontSize: 12, color: 'var(--text)', padding: '3px 0', borderBottom: '1px solid var(--surface-2)', display: 'flex', gap: 6 }}>
                         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title}</span>
                         <span style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>
-                          {p.kind === 'milestone' ? '里程碑 · ' : ''}{p.status}{typeof p.progress === 'number' ? ` · ${p.progress}%` : ''}{p.duration_days != null ? ` · ${p.duration_days}天` : ''}
+                          {p.kind === 'milestone' ? '里程碑 · ' : ''}{p.status}{typeof p.progress === 'number' ? ` · ${p.progress}%` : ''}{p.duration_days !== null && p.duration_days !== undefined ? ` · ${p.duration_days}天` : ''}
                         </span>
                       </div>
                     ))}

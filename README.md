@@ -1,5 +1,19 @@
 # MTask · AI 任务开发管理工具
 
+<p align="center">
+  <img src="build/social-preview.png" alt="MTask 社交预览图" width="640" />
+</p>
+
+<div align="center">
+
+[![Electron](https://img.shields.io/badge/Electron-33-47848F)]()
+[![React](https://img.shields.io/badge/React-18-61DAFB)]()
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6)]()
+[![Express](https://img.shields.io/badge/Express-4-000000)]()
+[![SQLite](https://img.shields.io/badge/SQLite-better--sqlite3-003B57)]()
+
+</div>
+
 替代基于 txt 的粗糙任务管理方式：按项目维度管理开发任务，AI 自动梳理任务内容，可配置多种 AI 开发工具，将每日任务队列发送给 AI 工具开发，完成归档可删。
 
 > 技术选型：Electron（桌面壳）+ React 18 / Vite / TypeScript（前端）+ Express / TypeScript（后端）+ SQLite（better-sqlite3）。

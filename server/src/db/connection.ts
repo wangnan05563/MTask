@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { clearStmtCache } from '../util/stmt-cache'; // T00792：连接生命周期联动语句缓存
 
@@ -58,11 +58,17 @@ function fallbackOpen(file: string): Database.Database {
 /** SQLite 连接单例。数据文件默认放在 server/data/mtask.db，可用 MTask_DATA_DIR 覆盖。 */
 let db: Database.Database | null = null;
 
+/** 主库文件绝对路径（T01061-FR5.1：备份/恢复共用同一解析，避免双处维护漂移） */
+export function dbFilePath(): string {
+  const dir = process.env.MTask_DATA_DIR ?? join(__dirname, '..', 'data');
+  return join(dir, 'mtask.db');
+}
+
 export function getDb(): Database.Database {
   if (db) return db;
-  const dir = process.env.MTask_DATA_DIR ?? join(__dirname, '..', 'data');
+  const dir = dirname(dbFilePath());
   mkdirSync(dir, { recursive: true });
-  const file = join(dir, 'mtask.db');
+  const file = dbFilePath();
   db = openDatabase(file);
   // T00792：连接（重）建时丢弃语句缓存——旧 Statement 绑定在已关闭的连接上，不可复用
   clearStmtCache();

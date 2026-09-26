@@ -1,0 +1,33 @@
+diff --git a/server/src/routes/index.ts b/server/src/routes/index.ts
+index 83ab6f1..f640dc8 100644
+--- a/server/src/routes/index.ts
++++ b/server/src/routes/index.ts
+@@ -23,6 +25,7 @@ import { existsSync, mkdirSync, statSync } from 'node:fs';
+ import { notifyChange } from '../services/ChangeBus';
+ import { v4 as uuid } from 'uuid';
+ import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
++import { exportGate } from '../util/export-gate'; // T00789：导出类端点并发闸
+ 
+ /** 低频集合列表 TTL（5s）：读多写少，写端点会主动 cacheClear 保持一致性 */
+ const LIST_TTL_MS = 5000;
+@@ -1039,7 +1071,8 @@ api.post('/ai/beautify', async (req, res) => {
+ });
+ 
+ // ---------- 报表生成与模板管理 ----------
+-api.post('/report/generate', async (req, res) => {
++// T00789：report/generate 虽已走 worker 隔离，但仍 165~2162ms/次且无并发闸；此处仅加闸不改执行方式
++api.post('/report/generate', exportGate('report-generate'), async (req, res) => {
+   const { period, format, projectId, templateId } = req.body ?? {};
+   if (!['day', 'week', 'month'].includes(period)) return res.status(400).json({ error: 'period 非法' });
+   if (!['xlsx', 'docx', 'pdf', 'pptx'].includes(format)) return res.status(400).json({ error: 'format 非法' });
+@@ -1717,7 +1815,9 @@ api.post('/settings/ai-summary-inbox', (req, res) => {
+ });
+ 
+ // ---------- 设置中心：数据迁移（换机重装用） ----------
+-api.get('/settings/export', (req, res) => {
++// T00789：exportBundle() 为同步重活（4.4MB 全量序列化，实测 122ms/次）→ defer 令其让出事件循环，
++// 否则同步执行期间无法接受后续请求、闸门计数永远到不了上限（实测 10 路并发 0×429、线性叠加至 946ms）
++api.get('/settings/export', exportGate('settings-export', undefined, { defer: true }), (req, res) => {
+   try {
+     // 可选 ?tables=a,b,c 子集导出（默认全量）。未知表名直接 400，避免静默产出空包。
+     const raw = typeof req.query.tables === 'string' ? req.query.tables.trim() : '';

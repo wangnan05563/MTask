@@ -113,6 +113,8 @@ export interface Project {
   created_at?: string;
   /** T00496：每项目待办/未验证计数（徽标展示） */
   todo_count?: number;
+  /** T00922：每项目已完成计数（看板/列表统计首屏即显示全量，无需加载更多后才能看到准确值） */
+  done_count?: number;
   unverified_count?: number;
   /** T00505：计划任务统计（计划菜单下拉徽标） */
   plan_done?: number;
@@ -133,7 +135,8 @@ export interface TaskImage {
 /** 图片直链（<img src> 直接用；Electron 壳内由 api:// 协议转发到本地服务） */
 // T00580：<img src> 无法自定义请求头，携带 ?token= 通过服务端图片路径的 query 授权
 // （accessToken 为空即纯本地模式，服务端 guard 整体放行，拼空串不影响）
-export let imageUrl = (id: string) => `${apiBase}/images/${id}${accessToken ? `?token=${encodeURIComponent(accessToken)}` : ''}`;
+const tokenQuery = (token: string) => (token ? `?token=${encodeURIComponent(token)}` : '');
+export const imageUrl = (id: string) => `${apiBase}/images/${id}${tokenQuery(accessToken)}`;
 
 /** 取图片 blob（复制到剪贴板用）。经 api:// 代理返回，代理已加 CORS 头，渲染进程可跨源读取 */
 export async function fetchImage(id: string): Promise<Blob> {
@@ -171,6 +174,8 @@ export interface Task {
   handle_result: string | null;
   /** T00566：AI 处理状态动画（'' 已读/无 | running 运行中 | failed 运行失败 | unread 未读） */
   ai_state: string;
+  /** T01057-FR1.2：失败重试次数（手动重试 +1；历史在 handle_result 追加段） */
+  retry_count?: number;
   /** T00577：派生单溯源——原任务编号（如 T00422） */
   derived_from: string | null;
   /** T00589：历史资产时间（非空即已沉淀至历史资产，与归档独立） */
@@ -278,6 +283,9 @@ export interface Prompt {
   req_category_id?: string;
   created_at: string;
   updated_at: string;
+  /** T00872：归档标记与归档时间——归档页按 archived=true + archived_at 展示可还原 */
+  archived?: boolean;
+  archived_at?: string | null;
 }
 
 export interface ReqCategory {

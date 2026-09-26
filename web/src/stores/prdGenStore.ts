@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { loadRun, persistRun, clearRun, type RunStatus } from '../ui/runStatus';
 
 /**
  * T00769：原始需求生成 PRD 的流式状态单例 store（仿 reportStream）。
@@ -23,6 +24,8 @@ export interface PrdGenState {
   result: { prdMd: string; issues: PrdGenIssue[] } | null;
   /** T00839：本次生成开始时间戳（ms），供控制台 tab 展示实时耗时与悬停进度 */
   startedAt?: number;
+  /** T01038：结束后保留的最终耗时（ms） */
+  finalElapsed?: number;
   /** T00933：多选批次已完成的各份结果（顺序 = 生成顺序） */
   batch: PrdBatchItem[];
   /** T00933：批次总数与当前序号（1-based），用于控制台与面板展示进度 */
@@ -34,7 +37,13 @@ const initialState = (): PrdGenState => ({
   streaming: false, logs: [], streamText: '', result: null, batch: [], batchTotal: 0, batchIndex: 0,
 });
 
-let state: PrdGenState = initialState();
+// T01038：模块初始化时水合刷新前持久化的最终耗时
+let state: PrdGenState = (() => {
+  const base = initialState();
+  const h = loadRun('prdgen');
+  if (h && h.finalElapsed != null) base.finalElapsed = h.finalElapsed;
+  return base;
+})();
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
 
@@ -56,15 +65,19 @@ export const prdGenStore = {
     abortCtrl?.abort();
     abortCtrl = null;
     state = initialState();
+    clearRun('prdgen');
     emit();
   },
   reset() {
     abortCtrl = null;
     state = initialState();
+    clearRun('prdgen');
     emit();
   },
   begin() {
-    state = { streaming: true, logs: [], streamText: '', result: null, startedAt: Date.now(), batch: [], batchTotal: 0, batchIndex: 0 }; // T00839：记录生成起始
+    const startedAt = Date.now();
+    state = { streaming: true, logs: [], streamText: '', result: null, startedAt, finalElapsed: undefined, batch: [], batchTotal: 0, batchIndex: 0 }; // T00839：记录生成起始
+    persistRun('prdgen', { status: 'running' as RunStatus, startedAt });
     emit();
   },
   /**
@@ -72,7 +85,9 @@ export const prdGenStore = {
    * 不再让第 2 份起把前一份的结果与日志整批清掉（原缺陷：多选只有最后一份留痕）。
    */
   beginBatch(total: number) {
-    state = { streaming: true, logs: [], streamText: '', result: null, startedAt: Date.now(), batch: [], batchTotal: total, batchIndex: 0 };
+    const startedAt = Date.now();
+    state = { streaming: true, logs: [], streamText: '', result: null, startedAt, finalElapsed: undefined, batch: [], batchTotal: total, batchIndex: 0 };
+    persistRun('prdgen', { status: 'running' as RunStatus, startedAt });
     emit();
   },
   /** T00933：批次内第 index 份开始（1-based）——重置流式正文/结果，日志只追加分隔行 */
@@ -89,12 +104,16 @@ export const prdGenStore = {
   /** T00933：批次收尾——统一给出成功/失败统计（控制台与面板据此提示） */
   finishBatch(okCount: number) {
     const total = state.batchTotal;
+    // T01038：批次结束时由 startedAt 算最终耗时并保留
+    const finalElapsed = state.startedAt ? Date.now() - state.startedAt : state.finalElapsed;
     state = {
       ...state,
       streaming: false,
       startedAt: undefined,
+      finalElapsed,
       logs: [...state.logs, `批次生成完成：成功 ${okCount}/${total} 份${okCount > 0 ? '，请在下方「批次结果」中逐份确认并录入' : ''}`],
     };
+    persistRun('prdgen', { status: 'success' as RunStatus, finalElapsed });
     emit();
   },
   pushLog(msg: string) {
@@ -110,8 +129,12 @@ export const prdGenStore = {
     emit();
   },
   finish(errorMsg?: string) {
-    // T00839：结束运行态同时清掉起始时间，避免已完成 tab 残留“已运行”时长
-    state = errorMsg ? { ...state, streaming: false, startedAt: undefined, logs: [...state.logs, errorMsg] } : { ...state, streaming: false, startedAt: undefined };
+    // T01038：结束运行态同时由 startedAt 算最终耗时并保留
+    const finalElapsed = state.startedAt ? Date.now() - state.startedAt : state.finalElapsed;
+    state = errorMsg
+      ? { ...state, streaming: false, startedAt: undefined, finalElapsed, logs: [...state.logs, errorMsg] }
+      : { ...state, streaming: false, startedAt: undefined, finalElapsed };
+    persistRun('prdgen', { status: (errorMsg ? 'error' : 'success') as RunStatus, finalElapsed });
     emit();
   },
 };

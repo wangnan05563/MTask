@@ -7,7 +7,7 @@ import { PlanService } from './PlanService';
 import { logService } from './LogService';
 import { ContextBudget, WorkspaceService, loadIgnoreRules, isIgnored } from './WorkspaceService';
 import { stripThinking } from '../util/thinking'; // T00814：解析问题清单前剔除思考块
-import { parseIssuesJson, parsePrdIssues, splitPrdBody, type PrdGenIssue } from './prdIssues'; // T00814：问题清单解析抽为可测模块
+import { parseIssuesJson, parsePrdIssues, splitPrdBody, inlineIssuesSection, type PrdGenIssue } from './prdIssues'; // T00814：问题清单解析抽为可测模块；T00818：清单内联正文章节
 
 /**
  * T00769：原始需求生成 PRD（AI 控制台卡片「原始需求生成PRD」后端）。
@@ -155,6 +155,7 @@ async function fallbackIssues(
   adapter: AIAdapter,
   config: ToolConfig,
   onStage: (msg: string) => void,
+  signal?: AbortSignal, // T00838：补问同样可被外部中止
 ): Promise<PrdGenIssue[]> {
   onStage('未解析到待确认问题 —— 发起一次补充提问（基于已生成 PRD 反推待确认项）…');
   const system = '你是资深需求分析师。只输出 JSON 数组，不要任何解释、不要 Markdown 代码块。';
@@ -163,11 +164,13 @@ async function fallbackIssues(
     '【已生成的 PRD 摘要】\n' + ContextBudget.headTail(prdMd, 4000, 'PRD '),
     '【原始需求片段】\n' + ContextBudget.headTail(source, 2000, '需求 '),
     '请基于上述 PRD 与原始需求，列出 5~10 条仍需与业务方确认的问题（缺失即阻塞落地的关键信息）。',
-    '输出格式：[{"level":"blocker|suggested|info","question":"…","context":"…"}]',
+    '输出格式：[{"level":"blocker|suggested|info","question":"…","context":"…","suggestion":"…"}]',
     'level 语义：blocker=不确认无法开工；suggested=影响方案选择；info=补充说明。',
+    // T00817：补充提问同样要求给出建议选项，保证兜底场景也具备「问题 + AI建议」结构
+    'suggestion 语义：针对该问题的 2~4 个可落地建议选项，用「选项A：… / 选项B：… / 选项C：…」分隔。',
   ].join('\n\n');
   try {
-    const r = await adapter.chat(system, user, config);
+    const r = await adapter.chat(system, user, config, signal);
     if (!r.ok || !r.content) { onStage('补充提问失败，本次未产出待确认问题（可手动新增自定义问题）'); return []; }
     const issues = parseIssuesJson(r.content);
     onStage(issues.length > 0 ? `补充提问完成：新增 ${issues.length} 条待确认问题` : '补充提问未产出问题清单（可手动新增自定义问题）');
@@ -185,6 +188,8 @@ export async function generatePrdStream(input: {
   content: string;
   onStage: (msg: string) => void;
   onDelta: (text: string) => void;
+  /** T00838：可选中止信号——上游（SSE 路由/停止按钮）可主动中断底层 AI 请求 */
+  signal?: AbortSignal;
 }): Promise<{ prdMd: string; issues: PrdGenIssue[] }> {
   const db = getDb();
   const project = db.prepare('SELECT name, workspace_path FROM projects WHERE id = ?').get(input.projectId) as
@@ -228,11 +233,14 @@ export async function generatePrdStream(input: {
     '【输出硬性要求（务必遵守）】',
     '1. 先输出完整 PRD 正文；',
     '2. 正文结束后另起一行输出分隔符 <<<ISSUES>>>，其后紧跟 JSON 数组，列出 5~10 条待确认问题；',
-    '3. 每条格式：{"level":"blocker|suggested|info","question":"…","context":"…"}；',
-    '4. 即使项目源码上下文缺失，也必须基于原始需求本身列出阻塞落地的关键未知项，不得省略该 JSON 段。',
+    '3. 每条格式：{"level":"blocker|suggested|info","question":"…","context":"…","suggestion":"…"}；',
+    // T00817：为每条待确认问题生成可落地的建议选项，形成「问题 + AI建议」配套，辅助产品快速决策。
+    // suggestion 组织形式：用「选项A：xxx / 选项B：xxx / 选项C：xxx」分隔，给出 2~4 个有区分度的可行选项
+    '4. suggestion 为该问题的 AI 建议：给出 2~4 个可落地的建议选项，用「选项A：… / 选项B：… / 选项C：…」分隔；必须基于问题与项目上下文推导，不得虚构无依据的内容；',
+    '5. 即使项目源码上下文缺失，也必须基于原始需求本身列出阻塞落地的关键未知项，不得省略该 JSON 段。',
     // T00814：长文档实测会在 8K 输出上限处被截断，导致整份 PRD 作废；这里给出篇幅边界，
     // 把预算花在变更点/字段/验收标准上，而不是无节制铺陈
-    '5. 篇幅控制：PRD 正文不超过 6000 字，聚焦「变更点、字段清单、业务规则、验收标准、影响面」；不要复述原始需求全文，不要输出目录。',
+    '6. 篇幅控制：PRD 正文不超过 6000 字，聚焦「变更点、字段清单、业务规则、验收标准、影响面」；不要复述原始需求全文，不要输出目录。',
   ].join('\n');
 
   const system = `${skill}\n\n# 三角色审查规则库（审查时逐条对照）\n${rules}`;
@@ -245,12 +253,12 @@ export async function generatePrdStream(input: {
     ISSUE_RULE,
   ].filter(Boolean).join('\n\n');
 
-  let result = await adapter.chatStream(system, user, genConfig, input.onDelta);
+  let result = await adapter.chatStream(system, user, genConfig, input.onDelta, input.signal);
   // T00814：个别提供商不接受 16K 输出上限（请求直接 400）——此时回退到 8K 重试一次，
   // 避免"提高了预算反而整个功能不可用"。仅在错误文本确指 max_tokens 时回退，其余错误照旧抛出。
   if (!result.ok && /max_tokens|max_completion_tokens|too large|invalid/i.test(result.error ?? '')) {
     input.onStage(`模型未接受 ${genConfig.maxTokens} tokens 输出上限，回退 ${PRD_FALLBACK_OUTPUT_TOKENS} 重试…`);
-    result = await adapter.chatStream(system, user, { ...genConfig, maxTokens: PRD_FALLBACK_OUTPUT_TOKENS }, input.onDelta);
+    result = await adapter.chatStream(system, user, { ...genConfig, maxTokens: PRD_FALLBACK_OUTPUT_TOKENS }, input.onDelta, input.signal);
   }
   // T00814：长文档实测即使预算给到 16K/32K，部分思考型模型仍会在自身上限处截断
   // （流出的正文 9~10K 字符即 finish_reason=length）。此时整份作废太浪费 ——
@@ -272,10 +280,14 @@ export async function generatePrdStream(input: {
   let issues = parsePrdIssues(text, prdMd, input.onStage);
   // 兜底补问：主流程未产出任何问题时，基于已生成 PRD 反推一份问题清单（失败不影响主流程）
   if (issues.length === 0) {
-    issues = await fallbackIssues(project, prdMd, input.content, adapter, genConfig, input.onStage);
+    issues = await fallbackIssues(project, prdMd, input.content, adapter, genConfig, input.onStage, input.signal);
   }
-  input.onStage(`解析完成：PRD ${prdMd.length} 字符、待确认问题 ${issues.length} 条（🔴 阻塞 ${issues.filter((i) => i.level === 'blocker').length} / 🟡 建议 ${issues.filter((i) => i.level === 'suggested').length} / 🟢 提示 ${issues.filter((i) => i.level === 'info').length}）`);
+  // T00818：把拆分出的问题清单内联回 PRD 正文「待确认问题汇总」章——分区 JSON 已被 splitPrdBody 剥离，
+  // 正文该章原只有标题+审查说明占位，若不下沉，前端预览末章即「提示后内容为空」。仅在有清单时改写。
+  const finalPrdMd = inlineIssuesSection(prdMd, issues);
+  if (finalPrdMd !== prdMd) input.onStage(`已将 ${issues.length} 条待确认问题内联到 PRD 正文「待确认问题汇总」章（预览末章不再为空）`);
+  input.onStage(`解析完成：PRD ${finalPrdMd.length} 字符、待确认问题 ${issues.length} 条（🔴 阻塞 ${issues.filter((i) => i.level === 'blocker').length} / 🟡 建议 ${issues.filter((i) => i.level === 'suggested').length} / 🟢 提示 ${issues.filter((i) => i.level === 'info').length}）`);
   // T00783-L3：startedAt 此前只 void 掉（死代码）——真实记录耗时，便于排查长耗时生成
-  logService.log('INFO', 'ai', `[PRD生成] project=${input.projectId} file=${input.filename} prd=${prdMd.length}ch issues=${issues.length} 耗时=${Date.now() - startedAt}ms`);
-  return { prdMd, issues };
+  logService.log('INFO', 'ai', `[PRD生成] project=${input.projectId} file=${input.filename} prd=${finalPrdMd.length}ch issues=${issues.length} 耗时=${Date.now() - startedAt}ms`);
+  return { prdMd: finalPrdMd, issues };
 }

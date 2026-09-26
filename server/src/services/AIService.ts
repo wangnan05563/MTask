@@ -6,6 +6,7 @@ import { logService } from './LogService';
 import { v4 as uuid } from 'uuid';
 import { getAdapter } from '../adapters';
 import { resolvePrdContext } from '../util/prdContext'; // T00763：任务关联 PRD → AI 上下文自动注入（util 独立避免循环依赖）
+import { WorkspaceService } from './WorkspaceService'; // T00777：工作空间检索增强
 import type { StreamResult, SubmitResult, PollResult } from '../adapters/types';
 import type { ToolConfig } from '../adapters';
 import { stripThinking } from '../util/thinking'; // T00814：思考块剥离上移共享
@@ -72,6 +73,56 @@ function stripPromptHeading(md: string): string {
  * FR2 协助整理 与 FR4 队列分发的 AI 调用层。
  * 梳理结果回填 ai_summary（用户确认后保存）；分发结果仅保存文本（待人工合并）。
  */
+/** 组装单条任务整理用的描述文本：带工作空间检索增强片段（关联 PRD 文案由调用方注入，此处只拼检索片段） */
+function buildOrganizeDescription(
+  task: { title: string; description?: string | null; project_id: string },
+  project: { workspace_path: string | null } | undefined,
+): string {
+  let description = task.description ?? '';
+  if (!project?.workspace_path) return description;
+  try {
+    const kws = WorkspaceService.extractKeywords(`${task.title} ${task.description ?? ''}`);
+    const ctx = WorkspaceService.autoContext(task.project_id, kws);
+    if (ctx) description = `${description}\n\n【工作空间检索片段（自动检索）】\n${ctx}`.trim();
+  } catch { /* 无工作空间/读取失败：跳过注入 */ }
+  return description;
+}
+
+/** 单条任务整理：组装上下文 → 调适配器 → 回填 results（organize 的循环体，抽出降低外层复杂度） */
+async function organizeOne(
+  taskId: string,
+  deps: {
+    db: ReturnType<typeof getDb>;
+    adapter: ReturnType<typeof getAdapter>;
+    config: ReturnType<typeof runtimeWithModel>['config'];
+    toolId: string;
+    startedAt: number;
+    results: Record<string, string>;
+  },
+): Promise<void> {
+  const { db, adapter, config, toolId, startedAt, results } = deps;
+  const task = TaskService.getById(taskId);
+  if (!task) return;
+  const project = db.prepare('SELECT name, workspace_path FROM projects WHERE id = ?').get(task.project_id) as { name: string; workspace_path: string | null } | undefined;
+  // T00763：任务关联了 PRD（req_ids → prd_requirements.prd_id）时自动加载原文作为上下文注入
+  const prd = resolvePrdContext({ taskId });
+  // T00777：工作空间检索增强——按任务标题/描述关键词搜代码，top 片段拼入描述（预算内；失败不阻塞）
+  const description = buildOrganizeDescription(task, project);
+  const result = await adapter.send(
+    {
+      taskId: task.id,
+      title: task.title,
+      description,
+      projectName: project?.name ?? '',
+      prdContext: prd ? `PRD 文档《${prd.filename || '未命名'}》相关原文：\n${prd.content}` : undefined,
+      workspacePath: project?.workspace_path || undefined, // T00771
+    },
+    config,
+  );
+  if (result.ok && result.content) results[taskId] = result.content;
+  recordUsage('organize', toolId, config.model, result.ok, startedAt, result.content?.length ?? 0, result.error);
+}
+
 export const AIService = {
   /**
    * FR2.1/2.2 单条或批量梳理：调用指定（默认整理）工具，产出结构化文本。
@@ -83,25 +134,9 @@ export const AIService = {
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     const results: Record<string, string> = {};
+    const deps = { db, adapter, config, toolId, startedAt, results };
     for (const taskId of taskIds) {
-      const task = TaskService.getById(taskId);
-      if (!task) continue;
-      const project = db.prepare('SELECT name, workspace_path FROM projects WHERE id = ?').get(task.project_id) as { name: string; workspace_path: string | null } | undefined;
-      // T00763：任务关联了 PRD（req_ids → prd_requirements.prd_id）时自动加载原文作为上下文注入
-      const prd = resolvePrdContext({ taskId });
-      const result = await adapter.send(
-        {
-          taskId: task.id,
-          title: task.title,
-          description: task.description,
-          projectName: project?.name ?? '',
-          prdContext: prd ? `PRD 文档《${prd.filename || '未命名'}》相关原文：\n${prd.content}` : undefined,
-          workspacePath: project?.workspace_path || undefined, // T00771
-        },
-        config,
-      );
-      if (result.ok && result.content) results[taskId] = result.content;
-      recordUsage('organize', toolId, config.model, result.ok, startedAt, result.content?.length ?? 0, result.error);
+      await organizeOne(taskId, deps);
     }
     return results;
   },
@@ -243,13 +278,14 @@ export const AIService = {
     system: string,
     user: string,
     timeoutMs?: number,
+    signal?: AbortSignal, // T00838：可选中止信号——控制台任务可被「停止」按钮中断
   ): Promise<{ ok: boolean; content?: string; error?: string }> {
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     // 长耗时任务（如 AI 周报洞察生成）由调用方显式传入更大的超时，覆盖该工具的默认 timeoutMs，避免中途被掐断
     const effective = timeoutMs == null ? config : { ...config, timeoutMs };
     const startedAt = Date.now();
-    const res = await adapter.chat(system, user, effective);
+    const res = await adapter.chat(system, user, effective, signal);
     recordUsage('ask', toolId, config.model, res.ok, startedAt, res.content?.length ?? 0, res.error);
     return res;
   },
@@ -306,6 +342,7 @@ export const AIService = {
     user: string,
     onDelta: (text: string) => void,
     timeoutMs?: number,
+    signal?: AbortSignal, // T00838：可选中止信号——周报生成可被「停止」按钮中断
   ): Promise<StreamResult> {
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
@@ -314,7 +351,7 @@ export const AIService = {
     const startedAt = Date.now();
     let chars = 0;
     const wrapped = (text: string) => { chars += text.length; onDelta(text); };
-    const res = await adapter.chatStream(system, user, effective, wrapped);
+    const res = await adapter.chatStream(system, user, effective, wrapped, signal);
     recordUsage('stream', toolId, config.model, res.ok, startedAt, chars, res.error);
     return res;
   },
@@ -364,10 +401,11 @@ export const AIService = {
     const startedAt = Date.now();
     const system =
       '你是项目计划评审助手。对给定的计划任务条目给出简短评估：工期是否合理、当前进度是否匹配、主要风险与一条建议。只输出评估正文，不超过60字，不加标题或编号。';
+    const prdSuffix = prdContext ? `\n\n【PRD 需求上下文（评估依据）】\n${prdContext}` : '';
     const user = `任务：${plan.title}
 工期（工作日）：${plan.duration_days}
 进度：${plan.progress}%
-负责人：${plan.assignee || '未指派'}${prdContext ? `\n\n【PRD 需求上下文（评估依据）】\n${prdContext}` : ''}`;
+负责人：${plan.assignee || '未指派'}${prdSuffix}`;
     const res = await adapter.chat(system, user, config);
     if (!res.ok) { recordUsage('plan-evaluate', toolId, config.model, false, startedAt, 0, res.error); return { ok: false, error: res.error }; }
     recordUsage('plan-evaluate', toolId, config.model, true, startedAt, res.content?.length ?? 0);

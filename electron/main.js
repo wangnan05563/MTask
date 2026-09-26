@@ -12,10 +12,11 @@
  * 运行前提：server/ 与 web/ 依赖已安装、web 已构建（scripts\构建打包.bat）。
  */
 
-const { app, BrowserWindow, Menu, protocol, shell, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, protocol, shell, dialog, ipcMain, Notification } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const http = require('node:http');
+const https = require('node:https');
 const fs = require('node:fs');
 
 const DEV = process.env.MTask_DEV === '1';
@@ -203,6 +204,73 @@ app.on('before-quit', (e) => {
   requestQuit();
 });
 
+// ================= T00840：关闭前检测运行中任务并友好确认 =================
+// 点击关闭按钮/关闭主窗口时不直接退出，先汇总「正在运行」的任务（AI 控制台手动分析 +
+// 后台队列 + 渲染进程内存流），有任务则弹确认框：取消保留运行、强制关闭先清理再退出。
+let closeApproved = false; // 已获准本次关闭（无任务，或用户已选强制关闭）→ 放行真正关闭
+let closing = false; // 防 close 事件在 async 确认期间重入
+
+/** 在渲染进程执行一段 JS 并把其 Promise 结果取回主进程；窗口不可用/执行失败返回 undefined */
+function runInRenderer(expr) {
+  if (!mainWin || mainWin.isDestroyed()) return Promise.resolve(undefined);
+  return mainWin.webContents.executeJavaScript(expr).catch(() => undefined);
+}
+
+/** 让渲染进程汇总当前运行中任务名称（内存流 + 后端运行态） */
+function queryRunningTasks() {
+  return runInRenderer('window.__mtaskRunningSnapshot ? window.__mtaskRunningSnapshot() : []')
+    .then((r) => (Array.isArray(r) ? r : []));
+}
+
+/** 强制关闭前交由渲染进程调用后端清理运行态（删 busy / 复位在途队列），尽力即可 */
+function cleanupRunningTasks() {
+  return runInRenderer('typeof window.__mtaskCleanupRunning === "function" ? window.__mtaskCleanupRunning() : undefined');
+}
+
+async function handleCloseRequest(win) {
+  if (closing) return;
+  closing = true;
+  try {
+    const tasks = await queryRunningTasks();
+    // 无运行任务：直接放行关闭（走正常退出通道）
+    if (!tasks.length) { closeApproved = true; win.close(); return; }
+
+    // 有运行任务：列出名称，提供「取消关闭」/「强制关闭」两选项
+    const list = tasks.length > 6
+      ? tasks.slice(0, 6).map((t) => `· ${t.name}`).join('\n') + `\n…等 ${tasks.length} 个`
+      : tasks.map((t) => `· ${t.name}`).join('\n');
+    const choice = await dialog.showMessageBox(win, {
+      type: 'warning',
+      title: '确认关闭',
+      message: `检测到有 ${tasks.length} 个任务正在运行`,
+      detail: `关闭可能导致这些任务中断：\n${list}\n\n是否仍要关闭应用？`,
+      buttons: ['取消关闭', '强制关闭'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    if (choice.response === 1) {
+      // 强制关闭：先清理遗留 busy/在途记录，避免下次启动看到永远挂起的任务，再放行退出
+      await cleanupRunningTasks();
+      closeApproved = true;
+      win.close();
+    }
+    // 选「取消关闭」：什么都不做，窗口保持开启
+  } finally {
+    closing = false;
+  }
+}
+
+/** 主窗口关闭拦截：不直接关，先查运行任务；无任务或已确认则放行由正常退出通道收尾 */
+function setupCloseGuard(win) {
+  win.on('close', (e) => {
+    // 已获准本次关闭，或在退出流程中（before-quit 已接管），不再拦截
+    if (closeApproved || quitting) return;
+    e.preventDefault();
+    void handleCloseRequest(win);
+  });
+}
+
 /**
  * 关键接入点：注册 api:// 自定义协议，由主进程代理转发到本地 HTTP 服务。
  * 前端在 Electron 壳内以 api:// 前缀发起请求（见 web/src/api/client.ts），
@@ -270,6 +338,100 @@ const WEB_MIME = {
  *  加载 index.html 会抛 ERR_FAILED 导致白屏；改用 app:// 协议从磁盘读取即可规避，
  *  无需放开 webSecurity。同时校验路径禁止 ../ 越权读取打包目录之外的文件。 */
 /**
+ * T01057-FR1.1：任务完成系统通知——主进程 30s 轮询 /api/notify/pending（ai_state=unread/failed），
+ * 与上次快照 diff 后对「新完成/新失败/状态变化」发 OS 通知；点击通知聚焦窗口并通知渲染端定位任务。
+ * 主进程常驻（不依赖前端页面），最小化/切页时通知依然可达。
+ */
+const notifyPrefsFile = () => path.join(app.getPath('userData'), 'notify-prefs.json');
+let notifyEnabled = true; // 默认开启；持久化在 userData/notify-prefs.json
+try {
+  const pf = notifyPrefsFile();
+  if (fs.existsSync(pf)) notifyEnabled = JSON.parse(fs.readFileSync(pf, 'utf8')).enabled !== false;
+} catch { /* 忽略：默认开启 */ }
+const notifySeen = new Map(); // task_no → ai_state 快照
+let notifyPrimed = false; // 首轮只建快照不通知（避免升级启动后轰炸存量未读）
+let notifyTimer = null;
+
+/** 读取 server 端访问令牌（tunnel-config.json 的 accessToken；未启用隧道时为空=接口不鉴权） */
+function readServerAccessToken() {
+  try {
+    const dir = dataDir() ?? path.join(__dirname, '..', 'server', 'data');
+    const cfgPath = path.join(dir, 'tunnel', 'tunnel-config.json');
+    if (!fs.existsSync(cfgPath)) return '';
+    return String(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).accessToken ?? '');
+  } catch { return ''; }
+}
+
+function showTaskNotification(item) {
+  const win = mainWin && !mainWin.isDestroyed() ? mainWin : null;
+  const n = new Notification({
+    title: item.ai_state === 'failed' ? `任务处理失败：${item.task_no}` : `任务处理完成：${item.task_no}`,
+    body: `${item.title}（${item.project_name}）— 点击查看详情`,
+    silent: false,
+  });
+  n.on('click', () => {
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+      win.webContents.send('notify:navigate', item.task_no);
+    }
+  });
+  n.show();
+}
+
+async function pollNotifyPending() {
+  if (!notifyEnabled || !serverProc) return;
+  try {
+    const token = readServerAccessToken();
+    const req = http.get({
+      host: SERVER_HOST, port: SERVER_PORT, path: '/api/notify/pending', timeout: 5000,
+      headers: token ? { 'X-Access-Token': token } : {},
+    }, (res) => {
+      let buf = '';
+      res.on('data', (c) => { buf += c; });
+      res.on('end', () => {
+        try {
+          const items = JSON.parse(buf) || [];
+          if (!notifyPrimed) {
+            // 首轮：仅建立基线，不轰炸存量未读
+            notifyPrimed = true;
+          } else {
+            for (const it of items) {
+              const prev = notifySeen.get(it.task_no);
+              if (prev !== it.ai_state) showTaskNotification(it);
+            }
+          }
+          notifySeen.clear();
+          for (const it of items) notifySeen.set(it.task_no, it.ai_state);
+        } catch { /* 坏 JSON 忽略本轮 */ }
+      });
+    });
+    req.on('error', () => { /* 服务未就绪/网络异常：忽略本轮 */ });
+    req.on('timeout', () => { req.destroy(); });
+  } catch { /* 忽略本轮 */ }
+}
+
+function startNotifyPolling() {
+  if (notifyTimer) return;
+  notifyTimer = setInterval(pollNotifyPending, 30000);
+  setTimeout(pollNotifyPending, 8000); // 启动后 8s 先对一次基线
+}
+
+ipcMain.handle('notify:get-enabled', () => notifyEnabled);
+ipcMain.handle('notify:set-enabled', (_evt, enabled) => {
+  notifyEnabled = enabled !== false;
+  try { fs.writeFileSync(notifyPrefsFile(), JSON.stringify({ enabled: notifyEnabled })); } catch { /* 持久化失败不阻断 */ }
+  if (notifyEnabled) {
+    setTimeout(pollNotifyPending, 500);
+  } else {
+    notifySeen.clear();
+    notifyPrimed = false; // 重新开启后先重建基线，避免通知积压
+  }
+  return notifyEnabled;
+});
+
+/**
  * T00771 修复：系统「选择文件夹」对话框。
  * 原先前端只能用 <input type="file">，Windows 下弹出的是文件选择框（只能选文件，选不了文件夹），
  * 工作空间绑定因此走不通。这里经 IPC 调主进程 dialog.showOpenDialog({openDirectory})，
@@ -283,6 +445,89 @@ ipcMain.handle('dialog:open-directory', async () => {
   });
   if (r.canceled || !r.filePaths?.length) return null;
   return r.filePaths[0];
+});
+
+// ---------- T00878：一键下载并静默安装更新包 ----------
+
+/** 从下载 URL 提取文件名（末尾路径段，去掉查询串）；取不到则回退默认名 */
+function downloadFilename(url) {
+  try {
+    const seg = new URL(url).pathname.split('/').filter(Boolean).pop();
+    if (seg) return seg;
+  } catch { /* 非法 URL，走回退 */ }
+  return `mtask-update-${Date.now()}.exe`;
+}
+
+// 应用内下载更新安装包到系统下载目录，下载进度经 webContents.send 推给渲染进程
+ipcMain.handle('update:download', async (_evt, url) => {
+  if (typeof url !== 'string' || !url) throw new Error('下载地址无效');
+  const filePath = path.join(app.getPath('downloads'), downloadFilename(url));
+  // 流式下载到临时文件，写完再改名，避免下载中断残留半截"安装包"被误执行
+  const tmpPath = filePath + `.part`;
+
+  // 用 Node https 手动流：可精确拿到 content-length 与逐块字节数来推进度，
+  // 比 electron session downloadURL（走默认下载器、事件回调复杂）更可控、无侧栏打扰。
+  await new Promise((resolve, reject) => {
+    https.get(url, { headers: { 'User-Agent': 'MTask-Updater' } }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        // 跟随 302/303（GitHub Release asset 通常重定向到云端存储）
+        https.get(res.headers.location, { headers: { 'User-Agent': 'MTask-Updater' } }, (r2) => pump(r2)).on('error', reject);
+        return;
+      }
+      if (res.statusCode !== 200) {
+        reject(new Error(`下载失败：HTTP ${res.statusCode}`));
+        res.resume();
+        return;
+      }
+      pump(res);
+      async function pump(r) {
+        // 失败清理：删掉残留别名文件，避免下次误判断下载完成
+        const cleanup = () => { try { fs.rmSync(tmpPath, { force: true }); } catch { /* 忽略 */ } };
+        const total = Number(r.headers['content-length'] || 0);
+        let received = 0;
+        const out = fs.createWriteStream(tmpPath);
+        r.on('data', (chunk) => {
+          received += chunk.length;
+          out.write(chunk);
+          // 节流推送进度（每块都 send 会太频繁，这里按字节步进）——进度是给"若非流式会卡界面"的场景兜底的低频更新
+          if (received % (1 << 20) === 0 && mainWin && !mainWin.isDestroyed()) {
+            mainWin.webContents.send('update:progress', { status: 'downloading', received, total });
+          }
+        });
+        r.on('end', () => {
+          out.end(() => {
+            try { fs.renameSync(tmpPath, filePath); } catch (e) {
+              cleanup();
+              reject(new Error(`写入安装包失败：${e.message}`));
+              return;
+            }
+            if (mainWin && !mainWin.isDestroyed()) {
+              mainWin.webContents.send('update:progress', { status: 'downloaded', received, total, filePath });
+            }
+            resolve(filePath);
+          });
+        });
+        r.on('error', (e) => { cleanup(); out.destroy(); reject(e); });
+        out.on('error', (e) => { cleanup(); reject(e); });
+      }
+    }).on('error', reject);
+  });
+  return filePath;
+});
+
+// 静默安装已下载的安装包并退出当前应用：NSIS 安装器自身会 taskkill 旧 MTask 进程，故可无缝覆盖
+ipcMain.handle('update:install', async (_evt, filePath) => {
+  if (typeof filePath !== 'string' || !filePath || !fs.existsSync(filePath)) throw new Error('安装包不存在，或已失效');
+  try {
+    // /S=静默安装，detached 使安装器独立于本进程存活；stdio ignore 不阻塞主进程退出
+    const child = spawn(filePath, ['/S'], { detached: true, stdio: 'ignore' });
+    child.unref();
+  } catch (e) {
+    throw new Error(`启动安装程序失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+  // 给渲染进程留出闪现提示的时间，随即退出本应用让安装器接管
+  setTimeout(() => app.quit(), 1500);
+  return { ok: true };
 });
 
 function setupWebProtocol() {
@@ -479,6 +724,8 @@ function maybeFinishSplash() {
     if (splashWin && !splashWin.isDestroyed()) splashWin.close();
     splashWin = null;
   }, 400);
+  // T01057-FR1.1：后端启动流程挂载后开启任务通知轮询（函数幂等；server 未就绪的轮次自动跳过）
+  startNotifyPolling();
 }
 
 // 主进程为 CommonJS 入口（electron/package.json 未启用 "type":"module"），顶层 await 语法非法；
@@ -543,6 +790,9 @@ app.whenReady().then(async () => { // NOSONAR - S7785 顶层 await 在 CommonJS 
     else updateSplash(80, '加载界面，等待后端…');
     maybeFinishSplash();
   });
+
+  // T00840：注册主窗口关闭守卫——有运行任务时先弹确认而非直接退出
+  setupCloseGuard(mainWin);
 
   await ensureBackend();
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CalendarRange, ChevronDown, ChevronUp, Copy, FolderInput, FolderPlus, ListTodo, Loader2, Pencil, Plus, Save, SquarePen, Trash2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
+import { Archive, CalendarRange, ChevronDown, ChevronUp, FolderInput, FolderPlus, ListTodo, Loader2, Minimize2, Pencil, Plus, Save, Sparkles, SquarePen, Trash2, Wand2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
 import { CopyButton } from '../ui/CopyButton';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type Project, type ReqCategory, type ReqEntry } from '../api/client';
@@ -8,6 +8,7 @@ import { clearSessionState, useSessionState } from '../ui/session';
 import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：通用需求正文 AI 美化
+import { PromptOptimizeButton } from '../ui/PromptOptimizeButton'; // T00842 二轮：正文改写为结构化提示词
 import { relTime } from '../ui/format';
 
 /** 通用需求仓库：按分类管理"通用优秀实现/解决方案"，支持增删改查与一键复制 */
@@ -55,7 +56,7 @@ export function ReqPage() {
   const [dragId, setDragId] = useState('');
   // T00489：按住行 200ms 才缩放（快速点击/点行内按钮不触发）
   const [pressId, setPressId] = useState('');
-  const pressTimer = useRef<Record<string, number>>({}); // NOSONAR - dragId 供 dropReorder 读取，setDragId 用于拖拽态重渲染
+  const pressTimer = useRef<Record<string, ReturnType<typeof setTimeout>>>({}); // NOSONAR - dragId 供 dropReorder 读取，setDragId 用于拖拽态重渲染
   const [overId, setOverId] = useState(''); // NOSONAR - overId 供列表行接入拖拽高亮后读取，setOverId 用于拖拽悬停态重渲染
   // 调整分组：moveOpenId 记录当前展开分组选择器的条目 id（单开），'' 表示全部收起
   const [moveOpenId, setMoveOpenId] = useState('');
@@ -272,6 +273,31 @@ export function ReqPage() {
     return () => document.removeEventListener('mousedown', onDocClick);
   }, [moveOpenId]);
 
+  // ---- 行级交互回调（S3776/S6847：从 JSX 内联箭头下沉；指针事件统一走 pointer 系列，兼容触屏长按） ----
+  const startPress = (id: string, target: EventTarget | null) => {
+    if ((target as HTMLElement).closest('button, input, select, a, textarea, label')) return;
+    pressTimer.current[id] = globalThis.setTimeout(() => setPressId(id), 200);
+  };
+  const endPress = (id: string) => {
+    clearTimeout(pressTimer.current[id]);
+    if (pressId) setPressId('');
+  };
+  const endPressRow = (id: string) => {
+    clearTimeout(pressTimer.current[id]);
+    if (pressId === id) setPressId('');
+  };
+  const rowCls = (id: string) => {
+    let cls = 'arena-row';
+    if (flashAt[id]) cls += ' flush';
+    if (dragId === id) cls += ' item-dragging';
+    else if (overId === id) cls += ' item-over';
+    if (pressId === id) cls += ' item-pressing';
+    return cls;
+  };
+  const dragStartRow = (id: string, e: React.DragEvent) => { setDragId(id); e.dataTransfer.effectAllowed = 'move'; };
+  const dragEndRow = () => { setDragId(''); setOverId(''); };
+  const dragOverRow = (id: string, e: React.DragEvent) => { e.preventDefault(); if (id !== dragId) setOverId(id); };
+
   /** 依据当前排序条件对条目排序（不改变原始 state）；置顶项始终排在最前 */
   const sortedEntries = [...entries].sort((a, b) => {
     // 置顶优先：置顶项固定在最前，组内再按用户字段/方向排序
@@ -282,7 +308,11 @@ export function ReqPage() {
     if (sortKey === 'manual') {
       const wa = a.sort_weight || 0;
       const wb = b.sort_weight || 0;
-      if (wa !== wb) return wa === 0 ? 1 : wb === 0 ? -1 : wa - wb;
+      if (wa !== wb) {
+        if (wa === 0) return 1;
+        if (wb === 0) return -1;
+        return wa - wb;
+      }
       return (b.updated_at || '').localeCompare(a.updated_at || '');
     }
     const cmp = sortKey === 'title'
@@ -341,7 +371,6 @@ export function ReqPage() {
         )}
         </span>
         {activeCat && (
-          <>
             <button className="tbtn-anim op-hidden" onClick={() => { // T00760：默认隐藏悬浮显示
               const ids = entries.map((x) => x.id);
               const allExpanded = ids.length > 0 && ids.every((id) => expandedIds[id]);
@@ -350,7 +379,6 @@ export function ReqPage() {
               style={{ display: 'inline-flex', alignItems: 'center', padding: '4px 8px', borderRadius: 6 }}>
               {entries.length > 0 && entries.every((x) => expandedIds[x.id]) ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />}
             </button>
-          </>
         )}
         <button
           onClick={() => { setCreating(!creating); setNewTitle(''); setNewContent(''); }}
@@ -364,6 +392,21 @@ export function ReqPage() {
         >
           <Plus size={13} />
         </button>
+        {/* T00842 位置2「需求标题栏」：样式对齐任务菜单已有同名按钮（task-op 同款尺寸/间距/圆角，图标同源） */}
+        <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+          <button onClick={() => flash('AI 美化功能开发中')} title="AI 美化 — 润色当前分类需求标题，使其语义更清晰表达更规范" aria-label="AI 美化：润色当前分类需求标题"
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
+            <Sparkles size={13} />
+          </button>
+          <button onClick={() => flash('AI 简化功能开发中')} title="AI 简化 — 依据需求详情高度总结为简洁标题（限 40 字，细节会精简）" aria-label="AI 简化：依据需求详情总结为简洁标题"
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
+            <Minimize2 size={13} />
+          </button>
+          <button onClick={() => flash('归档功能开发中')} title="归档 — 将当前分类全部需求移入归档" aria-label="归档：将当前分类全部需求移入归档"
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
+            <Archive size={13} />
+          </button>
+        </span>
         <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <select
@@ -393,12 +436,13 @@ export function ReqPage() {
         </span>
         </span>
         <input
+          className="op-hidden" // T00893：搜索框对齐其它工具栏控件的「默认隐藏、悬浮宿主区显示」约定
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="搜索标题/内容…"
           style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, marginLeft: 'auto' }}
         />
-        {notice && <span className="flash-toast" role="status">{notice}</span>}
+        {notice && <output className="flash-toast">{notice}</output>}
       </div>
 
       {/* 新建条目表单 */}
@@ -452,15 +496,15 @@ export function ReqPage() {
           const editing = draft !== undefined;
           return (
             <li key={flashAt[p.id] ? `f${flashAt[p.id]}-${p.id}` : p.id}
-              onMouseDown={(e) => { if ((e.target as HTMLElement).closest('button, input, select, a, textarea, label')) return; pressTimer.current[p.id] = window.setTimeout(() => setPressId(p.id), 200); }}
-              onMouseUp={() => { clearTimeout(pressTimer.current[p.id]); if (pressId) setPressId(''); }}
-              onMouseLeave={() => { clearTimeout(pressTimer.current[p.id]); if (pressId === p.id) setPressId(''); }}
+              onPointerDown={(e) => startPress(p.id, e.target)}
+              onPointerUp={() => endPress(p.id)}
+              onPointerLeave={() => endPressRow(p.id)}
               draggable={sortKey === 'manual'}
-              onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = 'move'; }}
-              onDragEnd={() => { setDragId(''); setOverId(''); }}
-              onDragOver={(e) => { e.preventDefault(); if (p.id !== dragId) setOverId(p.id); }}
+              onDragStart={(e) => dragStartRow(p.id, e)}
+              onDragEnd={dragEndRow}
+              onDragOver={(e) => dragOverRow(p.id, e)}
               onDrop={(e) => { e.preventDefault(); dropReorder(p.id); }}
-              className={`arena-row${flashAt[p.id] ? ' flush' : ''}${dragId === p.id ? ' item-dragging' : overId === p.id ? ' item-over' : ''}${pressId === p.id ? ' item-pressing' : ''}`}
+              className={rowCls(p.id)}
               style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 10, cursor: 'grab' }}>
               {editing ? (
                 <>
@@ -491,6 +535,13 @@ export function ReqPage() {
                       onPolished={(text) => setDrafts((prev) => ({ ...prev, [p.id]: { ...draft, content: text } }))}
                       flash={flash}
                       title="AI 美化 — 润色这段通用需求正文（保留全部实现要点，仅规范表达），结果回填后请核对再保存"
+                    />
+                    {/* T00842 二轮：编辑态详情输入框下方「提示词优化」——把正文改写为结构化提示词，功能对齐任务菜单同名操作 */}
+                    <PromptOptimizeButton
+                      title={draft.title}
+                      content={draft.content}
+                      onOptimized={(text) => setDrafts((prev) => ({ ...prev, [p.id]: { ...draft, content: text } }))}
+                      flash={flash}
                     />
                     <button onClick={() => void saveDraft(p)} disabled={!draft.title.trim()} style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="保存 — 保存对这条通用需求的修改" aria-label="保存：保存对这条通用需求的修改">
@@ -564,6 +615,19 @@ export function ReqPage() {
                         </div>
                       )}
                     </div>
+                    {/* T00842 位置1「通用需求菜单」：样式对齐任务菜单已有同名按钮（task-op 同款尺寸/间距/圆角，图标同源） */}
+                    <button className="abtn" onClick={() => flash('AI 美化功能开发中')} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                      title="AI 美化 — 润色该通用需求标题，使其语义更清晰表达更规范" aria-label="AI 美化：润色该通用需求标题">
+                      <Sparkles size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                    </button>
+                    <button className="abtn" onClick={() => flash('AI 简化功能开发中')} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                      title="AI 简化 — 依据需求详情高度总结为简洁标题（限 40 字，细节会精简）" aria-label="AI 简化：依据需求详情总结为简洁标题">
+                      <Minimize2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                    </button>
+                    <button className="abtn" onClick={() => flash('归档功能开发中')} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                      title="归档 — 将该条通用需求移入归档" aria-label="归档：将该条通用需求移入归档">
+                      <Archive size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                    </button>
                     <button className="abtn" onClick={() => void removeEntry(p)} style={{ fontSize: 12, color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="删除 — 删除这条通用需求" aria-label="删除：删除这条通用需求">
                       <Trash2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
@@ -573,6 +637,17 @@ export function ReqPage() {
                     // MarkdownContent 默认渲染富文本、可切源码视图，右上角切换/复制按钮悬浮于内容之上
                     <div style={{ marginTop: 6 }}>
                       <MarkdownContent content={p.content} showCopy />
+                      {/* T00842 位置4「详细信息框下方」：展示区为只读，点击进入编辑态可对正文做提示词优化 */}
+                      <div style={{ marginTop: 6, display: 'flex', gap: 4, alignItems: 'center' }}>
+                        <button onClick={() => {
+                          // 编辑态继承当前已存的数据，进入后下方出现真实优化按钮可改写正文
+                          setDrafts((prev) => (prev[p.id] ? prev : { ...prev, [p.id]: { title: p.title, content: p.content, categoryId: p.category_id } }));
+                        }} className="abtn"
+                          title="提示词优化 — 进入编辑并把需求内容改写为结构化提示词" aria-label="提示词优化：把需求内容改写为结构化提示词"
+                          style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
+                          <Wand2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                        </button>
+                      </div>
                     </div>
                   )}
                 </>

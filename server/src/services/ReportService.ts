@@ -408,6 +408,7 @@ export async function aiGenerateReportStream(
   opts: { projectId?: string; toolId: string },
   onStage: (msg: string) => void,
   onChunk: (text: string) => void,
+  signal?: AbortSignal, // T00838：可选中止信号——周报生成可被「停止」按钮中断
 ): Promise<{ token: string; filename: string; insight: string }> {
   onStage(`正在聚合${PERIOD_LABEL[period]}任务数据…`);
   const data = gatherReportData(period, opts.projectId);
@@ -429,7 +430,7 @@ export async function aiGenerateReportStream(
     `【任务明细】${JSON.stringify(data.tasks)}`,
     ...(data.plans.length > 0 ? [`【项目计划执行情况】${JSON.stringify(data.plans)}（含延期标记 overdue，请纳入进展要点与风险分析）`] : []),
   ].join('\n\n');
-  const res = await AIService.askStream(opts.toolId, system, user, onChunk, AI_REPORT_TIMEOUT);
+  const res = await AIService.askStream(opts.toolId, system, user, onChunk, AI_REPORT_TIMEOUT, signal);
   if (!res.ok || !res.content?.trim()) throw new Error(res.error ?? 'AI 生成失败');
   const insight = res.content.trim();
   onStage('洞察生成完成，正在按内置 skill 版式合成文件…');

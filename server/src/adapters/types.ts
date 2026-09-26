@@ -80,10 +80,10 @@ export interface AIAdapter {
   testConnection(config: ToolConfig): Promise<{ ok: boolean; message: string }>;
   /** 获取服务商可用模型列表（不支持 /models 接口的返回 ok:false） */
   listModels(config: ToolConfig): Promise<ModelsResult>;
-  /** 通用单轮对话：提示词优化等轻量增强场景（system + user 单条文本） */
-  chat(system: string, user: string, config: ToolConfig): Promise<JobResult>;
-  /** 流式单轮对话：按增量回调透传文本，供 AI 周报 SSE 流式输出使用；不支持流式的实现需回退为完整回调 */
-  chatStream(system: string, user: string, config: ToolConfig, onDelta: (text: string) => void): Promise<StreamResult>;
+  /** 通用单轮对话：提示词优化等轻量增强场景（system + user 单条文本）。T00838：可选 signal 供外部强制中止 */
+  chat(system: string, user: string, config: ToolConfig, signal?: AbortSignal): Promise<JobResult>;
+  /** 流式单轮对话：按增量回调透传文本，供 AI 周报 SSE 流式输出使用；不支持流式的实现需回退为完整回调。T00838：可选 signal 供外部强制中止 */
+  chatStream(system: string, user: string, config: ToolConfig, onDelta: (text: string) => void, signal?: AbortSignal): Promise<StreamResult>;
   send(context: TaskContext, config: ToolConfig): Promise<JobResult>;
   /** 可选：异步提交（受理后返回回执标识）。未实现表示工具为同步响应，适配层自动回退 send */
   submit?(context: TaskContext, config: ToolConfig): Promise<SubmitResult>;

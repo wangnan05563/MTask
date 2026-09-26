@@ -1,6 +1,10 @@
 import { Router, raw } from 'express';
+import * as PrdGenService from '../services/PrdGenService'; // T00769：原始需求生成 PRD
+import { WorkspaceService } from '../services/WorkspaceService'; // T00776：工作空间搜索/读文件
 import { getDb } from '../db/connection';
-import { TaskService, type TaskInput, type TaskListOptions } from '../services/TaskService';
+import { TaskService, nextTaskNo, type TaskInput, type TaskListOptions } from '../services/TaskService';
+import { RecurringService, TokenService } from '../services/RecurringService'; // T01073：循环任务 + API Token
+import { listBackups, runBackup, restoreBackup, backupStatus } from '../services/BackupService'; // T01061-FR5.1
 import { ConfigService } from '../services/ConfigService';
 import { ConsoleJobService } from '../services/ConsoleJobService';
 import { QueueService } from '../services/QueueService';
@@ -10,7 +14,6 @@ import { TaskImageService } from '../services/TaskImageService';
 import { TaskCategoryService } from '../services/TaskCategoryService';
 import { ReqCategoryService, ReqEntryService } from '../services/ReqService';
 import { exportBundle, importBundle, isExportTable } from '../services/SettingsService';
-import { WorkspaceService } from '../services/WorkspaceService'; // T00776：工作空间搜索/读文件/符号索引（HEAD 缺此导入导致编译不过）
 import { getDefaultNoteProjectId, getSetting, INBOX_PROJECT_ID, setSetting } from '../services/AppSettings';
 import { getConfig as getUpdateConfig, saveConfig as saveUpdateConfig, testConfig as testUpdateConfig, checkUpdate, currentVersion as currentAppVersion } from '../services/UpdateService';
 import { logService } from '../services/LogService';
@@ -92,10 +95,11 @@ api.get('/projects', (req, res) => {
   const counts = getDb().prepare(
     `SELECT project_id,
             SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) AS todo_count,
+            SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done_count,
             SUM(CASE WHEN verified = 0 THEN 1 ELSE 0 END) AS unverified_count
      FROM tasks WHERE archived = 0 AND COALESCE(shelved, 0) = 0 GROUP BY project_id`,
-  ).all() as Array<{ project_id: string; todo_count: number; unverified_count: number }>;
-  // T00505：计划菜单项目下拉统计（按 plan_tasks.status：todo=待开始、doing=进行中、done=已完成）
+  ).all() as Array<{ project_id: string; todo_count: number; done_count: number; unverified_count: number }>;
+  // T00505：计划菜单项目下拉统计（按 plan_tasks.status：待办=待开始、doing=进行中、done=已完成）
   const planCounts = getDb().prepare(
     `SELECT project_id,
             SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS plan_done,
@@ -108,7 +112,7 @@ api.get('/projects', (req, res) => {
   const rowsWithCounts = rows.map((r) => {
     const c = byPid.get(r.id as string);
     const pc = planByPid.get(r.id as string);
-    return { ...r, todo_count: c?.todo_count ?? 0, unverified_count: c?.unverified_count ?? 0, plan_done: pc?.plan_done ?? 0, plan_doing: pc?.plan_doing ?? 0, plan_open: pc?.plan_open ?? 0 };
+    return { ...r, todo_count: c?.todo_count ?? 0, done_count: c?.done_count ?? 0, unverified_count: c?.unverified_count ?? 0, plan_done: pc?.plan_done ?? 0, plan_doing: pc?.plan_doing ?? 0, plan_open: pc?.plan_open ?? 0 };
   });
   cacheSet('projects', rowsWithCounts, LIST_TTL_MS);
   res.json(rowsWithCounts);
@@ -155,6 +159,25 @@ api.post('/projects/reorder', (req, res) => {
   res.json({ ok: true, reordered: valid.length });
 });
 
+/** T00771：工作空间路径绑定校验——返回错误信息（null 表示通过）；通过时写入 sets/values 并记录历史 */
+function applyWorkspacePath(workspacePath: unknown, sets: string[], values: unknown[]): string | null {
+  if (workspacePath === undefined) return null;
+  const wp = typeof workspacePath === 'string' ? workspacePath.trim() : '';
+  if (wp) {
+    if (!/^[a-zA-Z]:[\\/]/.test(wp) && !wp.startsWith('/')) {
+      return `工作空间路径须为绝对路径（收到：${wp}）`;
+    }
+    if (!existsSync(wp) || !statSync(wp).isDirectory()) {
+      return `工作空间路径不存在或不是文件夹：${wp}`;
+    }
+    sets.push('workspace_path = ?'); values.push(wp);
+    recordWorkspaceHistory(wp);
+    return null;
+  }
+  sets.push("workspace_path = ''"); // 空串 = 解绑（字面量无占位符，不入 values）
+  return null;
+}
+
 api.patch('/projects/:id', (req, res) => {
   const { name, description, sortWeight, workspacePath } = req.body ?? {};
   const db = getDb();
@@ -164,24 +187,22 @@ api.patch('/projects/:id', (req, res) => {
   if (description !== undefined) { sets.push('description = ?'); values.push(description); }
   if (sortWeight !== undefined) { sets.push('sort_weight = ?'); values.push(sortWeight); }
   // T00771：工作空间绑定——路径必须存在且为文件夹（服务端本机校验），多项目可指向同一路径（仅存引用）
-  if (workspacePath !== undefined) {
-    const wp = typeof workspacePath === 'string' ? workspacePath.trim() : '';
-    if (wp) {
-      if (!/^[a-zA-Z]:[\\/]/.test(wp) && !wp.startsWith('/')) {
-        return res.status(400).json({ error: `工作空间路径须为绝对路径（收到：${wp}）` });
-      }
-      if (!existsSync(wp) || !statSync(wp).isDirectory()) {
-        return res.status(400).json({ error: `工作空间路径不存在或不是文件夹：${wp}` });
-      }
-      sets.push('workspace_path = ?'); values.push(wp);
-      recordWorkspaceHistory(wp);
-    } else {
-      sets.push("workspace_path = ''"); // 空串 = 解绑（字面量无占位符，不入 values）
-    }
-  }
+  // 走查修复（H-1）：换绑判定需与旧值比较，旧值必须在 UPDATE 之前读取——
+  // 同值重存（如在下拉条重选同一路径）不再清空符号索引，避免查询空窗且无自动重建
+  const prevWorkspace = (db.prepare('SELECT workspace_path FROM projects WHERE id = ?').get(req.params.id) as { workspace_path?: string | null } | undefined)?.workspace_path ?? '';
+  const wsErr = applyWorkspacePath(workspacePath, sets, values);
+  if (wsErr) return res.status(400).json({ error: wsErr });
   if (sets.length === 0) return res.status(400).json({ error: '无更新字段' });
   sets.push('updated_at = ?'); values.push(now());
   db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = ?`).run(...values, req.params.id);
+  // T00780：工作空间换绑/解绑 → 该项目符号索引立即失效（旧路径符号不再属于本项目）；
+  // 仅在路径实际发生变化（含绑定/解绑）时清理，同值重存跳过
+  if (workspacePath !== undefined) {
+    const nextWs = typeof workspacePath === 'string' ? workspacePath.trim() : '';
+    if (nextWs !== prevWorkspace.trim()) {
+      try { WorkspaceService.clearSymbols(req.params.id); } catch { /* 索引清理失败不阻塞绑定 */ }
+    }
+  }
   cacheClear('projects'); // 改名/排序影响列表展示
   res.json(db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id));
 });
@@ -298,8 +319,159 @@ api.delete('/projects/:id', (req, res) => {
 
 // ---------- 任务 ----------
 // 可选参数：projectId / archived / limit / offset / keyword / categoryId / sort（全部向后兼容，缺省=全量）
+// T01059-FR2.2：统计仪表盘数据——吞吐（每日完成数）/AI 成功率/AI 平均耗时/验证通过率 + 任务概览
+api.get('/stats/dashboard', (req, res) => {
+  const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+  const days = Math.min(365, Math.max(7, Number(req.query.days) || 30));
+  const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+  const today = new Date().toISOString().slice(0, 10);
+  const projWhere = projectId ? 'AND project_id = ?' : '';
+  const projArgs: string[] = projectId ? [projectId] : [];
+  const db = getDb();
+  // 吞吐：近 N 天每日完成（done）任务数——updated_at 变更即统计口径（完成时刻）
+  const throughput = db.prepare(
+    `SELECT substr(updated_at, 1, 10) AS date, COUNT(*) AS count FROM tasks
+      WHERE status = 'done' AND archived = 0 AND substr(updated_at, 1, 10) >= ? ${projWhere}
+      GROUP BY substr(updated_at, 1, 10) ORDER BY date`,
+  ).all(today, ...projArgs) as Array<{ date: string; count: number }>;
+  // AI 成功率/平均耗时（近 N 天 ai_usage）
+  const ai = db.prepare(
+    `SELECT COUNT(*) AS total, SUM(ok) AS okCount, AVG(duration_ms) AS avgMs FROM ai_usage WHERE created_at >= ?`,
+  ).get(since) as { total: number; okCount: number | null; avgMs: number | null };
+  // 验证通过率：done 任务中 verified=1 占比
+  const verify = db.prepare(
+    `SELECT COUNT(*) AS total, SUM(verified) AS verified FROM tasks WHERE status = 'done' AND archived = 0 ${projWhere}`,
+  ).get(...projArgs) as { total: number; verified: number | null };
+  // 概览
+  const totals = db.prepare(
+    `SELECT
+       SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) AS todo,
+       SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
+       SUM(CASE WHEN status NOT IN ('todo','done') THEN 1 ELSE 0 END) AS other
+     FROM tasks WHERE archived = 0 ${projWhere}`,
+  ).get(...projArgs) as { todo: number | null; done: number | null; other: number | null };
+  res.json({
+    days,
+    throughput,
+    ai: { total: ai.total ?? 0, ok: ai.okCount ?? 0, rate: ai.total ? Math.round(((ai.okCount ?? 0) / ai.total) * 1000) / 10 : 0, avgMs: Math.round(ai.avgMs ?? 0) },
+    verify: { total: verify.total ?? 0, verified: verify.verified ?? 0, rate: verify.total ? Math.round(((verify.verified ?? 0) / verify.total) * 1000) / 10 : 0 },
+    totals: { todo: totals.todo ?? 0, done: totals.done ?? 0, other: totals.other ?? 0 },
+  });
+});
+
+// T01061-FR5.1：数据库备份/恢复——自动每日备份（BackupService），手动备份/恢复/列表供设置页
+api.get('/backups', (_req, res) => {
+  res.json({ backups: listBackups(), status: backupStatus() });
+});
+api.post('/backups/now', (_req, res) => {
+  void runBackup('manual')
+    .then((r) => res.json({ ok: true, ...r, backups: listBackups(), status: backupStatus() }))
+    .catch((e: unknown) => res.status(500).json({ error: e instanceof Error ? e.message : String(e) }));
+});
+api.post('/backups/restore', (req, res) => {
+  const name = typeof (req.body ?? {}).name === 'string' ? String((req.body as { name: string }).name) : '';
+  if (!name) return res.status(400).json({ error: 'name 必填（备份文件名）' });
+  void restoreBackup(name)
+    .then(() => res.json({ ok: true, message: '已从快照恢复当前数据库（online 恢复，无需重启）；界面数据如未刷新请手动刷新页面。' }))
+    .catch((e: unknown) => res.status(500).json({ error: e instanceof Error ? e.message : String(e) }));
+});
+
+// T01064-FR1.4：通知中心数据源——最近任务事件（projectId 可选、since 未读增量、limit 上限 200）
+api.get('/events', (req, res) => {
+  const projectId = typeof req.query.projectId === 'string' && req.query.projectId ? req.query.projectId : undefined;
+  const since = typeof req.query.since === 'string' && req.query.since ? req.query.since : undefined;
+  const limit = Number(req.query.limit);
+  res.json(TaskService.listEvents({ projectId, since, limit: Number.isFinite(limit) ? limit : undefined }));
+});
+
+// T01064-FR1.5：单任务事件时间线（状态流转/回传/验证历史）
+api.get('/events/by-task/:taskId', (req, res) => {
+  res.json(TaskService.listTaskEvents(req.params.taskId));
+});
+
+// T01066-FR1.8（并行任务池）：运行中槽位/并发上限/排队计数。
+// MTask 为 pull 模式（外部 Agent 经 MCP 领任务）——池状态为观测与软引导；上限存 app_settings（默认 3，1~10）。
+const POOL_LIMIT_KEY = 'ai.pool.limit';
+api.get('/pool/status', (_req, res) => {
+  const db = getDb();
+  const limit = Math.min(10, Math.max(1, Number(getSetting(POOL_LIMIT_KEY)) || 3));
+  const running = db.prepare(
+    `SELECT t.id, t.task_no, t.title, t.ai_state_at, p.name AS project_name
+       FROM tasks t JOIN projects p ON p.id = t.project_id
+      WHERE t.ai_state = 'running' AND t.archived = 0 AND COALESCE(t.shelved, 0) = 0
+      ORDER BY t.ai_state_at DESC`,
+  ).all() as Array<{ id: string; task_no: string | null; title: string; ai_state_at: string; project_name: string }>;
+  const queued = (db.prepare(
+    "SELECT COUNT(*) AS c FROM tasks WHERE status = 'todo' AND COALESCE(ai_state, '') = '' AND archived = 0 AND COALESCE(shelved, 0) = 0",
+  ).get() as { c: number }).c;
+  res.json({ limit, running, queued });
+});
+api.put('/pool/limit', (req, res) => {
+  const n = Number((req.body ?? {}).limit);
+  if (!Number.isFinite(n) || n < 1 || n > 10) return res.status(400).json({ error: 'limit 取值 1~10' });
+  setSetting(POOL_LIMIT_KEY, String(Math.round(n)));
+  res.json({ ok: true, limit: Math.round(n) });
+});
+
+// T01072-FR1.9：处理结果历史与回滚（diff 视图数据源）
+api.get('/tasks/by-no/:taskNo/result-history', (req, res) => {
+  const task = TaskService.findByNo(req.params.taskNo);
+  if (!task) return res.status(404).json({ error: `任务「${req.params.taskNo}」不存在` });
+  res.json(TaskService.listResultHistory(task.id));
+});
+api.post('/tasks/by-no/:taskNo/result-rollback', (req, res) => {
+  const historyId = String((req.body ?? {}).historyId ?? '');
+  if (!historyId) return res.status(400).json({ error: 'historyId 必填' });
+  try {
+    const task = TaskService.rollbackResult(req.params.taskNo, historyId);
+    if (!task) return res.status(404).json({ error: `任务「${req.params.taskNo}」不存在` });
+    res.json(task);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// T01073-FR5.5：循环任务规则管理（到期由 server tick 自动生成副本）
+api.get('/recurring', (_req, res) => res.json(RecurringService.list()));
+api.post('/recurring', (req, res) => {
+  const { projectId, title, description, priority, categoryId, freq } = req.body ?? {};
+  try {
+    res.status(201).json(RecurringService.create({ projectId, title, description, priority, categoryId: categoryId ?? null, freq: freq ?? 'weekly' }));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+api.put('/recurring/:id', (req, res) => {
+  const enabled = (req.body ?? {}).enabled;
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled 布尔值必填' });
+  const r = RecurringService.setEnabled(req.params.id, enabled);
+  if (!r) return res.status(404).json({ error: '规则不存在' });
+  res.json(r);
+});
+api.delete('/recurring/:id', (req, res) => {
+  RecurringService.remove(req.params.id);
+  res.status(204).end();
+});
+
+// T01073-FR5.6：API Token 管理（创建时明文仅展示一次）
+api.get('/tokens', (_req, res) => res.json(TokenService.list()));
+api.post('/tokens', (req, res) => {
+  const name = String((req.body ?? {}).name ?? '');
+  try { res.status(201).json(TokenService.create(name)); } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+api.put('/tokens/:id', (req, res) => {
+  const enabled = (req.body ?? {}).enabled;
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled 布尔值必填' });
+  TokenService.setEnabled(req.params.id, enabled);
+  res.json({ ok: true });
+});
+api.delete('/tokens/:id', (req, res) => {
+  TokenService.remove(req.params.id);
+  res.status(204).end();
+});
+
 api.get('/tasks', (req, res) => {
-  const { projectId, archived, limit, offset, keyword, categoryId, priority, sort, shelved } = req.query;
+  const { projectId, archived, limit, offset, keyword, categoryId, priority, sort, shelved, status } = req.query;
   // limit 仅接受 1~500 的正整数，非法则忽略（保持全量语义），避免恶意超大分页拖垮查询
   let limitN: number | undefined;
   const limitRaw = Number(limit);
@@ -316,6 +488,8 @@ api.get('/tasks', (req, res) => {
     keyword: keyword as string | undefined,
     categoryId: categoryId as string | undefined,
     sort: sort as TaskListOptions['sort'],
+    // T01074：修复 status 过滤被路由层丢弃的问题（query status=todo/done 现在真正生效）
+    status: status as TaskListOptions['status'],
   }));
 });
 
@@ -324,6 +498,23 @@ api.get('/tasks/by-no/:taskNo', (req, res) => {
   const task = TaskService.findByNo(req.params.taskNo);
   if (!task) return res.status(404).json({ error: `任务「${req.params.taskNo}」不存在` });
   res.json(task);
+});
+
+// T01057-FR1.1：系统通知轮询数据源——AI 处理完成（unread）/失败（failed）的任务轻量清单；
+// Electron 主进程 30s 轮询 diff 快照后发 OS 通知（点击通知聚焦窗口并定位任务）。
+api.get('/notify/pending', (_req, res) => {
+  res.json(TaskService.listAiPending());
+});
+
+// T01057-FR1.2：失败一键重试——ai_state=failed 的任务回待办，retry_count+1，历史结果追加保留
+api.post('/tasks/by-no/:taskNo/retry', (req, res) => {
+  try {
+    const task = TaskService.retryTask(req.params.taskNo);
+    if (!task) return res.status(404).json({ error: `任务「${req.params.taskNo}」不存在` });
+    res.json(task);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 api.post('/tasks', (req, res) => {
@@ -346,8 +537,20 @@ api.post('/tasks', (req, res) => {
   res.status(201).json(TaskService.create({ projectId: pid, title: title.trim(), description, priority, status, categoryId, parentId: parent?.id }));
 });
 
+/** T00566 二轮：状态自动驱动推导（REST 侧）——返回待写入的 ai_state；优先采用显式 aiState，否则按语义推导 */
+function computeAutoAiState(opts: { aiState?: string; verified?: unknown; status?: unknown; handleResult?: unknown }): string | undefined {
+  if (opts.aiState === undefined) {
+    if (opts.verified === false) return 'failed';
+    if (opts.status === 'done') return 'unread';
+    if (opts.handleResult === undefined) return undefined;
+    return 'unread';
+  }
+  return opts.aiState;
+}
+
 api.patch('/tasks/:id', (req, res) => {
-  const { title, description, priority, status, verified, aiSummary, handleResult, pinned, categoryId, parentId, color, aiState, derivedFrom } = req.body ?? {}; // T00566：aiState AI 处理状态 // T00490：color 记录字体颜色
+  const { title, description, priority, status, verified, aiSummary, handleResult, pinned, categoryId, parentId, color, aiState, derivedFrom, archived } = req.body ?? {}; // T00566：aiState AI 处理状态 // T00490：color 记录字体颜色 // T00779：archived 归档（派生单闭环）
+  if (archived !== undefined && typeof archived !== 'boolean') { res.status(400).json({ error: 'archived 必须为布尔值' }); return; }
   // T00450：parentId 挂接/换父/解除（null）——同项目校验；父任务不可挂到自己或其后代（两级层级下后代不存在，仅防自挂）
   if (parentId !== undefined) {
     if (parentId === req.params.id) return res.status(400).json({ error: '父任务不能是任务自身' });
@@ -360,13 +563,8 @@ api.patch('/tasks/:id', (req, res) => {
   }
   // T00566 二轮：状态**自动驱动**（REST 侧同样不依赖技能）——显式 aiState 优先；
   // 否则按语义推导：验证失败→failed；标记完成→unread；回传处理结果→unread
-  const autoAiState = aiState !== undefined
-    ? aiState
-    : verified === false ? 'failed'
-      : status === 'done' ? 'unread'
-        : handleResult !== undefined ? 'unread'
-          : undefined;
-  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId, parent_id: parentId === undefined ? undefined : (parentId || null), color, ai_state: autoAiState, derived_from: derivedFrom }));
+  const autoAiState = computeAutoAiState({ aiState, verified, status, handleResult });
+  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId, parent_id: parentId === undefined ? undefined : (parentId || null), color, ai_state: autoAiState, derived_from: derivedFrom, archived })); // T00779：archived 归档
 });
 
 api.post('/tasks/move', (req, res) => {
@@ -604,13 +802,25 @@ api.post('/tasks/import-csv/confirm', (req, res) => {
 });
 
 // ---------- T00556 / PRD INT-6：JSON 任务导入（Trello 导出 / 通用 JSON 数组，preview + confirm） ----------
+/** 取首个非 null/undefined 字段并显式字符串化（S6551：避免 unknown 走默认 [object Object] 字符串化） */
+function firstStr(...vals: unknown[]): string {
+  for (const v of vals) {
+    if (v == null) continue;
+    if (typeof v === 'object') return JSON.stringify(v);
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return String(v);
+    return String(v as symbol); // symbol/function 等非 JSON 值兜底（显式窄化，不走 [object Object]）
+  }
+  return '';
+}
+
 /** 把多种 JSON 形态归一为任务条目：数组 / {cards|tasks|items|issues:[]} / Trello board {lists:[{cards:[]}]} */
 function extractJsonImportItems(data: unknown): Array<{ title: string; description: string; priority?: string }> {
   const toItem = (o: Record<string, unknown>): { title: string; description: string; priority?: string } | null => {
-    const title = String(o.title ?? o.name ?? o.summary ?? '').trim();
+    const title = firstStr(o.title, o.name, o.summary).trim();
     if (!title) return null;
-    const description = String(o.description ?? o.desc ?? o.details ?? o.content ?? '').trim();
-    const pr = String(o.priority ?? '').toLowerCase();
+    const description = firstStr(o.description, o.desc, o.details, o.content).trim();
+    const pr = firstStr(o.priority).toLowerCase();
     const priority = PRIORITY_ALIAS[pr] ? pr : undefined;
     return priority ? { title, description, priority } : { title, description };
   };
@@ -1117,8 +1327,64 @@ api.post('/report/ai-generate', async (req, res) => {
 });
 
 // ---------- AI 周报（SSE 流式）：联动 AI 控制台实时展示生成过程 ----------
-api.post('/report/ai-generate-stream', async (req, res) => {
-  const { period, format, projectId, toolId } = req.body ?? {};
+// ---------- T00769：原始需求生成 PRD（AI 控制台卡片，内置技能 prd-generate 驱动，SSE 流式输出） ----------
+api.post('/plans/prd-generate-stream', raw({ type: () => true, limit: '30mb' }), async (req, res) => {
+  const { projectId, toolId, filename } = req.query as Record<string, string | undefined>;
+  if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
+  if (!toolId) { res.status(400).json({ error: '请选择 AI 模型' }); return; }
+  let buf = req.body as Buffer | Record<string, unknown>;
+  // 协议兼容：application/json 时全局 express.json() 已把 body 解析为对象 {contentBase64}（streamEvents 通道）；
+  // 其余 Content-Type 走 raw() Buffer（文件二进制）
+  let fileBuf: Buffer;
+  if (buf && !Buffer.isBuffer(buf) && typeof (buf as { contentBase64?: unknown }).contentBase64 === 'string') {
+    fileBuf = Buffer.from((buf as { contentBase64: string }).contentBase64, 'base64');
+  } else {
+    fileBuf = buf as Buffer;
+  }
+  if (!fileBuf?.length) { res.status(400).json({ error: '请求体应为原始需求文件二进制' }); return; }
+  const fname = filename || '原始需求.md';
+  // T00769：扩展名与项目存在性前置校验（SSE 建立前快速失败，前端能拿到结构化 400 而非流中 error）
+  const extMatch = /\.[a-z0-9]+$/.exec(fname.toLowerCase());
+  const ext = extMatch ? extMatch[0] : '';
+  if (!['.doc', '.docx', '.xls', '.xlsx', '.csv', '.md', '.markdown', '.txt'].includes(ext)) {
+    res.status(400).json({ error: `不支持的文件格式「${ext || fname}」——支持 .doc/.docx/.xls/.xlsx/.md/.txt` }); return;
+  }
+  if (ext === '.doc') { res.status(400).json({ error: '老式 .doc 暂不支持，请用 Word 另存为 .docx 后重新上传' }); return; }
+  if (ext === '.xls') { res.status(400).json({ error: '老式 .xls 暂不支持，请用 Excel 另存为 .xlsx 后重新上传' }); return; }
+  if (!getDb().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) { res.status(400).json({ error: '项目不存在' }); return; }
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+  let closed = false;
+  const send = (event: string, payload: unknown) => {
+    if (closed || res.writableEnded) return;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+  };
+  // T00838：客户端断开（含前端「停止」主动 abort）即中止底层 AI 请求，资源随即释放
+  const ac = new AbortController();
+  res.on('close', () => { closed = true; ac.abort(); });
+
+  try {
+    const text = await PrdGenService.extractSourceText(fname, fileBuf);
+    const r = await PrdGenService.generatePrdStream({
+      projectId,
+      toolId,
+      filename: fname,
+      content: text,
+      onStage: (msg) => send('stage', { msg }),
+      onDelta: (t) => send('chunk', { text: t }),
+      signal: ac.signal, // T00838：客户端断开 → 中止底层生成
+    });
+    send('done', { prdMd: r.prdMd, issues: r.issues });
+  } catch (e) {
+    send('error', { error: e instanceof Error ? e.message : String(e) });
+  }
+  res.end();
+});
+
+api.post('/report/ai-generate-stream', async (req, res) => {  const { period, format, projectId, toolId } = req.body ?? {};
   if (!['day', 'week', 'month'].includes(period)) return res.status(400).json({ error: 'period 非法' });
   if (!['xlsx', 'docx', 'pdf', 'pptx'].includes(format)) return res.status(400).json({ error: 'format 非法' });
   if (typeof toolId !== 'string' || !toolId) return res.status(400).json({ error: '请选择 AI 模型' });
@@ -1137,7 +1403,9 @@ api.post('/report/ai-generate-stream', async (req, res) => {
     if (closed || res.writableEnded) return;
     res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
   };
-  res.on('close', () => { closed = true; });
+  // T00838：客户端断开（含前端「停止」主动 abort）即中止底层 AI 请求
+  const ac = new AbortController();
+  res.on('close', () => { closed = true; ac.abort(); });
 
   try {
     const r = await aiGenerateReportStream(
@@ -1146,6 +1414,7 @@ api.post('/report/ai-generate-stream', async (req, res) => {
       { projectId: projectId || undefined, toolId },
       (msg) => send('stage', { msg }),
       (text) => send('chunk', { text }),
+      ac.signal,
     );
     send('done', { token: r.token, filename: r.filename });
     res.end();
@@ -1258,6 +1527,13 @@ api.post('/console-jobs/:id/restart', (req, res) => {
   res.json({ id: job.id });
 });
 
+// T00838：停止单个任务——abort 底层 AI 请求并清理记录；已结束/不存在返回可读提示（幂等）
+api.post('/console-jobs/:id/stop', (req, res) => {
+  const r = ConsoleJobService.stop(req.params.id);
+  if (!r.ok) return res.status(404).json({ error: r.message });
+  res.json({ message: r.message });
+});
+
 api.delete('/console-jobs/:id', (req, res) => {
   if (!ConsoleJobService.remove(req.params.id)) return res.status(404).json({ error: '任务不存在' });
   res.status(204).end();
@@ -1267,6 +1543,35 @@ api.delete('/console-jobs/:id', (req, res) => {
 api.delete('/console-jobs', (_req, res) => {
   ConsoleJobService.clear();
   res.status(204).end();
+});
+
+// ---------- T00840：应用关闭前检测运行中任务 ----------
+/** 运行中任务汇总：AI 控制台手动分析（console_jobs busy）+ 后台队列在途（queue_jobs queued/sending）。
+ *  供桌面壳在用户关闭应用时列出「正在运行的任务」并确认是否强制关闭。 */
+api.get('/runtime/running-tasks', (_req, res) => {
+  const db = getDb();
+  const consoles = db.prepare("SELECT id, title FROM console_jobs WHERE status = 'busy'").all() as { id: string; title: string }[];
+  const queues = db.prepare(
+    `SELECT qj.id AS id, t.title AS name FROM queue_jobs qj
+       JOIN tasks t ON t.id = qj.task_id
+      WHERE qj.status IN ('queued', 'sending')`,
+  ).all() as { id: string; name: string }[];
+  const tasks = [
+    ...consoles.map((r) => ({ id: r.id, name: r.title, kind: 'console' as const })),
+    ...queues.map((r) => ({ id: r.id, name: r.name, kind: 'queue' as const })),
+  ];
+  res.json({ tasks });
+});
+
+/** 强制关闭前的运行态清理：删除 AI 控制台 busy 记录、把在途队列任务复位为 queued（便于下次重发），避免遗留“挂起”任务。 */
+api.post('/runtime/running-tasks/cleanup', (_req, res) => {
+  const db = getDb();
+  const clearedConsole = db.prepare("DELETE FROM console_jobs WHERE status = 'busy'").run().changes;
+  const requeuedQueue = db.prepare(
+    "UPDATE queue_jobs SET status = 'queued', ticket = NULL, submitted_at = NULL, sent_at = NULL, finished_at = NULL, error = NULL WHERE status IN ('queued', 'sending')",
+  ).run().changes;
+  cacheClear('console-jobs');
+  res.json({ clearedConsole, requeuedQueue });
 });
 
 // ---------- 任务智能分类 ----------
@@ -1404,17 +1709,8 @@ function resolveCleanRefs(taskNos: string[]): Map<string, { id: string; title: s
   return out;
 }
 
-/**
- * 执行数据清洗：把同一项目内判定为重复的任务，按其分组并入代表任务后归档被合并任务。
- * 写入严格走 TaskService.update（合并内容）与 ArchiveService.archive（归档，可 restore 还原），
- * 不直写 sqlite——绕过 Service 会丢关联同步（技能红线）。归档本身即可逆，误合并可还原。
- */
-api.post('/ai/clean-tasks', (req, res) => {
-  const { groups } = req.body ?? {};
-  if (!Array.isArray(groups) || groups.length === 0) {
-    return res.status(400).json({ error: 'groups 必填且为非空数组' });
-  }
-  // 逐组兜底校验：AI 输出不可靠，缺代表任务号或无可合并项时整组跳过（宁缺毋滥）
+/** 逐组兜底校验并归一化为可执行合并分组（AI 输出不可靠，缺代表任务号或无合并项时整组跳过） */
+function parseCleanGroups(groups: unknown[]): CleanGroup[] {
   const parsed: CleanGroup[] = [];
   for (const g of groups) {
     if (!g || typeof g !== 'object') continue;
@@ -1427,6 +1723,57 @@ api.post('/ai/clean-tasks', (req, res) => {
     if (!keep || merge.length === 0) continue;
     parsed.push({ keep, merge: Array.from(new Set(merge)), reason: typeof o.reason === 'string' ? o.reason.trim() : '' });
   }
+  return parsed;
+}
+
+/** 处理单个合并分组：追加合并记录到代表任务、归档被合并任务；返回执行结果（null 表示跳过） */
+function processCleanGroup(
+  g: CleanGroup,
+  refs: Map<string, { id: string; title: string }>,
+  missing: string[],
+): { detail: { keep: string; keepTitle: string; archived: string[]; reason: string }; archived: number } | null {
+  const keepRef = refs.get(g.keep);
+  if (!keepRef) { missing.push(g.keep); return null; }
+  const ids: string[] = [];
+  const archivedNos: string[] = [];
+  for (const no of g.merge) {
+    const ref = refs.get(no);
+    if (!ref) { missing.push(no); continue; }
+    ids.push(ref.id);
+    archivedNos.push(no);
+  }
+  if (ids.length === 0) return null;
+  const keepTask = TaskService.getById(keepRef.id);
+  if (keepTask) {
+    const stamp = new Date().toISOString().slice(0, 10);
+    const note = [
+      '## 数据清洗合并记录',
+      `- 合并时间：${stamp}（AI 控制台「数据清洗」）`,
+      `- 代表任务：${g.keep} ${keepRef.title}`,
+      '- 被合并并归档的任务：',
+      ...archivedNos.map((no) => `  - ${no}（${refs.get(no)?.title ?? ''}）`),
+      ...(g.reason ? [`- 合并理由：${g.reason}`] : []),
+      '- 说明：被合并任务已归档（可在归档菜单还原），关键信息已并入本条。',
+    ].join('\n');
+    const prev = keepTask.handle_result?.trim() ?? '';
+    TaskService.update(keepRef.id, { handle_result: prev ? `${prev}\n\n${note}` : note });
+  }
+  // 归档被合并任务：走 ArchiveService（可逆，误合并可 restore）
+  ArchiveService.archive(ids);
+  return { detail: { keep: g.keep, keepTitle: keepRef.title, archived: archivedNos, reason: g.reason }, archived: ids.length };
+}
+
+/**
+ * 执行数据清洗：把同一项目内判定为重复的任务，按其分组并入代表任务后归档被合并任务。
+ * 写入严格走 TaskService.update（合并内容）与 ArchiveService.archive（归档，可 restore 还原），
+ * 不直写 sqlite——绕过 Service 会丢关联同步（技能红线）。归档本身即可逆，误合并可还原。
+ */
+api.post('/ai/clean-tasks', (req, res) => {
+  const { groups } = req.body ?? {};
+  if (!Array.isArray(groups) || groups.length === 0) {
+    return res.status(400).json({ error: 'groups 必填且为非空数组' });
+  }
+  const parsed = parseCleanGroups(groups);
   if (parsed.length === 0) return res.status(400).json({ error: '没有可执行的合并分组（每组需提供 keep 与非空 merge）' });
 
   const refs = resolveCleanRefs(parsed.flatMap((g) => [g.keep, ...g.merge]));
@@ -1436,38 +1783,8 @@ api.post('/ai/clean-tasks', (req, res) => {
 
   try {
     for (const g of parsed) {
-      const keepRef = refs.get(g.keep);
-      if (!keepRef) { missing.push(g.keep); continue; }
-      const ids: string[] = [];
-      const archivedNos: string[] = [];
-      for (const no of g.merge) {
-        const ref = refs.get(no);
-        if (!ref) { missing.push(no); continue; }
-        ids.push(ref.id);
-        archivedNos.push(no);
-      }
-      if (ids.length === 0) continue;
-
-      // 1) 合并：被合并任务的关键信息追加进代表任务的「处理结果」，保证信息不丢
-      const keepTask = TaskService.getById(keepRef.id);
-      if (keepTask) {
-        const stamp = new Date().toISOString().slice(0, 10);
-        const note = [
-          '## 数据清洗合并记录',
-          `- 合并时间：${stamp}（AI 控制台「数据清洗」）`,
-          `- 代表任务：${g.keep} ${keepRef.title}`,
-          '- 被合并并归档的任务：',
-          ...archivedNos.map((no) => `  - ${no}（${refs.get(no)?.title ?? ''}）`),
-          ...(g.reason ? [`- 合并理由：${g.reason}`] : []),
-          '- 说明：被合并任务已归档（可在归档菜单还原），关键信息已并入本条。',
-        ].join('\n');
-        const prev = keepTask.handle_result?.trim() ?? '';
-        TaskService.update(keepRef.id, { handle_result: prev ? `${prev}\n\n${note}` : note });
-      }
-      // 2) 归档被合并任务：走 ArchiveService（可逆，误合并可 restore）
-      ArchiveService.archive(ids);
-      archivedCount += ids.length;
-      details.push({ keep: g.keep, keepTitle: keepRef.title, archived: archivedNos, reason: g.reason });
+      const r = processCleanGroup(g, refs, missing);
+      if (r) { details.push(r.detail); archivedCount += r.archived; }
     }
     notifyChange('tasks'); // 归档由 ArchiveService 直接写库，补发变更通知让前端列表即时刷新
     res.status(201).json({ ok: true, merged: details.length, archived: archivedCount, missing, details });
@@ -1489,10 +1806,11 @@ function createTaskFromSource(table: 'prompts' | 'req_entries', sourceId: string
   const exist = getDb().prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? LIMIT 1').get(projectId, `${prefix} ${src.title}`) as { id: string } | undefined;
   if (exist) return { taskId: exist.id, projectId, reused: true };
   const id = uuid();
+  // T00910：复制到待办的任务一并分配全局唯一任务编号 task_no（与 TaskService.create 一致），否则复制出的待办在列表无编号
   getDb().prepare(
-    `INSERT INTO tasks (id, project_id, title, description, priority, status, verified, archived, pinned, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'normal', 'todo', 0, 0, 0, ?, ?)`,
-  ).run(id, projectId, `${prefix} ${src.title}`, src.content || '', now(), now());
+    `INSERT INTO tasks (id, task_no, project_id, title, description, priority, status, verified, archived, pinned, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'normal', 'todo', 0, 0, 0, ?, ?)`,
+  ).run(id, nextTaskNo(), projectId, `${prefix} ${src.title}`, src.content || '', now(), now());
   return { taskId: id, projectId, reused: false };
 }
 
@@ -1601,10 +1919,13 @@ api.delete('/prompt-categories/:id', (req, res) => {
 });
 
 api.get('/prompts', (req, res) => {
-  const { categoryId, keyword } = req.query;
+  const { categoryId, keyword, archived } = req.query;
   const where: string[] = [];
   const values: unknown[] = [];
-  where.push('archived = 0'); // T00525：已归档默认不列出
+  // T00525 默认只列未归档；T00872：归档页传 archived=1 应**只返回归档提示词**（软删查询）。
+  // 注意：不能用「archived=1 即不加过滤」——那会连未归档的一起返回，导致归档页混入全部数据。
+  const inArchive = archived === '1' || archived === 'true';
+  where.push(inArchive ? 'archived = 1' : 'archived = 0');
   if (categoryId) { where.push('category_id = ?'); values.push(categoryId); }
   // keyword 显式收窄为 string：query 值可能是数组/对象，隐式字符串化会得到 "[object Object]" 污染 LIKE 条件
   if (typeof keyword === 'string' && keyword) {
@@ -1643,8 +1964,12 @@ api.patch('/prompts/:id', (req, res) => {
   if (categoryId !== undefined) { sets.push('category_id = ?'); values.push(categoryId); }
   if (pinned !== undefined) { sets.push('pinned = ?'); values.push(pinned ? 1 : 0); }
   if (color !== undefined) { sets.push('color = ?'); values.push(String(color)); } // T00490
-  if (archived !== undefined) { sets.push('archived = ?'); values.push(archived ? 1 : 0); } // T00525：删除改归档
-  if (reqCategoryId !== undefined) { sets.push('req_category_id = ?'); values.push(String(reqCategoryId)); } // T00837：通用需求分类归属（归入/解除）
+  if (archived !== undefined) {
+    sets.push('archived = ?'); values.push(archived ? 1 : 0); // T00525：删除改归档
+    // T00872：归档/还原时同步归档时间打点——归档页展示「归档于」，还原后清空
+    sets.push('archived_at = ?'); values.push(archived ? now() : null);
+  }
+  if (reqCategoryId !== undefined) { sets.push('req_category_id = ?'); values.push(String(reqCategoryId)); } // T00837
   if (sets.length === 0) return res.status(400).json({ error: '无更新字段' });
   sets.push('updated_at = ?'); values.push(now());
   db.prepare(`UPDATE prompts SET ${sets.join(', ')} WHERE id = ?`).run(...values, req.params.id);

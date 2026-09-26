@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown'; // T00763：PRD 原文 Markdown 渲染弹窗
-import { Check, ChevronDown, ChevronUp, FileSpreadsheet, FileText, Link2, ListChecks, Loader2, Plus, RefreshCw, Table2, Trash2, X } from 'lucide-react'; // T00765：标题点击查询详情；T00763：查看PRD；T00773：多选模式；T00959：导出 Excel
+import { Check, ChevronDown, ChevronUp, Archive, FileSpreadsheet, FileText, Link2, ListChecks, Loader2, Minimize2, Plus, RefreshCw, Sparkles, Table2, Trash2, Upload, X } from 'lucide-react'; // T00765：标题点击查询详情；T00763：查看PRD；T00773：多选模式；T00824：跳转导入入口；T00825：关联PRD；T00842：需求标题栏 AI 美化/简化/归档；T00959：导出 Excel
 import { EXPORT_MIME, safeExportName, saveBinary } from '../utils/download'; // T00959：导出下载
 
 /** 矩阵行：需求 + 其关联的计划与待办（T00662） */
@@ -45,21 +45,26 @@ export function ReqMatrixPanel({ projectId, onClose }: {
   const [exporting, setExporting] = useState(false);
   const [notice, setNotice] = useState('');
   const [linkFor, setLinkFor] = useState<string>('');       // 正在调整关联的需求 id
-  const [linkKind, setLinkKind] = useState<'plan' | 'task'>('plan');
+  const [linkKind, setLinkKind] = useState<'plan' | 'task' | 'prd'>('plan');
   const [queryId, setQueryId] = useState<string>(''); // T00765：正在查看详情的需求 id（点击标题旁 chevron 切换）
-  const [prdModal, setPrdModal] = useState<{ filename: string; content: string } | null | undefined>(undefined); // T00763：undefined=关闭，null=加载中，对象=展示中
+  // T00763：undefined=关闭，null=加载中，对象=展示中；T00825：locate 字段承载定位关键词（需求标题/编号）
+  const [prdModal, setPrdModal] = useState<{ filename: string; content: string; locateTitle?: string; locateNo?: string } | null | undefined>(undefined);
+  // T00825：项目内 PRD 文档列表——「关联调整·PRD」选项卡可选对象
+  const [prdDocs, setPrdDocs] = useState<Array<{ id: string; filename: string }>>([]);
   const [newTitle, setNewTitle] = useState('');
   // T00773：多选模式（参考项目计划 T00564）——批量更改状态 / 批量删除
   const [multi, setMulti] = useState(false);
   const [selIds, setSelIds] = useState<string[]>([]);
   const allRef = useRef<HTMLInputElement>(null);
+  // T00825：PRD 原文弹窗内容容器——渲染后按定位关键词 scrollIntoView + 高亮
+  const prdBodyRef = useRef<HTMLDivElement>(null);
 
-  /** T00763：查看 PRD 原文——拉取完整 Markdown 后弹窗渲染 */
-  async function openPrd(doc: { id: string; filename: string }) {
+  /** T00763/T00825：查看 PRD 原文——拉取完整 Markdown 后弹窗渲染；可带定位关键词（需求标题/编号）滚动高亮 */
+  async function openPrd(doc: { id: string; filename: string }, locate?: { title: string; reqNo: string }) {
     setPrdModal(null); // null = 加载中
     try {
       const d = await api.get<{ filename: string; content_md: string }>(`/plans/prd-docs/${doc.id}`);
-      setPrdModal({ filename: d.filename || doc.filename || '未命名 PRD', content: d.content_md });
+      setPrdModal({ filename: d.filename || doc.filename || '未命名 PRD', content: d.content_md, locateTitle: locate?.title, locateNo: locate?.reqNo });
     } catch (e) {
       setPrdModal(undefined);
       flash(e instanceof Error ? e.message : String(e));
@@ -90,17 +95,57 @@ export function ReqMatrixPanel({ projectId, onClose }: {
 
   const load = useCallback(async () => {
     if (!projectId) return;
-    const [r, p, t] = await Promise.all([
+    const [r, p, t, d] = await Promise.all([
       api.get<MatrixReq[]>(`/plans/prd-requirements?projectId=${projectId}`),
       api.get<PlanLite[]>(`/plans?projectId=${projectId}`).catch(() => []),
       api.get<Array<{ id: string; task_no: string | null; title: string }>>(`/tasks?projectId=${projectId}&archived=false`).catch(() => []),
+      api.get<Array<{ id: string; filename: string }>>(`/plans/prd-docs?projectId=${projectId}`).catch(() => []),
     ]);
     setRows(r);
     setPlans(p);
     setTasks(t.map((x) => ({ id: x.id, taskNo: x.task_no, title: x.title })));
+    setPrdDocs(d);
   }, [projectId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // T00825：PRD 原文弹窗渲染完成后定位高亮——优先按需求标题匹配标题行，其次编号；
+  // 命中 → scrollIntoView + 加高亮 class（2.5s 后移除）；未命中标题退化到任意含标题的段落；仍无则滚动顶部，不报错
+  useEffect(() => {
+    if (!prdModal || prdModal === null || !prdModal.content || !prdBodyRef.current) return;
+    const locate = prdModal.locateTitle || prdModal.locateNo;
+    if (!locate) return;
+    const root = prdBodyRef.current;
+    const targets: Array<[Element, number]> = [];
+    root.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((el) => {
+      const txt = (el.textContent ?? '').trim();
+      if (!txt) return;
+      const score = prdModal.locateTitle && txt.includes(prdModal.locateTitle) ? 2 : (prdModal.locateNo && txt.includes(prdModal.locateNo) ? 1 : 0);
+      if (score > 0) targets.push([el, score]);
+    });
+    let hit: Element | null = targets.sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+    const locateTitle = prdModal.locateTitle ?? '';
+    if (!hit && locateTitle) {
+      hit = Array.from(root.querySelectorAll('p,li,td')).find((el) => (el.textContent ?? '').includes(locateTitle)) ?? null;
+    }
+    const container = root;
+    if (hit) {
+      try { hit.scrollIntoView({ block: 'center' }); } catch { /* 忽略滚动异常 */ }
+      hit.classList.add('prd-hl');
+      window.setTimeout(() => hit?.classList.remove('prd-hl'), 2500);
+    } else {
+      container.scrollTop = 0;
+    }
+  }, [prdModal]);
+
+  /** T00824：从本视图跳转 AI 工作台并自动展开「从 PRD 导入项目计划」面板，目标项目随跳转带出 */
+  function goImportPrd() {
+    try {
+      sessionStorage.setItem('report.showPrdImport', JSON.stringify(true));
+      sessionStorage.setItem('prd-import.project', JSON.stringify(projectId));
+      globalThis.dispatchEvent(new CustomEvent('mtaskNavigate', { detail: { tab: 'report' } }));
+    } catch { /* 跳转异常静默，不影响当前视图 */ }
+  }
 
   async function addReq() {
     if (!newTitle.trim()) return flash('请输入需求标题');
@@ -137,6 +182,14 @@ export function ReqMatrixPanel({ projectId, onClose }: {
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
   }
 
+  /** T00825：设置/解除需求↔PRD 关联（单选，传空串解除） */
+  async function setPrdLink(reqId: string, docId: string, linked: boolean) {
+    try {
+      await api.patch(`/plans/prd-requirements/${reqId}`, { prdId: linked ? docId : '' });
+      await load();
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
+  }
+
   /** T00773：批量更改选中需求的状态（复用单条 PATCH，循环提交） */
   async function batchSetStatus(st: string) {
     const ids = [...selIds];
@@ -154,7 +207,6 @@ export function ReqMatrixPanel({ projectId, onClose }: {
   async function batchDeleteReqs() {
     const ids = [...selIds];
     if (ids.length === 0) return;
-    const victims = rows.filter((r) => ids.includes(r.id));
     if (!(await askConfirm(`删除选中的 ${ids.length} 条需求？\n\n其与计划/待办的关联将一并清理（计划与任务本身不受影响）。`))) return;
     setBusy(true);
     try {
@@ -206,6 +258,13 @@ export function ReqMatrixPanel({ projectId, onClose }: {
             </button>
           </span>
         )}
+        {/* T00824：跳转 AI 工作台导入入口——文件多选在导入面板内完成 */}
+        <button onClick={goImportPrd} className="tbtn-anim"
+          title="选择PRD导入 — 跳转 AI 工作台，从 PRD 批量导入需求矩阵与项目计划"
+          aria-label="选择PRD导入"
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 3, border: '1px solid var(--accent)', borderRadius: 6, background: 'transparent', color: 'var(--accent)', cursor: 'pointer', fontSize: 11, padding: '2px 8px' }}>
+          <Upload size={12} />
+        </button>
         {/* T00959：导出 Excel——无文字图标按钮 + 悬浮倾斜 + 两行中文浮层；导出当前项目矩阵（与界面同源数据） */}
         <button onClick={() => void exportMatrix()} disabled={exporting || rows.length === 0} className="tbtn-anim prd-tilt-btn"
           title={rows.length === 0 ? '导出 Excel\n当前项目没有需求可导出' : '导出 Excel\n下载需求跟踪矩阵表格（含关联计划/待办）'}
@@ -215,7 +274,7 @@ export function ReqMatrixPanel({ projectId, onClose }: {
         </button>
         <button onClick={() => void load()} className="tbtn-anim" title="刷新矩阵" aria-label="刷新矩阵"
           style={{ display: 'inline-flex', alignItems: 'center', gap: 3, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 11, padding: '2px 8px' }}>
-          <RefreshCw size={12} /> 刷新
+          <RefreshCw size={12} />
         </button>
         <button onClick={onClose} className="tbtn-anim" title="收起矩阵面板" aria-label="收起需求跟踪矩阵"
           style={{ display: 'inline-flex', alignItems: 'center', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', padding: '3px 6px' }}>
@@ -232,7 +291,7 @@ export function ReqMatrixPanel({ projectId, onClose }: {
         <button onClick={() => void addReq()} disabled={busy} className="tbtn-anim"
           title="新增一条需求（编号自动生成）" aria-label="新增需求"
           style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)', fontSize: 12, cursor: 'pointer' }}>
-          <Plus size={13} /> 新增需求
+          <Plus size={13} />
         </button>
         {notice && <span style={{ fontSize: 11, color: 'var(--accent)' }}>{notice}</span>}
       </div>
@@ -258,6 +317,8 @@ export function ReqMatrixPanel({ projectId, onClose }: {
                   <th style={{ padding: '5px 6px' }}>需求标题</th>
                   <th style={{ padding: '5px 6px' }}>状态</th>
                   <th style={{ padding: '5px 6px' }}>关联计划</th>
+                  {/* T00825：关联PRD 列——显示可点击的 PRD 名称，点击打开原文并定位高亮 */}
+                  <th style={{ padding: '5px 6px' }}>关联PRD</th>
                   <th style={{ padding: '5px 6px' }}>关联待办</th>
                   <th style={{ padding: '5px 6px' }}>操作</th>
                 </tr>
@@ -290,6 +351,22 @@ export function ReqMatrixPanel({ projectId, onClose }: {
                           aria-label={`查询需求 ${r.title} 详情`} aria-expanded={queryId === r.id}
                           style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: queryId === r.id ? 'var(--accent)' : 'var(--text-muted)', padding: 2, display: 'inline-flex', flexShrink: 0 }}>
                           {queryId === r.id ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                        </button>
+                        {/* T00842 位置3「参考任务菜单」：样式对齐任务菜单已有同名按钮（task-op 同款尺寸/间距/圆角，图标同源） */}
+                        <button onClick={() => flash('AI 美化功能开发中')} className="tbtn-anim"
+                          title="AI 美化 — 润色该需求标题，使其语义更清晰表达更规范" aria-label="AI 美化：润色该需求标题"
+                          style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)', padding: 2, display: 'inline-flex', flexShrink: 0 }}>
+                          <Sparkles size={12} />
+                        </button>
+                        <button onClick={() => flash('AI 简化功能开发中')} className="tbtn-anim"
+                          title="AI 简化 — 依据需求详情高度总结为简洁标题（限 40 字，细节会精简）" aria-label="AI 简化：依据需求详情总结为简洁标题"
+                          style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)', padding: 2, display: 'inline-flex', flexShrink: 0 }}>
+                          <Minimize2 size={12} />
+                        </button>
+                        <button onClick={() => flash('归档功能开发中')} className="tbtn-anim"
+                          title="归档 — 将该需求移入归档" aria-label="归档：将该需求移入归档"
+                          style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)', padding: 2, display: 'inline-flex', flexShrink: 0 }}>
+                          <Archive size={12} />
                         </button>
                       </div>
                       {r.source_ref && <div style={{ fontSize: 10, color: 'var(--text-muted)', paddingLeft: 4 }}>{r.source_ref}</div>}
@@ -328,6 +405,18 @@ export function ReqMatrixPanel({ projectId, onClose }: {
                             </span>
                           ))}
                         </span>
+                      )}
+                    </td>
+                    {/* T00825：关联PRD 单元格——有 PRD 时显示可点击名称（打开原文并定位该需求章节高亮），无则占位 */}
+                    <td style={{ padding: '4px 6px', maxWidth: 180 }}>
+                      {!r.prdDoc ? <span style={{ color: 'var(--text-muted)' }}>—</span> : (
+                        <button onClick={() => void openPrd(r.prdDoc!, { title: r.title, reqNo: r.req_no })} className="tbtn-anim"
+                          title={`打开 PRD 原文：${r.prdDoc.filename}（定位到「${r.title}」章节）`}
+                          aria-label={`打开关联 PRD ${r.prdDoc.filename}`}
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, border: 'none', background: 'transparent', color: 'var(--accent)', cursor: 'pointer', padding: 0, maxWidth: '100%', textAlign: 'left' }}>
+                          <FileText size={11} style={{ flexShrink: 0 }} />
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.prdDoc.filename}</span>
+                        </button>
                       )}
                     </td>
                     <td style={{ padding: '4px 6px', maxWidth: 200 }}>
@@ -370,6 +459,9 @@ export function ReqMatrixPanel({ projectId, onClose }: {
                 style={{ padding: '2px 10px', fontSize: 11, border: 'none', cursor: 'pointer', background: linkKind === 'plan' ? 'var(--accent)' : 'transparent', color: linkKind === 'plan' ? 'var(--accent-text)' : 'var(--text)' }}>计划</button>
               <button onClick={() => setLinkKind('task')} title="关联到待办任务" aria-label="关联到待办"
                 style={{ padding: '2px 10px', fontSize: 11, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: linkKind === 'task' ? 'var(--accent)' : 'transparent', color: linkKind === 'task' ? 'var(--accent-text)' : 'var(--text)' }}>待办</button>
+              {/* T00825：PRD 选项卡——单选关联一份 PRD 文档（取消=解除） */}
+              <button onClick={() => setLinkKind('prd')} title="关联到 PRD 文档" aria-label="关联到 PRD"
+                style={{ padding: '2px 10px', fontSize: 11, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: linkKind === 'prd' ? 'var(--accent)' : 'transparent', color: linkKind === 'prd' ? 'var(--accent-text)' : 'var(--text)' }}>PRD</button>
             </fieldset>
             <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>勾选即建立关联，取消勾选解除</span>
             <span style={{ flex: 1 }} />
@@ -379,6 +471,26 @@ export function ReqMatrixPanel({ projectId, onClose }: {
           {(() => {
             const cur = rows.find((x) => x.id === linkFor);
             if (!cur) return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{busy ? <Loader2 size={12} className="aispin" /> : '需求已变更，请刷新'}</div>;
+            // T00825：PRD 为单值关联（radio 风格），计划/待办保持多选勾选
+            if (linkKind === 'prd') {
+              if (prdDocs.length === 0) return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>该项目暂无 PRD 文档可选。</div>;
+              return (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxHeight: 180, overflowY: 'auto' }}>
+                  {prdDocs.map((x) => {
+                    const on = cur.prdDoc?.id === x.id;
+                    return (
+                      <button key={x.id} onClick={() => void setPrdLink(cur.id, x.id, !on)} className="tbtn-anim"
+                        title={on ? `解除与「${x.filename}」的关联` : `关联到「${x.filename}」`}
+                        aria-label={on ? `解除关联 PRD ${x.filename}` : `关联 PRD ${x.filename}`}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer', border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 6, padding: '2px 8px', background: on ? 'var(--accent-soft, transparent)' : 'transparent', color: on ? 'var(--accent)' : 'var(--text)', maxWidth: 260 }}>
+                        {on && <Check size={11} />}
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{x.filename || '未命名 PRD'}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            }
             const linkedIds = linkKind === 'plan' ? cur.linkedPlans.map((x) => x.id) : cur.linkedTasks.map((x) => x.id);
             const list = linkKind === 'plan'
               ? plans.map((p) => ({ id: p.id, label: p.title }))
@@ -403,10 +515,12 @@ export function ReqMatrixPanel({ projectId, onClose }: {
       )}
       {/* T00763：PRD 原文弹窗——模态覆盖层，Markdown 渲染 + 滚动查看长文档 */}
       {prdModal !== undefined && (
-        <div onClick={() => setPrdModal(undefined)}
-          role="dialog" aria-modal="true" aria-label={`PRD 原文：${prdModal === null ? '加载中' : prdModal.filename}`}
+        <dialog open
+          aria-label={`PRD 原文：${prdModal === null ? '加载中' : prdModal.filename}`}
           style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-          <div onClick={(e) => e.stopPropagation()}
+          {/* T00825：定位章节高亮样式（accent 柔和底 + 左强调条，随主题变量） */}
+          <style>{'.prd-hl { background: var(--accent-soft); box-shadow: 0 0 0 3px var(--accent-soft); border-radius: 4px; transition: background .3s ease; }'}</style>
+          <div
             style={{ width: 'min(860px, 100%)', maxHeight: '82vh', display: 'flex', flexDirection: 'column', background: 'var(--card-bg)', color: 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 12px 40px rgba(0,0,0,0.25)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
               <FileText size={15} style={{ color: 'var(--accent)' }} />
@@ -419,13 +533,13 @@ export function ReqMatrixPanel({ projectId, onClose }: {
                 <X size={13} />
               </button>
             </div>
-            <div style={{ padding: '12px 16px', overflowY: 'auto', fontSize: 13 }}>
+            <div ref={prdBodyRef} style={{ padding: '12px 16px', overflowY: 'auto', fontSize: 13 }}>
               {prdModal === null
                 ? <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)' }}><Loader2 size={14} className="aispin" /> 加载 PRD 原文…</div>
                 : <MarkdownContent content={prdModal.content} />}
             </div>
           </div>
-        </div>
+        </dialog>
       )}
     </div>
   );

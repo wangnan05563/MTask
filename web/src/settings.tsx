@@ -6,7 +6,7 @@
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
-export type Theme = 'light' | 'dark';
+export type Theme = 'light' | 'dark' | 'auto'; // T01060-FR4.2：auto=跟随系统（matchMedia 动态解析）
 export type FontKey = 'default' | 'mono' | 'kai' | 'song';
 export type FontSizeKey = 's' | 'm' | 'l';
 /** 备份导入时的冲突处理策略：合并/保留现有/覆盖全部 */
@@ -16,6 +16,8 @@ export interface SettingsPrefs {
   theme: Theme;
   font: FontKey;
   fontSize: FontSizeKey;
+  /** T01060-FR4.1：自定义强调色（#rrggbb；空串=跟随主题默认） */
+  accent: string;
 }
 
 const PREF_KEY = 'settings.prefs';
@@ -47,7 +49,15 @@ export const FONT_SIZE_OPTIONS: { key: FontSizeKey; label: string }[] = [
   { key: 'l', label: '大' },
 ];
 
-const DEFAULTS: SettingsPrefs = { theme: 'light', font: 'default', fontSize: 'm' };
+const DEFAULTS: SettingsPrefs = { theme: 'light', font: 'default', fontSize: 'm', accent: '' };
+
+/** T01060-FR4.1：hex 亮度（0~1）——用于强调色上按钮文字自动取深/白，保证对比度 */
+function luminance(hex: string): number {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
 
 /** 全局 CSS 变量：浅/深两套主题 + 语义色板。所有页面改用这些变量即自动适配主题与字号 */
 const themeCss = `
@@ -95,6 +105,62 @@ const themeCss = `
   --markdown-quote: #4b5563;
   color-scheme: dark;
 }
+
+/* T01038+：运行态「流光文字」动画——对齐 WorkBuddy 会话运行动画样式（lib-chat-ui cb-shining-text）：
+   110° 渐变 + background-clip:text，基色 30% 透明、中段提亮 75%，background-position 200%→-200% 每 2.2s 无限扫过。
+   颜色经 --ai-shimmer-color 可覆盖（如蓝底按钮内传 var(--accent-text)），默认跟随主题主文字色 var(--text)。 */
+@keyframes ai-shimmer-sweep {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.ai-shimmer {
+  width: fit-content;
+  background: linear-gradient(110deg,
+    color-mix(in srgb, var(--ai-shimmer-color, var(--text)) 30%, transparent) 0%,
+    color-mix(in srgb, var(--ai-shimmer-color, var(--text)) 30%, transparent) 35%,
+    color-mix(in srgb, var(--ai-shimmer-color, var(--text)) 75%, transparent) 50%,
+    color-mix(in srgb, var(--ai-shimmer-color, var(--text)) 30%, transparent) 65%,
+    color-mix(in srgb, var(--ai-shimmer-color, var(--text)) 30%, transparent) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: ai-shimmer-sweep 2.2s linear infinite;
+}
+
+/* T01067-FR3.4：长列表虚拟滚动（content-visibility）——Chromium 桌面壳原生支持，
+   屏外行跳过渲染仅保留布局占位（intrinsic-size 为估算行高，展开后按实际高度自适应）。
+   对不定高列表（任务行可展开/含图）优于 JS 窗口化：零改造、无测量抖动。 */
+.cv-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 64px;
+}
+
+/* T01067-FR3.3：骨架屏——AI 生成/数据加载期间的占位微光条（对齐 WorkBuddy sm-skeleton-shimmer 观感） */
+@keyframes skel-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.skel {
+  background: linear-gradient(90deg,
+    var(--surface-2) 25%,
+    var(--border) 37%,
+    var(--surface-2) 63%);
+  background-size: 400% 100%;
+  animation: skel-shimmer 1.4s ease infinite;
+  border-radius: 6px;
+}
+
+/* T01068-FR4.4：流光延展——AI 运行态元素的 accent 光晕呼吸（文字流光 ai-shimmer 的边框/容器延展形态）。
+   用 box-shadow 而非 conic 边框：不与各卡片 inline background 冲突、无 @property 依赖，观感近似。 */
+@keyframes flow-glow {
+  0%, 100% { box-shadow: 0 0 0 1px var(--accent), 0 0 10px color-mix(in srgb, var(--accent) 30%, transparent); }
+  50% { box-shadow: 0 0 0 1.5px var(--accent), 0 0 20px color-mix(in srgb, var(--accent) 55%, transparent); }
+}
+.flow-glow {
+  animation: flow-glow 1.8s ease-in-out infinite;
+}
 `;
 
 function loadPrefs(): SettingsPrefs {
@@ -103,9 +169,11 @@ function loadPrefs(): SettingsPrefs {
     if (!raw) return DEFAULTS;
     const p = { ...DEFAULTS, ...(JSON.parse(raw) as Partial<SettingsPrefs>) };
     // 防脏数据：主题/字号/字体只在合法枚举内，否则回退默认
-    if (!['light', 'dark'].includes(p.theme)) p.theme = DEFAULTS.theme;
+    if (!['light', 'dark', 'auto'].includes(p.theme)) p.theme = DEFAULTS.theme;
     if (!(p.font in FONT_MAP)) p.font = DEFAULTS.font;
     if (!(p.fontSize in FONT_SIZE_MAP)) p.fontSize = DEFAULTS.fontSize;
+    // T01060-FR4.1：强调色仅接受空串（默认）或 #rrggbb
+    if (p.accent !== '' && !/^#[0-9a-fA-F]{6}$/.test(p.accent)) p.accent = DEFAULTS.accent;
     return p;
   } catch {
     return DEFAULTS;
@@ -124,15 +192,43 @@ const Ctx = createContext<SettingsCtx>({
 
 export function SettingsProvider({ children }: { readonly children: ReactNode }) {
   const [prefs, setPrefs] = useState<SettingsPrefs>(loadPrefs);
+  // T01060-FR4.2：跟随系统——auto 时监听系统配色变化，动态解析实际主题
+  const [systemDark, setSystemDark] = useState(() =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-color-scheme: dark)').matches
+      : false,
+  );
+  useEffect(() => {
+    if (prefs.theme !== 'auto' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, [prefs.theme]);
 
   // 偏好变化即持久化 + 应用主题与字体。data-theme 用 dataset 写入（S7761）
   useEffect(() => {
     try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch { /* 忽略配额等写入失败 */ }
-    document.documentElement.dataset.theme = prefs.theme;
+    const effTheme = prefs.theme === 'auto' ? (systemDark ? 'dark' : 'light') : prefs.theme;
+    document.documentElement.dataset.theme = effTheme;
     document.documentElement.style.setProperty('--font-family', FONT_MAP[prefs.font]);
     const vars = FONT_SIZE_MAP[prefs.fontSize];
     for (const [k, v] of Object.entries(vars)) document.documentElement.style.setProperty(k, v);
-  }, [prefs]);
+    // T01060-FR4.1：自定义强调色——inline 变量覆盖主题表；空串恢复默认
+    const rootStyle = document.documentElement.style;
+    const accent = prefs.accent.trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(accent)) {
+      rootStyle.setProperty('--accent', accent);
+      // 浅底/深底通用的浅强调底：以 app-bg 调和 10%；按钮文字按亮度自动取深/白
+      rootStyle.setProperty('--accent-soft', `color-mix(in srgb, ${accent} 10%, var(--app-bg))`);
+      const lum = luminance(accent);
+      rootStyle.setProperty('--accent-text', lum > 0.72 ? '#1f2937' : '#ffffff');
+    } else {
+      rootStyle.removeProperty('--accent');
+      rootStyle.removeProperty('--accent-soft');
+      rootStyle.removeProperty('--accent-text');
+    }
+  }, [prefs, systemDark]);
 
   // update 用 useCallback 稳定引用：setPrefs 本身稳定，避免 value 因函数重建而每次渲染变化
   const update = useCallback<SettingsCtx['update']>(

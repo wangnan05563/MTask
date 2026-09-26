@@ -72,7 +72,10 @@ export class OpenAICompatAdapter implements AIAdapter {
   }
 
   /** 通用单轮对话：复用 /chat/completions，供 send 与提示词优化等场景共用 */
-  async chat(system: string, user: string, config: ToolConfig): Promise<JobResult> {
+  async chat(system: string, user: string, config: ToolConfig, signal?: AbortSignal): Promise<JobResult> {
+    // T00838：把外部取消信号与内部超时信号合并，避免两者竞争覆盖同一个 ctrl.abort
+    const ctrl = signal ? new AbortController() : undefined;
+    if (signal && ctrl) signal.addEventListener('abort', () => ctrl.abort());
     try {
       const url = `${this.baseUrl(config.endpoint)}/chat/completions`;
       const res = await withTimeout(
@@ -91,6 +94,7 @@ export class OpenAICompatAdapter implements AIAdapter {
             temperature: config.temperature ?? 0.2,
             max_tokens: config.maxTokens ?? 4096,
           }),
+          ...(ctrl ? { signal: ctrl.signal } : {}),
         }),
         config.timeoutMs ?? 60000,
       );
@@ -124,15 +128,19 @@ export class OpenAICompatAdapter implements AIAdapter {
       }
       return { ok: true, content };
     } catch (e) {
+      // T00838：外部主动中止（用户点「停止」）归因到「任务已停止」，而非笼统的连接错误
+      if (signal?.aborted) return { ok: false, error: '任务已停止' };
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
   }
 
   /** 流式通用单轮对话：stream:true，逐块取 choices[0].delta.content 增量回调，供 AI 周报 SSE 实时输出 */
-  async chatStream(system: string, user: string, config: ToolConfig, onDelta: (text: string) => void): Promise<StreamResult> {
+  async chatStream(system: string, user: string, config: ToolConfig, onDelta: (text: string) => void, signal?: AbortSignal): Promise<StreamResult> {
     const ctrl = new AbortController();
     // 流式期间同样受超时约束：超时则中断流，避免长耗时任务无限挂起
     const timer = setTimeout(() => ctrl.abort(), config.timeoutMs ?? 60000);
+    // T00838：外部取消信号（用户点「停止」）同样 abort 底层流请求，与超时共用 ctrl
+    if (signal) signal.addEventListener('abort', () => ctrl.abort());
     try {
       const url = `${this.baseUrl(config.endpoint)}/chat/completions`;
       const res = await fetch(url, {
@@ -188,6 +196,8 @@ export class OpenAICompatAdapter implements AIAdapter {
       if (finish === 'content_filter') return { ok: false, error: outputStoppedError('finish_reason=content_filter', text.length), partial: text }; // 走查 M-3
       return { ok: true, content: text };
     } catch (e) {
+      // T00838：区分「外部主动停止」与「超时」——stop 场景不再误报为连接超时
+      if (signal?.aborted) return { ok: false, error: '任务已停止' };
       if (e instanceof Error && e.name === 'AbortError') return { ok: false, error: `连接超时（超过 ${config.timeoutMs ?? 60000}ms）` };
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     } finally {

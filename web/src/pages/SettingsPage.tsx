@@ -2,20 +2,36 @@ import { useEffect, useRef, useState } from 'react';
 import { api, type TaskCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { FONT_OPTIONS, FONT_SIZE_OPTIONS, useSettings, type ImportMode } from '../settings';
-import { Download, ExternalLink, FileUp, FolderPlus, Info, Moon, Pencil, RefreshCw, Save, Settings, ShieldCheck, Sun, Trash2 } from 'lucide-react';
+import { Download, ExternalLink, FileUp, FolderPlus, Info, MonitorCog, Moon, Pencil, RefreshCw, Save, Settings, ShieldCheck, Sun, Trash2 } from 'lucide-react';
+import { getLang, setLang, onLangChange, type Lang } from '../i18n'; // T01071-FR5.4：i18n 底座
+
+/** T01060-FR4.1：强调色预设色板（与主题内置 accent 同源的六色系） */
+const ACCENT_PRESETS = ['#2563eb', '#0891b2', '#16a34a', '#7c3aed', '#ea580c', '#dc2626'];
+
+/** T01068-FR4.3：主题预设库——主题 + 强调色的开箱组合 */
+const THEME_PRESETS: Array<{ label: string; theme: 'light' | 'dark' | 'auto'; accent: string }> = [
+  { label: '默认浅色', theme: 'light', accent: '' },
+  { label: '默认深色', theme: 'dark', accent: '' },
+  { label: '海洋', theme: 'dark', accent: '#0891b2' },
+  { label: '北欧', theme: 'dark', accent: '#5eead4' },
+  { label: '日暮', theme: 'light', accent: '#ea580c' },
+  { label: '玫瑰', theme: 'light', accent: '#e11d48' },
+];
+import { desktopApi } from '../ui/desktop'; // T00878：Electron 壳内一键下载并静默安装更新包
 import { TunnelPanel } from './TunnelPanel';
 import { HistoryPage } from './HistoryPage'; // T00756：历史资产嵌入设置
 import { HelpTab } from './HelpTab';
 import { DbAdminTab } from './DbAdminTab';
 import { LogsPage } from './LogsPage';
 import { ArchivePage } from './ArchivePage';
+import { RecurringTab, ApiTokensTab } from './RecurringTokensTabs'; // T01073：循环任务 + API Token
 
 /** 应用信息（与根 package.json 保持一致） */
 const APP_NAME = 'MTask';
 const APP_VERSION = '0.1.0';
 const APP_DESC = 'AI 任务开发管理工具：项目维度任务管理 + AI 梳理 + 队列分发。';
 
-type STab = 'general' | 'migration' | 'dbadmin' | 'categories' | 'tunnel' | 'logs' | 'history' | 'archive' | 'help' | 'about';
+type STab = 'general' | 'migration' | 'dbadmin' | 'categories' | 'recurring' | 'apitokens' | 'tunnel' | 'logs' | 'history' | 'archive' | 'help' | 'about';
 
 /** 导入策略文案映射：显式枚举映射替代嵌套三元，新增策略时只需补一行 */
 const IMPORT_MODE_LABELS: Record<ImportMode, string> = { merge: '合并', keep: '保留', overwrite: '覆盖' };
@@ -25,6 +41,8 @@ const SUB_TABS: { key: STab; label: string }[] = [
   { key: 'migration', label: '数据迁移' },
   { key: 'dbadmin', label: '数据维护' },
   { key: 'categories', label: '任务分类' },
+  { key: 'recurring', label: '循环任务' }, // T01073-FR5.5：周期性任务自动生成
+  { key: 'apitokens', label: 'API Token' }, // T01073-FR5.6：外部脚本访问凭据
   { key: 'tunnel', label: '内网穿透' },
   { key: 'logs', label: '日志' },
   { key: 'history', label: '历史资产' }, // T00756：自顶部菜单移入设置（归档 tab 前）
@@ -61,6 +79,8 @@ export function SettingsPage() {
       {st === 'migration' && <MigrationTab />}
       {st === 'dbadmin' && <DbAdminTab />}
       {st === 'categories' && <CategoriesTab />}
+      {st === 'recurring' && <RecurringTab />}
+      {st === 'apitokens' && <ApiTokensTab />}
       {st === 'tunnel' && <TunnelPanel />}
       {/* T00441：日志/归档入口从顶部菜单迁入设置页（内网穿透下方） */}
       {st === 'logs' && <LogsPage />}
@@ -149,7 +169,7 @@ function CategoriesTab() {
         </div>
       ))}
 
-      {notice && <span className="flash-toast" role="status">{notice}</span>}
+      {notice && <output className="flash-toast">{notice}</output>}
     </div>
   );
 }
@@ -157,6 +177,15 @@ function CategoriesTab() {
 /** 通用设置：主题 / 字体 / 字号，改动即时生效并持久化 */
 function GeneralTab() {
   const { prefs, update } = useSettings();
+  // T01057-FR1.1：任务通知开关——AI 任务完成/失败时弹系统通知（仅 Electron 桌面壳环境提供）
+  const desktop = (window as unknown as { mtaskDesktop?: { getNotifyEnabled?: () => Promise<boolean>; setNotifyEnabled?: (v: boolean) => Promise<boolean> } }).mtaskDesktop;
+  const [notifyOn, setNotifyOn] = useState<boolean | null>(null);
+  useEffect(() => { void desktop?.getNotifyEnabled?.().then(setNotifyOn); }, [desktop]);
+  // T01071-FR5.4：界面语言（i18n 底座，渐进式接入）
+  const [lang, setLangState] = useState<Lang>(getLang());
+  const [, forceRender] = useState(0);
+  useEffect(() => onLangChange(() => { setLangState(getLang()); forceRender((n) => n + 1); }), []);
+  const changeLang = (l: Lang) => { setLang(l); };
 
   const segButton = (active: boolean): React.CSSProperties => ({
     fontSize: 'var(--fs-m)',
@@ -192,8 +221,77 @@ function GeneralTab() {
           <button onClick={() => update('theme', 'dark')} style={segButton(prefs.theme === 'dark')} title="深色主题" aria-label="主题：深色">
             <Moon size={13} style={{ verticalAlign: '-2px', marginRight: 4 }} />深色
           </button>
+          {/* T01060-FR4.2：跟随系统——auto 由 matchMedia 动态解析明暗 */}
+          <button onClick={() => update('theme', 'auto')} style={segButton(prefs.theme === 'auto')} title="跟随系统 — 随操作系统明暗设置自动切换" aria-label="主题：跟随系统">
+            <MonitorCog size={13} style={{ verticalAlign: '-2px', marginRight: 4 }} />跟随系统
+          </button>
         </div>
       </div>
+
+      {/* T01068-FR4.3：主题预设库——主题+强调色的开箱组合，一键应用（当前命中项高亮描边） */}
+      <div style={{ marginBottom: 18 }}>
+        {field('主题预设', '一键应用成套的主题与强调色组合；应用后仍可在上方微调')}
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {THEME_PRESETS.map((p) => {
+            const active = prefs.theme === p.theme && prefs.accent === p.accent;
+            return (
+              <button key={p.label}
+                onClick={() => { update('theme', p.theme); update('accent', p.accent); }}
+                title={`应用预设「${p.label}」（${p.theme === 'dark' ? '深色' : p.theme === 'auto' ? '跟随系统' : '浅色'}${p.accent ? ` · ${p.accent}` : ' · 默认强调色'}）`}
+                aria-label={`主题预设：${p.label}`}
+                style={{ ...segButton(active), display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ width: 12, height: 12, borderRadius: '50%', background: p.accent || (p.theme === 'dark' ? '#3b82f6' : '#2563eb'), display: 'inline-block', border: '1px solid rgba(127,127,127,.35)' }} />
+                {p.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* T01071-FR5.4：界面语言（i18n 框架底座——渐进式接入，见 web/src/i18n.ts） */}
+      <div style={{ marginBottom: 18 }}>
+        {field('界面语言 / Language', '切换界面语言；语言包为渐进式接入，未覆盖的页面仍显示中文')}
+        <select
+          value={lang}
+          onChange={(e) => changeLang(e.target.value === 'en' ? 'en' : 'zh')}
+          style={{ padding: 6, fontSize: 'var(--fs-m)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}
+        >
+          <option value="zh">中文（默认）</option>
+          <option value="en">English (Beta)</option>
+        </select>
+      </div>
+
+      {/* T01060-FR4.1：自定义强调色——全站 --accent 变量即时生效（按钮文字按亮度自动取深/白） */}
+      <div style={{ marginBottom: 18 }}>
+        {field('强调色', '全站主按钮/链接/高亮的主色调；恢复默认则回到主题内置配色')}
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          {ACCENT_PRESETS.map((c) => (
+            <button key={c} onClick={() => update('accent', c)} title={`强调色 ${c}`}
+              aria-label={`强调色 ${c}`}
+              style={{ width: 26, height: 26, borderRadius: 6, border: prefs.accent === c ? '2px solid var(--text)' : '1px solid var(--border-strong)', background: c, cursor: 'pointer' }} />
+          ))}
+          <input type="color" value={prefs.accent || '#2563eb'} onChange={(e) => update('accent', e.target.value)}
+            title="自定义强调色（取色器）" aria-label="自定义强调色取色器"
+            style={{ width: 34, height: 26, padding: 0, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', cursor: 'pointer' }} />
+          <button onClick={() => update('accent', '')} style={segButton(prefs.accent === '')} title="恢复主题默认强调色" aria-label="恢复默认强调色">
+            恢复默认
+          </button>
+        </div>
+      </div>
+
+      {notifyOn !== null && desktop?.setNotifyEnabled && (
+        <div style={{ marginBottom: 18 }}>
+          {field('任务通知', 'AI 任务处理完成或失败时弹出系统通知，点击通知可跳转到对应任务（仅桌面应用内可用）')}
+          <button
+            onClick={() => void desktop.setNotifyEnabled?.(!notifyOn).then(setNotifyOn)}
+            title={notifyOn ? '任务通知：已开启（点击关闭）' : '任务通知：已关闭（点击开启）'}
+            aria-label="任务通知开关"
+            style={{ ...segButton(notifyOn), minWidth: 150 }}
+          >
+            {notifyOn ? '已开启（点击关闭）' : '已关闭（点击开启）'}
+          </button>
+        </div>
+      )}
 
       <div style={{ marginBottom: 18 }}>
         {field('字体', '选择界面显示字体')}
@@ -398,14 +496,21 @@ function UpdateSection() {
   const [cfg, setCfg] = useState<UpdateConfigView>({ repo: '', tokenConfigured: false, tokenMasked: '' });
   const [repoDraft, setRepoDraft] = useState('');
   const [tokenDraft, setTokenDraft] = useState('');
-  const [busy, setBusy] = useState<'save' | 'test' | 'check' | null>(null);
+  const [busy, setBusy] = useState<'save' | 'test' | 'check' | 'download' | 'install' | null>(null);
   const [notice, setNotice] = useState('');
   const [result, setResult] = useState<UpdateCheckInfo | null>(null);
+  // T00878：应用内下载进度（received/total，字节）；未在下载时为 null
+  const [dlProgress, setDlProgress] = useState<{ received: number; total: number } | null>(null);
+  // 订阅下载进度的事件源引用：组件卸载时清理，避免泄漏
+  const unsubRef = useRef<(() => void) | null | undefined>(null);
 
   const flash = (msg: string) => {
     setNotice(msg);
     setTimeout(() => setNotice(''), 5000);
   };
+
+  // 卸载时取消进度订阅
+  useEffect(() => () => { unsubRef.current?.(); }, []);
 
   useEffect(() => {
     void (async () => {
@@ -459,6 +564,35 @@ function UpdateSection() {
       flash(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(null);
+    }
+  }
+
+  // T00878：应用内一键下载更新包并静默安装（仅 Electron 壳；浏览器环境仍回退 window.open）
+  async function doDownload() {
+    if (!result?.hasUpdate) return;
+    const desk = desktopApi();
+    if (!desk?.downloadUpdate || !desk.installUpdate) { window.open(result.downloadUrl, '_blank'); return; }
+    setBusy('download');
+    setDlProgress(null);
+    unsubRef.current?.(); // 防止上一次订阅残留重复触发
+    try {
+      const filePath: string = await new Promise((resolve, reject) => {
+        unsubRef.current = desk.onUpdateProgress?.((data) => {
+          // 进度事件里带 filePath 表示下载完成；途中只更新 received/total
+          if (data.status === 'downloaded') { resolve(data.filePath ?? ''); return; }
+          setDlProgress({ received: data.received ?? 0, total: data.total ?? 0 });
+        });
+        desk.downloadUpdate?.(result.downloadUrl).then(resolve).catch(reject);
+      });
+      setDlProgress(null);
+      setBusy('install'); // 进入安装阶段：界面显示"正在安装并重启"
+      flash('新版本已下载，正在静默安装并重启应用…');
+      await desk.installUpdate(filePath);
+      // 安装成功会触发主进程退出；走到这里是兜底（一般到不了）
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+      setBusy(null);
+      setDlProgress(null);
     }
   }
 
@@ -541,14 +675,28 @@ function UpdateSection() {
                   {result.changelog}
                 </div>
               )}
-              <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button onClick={() => window.open(result.downloadUrl, '_blank')} title="下载安装包 — 打开最新 Windows 安装包下载地址" aria-label="下载最新安装包" style={btnStyle(true)}>
-                  <Download size={13} /> 下载新版本
+              <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button onClick={() => void doDownload()} disabled={busy !== null} title="下载新版本 — 应用内下载安装包并静默安装重启" aria-label="下载并静默安装新版本" style={btnStyle(true)}>
+                  <Download size={13} />
+                  {/* T00878：按当前阶段给按钮友好文案 */}
+                  {busy === 'download' ? (dlProgress?.total ? `下载中 ${Math.round(dlProgress.received / dlProgress.total * 100)}%` : '下载中…')
+                    : busy === 'install' ? '正在安装并重启…' : '立即更新'}
                 </button>
                 <button onClick={() => window.open(result.releaseUrl, '_blank')} title="查看 Release 页 — 浏览完整更新说明与历史版本" aria-label="查看 Release 页面" style={btnStyle(false)}>
                   <ExternalLink size={13} /> 查看发布页
                 </button>
               </div>
+              {/* T00878：下载进度条——Electron 壳内下载时展示 received/total */}
+              {busy === 'download' && dlProgress?.total ? (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ height: 6, borderRadius: 3, background: 'var(--border-strong)', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${Math.min(100, Math.round(dlProgress.received / dlProgress.total * 100))}%`, background: 'var(--accent)', transition: 'width .2s' }} />
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
+                    已下载 {Math.round(dlProgress.received / 1024 / 1024)} MB / {Math.round(dlProgress.total / 1024 / 1024)} MB
+                  </div>
+                </div>
+              ) : null}
             </>
           ) : (
             <div>当前已是最新版本：v{result.currentVersion}（远端最新 v{result.latestVersion}）</div>

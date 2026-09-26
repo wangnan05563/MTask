@@ -65,15 +65,26 @@ export function CommandPalette({ open, onClose, onNavigate }: {
       }
     }
     // 任务（跨项目）
-    for (const t of tasks) {
-      const label = `${t.task_no ?? 'T?????'} ${t.title}（${t.status === 'done' ? '已完成' : '待办'}）`;
-      if (!kwLower || t.title.toLowerCase().includes(kwLower) || (t.task_no ?? '').toLowerCase().includes(kwLower)) {
-        out.push({
-          group: '任务', label, hint: '跳任务页并定位该任务（搜索编号）',
-          action: () => { setSessionState('tasks.search', t.task_no ?? t.title); onNavigate('tasks'); },
-        });
+      // T00836：点击任务除写入搜索词外，还下发 focusId/focusTab，任务页据此滚动定位 + 高亮 + 展开该记录
+      for (const t of tasks) {
+        const label = `${t.task_no ?? 'T?????'} ${t.title}（${t.status === 'done' ? '已完成' : '待办'}）`;
+        if (!kwLower || t.title.toLowerCase().includes(kwLower) || (t.task_no ?? '').toLowerCase().includes(kwLower)) {
+          out.push({
+            group: '任务', label, hint: '跳任务页并定位该任务（搜索编号）',
+            action: () => {
+              const ft = t.status === 'done' ? 'done' : 'todo';
+              setSessionState('tasks.search', t.task_no ?? t.title);
+              setSessionState('tasks.focusId', t.id);
+              // T00836 二轮：task 属于某个项目，而任务页当前 activeProject 不一定就是它——
+              // 不下发 projectId，定位会在「列表不含该任务」时失效（目标行不在当前项目列表）。
+              setSessionState('tasks.focusProjectId', t.project_id ?? '');
+              setSessionState('tasks.focusTab', ft);
+              setSessionState('tasks.activeTab', ft); // 列表 tab 与聚焦任务所在 tab 对齐，保证该行可见
+              onNavigate('tasks');
+            },
+          });
+        }
       }
-    }
     // 提示词
     for (const p of prompts) {
       if (!kwLower || p.title.toLowerCase().includes(kwLower)) {

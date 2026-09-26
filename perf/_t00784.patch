@@ -1,0 +1,37 @@
+diff --git a/server/src/services/PlanService.ts b/server/src/services/PlanService.ts
+index 55ad9c0..1c8618f 100644
+--- a/server/src/services/PlanService.ts
++++ b/server/src/services/PlanService.ts
+@@ -1253,10 +1465,30 @@ export const PlanService = {
+     // T00763：项目内 PRD 文档摘要——矩阵行经 prd_id 关联，前端「查看PRD」按钮按此取文档
+     const prdDocs = db.prepare('SELECT id, filename FROM prd_docs WHERE project_id = ?').all(projectId) as Array<{ id: string; filename: string }>;
+     const docById = new Map(prdDocs.map((d) => [d.id, d]));
++    // T00784：反向索引替换 O(N×M) 逐需求 filter——原先每个需求都对全量 plans/tasks 重跑
++    // JSON.parse（N 需求 × M 计划/任务），压测实测 436 次调用累计 117.6s 事件循环时间，
++    // 并拖慢同进程所有其它端点。现改为对 plans/tasks 各遍历一次建 Map<reqId, 摘要[]>，
++    // 复杂度降为 O(N+M)，req_ids 仅解析一次。（不改返回结构与字段顺序）
++    const plansByReq = new Map<string, Array<{ id: string; title: string; status: string }>>();
++    for (const p of plans) {
++      for (const id of parse(p.req_ids)) {
++        const bucket = plansByReq.get(id);
++        const item = { id: p.id, title: p.title, status: p.status };
++        if (bucket) bucket.push(item); else plansByReq.set(id, [item]);
++      }
++    }
++    const tasksByReq = new Map<string, Array<{ id: string; taskNo: string | null; title: string; status: string; verified: boolean }>>();
++    for (const x of tasks) {
++      for (const id of parse(x.req_ids)) {
++        const bucket = tasksByReq.get(id);
++        const item = { id: x.id, taskNo: x.task_no, title: x.title, status: x.status, verified: !!x.verified };
++        if (bucket) bucket.push(item); else tasksByReq.set(id, [item]);
++      }
++    }
+     return reqs.map((r) => {
+       const rid = String(r.id);
+-      const linkedPlans = plans.filter((p) => parse(p.req_ids).includes(rid)).map((p) => ({ id: p.id, title: p.title, status: p.status }));
+-      const linkedTasks = tasks.filter((x) => parse(x.req_ids).includes(rid)).map((x) => ({ id: x.id, taskNo: x.task_no, title: x.title, status: x.status, verified: !!x.verified }));
++      const linkedPlans = plansByReq.get(rid) ?? [];
++      const linkedTasks = tasksByReq.get(rid) ?? [];
+       const prdId = typeof r.prd_id === 'string' ? r.prd_id : null;
+       const prdDoc = prdId ? docById.get(prdId) : undefined;
+       return { ...r, linkedPlans, linkedTasks, prdDoc: prdDoc ?? null };

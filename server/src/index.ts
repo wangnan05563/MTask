@@ -10,6 +10,8 @@ import { QueueService } from './services/QueueService';
 import { AIService } from './services/AIService';
 import { loadTunnelConfig } from './tunnel/tunnel-config';
 import { changeBus } from './services/ChangeBus';
+import { startDailyBackupTimer } from './services/BackupService'; // T01061-FR5.1：每日自动备份
+import { RecurringService, TokenService } from './services/RecurringService'; // T01073：循环任务 + API Token
 import { reconcileLinkedPlanStatuses } from './services/PlanService';
 
 const PORT = Number(process.env.MTask_PORT ?? 39876);
@@ -75,8 +77,12 @@ function accessTokenGuard(req: express.Request, res: express.Response, next: exp
     return;
   }
   if (token && req.headers['x-access-token'] !== token) {
-    res.status(401).json({ error: 'unauthorized' });
-    return;
+    // T01073-FR5.6：API Token 具名凭据——主令牌不匹配时尝试 api_tokens 表（启用中的凭据通过并刷新 last_used_at）
+    const provided = String(req.headers['x-access-token'] ?? '');
+    if (!provided || !TokenService.verify(provided)) {
+      res.status(401).json({ error: 'unauthorized' });
+      return;
+    }
   }
   next();
 }
@@ -145,6 +151,11 @@ try {
 app.listen(PORT, HOST, () => {
   console.log(`[mtask] server ready at http://${HOST}:${PORT}`);
   console.log(`[mtask] health: http://${HOST}:${PORT}/api/health`);
+  // T01061-FR5.1：每日自动备份（当天首启即备 + 每小时检查日期翻转）
+  startDailyBackupTimer();
+  // T01073-FR5.5：循环任务到期生成（启动即跑一轮 + 每小时检查）
+  try { RecurringService.tick(); } catch (e) { console.error('[recurring] 启动 tick 失败:', e); }
+  setInterval(() => { try { RecurringService.tick(); } catch { /* 单轮失败不中断定时 */ } }, 3600000);
 });
 
 // 异步队列轮询器：周期性地将已受理（sending+有 ticket）的 Job 收口。

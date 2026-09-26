@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { Archive, ChevronDown, ChevronUp, Code2, Cpu, Copy, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, Save, Star, Trash2, X, Check } from 'lucide-react';
+import { Archive, ChevronDown, ChevronUp, Code2, Cpu, Copy, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, Save, Star, X, Check } from 'lucide-react';
 import { api, type AITool } from '../api/client';
 import { UsagePanel } from './UsagePanel';
 import { askConfirm } from '../ui/dialogs';
@@ -117,7 +117,7 @@ function ToolActionsCell({ tool, testing, fetchingModels, testResult, modelsResu
           void navigator.clipboard.writeText(tool.model).then(() => {
             flash(`已复制模型：${tool.model}`);
             setCopied(true);
-            window.setTimeout(() => setCopied(false), 1500);
+            globalThis.setTimeout(() => setCopied(false), 1500);
           });
         }}
         disabled={!tool.model}
@@ -162,28 +162,107 @@ interface ToolKeyCellProps {
 
 /** API Key 列（S3776 拆分）：默认仅展示掩码，点击按钮按需拉取明文 */
 function ToolKeyCell({ tool, revealed, onToggleReveal, flash }: ToolKeyCellProps & { flash: (msg: string) => void }) {
+  const copyRevealed = () => { navigator.clipboard.writeText(revealed ?? '').then(() => flash?.('已复制 API Key')); };
+  if (!revealed) {
+    return (
+      <td style={cellStyle}>
+        {tool.apiKeyMasked ?? '未配置'}
+        {tool.hasApiKey && (
+          <button
+            onClick={() => onToggleReveal(tool)}
+            title="查看原文 — 查看 API Key 明文"
+            aria-label="查看原文：查看 API Key 明文"
+            style={{ fontSize: 11, marginTop: 2, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+          >
+            <Eye size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+          </button>
+        )}
+      </td>
+    );
+  }
   return (
     <td style={cellStyle}>
-      <div
-        style={revealed ? { fontFamily: 'monospace', wordBreak: 'break-all', maxWidth: 200, cursor: 'copy', userSelect: 'text' } : undefined}
-        onDoubleClick={revealed ? () => { void navigator.clipboard.writeText(revealed).then(() => flash?.('已复制 API Key')); } : undefined}
-        title={revealed ? '双击复制完整 API Key' : undefined}
+      <button
+        type="button"
+        onClick={copyRevealed}
+        style={{ fontFamily: 'monospace', wordBreak: 'break-all', maxWidth: 200, cursor: 'copy', userSelect: 'text', display: 'block', width: '100%', textAlign: 'left', border: 'none', background: 'transparent', padding: 0, color: 'inherit', fontSize: 'inherit' }}
+        title="点击复制完整 API Key"
       >
-        {revealed ?? (tool.apiKeyMasked ?? '未配置')}
-      </div>
+        {revealed}
+      </button>
       {tool.hasApiKey && (
         <button
           onClick={() => onToggleReveal(tool)}
-          title={revealed ? '隐藏 — 隐藏 API Key 明文' : '查看原文 — 查看 API Key 明文'}
-          aria-label={revealed ? '隐藏：隐藏 API Key 明文' : '查看原文：查看 API Key 明文'}
+          title="隐藏 — 隐藏 API Key 明文"
+          aria-label="隐藏：隐藏 API Key 明文"
           style={{ fontSize: 11, marginTop: 2, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
         >
-          {revealed
-            ? <EyeOff size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-            : <Eye size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
+          <EyeOff size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
         </button>
       )}
     </td>
+  );
+}
+
+/** 模型选择无框下拉（T00542，S3776/S6819/S3358/S4325 拆分修复）：模型字段与展开下拉的逻辑下沉为独立组件，
+ * 使 ToolRow 复杂度降至阈值内；保留 listbox 角色（自定义下拉无法等价替换为原生 select），并补 tabIndex/键盘可达性 */
+function ToolModelCell(props: {
+  readonly tool: AITool;
+  readonly modelMenuId: string;
+  readonly modelMenuPos: { top: number; left: number } | null;
+  readonly modelMenuRef: React.MutableRefObject<HTMLSpanElement | null>;
+  readonly fetchingModels: Record<string, boolean>;
+  readonly modelsResult: Record<string, string[]>;
+  readonly onToggleModelMenu: (t: AITool, anchor: HTMLElement) => void;
+  readonly onSelectModel: (t: AITool, model: string) => void;
+}) {
+  const { tool, modelMenuId, modelMenuPos, modelMenuRef, fetchingModels, modelsResult, onToggleModelMenu, onSelectModel } = props;
+  const isOpen = modelMenuId === tool.id;
+
+  // 下拉正文（S3358：将嵌套三元拆为独立函数，避免嵌套条件表达式）
+  const renderMenuBody = () => {
+    if (fetchingModels[tool.id]) {
+      return (
+        <div style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Loader2 size={12} className="aispin" /> 获取模型列表中…
+        </div>
+      );
+    }
+    const list = modelsResult[tool.id] ?? [];
+    if (list.length > 0) {
+      return list.map((m) => (
+        <button key={m} aria-pressed={m === tool.model}
+          onClick={() => onSelectModel(tool, m)}
+          title={m}
+          style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '5px 10px', fontSize: 12, border: 'none', cursor: 'pointer', background: m === tool.model ? 'var(--accent-soft)' : 'transparent', color: m === tool.model ? 'var(--accent)' : 'var(--text)' }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m}</span>
+          {m === tool.model && <span style={{ fontSize: 10 }}>当前</span>}
+        </button>
+      ));
+    }
+    return <div style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-muted)' }}>暂无模型列表，请先点击「拉取模型」获取</div>;
+  };
+
+  return (
+    <span ref={isOpen ? (modelMenuRef as unknown as React.RefObject<HTMLSpanElement>) : undefined} style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 2, maxWidth: 220 }}>
+      <button
+        onClick={(e) => onToggleModelMenu(tool, e.currentTarget as HTMLElement)}
+        title={tool.model ? `模型：${tool.model} — 点击选择可用模型` : '选择模型 — 点击拉取并选择可用模型'}
+        aria-label="选择模型" aria-haspopup="listbox" aria-expanded={isOpen}
+        className="task-op"
+        style={{ cursor: 'pointer', border: 'none', background: 'transparent', padding: 0, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 3, color: tool.model ? 'var(--text)' : 'var(--text-muted)', fontFamily: 'inherit' }}
+      >
+        {fetchingModels[tool.id] ? <Loader2 size={11} className="aispin" /> : null}
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 170 }}>{tool.model ?? '选择模型'}</span>
+        <ChevronDown size={11} />
+      </button>
+      {isOpen && modelMenuPos && (
+        <div aria-label="可用模型列表"
+          style={{ position: 'fixed', top: modelMenuPos.top, left: modelMenuPos.left, zIndex: 70, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 6px 16px rgba(0,0,0,.16)', maxHeight: 200, overflowY: 'auto', minWidth: 220 }}>
+          {renderMenuBody()}
+        </div>
+      )}
+    </span>
   );
 }
 
@@ -227,7 +306,7 @@ function ToolRow(props: ToolRowProps) {
   const { tool } = props;
   // T00489：按住行 200ms 才缩放（组件内自管状态）
   const [pressOn, setPressOn] = useState(false);
-  const pressTimer = useRef<number | undefined>(undefined);
+  const pressTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const flushClass = props.flushed ? ' flush' : '';
   let dragClass = '';
   if (props.dragId === tool.id) dragClass = ' tool-dragging';
@@ -235,7 +314,7 @@ function ToolRow(props: ToolRowProps) {
   return (
     <tr
       className={`arena-row${flushClass}${dragClass}${pressOn ? ' item-pressing' : ''}`}
-      onMouseDown={(e) => { if ((e.target as HTMLElement).closest('button, input, select, a, textarea, label, [data-noscale]')) return; pressTimer.current = window.setTimeout(() => setPressOn(true), 200); }}
+      onMouseDown={(e) => { if ((e.target as HTMLElement).closest('button, input, select, a, textarea, label, [data-noscale]')) { return; } pressTimer.current = globalThis.setTimeout(() => setPressOn(true), 200); }}
       onMouseUp={() => { clearTimeout(pressTimer.current); setPressOn(false); }}
       onMouseLeave={() => { clearTimeout(pressTimer.current); setPressOn(false); }}
       draggable
@@ -274,40 +353,16 @@ function ToolRow(props: ToolRowProps) {
         onDoubleClick={() => { void navigator.clipboard.writeText(tool.endpoint).then(() => props.flash?.('已复制 Endpoint')); }}
         title={`双击复制整个字段：${tool.endpoint}`}>{tool.endpoint}</td>
       <td style={cellStyle} draggable={false}>
-        {/* T00542：模型字段无框下拉条——点击触发展开（未拉取则自动拉取模型列表），选择后直接持久化 */}
-        <span ref={props.modelMenuId === tool.id ? (props.modelMenuRef as unknown as React.RefObject<HTMLSpanElement>) : undefined} style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 2, maxWidth: 220 }}>
-          <button
-            onClick={(e) => props.onToggleModelMenu(tool, e.currentTarget as HTMLElement)}
-            title={tool.model ? `模型：${tool.model} — 点击选择可用模型` : '选择模型 — 点击拉取并选择可用模型'}
-            aria-label="选择模型" aria-haspopup="listbox" aria-expanded={props.modelMenuId === tool.id}
-            className="task-op"
-            style={{ cursor: 'pointer', border: 'none', background: 'transparent', padding: 0, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 3, color: tool.model ? 'var(--text)' : 'var(--text-muted)', fontFamily: 'inherit' }}
-          >
-            {props.fetchingModels[tool.id] ? <Loader2 size={11} className="aispin" /> : null}
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 170 }}>{tool.model ?? '选择模型'}</span>
-            <ChevronDown size={11} />
-          </button>
-          {props.modelMenuId === tool.id && props.modelMenuPos && (
-            <div role="listbox" aria-label="可用模型列表"
-              style={{ position: 'fixed', top: props.modelMenuPos.top, left: props.modelMenuPos.left, zIndex: 70, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 6px 16px rgba(0,0,0,.16)', maxHeight: 200, overflowY: 'auto', minWidth: 220 }}>
-              {props.fetchingModels[tool.id] ? (
-                <div style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}><Loader2 size={12} className="aispin" /> 获取模型列表中…</div>
-              ) : (props.modelsResult[tool.id]?.length ?? 0) > 0 ? (
-                props.modelsResult[tool.id]!.map((m) => (
-                  <button key={m} role="option" aria-selected={m === tool.model}
-                    onClick={() => props.onSelectModel(tool, m)}
-                    title={m}
-                    style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '5px 10px', fontSize: 12, border: 'none', cursor: 'pointer', background: m === tool.model ? 'var(--accent-soft)' : 'transparent', color: m === tool.model ? 'var(--accent)' : 'var(--text)' }}>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m}</span>
-                    {m === tool.model && <span style={{ fontSize: 10 }}>当前</span>}
-                  </button>
-                ))
-              ) : (
-                <div style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-muted)' }}>暂无模型列表，请先点击「拉取模型」获取</div>
-              )}
-            </div>
-          )}
-        </span>
+        <ToolModelCell
+          tool={tool}
+          modelMenuId={props.modelMenuId}
+          modelMenuPos={props.modelMenuPos}
+          modelMenuRef={props.modelMenuRef}
+          fetchingModels={props.fetchingModels}
+          modelsResult={props.modelsResult}
+          onToggleModelMenu={props.onToggleModelMenu}
+          onSelectModel={props.onSelectModel}
+        />
         {tool.model_notes && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{tool.model_notes}</div>}
       </td>
       {/* 默认仅展示掩码；点击「查看原文」按需拉取明文，再点隐藏即从内存移除（FR3.5） */}
@@ -809,7 +864,7 @@ export function AIToolsPage() {
           placeholder="搜索名称/厂商/Endpoint/备注…"
           style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, flex: 1, minWidth: 180 }}
         />
-        {notice && <span className="flash-toast" role="status">{notice}</span>}
+        {notice && <output className="flash-toast">{notice}</output>}
         <button
           onClick={openCreate}
           title="新增配置 — 新增一条 AI 厂商配置记录"

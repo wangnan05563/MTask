@@ -223,7 +223,12 @@ function InputDialogEx({ options, onSubmit }: InputDialogExProps) {
   const numRequired = typeof numRequiredRaw === 'function' ? numRequiredRaw(sel) : !!numRequiredRaw;
   const labelRaw = options.numberField?.label;
   const numLabel = typeof labelRaw === 'function' ? labelRaw(sel) : (labelRaw ?? '');
-  const numOk = !options.numberField || !showNum || !numRequired || (Number(num) >= (options.numberField.min ?? Number.NEGATIVE_INFINITY) && num.trim() !== '');
+  // T00783-N1：填了就校验 min，留空才看必填——原先选填态（numRequired=false）会跳过 min 校验，
+  // 工期填 0/-3 也能提交（服务端 Math.max(1) 静默兜底为 1 天，用户无感知）
+  const numOk = !options.numberField || !showNum
+    || (num.trim() === ''
+      ? !numRequired
+      : Number(num) >= (options.numberField.min ?? Number.NEGATIVE_INFINITY) && Number.isFinite(Number(num)));
 
   useEffect(() => { ref.current?.focus(); }, []);
   useEffect(() => {

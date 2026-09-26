@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, type Project, type Task, type TaskCategory } from '../api/client';
+import { api, type Project, type Prompt, type PromptCategory, type Task, type TaskCategory } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
-import { Check, ListChecks, RotateCcw, Search, Trash2, Undo2, X } from 'lucide-react';
+import { Check, ListChecks, Search, Trash2, Undo2, X } from 'lucide-react';
 import { relTime } from '../ui/format';
 import { useSessionState } from '../ui/session';
 
@@ -28,6 +28,9 @@ export function ArchivePage() {
   // T00442 扩展：项目计划归档列表
   const [archivedPlans, setArchivedPlans] = useState<ArchivedPlan[]>([]);
   const [cats, setCats] = useState<TaskCategory[]>([]);
+  // T00872：归档提示词列表 + 分类名映射（后端 /prompts?archived=1 返回软删数据，可在此还原/彻底删除）
+  const [archivedPrompts, setArchivedPrompts] = useState<Prompt[]>([]);
+  const [promptCatNames, setPromptCatNames] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
 
@@ -40,6 +43,7 @@ export function ArchivePage() {
   const [projFilter, setProjFilter] = useSessionState<string>('archive.projFilter', '');
   const [page, setPage] = useState(1);
   const [planPage, setPlanPage] = useState(1);
+  const [promptPage, setPromptPage] = useState(1); // T00872：归档提示词分页页脚
 
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
 
@@ -50,6 +54,12 @@ export function ArchivePage() {
     try {
       // 归档计划接口走 plans 路由（T00442 扩展），后端未升级时静默降级不阻塞任务归档区
       setArchivedPlans(await api.get<ArchivedPlan[]>('/plans/archived'));
+    } catch { /* 后端为旧版时忽略 */ }
+    try {
+      // T00872：归档提示词——/prompts?archived=1 返回软删提示词；还原走 PATCH archived=false，删除走 DELETE
+      setArchivedPrompts(await api.get<Prompt[]>('/prompts?archived=1'));
+      const pcs = await api.get<PromptCategory[]>('/prompt-categories');
+      setPromptCatNames(Object.fromEntries(pcs.map((c) => [c.id, c.name])));
     } catch { /* 后端为旧版时忽略 */ }
   }, []);
 
@@ -75,12 +85,22 @@ export function ArchivePage() {
     });
   }, [archivedPlans, kw, projFilter]);
 
+  // T00872：归档提示词——支持关键词过滤（标题），与任务/计划区共用 kw
+  const filteredPrompts = useMemo(() => {
+    const k = kw.trim().toLowerCase();
+    return archivedPrompts.filter((p) => !k || p.title.toLowerCase().includes(k));
+  }, [archivedPrompts, kw]);
+
+  const promptPages = Math.max(1, Math.ceil(filteredPrompts.length / PAGE_SIZE));
+
   const taskPages = Math.max(1, Math.ceil(filteredTasks.length / PAGE_SIZE));
   const planPages = Math.max(1, Math.ceil(filteredPlans.length / PAGE_SIZE));
   const curTaskPage = Math.min(page, taskPages);
   const curPlanPage = Math.min(planPage, planPages);
   const pageTasks = filteredTasks.slice((curTaskPage - 1) * PAGE_SIZE, curTaskPage * PAGE_SIZE);
   const pagePlans = filteredPlans.slice((curPlanPage - 1) * PAGE_SIZE, curPlanPage * PAGE_SIZE);
+  const curPromptPage = Math.min(promptPage, promptPages);
+  const pagePrompts = filteredPrompts.slice((curPromptPage - 1) * PAGE_SIZE, curPromptPage * PAGE_SIZE);
 
   // ---------- 单条操作（原有） ----------
 
@@ -105,6 +125,19 @@ export function ArchivePage() {
     const ok = await askConfirm(`确认彻底删除计划「${p.title}」？此操作不可恢复（归档后仅剩此副本）。`);
     if (!ok) return;
     await api.del(`/plans/${p.id}`);
+    void load();
+  }
+
+  // T00872：归档提示词还原（PATCH archived=false）与彻底删除（DELETE /prompts/:id）
+  async function restorePrompt(p: Prompt) {
+    await api.patch(`/prompts/${p.id}`, { archived: false });
+    void load();
+  }
+
+  async function removePrompt(p: Prompt) {
+    const ok = await askConfirm(`确认彻底删除提示词「${p.title}」？此操作不可恢复。`);
+    if (!ok) return;
+    await api.del(`/prompts/${p.id}`);
     void load();
   }
 
@@ -179,11 +212,14 @@ export function ArchivePage() {
   function renderBatchBar(kind: 'task' | 'plan') {
     const ids = kind === 'task' ? selTaskIds : selPlanIds;
     if (ids.length === 0) return null;
+    // S3358：将嵌套三元拆为独立变量，避免嵌套条件表达式
+    const pageCount = kind === 'task' ? pageTasks.length : pagePlans.length;
+    const selectAllTitle = ids.length === pageCount ? '取消全选本页' : '全选本页';
     return (
       <div style={{ position: 'sticky', top: 0, zIndex: 50, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '6px 10px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: '1px solid var(--accent)', boxShadow: '0 4px 12px rgba(0,0,0,.12)', fontSize: 12 }}>
         <strong style={{ color: 'var(--accent)' }}>已选 {ids.length} 条</strong>
         <button onClick={kind === 'task' ? selectAllTasks : selectAllPlans} disabled={busy} className="tbtn-anim"
-          title={ids.length === (kind === 'task' ? pageTasks.length : pagePlans.length) ? '取消全选本页' : '全选本页'}
+          title={selectAllTitle}
           aria-label="全选本页"
           style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', border: 'none', background: 'transparent', color: 'var(--text)' }}>
           <ListChecks size={14} />
@@ -249,7 +285,7 @@ export function ArchivePage() {
         {/* 搜索（标题/编号/项目名） */}
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', borderRadius: 6, padding: '3px 8px', background: 'var(--card-bg)' }}>
           <Search size={13} style={{ color: 'var(--text-muted)' }} />
-          <input value={kw} onChange={(e) => { setKw(e.target.value); setPage(1); setPlanPage(1); }}
+          <input value={kw} onChange={(e) => { setKw(e.target.value); setPage(1); setPlanPage(1); setPromptPage(1); }}
             placeholder="搜索归档标题…" aria-label="搜索归档内容"
             style={{ border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 12, width: 150 }} />
           {kw && <button onClick={() => setKw('')} title="清除搜索" aria-label="清除搜索" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}><X size={12} /></button>}
@@ -314,6 +350,23 @@ export function ArchivePage() {
         ))}
       </ul>
       {renderPager(curPlanPage, planPages, (n) => setPlanPage(n))}
+
+      {/* T00872：归档提示词区——提示词「归档」（软删）后在此还原或彻底删除 */}
+      <h4 style={{ fontSize: 14, margin: '20px 0 8px' }}>归档提示词（{filteredPrompts.length}）</h4>
+      {filteredPrompts.length === 0 && <p style={{ color: 'var(--text-muted)' }}>暂无归档提示词（或当前筛选无结果）。提示词页归档后的条目会出现在这里。</p>}
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {pagePrompts.map((p) => (
+          <li key={p.id} className="arena-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
+            <span style={{ flex: 1, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {p.title}（{promptCatNames[p.category_id] ?? '未知分类'}）
+            </span>
+            <span className="abtn" style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${p.archived_at ?? ''}`}>{relTime(p.archived_at)}</span>
+            <button className="abtn" onClick={() => void restorePrompt(p)} title="还原 — 将该提示词还原到提示词页原分类" aria-label="还原：将该提示词还原到提示词页原分类" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
+            <button className="abtn" onClick={() => void removePrompt(p)} title="删除 — 彻底删除该提示词，此操作不可恢复" aria-label="删除：彻底删除该提示词，此操作不可恢复" style={{ fontSize: 12, color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
+          </li>
+        ))}
+      </ul>
+      {renderPager(curPromptPage, promptPages, (n) => setPromptPage(n))}
     </section>
   );
 }

@@ -178,6 +178,24 @@ export const ConsoleJobService = {
   },
 
   /**
+   * T00838：在内存中登记每个正在运行 job 的 AbortController。
+   * 进程内所有请求共享该 Map，供 stop() 定位并中止目标 job，不影响其它并行任务。
+   */
+  runningControllers: new Map<string, AbortController>(),
+
+  /**
+   * T00838：停止单个 job——abort 其底层 AI 请求并删除任务记录（清理产物，可幂等）。
+   * 已结束/不存在返回可读提示；目标任务被中止后 runJob 的落库回调作用于已删除行（0 行更新）而无副作用。
+   */
+  stop(id: string): { ok: boolean; message: string } {
+    const ctrl = this.runningControllers.get(id);
+    if (ctrl) ctrl.abort();
+    const removed = this.remove(id);
+    if (removed) return { ok: true, message: '任务已停止并清理' };
+    return { ok: false, message: '该任务不存在或已结束，无需停止' };
+  },
+
+  /**
    * 异步执行单个任务：请求即受理，真正耗时在后台完成并回调 markDone/markError 回写库，
    * 因此任务运行不依赖前端会话（页面切换/刷新都不中断）。由调用方以不 await 方式触发。
    */
@@ -185,12 +203,20 @@ export const ConsoleJobService = {
     const job = this.get(id);
     if (!job) return;
     const { sys, usr } = buildConsoleChat(job);
+    // T00838：为本次运行登记 AbortController，供「停止」接口 abort 底层 AI 请求；结束即注销
+    const ctrl = new AbortController();
+    this.runningControllers.set(id, ctrl);
     try {
-      const res = await AIService.ask(toolId, sys, usr);
+      const res = await AIService.ask(toolId, sys, usr, undefined, ctrl.signal);
+      // 用户主动停止（stop 已删行/已 abort）时不再覆写 error，避免把「任务已停止」当失败留在库中
+      if (ctrl.signal.aborted) return;
       if (res.ok && res.content) this.markDone(id, res.content);
       else this.markError(id, res.error ?? 'AI 未返回结果');
     } catch (e) {
+      if (ctrl.signal.aborted) return;
       this.markError(id, e instanceof Error ? e.message : String(e));
+    } finally {
+      this.runningControllers.delete(id);
     }
   },
 };

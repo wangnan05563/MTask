@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent } from 'react';
 import { api, imageUrl, fetchImage, imageDataURL, type AITool, type Project, type PromptCategory, type ReqCategory, type Task, type TaskCategory, type TaskImage } from '../api/client';
+import { ResultDiffPanel } from '../ui/ResultDiff'; // T01072-FR1.9：结果历史 diff 与回滚
 import { beautifyStore } from '../stores/beautifyStore';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown';
@@ -13,13 +14,15 @@ import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00771：工作空�
 import { WorkspaceSearchPanel } from '../ui/WorkspaceSearchPanel'; // T00786：工作空间全文检索面板（partial 提示）
 import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：正文 AI 美化（反馈/处理结果共用）
 
+/** 顶部 tab 三态：待办 / 已完成 / 搁置（S4323：具名类型别名替代内联联合类型） */
+type ActiveTab = 'todo' | 'done' | 'shelved';
+
 // ---------- T00552：批量分类运行态模块级化——切页后循环继续、返回不卡死 ----------
 export const classifyStore: { busy: boolean; hit: number; total: number; done: boolean } = { busy: false, hit: 0, total: 0, done: false };
 async function runBatchClassifyModule(target: Array<{ id: string; title: string; priority: string }>, toolId: string, cats: Array<{ id: string; name: string }>): Promise<void> {
   if (classifyStore.busy) return;
   classifyStore.busy = true;
   classifyStore.hit = 0; classifyStore.total = target.length; classifyStore.done = false;
-  let prio = 0;
   try {
     for (const t of target) {
       if (!classifyStore.busy) break; // 防御：外部复位即中止
@@ -29,7 +32,7 @@ async function runBatchClassifyModule(target: Array<{ id: string; title: string;
         });
         if (!(r.ok && r.categoryId)) continue;
         const patch: { categoryId: string; priority?: string } = { categoryId: r.categoryId };
-        if (t.priority === 'normal' && r.priority) { patch.priority = r.priority; prio++; }
+        if (t.priority === 'normal' && r.priority) { patch.priority = r.priority; }
         await api.patch(`/tasks/${t.id}`, patch);
         classifyStore.hit += 1;
       } catch { /* 单条失败不中断批量 */ }
@@ -38,7 +41,6 @@ async function runBatchClassifyModule(target: Array<{ id: string; title: string;
     classifyStore.done = true;
     classifyStore.busy = false;
   }
-  void prio;
 }
 
 /** 粘贴截图项：id 为入列时生成的稳定唯一标识，供列表 key 使用，删除中间项不会导致其余项身份错位 */
@@ -55,6 +57,35 @@ interface ImageDraft {
 
 /** T00658：三态复选框（支持半选态）——原生 indeterminate 只能经属性设置，封装为受控组件。
  *  用于多选模式标题旁的「全选框」：全选=checked、部分选中=indeterminate、未选=空。 */
+/** T01064-FR1.5：任务事件时间线——状态流转/回传/验证历史（/api/events/by-task/:id，正序；无事件不渲染） */
+function TaskEventTimeline({ taskId }: { taskId: string }) {
+  const [events, setEvents] = useState<Array<{ kind: string; detail: string; created_at: string }> | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void api.get<Array<{ kind: string; detail: string; created_at: string }>>(`/events/by-task/${taskId}`)
+      .then((d) => { if (alive) setEvents(Array.isArray(d) ? d : []); })
+      .catch(() => { if (alive) setEvents([]); });
+    return () => { alive = false; };
+  }, [taskId]);
+  if (!events || events.length === 0) return null;
+  return (
+    <div style={{ margin: '8px 0 0', padding: '8px 10px', border: '1px dashed var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>时间线 · 事件自动记录</div>
+      {events.map((ev, i) => (
+        <div key={i} style={{ display: 'flex', gap: 8, fontSize: 11, alignItems: 'baseline' }}>
+          <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>{ev.created_at.slice(5, 16).replace('T', ' ')}</span>
+          <span style={{ color: ev.detail.includes('失败') ? 'var(--danger)' : 'var(--text-secondary)' }}>{ev.detail}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** T01065-FR1.6：批量操作动作的中文名（撤销按钮提示用） */
+const ACTION_LABEL: Record<'status' | 'category' | 'priority' | 'color' | 'archive', string> = {
+  status: '批量改状态', category: '批量设分类', priority: '批量设优先级', color: '批量字体颜色', archive: '批量归档',
+};
+
 function TriCheckbox({ checked, indeterminate, onChange, title, label, style }: {
   readonly checked: boolean;
   readonly indeterminate: boolean;
@@ -155,8 +186,14 @@ export function TasksPage() {
     setTodo(clear); setDone(clear);
   };
   const [search, setSearch] = useSessionState<string>('tasks.search', ''); // T00560：命令面板跳转写入搜索词
+  // T00836：命令面板点击任务后下发的「定位」意图——滚动到该行并高亮 + 展开记录，定位完成即消费清空
+  const [focusTaskId, setFocusTaskId] = useSessionState<string>('tasks.focusId', '');
+  const [focusTab, setFocusTab] = useSessionState<string>('tasks.focusTab', '');
+  // T00836 二轮：聚焦任务所属项目——任务可能属于非当前 activeProject 的项目，
+  // 若不下发此 id，切换列表后会因「目标行不在当前项目列表」而定位失败。
+  const [focusProjectId, setFocusProjectId] = useSessionState<string>('tasks.focusProjectId', '');
   // T00757：列表 tab——待办/已完成/搁置三个列表标题并排为 tab，仅渲染激活 tab 的列表（会话级保持）
-  const [activeTab, setActiveTab] = useSessionState<'todo' | 'done' | 'shelved'>('tasks.activeTab', 'todo');
+  const [activeTab, setActiveTab] = useSessionState<ActiveTab>('tasks.activeTab', 'todo');
   // 主列表分页：后端按页拉取 + 加载更多；hasMore=true 表示当前页刚好满页、可能还有更多
   const PAGE_SIZE = 200;
   const [hasMore, setHasMore] = useState(false);
@@ -189,14 +226,14 @@ export function TasksPage() {
   useEffect(() => {
     if (classifyBusy && !classifyStore.busy) { setClassifyBusy(false); return; }
     if (!classifyBusy) return;
-    const timer = window.setInterval(() => {
+    const timer = globalThis.setInterval(() => {
       if (!classifyStore.busy) {
         setClassifyBusy(false);
         flash(classifyStore.hit > 0 ? `批量分类完成 ${classifyStore.hit}/${classifyStore.total} 条` : '未能为这些任务匹配到合适分类');
         void loadTasks(activeProject);
       }
     }, 1500);
-    return () => window.clearInterval(timer);
+    return () => globalThis.clearInterval(timer);
   }, [classifyBusy, activeProject]);
   // 进行中请求的取消控制器：美化已入 beautifyStore.aborts（模块级，切页存活）；提示词优化仍按页内隔离
   const optimizeAborts = useRef<Record<string, AbortController>>({});
@@ -223,6 +260,8 @@ export function TasksPage() {
 
   // T00610：验证失败反馈录入弹窗（文本 + 截图）与提交忙碌态
   const [failDialog, setFailDialog] = useState<{ taskId: string; title: string; text: string; images: PastedImage[] } | null>(null);
+  /** 移除反馈弹窗内待上传截图（S2004：从 JSX 深层嵌套箭头下沉为组件级回调） */
+  const removeFailImage = (imgId: string) => setFailDialog((d) => (d ? { ...d, images: d.images.filter((x) => x.id !== imgId) } : d));
   const [failBusy, setFailBusy] = useState(false);
   // 验证失败反馈编辑草稿：存在即编辑态，保存写回 handle_result 全文
   const [fbDrafts, setFbDrafts] = useState<Record<string, string>>({});
@@ -258,7 +297,7 @@ export function TasksPage() {
     }
   }
   const projDropRef = useRef<HTMLDivElement | null>(null);
-  const pressTimer = useRef<Record<string, number>>({});
+  const pressTimer = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
     const flash = (msg: string) => {
     setNotice(msg);
     setTimeout(() => setNotice(''), 2500);
@@ -384,6 +423,47 @@ export function TasksPage() {
   }, [activeProject, loadTasks]);
   useEffect(() => { void loadTools(); }, [loadTools]);
   useEffect(() => { void loadCategories(); }, [loadCategories]);
+
+  // T00836：命令面板定位意图处理——若目标 tab 与当前不一致先切 tab（等该列表渲染后再定位）；
+  // 命中行则滚动居中 + 高亮 + 展开描述与处理结果（“显示当前记录信息”），定位完成即消费清空，避免重复触发
+  useEffect(() => {
+    if (!focusTaskId) return;
+    // T00836 二轮：任务所属项目与当前 activeProject 不一致时，先切项目（会触发上方 loadTasks 重新加载该任务列表）；
+    // 目标行只在所属项目的 todo/done 里，切完项目的同时也消费 projectId，避免重复切换。
+    if (focusProjectId && activeProject !== focusProjectId) {
+      setActiveProject(focusProjectId);
+      setFocusProjectId('');
+      return;
+    }
+    // T00836 二轮：分类/优先级选项卡会把目标任务过滤出列表——定位前先清空这两类过滤，
+    // 保证目标行在全量结果里可见；清空后等列表重载再定位。flag 防抖：触发清理后本轮先返回。
+    if (catFilter || priorityFilter) {
+      if (catFilter) setCatFilter('');
+      if (priorityFilter) setPriorityFilter('');
+      setFocusProjectId('__fetch_filter__');
+      return;
+    }
+    // T00836 二轮：上一节清空过滤后列表重载完成、projectId 无实际目标，进入正式定位流程。
+    if (focusProjectId === '__fetch_filter__') setFocusProjectId('');
+    if (focusTab && (focusTab === 'todo' || focusTab === 'done') && focusTab !== activeTab) { setActiveTab(focusTab); return; }
+    const el = document.querySelector(`[data-ttask-id="${focusTaskId}"]`);
+    if (el instanceof HTMLElement) {
+      try { el.scrollIntoView({ block: 'center' }); } catch { /* 忽略滚动异常 */ }
+      // 内联高亮：accent 描边 + 柔和底，避免新增全局样式类污染
+      const prevOutline = el.style.outline;
+      const prevBg = el.style.background;
+      el.style.outline = '2px solid var(--accent)';
+      el.style.outlineOffset = '2px';
+      el.style.background = 'var(--accent-soft)';
+      setDescExpanded((p) => ({ ...p, [focusTaskId]: true }));
+      setResultOpen((p) => ({ ...p, [focusTaskId]: true }));
+      const done = () => { el.style.outline = prevOutline; el.style.background = prevBg; setFocusTaskId(''); setFocusTab(''); };
+      window.setTimeout(done, 3000);
+    } else {
+      setFocusTaskId(''); setFocusTab('');
+    }
+    // 依赖 todo/done/activeTab/activeProject/filters：目标列表渲染后再定位；仅定位一次后即清空
+  }, [focusTaskId, todo, done, activeTab, activeProject, focusProjectId, catFilter, priorityFilter]);
   // T00433：MCP 回传 / 队列执行 / 其他窗口改任务状态时，前端无感知——轻量轮询对比签名，有变化才刷新。
   // 保护条件：任何未保存草稿或 AI 操作进行中时跳过本轮，避免打断用户编辑（变化留待下一轮干净窗口）。
   // T00457：批量操作——多选模式 + 选中任务集合（跨待办/已完成统一 id 集合）
@@ -392,6 +472,8 @@ export function TasksPage() {
   const [csvPreview, setCsvPreview] = useState<{ items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>; errors: Array<{ row: number; message: string }> } | null>(null);
   const [csvImportKind, setCsvImportKind] = useState<'csv' | 'json'>('csv'); // T00556：导入类型分流
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // T01065-FR1.6：最近一次批量操作的撤销快照（操作前旧值；一次性；归档类不记录）
+  const [lastBatch, setLastBatch] = useState<{ entries: Array<{ id: string; patch: { status: string; priority: string; category_id: string | null; color: string } }>; label: string } | null>(null);
   const [batchOpBusy, setBatchOpBusy] = useState(false);
   // T00446：任务列表拖拽排序（manual 排序模式下启用）
   const [dragTaskId, setDragTaskId] = useState('');
@@ -637,7 +719,8 @@ export function TasksPage() {
       for (const img of failDialog.images) {
         await api.post(`/tasks/${task.id}/images`, { data: img.url });
       }
-      flash(`已标记验证失败并回退待办${failDialog.images.length > 0 ? `（附 ${failDialog.images.length} 张截图）` : ''}`);
+      const imgNote = failDialog.images.length > 0 ? `（附 ${failDialog.images.length} 张截图）` : '';
+      flash(`已标记验证失败并回退待办${imgNote}`);
       setFailDialog(null);
       void loadTasks(activeProject);
     } catch (e) {
@@ -868,10 +951,60 @@ export function TasksPage() {
     try {
       const r = await api.post<{ ok: boolean; affected: number }>('/tasks/batch', { ids, action, value });
       flash(`批量操作完成：${r.affected} 条已更新`);
+      // T01065-FR1.6：批量操作撤销快照——操作前抓旧值（status/priority/category/color），
+      // 工具栏出现一次性「撤销」按钮逐条还原；归档类不提供 undo（归档页可恢复）
+      if (action !== 'archive') {
+        const all = [...todo, ...done, ...shelvedTasks];
+        const entries = ids
+          .map((id) => {
+            const t = all.find((x) => x.id === id);
+            if (!t) return null;
+            return { id, patch: { status: t.status, priority: t.priority, category_id: t.category_id, color: t.color || '' } };
+          })
+          .filter((x): x is NonNullable<typeof x> => x !== null);
+        if (entries.length > 0) setLastBatch({ entries, label: `${ACTION_LABEL[action]}${value ? `（${value}）` : ''}` });
+      } else {
+        setLastBatch(null);
+      }
       setSelectedIds(new Set());
       void loadTasks(activeProject);
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
+    } finally { setBatchOpBusy(false); }
+  }
+
+  /** T01065-FR1.6：批量移动到项目——选中任务整体迁移（moveProject 已有，补批量入口） */
+  async function batchMoveTo(projectId: string) {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return flash('请先勾选任务');
+    const target = projects.find((p) => p.id === projectId);
+    if (!window.confirm(`将选中的 ${ids.length} 条任务移动到「${target?.name ?? projectId}」？`)) return;
+    setBatchOpBusy(true);
+    try {
+      await api.post('/tasks/move', { taskIds: ids, projectId });
+      flash(`批量移动完成：${ids.length} 条已迁移到「${target?.name ?? projectId}」`);
+      setSelectedIds(new Set());
+      void loadTasks(activeProject);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally { setBatchOpBusy(false); }
+  }
+
+  /** T01065-FR1.6：撤销最近一次批量操作——按操作前快照逐条 PATCH 还原（归档类不在撤销范围） */
+  async function undoLastBatch() {
+    if (!lastBatch || batchOpBusy) return;
+    setBatchOpBusy(true);
+    try {
+      for (const { id, patch } of lastBatch.entries) {
+        await api.patch(`/tasks/${id}`, patch);
+      }
+      flash(`已撤销上次批量操作（${lastBatch.entries.length} 条已还原：${lastBatch.label}）`);
+      setLastBatch(null);
+      void loadTasks(activeProject);
+    } catch (e) {
+      flash(`撤销失败：${e instanceof Error ? e.message : String(e)}（已还原的部分保持当前状态）`);
+      setLastBatch(null);
+      void loadTasks(activeProject);
     } finally { setBatchOpBusy(false); }
   }
 
@@ -908,9 +1041,14 @@ export function TasksPage() {
   /** T00456 / PRD UX-1：看板视图——按状态分列（待办/已完成），卡片拖拽流转状态。
    *  卡片为简化渲染（标题/优先级/分类/进度），编辑回列表视图；drop 到目标列即变更状态。 */
   function renderBoard() {
+    // T00922：看板标题统计改取项目级全量计数（todo_count/done_count），首屏即显示该项目全部待办/已完成，
+    // 不再受分页已加载条目数影响（原 done.length 仅覆盖当前已加载页，需「加载更多」后才趋近真实值）
+    const curProj = projects.find((p) => p.id === activeProject);
+    const todoTotal = curProj?.todo_count ?? todo.length;
+    const doneTotal = curProj?.done_count ?? done.length;
     const boardCols: Array<{ key: 'todo' | 'done'; label: string; items: Task[] }> = [
-      { key: 'todo', label: `待办（${todo.length}）`, items: todo },
-      { key: 'done', label: `已完成（${done.length}）`, items: done },
+      { key: 'todo', label: `待办（${todoTotal}）`, items: todo },
+      { key: 'done', label: `已完成（${doneTotal}）`, items: done },
     ];
     const onDropTo = (target: 'todo' | 'done') => {
       if (!dragTaskId) return;
@@ -981,6 +1119,22 @@ export function TasksPage() {
           style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', color: 'var(--danger)' }}>
           <Archive size={14} />
         </button>
+        {/* T01065-FR1.6：批量移动到项目（moveProject 批量入口） */}
+        <select value="" disabled={batchOpBusy || projects.length === 0} aria-label="批量移动到项目" title="批量移动到项目 — 选中任务整体迁移到目标项目"
+          onChange={(e) => { const v = e.target.value; if (v) void batchMoveTo(v); }}
+          style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          <option value="">移动到项目…</option>
+          {projects.filter((p) => p.id !== 'sys-inbox' && p.id !== activeProject).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        {/* T01065-FR1.6：撤销最近一次批量操作（一次性按钮，操作前旧值快照逐条还原） */}
+        {lastBatch && (
+          <button onClick={() => void undoLastBatch()} disabled={batchOpBusy} className="tbtn-anim"
+            title={`撤销上次批量操作 — ${lastBatch.label}，${lastBatch.entries.length} 条将还原为操作前的状态`}
+            aria-label={`撤销上次批量操作（${lastBatch.entries.length} 条）`}
+            style={{ cursor: 'pointer', padding: '2px 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, border: '1px solid var(--accent)', borderRadius: 6, background: 'var(--accent-soft)', color: 'var(--accent)' }}>
+            <RotateCcw size={13} /> 撤销批量（{lastBatch.entries.length}）
+          </button>
+        )}
         <button onClick={() => setSelectedIds(new Set())} disabled={batchOpBusy} className="tbtn-anim"
           title="取消选择" aria-label="取消选择"
           style={{ cursor: 'pointer', padding: '2px 4px', marginLeft: 'auto', display: 'inline-flex', alignItems: 'center' }}>
@@ -1298,9 +1452,24 @@ export function TasksPage() {
   const fmtShort = (iso: string) => (iso ? iso.slice(5, 16).replace('T', ' ') : '');
 
   /** 任务行标题行：置顶/编号/徽标/标题（T00547：完成状态/验证按钮移至下方元信息行左侧，不独立占行） */
+  // T01057-FR1.2：失败一键重试——ai_state=failed 的任务回待办，retry_count+1，历史结果保留（handle_result 追加段）
+  const [retryingNo, setRetryingNo] = useState('');
+  async function handleRetryTask(taskNo: string) {
+    if (retryingNo) return;
+    if (!window.confirm(`重试任务 ${taskNo}？将回到待办并等待 AI 重新领取执行，历次处理结果保留。`)) return;
+    setRetryingNo(taskNo);
+    try {
+      await api.post(`/tasks/by-no/${taskNo}/retry`, {});
+      await loadTasks(activeProject);
+    } catch (e) {
+      window.alert(`重试失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setRetryingNo('');
+    }
+  }
   function renderTaskTitleRow(t: Task, titleEditing: boolean) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div data-ttask-id={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         {multiSelect && (
           <input type="checkbox" checked={selectedIds.has(t.id)} aria-label={`选中任务 ${t.title}`}
             onChange={(e) => setSelectedIds((prev) => { const n = new Set(prev); if (e.target.checked) { n.add(t.id); } else { n.delete(t.id); } return n; })}
@@ -1338,6 +1507,23 @@ export function TasksPage() {
             <AlertTriangle size={13} />
           </span>
         )}
+        {/* T01057-FR1.2：失败一键重试——回待办等待 AI 重新领取，历次结果保留；重试过显示次数徽标 */}
+        {t.ai_state === 'failed' && (
+          <button
+            onClick={() => t.task_no && void handleRetryTask(t.task_no)}
+            disabled={retryingNo === t.task_no}
+            title={retryingNo === t.task_no ? '重试中…' : '重试 — 回到待办，等待 AI 重新领取执行（历次结果保留）'}
+            aria-label={`重试任务 ${t.task_no ?? ''}`}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, padding: '1px 6px', borderRadius: 5, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: retryingNo === t.task_no ? 'wait' : 'pointer' }}
+          >
+            {retryingNo === t.task_no ? <Loader2 size={11} className="aispin" /> : <RotateCcw size={11} />} 重试
+          </button>
+        )}
+        {(t.retry_count ?? 0) > 0 && (
+          <span title={`该任务已手动重试 ${t.retry_count} 次（历次结果见处理结果）`} aria-label={`已重试 ${t.retry_count} 次`} style={{ display: 'inline-flex', alignItems: 'center', fontSize: 10, padding: '0 5px', borderRadius: 4, background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
+            重试×{t.retry_count}
+          </span>
+        )}
         {t.ai_state === 'unread' && (
           <span className="ai-unread-breathe" title="AI 处理完成 — 点击展开任务详情查看结果" aria-label="AI 处理完成未读" style={{ display: 'inline-flex', alignItems: 'center' }}>
             <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)', display: 'inline-block' }} />
@@ -1357,11 +1543,11 @@ export function TasksPage() {
         {/* T00502/T00521 调整：验证失败徽标——点击展开「验证失败反馈」窗口（聚焦失败段查看/修改）
             T00623：验证通过（verified=true）后隐藏该标签——历史【验证失败】段仍在 handle_result（供追溯），但不再作为当前状态提示 */}
         {t.handle_result?.includes('【验证失败') && !t.verified && (
-          <span title="验证失败 — 点击查看/修改失败反馈" aria-label="验证失败"
+          <button type="button" title="验证失败 — 点击查看/修改失败反馈" aria-label="验证失败"
             onClick={() => setFailbackOpen((p) => ({ ...p, [t.id]: true }))}
-            style={{ fontSize: 10, color: 'var(--danger)', border: '1px solid var(--danger)', padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'pointer' }}>
+            style={{ fontSize: 10, color: 'var(--danger)', border: '1px solid var(--danger)', padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'pointer', background: 'transparent', fontFamily: 'inherit' }}>
             验证失败
-          </span>
+          </button>
         )}
         {/* T00462/T00451：计划联动任务区分徽标——悬浮显示来源计划标题（反向引用）
             T01037：来源计划是里程碑时徽标显示「里程碑」，不再一律显示「计划」（里程碑≠普通计划条目） */}
@@ -1547,7 +1733,7 @@ export function TasksPage() {
               ○ 未验证
             </button>
             <button role="menuitem"
-              onClick={() => { setVerifyMenuId(''); void markVerifyFailed(t); }}
+              onClick={() => { setVerifyMenuId(''); markVerifyFailed(t); }}
               title="标记验证失败 — 录入失败反馈，任务将回退到待办列表"
               style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--danger)' }}>
               <X size={14} /> 验证失败
@@ -1572,7 +1758,13 @@ export function TasksPage() {
             style={{ flex: 1, padding: '4px 6px', border: '1px solid var(--accent)', borderRadius: 4, fontSize: 13, boxSizing: 'border-box' }}
           />
         ) : (
-          <span style={{ flex: 1, textDecoration: t.status === 'done' ? 'line-through' : 'none', color: t.color || 'var(--text)' }}>
+          // T00918：已完成且无处理结果反馈的任务，其标题行常无「描述/处理结果」展开入口可点，
+          // 未读红点无处置除；故点击标题本身即视为「已查看」，清除该任务未读状态（仅覆盖此场景，不影响已填反馈任务）
+          <span
+            onClick={() => { if (t.status === 'done' && !t.handle_result && t.ai_state === 'unread') { void api.patch(`/tasks/${t.id}`, { aiState: '' }).then(() => setTasksStateRead(t.id)); } }}
+            title={t.status === 'done' && !t.handle_result && t.ai_state === 'unread' ? '点击消除未读状态' : undefined}
+            style={{ flex: 1, textDecoration: t.status === 'done' ? 'line-through' : 'none', color: t.color || 'var(--text)', cursor: t.status === 'done' && !t.handle_result && t.ai_state === 'unread' ? 'pointer' : 'default' }}
+          >
             {t.title}
           </span>
         )}
@@ -1660,13 +1852,15 @@ export function TasksPage() {
   function renderSimplifyButton(t: Task) {
     const busy = beautifyBusy[t.id];
     const hasDesc = Boolean((t.description ?? '').trim());
+    let simplifyTitle: string;
+    if (busy) simplifyTitle = 'AI 处理进行中，请在工具栏点击「取消」';
+    else if (hasDesc) simplifyTitle = 'AI 简化 — 依据任务详情高度总结为简洁标题（限 40 字，细节会精简）';
+    else simplifyTitle = 'AI 简化不可用 — 该任务暂无详情内容，请先补充详情后再简化（避免语义丢失）';
     return (
       <button
         onClick={() => void simplify(t)}
         disabled={(batchBusy && !busy) || busy}
-        title={busy ? 'AI 处理进行中，请在工具栏点击「取消」'
-          : hasDesc ? 'AI 简化 — 依据任务详情高度总结为简洁标题（限 40 字，细节会精简）'
-            : 'AI 简化不可用 — 该任务暂无详情内容，请先补充详情后再简化（避免语义丢失）'}
+        title={simplifyTitle}
         aria-label={busy ? 'AI 处理进行中' : 'AI 简化：依据任务详情总结为简洁标题'}
         className={`task-op${busy ? ' task-breathe' : ''}`}
         style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', background: busy ? 'var(--accent)' : 'transparent', color: busy ? 'var(--accent-text)' : 'var(--text)', opacity: (!hasDesc || (batchBusy && !busy)) ? 0.45 : 1 }}
@@ -1913,6 +2107,10 @@ export function TasksPage() {
             )}
           </div>
         )}
+        {/* T01072-FR1.9：结果历史 diff 与回滚（handle_result 被覆盖前留档；无历史时不渲染） */}
+        {!editing && t.handle_result && t.task_no && (
+          <ResultDiffPanel taskNo={t.task_no} current={t.handle_result} onRollback={() => { void loadTasks(activeProject); }} />
+        )}
       </div>
     );
   }
@@ -1924,7 +2122,7 @@ export function TasksPage() {
     for (const ln of (t.handle_result ?? '').split('\n')) {
       if (ln.includes('【验证失败')) { cap = true; out.push(ln); continue; }
       if (cap) {
-        if (/^【/.test(ln.trim())) break; // 下一段标记开始，失败反馈段结束
+        if (ln.trim().startsWith('【')) break; // 下一段标记开始，失败反馈段结束
         out.push(ln);
       }
     }
@@ -1998,8 +2196,8 @@ export function TasksPage() {
               style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, boxSizing: 'border-box' }}
             />
             <div style={{ marginTop: 4, display: 'flex', gap: 4, alignItems: 'center' }}>
-              {/* T00796 补漏：用户反馈「修改入口看不到 AI 美化」——行内反馈编辑态此前漏接，
-                  与录入弹窗/处理结果/通用需求共用同一组件，结果只回填草稿，仍需点保存落库 */}
+              {/* T00796 二轮补：反馈「修改」入口同样要有 AI 美化（与录入弹窗/处理结果/通用需求同一组件），
+                  结果只回填草稿，仍需点保存落库 */}
               <AiPolishButton
                 value={fbDrafts[t.id] ?? ''}
                 onPolished={(text) => setFbDrafts((prev) => ({ ...prev, [t.id]: text }))}
@@ -2090,20 +2288,23 @@ export function TasksPage() {
     const titleEditing = titleDrafts[t.id] !== undefined;
     // 排序模式与拖拽高亮类名提前算出：避免 className / style 内出现嵌套三元
     // T00719：shelved 列表拖拽重排沿用 manual 排序链路（dropTaskReorder 按列表 id 序写 user_sort）
-    const sortMode = kind === 'todo' ? todoSort : kind === 'shelved' ? shelvedSort : doneSort;
+    let sortMode: SortKey;
+    if (kind === 'todo') sortMode = todoSort;
+    else if (kind === 'shelved') sortMode = shelvedSort;
+    else sortMode = doneSort;
     let dragCls = '';
     if (overTaskId === t.id) dragCls = ' plan-over';
     else if (dragTaskId === t.id) dragCls = ' plan-dragging';
     return (
       <li
-        className={`task-item${titleEditing || descEditing ? ' task-editing' : ''}${dragCls}${refreshFlash && t.updated_at && Date.parse(t.updated_at) >= refreshFlash ? ' flush' : ''}${pressId === t.id ? ' item-pressing' : ''}`}
-        onMouseDown={(e) => {
+        className={`task-item cv-auto${titleEditing || descEditing ? ' task-editing' : ''}${dragCls}${refreshFlash && t.updated_at && Date.parse(t.updated_at) >= refreshFlash ? ' flush' : ''}${pressId === t.id ? ' item-pressing' : ''}`}
+        onPointerDown={(e) => {
           // T00489：交互元素上按下不触发行缩放；非交互区按住 200ms 才缩放（快速点击不缩放）
           if ((e.target as HTMLElement).closest('button, input, select, a, textarea, label')) return;
-          pressTimer.current[t.id] = window.setTimeout(() => setPressId(t.id), 200);
+          pressTimer.current[t.id] = globalThis.setTimeout(() => setPressId(t.id), 200);
         }}
-        onMouseUp={() => { clearTimeout(pressTimer.current[t.id]); if (pressId) setPressId(''); }}
-        onMouseLeave={() => { clearTimeout(pressTimer.current[t.id]); if (pressId === t.id) setPressId(''); }}
+        onPointerUp={() => { clearTimeout(pressTimer.current[t.id]); if (pressId) setPressId(''); }}
+        onPointerLeave={() => { clearTimeout(pressTimer.current[t.id]); if (pressId === t.id) setPressId(''); }}
         draggable={sortMode === 'manual'}
         onDragStart={() => setDragTaskId(t.id)}
         onDragEnd={() => { setDragTaskId(''); setOverTaskId(''); }}
@@ -2116,6 +2317,8 @@ export function TasksPage() {
         {renderTaskMetaRow(t, titleEditing, descEditing)}
         {/* 描述板块：描述展开时，Markdown 正文在上、截图缩略图紧随其后显示在同一容器内 */}
         {descExpanded[t.id] && !descEditing && (t.description || t.images.length > 0) && renderTaskDescView(t)}
+        {/* T01064-FR1.5：任务事件时间线——状态流转/回传/验证历史（展开描述时随详情展示） */}
+        {descExpanded[t.id] && !descEditing && <TaskEventTimeline taskId={t.id} />}
         {/* 大图预览独立于查看态条件：编辑态下已打开的预览不因进入编辑而消失 */}
         {previewId && descExpanded[t.id] && t.images.some((i) => i.id === previewId) && renderTaskPreview(t)}
         {descEditing && renderTaskDescEditor(t, descDraft)}
@@ -2143,7 +2346,7 @@ export function TasksPage() {
           {anyBeautify ? '取消' : todo.length}
         </button>
         {/* 工具条整体连贯进度提示：单条/批量美化进行中展示（优化进行中文案在各任务描述区展示），完成/取消后清空 */}
-        {anyBeautify && <span className="flash-toast" role="status" style={{ top: 48 }}><span className="task-breathe" style={{ color: 'var(--accent)' }}>{batchBusy ? '正在批量美化标题…' : '正在美化标题…'}</span></span>}
+        {anyBeautify && <output className="flash-toast" style={{ top: 48 }}><span className="task-breathe" style={{ color: 'var(--accent)' }}>{batchBusy ? '正在批量美化标题…' : '正在美化标题…'}</span></output>}
       </>
     );
   }
@@ -2265,24 +2468,23 @@ export function TasksPage() {
             <ChevronDown size={12} />
           </button>
           {projOpen && (
-            <div role="listbox" style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 30, minWidth: 220 }}>
+            <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 30, minWidth: 220 }}>
               {sortedProjects.map((p) => (
-                <button key={p.id} role="option" aria-selected={p.id === activeProject}
+                <button key={p.id} aria-pressed={p.id === activeProject}
                   onClick={() => { setActiveProject(p.id); setProjOpen(false); }}
                   title={`${p.name}：待办 ${p.todo_count ?? 0} 条，未验证 ${p.unverified_count ?? 0} 条`}
                   style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, background: p.id === activeProject ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer' }}>
                   {/* T00655：置顶图标——位于项目名称之前，点击切换置顶（已置顶=实心 accent + 弹入动画） */}
-                  <span
-                    role="button" tabIndex={0}
+                  <button
+                    type="button"
                     onClick={(e) => { e.stopPropagation(); void toggleProjectPin(p); }}
-                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); void toggleProjectPin(p); } }}
                     title={isProjectPinned(p) ? `已置顶「${p.name}」— 点击取消置顶` : `置顶「${p.name}」— 点击后在默认排序下排最前`}
                     aria-label={isProjectPinned(p) ? `取消置顶 ${p.name}` : `置顶 ${p.name}`}
                     className={isProjectPinned(p) ? 'pin-pop tbtn-anim' : 'tbtn-anim'}
-                    style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0, color: isProjectPinned(p) ? 'var(--accent)' : 'var(--text-muted)', cursor: 'pointer' }}
+                    style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0, color: isProjectPinned(p) ? 'var(--accent)' : 'var(--text-muted)', cursor: 'pointer', border: 'none', background: 'transparent', padding: 0 }}
                   >
                     <Pin size={12} style={{ transform: isProjectPinned(p) ? 'rotate(-45deg)' : 'none', transition: 'transform .18s ease, color .18s ease', fill: isProjectPinned(p) ? 'currentColor' : 'none' }} />
-                  </span>
+                  </button>
                   <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
                   <span title={`待办 ${p.todo_count ?? 0} 条`} style={{ minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{p.todo_count ?? 0}</span>
                   <span title={`未验证 ${p.unverified_count ?? 0} 条`} style={{ minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.unverified_count ?? 0}</span>
@@ -2408,7 +2610,7 @@ export function TasksPage() {
           placeholder="搜索标题/描述…"
           style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, marginLeft: 'auto' }}
         />
-        {notice && <span className="flash-toast" role="status">{notice}</span>}
+        {notice && <output className="flash-toast">{notice}</output>}
       </div>
     );
   }
@@ -2554,6 +2756,11 @@ export function TasksPage() {
     const visibleDone = arrange(sortTasks(done.filter(matches).filter(matchDoneFilter), doneSort));
     // T00719：搁置列表沿用同一套搜索/分类/优先级过滤（fetchTasks 已按同参拉取），本地再按排序键排序
     const visibleShelved = arrange(sortTasks(shelvedTasks.filter(matches), shelvedSort));
+    // T00922：tab 标题已完成/待办统计改取项目级全量计数——原 done.length/todo.length 仅覆盖当前已加载页，
+    // 首屏需「加载更多」后才趋近真实总量；改用项目 done_count/todo_count 后首屏即显示全量。未验证数保持原语义（已完成中未验证）
+    const curProj = projects.find((p) => p.id === activeProject);
+    const todoTotal = curProj?.todo_count ?? todo.length;
+    const doneTotal = curProj?.done_count ?? done.length;
     return (
       <>
         {batchBar}
@@ -2563,8 +2770,8 @@ export function TasksPage() {
         {viewMode === 'list' && (<>
         {/* T00757：待办/已完成/搁置 三个标题并排为 tab——激活项加粗+下方横线，未激活常规字重；仅渲染激活 tab 的列表 */}
         <div className="op-host" style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--border-strong)', marginBottom: 8 }}>
-          {([['todo', `待办（${visibleTodo.length}/${todo.length}）`],
-             ['done', `已完成（${visibleDone.length}/${done.length}，未验证 ${done.filter((t) => !t.verified).length}）`],
+          {([['todo', `待办（${visibleTodo.length}/${todoTotal}）`],
+             ['done', `已完成（${visibleDone.length}/${doneTotal}，未验证 ${done.filter((t) => !t.verified).length}）`],
              ['shelved', `搁置（${visibleShelved.length}）`]] as const).map(([key, label]) => (
             <button key={key} onClick={() => setActiveTab(key)} aria-pressed={activeTab === key}
               title={`${label} — 点击切换到该列表`}
@@ -2952,9 +3159,10 @@ export function TasksPage() {
       {renderToolbar()}
       {/* T00771：新建项目后的工作空间绑定弹窗——内嵌同款选择面板（历史/新建/打开本地文件夹），可跳过 */}
       {wsPickForNew && (
-        <div onClick={() => setWsPickForNew(null)} role="dialog" aria-modal="true" aria-label="绑定工作空间"
+        <dialog open
+          aria-label="绑定工作空间"
           style={{ position: 'fixed', inset: 0, zIndex: 900, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '18vh' }}>
-          <div onClick={(e) => e.stopPropagation()}
+          <div
             style={{ width: 300, background: 'var(--card-bg)', color: 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 12px 40px rgba(0,0,0,.25)', padding: 12 }}>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>为「{wsPickForNew.name}」选择工作空间</div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>工作空间是项目的上下文根路径，AI 功能将以此路径加载上下文；可跳过稍后在任务菜单绑定。</div>
@@ -2971,7 +3179,7 @@ export function TasksPage() {
               跳过，稍后绑定
             </button>
           </div>
-        </div>
+        </dialog>
       )}
       {renderNewTaskForm()}
       {renderTaskLists()}
@@ -3041,7 +3249,7 @@ export function TasksPage() {
                   {failDialog.images.map((img) => (
                     <span key={img.id} style={{ position: 'relative', display: 'inline-flex' }}>
                       <img src={img.url} alt="待上传截图预览" style={{ height: 64, borderRadius: 4, border: '1px solid var(--border)' }} />
-                      <button onClick={() => setFailDialog((d) => (d ? { ...d, images: d.images.filter((x) => x.id !== img.id) } : d))}
+                      <button onClick={() => removeFailImage(img.id)}
                         title="移除该截图" aria-label="移除该截图"
                         style={{ position: 'absolute', top: -6, right: -6, width: 16, height: 16, borderRadius: '50%', border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 11, lineHeight: '16px', cursor: 'pointer', padding: 0 }}>×</button>
                     </span>
@@ -3061,6 +3269,7 @@ export function TasksPage() {
           </div>
         </div>
       )}
+
       {/* T00786：工作空间全文检索面板（挂载于页面级，随主 section 渲染；floating overlay 关闭即卸载） */}
       {wsSearchOpen && (
         <WorkspaceSearchPanel

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
-import { EXPORT_MIME, safeExportName, saveBinary } from '../utils/download'; // T00959：导出下载
 import { askConfirm, askInput } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown';
-import { Check, FileDown, FilePenLine, FilePlus2, FileText, FileType, Loader2, Pencil, Plus, RefreshCw, SendToBack, Trash2, Undo2, Upload, X } from 'lucide-react'; // T00770：PRD 管理视图；T00959：下载格式菜单图标
+import { EXPORT_MIME, safeExportName, saveBinary } from '../utils/download'; // T00959：导出下载
+import { Check, FileDown, FilePenLine, FilePlus2, FileText, FileType, FileUp, Loader2, Pencil, Plus, RefreshCw, SendToBack, Trash2, Undo2, Upload, X } from 'lucide-react'; // T00770：PRD 管理视图；T00824：跳转导入入口；T00959：下载格式菜单
 
 /** PRD 文档行（列表轻量；T00770 增加 status 流转） */
 interface PrdDoc {
@@ -23,7 +23,19 @@ interface PrdIssue {
   /** 'open'=待确认 | 'resolved'=已确认 */
   status: string;
   updated_at: string;
+  /** T00817：AI 建议选项（可为空） */
+  suggestion?: string;
+  /** T00822：问题级别——blocker/suggested/info/custom，与 AI 控制台生成批次一致 */
+  level?: string;
 }
+
+/** T00822：问题级别展示映射（对齐 AI 控制台「原始需求生成 PRD」的待确认问题标签） */
+const ISSUE_LEVEL_META: Record<string, { label: string; color: string }> = {
+  blocker: { label: '🔴 阻塞', color: 'var(--danger, #c22)' },
+  suggested: { label: '🟡 建议', color: 'var(--warning, #c80)' },
+  info: { label: '🟢 提示', color: 'var(--success)' },
+  custom: { label: '自定义', color: 'var(--accent)' },
+};
 
 /** T00959：PRD 下载支持的格式（选项菜单顺序与图标） */
 const PRD_DOWNLOAD_FORMATS = [
@@ -38,7 +50,7 @@ const PRD_DOWNLOAD_FORMATS = [
  * 未选中文档时按钮禁用，浮层说明原因（避免"点了没反应"）。
  */
 function PrdDownloadButton({ doc, onError }: {
-  readonly doc: { id: string; filename: string } | null;
+  readonly doc: PrdDoc | null;
   readonly onError: (msg: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -225,15 +237,18 @@ export function PrdPanel({ projectId, onClose }: {
   // ---- 待确认问题 ----
 
   async function addIssue() {
+    // T00823：未显式选中文档时，默认挂到「当前项目最新创建的一份 PRD」——避免产生无归属的项目级问题，
+    // 后续确认后无法回写；仅当项目完全没有任何 PRD 文档时才回落为项目级。
+    const prd = selected ?? docs[0] ?? null;
     const q = await askInput({
-      title: selected ? `新增待确认问题（挂到「${selected.filename}」）` : '新增待确认问题（项目级）',
+      title: prd ? `新增待确认问题（挂到「${prd.filename}」）` : '新增待确认问题（项目级，尚未有 PRD 文档可关联回写）',
       placeholder: '待确认的问题描述',
     });
     if (q === null) return;
     if (!q.trim()) return flash('问题描述不能为空');
     try {
-      await api.post('/plans/prd-issues', { projectId, prdId: selected?.id, question: q.trim() });
-      flash('已新增待确认问题');
+      await api.post('/plans/prd-issues', { projectId, prdId: prd?.id, question: q.trim() });
+      flash(prd ? `已新增待确认问题（关联「${prd.filename}」）` : '已新增项目级待确认问题（无可回写 PRD）');
       await load();
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
   }
@@ -281,6 +296,17 @@ export function PrdPanel({ projectId, onClose }: {
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
   }
 
+  /** T00824：从本视图跳转 AI 工作台并自动展开「从 PRD 导入项目计划」面板，目标项目随跳转带出。
+   *  T00907：docId 为该行 PRD 文档——跳转后面板自动读取该文档并作为「已选文件」填充确认栏，无需用户重新选文件 */
+  function goImportPrd(docId?: string) {
+    try {
+      sessionStorage.setItem('report.showPrdImport', JSON.stringify(true));
+      sessionStorage.setItem('prd-import.project', JSON.stringify(projectId));
+      if (docId) sessionStorage.setItem('prd-import.docId', docId);
+      globalThis.dispatchEvent(new CustomEvent('mtaskNavigate', { detail: { tab: 'report' } }));
+    } catch { /* 跳转异常静默，不影响当前视图 */ }
+  }
+
   async function removeIssue(i: PrdIssue) {
     if (!(await askConfirm(`删除待确认问题「${i.question}」？`))) return;
     try {
@@ -302,10 +328,10 @@ export function PrdPanel({ projectId, onClose }: {
         <span style={{ flex: 1 }} />
         {/* T00959：PRD 下载（md/docx/pdf 三格式菜单）——作用于当前选中的文档 */}
         <PrdDownloadButton doc={selected} onError={(m) => flash(`导出失败：${m}`)} />
-        <button onClick={() => { void createDoc(); }} className="tbtn-anim" title="新建 PRD 文档" style={opBtn}><FilePlus2 size={12} /> 新建</button>
+        <button onClick={() => { void createDoc(); }} className="tbtn-anim" title="新建 PRD 文档" aria-label="新建" style={opBtn}><FilePlus2 size={12} /></button>
         <label className="tbtn-anim" title="导入 PRD 文档（.md / .markdown / .txt；.docx 请用 AI PRD 导入）"
           style={{ ...opBtn, display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
-          <Upload size={12} /> 导入
+          <Upload size={12} />
           <input type="file" accept=".md,.markdown,.txt" style={{ display: 'none' }}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void importFile(f); } e.target.value = ''; }} />
         </label>
@@ -334,6 +360,13 @@ export function PrdPanel({ projectId, onClose }: {
             <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{d.content_chars} 字 · {d.updated_at.slice(0, 10)}</span>
           </button>
           <span style={{ display: 'inline-flex', gap: 5 }}>
+            {/* T00824：跳转 AI 工作台导入入口——位于文档标题后、状态流转按钮前；T00907：带入该行文档，跳转后自动填充确认栏 */}
+            <button onClick={() => goImportPrd(d.id)} className="tbtn-anim"
+              title="从PRD导入项目计划 — 跳转 AI 工作台，AI 拆 WBS 并提取需求到需求跟踪矩阵与项目计划"
+              aria-label="从PRD导入项目计划"
+              style={{ ...opBtn, gap: 3 }}>
+              <FileUp size={11} /> 从PRD导入项目计划
+            </button>
             <button onClick={() => { void toggleStatus(d); }} className="tbtn-anim" title={d.status === 'confirmed' ? '转回草稿（PRD）' : '确认为确认版 PRD'} style={opBtn}>
               {d.status === 'confirmed' ? <Undo2 size={11} /> : <Check size={11} />}
             </button>
@@ -380,8 +413,8 @@ export function PrdPanel({ projectId, onClose }: {
           <strong style={{ fontSize: 12 }}>待确认问题</strong>
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>确认后可把结论回写到对应 PRD</span>
           <span style={{ flex: 1 }} />
-          <button onClick={() => { void addIssue(); }} className="tbtn-anim" title={selected ? '新增问题（挂到当前选中文档）' : '新增项目级问题（先选中文档可自动挂靠）'} style={opBtn}>
-            <Plus size={11} /> 新增
+          <button onClick={() => { void addIssue(); }} className="tbtn-anim" title={selected ? '新增问题（挂到当前选中文档）' : '新增项目级问题（先选中文档可自动挂靠）'} aria-label="新增待确认问题" style={opBtn}>
+            <Plus size={11} />
           </button>
         </div>
         {issues.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 0' }}>暂无待确认问题。</div>}
@@ -395,8 +428,19 @@ export function PrdPanel({ projectId, onClose }: {
                   color: i.status === 'resolved' ? 'var(--success)' : 'var(--warning, #c80)' }}>
                 {i.status === 'resolved' ? '已确认' : '待确认'}
               </span>
+              {/* T00822：问题级别标签——对齐 AI 控制台生成面板的级别展示（🔴阻塞/🟡建议/🟢提示/自定义） */}
+              {i.level && ISSUE_LEVEL_META[i.level] && (
+                <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 8, flex: 'none', marginTop: 1,
+                  color: ISSUE_LEVEL_META[i.level].color }}>
+                  {ISSUE_LEVEL_META[i.level].label}
+                </span>
+              )}
               <span style={{ fontSize: 12, color: 'var(--text)', minWidth: 0, flex: '1 1 260px' }}>
                 {i.question}
+                {/* T00817：AI 建议字段——展示 AI 为该问题生成的建议选项，辅助决策 */}
+                {i.suggestion && (
+                  <span style={{ display: 'block', fontSize: 11, color: 'var(--accent)', marginTop: 2, whiteSpace: 'pre-line' }}>AI建议：{i.suggestion}</span>
+                )}
                 {i.status === 'resolved' && i.answer && (
                   <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>结论：{i.answer}</span>
                 )}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, Compass, X, type LucideIcon } from 'lucide-react';
 
 /**
@@ -39,7 +39,9 @@ export function PageGuideDialog({ open, onClose, title, steps }: {
   readonly steps: readonly GuideStep[];
 }) {
   const [step, setStep] = useState(0);
+  const dialogRef = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (open) setStep(0); }, [open]);
+  useEffect(() => { if (open && dialogRef.current) dialogRef.current.focus(); }, [open]);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -57,7 +59,7 @@ export function PageGuideDialog({ open, onClose, title, steps }: {
     <div /* NOSONAR - 遮罩点击为鼠标便捷关闭，关闭按钮提供键盘可达通路 */
       style={{ position: 'fixed', inset: 0, background: 'var(--overlay, rgba(0,0,0,.45))', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12 }}
       onClick={(e) => { if (e.target === e.currentTarget) finish(); }}>
-      <div role="dialog" aria-modal="true" aria-label={title}
+      <dialog open ref={dialogRef} aria-modal="true" aria-label={title} tabIndex={-1}
         style={{ background: 'var(--card-bg)', borderRadius: 10, width: 'min(560px, 92vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 12px 40px rgba(0,0,0,.22)' }}>
         {/* 头部 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
@@ -107,7 +109,7 @@ export function PageGuideDialog({ open, onClose, title, steps }: {
             : <button onClick={() => setStep((s) => Math.min(steps.length - 1, s + 1))} className="tbtn-anim"
               style={{ padding: '5px 14px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12 }}>下一步</button>}
         </div>
-      </div>
+      </dialog>
     </div>
   );
 }

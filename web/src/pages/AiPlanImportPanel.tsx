@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { api, type Project } from '../api/client';
-import { Loader2, Save, Sparkles, Upload, X } from 'lucide-react';
+import { Save, Sparkles, Upload, X } from 'lucide-react';
 import { useSessionState } from '../ui/session';
 import { aiImportStore, type AiImportDraftRow } from '../stores/aiImportStore';
 
@@ -65,7 +65,13 @@ export function AiPlanImportPanel({ toolId, onClose, onSaved }: {
     try {
       const r = await api.post<{ inserted: number }>('/plans/batch', {
         projectId,
-        items: items.map(({ include, rowKey, ...rest }) => { void include; void rowKey; return rest; }),
+        // 提交体剔除前端草稿态字段（include/rowKey 不落库），其余字段原样提交
+        items: items.map((row) => {
+          const rest = { ...row } as Omit<AiImportDraftRow, 'include' | 'rowKey'> & { include?: unknown; rowKey?: unknown };
+          delete rest.include;
+          delete rest.rowKey;
+          return rest;
+        }),
       });
       aiImportStore.log(`保存完成：已创建 ${r.inserted} 条计划，时间线已重排`, 'ok');
       aiImportStore.patch({ rows: [], lastSaved: r.inserted });
@@ -114,7 +120,7 @@ export function AiPlanImportPanel({ toolId, onClose, onSaved }: {
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void parse(f); } e.target.value = ''; }} />
         </label>
         {fileName && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{fileName}</span>}
-        {busy && <span style={{ fontSize: 11, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Loader2 size={12} className="aispin" />处理中…</span>}
+        {busy && <span className="ai-shimmer" style={{ fontSize: 11, fontWeight: 600, ['--ai-shimmer-color' as never]: 'var(--accent)' }}>处理中…</span>}
         {/* 面板内仅保留一行状态提示：完整滚动输出统一在右侧控制台 tab */}
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
           {snap.logs.length > 0 ? `控制台已输出 ${snap.logs.length} 条执行日志 →` : '执行过程将在右侧 AI 控制台逐行输出'}

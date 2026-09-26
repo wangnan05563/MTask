@@ -82,8 +82,11 @@ export class ClaudeAdapter implements AIAdapter {
   }
 
   /** 通用单轮对话：复用 /v1/messages，供 send 与提示词优化等场景共用 */
-  async chat(system: string, user: string, config: ToolConfig): Promise<JobResult> {
+  async chat(system: string, user: string, config: ToolConfig, signal?: AbortSignal): Promise<JobResult> {
     if (!config.apiKey) return { ok: false, error: '缺少 API Key' };
+    // T00838：为外部取消信号生成内部 AbortController，随 fetch 透传
+    const ctrl = signal ? new AbortController() : undefined;
+    if (signal && ctrl) signal.addEventListener('abort', () => ctrl.abort());
     try {
       const url = `${this.baseUrl(config.endpoint)}/v1/messages`;
       const res = await withTimeout(
@@ -101,6 +104,7 @@ export class ClaudeAdapter implements AIAdapter {
             system,
             messages: [{ role: 'user', content: user }],
           }),
+          ...(ctrl ? { signal: ctrl.signal } : {}),
         }),
         config.timeoutMs ?? 60000,
       );
@@ -117,16 +121,20 @@ export class ClaudeAdapter implements AIAdapter {
       if (!text) return { ok: false, error: 'AI 返回内容为空' };
       return { ok: true, content: text };
     } catch (e) {
+      // T00838：外部主动中止归因到「任务已停止」
+      if (signal?.aborted) return { ok: false, error: '任务已停止' };
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
   }
 
   /** 流式通用单轮对话：stream:true，解析 content_block_delta 的 text 增量回调，供 AI 周报 SSE 实时输出 */
-  async chatStream(system: string, user: string, config: ToolConfig, onDelta: (text: string) => void): Promise<StreamResult> {
+  async chatStream(system: string, user: string, config: ToolConfig, onDelta: (text: string) => void, signal?: AbortSignal): Promise<StreamResult> {
     if (!config.apiKey) return { ok: false, error: '缺少 API Key' };
     const ctrl = new AbortController();
     // 流式期间受超时约束：超时即中断，避免长耗时任务无限挂起
     const timer = setTimeout(() => ctrl.abort(), config.timeoutMs ?? 60000);
+    // T00838：外部取消信号（用户点「停止」）同样 abort 底层流请求
+    if (signal) signal.addEventListener('abort', () => ctrl.abort());
     try {
       const url = `${this.baseUrl(config.endpoint)}/v1/messages`;
       const res = await fetch(url, {
@@ -179,6 +187,8 @@ export class ClaudeAdapter implements AIAdapter {
       if (stopReason === 'refusal') return { ok: false, error: outputStoppedError('stop_reason=refusal', text.length) }; // 走查 M-3
       return { ok: true, content: text };
     } catch (e) {
+      // T00838：区分「外部主动停止」与「超时」
+      if (signal?.aborted) return { ok: false, error: '任务已停止' };
       if (e instanceof Error && e.name === 'AbortError') return { ok: false, error: `连接超时（超过 ${config.timeoutMs ?? 60000}ms）` };
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     } finally {

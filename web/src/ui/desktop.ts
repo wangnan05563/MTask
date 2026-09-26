@@ -8,6 +8,12 @@
 export interface DesktopApi {
   /** 唤起系统「选择文件夹」对话框，返回绝对路径；用户取消返回 null */
   openDirectory: () => Promise<string | null>;
+  /** 应用内下载更新安装包（T00878）：返回安装包绝对路径 */
+  downloadUpdate?: (url: string) => Promise<string>;
+  /** 静默安装已下载的安装包并退出当前应用（T00878） */
+  installUpdate?: (filePath: string) => Promise<{ ok: boolean }>;
+  /** 订阅下载进度（T00878）；返回取消订阅函数 */
+  onUpdateProgress?: (cb: (data: { status: string; received?: number; total?: number; filePath?: string }) => void) => () => void;
 }
 
 /** 取桌面壳 API；非 Electron 环境返回 null（调用方需自行降级） */

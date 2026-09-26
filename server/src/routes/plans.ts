@@ -43,6 +43,13 @@ function pid(req: import('express').Request): string {
 // ---------- 节假日（须先于 /:id 注册） ----------
 planApi.get('/holidays', (_req, res) => wrap(res, () => PlanService.listHolidays()));
 
+// T01058-FR1.3：就绪任务推荐——deps 前置均完成的执行行（供 AI 工作台「现在做这个」卡片）
+planApi.get('/ready', (req, res) => {
+  const projectId = pid(req);
+  if (!projectId) return res.status(400).json({ error: 'projectId 必填' });
+  wrap(res, () => PlanService.readyTasks(projectId, Math.min(10, Math.max(1, Number(req.query.limit) || 3))));
+});
+
 planApi.post('/holidays', (req, res) => {
   const { date, name, kind } = (req.body ?? {}) as { date?: unknown; name?: unknown; kind?: unknown };
   if (!date || typeof date !== 'string') return res.status(400).json({ error: 'date 必填（YYYY-MM-DD）' });
@@ -73,6 +80,21 @@ planApi.post('/import', raw({ type: () => true, limit: '30mb' }), (req, res) => 
   PlanService.importExcel(projectId, req.body)
     .then((r) => res.json(r))
     .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
+});
+
+// T01071-FR5.3：项目全量 Markdown 导出（任务清单 + WBS + 需求矩阵，单文档）
+planApi.get('/export-md', exportGate('plans-export-md'), (req, res) => {
+  const projectId = req.query.projectId;
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+  try {
+    const md = PlanService.exportMarkdown(projectId);
+    const ts = new Date().toISOString().slice(0, 19).replaceAll(/[-:T]/g, '');
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="mtask-export-${ts}.md"`);
+    res.send(md);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 // T00789：同步主线程导出（实测 ~283ms/次），加并发闸避免多路导出串行叠加阻塞
@@ -153,8 +175,12 @@ planApi.post('/ai-parse-prd', raw({ type: () => true, limit: '30mb' }), (req, re
   if (typeof toolId !== 'string' || !toolId) return res.status(400).json({ error: 'toolId 必填（PRD 解析需要模型工具）' });
   if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: '请求体应为文件二进制' });
   PlanService.extractPrdText(req.body, filename)
-    .then((text) => PlanService.aiParsePrd(toolId, text))
-    .then((r) => res.json({ ok: true, ...r }))
+    .then(async (text) => {
+      // T00908：随解析一并返回提取后的 PRD 全文 textMd——供前端确认导入时作 prdMd 落库到 PRD 管理视图
+      const r = await PlanService.aiParsePrd(toolId, text);
+      return { ok: true, ...r, textMd: text };
+    })
+    .then((r) => res.json(r))
     .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
 });
 
@@ -186,6 +212,28 @@ planApi.put('/prd-docs/:id', (req, res) => {
   }));
 });
 
+// ---------- T00770：PRD 管理视图（新建 / 删除 / 状态流转 / 待确认问题） ----------
+
+planApi.post('/prd-docs', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof b.projectId !== 'string' || !b.projectId) return res.status(400).json({ error: 'projectId 必填' });
+  wrap(res, () => PlanService.createPrdDoc({
+    projectId: b.projectId as string,
+    filename: typeof b.filename === 'string' ? b.filename : '',
+    contentMd: typeof b.contentMd === 'string' ? b.contentMd : '',
+    status: typeof b.status === 'string' ? b.status : undefined,
+    originHash: typeof b.originHash === 'string' ? b.originHash : undefined,
+  }));
+});
+
+planApi.delete('/prd-docs/:id', (req, res) => wrap(res, () => { PlanService.deletePrdDoc(req.params.id); return { ok: true }; }));
+
+planApi.patch('/prd-docs/:id/status', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof b.status !== 'string') return res.status(400).json({ error: "status 必填（'prd' | 'confirmed'）" });
+  wrap(res, () => PlanService.setPrdDocStatus(req.params.id, b.status as string));
+});
+
 /** 导出文件名安全化：去掉路径分隔与非法字符（与前端 safeFilename 同口径，避免下载文件名带斜杠） */
 function safeExportName(name: string, fallback: string): string {
   const s = name.replaceAll(/[\\/:*?"<>|\n\r\t]/g, '-').replaceAll(/\s+/g, ' ').trim().slice(0, 80);
@@ -212,7 +260,8 @@ planApi.get('/prd-docs/:id/export', exportGate('prd-doc-export', undefined, { de
       return;
     }
     const { buildPrdDocx, buildPrdPdf } = await import('../services/prdExport'); // 按需加载：docx/pdfkit 较重，仅导出时引入
-    const buf = format === 'docx' ? await buildPrdDocx(md, base) : await buildPrdPdf(md, base);
+    const title = base;
+    const buf = format === 'docx' ? await buildPrdDocx(md, title) : await buildPrdPdf(md, title);
     res.setHeader('Content-Type', format === 'docx'
       ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
       : 'application/pdf');
@@ -222,6 +271,50 @@ planApi.get('/prd-docs/:id/export', exportGate('prd-doc-export', undefined, { de
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
+
+planApi.get('/prd-issues', (req, res) => {
+  const projectId = pid(req);
+  const prdId = typeof req.query.prdId === 'string' && req.query.prdId ? req.query.prdId : undefined;
+  wrap(res, () => PlanService.listIssues(projectId, prdId));
+});
+
+planApi.post('/prd-issues', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof b.projectId !== 'string' || !b.projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (typeof b.question !== 'string' || !b.question.trim()) return res.status(400).json({ error: 'question 必填' });
+  wrap(res, () => PlanService.addIssue({
+    projectId: b.projectId as string,
+    prdId: typeof b.prdId === 'string' && b.prdId ? b.prdId : undefined,
+    question: b.question as string,
+  }));
+});
+
+planApi.patch('/prd-issues/:id', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  wrap(res, () => PlanService.updateIssue(req.params.id, {
+    question: typeof b.question === 'string' ? b.question : undefined,
+    answer: typeof b.answer === 'string' ? b.answer : undefined,
+    status: typeof b.status === 'string' ? b.status : undefined,
+    suggestion: typeof b.suggestion === 'string' ? b.suggestion : undefined,
+  }));
+});
+
+planApi.delete('/prd-issues/:id', (req, res) => wrap(res, () => { PlanService.deleteIssue(req.params.id); return { ok: true }; }));
+
+/** T00769：批量录入待确认问题（AI 生成的清单 + 用户自定义一次入库） */
+planApi.post('/prd-issues/batch', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof b.projectId !== 'string' || !b.projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (!Array.isArray(b.items)) return res.status(400).json({ error: 'items 必须为数组' });
+  wrap(res, () => PlanService.addIssuesBatch({
+    projectId: b.projectId as string,
+    prdId: typeof b.prdId === 'string' && b.prdId ? b.prdId : undefined,
+    items: b.items as Array<{ question: string; answer?: string; level?: string; suggestion?: string }>,
+  }));
+});
+
+/** 回写：把已确认问题的「问题 + 结论」写入对应 PRD 文档 Markdown */
+planApi.post('/prd-issues/:id/writeback', (req, res) => wrap(res, () => PlanService.writebackIssue(req.params.id)));
 
 // ---------- T00662：需求跟踪矩阵 CRUD ----------
 
@@ -257,7 +350,7 @@ planApi.get('/prd-requirements/export', exportGate('req-matrix-export', undefine
     });
     const buf = await buildMatrixXlsx(data, project.name);
     const ts = new Date().toISOString().slice(0, 10);
-    const fname = `${safeExportName(`需求跟踪矩阵-${project.name}-${ts}`, '需求跟踪矩阵')}.xlsx`;
+    const fname = safeExportName(`需求跟踪矩阵-${project.name}-${ts}`, '需求跟踪矩阵') + '.xlsx';
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fname)}`);
     res.send(buf);
@@ -280,10 +373,11 @@ planApi.post('/prd-requirements', (req, res) => {
 planApi.patch('/prd-requirements/:id', (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   wrap(res, () => PlanService.updateRequirement(req.params.id, {
-    title: optStr(b.title), content: b.content === undefined ? undefined : String(b.content),
-    reqNo: optStr(b.reqNo), sourceRef: b.sourceRef === undefined ? undefined : String(b.sourceRef),
+    title: optStr(b.title), content: optStr(b.content),
+    reqNo: optStr(b.reqNo), sourceRef: optStr(b.sourceRef),
     priority: optStr(b.priority), status: optStr(b.status),
     sortOrder: b.sortOrder === undefined ? undefined : Number(b.sortOrder),
+    prdId: optStr(b.prdId),
   }));
 });
 
@@ -292,7 +386,9 @@ planApi.delete('/prd-requirements/:id', (req, res) => wrap(res, () => { PlanServ
 /** 关联调整：需求 ↔ 计划/待办（linked=true 建立关联，false 解除） */
 planApi.post('/prd-requirements/:id/link', (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
-  const kind = b.kind === 'task' ? 'task' : b.kind === 'plan' ? 'plan' : null;
+  let kind: 'task' | 'plan' | null = null;
+  if (b.kind === 'task') kind = 'task';
+  else if (b.kind === 'plan') kind = 'plan';
   if (!kind || typeof b.targetId !== 'string' || !b.targetId) return res.status(400).json({ error: 'kind(plan|task) 与 targetId 必填' });
   wrap(res, () => { PlanService.linkRequirement(req.params.id, { kind, targetId: b.targetId as string, linked: b.linked !== false }); return { ok: true }; });
 });

@@ -57,7 +57,10 @@ export class OllamaAdapter implements AIAdapter {
   }
 
   /** 通用单轮对话：复用 /api/chat，供 send 与提示词优化等场景共用 */
-  async chat(system: string, user: string, config: ToolConfig): Promise<JobResult> {
+  async chat(system: string, user: string, config: ToolConfig, signal?: AbortSignal): Promise<JobResult> {
+    // T00838：为外部取消信号生成内部 AbortController，随 fetch 透传
+    const ctrl = signal ? new AbortController() : undefined;
+    if (signal && ctrl) signal.addEventListener('abort', () => ctrl.abort());
     try {
       const url = `${this.baseUrl(config.endpoint)}/api/chat`;
       const prompt = system ? `${system}\n\n${user}` : user;
@@ -72,6 +75,7 @@ export class OllamaAdapter implements AIAdapter {
             stream: false,
             options: { temperature: config.temperature ?? 0.2 },
           }),
+          ...(ctrl ? { signal: ctrl.signal } : {}),
         }),
         config.timeoutMs ?? 60000,
       );
@@ -85,15 +89,19 @@ export class OllamaAdapter implements AIAdapter {
       if (!data.message?.content) return { ok: false, error: 'AI 返回内容为空' };
       return { ok: true, content: data.message.content };
     } catch (e) {
+      // T00838：外部主动中止归因到「任务已停止」
+      if (signal?.aborted) return { ok: false, error: '任务已停止' };
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
   }
 
   /** 流式通用单轮对话：stream:true，逐行取 message.content 增量回调，供 AI 周报 SSE 实时输出 */
-  async chatStream(system: string, user: string, config: ToolConfig, onDelta: (text: string) => void): Promise<StreamResult> {
+  async chatStream(system: string, user: string, config: ToolConfig, onDelta: (text: string) => void, signal?: AbortSignal): Promise<StreamResult> {
     const ctrl = new AbortController();
     // 流式期间受超时约束：超时即中断，避免长耗时任务无限挂起
     const timer = setTimeout(() => ctrl.abort(), config.timeoutMs ?? 60000);
+    // T00838：外部取消信号（用户点「停止」）同样 abort 底层流请求
+    if (signal) signal.addEventListener('abort', () => ctrl.abort());
     try {
       const url = `${this.baseUrl(config.endpoint)}/api/chat`;
       const prompt = system ? `${system}\n\n${user}` : user;
@@ -135,6 +143,8 @@ export class OllamaAdapter implements AIAdapter {
       if (doneReason === 'length') return { ok: false, error: streamTruncatedError(text.length), partial: text }; // T00779 + T00814 partial
       return { ok: true, content: text };
     } catch (e) {
+      // T00838：区分「外部主动停止」与「超时」
+      if (signal?.aborted) return { ok: false, error: '任务已停止' };
       if (e instanceof Error && e.name === 'AbortError') return { ok: false, error: `连接超时（超过 ${config.timeoutMs ?? 60000}ms）` };
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     } finally {

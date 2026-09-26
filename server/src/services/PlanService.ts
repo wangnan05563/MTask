@@ -531,14 +531,17 @@ function milestoneDurations(items: Array<{ kind?: PlanKind; durationDays?: numbe
 
 /** PRD 解析：原始计划条目 → 归一化计划草稿数组（reqNos 字符串过滤，durationDays≥1，status 固定为待办初始态）
  *  T01001：新增 kind 字段——AI 显式输出优先，否则按 WBS 层级推断里程碑。 */
-function normalizePrdPlans(raw: unknown[]): Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind }> {
-  const drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind }> = [];
+function normalizePrdPlans(raw: unknown[]): Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind; complexity?: number }> {
+  const drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind; complexity?: number }> = [];
   for (const r of raw) {
     if (!r || typeof r !== 'object') continue;
     const o = r as Record<string, unknown>;
     const title = typeof o.title === 'string' ? o.title.trim() : '';
     if (!title) continue;
     const reqNos = Array.isArray(o.reqNos) ? o.reqNos.filter((x): x is string => typeof x === 'string') : [];
+    // T01058-FR2.1：AI 复杂度评级（1~5；非法/缺失为 undefined）
+    const cRaw = Number(o.complexity);
+    const complexity = Number.isFinite(cRaw) && cRaw >= 1 && cRaw <= 5 ? Math.round(cRaw) : undefined;
     drafts.push({
       title,
       description: typeof o.description === 'string' ? o.description : '',
@@ -547,15 +550,44 @@ function normalizePrdPlans(raw: unknown[]): Array<{ title: string; description: 
       reqNos,
       status: 'todo',
       kind: resolvePrdKind(title, o.kind),
+      complexity,
     });
   }
   return drafts;
 }
 
 export const PlanService = {
+  /** T01058-FR1.3：就绪任务推荐——deps 引用的前置计划均已完成（或无 deps）的普通执行行；
+   *  携带关联待办编号（linked_task_id → tasks.task_no）供「现在做这个」卡片跳转定位。 */
+  readyTasks(projectId: string, limit = 3): Array<{ id: string; title: string; duration_days: number; complexity: number | null; start_date: string; task_no: string | null }> {
+    const db = getDb();
+    const rows = db.prepare(
+      `SELECT id, title, duration_days, complexity, start_date, sort_order, deps, linked_task_id
+         FROM plan_tasks WHERE project_id = ? AND archived = 0 AND kind = 'normal' AND status NOT IN ('done','blocked')
+        ORDER BY start_date, sort_order`,
+    ).all(projectId) as Array<{ id: string; title: string; duration_days: number; complexity: number | null; start_date: string; sort_order: number; deps: string | null; linked_task_id: string | null }>;
+    const statusById = new Map(
+      (db.prepare('SELECT id, status FROM plan_tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ id: string; status: string }>)
+        .map((r) => [r.id, r.status]),
+    );
+    const taskNoById = new Map(
+      (db.prepare("SELECT id, task_no FROM tasks WHERE archived = 0 AND task_no IS NOT NULL").all() as Array<{ id: string; task_no: string }>)
+        .map((r) => [r.id, r.task_no]),
+    );
+    const out: Array<{ id: string; title: string; duration_days: number; complexity: number | null; start_date: string; task_no: string | null }> = [];
+    for (const r of rows) {
+      let deps: Array<{ id?: string }> = [];
+      try { deps = r.deps ? JSON.parse(r.deps) : []; } catch { deps = []; }
+      const ready = deps.every((d) => !d?.id || statusById.get(d.id) === 'done');
+      if (!ready) continue;
+      out.push({ id: r.id, title: r.title, duration_days: r.duration_days, complexity: r.complexity, start_date: r.start_date, task_no: r.linked_task_id ? taskNoById.get(r.linked_task_id) ?? null : null });
+      if (out.length >= limit) break;
+    }
+    return out;
+  },
+
   /** 活跃计划列表（排除已归档；归档条目走 listArchived，T00442 语义：删除=归档） */
-  list(projectId: string): PlanTaskRow[] {
-    const rows = getDb().prepare(
+  list(projectId: string): PlanTaskRow[] {    const rows = getDb().prepare(
       `SELECT p.*, t.title AS linked_task_title
        FROM plan_tasks p LEFT JOIN tasks t ON t.id = p.linked_task_id
        WHERE p.project_id = ? AND p.archived = 0 AND COALESCE(p.history_at, '') = '' ORDER BY p.sort_order`,
@@ -981,8 +1013,48 @@ export const PlanService = {
   },
 
   /** 导出：sheet1=计划任务（与模板同列序同样式，T00500 验证修正），sheet2=节假日 */
-  async exportExcel(projectId: string): Promise<Buffer> {
-    const rows = this.list(projectId);
+  /** T01071-FR5.3：项目全量 Markdown 导出——任务清单 + WBS 计划 + 需求跟踪矩阵（单文档，人工可读/可归档） */
+  exportMarkdown(projectId: string): string {
+    const db = getDb();
+    const proj = db.prepare('SELECT name FROM projects WHERE id = ?').get(projectId) as { name: string } | undefined;
+    const name = proj?.name ?? projectId;
+    const esc = (s: unknown) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+    const lines: string[] = [];
+    lines.push(`# ${name} · 全量导出`, '');
+    lines.push(`> 生成时间：${new Date().toISOString().slice(0, 19).replace('T', ' ')}　|　来源：MTask 项目管理`, '');
+    // 任务清单
+    const tasks = db.prepare(
+      `SELECT task_no, title, status, priority, verified FROM tasks WHERE project_id = ? AND archived = 0 ORDER BY task_no`,
+    ).all(projectId) as Array<{ task_no: string | null; title: string; status: string; priority: string; verified: number }>;
+    lines.push(`## 任务清单（${tasks.length} 条）`, '');
+    lines.push('| 编号 | 标题 | 状态 | 优先级 | 验证 |', '| --- | --- | --- | --- | --- |');
+    for (const t of tasks) {
+      lines.push(`| ${t.task_no ?? '—'} | ${esc(t.title)} | ${t.status} | ${t.priority} | ${t.verified ? '✓' : ''} |`);
+    }
+    lines.push('');
+    // WBS 计划
+    const plans = this.list(projectId);
+    lines.push(`## 项目计划 / WBS（${plans.length} 条）`, '');
+    lines.push('| 类型 | 标题 | 开始 | 结束 | 工期 | 进度 | 状态 | 负责人 |', '| --- | --- | --- | --- | --- | --- | --- | --- |');
+    for (const p of plans) {
+      lines.push(`| ${p.kind === 'milestone' ? '里程碑' : p.kind === 'daily' ? '日常' : '任务'} | ${esc(p.title)} | ${p.start_date} | ${p.end_date} | ${p.duration_days} | ${p.progress}% | ${p.status} | ${esc(p.assignee) || '—'} |`);
+    }
+    lines.push('');
+    // 需求跟踪矩阵
+    const reqs = this.listRequirements(projectId) as Array<Record<string, unknown>>;
+    if (reqs.length > 0) {
+      lines.push(`## 需求跟踪矩阵（${reqs.length} 条）`, '');
+      lines.push('| 编号 | 需求 | 状态 | 关联计划 |', '| --- | --- | --- | --- |');
+      for (const r of reqs) {
+        const linked = (r.plans as Array<{ title?: string }> | undefined) ?? [];
+        lines.push(`| ${String(r.req_no ?? '—')} | ${esc(r.title)} | ${String(r.status ?? 'todo')} | ${linked.map((x) => esc(x.title)).join('、') || '—'} |`);
+      }
+      lines.push('');
+    }
+    return lines.join('\n');
+  },
+
+  async exportExcel(projectId: string): Promise<Buffer> {    const rows = this.list(projectId);
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('项目计划', { views: [{ state: 'frozen', ySplit: 1 }] });
     ws.columns = [
@@ -1192,7 +1264,7 @@ export const PlanService = {
       '给定一份 PRD / 需求文档（Markdown 或纯文本），输出**一个 JSON 对象**（不是数组），结构：',
       '{"requirements":[{"reqNo":"REQ-001","title":"需求简述","content":"需求原文要点","sourceRef":"原文定位（章节/小节/段落号）","priority":"low|normal|high|urgent"}],',
       // T01001：plans 每行必须给出 kind，用于导入时区分「里程碑」与「普通任务」——顶层里程碑 kind="milestone"，明细任务 kind="normal"
-      ' "plans":[{"title":"WBS编号+任务名","description":"该节点要做的事（保留原文关键信息）","durationDays":工期工作日数,"startDate":"","reqNos":["REQ-001"],"kind":"milestone|normal"}]}',
+      ' "plans":[{"title":"WBS编号+任务名","description":"该节点要做的事（保留原文关键信息）","durationDays":工期工作日数,"startDate":"","reqNos":["REQ-001"],"kind":"milestone|normal","complexity":1到5的整数}]}',
       // T00979：此前只让 AI 按 WBS 编号扁平输出，模型常停在里程碑层（如 M1-M4）不再向下拆明细。
       // 现强制「里程碑 + 每个里程碑下的明细任务」两级展开，且顶层保留原文里程碑名，杜绝只出里程碑不出任务。
       '要求：',
@@ -1203,6 +1275,7 @@ export const PlanService = {
       '   - **绝对禁止只输出里程碑而不拆明细任务**；若某里程碑在原文确无可落实的独立任务，才允许仅保留该里程碑一行；',
       '   - **每行必须填 kind**：顶层里程碑行填 "milestone"，其下的明细任务行填 "normal"（使用述求准确、不遗漏的这两类取值，不要用其它写法）；',
       '   - 每行 reqNos 只填**该节点直接实现/覆盖的需求编号**；管理类节点（启动/计划/评审/验收等）若不对应具体需求，reqNos 输出 []，**不要把所有需求挂上**（关联过宽会让需求跟踪矩阵失去意义）；',
+      '   - **每行（normal 明细任务）必须给出 complexity 复杂度评级（1~5 整数）**：1=琐碎（半天内）、2=简单、3=中等、4=复杂（不确定性高/跨模块耦合，建议再拆分）、5=极复杂（应拆分为多个任务）；里程碑行可不填或填其下平均；',
       '3. startDate 一律空串（保存后系统按导入当日并行排布：各行独立取导入日为开始日，不做串行顺延）；status 一律 "todo"；durationDays 缺失默认 1；',
       '4. 只输出 JSON 对象本身，不要任何解释或 Markdown 代码围栏；不虚构文档中没有的内容。',
       // T00707：原「宁多勿漏」会把长文档的输出顶到 token 上限而截断（用户实测导入报错），改为规模约束
@@ -1240,7 +1313,7 @@ export const PlanService = {
   importPrd(projectId: string, input: {
     requirements?: Array<{ reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string }>;
     // T01001：plans 行支持 kind（milestone=里程碑 / normal=普通任务），导入时据此区分，不再全部转成普通任务
-    plans?: Array<{ title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string; kind?: PlanKind }>;
+    plans?: Array<{ title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string; kind?: PlanKind; complexity?: number }>;
     createTasks?: boolean;
     prdMd?: string;
     prdFilename?: string;
@@ -1293,6 +1366,7 @@ export const PlanService = {
           durationDays: planDurations[i],
           assignee: p.assignee,
           status: 'todo' as PlanStatus,
+          complexity: p.complexity, // T01058-FR2.1：AI 复杂度评级随导入落库
           // T01001：里程碑/普通任务在导入时确定类型，避免全部落入默认 normal；
           // AI 解析路径已由 normalizePrdPlans 推好 kind，此处的兜底覆盖直接调 import-prd/MCP 未显式传 kind 的场景
           kind: planKinds[i],
@@ -1733,7 +1807,7 @@ export const PlanService = {
   /** 批量创建（AI 导入确认保存/其他批量来源）：事务插入后统一重排；首条用其 startDate 作锚点。
    *  T00709（D-1 修复）：返回 ids 按输入顺序对齐（经 title 清洗过滤后的 clean 数组下标），
    *  供调用方（importPrd）按 id 回写 req_ids 关联——废弃按标题 find 匹配（同名计划会互相覆盖）。 */
-  createBatch(projectId: string, items: Array<{ title: string; description?: string; startDate?: string; durationDays?: number; assignee?: string; status?: PlanStatus; kind?: PlanKind }>): { inserted: number; ids: string[] } {
+  createBatch(projectId: string, items: Array<{ title: string; description?: string; startDate?: string; durationDays?: number; assignee?: string; status?: PlanStatus; kind?: PlanKind; complexity?: number }>): { inserted: number; ids: string[] } {
     if (!getDb().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
     const clean = items.filter((it) => it.title?.trim());
     if (clean.length === 0) throw new Error('没有可创建的计划条目');
@@ -1746,8 +1820,8 @@ export const PlanService = {
       const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ? AND archived = 0').get(projectId) as { m: number }).m;
       const ins = db.prepare(
         `INSERT INTO plan_tasks (id, project_id, title, description, start_date, end_date, duration_days,
-           progress, status, assignee, sort_order, linked_task_id, kind, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?, ?)`,
+           progress, status, assignee, sort_order, linked_task_id, kind, complexity, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
       );
       clean.forEach((it, i) => {
         const duration = Math.max(1, Math.floor(Number(it.durationDays) || 1));
@@ -1759,7 +1833,7 @@ export const PlanService = {
         const end = calcEndDate(start, duration, cal);
         const id = uuid();
         ids.push(id);
-        ins.run(id, projectId, it.title.trim(), it.description ?? '', start, end, duration, status, it.assignee ?? '', maxOrder + 1 + i, kind, t, t);
+        ins.run(id, projectId, it.title.trim(), it.description ?? '', start, end, duration, status, it.assignee ?? '', maxOrder + 1 + i, kind, it.complexity ?? null, t, t);
       });
     })();
     notifyChange('plans');

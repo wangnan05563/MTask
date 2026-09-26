@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { parseIssuesJson, issuesFromSection, parsePrdIssues, splitPrdBody } = require('../server/dist/services/prdIssues.js');
+const { parseIssuesJson, issuesFromSection, parsePrdIssues, splitPrdBody, unwrapTopFence } = require('../server/dist/services/prdIssues.js');
 const { stripWordFieldCodes, isWordFieldToken } = require('../server/dist/util/wordFields.js');
 
 let pass = 0; let fail = 0;
@@ -66,6 +66,16 @@ check('E-4 真的没有时才返回空（交由补充提问兜底）', t4.length
 check('B-1 切掉问题清单段', splitPrdBody('PRD 正文\n<<<ISSUES>>>\n[]') === 'PRD 正文', JSON.stringify(splitPrdBody('PRD 正文\n<<<ISSUES>>>\n[]')));
 check('B-2 标记变体也切', !splitPrdBody('PRD 正文\n<ISSUES>\n[]').includes('ISSUES'), '');
 check('B-3 无标记时原样返回', splitPrdBody('PRD 正文') === 'PRD 正文', '');
+
+// ---------- 3b. T00815：整体代码围栏解包 ----------
+const FENCED = '```markdown\n# 标题\n**加粗**\n```';
+check('F-1 整体 ```markdown 围栏解包', splitPrdBody(FENCED) === '# 标题\n**加粗**', JSON.stringify(splitPrdBody(FENCED)));
+check('F-2 无语言标注的围栏也解', splitPrdBody('```\n# 标题\n```') === '# 标题', '');
+const F3_IN = '```markdown\n# 标题\n<<<ISSUES>>>\n[]\n```';
+check('F-3 带 <<<ISSUES>>> 的整体围栏', splitPrdBody(F3_IN).startsWith('# 标题'), JSON.stringify(splitPrdBody(F3_IN)));
+check('F-4 正文内局部代码块不受影响', splitPrdBody('# 标题\n```js\nconst a=1;\n```').includes('const a=1'), '');
+check('F-5 未闭合围栏（截断）不误删', splitPrdBody('```markdown\n# 标题').startsWith('```markdown'), '');
+check('F-6 unwrapTopFence 直测', unwrapTopFence('```md\n内容\n```') === '内容' && unwrapTopFence('# 无围栏') === '# 无围栏', '');
 
 // ---------- 5. Word 域代码清理（用真实 docx 抽取文本） ----------
 const DOC = 'D:\\code\\QJ\\BEMP5.0DEV\\docs\\原始需求\\2026.7.17《关于电票系统字段优化需求》-电票系统v20260914.docx';

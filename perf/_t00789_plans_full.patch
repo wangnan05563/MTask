@@ -1,0 +1,115 @@
+diff --git a/server/src/routes/plans.ts b/server/src/routes/plans.ts
+index aadcaf2..ddff950 100644
+--- a/server/src/routes/plans.ts
++++ b/server/src/routes/plans.ts
+@@ -2,6 +2,7 @@ import { Router, raw } from 'express';
+ import { PlanService } from '../services/PlanService';
+ import { AIService } from '../services/AIService';
+ import { resolvePrdContext } from '../util/prdContext'; // T00763：计划关联 PRD → 评估上下文
++import { exportGate } from '../util/export-gate'; // T00789：导出类端点并发闸
+ 
+ /**
+  * 项目计划路由（T00431，菜单位于周报前）。
+@@ -74,7 +75,8 @@ planApi.post('/import', raw({ type: () => true, limit: '30mb' }), (req, res) =>
+     .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
+ });
+ 
+-planApi.get('/export', (req, res) => {
++// T00789：同步主线程导出（实测 ~283ms/次），加并发闸避免多路导出串行叠加阻塞
++planApi.get('/export', exportGate('plans-export'), (req, res) => {
+   const projectId = req.query.projectId;
+   if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+   PlanService.exportExcel(projectId).then((buf) => {
+@@ -184,6 +186,70 @@ planApi.put('/prd-docs/:id', (req, res) => {
+   }));
+ });
+ 
++// ---------- T00770：PRD 管理视图（新建 / 删除 / 状态流转 / 待确认问题） ----------
++
++planApi.post('/prd-docs', (req, res) => {
++  const b = (req.body ?? {}) as Record<string, unknown>;
++  if (typeof b.projectId !== 'string' || !b.projectId) return res.status(400).json({ error: 'projectId 必填' });
++  wrap(res, () => PlanService.createPrdDoc({
++    projectId: b.projectId as string,
++    filename: typeof b.filename === 'string' ? b.filename : '',
++    contentMd: typeof b.contentMd === 'string' ? b.contentMd : '',
++    status: typeof b.status === 'string' ? b.status : undefined,
++  }));
++});
++
++planApi.delete('/prd-docs/:id', (req, res) => wrap(res, () => { PlanService.deletePrdDoc(req.params.id); return { ok: true }; }));
++
++planApi.patch('/prd-docs/:id/status', (req, res) => {
++  const b = (req.body ?? {}) as Record<string, unknown>;
++  if (typeof b.status !== 'string') return res.status(400).json({ error: "status 必填（'prd' | 'confirmed'）" });
++  wrap(res, () => PlanService.setPrdDocStatus(req.params.id, b.status as string));
++});
++
++planApi.get('/prd-issues', (req, res) => {
++  const projectId = pid(req);
++  const prdId = typeof req.query.prdId === 'string' && req.query.prdId ? req.query.prdId : undefined;
++  wrap(res, () => PlanService.listIssues(projectId, prdId));
++});
++
++planApi.post('/prd-issues', (req, res) => {
++  const b = (req.body ?? {}) as Record<string, unknown>;
++  if (typeof b.projectId !== 'string' || !b.projectId) return res.status(400).json({ error: 'projectId 必填' });
++  if (typeof b.question !== 'string' || !b.question.trim()) return res.status(400).json({ error: 'question 必填' });
++  wrap(res, () => PlanService.addIssue({
++    projectId: b.projectId as string,
++    prdId: typeof b.prdId === 'string' && b.prdId ? b.prdId : undefined,
++    question: b.question as string,
++  }));
++});
++
++planApi.patch('/prd-issues/:id', (req, res) => {
++  const b = (req.body ?? {}) as Record<string, unknown>;
++  wrap(res, () => PlanService.updateIssue(req.params.id, {
++    question: typeof b.question === 'string' ? b.question : undefined,
++    answer: typeof b.answer === 'string' ? b.answer : undefined,
++    status: typeof b.status === 'string' ? b.status : undefined,
++  }));
++});
++
++planApi.delete('/prd-issues/:id', (req, res) => wrap(res, () => { PlanService.deleteIssue(req.params.id); return { ok: true }; }));
++
++/** T00769：批量录入待确认问题（AI 生成的清单 + 用户自定义一次入库） */
++planApi.post('/prd-issues/batch', (req, res) => {
++  const b = (req.body ?? {}) as Record<string, unknown>;
++  if (typeof b.projectId !== 'string' || !b.projectId) return res.status(400).json({ error: 'projectId 必填' });
++  if (!Array.isArray(b.items)) return res.status(400).json({ error: 'items 必须为数组' });
++  wrap(res, () => PlanService.addIssuesBatch({
++    projectId: b.projectId as string,
++    prdId: typeof b.prdId === 'string' && b.prdId ? b.prdId : undefined,
++    items: b.items as Array<{ question: string; answer?: string; level?: string }>,
++  }));
++});
++
++/** 回写：把已确认问题的「问题 + 结论」写入对应 PRD 文档 Markdown */
++planApi.post('/prd-issues/:id/writeback', (req, res) => wrap(res, () => PlanService.writebackIssue(req.params.id)));
++
+ // ---------- T00662：需求跟踪矩阵 CRUD ----------
+ 
+ planApi.get('/prd-requirements', (req, res) => wrap(res, () => PlanService.listRequirements(pid(req))));
+@@ -202,8 +268,8 @@ planApi.post('/prd-requirements', (req, res) => {
+ planApi.patch('/prd-requirements/:id', (req, res) => {
+   const b = (req.body ?? {}) as Record<string, unknown>;
+   wrap(res, () => PlanService.updateRequirement(req.params.id, {
+-    title: optStr(b.title), content: b.content === undefined ? undefined : String(b.content),
+-    reqNo: optStr(b.reqNo), sourceRef: b.sourceRef === undefined ? undefined : String(b.sourceRef),
++    title: optStr(b.title), content: optStr(b.content),
++    reqNo: optStr(b.reqNo), sourceRef: optStr(b.sourceRef),
+     priority: optStr(b.priority), status: optStr(b.status),
+     sortOrder: b.sortOrder === undefined ? undefined : Number(b.sortOrder),
+   }));
+@@ -214,7 +280,9 @@ planApi.delete('/prd-requirements/:id', (req, res) => wrap(res, () => { PlanServ
+ /** 关联调整：需求 ↔ 计划/待办（linked=true 建立关联，false 解除） */
+ planApi.post('/prd-requirements/:id/link', (req, res) => {
+   const b = (req.body ?? {}) as Record<string, unknown>;
+-  const kind = b.kind === 'task' ? 'task' : b.kind === 'plan' ? 'plan' : null;
++  let kind: 'task' | 'plan' | null = null;
++  if (b.kind === 'task') kind = 'task';
++  else if (b.kind === 'plan') kind = 'plan';
+   if (!kind || typeof b.targetId !== 'string' || !b.targetId) return res.status(400).json({ error: 'kind(plan|task) 与 targetId 必填' });
+   wrap(res, () => { PlanService.linkRequirement(req.params.id, { kind, targetId: b.targetId as string, linked: b.linked !== false }); return { ok: true }; });
+ });

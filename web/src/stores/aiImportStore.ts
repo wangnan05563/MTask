@@ -8,6 +8,8 @@
  * - 日志与草稿仅存内存（会话级语义）——图片/大文本不入 sessionStorage，避免配额问题；
  * - ReportConsole 通过 subscribe 订阅变更并渲染「AI 项目计划导入」tab。
  */
+import { loadRun, persistRun, clearRun, type RunStatus } from '../ui/runStatus';
+
 export interface AiImportLog {
   t: string;
   level: 'info' | 'ok' | 'error';
@@ -35,6 +37,10 @@ interface AiImportState {
   rows: AiImportDraftRow[];
   /** 最近一次保存成功条数（用于控制台摘要展示） */
   lastSaved: number;
+  /** T00839：本次执行开始时间戳（ms），供控制台 tab 展示实时耗时与悬停进度；非 busy 时为 undefined */
+  startedAt?: number;
+  /** T01038：结束后保留的最终耗时（ms） */
+  finalElapsed?: number;
   /**
    * T00982：解析结果完成戳（ms）——解析结果写入会话存储后递增。
    * 解析期间切换页面会让面板组件卸载，若解析在卸载之后才完成，已挂载的实例看不到那次 setState；
@@ -43,9 +49,24 @@ interface AiImportState {
   parseStamp?: number;
 }
 
-const initial: AiImportState = { kind: 'plan', busy: false, fileName: '', error: '', logs: [], rows: [], lastSaved: 0 };
+const initial: AiImportState = { kind: 'plan', busy: false, fileName: '', error: '', logs: [], rows: [], lastSaved: 0, startedAt: undefined };
 
-let state: AiImportState = { ...initial };
+// T01038+：kind 随运行态持久化——刷新水合 finalElapsed 后成功徽标才能挂对卡片（plan/prd 两卡片共用本 store）
+const KIND_KEY = 'mtask.run.aiimport.kind';
+const persistKind = (k: AiImportState['kind']): void => { try { sessionStorage.setItem(KIND_KEY, k); } catch { /* ignore */ } };
+const loadKind = (): AiImportState['kind'] | null => { try { return sessionStorage.getItem(KIND_KEY) as AiImportState['kind'] | null; } catch { return null; } };
+
+// T01038：模块初始化时水合刷新前持久化的最终耗时
+let state: AiImportState = (() => {
+  const base: AiImportState = { ...initial };
+  const h = loadRun('aiimport');
+  if (h && h.finalElapsed != null) {
+    base.finalElapsed = h.finalElapsed;
+    const k = loadKind();
+    if (k === 'prd' || k === 'plan') base.kind = k;
+  }
+  return base;
+})();
 const listeners = new Set<() => void>();
 
 function emit(): void {
@@ -67,7 +88,21 @@ export const aiImportStore = {
     emit();
   },
   patch(p: Partial<AiImportState>): void {
-    state = { ...state, ...p };
+    const next = { ...state, ...p };
+    // T00839：仅在「非忙 → 忙」的瞬时记录起始（同一次执行内的再次置忙不重置）；离开忙态即清空，tab 不再残留时长
+    if (p.busy === true && !state.busy) {
+      next.startedAt = Date.now();
+      next.finalElapsed = undefined;
+      persistKind(next.kind);
+      persistRun('aiimport', { status: 'running' as RunStatus, startedAt: next.startedAt });
+    } else if (p.busy === false) {
+      // T01038：离开忙态时由 startedAt 算最终耗时并保留（停止计时但保留最终耗时）
+      const finalElapsed = next.startedAt ? Date.now() - next.startedAt : next.finalElapsed;
+      next.startedAt = undefined;
+      next.finalElapsed = finalElapsed;
+      persistRun('aiimport', { status: 'success' as RunStatus, finalElapsed });
+    }
+    state = next;
     emit();
   },
   setRows(rows: AiImportDraftRow[]): void {
@@ -77,6 +112,8 @@ export const aiImportStore = {
   /** 重置执行区（保留面板选择态，如项目由会话级状态承载）。T00662：可指定导入类型。 */
   reset(kind: AiImportState['kind'] = 'plan'): void {
     state = { ...initial, kind };
+    persistKind(kind);
+    clearRun('aiimport');
     emit();
   },
   /** T00662：控制台 tab 标题（随导入类型变化） */

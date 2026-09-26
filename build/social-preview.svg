@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e40af"/>
+      <stop offset="0.55" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="640" fill="url(#bg)"/>
+
+  <!-- 左侧：品牌徽标（忠实复用 web/public/icon.svg 的形状） -->
+  <g transform="translate(120 64) scale(1.0)">
+    <path d="M128 360 V164 L208 266 L288 164 V360"
+          fill="none" stroke="#ffffff" stroke-width="46"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="368" cy="344" r="74" fill="#ffffff"/>
+    <path d="M334 344 l24 24 l46 -50"
+          fill="none" stroke="#2563eb" stroke-width="22"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M396 108 l11 29 l29 11 l-29 11 l-11 29 l-11 -29 l-29 -11 l29 -11 z" fill="#ffffff" opacity="0.95"/>
+  </g>
+
+  <!-- 右侧：产品名 + 标语 + 技术栈 -->
+  <g transform="translate(560 210)">
+    <text x="0" y="0" font-family="'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif" font-size="100" font-weight="700" fill="#ffffff">MTask</text>
+    <text x="4" y="92" font-family="'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif" font-size="34" font-weight="500" fill="#dbeafe">AI 任务开发管理工具</text>
+    <text x="4" y="140" font-family="'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif" font-size="30" font-weight="400" fill="#bfdbfe" opacity="0.95">项目化 · AI 梳理 · 队列分发</text>
+    <text x="4" y="192" font-family="'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif" font-size="24" fill="#bfdbfe" opacity="0.85">Electron · React · TypeScript · Express · SQLite</text>
+  </g>
+
+  <text x="24" y="612" font-family="Consolas,Menlo,monospace" font-size="20" fill="#ffffff" opacity="0.55">github.com/mtask</text>
+</svg>

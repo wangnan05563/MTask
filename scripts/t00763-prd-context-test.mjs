@@ -78,7 +78,7 @@ console.log(JSON.stringify(c ? { prdId: c.prdId, len: c.content.length, hasCut: 
   writeFileSync(probeFile, probe, 'utf8');
   let ctxOut = '';
   try {
-    ctxOut = execFileSync(process.execPath, [probeFile], { env: { ...process.env, MTask_DATA_DIR: 'D:/tmp/mtask-t00763' }, encoding: 'utf8' }).trim();
+    ctxOut = execFileSync(process.execPath, [probeFile], { env: { ...process.env, MTask_DATA_DIR: process.env.MTASK_TEST_DATA_DIR ?? 'D:/tmp/mtask-t00763' }, encoding: 'utf8' }).trim();
   } catch (e) { ctxOut = 'ERR ' + String(e.message).slice(0, 200); }
   let ctx = null; try { ctx = JSON.parse(ctxOut); } catch { /* 解析失败按 FAIL 处理 */ }
   ok('TC-07', '任务反查 PRD 上下文（超长保头保尾截断 + 反向更新内容可见）',
@@ -92,8 +92,8 @@ console.log(JSON.stringify(c ? { prdId: c.prdId, len: c.content.length, hasCut: 
   writeFileSync(probe2File, probe2, 'utf8');
   let ctx2 = '';
   try {
-    ctx2 = execFileSync(process.execPath, [probe2File], { env: { ...process.env, MTask_DATA_DIR: 'D:/tmp/mtask-t00763' }, encoding: 'utf8' }).trim();
-  } catch (e) { ctx2 = 'ERR ' + String(e.message).slice(0, 120); }
+    ctx2 = execFileSync(process.execPath, [probe2File], { env: { ...process.env, MTask_DATA_DIR: process.env.MTASK_TEST_DATA_DIR ?? 'D:/tmp/mtask-t00763' }, encoding: 'utf8' }).trim();
+  } catch (e) { ctx2 = "ERR " + String(e.message).slice(0, 200) + " | " + String((e.stderr ?? "")).slice(0, 300); }
   ok('TC-08', '未关联 PRD 的任务解析为 null', ctx2 === 'null', `result=${ctx2}`);
 
   // TC-09 上下文解析兼容 planId 入口
@@ -104,8 +104,8 @@ console.log(JSON.stringify(c ? { prdId: c.prdId, len: c.content.length, hasCut: 
   writeFileSync(probe3File, probe3, 'utf8');
   let ctx3 = '';
   try {
-    ctx3 = execFileSync(process.execPath, [probe3File], { env: { ...process.env, MTask_DATA_DIR: 'D:/tmp/mtask-t00763' }, encoding: 'utf8' }).trim();
-  } catch (e) { ctx3 = 'ERR ' + String(e.message).slice(0, 120); }
+    ctx3 = execFileSync(process.execPath, [probe3File], { env: { ...process.env, MTask_DATA_DIR: process.env.MTASK_TEST_DATA_DIR ?? 'D:/tmp/mtask-t00763' }, encoding: 'utf8' }).trim();
+  } catch (e) { ctx3 = "ERR " + String(e.message).slice(0, 200) + " | " + String((e.stderr ?? "")).slice(0, 300); }
   ok('TC-09', '计划条目反查 PRD 上下文命中', ctx3 === `HIT:${prdId}`, `result=${ctx3}`);
 
   // TC-10 兼容回归：不带 prdMd 的导入照常工作（不产生文档）

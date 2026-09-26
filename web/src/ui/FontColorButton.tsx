@@ -15,11 +15,11 @@ const PALETTE = [
   '#B97A57', '#FFAEC9', '#FFC90E', '#EFE4B0',
 ];
 
-export function FontColorButton({ current, onApply, label = '字体颜色' }: {
+export function FontColorButton({ current, onApply, label = '字体颜色' }: Readonly<{
   current: string;
   onApply: (color: string) => void;
   label?: string;
-}) {
+}>) {
   const [open, setOpen] = useState(false);
   const [dropUp, setDropUp] = useState(false);
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -46,10 +46,9 @@ export function FontColorButton({ current, onApply, label = '字体颜色' }: {
 
   return (
     <div ref={hostRef} style={{ position: 'relative', display: 'inline-flex' }}>
-      <span
+      <button
+        type="button"
         className="tbtn-anim"
-        role="button"
-        tabIndex={0}
         title={`${label} — 点击应用当前颜色（${current || '默认'}）`}
         aria-label={`${label}：点击直接应用当前颜色`}
         onClick={() => onApply(current)}
@@ -58,7 +57,7 @@ export function FontColorButton({ current, onApply, label = '字体颜色' }: {
       >
         <span style={{ fontSize: 12, fontWeight: 700, fontFamily: 'serif', textDecoration: 'none' }}>A</span>
         <span style={{ display: 'block', width: 14, height: 3, borderRadius: 1, background: barColor, marginTop: 1 }} />
-      </span>
+      </button>
       <button
         className="tbtn-anim"
         onClick={togglePalette}
@@ -72,14 +71,12 @@ export function FontColorButton({ current, onApply, label = '字体颜色' }: {
       </button>
       {open && (
         <div
-          role="listbox"
           style={{ position: 'absolute', ...(dropUp ? { bottom: '100%', marginBottom: 4 } : { top: '100%', marginTop: 4 }), right: 0, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', padding: 6, zIndex: 20, display: 'grid', gridTemplateColumns: 'repeat(8, 18px)', gap: 4 }}
         >
           {PALETTE.map((c) => (
             <button
               key={c}
-              role="option"
-              aria-selected={current === c}
+              aria-pressed={current === c}
               onClick={() => { onApply(c); setOpen(false); }}
               title={c}
               style={{ width: 18, height: 18, borderRadius: 3, background: c, border: current === c ? '2px solid var(--accent)' : '1px solid var(--border)', cursor: 'pointer', transition: 'transform .12s ease' }}

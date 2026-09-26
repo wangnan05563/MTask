@@ -1,0 +1,22 @@
+diff --git a/server/src/routes/plans.ts b/server/src/routes/plans.ts
+index aadcaf2..ddff950 100644
+--- a/server/src/routes/plans.ts
++++ b/server/src/routes/plans.ts
+@@ -2,6 +2,7 @@ import { Router, raw } from 'express';
+ import { PlanService } from '../services/PlanService';
+ import { AIService } from '../services/AIService';
+ import { resolvePrdContext } from '../util/prdContext'; // T00763：计划关联 PRD → 评估上下文
++import { exportGate } from '../util/export-gate'; // T00789：导出类端点并发闸
+ 
+ /**
+  * 项目计划路由（T00431，菜单位于周报前）。
+@@ -74,7 +75,8 @@ planApi.post('/import', raw({ type: () => true, limit: '30mb' }), (req, res) =>
+     .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
+ });
+ 
+-planApi.get('/export', (req, res) => {
++// T00789：同步主线程导出（实测 ~283ms/次），加并发闸避免多路导出串行叠加阻塞
++planApi.get('/export', exportGate('plans-export'), (req, res) => {
+   const projectId = req.query.projectId;
+   if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+   PlanService.exportExcel(projectId).then((buf) => {
