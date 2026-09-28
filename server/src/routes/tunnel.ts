@@ -25,8 +25,26 @@ import {
   backendPort,
   regenerateAccessToken,
 } from '../tunnel/tunnel-config';
+import { isLocalRequest } from '../util/local-request';
 
 const router = Router();
+
+/**
+ * 隧道管理仅限本机：公网（经隧道转发）只放行运行状态与脱敏配置查询——
+ * 前端需要它们判断「是否已配置访问令牌」并引导用户解锁；其余端点（启停、改配置、
+ * 重置令牌、命名隧道向导）都能改变本机状态或夺取控制权，公网任意人可达即为越权面。
+ */
+router.use((req, res, next) => {
+  if (isLocalRequest(req)) {
+    next();
+    return;
+  }
+  if (req.method === 'GET' && (req.path === '/status' || req.path === '/config')) {
+    next();
+    return;
+  }
+  res.status(403).json({ error: '隧道管理仅限本机操作' });
+});
 
 /** 隧道服务单例：管理 provider 生命周期（启动/停止/状态/URL） */
 const tunnel = new TunnelService();
@@ -81,7 +99,7 @@ router.post('/stop', (_req, res) => {
   res.json(statusBody());
 });
 
-router.get('/config', (_req, res) => {
+router.get('/config', (req, res) => {
   const t = loadTunnelConfig();
   res.json({
     provider: t.provider,
@@ -97,7 +115,10 @@ router.get('/config', (_req, res) => {
     hostname: t.hostname,
     certFileConfigured: Boolean(t.certFile),
     pathPrefix: t.pathPrefix,
-    accessToken: t.accessToken,
+    // 明文令牌只在本机下发（前端据此自动解锁，无需手工输入）；公网仅给脱敏串与「是否已配置」标志——
+    // 否则任何拿到隧道 URL 的人都能读走令牌，从而完全接管数据接口与隧道管理。
+    accessToken: isLocalRequest(req) ? t.accessToken : '',
+    accessTokenMasked: maskToken(t.accessToken),
     accessTokenConfigured: Boolean(t.accessToken),
   });
 });

@@ -48,12 +48,14 @@ app.use((req, res, next) => {
   next();
 });
 
-// 访问令牌中间件：一旦配置了 accessToken，除 /tunnel/*（隧道的启停/配置自身）外，
-// 所有 /api 数据接口都必须携带匹配的 X-Access-Token，防止公网穿透后未授权读写数据。
-// 未配置令牌（纯本地单机）时整体放行，保持既有行为零回归。
+// 访问令牌中间件：一旦配置了 accessToken，所有 /api 数据接口都必须携带匹配的 X-Access-Token，
+// 防止公网穿透后未授权读写数据。未配置令牌（纯本地单机）时整体放行，保持既有行为零回归。
 function accessTokenGuard(req: express.Request, res: express.Response, next: express.NextFunction): void {
-  // 隧道管理端点自身放行：若被 401 拦截，用户将无法在公网输入令牌完成解锁
-  if (req.path.startsWith('/tunnel')) {
+  // 隧道管理端点不在此校验令牌，改由 tunnel 路由内的「仅本机可管理」闸门负责
+  // （公网只读 status/config）。原因：本机是令牌的唯一合法初始化入口，若这里按令牌拦截，
+  // 会出现「已配置令牌但本机尚未持有令牌 → 读不到也重置不了」的死锁。
+  // 用 originalUrl 判断：guard 同时被 /api 与 /api/tunnel 两处挂载，req.path 语义随挂载点变化。
+  if (req.originalUrl.split('?')[0].startsWith('/api/tunnel/')) {
     next();
     return;
   }
