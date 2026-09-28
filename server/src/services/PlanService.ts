@@ -3,6 +3,7 @@
  * Excel 导入/导出（exceljs）、计划→待办状态联动。设计文档见 docs/PRD-项目计划.md。
  */
 import { getDb } from '../db/connection';
+import { createHash } from 'node:crypto'; // T01156-3：PRD 导入内容哈希——同名/同内容覆盖去重
 import { v4 as uuid } from 'uuid';
 import ExcelJS from 'exceljs';
 import { AIService } from './AIService';
@@ -27,6 +28,8 @@ export interface PlanTaskRow {
   sort_order: number;
   /** 关联待办 tasks.id；待办已删除时保留原值并由查询附带 linked_task_missing 提示 */
   linked_task_id: string | null;
+  /** 需求追溯关联：本计划覆盖的需求编号数组（JSON），供矩阵「需求→计划」关联与计划完成态向待办传播 */
+  req_ids: string | null;
   /** T00490：记录字体颜色，空串=默认色 */
   color: string;
   /** T00499：前置依赖 JSON [{id,type:'serial'|'parallel'}]，空=无依赖 */
@@ -53,6 +56,14 @@ const PLAN_STATUSES = new Set<PlanStatus>(['todo', 'doing', 'done', 'blocked']);
 
 /** AI 解析输入的行数上限：超出的内容截断，避免超大文件拖垮模型上下文（T00438） */
 const MAX_PARSE_ROWS = 300;
+/** T01156：PRD 解析首轮输出预算下限。
+ *  PRD 拆 WBS + 逐条需求可能产出较长 JSON，工具默认 max_tokens(4096) 常被触顶截断 → 触发精简重试硬砍 requirements≤20，静默丢需求。
+ *  但预算也绝非越大越好：本轮实测把 16384 顶上去后，上游网关对单次输出上限/响应体大小有硬限制，或生成过久导致网关自身超时 → 直接报 HTTP 502（Bad Gateway）。
+ *  实测该 PRD 实际输出约 4000 token，8192 给 2 倍余量既不截断、又远离网关上限，是最稳取值。 */
+const PRD_PARSE_MIN_OUTPUT_TOKENS = 8_192;
+/** T01156-4：PRD 解析超时下限。maxTokens 抬到 16K 后生成更耗时，工具默认 timeoutMs(60000) 必触顶 →
+ *  「连接超时（超过 60000ms）」报错（与上一轮抬高预算是同一连锁反应）。显式给 300s 兜底。 */
+const PRD_PARSE_TIMEOUT_MS = 300_000;
 
 /** T00500 验证修正：计划表共用美化（模板/导出同源）——冻结首行由 addWorksheet views 配置，
  *  此处负责深蓝表头白字加粗 + 指定列居中；centerKeys 由调用方显式传入（getColumn 对未知 key 会新建列导致越界，T00516 冒烟实测） */
@@ -414,6 +425,29 @@ function taskStatusForPlan(ps: PlanStatus): 'todo' | 'done' {
   return ps === 'done' ? 'done' : 'todo';
 }
 
+/**
+ * T01266：需求追溯维度（req_ids）的计划→待办状态同步。
+ * 需求跟踪矩阵里「需求→计划」与「需求→待办」是通过 req_ids 建立的追溯关联，
+ * 与计划页 plan_tasks.linked_task_id 直接关联是两套独立机制。仅 linked_task_id 关联的
+ * 待办会在计划完成时被同步（见 update / linkTodo），而矩阵 req_ids 关联的待办不会跟随——
+ * 表现为「矩阵里关联了待办、再把计划标记完成，待办状态不动」。本函数把计划状态传播到
+ * 所有与该计划共享至少一个需求的未归档待办，实现需求闭环。语义与 linked_task_id 同步一致：
+ * 计划 done→待办 done；其余→待办 todo（可回退）。
+ */
+function syncReqLinkedTasks(db: ReturnType<typeof getDb>, projectId: string, planReqIds: string[], planStatus: PlanStatus): void {
+  if (planReqIds.length === 0) return;
+  const tasks = db.prepare(
+    `SELECT id, req_ids FROM tasks WHERE project_id = ? AND archived = 0 AND req_ids IS NOT NULL AND req_ids != '' AND req_ids != '[]'`,
+  ).all(projectId) as Array<{ id: string; req_ids: string | null }>;
+  if (tasks.length === 0) return;
+  const ts = taskStatusForPlan(planStatus);
+  const upd = db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?');
+  for (const tk of tasks) {
+    const tIds = parseLinkIds(tk.req_ids);
+    if (tIds.some((x) => planReqIds.includes(x))) upd.run(ts, now(), tk.id);
+  }
+}
+
 /** AI 条目标准结构（草稿） */
 type PlanDraft = { title: string; description: string; startDate: string; durationDays: number; assignee: string; status: PlanStatus };
 
@@ -678,6 +712,12 @@ export const PlanService = {
       if (linkedTaskId) {
         db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?').run(taskStatusForPlan(status), now(), linkedTaskId);
       }
+      // T01266：需求追溯维度（req_ids）关联待办的同步（矩阵关联场景）。
+      // 仅当本次确实变更了计划状态才传播，避免普通字段编辑（标题/工期等）误触待办回退。
+      if (patch.status !== undefined && PLAN_STATUSES.has(patch.status)) {
+        const planReqIds = parseLinkIds(row.req_ids);
+        if (planReqIds.length > 0) syncReqLinkedTasks(db, row.project_id, planReqIds, status);
+      }
     })();
     return this.get(id);
   },
@@ -827,9 +867,9 @@ export const PlanService = {
     const taskId = uuid();
     db.transaction(() => {
       db.prepare(
-        `INSERT INTO tasks (id, project_id, title, description, priority, status, verified, archived, pinned, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'normal', ?, 0, 0, 0, ?, ?)`,
-      ).run(taskId, row.project_id, `[计划] ${row.title}`, row.description || '', taskStatusForPlan(row.status), t, t);
+        `INSERT INTO tasks (id, task_no, project_id, title, description, priority, status, verified, archived, pinned, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'normal', ?, 0, 0, 0, ?, ?)`,
+      ).run(taskId, nextTaskNo(), row.project_id, `[计划] ${row.title}`, row.description || '', taskStatusForPlan(row.status), t, t);
       db.prepare('UPDATE plan_tasks SET linked_task_id = ?, updated_at = ? WHERE id = ?').run(taskId, now(), id);
     })();
     return { plan: this.get(id)!, taskId, reused: false };
@@ -1258,6 +1298,10 @@ export const PlanService = {
     requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>;
     drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind }>;
     coverageWarn?: string;
+    /** T01156：反向覆盖——需求清单中存在、但未被任何 WBS 计划 reqNos 关联的需求编号（可追溯性缺口）。 */
+    uncoveredReqNos?: string[];
+    /** T01156：首轮输出被截断、已用精简模式重试（requirements≤20/plans≤24）——数量可能被压缩，需求可能静默丢失。 */
+    truncatedNote?: string;
   }> {
     const system = [
       '你是 MTask 的 PRD 解析助手：既要拆分 WBS 计划，也要**逐条提取可跟踪需求**（用于生成需求跟踪矩阵）。',
@@ -1275,6 +1319,7 @@ export const PlanService = {
       '   - **绝对禁止只输出里程碑而不拆明细任务**；若某里程碑在原文确无可落实的独立任务，才允许仅保留该里程碑一行；',
       '   - **每行必须填 kind**：顶层里程碑行填 "milestone"，其下的明细任务行填 "normal"（使用述求准确、不遗漏的这两类取值，不要用其它写法）；',
       '   - 每行 reqNos 只填**该节点直接实现/覆盖的需求编号**；管理类节点（启动/计划/评审/验收等）若不对应具体需求，reqNos 输出 []，**不要把所有需求挂上**（关联过宽会让需求跟踪矩阵失去意义）；',
+      '   - **可追溯性约束（必须遵守）**：功能/非功能/约束类需求（REQ-xxx 各一条）至少应被一个明细任务（kind="normal" 行）的 reqNos 覆盖。若某需求确无现成 WBS 节点承载，必须在 plans 末尾为它补一条 normal 任务（标题含该 REQ 编号，如「REQ-016 相关实现/验证」）以保证**每条需求都可追溯到至少一条计划**；严禁出现「需求清单有、WBS 却无人认领」的缺口。',
       '   - **每行（normal 明细任务）必须给出 complexity 复杂度评级（1~5 整数）**：1=琐碎（半天内）、2=简单、3=中等、4=复杂（不确定性高/跨模块耦合，建议再拆分）、5=极复杂（应拆分为多个任务）；里程碑行可不填或填其下平均；',
       '3. startDate 一律空串（保存后系统按导入当日并行排布：各行独立取导入日为开始日，不做串行顺延）；status 一律 "todo"；durationDays 缺失默认 1；',
       '4. 只输出 JSON 对象本身，不要任何解释或 Markdown 代码围栏；不虚构文档中没有的内容。',
@@ -1290,21 +1335,37 @@ export const PlanService = {
       + 'plans ≤24 条（只输出 title 与 reqNos，description 空串，**仍须保留里程碑并尽量带出各里程碑下最重要的 1~2 条明细**）；标题 ≤20 字。宁可少，也必须输出完整可解析的 JSON 对象。',
     ].join('\n');
     // T00723：JSON 解析失败/输出截断自动重试 1 次，且解析成败计入 ai_usage（ask-json）
+    // T01156：首轮预算抬到 PRD_PARSE_MIN_OUTPUT_TOKENS，避免长 PRD 触顶 max_tokens 截断 → 触发精简重试硬砍 requirements≤20 静默丢需求
     const ai = await AIService.askJson(toolId, system, `【PRD 文档】\n${docText}`, (content) =>
       parseJsonObjectWithRecovery(content, 'AI 未返回有效的 PRD 解析结果（需 JSON 对象），请检查文档内容或更换模型'),
-      undefined, systemCompact,
+      PRD_PARSE_TIMEOUT_MS, systemCompact, PRD_PARSE_MIN_OUTPUT_TOKENS,
     );
     if (!ai.ok) throw new Error(`AI 解析失败：${ai.error}`);
+    // T01156：精简重试一旦触发，说明首轮输出被截断（需求/计划数量可能被压缩），必须显式告知，不能静默丢需求
+    const truncatedNote = ai.retried
+      ? '首轮 AI 输出超长被截断，已自动启用精简模式重试（需求≤20、计划≤24，且需求 content/原文定位被清空）——若需求数量明显偏少，建议调大该工具的 max_tokens 或更换模型后重跑'
+      : '';
     const obj = ai.data as Record<string, unknown>;
     const rawReqs = Array.isArray(obj.requirements) ? obj.requirements : [];
     const requirements = normalizeRequirements(rawReqs);
     const rawPlans = Array.isArray(obj.plans) ? obj.plans : [];
     const drafts = normalizePrdPlans(rawPlans);
     if (requirements.length === 0 && drafts.length === 0) throw new Error('AI 未能从 PRD 中解析出需求或计划，请确认文档内容或更换模型');
-    const coverageWarn = drafts.length > 0 && requirements.length > 0 && drafts.every((d) => d.reqNos.length === 0)
-      ? '本次解析的计划节点未关联到需求编号——可在矩阵面板中手动建立关联'
-      : '';
-    return { requirements, drafts, coverageWarn };
+    // T01156：反向覆盖检查——需求清单中存在、但未被任何 WBS 计划 reqNos 关联的需求编号（可追溯性缺口）。
+    // 旧 coverageWarn 仅当「所有计划 reqNos 全空」时才告警，漏掉了「部分需求无人认领」这种静默缺口
+    // （典型表现：需求清单 25 条、WBS 22 条，但仅前 15 条需求被关联，后 10 条 REQ-016…REQ-025 不可追溯）。
+    const referenced = new Set<string>();
+    for (const d of drafts) for (const n of d.reqNos) referenced.add(n);
+    const uncoveredReqNos = requirements.map((r) => r.reqNo).filter((no) => !referenced.has(no));
+    let coverageWarn = '';
+    if (drafts.length > 0 && requirements.length > 0) {
+      if (uncoveredReqNos.length === requirements.length) {
+        coverageWarn = '本次解析的计划节点未关联到任何需求编号——可在矩阵面板中手动建立关联';
+      } else if (uncoveredReqNos.length > 0) {
+        coverageWarn = `有 ${uncoveredReqNos.length} 条需求未被任何 WBS 计划关联（${uncoveredReqNos.slice(0, 10).join('、')}${uncoveredReqNos.length > 10 ? '…' : ''}）——这些需求当前不可追溯，建议补计划或在矩阵面板手动关联`;
+      }
+    }
+    return { requirements, drafts, coverageWarn, uncoveredReqNos, truncatedNote };
   },
 
   /** T00763：导入 PRD 解析结果——事务创建需求项 + 计划（含 req_ids 关联）+ 可选同步生成待办任务。 */
@@ -1330,13 +1391,31 @@ export const PlanService = {
     let taskCount = 0;
     const unlinkedReqNos = new Set<string>();
     // T00763：PRD 原文完整保留（Markdown 不截断），导入即生成文档记录并关联需求行
+    // T01156-3：同名/同内容覆盖——重复导入不再堆重复文档（对齐 createPrdDoc 的 T00821 覆盖模式）：
+    //   ① 同项目 + 同内容哈希(origin_hash) → 覆盖复用该行；② 同项目 + 同文件名 → 覆盖复用（保留状态流转）。
+    //   此前每次导入都 INSERT 新行，同一 PRD 导 N 次堆 N 份相同文档，旧需求删除后沦为孤儿（aimsg 实测 3 份同文档、2 份零引用）。
     const prdMd = typeof input.prdMd === 'string' ? input.prdMd : '';
     let prdId: string | undefined;
     if (prdMd.trim()) {
-      prdId = uuid();
-      db.prepare(
-        `INSERT INTO prd_docs (id, project_id, filename, content_md, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run(prdId, projectId, (input.prdFilename ?? '').trim(), prdMd, t, t);
+      const filename = (input.prdFilename ?? '').trim();
+      const contentHash = createHash('sha256').update(prdMd).digest('hex').slice(0, 24);
+      const byHash = db.prepare('SELECT id FROM prd_docs WHERE project_id = ? AND origin_hash = ?').get(projectId, contentHash) as { id: string } | undefined;
+      const byName = filename
+        ? db.prepare('SELECT id FROM prd_docs WHERE project_id = ? AND filename = ? ORDER BY created_at DESC LIMIT 1').get(projectId, filename) as { id: string } | undefined
+        : undefined;
+      const existing = byHash ?? byName;
+      if (existing) {
+        // 覆盖：更新正文/哈希/时间戳；filename 仅在本次带值时覆盖；status 保留原值（不重置用户确认态）
+        db.prepare("UPDATE prd_docs SET content_md = ?, filename = CASE WHEN ? <> '' THEN ? ELSE filename END, origin_hash = ?, updated_at = ? WHERE id = ?")
+          .run(prdMd, filename, filename, contentHash, t, existing.id);
+        prdId = existing.id;
+        logService.log('INFO', 'prd', `[PRD导入覆盖] project=${projectId} doc=${existing.id} filename=${filename}（同内容/同名复用，不新建）`);
+      } else {
+        prdId = uuid();
+        db.prepare(
+          `INSERT INTO prd_docs (id, project_id, filename, content_md, origin_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ).run(prdId, projectId, filename, prdMd, contentHash, t, t);
+      }
     }
     db.transaction(() => {
       // 1) 需求项（矩阵行）——reqNo → id 映射供计划/待办关联
@@ -1739,6 +1818,16 @@ export const PlanService = {
     if (target.linked && !has) ids.push(reqId);
     if (!target.linked && has) ids.splice(ids.indexOf(reqId), 1);
     db.prepare(`UPDATE ${table} SET req_ids = ?, updated_at = ? WHERE id = ?`).run(ids.length > 0 ? JSON.stringify(ids) : null, now(), target.targetId);
+    // T01266：需求追溯维度反向同步——把任务关联到某需求时，若该需求已被某个「已完成」计划覆盖，
+    // 则该待办应同步标记完成（与计划页 linked_task_id 同步语义一致），避免「先完成计划、后关联待办」时状态滞后。
+    if (target.kind === 'task' && target.linked && !has) {
+      const donePlans = db.prepare(
+        `SELECT req_ids FROM plan_tasks WHERE project_id = ? AND archived = 0 AND status = 'done' AND req_ids IS NOT NULL AND req_ids != ''`,
+      ).all(row.project_id) as Array<{ req_ids: string }>;
+      if (donePlans.some((p) => parseLinkIds(p.req_ids).includes(reqId))) {
+        db.prepare("UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ?").run(now(), target.targetId);
+      }
+    }
   },
 
   /**
@@ -1821,7 +1910,7 @@ export const PlanService = {
       const ins = db.prepare(
         `INSERT INTO plan_tasks (id, project_id, title, description, start_date, end_date, duration_days,
            progress, status, assignee, sort_order, linked_task_id, kind, complexity, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?, ?, ?)`,
       );
       clean.forEach((it, i) => {
         const duration = Math.max(1, Math.floor(Number(it.durationDays) || 1));
