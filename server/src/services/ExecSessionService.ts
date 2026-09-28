@@ -9,7 +9,21 @@
  */
 import { randomUUID } from 'node:crypto';
 import { getDb } from '../db/connection';
+import { getSetting } from './AppSettings'; // T01270：停滞阈值读 app_settings（supervisor.sessionStaleMs）
 import { TaskService } from './TaskService';
+
+/** T01270（FR-1.3）：会话停滞默认阈值 10 分钟——超过无心跳即视为停滞（PRD FR-1.3） */
+const DEFAULT_SESSION_STALE_MS = 10 * 60 * 1000;
+/** 阈值配置键：与 PRD 配置命名一致，M2 的 SupervisorService 直接复用同一键 */
+const SESSION_STALE_KEY = 'supervisor.sessionStaleMs';
+
+/** 停滞阈值解析：显式入参 > app_settings 配置 > 默认 10 分钟（非法值一律回退默认，避免 0/NaN 把全部会话误判停滞） */
+function resolveStaleMs(explicit?: number): number {
+  if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit > 0) return explicit;
+  const raw = getSetting(SESSION_STALE_KEY);
+  const n = raw === null ? NaN : Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_SESSION_STALE_MS;
+}
 
 /** exec_sessions 行（PRD §5.1） */
 export interface ExecSessionRow {
@@ -147,5 +161,35 @@ export const ExecSessionService = {
     return (getDb().prepare(
       'SELECT * FROM exec_sessions WHERE platform = ? AND session_id = ? ORDER BY started_at DESC LIMIT 1',
     ).get(platform, sessionId) as ExecSessionRow | undefined) ?? null;
+  },
+
+  /**
+   * T01270（FR-1.3）：停滞兜底——把 last_heartbeat 超阈值（默认 10min，可配 `supervisor.sessionStaleMs`）
+   * 的 active 会话置 stalled。
+   *
+   * 设计取舍：
+   * - **探测优先**（对齐 TaskService.expireStaleRunning）：先用一次轻量 SELECT 判断有无超时会话
+   *   （走 idx_exec_platform_status），无则直接返回，避免每次 tick 都开写事务；
+   * - **只改会话状态，不动任务 ai_state**：任务侧超时由 TaskService.expireStaleRunning 兜底
+   *   （PRD FR-1.3 后半句），两者阈值语义不同（会话 10min 是「平台是否还在干活」，任务 1h 是
+   *   「Agent 是否已中断」），混用会让长任务被误判中断；
+   * - 停滞只是**观测信号**，M1 阶段不触发任何自动动作（P0 仅观测）；自愈路径在 reportProgress
+   *   里（stalled 会话收到新心跳即回 active，PRD §8 状态机）。
+   */
+  expireStaleSessions(maxAgeMs?: number): number {
+    const db = getDb();
+    const staleMs = resolveStaleMs(maxAgeMs);
+    const cutoff = new Date(Date.now() - staleMs).toISOString();
+    const probe = db.prepare(
+      "SELECT id FROM exec_sessions WHERE status = 'active' AND last_heartbeat < ? LIMIT 1",
+    ).get(cutoff) as { id: string } | undefined;
+    if (!probe) return 0;
+    const r = db.prepare(
+      "UPDATE exec_sessions SET status = 'stalled' WHERE status = 'active' AND last_heartbeat < ?",
+    ).run(cutoff);
+    if (r.changes > 0) {
+      console.warn(`[ExecSessionService] ${r.changes} 个执行会话超过 ${Math.round(staleMs / 60000)} 分钟无心跳，置 stalled（FR-1.3 停滞兜底）`);
+    }
+    return r.changes;
   },
 };
