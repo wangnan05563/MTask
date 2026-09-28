@@ -14,6 +14,7 @@ import { TaskService } from '../services/TaskService';
 import { TaskImageService } from '../services/TaskImageService'; // T00610：截图读取（供 AI 识别验证失败反馈截图）
 import { PlanService } from '../services/PlanService';
 import { ExecSessionService } from '../services/ExecSessionService'; // T01269：执行会话心跳上报（FR-1.2）
+import { SupervisorService } from '../services/SupervisorService'; // T01286：监督状态查询（FR-5.2）
 import { resolvePrdContext } from '../util/prdContext'; // T00763：PRD 上下文反查
 import { ArchiveService } from '../services/ArchiveService';
 import {
@@ -681,6 +682,17 @@ ${a.result}`;
         };
       }
       return ok(json(r), { conflict: false, ...r });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // T01286（PRD FR-5.2 / §6.1）：监督状态查询——外部平台在拉取任务前先判断监督器是否开启、当前是否可执行
+  server.registerTool('mtask_supervisor_status', {
+    title: '查询监督状态',
+    description: '查询 AI 监督器的当前运行态：熔断开关（enabled，关闭时不产生就绪任务，拉取接口会返空）、tick 周期与下次 tick 时刻、token 预算占用、活跃/停滞会话、以及最近一轮决策的动作与所用模型。只读接口，不触发决策。',
+  }, async () => {
+    try {
+      const s = SupervisorService.getStatus();
+      return ok(json(s), { ...s });
     } catch (e) { return err((e as Error).message); }
   });
 

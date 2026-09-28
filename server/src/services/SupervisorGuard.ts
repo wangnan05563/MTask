@@ -95,6 +95,31 @@ function readInt(key: string, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
+/** 护栏限值（FR-4.1~4.4）与预算占用 */
+export interface GuardLimits {
+  maxConcurrent: number;
+  maxRetry: number;
+  cooldownMs: number;
+  /** 预算上限，0 = 不限 */
+  tokenBudget: number;
+  /** 已用 token（FR-4.4 落地前由 supervisor.tokenUsed 累计键暂代） */
+  tokenUsed: number;
+}
+
+/**
+ * T01286：护栏限值的**单一读取口径**——guard() 与「监督状态」面板/`mtask_supervisor_status`
+ * 共用本函数，否则默认值（2 / 3 / 5min）会在展示侧被复制一份，改一处漏一处。
+ */
+export function readGuardLimits(): GuardLimits {
+  return {
+    maxConcurrent: readInt('supervisor.maxConcurrent', DEFAULT_MAX_CONCURRENT),
+    maxRetry: readInt('supervisor.maxRetry', DEFAULT_MAX_RETRY),
+    cooldownMs: readInt('supervisor.cooldownMs', DEFAULT_COOLDOWN_MS),
+    tokenBudget: readInt('supervisor.tokenBudget', 0),
+    tokenUsed: readInt('supervisor.tokenUsed', 0),
+  };
+}
+
 /** 批量取任务监督重试计数（FR-4.2 口径：tasks.monitor_retry） */
 function loadRetryCounts(ids: string[]): Map<string, number> {
   const out = new Map<string, number>();
@@ -173,13 +198,11 @@ export function guard<A extends GuardAction>(actions: A[], ctx: GuardContext): G
   if (!readEnabled()) return halt('熔断开关已关闭（supervisor.enabled=0）', '熔断已关闭');
 
   // 闸 2：预算（FR-4.4）——成本失控的代价高于「本轮少跑」，故先于单动作闸
-  const budget = readInt('supervisor.tokenBudget', 0);
-  const used = readInt('supervisor.tokenUsed', 0);
-  if (budget > 0 && used >= budget) return halt(`token 预算已耗尽（${used}/${budget}）`, 'token 预算耗尽');
+  const { maxConcurrent, maxRetry, cooldownMs, tokenBudget, tokenUsed } = readGuardLimits();
+  if (tokenBudget > 0 && tokenUsed >= tokenBudget) {
+    return halt(`token 预算已耗尽（${tokenUsed}/${tokenBudget}）`, 'token 预算耗尽');
+  }
 
-  const maxConcurrent = readInt('supervisor.maxConcurrent', DEFAULT_MAX_CONCURRENT);
-  const maxRetry = readInt('supervisor.maxRetry', DEFAULT_MAX_RETRY);
-  const cooldownMs = readInt('supervisor.cooldownMs', DEFAULT_COOLDOWN_MS);
   const retryById = loadRetryCounts(actions.map((a) => a.taskId ?? ''));
   const lastFiredById = loadLastFiredAt(cooldownMs);
   // 已用并发槽 = 当前活跃会话数 + 本轮已放行的占槽动作：一次 tick 内多个动作须累计，否则会超卖

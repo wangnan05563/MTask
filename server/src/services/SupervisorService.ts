@@ -25,9 +25,9 @@ import { ExecSessionService } from './ExecSessionService';
 import { AIService } from './AIService';
 import { ConfigService } from './ConfigService';
 import { TaskService } from './TaskService'; // T01280：就绪待办标记（FR-3.1），TaskService 不反向依赖本模块，无循环
-import { guard, readEnabled, type GuardResult } from './SupervisorGuard';
+import { guard, readEnabled, readGuardLimits, type GuardResult } from './SupervisorGuard';
 import { applyActions, type ApplyOutcome } from './SupervisorExecutor'; // T01282：动作落地（FR-3.3~3.5）
-import { recordMonitorRun } from './SupervisorAudit'; // T01285：决策轮次审计落库（FR-4.6）
+import { recordMonitorRun, listMonitorRuns } from './SupervisorAudit'; // T01285：决策轮次审计落库（FR-4.6）；T01286 读出口（FR-5.2/5.3）
 import { parsePlanDeps, depsSatisfied } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7，与 TaskService 同口径）
 
 /** 监督 tick 默认周期 30s（FR-2.1） */
@@ -69,6 +69,36 @@ export interface SupervisorTickResult {
   readyMarked?: number;
   /** T01282：本轮护栏放行动作的落地结果（FR-3.3~3.5）；未进入决策流程时为 undefined，供 T01285 写 monitor_runs */
   executed?: ApplyOutcome[];
+}
+
+/**
+ * T01286（FR-5.2 / §6.1）：监督器**运行态**视图——面板与 `mtask_supervisor_status` 共用。
+ *
+ * `lastTickAt` / `nextTickAt` 来自进程内计时的最近一次 tick：空转轮次不写审计，若只看
+ * `monitor_runs` 会误报「监督器从未运行」；故单独记内存态（进程重启后为 null，如实表示未知）。
+ * `lastActions` / `lastRunAt` / `lastModel` 取自审计（唯一权威留痕），降级轮次即兜底 ESCALATE。
+ */
+export interface SupervisorStatusView {
+  enabled: boolean;
+  intervalMs: number;
+  /** 本进程最近一次 tick 时刻（含空转/熔断轮次）；未跑过为 null */
+  lastTickAt: string | null;
+  /** 预计下次 tick 时刻（lastTickAt + intervalMs）；未跑过 tick 时为 null */
+  nextTickAt: string | null;
+  tokenBudgetUsed: number;
+  /** 预算上限，0 = 不限 */
+  tokenBudget: number;
+  maxConcurrent: number;
+  maxRetry: number;
+  cooldownMs: number;
+  /** 活跃/停滞会话（含关联任务简述），即 FR-5.1 面板的数据源口径 */
+  activeSessions: SnapshotSession[];
+  /** 最近一次决策轮次时刻；无审计记录为 null */
+  lastRunAt: string | null;
+  /** 最近一次决策轮次采用的动作（降级轮次为系统兜底 ESCALATE） */
+  lastActions: SupervisorAction[];
+  /** 最近一次决策所用模型名 */
+  lastModel: string;
 }
 
 /** 快照规模上限：LLM 输入需可控（NFR-1「有动作时 LLM 调用 < 10s」），超出部分只计数不入快照 */
@@ -276,6 +306,10 @@ function resolveDecisionToolId(): string | null {
 /** 异步 tick 的重入闸：LLM 调用最长 DECISION_TIMEOUT_MS 而 intervalMs 最小可配 1s，无闸会叠轮重复调 LLM */
 let ticking = false;
 
+/** T01286：本进程最近一次 tick 时刻（毫秒）。空转轮次不写审计，故「监督器是否在跑」只能由内存态回答；
+ *  进程重启后归零（视角为 null），如实表示「本进程未跑过」而非编造时间。 */
+let lastTickAtMs = 0;
+
 /** 配置解析：缺失/非法一律回退默认，避免 0 或 NaN 让定时器退化成忙轮询 */
 function readIntervalMs(): number {
   const n = Number(getSetting(INTERVAL_KEY));
@@ -304,6 +338,64 @@ function parseTaskIds(raw: string): string[] {
 export const SupervisorService = {
   getConfig(): SupervisorConfig {
     return { enabled: readEnabled(), intervalMs: readIntervalMs() };
+  },
+
+  /**
+   * T01286（FR-5.2 / §6.1）：监督器运行态——熔断开关、tick 节奏、预算占用、最近决策、活跃会话。
+   * 只读聚合，不触发任何 LLM 调用；供设置页「监督审计」面板与 `mtask_supervisor_status` 共用。
+   */
+  getStatus(): SupervisorStatusView {
+    const limits = readGuardLimits();
+    const intervalMs = readIntervalMs();
+    const last = listMonitorRuns(1)[0];
+    return {
+      enabled: readEnabled(),
+      intervalMs,
+      lastTickAt: lastTickAtMs ? new Date(lastTickAtMs).toISOString() : null,
+      nextTickAt: lastTickAtMs ? new Date(lastTickAtMs + intervalMs).toISOString() : null,
+      tokenBudgetUsed: limits.tokenUsed,
+      tokenBudget: limits.tokenBudget,
+      maxConcurrent: limits.maxConcurrent,
+      maxRetry: limits.maxRetry,
+      cooldownMs: limits.cooldownMs,
+      activeSessions: this.listActiveSessions(),
+      lastRunAt: last?.ranAt ?? null,
+      // 审计行由本模块写入（结构即 SupervisorAction），脏行按对象过滤丢弃而非整体报错
+      lastActions: (last?.actions ?? []).filter((a): a is SupervisorAction => !!a && typeof a === 'object'),
+      lastModel: last?.model ?? '',
+    };
+  },
+
+  /**
+   * 活跃/停滞会话（含关联任务简述）——决策快照（collectSnapshot）与状态接口共用同一采集实现：
+   * 两处各写一套「会话 → 任务」联表，迟早出现「面板说有任务、快照说没有」的口径漂移。
+   * IN 分批 200 规避 SQLite 变量上限（与 TaskService / ExecSessionService 同口径）。
+   */
+  listActiveSessions(): SnapshotSession[] {
+    const db = getDb();
+    const sessRows = db.prepare(
+      "SELECT platform, status, progress, task_ids FROM exec_sessions WHERE status IN ('active','stalled') ORDER BY last_heartbeat DESC",
+    ).all() as Array<{ platform: string; status: string; progress: number; task_ids: string }>;
+    const sessTaskIds = new Set<string>();
+    for (const s of sessRows) for (const id of parseTaskIds(s.task_ids)) sessTaskIds.add(id);
+    const briefById = new Map<string, { taskId: string; taskNo: string | null; title: string }>();
+    const sessTaskList = [...sessTaskIds];
+    for (let i = 0; i < sessTaskList.length; i += 200) {
+      const chunk = sessTaskList.slice(i, i + 200);
+      const found = db.prepare(
+        `SELECT id, task_no, title FROM tasks WHERE id IN (${chunk.map(() => '?').join(',')})`,
+      ).all(...chunk) as Array<{ id: string; task_no: string | null; title: string }>;
+      for (const f of found) briefById.set(f.id, { taskId: f.id, taskNo: f.task_no, title: f.title });
+    }
+    return sessRows.map((s) => ({
+      platform: s.platform,
+      status: s.status,
+      progress: s.progress,
+      stale: s.status === 'stalled',
+      tasks: parseTaskIds(s.task_ids)
+        .map((id) => briefById.get(id))
+        .filter((t): t is { taskId: string; taskNo: string | null; title: string } => !!t),
+    }));
   },
 
   /**
@@ -396,29 +488,7 @@ export const SupervisorService = {
     });
 
     // --- 活跃/停滞会话（带关联任务，供 LLM 定位 RESUME / REDISPATCH 目标） ---
-    const sessRows = db.prepare(
-      "SELECT platform, status, progress, task_ids FROM exec_sessions WHERE status IN ('active','stalled') ORDER BY last_heartbeat DESC",
-    ).all() as Array<{ platform: string; status: string; progress: number; task_ids: string }>;
-    const sessTaskIds = new Set<string>();
-    for (const s of sessRows) for (const id of parseTaskIds(s.task_ids)) sessTaskIds.add(id);
-    const briefById = new Map<string, { taskId: string; taskNo: string | null; title: string }>();
-    const sessTaskList = [...sessTaskIds];
-    for (let i = 0; i < sessTaskList.length; i += 200) {
-      const chunk = sessTaskList.slice(i, i + 200);
-      const found = db.prepare(
-        `SELECT id, task_no, title FROM tasks WHERE id IN (${chunk.map(() => '?').join(',')})`,
-      ).all(...chunk) as Array<{ id: string; task_no: string | null; title: string }>;
-      for (const f of found) briefById.set(f.id, { taskId: f.id, taskNo: f.task_no, title: f.title });
-    }
-    const sessions: SnapshotSession[] = sessRows.map((s) => ({
-      platform: s.platform,
-      status: s.status,
-      progress: s.progress,
-      stale: s.status === 'stalled',
-      tasks: parseTaskIds(s.task_ids)
-        .map((id) => briefById.get(id))
-        .filter((t): t is { taskId: string; taskNo: string | null; title: string } => !!t),
-    }));
+    const sessions = this.listActiveSessions();
 
     // --- 失败任务（监督器重试口径，FR-4.2） ---
     const failedRows = db.prepare(
@@ -461,6 +531,7 @@ export const SupervisorService = {
    * 因含 LLM 调用而为异步，故用 `ticking` 重入闸避免叠轮。
    */
   async supervisorTick(): Promise<SupervisorTickResult> {
+    lastTickAtMs = Date.now(); // T01286：无论本轮是否进入决策，都更新「监督器仍在跑」的活性信号
     const stalledMarked = ExecSessionService.expireStaleSessions();
     const probe = this.probe();
     if (!readEnabled()) return { ran: false, reason: 'disabled', stalledMarked, probe };

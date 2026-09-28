@@ -20,6 +20,7 @@ import { logService } from '../services/LogService';
 import { dbAdminApi } from './dbadmin';
 import { planApi } from './plans';
 import { historyApi } from './history'; // T00589：历史资产（转移/统计）
+import { supervisorApi } from './supervisor'; // T01286：监督状态/审计/配置（FR-5.2~5.4）
 import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, gatherReportData, type ReportPeriod } from '../services/ReportService';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
@@ -2176,3 +2177,7 @@ api.use('/dbadmin', dbAdminApi);
 // ---------- 项目计划（T00431，菜单位于周报前） ----------
 api.use('/plans', planApi);
 api.use('/history', historyApi); // T00589：历史资产页面后端（转移 + 统计）
+
+// ---------- 监督器（T01286）：状态看板 / 审计视图 / 熔断与中继配置 ----------
+api.use('/supervisor', supervisorApi);
+

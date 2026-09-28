@@ -25,19 +25,21 @@ import { DbAdminTab } from './DbAdminTab';
 import { LogsPage } from './LogsPage';
 import { ArchivePage } from './ArchivePage';
 import { RecurringTab, ApiTokensTab } from './RecurringTokensTabs'; // T01073：循环任务 + API Token
+import { SupervisorPanel } from './SupervisorPanel'; // T01286：监督状态与审计（FR-5.2~5.4）
 
 /** 应用信息（与根 package.json 保持一致） */
 const APP_NAME = 'MTask';
 const APP_VERSION = '0.1.0';
 const APP_DESC = 'AI 任务开发管理工具：项目维度任务管理 + AI 梳理 + 队列分发。';
 
-type STab = 'general' | 'migration' | 'dbadmin' | 'categories' | 'recurring' | 'apitokens' | 'tunnel' | 'logs' | 'history' | 'archive' | 'help' | 'about';
+type STab = 'general' | 'supervisor' | 'migration' | 'dbadmin' | 'categories' | 'recurring' | 'apitokens' | 'tunnel' | 'logs' | 'history' | 'archive' | 'help' | 'about';
 
 /** 导入策略文案映射：显式枚举映射替代嵌套三元，新增策略时只需补一行 */
 const IMPORT_MODE_LABELS: Record<ImportMode, string> = { merge: '合并', keep: '保留', overwrite: '覆盖' };
 
 const SUB_TABS: { key: STab; label: string }[] = [
   { key: 'general', label: '通用设置' },
+  { key: 'supervisor', label: '监督审计' }, // T01286-FR5.2~5.4：状态看板 + 审计列表 + 熔断开关
   { key: 'migration', label: '数据迁移' },
   { key: 'dbadmin', label: '数据维护' },
   { key: 'categories', label: '任务分类' },
@@ -76,6 +78,7 @@ export function SettingsPage() {
       </nav>
 
       {st === 'general' && <GeneralTab />}
+      {st === 'supervisor' && <SupervisorPanel />} {/* T01286：监督状态与审计（FR-5.2~5.4） */}
       {st === 'migration' && <MigrationTab />}
       {st === 'dbadmin' && <DbAdminTab />}
       {st === 'categories' && <CategoriesTab />}

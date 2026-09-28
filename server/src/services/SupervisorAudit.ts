@@ -3,9 +3,10 @@
  * 记录「AI 看到了什么、想做什么、护栏拦了什么、实际落地了什么」，前端「监督审计」视图据此回溯
  * 「AI 为什么这么做」（FR-5.3）。
  *
- * 独立成模块（与 SupervisorGuard / SupervisorExecutor 同构）：本模块**只写不裁决、不执行**，
- * 输入是 tick 各阶段的产出，输出是一行审计记录——测试可直接喂结果断言落库内容，
- * 无需构造 LLM、护栏配置与真实动作。
+ * 独立成模块（与 SupervisorGuard / SupervisorExecutor 同构）：本模块**只读写审计数据、不裁决不执行**，
+ * 写侧输入是 tick 各阶段的产出，输出是一行审计记录——测试可直接喂结果断言落库内容，
+ * 无需构造 LLM、护栏配置与真实动作；读侧（T01286 / FR-5.3）供状态面板与 `mtask_supervisor_status`
+ * 反查「最近一轮 AI 想做什么」，与写侧同处一文件以保证列语义与解析口径一致。
  *
  * 只写「决策轮次」不写空转轮次（`ran=true` 才调用）：空转/熔断/叠轮每 30s 一次，
  * 若也落库会以 2880 行/天的速度把审计表刷成噪声，真出事时反而找不到有效记录。
@@ -128,4 +129,66 @@ export function recordMonitorRun(input: AuditRunInput): void {
   } catch (e) {
     console.error('[supervisor] 审计写入失败（本轮记录丢失）:', e);
   }
+}
+
+/** 审计列表行：JSON 列已解析为对象/数组，供前端直接消费 */
+export interface MonitorRunRow {
+  id: string;
+  ranAt: string;
+  snapshot: Record<string, unknown> | null;
+  actions: unknown[];
+  applied: unknown[];
+  blockedBy: string;
+  model: string;
+}
+
+/** 列表默认条数与上限：审计每决策轮一行，上限 200 条足够回溯且不拖慢面板 */
+const LIST_DEFAULT_LIMIT = 30;
+const LIST_MAX_LIMIT = 200;
+
+/** 解析 JSON 对象列；坏行按 null 兜底——单行脏数据不该让整页审计不可读 */
+function parseObject(raw: string | null): Record<string, unknown> | null {
+  try {
+    const v = JSON.parse(raw || 'null');
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 解析 JSON 数组列；坏行按空数组兜底 */
+function parseArray(raw: string | null): unknown[] {
+  try {
+    const v = JSON.parse(raw || '[]');
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 读最近若干条审计（FR-5.3）：走 idx_monitor_runs_ran 倒序，limit 收口在 [1, 200] */
+export function listMonitorRuns(limit?: number): MonitorRunRow[] {
+  const n = Number.isFinite(limit) && (limit as number) > 0
+    ? Math.min(Math.trunc(limit as number), LIST_MAX_LIMIT)
+    : LIST_DEFAULT_LIMIT;
+  const rows = getDb()
+    .prepare('SELECT id, ran_at, snapshot, actions, applied, blocked_by, model FROM monitor_runs ORDER BY ran_at DESC LIMIT ?')
+    .all(n) as Array<{
+      id: string;
+      ran_at: string;
+      snapshot: string | null;
+      actions: string | null;
+      applied: string | null;
+      blocked_by: string | null;
+      model: string | null;
+    }>;
+  return rows.map((r) => ({
+    id: r.id,
+    ranAt: r.ran_at,
+    snapshot: parseObject(r.snapshot),
+    actions: parseArray(r.actions),
+    applied: parseArray(r.applied),
+    blockedBy: r.blocked_by ?? '',
+    model: r.model ?? '',
+  }));
 }
