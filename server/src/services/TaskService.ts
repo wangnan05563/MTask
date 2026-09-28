@@ -355,9 +355,13 @@ export const TaskService = {
     const n = (row.retry_count ?? 0) + 1;
     const stamp = new Date().toISOString();
     const marker = `${(row.handle_result ?? '').trimEnd()}${row.handle_result ? '\n\n' : ''}---\n[重试 #${n}] ${stamp}：任务被手动重试，已回到待办，等待 AI 重新领取执行。`;
+    // A 方案（2026-09-28）：重试时把 ai_state_at 一并清空，使重试后的任务与「全新 todo」在
+    // mcp/server.ts:314 的 markRunning 领取条件（status==='todo' && ai_state==='' && !ai_state_at）
+    // 上完全一致——否则重试后 ai_state_at 被写成 now，markRunning 仍因 !ai_state_at 不满足而领不走，
+    // 表现为「点了重试也没变化」。清空后重试即「重新武装」，下一次 markRunning 调用即可领走转 running。
     db.prepare(
-      `UPDATE tasks SET status = 'todo', ai_state = '', ai_state_at = ?, retry_count = ?, handle_result = ?, updated_at = ? WHERE id = ?`,
-    ).run(stamp, n, marker, stamp, row.id);
+      `UPDATE tasks SET status = 'todo', ai_state = '', ai_state_at = '', retry_count = ?, handle_result = ?, updated_at = ? WHERE id = ?`,
+    ).run(n, marker, stamp, row.id);
     return this.getById(row.id);
   },
 
