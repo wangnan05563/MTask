@@ -7,6 +7,9 @@ import { ReqEntryService } from './ReqService';
 
 /** 批量 IN 查询的每批 id 数：SQLite 变量上限 999，留足余量并与图片批量查询（≤200）同量级 */
 const PLAN_LOOKUP_BATCH = 200;
+/** T01280：就绪任务排水排序权重——与 SupervisorService.PRIORITY_CASE 同口径，
+ *  否则「决策层看到的优先级」与「拉取接口返回的优先级」不一致，高优先级任务可能被低优先级挤掉。 */
+const PRIORITY_CASE = "CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 9 END";
 /** T00620：running 状态超时阈值——超过则视为 AI 中断并自动置 failed（可用环境变量覆盖，便于调试） */
 // T01297：running 超时兜底阈值——默认从 30 分钟放宽到 1 小时。
 // 原 30 分钟在「长任务执行中无续期」时（如文档识别/AI 生成本身耗时超阈值且期间与 MTask 零交互）
@@ -246,6 +249,67 @@ function normalizeBoolPatch(patch: Record<string, unknown>): void {
   }
 }
 
+/** 计划行 deps（`[{id,type}]`）解析为前置计划 id 列表；脏数据按空数组处理（与 SupervisorService.parseDeps 同口径） */
+function parseDeps(raw: string | null): string[] {
+  try {
+    const v = JSON.parse(raw || '[]');
+    return Array.isArray(v)
+      ? v.filter((d): d is { id: string } => !!d && typeof d.id === 'string').map((d) => d.id)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/** T01280（FR-3.1）：依赖感知过滤——从给定待办中筛出「前置依赖全部已完成」的 id。
+ *  口径与 SupervisorService.collectSnapshot / PlanService.readyTasks 一致：
+ *  无计划行或 deps 为空 → 就绪；deps 指向的计划行已不存在 → 按已完成（脏引用不永久卡住排水）。
+ *  分批 IN 规避 SQLite 变量上限（与 loadPlanLinked 同口径）。 */
+function dependencyReadyIds(db: ReturnType<typeof getDb>, taskIds: string[]): string[] {
+  if (taskIds.length === 0) return [];
+  const depsByTask = new Map<string, string[]>();
+  const depIds = new Set<string>();
+  for (let i = 0; i < taskIds.length; i += PLAN_LOOKUP_BATCH) {
+    const chunk = taskIds.slice(i, i + PLAN_LOOKUP_BATCH);
+    const plans = db.prepare(
+      `SELECT linked_task_id, deps FROM plan_tasks
+        WHERE archived = 0 AND linked_task_id IN (${chunk.map(() => '?').join(',')})`,
+    ).all(...chunk) as Array<{ linked_task_id: string; deps: string | null }>;
+    for (const p of plans) {
+      const ids = parseDeps(p.deps);
+      depsByTask.set(p.linked_task_id, ids);
+      for (const id of ids) depIds.add(id);
+    }
+  }
+  // 无任何任务挂计划行时无需查依赖状态，直接全量就绪（绝大多数项目的常态）
+  if (depsByTask.size === 0) return [...taskIds];
+  const unfinished = new Set<string>();
+  const depList = [...depIds];
+  for (let i = 0; i < depList.length; i += PLAN_LOOKUP_BATCH) {
+    const chunk = depList.slice(i, i + PLAN_LOOKUP_BATCH);
+    const found = db.prepare(
+      `SELECT id FROM plan_tasks WHERE status != 'done' AND id IN (${chunk.map(() => '?').join(',')})`,
+    ).all(...chunk) as Array<{ id: string }>;
+    for (const f of found) unfinished.add(f.id);
+  }
+  return taskIds.filter((id) => !(depsByTask.get(id) ?? []).some((d) => unfinished.has(d)));
+}
+
+/** 行→视图装饰：批量补截图与来源计划（list / listMonitorReady 共用，避免第二套装饰逻辑漂移） */
+function decorateRows(db: ReturnType<typeof getDb>, rows: TaskRow[]): TaskView[] {
+  const imageMap = TaskImageService.mapByTasks(rows.map((r) => r.id));
+  const planLinked = loadPlanLinked(db, rows);
+  return rows.map((r) => {
+    const view = rowToTask(r, imageMap.get(r.id) ?? []);
+    const link = planLinked.get(r.id);
+    if (link) {
+      view.fromPlanTitle = link.title;
+      view.fromPlanKind = link.kind; // T01037：里程碑联动任务要显示「里程碑」而非「计划」
+    }
+    return view;
+  });
+}
+
 export const TaskService = {
   create(input: TaskInput): TaskView {
     const db = getDb();
@@ -428,18 +492,56 @@ export const TaskService = {
     // T00792：SQL 文本由「过滤组合 × 6 种排序 × limit/offset」决定，变体数有限且高度重复
     //（前端固定几种视图来回切），缓存 Statement 避免每次请求重新编译（实测 3.48× 于编译环节）
     const rows = cachedPrepare(db, sql).all(...values) as TaskRow[];
-    // 一次批量查图片，避免逐任务 N+1（内部已按 ≤200/批规避 SQLite 参数上限）
-    const imageMap = TaskImageService.mapByTasks(rows.map((r) => r.id));
-    const planLinked = loadPlanLinked(db, rows);
-    return rows.map((r) => {
-      const view = rowToTask(r, imageMap.get(r.id) ?? []);
-      const link = planLinked.get(r.id);
-      if (link) {
-        view.fromPlanTitle = link.title;
-        view.fromPlanKind = link.kind; // T01037：里程碑联动任务要显示「里程碑」而非「计划」
-      }
-      return view;
-    });
+    return decorateRows(db, rows);
+  },
+
+  /**
+   * T01280（FR-3.1）：就绪标记——把「无未完成前置依赖」的待办置 monitor_ready=1，供外部平台拉取执行。
+   *
+   * 为何由监督器统一驱动、而非拉取时惰性标记：标记是排水链路的输入（FR-3.5 拓扑排序的前置），
+   * 若放进拉取接口，外部平台的轮询/重试就会产生写副作用（同一请求既有读又有写，难以审计）。
+   *
+   * 只处理 monitor_ready=0 的候选，已标记的不重复进入依赖判定，常态下为空操作、成本随积压量线性。
+   * 有意不改 updated_at：monitor_ready 是内部调度标记，不是用户可见的「最近更新」，改动会污染列表排序。
+   */
+  markMonitorReady(): number {
+    const db = getDb();
+    const candidates = db.prepare(
+      "SELECT id FROM tasks WHERE status = 'todo' AND archived = 0 AND shelved = 0 AND ai_state = '' AND monitor_ready = 0",
+    ).all() as Array<{ id: string }>;
+    if (candidates.length === 0) return 0;
+    const ids = dependencyReadyIds(db, candidates.map((r) => r.id));
+    if (ids.length === 0) return 0;
+    const stmt = db.prepare('UPDATE tasks SET monitor_ready = 1 WHERE id = ?');
+    db.transaction(() => {
+      for (const id of ids) stmt.run(id);
+    })();
+    return ids.length;
+  },
+
+  /**
+   * T01280（FR-3.1）：外部平台拉取——返回可执行的就绪待办。
+   * 过滤：未被认领（ai_state 为空）、未归档未搁置、monitor_ready=1、平台偏好匹配（NULL 视为不限平台），
+   * 且前置依赖已完成——依赖做**二次校验**：monitor_ready 是 tick 时刻的快照，依赖可能在其后又被回退成未完成。
+   */
+  listMonitorReady(opts: { platform?: string; limit?: number } = {}): TaskView[] {
+    const db = getDb();
+    const limit = Math.min(200, Math.max(1, opts.limit ?? 20));
+    const where = ["status = 'todo'", 'archived = 0', 'shelved = 0', "ai_state = ''", 'monitor_ready = 1'];
+    const values: unknown[] = [];
+    // 平台缺省=不限平台（不能退化成 platform='' 的等值匹配，否则有平台偏好的任务会被整体排除）
+    const platform = opts.platform?.trim();
+    if (platform) {
+      where.push('(monitor_preferred_platform IS NULL OR monitor_preferred_platform = ?)');
+      values.push(platform);
+    }
+    // 依赖未满足的候选会被滤掉，故先取 3 倍候选量再截断，避免「取 limit 条→过滤后不足」过早返空
+    const candidates = db.prepare(
+      `SELECT * FROM tasks WHERE ${where.join(' AND ')} ORDER BY ${PRIORITY_CASE}, created_at LIMIT ?`,
+    ).all(...values, limit * 3) as TaskRow[];
+    const readyIds = new Set(dependencyReadyIds(db, candidates.map((r) => r.id)));
+    const rows = candidates.filter((r) => readyIds.has(r.id)).slice(0, limit);
+    return decorateRows(db, rows);
   },
 
   update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state' | 'ai_state_at' | 'derived_from' | 'shelved' | 'archived'>>): TaskView {

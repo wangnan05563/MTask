@@ -642,6 +642,21 @@ ${a.result}`;
     } catch (e) { return err((e as Error).message); }
   });
 
+  // T01280（PRD FR-3.1 / §6.1）：外部平台拉取就绪待办——执行层入口（拉取式）
+  server.registerTool('mtask_list_ready_tasks', {
+    title: '拉取就绪任务',
+    description: '外部 AI 平台拉取可执行的就绪待办。仅返回：未被认领（ai_state 为空）、status=todo、monitor_ready=1（Supervisor 已判定无未完成前置依赖）、且平台偏好匹配（monitor_preferred_platform 为空或等于 platform）的任务，并按优先级排序。注意：monitor_ready 由监督器 tick 标记，需 supervisor.enabled=1 才会产生就绪任务。',
+    inputSchema: {
+      platform: z.string().optional().describe("请求方平台标识（如 'workbuddy' | 'trae'）；只返回无平台偏好或偏好等于该值的任务，缺省则不按平台过滤"),
+      limit: z.number().optional().describe('返回条数上限（默认 20，上限 200）'),
+    },
+  }, async (a) => {
+    try {
+      const tasks = TaskService.listMonitorReady({ platform: a.platform?.trim() || undefined, limit: a.limit });
+      return ok(json(tasks), { tasks });
+    } catch (e) { return err((e as Error).message); }
+  });
+
   // ---------------- 提示词管理 ----------------
   server.registerTool('mtask_list_prompt_categories', {
     title: '列出提示词分类',

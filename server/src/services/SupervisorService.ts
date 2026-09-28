@@ -10,6 +10,8 @@
  *   护栏拍板见 SupervisorGuard.guard()（T01276，独立模块以避免与 decide() 循环依赖）；
  * - 异常降级见 buildDegradedActions()（T01278 / NFR-3）：决策 LLM 不可用时把待人工关注的对象
  *   统一升级为 ESCALATE 并打日志，避免「AI 不可用 → 本轮静默无动作 → 任务无人管」。
+ * - 就绪排水入口在 tick 内调用 TaskService.markMonitorReady()（T01280 / FR-3.1）：无未完成前置依赖的
+ *   待办置 monitor_ready=1，外部平台据此拉取；标记须先于空转判定执行（理由见 supervisorTick 注释）。
  *
  * 熔断语义（FR-4.5）：`supervisor.enabled=0`（默认）时**决策层**完全停摆，任务保持现状；
  * 但观测层兜底不受开关影响——停滞标记是零风险的只读观测信号，一并停掉会让面板停在「假存活」。
@@ -22,6 +24,7 @@ import { getSetting } from './AppSettings';
 import { ExecSessionService } from './ExecSessionService';
 import { AIService } from './AIService';
 import { ConfigService } from './ConfigService';
+import { TaskService } from './TaskService'; // T01280：就绪待办标记（FR-3.1），TaskService 不反向依赖本模块，无循环
 import { guard, readEnabled, type GuardResult } from './SupervisorGuard';
 
 /** 监督 tick 默认周期 30s（FR-2.1） */
@@ -59,6 +62,8 @@ export interface SupervisorTickResult {
   guard?: GuardResult<SupervisorAction>;
   /** T01278：本轮因决策 LLM 不可用而走异常降级——decision.actions 由 buildDegradedActions 生成而非 LLM 产出 */
   degraded?: boolean;
+  /** T01280：本轮新标记就绪（monitor_ready=1）的待办数；熔断轮次不标记，故为 undefined */
+  readyMarked?: number;
 }
 
 /** 快照规模上限：LLM 输入需可控（NFR-1「有动作时 LLM 调用 < 10s」），超出部分只计数不入快照 */
@@ -447,8 +452,9 @@ export const SupervisorService = {
    * 监督 tick 入口（FR-2.1）。步骤顺序有意为之：
    * 1) 观测层停滞兜底**先跑且不受熔断影响**（理由见文件头）；
    * 2) 熔断开关关闭 → 决策层空转返回（FR-4.5）；
-   * 3) 无监督对象 → 空转返回，不进入决策（NFR-1）；
-   * 4) 采集快照 → 调决策 LLM 得动作计划（T01275）→ 动作过护栏拍板（T01276；落地执行属 M3）。
+   * 3) 就绪标记（T01280 / FR-3.1）——须早于空转判定，否则「有就绪待办但无会话」时排水死锁（见下方注释）；
+   * 4) 无监督对象 → 空转返回，不进入决策（NFR-1）；
+   * 5) 采集快照 → 调决策 LLM 得动作计划（T01275）→ 动作过护栏拍板（T01276；落地执行属 M3）。
    *
    * 因含 LLM 调用而为异步，故用 `ticking` 重入闸避免叠轮。
    */
@@ -456,8 +462,12 @@ export const SupervisorService = {
     const stalledMarked = ExecSessionService.expireStaleSessions();
     const probe = this.probe();
     if (!readEnabled()) return { ran: false, reason: 'disabled', stalledMarked, probe };
-    if (!probe.hasWork) return { ran: false, reason: 'idle', stalledMarked, probe };
-    if (ticking) return { ran: false, reason: 'busy', stalledMarked, probe };
+    // T01280（FR-3.1）：就绪标记必须早于 hasWork 空转判定——积压里全是就绪待办、但无活跃会话/无 running 时，
+    // probe.hasWork 为假会直接空转返回，就绪任务永远标不上、拉取接口永远返空（排水死锁）。
+    // 位置在 readEnabled 之后，遵守 FR-4.5「开关关闭则监督器完全停摆」。
+    const readyMarked = TaskService.markMonitorReady();
+    if (!probe.hasWork) return { ran: false, reason: 'idle', stalledMarked, probe, readyMarked };
+    if (ticking) return { ran: false, reason: 'busy', stalledMarked, probe, readyMarked };
     ticking = true;
     try {
       const snapshot = this.collectSnapshot();
@@ -484,7 +494,7 @@ export const SupervisorService = {
         `[supervisor] 护栏：放行 ${guarded.applied.length} 拦截 ${guarded.blocked.length}` +
           (guarded.blockedBy ? `（${guarded.blockedBy}）` : ''),
       );
-      return { ran: true, reason: 'ok', stalledMarked, probe, snapshot, decision, guard: guarded, degraded: !decision.ok };
+      return { ran: true, reason: 'ok', stalledMarked, probe, snapshot, decision, guard: guarded, degraded: !decision.ok, readyMarked };
     } finally {
       ticking = false;
     }
