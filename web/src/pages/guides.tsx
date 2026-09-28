@@ -1,5 +1,5 @@
 import {
-  Archive, Boxes, ClipboardList, CalendarClock, Compass, Database, Download, History,
+  Activity, Archive, Boxes, ClipboardList, CalendarClock, Compass, Database, Download, History,
   Layers, Lightbulb, ListTodo, RefreshCw, Rocket, ScrollText, Settings, Sparkles,
   Table2, Upload, Wand2,
 } from 'lucide-react';
@@ -246,6 +246,43 @@ const QUEUE_STEPS: GuideStep[] = [
   },
 ];
 
+/** 执行会话菜单（ExecSessionsPage）——T01271-FR1.4 观测面板；内容对齐页面真实口径（只读、15s 轮询、心跳驱动） */
+const EXEC_SESSIONS_STEPS: GuideStep[] = [
+  {
+    title: '认识「执行会话」',
+    icon: Compass,
+    desc: '外部 AI 平台（WorkBuddy / Trae / 中继）执行任务期间的会话观测面板：一眼看清哪些会话还活着、跑到哪一步。',
+    points: [
+      '顶部三个统计（存活 / 停滞 / 已完成）直接反映当前会话规模',
+      '每条会话展示平台、阶段、进度、最近心跳与关联任务',
+      '当前阶段面板为只读观测，不含任何会触发外部平台动作的入口',
+    ],
+    visual: <Chips items={[chip(<Activity size={13} />, '会话观测'), chip(<RefreshCw size={13} />, '15s 自动刷新'), chip(<ListTodo size={13} />, '关联任务')]} />,
+  },
+  {
+    title: '状态口径与刷新',
+    icon: CalendarClock,
+    desc: '存活 / 停滞 / 已完成由服务端判定，前端只做展示，不自行推断。',
+    points: [
+      '停滞口径：最近心跳超过 supervisor.sessionStaleMs（默认 10 分钟）即标记为「停滞」',
+      '每 15 秒自动轮询一次；也可点右上「刷新」立即拉取最新心跳',
+      '判定完全在服务端完成，避免前后端两套超时口径不一致导致的状态打架',
+    ],
+    visual: <Chips items={[chip(<Activity size={13} />, '存活 active'), chip(<CalendarClock size={13} />, '停滞 stalled'), chip(<History size={13} />, '已完成 done')]} />,
+  },
+  {
+    title: '数据从哪来',
+    icon: Lightbulb,
+    desc: '面板不产生数据——它展示的是外部平台主动上报的心跳。',
+    points: [
+      '外部平台经 MCP 工具 mtask_report_progress 周期上报（建议 30~60 秒一次）',
+      '上报会更新会话心跳，并同步把对应任务置为「AI 处理中」',
+      '长时间无上报会转为「停滞」，通常意味着平台侧需要检查执行状态',
+    ],
+    visual: <Chips items={[chip(<Wand2 size={13} />, 'mtask_report_progress'), chip(<RefreshCw size={13} />, '心跳刷新'), chip(<ListTodo size={13} />, '任务转处理中')]} />,
+  },
+];
+
 /** 设置菜单（SettingsPage） */
 const SETTINGS_STEPS: GuideStep[] = [
   {
@@ -282,5 +319,6 @@ export const GUIDES: Readonly<Record<string, GuideEntry>> = {
   report: { title: 'AI 工作台 · 使用向导', seenKey: 'mtask.guide.seen.report', steps: REPORT_STEPS },
   history: { title: '历史资产 · 使用向导', seenKey: 'mtask.guide.seen.history', steps: HISTORY_STEPS },
   queue: { title: '队列 · 使用向导', seenKey: 'mtask.guide.seen.queue', steps: QUEUE_STEPS },
+  'exec-sessions': { title: '执行会话 · 使用向导', seenKey: 'mtask.guide.seen.exec-sessions', steps: EXEC_SESSIONS_STEPS },
   settings: { title: '设置 · 使用向导', seenKey: 'mtask.guide.seen.settings', steps: SETTINGS_STEPS },
 };
