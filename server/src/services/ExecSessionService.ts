@@ -63,6 +63,27 @@ export interface ReportProgressResult {
 
 const clampPct = (n: number): number => Math.max(0, Math.min(100, n));
 
+/** T01281：认领冲突的内部信号——仅在事务内抛出以触发回滚，不外泄给调用方（MCP 层只看到结构化结果） */
+class ClaimConflictError extends Error {}
+
+/** T01281（FR-3.2 / §6.1）：原子认领入参 */
+export interface ClaimTaskInput {
+  platform: string;
+  sessionId: string;
+  /** 任务内部 id 或任务编号（Txxxxx），与心跳上报同口径 */
+  taskRef: string;
+}
+
+/** T01281（FR-3.2）：认领结果——冲突不抛异常：外部平台需要区分「被别人抢走」与「服务出错」，前者应换任务而非重试 */
+export interface ClaimTaskResult {
+  claimed: boolean;
+  /** 未认领成功的原因：not_found=任务不存在 | already_claimed=已被认领 | not_ready=非待办/已归档 */
+  reason?: 'not_found' | 'already_claimed' | 'not_ready';
+  taskNo?: string | null;
+  /** 冲突时回显当前 ai_state，便于平台判断是否是自己已有会话在跑 */
+  aiState?: string;
+  sessionRowId?: string;
+}
 /** 任务定位：内部 id 优先，其次任务编号（外部平台通常只持有编号） */
 function resolveTaskRef(ref: string): { id: string; task_no: string | null } | null {
   const db = getDb();
@@ -156,6 +177,66 @@ export const ExecSessionService = {
     };
   },
 
+  /**
+   * T01281（FR-3.2 / §6.1）：原子认领——多平台同时拉到同一任务时，保证只有一个能认领成功。
+   *
+   * 并发安全由「immediate 写事务 + 条件 UPDATE」双重保证，缺一不可：
+   * - `immediate`：事务开始即取写锁，避免 deferred 事务「先读后写」时升级锁失败（SQLITE_BUSY），
+   *   或两个事务都基于同一份旧快照做判断的竞态；
+   * - `WHERE ai_state = ''`：认领成立与否由数据库在写入瞬间裁决（changes=0 即已被抢走），
+   *   而不是「先 SELECT 校验、再 UPDATE」——两者之间有窗口，正是重复执行/多平台抢单的根源。
+   *
+   * 冲突时抛内部信号回滚整个事务：新会话行一并撤销，不留「有会话但任务没跑」的脏数据。
+   */
+  claimTask(input: ClaimTaskInput): ClaimTaskResult {
+    const db = getDb();
+    const platform = (input.platform ?? '').trim();
+    const sessionId = (input.sessionId ?? '').trim();
+    if (!platform) throw new Error('platform 必填');
+    if (!sessionId) throw new Error('session_id 必填');
+    const task = resolveTaskRef((input.taskRef ?? '').trim());
+    if (!task) return { claimed: false, reason: 'not_found' };
+
+    const ts = new Date().toISOString();
+    const run = db.transaction((): ClaimTaskResult => {
+      // 会话先行：exec_session_id 要写进任务，必须先拿到（或建好）会话行
+      const existing = db.prepare(
+        'SELECT * FROM exec_sessions WHERE platform = ? AND session_id = ? ORDER BY started_at DESC LIMIT 1',
+      ).get(platform, sessionId) as ExecSessionRow | undefined;
+      const sessionRowId = existing?.id ?? randomUUID();
+      if (existing) {
+        // 复用会话：并入本次认领的任务、刷新心跳；已 done/stalled 的会话被重新认领即回 active（PRD §8）
+        db.prepare(
+          "UPDATE exec_sessions SET task_ids = ?, status = 'active', last_heartbeat = ?, finished_at = NULL WHERE id = ?",
+        ).run(mergeTaskIds(existing.task_ids, task.id), ts, sessionRowId);
+      } else {
+        db.prepare(
+          `INSERT INTO exec_sessions
+             (id, platform, session_id, task_ids, status, progress, phase, last_heartbeat, started_at, finished_at)
+           VALUES (?, ?, ?, ?, 'active', 0, '', ?, ?, NULL)`,
+        ).run(sessionRowId, platform, sessionId, JSON.stringify([task.id]), ts, ts);
+      }
+      // 原子认领：status='todo' + archived=0 一并约束——已完成/已归档任务即便 ai_state 为空也不该被拉走重跑（PRD §8 状态机）。
+      // monitor_ready 同事务清零：认领即出就绪池，否则任务日后被清空 ai_state 时仍带旧标记、会被再次拉取执行。
+      const r = db.prepare(
+        `UPDATE tasks
+            SET ai_state = 'running', ai_state_at = ?, exec_session_id = ?, monitor_ready = 0, updated_at = ?
+          WHERE id = ? AND ai_state = '' AND status = 'todo' AND archived = 0`,
+      ).run(ts, sessionRowId, ts, task.id);
+      if (r.changes === 0) throw new ClaimConflictError();
+      return { claimed: true, taskNo: task.task_no, aiState: 'running', sessionRowId };
+    });
+
+    try {
+      return run.immediate();
+    } catch (e) {
+      if (!(e instanceof ClaimConflictError)) throw e;
+      // 回滚后重新读库判定冲突原因（回滚已撤销会话侧写入，此处读到的是其他赢家提交后的状态）
+      const cur = db.prepare('SELECT ai_state FROM tasks WHERE id = ?').get(task.id) as { ai_state: string } | undefined;
+      const taken = !!cur && cur.ai_state !== '';
+      return { claimed: false, reason: taken ? 'already_claimed' : 'not_ready', taskNo: task.task_no, aiState: cur?.ai_state ?? '' };
+    }
+  },
   /** 按平台+会话标识取会话（供 MCP 返回与后续停滞判定复用） */
   getByPlatformSession(platform: string, sessionId: string): ExecSessionRow | null {
     return (getDb().prepare(

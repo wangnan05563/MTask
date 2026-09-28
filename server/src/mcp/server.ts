@@ -657,6 +657,33 @@ ${a.result}`;
     } catch (e) { return err((e as Error).message); }
   });
 
+  // T01281（PRD FR-3.2 / §6.1）：原子认领——多平台拉到同一任务时只有一个能认领成功，防重复执行
+  server.registerTool('mtask_claim_task', {
+    title: '原子认领任务',
+    description: '外部 AI 平台从 mtask_list_ready_tasks 拿到任务后，先调本工具认领再开始执行。事务内校验任务未被认领（ai_state 为空）后原子置 ai_state=running、绑定执行会话并清零就绪标记，从而防止多平台抢同一任务导致重复执行。已被其他平台抢走（conflict=true, reason=already_claimed）、或任务非待办/已归档（reason=not_ready）时认领失败，应换下一个任务而不是重试。task_id 可传任务内部 id 或任务编号（Txxxxx）。',
+    inputSchema: {
+      task_id: z.string().describe('要认领的任务：任务内部 id 或任务编号（Txxxxx）'),
+      platform: z.string().describe("认领方平台标识，如 'workbuddy' | 'trae' | 'relay:xxx'"),
+      session_id: z.string().describe('认领方平台侧会话标识（后续 mtask_report_progress 用同一标识续上报）'),
+    },
+  }, async (a) => {
+    try {
+      const r = ExecSessionService.claimTask({ taskRef: a.task_id, platform: a.platform, sessionId: a.session_id });
+      if (!r.claimed) {
+        // PRD 契约「返回成功/冲突(409)」：MCP 无 HTTP 状态码，用 isError + conflict 标记表达冲突语义
+        const why = r.reason === 'not_found' ? '任务不存在'
+          : r.reason === 'already_claimed' ? `任务已被认领（ai_state=${r.aiState || '非空'}）`
+            : '任务不是可执行的待办（非 todo 或已归档）';
+        return {
+          content: [{ type: 'text', text: `认领冲突：${why}${r.taskNo ? `（${r.taskNo}）` : ''}` }],
+          structuredContent: { conflict: true, ...r },
+          isError: true,
+        };
+      }
+      return ok(json(r), { conflict: false, ...r });
+    } catch (e) { return err((e as Error).message); }
+  });
+
   // ---------------- 提示词管理 ----------------
   server.registerTool('mtask_list_prompt_categories', {
     title: '列出提示词分类',
