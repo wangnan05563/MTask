@@ -620,7 +620,7 @@ ${a.result}`;
     title: '上报执行会话进度',
     description: '外部 AI 平台（WorkBuddy/Trae/中继）执行任务期间周期调用（建议 30~60s），上报平台会话标识、关联任务与进度/阶段并刷新会话心跳。MTask 据此在「执行会话」面板展示存活与进度、判定停滞。task_id 可传任务内部 id 或任务编号（Txxxxx）。pct>=100 或 done=true 表示本轮完成（会话置 done、任务置完成待查看）。',
     inputSchema: {
-      platform: z.string().describe("平台标识，如 'workbuddy' | 'trae' | 'relay:xxx'"),
+      platform: z.string().describe("平台标识，如 'workbuddy' | 'trae' | 'relay:xxx'。大小写/空白不敏感（内部统一归一为小写）"),
       session_id: z.string().describe('平台侧会话标识'),
       task_id: z.string().describe('关联任务：任务内部 id 或任务编号（Txxxxx）'),
       phase: z.string().optional().describe('当前阶段描述（如「读取代码」「执行测试」）'),
@@ -648,7 +648,7 @@ ${a.result}`;
     title: '拉取就绪任务',
     description: '外部 AI 平台拉取可执行的就绪待办。仅返回：未被认领（ai_state 为空）、status=todo、monitor_ready=1（Supervisor 已判定无未完成前置依赖）、且平台偏好匹配（monitor_preferred_platform 为空或等于 platform）的任务，并按优先级排序。注意：monitor_ready 由监督器 tick 标记，需 supervisor.enabled=1 才会产生就绪任务。',
     inputSchema: {
-      platform: z.string().optional().describe("请求方平台标识（如 'workbuddy' | 'trae'）；只返回无平台偏好或偏好等于该值的任务，缺省则不按平台过滤"),
+      platform: z.string().optional().describe("请求方平台标识（如 'workbuddy' | 'trae'）；只返回无平台偏好或偏好等于该值的任务，缺省则不按平台过滤。大小写/空白不敏感（内部统一归一为小写）"),
       limit: z.number().optional().describe('返回条数上限（默认 20，上限 200）'),
     },
   }, async (a) => {
@@ -664,7 +664,7 @@ ${a.result}`;
     description: '外部 AI 平台从 mtask_list_ready_tasks 拿到任务后，先调本工具认领再开始执行。事务内校验任务未被认领（ai_state 为空）后原子置 ai_state=running、绑定执行会话并清零就绪标记，从而防止多平台抢同一任务导致重复执行。已被其他平台抢走（conflict=true, reason=already_claimed）、或任务非待办/已归档（reason=not_ready）时认领失败，应换下一个任务而不是重试。task_id 可传任务内部 id 或任务编号（Txxxxx）。',
     inputSchema: {
       task_id: z.string().describe('要认领的任务：任务内部 id 或任务编号（Txxxxx）'),
-      platform: z.string().describe("认领方平台标识，如 'workbuddy' | 'trae' | 'relay:xxx'"),
+      platform: z.string().describe("认领方平台标识，如 'workbuddy' | 'trae' | 'relay:xxx'。大小写/空白不敏感（内部统一归一为小写）"),
       session_id: z.string().describe('认领方平台侧会话标识（后续 mtask_report_progress 用同一标识续上报）'),
     },
   }, async (a) => {

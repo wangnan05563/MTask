@@ -5,6 +5,7 @@ import { cachedPrepare } from '../util/stmt-cache'; // T00792：热点 SQL 语�
 import { TaskImageService, type TaskImageMeta } from './TaskImageService';
 import { ReqEntryService } from './ReqService';
 import { parsePlanDeps, depsSatisfied, topoOrder, type PlanDep } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7）
+import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化（拉取侧平台偏好匹配）
 
 /** 批量 IN 查询的每批 id 数：SQLite 变量上限 999，留足余量并与图片批量查询（≤200）同量级 */
 const PLAN_LOOKUP_BATCH = 200;
@@ -545,9 +546,11 @@ export const TaskService = {
     const where = ["status = 'todo'", 'archived = 0', 'shelved = 0', "ai_state = ''", 'monitor_ready = 1'];
     const values: unknown[] = [];
     // 平台缺省=不限平台（不能退化成 platform='' 的等值匹配，否则有平台偏好的任务会被整体排除）
-    const platform = opts.platform?.trim();
+    // T01288：两侧都归一化——请求侧过 normalizePlatform，存量列值用 LOWER/TRIM 兜底，
+    // 否则「Trae 自称 Trae、偏好存成 trae」会静默漏取（排水停滞却无告警）。
+    const platform = normalizePlatform(opts.platform);
     if (platform) {
-      where.push('(monitor_preferred_platform IS NULL OR monitor_preferred_platform = ?)');
+      where.push("(monitor_preferred_platform IS NULL OR LOWER(TRIM(monitor_preferred_platform)) = ?)");
       values.push(platform);
     }
     // 依赖未满足的候选会被滤掉，故先取 3 倍候选量再截断，避免「取 limit 条→过滤后不足」过早返空

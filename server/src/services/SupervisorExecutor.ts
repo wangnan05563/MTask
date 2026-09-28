@@ -29,6 +29,7 @@
 import { getDb } from '../db/connection';
 import { TaskService } from './TaskService';
 import { type GuardAction } from './SupervisorGuard';
+import { normalizePlatform } from '../util/platform'; // T01288：写入 monitor_preferred_platform 前归一化（拉取侧同口径）
 import { isRelayPlatform, dispatchTask } from './RelayDispatchService'; // T01283：不支持 MCP 的平台走推送兜底（FR-3.6）
 
 /** 单条动作的落地结果（供 T01285 写 monitor_runs 审计、T01286 前端展示） */
@@ -84,7 +85,7 @@ function validateTarget(type: string, taskId: string | undefined): { ok: true; t
 async function resume(a: GuardAction): Promise<ApplyOutcome> {
   const v = validateTarget(a.type, a.taskId);
   if (!v.ok) return v.outcome;
-  const platform = (a.platform ?? v.task.monitor_preferred_platform ?? '').trim();
+  const platform = normalizePlatform(a.platform ?? v.task.monitor_preferred_platform);
   if (isRelayPlatform(platform)) return pushOrApply(a, v.task.id, platform);
   const db = getDb();
   const ts = new Date().toISOString();
@@ -105,7 +106,8 @@ async function resume(a: GuardAction): Promise<ApplyOutcome> {
 async function redispatch(a: GuardAction): Promise<ApplyOutcome> {
   const v = validateTarget(a.type, a.taskId);
   if (!v.ok) return v.outcome;
-  const target = (a.toPlatform ?? '').trim();
+  // T01288：归一化后再落库——拉取侧按同一口径匹配，否则平台自称大小写不同就永远拉不到（静默停滞）
+  const target = normalizePlatform(a.toPlatform);
   if (!target) return { type: a.type, taskId: v.task.id, status: 'skipped', detail: '缺少 toPlatform，无法确定换到哪个平台' };
   if (isRelayPlatform(target)) return pushOrApply(a, v.task.id, target);
   const db = getDb();

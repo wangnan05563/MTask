@@ -10,6 +10,7 @@
 import { randomUUID } from 'node:crypto';
 import { getDb } from '../db/connection';
 import { getSetting } from './AppSettings'; // T01270：停滞阈值读 app_settings（supervisor.sessionStaleMs）
+import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化（会话按平台唯一，防大小写分裂）
 import { TaskService } from './TaskService';
 
 /** T01270（FR-1.3）：会话停滞默认阈值 10 分钟——超过无心跳即视为停滞（PRD FR-1.3） */
@@ -116,7 +117,7 @@ export const ExecSessionService = {
    */
   reportProgress(input: ReportProgressInput): ReportProgressResult {
     const db = getDb();
-    const platform = (input.platform ?? '').trim();
+    const platform = normalizePlatform(input.platform);
     const sessionId = (input.sessionId ?? '').trim();
     if (!platform) throw new Error('platform 必填');
     if (!sessionId) throw new Error('session_id 必填');
@@ -128,8 +129,10 @@ export const ExecSessionService = {
     // 完成判定：平台显式声明 done，或进度已到 100（PRD §6.1）
     const finished = input.done === true || (pctProvided && clampPct(input.pct as number) >= 100);
 
+    // T01288：列侧 LOWER/TRIM 兜底存量行——归一化只在写入侧生效，会话行按 platform+session_id 唯一，
+    // 大小写不一致会让同一会话被判成两个（面板分裂、停滞判定各看一半）。
     const existing = db.prepare(
-      'SELECT * FROM exec_sessions WHERE platform = ? AND session_id = ? ORDER BY started_at DESC LIMIT 1',
+      'SELECT * FROM exec_sessions WHERE LOWER(TRIM(platform)) = ? AND session_id = ? ORDER BY started_at DESC LIMIT 1',
     ).get(platform, sessionId) as ExecSessionRow | undefined;
 
     let sessionRowId: string;
@@ -190,7 +193,7 @@ export const ExecSessionService = {
    */
   claimTask(input: ClaimTaskInput): ClaimTaskResult {
     const db = getDb();
-    const platform = (input.platform ?? '').trim();
+    const platform = normalizePlatform(input.platform);
     const sessionId = (input.sessionId ?? '').trim();
     if (!platform) throw new Error('platform 必填');
     if (!sessionId) throw new Error('session_id 必填');
@@ -201,7 +204,7 @@ export const ExecSessionService = {
     const run = db.transaction((): ClaimTaskResult => {
       // 会话先行：exec_session_id 要写进任务，必须先拿到（或建好）会话行
       const existing = db.prepare(
-        'SELECT * FROM exec_sessions WHERE platform = ? AND session_id = ? ORDER BY started_at DESC LIMIT 1',
+        'SELECT * FROM exec_sessions WHERE LOWER(TRIM(platform)) = ? AND session_id = ? ORDER BY started_at DESC LIMIT 1',
       ).get(platform, sessionId) as ExecSessionRow | undefined;
       const sessionRowId = existing?.id ?? randomUUID();
       if (existing) {
@@ -237,11 +240,12 @@ export const ExecSessionService = {
       return { claimed: false, reason: taken ? 'already_claimed' : 'not_ready', taskNo: task.task_no, aiState: cur?.ai_state ?? '' };
     }
   },
-  /** 按平台+会话标识取会话（供 MCP 返回与后续停滞判定复用） */
+
+  /** 按平台+会话标识取会话（供 MCP 返回与后续停滞判定复用）；T01288：入参先归一化，与写入侧同口径 */
   getByPlatformSession(platform: string, sessionId: string): ExecSessionRow | null {
     return (getDb().prepare(
-      'SELECT * FROM exec_sessions WHERE platform = ? AND session_id = ? ORDER BY started_at DESC LIMIT 1',
-    ).get(platform, sessionId) as ExecSessionRow | undefined) ?? null;
+      'SELECT * FROM exec_sessions WHERE LOWER(TRIM(platform)) = ? AND session_id = ? ORDER BY started_at DESC LIMIT 1',
+    ).get(normalizePlatform(platform), sessionId) as ExecSessionRow | undefined) ?? null;
   },
 
   /**

@@ -16,6 +16,7 @@
  */
 import { getDb } from '../db/connection';
 import { getSetting } from './AppSettings';
+import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化统一口径
 import { QueueService } from './QueueService';
 import { AIService } from './AIService';
 import { logService } from './LogService';
@@ -40,15 +41,15 @@ export interface RelayDispatchResult {
   detail: string;
 }
 
-/** 逗号分隔配置 → 去空白小写列表 */
+/** 逗号分隔配置 → 归一化平台名列表（T01288：与请求侧同用 normalizePlatform，避免大小写口径分歧） */
 function readList(key: string): string[] {
   const raw = getSetting(key) ?? '';
-  return raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  return raw.split(',').map((s) => normalizePlatform(s)).filter(Boolean);
 }
 
 /** 该平台是否被声明为「不支持 MCP 拉取、需推送兜底」 */
 export function isRelayPlatform(platform: string | undefined): boolean {
-  const p = (platform ?? '').trim().toLowerCase();
+  const p = normalizePlatform(platform);
   if (!p) return false;
   return readList(RELAY_PLATFORMS_KEY).includes(p);
 }
