@@ -6,7 +6,8 @@
  *
  * 职责边界：
  * - 观测层停滞兜底并入本 tick（M1 已上线的 ExecSessionService.expireStaleSessions）；
- * - 状态快照采集见 collectSnapshot()（T01274）；LLM 裁决见 decide()（T01275）；护栏约束 → T01276。
+ * - 状态快照采集见 collectSnapshot()（T01274）；LLM 裁决见 decide()（T01275）；
+ *   护栏拍板见 SupervisorGuard.guard()（T01276，独立模块以避免与 decide() 循环依赖）。
  *
  * 熔断语义（FR-4.5）：`supervisor.enabled=0`（默认）时**决策层**完全停摆，任务保持现状；
  * 但观测层兜底不受开关影响——停滞标记是零风险的只读观测信号，一并停掉会让面板停在「假存活」。
@@ -16,11 +17,10 @@ import { getSetting } from './AppSettings';
 import { ExecSessionService } from './ExecSessionService';
 import { AIService } from './AIService';
 import { ConfigService } from './ConfigService';
+import { guard, readEnabled, type GuardResult } from './SupervisorGuard';
 
 /** 监督 tick 默认周期 30s（FR-2.1） */
 const DEFAULT_INTERVAL_MS = 30_000;
-/** 熔断开关（FR-4.5）：默认关闭，自动动作需用户显式开启 */
-const ENABLED_KEY = 'supervisor.enabled';
 /** tick 周期配置键（FR-2.1） */
 const INTERVAL_KEY = 'supervisor.intervalMs';
 
@@ -50,6 +50,8 @@ export interface SupervisorTickResult {
   snapshot?: MonitorSnapshot;
   /** 本轮 LLM 裁决结果（T01275）；未进入决策流程时为 undefined */
   decision?: SupervisorDecision;
+  /** 本轮动作过护栏的拍板结果（T01276）；未进入决策流程时为 undefined */
+  guard?: GuardResult<SupervisorAction>;
 }
 
 /** 快照规模上限：LLM 输入需可控（NFR-1「有动作时 LLM 调用 < 10s」），超出部分只计数不入快照 */
@@ -222,19 +224,17 @@ function resolveDecisionToolId(): string | null {
 let ticking = false;
 
 /** 配置解析：缺失/非法一律回退默认，避免 0 或 NaN 让定时器退化成忙轮询 */
-function readEnabled(): boolean {
-  const raw = getSetting(ENABLED_KEY);
-  return raw === '1' || raw === 'true';
-}
-
 function readIntervalMs(): number {
   const n = Number(getSetting(INTERVAL_KEY));
   return Number.isFinite(n) && n >= 1000 ? n : DEFAULT_INTERVAL_MS;
 }
 
-/** 数值型监督配置读取：缺失/非法回退默认（`supervisor.maxConcurrent`、`supervisor.tokenBudget` 等） */
+/** 数值型监督配置读取：缺失/空串/非法回退默认（`supervisor.maxConcurrent`、`supervisor.tokenBudget` 等）。
+ *  显式挡空值——`Number(null)` 为 0，会让未配置的 maxConcurrent 显示成 0 并与护栏口径不一致。 */
 function readIntSetting(key: string, fallback: number): number {
-  const n = Number(getSetting(key));
+  const raw = getSetting(key);
+  if (raw == null || raw.trim() === '') return fallback;
+  const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
@@ -405,7 +405,7 @@ export const SupervisorService = {
    * 1) 观测层停滞兜底**先跑且不受熔断影响**（理由见文件头）；
    * 2) 熔断开关关闭 → 决策层空转返回（FR-4.5）；
    * 3) 无监督对象 → 空转返回，不进入决策（NFR-1）；
-   * 4) 采集快照 → 调决策 LLM 得动作计划（T01275；护栏拍板与落地属 T01276）。
+   * 4) 采集快照 → 调决策 LLM 得动作计划（T01275）→ 动作过护栏拍板（T01276；落地执行属 M3）。
    *
    * 因含 LLM 调用而为异步，故用 `ticking` 重入闸避免叠轮。
    */
@@ -429,7 +429,13 @@ export const SupervisorService = {
         `[supervisor] 裁决：模型 ${decision.model || '(未配置)'} 动作 ${decision.actions.length} 耗时 ${decision.durationMs}ms` +
           (decision.ok ? '' : ` 失败：${decision.error ?? ''}`),
       );
-      return { ran: true, reason: 'ok', stalledMarked, probe, snapshot, decision };
+      // T01276：LLM 只「建议」，动作能否落地由护栏拍板；被拦动作降级 ESCALATE（落地执行属 M3）
+      const guarded = guard(decision.actions, { concurrent: snapshot.budget.concurrent });
+      console.log(
+        `[supervisor] 护栏：放行 ${guarded.applied.length} 拦截 ${guarded.blocked.length}` +
+          (guarded.blockedBy ? `（${guarded.blockedBy}）` : ''),
+      );
+      return { ran: true, reason: 'ok', stalledMarked, probe, snapshot, decision, guard: guarded };
     } finally {
       ticking = false;
     }
