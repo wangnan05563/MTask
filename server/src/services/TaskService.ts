@@ -8,11 +8,11 @@ import { ReqEntryService } from './ReqService';
 /** 批量 IN 查询的每批 id 数：SQLite 变量上限 999，留足余量并与图片批量查询（≤200）同量级 */
 const PLAN_LOOKUP_BATCH = 200;
 /** T00620：running 状态超时阈值——超过则视为 AI 中断并自动置 failed（可用环境变量覆盖，便于调试） */
-// T00868：running 超时兜底阈值——默认从 10 分钟放宽到 30 分钟。
-// 原 10 分钟在「长任务执行中无续期」时（如文档识别/AI 生成本身耗时超阈值且期间与 MTask 零交互）
-// 会把仍在执行的任务误置 failed（T00851 曾因此"未执行完就被标中断"）。30 分钟覆盖绝大多数长任务，
+// T01297：running 超时兜底阈值——默认从 30 分钟放宽到 1 小时。
+// 原 30 分钟在「长任务执行中无续期」时（如文档识别/AI 生成本身耗时超阈值且期间与 MTask 零交互）
+// 会把仍在执行的任务误置 failed（T00851 曾因此"未执行完就被标中断"）。1 小时覆盖绝大多数长任务，
 // 真正的超长任务仍由 Agent 中途重写 running 续期兜底（见 mtask 技能状态机）。
-const AI_STATE_STALE_MS = Number(process.env.MTASK_AI_STATE_STALE_MS ?? 30 * 60 * 1000);
+const AI_STATE_STALE_MS = Number(process.env.MTASK_AI_STATE_STALE_MS ?? 60 * 60 * 1000);
 
 
 /** DB 原始行：archived 为 number（SQLite 0/1） */
