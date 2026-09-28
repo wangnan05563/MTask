@@ -165,7 +165,8 @@ app.listen(PORT, HOST, () => {
   // T01275：tick 内含 LLM 裁决调用（异步），故用 void + catch 兜底，避免 unhandled rejection。
   void SupervisorService.supervisorTick().catch((e) => console.error('[supervisor] 启动 tick 失败:', e));
   setInterval(
-    () => { void SupervisorService.supervisorTick().catch(() => { /* 单轮失败不中断定时 */ }); },
+    // T01278：单轮异常必须留痕——原实现静默吞错，会让「监督器已挂」与「无监督对象」在日志上无从区分
+    () => { void SupervisorService.supervisorTick().catch((e) => console.error('[supervisor] tick 失败:', e)); },
     SupervisorService.getConfig().intervalMs,
   );
 });

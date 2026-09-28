@@ -7,10 +7,15 @@
  * 职责边界：
  * - 观测层停滞兜底并入本 tick（M1 已上线的 ExecSessionService.expireStaleSessions）；
  * - 状态快照采集见 collectSnapshot()（T01274）；LLM 裁决见 decide()（T01275）；
- *   护栏拍板见 SupervisorGuard.guard()（T01276，独立模块以避免与 decide() 循环依赖）。
+ *   护栏拍板见 SupervisorGuard.guard()（T01276，独立模块以避免与 decide() 循环依赖）；
+ * - 异常降级见 buildDegradedActions()（T01278 / NFR-3）：决策 LLM 不可用时把待人工关注的对象
+ *   统一升级为 ESCALATE 并打日志，避免「AI 不可用 → 本轮静默无动作 → 任务无人管」。
  *
  * 熔断语义（FR-4.5）：`supervisor.enabled=0`（默认）时**决策层**完全停摆，任务保持现状；
  * 但观测层兜底不受开关影响——停滞标记是零风险的只读观测信号，一并停掉会让面板停在「假存活」。
+ *
+ * 审计落库（FR-4.6 的 monitor_runs 写入）不在本文件：那是 M3 的 T01285。本任务只保证降级事件
+ * 在日志层可观测（console → LogService 环形缓冲 → 前端日志页），不与 T01285 的落库职责重叠。
  */
 import { getDb } from '../db/connection';
 import { getSetting } from './AppSettings';
@@ -52,6 +57,8 @@ export interface SupervisorTickResult {
   decision?: SupervisorDecision;
   /** 本轮动作过护栏的拍板结果（T01276）；未进入决策流程时为 undefined */
   guard?: GuardResult<SupervisorAction>;
+  /** T01278：本轮因决策 LLM 不可用而走异常降级——decision.actions 由 buildDegradedActions 生成而非 LLM 产出 */
+  degraded?: boolean;
 }
 
 /** 快照规模上限：LLM 输入需可控（NFR-1「有动作时 LLM 调用 < 10s」），超出部分只计数不入快照 */
@@ -206,6 +213,42 @@ function parseActions(content: string): SupervisorAction[] {
       reason,
     });
   }
+  return out;
+}
+
+/**
+ * T01278（NFR-3）：决策 LLM 不可用时的**异常降级**——产出人工可见的 ESCALATE 动作。
+ *
+ * 为什么必须产出动作而不是空手而归：`decide()` 失败若只留空动作，链路表现就是「AI 看过快照
+ * 但什么都没做」，与「快照里确实无事可做」在日志和面板上无从区分——前者是故障、后者是正常，
+ * 静默会让人误判系统健康。NFR-3 要求异常「统一降级为人工可见状态」，故此处显式升级为 ESCALATE。
+ *
+ * 指向对象按「最需人工介入」排序：停滞会话关联任务 → 失败任务，去重后上限 ACTION_LIMIT。
+ * 快照里没有这两类对象时（例如仅 running 任务且会话健康）产出一条无 taskId 的全局信号，
+ * 保证降级始终可见，而非因「无对象可指」再次静默。
+ *
+ * 「平台不可达」的降级不在 M2：M2 无平台调用（拉取式属 T01280、推送式兜底属 T01283），
+ * 而平台不可达在观测层的表现就是心跳超时 → 会话 stalled，已被本函数的第一个来源覆盖。
+ */
+function buildDegradedActions(snapshot: MonitorSnapshot, error?: string): SupervisorAction[] {
+  const reason = `[异常降级] 决策 LLM 不可用（${error || '未知错误'}），本轮无法自动裁决，转人工`;
+  const out: SupervisorAction[] = [];
+  const seen = new Set<string>();
+  /** 追加一条降级动作；返回是否已达上限（true = 调用方应立即收手） */
+  const push = (taskId?: string): boolean => {
+    if (taskId) {
+      if (seen.has(taskId)) return false;
+      seen.add(taskId);
+    }
+    out.push({ type: 'ESCALATE', taskId, reason });
+    return out.length >= ACTION_LIMIT;
+  };
+  for (const s of snapshot.sessions) {
+    if (!s.stale) continue;
+    for (const t of s.tasks) if (push(t.taskId)) return out;
+  }
+  for (const f of snapshot.failed) if (push(f.taskId)) return out;
+  if (out.length === 0) push();
   return out;
 }
 
@@ -429,13 +472,19 @@ export const SupervisorService = {
         `[supervisor] 裁决：模型 ${decision.model || '(未配置)'} 动作 ${decision.actions.length} 耗时 ${decision.durationMs}ms` +
           (decision.ok ? '' : ` 失败：${decision.error ?? ''}`),
       );
+      // T01278（NFR-3）：决策不可用时改走异常降级——动作由 buildDegradedActions 生成，保证异常人工可见
+      const actions = decision.ok ? decision.actions : buildDegradedActions(snapshot, decision.error);
+      if (!decision.ok) {
+        // console.warn 会被 LogService 环形缓冲捕获，前端日志页可查（降级必须留痕，不能静默）
+        console.warn(`[supervisor] 异常降级：决策不可用，产出 ${actions.length} 条 ESCALATE 待人工处理`);
+      }
       // T01276：LLM 只「建议」，动作能否落地由护栏拍板；被拦动作降级 ESCALATE（落地执行属 M3）
-      const guarded = guard(decision.actions, { concurrent: snapshot.budget.concurrent });
+      const guarded = guard(actions, { concurrent: snapshot.budget.concurrent });
       console.log(
         `[supervisor] 护栏：放行 ${guarded.applied.length} 拦截 ${guarded.blocked.length}` +
           (guarded.blockedBy ? `（${guarded.blockedBy}）` : ''),
       );
-      return { ran: true, reason: 'ok', stalledMarked, probe, snapshot, decision, guard: guarded };
+      return { ran: true, reason: 'ok', stalledMarked, probe, snapshot, decision, guard: guarded, degraded: !decision.ok };
     } finally {
       ticking = false;
     }
