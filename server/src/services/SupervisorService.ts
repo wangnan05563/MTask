@@ -26,6 +26,7 @@ import { AIService } from './AIService';
 import { ConfigService } from './ConfigService';
 import { TaskService } from './TaskService'; // T01280：就绪待办标记（FR-3.1），TaskService 不反向依赖本模块，无循环
 import { guard, readEnabled, type GuardResult } from './SupervisorGuard';
+import { applyActions, type ApplyOutcome } from './SupervisorExecutor'; // T01282：动作落地（FR-3.3~3.5）
 
 /** 监督 tick 默认周期 30s（FR-2.1） */
 const DEFAULT_INTERVAL_MS = 30_000;
@@ -64,6 +65,8 @@ export interface SupervisorTickResult {
   degraded?: boolean;
   /** T01280：本轮新标记就绪（monitor_ready=1）的待办数；熔断轮次不标记，故为 undefined */
   readyMarked?: number;
+  /** T01282：本轮护栏放行动作的落地结果（FR-3.3~3.5）；未进入决策流程时为 undefined，供 T01285 写 monitor_runs */
+  executed?: ApplyOutcome[];
 }
 
 /** 快照规模上限：LLM 输入需可控（NFR-1「有动作时 LLM 调用 < 10s」），超出部分只计数不入快照 */
@@ -488,13 +491,18 @@ export const SupervisorService = {
         // console.warn 会被 LogService 环形缓冲捕获，前端日志页可查（降级必须留痕，不能静默）
         console.warn(`[supervisor] 异常降级：决策不可用，产出 ${actions.length} 条 ESCALATE 待人工处理`);
       }
-      // T01276：LLM 只「建议」，动作能否落地由护栏拍板；被拦动作降级 ESCALATE（落地执行属 M3）
+      // T01276：LLM 只「建议」，动作能否落地由护栏拍板；被拦动作降级 ESCALATE
       const guarded = guard(actions, { concurrent: snapshot.budget.concurrent });
       console.log(
         `[supervisor] 护栏：放行 ${guarded.applied.length} 拦截 ${guarded.blocked.length}` +
           (guarded.blockedBy ? `（${guarded.blockedBy}）` : ''),
       );
-      return { ran: true, reason: 'ok', stalledMarked, probe, snapshot, decision, guard: guarded, degraded: !decision.ok, readyMarked };
+      // T01282（FR-3.3~3.5）：护栏只放行不执行，落地在这里——被拦动作已在 guard 内降级为 ESCALATE，
+      // 故落地对象只取 applied（blocked 的降级动作不改数据，由人工接手）。
+      const executed = applyActions(guarded.applied);
+      const cnt = (s: ApplyOutcome['status']) => executed.filter((e) => e.status === s).length;
+      console.log(`[supervisor] 落地：成功 ${cnt('applied')} 跳过 ${cnt('skipped')} 失败 ${cnt('failed')}`);
+      return { ran: true, reason: 'ok', stalledMarked, probe, snapshot, decision, guard: guarded, degraded: !decision.ok, readyMarked, executed };
     } finally {
       ticking = false;
     }
