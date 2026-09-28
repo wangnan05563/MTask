@@ -499,7 +499,8 @@ export const SupervisorService = {
       );
       // T01282（FR-3.3~3.5）：护栏只放行不执行，落地在这里——被拦动作已在 guard 内降级为 ESCALATE，
       // 故落地对象只取 applied（blocked 的降级动作不改数据，由人工接手）。
-      const executed = applyActions(guarded.applied);
+      // T01283：applyActions 改为异步（推送兜底需走中继 submit），动作间仍串行、独立容错。
+      const executed = await applyActions(guarded.applied);
       const cnt = (s: ApplyOutcome['status']) => executed.filter((e) => e.status === s).length;
       console.log(`[supervisor] 落地：成功 ${cnt('applied')} 跳过 ${cnt('skipped')} 失败 ${cnt('failed')}`);
       return { ran: true, reason: 'ok', stalledMarked, probe, snapshot, decision, guard: guarded, degraded: !decision.ok, readyMarked, executed };

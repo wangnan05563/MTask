@@ -18,12 +18,18 @@
  * - **CONTINUE / ESCALATE**：**无数据落地**（前者等待心跳、后者等人工），如实记 `skipped`，
  *   让审计能看到「LLM 建议了但本层没动」，而不是假装执行过（NFR-3 不静默）。
  *
+ * T01283（FR-3.6）：RESUME/REDISPATCH 的**通道**不再是唯一——目标平台若被声明为「不支持 MCP 拉取」
+ * （`supervisor.relayPlatforms`），则改由 `RelayDispatchService` 走中继推送，否则任务只会躺在
+ * 「就绪」上等一个永不到来的拉取（排水静默停滞）。通道判定与推送实现都在 RelayDispatchService，
+ * 本层只负责「选通道 + 记录结论」。
+ *
  * 每个动作独立事务：单个动作失败只记 failed，不回滚其他动作、不中断本轮——
  * 一个脏 taskId 不该拖垮整轮排水。
  */
 import { getDb } from '../db/connection';
 import { TaskService } from './TaskService';
 import { type GuardAction } from './SupervisorGuard';
+import { isRelayPlatform, dispatchTask } from './RelayDispatchService'; // T01283：不支持 MCP 的平台走推送兜底（FR-3.6）
 
 /** 单条动作的落地结果（供 T01285 写 monitor_runs 审计、T01286 前端展示） */
 export interface ApplyOutcome {
@@ -45,13 +51,15 @@ interface ExecTaskRow {
   priority: string;
   status: string;
   archived: number;
+  /** T01283：REDISPATCH 写过的偏好平台（FR-3.4），RESUME 判定推送通道时作为 LLM 未给 platform 的兜底来源 */
+  monitor_preferred_platform: string | null;
 }
 
 const PRIORITIES = new Set(['low', 'normal', 'high', 'urgent']);
 
 function loadTask(id: string): ExecTaskRow | undefined {
   return getDb()
-    .prepare('SELECT id, task_no, title, project_id, priority, status, archived FROM tasks WHERE id = ?')
+    .prepare('SELECT id, task_no, title, project_id, priority, status, archived, monitor_preferred_platform FROM tasks WHERE id = ?')
     .get(id) as ExecTaskRow | undefined;
 }
 
@@ -68,10 +76,16 @@ function validateTarget(type: string, taskId: string | undefined): { ok: true; t
   return { ok: true, task };
 }
 
-/** RESUME（FR-3.3）：重新入池等待平台再次拉取 */
-function resume(a: GuardAction): ApplyOutcome {
+/**
+ * RESUME（FR-3.3）：重新入池等待平台再次拉取。
+ * T01283：目标平台声明为「不支持 MCP 拉取」时改走**推送兜底**——只标 monitor_ready 会放进一个
+ * 没人来取的池子（排水静默停滞），故经中继 submit/poll 主动推进去（FR-3.6）。
+ */
+async function resume(a: GuardAction): Promise<ApplyOutcome> {
   const v = validateTarget(a.type, a.taskId);
   if (!v.ok) return v.outcome;
+  const platform = (a.platform ?? v.task.monitor_preferred_platform ?? '').trim();
+  if (isRelayPlatform(platform)) return pushOrApply(a, v.task.id, platform);
   const db = getDb();
   const ts = new Date().toISOString();
   // ai_state_at 一并清空：它不是时间戳留痕，而是「是否被 AI 处理过」的判据（见 TaskService.retryTask），
@@ -87,12 +101,13 @@ function resume(a: GuardAction): ApplyOutcome {
   return { type: a.type, taskId: v.task.id, status: 'applied', detail: '已重新入池（monitor_ready=1）并累加重试计数，等待外部平台再次拉取' };
 }
 
-/** REDISPATCH（FR-3.4）：换台——改偏好平台后同样重新入池 */
-function redispatch(a: GuardAction): ApplyOutcome {
+/** REDISPATCH（FR-3.4）：换台——改偏好平台后同样重新入池（不支持 MCP 的目标平台则走推送兜底） */
+async function redispatch(a: GuardAction): Promise<ApplyOutcome> {
   const v = validateTarget(a.type, a.taskId);
   if (!v.ok) return v.outcome;
   const target = (a.toPlatform ?? '').trim();
   if (!target) return { type: a.type, taskId: v.task.id, status: 'skipped', detail: '缺少 toPlatform，无法确定换到哪个平台' };
+  if (isRelayPlatform(target)) return pushOrApply(a, v.task.id, target);
   const db = getDb();
   const ts = new Date().toISOString();
   db.transaction(() => {
@@ -104,6 +119,21 @@ function redispatch(a: GuardAction): ApplyOutcome {
     ).run(target, ts, v.task.id);
   })();
   return { type: a.type, taskId: v.task.id, status: 'applied', detail: `偏好平台已改为「${target}」并重新入池，等待该平台拉取` };
+}
+
+/**
+ * 推送兜底（FR-3.6）：把结果状态映射为落地结论。
+ * 未配置中继工具（queueId 缺省）判 skipped 而非 failed——那是**配置缺失**、不是链路故障，
+ * 混为一谈会让审计把「还没配」误读成「派发坏了」。
+ */
+async function pushOrApply(a: GuardAction, taskId: string, platform: string): Promise<ApplyOutcome> {
+  const r = await dispatchTask(taskId, platform);
+  return {
+    type: a.type,
+    taskId,
+    status: r.ok ? 'applied' : r.queueId ? 'failed' : 'skipped',
+    detail: r.detail,
+  };
 }
 
 /** SPLIT（FR-3.5）：拆出子任务回灌待办池，父任务退出就绪池 */
@@ -130,13 +160,14 @@ function split(a: GuardAction): ApplyOutcome {
   return { type: a.type, taskId: parent.id, status: 'applied', detail: `已拆出子任务 ${child.task_no ?? child.id} 并置为就绪，父任务退出就绪池`, createdTaskNo: child.task_no ?? undefined };
 }
 
-/** 主入口：按动作类型分派；未知/无需落地的类型如实记 skipped */
-export function applyActions(actions: GuardAction[]): ApplyOutcome[] {
+/** 主入口：按动作类型分派；未知/无需落地的类型如实记 skipped。
+ *  T01283 起为 async：推送兜底要走 `QueueService.submitAll`（网络提交），无法在同步函数内完成。 */
+export async function applyActions(actions: GuardAction[]): Promise<ApplyOutcome[]> {
   const out: ApplyOutcome[] = [];
   for (const a of actions) {
     try {
-      if (a.type === 'RESUME') out.push(resume(a));
-      else if (a.type === 'REDISPATCH') out.push(redispatch(a));
+      if (a.type === 'RESUME') out.push(await resume(a));
+      else if (a.type === 'REDISPATCH') out.push(await redispatch(a));
       else if (a.type === 'SPLIT') out.push(split(a));
       else out.push({
         type: a.type,
