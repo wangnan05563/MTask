@@ -175,8 +175,21 @@ export const QueueService = {
     ).all(queueId) as Array<QueueJobRow & { task_title: string | null; tool_name: string | null }>;
   },
 
+  /** T01298：移除队列中的单个任务项——sending（在途）不可移除，避免后台 poller 更新已删行 */
   removeJob(queueId: string, jobId: string): void {
+    const job = this.getJob(jobId);
+    if (!job || job.queue_id !== queueId) return;
+    if (job.status === 'sending') throw new Error('任务正在发送中，不可移除');
     getDb().prepare('DELETE FROM queue_jobs WHERE id = ? AND queue_id = ?').run(jobId, queueId);
+  },
+
+  /** T01298：删除整个队列——queue_jobs 随 FK ON DELETE CASCADE 级联清理；running 中禁止删除 */
+  remove(queueId: string): void {
+    const queue = this.getById(queueId);
+    if (!queue) throw new Error('队列不存在');
+    if (queue.status === 'running') throw new Error('队列正在发送中，不可删除');
+    getDb().prepare('DELETE FROM queues WHERE id = ?').run(queueId);
+    cacheClear('queues');
   },
 
   /** FR4.2 触发：逐 Job 发送（串行保序）。由 AIService 注入真实发送函数，便于测试。 */

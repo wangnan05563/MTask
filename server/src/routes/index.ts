@@ -1199,9 +1199,22 @@ api.post('/queues/:id/jobs', (req, res) => {
   }
 });
 
+api.delete('/queues/:id', (req, res) => {
+  try {
+    QueueService.remove(req.params.id);
+    res.status(204).end();
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 api.delete('/queues/:id/jobs/:jobId', (req, res) => {
-  QueueService.removeJob(req.params.id, req.params.jobId);
-  res.status(204).end();
+  try {
+    QueueService.removeJob(req.params.id, req.params.jobId);
+    res.status(204).end();
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 api.post('/queues/:id/send', async (req, res) => {

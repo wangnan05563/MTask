@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, type Queue, type QueueJob, type Task, type AITool } from '../api/client';
-import { Plus, ListPlus, RotateCcw, Send, Eye, ChevronUp, Check, Copy, Layers, Loader2 } from 'lucide-react';
+import { Plus, ListPlus, RotateCcw, Send, Eye, ChevronUp, Check, Copy, Layers, Loader2, Trash2 } from 'lucide-react';
 import { EmptyState } from '../ui/EmptyState'; // T01072-FR1.10：统一空态组件
+import { askConfirm } from '../ui/dialogs'; // T01298：删除队列/移除任务前确认
 
 /** T01066-FR1.8：并行任务池状态（running 槽位 + 上限 + 排队计数） */
 interface PoolStatus {
@@ -133,6 +134,35 @@ export function QueuePage() {
     }
   }
 
+  /** T01298：从队列移除单个任务项（sending 在途项由后端拒绝，前端也不展示入口） */
+  async function removeJob(job: QueueJob) {
+    if (!active) return;
+    if (!(await askConfirm(`从队列移除「${taskTitle(job)}」？移除后可重新加入。`))) return;
+    try {
+      await api.del(`/queues/${active.id}/jobs/${job.id}`);
+      await open(active.id);
+      flash('已从队列移除');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** T01298：删除整个队列（任务项随级联清理）；删除后回到未选中态 */
+  async function deleteQueue() {
+    if (!active) return;
+    if (!(await askConfirm(`删除队列「${active.name}」？队列内全部任务项将一并移除，不可恢复。`))) return;
+    try {
+      await api.del(`/queues/${active.id}`);
+      stopPolling();
+      setActive(null);
+      setExpandedJob(null);
+      void load();
+      flash('队列已删除');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   /** FR5.1 采纳：保存 AI 文本到任务并置 done（仅保存文本，人工合并） */
   async function adopt(job: QueueJob) {
     if (!job.response_payload) return;
@@ -193,6 +223,16 @@ export function QueuePage() {
             style={{ background: 'transparent', border: '1px solid var(--border)', padding: '6px 10px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}
           >
             <RotateCcw size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 重试失败
+          </button>
+        )}
+        {active && active.status !== 'running' && (
+          <button
+            onClick={() => void deleteQueue()}
+            title="删除队列 — 删除当前队列及其全部任务项（不可恢复）"
+            aria-label="删除队列：删除当前队列及其全部任务项"
+            style={{ background: 'transparent', border: '1px solid var(--border)', padding: '6px 10px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--danger)' }}
+          >
+            <Trash2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 删除队列
           </button>
         )}
         {notice && <output className="flash-toast">{notice}</output>}
@@ -301,6 +341,7 @@ export function QueuePage() {
                   onToggle={() => setExpandedJob(expandedJob === j.id ? null : j.id)}
                   onAdopt={() => void adopt(j)}
                   onCopy={() => void copy(j)}
+                  onDelete={() => void removeJob(j)}
                 />
               ))}
               {(active.jobs ?? []).length === 0 && (
@@ -323,9 +364,11 @@ function JobRow(props: {
   readonly onToggle: () => void;
   readonly onAdopt: () => void;
   readonly onCopy: () => void;
+  readonly onDelete: () => void;
 }) {
-  const { job, taskTitle, toolName, statusColor, expanded, onToggle, onAdopt, onCopy } = props;
+  const { job, taskTitle, toolName, statusColor, expanded, onToggle, onAdopt, onCopy, onDelete } = props;
   const canAdopt = job.status === 'success' && !!job.response_payload;
+  const canRemove = job.status !== 'sending'; // T01298：在途项不可移除（后端同样拒绝）
   return (
     <>
       <tr onClick={onToggle} style={{ cursor: 'pointer' }}>
@@ -366,6 +409,16 @@ function JobRow(props: {
               style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
             >
               <Copy size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+            </button>
+          )}
+          {canRemove && (
+            <button
+              onClick={onDelete}
+              title="移除 — 将该任务项从队列中移除（可重新加入）"
+              aria-label="移除：将该任务项从队列中移除"
+              style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--danger)' }}
+            >
+              <Trash2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
             </button>
           )}
         </td>
