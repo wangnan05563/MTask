@@ -27,6 +27,7 @@ import { ConfigService } from './ConfigService';
 import { TaskService } from './TaskService'; // T01280：就绪待办标记（FR-3.1），TaskService 不反向依赖本模块，无循环
 import { guard, readEnabled, type GuardResult } from './SupervisorGuard';
 import { applyActions, type ApplyOutcome } from './SupervisorExecutor'; // T01282：动作落地（FR-3.3~3.5）
+import { parsePlanDeps, depsSatisfied } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7，与 TaskService 同口径）
 
 /** 监督 tick 默认周期 30s（FR-2.1） */
 const DEFAULT_INTERVAL_MS = 30_000;
@@ -102,7 +103,7 @@ export interface SnapshotPending {
   title: string;
   priority: string;
   deps: SnapshotDep[];
-  /** 前置依赖全部完成（无 deps 视为就绪）——FR-3.1 排水判定输入 */
+  /** 依赖满足（serial 前置均已完成；parallel 不阻塞；无 deps 视为就绪）——FR-3.1/3.7 排水判定输入 */
   ready: boolean;
 }
 
@@ -299,16 +300,6 @@ function parseTaskIds(raw: string): string[] {
   }
 }
 
-/** 计划行 deps（`[{id,type}]`）解析；脏数据按空数组处理 */
-function parseDeps(raw: string | null): Array<{ id: string; type: string }> {
-  try {
-    const v = JSON.parse(raw || '[]');
-    return Array.isArray(v) ? v.filter((d): d is { id: string; type: string } => !!d && typeof d.id === 'string') : [];
-  } catch {
-    return [];
-  }
-}
-
 export const SupervisorService = {
   getConfig(): SupervisorConfig {
     return { enabled: readEnabled(), intervalMs: readIntervalMs() };
@@ -362,7 +353,7 @@ export const SupervisorService = {
       ).all(...taskIds) as Array<{ linked_task_id: string; deps: string | null }>;
       for (const p of plans) {
         planByTask.set(p.linked_task_id, { deps: p.deps });
-        for (const d of parseDeps(p.deps)) depIds.add(d.id);
+        for (const d of parsePlanDeps(p.deps)) depIds.add(d.id);
       }
     }
     const depStatus = new Map<string, { title: string; status: string }>();
@@ -375,24 +366,31 @@ export const SupervisorService = {
       for (const f of found) depStatus.set(f.id, { title: f.title, status: f.status });
     }
 
+    // T01284：判定用「存在行的状态」表；只查到的行入表，缺行由 depsSatisfied 视为已完成
+    const depStatusById = new Map<string, string>();
+    for (const [id, v] of depStatus) depStatusById.set(id, v.status);
+
     const pending: SnapshotPending[] = pendingRows.map((r) => {
-      const deps: SnapshotDep[] = parseDeps(planByTask.get(r.id)?.deps ?? null).map((d) => {
+      const planDeps = parsePlanDeps(planByTask.get(r.id)?.deps ?? null);
+      const deps: SnapshotDep[] = planDeps.map((d) => {
         const info = depStatus.get(d.id);
         return {
           planTaskId: d.id,
           title: info?.title ?? '',
-          type: d.type === 'parallel' ? 'parallel' : 'serial',
+          type: d.type,
           // 计划行已不存在时按「已完成」处理，与 PlanService.readyTasks 同口径（避免脏引用永久卡住排水）
           done: !info || info.status === 'done',
         };
       });
+      // T01284（FR-3.7）：与 TaskService 排水**同一判定**（util/planDeps）——serial 前置须完成，
+      // parallel 不阻塞（可并发投给不同平台会话）。此前按「全部完成」判定，把 parallel 误当 serial。
       return {
         taskId: r.id,
         taskNo: r.task_no,
         title: r.title,
         priority: r.priority,
         deps,
-        ready: deps.every((d) => d.done),
+        ready: depsSatisfied(planDeps, depStatusById),
       };
     });
 

@@ -4,6 +4,7 @@ import { v4 as uuid } from 'uuid';
 import { cachedPrepare } from '../util/stmt-cache'; // T00792：热点 SQL 语句复用
 import { TaskImageService, type TaskImageMeta } from './TaskImageService';
 import { ReqEntryService } from './ReqService';
+import { parsePlanDeps, depsSatisfied, topoOrder, type PlanDep } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7）
 
 /** 批量 IN 查询的每批 id 数：SQLite 变量上限 999，留足余量并与图片批量查询（≤200）同量级 */
 const PLAN_LOOKUP_BATCH = 200;
@@ -249,26 +250,18 @@ function normalizeBoolPatch(patch: Record<string, unknown>): void {
   }
 }
 
-/** 计划行 deps（`[{id,type}]`）解析为前置计划 id 列表；脏数据按空数组处理（与 SupervisorService.parseDeps 同口径） */
-function parseDeps(raw: string | null): string[] {
-  try {
-    const v = JSON.parse(raw || '[]');
-    return Array.isArray(v)
-      ? v.filter((d): d is { id: string } => !!d && typeof d.id === 'string').map((d) => d.id)
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-/** T01280（FR-3.1）：依赖感知过滤——从给定待办中筛出「前置依赖全部已完成」的 id。
- *  口径与 SupervisorService.collectSnapshot / PlanService.readyTasks 一致：
- *  无计划行或 deps 为空 → 就绪；deps 指向的计划行已不存在 → 按已完成（脏引用不永久卡住排水）。
- *  分批 IN 规避 SQLite 变量上限（与 loadPlanLinked 同口径）。 */
-function dependencyReadyIds(db: ReturnType<typeof getDb>, taskIds: string[]): string[] {
-  if (taskIds.length === 0) return [];
-  const depsByTask = new Map<string, string[]>();
-  const depIds = new Set<string>();
+/**
+ * T01280/T01284（FR-3.1 / FR-3.7）：依赖感知的**就绪判定 + 拓扑排序**。
+ *
+ * 一次查询同时产出两者（原先只有判定，排序在 T01284 补上），避免「判定查一遍、排序再查一遍」的口径漂移。
+ * 依赖语义见 `util/planDeps`：serial 严格先后、parallel 不阻塞、deps 指向的计划行已不存在按已完成；
+ * 分批 IN 规避 SQLite 变量上限 999（与图片批量查询同口径）。
+ */
+function readyAndOrder<T extends { id: string }>(db: ReturnType<typeof getDb>, rows: T[]): T[] {
+  if (rows.length === 0) return [];
+  const taskIds = rows.map((r) => r.id);
+  const depsByTask = new Map<string, PlanDep[]>();
+  const depPlanIds = new Set<string>();
   for (let i = 0; i < taskIds.length; i += PLAN_LOOKUP_BATCH) {
     const chunk = taskIds.slice(i, i + PLAN_LOOKUP_BATCH);
     const plans = db.prepare(
@@ -276,23 +269,43 @@ function dependencyReadyIds(db: ReturnType<typeof getDb>, taskIds: string[]): st
         WHERE archived = 0 AND linked_task_id IN (${chunk.map(() => '?').join(',')})`,
     ).all(...chunk) as Array<{ linked_task_id: string; deps: string | null }>;
     for (const p of plans) {
-      const ids = parseDeps(p.deps);
-      depsByTask.set(p.linked_task_id, ids);
-      for (const id of ids) depIds.add(id);
+      const deps = parsePlanDeps(p.deps);
+      depsByTask.set(p.linked_task_id, deps);
+      for (const d of deps) depPlanIds.add(d.id);
     }
   }
-  // 无任何任务挂计划行时无需查依赖状态，直接全量就绪（绝大多数项目的常态）
-  if (depsByTask.size === 0) return [...taskIds];
-  const unfinished = new Set<string>();
-  const depList = [...depIds];
+  // 无任何任务挂计划行时无需查依赖状态，直接按原序返回（绝大多数项目的常态）
+  if (depsByTask.size === 0) return [...rows];
+
+  const statusById = new Map<string, string>();
+  const linkedTaskByPlanId = new Map<string, string>();
+  const depList = [...depPlanIds];
   for (let i = 0; i < depList.length; i += PLAN_LOOKUP_BATCH) {
     const chunk = depList.slice(i, i + PLAN_LOOKUP_BATCH);
     const found = db.prepare(
-      `SELECT id FROM plan_tasks WHERE status != 'done' AND id IN (${chunk.map(() => '?').join(',')})`,
-    ).all(...chunk) as Array<{ id: string }>;
-    for (const f of found) unfinished.add(f.id);
+      `SELECT id, status, linked_task_id FROM plan_tasks WHERE id IN (${chunk.map(() => '?').join(',')})`,
+    ).all(...chunk) as Array<{ id: string; status: string; linked_task_id: string | null }>;
+    for (const f of found) {
+      statusById.set(f.id, f.status);
+      if (f.linked_task_id) linkedTaskByPlanId.set(f.id, f.linked_task_id);
+    }
   }
-  return taskIds.filter((id) => !(depsByTask.get(id) ?? []).some((d) => unfinished.has(d)));
+
+  const ready = rows.filter((r) => depsSatisfied(depsByTask.get(r.id) ?? [], statusById));
+  if (ready.length <= 1) return ready;
+
+  // 拓扑序偏好：仅当依赖方的计划行也指向**本轮就绪集内**的任务时才构成可排序的边
+  const readyIds = new Set(ready.map((r) => r.id));
+  const edges: Array<{ from: string; to: string }> = [];
+  for (const r of ready) {
+    for (const d of depsByTask.get(r.id) ?? []) {
+      const from = linkedTaskByPlanId.get(d.id);
+      if (from && from !== r.id && readyIds.has(from)) edges.push({ from, to: r.id });
+    }
+  }
+  if (edges.length === 0) return ready;
+  const byId = new Map(ready.map((r) => [r.id, r]));
+  return topoOrder(ready.map((r) => r.id), edges).map((id) => byId.get(id)!);
 }
 
 /** 行→视图装饰：批量补截图与来源计划（list / listMonitorReady 共用，避免第二套装饰逻辑漂移） */
@@ -510,7 +523,7 @@ export const TaskService = {
       "SELECT id FROM tasks WHERE status = 'todo' AND archived = 0 AND shelved = 0 AND ai_state = '' AND monitor_ready = 0",
     ).all() as Array<{ id: string }>;
     if (candidates.length === 0) return 0;
-    const ids = dependencyReadyIds(db, candidates.map((r) => r.id));
+    const ids = readyAndOrder(db, candidates).map((r) => r.id);
     if (ids.length === 0) return 0;
     const stmt = db.prepare('UPDATE tasks SET monitor_ready = 1 WHERE id = ?');
     db.transaction(() => {
@@ -522,7 +535,9 @@ export const TaskService = {
   /**
    * T01280（FR-3.1）：外部平台拉取——返回可执行的就绪待办。
    * 过滤：未被认领（ai_state 为空）、未归档未搁置、monitor_ready=1、平台偏好匹配（NULL 视为不限平台），
-   * 且前置依赖已完成——依赖做**二次校验**：monitor_ready 是 tick 时刻的快照，依赖可能在其后又被回退成未完成。
+   * 且依赖满足（serial 前置已完成；parallel 不阻塞）——依赖做**二次校验**：monitor_ready 是 tick 时刻的
+   * 快照，依赖可能在其后又被回退成未完成。
+   * T01284（FR-3.7）：返回顺序按 deps 拓扑序（前置优先），同层级保持优先级/创建时间原序。
    */
   listMonitorReady(opts: { platform?: string; limit?: number } = {}): TaskView[] {
     const db = getDb();
@@ -539,8 +554,7 @@ export const TaskService = {
     const candidates = db.prepare(
       `SELECT * FROM tasks WHERE ${where.join(' AND ')} ORDER BY ${PRIORITY_CASE}, created_at LIMIT ?`,
     ).all(...values, limit * 3) as TaskRow[];
-    const readyIds = new Set(dependencyReadyIds(db, candidates.map((r) => r.id)));
-    const rows = candidates.filter((r) => readyIds.has(r.id)).slice(0, limit);
+    const rows = readyAndOrder(db, candidates).slice(0, limit);
     return decorateRows(db, rows);
   },
 

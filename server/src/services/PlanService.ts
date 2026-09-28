@@ -13,6 +13,7 @@ import { notifyChange } from './ChangeBus';
 import PizZip from 'pizzip';
 import { stripWordFieldCodes } from '../util/wordFields'; // T00814：清洗 Word 域代码（目录/页码/交叉引用）
 import { logService } from './LogService'; // T00821：覆盖录入行为留痕（覆盖时间/文件名/项目，单机无账号故操作人留空）
+import { parsePlanDeps, depsSatisfied } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7）
 
 export interface PlanTaskRow {
   id: string;
@@ -591,8 +592,9 @@ function normalizePrdPlans(raw: unknown[]): Array<{ title: string; description: 
 }
 
 export const PlanService = {
-  /** T01058-FR1.3：就绪任务推荐——deps 引用的前置计划均已完成（或无 deps）的普通执行行；
-   *  携带关联待办编号（linked_task_id → tasks.task_no）供「现在做这个」卡片跳转定位。 */
+  /** T01058-FR1.3：就绪任务推荐——依赖满足（serial 前置已完成；parallel 不阻塞）或无 deps 的普通执行行；
+   *  携带关联待办编号（linked_task_id → tasks.task_no）供「现在做这个」卡片跳转定位。
+   *  T01284：判定改为与排水链路（TaskService.readyAndOrder）共用 util/planDeps，避免「推荐说未就绪、排水说就绪」。 */
   readyTasks(projectId: string, limit = 3): Array<{ id: string; title: string; duration_days: number; complexity: number | null; start_date: string; task_no: string | null }> {
     const db = getDb();
     const rows = db.prepare(
@@ -610,10 +612,7 @@ export const PlanService = {
     );
     const out: Array<{ id: string; title: string; duration_days: number; complexity: number | null; start_date: string; task_no: string | null }> = [];
     for (const r of rows) {
-      let deps: Array<{ id?: string }> = [];
-      try { deps = r.deps ? JSON.parse(r.deps) : []; } catch { deps = []; }
-      const ready = deps.every((d) => !d?.id || statusById.get(d.id) === 'done');
-      if (!ready) continue;
+      if (!depsSatisfied(parsePlanDeps(r.deps), statusById)) continue;
       out.push({ id: r.id, title: r.title, duration_days: r.duration_days, complexity: r.complexity, start_date: r.start_date, task_no: r.linked_task_id ? taskNoById.get(r.linked_task_id) ?? null : null });
       if (out.length >= limit) break;
     }
