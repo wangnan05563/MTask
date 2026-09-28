@@ -6,7 +6,7 @@
  *
  * 职责边界：
  * - 观测层停滞兜底并入本 tick（M1 已上线的 ExecSessionService.expireStaleSessions）；
- * - 状态快照采集见 collectSnapshot()（T01274）；LLM 裁决 → T01275；护栏约束 → T01276。
+ * - 状态快照采集见 collectSnapshot()（T01274）；LLM 裁决见 decide()（T01275）；护栏约束 → T01276。
  *
  * 熔断语义（FR-4.5）：`supervisor.enabled=0`（默认）时**决策层**完全停摆，任务保持现状；
  * 但观测层兜底不受开关影响——停滞标记是零风险的只读观测信号，一并停掉会让面板停在「假存活」。
@@ -14,6 +14,8 @@
 import { getDb } from '../db/connection';
 import { getSetting } from './AppSettings';
 import { ExecSessionService } from './ExecSessionService';
+import { AIService } from './AIService';
+import { ConfigService } from './ConfigService';
 
 /** 监督 tick 默认周期 30s（FR-2.1） */
 const DEFAULT_INTERVAL_MS = 30_000;
@@ -38,19 +40,32 @@ export interface SupervisorProbe {
 }
 
 export interface SupervisorTickResult {
-  /** 本轮是否进入决策流程（false = 空转 / 熔断） */
+  /** 本轮是否进入决策流程（false = 空转 / 熔断 / 上一轮未结束） */
   ran: boolean;
-  reason: 'ok' | 'disabled' | 'idle';
+  reason: 'ok' | 'disabled' | 'idle' | 'busy';
   /** 本轮新标记为 stalled 的会话数（观测层兜底产物） */
   stalledMarked: number;
   probe: SupervisorProbe;
   /** 进入决策流程时采集的状态快照（T01274）；空转/熔断轮次为 undefined */
   snapshot?: MonitorSnapshot;
+  /** 本轮 LLM 裁决结果（T01275）；未进入决策流程时为 undefined */
+  decision?: SupervisorDecision;
 }
 
 /** 快照规模上限：LLM 输入需可控（NFR-1「有动作时 LLM 调用 < 10s」），超出部分只计数不入快照 */
 const PENDING_LIMIT = 50;
 const FAILED_LIMIT = 50;
+
+/** 决策 LLM 超时（NFR-1：有动作时 LLM 调用 < 10s，超时由上层降级 ESCALATE） */
+const DECISION_TIMEOUT_MS = 10_000;
+/** 决策输出 token 上限（PRD §7：决策输出短小） */
+const DECISION_MAX_TOKENS = 2048;
+/** 决策温度（PRD §7：temperature=0 让同一快照的裁决稳定可复现） */
+const DECISION_TEMPERATURE = 0;
+/** 单轮动作数上限：白名单之外的刷屏式输出直接截断，防幻觉放大 */
+const ACTION_LIMIT = 20;
+/** 监督决策模型配置键（PRD §13：独立「监控专用」模型） */
+const TOOL_KEY = 'supervisor.toolId';
 
 /** 待办优先级排序权重（SQL CASE 与之一致，改这里需同步改 collectSnapshot 的 ORDER BY） */
 const PRIORITY_CASE = "CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 9 END";
@@ -112,6 +127,99 @@ export interface MonitorSnapshot {
   failed: SnapshotFailed[];
   budget: SnapshotBudget;
 }
+
+/** 决策动作类型（PRD §6 白名单：仅这 5 类安全动作，其余一律判为无效输出） */
+export type SupervisorActionType = 'CONTINUE' | 'RESUME' | 'REDISPATCH' | 'SPLIT' | 'ESCALATE';
+
+const ACTION_TYPES = new Set<string>(['CONTINUE', 'RESUME', 'REDISPATCH', 'SPLIT', 'ESCALATE']);
+
+/** 决策 LLM 产出的单条动作（结构对齐 PRD §7 模板） */
+export interface SupervisorAction {
+  type: SupervisorActionType;
+  /** 目标任务 id（取自快照）；无目标动作可缺省 */
+  taskId?: string;
+  /** RESUME 的源平台 */
+  platform?: string;
+  /** REDISPATCH 的目标平台 */
+  toPlatform?: string;
+  reason: string;
+}
+
+/** 一轮裁决结果（含审计所需的模型名与耗时） */
+export interface SupervisorDecision {
+  ok: boolean;
+  /** 决策模型名（供 T01278 写 monitor_runs 审计） */
+  model: string;
+  /** 动作计划；ok=false 时为空数组 */
+  actions: SupervisorAction[];
+  /** 是否经过「精简提示词」重试 */
+  retried: boolean;
+  error?: string;
+  durationMs: number;
+}
+
+/** 决策 LLM system 提示（PRD §7 模板逐条落地） */
+const MONITOR_SYSTEM_PROMPT = [
+  '你是 MTask 的监督决策器。你监控外部 AI 平台（WorkBuddy/Trae）的执行会话与待办状态，产出下一步动作计划。',
+  '只依据下方快照，不虚构任务、不虚构 taskId。',
+  '可用动作：',
+  '- CONTINUE：会话健康，等待下一心跳',
+  '- RESUME：会话停滞，重新标记就绪触发续跑',
+  '- REDISPATCH：连续失败，换到另一个平台（toPlatform 指定目标平台）',
+  '- SPLIT：任务复杂度过高，拆分为子任务',
+  '- ESCALATE：超重试上限/需人工判断',
+  '只输出 JSON：{"actions":[{"type":"...","taskId":"...","toPlatform":"...","reason":"..."}]}；',
+  '无需动作时输出 {"actions":[]}；reason 用简体中文，一句话说明依据。',
+].join('\n');
+
+/** 重试用的精简提示（复用 askJson 的 retrySystem 机制）：首轮截断/解析失败时压缩输出规模再试 */
+const MONITOR_RETRY_PROMPT = [
+  '你是 MTask 的监督决策器。仅输出 JSON，不要解释、不要 Markdown 代码块。',
+  '格式：{"actions":[{"type":"CONTINUE|RESUME|REDISPATCH|SPLIT|ESCALATE","taskId":"...","toPlatform":"...","reason":"..."}]}',
+  'taskId 必须取自快照；无动作输出 {"actions":[]}。',
+].join('\n');
+
+/**
+ * 解析并校验决策 LLM 的 JSON 输出（作为 askJson 的 parse 回调——抛错即触发其自带的一次重试）。
+ * 校验从严：动作类型须在 §6 白名单内、reason 必填；不合规即整轮判为无效输出，
+ * 交给 askJson 用精简提示重试，仍失败则由 tick 记入 decision.error 降级（NFR-3）。
+ */
+function parseActions(content: string): SupervisorAction[] {
+  const parsed = JSON.parse(content) as { actions?: unknown };
+  if (!Array.isArray(parsed?.actions)) throw new Error('输出缺少 actions 数组');
+  const out: SupervisorAction[] = [];
+  for (const item of parsed.actions.slice(0, ACTION_LIMIT)) {
+    if (!item || typeof item !== 'object') throw new Error('动作项不是对象');
+    const r = item as Record<string, unknown>;
+    const type = String(r.type ?? '').toUpperCase();
+    if (!ACTION_TYPES.has(type)) throw new Error(`未知动作类型：${String(r.type)}`);
+    const reason = typeof r.reason === 'string' ? r.reason.trim() : '';
+    if (!reason) throw new Error(`动作 ${type} 缺少 reason`);
+    const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+    out.push({
+      type: type as SupervisorActionType,
+      taskId: str(r.taskId),
+      platform: str(r.platform),
+      toPlatform: str(r.toPlatform),
+      reason,
+    });
+  }
+  return out;
+}
+
+/**
+ * 解析监督决策所用模型：优先「监控专用」配置 `supervisor.toolId`（PRD §13 独立监控模型）；
+ * 未配置（或指向已删除工具）时回退默认 AI 梳理 / 开发工具——否则开关打开后决策链路会整体不可用。
+ */
+function resolveDecisionToolId(): string | null {
+  const explicit = getSetting(TOOL_KEY);
+  if (explicit && getDb().prepare('SELECT 1 FROM ai_tools WHERE id = ?').get(explicit)) return explicit;
+  const d = ConfigService.getDefaults();
+  return d.organize ?? d.develop ?? null;
+}
+
+/** 异步 tick 的重入闸：LLM 调用最长 DECISION_TIMEOUT_MS 而 intervalMs 最小可配 1s，无闸会叠轮重复调 LLM */
+let ticking = false;
 
 /** 配置解析：缺失/非法一律回退默认，避免 0 或 NaN 让定时器退化成忙轮询 */
 function readEnabled(): boolean {
@@ -296,21 +404,80 @@ export const SupervisorService = {
    * 监督 tick 入口（FR-2.1）。步骤顺序有意为之：
    * 1) 观测层停滞兜底**先跑且不受熔断影响**（理由见文件头）；
    * 2) 熔断开关关闭 → 决策层空转返回（FR-4.5）；
-   * 3) 无监督对象 → 空转返回，不进入决策（NFR-1）。
+   * 3) 无监督对象 → 空转返回，不进入决策（NFR-1）；
+   * 4) 采集快照 → 调决策 LLM 得动作计划（T01275；护栏拍板与落地属 T01276）。
+   *
+   * 因含 LLM 调用而为异步，故用 `ticking` 重入闸避免叠轮。
    */
-  supervisorTick(): SupervisorTickResult {
+  async supervisorTick(): Promise<SupervisorTickResult> {
     const stalledMarked = ExecSessionService.expireStaleSessions();
     const probe = this.probe();
     if (!readEnabled()) return { ran: false, reason: 'disabled', stalledMarked, probe };
     if (!probe.hasWork) return { ran: false, reason: 'idle', stalledMarked, probe };
-    // T01274：进入决策前采集状态快照；T01275 将它作为输入调决策 LLM，T01276 再对产出动作过护栏。
-    const snapshot = this.collectSnapshot();
-    const readyCount = snapshot.pending.filter((p) => p.ready).length;
-    console.log(
-      `[supervisor] 快照：待办 ${snapshot.pending.length}/${snapshot.pendingTotal}（就绪 ${readyCount}）` +
-        ` 活跃或停滞会话 ${snapshot.sessions.length} 失败任务 ${snapshot.failed.length}` +
-        ` 并发 ${snapshot.budget.concurrent}/${snapshot.budget.maxConcurrent}`,
-    );
-    return { ran: true, reason: 'ok', stalledMarked, probe, snapshot };
+    if (ticking) return { ran: false, reason: 'busy', stalledMarked, probe };
+    ticking = true;
+    try {
+      const snapshot = this.collectSnapshot();
+      const readyCount = snapshot.pending.filter((p) => p.ready).length;
+      console.log(
+        `[supervisor] 快照：待办 ${snapshot.pending.length}/${snapshot.pendingTotal}（就绪 ${readyCount}）` +
+          ` 活跃或停滞会话 ${snapshot.sessions.length} 失败任务 ${snapshot.failed.length}` +
+          ` 并发 ${snapshot.budget.concurrent}/${snapshot.budget.maxConcurrent}`,
+      );
+      const decision = await this.decide(snapshot);
+      console.log(
+        `[supervisor] 裁决：模型 ${decision.model || '(未配置)'} 动作 ${decision.actions.length} 耗时 ${decision.durationMs}ms` +
+          (decision.ok ? '' : ` 失败：${decision.error ?? ''}`),
+      );
+      return { ran: true, reason: 'ok', stalledMarked, probe, snapshot, decision };
+    } finally {
+      ticking = false;
+    }
+  },
+
+  /**
+   * T01275（FR-2.3）：把快照交给「监控专用」模型裁决，产出结构化动作计划。
+   *
+   * 复用 AIService.askJson——自带截断/解析失败重试 1 次与 ai_usage 计量（kind='ask-json'）；
+   * 调用参数按 PRD §7：max_tokens=2048、temperature=0、超时 10s（NFR-1）。
+   * 本方法**只裁决不落地**：动作是否被护栏放行、是否写 monitor_runs，属 T01276 / T01278。
+   */
+  async decide(snapshot: MonitorSnapshot): Promise<SupervisorDecision> {
+    const toolId = resolveDecisionToolId();
+    if (!toolId) {
+      return { ok: false, model: '', actions: [], retried: false, error: '未配置监督决策模型（supervisor.toolId）', durationMs: 0 };
+    }
+    const model = (getDb().prepare('SELECT model FROM ai_tools WHERE id = ?').get(toolId) as { model: string | null } | undefined)?.model ?? '';
+    const startedAt = Date.now();
+    try {
+      const res = await AIService.askJson<SupervisorAction[]>(
+        toolId,
+        MONITOR_SYSTEM_PROMPT,
+        JSON.stringify(snapshot),
+        parseActions,
+        DECISION_TIMEOUT_MS,
+        MONITOR_RETRY_PROMPT,
+        DECISION_MAX_TOKENS,
+        DECISION_TEMPERATURE,
+      );
+      return {
+        ok: res.ok,
+        model,
+        actions: res.data ?? [],
+        retried: Boolean(res.retried),
+        error: res.error,
+        durationMs: Date.now() - startedAt,
+      };
+    } catch (e) {
+      // 模型未配置 / 工具被删时 runtimeWithModel 抛错——统一按「决策不可用」返回，由 tick 记录降级
+      return {
+        ok: false,
+        model,
+        actions: [],
+        retried: false,
+        error: e instanceof Error ? e.message : String(e),
+        durationMs: Date.now() - startedAt,
+      };
+    }
   },
 };

@@ -304,15 +304,20 @@ export const AIService = {
     timeoutMs?: number,
     /** T00707：重试时改用的「精简提示词」——首次输出被截断/解析失败时用它压缩输出规模再试 */
     retrySystem?: string,
-  ): Promise<{ ok: boolean; data?: T; error?: string }> {
+    /** T01156：首轮输出预算上限（覆盖工具默认 max_tokens）——结构化解析输出较长时抬高以防截断触发精简重试丢数据 */
+    maxTokens?: number,
+    /** T01275：首轮温度覆盖——监督决策要求 temperature=0 稳定复现，而工具默认温度偏高 */
+    temperature?: number,
+  ): Promise<{ ok: boolean; data?: T; error?: string; retried?: boolean }> {
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     const effective = timeoutMs == null ? config : { ...config, timeoutMs };
+    const base = temperature == null ? effective : { ...effective, temperature };
     let lastError = '';
     for (let attempt = 1; attempt <= 2; attempt++) {
       const startedAt = Date.now();
       // 重试降 temperature=0：降低输出随机性，提高结构化 JSON 命中率
-      const useConfig = attempt === 1 ? effective : { ...effective, temperature: 0 };
+      const useConfig = { ...(attempt === 1 ? base : { ...base, temperature: 0 }), ...(maxTokens != null ? { maxTokens } : {}) };
       const useSystem = attempt === 1 || !retrySystem ? system : retrySystem;
       const res = await adapter.chat(useSystem, user, useConfig);
       if (!res.ok || !res.content) {
@@ -323,7 +328,7 @@ export const AIService = {
       try {
         const data = parse(res.content);
         recordUsage('ask-json', toolId, config.model, true, startedAt, res.content.length);
-        return { ok: true, data };
+        return { ok: true, data, retried: attempt > 1 };
       } catch (e) {
         lastError = e instanceof Error ? e.message : String(e);
         recordUsage('ask-json', toolId, config.model, false, startedAt, res.content.length, `JSON 解析失败：${lastError.slice(0, 200)}`);

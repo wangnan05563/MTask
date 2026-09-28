@@ -160,9 +160,10 @@ app.listen(PORT, HOST, () => {
   // T01273-FR2.1：监督器 tick（启动即跑一轮 + 按 supervisor.intervalMs 周期，默认 30s）。
   // T01270 的会话停滞兜底已并入该 tick（观测层不受熔断开关影响），故移除其独立定时器；
   // 决策层受 supervisor.enabled 熔断开关控制（默认关闭），无监督对象时空转返回（NFR-1）。
-  try { SupervisorService.supervisorTick(); } catch (e) { console.error('[supervisor] 启动 tick 失败:', e); }
+  // T01275：tick 内含 LLM 裁决调用（异步），故用 void + catch 兜底，避免 unhandled rejection。
+  void SupervisorService.supervisorTick().catch((e) => console.error('[supervisor] 启动 tick 失败:', e));
   setInterval(
-    () => { try { SupervisorService.supervisorTick(); } catch { /* 单轮失败不中断定时 */ } },
+    () => { void SupervisorService.supervisorTick().catch(() => { /* 单轮失败不中断定时 */ }); },
     SupervisorService.getConfig().intervalMs,
   );
 });
