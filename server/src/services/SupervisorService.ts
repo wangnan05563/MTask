@@ -16,8 +16,8 @@
  * 熔断语义（FR-4.5）：`supervisor.enabled=0`（默认）时**决策层**完全停摆，任务保持现状；
  * 但观测层兜底不受开关影响——停滞标记是零风险的只读观测信号，一并停掉会让面板停在「假存活」。
  *
- * 审计落库（FR-4.6 的 monitor_runs 写入）不在本文件：那是 M3 的 T01285。本任务只保证降级事件
- * 在日志层可观测（console → LogService 环形缓冲 → 前端日志页），不与 T01285 的落库职责重叠。
+ * 审计落库见 SupervisorAudit.recordMonitorRun（T01285 / FR-4.6）：tick 在进入决策流程的轮次末
+ * 写一行 monitor_runs；本文件只负责把各阶段产出交给它，落库实现与摘要口径均在审计模块内。
  */
 import { getDb } from '../db/connection';
 import { getSetting } from './AppSettings';
@@ -27,6 +27,7 @@ import { ConfigService } from './ConfigService';
 import { TaskService } from './TaskService'; // T01280：就绪待办标记（FR-3.1），TaskService 不反向依赖本模块，无循环
 import { guard, readEnabled, type GuardResult } from './SupervisorGuard';
 import { applyActions, type ApplyOutcome } from './SupervisorExecutor'; // T01282：动作落地（FR-3.3~3.5）
+import { recordMonitorRun } from './SupervisorAudit'; // T01285：决策轮次审计落库（FR-4.6）
 import { parsePlanDeps, depsSatisfied } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7，与 TaskService 同口径）
 
 /** 监督 tick 默认周期 30s（FR-2.1） */
@@ -501,6 +502,19 @@ export const SupervisorService = {
       const executed = await applyActions(guarded.applied);
       const cnt = (s: ApplyOutcome['status']) => executed.filter((e) => e.status === s).length;
       console.log(`[supervisor] 落地：成功 ${cnt('applied')} 跳过 ${cnt('skipped')} 失败 ${cnt('failed')}`);
+      // T01285（FR-4.6）：决策轮次写审计（空转/熔断/叠轮不写，理由见 SupervisorAudit 文件头）。
+      // 传本轮**实际采用**的动作而非 decision.actions——降级轮次 LLM 无输出，若传空会让审计丢失
+      // 「对哪些对象发了 ESCALATE」；降级本身由摘要里的 degraded/decisionError 标记区分。
+      recordMonitorRun({
+        snapshot,
+        actions,
+        executed,
+        blockedBy: guarded.blockedBy,
+        blockedCount: guarded.blocked.length,
+        decision,
+        readyMarked,
+        stalledMarked,
+      });
       return { ran: true, reason: 'ok', stalledMarked, probe, snapshot, decision, guard: guarded, degraded: !decision.ok, readyMarked, executed };
     } finally {
       ticking = false;
