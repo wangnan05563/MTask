@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { api, imageUrl, fetchImage, imageDataURL, type AITool, type Project, type PromptCategory, type ReqCategory, type Task, type TaskCategory, type TaskImage } from '../api/client';
 import { ResultDiffPanel } from '../ui/ResultDiff'; // T01072-FR1.9：结果历史 diff 与回滚
 import { beautifyStore } from '../stores/beautifyStore';
@@ -375,10 +376,16 @@ export function TasksPage() {
   const [verifyMenuId, setVerifyMenuId] = useState('');
   const [verifyMenuPos, setVerifyMenuPos] = useState<{ top: number; left: number } | null>(null);
   const verifyMenuRef = useRef<HTMLSpanElement | null>(null);
+  // T01299：面板经 Portal 挂到 body（逃出 .cv-auto 的 paint containment）——外点收起需同时放行面板内点击，
+  // 否则 mousedown 命中 body 上的面板即被收起，菜单项 click 永远不会触发。
+  const verifyMenuPanelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!verifyMenuId) return;
     const onDoc = (e: MouseEvent) => {
-      if (verifyMenuRef.current && !verifyMenuRef.current.contains(e.target as Node)) setVerifyMenuId('');
+      const target = e.target as Node;
+      if (verifyMenuRef.current?.contains(target)) return;
+      if (verifyMenuPanelRef.current?.contains(target)) return;
+      setVerifyMenuId('');
     };
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
@@ -1695,7 +1702,10 @@ export function TasksPage() {
   }
 
   /** 已完成任务验证入口（合一）：单按钮展开动画选择面板——✓ 验证通过 / ✗ 验证失败（T00521 调整，用户 19:33 反馈）。
-   *  面板 fixed 定位（脱离父容器 overflow 裁剪）+ 弹出动画；外点收起。 */
+   *  面板 fixed 定位 + 弹出动画；外点收起。
+   *  T01299：面板改经 Portal 挂 body——任务行 .cv-auto（content-visibility:auto，T01067）会使其成为
+   *  fixed 后代的包含块并按行裁剪（等价 contain:paint），fixed 视口坐标被错按行内坐标解析，
+   *  收起行（≈64px）时面板整体被裁掉不可见，展开详情后才「露出」，表现为严重错位。 */
   function renderVerifyButton(t: Task) {
     const open = verifyMenuId === t.id;
     return (
@@ -1717,8 +1727,8 @@ export function TasksPage() {
         >
           {t.verified ? '✓' : '○'}<ChevronDown size={10} />
         </button>
-        {open && verifyMenuPos && (
-          <div role="menu" aria-label="验证结果选择"
+        {open && verifyMenuPos && createPortal(
+          <div ref={verifyMenuPanelRef} role="menu" aria-label="验证结果选择"
             style={{ position: 'fixed', top: verifyMenuPos.top, left: verifyMenuPos.left, zIndex: 70, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 6px 16px rgba(0,0,0,.16)', padding: 4, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 128, animation: 'verify-pop .18s ease' }}>
             <button role="menuitem"
               onClick={() => { setVerifyMenuId(''); void toggleVerified(t); }}
@@ -1738,7 +1748,8 @@ export function TasksPage() {
               style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--danger)' }}>
               <X size={14} /> 验证失败
             </button>
-          </div>
+          </div>,
+          document.body,
         )}
       </span>
     );
