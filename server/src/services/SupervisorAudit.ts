@@ -60,6 +60,8 @@ export interface AuditDecision {
   ok: boolean;
   durationMs: number;
   error?: string;
+  /** T01289：本轮决策消耗的 token（含重试累计） */
+  usage?: { totalTokens: number };
 }
 
 export interface AuditRunInput {
@@ -95,6 +97,9 @@ function summarize(input: AuditRunInput): Record<string, unknown> {
     maxConcurrent: s.budget.maxConcurrent,
     usedTokens: s.budget.usedTokens,
     maxTokens: s.budget.maxTokens,
+    // T01289：快照里的 usedTokens 是**本轮开始前**的累计（LLM 看到的现状），本轮消耗单列一栏——
+    // 审计的价值在「这一轮花了多少」，只记前置累计会让人误读成「本轮没花钱」（REQ-019 成本可回溯）
+    decisionTokens: input.decision.usage?.totalTokens ?? 0,
     readyMarked: input.readyMarked ?? 0,
     stalledMarked: input.stalledMarked,
     // 降级标记：decision.ok=false 时 actions 非 LLM 产出，前端须能区分「AI 说的」与「系统兜底的」

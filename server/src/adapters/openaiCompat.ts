@@ -1,10 +1,27 @@
-import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult } from './types';
-import { withTimeout, formatHttpError, normalizeModels, readStreamLines } from './netutil';
+import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult, TokenUsage } from './types';
+import { withTimeout, formatHttpError, normalizeModels, readStreamLines, TIMEOUT_CODE } from './netutil';
 import { streamTruncatedError, outputStoppedError } from './types'; // T00779：流式截断统一错误文案
 
 interface ChatCompletionResp {
   choices?: { message?: { content?: string; reasoning_content?: string }; finish_reason?: string }[];
+  /** T01289：协议原生为 snake_case，在 readUsage 内归一为 camelCase 后向上暴露 */
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
   error?: { message?: string };
+}
+
+/**
+ * T01289：把 OpenAI 兼容响应里的 usage 归一为 TokenUsage。
+ * 三项缺一（或为负数/非数字）即视为「未提供」返回 undefined——宁可无计量，
+ * 也不能用半截数据污染预算护栏的累计值（错值会直接导致多拦或少拦）。
+ */
+function readUsage(u: ChatCompletionResp['usage']): TokenUsage | undefined {
+  if (!u) return undefined;
+  const p = u.prompt_tokens;
+  const c = u.completion_tokens;
+  const t = u.total_tokens;
+  if (typeof p !== 'number' || typeof c !== 'number' || typeof t !== 'number') return undefined;
+  if (p < 0 || c < 0 || t < 0) return undefined;
+  return { promptTokens: p, completionTokens: c, totalTokens: t };
 }
 
 /**
@@ -126,10 +143,15 @@ export class OpenAICompatAdapter implements AIAdapter {
         }
         return { ok: false, error: 'AI 返回内容为空' };
       }
-      return { ok: true, content };
+      // T01289：成功时带出 token 用量（服务商未回传则缺省），供监督器成本预算护栏累加
+      return { ok: true, content, usage: readUsage(data.usage) };
     } catch (e) {
       // T00838：外部主动中止（用户点「停止」）归因到「任务已停止」，而非笼统的连接错误
       if (signal?.aborted) return { ok: false, error: '任务已停止' };
+      // T01289：超时打结构化标记，上层（AIService.askJson）据此不再重试
+      if (e instanceof Error && (e as Error & { code?: string }).code === TIMEOUT_CODE) {
+        return { ok: false, error: e.message, timedOut: true };
+      }
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
   }

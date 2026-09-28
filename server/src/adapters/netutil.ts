@@ -3,12 +3,25 @@
  * 参考 19_Karpathy 项目 ai.ts 的 normalizeModels / formatHttpError 实现。
  */
 
+/**
+ * T01289：超时错误的机器可读标记。上层据此把「超时」与其它网络失败区分开——
+ * 超时属于链路级失败，重试往往只是把等待时间翻倍（监督决策要求「超时即降级」，见 NFR-1）。
+ */
+export const TIMEOUT_CODE = 'ETIMEDOUT';
+
 /** 超时控制：Node 22 全局 fetch 与超时 Promise 竞速 */
 export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([
-    p,
-    new Promise<T>((_, rej) => setTimeout(() => rej(new Error(`连接超时（超过 ${ms}ms），请检查 Endpoint 或网络`)), ms)),
-  ]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((_, rej) => {
+    timer = setTimeout(() => {
+      const err = new Error(`连接超时（超过 ${ms}ms），请检查 Endpoint 或网络`) as Error & { code?: string };
+      err.code = TIMEOUT_CODE;
+      rej(err);
+    }, ms);
+  });
+  // 竞速结束即清掉定时器：原实现让每次调用都残留一个最长 60s 的待触发定时器，
+  // 长会话下持续累积，还会拖住进程退出（脚本/测试尤为明显）
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }
 
 /** 解析厂商 HTTP 错误响应：优先提取 OpenAI 兼容协议的 error.message（error 为对象或字符串两种形态） */

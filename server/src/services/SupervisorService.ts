@@ -20,7 +20,7 @@
  * 写一行 monitor_runs；本文件只负责把各阶段产出交给它，落库实现与摘要口径均在审计模块内。
  */
 import { getDb } from '../db/connection';
-import { getSetting } from './AppSettings';
+import { getSetting, setSetting } from './AppSettings';
 import { ExecSessionService } from './ExecSessionService';
 import { AIService } from './AIService';
 import { ConfigService } from './ConfigService';
@@ -29,6 +29,7 @@ import { guard, readEnabled, readGuardLimits, type GuardResult } from './Supervi
 import { applyActions, type ApplyOutcome } from './SupervisorExecutor'; // T01282：动作落地（FR-3.3~3.5）
 import { recordMonitorRun, listMonitorRuns } from './SupervisorAudit'; // T01285：决策轮次审计落库（FR-4.6）；T01286 读出口（FR-5.2/5.3）
 import { parsePlanDeps, depsSatisfied } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7，与 TaskService 同口径）
+import type { TokenUsage } from '../adapters/types'; // T01289：决策用量的计量口径（适配器归一后的 usage）
 
 /** 监督 tick 默认周期 30s（FR-2.1） */
 const DEFAULT_INTERVAL_MS = 30_000;
@@ -157,7 +158,7 @@ export interface SnapshotFailed {
 }
 
 export interface SnapshotBudget {
-  /** 已用 token：ai_usage 当前无 token 列，M2 先读累计配置键，FR-4.4 落地时改为真实计量 */
+  /** 已用 token：由 T01289 起从决策 LLM 回传的 usage 真实累加进 `supervisor.tokenUsed`（addTokenUsed） */
   usedTokens: number;
   /** 预算上限，0 = 不限（supervisor.tokenBudget） */
   maxTokens: number;
@@ -205,6 +206,8 @@ export interface SupervisorDecision {
   retried: boolean;
   error?: string;
   durationMs: number;
+  /** T01289：本轮决策消耗的 token（含重试累计）；服务商未回传用量时缺省 */
+  usage?: TokenUsage;
 }
 
 /** 决策 LLM system 提示（PRD §7 模板逐条落地） */
@@ -323,6 +326,19 @@ function readIntSetting(key: string, fallback: number): number {
   if (raw == null || raw.trim() === '') return fallback;
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/**
+ * T01289（FR-4.4 / REQ-019）：把一轮决策消耗的 token 累加进 `supervisor.tokenUsed`。
+ *
+ * 该键是预算护栏（SupervisorGuard 闸 2）**唯一**的「已用」数据源，此前全仓只有读取、没有写入，
+ * 导致 `tokenUsed` 恒为 0、护栏永不触发——REQ-019「累计超预算即暂停自动触发」形同虚设。
+ * 用量取自适配器回传的 usage：拿不到就不写，宁可无计量也不用字符数臆造（错值会直接导致漏拦或误拦）。
+ */
+function addTokenUsed(tokens: number): void {
+  if (!Number.isFinite(tokens) || tokens <= 0) return;
+  const used = readIntSetting('supervisor.tokenUsed', 0) + Math.round(tokens);
+  setSetting('supervisor.tokenUsed', String(used));
 }
 
 /** exec_sessions.task_ids（JSON 数组字符串）解析；脏数据按空数组处理 */
@@ -617,6 +633,9 @@ export const SupervisorService = {
         DECISION_MAX_TOKENS,
         DECISION_TEMPERATURE,
       );
+      // T01289（FR-4.4 / REQ-019）：先计量再返回——预算是「累计」语义，失败轮次花的 token 同样是成本，
+      // 故不看 ok；res.usage 已是 askJson 全部尝试之和，重试不会被漏计。
+      if (res.usage) addTokenUsed(res.usage.totalTokens);
       return {
         ok: res.ok,
         model,
@@ -624,6 +643,7 @@ export const SupervisorService = {
         retried: Boolean(res.retried),
         error: res.error,
         durationMs: Date.now() - startedAt,
+        usage: res.usage,
       };
     } catch (e) {
       // 模型未配置 / 工具被删时 runtimeWithModel 抛错——统一按「决策不可用」返回，由 tick 记录降级

@@ -102,7 +102,7 @@ export interface GuardLimits {
   cooldownMs: number;
   /** 预算上限，0 = 不限 */
   tokenBudget: number;
-  /** 已用 token（FR-4.4 落地前由 supervisor.tokenUsed 累计键暂代） */
+  /** 已用 token：T01289 起由 SupervisorService 从决策 LLM 回传的 usage 真实累加进 `supervisor.tokenUsed` */
   tokenUsed: number;
 }
 

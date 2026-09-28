@@ -7,7 +7,7 @@ import { v4 as uuid } from 'uuid';
 import { getAdapter } from '../adapters';
 import { resolvePrdContext } from '../util/prdContext'; // T00763：任务关联 PRD → AI 上下文自动注入（util 独立避免循环依赖）
 import { WorkspaceService } from './WorkspaceService'; // T00777：工作空间检索增强
-import type { StreamResult, SubmitResult, PollResult } from '../adapters/types';
+import type { StreamResult, SubmitResult, PollResult, TokenUsage } from '../adapters/types';
 import type { ToolConfig } from '../adapters';
 import { stripThinking } from '../util/thinking'; // T00814：思考块剥离上移共享
 
@@ -295,6 +295,7 @@ export const AIService = {
    * 并对失败（输出截断 / 内容为空 / JSON 解析失败）自动重试 1 次（重试降 temperature=0）。
    * parse 抛错即视为本次输出无效。返回 { ok, data, error }；失败时 error 末尾注明已重试。
    * 供 aiParsePrd / aiParseWbs 等结构化解析场景使用（普通对话仍走 ask）。
+   * T01289：额外带出全部尝试累计的 token 用量（适配器未回传则缺省），供监督器预算护栏计量。
    */
   async askJson<T>(
     toolId: string,
@@ -308,33 +309,53 @@ export const AIService = {
     maxTokens?: number,
     /** T01275：首轮温度覆盖——监督决策要求 temperature=0 稳定复现，而工具默认温度偏高 */
     temperature?: number,
-  ): Promise<{ ok: boolean; data?: T; error?: string; retried?: boolean }> {
+  ): Promise<{ ok: boolean; data?: T; error?: string; retried?: boolean; usage?: TokenUsage }> {
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     const effective = timeoutMs == null ? config : { ...config, timeoutMs };
     const base = temperature == null ? effective : { ...effective, temperature };
     let lastError = '';
+    /** T01289：实际发起的调用次数——超时提前收手时并未真正重试，末句文案须如实（NFR-3 不误导排障） */
+    let attempts = 0;
+    // T01289：累计**全部**尝试的用量——重试意味着真实多花了一次调用，
+    // 只记最后一次会让预算护栏系统性低估成本（护栏漏拦比误拦更危险）。
+    let usage: TokenUsage | undefined;
+    const addUsage = (u?: TokenUsage): void => {
+      if (!u) return;
+      usage = usage
+        ? {
+            promptTokens: usage.promptTokens + u.promptTokens,
+            completionTokens: usage.completionTokens + u.completionTokens,
+            totalTokens: usage.totalTokens + u.totalTokens,
+          }
+        : u;
+    };
     for (let attempt = 1; attempt <= 2; attempt++) {
+      attempts = attempt;
       const startedAt = Date.now();
       // 重试降 temperature=0：降低输出随机性，提高结构化 JSON 命中率
       const useConfig = { ...(attempt === 1 ? base : { ...base, temperature: 0 }), ...(maxTokens != null ? { maxTokens } : {}) };
       const useSystem = attempt === 1 || !retrySystem ? system : retrySystem;
       const res = await adapter.chat(useSystem, user, useConfig);
+      addUsage(res.usage);
       if (!res.ok || !res.content) {
         lastError = res.error ?? 'AI 返回内容为空';
         recordUsage('ask-json', toolId, config.model, false, startedAt, 0, lastError);
+        // T01289：超时不重试——本轮已耗尽整个超时窗口，再试一次只会把等待时间翻倍；
+        // 监督决策据此在 10s 内降级 ESCALATE（NFR-1），而不是 20s 后才降级。
+        if (res.timedOut) break;
         continue;
       }
       try {
         const data = parse(res.content);
         recordUsage('ask-json', toolId, config.model, true, startedAt, res.content.length);
-        return { ok: true, data, retried: attempt > 1 };
+        return { ok: true, data, retried: attempt > 1, usage };
       } catch (e) {
         lastError = e instanceof Error ? e.message : String(e);
         recordUsage('ask-json', toolId, config.model, false, startedAt, res.content.length, `JSON 解析失败：${lastError.slice(0, 200)}`);
       }
     }
-    return { ok: false, error: `${lastError}（已自动重试 1 次）` };
+    return { ok: false, error: `${lastError}${attempts > 1 ? '（已自动重试 1 次）' : ''}`, usage };
   },
 
   /**

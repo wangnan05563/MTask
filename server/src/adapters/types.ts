@@ -26,11 +26,26 @@ export interface ToolConfig {
   apiKey?: string;
 }
 
+/**
+ * T01289：单次调用的 token 用量（OpenAI 兼容 usage 归一化后的口径）。
+ * 有意为「可选」——非 OpenAI 兼容协议（Claude/Ollama/WorkBuddy）不回传用量，
+ * 缺省即「无从计量」，上层据此不做累加，而不是按字符数臆造一个数字。
+ */
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export interface JobResult {
   ok: boolean;
   content?: string;
   error?: string;
   rawMeta?: Record<string, unknown>;
+  /** T01289：服务商回传的 token 用量；未回传时缺省（监督器成本预算护栏的计量来源） */
+  usage?: TokenUsage;
+  /** T01289：本次失败是否因超时——上层据此放弃重试（超时重试只会把等待翻倍） */
+  timedOut?: boolean;
 }
 
 /** 获取可用模型列表的结果 */
