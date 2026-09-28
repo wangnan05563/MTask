@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Activity, BarChart3, CheckCircle2, Clock3, ListTodo, ShieldCheck } from 'lucide-react';
 import { api, type Project } from '../api/client';
+import { FlowProgress } from '../ui/FlowProgress'; // T01068-FR4.4：流光进度条
 
 /** T01059-FR2.2：统计仪表盘——周吞吐/AI 成功率/AI 平均耗时/验证通过率四指标 + 吞吐趋势条形图。
  *  数据源 /api/stats/dashboard；纯 CSS 条形图（无图表库依赖）；项目/时间窗筛选。 */
@@ -107,6 +108,20 @@ export function DashboardPage() {
             <StatCard icon={<ShieldCheck size={14} />} label={`AI 成功率（${data.days} 天）`} value={`${data.ai.rate}%`} sub={`${data.ai.ok}/${data.ai.total} 次调用成功`} />
             <StatCard icon={<Clock3 size={14} />} label="AI 平均耗时" value={data.ai.avgMs >= 1000 ? `${Math.round(data.ai.avgMs / 100) / 10}s` : `${data.ai.avgMs}ms`} sub={`验证通过率 ${data.verify.rate}%（${data.verify.verified}/${data.verify.total} done 已验证）`} />
           </div>
+
+          {/* T01068-FR4.4：总完成度——流光进度条（与骨架屏/按钮 loading 共用 flow-sweep keyframes） */}
+          {(() => {
+            const total = data.totals.done + data.totals.todo + data.totals.other;
+            const completion = total ? Math.round((data.totals.done / total) * 100) : 0;
+            return (
+              <div style={{ marginTop: 12, padding: 14, border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+                  <CheckCircle2 size={14} style={{ color: 'var(--accent)' }} /> 总完成度 {completion}%
+                </div>
+                <FlowProgress value={completion} aria-label={`总完成度 ${completion}%`} />
+              </div>
+            );
+          })()}
 
           <div style={{ marginTop: 16, padding: 14, border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, marginBottom: 10 }}>

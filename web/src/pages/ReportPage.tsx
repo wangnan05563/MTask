@@ -10,6 +10,7 @@ import { useSessionState } from '../ui/session';
 import { usePrdGen } from '../stores/prdGenStore'; // T01038：PRD 生成卡片统一运行状态
 import { aiImportStore } from '../stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 import { RunStatusBadge, type RunStatus } from '../ui/runStatus'; // T01038：统一运行状态徽标
+import { FlowButton } from '../ui/FlowButton'; // T01068-FR4.4：流光按钮（loading 态）
 import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap } from 'lucide-react';
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CARD } from '../ui/consoleReset'; // T01042：卡片侧重置入口（与控制台重置共用核心）
 
@@ -768,16 +769,16 @@ export function ReportPage() {
                 </ul>
               )}
           </div>
-          <button
+          <FlowButton
             onClick={() => void generate()}
             disabled={busy}
             title="离线周报生成 — 本地聚合数据生成报表"
             aria-label="离线周报生成：本地聚合数据生成报表"
-            style={{ padding: '6px 16px', background: 'var(--accent)', color: 'var(--accent-text)', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            loading={busy}
+            loadingText="生成中…"
           >
-            {busy ? <span className="ai-shimmer" style={{ fontWeight: 600, ['--ai-shimmer-color' as never]: 'var(--accent-text)' }}>生成中…</span> : <><Download size={14} /> 离线生成{PERIODS.find((p) => p.key === period)?.label}（{scoped.value}）</>}
-
-          </button>
+            <><Download size={14} /> 离线生成{PERIODS.find((p) => p.key === period)?.label}（{scoped.value}）</>
+          </FlowButton>
         </div>
         )}
 
@@ -810,16 +811,16 @@ export function ReportPage() {
           <div style={{ marginBottom: 12, fontSize: 11, color: 'var(--text-muted)' }}>
             AI 工具统一使用「模型菜单」的默认整理工具（无需在此重复选择）。
           </div>
-          <button
+          <FlowButton
             onClick={() => void aiGenerate()}
             disabled={aiStreaming}
             title="AI 周报生成 — 结合任务数据调用 AI 生成周报"
             aria-label="AI 周报生成：结合任务数据调用 AI 生成周报"
-            style={{ padding: '6px 16px', background: 'var(--accent)', color: 'var(--accent-text)', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            loading={aiStreaming}
+            loadingText="AI 生成中…"
           >
-            {aiStreaming ? <span className="ai-shimmer" style={{ fontWeight: 600, ['--ai-shimmer-color' as never]: 'var(--accent-text)' }}>AI 生成中…</span> : <><Sparkles size={14} /> AI 周报生成</>}
-
-          </button>
+            <><Sparkles size={14} /> AI 周报生成</>
+          </FlowButton>
           {/* T00558 / PRD AI-5：生成后把 AI 洞察摘要写入收件箱任务 */}
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 10, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}
             title="勾选后，AI 周报生成时会把洞察摘要写入「收件箱」项目的一条待办任务（便于后续跟进）">

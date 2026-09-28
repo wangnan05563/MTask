@@ -109,7 +109,7 @@ const themeCss = `
 /* T01038+：运行态「流光文字」动画——对齐 WorkBuddy 会话运行动画样式（lib-chat-ui cb-shining-text）：
    110° 渐变 + background-clip:text，基色 30% 透明、中段提亮 75%，background-position 200%→-200% 每 2.2s 无限扫过。
    颜色经 --ai-shimmer-color 可覆盖（如蓝底按钮内传 var(--accent-text)），默认跟随主题主文字色 var(--text)。 */
-@keyframes ai-shimmer-sweep {
+@keyframes flow-sweep {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
@@ -126,7 +126,7 @@ const themeCss = `
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
-  animation: ai-shimmer-sweep 2.2s linear infinite;
+  animation: flow-sweep 2.2s linear infinite;
 }
 
 /* T01067-FR3.4：长列表虚拟滚动（content-visibility）——Chromium 桌面壳原生支持，
@@ -137,18 +137,14 @@ const themeCss = `
   contain-intrinsic-size: auto 64px;
 }
 
-/* T01067-FR3.3：骨架屏——AI 生成/数据加载期间的占位微光条（对齐 WorkBuddy sm-skeleton-shimmer 观感） */
-@keyframes skel-shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
+/* T01067-FR3.3：骨架屏——AI 生成/数据加载期间的占位微光条（对齐 WorkBuddy sm-skeleton-shimmer 观感）。复用全局 flow-sweep keyframes（与进度条/按钮 loading 同源）。 */
 .skel {
   background: linear-gradient(90deg,
     var(--surface-2) 25%,
     var(--border) 37%,
     var(--surface-2) 63%);
   background-size: 400% 100%;
-  animation: skel-shimmer 1.4s ease infinite;
+  animation: flow-sweep 1.4s ease infinite;
   border-radius: 6px;
 }
 
@@ -160,6 +156,58 @@ const themeCss = `
 }
 .flow-glow {
   animation: flow-glow 1.8s ease-in-out infinite;
+}
+
+/* T01068-FR4.4：进度条——流光扫过填充（与骨架/按钮共用 flow-sweep keyframes）。
+   轨道 surface-2；填充 accent 渐变带中段提亮，扫光时呈现流动高光。 */
+.flow-progress {
+  position: relative;
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.flow-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--accent) 70%, transparent) 0%,
+    var(--accent) 35%,
+    color-mix(in srgb, var(--accent) 70%, transparent) 50%,
+    var(--accent) 65%,
+    color-mix(in srgb, var(--accent) 70%, transparent) 100%);
+  background-size: 200% 100%;
+  animation: flow-sweep 2.2s linear infinite;
+}
+
+/* T01068-FR4.4：按钮 loading——流光扫过按钮表面（与骨架/进度条共用 flow-sweep keyframes）。
+   在按钮背景上叠加一道斜向高光，loading 态呈现流动质感；标签保留可读文字。
+   注意：宿主须用 background-color 长写法设底色（勿用 background 简写），否则内联 background 会覆盖本类 background-image。 */
+.flow-btn {
+  position: relative;
+  overflow: hidden;
+  background-image: linear-gradient(100deg, transparent 25%, color-mix(in srgb, var(--accent-text, #fff) 38%, transparent) 50%, transparent 75%);
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: flow-sweep 1.8s linear infinite;
+}
+
+/* T01068-FR4.4 + 无障碍：prefers-reduced-motion 下降级全部流光动画，避免眩晕。
+   文字流光回退为实色文字；进度条/按钮/骨架回退为静态填充；光晕呼吸关闭。满足「reduced-motion 下自动降级」。 */
+@media (prefers-reduced-motion: reduce) {
+  .ai-shimmer {
+    -webkit-text-fill-color: var(--ai-shimmer-color, var(--text));
+    color: var(--ai-shimmer-color, var(--text));
+    background: none;
+    animation: none;
+  }
+  .skel { animation: none; }
+  .flow-progress-fill { animation: none; }
+  .flow-btn { animation: none; background-image: none; }
+  .flow-glow { animation: none; }
 }
 `;
 
