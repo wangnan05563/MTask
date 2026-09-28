@@ -329,6 +329,42 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     );
     CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage(created_at);
     CREATE INDEX IF NOT EXISTS idx_ai_usage_tool ON ai_usage(tool_id, created_at);
+
+    -- T01268（PRD §5.1）：外部平台执行会话——AI 编排大脑的观测底座。
+    -- 每次外部平台（WorkBuddy/Trae/中继）执行会话一行，记录平台/会话标识/关联任务/
+    -- 状态/进度/阶段/最近心跳；Supervisor 据此判定存活与停滞（FR-1.1 / FR-1.3）。
+    -- 纯新增表，CREATE TABLE IF NOT EXISTS 保证老库向后兼容（NFR-4）。
+    CREATE TABLE IF NOT EXISTS exec_sessions (
+      id             TEXT PRIMARY KEY,
+      platform       TEXT NOT NULL,
+      session_id     TEXT,
+      task_ids       TEXT NOT NULL,
+      status         TEXT NOT NULL DEFAULT 'active',
+      progress       REAL DEFAULT 0,
+      phase          TEXT DEFAULT '',
+      last_heartbeat TEXT NOT NULL,
+      started_at     TEXT NOT NULL,
+      finished_at    TEXT
+    );
+    -- 按 平台+状态 查活跃/停滞会话（Supervisor 每轮 tick 的探测路径）
+    CREATE INDEX IF NOT EXISTS idx_exec_platform_status ON exec_sessions(platform, status);
+    -- 按 最近心跳 判定停滞（last_heartbeat < now - supervisor.sessionStaleMs）
+    CREATE INDEX IF NOT EXISTS idx_exec_heartbeat ON exec_sessions(last_heartbeat);
+
+    -- T01268（PRD §5.2）：监督审计——每次监督 tick 的决策与动作留痕（FR-4.6）。
+    -- snapshot=快照摘要、actions=LLM 原始动作、applied=护栏后实际落地、blocked_by=拦截原因。
+    -- 前端「监督审计」视图据此逐条回溯「AI 为什么这么做」（FR-5.3）。
+    CREATE TABLE IF NOT EXISTS monitor_runs (
+      id          TEXT PRIMARY KEY,
+      ran_at      TEXT NOT NULL,
+      snapshot    TEXT,
+      actions     TEXT NOT NULL,
+      applied     TEXT NOT NULL,
+      blocked_by  TEXT DEFAULT '',
+      model       TEXT DEFAULT ''
+    );
+    -- 审计列表按时间倒序分页（GET /monitor-runs 的查询路径）
+    CREATE INDEX IF NOT EXISTS idx_monitor_runs_ran ON monitor_runs(ran_at DESC);
   `);
 
   // 迁移兜底：老库缺列时补列（CREATE TABLE IF NOT EXISTS 对已存在表不生效）
@@ -384,6 +420,15 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // T00662：需求跟踪矩阵关联——计划/待办以 JSON 数组保存关联的需求 id（多对多）
   ensureColumn('plan_tasks', 'req_ids', 'req_ids TEXT');
   ensureColumn('tasks', 'req_ids', 'req_ids TEXT');
+  // T01268（PRD §5.3）：AI 编排大脑——tasks 增量列（ensureColumn 幂等补列，兼容既有库，NFR-4）。
+  // monitor_ready=待外部平台拉取的就绪标记（FR-3.1）；monitor_preferred_platform=REDISPATCH 偏好平台（FR-3.4）；
+  // monitor_retry=监督器重试计数（FR-4.2）；exec_session_id=关联 exec_sessions.id（FR-1.2）
+  ensureColumn('tasks', 'monitor_ready', 'monitor_ready INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('tasks', 'monitor_preferred_platform', 'monitor_preferred_platform TEXT');
+  ensureColumn('tasks', 'monitor_retry', 'monitor_retry INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('tasks', 'exec_session_id', 'exec_session_id TEXT');
+  // 就绪任务拉取按 monitor_ready 过滤（mtask_list_ready_tasks），加索引避免全表扫描
+  db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_monitor_ready ON tasks(monitor_ready)");
   // T00763：需求行关联的 PRD 文档 id（导入时若携带 PRD 原文则回填，供矩阵查看与 AI 上下文反查）
   ensureColumn('prd_requirements', 'prd_id', 'prd_id TEXT');
   // T00770：PRD 文档状态流转——'prd'=草稿/评审中 | 'confirmed'=确认版（进入需求跟踪矩阵的正式基线）

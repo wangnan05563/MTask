@@ -13,6 +13,7 @@ import { getDefaultNoteProjectId } from '../services/AppSettings';
 import { TaskService } from '../services/TaskService';
 import { TaskImageService } from '../services/TaskImageService'; // T00610：截图读取（供 AI 识别验证失败反馈截图）
 import { PlanService } from '../services/PlanService';
+import { ExecSessionService } from '../services/ExecSessionService'; // T01269：执行会话心跳上报（FR-1.2）
 import { resolvePrdContext } from '../util/prdContext'; // T00763：PRD 上下文反查
 import { ArchiveService } from '../services/ArchiveService';
 import {
@@ -609,6 +610,35 @@ ${a.result}`;
     try {
       const tasks = a.archived ? ArchiveService.archive(a.taskIds) : ArchiveService.restore(a.taskIds);
       return ok(json(tasks), { tasks });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // ---------------- AI 编排大脑（观测 / 监督，T01269 起） ----------------
+  // T01269（PRD FR-1.2）：外部平台执行会话心跳上报——观测层入口，仅观测不自动动作（P0）
+  server.registerTool('mtask_report_progress', {
+    title: '上报执行会话进度',
+    description: '外部 AI 平台（WorkBuddy/Trae/中继）执行任务期间周期调用（建议 30~60s），上报平台会话标识、关联任务与进度/阶段并刷新会话心跳。MTask 据此在「执行会话」面板展示存活与进度、判定停滞。task_id 可传任务内部 id 或任务编号（Txxxxx）。pct>=100 或 done=true 表示本轮完成（会话置 done、任务置完成待查看）。',
+    inputSchema: {
+      platform: z.string().describe("平台标识，如 'workbuddy' | 'trae' | 'relay:xxx'"),
+      session_id: z.string().describe('平台侧会话标识'),
+      task_id: z.string().describe('关联任务：任务内部 id 或任务编号（Txxxxx）'),
+      phase: z.string().optional().describe('当前阶段描述（如「读取代码」「执行测试」）'),
+      pct: z.number().optional().describe('进度百分比 0~100'),
+      note: z.string().optional().describe('附注（可选）'),
+      done: z.boolean().optional().describe('平台显式声明本轮执行完成'),
+    },
+  }, async (a) => {
+    try {
+      const r = ExecSessionService.reportProgress({
+        platform: a.platform,
+        sessionId: a.session_id,
+        taskRef: a.task_id,
+        phase: a.phase,
+        pct: a.pct,
+        note: a.note,
+        done: a.done,
+      });
+      return ok(json(r), { ...r });
     } catch (e) { return err((e as Error).message); }
   });
 
