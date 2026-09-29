@@ -8,7 +8,8 @@
  * 依赖方向有意为单向：Guard 不 import SupervisorService（否则与 decide() 构成循环依赖），
  * 故熔断判定 `readEnabled` 在此实现并对外导出，由 SupervisorService 复用——两处必须同一口径。
  *
- * 五道闸（顺序即优先级；前两道是全局闸，命中即整轮降级）：
+ * 六道闸（顺序即优先级；前两道是全局闸，命中即整轮降级）：
+ * 0) 真实性（T01342）——动作引用的 taskId 必须在本轮快照内，拦 LLM 幻觉/越权引用；
  * 1) 熔断 `supervisor.enabled=0`（FR-4.5）——用户一键接管，任何自动动作都不许发；
  * 2) 预算 `supervisor.tokenBudget`（FR-4.4）——成本失控的代价高于「本轮少跑几个任务」，故先于单动作闸；
  * 3) 并发 `supervisor.maxConcurrent`（FR-4.1）——仅「会新开执行会话」的动作占槽；
@@ -58,6 +59,13 @@ export interface GuardAction {
 export interface GuardContext {
   /** 当前活跃执行会话数（取自快照 budget.concurrent）——并发闸的「已用」侧 */
   concurrent: number;
+  /**
+   * T01342：本轮快照内的任务 id 全集（pending + 会话关联 + 失败任务）。
+   * 用于拦截 LLM 输出的**悬空/越权 taskId**（幻觉 id、或不在本轮决策上下文里的任务）——
+   * 这类动作一旦落到执行层就是无审计锚点的越权写。
+   * **缺省即不做该校验**（既有调用方/单测不传时行为不变）。
+   */
+  knownTaskIds?: ReadonlySet<string>;
 }
 
 export interface BlockedAction<A extends GuardAction> {
@@ -184,6 +192,8 @@ export function guard<A extends GuardAction>(actions: A[], ctx: GuardContext): G
   const applied: A[] = [];
   const blocked: BlockedAction<A>[] = [];
   const reasons: string[] = [];
+  // T01342：快照内任务 id 集合（缺省=不做真实性校验，保持既有调用方行为不变）
+  const knownTaskIds = ctx.knownTaskIds;
 
   /** 全局闸命中：整轮动作降级。reasons 记「类别」而非带数值详情，避免 blocked_by 被同因刷屏 */
   const halt = (detail: string, category: string): GuardResult<A> => {
@@ -215,6 +225,17 @@ export function guard<A extends GuardAction>(actions: A[], ctx: GuardContext): G
       continue;
     }
     const tid = a.taskId;
+
+    // 闸 0：目标任务必须在本轮快照内（T01342）——「真实性」校验，先于所有配额闸。
+    // LLM 只能引用它在快照里见过的 id，故不在集合内的 id 必属幻觉或越权引用；
+    // 放在并发闸之前还有一个副作用：被拦的假动作不该占用并发槽。
+    // 降级而非丢弃（沿用 NFR-3）：保留 taskId 供人工接手，reason 进入 blocked_by 审计。
+    if (knownTaskIds && tid && !knownTaskIds.has(tid)) {
+      const detail = `目标任务不在本轮快照（疑似幻觉/越权 id ${tid.slice(0, 8)}…）`;
+      reasons.push('目标任务不在快照');
+      blocked.push({ action: a, reason: detail, degraded: degrade(a, detail) });
+      continue;
+    }
 
     // 闸 3：并发（FR-4.1）
     if (CONCURRENCY_ACTIONS.has(a.type) && usedSlots >= maxConcurrent) {

@@ -18,6 +18,8 @@
  *
  * 审计落库见 SupervisorAudit.recordMonitorRun（T01285 / FR-4.6）：tick 在进入决策流程的轮次末
  * 写一行 monitor_runs；本文件只负责把各阶段产出交给它，落库实现与摘要口径均在审计模块内。
+ * 审计的**存储侧配套**（T01311）见 SupervisorAudit.pruneMonitorRuns：按保留期清理旧行，由本文件
+ * 每轮 tick 调用（内部 1h 节流）；调度器句柄与 intervalMs 热重载同为本文件职责（T01311 / FR-2.1）。
  */
 import { getDb } from '../db/connection';
 import { getSetting, setSetting } from './AppSettings';
@@ -27,7 +29,7 @@ import { ConfigService } from './ConfigService';
 import { TaskService } from './TaskService'; // T01280：就绪待办标记（FR-3.1），TaskService 不反向依赖本模块，无循环
 import { guard, readEnabled, readGuardLimits, type GuardResult } from './SupervisorGuard';
 import { applyActions, type ApplyOutcome } from './SupervisorExecutor'; // T01282：动作落地（FR-3.3~3.5）
-import { recordMonitorRun, listMonitorRuns } from './SupervisorAudit'; // T01285：决策轮次审计落库（FR-4.6）；T01286 读出口（FR-5.2/5.3）
+import { recordMonitorRun, listMonitorRuns, pruneMonitorRuns, readRetentionDays } from './SupervisorAudit'; // T01285：决策轮次审计落库（FR-4.6）；T01286 读出口（FR-5.2/5.3）；T01311：清理与保留期读出口
 import { parsePlanDeps, depsSatisfied } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7，与 TaskService 同口径）
 import type { TokenUsage } from '../adapters/types'; // T01289：决策用量的计量口径（适配器归一后的 usage）
 
@@ -40,6 +42,8 @@ export interface SupervisorConfig {
   /** 熔断开关：默认关闭，自动动作需用户显式开启（FR-4.5） */
   enabled: boolean;
   intervalMs: number;
+  /** T01311：审计保留天数（0 = 不清理），配置键 supervisor.auditRetentionDays */
+  auditRetentionDays: number;
 }
 
 /** 空转探测结果：只回答「有没有监督对象」，不拉明细（明细由 T01274 的快照采集负责） */
@@ -82,6 +86,8 @@ export interface SupervisorTickResult {
 export interface SupervisorStatusView {
   enabled: boolean;
   intervalMs: number;
+  /** T01311：审计保留天数（0 = 不清理）——面板与 tick 周期同处展示，便于对照「节奏 vs 留痕」两项运行参数 */
+  auditRetentionDays: number;
   /** 本进程最近一次 tick 时刻（含空转/熔断轮次）；未跑过为 null */
   lastTickAt: string | null;
   /** 预计下次 tick 时刻（lastTickAt + intervalMs）；未跑过 tick 时为 null */
@@ -313,10 +319,26 @@ let ticking = false;
  *  进程重启后归零（视角为 null），如实表示「本进程未跑过」而非编造时间。 */
 let lastTickAtMs = 0;
 
+/** tick 周期可配范围（T01311 / FR-2.1）：下限 1s（再密就是忙轮询），上限 1h（再疏监督形同停摆） */
+const INTERVAL_MIN_MS = 1_000;
+const INTERVAL_MAX_MS = 60 * 60_000;
+
+/** 调度器句柄：热重载需先 clear 旧定时器再注册新的（未启动为 null） */
+let tickTimer: ReturnType<typeof setInterval> | null = null;
+
 /** 配置解析：缺失/非法一律回退默认，避免 0 或 NaN 让定时器退化成忙轮询 */
 function readIntervalMs(): number {
   const n = Number(getSetting(INTERVAL_KEY));
-  return Number.isFinite(n) && n >= 1000 ? n : DEFAULT_INTERVAL_MS;
+  return Number.isFinite(n) && n >= INTERVAL_MIN_MS ? n : DEFAULT_INTERVAL_MS;
+}
+
+/**
+ * 单轮 tick 的统一入口（T01311 收拢，启动轮与周期轮共用）。
+ * 异常必须留痕：console.error 会被 LogService 环形缓冲捕获，否则「监督器已挂」与「无监督对象」
+ * 在日志上无从区分——静默吞错会把故障伪装成正常空转。
+ */
+function runTick(): void {
+  void SupervisorService.supervisorTick().catch((e) => console.error('[supervisor] tick 失败:', e));
 }
 
 /** 数值型监督配置读取：缺失/空串/非法回退默认（`supervisor.maxConcurrent`、`supervisor.tokenBudget` 等）。
@@ -352,8 +374,41 @@ function parseTaskIds(raw: string): string[] {
 }
 
 export const SupervisorService = {
+  /**
+   * T01311（FR-2.1）：启动监督调度——启动即跑一轮 + 注册周期定时器。
+   * 从 index.ts 内联 setInterval 收拢到此处，是为了持有定时器句柄：散在 index 里没有句柄可 clear，
+   * intervalMs 在线修改就只能「显示已改、实际没变」（T01311 要修的误导性开关）。
+   */
+  startScheduler(): void {
+    runTick();
+    this.reschedule();
+  },
+
+  /** 按当前配置重注册定时器；返回生效周期。供启动与 intervalMs 热重载共用，保证两处同一口径 */
+  reschedule(): number {
+    const ms = readIntervalMs();
+    if (tickTimer) clearInterval(tickTimer);
+    tickTimer = setInterval(runTick, ms);
+    return ms;
+  },
+
+  /**
+   * T01311（FR-2.1）：在线改 tick 周期并**热重载**——写入即生效，才允许开放该配置。
+   * 范围校验挡在写库之前：0/NaN/负值会让定时器退化成忙轮询，写进去就是故障配置。
+   * 仅在调度器已启动时重注册（单测/脚本可能只调本方法而不启定时器，不该凭空造一个）。
+   */
+  setIntervalMs(ms: number): number {
+    if (!Number.isFinite(ms) || ms < INTERVAL_MIN_MS || ms > INTERVAL_MAX_MS) {
+      throw new Error(`tick 周期需在 ${INTERVAL_MIN_MS}~${INTERVAL_MAX_MS} 毫秒之间`);
+    }
+    const rounded = Math.round(ms);
+    setSetting(INTERVAL_KEY, String(rounded));
+    if (tickTimer) this.reschedule();
+    return rounded;
+  },
+
   getConfig(): SupervisorConfig {
-    return { enabled: readEnabled(), intervalMs: readIntervalMs() };
+    return { enabled: readEnabled(), intervalMs: readIntervalMs(), auditRetentionDays: readRetentionDays() };
   },
 
   /**
@@ -367,6 +422,7 @@ export const SupervisorService = {
     return {
       enabled: readEnabled(),
       intervalMs,
+      auditRetentionDays: readRetentionDays(),
       lastTickAt: lastTickAtMs ? new Date(lastTickAtMs).toISOString() : null,
       nextTickAt: lastTickAtMs ? new Date(lastTickAtMs + intervalMs).toISOString() : null,
       tokenBudgetUsed: limits.tokenUsed,
@@ -549,6 +605,9 @@ export const SupervisorService = {
   async supervisorTick(): Promise<SupervisorTickResult> {
     lastTickAtMs = Date.now(); // T01286：无论本轮是否进入决策，都更新「监督器仍在跑」的活性信号
     const stalledMarked = ExecSessionService.expireStaleSessions();
+    // T01311：审计清理与熔断开关无关——监督长期关闭时旧行同样该按保留策略回收。
+    // 内部按 1h 节流并自行兜错，故可每轮无脑调用；放在决策之前，避免被下方任何 early return 跳过。
+    pruneMonitorRuns();
     const probe = this.probe();
     if (!readEnabled()) return { ran: false, reason: 'disabled', stalledMarked, probe };
     // T01280（FR-3.1）：就绪标记必须早于 hasWork 空转判定——积压里全是就绪待办、但无活跃会话/无 running 时，
@@ -578,7 +637,14 @@ export const SupervisorService = {
         console.warn(`[supervisor] 异常降级：决策不可用，产出 ${actions.length} 条 ESCALATE 待人工处理`);
       }
       // T01276：LLM 只「建议」，动作能否落地由护栏拍板；被拦动作降级 ESCALATE
-      const guarded = guard(actions, { concurrent: snapshot.budget.concurrent });
+      // T01342：一并传入本轮快照的任务 id 全集——护栏据此拦截 LLM 幻觉/越权的 taskId。
+      // 取 pending（受 PENDING_LIMIT 截断）＋会话关联任务＋失败任务（受 FAILED_LIMIT 截断）：
+      // LLM 只能引用它在快照里见过的 id，故集合外的 id 必属幻觉，拦截不会误伤正常续跑。
+      const knownTaskIds = new Set<string>();
+      for (const p of snapshot.pending) if (p.taskId) knownTaskIds.add(p.taskId);
+      for (const s of snapshot.sessions) for (const t of s.tasks) if (t.taskId) knownTaskIds.add(t.taskId);
+      for (const f of snapshot.failed) if (f.taskId) knownTaskIds.add(f.taskId);
+      const guarded = guard(actions, { concurrent: snapshot.budget.concurrent, knownTaskIds });
       console.log(
         `[supervisor] 护栏：放行 ${guarded.applied.length} 拦截 ${guarded.blocked.length}` +
           (guarded.blockedBy ? `（${guarded.blockedBy}）` : ''),
