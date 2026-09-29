@@ -67,6 +67,18 @@ router.get('/status', (_req, res) => {
 router.post('/start', async (_req, res) => {
   try {
     const config = loadTunnelConfig();
+    // T01341：未配置访问令牌时拒绝启动公网穿透。
+    // accessTokenGuard 的既有设计是「未配令牌即整体放行」（保持本地单机零门槛），
+    // 但该语义一旦叠加隧道，就等于把全部 /api 数据接口无鉴权暴露到公网。
+    // 这里把「公网暴露」与「已鉴权」绑定：先生成令牌才能穿透，避免静默裸奔。
+    // 逃生舱：令牌由本机 `POST /api/tunnel/reset-token` 随时生成， refused 只拦本次启动。
+    if (!config.accessToken) {
+      res.status(400).json({
+        error: '未配置访问令牌：启动公网穿透会把全部数据接口无鉴权暴露，请先生成访问令牌后再启动',
+        errorType: 'access_token_required',
+      });
+      return;
+    }
     await tunnel.start(config, backendPort());
     res.json(statusBody());
   } catch (err) {

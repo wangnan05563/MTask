@@ -75,6 +75,9 @@ export function TunnelPanel() {
       if (err.errorType === 'tailscale_funnel_auth') {
         setAuthUrl(err.authUrl ?? '');
         flash(msg, true);
+      } else if (err.errorType === 'access_token_required') {
+        // T01341：未配令牌被拒——提示直达「生成访问令牌」，而不是让用户在启动失败里猜
+        flash(`${msg}（可点下方「重新生成」取得令牌）`, true);
       } else if (err.errorType === 'binary_download_failed') {
         flash(`${msg}\n请手动下载并放到: ${err.manualPath}\n${(err.downloadUrls ?? []).join('\n')}`, true);
       } else {
@@ -156,6 +159,12 @@ export function TunnelPanel() {
               </div>
             )}
             {!status.publicUrl && <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-muted)', marginTop: 2 }}>启动后可获得公网地址</div>}
+            {/* T01341：未配令牌时提前告知启动会被拒，避免用户点了才撞 400 */}
+            {!running && !tokenVal && (
+              <div style={{ fontSize: 'var(--fs-m)', color: 'var(--danger)', marginTop: 2 }}>
+                未配置访问令牌：穿透会把数据接口无鉴权暴露到公网，启动会被拒绝——请先「重新生成」令牌。
+              </div>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             {running ? (
