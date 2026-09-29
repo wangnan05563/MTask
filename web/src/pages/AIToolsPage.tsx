@@ -449,6 +449,10 @@ function ToolFormDialog(props: ToolFormDialogProps) {
           <div style={{ gridColumn: '1 / -1' }}>
             <label htmlFor="aitool-endpoint" style={labelStyle}>Endpoint / Base URL *</label>
             <input id="aitool-endpoint" style={fieldStyle} value={form.endpoint} onChange={(e) => props.onFieldChange({ endpoint: e.target.value })} placeholder="例如 https://api.deepseek.com/v1" />
+            {/* T01346：说明版本段的补齐口径，避免自带 /v4 的厂商（智谱）被再补一段 /v1 而 404 */}
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+              未带版本段时自动补 <code>/v1</code>；已带版本段（<code>/v1</code>、<code>/v4</code> 等）则原样使用，勿再补一段。例：DeepSeek 填 <code>https://api.deepseek.com</code>（或 <code>…/v1</code>），智谱填 <code>https://open.bigmodel.cn/api/paas/v4</code>。
+            </div>
           </div>
           <div style={{ gridColumn: '1 / -1' }}>
             <label htmlFor="aitool-console-url" style={labelStyle}>厂商控制台 URL（可选）</label>

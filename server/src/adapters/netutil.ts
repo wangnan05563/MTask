@@ -34,6 +34,8 @@ export function formatHttpError(status: number, errText: string): string {
   } catch {
     if (errText) detail += `: ${errText.slice(0, 200)}`;
   }
+  // T01346：404 多为 Base URL 路径不对（多/少版本段），补一句可操作提示
+  if (status === 404) detail += '（404 多为 Base URL 路径不对：请检查是否重复/缺失版本段）';
   return detail;
 }
 

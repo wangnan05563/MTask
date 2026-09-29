@@ -33,8 +33,12 @@ export class OpenAICompatAdapter implements AIAdapter {
 
   private baseUrl(endpoint: string): string {
     const e = endpoint.replace(/\/+$/, '');
-    // OpenAI 兼容端点要求 /v1 前缀：兼容「填根域名」与「填到 /v1」两种习惯
-    return e.endsWith('/v1') ? e : `${e}/v1`;
+    // T01346：只在 URL **本身没有版本路径段**时才补 /v1（兼容「填根域名」与「填到 /v1」两种习惯）。
+    // 旧实现「不以 /v1 结尾就补 /v1」会把自带版本号的厂商拼坏：
+    // 智谱 https://open.bigmodel.cn/api/paas/v4 → .../api/paas/v4/v1/chat/completions → 上游 404；
+    // 同理 /api/v1、/v2、/v1beta 等网关也会被多补一段。
+    if (/\/v\d[\w.-]*$/i.test(e)) return e;
+    return `${e}/v1`;
   }
 
   async testConnection(config: ToolConfig) {
@@ -118,7 +122,15 @@ export class OpenAICompatAdapter implements AIAdapter {
 
       const data = (await res.json()) as ChatCompletionResp;
       if (!res.ok || data.error) {
-        return { ok: false, error: data.error?.message ?? `HTTP ${res.status}` };
+        const base = data.error?.message ?? `HTTP ${res.status}`;
+        // T01346：裸「HTTP 404」无法排障——404 几乎总是 Base URL 路径拼错（多/少版本段），
+        // 给出可操作提示，让用户自己就能对照修正（其余状态码保持原文不干扰既有断言）。
+        return {
+          ok: false,
+          error: res.status === 404
+            ? `${base} — 404 多为 Base URL 路径不对：请检查是否重复/缺失版本段（自带版本者如智谱应填 https://open.bigmodel.cn/api/paas/v4，不要再补 /v1）`
+            : base,
+        };
       }
       const choice = data.choices?.[0];
       const content = choice?.message?.content ?? '';

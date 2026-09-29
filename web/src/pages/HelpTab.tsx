@@ -354,7 +354,7 @@ function ConfigScreen() {
         ['典型 1 · OpenAI 兼容（DeepSeek / 通义等）', 'application/json', `{
   "type": "openai-compatible",          // 必填：适配器类型
   "name": "DeepSeek",                    // 必填：显示名
-  "endpoint": "https://api.deepseek.com",// 必填：自动补 /v1
+  "endpoint": "https://api.deepseek.com",// 必填：未带版本段时自动补 /v1（自带 /v4 等则不补）
   "apiKey": "sk-xxxx",                   // 必填：接口密钥
   "model": "deepseek-chat",              // 推荐：默认模型
   "purpose": "develop",                  // organize | develop
