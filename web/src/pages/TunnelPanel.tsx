@@ -48,23 +48,31 @@ export function TunnelPanel() {
   useEffect(() => { void loadStatus(); void loadConfig(); }, []);
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
+  // T01386：配置载荷统一构造——保存与启动共用，保证「启动的就是界面所见」
+  const cfgPayload = () => ({
+    provider, localPort: Math.max(Number(localPort) || 0, 0),
+    binaryPath, autoStart, tunnelMode, tunnelName: cfName || undefined,
+    hostname: cfHostname || undefined, pathPrefix: pathPrefix || undefined,
+    certFile: undefined,
+    cpolarAuthtoken: tokenNew || undefined,
+  });
+
   const saveConfig = async () => {
     setBusy(true);
     try {
-      await api.post('/tunnel/config', {
-        provider, localPort: Math.max(Number(localPort) || 0, 0),
-        binaryPath, autoStart, tunnelMode, tunnelName: cfName || undefined,
-        hostname: cfHostname || undefined, pathPrefix: pathPrefix || undefined,
-        certFile: undefined,
-        cpolarAuthtoken: tokenNew || undefined,
-      });
+      await api.post('/tunnel/config', cfgPayload());
       flash('配置已保存');
     } catch (e) { flash(e instanceof Error ? e.message : String(e), true); } finally { setBusy(false); }
   };
 
   const start = async () => {
+    // T01386：根因是「启动」用的是**已保存**的旧配置——用户选了 Tailscale 但未保存时点启动，
+    // 服务端仍按旧 provider（cloudflare）启动，表现为误连 trycloudflare.com。
+    // 修复：启动前先以界面当前选择保存配置，保证「启动的就是界面所见」。
+    // 二进制缺失等异常由服务端 ensureBinary 抛出明确文案（「未检测到 Tailscale…」）。
     setBusy(true); setAuthUrl('');
     try {
+      await api.post('/tunnel/config', cfgPayload()); // 以界面当前选择为准
       const r = await api.post<{ status: string; publicUrl: string | null; provider: string }>('/tunnel/start');
       setStatus(r);
       flash('隧道已启动');
