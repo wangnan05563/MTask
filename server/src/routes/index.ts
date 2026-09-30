@@ -1245,6 +1245,26 @@ api.post('/queues/:id/submit', async (req, res) => {
   }
 });
 
+// T01434：队列级暂停/继续（移动端半操作）
+api.post('/queues/:id/pause', (req, res) => {
+  try {
+    QueueService.setPaused(req.params.id, Boolean(req.body?.paused));
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// T01434：失败 Job 单条重试
+api.post('/queues/:id/jobs/:jobId/retry', (req, res) => {
+  try {
+    QueueService.retryJob(req.params.id, req.params.jobId);
+    res.status(204).end();
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 api.post('/queues/:id/reset', (req, res) => {
   QueueService.resetFailed(req.params.id);
   res.status(204).end();

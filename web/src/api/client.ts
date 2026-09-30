@@ -255,6 +255,8 @@ export interface Queue {
   date: string;
   status: string;
   created_at: string;
+  /** T01434：队列级暂停——true 时发送/提交被拒绝 */
+  paused?: number;
   jobs?: QueueJob[];
 }
 

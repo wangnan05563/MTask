@@ -17,6 +17,8 @@ export interface QueueRow {
   date: string;
   status: string;
   created_at: string;
+  /** T01434：队列级暂停——true 时拒绝 send/submit，移动端可半操作 */
+  paused?: number;
 }
 
 export interface QueueJobRow {
@@ -197,6 +199,7 @@ export const QueueService = {
     const db = getDb();
     const queue = this.getById(queueId);
     if (!queue) throw new Error('队列不存在');
+    if (queue.paused) throw new Error('队列已暂停，请先继续后再发送');
     if (queue.status === 'running') throw new Error('队列正在发送中');
     db.prepare("UPDATE queues SET status = 'running' WHERE id = ?").run(queueId);
     const jobs = this.listJobs(queueId);
@@ -230,6 +233,18 @@ export const QueueService = {
       .run(queueId);
   },
 
+  /** T01434：队列级暂停/继续 */
+  setPaused(queueId: string, paused: boolean): void {
+    getDb().prepare('UPDATE queues SET paused = ? WHERE id = ?').run(paused ? 1 : 0, queueId);
+  },
+
+  /** T01434：失败 Job 单条重试——仅 failed/timeout 可重试，重置为 queued */
+  retryJob(queueId: string, jobId: string): void {
+    const r = getDb().prepare("UPDATE queue_jobs SET status = 'queued', error = NULL, response_payload = NULL, finished_at = NULL WHERE id = ? AND queue_id = ? AND status IN ('failed', 'timeout')")
+      .run(jobId, queueId);
+    if (r.changes === 0) throw new Error('仅失败/超时的 Job 可重试');
+  },
+
   /**
    * 异步提交（FR4.2 异步路径）：逐 Job 调用 submit()，不再阻塞等待完整结果。
    * - 同步即返回（accepted=false + content）→ 直接置 success
@@ -241,6 +256,7 @@ export const QueueService = {
     const db = getDb();
     const queue = this.getById(queueId);
     if (!queue) throw new Error('队列不存在');
+    if (queue.paused) throw new Error('队列已暂停，请先继续后再发送');
     if (queue.status === 'running') throw new Error('队列正在发送中');
     db.prepare("UPDATE queues SET status = 'running' WHERE id = ?").run(queueId);
     const jobs = this.listJobs(queueId);

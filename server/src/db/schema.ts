@@ -374,6 +374,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('ai_tools', 'remark', "remark TEXT DEFAULT ''");
   ensureColumn('ai_tools', 'console_url', "console_url TEXT DEFAULT ''");
   ensureColumn('tasks', 'verified', 'verified INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('queues', 'paused', 'paused INTEGER NOT NULL DEFAULT 0'); // T01434：队列级暂停/继续
   // T00490：记录字体颜色（Excel 风格颜色按钮）——空串=默认色
   ensureColumn('tasks', 'color', "color TEXT DEFAULT ''");
   ensureColumn('prompts', 'color', "color TEXT DEFAULT ''");

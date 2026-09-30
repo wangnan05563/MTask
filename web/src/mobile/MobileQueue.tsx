@@ -6,10 +6,10 @@ import { pageStyle as page, tapCardStyle as card, mutedStyle as muted, cardStyle
 import { useEffect, useState } from 'react';
 import { api, type Queue, type QueueJob, type Task } from '../api/client';
 import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
-import { PullRefresh, Skeleton } from './ui';
+import { Badge, PullRefresh, Skeleton } from './ui';
 import { Copy, ExternalLink } from 'lucide-react';
 
-interface Props { readonly notify: (msg: string) => void; readonly openDesktop: () => void; }
+interface Props { readonly notify: (msg: string, isErr?: boolean) => void; readonly openDesktop: () => void; }
 
 const STATUS_LABEL: Record<string, string> = {
   queued: '排队', sending: '发送中', success: '成功', failed: '失败', timeout: '超时', draft: '草稿', running: '进行中', finished: '已完成',
@@ -59,6 +59,27 @@ export function MobileQueue({ notify, openDesktop }: Props) {
     } catch (e) { notify(e instanceof Error ? e.message : String(e)); } finally { setLoading(false); }
   }
 
+  // T01434：队列级暂停/继续
+  async function togglePause() {
+    if (!active) return;
+    try {
+      await api.post(`/queues/${active.id}/pause`, { paused: !active.paused });
+      const q = await api.get<Queue & { jobs: QueueJob[] }>(`/queues/${active.id}`);
+      setActive(q);
+      notify(active.paused ? '队列已继续' : '队列已暂停——发送/提交将被拒绝');
+    } catch (e) { notify(e instanceof Error ? e.message : String(e), true); }
+  }
+
+  // T01434：失败 Job 单条重试
+  async function retryJob(j: QueueJob) {
+    if (!active) return;
+    try {
+      await api.post(`/queues/${active.id}/jobs/${j.id}/retry`, {});
+      notify('Job 已重置为排队中');
+      await open(active.id);
+    } catch (e) { notify(e instanceof Error ? e.message : String(e), true); }
+  }
+
   const taskTitle = (j: QueueJob) => j.task_title ?? tasks.find((t) => t.id === j.task_id)?.title ?? j.task_id.slice(0, 8);
 
   async function copyJob(j: QueueJob) {
@@ -91,7 +112,16 @@ export function MobileQueue({ notify, openDesktop }: Props) {
         {active && (
           <>
             <button onClick={() => { setActive(null); setJobs([]); }} style={back}>‹ 返回队列列表</button>
-            <div style={{ fontWeight: 600, marginBottom: 8 }}>{active.name}</div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+              <div style={{ fontWeight: 600 }}>
+                {active.name}
+                {!!active.paused && <Badge tone="danger" style={{ marginLeft: 6 }}>已暂停</Badge>}
+              </div>
+              <button onClick={() => void togglePause()} title={active.paused ? '继续 — 恢复队列发送/提交' : '暂停 — 暂停后发送/提交将被拒绝'}
+                style={{ fontSize: 12, padding: '4px 12px', borderRadius: 6, border: '1px solid var(--border-strong)', background: active.paused ? 'var(--accent)' : 'var(--surface-2)', color: active.paused ? 'var(--accent-text)' : 'var(--text)', cursor: 'pointer' }}>
+                {active.paused ? '▶ 继续' : '⏸ 暂停'}
+              </button>
+            </div>
             {loading && <div style={{ padding: '8px 0' }}><Skeleton rows={3} card /></div>}
             {jobs.length === 0 && <div style={muted}>该队列暂无 Job</div>}
             {jobs.map((j) => (
@@ -100,12 +130,18 @@ export function MobileQueue({ notify, openDesktop }: Props) {
                   <span style={{ fontSize: 14, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{taskTitle(j)}</span>
                   <span style={{ fontSize: 12, color: STATUS_COLOR[j.status] || 'var(--text-muted)', flexShrink: 0 }}>● {STATUS_LABEL[j.status] || j.status}</span>
                 </div>
-                {j.response_payload && (
-                  <button onClick={() => void copyJob(j)} style={copyRow}><Copy size={13} /> 复制 AI 文本</button>
-                )}
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                  {j.response_payload && (
+                    <button onClick={() => void copyJob(j)} style={copyRow}><Copy size={13} /> 复制 AI 文本</button>
+                  )}
+                  {(j.status === 'failed' || j.status === 'timeout') && (
+                    <button onClick={() => void retryJob(j)} title="重试 — 重置该 Job 为排队中"
+                      style={{ ...copyRow, color: 'var(--danger)' }}>↻ 重试</button>
+                  )}
+                </div>
               </div>
             ))}
-            <button onClick={openDesktop} style={deskLink}><ExternalLink size={14} /> 在桌面端编排队列</button>
+            <div style={{ marginTop: 8 }}><button onClick={openDesktop} style={deskLink}><ExternalLink size={14} /> 拖拽排序与编辑请在桌面端操作</button></div>
           </>
         )}
       </div>
