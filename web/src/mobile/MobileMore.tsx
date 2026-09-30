@@ -7,7 +7,7 @@ import { pageStyle as page, tapCardStyle as row, cardStyle as card, mutedStyle a
 import { useEffect, useState } from 'react';
 import { api, setAccessToken, type AITool, type Project, type Task } from '../api/client';
 import { useSettings } from '../settings';
-import { Boxes, Archive, BarChart3, Terminal, Settings, ExternalLink, LogOut, Moon, Sun, ChevronRight } from 'lucide-react';
+import { Boxes, Archive, BarChart3, Terminal, Settings, ExternalLink, LogOut, Moon, Sun, Monitor, ChevronRight } from 'lucide-react';
 
 interface Props { readonly notify: (msg: string) => void; readonly openDesktop: () => void; }
 
@@ -119,7 +119,7 @@ function LogsView({ notify }: { readonly notify: (msg: string) => void }) {
 }
 
 // ---------- 设置 ----------
-function SettingsView({ notify, openDesktop, theme, setTheme }: { readonly notify: (msg: string) => void; readonly openDesktop: () => void; readonly theme: string; readonly setTheme: (t: 'light' | 'dark') => void }) {
+function SettingsView({ notify, openDesktop, theme, setTheme }: { readonly notify: (msg: string) => void; readonly openDesktop: () => void; readonly theme: string; readonly setTheme: (t: 'auto' | 'light' | 'dark') => void }) {
   const [status, setStatus] = useState<{ status: string; publicUrl: string | null }>({ status: 'stopped', publicUrl: null });
   const [projects, setProjects] = useState<Project[]>([]);
   const [noteProject, setNoteProject] = useState('');
@@ -162,9 +162,16 @@ function SettingsView({ notify, openDesktop, theme, setTheme }: { readonly notif
 
       <div style={setRow}>
         <span style={setLabel}>主题</span>
-        <button onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} style={seg}>
-          {theme === 'light' ? <><Sun size={14} /> 浅色</> : <><Moon size={14} /> 深色</>}
-        </button>
+        {/* T01427：三选一（跟随系统/浅色/深色）——auto 档由 SettingsProvider 的 matchMedia
+            监听实时切换 data-theme（与桌面端 T01060 同一机制） */}
+        <div style={{ display: 'inline-flex', gap: 4 }}>
+          {([['auto', '跟随系统', <Monitor size={14} key="a" />], ['light', '浅色', <Sun size={14} key="l" />], ['dark', '深色', <Moon size={14} key="d" />]] as const).map(([val, label, icon]) => (
+            <button key={val} onClick={() => setTheme(val)} aria-pressed={theme === val}
+              style={{ ...seg, ...(theme === val ? { background: 'var(--accent)', color: 'var(--accent-text)', borderColor: 'var(--accent)' } : {}) }}>
+              {icon} {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <button onClick={openDesktop} style={deskBtn}><ExternalLink size={14} /> 切换到桌面版</button>
