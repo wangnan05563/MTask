@@ -22,7 +22,7 @@ const SESSION_STALE_KEY = 'supervisor.sessionStaleMs';
 function resolveStaleMs(explicit?: number): number {
   if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit > 0) return explicit;
   const raw = getSetting(SESSION_STALE_KEY);
-  const n = raw === null ? NaN : Number(raw);
+  const n = raw === null ? Number.NaN : Number(raw);
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_SESSION_STALE_MS;
 }
 
@@ -69,6 +69,18 @@ export interface ReportProgressResult {
   taskState: string;
 }
 
+/** T01271：会话关联任务的轻量摘要（面板列表展示，不拉整行任务） */
+export interface SessionTaskBrief {
+  id: string;
+  task_no: string | null;
+  title: string;
+}
+
+/** T01271（FR-1.4）：面板视图 = 会话行 + 关联任务摘要 */
+export interface ExecSessionView extends ExecSessionRow {
+  tasks: SessionTaskBrief[];
+}
+
 const clampPct = (n: number): number => Math.max(0, Math.min(100, n));
 
 /** T01281：认领冲突的内部信号——仅在事务内抛出以触发回滚，不外泄给调用方（MCP 层只看到结构化结果） */
@@ -92,6 +104,7 @@ export interface ClaimTaskResult {
   aiState?: string;
   sessionRowId?: string;
 }
+
 /** 任务定位：内部 id 优先，其次任务编号（外部平台通常只持有编号） */
 function resolveTaskRef(ref: string): { id: string; task_no: string | null } | null {
   const db = getDb();
@@ -115,6 +128,16 @@ function mergeTaskIds(raw: string, taskId: string): string {
   }
   if (!list.includes(taskId)) list.push(taskId);
   return JSON.stringify(list);
+}
+
+/** task_ids 解析（T01271 面板反查任务用）；脏数据按空数组处理 */
+function parseTaskIds(raw: string): string[] {
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 export const ExecSessionService = {
@@ -152,13 +175,25 @@ export const ExecSessionService = {
       // 状态优先级：完成（终态）> 失败 > 心跳复活（stalled/failed → active，PRD §8 状态机）。
       // failed 可被新心跳复活是刻意的（PRD §8「failed ──REDISPATCH──▶ active(换台)」）：同一会话标识
       // 再次上报即证明该平台已重新执行；done 保持终态不可复活——重新执行必须换新会话标识。
-      const nextStatus = finished
-        ? 'done'
-        : failedReported
-          ? 'failed'
-          : (existing.status === 'stalled' || existing.status === 'failed' ? 'active' : existing.status);
-      const nextPct = finished ? 100 : (pctProvided ? clampPct(input.pct as number) : existing.progress);
-      const nextPhase = input.phase !== undefined ? input.phase : existing.phase;
+      let nextStatus: string;
+      if (finished) {
+        nextStatus = 'done';
+      } else if (failedReported) {
+        nextStatus = 'failed';
+      } else if (existing.status === 'stalled' || existing.status === 'failed') {
+        nextStatus = 'active';
+      } else {
+        nextStatus = existing.status;
+      }
+      let nextPct: number;
+      if (finished) {
+        nextPct = 100;
+      } else if (pctProvided) {
+        nextPct = clampPct(input.pct as number);
+      } else {
+        nextPct = existing.progress;
+      }
+      const nextPhase = input.phase ?? existing.phase;
       db.prepare(
         `UPDATE exec_sessions
             SET task_ids = ?, status = ?, progress = ?, phase = ?, last_heartbeat = ?, finished_at = ?
@@ -169,14 +204,24 @@ export const ExecSessionService = {
       );
     } else {
       sessionRowId = randomUUID();
+      // 初始状态与已完成会话行同口径：完成 > 失败 > 执行中；进度仅在未完成且显式上报时采用
+      let initialStatus = 'active';
+      let initialPct = 0;
+      if (finished) {
+        initialStatus = 'done';
+        initialPct = 100;
+      } else if (failedReported) {
+        initialStatus = 'failed';
+      } else if (pctProvided) {
+        initialPct = clampPct(input.pct as number);
+      }
       db.prepare(
         `INSERT INTO exec_sessions
            (id, platform, session_id, task_ids, status, progress, phase, last_heartbeat, started_at, finished_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         sessionRowId, platform, sessionId, JSON.stringify([task.id]),
-        finished ? 'done' : failedReported ? 'failed' : 'active',
-        finished ? 100 : (pctProvided ? clampPct(input.pct as number) : 0),
+        initialStatus, initialPct,
         input.phase ?? '', now, now, finished ? now : null,
       );
     }
@@ -293,5 +338,40 @@ export const ExecSessionService = {
       console.warn(`[ExecSessionService] ${r.changes} 个执行会话超过 ${Math.round(staleMs / 60000)} 分钟无心跳，置 stalled（FR-1.3 停滞兜底）`);
     }
     return r.changes;
+  },
+
+  /**
+   * T01271（FR-1.4）：执行会话面板数据源——按最近心跳倒序返回会话，并带出关联任务摘要。
+   *
+   * 读取路径先做一次停滞判定（对齐 TaskService.list 的惰性过期模式）：面板刚打开时即使
+   * 定时器尚未跑到，也能看到正确的停滞标记，避免「明明超时了仍显示存活」。
+   */
+  listSessions(limit = 100): ExecSessionView[] {
+    this.expireStaleSessions();
+    const db = getDb();
+    const rows = db.prepare(
+      'SELECT * FROM exec_sessions ORDER BY last_heartbeat DESC LIMIT ?',
+    ).all(Math.min(500, Math.max(1, limit))) as ExecSessionRow[];
+
+    // 关联任务一次性批量查（SQLite 变量上限 999，按 200 分批，与 TaskService 同口径）
+    const ids = new Set<string>();
+    for (const r of rows) for (const id of parseTaskIds(r.task_ids)) ids.add(id);
+    const taskMap = new Map<string, SessionTaskBrief>();
+    const all = [...ids];
+    for (let i = 0; i < all.length; i += 200) {
+      const chunk = all.slice(i, i + 200);
+      const placeholders = chunk.map(() => '?').join(',');
+      const found = db.prepare(
+        `SELECT id, task_no, title FROM tasks WHERE id IN (${placeholders})`,
+      ).all(...chunk) as SessionTaskBrief[];
+      for (const t of found) taskMap.set(t.id, t);
+    }
+
+    return rows.map((r) => ({
+      ...r,
+      tasks: parseTaskIds(r.task_ids)
+        .map((id) => taskMap.get(id))
+        .filter((t): t is SessionTaskBrief => !!t),
+    }));
   },
 };

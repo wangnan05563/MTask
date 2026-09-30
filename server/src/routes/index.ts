@@ -4,6 +4,7 @@ import { WorkspaceService } from '../services/WorkspaceService'; // T00776：工
 import { getDb } from '../db/connection';
 import { TaskService, nextTaskNo, type TaskInput, type TaskListOptions } from '../services/TaskService';
 import { RecurringService, TokenService } from '../services/RecurringService'; // T01073：循环任务 + API Token
+import { ExecSessionService } from '../services/ExecSessionService'; // T01271：执行会话面板数据源
 import { listBackups, runBackup, restoreBackup, backupStatus } from '../services/BackupService'; // T01061-FR5.1
 import { ConfigService } from '../services/ConfigService';
 import { ConsoleJobService } from '../services/ConsoleJobService';
@@ -370,7 +371,7 @@ api.post('/backups/now', (_req, res) => {
     .catch((e: unknown) => res.status(500).json({ error: e instanceof Error ? e.message : String(e) }));
 });
 api.post('/backups/restore', (req, res) => {
-  const name = typeof (req.body ?? {}).name === 'string' ? String((req.body as { name: string }).name) : '';
+  const name = typeof req.body?.name === 'string' ? String((req.body as { name: string }).name) : '';
   if (!name) return res.status(400).json({ error: 'name 必填（备份文件名）' });
   void restoreBackup(name)
     .then(() => res.json({ ok: true, message: '已从快照恢复当前数据库（online 恢复，无需重启）；界面数据如未刷新请手动刷新页面。' }))
@@ -378,7 +379,10 @@ api.post('/backups/restore', (req, res) => {
 });
 
 // T01064-FR1.4：通知中心数据源——最近任务事件（projectId 可选、since 未读增量、limit 上限 200）
-api.get('/events', (req, res) => {
+// 路径必须避开 /events：/api/events 是 T00444 的 SSE 变更流（index.ts app.get，B11 文档约定）。
+// 本路由器挂在 /api 之前，若沿用 /events 会先一步匹配并返回 JSON，使 SSE 端点永远不可达——
+// 前端 EventSource 收到 JSON 数组、实时刷新静默失效（T01340）。
+api.get('/events/recent', (req, res) => {
   const projectId = typeof req.query.projectId === 'string' && req.query.projectId ? req.query.projectId : undefined;
   const since = typeof req.query.since === 'string' && req.query.since ? req.query.since : undefined;
   const limit = Number(req.query.limit);
@@ -408,7 +412,7 @@ api.get('/pool/status', (_req, res) => {
   res.json({ limit, running, queued });
 });
 api.put('/pool/limit', (req, res) => {
-  const n = Number((req.body ?? {}).limit);
+  const n = Number(req.body?.limit);
   if (!Number.isFinite(n) || n < 1 || n > 10) return res.status(400).json({ error: 'limit 取值 1~10' });
   setSetting(POOL_LIMIT_KEY, String(Math.round(n)));
   res.json({ ok: true, limit: Math.round(n) });
@@ -421,7 +425,7 @@ api.get('/tasks/by-no/:taskNo/result-history', (req, res) => {
   res.json(TaskService.listResultHistory(task.id));
 });
 api.post('/tasks/by-no/:taskNo/result-rollback', (req, res) => {
-  const historyId = String((req.body ?? {}).historyId ?? '');
+  const historyId = String(req.body?.historyId ?? '');
   if (!historyId) return res.status(400).json({ error: 'historyId 必填' });
   try {
     const task = TaskService.rollbackResult(req.params.taskNo, historyId);
@@ -443,7 +447,7 @@ api.post('/recurring', (req, res) => {
   }
 });
 api.put('/recurring/:id', (req, res) => {
-  const enabled = (req.body ?? {}).enabled;
+  const enabled = req.body?.enabled;
   if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled 布尔值必填' });
   const r = RecurringService.setEnabled(req.params.id, enabled);
   if (!r) return res.status(404).json({ error: '规则不存在' });
@@ -454,14 +458,18 @@ api.delete('/recurring/:id', (req, res) => {
   res.status(204).end();
 });
 
+// T01271-FR1.4：执行会话面板数据源——外部平台执行会话列表（存活/进度/阶段/停滞）。
+// 读取路径内部惰性判定停滞，面板打开即见正确状态（不依赖 60s 定时器恰好跑到）。
+api.get('/exec-sessions', (_req, res) => res.json(ExecSessionService.listSessions()));
+
 // T01073-FR5.6：API Token 管理（创建时明文仅展示一次）
 api.get('/tokens', (_req, res) => res.json(TokenService.list()));
 api.post('/tokens', (req, res) => {
-  const name = String((req.body ?? {}).name ?? '');
+  const name = String(req.body?.name ?? '');
   try { res.status(201).json(TokenService.create(name)); } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 api.put('/tokens/:id', (req, res) => {
-  const enabled = (req.body ?? {}).enabled;
+  const enabled = req.body?.enabled;
   if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled 布尔值必填' });
   TokenService.setEnabled(req.params.id, enabled);
   res.json({ ok: true });
@@ -2180,4 +2188,3 @@ api.use('/history', historyApi); // T00589：历史资产页面后端（转移 +
 
 // ---------- 监督器（T01286）：状态看板 / 审计视图 / 熔断与中继配置 ----------
 api.use('/supervisor', supervisorApi);
-

@@ -312,7 +312,7 @@ export async function createMCPServer(): Promise<McpServer> {
       // ①仅查看/三查的任务钉成转圈、②已完成的 unread 与中断后的 failed 抹回 running
       // （用户实测："任务处理结束后状态还是运行态"）。
       // 现在：状态只由显式写入驱动（mtask_write_task_status / markRunning:true），
-      // 且 running 超时（默认 10 分钟，见 TaskService.expireStaleRunning）自动兜底为 failed。
+      // 且 running 超时（默认 1 小时，见 TaskService.expireStaleRunning）自动兜底为 failed。
       if (a.markRunning && task.status === 'todo' && task.ai_state === '' && !task.ai_state_at) {
         TaskService.setAiState(task.id, 'running');
       }
@@ -398,6 +398,8 @@ export async function createMCPServer(): Promise<McpServer> {
         plans: parsed.drafts.slice(0, 20).map((d) => ({ title: d.title, durationDays: d.durationDays, reqNos: d.reqNos })),
         truncated: parsed.requirements.length > 20 || parsed.drafts.length > 20,
         coverageWarn: parsed.coverageWarn || undefined,
+        uncoveredReqNos: parsed.uncoveredReqNos ?? [],
+        truncatedNote: parsed.truncatedNote || undefined,
       };
       return ok(JSON.stringify(summary), summary);
     } catch (e) { return err((e as Error).message); }
@@ -674,11 +676,17 @@ ${a.result}`;
       const r = ExecSessionService.claimTask({ taskRef: a.task_id, platform: a.platform, sessionId: a.session_id });
       if (!r.claimed) {
         // PRD 契约「返回成功/冲突(409)」：MCP 无 HTTP 状态码，用 isError + conflict 标记表达冲突语义
-        const why = r.reason === 'not_found' ? '任务不存在'
-          : r.reason === 'already_claimed' ? `任务已被认领（ai_state=${r.aiState || '非空'}）`
-            : '任务不是可执行的待办（非 todo 或已归档）';
+        let why: string;
+        if (r.reason === 'not_found') {
+          why = '任务不存在';
+        } else if (r.reason === 'already_claimed') {
+          why = `任务已被认领（ai_state=${r.aiState || '非空'}）`;
+        } else {
+          why = '任务不是可执行的待办（非 todo 或已归档）';
+        }
+        const taskNoSuffix = r.taskNo ? `（${r.taskNo}）` : '';
         return {
-          content: [{ type: 'text', text: `认领冲突：${why}${r.taskNo ? `（${r.taskNo}）` : ''}` }],
+          content: [{ type: 'text', text: `认领冲突：${why}${taskNoSuffix}` }],
           structuredContent: { conflict: true, ...r },
           isError: true,
         };

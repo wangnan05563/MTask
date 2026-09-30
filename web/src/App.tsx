@@ -2,19 +2,19 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import { TasksPage } from './pages/TasksPage';
 import { AIToolsPage } from './pages/AIToolsPage';
 import { QueuePage } from './pages/QueuePage';
+import { ExecSessionsPage } from './pages/ExecSessionsPage'; // T01271-FR1.4：执行会话观测面板
 import { PromptsPage } from './pages/PromptsPage';
 import { ReqPage } from './pages/ReqPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { ReportPage } from './pages/ReportPage';
 import { PlanPage } from './pages/PlanPage';
-import { DashboardPage } from './pages/DashboardPage';
 import { NotifyBell } from './ui/NotifyBell'; // T01064-FR1.4：全局通知中心
 import { api, setAccessToken } from './api/client';
 import { MarkdownStyles } from './ui/Markdown';
 import { CommandPalette } from './pages/CommandPalette';
 import { SettingsProvider } from './settings';
 import { MobileShell } from './mobile/MobileShell';
-import { BarChart3, Boxes, CalendarRange, Compass, Lightbulb, ListOrdered, ListTodo, ScrollText, Settings, Sparkles, type LucideIcon } from 'lucide-react';
+import { Activity, Boxes, CalendarRange, Compass, Lightbulb, ListOrdered, ListTodo, ScrollText, Settings, Sparkles, type LucideIcon } from 'lucide-react';
 import { PageGuideDialog, hasSeenGuide, markGuideSeen } from './pages/PageGuide'; // T00706：通用使用向导
 import { GUIDES } from './pages/guides'; // T00706：各菜单向导内容配置
 import { useReportStream } from './reportStream'; // T01038：AI 工作台运行态（周报生成）
@@ -23,7 +23,7 @@ import { aiImportStore } from './stores/aiImportStore'; // T01038：项目计划
 import { Loader2 } from 'lucide-react'; // T01038：Tab 运行指示旋转图标
 
 // T00441：日志/归档入口从顶部菜单移入「设置」（内网穿透下方），顶部菜单收敛为高频功能
-type Tab = 'tasks' | 'aitools' | 'prompts' | 'req' | 'plan' | 'dashboard' | 'queue' | 'report' | 'settings';
+type Tab = 'tasks' | 'aitools' | 'prompts' | 'req' | 'plan' | 'queue' | 'report' | 'exec-sessions' | 'settings';
 
 const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: 'tasks', label: '任务', icon: ListTodo },
@@ -31,9 +31,10 @@ const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: 'prompts', label: '提示词', icon: ScrollText },
   { key: 'req', label: '通用需求', icon: Lightbulb },
   { key: 'plan', label: '项目管理', icon: CalendarRange }, // T00664：更名——后续定位为项目管理模块
-  { key: 'dashboard', label: '仪表盘', icon: BarChart3 }, // T01059-FR2.2：吞吐/AI 成功率/耗时/验证通过率
+  // T01154：仪表盘入口迁至「设置 → 仪表盘」（通用设置之后），顶部菜单不再占位
   { key: 'report', label: 'AI 工作台', icon: Sparkles }, // T00569：周报改名 AI 工作台（卡片化入口）
   { key: 'queue', label: '队列', icon: ListOrdered },
+  { key: 'exec-sessions', label: '执行会话', icon: Activity }, // T01271-FR1.4：外部平台执行会话观测面板
   { key: 'settings', label: '设置', icon: Settings },
 ];
 
@@ -59,7 +60,7 @@ function Shell() {
   }, []);
   // T01057-FR1.1：OS 通知点击 → 聚焦窗口后定位到对应任务（写 focusId 供任务页定位，再切到任务菜单）
   useEffect(() => {
-    const desktop = (window as unknown as { mtaskDesktop?: { onNavigateTask?: (cb: (taskNo: string) => void) => () => void } }).mtaskDesktop;
+    const desktop = (globalThis as unknown as { mtaskDesktop?: { onNavigateTask?: (cb: (taskNo: string) => void) => () => void } }).mtaskDesktop;
     if (!desktop?.onNavigateTask) return; // 浏览器环境无桌面桥，跳过
     const off = desktop.onNavigateTask((taskNo) => {
       try { sessionStorage.setItem('tasks.focusId', JSON.stringify(taskNo)); } catch { /* 忽略 */ }
@@ -262,8 +263,9 @@ function Shell() {
       {tab === 'prompts' && <PromptsPage />}
       {tab === 'req' && <ReqPage />}
       {tab === 'queue' && <QueuePage />}
+      {tab === 'exec-sessions' && <ExecSessionsPage />}
       {tab === 'plan' && <PlanPage />}
-      {tab === 'dashboard' && <DashboardPage />}
+      {/* T01154：仪表盘迁入设置页（通用设置 tab 后） */}
       {tab === 'report' && <ReportPage />}
       {/* T00441：日志/归档入口移至「设置」页（内网穿透下方） */}
       {tab === 'settings' && <SettingsPage />}

@@ -68,6 +68,8 @@ interface PrdParseResult {
   coverageWarn?: string;
   /** T00908：后端随解析返回的 PRD 提取全文，供确认导入时落库到 PRD 管理视图 */
   textMd?: string;
+  /** T01156：首轮输出被截断、已用精简模式重试（需求可能静默丢失） */
+  truncatedNote?: string;
 }
 
 /** T00824：多文件解析结果合并——统一重编号 REQ-001…（各文件 AI 都从 REQ-001 起号，直接拼接会重号），
@@ -119,7 +121,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   const autoPullDoc = useCallback(async (docId: string) => {
     try {
       const d = await api.get<{ filename: string; content_md: string }>(`/plans/prd-docs/${docId}`);
-      const ext = (d.filename.match(/\.([a-z0-9]+)$/i)?.[1] ?? 'md').toLowerCase();
+      const ext = (/\.([a-z0-9]+)$/i.exec(d.filename)?.[1] ?? 'md').toLowerCase();
       const file = new File([d.content_md], d.filename || `PRD-${docId}.md`,
         { type: ext === 'md' || ext === 'markdown' ? 'text/markdown' : 'text/plain' });
       setPickedFiles((prev) => (prev.some((f) => f.name === file.name) ? prev : [...prev, file]));
@@ -140,6 +142,8 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   // T01001 二轮：任何行变更（工期/勾选/类型）后都重算里程碑工期，保证"里程碑 = 其下明细之和"
   const patchPlan = (i: number, patch: Partial<PrdPlan>) =>
     setPlans((prev) => recalcMilestoneDurations(prev.map((x, j) => (j === i ? { ...x, ...patch } : x))));
+  // S2004：已选文件删除回调同样下沉，避免 JSX 内 setPickedFiles 回调嵌套过深
+  const removePickedFile = (idx: number) => setPickedFiles((prev) => prev.filter((_, j) => j !== idx));
   const { busy, fileName, error } = snap;
 
   useEffect(() => {
@@ -197,11 +201,13 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
           `/plans/ai-parse-prd?projectId=${projectId}&toolId=${toolId}&filename=${encodeURIComponent(file.name)}`,
           buf,
         );
-        results.push({ requirements: r.requirements ?? [], drafts: r.drafts ?? [], coverageWarn: r.coverageWarn });
+        results.push({ requirements: r.requirements ?? [], drafts: r.drafts ?? [], coverageWarn: r.coverageWarn, truncatedNote: r.truncatedNote });
         // T00908：暂存每份文件的 PRD 全文（供确认导入时落库 PRD 管理视图）
         if (r.textMd) sources.push({ name: file.name, text: r.textMd });
         aiImportStore.log(`✓ ${file.name}：需求 ${r.requirements?.length ?? 0} 条、WBS ${r.drafts?.length ?? 0} 条`, 'ok');
         if (r.coverageWarn) aiImportStore.log(r.coverageWarn, 'error');
+        // T01156：首轮输出被截断、走了精简重试——需求可能被静默压缩，必须提示用户核对数量
+        if (r.truncatedNote) aiImportStore.log(`⚠ ${r.truncatedNote}`, 'error');
       } catch (e) {
         const msg = String((e as Error).message ?? e);
         firstError ||= msg;
@@ -340,7 +346,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
             <div key={`${f.name}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
               <FileUp size={12} style={{ color: 'var(--accent)', flexShrink: 0 }} />
               <span style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={f.name}>{f.name}</span>
-              <button onClick={() => setPickedFiles((prev) => prev.filter((_, j) => j !== i))} className="tbtn-anim"
+              <button onClick={() => removePickedFile(i)} className="tbtn-anim"
                 title="删除 — 从已选列表中移除该文件，不再参与解析" aria-label="删除：移除已选文件"
                 style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px' }}>
                 <Trash2 size={13} />

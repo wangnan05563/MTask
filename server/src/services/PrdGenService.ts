@@ -6,7 +6,6 @@ import { ConfigService } from './ConfigService';
 import { PlanService } from './PlanService';
 import { logService } from './LogService';
 import { ContextBudget, WorkspaceService, loadIgnoreRules, isIgnored } from './WorkspaceService';
-import { stripThinking } from '../util/thinking'; // T00814：解析问题清单前剔除思考块
 import { parseIssuesJson, parsePrdIssues, splitPrdBody, inlineIssuesSection, type PrdGenIssue } from './prdIssues'; // T00814：问题清单解析抽为可测模块；T00818：清单内联正文章节
 
 /**
@@ -101,7 +100,7 @@ const PRD_MIN_OUTPUT_TOKENS = 16_384;
 const PRD_FALLBACK_OUTPUT_TOKENS = 8192;
 const PRD_MIN_TIMEOUT_MS = 300_000;
 
-export type { PrdGenIssue }; // T00814：类型定义随解析模块迁移
+export type { PrdGenIssue } from './prdIssues'; // T00814：类型定义随解析模块迁移
 
 /**
  * 流式生成 PRD：内置技能 prompt + 原始需求 + 项目上下文 → adapter.chatStream。
