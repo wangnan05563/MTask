@@ -79,7 +79,7 @@ export const RecurringService = {
           projectId: r.project_id,
           title: `${r.title}（${dateTag}）`,
           description: r.description,
-          priority: (r.priority === 'low' || r.priority === 'high' || r.priority === 'urgent' ? r.priority : 'normal') as 'low' | 'normal' | 'high' | 'urgent',
+          priority: (r.priority === 'low' || r.priority === 'high' || r.priority === 'urgent' ? r.priority : 'normal'),
           categoryId: r.category_id ?? undefined,
         });
         created++;

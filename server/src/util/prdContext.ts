@@ -46,10 +46,10 @@ export function resolvePrdContext(target: { taskId?: string; planId?: string; re
     // 匹配 PRD 文件名/正文含目标任务标题的最新一篇，避免「已导入 PRD 却反查不到」。
     // 命中路径以 hitBy='title' 标注，便于审计误命中；ESCAPE 守卫标题中 % _ \ 通配符。
     if (!prdId && row?.title?.trim()) {
-      const esc = (s: string) => s.replace(/[\\%_]/g, (c) => '\\' + c);
+      const esc = (s: string) => s.replaceAll(/[\\%_]/g, (c) => '\\' + c);
       const like = `%${esc(row.title.trim())}%`;
       const d = db.prepare(
-        `SELECT id FROM prd_docs WHERE filename LIKE ? ESCAPE '\\' OR content_md LIKE ? ESCAPE '\\' ORDER BY updated_at DESC LIMIT 1`,
+        String.raw`SELECT id FROM prd_docs WHERE filename LIKE ? ESCAPE '\' OR content_md LIKE ? ESCAPE '\' ORDER BY updated_at DESC LIMIT 1`,
       ).get(like, like) as { id: string } | undefined;
       if (d) { prdId = d.id; hitBy = 'title'; }
     }

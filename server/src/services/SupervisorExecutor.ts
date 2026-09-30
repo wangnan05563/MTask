@@ -130,10 +130,18 @@ async function redispatch(a: GuardAction): Promise<ApplyOutcome> {
  */
 async function pushOrApply(a: GuardAction, taskId: string, platform: string): Promise<ApplyOutcome> {
   const r = await dispatchTask(taskId, platform);
+  let status: ApplyOutcome['status'];
+  if (r.ok) {
+    status = 'applied';
+  } else if (r.queueId) {
+    status = 'failed';
+  } else {
+    status = 'skipped';
+  }
   return {
     type: a.type,
     taskId,
-    status: r.ok ? 'applied' : r.queueId ? 'failed' : 'skipped',
+    status,
     detail: r.detail,
   };
 }

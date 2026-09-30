@@ -54,7 +54,7 @@ export function ResultDiffPanel({ taskNo, current, onRollback }: {
 
   async function rollback(entry: HistoryEntry) {
     if (busy) return;
-    if (!window.confirm(`回滚到 ${entry.replaced_at.slice(0, 19).replace('T', ' ')} 的版本？\n当前结果会先存入历史（可再滚回来）。`)) return;
+    if (!globalThis.confirm(`回滚到 ${entry.replaced_at.slice(0, 19).replace('T', ' ')} 的版本？\n当前结果会先存入历史（可再滚回来）。`)) return;
     setBusy(true);
     try {
       await api.post(`/tasks/by-no/${taskNo}/result-rollback`, { historyId: entry.id });
@@ -101,18 +101,32 @@ export function ResultDiffPanel({ taskNo, current, onRollback }: {
       </div>
       {diffRows && (
         <div style={{ fontFamily: FONT_MONO, fontSize: 11, maxHeight: 240, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card-bg)' }}>
-          {diffRows.map((r, i) => (
-            <div key={i} style={{
-              display: 'flex', gap: 6, padding: '1px 6px',
-              background: r.t === 'del' ? 'color-mix(in srgb, var(--danger) 12%, transparent)' : r.t === 'add' ? 'color-mix(in srgb, var(--success) 12%, transparent)' : 'transparent',
-              color: r.t === 'same' ? 'var(--text-muted)' : 'var(--text)',
-            }}>
-              <span style={{ flexShrink: 0, width: 10, color: r.t === 'del' ? 'var(--danger)' : r.t === 'add' ? 'var(--success)' : 'transparent' }}>
-                {r.t === 'del' ? '−' : r.t === 'add' ? '＋' : '·'}
-              </span>
-              <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{r.s || ' '}</span>
-            </div>
-          ))}
+          {diffRows.map((r, i) => {
+            let rowBg = 'transparent';
+            let markerColor = 'transparent';
+            let marker = '·';
+            if (r.t === 'del') {
+              rowBg = 'color-mix(in srgb, var(--danger) 12%, transparent)';
+              markerColor = 'var(--danger)';
+              marker = '−';
+            } else if (r.t === 'add') {
+              rowBg = 'color-mix(in srgb, var(--success) 12%, transparent)';
+              markerColor = 'var(--success)';
+              marker = '＋';
+            }
+            return (
+              <div key={i} style={{
+                display: 'flex', gap: 6, padding: '1px 6px',
+                background: rowBg,
+                color: r.t === 'same' ? 'var(--text-muted)' : 'var(--text)',
+              }}>
+                <span style={{ flexShrink: 0, width: 10, color: markerColor }}>
+                  {marker}
+                </span>
+                <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{r.s || ' '}</span>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

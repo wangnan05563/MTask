@@ -26,6 +26,6 @@ export function isLocalRequest(req: Request): boolean {
     if (req.headers[h]) return false;
   }
   // IPv6 的 Host 形如 [::1]:39876，去括号后才能与回环集合比对
-  const host = String(req.headers.host ?? '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+  const host = String(req.headers.host ?? '').replaceAll(/:\d+$/g, '').replaceAll(/(^\[|\]$)/g, '');
   return LOOPBACK_HOSTS.has(host);
 }

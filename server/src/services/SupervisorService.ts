@@ -255,7 +255,7 @@ function parseActions(content: string): SupervisorAction[] {
   for (const item of parsed.actions.slice(0, ACTION_LIMIT)) {
     if (!item || typeof item !== 'object') throw new Error('动作项不是对象');
     const r = item as Record<string, unknown>;
-    const type = String(r.type ?? '').toUpperCase();
+    const type = typeof r.type === 'string' ? r.type.toUpperCase() : '';
     if (!ACTION_TYPES.has(type)) throw new Error(`未知动作类型：${String(r.type)}`);
     const reason = typeof r.reason === 'string' ? r.reason.trim() : '';
     if (!reason) throw new Error(`动作 ${type} 缺少 reason`);
@@ -708,10 +708,7 @@ export const SupervisorService = {
         MONITOR_SYSTEM_PROMPT,
         JSON.stringify(snapshot),
         parseActions,
-        DECISION_TIMEOUT_MS,
-        MONITOR_RETRY_PROMPT,
-        DECISION_MAX_TOKENS,
-        DECISION_TEMPERATURE,
+        { timeoutMs: DECISION_TIMEOUT_MS, retrySystem: MONITOR_RETRY_PROMPT, maxTokens: DECISION_MAX_TOKENS, temperature: DECISION_TEMPERATURE },
       );
       // T01289（FR-4.4 / REQ-019）：先计量再返回——预算是「累计」语义，失败轮次花的 token 同样是成本，
       // 故不看 ok；res.usage 已是 askJson 全部尝试之和，重试不会被漏计。

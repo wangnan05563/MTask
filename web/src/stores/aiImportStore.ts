@@ -60,7 +60,7 @@ const loadKind = (): AiImportState['kind'] | null => { try { return sessionStora
 let state: AiImportState = (() => {
   const base: AiImportState = { ...initial };
   const h = loadRun('aiimport');
-  if (h && h.finalElapsed != null) {
+  if (h?.finalElapsed != null) {
     base.finalElapsed = h.finalElapsed;
     const k = loadKind();
     if (k === 'prd' || k === 'plan') base.kind = k;

@@ -590,7 +590,11 @@ export const TaskService = {
       if (patch.status !== undefined && patch.status !== before.status) ev.push(['status', `${before.status} → ${patch.status}`]);
       if (patch.verified !== undefined && patch.verified !== before.verified) ev.push(['verified', patch.verified ? '验证通过' : '验证未通过 / 退回']);
       if (patch.ai_state !== undefined && patch.ai_state !== before.ai_state && patch.ai_state !== 'running') {
-        ev.push(['ai_state', patch.ai_state === 'unread' ? 'AI 处理完成' : patch.ai_state === 'failed' ? 'AI 处理失败' : `AI 状态：${patch.ai_state}`]);
+        let aiStateDetail: string;
+        if (patch.ai_state === 'unread') aiStateDetail = 'AI 处理完成';
+        else if (patch.ai_state === 'failed') aiStateDetail = 'AI 处理失败';
+        else aiStateDetail = `AI 状态：${patch.ai_state}`;
+        ev.push(['ai_state', aiStateDetail]);
       }
       if (patch.handle_result !== undefined && patch.handle_result !== before.handle_result) {
         ev.push(['result', '处理结果回传/更新']);

@@ -178,7 +178,7 @@ export const QueueService = {
   /** T01298：移除队列中的单个任务项——sending（在途）不可移除，避免后台 poller 更新已删行 */
   removeJob(queueId: string, jobId: string): void {
     const job = this.getJob(jobId);
-    if (!job || job.queue_id !== queueId) return;
+    if (job?.queue_id !== queueId) return;
     if (job.status === 'sending') throw new Error('任务正在发送中，不可移除');
     getDb().prepare('DELETE FROM queue_jobs WHERE id = ? AND queue_id = ?').run(jobId, queueId);
   },

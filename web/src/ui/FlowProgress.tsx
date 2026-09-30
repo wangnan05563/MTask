@@ -9,10 +9,10 @@ import { type CSSProperties } from 'react';
 
 interface FlowProgressProps {
   /** 进度 0-100 */
-  value: number;
-  className?: string;
-  style?: CSSProperties;
-  'aria-label'?: string;
+  readonly value: number;
+  readonly className?: string;
+  readonly style?: CSSProperties;
+  readonly 'aria-label'?: string;
 }
 
 export function FlowProgress({ value, className, style, ...rest }: FlowProgressProps) {

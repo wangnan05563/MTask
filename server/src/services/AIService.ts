@@ -302,14 +302,18 @@ export const AIService = {
     system: string,
     user: string,
     parse: (content: string) => T,
-    timeoutMs?: number,
-    /** T00707：重试时改用的「精简提示词」——首次输出被截断/解析失败时用它压缩输出规模再试 */
-    retrySystem?: string,
-    /** T01156：首轮输出预算上限（覆盖工具默认 max_tokens）——结构化解析输出较长时抬高以防截断触发精简重试丢数据 */
-    maxTokens?: number,
-    /** T01275：首轮温度覆盖——监督决策要求 temperature=0 稳定复现，而工具默认温度偏高 */
-    temperature?: number,
+    /** T01361（S107）：可选参数打包为对象——8 参超上限 7 */
+    opts?: {
+      /** T00707：重试时改用的「精简提示词」——首次输出被截断/解析失败时用它压缩输出规模再试 */
+      retrySystem?: string;
+      /** T01156：首轮输出预算上限（覆盖工具默认 max_tokens）——结构化解析输出较长时抬高以防截断触发精简重试丢数据 */
+      maxTokens?: number;
+      /** T01275：首轮温度覆盖——监督决策要求 temperature=0 稳定复现，而工具默认温度偏高 */
+      temperature?: number;
+      timeoutMs?: number;
+    },
   ): Promise<{ ok: boolean; data?: T; error?: string; retried?: boolean; usage?: TokenUsage }> {
+    const { timeoutMs, retrySystem, maxTokens, temperature } = opts ?? {};
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     const effective = timeoutMs == null ? config : { ...config, timeoutMs };
@@ -334,7 +338,7 @@ export const AIService = {
       attempts = attempt;
       const startedAt = Date.now();
       // 重试降 temperature=0：降低输出随机性，提高结构化 JSON 命中率
-      const useConfig = { ...(attempt === 1 ? base : { ...base, temperature: 0 }), ...(maxTokens != null ? { maxTokens } : {}) };
+      const useConfig = { ...(attempt === 1 ? base : { ...base, temperature: 0 }), ...(maxTokens == null ? {} : { maxTokens }) };
       const useSystem = attempt === 1 || !retrySystem ? system : retrySystem;
       const res = await adapter.chat(useSystem, user, useConfig);
       addUsage(res.usage);

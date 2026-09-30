@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import { api, type TaskCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { FONT_OPTIONS, FONT_SIZE_OPTIONS, useSettings, type ImportMode } from '../settings';
@@ -26,19 +26,21 @@ import { LogsPage } from './LogsPage';
 import { ArchivePage } from './ArchivePage';
 import { RecurringTab, ApiTokensTab } from './RecurringTokensTabs'; // T01073：循环任务 + API Token
 import { SupervisorPanel } from './SupervisorPanel'; // T01286：监督状态与审计（FR-5.2~5.4）
+import { DashboardPage } from './DashboardPage'; // T01154：仪表盘迁入设置页
 
 /** 应用信息（与根 package.json 保持一致） */
 const APP_NAME = 'MTask';
 const APP_VERSION = '0.1.0';
 const APP_DESC = 'AI 任务开发管理工具：项目维度任务管理 + AI 梳理 + 队列分发。';
 
-type STab = 'general' | 'supervisor' | 'migration' | 'dbadmin' | 'categories' | 'recurring' | 'apitokens' | 'tunnel' | 'logs' | 'history' | 'archive' | 'help' | 'about';
+type STab = 'general' | 'dashboard' | 'supervisor' | 'migration' | 'dbadmin' | 'categories' | 'recurring' | 'apitokens' | 'tunnel' | 'logs' | 'history' | 'archive' | 'help' | 'about';
 
 /** 导入策略文案映射：显式枚举映射替代嵌套三元，新增策略时只需补一行 */
 const IMPORT_MODE_LABELS: Record<ImportMode, string> = { merge: '合并', keep: '保留', overwrite: '覆盖' };
 
 const SUB_TABS: { key: STab; label: string }[] = [
   { key: 'general', label: '通用设置' },
+  { key: 'dashboard', label: '仪表盘' }, // T01154：自顶部菜单迁入（通用设置之后）
   { key: 'supervisor', label: '监督审计' }, // T01286-FR5.2~5.4：状态看板 + 审计列表 + 熔断开关
   { key: 'migration', label: '数据迁移' },
   { key: 'dbadmin', label: '数据维护' },
@@ -78,6 +80,7 @@ export function SettingsPage() {
       </nav>
 
       {st === 'general' && <GeneralTab />}
+      {st === 'dashboard' && <DashboardPage />} {/* T01154：仪表盘迁入设置页 */}
       {st === 'supervisor' && <SupervisorPanel />} {/* T01286：监督状态与审计（FR-5.2~5.4） */}
       {st === 'migration' && <MigrationTab />}
       {st === 'dbadmin' && <DbAdminTab />}
@@ -181,13 +184,13 @@ function CategoriesTab() {
 function GeneralTab() {
   const { prefs, update } = useSettings();
   // T01057-FR1.1：任务通知开关——AI 任务完成/失败时弹系统通知（仅 Electron 桌面壳环境提供）
-  const desktop = (window as unknown as { mtaskDesktop?: { getNotifyEnabled?: () => Promise<boolean>; setNotifyEnabled?: (v: boolean) => Promise<boolean> } }).mtaskDesktop;
+  const desktop = (globalThis as unknown as { mtaskDesktop?: { getNotifyEnabled?: () => Promise<boolean>; setNotifyEnabled?: (v: boolean) => Promise<boolean> } }).mtaskDesktop;
   const [notifyOn, setNotifyOn] = useState<boolean | null>(null);
-  useEffect(() => { void desktop?.getNotifyEnabled?.().then(setNotifyOn); }, [desktop]);
+  useEffect(() => { desktop?.getNotifyEnabled?.().then(setNotifyOn); }, [desktop]);
   // T01071-FR5.4：界面语言（i18n 底座，渐进式接入）
-  const [lang, setLangState] = useState<Lang>(getLang());
-  const [, forceRender] = useState(0);
-  useEffect(() => onLangChange(() => { setLangState(getLang()); forceRender((n) => n + 1); }), []);
+  const [langState, setLangState] = useState<Lang>(getLang());
+  const forceRender = useReducer((x: number) => x + 1, 0)[1];
+  useEffect(() => onLangChange(() => { setLangState(getLang()); forceRender(); }), []);
   const changeLang = (l: Lang) => { setLang(l); };
 
   const segButton = (active: boolean): React.CSSProperties => ({
@@ -237,10 +240,14 @@ function GeneralTab() {
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {THEME_PRESETS.map((p) => {
             const active = prefs.theme === p.theme && prefs.accent === p.accent;
+            let themeLabel = '浅色';
+            if (p.theme === 'dark') themeLabel = '深色';
+            else if (p.theme === 'auto') themeLabel = '跟随系统';
+            const accentSuffix = p.accent ? ` · ${p.accent}` : ' · 默认强调色';
             return (
               <button key={p.label}
                 onClick={() => { update('theme', p.theme); update('accent', p.accent); }}
-                title={`应用预设「${p.label}」（${p.theme === 'dark' ? '深色' : p.theme === 'auto' ? '跟随系统' : '浅色'}${p.accent ? ` · ${p.accent}` : ' · 默认强调色'}）`}
+                title={`应用预设「${p.label}」（${themeLabel}${accentSuffix}）`}
                 aria-label={`主题预设：${p.label}`}
                 style={{ ...segButton(active), display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ width: 12, height: 12, borderRadius: '50%', background: p.accent || (p.theme === 'dark' ? '#3b82f6' : '#2563eb'), display: 'inline-block', border: '1px solid rgba(127,127,127,.35)' }} />
@@ -255,7 +262,7 @@ function GeneralTab() {
       <div style={{ marginBottom: 18 }}>
         {field('界面语言 / Language', '切换界面语言；语言包为渐进式接入，未覆盖的页面仍显示中文')}
         <select
-          value={lang}
+          value={langState}
           onChange={(e) => changeLang(e.target.value === 'en' ? 'en' : 'zh')}
           style={{ padding: 6, fontSize: 'var(--fs-m)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}
         >
@@ -286,7 +293,7 @@ function GeneralTab() {
         <div style={{ marginBottom: 18 }}>
           {field('任务通知', 'AI 任务处理完成或失败时弹出系统通知，点击通知可跳转到对应任务（仅桌面应用内可用）')}
           <button
-            onClick={() => void desktop.setNotifyEnabled?.(!notifyOn).then(setNotifyOn)}
+            onClick={() => desktop.setNotifyEnabled?.(!notifyOn).then(setNotifyOn)}
             title={notifyOn ? '任务通知：已开启（点击关闭）' : '任务通知：已关闭（点击开启）'}
             aria-label="任务通知开关"
             style={{ ...segButton(notifyOn), minWidth: 150 }}
@@ -612,6 +619,11 @@ function UpdateSection() {
     border: primary ? 'none' : '1px solid var(--border-strong)',
   });
 
+  // T00878：按当前阶段给更新按钮友好文案
+  let updateBtnLabel = '立即更新';
+  if (busy === 'download') updateBtnLabel = dlProgress?.total ? `下载中 ${Math.round(dlProgress.received / dlProgress.total * 100)}%` : '下载中…';
+  else if (busy === 'install') updateBtnLabel = '正在安装并重启…';
+
   return (
     <div style={{ marginTop: 14, padding: 16, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)' }}>
       <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}><RefreshCw size={14} /> 版本更新</div>
@@ -682,8 +694,7 @@ function UpdateSection() {
                 <button onClick={() => void doDownload()} disabled={busy !== null} title="下载新版本 — 应用内下载安装包并静默安装重启" aria-label="下载并静默安装新版本" style={btnStyle(true)}>
                   <Download size={13} />
                   {/* T00878：按当前阶段给按钮友好文案 */}
-                  {busy === 'download' ? (dlProgress?.total ? `下载中 ${Math.round(dlProgress.received / dlProgress.total * 100)}%` : '下载中…')
-                    : busy === 'install' ? '正在安装并重启…' : '立即更新'}
+                  {updateBtnLabel}
                 </button>
                 <button onClick={() => window.open(result.releaseUrl, '_blank')} title="查看 Release 页 — 浏览完整更新说明与历史版本" aria-label="查看 Release 页面" style={btnStyle(false)}>
                   <ExternalLink size={13} /> 查看发布页

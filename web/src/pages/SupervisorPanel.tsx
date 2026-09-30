@@ -110,7 +110,7 @@ const INPUT_STYLE: CSSProperties = {
 };
 
 /** 卡片容器：白底 + 细边框 + 16px 圆角（全局商务浅白风格） */
-function Card({ title, icon, extra, children }: { title: string; icon: ReactNode; extra?: ReactNode; children: ReactNode }) {
+function Card({ title, icon, extra, children }: { readonly title: string; readonly icon: ReactNode; readonly extra?: ReactNode; readonly children: ReactNode }) {
   return (
     <section style={{ border: '1px solid var(--border)', borderRadius: 16, background: 'var(--card-bg)', padding: 14, marginBottom: 12 }}>
       <header style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
@@ -124,7 +124,7 @@ function Card({ title, icon, extra, children }: { title: string; icon: ReactNode
 }
 
 /** 单个指标：标签在上、值在下，值支持悬浮完整说明 */
-function Metric({ label, value, hint }: { label: string; value: ReactNode; hint?: string }) {
+function Metric({ label, value, hint }: { readonly label: string; readonly value: ReactNode; readonly hint?: string }) {
   return (
     <div title={hint} style={{ minWidth: 132 }}>
       <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>{label}</div>
@@ -307,14 +307,20 @@ export function SupervisorPanel() {
           <>
             <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, margin: '12px 0 6px' }}>活跃 / 停滞 / 失败会话</div>
             <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 6 }}>
-              {status.activeSessions.map((s, i) => (
+              {status.activeSessions.map((s, i) => {
+                // S3358：嵌套三元提取为独立语句
+                let stateLabel = '存活';
+                if (s.stale) stateLabel = '停滞';
+                if (s.failed) stateLabel = '失败';
+                return (
                 <li key={`${s.platform}-${i}`} style={{ fontSize: 'var(--fs-m)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontWeight: 600 }}>{s.platform}</span>
-                  <span style={{ color: s.stale || s.failed ? 'var(--danger)' : 'var(--success)' }}>{s.failed ? '失败' : s.stale ? '停滞' : '存活'}</span>
+                  <span style={{ color: s.stale || s.failed ? 'var(--danger)' : 'var(--success)' }}>{stateLabel}</span>
                   <span style={{ color: 'var(--text-muted)' }}>{Math.round(s.progress)}%</span>
                   <span style={{ color: 'var(--text-secondary)' }}>{s.tasks.map((t) => t.taskNo ?? t.title).join('、') || '未关联任务'}</span>
                 </li>
-              ))}
+                );
+              })}
             </ul>
           </>
         )}

@@ -93,6 +93,57 @@ export function WorkspaceSearchPanel({
     }
   }
 
+  /** 结果区渲染：未检索 / 检索中 / 无结果 / 命中列表（避免 JSX 里的长三元链） */
+  function renderResults() {
+    if (!searched) {
+      return (
+        <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
+          {bound ? '输入关键词开始在工作空间内全文检索' : '当前项目尚未绑定工作空间（项目管理 → 选择工作空间）'}
+        </div>
+      );
+    }
+    if (busy) {
+      return (
+        <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
+          <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', verticalAlign: '-2px' }} /> 检索中…
+        </div>
+      );
+    }
+    if (hits.length === 0) {
+      return <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>无匹配结果</div>;
+    }
+    return hits.map((h, i) => {
+      const key = `${h.line}:${h.path}` as const;
+      const open = openedPath === key;
+      return (
+        <div key={`${h.path}:${h.line}:${i}`} style={{ borderBottom: i < hits.length - 1 ? '1px solid var(--border)' : 'none' }}>
+          <button
+            onClick={() => { if (open) { setOpenedPath(null); setFile(null); } else void openFile(h.path, h.line); }}
+            title={`${h.path}:${h.line} — 点击${open ? '收起' : '查看文件内容'}`}
+            aria-expanded={open}
+            style={{ display: 'flex', width: '100%', alignItems: 'baseline', gap: 8, padding: '7px 16px', border: 'none', background: open ? 'var(--accent-soft)' : 'transparent', cursor: 'pointer', textAlign: 'left' }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0, color: 'var(--accent)', fontSize: 12, fontFamily: 'monospace', minWidth: 64 }}>{h.line > 0 ? h.line : null}{h.line === 0 && <FileText size={12} />}</span>
+            <span style={{ flex: 1, color: 'var(--text)', fontSize: 12, wordBreak: 'break-all' }}>{h.path}</span>
+            <ChevronDown size={12} style={{ flexShrink: 0, color: 'var(--text-muted)', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s ease' }} />
+          </button>
+          <div style={{ padding: '0 16px 6px 16px', color: 'var(--text-secondary)', fontSize: 11, fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{h.snippet}</div>
+          {open && (
+            <div style={{ padding: '0 16px 8px 22px', borderTop: '1px dashed var(--border)' }}>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', margin: '4px 0' }}>{h.path} · 共 {file?.totalLines ?? '…'} 行</div>
+              {file === null ? (
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 0' }}><Loader2 size={12} style={{ animation: 'spin 1s linear infinite', verticalAlign: '-2px' }} /> 读取中…</div>
+              ) : (
+                <pre style={{ margin: 0, fontSize: 11, lineHeight: 1.5, color: 'var(--text)', overflowX: 'auto', maxHeight: 260, fontFamily: 'monospace' }}>
+                  {file.lines.map((l) => <div key={l.n} style={{ display: 'flex', gap: 10, background: l.n === h.line ? 'var(--accent-soft)' : 'transparent' }}><span style={{ color: 'var(--text-muted)', flexShrink: 0, userSelect: 'none' }}>{l.n}</span><span>{l.text}</span></div>)}
+                </pre>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    });
+  }
+
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
       <div ref={panelRef} aria-label="工作空间全文检索"
@@ -144,48 +195,7 @@ export function WorkspaceSearchPanel({
 
         {/* 结果区 */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
-          {!searched ? (
-            <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
-              {bound ? '输入关键词开始在工作空间内全文检索' : '当前项目尚未绑定工作空间（项目管理 → 选择工作空间）'}
-            </div>
-          ) : busy ? (
-            <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
-              <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', verticalAlign: '-2px' }} /> 检索中…
-            </div>
-          ) : hits.length === 0 ? (
-            <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>无匹配结果</div>
-          ) : (
-            hits.map((h, i) => {
-              const key = `${h.line}:${h.path}` as const;
-              const open = openedPath === key;
-              return (
-                <div key={`${h.path}:${h.line}:${i}`} style={{ borderBottom: i < hits.length - 1 ? '1px solid var(--border)' : 'none' }}>
-                  <button
-                    onClick={() => { if (open) { setOpenedPath(null); setFile(null); } else void openFile(h.path, h.line); }}
-                    title={`${h.path}:${h.line} — 点击${open ? '收起' : '查看文件内容'}`}
-                    aria-expanded={open}
-                    style={{ display: 'flex', width: '100%', alignItems: 'baseline', gap: 8, padding: '7px 16px', border: 'none', background: open ? 'var(--accent-soft)' : 'transparent', cursor: 'pointer', textAlign: 'left' }}>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0, color: 'var(--accent)', fontSize: 12, fontFamily: 'monospace', minWidth: 64 }}>{h.line > 0 ? h.line : null}{h.line === 0 && <FileText size={12} />}</span>
-                    <span style={{ flex: 1, color: 'var(--text)', fontSize: 12, wordBreak: 'break-all' }}>{h.path}</span>
-                    <ChevronDown size={12} style={{ flexShrink: 0, color: 'var(--text-muted)', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s ease' }} />
-                  </button>
-                  <div style={{ padding: '0 16px 6px 16px', color: 'var(--text-secondary)', fontSize: 11, fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{h.snippet}</div>
-                  {open && (
-                    <div style={{ padding: '0 16px 8px 22px', borderTop: '1px dashed var(--border)' }}>
-                      <div style={{ fontSize: 10, color: 'var(--text-muted)', margin: '4px 0' }}>{h.path} · 共 {file?.totalLines ?? '…'} 行</div>
-                      {file === null ? (
-                        <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 0' }}><Loader2 size={12} style={{ animation: 'spin 1s linear infinite', verticalAlign: '-2px' }} /> 读取中…</div>
-                      ) : (
-                        <pre style={{ margin: 0, fontSize: 11, lineHeight: 1.5, color: 'var(--text)', overflowX: 'auto', maxHeight: 260, fontFamily: 'monospace' }}>
-                          {file.lines.map((l) => <div key={l.n} style={{ display: 'flex', gap: 10, background: l.n === h.line ? 'var(--accent-soft)' : 'transparent' }}><span style={{ color: 'var(--text-muted)', flexShrink: 0, userSelect: 'none' }}>{l.n}</span><span>{l.text}</span></div>)}
-                        </pre>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })
-          )}
+          {renderResults()}
         </div>
 
         {/* 结果统计 */}

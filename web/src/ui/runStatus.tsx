@@ -59,16 +59,16 @@ export function useElapsed(startedAt?: number, active = false, finalElapsed?: nu
 }
 
 interface RunStatusBadgeProps {
-  status: RunStatus;
+  readonly status: RunStatus;
   /** 运行中起始时间戳（ms），用于实时计时 */
-  startedAt?: number;
+  readonly startedAt?: number;
   /** 结束后保留的最终耗时（ms）；优先于实时计时展示 */
-  finalElapsed?: number;
+  readonly finalElapsed?: number;
   /** 是否显示状态文字（图标始终显示） */
-  showLabel?: boolean;
+  readonly showLabel?: boolean;
   /** 图标尺寸 */
-  size?: number;
-  style?: CSSProperties;
+  readonly size?: number;
+  readonly style?: CSSProperties;
 }
 
 /**
@@ -90,10 +90,12 @@ export function RunStatusBadge({
   if (status === 'idle') return null;
   if (active) {
     const text = [showLabel ? meta.label : '', elapsed].filter(Boolean).join(' ') || meta.label;
+    const elapsedSuffix = elapsed ? ` · 耗时 ${elapsed}` : '';
+    const elapsedSuffixAria = elapsed ? `，耗时 ${elapsed}` : '';
     return (
       <span
-        title={`运行状态：${meta.label}${elapsed ? ` · 耗时 ${elapsed}` : ''}`}
-        aria-label={`运行状态：${meta.label}${elapsed ? `，耗时 ${elapsed}` : ''}`}
+        title={`运行状态：${meta.label}${elapsedSuffix}`}
+        aria-label={`运行状态：${meta.label}${elapsedSuffixAria}`}
         style={{ display: 'inline-flex', alignItems: 'center', fontSize: size, lineHeight: 1.3, whiteSpace: 'nowrap', ...style }}
       >
         <span className="ai-shimmer" style={{ fontWeight: 600 }}>{text}</span>
@@ -101,10 +103,12 @@ export function RunStatusBadge({
     );
   }
   const Icon = status === 'success' ? CheckCircle2 : XCircle;
+  const elapsedSuffix = elapsed ? ` · 耗时 ${elapsed}` : '';
+  const elapsedSuffixAria = elapsed ? `，耗时 ${elapsed}` : '';
   return (
     <span
-      title={`运行状态：${meta.label}${elapsed ? ` · 耗时 ${elapsed}` : ''}`}
-      aria-label={`运行状态：${meta.label}${elapsed ? `，耗时 ${elapsed}` : ''}`}
+      title={`运行状态：${meta.label}${elapsedSuffix}`}
+      aria-label={`运行状态：${meta.label}${elapsedSuffixAria}`}
       style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: meta.color, whiteSpace: 'nowrap', ...style }}
     >
       <Icon size={size} style={{ flexShrink: 0 }} />

@@ -213,7 +213,7 @@ function scanFileContent(abs: string, relChild: string, needle: string, hits: Ar
 
 /** 目录递归：忽略规则 → 目录下钻 → glob 过滤 → 文件名/全文命中（T00786：带扫描预算） */
 function searchWalk(ctx: SearchCtx, dir: string, rel: string): void {
-  if (ctx.hits.length >= SEARCH_LIMIT || budgetHit(ctx)) { if (budgetHit(ctx)) ctx.budgetExceeded = true; return; }
+  if (ctx.hits.length >= SEARCH_LIMIT || budgetHit(ctx)) { if (budgetHit(ctx)) { ctx.budgetExceeded = true; } return; }
   let entries: Array<{ name: string; isDir: boolean }>;
   try {
     entries = readdirSync(dir, { withFileTypes: true }).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
@@ -269,7 +269,7 @@ interface SymbolIndexCtx {
 
 /** 单文件符号提取：mtime 未变跳过；变化则重建该文件条目并按 extractor 正则抽取（上限 200/文件） */
 function indexFileSymbols(ctx: SymbolIndexCtx, abs: string, relChild: string): void {
-  const { db, projectId } = ctx;
+  const { projectId } = ctx;
   let st;
   try { st = statSync(abs); } catch { return; }
   const mtime = Math.floor(st.mtimeMs);

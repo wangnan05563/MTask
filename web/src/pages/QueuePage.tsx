@@ -255,7 +255,7 @@ export function QueuePage() {
           <span style={{ flex: 1 }} />
           {/* 并发上限调整（1~10，存 app_settings） */}
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--text-secondary)' }}>
-            并行上限
+            {'并行上限'}
             <button onClick={() => void changePoolLimit((pool?.limit ?? 3) - 1)} disabled={!pool || pool.limit <= 1}
               title="下调并行上限" aria-label="下调并行上限"
               style={{ width: 22, height: 22, borderRadius: 5, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}>−</button>

@@ -41,7 +41,9 @@ const initialState = (): PrdGenState => ({
 let state: PrdGenState = (() => {
   const base = initialState();
   const h = loadRun('prdgen');
-  if (h && h.finalElapsed != null) base.finalElapsed = h.finalElapsed;
+  // S6582：用可选链代替「h && h.finalElapsed」
+  const fe = h?.finalElapsed;
+  if (fe != null) base.finalElapsed = fe;
   return base;
 })();
 const listeners = new Set<() => void>();

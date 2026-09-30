@@ -44,8 +44,9 @@ function MovePromptModal({ p, categories, reqCats, catId, reqId, setCatId, setRe
   readonly onCancel: () => void; readonly onConfirm: () => void;
 }) {
   return (
-    // NOSONAR - 遮罩点击为鼠标便捷关闭，取消按钮提供键盘可达通路；需点面板外部才触发
+    // T01361：遮罩为纯装饰层（aria-hidden），点击关闭是鼠标便捷通路，键盘取消走「取消」按钮
     <div
+      aria-hidden="true"
       style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100 }}
       onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
     >
@@ -618,12 +619,23 @@ export function PromptsPage() {
    * 依据当前排序条件对提示词排序（不改变原始 state）；置顶项始终排在最前。
    * T00873 四轮：先按「通用需求分类」过滤——让「归入通用需求分类」有可检索的落点。
    */
-  const reqScopedPrompts = reqFilter === ''
-    ? prompts
-    : reqFilter === '__none__'
-      ? prompts.filter((p) => !p.req_category_id)
-      : prompts.filter((p) => p.req_category_id === reqFilter);
+  let reqScopedPrompts: typeof prompts;
+  if (reqFilter === '') {
+    reqScopedPrompts = prompts;
+  } else if (reqFilter === '__none__') {
+    reqScopedPrompts = prompts.filter((p) => !p.req_category_id);
+  } else {
+    reqScopedPrompts = prompts.filter((p) => p.req_category_id === reqFilter);
+  }
   const sortedPrompts = [...reqScopedPrompts].sort((a, b) => comparePrompts(a, b, sortKey, sortDir));
+  let emptyListHint: string;
+  if (categories.length === 0) {
+    emptyListHint = '暂无分类，请先新建分类。';
+  } else if (reqFilter === '') {
+    emptyListHint = '该分类下暂无提示词。';
+  } else {
+    emptyListHint = '当前筛选条件下没有提示词 —— 可把「通用需求分类」筛选切回「全部通用需求分类」。';
+  }
   return (
     <section>
       {/* 悬浮操作按钮 + 行 hover 高亮 + 记录高亮动画：类名与任务页体验一致 */}
@@ -767,9 +779,7 @@ export function PromptsPage() {
       {/* 提示词列表 */}
       {sortedPrompts.length === 0 && (
         <p style={{ color: 'var(--text-muted)' }}>
-          {categories.length === 0 ? '暂无分类，请先新建分类。'
-            : reqFilter !== '' ? '当前筛选条件下没有提示词 —— 可把「通用需求分类」筛选切回「全部通用需求分类」。'
-              : '该分类下暂无提示词。'}
+          {emptyListHint}
         </p>
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>

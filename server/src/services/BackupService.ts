@@ -45,7 +45,7 @@ function ensureDir(): string {
 }
 
 function pruneOld(dir: string): void {
-  const files = fs.readdirSync(dir).filter((f) => FILE_RE.test(f)).sort();
+  const files = fs.readdirSync(dir).filter((f) => FILE_RE.test(f)).sort((a, b) => a.localeCompare(b));
   while (files.length > KEEP) {
     const oldest = files.shift();
     if (!oldest) break;
@@ -80,7 +80,7 @@ export async function runBackup(reason: 'auto' | 'manual'): Promise<{ name: stri
 export function listBackups(): BackupMeta[] {
   const dir = backupDir();
   if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir).filter((f) => FILE_RE.test(f)).sort().reverse().map((name) => {
+  return fs.readdirSync(dir).filter((f) => FILE_RE.test(f)).sort((a, b) => a.localeCompare(b)).reverse().map((name) => {
     const st = fs.statSync(path.join(dir, name));
     return { name, size: st.size, mtime: st.mtime.toISOString() };
   });

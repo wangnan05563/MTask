@@ -29,6 +29,6 @@ export function cleanPrdStreamText(text: string): string {
   if (!text) return '';
   // 问题清单 JSON 段（标记之后的部分）在实时流中可能逐渐到达：只移除标记本身，
   // JSON 段保留原样（服务端 done 后会给出清洗后的 prdMd，录入/预览均以它为准）
-  const noMarker = text.replace(MARKER_RE, '');
+  const noMarker = text.replaceAll(MARKER_RE, '');
   return unwrapMdFence(noMarker);
 }

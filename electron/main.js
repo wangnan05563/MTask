@@ -393,14 +393,14 @@ async function pollNotifyPending() {
       res.on('end', () => {
         try {
           const items = JSON.parse(buf) || [];
-          if (!notifyPrimed) {
-            // 首轮：仅建立基线，不轰炸存量未读
-            notifyPrimed = true;
-          } else {
+          if (notifyPrimed) {
             for (const it of items) {
               const prev = notifySeen.get(it.task_no);
               if (prev !== it.ai_state) showTaskNotification(it);
             }
+          } else {
+            // 首轮：仅建立基线，不轰炸存量未读
+            notifyPrimed = true;
           }
           notifySeen.clear();
           for (const it of items) notifySeen.set(it.task_no, it.ai_state);
@@ -452,10 +452,42 @@ ipcMain.handle('dialog:open-directory', async () => {
 /** 从下载 URL 提取文件名（末尾路径段，去掉查询串）；取不到则回退默认名 */
 function downloadFilename(url) {
   try {
-    const seg = new URL(url).pathname.split('/').filter(Boolean).pop();
+    const seg = new URL(url).pathname.split('/').findLast(Boolean);
     if (seg) return seg;
   } catch { /* 非法 URL，走回退 */ }
   return `mtask-update-${Date.now()}.exe`;
+}
+
+// 流式写入下载响应：写完落盘改名，进度经 webContents 推送；失败清理半成品并 reject
+function pump(r, tmpPath, filePath, resolve, reject) {
+  // 失败清理：删掉残留别名文件，避免下次误判断下载完成
+  const cleanup = () => { try { fs.rmSync(tmpPath, { force: true }); } catch { /* 忽略 */ } };
+  const total = Number(r.headers['content-length'] || 0);
+  let received = 0;
+  const out = fs.createWriteStream(tmpPath);
+  r.on('data', (chunk) => {
+    received += chunk.length;
+    out.write(chunk);
+    // 节流推送进度（每块都 send 会太频繁，这里按字节步进）——进度是给"若非流式会卡界面"的场景兜底的低频更新
+    if (received % (1 << 20) === 0 && mainWin && !mainWin.isDestroyed()) {
+      mainWin.webContents.send('update:progress', { status: 'downloading', received, total });
+    }
+  });
+  r.on('end', () => {
+    out.end(() => {
+      try { fs.renameSync(tmpPath, filePath); } catch (e) {
+        cleanup();
+        reject(new Error(`写入安装包失败：${e.message}`));
+        return;
+      }
+      if (mainWin && !mainWin.isDestroyed()) {
+        mainWin.webContents.send('update:progress', { status: 'downloaded', received, total, filePath });
+      }
+      resolve(filePath);
+    });
+  });
+  r.on('error', (e) => { cleanup(); out.destroy(); reject(e); });
+  out.on('error', (e) => { cleanup(); reject(e); });
 }
 
 // 应用内下载更新安装包到系统下载目录，下载进度经 webContents.send 推给渲染进程
@@ -471,7 +503,7 @@ ipcMain.handle('update:download', async (_evt, url) => {
     https.get(url, { headers: { 'User-Agent': 'MTask-Updater' } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         // 跟随 302/303（GitHub Release asset 通常重定向到云端存储）
-        https.get(res.headers.location, { headers: { 'User-Agent': 'MTask-Updater' } }, (r2) => pump(r2)).on('error', reject);
+        https.get(res.headers.location, { headers: { 'User-Agent': 'MTask-Updater' } }, (r2) => pump(r2, tmpPath, filePath, resolve, reject)).on('error', reject);
         return;
       }
       if (res.statusCode !== 200) {
@@ -479,37 +511,7 @@ ipcMain.handle('update:download', async (_evt, url) => {
         res.resume();
         return;
       }
-      pump(res);
-      async function pump(r) {
-        // 失败清理：删掉残留别名文件，避免下次误判断下载完成
-        const cleanup = () => { try { fs.rmSync(tmpPath, { force: true }); } catch { /* 忽略 */ } };
-        const total = Number(r.headers['content-length'] || 0);
-        let received = 0;
-        const out = fs.createWriteStream(tmpPath);
-        r.on('data', (chunk) => {
-          received += chunk.length;
-          out.write(chunk);
-          // 节流推送进度（每块都 send 会太频繁，这里按字节步进）——进度是给"若非流式会卡界面"的场景兜底的低频更新
-          if (received % (1 << 20) === 0 && mainWin && !mainWin.isDestroyed()) {
-            mainWin.webContents.send('update:progress', { status: 'downloading', received, total });
-          }
-        });
-        r.on('end', () => {
-          out.end(() => {
-            try { fs.renameSync(tmpPath, filePath); } catch (e) {
-              cleanup();
-              reject(new Error(`写入安装包失败：${e.message}`));
-              return;
-            }
-            if (mainWin && !mainWin.isDestroyed()) {
-              mainWin.webContents.send('update:progress', { status: 'downloaded', received, total, filePath });
-            }
-            resolve(filePath);
-          });
-        });
-        r.on('error', (e) => { cleanup(); out.destroy(); reject(e); });
-        out.on('error', (e) => { cleanup(); reject(e); });
-      }
+      pump(res, tmpPath, filePath, resolve, reject);
     }).on('error', reject);
   });
   return filePath;

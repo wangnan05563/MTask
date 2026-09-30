@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import { parseCleanGroups, type CleanRow } from '../utils/cleanGroups'; // T00751：清洗分组解析抽为可测模块
 import { cleanPrdStreamText } from '../utils/prdFence'; // T00815：控制台 PRD 实时正文去标记/解围栏
 import { api, type AITool, type ReqCategory } from '../api/client';
@@ -343,6 +343,36 @@ function fmtElapsed(ms: number): string {
   return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`;
 }
 
+/** 已运行时长短文案——无起始时间返回空串，供各 tab title 拼接「已运行 xx」 */
+function startedElapsedText(startedAt: number | undefined): string {
+  if (startedAt == null) return '';
+  return fmtElapsed(Date.now() - startedAt);
+}
+
+/** T01038：运行状态徽标三态——运行中优先，结束后有最终耗时判成功，否则空闲 */
+function runStatus(busy: boolean, finalElapsed: number | undefined): 'running' | 'success' | 'idle' {
+  if (busy) return 'running';
+  if (finalElapsed == null) return 'idle';
+  return 'success';
+}
+
+/** 手动任务 tab 悬停文案：运行中展示实时耗时，结束态展示完成/失败 */
+function taskTabTitle(t: AnalysisTask): string {
+  if (t.status === 'busy') {
+    return `${t.title} · 运行中 · 已运行 ${startedElapsedText(t.startAt)}（切换卡片不中断，返回即恢复）`;
+  }
+  return `${t.title} · ${t.status === 'done' ? '已完成' : '失败'}`;
+}
+
+/** T00839：轮询重建快照时保留上一次的本地发起时间（startAt），使耗时全程连续、不随刷新重置 */
+function mergeJobSnapshots(prev: AnalysisTask[], jobs: Parameters<typeof rowToTask>[0][]): AnalysisTask[] {
+  return jobs.map((rj) => {
+    const old = prev.find((p) => p.id === rj.id);
+    const t = rowToTask(rj);
+    return old?.startAt ? { ...t, startAt: old.startAt } : t;
+  });
+}
+
 /** 手动分组表格行：id 为列表内稳定唯一键（避免用数组索引作 React key） */
 interface SaveRow {
   id: string;
@@ -591,14 +621,14 @@ export function ReportConsole({
   const [stopping, setStopping] = useState(false);
   const [notice, setNotice] = useState('');
   // 轻量 toast：本面板无全局 flash，就近以底部 transient 文本反馈结果/失败
-  const flash = (m: string) => { setNotice(m); window.setTimeout(() => setNotice(''), 3000); };
+  const flash = (m: string) => { setNotice(m); globalThis.setTimeout(() => setNotice(''), 3000); };
   const canStop = report.streaming || prdSnap.streaming || aiSnap.busy || runningCount > 0;
 
   // T00839：1s 心跳触发重渲染，使运行中 tab 的「已运行 xx」实时增长（store 变更不会带动计时刷新）
-  const [, setClock] = useState(0);
+  const [, bumpClock] = useReducer((c: number) => c + 1, 0);
   useEffect(() => {
-    const t = window.setInterval(() => setClock((c) => c + 1), 1000);
-    return () => window.clearInterval(t);
+    const t = globalThis.setInterval(() => bumpClock(), 1000);
+    return () => globalThis.clearInterval(t);
   }, []);
 
   const stopAll = useCallback(async () => {
@@ -668,11 +698,7 @@ export function ReportConsole({
     try {
       const jobs = await api.get<Parameters<typeof rowToTask>[0][]>('/console-jobs');
       // T00839：轮询重建快照时保留上一次的本地发起时间（startAt），使耗时全程连续、不随刷新重置
-      setTasks((prev) => jobs.map((rj) => {
-        const old = prev.find((p) => p.id === rj.id);
-        const t = rowToTask(rj);
-        return old?.startAt ? { ...t, startAt: old.startAt } : t;
-      }));
+      setTasks((prev) => mergeJobSnapshots(prev, jobs));
     } catch {
       // 后端暂不可用：静默，等待下次轮询再试，不打断既有展示
     }
@@ -747,11 +773,11 @@ export function ReportConsole({
   const [resetting, setResetting] = useState(false);
   async function resetConsole() {
     if (resetting) return;
-    if (!window.confirm(RESET_CONFIRM_CONSOLE)) return;
+    if (!globalThis.confirm(RESET_CONFIRM_CONSOLE)) return;
     setResetting(true);
     const r = await resetWorkbenchArtifacts();
     setResetting(false);
-    if (!r.ok) { window.alert(`重置失败：${r.error ?? '未知错误'}（本地状态已清理，可再次重置兜底）`); return; }
+    if (!r.ok) globalThis.alert(`重置失败：${r.error ?? '未知错误'}（本地状态已清理，可再次重置兜底）`);
   }
 
   // T01042：监听重置广播（控制台自身按钮与工作台卡片侧入口共用）——同步重置本地 state
@@ -762,8 +788,8 @@ export function ReportConsole({
       setCategory('summary');
       setCustom('');
     };
-    window.addEventListener(CONSOLE_RESET_EVENT, onReset);
-    return () => window.removeEventListener(CONSOLE_RESET_EVENT, onReset);
+    globalThis.addEventListener(CONSOLE_RESET_EVENT, onReset);
+    return () => globalThis.removeEventListener(CONSOLE_RESET_EVENT, onReset);
   }, [setCategory, setCustom]);
 
   /** 对比模型勾选切换：已选则移除，未选则追加 */
@@ -1150,7 +1176,7 @@ export function ReportConsole({
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
         <button
           onClick={() => setActiveId(REPORT_TAB)}
-          title={report.streaming ? `AI 周报生成中 · 已运行 ${report.startedAt != null ? fmtElapsed(Date.now() - report.startedAt) : ''} · 已输出 ${streamText.length} 字符（切换卡片不中断，返回即恢复）` : 'AI 周报 — 左侧生成触发的流式过程在此展示'}
+          title={report.streaming ? `AI 周报生成中 · 已运行 ${startedElapsedText(report.startedAt)} · 已输出 ${streamText.length} 字符（切换卡片不中断，返回即恢复）` : 'AI 周报 — 左侧生成触发的流式过程在此展示'}
           aria-label="AI 周报 tab"
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
@@ -1162,7 +1188,7 @@ export function ReportConsole({
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>AI 周报</span>
           {/* T01038：运行中显示统一动画图标 + 实时秒数；结束后保留最终耗时 */}
           <RunStatusBadge
-            status={report.streaming ? 'running' : (report.finalElapsed != null ? 'success' : 'idle')}
+            status={runStatus(report.streaming, report.finalElapsed)}
             startedAt={report.startedAt}
             finalElapsed={report.finalElapsed}
             size={10}
@@ -1173,7 +1199,7 @@ export function ReportConsole({
         {(aiSnap.logs.length > 0 || aiSnap.busy) && (
           <button
             onClick={() => setActiveId(AI_IMPORT_TAB)}
-            title={aiSnap.busy ? `AI 项目计划导入执行中 · 已运行 ${aiSnap.startedAt != null ? fmtElapsed(Date.now() - aiSnap.startedAt) : ''}（切换卡片不中断，返回即恢复）` : 'AI 项目计划导入 — 导入执行日志在此滚动输出'}
+            title={aiSnap.busy ? `AI 项目计划导入执行中 · 已运行 ${startedElapsedText(aiSnap.startedAt)}（切换卡片不中断，返回即恢复）` : 'AI 项目计划导入 — 导入执行日志在此滚动输出'}
             aria-label="AI 项目计划导入 tab"
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
@@ -1185,7 +1211,7 @@ export function ReportConsole({
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{aiImportStore.label()}</span>
             {/* T01038：统一运行状态徽标 */}
             <RunStatusBadge
-              status={aiSnap.busy ? 'running' : (aiSnap.finalElapsed != null ? 'success' : 'idle')}
+              status={runStatus(aiSnap.busy, aiSnap.finalElapsed)}
               startedAt={aiSnap.startedAt}
               finalElapsed={aiSnap.finalElapsed}
               size={10}
@@ -1197,7 +1223,7 @@ export function ReportConsole({
         {(prdSnap.logs.length > 0 || prdSnap.streaming) && (
           <button
             onClick={() => setActiveId(PRD_GEN_TAB)}
-            title={prdSnap.streaming ? `生成 PRD 中 · 已运行 ${prdSnap.startedAt != null ? fmtElapsed(Date.now() - prdSnap.startedAt) : ''} · 已输出 ${prdSnap.streamText.length} 字符（切换卡片不中断，返回即恢复）` : '原始需求生成 PRD — 生成过程与正文增量在此实时滚动输出'}
+            title={prdSnap.streaming ? `生成 PRD 中 · 已运行 ${startedElapsedText(prdSnap.startedAt)} · 已输出 ${prdSnap.streamText.length} 字符（切换卡片不中断，返回即恢复）` : '原始需求生成 PRD — 生成过程与正文增量在此实时滚动输出'}
             aria-label="原始需求生成 PRD tab"
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
@@ -1209,7 +1235,7 @@ export function ReportConsole({
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>原始需求生成 PRD</span>
             {/* T01038：统一运行状态徽标 */}
             <RunStatusBadge
-              status={prdSnap.streaming ? 'running' : (prdSnap.finalElapsed != null ? 'success' : 'idle')}
+              status={runStatus(prdSnap.streaming, prdSnap.finalElapsed)}
               startedAt={prdSnap.startedAt}
               finalElapsed={prdSnap.finalElapsed}
               size={10}
@@ -1220,9 +1246,7 @@ export function ReportConsole({
         {tasks.map((t) => (
           <div
             key={t.id}
-            title={t.status === 'busy'
-              ? `${t.title} · 运行中 · 已运行 ${t.startAt != null ? fmtElapsed(Date.now() - t.startAt) : ''}（切换卡片不中断，返回即恢复）`
-              : `${t.title} · ${t.status === 'done' ? '已完成' : '失败'}`}
+            title={taskTabTitle(t)}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 4px', borderRadius: 6,
               border: '1px solid var(--border-strong)', background: activeId === t.id ? 'var(--accent)' : 'var(--card-bg)',

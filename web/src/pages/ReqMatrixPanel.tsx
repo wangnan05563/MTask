@@ -84,7 +84,8 @@ export function ReqMatrixPanel({ projectId, onClose }: {
     try {
       const buf = await api.getBinary(`/plans/prd-requirements/export?projectId=${encodeURIComponent(projectId)}`);
       const ts = new Date().toISOString().slice(0, 10);
-      saveBinary(buf, `${safeExportName(`需求跟踪矩阵-${ts}`, '需求跟踪矩阵')}.xlsx`, EXPORT_MIME.xlsx);
+      const baseName = `需求跟踪矩阵-${ts}`;
+      saveBinary(buf, `${safeExportName(baseName, '需求跟踪矩阵')}.xlsx`, EXPORT_MIME.xlsx);
       flash(`已导出需求跟踪矩阵（${rows.length} 条需求）`);
     } catch (e) {
       flash(`导出失败：${e instanceof Error ? e.message : String(e)}`);
@@ -112,7 +113,7 @@ export function ReqMatrixPanel({ projectId, onClose }: {
   // T00825：PRD 原文弹窗渲染完成后定位高亮——优先按需求标题匹配标题行，其次编号；
   // 命中 → scrollIntoView + 加高亮 class（2.5s 后移除）；未命中标题退化到任意含标题的段落；仍无则滚动顶部，不报错
   useEffect(() => {
-    if (!prdModal || prdModal === null || !prdModal.content || !prdBodyRef.current) return;
+    if (!prdModal?.content || !prdBodyRef.current) return;
     const locate = prdModal.locateTitle || prdModal.locateNo;
     if (!locate) return;
     const root = prdBodyRef.current;
@@ -120,10 +121,13 @@ export function ReqMatrixPanel({ projectId, onClose }: {
     root.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((el) => {
       const txt = (el.textContent ?? '').trim();
       if (!txt) return;
-      const score = prdModal.locateTitle && txt.includes(prdModal.locateTitle) ? 2 : (prdModal.locateNo && txt.includes(prdModal.locateNo) ? 1 : 0);
+      let score = 0;
+      if (prdModal.locateTitle && txt.includes(prdModal.locateTitle)) score = 2;
+      else if (prdModal.locateNo && txt.includes(prdModal.locateNo)) score = 1;
       if (score > 0) targets.push([el, score]);
     });
-    let hit: Element | null = targets.sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+    targets.sort((a, b) => b[1] - a[1]);
+    let hit: Element | null = targets[0]?.[0] ?? null;
     const locateTitle = prdModal.locateTitle ?? '';
     if (!hit && locateTitle) {
       hit = Array.from(root.querySelectorAll('p,li,td')).find((el) => (el.textContent ?? '').includes(locateTitle)) ?? null;
@@ -132,7 +136,7 @@ export function ReqMatrixPanel({ projectId, onClose }: {
     if (hit) {
       try { hit.scrollIntoView({ block: 'center' }); } catch { /* 忽略滚动异常 */ }
       hit.classList.add('prd-hl');
-      window.setTimeout(() => hit?.classList.remove('prd-hl'), 2500);
+      globalThis.setTimeout(() => hit?.classList.remove('prd-hl'), 2500);
     } else {
       container.scrollTop = 0;
     }
@@ -409,7 +413,7 @@ export function ReqMatrixPanel({ projectId, onClose }: {
                     </td>
                     {/* T00825：关联PRD 单元格——有 PRD 时显示可点击名称（打开原文并定位该需求章节高亮），无则占位 */}
                     <td style={{ padding: '4px 6px', maxWidth: 180 }}>
-                      {!r.prdDoc ? <span style={{ color: 'var(--text-muted)' }}>—</span> : (
+                      {r.prdDoc ? (
                         <button onClick={() => void openPrd(r.prdDoc!, { title: r.title, reqNo: r.req_no })} className="tbtn-anim"
                           title={`打开 PRD 原文：${r.prdDoc.filename}（定位到「${r.title}」章节）`}
                           aria-label={`打开关联 PRD ${r.prdDoc.filename}`}
@@ -417,7 +421,7 @@ export function ReqMatrixPanel({ projectId, onClose }: {
                           <FileText size={11} style={{ flexShrink: 0 }} />
                           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.prdDoc.filename}</span>
                         </button>
-                      )}
+                      ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
                     </td>
                     <td style={{ padding: '4px 6px', maxWidth: 200 }}>
                       {r.linkedTasks.length === 0 ? <span style={{ color: 'var(--text-muted)' }}>—</span> : (

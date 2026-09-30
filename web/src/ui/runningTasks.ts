@@ -58,7 +58,7 @@ export async function cleanupRunningTasks(): Promise<void> {
 
 // 暴露给桌面主进程：启动一次即挂载全局，供关闭前 executeJavaScript 调用。
 // 仅在 Electron 壳（api:// 协议）下需要；浏览器直接关闭无此机制。
-if (typeof window !== 'undefined' && !/^https?:$/.test(window.location.protocol)) {
-  (window as unknown as { __mtaskRunningSnapshot?: typeof snapshotRunningTasks }).__mtaskRunningSnapshot = snapshotRunningTasks;
-  (window as unknown as { __mtaskCleanupRunning?: typeof cleanupRunningTasks }).__mtaskCleanupRunning = cleanupRunningTasks;
+if (globalThis.window !== undefined && !/^https?:$/.test(globalThis.window.location.protocol)) {
+  (globalThis as unknown as { __mtaskRunningSnapshot?: typeof snapshotRunningTasks }).__mtaskRunningSnapshot = snapshotRunningTasks;
+  (globalThis as unknown as { __mtaskCleanupRunning?: typeof cleanupRunningTasks }).__mtaskCleanupRunning = cleanupRunningTasks;
 }

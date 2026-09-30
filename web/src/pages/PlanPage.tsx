@@ -1677,7 +1677,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                   for (const d of depsOfPlan(p)) {
                     if (!d?.id || d.type === 'child') continue;
                     const u = planById.get(d.id);
-                    if (!u || !u.start_date || !u.end_date) continue;
+                    if (!u?.start_date || !u.end_date) continue;
                     const i2 = rowIdx.get(u.id);
                     if (i2 === undefined) continue;
                     const fx = 220 + (toIdx(u.end_date) + 1) * DAY_W;
@@ -1687,8 +1687,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                     const dAttr = tx > fx + 8
                       ? `M ${fx} ${fy} H ${(fx + tx) / 2} V ${ty} H ${tx - 5}`
                       : `M ${fx} ${fy} L ${tx - 5} ${ty}`;
-                    els.push(<path key={`${u.id}-${p.id}`} d={dAttr} fill="none" stroke={color} strokeWidth={crit ? 2 : 1.2} opacity={crit ? 0.9 : 0.55} />);
-                    els.push(<polygon key={`arr-${u.id}-${p.id}`} points={`${tx - 5},${ty - 3.5} ${tx - 5},${ty + 3.5} ${tx},${ty}`} fill={color} />);
+                    els.push(<path key={`${u.id}-${p.id}`} d={dAttr} fill="none" stroke={color} strokeWidth={crit ? 2 : 1.2} opacity={crit ? 0.9 : 0.55} />, <polygon key={`arr-${u.id}-${p.id}`} points={`${tx - 5},${ty - 3.5} ${tx - 5},${ty + 3.5} ${tx},${ty}`} fill={color} />);
                   }
                 }
                 return els;

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
-import { getLang, onLangChange, setLang, t, type Lang } from '../i18n';
+import { getLang, onLangChange, setLang as setGlobalLang, t, type Lang } from '../i18n';
 
 /**
  * T01073-FR5.5 / FR-5.6：循环任务与 API Token 管理面板（设置页嵌入）。
@@ -8,12 +8,12 @@ import { getLang, onLangChange, setLang, t, type Lang } from '../i18n';
 
 /** T01071-FR5.4 复用：语言切换按钮（i18n 底座的用户可见接入点） */
 export function LangSwitch() {
-  const [lang, setLangState] = useState<Lang>(getLang());
-  useEffect(() => onLangChange(() => setLangState(getLang())), []);
+  const [lang, setLang] = useState<Lang>(getLang());
+  useEffect(() => onLangChange(() => setLang(getLang())), []);
   const next: Lang = lang === 'zh' ? 'en' : 'zh';
   return (
     <button
-      onClick={() => setLang(next)}
+      onClick={() => setGlobalLang(next)}
       title={lang === 'zh' ? 'Switch to English (Beta)' : '切换到中文'}
       aria-label="切换界面语言"
       style={{ fontSize: 11, padding: '3px 10px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}
@@ -115,7 +115,7 @@ export function RecurringTab() {
                     style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: r.enabled ? 'var(--text-secondary)' : 'var(--accent)', cursor: 'pointer', marginRight: 4 }}>
                     {r.enabled ? '停用' : '启用'}
                   </button>
-                  <button onClick={async () => { if (window.confirm(`删除循环规则「${r.title}」？已生成的任务不受影响。`)) { await api.del(`/recurring/${r.id}`); void load(); } }}
+                  <button onClick={async () => { if (globalThis.confirm(`删除循环规则「${r.title}」？已生成的任务不受影响。`)) { await api.del(`/recurring/${r.id}`); void load(); } }}
                     title="删除该规则"
                     style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--danger)', cursor: 'pointer' }}>
                     删除
@@ -211,7 +211,7 @@ export function ApiTokensTab() {
                     style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: tk.enabled ? 'var(--text-secondary)' : 'var(--accent)', cursor: 'pointer', marginRight: 4 }}>
                     {tk.enabled ? '停用' : '启用'}
                   </button>
-                  <button onClick={async () => { if (window.confirm(`撤销「${tk.name}」？使用该 Token 的脚本将立即失去访问权限。`)) { await api.del(`/tokens/${tk.id}`); void load(); } }}
+                  <button onClick={async () => { if (globalThis.confirm(`撤销「${tk.name}」？使用该 Token 的脚本将立即失去访问权限。`)) { await api.del(`/tokens/${tk.id}`); void load(); } }}
                     style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--danger)', cursor: 'pointer' }}>
                     撤销
                   </button>

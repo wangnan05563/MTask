@@ -46,7 +46,7 @@ export function NotifyBell() {
 
   const refresh = useCallback(async () => {
     try {
-      const rows = await api.get<EventItem[]>('/events?limit=30');
+      const rows = await api.get<EventItem[]>('/events/recent?limit=30');
       setItems(Array.isArray(rows) ? rows : []);
     } catch { /* 服务未就绪等：保留上次数据 */ }
   }, []);
@@ -79,12 +79,13 @@ export function NotifyBell() {
     setOpen(false);
   }
 
+  const unreadBadgeSuffix = unreadCount > 0 ? `，${unreadCount} 条未读` : '';
   return (
     <div style={{ position: 'relative', marginLeft: 8 }}>
       <button
         onClick={toggle}
         title={unreadCount ? `通知中心 — ${unreadCount} 条未读` : '通知中心'}
-        aria-label={`通知中心${unreadCount ? `，${unreadCount} 条未读` : ''}`}
+        aria-label={`通知中心${unreadBadgeSuffix}`}
         style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 7, borderRadius: 6, background: 'var(--card-bg)', color: unreadCount ? 'var(--accent)' : 'var(--text)', cursor: 'pointer', border: '1px solid var(--border)' }}
       >
         <Bell size={16} />
@@ -96,8 +97,12 @@ export function NotifyBell() {
       </button>
       {open && (
         <>
-          {/* 遮罩：点击外部关闭 */}
-          <div style={{ position: 'fixed', inset: 0, zIndex: 998 }} onClick={() => setOpen(false)} />
+          {/* 遮罩：点击外部关闭——纯装饰层（aria-hidden），键盘关闭走 Esc/关闭按钮 */}
+          <div
+            style={{ position: 'fixed', inset: 0, zIndex: 998 }}
+            onClick={() => setOpen(false)}
+            aria-hidden="true"
+          />
           <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', width: 380, maxHeight: 480, overflowY: 'auto', background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,.15)', zIndex: 999 }}>
             <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
               <Bell size={13} /> 通知中心
@@ -109,12 +114,16 @@ export function NotifyBell() {
             {items.map((it) => {
               const meta = EVENT_KINDS[it.kind] ?? { icon: <FileText size={13} />, label: it.kind };
               const unread = it.created_at > lastSeen;
+              const taskNoSuffix = it.task_no ? ` ${it.task_no}` : '';
+              let iconColor = 'var(--accent)';
+              if (it.kind === 'ai_state' && it.detail.includes('失败')) iconColor = 'var(--danger)';
+              else if (it.kind === 'verified') iconColor = 'var(--success)';
               return (
                 <button key={it.id} onClick={() => gotoTask(it)}
-                  title={`${it.detail} — 点击前往任务${it.task_no ? ` ${it.task_no}` : ''}`}
+                  title={`${it.detail} — 点击前往任务${taskNoSuffix}`}
                   style={{ display: 'flex', gap: 8, width: '100%', textAlign: 'left', padding: '9px 14px', border: 'none', borderBottom: '1px solid var(--surface-2)', background: unread ? 'var(--accent-soft)' : 'transparent', cursor: 'pointer', alignItems: 'flex-start' }}
                 >
-                  <span style={{ marginTop: 2, display: 'inline-flex', alignItems: 'center', gap: 4, color: it.kind === 'ai_state' && it.detail.includes('失败') ? 'var(--danger)' : it.kind === 'verified' ? 'var(--success)' : 'var(--accent)', flexShrink: 0 }}>
+                  <span style={{ marginTop: 2, display: 'inline-flex', alignItems: 'center', gap: 4, color: iconColor, flexShrink: 0 }}>
                     {it.detail.includes('失败') ? <AlertTriangle size={13} /> : meta.icon}
                   </span>
                   <span style={{ flex: 1, minWidth: 0 }}>

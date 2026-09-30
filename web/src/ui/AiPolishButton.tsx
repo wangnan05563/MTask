@@ -19,16 +19,16 @@ let toolPending: Promise<string> | null = null;
 
 async function resolveToolId(): Promise<string> {
   if (toolCache) return toolCache;
-  if (!toolPending) {
-    toolPending = api.get<AITool[]>('/aitools')
-      .then((list) => {
-        const valid = (list ?? []).filter((t) => t.model);
-        toolCache = valid[0]?.id ?? '';
-        return toolCache;
-      })
-      .catch(() => '')
-      .finally(() => { toolPending = null; });
-  }
+  // S6606：用 ??= 代替「判空再赋值」
+  toolPending ??= api.get<AITool[]>('/aitools')
+    .then((list) => {
+      // S7750：取首个命中用 find 即可，无需 filter 后再取首项
+      const first = (list ?? []).find((t) => t.model);
+      toolCache = first?.id ?? '';
+      return toolCache;
+    })
+    .catch(() => '')
+    .finally(() => { toolPending = null; });
   return toolPending;
 }
 
@@ -78,7 +78,13 @@ export function AiPolishButton({ value, onPolished, toolId, disabled, flash, tit
   // 按钮本身必须始终清晰可见，否则功能等于不存在。
   const noText = !text;
   const idle = !busy && !disabled && !noText;
-  const label = busy ? 'AI 美化进行中…' : (noText ? `${title}（请先填写内容）` : title);
+  // S3358：嵌套三元展开为独立语句
+  let label = title;
+  if (noText) label = `${title}（请先填写内容）`;
+  if (busy) label = 'AI 美化进行中…';
+  let color = 'var(--text-muted)';
+  if (idle) color = 'var(--text)';
+  if (busy) color = 'var(--accent-text)';
   return (
     <button
       onClick={() => void run()}
@@ -90,7 +96,7 @@ export function AiPolishButton({ value, onPolished, toolId, disabled, flash, tit
         fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', border: 'none',
         cursor: idle ? 'pointer' : 'default',
         background: busy ? 'var(--accent)' : 'transparent',
-        color: busy ? 'var(--accent-text)' : (idle ? 'var(--text)' : 'var(--text-muted)'),
+        color,
         opacity: idle || busy ? 1 : 0.75,
       }}
     >

@@ -111,7 +111,7 @@ export async function buildPrdDocx(md: string, title: string): Promise<Buffer> {
     i += 1;
   }
   const doc = new Document({ sections: [{ children }] });
-  return await Packer.toBuffer(doc) as Buffer;
+  return await Packer.toBuffer(doc);
 }
 
 /**

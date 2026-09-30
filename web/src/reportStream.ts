@@ -25,7 +25,7 @@ const initialState = (): ReportStreamState => ({ streaming: false, logs: [], str
 let state: ReportStreamState = (() => {
   const base = initialState();
   const h = loadRun('report');
-  if (h && h.finalElapsed != null) base.finalElapsed = h.finalElapsed;
+  if (h?.finalElapsed != null) base.finalElapsed = h.finalElapsed;
   return base;
 })();
 const listeners = new Set<() => void>();

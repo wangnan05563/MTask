@@ -92,7 +92,7 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, action, sta
   const [resetting, setResetting] = useState(false);
   async function handleReset() {
     if (resetting || !onReset) return;
-    if (!window.confirm(RESET_CONFIRM_CARD)) return; // 二次确认：防误操作
+    if (!globalThis.confirm(RESET_CONFIRM_CARD)) return; // 二次确认：防误操作
     setResetting(true);
     try { await onReset(); } finally { setResetting(false); }
   }
@@ -116,11 +116,12 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, action, sta
         {statusNode && <span style={{ display: 'block', marginTop: 6 }}>{statusNode}</span>}
       </span>
       {hasCorner && (
-        <span style={{ position: 'absolute', top: 9, right: 9, display: 'inline-flex', alignItems: 'center', gap: 6 }} onClick={(e) => e.stopPropagation()}>
+        // S6848/S1082：容器本身不可交互，不再挂 onClick——冒泡阻断改由内部按钮各自 stopPropagation
+        <span style={{ position: 'absolute', top: 9, right: 9, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           {action}
           {onReset && (
             <button
-              onClick={handleReset}
+              onClick={(e) => { e.stopPropagation(); void handleReset(); }}
               disabled={resetting}
               title={resetting ? '重置中…' : '重置 — 清空控制台任务、该能力运行状态与关联草稿产物（与控制台重置等效）'}
               aria-label={`重置${title}的运行状态与关联草稿产物`}
@@ -173,10 +174,12 @@ function PrdDocsPopup({ open, projectId, onAssociate, onClose }: {
     onAssociate(d.id, d.filename);
   };
   return (
-    <div role="dialog" aria-modal="true" aria-label="已上传 PRD 文档"
+    // T01361：遮罩为纯装饰层（aria-hidden），点击关闭是鼠标便捷通路
+    <div
+      aria-hidden="true"
       onClick={onClose}
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div onClick={(e) => e.stopPropagation()}
+      <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()} tabIndex={-1}
         style={{ width: 480, maxWidth: '92vw', maxHeight: '72vh', overflow: 'auto', background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 12, padding: 16, boxShadow: '0 12px 32px rgba(0,0,0,.2)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
           <FileStack size={15} style={{ color: 'var(--accent)' }} />
@@ -371,7 +374,7 @@ export function ReportPage() {
   // 未选项目时不弹层，改用 flash 提示先确定范围（弹层需按项目拉取 PRD 管理视图）
   const prdDocsAction = (
     <button type="button" className="prd-tilt-btn"
-      onClick={() => { if (!projectId) { flash('请先在页面顶部选择目标项目范围，再查看已上传 PRD 文档'); return; } setPrdDocsOpen(true); }}
+      onClick={(e) => { e.stopPropagation(); if (!projectId) { flash('请先在页面顶部选择目标项目范围，再查看已上传 PRD 文档'); return; } setPrdDocsOpen(true); }}
       title="已上传 PRD 文档 — 查看当前项目已上传的 PRD 文档并关联到导入计划"
       aria-label="已上传 PRD 文档：查看当前项目已上传的 PRD 文档并关联到导入计划"
       style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, borderRadius: 7, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--accent)', cursor: 'pointer' }}>
@@ -383,7 +386,7 @@ export function ReportPage() {
   // T01042：有产物/草稿的四张卡提供卡片侧重置入口（共用 resetWorkbenchArtifacts 核心，效果与控制台重置一致）
   const resetArtifacts = async () => {
     const r = await resetWorkbenchArtifacts();
-    if (!r.ok) window.alert(`重置失败：${r.error ?? '未知错误'}（本地状态已清理，可再次重置兜底）`);
+    if (!r.ok) globalThis.alert(`重置失败：${r.error ?? '未知错误'}（本地状态已清理，可再次重置兜底）`);
   };
   const reportCards: ReportCardCfg[] = [
     { key: 'ai-import', icon: <FileUp size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: 'AI 项目计划导入',
@@ -427,21 +430,27 @@ export function ReportPage() {
 
   // T01038：统一各能力卡片运行状态徽标——按 store 运行态推导状态/起始时间/最终耗时，集中映射避免散落。
   // ai-import 与 prd-import 共用 aiImportStore（kind: 'plan'|'prd'）；offline 仅本地短时计时。
+  // S3358/S7735：状态推导收敛为独立函数（运行中优先；无最终耗时为 idle，否则 success），替代嵌套三元与否定条件
+  const deriveStatus = (streaming: boolean, finalElapsed?: number): RunStatus => {
+    if (streaming) return 'running';
+    if (finalElapsed == null) return 'idle';
+    return 'success';
+  };
   const cardStatus = (key: string): { status: RunStatus; startedAt?: number; finalElapsed?: number } => {
     switch (key) {
       case 'ai-live':
-        return { status: aiStreaming ? 'running' : (reportFinal != null ? 'success' : 'idle'), startedAt: reportStartedAt, finalElapsed: reportFinal };
+        return { status: deriveStatus(aiStreaming, reportFinal), startedAt: reportStartedAt, finalElapsed: reportFinal };
       case 'prd-gen':
-        return { status: prdSnap.streaming ? 'running' : (prdSnap.finalElapsed != null ? 'success' : 'idle'), startedAt: prdSnap.startedAt, finalElapsed: prdSnap.finalElapsed };
+        return { status: deriveStatus(prdSnap.streaming, prdSnap.finalElapsed), startedAt: prdSnap.startedAt, finalElapsed: prdSnap.finalElapsed };
       case 'ai-import':
       case 'prd-import': {
         // 两面板共用同一 store——按运行类型 kind 分流，避免「从 PRD 导入」运行时「AI 项目计划导入」卡片也转圈（2026-09-26 用户反馈）。
         const mine = (key === 'prd-import') === (aiImp.kind === 'prd');
         if (!mine) return { status: 'idle' };
-        return { status: aiImp.busy ? 'running' : (aiImp.finalElapsed != null ? 'success' : 'idle'), startedAt: aiImp.startedAt, finalElapsed: aiImp.finalElapsed };
+        return { status: deriveStatus(aiImp.busy, aiImp.finalElapsed), startedAt: aiImp.startedAt, finalElapsed: aiImp.finalElapsed };
       }
       case 'offline':
-        return { status: busy ? 'running' : (offlineFinal != null ? 'success' : 'idle'), startedAt: offlineStartedAt, finalElapsed: offlineFinal };
+        return { status: deriveStatus(busy, offlineFinal), startedAt: offlineStartedAt, finalElapsed: offlineFinal };
       default:
         return { status: 'idle' };
     }
@@ -630,20 +639,25 @@ export function ReportPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', margin: '14px 0 0', padding: '10px 14px', border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--accent-soft)' }}>
           <Zap size={15} style={{ color: 'var(--accent)', flexShrink: 0 }} />
           <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', flexShrink: 0 }}>现在做：</span>
-          {readyPlans.map((rp) => (
+          {readyPlans.map((rp) => {
+            // S4624：内层模板抽出为局部常量，避免嵌套模板字符串
+            const complexityPart = rp.complexity ? `，复杂度 ${rp.complexity}/5` : '';
+            const taskNoPart = rp.task_no ? ` ${rp.task_no}` : '';
+            return (
             <button
               key={rp.id}
               onClick={() => {
                 if (rp.task_no) { try { sessionStorage.setItem('tasks.focusId', JSON.stringify(rp.task_no)); } catch { /* 忽略 */ } }
                 globalThis.dispatchEvent(new CustomEvent('mtaskNavigate', { detail: { tab: 'tasks' } }));
               }}
-              title={`就绪任务：前置依赖均已完成${rp.complexity ? `，复杂度 ${rp.complexity}/5` : ''} — 点击前往任务${rp.task_no ? ` ${rp.task_no}` : ''}`}
+              title={`就绪任务：前置依赖均已完成${complexityPart} — 点击前往任务${taskNoPart}`}
               aria-label={`前往就绪任务 ${rp.title}`}
               style={{ fontSize: 12, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--accent)', background: 'var(--card-bg)', color: 'var(--accent)', cursor: 'pointer', whiteSpace: 'nowrap' }}
             >
               {rp.title}（{rp.duration_days} 天{rp.complexity ? ` · 复杂度${rp.complexity}` : ''}）→
             </button>
-          ))}
+            );
+          })}
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>前置依赖已完成的就绪任务（来自项目计划依赖图）</span>
         </div>
       )}

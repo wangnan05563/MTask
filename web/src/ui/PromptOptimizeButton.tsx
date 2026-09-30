@@ -22,16 +22,14 @@ let toolPending: Promise<string> | null = null;
 
 async function resolveToolId(): Promise<string> {
   if (toolCache) return toolCache;
-  if (!toolPending) {
-    toolPending = api.get<AITool[]>('/aitools')
-      .then((list) => {
-        const valid = (list ?? []).filter((t) => t.model);
-        toolCache = valid[0]?.id ?? '';
-        return toolCache;
-      })
-      .catch(() => '')
-      .finally(() => { toolPending = null; });
-  }
+  toolPending ??= api.get<AITool[]>('/aitools')
+    .then((list) => {
+      const valid = (list ?? []).find((t) => t.model);
+      toolCache = valid?.id ?? '';
+      return toolCache;
+    })
+    .catch(() => '')
+    .finally(() => { toolPending = null; });
   return toolPending;
 }
 
@@ -86,6 +84,9 @@ export function PromptOptimizeButton({ title, content, onClick, onOptimized, dis
 
   const idle = !busy && !disabled && !!text;
   const label = busy ? '提示词优化进行中…' : '提示词优化 — 用选中工具把内容改写为结构化提示词';
+  let color = 'var(--text-muted)';
+  if (idle) color = 'var(--text)';
+  if (busy) color = 'var(--accent-text)';
   return (
     <button
       onClick={() => void run()}
@@ -97,7 +98,7 @@ export function PromptOptimizeButton({ title, content, onClick, onOptimized, dis
         fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', border: 'none',
         cursor: idle ? 'pointer' : 'default',
         background: busy ? 'var(--accent)' : 'transparent',
-        color: busy ? 'var(--accent-text)' : (idle ? 'var(--text)' : 'var(--text-muted)'),
+        color,
         opacity: idle || busy ? 1 : 0.75,
       }}
     >

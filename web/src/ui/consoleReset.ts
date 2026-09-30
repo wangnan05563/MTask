@@ -54,7 +54,7 @@ export async function resetWorkbenchArtifacts(): Promise<{ ok: boolean; error?: 
   // 3. 草稿产物
   clearArtifactSession();
   // 4. 广播：挂载中的 AI 控制台同步重置本地 state
-  try { window.dispatchEvent(new CustomEvent(CONSOLE_RESET_EVENT)); } catch { /* 忽略 */ }
+  try { globalThis.dispatchEvent(new CustomEvent(CONSOLE_RESET_EVENT)); } catch { /* 忽略 */ }
   return { ok: true };
 }
 

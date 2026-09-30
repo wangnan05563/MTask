@@ -6,7 +6,7 @@ REM MTask build script: install deps, typecheck, build server, build web, packag
 REM This file is pure ASCII on purpose so cmd (ANSI codepage) parses it reliably.
 
 REM Prefer the WorkBuddy managed Node (matches better-sqlite3 ABI).
-set "MGNode=C:\Users\hspcadmin\.workbuddy\binaries\node\versions\22.22.2"
+set "MGNode=C:\Users\hspcadmin\.workbuddy\binaries\node\versions\22.22.2-3"
 if exist "%MGNode%\node.exe" set "PATH=%MGNode%;%PATH%"
 
 REM Use npmmirror so electron + electron-builder binaries can be downloaded.

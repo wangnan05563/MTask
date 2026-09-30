@@ -36,11 +36,15 @@ export function normalizeIssues(raw: unknown): PrdGenIssue[] {
  */
 export function scanJsonArrays(text: string): unknown[] {
   const out: unknown[] = [];
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] !== '[') continue;
+  // T01361（S2310）：外层改 while 手动推进——解析成功后跳到数组末尾的下一字符（i = j + 1），
+  // 其余路径步进 1；与原 for（i = j 后经 i++ 得 j+1）行为完全一致
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] !== '[') { i++; continue; }
     let depth = 0;
     let inStr = false;
     let esc = false;
+    let parsed = false;
     for (let j = i; j < text.length; j++) {
       const ch = text[j];
       if (inStr) {
@@ -57,11 +61,13 @@ export function scanJsonArrays(text: string): unknown[] {
           try {
             out.push(JSON.parse(text.slice(i, j + 1)));
           } catch { /* 非完整 JSON 片段，继续向后找下一个 '[' */ }
-          i = j; // 跳过本次已解析区间
+          i = j + 1; // 跳过本次已解析区间
+          parsed = true;
           break;
         }
       }
     }
+    if (!parsed) i++;
   }
   return out;
 }
@@ -173,7 +179,7 @@ export function splitPrdBody(text: string): string {
 
 /** T00818：问题清单内联渲染的前置保护——单元格里的管道符/换行会破坏表格结构，替换为占位 */
 function escCell(s: string): string {
-  return String(s).replaceAll('|', '\\|').replaceAll('\n', ' ').trim();
+  return String(s).replaceAll('|', String.raw`\|`).replaceAll('\n', ' ').trim();
 }
 
 /** T00818：待确认问题级别 → 中文短标签（与交互表格口径一致，便于正文可直接阅读） */

@@ -1,0 +1,7 @@
+{
+ "exportedAt": "2026-09-30T12:20:00+08:00",
+ "note": "T01361 修复前基线：26_MTask 项目 OPEN 问题（首次正确源码扫描 sonar-scan1 结果）。",
+ "caveat": "此前误判 hnnxbank 污染系 /api/issues/search 的 projectKeys 参数未生效所致；本文件仅含 project=26_MTask。",
+ "total": 0,
+ "issues": []
+}

@@ -246,7 +246,9 @@ function safeExportName(name: string, fallback: string): string {
  * 客户端只负责触发下载，保证两处入口导出结果一致、不依赖浏览器端能力。
  */
 planApi.get('/prd-docs/:id/export', exportGate('prd-doc-export', undefined, { defer: true }), async (req, res) => {
-  const format = String(req.query.format ?? 'md').toLowerCase();
+  // T01361（S6551）：query 参数先 typeof 收窄，避免 object 形态进入字符串化
+  const fmtRaw = req.query.format;
+  const format = (typeof fmtRaw === 'string' ? fmtRaw : 'md').toLowerCase();
   if (!['md', 'docx', 'pdf'].includes(format)) return res.status(400).json({ error: 'format 仅支持 md / docx / pdf' });
   try {
     const doc = PlanService.getPrdDoc(req.params.id) as { filename?: string; content_md?: string } | undefined;
@@ -255,7 +257,8 @@ planApi.get('/prd-docs/:id/export', exportGate('prd-doc-export', undefined, { de
     const md = doc.content_md ?? '';
     if (format === 'md') {
       res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`${base}.md`)}`);
+      const fileName = `${base}.md`;
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
       res.send(Buffer.from(md, 'utf8'));
       return;
     }
@@ -265,7 +268,8 @@ planApi.get('/prd-docs/:id/export', exportGate('prd-doc-export', undefined, { de
     res.setHeader('Content-Type', format === 'docx'
       ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
       : 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`${base}.${format}`)}`);
+    const exportName = `${base}.${format}`;
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(exportName)}`);
     res.send(buf);
   } catch (e: unknown) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
@@ -329,7 +333,7 @@ planApi.get('/prd-requirements/export', exportGate('req-matrix-export', undefine
   const STATUS_LABEL: Record<string, string> = { todo: '待开始', doing: '进行中', done: '已完成', changed: '已变更' };
   const PRIORITY_LABEL: Record<string, string> = { high: '高', medium: '中', normal: '普通', low: '低' };
   try {
-    const rows = PlanService.listRequirements(projectId) as Array<Record<string, unknown>>;
+    const rows = PlanService.listRequirements(projectId);
     const project = PlanService.getProjectBrief(projectId);
     const { buildMatrixXlsx } = await import('../services/prdExport'); // 按需加载 exceljs
     const data = rows.map((r) => {
@@ -345,7 +349,10 @@ planApi.get('/prd-requirements/export', exportGate('req-matrix-export', undefine
         source: String(r.source_ref ?? ''),
         prdDoc: prd?.filename ?? '',
         plans: plans.map((p) => p.title ?? '').filter(Boolean).join('；'),
-        tasks: tasks.map((t) => `${t.taskNo ? `${t.taskNo} ` : ''}${t.title ?? ''}`.trim()).filter(Boolean).join('；'),
+        tasks: tasks.map((t) => {
+          const taskLabel = t.taskNo ? `${t.taskNo} ${t.title ?? ''}` : `${t.title ?? ''}`;
+          return taskLabel.trim();
+        }).filter(Boolean).join('；'),
       };
     });
     const buf = await buildMatrixXlsx(data, project.name);

@@ -18,7 +18,7 @@ export interface DesktopApi {
 
 /** 取桌面壳 API；非 Electron 环境返回 null（调用方需自行降级） */
 export function desktopApi(): DesktopApi | null {
-  const w = window as unknown as { mtaskDesktop?: Partial<DesktopApi> };
+  const w = globalThis as unknown as { mtaskDesktop?: Partial<DesktopApi> };
   const api = w.mtaskDesktop;
   return typeof api?.openDirectory === 'function' ? (api as DesktopApi) : null;
 }

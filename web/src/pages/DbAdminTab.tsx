@@ -167,7 +167,13 @@ export function DbAdminTab() {
     try {
       const d = await api.get<{ backups: Array<{ name: string; size: number; mtime: string }>; status: { lastRun: { file: string; at: string; reason: string } | null; lastError: string | null } }>('/backups');
       setBackups(d.backups);
-      setLastBackup(d.status.lastRun ? `${d.status.lastRun.file}（${d.status.lastRun.reason === 'manual' ? '手动' : '自动'}，${d.status.lastRun.at.slice(0, 19).replace('T', ' ')}）` : '暂无');
+      const lastRun = d.status.lastRun;
+      if (lastRun) {
+        const mode = lastRun.reason === 'manual' ? '手动' : '自动';
+        setLastBackup(`${lastRun.file}（${mode}，${lastRun.at.slice(0, 19).replace('T', ' ')}）`);
+      } else {
+        setLastBackup('暂无');
+      }
       setLastError(d.status.lastError ?? '');
     } catch { /* 加载失败不打断页面 */ }
   }, []);

@@ -53,9 +53,9 @@ const DEFAULTS: SettingsPrefs = { theme: 'light', font: 'default', fontSize: 'm'
 
 /** T01060-FR4.1：hex 亮度（0~1）——用于强调色上按钮文字自动取深/白，保证对比度 */
 function luminance(hex: string): number {
-  const r = parseInt(hex.slice(1, 3), 16) / 255;
-  const g = parseInt(hex.slice(3, 5), 16) / 255;
-  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const r = Number.parseInt(hex.slice(1, 3), 16) / 255;
+  const g = Number.parseInt(hex.slice(3, 5), 16) / 255;
+  const b = Number.parseInt(hex.slice(5, 7), 16) / 255;
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
@@ -242,13 +242,13 @@ export function SettingsProvider({ children }: { readonly children: ReactNode })
   const [prefs, setPrefs] = useState<SettingsPrefs>(loadPrefs);
   // T01060-FR4.2：跟随系统——auto 时监听系统配色变化，动态解析实际主题
   const [systemDark, setSystemDark] = useState(() =>
-    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
-      ? window.matchMedia('(prefers-color-scheme: dark)').matches
+    globalThis.window !== undefined && typeof globalThis.matchMedia === 'function'
+      ? globalThis.matchMedia('(prefers-color-scheme: dark)').matches
       : false,
   );
   useEffect(() => {
-    if (prefs.theme !== 'auto' || typeof window.matchMedia !== 'function') return;
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    if (prefs.theme !== 'auto' || typeof globalThis.matchMedia !== 'function') return;
+    const mq = globalThis.matchMedia('(prefers-color-scheme: dark)');
     const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
@@ -257,7 +257,9 @@ export function SettingsProvider({ children }: { readonly children: ReactNode })
   // 偏好变化即持久化 + 应用主题与字体。data-theme 用 dataset 写入（S7761）
   useEffect(() => {
     try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch { /* 忽略配额等写入失败 */ }
-    const effTheme = prefs.theme === 'auto' ? (systemDark ? 'dark' : 'light') : prefs.theme;
+    // S3358：嵌套三元展开为 if 语句
+    let effTheme: Theme = prefs.theme;
+    if (effTheme === 'auto') effTheme = systemDark ? 'dark' : 'light';
     document.documentElement.dataset.theme = effTheme;
     document.documentElement.style.setProperty('--font-family', FONT_MAP[prefs.font]);
     const vars = FONT_SIZE_MAP[prefs.fontSize];

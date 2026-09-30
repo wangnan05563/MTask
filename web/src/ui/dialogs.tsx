@@ -69,7 +69,10 @@ function InputDialog({ options, onSubmit }: InputDialogProps) {
   }, []);
 
   // T00964：allowEmpty 时空输入 resolve ''（仍可与取消 null 区分），否则维持"空=取消"老语义
-  const ok = () => onSubmit(value.trim() ? value.trim() : (options.allowEmpty ? '' : null));
+  const ok = () => {
+    const trimmed = value.trim();
+    onSubmit(trimmed || (options.allowEmpty ? '' : null));
+  };
   const cancel = () => onSubmit(null);
 
   // 遮罩点击关闭用文档级事件委托 + ref 包含性判断（S6848），避免在非交互遮罩上挂交互 handler

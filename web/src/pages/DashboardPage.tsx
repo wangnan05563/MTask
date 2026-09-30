@@ -20,7 +20,7 @@ const RANGES = [
   { days: 90, label: '近 90 天' },
 ];
 
-function StatCard({ icon, label, value, sub, accent }: { icon: React.ReactNode; label: string; value: string; sub: string; accent?: boolean }) {
+function StatCard({ icon, label, value, sub, accent }: { readonly icon: React.ReactNode; readonly label: string; readonly value: string; readonly sub: string; readonly accent?: boolean }) {
   return (
     <div style={{ flex: '1 1 200px', padding: 14, border: `1px solid ${accent ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 10, background: 'var(--card-bg)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)' }}>{icon}{label}</div>
@@ -92,8 +92,8 @@ export function DashboardPage() {
           <div style={{ marginTop: 16, padding: 14, border: '1px solid var(--border)', borderRadius: 10 }}>
             <div className="skel" style={{ width: 140, height: 13 }} />
             <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'flex-end', height: 90 }}>
-              {[60, 34, 80, 45, 70, 25, 88].map((h, i) => (
-                <div key={i} className="skel" style={{ width: 26, height: `${h}%` }} />
+              {[60, 34, 80, 45, 70, 25, 88].map((h) => (
+                <div key={h} className="skel" style={{ width: 26, height: `${h}%` }} />
               ))}
             </div>
           </div>

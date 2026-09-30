@@ -9,9 +9,9 @@
 import { type ButtonHTMLAttributes, type ReactNode } from 'react';
 
 interface FlowButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  loading?: boolean;
-  loadingText?: string;
-  children: ReactNode;
+  readonly loading?: boolean;
+  readonly loadingText?: string;
+  readonly children: ReactNode;
 }
 
 export function FlowButton({ loading, loadingText = '处理中…', children, className, style, disabled, ...rest }: FlowButtonProps) {

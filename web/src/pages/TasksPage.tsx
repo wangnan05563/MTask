@@ -59,7 +59,7 @@ interface ImageDraft {
 /** T00658：三态复选框（支持半选态）——原生 indeterminate 只能经属性设置，封装为受控组件。
  *  用于多选模式标题旁的「全选框」：全选=checked、部分选中=indeterminate、未选=空。 */
 /** T01064-FR1.5：任务事件时间线——状态流转/回传/验证历史（/api/events/by-task/:id，正序；无事件不渲染） */
-function TaskEventTimeline({ taskId }: { taskId: string }) {
+function TaskEventTimeline({ taskId }: { readonly taskId: string }) {
   const [events, setEvents] = useState<Array<{ kind: string; detail: string; created_at: string }> | null>(null);
   useEffect(() => {
     let alive = true;
@@ -72,8 +72,8 @@ function TaskEventTimeline({ taskId }: { taskId: string }) {
   return (
     <div style={{ margin: '8px 0 0', padding: '8px 10px', border: '1px dashed var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
       <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>时间线 · 事件自动记录</div>
-      {events.map((ev, i) => (
-        <div key={i} style={{ display: 'flex', gap: 8, fontSize: 11, alignItems: 'baseline' }}>
+      {events.map((ev) => (
+        <div key={`${ev.created_at}|${ev.kind}|${ev.detail}`} style={{ display: 'flex', gap: 8, fontSize: 11, alignItems: 'baseline' }}>
           <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>{ev.created_at.slice(5, 16).replace('T', ' ')}</span>
           <span style={{ color: ev.detail.includes('失败') ? 'var(--danger)' : 'var(--text-secondary)' }}>{ev.detail}</span>
         </div>
@@ -465,7 +465,7 @@ export function TasksPage() {
       setDescExpanded((p) => ({ ...p, [focusTaskId]: true }));
       setResultOpen((p) => ({ ...p, [focusTaskId]: true }));
       const done = () => { el.style.outline = prevOutline; el.style.background = prevBg; setFocusTaskId(''); setFocusTab(''); };
-      window.setTimeout(done, 3000);
+      globalThis.setTimeout(done, 3000);
     } else {
       setFocusTaskId(''); setFocusTab('');
     }
@@ -960,7 +960,9 @@ export function TasksPage() {
       flash(`批量操作完成：${r.affected} 条已更新`);
       // T01065-FR1.6：批量操作撤销快照——操作前抓旧值（status/priority/category/color），
       // 工具栏出现一次性「撤销」按钮逐条还原；归档类不提供 undo（归档页可恢复）
-      if (action !== 'archive') {
+      if (action === 'archive') {
+        setLastBatch(null);
+      } else {
         const all = [...todo, ...done, ...shelvedTasks];
         const entries = ids
           .map((id) => {
@@ -969,9 +971,8 @@ export function TasksPage() {
             return { id, patch: { status: t.status, priority: t.priority, category_id: t.category_id, color: t.color || '' } };
           })
           .filter((x): x is NonNullable<typeof x> => x !== null);
-        if (entries.length > 0) setLastBatch({ entries, label: `${ACTION_LABEL[action]}${value ? `（${value}）` : ''}` });
-      } else {
-        setLastBatch(null);
+        const valueSuffix = value ? `（${value}）` : '';
+        if (entries.length > 0) setLastBatch({ entries, label: `${ACTION_LABEL[action]}${valueSuffix}` });
       }
       setSelectedIds(new Set());
       void loadTasks(activeProject);
@@ -985,7 +986,7 @@ export function TasksPage() {
     const ids = [...selectedIds];
     if (ids.length === 0) return flash('请先勾选任务');
     const target = projects.find((p) => p.id === projectId);
-    if (!window.confirm(`将选中的 ${ids.length} 条任务移动到「${target?.name ?? projectId}」？`)) return;
+    if (!globalThis.confirm(`将选中的 ${ids.length} 条任务移动到「${target?.name ?? projectId}」？`)) return;
     setBatchOpBusy(true);
     try {
       await api.post('/tasks/move', { taskIds: ids, projectId });
@@ -1463,13 +1464,13 @@ export function TasksPage() {
   const [retryingNo, setRetryingNo] = useState('');
   async function handleRetryTask(taskNo: string) {
     if (retryingNo) return;
-    if (!window.confirm(`重试任务 ${taskNo}？将回到待办并等待 AI 重新领取执行，历次处理结果保留。`)) return;
+    if (!globalThis.confirm(`重试任务 ${taskNo}？将回到待办并等待 AI 重新领取执行，历次处理结果保留。`)) return;
     setRetryingNo(taskNo);
     try {
       await api.post(`/tasks/by-no/${taskNo}/retry`, {});
       await loadTasks(activeProject);
     } catch (e) {
-      window.alert(`重试失败：${e instanceof Error ? e.message : String(e)}`);
+      globalThis.alert(`重试失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setRetryingNo('');
     }
@@ -1757,6 +1758,7 @@ export function TasksPage() {
 
   /** 标题区：编辑态输入框 / 展示态文本 + 描述展开按钮 */
   function renderTaskTitle(t: Task, titleEditing: boolean) {
+    const markTitleRead = () => { if (t.status === 'done' && !t.handle_result && t.ai_state === 'unread') { void api.patch(`/tasks/${t.id}`, { aiState: '' }).then(() => setTasksStateRead(t.id)); } };
     return (
       <>
         {titleEditing ? (
@@ -1772,7 +1774,10 @@ export function TasksPage() {
           // T00918：已完成且无处理结果反馈的任务，其标题行常无「描述/处理结果」展开入口可点，
           // 未读红点无处置除；故点击标题本身即视为「已查看」，清除该任务未读状态（仅覆盖此场景，不影响已填反馈任务）
           <span
-            onClick={() => { if (t.status === 'done' && !t.handle_result && t.ai_state === 'unread') { void api.patch(`/tasks/${t.id}`, { aiState: '' }).then(() => setTasksStateRead(t.id)); } }}
+            role="button"
+            tabIndex={0}
+            onClick={markTitleRead}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); markTitleRead(); } }}
             title={t.status === 'done' && !t.handle_result && t.ai_state === 'unread' ? '点击消除未读状态' : undefined}
             style={{ flex: 1, textDecoration: t.status === 'done' ? 'line-through' : 'none', color: t.color || 'var(--text)', cursor: t.status === 'done' && !t.handle_result && t.ai_state === 'unread' ? 'pointer' : 'default' }}
           >

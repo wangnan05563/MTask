@@ -24,8 +24,10 @@ function extractPrdTitle(prdMd: string): string {
 }
 
 /** T00819：文件名安全化——替换操作系统非法字符与控制符，剔除首尾点；清空返回 ''（调用方回退兜底命名） */
+const FILENAME_ILLEGAL_CHARS = String.raw`\/:*?"<>|`;
 function safeFilename(s: string): string {
-  return s.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim().replace(/^\.+|\.+$/g, '');
+  const cleaned = [...s].map((ch) => (FILENAME_ILLEGAL_CHARS.includes(ch) || (ch.codePointAt(0) ?? 0) < 0x20 ? '_' : ch)).join('');
+  return cleaned.trim().replaceAll(/(^\.+)|(\.+$)/g, '');
 }
 
 // T00820：结论(填写即确认)的会话持久化键——存「正文指纹 → {问题:结论}」映射。
@@ -35,7 +37,7 @@ const PRD_CONCL_KEY = 'prdGen.conclusion';
 /** T00820：稳定字符串指纹（djb2），用正文 prdMd 区分"批"，同一批切换页可恢复、不同批不串 */
 function hashStr(s: string): string {
   let h = 5381;
-  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + (s.codePointAt(i) ?? 0)) >>> 0;
   return h.toString(36);
 }
 
@@ -89,6 +91,8 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
   const [pickedFiles, setPickedFiles] = useState<File[]>([]);
   // T00933：批次里"当前正在查看/录入"的那一份（多选会产出多份 PRD，需可逐份切换，否则只能碰到最后一份）
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
+  /** 从已选列表移除指定下标的文件（确认生成前可单独删除） */
+  const removePickedFile = (idx: number) => setPickedFiles((prev) => prev.filter((_, i) => i !== idx));
   const { streaming } = snap;
   const activeItem = activeBatchId ? snap.batch.find((b) => b.id === activeBatchId) ?? null : null;
   const result = activeItem && !activeItem.failed
@@ -371,7 +375,7 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
           {pickedFiles.map((f, idx) => (
             <div key={`${f.name}-${idx}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 10px', borderTop: '1px solid var(--border-weak, var(--border-strong))' }}>
               <span style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={f.name}>{f.name}</span>
-              <button onClick={() => setPickedFiles((prev) => prev.filter((_, i) => i !== idx))} className="tbtn-anim"
+              <button onClick={() => removePickedFile(idx)} className="tbtn-anim"
                 title="删除 — 从已选列表中移除该文件，不再参与生成" aria-label="删除：移除已选文件"
                 style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px' }}>
                 <Trash2 size={13} />
@@ -380,7 +384,12 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
           ))}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '6px 10px', borderTop: '1px solid var(--border-weak, var(--border-strong))' }}>
             <span style={{ flex: 1, fontSize: 11, color: 'var(--text-muted)', alignSelf: 'center' }}>{streaming ? '生成中…' : ''}</span>
-            <button onClick={() => { if (pickedFiles.length === 0) return; const files = pickedFiles; setPickedFiles([]); void runBatchGenerate(files); }} disabled={streaming} className="tbtn-anim"
+            <button onClick={() => {
+              if (pickedFiles.length === 0) return;
+              const files = pickedFiles;
+              setPickedFiles([]);
+              void runBatchGenerate(files);
+            }} disabled={streaming} className="tbtn-anim"
               title="确认 — 对已选的全部原始需求文件逐个开始生成 PRD" aria-label="确认：对全部已选文件生成 PRD"
               style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, border: 'none', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: streaming ? 'default' : 'pointer', padding: '4px 10px' }}>
               <Sparkles size={12} /> 确认（{pickedFiles.length}）

@@ -15,6 +15,25 @@ import { stripWordFieldCodes } from '../util/wordFields'; // T00814：清洗 Wor
 import { logService } from './LogService'; // T00821：覆盖录入行为留痕（覆盖时间/文件名/项目，单机无账号故操作人留空）
 import { parsePlanDeps, depsSatisfied } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7）
 
+/** T01361：需求跟踪矩阵行（prd_requirements 全列 + 联表摘要）——具体化类型替代 Record<string, unknown>（Sonar S6551） */
+export interface RequirementRow {
+  id: string;
+  project_id: string;
+  req_no: string | null;
+  title: string | null;
+  content: string | null;
+  source_ref: string | null;
+  priority: string | null;
+  status: string | null;
+  sort_order: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+  prd_id: string | null;
+  linkedPlans: Array<{ id: string; title: string; status: string }>;
+  linkedTasks: Array<{ taskNo: string | null; title: string | null; status: string; verified: boolean }>;
+  prdDoc: { id: string; filename: string } | null;
+}
+
 export interface PlanTaskRow {
   id: string;
   project_id: string;
@@ -535,7 +554,9 @@ function normalizeRequirements(raw: unknown[]): Array<{ reqNo: string; title: st
  *  多级编号（如 "1.1 需求评审"）必为明细任务；一级编号开头（如 "1 M1 平台搭建"）即顶层=阶段里程碑。
  *  用结构（WBS 层级）而非关键词识别，避免把普通任务误判为里程碑。 */
 function resolvePrdKind(title: string, kindRaw: unknown): PlanKind {
-  const k = String(kindRaw ?? '').trim().toLowerCase();
+  // T01361（S6551）：kindRaw 非 string 时不再做 String() 兜底——来源均为 TEXT 列/JSON 字符串，
+  // 非字符串值原本也匹配不到任何 PlanKind，行为等价（同样落按编号兜底分支）
+  const k = (typeof kindRaw === 'string' ? kindRaw : '').trim().toLowerCase();
   if (k === 'milestone' || k === 'normal' || k === 'daily') return k as PlanKind;
   // 多级编号（1.1/2.3）→ 明细任务
   if (/^\s*\d+(\.\d+)+\s*[.\sA-Za-z0-9]/.test(title)) return 'normal';
@@ -1057,36 +1078,40 @@ export const PlanService = {
     const db = getDb();
     const proj = db.prepare('SELECT name FROM projects WHERE id = ?').get(projectId) as { name: string } | undefined;
     const name = proj?.name ?? projectId;
-    const esc = (s: unknown) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+    // T01361（S6551）：入参具体化为 string|null|undefined——调用点均传 DB TEXT 列值，行为等价
+    const esc = (s: string | null | undefined) => (s ?? '').replaceAll('|', String.raw`\|`).replaceAll('\n', ' ');
     const lines: string[] = [];
-    lines.push(`# ${name} · 全量导出`, '');
-    lines.push(`> 生成时间：${new Date().toISOString().slice(0, 19).replace('T', ' ')}　|　来源：MTask 项目管理`, '');
+    lines.push(`# ${name} · 全量导出`, '', `> 生成时间：${new Date().toISOString().slice(0, 19).replace('T', ' ')}　|　来源：MTask 项目管理`, '');
     // 任务清单
     const tasks = db.prepare(
       `SELECT task_no, title, status, priority, verified FROM tasks WHERE project_id = ? AND archived = 0 ORDER BY task_no`,
     ).all(projectId) as Array<{ task_no: string | null; title: string; status: string; priority: string; verified: number }>;
-    lines.push(`## 任务清单（${tasks.length} 条）`, '');
-    lines.push('| 编号 | 标题 | 状态 | 优先级 | 验证 |', '| --- | --- | --- | --- | --- |');
+    lines.push(`## 任务清单（${tasks.length} 条）`, '', '| 编号 | 标题 | 状态 | 优先级 | 验证 |', '| --- | --- | --- | --- | --- |');
     for (const t of tasks) {
       lines.push(`| ${t.task_no ?? '—'} | ${esc(t.title)} | ${t.status} | ${t.priority} | ${t.verified ? '✓' : ''} |`);
     }
     lines.push('');
     // WBS 计划
     const plans = this.list(projectId);
-    lines.push(`## 项目计划 / WBS（${plans.length} 条）`, '');
-    lines.push('| 类型 | 标题 | 开始 | 结束 | 工期 | 进度 | 状态 | 负责人 |', '| --- | --- | --- | --- | --- | --- | --- | --- |');
+    lines.push(`## 项目计划 / WBS（${plans.length} 条）`, '', '| 类型 | 标题 | 开始 | 结束 | 工期 | 进度 | 状态 | 负责人 |', '| --- | --- | --- | --- | --- | --- | --- | --- |');
     for (const p of plans) {
-      lines.push(`| ${p.kind === 'milestone' ? '里程碑' : p.kind === 'daily' ? '日常' : '任务'} | ${esc(p.title)} | ${p.start_date} | ${p.end_date} | ${p.duration_days} | ${p.progress}% | ${p.status} | ${esc(p.assignee) || '—'} |`);
+      let kindLabel = '任务';
+      if (p.kind === 'milestone') kindLabel = '里程碑';
+      else if (p.kind === 'daily') kindLabel = '日常';
+      lines.push(`| ${kindLabel} | ${esc(p.title)} | ${p.start_date} | ${p.end_date} | ${p.duration_days} | ${p.progress}% | ${p.status} | ${esc(p.assignee) || '—'} |`);
     }
     lines.push('');
     // 需求跟踪矩阵
-    const reqs = this.listRequirements(projectId) as Array<Record<string, unknown>>;
+    const reqs = this.listRequirements(projectId);
     if (reqs.length > 0) {
-      lines.push(`## 需求跟踪矩阵（${reqs.length} 条）`, '');
-      lines.push('| 编号 | 需求 | 状态 | 关联计划 |', '| --- | --- | --- | --- |');
+      lines.push(`## 需求跟踪矩阵（${reqs.length} 条）`, '', '| 编号 | 需求 | 状态 | 关联计划 |', '| --- | --- | --- | --- |');
       for (const r of reqs) {
-        const linked = (r.plans as Array<{ title?: string }> | undefined) ?? [];
-        lines.push(`| ${String(r.req_no ?? '—')} | ${esc(r.title)} | ${String(r.status ?? 'todo')} | ${linked.map((x) => esc(x.title)).join('、') || '—'} |`);
+        // T01361：原先读 r.plans（listRequirements 从未返回该字段，恒为 undefined → 关联计划列恒空），
+        // 改为读真实字段 linkedPlans，导出与界面矩阵同源
+        const linked = r.linkedPlans;
+        const reqNo = r.req_no == null ? '—' : String(r.req_no);
+        const status = r.status == null ? 'todo' : String(r.status);
+        lines.push(`| ${reqNo} | ${esc(r.title)} | ${status} | ${linked.map((x) => esc(x.title)).join('、') || '—'} |`);
       }
       lines.push('');
     }
@@ -1337,7 +1362,7 @@ export const PlanService = {
     // T01156：首轮预算抬到 PRD_PARSE_MIN_OUTPUT_TOKENS，避免长 PRD 触顶 max_tokens 截断 → 触发精简重试硬砍 requirements≤20 静默丢需求
     const ai = await AIService.askJson(toolId, system, `【PRD 文档】\n${docText}`, (content) =>
       parseJsonObjectWithRecovery(content, 'AI 未返回有效的 PRD 解析结果（需 JSON 对象），请检查文档内容或更换模型'),
-      PRD_PARSE_TIMEOUT_MS, systemCompact, PRD_PARSE_MIN_OUTPUT_TOKENS,
+      { timeoutMs: PRD_PARSE_TIMEOUT_MS, retrySystem: systemCompact, maxTokens: PRD_PARSE_MIN_OUTPUT_TOKENS },
     );
     if (!ai.ok) throw new Error(`AI 解析失败：${ai.error}`);
     // T01156：精简重试一旦触发，说明首轮输出被截断（需求/计划数量可能被压缩），必须显式告知，不能静默丢需求
@@ -1384,7 +1409,7 @@ export const PlanService = {
     const planItems = (input.plans ?? []).filter((p) => p?.title?.trim());
     if (reqs.length === 0 && planItems.length === 0) throw new Error('没有可导入的需求或计划条目');
     // T01001 二轮：落库前统一汇总里程碑工期（= 其下明细之和），覆盖直接调 import-prd / MCP 未做汇总的路径
-    const planKinds = planItems.map((p) => (p.kind ?? resolvePrdKind(p.title, p.kind)) as PlanKind);
+    const planKinds = planItems.map((p) => (p.kind ?? resolvePrdKind(p.title, p.kind)));
     const planDurations = milestoneDurations(planItems.map((p, i) => ({ kind: planKinds[i], durationDays: p.durationDays })));
     const t = now();
     let taskCount = 0;
@@ -1711,9 +1736,13 @@ export const PlanService = {
   // ---------- T00662：需求跟踪矩阵 CRUD ----------
 
   /** 矩阵行列表（按项目；含关联的计划与待办摘要，供矩阵展示「需求 ← 计划/任务」关联关系） */
-  listRequirements(projectId: string): Array<Record<string, unknown>> {
+  /**
+   * T01361：需求跟踪矩阵行（prd_requirements 全列 + 联表摘要）——具体化类型替代
+   * `Record<string, unknown>`（Sonar S6551：unknown/object 字符串化无法证明有 toString）。
+   */
+  listRequirements(projectId: string): RequirementRow[] {
     const db = getDb();
-    const reqs = db.prepare('SELECT * FROM prd_requirements WHERE project_id = ? ORDER BY sort_order, created_at').all(projectId) as Array<Record<string, unknown>>;
+    const reqs = db.prepare('SELECT * FROM prd_requirements WHERE project_id = ? ORDER BY sort_order, created_at').all(projectId) as Array<Omit<RequirementRow, 'linkedPlans' | 'linkedTasks' | 'prdDoc'>>;
     const plans = db.prepare('SELECT id, title, status, req_ids FROM plan_tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ id: string; title: string; status: string; req_ids: string | null }>;
     const tasks = db.prepare('SELECT id, task_no, title, status, verified, req_ids FROM tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ id: string; task_no: string | null; title: string; status: string; verified: number; req_ids: string | null }>;
     const parse = (v: string | null): string[] => {
