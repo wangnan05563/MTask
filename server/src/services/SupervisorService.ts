@@ -50,6 +50,8 @@ export interface SupervisorConfig {
 export interface SupervisorProbe {
   hasActiveSession: boolean;
   hasStalledSession: boolean;
+  /** T01357：失败会话也需进入决策（只剩 failed 会话而无 running 任务时，tick 不能判空转静默） */
+  hasFailedSession: boolean;
   hasRunningTask: boolean;
   /** 任一为真即需进入决策流程 */
   hasWork: boolean;
@@ -98,7 +100,7 @@ export interface SupervisorStatusView {
   maxConcurrent: number;
   maxRetry: number;
   cooldownMs: number;
-  /** 活跃/停滞会话（含关联任务简述），即 FR-5.1 面板的数据源口径 */
+  /** 活跃/停滞/失败会话（含关联任务简述），即 FR-5.1 面板的数据源口径（T01357：failed 纳入） */
   activeSessions: SnapshotSession[];
   /** 最近一次决策轮次时刻；无审计记录为 null */
   lastRunAt: string | null;
@@ -151,6 +153,9 @@ export interface SnapshotSession {
   progress: number;
   /** 停滞标记（status='stalled' 的语义化别名，便于 LLM 直接消费） */
   stale: boolean;
+  /** T01357：失败标记（status='failed' 的语义化别名）——平台已显式上报执行失败，
+   *  是 PRD §8「failed ──REDISPATCH──▶ active(换台)」的会话级触发前提 */
+  failed: boolean;
   /** 会话关联任务（LLM 据 taskId 产出 RESUME/REDISPATCH 动作） */
   tasks: Array<{ taskId: string; taskNo: string | null; title: string }>;
 }
@@ -222,8 +227,9 @@ const MONITOR_SYSTEM_PROMPT = [
   '只依据下方快照，不虚构任务、不虚构 taskId。',
   '可用动作：',
   '- CONTINUE：会话健康，等待下一心跳',
-  '- RESUME：会话停滞，重新标记就绪触发续跑',
-  '- REDISPATCH：连续失败，换到另一个平台（toPlatform 指定目标平台）',
+  '- RESUME：会话停滞（stale），重新标记就绪触发续跑',
+  // T01357：明确 REDISPATCH 触发条件——会话级失败或「停滞+任务侧已有失败记录」，防止 failed 入快照后过度换台
+  '- REDISPATCH：换到另一个平台（toPlatform），仅在以下任一情形使用：会话已失败（failed）；会话停滞（stale）且其关联任务已在失败列表（failed 数组）或重试计数（retryCount）> 0。健康会话不换台，单次停滞优先 RESUME',
   '- SPLIT：任务复杂度过高，拆分为子任务',
   '- ESCALATE：超重试上限/需人工判断',
   '只输出 JSON：{"actions":[{"type":"...","taskId":"...","toPlatform":"...","reason":"..."}]}；',
@@ -293,7 +299,8 @@ function buildDegradedActions(snapshot: MonitorSnapshot, error?: string): Superv
     return out.length >= ACTION_LIMIT;
   };
   for (const s of snapshot.sessions) {
-    if (!s.stale) continue;
+    // T01357：failed 会话与停滞会话同样「需人工介入」，降级时一并升级为 ESCALATE
+    if (!s.stale && !s.failed) continue;
     for (const t of s.tasks) if (push(t.taskId)) return out;
   }
   for (const f of snapshot.failed) if (push(f.taskId)) return out;
@@ -439,14 +446,16 @@ export const SupervisorService = {
   },
 
   /**
-   * 活跃/停滞会话（含关联任务简述）——决策快照（collectSnapshot）与状态接口共用同一采集实现：
+   * 活跃/停滞/失败会话（含关联任务简述）——决策快照（collectSnapshot）与状态接口共用同一采集实现：
    * 两处各写一套「会话 → 任务」联表，迟早出现「面板说有任务、快照说没有」的口径漂移。
+   * T01357：`failed` 纳入快照——平台已显式上报失败的会话对决策 LLM 可见（只读观测，M1 边界不变），
+   * 否则 REDISPATCH 的会话级前提（PRD §8）不可达，决策只能退化为依赖任务侧重试计数。
    * IN 分批 200 规避 SQLite 变量上限（与 TaskService / ExecSessionService 同口径）。
    */
   listActiveSessions(): SnapshotSession[] {
     const db = getDb();
     const sessRows = db.prepare(
-      "SELECT platform, status, progress, task_ids FROM exec_sessions WHERE status IN ('active','stalled') ORDER BY last_heartbeat DESC",
+      "SELECT platform, status, progress, task_ids FROM exec_sessions WHERE status IN ('active','stalled','failed') ORDER BY last_heartbeat DESC",
     ).all() as Array<{ platform: string; status: string; progress: number; task_ids: string }>;
     const sessTaskIds = new Set<string>();
     for (const s of sessRows) for (const id of parseTaskIds(s.task_ids)) sessTaskIds.add(id);
@@ -464,6 +473,7 @@ export const SupervisorService = {
       status: s.status,
       progress: s.progress,
       stale: s.status === 'stalled',
+      failed: s.status === 'failed',
       tasks: parseTaskIds(s.task_ids)
         .map((id) => briefById.get(id))
         .filter((t): t is { taskId: string; taskNo: string | null; title: string } => !!t),
@@ -471,7 +481,7 @@ export const SupervisorService = {
   },
 
   /**
-   * 空转探测：三条 EXISTS 各走一条索引（idx_exec_platform_status / idx_tasks_ai_state），
+   * 空转探测：四条 EXISTS 各走一条索引（idx_exec_platform_status / idx_tasks_ai_state），
    * 用 LIMIT 1 而非 COUNT——命中即返回，让空转轮次成本与表规模无关（NFR-1）。
    */
   probe(): SupervisorProbe {
@@ -479,12 +489,16 @@ export const SupervisorService = {
     const has = (sql: string): boolean => !!db.prepare(sql).get();
     const hasActiveSession = has("SELECT 1 FROM exec_sessions WHERE status = 'active' LIMIT 1");
     const hasStalledSession = has("SELECT 1 FROM exec_sessions WHERE status = 'stalled' LIMIT 1");
+    // T01357：failed 会话单独探测——若只剩失败会话（无 active/stalled、无 running 任务），
+    // 旧逻辑 hasWork=false 会判空转，失败信号静默，REDISPATCH 的会话级前提不可达
+    const hasFailedSession = has("SELECT 1 FROM exec_sessions WHERE status = 'failed' LIMIT 1");
     const hasRunningTask = has("SELECT 1 FROM tasks WHERE ai_state = 'running' LIMIT 1");
     return {
       hasActiveSession,
       hasStalledSession,
+      hasFailedSession,
       hasRunningTask,
-      hasWork: hasActiveSession || hasStalledSession || hasRunningTask,
+      hasWork: hasActiveSession || hasStalledSession || hasFailedSession || hasRunningTask,
     };
   },
 
@@ -559,7 +573,7 @@ export const SupervisorService = {
       };
     });
 
-    // --- 活跃/停滞会话（带关联任务，供 LLM 定位 RESUME / REDISPATCH 目标） ---
+    // --- 活跃/停滞/失败会话（带关联任务，供 LLM 定位 RESUME / REDISPATCH 目标） ---
     const sessions = this.listActiveSessions();
 
     // --- 失败任务（监督器重试口径，FR-4.2） ---
@@ -622,7 +636,7 @@ export const SupervisorService = {
       const readyCount = snapshot.pending.filter((p) => p.ready).length;
       console.log(
         `[supervisor] 快照：待办 ${snapshot.pending.length}/${snapshot.pendingTotal}（就绪 ${readyCount}）` +
-          ` 活跃或停滞会话 ${snapshot.sessions.length} 失败任务 ${snapshot.failed.length}` +
+          ` 活跃/停滞/失败会话 ${snapshot.sessions.length} 失败任务 ${snapshot.failed.length}` +
           ` 并发 ${snapshot.budget.concurrent}/${snapshot.budget.maxConcurrent}`,
       );
       const decision = await this.decide(snapshot);

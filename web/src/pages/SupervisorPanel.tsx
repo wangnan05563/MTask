@@ -9,9 +9,9 @@
  * - `/supervisor/status`：状态看板（FR-5.2），每 10s 轮询一次——只轮询状态，不轮询审计与配置，
  *   避免把用户正在编辑的中继配置输入框冲掉；
  * - `/supervisor/runs`：审计列表（FR-5.3），按需/随状态一并刷新；
- * - `/supervisor/config`：熔断开关与中继通道读写（FR-5.4 + T01283 遗留的两个配置键）。
+ * - `/supervisor/config`：熔断开关、中继通道与运行参数读写（FR-5.4 + T01283 遗留的两个配置键 + T01311 的 tick 周期/审计保留天数）。
  */
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { api } from '../api/client';
 import { fullTime, relTime } from '../ui/format';
 import { askConfirm } from '../ui/dialogs';
@@ -25,6 +25,7 @@ import {
   Save,
   ShieldCheck,
   ShieldOff,
+  SlidersHorizontal,
 } from 'lucide-react';
 
 /** 监督状态视图（与后端 SupervisorStatusView 同构） */
@@ -41,12 +42,15 @@ interface SessionBrief {
   status: string;
   progress: number;
   stale: boolean;
+  /** T01357：失败会话标记（快照采集已纳入 failed） */
+  failed?: boolean;
   tasks: Array<{ taskId: string; taskNo: string | null; title: string }>;
 }
 
 interface StatusView {
   enabled: boolean;
   intervalMs: number;
+  auditRetentionDays: number;
   lastTickAt: string | null;
   nextTickAt: string | null;
   tokenBudgetUsed: number;
@@ -72,6 +76,8 @@ interface RunRow {
 
 interface ConfigView {
   enabled: boolean;
+  intervalMs: number;
+  auditRetentionDays: number;
   relayPlatforms: string;
   relayToolId: string;
 }
@@ -96,6 +102,12 @@ const OUTCOME_COLOR: Record<string, string> = {
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 const bool = (v: unknown): boolean => v === true;
+
+/** 数字输入框统一样式（运行参数与中继输入同风格） */
+const INPUT_STYLE: CSSProperties = {
+  fontSize: 'var(--fs-m)', padding: '6px 10px', borderRadius: 8,
+  border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)',
+};
 
 /** 卡片容器：白底 + 细边框 + 16px 圆角（全局商务浅白风格） */
 function Card({ title, icon, extra, children }: { title: string; icon: ReactNode; extra?: ReactNode; children: ReactNode }) {
@@ -127,6 +139,9 @@ export function SupervisorPanel() {
   // 中继配置用独立输入态：轮询状态时不能被覆盖，否则用户正在输入的值会被冲掉
   const [relayPlatforms, setRelayPlatforms] = useState('');
   const [relayToolId, setRelayToolId] = useState('');
+  // 运行参数（T01311）同样用独立输入态，理由同上；周期以「秒」呈现，提交时换算回毫秒
+  const [intervalSec, setIntervalSec] = useState('');
+  const [retentionDays, setRetentionDays] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -158,6 +173,8 @@ export function SupervisorPanel() {
       setRuns(rs.runs ?? []);
       setRelayPlatforms(c.relayPlatforms);
       setRelayToolId(c.relayToolId);
+      setIntervalSec(String(Math.round(c.intervalMs / 1000)));
+      setRetentionDays(String(c.auditRetentionDays));
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
     } finally {
@@ -193,6 +210,18 @@ export function SupervisorPanel() {
     // 开启即「允许自动改任务状态」，属高风险动作，必须先确认（关闭则无需确认，随时一键接管）
     if (next && !(await askConfirm('开启后监督器将自动执行续跑 / 换台 / 拆分等动作（仍受并发、重试、预算、冷却护栏约束）。确认开启？'))) return;
     await saveConfig({ enabled: next }, next ? '已开启：自动动作生效' : '已关闭：自动动作停摆，人工接管');
+  };
+
+  /**
+   * T01311：保存运行参数。前端先做范围校验——把非法值挡在请求之前，
+   * 避免「提交→400→输入框仍显示错值」的往复；范围与后端 setIntervalMs/setRetentionDays 一致。
+   */
+  const saveRuntime = async () => {
+    const sec = Number(intervalSec);
+    const days = Number(retentionDays);
+    if (!Number.isFinite(sec) || sec < 1 || sec > 3600) return flash('tick 周期需为 1~3600 秒');
+    if (!Number.isFinite(days) || days < 0 || days > 3650) return flash('审计保留天数需为 0~3650 天（0 = 不清理）');
+    await saveConfig({ intervalMs: Math.round(sec * 1000), auditRetentionDays: Math.round(days) }, '运行参数已保存（即时生效）');
   };
 
   if (loading && !status) return <p style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-m)' }}>加载监督状态…</p>;
@@ -240,7 +269,8 @@ export function SupervisorPanel() {
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginBottom: 12 }}>
-          <Metric label="tick 周期" value={`${Math.round((status?.intervalMs ?? 0) / 1000)} 秒`} hint="supervisor.intervalMs；修改需重启服务生效" />
+          <Metric label="tick 周期" value={`${Math.round((status?.intervalMs ?? 0) / 1000)} 秒`} hint="supervisor.intervalMs；可在下方「运行参数」修改，写入即热重载生效" />
+          <Metric label="审计保留" value={status && status.auditRetentionDays > 0 ? `${status.auditRetentionDays} 天` : '不清理'} hint="supervisor.auditRetentionDays；0 表示保留全部（不清理），清理每小时最多执行一次" />
           <Metric label="最近一次 tick" value={status?.lastTickAt ? relTime(status.lastTickAt) : '本进程尚未 tick'} hint={status?.lastTickAt ? fullTime(status.lastTickAt) : '含空转轮次；空转不写审计，故单独记内存态'} />
           <Metric label="下次 tick" value={status?.nextTickAt ? relTime(status.nextTickAt) : '—'} hint={status?.nextTickAt ? fullTime(status.nextTickAt) : '本进程尚未 tick，无法推算'} />
           <Metric
@@ -253,7 +283,7 @@ export function SupervisorPanel() {
             value={status && status.tokenBudget > 0 ? `${status.tokenBudgetUsed} / ${status.tokenBudget}` : `不限（已用 ${status?.tokenBudgetUsed ?? 0}）`}
             hint="supervisor.tokenBudget；0 表示不限"
           />
-          <Metric label="活跃会话" value={`${status?.activeSessions.length ?? 0} / ${status?.maxConcurrent ?? 0}`} hint="当前活跃/停滞会话数 / 并发上限 supervisor.maxConcurrent" />
+          <Metric label="活跃会话" value={`${status?.activeSessions.length ?? 0} / ${status?.maxConcurrent ?? 0}`} hint="当前活跃/停滞/失败会话数 / 并发上限 supervisor.maxConcurrent" />
           <Metric label="重试上限" value={`${status?.maxRetry ?? 0} 次`} hint="supervisor.maxRetry；超限动作被拦截并升级人工" />
           <Metric label="冷却窗口" value={`${Math.round((status?.cooldownMs ?? 0) / 60000)} 分钟`} hint="supervisor.cooldownMs；同一任务两次触发的最小间隔" />
         </div>
@@ -275,12 +305,12 @@ export function SupervisorPanel() {
 
         {!!status?.activeSessions.length && (
           <>
-            <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, margin: '12px 0 6px' }}>活跃 / 停滞会话</div>
+            <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, margin: '12px 0 6px' }}>活跃 / 停滞 / 失败会话</div>
             <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 6 }}>
               {status.activeSessions.map((s, i) => (
                 <li key={`${s.platform}-${i}`} style={{ fontSize: 'var(--fs-m)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontWeight: 600 }}>{s.platform}</span>
-                  <span style={{ color: s.stale ? 'var(--danger)' : 'var(--success)' }}>{s.stale ? '停滞' : '存活'}</span>
+                  <span style={{ color: s.stale || s.failed ? 'var(--danger)' : 'var(--success)' }}>{s.failed ? '失败' : s.stale ? '停滞' : '存活'}</span>
                   <span style={{ color: 'var(--text-muted)' }}>{Math.round(s.progress)}%</span>
                   <span style={{ color: 'var(--text-secondary)' }}>{s.tasks.map((t) => t.taskNo ?? t.title).join('、') || '未关联任务'}</span>
                 </li>
@@ -288,6 +318,54 @@ export function SupervisorPanel() {
             </ul>
           </>
         )}
+      </Card>
+
+      <Card
+        title="运行参数"
+        icon={<SlidersHorizontal size={14} />}
+        extra={
+          <button
+            onClick={() => void saveRuntime()}
+            disabled={busy}
+            title="保存 — 写入 tick 周期与审计保留天数（均即时生效，无需重启）"
+            aria-label="保存：写入 tick 周期与审计保留天数"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-s)', padding: '4px 10px', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)' }}
+          >
+            <Save size={13} /> 保存
+          </button>
+        }
+      >
+        <p style={{ margin: '0 0 10px', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+          tick 周期写入后即刻重注册定时器（热重载，无需重启）；审计保留天数由下一轮 tick 的清理动作按新策略执行（清理每小时最多一次，故改动不会立刻删行）。
+        </p>
+        <div style={{ display: 'grid', gap: 10 }}>
+          <label style={{ display: 'grid', gap: 4 }}>
+            <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>tick 周期（秒，1 ~ 3600）</span>
+            <input
+              type="number"
+              min={1}
+              max={3600}
+              step={1}
+              value={intervalSec}
+              onChange={(e) => setIntervalSec(e.target.value)}
+              aria-label="tick 周期：监督器每轮决策的间隔秒数"
+              style={INPUT_STYLE}
+            />
+          </label>
+          <label style={{ display: 'grid', gap: 4 }}>
+            <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>审计保留天数（0 = 不清理，最长 3650 天）</span>
+            <input
+              type="number"
+              min={0}
+              max={3650}
+              step={1}
+              value={retentionDays}
+              onChange={(e) => setRetentionDays(e.target.value)}
+              aria-label="审计保留天数：monitor_runs 保留天数，0 表示不清理"
+              style={INPUT_STYLE}
+            />
+          </label>
+        </div>
       </Card>
 
       <Card
