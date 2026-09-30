@@ -2182,7 +2182,9 @@ export function TasksPage() {
     const editing = fbDrafts[t.id] !== undefined;
     const fbText = getFailbackText(t);
     return (
-      <div style={{ marginLeft: 32, marginTop: 4, border: '1px solid var(--danger)', borderRadius: 6 }}>
+      // T01385：修「窗口边缘过窄/内容截断」——右侧留出与左缩进对称的边距、min-width:0 允许收缩、
+      // 内容区 overflowX:auto + overflowWrap:anywhere，长代码块/长 URL 横向滚动而非溢出截断
+      <div style={{ marginLeft: 32, marginRight: 8, marginTop: 4, border: '1px solid var(--danger)', borderRadius: 6, minWidth: 0, overflow: 'hidden', boxSizing: 'border-box' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 6px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', borderTopLeftRadius: 6, borderTopRightRadius: 6 }}>
           <span style={{ fontSize: 11, color: 'var(--danger)' }}>验证失败反馈</span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -2216,7 +2218,7 @@ export function TasksPage() {
           </span>
         </div>
         {editing ? (
-          <div style={{ padding: 6 }}>
+          <div style={{ padding: 6, overflowX: 'auto' }}>
             <textarea
               value={fbDrafts[t.id]}
               onChange={(e) => setFbDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
@@ -2259,7 +2261,7 @@ export function TasksPage() {
             </div>
           </div>
         ) : (
-          <div style={{ padding: 6 }}>
+          <div style={{ padding: 6, overflowX: 'auto', overflowWrap: 'anywhere' }}>
             {fbText ? (
               <MarkdownContent content={fbText} showCopy />
             ) : (
