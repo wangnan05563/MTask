@@ -35,6 +35,8 @@ interface Props {
   readonly notify: (msg: string) => void;
 }
 
+const LAST_KEY = 'mtask.quicknote.last'; // T01426：上次选择的优先级/分类
+
 export function QuickNote({ onDone, onCancel, notify }: Props) {
   const [title, setTitle] = useState('');
   const [descOpen, setDescOpen] = useState(false);
@@ -68,6 +70,12 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
         const p = projects.find((x) => x.id === np.projectId);
         setProjectName(p?.name ?? '收件箱');
       } catch { /* 忽略，回退收件箱 */ }
+      // T01426：记忆上次——优先级/分类默认带出上次选择（项目仍以「默认记事项目」设置优先）
+      try {
+        const last = JSON.parse(localStorage.getItem(LAST_KEY) ?? '{}') as { priority?: string; categoryId?: string };
+        if (last.priority) setPriority(last.priority);
+        if (last.categoryId) setCategoryId(last.categoryId);
+      } catch { /* 忽略 */ }
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -139,6 +147,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
     };
     try {
       const task = await submitQuickNote(payload);
+      try { localStorage.setItem(LAST_KEY, JSON.stringify({ priority: payload.priority, categoryId: payload.categoryId })); } catch { /* 忽略 */ }
       notify('已记录');
       onDone(task);
     } catch {
@@ -199,6 +208,24 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
             <ImagePlus size={15} />贴图{images.length > 0 ? `(${images.length})` : ''}
           </button>
           <input ref={fileRef} type="file" accept="image/*" capture="environment" multiple style={{ display: 'none' }} onChange={(e) => { onPickImages(e.target.files); e.target.value = ''; }} />
+        </div>
+
+        {/* T01426：可选属性行——优先级/分类/项目，默认记忆上次；全部可选，不增必填 */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 10 }}>
+          <select value={priority} onChange={(e) => setPriority(e.target.value)} aria-label="优先级" style={attrSelect}>
+            <option value="urgent">🔴 紧急</option>
+            <option value="high">🟠 高</option>
+            <option value="normal">⚪ 普通</option>
+            <option value="low">🔵 低</option>
+          </select>
+          <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} aria-label="分类" style={attrSelect}>
+            <option value="">分类：未设</option>
+            {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <select value={projectId} onChange={(e) => { setProjectId(e.target.value); setProjectName(projects.find((x) => x.id === e.target.value)?.name ?? ''); }} aria-label="项目" style={attrSelect}>
+            {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            {!projects.some((x) => x.id === projectId) && <option value={projectId}>{projectName}</option>}
+          </select>
         </div>
 
         {/* 模板面板 */}
@@ -287,4 +314,5 @@ const quickBar: React.CSSProperties = { display: 'flex', gap: 8, marginTop: 12, 
 const quickChip: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '8px 12px', borderRadius: 20, fontSize: 13, cursor: 'pointer', border: 'none' };
 const sheet: React.CSSProperties = { marginTop: 10, padding: 12, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 10 };
 const tplItem: React.CSSProperties = { display: 'block', width: '100%', textAlign: 'left', padding: '10px 8px', fontSize: 14, border: 'none', borderBottom: '1px solid var(--surface-2)', background: 'transparent', color: 'var(--text)', cursor: 'pointer' };
+const attrSelect: React.CSSProperties = { width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 13, background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box' };
 const selectFull: React.CSSProperties = { width: '100%', padding: 10, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 14, background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box' };
