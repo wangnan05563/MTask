@@ -24,11 +24,20 @@ export function MobileHome({ onQuickNote, notify }: Props) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [categories, setCategories] = useState<TaskCategory[]>([]);
   const [detailTask, setDetailTask] = useState<Task | null>(null); // T01423：详情半屏抽屉
+  // T01424：失败/AI 待读聚合告警——allTasks 保底全量（含 done 的验证失败复核源），点击聚合条切换过滤
+  const [allTasks, setAllTasks] = useState<Task[]>([]);
+  const [alertFilter, setAlertFilter] = useState(false);
   const [loading, setLoading] = useState(false);
   const [pullY, setPullY] = useState(0);
   const startY = useRef<number | null>(null);
 
   const catName = (id: string | null) => categories.find((c) => c.id === id)?.name ?? '';
+
+  // T01424：失败 = AI 处理失败 或 验证失败未复核；AI 待读 = 处理完成未读
+  const failedTasks = allTasks.filter((t) => t.ai_state === 'failed' || (Boolean(t.handle_result?.includes('【验证失败')) && !t.verified));
+  const unreadTasks = allTasks.filter((t) => t.ai_state === 'unread');
+  const attentionIds = new Set([...failedTasks, ...unreadTasks].map((t) => t.id));
+  const shownTasks = alertFilter ? allTasks.filter((t) => attentionIds.has(t.id)) : tasks;
 
 
   const load = useCallback(async (pid: string) => {
@@ -36,6 +45,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
     setLoading(true);
     try {
       const list = await api.get<Task[]>(`/tasks?projectId=${pid}`);
+      setAllTasks(list);
       setTasks(list.filter((t) => t.status === 'todo'));
     } catch (e) {
       notify(e instanceof Error ? e.message : String(e));
@@ -90,6 +100,24 @@ export function MobileHome({ onQuickNote, notify }: Props) {
         </select>
       </header>
 
+      {/* T01424：失败/AI 待读聚合告警条——有告警才渲染，红点常驻，点击切换过滤视图 */}
+      {(failedTasks.length > 0 || unreadTasks.length > 0) && (
+        <style>{'@keyframes alert-dot-pulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }'}</style>
+      )}
+      {(failedTasks.length > 0 || unreadTasks.length > 0) && (
+        <button
+          onClick={() => setAlertFilter((v) => !v)}
+          aria-pressed={alertFilter}
+          title="点击查看/退出告警任务列表"
+          style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 12px 0', padding: '8px 12px', borderRadius: 10, border: '1px solid var(--danger)', background: 'var(--surface-2)', color: 'var(--text)', cursor: 'pointer', fontSize: 13, textAlign: 'left' }}
+        >
+          <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--danger)', flexShrink: 0, animation: 'alert-dot-pulse 1.6s ease-in-out infinite' }} />
+          <span style={{ color: 'var(--danger)', fontWeight: 600 }}>失败 {failedTasks.length}</span>
+          <span style={{ color: 'var(--accent)', fontWeight: 600 }}>AI 待读 {unreadTasks.length}</span>
+          <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: 12 }}>{alertFilter ? '显示全部' : '点击过滤'}</span>
+        </button>
+      )}
+
       <div
         style={{ flex: 1, overflowY: 'auto', padding: '0 12px', position: 'relative', transition: pullY ? 'none' : 'transform .15s ease' }}
         onTouchStart={onTouchStart}
@@ -99,7 +127,10 @@ export function MobileHome({ onQuickNote, notify }: Props) {
         {pullY > 10 && <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12, padding: 6 }}>{pullY > 55 ? '释放刷新…' : '下拉刷新'}</div>}
         {loading && <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12, padding: 10 }}>加载中…</div>}
 
-        {tasks.length === 0 && !loading && (
+        {shownTasks.length === 0 && !loading && alertFilter && (
+          <div style={empty}><div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>没有需要关注的任务了</div></div>
+        )}
+        {tasks.length === 0 && !loading && !alertFilter && (
           <div style={empty}>
             <div style={{ fontSize: 40 }}>📝</div>
             <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>还没有待办</div>
@@ -108,7 +139,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
         )}
 
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-          {tasks.map((t) => (
+          {shownTasks.map((t) => (
             <li key={t.id} style={rowStyle}>
               <button onClick={() => void toggleDone(t)} title="切换完成" aria-label="切换完成" style={checkBtn}>
                 {t.status === 'todo' ? '☐' : '☑'}
