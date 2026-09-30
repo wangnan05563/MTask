@@ -52,6 +52,13 @@ export interface ReportProgressInput {
   note?: string;
   /** 平台显式声明本轮执行已完成 */
   done?: boolean;
+  /**
+   * T01356（PRD §8）：平台显式声明本轮执行失败——会话置 `failed`，
+   * 面板据此展示「失败」（否则只能等心跳超时被判「停滞」，与任务侧 failed 口径打架）。
+   * 与 `done` 互斥：两者同传时以 `done` 为准（避免调用方笔误把已完成的会话标成失败）。
+   * 失败原因请写入 `phase`（数据模型无独立原因列），随会话留存供排查。
+   */
+  failed?: boolean;
 }
 
 export interface ReportProgressResult {
@@ -114,6 +121,8 @@ export const ExecSessionService = {
   /**
    * FR-1.2：心跳与进度上报。按 platform+session_id upsert 会话、刷新 last_heartbeat，
    * 并把关联任务置 running（完成则置终态 unread）。
+   * T01356：新增 `failed` 上报口径——会话可置 `failed`（PRD §8「active ──平台报错──▶ failed」），
+   * 补上面板与监督器此前拿不到「平台报错」信号的缺口。
    */
   reportProgress(input: ReportProgressInput): ReportProgressResult {
     const db = getDb();
@@ -128,6 +137,8 @@ export const ExecSessionService = {
     const pctProvided = typeof input.pct === 'number' && Number.isFinite(input.pct);
     // 完成判定：平台显式声明 done，或进度已到 100（PRD §6.1）
     const finished = input.done === true || (pctProvided && clampPct(input.pct as number) >= 100);
+    // 失败判定放在完成之后参与三元优先级：done 与 failed 同传时以 done 为准（见入参注释）
+    const failedReported = input.failed === true;
 
     // T01288：列侧 LOWER/TRIM 兜底存量行——归一化只在写入侧生效，会话行按 platform+session_id 唯一，
     // 大小写不一致会让同一会话被判成两个（面板分裂、停滞判定各看一半）。
@@ -138,8 +149,14 @@ export const ExecSessionService = {
     let sessionRowId: string;
     if (existing) {
       sessionRowId = existing.id;
-      // 心跳到达即证明会话重新活跃：stalled → active（PRD §8 状态机）；完成则终态 done
-      const nextStatus = finished ? 'done' : (existing.status === 'stalled' ? 'active' : existing.status);
+      // 状态优先级：完成（终态）> 失败 > 心跳复活（stalled/failed → active，PRD §8 状态机）。
+      // failed 可被新心跳复活是刻意的（PRD §8「failed ──REDISPATCH──▶ active(换台)」）：同一会话标识
+      // 再次上报即证明该平台已重新执行；done 保持终态不可复活——重新执行必须换新会话标识。
+      const nextStatus = finished
+        ? 'done'
+        : failedReported
+          ? 'failed'
+          : (existing.status === 'stalled' || existing.status === 'failed' ? 'active' : existing.status);
       const nextPct = finished ? 100 : (pctProvided ? clampPct(input.pct as number) : existing.progress);
       const nextPhase = input.phase !== undefined ? input.phase : existing.phase;
       db.prepare(
@@ -158,7 +175,7 @@ export const ExecSessionService = {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         sessionRowId, platform, sessionId, JSON.stringify([task.id]),
-        finished ? 'done' : 'active',
+        finished ? 'done' : failedReported ? 'failed' : 'active',
         finished ? 100 : (pctProvided ? clampPct(input.pct as number) : 0),
         input.phase ?? '', now, now, finished ? now : null,
       );

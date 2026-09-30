@@ -618,7 +618,7 @@ ${a.result}`;
   // T01269（PRD FR-1.2）：外部平台执行会话心跳上报——观测层入口，仅观测不自动动作（P0）
   server.registerTool('mtask_report_progress', {
     title: '上报执行会话进度',
-    description: '外部 AI 平台（WorkBuddy/Trae/中继）执行任务期间周期调用（建议 30~60s），上报平台会话标识、关联任务与进度/阶段并刷新会话心跳。MTask 据此在「执行会话」面板展示存活与进度、判定停滞。task_id 可传任务内部 id 或任务编号（Txxxxx）。pct>=100 或 done=true 表示本轮完成（会话置 done、任务置完成待查看）。',
+    description: '外部 AI 平台（WorkBuddy/Trae/中继）执行任务期间周期调用（建议 30~60s），上报平台会话标识、关联任务与进度/阶段并刷新会话心跳。MTask 据此在「执行会话」面板展示存活与进度、判定停滞。task_id 可传任务内部 id 或任务编号（Txxxxx）。pct>=100 或 done=true 表示本轮完成（会话置 done、任务置完成待查看）；failed=true 表示本轮执行失败（会话置 failed，面板显示「失败」，失败原因写 phase）——done 与 failed 同传时以 done 为准。',
     inputSchema: {
       platform: z.string().describe("平台标识，如 'workbuddy' | 'trae' | 'relay:xxx'。大小写/空白不敏感（内部统一归一为小写）"),
       session_id: z.string().describe('平台侧会话标识'),
@@ -627,6 +627,7 @@ ${a.result}`;
       pct: z.number().optional().describe('进度百分比 0~100'),
       note: z.string().optional().describe('附注（可选）'),
       done: z.boolean().optional().describe('平台显式声明本轮执行完成'),
+      failed: z.boolean().optional().describe('平台显式声明本轮执行失败（T01356，PRD §8）：会话置 failed，面板显示「失败」；失败原因请写入 phase。与 done 互斥，同传时以 done 为准'),
     },
   }, async (a) => {
     try {
@@ -638,6 +639,7 @@ ${a.result}`;
         pct: a.pct,
         note: a.note,
         done: a.done,
+        failed: a.failed,
       });
       return ok(json(r), { ...r });
     } catch (e) { return err((e as Error).message); }
