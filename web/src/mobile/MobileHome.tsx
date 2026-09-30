@@ -29,6 +29,11 @@ export function MobileHome({ onQuickNote, notify }: Props) {
   const [allTasks, setAllTasks] = useState<Task[]>([]);
   const [alertFilter, setAlertFilter] = useState(false);
   const [staleAsOf, setStaleAsOf] = useState<string | null>(null); // T01425：离线缓存数据的拉取时间
+  // T01432：任务行横滑手势——左滑完成 / 右滑详情；touch-action:pan-y 防纵向滚动冲突
+  const [swipe, setSwipe] = useState<{ id: string; dx: number } | null>(null); // 仅视觉反馈
+  const swipeRef = useRef<{ id: string; dx: number } | null>(null); // T01432：判定用 ref（touchend 同步可读，不受 setState 批处理影响）
+  const swipeStart = useRef<{ x: number; y: number } | null>(null);
+  const SWIPE_THRESHOLD = 72;
   const [loading, setLoading] = useState(false);
 
   const catName = (id: string | null) => categories.find((c) => c.id === id)?.name ?? '';
@@ -39,6 +44,33 @@ export function MobileHome({ onQuickNote, notify }: Props) {
   const attentionIds = new Set([...failedTasks, ...unreadTasks].map((t) => t.id));
   const shownTasks = alertFilter ? allTasks.filter((t) => attentionIds.has(t.id)) : tasks;
 
+
+  // T01432：横滑手势处理（仅横向位移占优时介入，纵向滚动不受影响）
+  function onRowTouchStart(e: React.TouchEvent, id: string) {
+    swipeStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  }
+  function onRowTouchMove(e: React.TouchEvent, id: string) {
+    if (!swipeStart.current) return;
+    const dx = e.touches[0].clientX - swipeStart.current.x;
+    const dy = e.touches[0].clientY - swipeStart.current.y;
+    if (Math.abs(dx) > Math.abs(dy) + 6) {
+      const clamped = { id, dx: Math.max(-96, Math.min(96, dx)) };
+      swipeRef.current = clamped;
+      setSwipe(clamped);
+    } else if (Math.abs(dy) > 8) {
+      swipeRef.current = null;
+      setSwipe((cur) => (cur?.id === id ? null : cur));
+    }
+  }
+  function onRowTouchEnd(t: Task) {
+    const cur = swipeRef.current;
+    swipeRef.current = null;
+    swipeStart.current = null;
+    setSwipe(null);
+    if (!cur || cur.id !== t.id) return;
+    if (cur.dx <= -SWIPE_THRESHOLD) void toggleDone(t);       // 左滑 → 完成/回退
+    else if (cur.dx >= SWIPE_THRESHOLD) setDetailTask(t);     // 右滑 → 详情
+  }
 
   const load = useCallback(async (pid: string) => {
     if (!pid) return;
@@ -95,7 +127,17 @@ export function MobileHome({ onQuickNote, notify }: Props) {
       <header style={headerStyle}>
         <div>
           <div style={{ fontSize: 16, fontWeight: 700 }}>待办概览</div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{tasks.length} 条待办</div>
+          {/* T01435：统计 chips 化——待办/需关注两级信息层级，需关注与告警条同一过滤语义 */}
+          <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+            <button onClick={() => setAlertFilter(false)} aria-pressed={!alertFilter}
+              style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, cursor: 'pointer', border: '1px solid ' + (!alertFilter ? 'var(--accent)' : 'var(--border-strong)'), background: !alertFilter ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)' }}>
+              待办 {tasks.length}
+            </button>
+            <button onClick={() => setAlertFilter(true)} aria-pressed={alertFilter}
+              style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, cursor: 'pointer', border: '1px solid ' + (alertFilter ? 'var(--danger)' : 'var(--border-strong)'), background: alertFilter ? 'color-mix(in srgb, var(--danger) 12%, transparent)' : 'transparent', color: failedTasks.length + unreadTasks.length > 0 ? 'var(--danger)' : 'var(--text-muted)' }}>
+              需关注 {failedTasks.length + unreadTasks.length}
+            </button>
+          </div>
         </div>
         <select value={projectId} onChange={(e) => { setProjectId(e.target.value); try { localStorage.setItem('mtask.mobile.lastProject', e.target.value); } catch { /* 忽略 */ } void load(e.target.value); }} style={projSelect}>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -143,7 +185,13 @@ export function MobileHome({ onQuickNote, notify }: Props) {
 
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
           {shownTasks.map((t) => (
-            <li key={t.id} style={rowStyle}>
+            <li
+              key={t.id}
+              onTouchStart={(e) => onRowTouchStart(e, t.id)}
+              onTouchMove={(e) => onRowTouchMove(e, t.id)}
+              onTouchEnd={() => onRowTouchEnd(t)}
+              style={{ ...rowStyle, touchAction: 'pan-y', position: 'relative', overflow: 'hidden', transform: swipe?.id === t.id ? `translateX(${swipe.dx * 0.35}px)` : undefined, transition: swipe?.id === t.id ? 'none' : 'transform .18s ease', background: swipe?.id === t.id ? (swipe.dx < 0 ? 'color-mix(in srgb, var(--success) 12%, transparent)' : 'color-mix(in srgb, var(--accent) 12%, transparent)') : undefined }}
+            >
               <button onClick={() => void toggleDone(t)} title="切换完成" aria-label="切换完成" style={checkBtn}>
                 {t.status === 'todo' ? '☐' : '☑'}
               </button>
@@ -168,6 +216,9 @@ export function MobileHome({ onQuickNote, notify }: Props) {
             </li>
           ))}
         </ul>
+          <div style={{ padding: '10px 2px', fontSize: 11, color: 'var(--text-muted)', textAlign: 'center' }}>
+            左滑任务 = 标记完成 · 右滑 = 查看详情
+          </div>
         </div>
       </PullRefresh>
       {/* T01388：悬浮「+」FAB 已移除——底栏中央「随手记」Plus 是唯一入口，避免同屏双加号 */}
@@ -179,6 +230,6 @@ export function MobileHome({ onQuickNote, notify }: Props) {
 // ---------- 样式 ----------
 // T01422：页面骨架/卡片/列表行/徽标统一取自 mobile/ui 基础层，页面仅保留特有样式
 const projSelect: React.CSSProperties = { padding: 6, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 13, background: 'var(--card-bg)', color: 'var(--text)', maxWidth: 160 };
-const checkBtn: React.CSSProperties = { fontSize: 20, lineHeight: 1, background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text)', flexShrink: 0, paddingTop: 2 };
+const checkBtn: React.CSSProperties = { fontSize: 20, lineHeight: 1, background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text)', flexShrink: 0, paddingTop: 2, width: 44, height: 44 }; // T01432：热区 ≥44×44
 const empty: React.CSSProperties = { textAlign: 'center', padding: '48px 0', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 };
 const emptyBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '8px 16px', borderRadius: 20, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', cursor: 'pointer', fontSize: 14 };
