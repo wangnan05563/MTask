@@ -114,6 +114,16 @@ export function backendPort(): number {
   return Number(process.env.MTask_PORT ?? 39876);
 }
 
+/** T01389：把路径前缀规范化为 /xxx/ 形式（空串=根路径模式）。
+ *  供 TailscaleProvider 与 Web 伺服侧前缀剥离共用，保证两侧对同一配置的理解一致。 */
+export function normalizePathPrefix(prefix: string): string {
+  if (!prefix) return '';
+  let p = prefix.trim();
+  if (!p.startsWith('/')) p = '/' + p;
+  if (!p.endsWith('/')) p = p + '/';
+  return p;
+}
+
 /** 生成新的访问令牌并持久化，返回明文（调用方需在启用隧道前先建立令牌） */
 export function regenerateAccessToken(): string {
   const token = randomUUID();

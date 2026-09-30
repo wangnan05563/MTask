@@ -8,7 +8,7 @@ import { mcpRouter } from './mcp/http';
 import { logService } from './services/LogService';
 import { QueueService } from './services/QueueService';
 import { AIService } from './services/AIService';
-import { loadTunnelConfig } from './tunnel/tunnel-config';
+import { loadTunnelConfig, normalizePathPrefix } from './tunnel/tunnel-config';
 import { changeBus } from './services/ChangeBus';
 import { startDailyBackupTimer } from './services/BackupService'; // T01061-FR5.1：每日自动备份
 import { RecurringService, TokenService } from './services/RecurringService'; // T01073：循环任务 + API Token
@@ -92,6 +92,19 @@ function accessTokenGuard(req: express.Request, res: express.Response, next: exp
   }
   next();
 }
+
+// T01389：Tailscale 路径前缀模式（funnel --set-path /xxx）会把 /xxx 原样转发到本地，
+// 而本地按根路径路由（/api、静态资源）——菜单点击的 /api/* 在隧道边缘直接 404。
+// 此处按隧道配置的 pathPrefix 把 /xxx/... 剥前缀后交给后续路由：
+//   https://host/xxx/api/tasks → /api/tasks、/xxx/assets/* → /assets/*、/xxx/ → index.html
+// pathPrefix 运行时可改（loadTunnelConfig 内存缓存），故每请求读取而非启动时固化。
+app.use((req, _res, next) => {
+  const prefix = normalizePathPrefix(loadTunnelConfig().pathPrefix);
+  if (prefix && (req.url === prefix.slice(0, -1) || req.url.startsWith(prefix))) {
+    req.url = '/' + req.url.slice(prefix.length);
+  }
+  next();
+});
 
 app.use('/api', accessTokenGuard, api);
 // MCP streamable HTTP 端点：与 REST 一致受 accessTokenGuard（X-Access-Token）保护
