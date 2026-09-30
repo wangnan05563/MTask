@@ -3,7 +3,7 @@
  * 录入方式：文本（主）/ 语音（Web Speech API，不支持则隐藏）/ 快捷模板（提示词预填）/ 图片贴图。
  * 提交复用 POST /api/tasks；离线时落本地草稿，联网后由 MobileShell 自动补提。
  */
-import { pageStyle as page, headerStyle as header } from './ui';
+import { Badge, pageStyle as page, headerStyle as header } from './ui';
 import { useEffect, useRef, useState } from 'react';
 import { api, type Project, type Task, type TaskCategory, type Prompt } from '../api/client';
 import { addDraft, submitQuickNote } from './offline';
@@ -37,6 +37,41 @@ interface Props {
 
 const LAST_KEY = 'mtask.quicknote.last'; // T01426：上次选择的优先级/分类
 
+/** T01431：随手记短语法解析。
+ *  支持前缀标记与时间词：`!high/!紧急` 优先级、`#项目名` 项目、`@分类名` 分类、
+ *  `今天/明天/后天/大后天/周X` 时间词（转为描述尾注，任务无独立截止字段不丢失信息）。
+ *  返回清洗后的标题与解析结果（未命中字段为 undefined，不覆盖既有选择）。 */
+export function parseQuickSyntax(raw: string, projects: { id: string; name: string }[], categories: { id: string; name: string }[]): {
+  title: string; priority?: string; projectId?: string; categoryId?: string; dueNote?: string;
+} {
+  let text = raw;
+  let priority: string | undefined;
+  let projectId: string | undefined;
+  let categoryId: string | undefined;
+  let dueNote: string | undefined;
+
+  const prioMap: Record<string, string> = { urgent: 'urgent', high: 'high', normal: 'normal', low: 'low', 紧急: 'urgent', 高: 'high', 普通: 'normal', 低: 'low' };
+  text = text.replace(/(^|\s)!([a-zA-Z一-龥]{2,4})(?=\s|$)/g, (m, pre, word) => {
+    const key = word.toLowerCase();
+    if (prioMap[key]) { priority = prioMap[key]; return pre; }
+    return m;
+  });
+  text = text.replace(/(^|\s)#([^\s#@!]+)(?=\s|$)/g, (m, pre, name) => {
+    const p = projects.find((x) => x.name === name);
+    if (p) { projectId = p.id; return pre; }
+    return m;
+  });
+  text = text.replace(/(^|\s)@([^\s#@!]+)(?=\s|$)/g, (m, pre, name) => {
+    const c = categories.find((x) => x.name === name);
+    if (c) { categoryId = c.id; return pre; }
+    return m;
+  });
+  const dueMatch = text.match(/(^|\s)(今天|明天|后天|大后天|周[一二三四五六日天])(?=\s|$)/);
+  if (dueMatch) { dueNote = dueMatch[2]; text = text.replace(dueMatch[0], dueMatch[1]); }
+
+  return { title: text.replace(/\s{2,}/g, ' ').trim(), priority, projectId, categoryId, dueNote };
+}
+
 export function QuickNote({ onDone, onCancel, notify }: Props) {
   const [title, setTitle] = useState('');
   const [descOpen, setDescOpen] = useState(false);
@@ -49,6 +84,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [categories, setCategories] = useState<TaskCategory[]>([]);
   const [busy, setBusy] = useState(false);
+  const [syntax, setSyntax] = useState<ReturnType<typeof parseQuickSyntax> | null>(null); // T01431：短语法解析预览
 
   // 语音录入
   const [listening, setListening] = useState(false);
@@ -137,9 +173,11 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
   async function submit() {
     if (!title.trim() || busy) return;
     setBusy(true);
+    // T01431：提交前应用短语法清洗（标题剥离标记，时间词转描述尾注）
+    const parsed = parseQuickSyntax(title, projects, categories);
     const payload = {
-      title: title.trim(),
-      description: description.trim() || undefined,
+      title: parsed.title,
+      description: [description.trim(), parsed.dueNote ? `⏰ ${parsed.dueNote}` : ''].filter(Boolean).join('\n') || undefined,
       priority,
       categoryId: categoryId || undefined,
       projectId: projectId || undefined,
@@ -185,7 +223,15 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
         <textarea
           autoFocus
           value={title}
-          onChange={(e) => setTitle(e.target.value)}
+          onChange={(e) => {
+            setTitle(e.target.value);
+            // T01431：实时短语法解析——命中即同步到属性行（预览可修正），不覆盖时间词
+            const r = parseQuickSyntax(e.target.value, projects, categories);
+            setSyntax(r);
+            if (r.priority) setPriority(r.priority);
+            if (r.projectId) setProjectId(r.projectId);
+            if (r.categoryId) setCategoryId(r.categoryId);
+          }}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }}
           placeholder="记点什么…（标题必填，回车提交）"
           rows={2}
@@ -227,6 +273,17 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
             {!projects.some((x) => x.id === projectId) && <option value={projectId}>{projectName}</option>}
           </select>
         </div>
+
+        {/* T01431：短语法解析预览条——提交前展示命中结果，属性行可修正 */}
+        {syntax && (syntax.priority || syntax.projectId || syntax.categoryId || syntax.dueNote) && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8, padding: '6px 10px', borderRadius: 8, background: 'var(--surface-2)', fontSize: 12, color: 'var(--text-secondary)' }}>
+            <span style={{ color: 'var(--text-muted)' }}>短语法解析：</span>
+            {syntax.priority && <Badge tone="accent">优先级 {{ urgent: '紧急', high: '高', normal: '普通', low: '低' }[syntax.priority]}</Badge>}
+            {syntax.projectId && <Badge>项目 {projects.find((x) => x.id === syntax.projectId)?.name}</Badge>}
+            {syntax.categoryId && <Badge>分类 {categories.find((x) => x.id === syntax.categoryId)?.name}</Badge>}
+            {syntax.dueNote && <Badge tone="success">⏰ {syntax.dueNote}</Badge>}
+          </div>
+        )}
 
         {/* 模板面板 */}
         {tplOpen && (
