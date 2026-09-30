@@ -48,7 +48,7 @@ perf/sandbox/
 /TMP_init.json
 /sonar-issues.json
 /scripts/.build-pipe.txt
-/.workbuddy/tmp/
+
 
 
 
@@ -56,6 +56,6 @@ perf/sandbox/
 server/MTask_DATA_DIR/
 
 # AI 工具本地产物（不入库）
-.trae/
+.trae
 generated-images
-.workbuddy/
+.workbuddy
