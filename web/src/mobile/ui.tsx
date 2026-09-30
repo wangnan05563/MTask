@@ -45,7 +45,9 @@ export function Badge({ tone = 'neutral', children, style }: { tone?: BadgeTone;
 }
 
 /** 半屏抽屉基元：底部滑入的半屏面板（后续队列半操作/详情抽屉复用）。
- *  遮罩点击 / Esc 关闭；挂载于普通文档流外（fixed），打开时才渲染。 */
+ *  遮罩点击 / Esc 关闭；挂载于普通文档流外（fixed），打开时才渲染。
+ *  结构注意：遮罩与 dialog 必须平级——若 dialog 处于 aria-hidden 遮罩内部，
+ *  整个抽屉会被无障碍树剔除（T01423 实测）。 */
 export function HalfSheet({ open, title, onClose, children }: { open: boolean; title?: string; onClose: () => void; children: ReactNode }) {
   useEffect(() => {
     if (!open) return;
@@ -55,17 +57,19 @@ export function HalfSheet({ open, title, onClose, children }: { open: boolean; t
   }, [open, onClose]);
   if (!open) return null;
   return (
-    <div
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-      aria-hidden="true"
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.4)', zIndex: 1000, display: 'flex', alignItems: 'flex-end' }}
-    >
+    <div style={{ position: 'fixed', inset: 0, zIndex: 1000 }}>
+      {/* 遮罩：纯装饰层（aria-hidden），点击关闭为鼠标便捷通路 */}
+      <div
+        aria-hidden="true"
+        onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+        style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.4)' }}
+      />
       <div
         role="dialog"
         aria-modal="true"
         aria-label={title}
         onClick={(e) => e.stopPropagation()}
-        style={{ width: '100%', maxHeight: '62%', overflowY: 'auto', background: 'var(--card-bg)', color: 'var(--text)', borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 14, boxSizing: 'border-box', animation: 'sheet-up 220ms ease-in-out' }}
+        style={{ position: 'absolute', left: 0, right: 0, bottom: 0, maxHeight: '62%', overflowY: 'auto', background: 'var(--card-bg)', color: 'var(--text)', borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 14, boxSizing: 'border-box', animation: 'sheet-up 220ms ease-in-out' }}
       >
         {title && <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 10 }}>{title}</div>}
         {children}

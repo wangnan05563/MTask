@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, imageUrl, type Project, type Task, type TaskCategory } from '../api/client';
 import { Plus } from 'lucide-react';
 import { Badge, headerStyle, pageStyle, rowStyle } from './ui';
+import { MobileTaskDetail } from './MobileTaskDetail';
 
 interface Props {
   readonly onQuickNote: () => void;
@@ -22,15 +23,13 @@ export function MobileHome({ onQuickNote, notify }: Props) {
   const [projectId, setProjectId] = useState('');
   const [tasks, setTasks] = useState<Task[]>([]);
   const [categories, setCategories] = useState<TaskCategory[]>([]);
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [detailTask, setDetailTask] = useState<Task | null>(null); // T01423：详情半屏抽屉
   const [loading, setLoading] = useState(false);
   const [pullY, setPullY] = useState(0);
   const startY = useRef<number | null>(null);
 
   const catName = (id: string | null) => categories.find((c) => c.id === id)?.name ?? '';
 
-  // 展开/收起任务详情：click 与键盘激活共用，保证键盘可达性
-  const toggleExpand = (id: string) => setExpanded((cur) => (cur === id ? null : id));
 
   const load = useCallback(async (pid: string) => {
     if (!pid) return;
@@ -117,9 +116,9 @@ export function MobileHome({ onQuickNote, notify }: Props) {
               {/* 用原生 button 并重置默认样式：既保留行内排版，又天然满足可交互性（S6819） */}
               <button
                 type="button"
-                aria-label={`任务详情：${t.title}，点按展开或收起`}
+                aria-label={`任务详情：${t.title}，点按查看详情与操作`}
                 style={{ flex: 1, minWidth: 0, cursor: 'pointer', background: 'none', border: 'none', padding: 0, textAlign: 'left', font: 'inherit', color: 'inherit' }}
-                onClick={() => toggleExpand(t.id)}
+                onClick={() => setDetailTask(t)}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   {t.pinned && <span style={{ fontSize: 11 }}>📌</span>}
@@ -130,24 +129,14 @@ export function MobileHome({ onQuickNote, notify }: Props) {
                   {t.category_id && <Badge>{catName(t.category_id)}</Badge>}
                   {t.images.length > 0 && <Badge>🖼 {t.images.length}</Badge>}
                 </div>
-                {expanded === t.id && (t.description || t.images.length > 0) && (
-                  <div style={{ marginTop: 6 }}>
-                    {t.description && <div style={{ fontSize: 13, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{t.description}</div>}
-                    {t.images.length > 0 && (
-                      <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
-                        {t.images.map((img) => (
-                          <img key={img.id} src={imageUrl(img.id)} alt="截图" style={{ height: 72, borderRadius: 6, border: '1px solid var(--border)' }} />
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
+                {/* T01423：详情/附件展示移入 MobileTaskDetail 半屏抽屉 */}
               </button>
             </li>
           ))}
         </ul>
       </div>
       {/* T01388：悬浮「+」FAB 已移除——底栏中央「随手记」Plus 是唯一入口，避免同屏双加号 */}
+      <MobileTaskDetail task={detailTask} categories={categories} onClose={() => setDetailTask(null)} onChanged={() => void load(projectId)} notify={notify} />
     </div>
   );
 }
