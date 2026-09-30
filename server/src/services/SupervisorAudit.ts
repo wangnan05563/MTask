@@ -18,6 +18,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { getDb } from '../db/connection';
+import { getSetting, setSetting } from './AppSettings';
 
 /** 快照摘要来源：只取计数与状态，结构化最小接口——MonitorSnapshot 天然兼容（同 SupervisorGuard 的做法） */
 export interface AuditSnapshot {
@@ -196,4 +197,74 @@ export function listMonitorRuns(limit?: number): MonitorRunRow[] {
     blockedBy: r.blocked_by ?? '',
     model: r.model ?? '',
   }));
+}
+
+/** 保留天数配置键（T01311）；0 或负数 = 不清理（保留全部） */
+const RETENTION_DAYS_KEY = 'supervisor.auditRetentionDays';
+/** 默认保留 7 天：决策轮次约 2880 行/天，7 天 ≈ 2 万行——回溯排障足够，又不让库随运行时长无界膨胀 */
+const DEFAULT_RETENTION_DAYS = 7;
+/** 清理节流 1h：tick 每 30s 一轮，无需每轮扫表；清理是维护动作，滞后一小时无任何影响 */
+const PRUNE_INTERVAL_MS = 60 * 60_000;
+
+/** 上次清理时刻（毫秒）；进程内节流用，重启归零不影响正确性（只是提前清一次） */
+let lastPruneAtMs = 0;
+
+/** 保留天数解析：缺失/空串/非法回退默认（显式挡空值——`Number('')` 为 0 会被误读成「永不清理」） */
+export function readRetentionDays(): number {
+  const raw = getSetting(RETENTION_DAYS_KEY);
+  if (raw == null || raw.trim() === '') return DEFAULT_RETENTION_DAYS;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : DEFAULT_RETENTION_DAYS;
+}
+
+/**
+ * T01311：按保留策略清理过期审计（FR-4.6 的存储侧配套）。
+ *
+ * 为什么必须有：审计每决策轮一行，监督长期开启会持续增长；没有清理机制，一年后这张表既是
+ * 磁盘负担也是面板查询的拖累。保留期可配（`supervisor.auditRetentionDays`，默认 7 天），
+ * 显式配 0/负数则完全关闭清理——给「需要长期留存证据」的部署留出口。
+ *
+ * 内部按 1h 节流，故调用方可安全地每轮 tick 调用（tick 每 30s 一轮，不节流就是每 30s 一次全表扫描）。
+ * 删除条件走 `idx_monitor_runs_ran`：`ran_at` 为 ISO 字符串，字典序即时间序，可直接比较。
+ *
+ * @param now 注入当前时刻（毫秒），仅供测试控制节流与截止时间
+ * @returns 本轮实际删除行数（0 = 未到节流点 / 已关闭清理 / 无过期行）
+ */
+export function pruneMonitorRuns(now = Date.now()): number {
+  if (now - lastPruneAtMs < PRUNE_INTERVAL_MS) return 0;
+  lastPruneAtMs = now;
+  const days = readRetentionDays();
+  if (days <= 0) return 0;
+  const cutoff = new Date(now - days * 86_400_000).toISOString();
+  try {
+    const r = getDb().prepare('DELETE FROM monitor_runs WHERE ran_at < ?').run(cutoff);
+    if (r.changes > 0) {
+      // 清理会永久删除审计证据，必须留痕（console.log 会被 LogService 捕获）
+      console.log(`[supervisor] 审计清理：删除 ${r.changes} 条早于 ${cutoff} 的记录（保留 ${days} 天）`);
+    }
+    return r.changes;
+  } catch (e) {
+    // 清理失败不该拖垮 tick：审计是旁路留痕，表被锁/损坏时监督决策仍应继续
+    console.error('[supervisor] 审计清理失败:', e);
+    return 0;
+  }
+}
+
+/** 保留天数上限（10 年）：再往上等于不清，不如直接配 0；设上限只为挡住手抖多打几位数的写入 */
+const MAX_RETENTION_DAYS = 3650;
+
+/**
+ * T01311：在线修改审计保留天数——写入即生效（清理在每轮 tick 现读配置，无需重启）。
+ *
+ * 校验挡在写库之前：NaN/负数会被 readRetentionDays 判为非法并静默回退默认，
+ * 写进去就成了「面板显示已改、实际仍按默认清理」的误导性配置。
+ * 显式允许 0：语义是「不清理、保留全部」，是需长期留存证据的部署的合法选择。
+ */
+export function setRetentionDays(days: number): number {
+  if (!Number.isFinite(days) || days < 0 || days > MAX_RETENTION_DAYS) {
+    throw new Error(`审计保留天数需在 0~${MAX_RETENTION_DAYS} 天之间（0 = 不清理）`);
+  }
+  const rounded = Math.round(days);
+  setSetting(RETENTION_DAYS_KEY, String(rounded));
+  return rounded;
 }

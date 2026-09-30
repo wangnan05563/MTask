@@ -258,6 +258,29 @@ export interface Queue {
   jobs?: QueueJob[];
 }
 
+/** T01271-FR1.4：执行会话关联任务摘要 */
+export interface ExecSessionTaskBrief {
+  id: string;
+  task_no: string | null;
+  title: string;
+}
+
+/** T01271-FR1.4：外部平台执行会话（「执行会话」面板数据源） */
+export interface ExecSession {
+  id: string;
+  platform: string;
+  session_id: string | null;
+  task_ids: string;
+  /** active 存活 | stalled 停滞 | done 完成 | failed | aborted */
+  status: string;
+  progress: number;
+  phase: string;
+  last_heartbeat: string;
+  started_at: string;
+  finished_at: string | null;
+  tasks: ExecSessionTaskBrief[];
+}
+
 export interface PromptCategory {
   id: string;
   name: string;

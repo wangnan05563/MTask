@@ -68,8 +68,11 @@ function accessTokenGuard(req: express.Request, res: express.Response, next: exp
   }
   const token = loadTunnelConfig().accessToken;
   // T00444：SSE 变更通知端点支持 query token——EventSource 无法自定义请求头，
-  // 前端以 ?token= 携带访问令牌（与 X-Access-Token 同值），仅此路径接受 query 形式
-  if (req.path.startsWith('/events') && token && req.query.token === token) {
+  // 前端以 ?token= 携带访问令牌（与 X-Access-Token 同值），仅此路径接受 query 形式。
+  // T01340：判据必须用 originalUrl（含挂载前缀）而非 req.path——SSE 端点注册在 app 层，
+  // 其 req.path 是 /api/events，用 startsWith('/events') 恒不成立，配令牌后 SSE 会被 401 拒掉。
+  // originalUrl 在「app 层注册」与「router 挂载」两种写法下都是完整路径，故用精确等值最稳。
+  if (req.originalUrl.split('?')[0] === '/api/events' && token && req.query.token === token) {
     next();
     return;
   }
@@ -162,13 +165,8 @@ app.listen(PORT, HOST, () => {
   // T01273-FR2.1：监督器 tick（启动即跑一轮 + 按 supervisor.intervalMs 周期，默认 30s）。
   // T01270 的会话停滞兜底已并入该 tick（观测层不受熔断开关影响），故移除其独立定时器；
   // 决策层受 supervisor.enabled 熔断开关控制（默认关闭），无监督对象时空转返回（NFR-1）。
-  // T01275：tick 内含 LLM 裁决调用（异步），故用 void + catch 兜底，避免 unhandled rejection。
-  void SupervisorService.supervisorTick().catch((e) => console.error('[supervisor] 启动 tick 失败:', e));
-  setInterval(
-    // T01278：单轮异常必须留痕——原实现静默吞错，会让「监督器已挂」与「无监督对象」在日志上无从区分
-    () => { void SupervisorService.supervisorTick().catch((e) => console.error('[supervisor] tick 失败:', e)); },
-    SupervisorService.getConfig().intervalMs,
-  );
+  // T01311：定时器收拢进 SupervisorService.startScheduler——持有句柄才能支持 intervalMs 热重载。
+  SupervisorService.startScheduler();
 });
 
 // 异步队列轮询器：周期性地将已受理（sending+有 ticket）的 Job 收口。

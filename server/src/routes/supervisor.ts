@@ -9,17 +9,17 @@
  * - `GET /runs`：审计视图（FR-5.3）——`monitor_runs` 列表，逐条回溯「AI 为什么这么做」；
  * - `GET /config`：配置回填（FR-5.4）——面板打开时把当前值读出来，避免「显示了默认值其实库里另存」。
  *
- * 写接口只开放**用户可决策**的三项：熔断开关（FR-5.4，PRD 要求显式开关）、
- * 中继兜底通道（T01283 的两个配置键，此前无 UI 入口）。
- * `intervalMs` 有意不开放：定时器在 server 启动时按周期注册，改了不重启只会「显示已改、实际没变」，
- * 属于误导性开关，不如不做（真要改周期需重启，属运维动作）。
+ * 写接口开放**用户可决策**的四项：熔断开关（FR-5.4，PRD 要求显式开关）、
+ * 中继兜底通道（T01283 的两个配置键，此前无 UI 入口）、tick 周期与审计保留天数（T01311）。
+ * `intervalMs` 直到 T01311 才开放：此前定时器无句柄可 clear，改了不重启只会「显示已改、实际没变」，
+ * 属误导性开关；现 `SupervisorService.setIntervalMs` 写库后即刻重注册定时器，写入即生效。
  */
 import { Router } from 'express';
 import { getDb } from '../db/connection';
 import { getSetting, setSetting } from '../services/AppSettings';
 import { logService } from '../services/LogService';
 import { SupervisorService } from '../services/SupervisorService';
-import { listMonitorRuns } from '../services/SupervisorAudit';
+import { listMonitorRuns, setRetentionDays } from '../services/SupervisorAudit';
 
 /** 熔断开关配置键（与 SupervisorGuard / SupervisorService 同口径） */
 const ENABLED_KEY = 'supervisor.enabled';
@@ -29,10 +29,13 @@ const RELAY_TOOL_KEY = 'supervisor.relayToolId';
 
 export const supervisorApi = Router();
 
-/** 配置读出口：只回面板可编辑的三项（节奏/限值/预算由 /status 统一给出，避免双数据源） */
+/** 配置读出口：只回面板可编辑的项（限值/预算由 /status 统一给出，避免双数据源） */
 function readConfig() {
+  const cfg = SupervisorService.getConfig();
   return {
-    enabled: SupervisorService.getConfig().enabled,
+    enabled: cfg.enabled,
+    intervalMs: cfg.intervalMs,
+    auditRetentionDays: cfg.auditRetentionDays,
     relayPlatforms: getSetting(RELAY_PLATFORMS_KEY) ?? '',
     relayToolId: getSetting(RELAY_TOOL_KEY) ?? '',
   };
@@ -61,17 +64,35 @@ supervisorApi.get('/runs', (req, res) => {
 supervisorApi.get('/config', (_req, res) => res.json(readConfig()));
 
 /**
- * 配置写入（FR-5.4 熔断开关 + T01283 中继通道）。
+ * 配置写入（FR-5.4 熔断开关 + T01283 中继通道 + T01311 运行参数）。
  * 未提供的字段保持原值——面板按需提交单项，不必回传整份配置。
  */
 supervisorApi.post('/config', (req, res) => {
-  const body = (req.body ?? {}) as { enabled?: unknown; relayPlatforms?: unknown; relayToolId?: unknown };
+  const body = (req.body ?? {}) as {
+    enabled?: unknown;
+    relayPlatforms?: unknown;
+    relayToolId?: unknown;
+    intervalMs?: unknown;
+    auditRetentionDays?: unknown;
+  };
   try {
     let changed = false;
     if (typeof body.enabled === 'boolean') {
       setSetting(ENABLED_KEY, body.enabled ? '1' : '0');
       // 熔断开关是「自动执行是否被允许」的总闸，写行为必须留痕（日志页可查谁在何时开/关）
       logService.log('WARN', 'supervisor', `熔断开关${body.enabled ? '已开启（自动动作生效）' : '已关闭（自动动作停摆，人工接管）'}`);
+      changed = true;
+    }
+    if (typeof body.intervalMs === 'number') {
+      // 越界由 setIntervalMs 抛错 → 统一走下方 400；合法值写库后即刻重注册定时器（热重载，无需重启）
+      const ms = SupervisorService.setIntervalMs(body.intervalMs);
+      logService.log('WARN', 'supervisor', `tick 周期已改为 ${ms}ms（热重载生效，无需重启）`);
+      changed = true;
+    }
+    if (typeof body.auditRetentionDays === 'number') {
+      const days = setRetentionDays(body.auditRetentionDays);
+      // 保留期决定审计证据的存续时长，属「会静默删数据」的配置，必须留痕
+      logService.log('WARN', 'supervisor', `审计保留天数已改为 ${days} 天（${days <= 0 ? '不清理，保留全部' : '过期自动清理'}）`);
       changed = true;
     }
     if (typeof body.relayPlatforms === 'string') {
@@ -87,7 +108,7 @@ supervisorApi.post('/config', (req, res) => {
       setSetting(RELAY_TOOL_KEY, id);
       changed = true;
     }
-    if (!changed) return res.status(400).json({ error: '无可写字段（支持 enabled / relayPlatforms / relayToolId）' });
+    if (!changed) return res.status(400).json({ error: '无可写字段（支持 enabled / intervalMs / auditRetentionDays / relayPlatforms / relayToolId）' });
     res.json(readConfig());
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
