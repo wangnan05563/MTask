@@ -6,6 +6,7 @@ import { pageStyle as page, tapCardStyle as card, mutedStyle as muted, cardStyle
 import { useEffect, useState } from 'react';
 import { api, type Queue, type QueueJob, type Task } from '../api/client';
 import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
+import { PullRefresh, Skeleton } from './ui';
 import { Copy, ExternalLink } from 'lucide-react';
 
 interface Props { readonly notify: (msg: string) => void; readonly openDesktop: () => void; }
@@ -69,6 +70,7 @@ export function MobileQueue({ notify, openDesktop }: Props) {
   return (
     <div style={page}>
       <header style={hdr}>队列</header>
+      <PullRefresh onRefresh={() => { void (async () => { try { const qs = await api.get<Queue[]>('/queues'); const ts = await api.get<Task[]>('/tasks?archived=0'); setQueues(qs); setTasks(ts); saveStaleCache('queues', qs); saveStaleCache('queue.tasks', ts); setStaleAsOf(null); } catch { /* 离线刷新失败保留缓存 */ } })(); }}>
       <div style={body}>
         {staleAsOf && (
           <div style={{ marginBottom: 8, padding: '5px 10px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-muted)', fontSize: 12 }}>
@@ -90,7 +92,7 @@ export function MobileQueue({ notify, openDesktop }: Props) {
           <>
             <button onClick={() => { setActive(null); setJobs([]); }} style={back}>‹ 返回队列列表</button>
             <div style={{ fontWeight: 600, marginBottom: 8 }}>{active.name}</div>
-            {loading && <div style={muted}>加载中…</div>}
+            {loading && <div style={{ padding: '8px 0' }}><Skeleton rows={3} card /></div>}
             {jobs.length === 0 && <div style={muted}>该队列暂无 Job</div>}
             {jobs.map((j) => (
               <div key={j.id} style={jobCard}>
@@ -107,6 +109,7 @@ export function MobileQueue({ notify, openDesktop }: Props) {
           </>
         )}
       </div>
+      </PullRefresh>
     </div>
   );
 }

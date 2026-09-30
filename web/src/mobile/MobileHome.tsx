@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, imageUrl, type Project, type Task, type TaskCategory } from '../api/client';
 import { Plus } from 'lucide-react';
-import { Badge, headerStyle, pageStyle, rowStyle } from './ui';
+import { Badge, headerStyle, pageStyle, PullRefresh, rowStyle, Skeleton } from './ui';
 import { MobileTaskDetail } from './MobileTaskDetail';
 import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
 
@@ -30,8 +30,6 @@ export function MobileHome({ onQuickNote, notify }: Props) {
   const [alertFilter, setAlertFilter] = useState(false);
   const [staleAsOf, setStaleAsOf] = useState<string | null>(null); // T01425：离线缓存数据的拉取时间
   const [loading, setLoading] = useState(false);
-  const [pullY, setPullY] = useState(0);
-  const startY = useRef<number | null>(null);
 
   const catName = (id: string | null) => categories.find((c) => c.id === id)?.name ?? '';
 
@@ -91,18 +89,6 @@ export function MobileHome({ onQuickNote, notify }: Props) {
     } catch (e) { notify(e instanceof Error ? e.message : String(e)); }
   }
 
-  // 下拉刷新：顶部下拉超过阈值触发
-  function onTouchStart(e: React.TouchEvent) { startY.current = e.touches[0].clientY; }
-  function onTouchMove(e: React.TouchEvent) {
-    if (startY.current == null || (e.currentTarget as HTMLElement).scrollTop > 0) { setPullY(0); return; }
-    const d = e.touches[0].clientY - startY.current;
-    if (d > 0) setPullY(Math.min(d, 70));
-  }
-  function onTouchEnd() {
-    if (pullY > 55) void load(projectId);
-    startY.current = null;
-    setPullY(0);
-  }
 
   return (
     <div style={pageStyle}>
@@ -134,20 +120,15 @@ export function MobileHome({ onQuickNote, notify }: Props) {
         </button>
       )}
 
-      <div
-        style={{ flex: 1, overflowY: 'auto', padding: '0 12px', position: 'relative', transition: pullY ? 'none' : 'transform .15s ease' }}
-        onTouchStart={onTouchStart}
-        onTouchMove={onTouchMove}
-        onTouchEnd={onTouchEnd}
-      >
-        {pullY > 10 && <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12, padding: 6 }}>{pullY > 55 ? '释放刷新…' : '下拉刷新'}</div>}
+      <PullRefresh onRefresh={() => load(projectId)}>
+        <div style={{ padding: '0 12px' }}>
         {/* T01425：缓存数据截至角标——stale 视图时展示 */}
         {staleAsOf && (
           <div style={{ margin: '6px 0 0', padding: '5px 10px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-muted)', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
             ⏱ 数据截至 {fmtAsOf(staleAsOf)}（离线缓存，联网后自动更新）
           </div>
         )}
-        {loading && <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12, padding: 10 }}>加载中…</div>}
+        {loading && <div style={{ padding: '8px 0' }}><Skeleton rows={4} /></div>}
 
         {shownTasks.length === 0 && !loading && alertFilter && (
           <div style={empty}><div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>没有需要关注的任务了</div></div>
@@ -187,7 +168,8 @@ export function MobileHome({ onQuickNote, notify }: Props) {
             </li>
           ))}
         </ul>
-      </div>
+        </div>
+      </PullRefresh>
       {/* T01388：悬浮「+」FAB 已移除——底栏中央「随手记」Plus 是唯一入口，避免同屏双加号 */}
       <MobileTaskDetail task={detailTask} categories={categories} onClose={() => setDetailTask(null)} onChanged={() => void load(projectId)} notify={notify} />
     </div>

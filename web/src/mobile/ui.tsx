@@ -6,7 +6,7 @@
  * 约定：移动端页面优先组合本文件导出的样式常量与组件；确需页面特有样式时以本层值为基底覆盖。
  */
 import type { CSSProperties, ReactNode } from 'react';
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 /** 页面容器：占满视口、纵向布局、应用底色 */
 export const pageStyle: CSSProperties = { display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--app-bg)', color: 'var(--text)' };
@@ -75,6 +75,67 @@ export function HalfSheet({ open, title, onClose, children }: { open: boolean; t
         {children}
       </div>
       <style>{'@keyframes sheet-up { from { transform: translateY(40%); opacity: .4 } to { transform: translateY(0); opacity: 1 } }'}</style>
+    </div>
+  );
+}
+
+// ---------- T01430：下拉刷新与骨架屏公共组件 ----------
+
+/** 下拉刷新容器：顶部下拉超过阈值（55px）触发 onRefresh；指示器内建。
+ *  内部滚动，外层不再需要 overflowY。 */
+export function PullRefresh({ onRefresh, children }: { onRefresh: () => Promise<void> | void; children: ReactNode }) {
+  const [pullY, setPullY] = useState(0);
+  const startY = useRef<number | null>(null);
+  const refreshing = useRef(false);
+
+  function onTouchStart(e: React.TouchEvent) { startY.current = e.touches[0].clientY; }
+  function onTouchMove(e: React.TouchEvent) {
+    if (startY.current == null || (e.currentTarget as HTMLElement).scrollTop > 0) { setPullY(0); return; }
+    const d = e.touches[0].clientY - startY.current;
+    if (d > 0) setPullY(Math.min(d, 70));
+  }
+  async function onTouchEnd() {
+    const hit = pullY > 55;
+    startY.current = null;
+    setPullY(0);
+    if (hit && !refreshing.current) {
+      refreshing.current = true;
+      try { await onRefresh(); } finally { refreshing.current = false; }
+    }
+  }
+
+  return (
+    <div
+      style={{ flex: 1, overflowY: 'auto', position: 'relative', transition: pullY ? 'none' : 'transform .15s ease' }}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+    >
+      {pullY > 10 && <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12, padding: 6 }}>{pullY > 55 ? '释放刷新…' : '下拉刷新'}</div>}
+      {children}
+    </div>
+  );
+}
+
+/** 骨架屏：弱网初载占位（行式），样式全部走 CSS 变量 */
+export function Skeleton({ rows = 3, card = false }: { rows?: number; card?: boolean }) {
+  return (
+    <div aria-hidden="true">
+      <style>{'@keyframes mtask-skel { 0%, 100% { opacity: .4 } 50% { opacity: .85 } }'}</style>
+      {Array.from({ length: rows }).map((_, i) => (
+        <div
+          key={i}
+          style={{
+            height: card ? 64 : 44,
+            borderRadius: 10,
+            marginBottom: 10,
+            background: 'var(--surface-2)',
+            border: '1px solid var(--border)',
+            animation: 'mtask-skel 1.2s ease-in-out infinite',
+            animationDelay: `${i * 0.15}s`,
+          }}
+        />
+      ))}
     </div>
   );
 }
