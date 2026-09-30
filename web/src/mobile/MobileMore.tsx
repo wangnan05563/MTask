@@ -46,7 +46,7 @@ export function MobileMore({ notify, openDesktop }: Props) {
         {sub === 'archive' && <ArchiveView notify={notify} />}
         {sub === 'report' && <ReportView openDesktop={openDesktop} />}
         {sub === 'logs' && <LogsView notify={notify} />}
-        {sub === 'settings' && <SettingsView notify={notify} openDesktop={openDesktop} theme={prefs.theme} setTheme={(t) => update('theme', t)} />}
+        {sub === 'settings' && <SettingsView notify={notify} openDesktop={openDesktop} theme={prefs.theme} setTheme={(t) => update('theme', t)} accent={prefs.accent} setAccent={(v) => update('accent', v)} />}
       </div>
     </div>
   );
@@ -119,7 +119,7 @@ function LogsView({ notify }: { readonly notify: (msg: string) => void }) {
 }
 
 // ---------- 设置 ----------
-function SettingsView({ notify, openDesktop, theme, setTheme }: { readonly notify: (msg: string) => void; readonly openDesktop: () => void; readonly theme: string; readonly setTheme: (t: 'auto' | 'light' | 'dark') => void }) {
+function SettingsView({ notify, openDesktop, theme, setTheme, accent, setAccent }: { readonly notify: (msg: string) => void; readonly openDesktop: () => void; readonly theme: string; readonly setTheme: (t: 'auto' | 'light' | 'dark') => void; readonly accent: string; readonly setAccent: (v: string) => void }) {
   const [status, setStatus] = useState<{ status: string; publicUrl: string | null }>({ status: 'stopped', publicUrl: null });
   const [projects, setProjects] = useState<Project[]>([]);
   const [noteProject, setNoteProject] = useState('');
@@ -171,6 +171,22 @@ function SettingsView({ notify, openDesktop, theme, setTheme }: { readonly notif
               {icon} {label}
             </button>
           ))}
+        </div>
+      </div>
+
+      {/* T01437：自定义强调色——与桌面端同一 prefs.accent 数据源，6 预置色 + 取色器 + 恢复默认 */}
+      <div style={setRow}>
+        <span style={setLabel}>强调色</span>
+        <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          {['#2563eb', '#7c3aed', '#059669', '#d97706', '#dc2626', '#0891b2'].map((c) => (
+            <button key={c} onClick={() => setAccent(c)} aria-label={`强调色 ${c}`}
+              style={{ width: 24, height: 24, borderRadius: 6, border: accent === c ? '2px solid var(--text)' : '1px solid var(--border-strong)', background: c, cursor: 'pointer' }} />
+          ))}
+          <input type="color" value={accent || '#2563eb'} onChange={(e) => setAccent(e.target.value)}
+            title="自定义强调色（取色器）" aria-label="自定义强调色取色器"
+            style={{ width: 30, height: 24, padding: 0, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', cursor: 'pointer' }} />
+          <button onClick={() => setAccent('')} title="恢复默认强调色" aria-label="恢复默认强调色"
+            style={{ ...seg, fontSize: 12 }}>默认</button>
         </div>
       </div>
 
