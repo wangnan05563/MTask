@@ -1,6 +1,6 @@
 /**
  * 移动端首页：任务（待办概览）。含项目切换、待办列表、完成切换、下拉刷新、空态引导。
- * 悬浮「+」随手记入口由 MobileShell 注入（见 MobileShell 的 FAB）。
+ * 随手记入口为底栏中央「随手记」Plus（T01388：首页悬浮 FAB 已移除，避免同屏双加号）。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, imageUrl, type Project, type Task, type TaskCategory } from '../api/client';
@@ -146,11 +146,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
           ))}
         </ul>
       </div>
-
-      {/* 悬浮随手记按钮（拇指区） */}
-      <button onClick={onQuickNote} title="随手记 — 快速新建任务" aria-label="随手记" style={fab}>
-        <Plus size={26} />
-      </button>
+      {/* T01388：悬浮「+」FAB 已移除——底栏中央「随手记」Plus 是唯一入口，避免同屏双加号 */}
     </div>
   );
 }
@@ -164,4 +160,3 @@ const checkBtn: React.CSSProperties = { fontSize: 20, lineHeight: 1, background:
 const tag: React.CSSProperties = { fontSize: 11, color: 'var(--text-secondary)', background: 'var(--surface-2)', borderRadius: 6, padding: '2px 6px' };
 const empty: React.CSSProperties = { textAlign: 'center', padding: '48px 0', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 };
 const emptyBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '8px 16px', borderRadius: 20, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', cursor: 'pointer', fontSize: 14 };
-const fab: React.CSSProperties = { position: 'absolute', right: 18, bottom: 18, width: 56, height: 56, borderRadius: '50%', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', cursor: 'pointer', boxShadow: '0 6px 18px rgba(0,0,0,.22)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' };
