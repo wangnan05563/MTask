@@ -7,16 +7,18 @@ import { pageStyle as page, tapCardStyle as row, cardStyle as card, mutedStyle a
 import { useEffect, useState } from 'react';
 import { api, setAccessToken, type AITool, type Project, type Task } from '../api/client';
 import { useSettings } from '../settings';
-import { Boxes, Archive, BarChart3, Terminal, Settings, ExternalLink, LogOut, Moon, Sun, Monitor, ChevronRight } from 'lucide-react';
+import { Boxes, Archive, BarChart3, Terminal, Activity, Settings, ExternalLink, LogOut, Moon, Sun, Monitor, ChevronRight } from 'lucide-react';
+import { MobileExecSessions } from './MobileExecSessions';
 
 interface Props { readonly notify: (msg: string) => void; readonly openDesktop: () => void; }
 
-type Sub = 'root' | 'aitools' | 'archive' | 'report' | 'logs' | 'settings';
+type Sub = 'root' | 'aitools' | 'archive' | 'report' | 'logs' | 'execsessions' | 'settings';
 
 const ITEMS: { key: Sub; label: string; icon: typeof Boxes; desc: string }[] = [
   { key: 'aitools', label: '配置记录管理', icon: Boxes, desc: 'AI 工具（查看）' },
   { key: 'archive', label: '归档', icon: Archive, desc: '已归档任务（查询）' },
   { key: 'report', label: '周报', icon: BarChart3, desc: '在桌面端生成' },
+  { key: 'execsessions', label: '执行会话', icon: Activity, desc: 'AI 执行监控 / 一键重派' },
   { key: 'logs', label: '日志', icon: Terminal, desc: '后台运行日志' },
   { key: 'settings', label: '设置', icon: Settings, desc: '连接 / 默认项目 / 退出' },
 ];
@@ -45,6 +47,7 @@ export function MobileMore({ notify, openDesktop }: Props) {
         {sub === 'aitools' && <AitoolsView notify={notify} />}
         {sub === 'archive' && <ArchiveView notify={notify} />}
         {sub === 'report' && <ReportView openDesktop={openDesktop} />}
+        {sub === 'execsessions' && <MobileExecSessions notify={notify} />}
         {sub === 'logs' && <LogsView notify={notify} />}
         {sub === 'settings' && <SettingsView notify={notify} openDesktop={openDesktop} theme={prefs.theme} setTheme={(t) => update('theme', t)} accent={prefs.accent} setAccent={(v) => update('accent', v)} />}
       </div>
@@ -52,7 +55,7 @@ export function MobileMore({ notify, openDesktop }: Props) {
   );
 }
 
-const SUB_TITLE: Record<Sub, string> = { root: '更多', aitools: '配置记录管理', archive: '归档', report: '周报', logs: '日志', settings: '设置' };
+const SUB_TITLE: Record<Sub, string> = { root: '更多', aitools: '配置记录管理', archive: '归档', report: '周报', logs: '日志', execsessions: '执行会话', settings: '设置' };
 
 // 退出仅清本机令牌并刷新页面，不依赖任何组件状态，置于模块顶层避免每次渲染重建函数
 function logout() {
