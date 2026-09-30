@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, imageUrl, type Project, type Task, type TaskCategory } from '../api/client';
 import { Plus } from 'lucide-react';
+import { Badge, headerStyle, pageStyle, rowStyle } from './ui';
 
 interface Props {
   readonly onQuickNote: () => void;
@@ -79,8 +80,8 @@ export function MobileHome({ onQuickNote, notify }: Props) {
   }
 
   return (
-    <div style={page}>
-      <header style={headerBar}>
+    <div style={pageStyle}>
+      <header style={headerStyle}>
         <div>
           <div style={{ fontSize: 16, fontWeight: 700 }}>待办概览</div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{tasks.length} 条待办</div>
@@ -109,7 +110,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
 
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
           {tasks.map((t) => (
-            <li key={t.id} style={row}>
+            <li key={t.id} style={rowStyle}>
               <button onClick={() => void toggleDone(t)} title="切换完成" aria-label="切换完成" style={checkBtn}>
                 {t.status === 'todo' ? '☐' : '☑'}
               </button>
@@ -126,8 +127,8 @@ export function MobileHome({ onQuickNote, notify }: Props) {
                   <span style={{ fontSize: 11, color: PRIO_COLOR[t.priority] || 'var(--text-muted)' }}>●{PRIO_LABEL[t.priority] || ''}</span>
                 </div>
                 <div style={{ display: 'flex', gap: 6, marginTop: 2, alignItems: 'center' }}>
-                  {t.category_id && <span style={tag}>{catName(t.category_id)}</span>}
-                  {t.images.length > 0 && <span style={tag}>🖼 {t.images.length}</span>}
+                  {t.category_id && <Badge>{catName(t.category_id)}</Badge>}
+                  {t.images.length > 0 && <Badge>🖼 {t.images.length}</Badge>}
                 </div>
                 {expanded === t.id && (t.description || t.images.length > 0) && (
                   <div style={{ marginTop: 6 }}>
@@ -152,11 +153,8 @@ export function MobileHome({ onQuickNote, notify }: Props) {
 }
 
 // ---------- 样式 ----------
-const page: React.CSSProperties = { display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--app-bg)', color: 'var(--text)', position: 'relative' };
-const headerBar: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', borderBottom: '1px solid var(--border)', background: 'var(--card-bg)' };
+// T01422：页面骨架/卡片/列表行/徽标统一取自 mobile/ui 基础层，页面仅保留特有样式
 const projSelect: React.CSSProperties = { padding: 6, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 13, background: 'var(--card-bg)', color: 'var(--text)', maxWidth: 160 };
-const row: React.CSSProperties = { display: 'flex', gap: 10, alignItems: 'flex-start', padding: '12px 2px', borderBottom: '1px solid var(--surface-2)' };
 const checkBtn: React.CSSProperties = { fontSize: 20, lineHeight: 1, background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text)', flexShrink: 0, paddingTop: 2 };
-const tag: React.CSSProperties = { fontSize: 11, color: 'var(--text-secondary)', background: 'var(--surface-2)', borderRadius: 6, padding: '2px 6px' };
 const empty: React.CSSProperties = { textAlign: 'center', padding: '48px 0', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 };
 const emptyBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '8px 16px', borderRadius: 20, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', cursor: 'pointer', fontSize: 14 };

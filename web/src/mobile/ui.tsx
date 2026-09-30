@@ -1,0 +1,76 @@
+/**
+ * T01422（mtask三期 2.1）：移动端组件规范化基础层。
+ *
+ * 四类基元 + 页面骨架样式，统一消费全局 CSS 变量（--app-bg/--card-bg/--border/--surface-2/
+ * --text* 系列与 --accent 等），为「明暗跟随系统」(2.6) 提供单一适配面。
+ * 约定：移动端页面优先组合本文件导出的样式常量与组件；确需页面特有样式时以本层值为基底覆盖。
+ */
+import type { CSSProperties, ReactNode } from 'react';
+import { useEffect } from 'react';
+
+/** 页面容器：占满视口、纵向布局、应用底色 */
+export const pageStyle: CSSProperties = { display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--app-bg)', color: 'var(--text)' };
+
+/** 顶栏：标题 + 左右操作槽 */
+export const headerStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', borderBottom: '1px solid var(--border)', background: 'var(--card-bg)' };
+
+/** 内容滚动区 */
+export const bodyStyle: CSSProperties = { flex: 1, overflowY: 'auto', padding: 12 };
+
+/** 卡片（容器型） */
+export const cardStyle: CSSProperties = { padding: 12, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 10, marginBottom: 10 };
+
+/** 可点击卡片（按钮型：整块可点、文字左对齐） */
+export const tapCardStyle: CSSProperties = { display: 'block', width: '100%', textAlign: 'left', padding: 14, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 10, marginBottom: 10, cursor: 'pointer', color: 'var(--text)' };
+
+/** 列表行（分隔线式） */
+export const rowStyle: CSSProperties = { display: 'flex', gap: 10, alignItems: 'flex-start', padding: '12px 2px', borderBottom: '1px solid var(--surface-2)' };
+
+/** 次要说明文本 */
+export const mutedStyle: CSSProperties = { color: 'var(--text-muted)', fontSize: 12, padding: '4px 2px' };
+
+export type BadgeTone = 'neutral' | 'accent' | 'success' | 'danger';
+
+/** 徽标配色（全部走 CSS 变量，暗色自动跟随） */
+const badgeTones: Record<BadgeTone, CSSProperties> = {
+  neutral: { color: 'var(--text-secondary)', background: 'var(--surface-2)' },
+  accent: { color: 'var(--accent)', background: 'var(--surface-2)', borderColor: 'var(--accent)' },
+  success: { color: 'var(--success)', background: 'var(--surface-2)', borderColor: 'var(--success)' },
+  danger: { color: 'var(--danger)', background: 'var(--surface-2)', borderColor: 'var(--danger)' },
+};
+
+/** 徽标基元：小号圆角标签 */
+export function Badge({ tone = 'neutral', children, style }: { tone?: BadgeTone; children: ReactNode; style?: CSSProperties }) {
+  return <span style={{ fontSize: 11, borderRadius: 6, padding: '2px 6px', border: '1px solid transparent', ...badgeTones[tone], ...style }}>{children}</span>;
+}
+
+/** 半屏抽屉基元：底部滑入的半屏面板（后续队列半操作/详情抽屉复用）。
+ *  遮罩点击 / Esc 关闭；挂载于普通文档流外（fixed），打开时才渲染。 */
+export function HalfSheet({ open, title, onClose, children }: { open: boolean; title?: string; onClose: () => void; children: ReactNode }) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    globalThis.addEventListener('keydown', onKey);
+    return () => globalThis.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+  if (!open) return null;
+  return (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      aria-hidden="true"
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.4)', zIndex: 1000, display: 'flex', alignItems: 'flex-end' }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: '100%', maxHeight: '62%', overflowY: 'auto', background: 'var(--card-bg)', color: 'var(--text)', borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 14, boxSizing: 'border-box', animation: 'sheet-up 220ms ease-in-out' }}
+      >
+        {title && <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 10 }}>{title}</div>}
+        {children}
+      </div>
+      <style>{'@keyframes sheet-up { from { transform: translateY(40%); opacity: .4 } to { transform: translateY(0); opacity: 1 } }'}</style>
+    </div>
+  );
+}

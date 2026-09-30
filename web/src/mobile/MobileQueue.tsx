@@ -2,6 +2,7 @@
  * 移动端：队列（只读视图，§5.3）。卡片列出队列与各 Job 状态徽标；
  * 不提供增删改排，操作区超链接「在桌面端编排」。
  */
+import { pageStyle as page, tapCardStyle as card, mutedStyle as muted, cardStyle as jobCard } from './ui';
 import { useEffect, useState } from 'react';
 import { api, type Queue, type QueueJob, type Task } from '../api/client';
 import { Copy, ExternalLink } from 'lucide-react';
@@ -88,12 +89,8 @@ export function MobileQueue({ notify, openDesktop }: Props) {
   );
 }
 
-const page: React.CSSProperties = { display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--app-bg)', color: 'var(--text)' };
 const hdr: React.CSSProperties = { fontSize: 16, fontWeight: 700, padding: 12, borderBottom: '1px solid var(--border)', background: 'var(--card-bg)' };
 const body: React.CSSProperties = { flex: 1, overflowY: 'auto', padding: 12 };
-const card: React.CSSProperties = { display: 'block', width: '100%', textAlign: 'left', padding: 14, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 10, marginBottom: 10, cursor: 'pointer', color: 'var(--text)' };
-const muted: React.CSSProperties = { color: 'var(--text-muted)', fontSize: 13, padding: 10 };
 const back: React.CSSProperties = { background: 'transparent', border: 'none', color: 'var(--accent)', fontSize: 13, cursor: 'pointer', padding: '4px 0', marginBottom: 8 };
-const jobCard: React.CSSProperties = { padding: 12, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 10, marginBottom: 10 };
 const copyRow: React.CSSProperties = { marginTop: 6, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--accent)', background: 'transparent', border: 'none', cursor: 'pointer' };
 const deskLink: React.CSSProperties = { marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 13, color: 'var(--accent)', background: 'transparent', border: 'none', cursor: 'pointer' };

@@ -1,6 +1,7 @@
 /**
  * 移动端：提示词（取用 / 复制，§5.3）。分类 → 提示词列表；点击复制全文，Toast「已复制」，便于粘贴到他处。
  */
+import { pageStyle as page, bodyStyle as body, cardStyle as card, mutedStyle as muted } from './ui';
 import { useEffect, useState } from 'react';
 import { api, type Prompt, type PromptCategory } from '../api/client';
 import { Copy, ChevronDown, ChevronUp } from 'lucide-react';
@@ -64,12 +65,8 @@ export function MobilePrompts({ notify }: Props) {
   );
 }
 
-const page: React.CSSProperties = { display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--app-bg)', color: 'var(--text)' };
 const hdr: React.CSSProperties = { fontSize: 16, fontWeight: 700, padding: 12, borderBottom: '1px solid var(--border)', background: 'var(--card-bg)' };
 const sel: React.CSSProperties = { width: '100%', padding: 10, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 14, background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box' };
-const body: React.CSSProperties = { flex: 1, overflowY: 'auto', padding: 12 };
-const card: React.CSSProperties = { padding: 12, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 10, marginBottom: 10 };
 const cardHead: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, width: '100%', background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text)' };
 const pre: React.CSSProperties = { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 13, color: 'var(--text-secondary)', background: 'var(--surface)', borderRadius: 8, padding: 10, margin: 0, maxHeight: 280, overflowY: 'auto' };
 const copyBtn: React.CSSProperties = { marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '8px 14px', borderRadius: 8, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', cursor: 'pointer', fontSize: 14 };
-const muted: React.CSSProperties = { color: 'var(--text-muted)', fontSize: 13, padding: 10 };

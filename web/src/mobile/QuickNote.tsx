@@ -3,6 +3,7 @@
  * 录入方式：文本（主）/ 语音（Web Speech API，不支持则隐藏）/ 快捷模板（提示词预填）/ 图片贴图。
  * 提交复用 POST /api/tasks；离线时落本地草稿，联网后由 MobileShell 自动补提。
  */
+import { pageStyle as page, headerStyle as header } from './ui';
 import { useEffect, useRef, useState } from 'react';
 import { api, type Project, type Task, type TaskCategory, type Prompt } from '../api/client';
 import { addDraft, submitQuickNote } from './offline';
@@ -280,8 +281,6 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
 }
 
 // ---------- 复用样式 ----------
-const page: React.CSSProperties = { display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--app-bg)', color: 'var(--text)' };
-const header: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderBottom: '1px solid var(--border)', background: 'var(--card-bg)' };
 const hdrBtn: React.CSSProperties = { fontSize: 14, padding: '6px 8px', background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text)' };
 const titleInput: React.CSSProperties = { width: '100%', marginTop: 4, padding: 12, border: '1px solid var(--border-strong)', borderRadius: 10, fontSize: 16, boxSizing: 'border-box', resize: 'none', fontFamily: 'inherit' };
 const quickBar: React.CSSProperties = { display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' };

@@ -3,6 +3,7 @@
  * 配置记录管理 / 归档 / 周报 / 日志 / 设置。点按进入只读视图或引导桌面端。
  * 设置子页含：隧道连接状态、默认记事项目、主题、退出（清除本机令牌）。
  */
+import { pageStyle as page, tapCardStyle as row, cardStyle as card, mutedStyle as muted } from './ui';
 import { useEffect, useState } from 'react';
 import { api, setAccessToken, type AITool, type Project, type Task } from '../api/client';
 import { useSettings } from '../settings';
@@ -174,13 +175,9 @@ function SettingsView({ notify, openDesktop, theme, setTheme }: { readonly notif
 }
 
 // ---------- 样式 ----------
-const page: React.CSSProperties = { display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--app-bg)', color: 'var(--text)' };
 const hdr: React.CSSProperties = { fontSize: 16, fontWeight: 700, padding: 12, borderBottom: '1px solid var(--border)', background: 'var(--card-bg)', display: 'flex', alignItems: 'center', gap: 10 };
 const backBtn: React.CSSProperties = { background: 'transparent', border: 'none', color: 'var(--accent)', fontSize: 22, lineHeight: 1, cursor: 'pointer' };
 const body: React.CSSProperties = { flex: 1, overflowY: 'auto', padding: 12 };
-const row: React.CSSProperties = { display: 'flex', alignItems: 'center', width: '100%', textAlign: 'left', padding: 14, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 10, marginBottom: 10, cursor: 'pointer', color: 'var(--text)' };
-const card: React.CSSProperties = { padding: 12, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 10, marginBottom: 10 };
-const muted: React.CSSProperties = { color: 'var(--text-muted)', fontSize: 12, padding: '4px 2px' };
 const deskBtn: React.CSSProperties = { marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '10px 16px', borderRadius: 8, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', cursor: 'pointer', fontSize: 14 };
 const logoutBtn: React.CSSProperties = { marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '10px 16px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--danger)', border: 'none', cursor: 'pointer', fontSize: 14 };
 const setRow: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '12px 0', borderBottom: '1px solid var(--surface-2)' };
