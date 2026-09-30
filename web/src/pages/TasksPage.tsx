@@ -250,6 +250,8 @@ export function TasksPage() {
   const [copiedId, setCopiedId] = useState('');
   // 描述 展开/收起 状态：descExpanded 记录已展开的 taskId，默认收起不展示摘要，点标题行箭头展开看完整描述
   const [descExpanded, setDescExpanded] = useState<Record<string, boolean>>({});
+  // T01384：描述动画可见态——收起时保留挂载以播放收起过渡，transitionEnd 后卸载（内容重，避免常驻渲染）
+  const [descVis, setDescVis] = useState<Record<string, boolean>>({});
   // AI 梳理摘要 展开/收起：与描述展开同风格（lucide 蓝色箭头），默认收起
   const [summaryExpanded, setSummaryExpanded] = useState<Record<string, boolean>>({});
   // 处理结果 草稿/展开状态：resultDrafts 存在即进入编辑态（有值时可点击「编辑」重新编辑）
@@ -1759,6 +1761,14 @@ export function TasksPage() {
   /** 标题区：编辑态输入框 / 展示态文本 + 描述展开按钮 */
   function renderTaskTitle(t: Task, titleEditing: boolean) {
     const markTitleRead = () => { if (t.status === 'done' && !t.handle_result && t.ai_state === 'unread') { void api.patch(`/tasks/${t.id}`, { aiState: '' }).then(() => setTasksStateRead(t.id)); } };
+    // T01384：点标题切换描述展开/收起（与箭头按钮同口径）；markTitleRead 顺路执行
+    const descToggleable = Boolean(t.description) && !titleEditing;
+    const toggleDesc = () => {
+      setDescExpanded((p) => ({ ...p, [t.id]: !p[t.id] }));
+      setDescVis((p) => ({ ...p, [t.id]: true }));
+      if (t.ai_state === 'unread') { void api.patch(`/tasks/${t.id}`, { aiState: '' }).then(() => setTasksStateRead(t.id)); }
+      markTitleRead();
+    };
     return (
       <>
         {titleEditing ? (
@@ -1773,21 +1783,24 @@ export function TasksPage() {
         ) : (
           // T00918：已完成且无处理结果反馈的任务，其标题行常无「描述/处理结果」展开入口可点，
           // 未读红点无处置除；故点击标题本身即视为「已查看」，清除该任务未读状态（仅覆盖此场景，不影响已填反馈任务）
+          // T01384：有描述时点击标题即展开/收起描述（键盘 Enter/Space 同效），aria-expanded 同步可展开状态
           <span
             role="button"
             tabIndex={0}
-            onClick={markTitleRead}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); markTitleRead(); } }}
-            title={t.status === 'done' && !t.handle_result && t.ai_state === 'unread' ? '点击消除未读状态' : undefined}
-            style={{ flex: 1, textDecoration: t.status === 'done' ? 'line-through' : 'none', color: t.color || 'var(--text)', cursor: t.status === 'done' && !t.handle_result && t.ai_state === 'unread' ? 'pointer' : 'default' }}
+            onClick={descToggleable ? toggleDesc : markTitleRead}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (descToggleable) { toggleDesc(); } else { markTitleRead(); } } }}
+            aria-expanded={descToggleable ? descExpanded[t.id] ?? false : undefined}
+            aria-controls={descToggleable ? `task-desc-${t.id}` : undefined}
+            title={descToggleable ? (descExpanded[t.id] ? '收起 — 再次点击收起任务描述' : '展开 — 点击查看完整任务描述') : (t.status === 'done' && !t.handle_result && t.ai_state === 'unread' ? '点击消除未读状态' : undefined)}
+            style={{ flex: 1, textDecoration: t.status === 'done' ? 'line-through' : 'none', color: t.color || 'var(--text)', cursor: descToggleable || (t.status === 'done' && !t.handle_result && t.ai_state === 'unread') ? 'pointer' : 'default' }}
           >
             {t.title}
           </span>
         )}
-        {/* 展开/收起按钮紧跟标题：有描述才显示，点击展开完整描述（默认收起不展示摘要，保持简洁） */}
+        {/* 展开/收起按钮紧跟标题：有描述才显示，点击展开完整描述（默认收起不展示摘要，保持简洁）——T01384 与标题点击同口径 */}
         {t.description && (
           <button
-            onClick={() => { setDescExpanded((p) => ({ ...p, [t.id]: !p[t.id] })); if (t.ai_state === 'unread') { void api.patch(`/tasks/${t.id}`, { aiState: '' }).then(() => setTasksStateRead(t.id)); } }}
+            onClick={toggleDesc}
             title={descExpanded[t.id] ? '收起 — 收起任务描述' : '展开 — 展开查看完整任务描述'}
             aria-label={descExpanded[t.id] ? '收起：收起任务描述' : '展开：展开查看完整任务描述'}
             className="task-op"
@@ -2331,12 +2344,24 @@ export function TasksPage() {
         {renderTaskTitleRow(t, titleEditing)}
         {/* 元信息/操作行：优先级/分类/功能按钮 + 记录时间，全部靠右同行 */}
         {renderTaskMetaRow(t, titleEditing, descEditing)}
-        {/* 描述板块：描述展开时，Markdown 正文在上、截图缩略图紧随其后显示在同一容器内 */}
-        {descExpanded[t.id] && !descEditing && (t.description || t.images.length > 0) && renderTaskDescView(t)}
-        {/* T01064-FR1.5：任务事件时间线——状态流转/回传/验证历史（展开描述时随详情展示） */}
-        {descExpanded[t.id] && !descEditing && <TaskEventTimeline taskId={t.id} />}
-        {/* 大图预览独立于查看态条件：编辑态下已打开的预览不因进入编辑而消失 */}
-        {previewId && descExpanded[t.id] && t.images.some((i) => i.id === previewId) && renderTaskPreview(t)}
+        {/* 描述板块：描述展开时，Markdown 正文在上、截图缩略图紧随其后显示在同一容器内。
+            T01384：grid-rows 0fr→1fr 过渡动画（240ms ease-in-out）；收起时保留挂载播完动画再卸载，
+            重内容（时间线/预览）仅在展开态渲染以控制长列表开销 */}
+        {!descEditing && (t.description || t.images.length > 0) && (descExpanded[t.id] || descVis[t.id]) && (
+          <div
+            id={`task-desc-${t.id}`}
+            role="region"
+            aria-label={`任务描述${t.task_no ? `（${t.task_no}）` : ''}`}
+            onTransitionEnd={(e) => { if (e.target === e.currentTarget && e.propertyName === 'grid-template-rows' && !descExpanded[t.id]) setDescVis((p) => { const n = { ...p }; delete n[t.id]; return n; }); }}
+            style={{ display: 'grid', gridTemplateRows: descExpanded[t.id] ? '1fr' : '0fr', opacity: descExpanded[t.id] ? 1 : 0, transition: 'grid-template-rows 240ms ease-in-out, opacity 200ms ease-in-out', overflow: 'hidden' }}
+          >
+            <div style={{ minHeight: 0, overflow: 'hidden' }}>
+              {descExpanded[t.id] && renderTaskDescView(t)}
+              {descExpanded[t.id] && <TaskEventTimeline taskId={t.id} />}
+              {previewId && descExpanded[t.id] && t.images.some((i) => i.id === previewId) && renderTaskPreview(t)}
+            </div>
+          </div>
+        )}
         {descEditing && renderTaskDescEditor(t, descDraft)}
         {t.ai_summary && !draft && renderTaskSummary(t)}
         {draft && renderTaskDraft(t, draft)}
