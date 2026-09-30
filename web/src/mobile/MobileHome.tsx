@@ -7,6 +7,7 @@ import { api, imageUrl, type Project, type Task, type TaskCategory } from '../ap
 import { Plus } from 'lucide-react';
 import { Badge, headerStyle, pageStyle, rowStyle } from './ui';
 import { MobileTaskDetail } from './MobileTaskDetail';
+import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
 
 interface Props {
   readonly onQuickNote: () => void;
@@ -27,6 +28,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
   // T01424：失败/AI 待读聚合告警——allTasks 保底全量（含 done 的验证失败复核源），点击聚合条切换过滤
   const [allTasks, setAllTasks] = useState<Task[]>([]);
   const [alertFilter, setAlertFilter] = useState(false);
+  const [staleAsOf, setStaleAsOf] = useState<string | null>(null); // T01425：离线缓存数据的拉取时间
   const [loading, setLoading] = useState(false);
   const [pullY, setPullY] = useState(0);
   const startY = useRef<number | null>(null);
@@ -43,12 +45,21 @@ export function MobileHome({ onQuickNote, notify }: Props) {
   const load = useCallback(async (pid: string) => {
     if (!pid) return;
     setLoading(true);
+    // T01425：stale-first——先渲染缓存兜底（弱网/无网立即可见），再后台 revalidate
+    const cached = loadStaleCache<Task[]>(`tasks.${pid}`);
+    if (cached) {
+      setAllTasks(cached.data);
+      setTasks(cached.data.filter((t) => t.status === 'todo'));
+      setStaleAsOf(cached.asOf);
+    }
     try {
       const list = await api.get<Task[]>(`/tasks?projectId=${pid}`);
       setAllTasks(list);
       setTasks(list.filter((t) => t.status === 'todo'));
+      saveStaleCache(`tasks.${pid}`, list);
+      setStaleAsOf(null);
     } catch (e) {
-      notify(e instanceof Error ? e.message : String(e));
+      if (!cached) notify(e instanceof Error ? e.message : String(e)); // 有缓存兜底时不重复弹错
     } finally {
       setLoading(false);
     }
@@ -56,13 +67,18 @@ export function MobileHome({ onQuickNote, notify }: Props) {
 
   useEffect(() => {
     void (async () => {
-      try { setCategories(await api.get<TaskCategory[]>('/task-categories')); } catch { /* 忽略 */ }
-      let list = await api.get<Project[]>('/projects').catch(() => [] as Project[]);
-      setProjects(list);
-      if (list.length === 0) return;
+      try { setCategories(await api.get<TaskCategory[]>('/task-categories')); } catch { /* 离线时分类缺失可接受 */ }
+      let list: Project[] = [];
+      try { list = await api.get<Project[]>('/projects'); setProjects(list); } catch { /* T01425：离线降级，用上次项目走缓存 */ }
       let pid = '';
       try { pid = (await api.get<{ projectId: string }>('/settings/note-project')).projectId; } catch { /* 忽略 */ }
-      if (!list.some((p) => p.id === pid)) pid = list[0].id;
+      if (!list.some((p) => p.id === pid)) pid = list[0]?.id ?? '';
+      if (!pid) {
+        try { pid = localStorage.getItem('mtask.mobile.lastProject') ?? ''; } catch { /* 忽略 */ }
+      } else {
+        try { localStorage.setItem('mtask.mobile.lastProject', pid); } catch { /* 忽略 */ }
+      }
+      if (!pid) return;
       setProjectId(pid);
       await load(pid);
     })();
@@ -95,7 +111,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
           <div style={{ fontSize: 16, fontWeight: 700 }}>待办概览</div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{tasks.length} 条待办</div>
         </div>
-        <select value={projectId} onChange={(e) => { setProjectId(e.target.value); void load(e.target.value); }} style={projSelect}>
+        <select value={projectId} onChange={(e) => { setProjectId(e.target.value); try { localStorage.setItem('mtask.mobile.lastProject', e.target.value); } catch { /* 忽略 */ } void load(e.target.value); }} style={projSelect}>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
       </header>
@@ -125,6 +141,12 @@ export function MobileHome({ onQuickNote, notify }: Props) {
         onTouchEnd={onTouchEnd}
       >
         {pullY > 10 && <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12, padding: 6 }}>{pullY > 55 ? '释放刷新…' : '下拉刷新'}</div>}
+        {/* T01425：缓存数据截至角标——stale 视图时展示 */}
+        {staleAsOf && (
+          <div style={{ margin: '6px 0 0', padding: '5px 10px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-muted)', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+            ⏱ 数据截至 {fmtAsOf(staleAsOf)}（离线缓存，联网后自动更新）
+          </div>
+        )}
         {loading && <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12, padding: 10 }}>加载中…</div>}
 
         {shownTasks.length === 0 && !loading && alertFilter && (

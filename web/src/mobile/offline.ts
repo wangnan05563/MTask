@@ -112,3 +112,26 @@ export function useOnlineStatus(): boolean {
   }, []);
   return online;
 }
+
+// ---------- T01425：stale-while-revalidate 缓存（弱网/无网降级） ----------
+const CACHE_PREFIX = 'mtask.swrcache.';
+
+/** 缓存盒：data + 拉取时间（asOf），供「数据截至」角标展示 */
+export interface StaleCache<T> { asOf: string; data: T; }
+
+export function loadStaleCache<T>(key: string): StaleCache<T> | null {
+  try {
+    const raw = localStorage.getItem(CACHE_PREFIX + key);
+    return raw ? (JSON.parse(raw) as StaleCache<T>) : null;
+  } catch { return null; }
+}
+
+export function saveStaleCache<T>(key: string, data: T): void {
+  try { localStorage.setItem(CACHE_PREFIX + key, JSON.stringify({ asOf: new Date().toISOString(), data } satisfies StaleCache<T>)); } catch { /* 配额溢出静默忽略 */ }
+}
+
+/** 缓存时间 → HH:MM 展示 */
+export function fmtAsOf(asOf: string): string {
+  const d = new Date(asOf);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}

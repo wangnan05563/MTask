@@ -105,6 +105,13 @@ export function MobileShell() {
           </span>
         )}
       </div>
+      {/* T01425：离线横幅强化——醒目条替代仅顶栏小字，说明降级行为 */}
+      {!online && (
+        <div role="status" style={{ margin: '0 12px', padding: '8px 12px', borderRadius: 10, background: 'var(--danger)', color: '#fff', fontSize: 13, display: 'flex', gap: 8, alignItems: 'center' }}>
+          <WifiOff size={14} style={{ flexShrink: 0 }} />
+          <span>离线中——正在浏览缓存数据；新建内容将离线暂存，联网后自动补提</span>
+        </div>
+      )}
 
       {/* 页面区 */}
       <div style={content}>

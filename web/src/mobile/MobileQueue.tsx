@@ -5,6 +5,7 @@
 import { pageStyle as page, tapCardStyle as card, mutedStyle as muted, cardStyle as jobCard } from './ui';
 import { useEffect, useState } from 'react';
 import { api, type Queue, type QueueJob, type Task } from '../api/client';
+import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
 import { Copy, ExternalLink } from 'lucide-react';
 
 interface Props { readonly notify: (msg: string) => void; readonly openDesktop: () => void; }
@@ -22,13 +23,29 @@ export function MobileQueue({ notify, openDesktop }: Props) {
   const [active, setActive] = useState<Queue | null>(null);
   const [jobs, setJobs] = useState<QueueJob[]>([]);
   const [loading, setLoading] = useState(false);
+  const [staleAsOf, setStaleAsOf] = useState<string | null>(null); // T01425：缓存数据时间
 
   useEffect(() => {
+    // T01425：stale-first 渲染缓存，再后台 revalidate
+    const cachedQ = loadStaleCache<Queue[]>('queues');
+    const cachedT = loadStaleCache<Task[]>('queue.tasks');
+    if (cachedQ && cachedT) {
+      setQueues(cachedQ.data);
+      setTasks(cachedT.data);
+      setStaleAsOf(cachedQ.asOf);
+    }
     void (async () => {
       try {
-        setQueues(await api.get<Queue[]>('/queues'));
-        setTasks(await api.get<Task[]>('/tasks?archived=0'));
-      } catch (e) { notify(e instanceof Error ? e.message : String(e)); }
+        const qs = await api.get<Queue[]>('/queues');
+        const ts = await api.get<Task[]>('/tasks?archived=0');
+        setQueues(qs);
+        setTasks(ts);
+        saveStaleCache('queues', qs);
+        saveStaleCache('queue.tasks', ts);
+        setStaleAsOf(null);
+      } catch (e) {
+        if (!(cachedQ && cachedT)) notify(e instanceof Error ? e.message : String(e));
+      }
     })();
   }, [notify]);
 
@@ -53,6 +70,11 @@ export function MobileQueue({ notify, openDesktop }: Props) {
     <div style={page}>
       <header style={hdr}>队列</header>
       <div style={body}>
+        {staleAsOf && (
+          <div style={{ marginBottom: 8, padding: '5px 10px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-muted)', fontSize: 12 }}>
+            ⏱ 数据截至 {fmtAsOf(staleAsOf)}（离线缓存，联网后自动更新）
+          </div>
+        )}
         {!active && (
           <>
             {queues.length === 0 && <div style={muted}>暂无队列</div>}
