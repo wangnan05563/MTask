@@ -57,4 +57,5 @@ server/MTask_DATA_DIR/
 
 # AI 工具本地产物（不入库）
 .trae/
-generated-images/
+generated-images
+.workbuddy/
