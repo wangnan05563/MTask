@@ -463,7 +463,7 @@ export function SupervisorPanel() {
                               const o = (a ?? {}) as Record<string, unknown>;
                               const type = str(o.type);
                               return (
-                                <li key={i} style={{ display: 'flex', gap: 8 }}>
+                                <li key={`${i}-${str(o.taskId)}`} style={{ display: 'flex', gap: 8 }}>
                                   <span style={{ color: ACTION_COLOR[type] ?? 'var(--text)', fontWeight: 600, minWidth: 88 }}>{type || '—'}</span>
                                   <span style={{ color: 'var(--text-secondary)' }}>{str(o.taskId) || '（全局）'}</span>
                                   <span style={{ color: 'var(--text-secondary)' }}>{str(o.reason)}</span>
@@ -481,7 +481,7 @@ export function SupervisorPanel() {
                               const o = (a ?? {}) as Record<string, unknown>;
                               const st = str(o.status);
                               return (
-                                <li key={i} style={{ display: 'flex', gap: 8 }}>
+                                <li key={`${i}-${str(o.detail)}`} style={{ display: 'flex', gap: 8 }}>
                                   <span style={{ color: OUTCOME_COLOR[st] ?? 'var(--text)', fontWeight: 600, minWidth: 60 }}>{st || '—'}</span>
                                   <span style={{ color: 'var(--text-secondary)' }}>{str(o.type)}</span>
                                   <span style={{ color: 'var(--text-secondary)' }}>{str(o.detail)}{o.createdTaskNo ? `（新任务 ${str(o.createdTaskNo)}）` : ''}</span>

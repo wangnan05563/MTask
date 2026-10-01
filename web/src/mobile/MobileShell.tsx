@@ -113,7 +113,7 @@ export function MobileShell() {
       {/* T01441：PWA 添加到主屏一次性引导卡（fixed 覆盖层） */}
       {pwaGuide && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-          <div role="dialog" aria-modal="true" aria-label="添加到主屏幕" style={{ background: 'var(--card-bg)', color: 'var(--text)', borderRadius: 14, padding: 16, maxWidth: 340, width: '100%' }}>
+          <dialog open aria-modal="true" aria-label="添加到主屏幕" style={{ position: 'static', margin: 0, border: 'none', background: 'var(--card-bg)', color: 'var(--text)', borderRadius: 14, padding: 16, maxWidth: 340, width: '100%' }}>
             <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 8 }}>📱 添加到主屏幕</div>
             <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
               把 MTask 装到手机桌面，像 App 一样全屏使用：<br />
@@ -126,7 +126,7 @@ export function MobileShell() {
             >
               我知道了
             </button>
-          </div>
+          </dialog>
         </div>
       )}
       {/* 顶部常驻：连接状态 + 待同步草稿角标 */}
@@ -142,10 +142,10 @@ export function MobileShell() {
       </div>
       {/* T01425：离线横幅强化——醒目条替代仅顶栏小字，说明降级行为 */}
       {!online && (
-        <div role="status" style={{ margin: '0 12px', padding: '8px 12px', borderRadius: 10, background: 'var(--danger)', color: '#fff', fontSize: 13, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <output style={{ margin: '0 12px', padding: '8px 12px', borderRadius: 10, background: 'var(--danger)', color: '#fff', fontSize: 13, display: 'flex', gap: 8, alignItems: 'center' }}>
           <WifiOff size={14} style={{ flexShrink: 0 }} />
           <span>离线中——正在浏览缓存数据；新建内容将离线暂存，联网后自动补提</span>
-        </div>
+        </output>
       )}
 
       {/* 页面区 */}

@@ -98,15 +98,13 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, action, sta
   }
   const hasCorner = Boolean(action || onReset);
   return (
-    <div
-      role="button"
-      tabIndex={0}
+    <button
+      type="button"
       onClick={onToggle}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
-      className={`ln${glow ? ' flow-glow' : ''}`}
       title={hint}
       aria-label={aria}
-      style={{ position: 'relative', textAlign: 'left', padding: 14, border: open ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', cursor: 'pointer', display: 'flex', gap: 10, alignItems: 'flex-start' }}
+      className={`ln${glow ? ' flow-glow' : ''}`}
+      style={{ position: 'relative', textAlign: 'left', padding: 14, border: open ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', color: 'inherit', font: 'inherit', cursor: 'pointer', display: 'flex', gap: 10, alignItems: 'flex-start', width: '100%' }}
     >
       {icon}
       <span style={{ flex: 1 }}>
@@ -132,7 +130,7 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, action, sta
           )}
         </span>
       )}
-    </div>
+    </button>
   );
 }
 
@@ -177,9 +175,9 @@ function PrdDocsPopup({ open, projectId, onAssociate, onClose }: {
     // T01361：遮罩为纯装饰层（aria-hidden），点击关闭是鼠标便捷通路
     <div
       aria-hidden="true"
-      onClick={onClose}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()} tabIndex={-1}
+      <div
         style={{ width: 480, maxWidth: '92vw', maxHeight: '72vh', overflow: 'auto', background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 12, padding: 16, boxShadow: '0 12px 32px rgba(0,0,0,.2)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
           <FileStack size={15} style={{ color: 'var(--accent)' }} />

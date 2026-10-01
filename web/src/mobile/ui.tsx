@@ -65,16 +65,15 @@ export function HalfSheet({ open, title, onClose, children }: { open: boolean; t
         onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
         style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.4)' }}
       />
-      <div
-        role="dialog"
+      <dialog
+        open
         aria-modal="true"
         aria-label={title}
-        onClick={(e) => e.stopPropagation()}
-        style={{ position: 'absolute', left: 0, right: 0, bottom: 0, maxHeight: '62%', overflowY: 'auto', background: 'var(--card-bg)', color: 'var(--text)', borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 14, boxSizing: 'border-box', animation: 'sheet-up 220ms ease-in-out' }}
+        style={{ position: 'absolute', left: 0, right: 0, bottom: 0, maxHeight: '62%', overflowY: 'auto', background: 'var(--card-bg)', color: 'var(--text)', borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 14, boxSizing: 'border-box', animation: 'sheet-up 220ms ease-in-out', border: 'none', margin: 0 }}
       >
         {title && <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 10 }}>{title}</div>}
         {children}
-      </div>
+      </dialog>
       <style>{'@keyframes sheet-up { from { transform: translateY(40%); opacity: .4 } to { transform: translateY(0); opacity: 1 } }'}</style>
     </div>
   );
@@ -125,7 +124,7 @@ export function Skeleton({ rows = 3, card = false }: { rows?: number; card?: boo
       <style>{'@keyframes mtask-skel { 0%, 100% { opacity: .4 } 50% { opacity: .85 } }'}</style>
       {Array.from({ length: rows }).map((_, i) => (
         <div
-          key={i}
+          key={`skel-${i}`}
           style={{
             height: card ? 64 : 44,
             borderRadius: 10,
