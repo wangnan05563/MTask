@@ -1,6 +1,6 @@
 {
   "name": "mtask",
-  "version": "0.1.1001.173",
+  "version": "0.1.1001.174",
   "private": true,
   "main": "electron/main.js",
   "description": "AI 任务开发管理工具：项目维度任务管理 + AI 梳理 + 队列分发（Electron + React + Express + SQLite）",
@@ -32,7 +32,8 @@
     "pdfkit": "^0.20.1",
     "pizzip": "^3.2.0",
     "pptxgenjs": "^4.0.1",
-    "uuid": "^11.0.5"
+    "uuid": "^11.0.5",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "electron": "^33.2.0",
