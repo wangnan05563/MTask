@@ -5,6 +5,7 @@ import { initSchema } from './db/schema';
 import { api } from './routes';
 import tunnelRouter from './routes/tunnel';
 import { mcpRouter } from './mcp/http';
+import { csrfGuard } from './services/CsrfGuard';
 import { logService } from './services/LogService';
 import { QueueService } from './services/QueueService';
 import { AIService } from './services/AIService';
@@ -110,8 +111,10 @@ app.use((req, _res, next) => {
   next();
 });
 
-app.use('/api', accessTokenGuard, api);
-// MCP streamable HTTP 端点：与 REST 一致受 accessTokenGuard（X-Access-Token）保护
+// M8/8.2：CSRF 防护（自定义头强制 + Origin 白名单；MTASK_CSRF_MODE=off 可紧急止血）
+app.use('/api', accessTokenGuard, csrfGuard, api);
+// MCP streamable HTTP 端点：与 REST 一致受 accessTokenGuard（X-Access-Token）保护。
+// 不叠加 csrfGuard——MCP 是机器对机器调用（自带令牌鉴权），不属于浏览器跨站面。
 app.use('/api/mcp', accessTokenGuard, mcpRouter());
 
 // T00444：SSE 数据变更通知端点——前端 EventSource 订阅后，任务/计划/队列的外部变更
