@@ -3,7 +3,7 @@
  * 不提供增删改排，操作区超链接「在桌面端编排」。
  */
 import { pageStyle as page, tapCardStyle as card, mutedStyle as muted, cardStyle as jobCard } from './ui';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, type Queue, type QueueJob, type Task } from '../api/client';
 import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
 import { Badge, EmptyState, PullRefresh, Skeleton } from './ui';
@@ -59,15 +59,17 @@ export function MobileQueue({ notify, openDesktop }: Props) {
     } catch (e) { notify(e instanceof Error ? e.message : String(e)); } finally { setLoading(false); }
   }
 
-  // T01434：队列级暂停/继续
+  // T01434：队列级暂停/继续（评审修复：busy 防抖防连点双请求竞态）
+  const pauseBusy = useRef(false);
   async function togglePause() {
-    if (!active) return;
+    if (!active || pauseBusy.current) return;
+    pauseBusy.current = true;
     try {
       await api.post(`/queues/${active.id}/pause`, { paused: !active.paused });
       const q = await api.get<Queue & { jobs: QueueJob[] }>(`/queues/${active.id}`);
       setActive(q);
       notify(active.paused ? '队列已继续' : '队列已暂停——发送/提交将被拒绝');
-    } catch (e) { notify(e instanceof Error ? e.message : String(e), true); }
+    } catch (e) { notify(e instanceof Error ? e.message : String(e), true); } finally { pauseBusy.current = false; }
   }
 
   // T01434：失败 Job 单条重试

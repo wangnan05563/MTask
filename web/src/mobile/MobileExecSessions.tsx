@@ -57,8 +57,14 @@ export function MobileExecSessions({ notify }: { readonly notify: (msg: string, 
     const cached = loadStaleCache<ExecSessionView[]>('exec.sessions');
     if (cached) { setSessions(cached.data); setStaleAsOf(cached.asOf); }
     void load();
-    const timer = setInterval(() => void load(), 10000); // T01433：10s 轮询
-    return () => clearInterval(timer);
+    // 评审修复：页面不可见时暂停轮询（省电省流量），恢复可见立即刷新
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const start = () => { timer ??= setInterval(() => void load(), 10000); void load(); };
+    const stop = () => { if (timer) { clearInterval(timer); timer = null; } };
+    start();
+    const onVis = () => (document.hidden ? stop() : start());
+    document.addEventListener('visibilitychange', onVis);
+    return () => { stop(); document.removeEventListener('visibilitychange', onVis); };
   }, [load]);
 
   async function redispatch(s: ExecSessionView) {

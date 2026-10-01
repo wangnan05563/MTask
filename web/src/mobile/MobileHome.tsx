@@ -170,7 +170,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
             ⏱ 数据截至 {fmtAsOf(staleAsOf)}（离线缓存，联网后自动更新）
           </div>
         )}
-        {loading && <div style={{ padding: '8px 0' }}><Skeleton rows={4} /></div>}
+        {loading && !staleAsOf && <div style={{ padding: '8px 0' }}><Skeleton rows={4} /></div>}
 
         {shownTasks.length === 0 && !loading && alertFilter && (
           <EmptyState icon="✅" message="没有需要关注的任务了" />
@@ -186,6 +186,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
               onTouchStart={(e) => onRowTouchStart(e, t.id)}
               onTouchMove={(e) => onRowTouchMove(e, t.id)}
               onTouchEnd={() => onRowTouchEnd(t)}
+              onTouchCancel={() => { swipeRef.current = null; swipeStart.current = null; setSwipe(null); }}
               style={{ ...rowStyle, touchAction: 'pan-y', position: 'relative', overflow: 'hidden', transform: swipe?.id === t.id ? `translateX(${swipe.dx * 0.35}px)` : undefined, transition: swipe?.id === t.id ? 'none' : 'transform .18s ease', background: swipe?.id === t.id ? (swipe.dx < 0 ? 'color-mix(in srgb, var(--success) 12%, transparent)' : 'color-mix(in srgb, var(--accent) 12%, transparent)') : undefined }}
             >
               <button onClick={() => void toggleDone(t)} title="切换完成" aria-label="切换完成" style={checkBtn}>
@@ -200,7 +201,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   {t.pinned && <span style={{ fontSize: 11 }}>📌</span>}
-                  <span style={{ flex: 1, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</span>
+                  <span className="zen-zoom" style={{ flex: 1, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</span>
                   <span style={{ fontSize: 11, color: PRIO_COLOR[t.priority] || 'var(--text-muted)' }}>●{PRIO_LABEL[t.priority] || ''}</span>
                 </div>
                 <div className="zen-hide" style={{ display: 'flex', gap: 6, marginTop: 2, alignItems: 'center' }}>

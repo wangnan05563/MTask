@@ -4,7 +4,7 @@
  * - 隧道鉴权：首访/令牌失效时显示访问口令输入（§4.3）。
  * - 顶部常驻连接状态与「待同步」草稿角标；恢复联网自动补提离线草稿（§3.4）。
  */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback,  useEffect, useRef, useState } from 'react';
 import { api, setAccessToken, type Task } from '../api/client';
 import { ListTodo, Plus, ListOrdered, ScrollText, MoreHorizontal, KeyRound, Wifi, WifiOff } from 'lucide-react';
 import { MobileHome } from './MobileHome';
@@ -29,15 +29,18 @@ export function MobileShell() {
   const [needToken, setNeedToken] = useState(false);
   const [tokenInput, setTokenInput] = useState('');
   const [toast, setToast] = useState('');
+  const [toastErr, setToastErr] = useState(false); // 评审修复：错误 toast 红色着色
   const [draftCount, setDraftCount] = useState(() => loadDrafts().length);
   const online = useOnlineStatus();
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const notify = (msg: string) => {
+  // 评审修复：useCallback 稳定引用 + isErr 错误着色（子组件 effect 依赖 notify 不再风暴）
+  const notify = useCallback((msg: string, isErr?: boolean) => {
     setToast(msg);
+    setToastErr(!!isErr);
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(''), 2500);
-  };
+  }, []);
 
   // 鉴权探测：无令牌配置则直接放行；已配置则需携带令牌
   useEffect(() => {
@@ -106,7 +109,7 @@ export function MobileShell() {
   return (
     <div style={shell}>
       {/* T01445：Zen 极简阅读全局样式——data-zen=1 时隐藏徽标/计数、放大正文字号 */}
-      <style>{"[data-zen='1'] .zen-hide { display: none !important; } [data-zen='1'] li span[style*='fontSize: 15'], [data-zen='1'] li span[style*='fontSize: 15px'] { font-size: 17px !important; } [data-zen='1'] div[style*='fontSize: 12'] { font-size: 14px !important; }"}</style>
+      <style>{"[data-zen='1'] .zen-hide { display: none !important; } [data-zen='1'] .zen-zoom { font-size: 17px !important; }"}</style>
       {/* T01441：PWA 添加到主屏一次性引导卡（fixed 覆盖层） */}
       {pwaGuide && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
@@ -182,7 +185,7 @@ export function MobileShell() {
       </nav>
 
       {/* Toast */}
-      {toast && <div style={toastBox}>{toast}</div>}
+      {toast && <div style={{ ...toastBox, color: toastErr ? 'var(--danger)' : 'var(--accent)', borderColor: toastErr ? 'var(--danger)' : 'var(--accent)' }}>{toast}</div>}
     </div>
   );
 }

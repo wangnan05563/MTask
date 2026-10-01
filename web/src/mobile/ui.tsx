@@ -101,7 +101,7 @@ export function PullRefresh({ onRefresh, children }: { onRefresh: () => Promise<
     setPullY(0);
     if (hit && !refreshing.current) {
       refreshing.current = true;
-      try { await onRefresh(); } finally { refreshing.current = false; }
+      try { await onRefresh(); } catch (e) { console.warn('[PullRefresh] 刷新失败', e); } finally { refreshing.current = false; } // 评审修复：不再吞错到不可见
     }
   }
 

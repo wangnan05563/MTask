@@ -32,7 +32,7 @@ const PRIORITIES = [
 interface Props {
   readonly onDone: (task: Task) => void;
   readonly onCancel: () => void;
-  readonly notify: (msg: string) => void;
+  readonly notify: (msg: string, isErr?: boolean) => void;
 }
 
 const LAST_KEY = 'mtask.quicknote.last'; // T01426：上次选择的优先级/分类
@@ -51,7 +51,7 @@ export function parseQuickSyntax(raw: string, projects: { id: string; name: stri
   let dueNote: string | undefined;
 
   const prioMap: Record<string, string> = { urgent: 'urgent', high: 'high', normal: 'normal', low: 'low', 紧急: 'urgent', 高: 'high', 普通: 'normal', 低: 'low' };
-  text = text.replace(/(^|\s)!([a-zA-Z一-龥]{2,4})(?=\s|$)/g, (m, pre, word) => {
+  text = text.replace(/(^|\s)!([a-zA-Z一-龥]{2,6})(?=\s|$)/g, (m, pre, word) => {
     const key = word.toLowerCase();
     if (prioMap[key]) { priority = prioMap[key]; return pre; }
     return m;
@@ -103,8 +103,8 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
       try {
         const np = await api.get<{ projectId: string }>('/settings/note-project');
         setProjectId(np.projectId);
-        const p = projects.find((x) => x.id === np.projectId);
-        setProjectName(p?.name ?? '收件箱');
+        // 评审修复：用本次拉取的项目列表匹配（原闭包读 projects state，恒为 [] 永远回退收件箱）
+        setProjectName((await api.get<Project[]>('/projects')).find((x) => x.id === np.projectId)?.name ?? '收件箱');
       } catch { /* 忽略，回退收件箱 */ }
       // T01426：记忆上次——优先级/分类默认带出上次选择（项目仍以「默认记事项目」设置优先）
       try {
@@ -191,8 +191,9 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
     } catch {
       // 任何提交失败（离线 / 网络抖动 / 服务器暂不可达）均落本地草稿，联网后自动补提（§3.4），避免内容丢失
       // 异常对象本身无需使用，统一按「已存草稿」反馈，不区分失败原因
-      addDraft(payload);
-      notify('提交失败，已存为草稿（联网后自动补提）');
+      const d = addDraft(payload);
+      // 评审修复：配额溢出（如大图）不再静默丢内容
+      notify(d.saved ? '提交失败，已存为草稿（联网后自动补提）' : '提交失败且本地空间不足——请移除截图后重试', !d.saved);
       onDone(null as unknown as Task);
     } finally {
       setBusy(false);
@@ -302,7 +303,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
         {images.length > 0 && (
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0' }}>
             {images.map((url, i) => (
-              <div key={url} style={{ position: 'relative' }}>
+              <div key={`${url.slice(-24)}-${i}`} style={{ position: 'relative' }}>
                 <img src={url} alt="待上传" style={{ height: 64, borderRadius: 6, border: '1px dashed var(--accent)' }} />
                 <button onClick={() => removeImageAt(i)} title="移除图片" aria-label="移除图片"
                   style={{ position: 'absolute', top: -6, right: -6, fontSize: 10, lineHeight: '16px', padding: '0 4px', background: 'var(--danger)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' }}>✕</button>

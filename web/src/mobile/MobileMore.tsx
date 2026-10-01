@@ -137,7 +137,7 @@ function ReportView({ openDesktop }: { readonly openDesktop: () => void }) {
   const rows: { label: string; value: number; color: string }[] = stats ? [
     { label: '本周完成', value: stats.done, color: 'var(--success)' },
     { label: '本周新增', value: stats.created, color: 'var(--accent)' },
-    { label: '失败待处理', value: stats.failed, color: 'var(--danger)' },
+    { label: '失败待处理（当前积压）', value: stats.failed, color: 'var(--danger)' },
   ] : [];
   const max = Math.max(1, ...rows.map((r) => r.value));
   return (

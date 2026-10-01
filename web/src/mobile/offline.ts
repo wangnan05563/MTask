@@ -29,14 +29,15 @@ export function loadDrafts(): QuickDraft[] {
   try { return JSON.parse(localStorage.getItem(DRAFT_KEY) ?? '[]') as QuickDraft[]; } catch { return []; }
 }
 
-function saveDrafts(list: QuickDraft[]): void {
-  try { localStorage.setItem(DRAFT_KEY, JSON.stringify(list)); } catch { /* 配额溢出等静默忽略 */ }
+function saveDrafts(list: QuickDraft[]): boolean {
+  try { localStorage.setItem(DRAFT_KEY, JSON.stringify(list)); return true; } catch { return false; } // 评审修复：配额溢出返回 false 让调用方提示
 }
 
-export function addDraft(d: Omit<QuickDraft, 'id' | 'createdAt'>): QuickDraft {
+export function addDraft(d: Omit<QuickDraft, 'id' | 'createdAt'>): QuickDraft & { saved: boolean } {
   const full: QuickDraft = { ...d, id: uid(), createdAt: new Date().toISOString() };
-  saveDrafts([full, ...loadDrafts()]);
-  return full;
+  // 评审修复：配额溢出不再静默——saved=false 让调用方提示用户（如移除图片后重试）
+  const saved = saveDrafts([full, ...loadDrafts()]);
+  return { ...full, saved };
 }
 
 export function removeDraft(id: string): void {
@@ -77,7 +78,7 @@ export async function flushDrafts(): Promise<number> {
   const drafts = loadDrafts();
   if (drafts.length === 0) return 0;
   let ok = 0;
-  const failed: QuickDraft[] = [];
+  const failedIds = new Set<string>();
   for (const d of drafts) {
     try {
       await submitQuickNote({
@@ -90,10 +91,12 @@ export async function flushDrafts(): Promise<number> {
       });
       ok++;
     } catch {
-      failed.push(d);
+      failedIds.add(d.id); // 评审修复：记录失败 id 而非整对象——结束后与新草稿合并，杜绝竞态丢数据
     }
   }
-  saveDrafts(failed);
+  // 评审修复：flush 过程中用户可能新增草稿——按「快照之外的全部现存草稿 + 快照中失败的」合并保存
+  const surviving = loadDrafts().filter((d) => !drafts.some((snap) => snap.id === d.id) || failedIds.has(d.id));
+  saveDrafts(surviving);
   return ok;
 }
 
