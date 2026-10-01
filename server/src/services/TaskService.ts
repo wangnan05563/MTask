@@ -118,7 +118,8 @@ export interface TaskInput {
 export interface TaskListOptions {
   projectId?: string;
   archived?: boolean;
-  /** 分页大小；不传=全量返回（兼容移动端/归档等调用方） */
+  /** 分页大小；不传=全量返回。⚠ M7-7.2 起 HTTP /api/tasks 路由层施默认上限（200，env 可配），
+   *  本参数的「不传=全量」语义仅剩 MCP（mtask_list_tasks，AI 全项目枚举依赖）与内部调用方使用 */
   limit?: number;
   offset?: number;
   /** 标题/描述模糊搜索（大小写不敏感） */

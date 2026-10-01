@@ -48,7 +48,8 @@ export function ArchivePage() {
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
 
   const load = useCallback(async () => {
-    setArchived(await api.get<Task[]>('/tasks?archived=1'));
+    // M7-7.2：显式 limit=500（服务端默认上限生效后的桌面适配）——归档超 500 时显示截断提示
+    setArchived(await api.get<Task[]>('/tasks?archived=1&limit=500'));
     setProjectNames(Object.fromEntries((await api.get<Project[]>('/projects')).map((p) => [p.id, p.name])));
     try { setCats(await api.get<TaskCategory[]>('/tasks/categories')); } catch { /* 旧版后端忽略 */ }
     try {
@@ -293,6 +294,11 @@ export function ArchivePage() {
       </div>
 
       <h4 style={{ fontSize: 14, margin: '0 0 8px' }}>归档任务（{filteredTasks.length}）</h4>
+      {archived.length >= 500 && (
+        <div style={{ fontSize: 12, color: 'var(--warn)', margin: '0 0 8px' }}>
+          ⚠ 已达单次拉取上限 500 条——更多归档请用关键词/分类过滤缩小范围（M7-7.2）
+        </div>
+      )}
       {/* 任务区筛选：分类 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <select value={catFilter} onChange={(e) => { setCatFilter(e.target.value); setPage(1); }}

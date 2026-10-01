@@ -550,10 +550,21 @@ api.delete('/tokens/:id', (req, res) => {
 
 api.get('/tasks', (req, res) => {
   const { projectId, archived, limit, offset, keyword, categoryId, priority, sort, shelved, status, attention } = req.query;
-  // limit 仅接受 1~500 的正整数，非法则忽略（保持全量语义），避免恶意超大分页拖垮查询
+  // M7-7.2：默认分页上限——未带 limit 或非法 limit 一律按 DEFAULT 截断（原「非法忽略=全量」语义废止）。
+  // 全量语义保留给 MCP（mtask_list_tasks 走 TaskService.list，不经本路由）；已盘点 HTTP 消费方：
+  // 桌面 TasksPage 200/页、移动端 100/页（7.1 改造）、CommandPalette/QueuePage/ArchivePage 显式 500。
+  // 可用 MTASK_TASKS_DEFAULT_LIMIT 覆盖（1~500，默认 200）。
+  const DEFAULT = Math.min(500, Math.max(1, Math.floor(Number(process.env.MTASK_TASKS_DEFAULT_LIMIT) || 200)));
   let limitN: number | undefined;
   const limitRaw = Number(limit);
-  if (Number.isFinite(limitRaw) && limitRaw >= 1 && limitRaw <= 500) limitN = Math.floor(limitRaw);
+  if (limit === undefined || limit === '') {
+    limitN = DEFAULT;
+  } else if (Number.isFinite(limitRaw) && limitRaw >= 1) {
+    // 显式合法值：钳制进 [1,500]（999→500 全量诉求由显式 500 表达）；0/负数视为无效走默认
+    limitN = Math.min(500, Math.floor(limitRaw));
+  } else {
+    limitN = DEFAULT;
+  }
   res.json(TaskService.list({
     projectId: projectId as string | undefined,
     archived: archived === '1' || archived === 'true',
