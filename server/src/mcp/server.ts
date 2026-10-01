@@ -157,11 +157,15 @@ export async function createMCPServer(): Promise<McpServer> {
 
   server.registerTool('mtask_list_plans', {
     title: '列出项目计划',
-    description: '列出指定项目的计划任务（串行瀑布时间线，含起止日期/工期/状态/进度/关联待办编号）。Agent 用于了解项目排期与规划上下文，避免与既有计划重复回写。includeArchived=true 时返回已归档计划。',
+    description: '列出指定项目的计划任务（串行瀑布时间线，含 id/类型 kind/起止日期/工期/状态/进度/关联待办编号）。Agent 用于了解项目排期与规划上下文，避免与既有计划重复回写。条目多时建议 brief=true（省掉 description，避免响应被截断）；只看里程碑可用 kind=milestone 过滤。includeArchived=true 时返回已归档计划。',
     inputSchema: {
       projectId: z.string().optional().describe('项目 id，与 projectName 二选一'),
       projectName: z.string().optional().describe('项目名称（如 MTask），按名称解析'),
       includeArchived: z.boolean().optional().describe('是否包含已归档计划（默认否）'),
+      // T01490：计划条目多时（>5KB）SSE 传输会被中途截断、客户端只拿到残缺 JSON。
+      // brief=true 省略 description 并跳过关联待办查询，显著降低响应体量。
+      brief: z.boolean().optional().describe('精简输出：省略 description 与关联待办查询，降低响应体量（计划条目多时避免传输截断）；需要看详情时不传'),
+      kind: z.enum(['normal', 'milestone', 'daily']).optional().describe('按计划类型过滤（如只取里程碑 kind=milestone）'),
     },
   }, async (a) => {
     try {
@@ -175,13 +179,23 @@ export async function createMCPServer(): Promise<McpServer> {
       if (a.includeArchived) {
         const all = PlanService.listArchived().filter((r) => r.project_id === pid);
         return ok(json(all.map((r) => ({
-          title: r.title, startDate: r.start_date, endDate: r.end_date,
+          id: r.id, title: r.title, kind: r.kind, startDate: r.start_date, endDate: r.end_date,
           durationDays: r.duration_days, status: r.status, progress: r.progress, assignee: r.assignee, archived: true,
         }))), { plans: all });
       }
-      const rows = PlanService.list(pid);
+      let rows = PlanService.list(pid);
+      if (a.kind) rows = rows.filter((r) => r.kind === a.kind);
+      // T01490：brief 模式省略 description + 跳过关联待办查询，压低体量避免传输截断
+      if (a.brief) {
+        const brief = rows.map((r) => ({
+          id: r.id, title: r.title, kind: r.kind, startDate: r.start_date, endDate: r.end_date,
+          durationDays: r.duration_days, progress: r.progress, status: r.status, assignee: r.assignee,
+        }));
+        return ok(json(brief), { plans: brief, count: brief.length });
+      }
       const plans = rows.map((r) => ({
-        title: r.title, description: r.description, startDate: r.start_date, endDate: r.end_date,
+        id: r.id, title: r.title, kind: r.kind, description: r.description,
+        startDate: r.start_date, endDate: r.end_date,
         durationDays: r.duration_days, progress: r.progress, status: r.status, assignee: r.assignee,
         linkedTaskNo: null as string | null,
       }));
@@ -193,13 +207,13 @@ export async function createMCPServer(): Promise<McpServer> {
           plans[i].linkedTaskNo = t?.task_no ?? null;
         }
       }
-      return ok(json(plans), { plans });
+      return ok(json(plans), { plans, count: plans.length });
     } catch (e) { return err((e as Error).message); }
   });
 
   server.registerTool('mtask_create_plans', {
     title: '批量创建项目计划',
-    description: '把 WBS/需求拆解结果批量写入指定项目的计划时间线（串行瀑布：任务按顺序自动按工作日排期，跳过周末与节假日；首条可带 startDate 作锚点）。适用于「把需求文档/PRD 拆分为项目计划」类回写。',
+    description: '把 WBS/需求拆解结果批量写入指定项目的计划时间线（串行瀑布：任务按顺序自动按工作日排期，跳过周末与节假日；首条可带 startDate 作锚点）。适用于「把需求文档/PRD 拆分为项目计划」类回写。item.kind 可指定 milestone 建里程碑（如「5 M5 AI 编排大脑落地」），缺省为 normal。',
     inputSchema: {
       projectId: z.string().optional().describe('目标项目 id，与 projectName 二选一'),
       projectName: z.string().optional().describe('项目名称，按名称解析'),
@@ -210,6 +224,11 @@ export async function createMCPServer(): Promise<McpServer> {
         durationDays: z.number().optional().describe('工期（工作日数，默认 1）'),
         assignee: z.string().optional().describe('负责人'),
         status: z.enum(['todo', 'doing', 'done', 'blocked']).optional().describe('状态，默认 todo'),
+        // T01490：kind 原先未暴露——导致经 MCP 回写的计划全部落为 normal，建不出里程碑
+        // （PlanService.createBatch 内部支持 kind，仅 MCP schema 缺字段被 zod 剥离）。
+        kind: z.enum(['normal', 'milestone', 'daily']).optional()
+          .describe('计划类型：milestone=里程碑（汇总节点，如「5 M5 AI 编排大脑落地」，先子后父收口）/ normal=普通工作项（默认）/ daily=日常'),
+        complexity: z.number().optional().describe('T01058：AI 复杂度评级（数值），随导入落库供工期估算参考'),
       })).describe('计划条目数组（按执行顺序排列）'),
     },
   }, async (a) => {
