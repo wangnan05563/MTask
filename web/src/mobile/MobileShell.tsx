@@ -46,6 +46,17 @@ export function MobileShell() {
     });
   }, []);
 
+  // T01441：PWA 添加到主屏一次性引导——仅隧道/公网（https）访问且未看过时弹出
+  const [pwaGuide, setPwaGuide] = useState(false);
+  useEffect(() => {
+    try {
+      if (localStorage.getItem('mtask.pwaGuide.seen')) return;
+      if (location.protocol !== 'https:') return; // 本地 http 访问不打扰
+      const t = setTimeout(() => setPwaGuide(true), 1200);
+      return () => clearTimeout(t);
+    } catch { /* 忽略 */ }
+  }, []);
+
   // 恢复联网后自动补提离线草稿
   useEffect(() => {
     if (!online) return;
@@ -94,6 +105,27 @@ export function MobileShell() {
 
   return (
     <div style={shell}>
+      {/* T01445：Zen 极简阅读全局样式——data-zen=1 时隐藏徽标/计数、放大正文字号 */}
+      <style>{"[data-zen='1'] .zen-hide { display: none !important; } [data-zen='1'] li span[style*='fontSize: 15'], [data-zen='1'] li span[style*='fontSize: 15px'] { font-size: 17px !important; } [data-zen='1'] div[style*='fontSize: 12'] { font-size: 14px !important; }"}</style>
+      {/* T01441：PWA 添加到主屏一次性引导卡（fixed 覆盖层） */}
+      {pwaGuide && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div role="dialog" aria-modal="true" aria-label="添加到主屏幕" style={{ background: 'var(--card-bg)', color: 'var(--text)', borderRadius: 14, padding: 16, maxWidth: 340, width: '100%' }}>
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 8 }}>📱 添加到主屏幕</div>
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+              把 MTask 装到手机桌面，像 App 一样全屏使用：<br />
+              <b>iPhone：</b>Safari 底部「分享」→「添加到主屏幕」<br />
+              <b>Android：</b>浏览器菜单 →「添加到主屏幕 / 安装应用」
+            </div>
+            <button
+              onClick={() => { try { localStorage.setItem('mtask.pwaGuide.seen', '1'); } catch { /* 忽略 */ } setPwaGuide(false); }}
+              style={{ marginTop: 12, width: '100%', padding: '10px 0', borderRadius: 10, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 14, cursor: 'pointer' }}
+            >
+              我知道了
+            </button>
+          </div>
+        </div>
+      )}
       {/* 顶部常驻：连接状态 + 待同步草稿角标 */}
       <div style={topbar}>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: online ? 'var(--success)' : 'var(--danger)' }}>

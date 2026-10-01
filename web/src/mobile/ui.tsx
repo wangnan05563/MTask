@@ -7,6 +7,7 @@
  */
 import type { CSSProperties, ReactNode } from 'react';
 import { useEffect, useRef, useState } from 'react';
+import { t, registerDict } from '../i18n';
 
 /** 页面容器：占满视口、纵向布局、应用底色 */
 export const pageStyle: CSSProperties = { display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--app-bg)', color: 'var(--text)' };
@@ -136,6 +137,32 @@ export function Skeleton({ rows = 3, card = false }: { rows?: number; card?: boo
           }}
         />
       ))}
+    </div>
+  );
+}
+
+// ---------- T01444：空态与引导统一 ----------
+registerDict('en', {
+  '还没有待办': 'No to-dos yet', '暂无执行会话': 'No exec sessions', '暂无队列': 'No queues',
+  '该队列暂无 Job': 'No jobs in this queue', '该分类下暂无提示词': 'No prompts in this category',
+  '暂无 AI 工具': 'No AI tools', '暂无归档任务': 'No archived tasks', '暂无可用模板': 'No templates available',
+  '开始随手记': 'Start quick note', '没有需要关注的任务了': 'Nothing needs attention',
+});
+
+/** 空态统一组件：图标 + 一句话（i18n）+ 可选行动按钮 */
+export function EmptyState({ icon = '📝', message, hint, actionLabel, onAction }: {
+  icon?: string; message: string; hint?: string; actionLabel?: string; onAction?: () => void;
+}) {
+  return (
+    <div style={{ textAlign: 'center', padding: '48px 12px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+      <div style={{ fontSize: 40 }} aria-hidden="true">{icon}</div>
+      <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>{t(message, message)}</div>
+      {hint && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{hint}</div>}
+      {actionLabel && onAction && (
+        <button onClick={onAction} style={{ marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '8px 16px', borderRadius: 20, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', cursor: 'pointer', fontSize: 14 }}>
+          {t(actionLabel, actionLabel)}
+        </button>
+      )}
     </div>
   );
 }

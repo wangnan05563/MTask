@@ -1,4 +1,5 @@
 import { getDb } from '../db/connection';
+import { PushService } from './PushService'; // T01440：Web Push
 import { notifyChange } from './ChangeBus';
 import { v4 as uuid } from 'uuid';
 import { cachedPrepare } from '../util/stmt-cache'; // T00792：热点 SQL 语句复用
@@ -471,6 +472,8 @@ export const TaskService = {
     ).run(new Date(nowMs).toISOString(), cutoff);
     if (r.changes > 0) {
       console.warn(`[TaskService] ${r.changes} 个 running 任务超过 ${Math.round(maxAgeMs / 60000)} 分钟未更新，自动置 failed（AI 中断兜底）`);
+      // T01440：Web Push 通知（fire-and-forget，不阻塞探测）
+      void PushService.notify('任务执行停滞', `${r.changes} 个 AI 任务心跳超时已置为失败，请查看处理`).catch(() => {});
     }
     return r.changes;
   },

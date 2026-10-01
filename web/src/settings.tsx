@@ -18,6 +18,8 @@ export interface SettingsPrefs {
   fontSize: FontSizeKey;
   /** T01060-FR4.1：自定义强调色（#rrggbb；空串=跟随主题默认） */
   accent: string;
+  /** T01445：Zen 极简阅读模式——隐藏徽标/计数、放大字号 */
+  zen?: boolean;
 }
 
 const PREF_KEY = 'settings.prefs';
@@ -49,7 +51,7 @@ export const FONT_SIZE_OPTIONS: { key: FontSizeKey; label: string }[] = [
   { key: 'l', label: '大' },
 ];
 
-const DEFAULTS: SettingsPrefs = { theme: 'light', font: 'default', fontSize: 'm', accent: '' };
+const DEFAULTS: SettingsPrefs = { theme: 'light', font: 'default', fontSize: 'm', accent: '', zen: false };
 
 /** T01060-FR4.1：hex 亮度（0~1）——用于强调色上按钮文字自动取深/白，保证对比度 */
 function luminance(hex: string): number {
@@ -218,6 +220,7 @@ function loadPrefs(): SettingsPrefs {
     const p = { ...DEFAULTS, ...(JSON.parse(raw) as Partial<SettingsPrefs>) };
     // 防脏数据：主题/字号/字体只在合法枚举内，否则回退默认
     if (!['light', 'dark', 'auto'].includes(p.theme)) p.theme = DEFAULTS.theme;
+    if (typeof p.zen !== 'boolean') p.zen = DEFAULTS.zen; // T01445
     if (!(p.font in FONT_MAP)) p.font = DEFAULTS.font;
     if (!(p.fontSize in FONT_SIZE_MAP)) p.fontSize = DEFAULTS.fontSize;
     // T01060-FR4.1：强调色仅接受空串（默认）或 #rrggbb
@@ -261,6 +264,7 @@ export function SettingsProvider({ children }: { readonly children: ReactNode })
     let effTheme: Theme = prefs.theme;
     if (effTheme === 'auto') effTheme = systemDark ? 'dark' : 'light';
     document.documentElement.dataset.theme = effTheme;
+    document.documentElement.dataset.zen = prefs.zen ? '1' : ''; // T01445
     document.documentElement.style.setProperty('--font-family', FONT_MAP[prefs.font]);
     const vars = FONT_SIZE_MAP[prefs.fontSize];
     for (const [k, v] of Object.entries(vars)) document.documentElement.style.setProperty(k, v);

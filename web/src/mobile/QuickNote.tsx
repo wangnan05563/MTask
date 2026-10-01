@@ -3,7 +3,7 @@
  * 录入方式：文本（主）/ 语音（Web Speech API，不支持则隐藏）/ 快捷模板（提示词预填）/ 图片贴图。
  * 提交复用 POST /api/tasks；离线时落本地草稿，联网后由 MobileShell 自动补提。
  */
-import { Badge, pageStyle as page, headerStyle as header } from './ui';
+import { Badge, EmptyState, pageStyle as page, headerStyle as header } from './ui';
 import { useEffect, useRef, useState } from 'react';
 import { api, type Project, type Task, type TaskCategory, type Prompt } from '../api/client';
 import { addDraft, submitQuickNote } from './offline';
@@ -289,7 +289,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
         {tplOpen && (
           <div style={sheet}>
             <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>从提示词模板预填</div>
-            {templates.length === 0 && <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>暂无可用模板</div>}
+            {templates.length === 0 && <EmptyState icon="📄" message="暂无可用模板" />}
             <div style={{ maxHeight: 240, overflowY: 'auto' }}>
               {templates.map((p) => (
                 <button key={p.id} onClick={() => applyTemplate(p)} style={tplItem}>{p.title}</button>

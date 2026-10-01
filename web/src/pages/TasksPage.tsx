@@ -5,6 +5,7 @@ import { ResultDiffPanel } from '../ui/ResultDiff'; // T01072-FR1.9：结果历�
 import { beautifyStore } from '../stores/beautifyStore';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown';
+import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
@@ -59,29 +60,6 @@ interface ImageDraft {
 /** T00658：三态复选框（支持半选态）——原生 indeterminate 只能经属性设置，封装为受控组件。
  *  用于多选模式标题旁的「全选框」：全选=checked、部分选中=indeterminate、未选=空。 */
 /** T01064-FR1.5：任务事件时间线——状态流转/回传/验证历史（/api/events/by-task/:id，正序；无事件不渲染） */
-function TaskEventTimeline({ taskId }: { readonly taskId: string }) {
-  const [events, setEvents] = useState<Array<{ kind: string; detail: string; created_at: string }> | null>(null);
-  useEffect(() => {
-    let alive = true;
-    void api.get<Array<{ kind: string; detail: string; created_at: string }>>(`/events/by-task/${taskId}`)
-      .then((d) => { if (alive) setEvents(Array.isArray(d) ? d : []); })
-      .catch(() => { if (alive) setEvents([]); });
-    return () => { alive = false; };
-  }, [taskId]);
-  if (!events || events.length === 0) return null;
-  return (
-    <div style={{ margin: '8px 0 0', padding: '8px 10px', border: '1px dashed var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>时间线 · 事件自动记录</div>
-      {events.map((ev) => (
-        <div key={`${ev.created_at}|${ev.kind}|${ev.detail}`} style={{ display: 'flex', gap: 8, fontSize: 11, alignItems: 'baseline' }}>
-          <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>{ev.created_at.slice(5, 16).replace('T', ' ')}</span>
-          <span style={{ color: ev.detail.includes('失败') ? 'var(--danger)' : 'var(--text-secondary)' }}>{ev.detail}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 /** T01065-FR1.6：批量操作动作的中文名（撤销按钮提示用） */
 const ACTION_LABEL: Record<'status' | 'category' | 'priority' | 'color' | 'archive', string> = {
   status: '批量改状态', category: '批量设分类', priority: '批量设优先级', color: '批量字体颜色', archive: '批量归档',

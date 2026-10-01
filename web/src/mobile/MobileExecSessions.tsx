@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type Task } from '../api/client';
 import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
-import { Badge, bodyStyle, cardStyle, type BadgeTone } from './ui';
+import { Badge, bodyStyle, cardStyle, EmptyState, type BadgeTone } from './ui';
 
 interface ExecSessionView {
   id: string;
@@ -81,7 +81,7 @@ export function MobileExecSessions({ notify }: { readonly notify: (msg: string, 
           ⏱ 数据截至 {fmtAsOf(staleAsOf)}（离线缓存，联网后自动更新）
         </div>
       )}
-      {sessions.length === 0 && <div style={{ padding: 10, fontSize: 13, color: 'var(--text-muted)' }}>暂无执行会话</div>}
+      {sessions.length === 0 && <EmptyState icon="🛰️" message="暂无执行会话" hint="AI 开始执行任务后会话会出现在这里" />}
       {sessions.map((s) => {
         const heartbeatStale = s.status === 'active' && Date.now() - new Date(s.last_heartbeat).getTime() > 10 * 60 * 1000;
         return (

@@ -6,6 +6,7 @@
 import { useState } from 'react';
 import { api, imageUrl, type Task, type TaskCategory } from '../api/client';
 import { Badge, HalfSheet, type BadgeTone } from './ui';
+import { TaskEventTimeline } from '../components/TaskEventTimeline';
 
 const PRIO_LABEL: Record<string, string> = { urgent: '紧急', high: '高', normal: '普通', low: '低' };
 const PRIO_TONE: Record<string, BadgeTone> = { urgent: 'danger', high: 'accent', normal: 'neutral', low: 'neutral' };
@@ -55,6 +56,8 @@ export function MobileTaskDetail({ task, categories, onClose, onChanged, notify 
           <div style={{ ...valueStyle, whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: 2 }}>{task.description}</div>
         </div>
       )}
+      {/* T01442：状态流转时间线（最近事件自动记录，与桌面端同源） */}
+      <TaskEventTimeline taskId={task.id} />
       {task.images.length > 0 && (
         <div style={{ marginTop: 10 }}>
           <div style={labelStyle}>附件（{task.images.length}）</div>

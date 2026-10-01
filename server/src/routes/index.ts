@@ -5,6 +5,7 @@ import { getDb } from '../db/connection';
 import { TaskService, nextTaskNo, type TaskInput, type TaskListOptions } from '../services/TaskService';
 import { RecurringService, TokenService } from '../services/RecurringService'; // T01073：循环任务 + API Token
 import { ExecSessionService } from '../services/ExecSessionService'; // T01271：执行会话面板数据源
+import { PushService } from '../services/PushService'; // T01440：Web Push
 import { listBackups, runBackup, restoreBackup, backupStatus } from '../services/BackupService'; // T01061-FR5.1
 import { ConfigService } from '../services/ConfigService';
 import { ConsoleJobService } from '../services/ConsoleJobService';
@@ -461,6 +462,37 @@ api.delete('/recurring/:id', (req, res) => {
 // T01271-FR1.4：执行会话面板数据源——外部平台执行会话列表（存活/进度/阶段/停滞）。
 // 读取路径内部惰性判定停滞，面板打开即见正确状态（不依赖 60s 定时器恰好跑到）。
 api.get('/exec-sessions', (_req, res) => res.json(ExecSessionService.listSessions()));
+
+// T01440：Web Push——VAPID 公钥 / 订阅管理 / 测试推送
+api.get('/push/public-key', (_req, res) => {
+  res.json({ publicKey: PushService.publicKey() });
+});
+api.post('/push/subscribe', (req, res) => {
+  try {
+    const sub = req.body as { endpoint?: string; keys?: { p256dh: string; auth: string } };
+    if (!sub?.endpoint || !sub.keys?.p256dh || !sub.keys?.auth) {
+      res.status(400).json({ error: '订阅结构不完整（需 endpoint 与 keys）' });
+      return;
+    }
+    PushService.subscribe(sub as { endpoint: string; keys: { p256dh: string; auth: string } });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+api.post('/push/unsubscribe', (req, res) => {
+  const endpoint = (req.body as { endpoint?: string })?.endpoint;
+  if (endpoint) PushService.unsubscribe(endpoint);
+  res.json({ ok: true });
+});
+api.post('/push/test', async (_req, res) => {
+  try {
+    const n = await PushService.sendTest();
+    res.json({ ok: true, delivered: n });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
 
 // T01073-FR5.6：API Token 管理（创建时明文仅展示一次）
 api.get('/tokens', (_req, res) => res.json(TokenService.list()));

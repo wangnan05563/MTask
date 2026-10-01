@@ -9,8 +9,9 @@ import { api, setAccessToken, type AITool, type Project, type Task } from '../ap
 import { useSettings } from '../settings';
 import { Boxes, Archive, BarChart3, Terminal, Activity, Settings, ExternalLink, LogOut, Moon, Sun, Monitor, ChevronRight } from 'lucide-react';
 import { MobileExecSessions } from './MobileExecSessions';
+import { EmptyState } from './ui';
 
-interface Props { readonly notify: (msg: string) => void; readonly openDesktop: () => void; }
+interface Props { readonly notify: (msg: string, isErr?: boolean) => void; readonly openDesktop: () => void; }
 
 type Sub = 'root' | 'aitools' | 'archive' | 'report' | 'logs' | 'execsessions' | 'settings';
 
@@ -49,7 +50,7 @@ export function MobileMore({ notify, openDesktop }: Props) {
         {sub === 'report' && <ReportView openDesktop={openDesktop} />}
         {sub === 'execsessions' && <MobileExecSessions notify={notify} />}
         {sub === 'logs' && <LogsView notify={notify} />}
-        {sub === 'settings' && <SettingsView notify={notify} openDesktop={openDesktop} theme={prefs.theme} setTheme={(t) => update('theme', t)} accent={prefs.accent} setAccent={(v) => update('accent', v)} />}
+        {sub === 'settings' && <SettingsView notify={notify} openDesktop={openDesktop} theme={prefs.theme} setTheme={(t) => update('theme', t)} accent={prefs.accent} setAccent={(v) => update('accent', v)} zen={prefs.zen ?? false} setZen={(v) => update('zen', v)} />}
       </div>
     </div>
   );
@@ -69,7 +70,7 @@ function AitoolsView({ notify }: { readonly notify: (msg: string) => void }) {
   useEffect(() => { api.get<AITool[]>('/aitools').then(setTools).catch((e) => notify(e instanceof Error ? e.message : String(e))); }, [notify]);
   return (
     <>
-      {tools.length === 0 && <div style={muted}>暂无 AI 工具</div>}
+      {tools.length === 0 && <EmptyState icon="🧰" message="暂无 AI 工具" />}
       {tools.map((t) => (
         <div key={t.id} style={card}>
           <div style={{ fontWeight: 600 }}>{t.name}</div>
@@ -84,14 +85,31 @@ function AitoolsView({ notify }: { readonly notify: (msg: string) => void }) {
 // ---------- 归档（只读） ----------
 function ArchiveView({ notify }: { readonly notify: (msg: string) => void }) {
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [kw, setKw] = useState(''); // T01442：关键词过滤
   useEffect(() => { api.get<Task[]>('/tasks?archived=1').then(setTasks).catch((e) => notify(e instanceof Error ? e.message : String(e))); }, [notify]);
+  // T01442：按归档月份分组（倒序）
+  const filtered = tasks.filter((t) => !kw || t.title.toLowerCase().includes(kw.toLowerCase()));
+  const groups = new Map<string, Task[]>();
+  for (const t of filtered) {
+    const month = (t.archived_at ?? '').slice(0, 7) || '未知月份';
+    if (!groups.has(month)) groups.set(month, []);
+    groups.get(month)!.push(t);
+  }
   return (
     <>
-      {tasks.length === 0 && <div style={muted}>暂无归档任务</div>}
-      {tasks.map((t) => (
-        <div key={t.id} style={card}>
-          <div style={{ fontSize: 14 }}>{t.title}</div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t.archived_at?.slice(0, 10) ?? ''} 归档</div>
+      <input value={kw} onChange={(e) => setKw(e.target.value)} placeholder="搜索归档任务标题…"
+        aria-label="搜索归档任务"
+        style={{ width: '100%', padding: 10, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 14, background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box', marginBottom: 10 }} />
+      {filtered.length === 0 && <EmptyState icon="🗄️" message="暂无归档任务" hint={kw ? '换个关键词试试' : undefined} />}
+      {[...groups.entries()].sort((a, b) => b[0].localeCompare(a[0])).map(([month, list]) => (
+        <div key={month}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', padding: '8px 2px 6px' }}>{month}（{list.length}）</div>
+          {list.map((t) => (
+            <div key={t.id} style={card}>
+              <div style={{ fontSize: 14 }}>{t.title}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t.archived_at?.slice(0, 10) ?? ''} 归档</div>
+            </div>
+          ))}
         </div>
       ))}
       <div style={muted}>移动端仅供查询；还原 / 删除请在桌面端操作。</div>
@@ -99,12 +117,48 @@ function ArchiveView({ notify }: { readonly notify: (msg: string) => void }) {
   );
 }
 
-// ---------- 周报（引导桌面端） ----------
+// ---------- 周报（T01443：移动摘要卡 + 跳桌面） ----------
 function ReportView({ openDesktop }: { readonly openDesktop: () => void }) {
+  const [stats, setStats] = useState<{ done: number; created: number; failed: number } | null>(null);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const all = await api.get<Task[]>('/tasks?archived=0');
+        const weekAgo = Date.now() - 7 * 86400000;
+        const inWeek = (iso?: string | null) => !!iso && new Date(iso).getTime() >= weekAgo;
+        setStats({
+          done: all.filter((t) => t.status === 'done' && inWeek(t.updated_at)).length,
+          created: all.filter((t) => inWeek(t.created_at)).length,
+          failed: all.filter((t) => t.ai_state === 'failed').length,
+        });
+      } catch { setStats({ done: 0, created: 0, failed: 0 }); }
+    })();
+  }, []);
+  const rows: { label: string; value: number; color: string }[] = stats ? [
+    { label: '本周完成', value: stats.done, color: 'var(--success)' },
+    { label: '本周新增', value: stats.created, color: 'var(--accent)' },
+    { label: '失败待处理', value: stats.failed, color: 'var(--danger)' },
+  ] : [];
+  const max = Math.max(1, ...rows.map((r) => r.value));
   return (
     <div style={card}>
-      <div style={{ fontSize: 14, marginBottom: 8 }}>周报生成涉及模板与报表渲染，建议在桌面端完成。</div>
-      <button onClick={openDesktop} style={deskBtn}><ExternalLink size={14} /> 在桌面端生成周报</button>
+      <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 10 }}>本周摘要</div>
+      {!stats ? <div style={muted}>统计加载中…</div> : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {rows.map((r) => (
+            <div key={r.label}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
+                <span style={{ color: 'var(--text-secondary)' }}>{r.label}</span>
+                <span style={{ fontWeight: 600, color: r.color }}>{r.value}</span>
+              </div>
+              <div style={{ height: 8, borderRadius: 4, background: 'var(--surface-2)', overflow: 'hidden' }}>
+                <div style={{ width: `${Math.round((r.value / max) * 100)}%`, height: '100%', background: r.color, borderRadius: 4, transition: 'width .4s ease' }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ marginTop: 12 }}><button onClick={openDesktop} style={deskBtn}><ExternalLink size={14} /> 完整周报在桌面端生成</button></div>
     </div>
   );
 }
@@ -122,7 +176,7 @@ function LogsView({ notify }: { readonly notify: (msg: string) => void }) {
 }
 
 // ---------- 设置 ----------
-function SettingsView({ notify, openDesktop, theme, setTheme, accent, setAccent }: { readonly notify: (msg: string) => void; readonly openDesktop: () => void; readonly theme: string; readonly setTheme: (t: 'auto' | 'light' | 'dark') => void; readonly accent: string; readonly setAccent: (v: string) => void }) {
+function SettingsView({ notify, openDesktop, theme, setTheme, accent, setAccent, zen, setZen }: { readonly notify: (msg: string, isErr?: boolean) => void; readonly openDesktop: () => void; readonly theme: string; readonly setTheme: (t: 'auto' | 'light' | 'dark') => void; readonly accent: string; readonly setAccent: (v: string) => void; readonly zen: boolean; readonly setZen: (v: boolean) => void }) {
   const [status, setStatus] = useState<{ status: string; publicUrl: string | null }>({ status: 'stopped', publicUrl: null });
   const [projects, setProjects] = useState<Project[]>([]);
   const [noteProject, setNoteProject] = useState('');
@@ -144,6 +198,47 @@ function SettingsView({ notify, openDesktop, theme, setTheme, accent, setAccent 
       setNoteProject(pid);
       notify('默认记事项目已更新');
     } catch (err) { notify(err instanceof Error ? err.message : String(err)); }
+  }
+
+  // T01440：Web Push 开关与测试
+  const [pushState, setPushState] = useState<'unsupported' | 'off' | 'on'>('off');
+  useEffect(() => {
+    void (async () => {
+      if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) { setPushState('unsupported'); return; }
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        setPushState((await reg.pushManager.getSubscription()) ? 'on' : 'off');
+      } catch { setPushState('off'); }
+    })();
+  }, []);
+  function b64ToUint8(b64: string): Uint8Array {
+    const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+    const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+    return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+  }
+  async function togglePush() {
+    try {
+      if (pushState === 'on') {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) { await api.post('/push/unsubscribe', { endpoint: sub.endpoint }); await sub.unsubscribe(); }
+        setPushState('off');
+        notify('推送已关闭');
+        return;
+      }
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') { notify('通知权限未授权，请在系统设置中允许', true); return; }
+      const reg = await navigator.serviceWorker.ready;
+      const { publicKey } = await api.get<{ publicKey: string }>('/push/public-key');
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToUint8(publicKey) as BufferSource });
+      await api.post('/push/subscribe', sub.toJSON());
+      setPushState('on');
+      notify('推送已开启——任务失败/停滞将通知');
+    } catch (e) { notify(e instanceof Error ? e.message : String(e), true); }
+  }
+  async function sendTestPush() {
+    try { await api.post('/push/test', {}); notify('测试推送已发送'); }
+    catch (e) { notify(e instanceof Error ? e.message : String(e), true); }
   }
 
   return (
@@ -175,6 +270,32 @@ function SettingsView({ notify, openDesktop, theme, setTheme, accent, setAccent 
             </button>
           ))}
         </div>
+      </div>
+
+      {/* T01440：Web Push 开关与测试 */}
+      <div style={setRow}>
+        <span style={setLabel}>失败推送通知</span>
+        <span style={{ display: 'inline-flex', gap: 6 }}>
+          {pushState !== 'unsupported' && (
+            <button onClick={() => void togglePush()} aria-pressed={pushState === 'on'}
+              style={{ ...seg, background: pushState === 'on' ? 'var(--accent)' : 'var(--card-bg)', color: pushState === 'on' ? 'var(--accent-text)' : 'var(--text)' }}>
+              {pushState === 'on' ? '已开启' : '已关闭'}
+            </button>
+          )}
+          {pushState === 'on' && (
+            <button onClick={() => void sendTestPush()} style={seg}>发送测试</button>
+          )}
+        </span>
+      </div>
+      {pushState === 'unsupported' && <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 0 8px' }}>当前浏览器不支持 Web Push</div>}
+
+      {/* T01445：Zen 极简阅读——隐藏徽标/计数、放大字号 */}
+      <div style={setRow}>
+        <span style={setLabel}>Zen 极简阅读</span>
+        <button onClick={() => setZen(!zen)} aria-pressed={zen} title="隐藏徽标与计数、放大字号，专注阅读"
+          style={{ ...seg, background: zen ? 'var(--accent)' : 'var(--card-bg)', color: zen ? 'var(--accent-text)' : 'var(--text)', borderColor: zen ? 'var(--accent)' : 'var(--border-strong)' }}>
+          {zen ? '已开启' : '已关闭'}
+        </button>
       </div>
 
       {/* T01437：自定义强调色——与桌面端同一 prefs.accent 数据源，6 预置色 + 取色器 + 恢复默认 */}

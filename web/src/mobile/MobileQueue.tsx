@@ -6,7 +6,7 @@ import { pageStyle as page, tapCardStyle as card, mutedStyle as muted, cardStyle
 import { useEffect, useState } from 'react';
 import { api, type Queue, type QueueJob, type Task } from '../api/client';
 import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
-import { Badge, PullRefresh, Skeleton } from './ui';
+import { Badge, EmptyState, PullRefresh, Skeleton } from './ui';
 import { Copy, ExternalLink } from 'lucide-react';
 
 interface Props { readonly notify: (msg: string, isErr?: boolean) => void; readonly openDesktop: () => void; }
@@ -100,7 +100,7 @@ export function MobileQueue({ notify, openDesktop }: Props) {
         )}
         {!active && (
           <>
-            {queues.length === 0 && <div style={muted}>暂无队列</div>}
+            {queues.length === 0 && <EmptyState icon="📋" message="暂无队列" hint="在桌面端创建队列后可在此查看" />}
             {queues.map((q) => (
               <button key={q.id} onClick={() => void open(q.id)} style={card}>
                 <div style={{ fontWeight: 600 }}>{q.name}</div>
@@ -123,7 +123,7 @@ export function MobileQueue({ notify, openDesktop }: Props) {
               </button>
             </div>
             {loading && <div style={{ padding: '8px 0' }}><Skeleton rows={3} card /></div>}
-            {jobs.length === 0 && <div style={muted}>该队列暂无 Job</div>}
+            {jobs.length === 0 && <EmptyState icon="🗂️" message="该队列暂无 Job" />}
             {jobs.map((j) => (
               <div key={j.id} style={jobCard}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>

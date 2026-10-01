@@ -42,3 +42,25 @@ self.addEventListener('fetch', (event) => {
       .catch(() => caches.match(req).then((r) => r || caches.match('./index.html'))),
   );
 });
+
+// ---------- T01440：Web Push ----------
+self.addEventListener('push', (event) => {
+  const data = (() => { try { return event.data ? event.data.json() : {}; } catch { return {}; } })();
+  event.waitUntil(
+    self.registration.showNotification(data.title || 'MTask', {
+      body: data.body || '',
+      icon: './icon.png',
+      tag: 'mtask-push',
+    }),
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window' }).then((cs) => {
+      for (const c of cs) { if ('focus' in c) return c.focus(); }
+      return self.clients.openWindow('./');
+    }),
+  );
+});

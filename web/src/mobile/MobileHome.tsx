@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, imageUrl, type Project, type Task, type TaskCategory } from '../api/client';
 import { Plus } from 'lucide-react';
-import { Badge, headerStyle, pageStyle, PullRefresh, rowStyle, Skeleton } from './ui';
+import { Badge, EmptyState, headerStyle, pageStyle, PullRefresh, rowStyle, Skeleton } from './ui';
 import { MobileTaskDetail } from './MobileTaskDetail';
 import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
 
@@ -128,7 +128,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
         <div>
           <div style={{ fontSize: 16, fontWeight: 700 }}>待办概览</div>
           {/* T01435：统计 chips 化——待办/需关注两级信息层级，需关注与告警条同一过滤语义 */}
-          <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+          <div className="zen-hide" style={{ display: 'flex', gap: 6, marginTop: 4 }}>
             <button onClick={() => setAlertFilter(false)} aria-pressed={!alertFilter}
               style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, cursor: 'pointer', border: '1px solid ' + (!alertFilter ? 'var(--accent)' : 'var(--border-strong)'), background: !alertFilter ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)' }}>
               待办 {tasks.length}
@@ -173,14 +173,10 @@ export function MobileHome({ onQuickNote, notify }: Props) {
         {loading && <div style={{ padding: '8px 0' }}><Skeleton rows={4} /></div>}
 
         {shownTasks.length === 0 && !loading && alertFilter && (
-          <div style={empty}><div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>没有需要关注的任务了</div></div>
+          <EmptyState icon="✅" message="没有需要关注的任务了" />
         )}
         {tasks.length === 0 && !loading && !alertFilter && (
-          <div style={empty}>
-            <div style={{ fontSize: 40 }}>📝</div>
-            <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>还没有待办</div>
-            <button onClick={onQuickNote} style={emptyBtn}><Plus size={14} /> 开始随手记</button>
-          </div>
+          <EmptyState icon="📝" message="还没有待办" actionLabel="开始随手记" onAction={onQuickNote} />
         )}
 
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
@@ -207,7 +203,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
                   <span style={{ flex: 1, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</span>
                   <span style={{ fontSize: 11, color: PRIO_COLOR[t.priority] || 'var(--text-muted)' }}>●{PRIO_LABEL[t.priority] || ''}</span>
                 </div>
-                <div style={{ display: 'flex', gap: 6, marginTop: 2, alignItems: 'center' }}>
+                <div className="zen-hide" style={{ display: 'flex', gap: 6, marginTop: 2, alignItems: 'center' }}>
                   {t.category_id && <Badge>{catName(t.category_id)}</Badge>}
                   {t.images.length > 0 && <Badge>🖼 {t.images.length}</Badge>}
                 </div>
