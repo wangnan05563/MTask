@@ -4,7 +4,7 @@
  */
 import { pageStyle as page, tapCardStyle as card, mutedStyle as muted, cardStyle as jobCard } from './ui';
 import { useEffect, useRef, useState } from 'react';
-import { api, type Queue, type QueueJob, type Task } from '../api/client';
+import { api, type Queue, type QueueJob } from '../api/client';
 import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
 import { Badge, EmptyState, PullRefresh, Skeleton } from './ui';
 import { Copy, ExternalLink } from 'lucide-react';
@@ -20,7 +20,8 @@ const STATUS_COLOR: Record<string, string> = {
 
 export function MobileQueue({ notify, openDesktop }: Props) {
   const [queues, setQueues] = useState<Queue[]>([]);
-  const [tasks, setTasks] = useState<Task[]>([]);
+  // M7-7.1：移除 /tasks?archived=0 全量拉取——Job 标题主来源是 /queues/:id JOIN 出的 task_title，
+  // 全量表只为极少数已删任务的兜底，代价却是一次全表扫描+全字段序列化
   const [active, setActive] = useState<Queue | null>(null);
   const [jobs, setJobs] = useState<QueueJob[]>([]);
   const [loading, setLoading] = useState(false);
@@ -29,23 +30,18 @@ export function MobileQueue({ notify, openDesktop }: Props) {
   useEffect(() => {
     // T01425：stale-first 渲染缓存，再后台 revalidate
     const cachedQ = loadStaleCache<Queue[]>('queues');
-    const cachedT = loadStaleCache<Task[]>('queue.tasks');
-    if (cachedQ && cachedT) {
+    if (cachedQ) {
       setQueues(cachedQ.data);
-      setTasks(cachedT.data);
       setStaleAsOf(cachedQ.asOf);
     }
     void (async () => {
       try {
         const qs = await api.get<Queue[]>('/queues');
-        const ts = await api.get<Task[]>('/tasks?archived=0');
         setQueues(qs);
-        setTasks(ts);
         saveStaleCache('queues', qs);
-        saveStaleCache('queue.tasks', ts);
         setStaleAsOf(null);
       } catch (e) {
-        if (!(cachedQ && cachedT)) notify(e instanceof Error ? e.message : String(e));
+        if (!(cachedQ)) notify(e instanceof Error ? e.message : String(e));
       }
     })();
   }, [notify]);
@@ -82,7 +78,7 @@ export function MobileQueue({ notify, openDesktop }: Props) {
     } catch (e) { notify(e instanceof Error ? e.message : String(e), true); }
   }
 
-  const taskTitle = (j: QueueJob) => j.task_title ?? tasks.find((t) => t.id === j.task_id)?.title ?? j.task_id.slice(0, 8);
+  const taskTitle = (j: QueueJob) => j.task_title ?? j.task_id.slice(0, 8);
 
   async function copyJob(j: QueueJob) {
     if (!j.response_payload) return;
@@ -93,7 +89,7 @@ export function MobileQueue({ notify, openDesktop }: Props) {
   return (
     <div style={page}>
       <header style={hdr}>队列</header>
-      <PullRefresh onRefresh={() => { void (async () => { try { const qs = await api.get<Queue[]>('/queues'); const ts = await api.get<Task[]>('/tasks?archived=0'); setQueues(qs); setTasks(ts); saveStaleCache('queues', qs); saveStaleCache('queue.tasks', ts); setStaleAsOf(null); } catch { /* 离线刷新失败保留缓存 */ } })(); }}>
+      <PullRefresh onRefresh={() => { void (async () => { try { const qs = await api.get<Queue[]>('/queues'); setQueues(qs); saveStaleCache('queues', qs); setStaleAsOf(null); } catch { /* 离线刷新失败保留缓存 */ } })(); }}>
       <div style={body}>
         {staleAsOf && (
           <div style={{ marginBottom: 8, padding: '5px 10px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-muted)', fontSize: 12 }}>

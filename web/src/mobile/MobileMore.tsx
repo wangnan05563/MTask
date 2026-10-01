@@ -4,12 +4,12 @@
  * 设置子页含：隧道连接状态、默认记事项目、主题、退出（清除本机令牌）。
  */
 import { pageStyle as page, tapCardStyle as row, cardStyle as card, mutedStyle as muted } from './ui';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, setAccessToken, type AITool, type Project, type Task } from '../api/client';
 import { useSettings } from '../settings';
 import { Boxes, Archive, BarChart3, Terminal, Activity, Settings, ExternalLink, LogOut, Moon, Sun, Monitor, ChevronRight } from 'lucide-react';
 import { MobileExecSessions } from './MobileExecSessions';
-import { EmptyState } from './ui';
+import { EmptyState, Skeleton } from './ui';
 
 interface Props { readonly notify: (msg: string, isErr?: boolean) => void; readonly openDesktop: () => void; }
 
@@ -83,14 +83,47 @@ function AitoolsView({ notify }: { readonly notify: (msg: string) => void }) {
 }
 
 // ---------- 归档（只读） ----------
+const ARCHIVE_PAGE = 100;
 function ArchiveView({ notify }: { readonly notify: (msg: string) => void }) {
+  // M7-7.1：原实现 /tasks?archived=1 全量拉取后本地过滤——归档区是增长最快的数据集。
+  // 改为服务端 keyword 过滤 + limit/offset 分页（加载更多），按月分组只作用于已加载行。
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [kw, setKw] = useState(''); // T01442：关键词过滤
-  useEffect(() => { api.get<Task[]>('/tasks?archived=1').then(setTasks).catch((e) => notify(e instanceof Error ? e.message : String(e))); }, [notify]);
-  // T01442：按归档月份分组（倒序）
-  const filtered = tasks.filter((t) => !kw || t.title.toLowerCase().includes(kw.toLowerCase()));
+  const [kw, setKw] = useState(''); // T01442：关键词过滤（300ms 防抖后走服务端）
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const offsetRef = useRef(0);
+  const seqRef = useRef(0); // 防竞态：仅采纳最后一次请求的结果
+
+  const fetchPage = (keyword: string, offset: number, replace: boolean) => {
+    const seq = ++seqRef.current;
+    const q = new URLSearchParams({ archived: '1', limit: String(ARCHIVE_PAGE), offset: String(offset) });
+    if (keyword) q.set('keyword', keyword);
+    const p = api.get<Task[]>(`/tasks?${q}`).then((list) => {
+      if (seq !== seqRef.current) return; // 过期响应丢弃
+      setTasks((cur) => (replace ? list : [...cur, ...list]));
+      offsetRef.current = offset + list.length;
+      setHasMore(list.length === ARCHIVE_PAGE);
+    });
+    if (replace) { setLoading(true); p.finally(() => setLoading(false)); }
+    else { setLoadingMore(true); p.finally(() => setLoadingMore(false)); }
+    return p;
+  };
+  // 首次加载
+  useEffect(() => { fetchPage('', 0, true).catch((e) => notify(e instanceof Error ? e.message : String(e))); }, [notify]);
+  // 关键词防抖（300ms）→ 服务端过滤并重置分页
+  useEffect(() => {
+    const t = setTimeout(() => { fetchPage(kw.trim(), 0, true).catch((e) => notify(e instanceof Error ? e.message : String(e))); }, kw ? 300 : 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kw]);
+  function loadMore() {
+    if (loadingMore || !hasMore) return;
+    fetchPage(kw.trim(), offsetRef.current, false).catch((e) => notify(e instanceof Error ? e.message : String(e)));
+  }
+  // T01442：按归档月份分组（倒序）——仅作用于已加载行
   const groups = new Map<string, Task[]>();
-  for (const t of filtered) {
+  for (const t of tasks) {
     const month = (t.archived_at ?? '').slice(0, 7) || '未知月份';
     if (!groups.has(month)) groups.set(month, []);
     groups.get(month)!.push(t);
@@ -100,7 +133,8 @@ function ArchiveView({ notify }: { readonly notify: (msg: string) => void }) {
       <input value={kw} onChange={(e) => setKw(e.target.value)} placeholder="搜索归档任务标题…"
         aria-label="搜索归档任务"
         style={{ width: '100%', padding: 10, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 14, background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box', marginBottom: 10 }} />
-      {filtered.length === 0 && <EmptyState icon="🗄️" message="暂无归档任务" hint={kw ? '换个关键词试试' : undefined} />}
+      {loading && <Skeleton rows={4} card />}
+      {!loading && tasks.length === 0 && <EmptyState icon="🗄️" message="暂无归档任务" hint={kw ? '换个关键词试试' : undefined} />}
       {[...groups.entries()].sort((a, b) => b[0].localeCompare(a[0])).map(([month, list]) => (
         <div key={month}>
           <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', padding: '8px 2px 6px' }}>{month}（{list.length}）</div>
@@ -112,6 +146,12 @@ function ArchiveView({ notify }: { readonly notify: (msg: string) => void }) {
           ))}
         </div>
       ))}
+      {hasMore && !loading && (
+        <button onClick={loadMore} disabled={loadingMore}
+          style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid var(--border-strong)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 13, cursor: 'pointer' }}>
+          {loadingMore ? '加载中…' : '加载更多'}
+        </button>
+      )}
       <div style={muted}>移动端仅供查询；还原 / 删除请在桌面端操作。</div>
     </>
   );
@@ -123,14 +163,8 @@ function ReportView({ openDesktop }: { readonly openDesktop: () => void }) {
   useEffect(() => {
     void (async () => {
       try {
-        const all = await api.get<Task[]>('/tasks?archived=0');
-        const weekAgo = Date.now() - 7 * 86400000;
-        const inWeek = (iso?: string | null) => !!iso && new Date(iso).getTime() >= weekAgo;
-        setStats({
-          done: all.filter((t) => t.status === 'done' && inWeek(t.updated_at)).length,
-          created: all.filter((t) => inWeek(t.created_at)).length,
-          failed: all.filter((t) => t.ai_state === 'failed').length,
-        });
+        // M7-7.1：原实现拉 /tasks?archived=0 全量后本地数数，改为轻量聚合端点
+        setStats(await api.get<{ done: number; created: number; failed: number }>('/stats/weekly'));
       } catch { setStats({ done: 0, created: 0, failed: 0 }); }
     })();
   }, []);

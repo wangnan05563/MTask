@@ -363,6 +363,27 @@ api.get('/stats/dashboard', (req, res) => {
   });
 });
 
+// M7-7.1：周报摘要（移动端 ReportView 专用轻量端点）——
+// 原实现拉 /tasks?archived=0 全量后在客户端数数（全表扫描 + 全字段序列化），改为 3 条索引聚合。
+// done/created = 近 7 天（与原客户端 `Date.now()-7d` 口径一致）；failed = 当前积压（ai_state='failed'，无时间窗）。
+api.get('/stats/weekly', (req, res) => {
+  const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+  const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+  const projWhere = projectId ? 'AND project_id = ?' : '';
+  const projArgs: string[] = projectId ? [projectId] : [];
+  const db = getDb();
+  const done = db.prepare(
+    `SELECT COUNT(*) AS c FROM tasks WHERE status = 'done' AND archived = 0 AND updated_at >= ? ${projWhere}`,
+  ).get(weekAgo, ...projArgs) as { c: number };
+  const created = db.prepare(
+    `SELECT COUNT(*) AS c FROM tasks WHERE archived = 0 AND created_at >= ? ${projWhere}`,
+  ).get(weekAgo, ...projArgs) as { c: number };
+  const failed = db.prepare(
+    `SELECT COUNT(*) AS c FROM tasks WHERE archived = 0 AND ai_state = 'failed' ${projWhere}`,
+  ).get(...projArgs) as { c: number };
+  res.json({ done: done.c, created: created.c, failed: failed.c });
+});
+
 // T01061-FR5.1：数据库备份/恢复——自动每日备份（BackupService），手动备份/恢复/列表供设置页
 api.get('/backups', (_req, res) => {
   res.json({ backups: listBackups(), status: backupStatus() });
@@ -528,7 +549,7 @@ api.delete('/tokens/:id', (req, res) => {
 });
 
 api.get('/tasks', (req, res) => {
-  const { projectId, archived, limit, offset, keyword, categoryId, priority, sort, shelved, status } = req.query;
+  const { projectId, archived, limit, offset, keyword, categoryId, priority, sort, shelved, status, attention } = req.query;
   // limit 仅接受 1~500 的正整数，非法则忽略（保持全量语义），避免恶意超大分页拖垮查询
   let limitN: number | undefined;
   const limitRaw = Number(limit);
@@ -547,6 +568,8 @@ api.get('/tasks', (req, res) => {
     sort: sort as TaskListOptions['sort'],
     // T01074：修复 status 过滤被路由层丢弃的问题（query status=todo/done 现在真正生效）
     status: status as TaskListOptions['status'],
+    // M7-7.1：移动端「需关注」服务端过滤（failed/unread），省去全量下发后本地筛
+    attention: attention === 'failed' || attention === 'unread' ? attention : undefined,
   }));
 });
 

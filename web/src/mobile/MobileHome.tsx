@@ -25,8 +25,14 @@ export function MobileHome({ onQuickNote, notify }: Props) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [categories, setCategories] = useState<TaskCategory[]>([]);
   const [detailTask, setDetailTask] = useState<Task | null>(null); // T01423：详情半屏抽屉
-  // T01424：失败/AI 待读聚合告警——allTasks 保底全量（含 done 的验证失败复核源），点击聚合条切换过滤
-  const [allTasks, setAllTasks] = useState<Task[]>([]);
+  // M7-7.1：需关注改为服务端精确拉取（attention=failed/unread，小响应），替代全量 allTasks 本地筛
+  const [failedTasks, setFailedTasks] = useState<Task[]>([]);
+  const [unreadTasks, setUnreadTasks] = useState<Task[]>([]);
+  // 待办列表分页：服务端 limit=100 + 加载更多；待办总数用 dashboard totals（精确、含未加载页）
+  const [todoTotal, setTodoTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [offset, setOffset] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [alertFilter, setAlertFilter] = useState(false);
   const [staleAsOf, setStaleAsOf] = useState<string | null>(null); // T01425：离线缓存数据的拉取时间
   // T01432：任务行横滑手势——左滑完成 / 右滑详情；touch-action:pan-y 防纵向滚动冲突
@@ -38,11 +44,10 @@ export function MobileHome({ onQuickNote, notify }: Props) {
 
   const catName = (id: string | null) => categories.find((c) => c.id === id)?.name ?? '';
 
-  // T01424：失败 = AI 处理失败 或 验证失败未复核；AI 待读 = 处理完成未读
-  const failedTasks = allTasks.filter((t) => t.ai_state === 'failed' || (Boolean(t.handle_result?.includes('【验证失败')) && !t.verified));
-  const unreadTasks = allTasks.filter((t) => t.ai_state === 'unread');
-  const attentionIds = new Set([...failedTasks, ...unreadTasks].map((t) => t.id));
-  const shownTasks = alertFilter ? allTasks.filter((t) => attentionIds.has(t.id)) : tasks;
+  // T01424：失败/AI 待读语义由服务端 attention 过滤保证（与原客户端谓词一致），
+  // alertFilter 视图直接渲染两组小列表的并集
+  const attentionTasks = [...failedTasks, ...unreadTasks];
+  const shownTasks = alertFilter ? attentionTasks : tasks;
 
 
   // T01432：横滑手势处理（仅横向位移占优时介入，纵向滚动不受影响）
@@ -72,21 +77,33 @@ export function MobileHome({ onQuickNote, notify }: Props) {
     else if (cur.dx >= SWIPE_THRESHOLD) setDetailTask(t);     // 右滑 → 详情
   }
 
+  const PAGE = 100;
   const load = useCallback(async (pid: string) => {
     if (!pid) return;
     setLoading(true);
-    // T01425：stale-first——先渲染缓存兜底（弱网/无网立即可见），再后台 revalidate
-    const cached = loadStaleCache<Task[]>(`tasks.${pid}`);
+    // T01425：stale-first——先渲染缓存兜底（弱网/无网立即可见），再后台 revalidate。
+    // M7-7.1：缓存改为「待办首页 + 需关注两组小列表」（原全量列表缓存随之废弃）。
+    const cached = loadStaleCache<{ tasks: Task[]; failed: Task[]; unread: Task[] }>(`home.${pid}`);
     if (cached) {
-      setAllTasks(cached.data);
-      setTasks(cached.data.filter((t) => t.status === 'todo'));
+      setTasks(cached.data.tasks);
+      setFailedTasks(cached.data.failed);
+      setUnreadTasks(cached.data.unread);
       setStaleAsOf(cached.asOf);
     }
     try {
-      const list = await api.get<Task[]>(`/tasks?projectId=${pid}`);
-      setAllTasks(list);
-      setTasks(list.filter((t) => t.status === 'todo'));
-      saveStaleCache(`tasks.${pid}`, list);
+      const [list, failed, unread, dash] = await Promise.all([
+        api.get<Task[]>(`/tasks?projectId=${pid}&status=todo&limit=${PAGE}`),
+        api.get<Task[]>(`/tasks?projectId=${pid}&attention=failed`),
+        api.get<Task[]>(`/tasks?projectId=${pid}&attention=unread`),
+        api.get<{ totals: { todo: number } }>(`/stats/dashboard?projectId=${pid}`),
+      ]);
+      setTasks(list);
+      setFailedTasks(failed);
+      setUnreadTasks(unread);
+      setTodoTotal(dash?.totals?.todo ?? list.length);
+      setOffset(list.length);
+      setHasMore(list.length === PAGE);
+      saveStaleCache(`home.${pid}`, { tasks: list, failed, unread });
       setStaleAsOf(null);
     } catch (e) {
       if (!cached) notify(e instanceof Error ? e.message : String(e)); // 有缓存兜底时不重复弹错
@@ -94,6 +111,22 @@ export function MobileHome({ onQuickNote, notify }: Props) {
       setLoading(false);
     }
   }, [notify]);
+
+  // M7-7.1：加载更多——追加下一页待办（chips 用精确 total，不受分页影响）
+  const loadMore = useCallback(async () => {
+    if (!hasMore || loadingMore || !projectId) return;
+    setLoadingMore(true);
+    try {
+      const list = await api.get<Task[]>(`/tasks?projectId=${projectId}&status=todo&limit=${PAGE}&offset=${offset}`);
+      setTasks((cur) => [...cur, ...list]);
+      setOffset((o) => o + list.length);
+      setHasMore(list.length === PAGE);
+    } catch (e) {
+      notify(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [hasMore, loadingMore, projectId, offset, notify]);
 
   useEffect(() => {
     void (async () => {
@@ -131,7 +164,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
           <div className="zen-hide" style={{ display: 'flex', gap: 6, marginTop: 4 }}>
             <button onClick={() => setAlertFilter(false)} aria-pressed={!alertFilter}
               style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, cursor: 'pointer', border: '1px solid ' + (!alertFilter ? 'var(--accent)' : 'var(--border-strong)'), background: !alertFilter ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)' }}>
-              待办 {tasks.length}
+              待办 {todoTotal}
             </button>
             <button onClick={() => setAlertFilter(true)} aria-pressed={alertFilter}
               style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, cursor: 'pointer', border: '1px solid ' + (alertFilter ? 'var(--danger)' : 'var(--border-strong)'), background: alertFilter ? 'color-mix(in srgb, var(--danger) 12%, transparent)' : 'transparent', color: failedTasks.length + unreadTasks.length > 0 ? 'var(--danger)' : 'var(--text-muted)' }}>
@@ -216,6 +249,12 @@ export function MobileHome({ onQuickNote, notify }: Props) {
           <div style={{ padding: '10px 2px', fontSize: 11, color: 'var(--text-muted)', textAlign: 'center' }}>
             左滑任务 = 标记完成 · 右滑 = 查看详情
           </div>
+          {hasMore && !loading && (
+            <button onClick={() => void loadMore()} disabled={loadingMore}
+              style={{ width: '100%', padding: 10, marginBottom: 8, borderRadius: 8, border: '1px solid var(--border-strong)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 13, cursor: 'pointer' }}>
+              {loadingMore ? '加载中…' : `加载更多（已加载 ${tasks.length}/${todoTotal}）`}
+            </button>
+          )}
         </div>
       </PullRefresh>
       {/* T01388：悬浮「+」FAB 已移除——底栏中央「随手记」Plus 是唯一入口，避免同屏双加号 */}

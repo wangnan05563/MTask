@@ -131,6 +131,10 @@ export interface TaskListOptions {
   status?: 'todo' | 'done';
   /** T00719：搁置筛选——不传/false 排除搁置任务（默认隔离，MCP 处理待办自动忽略搁置）；true 只返回搁置任务 */
   shelved?: boolean;
+  /** M7-7.1：移动端「需关注」过滤（语义与 MobileHome 告警条完全一致）——
+   *  failed = AI 失败 或 验证失败未复核（含旧数据 ai_state 为空但 handle_result 有标记的情况）；
+   *  unread = AI 处理完成未读。服务端过滤避免全量下发后本地筛。 */
+  attention?: 'failed' | 'unread';
   /** 分析范围：只返回「待处理 或 未验证(verified=0)」的任务。与 status 互斥（优先 pending）
    *  未验证任务即便已 done，其处理结果可能仍需关联判断，纳入便于 AI 分析上下文 */
   pending?: boolean;
@@ -222,6 +226,12 @@ function buildTaskFilter(opts: TaskListOptions): { where: string[]; values: unkn
   // pending 优先于 status：返回「待处理 或 未验证」任务的并集。
   if (opts.pending) { where.push('(status = ? OR verified = 0)'); values.push('todo'); }
   else if (opts.status) { where.push('status = ?'); values.push(opts.status); }
+  // M7-7.1：需关注过滤（移动端告警条的服务端等价实现；与 attention=unread 互斥使用）
+  if (opts.attention === 'failed') {
+    where.push(String.raw`(ai_state = 'failed' OR (handle_result LIKE '%【验证失败%' AND COALESCE(verified,0) = 0))`);
+  } else if (opts.attention === 'unread') {
+    where.push("ai_state = 'unread'");
+  }
   return { where, values };
 }
 
