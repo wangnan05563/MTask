@@ -343,8 +343,7 @@ export const TaskService = {
   },
 
   getById(id: string): TaskView | null {
-    // T00620：读取路径惰性过期 running（AI 中断兜底）——放在取行之前，保证返回值已是终态
-    this.expireStaleRunning();
+    // T00620：读取路径不再惰性过期 running（已移除，避免只读接口挂写锁）；超时兜底由 startStaleRunningGuard 定时收敛
     const row = getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(id) as TaskRow | undefined;
     return row ? rowToTask(row, TaskImageService.listByTask(id)) : null;
   },
@@ -486,8 +485,7 @@ export const TaskService = {
 
   /** 按项目/条件列出；archived=false 为活跃列表（待办/已完成由 status 区分）。支持可选分页/搜索/分类/排序 */
   list(opts: TaskListOptions = {}): TaskView[] {
-    // T00620：列表读取路径惰性过期 running（AI 中断兜底；内部 30s 节流）
-    this.expireStaleRunning();
+    // T00620：列表读取路径不再惰性过期 running（已移除，避免只读接口挂写锁）；超时兜底由 startStaleRunningGuard 定时收敛
     const db = getDb();
     const { where, values } = buildTaskFilter(opts);
     // 排序映射：优先级按业务档位映射数值，保证 urgent>high>normal>low
@@ -742,3 +740,19 @@ export const TaskService = {
     return this.getById(id)!;
   },
 };
+
+/**
+ * T01368 后续（P1）：把 running 超时兜底从「每次读」移出，改为启动后定时收敛。
+ * 原 list()/getById() 每次读取都调用 expireStaleRunning()，等于在只读接口上挂写锁——
+ * 并发列表刷新会互相阻塞（压测显示 /api/tasks 并发下吞吐从数千 rps 跌到十几 rps）。
+ * 改为每 60s 跑一轮：running 超时窗口默认 1 小时，60s 粒度足够兜底 AI 中断，且彻底去掉读路径写锁。
+ */
+let staleGuardTimer: ReturnType<typeof setInterval> | null = null;
+export function startStaleRunningGuard(intervalMs = 60000): void {
+  if (staleGuardTimer) return;
+  // 启动即收敛一轮（DB 未就绪时静默忽略）
+  try { TaskService.expireStaleRunning(); } catch { /* 启动期 DB 未就绪 */ }
+  staleGuardTimer = setInterval(() => {
+    try { TaskService.expireStaleRunning(); } catch { /* 单轮失败不中断定时器 */ }
+  }, intervalMs);
+}

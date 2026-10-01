@@ -14,6 +14,7 @@ import { startDailyBackupTimer } from './services/BackupService'; // T01061-FR5.
 import { RecurringService, TokenService } from './services/RecurringService'; // T01073：循环任务 + API Token
 import { SupervisorService } from './services/SupervisorService'; // T01273：监督器 tick（含 T01270 会话停滞兜底）
 import { reconcileLinkedPlanStatuses } from './services/PlanService';
+import { startStaleRunningGuard } from './services/TaskService'; // T01368 后续（P1）：running 超时兜底定时收敛（移出读路径）
 
 const PORT = Number(process.env.MTask_PORT ?? 39876);
 const HOST = '127.0.0.1';
@@ -183,6 +184,8 @@ app.listen(PORT, HOST, () => {
   // 决策层受 supervisor.enabled 熔断开关控制（默认关闭），无监督对象时空转返回（NFR-1）。
   // T01311：定时器收拢进 SupervisorService.startScheduler——持有句柄才能支持 intervalMs 热重载。
   SupervisorService.startScheduler();
+  // T01368 后续（P1）：running 超时兜底改为定时收敛，移出列表/详情读路径（去掉只读接口的写锁竞争）
+  startStaleRunningGuard(60000);
 });
 
 // 异步队列轮询器：周期性地将已受理（sending+有 ticket）的 Job 收口。
