@@ -102,6 +102,9 @@ app.use((req, _res, next) => {
   const prefix = normalizePathPrefix(loadTunnelConfig().pathPrefix);
   if (prefix && (req.url === prefix.slice(0, -1) || req.url.startsWith(prefix))) {
     req.url = '/' + req.url.slice(prefix.length);
+    // T01420：同步 originalUrl——/api/events、/images/ 的 query-token 特例按 originalUrl 匹配，
+    // 不改写会在子路径模式下 401（SSE 订阅与图片直链失效）
+    req.originalUrl = req.url;
   }
   next();
 });
