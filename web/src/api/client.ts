@@ -61,6 +61,22 @@ export const api = {
     }
     return res.arrayBuffer();
   },
+  /** T01480：POST 下载——JSON 请求体换二进制文件（Content-Disposition 取文件名） */
+  async postDownload(path: string, data: unknown): Promise<{ blob: Blob; filename: string }> {
+    const res = await fetch(`${apiBase}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(accessToken ? { 'X-Access-Token': accessToken } : {}) },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+    }
+    const cd = res.headers.get('Content-Disposition') ?? '';
+    let filename = filenameFromDisposition(cd);
+    if (!filename) filename = `export.${extFromContentType(res.headers.get('Content-Type') ?? '')}`;
+    return { blob: await res.blob(), filename };
+  },
   /** POST 二进制上传（xlsx 导入等），Content-Type 固定 octet-stream 以跳过全局 JSON 解析 */
   async postBinary<T>(path: string, data: ArrayBuffer): Promise<T> {
     const res = await fetch(`${apiBase}${path}`, {

@@ -6,6 +6,7 @@ import { TaskService, nextTaskNo, type TaskInput, type TaskListOptions } from '.
 import { RecurringService, TokenService } from '../services/RecurringService'; // T01073：循环任务 + API Token
 import { ExecSessionService } from '../services/ExecSessionService'; // T01271：执行会话面板数据源
 import { PushService } from '../services/PushService'; // T01440：Web Push
+import { TaskExportService, type ExportFormat } from '../services/TaskExportService'; // T01480：任务导出
 import { listBackups, runBackup, restoreBackup, backupStatus } from '../services/BackupService'; // T01061-FR5.1
 import { ConfigService } from '../services/ConfigService';
 import { ConsoleJobService } from '../services/ConsoleJobService';
@@ -462,6 +463,21 @@ api.delete('/recurring/:id', (req, res) => {
 // T01271-FR1.4：执行会话面板数据源——外部平台执行会话列表（存活/进度/阶段/停滞）。
 // 读取路径内部惰性判定停滞，面板打开即见正确状态（不依赖 60s 定时器恰好跑到）。
 api.get('/exec-sessions', (_req, res) => res.json(ExecSessionService.listSessions()));
+
+// T01480：任务导出（单条/批量，md/xlsx/docx 三格式共用同一数据装配）
+api.post('/tasks/export', async (req, res) => {
+  try {
+    const { taskIds, format } = req.body ?? {};
+    if (!Array.isArray(taskIds) || taskIds.length === 0) return res.status(400).json({ error: 'taskIds 必填' });
+    if (!['md', 'xlsx', 'docx'].includes(format)) return res.status(400).json({ error: 'format 仅支持 md/xlsx/docx' });
+    const { buffer, filename, mime } = await TaskExportService.export(taskIds as string[], format as ExportFormat);
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.send(buffer);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
 
 // T01440：Web Push——VAPID 公钥 / 订阅管理 / 测试推送
 api.get('/push/public-key', (_req, res) => {

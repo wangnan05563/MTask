@@ -10,7 +10,7 @@ import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { useBusy, setBusy } from '../ui/busy';
-import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, ChevronDown, ChevronUp, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, Pin, Plus, Save, ScanSearch, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
+import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, ChevronDown, ChevronUp, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, Pin, Plus, Save, ScanSearch, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00771：工作空间选择器（项目上下文根路径）
 import { WorkspaceSearchPanel } from '../ui/WorkspaceSearchPanel'; // T00786：工作空间全文检索面板（partial 提示）
@@ -1063,6 +1063,28 @@ export function TasksPage() {
     );
   }
 
+  // T01480：任务导出——md/xlsx/docx 三格式，单条与批量共用同一装配
+  const [exportMenu, setExportMenu] = useState<{ taskId: string; x: number; y: number } | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
+  async function exportTasks(ids: string[], fmt: 'md' | 'xlsx' | 'docx') {
+    setExportBusy(true);
+    try {
+      const { blob, filename } = await api.postDownload('/tasks/export', { taskIds: ids, format: fmt });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+      flash(`已导出 ${filename}`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally { setExportBusy(false); setExportMenu(null); }
+  }
+  const EXPORT_ITEMS: { fmt: 'docx' | 'md' | 'xlsx'; label: string; desc: string }[] = [
+    { fmt: 'docx', label: 'Word 文档', desc: '导出为 .docx' },
+    { fmt: 'md', label: 'Markdown', desc: '导出为 .md' },
+    { fmt: 'xlsx', label: 'Excel 表格', desc: '导出为 .xlsx' },
+  ];
+
   /** 批量操作条：multiSelect 且有选中时浮出（样式与任务行一致） */
   function renderBatchBar() {
     if (!multiSelect || selectedIds.size === 0) return null;
@@ -1101,6 +1123,13 @@ export function TasksPage() {
         <span style={{ display: 'inline-flex', alignItems: 'center' }} title="批量字体颜色 — 选色后应用到全部选中任务">
           <FontColorButton current="" onApply={(col) => { void batchApply('color', col); }} label="批量字体颜色" />
         </span>
+        {/* T01480：批量导出——md/xlsx/docx 三格式 */}
+        <select value="" disabled={exportBusy} aria-label="批量导出任务" title="批量导出 — 选中任务导出为 Word / Markdown / Excel"
+          onChange={(e) => { const v = e.target.value as 'md' | 'xlsx' | 'docx' | ''; if (v) void exportTasks([...selectedIds], v); }}
+          style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          <option value="">批量导出…</option>
+          {EXPORT_ITEMS.map((it) => <option key={it.fmt} value={it.fmt}>{it.label}</option>)}
+        </select>
         {/* T00704：批量归档——位于批量字体颜色之后（功能已存在，本次修复其可见性） */}
         <button onClick={() => void batchApply('archive')} disabled={batchOpBusy} className="tbtn-anim"
           title="批量归档 — 选中任务移入归档（可恢复）" aria-label="批量归档"
@@ -1650,6 +1679,17 @@ export function TasksPage() {
           style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
         >
           {t.handle_result ? <ClipboardEdit size={13} /> : <ClipboardList size={13} />}
+        </button>
+        {/* T01480：单条导出——点击弹出三格式菜单（Word/Markdown/Excel），动效与 Tooltip 内建 */}
+        <button
+          onClick={(e) => { const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); setExportMenu({ taskId: t.id, x: r.left, y: r.bottom + 4 }); }}
+          disabled={exportBusy}
+          title="文件导出 — 将该任务导出为 Word / Markdown / Excel"
+          aria-label={`文件导出：${t.title}`}
+          className="task-op export-anim"
+          style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        >
+          <Download size={13} />
         </button>
         <button
           onClick={() => { setReuseOpen(t.id); setReuseProjectId(''); setReuseSearch(''); setReuseCategoryId(''); void loadPromptCats(); void loadReqCats(); }}
@@ -2785,6 +2825,22 @@ export function TasksPage() {
     return (
       <>
         {batchBar}
+        {/* T01480：导出格式选择菜单（fixed 覆盖层，点外关闭） */}
+        {exportMenu && (
+          <div style={{ position: 'fixed', inset: 0, zIndex: 1300 }} onClick={() => setExportMenu(null)}>
+            <div style={{ position: 'absolute', left: Math.min(exportMenu.x, window.innerWidth - 190), top: Math.min(exportMenu.y, window.innerHeight - 150), background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 8, boxShadow: '0 6px 18px rgba(0,0,0,.18)', padding: 4, minWidth: 170 }} onClick={(e) => e.stopPropagation()}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 8px' }}>导出为…</div>
+              {EXPORT_ITEMS.map((it) => (
+                <button key={it.fmt} onClick={() => void exportTasks([exportMenu.taskId], it.fmt)} disabled={exportBusy}
+                  className="export-anim"
+                  title={`文件导出 - ${it.desc}`}
+                  style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 8, padding: '7px 10px', fontSize: 13, border: 'none', background: 'transparent', color: 'var(--text)', cursor: exportBusy ? 'wait' : 'pointer', textAlign: 'left', borderRadius: 6 }}>
+                  <Download size={14} style={{ color: 'var(--accent)' }} /> {it.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {csvBlock}
         {viewMode === 'board' && renderBoard()}
         {viewMode === 'board' && <div style={{ height: 8 }} />}
