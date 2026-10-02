@@ -1821,6 +1821,26 @@ export function TasksPage() {
     );
   }
 
+  /** M6-6.1：展示态标题按钮（自 renderTaskTitle 提取——三重三元与 cursor 判定是复杂度大头） */
+  function renderTitleDisplayButton(t: Task, descToggleable: boolean, toggleDesc: () => void, markTitleRead: () => void) {
+    const unreadDone = t.status === 'done' && !t.handle_result && t.ai_state === 'unread';
+    return (
+      // T00918：已完成且无处理结果反馈的任务，其标题行常无「描述/处理结果」展开入口可点，
+      // 未读红点无处置除；故点击标题本身即视为「已查看」，清除该任务未读状态（仅覆盖此场景，不影响已填反馈任务）
+      // T01384：有描述时点击标题即展开/收起描述（键盘 Enter/Space 同效），aria-expanded 同步可展开状态
+      <button
+        type="button"
+        onClick={descToggleable ? toggleDesc : markTitleRead}
+        aria-expanded={descToggleable ? descExpanded[t.id] ?? false : undefined}
+        aria-controls={descToggleable ? `task-desc-${t.id}` : undefined}
+        title={descToggleable ? (descExpanded[t.id] ? '收起 — 再次点击收起任务描述' : '展开 — 点击查看完整任务描述') : (unreadDone ? '点击消除未读状态' : undefined)}
+        style={{ flex: 1, background: 'none', border: 'none', padding: 0, font: 'inherit', textAlign: 'left', textDecoration: t.status === 'done' ? 'line-through' : 'none', color: t.color || 'var(--text)', cursor: descToggleable || unreadDone ? 'pointer' : 'default' }}
+      >
+        {t.title}
+      </button>
+    );
+  }
+
   /** 标题区：编辑态输入框 / 展示态文本 + 描述展开按钮（M6-6.1：图标组拆分至上方三个助手） */
   function renderTaskTitle(t: Task, titleEditing: boolean) {
     const markTitleRead = () => { if (t.status === 'done' && !t.handle_result && t.ai_state === 'unread') { void api.patch(`/tasks/${t.id}`, { aiState: '' }).then(() => setTasksStateRead(t.id)); } };
@@ -1844,19 +1864,7 @@ export function TasksPage() {
             style={{ flex: 1, padding: '4px 6px', border: '1px solid var(--accent)', borderRadius: 4, fontSize: 13, boxSizing: 'border-box' }}
           />
         ) : (
-          // T00918：已完成且无处理结果反馈的任务，其标题行常无「描述/处理结果」展开入口可点，
-          // 未读红点无处置除；故点击标题本身即视为「已查看」，清除该任务未读状态（仅覆盖此场景，不影响已填反馈任务）
-          // T01384：有描述时点击标题即展开/收起描述（键盘 Enter/Space 同效），aria-expanded 同步可展开状态
-          <button
-            type="button"
-            onClick={descToggleable ? toggleDesc : markTitleRead}
-            aria-expanded={descToggleable ? descExpanded[t.id] ?? false : undefined}
-            aria-controls={descToggleable ? `task-desc-${t.id}` : undefined}
-            title={descToggleable ? (descExpanded[t.id] ? '收起 — 再次点击收起任务描述' : '展开 — 点击查看完整任务描述') : (t.status === 'done' && !t.handle_result && t.ai_state === 'unread' ? '点击消除未读状态' : undefined)}
-            style={{ flex: 1, background: 'none', border: 'none', padding: 0, font: 'inherit', textAlign: 'left', textDecoration: t.status === 'done' ? 'line-through' : 'none', color: t.color || 'var(--text)', cursor: descToggleable || (t.status === 'done' && !t.handle_result && t.ai_state === 'unread') ? 'pointer' : 'default' }}
-          >
-            {t.title}
-          </button>
+          renderTitleDisplayButton(t, descToggleable, toggleDesc, markTitleRead)
         )}
         {/* 展开/收起按钮紧跟标题：有描述才显示，点击展开完整描述（默认收起不展示摘要，保持简洁）——T01384 与标题点击同口径 */}
         {t.description && renderDescToggleButton(t, toggleDesc)}
