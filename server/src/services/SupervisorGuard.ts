@@ -218,50 +218,46 @@ export function guard<A extends GuardAction>(actions: A[], ctx: GuardContext): G
   // 已用并发槽 = 当前活跃会话数 + 本轮已放行的占槽动作：一次 tick 内多个动作须累计，否则会超卖
   let usedSlots = Math.max(0, ctx.concurrent);
 
+  // M6-6.1：闸 0/3/4/5 的单动作判定提取为纯函数（usedSlots 逐动作传入当前值，放行后由主循环递增）
+  const judge = (a: A, usedSlotsNow: number): { reason: string; category: string } | null => {
+    const tid = a.taskId;
+
+    // 闸 0：目标任务必须在本轮快照内（T01342）——「真实性」校验，先于所有配额闸。
+    // LLM 只能引用它在快照里见过的 id，故不在集合内的 id 必属幻觉或越权引用；
+    // 放在并发闸之前还有一个副作用：被拦的假动作不该占用并发槽。
+    if (knownTaskIds && tid && !knownTaskIds.has(tid)) {
+      return { reason: `目标任务不在本轮快照（疑似幻觉/越权 id ${tid.slice(0, 8)}…）`, category: '目标任务不在快照' };
+    }
+    // 闸 3：并发（FR-4.1）
+    if (CONCURRENCY_ACTIONS.has(a.type) && usedSlotsNow >= maxConcurrent) {
+      return { reason: `并发已达上限（${usedSlotsNow}/${maxConcurrent}）`, category: '并发已达上限' };
+    }
+    if (tid) {
+      // 闸 4：重试上限（FR-4.2）——超限说明反复失败，自动重试只会继续撞墙，必须转人工
+      const retry = retryById.get(tid) ?? 0;
+      if (retry >= maxRetry) {
+        return { reason: `重试已达上限（${retry}/${maxRetry}）`, category: '重试已达上限' };
+      }
+      // 闸 5：冷却（FR-4.3）——防同一任务被高频重复触发形成抖动循环
+      const last = lastFiredById.get(tid);
+      if (last != null && Date.now() - last < cooldownMs) {
+        return { reason: `冷却未过（距上次触发 ${Math.round((Date.now() - last) / 1000)}s < ${Math.round(cooldownMs / 1000)}s）`, category: '冷却未过' };
+      }
+    }
+    return null;
+  };
+
   for (const a of actions) {
     // CONTINUE 只是「保持等待」、ESCALATE 已是人工态：均不消耗资源，直接放行
     if (!TRIGGER_ACTIONS.has(a.type)) {
       applied.push(a);
       continue;
     }
-    const tid = a.taskId;
-
-    // 闸 0：目标任务必须在本轮快照内（T01342）——「真实性」校验，先于所有配额闸。
-    // LLM 只能引用它在快照里见过的 id，故不在集合内的 id 必属幻觉或越权引用；
-    // 放在并发闸之前还有一个副作用：被拦的假动作不该占用并发槽。
-    // 降级而非丢弃（沿用 NFR-3）：保留 taskId 供人工接手，reason 进入 blocked_by 审计。
-    if (knownTaskIds && tid && !knownTaskIds.has(tid)) {
-      const detail = `目标任务不在本轮快照（疑似幻觉/越权 id ${tid.slice(0, 8)}…）`;
-      reasons.push('目标任务不在快照');
-      blocked.push({ action: a, reason: detail, degraded: degrade(a, detail) });
+    const verdict = judge(a, usedSlots);
+    if (verdict) {
+      reasons.push(verdict.category);
+      blocked.push({ action: a, reason: verdict.reason, degraded: degrade(a, verdict.reason) });
       continue;
-    }
-
-    // 闸 3：并发（FR-4.1）
-    if (CONCURRENCY_ACTIONS.has(a.type) && usedSlots >= maxConcurrent) {
-      const detail = `并发已达上限（${usedSlots}/${maxConcurrent}）`;
-      reasons.push('并发已达上限');
-      blocked.push({ action: a, reason: detail, degraded: degrade(a, detail) });
-      continue;
-    }
-
-    if (tid) {
-      // 闸 4：重试上限（FR-4.2）——超限说明反复失败，自动重试只会继续撞墙，必须转人工
-      const retry = retryById.get(tid) ?? 0;
-      if (retry >= maxRetry) {
-        const detail = `重试已达上限（${retry}/${maxRetry}）`;
-        reasons.push('重试已达上限');
-        blocked.push({ action: a, reason: detail, degraded: degrade(a, detail) });
-        continue;
-      }
-      // 闸 5：冷却（FR-4.3）——防同一任务被高频重复触发形成抖动循环
-      const last = lastFiredById.get(tid);
-      if (last != null && Date.now() - last < cooldownMs) {
-        const detail = `冷却未过（距上次触发 ${Math.round((Date.now() - last) / 1000)}s < ${Math.round(cooldownMs / 1000)}s）`;
-        reasons.push('冷却未过');
-        blocked.push({ action: a, reason: detail, degraded: degrade(a, detail) });
-        continue;
-      }
     }
 
     if (CONCURRENCY_ACTIONS.has(a.type)) usedSlots++;
