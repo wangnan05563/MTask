@@ -1776,7 +1776,52 @@ export function TasksPage() {
     );
   }
 
-  /** 标题区：编辑态输入框 / 展示态文本 + 描述展开按钮 */
+  /** M6-6.1：描述展开/收起图标（自 renderTaskTitle 提取） */
+  function renderDescToggleButton(t: Task, toggleDesc: () => void) {
+    return (
+      <button
+        onClick={toggleDesc}
+        title={descExpanded[t.id] ? '收起 — 收起任务描述' : '展开 — 展开查看完整任务描述'}
+        aria-label={descExpanded[t.id] ? '收起：收起任务描述' : '展开：展开查看完整任务描述'}
+        className="task-op"
+        style={{ fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+      >
+        {descExpanded[t.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+      </button>
+    );
+  }
+
+  /** M6-6.1：处理结果展开图标（自 renderTaskTitle 提取；unread 时顺路消除未读） */
+  function renderResultToggleButton(t: Task) {
+    return (
+      <button
+        onClick={() => { setResultOpen((p) => ({ ...p, [t.id]: !p[t.id] })); if (t.ai_state === 'unread') { void api.patch(`/tasks/${t.id}`, { aiState: '' }).then(() => setTasksStateRead(t.id)); } }}
+        title={resultOpen[t.id] ? '收起处理结果 — 收起该任务的处理结果' : '展开处理结果 — 展开查看该任务的处理结果'}
+        aria-label={resultOpen[t.id] ? '收起处理结果：收起该任务的处理结果' : '展开处理结果：展开查看该任务的处理结果'}
+        className="task-op"
+        style={{ fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+      >
+        {resultOpen[t.id] ? <ChevronUp size={13} /> : <ClipboardList size={13} />}
+      </button>
+    );
+  }
+
+  /** M6-6.1：验证失败反馈图标（自 renderTaskTitle 提取；verified=true 后隐藏） */
+  function renderFailbackToggleButton(t: Task) {
+    return (
+      <button
+        onClick={() => setFailbackOpen((p) => ({ ...p, [t.id]: !p[t.id] }))}
+        title="验证失败反馈 — 展开查看/修改该任务的验证失败反馈"
+        aria-label="验证失败反馈：展开查看或修改"
+        className="task-op"
+        style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--danger)' }}
+      >
+        {failbackOpen[t.id] ? <ChevronUp size={13} /> : <AlertTriangle size={13} />}
+      </button>
+    );
+  }
+
+  /** 标题区：编辑态输入框 / 展示态文本 + 描述展开按钮（M6-6.1：图标组拆分至上方三个助手） */
   function renderTaskTitle(t: Task, titleEditing: boolean) {
     const markTitleRead = () => { if (t.status === 'done' && !t.handle_result && t.ai_state === 'unread') { void api.patch(`/tasks/${t.id}`, { aiState: '' }).then(() => setTasksStateRead(t.id)); } };
     // T01384：点标题切换描述展开/收起（与箭头按钮同口径）；markTitleRead 顺路执行
@@ -1814,44 +1859,14 @@ export function TasksPage() {
           </button>
         )}
         {/* 展开/收起按钮紧跟标题：有描述才显示，点击展开完整描述（默认收起不展示摘要，保持简洁）——T01384 与标题点击同口径 */}
-        {t.description && (
-          <button
-            onClick={toggleDesc}
-            title={descExpanded[t.id] ? '收起 — 收起任务描述' : '展开 — 展开查看完整任务描述'}
-            aria-label={descExpanded[t.id] ? '收起：收起任务描述' : '展开：展开查看完整任务描述'}
-            className="task-op"
-            style={{ fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-          >
-            {descExpanded[t.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-          </button>
-        )}
+        {t.description && renderDescToggleButton(t, toggleDesc)}
         {/* 处理结果展开图标：紧随任务详情（描述）展开图标之后，作为第二个交互图标。
             有已录入结果才显示；仅切换 resultOpen 的查看态（不进入编辑），与描述展开相互独立，
-            两个面板可分别展开/收起，也可同时展开/收起。收起态用上箭头以区分展开态 */} 
-        {t.handle_result && (
-          <button
-            onClick={() => { setResultOpen((p) => ({ ...p, [t.id]: !p[t.id] })); if (t.ai_state === 'unread') { void api.patch(`/tasks/${t.id}`, { aiState: '' }).then(() => setTasksStateRead(t.id)); } }}
-            title={resultOpen[t.id] ? '收起处理结果 — 收起该任务的处理结果' : '展开处理结果 — 展开查看该任务的处理结果'}
-            aria-label={resultOpen[t.id] ? '收起处理结果：收起该任务的处理结果' : '展开处理结果：展开查看该任务的处理结果'}
-            className="task-op"
-            style={{ fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-          >
-            {resultOpen[t.id] ? <ChevronUp size={13} /> : <ClipboardList size={13} />}
-          </button>
-        )}
+            两个面板可分别展开/收起，也可同时展开/收起。收起态用上箭头以区分展开态 */}
+        {t.handle_result && renderResultToggleButton(t)}
         {/* T00531 布局调整：验证失败反馈按钮移至「展开处理结果」图标后方（标题行）——点击展开反馈窗口
             T00623：验证通过（verified=true）后同样隐藏该入口（与失败徽标一致，避免残留入口） */}
-        {t.handle_result?.includes('【验证失败') && !t.verified && (
-          <button
-            onClick={() => setFailbackOpen((p) => ({ ...p, [t.id]: !p[t.id] }))}
-            title="验证失败反馈 — 展开查看/修改该任务的验证失败反馈"
-            aria-label="验证失败反馈：展开查看或修改"
-            className="task-op"
-            style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--danger)' }}
-          >
-            {failbackOpen[t.id] ? <ChevronUp size={13} /> : <AlertTriangle size={13} />}
-          </button>
-        )}
+        {t.handle_result?.includes('【验证失败') && !t.verified && renderFailbackToggleButton(t)}
       </>
     );
   }

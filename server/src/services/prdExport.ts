@@ -42,73 +42,93 @@ const HEADING_BY_LEVEL = [
   HeadingLevel.HEADING_4, HeadingLevel.HEADING_5, HeadingLevel.HEADING_6,
 ] as const;
 
+// ---------- M6-6.1：Markdown 两遍式解析（docx/pdf 渲染共用，替代各自的行循环） ----------
+
+type MdBlock =
+  | { k: 'heading'; level: number; text: string }
+  | { k: 'code'; code: string }
+  | { k: 'table'; head: string[]; body: string[][] }
+  | { k: 'quote'; text: string }
+  | { k: 'list'; text: string }
+  | { k: 'space' }
+  | { k: 'para'; text: string };
+
+/** 从 i 行开始解析一个 Markdown 块；空行返回 space 块（pdf 渲染为 moveDown 间距，docx 跳过） */
+function parseMdBlockAt(lines: string[], i: number): { block: MdBlock; next: number } {
+  const line = lines[i].trimEnd();
+  if (!line.trim()) return { block: { k: 'space' }, next: i + 1 };
+  if (/^\s*```/.test(line)) {
+    const code: string[] = [];
+    let j = i + 1;
+    while (j < lines.length && !/^\s*```/.test(lines[j])) { code.push(lines[j]); j += 1; }
+    j += 1; // 跳过闭合围栏
+    return { block: { k: 'code', code: code.join('\n') }, next: j };
+  }
+  const lvl = headingLevel(line);
+  if (lvl >= 1) return { block: { k: 'heading', level: lvl, text: plainInline(line.replace(/^#{1,6}\s+/, '')) }, next: i + 1 };
+  if (line.startsWith('|') && i + 1 < lines.length && isTableSep(lines[i + 1].trim())) {
+    const head = splitRow(line);
+    let j = i + 2;
+    const body: string[][] = [];
+    while (j < lines.length && lines[j].trim().startsWith('|')) { body.push(splitRow(lines[j].trim())); j += 1; }
+    return { block: { k: 'table', head, body }, next: j };
+  }
+  if (/^>\s?/.test(line)) return { block: { k: 'quote', text: plainInline(line.replace(/^>\s?/, '')) }, next: i + 1 };
+  const list = /^\s*(?:[-*+]|\d+[.、)])\s+(.+)$/.exec(line);
+  if (list) return { block: { k: 'list', text: plainInline(list[1]) }, next: i + 1 };
+  return { block: { k: 'para', text: plainInline(line) }, next: i + 1 };
+}
+
+/** Markdown → 块列表（供 docx/pdf 渲染共用） */
+export function parseMdBlocks(md: string): MdBlock[] {
+  const lines = (md ?? '').split('\n');
+  const blocks: MdBlock[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const r = parseMdBlockAt(lines, i);
+    blocks.push(r.block);
+    i = r.next;
+  }
+  return blocks;
+}
+
+/** docx 表格块构建（提取自 buildPrdDocx） */
+function mdTable(b: Extract<MdBlock, { k: 'table' }>): Table {
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: [
+      new TableRow({
+        children: b.head.map((h) => new TableCell({
+          shading: { fill: 'EAF2FF' },
+          children: [new Paragraph({ children: [new TextRun({ text: h, bold: true })] })],
+        })),
+      }),
+      ...b.body.map((r) => new TableRow({
+        children: b.head.map((_, ci) => new TableCell({
+          children: [new Paragraph({ children: [new TextRun({ text: r[ci] ?? '' })] })],
+        })),
+      })),
+    ],
+  });
+}
+
 /**
  * Markdown → Word（.docx）。
  * 支持：标题、无序/有序列表、表格、代码块（等宽段落）、引用、普通段落；按 xlsx-trae 同族版式做浅表头。
+ * M6-6.1：行循环改两遍式（parseMdBlocks → 块渲染），认知复杂度自 25 降至阈值内。
  */
 export async function buildPrdDocx(md: string, title: string): Promise<Buffer> {
   const children: (Paragraph | Table)[] = [
     new Paragraph({ text: title, heading: HeadingLevel.TITLE }),
     new Paragraph({ text: `导出时间：${new Date().toLocaleString('zh-CN')}`, spacing: { after: 200 } }),
   ];
-  const lines = (md ?? '').split('\n');
-  let i = 0;
-  while (i < lines.length) {
-    const raw = lines[i];
-    const line = raw.trimEnd();
-    if (!line.trim()) { i += 1; continue; }
-    // 代码块：原样保留，等宽字体
-    if (/^\s*```/.test(line)) {
-      const code: string[] = [];
-      i += 1;
-      while (i < lines.length && !/^\s*```/.test(lines[i])) { code.push(lines[i]); i += 1; }
-      i += 1; // 跳过闭合围栏
-      for (const c of code) children.push(new Paragraph({ children: [new TextRun({ text: c || ' ', font: 'Consolas' })] }));
-      continue;
-    }
-    const lvl = headingLevel(line);
-    if (lvl >= 1) {
-      children.push(new Paragraph({ text: plainInline(line.replace(/^#{1,6}\s+/, '')), heading: HEADING_BY_LEVEL[lvl - 1] }));
-      i += 1;
-      continue;
-    }
-    // 表格：表头 + 分隔行 + 数据行
-    if (line.startsWith('|') && i + 1 < lines.length && isTableSep(lines[i + 1].trim())) {
-      const head = splitRow(line);
-      i += 2;
-      const body: string[][] = [];
-      while (i < lines.length && lines[i].trim().startsWith('|')) { body.push(splitRow(lines[i].trim())); i += 1; }
-      children.push(new Table({
-        width: { size: 100, type: WidthType.PERCENTAGE },
-        rows: [
-          new TableRow({
-            children: head.map((h) => new TableCell({
-              shading: { fill: 'EAF2FF' },
-              children: [new Paragraph({ children: [new TextRun({ text: h, bold: true })] })],
-            })),
-          }),
-          ...body.map((r) => new TableRow({
-            children: head.map((_, ci) => new TableCell({
-              children: [new Paragraph({ children: [new TextRun({ text: r[ci] ?? '' })] })],
-            })),
-          })),
-        ],
-      }));
-      continue;
-    }
-    if (/^>\s?/.test(line)) {
-      children.push(new Paragraph({ text: plainInline(line.replace(/^>\s?/, '')), indent: { left: 360 } }));
-      i += 1;
-      continue;
-    }
-    const list = /^\s*(?:[-*+]|\d+[.、)])\s+(.+)$/.exec(line);
-    if (list) {
-      children.push(new Paragraph({ text: plainInline(list[1]), bullet: { level: 0 } }));
-      i += 1;
-      continue;
-    }
-    children.push(new Paragraph({ text: plainInline(line), spacing: { after: 80 } }));
-    i += 1;
+  for (const b of parseMdBlocks(md)) {
+    if (b.k === 'heading') children.push(new Paragraph({ text: b.text, heading: HEADING_BY_LEVEL[b.level - 1] }));
+    else if (b.k === 'code') for (const c of b.code.split('\n')) children.push(new Paragraph({ children: [new TextRun({ text: c || ' ', font: 'Consolas' })] }));
+    else if (b.k === 'table') children.push(mdTable(b));
+    else if (b.k === 'quote') children.push(new Paragraph({ text: b.text, indent: { left: 360 } }));
+    else if (b.k === 'list') children.push(new Paragraph({ text: b.text, bullet: { level: 0 } }));
+    else if (b.k === 'para') children.push(new Paragraph({ text: b.text, spacing: { after: 80 } }));
   }
   const doc = new Document({ sections: [{ children }] });
   return await Packer.toBuffer(doc);
@@ -117,6 +137,8 @@ export async function buildPrdDocx(md: string, title: string): Promise<Buffer> {
 /**
  * Markdown → PDF（.pdf）：pdfkit 逐块渲染（标题分级字号、列表加项目符号、分页自动）。
  * 中文依赖系统黑体；非 Windows 或无该字体时回退默认字体（英文可读，中文可能显示为方框，属已知限制）。
+ * M6-6.1：行循环改两遍式（parseMdBlocks → 块渲染），认知复杂度自 25 降至阈值内。
+ * 行为等价性说明：quote 块为新增分支（原实现无 quote 处理，'>' 前缀会随正文输出）。
  */
 export async function buildPrdPdf(md: string, title: string): Promise<Buffer> {
   const PDFDocument = (await import('pdfkit')).default;
@@ -128,40 +150,18 @@ export async function buildPrdPdf(md: string, title: string): Promise<Buffer> {
 
   doc.fontSize(18).text(title);
   doc.fontSize(9).text(`导出时间：${new Date().toLocaleString('zh-CN')}`).moveDown(0.6);
-  const lines = (md ?? '').split('\n');
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i].trimEnd();
-    if (!line.trim()) { doc.moveDown(0.3); i += 1; continue; }
-    if (/^\s*```/.test(line)) {
-      const code: string[] = [];
-      i += 1;
-      while (i < lines.length && !/^\s*```/.test(lines[i])) { code.push(lines[i]); i += 1; }
-      i += 1;
-      doc.fontSize(9).text(code.join('\n'));
-      doc.moveDown(0.4);
-      continue;
-    }
-    const lvl = headingLevel(line);
-    if (lvl >= 1) {
-      doc.moveDown(0.25).fontSize(Math.max(11, 17 - lvl * 1.5)).text(plainInline(line.replace(/^#{1,6}\s+/, '')), { underline: lvl === 1 }).moveDown(0.2);
-      i += 1;
-      continue;
-    }
-    if (line.startsWith('|') && i + 1 < lines.length && isTableSep(lines[i + 1].trim())) {
-      const head = splitRow(line);
-      i += 2;
-      const body: string[][] = [];
-      while (i < lines.length && lines[i].trim().startsWith('|')) { body.push(splitRow(lines[i].trim())); i += 1; }
-      doc.moveDown(0.2).fontSize(10).text(head.join(' | '), { underline: true });
-      for (const r of body) doc.fontSize(9).text(r.join(' | '));
+  for (const b of parseMdBlocks(md)) {
+    if (b.k === 'heading') doc.moveDown(0.25).fontSize(Math.max(11, 17 - b.level * 1.5)).text(b.text, { underline: b.level === 1 }).moveDown(0.2);
+    else if (b.k === 'code') { doc.fontSize(9).text(b.code); doc.moveDown(0.4); }
+    else if (b.k === 'table') {
+      doc.moveDown(0.2).fontSize(10).text(b.head.join(' | '), { underline: true });
+      for (const r of b.body) doc.fontSize(9).text(r.join(' | '));
       doc.moveDown(0.3);
-      continue;
     }
-    const list = /^\s*(?:[-*+]|\d+[.、)])\s+(.+)$/.exec(line);
-    if (list) { doc.fontSize(10).text(`• ${plainInline(list[1])}`); i += 1; continue; }
-    doc.fontSize(10).text(plainInline(line));
-    i += 1;
+    else if (b.k === 'quote') doc.fontSize(10).text(plainInline(b.text), { indent: 20 }).moveDown(0.2);
+    else if (b.k === 'list') doc.fontSize(10).text(`• ${b.text}`);
+    else if (b.k === 'space') doc.moveDown(0.3);
+    else doc.fontSize(10).text(b.text);
   }
   doc.end();
   await done;

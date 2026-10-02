@@ -1663,35 +1663,9 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 </div>
               );
             })}
-            {/* T01059-FR2.3：deps 依赖连线 SVG 叠加层（serial 边画折线箭头；关键路径红色加粗） */}
+            {/* T01059-FR2.3：deps 依赖连线 SVG 叠加层（serial 边画折线箭头；关键路径红色加粗）——M6-6.1 提取为 renderDepsOverlay */}
             <svg width={220 + totalDays * DAY_W} height={plans.length * 30} style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none', zIndex: 2 }}>
-              {(() => {
-                const rowIdx = new Map(plans.map((p, i) => [p.id, i] as const));
-                const els: React.ReactNode[] = [];
-                for (const p of plans) {
-                  if (!p.start_date || !p.end_date) continue;
-                  const j = rowIdx.get(p.id);
-                  if (j === undefined) continue;
-                  const tx = 220 + toIdx(p.start_date) * DAY_W;
-                  const ty = j * 30 + 15;
-                  for (const d of depsOfPlan(p)) {
-                    if (!d?.id || d.type === 'child') continue;
-                    const u = planById.get(d.id);
-                    if (!u?.start_date || !u.end_date) continue;
-                    const i2 = rowIdx.get(u.id);
-                    if (i2 === undefined) continue;
-                    const fx = 220 + (toIdx(u.end_date) + 1) * DAY_W;
-                    const fy = i2 * 30 + 15;
-                    const crit = criticalEdges.has(`${u.id}->${p.id}`);
-                    const color = crit ? 'var(--danger)' : 'var(--accent)';
-                    const dAttr = tx > fx + 8
-                      ? `M ${fx} ${fy} H ${(fx + tx) / 2} V ${ty} H ${tx - 5}`
-                      : `M ${fx} ${fy} L ${tx - 5} ${ty}`;
-                    els.push(<path key={`${u.id}-${p.id}`} d={dAttr} fill="none" stroke={color} strokeWidth={crit ? 2 : 1.2} opacity={crit ? 0.9 : 0.55} />, <polygon key={`arr-${u.id}-${p.id}`} points={`${tx - 5},${ty - 3.5} ${tx - 5},${ty + 3.5} ${tx},${ty}`} fill={color} />);
-                  }
-                }
-                return els;
-              })()}
+              {renderDepsOverlay({ plans, toIdx, totalDays, DAY_W, depsOfPlan, planById, criticalEdges })}
             </svg>
             </div>
           </div>
@@ -1708,6 +1682,43 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         </div>
       </div>
     );
+  }
+
+  /** M6-6.1：deps 依赖连线 SVG 元素构建（自甘特渲染 IIFE 提取；甘特局部量经参数传入） */
+  function renderDepsOverlay(g: {
+    plans: PlanTask[];
+    toIdx: (d: string) => number;
+    totalDays: number;
+    DAY_W: number;
+    depsOfPlan: (p: PlanTask) => Array<{ id?: string; type?: string }>;
+    planById: Map<string, PlanTask>;
+    criticalEdges: Set<string>;
+  }): React.ReactNode[] {
+    const rowIdx = new Map(g.plans.map((p, i) => [p.id, i] as const));
+    const els: React.ReactNode[] = [];
+    for (const p of g.plans) {
+      if (!p.start_date || !p.end_date) continue;
+      const j = rowIdx.get(p.id);
+      if (j === undefined) continue;
+      const tx = 220 + g.toIdx(p.start_date) * g.DAY_W;
+      const ty = j * 30 + 15;
+      for (const d of g.depsOfPlan(p)) {
+        if (!d?.id || d.type === 'child') continue;
+        const u = g.planById.get(d.id);
+        if (!u?.start_date || !u.end_date) continue;
+        const i2 = rowIdx.get(u.id);
+        if (i2 === undefined) continue;
+        const fx = 220 + (g.toIdx(u.end_date) + 1) * g.DAY_W;
+        const fy = i2 * 30 + 15;
+        const crit = g.criticalEdges.has(`${u.id}->${p.id}`);
+        const color = crit ? 'var(--danger)' : 'var(--accent)';
+        const dAttr = tx > fx + 8
+          ? `M ${fx} ${fy} H ${(fx + tx) / 2} V ${ty} H ${tx - 5}`
+          : `M ${fx} ${fy} L ${tx - 5} ${ty}`;
+        els.push(<path key={`${u.id}-${p.id}`} d={dAttr} fill="none" stroke={color} strokeWidth={crit ? 2 : 1.2} opacity={crit ? 0.9 : 0.55} />, <polygon key={`arr-${u.id}-${p.id}`} points={`${tx - 5},${ty - 3.5} ${tx - 5},${ty + 3.5} ${tx},${ty}`} fill={color} />);
+      }
+    }
+    return els;
   }
 
   // ---------- 节假日 ----------
