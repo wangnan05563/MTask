@@ -62,6 +62,37 @@ interface SearchMemo {
   scannedFiles: number;
 }
 const searchMemo = new Map<string, SearchMemo>();
+
+/** 检索命中收集上限（M6-6.1：常量提取自 autoContext） */
+const SEARCH_HIT_LIMIT = 12;
+type SearchHit = { path: string; line: number; snippet: string };
+
+/** 文件路径命中收集（与 search() 的「文件名命中」语义对齐）；返回 true 表示已达上限 */
+function collectFileNameHits(memo: SearchMemo, needle: string, collected: SearchHit[], seen: Set<string>): boolean {
+  for (const f of memo.files) {
+    if (!f.toLowerCase().includes(needle)) continue;
+    const key = `${f}:0`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    collected.push({ path: f, line: 0, snippet: '(文件名命中)' });
+    if (collected.length >= SEARCH_HIT_LIMIT) return true;
+  }
+  return collected.length >= SEARCH_HIT_LIMIT;
+}
+
+/** 正文行命中收集（memo 已摊平，无任何文件 IO）；返回 true 表示已达上限 */
+function collectLineHits(memo: SearchMemo, needle: string, collected: SearchHit[], seen: Set<string>): boolean {
+  for (const l of memo.lines) {
+    if (!l.text.includes(needle)) continue;
+    const key = `${l.path}:${l.line}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const start = Math.max(0, l.text.indexOf(needle) - 60);
+    collected.push({ path: l.path, line: l.line, snippet: l.text.slice(start, start + SEARCH_SNIPPET_MAX).trim() });
+    if (collected.length >= SEARCH_HIT_LIMIT) return true;
+  }
+  return collected.length >= SEARCH_HIT_LIMIT;
+}
 /** 索引/换绑后必须失效（工作空间内容已变），由 refreshSymbols / clearSymbols 调用 */
 function invalidateSearchMemo(projectId?: string): void {
   if (projectId) searchMemo.delete(projectId);
@@ -501,34 +532,15 @@ export const WorkspaceService = {
   autoContext(projectId: string, keywords: string[], budgetChars = ContextBudget.searchHitsChars): string {
     if (!keywords || keywords.length === 0) return '';
     const memo = getSearchMemo(projectId);
-    const collected: Array<{ path: string; line: number; snippet: string }> = [];
+    const collected: SearchHit[] = [];
     const seen = new Set<string>();
     for (const kw of keywords) {
-      if (collected.length >= 12) break;
+      if (collected.length >= SEARCH_HIT_LIMIT) break;
       const needle = kw.toLowerCase();
       if (needle.length < 2) continue;
-      // 文件路径命中也算（与 search() 的「文件名命中」语义对齐）
-      for (const f of memo.files) {
-        if (f.toLowerCase().includes(needle)) {
-          const key = `${f}:0`;
-          if (!seen.has(key)) {
-            seen.add(key);
-            collected.push({ path: f, line: 0, snippet: '(文件名命中)' });
-            if (collected.length >= 12) break;
-          }
-        }
-      }
-      if (collected.length >= 12) break;
-      // 正文行匹配（memo 已摊平，无任何文件 IO）
-      for (const l of memo.lines) {
-        if (!l.text.includes(needle)) continue;
-        const key = `${l.path}:${l.line}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const start = Math.max(0, l.text.indexOf(needle) - 60);
-        collected.push({ path: l.path, line: l.line, snippet: l.text.slice(start, start + SEARCH_SNIPPET_MAX).trim() });
-        if (collected.length >= 12) break;
-      }
+      // M6-6.1：文件名命中/正文行命中两段收集循环提取为模块级助手，本函数仅保留遍历与上限控制
+      if (collectFileNameHits(memo, needle, collected, seen)) break;
+      if (collectLineHits(memo, needle, collected, seen)) break;
     }
     if (collected.length === 0) return '';
     const body = collected.map((h) => `${h.path}:${h.line} — ${h.snippet}`).join('\n');

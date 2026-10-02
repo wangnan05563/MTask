@@ -34,40 +34,37 @@ export function normalizeIssues(raw: unknown): PrdGenIssue[] {
  * 甚至给出多个代码块/示例片段，粗略切片会把两段无关内容之间的文字一起塞进 JSON.parse → 必然抛错，
  * 于是整条主流程被判「协议解析失败」而降级（用户看到的正是这条报错）。
  */
+/** JSON 结构 token：完整字符串字面量（含转义）或括号——用于配平扫描时跳过字符串内的括号 */
+const JSON_TOKEN_RE = /"(?:[^"\\]|\\.)*"|\[|\]/g;
+
+/** 从 start 处的 '[' 做配平扫描，返回与之配对的 ']' 下标；无法配平返回 -1（M6-6.1：由手写字符状态机改写，token 正则等价） */
+function findBalancedArrayEnd(text: string, start: number): number {
+  JSON_TOKEN_RE.lastIndex = start + 1;
+  let depth = 1;
+  let m: RegExpExecArray | null;
+  while ((m = JSON_TOKEN_RE.exec(text))) {
+    if (m[0] === '[') depth++;
+    else if (m[0] === ']') {
+      depth--;
+      if (depth === 0) return m.index;
+    }
+  }
+  return -1;
+}
+
 export function scanJsonArrays(text: string): unknown[] {
   const out: unknown[] = [];
-  // T01361（S2310）：外层改 while 手动推进——解析成功后跳到数组末尾的下一字符（i = j + 1），
-  // 其余路径步进 1；与原 for（i = j 后经 i++ 得 j+1）行为完全一致
+  // T01361（S2310）：解析成功后跳到数组末尾的下一字符（i = end + 1），其余路径步进 1；
+  // 配平即跳过（无论解析成败）——与原手写状态机行为完全一致
   let i = 0;
   while (i < text.length) {
     if (text[i] !== '[') { i++; continue; }
-    let depth = 0;
-    let inStr = false;
-    let esc = false;
-    let parsed = false;
-    for (let j = i; j < text.length; j++) {
-      const ch = text[j];
-      if (inStr) {
-        if (esc) esc = false;
-        else if (ch === '\\') esc = true;
-        else if (ch === '"') inStr = false;
-        continue;
-      }
-      if (ch === '"') { inStr = true; continue; }
-      if (ch === '[') depth++;
-      else if (ch === ']') {
-        depth--;
-        if (depth === 0) {
-          try {
-            out.push(JSON.parse(text.slice(i, j + 1)));
-          } catch { /* 非完整 JSON 片段，继续向后找下一个 '[' */ }
-          i = j + 1; // 跳过本次已解析区间
-          parsed = true;
-          break;
-        }
-      }
-    }
-    if (!parsed) i++;
+    const end = findBalancedArrayEnd(text, i);
+    if (end < 0) { i++; continue; }
+    try {
+      out.push(JSON.parse(text.slice(i, end + 1)));
+    } catch { /* 非完整 JSON 片段，继续向后找下一个 '[' */ }
+    i = end + 1; // 跳过本次已解析区间
   }
   return out;
 }

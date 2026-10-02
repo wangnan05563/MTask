@@ -336,6 +336,39 @@ function decorateRows(db: ReturnType<typeof getDb>, rows: TaskRow[]): TaskView[]
   });
 }
 
+/** M6-6.1：事件埋点相关类型与助手（自 update 提取，降低认知复杂度） */
+type UpdateEventPatch = Partial<Pick<TaskRow, 'status' | 'verified' | 'ai_state' | 'handle_result'>>;
+type UpdateEventBefore = { status: string; verified: number; ai_state: string; handle_result: string | null };
+
+/** T01072-FR1.9：旧结果留档（diff/回滚数据源）——每任务保留最近 10 条 */
+function recordResultHistory(db: ReturnType<typeof getDb>, taskId: string, prevResult: string | null): void {
+  db.prepare('INSERT INTO task_result_history (id, task_id, prev_result, replaced_at) VALUES (?, ?, ?, ?)')
+    .run(uuid(), taskId, prevResult ?? '', now());
+  db.prepare(
+    `DELETE FROM task_result_history WHERE task_id = ? AND id NOT IN (SELECT id FROM task_result_history WHERE task_id = ? ORDER BY replaced_at DESC LIMIT 10)`,
+  ).run(taskId, taskId);
+}
+
+/** T01064：ai_state 变更的埋点文案 */
+function aiStateEventDetail(next: string): string {
+  if (next === 'unread') return 'AI 处理完成';
+  if (next === 'failed') return 'AI 处理失败';
+  return `AI 状态：${next}`;
+}
+
+/** T01064 事件埋点——按变更前快照 diff 生成事件（running 态不记，避免开工噪声） */
+function collectUpdateEvents(patch: UpdateEventPatch, before: UpdateEventBefore, db: ReturnType<typeof getDb>, id: string): Array<[string, string]> {
+  const ev: Array<[string, string]> = [];
+  if (patch.status !== undefined && patch.status !== before.status) ev.push(['status', `${before.status} → ${patch.status}`]);
+  if (patch.verified !== undefined && patch.verified !== before.verified) ev.push(['verified', patch.verified ? '验证通过' : '验证未通过 / 退回']);
+  if (patch.ai_state !== undefined && patch.ai_state !== before.ai_state && patch.ai_state !== 'running') ev.push(['ai_state', aiStateEventDetail(patch.ai_state)]);
+  if (patch.handle_result !== undefined && patch.handle_result !== before.handle_result) {
+    ev.push(['result', '处理结果回传/更新']);
+    recordResultHistory(db, id, before.handle_result ?? '');
+  }
+  return ev;
+}
+
 export const TaskService = {
   create(input: TaskInput): TaskView {
     const db = getDb();
@@ -596,28 +629,9 @@ export const TaskService = {
     const sets = keys.map((k) => `${k} = ?`).join(', ');
     const values = keys.map((k) => patch[k]);
     db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`).run(...values, now(), id);
-    // T01064-FR1.4/1.5：事件埋点——状态/验证/AI 状态/回传结果变更写 task_events；running 态不记（避免开工噪声）
+    // T01064-FR1.4/1.5：事件埋点——状态/验证/AI 状态/回传结果变更写 task_events（M6-6.1：埋点段提取为模块级助手）
     if (before) {
-      const ev: Array<[string, string]> = [];
-      if (patch.status !== undefined && patch.status !== before.status) ev.push(['status', `${before.status} → ${patch.status}`]);
-      if (patch.verified !== undefined && patch.verified !== before.verified) ev.push(['verified', patch.verified ? '验证通过' : '验证未通过 / 退回']);
-      if (patch.ai_state !== undefined && patch.ai_state !== before.ai_state && patch.ai_state !== 'running') {
-        let aiStateDetail: string;
-        if (patch.ai_state === 'unread') aiStateDetail = 'AI 处理完成';
-        else if (patch.ai_state === 'failed') aiStateDetail = 'AI 处理失败';
-        else aiStateDetail = `AI 状态：${patch.ai_state}`;
-        ev.push(['ai_state', aiStateDetail]);
-      }
-      if (patch.handle_result !== undefined && patch.handle_result !== before.handle_result) {
-        ev.push(['result', '处理结果回传/更新']);
-        // T01072-FR1.9：旧结果留档（diff/回滚数据源）——每任务保留最近 10 条
-        db.prepare('INSERT INTO task_result_history (id, task_id, prev_result, replaced_at) VALUES (?, ?, ?, ?)')
-          .run(uuid(), id, before.handle_result ?? '', now());
-        db.prepare(
-          `DELETE FROM task_result_history WHERE task_id = ? AND id NOT IN (SELECT id FROM task_result_history WHERE task_id = ? ORDER BY replaced_at DESC LIMIT 10)`,
-        ).run(id, id);
-      }
-      for (const [kind, detail] of ev) logEvent(db, id, kind, detail);
+      for (const [kind, detail] of collectUpdateEvents(patch as UpdateEventPatch, before, db, id)) logEvent(db, id, kind, detail);
     }
     // 反向计划联动（T00436）：待办被项目计划关联时，状态变更同步回计划任务（已完成↔已完成，待办→进行中）
     if (patch.status !== undefined) syncPlanOnStatusChange(id, patch.status);
