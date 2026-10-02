@@ -350,49 +350,61 @@ function symbolIndexWalk(ctx: SymbolIndexCtx, dir: string, rel: string): void {
  * 预算独立于 `search`（MEMO_MAX_FILES / MEMO_MAX_BYTES，约 4 倍上限）：它扫一次供
  * 5 分钟内的全部关键词复用，摊薄后单次成本远低于逐关键词检索，超限同样置 truncated。
  */
+/** M6-6.1：memo 预扫描共享状态（walk 递归可变状态对象化，替代闭包捕获） */
+type MemoScanState = {
+  lines: SearchMemo['lines'];
+  files: string[];
+  scannedFiles: number;
+  scannedBytes: number;
+  truncated: boolean;
+};
+
+/** 单文件读取并摊平为可检索行；返回消耗字节数，跳过（二进制/过大/读取失败）返回 -1 */
+function memoScanFile(state: MemoScanState, abs: string, relChild: string): number {
+  let buf: Buffer;
+  try { buf = readFileSync(abs); } catch { return -1; }
+  if (buf.length > SEARCH_FILE_MAX_BYTES) return -1;
+  const text = buf.toString('utf8');
+  if (text.includes('\0')) return -1;
+  state.scannedFiles++;
+  state.scannedBytes += buf.length;
+  state.files.push(relChild);
+  const raw = text.split(/\r?\n/);
+  for (let i = 0; i < raw.length; i++) {
+    const t = raw[i];
+    if (!t) continue;
+    state.lines.push({ path: relChild, line: i + 1, text: t.toLowerCase() });
+  }
+  return buf.length;
+}
+
+/** memo 预扫描递归（预算超限置 truncated 并整层退出） */
+function memoWalk(state: MemoScanState, rules: IgnoreRule[], dir: string, rel: string): void {
+  if (state.scannedFiles >= MEMO_MAX_FILES || state.scannedBytes >= MEMO_MAX_BYTES) { state.truncated = true; return; }
+  let entries: Array<{ name: string; isDir: boolean }>;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true }).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
+  } catch { return; }
+  for (const e of entries) {
+    if (state.scannedFiles >= MEMO_MAX_FILES || state.scannedBytes >= MEMO_MAX_BYTES) { state.truncated = true; return; }
+    const relChild = rel ? `${rel}/${e.name}` : e.name;
+    if (isIgnored(relChild, e.isDir, rules)) continue;
+    const abs = join(dir, e.name);
+    if (e.isDir) { memoWalk(state, rules, abs, relChild); continue; }
+    if (BINARY_EXTS.has(extname(e.name).toLowerCase())) continue;
+    memoScanFile(state, abs, relChild);
+  }
+}
+
 function getSearchMemo(projectId: string): SearchMemo {
   const cached = searchMemo.get(projectId);
   if (cached && Date.now() - cached.at < SEARCH_MEMO_TTL_MS) return cached;
 
   const { workspace, rules } = getProjectWorkspace(projectId);
-  const lines: SearchMemo['lines'] = [];
-  const files: string[] = [];
-  let scannedFiles = 0;
-  let scannedBytes = 0;
-  let truncated = false;
+  const state: MemoScanState = { lines: [], files: [], scannedFiles: 0, scannedBytes: 0, truncated: false };
+  memoWalk(state, rules, workspace, '');
 
-  const walk = (dir: string, rel: string): void => {
-    if (scannedFiles >= MEMO_MAX_FILES || scannedBytes >= MEMO_MAX_BYTES) { truncated = true; return; }
-    let entries: Array<{ name: string; isDir: boolean }>;
-    try {
-      entries = readdirSync(dir, { withFileTypes: true }).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
-    } catch { return; }
-    for (const e of entries) {
-      if (scannedFiles >= MEMO_MAX_FILES || scannedBytes >= MEMO_MAX_BYTES) { truncated = true; return; }
-      const relChild = rel ? `${rel}/${e.name}` : e.name;
-      if (isIgnored(relChild, e.isDir, rules)) continue;
-      const abs = join(dir, e.name);
-      if (e.isDir) { walk(abs, relChild); continue; }
-      if (BINARY_EXTS.has(extname(e.name).toLowerCase())) continue;
-      let buf: Buffer;
-      try { buf = readFileSync(abs); } catch { continue; }
-      if (buf.length > SEARCH_FILE_MAX_BYTES) continue;
-      const text = buf.toString('utf8');
-      if (text.includes('\0')) continue;
-      scannedFiles++;
-      scannedBytes += buf.length;
-      files.push(relChild);
-      const raw = text.split(/\r?\n/);
-      for (let i = 0; i < raw.length; i++) {
-        const t = raw[i];
-        if (!t) continue;
-        lines.push({ path: relChild, line: i + 1, text: t.toLowerCase() });
-      }
-    }
-  };
-  walk(workspace, '');
-
-  const memo: SearchMemo = { at: Date.now(), lines, files, truncated, scannedFiles };
+  const memo: SearchMemo = { at: Date.now(), ...state };
   searchMemo.set(projectId, memo);
   return memo;
 }

@@ -140,6 +140,23 @@ function parseTaskIds(raw: string): string[] {
   }
 }
 
+/** M6-6.1：会话状态/进度优先级链（完成 > 失败 > 心跳复活 stalled/failed > 保持；进度仅在未完成且显式上报时采用）。
+ *  cur=null 表示新建会话（insert 分支）。update/insert 两分支共用，消除重复的优先级 if 链。 */
+function resolvedProgressState(
+  cur: { status: string; progress: number } | null,
+  finished: boolean,
+  failedReported: boolean,
+  pctProvided: boolean,
+  pctValue: number,
+): { status: string; pct: number } {
+  if (finished) return { status: 'done', pct: 100 };
+  if (failedReported) return { status: 'failed', pct: cur ? cur.progress : 0 };
+  if (cur && (cur.status === 'stalled' || cur.status === 'failed')) return { status: 'active', pct: cur.progress };
+  if (cur) return { status: cur.status, pct: cur.progress };
+  if (pctProvided) return { status: 'active', pct: clampPct(pctValue) };
+  return { status: 'active', pct: 0 };
+}
+
 export const ExecSessionService = {
   /**
    * FR-1.2：心跳与进度上报。按 platform+session_id upsert 会话、刷新 last_heartbeat，
@@ -169,59 +186,36 @@ export const ExecSessionService = {
       'SELECT * FROM exec_sessions WHERE LOWER(TRIM(platform)) = ? AND session_id = ? ORDER BY started_at DESC LIMIT 1',
     ).get(platform, sessionId) as ExecSessionRow | undefined;
 
+    // M6-6.1：状态/进度优先级链统一由 resolvedProgressState 计算（update/insert 共用）
+    const state = resolvedProgressState(
+      existing ? { status: existing.status, progress: existing.progress } : null,
+      finished, failedReported, pctProvided, typeof input.pct === 'number' ? input.pct : 0,
+    );
+
     let sessionRowId: string;
     if (existing) {
       sessionRowId = existing.id;
       // 状态优先级：完成（终态）> 失败 > 心跳复活（stalled/failed → active，PRD §8 状态机）。
       // failed 可被新心跳复活是刻意的（PRD §8「failed ──REDISPATCH──▶ active(换台)」）：同一会话标识
       // 再次上报即证明该平台已重新执行；done 保持终态不可复活——重新执行必须换新会话标识。
-      let nextStatus: string;
-      if (finished) {
-        nextStatus = 'done';
-      } else if (failedReported) {
-        nextStatus = 'failed';
-      } else if (existing.status === 'stalled' || existing.status === 'failed') {
-        nextStatus = 'active';
-      } else {
-        nextStatus = existing.status;
-      }
-      let nextPct: number;
-      if (finished) {
-        nextPct = 100;
-      } else if (pctProvided) {
-        nextPct = clampPct(input.pct as number);
-      } else {
-        nextPct = existing.progress;
-      }
-      const nextPhase = input.phase ?? existing.phase;
       db.prepare(
         `UPDATE exec_sessions
             SET task_ids = ?, status = ?, progress = ?, phase = ?, last_heartbeat = ?, finished_at = ?
           WHERE id = ?`,
       ).run(
-        mergeTaskIds(existing.task_ids, task.id), nextStatus, nextPct, nextPhase, now,
+        mergeTaskIds(existing.task_ids, task.id), state.status, state.pct, input.phase ?? existing.phase, now,
         finished ? (existing.finished_at ?? now) : existing.finished_at, sessionRowId,
       );
     } else {
       sessionRowId = randomUUID();
       // 初始状态与已完成会话行同口径：完成 > 失败 > 执行中；进度仅在未完成且显式上报时采用
-      let initialStatus = 'active';
-      let initialPct = 0;
-      if (finished) {
-        initialStatus = 'done';
-        initialPct = 100;
-      } else if (failedReported) {
-        initialStatus = 'failed';
-      } else if (pctProvided) {
-        initialPct = clampPct(input.pct as number);
-      }
       db.prepare(
         `INSERT INTO exec_sessions
            (id, platform, session_id, task_ids, status, progress, phase, last_heartbeat, started_at, finished_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         sessionRowId, platform, sessionId, JSON.stringify([task.id]),
-        initialStatus, initialPct,
+        state.status, state.pct,
         input.phase ?? '', now, now, finished ? now : null,
       );
     }

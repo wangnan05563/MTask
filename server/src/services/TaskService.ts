@@ -263,16 +263,8 @@ function normalizeBoolPatch(patch: Record<string, unknown>): void {
   }
 }
 
-/**
- * T01280/T01284（FR-3.1 / FR-3.7）：依赖感知的**就绪判定 + 拓扑排序**。
- *
- * 一次查询同时产出两者（原先只有判定，排序在 T01284 补上），避免「判定查一遍、排序再查一遍」的口径漂移。
- * 依赖语义见 `util/planDeps`：serial 严格先后、parallel 不阻塞、deps 指向的计划行已不存在按已完成；
- * 分批 IN 规避 SQLite 变量上限 999（与图片批量查询同口径）。
- */
-function readyAndOrder<T extends { id: string }>(db: ReturnType<typeof getDb>, rows: T[]): T[] {
-  if (rows.length === 0) return [];
-  const taskIds = rows.map((r) => r.id);
+/** M6-6.1：阶段①——批量取任务关联的计划行 deps（分批 IN 规避变量上限） */
+function loadDepsByTask(db: ReturnType<typeof getDb>, taskIds: string[]): { depsByTask: Map<string, PlanDep[]>; depPlanIds: Set<string> } {
   const depsByTask = new Map<string, PlanDep[]>();
   const depPlanIds = new Set<string>();
   for (let i = 0; i < taskIds.length; i += PLAN_LOOKUP_BATCH) {
@@ -287,9 +279,11 @@ function readyAndOrder<T extends { id: string }>(db: ReturnType<typeof getDb>, r
       for (const d of deps) depPlanIds.add(d.id);
     }
   }
-  // 无任何任务挂计划行时无需查依赖状态，直接按原序返回（绝大多数项目的常态）
-  if (depsByTask.size === 0) return [...rows];
+  return { depsByTask, depPlanIds };
+}
 
+/** M6-6.1：阶段②——批量取依赖计划行的状态与反向关联（任务 id） */
+function loadDepPlanStatus(db: ReturnType<typeof getDb>, depPlanIds: Set<string>): { statusById: Map<string, string>; linkedTaskByPlanId: Map<string, string> } {
   const statusById = new Map<string, string>();
   const linkedTaskByPlanId = new Map<string, string>();
   const depList = [...depPlanIds];
@@ -303,12 +297,11 @@ function readyAndOrder<T extends { id: string }>(db: ReturnType<typeof getDb>, r
       if (f.linked_task_id) linkedTaskByPlanId.set(f.id, f.linked_task_id);
     }
   }
+  return { statusById, linkedTaskByPlanId };
+}
 
-  const ready = rows.filter((r) => depsSatisfied(depsByTask.get(r.id) ?? [], statusById));
-  if (ready.length <= 1) return ready;
-
-  // 拓扑序偏好：仅当依赖方的计划行也指向**本轮就绪集内**的任务时才构成可排序的边
-  const readyIds = new Set(ready.map((r) => r.id));
+/** M6-6.1：阶段④——构建本轮就绪集内的可排序拓扑边 */
+function buildReadyEdges(ready: Array<{ id: string }>, depsByTask: Map<string, PlanDep[]>, linkedTaskByPlanId: Map<string, string>, readyIds: Set<string>): Array<{ from: string; to: string }> {
   const edges: Array<{ from: string; to: string }> = [];
   for (const r of ready) {
     for (const d of depsByTask.get(r.id) ?? []) {
@@ -316,6 +309,31 @@ function readyAndOrder<T extends { id: string }>(db: ReturnType<typeof getDb>, r
       if (from && from !== r.id && readyIds.has(from)) edges.push({ from, to: r.id });
     }
   }
+  return edges;
+}
+
+/**
+ * T01280/T01284（FR-3.1 / FR-3.7）：依赖感知的**就绪判定 + 拓扑排序**。
+ *
+ * 一次查询同时产出两者（原先只有判定，排序在 T01284 补上），避免「判定查一遍、排序再查一遍」的口径漂移。
+ * 依赖语义见 `util/planDeps`：serial 严格先后、parallel 不阻塞、deps 指向的计划行已不存在按已完成；
+ * 分批 IN 规避 SQLite 变量上限 999（与图片批量查询同口径）。
+ * M6-6.1：三阶段（取 deps / 取计划状态 / 构边）提取为模块级助手，本函数仅保留编排。
+ */
+function readyAndOrder<T extends { id: string }>(db: ReturnType<typeof getDb>, rows: T[]): T[] {
+  if (rows.length === 0) return [];
+  const { depsByTask, depPlanIds } = loadDepsByTask(db, rows.map((r) => r.id));
+  // 无任何任务挂计划行时无需查依赖状态，直接按原序返回（绝大多数项目的常态）
+  if (depsByTask.size === 0) return [...rows];
+
+  const { statusById, linkedTaskByPlanId } = loadDepPlanStatus(db, depPlanIds);
+
+  const ready = rows.filter((r) => depsSatisfied(depsByTask.get(r.id) ?? [], statusById));
+  if (ready.length <= 1) return ready;
+
+  // 拓扑序偏好：仅当依赖方的计划行也指向**本轮就绪集内**的任务时才构成可排序的边
+  const readyIds = new Set(ready.map((r) => r.id));
+  const edges = buildReadyEdges(ready, depsByTask, linkedTaskByPlanId, readyIds);
   if (edges.length === 0) return ready;
   const byId = new Map(ready.map((r) => [r.id, r]));
   return topoOrder(ready.map((r) => r.id), edges).map((id) => byId.get(id)!);
