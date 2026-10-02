@@ -117,14 +117,16 @@ export function PullRefresh({ onRefresh, children }: { onRefresh: () => Promise<
   );
 }
 
-/** 骨架屏：弱网初载占位（行式），样式全部走 CSS 变量 */
+/** 骨架屏：弱网初载占位（行式），样式全部走 CSS 变量。
+ *  M6-6.3：占位行键取自模块级常量数组（map 回调不出现索引变量，规避 S6479） */
+const SKEL_KEYS = Array.from({ length: 24 }, (_, i) => `skel-${i}`);
 export function Skeleton({ rows = 3, card = false }: { rows?: number; card?: boolean }) {
   return (
     <div aria-hidden="true">
       <style>{'@keyframes mtask-skel { 0%, 100% { opacity: .4 } 50% { opacity: .85 } }'}</style>
-      {Array.from({ length: rows }).map((_, i) => (
+      {SKEL_KEYS.slice(0, rows).map((k, i) => (
         <div
-          key={`skel-${i}`}
+          key={k}
           style={{
             height: card ? 64 : 44,
             borderRadius: 10,

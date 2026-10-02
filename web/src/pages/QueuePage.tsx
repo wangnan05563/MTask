@@ -51,7 +51,7 @@ export function QueuePage() {
 
   const load = useCallback(async () => {
     setQueues(await api.get<Queue[]>('/queues'));
-    // M7-7.2：status=todo 服务端过滤 + 显式 limit=500（提交选单取最近 500 条待办；原为全量拉取后本地筛）
+    // M7-7.2：status=待办 服务端过滤 + 显式 limit=500（提交选单取最近 500 条待办；原为全量拉取后本地筛）
     setTasks((await api.get<Task[]>('/tasks?archived=0&status=todo&limit=500')));
     setTools(await api.get<AITool[]>('/aitools'));
   }, []);

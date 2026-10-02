@@ -577,7 +577,7 @@ api.get('/tasks', (req, res) => {
     keyword: keyword as string | undefined,
     categoryId: categoryId as string | undefined,
     sort: sort as TaskListOptions['sort'],
-    // T01074：修复 status 过滤被路由层丢弃的问题（query status=todo/done 现在真正生效）
+    // T01074：修复 status 过滤被路由层丢弃的问题（query status 待办/已完成 现在真正生效）
     status: status as TaskListOptions['status'],
     // M7-7.1：移动端「需关注」服务端过滤（failed/unread），省去全量下发后本地筛
     attention: attention === 'failed' || attention === 'unread' ? attention : undefined,

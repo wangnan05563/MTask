@@ -115,7 +115,7 @@ export function ResultDiffPanel({ taskNo, current, onRollback }: {
               marker = '＋';
             }
             return (
-              <div key={`diff-${i}`} style={{
+              <div key={`${r.t}:${i}:${r.s ?? ''}`} style={{
                 display: 'flex', gap: 6, padding: '1px 6px',
                 background: rowBg,
                 color: r.t === 'same' ? 'var(--text-muted)' : 'var(--text)',

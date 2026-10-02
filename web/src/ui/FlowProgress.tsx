@@ -15,19 +15,25 @@ interface FlowProgressProps {
   readonly 'aria-label'?: string;
 }
 
-export function FlowProgress({ value, className, style, ...rest }: FlowProgressProps) {
+export function FlowProgress({ value, className, style, 'aria-label': ariaLabel }: FlowProgressProps) {
   const v = Math.max(0, Math.min(100, Math.round(value)));
   return (
-    <div
-      className={['flow-progress', className].filter(Boolean).join(' ')}
-      style={style}
-      role="progressbar"
-      aria-valuenow={v}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      {...rest}
-    >
-      <div className="flow-progress-fill" style={{ width: `${v}%` }} />
-    </div>
+    <>
+      {/* M6-6.3：S6819——a11y 语义由原生 <progress> 承载；流光视觉层是纯装饰（aria-hidden），
+          避免在 div 上挂 role="progressbar"（规则要求用原生元素）。视觉层对读屏隐藏，原生进度条 sr-only 暴露数值 */}
+      <progress
+        value={v}
+        max={100}
+        aria-label={ariaLabel}
+        style={{ position: 'absolute', width: 1, height: 1, margin: -1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap' }}
+      />
+      <div
+        className={['flow-progress', className].filter(Boolean).join(' ')}
+        style={style}
+        aria-hidden="true"
+      >
+        <div className="flow-progress-fill" style={{ width: `${v}%` }} />
+      </div>
+    </>
   );
 }

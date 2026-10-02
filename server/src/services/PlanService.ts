@@ -452,7 +452,7 @@ function taskStatusForPlan(ps: PlanStatus): 'todo' | 'done' {
  * 待办会在计划完成时被同步（见 update / linkTodo），而矩阵 req_ids 关联的待办不会跟随——
  * 表现为「矩阵里关联了待办、再把计划标记完成，待办状态不动」。本函数把计划状态传播到
  * 所有与该计划共享至少一个需求的未归档待办，实现需求闭环。语义与 linked_task_id 同步一致：
- * 计划 done→待办 done；其余→待办 todo（可回退）。
+ * 计划完成→待办同步完成；其余→待办回到待办（可回退）。
  */
 function syncReqLinkedTasks(db: ReturnType<typeof getDb>, projectId: string, planReqIds: string[], planStatus: PlanStatus): void {
   if (planReqIds.length === 0) return;

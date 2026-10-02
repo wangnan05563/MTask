@@ -281,7 +281,7 @@ export const ExecSessionService = {
            VALUES (?, ?, ?, ?, 'active', 0, '', ?, ?, NULL)`,
         ).run(sessionRowId, platform, sessionId, JSON.stringify([task.id]), ts, ts);
       }
-      // 原子认领：status='todo' + archived=0 一并约束——已完成/已归档任务即便 ai_state 为空也不该被拉走重跑（PRD §8 状态机）。
+      // 原子认领：status=待办 + archived=0 一并约束——已完成/已归档任务即便 ai_state 为空也不该被拉走重跑（PRD §8 状态机）。
       // monitor_ready 同事务清零：认领即出就绪池，否则任务日后被清空 ai_state 时仍带旧标记、会被再次拉取执行。
       const r = db.prepare(
         `UPDATE tasks

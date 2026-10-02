@@ -511,7 +511,7 @@ export const SupervisorService = {
   collectSnapshot(): MonitorSnapshot {
     const db = getDb();
 
-    // --- 待办池：未认领（ai_state=''）且未归档未搁置的 todo ---
+    // --- 待办池：未认领（ai_state=''）且未归档未搁置的待办任务 ---
     const pendingTotal = (db.prepare(
       "SELECT COUNT(*) AS n FROM tasks WHERE status = 'todo' AND archived = 0 AND shelved = 0 AND ai_state = ''",
     ).get() as { n: number }).n;

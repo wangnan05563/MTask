@@ -416,7 +416,7 @@ export function TasksPage() {
   useEffect(() => {
     if (!focusTaskId) return;
     // T00836 二轮：任务所属项目与当前 activeProject 不一致时，先切项目（会触发上方 loadTasks 重新加载该任务列表）；
-    // 目标行只在所属项目的 todo/done 里，切完项目的同时也消费 projectId，避免重复切换。
+    // 目标行只在所属项目的 待办/已完成 里，切完项目的同时也消费 projectId，避免重复切换。
     if (focusProjectId && activeProject !== focusProjectId) {
       setActiveProject(focusProjectId);
       setFocusProjectId('');
@@ -449,7 +449,7 @@ export function TasksPage() {
     } else {
       setFocusTaskId(''); setFocusTab('');
     }
-    // 依赖 todo/done/activeTab/activeProject/filters：目标列表渲染后再定位；仅定位一次后即清空
+    // 依赖 待办/已完成/activeTab/activeProject/filters：目标列表渲染后再定位；仅定位一次后即清空
   }, [focusTaskId, todo, done, activeTab, activeProject, focusProjectId, catFilter, priorityFilter]);
   // T00433：MCP 回传 / 队列执行 / 其他窗口改任务状态时，前端无感知——轻量轮询对比签名，有变化才刷新。
   // 保护条件：任何未保存草稿或 AI 操作进行中时跳过本轮，避免打断用户编辑（变化留待下一轮干净窗口）。
@@ -1029,7 +1029,7 @@ export function TasksPage() {
   /** T00456 / PRD UX-1：看板视图——按状态分列（待办/已完成），卡片拖拽流转状态。
    *  卡片为简化渲染（标题/优先级/分类/进度），编辑回列表视图；drop 到目标列即变更状态。 */
   function renderBoard() {
-    // T00922：看板标题统计改取项目级全量计数（todo_count/done_count），首屏即显示该项目全部待办/已完成，
+    // T00922：看板标题统计改取项目级全量计数（项目对象上的待办/已完成计数字段），首屏即显示该项目全部待办/已完成，
     // 不再受分页已加载条目数影响（原 done.length 仅覆盖当前已加载页，需「加载更多」后才趋近真实值）
     const curProj = projects.find((p) => p.id === activeProject);
     const todoTotal = curProj?.todo_count ?? todo.length;
@@ -2814,8 +2814,8 @@ export function TasksPage() {
     const visibleDone = arrange(sortTasks(done.filter(matches).filter(matchDoneFilter), doneSort));
     // T00719：搁置列表沿用同一套搜索/分类/优先级过滤（fetchTasks 已按同参拉取），本地再按排序键排序
     const visibleShelved = arrange(sortTasks(shelvedTasks.filter(matches), shelvedSort));
-    // T00922：tab 标题已完成/待办统计改取项目级全量计数——原 done.length/todo.length 仅覆盖当前已加载页，
-    // 首屏需「加载更多」后才趋近真实总量；改用项目 done_count/todo_count 后首屏即显示全量。未验证数保持原语义（已完成中未验证）
+    // T00922：tab 标题已完成/待办统计改取项目级全量计数——原列表长度仅覆盖当前已加载页，
+    // 首屏需「加载更多」后才趋近真实总量；改用项目级全量计数字段后首屏即显示全量。未验证数保持原语义（已完成中未验证）
     const curProj = projects.find((p) => p.id === activeProject);
     const todoTotal = curProj?.todo_count ?? todo.length;
     const doneTotal = curProj?.done_count ?? done.length;

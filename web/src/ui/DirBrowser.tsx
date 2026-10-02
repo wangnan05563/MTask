@@ -36,7 +36,7 @@ function DirBrowser({ onDone }: { readonly onDone: (path: string | null) => void
   const [listing, setListing] = useState<DirListing | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const panelRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDialogElement>(null);
 
   const load = useCallback(async (path: string) => {
     setLoading(true);
@@ -71,7 +71,8 @@ function DirBrowser({ onDone }: { readonly onDone: (path: string | null) => void
   const btn = 'tbtn-anim';
   return (
     <div style={overlay}>
-      <div ref={panelRef} role="dialog" aria-modal="true" aria-label="选择工作空间文件夹" style={panel}>
+      <dialog ref={panelRef} open aria-modal="true" aria-label="选择工作空间文件夹"
+        style={{ ...panel, margin: 0, border: 'none', padding: 0, position: 'static' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
           <Folder size={14} style={{ color: 'var(--accent)' }} /> 选择工作空间文件夹
           <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>（服务端目录浏览 — 无桌面壳环境的降级通道）</span>
@@ -141,7 +142,7 @@ function DirBrowser({ onDone }: { readonly onDone: (path: string | null) => void
             <Check size={12} /> 选择此文件夹
           </button>
         </div>
-      </div>
+      </dialog>
     </div>
   );
 }

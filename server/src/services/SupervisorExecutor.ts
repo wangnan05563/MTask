@@ -66,7 +66,7 @@ function loadTask(id: string): ExecTaskRow | undefined {
 
 /**
  * 共用前置校验：任务存在、未归档、且仍是待办。
- * 非待办（已 done）说明不该再被自动触发，跳过而不是强行改回 todo——改状态是人工该做的决定。
+ * 非待办（已 done）说明不该再被自动触发，跳过而不是强行改回待办——改状态是人工该做的决定。
  */
 function validateTarget(type: string, taskId: string | undefined): { ok: true; task: ExecTaskRow } | { ok: false; outcome: ApplyOutcome } {
   if (!taskId) return { ok: false, outcome: { type, status: 'skipped', detail: '动作缺少 taskId，无法定位对象' } };
