@@ -2824,7 +2824,10 @@ export function TasksPage() {
         {batchBar}
         {/* T01480：导出格式选择菜单（fixed 覆盖层，点外关闭） */}
         {exportMenu && (
-          <div style={{ position: 'fixed', inset: 0, zIndex: 1300 }} onClick={(e) => { if (e.target === e.currentTarget) setExportMenu(null); }}>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 1300 }}>
+            {/* M6-6.3：遮罩即原生 button（S6848/S1082——div onClick 触发规则），菜单为兄弟层置于其上，无需阻断冒泡 */}
+            <button type="button" aria-label="关闭导出菜单" onClick={() => setExportMenu(null)}
+              style={{ position: 'absolute', inset: 0, background: 'transparent', border: 'none', cursor: 'default' }} />
             <div style={{ position: 'absolute', left: Math.min(exportMenu.x, window.innerWidth - 190), top: Math.min(exportMenu.y, window.innerHeight - 150), background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 8, boxShadow: '0 6px 18px rgba(0,0,0,.18)', padding: 4, minWidth: 170 }}>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 8px' }}>导出为…</div>
               {EXPORT_ITEMS.map((it) => (
