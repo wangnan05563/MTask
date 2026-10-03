@@ -1,5 +1,7 @@
 import { Router, raw } from 'express';
 import { PlanService } from '../services/PlanService';
+import { TestCaseService } from '../services/TestCaseService'; // T01484：测试用例取数（PRD-测试用例管理 §6）
+import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput } from '../services/TestCaseService';
 import { AIService } from '../services/AIService';
 import { resolvePrdContext } from '../util/prdContext'; // T00763：计划关联 PRD → 评估上下文
 import { exportGate } from '../util/export-gate'; // T00789：导出类端点并发闸
@@ -399,6 +401,169 @@ planApi.post('/prd-requirements/:id/link', (req, res) => {
   if (!kind || typeof b.targetId !== 'string' || !b.targetId) return res.status(400).json({ error: 'kind(plan|task) 与 targetId 必填' });
   wrap(res, () => { PlanService.linkRequirement(req.params.id, { kind, targetId: b.targetId as string, linked: b.linked !== false }); return { ok: true }; });
 });
+
+// ---------- T01484：测试用例（PRD-测试用例管理 §6.1~§6.3） ----------
+// 注册顺序铁律：/test-cases 下的静态段（meta / coverage / batch / reorder / duplicate）
+// 必须先于 /test-cases/:id——否则 GET /test-cases/meta 会被 :id 抢注成「id=meta」，
+// 返回 400 用例不存在而不是枚举（验证脚本里有专门一条反向断言盯这个坑）。
+
+/** query 都是字符串：布尔只认 true/1，数字非法值当未传（服务层再按未传走默认） */
+function queryBool(v: unknown): boolean | undefined {
+  if (v === undefined) return undefined;
+  return v === true || v === 'true' || v === '1';
+}
+
+function queryNum(v: unknown): number | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * 关联需求字段的三态：键不存在=不改；null / '' =解除关联（服务层归一为 NULL）；字符串=挂到该需求。
+ * 不能用 optStr——它把 null 也吃成 undefined，「解除关联」点一下会静默失效。
+ */
+function reqIdField(b: Record<string, unknown>): string | null | undefined {
+  return b.reqId === undefined ? undefined : toStr(b.reqId);
+}
+
+function caseStepList(v: unknown): CaseStepInput[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  return v.map((x) => {
+    const s = (x ?? {}) as Record<string, unknown>;
+    return { action: optStr(s.action), expected: optStr(s.expected), stepNo: queryNum(s.stepNo) };
+  });
+}
+
+/** 批量端点统一入口：ids 必须是非空字符串数组 */
+function caseIds(v: unknown): string[] | null {
+  if (!Array.isArray(v) || v.length === 0 || !v.every((x) => typeof x === 'string' && x.trim())) return null;
+  return v as string[];
+}
+
+planApi.get('/test-cases/meta', (req, res) => wrap(res, () => TestCaseService.meta(pid(req))));
+
+planApi.get('/test-cases/coverage', (req, res) => wrap(res, () => TestCaseService.coverage(pid(req))));
+
+planApi.get('/test-cases', (req, res) => {
+  // pid(req) 必须留在 wrap 内：它抛的是业务校验错（约定 400 + {error}），
+  // 写在 wrap 外面会变成未捕获异常 → 500 + 整页堆栈，前端 toast 拿不到人话。
+  wrap(res, () => {
+    const q: CaseQuery = {
+      projectId: pid(req),
+      reqId: optStr(req.query.reqId),
+      q: optStr(req.query.q),
+      module: optStr(req.query.module),
+      priority: optStr(req.query.priority),
+      type: optStr(req.query.type),
+      status: optStr(req.query.status),
+      result: optStr(req.query.result),
+      orphanOnly: queryBool(req.query.orphanOnly),
+      limit: queryNum(req.query.limit),
+      offset: queryNum(req.query.offset),
+    };
+    return TestCaseService.list(q);
+  });
+});
+
+planApi.patch('/test-cases/batch', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const ids = caseIds(b.ids);
+  if (!ids) return res.status(400).json({ error: 'ids 需为非空字符串数组' });
+  const patch = (b.patch ?? {}) as Record<string, unknown>;
+  const fields: CaseBatchPatch = {
+    priority: optStr(patch.priority),
+    type: optStr(patch.type),
+    method: optStr(patch.method),
+    status: optStr(patch.status),
+    lastResult: optStr(patch.lastResult),
+    module: optStr(patch.module),
+    reqId: patch.reqId === undefined ? undefined : toStr(patch.reqId),
+  };
+  wrap(res, () => TestCaseService.batchPatch(ids, fields));
+});
+
+planApi.delete('/test-cases/batch', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const ids = caseIds(b.ids);
+  if (!ids) return res.status(400).json({ error: 'ids 需为非空字符串数组' });
+  wrap(res, () => TestCaseService.batchRemove(ids));
+});
+
+planApi.post('/test-cases/reorder', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const ids = caseIds(b.ids);
+  if (!ids) return res.status(400).json({ error: 'ids 需为非空字符串数组' });
+  if (typeof b.projectId !== 'string' || !b.projectId) return res.status(400).json({ error: 'projectId 必填' });
+  // reqId 三态：null=仅孤儿用例范围，''/缺省=整个项目，字符串=仅该需求
+  const scope = b.reqId === null ? null : optStr(b.reqId);
+  wrap(res, () => TestCaseService.reorder(b.projectId as string, ids, scope));
+});
+
+planApi.post('/test-cases/duplicate', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const ids = caseIds(b.ids);
+  if (!ids) return res.status(400).json({ error: 'ids 需为非空字符串数组' });
+  wrap(res, () => TestCaseService.duplicate(ids));
+});
+
+planApi.get('/test-cases/:id', (req, res) => wrap(res, () => TestCaseService.get(req.params.id)));
+
+planApi.post('/test-cases', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof b.projectId !== 'string' || !b.projectId || typeof b.title !== 'string' || !b.title.trim()) {
+    return res.status(400).json({ error: 'projectId 与 title 必填' });
+  }
+  const input: CaseInput = {
+    projectId: b.projectId,
+    title: b.title,
+    reqId: reqIdField(b),
+    caseNo: optStr(b.caseNo),
+    module: optStr(b.module),
+    preconditions: optStr(b.preconditions),
+    expected: optStr(b.expected),
+    testData: optStr(b.testData),
+    postconditions: optStr(b.postconditions),
+    priority: optStr(b.priority),
+    type: optStr(b.type),
+    method: optStr(b.method),
+    status: optStr(b.status),
+    lastResult: optStr(b.lastResult),
+    tags: optStr(b.tags),
+    sourceKey: optStr(b.sourceKey),
+    sourceHash: optStr(b.sourceHash),
+    sortOrder: queryNum(b.sortOrder),
+    steps: caseStepList(b.steps),
+  };
+  wrap(res, () => TestCaseService.create(input));
+});
+
+planApi.patch('/test-cases/:id', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const patch: CasePatch = {
+    title: optStr(b.title),
+    caseNo: optStr(b.caseNo),
+    module: optStr(b.module),
+    preconditions: optStr(b.preconditions),
+    expected: optStr(b.expected),
+    testData: optStr(b.testData),
+    postconditions: optStr(b.postconditions),
+    tags: optStr(b.tags),
+    reqId: reqIdField(b),
+    priority: optStr(b.priority),
+    type: optStr(b.type),
+    method: optStr(b.method),
+    status: optStr(b.status),
+    lastResult: optStr(b.lastResult),
+    sortOrder: queryNum(b.sortOrder),
+    sourceKey: optStr(b.sourceKey),
+    sourceHash: optStr(b.sourceHash),
+    steps: caseStepList(b.steps),
+  };
+  wrap(res, () => TestCaseService.update(req.params.id, patch));
+});
+
+planApi.delete('/test-cases/:id', (req, res) => wrap(res, () => TestCaseService.remove(req.params.id)));
 
 // ---------- 计划任务 CRUD ----------
 planApi.get('/', (req, res) => wrap(res, () => PlanService.list(pid(req))));
