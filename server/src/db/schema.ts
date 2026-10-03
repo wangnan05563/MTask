@@ -365,6 +365,52 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     );
     -- 审计列表按时间倒序分页（GET /monitor-runs 的查询路径）
     CREATE INDEX IF NOT EXISTS idx_monitor_runs_ran ON monitor_runs(ran_at DESC);
+
+    -- T01482（PRD-测试用例管理 §5.1）：测试用例——每条用例多对一关联需求跟踪矩阵条目（prd_requirements）。
+    -- req_id 可空=「孤儿用例」（PRD P4：要能筛出未挂需求的用例）；source_key/source_hash 承载 AI 生成幂等去重（P6）。
+    -- CASCADE 生效前提：connection.ts 已 db.pragma('foreign_keys = ON')，删除需求会连带删除其下用例（§5.3）。
+    CREATE TABLE IF NOT EXISTS test_cases (
+      id           TEXT PRIMARY KEY,
+      project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      req_id       TEXT REFERENCES prd_requirements(id) ON DELETE CASCADE,
+      case_no      TEXT NOT NULL DEFAULT '',
+      module       TEXT NOT NULL DEFAULT '',
+      title        TEXT NOT NULL,
+      preconditions TEXT NOT NULL DEFAULT '',
+      expected     TEXT NOT NULL DEFAULT '',
+      test_data    TEXT NOT NULL DEFAULT '',
+      postconditions TEXT NOT NULL DEFAULT '',
+      priority     TEXT NOT NULL DEFAULT 'P1',
+      type         TEXT NOT NULL DEFAULT 'functional',
+      method       TEXT NOT NULL DEFAULT 'manual',
+      status       TEXT NOT NULL DEFAULT 'draft',
+      last_result  TEXT NOT NULL DEFAULT 'untested',
+      tags         TEXT NOT NULL DEFAULT '',
+      source_key   TEXT NOT NULL DEFAULT '',
+      source_hash  TEXT NOT NULL DEFAULT '',
+      sort_order   INTEGER NOT NULL DEFAULT 0,
+      created_at   TEXT NOT NULL,
+      updated_at   TEXT NOT NULL
+    );
+    -- 列表按项目 + 排序取页（覆盖 idx_test_cases_req 之外的主查询路径）
+    CREATE INDEX IF NOT EXISTS idx_test_cases_project ON test_cases(project_id, sort_order);
+    -- 矩阵下钻按需求筛用例、覆盖率一次 GROUP BY req_id 均走该索引（禁止 N+1）
+    CREATE INDEX IF NOT EXISTS idx_test_cases_req ON test_cases(req_id);
+    -- 用例编号项目内唯一（AI 生成幂等导入与手工新增重号都靠它拦截）
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_test_cases_no ON test_cases(project_id, case_no);
+
+    -- T01482（PRD-测试用例管理 §5.2）：用例步骤子表——一步一行，含该步预期结果（TestRail Steps 模板，准则 P2）
+    CREATE TABLE IF NOT EXISTS case_steps (
+      id            TEXT PRIMARY KEY,
+      case_id       TEXT NOT NULL REFERENCES test_cases(id) ON DELETE CASCADE,
+      step_no       INTEGER NOT NULL,
+      action        TEXT NOT NULL DEFAULT '',
+      expected      TEXT NOT NULL DEFAULT '',
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL
+    );
+    -- 步骤随用例整批取（WHERE case_id IN (...)）并按 step_no 排序，避免逐条用例查步骤
+    CREATE INDEX IF NOT EXISTS idx_case_steps_case ON case_steps(case_id, step_no);
   `);
 
   // 迁移兜底：老库缺列时补列（CREATE TABLE IF NOT EXISTS 对已存在表不生效）
