@@ -53,11 +53,17 @@ export function depsSatisfied(deps: PlanDep[], statusById: Map<string, string>):
  * 这里只解决**投递顺序偏好**——parallel 混合链上「先投前置再投并发方」，否则平台可能先拉起依赖方。
  * 环（脏数据）不会被 Kahn 消解，按原序补尾，保证不丢项、不死循环。
  */
-export function topoOrder(ids: string[], edges: Array<{ from: string; to: string }>): string[] {
-  if (ids.length <= 1) return [...ids];
+/**
+ * M6-6.1：由图数据建邻接表与入度表（原 topoOrder 内联建图循环）。
+ * 自环与引用集合外节点的边一律跳过——这类边来自脏数据，计入会让入度永远降不到 0。
+ */
+function buildTopoGraph(ids: string[], edges: Array<{ from: string; to: string }>): {
+  adj: Map<string, string[]>;
+  indeg: Map<string, number>;
+} {
   const inSet = new Set(ids);
-  const indeg = new Map<string, number>();
   const adj = new Map<string, string[]>();
+  const indeg = new Map<string, number>();
   for (const id of ids) {
     indeg.set(id, 0);
     adj.set(id, []);
@@ -67,20 +73,35 @@ export function topoOrder(ids: string[], edges: Array<{ from: string; to: string
     adj.get(e.from)!.push(e.to);
     indeg.set(e.to, (indeg.get(e.to) ?? 0) + 1);
   }
-  const queue = ids.filter((id) => (indeg.get(id) ?? 0) === 0);
+  return { adj, indeg };
+}
+
+/** M6-6.1：Kahn 排空——逐个出队并递减后继入度，归零者入队 */
+function drainTopo(queue: string[], adj: Map<string, string[]>, indeg: Map<string, number>): string[] {
   const out: string[] = [];
-  while (queue.length > 0) {
-    const id = queue.shift()!;
+  const pending = [...queue];
+  while (pending.length > 0) {
+    const id = pending.shift()!;
     out.push(id);
     for (const next of adj.get(id) ?? []) {
       const left = (indeg.get(next) ?? 1) - 1;
       indeg.set(next, left);
-      if (left === 0) queue.push(next);
+      if (left === 0) pending.push(next);
     }
   }
-  if (out.length < ids.length) {
-    const seen = new Set(out);
-    for (const id of ids) if (!seen.has(id)) out.push(id);
-  }
   return out;
+}
+
+/** M6-6.1：环上的残余节点按原序补尾（Kahn 不消解环，保证不丢项、不死循环） */
+function appendUnreached(out: string[], ids: string[]): string[] {
+  if (out.length >= ids.length) return out;
+  const seen = new Set(out);
+  return [...out, ...ids.filter((id) => !seen.has(id))];
+}
+
+export function topoOrder(ids: string[], edges: Array<{ from: string; to: string }>): string[] {
+  if (ids.length <= 1) return [...ids];
+  const { adj, indeg } = buildTopoGraph(ids, edges);
+  const roots = ids.filter((id) => (indeg.get(id) ?? 0) === 0);
+  return appendUnreached(drainTopo(roots, adj, indeg), ids);
 }

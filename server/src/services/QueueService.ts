@@ -108,6 +108,29 @@ async function submitOneJob(
 }
 
 /**
+ * M6-6.1：单 Job 的发送与状态落库（与 submitOneJob 同构；原 sendAll 内联的逐 job 逻辑）。
+ * 抛错在内部收敛为 failed，不中断整轮队列——个别 Job 失败不应让后续 Job 不发。
+ */
+async function sendOneJob(
+  job: QueueJobRow,
+  send: (job: QueueJobRow) => Promise<{ ok: boolean; content?: string; error?: string }>,
+): Promise<void> {
+  const db = getDb();
+  db.prepare("UPDATE queue_jobs SET status = 'sending', sent_at = ? WHERE id = ?").run(now(), job.id);
+  try {
+    const result = await send(job);
+    db.prepare(
+      "UPDATE queue_jobs SET status = ?, response_payload = ?, error = ?, finished_at = ? WHERE id = ?",
+    ).run(result.ok ? 'success' : 'failed', result.content ?? null, result.error ?? null, now(), job.id);
+    if (result.ok) autoCompleteQueueTask(job.task_id);
+    notifyChange('queue');
+  } catch (e) {
+    db.prepare("UPDATE queue_jobs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?")
+      .run(e instanceof Error ? e.message : String(e), now(), job.id);
+  }
+}
+
+/**
  * FR4 每日任务队列：构建 → 触发 → Job 状态机（queued/sending/success/failed/timeout）→ 回执落库。
  * 参考：OpenHands Agent 控制器 / LibreChat Subagents 的轻量编排（同类产品分析报告 4.3）。
  */
@@ -206,18 +229,7 @@ export const QueueService = {
     try {
       for (const job of jobs) {
         if (job.status === 'success') continue; // 已成功的不重复发送
-        db.prepare("UPDATE queue_jobs SET status = 'sending', sent_at = ? WHERE id = ?").run(now(), job.id);
-        try {
-          const result = await send(job);
-          db.prepare(
-            "UPDATE queue_jobs SET status = ?, response_payload = ?, error = ?, finished_at = ? WHERE id = ?"
-          ).run(result.ok ? 'success' : 'failed', result.content ?? null, result.error ?? null, now(), job.id);
-          if (result.ok) autoCompleteQueueTask(job.task_id);
-          notifyChange('queue');
-        } catch (e) {
-          db.prepare("UPDATE queue_jobs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?")
-            .run(e instanceof Error ? e.message : String(e), now(), job.id);
-        }
+        await sendOneJob(job, send);
       }
       db.prepare("UPDATE queues SET status = 'finished' WHERE id = ?").run(queueId);
       return this.listJobs(queueId);

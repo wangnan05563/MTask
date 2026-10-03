@@ -63,54 +63,81 @@ supervisorApi.get('/runs', (req, res) => {
 
 supervisorApi.get('/config', (_req, res) => res.json(readConfig()));
 
+/** POST /config 的请求体结构（全部可选：未提供的字段保持原值） */
+interface SupervisorConfigPatch {
+  enabled?: unknown;
+  relayPlatforms?: unknown;
+  relayToolId?: unknown;
+  intervalMs?: unknown;
+  auditRetentionDays?: unknown;
+}
+
+/** 单字段写入器：返回 true 表示本字段已落库；非法值抛错，交由路由统一转 400 */
+type ConfigWriter = (b: SupervisorConfigPatch) => boolean;
+
+/** 熔断开关：自动执行的总闸，写行为必须留痕（日志页可查谁在何时开/关） */
+const writeEnabled: ConfigWriter = (b) => {
+  if (typeof b.enabled !== 'boolean') return false;
+  setSetting(ENABLED_KEY, b.enabled ? '1' : '0');
+  logService.log('WARN', 'supervisor', `熔断开关${b.enabled ? '已开启（自动动作生效）' : '已关闭（自动动作停摆，人工接管）'}`);
+  return true;
+};
+
+/** tick 周期：越界由 setIntervalMs 抛错；合法值写库后即刻重注册定时器（热重载，无需重启） */
+const writeIntervalMs: ConfigWriter = (b) => {
+  if (typeof b.intervalMs !== 'number') return false;
+  const ms = SupervisorService.setIntervalMs(b.intervalMs);
+  logService.log('WARN', 'supervisor', `tick 周期已改为 ${ms}ms（热重载生效，无需重启）`);
+  return true;
+};
+
+/** 审计保留天数：决定审计证据的存续时长，属「会静默删数据」的配置，必须留痕 */
+const writeRetentionDays: ConfigWriter = (b) => {
+  if (typeof b.auditRetentionDays !== 'number') return false;
+  const days = setRetentionDays(b.auditRetentionDays);
+  logService.log('WARN', 'supervisor', `审计保留天数已改为 ${days} 天（${days <= 0 ? '不清理，保留全部' : '过期自动清理'}）`);
+  return true;
+};
+
+const writeRelayPlatforms: ConfigWriter = (b) => {
+  if (typeof b.relayPlatforms !== 'string') return false;
+  setSetting(RELAY_PLATFORMS_KEY, b.relayPlatforms.trim());
+  return true;
+};
+
+/** 中继工具 id：写错会导致派发静默 skipped，故写入前校验存在性（空串=清除配置，允许） */
+const writeRelayToolId: ConfigWriter = (b) => {
+  if (typeof b.relayToolId !== 'string') return false;
+  const id = b.relayToolId.trim();
+  if (id && !getDb().prepare('SELECT 1 FROM ai_tools WHERE id = ?').get(id)) {
+    throw new Error('中继工具不存在，请先在「模型」页创建');
+  }
+  setSetting(RELAY_TOOL_KEY, id);
+  return true;
+};
+
+/** 按序执行全部写入器，返回是否有字段实际落库 */
+function writeSupervisorConfig(b: SupervisorConfigPatch): boolean {
+  let changed = false;
+  for (const write of [writeEnabled, writeIntervalMs, writeRetentionDays, writeRelayPlatforms, writeRelayToolId]) {
+    if (write(b)) changed = true;
+  }
+  return changed;
+}
+
 /**
  * 配置写入（FR-5.4 熔断开关 + T01283 中继通道 + T01311 运行参数）。
  * 未提供的字段保持原值——面板按需提交单项，不必回传整份配置。
  */
 supervisorApi.post('/config', (req, res) => {
-  const body = (req.body ?? {}) as {
-    enabled?: unknown;
-    relayPlatforms?: unknown;
-    relayToolId?: unknown;
-    intervalMs?: unknown;
-    auditRetentionDays?: unknown;
-  };
+  const body = (req.body ?? {}) as SupervisorConfigPatch;
   try {
-    let changed = false;
-    if (typeof body.enabled === 'boolean') {
-      setSetting(ENABLED_KEY, body.enabled ? '1' : '0');
-      // 熔断开关是「自动执行是否被允许」的总闸，写行为必须留痕（日志页可查谁在何时开/关）
-      logService.log('WARN', 'supervisor', `熔断开关${body.enabled ? '已开启（自动动作生效）' : '已关闭（自动动作停摆，人工接管）'}`);
-      changed = true;
+    if (!writeSupervisorConfig(body)) {
+      return res.status(400).json({ error: '无可写字段（支持 enabled / intervalMs / auditRetentionDays / relayPlatforms / relayToolId）' });
     }
-    if (typeof body.intervalMs === 'number') {
-      // 越界由 setIntervalMs 抛错 → 统一走下方 400；合法值写库后即刻重注册定时器（热重载，无需重启）
-      const ms = SupervisorService.setIntervalMs(body.intervalMs);
-      logService.log('WARN', 'supervisor', `tick 周期已改为 ${ms}ms（热重载生效，无需重启）`);
-      changed = true;
-    }
-    if (typeof body.auditRetentionDays === 'number') {
-      const days = setRetentionDays(body.auditRetentionDays);
-      // 保留期决定审计证据的存续时长，属「会静默删数据」的配置，必须留痕
-      logService.log('WARN', 'supervisor', `审计保留天数已改为 ${days} 天（${days <= 0 ? '不清理，保留全部' : '过期自动清理'}）`);
-      changed = true;
-    }
-    if (typeof body.relayPlatforms === 'string') {
-      setSetting(RELAY_PLATFORMS_KEY, body.relayPlatforms.trim());
-      changed = true;
-    }
-    if (typeof body.relayToolId === 'string') {
-      const id = body.relayToolId.trim();
-      // 中继工具 id 写错会导致派发静默 skipped，故写入前校验存在性（空串=清除配置，允许）
-      if (id && !getDb().prepare('SELECT 1 FROM ai_tools WHERE id = ?').get(id)) {
-        return res.status(400).json({ error: '中继工具不存在，请先在「模型」页创建' });
-      }
-      setSetting(RELAY_TOOL_KEY, id);
-      changed = true;
-    }
-    if (!changed) return res.status(400).json({ error: '无可写字段（支持 enabled / intervalMs / auditRetentionDays / relayPlatforms / relayToolId）' });
     res.json(readConfig());
   } catch (e) {
+    // 越界/不存在等校验失败统一 400：这类错误由写入器抛 Error 携带人话文案
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });

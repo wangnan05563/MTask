@@ -1166,192 +1166,183 @@ export function ReportConsole({
     );
   }
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, border: '1px solid var(--border)', borderRadius: 8, padding: 12, background: 'var(--card-bg)', height: '100%', minHeight: 420 }}>
-      <style>{'@keyframes mconsole-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }'}</style>
-
-      {renderToolbar()}
-
-      {/* 并行任务 tab 栏：AI 周报固定 + 各分析任务（可关闭），超出换行 */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+  // 渲染辅助：将整组件 return 内的密集 JSX 拆成独立函数，各自单独计认知复杂度，避免单一函数超 S3776 阈值
+  const renderTabBar = () => (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+      <button
+        onClick={() => setActiveId(REPORT_TAB)}
+        title={report.streaming ? `AI 周报生成中 · 已运行 ${startedElapsedText(report.startedAt)} · 已输出 ${streamText.length} 字符（切换卡片不中断，返回即恢复）` : 'AI 周报 — 左侧生成触发的流式过程在此展示'}
+        aria-label="AI 周报 tab"
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+          border: '1px solid var(--border-strong)', background: onReportTab ? 'var(--accent)' : 'var(--card-bg)',
+          color: onReportTab ? 'var(--accent-text)' : 'var(--text)', maxWidth: 120,
+        }}
+      >
+        <Sparkles size={11} />
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>AI 周报</span>
+        {/* T01038：运行中显示统一动画图标 + 实时秒数；结束后保留最终耗时 */}
+        <RunStatusBadge
+          status={runStatus(report.streaming, report.finalElapsed)}
+          startedAt={report.startedAt}
+          finalElapsed={report.finalElapsed}
+          size={10}
+          showLabel={false}
+        />
+      </button>
+      {/* T00569 三轮：AI 项目计划导入 tab——有执行记录或进行中时显示 */}
+      {(aiSnap.logs.length > 0 || aiSnap.busy) && (
         <button
-          onClick={() => setActiveId(REPORT_TAB)}
-          title={report.streaming ? `AI 周报生成中 · 已运行 ${startedElapsedText(report.startedAt)} · 已输出 ${streamText.length} 字符（切换卡片不中断，返回即恢复）` : 'AI 周报 — 左侧生成触发的流式过程在此展示'}
-          aria-label="AI 周报 tab"
+          onClick={() => setActiveId(AI_IMPORT_TAB)}
+          title={aiSnap.busy ? `AI 项目计划导入执行中 · 已运行 ${startedElapsedText(aiSnap.startedAt)}（切换卡片不中断，返回即恢复）` : 'AI 项目计划导入 — 导入执行日志在此滚动输出'}
+          aria-label="AI 项目计划导入 tab"
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
-            border: '1px solid var(--border-strong)', background: onReportTab ? 'var(--accent)' : 'var(--card-bg)',
-            color: onReportTab ? 'var(--accent-text)' : 'var(--text)', maxWidth: 120,
+            border: '1px solid var(--border-strong)', background: onAiImportTab ? 'var(--accent)' : 'var(--card-bg)',
+            color: onAiImportTab ? 'var(--accent-text)' : 'var(--text)', maxWidth: 150,
           }}
         >
-          <Sparkles size={11} />
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>AI 周报</span>
-          {/* T01038：运行中显示统一动画图标 + 实时秒数；结束后保留最终耗时 */}
+          <FileUp size={11} />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{aiImportStore.label()}</span>
+          {/* T01038：统一运行状态徽标 */}
           <RunStatusBadge
-            status={runStatus(report.streaming, report.finalElapsed)}
-            startedAt={report.startedAt}
-            finalElapsed={report.finalElapsed}
+            status={runStatus(aiSnap.busy, aiSnap.finalElapsed)}
+            startedAt={aiSnap.startedAt}
+            finalElapsed={aiSnap.finalElapsed}
             size={10}
             showLabel={false}
           />
         </button>
-        {/* T00569 三轮：AI 项目计划导入 tab——有执行记录或进行中时显示 */}
-        {(aiSnap.logs.length > 0 || aiSnap.busy) && (
+      )}
+      {/* T00769 二轮：原始需求生成 PRD tab——有日志或生成中时显示，流式正文与阶段日志在此滚动 */}
+      {(prdSnap.logs.length > 0 || prdSnap.streaming) && (
+        <button
+          onClick={() => setActiveId(PRD_GEN_TAB)}
+          title={prdSnap.streaming ? `生成 PRD 中 · 已运行 ${startedElapsedText(prdSnap.startedAt)} · 已输出 ${prdSnap.streamText.length} 字符（切换卡片不中断，返回即恢复）` : '原始需求生成 PRD — 生成过程与正文增量在此实时滚动输出'}
+          aria-label="原始需求生成 PRD tab"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+            border: '1px solid var(--border-strong)', background: onPrdGenTab ? 'var(--accent)' : 'var(--card-bg)',
+            color: onPrdGenTab ? 'var(--accent-text)' : 'var(--text)', maxWidth: 150,
+          }}
+        >
+          <FilePlus2 size={11} />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>原始需求生成 PRD</span>
+          {/* T01038：统一运行状态徽标 */}
+          <RunStatusBadge
+            status={runStatus(prdSnap.streaming, prdSnap.finalElapsed)}
+            startedAt={prdSnap.startedAt}
+            finalElapsed={prdSnap.finalElapsed}
+            size={10}
+            showLabel={false}
+          />
+        </button>
+      )}
+      {tasks.map((t) => (
+        <div
+          key={t.id}
+          title={taskTabTitle(t)}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 4px', borderRadius: 6,
+            border: '1px solid var(--border-strong)', background: activeId === t.id ? 'var(--accent)' : 'var(--card-bg)',
+            color: activeId === t.id ? 'var(--accent-text)' : 'var(--text)', maxWidth: 150,
+          }}
+        >
+          {/* 切换 tab 与关闭拆成两个并列原生 button：避免 button 嵌套 button 的非法 DOM，也满足可访问性要求 */}
           <button
-            onClick={() => setActiveId(AI_IMPORT_TAB)}
-            title={aiSnap.busy ? `AI 项目计划导入执行中 · 已运行 ${startedElapsedText(aiSnap.startedAt)}（切换卡片不中断，返回即恢复）` : 'AI 项目计划导入 — 导入执行日志在此滚动输出'}
-            aria-label="AI 项目计划导入 tab"
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
-              border: '1px solid var(--border-strong)', background: onAiImportTab ? 'var(--accent)' : 'var(--card-bg)',
-              color: onAiImportTab ? 'var(--accent-text)' : 'var(--text)', maxWidth: 150,
-            }}
+            type="button"
+            onClick={() => setActiveId(t.id)}
+            aria-label={`${t.title} tab`}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'transparent', border: 'none', color: 'inherit', fontSize: 11, cursor: 'pointer', padding: 0, maxWidth: 110 }}
           >
-            <FileUp size={11} />
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{aiImportStore.label()}</span>
-            {/* T01038：统一运行状态徽标 */}
-            <RunStatusBadge
-              status={runStatus(aiSnap.busy, aiSnap.finalElapsed)}
-              startedAt={aiSnap.startedAt}
-              finalElapsed={aiSnap.finalElapsed}
-              size={10}
-              showLabel={false}
-            />
+            {statusIcon(t.status)}
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</span>
           </button>
-        )}
-        {/* T00769 二轮：原始需求生成 PRD tab——有日志或生成中时显示，流式正文与阶段日志在此滚动 */}
-        {(prdSnap.logs.length > 0 || prdSnap.streaming) && (
+          {t.status === 'busy' && t.startAt != null && <span style={{ fontSize: 9, opacity: 0.85 }}>{fmtElapsed(Date.now() - t.startAt)}</span>}
           <button
-            onClick={() => setActiveId(PRD_GEN_TAB)}
-            title={prdSnap.streaming ? `生成 PRD 中 · 已运行 ${startedElapsedText(prdSnap.startedAt)} · 已输出 ${prdSnap.streamText.length} 字符（切换卡片不中断，返回即恢复）` : '原始需求生成 PRD — 生成过程与正文增量在此实时滚动输出'}
-            aria-label="原始需求生成 PRD tab"
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
-              border: '1px solid var(--border-strong)', background: onPrdGenTab ? 'var(--accent)' : 'var(--card-bg)',
-              color: onPrdGenTab ? 'var(--accent-text)' : 'var(--text)', maxWidth: 150,
-            }}
+            type="button"
+            onClick={(e) => { e.stopPropagation(); closeTask(t.id); }}
+            title="关闭此分析"
+            aria-label={`关闭${t.title}`}
+            style={{ fontSize: 12, opacity: 0.7, cursor: 'pointer', marginLeft: 2, background: 'transparent', border: 'none', color: 'inherit', padding: 0, display: 'inline-flex' }}
           >
-            <FilePlus2 size={11} />
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>原始需求生成 PRD</span>
-            {/* T01038：统一运行状态徽标 */}
-            <RunStatusBadge
-              status={runStatus(prdSnap.streaming, prdSnap.finalElapsed)}
-              startedAt={prdSnap.startedAt}
-              finalElapsed={prdSnap.finalElapsed}
-              size={10}
-              showLabel={false}
-            />
+            <X size={11} />
           </button>
-        )}
-        {tasks.map((t) => (
-          <div
-            key={t.id}
-            title={taskTabTitle(t)}
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 4px', borderRadius: 6,
-              border: '1px solid var(--border-strong)', background: activeId === t.id ? 'var(--accent)' : 'var(--card-bg)',
-              color: activeId === t.id ? 'var(--accent-text)' : 'var(--text)', maxWidth: 150,
-            }}
-          >
-            {/* 切换 tab 与关闭拆成两个并列原生 button：避免 button 嵌套 button 的非法 DOM，也满足可访问性要求 */}
-            <button
-              type="button"
-              onClick={() => setActiveId(t.id)}
-              aria-label={`${t.title} tab`}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'transparent', border: 'none', color: 'inherit', fontSize: 11, cursor: 'pointer', padding: 0, maxWidth: 110 }}
-            >
-              {statusIcon(t.status)}
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</span>
-            </button>
-            {t.status === 'busy' && t.startAt != null && <span style={{ fontSize: 9, opacity: 0.85 }}>{fmtElapsed(Date.now() - t.startAt)}</span>}
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); closeTask(t.id); }}
-              title="关闭此分析"
-              aria-label={`关闭${t.title}`}
-              style={{ fontSize: 12, opacity: 0.7, cursor: 'pointer', marginLeft: 2, background: 'transparent', border: 'none', color: 'inherit', padding: 0, display: 'inline-flex' }}
-            >
-              <X size={11} />
-            </button>
-          </div>
-        ))}
-      </div>
+        </div>
+      ))}
+    </div>
+  );
 
-      {/* 结果区：当前聚焦任务/流式滚动展示 */}
-      <div
-        ref={bodyRef}
-        style={{ flex: 1, minHeight: 0, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: 8, background: 'var(--surface)' }}
-      >
-        {renderBody()}
-      </div>
-
-      {/* 底部：状态在左，预览/下载/重跑在右 */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, fontSize: 11 }}>
-        <span style={{ color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center' }}>{statusText()}</span>
-        <span style={{ color: 'var(--accent)', opacity: notice ? 1 : 0, transition: 'opacity .2s', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 180 }}>{notice}</span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-          {/* T00838：停止按钮——任一任务运行中即可用，点击中止对应后端 AI 请求并清理产物（幂等） */}
-          <button
-            onClick={() => void stopAll()}
-            disabled={!canStop}
-            title="停止 — 中止正在进行的 PRD 生成 / 周报生成 / 手动分析 / PRD 导入，并清理相关产物"
-            aria-label="停止：中止运行中的 AI 任务并清理相关产物"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: canStop ? 'pointer' : 'not-allowed', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: canStop ? 'var(--danger, #dc2626)' : 'var(--text-muted)', opacity: canStop ? 1 : 0.5 }}
-          >
-            {stopping ? <Loader2 size={12} className="aispin" /> : <OctagonX size={12} />} 停止
-          </button>
-          {!onReportTab && activeTask?.status === 'done' && (
-            <>
-              {/* T00652：仅「数据清洗」分析完成后提供执行入口——按 AI 分组合并重复任务 */}
-              {activeTask.category === 'clean' && (
-                <button
-                  onClick={() => openClean()}
-                  title="执行清洗 — 按 AI 判定的重复分组合并，归档重复任务（可在归档菜单还原）"
-                  aria-label="执行清洗"
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--accent)' }}
-                >
-                  <Sparkles size={12} /> 执行清洗
-                </button>
-              )}
+  const renderBottomBar = () => (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, fontSize: 11 }}>
+      <span style={{ color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center' }}>{statusText()}</span>
+      <span style={{ color: 'var(--accent)', opacity: notice ? 1 : 0, transition: 'opacity .2s', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 180 }}>{notice}</span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+        {/* T00838：停止按钮——任一任务运行中即可用，点击中止对应后端 AI 请求并清理产物（幂等） */}
+        <button
+          onClick={() => void stopAll()}
+          disabled={!canStop}
+          title="停止 — 中止正在进行的 PRD 生成 / 周报生成 / 手动分析 / PRD 导入，并清理相关产物"
+          aria-label="停止：中止运行中的 AI 任务并清理相关产物"
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: canStop ? 'pointer' : 'not-allowed', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: canStop ? 'var(--danger, #dc2626)' : 'var(--text-muted)', opacity: canStop ? 1 : 0.5 }}
+        >
+          {stopping ? <Loader2 size={12} className="aispin" /> : <OctagonX size={12} />} 停止
+        </button>
+        {!onReportTab && activeTask?.status === 'done' && (
+          <>
+            {/* T00652：仅「数据清洗」分析完成后提供执行入口——按 AI 分组合并重复任务 */}
+            {activeTask.category === 'clean' && (
               <button
-                onClick={() => void openSave()}
-                title="转存到通用需求 — 把这份通用需求清单写入「通用需求」菜单的指定分组"
-                aria-label="转存到通用需求"
+                onClick={() => openClean()}
+                title="执行清洗 — 按 AI 判定的重复分组合并，归档重复任务（可在归档菜单还原）"
+                aria-label="执行清洗"
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--accent)' }}
               >
-                <FolderInput size={12} /> 转存需求
+                <Sparkles size={12} /> 执行清洗
               </button>
-              <button
-                onClick={() => void restart(activeTask.id)}
-                title="重新分析 — 复用相同问题与周期重新发起"
-                aria-label="重新分析"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)' }}
-              >
-                <RotateCw size={12} /> 重跑
-              </button>
-            </>
-          )}
-          <button
-            onClick={openPreview}
-            disabled={!hasAnswer}
-            title="打开预览 — 新窗口查看完整 Markdown 报告"
-            aria-label="打开预览"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--accent)' }}
-          >
-            <Eye size={12} /> 打开预览
-          </button>
-          <button
-            onClick={downloadActive}
-            disabled={!hasAnswer}
-            title="下载 — 导出分析结果为 Markdown 文件"
-            aria-label="下载"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--accent)' }}
-          >
-            <Download size={12} /> 下载
-          </button>
-        </span>
-      </div>
+            )}
+            <button
+              onClick={() => void openSave()}
+              title="转存到通用需求 — 把这份通用需求清单写入「通用需求」菜单的指定分组"
+              aria-label="转存到通用需求"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--accent)' }}
+            >
+              <FolderInput size={12} /> 转存需求
+            </button>
+            <button
+              onClick={() => void restart(activeTask.id)}
+              title="重新分析 — 复用相同问题与周期重新发起"
+              aria-label="重新分析"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)' }}
+            >
+              <RotateCw size={12} /> 重跑
+            </button>
+          </>
+        )}
+        <button
+          onClick={openPreview}
+          disabled={!hasAnswer}
+          title="打开预览 — 新窗口查看完整 Markdown 报告"
+          aria-label="打开预览"
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--accent)' }}
+        >
+          <Eye size={12} /> 打开预览
+        </button>
+        <button
+          onClick={downloadActive}
+          disabled={!hasAnswer}
+          title="下载 — 导出分析结果为 Markdown 文件"
+          aria-label="下载"
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--accent)' }}
+        >
+          <Download size={12} /> 下载
+        </button>
+      </span>
+    </div>
+  );
 
+  const renderModals = () => (
+    <>
       {/* 预览遮罩：渲染当前任务 Markdown 结论 */}
       {previewOpen && (
         <div /* NOSONAR - 遮罩点击空白关闭为便捷辅助，正式关闭入口为原生 X 按钮，无需对背景遮罩聚焦键盘 */
@@ -1414,6 +1405,26 @@ export function ReportConsole({
           onClose={() => setCleanOpen(false)}
         />
       )}
+    </>
+  );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, border: '1px solid var(--border)', borderRadius: 8, padding: 12, background: 'var(--card-bg)', height: '100%', minHeight: 420 }}>
+      <style>{'@keyframes mconsole-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }'}</style>
+
+      {renderToolbar()}
+      {renderTabBar()}
+
+      {/* 结果区：当前聚焦任务/流式滚动展示 */}
+      <div
+        ref={bodyRef}
+        style={{ flex: 1, minHeight: 0, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: 8, background: 'var(--surface)' }}
+      >
+        {renderBody()}
+      </div>
+
+      {renderBottomBar()}
+      {renderModals()}
     </div>
   );
 }

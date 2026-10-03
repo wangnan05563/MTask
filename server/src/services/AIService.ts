@@ -123,6 +123,34 @@ async function organizeOne(
   recordUsage('organize', toolId, config.model, result.ok, startedAt, result.content?.length ?? 0, result.error);
 }
 
+/**
+ * M6-6.1：askJson 的每次尝试配置（原内联三元）。
+ * 重试降 temperature=0 提高结构化 JSON 命中率；maxTokens 覆盖两轮一致生效。
+ */
+function attemptConfig<T extends { maxTokens?: number; temperature?: number }>(base: T, attempt: number, maxTokens?: number): T {
+  const cfg = attempt === 1 ? base : { ...base, temperature: 0 };
+  return maxTokens == null ? cfg : { ...cfg, maxTokens };
+}
+
+/** M6-6.1：第二次尝试起改用精简提示词（T00707），压缩输出规模再试 */
+function attemptSystem(attempt: number, system: string, retrySystem?: string): string {
+  return attempt === 1 || !retrySystem ? system : retrySystem;
+}
+
+/**
+ * M6-6.1：累计**全部**尝试的用量（原 addUsage 闭包）——重试意味着真实多花了一次调用，
+ * 只记最后一次会让预算护栏系统性低估成本（护栏漏拦比误拦更危险）。
+ */
+function mergeUsage(prev: TokenUsage | undefined, cur?: TokenUsage): TokenUsage | undefined {
+  if (!cur) return prev;
+  if (!prev) return cur;
+  return {
+    promptTokens: prev.promptTokens + cur.promptTokens,
+    completionTokens: prev.completionTokens + cur.completionTokens,
+    totalTokens: prev.totalTokens + cur.totalTokens,
+  };
+}
+
 export const AIService = {
   /**
    * FR2.1/2.2 单条或批量梳理：调用指定（默认整理）工具，产出结构化文本。
@@ -318,33 +346,15 @@ export const AIService = {
     const adapter = getAdapter(type);
     const effective = timeoutMs == null ? config : { ...config, timeoutMs };
     const base = temperature == null ? effective : { ...effective, temperature };
-    let lastError = '';
-    /** T01289：实际发起的调用次数——超时提前收手时并未真正重试，末句文案须如实（NFR-3 不误导排障） */
-    let attempts = 0;
-    // T01289：累计**全部**尝试的用量——重试意味着真实多花了一次调用，
-    // 只记最后一次会让预算护栏系统性低估成本（护栏漏拦比误拦更危险）。
-    let usage: TokenUsage | undefined;
-    const addUsage = (u?: TokenUsage): void => {
-      if (!u) return;
-      usage = usage
-        ? {
-            promptTokens: usage.promptTokens + u.promptTokens,
-            completionTokens: usage.completionTokens + u.completionTokens,
-            totalTokens: usage.totalTokens + u.totalTokens,
-          }
-        : u;
-    };
+    const acc: { usage?: TokenUsage; lastError: string; attempts: number } = { lastError: '', attempts: 0 };
     for (let attempt = 1; attempt <= 2; attempt++) {
-      attempts = attempt;
+      acc.attempts = attempt;
       const startedAt = Date.now();
-      // 重试降 temperature=0：降低输出随机性，提高结构化 JSON 命中率
-      const useConfig = { ...(attempt === 1 ? base : { ...base, temperature: 0 }), ...(maxTokens == null ? {} : { maxTokens }) };
-      const useSystem = attempt === 1 || !retrySystem ? system : retrySystem;
-      const res = await adapter.chat(useSystem, user, useConfig);
-      addUsage(res.usage);
+      const res = await adapter.chat(attemptSystem(attempt, system, retrySystem), user, attemptConfig(base, attempt, maxTokens));
+      acc.usage = mergeUsage(acc.usage, res.usage);
       if (!res.ok || !res.content) {
-        lastError = res.error ?? 'AI 返回内容为空';
-        recordUsage('ask-json', toolId, config.model, false, startedAt, 0, lastError);
+        acc.lastError = res.error ?? 'AI 返回内容为空';
+        recordUsage('ask-json', toolId, config.model, false, startedAt, 0, acc.lastError);
         // T01289：超时不重试——本轮已耗尽整个超时窗口，再试一次只会把等待时间翻倍；
         // 监督决策据此在 10s 内降级 ESCALATE（NFR-1），而不是 20s 后才降级。
         if (res.timedOut) break;
@@ -353,13 +363,13 @@ export const AIService = {
       try {
         const data = parse(res.content);
         recordUsage('ask-json', toolId, config.model, true, startedAt, res.content.length);
-        return { ok: true, data, retried: attempt > 1, usage };
+        return { ok: true, data, retried: attempt > 1, usage: acc.usage };
       } catch (e) {
-        lastError = e instanceof Error ? e.message : String(e);
-        recordUsage('ask-json', toolId, config.model, false, startedAt, res.content.length, `JSON 解析失败：${lastError.slice(0, 200)}`);
+        acc.lastError = e instanceof Error ? e.message : String(e);
+        recordUsage('ask-json', toolId, config.model, false, startedAt, res.content.length, `JSON 解析失败：${acc.lastError.slice(0, 200)}`);
       }
     }
-    return { ok: false, error: `${lastError}${attempts > 1 ? '（已自动重试 1 次）' : ''}`, usage };
+    return { ok: false, error: `${acc.lastError}${acc.attempts > 1 ? '（已自动重试 1 次）' : ''}`, usage: acc.usage };
   },
 
   /**

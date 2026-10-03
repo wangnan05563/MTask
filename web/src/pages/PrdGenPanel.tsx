@@ -163,12 +163,9 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
    * @returns 本份结果（批次由调用方汇总），单份流程仍按老语义返回
    */
   async function generate(file: File, batchCtx?: { index: number; total: number }): Promise<{ prdMd: string; issues: PrdGenIssue[] } | null> {
-    if (!projectId) { flash('请先选择目标项目'); prdGenStore.pushLog('缺少目标项目，已中止'); return null; }
-    if (!toolId) { flash('请先在控制台选择 AI 模型（顶部模型下拉）'); prdGenStore.pushLog('缺少 AI 模型，已中止', ); return null; }
-    const lower = file.name.toLowerCase();
-    if (lower.endsWith('.doc')) { flash('老式 .doc 请先用 Word 另存为 .docx'); return null; }
-    if (lower.endsWith('.xls')) { flash('老式 .xls 请先用 Excel 另存为 .xlsx'); return null; }
-    if (!/\.(docx|xlsx|csv|md|markdown|txt)$/i.test(lower)) { flash('支持的格式：.docx/.xlsx/.csv/.md/.txt'); return null; }
+    // M6-6.1：前置校验（格式/上下文）下沉为嵌套辅助，主流程只编排
+    const preErr = validateGenerateInput(file);
+    if (preErr) return null;
     // T00820：重新生成即新批——清掉上一代结论快照，避免跨代串数据
     clearConclusionBatches();
     // T00933：批次内不重建整批状态（会清掉前一份结果与日志），单份流程仍走 begin
@@ -182,11 +179,7 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
     if (!wsPath) prdGenStore.pushLog('⚠ 当前项目未绑定工作空间 —— 本次缺少项目源码上下文，待确认问题识别质量会下降（建议先在上方绑定工作空间）');
     let errMsg = '';
     try {
-      const buf = await file.arrayBuffer();
-      let bin = '';
-      const bytes = new Uint8Array(buf);
-      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCodePoint(...bytes.subarray(i, i + 0x8000));
-      const contentBase64 = btoa(bin);
+      const contentBase64 = await fileToBase64(file);
       await streamEvents(
         `/plans/prd-generate-stream?projectId=${projectId}&toolId=${toolId}&filename=${encodeURIComponent(file.name)}`,
         { contentBase64 },
@@ -200,37 +193,67 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
       );
       if (errMsg) throw new Error(errMsg);
       const done = prdGenStore.get().result ?? null;
-      // T00933：批次内本份结果入册（失败也记一条占位，面板可看出哪份没出结果）
-      if (batchCtx) {
-        prdGenStore.pushBatchItem({
-          id: `${Date.now()}-${batchCtx.index}-${file.name}`,
-          filename: file.name,
-          prdMd: done?.prdMd ?? '',
-          issues: done?.issues ?? [],
-          failed: !done,
-        });
-        prdGenStore.pushLog(`「${file.name}」生成完成（第 ${batchCtx.index}/${batchCtx.total} 份）：PRD ${done?.prdMd.length ?? 0} 字符、待确认问题 ${done?.issues.length ?? 0} 条`);
-      } else {
-        prdGenStore.finish();
-        prdGenStore.pushLog('生成完成：请在下方交互表格确认问题（结论将回写 PRD）');
-      }
+      recordGenerateOutcome(done, batchCtx);
       return done;
     } catch (e) {
       // 用户「停止」主动中止：状态已由 prdGenStore.abort() 清空，不再追加失败日志
       if (ac.signal.aborted) return null;
       const msg = e instanceof Error ? e.message : String(e);
-      if (batchCtx) {
-        prdGenStore.pushBatchItem({
-          id: `${Date.now()}-${batchCtx.index}-${file.name}`,
-          filename: file.name, prdMd: '', issues: [], failed: true,
-        });
-        prdGenStore.pushLog(`「${file.name}」生成失败（第 ${batchCtx.index}/${batchCtx.total} 份）：${msg}`);
-      } else {
-        prdGenStore.finish(`生成失败：${msg}`);
-      }
+      recordGenerateOutcome(null, batchCtx, msg);
       return null;
     } finally {
       prdGenStore.setAbortCtrl(null);
+    }
+
+    /** M6-6.1：生成前置校验（项目/模型/文件格式）；不通过时就地 flash + 记日志，返回非 null 文案 */
+    function validateGenerateInput(f: File): string | null {
+      if (!projectId) { flash('请先选择目标项目'); prdGenStore.pushLog('缺少目标项目，已中止'); return 'no-project'; }
+      if (!toolId) { flash('请先在控制台选择 AI 模型（顶部模型下拉）'); prdGenStore.pushLog('缺少 AI 模型，已中止'); return 'no-tool'; }
+      const lower = f.name.toLowerCase();
+      if (lower.endsWith('.doc')) { flash('老式 .doc 请先用 Word 另存为 .docx'); return 'doc'; }
+      if (lower.endsWith('.xls')) { flash('老式 .xls 请先用 Excel 另存为 .xlsx'); return 'xls'; }
+      if (!/\.(docx|xlsx|csv|md|markdown|txt)$/i.test(lower)) { flash('支持的格式：.docx/.xlsx/.csv/.md/.txt'); return 'format'; }
+      return null;
+    }
+
+    /** M6-6.1：文件 → base64（分块避免大文件栈溢出） */
+    function fileToBase64(f: File): Promise<string> {
+      return f.arrayBuffer().then((buf) => {
+        const bytes = new Uint8Array(buf);
+        let bin = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCodePoint(...bytes.subarray(i, i + 0x8000));
+        return btoa(bin);
+      });
+    }
+
+    /** M6-6.1：生成结果/失败入册（批次走 pushBatchItem，单份走 finish） */
+    function recordGenerateOutcome(
+      done: { prdMd: string; issues: PrdGenIssue[] } | null,
+      ctx?: { index: number; total: number },
+      errMsg?: string,
+    ): void {
+      if (errMsg) {
+        if (ctx) {
+          prdGenStore.pushBatchItem({ id: `${Date.now()}-${ctx.index}-${file.name}`, filename: file.name, prdMd: '', issues: [], failed: true });
+          prdGenStore.pushLog(`「${file.name}」生成失败（第 ${ctx.index}/${ctx.total} 份）：${errMsg}`);
+        } else {
+          prdGenStore.finish(`生成失败：${errMsg}`);
+        }
+        return;
+      }
+      if (ctx) {
+        prdGenStore.pushBatchItem({
+          id: `${Date.now()}-${ctx.index}-${file.name}`,
+          filename: file.name,
+          prdMd: done?.prdMd ?? '',
+          issues: done?.issues ?? [],
+          failed: !done,
+        });
+        prdGenStore.pushLog(`「${file.name}」生成完成（第 ${ctx.index}/${ctx.total} 份）：PRD ${done?.prdMd.length ?? 0} 字符、待确认问题 ${done?.issues.length ?? 0} 条`);
+      } else {
+        prdGenStore.finish();
+        prdGenStore.pushLog('生成完成：请在下方交互表格确认问题（结论将回写 PRD）');
+      }
     }
   }
 

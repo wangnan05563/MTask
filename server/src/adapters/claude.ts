@@ -8,6 +8,50 @@ interface MessagesResp {
   error?: { message?: string };
 }
 
+/** 流式行的累积态：文本与 Anthropic 侧的 stop_reason（T00779：max_tokens 即触顶截断） */
+interface ClaudeStreamAcc {
+  text: string;
+  stopReason: string;
+}
+
+/**
+ * M6-6.1：Anthropic 流式事件行的累积器（原 chatStream 内联回调）。
+ * 只解析 `data:` 有效载荷；非 JSON / 错误校验行静默跳过，交由流结束后的整体裁决处理。
+ */
+function claudeLineCollector(onDelta: (text: string) => void): { acc: ClaudeStreamAcc; collect: (line: string) => void } {
+  const acc: ClaudeStreamAcc = { text: '', stopReason: '' };
+  const collect = (line: string): void => {
+    const trimmed = line.trim();
+    // Anthropic 事件以 data: 前缀承载 JSON；跳过 event 行为减少无意义解析
+    if (!trimmed.startsWith('data:')) return;
+    const payload = trimmed.slice(5).trim();
+    if (!payload) return;
+    try {
+      const json = JSON.parse(payload) as { type?: string; delta?: { type?: string; text?: string; stop_reason?: string | null }; error?: { message?: string } };
+      if (json.error?.message) throw new Error(json.error.message);
+      // message_delta 事件携带 stop_reason，max_tokens 表示触顶截断
+      if (json.type === 'message_delta' && typeof json.delta?.stop_reason === 'string' && json.delta.stop_reason) {
+        acc.stopReason = json.delta.stop_reason;
+      }
+      // 仅取文本增量块：content_block_delta 且 delta 类型为 text_delta
+      if (json.type === 'content_block_delta' && json.delta?.type === 'text_delta' && json.delta.text) {
+        acc.text += json.delta.text;
+        onDelta(json.delta.text);
+      }
+    } catch {
+      // 忽略协议偶发的非 JSON 行，交由完整流结束后判断结果
+    }
+  };
+  return { acc, collect };
+}
+
+/** M6-6.1：流式结束后的成败裁决（触顶截断带 partial；拒答为走查 M-3 的输出中断口径） */
+function claudeStreamVerdict(text: string, stopReason: string): StreamResult | null {
+  if (stopReason === 'max_tokens') return { ok: false, error: streamTruncatedError(text.length), partial: text };
+  if (stopReason === 'refusal') return { ok: false, error: outputStoppedError('stop_reason=refusal', text.length) };
+  return null;
+}
+
 const ANTHROPIC_VERSION = '2023-06-01';
 
 /** Anthropic Messages API 适配器。endpoint 填写形如 https://api.anthropic.com 的根地址。 */
@@ -158,34 +202,11 @@ export class ClaudeAdapter implements AIAdapter {
       if (!res.ok || !res.body) {
         return { ok: false, error: res.ok ? 'AI 未返回流式内容' : formatHttpError(res.status, await res.text().catch(() => '')) };
       }
-      let text = '';
-      let stopReason = ''; // T00779：Anthropic 侧截断标志（max_tokens）
-      await readStreamLines(res, (line) => {
-        const trimmed = line.trim();
-        // Anthropic 事件以 data: 前缀承载 JSON；跳过 event 行为减少无意义解析
-        if (!trimmed.startsWith('data:')) return;
-        const payload = trimmed.slice(5).trim();
-        if (!payload) return;
-        try {
-          const json = JSON.parse(payload) as { type?: string; delta?: { type?: string; text?: string; stop_reason?: string | null }; error?: { message?: string } };
-          if (json.error?.message) throw new Error(json.error.message);
-          // T00779：message_delta 事件携带 stop_reason，max_tokens 表示触顶截断
-          if (json.type === 'message_delta' && typeof json.delta?.stop_reason === 'string' && json.delta.stop_reason) {
-            stopReason = json.delta.stop_reason;
-          }
-          // 仅取文本增量块：content_block_delta 且 delta 类型为 text_delta
-          if (json.type === 'content_block_delta' && json.delta?.type === 'text_delta' && json.delta.text) {
-            text += json.delta.text;
-            onDelta(json.delta.text);
-          }
-        } catch {
-          // 忽略协议偶发的非 JSON 行，交由完整流结束后判断结果
-        }
-      });
+      const { acc, collect } = claudeLineCollector(onDelta);
+      await readStreamLines(res, collect);
+      const { text, stopReason } = acc;
       if (!text) return { ok: false, error: 'AI 返回内容为空' };
-      if (stopReason === 'max_tokens') return { ok: false, error: streamTruncatedError(text.length), partial: text }; // T00779 + T00814 partial
-      if (stopReason === 'refusal') return { ok: false, error: outputStoppedError('stop_reason=refusal', text.length) }; // 走查 M-3
-      return { ok: true, content: text };
+      return claudeStreamVerdict(text, stopReason) ?? { ok: true, content: text };
     } catch (e) {
       // T00838：区分「外部主动停止」与「超时」
       if (signal?.aborted) return { ok: false, error: '任务已停止' };

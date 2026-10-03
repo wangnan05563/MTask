@@ -27,7 +27,7 @@ import { ExecSessionService } from './ExecSessionService';
 import { AIService } from './AIService';
 import { ConfigService } from './ConfigService';
 import { TaskService } from './TaskService'; // T01280：就绪待办标记（FR-3.1），TaskService 不反向依赖本模块，无循环
-import { guard, readEnabled, readGuardLimits, type GuardResult } from './SupervisorGuard';
+import { guard, readEnabled, readGuardLimits, type GuardAction, type GuardResult } from './SupervisorGuard';
 import { applyActions, type ApplyOutcome } from './SupervisorExecutor'; // T01282：动作落地（FR-3.3~3.5）
 import { recordMonitorRun, listMonitorRuns, pruneMonitorRuns, readRetentionDays } from './SupervisorAudit'; // T01285：决策轮次审计落库（FR-4.6）；T01286 读出口（FR-5.2/5.3）；T01311：清理与保留期读出口
 import { parsePlanDeps, depsSatisfied } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7，与 TaskService 同口径）
@@ -306,6 +306,45 @@ function buildDegradedActions(snapshot: MonitorSnapshot, error?: string): Superv
   for (const f of snapshot.failed) if (push(f.taskId)) return out;
   if (out.length === 0) push();
   return out;
+}
+
+/**
+ * M6-6.1：本轮快照的「已知任务 id」全集（原 supervisorTick 内联三段循环）。
+ * 含 pending（受 PENDING_LIMIT 截断）＋会话关联任务＋失败任务（受 FAILED_LIMIT 截断）——
+ * LLM 只能引用它在快照里见过的 id，故集合外的 id 必属幻觉或越权引用。
+ */
+function collectKnownTaskIds(snapshot: MonitorSnapshot): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const p of snapshot.pending) if (p.taskId) ids.add(p.taskId);
+  for (const s of snapshot.sessions) for (const t of s.tasks) if (t.taskId) ids.add(t.taskId);
+  for (const f of snapshot.failed) if (f.taskId) ids.add(f.taskId);
+  return ids;
+}
+
+/** M6-6.1：本轮快照摘要日志（原内联 console.log 拼串） */
+function logSnapshot(s: MonitorSnapshot): void {
+  const readyCount = s.pending.filter((p) => p.ready).length;
+  console.log(
+    `[supervisor] 快照：待办 ${s.pending.length}/${s.pendingTotal}（就绪 ${readyCount}）` +
+      ` 活跃/停滞/失败会话 ${s.sessions.length} 失败任务 ${s.failed.length}` +
+      ` 并发 ${s.budget.concurrent}/${s.budget.maxConcurrent}`,
+  );
+}
+
+/** M6-6.1：裁决结果日志（失败额外带错误原因，便于排障「 LLM 不可用」） */
+function logDecision(d: SupervisorDecision): void {
+  console.log(
+    `[supervisor] 裁决：模型 ${d.model || '(未配置)'} 动作 ${d.actions.length} 耗时 ${d.durationMs}ms` +
+      (d.ok ? '' : ` 失败：${d.error ?? ''}`),
+  );
+}
+
+/** M6-6.1：护栏拍板结果日志（含去重后的拦截原因） */
+function logGuard<A extends GuardAction>(g: GuardResult<A>): void {
+  console.log(
+    `[supervisor] 护栏：放行 ${g.applied.length} 拦截 ${g.blocked.length}` +
+      (g.blockedBy ? `（${g.blockedBy}）` : ''),
+  );
 }
 
 /**
@@ -633,17 +672,9 @@ export const SupervisorService = {
     ticking = true;
     try {
       const snapshot = this.collectSnapshot();
-      const readyCount = snapshot.pending.filter((p) => p.ready).length;
-      console.log(
-        `[supervisor] 快照：待办 ${snapshot.pending.length}/${snapshot.pendingTotal}（就绪 ${readyCount}）` +
-          ` 活跃/停滞/失败会话 ${snapshot.sessions.length} 失败任务 ${snapshot.failed.length}` +
-          ` 并发 ${snapshot.budget.concurrent}/${snapshot.budget.maxConcurrent}`,
-      );
+      logSnapshot(snapshot);
       const decision = await this.decide(snapshot);
-      console.log(
-        `[supervisor] 裁决：模型 ${decision.model || '(未配置)'} 动作 ${decision.actions.length} 耗时 ${decision.durationMs}ms` +
-          (decision.ok ? '' : ` 失败：${decision.error ?? ''}`),
-      );
+      logDecision(decision);
       // T01278（NFR-3）：决策不可用时改走异常降级——动作由 buildDegradedActions 生成，保证异常人工可见
       const actions = decision.ok ? decision.actions : buildDegradedActions(snapshot, decision.error);
       if (!decision.ok) {
@@ -651,18 +682,9 @@ export const SupervisorService = {
         console.warn(`[supervisor] 异常降级：决策不可用，产出 ${actions.length} 条 ESCALATE 待人工处理`);
       }
       // T01276：LLM 只「建议」，动作能否落地由护栏拍板；被拦动作降级 ESCALATE
-      // T01342：一并传入本轮快照的任务 id 全集——护栏据此拦截 LLM 幻觉/越权的 taskId。
-      // 取 pending（受 PENDING_LIMIT 截断）＋会话关联任务＋失败任务（受 FAILED_LIMIT 截断）：
-      // LLM 只能引用它在快照里见过的 id，故集合外的 id 必属幻觉，拦截不会误伤正常续跑。
-      const knownTaskIds = new Set<string>();
-      for (const p of snapshot.pending) if (p.taskId) knownTaskIds.add(p.taskId);
-      for (const s of snapshot.sessions) for (const t of s.tasks) if (t.taskId) knownTaskIds.add(t.taskId);
-      for (const f of snapshot.failed) if (f.taskId) knownTaskIds.add(f.taskId);
-      const guarded = guard(actions, { concurrent: snapshot.budget.concurrent, knownTaskIds });
-      console.log(
-        `[supervisor] 护栏：放行 ${guarded.applied.length} 拦截 ${guarded.blocked.length}` +
-          (guarded.blockedBy ? `（${guarded.blockedBy}）` : ''),
-      );
+      // T01342：一并传入本轮快照的任务 id 全集（collectKnownTaskIds）——护栏据此拦截 LLM 幻觉/越权的 taskId
+      const guarded = guard(actions, { concurrent: snapshot.budget.concurrent, knownTaskIds: collectKnownTaskIds(snapshot) });
+      logGuard(guarded);
       // T01282（FR-3.3~3.5）：护栏只放行不执行，落地在这里——被拦动作已在 guard 内降级为 ESCALATE，
       // 故落地对象只取 applied（blocked 的降级动作不改数据，由人工接手）。
       // T01283：applyActions 改为异步（推送兜底需走中继 submit），动作间仍串行、独立容错。

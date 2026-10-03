@@ -413,30 +413,33 @@ export function TasksPage() {
 
   // T00836：命令面板定位意图处理——若目标 tab 与当前不一致先切 tab（等该列表渲染后再定位）；
   // 命中行则滚动居中 + 高亮 + 展开描述与处理结果（“显示当前记录信息”），定位完成即消费清空，避免重复触发
-  useEffect(() => {
-    if (!focusTaskId) return;
-    // T00836 二轮：任务所属项目与当前 activeProject 不一致时，先切项目（会触发上方 loadTasks 重新加载该任务列表）；
-    // 目标行只在所属项目的 待办/已完成 里，切完项目的同时也消费 projectId，避免重复切换。
+  // M6-6.1：聚焦任务前的预处理（切项目 / 清过滤 / 切 tab）；返回 true 表示已执行动作、本轮定位中断
+  const runFocusPreCheck = (focusTaskId: string): boolean => {
+    // T00836 二轮：任务所属项目与当前 activeProject 不一致时，先切项目（会触发 loadTasks 重新加载该任务列表）
     if (focusProjectId && activeProject !== focusProjectId) {
       setActiveProject(focusProjectId);
       setFocusProjectId('');
-      return;
+      return true;
     }
-    // T00836 二轮：分类/优先级选项卡会把目标任务过滤出列表——定位前先清空这两类过滤，
-    // 保证目标行在全量结果里可见；清空后等列表重载再定位。flag 防抖：触发清理后本轮先返回。
+    // T00836 二轮：分类/优先级过滤会把目标任务过滤出列表——定位前先清空，保证目标行在全量结果里可见
     if (catFilter || priorityFilter) {
       if (catFilter) setCatFilter('');
       if (priorityFilter) setPriorityFilter('');
       setFocusProjectId('__fetch_filter__');
-      return;
+      return true;
     }
-    // T00836 二轮：上一节清空过滤后列表重载完成、projectId 无实际目标，进入正式定位流程。
-    if (focusProjectId === '__fetch_filter__') setFocusProjectId('');
-    if (focusTab && (focusTab === 'todo' || focusTab === 'done') && focusTab !== activeTab) { setActiveTab(focusTab); return; }
+    if (focusTab && (focusTab === 'todo' || focusTab === 'done') && focusTab !== activeTab) {
+      setActiveTab(focusTab);
+      return true;
+    }
+    return false;
+  };
+
+  // M6-6.1：在已渲染列表中定位目标任务行并高亮（找不到则清空聚焦态）
+  const locateTaskRow = (focusTaskId: string): void => {
     const el = document.querySelector(`[data-ttask-id="${focusTaskId}"]`);
     if (el instanceof HTMLElement) {
       try { el.scrollIntoView({ block: 'center' }); } catch { /* 忽略滚动异常 */ }
-      // 内联高亮：accent 描边 + 柔和底，避免新增全局样式类污染
       const prevOutline = el.style.outline;
       const prevBg = el.style.background;
       el.style.outline = '2px solid var(--accent)';
@@ -449,6 +452,14 @@ export function TasksPage() {
     } else {
       setFocusTaskId(''); setFocusTab('');
     }
+  };
+
+  useEffect(() => {
+    if (!focusTaskId) return;
+    // 上一节清空过滤后列表重载完成、projectId 无实际目标，进入正式定位流程
+    if (focusProjectId === '__fetch_filter__') setFocusProjectId('');
+    if (runFocusPreCheck(focusTaskId)) return;
+    locateTaskRow(focusTaskId);
     // 依赖 待办/已完成/activeTab/activeProject/filters：目标列表渲染后再定位；仅定位一次后即清空
   }, [focusTaskId, todo, done, activeTab, activeProject, focusProjectId, catFilter, priorityFilter]);
   // T00433：MCP 回传 / 队列执行 / 其他窗口改任务状态时，前端无感知——轻量轮询对比签名，有变化才刷新。
@@ -2351,12 +2362,48 @@ export function TasksPage() {
    *  注意：必须用普通函数调用（renderTaskItem(t)）而非组件，否则定义在渲染函数内会每次重渲染都生成新组件类型，
    *  导致整个任务项（含描述/梳理 textarea）反复卸载重建、光标焦点丢失。普通函数把 JSX 内联进父组件树，按位置复用 DOM，焦点稳定。
    *  同理，行内各区块也拆为普通渲染函数调用，保持单函数复杂度可控。 */
+
+  /** M6-6.1：任务行 className 预计算（避免 JSX 内联嵌套三元） */
+  function buildTaskItemClass(t: Task, titleEditing: boolean, descEditing: boolean, dragCls: string): string {
+    const editing = titleEditing || descEditing ? ' task-editing' : '';
+    const flush = refreshFlash && t.updated_at && Date.parse(t.updated_at) >= refreshFlash ? ' flush' : '';
+    const press = pressId === t.id ? ' item-pressing' : '';
+    return `task-item cv-auto${editing}${dragCls}${flush}${press}`;
+  }
+
+  /** M6-6.1：任务行 style 预计算（避免 JSX 内联三元） */
+  function buildTaskItemStyle(t: Task, sortMode: SortKey): React.CSSProperties {
+    return {
+      borderBottom: '1px solid var(--surface-2)', padding: '6px 0', marginLeft: t.parent_id ? 28 : 0,
+      borderLeft: t.parent_id ? '2px solid var(--border-strong)' : undefined,
+      paddingLeft: t.parent_id ? 10 : undefined,
+      cursor: sortMode === 'manual' ? 'grab' : undefined,
+    };
+  }
+
+  /** M6-6.1：描述板块（grid 展开动画 + 时间线/预览，仅展开态渲染重内容） */
+  function renderDescSection(t: Task): React.ReactNode {
+    return (
+      <section
+        id={`task-desc-${t.id}`}
+        aria-label={`任务描述${t.task_no ? `（${t.task_no}）` : ''}`}
+        onTransitionEnd={(e) => { if (e.target === e.currentTarget && e.propertyName === 'grid-template-rows' && !descExpanded[t.id]) setDescVis((p) => { const n = { ...p }; delete n[t.id]; return n; }); }}
+        style={{ display: 'grid', gridTemplateRows: descExpanded[t.id] ? '1fr' : '0fr', opacity: descExpanded[t.id] ? 1 : 0, transition: 'grid-template-rows 240ms ease-in-out, opacity 200ms ease-in-out', overflow: 'hidden' }}
+      >
+        <div style={{ minHeight: 0, overflow: 'hidden' }}>
+          {descExpanded[t.id] && renderTaskDescView(t)}
+          {descExpanded[t.id] && <TaskEventTimeline taskId={t.id} />}
+          {previewId && descExpanded[t.id] && t.images.some((i) => i.id === previewId) && renderTaskPreview(t)}
+        </div>
+      </section>
+    );
+  }
+
   function renderTaskItem(t: Task, kind: 'todo' | 'done' | 'shelved', listIds: string[]) {
     const draft = drafts[t.id];
     const descDraft = descDrafts[t.id];
     const descEditing = descDraft !== undefined;
     const titleEditing = titleDrafts[t.id] !== undefined;
-    // 排序模式与拖拽高亮类名提前算出：避免 className / style 内出现嵌套三元
     // T00719：shelved 列表拖拽重排沿用 manual 排序链路（dropTaskReorder 按列表 id 序写 user_sort）
     let sortMode: SortKey;
     if (kind === 'todo') sortMode = todoSort;
@@ -2367,7 +2414,7 @@ export function TasksPage() {
     else if (dragTaskId === t.id) dragCls = ' plan-dragging';
     return (
       <li
-        className={`task-item cv-auto${titleEditing || descEditing ? ' task-editing' : ''}${dragCls}${refreshFlash && t.updated_at && Date.parse(t.updated_at) >= refreshFlash ? ' flush' : ''}${pressId === t.id ? ' item-pressing' : ''}`}
+        className={buildTaskItemClass(t, titleEditing, descEditing, dragCls)}
         onPointerDown={(e) => {
           // T00489：交互元素上按下不触发行缩放；非交互区按住 200ms 才缩放（快速点击不缩放）
           if ((e.target as HTMLElement).closest('button, input, select, a, textarea, label')) return;
@@ -2380,28 +2427,13 @@ export function TasksPage() {
         onDragEnd={() => { setDragTaskId(''); setOverTaskId(''); }}
         onDragOver={(e) => { e.preventDefault(); if (t.id !== dragTaskId) setOverTaskId(t.id); }}
         onDrop={(e) => { e.preventDefault(); dropTaskReorder(kind, listIds, t.id); }}
-        style={{ borderBottom: '1px solid var(--surface-2)', padding: '6px 0', marginLeft: t.parent_id ? 28 : 0, borderLeft: t.parent_id ? '2px solid var(--border-strong)' : undefined, paddingLeft: t.parent_id ? 10 : undefined, cursor: sortMode === 'manual' ? 'grab' : undefined }}
+        style={buildTaskItemStyle(t, sortMode)}
       >
         {renderTaskTitleRow(t, titleEditing)}
         {/* 元信息/操作行：优先级/分类/功能按钮 + 记录时间，全部靠右同行 */}
         {renderTaskMetaRow(t, titleEditing, descEditing)}
-        {/* 描述板块：描述展开时，Markdown 正文在上、截图缩略图紧随其后显示在同一容器内。
-            T01384：grid-rows 0fr→1fr 过渡动画（240ms ease-in-out）；收起时保留挂载播完动画再卸载，
-            重内容（时间线/预览）仅在展开态渲染以控制长列表开销 */}
-        {!descEditing && (t.description || t.images.length > 0) && (descExpanded[t.id] || descVis[t.id]) && (
-          <section
-            id={`task-desc-${t.id}`}
-            aria-label={`任务描述${t.task_no ? `（${t.task_no}）` : ''}`}
-            onTransitionEnd={(e) => { if (e.target === e.currentTarget && e.propertyName === 'grid-template-rows' && !descExpanded[t.id]) setDescVis((p) => { const n = { ...p }; delete n[t.id]; return n; }); }}
-            style={{ display: 'grid', gridTemplateRows: descExpanded[t.id] ? '1fr' : '0fr', opacity: descExpanded[t.id] ? 1 : 0, transition: 'grid-template-rows 240ms ease-in-out, opacity 200ms ease-in-out', overflow: 'hidden' }}
-          >
-            <div style={{ minHeight: 0, overflow: 'hidden' }}>
-              {descExpanded[t.id] && renderTaskDescView(t)}
-              {descExpanded[t.id] && <TaskEventTimeline taskId={t.id} />}
-              {previewId && descExpanded[t.id] && t.images.some((i) => i.id === previewId) && renderTaskPreview(t)}
-            </div>
-          </section>
-        )}
+        {/* 描述板块：T01384 grid-rows 0fr→1fr 过渡；重内容仅展开态渲染 */}
+        {!descEditing && (t.description || t.images.length > 0) && (descExpanded[t.id] || descVis[t.id]) && renderDescSection(t)}
         {descEditing && renderTaskDescEditor(t, descDraft)}
         {t.ai_summary && !draft && renderTaskSummary(t)}
         {draft && renderTaskDraft(t, draft)}

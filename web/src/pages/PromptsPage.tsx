@@ -230,6 +230,28 @@ function TaskCopyModal({ taskCopyPrompt, taskCopyBusy, setTaskCopyPrompt, taskCo
   );
 }
 
+/** M6-6.1：移动无实际变更时的反馈文案（区分「已归入」与「确实没改」两种真实情形） */
+function describeNoChange(
+  t: { catId: string; reqId: string; p: Prompt },
+  reqCats: ReqCategory[],
+  categories: PromptCategory[],
+): string {
+  const curReqName = t.reqId ? reqCats.find((c) => c.id === t.reqId)?.name : '';
+  const curCatName = categories.find((c) => c.id === t.catId)?.name;
+  if (t.reqId && t.reqId === (t.p.req_category_id ?? '')) {
+    return `该提示词已归入通用需求分类「${curReqName ?? t.reqId}」，无需重复操作；如需换分类请选择其它项，如需换提示词分组请在上方「目标分组」中选择`;
+  }
+  return `提示词分组与通用需求分类均未改动 —— 换分组请用上方「目标分组」（当前「${curCatName ?? '未分类'}」），归入通用需求分类请用下方下拉后点「移动」`;
+}
+
+/** M6-6.1：移动成功的反馈文案（按实际变更项给出，避免误导成"移动了提示词分组"） */
+function describeMove(t: { p: Prompt }, movedCat?: string, movedReq?: string): string {
+  if (movedCat && movedReq) return `已将「${t.p.title}」移动到「${movedCat}」并归入通用需求分类「${movedReq}」`;
+  if (movedReq) return `已将「${t.p.title}」归入通用需求分类「${movedReq}」（提示词分组保持不变）`;
+  if (movedCat) return `已移动至「${movedCat}」分组`;
+  return '已更新该提示词的归属';
+}
+
 /** 提示词仓库：按分类管理提示词，支持增删改查与一键复制 */
 export function PromptsPage() {
   const [categories, setCategories] = useState<PromptCategory[]>([]);
@@ -516,18 +538,9 @@ export function PromptsPage() {
     const patch: Record<string, string> = {};
     if (t.catId !== t.p.category_id) patch.categoryId = t.catId;
     if (t.reqId !== (t.p.req_category_id ?? '')) patch.reqCategoryId = t.reqId;
+    // T00873 四轮：两份下拉都维持原值才算"无改动"——区分「已归入」与「确实没改」两种真实情形
     if (Object.keys(patch).length === 0) {
-      // T00873 四轮：两份下拉都维持原值才算"无改动"。原文案「未选择变更项，未做改动」让"只想归入通用需求分类"
-      // 的用户误以为被拦截——这里区分两种真实情形并给出可操作指引：
-      // ① 已经归入所选分类（常见：卡片上看不到归属，用户以为没归入）→ 明说已归入；
-      // ② 确实什么都没改 → 指明两个下拉各自的作用。
-      const curReqName = t.reqId ? reqCats.find((c) => c.id === t.reqId)?.name : '';
-      const curCatName = categories.find((c) => c.id === t.catId)?.name;
-      if (t.reqId && t.reqId === (t.p.req_category_id ?? '')) {
-        flash(`该提示词已归入通用需求分类「${curReqName ?? t.reqId}」，无需重复操作；如需换分类请选择其它项，如需换提示词分组请在上方「目标分组」中选择`);
-      } else {
-        flash(`提示词分组与通用需求分类均未改动 —— 换分组请用上方「目标分组」（当前「${curCatName ?? '未分类'}」），归入通用需求分类请用下方下拉后点「移动」`);
-      }
+      flash(describeNoChange(t, reqCats, categories));
       setMoveTarget(null);
       return;
     }
@@ -541,10 +554,7 @@ export function PromptsPage() {
       // 反馈文案按实际变更项给出：只切通用需求分类时就提示通用需求归属，避免误导成"移动了提示词分组"
       const movedCat = patch.categoryId ? categories.find((c) => c.id === t.catId)?.name : undefined;
       const movedReq = patch.reqCategoryId ? reqCats.find((c) => c.id === t.reqId)?.name : undefined;
-      if (movedCat && movedReq) flash(`已将「${t.p.title}」移动到「${movedCat}」并归入通用需求分类「${movedReq}」`);
-      else if (movedReq) flash(`已将「${t.p.title}」归入通用需求分类「${movedReq}」（提示词分组保持不变）`);
-      else if (movedCat) flash(`已移动至「${movedCat}」分组`);
-      else flash('已更新该提示词的归属');
+      flash(describeMove(t, movedCat, movedReq));
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
     }

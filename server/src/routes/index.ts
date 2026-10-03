@@ -2073,36 +2073,68 @@ api.post('/prompts', (req, res) => {
   res.status(201).json(getDb().prepare('SELECT * FROM prompts WHERE id = ?').get(id));
 });
 
-api.patch('/prompts/:id', (req, res) => {
-  const { title, content, categoryId, pinned, color, archived, reqCategoryId } = req.body ?? {}; // T00490/T00525；T00837
-  const db = getDb();
-  // T00837：分组/通用需求分类调整前记录原归属，用于审计与前端可感知的「原→目标」日志
-  const before = categoryId !== undefined || reqCategoryId !== undefined
-    ? db.prepare('SELECT category_id, req_category_id, title FROM prompts WHERE id = ?').get(req.params.id) as
-      { category_id: string | null; req_category_id: string | null; title: string } | undefined
-    : undefined;
+/** PATCH /prompts/:id 的请求体（全部可选：未提供即不更新） */
+interface PromptPatchBody {
+  title?: unknown;
+  content?: unknown;
+  categoryId?: unknown;
+  pinned?: unknown;
+  color?: unknown;
+  archived?: unknown;
+  reqCategoryId?: unknown;
+}
+
+/** 分组调整前的原归属快照（T00837：用于审计与前端可感知的「原→目标」日志） */
+interface PromptGroupBefore {
+  category_id: string | null;
+  req_category_id: string | null;
+  title: string;
+}
+
+/** M6-6.1：仅当请求涉及分组字段时才读原归属——避免每次改名都多一次查询 */
+function snapshotPromptGroup(db: ReturnType<typeof getDb>, body: PromptPatchBody, id: string): PromptGroupBefore | undefined {
+  if (body.categoryId === undefined && body.reqCategoryId === undefined) return undefined;
+  return db.prepare('SELECT category_id, req_category_id, title FROM prompts WHERE id = ?').get(id) as PromptGroupBefore | undefined;
+}
+
+/** M6-6.1：拼接 SET 子句；T00525 归档同时写 archived_at（T00872），T00490 color 统一字符串化 */
+function buildPromptPatch(body: PromptPatchBody, ts: string): { sets: string[]; values: unknown[] } {
   const sets: string[] = [];
   const values: unknown[] = [];
-  if (title !== undefined) { sets.push('title = ?'); values.push(title); }
-  if (content !== undefined) { sets.push('content = ?'); values.push(content); }
-  if (categoryId !== undefined) { sets.push('category_id = ?'); values.push(categoryId); }
-  if (pinned !== undefined) { sets.push('pinned = ?'); values.push(pinned ? 1 : 0); }
-  if (color !== undefined) { sets.push('color = ?'); values.push(String(color)); } // T00490
-  if (archived !== undefined) {
-    sets.push('archived = ?'); values.push(archived ? 1 : 0); // T00525：删除改归档
-    // T00872：归档/还原时同步归档时间打点——归档页展示「归档于」，还原后清空
-    sets.push('archived_at = ?'); values.push(archived ? now() : null);
+  if (body.title !== undefined) { sets.push('title = ?'); values.push(body.title); }
+  if (body.content !== undefined) { sets.push('content = ?'); values.push(body.content); }
+  if (body.categoryId !== undefined) { sets.push('category_id = ?'); values.push(body.categoryId); }
+  if (body.pinned !== undefined) { sets.push('pinned = ?'); values.push(body.pinned ? 1 : 0); }
+  if (body.color !== undefined) { sets.push('color = ?'); values.push(String(body.color)); }
+  if (body.archived !== undefined) {
+    sets.push('archived = ?'); values.push(body.archived ? 1 : 0);
+    sets.push('archived_at = ?'); values.push(body.archived ? ts : null);
   }
-  if (reqCategoryId !== undefined) { sets.push('req_category_id = ?'); values.push(String(reqCategoryId)); } // T00837
-  if (sets.length === 0) return res.status(400).json({ error: '无更新字段' });
-  sets.push('updated_at = ?'); values.push(now());
+  if (body.reqCategoryId !== undefined) { sets.push('req_category_id = ?'); values.push(String(body.reqCategoryId)); }
+  sets.push('updated_at = ?'); values.push(ts);
+  return { sets, values };
+}
+
+/** M6-6.1：分组调整留痕——目标缺失时回落到原值，日志始终可读（操作人单机环境留空） */
+function logPromptGroupChange(before: PromptGroupBefore | undefined, body: PromptPatchBody): void {
+  if (!before || (body.categoryId === undefined && body.reqCategoryId === undefined)) return;
+  const oldCate = before.category_id ?? '无';
+  const oldReq = before.req_category_id ?? '无';
+  const newCate = body.categoryId ?? oldCate;
+  const newReq = body.reqCategoryId ?? oldReq;
+  logService.log('INFO', 'prompt',
+    `[提示词分组调整] "${before.title}" 原(提示词分类=${oldCate}，通用需求分类=${oldReq}) → 目标(提示词分类=${newCate}，通用需求分类=${newReq})（操作人留空）`);
+}
+
+api.patch('/prompts/:id', (req, res) => {
+  const body = (req.body ?? {}) as PromptPatchBody;
+  const db = getDb();
+  const before = snapshotPromptGroup(db, body, req.params.id);
+  const { sets, values } = buildPromptPatch(body, now());
+  if (values.length === 1) return res.status(400).json({ error: '无更新字段' }); // 仅剩 updated_at
   db.prepare(`UPDATE prompts SET ${sets.join(', ')} WHERE id = ?`).run(...values, req.params.id);
   cacheClear('prompt-categories'); // 改分类/置顶影响分类计数与顺序
-  // T00837：分组/通用需求分类调整审计——记录调整时间与原/目标分类，操作人单机环境留空
-  if (before && (categoryId !== undefined || reqCategoryId !== undefined)) {
-    logService.log('INFO', 'prompt',
-      `[提示词分组调整] "${before.title}" 原(提示词分类=${before.category_id ?? '无'}，通用需求分类=${before.req_category_id ?? '无'}) → 目标(提示词分类=${categoryId ?? (before.category_id ?? '无')}，通用需求分类=${reqCategoryId ?? (before.req_category_id ?? '无')})（操作人留空）`);
-  }
+  logPromptGroupChange(before, body);
   res.json(db.prepare('SELECT * FROM prompts WHERE id = ?').get(req.params.id));
 });
 

@@ -9,6 +9,12 @@ interface ChatCompletionResp {
   error?: { message?: string };
 }
 
+/** 流式行收集器的累积态：文本与最后一个 finish_reason */
+interface StreamAcc {
+  text: string;
+  finish: string;
+}
+
 /**
  * T01289：把 OpenAI 兼容响应里的 usage 归一为 TokenUsage。
  * 三项缺一（或为负数/非数字）即视为「未提供」返回 undefined——宁可无计量，
@@ -22,6 +28,95 @@ function readUsage(u: ChatCompletionResp['usage']): TokenUsage | undefined {
   if (typeof p !== 'number' || typeof c !== 'number' || typeof t !== 'number') return undefined;
   if (p < 0 || c < 0 || t < 0) return undefined;
   return { promptTokens: p, completionTokens: c, totalTokens: t };
+}
+
+/**
+ * M6-6.1：非流式 HTTP 失败体换算（原 chat() 内联分支）。
+ * 服务商错误体优先，其次 HTTP 状态；404 额外补 Base URL 排障提示（T01346）。
+ */
+function httpFailure(status: number, data: ChatCompletionResp): JobResult {
+  const base = data.error?.message ?? `HTTP ${status}`;
+  // T01346：裸「HTTP 404」无法排障——404 几乎总是 Base URL 路径拼错（多/少版本段），
+  // 给出可操作提示，让用户自己就能对照修正（其余状态码保持原文不干扰既有断言）。
+  return {
+    ok: false,
+    error: status === 404
+      ? `${base} — 404 多为 Base URL 路径不对：请检查是否重复/缺失版本段（自带版本者如智谱应填 https://open.bigmodel.cn/api/paas/v4，不要再补 /v1）`
+      : base,
+  };
+}
+
+/**
+ * M6-6.1：把「请求成功但输出不完整」的三种情形归一为失败（原 chat() 内联判定链）。
+ * 返回 null 表示正文可用、交由调用方走成功分支。
+ *
+ * 顺序不可调换：触顶时 content 可能为空串，必须先判 finish_reason 再判空。
+ */
+type ChatChoice = NonNullable<ChatCompletionResp['choices']>[number];
+
+function stoppedFailure(choice: ChatChoice | undefined, content: string): JobResult | null {
+  // content_filter（安全策略切断）与截断同类，半截内容同样不作完整结果（走查 M-3）
+  const reason = choice?.finish_reason;
+  if (reason === 'length') return { ok: false, error: streamTruncatedError(content.length) };
+  if (reason === 'content_filter') return { ok: false, error: outputStoppedError('finish_reason=content_filter', content.length) };
+  if (content) return null;
+  // T00721：思考型模型（如 agnes-2.5-flash）可能把输出预算全部耗在 reasoning_content（思考）上，
+  // 正文为空（实测 20~44s 长耗时 + 0 字符）。给出可操作提示而非笼统的「AI 返回内容为空」
+  const reasoning = choice?.message?.reasoning_content;
+  if (reasoning) {
+    return { ok: false, error: `模型仅输出了思考过程（reasoning ${reasoning.length} 字符），正文为空——多为思考耗尽输出上限所致，请调大该工具的 max_tokens 或更换非思考型模型后重试` };
+  }
+  return { ok: false, error: 'AI 返回内容为空' };
+}
+
+/** M6-6.1：流式结束后的成败裁决（截断/安全策略均带 partial，供长文场景选择性采纳） */
+function streamVerdict(text: string, finish: string): StreamResult | null {
+  if (finish === 'length') return { ok: false, error: streamTruncatedError(text.length), partial: text };
+  if (finish === 'content_filter') return { ok: false, error: outputStoppedError('finish_reason=content_filter', text.length), partial: text };
+  return null;
+}
+
+/**
+ * M6-6.1：流式 SSE 行的累积器（原 chatStream 的内联回调）。
+ * 只解析 `data:` 有效载荷，非 JSON / 错误校验行静默跳过——交由流结束后的整体裁决处理。
+ */
+function openaiLineCollector(onDelta: (text: string) => void): { acc: StreamAcc; collect: (line: string) => void } {
+  const acc: StreamAcc = { text: '', finish: '' };
+  const collect = (line: string): void => {
+    const trimmed = line.trim();
+    // OpenAI 兼容以 data: 前缀承载事件；跳过注释/id 等无内容行
+    if (!trimmed.startsWith('data:')) return;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === '[DONE]') return;
+    try {
+      const json = JSON.parse(payload) as { choices?: { delta?: { content?: string }; finish_reason?: string | null }[]; error?: { message?: string } };
+      if (json.error?.message) throw new Error(json.error.message);
+      // T00779：记录最后一个 finish_reason——触顶截断（length）时流里已有大量内容，
+      // 若只看 text 非空会误判成功，导致半截结果被上层当完整结果入库
+      const fr = json.choices?.[0]?.finish_reason;
+      if (typeof fr === 'string' && fr) acc.finish = fr;
+      const delta = json.choices?.[0]?.delta?.content;
+      if (typeof delta === 'string' && delta) {
+        acc.text += delta;
+        onDelta(delta);
+      }
+    } catch {
+      // 忽略协议偶发的非 JSON / 错误校验行，交由完整流结束后判断
+    }
+  };
+  return { acc, collect };
+}
+
+/**
+ * M6-6.1：非流式异常归因（原 chat() catch 分支）。
+ * 优先级：外部主动中止（用户点「停止」） > 超时标记（T01289：上层据此不再重试） > 原样透传。
+ */
+function failureFromError(e: unknown, signal?: AbortSignal): JobResult {
+  if (signal?.aborted) return { ok: false, error: '任务已停止' };
+  if (e instanceof Error && (e as Error & { code?: string }).code === TIMEOUT_CODE) {
+    return { ok: false, error: e.message, timedOut: true };
+  }
+  return { ok: false, error: e instanceof Error ? e.message : String(e) };
 }
 
 /**
@@ -121,50 +216,17 @@ export class OpenAICompatAdapter implements AIAdapter {
       );
 
       const data = (await res.json()) as ChatCompletionResp;
-      if (!res.ok || data.error) {
-        const base = data.error?.message ?? `HTTP ${res.status}`;
-        // T01346：裸「HTTP 404」无法排障——404 几乎总是 Base URL 路径拼错（多/少版本段），
-        // 给出可操作提示，让用户自己就能对照修正（其余状态码保持原文不干扰既有断言）。
-        return {
-          ok: false,
-          error: res.status === 404
-            ? `${base} — 404 多为 Base URL 路径不对：请检查是否重复/缺失版本段（自带版本者如智谱应填 https://open.bigmodel.cn/api/paas/v4，不要再补 /v1）`
-            : base,
-        };
-      }
+      if (!res.ok || data.error) return httpFailure(res.status, data);
       const choice = data.choices?.[0];
       const content = choice?.message?.content ?? '';
-      // T00714（D-6 修复）：输出被 token 上限截断（finish_reason=length）时显式报错——
-      // 不再把残缺/空输出静默交给上层做 JSON 解析（曾表现为「AI 未返回有效的 PRD 解析结果」误导排障）；
-      // 记 ok=false 进 ai_usage，错误文案可区分「输出被截断」与「模型不行」。
-      // 注意顺序：触顶时 content 可能为空串，必须先判 finish_reason 再判空（maxTokens 极小时实测）
-      // 走查 M-2：文案统一改调 streamTruncatedError（与流式/claude/ollama 一套口径）
-      // 走查 M-3：content_filter（安全策略切断）与截断同类，半截内容同样不作完整结果
-      if (choice?.finish_reason === 'length') {
-        return { ok: false, error: streamTruncatedError(content.length) };
-      }
-      if (choice?.finish_reason === 'content_filter') {
-        return { ok: false, error: outputStoppedError('finish_reason=content_filter', content.length) };
-      }
-      if (!content) {
-        // T00721：思考型模型（如 agnes-2.5-flash）可能把输出预算全部耗在 reasoning_content（思考）上，
-        // 正文为空（实测 20~44s 长耗时 + 0 字符）。给出可操作提示而非笼统的「AI 返回内容为空」
-        const reasoning = choice?.message?.reasoning_content;
-        if (reasoning) {
-          return { ok: false, error: `模型仅输出了思考过程（reasoning ${reasoning.length} 字符），正文为空——多为思考耗尽输出上限所致，请调大该工具的 max_tokens 或更换非思考型模型后重试` };
-        }
-        return { ok: false, error: 'AI 返回内容为空' };
-      }
+      // T00714（D-6 修复）：截断/风控/空正文一律显式报错，不再把残缺输出静默交给上层做 JSON 解析
+      // （曾表现为「AI 未返回有效的 PRD 解析结果」误导排障）；记 ok=false 进 ai_usage。
+      const stopped = stoppedFailure(choice, content);
+      if (stopped) return stopped;
       // T01289：成功时带出 token 用量（服务商未回传则缺省），供监督器成本预算护栏累加
       return { ok: true, content, usage: readUsage(data.usage) };
     } catch (e) {
-      // T00838：外部主动中止（用户点「停止」）归因到「任务已停止」，而非笼统的连接错误
-      if (signal?.aborted) return { ok: false, error: '任务已停止' };
-      // T01289：超时打结构化标记，上层（AIService.askJson）据此不再重试
-      if (e instanceof Error && (e as Error & { code?: string }).code === TIMEOUT_CODE) {
-        return { ok: false, error: e.message, timedOut: true };
-      }
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      return failureFromError(e, signal);
     }
   }
 
@@ -199,36 +261,14 @@ export class OpenAICompatAdapter implements AIAdapter {
       if (!res.ok || !res.body) {
         return { ok: false, error: res.ok ? 'AI 未返回流式内容' : formatHttpError(res.status, await res.text().catch(() => '')) };
       }
-      let text = '';
-      let finish = '';
-      await readStreamLines(res, (line) => {
-        const trimmed = line.trim();
-        // OpenAI 兼容以 data: 前缀承载事件；跳过注释/id 等无内容行
-        if (!trimmed.startsWith('data:')) return;
-        const payload = trimmed.slice(5).trim();
-        if (!payload || payload === '[DONE]') return;
-        try {
-          const json = JSON.parse(payload) as { choices?: { delta?: { content?: string }; finish_reason?: string | null }[]; error?: { message?: string } };
-          if (json.error?.message) throw new Error(json.error.message);
-          // T00779：记录最后一个 finish_reason——触顶截断（length）时流里已有大量内容，
-          // 若只看 text 非空会误判成功，导致半截结果被上层当完整结果入库
-          const fr = json.choices?.[0]?.finish_reason;
-          if (typeof fr === 'string' && fr) finish = fr;
-          const delta = json.choices?.[0]?.delta?.content;
-          if (typeof delta === 'string' && delta) {
-            text += delta;
-            onDelta(delta);
-          }
-        } catch {
-          // 忽略协议偶发的非 JSON / 错误校验行，交由完整流结束后判断
-        }
-      });
+      const { acc, collect } = openaiLineCollector(onDelta);
+      await readStreamLines(res, collect);
+      const { text, finish } = acc;
       if (!text) return { ok: false, error: 'AI 返回内容为空' };
       // T00779：触顶截断仍按失败处理（防半截结果入库）；T00814 起额外携带 partial，
       // 供"用户会逐条复核"的长文场景（当前仅 PRD 生成）选择性采纳
-      if (finish === 'length') return { ok: false, error: streamTruncatedError(text.length), partial: text };
-      if (finish === 'content_filter') return { ok: false, error: outputStoppedError('finish_reason=content_filter', text.length), partial: text }; // 走查 M-3
-      return { ok: true, content: text };
+      const stopped = streamVerdict(text, finish);
+      return stopped ?? { ok: true, content: text };
     } catch (e) {
       // T00838：区分「外部主动停止」与「超时」——stop 场景不再误报为连接超时
       if (signal?.aborted) return { ok: false, error: '任务已停止' };

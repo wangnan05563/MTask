@@ -1547,6 +1547,58 @@ export function PlanPage() {
     todo: 'var(--accent)', doing: 'var(--success)', done: 'var(--text-muted)', blocked: 'var(--danger)',
   };
 
+  // M6-6.1：关键路径计算（自 renderGantt 提取，独立计复杂度）——串行依赖 DAG 上以 duration 为权重的最长链
+  function computeCriticalPath(input: PlanTask[]) {
+    const planById = new Map(input.map((p) => [p.id, p]));
+    const depsOfPlan = (p: PlanTask): Array<{ id?: string; type?: string }> => {
+      try { return p.deps ? JSON.parse(p.deps) : []; } catch { return []; }
+    };
+    const endLen = new Map<string, number>();
+    const longestEnd = (id: string, seen: Set<string>): number => {
+      const memo = endLen.get(id);
+      if (memo !== undefined) return memo;
+      const p = planById.get(id);
+      if (!p || seen.has(id)) return 0; // 环防护
+      seen.add(id);
+      let best = 0;
+      for (const d of depsOfPlan(p)) {
+        if (d?.id && d.type !== 'child') best = Math.max(best, longestEnd(d.id, seen));
+      }
+      seen.delete(id);
+      const v = best + (p.duration_days || 0);
+      endLen.set(id, v);
+      return v;
+    };
+    for (const p of input) longestEnd(p.id, new Set());
+    const criticalEdges = new Set<string>(); // `${fromId}->${toId}`
+    const criticalNodes = new Set<string>();
+    for (const p of input) {
+      for (const d of depsOfPlan(p)) {
+        if (!d?.id || d.type === 'child') continue;
+        const u = planById.get(d.id);
+        if (!u) continue;
+        const ev = endLen.get(p.id) ?? 0;
+        const eu = endLen.get(u.id) ?? 0;
+        if (ev > 0 && ev === eu + (p.duration_days || 0)) {
+          criticalEdges.add(`${u.id}->${p.id}`);
+          criticalNodes.add(u.id);
+          criticalNodes.add(p.id);
+        }
+      }
+    }
+    return { planById, depsOfPlan, criticalEdges, criticalNodes };
+  }
+
+  // M6-6.1：月份刻度生成（自 renderGantt 提取）
+  function buildMonthTicks(rangeStart: string, totalDays: number, dayMs: number, dayW: number): Array<{ label: string; left: number }> {
+    const ticks: Array<{ label: string; left: number }> = [];
+    for (let i = 0; i < totalDays; i++) {
+      const d = new Date(new Date(rangeStart + 'T00:00:00').getTime() + i * dayMs);
+      if (d.getDate() === 1) ticks.push({ label: `${d.getMonth() + 1}月`, left: i * dayW });
+    }
+    return ticks;
+  }
+
   /** 甘特主视图：横向日轴 + 串行任务条 + 周末/节假日底纹 + 今日线 + 进度内嵌 */
   function renderGantt() {
     if (plans.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 12, padding: 16 }}>暂无计划任务，先创建或导入。</div>;
@@ -1569,50 +1621,33 @@ export function PlanPage() {
 
     // T01059-FR2.3：deps 连线与关键路径——serial 依赖边；关键路径 = 以 duration 为权重、deps DAG 上的最长链
     // （判据：endLen(v) === endLen(u) + dur(v) 的边即关键边；并列最长链都会高亮，符合可视化目的）
-    const planById = new Map(plans.map((p) => [p.id, p]));
-    const depsOfPlan = (p: PlanTask): Array<{ id?: string; type?: string }> => {
-      try { return p.deps ? JSON.parse(p.deps) : []; } catch { return []; }
-    };
-    const endLen = new Map<string, number>();
-    const longestEnd = (id: string, seen: Set<string>): number => {
-      const memo = endLen.get(id);
-      if (memo !== undefined) return memo;
-      const p = planById.get(id);
-      if (!p || seen.has(id)) return 0; // 环防护
-      seen.add(id);
-      let best = 0;
-      for (const d of depsOfPlan(p)) {
-        if (d?.id && d.type !== 'child') best = Math.max(best, longestEnd(d.id, seen));
-      }
-      seen.delete(id);
-      const v = best + (p.duration_days || 0);
-      endLen.set(id, v);
-      return v;
-    };
-    for (const p of plans) longestEnd(p.id, new Set());
-    const criticalEdges = new Set<string>(); // `${fromId}->${toId}`
-    const criticalNodes = new Set<string>();
-    for (const p of plans) {
-      for (const d of depsOfPlan(p)) {
-        if (!d?.id || d.type === 'child') continue;
-        const u = planById.get(d.id);
-        if (!u) continue;
-        const ev = endLen.get(p.id) ?? 0;
-        const eu = endLen.get(u.id) ?? 0;
-        if (ev > 0 && ev === eu + (p.duration_days || 0)) {
-          criticalEdges.add(`${u.id}->${p.id}`);
-          criticalNodes.add(u.id);
-          criticalNodes.add(p.id);
-        }
-      }
-    }
+    // M6-6.1：关键路径计算 + 月份刻度下沉为独立辅助函数（详见 renderGantt 上方定义），本函数仅编排
+    const { planById, depsOfPlan, criticalEdges, criticalNodes } = computeCriticalPath(plans);
+    const monthTicks = buildMonthTicks(rangeStart, totalDays, dayMs, DAY_W);
 
-    // 顶部月份刻度
-    const monthTicks: Array<{ label: string; left: number }> = [];
-    for (let i = 0; i < totalDays; i++) {
-      const d = new Date(new Date(rangeStart + 'T00:00:00').getTime() + i * dayMs);
-      if (d.getDate() === 1) monthTicks.push({ label: `${d.getMonth() + 1}月`, left: i * DAY_W });
-    }
+    // M6-6.1：日历底纹（周末/节假日）单格渲染——抽离避免甘特主渲染嵌套 Array.from+if
+    const renderCalShade = (di: number, weekend: boolean, hol: boolean): React.ReactNode => {
+      if (!weekend && !hol) return null;
+      return <div key={di} style={{ position: 'absolute', left: di * DAY_W, width: DAY_W, height: '100%', background: hol ? 'var(--danger-soft, rgba(220,38,38,.10))' : 'var(--surface-2)' }} />;
+    };
+    // M6-6.1：今日线（仅当 todayIdx 落在范围内）
+    const renderTodayLine = (): React.ReactNode =>
+      todayIdx >= 0 && todayIdx < totalDays
+        ? <div style={{ position: 'absolute', left: todayIdx * DAY_W + DAY_W / 2, top: 0, bottom: 0, width: 1, background: 'var(--accent)', opacity: 0.6 }} />
+        : null;
+    // M6-6.1：状态色图例（T01059-FR2.3：周末/节假日/今日/四态说明）
+    const renderStatusLegend = (): React.ReactNode => (
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '6px 10px', borderTop: '1px solid var(--border)', display: 'flex', gap: 14 }}>
+        {Object.entries(STATUS_BAR).map(([k, c]) => (
+          <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: c, display: 'inline-block' }} />
+            {{ todo: '待开始', doing: '进行中', done: '已完成', blocked: '受阻' }[k as PlanTask['status']]}
+          </span>
+        ))}
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 1, height: 10, background: 'var(--accent)', display: 'inline-block' }} />今天</span>
+        <span>灰底=周末　红底=节假日</span>
+      </div>
+    );
 
     return (
       <div style={{ border: '1px solid var(--border-strong)', borderRadius: 8, overflow: 'hidden' }}>
@@ -1639,16 +1674,11 @@ export function PlanPage() {
                     {/* 日历底纹：周末/节假日 */}
                     {Array.from({ length: totalDays }, (_, di) => {
                       const d = new Date(new Date(rangeStart + 'T00:00:00').getTime() + di * dayMs);
-                      const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
                       const weekend = d.getDay() === 0 || d.getDay() === 6;
-                      const hol = holSet.has(ds);
-                      if (!weekend && !hol) return null;
-                      return <div key={di} style={{ position: 'absolute', left: di * DAY_W, width: DAY_W, height: '100%', background: hol ? 'var(--danger-soft, rgba(220,38,38,.10))' : 'var(--surface-2)' }} />;
+                      const hol = holSet.has(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+                      return renderCalShade(di, weekend, hol);
                     })}
-                    {/* 今日线 */}
-                    {todayIdx >= 0 && todayIdx < totalDays && (
-                      <div style={{ position: 'absolute', left: todayIdx * DAY_W + DAY_W / 2, top: 0, bottom: 0, width: 1, background: 'var(--accent)', opacity: 0.6 }} />
-                    )}
+                    {renderTodayLine()}
                     {/* 任务条（T01059-FR2.3：关键路径节点红色描边） */}
                     <div title={`${p.title}
 ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.progress}% · ${p.assignee || '未分配'}${criticalNodes.has(p.id) ? ' · ★ 关键路径' : ''}`}
@@ -1670,16 +1700,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             </div>
           </div>
         </div>
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '6px 10px', borderTop: '1px solid var(--border)', display: 'flex', gap: 14 }}>
-          {Object.entries(STATUS_BAR).map(([k, c]) => (
-            <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ width: 10, height: 10, borderRadius: 2, background: c, display: 'inline-block' }} />
-              {{ todo: '待开始', doing: '进行中', done: '已完成', blocked: '受阻' }[k as PlanTask['status']]}
-            </span>
-          ))}
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 1, height: 10, background: 'var(--accent)', display: 'inline-block' }} />今天</span>
-          <span>灰底=周末　红底=节假日</span>
-        </div>
+        {renderStatusLegend()}
       </div>
     );
   }
@@ -1702,23 +1723,50 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       if (j === undefined) continue;
       const tx = 220 + g.toIdx(p.start_date) * g.DAY_W;
       const ty = j * 30 + 15;
-      for (const d of g.depsOfPlan(p)) {
-        if (!d?.id || d.type === 'child') continue;
-        const u = g.planById.get(d.id);
-        if (!u?.start_date || !u.end_date) continue;
-        const i2 = rowIdx.get(u.id);
-        if (i2 === undefined) continue;
-        const fx = 220 + (g.toIdx(u.end_date) + 1) * g.DAY_W;
-        const fy = i2 * 30 + 15;
-        const crit = g.criticalEdges.has(`${u.id}->${p.id}`);
-        const color = crit ? 'var(--danger)' : 'var(--accent)';
-        const dAttr = tx > fx + 8
-          ? `M ${fx} ${fy} H ${(fx + tx) / 2} V ${ty} H ${tx - 5}`
-          : `M ${fx} ${fy} L ${tx - 5} ${ty}`;
-        els.push(<path key={`${u.id}-${p.id}`} d={dAttr} fill="none" stroke={color} strokeWidth={crit ? 2 : 1.2} opacity={crit ? 0.9 : 0.55} />, <polygon key={`arr-${u.id}-${p.id}`} points={`${tx - 5},${ty - 3.5} ${tx - 5},${ty + 3.5} ${tx},${ty}`} fill={color} />);
-      }
+      els.push(...buildDepEdgesForPlan(g, p, rowIdx, tx, ty));
     }
     return els;
+  }
+
+  /** M6-6.1：单计划依赖边构建（自 renderDepsOverlay 内层循环提取，承载 its 复杂度） */
+  function buildDepEdgesForPlan(
+    g: {
+      toIdx: (d: string) => number;
+      DAY_W: number;
+      depsOfPlan: (p: PlanTask) => Array<{ id?: string; type?: string }>;
+      planById: Map<string, PlanTask>;
+      criticalEdges: Set<string>;
+    },
+    p: PlanTask,
+    rowIdx: Map<string, number>,
+    tx: number,
+    ty: number,
+  ): React.ReactNode[] {
+    const els: React.ReactNode[] = [];
+    for (const d of g.depsOfPlan(p)) {
+      if (!d?.id || d.type === 'child') continue;
+      const u = g.planById.get(d.id);
+      if (!u?.start_date || !u.end_date) continue;
+      const i2 = rowIdx.get(u.id);
+      if (i2 === undefined) continue;
+      const fx = 220 + (g.toIdx(u.end_date) + 1) * g.DAY_W;
+      const fy = i2 * 30 + 15;
+      const crit = g.criticalEdges.has(`${u.id}->${p.id}`);
+      els.push(...buildDepEdge(p.id, u.id, tx, ty, fx, fy, crit));
+    }
+    return els;
+  }
+
+  /** M6-6.1：单条依赖边（折线箭头 + 关键路径加粗描红）；依赖边密集的三元/条件抽离，降低 renderDepsOverlay 复杂度 */
+  function buildDepEdge(pId: string, uId: string, tx: number, ty: number, fx: number, fy: number, crit: boolean): React.ReactNode[] {
+    const color = crit ? 'var(--danger)' : 'var(--accent)';
+    const dAttr = tx > fx + 8
+      ? `M ${fx} ${fy} H ${(fx + tx) / 2} V ${ty} H ${tx - 5}`
+      : `M ${fx} ${fy} L ${tx - 5} ${ty}`;
+    return [
+      <path key={`${uId}-${pId}`} d={dAttr} fill="none" stroke={color} strokeWidth={crit ? 2 : 1.2} opacity={crit ? 0.9 : 0.55} />,
+      <polygon key={`arr-${uId}-${pId}`} points={`${tx - 5},${ty - 3.5} ${tx - 5},${ty + 3.5} ${tx},${ty}`} fill={color} />,
+    ];
   }
 
   // ---------- 节假日 ----------

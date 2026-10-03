@@ -517,6 +517,92 @@ function parseLinkIds(json: string | null): string[] {
   }
 }
 
+/**
+ * M6-6.1（T01156）：反向覆盖检查——需求清单中有、却未被任何 WBS 计划 reqNos 关联的需求编号。
+ * 旧 coverageWarn 仅当「所有计划 reqNos 全空」时才告警，漏掉了「部分需求无人认领」的静默缺口
+ * （典型表现：需求清单 25 条、WBS 22 条，但仅前 15 条需求被关联，后 10 条 REQ-016…REQ-025 不可追溯）。
+ */
+function collectUncoveredReqNos(
+  requirements: Array<{ reqNo: string }>,
+  drafts: Array<{ reqNos: string[] }>,
+): string[] {
+  const referenced = new Set<string>();
+  for (const d of drafts) for (const n of d.reqNos) referenced.add(n);
+  return requirements.map((r) => r.reqNo).filter((no) => !referenced.has(no));
+}
+
+/** M6-6.1：可追溯性缺口 → 人话告警（全未关联 / 部分未关联两种情况文案不同） */
+function buildCoverageWarn(draftCount: number, reqCount: number, uncovered: string[]): string {
+  if (draftCount === 0 || reqCount === 0) return '';
+  if (uncovered.length === 0) return '';
+  if (uncovered.length === reqCount) return '本次解析的计划节点未关联到任何需求编号——可在矩阵面板中手动建立关联';
+  const more = uncovered.length > 10 ? '…' : '';
+  return `有 ${uncovered.length} 条需求未被任何 WBS 计划关联（${uncovered.slice(0, 10).join('、')}${more}）——这些需求当前不可追溯，建议补计划或在矩阵面板手动关联`;
+}
+
+/** M6-6.1：导出 Markdown 的单元格转义（管道符转义 + 换行压平，避免撑坏表格） */
+type MdCell = (s: string | null | undefined) => string;
+
+/** M6-6.1：WBS 类型 → 表内人话标签 */
+function planKindLabel(kind: string | undefined): string {
+  if (kind === 'milestone') return '里程碑';
+  if (kind === 'daily') return '日常';
+  return '任务';
+}
+
+/** M6-6.1：追加「任务清单」表到导出正文 */
+function pushTaskTable(
+  lines: string[],
+  tasks: Array<{ task_no: string | null; title: string; status: string; priority: string; verified: number }>,
+  esc: MdCell,
+): void {
+  lines.push(`## 任务清单（${tasks.length} 条）`, '', '| 编号 | 标题 | 状态 | 优先级 | 验证 |', '| --- | --- | --- | --- | --- |');
+  for (const t of tasks) {
+    lines.push(`| ${t.task_no ?? '—'} | ${esc(t.title)} | ${t.status} | ${t.priority} | ${t.verified ? '✓' : ''} |`);
+  }
+  lines.push('');
+}
+
+/** M6-6.1：追加「项目计划 / WBS」表到导出正文 */
+function pushPlanTable(lines: string[], plans: PlanTaskRow[], esc: MdCell): void {
+  lines.push(`## 项目计划 / WBS（${plans.length} 条）`, '', '| 类型 | 标题 | 开始 | 结束 | 工期 | 进度 | 状态 | 负责人 |', '| --- | --- | --- | --- | --- | --- | --- | --- |');
+  for (const p of plans) {
+    const kindLabel = planKindLabel((p as { kind?: string }).kind);
+    lines.push(`| ${kindLabel} | ${esc(p.title)} | ${p.start_date} | ${p.end_date} | ${p.duration_days} | ${p.progress}% | ${p.status} | ${esc(p.assignee) || '—'} |`);
+  }
+  lines.push('');
+}
+
+/** M6-6.1：追加「需求跟踪矩阵」表（T01361：关联计划读真实字段 linkedPlans，与界面矩阵同源） */
+function pushReqTable(lines: string[], reqs: RequirementRow[], esc: MdCell): void {
+  lines.push(`## 需求跟踪矩阵（${reqs.length} 条）`, '', '| 编号 | 需求 | 状态 | 关联计划 |', '| --- | --- | --- | --- |');
+  for (const r of reqs) {
+    const reqNo = r.req_no == null ? '—' : String(r.req_no);
+    const status = r.status == null ? 'todo' : String(r.status);
+    lines.push(`| ${reqNo} | ${esc(r.title)} | ${status} | ${r.linkedPlans.map((x) => esc(x.title)).join('、') || '—'} |`);
+  }
+  lines.push('');
+}
+
+function applyLinkToggle(ids: string[], reqId: string, linked: boolean): { ids: string[]; added: boolean } {
+  const has = ids.includes(reqId);
+  if (linked && !has) ids.push(reqId);
+  if (!linked && has) ids.splice(ids.indexOf(reqId), 1);
+  return { ids, added: linked && !has };
+}
+
+/**
+ * M6-6.1（T01266）：需求追溯的反向同步——把待办关联到某需求时，若该需求已被某个「已完成」计划覆盖，
+ * 则该待办同步标记完成（与计划页 linked_task_id 同步语义一致），避免「先完成计划、后关联待办」的状态滞后。
+ */
+function syncTaskCoveredDone(db: ReturnType<typeof getDb>, projectId: string, taskId: string, reqId: string): void {
+  const donePlans = db.prepare(
+    `SELECT req_ids FROM plan_tasks WHERE project_id = ? AND archived = 0 AND status = 'done' AND req_ids IS NOT NULL AND req_ids != ''`,
+  ).all(projectId) as Array<{ req_ids: string }>;
+  if (!donePlans.some((p) => parseLinkIds(p.req_ids).includes(reqId))) return;
+  db.prepare("UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ?").run(now(), taskId);
+}
+
 /** PRD 解析：单条原始需求 → 归一化需求（reqNo 查重去重 + priority 枚举兜底；标题缺失返回 null） */
 function normalizeRequirement(
   r: unknown,
@@ -1086,35 +1172,12 @@ export const PlanService = {
     const tasks = db.prepare(
       `SELECT task_no, title, status, priority, verified FROM tasks WHERE project_id = ? AND archived = 0 ORDER BY task_no`,
     ).all(projectId) as Array<{ task_no: string | null; title: string; status: string; priority: string; verified: number }>;
-    lines.push(`## 任务清单（${tasks.length} 条）`, '', '| 编号 | 标题 | 状态 | 优先级 | 验证 |', '| --- | --- | --- | --- | --- |');
-    for (const t of tasks) {
-      lines.push(`| ${t.task_no ?? '—'} | ${esc(t.title)} | ${t.status} | ${t.priority} | ${t.verified ? '✓' : ''} |`);
-    }
-    lines.push('');
+    pushTaskTable(lines, tasks, esc);
     // WBS 计划
-    const plans = this.list(projectId);
-    lines.push(`## 项目计划 / WBS（${plans.length} 条）`, '', '| 类型 | 标题 | 开始 | 结束 | 工期 | 进度 | 状态 | 负责人 |', '| --- | --- | --- | --- | --- | --- | --- | --- |');
-    for (const p of plans) {
-      let kindLabel = '任务';
-      if (p.kind === 'milestone') kindLabel = '里程碑';
-      else if (p.kind === 'daily') kindLabel = '日常';
-      lines.push(`| ${kindLabel} | ${esc(p.title)} | ${p.start_date} | ${p.end_date} | ${p.duration_days} | ${p.progress}% | ${p.status} | ${esc(p.assignee) || '—'} |`);
-    }
-    lines.push('');
+    pushPlanTable(lines, this.list(projectId), esc);
     // 需求跟踪矩阵
     const reqs = this.listRequirements(projectId);
-    if (reqs.length > 0) {
-      lines.push(`## 需求跟踪矩阵（${reqs.length} 条）`, '', '| 编号 | 需求 | 状态 | 关联计划 |', '| --- | --- | --- | --- |');
-      for (const r of reqs) {
-        // T01361：原先读 r.plans（listRequirements 从未返回该字段，恒为 undefined → 关联计划列恒空），
-        // 改为读真实字段 linkedPlans，导出与界面矩阵同源
-        const linked = r.linkedPlans;
-        const reqNo = r.req_no == null ? '—' : String(r.req_no);
-        const status = r.status == null ? 'todo' : String(r.status);
-        lines.push(`| ${reqNo} | ${esc(r.title)} | ${status} | ${linked.map((x) => esc(x.title)).join('、') || '—'} |`);
-      }
-      lines.push('');
-    }
+    if (reqs.length > 0) pushReqTable(lines, reqs, esc);
     return lines.join('\n');
   },
 
@@ -1375,20 +1438,10 @@ export const PlanService = {
     const rawPlans = Array.isArray(obj.plans) ? obj.plans : [];
     const drafts = normalizePrdPlans(rawPlans);
     if (requirements.length === 0 && drafts.length === 0) throw new Error('AI 未能从 PRD 中解析出需求或计划，请确认文档内容或更换模型');
-    // T01156：反向覆盖检查——需求清单中存在、但未被任何 WBS 计划 reqNos 关联的需求编号（可追溯性缺口）。
-    // 旧 coverageWarn 仅当「所有计划 reqNos 全空」时才告警，漏掉了「部分需求无人认领」这种静默缺口
-    // （典型表现：需求清单 25 条、WBS 22 条，但仅前 15 条需求被关联，后 10 条 REQ-016…REQ-025 不可追溯）。
-    const referenced = new Set<string>();
-    for (const d of drafts) for (const n of d.reqNos) referenced.add(n);
-    const uncoveredReqNos = requirements.map((r) => r.reqNo).filter((no) => !referenced.has(no));
-    let coverageWarn = '';
-    if (drafts.length > 0 && requirements.length > 0) {
-      if (uncoveredReqNos.length === requirements.length) {
-        coverageWarn = '本次解析的计划节点未关联到任何需求编号——可在矩阵面板中手动建立关联';
-      } else if (uncoveredReqNos.length > 0) {
-        coverageWarn = `有 ${uncoveredReqNos.length} 条需求未被任何 WBS 计划关联（${uncoveredReqNos.slice(0, 10).join('、')}${uncoveredReqNos.length > 10 ? '…' : ''}）——这些需求当前不可追溯，建议补计划或在矩阵面板手动关联`;
-      }
-    }
+    // T01156：反向覆盖检查（collectUncoveredReqNos / buildCoverageWarn）——需求清单中存在、
+    // 但未被任何 WBS 计划 reqNos 关联的需求编号即可追溯性缺口。
+    const uncoveredReqNos = collectUncoveredReqNos(requirements, drafts);
+    const coverageWarn = buildCoverageWarn(drafts.length, requirements.length, uncoveredReqNos);
     return { requirements, drafts, coverageWarn, uncoveredReqNos, truncatedNote };
   },
 
@@ -1835,27 +1888,17 @@ export const PlanService = {
   linkRequirement(reqId: string, target: { kind: 'plan' | 'task'; targetId: string; linked: boolean }): void {
     const db = getDb();
     const table = target.kind === 'plan' ? 'plan_tasks' : 'tasks';
+    // M6-6.1：目标种类 → 人话名词（原散落各处的三元命名统一后，错误文案不再重复）
+    const label = target.kind === 'plan' ? '计划' : '待办';
     // T00710（D-2 修复）：校验需求与目标同项目（对齐 linkTodo 的同项目约束），防矩阵跨项目混入脏关联
     const req = db.prepare('SELECT project_id FROM prd_requirements WHERE id = ?').get(reqId) as { project_id: string } | undefined;
     if (!req) throw new Error('需求不存在');
     const row = db.prepare(`SELECT req_ids, project_id FROM ${table} WHERE id = ?`).get(target.targetId) as { req_ids: string | null; project_id: string } | undefined;
-    if (!row) throw new Error(target.kind === 'plan' ? '计划不存在' : '任务不存在');
-    if (req.project_id !== row.project_id) throw new Error(target.kind === 'plan' ? '仅可关联同项目的计划' : '仅可关联同项目的待办');
-    const ids = parseLinkIds(row.req_ids);
-    const has = ids.includes(reqId);
-    if (target.linked && !has) ids.push(reqId);
-    if (!target.linked && has) ids.splice(ids.indexOf(reqId), 1);
+    if (!row) throw new Error(`${label}不存在`);
+    if (req.project_id !== row.project_id) throw new Error(`仅可关联同项目的${label}`);
+    const { ids, added } = applyLinkToggle(parseLinkIds(row.req_ids), reqId, target.linked);
     db.prepare(`UPDATE ${table} SET req_ids = ?, updated_at = ? WHERE id = ?`).run(ids.length > 0 ? JSON.stringify(ids) : null, now(), target.targetId);
-    // T01266：需求追溯维度反向同步——把任务关联到某需求时，若该需求已被某个「已完成」计划覆盖，
-    // 则该待办应同步标记完成（与计划页 linked_task_id 同步语义一致），避免「先完成计划、后关联待办」时状态滞后。
-    if (target.kind === 'task' && target.linked && !has) {
-      const donePlans = db.prepare(
-        `SELECT req_ids FROM plan_tasks WHERE project_id = ? AND archived = 0 AND status = 'done' AND req_ids IS NOT NULL AND req_ids != ''`,
-      ).all(row.project_id) as Array<{ req_ids: string }>;
-      if (donePlans.some((p) => parseLinkIds(p.req_ids).includes(reqId))) {
-        db.prepare("UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ?").run(now(), target.targetId);
-      }
-    }
+    if (target.kind === 'task' && added) syncTaskCoveredDone(db, row.project_id, target.targetId, reqId);
   },
 
   /**
