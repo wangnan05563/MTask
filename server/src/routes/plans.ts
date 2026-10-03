@@ -445,6 +445,10 @@ planApi.get('/test-cases/meta', (req, res) => wrap(res, () => TestCaseService.me
 
 planApi.get('/test-cases/coverage', (req, res) => wrap(res, () => TestCaseService.coverage(pid(req))));
 
+// T01485：工具条统计「共 N 条 · 已关联需求 M 条 · 孤儿 K 条」——服务层 stats() 已就绪，
+// 但列表面向服务端分页（limit 后只拿到当页），全项目口径必须单独取，不能由前端数当页。
+planApi.get('/test-cases/stats', (req, res) => wrap(res, () => TestCaseService.stats(pid(req))));
+
 planApi.get('/test-cases', (req, res) => {
   // pid(req) 必须留在 wrap 内：它抛的是业务校验错（约定 400 + {error}），
   // 写在 wrap 外面会变成未捕获异常 → 500 + 整页堆栈，前端 toast 拿不到人话。

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ArrowUpDown, CalendarPlus, Check, Download, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, FileText, FilePenLine, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Table2, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search } from 'lucide-react';
+import { Archive, ArrowUpDown, CalendarPlus, Check, Download, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, FileText, FilePenLine, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Table2, TestTubes, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { EmptyState } from '../ui/EmptyState'; // T01072-FR1.10：统一空态组件
 import { ReqMatrixPanel } from './ReqMatrixPanel'; // T00662：需求跟踪矩阵
+import { TestCasePanel } from './TestCasePanel'; // T01485：测试用例视图
 import { PrdPanel } from './PrdPanel'; // T00770：PRD 管理视图（文档生命周期 + 待确认问题）
 import { ProjectGuideDialog, hasSeenProjectGuide, markProjectGuideSeen } from './ProjectGuide'; // T00665：项目管理向导（T00706：已看状态改由调用方在关闭时记录）
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin, reorderProjects, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
@@ -329,10 +330,11 @@ function PlanViewModeToggle({ viewMode, setViewMode }: {
   );
 }
 
-/** 工具栏：PRD 管理 / 需求跟踪矩阵入口（S3776 抽取） */
-function PlanPanelToggles({ showPrd, setShowPrd, showMatrix, setShowMatrix }: {
+/** 工具栏：PRD 管理 / 需求跟踪矩阵 / 测试用例入口（S3776 抽取） */
+function PlanPanelToggles({ showPrd, setShowPrd, showMatrix, setShowMatrix, showTestCases, setShowTestCases }: {
   readonly showPrd: boolean; readonly setShowPrd: React.Dispatch<React.SetStateAction<boolean>>;
   readonly showMatrix: boolean; readonly setShowMatrix: React.Dispatch<React.SetStateAction<boolean>>;
+  readonly showTestCases: boolean; readonly setShowTestCases: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
   return (
     <>
@@ -349,6 +351,13 @@ function PlanPanelToggles({ showPrd, setShowPrd, showMatrix, setShowMatrix }: {
         aria-label="需求跟踪矩阵" aria-expanded={showMatrix}
         style={{ ...btnStyle, background: showMatrix ? 'var(--accent)' : 'transparent', color: showMatrix ? 'var(--accent-text)' : 'var(--text)', borderColor: showMatrix ? 'var(--accent)' : 'var(--border-strong)' }}>
         <Table2 size={13} />
+      </button>
+      {/* T01485：测试用例入口——紧随需求跟踪矩阵（PRD §4.1：矩阵是用例的上游，顺序即操作动线）；图标-only，样式与相邻两个入口完全一致 */}
+      <button onClick={() => setShowTestCases((v) => !v)} className="tbtn-anim"
+        title="测试用例 — 用例增删改查、步骤行内编辑、批量维护、覆盖度与导出"
+        aria-label="测试用例" aria-expanded={showTestCases}
+        style={{ ...btnStyle, background: showTestCases ? 'var(--accent)' : 'transparent', color: showTestCases ? 'var(--accent-text)' : 'var(--text)', borderColor: showTestCases ? 'var(--accent)' : 'var(--border-strong)' }}>
+        <TestTubes size={13} />
       </button>
     </>
   );
@@ -1094,6 +1103,9 @@ export function PlanPage() {
 
   // T00770：PRD 管理视图展开态（矩阵入口前方按钮；面板在矩阵面板上方展开）
   const [showPrd, setShowPrd] = useSessionState<boolean>('plan.showPrd', false);
+
+  // T01485：测试用例视图展开态（PRD §7.1 会话键 `plan.showTestCases`）
+  const [showTestCases, setShowTestCases] = useSessionState<boolean>('plan.showTestCases', false);
 
   const flash = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(''), 3000); };
 
@@ -1946,7 +1958,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         )}
         {evalBusy && <output className="flash-toast"><span className="task-breathe" style={{ color: 'var(--accent)' }}>AI 评估中{evalLabel ? `（${evalLabel}）` : ''}…</span></output>}
         <PlanViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
-        <PlanPanelToggles showPrd={showPrd} setShowPrd={setShowPrd} showMatrix={showMatrix} setShowMatrix={setShowMatrix} />
+        <PlanPanelToggles showPrd={showPrd} setShowPrd={setShowPrd} showMatrix={showMatrix} setShowMatrix={setShowMatrix}
+          showTestCases={showTestCases} setShowTestCases={setShowTestCases} />
         <button onClick={openHolidayManager} style={btnStyle} title="节假日管理 — 手动维护 / 联网导入法定节假日 / 万年历视图">节假日（{holidays.length}）</button>
         <button onClick={reload} style={btnStyle} title="刷新"><RefreshCw size={13} /></button>
         {/* T00735：移除本页原有的「向导」按钮——与全局导航右上角常驻按钮重复（两者打开同一份项目管理向导内容），
@@ -1982,6 +1995,9 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
 
       {/* T00662：需求跟踪矩阵面板（甘特按钮旁入口展开） */}
       {showMatrix && projectId && <ReqMatrixPanel projectId={projectId} onClose={() => setShowMatrix(false)} />}
+
+      {/* T01485：测试用例面板（矩阵之后展开，保持 PRD → 矩阵 → 用例 的自上而下动线，§4.1） */}
+      {showTestCases && projectId && <TestCasePanel projectId={projectId} onClose={() => setShowTestCases(false)} />}
 
       {viewMode === 'gantt' ? renderGantt() : (
       <table className="plan-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>

@@ -31,3 +31,20 @@ export function safeExportName(name: string, fallback = 'export'): string {
   const s = name.replaceAll(/[\\/:*?"<>|\n\r\t]/g, '-').replaceAll(/\s+/g, ' ').trim().slice(0, 80);
   return s || fallback;
 }
+
+/**
+ * T01485：保存 Blob 为文件——用于 `api.postDownload()` 这类「POST 换文件流」的导出。
+ *
+ * 与 `saveBinary` 的差别只在于输入：后者接 ArrayBuffer（GET 二进制），
+ * 前者接 Blob 且直接用服务端 Content-Disposition 给出的文件名（含中文与日期），
+ * 避免前端再拼一份命名规则形成第二套口径。
+ */
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = safeExportName(filename, 'export');
+  a.rel = 'noopener';
+  a.click();
+  URL.revokeObjectURL(url);
+}
