@@ -408,6 +408,62 @@ export function SupervisorPanel() {
     </Card>
   );
 
+  /** M6-6.4：单条审计轮次卡片（提取以消除 S2004 深嵌套）。 */
+  const renderAuditRun = (r: RunRow) => {
+    const s = snap(r);
+    const open = !!expanded[r.id];
+    const degraded = bool(s.degraded);
+    const blockedCount = num(s.blockedCount);
+    return (
+      <div key={r.id} style={{ border: '1px solid var(--border)', borderRadius: 12, background: 'var(--surface)' }}>
+        <button
+          onClick={() => setExpanded((p) => ({ ...p, [r.id]: !p[r.id] }))}
+          title="展开/收起 — 查看该轮次的动作与落地结果"
+          aria-label="展开或收起审计详情"
+          style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: 'transparent', color: 'var(--text)', textAlign: 'left', flexWrap: 'wrap' }}
+        >
+          {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          <span style={{ fontSize: 'var(--fs-m)', fontWeight: 600 }} title={fullTime(r.ranAt)}>{relTime(r.ranAt)}</span>
+          <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>{r.model || '模型未配置'}</span>
+          {degraded && (
+            <span style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', border: '1px solid var(--danger)', borderRadius: 6, padding: '0 6px' }}>异常降级</span>
+          )}
+          {blockedCount > 0 && (
+            <span style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', border: '1px solid var(--warn)', borderRadius: 6, padding: '0 6px' }} title={r.blockedBy}>护栏拦截 {blockedCount}</span>
+          )}
+          <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+            待办 {num(s.pending)}/{num(s.pendingTotal)} · 就绪 {num(s.pendingReady)} · 会话 {num(s.sessions)}（停滞 {num(s.staleSessions)}） · 并发 {num(s.concurrent)}/{num(s.maxConcurrent)}
+          </span>
+        </button>
+        {open && (
+          <div style={{ padding: '0 12px 10px 30px', fontSize: 'var(--fs-m)', display: 'grid', gap: 8 }}>
+            <div style={{ color: 'var(--text-secondary)' }}>
+              本轮标记：就绪 {num(s.readyMarked)} · 停滞 {num(s.stalledMarked)}；耗时 {num(s.decisionMs)}ms
+              {s.decisionError ? `；决策错误：${str(s.decisionError)}` : ''}
+            </div>
+            <div>
+              <div style={{ fontWeight: 600, marginBottom: 2 }}>AI 动作（{r.actions.length}）</div>
+              {r.actions.length === 0 ? <span style={{ color: 'var(--text-muted)' }}>无</span> : (
+                <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 2 }}>
+                  {r.actions.map(renderActionItem)}
+                </ul>
+              )}
+            </div>
+            <div>
+              <div style={{ fontWeight: 600, marginBottom: 2 }}>落地结果（{r.applied.length}）</div>
+              {r.applied.length === 0 ? <span style={{ color: 'var(--text-muted)' }}>无</span> : (
+                <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 2 }}>
+                  {r.applied.map(renderAppliedItem)}
+                </ul>
+              )}
+            </div>
+            {r.blockedBy && <div style={{ color: 'var(--warn)' }}>护栏拦截原因：{r.blockedBy}</div>}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   /** M6-6.4：审计「AI 动作」单行（提取以消除 S2004 深嵌套）。 */
   const renderActionItem = (a: unknown, i: number) => {
     const o = (a ?? {}) as Record<string, unknown>;
@@ -442,60 +498,7 @@ export function SupervisorPanel() {
         </p>
       ) : (
         <div style={{ display: 'grid', gap: 8 }}>
-          {runs.map((r) => {
-            const s = snap(r);
-            const open = !!expanded[r.id];
-            const degraded = bool(s.degraded);
-            const blockedCount = num(s.blockedCount);
-            return (
-              <div key={r.id} style={{ border: '1px solid var(--border)', borderRadius: 12, background: 'var(--surface)' }}>
-                <button
-                  onClick={() => setExpanded((p) => ({ ...p, [r.id]: !p[r.id] }))}
-                  title="展开/收起 — 查看该轮次的动作与落地结果"
-                  aria-label="展开或收起审计详情"
-                  style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: 'transparent', color: 'var(--text)', textAlign: 'left', flexWrap: 'wrap' }}
-                >
-                  {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                  <span style={{ fontSize: 'var(--fs-m)', fontWeight: 600 }} title={fullTime(r.ranAt)}>{relTime(r.ranAt)}</span>
-                  <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>{r.model || '模型未配置'}</span>
-                  {degraded && (
-                    <span style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', border: '1px solid var(--danger)', borderRadius: 6, padding: '0 6px' }}>异常降级</span>
-                  )}
-                  {blockedCount > 0 && (
-                    <span style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', border: '1px solid var(--warn)', borderRadius: 6, padding: '0 6px' }} title={r.blockedBy}>护栏拦截 {blockedCount}</span>
-                  )}
-                  <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
-                    待办 {num(s.pending)}/{num(s.pendingTotal)} · 就绪 {num(s.pendingReady)} · 会话 {num(s.sessions)}（停滞 {num(s.staleSessions)}） · 并发 {num(s.concurrent)}/{num(s.maxConcurrent)}
-                  </span>
-                </button>
-                {open && (
-                  <div style={{ padding: '0 12px 10px 30px', fontSize: 'var(--fs-m)', display: 'grid', gap: 8 }}>
-                    <div style={{ color: 'var(--text-secondary)' }}>
-                      本轮标记：就绪 {num(s.readyMarked)} · 停滞 {num(s.stalledMarked)}；耗时 {num(s.decisionMs)}ms
-                      {s.decisionError ? `；决策错误：${str(s.decisionError)}` : ''}
-                    </div>
-                    <div>
-                      <div style={{ fontWeight: 600, marginBottom: 2 }}>AI 动作（{r.actions.length}）</div>
-                      {r.actions.length === 0 ? <span style={{ color: 'var(--text-muted)' }}>无</span> : (
-                        <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 2 }}>
-                          {r.actions.map(renderActionItem)}
-                        </ul>
-                      )}
-                    </div>
-                    <div>
-                      <div style={{ fontWeight: 600, marginBottom: 2 }}>落地结果（{r.applied.length}）</div>
-                      {r.applied.length === 0 ? <span style={{ color: 'var(--text-muted)' }}>无</span> : (
-                        <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 2 }}>
-                          {r.applied.map(renderAppliedItem)}
-                        </ul>
-                      )}
-                    </div>
-                    {r.blockedBy && <div style={{ color: 'var(--warn)' }}>护栏拦截原因：{r.blockedBy}</div>}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          {runs.map((r) => renderAuditRun(r))}
         </div>
       )}
     </Card>

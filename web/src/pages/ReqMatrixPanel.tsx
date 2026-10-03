@@ -302,6 +302,16 @@ export function ReqMatrixPanel({ projectId, onClose }: {
     </div>
   );
 
+  /** M6-6.4：多选模式的行内勾选单元格（提取以消除 S2004 深嵌套）。 */
+  const renderSelectCell = (r: MatrixReq) => (
+    <td style={{ padding: '4px 6px' }}>
+      <input type="checkbox" checked={selIds.includes(r.id)}
+        onChange={(e) => setSelIds(e.target.checked ? [...selIds, r.id] : selIds.filter((x) => x !== r.id))}
+        aria-label={`选中需求 ${r.title}`} title={`选中 ${r.req_no || ''} ${r.title}`}
+        style={{ cursor: 'pointer' }} />
+    </td>
+  );
+
   const renderMatrixTable = () => (
     rows.length === 0
       ? <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>该项目暂无需求记录——可用「从 PRD 导入项目计划」生成，或在上方手动新增。</div>
@@ -334,14 +344,7 @@ export function ReqMatrixPanel({ projectId, onClose }: {
               {rows.map((r) => (
                 <tr key={r.id} style={{ borderTop: '1px solid var(--border)' }}>
                   {/* T00773：行内勾选框（多选模式下出现） */}
-                  {multi && (
-                    <td style={{ padding: '4px 6px' }}>
-                      <input type="checkbox" checked={selIds.includes(r.id)}
-                        onChange={(e) => setSelIds(e.target.checked ? [...selIds, r.id] : selIds.filter((x) => x !== r.id))}
-                        aria-label={`选中需求 ${r.title}`} title={`选中 ${r.req_no || ''} ${r.title}`}
-                        style={{ cursor: 'pointer' }} />
-                    </td>
-                  )}
+                  {multi && renderSelectCell(r)}
                   <td style={{ padding: '4px 6px', width: 100 }}>
                     <input defaultValue={r.req_no} aria-label="需求编号" title="需求编号（失焦保存）"
                       onBlur={(e) => { if (e.target.value !== r.req_no) void updateReq(r.id, { req_no: e.target.value }); }}
@@ -507,6 +510,7 @@ export function ReqMatrixPanel({ projectId, onClose }: {
           const cur = rows.find((x) => x.id === linkFor);
           if (!cur) return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{busy ? <Loader2 size={12} className="aispin" /> : '需求已变更，请刷新'}</div>;
           // T00825：PRD 为单值关联（radio 风格），计划/待办保持多选勾选
+          // 用 if/else 而非 early-return：让 TS 在 else 分支自然收窄 linkKind 为 'plan' | 'task'（免类型断言 S4325）
           if (linkKind === 'prd') {
             if (prdDocs.length === 0) return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>该项目暂无 PRD 文档可选。</div>;
             return (
@@ -514,18 +518,17 @@ export function ReqMatrixPanel({ projectId, onClose }: {
                 {prdDocs.map((x) => renderPrdDocOption(cur, x))}
               </div>
             );
+          } else {
+            const list = linkKind === 'plan'
+              ? plans.map((p) => ({ id: p.id, label: p.title }))
+              : tasks.map((t) => ({ id: t.id, label: `${t.taskNo ?? '—'} ${t.title}` }));
+            if (list.length === 0) return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>该项目暂无{linkKind === 'plan' ? '计划' : '待办任务'}可选。</div>;
+            return (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxHeight: 180, overflowY: 'auto' }}>
+                {list.map((x) => renderLinkOption(cur, linkKind, x))}
+              </div>
+            );
           }
-          // PRD 分支已在上方 return；此处收窄为 'plan' | 'task'（供 renderLinkOption 形参）
-          const kind = linkKind as 'plan' | 'task';
-          const list = kind === 'plan'
-            ? plans.map((p) => ({ id: p.id, label: p.title }))
-            : tasks.map((t) => ({ id: t.id, label: `${t.taskNo ?? '—'} ${t.title}` }));
-          if (list.length === 0) return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>该项目暂无{kind === 'plan' ? '计划' : '待办任务'}可选。</div>;
-          return (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxHeight: 180, overflowY: 'auto' }}>
-              {list.map((x) => renderLinkOption(cur, kind, x))}
-            </div>
-          );
         })()}
       </div>
     )
