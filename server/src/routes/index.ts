@@ -2091,6 +2091,16 @@ interface PromptGroupBefore {
   title: string;
 }
 
+/** M6-6.4：安全的原始类型→字符串转换。
+ *  提示词分组字段来自不可信 req.body（unknown），直接 String(obj) 会落库 "[object Object]"（S6551）。
+ *  仅接受 string/number/boolean，其余（对象/数组/null/undefined）一律视为未提供。 */
+function primitiveToStr(v: unknown): string | undefined {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  if (typeof v === 'boolean') return v ? '1' : '0';
+  return undefined;
+}
+
 /** M6-6.1：仅当请求涉及分组字段时才读原归属——避免每次改名都多一次查询 */
 function snapshotPromptGroup(db: ReturnType<typeof getDb>, body: PromptPatchBody, id: string): PromptGroupBefore | undefined {
   if (body.categoryId === undefined && body.reqCategoryId === undefined) return undefined;
@@ -2105,12 +2115,15 @@ function buildPromptPatch(body: PromptPatchBody, ts: string): { sets: string[]; 
   if (body.content !== undefined) { sets.push('content = ?'); values.push(body.content); }
   if (body.categoryId !== undefined) { sets.push('category_id = ?'); values.push(body.categoryId); }
   if (body.pinned !== undefined) { sets.push('pinned = ?'); values.push(body.pinned ? 1 : 0); }
-  if (body.color !== undefined) { sets.push('color = ?'); values.push(String(body.color)); }
+  // M6-6.4：先归一取值再单层判断（避免双层嵌套把认知复杂度推高，S3776）
+  const colorStr = primitiveToStr(body.color);
+  if (colorStr !== undefined) { sets.push('color = ?'); values.push(colorStr); }
   if (body.archived !== undefined) {
     sets.push('archived = ?'); values.push(body.archived ? 1 : 0);
     sets.push('archived_at = ?'); values.push(body.archived ? ts : null);
   }
-  if (body.reqCategoryId !== undefined) { sets.push('req_category_id = ?'); values.push(String(body.reqCategoryId)); }
+  const reqCateStr = primitiveToStr(body.reqCategoryId);
+  if (reqCateStr !== undefined) { sets.push('req_category_id = ?'); values.push(reqCateStr); }
   sets.push('updated_at = ?'); values.push(ts);
   return { sets, values };
 }
@@ -2120,8 +2133,9 @@ function logPromptGroupChange(before: PromptGroupBefore | undefined, body: Promp
   if (!before || (body.categoryId === undefined && body.reqCategoryId === undefined)) return;
   const oldCate = before.category_id ?? '无';
   const oldReq = before.req_category_id ?? '无';
-  const newCate = body.categoryId ?? oldCate;
-  const newReq = body.reqCategoryId ?? oldReq;
+  // M6-6.4：分组字段为 unknown，日志用 primitiveToStr 归一（避免 "[object Object]" 进日志）
+  const newCate = primitiveToStr(body.categoryId) ?? oldCate;
+  const newReq = primitiveToStr(body.reqCategoryId) ?? oldReq;
   logService.log('INFO', 'prompt',
     `[提示词分组调整] "${before.title}" 原(提示词分类=${oldCate}，通用需求分类=${oldReq}) → 目标(提示词分类=${newCate}，通用需求分类=${newReq})（操作人留空）`);
 }

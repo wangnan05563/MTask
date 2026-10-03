@@ -45,10 +45,10 @@ function label(row: ExportRow): string {
 function buildMarkdown(rows: ExportRow[]): Buffer {
   const parts: string[] = [`# 任务导出（${rows.length} 条）`, ''];
   for (const r of rows) {
-    parts.push(`## ${r.task_no ? `${r.task_no} · ` : ''}${r.title}`);
-    parts.push('');
-    parts.push(`- 状态：${STATUS_LABEL[r.status] ?? r.status}`);
-    parts.push(`- 优先级：${label(r)}`);
+    // M6-6.4：编号前缀与标题分开拼接（消除嵌套模板字符串 S4624）
+    const noPrefix = r.task_no ? `${r.task_no} · ` : '';
+    const titleHead = `${noPrefix}${r.title}`;
+    parts.push(`## ${titleHead}`, '', `- 状态：${STATUS_LABEL[r.status] ?? r.status}`, `- 优先级：${label(r)}`);
     if (r.category) parts.push(`- 分类：${r.category}`);
     parts.push(`- 创建时间：${r.created_at.slice(0, 19).replace('T', ' ')}`);
     if (r.description) parts.push('', r.description);
@@ -87,19 +87,26 @@ async function buildXlsx(rows: ExportRow[]): Promise<Buffer> {
 async function buildDocx(rows: ExportRow[]): Promise<Buffer> {
   const children: Paragraph[] = [new Paragraph({ text: `任务导出（${rows.length} 条）`, heading: HeadingLevel.TITLE })];
   for (const r of rows) {
-    children.push(new Paragraph({ text: `${r.task_no ? `${r.task_no} · ` : ''}${r.title}`, heading: HeadingLevel.HEADING_1 }));
-    children.push(new Paragraph({ children: [
-      new TextRun({ text: `状态：${STATUS_LABEL[r.status] ?? r.status}　优先级：${label(r)}` }),
-      ...(r.category ? [new TextRun({ text: `　分类：${r.category}` })] : []),
-      new TextRun({ text: `　创建：${r.created_at.slice(0, 19).replace('T', ' ')}`, color: '888888', size: 18 }),
-    ] }));
+    // M6-6.4：编号前缀与标题分开拼接（消除嵌套模板字符串 S4624）
+    const noPrefix = r.task_no ? `${r.task_no} · ` : '';
+    const titleHead = `${noPrefix}${r.title}`;
+    children.push(
+      new Paragraph({ text: titleHead, heading: HeadingLevel.HEADING_1 }),
+      new Paragraph({ children: [
+        new TextRun({ text: `状态：${STATUS_LABEL[r.status] ?? r.status}　优先级：${label(r)}` }),
+        ...(r.category ? [new TextRun({ text: `　分类：${r.category}` })] : []),
+        new TextRun({ text: `　创建：${r.created_at.slice(0, 19).replace('T', ' ')}`, color: '888888', size: 18 }),
+      ] }),
+    );
     if (r.description) {
       children.push(new Paragraph({ text: '描述', heading: HeadingLevel.HEADING_3 }));
       for (const line of r.description.split('\n')) children.push(new Paragraph({ text: line }));
     }
     if (r.handle_result) {
-      children.push(new Paragraph({ text: '处理结果摘要', heading: HeadingLevel.HEADING_3 }));
-      children.push(new Paragraph({ text: r.handle_result.split('\n')[0] }));
+      children.push(
+        new Paragraph({ text: '处理结果摘要', heading: HeadingLevel.HEADING_3 }),
+        new Paragraph({ text: r.handle_result.split('\n')[0] }),
+      );
     }
   }
   const doc = new Document({ sections: [{ children }] });

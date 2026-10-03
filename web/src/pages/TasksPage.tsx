@@ -1835,6 +1835,11 @@ export function TasksPage() {
   /** M6-6.1：展示态标题按钮（自 renderTaskTitle 提取——三重三元与 cursor 判定是复杂度大头） */
   function renderTitleDisplayButton(t: Task, descToggleable: boolean, toggleDesc: () => void, markTitleRead: () => void) {
     const unreadDone = t.status === 'done' && !t.handle_result && t.ai_state === 'unread';
+    // M6-6.4：title 提示文案判定改为平铺分支（消除嵌套三元 S3358）
+    const descTitle = descExpanded[t.id] ? '收起 — 再次点击收起任务描述' : '展开 — 点击查看完整任务描述';
+    let titleAttr: string | undefined;
+    if (descToggleable) titleAttr = descTitle;
+    else if (unreadDone) titleAttr = '点击消除未读状态';
     return (
       // T00918：已完成且无处理结果反馈的任务，其标题行常无「描述/处理结果」展开入口可点，
       // 未读红点无处置除；故点击标题本身即视为「已查看」，清除该任务未读状态（仅覆盖此场景，不影响已填反馈任务）
@@ -1844,7 +1849,7 @@ export function TasksPage() {
         onClick={descToggleable ? toggleDesc : markTitleRead}
         aria-expanded={descToggleable ? descExpanded[t.id] ?? false : undefined}
         aria-controls={descToggleable ? `task-desc-${t.id}` : undefined}
-        title={descToggleable ? (descExpanded[t.id] ? '收起 — 再次点击收起任务描述' : '展开 — 点击查看完整任务描述') : (unreadDone ? '点击消除未读状态' : undefined)}
+        title={titleAttr}
         style={{ flex: 1, background: 'none', border: 'none', padding: 0, font: 'inherit', textAlign: 'left', textDecoration: t.status === 'done' ? 'line-through' : 'none', color: t.color || 'var(--text)', cursor: descToggleable || unreadDone ? 'pointer' : 'default' }}
       >
         {t.title}
@@ -2383,10 +2388,12 @@ export function TasksPage() {
 
   /** M6-6.1：描述板块（grid 展开动画 + 时间线/预览，仅展开态渲染重内容） */
   function renderDescSection(t: Task): React.ReactNode {
+    // M6-6.4：aria-label 拼接提取为独立变量（消除嵌套模板字符串 S4624）
+    const descAriaLabel = t.task_no ? `任务描述（${t.task_no}）` : '任务描述';
     return (
       <section
         id={`task-desc-${t.id}`}
-        aria-label={`任务描述${t.task_no ? `（${t.task_no}）` : ''}`}
+        aria-label={descAriaLabel}
         onTransitionEnd={(e) => { if (e.target === e.currentTarget && e.propertyName === 'grid-template-rows' && !descExpanded[t.id]) setDescVis((p) => { const n = { ...p }; delete n[t.id]; return n; }); }}
         style={{ display: 'grid', gridTemplateRows: descExpanded[t.id] ? '1fr' : '0fr', opacity: descExpanded[t.id] ? 1 : 0, transition: 'grid-template-rows 240ms ease-in-out, opacity 200ms ease-in-out', overflow: 'hidden' }}
       >

@@ -2,11 +2,10 @@
  * 移动端：队列（只读视图，§5.3）。卡片列出队列与各 Job 状态徽标；
  * 不提供增删改排，操作区超链接「在桌面端编排」。
  */
-import { pageStyle as page, tapCardStyle as card, mutedStyle as muted, cardStyle as jobCard } from './ui';
+import { pageStyle as page, tapCardStyle as card, cardStyle as jobCard, Badge, EmptyState, PullRefresh, Skeleton } from './ui';
 import { useEffect, useRef, useState } from 'react';
 import { api, type Queue, type QueueJob } from '../api/client';
 import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
-import { Badge, EmptyState, PullRefresh, Skeleton } from './ui';
 import { Copy, ExternalLink } from 'lucide-react';
 
 interface Props { readonly notify: (msg: string, isErr?: boolean) => void; readonly openDesktop: () => void; }

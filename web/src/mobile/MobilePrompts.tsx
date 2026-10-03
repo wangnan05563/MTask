@@ -1,7 +1,7 @@
 /**
  * 移动端：提示词（取用 / 复制，§5.3）。分类 → 提示词列表；点击复制全文，Toast「已复制」，便于粘贴到他处。
  */
-import { EmptyState, pageStyle as page, bodyStyle as body, cardStyle as card, mutedStyle as muted } from './ui';
+import { EmptyState, pageStyle as page, bodyStyle as body, cardStyle as card } from './ui';
 import { useEffect, useState } from 'react';
 import { api, type Prompt, type PromptCategory } from '../api/client';
 import { Copy, ChevronDown, ChevronUp } from 'lucide-react';

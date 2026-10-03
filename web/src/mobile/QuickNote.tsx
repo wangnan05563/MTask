@@ -51,25 +51,25 @@ export function parseQuickSyntax(raw: string, projects: { id: string; name: stri
   let dueNote: string | undefined;
 
   const prioMap: Record<string, string> = { urgent: 'urgent', high: 'high', normal: 'normal', low: 'low', 紧急: 'urgent', 高: 'high', 普通: 'normal', 低: 'low' };
-  text = text.replace(/(^|\s)!([a-zA-Z一-龥]{2,6})(?=\s|$)/g, (m, pre, word) => {
+  text = text.replaceAll(/(^|\s)!([a-zA-Z一-龥]{2,6})(?=\s|$)/g, (m, pre, word) => {
     const key = word.toLowerCase();
     if (prioMap[key]) { priority = prioMap[key]; return pre; }
     return m;
   });
-  text = text.replace(/(^|\s)#([^\s#@!]+)(?=\s|$)/g, (m, pre, name) => {
+  text = text.replaceAll(/(^|\s)#([^\s#@!]+)(?=\s|$)/g, (m, pre, name) => {
     const p = projects.find((x) => x.name === name);
     if (p) { projectId = p.id; return pre; }
     return m;
   });
-  text = text.replace(/(^|\s)@([^\s#@!]+)(?=\s|$)/g, (m, pre, name) => {
+  text = text.replaceAll(/(^|\s)@([^\s#@!]+)(?=\s|$)/g, (m, pre, name) => {
     const c = categories.find((x) => x.name === name);
     if (c) { categoryId = c.id; return pre; }
     return m;
   });
-  const dueMatch = text.match(/(^|\s)(今天|明天|后天|大后天|周[一二三四五六日天])(?=\s|$)/);
+  const dueMatch = /(^|\s)(今天|明天|后天|大后天|周[一二三四五六日天])(?=\s|$)/.exec(text);
   if (dueMatch) { dueNote = dueMatch[2]; text = text.replace(dueMatch[0], dueMatch[1]); }
 
-  return { title: text.replace(/\s{2,}/g, ' ').trim(), priority, projectId, categoryId, dueNote };
+  return { title: text.replaceAll(/\s{2,}/g, ' ').trim(), priority, projectId, categoryId, dueNote };
 }
 
 export function QuickNote({ onDone, onCancel, notify }: Props) {

@@ -3,13 +3,12 @@
  * 配置记录管理 / 归档 / 周报 / 日志 / 设置。点按进入只读视图或引导桌面端。
  * 设置子页含：隧道连接状态、默认记事项目、主题、退出（清除本机令牌）。
  */
-import { pageStyle as page, tapCardStyle as row, cardStyle as card, mutedStyle as muted } from './ui';
+import { pageStyle as page, tapCardStyle as row, cardStyle as card, mutedStyle as muted, EmptyState, Skeleton } from './ui';
 import { useEffect, useRef, useState } from 'react';
 import { api, setAccessToken, type AITool, type Project, type Task } from '../api/client';
 import { useSettings } from '../settings';
 import { Boxes, Archive, BarChart3, Terminal, Activity, Settings, ExternalLink, LogOut, Moon, Sun, Monitor, ChevronRight } from 'lucide-react';
 import { MobileExecSessions } from './MobileExecSessions';
-import { EmptyState, Skeleton } from './ui';
 
 interface Props { readonly notify: (msg: string, isErr?: boolean) => void; readonly openDesktop: () => void; }
 
@@ -23,6 +22,13 @@ const ITEMS: { key: Sub; label: string; icon: typeof Boxes; desc: string }[] = [
   { key: 'logs', label: '日志', icon: Terminal, desc: '后台运行日志' },
   { key: 'settings', label: '设置', icon: Settings, desc: '连接 / 默认项目 / 退出' },
 ];
+
+/** M6-6.4：base64url → Uint8Array（Web Push 订阅公钥解码）。模块级函数，供 togglePush 复用。 */
+function b64ToUint8(b64: string): Uint8Array {
+  const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replaceAll('-', '+').replaceAll('_', '/'));
+  return Uint8Array.from(raw, (c) => c.codePointAt(0) ?? 0);
+}
 
 export function MobileMore({ notify, openDesktop }: Props) {
   const [sub, setSub] = useState<Sub>('root');
@@ -177,7 +183,7 @@ function ReportView({ openDesktop }: { readonly openDesktop: () => void }) {
   return (
     <div style={card}>
       <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 10 }}>本周摘要</div>
-      {!stats ? <div style={muted}>统计加载中…</div> : (
+      {stats ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {rows.map((r) => (
             <div key={r.label}>
@@ -191,7 +197,7 @@ function ReportView({ openDesktop }: { readonly openDesktop: () => void }) {
             </div>
           ))}
         </div>
-      )}
+      ) : <div style={muted}>统计加载中…</div>}
       <div style={{ marginTop: 12 }}><button onClick={openDesktop} style={deskBtn}><ExternalLink size={14} /> 完整周报在桌面端生成</button></div>
     </div>
   );
@@ -238,18 +244,13 @@ function SettingsView({ notify, openDesktop, theme, setTheme, accent, setAccent,
   const [pushState, setPushState] = useState<'unsupported' | 'off' | 'on'>('off');
   useEffect(() => {
     void (async () => {
-      if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) { setPushState('unsupported'); return; }
+      if (!('serviceWorker' in navigator) || !('PushManager' in globalThis) || !('Notification' in globalThis)) { setPushState('unsupported'); return; }
       try {
         const reg = await navigator.serviceWorker.ready;
         setPushState((await reg.pushManager.getSubscription()) ? 'on' : 'off');
       } catch { setPushState('off'); }
     })();
   }, []);
-  function b64ToUint8(b64: string): Uint8Array {
-    const pad = '='.repeat((4 - (b64.length % 4)) % 4);
-    const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
-    return Uint8Array.from(raw, (c) => c.charCodeAt(0));
-  }
   async function togglePush() {
     try {
       if (pushState === 'on') {

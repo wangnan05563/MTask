@@ -4,7 +4,7 @@
  * failed 会话一键重派（复用任务 retry API，回待办等待重新领取）。
  */
 import { useCallback, useEffect, useState } from 'react';
-import { api, type Task } from '../api/client';
+import { api } from '../api/client';
 import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
 import { Badge, bodyStyle, cardStyle, EmptyState, type BadgeTone } from './ui';
 
@@ -142,4 +142,5 @@ export async function fetchExecSessionBadge(): Promise<{ failed: number; active:
   } catch { return { failed: 0, active: 0 }; }
 }
 
-export type { ExecSessionView, Task };
+export type { ExecSessionView };
+export type { Task } from '../api/client';

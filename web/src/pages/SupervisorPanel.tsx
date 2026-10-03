@@ -408,6 +408,32 @@ export function SupervisorPanel() {
     </Card>
   );
 
+  /** M6-6.4：审计「AI 动作」单行（提取以消除 S2004 深嵌套）。 */
+  const renderActionItem = (a: unknown, i: number) => {
+    const o = (a ?? {}) as Record<string, unknown>;
+    const type = str(o.type);
+    return (
+      <li key={`${i}-${str(o.taskId)}`} style={{ display: 'flex', gap: 8 }}>
+        <span style={{ color: ACTION_COLOR[type] ?? 'var(--text)', fontWeight: 600, minWidth: 88 }}>{type || '—'}</span>
+        <span style={{ color: 'var(--text-secondary)' }}>{str(o.taskId) || '（全局）'}</span>
+        <span style={{ color: 'var(--text-secondary)' }}>{str(o.reason)}</span>
+      </li>
+    );
+  };
+
+  /** M6-6.4：审计「落地结果」单行（提取以消除 S2004 深嵌套）。 */
+  const renderAppliedItem = (a: unknown, i: number) => {
+    const o = (a ?? {}) as Record<string, unknown>;
+    const st = str(o.status);
+    return (
+      <li key={`${i}-${str(o.detail)}`} style={{ display: 'flex', gap: 8 }}>
+        <span style={{ color: OUTCOME_COLOR[st] ?? 'var(--text)', fontWeight: 600, minWidth: 60 }}>{st || '—'}</span>
+        <span style={{ color: 'var(--text-secondary)' }}>{str(o.type)}</span>
+        <span style={{ color: 'var(--text-secondary)' }}>{str(o.detail)}{o.createdTaskNo ? `（新任务 ${str(o.createdTaskNo)}）` : ''}</span>
+      </li>
+    );
+  };
+
   const renderAuditCard = () => (
     <Card title="监督审计" icon={<AlertTriangle size={14} />} extra={<span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>最近 {runs.length} 条决策轮次</span>}>
       {runs.length === 0 ? (
@@ -452,17 +478,7 @@ export function SupervisorPanel() {
                       <div style={{ fontWeight: 600, marginBottom: 2 }}>AI 动作（{r.actions.length}）</div>
                       {r.actions.length === 0 ? <span style={{ color: 'var(--text-muted)' }}>无</span> : (
                         <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 2 }}>
-                          {r.actions.map((a, i) => {
-                            const o = (a ?? {}) as Record<string, unknown>;
-                            const type = str(o.type);
-                            return (
-                              <li key={`${i}-${str(o.taskId)}`} style={{ display: 'flex', gap: 8 }}>
-                                <span style={{ color: ACTION_COLOR[type] ?? 'var(--text)', fontWeight: 600, minWidth: 88 }}>{type || '—'}</span>
-                                <span style={{ color: 'var(--text-secondary)' }}>{str(o.taskId) || '（全局）'}</span>
-                                <span style={{ color: 'var(--text-secondary)' }}>{str(o.reason)}</span>
-                              </li>
-                            );
-                          })}
+                          {r.actions.map(renderActionItem)}
                         </ul>
                       )}
                     </div>
@@ -470,17 +486,7 @@ export function SupervisorPanel() {
                       <div style={{ fontWeight: 600, marginBottom: 2 }}>落地结果（{r.applied.length}）</div>
                       {r.applied.length === 0 ? <span style={{ color: 'var(--text-muted)' }}>无</span> : (
                         <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 2 }}>
-                          {r.applied.map((a, i) => {
-                            const o = (a ?? {}) as Record<string, unknown>;
-                            const st = str(o.status);
-                            return (
-                              <li key={`${i}-${str(o.detail)}`} style={{ display: 'flex', gap: 8 }}>
-                                <span style={{ color: OUTCOME_COLOR[st] ?? 'var(--text)', fontWeight: 600, minWidth: 60 }}>{st || '—'}</span>
-                                <span style={{ color: 'var(--text-secondary)' }}>{str(o.type)}</span>
-                                <span style={{ color: 'var(--text-secondary)' }}>{str(o.detail)}{o.createdTaskNo ? `（新任务 ${str(o.createdTaskNo)}）` : ''}</span>
-                              </li>
-                            );
-                          })}
+                          {r.applied.map(renderAppliedItem)}
                         </ul>
                       )}
                     </div>

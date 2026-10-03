@@ -64,7 +64,7 @@ export function isAllowedOrigin(origin: string): boolean {
   const th = tunnelHost();
   if (th && (o === `https://${th}` || o === `http://${th}`)) return true;
   // 显式白名单
-  return envAllowed().some((e) => o === e);
+  return envAllowed().includes(o);
 }
 
 /** 手动解析 Cookie（项目未引入 cookie-parser，避免为 strict 模式加依赖） */

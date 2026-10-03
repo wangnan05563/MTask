@@ -457,6 +457,33 @@ export function ReqMatrixPanel({ projectId, onClose }: {
       )
   );
 
+  /** M6-6.4：PRD 单选按钮（提取以消除 S2004 深嵌套）。 */
+  const renderPrdDocOption = (cur: MatrixReq, x: { id: string; filename: string }) => {
+    const on = cur.prdDoc?.id === x.id;
+    return (
+      <button key={x.id} onClick={() => void setPrdLink(cur.id, x.id, !on)} className="tbtn-anim"
+        title={on ? `解除与「${x.filename}」的关联` : `关联到「${x.filename}」`}
+        aria-label={on ? `解除关联 PRD ${x.filename}` : `关联 PRD ${x.filename}`}
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer', border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 6, padding: '2px 8px', background: on ? 'var(--accent-soft, transparent)' : 'transparent', color: on ? 'var(--accent)' : 'var(--text)', maxWidth: 260 }}>
+        {on && <Check size={11} />}
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{x.filename || '未命名 PRD'}</span>
+      </button>
+    );
+  };
+
+  /** M6-6.4：计划/待办多选勾选项（提取以消除 S2004 深嵌套）。kind 显式传参避免 'prd' 分支的类型污染。 */
+  const renderLinkOption = (cur: MatrixReq, kind: 'plan' | 'task', x: { id: string; label: string }) => {
+    const linkedIds = kind === 'plan' ? cur.linkedPlans.map((y) => y.id) : cur.linkedTasks.map((y) => y.id);
+    const on = linkedIds.includes(x.id);
+    return (
+      <label key={x.id} title={x.label} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--text)', cursor: 'pointer', border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 6, padding: '2px 8px', maxWidth: 260 }}>
+        <input type="checkbox" checked={on} onChange={(e) => void toggleLink(cur.id, kind, x.id, e.target.checked)} style={{ cursor: 'pointer' }} />
+        {on && <Check size={11} style={{ color: 'var(--accent)' }} />}
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{x.label}</span>
+      </label>
+    );
+  };
+
   const renderLinkPanel = () => (
     linkFor && (
       <div style={{ marginTop: 10, border: '1px solid var(--border-strong)', borderRadius: 8, padding: 10, background: 'var(--surface-2, transparent)' }}>
@@ -484,38 +511,19 @@ export function ReqMatrixPanel({ projectId, onClose }: {
             if (prdDocs.length === 0) return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>该项目暂无 PRD 文档可选。</div>;
             return (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxHeight: 180, overflowY: 'auto' }}>
-                {prdDocs.map((x) => {
-                  const on = cur.prdDoc?.id === x.id;
-                  return (
-                    <button key={x.id} onClick={() => void setPrdLink(cur.id, x.id, !on)} className="tbtn-anim"
-                      title={on ? `解除与「${x.filename}」的关联` : `关联到「${x.filename}」`}
-                      aria-label={on ? `解除关联 PRD ${x.filename}` : `关联 PRD ${x.filename}`}
-                      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer', border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 6, padding: '2px 8px', background: on ? 'var(--accent-soft, transparent)' : 'transparent', color: on ? 'var(--accent)' : 'var(--text)', maxWidth: 260 }}>
-                      {on && <Check size={11} />}
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{x.filename || '未命名 PRD'}</span>
-                    </button>
-                  );
-                })}
+                {prdDocs.map((x) => renderPrdDocOption(cur, x))}
               </div>
             );
           }
-          const linkedIds = linkKind === 'plan' ? cur.linkedPlans.map((x) => x.id) : cur.linkedTasks.map((x) => x.id);
-          const list = linkKind === 'plan'
+          // PRD 分支已在上方 return；此处收窄为 'plan' | 'task'（供 renderLinkOption 形参）
+          const kind = linkKind as 'plan' | 'task';
+          const list = kind === 'plan'
             ? plans.map((p) => ({ id: p.id, label: p.title }))
             : tasks.map((t) => ({ id: t.id, label: `${t.taskNo ?? '—'} ${t.title}` }));
-          if (list.length === 0) return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>该项目暂无{linkKind === 'plan' ? '计划' : '待办任务'}可选。</div>;
+          if (list.length === 0) return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>该项目暂无{kind === 'plan' ? '计划' : '待办任务'}可选。</div>;
           return (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxHeight: 180, overflowY: 'auto' }}>
-              {list.map((x) => {
-                const on = linkedIds.includes(x.id);
-                return (
-                  <label key={x.id} title={x.label} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--text)', cursor: 'pointer', border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 6, padding: '2px 8px', maxWidth: 260 }}>
-                    <input type="checkbox" checked={on} onChange={(e) => void toggleLink(cur.id, linkKind, x.id, e.target.checked)} style={{ cursor: 'pointer' }} />
-                    {on && <Check size={11} style={{ color: 'var(--accent)' }} />}
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{x.label}</span>
-                  </label>
-                );
-              })}
+              {list.map((x) => renderLinkOption(cur, kind, x))}
             </div>
           );
         })()}

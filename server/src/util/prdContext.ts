@@ -85,11 +85,10 @@ function trimPrdContent(content: string, docId: string): string {
  */
 export function resolvePrdContext(target: { taskId?: string; planId?: string; requirementId?: string }): PrdContext | null {
   const db = getDb();
-  const hit = target.requirementId
-    ? hitByRequirement(db, target.requirementId)
-    : target.taskId || target.planId
-      ? hitByTargetRow(db, target.taskId, target.planId)
-      : null;
+  // M6-6.4：三级命中判定展开为显式分支（原为嵌套三元，S3358）
+  let hit: PrdHit | null = null;
+  if (target.requirementId) hit = hitByRequirement(db, target.requirementId);
+  else if (target.taskId || target.planId) hit = hitByTargetRow(db, target.taskId, target.planId);
   if (!hit) return null;
   const doc = db.prepare('SELECT id, filename, content_md FROM prd_docs WHERE id = ?').get(hit.prdId) as { id: string; filename: string; content_md: string } | undefined;
   if (!doc) return null;

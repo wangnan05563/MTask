@@ -41,7 +41,7 @@ const badgeTones: Record<BadgeTone, CSSProperties> = {
 };
 
 /** 徽标基元：小号圆角标签 */
-export function Badge({ tone = 'neutral', children, style }: { tone?: BadgeTone; children: ReactNode; style?: CSSProperties }) {
+export function Badge({ tone = 'neutral', children, style }: Readonly<{ tone?: BadgeTone; children: ReactNode; style?: CSSProperties }>) {
   return <span style={{ fontSize: 11, borderRadius: 6, padding: '2px 6px', border: '1px solid transparent', ...badgeTones[tone], ...style }}>{children}</span>;
 }
 
@@ -49,7 +49,7 @@ export function Badge({ tone = 'neutral', children, style }: { tone?: BadgeTone;
  *  遮罩点击 / Esc 关闭；挂载于普通文档流外（fixed），打开时才渲染。
  *  结构注意：遮罩与 dialog 必须平级——若 dialog 处于 aria-hidden 遮罩内部，
  *  整个抽屉会被无障碍树剔除（T01423 实测）。 */
-export function HalfSheet({ open, title, onClose, children }: { open: boolean; title?: string; onClose: () => void; children: ReactNode }) {
+export function HalfSheet({ open, title, onClose, children }: Readonly<{ open: boolean; title?: string; onClose: () => void; children: ReactNode }>) {
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -83,7 +83,7 @@ export function HalfSheet({ open, title, onClose, children }: { open: boolean; t
 
 /** 下拉刷新容器：顶部下拉超过阈值（55px）触发 onRefresh；指示器内建。
  *  内部滚动，外层不再需要 overflowY。 */
-export function PullRefresh({ onRefresh, children }: { onRefresh: () => Promise<void> | void; children: ReactNode }) {
+export function PullRefresh({ onRefresh, children }: Readonly<{ onRefresh: () => Promise<void> | void; children: ReactNode }>) {
   const [pullY, setPullY] = useState(0);
   const startY = useRef<number | null>(null);
   const refreshing = useRef(false);
@@ -120,7 +120,7 @@ export function PullRefresh({ onRefresh, children }: { onRefresh: () => Promise<
 /** 骨架屏：弱网初载占位（行式），样式全部走 CSS 变量。
  *  M6-6.3：占位行键取自模块级常量数组（map 回调不出现索引变量，规避 S6479） */
 const SKEL_KEYS = Array.from({ length: 24 }, (_, i) => `skel-${i}`);
-export function Skeleton({ rows = 3, card = false }: { rows?: number; card?: boolean }) {
+export function Skeleton({ rows = 3, card = false }: Readonly<{ rows?: number; card?: boolean }>) {
   return (
     <div aria-hidden="true">
       <style>{'@keyframes mtask-skel { 0%, 100% { opacity: .4 } 50% { opacity: .85 } }'}</style>
@@ -151,9 +151,9 @@ registerDict('en', {
 });
 
 /** 空态统一组件：图标 + 一句话（i18n）+ 可选行动按钮 */
-export function EmptyState({ icon = '📝', message, hint, actionLabel, onAction }: {
+export function EmptyState({ icon = '📝', message, hint, actionLabel, onAction }: Readonly<{
   icon?: string; message: string; hint?: string; actionLabel?: string; onAction?: () => void;
-}) {
+}>) {
   return (
     <div style={{ textAlign: 'center', padding: '48px 12px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
       <div style={{ fontSize: 40 }} aria-hidden="true">{icon}</div>

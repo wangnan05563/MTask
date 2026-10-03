@@ -3,8 +3,7 @@
  * 随手记入口为底栏中央「随手记」Plus（T01388：首页悬浮 FAB 已移除，避免同屏双加号）。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, imageUrl, type Project, type Task, type TaskCategory } from '../api/client';
-import { Plus } from 'lucide-react';
+import { api, type Project, type Task, type TaskCategory } from '../api/client';
 import { Badge, EmptyState, headerStyle, pageStyle, PullRefresh, rowStyle, Skeleton } from './ui';
 import { MobileTaskDetail } from './MobileTaskDetail';
 import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
@@ -136,10 +135,11 @@ export function MobileHome({ onQuickNote, notify }: Props) {
       let pid = '';
       try { pid = (await api.get<{ projectId: string }>('/settings/note-project')).projectId; } catch { /* 忽略 */ }
       if (!list.some((p) => p.id === pid)) pid = list[0]?.id ?? '';
-      if (!pid) {
-        try { pid = localStorage.getItem('mtask.mobile.lastProject') ?? ''; } catch { /* 忽略 */ }
-      } else {
+      // M6-6.4：正条件前置（S7735）——有默认项目则记住，否则回落上次缓存
+      if (pid) {
         try { localStorage.setItem('mtask.mobile.lastProject', pid); } catch { /* 忽略 */ }
+      } else {
+        try { pid = localStorage.getItem('mtask.mobile.lastProject') ?? ''; } catch { /* 忽略 */ }
       }
       if (!pid) return;
       setProjectId(pid);
@@ -154,6 +154,23 @@ export function MobileHome({ onQuickNote, notify }: Props) {
     } catch (e) { notify(e instanceof Error ? e.message : String(e)); }
   }
 
+  /** M6-6.4：行滑动视觉样式。抽出以消除 JSX 中的嵌套三元（S3358）。 */
+  function rowVisualStyle(id: string): React.CSSProperties {
+    const base: React.CSSProperties = {
+      ...rowStyle,
+      touchAction: 'pan-y',
+      position: 'relative',
+      overflow: 'hidden',
+    };
+    if (swipe?.id !== id) {
+      return { ...base, transition: 'transform .18s ease' };
+    }
+    // 左滑（dx<0）表示「完成」意图 → success 色；右滑 → accent 色
+    const bg = swipe.dx < 0
+      ? 'color-mix(in srgb, var(--success) 12%, transparent)'
+      : 'color-mix(in srgb, var(--accent) 12%, transparent)';
+    return { ...base, transform: `translateX(${swipe.dx * 0.35}px)`, transition: 'none', background: bg };
+  }
 
   return (
     <div style={pageStyle}>
@@ -163,7 +180,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
           {/* T01435：统计 chips 化——待办/需关注两级信息层级，需关注与告警条同一过滤语义 */}
           <div className="zen-hide" style={{ display: 'flex', gap: 6, marginTop: 4 }}>
             <button onClick={() => setAlertFilter(false)} aria-pressed={!alertFilter}
-              style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, cursor: 'pointer', border: '1px solid ' + (!alertFilter ? 'var(--accent)' : 'var(--border-strong)'), background: !alertFilter ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)' }}>
+              style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, cursor: 'pointer', border: '1px solid ' + (alertFilter ? 'var(--border-strong)' : 'var(--accent)'), background: alertFilter ? 'transparent' : 'var(--accent-soft)', color: 'var(--text)' }}>
               待办 {todoTotal}
             </button>
             <button onClick={() => setAlertFilter(true)} aria-pressed={alertFilter}
@@ -220,7 +237,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
               onTouchMove={(e) => onRowTouchMove(e, t.id)}
               onTouchEnd={() => onRowTouchEnd(t)}
               onTouchCancel={() => { swipeRef.current = null; swipeStart.current = null; setSwipe(null); }}
-              style={{ ...rowStyle, touchAction: 'pan-y', position: 'relative', overflow: 'hidden', transform: swipe?.id === t.id ? `translateX(${swipe.dx * 0.35}px)` : undefined, transition: swipe?.id === t.id ? 'none' : 'transform .18s ease', background: swipe?.id === t.id ? (swipe.dx < 0 ? 'color-mix(in srgb, var(--success) 12%, transparent)' : 'color-mix(in srgb, var(--accent) 12%, transparent)') : undefined }}
+              style={rowVisualStyle(t.id)}
             >
               <button onClick={() => void toggleDone(t)} title="切换完成" aria-label="切换完成" style={checkBtn}>
                 {t.status === 'todo' ? '☐' : '☑'}
