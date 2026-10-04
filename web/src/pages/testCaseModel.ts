@@ -133,6 +133,44 @@ export interface CaseBatchFields {
 export const PAGE_SIZE_OPTIONS = [200, 500, 0] as const;
 export const PAGE_SIZE_LABELS: Record<number, string> = { 200: '200/页', 500: '500/页', 0: '全部' };
 
+/**
+ * T01495（PRD §11 性能）：全部模式一次性取全量，>1000 条时上千行「输入框 + 下拉」控件会把主线程压死。
+ * 仅对「全部」模式（`pageSize===0`）且已载入行数 `>1000` 窗口化渲染——**分页档位（200/500）恒不触发**（每页本就 ≤500 行，
+ * 加虚拟滚动是 PRD 明令避免的过度设计）。窗口计算与触发判定都是纯函数，脱离 DOM 可单测（见 t01495 探针）。
+ */
+export const VIRTUAL_THRESHOLD = 1000;
+/** 折叠行固定行高（行内输入框单行 + 上下 padding，主 `<tr>` 显式设高保证窗口数学不漂） */
+export const VIRTUAL_ROW_H = 32;
+/** 虚拟滚动视口高度（约 20 行；决定一次实际渲染的 DOM 行数上界，与总条数无关） */
+export const VIRTUAL_VIEWPORT_H = 640;
+/** 视口上下各多渲染的行数，缓冲快速滚动时的空白 */
+export const VIRTUAL_OVERSCAN = 8;
+
+/** 是否进入虚拟滚动：仅「全部」模式且 >1000 行（分页模式恒 false，勿过度设计） */
+export function shouldVirtualize(pageSize: number, rowCount: number): boolean {
+  return pageSize === 0 && rowCount > VIRTUAL_THRESHOLD;
+}
+
+/** 窗口切片结果：`[start,end)` 渲染，`padTop/padBottom` 用等高占位撑出真实滚动区间 */
+export interface VWindow { start: number; end: number; padTop: number; padBottom: number; }
+
+/**
+ * 固定行高窗口计算。渲染行数上界 = 视口行 + 2×overscan，与 `rowCount` 无关——
+ * 这正是本单唯一要证的「大列表 DOM 行数不再随条数线性增长」；总占位高度恒等于 `rowCount*rowH`，
+ * 故滚动条长度与全量渲染一致，不会出现「滚到底发现还有一截」的错位。
+ */
+export function computeWindow(
+  scrollTop: number, rowCount: number,
+  rowH: number = VIRTUAL_ROW_H, viewportH: number = VIRTUAL_VIEWPORT_H, overscan: number = VIRTUAL_OVERSCAN,
+): VWindow {
+  if (rowCount <= 0) return { start: 0, end: 0, padTop: 0, padBottom: 0 };
+  const first = Math.max(0, Math.floor(scrollTop / rowH));
+  const visible = Math.ceil(viewportH / rowH);
+  const start = Math.min(rowCount, Math.max(0, first - overscan));
+  const end = Math.min(rowCount, first + visible + overscan);
+  return { start, end, padTop: start * rowH, padBottom: Math.max(0, (rowCount - end) * rowH) };
+}
+
 /** 执行结果着色（§7.3 列 8）：pass→success，fail→danger，blocked/skip→muted */
 export const RESULT_COLOR: Record<string, string> = {
   pass: 'var(--success)',

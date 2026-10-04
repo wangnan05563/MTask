@@ -11,7 +11,8 @@ import { Fragment, useState } from 'react';
 import { ChevronDown, ChevronUp, Copy, GripVertical, Plus, Trash2 } from 'lucide-react';
 import {
   BTN, CELL_INPUT, CHIP, ICON_BTN, PAGE_SIZE_LABELS, PAGE_SIZE_OPTIONS, RESULT_COLOR, TH, TH_TD,
-  enumLabel, type CaseMeta, type CasePatchBody, type CaseRow, type CaseScope, type ReqLite,
+  VIRTUAL_ROW_H, VIRTUAL_THRESHOLD, VIRTUAL_VIEWPORT_H, computeWindow, enumLabel, shouldVirtualize,
+  type CaseMeta, type CasePatchBody, type CaseRow, type CaseScope, type ReqLite,
 } from './testCaseModel';
 
 /** chip 文本截断（§9.1 关联 chip：>14 字截断） */
@@ -58,8 +59,13 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
 }) {
   // 拖拽起点只在一次 DOM 交互内有效（松手即失效），不属于「切页后要恢复」的用户可感知状态，故用 useState
   const [dragFrom, setDragFrom] = useState(-1);
+  // T01495：滚动位置是瞬时视图态（不进会话态，刷新回顶部即可），仅「全部 >1000」虚拟模式读取它算窗口
+  const [scrollTop, setScrollTop] = useState(0);
   const colSpan = multi ? 11 : 10;
   const pageCount = pageSize > 0 ? Math.max(1, Math.ceil(total / pageSize)) : 1;
+  // 仅「全部」模式（pageSize=0）且载入 >1000 行才窗口化；分页档位恒为 false（勿过度设计）
+  const virtual = shouldVirtualize(pageSize, rows.length);
+  const win = virtual ? computeWindow(scrollTop, rows.length) : null;
 
   /** 关联需求单元格：chip（点击下钻矩阵）+「换」（改关联/解除） */
   const renderReqCell = (row: CaseRow) => {
@@ -105,12 +111,12 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
   );
 
   const renderRow = (row: CaseRow) => {
-    const opened = expandedId === row.id;
+    const opened = !virtual && expandedId === row.id; // T01495：>1000 虚拟模式下关闭行内展开（步骤编辑请切分页/按需求筛选后进行）
     // 每行渲染「主行 + 可选展开行」两个 <tr>，故用 Fragment 包一层；key 必须挂在 Fragment 上，
     // 否则列表缺 key 会让 React 按下标复用节点——排序/分页变动时行内输入框的脏值会串到别的用例上
     return (
       <Fragment key={row.id}>
-        <tr style={{ borderTop: '1px solid var(--border)' }}>
+        <tr style={{ borderTop: '1px solid var(--border)', ...(virtual ? { height: VIRTUAL_ROW_H } : {}) }}>
           {multi && (
             <td style={TH_TD}>
               <input type="checkbox" checked={selIds.includes(row.id)} onChange={() => onToggleSel(row.id)}
@@ -127,10 +133,10 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
               <input defaultValue={row.title} disabled={busy} aria-label="用例标题" title="用例标题（失焦保存）；点右侧箭头展开详情与步骤"
                 onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== row.title) onPatch(row.id, { title: v }, '已改标题'); }}
                 style={{ ...CELL_INPUT, flex: 1, minWidth: 150 }} />
-              <button onClick={() => onToggleExpand(row.id)} className="tbtn-anim"
-                title={opened ? '收起详情与步骤' : '展开详情与步骤\n（前置/数据/预期/后置 + 步骤增删排序）'}
+              <button onClick={virtual ? undefined : () => onToggleExpand(row.id)} disabled={virtual} className="tbtn-anim"
+                title={virtual ? '全部模式(>1000)为性能关闭行内展开——编辑步骤请切 200/500 分页或按需求筛选' : opened ? '收起详情与步骤' : '展开详情与步骤\n（前置/数据/预期/后置 + 步骤增删排序）'}
                 aria-label={`展开用例 ${row.case_no} 详情`} aria-expanded={opened}
-                style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: opened ? 'var(--accent)' : 'var(--text-muted)', padding: 2, display: 'inline-flex', flexShrink: 0 }}>
+                style={{ border: 'none', background: 'transparent', cursor: virtual ? 'default' : 'pointer', color: opened ? 'var(--accent)' : 'var(--text-muted)', padding: 2, display: 'inline-flex', flexShrink: 0, opacity: virtual ? 0.4 : 1 }}>
                 {opened ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
               </button>
             </div>
@@ -148,10 +154,10 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
           {renderEnumCell(row, 'status', meta?.status ?? [], 'statusLabel', 96, '状态')}
           {renderEnumCell(row, 'lastResult', meta?.result ?? [], 'resultLabel', 96, '执行结果', RESULT_COLOR[row.last_result] ?? 'var(--text)')}
           <td style={{ ...TH_TD, width: 70, textAlign: 'center' }}>
-            <button onClick={() => onToggleExpand(row.id)} className="tbtn-anim"
-              title={`步骤 ${row.steps.length} 条 — 点击${opened ? '收起' : '展开'}行内编辑`}
+            <button onClick={virtual ? undefined : () => onToggleExpand(row.id)} disabled={virtual} className="tbtn-anim"
+              title={virtual ? `步骤 ${row.steps.length} 条 — 全部模式(>1000)已关闭行内展开，请切分页/筛选后编辑` : `步骤 ${row.steps.length} 条 — 点击${opened ? '收起' : '展开'}行内编辑`}
               aria-label={`编辑用例 ${row.case_no} 的步骤`} aria-expanded={opened}
-              style={{ ...CHIP, cursor: 'pointer', background: opened ? 'var(--accent)' : 'transparent', color: opened ? 'var(--accent-text)' : 'var(--text)', borderColor: opened ? 'var(--accent)' : 'var(--border-strong)' }}>
+              style={{ ...CHIP, cursor: virtual ? 'default' : 'pointer', background: opened ? 'var(--accent)' : 'transparent', color: opened ? 'var(--accent-text)' : 'var(--text)', borderColor: opened ? 'var(--accent)' : 'var(--border-strong)', opacity: virtual ? 0.7 : 1 }}>
               {row.steps.length}
             </button>
           </td>
@@ -239,28 +245,32 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
     );
   };
 
-  const renderHead = () => (
-    <thead>
-      <tr style={{ color: 'var(--text-muted)', textAlign: 'left', background: 'var(--surface-2, transparent)' }}>
-        {multi && (
-          <th style={{ ...TH, width: 30 }}>
-            <input ref={allRef} type="checkbox" checked={rows.length > 0 && selIds.length >= total}
-              onChange={onToggleAll} title="全选/全不选当前筛选结果（跨分页）" aria-label="全选用例" style={{ cursor: 'pointer' }} />
-          </th>
-        )}
-        <th style={TH}>用例编号</th>
-        <th style={TH}>用例标题</th>
-        <th style={TH}>所属模块</th>
-        <th style={TH}>关联需求</th>
-        <th style={TH}>优先级</th>
-        <th style={TH}>类型</th>
-        <th style={TH}>状态</th>
-        <th style={TH}>执行结果</th>
-        <th style={{ ...TH, textAlign: 'center' }}>步骤</th>
-        <th style={TH}>操作</th>
-      </tr>
-    </thead>
-  );
+  const renderHead = () => {
+    // 虚拟模式表头 sticky（滚动时列名常驻）；非虚拟保持原样，不动既有观感
+    const hb = virtual ? { ...TH, position: 'sticky' as const, top: 0, zIndex: 2, background: 'var(--surface-2)' } : TH;
+    return (
+      <thead>
+        <tr style={{ color: 'var(--text-muted)', textAlign: 'left', background: 'var(--surface-2, transparent)' }}>
+          {multi && (
+            <th style={{ ...hb, width: 30 }}>
+              <input ref={allRef} type="checkbox" checked={rows.length > 0 && selIds.length >= total}
+                onChange={onToggleAll} title="全选/全不选当前筛选结果（跨分页）" aria-label="全选用例" style={{ cursor: 'pointer' }} />
+            </th>
+          )}
+          <th style={hb}>用例编号</th>
+          <th style={hb}>用例标题</th>
+          <th style={hb}>所属模块</th>
+          <th style={hb}>关联需求</th>
+          <th style={hb}>优先级</th>
+          <th style={hb}>类型</th>
+          <th style={hb}>状态</th>
+          <th style={hb}>执行结果</th>
+          <th style={{ ...hb, textAlign: 'center' }}>步骤</th>
+          <th style={hb}>操作</th>
+        </tr>
+      </thead>
+    );
+  };
 
   /** 「未覆盖的需求」视图：覆盖度里 caseCount=0 的行，出口是「为该需求补用例」（§7.2 [仅显示]） */
   const renderUncovered = () => (
@@ -334,17 +344,31 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
   if (scope === 'uncovered') return <>{renderUncovered()}</>;
   if (rows.length === 0) return <>{renderEmpty()}{total > 0 ? renderPager() : null}</>;
 
+  // T01495：虚拟模式只切窗内行；上下各用一行等高占位 <tr> 撑出与全量一致的滚动区间（总高=start*rowH+窗口高+(count-end)*rowH=count*rowH）
+  const bodyRows = win ? rows.slice(win.start, win.end) : rows;
+
   return (
     <>
       <datalist id="tc-module-options">
         {(meta?.modules ?? []).map((m) => <option key={m} value={m} />)}
       </datalist>
-      <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
+      <div
+        style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 6, ...(virtual ? { maxHeight: VIRTUAL_VIEWPORT_H, overflowY: 'auto' } : {}) }}
+        onScroll={virtual ? (e) => setScrollTop(e.currentTarget.scrollTop) : undefined}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           {renderHead()}
-          <tbody key={`body-${syncNonce}`}>{rows.map((row) => renderRow(row))}</tbody>
+          <tbody key={`body-${syncNonce}${virtual ? '-v' : ''}`}>
+            {win && win.padTop > 0 && <tr aria-hidden style={{ height: win.padTop }}><td colSpan={colSpan} style={{ padding: 0, border: 'none' }} /></tr>}
+            {bodyRows.map((row) => renderRow(row))}
+            {win && win.padBottom > 0 && <tr aria-hidden style={{ height: win.padBottom }}><td colSpan={colSpan} style={{ padding: 0, border: 'none' }} /></tr>}
+          </tbody>
         </table>
       </div>
+      {virtual && (
+        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+          全部模式已载入 {rows.length} 条，超过 {VIRTUAL_THRESHOLD} 条自动启用虚拟滚动（仅渲染视口附近 {bodyRows.length} 行）；行内编辑/步骤展开请切 200/500 分页或按需求筛选。
+        </div>
+      )}
       {renderPager()}
     </>
   );
