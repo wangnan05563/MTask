@@ -17,7 +17,7 @@ import { TestCaseToolbar } from './TestCaseToolbar';
 import { TestCaseFilterBar } from './TestCaseFilterBar';
 import { TestCaseTable } from './TestCaseTable';
 import {
-  EMPTY_FILTERS, buildListQuery, hasActiveFilter, scopeOf,
+  EMPTY_FILTERS, buildExportBody, buildListQuery, hasActiveFilter, scopeOf,
   type CaseBatchFields, type CaseCoverage, type CaseFilters, type CaseMeta, type CasePatchBody,
   type CaseRow, type CaseStats, type ReqLite,
 } from './testCaseModel';
@@ -255,23 +255,35 @@ export function TestCasePanel({ projectId, focusReqId, focusSeq, onLocateReq, on
     }
   }, [projectId, reqFilter, kwArg, filters, selIds, total, flash, setSelIds]);
 
+  /**
+   * 导出范围文案（§7.6）。必须与下方 `exportCases` 实际下发的条件同源：
+   * 菜单写「全部 N 条（含关键词…）」而请求体不带关键词，就是提示与内容不一致（T01485 留下的口径裂缝，本单补掉）。
+   */
+  const exportScope = ((): string => {
+    if (selIds.length > 0) return `选中的 ${selIds.length} 条`;
+    if (reqFilter) {
+      const hit = reqs.find((r) => r.id === reqFilter);
+      return hit ? `需求 ${hit.req_no} ${hit.title}`.trim() : '当前筛选需求下的用例';
+    }
+    if (hasActiveFilter(filters, kwArg, '')) {
+      return kwArg ? `当前筛选结果 ${total} 条（关键词「${kwArg}」）` : `当前筛选结果 ${total} 条`;
+    }
+    return `全部 ${stats.total} 条`;
+  })();
+
   const exportCases = useCallback(async (format: string): Promise<void> => {
     setExporting(true);
     try {
-      const r = await api.postDownload('/plans/test-cases/export', {
-        projectId, format,
-        ...(selIds.length > 0 ? { ids: selIds } : {}),
-        ...(selIds.length === 0 && reqFilter ? { reqId: reqFilter } : {}),
-      });
+      const r = await api.postDownload('/plans/test-cases/export',
+        buildExportBody({ projectId, reqId: reqFilter, keyword, filters, ids: selIds, format }));
       saveBlob(r.blob, r.filename);
       flash(`已导出 ${r.filename}`);
     } catch (e) {
-      // T01487 才落地导出端点；此处如实暴露 404，不做「假装成功」的兜底
       flash(`导出失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setExporting(false);
     }
-  }, [projectId, selIds, reqFilter, flash]);
+  }, [projectId, selIds, reqFilter, keyword, filters, flash]);
 
   const setFilter = useCallback((patch: Partial<CaseFilters>): void => {
     setFilters({ ...filters, ...patch });
@@ -294,7 +306,7 @@ export function TestCasePanel({ projectId, focusReqId, focusSeq, onLocateReq, on
   return (
     <section aria-label="测试用例面板" style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 12, background: 'var(--card-bg)' }}>
       <TestCaseToolbar meta={meta} stats={stats} multi={multi} selIds={selIds} total={total} filterOpen={filterOpen}
-        loading={busy} exporting={exporting} reqFilter={reqFilter} keyword={keyword} reqs={reqs}
+        loading={busy} exporting={exporting} exportScope={exportScope} reqs={reqs}
         onToggleMulti={() => { setMulti(!multi); setSelIds([]); }}
         onToggleFilter={() => setFilterOpen(!filterOpen)}
         onRefresh={() => void load()}

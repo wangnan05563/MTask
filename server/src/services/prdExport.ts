@@ -7,6 +7,7 @@
  */
 import { existsSync } from 'node:fs';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType } from 'docx';
+import { DOCX_HEAD_SHADING, paintDataRow, paintHeaderRow } from '../util/exportStyle'; // T01487：规范 A 版式单源
 
 /** 与报表构建器同口径的中文字体（Windows 环境下用于 PDF 渲染） */
 const PDF_FONT = 'C:/Windows/Fonts/simhei.ttf';
@@ -99,7 +100,7 @@ function mdTable(b: Extract<MdBlock, { k: 'table' }>): Table {
     rows: [
       new TableRow({
         children: b.head.map((h) => new TableCell({
-          shading: { fill: 'EAF2FF' },
+          shading: { fill: DOCX_HEAD_SHADING },
           children: [new Paragraph({ children: [new TextRun({ text: h, bold: true })] })],
         })),
       }),
@@ -199,31 +200,16 @@ export async function buildMatrixXlsx(rows: MatrixExportRow[], projectName: stri
   const ExcelJS = await import('exceljs');
   const wb = new ExcelJS.default.Workbook();
   const ws = wb.addWorksheet('需求跟踪矩阵');
-  const HEAD_FILL = 'EAF2FF';
-  const ZEBRA_FILL = 'F7F9FC';
-  const THIN = { style: 'thin', color: { argb: 'D9DEE7' } } as const;
   ws.columns = MATRIX_COLUMNS.map((c) => ({ header: c.header, key: c.key, width: c.width }));
-  const hr = ws.getRow(1);
-  hr.font = { bold: true };
-  hr.eachCell((c) => {
-    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD_FILL } };
-    c.border = { top: THIN, left: THIN, bottom: THIN, right: THIN };
-  });
+  paintHeaderRow(ws.getRow(1));
   rows.forEach((r, i) => {
-    const row = ws.addRow({ ...r });
-    row.eachCell((c) => { c.border = { top: THIN, left: THIN, bottom: THIN, right: THIN }; });
-    if (i % 2 === 1) row.eachCell((c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ZEBRA_FILL } }; });
+    paintDataRow(ws.addRow({ ...r }), i % 2 === 1);
   });
   ws.views = [{ state: 'frozen', ySplit: 1 }];
   // 首行补充项目与统计信息，便于导出件单独流转时仍有上下文
   ws.insertRow(1, [`项目：${projectName}`, `需求 ${rows.length} 条`, `导出时间：${new Date().toLocaleString('zh-CN')}`]);
   ws.getRow(1).font = { bold: true };
-  const hr2 = ws.getRow(2);
-  hr2.font = { bold: true };
-  hr2.eachCell((c) => {
-    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD_FILL } };
-    c.border = { top: THIN, left: THIN, bottom: THIN, right: THIN };
-  });
+  paintHeaderRow(ws.getRow(2)); // insertRow 把原表头挤到第 2 行，样式要重新刷一遍
   ws.views = [{ state: 'frozen', ySplit: 2 }];
   return Buffer.from(await wb.xlsx.writeBuffer() as ArrayBuffer);
 }

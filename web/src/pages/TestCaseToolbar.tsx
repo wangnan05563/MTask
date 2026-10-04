@@ -23,7 +23,7 @@ const BATCH_FIELDS: Array<{ group: 'priorityLabel' | 'typeLabel' | 'statusLabel'
   { group: 'statusLabel', field: 'status', title: '批量状态', valuesKey: 'status' },
 ];
 
-export function TestCaseToolbar({ meta, stats, multi, selIds, total, filterOpen, loading, exporting, reqFilter, keyword, reqs,
+export function TestCaseToolbar({ meta, stats, multi, selIds, total, filterOpen, loading, exporting, exportScope, reqs,
   onToggleMulti, onToggleFilter, onRefresh, onClose, onExport, onBatch, onBatchDelete, onDuplicate, onSelectAll }: {
   readonly meta: CaseMeta | null;
   readonly stats: CaseStats;
@@ -34,8 +34,11 @@ export function TestCaseToolbar({ meta, stats, multi, selIds, total, filterOpen,
   readonly filterOpen: boolean;
   readonly loading: boolean;
   readonly exporting: boolean;
-  readonly reqFilter: string;
-  readonly keyword: string;
+  /**
+   * 导出范围文案（§7.6）。由父级 `TestCasePanel` 算好递进来，本组件不再从 `reqFilter`/`keyword`
+   * 自己推一份：那句文案必须与真正下发的导出条件逐字对应，两处各自判断就一定会有说一套做一套。
+   */
+  readonly exportScope: string;
   /** 项目内需求（批量关联下拉的候选，§7.5） */
   readonly reqs: ReqLite[];
   readonly onToggleMulti: () => void;
@@ -59,10 +62,6 @@ export function TestCaseToolbar({ meta, stats, multi, selIds, total, filterOpen,
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [exportOpen]);
-
-  /** 导出范围文案（§7.6：选中 > 需求筛选 > 全量，避免「点了不知道导出什么」） */
-  const exportScope = selIds.length > 0 ? `选中的 ${selIds.length} 条`
-    : reqFilter ? '当前筛选需求的用例' : `全部 ${stats.total} 条`;
 
   /** 批量条里的导出：菜单太窄不值得弹，直接按 Excel 导出选中项（删除/复制之外的第三个高频动作） */
   async function exportSelected(): Promise<void> {
@@ -144,7 +143,7 @@ export function TestCaseToolbar({ meta, stats, multi, selIds, total, filterOpen,
         </button>
         {exportOpen && (
           <div style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, zIndex: 60, minWidth: 232, padding: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,.16)' }}>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 8px' }}>导出范围：{exportScope}{keyword ? `（含关键词「${keyword}」的筛选）` : ''}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 8px' }}>导出范围：{exportScope}</div>
             {CASE_EXPORT_FORMATS.map((f) => (
               <button key={f.key} onClick={() => { setExportOpen(false); onExport(f.key); }} disabled={exporting}
                 title={`${f.label}\n${f.desc}`} aria-label={`导出 ${f.label}`}

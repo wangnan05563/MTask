@@ -511,6 +511,60 @@ planApi.post('/test-cases/duplicate', (req, res) => {
   wrap(res, () => TestCaseService.duplicate(ids));
 });
 
+/** 用例导出 MIME（与 `web/src/utils/download.ts` 的 EXPORT_MIME 同值；服务端不引前端模块） */
+const CASE_EXPORT_MIME: Record<string, string> = {
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  md: 'text/markdown; charset=utf-8',
+};
+
+/**
+ * T01487：测试用例导出（§6.4）。用 POST 不用 GET：请求体要带选择集（可达上百个 id）与筛选条件。
+ * 范围优先级 选中 ids > 单需求 reqId > 当前筛选 > 全量（§7.6），取数一律回到
+ * `TestCaseService`——与列表同一套 `buildCaseWhere`，界面看到什么就导出什么，不在路由里另写查询。
+ * `reqId` 传 `null` 与 `reorder` 同语义 = 仅孤儿用例范围。
+ */
+planApi.post('/test-cases/export', exportGate('testcase-export', undefined, { defer: true }), async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof b.projectId !== 'string' || !b.projectId) return res.status(400).json({ error: 'projectId 必填' });
+  const format = typeof b.format === 'string' ? b.format.toLowerCase() : '';
+  if (!Object.hasOwn(CASE_EXPORT_MIME, format)) return res.status(400).json({ error: 'format 仅支持 xlsx / docx / md' });
+  try {
+    const projectId = b.projectId;
+    const ids = Array.isArray(b.ids) ? b.ids.filter((x): x is string => typeof x === 'string' && Boolean(x.trim())) : [];
+    const cases = ids.length > 0
+      ? TestCaseService.byIds(ids)
+      : TestCaseService.list({
+        projectId,
+        reqId: b.reqId === null ? undefined : optStr(b.reqId),
+        q: optStr(b.q),
+        module: optStr(b.module),
+        priority: optStr(b.priority),
+        type: optStr(b.type),
+        status: optStr(b.status),
+        result: optStr(b.result),
+        orphanOnly: b.reqId === null || b.orphanOnly === true || b.orphanOnly === 'true',
+        limit: 0, // 「全部」模式：导出不能只出当页（服务层自有 MAX_PAGE_SIZE 护栏）
+        offset: 0,
+      }).items;
+    const project = PlanService.getProjectBrief(projectId);
+    const { buildCaseDocx, buildCaseMd, buildCaseXlsx } = await import('../services/testCaseExport'); // 按需加载 exceljs/docx
+    const payload = { projectName: project.name, cases, coverage: TestCaseService.coverage(projectId) };
+    const buf = format === 'xlsx'
+      ? await buildCaseXlsx(payload)
+      : format === 'docx'
+        ? await buildCaseDocx(payload)
+        : buildCaseMd(payload);
+    const ymd = new Date().toISOString().slice(0, 10).replaceAll('-', '');
+    const fname = safeExportName(`测试用例-${project.name}-${ymd}`, '测试用例') + `.${format}`;
+    res.setHeader('Content-Type', CASE_EXPORT_MIME[format]);
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fname)}`);
+    res.send(buf);
+  } catch (e: unknown) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 planApi.get('/test-cases/:id', (req, res) => wrap(res, () => TestCaseService.get(req.params.id)));
 
 planApi.post('/test-cases', (req, res) => {

@@ -418,6 +418,22 @@ export const TestCaseService = {
     return loadCase(getDb(), id);
   },
 
+  /**
+   * T01487：按显式选择集取数（导出用）。与 `list` 同构地一次取回全部步骤，
+   * 不得逐条 `get(id)`——§11 明令禁 N+1，导出选中上百条时那就是上百次查询。
+   * 不存 id 一律拒（而不是静默少返几行）：选择集跨会话残留时，静默少行会让用户
+   * 以为「导出件就这么点」，永远发现不了丢数据。
+   */
+  byIds(ids: readonly string[]): TestCaseWithSteps[] {
+    const db = getDb();
+    const target = resolveCaseIds(db, ids);
+    const rows = db
+      .prepare(`${CASE_SELECT} WHERE c.id IN (${inHolders(target.ids.length)}) ORDER BY c.sort_order, c.created_at`)
+      .all(...target.ids) as JoinedCase[];
+    const byCase = stepsByCase(db, rows.map((r) => r.id));
+    return rows.map((r) => withSteps(r, byCase.get(r.id) ?? []));
+  },
+
   /** 新建用例（含步骤）。未传 `caseNo` 时按项目内 `TC-xxx` 自动编号（§6.2） */
   create(input: CaseInput): TestCaseWithSteps {
     const db = getDb();

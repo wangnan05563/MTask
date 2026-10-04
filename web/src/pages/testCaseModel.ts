@@ -183,6 +183,37 @@ export function buildListQuery(input: {
   return `/plans/test-cases?${p.toString()}`;
 }
 
+/**
+ * 拼导出请求体（§6.4）。字段集合与 `buildListQuery` 一一对应，所以成对放在本文件：
+ * 两处各写一遍筛选字段，就是「界面筛的是一套、导出的是另一套」这类漂移的源头。
+ * `ids` 非空时只看选择集（§7.6 优先级最高），其余条件不下发——否则服务端两套条件取交集，
+ * 导出行数会比用户勾的条数少，而界面提示的偏偏是「选中的 N 条」。
+ */
+export function buildExportBody(input: {
+  projectId: string;
+  reqId: string;
+  keyword: string;
+  filters: CaseFilters;
+  ids: string[];
+  format: string;
+}): Record<string, unknown> {
+  const { projectId, reqId, keyword, filters, ids, format } = input;
+  if (ids.length > 0) return { projectId, format, ids };
+  const kw = keyword.trim();
+  return {
+    projectId,
+    format,
+    ...(reqId ? { reqId } : {}),
+    ...(kw ? { q: kw } : {}),
+    ...(filters.module ? { module: filters.module } : {}),
+    ...(filters.priority ? { priority: filters.priority } : {}),
+    ...(filters.type ? { type: filters.type } : {}),
+    ...(filters.status ? { status: filters.status } : {}),
+    ...(filters.result ? { result: filters.result } : {}),
+    ...(filters.orphanOnly ? { orphanOnly: true } : {}),
+  };
+}
+
 /** 标签取值：meta 未就绪（首屏）时回落原值，避免 select 闪空白 */
 export type CaseLabelGroup = 'priorityLabel' | 'typeLabel' | 'methodLabel' | 'statusLabel' | 'resultLabel';
 
