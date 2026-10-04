@@ -1,7 +1,7 @@
 import { Router, raw } from 'express';
 import { PlanService } from '../services/PlanService';
 import { TestCaseService } from '../services/TestCaseService'; // T01484：测试用例取数（PRD-测试用例管理 §6）
-import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput } from '../services/TestCaseService';
+import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput, DraftCaseImport, DraftReqImport } from '../services/TestCaseService';
 import { AIService } from '../services/AIService';
 import { resolvePrdContext } from '../util/prdContext'; // T00763：计划关联 PRD → 评估上下文
 import { exportGate } from '../util/export-gate'; // T00789：导出类端点并发闸
@@ -509,6 +509,39 @@ planApi.post('/test-cases/duplicate', (req, res) => {
   const ids = caseIds(b.ids);
   if (!ids) return res.status(400).json({ error: 'ids 需为非空字符串数组' });
   wrap(res, () => TestCaseService.duplicate(ids));
+});
+
+/**
+ * T01492（§8.5）：草稿确认导入。路由只做「typeof 收窄 + 形态转换」，落库/幂等/事务全交 `TestCaseService.importDraft`。
+ * 静态段 `import-draft` 与 `duplicate`/`batch`/`reorder` 同区——本路由是 POST，不会被 GET/PATCH/DELETE `/:id` 抢注，
+ * 但仍置于 `/:id` 之前保持「静态先于参数」的注册纪律（§6.1 铁律）。
+ */
+planApi.post('/test-cases/import-draft', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof b.projectId !== 'string' || !b.projectId) return res.status(400).json({ error: 'projectId 必填' });
+  const projectId = b.projectId;
+  if (!Array.isArray(b.cases)) return res.status(400).json({ error: 'cases 需为数组' });
+  const cases = (b.cases as unknown[]).map((x) => {
+    const s = (x ?? {}) as Record<string, unknown>;
+    return {
+      reqNo: optStr(s.reqNo), title: optStr(s.title), module: optStr(s.module),
+      preconditions: optStr(s.preconditions), expected: optStr(s.expected), testData: optStr(s.testData),
+      postconditions: optStr(s.postconditions), priority: optStr(s.priority), type: optStr(s.type),
+      method: optStr(s.method), tags: optStr(s.tags), steps: caseStepList(s.steps),
+      include: s.include === undefined ? undefined : (s.include !== false && s.include !== 'false'),
+    } satisfies DraftCaseImport;
+  });
+  const requirements = Array.isArray(b.requirements)
+    ? (b.requirements as unknown[]).map((x) => {
+      const s = (x ?? {}) as Record<string, unknown>;
+      return {
+        reqNo: optStr(s.reqNo), title: optStr(s.title), content: optStr(s.content),
+        sourceRef: optStr(s.sourceRef), priority: optStr(s.priority), isNew: queryBool(s.isNew),
+      } satisfies DraftReqImport;
+    })
+    : [];
+  const writeRequirements = b.writeRequirements === true || b.writeRequirements === 'true';
+  wrap(res, () => TestCaseService.importDraft({ projectId, requirements, cases, writeRequirements }));
 });
 
 /** 用例导出 MIME（与 `web/src/utils/download.ts` 的 EXPORT_MIME 同值；服务端不引前端模块） */

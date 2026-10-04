@@ -6,12 +6,14 @@ import { ReportConsole } from './ReportConsole';
 import { AiPlanImportPanel } from './AiPlanImportPanel';
 import { PrdImportPanel } from './PrdImportPanel'; // T00662：从 PRD 导入项目计划
 import { PrdGenPanel } from './PrdGenPanel'; // T00769：原始需求生成 PRD
+import { TestCaseGenPanel } from './TestCaseGenPanel'; // T01492：从 PRD 生成测试用例
 import { useSessionState } from '../ui/session';
 import { usePrdGen } from '../stores/prdGenStore'; // T01038：PRD 生成卡片统一运行状态
+import { useTestCaseGen } from '../stores/testCaseGenStore'; // T01492：测试用例生成卡片运行状态
 import { aiImportStore } from '../stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 import { RunStatusBadge, type RunStatus } from '../ui/runStatus'; // T01038：统一运行状态徽标
 import { FlowButton } from '../ui/FlowButton'; // T01068-FR4.4：流光按钮（loading 态）
-import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap } from 'lucide-react';
+import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks } from 'lucide-react';
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CARD } from '../ui/consoleReset'; // T01042：卡片侧重置入口（与控制台重置共用核心）
 
 interface ReportTemplate {
@@ -211,9 +213,10 @@ function PrdDocsPopup({ open, projectId, onAssociate, onClose }: {
 }
 
 /** 三块 AI 工作面板的条件渲染（S3776：条件块下沉为独立组件） */
-function ReportWorkPanels({ aiToolId, showPrdGen, closePrdGen, prdGenSaved, showPrdImport, closePrdImport, prdImportSaved, showAiImport, closeAiImport, aiImportSaved, prdImportKey }: {
+function ReportWorkPanels({ aiToolId, showPrdGen, closePrdGen, prdGenSaved, showTcGen, closeTcGen, tcImported, showPrdImport, closePrdImport, prdImportSaved, showAiImport, closeAiImport, aiImportSaved, prdImportKey }: {
   readonly aiToolId: string;
   readonly showPrdGen: boolean; readonly closePrdGen: () => void; readonly prdGenSaved: (r: { issues: number }) => void;
+  readonly showTcGen: boolean; readonly closeTcGen: () => void; readonly tcImported: (r: { imported: number }) => void;
   readonly showPrdImport: boolean; readonly closePrdImport: () => void; readonly prdImportSaved: (r: { requirements: number; plans: number; tasks: number }) => void;
   readonly showAiImport: boolean; readonly closeAiImport: () => void; readonly aiImportSaved: (n: number) => void;
   /** T00908：PRD 导入面板重挂载键——从弹层关联文档后递增，强制面板重挂以读取新会话标记 */
@@ -221,6 +224,10 @@ function ReportWorkPanels({ aiToolId, showPrdGen, closePrdGen, prdGenSaved, show
 }) {
   return (
     <>
+      {/* T01492：从 PRD 生成测试用例面板（日志/正文同走右侧控制台；停止已接进控制台 stopAll） */}
+      {showTcGen && (
+        <TestCaseGenPanel toolId={aiToolId} onClose={closeTcGen} onImported={tcImported} />
+      )}
       {/* T00769：原始需求生成 PRD 面板（插在「从 PRD 导入项目计划」面板前；日志/正文同走右侧控制台） */}
       {showPrdGen && (
         <PrdGenPanel toolId={aiToolId} onClose={closePrdGen} onSaved={prdGenSaved} />
@@ -301,6 +308,8 @@ export function ReportPage() {
   const [showPrdImport, setShowPrdImport] = useSessionState('report.showPrdImport', false);
   // T00769：原始需求生成 PRD 面板展开态（插在「从 PRD 导入项目计划」前一位，与其余卡片互斥）
   const [showPrdGen, setShowPrdGen] = useSessionState('report.showPrdGen', false);
+  // T01492：从 PRD 生成测试用例面板展开态（第 6 张卡，与其余卡片互斥）
+  const [showTcGen, setShowTcGen] = useSessionState('report.showTcGen', false);
   // T00908：「已上传 PRD 文档」弹层展开态 + 导入面板强制重挂载计数（选择文档后递增 key 触发面板重挂，
   //          使 useSessionState 重新读取 sessionStorage 中的目标项目与 docId，保证自动带入生效）
   const [prdDocsOpen, setPrdDocsOpen] = useState(false);
@@ -315,6 +324,7 @@ export function ReportPage() {
   // T01038：订阅各模块级 store 的运行态，供卡片统一状态徽标 + 导航 Tab 旋转指示共用（跨 Tab 切换天然保持）
   const { streaming: aiStreaming, logs: aiLogs, streamText: aiStreamText, result: aiResult, startedAt: reportStartedAt, finalElapsed: reportFinal } = useReportStream();
   const prdSnap = usePrdGen();
+  const tcSnap = useTestCaseGen(); // T01492：测试用例生成卡片运行状态供徽标共用
   const aiImp = useSyncExternalStore(aiImportStore.subscribe, aiImportStore.getSnapshot);
 
   const flash = (m: string) => {
@@ -357,10 +367,11 @@ export function ReportPage() {
     aiLive: setShowAiLive,
     prdImport: setShowPrdImport,
     prdGen: setShowPrdGen,
+    tcGen: setShowTcGen,
   } as const;
   type PanelKey = keyof typeof panelSetters;
   const panelOpen: Record<PanelKey, boolean> = {
-    aiImport: showAiImport, offline: showOffline, aiLive: showAiLive, prdImport: showPrdImport, prdGen: showPrdGen,
+    aiImport: showAiImport, offline: showOffline, aiLive: showAiLive, prdImport: showPrdImport, prdGen: showPrdGen, tcGen: showTcGen,
   };
   /** 点击卡片：已展开则收起，否则只展开它（其余全部收起） */
   function togglePanel(key: PanelKey) {
@@ -417,11 +428,20 @@ export function ReportPage() {
       action: prdDocsAction,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('prdImport') },
+    { key: 'tc-gen', icon: <ListChecks size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '从 PRD 生成测试用例',
+      desc: '选择内部 PRD 或上传需求文档，内置技能拆分需求 + 分块生成用例 + 覆盖校验，草稿确认后入库（同一 PRD 重跑幂等）',
+      hint: '从 PRD 生成测试用例 — 内部 PRD 文档或外部上传，内置技能 testcase-generate 结合项目源码上下文生成用例草稿，勾选确认后入库', aria: '从 PRD 生成测试用例',
+      open: showTcGen,
+      onReset: resetArtifacts,
+      onToggle: () => togglePanel('tcGen') },
   ];
 
   // 工作面板开关回调（S3776：从 JSX 内联箭头下沉）
   const closePrdGen = () => setShowPrdGen(false);
   const prdGenSaved = (r: { issues: number }) => flash(`PRD 已录入管理视图（含问题 ${r.issues} 条）——可在「项目管理」页的 PRD 管理视图中查看`);
+  // T01492：从 PRD 生成测试用例面板关闭与导入回调
+  const closeTcGen = () => setShowTcGen(false);
+  const tcImported = (r: { imported: number }) => flash(`已导入 ${r.imported} 条测试用例——可在「项目管理 → 测试用例视图」查看`);
   const closePrdImport = () => setShowPrdImport(false);
   const closeAiImport = () => setShowAiImport(false);
   const aiImportSaved = (n: number) => flash(`AI 导入完成：已创建 ${n} 条计划（可在「项目计划」查看）`);
@@ -440,6 +460,8 @@ export function ReportPage() {
         return { status: deriveStatus(aiStreaming, reportFinal), startedAt: reportStartedAt, finalElapsed: reportFinal };
       case 'prd-gen':
         return { status: deriveStatus(prdSnap.streaming, prdSnap.finalElapsed), startedAt: prdSnap.startedAt, finalElapsed: prdSnap.finalElapsed };
+      case 'tc-gen':
+        return { status: deriveStatus(tcSnap.streaming, tcSnap.finalElapsed), startedAt: tcSnap.startedAt, finalElapsed: tcSnap.finalElapsed };
       case 'ai-import':
       case 'prd-import': {
         // 两面板共用同一 store——按运行类型 kind 分流，避免「从 PRD 导入」运行时「AI 项目计划导入」卡片也转圈（2026-09-26 用户反馈）。
@@ -685,6 +707,7 @@ export function ReportPage() {
 
       <ReportWorkPanels aiToolId={aiToolId}
         showPrdGen={showPrdGen} closePrdGen={closePrdGen} prdGenSaved={prdGenSaved}
+        showTcGen={showTcGen} closeTcGen={closeTcGen} tcImported={tcImported}
         showPrdImport={showPrdImport} closePrdImport={closePrdImport} prdImportSaved={prdImportSaved}
         showAiImport={showAiImport} closeAiImport={closeAiImport} aiImportSaved={aiImportSaved}
         prdImportKey={prdRemountKey} />

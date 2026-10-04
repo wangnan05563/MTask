@@ -25,6 +25,8 @@ import {
   pickEnum,
 } from '../util/testCaseEnums';
 import type { CaseMethod, CasePriority, CaseResult, CaseStatus, CaseType } from '../util/testCaseEnums';
+// T01492：幂等去重键与内容指纹的单源——写库必须逐字复现生成期口径，否则「生成期判已入库」与「写库期查重」分裂（§2.2 P6）
+import { caseSourceKey, caseContentHash } from './testCaseGenParse';
 
 /** 默认每页条数（§7.3 分页档位 200 / 500 / 全部） */
 const DEFAULT_PAGE_SIZE = 200;
@@ -129,6 +131,47 @@ export interface CaseBatchPatch {
   lastResult?: string;
   reqId?: string | null;
   module?: string;
+}
+
+/**
+ * T01492（§8.5）：草稿确认导入的单条用例入参。
+ * 前端草稿可就地编辑，故 `source_key`/`source_hash` 一律由服务端按单源公式**重算**、绝不信任客户端携带值——
+ * 用户改了标题就应产出新的去重键（改后视为另一条用例），未改则与生成期命中同键、触发幂等跳过。
+ */
+export interface DraftCaseImport {
+  reqNo?: string;
+  title?: string;
+  module?: string;
+  preconditions?: string;
+  expected?: string;
+  testData?: string;
+  postconditions?: string;
+  priority?: string;
+  type?: string;
+  method?: string;
+  tags?: string;
+  steps?: CaseStepInput[];
+  /** 草稿视图勾选态：显式 false 才排除（缺省视为勾选，§8.5「不勾选不入库」） */
+  include?: boolean;
+}
+
+/** 草稿拆分需求条目（仅 writeRequirements 时把 isNew 项写入矩阵，§8.1 勾选） */
+export interface DraftReqImport {
+  reqNo?: string;
+  title?: string;
+  content?: string;
+  sourceRef?: string;
+  priority?: string;
+  isNew?: boolean;
+}
+
+/** `POST /test-cases/import-draft` 入参（单事务：建需求→reqNo→id 映射→用例落库→步骤落库→source_key 幂等） */
+export interface DraftImportInput {
+  projectId: string;
+  requirements?: DraftReqImport[];
+  cases: DraftCaseImport[];
+  /** 是否把本次新拆分的需求写入需求跟踪矩阵；false 时新需求下的用例落孤儿（req_id=NULL） */
+  writeRequirements?: boolean;
 }
 
 /** 联表查询行（DB 列 + LEFT JOIN 附带的需求摘要） */
@@ -651,5 +694,94 @@ export const TestCaseService = {
     const db = getDb();
     if (!str(projectId)) throw new Error('projectId 必填');
     return coverageRows(db, projectId);
+  },
+
+  /**
+   * T01492（§8.5）：草稿确认导入——单个 `db.transaction()` 收口（对齐 WBS 导入的 reqNo→id 映射范式）。
+   *
+   * 口径要点：
+   *  - **幂等**：逐条按单源 `caseSourceKey(reqNo,title)` 重算去重键，命中库内已有 `source_key` 即跳过（重复导入同 PRD 不产生重复用例，§2.2 P6）；
+   *  - **不信任客户端 source_key**：一律服务端按（可能被就地编辑过的）标题重算，与 `TestCaseGenService` 生成期逐字同源；
+   *  - **只处理勾选行**：`include===false` 或标题为空的草稿行不入库；
+   *  - **需求映射**：`writeRequirements` 时把矩阵中尚不存在的新拆分需求写入并回填 reqNo→id；否则新需求下的用例落孤儿（req_id=NULL）。
+   */
+  importDraft(input: DraftImportInput): { imported: number; skipped: number; requirementsCreated: number } {
+    const db = getDb();
+    requireProject(db, input.projectId);
+    const wanted = (Array.isArray(input.cases) ? input.cases : []).filter((c) => c && c.include !== false && str(c.title));
+
+    // 已有需求 req_no → id（同 WBS 导入：先建映射，用例落库时按 reqNo 挂需求）
+    const reqNoToId = new Map<string, string>();
+    for (const r of db.prepare('SELECT id, req_no FROM prd_requirements WHERE project_id = ?').all(input.projectId) as Array<{ id: string; req_no: string | null }>) {
+      if (r.req_no) reqNoToId.set(String(r.req_no), String(r.id));
+    }
+    // 已入库 source_key 集合：与 `TestCaseGenService` 生成期完全同一条 SQL，判重口径不错位
+    const existingKeys = new Set(
+      (db.prepare("SELECT source_key FROM test_cases WHERE project_id = ? AND source_key <> ''").all(input.projectId) as Array<{ source_key: string }>).map((r) => r.source_key),
+    );
+
+    const t = now();
+    let seq = maxCaseNoSeq(db, input.projectId);
+    let order = nextSortOrder(db, input.projectId);
+    let reqOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM prd_requirements WHERE project_id = ?').get(input.projectId) as { m: number }).m;
+    let created = 0;
+    let imported = 0;
+    let skipped = 0;
+
+    const insReq = db.prepare(
+      `INSERT INTO prd_requirements (id, project_id, req_no, title, content, source_ref, priority, status, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?)`,
+    );
+    const insCase = db.prepare(
+      `INSERT INTO test_cases (id, project_id, req_id, case_no, module, title, preconditions, expected,
+         test_data, postconditions, priority, type, method, status, last_result, tags,
+         source_key, source_hash, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    db.transaction(() => {
+      if (input.writeRequirements) {
+        for (const rq of (Array.isArray(input.requirements) ? input.requirements : [])) {
+          const no = str(rq.reqNo);
+          const title = str(rq.title);
+          if (!no || !title) continue;
+          if (reqNoToId.has(no)) continue; // 矩阵已有同 reqNo：复用不重复建（幂等）
+          reqOrder += 1;
+          const id = uuid();
+          insReq.run(id, input.projectId, no, title, str(rq.content), str(rq.sourceRef), str(rq.priority) || 'normal', reqOrder, t, t);
+          reqNoToId.set(no, id);
+          created += 1;
+        }
+      }
+      for (const c of wanted) {
+        const reqNo = str(c.reqNo);
+        const title = str(c.title);
+        const sourceKey = caseSourceKey(reqNo, title);
+        if (existingKeys.has(sourceKey)) { skipped += 1; continue; } // 幂等跳过：同去重键已入库
+        seq += 1;
+        order += 1;
+        const caseId = uuid();
+        const sourceHash = caseContentHash({
+          reqNo, module: str(c.module), preconditions: str(c.preconditions), expected: str(c.expected), testData: str(c.testData),
+          steps: (Array.isArray(c.steps) ? c.steps : []).map((s) => ({ action: str(s.action), expected: str(s.expected) })),
+        });
+        insCase.run(
+          caseId, input.projectId, reqNoToId.get(reqNo) ?? null, caseNoOf(seq), str(c.module), title,
+          str(c.preconditions), str(c.expected), str(c.testData), str(c.postconditions),
+          enumVal(c.priority, CASE_PRIORITY, CASE_DEFAULTS.priority),
+          enumVal(c.type, CASE_TYPE, CASE_DEFAULTS.type),
+          enumVal(c.method, CASE_METHOD, CASE_DEFAULTS.method),
+          CASE_DEFAULTS.status,
+          CASE_DEFAULTS.lastResult, str(c.tags),
+          sourceKey, sourceHash, order, t, t,
+        );
+        insertSteps(db, caseId, Array.isArray(c.steps) ? c.steps : [], t);
+        existingKeys.add(sourceKey); // 同批内也防重（同 source_key 两次只入一条）
+        imported += 1;
+      }
+    })();
+
+    if (imported > 0 || created > 0) notifyChange('plans');
+    return { imported, skipped, requirementsCreated: created };
   },
 };

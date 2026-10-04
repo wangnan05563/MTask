@@ -27,6 +27,7 @@ const ARTIFACT_SESSION_KEYS = [
   'prd-import.plans', // PERSIST_KEYS.plans
   'prd-import.sources', // PERSIST_KEYS.sources
   'prdGen.conclusion', // PrdGenPanel PRD_CONCL_KEY
+  'tcgen.draft', // TestCaseGenPanel 草稿快照（§8.7：重置控制台/卡片侧连带清空）
   'plan.showPrd', // PrdGenPanel 联动的 PRD 管理视图开关
 ] as const;
 
