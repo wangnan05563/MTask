@@ -16,6 +16,8 @@ import { PlanService } from '../services/PlanService';
 import { ExecSessionService } from '../services/ExecSessionService'; // T01269：执行会话心跳上报（FR-1.2）
 import { SupervisorService } from '../services/SupervisorService'; // T01286：监督状态查询（FR-5.2）
 import { resolvePrdContext } from '../util/prdContext'; // T00763：PRD 上下文反查
+import { TestCaseService, type CasePatch } from '../services/TestCaseService'; // T01493：测试用例 MCP 工具（复用服务层单源枚举与幂等落库）
+import { CASE_PRIORITY, CASE_TYPE, CASE_METHOD, CASE_STATUS, CASE_RESULT } from '../util/testCaseEnums'; // T01493：zod 枚举从单源导入，杜绝第三次口径漂移
 import { ArchiveService } from '../services/ArchiveService';
 import {
   gatherReportData,
@@ -484,6 +486,125 @@ export async function createMCPServer(): Promise<McpServer> {
       if (!a.kind || !a.targetId) return err('link 需要 kind(plan|task) 与 targetId');
       PlanService.linkRequirement(a.reqId, { kind: a.kind, targetId: a.targetId, linked: a.linked !== false });
       return ok(JSON.stringify({ ok: true, reqId: a.reqId, kind: a.kind, targetId: a.targetId, linked: a.linked !== false }), { ok: true });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // ---------- T01493：测试用例（查询 / 维护），zod 枚举从 testCaseEnums 单源导入 ----------
+
+  server.registerTool('mtask_list_testcases', {
+    title: '查询测试用例',
+    description: '按项目返回测试用例列表（含步骤与关联需求摘要 reqNo/reqTitle）+ 覆盖度摘要（总/已覆盖/未覆盖/覆盖率）。可按需求行 reqId、关键词 q、模块、优先级/类型/状态/执行结果筛选，orphanOnly 仅取未关联需求的孤儿用例，支持 limit/offset 分页。供 AI 核对用例覆盖与进度。',
+    inputSchema: {
+      projectId: z.string().optional().describe('项目 id（与 projectName 二选一）'),
+      projectName: z.string().optional().describe('项目名称（与 projectId 二选一）'),
+      reqId: z.string().optional().describe('可选：按需求 id（矩阵行）过滤'),
+      q: z.string().optional().describe('可选：关键词（标题/模块/预期等）'),
+      module: z.string().optional().describe('可选：按模块过滤'),
+      priority: z.enum(CASE_PRIORITY).optional().describe('可选：优先级 P0~P3'),
+      type: z.enum(CASE_TYPE).optional().describe('可选：用例类型'),
+      status: z.enum(CASE_STATUS).optional().describe('可选：生命周期状态'),
+      result: z.enum(CASE_RESULT).optional().describe('可选：最近执行结果'),
+      orphanOnly: z.boolean().optional().describe('可选：仅返回未关联需求的孤儿用例'),
+      limit: z.number().int().optional().describe('可选：分页大小（省略=200；≤0=全部）'),
+      offset: z.number().int().optional().describe('可选：分页偏移'),
+    },
+  }, async (a) => {
+    try {
+      const loc = resolveProjectIdOf(a.projectId, a.projectName);
+      if (!loc.id) return err(loc.error ?? '项目未指定');
+      const res = TestCaseService.list({
+        projectId: loc.id, reqId: a.reqId, q: a.q, module: a.module,
+        priority: a.priority, type: a.type, status: a.status, result: a.result,
+        orphanOnly: a.orphanOnly, limit: a.limit, offset: a.offset,
+      });
+      const cov = TestCaseService.coverage(loc.id);
+      const summary = {
+        projectId: loc.id, total: res.total, returned: res.items.length,
+        coverage: { total: cov.total, covered: cov.covered, uncovered: cov.uncovered, rate: cov.rate },
+      };
+      return ok(JSON.stringify({ ...summary, cases: res.items }), { ...summary, cases: res.items });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_update_testcases', {
+    title: '维护测试用例',
+    description: '维护测试用例：action=create（新建，需 projectId/projectName + title，可带 reqId/steps/枚举字段）/ update（改字段，需 caseId；字符串传空串=清空）/ delete（删单条，需 caseId）/ link（挂/解需求，需 caseId + reqId，reqId 传空串或 null 解除）/ batch-patch（批量改枚举/模块/关联，需 caseIds + patch，不含 title/caseNo）。字段一律走 TestCaseService，枚举经单源校验（非法值回落默认）、写后 notifyChange(\'plans\')，落库以返回体的实际字段为准。',
+    inputSchema: {
+      action: z.enum(['create', 'update', 'delete', 'link', 'batch-patch']).describe('操作类型'),
+      projectId: z.string().optional().describe('create 时使用：项目 id（与 projectName 二选一）'),
+      projectName: z.string().optional().describe('create 时使用：项目名称'),
+      caseId: z.string().optional().describe('update/delete/link 时使用：用例 id（可由 mtask_list_testcases 获取）'),
+      caseIds: z.array(z.string()).optional().describe('batch-patch 时使用：目标用例 id 数组'),
+      reqId: z.string().nullable().optional().describe('create/link：关联的需求 id；link 传空串或 null 解除关联'),
+      title: z.string().optional().describe('create 必填 / update 可选：用例标题'),
+      caseNo: z.string().optional().describe('create/update：用例编号（留空自动 TC-xxx）'),
+      module: z.string().optional().describe('模块'),
+      preconditions: z.string().optional().describe('前置条件'),
+      expected: z.string().optional().describe('预期结果'),
+      testData: z.string().optional().describe('测试数据'),
+      postconditions: z.string().optional().describe('后置条件'),
+      priority: z.enum(CASE_PRIORITY).optional().describe('优先级'),
+      type: z.enum(CASE_TYPE).optional().describe('用例类型'),
+      method: z.enum(CASE_METHOD).optional().describe('执行方式'),
+      status: z.enum(CASE_STATUS).optional().describe('生命周期状态'),
+      lastResult: z.enum(CASE_RESULT).optional().describe('最近执行结果'),
+      tags: z.string().optional().describe('标签'),
+      steps: z.array(z.object({ action: z.string().optional(), expected: z.string().optional(), stepNo: z.number().int().optional() })).optional().describe('create/update 全量替换步骤：[{action,expected,stepNo?}]'),
+      patch: z.object({
+        priority: z.enum(CASE_PRIORITY).optional(), type: z.enum(CASE_TYPE).optional(), method: z.enum(CASE_METHOD).optional(),
+        status: z.enum(CASE_STATUS).optional(), lastResult: z.enum(CASE_RESULT).optional(),
+        module: z.string().optional(), reqId: z.string().nullable().optional(),
+      }).optional().describe('batch-patch 时使用：批量改动字段'),
+    },
+  }, async (a) => {
+    try {
+      if (a.action === 'create') {
+        const loc = resolveProjectIdOf(a.projectId, a.projectName);
+        if (!loc.id) return err(loc.error ?? '项目未指定');
+        if (!a.title?.trim()) return err('create 需要 title');
+        const row = TestCaseService.create({
+          projectId: loc.id, reqId: a.reqId ?? null, title: a.title, caseNo: a.caseNo, module: a.module,
+          preconditions: a.preconditions, expected: a.expected, testData: a.testData, postconditions: a.postconditions,
+          priority: a.priority, type: a.type, method: a.method, status: a.status, lastResult: a.lastResult,
+          tags: a.tags, steps: a.steps,
+        });
+        return ok(JSON.stringify(row), { ...row });
+      }
+      if (a.action === 'batch-patch') {
+        if (!Array.isArray(a.caseIds) || a.caseIds.length === 0) return err('batch-patch 需要 caseIds 数组');
+        if (!a.patch) return err('batch-patch 需要 patch');
+        const r = TestCaseService.batchPatch(a.caseIds, a.patch);
+        return ok(JSON.stringify({ ok: true, ...r }), { ok: true, ...r });
+      }
+      if (!a.caseId) return err(`${a.action} 需要 caseId`);
+      if (a.action === 'delete') {
+        TestCaseService.remove(a.caseId);
+        return ok(JSON.stringify({ ok: true, deleted: a.caseId }), { ok: true, deleted: a.caseId });
+      }
+      if (a.action === 'link') {
+        if (a.reqId === undefined) return err('link 需要 reqId（传空串或 null 解除关联）');
+        const row = TestCaseService.update(a.caseId, { reqId: a.reqId });
+        return ok(JSON.stringify(row), { ...row });
+      }
+      // update：仅把调用方显式提供的字段并入 patch（省略=不改）
+      const patch: CasePatch = {};
+      if (a.title !== undefined) patch.title = a.title;
+      if (a.caseNo !== undefined) patch.caseNo = a.caseNo;
+      if (a.module !== undefined) patch.module = a.module;
+      if (a.preconditions !== undefined) patch.preconditions = a.preconditions;
+      if (a.expected !== undefined) patch.expected = a.expected;
+      if (a.testData !== undefined) patch.testData = a.testData;
+      if (a.postconditions !== undefined) patch.postconditions = a.postconditions;
+      if (a.priority !== undefined) patch.priority = a.priority;
+      if (a.type !== undefined) patch.type = a.type;
+      if (a.method !== undefined) patch.method = a.method;
+      if (a.status !== undefined) patch.status = a.status;
+      if (a.lastResult !== undefined) patch.lastResult = a.lastResult;
+      if (a.tags !== undefined) patch.tags = a.tags;
+      if (a.reqId !== undefined) patch.reqId = a.reqId;
+      if (a.steps !== undefined) patch.steps = a.steps;
+      const row = TestCaseService.update(a.caseId, patch);
+      return ok(JSON.stringify(row), { ...row });
     } catch (e) { return err((e as Error).message); }
   });
 
