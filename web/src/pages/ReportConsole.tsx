@@ -5,9 +5,10 @@ import { api, type AITool, type ReqCategory } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
 import { useSessionState } from '../ui/session';
 import { RunStatusBadge } from '../ui/runStatus'; // T01038：统一运行状态徽标（动画图标 + 实时秒数 + 最终耗时）
-import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput, GitCompare, FileUp, FilePlus2, Maximize, PanelLeftOpen, OctagonX } from 'lucide-react';
+import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput, GitCompare, FileUp, FilePlus2, Maximize, PanelLeftOpen, OctagonX, ListChecks } from 'lucide-react';
 import { aiImportStore } from '../stores/aiImportStore';
 import { prdGenStore } from '../stores/prdGenStore'; // T00769 二轮：原始需求生成 PRD 的过程输出
+import { testCaseGenStore } from '../stores/testCaseGenStore'; // T01491：从 PRD 生成测试用例的过程输出
 import { reportStream, useReportStream } from '../reportStream'; // T00838：停止按钮需订阅周报流状态
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CONSOLE, CONSOLE_RESET_EVENT } from '../ui/consoleReset'; // T01042：控制台/卡片共用重置核心
 
@@ -71,6 +72,9 @@ const AI_IMPORT_TAB = '__aiimport__';
 
 /** T00769 二轮：内置「原始需求生成 PRD」tab 固定 id——此前该卡片只写模块级 store、控制台无订阅，表现即「右侧控制台无任何输出」 */
 const PRD_GEN_TAB = '__prdgen__';
+
+/** T01491：内置「从 PRD 生成测试用例」tab 固定 id（仿 PRD_GEN_TAB）——生成阶段日志 + 流式正文在此实时滚动 */
+const TEST_CASE_GEN_TAB = '__testcasegen__';
 
 /**
  * 自定义 AI 工具选择器：收拢时仅显示已选工具的「模型名」（节省单行空间），
@@ -610,6 +614,9 @@ export function ReportConsole({
   // T00769 二轮：订阅 PRD 生成 store（流式正文 + 阶段日志在此滚动，修复「右侧控制台无任何输出」）
   const prdSnap = useSyncExternalStore(prdGenStore.subscribe, prdGenStore.get);
   const onPrdGenTab = activeId === PRD_GEN_TAB;
+  // T01491：订阅测试用例生成 store（流式正文 + 阶段日志在此滚动，与 PRD 生成链路同构）
+  const tcSnap = useSyncExternalStore(testCaseGenStore.subscribe, testCaseGenStore.get);
+  const onTestCaseGenTab = activeId === TEST_CASE_GEN_TAB;
   const activeTask = tasks.find((t) => t.id === activeId) ?? null;
   const onReportTab = activeId === REPORT_TAB;
   const runningCount = tasks.filter((t) => t.status === 'busy').length;
@@ -622,7 +629,7 @@ export function ReportConsole({
   const [notice, setNotice] = useState('');
   // 轻量 toast：本面板无全局 flash，就近以底部 transient 文本反馈结果/失败
   const flash = (m: string) => { setNotice(m); globalThis.setTimeout(() => setNotice(''), 3000); };
-  const canStop = report.streaming || prdSnap.streaming || aiSnap.busy || runningCount > 0;
+  const canStop = report.streaming || prdSnap.streaming || tcSnap.streaming || aiSnap.busy || runningCount > 0;
 
   // T00839：1s 心跳触发重渲染，使运行中 tab 的「已运行 xx」实时增长（store 变更不会带动计时刷新）
   const [, bumpClock] = useReducer((c: number) => c + 1, 0);
@@ -642,6 +649,8 @@ export function ReportConsole({
       if (busy.length > 0) setTasks((prev) => prev.filter((t) => t.status !== 'busy'));
       // 2) PRD 生成流：abort SSE + 清 store
       if (prdSnap.streaming) prdGenStore.abort();
+      // 2b) T01491：测试用例生成流：abort SSE + 清 store
+      if (tcSnap.streaming) testCaseGenStore.abort();
       // 3) PRD 导入单次请求：本请求未 job 化，前端清 store 结束等待，后端自然结束
       if (aiSnap.busy) aiImportStore.reset();
       // 4) 周报生成流：abort SSE + 清 store
@@ -652,7 +661,7 @@ export function ReportConsole({
     } finally {
       setStopping(false);
     }
-  }, [stopping, tasks, prdSnap.streaming, aiSnap.busy, report.streaming]);
+  }, [stopping, tasks, prdSnap.streaming, tcSnap.streaming, aiSnap.busy, report.streaming]);
 
   // 阶段日志没有天然 id，按「内容 + 同内容出现序号」派生稳定 key：
   // 追加式日志的前缀条目 key 不变，避免用数组索引作 key 在重排时错误复用 DOM
@@ -681,11 +690,19 @@ export function ReportConsole({
     prevPrdLogCount.current = prdLogCount;
   }, [prdLogCount]);
 
+  // T01491：测试用例生成一开始输出阶段日志就自动切到该 tab（与 PRD 生成同款机制，仅首次日志出现时切）
+  const tcLogCount = tcSnap.logs.length;
+  const prevTcLogCount = useRef(0);
+  useEffect(() => {
+    if (tcLogCount > 0 && prevTcLogCount.current === 0) setActiveId(TEST_CASE_GEN_TAB);
+    prevTcLogCount.current = tcLogCount;
+  }, [tcLogCount]);
+
   // 正在生成（AI 周报流式或手动任务进行中）时随内容滚到底部，保证流式输出始终跟随最新内容
-  const live = isLive(onReportTab, streaming, streamText, activeTask) || onAiImportTab || onPrdGenTab;
+  const live = isLive(onReportTab, streaming, streamText, activeTask) || onAiImportTab || onPrdGenTab || onTestCaseGenTab;
   useEffect(() => {
     if (live) bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
-  }, [live, streamText, streamsLen(activeTask), prdSnap.streamText, prdSnap.logs.length]);
+  }, [live, streamText, streamsLen(activeTask), prdSnap.streamText, prdSnap.logs.length, tcSnap.streamText, tcSnap.logs.length]);
 
   // 统一按 id 局部更新任务字段，避免在并发更新中因闭包持有旧 tasks 而互相覆盖
   const updateTask = useCallback((id: string, patch: Partial<AnalysisTask>) => {
@@ -972,6 +989,34 @@ export function ReportConsole({
         </div>
       );
     }
+    // T01491：从 PRD 生成测试用例 tab——阶段日志 + 流式协议正文实时滚动（仿 PRD_GEN_TAB）
+    if (onTestCaseGenTab) {
+      return (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+            <ListChecks size={13} style={{ color: 'var(--accent)' }} /> 从 PRD 生成测试用例
+            {tcSnap.streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
+            {tcSnap.result && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>
+                需求 {tcSnap.result.requirements.length} 条 / 用例 {tcSnap.result.cases.length} 条 / 覆盖 {tcSnap.result.coverage.rate}%{tcSnap.result.truncated ? ' · ⚠ 本轮可能被截断' : ''}
+              </span>
+            )}
+          </div>
+          {tcSnap.logs.map((l, i) => (
+            <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|warn|失败|错误/i.test(l) ? 'var(--warning, #c80)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
+          ))}
+          {!!tcSnap.streamText && (
+            <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>生成输出（实时·协议原文）</div>
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'monospace', maxHeight: 260, overflowY: 'auto' }}>{tcSnap.streamText}</div>
+            </div>
+          )}
+          {!tcSnap.streaming && tcSnap.result && (
+            <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「从 PRD 生成测试用例」卡片草稿视图勾选确认后导入。</div>
+          )}
+        </div>
+      );
+    }
     // T00569 三轮：AI 项目计划导入 tab——控制台式滚动输出执行日志（与导入面板深度整合）
     if (onAiImportTab) {
       const lv = logLevelColor;
@@ -1233,6 +1278,29 @@ export function ReportConsole({
             status={runStatus(prdSnap.streaming, prdSnap.finalElapsed)}
             startedAt={prdSnap.startedAt}
             finalElapsed={prdSnap.finalElapsed}
+            size={10}
+            showLabel={false}
+          />
+        </button>
+      )}
+      {/* T01491：从 PRD 生成测试用例 tab——有日志或生成中时显示，阶段日志与协议正文增量在此实时滚动 */}
+      {(tcSnap.logs.length > 0 || tcSnap.streaming) && (
+        <button
+          onClick={() => setActiveId(TEST_CASE_GEN_TAB)}
+          title={tcSnap.streaming ? `生成测试用例中 · 已运行 ${startedElapsedText(tcSnap.startedAt)} · 已输出 ${tcSnap.streamText.length} 字符（切换卡片不中断，返回即恢复）` : '从 PRD 生成测试用例 — 生成过程与协议正文增量在此实时滚动输出'}
+          aria-label="从 PRD 生成测试用例 tab"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+            border: '1px solid var(--border-strong)', background: onTestCaseGenTab ? 'var(--accent)' : 'var(--card-bg)',
+            color: onTestCaseGenTab ? 'var(--accent-text)' : 'var(--text)', maxWidth: 150,
+          }}
+        >
+          <ListChecks size={11} />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>生成测试用例</span>
+          <RunStatusBadge
+            status={runStatus(tcSnap.streaming, tcSnap.finalElapsed)}
+            startedAt={tcSnap.startedAt}
+            finalElapsed={tcSnap.finalElapsed}
             size={10}
             showLabel={false}
           />

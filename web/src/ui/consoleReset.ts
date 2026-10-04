@@ -13,6 +13,7 @@
 import { api } from '../api/client';
 import { reportStream } from '../reportStream';
 import { prdGenStore } from '../stores/prdGenStore';
+import { testCaseGenStore } from '../stores/testCaseGenStore'; // T01491：从 PRD 生成测试用例运行态
 import { aiImportStore } from '../stores/aiImportStore';
 
 /** 重置广播事件名：AI 控制台挂载时监听，收到后重置本地 state */
@@ -50,6 +51,7 @@ export async function resetWorkbenchArtifacts(): Promise<{ ok: boolean; error?: 
   // 2. 各能力 store：运行中先中止（停止进行中的请求/流），再重置为初始态
   try { reportStream.abort(); } catch { /* 幂等 */ }
   try { prdGenStore.abort(); } catch { /* 幂等 */ }
+  try { testCaseGenStore.abort(); } catch { /* 幂等 */ }
   try { aiImportStore.reset('plan'); } catch { /* 幂等 */ }
   // 3. 草稿产物
   clearArtifactSession();

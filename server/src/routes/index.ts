@@ -1,5 +1,7 @@
 import { Router, raw } from 'express';
 import * as PrdGenService from '../services/PrdGenService'; // T00769：原始需求生成 PRD
+import { generateTestCasesStream, type GenPrefs } from '../services/TestCaseGenService'; // T01491：从 PRD 生成测试用例（SSE）
+import { PlanService } from '../services/PlanService'; // T01491：读取内部 PRD 文档原文（prdDocId 来源）
 import { WorkspaceService } from '../services/WorkspaceService'; // T00776：工作空间搜索/读文件
 import { getDb } from '../db/connection';
 import { TaskService, nextTaskNo, type TaskInput, type TaskListOptions } from '../services/TaskService';
@@ -1502,6 +1504,88 @@ api.post('/plans/prd-generate-stream', raw({ type: () => true, limit: '30mb' }),
       signal: ac.signal, // T00838：客户端断开 → 中止底层生成
     });
     send('done', { prdMd: r.prdMd, issues: r.issues });
+  } catch (e) {
+    send('error', { error: e instanceof Error ? e.message : String(e) });
+  }
+  res.end();
+});
+
+// ---------- T01491：从 PRD 生成测试用例（AI 控制台卡片，内置技能 testcase-generate 驱动，SSE 流式输出） ----------
+// 与 prd-generate-stream 同处同构：raw(30mb) 兼容「application/json（streamEvents 通道，body 为对象）」与
+// 「文件二进制（raw Buffer）」两种上送形态；来源支持内部 PRD 文档（prdDocId）或上传外部文档（contentBase64）。
+api.post('/plans/testcase-generate-stream', raw({ type: () => true, limit: '30mb' }), async (req, res) => {
+  const { projectId, toolId } = req.query as Record<string, string | undefined>;
+  if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
+  if (!toolId) { res.status(400).json({ error: '请选择 AI 模型' }); return; }
+  // 请求体归一：application/json 时全局 express.json() 已解析为对象（streamEvents 走这条），否则 raw() 给 Buffer
+  const body = req.body as Buffer | Record<string, unknown> | undefined;
+  const payload: Record<string, unknown> = body && !Buffer.isBuffer(body) && typeof body === 'object' ? body : {};
+  const qfilename = req.query.filename as string | undefined;
+  const filename = (typeof payload.filename === 'string' && payload.filename) || qfilename || '';
+  const prdDocId = (typeof payload.prdDocId === 'string' && payload.prdDocId) || (req.query.prdDocId as string | undefined) || '';
+  const sourceLabel = (typeof payload.source === 'string' && payload.source) || (req.query.source as string | undefined) || '';
+  const resplit = payload.resplit === true || req.query.resplit === '1';
+  const prefs = payload.prefs && typeof payload.prefs === 'object' ? (payload.prefs as GenPrefs) : undefined;
+
+  if (!getDb().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) { res.status(400).json({ error: '项目不存在' }); return; }
+
+  // 解析 PRD 原文：内部文档优先（content_md 已是 Markdown），否则把上传文件二进制抽取为文本
+  let text = '';
+  let resolvedSource = sourceLabel;
+  try {
+    if (prdDocId) {
+      const doc = PlanService.getPrdDoc(prdDocId) as { filename?: string; content_md?: string } | undefined;
+      if (!doc) { res.status(400).json({ error: 'PRD 文档不存在' }); return; }
+      text = doc.content_md ?? '';
+      resolvedSource = resolvedSource || doc.filename || '内部 PRD 文档';
+    } else {
+      let fileBuf: Buffer | undefined;
+      if (Buffer.isBuffer(body) && body.length) fileBuf = body;
+      else if (typeof payload.contentBase64 === 'string') fileBuf = Buffer.from(payload.contentBase64, 'base64');
+      if (!fileBuf?.length) { res.status(400).json({ error: '请提供 PRD 来源（内部文档 prdDocId 或上传文件）' }); return; }
+      const fname = filename || '需求文档.md';
+      const extMatch = /\.[a-z0-9]+$/.exec(fname.toLowerCase());
+      const ext = extMatch ? extMatch[0] : '';
+      if (!['.doc', '.docx', '.xls', '.xlsx', '.csv', '.md', '.markdown', '.txt'].includes(ext)) {
+        res.status(400).json({ error: `不支持的文件格式「${ext || fname}」——支持 .docx/.xlsx/.csv/.md/.txt` }); return;
+      }
+      if (ext === '.doc') { res.status(400).json({ error: '老式 .doc 暂不支持，请用 Word 另存为 .docx 后重新上传' }); return; }
+      if (ext === '.xls') { res.status(400).json({ error: '老式 .xls 暂不支持，请用 Excel 另存为 .xlsx 后重新上传' }); return; }
+      text = await PrdGenService.extractSourceText(fname, fileBuf);
+      resolvedSource = resolvedSource || fname;
+    }
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); return;
+  }
+  if (!text.trim()) { res.status(400).json({ error: 'PRD 内容为空，无法生成用例' }); return; }
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+  let closed = false;
+  const send = (event: string, evPayload: unknown) => {
+    if (closed || res.writableEnded) return;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(evPayload)}\n\n`);
+  };
+  // 客户端断开（含前端「停止」主动 abort）即中止底层 AI 请求，资源随即释放（沿用 prd-generate-stream 的 res.close 语义）
+  const ac = new AbortController();
+  res.on('close', () => { closed = true; ac.abort(); });
+
+  try {
+    const draft = await generateTestCasesStream({
+      projectId,
+      toolId,
+      content: text,
+      source: resolvedSource,
+      resplitRequirements: resplit,
+      prefs,
+      onStage: (msg) => send('stage', { msg }),
+      onDelta: (t) => send('chunk', { text: t }),
+      signal: ac.signal,
+    });
+    // done 负载即 TcGenDraft：草稿视图（T01492）据此渲染并勾选后调 import-draft
+    send('done', { requirements: draft.requirements, cases: draft.cases, coverage: draft.coverage, notes: draft.notes, truncated: draft.truncated });
   } catch (e) {
     send('error', { error: e instanceof Error ? e.message : String(e) });
   }
