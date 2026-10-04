@@ -25,10 +25,21 @@ import {
 /** 列表响应（服务端 `TestCaseService.list`） */
 interface CaseListRes { total: number; items: CaseRow[] }
 
-export function TestCasePanel({ projectId, focusReqId, onClose }: {
+export function TestCasePanel({ projectId, focusReqId, focusSeq, onLocateReq, onClose }: {
   readonly projectId: string;
   /** 需求跟踪矩阵下钻带来的筛选需求 id（空串=不过滤，§7.1） */
   readonly focusReqId?: string;
+  /**
+   * T01486 A4：下钻序号。只靠 `focusReqId` 去重会让「同一需求重复下钻」静默失效——
+   * 用户手动清掉筛选后再点同一个「用例 N」chip，意图值没变、effect 不重跑，按钮看上去就是坏的。
+   * 父级每次点击自增序号，本面板据此判定「这是一次新意图」，而不是「这个需求我又见了一次」。
+   */
+  readonly focusSeq?: number;
+  /**
+   * T01486 §4.3：用例侧点「关联需求」chip 反向跳矩阵。由父级负责展开矩阵并定位行；
+   * 没传时退化为本面板内的按需求筛选（用例侧至少得有个可见反馈，不能点了什么都不发）。
+   */
+  readonly onLocateReq?: (reqId: string) => void;
   readonly onClose: () => void;
 }) {
   // ---------- 会话态（§7.1 会话键表） ----------
@@ -121,16 +132,21 @@ export function TestCasePanel({ projectId, focusReqId, onClose }: {
   }, [selIds, total]);
 
   // 矩阵下钻：父级把需求 id 放进来 → 回填筛选并退出其他视图（§4.3）
+  // 去重看 (id, seq) 这一对：id 相同但 seq 变了就是新意图；两者都没变而 effect 因 filters
+  // 变更重跑时，必须早退，否则会把用户手动改的筛选又拽回下钻的那个需求
   const lastFocus = useRef('');
+  const lastSeq = useRef(-1);
   useEffect(() => {
     const id = focusReqId ?? '';
-    if (!id || id === lastFocus.current) return;
+    const seq = focusSeq ?? 0;
+    if (!id || (seq === lastSeq.current && id === lastFocus.current)) return;
+    lastSeq.current = seq;
     lastFocus.current = id;
     setReqFilter(id);
     setUncoveredOnly(false);
     setFilters({ ...filters, orphanOnly: false });
     setPage(0);
-  }, [focusReqId, setReqFilter, setUncoveredOnly, setFilters, setPage, filters]);
+  }, [focusReqId, focusSeq, setReqFilter, setUncoveredOnly, setFilters, setPage, filters]);
 
   /** 统一写入口：成功后提示并刷新，失败时提示服务端文案并重挂载表格（防界面与库里不一致） */
   const patchCase = useCallback(async (id: string, patch: CasePatchBody, label: string): Promise<void> => {
@@ -308,7 +324,10 @@ export function TestCasePanel({ projectId, focusReqId, onClose }: {
         onPatch={(id, patch, label) => void patchCase(id, patch, label)}
         onRemove={(row) => void removeCase(row)}
         onDuplicate={(row) => void duplicateCases([row.id])}
-        onLocateReq={(reqId) => { setReqFilter(reqId); setPage(0); flash('已按该需求筛选用例；矩阵侧的下钻定位见 T01486'); }}
+        onLocateReq={(reqId) => {
+          if (onLocateReq) onLocateReq(reqId);
+          else { setReqFilter(reqId); setPage(0); flash('已按该需求筛选用例'); }
+        }}
         onCoverReq={(reqId) => { setUncoveredOnly(false); setReqFilter(reqId); setPage(0); flash('已切到该需求，在上方输入框回车即可补用例'); }}
         onClearFilter={clearFilter}
         onPage={(p) => setPage(Math.max(0, p))}

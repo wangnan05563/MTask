@@ -1107,6 +1107,14 @@ export function PlanPage() {
   // T01485：测试用例视图展开态（PRD §7.1 会话键 `plan.showTestCases`）
   const [showTestCases, setShowTestCases] = useSessionState<boolean>('plan.showTestCases', false);
 
+  // T01486 §4.3：矩阵 ⇄ 用例 双向跳转的两个瞬时意图，与会话态同机制落 sessionStorage
+  // （刷新/切页返回后不丢）：下钻带来的是“筛哪个需求”，回跳带来的是“定位哪一行”。
+  // 两者不新建第三套筛选状态，分别复用 `tc.reqFilter` 与矩阵行高亮。
+  const [tcFocusReqId, setTcFocusReqId] = useSessionState<string>('plan.tcFocusReqId', '');
+  const [matrixLocateReqId, setMatrixLocateReqId] = useSessionState<string>('plan.matrixLocateReqId', '');
+  // T01486 A4：下钻序号（不入会话：它只是「刚刚点了一下」这种瞬时信号，跨刷新保持它反而会让面板重复应用筛选）
+  const [tcDrillSeq, setTcDrillSeq] = useState(0);
+
   const flash = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(''), 3000); };
 
   /** T00657：项目列表（下拉徽标含待办/未验证与计划计数）——抽为可重复调用的加载函数 */
@@ -1994,10 +2002,28 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       {showPrd && projectId && <PrdPanel projectId={projectId} onClose={() => setShowPrd(false)} />}
 
       {/* T00662：需求跟踪矩阵面板（甘特按钮旁入口展开） */}
-      {showMatrix && projectId && <ReqMatrixPanel projectId={projectId} onClose={() => setShowMatrix(false)} />}
+      {/* T01486：「用例」列 chip 下钻用例视图；locateReqId 是用例侧回跳时要定位高亮的行 */}
+      {showMatrix && projectId && (
+        <ReqMatrixPanel projectId={projectId} onClose={() => setShowMatrix(false)}
+          locateReqId={matrixLocateReqId} onLocateHandled={() => setMatrixLocateReqId('')}
+          onDrillCases={(reqId) => {
+            setTcFocusReqId(reqId);
+            setTcDrillSeq((n) => n + 1); // 同一个需求重复下钻也要生效，靠序号而非值变更识别新意图
+            setShowTestCases(true);
+            // 筛选写入由面板自己的 focus effect 完成（它同时清掉孤儿/未覆盖视图等互斥态），
+            // 父级只递意图，不在 PlanPage 再抢写 `tc.reqFilter`，避免同一个筛选两个写入方
+          }} />
+      )}
 
       {/* T01485：测试用例面板（矩阵之后展开，保持 PRD → 矩阵 → 用例 的自上而下动线，§4.1） */}
-      {showTestCases && projectId && <TestCasePanel projectId={projectId} onClose={() => setShowTestCases(false)} />}
+      {showTestCases && projectId && (
+        <TestCasePanel projectId={projectId} focusReqId={tcFocusReqId} focusSeq={tcDrillSeq} onClose={() => setShowTestCases(false)}
+          onLocateReq={(reqId) => {
+            setShowMatrix(true);
+            setMatrixLocateReqId(reqId);
+            flash('已展开需求跟踪矩阵并定位该需求行');
+          }} />
+      )}
 
       {viewMode === 'gantt' ? renderGantt() : (
       <table className="plan-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>

@@ -2,11 +2,16 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown'; // T00763：PRD 原文 Markdown 渲染弹窗
-import { Check, ChevronDown, ChevronUp, Archive, FileSpreadsheet, FileText, Link2, ListChecks, Loader2, Minimize2, Plus, RefreshCw, Sparkles, Table2, Trash2, Upload, X } from 'lucide-react'; // T00765：标题点击查询详情；T00763：查看PRD；T00773：多选模式；T00824：跳转导入入口；T00825：关联PRD；T00842：需求标题栏 AI 美化/简化/归档；T00959：导出 Excel
+import { Check, FileSpreadsheet, FileText, ListChecks, Loader2, Plus, RefreshCw, Table2, Trash2, Upload, X } from 'lucide-react'; // T00763：查看PRD；T00773：多选模式；T00824：跳转导入入口；T00825：关联PRD；T00959：导出 Excel（行渲染相关的图标随 MatrixTable 一并迁出）
 import { EXPORT_MIME, safeExportName, saveBinary } from '../utils/download'; // T00959：导出下载
+import { MatrixTable } from './MatrixTable'; // T01486：表格主体拆出子组件（新增「用例」下钻列）
+import type { CaseCoverage } from './testCaseModel'; // T01486：覆盖度响应形状
 
-/** 矩阵行：需求 + 其关联的计划与待办（T00662） */
-interface MatrixReq {
+/**
+ * 矩阵行：需求 + 其关联的计划与待办（T00662）。
+ * 导出给 `MatrixTable`（T01486 拆出的表格子组件）复用，避免两份行类型定义漂移。
+ */
+export interface MatrixReq {
   id: string;
   project_id: string;
   req_no: string;
@@ -22,7 +27,7 @@ interface MatrixReq {
 }
 interface PlanLite { id: string; title: string; status: string; }
 
-const STATUS_OPTIONS: Array<{ key: string; label: string }> = [
+export const STATUS_OPTIONS: Array<{ key: string; label: string }> = [
   { key: 'todo', label: '待开始' },
   { key: 'doing', label: '进行中' },
   { key: 'done', label: '已完成' },
@@ -33,9 +38,15 @@ const STATUS_OPTIONS: Array<{ key: string; label: string }> = [
  * 需求跟踪矩阵面板（T00662）：按项目展示 PRD 需求 → 计划/待办 的关联与状态；
  * 支持增（新增需求）/ 删 / 改（标题、编号、状态行内编辑）/ 关联调整（勾选计划或待办建立/解除关联）。
  */
-export function ReqMatrixPanel({ projectId, onClose }: {
+export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, onLocateHandled }: {
   readonly projectId: string;
   readonly onClose: () => void;
+  /** T01486 §4.3：点「用例」列 chip 下钻用例视图（reqId 为空表示只看该项目全部用例） */
+  readonly onDrillCases?: (reqId: string) => void;
+  /** T01486 §4.3：用例侧点「关联需求」chip 反向跳转过来时要定位并高亮的需求 id */
+  readonly locateReqId?: string;
+  /** 定位请求已消费，请父级清掉会话键（否则刷新或再挂载会重复跳转） */
+  readonly onLocateHandled?: () => void;
 }) {
   const [rows, setRows] = useState<MatrixReq[]>([]);
   const [plans, setPlans] = useState<PlanLite[]>([]);
@@ -52,6 +63,17 @@ export function ReqMatrixPanel({ projectId, onClose }: {
   // T00825：项目内 PRD 文档列表——「关联调整·PRD」选项卡可选对象
   const [prdDocs, setPrdDocs] = useState<Array<{ id: string; filename: string }>>([]);
   const [newTitle, setNewTitle] = useState('');
+  // T01486：需求 id → 关联用例条数。走 `GET /test-cases/coverage` 的 `byReq`（服务端一次 GROUP BY），
+  // 「用例」列计数、删除需求的连带条数、下钻入口三处共用同一个口径，不在前端另数一遍
+  const [caseCounts, setCaseCounts] = useState<Record<string, number>>({});
+  // T01486：反向跳转的瞬时态——滚到该行并加底色高亮，2.5s 后自行消退
+  const [flashReqId, setFlashReqId] = useState('');
+  // 消退定时器与「已消费过哪个跳转意图」都走 ref：既不参与渲染，也不会被 effect 重跑干扰
+  const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const locatedRef = useRef('');
+  // 首次取数是否完成：定位 effect 必须等它，否则刚挂载时 rows 还是空数组，
+  // 会把「没加载完」误判成「需求已不在矩阵中」，顺手把跳转意图也消费掉了
+  const [loaded, setLoaded] = useState(false);
   // T00773：多选模式（参考项目计划 T00564）——批量更改状态 / 批量删除
   const [multi, setMulti] = useState(false);
   const [selIds, setSelIds] = useState<string[]>([]);
@@ -96,16 +118,20 @@ export function ReqMatrixPanel({ projectId, onClose }: {
 
   const load = useCallback(async () => {
     if (!projectId) return;
-    const [r, p, t, d] = await Promise.all([
+    const [r, p, t, d, cv] = await Promise.all([
       api.get<MatrixReq[]>(`/plans/prd-requirements?projectId=${projectId}`),
       api.get<PlanLite[]>(`/plans?projectId=${projectId}`).catch(() => []),
       api.get<Array<{ id: string; task_no: string | null; title: string }>>(`/tasks?projectId=${projectId}&archived=false`).catch(() => []),
       api.get<Array<{ id: string; filename: string }>>(`/plans/prd-docs?projectId=${projectId}`).catch(() => []),
+      // 用例覆盖度取不到不能拖累矩阵主体：退化成「全部未覆盖」，矩阵照常渲染
+      api.get<CaseCoverage>(`/plans/test-cases/coverage?projectId=${projectId}`).catch(() => null),
     ]);
     setRows(r);
     setPlans(p);
     setTasks(t.map((x) => ({ id: x.id, taskNo: x.task_no, title: x.title })));
     setPrdDocs(d);
+    setCaseCounts(Object.fromEntries((cv?.byReq ?? []).map((x) => [x.reqId, x.caseCount])));
+    setLoaded(true);
   }, [projectId]);
 
   useEffect(() => { void load(); }, [load]);
@@ -142,6 +168,36 @@ export function ReqMatrixPanel({ projectId, onClose }: {
     }
   }, [prdModal]);
 
+  // T01486：用例侧反向跳转——定位到该需求行，滚动 + 底色高亮，并立刻回销父级会话键。
+  // 高亮用内联底色而不是加 class：全站样式集中在 App.tsx 的内联 <style>，为一个临时态再开
+  // 一份 CSS 资产不划算；内联值也更容易被 `getComputedStyle` 直接断言。
+  // 两个坑（均由 ui-probe 实测出来）：
+  //  1. 不能在 id 变空时 `setFlashReqId('')`：回销会话键必然让 locateReqId 从 id 变成空串并
+  //     重跑本 effect，高亮会在设置后的下一帧就被抹掉，用户根本看不见（定时器也会被 cleanup 抢走）；
+  //     空串只用来重置「已处理过哪个 id」，消退交给定时器自己完成，定时器不挂在 effect 生命周期上。
+  //  2. 不能只按 id 去重：同一条需求连续跳两次（验收 A4「双向跳转各 3 次」）必须都能重新高亮，
+  //     所以要去重的标记在回到空串时一并复位。
+  useEffect(() => {
+    if (!loaded) return;
+    const id = locateReqId ?? '';
+    if (!id) { locatedRef.current = ''; return; }
+    if (locatedRef.current === id) return;
+    locatedRef.current = id;
+    if (!rows.some((x) => x.id === id)) {
+      onLocateHandled?.();
+      flash('该需求已不在矩阵中（可能已删除）');
+      return;
+    }
+    onLocateHandled?.();
+    document.querySelector(`[data-req-id="${id}"]`)?.scrollIntoView({ block: 'center' });
+    setFlashReqId(id);
+    if (fadeTimer.current) clearTimeout(fadeTimer.current);
+    fadeTimer.current = setTimeout(() => setFlashReqId(''), 2500);
+  }, [locateReqId, rows, loaded, onLocateHandled]);
+
+  // 定时器只跟组件卸载走，不跟 effect 重跑走；否则跳转高亮会被下一次依赖变更瞬间抹掉
+  useEffect(() => () => { if (fadeTimer.current) clearTimeout(fadeTimer.current); }, []);
+
   /** T00824：从本视图跳转 AI 工作台并自动展开「从 PRD 导入项目计划」面板，目标项目随跳转带出 */
   function goImportPrd() {
     try {
@@ -170,10 +226,14 @@ export function ReqMatrixPanel({ projectId, onClose }: {
   }
 
   async function removeReq(r: MatrixReq) {
-    if (!(await askConfirm(`删除需求「${r.title}」？\n\n其与计划/待办的关联将一并清理（计划与任务本身不受影响）。`))) return;
+    // T01486 A15：`test_cases.req_id` 是 CASCADE 外键，删需求会连带删掉其下用例（物理删除），
+    // 条数必须弹前先给用户看——事后提示等于没提示
+    const n = caseCounts[r.id] ?? 0;
+    const caseHint = n > 0 ? `\n\n⚠ 将一并删除 ${n} 条测试用例（及其步骤），此操作不可撤销。` : '';
+    if (!(await askConfirm(`删除需求「${r.title}」？\n\n其与计划/待办的关联将一并清理（计划与任务本身不受影响）。${caseHint}`))) return;
     try {
       await api.del(`/plans/prd-requirements/${r.id}`);
-      flash('已删除需求并清理关联');
+      flash(n > 0 ? `已删除需求，连带清理 ${n} 条测试用例` : '已删除需求并清理关联');
       await load();
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
   }
@@ -211,12 +271,19 @@ export function ReqMatrixPanel({ projectId, onClose }: {
   async function batchDeleteReqs() {
     const ids = [...selIds];
     if (ids.length === 0) return;
-    if (!(await askConfirm(`删除选中的 ${ids.length} 条需求？\n\n其与计划/待办的关联将一并清理（计划与任务本身不受影响）。`))) return;
+    // T01486 A15：汇总本批需求名下的用例条数；选中 10 条但其中 3 条有用例时，
+    // 只说“10 条需求”会让人低估破坏面，所以单独报“涉及 N 条”而不逐条列举
+    const withCases = ids.map((id) => caseCounts[id] ?? 0).filter((n) => n > 0);
+    const total = withCases.reduce((a, b) => a + b, 0);
+    const caseHint = total > 0
+      ? `\n\n⚠ 其中 ${withCases.length} 条需求名下共 ${total} 条测试用例会被一并删除（及其步骤），此操作不可撤销。`
+      : '';
+    if (!(await askConfirm(`删除选中的 ${ids.length} 条需求？\n\n其与计划/待办的关联将一并清理（计划与任务本身不受影响）。${caseHint}`))) return;
     setBusy(true);
     try {
       for (const id of ids) await api.del(`/plans/prd-requirements/${id}`);
       setSelIds([]);
-      flash(`已删除 ${ids.length} 条需求并清理关联`);
+      flash(total > 0 ? `已删除 ${ids.length} 条需求，连带清理 ${total} 条测试用例` : `已删除 ${ids.length} 条需求并清理关联`);
       await load();
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   }
@@ -302,163 +369,18 @@ export function ReqMatrixPanel({ projectId, onClose }: {
     </div>
   );
 
-  /** M6-6.4：多选模式的行内勾选单元格（提取以消除 S2004 深嵌套）。 */
-  const renderSelectCell = (r: MatrixReq) => (
-    <td style={{ padding: '4px 6px' }}>
-      <input type="checkbox" checked={selIds.includes(r.id)}
-        onChange={(e) => setSelIds(e.target.checked ? [...selIds, r.id] : selIds.filter((x) => x !== r.id))}
-        aria-label={`选中需求 ${r.title}`} title={`选中 ${r.req_no || ''} ${r.title}`}
-        style={{ cursor: 'pointer' }} />
-    </td>
-  );
-
-  const renderMatrixTable = () => (
-    rows.length === 0
-      ? <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>该项目暂无需求记录——可用「从 PRD 导入项目计划」生成，或在上方手动新增。</div>
-      : (
-        <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead>
-              <tr style={{ color: 'var(--text-muted)', textAlign: 'left', background: 'var(--surface-2, transparent)' }}>
-                {/* T00773：多选模式勾选列——表头全选（含半选态） */}
-                {multi && (
-                  <th style={{ padding: '5px 6px', width: 30 }}>
-                    <input ref={allRef} type="checkbox"
-                      checked={rows.length > 0 && selIds.length === rows.length}
-                      onChange={(e) => setSelIds(e.target.checked ? rows.map((r) => r.id) : [])}
-                      title="全选/全不选当前需求" aria-label="全选需求"
-                      style={{ cursor: 'pointer' }} />
-                  </th>
-                )}
-                <th style={{ padding: '5px 6px' }}>需求编号</th>
-                <th style={{ padding: '5px 6px' }}>需求标题</th>
-                <th style={{ padding: '5px 6px' }}>状态</th>
-                <th style={{ padding: '5px 6px' }}>关联计划</th>
-                {/* T00825：关联PRD 列——显示可点击的 PRD 名称，点击打开原文并定位高亮 */}
-                <th style={{ padding: '5px 6px' }}>关联PRD</th>
-                <th style={{ padding: '5px 6px' }}>关联待办</th>
-                <th style={{ padding: '5px 6px' }}>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} style={{ borderTop: '1px solid var(--border)' }}>
-                  {/* T00773：行内勾选框（多选模式下出现） */}
-                  {multi && renderSelectCell(r)}
-                  <td style={{ padding: '4px 6px', width: 100 }}>
-                    <input defaultValue={r.req_no} aria-label="需求编号" title="需求编号（失焦保存）"
-                      onBlur={(e) => { if (e.target.value !== r.req_no) void updateReq(r.id, { req_no: e.target.value }); }}
-                      style={{ width: 88, border: '1px solid transparent', borderRadius: 4, background: 'transparent', color: 'var(--accent)', fontSize: 12, padding: '1px 4px' }} />
-                  </td>
-                  <td style={{ padding: '4px 6px' }}>
-                    {/* T00765：标题字段带交互点击查询——chevron 展开需求详情（内容/来源/优先级），标题输入框编辑能力不变 */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                      <input defaultValue={r.title} aria-label="需求标题" title={r.content || r.source_ref || '（无详情）'}
-                        onBlur={(e) => { if (e.target.value !== r.title) void updateReq(r.id, { title: e.target.value }); }}
-                        style={{ flex: 1, minWidth: 150, border: '1px solid transparent', borderRadius: 4, background: 'transparent', color: 'var(--text)', fontSize: 12, padding: '1px 4px' }} />
-                      <button onClick={() => setQueryId(queryId === r.id ? '' : r.id)} className="tbtn-anim"
-                        title={queryId === r.id ? '收起需求详情' : '查询需求详情（内容/来源/优先级）'}
-                        aria-label={`查询需求 ${r.title} 详情`} aria-expanded={queryId === r.id}
-                        style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: queryId === r.id ? 'var(--accent)' : 'var(--text-muted)', padding: 2, display: 'inline-flex', flexShrink: 0 }}>
-                        {queryId === r.id ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                      </button>
-                      {/* T00842 位置3「参考任务菜单」：样式对齐任务菜单已有同名按钮（task-op 同款尺寸/间距/圆角，图标同源） */}
-                      <button onClick={() => flash('AI 美化功能开发中')} className="tbtn-anim"
-                        title="AI 美化 — 润色该需求标题，使其语义更清晰表达更规范" aria-label="AI 美化：润色该需求标题"
-                        style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)', padding: 2, display: 'inline-flex', flexShrink: 0 }}>
-                        <Sparkles size={12} />
-                      </button>
-                      <button onClick={() => flash('AI 简化功能开发中')} className="tbtn-anim"
-                        title="AI 简化 — 依据需求详情高度总结为简洁标题（限 40 字，细节会精简）" aria-label="AI 简化：依据需求详情总结为简洁标题"
-                        style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)', padding: 2, display: 'inline-flex', flexShrink: 0 }}>
-                        <Minimize2 size={12} />
-                      </button>
-                      <button onClick={() => flash('归档功能开发中')} className="tbtn-anim"
-                        title="归档 — 将该需求移入归档" aria-label="归档：将该需求移入归档"
-                        style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)', padding: 2, display: 'inline-flex', flexShrink: 0 }}>
-                        <Archive size={12} />
-                      </button>
-                    </div>
-                    {r.source_ref && <div style={{ fontSize: 10, color: 'var(--text-muted)', paddingLeft: 4 }}>{r.source_ref}</div>}
-                    {queryId === r.id && (
-                      <div style={{ marginTop: 4, padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface-2)', fontSize: 11, color: 'var(--text)' }}>
-                        <div style={{ whiteSpace: 'pre-wrap' }}>{r.content ? r.content : '（无内容）'}</div>
-                        <div style={{ marginTop: 4, color: 'var(--text-muted)' }}>来源：{r.source_ref || '—'} · 优先级：{r.priority || 'normal'} · 状态：{r.status || 'todo'}</div>
-                        {/* T00763：需求关联了 PRD 原文文档 → 提供弹窗查看完整 Markdown */}
-                        {r.prdDoc && (
-                          <div style={{ marginTop: 6 }}>
-                            <button onClick={() => void openPrd(r.prdDoc!)} className="tbtn-anim"
-                              title={`查看 PRD 原文：${r.prdDoc.filename || '未命名'}`}
-                              aria-label={`查看需求 ${r.title} 关联的 PRD 原文`}
-                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, border: '1px solid var(--accent)', borderRadius: 5, background: 'transparent', color: 'var(--accent)', cursor: 'pointer', padding: '2px 8px' }}>
-                              <FileText size={11} /> 查看PRD
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </td>
-                  <td style={{ padding: '4px 6px', width: 96 }}>
-                    <select value={r.status} onChange={(e) => void updateReq(r.id, { status: e.target.value })}
-                      aria-label="需求状态" title="需求状态"
-                      style={{ border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, padding: '1px 4px' }}>
-                      {STATUS_OPTIONS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-                    </select>
-                  </td>
-                  <td style={{ padding: '4px 6px', maxWidth: 200 }}>
-                    {r.linkedPlans.length === 0 ? <span style={{ color: 'var(--text-muted)' }}>—</span> : (
-                      <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 3 }}>
-                        {r.linkedPlans.map((p) => (
-                          <span key={p.id} title={`计划：${p.title}（${p.status}）`}
-                            style={{ fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: 'var(--text)' }}>
-                            {p.title.length > 14 ? `${p.title.slice(0, 14)}…` : p.title}
-                          </span>
-                        ))}
-                      </span>
-                    )}
-                  </td>
-                  {/* T00825：关联PRD 单元格——有 PRD 时显示可点击名称（打开原文并定位该需求章节高亮），无则占位 */}
-                  <td style={{ padding: '4px 6px', maxWidth: 180 }}>
-                    {r.prdDoc ? (
-                      <button onClick={() => void openPrd(r.prdDoc!, { title: r.title, reqNo: r.req_no })} className="tbtn-anim"
-                        title={`打开 PRD 原文：${r.prdDoc.filename}（定位到「${r.title}」章节）`}
-                        aria-label={`打开关联 PRD ${r.prdDoc.filename}`}
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, border: 'none', background: 'transparent', color: 'var(--accent)', cursor: 'pointer', padding: 0, maxWidth: '100%', textAlign: 'left' }}>
-                        <FileText size={11} style={{ flexShrink: 0 }} />
-                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.prdDoc.filename}</span>
-                      </button>
-                    ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
-                  </td>
-                  <td style={{ padding: '4px 6px', maxWidth: 200 }}>
-                    {r.linkedTasks.length === 0 ? <span style={{ color: 'var(--text-muted)' }}>—</span> : (
-                      <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 3 }}>
-                        {r.linkedTasks.map((t) => (
-                          <span key={t.id} title={`待办：${t.title}（${t.status === 'done' ? '已完成' : '待办'}${t.verified ? '·已验证' : ''}）`}
-                            style={{ fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: t.status === 'done' ? 'var(--success)' : 'var(--text)' }}>
-                            {t.taskNo ?? '—'}
-                          </span>
-                        ))}
-                      </span>
-                    )}
-                  </td>
-                  <td style={{ padding: '4px 6px', whiteSpace: 'nowrap' }}>
-                    <button onClick={() => { setLinkFor(linkFor === r.id ? '' : r.id); setLinkKind('plan'); }}
-                      className="tbtn-anim" title="关联调整 — 勾选计划或待办建立/解除关联" aria-label={`调整 ${r.title} 的关联`}
-                      style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, background: linkFor === r.id ? 'var(--accent)' : 'transparent', color: linkFor === r.id ? 'var(--accent-text)' : 'var(--text)', cursor: 'pointer', padding: '1px 6px', marginRight: 4 }}>
-                      <Link2 size={11} /> 关联
-                    </button>
-                    <button onClick={() => void removeReq(r)} className="tbtn-anim" title="删除需求（清理关联）" aria-label={`删除需求 ${r.title}`}
-                      style={{ display: 'inline-flex', border: 'none', background: 'transparent', color: 'var(--danger)', cursor: 'pointer', padding: 2 }}>
-                      <Trash2 size={12} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )
-  );
+  /** T01486：表格主体已拆到 `MatrixTable`（纯搬迁 + 新增「用例」下钻列），这里只组装它需要的状态与动作 */
+  const tableProps = {
+    rows, multi, selIds, caseCounts, queryId, linkFor,
+    locateReqId: flashReqId, allRef,
+    setSelIds, setQueryId,
+    onUpdate: (id: string, patch: Partial<Pick<MatrixReq, 'title' | 'req_no' | 'status' | 'priority'>>) => { void updateReq(id, patch); },
+    onToggleLink: (reqId: string, kind: 'plan' | 'task', targetId: string, linked: boolean) => { void toggleLink(reqId, kind, targetId, linked); },
+    onSetLinkFor: (reqId: string) => { setLinkFor(linkFor === reqId ? '' : reqId); setLinkKind('plan'); },
+    onRemove: (r: MatrixReq) => { void removeReq(r); },
+    onOpenPrd: (doc: { id: string; filename: string }, locate?: { title: string; reqNo: string }) => { void openPrd(doc, locate); },
+    onDrillCases: (reqId: string) => { onDrillCases?.(reqId); },
+  };
 
   /** M6-6.4：PRD 单选按钮（提取以消除 S2004 深嵌套）。 */
   const renderPrdDocOption = (cur: MatrixReq, x: { id: string; filename: string }) => {
@@ -565,10 +487,13 @@ export function ReqMatrixPanel({ projectId, onClose }: {
   );
 
   return (
-    <div style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 14 }}>
+    // T01486：给面板加可访问名——双向跳转需要稳定地定位「矩阵侧」DOM（与用例面板的
+    // `section[aria-label="测试用例面板"]` 同约定），同时让读屏用户知道这片区域是什么
+    <div role="region" aria-label="需求跟踪矩阵面板"
+      style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 14 }}>
       {renderToolbar()}
       {renderNewReqRow()}
-      {renderMatrixTable()}
+      <MatrixTable p={tableProps} flash={flash} />
       {renderLinkPanel()}
       {renderPrdModal()}
     </div>
