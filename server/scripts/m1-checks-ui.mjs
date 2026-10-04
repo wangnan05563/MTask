@@ -46,8 +46,9 @@ export async function seedUiFixture(base, tag, opts = {}) {
   return { projectId: proj.id, reqIdWithCases: reqA.id };
 }
 
-/** CDP 连接：拿到 page target 的 ws，包一层 evaluate / navigate / waitLoad */
-async function connectCdp(cdpBase) {
+/** CDP 连接：拿到 page target 的 ws，包一层 evaluate / navigate / waitLoad。
+ *  T01496：导出给 m3-checks-ui.mjs 复用——CDP 握手/异常收集是全量验收 UI 段的公共底座，勿另造一份。 */
+export async function connectCdp(cdpBase) {
   const targets = await (await fetch(`${cdpBase}/json`)).json();
   const page = targets.find((t) => t.type === 'page');
   if (!page) throw new Error('no page target on CDP');
