@@ -7,13 +7,16 @@
  *   node server/scripts/m2-regression.mjs --skip-build        # 复跑不改代码时，沿用上次构建
  *   node server/scripts/m2-regression.mjs --skip-api          # 只跑流水线段（迭代 A9-A12 用）
  *   node server/scripts/m2-regression.mjs --skip-pipeline     # 只跑 A8 HTTP 契约（迭代守卫文案用）
+ *   node server/scripts/m2-regression.mjs --skip-skill        # 跳过技能契约闸门节（仅迭代本编排文案时用，全量必跑）
  *   node server/scripts/m2-regression.mjs --base=http://127.0.0.1:39924   # A8 打已在跑实例（流水线仍自建临时库）
  *
  * 分工（与 m1-regression.mjs 同构，勿另造轮子）：
  *  - A8「双输入通道」是服务端契约：通道选择 + 前置校验全在 SSE 头 flush 前 return → HTTP 层确定性打；
  *  - A9-A12 是生成流水线语义（阶段日志/中断/覆盖率/幂等）：in-process 桩 adapter 驱动真实 pipeline，
  *    无需真实模型即可断言，由子进程 `m2-checks-pipeline.cjs` 产出单行 `M2PIPE:<json>` 供本脚本解析；
- *  - A7「卡片一致性」是渲染/DOM 契约，本环境无 CDP 探针 → 如实标 SKIP，绝不因为没跑就当它过了。
+ *  - A7「卡片一致性」是渲染/DOM 契约，本环境无 CDP 探针 → 如实标 SKIP，绝不因为没跑就当它过了；
+ *  - 技能契约闸门（skill-contract-check.mjs，T01489 交接要求）作为独立一节：提示词字段/示例与
+ *    testCaseEnums 单源漂移、dist 资产缺失都会让生成链路静默劣化，必须先于 A8/流水线判定通过。
  *
  * 隔离纪律（硬规则#8）：A8 段自举隔离实例（MTask_PORT + 临时 MTask_DATA_DIR），流水线段自己再开一个临时库，
  *  两段都跑完即清；A8 只造带前缀的自建项目并删，绝不污染共享库。
@@ -40,6 +43,8 @@ const has = (name) => argv.includes(`--${name}`);
 const OUT = flag('out', path.join(ROOT, 'docs', 'M2-验收回归报告.md'));
 const EXTERNAL_BASE = flag('base', '');
 const PIPELINE = path.join(ROOT, 'server', 'scripts', 'm2-checks-pipeline.cjs');
+// T01489 交接：技能契约闸门（提示词资产 ↔ testCaseEnums 单源一致性 + dist 资产齐备）纳入 M2 回归一节
+const SKILL_CHECK = path.join(ROOT, 'server', 'scripts', 'skill-contract-check.mjs');
 
 /** ---------- 构建前置（与 M1 A14 同口径：dist 必须是本次被测代码）---------- */
 function runCmd(cmd, args, tag) {
@@ -264,6 +269,15 @@ async function main() {
       groups.push(await phaseBuild());
     }
 
+    console.log('\n== 技能契约闸门（testcase-generate ↔ 枚举单源，T01489 交接）==');
+    if (has('skip-skill')) {
+      console.log('  已跳过（--skip-skill）');
+      groups.push({ title: '技能契约闸门未执行（--skip-skill）', ids: ['GATE'], list: [{ k: 'GATE_skippedThisRun', pass: false, skip: true, msg: '本次以 --skip-skill 快跑，契约闸门未执行，不得当作已验' }] });
+    } else {
+      const gate = await runCmd(`"${process.execPath}"`, [`"${SKILL_CHECK}"`], 'GATE_skill_contract_check');
+      groups.push({ title: '技能契约闸门（提示词字段/示例 ↔ testCaseEnums 单源，含 dist 资产）', ids: ['GATE'], list: [gate] });
+    }
+
     if (!base && !has('skip-api')) {
       const booted = await bootIsolated();
       base = booted.base; child = booted.child; dataDir = booted.dataDir; runner = booted.runner;
@@ -297,7 +311,7 @@ async function main() {
     groups.push(a7SkipGroup());
     console.log('  SKIP（无 CDP 探针，交 T01496/人工 UI 抽查）');
 
-    if (has('skip-api') || has('skip-pipeline') || has('skip-build')) {
+    if (has('skip-api') || has('skip-pipeline') || has('skip-build') || has('skip-skill')) {
       groups.push({ title: '本次为分段快跑（不是完整验收）', ids: ['RUN'], list: [{ k: 'RUN_partial', pass: false, skip: true, msg: `分段开关：${argv.filter((a) => a.startsWith('--skip')).join(' ') || '无'}——全量验收请不加任何 --skip 重跑` }] });
     }
 
