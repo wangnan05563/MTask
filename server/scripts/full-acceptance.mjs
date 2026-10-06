@@ -69,6 +69,18 @@ function runCmd(cmd, args, tag) {
   });
 }
 
+/** 释放 repo dev electron 对 better_sqlite3.node 的锁：无进程时非零退出属预期，不算失败 */
+function killDevElectron() {
+  return new Promise((resolve) => {
+    const child = spawn('taskkill /F /IM electron.exe', { cwd: ROOT, shell: true, windowsHide: true });
+    child.on('close', (code) => {
+      console.log(code === 0 ? '  OK 已释放 repo dev electron 锁' : '  INFO repo dev 无 electron.exe 在跑（无需杀，正常）');
+      resolve();
+    });
+    child.on('error', () => { console.log('  INFO taskkill 不可用，跳过锁释放'); resolve(); });
+  });
+}
+
 /** 跑一个子脚本，收集 stdout（用于解析 M3UI:/T01495: JSON），stderr 透传到控制台便于排障 */
 function runSub(script, args) {
   return new Promise((resolve) => {
@@ -134,7 +146,8 @@ async function phasePackage(buildOk) {
     return { name: 'package', list };
   }
   // 只杀 repo dev electron.exe；已安装的 MTask.exe（用户桌面应用/回连通道）绝不碰——它的进程终止由 nsis-kill-process.nsh 在“安装时”处理
-  await runCmd('taskkill', ['/F', '/IM', 'electron.exe'], 'A14_pack_killDev');
+  // 与 打包.bat 同口径：无 dev electron 时 taskkill 非零退出属预期，打 INFO 而非 FAIL（曾以 runCmd 误报 FAIL 干扰排障）
+  await killDevElectron();
   const startedAt = Date.now();
   const relDir = path.join(ROOT, 'release');
   const pack = await runCmd('npm', ['run', 'dist'], 'A14_pack_electronBuilder');
