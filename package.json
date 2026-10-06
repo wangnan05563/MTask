@@ -17,8 +17,8 @@
     "typecheck": "npm run typecheck -w mtask-server",
     "test:api": "node scripts/run-api-tests.mjs",
     "electron": "electron electron/main.js",
-    "dist": "electron-builder --win",
-    "dist:dir": "electron-builder --win --dir",
+    "dist": "node scripts/dist.js",
+    "dist:dir": "node scripts/dist.js --dir",
     "make:icon": "electron scripts/make-icon.js"
   },
   "dependencies": {
@@ -42,6 +42,7 @@
   "build": {
     "appId": "com.mtask.desktop",
     "productName": "MTask",
+    "artifactName": "${productName} Setup ${buildVersion}.${ext}",
     "directories": {
       "output": "release"
     },
