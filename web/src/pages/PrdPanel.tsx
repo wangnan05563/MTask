@@ -164,6 +164,7 @@ export function PrdPanel({ projectId, onClose }: {
     try {
       const d = await api.post<PrdDoc>('/plans/prd-docs', { projectId, filename: name.trim(), contentMd: `# ${name.trim()}\n\n` });
       flash('已新建 PRD 文档');
+      globalThis.dispatchEvent(new CustomEvent('mtask:prdDocsChanged')); // T01557：通知矩阵「关联」候选列表即时同步
       await load();
       await openDoc(d.id);
       setMode('edit');
@@ -190,6 +191,7 @@ export function PrdPanel({ projectId, onClose }: {
       const text = await file.text();
       const d = await api.post<PrdDoc>('/plans/prd-docs', { projectId, filename: name.trim() || file.name, contentMd: text });
       flash(`已导入「${d.filename}」`);
+      globalThis.dispatchEvent(new CustomEvent('mtask:prdDocsChanged')); // T01557：通知矩阵「关联」候选列表即时同步
       await load();
       await openDoc(d.id);
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }

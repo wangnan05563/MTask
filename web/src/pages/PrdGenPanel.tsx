@@ -312,6 +312,7 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
       }
       flash(`已录入 PRD 管理视图：${docName}（${status === 'confirmed' ? '确认版' : 'PRD'}，含问题 ${rows.length} 条）`);
       prdGenStore.pushLog(`已录入 PRD 管理视图：${docName}（${status === 'confirmed' ? '确认版' : '草稿 PRD'}；问题 ${rows.length} 条同步入库）`);
+      globalThis.dispatchEvent(new CustomEvent('mtask:prdDocsChanged')); // T01557：通知矩阵「关联」候选列表即时同步
       // T00821：确认版录入成功 → 自动切到「项目管理」并打开当前项目的 PRD 管理视图。
       // 只在成功返回后执行；写入 PlanPage 的会话态(plan.projectId/plan.showPrd)并触发全局 Tab 切换，异常不阻断已完成的录入。
       if (overwrite) {

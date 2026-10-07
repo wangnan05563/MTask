@@ -147,6 +147,14 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
     setPrdDocs(d);
   }, [projectId]);
 
+  // T01557（按建议增强）：任一 PRD 上传/录入成功后，其它页面派发 'mtask:prdDocsChanged'，
+  // 此处立即重拉候选列表——即使矩阵页未切页、关联面板未重开也即时同步（与「打开面板时刷新」互补）。
+  useEffect(() => {
+    const onPrdDocsChanged = () => { void loadPrdDocs(); };
+    globalThis.addEventListener('mtask:prdDocsChanged', onPrdDocsChanged);
+    return () => globalThis.removeEventListener('mtask:prdDocsChanged', onPrdDocsChanged);
+  }, [loadPrdDocs]);
+
   // T00825：PRD 原文弹窗渲染完成后定位高亮——优先按需求标题匹配标题行，其次编号；
   // 命中 → scrollIntoView + 加高亮 class（2.5s 后移除）；未命中标题退化到任意含标题的段落；仍无则滚动顶部，不报错
   useEffect(() => {
