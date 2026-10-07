@@ -65,6 +65,19 @@ const ACTION_LABEL: Record<'status' | 'category' | 'priority' | 'color' | 'archi
   status: '批量改状态', category: '批量设分类', priority: '批量设优先级', color: '批量字体颜色', archive: '批量归档',
 };
 
+/**
+ * T01065 后续：一级撤销快照（一次批量操作 = 一步）。
+ * entries 为操作前旧值；还原时逐条 PATCH 回去。
+ */
+interface BatchSnapshot {
+  entries: Array<{ id: string; patch: { status: string; priority: string; category_id: string | null; color: string } }>;
+  label: string;
+  /** 操作时刻（ISO），步骤列表里按时间展示，便于辨认「要撤到哪一步」 */
+  at: string;
+}
+/** 撤销栈上限：再深的历史用户基本不会翻，且每条快照都占内存（含逐条旧值） */
+const MAX_UNDO_STEPS = 10;
+
 function TriCheckbox({ checked, indeterminate, onChange, title, label, style }: {
   readonly checked: boolean;
   readonly indeterminate: boolean;
@@ -473,8 +486,10 @@ export function TasksPage() {
   const [csvPreview, setCsvPreview] = useState<{ items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>; errors: Array<{ row: number; message: string }> } | null>(null);
   const [csvImportKind, setCsvImportKind] = useState<'csv' | 'json'>('csv'); // T00556：导入类型分流
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  // T01065-FR1.6：最近一次批量操作的撤销快照（操作前旧值；一次性；归档类不记录）
-  const [lastBatch, setLastBatch] = useState<{ entries: Array<{ id: string; patch: { status: string; priority: string; category_id: string | null; color: string } }>; label: string } | null>(null);
+  // T01065-FR1.6：批量操作撤销快照栈（操作前旧值；栈顶=最近一次；归档类不入栈，归档页可自行恢复）
+  // T01065 后续：由「只留最近一次」改为最多 MAX_UNDO_STEPS 级的栈——连续多次批量操作可逐级回退，
+  // 也可以从步骤列表直接回到中间某一步（撤销该步及其之后的所有步）。
+  const [batchStack, setBatchStack] = useState<BatchSnapshot[]>([]);
   const [batchOpBusy, setBatchOpBusy] = useState(false);
   // T00446：任务列表拖拽排序（manual 排序模式下启用）
   const [dragTaskId, setDragTaskId] = useState('');
@@ -953,10 +968,9 @@ export function TasksPage() {
       const r = await api.post<{ ok: boolean; affected: number }>('/tasks/batch', { ids, action, value });
       flash(`批量操作完成：${r.affected} 条已更新`);
       // T01065-FR1.6：批量操作撤销快照——操作前抓旧值（status/priority/category/color），
-      // 工具栏出现一次性「撤销」按钮逐条还原；归档类不提供 undo（归档页可恢复）
-      if (action === 'archive') {
-        setLastBatch(null);
-      } else {
+      // 工具栏出现「撤销」按钮逐条还原；归档类不入栈（归档页可恢复）
+      // T01065 后续：改为入栈（最多 MAX_UNDO_STEPS 级），连续多次批量操作可逐级回退
+      if (action !== 'archive') {
         const all = [...todo, ...done, ...shelvedTasks];
         const entries = ids
           .map((id) => {
@@ -966,7 +980,10 @@ export function TasksPage() {
           })
           .filter((x): x is NonNullable<typeof x> => x !== null);
         const valueSuffix = value ? `（${value}）` : '';
-        if (entries.length > 0) setLastBatch({ entries, label: `${ACTION_LABEL[action]}${valueSuffix}` });
+        if (entries.length > 0) {
+          // 超出上限时丢最旧的一步：撤销栈是「最近操作的后悔药」，最旧的一步价值最低
+          setBatchStack((prev) => [...prev, { entries, label: `${ACTION_LABEL[action]}${valueSuffix}`, at: new Date().toISOString() }].slice(-MAX_UNDO_STEPS));
+        }
       }
       setSelectedIds(new Set());
       void loadTasks(activeProject);
@@ -992,20 +1009,36 @@ export function TasksPage() {
     } finally { setBatchOpBusy(false); }
   }
 
-  /** T01065-FR1.6：撤销最近一次批量操作——按操作前快照逐条 PATCH 还原（归档类不在撤销范围） */
-  async function undoLastBatch() {
-    if (!lastBatch || batchOpBusy) return;
+  /**
+   * T01065 后续：撤销 `steps` 步（默认 1 = 只撤最近一次）。
+   *
+   * 多步撤销必须**从新到旧**依次还原：后一步的旧值里可能包含前一步改动后的字段，
+   * 若按从旧到新回放，前一步的旧值会把后一步的还原结果再覆盖回去。
+   *
+   * @param steps 撤销步数（1~栈深）；越界自动夹到栈深
+   */
+  async function undoLastBatch(steps = 1) {
+    const depth = batchStack.length;
+    if (depth === 0 || batchOpBusy) return;
+    const n = Math.min(depth, Math.max(1, steps));
+    const undoing = batchStack.slice(depth - n); // 末尾 n 步，保持从旧到新
     setBatchOpBusy(true);
     try {
-      for (const { id, patch } of lastBatch.entries) {
-        await api.patch(`/tasks/${id}`, patch);
+      for (const snap of [...undoing].reverse()) {
+        for (const { id, patch } of snap.entries) {
+          await api.patch(`/tasks/${id}`, patch);
+        }
       }
-      flash(`已撤销上次批量操作（${lastBatch.entries.length} 条已还原：${lastBatch.label}）`);
-      setLastBatch(null);
+      const labels = [...undoing].reverse().map((s) => s.label).join('、');
+      const restored = undoing.reduce((sum, s) => sum + s.entries.length, 0);
+      flash(n === 1 ? `已撤销上次批量操作（${restored} 条已还原：${labels}）` : `已撤销 ${n} 步批量操作（共 ${restored} 次还原：${labels}）`);
+      setBatchStack((prev) => prev.slice(0, depth - n));
       void loadTasks(activeProject);
     } catch (e) {
-      flash(`撤销失败：${e instanceof Error ? e.message : String(e)}（已还原的部分保持当前状态）`);
-      setLastBatch(null);
+      // 中途失败仍清空这 n 步：库里已是「部分还原」的中间态，再把快照留在栈上会诱使用户重复撤销，
+      // 产生更难解释的结果。已还原的部分保持现状，用户可据当前列表重新操作。
+      flash(`撤销失败：${e instanceof Error ? e.message : String(e)}（已还原的部分保持当前状态，可重试）`);
+      setBatchStack((prev) => prev.slice(0, depth - n));
       void loadTasks(activeProject);
     } finally { setBatchOpBusy(false); }
   }
@@ -1099,6 +1132,43 @@ export function TasksPage() {
     { fmt: 'xlsx', label: 'Excel 表格', desc: '导出为 .xlsx' },
   ];
 
+  /**
+   * T01065 后续：多级撤销条（快照栈非空时常驻，与选中态无关）。
+   *
+   * 必须独立于批量条：批量操作完成即清空选中 → 批量条收起，若撤销挂在其中，
+   * 用户刚做完操作就找不到撤销入口（等于多级撤销白做）。
+   */
+  function renderUndoBar() {
+    const undoTop: BatchSnapshot | undefined = batchStack[batchStack.length - 1];
+    if (!undoTop) return null;
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '6px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--accent-soft)', border: '1px solid var(--accent)', fontSize: 12 }}>
+        <button onClick={() => void undoLastBatch(1)} disabled={batchOpBusy} className="tbtn-anim"
+          title={`撤销最近一次批量操作 — ${undoTop.label}，${undoTop.entries.length} 条将还原为操作前的状态${batchStack.length > 1 ? `（共 ${batchStack.length} 步可逐级回退）` : ''}`}
+          aria-label={`撤销最近一次批量操作（${undoTop.entries.length} 条）`}
+          style={{ cursor: 'pointer', padding: '2px 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, border: '1px solid var(--accent)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--accent)' }}>
+          <RotateCcw size={13} /> 撤销批量（{undoTop.entries.length}）{batchStack.length > 1 ? ` · 共 ${batchStack.length} 步` : ''}
+        </button>
+        {batchStack.length > 1 && (
+          <select value="" disabled={batchOpBusy} aria-label="撤销多步批量操作"
+            title="撤销多步 — 选择要回退到的那一步，该步及其之后的全部批量操作都会被撤销"
+            onChange={(e) => { const n = Number(e.target.value); if (n > 0) void undoLastBatch(n); }}
+            style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+            <option value="">撤销多步…</option>
+            {batchStack.map((s, i) => {
+              const steps = batchStack.length - i; // 撤销第 i 步及其之后 → 共 steps 步
+              return <option key={`${s.at}-${i}`} value={steps}>撤销 {steps} 步：{s.label}（{s.entries.length} 条 · {s.at.slice(11, 16)}）</option>;
+            })}
+          </select>
+        )}
+        <button onClick={() => setBatchStack([])} disabled={batchOpBusy} title="清空撤销历史 — 丢弃全部快照（已发生的批量操作不会被撤销）" aria-label="清空撤销历史"
+          style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', border: 'none', background: 'transparent', color: 'var(--text-secondary)' }}>
+          <X size={13} />
+        </button>
+      </div>
+    );
+  }
+
   /** 批量操作条：multiSelect 且有选中时浮出（样式与任务行一致） */
   function renderBatchBar() {
     if (!multiSelect || selectedIds.size === 0) return null;
@@ -1157,15 +1227,9 @@ export function TasksPage() {
           <option value="">移动到项目…</option>
           {projects.filter((p) => p.id !== 'sys-inbox' && p.id !== activeProject).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
-        {/* T01065-FR1.6：撤销最近一次批量操作（一次性按钮，操作前旧值快照逐条还原） */}
-        {lastBatch && (
-          <button onClick={() => void undoLastBatch()} disabled={batchOpBusy} className="tbtn-anim"
-            title={`撤销上次批量操作 — ${lastBatch.label}，${lastBatch.entries.length} 条将还原为操作前的状态`}
-            aria-label={`撤销上次批量操作（${lastBatch.entries.length} 条）`}
-            style={{ cursor: 'pointer', padding: '2px 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, border: '1px solid var(--accent)', borderRadius: 6, background: 'var(--accent-soft)', color: 'var(--accent)' }}>
-            <RotateCcw size={13} /> 撤销批量（{lastBatch.entries.length}）
-          </button>
-        )}
+        {/* T01065 后续：撤销入口已移出批量条——见 renderUndoBar。
+            原因：批量操作完成后会清空选中（selectedIds → 空），批量条随之收起，
+            挂在批量条里的撤销按钮也就一并消失，等于「刚做完就撤不了」。 */}
         <button onClick={() => setSelectedIds(new Set())} disabled={batchOpBusy} className="tbtn-anim"
           title="取消选择" aria-label="取消选择"
           style={{ cursor: 'pointer', padding: '2px 4px', marginLeft: 'auto', display: 'inline-flex', alignItems: 'center' }}>
@@ -2898,6 +2962,8 @@ export function TasksPage() {
     return (
       <>
         {batchBar}
+        {/* T01065 后续：多级撤销条——独立于批量条常驻（批量操作后选中被清空，批量条会收起） */}
+        {renderUndoBar()}
         {/* T01480：导出格式选择菜单（fixed 覆盖层，点外关闭） */}
         {exportMenu && (
           <div style={{ position: 'fixed', inset: 0, zIndex: 1300 }}>
