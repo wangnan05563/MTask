@@ -304,7 +304,9 @@ export function TestCasePanel({ projectId, focusReqId, focusSeq, onLocateReq, on
     .map((r) => ({ reqId: r.reqId, reqNo: r.reqNo, title: r.title }));
 
   return (
-    <section aria-label="测试用例面板" style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 12, background: 'var(--card-bg)' }}>
+    // T01534：容器边框对齐 PRD 管理视图/需求跟踪矩阵/用例生成面板的 accent 边框范式，
+    // 消除同页四面板中用例面板唯一的灰边特例（原 border:--border/radius:8/padding:10）
+    <section aria-label="测试用例面板" style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 14 }}>
       <TestCaseToolbar meta={meta} stats={stats} multi={multi} selIds={selIds} total={total} filterOpen={filterOpen}
         loading={busy} exporting={exporting} exportScope={exportScope} reqs={reqs}
         onToggleMulti={() => { setMulti(!multi); setSelIds([]); }}
