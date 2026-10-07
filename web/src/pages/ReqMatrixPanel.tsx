@@ -136,6 +136,17 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
 
   useEffect(() => { void load(); }, [load]);
 
+  /**
+   * T01557：单独刷新 PRD 文档列表。
+   * prdDocs 原仅在 load()（依赖 projectId）时拉取——刚上传的 PRD 不会进列表，
+   * 必须切走页面重挂载才可见。打开「关联」面板时按需重拉，保证关联目标始终为最新。
+   */
+  const loadPrdDocs = useCallback(async () => {
+    if (!projectId) return;
+    const d = await api.get<Array<{ id: string; filename: string }>>(`/plans/prd-docs?projectId=${projectId}`).catch(() => []);
+    setPrdDocs(d);
+  }, [projectId]);
+
   // T00825：PRD 原文弹窗渲染完成后定位高亮——优先按需求标题匹配标题行，其次编号；
   // 命中 → scrollIntoView + 加高亮 class（2.5s 后移除）；未命中标题退化到任意含标题的段落；仍无则滚动顶部，不报错
   useEffect(() => {
@@ -376,7 +387,13 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
     setSelIds, setQueryId,
     onUpdate: (id: string, patch: Partial<Pick<MatrixReq, 'title' | 'req_no' | 'status' | 'priority'>>) => { void updateReq(id, patch); },
     onToggleLink: (reqId: string, kind: 'plan' | 'task', targetId: string, linked: boolean) => { void toggleLink(reqId, kind, targetId, linked); },
-    onSetLinkFor: (reqId: string) => { setLinkFor(linkFor === reqId ? '' : reqId); setLinkKind('plan'); },
+    // T01557：打开关联面板时刷新 PRD 文档列表（避免刚上传的 PRD 需切页才可见）
+    onSetLinkFor: (reqId: string) => {
+      const opening = linkFor !== reqId;
+      setLinkFor(opening ? reqId : '');
+      setLinkKind('plan');
+      if (opening) void loadPrdDocs();
+    },
     onRemove: (r: MatrixReq) => { void removeReq(r); },
     onOpenPrd: (doc: { id: string; filename: string }, locate?: { title: string; reqNo: string }) => { void openPrd(doc, locate); },
     onDrillCases: (reqId: string) => { onDrillCases?.(reqId); },
