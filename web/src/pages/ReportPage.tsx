@@ -384,11 +384,12 @@ export function ReportPage() {
   // T00908：「已上传 PRD 文档」倾斜动画按钮——无文字图标入口，置于「从 PRD 导入项目计划」卡片右上角。
   // 未选项目时不弹层，改用 flash 提示先确定范围（弹层需按项目拉取 PRD 管理视图）
   const prdDocsAction = (
-    <button type="button" className="prd-tilt-btn"
+    <button type="button"
       onClick={(e) => { e.stopPropagation(); if (!projectId) { flash('请先在页面顶部选择目标项目范围，再查看已上传 PRD 文档'); return; } setPrdDocsOpen(true); }}
       title="已上传 PRD 文档 — 查看当前项目已上传的 PRD 文档并关联到导入计划"
       aria-label="已上传 PRD 文档：查看当前项目已上传的 PRD 文档并关联到导入计划"
       style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, borderRadius: 7, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--accent)', cursor: 'pointer' }}>
+      {/* T01558：去除文档面板专属的 3D 倾斜（prd-tilt-btn），改为与 tc-gen 等其余卡片一致的扁平卡片按钮（chrome 与卡片重置按钮同源） */}
       <FileStack size={14} />
     </button>
   );
