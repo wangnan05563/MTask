@@ -9,6 +9,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { ReportPage } from './pages/ReportPage';
 import { PlanPage } from './pages/PlanPage';
 import { NotifyBell } from './ui/NotifyBell'; // T01064-FR1.4：全局通知中心
+import { focusTaskByNo } from './ui/focusTask'; // T01057 建议：通知点击跨项目定位（写齐 focusId/项目/tab）
 import { api, setAccessToken } from './api/client';
 import { MarkdownStyles } from './ui/Markdown';
 import { CommandPalette } from './pages/CommandPalette';
@@ -58,14 +59,13 @@ function Shell() {
     globalThis.addEventListener('mtaskNavigate', onNavigate);
     return () => globalThis.removeEventListener('mtaskNavigate', onNavigate);
   }, []);
-  // T01057-FR1.1：OS 通知点击 → 聚焦窗口后定位到对应任务（写 focusId 供任务页定位，再切到任务菜单）
+  // T01057-FR1.1：OS 通知点击 → 聚焦窗口后定位到对应任务。
+  // T01057 建议：改用 focusTaskByNo——按编号解析 id/项目/状态写齐定位键（含切 activeProject），
+  // 修复此前「只写 focusId=task_no、跨项目任务定位不到」的问题（编号≠行 uuid）。
   useEffect(() => {
     const desktop = (globalThis as unknown as { mtaskDesktop?: { onNavigateTask?: (cb: (taskNo: string) => void) => () => void } }).mtaskDesktop;
     if (!desktop?.onNavigateTask) return; // 浏览器环境无桌面桥，跳过
-    const off = desktop.onNavigateTask((taskNo) => {
-      try { sessionStorage.setItem('tasks.focusId', JSON.stringify(taskNo)); } catch { /* 忽略 */ }
-      setTab('tasks');
-    });
+    const off = desktop.onNavigateTask((taskNo) => { void focusTaskByNo(taskNo); });
     return off;
   }, []);
   // T00443 / PRD UX-4：Ctrl+F 唤起/关闭命令面板（T00560：由 Ctrl+K 调整为更符合操作习惯的 Ctrl+F）

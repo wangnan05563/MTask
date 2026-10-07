@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Bell, CheckCircle2, FileText, ListTodo, ShieldCheck } from 'lucide-react';
 import { api } from '../api/client';
+import { focusTaskByNo } from './focusTask'; // T01057 建议：通知点击跨项目定位
 
 /**
  * T01064-FR1.4：全局通知中心（顶栏铃铛）——聚合任务事件（状态/验证/AI 完成/失败/回传）。
@@ -77,10 +78,8 @@ export function NotifyBell() {
   }
 
   function gotoTask(it: EventItem) {
-    if (it.task_no) {
-      try { sessionStorage.setItem('tasks.focusId', JSON.stringify(it.task_no)); } catch { /* 忽略 */ }
-    }
-    globalThis.dispatchEvent(new CustomEvent('mtaskNavigate', { detail: { tab: 'tasks' } }));
+    // T01057 建议：按编号定位（解析 id/项目/tab，跨项目可命中），替代此前只写 focusId=task_no 无法命中行 uuid 的旧逻辑
+    void focusTaskByNo(it.task_no);
     setOpen(false);
   }
 
@@ -120,7 +119,7 @@ export function NotifyBell() {
               const meta = EVENT_KINDS[it.kind] ?? { icon: <FileText size={13} />, label: it.kind };
               const unread = it.created_at > lastSeen;
               const taskNoSuffix = it.task_no ? ` ${it.task_no}` : '';
-              // T01061 后续：系统告警无对应任务——点击不应跳转
+              // T01061 后续：系统告警无对应任务——点击不应跳转（focusTaskByNo(null) 只会空跑一次导航）
               const isSystem = it.task_id === SYSTEM_TASK_ID;
               let iconColor = 'var(--accent)';
               if (isSystem || (it.kind === 'ai_state' && it.detail.includes('失败'))) iconColor = 'var(--danger)';

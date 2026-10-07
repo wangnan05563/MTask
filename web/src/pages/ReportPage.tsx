@@ -16,6 +16,7 @@ import { FlowButton } from '../ui/FlowButton'; // T01068-FR4.4：流光按钮（
 import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks } from 'lucide-react';
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CARD } from '../ui/consoleReset'; // T01042：卡片侧重置入口（与控制台重置共用核心）
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
+import { focusTaskByNo } from '../ui/focusTask'; // T01057 建议：就绪任务跳转按编号定位（跨项目可命中）
 
 interface ReportTemplate {
   id: string;
@@ -668,8 +669,7 @@ export function ReportPage() {
             <button
               key={rp.id}
               onClick={() => {
-                if (rp.task_no) { try { sessionStorage.setItem('tasks.focusId', JSON.stringify(rp.task_no)); } catch { /* 忽略 */ } }
-                globalThis.dispatchEvent(new CustomEvent('mtaskNavigate', { detail: { tab: 'tasks' } }));
+                void focusTaskByNo(rp.task_no);
               }}
               title={`就绪任务：前置依赖均已完成${complexityPart} — 点击前往任务${taskNoPart}`}
               aria-label={`前往就绪任务 ${rp.title}`}
