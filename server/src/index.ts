@@ -16,6 +16,7 @@ import { RecurringService, TokenService } from './services/RecurringService'; //
 import { SupervisorService } from './services/SupervisorService'; // T01273：监督器 tick（含 T01270 会话停滞兜底）
 import { reconcileLinkedPlanStatuses } from './services/PlanService';
 import { startStaleRunningGuard } from './services/TaskService'; // T01368 后续（P1）：running 超时兜底定时收敛（移出读路径）
+import { startEventRetentionTimer } from './services/EventRetention'; // T01064 后续：事件表 90 天保留期清理
 
 const PORT = Number(process.env.MTask_PORT ?? 39876);
 const HOST = '127.0.0.1';
@@ -87,8 +88,15 @@ function accessTokenGuard(req: express.Request, res: express.Response, next: exp
   if (token && req.headers['x-access-token'] !== token) {
     // T01073-FR5.6：API Token 具名凭据——主令牌不匹配时尝试 api_tokens 表（启用中的凭据通过并刷新 last_used_at）
     const provided = String(req.headers['x-access-token'] ?? '');
-    if (!provided || !TokenService.verify(provided)) {
+    const scope = provided ? TokenService.verify(provided) : null;
+    if (!scope) {
       res.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    // T01073 后续：只读凭据拦截写操作。判据是方法而非路径——全站写操作一律走 POST/PATCH/PUT/DELETE，
+    // 按路径维护白名单既冗长又会随新端点上线而漏配。MCP 走 POST，故只读凭据天然用不了 MCP（其工具含写能力）。
+    if (scope === 'read' && req.method !== 'GET') {
+      res.status(403).json({ error: '该凭据为只读（scope=read），不允许写操作' });
       return;
     }
   }
@@ -189,6 +197,8 @@ app.listen(PORT, HOST, () => {
   SupervisorService.startScheduler();
   // T01368 后续（P1）：running 超时兜底改为定时收敛，移出列表/详情读路径（去掉只读接口的写锁竞争）
   startStaleRunningGuard(60000);
+  // T01064 后续：task_events 保留期清理（默认 90 天，events.retentionDays 可配，0 = 不清理）
+  startEventRetentionTimer();
 });
 
 // 异步队列轮询器：周期性地将已受理（sending+有 ticket）的 Job 收口。

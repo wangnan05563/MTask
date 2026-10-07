@@ -246,6 +246,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       priority    TEXT NOT NULL DEFAULT 'normal',
       category_id TEXT,
       freq        TEXT NOT NULL DEFAULT 'weekly',
+      -- T01073 后续：cron 表达式（5 段式，本地时区解释）；非空时优先于 freq 决定下次触发时刻
+      cron_expr   TEXT DEFAULT '',
       next_run_at TEXT NOT NULL,
       last_task_no TEXT,
       enabled     INTEGER NOT NULL DEFAULT 1,
@@ -258,6 +260,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       id           TEXT PRIMARY KEY,
       name         TEXT NOT NULL,
       token        TEXT NOT NULL UNIQUE,
+      -- T01073 后续：权限范围 read=只读（仅放行 GET）/ write=读写（默认）
+      scope        TEXT NOT NULL DEFAULT 'write',
       enabled      INTEGER NOT NULL DEFAULT 1,
       created_at   TEXT NOT NULL,
       last_used_at TEXT
@@ -443,6 +447,10 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('tasks', 'retry_count', 'retry_count INTEGER NOT NULL DEFAULT 0');
   // T01058-FR2.1：计划行 AI 复杂度评级（1~5，≥4 标红提示建议拆分）；PRD 导入时 AI 输出
   ensureColumn('plan_tasks', 'complexity', 'complexity INTEGER');
+  // T01073 后续：①循环任务 cron 表达式（精确到时刻；空=按 freq 粗粒度调度，列在 CREATE 段已含 cron_expr 的库无需重复）
+  ensureColumn('recurring_rules', 'cron_expr', "cron_expr TEXT DEFAULT ''");
+  // T01073 后续：②API Token 权限范围——read=只读凭据（仅放行 GET，含 MCP 写操作）、write=读写（默认，兼容既有凭据）
+  ensureColumn('api_tokens', 'scope', "scope TEXT NOT NULL DEFAULT 'write'");
   // T00620：AI 状态变更时间（ISO 字符串）——两个用途：
   // 1) running 超时（Agent 中断/崩溃无兜底）→ 读取时惰性置 failed；
   // 2) 标记"是否被 AI 处理过"——'' 状态（用户已读清空）时保留该时间戳不丢，

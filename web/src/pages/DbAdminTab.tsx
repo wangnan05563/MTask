@@ -201,6 +201,41 @@ export function DbAdminTab() {
     } finally { setBkBusy(''); }
   }
 
+  // T01064 后续：task_events 保留期（默认 90 天，0 = 不清理）+ 手动立即清理
+  const [retDays, setRetDays] = useState('');
+  const [retTotal, setRetTotal] = useState(0);
+  const loadRetention = useCallback(async () => {
+    try {
+      const d = await api.get<{ days: number; total: number }>('/events/retention');
+      setRetDays(String(d.days));
+      setRetTotal(d.total);
+    } catch { /* 加载失败不打断页面 */ }
+  }, []);
+  useEffect(() => { void loadRetention(); }, [loadRetention]);
+  async function saveRetention() {
+    const n = Number(retDays);
+    if (!Number.isFinite(n)) { flash('保留天数必须为数字（0 = 不清理）'); return; }
+    try {
+      const d = await api.put<{ days: number; total: number }>('/events/retention', { days: n });
+      setRetDays(String(d.days)); setRetTotal(d.total);
+      flash(d.days > 0 ? `事件保留期已设为 ${d.days} 天（每日自动清理一次）` : '事件保留期已关闭（保留全部事件）');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+  async function purgeEvents() {
+    const days = Number(retDays);
+    if (!Number.isFinite(days) || days <= 0) { flash('保留天数为 0（不清理）时无需手动清理'); return; }
+    if (!(await askConfirm(`立即清理 ${days} 天前的任务事件？\n\n当前共 ${retTotal} 条事件，过期部分将被永久删除（不可恢复）。`))) return;
+    try {
+      const d = await api.post<{ deleted: number; total: number }>('/events/purge', {});
+      setRetTotal(d.total);
+      flash(d.deleted > 0 ? `已清理 ${d.deleted} 条过期事件，剩余 ${d.total} 条` : '没有过期事件需要清理');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   const pkCol = useMemo(() => columns.find((c) => c.primary_key)?.name ?? 'id', [columns]);
 
   const loadTables = useCallback(async (keepActive = true) => {
@@ -361,6 +396,32 @@ export function DbAdminTab() {
             ))}
           </div>
         )}
+      </div>
+
+      {/* T01064 后续：task_events 保留期——事件流长期增长，默认保留 90 天，每日自动清理一次 */}
+      <div style={{ border: '1px solid var(--border-strong)', borderRadius: 8, padding: 12, marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Trash2 size={14} /> 事件保留期
+          </div>
+          <span style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>
+            任务事件（通知中心/时间线数据源）当前共 {retTotal} 条
+          </span>
+          <span style={{ flex: 1 }} />
+          <label style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }} htmlFor="db-event-retention">保留</label>
+          <input id="db-event-retention" value={retDays} onChange={(e) => setRetDays(e.target.value)}
+            title="保留天数 — 0 表示不清理（保留全部事件）"
+            style={{ width: 64, fontSize: 'var(--fs-m)', padding: '4px 6px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
+          <span style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>天</span>
+          <button onClick={() => void saveRetention()} title="保存保留期 — 即时生效，无需重启"
+            style={{ fontSize: 'var(--fs-m)', padding: '5px 12px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+            保存
+          </button>
+          <button onClick={() => void purgeEvents()} title="立即清理过期事件 — 跳过每日节流，过期部分永久删除"
+            style={{ fontSize: 'var(--fs-m)', padding: '5px 12px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}>
+            立即清理
+          </button>
+        </div>
       </div>
 
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>

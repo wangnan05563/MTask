@@ -26,9 +26,11 @@ export function LangSwitch() {
 interface ProjectRowLite { id: string; name: string }
 interface RecurringRule {
   id: string; project_id: string; project_name: string; title: string;
-  freq: string; next_run_at: string; last_task_no: string | null; enabled: number; created_at: string;
+  freq: string; cron_expr?: string; next_run_at: string; last_task_no: string | null; enabled: number; created_at: string;
 }
-const FREQ_LABELS: Record<string, string> = { daily: '每天', weekly: '每周', monthly: '每月' };
+const FREQ_LABELS: Record<string, string> = { daily: '每天', weekly: '每周', monthly: '每月', cron: 'cron 定时' };
+/** T01073 后续：cron 5 段式提示（分 时 日 月 周） */
+const CRON_PLACEHOLDER = '0 9 * * 1';
 
 export function RecurringTab() {
   const [rules, setRules] = useState<RecurringRule[]>([]);
@@ -36,6 +38,8 @@ export function RecurringTab() {
   const [projectId, setProjectId] = useState('');
   const [title, setTitle] = useState('');
   const [freq, setFreq] = useState('weekly');
+  // T01073 后续：cron 表达式（可选）。非空时优先于上面的频率下拉——精确到「每周一 9:00」这类时刻
+  const [cron, setCron] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
@@ -52,11 +56,22 @@ export function RecurringTab() {
     if (!projectId || !title.trim()) return flash('请选择项目并填写标题');
     setBusy(true);
     try {
-      await api.post('/recurring', { projectId, title: title.trim(), freq, priority: 'normal' });
+      await api.post('/recurring', { projectId, title: title.trim(), freq, cron: cron.trim(), priority: 'normal' });
       setTitle('');
-      flash('循环规则已创建（server 启动与每小时 tick 时到期生成）');
+      setCron('');
+      flash(cron.trim() ? `循环规则已创建（按 cron「${cron.trim()}」定时生成）` : '循环规则已创建（server 启动与每小时 tick 时到期生成）');
       await load();
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
+  }
+
+  /** T01073 后续：行内改 cron 表达式（改完即时生效；非法表达式由后端拒绝，错误直接闪现） */
+  async function updateCron(rule: RecurringRule, expr: string) {
+    if (expr === (rule.cron_expr ?? '')) return;
+    try {
+      await api.put(`/recurring/${rule.id}`, { cron: expr });
+      flash(expr ? `「${rule.title}」已改为 cron「${expr}」` : `「${rule.title}」已取消 cron，按${FREQ_LABELS[rule.freq] ?? rule.freq}生成`);
+      await load();
+    } catch (e) { flash(String((e as Error).message ?? e)); }
   }
 
   const cell: { padding: number; borderBottom: string; fontSize: number } = { padding: 8, borderBottom: '1px solid var(--surface-2)', fontSize: 12 };
@@ -66,6 +81,7 @@ export function RecurringTab() {
       <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 4 }}>{t('循环任务', '循环任务')}</div>
       <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 12 }}>
         按周期自动生成任务副本（例：每周周报）。到期由后端每小时检查并生成，标题自动带日期后缀。
+        需要精确到时刻时填 cron 表达式（<code>分 时 日 月 周</code>，如 <code>0 9 * * 1</code> = 每周一 9:00，按本地时区）；留空则按上面的频率粗粒度生成。
       </div>
 
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
@@ -80,6 +96,10 @@ export function RecurringTab() {
           style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           {Object.entries(FREQ_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
         </select>
+        <input value={cron} onChange={(e) => setCron(e.target.value)} placeholder={`cron 可选（如 ${CRON_PLACEHOLDER}）`} aria-label="cron 表达式"
+          title="cron 5 段式：分 时 日 月 周（按本地时区）。填写后忽略上面的频率下拉，可精确到时刻，如「0 9 * * 1」= 每周一 9:00"
+          onKeyDown={(e) => { if (e.key === 'Enter') void createRule(); }}
+          style={{ width: 150, padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
         <button onClick={() => void createRule()} disabled={busy}
           style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
           添加规则
@@ -106,8 +126,16 @@ export function RecurringTab() {
               <tr key={r.id}>
                 <td style={{ ...cell, color: r.enabled ? 'var(--text)' : 'var(--text-muted)' }}>{r.title}</td>
                 <td style={cell}>{r.project_name}</td>
-                <td style={cell}>{FREQ_LABELS[r.freq] ?? r.freq}</td>
-                <td style={{ ...cell, color: 'var(--text-muted)' }}>{r.next_run_at.slice(0, 10)}</td>
+                <td style={cell}>
+                  {r.freq === 'cron' ? (
+                    <input key={`${r.id}-${r.cron_expr ?? ''}`} defaultValue={r.cron_expr ?? ''} aria-label={`${r.title} 的 cron 表达式`}
+                      title="cron 5 段式：分 时 日 月 周（本地时区）。回车/失焦保存；清空则回退为按频率生成"
+                      onBlur={(e) => void updateCron(r, e.target.value.trim())}
+                      onKeyDown={(e) => { if (e.key === 'Enter') void updateCron(r, e.currentTarget.value.trim()); }}
+                      style={{ width: 110, padding: 3, fontSize: 11, fontFamily: 'Consolas, Menlo, monospace', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text)' }} />
+                  ) : (FREQ_LABELS[r.freq] ?? r.freq)}
+                </td>
+                <td style={{ ...cell, color: 'var(--text-muted)' }}>{r.next_run_at.slice(0, r.freq === 'cron' ? 16 : 10)}</td>
                 <td style={cell}>{r.last_task_no ?? '—'}</td>
                 <td style={cell}>
                   <button onClick={async () => { await api.put(`/recurring/${r.id}`, { enabled: !r.enabled }); void load(); }}
@@ -130,11 +158,15 @@ export function RecurringTab() {
   );
 }
 
-interface ApiTokenRow { id: string; name: string; token_masked: string; enabled: number; created_at: string; last_used_at: string | null }
+/** T01073 后续：权限范围——read 只读（仅放行 GET，写操作返回 403）/ write 读写 */
+type TokenScope = 'read' | 'write';
+const SCOPE_LABELS: Record<TokenScope, string> = { read: '只读', write: '读写' };
+interface ApiTokenRow { id: string; name: string; token_masked: string; scope?: TokenScope; enabled: number; created_at: string; last_used_at: string | null }
 
 export function ApiTokensTab() {
   const [tokens, setTokens] = useState<ApiTokenRow[]>([]);
   const [name, setName] = useState('');
+  const [scope, setScope] = useState<TokenScope>('write');
   const [fresh, setFresh] = useState<{ name: string; token: string } | null>(null);
   const [notice, setNotice] = useState('');
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
@@ -147,9 +179,19 @@ export function ApiTokensTab() {
   async function createToken() {
     if (!name.trim()) return flash('请填写凭据名称（如：CI 脚本）');
     try {
-      const r = await api.post<{ id: string; name: string; token: string }>('/tokens', { name: name.trim() });
+      const r = await api.post<{ id: string; name: string; token: string; scope: TokenScope }>('/tokens', { name: name.trim(), scope });
       setFresh({ name: r.name, token: r.token }); // 明文仅此一次展示
       setName('');
+      await load();
+    } catch (e) { flash(String((e as Error).message ?? e)); }
+  }
+
+  /** T01073 后续：切换权限范围（只读凭据的写操作会被后端 403 拦下） */
+  async function toggleScope(tk: ApiTokenRow) {
+    const next: TokenScope = tk.scope === 'read' ? 'write' : 'read';
+    try {
+      await api.put(`/tokens/${tk.id}`, { scope: next });
+      flash(`「${tk.name}」权限范围已改为${SCOPE_LABELS[next]}`);
       await load();
     } catch (e) { flash(String((e as Error).message ?? e)); }
   }
@@ -161,12 +203,18 @@ export function ApiTokensTab() {
       <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 4 }}>API Token</div>
       <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 12 }}>
         供外部脚本调用 MTask REST API 的具名凭据（请求头 X-Access-Token）；在内网穿透开启时与主令牌等效。可随时停用或撤销。
+        <b>只读</b>凭据仅放行 GET（写操作返回 403），适合给看板/统计类脚本——拿到 token 也改不动数据。
       </div>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="凭据名称（如：CI 脚本）" aria-label="API Token 名称"
           onKeyDown={(e) => { if (e.key === 'Enter') void createToken(); }}
           style={{ flex: 1, padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
+        <select value={scope} onChange={(e) => setScope(e.target.value as TokenScope)} aria-label="API Token 权限范围"
+          title="只读 = 仅放行 GET 请求（写操作返回 403）；读写 = 与当前行为一致"
+          style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          {(Object.keys(SCOPE_LABELS) as TokenScope[]).map((k) => <option key={k} value={k}>{SCOPE_LABELS[k]}</option>)}
+        </select>
         <button onClick={() => void createToken()}
           style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
           生成 Token
@@ -196,6 +244,7 @@ export function ApiTokensTab() {
             <tr style={{ textAlign: 'left', color: 'var(--text-secondary)', fontSize: 12 }}>
               <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>名称</th>
               <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>Token</th>
+              <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>范围</th>
               <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>最近使用</th>
               <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>操作</th>
             </tr>
@@ -205,6 +254,12 @@ export function ApiTokensTab() {
               <tr key={tk.id}>
                 <td style={{ ...cell, color: tk.enabled ? 'var(--text)' : 'var(--text-muted)' }}>{tk.name}</td>
                 <td style={{ ...cell, fontFamily: 'Consolas, Menlo, monospace', color: 'var(--text-muted)' }}>{tk.token_masked}</td>
+                <td style={cell}>
+                  <button onClick={() => void toggleScope(tk)} title="切换权限范围 — 只读凭据只能发 GET 请求"
+                    style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: tk.scope === 'read' ? 'var(--accent)' : 'var(--text-secondary)', cursor: 'pointer' }}>
+                    {SCOPE_LABELS[tk.scope ?? 'write']}
+                  </button>
+                </td>
                 <td style={cell}>{tk.last_used_at ? tk.last_used_at.slice(0, 16) : '从未使用'}</td>
                 <td style={cell}>
                   <button onClick={async () => { await api.put(`/tokens/${tk.id}`, { enabled: !tk.enabled }); void load(); }}

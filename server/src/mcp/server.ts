@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { McpServer, type CallToolResult } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { getDb } from '../db/connection';
 import { getDefaultNoteProjectId } from '../services/AppSettings';
+import { readPoolStatus, poolFullHint } from '../services/ConcurrencyPool'; // T01066 后续：MCP 领取路径池满提示
 import { TaskService } from '../services/TaskService';
 import { TaskImageService } from '../services/TaskImageService'; // T00610：截图读取（供 AI 识别验证失败反馈截图）
 import { PlanService } from '../services/PlanService';
@@ -289,7 +290,9 @@ export async function createMCPServer(): Promise<McpServer> {
 
   server.registerTool('mtask_list_tasks', {
     title: '列出任务',
-    description: '按项目/状态/归档态列出任务；projectId 或 projectName 二者可选其一过滤项目，都不传则列出全部项目。默认只返回「待处理 或 未验证」的任务（利于 AI 分析决策）；需查其他需显式传 status。',
+    description: '按项目/状态/归档态列出任务；projectId 或 projectName 二者可选其一过滤项目，都不传则列出全部项目。默认只返回「待处理 或 未验证」的任务（利于 AI 分析决策）；需查其他需显式传 status。'
+      + '【并发池提示】T01066 后续：并发池已满（运行中任务数 ≥ 上限，默认 3）时，返回文本开头会带一段 ⚠ 软引导，'
+      + '提示先收口已领取任务；structuredContent.pool 给出 limit/running/queued/full。此为提示不是拦截——是否继续领取由 Agent 自行判断。',
     inputSchema: {
       projectId: z.string().optional().describe('项目 id，缺省列出全部项目任务'),
       projectName: z.string().optional().describe('项目名称（如 MTask/wiki/xianyu），按名称解析为项目 id 过滤，与 projectId 二选一'),
@@ -311,7 +314,11 @@ export async function createMCPServer(): Promise<McpServer> {
       if (a.status) listOpts.status = a.status;
       else if (a.scope !== 'all') listOpts.pending = true;
       const tasks = TaskService.list(listOpts);
-      return ok(json(tasks), { tasks });
+      // T01066 后续：领取路径的池满提示——说明"上限"是软引导而非硬拦截，
+      // 让 Agent 自己决定是先收口旧任务还是继续领取（硬拦会破坏多 Agent 自主并发）。
+      const pool = readPoolStatus();
+      const hint = poolFullHint(pool);
+      return ok(hint ? `${hint}\n\n${json(tasks)}` : json(tasks), { tasks, pool });
     } catch (e) { return err((e as Error).message); }
   });
 
@@ -338,7 +345,10 @@ export async function createMCPServer(): Promise<McpServer> {
         TaskService.setAiState(task.id, 'running');
       }
       const fresh = TaskService.getById(task.id) ?? task;
-      return ok(json(fresh), { task: fresh });
+      // T01066 后续：markRunning 是真正的「领取」动作——领取后若池已满，把提示带回去，
+      // 让 Agent 知道自己已占满槽位、继续领取会挤掉上下文（仍不硬拦）。
+      const claimHint = a.markRunning ? poolFullHint(readPoolStatus()) : '';
+      return ok(claimHint ? `${claimHint}\n\n${json(fresh)}` : json(fresh), { task: fresh });
     } catch (e) { return err((e as Error).message); }
   });
 

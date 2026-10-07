@@ -6,6 +6,8 @@ import { WorkspaceService } from '../services/WorkspaceService'; // T00776：工
 import { getDb } from '../db/connection';
 import { TaskService, nextTaskNo, type TaskInput, type TaskListOptions } from '../services/TaskService';
 import { RecurringService, TokenService } from '../services/RecurringService'; // T01073：循环任务 + API Token
+import { readEventRetentionDays, setEventRetentionDays, pruneTaskEvents, countEvents } from '../services/EventRetention'; // T01064 后续：事件表保留期清理
+import { readPoolStatus, setPoolLimit } from '../services/ConcurrencyPool'; // T01066 后续：并行任务池单源
 import { ExecSessionService } from '../services/ExecSessionService'; // T01271：执行会话面板数据源
 import { PushService } from '../services/PushService'; // T01440：Web Push
 import { TaskExportService, type ExportFormat } from '../services/TaskExportService'; // T01480：任务导出
@@ -419,28 +421,38 @@ api.get('/events/by-task/:taskId', (req, res) => {
   res.json(TaskService.listTaskEvents(req.params.taskId));
 });
 
+// T01064 后续：事件表保留期（默认 90 天，0 = 不清理）。自动清理由常驻定时器执行，
+// 此处暴露读写 + 手动立即清理，便于设置页展示与「先清一次看效果」。
+api.get('/events/retention', (_req, res) => {
+  res.json({ days: readEventRetentionDays(), total: countEvents() });
+});
+api.put('/events/retention', (req, res) => {
+  const days = Number((req.body as { days?: unknown } | undefined)?.days);
+  if (!Number.isFinite(days)) {
+    res.status(400).json({ error: 'days 必须为数字（0 = 不清理）' });
+    return;
+  }
+  try {
+    res.json({ days: setEventRetentionDays(days), total: countEvents() });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+api.post('/events/purge', (_req, res) => {
+  // force=true：跳过 24h 节流，让「立即清理」点击后确实有动作（否则用户会以为功能坏了）
+  res.json({ deleted: pruneTaskEvents(Date.now(), true), total: countEvents() });
+});
+
 // T01066-FR1.8（并行任务池）：运行中槽位/并发上限/排队计数。
 // MTask 为 pull 模式（外部 Agent 经 MCP 领任务）——池状态为观测与软引导；上限存 app_settings（默认 3，1~10）。
-const POOL_LIMIT_KEY = 'ai.pool.limit';
+// T01066 后续：口径抽到 ConcurrencyPool（MCP 领取路径复用同一份，避免两处 SQL 漂移）。
 api.get('/pool/status', (_req, res) => {
-  const db = getDb();
-  const limit = Math.min(10, Math.max(1, Number(getSetting(POOL_LIMIT_KEY)) || 3));
-  const running = db.prepare(
-    `SELECT t.id, t.task_no, t.title, t.ai_state_at, p.name AS project_name
-       FROM tasks t JOIN projects p ON p.id = t.project_id
-      WHERE t.ai_state = 'running' AND t.archived = 0 AND COALESCE(t.shelved, 0) = 0
-      ORDER BY t.ai_state_at DESC`,
-  ).all() as Array<{ id: string; task_no: string | null; title: string; ai_state_at: string; project_name: string }>;
-  const queued = (db.prepare(
-    "SELECT COUNT(*) AS c FROM tasks WHERE status = 'todo' AND COALESCE(ai_state, '') = '' AND archived = 0 AND COALESCE(shelved, 0) = 0",
-  ).get() as { c: number }).c;
-  res.json({ limit, running, queued });
+  res.json(readPoolStatus());
 });
 api.put('/pool/limit', (req, res) => {
   const n = Number(req.body?.limit);
   if (!Number.isFinite(n) || n < 1 || n > 10) return res.status(400).json({ error: 'limit 取值 1~10' });
-  setSetting(POOL_LIMIT_KEY, String(Math.round(n)));
-  res.json({ ok: true, limit: Math.round(n) });
+  res.json({ ok: true, limit: setPoolLimit(n) });
 });
 
 // T01072-FR1.9：处理结果历史与回滚（diff 视图数据源）
@@ -464,16 +476,27 @@ api.post('/tasks/by-no/:taskNo/result-rollback', (req, res) => {
 // T01073-FR5.5：循环任务规则管理（到期由 server tick 自动生成副本）
 api.get('/recurring', (_req, res) => res.json(RecurringService.list()));
 api.post('/recurring', (req, res) => {
-  const { projectId, title, description, priority, categoryId, freq } = req.body ?? {};
+  const { projectId, title, description, priority, categoryId, freq, cron } = req.body ?? {};
   try {
-    res.status(201).json(RecurringService.create({ projectId, title, description, priority, categoryId: categoryId ?? null, freq: freq ?? 'weekly' }));
+    res.status(201).json(RecurringService.create({ projectId, title, description, priority, categoryId: categoryId ?? null, freq: freq ?? 'weekly', cron: cron ?? '' }));
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
 api.put('/recurring/:id', (req, res) => {
+  // T01073 后续：cron 与 enabled 可分别更新（cron 需校验；非法表达式会被拒，不会写库）
+  const cron = req.body?.cron;
+  if (typeof cron === 'string') {
+    try {
+      const r = RecurringService.setCron(req.params.id, cron);
+      if (!r) return res.status(404).json({ error: '规则不存在' });
+      return res.json(r);
+    } catch (e) {
+      return res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+    }
+  }
   const enabled = req.body?.enabled;
-  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled 布尔值必填' });
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled 布尔值或 cron 字符串必填' });
   const r = RecurringService.setEnabled(req.params.id, enabled);
   if (!r) return res.status(404).json({ error: '规则不存在' });
   res.json(r);
@@ -537,11 +560,18 @@ api.post('/push/test', async (_req, res) => {
 api.get('/tokens', (_req, res) => res.json(TokenService.list()));
 api.post('/tokens', (req, res) => {
   const name = String(req.body?.name ?? '');
-  try { res.status(201).json(TokenService.create(name)); } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+  // T01073 后续：scope 默认 write（读写）；read=只读凭据，仅放行 GET（非 GET 返回 403）
+  const scope = String(req.body?.scope ?? 'write');
+  try { res.status(201).json(TokenService.create(name, scope)); } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 api.put('/tokens/:id', (req, res) => {
+  const scope = req.body?.scope;
+  if (typeof scope === 'string') {
+    TokenService.setScope(req.params.id, scope);
+    return res.json({ ok: true });
+  }
   const enabled = req.body?.enabled;
-  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled 布尔值必填' });
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled 布尔值或 scope 字符串必填' });
   TokenService.setEnabled(req.params.id, enabled);
   res.json({ ok: true });
 });
