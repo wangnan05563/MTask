@@ -15,6 +15,7 @@ import { RunStatusBadge, type RunStatus } from '../ui/runStatus'; // T01038：�
 import { FlowButton } from '../ui/FlowButton'; // T01068-FR4.4：流光按钮（loading 态）
 import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks } from 'lucide-react';
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CARD } from '../ui/consoleReset'; // T01042：卡片侧重置入口（与控制台重置共用核心）
+import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
 
 interface ReportTemplate {
   id: string;
@@ -94,7 +95,7 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, action, sta
   const [resetting, setResetting] = useState(false);
   async function handleReset() {
     if (resetting || !onReset) return;
-    if (!globalThis.confirm(RESET_CONFIRM_CARD)) return; // 二次确认：防误操作
+    if (!await askConfirm(RESET_CONFIRM_CARD)) return; // 二次确认：防误操作
     setResetting(true);
     try { await onReset(); } finally { setResetting(false); }
   }

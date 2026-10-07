@@ -11,6 +11,7 @@ import { prdGenStore } from '../stores/prdGenStore'; // T00769 二轮：原始�
 import { testCaseGenStore } from '../stores/testCaseGenStore'; // T01491：从 PRD 生成测试用例的过程输出
 import { reportStream, useReportStream } from '../reportStream'; // T00838：停止按钮需订阅周报流状态
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CONSOLE, CONSOLE_RESET_EVENT } from '../ui/consoleReset'; // T01042：控制台/卡片共用重置核心
+import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
 
 const CATEGORIES = [
   { key: 'summary', label: '周期要点汇总' },
@@ -790,7 +791,7 @@ export function ReportConsole({
   const [resetting, setResetting] = useState(false);
   async function resetConsole() {
     if (resetting) return;
-    if (!globalThis.confirm(RESET_CONFIRM_CONSOLE)) return;
+    if (!await askConfirm(RESET_CONFIRM_CONSOLE)) return;
     setResetting(true);
     const r = await resetWorkbenchArtifacts();
     setResetting(false);
