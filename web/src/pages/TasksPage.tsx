@@ -159,6 +159,9 @@ export function TasksPage() {
   // T00719：搁置任务列表（页面最下方独立区块，与待办/已完成隔离；MCP 处理待办时自动忽略）
   const [shelvedTasks, setShelvedTasks] = useState<Task[]>([]);
   const [shelvedSort, setShelvedSort] = useState<SortKey>('default');
+  // T01533：标题区按下选中守卫——manual 排序时行 draggable 会劫持鼠标拖拽致标题无法选择复制；
+  // 自标题按下起临时对该行禁用行拖拽（改从行内其他区域仍可拖动排序），松开指针即恢复。
+  const [titleSelId, setTitleSelId] = useState('');
   // T00566：本地静默清空某任务 ai_state（已读）——不打断列表，不触发全表刷新
   const setTasksStateRead = (id: string) => {
     const clear = (arr: Task[]) => arr.map((x) => (x.id === id && x.ai_state ? { ...x, ai_state: '' } : x));
@@ -1844,16 +1847,26 @@ export function TasksPage() {
       // T00918：已完成且无处理结果反馈的任务，其标题行常无「描述/处理结果」展开入口可点，
       // 未读红点无处置除；故点击标题本身即视为「已查看」，清除该任务未读状态（仅覆盖此场景，不影响已填反馈任务）
       // T01384：有描述时点击标题即展开/收起描述（键盘 Enter/Space 同效），aria-expanded 同步可展开状态
-      <button
-        type="button"
-        onClick={descToggleable ? toggleDesc : markTitleRead}
+      // T01533：button → span[role=button]——Chromium 不允许鼠标框选 button 内文字，且全局
+      //   `button:hover` 倾斜规则（App.tsx）让悬浮时文字位移、更难选中复制；改 span 后倾斜随之消失，
+      //   userSelect 显式放开可正常框选；点击展开/键盘操作语义原样保留（选中文字松手不误触折叠）。
+      <span
+        role="button"
+        tabIndex={0}
+        onClick={(e) => {
+          const sel = window.getSelection();
+          if (sel && !sel.isCollapsed && e.currentTarget.contains(sel.anchorNode)) return; // 正在框选复制，不触发折叠
+          if (descToggleable) toggleDesc(); else markTitleRead();
+        }}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (descToggleable) toggleDesc(); else markTitleRead(); } }}
+        onMouseDown={() => setTitleSelId(t.id)}
         aria-expanded={descToggleable ? descExpanded[t.id] ?? false : undefined}
         aria-controls={descToggleable ? `task-desc-${t.id}` : undefined}
         title={titleAttr}
-        style={{ flex: 1, background: 'none', border: 'none', padding: 0, font: 'inherit', textAlign: 'left', textDecoration: t.status === 'done' ? 'line-through' : 'none', color: t.color || 'var(--text)', cursor: descToggleable || unreadDone ? 'pointer' : 'default' }}
+        style={{ flex: 1, background: 'none', border: 'none', padding: 0, font: 'inherit', textAlign: 'left', textDecoration: t.status === 'done' ? 'line-through' : 'none', color: t.color || 'var(--text)', cursor: descToggleable || unreadDone ? 'pointer' : 'default', userSelect: 'text', WebkitUserSelect: 'text' }}
       >
         {t.title}
-      </button>
+      </span>
     );
   }
 
@@ -2424,12 +2437,13 @@ export function TasksPage() {
         className={buildTaskItemClass(t, titleEditing, descEditing, dragCls)}
         onPointerDown={(e) => {
           // T00489：交互元素上按下不触发行缩放；非交互区按住 200ms 才缩放（快速点击不缩放）
-          if ((e.target as HTMLElement).closest('button, input, select, a, textarea, label')) return;
+          // T01533：标题 span[role=button] 属交互元素，纳入排除
+          if ((e.target as HTMLElement).closest('button, input, select, a, textarea, label, [role="button"]')) return;
           pressTimer.current[t.id] = globalThis.setTimeout(() => setPressId(t.id), 200);
         }}
-        onPointerUp={() => { clearTimeout(pressTimer.current[t.id]); if (pressId) setPressId(''); }}
-        onPointerLeave={() => { clearTimeout(pressTimer.current[t.id]); if (pressId === t.id) setPressId(''); }}
-        draggable={sortMode === 'manual'}
+        onPointerUp={() => { clearTimeout(pressTimer.current[t.id]); if (pressId) setPressId(''); setTitleSelId(''); }}
+        onPointerLeave={() => { clearTimeout(pressTimer.current[t.id]); if (pressId === t.id) setPressId(''); setTitleSelId(''); }}
+        draggable={sortMode === 'manual' && titleSelId !== t.id}
         onDragStart={() => setDragTaskId(t.id)}
         onDragEnd={() => { setDragTaskId(''); setOverTaskId(''); }}
         onDragOver={(e) => { e.preventDefault(); if (t.id !== dragTaskId) setOverTaskId(t.id); }}
