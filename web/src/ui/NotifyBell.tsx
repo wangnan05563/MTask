@@ -14,7 +14,12 @@ const EVENT_KINDS: Record<string, { icon: React.ReactNode; label: string }> = {
   verified: { icon: <ShieldCheck size={13} />, label: '验证' },
   ai_state: { icon: <CheckCircle2 size={13} />, label: 'AI' },
   result: { icon: <FileText size={13} />, label: '结果' },
+  // T01061 后续：系统级告警（如数据库备份失败）——不关联任务，哨兵 task_id='system'
+  system: { icon: <AlertTriangle size={13} />, label: '系统' },
 };
+
+/** T01061 后续：系统级告警的哨兵 task_id（与服务端 SystemEvent.SYSTEM_TASK_ID 对齐） */
+const SYSTEM_TASK_ID = 'system';
 
 interface EventItem {
   id: string;
@@ -115,12 +120,14 @@ export function NotifyBell() {
               const meta = EVENT_KINDS[it.kind] ?? { icon: <FileText size={13} />, label: it.kind };
               const unread = it.created_at > lastSeen;
               const taskNoSuffix = it.task_no ? ` ${it.task_no}` : '';
+              // T01061 后续：系统告警无对应任务——点击不应跳转
+              const isSystem = it.task_id === SYSTEM_TASK_ID;
               let iconColor = 'var(--accent)';
-              if (it.kind === 'ai_state' && it.detail.includes('失败')) iconColor = 'var(--danger)';
+              if (isSystem || (it.kind === 'ai_state' && it.detail.includes('失败'))) iconColor = 'var(--danger)';
               else if (it.kind === 'verified') iconColor = 'var(--success)';
               return (
-                <button key={it.id} onClick={() => gotoTask(it)}
-                  title={`${it.detail} — 点击前往任务${taskNoSuffix}`}
+                <button key={it.id} onClick={() => (isSystem ? setOpen(false) : gotoTask(it))}
+                  title={isSystem ? `${it.detail} — 系统告警，无需跳转` : `${it.detail} — 点击前往任务${taskNoSuffix}`}
                   style={{ display: 'flex', gap: 8, width: '100%', textAlign: 'left', padding: '9px 14px', border: 'none', borderBottom: '1px solid var(--surface-2)', background: unread ? 'var(--accent-soft)' : 'transparent', cursor: 'pointer', alignItems: 'flex-start' }}
                 >
                   <span style={{ marginTop: 2, display: 'inline-flex', alignItems: 'center', gap: 4, color: iconColor, flexShrink: 0 }}>
@@ -128,7 +135,7 @@ export function NotifyBell() {
                   </span>
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <span style={{ display: 'block', fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {it.task_no ? <b style={{ color: 'var(--accent)' }}>{it.task_no}</b> : null} {it.title || it.detail}
+                      {it.task_no ? <b style={{ color: 'var(--accent)' }}>{it.task_no}</b> : null} {isSystem ? '系统告警' : (it.title || it.detail)}
                     </span>
                     <span style={{ display: 'block', fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
                       {meta.label} · {it.detail} · {relTime(it.created_at)}

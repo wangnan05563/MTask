@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { dbFilePath, getDb } from '../db/connection';
+import { logSystemEvent } from './SystemEvent'; // T01061 后续：备份失败告警进通知中心
 
 const KEEP = 14;
 const FILE_RE = /^mtask-backup-\d{8}-\d{6}\.db$/;
@@ -55,12 +56,16 @@ function pruneOld(dir: string): void {
 
 /** 执行一次备份（online backup，返回目标文件名） */
 export async function runBackup(reason: 'auto' | 'manual'): Promise<{ name: string; size: number }> {
-  const dir = ensureDir();
-  const stamp = new Date();
-  const pad = (n: number, w = 2) => String(n).padStart(w, '0');
-  const name = `mtask-backup-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}-${pad(stamp.getHours())}${pad(stamp.getMinutes())}${pad(stamp.getSeconds())}.db`;
-  const dest = path.join(dir, name);
+  // 半成品文件路径：失败分支要清理它，故声明在 try 外（mkdir 就失败时为空串，跳过清理）
+  let dest = '';
   try {
+    // ensureDir 必须在 try 内：备份目录创建失败（如同名文件占位/权限不足）同样属于「备份失败」，
+    // 放在 try 外会让这类失败直接抛出、既不记 lastError 也不进通知中心（T01061 后续）
+    const dir = ensureDir();
+    const stamp = new Date();
+    const pad = (n: number, w = 2) => String(n).padStart(w, '0');
+    const name = `mtask-backup-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}-${pad(stamp.getHours())}${pad(stamp.getMinutes())}${pad(stamp.getSeconds())}.db`;
+    dest = path.join(dir, name);
     await getDb().backup(dest);
     const size = fs.statSync(dest).size;
     lastRun = { file: name, at: stamp.toISOString(), reason };
@@ -72,6 +77,9 @@ export async function runBackup(reason: 'auto' | 'manual'): Promise<{ name: stri
     lastError = e instanceof Error ? e.message : String(e);
     console.error(`[backup] 备份失败（${reason}）:`, lastError);
     try { if (fs.existsSync(dest)) fs.unlinkSync(dest); } catch { /* 清理半成品失败忽略 */ }
+    // T01061 后续：失败告警进通知中心（FR-1.1 链路）——设置页不是常开页面，
+    // 「数据保护降级」这种事必须在用户天天看得到的地方出现一次。同文案 6h 内只报一次。
+    logSystemEvent(`数据备份失败（${reason === 'manual' ? '手动' : '自动'}）：${lastError} — 数据保护已降级，请检查磁盘空间与备份目录权限`);
     throw new Error(`备份失败：${lastError}`);
   }
 }
