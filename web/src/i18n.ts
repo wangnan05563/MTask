@@ -6,9 +6,13 @@
  *  - `registerDict`：各页面/模块按需注册自己的键值对（增量接入，未接入页面零改动继续用中文）；
  *  - 语言偏好存 localStorage（settings.lang），设置页可切换；切换后需要刷新页面或重挂载组件生效。
  *
- * 现状：底座 + 英文包骨架（常用动作词）；全站字符串抽取未完成（覆盖率远低于 95% 验收线），
- * 按页面模块逐步迁移（见 T01071 回传「处置说明」）。
+ * 现状：底座 + 术语表（web/src/i18n/terms.ts）+ 覆盖率 CI（scripts/i18n-coverage.mjs）；
+ * 全站抽取按菜单逐页推进，当前仅「设置 → 循环任务 / API Token」页签完成迁移（试点页），
+ * 其余页面仍是中文字面量（详见 T01071 回传的覆盖率报告）。
  */
+import { useEffect, useState } from 'react';
+import { TERMS } from './i18n/terms';
+
 export type Lang = 'zh' | 'en';
 const LANG_KEY = 'settings.lang';
 
@@ -31,6 +35,14 @@ const dicts: Record<Lang, Record<string, string>> = {
   },
 };
 
+// T01071 后续：术语表是译法的唯一来源——启动时并入英文包，避免各页面各自造词。
+// 术语表优先级低于上面手写的骨架？反之：后注册覆盖先注册，故术语表放在后面，保证「同词同译」。
+for (const term of TERMS) {
+  dicts.en[term.zh] = term.en;
+  // 异形写法也指向同一译法：老页面不改文案也能整体切换，迁移期不会一半英文一半中文
+  for (const alias of term.aliases ?? []) dicts.en[alias] = term.en;
+}
+
 export function getLang(): Lang {
   return current;
 }
@@ -45,6 +57,28 @@ export function setLang(l: Lang): void {
 export function onLangChange(fn: () => void): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);
+}
+
+/**
+ * T01071 后续：迁移页面用它订阅语言变化并触发重渲染。
+ * 没有它，页面内 `t()` 的结果只在首次渲染时求值，切到英文后必须刷新页面才生效——
+ * 逐页迁移时每个页面加一行 `useLang()` 即可，比给每个组件套 Provider 轻得多。
+ */
+export function useLang(): Lang {
+  const [lang, setLocal] = useState<Lang>(current);
+  useEffect(() => onLangChange(() => setLocal(current)), []);
+  return lang;
+}
+
+/**
+ * T01071 后续：标记「这一串中文是术语键，译文在调用处取」。
+ *
+ * 场景：表里的中文值（如 `FREQ_LABELS = { daily: '每天' }`）如果直接写字面量，
+ * 覆盖率脚本看不到它最终会过 t()（渲染时 `t(FREQ_LABELS[k])`），会误判为未抽取。
+ * 用 `term('每天')` 包一层既是给人的说明，也是给 CI 的标记——函数本身原样返回。
+ */
+export function term(key: string): string {
+  return key;
 }
 
 /** 页面/模块按需注册语言包（增量接入入口） */
