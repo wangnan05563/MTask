@@ -10,6 +10,8 @@ import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
 import { usePersistentState, useSessionState } from '../ui/session';
+import { buildWorkdayCtx } from '../utils/workday'; // T01059 后续：甘特拖动
+import { deltaDaysFromPx, ganttDragResult, newGanttDrag, type GanttDragMode, type GanttDragState } from '../utils/ganttDrag'; // T01059 后续
 
 /** 项目计划页（T00431，菜单位于周报前）：串行瀑布时间线 + Excel 导入导出 + 待办联动。 */
 
@@ -1105,6 +1107,14 @@ export function PlanPage() {
   const [depSel, setDepSel] = useState<Record<string, 'serial' | 'parallel'>>({});
   // T00449：视图模式（列表/甘特）会话级保持
   const [viewMode, setViewMode] = useSessionState<'list' | 'gantt'>('plan.viewMode', 'list');
+
+  // ---------- T01059 后续：甘特条拖动（move / 左右边缘 resize → 联动 start_date 与 duration_days）----------
+  // 拖动期间只改本地预览态，松手才落库（走既有 updatePlan → PATCH /plans/:id，服务端按工作日历重算 end_date
+  // 并沿显式 deps 传播）。这样一次拖动只发一个请求，也不会在拖动过程中被 reload 打断。
+  const [ganttDrag, setGanttDrag] = useState<GanttDragState | null>(null);
+  const ganttDragRef = useRef<GanttDragState | null>(null);
+  // 与服务端同口径的工作日历上下文（放假日/加班日）
+  const workdayCtx = useMemo(() => buildWorkdayCtx(holidays), [holidays]);
   // T00665：使用向导——首次进入模块自动弹出（依据 localStorage 标记），常驻按钮可随时重看
   const [guideOpen, setGuideOpen] = useState(false);
   useEffect(() => { if (!hasSeenProjectGuide()) setGuideOpen(true); }, []);
@@ -1667,6 +1677,54 @@ export function PlanPage() {
     return ticks;
   }
 
+  /** T01059 后续：开始拖动甘特条（条体=平移，左右 6px 手柄=伸缩工期）；仅左键触发 */
+  function startGanttDrag(e: React.MouseEvent, p: PlanTask, mode: GanttDragMode): void {
+    if (e.button !== 0 || !p.start_date || !p.end_date) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const dur = Math.max(1, p.duration_days || 1);
+    const st = newGanttDrag(p.id, mode, e.clientX, p.start_date, p.end_date, dur);
+    ganttDragRef.current = st;
+    setGanttDrag(st);
+  }
+
+  /** T01059 后续：拖动结束落库——只发一次 PATCH，同时带上新的开始日与工期 */
+  function commitGanttDrag(): void {
+    const cur = ganttDragRef.current;
+    ganttDragRef.current = null;
+    setGanttDrag(null);
+    if (!cur || !cur.moved) return;
+    const p = plans.find((x) => x.id === cur.id);
+    if (!p) return;
+    if (cur.nextStart === p.start_date && cur.nextDur === p.duration_days) return;
+    const what = cur.mode === 'move' ? '平移' : '调整工期';
+    void updatePlan(p, { start_date: cur.nextStart, duration_days: cur.nextDur });
+    flash(`${what}：${p.title} → ${cur.nextStart} ~ ${cur.nextEnd}（${cur.nextDur} 工作日）`);
+  }
+
+  // T01059 后续：拖动期间的全局鼠标监听。依赖只取「哪条·哪种」——每次 mousemove 都重建监听既浪费也会丢事件。
+  const ganttDragKey = ganttDrag ? `${ganttDrag.id}:${ganttDrag.mode}` : '';
+  useEffect(() => {
+    if (!ganttDragKey) return;
+    const onMove = (ev: MouseEvent): void => {
+      const cur = ganttDragRef.current;
+      if (!cur) return;
+      const deltaDays = deltaDaysFromPx(ev.clientX - cur.startX, DAY_W);
+      const next = ganttDragResult(cur.mode, cur.origStart, cur.origEnd, cur.origDur, deltaDays, workdayCtx);
+      const st: GanttDragState = { ...cur, nextStart: next.start, nextEnd: next.end, nextDur: next.dur, moved: cur.moved || deltaDays !== 0 };
+      ganttDragRef.current = st;
+      setGanttDrag(st);
+    };
+    const onUp = (): void => { commitGanttDrag(); };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 拖动的原点数据都在 ref 里，回调无需随预览态重建
+  }, [ganttDragKey]);
+
   /** 甘特主视图：横向日轴 + 串行任务条 + 周末/节假日底纹 + 今日线 + 进度内嵌 */
   function renderGantt() {
     if (plans.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 12, padding: 16 }}>暂无计划任务，先创建或导入。</div>;
@@ -1714,8 +1772,26 @@ export function PlanPage() {
         ))}
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 1, height: 10, background: 'var(--accent)', display: 'inline-block' }} />今天</span>
         <span>灰底=周末　红底=节假日</span>
+        {/* T01059 后续：拖动能力提示——甘特此前是纯只读可视化，交互入口要能被发现 */}
+        <span style={{ color: 'var(--accent)' }}>拖条体=平移　拖两端=改工期</span>
       </div>
     );
+
+    // T01059 后续：拖动实时预览气泡——显示松手后将落库的开始/结束/工期
+    const renderDragBadge = (d: GanttDragState): React.ReactNode => (
+      <span style={{
+        position: 'absolute', left: 0, top: -14, zIndex: 6, whiteSpace: 'nowrap', fontSize: 10, lineHeight: '14px',
+        padding: '0 4px', borderRadius: 3, background: 'var(--surface)', color: 'var(--accent)',
+        border: '1px solid var(--border-strong)', pointerEvents: 'none',
+      }}>
+        {d.nextStart} ~ {d.nextEnd} · {d.nextDur} 工作日
+      </span>
+    );
+
+    // T01059 后续：拖动行的预览副本（只覆盖日期字段），行渲染与依赖连线共用同一份数据
+    const ganttPlans = ganttDrag
+      ? plans.map((x) => (x.id === ganttDrag.id ? { ...x, start_date: ganttDrag.nextStart, end_date: ganttDrag.nextEnd } : x))
+      : plans;
 
     return (
       <div style={{ border: '1px solid var(--border-strong)', borderRadius: 8, overflow: 'hidden' }}>
@@ -1727,12 +1803,17 @@ export function PlanPage() {
                 <span key={`${m.label}-${m.left}`} style={{ position: 'absolute', left: m.left + 4 }}>{m.label}</span>
               ))}
             </div>
-            {/* 任务行（T01059-FR2.3：relative 容器 + SVG 依赖连线叠加层） */}
-            <div style={{ position: 'relative' }}>
-            {plans.map((p, i) => {
+            {/* 任务行（T01059-FR2.3：relative 容器 + SVG 依赖连线叠加层；T01059 后续：拖动时禁选中以免拖出蓝色选区） */}
+            <div style={{ position: 'relative', userSelect: ganttDrag ? 'none' : undefined }}>
+            {ganttPlans.map((p, i) => {
               if (!p.start_date || !p.end_date) return null;
-              const left = toIdx(p.start_date) * DAY_W;
-              const width = Math.max(DAY_W, (toIdx(p.end_date) - toIdx(p.start_date) + 1) * DAY_W);
+              // T01059 后续：拖动中的行用预览日期渲染（松手才落库），保证拖动过程所见即所得；
+              // 依赖连线层同样吃这份「预览版 plans」，避免拖动时连线停在旧位置产生跳变。
+              const drag = ganttDrag && ganttDrag.id === p.id ? ganttDrag : null;
+              const effStart = p.start_date;
+              const effEnd = p.end_date;
+              const left = toIdx(effStart) * DAY_W;
+              const width = Math.max(DAY_W, (toIdx(effEnd) - toIdx(effStart) + 1) * DAY_W);
               return (
                 <div key={p.id} style={{ display: 'flex', alignItems: 'center', height: 30, borderBottom: '1px solid var(--surface-2)', fontSize: 12 }}>
                   <div style={{ width: 220, flexShrink: 0, padding: '0 8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }} title={p.title}>
@@ -1747,15 +1828,25 @@ export function PlanPage() {
                       return renderCalShade(di, weekend, hol);
                     })}
                     {renderTodayLine()}
-                    {/* 任务条（T01059-FR2.3：关键路径节点红色描边） */}
+                    {/* 任务条（T01059-FR2.3：关键路径红色描边；T01059 后续：拖条体平移、拖两端改工期） */}
                     <div title={`${p.title}
-${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.progress}% · ${p.assignee || '未分配'}${criticalNodes.has(p.id) ? ' · ★ 关键路径' : ''}`}
+${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.progress}% · ${p.assignee || '未分配'}${criticalNodes.has(p.id) ? ' · ★ 关键路径' : ''}
+拖动条体=平移排期；拖左右两端=伸缩工期（松手保存）`}
+                      onMouseDown={(e) => startGanttDrag(e, p, 'move')}
                       style={{
                         position: 'absolute', left, width, top: 5, height: 18, borderRadius: 4,
-                        background: STATUS_BAR[p.status], opacity: 0.85, cursor: 'default', overflow: 'hidden',
+                        background: STATUS_BAR[p.status], opacity: drag ? 1 : 0.85, cursor: drag ? 'grabbing' : 'grab',
                         outline: criticalNodes.has(p.id) ? '2px solid var(--danger)' : undefined, outlineOffset: -1,
                       }}>
-                      <div style={{ width: `${p.progress}%`, height: '100%', background: 'rgba(255,255,255,.35)' }} />
+                      <div style={{ position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', borderRadius: 4, overflow: 'hidden' }}>
+                        <div style={{ width: `${p.progress}%`, height: '100%', background: 'rgba(255,255,255,.35)' }} />
+                      </div>
+                      {/* 左/右 resize 手柄：6px 命中区，stopPropagation 避免触发条体平移 */}
+                      <span onMouseDown={(e) => startGanttDrag(e, p, 'resize-l')} title="拖动改开始日（工期随之变化）"
+                        style={{ position: 'absolute', left: 0, top: 0, width: 6, height: '100%', cursor: 'ew-resize', background: 'rgba(255,255,255,.55)', borderRadius: '4px 0 0 4px' }} />
+                      <span onMouseDown={(e) => startGanttDrag(e, p, 'resize-r')} title="拖动改结束日（工期随之变化）"
+                        style={{ position: 'absolute', right: 0, top: 0, width: 6, height: '100%', cursor: 'ew-resize', background: 'rgba(255,255,255,.55)', borderRadius: '0 4px 4px 0' }} />
+                      {drag ? renderDragBadge(drag) : null}
                     </div>
                   </div>
                 </div>
@@ -1763,7 +1854,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             })}
             {/* T01059-FR2.3：deps 依赖连线 SVG 叠加层（serial 边画折线箭头；关键路径红色加粗）——M6-6.1 提取为 renderDepsOverlay */}
             <svg width={220 + totalDays * DAY_W} height={plans.length * 30} style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none', zIndex: 2 }}>
-              {renderDepsOverlay({ plans, toIdx, totalDays, DAY_W, depsOfPlan, planById, criticalEdges })}
+              {renderDepsOverlay({ plans: ganttPlans, toIdx, totalDays, DAY_W, depsOfPlan, planById, criticalEdges })}
             </svg>
             </div>
           </div>
