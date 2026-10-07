@@ -56,13 +56,16 @@ function makeStub(mode, hooks = {}) {
   };
 }
 
-function seedProject(name) {
+function seedProject(name, reqCount = 2) {
   const db = getDb();
   const now = new Date().toISOString();
   const pid = 'p-' + name + '-' + now;
   db.prepare('INSERT INTO projects (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)').run(pid, name, now, now);
-  PlanService.createRequirement(pid, { reqNo: 'REQ-001', title: '用户登录', content: '账号密码登录', priority: 'high' });
-  PlanService.createRequirement(pid, { reqNo: 'REQ-002', title: '订单取消', content: '未支付订单可取消', priority: 'normal' });
+  const titles = ['用户登录', '订单取消', '商品检索', '支付回调', '库存扣减', '优惠券核销'];
+  for (let i = 1; i <= reqCount; i++) {
+    const reqNo = `REQ-00${i}`;
+    PlanService.createRequirement(pid, { reqNo, title: titles[(i - 1) % titles.length], content: `${titles[(i - 1) % titles.length]}的可验证需求`, priority: i === 2 ? 'normal' : 'high' });
+  }
   return pid;
 }
 
@@ -139,6 +142,55 @@ async function run() {
       await gen.generateTestCasesStream({ projectId: seedProject('M2-abortmid'), toolId: 'stub', content: '# PRD REQ-001 REQ-002', source: 'x', resplitRequirements: true, onStage: () => {}, onDelta: () => {}, signal: ac2.signal });
     } catch (e) { abortMid = e && e.message; }
     ck('A9_abort_mid_generation', /中止|aborted/i.test(abortMid), `err=${abortMid}`);
+
+    // ===== TOL 块级容错（用户报障回归闸门）：单块调用失败不得报废整轮、不得丢已生成结果 =====
+    // 6 需求 → 2 块（CHUNK_SIZE=5：[REQ-001..005] + [REQ-006]）；桩对含 REQ-006 的调用抛 fetch failed
+    const throwOn = (no) => ({
+      chatStream: async (_sys, user) => {
+        if ((user.match(/REQ-\d+/g) || []).includes(no)) throw new Error('fetch failed（原因：ECONNREFUSED 127.0.0.1:1）');
+        return makeStub('full').chatStream(_sys, user);
+      },
+    });
+    adaptersMod.getAdapter = () => throwOn('REQ-006');
+    const pidT = seedProject('M2-tol', 6);
+    const stagesT = [];
+    let tolErr = '';
+    let draftT = null;
+    try {
+      draftT = await gen.generateTestCasesStream({
+        projectId: pidT, toolId: 'stub', content: '# PRD 需求文档', source: 'x',
+        onStage: (m) => stagesT.push(m), onDelta: () => {},
+      });
+    } catch (e) { tolErr = e && e.message; }
+    ck('TOL_partial_failure_does_not_abort', !tolErr && !!draftT, `err=${tolErr}`);
+    ck('TOL_generated_cases_kept', !!draftT && draftT.cases.length === 5 && draftT.cases.every((c) => c.reqNo !== 'REQ-006'), `cases=${draftT && draftT.cases.map((c) => c.reqNo).join(',')}`);
+    ck('TOL_failed_block_warned_and_noted', !!draftT && stagesT.some((m) => /生成失败/.test(m)) && draftT.notes.some((n) => /因调用失败被跳过/.test(n)), `notes=${draftT && draftT.notes.join(' / ').slice(0, 140)}`);
+    ck('TOL_coverage_marks_failure', !!draftT && draftT.coverage.uncovered === 1 && draftT.coverage.rate === Math.round((5 / 6) * 1000) / 10, `cov=${draftT && JSON.stringify({ r: draftT.coverage.rate, u: draftT.coverage.uncovered })}`);
+
+    // 全部块失败（零产出）→ 必须整体抛错并带原始故障原因，不给空草稿假成功
+    adaptersMod.getAdapter = () => ({ chatStream: async () => { throw new Error('fetch failed（原因：ENOTFOUND api.invalid）'); } });
+    let zeroErr = '';
+    try {
+      await gen.generateTestCasesStream({ projectId: seedProject('M2-tolzero'), toolId: 'stub', content: '# PRD', source: 'x', onStage: () => {}, onDelta: () => {} });
+    } catch (e) { zeroErr = e && e.message; }
+    ck('TOL_zero_output_still_throws', /所有需求块生成失败/.test(zeroErr) && /ENOTFOUND/.test(zeroErr), `err=${zeroErr}`);
+
+    // 中止信号不被容错吞掉：块循环中途 abort → 立即整体上抛
+    const ac3 = new AbortController();
+    let calls3 = 0;
+    adaptersMod.getAdapter = () => ({
+      chatStream: async (_sys, user) => {
+        calls3 += 1;
+        if (calls3 === 1) return makeStub('full').chatStream(_sys, user);
+        ac3.abort();
+        return { ok: false, error: '任务已停止' };
+      },
+    });
+    let abortTol = '';
+    try {
+      await gen.generateTestCasesStream({ projectId: seedProject('M2-tolabort', 6), toolId: 'stub', content: '# PRD', source: 'x', onStage: () => {}, onDelta: () => {}, signal: ac3.signal });
+    } catch (e) { abortTol = e && e.message; }
+    ck('TOL_abort_not_swallowed', /停止|中止|aborted/.test(abortTol), `err=${abortTol}`);
   } catch (e) {
     ck('PIPELINE_NO_EXCEPTION', false, 'pipeline 驱动异常：' + (e && (e.stack || e.message)));
   } finally {

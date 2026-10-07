@@ -125,3 +125,14 @@ export function streamTruncatedError(chars: number): string {
 export function outputStoppedError(label: string, chars: number): string {
   return `AI 输出提前终止（${label}，已输出 ${chars} 字符）——半截内容不作完整结果，请调整输入内容或更换模型后重试`;
 }
+
+/**
+ * 网络层异常归因：undici 的 fetch 失败只报 `fetch failed`（TypeError），真实原因（ECONNREFUSED /
+ * ENOTFOUND / socket hang up 等）藏在 e.cause——不带出来用户无法自查端点/网络问题。
+ */
+export function describeError(e: unknown): string {
+  if (!(e instanceof Error)) return String(e);
+  const cause: unknown = (e as { cause?: unknown }).cause;
+  const causeMsg = cause instanceof Error ? cause.message : cause ? String(cause) : '';
+  return causeMsg && !e.message.includes(causeMsg) ? `${e.message}（原因：${causeMsg}）` : e.message;
+}

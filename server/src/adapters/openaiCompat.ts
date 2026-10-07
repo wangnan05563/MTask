@@ -1,6 +1,6 @@
 import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult, TokenUsage } from './types';
 import { withTimeout, formatHttpError, normalizeModels, readStreamLines, TIMEOUT_CODE } from './netutil';
-import { streamTruncatedError, outputStoppedError } from './types'; // T00779：流式截断统一错误文案
+import { streamTruncatedError, outputStoppedError, describeError } from './types'; // T00779：流式截断统一错误文案
 
 interface ChatCompletionResp {
   choices?: { message?: { content?: string; reasoning_content?: string }; finish_reason?: string }[];
@@ -116,7 +116,7 @@ function failureFromError(e: unknown, signal?: AbortSignal): JobResult {
   if (e instanceof Error && (e as Error & { code?: string }).code === TIMEOUT_CODE) {
     return { ok: false, error: e.message, timedOut: true };
   }
-  return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  return { ok: false, error: describeError(e) };
 }
 
 /**
@@ -273,7 +273,7 @@ export class OpenAICompatAdapter implements AIAdapter {
       // T00838：区分「外部主动停止」与「超时」——stop 场景不再误报为连接超时
       if (signal?.aborted) return { ok: false, error: '任务已停止' };
       if (e instanceof Error && e.name === 'AbortError') return { ok: false, error: `连接超时（超过 ${config.timeoutMs ?? 60000}ms）` };
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      return { ok: false, error: describeError(e) };
     } finally {
       clearTimeout(timer);
     }

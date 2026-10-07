@@ -305,7 +305,23 @@ export async function generateTestCasesStream(input: {
     input.onStage(`  ▸ 已生成 ${coveredNow}/${reqSetNos.length} 条需求的用例（累计 ${allCases.length} 条）`);
   };
 
-  for (const chunk of chunks) await genChunk(chunk, MAX_SHRINK_RETRY);
+  // 块级容错：单块 AI 调用失败（网络/提供商错误）只跳过该块，不报废整轮——
+  // 此前一个 fetch failed 会让已生成结果全部丢失且草稿视图空白（用户报障：生成完成后看不到结果）。
+  // 用户主动「停止」（signal.aborted）仍立即整体上抛；全部块皆零产出时抛错，避免给出空草稿假成功。
+  const failedReqNos = new Set<string>();
+  let lastChunkErr = '';
+  const runChunk = async (nos: string[]): Promise<void> => {
+    try {
+      await genChunk(nos, MAX_SHRINK_RETRY);
+    } catch (e) {
+      if (input.signal?.aborted) throw e;
+      lastChunkErr = e instanceof Error ? e.message : String(e);
+      nos.forEach((n) => failedReqNos.add(n));
+      input.onStage(`⚠ 本块（${nos.length} 需求）生成失败：${lastChunkErr}——跳过该块，其余块继续`);
+    }
+  };
+
+  for (const chunk of chunks) await runChunk(chunk);
 
   // ================= 步骤 3/3：覆盖率校验 + 定向补生成 =================
   input.onStage('步骤 3/3｜覆盖率校验…');
@@ -317,13 +333,23 @@ export async function generateTestCasesStream(input: {
     input.onStage(`  未覆盖 ${uncovered.length} 条需求，定向补生成中…`);
     const before = allCases.length;
     for (let i = 0; i < uncovered.length; i += CHUNK_SIZE) {
-      await genChunk(uncovered.slice(i, i + CHUNK_SIZE), MAX_SHRINK_RETRY);
+      await runChunk(uncovered.slice(i, i + CHUNK_SIZE));
     }
     countByReq.clear();
     for (const c of allCases) countByReq.set(c.reqNo, (countByReq.get(c.reqNo) ?? 0) + 1);
     uncovered = reqSetNos.filter((no) => !countByReq.has(no));
     input.onStage(`  补生成新增 ${allCases.length - before} 条用例，仍有 ${uncovered.length} 条需求未覆盖`);
     if (uncovered.length > 0) notes.push(`以下需求经补生成仍未产出用例：${uncovered.join(', ')}（可在草稿视图手动补充或忽略）`);
+  }
+
+  // 整轮零产出且确有块失败：抛原始错误（给空草稿不如给明确故障），与 A11「部分覆盖带告警」不冲突
+  if (allCases.length === 0 && failedReqNos.size > 0) {
+    throw new Error(`所有需求块生成失败：${lastChunkErr}——请在「模型管理」检查该工具的端点/网络后重试`);
+  }
+  // 失败块点名（排除补生成已成功挽回的）：让用户知道哪些需求是故障跳过而非模型没写
+  const failedStillUncovered = [...failedReqNos].filter((no) => !countByReq.has(no));
+  if (failedStillUncovered.length > 0) {
+    notes.push(`以下需求因调用失败被跳过：${failedStillUncovered.join(', ')}（最近一次错误：${lastChunkErr}）`);
   }
 
   const total = reqSetNos.length;

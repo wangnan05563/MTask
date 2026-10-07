@@ -1,5 +1,6 @@
 import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult, SubmitResult, PollResult } from './types';
 import { withTimeout, formatHttpError } from './netutil';
+import { describeError } from './types';
 
 /**
  * 回调/中继型适配器（骨架）：面向 WorkBuddy 等 Agent 平台。
@@ -146,7 +147,7 @@ export class WorkBuddyAdapter implements AIAdapter {
     } catch (e) {
       // T00838：外部主动中止归因到「任务已停止」
       if (signal?.aborted) return { ok: false, error: '任务已停止' };
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      return { ok: false, error: describeError(e) };
     }
   }
 }
