@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ArrowUpDown, CalendarPlus, Check, Download, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, FileText, FilePenLine, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Table2, TestTubes, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search } from 'lucide-react';
+import { Archive, ArrowUpDown, CalendarPlus, Check, Download, Gauge, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, FileText, FilePenLine, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Table2, TestTubes, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { EmptyState } from '../ui/EmptyState'; // T01072-FR1.10：统一空态组件
 import { ReqMatrixPanel } from './ReqMatrixPanel'; // T00662：需求跟踪矩阵
 import { TestCasePanel } from './TestCasePanel'; // T01485：测试用例视图
@@ -300,6 +300,24 @@ function PlanEvalButton({ batchEvaluatePlans, evalBusy, busy, evalLabel, plans }
   return (
     <button onClick={() => runAsync(batchEvaluatePlans())} disabled={evalBusy || busy} title="AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）" aria-label="批量 AI 评估" className={evalBusy ? 'task-breathe' : undefined} style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }}>
       {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}AI 评估{evalLabel && plans.length > 0 ? `（${evalLabel}）` : ''}
+    </button>
+  );
+}
+
+/** 工具栏：复杂度批量补算按钮（T01058 后续，S3776 抽取） */
+function PlanComplexityButton({ backfill, evalBusy, busy }: {
+  readonly backfill: (force: boolean) => Promise<void>; readonly evalBusy: boolean; readonly busy: boolean;
+}) {
+  return (
+    <button
+      onClick={(e) => runAsync(backfill(e.shiftKey))}
+      disabled={evalBusy || busy}
+      title="补算复杂度 — 为尚无复杂度评级（1~5）的计划行批量补算，AI 按批评定；按住 Shift 点击 = 连同已评级的行一起重算"
+      aria-label="批量补算复杂度"
+      className={evalBusy ? 'task-breathe' : undefined}
+      style={{ ...btnStyle, color: 'var(--text-secondary)' }}
+    >
+      {evalBusy ? <Loader2 size={13} className="aispin" /> : <Gauge size={13} />}补算复杂度
     </button>
   );
 }
@@ -1317,6 +1335,36 @@ export function PlanPage() {
     });
   }
 
+  // ---------- T01058 后续：复杂度批量补算 ----------
+  /**
+   * 复杂度只在 PRD 导入时由 AI 给出，手工/Excel 导入与存量行恒为空，
+   * 「复杂度 ≥4 建议拆分」的提示对它们不生效。此处按批（20 行/次）补算缺失评级。
+   * 与「AI 评估」分开：评估改的是描述文本且逐条调用，补算只写 complexity 且批量调用。
+   */
+  async function backfillComplexity(force: boolean) {
+    if (evalBusy) return;
+    if (!aiToolId) { flash('请先选择 AI 模型（AI 导入旁的模型下拉）'); return; }
+    if (!projectId) { flash('请先选择项目'); return; }
+    setEvalBusy(true);
+    setEvalLabel('补算中');
+    try {
+      const r = await api.post<{ scanned: number; updated: number; batches: Array<{ offset: number; size: number; updated: number; error?: string }> }>(
+        '/plans/complexity/backfill',
+        { toolId: aiToolId, projectId, force },
+      );
+      const failed = r.batches.filter((b) => b.error).length;
+      if (r.scanned === 0) flash(force ? '本项目没有可补算的计划行' : '本项目计划行的复杂度均已评定（无需补算）');
+      else if (r.updated === 0 && failed > 0) flash(`复杂度补算失败：${r.batches.find((b) => b.error)?.error ?? 'AI 调用失败'}`);
+      else flash(`复杂度补算完成：扫描 ${r.scanned} 行，写入 ${r.updated} 行${failed > 0 ? `（${failed} 批失败，可重跑）` : ''}`);
+      reload();
+    } catch (e) {
+      flash(String((e as Error).message ?? e));
+    } finally {
+      setEvalBusy(false);
+      setEvalLabel('');
+    }
+  }
+
   // ---------- T00564：多选批量操作 ----------
   function togglePlanSel(id: string) {
     setPlanSelIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -1957,6 +2005,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         {/* T00506 调整：任务类型选择移入「新建计划任务」弹窗（默认普通任务），工具栏不再展示 */}
         <PlanCreateImportButtons busy={busy} createPlan={createPlan} importExcel={importExcel} exportExcel={exportExcel} exportMarkdown={exportMarkdown} downloadTemplate={downloadTemplate} />
         <PlanEvalButton batchEvaluatePlans={batchEvaluatePlans} evalBusy={evalBusy} busy={busy} evalLabel={evalLabel} plans={plans} />
+        <PlanComplexityButton backfill={backfillComplexity} evalBusy={evalBusy} busy={busy} />
         <PlanMultiToggle planMulti={planMulti} setPlanMulti={setPlanMulti} setPlanSelIds={setPlanSelIds} />
         {planMulti && planSelIds.length > 0 && (
           <PlanBatchBar planSelIds={planSelIds} plans={plans} selectAllPlans={selectAllPlans}
