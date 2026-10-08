@@ -9,7 +9,7 @@ import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, togg
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
-import { usePersistentState, useSessionState } from '../ui/session';
+import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { buildWorkdayCtx } from '../utils/workday'; // T01059 后续：甘特拖动
 import { deltaDaysFromPx, ganttDragResult, newGanttDrag, type GanttDragMode, type GanttDragState } from '../utils/ganttDrag'; // T01059 后续
 import { PlanTimeline, type TlGranularity, type TlPlan } from '../components/PlanTimeline'; // T01564：纵向时间轴
@@ -1115,6 +1115,12 @@ function milestoneMeta(plans: PlanTask[], i: number): { isMilestone: boolean; in
   return { isMilestone, inner, innerCount, innerDays, innerAvg };
 }
 
+/**
+ * T01620：批量 AI 循环活在组件实例之外（切页卸载后旧循环仍在跑并继续写描述），
+ * 组件级 busy 随实例一起消失，故用模块级标记兜住重复启动——刷新会自然归零。
+ */
+let planAiBatchRunning = false;
+
 export function PlanPage() {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   // T00460：切页保状态——项目选择会话级持久化，切回不重置
@@ -1125,13 +1131,20 @@ export function PlanPage() {
   const [busy, setBusy] = useState(false);
   // T00438 AI 导入：模型列表与选中工具（持久化）、解析弹窗状态、可编辑草稿行
   const [aiToolId, setAiToolId] = usePersistentState('plan.aiToolId', '');
-  // T00472：AI 评估状态（批量进度动态计数，单条/批量共用）
-  const [evalBusy, setEvalBusy] = useSessionState<boolean>('plan.evalBusy', false); // T00550：切页保持
-  const [evalLabel, setEvalLabel] = useSessionState<string>('plan.evalLabel', '');
+  // T00472：AI 评估状态（批量进度动态计数，单条/批量共用）。
+  // T01620：这两个状态**必须留在组件内**，不能再走 useSessionState——持久化靠 effect 落盘，
+  // 而 PlanPage 是 `{tab==='plan' && <PlanPage/>}` 条件挂载，切页/刷新即卸载：
+  // 在跑的循环对已卸载组件 setState 是空操作，sessionStorage 里最后一次落盘的
+  // `evalBusy=true` + `evalLabel='0/20'`（首条 AI 调用要几十秒，正是最容易落盘的窗口）
+  // 就再没人能清掉 → 计数永久冻结、评估按钮永久禁用。
+  const [evalBusy, setEvalBusy] = useState(false);
+  const [evalLabel, setEvalLabel] = useState('');
+  // 存量僵尸键自愈：修复前卡住的用户，回到本页即清一次（此后不再有写入方）
+  useEffect(() => { clearSessionState('plan.evalBusy'); clearSessionState('plan.evalLabel'); }, []);
   // ---- 行级交互回调（S2004/S3776：从 JSX 内联箭头下沉到组件级，降低嵌套与复杂度） ----
   const toggleMsCollapsed = (id: string) => setCollapsedMs((prev) => ({ ...prev, [id]: !prev[id] }));
   const evaluateRow = (row: PlanTask) => {
-    if (evalBusy) return;
+    if (evalBusy || planAiBatchRunning) { flash('批量 AI 任务进行中，请等待其完成'); return; }
     if (!aiToolId) { flash('请先在模型菜单配置默认 AI 工具'); return; }
     void evaluateOnePlan(row).then((okk) => { if (okk) flash('AI 评估已写入该行描述'); });
   };
@@ -1437,24 +1450,32 @@ export function PlanPage() {
 
   /** 批量评估：确认后逐条串行评估并自动录入描述，进度动态计数（k/N） */
   function batchEvaluatePlans(targetIds?: string[]) {
-    if (evalBusy) return;
+    if (evalBusy || planAiBatchRunning) { flash('已有批量 AI 任务在进行中，请等待其完成'); return; }
     if (!aiToolId) { flash('请先选择 AI 模型（AI 导入旁的模型下拉）'); return; }
     const target = targetIds ? plans.filter((p) => targetIds.includes(p.id)) : plans;
     if (target.length === 0) { flash('当前项目暂无计划条目'); return; }
-    setEvalLabel(`0/${target.length}`);
     const msg = `将对 ${target.length} 条计划逐条 AI 评估（工期合理性/风险/建议），结果自动录入各条描述（可后续手动编辑或删除），确认开始？`;
+    // T01620：计数在确认后才置位（原先在确认前置 0/N，取消/刷新都会留下无人清理的残计数），
+    // 且收口放 finally——中途抛异常也要把 busy 归位，否则按钮永久禁用。
     void askConfirm(msg).then(async (go) => {
-      if (!go) { setEvalLabel(''); return; }
+      if (!go) return;
+      if (planAiBatchRunning) { flash('已有批量 AI 任务在进行中，请等待其完成'); return; }
+      planAiBatchRunning = true;
       setEvalBusy(true);
       let done = 0;
-      for (const p of target) {
-        await evaluateOnePlan(p);
-        done += 1;
-        setEvalLabel(`${done}/${target.length}`);
+      try {
+        setEvalLabel(`0/${target.length}`);
+        for (const p of target) {
+          await evaluateOnePlan(p);
+          done += 1;
+          setEvalLabel(`${done}/${target.length}`);
+        }
+      } finally {
+        planAiBatchRunning = false;
+        setEvalBusy(false);
+        setTimeout(() => setEvalLabel(''), 2500);
+        flash(`AI 评估完成：${done} 条结果已写入描述`);
       }
-      setEvalBusy(false);
-      setTimeout(() => setEvalLabel(''), 2500);
-      flash(`AI 评估完成：${done} 条结果已写入描述`);
     });
   }
 
@@ -1465,9 +1486,10 @@ export function PlanPage() {
    * 与「AI 评估」分开：评估改的是描述文本且逐条调用，补算只写 complexity 且批量调用。
    */
   async function backfillComplexity(force: boolean) {
-    if (evalBusy) return;
+    if (evalBusy || planAiBatchRunning) { flash('已有批量 AI 任务在进行中，请等待其完成'); return; }
     if (!aiToolId) { flash('请先选择 AI 模型（AI 导入旁的模型下拉）'); return; }
     if (!projectId) { flash('请先选择项目'); return; }
+    planAiBatchRunning = true;
     setEvalBusy(true);
     setEvalLabel('补算中');
     try {
@@ -1483,6 +1505,7 @@ export function PlanPage() {
     } catch (e) {
       flash(String((e as Error).message ?? e));
     } finally {
+      planAiBatchRunning = false;
       setEvalBusy(false);
       setEvalLabel('');
     }
