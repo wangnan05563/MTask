@@ -163,7 +163,8 @@ export function MobileTaskDetail({ task, categories, onClose, onChanged, notify 
                 onClick={() => setPreviewId((p) => (p === img.id ? '' : img.id))}
                 title="放大预览 — 点击放大或收起截图"
                 aria-label={previewId === img.id ? '收起截图：点击收起放大预览' : '任务截图：点击放大预览'}
-                style={{ padding: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'block', lineHeight: 0, maxWidth: '100%' }}
+                // 放大态撑满一行：按钮是 flex 项（基准=内容宽），img 的 width:100% 缺确定基准会退回原始尺寸（与桌面抽屉同因）
+                style={{ padding: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'block', lineHeight: 0, maxWidth: '100%', ...(previewId === img.id ? { width: '100%' } : {}) }}
               >
                 <img
                   src={imageUrl(img.id)}

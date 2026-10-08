@@ -183,8 +183,10 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
                     type="button"
                     onClick={() => setPreviewId(previewId === img.id ? '' : img.id)}
                     title="放大预览 — 点击放大或收起截图"
-                    aria-label="任务截图：点击放大预览"
-                    style={{ padding: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'block', lineHeight: 0 }}
+                    aria-label={previewId === img.id ? '收起截图：点击收起放大预览' : '任务截图：点击放大预览'}
+                    // 放大态必须把按钮自身撑满一行：它在外层 display:flex 容器里是 flex 项（基准宽度=内容宽），
+                    // 而 img 的 width:'100%' 相对的是这个不确定的父宽 → 百分比失效、退回原始尺寸（实测 8px 图放大后仅 16px）。
+                    style={{ padding: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'block', lineHeight: 0, ...(previewId === img.id ? { width: '100%' } : {}) }}
                   >
                     <img
                       src={imageUrl(img.id)}
