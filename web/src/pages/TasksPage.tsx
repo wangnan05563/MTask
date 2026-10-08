@@ -306,6 +306,8 @@ export function TasksPage() {
     }
   }
   const projDropRef = useRef<HTMLDivElement | null>(null);
+  // T01584：上次「点击刷新项目计数」的时间戳——连点只按节流窗口拉一次，不打爆后端
+  const projCountsAtRef = useRef(0);
   const pressTimer = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
     const flash = (msg: string) => {
     setNotice(msg);
@@ -321,6 +323,17 @@ export function TasksPage() {
       setActiveProject(list[0].id);
     }
   }, [activeProject]);
+
+  /** T01584：展开项目下拉时按需刷新徽标计数（待办/未验证）。
+   *  既有刷新链路是「SSE 变更推送 + 10s 外部变更轮询」，两者都只保证最终一致——
+   *  用户点开下拉那一刻看到的仍可能是旧值（断线兜底期间、或别的窗口刚改完）。
+   *  这里把「点击」变成主动拉取：800ms 节流窗口内的连点不重复发请求（约束 3）。 */
+  const refreshProjCounts = useCallback(() => {
+    const now = Date.now();
+    if (now - projCountsAtRef.current < 800) return;
+    projCountsAtRef.current = now;
+    void loadProjects();
+  }, [loadProjects]);
 
   /**
    * 分页拉取任务。搜索/分类经后端过滤后再分页，保证分页下检索结果完整（而非只搜已加载页）；
@@ -2766,7 +2779,7 @@ export function TasksPage() {
       <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <span className="op-host" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
         <div ref={projDropRef} style={{ position: 'relative', display: 'inline-flex' }}>
-          <button onClick={() => setProjOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={projOpen}
+          <button onClick={() => { setProjOpen((o) => { if (!o) refreshProjCounts(); return !o; }); }} aria-haspopup="listbox" aria-expanded={projOpen}
             title="切换项目 — 项目名后徽标：红=待办数、黄=未验证数（悬浮查看详情）"
             aria-label="切换项目"
             style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, cursor: 'pointer' }}>

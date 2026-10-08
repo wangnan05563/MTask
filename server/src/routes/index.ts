@@ -96,15 +96,20 @@ api.get('/projects', (req, res) => {
     res.json(all);
     return;
   }
-  const cached = cacheGet<unknown[]>('projects');
-  if (cached) return res.json(cached);
-  const rows = getDb().prepare("SELECT * FROM projects WHERE COALESCE(history_at,'') = '' AND COALESCE(archived,0) = 0 ORDER BY sort_weight, created_at").all() as Array<Record<string, unknown>>;
+  // T01584：只缓存「项目行」，徽标计数每次实时聚合——
+  // 旧实现把计数一并塞进 5s 缓存，而任务写端点（PATCH/回传/归档）从不失效 `projects` 这一份，
+  // 于是计数最长滞后 5 秒且前端不重拉；计数只是两条 GROUP BY，实时算的代价远低于旧值残留的误导。
+  const cached = cacheGet<Array<Record<string, unknown>>>('projects');
+  const rows = cached ?? getDb().prepare("SELECT * FROM projects WHERE COALESCE(history_at,'') = '' AND COALESCE(archived,0) = 0 ORDER BY sort_weight, created_at").all() as Array<Record<string, unknown>>;
+  if (!cached) cacheSet('projects', rows, LIST_TTL_MS);
   // T00496：附每项目待办/未验证计数（供项目下拉徽标展示）
+  // T01584：`unverified_count` 口径修正为「已完成且未验证」——旧写法 `verified = 0` 把待办任务一并计入
+  // （待办天然 verified=0），与任务列表「已完成（…，未验证 n）」的既有口径冲突，徽标因此虚高。
   const counts = getDb().prepare(
     `SELECT project_id,
             SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) AS todo_count,
             SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done_count,
-            SUM(CASE WHEN verified = 0 THEN 1 ELSE 0 END) AS unverified_count
+            SUM(CASE WHEN status = 'done' AND verified = 0 THEN 1 ELSE 0 END) AS unverified_count
      FROM tasks WHERE archived = 0 AND COALESCE(shelved, 0) = 0 GROUP BY project_id`,
   ).all() as Array<{ project_id: string; todo_count: number; done_count: number; unverified_count: number }>;
   // T00505：计划菜单项目下拉统计（按 plan_tasks.status：待办=待开始、doing=进行中、done=已完成）
@@ -122,7 +127,6 @@ api.get('/projects', (req, res) => {
     const pc = planByPid.get(r.id as string);
     return { ...r, todo_count: c?.todo_count ?? 0, done_count: c?.done_count ?? 0, unverified_count: c?.unverified_count ?? 0, plan_done: pc?.plan_done ?? 0, plan_doing: pc?.plan_doing ?? 0, plan_open: pc?.plan_open ?? 0 };
   });
-  cacheSet('projects', rowsWithCounts, LIST_TTL_MS);
   res.json(rowsWithCounts);
 });
 
