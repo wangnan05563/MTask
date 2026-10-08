@@ -6,7 +6,8 @@ import { beautifyStore } from '../stores/beautifyStore';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown';
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
-import { TaskDetailDrawer } from '../components/TaskDetailDrawer'; // T01562：真抽屉详情
+import { TaskDetailDrawer, type TaskDetailTab } from '../components/TaskDetailDrawer'; // T01562：真抽屉详情
+import type { FocusTaskIntent } from '../ui/focusTask'; // T01568：外部跳转定位意图（通知/铃铛/就绪条）
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
@@ -19,6 +20,9 @@ import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：正文
 
 /** 顶部 tab 三态：待办 / 已完成 / 搁置（S4323：具名类型别名替代内联联合类型） */
 type ActiveTab = 'todo' | 'done' | 'shelved';
+
+/** T01568：详情抽屉合法标签页（会话键 focusDrawerTab 的白名单校验口径，与 TaskDetailDrawer 标签页一致） */
+const DRAWER_TABS: readonly TaskDetailTab[] = ['desc', 'result', 'summary', 'timeline', 'plans'];
 
 // ---------- T00552：批量分类运行态模块级化——切页后循环继续、返回不卡死 ----------
 export const classifyStore: { busy: boolean; hit: number; total: number; done: boolean } = { busy: false, hit: 0, total: 0, done: false };
@@ -190,7 +194,11 @@ export function TasksPage() {
   const [focusProjectId, setFocusProjectId] = useSessionState<string>('tasks.focusProjectId', '');
   // T01562：真抽屉详情——当前打开抽屉的任务（按 task.id 作 key，切换任务即重挂载）；focusDrawerId 由 focusTaskByNo 写入
   const [drawerTask, setDrawerTask] = useState<Task | null>(null);
+  // T01568：抽屉落位标签页——外部跳转（focusTaskByNo 传 'result' 等）写入 focusDrawerTab，开抽屉即落该页；
+  // 手动开抽屉不写（保持 null → 抽屉默认「描述」），两套入口互不污染。
+  const [drawerTab, setDrawerTab] = useState<TaskDetailTab | null>(null);
   const [focusDrawerId, setFocusDrawerId] = useSessionState<string>('tasks.focusDrawerId', '');
+  const [focusDrawerTab, setFocusDrawerTab] = useSessionState<string>('tasks.focusDrawerTab', '');
   // T00757：列表 tab——待办/已完成/搁置三个列表标题并排为 tab，仅渲染激活 tab 的列表（会话级保持）
   const [activeTab, setActiveTab] = useSessionState<ActiveTab>('tasks.activeTab', 'todo');
   // 主列表分页：后端按页拉取 + 加载更多；hasMore=true 表示当前页刚好满页、可能还有更多
@@ -487,16 +495,62 @@ export function TasksPage() {
   // 与行内展开（快速预览）并存，抽屉=完整操作台。解析到任务即唤起并清空会话键。
   // 列表尚未就绪时保留会话键（外部跳转后任务数据晚于会话键到达，过早清空会导致抽屉不弹），
   // 仅在「已加载到数据却找不到该任务」（已删/不可见）时清空，避免会话键长期滞留。
+  // T01568：focusDrawerTab 与 focusDrawerId 成对消费——决定抽屉落在哪个标签页（非法值回落 desc），
+  // 且无论命中与否都清空，防止残留的 tab 键影响下一次手动开抽屉。
   useEffect(() => {
     if (!focusDrawerId) return;
     const t = [...todo, ...done, ...shelvedTasks].find((x) => x.id === focusDrawerId);
+    const tab: TaskDetailTab | null = (DRAWER_TABS as string[]).includes(focusDrawerTab)
+      ? (focusDrawerTab as TaskDetailTab)
+      : (focusDrawerTab ? 'desc' : null);
     if (t) {
       setDrawerTask(t);
+      setDrawerTab(tab);
       setFocusDrawerId('');
+      setFocusDrawerTab('');
       return;
     }
-    if (todo.length + done.length + shelvedTasks.length > 0) setFocusDrawerId('');
-  }, [focusDrawerId, todo, done, shelvedTasks]);
+    if (todo.length + done.length + shelvedTasks.length > 0) {
+      setFocusDrawerId('');
+      setFocusDrawerTab('');
+    }
+  }, [focusDrawerId, focusDrawerTab, todo, done, shelvedTasks]);
+
+  // T01568：外部跳转的「定位意图」事件——会话键只在本页挂载那一刻被 useSessionState 读取一次，
+  // 而 OS 通知/铃铛/就绪条常在用户已停在任务页时触发（不重新挂载），只写 sessionStorage 会「点了没反应」。
+  // 事件把同一份意图直写本页状态；未挂载时没有监听者，仍由会话键在挂载时接管，两条路径落点一致。
+  // 抽屉优先用事件携带的完整任务直接打开：列表此刻可能仍筛着上一条通知的编号，按列表查找会静默丢失本次跳转。
+  useEffect(() => {
+    const onFocusIntent = (e: Event) => {
+      const d = (e as CustomEvent<FocusTaskIntent | undefined>).detail;
+      if (!d || !d.taskNo) return;
+      setSearch(d.taskNo);
+      if (!d.id) return; // 解析失败：仅带编号搜索词落到任务页，由用户自行检索
+      setFocusTaskId(d.id);
+      if (d.projectId) setFocusProjectId(d.projectId);
+      if (d.tab) { setFocusTab(d.tab); setActiveTab(d.tab); }
+      if (d.drawerTab && d.task) {
+        setDrawerTask(d.task);
+        setDrawerTab(d.drawerTab);
+        // 本页已直接接管本次跳转：清掉刚写入的会话键，否则任务页下次挂载（切页/刷新）会再弹一次旧抽屉
+        clearSessionState('tasks.focusDrawerId');
+        clearSessionState('tasks.focusDrawerTab');
+      } else if (d.drawerTab) {
+        setFocusDrawerId(d.id);
+        setFocusDrawerTab(d.drawerTab);
+      }
+    };
+    globalThis.addEventListener('mtaskFocusTask', onFocusIntent);
+    return () => globalThis.removeEventListener('mtaskFocusTask', onFocusIntent);
+    // 订阅只需一次：回调内全部是 useState 的 setter（身份稳定）
+  }, []);
+
+  // T01568：行内按钮开抽屉的统一入口（tab=null → 抽屉取默认「描述」页）。
+  // 外部跳转走 focusDrawerId 会话键（见上方 effect），两条路径共用 drawerTab 一个落位状态。
+  const openDetailDrawer = (t: Task, tab: TaskDetailTab | null = null): void => {
+    setDrawerTab(tab);
+    setDrawerTask(t);
+  };
 
   // T00433：MCP 回传 / 队列执行 / 其他窗口改任务状态时，前端无感知——轻量轮询对比签名，有变化才刷新。
   // 保护条件：任何未保存草稿或 AI 操作进行中时跳过本轮，避免打断用户编辑（变化留待下一轮干净窗口）。
@@ -2008,7 +2062,7 @@ export function TasksPage() {
         )}
         {includeRename && <button onClick={() => toggleTitleEdit(t)} title={titleEditing ? '取消 — 取消重命名' : '改名 — 重命名该任务标题'} aria-label={titleEditing ? '取消重命名' : '重命名该任务标题'} className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{titleEditing ? <X size={13} /> : <SquarePen size={13} />}</button>}
         {/* T01562：真抽屉——右侧滑入完整操作台（描述/结果/摘要/时间线/关联计划），与行内展开互补 */}
-        <button onClick={() => setDrawerTask(t)} title="展开详情抽屉 — 在右侧抽屉中查看并编辑任务完整详情" aria-label="展开详情抽屉 — 在右侧抽屉中查看并编辑任务完整详情" className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><PanelRightOpen size={13} /></button>
+        <button onClick={() => openDetailDrawer(t)} title="展开详情抽屉 — 在右侧抽屉中查看并编辑任务完整详情" aria-label="展开详情抽屉 — 在右侧抽屉中查看并编辑任务完整详情" className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><PanelRightOpen size={13} /></button>
       </>
     );
   }
@@ -2827,7 +2881,7 @@ export function TasksPage() {
           className="op-hidden"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="搜索标题/描述…"
+          placeholder="搜索标题/描述/编号…"
           style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, marginLeft: 'auto' }}
         />
         {notice && <output className="flash-toast">{notice}</output>}
@@ -2950,7 +3004,8 @@ export function TasksPage() {
       // 分类筛选：'none' 表示未分类；指定分类则精确匹配；空串为全部
       if (catFilter === 'none') { if (t.category_id) return false; }
       else if (catFilter && t.category_id !== catFilter) return false;
-      return !kw || t.title.toLowerCase().includes(kw) || (t.description ?? '').toLowerCase().includes(kw);
+      // T01568：编号同样参与本地检索——外部跳转以 task_no 作搜索词，只比标题/描述会把目标行筛没
+      return !kw || t.title.toLowerCase().includes(kw) || (t.description ?? '').toLowerCase().includes(kw) || (t.task_no ?? '').toLowerCase().includes(kw);
     };
     // 已完成栏验证状态过滤：all=全部，verified=仅已验证，unverified=仅未验证（拆出避免嵌套三元）
     const matchDoneFilter = (t: Task) => {
@@ -3528,9 +3583,11 @@ export function TasksPage() {
           按 task.id 作 key 重挂载，切换任务即重置编辑态（降低与逐行展开态的耦合回归风险） */}
       {drawerTask && (
         <TaskDetailDrawer
+          key={drawerTask.id}
           task={drawerTask}
           projectId={activeProject}
-          onClose={() => setDrawerTask(null)}
+          initialTab={drawerTab ?? undefined}
+          onClose={() => { setDrawerTask(null); setDrawerTab(null); }}
           onChanged={() => void loadTasks(activeProject)}
         />
       )}

@@ -62,10 +62,12 @@ function Shell() {
   // T01057-FR1.1：OS 通知点击 → 聚焦窗口后定位到对应任务。
   // T01057 建议：改用 focusTaskByNo——按编号解析 id/项目/状态写齐定位键（含切 activeProject），
   // 修复此前「只写 focusId=task_no、跨项目任务定位不到」的问题（编号≠行 uuid）。
+  // T01568：OS 通知只由「任务处理完成/失败」（electron/main 轮询 ai_state 变化）产生，
+  // 用 'notice' 让落位跟着任务实际状态走——已回传结果→处理结果页；失败或尚无结果→描述页。
   useEffect(() => {
     const desktop = (globalThis as unknown as { mtaskDesktop?: { onNavigateTask?: (cb: (taskNo: string) => void) => () => void } }).mtaskDesktop;
     if (!desktop?.onNavigateTask) return; // 浏览器环境无桌面桥，跳过
-    const off = desktop.onNavigateTask((taskNo) => { void focusTaskByNo(taskNo); });
+    const off = desktop.onNavigateTask((taskNo) => { void focusTaskByNo(taskNo, 'notice'); });
     return off;
   }, []);
   // T00443 / PRD UX-4：Ctrl+F 唤起/关闭命令面板（T00560：由 Ctrl+K 调整为更符合操作习惯的 Ctrl+F）

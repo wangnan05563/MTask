@@ -12,7 +12,9 @@ import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { SlideOver } from './SlideOver';
 import { ClipboardList, FileText, History, Link2, Pencil, Save, Sparkles, X } from 'lucide-react';
 
-type Tab = 'desc' | 'result' | 'summary' | 'timeline' | 'plans';
+/** T01568：标签页键对外导出——外部跳转（focusTaskByNo）按名称指定落位标签页 */
+export type TaskDetailTab = 'desc' | 'result' | 'summary' | 'timeline' | 'plans';
+type Tab = TaskDetailTab;
 
 const PRIO_LABEL: Record<string, string> = { urgent: '紧急', high: '高', normal: '普通', low: '低' };
 const STATUS_LABEL: Record<string, string> = { todo: '待办', done: '已完成' };
@@ -25,13 +27,15 @@ function Badge({ children, color }: { readonly children: React.ReactNode; readon
   );
 }
 
-export function TaskDetailDrawer({ task, projectId, onClose, onChanged }: {
+export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChanged }: {
   readonly task: Task;
   readonly projectId: string;
+  /** T01568：外部跳转指定的默认落位标签页（缺省 desc）——抽屉按 task.id 重挂载，故仅取初始值 */
+  readonly initialTab?: TaskDetailTab;
   readonly onClose: () => void;
   readonly onChanged: () => void;
 }) {
-  const [tab, setTab] = useState<Tab>('desc');
+  const [tab, setTab] = useState<Tab>(initialTab ?? 'desc');
   const [editing, setEditing] = useState<null | 'desc' | 'result'>(null);
   const [busy, setBusy] = useState(false);
   // 本地镜像可编辑字段，避免父级刷新覆盖未保存草稿（抽屉按 task.id 作 key，切换任务即重挂载）
@@ -43,6 +47,12 @@ export function TaskDetailDrawer({ task, projectId, onClose, onChanged }: {
   const [plans, setPlans] = useState<Array<{ id: string; title: string; kind: string; start_date: string }>>([]);
   const [plansLoading, setPlansLoading] = useState(false);
   const [previewId, setPreviewId] = useState(''); // T01563：附件放大预览（点同图收起）
+
+  // T01568：同一任务被再次跳转（如重复点同一条通知）时组件不重挂载，initialTab 变化仍需把视图切回约定标签页；
+  // 用户手动切页后 initialTab 未变，故不会被反复拽回——只在「外部指定的落位发生变化」时生效。
+  useEffect(() => {
+    if (initialTab) setTab(initialTab);
+  }, [initialTab]);
 
   useEffect(() => {
     if (tab !== 'plans') return;

@@ -122,7 +122,7 @@ export interface TaskListOptions {
    *  本参数的「不传=全量」语义仅剩 MCP（mtask_list_tasks，AI 全项目枚举依赖）与内部调用方使用 */
   limit?: number;
   offset?: number;
-  /** 标题/描述模糊搜索（大小写不敏感） */
+  /** 标题/描述/编号模糊搜索（大小写不敏感；T01568 起编号纳入，供按编号检索与外部跳转定位） */
   keyword?: string;
   /** 分类筛选；'none' 表示未分类任务 */
   categoryId?: string;
@@ -214,8 +214,10 @@ function buildTaskFilter(opts: TaskListOptions): { where: string[]; values: unkn
   if (opts.keyword) {
     // 转义 LIKE 通配符（%/_），让搜索词按字面匹配而非被误当通配
     const kw = `%${opts.keyword.replaceAll(/[%_]/g, (m) => '\\' + m)}%`;
-    where.push(String.raw`(title LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\')`);
-    values.push(kw, kw);
+    // T01568：编号也纳入模糊搜索——外部跳转（通知/就绪条）以 task_no 作搜索词定位，
+    // 只搜标题/描述时「按编号搜索」会把目标行整条筛掉（列表 0 行 → 定位与抽屉直达都落空）。
+    where.push(String.raw`(title LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\' OR task_no LIKE ? ESCAPE '\')`);
+    values.push(kw, kw, kw);
   }
   if (opts.categoryId === 'none') where.push('category_id IS NULL');
   else if (opts.categoryId) { where.push('category_id = ?'); values.push(opts.categoryId); }

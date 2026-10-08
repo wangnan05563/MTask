@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Bell, CheckCircle2, FileText, ListTodo, ShieldCheck } from 'lucide-react';
 import { api } from '../api/client';
-import { focusTaskByNo } from './focusTask'; // T01057 建议：通知点击跨项目定位
+import { focusTaskByNo, type FocusOpenMode } from './focusTask'; // T01057 建议：通知点击跨项目定位；T01568：按需直达抽屉并指定落位
 
 /**
  * T01064-FR1.4：全局通知中心（顶栏铃铛）——聚合任务事件（状态/验证/AI 完成/失败/回传）。
@@ -77,9 +77,18 @@ export function NotifyBell() {
     }
   }
 
+  // T01568：铃铛按事件语义分流——「结果回传 / AI 处理完成或失败」是待查看内容，直达抽屉
+  // （落位由 drawerTabForNotice 按任务实际状态决定，与 OS 通知同一口径）；
+  // 「状态变更 / 验证」只是提醒该任务发生了什么，保持既有的「仅定位行 + 高亮」，不把抽屉糊到脸上。
+  // 系统告警无对应任务，沿用不可跳转（见 gotoTask 调用处）。
+  function drawerTabForEvent(it: EventItem): FocusOpenMode | false {
+    if (it.kind === 'result' || it.kind === 'ai_state') return 'notice';
+    return false;
+  }
+
   function gotoTask(it: EventItem) {
     // T01057 建议：按编号定位（解析 id/项目/tab，跨项目可命中），替代此前只写 focusId=task_no 无法命中行 uuid 的旧逻辑
-    void focusTaskByNo(it.task_no);
+    void focusTaskByNo(it.task_no, drawerTabForEvent(it));
     setOpen(false);
   }
 

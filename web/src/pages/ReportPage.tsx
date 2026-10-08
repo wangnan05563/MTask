@@ -670,9 +670,10 @@ export function ReportPage() {
             <button
               key={rp.id}
               onClick={() => {
-                void focusTaskByNo(rp.task_no);
+                // T01568：就绪条的意图是「现在做这个」——要看的是任务正文而非一行高亮，直达抽屉「描述」页
+                void focusTaskByNo(rp.task_no, 'desc');
               }}
-              title={`就绪任务：前置依赖均已完成${complexityPart} — 点击前往任务${taskNoPart}`}
+              title={`就绪任务：前置依赖均已完成${complexityPart} — 点击打开任务详情${taskNoPart}`}
               aria-label={`前往就绪任务 ${rp.title}`}
               style={{ fontSize: 12, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--accent)', background: 'var(--card-bg)', color: 'var(--accent)', cursor: 'pointer', whiteSpace: 'nowrap' }}
             >
