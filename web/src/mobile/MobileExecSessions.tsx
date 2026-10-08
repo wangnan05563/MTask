@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
 import { Badge, bodyStyle, cardStyle, EmptyState, type BadgeTone } from './ui';
+import { platformLabel } from '../ui/platformLabel';
 
 interface ExecSessionView {
   id: string;
@@ -94,7 +95,7 @@ export function MobileExecSessions({ notify }: { readonly notify: (msg: string, 
           <div key={s.id} style={cardStyle}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
               <Badge tone={STATUS_TONE[s.status] ?? 'neutral'}>{STATUS_LABEL[s.status] ?? s.status}</Badge>
-              <span style={{ fontSize: 13, fontWeight: 600 }}>{s.platform}</span>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>{platformLabel(s.platform)}</span>
               {s.session_id && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{s.session_id.slice(0, 8)}</span>}
               <span style={{ marginLeft: 'auto', fontSize: 11, color: heartbeatStale ? 'var(--danger)' : 'var(--text-muted)' }}>
                 心跳 {relTime(s.last_heartbeat)}{heartbeatStale ? '（停滞?）' : ''}

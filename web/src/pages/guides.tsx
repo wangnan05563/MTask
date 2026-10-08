@@ -251,7 +251,7 @@ const EXEC_SESSIONS_STEPS: GuideStep[] = [
   {
     title: '认识「执行会话」',
     icon: Compass,
-    desc: '外部 AI 平台（WorkBuddy / Trae / 中继）执行任务期间的会话观测面板：一眼看清哪些会话还活着、跑到哪一步。',
+    desc: '外部 AI 平台（qcoder / WorkBuddy / 中继）执行任务期间的会话观测面板：一眼看清哪些会话还活着、跑到哪一步。',
     points: [
       '顶部三个统计（存活 / 停滞 / 已完成）直接反映当前会话规模',
       '每条会话展示平台、阶段、进度、最近心跳与关联任务',

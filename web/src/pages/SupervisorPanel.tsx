@@ -13,6 +13,7 @@
  */
 import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { api } from '../api/client';
+import { platformLabel } from '../ui/platformLabel';
 import { fullTime, relTime } from '../ui/format';
 import { askConfirm } from '../ui/dialogs';
 import {
@@ -302,7 +303,7 @@ export function SupervisorPanel() {
             if (s.failed) stateLabel = '失败';
             return (
               <li key={`${s.platform}-${i}`} style={{ fontSize: 'var(--fs-m)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontWeight: 600 }}>{s.platform}</span>
+                <span style={{ fontWeight: 600 }}>{platformLabel(s.platform)}</span>
                 <span style={{ color: s.stale || s.failed ? 'var(--danger)' : 'var(--success)' }}>{stateLabel}</span>
                 <span style={{ color: 'var(--text-muted)' }}>{Math.round(s.progress)}%</span>
                 <span style={{ color: 'var(--text-secondary)' }}>{s.tasks.map((t) => t.taskNo ?? t.title).join('、') || '未关联任务'}</span>

@@ -3,6 +3,7 @@ import { Activity, Loader2, RefreshCw } from 'lucide-react';
 import { api, type ExecSession } from '../api/client';
 import { EmptyState } from '../ui/EmptyState';
 import { fullTime, relTime } from '../ui/format';
+import { platformLabel } from '../ui/platformLabel';
 
 /**
  * T01271-FR1.4：「执行会话」面板——展示外部平台会话的存活 / 进度 / 阶段 / 停滞标记。
@@ -100,7 +101,7 @@ export function ExecSessionsPage() {
         <div style={{ flex: 1 }}>
           <h2 style={{ margin: 0, fontSize: 17, color: 'var(--text)' }}>执行会话</h2>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-            外部 AI 平台（WorkBuddy / Trae / 中继）执行任务期间上报的会话存活与进度，每 15 秒自动刷新
+            外部 AI 平台（qcoder / WorkBuddy / 中继）执行任务期间上报的会话存活与进度，每 15 秒自动刷新
           </div>
         </div>
         <button
@@ -149,7 +150,7 @@ function SessionCard({ s }: { readonly s: ExecSession }) {
         <span style={{ fontSize: 11.5, color: meta.color, border: `1px solid ${meta.color}`, borderRadius: 999, padding: '1px 8px' }}>
           {meta.label}
         </span>
-        <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text)' }}>{s.platform}</span>
+        <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text)' }}>{platformLabel(s.platform)}</span>
         <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, color: 'var(--text-muted)' }}>{s.session_id ?? '-'}</span>
         <span style={{ flex: 1 }} />
         <span title={fullTime(s.last_heartbeat)} style={{ fontSize: 12, color: 'var(--text-muted)' }}>
