@@ -12,7 +12,7 @@ import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { buildWorkdayCtx } from '../utils/workday'; // T01059 后续：甘特拖动
 import { deltaDaysFromPx, ganttDragResult, newGanttDrag, type GanttDragMode, type GanttDragState } from '../utils/ganttDrag'; // T01059 后续
-import { PlanTimeline, type TlGranularity, type TlPlan } from '../components/PlanTimeline'; // T01564：纵向时间轴
+import { PlanTimeline, type TlGranularity, type TlPlan, type TlSpacing } from '../components/PlanTimeline'; // T01564：纵向时间轴
 import { SlideOver } from '../components/SlideOver'; // T01565：时间线节点详情复用 FR-3.2 抽屉基元
 import { focusTaskById } from '../ui/focusTask'; // T01577：时间线节点跳转关联待办，复用跨视图定位公共 helper
 
@@ -383,8 +383,34 @@ function PlanTimelineGranularityToggle({ granularity, setGranularity }: {
   );
 }
 
-/** T01576：时间线「全部收起 / 全部展开」快捷按钮（仅时间线视图内）。
- *  写的仍是 `plan.collapsedMs` 同一份会话态——这里一键收起，列表/甘特视图同步收起，
+/** T01575：时间线间距模式切换（等距 / 按比例）。
+ *  与粒度控件同排、同为呈现偏好：按比例时长空档按 start_date 差值真实拉开，
+ *  组件内已做「最小间距护栏 + 超长空档压缩并给断裂提示」，故不会推出不可读的空白（S3776 抽取）。 */
+function PlanTimelineSpacingToggle({ spacing, setSpacing }: {
+  readonly spacing: TlSpacing; readonly setSpacing: React.Dispatch<React.SetStateAction<TlSpacing>>;
+}) {
+  const modes: ReadonlyArray<{ readonly k: TlSpacing; readonly label: string; readonly tip: string }> = [
+    { k: 'uniform', label: '等距', tip: '等距排布：每个节点固定一行，重在脉络可读（默认）' },
+    { k: 'proportional', label: '按比例', tip: '按比例排布：节点纵向距离 ∝ 起始日期差，跨月空档会真实拉开（超长空档压缩绘制并标注「空档 N 天」）' },
+  ];
+  return (
+    <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} role="group" aria-label="时间线间距模式">
+      {modes.map((m, i) => (
+        <button
+          key={m.k}
+          type="button"
+          data-tl-spacing={m.k}
+          title={m.tip}
+          aria-pressed={spacing === m.k}
+          onClick={() => setSpacing(m.k)}
+          style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: i > 0 ? '1px solid var(--border-strong)' : 'none', cursor: 'pointer', background: spacing === m.k ? 'var(--accent)' : 'transparent', color: spacing === m.k ? 'var(--accent-text)' : 'var(--text)' }}
+        >{m.label}</button>
+      ))}
+    </div>
+  );
+}
+
+/** T01576：时间线「全部收起 / 全部展开」快捷按钮（仅时间线视图内）。 *  写的仍是 `plan.collapsedMs` 同一份会话态——这里一键收起，列表/甘特视图同步收起，
  *  不另建第二套折叠记忆。 */
 function PlanTimelineCollapseAll({ allCollapsed, phaseCount, onToggle }: {
   readonly allCollapsed: boolean; readonly phaseCount: number; readonly onToggle: () => void;
@@ -1233,6 +1259,8 @@ export function PlanPage() {
   const [viewMode, setViewMode] = useSessionState<'list' | 'gantt' | 'timeline'>('plan.viewMode', 'list');
   // T01565：时间线粒度（日/周/月/季）——独立于甘特的 durationUnit（day/hour），会话级保持
   const [tlGranularity, setTlGranularity] = useSessionState<TlGranularity>('plan.tlGranularity', 'month');
+  // T01575：时间线间距模式（等距/按比例）——与粒度同属视图呈现偏好，会话级保持，不改排期数据
+  const [tlSpacing, setTlSpacing] = useSessionState<TlSpacing>('plan.tlSpacing', 'uniform');
   // T01565：时间线节点点击详情（复用 FR-3.2 SlideOver，不新造抽屉）
   const [selectedPlan, setSelectedPlan] = useState<TlPlan | null>(null);
 
@@ -1896,10 +1924,11 @@ export function PlanPage() {
           </div>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <PlanTimelineGranularityToggle granularity={tlGranularity} setGranularity={setTlGranularity} />
+            <PlanTimelineSpacingToggle spacing={tlSpacing} setSpacing={setTlSpacing} />
             <PlanTimelineCollapseAll allCollapsed={tlAllCollapsed} phaseCount={tlMsIds.length} onToggle={() => setAllTlCollapsed(!tlAllCollapsed)} />
           </div>
         </div>
-        <PlanTimeline plans={plans} granularity={tlGranularity} onSelect={(p) => setSelectedPlan(p)}
+        <PlanTimeline plans={plans} granularity={tlGranularity} spacing={tlSpacing} onSelect={(p) => setSelectedPlan(p)}
           collapsedMs={collapsedMs} onToggleMsCollapse={toggleMsCollapsed} onJumpToLinked={jumpToLinked} />
         {selectedPlan && (
           <SlideOver open title={selectedPlan.title} onClose={() => setSelectedPlan(null)} width={420}>

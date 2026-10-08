@@ -8,10 +8,24 @@
  * 节点点击 → onSelect 由父级用 SlideOver 展示详情。
  * T01576：阶段可折叠——折叠只摘掉「阶段内任务节点 + 其刻度」，里程碑菱形与阶段汇总摘要（任务数/
  * 平均进度）仍留在轴上；折叠态由父级传入的 collapsedMs 承载，与列表/甘特共用 `plan.collapsedMs` 同一键。
- * 时间轴为均匀间距（非严格按时间比例），重在脉络可读性；比例间距为后续增强。
+ * 间距模式（T01575）：
+ *  - uniform（默认）：每个节点固定行高 + 8px 下边距，重在「脉络可读」，不体现时间疏密；
+ *  - proportional：节点之间按 `start_date` 差值换算纵向间距，长空档真实拉开。
+ *    为避免不可读，两端各有护栏——下限 MIN_GAP（同日/紧邻节点仍保证不重叠），
+ *    上限 MAX_GAP（超长空档压缩绘制，并给出「空档 N 天」断裂提示）；比例尺 PX_PER_DAY 随粒度变化，
+ *    故日粒度拉开最狠、季粒度最收敛（与刻度密度联动）。
+ * 未排期（start_date 为空）节点在两种模式下都沉底，并在卡内显式标注「未排期」。
  */
 import { useMemo, type ReactNode } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react'; // T01576：阶段折叠控件（与列表视图 PlanTitleCell 同一套图标语言）
+
+const DAY_MS = 86_400_000;
+/** 比例模式护栏：最小可点间距（px）与超长空档压缩上限（px） */
+const MIN_GAP = 48;
+const MAX_GAP = 160;
+/** 每颗粒度下的比例尺（px/天）——与「看多细的时间」匹配：日粒度连十来天的间隔也该拉开，
+ *  季粒度只有跨季空档才明显变长。有效可视区间即 [MIN_GAP/px, MAX_GAP/px] 天，超出上限走压缩 + 断裂提示。 */
+const PX_PER_DAY: Record<TlGranularity, number> = { day: 6, week: 4, month: 2.5, quarter: 1.2 };
 
 /** 结构类型：PlanPage 的 PlanTask 经结构化赋值传入（额外字段不影响兼容性）。
  *  字段以 PlanTask 为准：kind/color 在 PlanTask 中为可选 → 此处同样声明为可选，保证 PlanTask[] 可整体赋值。 */
@@ -32,6 +46,16 @@ export interface TlPlan {
 }
 
 export type TlGranularity = 'day' | 'week' | 'month' | 'quarter';
+
+/** T01575：节点纵向间距模式——等距（默认）或按 start_date 比例 */
+export type TlSpacing = 'uniform' | 'proportional';
+
+/** start_date → 时间戳；空值或非法日期返回 null（未排期节点在比例模式下不参与时间换算） */
+function toDateMs(d: string): number | null {
+  if (!d) return null;
+  const t = new Date(d.length === 10 ? d + 'T00:00:00' : d).getTime();
+  return Number.isNaN(t) ? null : t;
+}
 
 function fmtDate(d: string, g: TlGranularity): string {
   if (!d) return '未排期';
@@ -86,11 +110,15 @@ type TlRow =
   | { readonly type: 'tick'; readonly key: string; readonly label: string }
   | { readonly type: 'ms'; readonly key: string; readonly p: TlPlan; readonly collapsed: boolean; readonly itemCount: number }
   | { readonly type: 'sum'; readonly key: string; readonly text: string; readonly msId: string | null; readonly collapsed: boolean }
-  | { readonly type: 'item'; readonly key: string; readonly p: TlPlan };
+  | { readonly type: 'item'; readonly key: string; readonly p: TlPlan }
+  /** T01575：比例模式下的节点间空白（px 已含护栏）；days > 0 表示这是被压缩绘制的超长空档，需给断裂提示 */
+  | { readonly type: 'spacer'; readonly key: string; readonly px: number; readonly days: number };
 
-export function PlanTimeline({ plans, granularity, onSelect, collapsedMs = {}, onToggleMsCollapse, onJumpToLinked }: {
+export function PlanTimeline({ plans, granularity, spacing = 'uniform', onSelect, collapsedMs = {}, onToggleMsCollapse, onJumpToLinked }: {
   readonly plans: ReadonlyArray<TlPlan>;
   readonly granularity: TlGranularity;
+  /** T01575：间距模式；缺省 'uniform' 保持旧行为（组件可被不感知本特性的调用方直接使用） */
+  readonly spacing?: TlSpacing;
   readonly onSelect: (p: TlPlan) => void;
   /** T01576：里程碑折叠态——与列表/甘特视图共用 `plan.collapsedMs` 会话键（同一里程碑 id，口径一致） */
   readonly collapsedMs?: Record<string, boolean>;
@@ -122,6 +150,24 @@ export function PlanTimeline({ plans, granularity, onSelect, collapsedMs = {}, o
   const rows = useMemo<TlRow[]>(() => {
     const out: TlRow[] = [];
     let lastBucket = '';
+    let prevT: number | null = null;   // 上一个「有排期」节点的 start_date
+    let seenNode = false;              // 是否已渲染过节点（首个节点前不留空白）
+    /** T01575：比例模式下的节点间距——下限保命（不重叠），上限压缩（长空档不推白），压缩时回报天数供断裂提示 */
+    const gapOf = (t: number | null): { px: number; days: number } => {
+      if (t === null) return { px: MIN_GAP, days: 0 };
+      const days = Math.max(0, Math.round((t - (prevT ?? t)) / DAY_MS));
+      const raw = days * PX_PER_DAY[granularity];
+      if (raw > MAX_GAP) return { px: MAX_GAP, days };
+      return { px: Math.max(MIN_GAP, Math.round(raw)), days: 0 };
+    };
+    /** 在「刻度 + 节点」之前插入间距（刻度仍紧贴它标注的节点） */
+    const spacerBefore = (p: TlPlan) => {
+      if (spacing !== 'proportional') return;
+      const t = toDateMs(p.start_date);
+      if (seenNode) out.push({ type: 'spacer', key: `${p.id}-sp`, ...gapOf(t) });
+      seenNode = true;
+      if (t !== null) prevT = t;
+    };
     const tick = (p: TlPlan, k: string) => {
       const bk = bucketKey(p.start_date, granularity);
       if (bk && bk !== lastBucket) {
@@ -134,6 +180,7 @@ export function PlanTimeline({ plans, granularity, onSelect, collapsedMs = {}, o
       const collapsed = !!ph.milestone && !!collapsedMs[ph.milestone.id];
       if (ph.milestone) {
         const ms = ph.milestone;
+        spacerBefore(ms);
         tick(ms, `p${i}`);
         out.push({ type: 'ms', key: ms.id, p: ms, collapsed, itemCount: ph.items.length });
       }
@@ -150,12 +197,13 @@ export function PlanTimeline({ plans, granularity, onSelect, collapsedMs = {}, o
       }
       if (collapsed) return;
       for (const p of ph.items) {
+        spacerBefore(p);
         tick(p, `p${i}`);
         out.push({ type: 'item', key: p.id, p });
       }
     });
     return out;
-  }, [phases, granularity, collapsedMs]);
+  }, [phases, granularity, spacing, collapsedMs]);
 
   if (plans.length === 0) {
     return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: 16, textAlign: 'center' }}>（暂无计划任务，无法生成时间线）</div>;
@@ -182,7 +230,10 @@ export function PlanTimeline({ plans, granularity, onSelect, collapsedMs = {}, o
           {isMs && <span aria-hidden="true" style={{ color: 'var(--accent)', marginRight: 4 }}>◆</span>}{p.title}
         </div>
         <div style={{ display: 'flex', gap: 8, fontSize: 11, color: 'var(--text-muted)', marginTop: 3, flexWrap: 'wrap' }}>
-          <span>{fmtDate(p.start_date, granularity)} → {fmtDate(p.end_date, granularity)}</span>
+          {toDateMs(p.start_date) === null
+            // T01575：未排期节点两种模式下都沉底，并在卡内显式标注（旧版只在日期位显示「未排期」，容易被当成数据缺失）
+            ? <span data-tl="unscheduled" style={{ color: 'var(--text-muted)', border: '1px dashed var(--border-strong)', borderRadius: 4, padding: '0 5px' }}>未排期</span>
+            : <span>{fmtDate(p.start_date, granularity)} → {fmtDate(p.end_date, granularity)}</span>}
           {p.assignee && <span>负责人：{p.assignee}</span>}
           <span style={{ color: st.color }}>{st.label}</span>
           {p.linked_task_id && <span style={{ color: 'var(--success)' }}>✓ 已关联</span>}
@@ -207,6 +258,21 @@ export function PlanTimeline({ plans, granularity, onSelect, collapsedMs = {}, o
             <div key={r.key} role="listitem" data-tl="tick" aria-label={`时间刻度 ${r.label}`} style={{ position: 'relative', margin: '12px 0 6px' }}>
               <span aria-hidden="true" style={{ position: 'absolute', left: -31, top: 2, width: 12, height: 12, borderRadius: '50%', background: 'var(--surface-2)', border: '2px solid var(--accent)' }} />
               <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent)', letterSpacing: .3 }}>{r.label}</span>
+            </div>
+          );
+        }
+        if (r.type === 'spacer') {
+          return (
+            <div key={r.key} data-tl="spacer" data-tl-px={r.px} data-tl-days={r.days}
+              role={r.days > 0 ? undefined : 'presentation'} aria-hidden={r.days === 0 || undefined}
+              style={{ height: r.px, position: 'relative' }}>
+              {r.days > 0 && (
+                <span style={{
+                  position: 'absolute', left: 4, top: '50%', transform: 'translateY(-50%)',
+                  fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap',
+                  border: '1px dashed var(--border-strong)', borderRadius: 5, padding: '1px 7px', background: 'var(--card-bg)',
+                }}>⋯ 空档 {r.days} 天（比例尺已压缩）</span>
+              )}
             </div>
           );
         }
