@@ -88,7 +88,7 @@ type TlRow =
   | { readonly type: 'sum'; readonly key: string; readonly text: string; readonly msId: string | null; readonly collapsed: boolean }
   | { readonly type: 'item'; readonly key: string; readonly p: TlPlan };
 
-export function PlanTimeline({ plans, granularity, onSelect, collapsedMs = {}, onToggleMsCollapse }: {
+export function PlanTimeline({ plans, granularity, onSelect, collapsedMs = {}, onToggleMsCollapse, onJumpToLinked }: {
   readonly plans: ReadonlyArray<TlPlan>;
   readonly granularity: TlGranularity;
   readonly onSelect: (p: TlPlan) => void;
@@ -96,6 +96,8 @@ export function PlanTimeline({ plans, granularity, onSelect, collapsedMs = {}, o
   readonly collapsedMs?: Record<string, boolean>;
   /** T01576：切换某里程碑阶段的折叠态；缺省时不渲染折叠控件（保证组件可独立使用） */
   readonly onToggleMsCollapse?: (id: string) => void;
+  /** T01577：跳转到该计划项关联的待办（focusTaskByNo/ById 那套跨视图定位）；缺省时关联仍是纯文本 */
+  readonly onJumpToLinked?: (p: TlPlan) => void;
 }) {
   const phases = useMemo(() => {
     const sorted = [...plans].sort((a, b) => {
@@ -161,14 +163,17 @@ export function PlanTimeline({ plans, granularity, onSelect, collapsedMs = {}, o
 
   function nodeCard(p: TlPlan, isMs: boolean): ReactNode {
     const st = STATUS_META[p.status] ?? { label: p.status, color: 'var(--text-muted)' };
+    // T01577：可跳转时在卡右上角留白（跳转控件是卡的兄弟节点，见下方 row 渲染）；
+    // 里程碑卡右上角还有折叠控件，两者并存时留白要再让出一个角标位。
+    const badge = !!p.linked_task_id && !!onJumpToLinked;
+    const padRight = !badge ? (isMs ? 34 : 11) : isMs ? 92 : 84;
     return (
       <button
         onClick={() => onSelect(p)}
         aria-label={`查看 ${p.title} 详情`}
         style={{
           display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
-          // 里程碑卡右侧给折叠控件留位（T01576：控件是卡的兄弟节点，绝对定位覆盖在右上角）
-          padding: isMs ? '9px 34px 9px 11px' : '9px 11px', borderRadius: 8,
+          padding: `9px ${padRight}px 9px 11px`, borderRadius: 8,
           border: `1px solid ${isMs ? 'var(--accent)' : 'var(--border)'}`,
           background: 'var(--card-bg)', color: 'var(--text)',
         }}
@@ -245,6 +250,24 @@ export function PlanTimeline({ plans, granularity, onSelect, collapsedMs = {}, o
                 {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
                 <span style={{ fontSize: 10, marginLeft: 1 }}>{msRow.itemCount}</span>
               </button>
+            )}
+            {/* T01577：关联待办跳转角标——节点卡本身是 button（不能嵌套按钮），故与折叠控件同法，
+                作为卡的兄弟节点绝对定位在右上角；里程碑卡的右上角已被折叠控件占用，角标让位到其左侧。 */}
+            {r.p.linked_task_id && onJumpToLinked && (
+              <button
+                type="button"
+                data-tl="jump-linked"
+                className="tl-chip"
+                onClick={() => onJumpToLinked(r.p)}
+                aria-label={`打开关联待办：${r.p.linked_task_title || r.p.title}`}
+                title={`跳转到该计划关联的待办${r.p.linked_task_title ? `「${r.p.linked_task_title}」` : ''}`}
+                style={{
+                  position: 'absolute', right: isMs ? 38 : 6, top: 8, zIndex: 1,
+                  padding: '2px 7px', fontSize: 11, whiteSpace: 'nowrap',
+                  border: '1px solid var(--success)', borderRadius: 5,
+                  background: 'var(--card-bg)', color: 'var(--success)', cursor: 'pointer',
+                }}
+              >↗ 待办</button>
             )}
           </div>
         );

@@ -67,6 +67,62 @@ export function drawerTabForNotice(t: Pick<Task, 'ai_state' | 'handle_result'>):
 /** focusTaskByNo 第二形参：true=抽屉落描述页；传具体标签页名=直接落该页；'notice'=按通知语义自动落位 */
 export type FocusOpenMode = TaskDetailTab | 'notice';
 
+/** 落位口径：open=true→描述页；'notice'→按通知语义；具体页名→该页；falsy→仅定位行 */
+function resolveDrawerTab(t: Task, open?: boolean | FocusOpenMode): TaskDetailTab | '' {
+  if (!open) return '';
+  if (open === 'notice') return drawerTabForNotice(t);
+  return open === true ? 'desc' : open;
+}
+
+/**
+ * 把「已解析到的任务」写成定位意图并切到任务页（focusTaskByNo / focusTaskById 共用）。
+ * searchKey 用任务编号：任务页据此把列表筛到该行（编号已纳入服务端与本地搜索，T01568）。
+ */
+function applyFocus(t: Task, searchKey: string, open?: boolean | FocusOpenMode): void {
+  const tab = t.status === 'done' ? 'done' : 'todo';
+  const drawerTab = resolveDrawerTab(t, open);
+  setSessionState('tasks.focusId', t.id);
+  setSessionState('tasks.focusProjectId', t.project_id ?? '');
+  setSessionState('tasks.focusTab', tab);
+  setSessionState('tasks.activeTab', tab); // tab 与目标行所在列表对齐，保证该行渲染可见
+  setSessionState('tasks.search', searchKey);
+  if (drawerTab) {
+    setSessionState('tasks.focusDrawerId', t.id);
+    setSessionState('tasks.focusDrawerTab', drawerTab);
+  }
+  dispatchFocus({ id: t.id, taskNo: searchKey, tab, projectId: t.project_id ?? '', drawerTab, task: t });
+  navigateToTasks();
+}
+
+/**
+ * 按任务 id 定位（T01577：计划行只有 `linked_task_id`，没有编号，且本单口径禁止新增后端接口）。
+ * 用既有的项目任务列表接口解析出该任务后复用同一套落位逻辑（关联受后端「同项目」约束，项目内必查得到）；
+ * 解析不到（待办已删/归档/搁置）返回 false，由调用方给「未找到对应待办」提示而非静默。
+ *
+ * 先带 keyword=关联标题 查：大项目未筛的全量前 500 条未必含目标行，只靠全量本地筛会误报「未找到」。
+ */
+export async function focusTaskById(
+  taskId: string | null | undefined,
+  projectId: string | null | undefined,
+  open?: boolean | FocusOpenMode,
+  titleHint?: string | null,
+): Promise<boolean> {
+  if (!taskId) return false;
+  const base = `/tasks?projectId=${encodeURIComponent(projectId ?? '')}&archived=false&limit=500`;
+  const urls = titleHint ? [`${base}&keyword=${encodeURIComponent(titleHint)}`, base] : [base];
+  for (const url of urls) {
+    try {
+      const list = await api.get<Task[]>(url);
+      const hit = Array.isArray(list) ? list.find((t) => t.id === taskId) : undefined;
+      if (hit) {
+        applyFocus(hit, hit.task_no ?? '', open);
+        return true;
+      }
+    } catch { /* 单条查询失败换下一条兜底，全部失败返回 false 由调用方提示 */ }
+  }
+  return false;
+}
+
 /**
  * 按 task_no 定位任务：拉取该任务的 id/项目/状态，写齐 focusId(uuid)/focusProjectId/focusTab/activeTab/search
  * 五个会话键后切到任务页；任务页据此先切到所属项目、清过滤、切 tab，再滚动高亮目标行。
@@ -85,22 +141,10 @@ export async function focusTaskByNo(
   try {
     const t = await api.get<Task>(`/tasks/by-no/${encodeURIComponent(taskNo)}`);
     if (!t || !t.id) throw new Error('empty');
-    const tab = t.status === 'done' ? 'done' : 'todo';
-    // T01562：外部跳转若要求展开抽屉，写入 focusDrawerId 供任务页自动唤起（行内展开仍为快速预览）
-    const drawerTab: TaskDetailTab | '' = !open ? '' : open === 'notice' ? drawerTabForNotice(t) : open === true ? 'desc' : open;
-    setSessionState('tasks.focusId', t.id);
-    setSessionState('tasks.focusProjectId', t.project_id ?? '');
-    setSessionState('tasks.focusTab', tab);
-    setSessionState('tasks.activeTab', tab); // tab 与目标行所在列表对齐，保证该行渲染可见
-    setSessionState('tasks.search', taskNo);
-    if (drawerTab) {
-      setSessionState('tasks.focusDrawerId', t.id);
-      setSessionState('tasks.focusDrawerTab', drawerTab);
-    }
-    dispatchFocus({ id: t.id, taskNo, tab, projectId: t.project_id ?? '', drawerTab, task: t });
+    applyFocus(t, taskNo, open);
   } catch {
     setSessionState('tasks.search', taskNo);
     dispatchFocus({ taskNo });
+    navigateToTasks();
   }
-  navigateToTasks();
 }

@@ -208,6 +208,10 @@ function Shell() {
         /* T00477：菜单下拉/过滤条件悬浮展示（默认淡化，悬浮或聚焦完全显示） */
         .toolbar-reveal { opacity: .35; transition: opacity .18s ease; }
         .toolbar-reveal:hover, .toolbar-reveal:focus-within { opacity: 1; }
+        /* T01577：时间线节点卡上的可操作角标（跳转关联待办）——hover/键盘焦点都要有可见反馈 */
+        .tl-chip { transition: filter .12s ease, box-shadow .12s ease; }
+        .tl-chip:hover { filter: brightness(.94); }
+        .tl-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
         .abtn:hover, .ghost:hover { background: var(--surface-2); }`}</style>
 
       {/* 菜单行：置顶，导航项居左；后端连接状态用 margin-left:auto 推到右端且垂直居中，与菜单项同行 */}

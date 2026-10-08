@@ -14,6 +14,7 @@ import { buildWorkdayCtx } from '../utils/workday'; // T01059 后续：甘特拖
 import { deltaDaysFromPx, ganttDragResult, newGanttDrag, type GanttDragMode, type GanttDragState } from '../utils/ganttDrag'; // T01059 后续
 import { PlanTimeline, type TlGranularity, type TlPlan } from '../components/PlanTimeline'; // T01564：纵向时间轴
 import { SlideOver } from '../components/SlideOver'; // T01565：时间线节点详情复用 FR-3.2 抽屉基元
+import { focusTaskById } from '../ui/focusTask'; // T01577：时间线节点跳转关联待办，复用跨视图定位公共 helper
 
 /** 项目计划页（T00431，菜单位于周报前）：串行瀑布时间线 + Excel 导入导出 + 待办联动。 */
 
@@ -409,7 +410,11 @@ function PlanTimelineCollapseAll({ allCollapsed, phaseCount, onToggle }: {
 
 /** T01565：时间线节点详情（SlideOver 正文）。只读展示——编辑仍走列表/甘特既有入口，
  *  本抽屉不复制一套编辑逻辑（S3776 抽取，保持 renderTimeline 只做编排）。 */
-function PlanTimelineDetail({ plan }: { readonly plan: TlPlan }) {
+function PlanTimelineDetail({ plan, onJump }: {
+  readonly plan: TlPlan;
+  /** T01577：点击「已关联待办」跳到该待办并打开抽屉；缺省时保持纯文本（组件仍可在只读场景复用） */
+  readonly onJump?: (p: TlPlan) => void;
+}) {
   const badge = (children: React.ReactNode, color?: string) => (
     <span style={{ fontSize: 11, padding: '1px 7px', borderRadius: 10, border: '1px solid var(--border-strong)', color: color ?? 'var(--text-muted)', whiteSpace: 'nowrap' }}>{children}</span>
   );
@@ -433,9 +438,20 @@ function PlanTimelineDetail({ plan }: { readonly plan: TlPlan }) {
           <div style={{ whiteSpace: 'pre-wrap', marginTop: 4, color: 'var(--text-muted)' }}>{plan.description}</div>
         </div>
       )}
-      {plan.linked_task_id && (
+      {plan.linked_task_id && (onJump ? (
+        // T01577：抽屉里的关联待办改为可点击（键盘可达 + hover/焦点态），点击即切到待办页并打开该任务抽屉
+        <button type="button" data-tl="drawer-jump-linked" className="tl-chip"
+          onClick={() => onJump(plan)}
+          aria-label={`打开关联待办：${plan.linked_task_title || plan.title}`}
+          title="跳转到该计划关联的待办 — 切到待办页并打开详情抽屉"
+          style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 4,
+            padding: '3px 9px', fontSize: 12, border: '1px solid var(--success)', borderRadius: 6,
+            background: 'var(--card-bg)', color: 'var(--success)', cursor: 'pointer' }}>
+          ✓ 已关联待办{plan.linked_task_title ? `：${plan.linked_task_title}` : ''} <span aria-hidden="true">↗</span>
+        </button>
+      ) : (
         <div style={{ color: 'var(--success)' }}>✓ 已关联待办{plan.linked_task_title ? `：${plan.linked_task_title}` : ''}</div>
-      )}
+      ))}
       <div style={{ fontSize: 11, color: 'var(--text-muted)', borderTop: '1px solid var(--border)', paddingTop: 8 }}>
         详情为只读快照；要改排期/进度请回列表或甘特视图编辑。
       </div>
@@ -1838,6 +1854,15 @@ export function PlanPage() {
         return next;
       });
     };
+    /** T01577：时间线节点 → 关联待办的一键跳转（时间线本身仍只读，跳转是本视图唯一新增交互）。
+     *  先关时间线抽屉，再按 linked_task_id 定位并打开待办详情抽屉（'desc' 沿用 T01562 外部跳转子页口径）；
+     *  解析不到（待办已删/归档/网络异常）给出可见提示，绝不静默。 */
+    const jumpToLinked = (p: TlPlan): void => {
+      setSelectedPlan(null);
+      void focusTaskById(p.linked_task_id, projectId, 'desc', p.linked_task_title).then((hit) => {
+        if (!hit) flash(`未找到对应待办：${p.linked_task_title || p.title}（可能已删除或归档）`);
+      });
+    };
     return (
       <div style={{ marginTop: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
@@ -1850,10 +1875,10 @@ export function PlanPage() {
           </div>
         </div>
         <PlanTimeline plans={plans} granularity={tlGranularity} onSelect={(p) => setSelectedPlan(p)}
-          collapsedMs={collapsedMs} onToggleMsCollapse={toggleMsCollapsed} />
+          collapsedMs={collapsedMs} onToggleMsCollapse={toggleMsCollapsed} onJumpToLinked={jumpToLinked} />
         {selectedPlan && (
           <SlideOver open title={selectedPlan.title} onClose={() => setSelectedPlan(null)} width={420}>
-            <PlanTimelineDetail plan={selectedPlan} />
+            <PlanTimelineDetail plan={selectedPlan} onJump={jumpToLinked} />
           </SlideOver>
         )}
       </div>
