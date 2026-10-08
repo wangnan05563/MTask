@@ -1,0 +1,240 @@
+/**
+ * T01562 / T01563（FR-3.2 真抽屉）：任务详情抽屉内容（完整操作台）。
+ * 与现有「行内展开」并存——行内=列表内快速预览，本抽屉=完整查看 + 编辑。
+ * 自包含：用底层原语（MarkdownContent / TaskEventTimeline / api.patch）与自身编辑态，
+ * 不耦合 TasksPage 的逐行展开状态，降低回归风险（R2/R3）。
+ * 标签页：描述 / 处理结果 / AI 摘要 / 时间线 / 关联计划。
+ */
+import { useEffect, useState } from 'react';
+import { api, imageUrl, type Task } from '../api/client';
+import { MarkdownContent } from '../ui/Markdown';
+import { TaskEventTimeline } from '../components/TaskEventTimeline';
+import { SlideOver } from './SlideOver';
+import { ClipboardList, FileText, History, Link2, Pencil, Save, Sparkles, X } from 'lucide-react';
+
+type Tab = 'desc' | 'result' | 'summary' | 'timeline' | 'plans';
+
+const PRIO_LABEL: Record<string, string> = { urgent: '紧急', high: '高', normal: '普通', low: '低' };
+const STATUS_LABEL: Record<string, string> = { todo: '待办', done: '已完成' };
+
+function Badge({ children, color }: { readonly children: React.ReactNode; readonly color?: string }) {
+  return (
+    <span style={{ fontSize: 11, padding: '1px 7px', borderRadius: 10, border: '1px solid var(--border-strong)', color: color ?? 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+      {children}
+    </span>
+  );
+}
+
+export function TaskDetailDrawer({ task, projectId, onClose, onChanged }: {
+  readonly task: Task;
+  readonly projectId: string;
+  readonly onClose: () => void;
+  readonly onChanged: () => void;
+}) {
+  const [tab, setTab] = useState<Tab>('desc');
+  const [editing, setEditing] = useState<null | 'desc' | 'result'>(null);
+  const [busy, setBusy] = useState(false);
+  // 本地镜像可编辑字段，避免父级刷新覆盖未保存草稿（抽屉按 task.id 作 key，切换任务即重挂载）
+  const [desc, setDesc] = useState(task.description);
+  const [descDraft, setDescDraft] = useState(task.description);
+  const [result, setResult] = useState(task.handle_result ?? '');
+  const [resultDraft, setResultDraft] = useState(task.handle_result ?? '');
+  const [summary] = useState(task.ai_summary ?? '');
+  const [plans, setPlans] = useState<Array<{ id: string; title: string; kind: string; start_date: string }>>([]);
+  const [plansLoading, setPlansLoading] = useState(false);
+  const [previewId, setPreviewId] = useState(''); // T01563：附件放大预览（点同图收起）
+
+  useEffect(() => {
+    if (tab !== 'plans') return;
+    setPlansLoading(true);
+    api.get<Array<{ id: string; title: string; kind: string; start_date: string; linked_task_id: string | null }>>(`/plans?projectId=${projectId}`)
+      .then((ps) => setPlans(ps.filter((p) => p.linked_task_id === task.id).map((p) => ({ id: p.id, title: p.title, kind: p.kind, start_date: p.start_date }))))
+      .catch(() => setPlans([]))
+      .finally(() => setPlansLoading(false));
+  }, [tab, projectId, task.id]);
+
+  async function save(kind: 'desc' | 'result') {
+    setBusy(true);
+    try {
+      if (kind === 'desc') {
+        await api.patch(`/tasks/${task.id}`, { description: descDraft });
+        setDesc(descDraft);
+      } else {
+        await api.patch(`/tasks/${task.id}`, { handleResult: resultDraft });
+        setResult(resultDraft);
+      }
+      onChanged();
+      setEditing(null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const tabs: Array<{ key: Tab; label: string; icon: React.ReactNode }> = [
+    { key: 'desc', label: '描述', icon: <FileText size={13} /> },
+    { key: 'result', label: '处理结果', icon: <ClipboardList size={13} /> },
+    { key: 'summary', label: 'AI 摘要', icon: <Sparkles size={13} /> },
+    { key: 'timeline', label: '时间线', icon: <History size={13} /> },
+    { key: 'plans', label: '关联计划', icon: <Link2 size={13} /> },
+  ];
+
+  return (
+    <SlideOver open title={task.title} onClose={onClose} width={480}>
+      {/* 头部徽标 */}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+        <Badge color={task.status === 'done' ? 'var(--success)' : 'var(--accent)'}>{STATUS_LABEL[task.status] ?? task.status}</Badge>
+        <Badge>{PRIO_LABEL[task.priority] ?? task.priority}</Badge>
+        {task.verified && <Badge color="var(--success)">已验证</Badge>}
+        {task.pinned && <Badge color="var(--accent)">📌 置顶</Badge>}
+        {task.task_no && <Badge>{task.task_no}</Badge>}
+      </div>
+
+      {/* 标签页 */}
+      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--border)', marginBottom: 12, flexWrap: 'wrap' }}>
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            aria-label={t.label}
+            className="tbtn-anim"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 9px', fontSize: 12, cursor: 'pointer',
+              border: 'none', borderBottom: tab === t.key ? '2px solid var(--accent)' : '2px solid transparent',
+              background: 'transparent', color: tab === t.key ? 'var(--accent)' : 'var(--text)', fontWeight: tab === t.key ? 600 : 400,
+            }}
+          >
+            {t.icon}{t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* 描述 */}
+      {tab === 'desc' && (
+        <div>
+          {editing === 'desc' ? (
+            <div>
+              <textarea
+                value={descDraft}
+                onChange={(e) => setDescDraft(e.target.value)}
+                rows={10}
+                aria-label="编辑任务描述"
+                style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 13, resize: 'vertical' }}
+              />
+              <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end' }}>
+                <button onClick={() => { setDescDraft(desc); setEditing(null); }} disabled={busy} className="tbtn-anim" style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>
+                  <X size={12} style={{ verticalAlign: '-2px' }} /> 取消
+                </button>
+                <button onClick={() => void save('desc')} disabled={busy} className="tbtn-anim" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: busy ? 'default' : 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12 }}>
+                  {busy ? '保存中…' : <><Save size={12} /> 保存</>}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div>
+              {desc ? <MarkdownContent content={desc} /> : <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>（无描述）</div>}
+              <button onClick={() => { setDescDraft(desc); setEditing('desc'); }} className="tbtn-anim" style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>
+                <Pencil size={12} /> 编辑描述
+              </button>
+            </div>
+          )}
+          {task.images.length > 0 && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>附件（{task.images.length}）</div>
+              {/* T01563：缩略图点击放大——沿用列表内 previewId  toggle 范式（点同图收起），大图仍附复制无关的纯预览 */}
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {task.images.map((img) => (
+                  <button
+                    key={img.id}
+                    type="button"
+                    onClick={() => setPreviewId(previewId === img.id ? '' : img.id)}
+                    title="放大预览 — 点击放大或收起截图"
+                    aria-label="任务截图：点击放大预览"
+                    style={{ padding: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'block', lineHeight: 0 }}
+                  >
+                    <img
+                      src={imageUrl(img.id)}
+                      alt="任务截图"
+                      style={{
+                        // 放大态按宽度铺满抽屉、高度自适应（height:'100%' 在 auto 高度父级下会退回原始尺寸，小图放大无效）
+                        ...(previewId === img.id
+                          ? { width: '100%', height: 'auto', maxWidth: '100%', objectFit: 'contain' as const }
+                          : { height: 84, width: 'auto', maxWidth: '100%', objectFit: 'contain' as const }),
+                        borderRadius: 8,
+                        border: previewId === img.id ? '2px solid var(--accent)' : '1px solid var(--border)',
+                        display: 'block',
+                      }}
+                    />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 处理结果 */}
+      {tab === 'result' && (
+        <div>
+          {editing === 'result' ? (
+            <div>
+              <textarea
+                value={resultDraft}
+                onChange={(e) => setResultDraft(e.target.value)}
+                rows={10}
+                aria-label="编辑处理结果"
+                style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 13, resize: 'vertical' }}
+              />
+              <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end' }}>
+                <button onClick={() => { setResultDraft(result); setEditing(null); }} disabled={busy} className="tbtn-anim" style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>
+                  <X size={12} style={{ verticalAlign: '-2px' }} /> 取消
+                </button>
+                <button onClick={() => void save('result')} disabled={busy} className="tbtn-anim" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: busy ? 'default' : 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12 }}>
+                  {busy ? '保存中…' : <><Save size={12} /> 保存</>}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div>
+              {result ? <MarkdownContent content={result} /> : <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>（暂无处理结果，AI 分析结论将回写于此）</div>}
+              <button onClick={() => { setResultDraft(result); setEditing('result'); }} className="tbtn-anim" style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>
+                <Pencil size={12} /> 编辑 / 回传结果
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* AI 摘要 */}
+      {tab === 'summary' && (
+        <div>
+          {summary ? <MarkdownContent content={summary} /> : <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>（暂无 AI 梳理摘要）</div>}
+        </div>
+      )}
+
+      {/* 时间线 */}
+      {tab === 'timeline' && <TaskEventTimeline taskId={task.id} />}
+
+      {/* 关联计划 */}
+      {tab === 'plans' && (
+        <div>
+          {plansLoading ? (
+            <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>加载关联计划…</div>
+          ) : plans.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {plans.map((p) => (
+                <div key={p.id} style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, fontSize: 13 }}>
+                  <div style={{ fontWeight: 600 }}>{p.title}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                    {p.kind === 'milestone' ? '阶段里程碑' : '计划任务'} · {p.start_date || '未排期'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>（该任务未关联任何计划）</div>
+          )}
+        </div>
+      )}
+    </SlideOver>
+  );
+}

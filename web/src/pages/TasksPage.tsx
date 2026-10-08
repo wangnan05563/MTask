@@ -6,11 +6,12 @@ import { beautifyStore } from '../stores/beautifyStore';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown';
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
+import { TaskDetailDrawer } from '../components/TaskDetailDrawer'; // T01562：真抽屉详情
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { useBusy, setBusy } from '../ui/busy';
-import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, ChevronDown, ChevronUp, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, Pin, Plus, Save, ScanSearch, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
+import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, ChevronDown, ChevronUp, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, PanelRightOpen, Pin, Plus, Save, ScanSearch, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00771：工作空间选择器（项目上下文根路径）
 import { WorkspaceSearchPanel } from '../ui/WorkspaceSearchPanel'; // T00786：工作空间全文检索面板（partial 提示）
@@ -187,6 +188,9 @@ export function TasksPage() {
   // T00836 二轮：聚焦任务所属项目——任务可能属于非当前 activeProject 的项目，
   // 若不下发此 id，切换列表后会因「目标行不在当前项目列表」而定位失败。
   const [focusProjectId, setFocusProjectId] = useSessionState<string>('tasks.focusProjectId', '');
+  // T01562：真抽屉详情——当前打开抽屉的任务（按 task.id 作 key，切换任务即重挂载）；focusDrawerId 由 focusTaskByNo 写入
+  const [drawerTask, setDrawerTask] = useState<Task | null>(null);
+  const [focusDrawerId, setFocusDrawerId] = useSessionState<string>('tasks.focusDrawerId', '');
   // T00757：列表 tab——待办/已完成/搁置三个列表标题并排为 tab，仅渲染激活 tab 的列表（会话级保持）
   const [activeTab, setActiveTab] = useSessionState<ActiveTab>('tasks.activeTab', 'todo');
   // 主列表分页：后端按页拉取 + 加载更多；hasMore=true 表示当前页刚好满页、可能还有更多
@@ -478,6 +482,22 @@ export function TasksPage() {
     locateTaskRow(focusTaskId);
     // 依赖 待办/已完成/activeTab/activeProject/filters：目标列表渲染后再定位；仅定位一次后即清空
   }, [focusTaskId, todo, done, activeTab, activeProject, focusProjectId, catFilter, priorityFilter]);
+
+  // T01562：外部跳转（focusTaskByNo openDrawer=true）写入 focusDrawerId 后，自动唤起右侧真抽屉；
+  // 与行内展开（快速预览）并存，抽屉=完整操作台。解析到任务即唤起并清空会话键。
+  // 列表尚未就绪时保留会话键（外部跳转后任务数据晚于会话键到达，过早清空会导致抽屉不弹），
+  // 仅在「已加载到数据却找不到该任务」（已删/不可见）时清空，避免会话键长期滞留。
+  useEffect(() => {
+    if (!focusDrawerId) return;
+    const t = [...todo, ...done, ...shelvedTasks].find((x) => x.id === focusDrawerId);
+    if (t) {
+      setDrawerTask(t);
+      setFocusDrawerId('');
+      return;
+    }
+    if (todo.length + done.length + shelvedTasks.length > 0) setFocusDrawerId('');
+  }, [focusDrawerId, todo, done, shelvedTasks]);
+
   // T00433：MCP 回传 / 队列执行 / 其他窗口改任务状态时，前端无感知——轻量轮询对比签名，有变化才刷新。
   // 保护条件：任何未保存草稿或 AI 操作进行中时跳过本轮，避免打断用户编辑（变化留待下一轮干净窗口）。
   // T00457：批量操作——多选模式 + 选中任务集合（跨待办/已完成统一 id 集合）
@@ -1987,6 +2007,8 @@ export function TasksPage() {
           </>
         )}
         {includeRename && <button onClick={() => toggleTitleEdit(t)} title={titleEditing ? '取消 — 取消重命名' : '改名 — 重命名该任务标题'} aria-label={titleEditing ? '取消重命名' : '重命名该任务标题'} className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{titleEditing ? <X size={13} /> : <SquarePen size={13} />}</button>}
+        {/* T01562：真抽屉——右侧滑入完整操作台（描述/结果/摘要/时间线/关联计划），与行内展开互补 */}
+        <button onClick={() => setDrawerTask(t)} title="展开详情抽屉 — 在右侧抽屉中查看并编辑任务完整详情" aria-label="展开详情抽屉 — 在右侧抽屉中查看并编辑任务完整详情" className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><PanelRightOpen size={13} /></button>
       </>
     );
   }
@@ -2450,7 +2472,7 @@ export function TasksPage() {
     const editing = titleEditing || descEditing ? ' task-editing' : '';
     const flush = refreshFlash && t.updated_at && Date.parse(t.updated_at) >= refreshFlash ? ' flush' : '';
     const press = pressId === t.id ? ' item-pressing' : '';
-    return `task-item cv-auto${editing}${dragCls}${flush}${press}`;
+    return `task-item cv-auto${editing}${dragCls}${flush}${press}${drawerTask?.id === t.id ? ' task-drawer-open' : ''}`;
   }
 
   /** M6-6.1：任务行 style 预计算（避免 JSX 内联三元） */
@@ -3342,7 +3364,9 @@ export function TasksPage() {
         /* T00474：筛选条件悬浮展示——默认淡化降权重，工具栏悬浮/键盘聚焦时完全显示 */
         /* T00487：悬浮显示替代灰显——默认完全隐藏（占位不抖动），宿主悬浮/键盘聚焦时 200ms 平滑显示 */
         .task-item .title-op { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
-        .task-item:hover .title-op, .task-item:focus-within .title-op { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
+        /* T01562：抽屉打开时保持该行操作区显形——关闭抽屉后焦点要归还给触发按钮，
+           而 visibility:hidden 的元素无法接收 focus()，否则键盘用户关闭后焦点掉回 body */
+        .task-item:hover .title-op, .task-item:focus-within .title-op, .task-item.task-drawer-open .title-op { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
         .task-op {
           opacity: 0;
           visibility: hidden;
@@ -3350,6 +3374,7 @@ export function TasksPage() {
         }
         .task-item:hover .task-op,
         .task-item:focus-within .task-op,
+        .task-item.task-drawer-open .task-op,
         .task-item.task-editing .task-op {
           opacity: 1;
           visibility: visible;
@@ -3364,6 +3389,7 @@ export function TasksPage() {
         }
         .task-item:hover .task-toolbar,
         .task-item:focus-within .task-toolbar,
+        .task-item.task-drawer-open .task-toolbar,
         .task-item.task-editing .task-toolbar {
           max-height: 96px;
           margin-top: 2px;
@@ -3495,6 +3521,17 @@ export function TasksPage() {
           project={projects.find((p) => p.id === activeProject) ?? null}
           flash={flash}
           onClose={() => setWsSearchOpen(false)}
+        />
+      )}
+
+      {/* T01562：真抽屉详情——自包含操作台（描述/结果/摘要/时间线/关联计划），与行内展开并存；
+          按 task.id 作 key 重挂载，切换任务即重置编辑态（降低与逐行展开态的耦合回归风险） */}
+      {drawerTask && (
+        <TaskDetailDrawer
+          task={drawerTask}
+          projectId={activeProject}
+          onClose={() => setDrawerTask(null)}
+          onChanged={() => void loadTasks(activeProject)}
         />
       )}
     </section>

@@ -33,7 +33,7 @@ interface FocusableTask {
  * 五个会话键后切到任务页；任务页据此先切到所属项目、清过滤、切 tab，再滚动高亮目标行。
  * 解析失败（任务已删/网络异常）时退化为「仅带搜索编号跳转」，至少让用户落到任务页可自行检索。
  */
-export async function focusTaskByNo(taskNo: string | null | undefined): Promise<void> {
+export async function focusTaskByNo(taskNo: string | null | undefined, openDrawer = false): Promise<void> {
   if (!taskNo) { navigateToTasks(); return; }
   try {
     const t = await api.get<FocusableTask>(`/tasks/by-no/${encodeURIComponent(taskNo)}`);
@@ -44,6 +44,8 @@ export async function focusTaskByNo(taskNo: string | null | undefined): Promise<
     setSessionState('tasks.focusTab', tab);
     setSessionState('tasks.activeTab', tab); // tab 与目标行所在列表对齐，保证该行渲染可见
     setSessionState('tasks.search', taskNo);
+    // T01562：外部跳转若要求展开抽屉，写入 focusDrawerId 供任务页自动唤起（行内展开仍为快速预览）
+    if (openDrawer) setSessionState('tasks.focusDrawerId', t.id);
   } catch {
     setSessionState('tasks.search', taskNo);
   }
