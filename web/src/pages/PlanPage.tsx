@@ -12,6 +12,7 @@ import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
 import { usePersistentState, useSessionState } from '../ui/session';
 import { buildWorkdayCtx } from '../utils/workday'; // T01059 后续：甘特拖动
 import { deltaDaysFromPx, ganttDragResult, newGanttDrag, type GanttDragMode, type GanttDragState } from '../utils/ganttDrag'; // T01059 后续
+import { PlanTimeline } from '../components/PlanTimeline'; // T01564：纵向时间轴
 
 /** 项目计划页（T00431，菜单位于周报前）：串行瀑布时间线 + Excel 导入导出 + 待办联动。 */
 
@@ -340,12 +341,13 @@ function PlanMultiToggle({ planMulti, setPlanMulti, setPlanSelIds }: {
 
 /** 工具栏：列表/甘特视图切换（S3776 抽取） */
 function PlanViewModeToggle({ viewMode, setViewMode }: {
-  readonly viewMode: 'list' | 'gantt'; readonly setViewMode: React.Dispatch<React.SetStateAction<'list' | 'gantt'>>;
+  readonly viewMode: 'list' | 'gantt' | 'timeline'; readonly setViewMode: React.Dispatch<React.SetStateAction<'list' | 'gantt' | 'timeline'>>;
 }) {
   return (
     <fieldset style={{ display: 'inline-flex', margin: 0, padding: 0, minWidth: 0, border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} aria-label="视图切换">
       <button onClick={() => setViewMode('list')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', cursor: 'pointer', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图">列表</button>
       <button onClick={() => setViewMode('gantt')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: viewMode === 'gantt' ? 'var(--accent)' : 'transparent', color: viewMode === 'gantt' ? 'var(--accent-text)' : 'var(--text)' }} title="甘特图视图 — 按串行瀑布时间线可视化">甘特</button>
+      <button onClick={() => setViewMode('timeline')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: viewMode === 'timeline' ? 'var(--accent)' : 'transparent', color: viewMode === 'timeline' ? 'var(--accent-text)' : 'var(--text)' }} title="时间线视图 — 纵向里程碑脉络，与甘特（横向排期+依赖线+关键路径）互补">时间线</button>
     </fieldset>
   );
 }
@@ -1106,7 +1108,7 @@ export function PlanPage() {
   const [collapsedMs, setCollapsedMs] = useSessionState<Record<string, boolean>>('plan.collapsedMs', {}); // T00570：里程碑收起态切页保持
   const [depSel, setDepSel] = useState<Record<string, 'serial' | 'parallel'>>({});
   // T00449：视图模式（列表/甘特）会话级保持
-  const [viewMode, setViewMode] = useSessionState<'list' | 'gantt'>('plan.viewMode', 'list');
+  const [viewMode, setViewMode] = useSessionState<'list' | 'gantt' | 'timeline'>('plan.viewMode', 'list');
 
   // ---------- T01059 后续：甘特条拖动（move / 左右边缘 resize → 联动 start_date 与 duration_days）----------
   // 拖动期间只改本地预览态，松手才落库（走既有 updatePlan → PATCH /plans/:id，服务端按工作日历重算 end_date
@@ -1725,6 +1727,24 @@ export function PlanPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 拖动的原点数据都在 ref 里，回调无需随预览态重建
   }, [ganttDragKey]);
 
+  /** T01564：时间线视图——纵向里程碑脉络，与甘特互补（非替代）。
+   *  数据就是甘特同一份 plans（plan_tasks），本模式只读渲染；
+   *  粒度缩放 / 阶段分组 / 节点详情属 T01565。 */
+  function renderTimeline() {
+    return (
+      <div style={{ marginTop: 10 }}>
+        <PlanTimeline plans={plans} />
+      </div>
+    );
+  }
+
+  /** T01564：非列表模式的视图分派。
+   *  用 if/else 而非 JSX 里的三层嵌套三元（S3358：三元不应嵌套）。 */
+  function renderNonListView() {
+    if (viewMode === 'timeline') return renderTimeline();
+    return renderGantt();
+  }
+
   /** 甘特主视图：横向日轴 + 串行任务条 + 周末/节假日底纹 + 今日线 + 进度内嵌 */
   function renderGantt() {
     if (plans.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 12, padding: 16 }}>暂无计划任务，先创建或导入。</div>;
@@ -2165,7 +2185,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
           }} />
       )}
 
-      {viewMode === 'gantt' ? renderGantt() : (
+      {/* T01564：三模式分派——timeline / gantt 走视图函数，list 仍是下方表格（原为两层嵌套三元，S3358） */}
+      {viewMode === 'list' ? (
       <table className="plan-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
         <thead>
           <tr style={{ textAlign: 'left', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-strong)' }}>
@@ -2236,7 +2257,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
           )}
         </tbody>
       </table>
-      )}
+      ) : renderNonListView()}
 
       {/* T00438 AI 导入弹窗：模型选择 + 文件上传 → AI 解析草稿表格（可编辑/勾选）→ 批量保存 */}
       {/* T00442 节假日多功能弹窗：手动维护 / 联网导入法定节假日 / 万年历 */}
