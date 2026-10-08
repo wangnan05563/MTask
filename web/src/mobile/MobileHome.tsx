@@ -282,7 +282,13 @@ export function MobileHome({ onQuickNote, notify }: Props) {
         </div>
       </PullRefresh>
       {/* T01388：悬浮「+」FAB 已移除——底栏中央「随手记」Plus 是唯一入口，避免同屏双加号 */}
-      <MobileTaskDetail task={activeDetail} categories={categories} onClose={() => setDetailTask(null)} onChanged={() => void load(projectId)} notify={notify} />
+      {/* T01563：详情半屏改为「条件渲染 + task.id 作 key」。
+       *  原先常驻挂载（仅靠 task=null 提前 return）会让编辑态跨任务残留——实测：在 Alpha 里点「编辑描述」
+       *  输入草稿后 ESC 关闭，再打开 Beta 仍停在编辑器且草稿是 Alpha 的内容，Beta 描述被顶掉。
+       *  条件渲染负责关闭即卸载，key 负责「打开中切换任务」也重挂载（与桌面抽屉同口径）。 */}
+      {activeDetail && (
+        <MobileTaskDetail key={activeDetail.id} task={activeDetail} categories={categories} onClose={() => setDetailTask(null)} onChanged={() => void load(projectId)} notify={notify} />
+      )}
     </div>
   );
 }
