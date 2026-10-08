@@ -28,6 +28,8 @@ export function MobileTaskDetail({ task, categories, onClose, onChanged, notify 
   const [descDraft, setDescDraft] = useState('');
   const [resultDraft, setResultDraft] = useState('');
   const [saveBusy, setSaveBusy] = useState(false);
+  // T01572：附件点击放大态（与桌面 TaskDetailDrawer 同口径——previewId 记录当前放大的图，点同图收起）
+  const [previewId, setPreviewId] = useState('');
   if (!task) return null;
 
   const catName = categories.find((c) => c.id === task.category_id)?.name ?? '';
@@ -149,10 +151,35 @@ export function MobileTaskDetail({ task, categories, onClose, onChanged, notify 
       <TaskEventTimeline taskId={task.id} />
       {task.images.length > 0 && (
         <div style={{ marginTop: 10 }}>
-          <div style={labelStyle}>附件（{task.images.length}）</div>
+          <div style={labelStyle}>附件（{task.images.length}）{previewId ? ' · 已放大，再点同一张收起' : ''}</div>
+          {/* T01572：补齐与桌面抽屉的最后一处不一致——缩略图点击放大（原位切换尺寸，不用 window.open / showModal，
+              那两者在 Electron 渲染层不可用且会盖住半屏）。放大态 width:100% 撑满半屏内容区、height:auto 保原比例，
+              仍受 HalfSheet 的 maxHeight 62% + overflowY:auto 约束（可纵向滚动，不撑破视口、不横向溢出）。 */}
           <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
             {task.images.map((img) => (
-              <img key={img.id} src={imageUrl(img.id)} alt="任务截图" style={{ height: 88, borderRadius: 8, border: '1px solid var(--border)' }} />
+              <button
+                key={img.id}
+                type="button"
+                onClick={() => setPreviewId((p) => (p === img.id ? '' : img.id))}
+                title="放大预览 — 点击放大或收起截图"
+                aria-label={previewId === img.id ? '收起截图：点击收起放大预览' : '任务截图：点击放大预览'}
+                style={{ padding: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'block', lineHeight: 0, maxWidth: '100%' }}
+              >
+                <img
+                  src={imageUrl(img.id)}
+                  alt="任务截图"
+                  style={{
+                    // 放大态：撑满内容区、高度自适应原比例（height:'100%' 在 auto 高度父级下会退回原始尺寸）
+                    ...(previewId === img.id
+                      ? { width: '100%', height: 'auto', maxWidth: '100%', objectFit: 'contain' as const }
+                      : { height: 88, width: 'auto', maxWidth: '100%', objectFit: 'contain' as const }),
+                    borderRadius: 8,
+                    border: previewId === img.id ? '2px solid var(--accent)' : '1px solid var(--border)',
+                    display: 'block',
+                    cursor: 'zoom-in',
+                  }}
+                />
+              </button>
             ))}
           </div>
         </div>
