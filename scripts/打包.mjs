@@ -14,7 +14,8 @@
  *  [4] server build（tsc -p）
  *  [5] web build（vite build）
  *  [6] 版本号递增（bump-version.js）→ 切 Electron ABI → electron-builder --win
- *      → 切回 dev ABI → 尝试清理 win-unpacked
+ *      （带 -c.buildVersion=<version> 保住 4 段版本名，见修复4/T01569）
+ *      → 还原打包前 ABI → 尝试清理 win-unpacked
  *
  * 说明：
  *  - electron-builder 子进程统一带 CODEBUDDY_SAFE_DELETE_ENABLED=0（shim 官方逃生开关）：
@@ -87,6 +88,9 @@ const switchAbi = (mode) => {
 };
 
 log('切换 Electron ABI 并打包…');
+// 打包前记录工作区当前的原生二进制，打包后原样还原（见下方恢复段）。
+const bsNode = path.join(ROOT, 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
+const prevAbi = fs.existsSync(bsNode) ? fs.readFileSync(bsNode) : null;
 switchAbi('electron');
 
 // 输出目录兜底：release 被占用（win-unpacked 无法清理）时依次尝试 release2..9
@@ -109,10 +113,16 @@ const childEnv = {
   ELECTRON_BUILDER_BINARIES_MIRROR: process.env.ELECTRON_BUILDER_BINARIES_MIRROR ?? 'https://npmmirror.com/mirrors/electron-builder-binaries/',
 };
 run(NODE, [path.join(ROOT, 'node_modules', 'electron-builder', 'out', 'cli', 'cli.js'),
-  '--win', `--config.directories.output=${outDir}`, '--publish=never'], { env: childEnv });
+  '--win', `-c.buildVersion=${appVer}`, `--config.directories.output=${outDir}`, '--publish=never'], { env: childEnv });
 
-// 恢复 dev ABI（工作区保持 dev 可启动）
-switchAbi('dev');
+// 恢复打包前的 ABI：build/native/dev 是针对旧 Node 运行时缓存的，本地 Node 升级后直接覆盖会让
+// server/dist 直跑报 ERR_DLOPEN_FAILED（实测 Node24/ABI137 环境 require 失败），故按字节原样还原。
+if (prevAbi) {
+  fs.writeFileSync(bsNode, prevAbi);
+  console.log('[ABI] better-sqlite3 → 还原打包前工作区版本');
+} else {
+  switchAbi('dev');
+}
 
 // 清理 win-unpacked（非致命）
 try {
