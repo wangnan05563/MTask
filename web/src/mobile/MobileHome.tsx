@@ -172,6 +172,13 @@ export function MobileHome({ onQuickNote, notify }: Props) {
     return { ...base, transform: `translateX(${swipe.dx * 0.35}px)`, transition: 'none', background: bg };
   }
 
+  /** T01563：详情抽屉传入「最新快照」。
+   *  detailTask 只是打开抽屉那一刻的副本；就地编辑（描述/处理结果）保存后 load() 刷新的是 tasks，
+   *  若继续把旧副本传下去，会出现「保存成功却仍显示旧文本」。列表里没有该任务时（被搁置/完成而移出待办）
+   *  沿用副本，避免抽屉因取不到任务而闪退。 */
+  const freshDetail = detailTask ? tasks.find((t) => t.id === detailTask.id) : undefined;
+  const activeDetail = freshDetail ?? detailTask;
+
   return (
     <div style={pageStyle}>
       <header style={headerStyle}>
@@ -275,7 +282,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
         </div>
       </PullRefresh>
       {/* T01388：悬浮「+」FAB 已移除——底栏中央「随手记」Plus 是唯一入口，避免同屏双加号 */}
-      <MobileTaskDetail task={detailTask} categories={categories} onClose={() => setDetailTask(null)} onChanged={() => void load(projectId)} notify={notify} />
+      <MobileTaskDetail task={activeDetail} categories={categories} onClose={() => setDetailTask(null)} onChanged={() => void load(projectId)} notify={notify} />
     </div>
   );
 }
