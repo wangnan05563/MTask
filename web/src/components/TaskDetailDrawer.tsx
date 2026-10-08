@@ -16,6 +16,12 @@ import { ClipboardList, FileText, History, Link2, Pencil, Save, Sparkles, X } fr
 export type TaskDetailTab = 'desc' | 'result' | 'summary' | 'timeline' | 'plans';
 type Tab = TaskDetailTab;
 
+/**
+ * T01570：抽屉保存后向父级回报的「定点补丁」——只带本次真正改写的字段。
+ * 父页据此把新值就地合并进列表与抽屉自身，行内区块即时同步，不必再靠整表重载才看到变化。
+ */
+export type TaskPatch = Partial<Pick<Task, 'description' | 'handle_result'>>;
+
 const PRIO_LABEL: Record<string, string> = { urgent: '紧急', high: '高', normal: '普通', low: '低' };
 const STATUS_LABEL: Record<string, string> = { todo: '待办', done: '已完成' };
 
@@ -33,7 +39,7 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
   /** T01568：外部跳转指定的默认落位标签页（缺省 desc）——抽屉按 task.id 重挂载，故仅取初始值 */
   readonly initialTab?: TaskDetailTab;
   readonly onClose: () => void;
-  readonly onChanged: () => void;
+  readonly onChanged: (patch: TaskPatch) => void;
 }) {
   const [tab, setTab] = useState<Tab>(initialTab ?? 'desc');
   const [editing, setEditing] = useState<null | 'desc' | 'result'>(null);
@@ -54,6 +60,21 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
     if (initialTab) setTab(initialTab);
   }, [initialTab]);
 
+  // T01570：两套查看态互通（行内 → 抽屉方向）——行内编辑保存 / MCP 回传经列表刷新把新快照带进来后，
+  // 非编辑态跟随 props 更新展示镜像；正处于编辑态（有未保存草稿）时不打断，避免吞掉用户正在敲的字。
+  // 抽屉不再因 props 变化重挂载（key=task.id 稳定），故必须显式同步，否则关抽屉重开前一直是旧文本。
+  useEffect(() => {
+    if (editing === 'desc') return;
+    setDesc(task.description);
+    setDescDraft(task.description);
+  }, [task.description, editing]);
+  useEffect(() => {
+    if (editing === 'result') return;
+    const next = task.handle_result ?? '';
+    setResult(next);
+    setResultDraft(next);
+  }, [task.handle_result, editing]);
+
   useEffect(() => {
     if (tab !== 'plans') return;
     setPlansLoading(true);
@@ -66,14 +87,18 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
   async function save(kind: 'desc' | 'result') {
     setBusy(true);
     try {
+      // T01570：回报本次改写的字段（定点补丁），父页据此即时同步行内对应区块
+      let patch: TaskPatch;
       if (kind === 'desc') {
         await api.patch(`/tasks/${task.id}`, { description: descDraft });
         setDesc(descDraft);
+        patch = { description: descDraft };
       } else {
         await api.patch(`/tasks/${task.id}`, { handleResult: resultDraft });
         setResult(resultDraft);
+        patch = { handle_result: resultDraft };
       }
-      onChanged();
+      onChanged(patch);
       setEditing(null);
     } finally {
       setBusy(false);

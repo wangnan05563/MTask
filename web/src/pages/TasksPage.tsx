@@ -6,7 +6,7 @@ import { beautifyStore } from '../stores/beautifyStore';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown';
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
-import { TaskDetailDrawer, type TaskDetailTab } from '../components/TaskDetailDrawer'; // T01562：真抽屉详情
+import { TaskDetailDrawer, type TaskDetailTab, type TaskPatch } from '../components/TaskDetailDrawer'; // T01562：真抽屉详情
 import type { FocusTaskIntent } from '../ui/focusTask'; // T01568：外部跳转定位意图（通知/铃铛/就绪条）
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
@@ -341,12 +341,23 @@ export function TasksPage() {
     setTodo((prev) => (replace ? nextTodo : [...prev, ...nextTodo]));
     setDone((prev) => (replace ? nextDone : [...prev, ...nextDone]));
     setHasMore(list.length === PAGE_SIZE);
+    // T01570：两套查看态共用同一份数据快照——整表刷新后把抽屉持有的任务对象换成新快照，
+    // 否则行内编辑保存 / MCP 回传后，已开着的抽屉仍是打开那一刻的旧对象（要关开才更新），
+    // 用户在旧文本上再保存就会覆盖掉刚写入的新内容（丢更新）。
+    setDrawerTask((cur) => {
+      if (!cur) return cur;
+      return nextTodo.find((x) => x.id === cur.id) ?? nextDone.find((x) => x.id === cur.id) ?? cur;
+    });
     // T00719：搁置列表随同一套查询条件（关键词/分类/优先级）刷新；搁置量通常较少，直接全量拉取（无 offset）
     try {
       const ps = new URLSearchParams(p);
       ps.set('shelved', '1');
       ps.delete('offset');
-      setShelvedTasks(await api.get<Task[]>(`/tasks?${ps.toString()}`));
+      const nextShelved = await api.get<Task[]>(`/tasks?${ps.toString()}`);
+      setShelvedTasks(nextShelved);
+      setDrawerTask((cur) => (cur && nextShelved.some((x) => x.id === cur.id)
+        ? nextShelved.find((x) => x.id === cur.id) ?? cur
+        : cur));
     } catch { /* 搁置列表拉取失败不打断主列表 */ }
   }, [search, catFilter, priorityFilter]);
 
@@ -545,11 +556,38 @@ export function TasksPage() {
     // 订阅只需一次：回调内全部是 useState 的 setter（身份稳定）
   }, []);
 
-  // T01568：行内按钮开抽屉的统一入口（tab=null → 抽屉取默认「描述」页）。
-  // 外部跳转走 focusDrawerId 会话键（见上方 effect），两条路径共用 drawerTab 一个落位状态。
-  const openDetailDrawer = (t: Task, tab: TaskDetailTab | null = null): void => {
-    setDrawerTab(tab);
+  /**
+   * T01570：行内三块展开态 → 抽屉落位（减少两套查看态各自的困惑）。
+   * 用户在列表里点开哪一块，就说明他正在看那块内容，抽屉打开即落对应标签页；
+   * 优先级取「正在处理的内容」在上：处理结果（含未保存草稿）> AI 摘要 > 描述；
+   * 三块都没展开过则返回 null，抽屉保持自身默认「描述」页（T01562 原行为不变）。
+   * 注：验证失败反馈（failbackOpen）在抽屉里没有对应标签页，故不参与映射。
+   */
+  const drawerTabFromInline = (t: Task): TaskDetailTab | null => {
+    if (resultOpen[t.id] || resultDrafts[t.id] !== undefined) return 'result';
+    if (summaryExpanded[t.id]) return 'summary';
+    if (descExpanded[t.id]) return 'desc';
+    return null;
+  };
+
+  // T01568：行内按钮开抽屉的统一入口；T01570：tab 省略=按行内已展开区块推断，显式传 null=强制走默认「描述」。
+  // 外部跳转（通知/就绪条）走 focusDrawerId 会话键 / mtaskFocusTask 事件并显式指定落位，不受推断影响。
+  const openDetailDrawer = (t: Task, tab?: TaskDetailTab | null): void => {
+    setDrawerTab(tab === undefined ? drawerTabFromInline(t) : tab);
     setDrawerTask(t);
+  };
+
+  /**
+   * T01570：抽屉保存后的定点同步——把本次改写的字段就地合并进待办/已完成/搁置列表与抽屉自身，
+   * 行内对应区块立刻显示新文本，不再依赖 loadTasks 整表重载才更新（重载仍由 SSE/轮询作兜底，二者幂等）。
+   * 行内未保存草稿（resultDrafts/descDrafts）不动：那是用户正敲的内容，不能被抽屉的保存覆盖。
+   */
+  const applyTaskPatch = (taskId: string, patch: TaskPatch): void => {
+    const splice = (list: Task[]): Task[] => list.map((t) => (t.id === taskId ? { ...t, ...patch } : t));
+    setTodo(splice);
+    setDone(splice);
+    setShelvedTasks(splice);
+    setDrawerTask((cur) => (cur && cur.id === taskId ? { ...cur, ...patch } : cur));
   };
 
   // T00433：MCP 回传 / 队列执行 / 其他窗口改任务状态时，前端无感知——轻量轮询对比签名，有变化才刷新。
@@ -3580,7 +3618,9 @@ export function TasksPage() {
       )}
 
       {/* T01562：真抽屉详情——自包含操作台（描述/结果/摘要/时间线/关联计划），与行内展开并存；
-          按 task.id 作 key 重挂载，切换任务即重置编辑态（降低与逐行展开态的耦合回归风险） */}
+          按 task.id 作 key 重挂载，切换任务即重置编辑态（降低与逐行展开态的耦合回归风险）。
+          T01570：落位标签页由行内已展开区块推断（openDetailDrawer）/外部跳转显式指定；
+          保存后走 applyTaskPatch 定点同步，行内对应区块即时更新，不再整表重载。 */}
       {drawerTask && (
         <TaskDetailDrawer
           key={drawerTask.id}
@@ -3588,7 +3628,7 @@ export function TasksPage() {
           projectId={activeProject}
           initialTab={drawerTab ?? undefined}
           onClose={() => { setDrawerTask(null); setDrawerTab(null); }}
-          onChanged={() => void loadTasks(activeProject)}
+          onChanged={(patch) => applyTaskPatch(drawerTask.id, patch)}
         />
       )}
     </section>
