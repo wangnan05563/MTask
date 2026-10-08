@@ -12,7 +12,8 @@ import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
 import { usePersistentState, useSessionState } from '../ui/session';
 import { buildWorkdayCtx } from '../utils/workday'; // T01059 后续：甘特拖动
 import { deltaDaysFromPx, ganttDragResult, newGanttDrag, type GanttDragMode, type GanttDragState } from '../utils/ganttDrag'; // T01059 后续
-import { PlanTimeline } from '../components/PlanTimeline'; // T01564：纵向时间轴
+import { PlanTimeline, type TlGranularity, type TlPlan } from '../components/PlanTimeline'; // T01564：纵向时间轴
+import { SlideOver } from '../components/SlideOver'; // T01565：时间线节点详情复用 FR-3.2 抽屉基元
 
 /** 项目计划页（T00431，菜单位于周报前）：串行瀑布时间线 + Excel 导入导出 + 待办联动。 */
 
@@ -349,6 +350,69 @@ function PlanViewModeToggle({ viewMode, setViewMode }: {
       <button onClick={() => setViewMode('gantt')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: viewMode === 'gantt' ? 'var(--accent)' : 'transparent', color: viewMode === 'gantt' ? 'var(--accent-text)' : 'var(--text)' }} title="甘特图视图 — 按串行瀑布时间线可视化">甘特</button>
       <button onClick={() => setViewMode('timeline')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: viewMode === 'timeline' ? 'var(--accent)' : 'transparent', color: viewMode === 'timeline' ? 'var(--accent-text)' : 'var(--text)' }} title="时间线视图 — 纵向里程碑脉络，与甘特（横向排期+依赖线+关键路径）互补">时间线</button>
     </fieldset>
+  );
+}
+
+/** T01565：时间线粒度切换（日 / 周 / 月 / 季）。
+ *  与甘特的 durationUnit（day/hour）是两套口径：本控件决定**轴上刻度密度**与标签格式，
+ *  不改任何排期数据，故与会话态一起独立存储（S3776 抽取）。 */
+function PlanTimelineGranularityToggle({ granularity, setGranularity }: {
+  readonly granularity: TlGranularity; readonly setGranularity: React.Dispatch<React.SetStateAction<TlGranularity>>;
+}) {
+  const granules: ReadonlyArray<{ readonly k: TlGranularity; readonly label: string; readonly tip: string }> = [
+    { k: 'day', label: '日', tip: '按日刻度：轴上最密，适合短周期冲刺' },
+    { k: 'week', label: '周', tip: '按周刻度（周一起算）：适合迭代级脉络' },
+    { k: 'month', label: '月', tip: '按月刻度：默认，适合里程碑级脉络' },
+    { k: 'quarter', label: '季', tip: '按季刻度：轴上最疏，适合跨季度总览' },
+  ];
+  return (
+    <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} role="group" aria-label="时间线粒度">
+      {granules.map((g, i) => (
+        <button
+          key={g.k}
+          title={g.tip}
+          aria-pressed={granularity === g.k}
+          onClick={() => setGranularity(g.k)}
+          style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: i > 0 ? '1px solid var(--border-strong)' : 'none', cursor: 'pointer', background: granularity === g.k ? 'var(--accent)' : 'transparent', color: granularity === g.k ? 'var(--accent-text)' : 'var(--text)' }}
+        >{g.label}</button>
+      ))}
+    </div>
+  );
+}
+
+/** T01565：时间线节点详情（SlideOver 正文）。只读展示——编辑仍走列表/甘特既有入口，
+ *  本抽屉不复制一套编辑逻辑（S3776 抽取，保持 renderTimeline 只做编排）。 */
+function PlanTimelineDetail({ plan }: { readonly plan: TlPlan }) {
+  const badge = (children: React.ReactNode, color?: string) => (
+    <span style={{ fontSize: 11, padding: '1px 7px', borderRadius: 10, border: '1px solid var(--border-strong)', color: color ?? 'var(--text-muted)', whiteSpace: 'nowrap' }}>{children}</span>
+  );
+  const isMs = plan.kind === 'milestone';
+  const statusLabel: Record<string, string> = { todo: '待开始', doing: '进行中', done: '已完成', blocked: '受阻' };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {badge(isMs ? '阶段里程碑' : plan.kind === 'daily' ? '日常任务' : '计划任务', 'var(--accent)')}
+        {plan.assignee && badge(`负责人：${plan.assignee}`)}
+        <span>{statusLabel[plan.status] ?? plan.status}</span>
+        {!isMs && badge(`进度 ${plan.progress || 0}%`)}
+      </div>
+      <div>
+        <b>起止：</b>{plan.start_date || '未排期'} → {plan.end_date || '未排期'}
+        <span style={{ color: 'var(--text-muted)' }}>（{plan.duration_days || 0} 天）</span>
+      </div>
+      {plan.description && (
+        <div>
+          <b>描述：</b>
+          <div style={{ whiteSpace: 'pre-wrap', marginTop: 4, color: 'var(--text-muted)' }}>{plan.description}</div>
+        </div>
+      )}
+      {plan.linked_task_id && (
+        <div style={{ color: 'var(--success)' }}>✓ 已关联待办{plan.linked_task_title ? `：${plan.linked_task_title}` : ''}</div>
+      )}
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+        详情为只读快照；要改排期/进度请回列表或甘特视图编辑。
+      </div>
+    </div>
   );
 }
 
@@ -1109,6 +1173,10 @@ export function PlanPage() {
   const [depSel, setDepSel] = useState<Record<string, 'serial' | 'parallel'>>({});
   // T00449：视图模式（列表/甘特）会话级保持
   const [viewMode, setViewMode] = useSessionState<'list' | 'gantt' | 'timeline'>('plan.viewMode', 'list');
+  // T01565：时间线粒度（日/周/月/季）——独立于甘特的 durationUnit（day/hour），会话级保持
+  const [tlGranularity, setTlGranularity] = useSessionState<TlGranularity>('plan.tlGranularity', 'month');
+  // T01565：时间线节点点击详情（复用 FR-3.2 SlideOver，不新造抽屉）
+  const [selectedPlan, setSelectedPlan] = useState<TlPlan | null>(null);
 
   // ---------- T01059 后续：甘特条拖动（move / 左右边缘 resize → 联动 start_date 与 duration_days）----------
   // 拖动期间只改本地预览态，松手才落库（走既有 updatePlan → PATCH /plans/:id，服务端按工作日历重算 end_date
@@ -1727,13 +1795,24 @@ export function PlanPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 拖动的原点数据都在 ref 里，回调无需随预览态重建
   }, [ganttDragKey]);
 
-  /** T01564：时间线视图——纵向里程碑脉络，与甘特互补（非替代）。
-   *  数据就是甘特同一份 plans（plan_tasks），本模式只读渲染；
-   *  粒度缩放 / 阶段分组 / 节点详情属 T01565。 */
+  /** T01564 / T01565：时间线视图——纵向里程碑脉络，与甘特互补（非替代）。
+   *  数据仍是甘特同一份 plans（plan_tasks），本视图只展示与开详情，编辑留在列表/甘特入口。
+   *  编排三件事：与甘特区分的微型说明 + 粒度切换（T01565）+ 节点详情抽屉（复用 FR-3.2 SlideOver）。 */
   function renderTimeline() {
     return (
       <div style={{ marginTop: 10 }}>
-        <PlanTimeline plans={plans} />
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            时间线 = 纵向里程碑脉络（阶段进展）；甘特 = 横向排期 + 依赖线 + 关键路径。两者同源同一条计划，视角互补。
+          </div>
+          <PlanTimelineGranularityToggle granularity={tlGranularity} setGranularity={setTlGranularity} />
+        </div>
+        <PlanTimeline plans={plans} granularity={tlGranularity} onSelect={(p) => setSelectedPlan(p)} />
+        {selectedPlan && (
+          <SlideOver open title={selectedPlan.title} onClose={() => setSelectedPlan(null)} width={420}>
+            <PlanTimelineDetail plan={selectedPlan} />
+          </SlideOver>
+        )}
       </div>
     );
   }
