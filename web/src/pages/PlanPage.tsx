@@ -282,16 +282,18 @@ function PlanCreateImportButtons({ busy, createPlan, importExcel, exportExcel, e
 }) {
   return (
     <>
-      <button className="tbtn-anim" onClick={() => void createPlan()} disabled={busy} title="新建计划任务 — 弹窗中选择任务类型（普通/里程碑/日常）" aria-label="新建计划任务" style={{ ...btnStyle, padding: '6px 8px' }}><CalendarPlus size={13} /></button>
-      <label className="tbtn-anim" style={{ ...btnStyle, cursor: busy ? 'default' : 'pointer', padding: '6px 8px' }} title="导入 Excel — 批量导入计划任务（任一行校验失败则整体不入库）" aria-label="导入 Excel">
+      {/* T01619：工具栏七个操作按钮默认隐藏、悬浮整条工具栏（.op-host）时淡入——
+          沿用 .op-hidden 口径（opacity + visibility，保留占位不跳版，且不做灰显禁用） */}
+      <button className="tbtn-anim op-hidden" onClick={() => void createPlan()} disabled={busy} title="新建计划任务 — 弹窗中选择任务类型（普通/里程碑/日常）" aria-label="新建计划任务" style={{ ...btnStyle, padding: '6px 8px' }}><CalendarPlus size={13} /></button>
+      <label className="tbtn-anim op-hidden" style={{ ...btnStyle, cursor: busy ? 'default' : 'pointer', padding: '6px 8px' }} title="导入 Excel — 批量导入计划任务（任一行校验失败则整体不入库）" aria-label="导入 Excel">
         <Upload size={13} />
         <input type="file" accept=".xlsx" style={{ display: 'none' }}
           onChange={(e) => { const f = e.target.files?.[0]; if (f) { void importExcel(f); e.target.value = ''; } }} />
       </label>
-      <button className="tbtn-anim" onClick={() => void exportExcel()} title="导出 Excel — 导出当前项目全部计划" aria-label="导出 Excel" style={{ ...btnStyle, padding: '6px 8px' }}><Download size={13} /></button>
+      <button className="tbtn-anim op-hidden" onClick={() => void exportExcel()} title="导出 Excel — 导出当前项目全部计划" aria-label="导出 Excel" style={{ ...btnStyle, padding: '6px 8px' }}><Download size={13} /></button>
       {/* T01071-FR5.3：项目全量 Markdown 导出（任务清单 + WBS + 需求矩阵单文档） */}
-      <button className="tbtn-anim" onClick={() => void exportMarkdown()} title="导出 Markdown — 任务清单 + 计划 + 需求矩阵单文档" aria-label="导出 Markdown" style={{ ...btnStyle, padding: '6px 8px' }}><FileText size={13} /></button>
-      <button className="tbtn-anim" onClick={() => void downloadTemplate()} title="下载模板 — 获取导入用 Excel 模板" aria-label="下载导入模板" style={{ ...btnStyle, padding: '6px 8px' }}><FileSpreadsheet size={13} /></button>
+      <button className="tbtn-anim op-hidden" onClick={() => void exportMarkdown()} title="导出 Markdown — 任务清单 + 计划 + 需求矩阵单文档" aria-label="导出 Markdown" style={{ ...btnStyle, padding: '6px 8px' }}><FileText size={13} /></button>
+      <button className="tbtn-anim op-hidden" onClick={() => void downloadTemplate()} title="下载模板 — 获取导入用 Excel 模板" aria-label="下载导入模板" style={{ ...btnStyle, padding: '6px 8px' }}><FileSpreadsheet size={13} /></button>
       {/* T00569：AI 导入入口已迁移至 AI 工作台「AI 项目计划导入」卡片（本页经跨页信号自动打开弹窗） */}
     </>
   );
@@ -303,7 +305,7 @@ function PlanEvalButton({ batchEvaluatePlans, evalBusy, busy, evalLabel, plans }
   readonly evalLabel: string; readonly plans: PlanTask[];
 }) {
   return (
-    <button onClick={() => runAsync(batchEvaluatePlans())} disabled={evalBusy || busy} title="AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）" aria-label="批量 AI 评估" className={evalBusy ? 'task-breathe' : undefined} style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }}>
+    <button onClick={() => runAsync(batchEvaluatePlans())} disabled={evalBusy || busy} title="AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）" aria-label="批量 AI 评估" className={'op-hidden' + (evalBusy ? ' task-breathe' : '')} style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }}>
       {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}AI 评估{evalLabel && plans.length > 0 ? `（${evalLabel}）` : ''}
     </button>
   );
@@ -334,7 +336,7 @@ function PlanMultiToggle({ planMulti, setPlanMulti, setPlanSelIds }: {
 }) {
   return (
     <button onClick={() => { setPlanMulti((m) => !m); setPlanSelIds([]); }} title={planMulti ? '退出多选模式' : '多选模式 — 勾选计划后批量改状态/挂接/归档/评估'} aria-label={planMulti ? '退出多选模式' : '进入多选模式'}
-      className="tbtn-anim"
+      className="tbtn-anim op-hidden"
       style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', border: '1px solid var(--border-strong)', background: planMulti ? 'var(--accent)' : 'transparent', color: planMulti ? 'var(--accent-text)' : 'var(--text)' }}>
       {planMulti ? <Check size={13} /> : <ListChecks size={13} />}
     </button>
