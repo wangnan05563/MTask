@@ -6,9 +6,12 @@
  * 粒度（日/周/月/季）同时决定**轴上刻度密度**与标签格式：桶键变化处插入刻度标签，
  * 日粒度最密、季粒度最疏（T01565）。
  * 节点点击 → onSelect 由父级用 SlideOver 展示详情。
+ * T01576：阶段可折叠——折叠只摘掉「阶段内任务节点 + 其刻度」，里程碑菱形与阶段汇总摘要（任务数/
+ * 平均进度）仍留在轴上；折叠态由父级传入的 collapsedMs 承载，与列表/甘特共用 `plan.collapsedMs` 同一键。
  * 时间轴为均匀间距（非严格按时间比例），重在脉络可读性；比例间距为后续增强。
  */
 import { useMemo, type ReactNode } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react'; // T01576：阶段折叠控件（与列表视图 PlanTitleCell 同一套图标语言）
 
 /** 结构类型：PlanPage 的 PlanTask 经结构化赋值传入（额外字段不影响兼容性）。
  *  字段以 PlanTask 为准：kind/color 在 PlanTask 中为可选 → 此处同样声明为可选，保证 PlanTask[] 可整体赋值。 */
@@ -77,17 +80,22 @@ function phaseStats(items: TlPlan[]) {
   return { count: items.length, days, avg };
 }
 
-/** 扁平渲染行：刻度 → 里程碑 → 阶段汇总 → 任务，刻度由粒度决定密度 */
+/** 扁平渲染行：刻度 → 里程碑 → 阶段汇总 → 任务，刻度由粒度决定密度。
+ *  sum 行多带 msId：折叠时汇总行要标注「已收起」并可点击展开（T01576）。 */
 type TlRow =
   | { readonly type: 'tick'; readonly key: string; readonly label: string }
-  | { readonly type: 'ms'; readonly key: string; readonly p: TlPlan }
-  | { readonly type: 'sum'; readonly key: string; readonly text: string }
+  | { readonly type: 'ms'; readonly key: string; readonly p: TlPlan; readonly collapsed: boolean; readonly itemCount: number }
+  | { readonly type: 'sum'; readonly key: string; readonly text: string; readonly msId: string | null; readonly collapsed: boolean }
   | { readonly type: 'item'; readonly key: string; readonly p: TlPlan };
 
-export function PlanTimeline({ plans, granularity, onSelect }: {
+export function PlanTimeline({ plans, granularity, onSelect, collapsedMs = {}, onToggleMsCollapse }: {
   readonly plans: ReadonlyArray<TlPlan>;
   readonly granularity: TlGranularity;
   readonly onSelect: (p: TlPlan) => void;
+  /** T01576：里程碑折叠态——与列表/甘特视图共用 `plan.collapsedMs` 会话键（同一里程碑 id，口径一致） */
+  readonly collapsedMs?: Record<string, boolean>;
+  /** T01576：切换某里程碑阶段的折叠态；缺省时不渲染折叠控件（保证组件可独立使用） */
+  readonly onToggleMsCollapse?: (id: string) => void;
 }) {
   const phases = useMemo(() => {
     const sorted = [...plans].sort((a, b) => {
@@ -120,26 +128,32 @@ export function PlanTimeline({ plans, granularity, onSelect }: {
       }
     };
     phases.forEach((ph, i) => {
+      // T01576：折叠态只影响「阶段内任务节点 + 其刻度」——里程碑菱形与阶段汇总摘要保留，脉络不失焦。
+      const collapsed = !!ph.milestone && !!collapsedMs[ph.milestone.id];
       if (ph.milestone) {
         const ms = ph.milestone;
         tick(ms, `p${i}`);
-        out.push({ type: 'ms', key: ms.id, p: ms });
+        out.push({ type: 'ms', key: ms.id, p: ms, collapsed, itemCount: ph.items.length });
       }
       if (ph.items.length > 0) {
         const st = phaseStats(ph.items);
         out.push({
           type: 'sum',
           key: `p${i}-sum`,
-          text: `${ph.milestone ? '本阶段' : '阶段'}：${st.count} 个任务 · 共 ${st.days} 天 · 平均进度 ${st.avg}%`,
+          text: `${ph.milestone ? '本阶段' : '阶段'}：${st.count} 个任务 · 共 ${st.days} 天 · 平均进度 ${st.avg}%`
+            + (collapsed ? ' · 已收起，点里程碑卡右侧箭头展开' : ''),
+          msId: ph.milestone?.id ?? null,
+          collapsed,
         });
       }
+      if (collapsed) return;
       for (const p of ph.items) {
         tick(p, `p${i}`);
         out.push({ type: 'item', key: p.id, p });
       }
     });
     return out;
-  }, [phases, granularity]);
+  }, [phases, granularity, collapsedMs]);
 
   if (plans.length === 0) {
     return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: 16, textAlign: 'center' }}>（暂无计划任务，无法生成时间线）</div>;
@@ -153,7 +167,8 @@ export function PlanTimeline({ plans, granularity, onSelect }: {
         aria-label={`查看 ${p.title} 详情`}
         style={{
           display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
-          padding: '9px 11px', borderRadius: 8,
+          // 里程碑卡右侧给折叠控件留位（T01576：控件是卡的兄弟节点，绝对定位覆盖在右上角）
+          padding: isMs ? '9px 34px 9px 11px' : '9px 11px', borderRadius: 8,
           border: `1px solid ${isMs ? 'var(--accent)' : 'var(--border)'}`,
           background: 'var(--card-bg)', color: 'var(--text)',
         }}
@@ -192,12 +207,16 @@ export function PlanTimeline({ plans, granularity, onSelect }: {
         }
         if (r.type === 'sum') {
           return (
-            <div key={r.key} role="listitem" data-tl="sum" aria-label={`阶段汇总 ${r.text}`} style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0 8px' }}>{r.text}</div>
+            <div key={r.key} role="listitem" data-tl="sum" data-tl-collapsed={r.collapsed ? '1' : '0'}
+              aria-label={`阶段汇总 ${r.text}`}
+              style={{ fontSize: 12, color: r.collapsed ? 'var(--accent)' : 'var(--text-muted)', margin: '4px 0 8px' }}>{r.text}</div>
           );
         }
-        const isMs = r.type === 'ms';
+        const msRow = r.type === 'ms' ? r : null;
+        const isMs = msRow !== null;
+        const collapsed = msRow?.collapsed === true;
         return (
-          <div key={r.key} role="listitem" data-tl={isMs ? 'ms' : 'item'} aria-label={`${isMs ? '里程碑' : '计划任务'} ${r.p.title}`} style={{ position: 'relative', marginBottom: 8 }}>
+          <div key={r.key} role="listitem" data-tl={isMs ? 'ms' : 'item'} data-tl-collapsed={isMs ? (collapsed ? '1' : '0') : undefined} aria-label={`${isMs ? '里程碑' : '计划任务'} ${r.p.title}`} style={{ position: 'relative', marginBottom: 8 }}>
             <span
               aria-hidden="true"
               style={
@@ -207,6 +226,26 @@ export function PlanTimeline({ plans, granularity, onSelect }: {
               }
             />
             {nodeCard(r.p, isMs)}
+            {/* T01576：折叠控件——真实 <button>（键盘 Tab 可达、Enter/Space 触发），带 aria-expanded。
+                不能嵌进节点卡（卡本身是 button，HTML 不允许按钮套按钮），故作为兄弟节点绝对定位在卡右上角。 */}
+            {msRow && onToggleMsCollapse && msRow.itemCount > 0 && (
+              <button
+                type="button"
+                data-tl="collapse"
+                onClick={() => onToggleMsCollapse(msRow.p.id)}
+                aria-expanded={!collapsed}
+                aria-label={`${collapsed ? '展开' : '收起'}阶段：${msRow.p.title}（${msRow.itemCount} 个任务）`}
+                title={`${collapsed ? '展开' : '收起'}该阶段内的 ${msRow.itemCount} 个任务节点（与列表视图折叠态同源）`}
+                style={{
+                  position: 'absolute', right: 6, top: 8, zIndex: 1, padding: 2,
+                  border: '1px solid var(--accent)', borderRadius: 5, background: 'var(--card-bg)',
+                  color: 'var(--accent)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', lineHeight: 0,
+                }}
+              >
+                {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                <span style={{ fontSize: 10, marginLeft: 1 }}>{msRow.itemCount}</span>
+              </button>
+            )}
           </div>
         );
       })}

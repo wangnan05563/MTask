@@ -380,6 +380,33 @@ function PlanTimelineGranularityToggle({ granularity, setGranularity }: {
   );
 }
 
+/** T01576：时间线「全部收起 / 全部展开」快捷按钮（仅时间线视图内）。
+ *  写的仍是 `plan.collapsedMs` 同一份会话态——这里一键收起，列表/甘特视图同步收起，
+ *  不另建第二套折叠记忆。 */
+function PlanTimelineCollapseAll({ allCollapsed, phaseCount, onToggle }: {
+  readonly allCollapsed: boolean; readonly phaseCount: number; readonly onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-tl="collapse-all"
+      onClick={onToggle}
+      disabled={phaseCount === 0}
+      aria-pressed={allCollapsed}
+      aria-label={allCollapsed ? '展开全部阶段的任务节点' : '全部收起：隐藏各阶段内的任务节点'}
+      title={allCollapsed
+        ? `展开全部 ${phaseCount} 个阶段的节点`
+        : `全部收起 ${phaseCount} 个阶段的任务节点（里程碑脉络与阶段汇总仍保留）`}
+      style={{
+        padding: '4px 10px', fontSize: 12, cursor: phaseCount === 0 ? 'not-allowed' : 'pointer',
+        border: '1px solid var(--border-strong)', borderRadius: 6, opacity: phaseCount === 0 ? .5 : 1,
+        background: allCollapsed ? 'var(--accent)' : 'transparent',
+        color: allCollapsed ? 'var(--accent-text)' : 'var(--text)',
+      }}
+    >{allCollapsed ? '全部展开' : '全部收起'}</button>
+  );
+}
+
 /** T01565：时间线节点详情（SlideOver 正文）。只读展示——编辑仍走列表/甘特既有入口，
  *  本抽屉不复制一套编辑逻辑（S3776 抽取，保持 renderTimeline 只做编排）。 */
 function PlanTimelineDetail({ plan }: { readonly plan: TlPlan }) {
@@ -1799,15 +1826,31 @@ export function PlanPage() {
    *  数据仍是甘特同一份 plans（plan_tasks），本视图只展示与开详情，编辑留在列表/甘特入口。
    *  编排三件事：与甘特区分的微型说明 + 粒度切换（T01565）+ 节点详情抽屉（复用 FR-3.2 SlideOver）。 */
   function renderTimeline() {
+    // T01576：阶段折叠——与列表/甘特共用同一份 `plan.collapsedMs`（键=里程碑 id），
+    // 故此处一键收起/展开会与列表视图互相影响，这是刻意口径（避免两套折叠记忆互不相认）。
+    const tlMsIds = plans.filter((p) => p.kind === 'milestone').map((p) => p.id);
+    const tlAllCollapsed = tlMsIds.length > 0 && tlMsIds.every((id) => !!collapsedMs[id]);
+    const setAllTlCollapsed = (v: boolean): void => {
+      setCollapsedMs(() => {
+        if (!v) return {};
+        const next: Record<string, boolean> = {};
+        for (const id of tlMsIds) next[id] = true;
+        return next;
+      });
+    };
     return (
       <div style={{ marginTop: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
             时间线 = 纵向里程碑脉络（阶段进展）；甘特 = 横向排期 + 依赖线 + 关键路径。两者同源同一条计划，视角互补。
           </div>
-          <PlanTimelineGranularityToggle granularity={tlGranularity} setGranularity={setTlGranularity} />
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <PlanTimelineGranularityToggle granularity={tlGranularity} setGranularity={setTlGranularity} />
+            <PlanTimelineCollapseAll allCollapsed={tlAllCollapsed} phaseCount={tlMsIds.length} onToggle={() => setAllTlCollapsed(!tlAllCollapsed)} />
+          </div>
         </div>
-        <PlanTimeline plans={plans} granularity={tlGranularity} onSelect={(p) => setSelectedPlan(p)} />
+        <PlanTimeline plans={plans} granularity={tlGranularity} onSelect={(p) => setSelectedPlan(p)}
+          collapsedMs={collapsedMs} onToggleMsCollapse={toggleMsCollapsed} />
         {selectedPlan && (
           <SlideOver open title={selectedPlan.title} onClose={() => setSelectedPlan(null)} width={420}>
             <PlanTimelineDetail plan={selectedPlan} />
