@@ -132,7 +132,7 @@ type PlanPatch = Partial<Pick<PlanTask, 'title' | 'description' | 'duration_days
 type HolidayTab = 'manage' | 'national' | 'calendar';
 
 /** 甘特页项目选择器：触发按钮 + 排序菜单 + 项目下拉（T00663，S3776 抽取） */
-function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, projDropRef, sortDropRef, projOpen, setProjOpen, projDropPos, setProjDropPos, projSortOpen, setProjSortOpen, projSortMode, setProjSortMode, dragProjId, setDragProjId, overProjId, setOverProjId, dropReorder, togglePin, isProjectPinned }: {
+function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, projDropRef, sortDropRef, projOpen, setProjOpen, projDropPos, setProjDropPos, projSortOpen, setProjSortOpen, projSortMode, setProjSortMode, dragProjId, setDragProjId, overProjId, setOverProjId, dropReorder, togglePin, isProjectPinned, onExpand }: {
   readonly projects: ProjectRow[]; readonly sortedProjects: ProjectRow[]; readonly projectId: string; readonly setProjectId: (id: string) => void;
   readonly projDropRef: React.MutableRefObject<HTMLDivElement | null>;
   readonly sortDropRef: React.MutableRefObject<HTMLSpanElement | null>;
@@ -145,6 +145,8 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
   readonly dropReorder: (id: string) => Promise<void> | void;
   readonly togglePin: (p: ProjectRow) => Promise<void> | void;
   readonly isProjectPinned: (p: ProjectRow) => boolean;
+  /** T01679：下拉展开时的按需重拉回调（T01584 同款 800ms 节流在父级实现）——连点不重复发请求 */
+  readonly onExpand?: () => void;
 }) {
   const cur = projects.find((p) => p.id === projectId);
   return (
@@ -153,6 +155,7 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
         // T00520：展开时以按钮视口坐标 fixed 定位面板——脱离父容器 overflow 裁剪，不受窗口/容器大小限制
         const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
         setProjDropPos({ top: r.bottom + 4, left: r.left });
+        if (!projOpen) onExpand?.(); // T01679：展开即重拉项目行（三枚计划徽标取最新），收起不拉
         setProjOpen((o) => !o);
       }} aria-haspopup="listbox" aria-expanded={projOpen}
         title="选择项目 — 项目名后徽标：绿=已完成、蓝=进行中、灰=待开始（悬浮查看详情）"
@@ -1316,6 +1319,17 @@ export function PlanPage() {
     if (kind === 'tasks' || kind === 'plans') void loadProjects();
   }), [loadProjects]);
 
+  // T01679：展开项目下拉时按需重拉项目行（plan_done/plan_doing/plan_open 三徽标取最新）——
+  // 与任务菜单 T01584 同款 800ms 节流口径（窗口内连点不重复发请求），节流窗口不各定一个数。
+  // SSE 订阅只保最终一致：别的窗口刚改完计划任务时，点开下拉那一刻仍可能是旧值，「点击」变成主动拉取。
+  const projCountsAtRef = useRef(0);
+  const refreshProjCounts = useCallback(() => {
+    const now = Date.now();
+    if (now - projCountsAtRef.current < 800) return;
+    projCountsAtRef.current = now;
+    void loadProjects();
+  }, [loadProjects]);
+
   /** T00663：按所选排序方式排列项目（默认序=后端顺序，置顶权重优先生效） */
   const sortedProjects = useMemo(() => sortProjects(projects, projSortMode), [projects, projSortMode]);
 
@@ -2313,6 +2327,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       {/* 工具条：项目选择 + 增删导入导出（T00491：操作控件/下拉默认隐藏，悬浮工具条显示） */}
       <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
         <PlanProjectPicker projects={projects} sortedProjects={sortedProjects} projectId={projectId} setProjectId={setProjectId}
+          onExpand={refreshProjCounts}
           projDropRef={projDropRef} sortDropRef={sortDropRef} projOpen={projOpen} setProjOpen={setProjOpen} projDropPos={projDropPos} setProjDropPos={setProjDropPos}
           projSortOpen={projSortOpen} setProjSortOpen={setProjSortOpen} projSortMode={projSortMode} setProjSortMode={setProjSortMode}
           dragProjId={dragProjId} setDragProjId={setDragProjId} overProjId={overProjId} setOverProjId={setOverProjId}
