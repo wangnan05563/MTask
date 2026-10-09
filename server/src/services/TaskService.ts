@@ -413,26 +413,29 @@ export const TaskService = {
   },
 
   /** T01064-FR1.4：通知中心数据源——项目（或全部）最近事件；since（ISO）只取其后（未读增量） */
-  listEvents(opts: { projectId?: string; limit?: number; since?: string }): Array<{ id: string; task_no: string | null; task_id: string; kind: string; detail: string; title: string; created_at: string }> {
+  // T01616：通知中心条目带项目归属（project_id/project_name）——单次 LEFT JOIN projects 随行带出，无 N+1
+  listEvents(opts: { projectId?: string; limit?: number; since?: string }): Array<{ id: string; task_no: string | null; task_id: string; project_id: string; project_name: string | null; kind: string; detail: string; title: string; created_at: string }> {
     const lim = Math.min(200, Math.max(1, opts.limit ?? 50));
     if (opts.projectId) {
       const sinceWhere = opts.since ? 'AND e.created_at > ?' : '';
       const args: unknown[] = [opts.projectId, ...(opts.since ? [opts.since] : []), lim];
       return getDb().prepare(
-        `SELECT e.id, e.task_no, e.task_id, e.kind, e.detail, e.created_at, t.title
+        `SELECT e.id, e.task_no, e.task_id, e.project_id, pr.name AS project_name, e.kind, e.detail, e.created_at, t.title
            FROM task_events e LEFT JOIN tasks t ON t.id = e.task_id
+           LEFT JOIN projects pr ON pr.id = e.project_id
           WHERE e.project_id = ? ${sinceWhere}
           ORDER BY e.created_at DESC LIMIT ?`,
-      ).all(...args) as Array<{ id: string; task_no: string | null; task_id: string; kind: string; detail: string; title: string; created_at: string }>;
+      ).all(...args) as Array<{ id: string; task_no: string | null; task_id: string; project_id: string; project_name: string | null; kind: string; detail: string; title: string; created_at: string }>;
     }
     const sinceWhere = opts.since ? 'WHERE e.created_at > ?' : '';
     const args: unknown[] = [...(opts.since ? [opts.since] : []), lim];
     return getDb().prepare(
-      `SELECT e.id, e.task_no, e.task_id, e.kind, e.detail, e.created_at, t.title
+      `SELECT e.id, e.task_no, e.task_id, e.project_id, pr.name AS project_name, e.kind, e.detail, e.created_at, t.title
          FROM task_events e LEFT JOIN tasks t ON t.id = e.task_id
+         LEFT JOIN projects pr ON pr.id = e.project_id
          ${sinceWhere}
         ORDER BY e.created_at DESC LIMIT ?`,
-    ).all(...args) as Array<{ id: string; task_no: string | null; task_id: string; kind: string; detail: string; title: string; created_at: string }>;
+    ).all(...args) as Array<{ id: string; task_no: string | null; task_id: string; project_id: string; project_name: string | null; kind: string; detail: string; title: string; created_at: string }>;
   },
 
   /** T01064-FR1.5：单任务事件时间线（状态流转/回传/验证历史，正序） */

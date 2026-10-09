@@ -26,6 +26,8 @@ interface EventItem {
   id: string;
   task_no: string | null;
   task_id: string;
+  project_id: string;
+  project_name: string | null; // T01616：项目归属（服务端 JOIN projects 随行带出）
   kind: string;
   detail: string;
   title: string;
@@ -145,8 +147,16 @@ export function NotifyBell() {
                     <span style={{ display: 'block', fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {it.task_no ? <b style={{ color: 'var(--accent)' }}>{it.task_no}</b> : null} {isSystem ? '系统告警' : (it.title || it.detail)}
                     </span>
-                    <span style={{ display: 'block', fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
-                      {meta.label} · {it.detail} · {relTime(it.created_at)}
+                    {/* T01616：项目归属标注——放在元信息行首，与 kind/detail/时间同排不增行高；
+                        行点击本就跳往该任务（任务所属项目即此项目），徽标只作快速识别不做二次跳转 */}
+                    <span style={{ display: 'flex', fontSize: 11, color: 'var(--text-secondary)', marginTop: 2, alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                      {it.project_name && (
+                        <span title={`所属项目：${it.project_name}`}
+                          style={{ display: 'inline-flex', alignItems: 'center', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 10, padding: '0 5px', borderRadius: 8, border: '1px solid var(--border-strong)', color: 'var(--text-muted)' }}>
+                          {it.project_name}
+                        </span>
+                      )}
+                      <span>{meta.label} · {it.detail} · {relTime(it.created_at)}</span>
                     </span>
                   </span>
                   {unread && <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--accent)', marginTop: 6, flexShrink: 0 }} />}
