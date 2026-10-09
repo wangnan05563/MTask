@@ -54,6 +54,8 @@ export interface PlanTaskRow {
   color: string;
   /** T00499：前置依赖 JSON [{id,type:'serial'|'parallel'}]，空=无依赖 */
   deps: string;
+  /** T01058-FR2.1：AI 复杂度评级（1~5，≥4 建议拆分）；DB 列经 ensureColumn 补齐，历史行/未评估行为 NULL（T01689 起随 MCP 露出） */
+  complexity?: number | null;
   /** T00506：任务类型 normal=普通、milestone=阶段里程碑、daily=日常任务 */
   kind: string;
   /** 归档标记（T00442 扩展）：1=已归档（时间线移除，归档菜单可恢复/彻底删除） */

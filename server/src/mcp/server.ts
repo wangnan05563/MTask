@@ -14,6 +14,7 @@ import { readPoolStatus, poolFullHint } from '../services/ConcurrencyPool'; // T
 import { TaskService } from '../services/TaskService';
 import { TaskImageService } from '../services/TaskImageService'; // T00610：截图读取（供 AI 识别验证失败反馈截图）
 import { PlanService } from '../services/PlanService';
+import { parsePlanDeps } from '../util/planDeps'; // T01689：deps 解析单源复用（T01284 统一实现，MCP 层不再自造第二套口径）
 import { ExecSessionService } from '../services/ExecSessionService'; // T01269：执行会话心跳上报（FR-1.2）
 import { SupervisorService } from '../services/SupervisorService'; // T01286：监督状态查询（FR-5.2）
 import { resolvePrdContext } from '../util/prdContext'; // T00763：PRD 上下文反查
@@ -160,7 +161,7 @@ export async function createMCPServer(): Promise<McpServer> {
 
   server.registerTool('mtask_list_plans', {
     title: '列出项目计划',
-    description: '列出指定项目的计划任务（串行瀑布时间线，含 id/类型 kind/起止日期/工期/状态/进度/关联待办编号）。Agent 用于了解项目排期与规划上下文，避免与既有计划重复回写。条目多时建议 brief=true（省掉 description，避免响应被截断）；只看里程碑可用 kind=milestone 过滤。includeArchived=true 时返回已归档计划。',
+    description: '列出指定项目的计划任务（串行瀑布时间线，含 id/类型 kind/起止日期/工期/状态/进度/关联待办编号）。Agent 用于了解项目排期与规划上下文，避免与既有计划重复回写。条目多时建议 brief=true（省掉 description 与依赖明细、只回 depsCount/reqIdsCount，避免响应被截断）；只看里程碑可用 kind=milestone 过滤。includeArchived=true 时返回已归档计划。T01689：完整模式每条另回 deps（[{id,type:serial|parallel}] 前置依赖——外部 Agent 可用于排期/排水校验与「里程碑↔子任务」归属判定）、reqIds（需求矩阵锚点——校验计划↔需求覆盖度/重复锚定）、complexity（AI 复杂度评级 1~5，参与工期判断）；响应 meta 附 withDeps/withReqAnchors 计数（带依赖/带需求锚点的条目数，一眼看出覆盖缺口）。',
     inputSchema: {
       projectId: z.string().optional().describe('项目 id，与 projectName 二选一'),
       projectName: z.string().optional().describe('项目名称（如 MTask），按名称解析'),
@@ -179,27 +180,47 @@ export async function createMCPServer(): Promise<McpServer> {
         pid = p.id;
       }
       if (!pid) return err('projectId 或 projectName 必填');
+      // T01689：req_ids JSON → string[]（与 PlanService 内部 parseLinkIds 同口径；私有函数不跨层引用）
+      const parseReqIds = (raw: string | null | undefined): string[] => {
+        try {
+          const v: unknown = JSON.parse(raw || '[]');
+          return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+        } catch { return []; }
+      };
+      // complexity 列由 ensureColumn 补齐、PRD 导入写入；PlanTaskRow 已声明为可选字段，历史行为 NULL
+      const cx = (r: { complexity?: number | null }): number | null => r.complexity ?? null;
       if (a.includeArchived) {
         const all = PlanService.listArchived().filter((r) => r.project_id === pid);
         return ok(json(all.map((r) => ({
           id: r.id, title: r.title, kind: r.kind, startDate: r.start_date, endDate: r.end_date,
           durationDays: r.duration_days, status: r.status, progress: r.progress, assignee: r.assignee, archived: true,
+          deps: parsePlanDeps(r.deps), reqIds: parseReqIds(r.req_ids), complexity: cx(r),
         }))), { plans: all });
       }
       let rows = PlanService.list(pid);
       if (a.kind) rows = rows.filter((r) => r.kind === a.kind);
       // T01490：brief 模式省略 description + 跳过关联待办查询，压低体量避免传输截断
+      // T01689：brief 仍回 depsCount/reqIdsCount/complexity（数量级字段，Agent 可低成本判断覆盖度）
       if (a.brief) {
-        const brief = rows.map((r) => ({
-          id: r.id, title: r.title, kind: r.kind, startDate: r.start_date, endDate: r.end_date,
-          durationDays: r.duration_days, progress: r.progress, status: r.status, assignee: r.assignee,
-        }));
-        return ok(json(brief), { plans: brief, count: brief.length });
+        const brief = rows.map((r) => {
+          const deps = parsePlanDeps(r.deps); const reqIds = parseReqIds(r.req_ids);
+          return {
+            id: r.id, title: r.title, kind: r.kind, startDate: r.start_date, endDate: r.end_date,
+            durationDays: r.duration_days, progress: r.progress, status: r.status, assignee: r.assignee,
+            depsCount: deps.length, reqIdsCount: reqIds.length, complexity: cx(r),
+          };
+        });
+        return ok(json(brief), {
+          plans: brief, count: brief.length,
+          withDeps: brief.filter((p) => p.depsCount > 0).length,
+          withReqAnchors: brief.filter((p) => p.reqIdsCount > 0).length,
+        });
       }
       const plans = rows.map((r) => ({
         id: r.id, title: r.title, kind: r.kind, description: r.description,
         startDate: r.start_date, endDate: r.end_date,
         durationDays: r.duration_days, progress: r.progress, status: r.status, assignee: r.assignee,
+        deps: parsePlanDeps(r.deps), reqIds: parseReqIds(r.req_ids), complexity: cx(r),
         linkedTaskNo: null as string | null,
       }));
       // 附关联待办编号（Agent 回传时需要 taskNo 而非内部 id）
@@ -210,7 +231,11 @@ export async function createMCPServer(): Promise<McpServer> {
           plans[i].linkedTaskNo = t?.task_no ?? null;
         }
       }
-      return ok(json(plans), { plans, count: plans.length });
+      return ok(json(plans), {
+        plans, count: plans.length,
+        withDeps: plans.filter((p) => p.deps.length > 0).length,
+        withReqAnchors: plans.filter((p) => p.reqIds.length > 0).length,
+      });
     } catch (e) { return err((e as Error).message); }
   });
 
