@@ -357,9 +357,16 @@ export function TasksPage() {
     // T01570：两套查看态共用同一份数据快照——整表刷新后把抽屉持有的任务对象换成新快照，
     // 否则行内编辑保存 / MCP 回传后，已开着的抽屉仍是打开那一刻的旧对象（要关开才更新），
     // 用户在旧文本上再保存就会覆盖掉刚写入的新内容（丢更新）。
+    // T01700：版本守卫——快照 updated_at 比抽屉当前值旧（applyTaskPatch 定点补丁已把时间戳抬为本地写入时刻）
+    // 说明本次 fetch 在本地 PATCH 落库前发出、内容不含最新写入，覆盖即回退 → 跳过，等下一次新鲜快照。
+    // 编辑态不在这里跳过：抽屉自身 useEffect（editing 非空时不同步草稿）已保护草稿，
+    // 而取消编辑后要「展示最新」恰恰依赖新快照继续流入 task prop——跳过反而会卡在旧值（探针 S6c 实证）。
     setDrawerTask((cur) => {
       if (!cur) return cur;
-      return nextTodo.find((x) => x.id === cur.id) ?? nextDone.find((x) => x.id === cur.id) ?? cur;
+      const next = nextTodo.find((x) => x.id === cur.id) ?? nextDone.find((x) => x.id === cur.id);
+      if (!next) return cur;
+      if ((next.updated_at ?? '') < (cur.updated_at ?? '')) return cur;
+      return next;
     });
     // T00719：搁置列表随同一套查询条件（关键词/分类/优先级）刷新；搁置量通常较少，直接全量拉取（无 offset）
     try {
@@ -368,9 +375,13 @@ export function TasksPage() {
       ps.delete('offset');
       const nextShelved = await api.get<Task[]>(`/tasks?${ps.toString()}`);
       setShelvedTasks(nextShelved);
-      setDrawerTask((cur) => (cur && nextShelved.some((x) => x.id === cur.id)
-        ? nextShelved.find((x) => x.id === cur.id) ?? cur
-        : cur));
+      setDrawerTask((cur) => {
+        if (!cur) return cur;
+        const next = nextShelved.find((x) => x.id === cur.id);
+        if (!next) return cur;
+        if ((next.updated_at ?? '') < (cur.updated_at ?? '')) return cur;
+        return next;
+      });
     } catch { /* 搁置列表拉取失败不打断主列表 */ }
   }, [search, catFilter, priorityFilter]);
 
@@ -600,7 +611,11 @@ export function TasksPage() {
     setTodo(splice);
     setDone(splice);
     setShelvedTasks(splice);
-    setDrawerTask((cur) => (cur && cur.id === taskId ? { ...cur, ...patch } : cur));
+    // T01700：抽屉镜像合并时把 updated_at 抬为本地写入时刻——比任何「PATCH 落库前发出」的在途列表快照都新，
+    // fetchTasks 的版本守卫（见下）据此跳过旧快照，杜绝「外部 PATCH→立即保存/回滚→被旧快照打回」的丢更新竞态。
+    // 列表行不抬时间戳：其自愈由轮询签名（updated_at 入 sig）触发整表重载兜底，无需在客户端伪造。
+    const stamp = new Date().toISOString();
+    setDrawerTask((cur) => (cur && cur.id === taskId ? { ...cur, ...patch, updated_at: stamp } : cur));
   };
 
   // T00433：MCP 回传 / 队列执行 / 其他窗口改任务状态时，前端无感知——轻量轮询对比签名，有变化才刷新。
