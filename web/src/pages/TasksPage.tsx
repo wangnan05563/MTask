@@ -1137,7 +1137,7 @@ export function TasksPage() {
     const ids = [...selectedIds];
     if (ids.length === 0) return flash('请先勾选任务');
     const target = projects.find((p) => p.id === projectId);
-    if (!globalThis.confirm(`将选中的 ${ids.length} 条任务移动到「${target?.name ?? projectId}」？`)) return;
+    if (!(await askConfirm(`将选中的 ${ids.length} 条任务移动到「${target?.name ?? projectId}」？`))) return;
     setBatchOpBusy(true);
     try {
       await api.post('/tasks/move', { taskIds: ids, projectId });
@@ -1691,7 +1691,7 @@ export function TasksPage() {
   const [retryingNo, setRetryingNo] = useState('');
   async function handleRetryTask(taskNo: string) {
     if (retryingNo) return;
-    if (!globalThis.confirm(`重试任务 ${taskNo}？将回到待办并等待 AI 重新领取执行，历次处理结果保留。`)) return;
+    if (!(await askConfirm(`重试任务 ${taskNo}？将回到待办并等待 AI 重新领取执行，历次处理结果保留。`))) return;
     setRetryingNo(taskNo);
     try {
       await api.post(`/tasks/by-no/${taskNo}/retry`, {});

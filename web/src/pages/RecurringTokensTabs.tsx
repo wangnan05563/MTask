@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
+import { askConfirm } from '../ui/dialogs'; // T01699：确认框归一（原生 confirm 阻塞渲染线程且样式不一致）
 import { getLang, onLangChange, registerDict, setLang as setGlobalLang, t, term, useLang, type Lang } from '../i18n';
 
 /**
@@ -220,7 +221,7 @@ export function RecurringTab() {
                     style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: r.enabled ? 'var(--text-secondary)' : 'var(--accent)', cursor: 'pointer', marginRight: 4 }}>
                     {r.enabled ? t('停用', '停用') : t('启用', '启用')}
                   </button>
-                  <button onClick={async () => { if (globalThis.confirm(`${t('删除循环规则', '删除循环规则')}「${r.title}」？${t('已生成的任务不受影响。', '已生成的任务不受影响。')}`)) { await api.del(`/recurring/${r.id}`); void load(); } }}
+                  <button onClick={async () => { if (await askConfirm(`${t('删除循环规则', '删除循环规则')}「${r.title}」？${t('已生成的任务不受影响。', '已生成的任务不受影响。')}`)) { await api.del(`/recurring/${r.id}`); void load(); } }}
                     title={t('删除该规则', '删除该规则')}
                     style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--danger)', cursor: 'pointer' }}>
                     {t('删除', '删除')}
@@ -346,7 +347,7 @@ export function ApiTokensTab() {
                     style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: tk.enabled ? 'var(--text-secondary)' : 'var(--accent)', cursor: 'pointer', marginRight: 4 }}>
                     {tk.enabled ? t('停用', '停用') : t('启用', '启用')}
                   </button>
-                  <button onClick={async () => { if (globalThis.confirm(`${t('撤销', '撤销')}「${tk.name}」？${t('的脚本将立即失去访问权限。', '的脚本将立即失去访问权限。')}`)) { await api.del(`/tokens/${tk.id}`); void load(); } }}
+                  <button onClick={async () => { if (await askConfirm(`${t('撤销', '撤销')}「${tk.name}」？${t('的脚本将立即失去访问权限。', '的脚本将立即失去访问权限。')}`)) { await api.del(`/tokens/${tk.id}`); void load(); } }}
                     style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--danger)', cursor: 'pointer' }}>
                     {t('撤销', '撤销')}
                   </button>
