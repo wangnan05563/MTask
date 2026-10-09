@@ -307,7 +307,9 @@ function PlanEvalButton({ batchEvaluatePlans, evalBusy, busy, evalLabel, plans }
 }) {
   return (
     <button onClick={() => runAsync(batchEvaluatePlans())} disabled={evalBusy || busy} title="AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）" aria-label="批量 AI 评估" className={'op-hidden' + (evalBusy ? ' task-breathe' : '')} style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }}>
-      {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}AI 评估{evalLabel && plans.length > 0 ? `（${evalLabel}）` : ''}
+      {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}AI 评估{evalBusy
+        ? (evalLabel && plans.length > 0 ? `（${evalLabel}）` : '') // T01618：评估中保持进度标签口径不变
+        : (plans.length > 0 ? ` ${plans.length}` : '')} {/* T01618：待评估计划条数，对齐「AI 美化全部待办」数量范式 */}
     </button>
   );
 }

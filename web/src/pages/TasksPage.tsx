@@ -2735,6 +2735,8 @@ export function TasksPage() {
 
   /** 一键批量分类按钮（提取以降低工具条函数复杂度，渲染不变） */
   function renderClassifyButton() {
+    // T01618：数量显示对齐「AI 美化全部待办」范式——本按钮作用域是未分类任务（含已完成），展示其条数
+    const unclassified = [...todo, ...done].filter((t) => !t.category_id).length;
     return (
       <button
         onClick={() => void batchClassify()}
@@ -2745,6 +2747,7 @@ export function TasksPage() {
         style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: classifyBusy ? 'var(--accent)' : 'transparent', color: classifyBusy ? 'var(--accent-text)' : 'var(--text)' }}
       >
         {classifyBusy ? <Loader2 size={13} className="aispin" /> : <Tags size={13} />}
+        {!classifyBusy && unclassified > 0 ? unclassified : ''}
       </button>
     );
   }
