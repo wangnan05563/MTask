@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
+import { childParentIdOf } from '../util/planDeps'; // T01621：里程碑显式挂接判定单源（与时间线分组共用）
 import { Archive, ArrowUpDown, CalendarPlus, Check, Download, Gauge, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, FileText, FilePenLine, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Table2, TestTubes, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { EmptyState } from '../ui/EmptyState'; // T01072-FR1.10：统一空态组件
 import { ReqMatrixPanel } from './ReqMatrixPanel'; // T00662：需求跟踪矩阵
@@ -117,13 +118,12 @@ async function downloadTemplate() {
   downloadBlob(buf, 'plan-template.xlsx');
 }
 
-/** T00508：取记录挂接的里程碑（deps 中 type=child），无则 null */
+/** T00508：取记录挂接的里程碑（deps 中 type=child），无则 null。
+ *  T01621：解析逻辑收敛到 web/src/util/planDeps.ts 单源——时间线阶段分组（PlanTimeline.phases）
+ *  与本判定共用同一实现，保证「里程碑成员集合」两视图一致（折叠隐藏集合差集为空）。 */
 function childMilestoneOf(p: PlanTask, plans: PlanTask[]): PlanTask | null {
-  try {
-    const deps = p.deps ? JSON.parse(p.deps) as Array<{ id: string; type: string }> : [];
-    const hit = deps.find((d) => d.type === 'child');
-    return hit ? plans.find((x) => x.id === hit.id) ?? null : null;
-  } catch { return null; }
+  const id = childParentIdOf(p.deps);
+  return id ? plans.find((x) => x.id === id) ?? null : null;
 }
 
 /** 计划行补丁类型（与 updatePlan 第二参对齐，提取单元格组件复用） */
@@ -1137,7 +1137,10 @@ function planRowHidden(p: PlanTask, i: number, plans: PlanTask[], titleFilter: s
   return false;
 }
 
-/** 里程碑汇总（T00506）：本里程碑到下一里程碑之间的普通/日常任务统计 */
+/** 里程碑汇总（T00506）：本里程碑到下一里程碑之间的普通/日常任务统计。
+ *  ⚠ 口径（T01621）：此处汇总**按位置切片**（T00506 既有语义，显示维度不收窄），
+ *  而折叠隐藏（planRowHidden）与时间线阶段成员**按显式 child 依赖**——两套口径并存：
+ *  汇总数字可能包含未显式挂接的位置后继，属预期行为，勿据此外推折叠集合。 */
 function milestoneMeta(plans: PlanTask[], i: number): { isMilestone: boolean; inner: PlanTask[]; innerCount: number; innerDays: number; innerAvg: number } {
   const isMilestone = plans[i].kind === 'milestone';
   let mEnd = plans.length;

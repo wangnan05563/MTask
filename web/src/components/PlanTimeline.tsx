@@ -20,6 +20,7 @@
  * 未排期（start_date 为空）节点在两种模式下都沉底，并在卡内显式标注「未排期」。
  */
 import { useMemo, type ReactNode } from 'react';
+import { childParentIdOf } from '../util/planDeps'; // T01621：显式挂接判定单源（与列表折叠共用）
 import { ChevronDown, ChevronRight } from 'lucide-react'; // T01576：阶段折叠控件（与列表视图 PlanTitleCell 同一套图标语言）
 
 const DAY_MS = 86_400_000;
@@ -46,6 +47,8 @@ export interface TlPlan {
   readonly color?: string | null;
   readonly linked_task_id: string | null;
   readonly linked_task_title?: string | null;
+  /** T00499/T01621：前置依赖 JSON [{id,type}]（type=child 表示挂接到某里程碑）——阶段分组显式关系判定用 */
+  readonly deps?: string | null;
 }
 
 export type TlGranularity = 'day' | 'week' | 'month' | 'quarter';
@@ -93,8 +96,7 @@ function bucketKey(d: string, g: TlGranularity): string {
   return `${y}-Q${Math.floor((m - 1) / 3) + 1}`;
 }
 
-/** 状态 → 文案 + 状态色（T01565：阶段内任务显示状态色；与 PlanPage 列表口径一致） */
-const STATUS_META: Record<string, { label: string; color: string }> = {
+/** 状态 → 文案 + 状态色（T01565：阶段内任务显示状态色；与 PlanPage 列表口径一致） */const STATUS_META: Record<string, { label: string; color: string }> = {
   todo: { label: '待开始', color: 'var(--text-muted)' },
   doing: { label: '进行中', color: 'var(--accent)' },
   done: { label: '已完成', color: 'var(--success)' },
@@ -117,6 +119,66 @@ type TlRow =
   /** T01575：比例模式下的节点间空白（px 已含护栏）；days > 0 表示这是被压缩绘制的超长空档，需给断裂提示 */
   | { readonly type: 'spacer'; readonly key: string; readonly px: number; readonly days: number };
 
+/**
+ * T01621：时间线阶段分组（纯函数，可独立夹具测试）。
+ * 口径——里程碑成员判定与列表/甘特折叠（PlanPage.childMilestoneOf）共用显式 child 依赖：
+ *  - 拥有显式子任务的里程碑：阶段成员 = 显式子集（deps type=child 指向它的行，无论 start_date 先后），
+ *    位置相邻但未挂接的普通任务**不并入**，在其后另起无名段 → 折叠该里程碑时两视图隐藏集合差集为空；
+ *  - 无显式子任务的里程碑：沿用位置分组（T01565 既有行为不回退）；
+ *  - 指向不存在里程碑（被归档/过滤）的显式子任务不丢失，尾部无名段承接。
+ */
+export function groupTimelinePhases(plans: ReadonlyArray<TlPlan>): Array<{ milestone: TlPlan | null; items: TlPlan[] }> {
+  type Phase = { milestone: TlPlan | null; items: TlPlan[] };
+  const sorted = [...plans].sort((a, b) => {
+    if (!a.start_date) return 1;
+    if (!b.start_date) return -1;
+    return a.start_date < b.start_date ? -1 : a.start_date > b.start_date ? 1 : 0;
+  });
+  // 预扫：哪些里程碑拥有显式子任务（这类里程碑的阶段成员=显式子集，不再吞位置后继）
+  const msIds = new Set(sorted.filter((p) => p.kind === 'milestone').map((p) => p.id));
+  const explicitMsIds = new Set<string>();
+  for (const p of sorted) {
+    if (p.kind === 'milestone') continue;
+    const msId = childParentIdOf(p.deps);
+    if (msId && msIds.has(msId)) explicitMsIds.add(msId);
+  }
+  const result: Phase[] = [];
+  const phaseByMsId = new Map<string, Phase>();
+  const pending = new Map<string, TlPlan[]>(); // 里程碑行尚未出现时的显式子任务暂存（start_date 早于里程碑）
+  const prelude: Phase = { milestone: null, items: [] };
+  let cur: Phase = prelude;
+  for (const p of sorted) {
+    if (p.kind === 'milestone') {
+      // 先落袋当前无名段（prelude / loose），保持时间序——否则段内任务随 cur 切换被丢弃（夹具 A 实证）
+      if (!cur.milestone && cur.items.length) result.push(cur);
+      const ph: Phase = { milestone: p, items: pending.get(p.id) ?? [] };
+      pending.delete(p.id);
+      result.push(ph);
+      phaseByMsId.set(p.id, ph);
+      cur = ph;
+      continue;
+    }
+    const msId = childParentIdOf(p.deps);
+    if (msId && explicitMsIds.has(msId)) {
+      const ph = phaseByMsId.get(msId);
+      if (ph) ph.items.push(p);
+      else (pending.get(msId) ?? pending.set(msId, []).get(msId)!).push(p);
+      continue;
+    }
+    // 非成员普通任务：若当前阶段属于「有显式子任务」的里程碑，另起无名段（不并入，保持折叠集合一致）
+    if (cur.milestone && explicitMsIds.has(cur.milestone.id)) {
+      cur = { milestone: null, items: [] };
+    }
+    cur.items.push(p);
+  }
+  // 收尾：指向不存在里程碑（被归档/过滤）的显式子任务不丢失——尾部无名段承接（保持时间序）
+  const leftover: TlPlan[] = [];
+  for (const ts of pending.values()) leftover.push(...ts);
+  if (leftover.length) result.push({ milestone: null, items: leftover });
+  if (!cur.milestone && cur.items.length && !result.includes(cur)) result.push(cur);
+  return result;
+}
+
 export function PlanTimeline({ plans, granularity, spacing = 'uniform', onSelect, collapsedMs = {}, onToggleMsCollapse, onJumpToLinked }: {
   readonly plans: ReadonlyArray<TlPlan>;
   readonly granularity: TlGranularity;
@@ -130,25 +192,8 @@ export function PlanTimeline({ plans, granularity, spacing = 'uniform', onSelect
   /** T01577：跳转到该计划项关联的待办（focusTaskByNo/ById 那套跨视图定位）；缺省时关联仍是纯文本 */
   readonly onJumpToLinked?: (p: TlPlan) => void;
 }) {
-  const phases = useMemo(() => {
-    const sorted = [...plans].sort((a, b) => {
-      if (!a.start_date) return 1;
-      if (!b.start_date) return -1;
-      return a.start_date < b.start_date ? -1 : a.start_date > b.start_date ? 1 : 0;
-    });
-    const result: Array<{ milestone: TlPlan | null; items: TlPlan[] }> = [];
-    let cur: { milestone: TlPlan | null; items: TlPlan[] } = { milestone: null, items: [] };
-    for (const p of sorted) {
-      if (p.kind === 'milestone') {
-        if (cur.milestone || cur.items.length) { result.push(cur); cur = { milestone: p, items: [] }; }
-        else cur.milestone = p;
-      } else {
-        cur.items.push(p);
-      }
-    }
-    if (cur.milestone || cur.items.length) result.push(cur);
-    return result;
-  }, [plans]);
+  // T01621：阶段分组抽为纯函数（可独立夹具测试）——优先显式 child 关系，无显式子任务的里程碑沿用位置分组
+  const phases = useMemo(() => groupTimelinePhases(plans), [plans]);
 
   const rows = useMemo<TlRow[]>(() => {
     const out: TlRow[] = [];
