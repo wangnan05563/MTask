@@ -8,6 +8,7 @@
 import { useState } from 'react';
 import { api, imageUrl, type Task, type TaskCategory } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
+import { ResultDiffPanel } from '../ui/ResultDiff'; // T01698：结果历史 diff/回滚——与桌面抽屉/行内同一组件
 import { Badge, HalfSheet, type BadgeTone } from './ui';
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
 
@@ -135,7 +136,23 @@ export function MobileTaskDetail({ task, categories, onClose, onChanged, notify 
             </div>
           </div>
         ) : (
-          task.handle_result ? <MarkdownContent content={task.handle_result} /> : <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 2 }}>（暂无处理结果，AI 分析结论将回写于此）</div>
+          <div>
+            {task.handle_result ? <MarkdownContent content={task.handle_result} /> : <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 2 }}>（暂无处理结果，AI 分析结论将回写于此）</div>}
+            {/* T01698：结果历史 diff/回滚——与桌面抽屉/行内同一组件（T01607）；渲染只看 task_no 不看正文
+                （回滚到「空正文」版本时面板仍在，否则失去再滚回来的入口）。半屏无缩进 indent=0。 */}
+            {task.task_no && (
+              <ResultDiffPanel
+                taskNo={task.task_no}
+                current={task.handle_result ?? ''}
+                indent={0}
+                onRollback={(next) => {
+                  // 回滚成功：草稿镜像同步（下次进入编辑态基于回滚后文本），并通知父级重拉列表刷新 task prop
+                  if (typeof next === 'string') setResultDraft(next);
+                  onChanged();
+                }}
+              />
+            )}
+          </div>
         )}
       </details>
       {/* AI 摘要：可折叠段（默认收起，窄屏不挤占正文；与桌面一致但同样可展开查看） */}
