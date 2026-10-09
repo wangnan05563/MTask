@@ -14,6 +14,9 @@
  *    为避免不可读，两端各有护栏——下限 MIN_GAP（同日/紧邻节点仍保证不重叠），
  *    上限 MAX_GAP（超长空档压缩绘制，并给出「空档 N 天」断裂提示）；比例尺 PX_PER_DAY 随粒度变化，
  *    故日粒度拉开最狠、季粒度最收敛（与刻度密度联动）。
+ *  口径（T01677）：proportional 的差值是**自然日**，而计划排期/甘特/`duration_days` 是**工作日**
+ *  （PlanService 走 nextWorkday + 节假日日历）——两种视图对「间隔多长」不可直接对照，
+ *  断裂提示与模式 tooltip 已显式声明，避免误读；工作日折算需日历下发前端，待真有对照需求再评估。
  * 未排期（start_date 为空）节点在两种模式下都沉底，并在卡内显式标注「未排期」。
  */
 import { useMemo, type ReactNode } from 'react';
@@ -271,7 +274,7 @@ export function PlanTimeline({ plans, granularity, spacing = 'uniform', onSelect
                   position: 'absolute', left: 4, top: '50%', transform: 'translateY(-50%)',
                   fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap',
                   border: '1px dashed var(--border-strong)', borderRadius: 5, padding: '1px 7px', background: 'var(--card-bg)',
-                }}>⋯ 空档 {r.days} 天（比例尺已压缩）</span>
+                }}>⋯ 空档 {r.days} 天（按自然日，比例尺已压缩；甘特为工作日口径）</span>
               )}
             </div>
           );

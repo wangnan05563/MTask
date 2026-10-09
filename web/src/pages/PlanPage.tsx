@@ -397,7 +397,7 @@ function PlanTimelineSpacingToggle({ spacing, setSpacing }: {
 }) {
   const modes: ReadonlyArray<{ readonly k: TlSpacing; readonly label: string; readonly tip: string }> = [
     { k: 'uniform', label: '等距', tip: '等距排布：每个节点固定一行，重在脉络可读（默认）' },
-    { k: 'proportional', label: '按比例', tip: '按比例排布：节点纵向距离 ∝ 起始日期差，跨月空档会真实拉开（超长空档压缩绘制并标注「空档 N 天」）' },
+    { k: 'proportional', label: '按比例', tip: '按比例排布：节点纵向距离 ∝ 起始日期差（按自然日；甘特/工期为工作日口径，两者不可直接对照），跨月空档会真实拉开（超长空档压缩绘制并标注「空档 N 天」）' },
   ];
   return (
     <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} role="group" aria-label="时间线间距模式">
