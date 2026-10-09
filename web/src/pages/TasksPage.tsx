@@ -2395,9 +2395,14 @@ export function TasksPage() {
             )}
           </div>
         )}
-        {/* T01072-FR1.9：结果历史 diff 与回滚（handle_result 被覆盖前留档；无历史时不渲染） */}
-        {!editing && t.handle_result && t.task_no && (
-          <ResultDiffPanel taskNo={t.task_no} current={t.handle_result} onRollback={() => { void loadTasks(activeProject); }} />
+        {/* T01072-FR1.9：结果历史 diff 与回滚（handle_result 被覆盖前留档；无历史时组件自身返回 null）。
+            T01607：渲染条件不再要求「当前有正文」——回滚到空正文那一版后仍需保留再滚回来的入口。 */}
+        {!editing && t.task_no && (
+          <ResultDiffPanel
+            taskNo={t.task_no}
+            current={t.handle_result ?? ''}
+            onRollback={() => { void loadTasks(activeProject); }}
+          />
         )}
       </div>
     );

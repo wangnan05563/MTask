@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react';
 import { api, imageUrl, type Task } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
+import { ResultDiffPanel } from '../ui/ResultDiff'; // T01607：结果历史 diff/回滚——与行内共用同一组件
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { SlideOver } from './SlideOver';
 import { ClipboardList, FileText, History, Link2, Pencil, Save, Sparkles, X } from 'lucide-react';
@@ -236,6 +237,24 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
               <button onClick={() => { setResultDraft(result); setEditing('result'); }} className="tbtn-anim" style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>
                 <Pencil size={12} /> 编辑 / 回传结果
               </button>
+              {/* T01607：结果历史 diff/回滚——与行内区块同一组件、同一数据源（task_result_history）。
+                  回滚成功走 T01570 定点补丁通道：抽屉正文与行内结果区同时回到旧文本，无需收起抽屉回列表。
+                  渲染条件只看 task_no 不看正文：回滚到「空正文」那一版时面板必须仍在，否则失去再滚回来的入口
+                  （无留档时组件自身返回 null，不会多出空框）。 */}
+              {task.task_no && (
+                <ResultDiffPanel
+                  taskNo={task.task_no}
+                  current={result}
+                  indent={0}
+                  onRollback={(next) => {
+                    // 回滚后旧正文进了历史、当前文本被替换：先就地同步两端，再由父页计数触发面板重拉
+                    const text = typeof next === 'string' ? next : result;
+                    setResult(text);
+                    setResultDraft(text);
+                    onChanged({ handle_result: text });
+                  }}
+                />
+              )}
             </div>
           )}
         </div>

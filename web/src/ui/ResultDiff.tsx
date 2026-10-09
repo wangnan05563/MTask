@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
+import { askConfirm } from './dialogs'; // T01607：回滚二次确认改走项目对话框——Electron 下原生 confirm 不可靠（同 T01042 口径）
 
 /**
  * T01072-FR1.9：回传结果 diff 视图与一键回滚。
@@ -33,34 +34,41 @@ function lineDiff(oldText: string, newText: string): DiffRow[] {
 }
 
 /** 回传结果历史 + diff 面板：lazy 拉取，无历史时不渲染由调用方控制 */
-export function ResultDiffPanel({ taskNo, current, onRollback }: {
-  readonly taskNo: string; readonly current: string; readonly onRollback: () => void;
+export function ResultDiffPanel({ taskNo, current, onRollback, indent = 32 }: {
+  readonly taskNo: string;
+  readonly current: string;
+  /** 回滚成功后的回调；nextResult 为服务端回写后的正文，调用方据此就地刷新（省略则需自行重载） */
+  readonly onRollback: (nextResult?: string) => void;
+  /** 左缩进（px）：行内区块跟随列表缩进，抽屉等无缩进容器传 0 */
+  readonly indent?: number;
 }) {
   const [history, setHistory] = useState<HistoryEntry[] | null>(null);
   const [diffWith, setDiffWith] = useState<HistoryEntry | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
 
+  // 留档只在 handle_result 被覆盖时增长，故跟随 current 重拉即等价于「正文有变化」——
+  // 抽屉保存、行内保存、MCP 外部回传、回滚四条路径都会带来自身列表的即时更新（T01607）。
   useEffect(() => {
     let alive = true;
     void api.get<HistoryEntry[]>(`/tasks/by-no/${taskNo}/result-history`)
       .then((d) => { if (alive) setHistory(Array.isArray(d) ? d : []); })
       .catch(() => { if (alive) setHistory([]); });
     return () => { alive = false; };
-  }, [taskNo]);
+  }, [taskNo, current]);
 
-  if (!history) return <div className="skel" style={{ height: 32, margin: '8px 0 0 32px' }} />;
+  if (!history) return <div className="skel" style={{ height: 32, margin: `8px 0 0 ${indent}px` }} />;
   if (history.length === 0) return null; // 无历史（首次回传）不渲染
 
   async function rollback(entry: HistoryEntry) {
     if (busy) return;
-    if (!globalThis.confirm(`回滚到 ${entry.replaced_at.slice(0, 19).replace('T', ' ')} 的版本？\n当前结果会先存入历史（可再滚回来）。`)) return;
+    if (!(await askConfirm(`回滚到 ${entry.replaced_at.slice(0, 19).replace('T', ' ')} 的版本？\n当前结果会先存入历史（可再滚回来）。`))) return;
     setBusy(true);
     try {
-      await api.post(`/tasks/by-no/${taskNo}/result-rollback`, { historyId: entry.id });
+      const res = await api.post<{ handle_result?: string | null }>(`/tasks/by-no/${taskNo}/result-rollback`, { historyId: entry.id });
       setMsg('已回滚');
       setDiffWith(null);
-      onRollback();
+      onRollback(typeof res?.handle_result === 'string' ? res.handle_result : undefined);
     } catch (e) {
       setMsg(`回滚失败：${e instanceof Error ? e.message : String(e)}`);
     } finally { setBusy(false); }
@@ -71,7 +79,7 @@ export function ResultDiffPanel({ taskNo, current, onRollback }: {
   const addCount = diffRows?.filter((r) => r.t === 'add').length ?? 0;
 
   return (
-    <div style={{ margin: '6px 0 0 32px', border: '1px dashed var(--border-strong)', borderRadius: 8, padding: 8, background: 'var(--surface)' }}>
+    <div style={{ margin: `6px 0 0 ${indent}px`, border: '1px dashed var(--border-strong)', borderRadius: 8, padding: 8, background: 'var(--surface)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>结果历史（{history.length}）</span>
         <select
