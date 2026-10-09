@@ -1282,7 +1282,7 @@ export function PlanPage() {
   useEffect(() => { if (!hasSeenProjectGuide()) setGuideOpen(true); }, []);
 
   // T00663：项目排序与置顶（复用共享模块）——排序方式会话级持久；拖拽排序仅在默认序下启用
-  const [projSortMode, setProjSortMode] = useSessionState<ProjectSortMode>('plan.projectSort', 'default');
+  const [projSortMode, setProjSortMode] = usePersistentState<ProjectSortMode>('plan.projectSort', 'default'); // T01697：排序偏好持久化（重启保持）
   const [projSortOpen, setProjSortOpen] = useState(false);
   const sortDropRef = useRef<HTMLSpanElement | null>(null);
   const [dragProjId, setDragProjId] = useState('');

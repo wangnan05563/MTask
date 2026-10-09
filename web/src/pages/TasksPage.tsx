@@ -177,7 +177,7 @@ export function TasksPage() {
   const [done, setDone] = useState<Task[]>([]);
   // T00719：搁置任务列表（页面最下方独立区块，与待办/已完成隔离；MCP 处理待办时自动忽略）
   const [shelvedTasks, setShelvedTasks] = useState<Task[]>([]);
-  const [shelvedSort, setShelvedSort] = useState<SortKey>('default');
+  const [shelvedSort, setShelvedSort] = usePersistentState<SortKey>('shelvedSort', 'default'); // T01697：原为裸 useState（切页即丢）——升级持久化
   // T01533：标题区按下选中守卫——manual 排序时行 draggable 会劫持鼠标拖拽致标题无法选择复制；
   // 自标题按下起临时对该行禁用行拖拽（改从行内其他区域仍可拖动排序），松开指针即恢复。
   const [titleSelId, setTitleSelId] = useState('');
@@ -278,8 +278,8 @@ export function TasksPage() {
   // 「已完成」栏验证状态过滤：默认仅展示未验证，便于优先处理待核对的完成项；all=全部
   const [doneFilter, setDoneFilter] = useState<'all' | 'unverified' | 'verified'>('unverified');
   // 待办/已完成区块排序：会话级偏好，默认保持后端顺序
-  const [todoSort, setTodoSort] = useSessionState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.todoSort', 'default');
-  const [doneSort, setDoneSort] = useSessionState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.doneSort', 'default');
+  const [todoSort, setTodoSort] = usePersistentState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.todoSort', 'default'); // T01697：排序偏好持久化（重启保持）
+  const [doneSort, setDoneSort] = usePersistentState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.doneSort', 'default'); // T01697
   // T00456 / PRD UX-1：视图模式（列表/看板）会话级保持
   const [viewMode, setViewMode] = useSessionState<'list' | 'board'>('tasks.viewMode', 'list');
 
@@ -291,7 +291,7 @@ export function TasksPage() {
   const [projOpen, setProjOpen] = useState(false);
 
   // T00655：项目排序与置顶——排序方式会话级持久（下次进入恢复）；置顶经项目 sort_weight 持久到后端
-  const [projSortMode, setProjSortMode] = useSessionState<ProjectSortMode>('tasks.projectSort', 'default');
+  const [projSortMode, setProjSortMode] = usePersistentState<ProjectSortMode>('tasks.projectSort', 'default'); // T01697
   const [projSortOpen, setProjSortOpen] = useState(false);
   const projSortRef = useRef<HTMLSpanElement | null>(null); // T00655：排序菜单外部点击收起
   const sortedProjects = useMemo(() => sortProjects(projects, projSortMode), [projects, projSortMode]); // T00663：排序逻辑复用共享模块
