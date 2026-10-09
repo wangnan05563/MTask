@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api, type Project } from '../api/client';
 import { FileUp, Save, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import { useSessionState } from '../ui/session';
@@ -305,7 +306,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
         <label className="tbtn-anim" title="选择 PRD 文件（可多选 .docx/.md/.markdown/.txt/.xlsx/.csv/.pdf，将合并分析为单一需求矩阵与项目计划）"
           style={{ cursor: busy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--accent)', color: 'var(--accent)', fontSize: 12 }}>
           <Upload size={13} /> 选择 PRD 文件{pickedFiles.length > 0 ? `（已选 ${pickedFiles.length}）` : ''}
-          <input type="file" multiple accept=".docx,.md,.markdown,.txt,.xlsx,.csv,.pdf" style={{ display: 'none' }}
+          <input type="file" multiple accept=".docx,.md,.markdown,.txt,.xlsx,.csv,.pdf" style={FILE_INPUT_SR_ONLY}
             onChange={(e) => {
               const fs = e.target.files ? Array.from(e.target.files) : [];
               e.target.value = '';

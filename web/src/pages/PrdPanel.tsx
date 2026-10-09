@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown';
@@ -334,7 +335,7 @@ export function PrdPanel({ projectId, onClose }: {
         <label className="tbtn-anim" title="导入 PRD 文档（.md / .markdown / .txt；.docx 请用 AI PRD 导入）"
           style={{ ...opBtn, display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
           <Upload size={12} />
-          <input type="file" accept=".md,.markdown,.txt" style={{ display: 'none' }}
+          <input type="file" accept=".md,.markdown,.txt" style={FILE_INPUT_SR_ONLY}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void importFile(f); } e.target.value = ''; }} />
         </label>
         <button onClick={() => { void load(); }} className="tbtn-anim" title="刷新" style={opBtn}><RefreshCw size={12} /></button>

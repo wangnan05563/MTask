@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent } from 'react';
+import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { createPortal } from 'react-dom';
 import { api, imageUrl, fetchImage, imageDataURL, type AITool, type Project, type PromptCategory, type ReqCategory, type Task, type TaskCategory, type TaskImage } from '../api/client';
 import { ResultDiffPanel } from '../ui/ResultDiff'; // T01072-FR1.9：结果历史 diff 与回滚
@@ -2919,7 +2920,7 @@ export function TasksPage() {
           style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', display: 'inline-block' }}>
           <span>导入数据</span>
           {/* T00556：扩展为 CSV/JSON 双格式导入（Trello 导出 / JSON 数组） */}
-          <input type="file" accept=".csv,.json" style={{ display: 'none' }}
+          <input type="file" accept=".csv,.json" style={FILE_INPUT_SR_ONLY}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void onCsvFile(f); } e.target.value = ''; }} />
         </label>
         <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
@@ -3587,7 +3588,7 @@ export function TasksPage() {
                 <label className="tbtn-anim" title="选择截图文件（可多选）"
                   style={{ cursor: failBusy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border-strong)', fontSize: 12, color: 'var(--text)' }}>
                   <ImagePlus size={13} /> 选择截图
-                  <input type="file" accept="image/*" multiple style={{ display: 'none' }}
+                  <input type="file" accept="image/*" multiple style={FILE_INPUT_SR_ONLY}
                     onChange={(e) => {
                       const fs = [...(e.target.files ?? [])];
                       for (const f of fs) {

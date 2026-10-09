@@ -10,6 +10,7 @@
  * 草稿字段口径以 `stores/testCaseGenStore.ts` 的 `Draft*`（镜像后端 testCaseGenParse）为单源，此处不二次运算。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api, type Project } from '../api/client';
 import { streamEvents } from '../api/sse';
 import { useSessionState } from '../ui/session';
@@ -277,7 +278,7 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
 
         <label className="tbtn-anim" title="② 外部导入：上传需求文档（.docx/.xlsx/.csv/.md/.txt）" style={{ ...opBtn, cursor: 'pointer' }}>
           <Upload size={12} /> 选择文件
-          <input type="file" accept=".doc,.docx,.xls,.xlsx,.csv,.md,.markdown,.txt" style={{ display: 'none' }}
+          <input type="file" accept=".doc,.docx,.xls,.xlsx,.csv,.md,.markdown,.txt" style={FILE_INPUT_SR_ONLY}
             onChange={(e) => { const f = e.target.files?.[0] ?? null; e.target.value = ''; if (f) { setPickedFile(f); setDocId(''); } }} />
         </label>
         {pickedFile && (

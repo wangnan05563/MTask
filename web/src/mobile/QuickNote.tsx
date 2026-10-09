@@ -4,6 +4,7 @@
  * 提交复用 POST /api/tasks；离线时落本地草稿，联网后由 MobileShell 自动补提。
  */
 import { Badge, EmptyState, pageStyle as page, headerStyle as header } from './ui';
+import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { useEffect, useRef, useState } from 'react';
 import { api, type Project, type Task, type TaskCategory, type Prompt } from '../api/client';
 import { addDraft, submitQuickNote } from './offline';
@@ -254,7 +255,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
           <button onClick={() => fileRef.current?.click()} title="贴图 — 添加任务截图" aria-label="添加图片" style={quickChip}>
             <ImagePlus size={15} />贴图{images.length > 0 ? `(${images.length})` : ''}
           </button>
-          <input ref={fileRef} type="file" accept="image/*" capture="environment" multiple style={{ display: 'none' }} onChange={(e) => { onPickImages(e.target.files); e.target.value = ''; }} />
+          <input ref={fileRef} type="file" accept="image/*" capture="environment" multiple style={FILE_INPUT_SR_ONLY} onChange={(e) => { onPickImages(e.target.files); e.target.value = ''; }} />
         </div>
 
         {/* T01426：可选属性行——优先级/分类/项目，默认记忆上次；全部可选，不增必填 */}

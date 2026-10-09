@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
+import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api, type Project } from '../api/client';
 import { Save, Sparkles, Upload, X } from 'lucide-react';
 import { useSessionState } from '../ui/session';
@@ -116,7 +117,7 @@ export function AiPlanImportPanel({ toolId, onClose, onSaved }: {
         <label className="tbtn-anim" title="选择计划 Excel（.xlsx/.csv）或需求文档（.md/.docx）"
           style={{ cursor: busy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--accent)', color: 'var(--accent)', fontSize: 12 }}>
           <Upload size={13} /> 选择文件
-          <input type="file" accept=".xlsx,.csv,.md,.markdown,.docx" style={{ display: 'none' }}
+          <input type="file" accept=".xlsx,.csv,.md,.markdown,.docx" style={FILE_INPUT_SR_ONLY}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void parse(f); } e.target.value = ''; }} />
         </label>
         {fileName && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{fileName}</span>}

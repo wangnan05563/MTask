@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ChangeEvent, type CSSProperties } from 'react';
+import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api, type Project, type AITool } from '../api/client';
 import { streamEvents } from '../api/sse';
 import { reportStream, useReportStream } from '../reportStream';
@@ -876,7 +877,7 @@ export function ReportPage() {
       {notice && <output className="flash-toast">{notice}</output>}
 
       {/* T00621：原「内置技能」「模板管理」独立区块已整合进各自工作面板（AI 周报面板=内置技能；离线周报面板=模板管理），此处仅保留隐藏的上传入口与占位符说明 */}
-      <input ref={fileRef} type="file" accept=".xlsx,.docx" style={{ display: 'none' }} onChange={(e) => void onUpload(e)} />
+      <input ref={fileRef} type="file" accept=".xlsx,.docx" style={FILE_INPUT_SR_ONLY} onChange={(e) => void onUpload(e)} />
 
       <div style={{ marginTop: 12, fontSize: 11, color: 'var(--text-muted)' }}>
         说明：报表按本周期内更新过的任务（未归档）聚合，包含各项目汇总与任务明细；选用 Word 模板时以 {`{period}`}、{`{periodLabel}`}、{`{startDate}`}、{`{endDate}`}、{`{projects}`}、{`{tasks}`} 占位符渲染。模板导入入口在「离线周报生成」工作面板内（仅支持 .xlsx / .docx，≤10MB）。

@@ -205,6 +205,9 @@ function Shell() {
         /* T00491：菜单操作控件/搜索框统一「默认隐藏、悬浮宿主区显示」（后代选择器支持嵌套组） */
         .op-host .op-hidden { opacity: 0; visibility: hidden; transition: opacity .2s ease, visibility 0s linear .2s; }
         .op-host:hover .op-hidden, .op-host:focus-within .op-hidden { opacity: 1; visibility: visible; transition: opacity .2s ease, visibility 0s; }
+        /* T01674：键盘可达的文件选择入口——sr-only file input 聚焦时容器（label）显示焦点环，
+           与相邻按钮焦点观感一致；不加此环则 Tab 命中后无可见指示 */
+        .op-hidden:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 6px; }
         /* T00477：菜单下拉/过滤条件悬浮展示（默认淡化，悬浮或聚焦完全显示） */
         .toolbar-reveal { opacity: .35; transition: opacity .18s ease; }
         .toolbar-reveal:hover, .toolbar-reveal:focus-within { opacity: 1; }

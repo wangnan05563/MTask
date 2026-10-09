@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { Database, Download, FileUp, Pencil, Plus, RefreshCw, Search, Table2, Trash2, X } from 'lucide-react';
@@ -456,7 +457,7 @@ export function DbAdminTab() {
                 </button>
                 <label style={{ ...btnStyle(false), marginBottom: 0 }} title="从 CSV / JSON 文件导入数据">
                   <FileUp size={13} /> 导入
-                  <input type="file" accept=".csv,.json" style={{ display: 'none' }} onChange={(e) => void handleImportFile(e)} />
+                  <input type="file" accept=".csv,.json" style={FILE_INPUT_SR_ONLY} onChange={(e) => void handleImportFile(e)} />
                 </label>
                 <button style={btnStyle(false)} onClick={() => void handleExport('csv')} title="导出当前表全部数据为 CSV"><Download size={13} /> CSV</button>
                 <button style={btnStyle(false)} onClick={() => void handleExport('json')} title="导出当前表全部数据为 JSON"><Download size={13} /> JSON</button>

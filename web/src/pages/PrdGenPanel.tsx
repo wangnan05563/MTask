@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api, type Project } from '../api/client';
 import { streamEvents } from '../api/sse';
 import { useSessionState } from '../ui/session';
@@ -356,7 +357,7 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
         <label className="tbtn-anim" title="选择原始需求（.docx/.xlsx/.csv/.md/.txt；老式 .doc/.xls 请先另存）——支持一次选择多个"
           style={{ ...opBtn, display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
           <Upload size={12} /> 选择原始需求
-          <input type="file" multiple accept=".doc,.docx,.xls,.xlsx,.csv,.md,.markdown,.txt" style={{ display: 'none' }}
+          <input type="file" multiple accept=".doc,.docx,.xls,.xlsx,.csv,.md,.markdown,.txt" style={FILE_INPUT_SR_ONLY}
             onChange={(e) => {
               // T00891：多选——逐个校验合法格式，非法的即时拒绝、合法者全部入列表；
               // 校验规则与 generate 内一致（T00841），保证入列即可用、避免确认时才报错
