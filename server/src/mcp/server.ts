@@ -489,7 +489,8 @@ export async function createMCPServer(): Promise<McpServer> {
       title: z.string().optional().describe('create 必填 / update 可选：需求标题'),
       content: z.string().optional().describe('需求描述/原文要点'),
       sourceRef: z.string().optional().describe('PRD 原文定位（章节/段落）'),
-      priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('优先级'),
+      priority: z.enum(['low', 'normal', 'high', 'urgent', 'P0', 'P1', 'P2', 'P3', 'p0', 'p1', 'p2', 'p3']).optional()
+        .describe('优先级：low|normal|high|urgent 或 P0~P3（P 档自动换算入库：P0=urgent / P1=high / P2=normal / P3=low，与用例词表统一）'),
       status: z.enum(['todo', 'doing', 'done', 'changed']).optional().describe('需求状态'),
       kind: z.enum(['plan', 'task']).optional().describe('link 时使用：关联目标类型'),
       targetId: z.string().optional().describe('link 时使用：计划或待办的任务 id'),
@@ -497,19 +498,26 @@ export async function createMCPServer(): Promise<McpServer> {
     },
   }, async (a) => {
     try {
+      // T01703：P 档 → 存储枚举换算（存储层不动，兼容旧客户端读取）；非法值原样传入由服务层报错
+      const PRIO_ALIAS: Record<string, 'low' | 'normal' | 'high' | 'urgent'> = { P0: 'urgent', P1: 'high', P2: 'normal', P3: 'low' };
+      const normPrio = (p?: string): string | undefined => {
+        if (!p) return p;
+        const hit = PRIO_ALIAS[p.toUpperCase()];
+        return hit ?? p;
+      };
       if (a.action === 'create') {
         const loc = resolveProjectIdOf(a.projectId, a.projectName);
         if (!loc.id) return err(loc.error ?? '项目未指定');
         if (!a.title?.trim()) return err('create 需要 title');
         const row = PlanService.createRequirement(loc.id, {
-          reqNo: a.reqNo, title: a.title, content: a.content, sourceRef: a.sourceRef, priority: a.priority, status: a.status,
+          reqNo: a.reqNo, title: a.title, content: a.content, sourceRef: a.sourceRef, priority: normPrio(a.priority), status: a.status,
         });
         return ok(JSON.stringify(row), row);
       }
       if (!a.reqId) return err(`${a.action} 需要 reqId`);
       if (a.action === 'update') {
         const row = PlanService.updateRequirement(a.reqId, {
-          title: a.title, content: a.content, reqNo: a.reqNo, sourceRef: a.sourceRef, priority: a.priority, status: a.status,
+          title: a.title, content: a.content, reqNo: a.reqNo, sourceRef: a.sourceRef, priority: normPrio(a.priority), status: a.status,
         });
         return ok(JSON.stringify(row), row);
       }

@@ -34,6 +34,14 @@ export interface MatrixTableProps {
 }
 
 const TD_STYLE = { padding: '4px 6px' } as const;
+
+/** T01703：矩阵优先级 ↔ 用例 P 档同屏换算标注（urgent↔P0 / high↔P1 / normal↔P2 / low↔P3），
+ *  与测试用例列表（P0~P3 词表）同屏时无需人工换算；存量矩阵值即存储枚举，标注为只读换算。 */
+const PRIO_P_LABEL: Record<string, string> = { urgent: 'P0', high: 'P1', normal: 'P2', low: 'P3' };
+const prioWithP = (p: string | undefined): string => {
+  const v = p || 'normal';
+  return PRIO_P_LABEL[v] ? `${v}（${PRIO_P_LABEL[v]}）` : v;
+};
 const PLAIN_INPUT = {
   border: '1px solid transparent', borderRadius: 4, background: 'transparent',
   fontSize: 12, padding: '1px 4px',
@@ -113,7 +121,7 @@ export function MatrixTable({ p, flash }: { readonly p: MatrixTableProps; readon
   const renderDetail = (r: MatrixReq) => (
     <div style={{ marginTop: 4, padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface-2)', fontSize: 11, color: 'var(--text)' }}>
       <div style={{ whiteSpace: 'pre-wrap' }}>{r.content ? r.content : '（无内容）'}</div>
-      <div style={{ marginTop: 4, color: 'var(--text-muted)' }}>来源：{r.source_ref || '—'} · 优先级：{r.priority || 'normal'} · 状态：{r.status || 'todo'}</div>
+      <div style={{ marginTop: 4, color: 'var(--text-muted)' }}>来源：{r.source_ref || '—'} · 优先级：{prioWithP(r.priority)} · 状态：{r.status || 'todo'}</div>
       {r.prdDoc && (
         <div style={{ marginTop: 6 }}>
           <button onClick={() => p.onOpenPrd(r.prdDoc!)} className="tbtn-anim"
