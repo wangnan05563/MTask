@@ -26,6 +26,7 @@ import { getConfig as getUpdateConfig, saveConfig as saveUpdateConfig, testConfi
 import { logService } from '../services/LogService';
 import { dbAdminApi } from './dbadmin';
 import { planApi } from './plans';
+import { estimateApi } from './estimates'; // T02037（估算视图 E3）：/api/estimates*，PRD §8
 import { historyApi } from './history'; // T00589：历史资产（转移/统计）
 import { supervisorApi } from './supervisor'; // T01286：监督状态/审计/配置（FR-5.2~5.4）
 import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, gatherReportData, type ReportPeriod } from '../services/ReportService';
@@ -2456,6 +2457,7 @@ api.use('/dbadmin', dbAdminApi);
 
 // ---------- 项目计划（T00431，菜单位于周报前） ----------
 api.use('/plans', planApi);
+api.use('/estimates', estimateApi); // T02037（估算视图 E3）：PRD-估算视图与工作量评估导出 §8
 api.use('/history', historyApi); // T00589：历史资产页面后端（转移 + 统计）
 
 // ---------- 监督器（T01286）：状态看板 / 审计视图 / 熔断与中继配置 ----------

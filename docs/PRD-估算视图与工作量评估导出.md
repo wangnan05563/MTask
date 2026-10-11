@@ -1,6 +1,7 @@
 # PRD：项目管理「估算」视图与工作量评估导出（MTask）
 
-> 来源任务：T01839 ｜ 版本：**v1.6** ｜ 日期：2026-10-12 ｜ 状态：**已批准·E0 放行**（业主 2026-10-11 签字：D1~D6 全部按评审建议值通过，见文末「裁决结果」；E0 Spike 同日实测通过，见 §11.1）
+> 来源任务：T01839 ｜ 版本：**v1.7** ｜ 日期：2026-10-12 ｜ 状态：**已批准·E0 放行**（业主 2026-10-11 签字：D1~D6 全部按评审建议值通过，见文末「裁决结果」；E0 Spike 同日实测通过，见 §11.1）
+> v1.7 变更（T02037 = §11-E3 实施回写）：① §4.6 规则 2 的「k 项目级可配」缺键名，现定死两支 KV：全局 `estimate.caseWeightK`、项目级 `estimate.caseWeightK.<projectId>`（项目级优先，缺省 0.5；非正数直接报错不静默回落）。② §4.6 三档推导值**一律落到 0.5 人天网格**（§4.1「输入精度 0.5 人天」的实现口径）——不写死这条，面板显示 3.25、Excel 里又是 3.25，而客户模板全是 .5 步进，两侧迟早对不上。③ §4.6「人工改过即转 manual」的**落点定在路由层**：`PATCH /api/estimates/:planId` 未显式给 `source` 时，`rule`/`default` 行一律转 `manual`（`EstimateService` 的「缺省沿用原值」语义不动，避免与 E1 断言打架）；不转则 §9 的复核率会把人已改过的行继续算成未复核机器值。④ §8 端点按实测落地形态补注（见该节「E3 实测补充」）：derive **默认 dryRun**、`mode=derive`、`/meta` 单源、`/detach`+`/detach/cleanup` 显式清理、params 传空串=回落默认；并记一条引擎既有分类口径——排除计数按「未估算 → 小计 → 里程碑」优先级，未估算的里程碑行记入 `unEstimated` 而非 `milestone`。
 > v1.6 变更（T02036 = §11-E2 实施回写）：① §9「可维护」项把引擎落点由 `web/src/util/estimate-engine.ts` **校正到服务端单源** `server/src/services/estimate-engine.ts`——两侧 tsconfig 均无跨包 include/alias（`server/tsconfig.json` 有 `rootDir:"src"`、`web/tsconfig.json` 只 include `src`），让 web 持有唯一实现会让服务端（E6 导出缓存值只能来自引擎输出，§11.1 红线 2）无法复用；前端经 E3 的汇总接口取数展示，「避免两处公式各写一遍」的原意由此真正落地（§9 该行同步改写）。② §4.6 的 `estimate.rule.default.ratio`「1:4:1.6」读法按正文显式式子定死：**首末两段是 O、P 相对 M 的倍率，中段 4 是 PERT 权重而非 M 的倍率**（即 O=M、P=1.6M，与模板实测形态一致）；实现落 `parseRuleRatio()`，中段不是 4 直接报错不猜。③ §4.2 补记「标准式与模板式逐值等价」的**前提是 O≤M≤P**（乱序反例 0/5/1：标准 3.5 vs 模板 1.5），该前提由 E1 服务层校验守住，引擎不重复设第二道校验。
 > v1.5 变更（T02034 = §11-E1 实施回写）：§3.1 的 `plan_id` 由「FK→plan_tasks」校正为**不建物理外键 + 服务层归属校验 + 视图层过滤**，依据是 `PlanService.purge()` 的物理 DELETE 与 §7「估算行原样保留」在外键下不能共存（实测取证与断言见 `scripts/verify-t02034-estimate-e1.mts`）。§4.5 点名的 `addWorkdays(anchor,n)` 正向工作日工具同日落地（服务端 `server/src/util/workdays.ts` 唯一实现 + 前端 `web/src/utils/workday.ts` 同语义镜像，720 格网格逐格全等断言）。
 > v1.4 变更（T01843 复杂度补录取证收口）：§1.1/§4.6 的复杂度基线按生产库实测改写（mtask四期 37/37 非空），§11-E15 判据按实测行数重述并记四期闭环，§12-R3 更新状态，§1.4 补「复杂度评级」术语并明确里程碑不重复计。全程只读取证，无数据写入。
@@ -292,12 +293,15 @@ E = (O + P + 4M) / 6        —— 与标准 PERT (O + 4M + P)/6 完全等价
 ### 4.6 冷启动：从既有数据推导三点
 
 未录入时按优先级择一推导（结果 `source='rule'`，人工改过即转 `source='manual'`）：
+> **「转 manual」的落点（v1.7）**：`PATCH /api/estimates/:planId` 未显式携带 `source` 时，把 `rule`/`default` 行转成 `manual`；`EstimateService.upsert` 的「source 缺省=沿用原值」语义保持不动（E1 的 84 条断言按它写），转换只做在路由层——PATCH 是人工录入的唯一通道，在这里转比在 service 里加参数少一个可被绕过的入口。显式传 `source:'rule'` 仍可写回（AI/批量通道要用）。不转的后果：§9 的「人工复核率 = `source='manual'` 占比」会把人已改过的行继续算成未复核机器值，上线度量直接失真。
 
 1. **复杂度映射**（`complexity` 非空，如 swork 已填）
    `M = base_days(complexity)`，`O = M × rO`，`P = M × rP`；默认 `base_days` = {1:1, 2:2, 3:3.5, 4:5, 5:8}，`rO:rM:rP` 取 `estimate.rule.default.ratio`（1 : 4 : 1.6 → 即 O=M、P=1.6M，与模板实测形态一致）。
    > **比例串的读法已定死（v1.6，E3 实施前必须有一条口径，否则两侧各猜一套）**：按正文显式式子取意——**首末两段是 O、P 相对 M 的倍率，中段那个 4 是 PERT 权重而不是 M 的倍率**，所以 `1:4:1.6` 得 O=M×1、P=M×1.6（与模板实测 12/12/16、20/20/24、30/30/35 形态吻合）。实现落 `estimate-engine.ts` 的 `parseRuleRatio()`：段数不对/含非正数报错，**中段不是 4 也报错**（写成 `1:5:1.6` 只能是配置手滑，猜成 M×5 会推出离谱工时）。E3 的 derive 与 E13 的参数页都调这一个函数。
 2. **用例加权映射**（该计划关联需求存在用例，如 swork 71 条）
    `M = clamp(Σ权重 × k, 0.5, 20)`，权重 P0=3/P1=2/P2=1/P3=0.5，`k` 默认 0.5（项目级可配）。
+   > **k 的键名（v1.7 补，E3 实测口径）**：`app_settings` 里 §3.3 未给这一支的键名，实现定死为全局 `estimate.caseWeightK` + 项目级 `estimate.caseWeightK.<projectId>`（项目级优先）。非正数/非数字**报错**不静默回落——k 写歪一位，整个项目用例档的 M 全跟着歪。未知优先级（不在 P0~P3 内）权重记 0 并单独回传 `basis.caseWeightUnknown` 计数，不猜档。
+   > **三档推导值一律落到 0.5 人天网格（v1.7）**：§4.1 写了「输入精度 0.5 人天」但没说推导要不要对齐；不对齐的话面板显示 `M=3.25 / P=5.2`，而客户模板全是 .5 步进，E6 导出与面板就成了两套数。实现见 `EstimateDerive.ts` 的 `toGrid()`（`Math.round(v×2)/2`），断言在 `scripts/verify-t02037-estimate-e3.mts` S-03~S-08。
 3. **工期回退**（仅有 `duration_days`，如 mtask四期/一期全部计划）
    `M = duration_days`，`O = 0.8M`，`P = 1.4M`（面板显式提示「由排期工期推导，建议复核」）。
 4. **历史耗时校准**（离线建议，本期只读输出）
@@ -483,6 +487,18 @@ E = (O + P + 4M) / 6        —— 与标准 PERT (O + 4M + P)/6 完全等价
 | `GET /api/estimates/export-xlsx` / `export-pdf` | 见 §6 |
 | `GET /api/estimates/snapshots?projectId=` | 最近快照列表；`?compare=a,b` 返回两版差异 |
 
+**E3 实测补充（v1.7，落地形态与上表的差异都在这里，避免 E4/E10/E13 各自猜）**：
+
+- `GET /api/estimates?projectId=&includeArchived=` 一次返回 `items / summary / params / meta / checks` 五块；**`includeArchived` 只影响 `items`，不影响 `summary`**（§3.1「归档行不进 Σ」——审计视角一开就把归档工作量算进报价是错的方向）。`checks` = `ratioCheck`（§4.4 I40 自检）+ `coverage`（normal/milestone/estimated/missing/bySource/detached，§9 复核率出数口）+ `detached`。
+- 新增两枚上表未列的端点：`GET /api/estimates/meta`（§9「枚举与标签单源」的下发口：阶段/系数标签、8 个参数键名、复杂度基准档、用例权重、工期倍率）、`GET /api/estimates/detach` + `POST /api/estimates/detach/cleanup {ids}`（§7「清理为显式手动操作」；清理只动确属脱离的行，在架行返回 `removed:0`）。
+- `POST /api/estimates/derive` **默认 `dryRun=true`**（`{dryRun:false}` 才落库）。上表写的是「`{dryRun:true}` 返回预览」，但把「写」当默认值意味着任何一次忘记传参的调用都在改库——报价依据不该这样。参数：`planIds?`、`scope:'missing'|'all'`（默认 missing：只补未估算行）、`includeManual?`（`scope=all` 下才生效，人工行默认受保护）、`caseWeightK?`（影响试算用，不落配置）。
+- `POST /api/estimates/batch` 的 `mode:'derive'` 走同一套推导（`dryRun` 默认 false，与 derive 相反：批量端点本身就是写通道）；`mode:'set'` 沿用 §3.1「任一行不合格零写入 + 行级 `errors[{index,planId,message}]`」。
+- `PUT /api/estimates/params {settings:{…}}`：**先全量试算再落库**（含单个非法值时整批零写入并回 400 中文文案）；值传空串 = 删除该配置、回落默认；未知键直接 400（防参数页写歪到别的 KV）。响应里的 `config` 是**写后回读**的生效值。
+- 排除计数口径（引擎既有行为，记下来免得当成 bug）：`ratioCheck.excluded` 按「未估算 → 小计 → 里程碑」优先级归类，**未估算的里程碑行计入 `unEstimated` 而非 `milestone`**；里程碑真正带上估算值时才进 `milestone`。两条路径都不进 Σ（断言 S-26/S-27、R-53）。
+- 导出端点 `export-xlsx` / `export-pdf` 属 E6/E7，**E3 不留占位路由**（空实现会被前端当成已就绪）。
+- 验证：`scripts/verify-t02037-estimate-e3.mts`（S 段服务层 + R 段隔离实例 REST 全链）——**PASS=83 FAIL=0**。
+
+
 MCP 工具（`server/src/mcp/server.ts`，注意 T01490 的响应体量截断教训：列表默认 brief + 显式 `full` 开关）：
 `mtask_get_estimates {projectId|projectName, brief?}`、`mtask_update_estimates {taskNo|planId, optimistic, likely, pessimistic}`、`mtask_export_estimate_workload {projectId, format:'xlsx'|'pdf', audience?}`。
 
@@ -530,7 +546,7 @@ MCP 工具（`server/src/mcp/server.ts`，注意 T01490 的响应体量截断教
 | **E0** | **技术验证 Spike（E6 的放行闸门）**：用 exceljs 产出最小样例文件，验证①单元格**写活公式**；②非 ASCII 命名区域 `每人月工天标准` 写入后公式可解析、改值可重算；③28 处合并区无损；④断言脚本可跑（公式串轨 + 缓存值轨 + Excel 重算轨）。任一不达 → 改方案 | — | **P0** | **S — 已完成（2026-10-11 实测通过，结论见 §11.1；E6 放行）** |
 | E1 | 数据模型与迁移（`estimate_items` / `estimate_snapshots`，落 `schema.ts` + `ensureColumn` 范式）+ `EstimateService` CRUD + 校验 + **`addWorkdays(anchor,n)` 工作日正向工具（服务端/前端同语义，单源）** | E0 | P0 | **S — 已完成（2026-10-11，实施单 T02034）**：两张表落 `server/src/db/schema.ts` 建表清单、`EstimateService`（CRUD/PATCH 缺省沿用/批量「任一行失败零写入」/快照 20 条裁剪/脱离计划行）、`server/src/util/workdays.ts` + 前端镜像。验证 `scripts/verify-t02034-estimate-e1.mts` **PASS=84 FAIL=0**（隔离库），`npm run typecheck`（server）与 `npm run build -w mtask-web` 均 0 错。§3.1 的 plan_id 外键记法按实测校正（见该表 v1.5 说明）；REST 路由与 derive 规则归 E3，不属本单 |
 | E2 | `estimate-engine.ts`（E/σ/汇总/系数/比例自检，**含「排除小计行」口径**）+ 黄金样例单测 + 「前端 Σ ≈ 模板 H35」断言 | E1 | P0 | **S — 已完成（2026-10-12，实施单 T02036）**：`server/src/services/estimate-engine.ts`（纯计算：`expected`/`sigma`/`confidence`/`buildSummary`/`toEngineRow`/`parseRuleRatio`/`resolveEstimateConfig`/`expectedEndWorkday`，配置键与系数标签同源）。落点由 §9 原写的 web 路径校正到服务端（理由见 §9 可维护行 v1.6 注）。验证 `scripts/verify-t02036-estimate-e2.mts` **PASS=73 FAIL=0**（隔离库）：12341 格标准式↔模板式逐值等价、附录 A 六条 H 列实测值、比例 0.0421/0.0687/0.5001 与 H40≈14.44 黄金回归、**Excel `SUBTOTAL(9,…)` 语义仿真对照轨**（§10-14 差 <1e-9 且反证朴素 sum 会把开发段算两遍）、里程碑/小计/归档三类排除行各归各位。`npm run typecheck`（server）与 `npm run build -w mtask-web` 均 0 错。derive 规则（复杂度/用例/工期）与 REST 路由归 E3，不属本单 |
-| E3 | REST 路由 + `derive` 规则（复杂度/用例/工期三档） | E1,E2 | P0 | M |
+| E3 | REST 路由 + `derive` 规则（复杂度/用例/工期三档） | E1,E2 | P0 | **M — 已完成（2026-10-12，实施单 T02037）**：`server/src/routes/estimates.ts`（§8 端点清单 + 该节「E3 实测补充」；复用 `planApi` 的 `wrap`/`pid`/静态路径先于 `:id` 约定，`api.use('/estimates', …)` 挂进 `routes/index.ts:2459`）+ `server/src/services/EstimateDerive.ts`（三档规则、0.5 网格、里程碑只出参考值不落库、人工行保护、`coverage` 出数口）。路由层不含任何计算：校验归 `EstimateService`、PERT/汇总/参数归 `estimate-engine.ts`、推导归 `EstimateDerive`。验证 `scripts/verify-t02037-estimate-e3.mts` **PASS=83 FAIL=0**（S 段服务层只读 + R 段隔离实例 REST 全链：derive 默认 dryRun→落库 4 行、Σ 恒等式 22.4166667、里程碑误写估算仍被挡在 Σ 外、批量任一行不合格零写入、PATCH 转 manual、参数非法整批零写入、快照 compare 差异、脱离行显式清理、归档行不进 Σ）；`npm run typecheck -w server` 与 `npm run build -w server` 均 0 错 |
 | E4 | 估算面板 UI（**新建 docked 分栏，本仓无 SplitPane 基元** + 汇总卡 + 明细行内录入 + **每行 O~P 区间条（P0，自 E8 移入）** + 空态/错误态 + `TlPlan` 扩 complexity 字段） | E3 | P0 | **L→XL**（v1.1 上调：分栏基元与挤压走查为新增成本） |
 | E5 | 批量填充 + 撤销 + 筛选未复核 | E4 | P1 | M |
 | E6 | **Excel 导出逐格复刻模板**（28 处合并区 / R31 小计 / R35·R40 跨 E~I 列公式 / 系数行三点 / 命名区域 / 列宽 / 备注）+ 回读断言 | E0,E2,E3 | P0 | L |
