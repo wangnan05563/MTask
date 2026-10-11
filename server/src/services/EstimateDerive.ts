@@ -51,7 +51,7 @@ export const DURATION_P_MUL = 1.4;
 export const DURATION_NOTE = '由排期工期推导，建议复核';
 
 /** 跳过落库的原因（面板据此分色显示，空串=可落库） */
-export const DERIVE_SKIPS = ['milestone', 'exists', 'manual'] as const;
+export const DERIVE_SKIPS = ['milestone', 'exists', 'manual', 'offRule'] as const;
 export type DeriveSkip = (typeof DERIVE_SKIPS)[number] | '';
 
 export interface DeriveItem {
@@ -85,10 +85,16 @@ export interface DeriveOptions {
   config: EstimateConfig;
   /** 覆盖 k（面板「影响试算」与单测用；缺省读 `app_settings`） */
   caseWeightK?: number;
+  /**
+   * 只用某一档（§5.3 批量填充的「按复杂度重新推导」/「按用例加权推导」两种入口）。
+   * **不是强制改算式**：某行的自然择档不是它时整行跳过（`skip='offRule'`）而不是换个档硬凑——
+   * 没有复杂度档的行被「按复杂度」填出数来，就是假数据。
+   */
+  onlyRule?: DeriveRule;
 }
 
-/** §4.1 输入精度 0.5 人天 */
-function toGrid(v: number): number {
+/** §4.1 输入精度 0.5 人天（导出给 verify 脚本对照前端镜像，同 workday 镜像的断言范式） */
+export function toGrid(v: number): number {
   return Math.round(v * 2) / 2;
 }
 
@@ -312,6 +318,9 @@ export function deriveEstimates(projectId: string, opts: DeriveOptions): {
     });
     let skip: DeriveSkip = '';
     if (plan.kind === 'milestone') skip = 'milestone';
+    // 择档过滤排在保护规则之前：这一行本就不属于所选档，跳过原因要说的是「不是该档」，
+    // 而不是拿「已有行/人工行」盖掉真实原因（批量填充 40 行时，误标的跳过没法排查）。
+    else if (opts.onlyRule && item.rule !== opts.onlyRule) skip = 'offRule';
     else if (existing && (scope === 'missing' || (existing === 'manual' && !includeManual))) skip = existing === 'manual' ? 'manual' : 'exists';
     item.skip = skip;
     item.writable = skip === '';

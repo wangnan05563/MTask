@@ -25,6 +25,8 @@ import {
   CASE_PRIORITY_WEIGHTS,
   CASE_WEIGHT_K_DEFAULT,
   COMPLEXITY_BASE_DAYS,
+  DERIVE_RULES,
+  DERIVE_SKIPS,
   DURATION_O_MUL,
   DURATION_P_MUL,
   SETTINGS_KEY_CASE_K,
@@ -35,6 +37,7 @@ import {
   listPlanSkeletons,
   resolveCaseWeightK,
   writeDerives,
+  type DeriveRule,
 } from '../services/EstimateDerive';
 
 export const estimateApi = Router();
@@ -85,6 +88,20 @@ function effectiveCaseK(projectId: string, override?: number) {
 }
 
 /**
+ * §5.3 批量填充的档位入口（T02040）：只收三档名，空=不过滤。
+ * 传了不认识的值要报错而不是静默当作没传——静默会让「按复杂度填」变成「按引擎择档填」，
+ * 用户以为选中的是复杂度，实际写进去的是工期回退值。
+ */
+function parseOnlyRule(v: unknown): DeriveRule | undefined {
+  const s = str(v);
+  if (!s) return undefined;
+  if (!(DERIVE_RULES as readonly string[]).includes(s)) {
+    throw new Error(`未知推导档位：${s}（可用 ${DERIVE_RULES.join(' / ')}）`);
+  }
+  return s as DeriveRule;
+}
+
+/**
  * Σ 的输入集合：**恒取未归档计划**（§3.1「归档行留在库里供历史报价复核，但不进面板、不进 Σ」）——
  * `includeArchived` 只影响明细列表，不影响汇总，否则审计视角一开就会把归档工作量重新计入报价。
  * 集合要连**未估算**的计划一起给：§4.4 的分配比例自检只喂已有估算行的话恒等于 1，自检空转。
@@ -112,6 +129,9 @@ estimateApi.get('/meta', (_req, res) =>
     complexityBaseDays: COMPLEXITY_BASE_DAYS,
     casePriorityWeights: CASE_PRIORITY_WEIGHTS,
     durationMul: { oMul: DURATION_O_MUL, pMul: DURATION_P_MUL },
+    // T02040：批量填充的三档入口与跳过原因枚举从这里出，面板不再各写一份名单
+    deriveRules: DERIVE_RULES,
+    deriveSkips: DERIVE_SKIPS,
   })),
 );
 
@@ -243,14 +263,16 @@ estimateApi.post('/derive', (req, res) =>
     const dryRun = b.dryRun === undefined ? true : truthy(b.dryRun); // 默认预览，落库要显式 dryRun:false
     const planIds = Array.isArray(b.planIds) ? (b.planIds as unknown[]).map(str).filter(Boolean) : undefined;
     const kOverride = b.caseWeightK === undefined || b.caseWeightK === null ? undefined : Number(b.caseWeightK);
+    const onlyRule = parseOnlyRule(b.onlyRule);
     const r = deriveEstimates(projectId, {
       planIds,
       scope: b.scope === 'all' ? 'all' : 'missing',
       includeManual: truthy(b.includeManual),
       config: resolveEstimateConfig(readKv(projectId)),
       caseWeightK: kOverride,
+      onlyRule,
     });
-    if (dryRun) return { projectId, dryRun: true, written: 0, ...r };
+    if (dryRun) return { projectId, dryRun: true, written: 0, onlyRule, ...r };
     const write = writeDerives(projectId, r.items);
     return { projectId, dryRun: false, ...r, ...write };
   }),
@@ -264,15 +286,18 @@ estimateApi.post('/batch', (req, res) =>
     const mode = str(b.mode) || 'set';
     if (mode !== 'set' && mode !== 'derive') throw new Error(`未知批量模式：${mode}（可用 set / derive）`);
     if (mode === 'derive') {
+      const onlyRule = parseOnlyRule(b.onlyRule);
       const r = deriveEstimates(projectId, {
         planIds: Array.isArray(b.planIds) ? (b.planIds as unknown[]).map(str).filter(Boolean) : undefined,
         scope: b.scope === 'all' ? 'all' : 'missing',
         includeManual: truthy(b.includeManual),
         config: resolveEstimateConfig(readKv(projectId)),
         caseWeightK: b.caseWeightK === undefined || b.caseWeightK === null ? undefined : Number(b.caseWeightK),
+        onlyRule,
       });
-      const write = truthy(b.dryRun) ? { written: 0, errors: [], writtenPlanIds: [] } : writeDerives(projectId, r.items);
-      return { projectId, mode, dryRun: truthy(b.dryRun), ...r, ...write };
+      if (truthy(b.dryRun)) return { projectId, mode, dryRun: true, written: 0, errors: [], writtenPlanIds: [], onlyRule, ...r };
+      const write = writeDerives(projectId, r.items);
+      return { projectId, mode, dryRun: false, onlyRule, ...r, ...write };
     }
     const items = b.items;
     if (!Array.isArray(items) || items.length === 0) throw new Error('批量写入内容为空（items 需为非空数组）');

@@ -7,13 +7,19 @@
  *    就从断言退化成两套实现的巧合一致——这正是本仓 planDeps 双口径踩过的坑。
  * ② **分组单源**：明细行的里程碑分组直接复用时间线的 `groupTimelinePhases`，
  *    折叠态与列表/甘特共用同一份 `plan.collapsedMs`（T01576 口径），面板不自造第三套分组。
- * ③ **只读首段**：行内录入/批量填充是 T02040（§5.3），区间条与图是 T02041（§5.4），
- *    导出区随 E6/E7——本文件不预留空壳按钮。
+ * ③ **三点运算零本地实现**（T02040 起本面板可写，但写路径仍不含运算）：行内录入走 PATCH、
+ *    批量填充走 `mode=derive` / `mode=set`，`O>M` 之类的不合格值**由服务端拒**（400 + 中文文案），
+ *    面板只是把那行标红——前端不复写一份 `pointsError`，否则「谁被拒」会变成两套判据。
+ *    改完即时重取 `GET /api/estimates`：E/σ/汇总卡的新值仍由服务端算（§10-3 的「即时刷新」）。
+ * ④ 区间条与图是 T02041（§5.4），导出区随 E6/E7——本文件不预留空壳按钮。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { groupTimelinePhases, type TlPlan } from './PlanTimeline';
 import { api } from '../api/client';
-import { estimatesApi, type DeriveItem, type EstimateItem, type EstimateSource, type EstimatesResponse } from '../api/estimates';
+import {
+  estimatesApi, toGrid,
+  type DeriveItem, type DeriveRule, type EstimateItem, type EstimateInput, type EstimateSource, type EstimatesResponse,
+} from '../api/estimates';
 import { askConfirm } from '../ui/dialogs';
 
 /** PRD §5.1：docked 分栏宽 420；<1200px 转 SlideOver 时沿用同宽（两处共用一个常量） */
@@ -31,10 +37,25 @@ export const SOURCE_BADGE: Record<EstimateSource | 'none', { label: string; colo
 };
 
 /** §10-2：未落库的行走三档推导给「默认」值，徽标要能看出是哪一档推出来的 */
-export const RULE_LABEL: Record<DeriveItem['rule'], string> = {
+export const RULE_LABEL: Record<DeriveRule, string> = {
   complexity: '默认·复杂度',
   caseWeight: '默认·用例',
   duration: '默认·工期',
+};
+
+/** §5.3 批量填充的档位入口文案（与 `RULE_LABEL` 同一批档名，不另起一套叫法） */
+export const BATCH_RULE_LABEL: Record<DeriveRule, string> = {
+  complexity: '按复杂度重推',
+  caseWeight: '按用例加权重推',
+  duration: '按工期重推',
+};
+
+/** 服务端 `DERIVE_SKIPS` 的中文说明：跳过原因由服务端判定，面板只翻译，不第二次判定 */
+export const SKIP_LABEL: Record<string, string> = {
+  milestone: '里程碑行不落估算',
+  exists: '已有估算行（scope=missing 只补空的）',
+  manual: '人工复核过的行不覆盖',
+  offRule: '不属于所选推导档',
 };
 
 const num = (v: number | null | undefined): string =>
@@ -43,6 +64,13 @@ const num = (v: number | null | undefined): string =>
 const pct = (v: number | null | undefined): string => (v === null || v === undefined ? '—' : `${(v * 100).toFixed(1)}%`);
 /** `ratioCheck.deviationPct` 服务端已是「百分数」本身（2.3 = 2.3%），不能再过一遍 pct */
 const devPct = (v: number): string => `${(Math.round(v * 10) / 10).toFixed(1)}%`;
+
+/** 服务端 400 的中文文案直接上屏（`wrap()` 统一 `{ error }`，`api` 客户端已抛成 Error.message） */
+const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** 按跳过原因计数（响应里的 `skipped` 是唯一来源，面板不再判一次该不该跳） */
+const countSkip = (resp: { skipped: Array<{ skip: string }> }, kind: string): number =>
+  resp.skipped.filter((s) => s.skip === kind).length;
 
 /** 面板明细行（服务端三份数据合成一张表：估算行 / 推导建议 / 逐行期望值） */
 export interface PanelRow {
@@ -60,6 +88,10 @@ export interface PanelRow {
   badge: { label: string; color: string };
   /** true=未落库的推导建议（灰显 + 不可当报价依据） */
   suggestion: boolean;
+  /** 有估算行落库（T02040 行内录入要区分「改已有行」与「把建议值变成行」——后者 PATCH 得给全三点+阶段） */
+  persisted: boolean;
+  /** 估算行的来源；未落库为 'none'（「只看未复核」筛选与撤销都按它判，不靠徽标文案猜） */
+  source: EstimateSource | 'none';
   /** 徽标/数值的悬停说明：已落库行取 note，建议行取推导依据 */
   tip: string;
   /** 里程碑行：值照样显示但不进 Σ（§4.6 红线一） */
@@ -104,6 +136,8 @@ export function buildPanelRows(
         sigma: rr?.sigma ?? null,
         badge: SOURCE_BADGE[it.source] ?? SOURCE_BADGE.none,
         suggestion: false,
+        persisted: true,
+        source: it.source,
         tip: it.note || `已落库估算行（${SOURCE_BADGE[it.source]?.label ?? it.source}）`,
       };
     }
@@ -117,12 +151,15 @@ export function buildPanelRows(
         sigma: null,
         badge: { label: RULE_LABEL[dv.rule], color: SOURCE_BADGE.default.color },
         suggestion: true,
-        tip: dv.skip ? `不落库：${dv.skip}` : dv.note,
+        persisted: false,
+        source: 'none',
+        tip: dv.skip ? `不落库：${SKIP_LABEL[dv.skip] ?? dv.skip}` : dv.note,
       };
     }
     return {
       ...base, optimistic: null, likely: null, pessimistic: null, expected: null, sigma: null,
-      badge: SOURCE_BADGE.none, suggestion: false, tip: '无估算行，也没有可用的推导依据',
+      badge: SOURCE_BADGE.none, suggestion: false, persisted: false, source: 'none',
+      tip: '无估算行，也没有可用的推导依据',
     };
   });
 }
@@ -160,6 +197,48 @@ export interface EstimatePanelProps {
   readonly hideHeading?: boolean;
 }
 
+/** §5.3 行内编辑的三列（顺序即列顺序；面板与 verify 脚本共用这一份名单） */
+export const POINT_FIELDS = ['optimistic', 'likely', 'pessimistic'] as const;
+export type PointField = (typeof POINT_FIELDS)[number];
+export const POINT_LABEL: Record<PointField, string> = { optimistic: '乐观 O', likely: '最可能 M', pessimistic: '悲观 P' };
+
+/** 正在编辑的单元格（值原样存字符串，交给服务端判「是不是数 / O≤M≤P」） */
+interface Draft { planId: string; field: PointField; value: string }
+
+/** 一次批量写入的可撤销记录：写入前每行的原貌（null=当时没有估算行，撤销等价于删行） */
+export interface UndoEntry {
+  /** 人话标签（进撤销 toast 与提示条 title，如「统一值填充 4 行」） */
+  label: string;
+  /** 本次实际写入的行数——顶部提示「已填充 N 行 · 撤销」按它出数，与服务端 `written` 同源 */
+  count: number;
+  before: Array<{ planId: string; snapshot: EstimateInput | null }>;
+}
+
+/** 批量填充的三种模式（§5.3）：两档走服务端推导，一档走服务端批量写 */
+export type BatchMode = DeriveRule | 'uniform';
+
+/** 已落库行的原貌快照（撤销时按它回写，`source` 一起带上——否则规则行会被「转 manual」洗成人工行） */
+export function snapshotRow(r: PanelRow): EstimateInput | null {
+  if (!r.persisted) return null;
+  const s: EstimateInput = {
+    optimistic: r.optimistic ?? undefined,
+    likely: r.likely ?? undefined,
+    pessimistic: r.pessimistic ?? undefined,
+    source: r.source === 'none' ? undefined : r.source,
+  };
+  if (r.phase) s.phase = r.phase as EstimateInput['phase'];
+  return s;
+}
+
+/**
+ * 「统一值 + 相对幅度」模式的三点生成（§5.3 模式 ③）。
+ * 只算 `M×倍率` 这一件输入侧的事，落 0.5 网格用 `toGrid`（服务端同语义镜像）；
+ * 不碰 E/σ——那仍是服务端 `expected()` 的独占口径。倍率缺省取服务端下发的 `ruleRatio`。
+ */
+export function uniformPoints(m: number, oMul: number, pMul: number): { optimistic: number; likely: number; pessimistic: number } {
+  return { optimistic: toGrid(m * oMul), likely: toGrid(m), pessimistic: toGrid(m * pMul) };
+}
+
 export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollapse, onToast, hideHeading = false }: EstimatePanelProps) {
   const [data, setData] = useState<EstimatesResponse | null>(null);
   const [derives, setDerives] = useState<DeriveItem[]>([]);
@@ -167,6 +246,18 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deriveBusy, setDeriveBusy] = useState(false);
+  // ---------- T02040（§5.3）：行内录入 / 批量填充 / 撤销 / 只看未复核 ----------
+  const [draft, setDraft] = useState<Draft | null>(null);
+  /** planId → 服务端拒绝文案。判定权在服务端：面板不复写 `pointsError`，只把被拒的行标红 */
+  const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+  const [selIds, setSelIds] = useState<string[]>([]);
+  const [onlyUnreviewed, setOnlyUnreviewed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
+  const [uniformOpen, setUniformOpen] = useState(false);
+  const [uniform, setUniform] = useState<{ m: string; oMul: string; pMul: string }>({ m: '', oMul: '', pMul: '' });
+  /** 同一格同一个被拒值不重复打接口（失焦是常态，否则一次错误输入会刷 N 次 400） */
+  const rejectedSent = useRef<Set<string>>(new Set());
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -225,6 +316,238 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
     }
   }
 
+  /** 可见行（「只看未复核」= source≠manual：规则/默认/未录入都算待复核，§5.2 状态要求） */
+  const visibleRows = useMemo(
+    () => rows.filter((r) => !onlyUnreviewed || r.source !== 'manual'),
+    [rows, onlyUnreviewed],
+  );
+  /** 批量填充的作用域：可见 + 非里程碑（里程碑行服务端也不落估算，红线下不放进候选） */
+  const batchableIds = useMemo(
+    () => visibleRows.filter((r) => r.kind !== 'milestone').map((r) => r.planId),
+    [visibleRows],
+  );
+  const selRows = useMemo(
+    () => selIds.map((id) => rowById.get(id)).filter((r): r is PanelRow => !!r && r.kind !== 'milestone'),
+    [selIds, rowById],
+  );
+
+  const toggleSel = (id: string): void =>
+    setSelIds((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+  const selectAllVisible = (): void => setSelIds(batchableIds);
+
+  /** 一次批量写入的可撤销记录（原值取**写入前**的行快照，连 `source` 一起带上才谈得上还原） */
+  function pushUndo(label: string, count: number, before: Array<{ planId: string; snapshot: EstimateInput | null }>): void {
+    if (before.length === 0) return;
+    setUndoStack((p) => [...p, { label, count, before }]);
+  }
+
+  /**
+   * 单格保存（§5.3：Enter / 失焦即 PATCH）。
+   * 值的合法性一律交服务端：`O>M`、负数、非数字都由 400 中文文案回，面板只把该行标红——
+   * 前端再判一遍就是两套判据（同 §9 计算单源，也同 E4 首段的零计算红线）。
+   */
+  async function commitDraft(d: Draft | null): Promise<void> {
+    setDraft(null);
+    if (!d) return;
+    const r = rowById.get(d.planId);
+    if (!r) return;
+    const raw = d.value.trim();
+    // 清空 = 取消这次编辑：0 人天是一条真实报价，不该由误触落库
+    if (raw === '') return;
+    const key = `${d.planId}|${d.field}|${raw}`;
+    if (rejectedSent.current.has(key)) return; // 同一个被拒值不重打接口（失焦会连着触发）
+    if (r.persisted && String(r[d.field] ?? '') === raw) {
+      setRowErrors((p) => {
+        if (!(d.planId in p)) return p;
+        const n = { ...p };
+        delete n[d.planId];
+        return n;
+      });
+      return;
+    }
+
+    const input: EstimateInput = {};
+    if (r.persisted) {
+      input[d.field] = raw; // 单字段 PATCH：另外两点由服务端沿用原值（§8 PATCH 语义）
+    } else {
+      // 建议行落库=新建估算行，三点必填才过得了服务端校验；未编辑的两点继承推导值
+      for (const f of POINT_FIELDS) {
+        const v = f === d.field ? raw : r[f];
+        if (v === null || v === undefined) {
+          onToast(`该行没有可继承的推导值，请把「${POINT_LABEL[f]}」一起填上`);
+          return;
+        }
+        input[f] = v;
+      }
+      if (r.phase) input.phase = r.phase as EstimateInput['phase'];
+    }
+
+    setBusy(true);
+    try {
+      await estimatesApi.patchItem(projectId, d.planId, input);
+      rejectedSent.current.delete(key);
+      setRowErrors((p) => {
+        if (!(d.planId in p)) return p;
+        const n = { ...p };
+        delete n[d.planId];
+        return n;
+      });
+      await load(); // E/σ/汇总卡的新值仍由服务端算（§10-3「即时刷新」的实现方式）
+    } catch (e) {
+      rejectedSent.current.add(key);
+      setRowErrors((p) => ({ ...p, [d.planId]: errMsg(e) }));
+      // 被拒的值留在格子里：清掉它就逼用户重打一遍，而红框+行内文案已经说明了为什么没进去。
+      // 连着触发的失焦不会重打接口——`rejectedSent` 按 planId|field|value 拦。
+      setDraft(d);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 打开「统一值 + 相对幅度」表单：倍率预填服务端下发的 `ruleRatio`，面板不自带一套经验值 */
+  function openUniform(): void {
+    const ratio = data?.params.config.ruleRatio;
+    setUniform({ m: '', oMul: ratio ? String(ratio.oMul) : '', pMul: ratio ? String(ratio.pMul) : '' });
+    setUniformOpen(true);
+  }
+
+  /**
+   * 批量填充（§5.3 三模式）：预览 → `askConfirm` → 写入 → 压撤销栈。
+   * 模式 ①② 走 `mode=derive` + `onlyRule`：**过滤不是强制改算式**——某行的自然择档不是它时
+   * 服务端整行跳过（`skip='offRule'`），面板如实报「N 行不属于该档」。没有复杂度档的行被
+   * 「按复杂度」硬填出数来就是假数据，这条是本次实施给服务端补的口径。
+   */
+  async function runBatch(mode: BatchMode): Promise<void> {
+    if (selRows.length === 0) { onToast('先勾选要批量填充的行（里程碑行不参与）'); return; }
+    setBusy(true);
+    try {
+      if (mode === 'uniform') {
+        const nums = [uniform.m, uniform.oMul, uniform.pMul].map((v) => v.trim());
+        if (nums.some((v) => v === '' || !Number.isFinite(Number(v)))) {
+          onToast('统一值模式需要「最可能 M」与两个倍率都填数字');
+          return;
+        }
+        const [m, oMul, pMul] = nums.map(Number);
+        if (m <= 0 || oMul <= 0 || pMul <= 0) { onToast('统一值与倍率必须是正数'); return; }
+        const pts = uniformPoints(m, oMul, pMul);
+        const items = selRows.map((r) => ({
+          planId: r.planId,
+          ...pts,
+          source: 'manual' as const, // 人给的统一值就是人工复核，不能让批量通道把徽标留在「规则」
+          ...(r.phase ? { phase: r.phase as EstimateInput['phase'] } : {}),
+        }));
+        const go = await askConfirm(
+          `将把 ${items.length} 行的三点设为 O ${num(pts.optimistic)} / M ${num(pts.likely)} / P ${num(pts.pessimistic)} 人天`
+          + `（M=${num(m)}，倍率 ${num(oMul)} / ${num(pMul)}，落 0.5 网格）。\n`
+          + '已有估算的行会被覆盖并转「人工」，确认写入？',
+        );
+        if (!go) return;
+        const before = selRows.map((r) => ({ planId: r.planId, snapshot: snapshotRow(r) }));
+        const w = await estimatesApi.batchSet(projectId, items);
+        if (w.written === 0) {
+          // 服务端「任一行不合格零写入」：把行级错误摊到对应行上，一行都不动
+          const next: Record<string, string> = {};
+          w.errors.forEach((e) => { next[e.planId] = e.message; });
+          setRowErrors((p) => ({ ...p, ...next }));
+          onToast(`批量填充被拒绝：${w.errors.length > 0 ? w.errors[0].message : '未写入任何行'}`);
+          return;
+        }
+        pushUndo(`统一值填充 ${w.written} 行`, w.written, before);
+        onToast(`已填充 ${w.written} 行${w.errors.length > 0 ? `，${w.errors.length} 行被拒` : ''}`);
+        await load();
+        return;
+      }
+
+      // includeManual 缺省 false：§4.6 红线二在批量通道同样生效——人工复核过的行由服务端跳过
+      // （skip='manual'），面板如实报数，而不是替用户决定「覆盖你复核过的值」。
+      // `onlyRule` 是这三个按钮的全部区别：不带它，「按用例加权重推」会和「按复杂度重推」做同一件事。
+      const deriveOpts = { planIds: selRows.map((r) => r.planId), scope: 'all' as const, onlyRule: mode as DeriveRule };
+      const preview = await estimatesApi.batchDerive(projectId, { ...deriveOpts, dryRun: true });
+      const n = preview.writableCount;
+      if (n === 0) {
+        onToast(`没有可${BATCH_RULE_LABEL[mode]}的行（${preview.skipped.length} 行全部被跳过，原因见明细 tooltip）`);
+        return;
+      }
+      const skipped = preview.skipped.length;
+      const go = await askConfirm(
+        `${BATCH_RULE_LABEL[mode]}：选中 ${selRows.length} 行中 ${n} 行可写入`
+        + `${skipped > 0 ? `，${skipped} 行跳过（其中 ${countSkip(preview, 'offRule')} 行不属于该档、${countSkip(preview, 'manual')} 行为人工复核过的行）` : ''}。\n`
+        + `用例加权档的 k=${preview.caseWeightK}（来源：${preview.caseWeightKFrom}）。\n预览行数与写入行数同源，确认即写入？`,
+      );
+      if (!go) return;
+      const before = new Map(selRows.map((r) => [r.planId, snapshotRow(r)]));
+      const w = await estimatesApi.batchDerive(projectId, deriveOpts);
+      // 撤销快照只覆盖**真正被写入**的行：优先取服务端回传的 `writtenPlanIds`（等长才非空），
+      // 拿不到时按本次选中的可写行兜底——绝不拿「全选可见」当作用域，否则会碰到没写过的行。
+      const ids = w.writtenPlanIds && w.writtenPlanIds.length > 0
+        ? w.writtenPlanIds
+        : ((w.written ?? 0) > 0 ? selRows.filter((r) => preview.items.some((it) => it.planId === r.planId && it.writable)).map((r) => r.planId) : []);
+      pushUndo(`${BATCH_RULE_LABEL[mode]} ${w.written ?? 0} 行`, w.written ?? 0, ids.map((id) => ({ planId: id, snapshot: before.get(id) ?? null })));
+      onToast(`已${BATCH_RULE_LABEL[mode]}写入 ${w.written ?? 0} 行${(w.errors?.length ?? 0) > 0 ? `，${w.errors?.length} 行被拒` : ''}`);
+      await load();
+    } catch (e) {
+      onToast(`批量填充失败：${errMsg(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 撤销最近一次批量写入（§5.3：会话内存栈；原态是「无估算行」的，删除才等价于回滚） */
+  async function undoLast(): Promise<void> {
+    const entry = undoStack[undoStack.length - 1];
+    if (!entry) return;
+    setBusy(true);
+    try {
+      const restore = entry.before.filter((b) => b.snapshot !== null).map((b) => ({ planId: b.planId, ...b.snapshot as EstimateInput }));
+      const drop = entry.before.filter((b) => b.snapshot === null).map((b) => b.planId);
+      let restored = 0, removed = 0;
+      if (restore.length > 0) {
+        const r = await estimatesApi.batchSet(projectId, restore);
+        if (r.written === 0) {
+          onToast(`撤销失败：${r.errors[0]?.message ?? '未写入任何行'}`);
+          return;
+        }
+        restored = r.written;
+      }
+      for (const id of drop) {
+        const r = await estimatesApi.removeItem(projectId, id);
+        if (r.removed) removed += 1;
+      }
+      setUndoStack((p) => p.slice(0, -1));
+      setSelIds([]);
+      onToast(`已撤销「${entry.label}」：还原 ${restored} 行${removed > 0 ? `，删除 ${removed} 行新建估算` : ''}`);
+      await load();
+    } catch (e) {
+      onToast(`撤销失败：${errMsg(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** §7 的显式清理入口：脱离计划的估算行——先列清单再确认，绝不做成自动清理 */
+  async function cleanupDetached(): Promise<void> {
+    setBusy(true);
+    try {
+      const list = await estimatesApi.listDetached(projectId);
+      const ids = list.rows.map((r) => r.id);
+      if (ids.length === 0) { onToast('当前没有脱离计划的估算行（可能刚被其他入口清理过）'); await load(); return; }
+      const sample = list.rows.slice(0, 3).map((r) => `${num(r.optimistic)}/${num(r.likely)}/${num(r.pessimistic)}`).join('、');
+      const go = await askConfirm(
+        `有 ${ids.length} 条估算已脱离计划（计划被彻底删除后估算按 §7 原样保留）。\n`
+        + `三点值：${sample}${ids.length > 3 ? ' 等' : ''} 人天。\n`
+        + '删除后不进撤销栈、无法恢复，确认清理？',
+      );
+      if (!go) return;
+      const r = await estimatesApi.cleanupDetached(projectId, ids);
+      onToast(`已清理 ${r.removed} 条脱离计划的估算行${r.removed !== ids.length ? `，${ids.length - r.removed} 条未删（已不满足脱离条件）` : ''}`);
+      await load();
+    } catch (e) {
+      onToast(`清理失败：${errMsg(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (loading) {
     return (
       <div style={{ padding: 12 }}>
@@ -263,6 +586,32 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
     </div>
   );
 
+  /** 工具条小按钮（11px 档，同 §5.5 字号阶梯；禁用态只降色不改形，避免按钮跳动） */
+  const toolBtn = (tone: 'default' | 'accent' | 'danger' = 'default', disabled = false): CSSProperties => ({
+    border: `1px solid ${tone === 'danger' ? 'var(--danger)' : tone === 'accent' ? 'var(--accent)' : 'var(--border-strong)'}`,
+    borderRadius: 6,
+    padding: '3px 8px',
+    background: 'var(--card-bg)',
+    color: disabled ? 'var(--text-muted)' : tone === 'danger' ? 'var(--danger)' : tone === 'accent' ? 'var(--accent)' : 'var(--text)',
+    cursor: disabled ? 'default' : 'pointer',
+    fontSize: 11,
+  });
+
+  /** 行内录入的数字输入框（40px 定宽 = 原 span 列宽，面板 420 的账不变；appearance 只去箭头不改 step 语义） */
+  const pointInput = (err: string | undefined): CSSProperties => ({
+    width: 40,
+    textAlign: 'right',
+    fontFamily: MONO,
+    fontSize: 12,
+    padding: '1px 2px',
+    borderRadius: 4,
+    border: `1px solid ${err ? 'var(--danger)' : 'var(--border)'}`,
+    background: 'var(--card-bg)',
+    color: 'var(--text)',
+    WebkitAppearance: 'textfield',
+    appearance: 'textfield',
+  });
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}>
       {/* 1) 汇总卡（sticky，§5.2-1）——读数全部来自服务端 summary */}
@@ -278,6 +627,20 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
           {card('理想人月（ΣE）', num(s.idealManMonths.expected), `直接投入 ${num(s.directManDays.expected)} 人天`)}
           {card('Σ估算比例（I40）', pct(rc.sumRatio), `偏差 ${devPct(rc.deviationPct)}`, rc.danger)}
         </div>
+        {/* §5.3 撤销：本会话内存栈顶（批量写入前抓的原值）；空栈不占位 */}
+        {undoStack.length > 0 && (() => {
+          const last = undoStack[undoStack.length - 1];
+          return (
+            <div role="status" aria-label="批量填充撤销条" style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+              <span>已填充 {last.count} 行 · 撤销</span>
+              <button type="button" className="tbtn-anim" style={toolBtn('accent', busy)} disabled={busy}
+                title={`${last.label}（本会话第 ${undoStack.length} 步，仅还原最近一次批量写入）`}
+                onClick={() => void undoLast()}>
+                撤销{undoStack.length > 1 ? `（剩 ${undoStack.length - 1} 步）` : ''}
+              </button>
+            </div>
+          );
+        })()}
       </div>
 
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 10 }}>
@@ -309,7 +672,66 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
           </tbody>
         </table>
 
-        {/* 3) 明细行（§5.2-3）：分组与折叠与时间线同源 */}
+        {/* 3) 明细工具条（§5.3 批量填充 + 只看未复核）：作用域=可见且非里程碑的行，里程碑由服务端红线排除 */}
+        <div role="toolbar" aria-label="估算批量填充工具条" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', margin: '14px 0 6px' }}>
+          <label
+            title="隐藏已复核（source=manual）的行——规则/默认/未录入都算待复核（§5.2 状态要求）"
+            style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}
+          >
+            <input type="checkbox" checked={onlyUnreviewed} onChange={(e) => setOnlyUnreviewed(e.target.checked)} />
+            只看未复核
+          </label>
+          <button type="button" className="tbtn-anim" style={toolBtn()} onClick={selectAllVisible}
+            title={`选中当前可见的 ${batchableIds.length} 行（里程碑行不参与批量填充）`}>
+            全选可见
+          </button>
+          <button type="button" className="tbtn-anim" style={toolBtn('default', selIds.length === 0)} disabled={selIds.length === 0}
+            onClick={() => setSelIds([])}>
+            清空
+          </button>
+          {(Object.keys(BATCH_RULE_LABEL) as DeriveRule[]).map((rule) => (
+            <button key={rule} type="button" className="tbtn-anim" style={toolBtn('accent', busy || selRows.length === 0)}
+              disabled={busy || selRows.length === 0} onClick={() => void runBatch(rule)}
+              title={`把选中行里自然择档为「${RULE_LABEL[rule]}」的那些按 §4.6 该档重推；不属于该档的行由服务端整行跳过（offRule），不硬凑假数据`}>
+              {BATCH_RULE_LABEL[rule]}
+            </button>
+          ))}
+          <button type="button" className="tbtn-anim" style={toolBtn('accent', busy || selRows.length === 0)}
+            disabled={busy || selRows.length === 0} onClick={openUniform}
+            title={`给选中的 ${selRows.length} 行写同一组三点（M + O/P 倍率，落 0.5 网格）`}>
+            统一值…
+          </button>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>已选 {selRows.length} 行</span>
+        </div>
+
+        {uniformOpen && (
+          <div role="group" aria-label="统一值批量填充表单"
+            style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', border: '1px solid var(--border-strong)', borderRadius: 8, padding: 6, background: 'var(--card-bg)', fontSize: 11 }}>
+            <span style={{ color: 'var(--text-muted)' }}>统一值 + 相对幅度</span>
+            {([['m', '最可能 M', '人天'], ['oMul', 'O 倍率', '如 0.8'], ['pMul', 'P 倍率', '如 1.4']] as const).map(([key, label, hint]) => (
+              <label key={key} title={`${label}（${hint}）`} style={{ display: 'flex', gap: 3, alignItems: 'center', color: 'var(--text-muted)' }}>
+                {label}
+                <input type="number" step={key === 'm' ? 0.5 : 0.1} min={0} value={uniform[key]}
+                  onChange={(e) => setUniform((p) => ({ ...p, [key]: e.target.value }))}
+                  style={{ width: 52, textAlign: 'right', fontFamily: MONO, fontSize: 12, padding: '1px 2px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
+                />
+              </label>
+            ))}
+            <span style={{ color: 'var(--text-muted)' }}>→ {(() => {
+              const m = Number(uniform.m), o = Number(uniform.oMul), p = Number(uniform.pMul);
+              return uniform.m.trim() !== '' && Number.isFinite(m) && Number.isFinite(o) && Number.isFinite(p) && m > 0 && o > 0 && p > 0
+                ? `O ${num(uniformPoints(m, o, p).optimistic)} / M ${num(uniformPoints(m, o, p).likely)} / P ${num(uniformPoints(m, o, p).pessimistic)}`
+                : '待填';
+            })()}</span>
+            <button type="button" className="tbtn-anim" style={toolBtn('accent', busy || selRows.length === 0)}
+              disabled={busy || selRows.length === 0} onClick={() => void runBatch('uniform')}>
+              写入 {selRows.length} 行
+            </button>
+            <button type="button" className="tbtn-anim" style={toolBtn()} onClick={() => setUniformOpen(false)}>取消</button>
+          </div>
+        )}
+
+        {/* 4) 明细行（§5.2-3）：分组与折叠与时间线同源 */}
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '14px 0 6px' }}>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>明细（O / M / P / E / σ）</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
@@ -354,13 +776,28 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
               {!collapsed && group.items.map((p) => {
                 const r = rowById.get(p.id);
                 if (!r) return null;
+                if (onlyUnreviewed && r.source === 'manual') return null;
+                const err = rowErrors[r.planId];
+                const editable = r.kind !== 'milestone';
+                const cellValue = (f: PointField): string =>
+                  draft && draft.planId === r.planId && draft.field === f
+                    ? draft.value
+                    : (r[f] === null ? '' : String(r[f]));
                 const badge = (
                   <span title={r.tip} style={{ fontSize: 10, padding: '0 4px', borderRadius: 3, border: `1px solid ${r.badge.color}`, color: r.badge.color, whiteSpace: 'nowrap' }}>
                     {r.badge.label}
                   </span>
                 );
                 return (
-                  <div key={r.planId} style={{ borderBottom: '1px solid var(--border)', padding: '4px 0 4px 12px', fontSize: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <div key={r.planId} style={{ borderBottom: '1px solid var(--border)', padding: '4px 0 4px 4px', fontSize: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <input
+                      type="checkbox"
+                      checked={selIds.includes(r.planId)}
+                      disabled={!editable}
+                      onChange={() => toggleSel(r.planId)}
+                      title={editable ? '勾选后参与批量填充' : '里程碑行不参与批量填充（§4.6 红线一）'}
+                      style={{ margin: 0, flex: '0 0 auto' }}
+                    />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: r.suggestion ? 'var(--text-muted)' : 'var(--text)' }} title={r.title}>
                         {r.reqNos.length > 0 && <span style={{ color: 'var(--text-muted)', marginRight: 4, fontFamily: MONO, fontSize: 11 }}>{r.reqNos.join('、')}</span>}
@@ -369,13 +806,34 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                       <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 2 }}>
                         {badge}
                         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>复杂度 {r.complexity ?? '—'}</span>
+                        {err && <span style={{ fontSize: 11, color: 'var(--danger)' }}>{err}</span>}
                       </div>
                     </div>
-                    <div style={{ display: 'flex', gap: 4, fontFamily: MONO, textAlign: 'right' }}>
-                      <span style={{ width: 34, textAlign: 'right', color: 'var(--text-muted)' }} title="乐观（人天）">{num(r.optimistic)}</span>
-                      <span style={{ width: 34, textAlign: 'right' }} title="最可能（人天）">{num(r.likely)}</span>
-                      <span style={{ width: 34, textAlign: 'right', color: 'var(--text-muted)' }} title="悲观（人天）">{num(r.pessimistic)}</span>
-                      <span style={{ width: 38, textAlign: 'right' }} title="期望值 E（服务端算）">{num(r.expected)}</span>
+                    <div style={{ display: 'flex', gap: 4, fontFamily: MONO, textAlign: 'right', alignItems: 'center' }}>
+                      {POINT_FIELDS.map((f) => (
+                        <input
+                          key={f}
+                          type="number"
+                          step={0.5}
+                          min={0}
+                          disabled={!editable || busy}
+                          value={cellValue(f)}
+                          placeholder="—"
+                          aria-label={`${r.title} ${POINT_LABEL[f]}（人天）`}
+                          title={editable
+                            ? `${POINT_LABEL[f]}（人天，0.5 步进）：Enter 或失焦即落库，Esc 还原${err ? `\n${err}` : ''}`
+                            : '里程碑行不落估算（§4.6 红线一），值只作参考'}
+                          onChange={(e) => setDraft({ planId: r.planId, field: f, value: e.target.value })}
+                          onFocus={() => setDraft({ planId: r.planId, field: f, value: cellValue(f) })}
+                          onBlur={() => void commitDraft(draft)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') { e.preventDefault(); void commitDraft(draft); }
+                            else if (e.key === 'Escape') { e.preventDefault(); setDraft(null); }
+                          }}
+                          style={{ ...pointInput(err), color: f === 'likely' ? 'var(--text)' : 'var(--text-muted)' }}
+                        />
+                      ))}
+                      <span style={{ width: 38, textAlign: 'right' }} title="期望值 E（服务端算，只读）">{num(r.expected)}</span>
                       <span style={{ width: 34, textAlign: 'right', color: 'var(--text-muted)' }} title="σ（未落库行不计算）">{num(r.sigma)}</span>
                     </div>
                   </div>
@@ -385,7 +843,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
           );
         })}
 
-        {/* 4) 告警条（§5.2 状态要求里「比例自检」那一档；行内录入错误随 T02040 落地） */}
+        {/* 5) 告警条（§5.2 状态要求里「比例自检」那一档 + §7 脱离计划行） */}
         {(rc.danger || rc.unassigned.length > 0 || data.checks.detached > 0) && (
           <div style={{ marginTop: 10, border: `1px solid ${rc.danger ? 'var(--danger)' : 'var(--border-strong)'}`, borderRadius: 8, padding: 8, background: 'var(--card-bg)', fontSize: 12 }}>
             <div style={{ color: rc.danger ? 'var(--danger)' : 'var(--text)', marginBottom: 4 }}>
@@ -398,8 +856,28 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
               </div>
             )}
             {data.checks.detached > 0 && (
-              <div style={{ color: 'var(--text-muted)' }}>另有 {data.checks.detached} 条估算行已脱离计划（清理入口随 E5 提供）</div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4, flexWrap: 'wrap' }}>
+                <span style={{ color: 'var(--text-muted)' }}>另有 {data.checks.detached} 条估算行已脱离计划</span>
+                <button type="button" className="tbtn-anim" style={toolBtn('danger', busy)} disabled={busy}
+                  title="§7：计划被彻底删除后估算行原样保留（历史报价依据）；清理是显式手动操作，不进撤销栈"
+                  onClick={() => void cleanupDetached()}>
+                  清理脱离行
+                </button>
+              </div>
             )}
+          </div>
+        )}
+
+        {/* 6) 行内录入错误条（§5.2 状态要求：被拒的行逐行点名 + 底部计数；判据全在服务端，面板只转录 400 文案） */}
+        {Object.keys(rowErrors).length > 0 && (
+          <div role="alert" aria-label="行内录入错误提示"
+            style={{ marginTop: 10, border: '1px solid var(--danger)', borderRadius: 8, padding: 8, background: 'var(--card-bg)', fontSize: 12, color: 'var(--danger)' }}>
+            <div>{Object.keys(rowErrors).length} 行不满足录入校验（O≤M≤P），导出前须修正</div>
+            {Object.entries(rowErrors).map(([id, msg]) => (
+              <div key={id} style={{ color: 'var(--text-muted)', marginTop: 2 }}>
+                {rowById.get(id)?.title ?? id}：{msg}
+              </div>
+            ))}
           </div>
         )}
       </div>
