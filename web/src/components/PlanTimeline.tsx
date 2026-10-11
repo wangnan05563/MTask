@@ -49,6 +49,8 @@ export interface TlPlan {
   readonly linked_task_title?: string | null;
   /** T00499/T01621：前置依赖 JSON [{id,type}]（type=child 表示挂接到某里程碑）——阶段分组显式关系判定用 */
   readonly deps?: string | null;
+  /** T02039（估算视图 E4 §5.1）：估算面板明细列要显示复杂度（计划查询已返回该列，投影补上即可，服务端无需改） */
+  readonly complexity?: number | null;
 }
 
 export type TlGranularity = 'day' | 'week' | 'month' | 'quarter';

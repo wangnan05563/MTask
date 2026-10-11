@@ -247,8 +247,12 @@ export interface EstimateSummary {
   coefRows: CoefRow[];
   /** 报价口径（§4.3 + 裁决 D2：对外 P84，内部同时看 P50） */
   quote: { p50ManDays: number; p84ManDays: number; p50ManMonth: number; p84ManMonth: number; sigma: number };
-  /** 逐行期望值与人天占比（开发段整体比例见 `phases` 里的 dev 项） */
-  rowRatios: Array<{ key: string; phase: string; expected: number; ratio: number }>;
+  /**
+   * 逐行期望值 / σ / 人天占比（开发段整体比例见 `phases` 里的 dev 项）。
+   * σ 也在这里给（T02039/E4）：面板明细列要显示 σ，而 §9 计算单源禁止前端自算三点——
+   * 缺这一个字段，前端要么不算、要么重算一遍 `sigma()`。
+   */
+  rowRatios: Array<{ key: string; phase: string; expected: number; sigma: number; ratio: number }>;
   ratioCheck: RatioCheck;
   /** 进入 Σ 的行标识（面板「已计入 N 行」与调试对账） */
   countedKeys: string[];
@@ -350,6 +354,7 @@ export function buildSummary(rows: EstimateEngineRow[], config: EstimateConfig =
       key: r.key,
       phase: r.phase,
       expected: expected(r.points),
+      sigma: sigma(r.points),
       ratio: denom === 0 ? 0 : toManMonth(expected(r.points), config) / denom,
     }));
 

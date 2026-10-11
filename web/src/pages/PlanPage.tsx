@@ -17,6 +17,7 @@ import { deltaDaysFromPx, ganttDragResult, newGanttDrag, type GanttDragMode, typ
 import { PlanTimeline, type TlGranularity, type TlPlan, type TlSpacing } from '../components/PlanTimeline'; // T01564：纵向时间轴
 import { SlideOver } from '../components/SlideOver'; // T01565：时间线节点详情复用 FR-3.2 抽屉基元
 import { focusTaskById } from '../ui/focusTask'; // T01577：时间线节点跳转关联待办，复用跨视图定位公共 helper
+import { EstimatePanel, ESTIMATE_PANEL_WIDTH, useEstimatePanelMode } from '../components/EstimatePanel'; // T02039（估算视图 E4）：时间线右侧停靠面板，<1200px 转覆盖式
 
 /** 项目计划页（T00431，菜单位于周报前）：串行瀑布时间线 + Excel 导入导出 + 待办联动。 */
 
@@ -1272,6 +1273,10 @@ export function PlanPage() {
   const [tlSpacing, setTlSpacing] = useSessionState<TlSpacing>('plan.tlSpacing', 'uniform');
   // T01565：时间线节点点击详情（复用 FR-3.2 SlideOver，不新造抽屉）
   const [selectedPlan, setSelectedPlan] = useState<TlPlan | null>(null);
+  // T02039（估算视图 E4 / 裁决 D3）：估算面板只挂在时间线视图，开合态与 plan.viewMode、plan.collapsedMs
+  // 同套会话级持久化口径（§10-1「刷新后保持」）；改 viewMode 不受影响——面板不是第四段视图。
+  const [estimateOpen, setEstimateOpen] = useSessionState<boolean>('plan.estimatePanelOpen', false);
+  const estimateMode = useEstimatePanelMode(); // docked（≥1200px）/ overlay（<1200px 转覆盖式抽屉）
 
   // ---------- T01059 后续：甘特条拖动（move / 左右边缘 resize → 联动 start_date 与 duration_days）----------
   // 拖动期间只改本地预览态，松手才落库（走既有 updatePlan → PATCH /plans/:id，服务端按工作日历重算 end_date
@@ -1946,10 +1951,40 @@ export function PlanPage() {
             <PlanTimelineGranularityToggle granularity={tlGranularity} setGranularity={setTlGranularity} />
             <PlanTimelineSpacingToggle spacing={tlSpacing} setSpacing={setTlSpacing} />
             <PlanTimelineCollapseAll allCollapsed={tlAllCollapsed} phaseCount={tlMsIds.length} onToggle={() => setAllTlCollapsed(!tlAllCollapsed)} />
+            {/* T02039（§5.1）：面板开关与三枚 toggle 同排。用文案 + 箭头字形而非 lucide 图标，
+                免得为多一个图标去动 lucide 导入行（那行正被并发会话的 T01673 改动占着）。 */}
+            <button
+              type="button"
+              className="tbtn-anim"
+              onClick={() => setEstimateOpen(!estimateOpen)}
+              title={estimateOpen ? '收起估算面板' : '打开估算面板（右侧停靠；窄屏转为覆盖式抽屉）'}
+              style={{ fontSize: 12, padding: '3px 8px', border: `1px solid ${estimateOpen ? 'var(--accent)' : 'var(--border-strong)'}`, borderRadius: 6, background: estimateOpen ? 'var(--accent-soft)' : 'var(--card-bg)', color: estimateOpen ? 'var(--accent)' : 'var(--text)', cursor: 'pointer' }}
+            >
+              估算面板 {estimateOpen ? '⤡' : '⤢'}
+            </button>
           </div>
         </div>
-        <PlanTimeline plans={plans} granularity={tlGranularity} spacing={tlSpacing} onSelect={(p) => setSelectedPlan(p)}
-          collapsedMs={collapsedMs} onToggleMsCollapse={toggleMsCollapsed} onJumpToLinked={jumpToLinked} />
+        {/* T02039：docked 分栏——左列 flex:1 + minWidth:0 让时间线自然被 420px 挤压（§10-13 走查项），
+            右列 sticky 使面板在长脉络滚动时始终可见；overlay 形态复用 FR-3.2 SlideOver，不新造抽屉。 */}
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <PlanTimeline plans={plans} granularity={tlGranularity} spacing={tlSpacing} onSelect={(p) => setSelectedPlan(p)}
+              collapsedMs={collapsedMs} onToggleMsCollapse={toggleMsCollapsed} onJumpToLinked={jumpToLinked} />
+          </div>
+          {estimateOpen && estimateMode === 'docked' && (
+            <aside
+              aria-label="估算面板"
+              style={{ flex: `0 0 ${ESTIMATE_PANEL_WIDTH}px`, maxWidth: '44vw', position: 'sticky', top: 0, height: 'calc(100vh - 150px)', minHeight: 320, border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}
+            >
+              <EstimatePanel projectId={projectId} plans={plans} collapsedMs={collapsedMs} onToggleMsCollapse={toggleMsCollapsed} onToast={flash} />
+            </aside>
+          )}
+        </div>
+        {estimateOpen && estimateMode === 'overlay' && (
+          <SlideOver open title="估算面板" onClose={() => setEstimateOpen(false)} width={ESTIMATE_PANEL_WIDTH}>
+            <EstimatePanel projectId={projectId} plans={plans} collapsedMs={collapsedMs} onToggleMsCollapse={toggleMsCollapsed} onToast={flash} hideHeading />
+          </SlideOver>
+        )}
         {selectedPlan && (
           <SlideOver open title={selectedPlan.title} onClose={() => setSelectedPlan(null)} width={420}>
             <PlanTimelineDetail plan={selectedPlan} onJump={jumpToLinked} />

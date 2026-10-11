@@ -1,6 +1,7 @@
 # PRD：项目管理「估算」视图与工作量评估导出（MTask）
 
-> 来源任务：T01839 ｜ 版本：**v1.7** ｜ 日期：2026-10-12 ｜ 状态：**已批准·E0 放行**（业主 2026-10-11 签字：D1~D6 全部按评审建议值通过，见文末「裁决结果」；E0 Spike 同日实测通过，见 §11.1）
+> 来源任务：T01839 ｜ 版本：**v1.8** ｜ 日期：2026-10-12 ｜ 状态：**已批准·E0 放行**（业主 2026-10-11 签字：D1~D6 全部按评审建议值通过，见文末「裁决结果」；E0 Spike 同日实测通过，见 §11.1）
+> v1.8 变更（T02039 = §11-E4 首段实施回写）：① §5.1 末条对 `complexity` 的判断**按实测校正**——`GET /api/plans` 走 `SELECT p.*`，`complexity` 列早已随计划下发，E4 只需给 `TlPlan` 补一个可选字段，**服务端与计划查询都不必改**（原文「需扩…计划查询列」会让下一位实施者白跑一趟后端）。② 逐行 σ 的**唯一来源定为 `summary.rowRatios[].sigma`**（引擎 additive 补该字段）：§9「前端不重写公式」如果只覆盖 E 不覆盖 σ，面板 σ 列要么空着要么前端再算一遍 `sigma()`。③ §5.2 的**空态判定校正**为「`items.length === 0`」而非「全部 `source='default'`」——`default` 行也要先经「按规则推导」写入才存在，按原文判据则空态永远不出现。④ 明细列的**需求编号不新增服务端字段**，复用需求矩阵现成接口 `GET /api/plans/prd-requirements`（按 `linkedPlans[].id` 反查 `req_no`）。⑤ §5.2 四段按交付单**显式分段**：本单交付 1/2/3 段 + 空态，**行内录入与行内错误态随 T02040**、**区间条随 T02041**、**导出区随 E6/E7**，面板内不预留空壳按钮（预留即等于承诺一个未验的交互）。⑥ 覆盖式（<1200px）下面板自带标题行隐去，避免与 `SlideOver` 标题重复。⑦ §10-1/2/5/13 由 CDP 真机走查取证（`scripts/verify-t02039-e4-ui.mjs`，26 断言含三档视口与截图），另附取数/零计算脚本 `scripts/verify-t02039-estimate-e4a.mts`（37 断言）。
 > v1.7 变更（T02037 = §11-E3 实施回写）：① §4.6 规则 2 的「k 项目级可配」缺键名，现定死两支 KV：全局 `estimate.caseWeightK`、项目级 `estimate.caseWeightK.<projectId>`（项目级优先，缺省 0.5；非正数直接报错不静默回落）。② §4.6 三档推导值**一律落到 0.5 人天网格**（§4.1「输入精度 0.5 人天」的实现口径）——不写死这条，面板显示 3.25、Excel 里又是 3.25，而客户模板全是 .5 步进，两侧迟早对不上。③ §4.6「人工改过即转 manual」的**落点定在路由层**：`PATCH /api/estimates/:planId` 未显式给 `source` 时，`rule`/`default` 行一律转 `manual`（`EstimateService` 的「缺省沿用原值」语义不动，避免与 E1 断言打架）；不转则 §9 的复核率会把人已改过的行继续算成未复核机器值。④ §8 端点按实测落地形态补注（见该节「E3 实测补充」）：derive **默认 dryRun**、`mode=derive`、`/meta` 单源、`/detach`+`/detach/cleanup` 显式清理、params 传空串=回落默认；并记一条引擎既有分类口径——排除计数按「未估算 → 小计 → 里程碑」优先级，未估算的里程碑行记入 `unEstimated` 而非 `milestone`。
 > v1.6 变更（T02036 = §11-E2 实施回写）：① §9「可维护」项把引擎落点由 `web/src/util/estimate-engine.ts` **校正到服务端单源** `server/src/services/estimate-engine.ts`——两侧 tsconfig 均无跨包 include/alias（`server/tsconfig.json` 有 `rootDir:"src"`、`web/tsconfig.json` 只 include `src`），让 web 持有唯一实现会让服务端（E6 导出缓存值只能来自引擎输出，§11.1 红线 2）无法复用；前端经 E3 的汇总接口取数展示，「避免两处公式各写一遍」的原意由此真正落地（§9 该行同步改写）。② §4.6 的 `estimate.rule.default.ratio`「1:4:1.6」读法按正文显式式子定死：**首末两段是 O、P 相对 M 的倍率，中段 4 是 PERT 权重而非 M 的倍率**（即 O=M、P=1.6M，与模板实测形态一致）；实现落 `parseRuleRatio()`，中段不是 4 直接报错不猜。③ §4.2 补记「标准式与模板式逐值等价」的**前提是 O≤M≤P**（乱序反例 0/5/1：标准 3.5 vs 模板 1.5），该前提由 E1 服务层校验守住，引擎不重复设第二道校验。
 > v1.5 变更（T02034 = §11-E1 实施回写）：§3.1 的 `plan_id` 由「FK→plan_tasks」校正为**不建物理外键 + 服务层归属校验 + 视图层过滤**，依据是 `PlanService.purge()` 的物理 DELETE 与 §7「估算行原样保留」在外键下不能共存（实测取证与断言见 `scripts/verify-t02034-estimate-e1.mts`）。§4.5 点名的 `addWorkdays(anchor,n)` 正向工作日工具同日落地（服务端 `server/src/util/workdays.ts` 唯一实现 + 前端 `web/src/utils/workday.ts` 同语义镜像，720 格网格逐格全等断言）。
@@ -336,9 +337,9 @@ E = (O + P + 4M) / 6        —— 与标准 PERT (O + 4M + P)/6 完全等价
 
 - 面板开合态：`useSessionState('plan.estimatePanelOpen', false)`（与 `plan.viewMode`、`plan.collapsedMs` 同套持久化口径）。
 - **新增成本如实计入（v1.1 依评审 M1）**：实测 `web/src/` **无任何 SplitPane / 右栏停靠基元可复用**（只有覆盖式 `web/src/components/SlideOver.tsx`），上图的 docked 分栏属新建；同时 `PlanTimeline` 原为整宽渲染，被 420px 挤压后的节点重叠/横向溢出风险未验证 → 验收补一档宽度走查（见 §10 第 13 项）。
-- 视口宽度 <1200px 时面板转为覆盖式 `SlideOver`（宽度 420）。
+- 视口宽度 <1200px 时面板转为覆盖式 `SlideOver`（宽度 420）。**E4 实测补记（v1.8）**：阈值写成可断言的纯函数 `estimatePanelModeForWidth(width)`（`<1200 → overlay`）并监听 `resize`，拖动窗口即时切换；转为抽屉时面板内标题行隐去（`hideHeading`），否则与 `SlideOver` 自带标题同屏重复。
 - 面板打开时甘特视图不变（甘特另有「估算区间叠加」开关，见 §5.4）。
-- 明细列要显示「复杂度」，但时间线数据源类型 `TlPlan`（`web/src/components/PlanTimeline.tsx:36-52`）**当前无 `complexity` 字段** → E4 需扩该类型与计划查询列（MCP `mtask_list_plans` 已返回 complexity，服务端无需改）。
+- 明细列要显示「复杂度」：**v1.8 按 E4 实测校正**——`GET /api/plans`（`PlanService.list` 走 `SELECT p.*`）本就返回 `complexity`，缺的只是时间线数据源类型 `TlPlan`（`web/src/components/PlanTimeline.tsx:36-52`）没声明该字段。E4 只加了一个可选字段 `complexity?: number | null`，**服务端与计划查询零改动**。
 
 ### 5.2 面板结构与状态
 
@@ -349,11 +350,19 @@ E = (O + P + 4M) / 6        —— 与标准 PERT (O + 4M + P)/6 完全等价
 3. **明细行**：与时间线同源的计划条目列表（milestone 显示为组头、子项缩进，折叠态与 `plan.collapsedMs` 共享，延续 T01576 口径）；列：标题 / 需求编号 / 复杂度 / **O M P** / E / σ / 来源徽标。
 4. **导出区**：`导出 Excel`、`导出 PDF（内部版）`、`导出 PDF（客户版）`，下方列出最近 5 次快照（`estimate_snapshots`）时间，可点「对比」看两次报价差异。
 
+**E4 首段落地口径（v1.8 实施校正，实施单 T02039）**：
+
+- **分组单源**：明细的里程碑分组直接复用时间线的 `groupTimelinePhases`，折叠读同一份 `plan.collapsedMs`——本仓 `planDeps` 双口径的教训不重演（面板不写第三套分组）。
+- **需求编号列不新增服务端字段**：取需求矩阵现成接口 `GET /api/plans/prd-requirements?projectId=`，按 `linkedPlans[].id` 反查 `req_no`。为这一列改计划查询属重复建设。
+- **逐行 σ 由服务端下发**：`summary.rowRatios[]` additive 补 `sigma` 字段。§9「前端不重写公式」若只管 E 不管 σ，面板 σ 列就只能空着或前端再算一遍。
+- **零计算红线（面板内不做任何三点运算）**：汇总卡、阶段表、明细 E/σ 全部读 `GET /api/estimates` 响应；该约束由取数脚本反向断言（面板源码不含 PERT/σ 式子、不引图表库、不 import 服务端模块）。
+- **交付分段**：本单只交付第 1/2/3 段 + 空态一键填充；**行内 O/M/P 录入与行内错误态（`O>M` 标红、导出禁用）随 T02040**、**每行 O~P 区间条随 T02041**、**第 4 段导出区随 E6/E7**。面板内不预留空壳按钮——预留一个没验过的交互比少一个按钮更贵。
+
 状态要求：
 - **加载**：骨架 `className="skel"`（复用 `ResultDiff.tsx` 空态范式）。
-- **空态**：全部 `source='default'` 时，明细列上方常驻提示条「尚未录入估算——点『按规则推导』用复杂度/工期生成初始值」，按钮一键填充（弹层显示将写入的行数）。
-- **部分录入**：来源徽标混排（人工/规则/默认），并提供筛选「只看未复核（source≠manual）」。
-- **错误**：`O>M` 或 `P<M` 的行内联标红 + 底部提示「N 行不满足 O≤M≤P，导出前须修正」；导出按钮在存在错误时禁用并 title 说明原因。
+- **空态**：**v1.8 判据校正**——空态是「项目下一条估算都没有」（`items.length === 0`），不是原文写的「全部 `source='default'`」：`default` 行也要先经「按规则推导」写入才存在，按原判据空态永远不触发。空态下明细区上方常驻提示「尚未录入估算——点『按规则推导』用复杂度/用例/工期生成初始值」，按钮先 `dryRun` 预览 `writableCount` 再确认写入（预览行数与写入行数同源，§10-5）。
+- **部分录入**：来源徽标混排（人工/规则/默认），未落库行显示推导档（`默认·复杂度` / `默认·用例` / `默认·工期`）并灰显、标为「建议值不进 Σ」；筛选「只看未复核（source≠manual）」随 T02040。
+- **错误**：`O>M` 或 `P<M` 的行内联标红 + 底部提示「N 行不满足 O≤M≤P，导出前须修正」；导出按钮在存在错误时禁用并 title 说明原因。（行内录入通道随 T02040 落地；本段先落 Σ估算比例偏差告警条，含未归阶段行逐行点名与「脱离计划」计数。）
 
 ### 5.3 录入与批量填充
 
@@ -547,7 +556,7 @@ MCP 工具（`server/src/mcp/server.ts`，注意 T01490 的响应体量截断教
 | E1 | 数据模型与迁移（`estimate_items` / `estimate_snapshots`，落 `schema.ts` + `ensureColumn` 范式）+ `EstimateService` CRUD + 校验 + **`addWorkdays(anchor,n)` 工作日正向工具（服务端/前端同语义，单源）** | E0 | P0 | **S — 已完成（2026-10-11，实施单 T02034）**：两张表落 `server/src/db/schema.ts` 建表清单、`EstimateService`（CRUD/PATCH 缺省沿用/批量「任一行失败零写入」/快照 20 条裁剪/脱离计划行）、`server/src/util/workdays.ts` + 前端镜像。验证 `scripts/verify-t02034-estimate-e1.mts` **PASS=84 FAIL=0**（隔离库），`npm run typecheck`（server）与 `npm run build -w mtask-web` 均 0 错。§3.1 的 plan_id 外键记法按实测校正（见该表 v1.5 说明）；REST 路由与 derive 规则归 E3，不属本单 |
 | E2 | `estimate-engine.ts`（E/σ/汇总/系数/比例自检，**含「排除小计行」口径**）+ 黄金样例单测 + 「前端 Σ ≈ 模板 H35」断言 | E1 | P0 | **S — 已完成（2026-10-12，实施单 T02036）**：`server/src/services/estimate-engine.ts`（纯计算：`expected`/`sigma`/`confidence`/`buildSummary`/`toEngineRow`/`parseRuleRatio`/`resolveEstimateConfig`/`expectedEndWorkday`，配置键与系数标签同源）。落点由 §9 原写的 web 路径校正到服务端（理由见 §9 可维护行 v1.6 注）。验证 `scripts/verify-t02036-estimate-e2.mts` **PASS=73 FAIL=0**（隔离库）：12341 格标准式↔模板式逐值等价、附录 A 六条 H 列实测值、比例 0.0421/0.0687/0.5001 与 H40≈14.44 黄金回归、**Excel `SUBTOTAL(9,…)` 语义仿真对照轨**（§10-14 差 <1e-9 且反证朴素 sum 会把开发段算两遍）、里程碑/小计/归档三类排除行各归各位。`npm run typecheck`（server）与 `npm run build -w mtask-web` 均 0 错。derive 规则（复杂度/用例/工期）与 REST 路由归 E3，不属本单 |
 | E3 | REST 路由 + `derive` 规则（复杂度/用例/工期三档） | E1,E2 | P0 | **M — 已完成（2026-10-12，实施单 T02037）**：`server/src/routes/estimates.ts`（§8 端点清单 + 该节「E3 实测补充」；复用 `planApi` 的 `wrap`/`pid`/静态路径先于 `:id` 约定，`api.use('/estimates', …)` 挂进 `routes/index.ts:2459`）+ `server/src/services/EstimateDerive.ts`（三档规则、0.5 网格、里程碑只出参考值不落库、人工行保护、`coverage` 出数口）。路由层不含任何计算：校验归 `EstimateService`、PERT/汇总/参数归 `estimate-engine.ts`、推导归 `EstimateDerive`。验证 `scripts/verify-t02037-estimate-e3.mts` **PASS=83 FAIL=0**（S 段服务层只读 + R 段隔离实例 REST 全链：derive 默认 dryRun→落库 4 行、Σ 恒等式 22.4166667、里程碑误写估算仍被挡在 Σ 外、批量任一行不合格零写入、PATCH 转 manual、参数非法整批零写入、快照 compare 差异、脱离行显式清理、归档行不进 Σ）；`npm run typecheck -w server` 与 `npm run build -w server` 均 0 错 |
-| E4 | 估算面板 UI（**新建 docked 分栏，本仓无 SplitPane 基元** + 汇总卡 + 明细行内录入 + **每行 O~P 区间条（P0，自 E8 移入）** + 空态/错误态 + `TlPlan` 扩 complexity 字段） | E3 | P0 | **L→XL**（v1.1 上调：分栏基元与挤压走查为新增成本） |
+| E4 | 估算面板 UI（**新建 docked 分栏，本仓无 SplitPane 基元** + 汇总卡 + 明细行内录入 + **每行 O~P 区间条（P0，自 E8 移入）** + 空态/错误态 + `TlPlan` 扩 complexity 字段） | E3 | P0 | **L→XL**（v1.1 上调：分栏基元与挤压走查为新增成本）**· 首段已交付（2026-10-12，实施单 T02039）**：`web/src/components/EstimatePanel.tsx`（分组/汇总卡/明细只渲染服务端 `buildSummary` 出数，零前端计算）+ `web/src/api/estimates.ts` + `PlanPage.tsx` 工具条开关与 `<1200px` 覆盖式（`useEstimatePanelMode`，dock 420px sticky / overlay 复用 `SlideOver` 且 `hideHeading`）+ `PlanTimeline.tsx` `TlPlan.complexity?` 可选字段（服务端与计划查询零改动）+ 空态「按规则推导」入口（dryRun 预览→`askConfirm`→落库→toast→REST 复核）+ 会话级持久化 `plan.estimatePanelOpen`。**验证**：`scripts/verify-t02039-estimate-e4a.mts` **PASS=37 FAIL=0**（S 段源码单一来源守卫 + R 段隔离实例真实 REST 喂 `buildPanelRows`，含 Σ 只增不减、里程碑恒在外）；`scripts/verify-t02039-e4-ui.mjs` **PASS=26 FAIL=0**（真机 headless-Chrome/CDP 走查，覆盖 §10-1/2/5/13：1920/1440/1200 三档无横向滚动、节点不重叠、文字不截断，1100 自动转覆盖式且时间线回全宽，刷新/重进页面开合态保持，5 张截图人工过目）。`npx tsc --noEmit`（web）、`npm run build -w mtask-web`、`npm run typecheck`（server）均 0 错。**剩余子段按 v1.8 §5.2「交付分段」口径派生**：行内 O/M/P 录入与错误态（§10-3/4）→ T02040；每行 O~P 区间条（P0）→ T02041；导出区按钮与脱敏开关随 E6/E7 —— 首段不留空壳按钮 |
 | E5 | 批量填充 + 撤销 + 筛选未复核 | E4 | P1 | M |
 | E6 | **Excel 导出逐格复刻模板**（28 处合并区 / R31 小计 / R35·R40 跨 E~I 列公式 / 系数行三点 / 命名区域 / 列宽 / 备注）+ 回读断言 | E0,E2,E3 | P0 | L |
 | E7 | PDF 导出（内部/客户版，服务端脱敏） | E6 | P1 | M |
