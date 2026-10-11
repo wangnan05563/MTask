@@ -13,6 +13,15 @@ const PLAN_LOOKUP_BATCH = 200;
 /** T01280：就绪任务排水排序权重——与 SupervisorService.PRIORITY_CASE 同口径，
  *  否则「决策层看到的优先级」与「拉取接口返回的优先级」不一致，高优先级任务可能被低优先级挤掉。 */
 const PRIORITY_CASE = "CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 9 END";
+/** T02070 口径裁决：tasks.status 恒为 **todo|done 二元**（tasks 表无 CHECK 约束，白名单只能在写入口钉）。
+ *  第三态不做的原因是消费侧全按二元二分：待办/已完成两页签严格 `status === 'todo' / 'done'`
+ *  （TasksPage.tsx 待办/已完成两页签按 `status === 'todo' / 'done'` 严格二分）、AI 待处理与监控队列
+ *  SQL 是 `status = 'todo'`（见本文件 markMonitorReady / listMonitorReady）、
+ *  抽屉与移动端 STATUS_LABEL 只有两键——写进 'doing' 不会报错，而是让任务从两个页签同时消失并
+ *  永久脱离队列（比「父任务显示 30% 却仍是待办」这个原症状更严重）。
+ *  中间态由 progress（0~100）承载、「AI 在途」由 ai_state（running/unread/failed）承载。
+ *  真要上第三态的完整改造清单见工单 T02070 正文第 2 条。 */
+export const TASK_STATUSES: ReadonlySet<string> = new Set(['todo', 'done']);
 /** T00620：running 状态超时阈值——超过则视为 AI 中断并自动置 failed（可用环境变量覆盖，便于调试） */
 // T01297：running 超时兜底阈值——默认从 30 分钟放宽到 1 小时。
 // 原 30 分钟在「长任务执行中无续期」时（如文档识别/AI 生成本身耗时超阈值且期间与 MTask 零交互）

@@ -4,7 +4,7 @@ import { generateTestCasesStream, type GenPrefs } from '../services/TestCaseGenS
 import { PlanService } from '../services/PlanService'; // T01491：读取内部 PRD 文档原文（prdDocId 来源）
 import { WorkspaceService } from '../services/WorkspaceService'; // T00776：工作空间搜索/读文件
 import { getDb } from '../db/connection';
-import { TaskService, nextTaskNo, type TaskInput, type TaskListOptions } from '../services/TaskService';
+import { TaskService, nextTaskNo, TASK_STATUSES, type TaskInput, type TaskListOptions } from '../services/TaskService';
 import { RecurringService, TokenService } from '../services/RecurringService'; // T01073：循环任务 + API Token
 import { readEventRetentionDays, setEventRetentionDays, pruneTaskEvents, countEvents } from '../services/EventRetention'; // T01064 后续：事件表保留期清理
 import { readPoolStatus, setPoolLimit } from '../services/ConcurrencyPool'; // T01066 后续：并行任务池单源
@@ -647,6 +647,8 @@ api.post('/tasks/by-no/:taskNo/retry', (req, res) => {
 api.post('/tasks', (req, res) => {
   const { projectId, title, description, priority, status, categoryId, parentId } = req.body ?? {};
   if (!title || typeof title !== 'string' || !title.trim()) return res.status(400).json({ error: 'title 必填' });
+  // T02070 裁决：同 PATCH——第三态落库即成「两个页签都看不见」的幽灵行，写入口拒收
+  if (status !== undefined && !TASK_STATUSES.has(status)) { res.status(400).json({ error: `状态非法：${status}（待办状态仅 todo|done，中间态由进度承载）` }); return; }
   // 移动端随手记：projectId 可选（§3.1/§3.3）。缺省落"默认记事项目"（用户设置优先，否则收件箱系统项目）
   const pid = projectId && typeof projectId === 'string' && projectId.trim()
     ? projectId.trim()
@@ -677,6 +679,10 @@ function computeAutoAiState(opts: { aiState?: string; verified?: unknown; status
 
 api.patch('/tasks/:id', (req, res) => {
   const { title, description, priority, status, verified, aiSummary, handleResult, pinned, categoryId, parentId, color, aiState, derivedFrom, archived } = req.body ?? {}; // T00566：aiState AI 处理状态 // T00490：color 记录字体颜色 // T00779：archived 归档（派生单闭环）
+  // T02070 裁决（待办状态二元口径）：tasks 表无 CHECK 约束，本端点与 POST /tasks 是仅有的两个
+  // 非类型化写入口。第三值（doing/blocked）不会报错却会让任务从「待办/已完成」两页签同时消失并
+  // 脱离 AI 待处理/监控队列，故在边界拒收，而不是让脏数据进库。
+  if (status !== undefined && !TASK_STATUSES.has(status)) { res.status(400).json({ error: `状态非法：${status}（待办状态仅 todo|done，中间态由进度承载）` }); return; }
   if (archived !== undefined && typeof archived !== 'boolean') { res.status(400).json({ error: 'archived 必须为布尔值' }); return; }
   // T00450：parentId 挂接/换父/解除（null）——同项目校验；父任务不可挂到自己或其后代（两级层级下后代不存在，仅防自挂）
   if (parentId !== undefined) {
