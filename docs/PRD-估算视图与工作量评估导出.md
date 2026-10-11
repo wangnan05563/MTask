@@ -1,6 +1,7 @@
 # PRD：项目管理「估算」视图与工作量评估导出（MTask）
 
-> 来源任务：T01839 ｜ 版本：**v1.5** ｜ 日期：2026-10-11 ｜ 状态：**已批准·E0 放行**（业主 2026-10-11 签字：D1~D6 全部按评审建议值通过，见文末「裁决结果」；E0 Spike 同日实测通过，见 §11.1）
+> 来源任务：T01839 ｜ 版本：**v1.6** ｜ 日期：2026-10-12 ｜ 状态：**已批准·E0 放行**（业主 2026-10-11 签字：D1~D6 全部按评审建议值通过，见文末「裁决结果」；E0 Spike 同日实测通过，见 §11.1）
+> v1.6 变更（T02036 = §11-E2 实施回写）：① §9「可维护」项把引擎落点由 `web/src/util/estimate-engine.ts` **校正到服务端单源** `server/src/services/estimate-engine.ts`——两侧 tsconfig 均无跨包 include/alias（`server/tsconfig.json` 有 `rootDir:"src"`、`web/tsconfig.json` 只 include `src`），让 web 持有唯一实现会让服务端（E6 导出缓存值只能来自引擎输出，§11.1 红线 2）无法复用；前端经 E3 的汇总接口取数展示，「避免两处公式各写一遍」的原意由此真正落地（§9 该行同步改写）。② §4.6 的 `estimate.rule.default.ratio`「1:4:1.6」读法按正文显式式子定死：**首末两段是 O、P 相对 M 的倍率，中段 4 是 PERT 权重而非 M 的倍率**（即 O=M、P=1.6M，与模板实测形态一致）；实现落 `parseRuleRatio()`，中段不是 4 直接报错不猜。③ §4.2 补记「标准式与模板式逐值等价」的**前提是 O≤M≤P**（乱序反例 0/5/1：标准 3.5 vs 模板 1.5），该前提由 E1 服务层校验守住，引擎不重复设第二道校验。
 > v1.5 变更（T02034 = §11-E1 实施回写）：§3.1 的 `plan_id` 由「FK→plan_tasks」校正为**不建物理外键 + 服务层归属校验 + 视图层过滤**，依据是 `PlanService.purge()` 的物理 DELETE 与 §7「估算行原样保留」在外键下不能共存（实测取证与断言见 `scripts/verify-t02034-estimate-e1.mts`）。§4.5 点名的 `addWorkdays(anchor,n)` 正向工作日工具同日落地（服务端 `server/src/util/workdays.ts` 唯一实现 + 前端 `web/src/utils/workday.ts` 同语义镜像，720 格网格逐格全等断言）。
 > v1.4 变更（T01843 复杂度补录取证收口）：§1.1/§4.6 的复杂度基线按生产库实测改写（mtask四期 37/37 非空），§11-E15 判据按实测行数重述并记四期闭环，§12-R3 更新状态，§1.4 补「复杂度评级」术语并明确里程碑不重复计。全程只读取证，无数据写入。
 > 评审报告：`docs/PRD评审报告-估算视图与工作量评估导出.md`（T01842，二次独立取证，v1.0→v1.1 修订项 C1~C9 全部落点见该报告 §7）
@@ -253,6 +254,8 @@ E = (O + P + 4M) / 6        —— 与标准 PERT (O + 4M + P)/6 完全等价
 
 **实现要求**：`estimate-engine.ts` 必须实现为标准式 `(O + 4*M + P)/6`，同时提供属性测试断言其与模板式在 `COUNTA=3` 场景下逐值相等（黄金样例取自 §2.2-⑤ 与小工具文档：O=6, M=21, P=36 → E=21）。导出到 Excel 时**写入模板原式**（保持客户可复核、可改值重算），而非静态数值。
 
+> **等价前提（v1.6 依 E2 实施实测补记）**：两式逐值相等**只在 `O ≤ M ≤ P` 时成立**——模板式靠 MIN/MAX 定位中值再按位次加权，三点乱序时必然分叉（反例 0/5/1：标准式 3.5、模板式 1.5，差 2 人天）。该前提由 E1 服务层的 `pointsError` 校验守住（`EstimateService` 拒绝 O>M），引擎自身不再设第二道校验：两道校验迟早漂移成两套报价数。断言见 `scripts/verify-t02036-estimate-e2.mts` 1-05（12341 格全网格逐值相等）与 1-06（乱序反例 + 违例计数为 0）。
+
 ### 4.3 不确定度
 
 - 标准差 `σ = (P − O) / 6`；
@@ -271,17 +274,19 @@ E = (O + P + 4M) / 6        —— 与标准 PERT (O + 4M + P)/6 完全等价
 
 `SUBTOTAL(9, …)` 的语义要点有**两条**，缺一不可（v1.1 依评审 B2 补强）：
 
-1. **忽略被筛选隐藏的行**——MTask 导出时保留该函数（客户在 Excel 里筛选阶段行即可重算），前端计算则用**当前可见行**求和以保持一致；
+1. **忽略被筛选隐藏的行**——MTask 导出时保留该函数（客户在 Excel 里筛选阶段行即可重算），前端计算则用**当前可见行**求和以保持一致（v1.6 依 E2 实施落点：可见行集合由面板传给 E3 的汇总接口，接口内走同一个 `buildSummary(rows, config)`，**前端不重写求和公式**——两处各写一遍正是本节要防的事）；
 2. **忽略范围内其他 SUBTOTAL 的结果**——模板 R35 的求和区间 `E6:E34` **包含 R31「小计：」行**（`E31=SUBTOTAL(9,E8:E30)`），Excel 靠嵌套忽略语义不重复计。前端若对同一区间朴素 `sum()`，**开发段人天会被算两遍、报价人月直接翻倍**。
 
 因此实现口径固定为：**前端汇总 = 5 个阶段行值 + 开发段明细行值，显式排除小计行**（与 SUBTOTAL 嵌套忽略语义等价）；并新增单测断言「前端 Σ ≈ 模板 H35 重算值」（黄金样例见 §4.2）。
 
 **自检口径**（模板备注第 3 条要求人工检查，本 PRD 改为自动）：自检单元格是 **I40 = `SUBTOTAL(9,I35:I39)`**（= Σ阶段比例 I35 + Σ系数比例 I36~I39），不是泛指「Σ估算比例」。面板底部显示「Σ估算比例（I40）= 99.98%（应为 100%，偏差来自四舍五入）」，偏差 >1% 时以 `--danger` 标注并提示存在未归入阶段的行。
 
+> **偏差的代数来源（v1.6 依 E2 实施推导，写清楚免得被当成"精度问题"）**：`I35 = 1/(1+Σ系数)`、系数行 `I_r = 系数/(1+Σ系数)`，两者相加恒等于 **1**——所以完备数据的 I40 不是"接近"而是**精确** 100%（引擎侧实测差值 <1e-12）。真正能把读数推离 100% 的只有两件事：① 显示值四舍五入；② **有行没归进六个阶段**（它在面板里有占比读数，却不在 H35 的分子里）。因此 `buildSummary` 的 `ratioCheck` 把后者逐行点名返回（`unassigned:[{key,phase}]`），面板的告警必须能定位到行——只甩一个"99.98%"等于没做自检。
+
 ### 4.5 人天 / 人月 / 日历天换算
 
 - 人天 → 人月：÷ `estimate.manDaysPerManMonth`（默认 20.83）；
-- 人天 → 日历天：按工作日映射（跳周末与 `holidays`），供与 `duration_days` 对比。**现无正向函数**（v1.1 实测）：服务端有 `isWorkday/calcEndDate/nextWorkday/workdaysInRange`（`PlanService.ts:263/314/325/279`）、前端有 `web/src/utils/workday.ts` 的 `isWorkday/calcEndDate/countWorkdays/snapWorkdayForward/addDays`，但**没有「从锚点日向后走 N 个工作日」的 `addWorkdays(anchor, n)`** → E1/E2 需新增该工具（服务端 + 前端同语义，参照 `util/planDeps` 的单源教训避免两套口径），单测含 `holidays` 命中与跨周末用例；
+- 人天 → 日历天：按工作日映射（跳周末与 `holidays`），供与 `duration_days` 对比。**现无正向函数**（v1.1 实测）：服务端有 `isWorkday/calcEndDate/nextWorkday/workdaysInRange`（`PlanService.ts:263/314/325/279`）、前端有 `web/src/utils/workday.ts` 的 `isWorkday/calcEndDate/countWorkdays/snapWorkdayForward/addDays`，但**没有「从锚点日向后走 N 个工作日」的 `addWorkdays(anchor, n)`** → E1/E2 需新增该工具（服务端 + 前端同语义，参照 `util/planDeps` 的单源教训避免两套口径），单测含 `holidays` 命中与跨周末用例。**E2 已落地的引擎侧入口**：`estimate-engine.ts` 的 `expectedEndWorkday(anchor, E, cal)`——按 ⌈E⌉ 个工作日正向推进，内部直接调 E1 的 `addWorkdays`，不自带第二套工作日口径（断言见 `scripts/verify-t02036-estimate-e2.mts` 2-10~2-13，含放假、加班日与跨周末）；
 - **不做**人月 × 单价 → 金额（§1.3 非目标；**裁决 D6 已签：保持非目标**，金额列另行商务确认，不阻塞本期）。
 
 ### 4.6 冷启动：从既有数据推导三点
@@ -290,6 +295,7 @@ E = (O + P + 4M) / 6        —— 与标准 PERT (O + 4M + P)/6 完全等价
 
 1. **复杂度映射**（`complexity` 非空，如 swork 已填）
    `M = base_days(complexity)`，`O = M × rO`，`P = M × rP`；默认 `base_days` = {1:1, 2:2, 3:3.5, 4:5, 5:8}，`rO:rM:rP` 取 `estimate.rule.default.ratio`（1 : 4 : 1.6 → 即 O=M、P=1.6M，与模板实测形态一致）。
+   > **比例串的读法已定死（v1.6，E3 实施前必须有一条口径，否则两侧各猜一套）**：按正文显式式子取意——**首末两段是 O、P 相对 M 的倍率，中段那个 4 是 PERT 权重而不是 M 的倍率**，所以 `1:4:1.6` 得 O=M×1、P=M×1.6（与模板实测 12/12/16、20/20/24、30/30/35 形态吻合）。实现落 `estimate-engine.ts` 的 `parseRuleRatio()`：段数不对/含非正数报错，**中段不是 4 也报错**（写成 `1:5:1.6` 只能是配置手滑，猜成 M×5 会推出离谱工时）。E3 的 derive 与 E13 的参数页都调这一个函数。
 2. **用例加权映射**（该计划关联需求存在用例，如 swork 71 条）
    `M = clamp(Σ权重 × k, 0.5, 20)`，权重 P0=3/P1=2/P2=1/P3=0.5，`k` 默认 0.5（项目级可配）。
 3. **工期回退**（仅有 `duration_days`，如 mtask四期/一期全部计划）
@@ -493,7 +499,7 @@ MCP 工具（`server/src/mcp/server.ts`，注意 T01490 的响应体量截断教
 | 数据一致 | 估算与排期解耦：删除估算不影响 `plan_tasks`；删除计划不留孤立行（级联/过滤见 §7） | API 冒烟 + 只读库比对 |
 | 安全 | 报价数据不落第三方；导出端点走 `exportGate`；客户版脱敏由服务端决定（前端隐藏不算脱敏） | 代码审查断言：`audience=client` 分支在**服务端**过滤 |
 | 可访问性 | 数字输入 `aria-label`；面板 `role="region"` + `aria-label="估算面板"`；键盘 Tab 可达全部录入控件；对比度沿用主题 | a11y 走查（延续 `docs` 内 T01674 键盘可达教训：禁止 label 包裹 `display:none` 文件框这类不可达写法） |
-| 可维护 | 计算逻辑集中 `web/src/util/estimate-engine.ts` + `server/src/services/EstimateService.ts`，前端只读展示，**避免两处公式各写一遍**（同 T01621 的 planDeps 单源教训） | 单测覆盖引擎全分支 |
+| 可维护 | 计算逻辑集中 `server/src/services/estimate-engine.ts`（**纯计算模块，不碰库不读配置**）+ `server/src/services/EstimateService.ts`（数据层），前端只读展示、经 E3 汇总接口取数，**避免两处公式各写一遍**（同 T01621 的 planDeps 单源教训）。⚠ v1.0~v1.5 本行原写 `web/src/util/estimate-engine.ts`，v1.6 按 E2 实施实测校正到服务端：`server/tsconfig.json` 有 `rootDir:"src"`、`web/tsconfig.json` 只 include `src`，两侧都无跨包 alias，web 持唯一实现会让服务端拿不到同一套数——而 §11.1 红线 2 明文要求「导出件的缓存值只能来自估算引擎的输出」。配置键名与四个系数的标签/顺序同样单源在引擎（`ESTIMATE_SETTING_KEYS` / `ESTIMATE_COEF_SETTING_KEYS`），E13 参数页不得再抄一份 | 单测覆盖引擎全分支（`scripts/verify-t02036-estimate-e2.mts`，含 Excel `SUBTOTAL(9,…)` 语义仿真对照轨） |
 
 ---
 
@@ -523,7 +529,7 @@ MCP 工具（`server/src/mcp/server.ts`，注意 T01490 的响应体量截断教
 |---|---|---|---|---|
 | **E0** | **技术验证 Spike（E6 的放行闸门）**：用 exceljs 产出最小样例文件，验证①单元格**写活公式**；②非 ASCII 命名区域 `每人月工天标准` 写入后公式可解析、改值可重算；③28 处合并区无损；④断言脚本可跑（公式串轨 + 缓存值轨 + Excel 重算轨）。任一不达 → 改方案 | — | **P0** | **S — 已完成（2026-10-11 实测通过，结论见 §11.1；E6 放行）** |
 | E1 | 数据模型与迁移（`estimate_items` / `estimate_snapshots`，落 `schema.ts` + `ensureColumn` 范式）+ `EstimateService` CRUD + 校验 + **`addWorkdays(anchor,n)` 工作日正向工具（服务端/前端同语义，单源）** | E0 | P0 | **S — 已完成（2026-10-11，实施单 T02034）**：两张表落 `server/src/db/schema.ts` 建表清单、`EstimateService`（CRUD/PATCH 缺省沿用/批量「任一行失败零写入」/快照 20 条裁剪/脱离计划行）、`server/src/util/workdays.ts` + 前端镜像。验证 `scripts/verify-t02034-estimate-e1.mts` **PASS=84 FAIL=0**（隔离库），`npm run typecheck`（server）与 `npm run build -w mtask-web` 均 0 错。§3.1 的 plan_id 外键记法按实测校正（见该表 v1.5 说明）；REST 路由与 derive 规则归 E3，不属本单 |
-| E2 | `estimate-engine.ts`（E/σ/汇总/系数/比例自检，**含「排除小计行」口径**）+ 黄金样例单测 + 「前端 Σ ≈ 模板 H35」断言 | E1 | P0 | S |
+| E2 | `estimate-engine.ts`（E/σ/汇总/系数/比例自检，**含「排除小计行」口径**）+ 黄金样例单测 + 「前端 Σ ≈ 模板 H35」断言 | E1 | P0 | **S — 已完成（2026-10-12，实施单 T02036）**：`server/src/services/estimate-engine.ts`（纯计算：`expected`/`sigma`/`confidence`/`buildSummary`/`toEngineRow`/`parseRuleRatio`/`resolveEstimateConfig`/`expectedEndWorkday`，配置键与系数标签同源）。落点由 §9 原写的 web 路径校正到服务端（理由见 §9 可维护行 v1.6 注）。验证 `scripts/verify-t02036-estimate-e2.mts` **PASS=73 FAIL=0**（隔离库）：12341 格标准式↔模板式逐值等价、附录 A 六条 H 列实测值、比例 0.0421/0.0687/0.5001 与 H40≈14.44 黄金回归、**Excel `SUBTOTAL(9,…)` 语义仿真对照轨**（§10-14 差 <1e-9 且反证朴素 sum 会把开发段算两遍）、里程碑/小计/归档三类排除行各归各位。`npm run typecheck`（server）与 `npm run build -w mtask-web` 均 0 错。derive 规则（复杂度/用例/工期）与 REST 路由归 E3，不属本单 |
 | E3 | REST 路由 + `derive` 规则（复杂度/用例/工期三档） | E1,E2 | P0 | M |
 | E4 | 估算面板 UI（**新建 docked 分栏，本仓无 SplitPane 基元** + 汇总卡 + 明细行内录入 + **每行 O~P 区间条（P0，自 E8 移入）** + 空态/错误态 + `TlPlan` 扩 complexity 字段） | E3 | P0 | **L→XL**（v1.1 上调：分栏基元与挤压走查为新增成本） |
 | E5 | 批量填充 + 撤销 + 筛选未复核 | E4 | P1 | M |
