@@ -1458,7 +1458,7 @@ export const PlanService = {
     createTasks?: boolean;
     prdMd?: string;
     prdFilename?: string;
-  }): { requirements: number; plans: number; tasks: number; unlinkedReqNos: string[]; prdId?: string; reqNoMap: Array<{ from: string; to: string }> } {
+  }): { requirements: number; plans: number; tasks: number; unlinkedReqNos: string[]; prdId?: string; reqNoMap: Array<{ from: string; to: string }>; dupPlanTitles: Array<{ title: string; existing: number }> } {
     const db = getDb();
     if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
     const reqs = (input.requirements ?? []).filter((r) => r?.title?.trim());
@@ -1496,6 +1496,20 @@ export const PlanService = {
         db.prepare(
           `INSERT INTO prd_docs (id, project_id, filename, content_md, origin_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
         ).run(prdId, projectId, filename, prdMd, contentHash, t, t);
+      }
+    }
+    // T01869：同名计划回传——重导同一份 PRD 时计划按标题新建而不覆盖，列表里会出现两行同名、
+    // 状态一行「未开始/0%」一行原值，极易被读成「原有计划的任务被重置」。这里只把事实回传，不改落库行为。
+    const dupPlanTitles: Array<{ title: string; existing: number }> = [];
+    {
+      const countSame = db.prepare('SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0');
+      const seen = new Set<string>();
+      for (const p of planItems) {
+        const title = p.title.trim();
+        if (seen.has(title)) continue;
+        seen.add(title);
+        const n = (countSame.get(projectId, title) as { n: number }).n;
+        if (n > 0) dupPlanTitles.push({ title, existing: n });
       }
     }
     db.transaction(() => {
@@ -1582,7 +1596,7 @@ export const PlanService = {
         // 仅导入需求（无计划）时属合法场景，不抛错
       }
     })();
-    return { requirements: reqs.length, plans: planItems.length, tasks: taskCount, unlinkedReqNos: [...unlinkedReqNos], prdId, reqNoMap };
+    return { requirements: reqs.length, plans: planItems.length, tasks: taskCount, unlinkedReqNos: [...unlinkedReqNos], prdId, reqNoMap, dupPlanTitles };
   },
 
   // ---------- T00763：PRD 原文文档（存储 / 查看 / 反向更新 / AI 上下文反查） ----------

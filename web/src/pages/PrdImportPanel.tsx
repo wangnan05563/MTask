@@ -248,7 +248,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       // T00908：把暂存的源文件 PRD 全文拼为 prdMd 一并入库——后端落库 prd_docs（PRD 管理视图）并为需求行回填 prd_id 建立关联
       const prdMd = prdSources.map((s) => `# 来源：${s.name}\n\n${s.text}`).join('\n\n---\n\n');
       const prdFilename = prdSources.length > 1 ? `${prdSources.length} 个来源文件` : prdSources[0]?.name;
-      const r = await api.post<{ requirements: number; plans: number; tasks: number; unlinkedReqNos?: string[]; prdId?: string; reqNoMap?: Array<{ from: string; to: string }> }>('/plans/import-prd', {
+      const r = await api.post<{ requirements: number; plans: number; tasks: number; unlinkedReqNos?: string[]; prdId?: string; reqNoMap?: Array<{ from: string; to: string }>; dupPlanTitles?: Array<{ title: string; existing: number }> }>('/plans/import-prd', {
         projectId,
         createTasks,
         requirements: rq.map(({ include: _inc, key: _key, ...rest }) => rest),
@@ -263,6 +263,10 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       // 用户手里拿的是 PRD 原编号，静默改号会让后续按编号核对全部对不上
       if (r.reqNoMap?.length) {
         aiImportStore.log(`编号顺延：${r.reqNoMap.length} 条需求与矩阵已有编号重复，已改为项目内顺延号（${r.reqNoMap.map((x) => `${x.from}→${x.to}`).join('、')}），计划/待办关联按顺延后的编号建立`, 'error');
+      }
+      // T01869：计划按标题新建不覆盖——同名行会与原条目并排出现在同一列表里，必须当场说清哪条是新增的
+      if (r.dupPlanTitles?.length) {
+        aiImportStore.log(`同名提醒：本次新建的计划里有 ${r.dupPlanTitles.length} 个标题在项目内已存在（${r.dupPlanTitles.map((x) => `${x.title}（已有 ${x.existing} 条）`).join('、')}）——新行是「未开始/0%」，原条目状态与进度未被改动，请勿把新行误认成被重置的原计划`, 'info');
       }
       // T00712（D-5）：无效需求编号不再静默丢弃——服务端返回 unlinkedReqNos 时在控制台给出可感知告警
       if (r.unlinkedReqNos?.length) {
