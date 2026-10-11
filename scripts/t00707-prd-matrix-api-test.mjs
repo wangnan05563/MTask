@@ -91,6 +91,8 @@ const main = async () => {
     `带关联的待办应 6 条（2 个管理节点无需求关联）：${prdTasks.length} 条 [PRD] 待办、${taskWithReq.length} 条带 req_ids`);
 
   // TC-06 重复标题计划的关联错位（缺陷探针：两条同 title 不同 reqNos）
+  // T01875 口径：同批撞名的新行落库时自动加「（N）」区分后缀（与需求编号顺延同构），
+  // 本条断言由「同名两行」改为「同前缀两行且标题互不相同」——关联各自正确的原意不变。
   const dup = await api('POST', '/api/plans/import-prd', {
     projectId,
     requirements: [{ reqNo: 'REQ-011', title: '重复标题探针需求A' }, { reqNo: 'REQ-012', title: '重复标题探针需求B' }],
@@ -100,13 +102,15 @@ const main = async () => {
     ],
   });
   const plans2 = (await api('GET', `/api/plans?projectId=${projectId}`)).json ?? [];
-  const dupRows = plans2.filter((p) => p.title === '6.1 重复标题验证');
+  const dupRows = plans2.filter((p) => String(p.title).startsWith('6.1 重复标题验证'));
   const reqIdsOf = (p) => (p.req_ids ? JSON.parse(p.req_ids) : []);
   const m2 = ((await api('GET', `/api/plans/prd-requirements?projectId=${projectId}`)).json ?? []);
   const n11 = m2.find((r) => r.req_no === 'REQ-011'); const n12 = m2.find((r) => r.req_no === 'REQ-012');
   const a11 = (n11?.linkedPlans ?? []).length; const a12 = (n12?.linkedPlans ?? []).length;
-  ok('TC-06', '重复标题计划各自正确关联（期望 A→REQ-011、B→REQ-012）', dupRows.length === 2 && a11 === 1 && a12 === 1,
-    `同名计划 ${dupRows.length} 条；REQ-011 关联 ${a11} 条计划、REQ-012 关联 ${a12} 条计划（返回计数 plans=${dup.json?.plans}）→ ${a11 !== 1 || a12 !== 1 ? '【缺陷】标题匹配 find 命中同一行，后者覆盖前者' : '各自正确'}`);
+  const distinctTitles = new Set(dupRows.map((p) => p.title)).size === dupRows.length;
+  const dupReport = (dup.json?.dupPlanTitles ?? []).find((x) => x.title === '6.1 重复标题验证');
+  ok('TC-06', '重复标题计划各自正确关联（期望 A→REQ-011、B→REQ-012，新行加后缀区分）', dupRows.length === 2 && distinctTitles && a11 === 1 && a12 === 1 && !!dupReport?.renamedTo,
+    `同前缀 ${dupRows.length} 条（标题 ${JSON.stringify(dupRows.map((p) => p.title))}）；REQ-011 关联 ${a11} 条计划、REQ-012 关联 ${a12} 条计划；回传撞名=${JSON.stringify(dupReport)}（返回计数 plans=${dup.json?.plans}）`);
 
   // TC-07 无效 reqNos 静默丢弃
   const ghost = await api('POST', '/api/plans/import-prd', {

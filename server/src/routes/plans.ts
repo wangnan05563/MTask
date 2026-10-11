@@ -197,6 +197,8 @@ planApi.post('/import-prd', (req, res) => {
     createTasks: b.createTasks === true,
     prdMd: typeof b.prdMd === 'string' ? b.prdMd : undefined, // T00763：PRD Markdown 原文完整落库
     prdFilename: typeof b.prdFilename === 'string' ? b.prdFilename : undefined,
+    // T01875：撞名计划处置口径——'reuse' 走幂等补写，其余（含缺省）保持新建并给新行加「（N）」区分后缀
+    onDuplicatePlan: b.onDuplicatePlan === 'reuse' ? 'reuse' : undefined,
   }));
 });
 

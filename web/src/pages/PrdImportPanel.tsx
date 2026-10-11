@@ -222,7 +222,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       // T00908：把暂存的源文件 PRD 全文拼为 prdMd 一并入库——后端落库 prd_docs（PRD 管理视图）并为需求行回填 prd_id 建立关联
       const prdMd = prdSources.map((s) => `# 来源：${s.name}\n\n${s.text}`).join('\n\n---\n\n');
       const prdFilename = prdSources.length > 1 ? `${prdSources.length} 个来源文件` : prdSources[0]?.name;
-      const r = await api.post<{ requirements: number; plans: number; tasks: number; unlinkedReqNos?: string[]; prdId?: string; reqNoMap?: Array<{ from: string; to: string }>; dupPlanTitles?: Array<{ title: string; existing: number }>; ambiguousReqNos?: string[]; orphanRequirements?: Array<{ reqNo: string; title: string }> }>('/plans/import-prd', {
+      const r = await api.post<{ requirements: number; plans: number; tasks: number; unlinkedReqNos?: string[]; prdId?: string; reqNoMap?: Array<{ from: string; to: string }>; dupPlanTitles?: Array<{ title: string; existing: number; renamedTo?: string; reusedPlanId?: string }>; reusedPlans?: number; ambiguousReqNos?: string[]; orphanRequirements?: Array<{ reqNo: string; title: string }> }>('/plans/import-prd', {
         projectId,
         createTasks,
         requirements: rq.map(({ include: _inc, key: _key, ...rest }) => rest),
@@ -232,15 +232,22 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       });
       const taskPart = r.tasks ? `、待办任务 ${r.tasks} 条` : '';
       const prdPart = r.prdId ? '；源 PRD 已录入「PRD 管理」并关联本次需求矩阵记录' : '';
-      aiImportStore.log(`导入完成：需求 ${r.requirements} 条（已入需求跟踪矩阵）、计划 ${r.plans} 条${taskPart}${prdPart}`, 'ok');
+      aiImportStore.log(`导入完成：需求 ${r.requirements} 条（已入需求跟踪矩阵）、新建计划 ${r.plans} 条${r.reusedPlans ? `（另复用同名计划 ${r.reusedPlans} 条）` : ''}${taskPart}${prdPart}`, 'ok');
       // T01867：与项目已有编号撞号的需求由服务端按最大编号顺延，明细必须可见——
       // 用户手里拿的是 PRD 原编号，静默改号会让后续按编号核对全部对不上
       if (r.reqNoMap?.length) {
         aiImportStore.log(`编号顺延：${r.reqNoMap.length} 条需求与矩阵已有编号重复，已改为项目内顺延号（${r.reqNoMap.map((x) => `${x.from}→${x.to}`).join('、')}），计划/待办关联按顺延后的编号建立`, 'error');
       }
-      // T01869：计划按标题新建不覆盖——同名行会与原条目并排出现在同一列表里，必须当场说清哪条是新增的
+      // T01869→T01875：撞名计划的新行落库时已带「（N）」区分后缀，不再是与原行无法分辨的同名行；
+      // 明细点名哪个原号让成了哪个新标题，消除「原有任务被重置」的误读面
       if (r.dupPlanTitles?.length) {
-        aiImportStore.log(`同名提醒：本次新建的计划里有 ${r.dupPlanTitles.length} 个标题在项目内已存在（${r.dupPlanTitles.map((x) => `${x.title}（已有 ${x.existing} 条）`).join('、')}）——新行是「未开始/0%」，原条目状态与进度未被改动，请勿把新行误认成被重置的原计划`, 'info');
+        const renamed = r.dupPlanTitles.filter((x) => x.renamedTo);
+        if (renamed.length) {
+          aiImportStore.log(`同名让号：本次有 ${renamed.length} 个计划标题在项目内已存在（${renamed.map((x) => `${x.title} → 新行「${x.renamedTo}」，原有 ${x.existing} 条`).join('、')}）——原条目状态与进度一字未动，新增那条用后缀区分，不会与原计划混淆`, 'info');
+        }
+        if (r.reusedPlans) {
+          aiImportStore.log(`同名复用：${r.reusedPlans} 条计划命中项目内已有同名行（未新建），仅补齐空描述/空复杂度与需求关联（只增不减），其状态与进度保持不变`, 'info');
+        }
       }
       // T00712（D-5）：无效需求编号不再静默丢弃——服务端返回 unlinkedReqNos 时在控制台给出可感知告警
       if (r.unlinkedReqNos?.length) {

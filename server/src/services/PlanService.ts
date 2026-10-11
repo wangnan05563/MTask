@@ -16,6 +16,7 @@ import { stripWordFieldCodes } from '../util/wordFields'; // T00814：清洗 Wor
 import { logService } from './LogService'; // T00821：覆盖录入行为留痕（覆盖时间/文件名/项目，单机无账号故操作人留空）
 import { parsePlanDeps, depsSatisfied } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7）
 import { resolveReqNo, groupDuplicateReqNos, isReqNoTaken } from '../util/reqNo'; // T01867：需求编号项目内唯一顺延
+import { nextPlanTitle } from '../util/planTitle'; // T01875：计划标题撞名让号（与需求编号顺延同构）
 
 /** T01361：需求跟踪矩阵行（prd_requirements 全列 + 联表摘要）——具体化类型替代 Record<string, unknown>（Sonar S6551） */
 export interface RequirementRow {
@@ -1514,6 +1515,12 @@ export const PlanService = {
   /** T00763：导入 PRD 解析结果——事务创建需求项 + 计划（含 req_ids 关联）+ 可选同步生成待办任务。 */
   /** T00712（D-5）：返回 unlinkedReqNos——reqNos 引用了本次导入中不存在的需求编号时不再静默丢弃。 */
   /** T00763：input.prdMd（PRD Markdown 原文）非空时完整落库 prd_docs，并回填需求行 prd_id——供矩阵「查看PRD」与 AI 上下文反查。 */
+  /**
+   * T01875：重复导入的计划行口径（T01869 只回传事实、不改落库，本单把口径定下来）——
+   * 默认 `onDuplicatePlan:'new'`：延续 T01867/T01921 已确立的「已有条目一律不动，新行让号」同构口径，
+   *   撞名不再并排同名，新行标题自动带 `（N）` 区分后缀；
+   * 显式 `'reuse'`：幂等重跑，按标题命中未归档同名原行补差异与需求关联，**绝不改原行 status/progress**。
+   */
   importPrd(projectId: string, input: {
     requirements?: Array<{ reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string }>;
     // T01001：plans 行支持 kind（milestone=里程碑 / normal=普通任务），导入时据此区分，不再全部转成普通任务
@@ -1521,7 +1528,8 @@ export const PlanService = {
     createTasks?: boolean;
     prdMd?: string;
     prdFilename?: string;
-  }): { requirements: number; plans: number; tasks: number; unlinkedReqNos: string[]; prdId?: string; reqNoMap: Array<{ from: string; to: string }>; dupPlanTitles: Array<{ title: string; existing: number }>; ambiguousReqNos: string[]; orphanRequirements: Array<{ reqNo: string; title: string }> } {
+    onDuplicatePlan?: 'new' | 'reuse';
+  }): { requirements: number; plans: number; tasks: number; unlinkedReqNos: string[]; prdId?: string; reqNoMap: Array<{ from: string; to: string }>; dupPlanTitles: Array<{ title: string; existing: number; renamedTo?: string; reusedPlanId?: string }>; reusedPlans: number; ambiguousReqNos: string[]; orphanRequirements: Array<{ reqNo: string; title: string }> } {
     const db = getDb();
     if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
     const reqs = (input.requirements ?? []).filter((r) => r?.title?.trim());
@@ -1571,19 +1579,45 @@ export const PlanService = {
       }
     }
     // T01869：同名计划回传——重导同一份 PRD 时计划按标题新建而不覆盖，列表里会出现两行同名、
-    // 状态一行「未开始/0%」一行原值，极易被读成「原有计划的任务被重置」。这里只把事实回传，不改落库行为。
-    const dupPlanTitles: Array<{ title: string; existing: number }> = [];
+    // 状态一行「未开始/0%」一行原值，极易被读成「原有计划的任务被重置」。T01869 只回传事实，
+    // T01875 把口径定下来并给出处置（两种都不动已有行）：
+    //   new（默认）：撞名的新行换「（N）」区分后缀——与 T01867/T01921 需求编号顺延同构；
+    //   reuse     ：撞名不新建，命中未归档同名原行做补写，原行 status/progress 一字不动。
+    // planTargets[i] 与 planItems[i] 一一对应：实际落库标题 + 命中的原行 id（null=新建）。
+    const reuseMode = input.onDuplicatePlan === 'reuse';
+    const dupPlanTitles: Array<{ title: string; existing: number; renamedTo?: string; reusedPlanId?: string }> = [];
+    const planTargets: Array<{ title: string; reuseId: string | null }> = [];
     {
-      const countSame = db.prepare('SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0');
-      const seen = new Set<string>();
+      const rows = db.prepare('SELECT id, title FROM plan_tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ id: string; title: string }>;
+      const firstIdByTitle = new Map<string, string>();
+      const countByTitle = new Map<string, number>();
+      for (const r of rows) {
+        if (!firstIdByTitle.has(r.title)) firstIdByTitle.set(r.title, r.id);
+        countByTitle.set(r.title, (countByTitle.get(r.title) ?? 0) + 1);
+      }
+      const taken = new Set<string>(firstIdByTitle.keys());
+      const reported = new Set<string>();
       for (const p of planItems) {
-        const title = p.title.trim();
-        if (seen.has(title)) continue;
-        seen.add(title);
-        const n = (countSame.get(projectId, title) as { n: number }).n;
-        if (n > 0) dupPlanTitles.push({ title, existing: n });
+        const base = p.title.trim();
+        const existing = countByTitle.get(base) ?? 0;
+        if (existing > 0 && reuseMode) {
+          const reuseId = firstIdByTitle.get(base)!;
+          planTargets.push({ title: base, reuseId });
+          if (!reported.has(base)) { reported.add(base); dupPlanTitles.push({ title: base, existing, reusedPlanId: reuseId }); }
+          continue;
+        }
+        // 无撞名时 nextPlanTitle 原样返回；本批内部自己撞名（同一份拆解两条同标题）也一样让号
+        const renamed = nextPlanTitle(base, taken);
+        taken.add(renamed);
+        planTargets.push({ title: renamed, reuseId: null });
+        if (renamed !== base && !reported.has(base)) {
+          reported.add(base);
+          dupPlanTitles.push({ title: base, existing, renamedTo: renamed });
+        }
       }
     }
+    const reusedPlans = planTargets.filter((x) => x.reuseId).length;
+    let insertedPlans = 0; // 实际新建的计划行数（reuse 命中的行不计数，返回给调用方区分「新建/复用」）
     db.transaction(() => {
       // 1) 需求项（矩阵行）——reqNo → id 映射供计划/待办关联
       // T01995：两个编号空间分开登记——
@@ -1626,38 +1660,62 @@ export const PlanService = {
         newReqs.push({ id, reqNo, title: r.title.trim() });
       }
       // 2) 计划（含 req_ids 关联）
-      let insertedPlans = 0;
-      let planIds: string[] = []; // T00754：新建计划的 id（与 planItems 下标对齐），供建待办时回写关联
-      if (planItems.length > 0) {
-        const created = this.createBatch(projectId, planItems.map((p, i) => ({
-          title: p.title,
-          description: p.description,
-          startDate: p.startDate,
+      // T01875：planIds 与 planItems 下标对齐，元素是该条目实际落库的计划 id——
+      // 新建行取 createBatch 返回值，reuse 行指向命中的原行（不新建）。
+      // 旧实现（T01869 口径）一律新建且不判重，重导同一份 PRD 会留下并排同名两套计划，无法幂等重跑。
+      const planIds: Array<string | null> = new Array(planItems.length).fill(null);
+      const newIdx: number[] = [];
+      planTargets.forEach((target, i) => { if (!target.reuseId) newIdx.push(i); });
+      if (newIdx.length > 0) {
+        const created = this.createBatch(projectId, newIdx.map((i) => ({
+          title: planTargets[i].title,
+          description: planItems[i].description,
+          startDate: planItems[i].startDate,
           // T01001 二轮：工期用汇总后的值（里程碑 = 其下明细之和），保证导���后两边对得上
           durationDays: planDurations[i],
-          assignee: p.assignee,
+          assignee: planItems[i].assignee,
           status: 'todo' as PlanStatus,
-          complexity: p.complexity, // T01058-FR2.1：AI 复杂度评级随导入落库
+          complexity: planItems[i].complexity, // T01058-FR2.1：AI 复杂度评级随导入落库
           // T01001：里程碑/普通任务在导入时确定类型，避免全部落入默认 normal；
           // AI 解析路径已由 normalizePrdPlans 推好 kind，此处的兜底覆盖直接调 import-prd/MCP 未显式传 kind 的场景
           kind: planKinds[i],
         })));
         insertedPlans = created.inserted;
-        planIds = created.ids;
-        // T00709（D-1 修复）：按 createBatch 返回的 id（与 planItems 同一下标序，两侧 title 过滤口径一致）回写 req_ids，
-        // 废弃按标题 find 匹配——同名计划会命中同一行导致关联互相覆盖丢失
-        const updPlan = db.prepare('UPDATE plan_tasks SET req_ids = ?, updated_at = ? WHERE id = ?');
-        planIds.forEach((planId, i) => {
-          const p = planItems[i];
-          if (!p) return;
-          const rawNos = p.reqNos ?? [];
-          // T00712（D-5）：引用了不存在的需求编号 → 记入 unlinkedReqNos 供调用方提示
-          for (const n of rawNos) if (!findReqId(n)) unlinkedReqNos.add(n);
-          const ids = rawNos.map((n) => findReqId(n)).filter((x): x is string => !!x);
-          if (ids.length > 0) updPlan.run(JSON.stringify(ids), t, planId);
-          for (const rid of ids) linkedReqIds.add(rid); // T01995：零关联清点用
-        });
+        created.ids.forEach((id, k) => { const i = newIdx[k]; if (i !== undefined) planIds[i] = id; });
       }
+      // T00709（D-1 修复）：按 createBatch 返回的 id（与 planItems 同一下标序，两侧 title 过滤口径一致）回写 req_ids，
+      // 废弃按标题 find 匹配——同名计划会命中同一行导致关联互相覆盖丢失
+      const updPlan = db.prepare('UPDATE plan_tasks SET req_ids = ?, updated_at = ? WHERE id = ?');
+      const updReuse = db.prepare(
+        `UPDATE plan_tasks SET description = ?, complexity = ?, req_ids = COALESCE(?, req_ids), updated_at = ?
+         WHERE id = ? AND archived = 0`,
+      );
+      planTargets.forEach((target, i) => {
+        const p = planItems[i];
+        if (!p) return;
+        const rawNos = p.reqNos ?? [];
+        // T00712（D-5）：引用了不存在的需求编号 → 记入 unlinkedReqNos 供调用方提示
+        for (const n of rawNos) if (!findReqId(n)) unlinkedReqNos.add(n);
+        const ids = rawNos.map((n) => findReqId(n)).filter((x): x is string => !!x);
+        for (const rid of ids) linkedReqIds.add(rid); // T01995：零关联清点用
+        if (target.reuseId) {
+          // T01875 reuse：只补差异字段与需求关联——
+          // 需求关联取「并集」（只增不减；覆盖式写入会让原行手工加的关联消失），
+          // 描述/复杂度仅在原值为空时补填；status、progress、起止日期一律不写
+          // （T01869 硬约束：重导不得把已有进度打回 0%／未开始）。
+          const cur = db.prepare('SELECT description, complexity, req_ids FROM plan_tasks WHERE id = ? AND archived = 0')
+            .get(target.reuseId) as { description: string | null; complexity: number | null; req_ids: string | null } | undefined;
+          if (!cur) return;
+          const description = (cur.description ?? '').trim() ? cur.description : (p.description ?? '');
+          const complexity = cur.complexity ?? (p.complexity ?? null);
+          const curReqIds = parseLinkIds(cur.req_ids);
+          const added = ids.filter((x) => !curReqIds.includes(x));
+          updReuse.run(description ?? '', complexity, added.length > 0 ? JSON.stringify([...curReqIds, ...added]) : null, t, target.reuseId);
+          return;
+        }
+        const planId = planIds[i];
+        if (planId && ids.length > 0) updPlan.run(JSON.stringify(ids), t, planId);
+      });
       // 3) 可选：WBS → 待办任务（便于 AI 推进执行），待办同样携带 req_ids
       if (input.createTasks && planItems.length > 0) {
         const insTask = db.prepare(
@@ -1668,12 +1726,31 @@ export const PlanService = {
         // 任务列表的「计划」徽标（TaskService.list 反查）与项目管理页「待办联动」均依赖该字段，
         // 缺失会导致任务无「计划」标签、项目管理页显示「未关联」
         const linkPlan = db.prepare('UPDATE plan_tasks SET linked_task_id = ?, updated_at = ? WHERE id = ? AND linked_task_id IS NULL');
-        planIds.forEach((planId, i) => {
+        const updTaskReq = db.prepare('UPDATE tasks SET req_ids = ?, updated_at = ? WHERE id = ?');
+        planTargets.forEach((target, i) => {
           const p = planItems[i];
           if (!p) return;
           const ids = (p.reqNos ?? []).map((n) => findReqId(n)).filter((x): x is string => !!x);
+          if (target.reuseId) {
+            // T01875 reuse：原行已有派生待办 → 不再造第二条（同标题待办会在任务列表并排重复，
+            // 也破坏 T01874 的「一个待办只由一个计划承载」口径）；未归档的那条只把本次需求编号并入 req_ids（只增不减），
+            // 已归档的既有承载不擅自复活。
+            const linkedTaskId = (db.prepare('SELECT linked_task_id FROM plan_tasks WHERE id = ?').get(target.reuseId) as { linked_task_id: string | null } | undefined)?.linked_task_id;
+            if (linkedTaskId) {
+              const liveTask = db.prepare('SELECT id, req_ids FROM tasks WHERE id = ? AND archived = 0').get(linkedTaskId) as { id: string; req_ids: string | null } | undefined;
+              if (liveTask) {
+                const curIds = parseLinkIds(liveTask.req_ids);
+                const added = ids.filter((x) => !curIds.includes(x));
+                if (added.length > 0) updTaskReq.run(JSON.stringify([...curIds, ...added]), t, liveTask.id);
+              }
+              return;
+            }
+          }
+          const planId = planIds[i];
+          if (!planId) return;
           const taskId = uuid();
-          insTask.run(taskId, nextTaskNo(), projectId, `[PRD] ${p.title}`, p.description ?? '', 'normal', ids.length ? JSON.stringify(ids) : null, t, t);
+          // T01875：待办标题跟随实际落库标题（撞名让号后与计划行保持一致，便于反查）
+          insTask.run(taskId, nextTaskNo(), projectId, `[PRD] ${target.title}`, p.description ?? '', 'normal', ids.length ? JSON.stringify(ids) : null, t, t);
           linkPlan.run(taskId, t, planId);
           taskCount += 1;
         });
@@ -1687,7 +1764,7 @@ export const PlanService = {
     const orphanRequirements = planItems.length > 0
       ? newReqs.filter((x) => !linkedReqIds.has(x.id)).map((x) => ({ reqNo: x.reqNo, title: x.title }))
       : [];
-    return { requirements: reqs.length, plans: planItems.length, tasks: taskCount, unlinkedReqNos: [...unlinkedReqNos], prdId, reqNoMap, dupPlanTitles, ambiguousReqNos: [...ambiguousReqNos], orphanRequirements };
+    return { requirements: reqs.length, plans: insertedPlans, tasks: taskCount, unlinkedReqNos: [...unlinkedReqNos], prdId, reqNoMap, dupPlanTitles, reusedPlans, ambiguousReqNos: [...ambiguousReqNos], orphanRequirements };
   },
 
   // ---------- T00763：PRD 原文文档（存储 / 查看 / 反向更新 / AI 上下文反查） ----------

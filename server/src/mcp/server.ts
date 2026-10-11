@@ -436,6 +436,8 @@ export async function createMCPServer(): Promise<McpServer> {
       filename: z.string().describe('原始文件名（决定解析方式，如 prd.docx / prd.pdf）'),
       fileBase64: z.string().describe('文件内容的 base64（不含 data: 前缀）'),
       createTasks: z.boolean().optional().describe('是否同时把 WBS 节点转为待办任务（默认 false，便于 AI 推进执行）'),
+      // T01875：撞名计划处置（同一份 PRD 重复导入的幂等口径）
+      onDuplicatePlan: z.enum(['new', 'reuse']).optional().describe("项目内已有同名计划时的处置：'new'（默认）= 仍新建，但新行标题自动加「（N）」后缀区分，原行不动；'reuse' = 命中同名原行做幂等补写（只补空描述/复杂度与需求关联，只增不减），不新建、绝不改原行状态与进度"),
     },
   }, async (a) => {
     try {
@@ -446,7 +448,7 @@ export async function createMCPServer(): Promise<McpServer> {
       const text = await PlanService.extractPrdText(buf, a.filename);
       const parsed = await PlanService.aiParsePrd(a.toolId, text);
       // T00763：PRD 原文（提取后的 Markdown）随导入完整落库，需求行回填 prd_id
-      const r = PlanService.importPrd(loc.id, { requirements: parsed.requirements, plans: parsed.drafts, createTasks: a.createTasks === true, prdMd: text, prdFilename: a.filename });
+      const r = PlanService.importPrd(loc.id, { requirements: parsed.requirements, plans: parsed.drafts, createTasks: a.createTasks === true, prdMd: text, prdFilename: a.filename, onDuplicatePlan: a.onDuplicatePlan });
       const summary = {
         projectId: loc.id,
         imported: r,
