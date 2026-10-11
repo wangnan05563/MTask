@@ -47,6 +47,10 @@ if (!DB) {
 
 // ---- 造修复前的存量脏数据：同一编号两位/三位混写 + 字面同号两行 + 干扰前缀 ----
 const db = new DatabaseSync(DB);
+// T01872 之后库层有了 (project_id, req_no) 部分唯一索引，字面同号直写会被 SQLITE_CONSTRAINT 拒掉。
+// 本夹具要模拟的是「索引建立之前遗留的存量脏数据」（矩阵行内标记服务的正是这批历史行），
+// 故先移除索引再播种；索引自身的约束行为由 scripts/t01872-unique-index-test.mjs 断言。
+db.exec('DROP INDEX IF EXISTS uniq_prd_req_project_no');
 const ins = db.prepare('INSERT INTO prd_requirements (id, project_id, req_no, title, content, source_ref, priority, status, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
 const stamp = new Date().toISOString();
 // id 带本次运行标记：同一隔离库可反复跑（每次是新项目，但主键不能复用）

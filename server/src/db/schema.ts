@@ -527,6 +527,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // 老库 queue_jobs 的 task_id/tool_id 外键缺 ON DELETE CASCADE，删除关联任务/工具/项目时
   // 会被外键约束阻断（500）。SQLite 不支持 ALTER 外键，需整表重建，按幂等方式检测后执行
   ensureQueueJobsCascade();
+  // T01872：需求编号项目内唯一——数据库层兜底约束（存量重复时只告警不建索引，见函数注释）
+  ensurePrdReqNoUnique();
 
   seedPromptCategories();
   // 移动端随手记默认归属项目（收件箱）：确定性 id，保证每次启动只创建一次
@@ -625,6 +627,43 @@ function backfillTaskNo(): void {
       upd.run(`T${String(max).padStart(5, '0')}`, id);
     }
   })();
+}
+
+/**
+ * T01872：需求编号项目内唯一的数据库层兜底约束。
+ * 服务层 resolveReqNo 只挡走接口的新写入，SQL 迁移脚本、外部工具直改库、
+ * 未来新增的批量入口仍能写出同号行——索引把这扇门也关上。
+ *
+ * 三点口径：
+ * 1. 用**部分**唯一索引排除空值（req_no 可为 NULL/''，手工新建常留空），
+ *    这样未编号的行继续共存，迁移里也无需改写用户数据做「归一」。
+ * 2. 存量重复会让 CREATE 触发 SQLITE_CONSTRAINT——只告警、不建索引、下次启动自动重试，
+ *    绝不静默改号（用户手里的引用编号不能被动）。清理通道是既有的矩阵重复标记（T01873）+ 改号接口。
+ * 3. 索引只挡「字面同号」；REQ-01 与 REQ-001 的同一性等价判定仍由服务层 reqNoKey 守
+ *    （SQLite 索引表达式做不到归一），故本约束是补漏、不替代服务层。
+ */
+function ensurePrdReqNoUnique(): void {
+  const db = getDb();
+  try {
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_prd_req_project_no
+             ON prd_requirements(project_id, req_no)
+             WHERE req_no IS NOT NULL AND req_no <> ''`);
+  } catch (e) {
+    // console.warn 由 LogService 环形缓冲捕获，前端日志页可查——迁移降级不能静默
+    const groups = db.prepare(
+      `SELECT project_id, req_no, COUNT(*) AS c
+       FROM prd_requirements
+       WHERE req_no IS NOT NULL AND req_no <> ''
+       GROUP BY project_id, req_no HAVING c > 1
+       ORDER BY c DESC, req_no`,
+    ).all() as Array<{ project_id: string; req_no: string; c: number }>;
+    const sample = groups.slice(0, 8).map((g) => `${g.req_no}×${g.c}`).join('、');
+    console.warn(
+      `[schema] 需求编号唯一索引未建立：库内已有 ${groups.length} 组同号行（${sample}${groups.length > 8 ? ' …' : ''}）。`
+      + '请在需求跟踪矩阵把重复行改号（重复编号已行内标红、可一键定位），下次启动会自动重试。'
+      + `原因：${String((e as Error).message ?? e)}`,
+    );
+  }
 }
 
 /**
