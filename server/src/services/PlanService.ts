@@ -14,7 +14,7 @@ import PizZip from 'pizzip';
 import { stripWordFieldCodes } from '../util/wordFields'; // T00814：清洗 Word 域代码（目录/页码/交叉引用）
 import { logService } from './LogService'; // T00821：覆盖录入行为留痕（覆盖时间/文件名/项目，单机无账号故操作人留空）
 import { parsePlanDeps, depsSatisfied } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7）
-import { resolveReqNo, groupDuplicateReqNos } from '../util/reqNo'; // T01867：需求编号项目内唯一顺延
+import { resolveReqNo, groupDuplicateReqNos, isReqNoTaken } from '../util/reqNo'; // T01867：需求编号项目内唯一顺延
 
 /** T01361：需求跟踪矩阵行（prd_requirements 全列 + 联表摘要）——具体化类型替代 Record<string, unknown>（Sonar S6551） */
 export interface RequirementRow {
@@ -1878,7 +1878,8 @@ export const PlanService = {
         .map((r) => String(r.req_no ?? '').trim()).filter(Boolean),
     );
     const requested = (input.reqNo ?? '').trim();
-    if (requested && usedNos.has(requested)) throw new Error(`需求编号「${requested}」在本项目已存在，请换一个或直接留空由系统顺延`);
+    // 占用判定按编号同一性（REQ-01 与 REQ-001 是同一个号），否则两种写法能并存、顺延也白做
+    if (requested && isReqNoTaken(usedNos, requested)) throw new Error(`需求编号「${requested}」在本项目已存在，请换一个或直接留空由系统顺延`);
     const reqNo = resolveReqNo(usedNos, requested);
     db.prepare(
       `INSERT INTO prd_requirements (id, project_id, req_no, title, content, source_ref, priority, status, sort_order, created_at, updated_at)
@@ -1894,8 +1895,10 @@ export const PlanService = {
     if (targetNo) {
       const self = db.prepare('SELECT project_id FROM prd_requirements WHERE id = ?').get(id) as { project_id: string } | undefined;
       if (!self) throw new Error('需求不存在');
-      const taken = db.prepare('SELECT 1 FROM prd_requirements WHERE project_id = ? AND req_no = ? AND id <> ?').get(self.project_id, targetNo, id);
-      if (taken) throw new Error(`需求编号「${targetNo}」在本项目已被其他需求占用`);
+      // 同项目其余行按编号同一性判占用（SQL 等值比不出 REQ-01 与 REQ-001 这种混写同号）
+      const others = (db.prepare('SELECT req_no FROM prd_requirements WHERE project_id = ? AND id <> ?').all(self.project_id, id) as Array<{ req_no: string | null }>)
+        .map((r) => String(r.req_no ?? '').trim()).filter(Boolean);
+      if (isReqNoTaken(others, targetNo)) throw new Error(`需求编号「${targetNo}」在本项目已被其他需求占用`);
     }
     const sets: string[] = [];
     const vals: unknown[] = [];
@@ -1943,7 +1946,7 @@ export const PlanService = {
   },
 
   /** T01867：项目内重复需求编号分组（存量脏数据可见化；新数据已不会再产生） */
-  duplicateReqNos(projectId: string): Array<{ reqNo: string; count: number }> {
+  duplicateReqNos(projectId: string): Array<{ reqNo: string; count: number; variants: string[] }> {
     const db = getDb();
     const rows = db.prepare('SELECT req_no FROM prd_requirements WHERE project_id = ?').all(projectId) as Array<{ req_no: string | null }>;
     return groupDuplicateReqNos(rows);

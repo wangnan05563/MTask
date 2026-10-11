@@ -27,6 +27,7 @@ import {
 import type { CaseMethod, CasePriority, CaseResult, CaseStatus, CaseType } from '../util/testCaseEnums';
 // T01492：幂等去重键与内容指纹的单源——写库必须逐字复现生成期口径，否则「生成期判已入库」与「写库期查重」分裂（§2.2 P6）
 import { caseSourceKey, caseContentHash } from './testCaseGenParse';
+import { reqNoKey } from '../util/reqNo';
 
 /** 默认每页条数（§7.3 分页档位 200 / 500 / 全部） */
 const DEFAULT_PAGE_SIZE = 200;
@@ -711,9 +712,13 @@ export const TestCaseService = {
     const wanted = (Array.isArray(input.cases) ? input.cases : []).filter((c) => c && c.include !== false && str(c.title));
 
     // 已有需求 req_no → id（同 WBS 导入：先建映射，用例落库时按 reqNo 挂需求）
+    // T01867 复验修正：键用编号同一性（REQ-01 与 REQ-001 视为同一个号），
+    // 否则草稿里的 REQ-001 会绕开已有 REQ-01 另建一行，矩阵里两种写法并存、按号定位再次不确定。
     const reqNoToId = new Map<string, string>();
-    for (const r of db.prepare('SELECT id, req_no FROM prd_requirements WHERE project_id = ?').all(input.projectId) as Array<{ id: string; req_no: string | null }>) {
-      if (r.req_no) reqNoToId.set(String(r.req_no), String(r.id));
+    for (const r of db.prepare('SELECT id, req_no FROM prd_requirements WHERE project_id = ? ORDER BY sort_order').all(input.projectId) as Array<{ id: string; req_no: string | null }>) {
+      if (!r.req_no) continue;
+      const key = reqNoKey(String(r.req_no));
+      if (!reqNoToId.has(key)) reqNoToId.set(key, String(r.id)); // 存量混写同号时取矩阵靠前的原行，避免命中随遍历顺序漂移
     }
     // 已入库 source_key 集合：与 `TestCaseGenService` 生成期完全同一条 SQL，判重口径不错位
     const existingKeys = new Set(
@@ -745,11 +750,11 @@ export const TestCaseService = {
           const no = str(rq.reqNo);
           const title = str(rq.title);
           if (!no || !title) continue;
-          if (reqNoToId.has(no)) continue; // 矩阵已有同 reqNo：复用不重复建（幂等）
+          if (reqNoToId.has(reqNoKey(no))) continue; // 矩阵已有同编号（含 REQ-01/REQ-001 混写）：复用不重复建（幂等）
           reqOrder += 1;
           const id = uuid();
           insReq.run(id, input.projectId, no, title, str(rq.content), str(rq.sourceRef), str(rq.priority) || 'normal', reqOrder, t, t);
-          reqNoToId.set(no, id);
+          reqNoToId.set(reqNoKey(no), id);
           created += 1;
         }
       }
@@ -766,7 +771,7 @@ export const TestCaseService = {
           steps: (Array.isArray(c.steps) ? c.steps : []).map((s) => ({ action: str(s.action), expected: str(s.expected) })),
         });
         insCase.run(
-          caseId, input.projectId, reqNoToId.get(reqNo) ?? null, caseNoOf(seq), str(c.module), title,
+          caseId, input.projectId, reqNoToId.get(reqNoKey(reqNo)) ?? null, caseNoOf(seq), str(c.module), title,
           str(c.preconditions), str(c.expected), str(c.testData), str(c.postconditions),
           enumVal(c.priority, CASE_PRIORITY, CASE_DEFAULTS.priority),
           enumVal(c.type, CASE_TYPE, CASE_DEFAULTS.type),

@@ -69,7 +69,7 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
   // T01486：反向跳转的瞬时态——滚到该行并加底色高亮，2.5s 后自行消退
   const [flashReqId, setFlashReqId] = useState('');
   // T01867：修复前增量导入撞下的重复编号组——新导入已不会再产生，此处只用于暴露历史脏数据
-  const [dupGroups, setDupGroups] = useState<Array<{ reqNo: string; count: number }>>([]);
+  const [dupGroups, setDupGroups] = useState<Array<{ reqNo: string; count: number; variants: string[] }>>([]);
   // 消退定时器与「已消费过哪个跳转意图」都走 ref：既不参与渲染，也不会被 effect 重跑干扰
   const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const locatedRef = useRef('');
@@ -127,7 +127,7 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
       api.get<Array<{ id: string; filename: string }>>(`/plans/prd-docs?projectId=${projectId}`).catch(() => []),
       // 用例覆盖度取不到不能拖累矩阵主体：退化成「全部未覆盖」，矩阵照常渲染
       api.get<CaseCoverage>(`/plans/test-cases/coverage?projectId=${projectId}`).catch(() => null),
-      api.get<{ groups: Array<{ reqNo: string; count: number }> }>(`/plans/prd-requirements/duplicates?projectId=${projectId}`).catch(() => ({ groups: [] })),
+      api.get<{ groups: Array<{ reqNo: string; count: number; variants: string[] }> }>(`/plans/prd-requirements/duplicates?projectId=${projectId}`).catch(() => ({ groups: [] })),
     ]);
     setRows(r);
     setPlans(p);
@@ -325,11 +325,12 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
       <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
         共 {rows.length} 条需求，已关联计划/待办 {covered} 条；可增删改与调整关联
       </span>
-      {/* T01867：重复编号会让「按编号定位需求」（矩阵导出、用例导入复用）命中不确定行——只提示历史脏数据，不阻断操作 */}
+      {/* T01867：重复编号会让「按编号定位需求」（矩阵导出、用例导入复用）命中不确定行——只提示历史脏数据，不阻断操作
+          T01921：一组内可能同时有 REQ-01 / REQ-001 两种写法，展平 variants 才看得出是同一编号混写而非两个号 */}
       {dupGroups.length > 0 && (
         <span style={{ fontSize: 11, color: 'var(--danger)', border: '1px solid var(--danger)', borderRadius: 6, padding: '1px 6px' }}
-          title={`以下编号在本项目出现多行，按编号定位需求会命中不确定行，建议手动改为唯一编号：${dupGroups.map((g) => `${g.reqNo}×${g.count}`).join('、')}`}>
-          ⚠ 重复需求编号 {dupGroups.length} 组：{dupGroups.slice(0, 3).map((g) => `${g.reqNo}×${g.count}`).join('、')}{dupGroups.length > 3 ? ` 等 ${dupGroups.length} 组` : ''}
+          title={`以下编号在本项目出现多行，按编号定位需求会命中不确定行，建议手动改为唯一编号：${dupGroups.map((g) => `${g.variants.join('/')}×${g.count}`).join('、')}`}>
+          ⚠ 重复需求编号 {dupGroups.length} 组：{dupGroups.slice(0, 3).map((g) => `${g.variants.join('/')}×${g.count}`).join('、')}{dupGroups.length > 3 ? ` 等 ${dupGroups.length} 组` : ''}
         </span>
       )}
       <span style={{ flex: 1 }} />

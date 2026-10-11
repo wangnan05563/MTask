@@ -29,6 +29,7 @@ const SUITES = [
   't00779-stream-truncate-test.mjs',
   't00780-symbols-lifecycle-test.mjs',
   't00781-writeback-dedupe-test.mjs',
+  't01921-reqno-uniqueness-test.mjs',
 ];
 
 const selected = SUITES.filter((f) => only.length === 0 || only.some((o) => f.startsWith(o)));
