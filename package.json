@@ -58,6 +58,7 @@
     "files": [
       "electron/main.js",
       "electron/preload.js",
+      "electron/update-state.js",
       "electron/splash.html",
       "electron/icon.png",
       "web/dist/**/*",

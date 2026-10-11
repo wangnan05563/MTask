@@ -172,5 +172,13 @@ ok('W-12 界面：下载中有「取消下载」，取消后主按钮变「继�
 ok('W-13 界面：安装失败回执条 + 重试复用安装包（不重新下载）',
   /安装失败：\{installError\.message\}/.test(settingsTsx) && /runInstall\(installError\.filePath, installError\.targetVersion\)/.test(settingsTsx));
 
+// W-14：打包白名单守卫——electron-builder 的 build.files 是显式清单，主进程新 require 的本地文件
+// 漏登记就不会进 app.asar，装机版会在 require 处直接崩（本次实测踩过：漏 update-state.js → 后端起不来）
+const buildFiles = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).build.files;
+const localRequires = [...mainJs.matchAll(/require\('\.\/([\w-]+)'\)/g)].map((m) => `electron/${m[1]}.js`);
+ok('W-14 主进程本地 require 的每个文件都在 build.files 白名单里（装机版不会缺文件崩在 require）',
+  localRequires.length > 0 && localRequires.every((f) => buildFiles.includes(f)),
+  `require=${localRequires.join(',')} 未登记=${localRequires.filter((f) => !buildFiles.includes(f)).join(',') || '无'}`);
+
 console.log(`verify-t02071-update-flow: PASS=${pass} FAIL=${fail}`);
 process.exitCode = fail > 0 ? 1 : 0; // 自然退出（硬 exit 会与未释放的 undici 句柄撞 libuv 断言）
