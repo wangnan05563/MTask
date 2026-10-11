@@ -43,6 +43,8 @@ const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
 function Shell() {
   const [tab, setTab] = useState<Tab>('tasks');
   const [serverOk, setServerOk] = useState<boolean | null>(null);
+  // T01836：启动自动检测到的新版本（仅提示，一键下载安装仍在「设置 → 版本更新」卡片内）
+  const [updateHint, setUpdateHint] = useState<{ latestVersion: string; currentVersion: string } | null>(null);
   // T00443 / PRD UX-4：全局命令面板（T00560：快捷键 Ctrl+F）
   const [paletteOpen, setPaletteOpen] = useState(false);
   // T00706：全菜单使用向导——当前菜单首次进入自动弹出，导航右侧常驻「向导」按钮随时唤起
@@ -87,6 +89,17 @@ function Shell() {
       .then(() => setServerOk(true))
       .catch(() => setServerOk(false));
   }, []);
+
+  // T01836 需求 1「应用启动时自动检测是否有新版本」：等后端就绪后静默查一次
+  //（force=false 走服务端 15min 缓存，不会每次启动都打 GitHub API）。
+  // 未配置仓库时 checkUpdate 会抛错、离线时 fetch 失败——两种情况都按「无提示」处理，不打扰用户。
+  useEffect(() => {
+    if (!serverOk) return;
+    if (sessionStorage.getItem('mtask.updateHintClosed')) return; // 本次会话已手动关掉就不再弹
+    api.post<{ hasUpdate?: boolean; latestVersion?: string; currentVersion?: string }>('/update/check', { force: false })
+      .then((r) => { if (r?.hasUpdate && r.latestVersion) setUpdateHint({ latestVersion: r.latestVersion, currentVersion: r.currentVersion ?? '' }); })
+      .catch(() => { /* 未配置 / 离线：静默 */ });
+  }, [serverOk]);
 
   // 启动时同步访问令牌：若后端已配置（或重置过）令牌，更新本地，避免带旧令牌触发 401
   useEffect(() => {
@@ -270,6 +283,27 @@ function Shell() {
           </button>
         )}
       </nav>
+
+      {/* T01836：启动自动检测新版本的一次性提示条——点击去「设置 → 版本更新」走一键下载/静默安装，
+          关掉后本次会话不再弹（sessionStorage），不影响已是最新版本的静默场景 */}
+      {updateHint && (
+        <output style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 14px', fontSize: 12, background: 'var(--accent-soft)', color: 'var(--accent)', borderBottom: '1px solid var(--border)' }}>
+          <span>发现新版本 v{updateHint.latestVersion}（当前 v{updateHint.currentVersion}）</span>
+          <button
+            onClick={() => setTab('settings')}
+            style={{ cursor: 'pointer', border: '1px solid var(--accent)', background: 'var(--card-bg)', color: 'var(--accent)', borderRadius: 6, padding: '2px 10px', fontSize: 12 }}
+          >
+            立即更新
+          </button>
+          <button
+            onClick={() => { sessionStorage.setItem('mtask.updateHintClosed', '1'); setUpdateHint(null); }}
+            aria-label="关闭新版本提示"
+            style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 12 }}
+          >
+            忽略本次
+          </button>
+        </output>
+      )}
 
       {tab === 'tasks' && <TasksPage />}
       {tab === 'aitools' && <AIToolsPage />}
