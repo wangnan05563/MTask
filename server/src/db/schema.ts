@@ -415,6 +415,44 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     );
     -- 步骤随用例整批取（WHERE case_id IN (...)）并按 step_no 排序，避免逐条用例查步骤
     CREATE INDEX IF NOT EXISTS idx_case_steps_case ON case_steps(case_id, step_no);
+
+    -- E1（PRD-估算视图 §3.1）：估算条目——每条计划一行，可空即「未估算」。
+    -- plan_id **不建物理外键**（v1.4 依实测校正 PRD 表格里的「FK→plan_tasks」记法）：
+    --   PlanService.purge()（services/PlanService.ts:960）会对**已归档**计划做物理 DELETE，
+    --   带 FK 时该语句直接抛 SQLITE_CONSTRAINT——归档菜单整条链断掉；而 PRD §7 明确要求估算行
+    --   此时**原样保留**（历史报价依据）并在面板计为「脱离计划」，靠视图层 INNER JOIN 过滤。
+    --   归属校验因此落在服务层（EstimateService.requirePlan：计划存在 + 同项目）。
+    -- project_id 随项目级联删是本仓既有口径（tasks / prd_requirements 同写法，routes/index.ts:327
+    -- 的「删项目」依赖它），与「删计划不删估算」不冲突——项目没了才跟着没。
+    CREATE TABLE IF NOT EXISTS estimate_items (
+      id           TEXT PRIMARY KEY,
+      project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      plan_id      TEXT NOT NULL,
+      phase        TEXT NOT NULL DEFAULT 'dev',
+      unit         TEXT NOT NULL DEFAULT 'man_day',
+      optimistic   REAL NOT NULL DEFAULT 0,
+      likely       REAL NOT NULL DEFAULT 0,
+      pessimistic  REAL NOT NULL DEFAULT 0,
+      source       TEXT NOT NULL DEFAULT 'manual',
+      note         TEXT NOT NULL DEFAULT '',
+      created_at   TEXT NOT NULL,
+      updated_at   TEXT NOT NULL
+    );
+    -- 一条计划最多一条估算（重复 upsert 靠它拦，面板左联也按它取）
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_estimate_items_plan ON estimate_items(project_id, plan_id);
+    -- 面板/汇总整项目取
+    CREATE INDEX IF NOT EXISTS idx_estimate_items_project ON estimate_items(project_id);
+
+    -- E1（PRD-估算视图 §3.2）：导出版本留档——payload 存汇总结果 JSON，不存原始三点（原始以 estimate_items 为准）
+    CREATE TABLE IF NOT EXISTS estimate_snapshots (
+      id         TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      format     TEXT NOT NULL DEFAULT 'xlsx',
+      filename   TEXT NOT NULL DEFAULT '',
+      payload    TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_estimate_snapshots_project ON estimate_snapshots(project_id, created_at);
   `);
 
   // 迁移兜底：老库缺列时补列（CREATE TABLE IF NOT EXISTS 对已存在表不生效）

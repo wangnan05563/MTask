@@ -83,6 +83,28 @@ export function snapWorkdayBack(s: string, ctx: WorkdayCtx): string {
   return fmtDate(d);
 }
 
+/**
+ * 从锚点日向后走 n 个工作日的落点日（**锚点日不计入**，n=1 即锚点之后的第一个工作日）。
+ * 服务端 `server/src/util/workdays.ts:addWorkdays` 的前端镜像，两侧由 `scripts/estimate-e1-test.mjs`
+ * 逐日网格比对（估算的人天→日历天换算与日历天列展示都靠它，口径必须一致）。
+ */
+export function addWorkdays(anchor: string, n: number, ctx: WorkdayCtx): string {
+  if (!anchor || !/^\d{4}-\d{2}-\d{2}$/.test(anchor)) return anchor;
+  const d = parseYmd(anchor);
+  if (n <= 0) {
+    while (!isWorkday(d, ctx)) d.setDate(d.getDate() + 1);
+    return fmtDate(d);
+  }
+  let left = Math.floor(n);
+  for (;;) {
+    d.setDate(d.getDate() + 1);
+    if (isWorkday(d, ctx)) {
+      left -= 1;
+      if (left === 0) return fmtDate(d);
+    }
+  }
+}
+
 /** 日历日加减（不跳周末） */
 export function addDays(s: string, n: number): string {
   const d = parseYmd(s);

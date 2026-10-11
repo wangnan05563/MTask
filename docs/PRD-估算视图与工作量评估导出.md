@@ -1,6 +1,7 @@
 # PRD：项目管理「估算」视图与工作量评估导出（MTask）
 
-> 来源任务：T01839 ｜ 版本：**v1.4** ｜ 日期：2026-10-11 ｜ 状态：**已批准·E0 放行**（业主 2026-10-11 签字：D1~D6 全部按评审建议值通过，见文末「裁决结果」；E0 Spike 同日实测通过，见 §11.1）
+> 来源任务：T01839 ｜ 版本：**v1.5** ｜ 日期：2026-10-11 ｜ 状态：**已批准·E0 放行**（业主 2026-10-11 签字：D1~D6 全部按评审建议值通过，见文末「裁决结果」；E0 Spike 同日实测通过，见 §11.1）
+> v1.5 变更（T02034 = §11-E1 实施回写）：§3.1 的 `plan_id` 由「FK→plan_tasks」校正为**不建物理外键 + 服务层归属校验 + 视图层过滤**，依据是 `PlanService.purge()` 的物理 DELETE 与 §7「估算行原样保留」在外键下不能共存（实测取证与断言见 `scripts/verify-t02034-estimate-e1.mts`）。§4.5 点名的 `addWorkdays(anchor,n)` 正向工作日工具同日落地（服务端 `server/src/util/workdays.ts` 唯一实现 + 前端 `web/src/utils/workday.ts` 同语义镜像，720 格网格逐格全等断言）。
 > v1.4 变更（T01843 复杂度补录取证收口）：§1.1/§4.6 的复杂度基线按生产库实测改写（mtask四期 37/37 非空），§11-E15 判据按实测行数重述并记四期闭环，§12-R3 更新状态，§1.4 补「复杂度评级」术语并明确里程碑不重复计。全程只读取证，无数据写入。
 > 评审报告：`docs/PRD评审报告-估算视图与工作量评估导出.md`（T01842，二次独立取证，v1.0→v1.1 修订项 C1~C9 全部落点见该报告 §7）
 > 影响项目：mtask四期（工作空间 `D:\code\otherProjects\26_MTask`）
@@ -167,7 +168,7 @@
 |---|---|---|
 | id | TEXT PK | uuid |
 | project_id | TEXT FK→projects | 归属项目 |
-| plan_id | TEXT FK→plan_tasks | 被估算的计划条目；**唯一索引** `(project_id, plan_id)`。**不设物理级联删除**（v1.1 依评审 B5）：`plan_tasks` 实为软归档（`archived`/`archived_at`，`server/src/db/schema.ts:517-518`），估算行随计划的归档态在**视图层**过滤，避免「删计划把历史报价依据一起删掉」 |
+| plan_id | TEXT（**不建物理外键**，v1.5 依 E1 实施实测校正本表的「FK→plan_tasks」记法） | 被估算的计划条目；**唯一索引** `(project_id, plan_id)`。**不设物理级联删除**（v1.1 依评审 B5）：`plan_tasks` 实为软归档（`archived`/`archived_at`，`server/src/db/schema.ts:517-518`），估算行随计划的归档态在**视图层**过滤，避免「删计划把历史报价依据一起删掉」。**校正依据**：`PlanService.purge()`（`services/PlanService.ts:960`）对**已归档**计划执行物理 `DELETE FROM plan_tasks`，若 plan_id 带外键则该语句抛 `SQLITE_CONSTRAINT`——归档菜单整条链断；而 §7 要求此时估算行**原样保留**并计为「脱离计划」，两者只能靠「不建外键 + 服务层归属校验（`EstimateService.requirePlan`：计划存在且同项目）+ 视图层 INNER JOIN 过滤」实现。`project_id` 仍写 `REFERENCES projects(id) ON DELETE CASCADE`——这是本仓既有口径（`tasks` / `prd_requirements` 同写法，`routes/index.ts:327` 的删项目依赖它），与「删计划不删估算」不冲突。断言见 `scripts/verify-t02034-estimate-e1.mts` A-04 / C-29~C-32。 |
 | phase | TEXT | 阶段：`req`（需求分析）/`design`（系统设计）/`dev`（开发/研发）/`impl`（实施）/`common`（公共&远程投入）/`onsite`（现场维护） |
 | unit | TEXT | 计量单位：`man_day`（默认，1 人天=8 人时，同模板 E4） |
 | optimistic | REAL | 乐观值 O（人天，≥0） |
@@ -521,7 +522,7 @@ MCP 工具（`server/src/mcp/server.ts`，注意 T01490 的响应体量截断教
 | ID | 工作项 | 依赖 | 优先级 | 量级 |
 |---|---|---|---|---|
 | **E0** | **技术验证 Spike（E6 的放行闸门）**：用 exceljs 产出最小样例文件，验证①单元格**写活公式**；②非 ASCII 命名区域 `每人月工天标准` 写入后公式可解析、改值可重算；③28 处合并区无损；④断言脚本可跑（公式串轨 + 缓存值轨 + Excel 重算轨）。任一不达 → 改方案 | — | **P0** | **S — 已完成（2026-10-11 实测通过，结论见 §11.1；E6 放行）** |
-| E1 | 数据模型与迁移（`estimate_items` / `estimate_snapshots`，落 `schema.ts` + `ensureColumn` 范式）+ `EstimateService` CRUD + 校验 + **`addWorkdays(anchor,n)` 工作日正向工具（服务端/前端同语义，单源）** | E0 | P0 | S |
+| E1 | 数据模型与迁移（`estimate_items` / `estimate_snapshots`，落 `schema.ts` + `ensureColumn` 范式）+ `EstimateService` CRUD + 校验 + **`addWorkdays(anchor,n)` 工作日正向工具（服务端/前端同语义，单源）** | E0 | P0 | **S — 已完成（2026-10-11，实施单 T02034）**：两张表落 `server/src/db/schema.ts` 建表清单、`EstimateService`（CRUD/PATCH 缺省沿用/批量「任一行失败零写入」/快照 20 条裁剪/脱离计划行）、`server/src/util/workdays.ts` + 前端镜像。验证 `scripts/verify-t02034-estimate-e1.mts` **PASS=84 FAIL=0**（隔离库），`npm run typecheck`（server）与 `npm run build -w mtask-web` 均 0 错。§3.1 的 plan_id 外键记法按实测校正（见该表 v1.5 说明）；REST 路由与 derive 规则归 E3，不属本单 |
 | E2 | `estimate-engine.ts`（E/σ/汇总/系数/比例自检，**含「排除小计行」口径**）+ 黄金样例单测 + 「前端 Σ ≈ 模板 H35」断言 | E1 | P0 | S |
 | E3 | REST 路由 + `derive` 规则（复杂度/用例/工期三档） | E1,E2 | P0 | M |
 | E4 | 估算面板 UI（**新建 docked 分栏，本仓无 SplitPane 基元** + 汇总卡 + 明细行内录入 + **每行 O~P 区间条（P0，自 E8 移入）** + 空态/错误态 + `TlPlan` 扩 complexity 字段） | E3 | P0 | **L→XL**（v1.1 上调：分栏基元与挤压走查为新增成本） |
