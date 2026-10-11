@@ -183,18 +183,25 @@ function syncPlanOnStatusChange(id: string, status: string): void {
   if (childRow?.parent_id) recalcParentProgress(childRow.parent_id);
 }
 
-/** M-5：按子任务完成比例重算父任务 progress（全完成时父自动 done；未全完成时回退待办）。
- *  从 syncPlanOnStatusChange 抽出复用——T00776 评审发现新增子任务不重算会导致父进度失真（done/100% 下再添子任务）。 */
+/** M-5 / T01876：按「未归档子任务」完成比例重算父任务 progress 与 status。
+ *  状态口径维持 todo|done 二元：tasks 全链路按二元消费（TasksPage 待办/已完成页签严格二分、
+ *  TaskDetailDrawer/MobileTaskDetail 的 STATUS_LABEL 只有这两个键、待处理队列 SQL 是 status='todo'），
+ *  写 doing 会让「部分完成的父」从两个页签同时消失并进不了 AI 队列——比原症状更严重，故只做进度求真，
+ *  第三态支持另立产品单。父的语义是聚合：未完成即 todo，进度按子任务比例如实反映（todo + 50% 不再自相矛盾，
+ *  todo 在此读作「未完成」而非「未开始」）。
+ *  子任务全部归档（total=0）时不动父：无可依据的比例，保留人工状态。
+ *  去掉旧写的 `AND status != 'done'` 守卫：它把 done 父整体冻结（生产实测 T00772：3/3 子全 done，父仍 done/0%），
+ *  也正是 T00776「done 父再添 todo 子后进度状态双双失真」的成因。
+ *  从 syncPlanOnStatusChange 抽出复用——T00776 评审发现新增子任务不重算会导致父进度失真。 */
 function recalcParentProgress(parentId: string): void {
   const db = getDb();
   const stat = db.prepare(
     "SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done FROM tasks WHERE parent_id = ? AND archived = 0",
   ).get(parentId) as { total: number; done: number };
-  if (stat.total > 0) {
-    const progress = Math.round((stat.done / stat.total) * 100);
-    const parentStatus = stat.done === stat.total ? 'done' : 'todo';
-    db.prepare("UPDATE tasks SET progress = ?, status = ?, updated_at = ? WHERE id = ? AND status != 'done'").run(progress, parentStatus, now(), parentId);
-  }
+  if (stat.total === 0) return;
+  const progress = Math.round((stat.done / stat.total) * 100);
+  const parentStatus = progress === 100 ? 'done' : 'todo';
+  db.prepare('UPDATE tasks SET progress = ?, status = ?, updated_at = ? WHERE id = ?').run(progress, parentStatus, now(), parentId);
 }
 
 /** FR1.2 / FR1.3 / FR1.4 / FR5 */
@@ -629,6 +636,18 @@ export const TaskService = {
     return decorateRows(db, rows);
   },
 
+  /** T01876：归档/还原子任务后补重算其父任务进度。
+   *  status 变更路径已由 syncPlanOnStatusChange 触发重算，archived 变更此前无人重算，
+   *  导致「归档最后一个未完成子任务」后父进度永久停在旧值（实测 33% 不回落 50%/100%）。 */
+  recalcParentsOfChildren(childIds: string[]): void {
+    const db = getDb();
+    const sel = db.prepare('SELECT parent_id FROM tasks WHERE id = ?');
+    for (const id of childIds) {
+      const p = sel.get(id) as { parent_id: string | null } | undefined;
+      if (p?.parent_id) recalcParentProgress(p.parent_id);
+    }
+  },
+
   update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state' | 'ai_state_at' | 'derived_from' | 'shelved' | 'archived'>>): TaskView {
     const db = getDb();
     // better-sqlite3 不支持 boolean 绑定且 SQLite 无布尔型，布尔列先归一整型 0/1 再落库
@@ -658,6 +677,8 @@ export const TaskService = {
     }
     // 反向计划联动（T00436）：待办被项目计划关联时，状态变更同步回计划任务（已完成↔已完成，待办→进行中）
     if (patch.status !== undefined) syncPlanOnStatusChange(id, patch.status);
+    // T01876：归档态变更同样要重算父进度（REST/MCP 单条归档走本方法，批量归档见 ArchiveService）
+    if (patch.archived !== undefined) this.recalcParentsOfChildren([id]);
     notifyChange('tasks');
     return this.getById(id)!;
   },

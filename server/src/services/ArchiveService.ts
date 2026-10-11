@@ -16,6 +16,8 @@ export const ArchiveService = {
     db.transaction(() => {
       for (const id of taskIds) stmt.run(now(), now(), id);
     })();
+    // T01876：归档改变了「未完成子任务」集合，父进度必须重算（此前批量归档不重算，进度失真）
+    TaskService.recalcParentsOfChildren(taskIds);
     return taskIds.map((id) => TaskService.getById(id)).filter(Boolean) as TaskView[];
   },
 
@@ -26,6 +28,7 @@ export const ArchiveService = {
     db.transaction(() => {
       for (const id of taskIds) stmt.run(now(), id);
     })();
+    TaskService.recalcParentsOfChildren(taskIds); // T01876：与归档同口径（还原同样改变子任务集合）
     return taskIds.map((id) => TaskService.getById(id)).filter(Boolean) as TaskView[];
   },
 
