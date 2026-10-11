@@ -22,6 +22,8 @@ export interface MatrixTableProps {
   readonly linkFor: string;
   /** 用例侧反向跳转带来的需求 id（命中行加底色高亮，§4.3） */
   readonly locateReqId: string;
+  /** T01873：重复编号命中行 → 悬浮说明文案；空对象表示本项目无重复编号，行内不产生任何标记 */
+  readonly dupInfo: Record<string, string>;
   readonly allRef: RefObject<HTMLInputElement>;
   readonly setSelIds: Dispatch<SetStateAction<string[]>>;
   readonly setQueryId: Dispatch<SetStateAction<string>>;
@@ -199,9 +201,12 @@ export function MatrixTable({ p, flash }: { readonly p: MatrixTableProps; readon
               style={{ borderTop: '1px solid var(--border)', background: p.locateReqId === r.id ? LOCATE_BG : undefined }}>
               {multi && renderSelectCell(r)}
               <td style={{ padding: '4px 6px', width: 100 }}>
-                <input defaultValue={r.req_no} aria-label="需求编号" title="需求编号（失焦保存）"
+                {/* T01873：与本行同号的其他行存在时，编号按 --danger 口径标红（与工具条 banner 同色），
+                    悬浮说明点名「另一行是谁」；无重复编号的行渲染与之前完全一致 */}
+                <input defaultValue={r.req_no} aria-label="需求编号" title={p.dupInfo[r.id] ?? '需求编号（失焦保存）'}
+                  data-dup={p.dupInfo[r.id] ? '1' : undefined}
                   onBlur={(e) => { if (e.target.value !== r.req_no) p.onUpdate(r.id, { req_no: e.target.value }); }}
-                  style={{ ...PLAIN_INPUT, width: 88, color: 'var(--accent)' }} />
+                  style={{ ...PLAIN_INPUT, width: 88, color: p.dupInfo[r.id] ? 'var(--danger)' : 'var(--accent)', border: p.dupInfo[r.id] ? '1px solid var(--danger)' : PLAIN_INPUT.border }} />
               </td>
               {renderTitleCell(r)}
               <td style={{ padding: '4px 6px', width: 96 }}>

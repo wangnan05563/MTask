@@ -1946,9 +1946,10 @@ export const PlanService = {
   },
 
   /** T01867：项目内重复需求编号分组（存量脏数据可见化；新数据已不会再产生） */
-  duplicateReqNos(projectId: string): Array<{ reqNo: string; count: number; variants: string[] }> {
+  duplicateReqNos(projectId: string): Array<{ reqNo: string; count: number; variants: string[]; ids: string[] }> {
     const db = getDb();
-    const rows = db.prepare('SELECT req_no FROM prd_requirements WHERE project_id = ?').all(projectId) as Array<{ req_no: string | null }>;
+    // T01873：取 id 并按矩阵顺序返回——面板的行内标记与「点提示直达第一组」都依赖 id 与顺序
+    const rows = db.prepare('SELECT id, req_no FROM prd_requirements WHERE project_id = ? ORDER BY sort_order, created_at').all(projectId) as Array<{ id: string; req_no: string | null }>;
     return groupDuplicateReqNos(rows);
   },
 

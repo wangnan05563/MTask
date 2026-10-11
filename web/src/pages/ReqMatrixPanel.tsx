@@ -69,7 +69,9 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
   // T01486：反向跳转的瞬时态——滚到该行并加底色高亮，2.5s 后自行消退
   const [flashReqId, setFlashReqId] = useState('');
   // T01867：修复前增量导入撞下的重复编号组——新导入已不会再产生，此处只用于暴露历史脏数据
-  const [dupGroups, setDupGroups] = useState<Array<{ reqNo: string; count: number; variants: string[] }>>([]);
+  // T01873：ids 为该组命中行（矩阵顺序，ids[0] 是最靠前的一行），供行内标记与「点提示直达」使用
+  const [dupGroups, setDupGroups] = useState<Array<{ reqNo: string; count: number; variants: string[]; ids: string[] }>>([]);
+  const [dupCursor, setDupCursor] = useState(0); // T01873：同一 banner 反复点击时按组轮换定位
   // 消退定时器与「已消费过哪个跳转意图」都走 ref：既不参与渲染，也不会被 effect 重跑干扰
   const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const locatedRef = useRef('');
@@ -127,7 +129,7 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
       api.get<Array<{ id: string; filename: string }>>(`/plans/prd-docs?projectId=${projectId}`).catch(() => []),
       // 用例覆盖度取不到不能拖累矩阵主体：退化成「全部未覆盖」，矩阵照常渲染
       api.get<CaseCoverage>(`/plans/test-cases/coverage?projectId=${projectId}`).catch(() => null),
-      api.get<{ groups: Array<{ reqNo: string; count: number; variants: string[] }> }>(`/plans/prd-requirements/duplicates?projectId=${projectId}`).catch(() => ({ groups: [] })),
+      api.get<{ groups: Array<{ reqNo: string; count: number; variants: string[]; ids: string[] }> }>(`/plans/prd-requirements/duplicates?projectId=${projectId}`).catch(() => ({ groups: [] })),
     ]);
     setRows(r);
     setPlans(p);
@@ -220,6 +222,30 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
 
   // 定时器只跟组件卸载走，不跟 effect 重跑走；否则跳转高亮会被下一次依赖变更瞬间抹掉
   useEffect(() => () => { if (fadeTimer.current) clearTimeout(fadeTimer.current); }, []);
+
+  /**
+   * T01873：重复编号的行内标记文案（需求 id → 悬浮说明）。
+   * duplicates 只给分组，这里补上「与本行同号的其他行是谁」，
+   * 让用户在标红的单元格里就看出这是同一编号的多行（可能是 REQ-01 / REQ-001 混写）而不是两个号。
+   */
+  const dupInfo: Record<string, string> = {};
+  for (const g of dupGroups) {
+    for (const id of g.ids) {
+      const others = g.ids.filter((x) => x !== id).map((x) => rows.find((r) => r.id === x)).filter((x): x is MatrixReq => !!x);
+      dupInfo[id] = `此编号在本项目有 ${g.count} 行，另一行为 ${others.map((o) => `「${o.req_no} ${o.title}」`).join('、')}——按编号定位需求会命中不确定行，建议把本行改为唯一编号`;
+    }
+  }
+
+  /** T01873：点 banner 直达重复行——滚动 + 复用 flashReqId 瞬时高亮；连点按组轮换，不必刷新页面 */
+  function locateDuplicateGroup() {
+    const id = dupGroups[dupCursor % Math.max(dupGroups.length, 1)]?.ids[0];
+    if (!id) return;
+    setDupCursor((c) => c + 1);
+    document.querySelector(`[data-req-id="${id}"]`)?.scrollIntoView({ block: 'center' });
+    setFlashReqId(id);
+    if (fadeTimer.current) clearTimeout(fadeTimer.current);
+    fadeTimer.current = setTimeout(() => setFlashReqId(''), 2500);
+  }
 
   /** T00824：从本视图跳转 AI 工作台并自动展开「从 PRD 导入项目计划」面板，目标项目随跳转带出 */
   function goImportPrd() {
@@ -326,12 +352,15 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
         共 {rows.length} 条需求，已关联计划/待办 {covered} 条；可增删改与调整关联
       </span>
       {/* T01867：重复编号会让「按编号定位需求」（矩阵导出、用例导入复用）命中不确定行——只提示历史脏数据，不阻断操作
-          T01921：一组内可能同时有 REQ-01 / REQ-001 两种写法，展平 variants 才看得出是同一编号混写而非两个号 */}
+          T01921：一组内可能同时有 REQ-01 / REQ-001 两种写法，展平 variants 才看得出是同一编号混写而非两个号
+          T01873：整条改为可点按钮——点一次滚到该组最靠前的行并瞬时高亮；连点在各组间轮换 */}
       {dupGroups.length > 0 && (
-        <span style={{ fontSize: 11, color: 'var(--danger)', border: '1px solid var(--danger)', borderRadius: 6, padding: '1px 6px' }}
-          title={`以下编号在本项目出现多行，按编号定位需求会命中不确定行，建议手动改为唯一编号：${dupGroups.map((g) => `${g.variants.join('/')}×${g.count}`).join('、')}`}>
+        <button onClick={locateDuplicateGroup} className="tbtn-anim"
+          title={`点击定位到重复编号的行（连点切换下一组）。以下编号在本项目出现多行，按编号定位需求会命中不确定行，建议手动改为唯一编号：${dupGroups.map((g) => `${g.variants.join('/')}×${g.count}`).join('、')}`}
+          aria-label="定位重复需求编号的行"
+          style={{ fontSize: 11, color: 'var(--danger)', border: '1px solid var(--danger)', borderRadius: 6, padding: '1px 6px', background: 'transparent', cursor: 'pointer' }}>
           ⚠ 重复需求编号 {dupGroups.length} 组：{dupGroups.slice(0, 3).map((g) => `${g.variants.join('/')}×${g.count}`).join('、')}{dupGroups.length > 3 ? ` 等 ${dupGroups.length} 组` : ''}
-        </span>
+        </button>
       )}
       <span style={{ flex: 1 }} />
       {/* T00773：多选模式开关（参考项目计划 T00564）——勾选需求后批量改状态/删除 */}
@@ -404,6 +433,7 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
   const tableProps = {
     rows, multi, selIds, caseCounts, queryId, linkFor,
     locateReqId: flashReqId, allRef,
+    dupInfo, // T01873：重复编号行内的标红与悬浮说明（无重复时为空对象，渲染零变化）
     setSelIds, setQueryId,
     onUpdate: (id: string, patch: Partial<Pick<MatrixReq, 'title' | 'req_no' | 'status' | 'priority'>>) => { void updateReq(id, patch); },
     onToggleLink: (reqId: string, kind: 'plan' | 'task', targetId: string, linked: boolean) => { void toggleLink(reqId, kind, targetId, linked); },

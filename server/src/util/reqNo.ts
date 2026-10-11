@@ -87,18 +87,22 @@ export function isReqNoTaken(existing: Iterable<string>, no: string): boolean {
   return false;
 }
 
-/** 找出项目内重复的需求编号分组（供矩阵面板提示存量脏数据；按编号同一性分组，能识别 REQ-01 与 REQ-001 混写） */
-export function groupDuplicateReqNos(rows: Array<{ req_no: string | null }>): Array<{ reqNo: string; count: number; variants: string[] }> {
-  const byKey = new Map<string, string[]>();
+/**
+ * 找出项目内重复的需求编号分组（供矩阵面板提示存量脏数据；按编号同一性分组，能识别 REQ-01 与 REQ-001 混写）。
+ * T01873：带上命中行的 id 列表（按调用方传入顺序，即矩阵 sort_order 序），
+ * 面板才能从「只报计数」升级为「行内标红 + 点提示直达第一组」——id[0] 即该组最靠前的那行。
+ */
+export function groupDuplicateReqNos(rows: Array<{ id: string; req_no: string | null }>): Array<{ reqNo: string; count: number; variants: string[]; ids: string[] }> {
+  const byKey = new Map<string, Array<{ id: string; no: string }>>();
   for (const r of rows) {
     const no = String(r.req_no ?? '').trim();
     if (!no) continue;
     const list = byKey.get(reqNoKey(no));
-    if (list) list.push(no);
-    else byKey.set(reqNoKey(no), [no]);
+    if (list) list.push({ id: r.id, no });
+    else byKey.set(reqNoKey(no), [{ id: r.id, no }]);
   }
   return [...byKey.values()]
     .filter((v) => v.length > 1)
-    .map((v) => ({ reqNo: v[0], count: v.length, variants: [...new Set(v)] }))
+    .map((v) => ({ reqNo: v[0].no, count: v.length, variants: [...new Set(v.map((x) => x.no))], ids: v.map((x) => x.id) }))
     .sort((a, b) => a.reqNo.localeCompare(b.reqNo, undefined, { numeric: true }));
 }
