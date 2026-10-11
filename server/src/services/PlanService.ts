@@ -1458,7 +1458,7 @@ export const PlanService = {
     createTasks?: boolean;
     prdMd?: string;
     prdFilename?: string;
-  }): { requirements: number; plans: number; tasks: number; unlinkedReqNos: string[]; prdId?: string; reqNoMap: Array<{ from: string; to: string }>; dupPlanTitles: Array<{ title: string; existing: number }> } {
+  }): { requirements: number; plans: number; tasks: number; unlinkedReqNos: string[]; prdId?: string; reqNoMap: Array<{ from: string; to: string }>; dupPlanTitles: Array<{ title: string; existing: number }>; ambiguousReqNos: string[]; orphanRequirements: Array<{ reqNo: string; title: string }> } {
     const db = getDb();
     if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
     const reqs = (input.requirements ?? []).filter((r) => r?.title?.trim());
@@ -1471,6 +1471,15 @@ export const PlanService = {
     let taskCount = 0;
     const unlinkedReqNos = new Set<string>();
     const reqNoMap: Array<{ from: string; to: string }> = []; // T01867：撞号顺延明细（请求编号 → 实际落库编号）
+    // T01995：多来源合并导入的两处静默缺陷补漏——
+    // ① ambiguousReqNos：同一「PRD 原编号」被本次 payload 的两行争用（两份 PRD 各自从 REQ-001 起号且调用方未分表重编号）。
+    //    旧实现只把歧义静默吸收成「后写覆盖先写」，前一份文档的关联被悄悄改挂到后一份的行上
+    //    （实测 mtask四期 前 20 行零关联），这里点名回传；归属仍沿用既有覆盖语义，不改 T01921 已复验的关联口径。
+    // ② orphanRequirements：本次新建却零计划/待办关联的需求行。unlinkedReqNos 只校验编号存在性，
+    //    「挂错行」因编号存在而完全不报警，这里按行清点，让同类问题不再静默通过。
+    const ambiguousReqNos = new Set<string>();
+    const newReqs: Array<{ id: string; reqNo: string; title: string }> = [];
+    const linkedReqIds = new Set<string>();
     // T00763：PRD 原文完整保留（Markdown 不截断），导入即生成文档记录并关联需求行
     // T01156-3：同名/同内容覆盖——重复导入不再堆重复文档（对齐 createPrdDoc 的 T00821 覆盖模式）：
     //   ① 同项目 + 同内容哈希(origin_hash) → 覆盖复用该行；② 同项目 + 同文件名 → 覆盖复用（保留状态流转）。
@@ -1514,7 +1523,14 @@ export const PlanService = {
     }
     db.transaction(() => {
       // 1) 需求项（矩阵行）——reqNo → id 映射供计划/待办关联
+      // T01995：两个编号空间分开登记——
+      //   noToId         落库编号（顺延后的实际编号）→ id，权威；
+      //   requestedToId  PRD 原编号 → id，计划条目引用的就是这个空间（T01921 的顺延不断链靠它）。
+      // 查号按「原编号空间优先」：原编号 REQ-013 撞上别行的落库新号 REQ-013 属正常顺延产物，
+      // 不能被当成歧义误报（否则每次增量导入都会红一片），只有同一原编号被本次两行争用才是真歧义。
       const noToId = new Map<string, string>();
+      const requestedToId = new Map<string, string>();
+      const findReqId = (n: string) => requestedToId.get(n) ?? noToId.get(n);
       const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM prd_requirements WHERE project_id = ?').get(projectId) as { m: number }).m;
       let order = maxOrder;
       // T01867：编号在项目内唯一——AI 每次解析都从 REQ-001 起号，增量导入必与存量撞号，
@@ -1537,8 +1553,14 @@ export const PlanService = {
         order += 1;
         insReq.run(id, projectId, reqNo, r.title.trim(), r.content ?? '', r.sourceRef ?? '', r.priority ?? 'normal', order, prdId ?? null, t, t);
         noToId.set(reqNo, id);
-        // 计划条目仍按 PRD 里的原编号引用：把「请求编号 → 本行 id」也登记，顺延后关联不断链
-        if (requested) noToId.set(requested, id);
+        // 计划条目仍按 PRD 里的原编号引用：把「请求编号 → 本行 id」登记到原编号空间（顺延后关联不断链，T01921）
+        // T01995：同一原编号被本次两行争用时点名（后登记者仍按既有口径胜出），不再静默
+        if (requested) {
+          const claimed = requestedToId.get(requested);
+          if (claimed && claimed !== id) ambiguousReqNos.add(requested);
+          requestedToId.set(requested, id);
+        }
+        newReqs.push({ id, reqNo, title: r.title.trim() });
       }
       // 2) 计划（含 req_ids 关联）
       let insertedPlans = 0;
@@ -1567,9 +1589,10 @@ export const PlanService = {
           if (!p) return;
           const rawNos = p.reqNos ?? [];
           // T00712（D-5）：引用了不存在的需求编号 → 记入 unlinkedReqNos 供调用方提示
-          for (const n of rawNos) if (!noToId.has(n)) unlinkedReqNos.add(n);
-          const ids = rawNos.map((n) => noToId.get(n)).filter((x): x is string => !!x);
+          for (const n of rawNos) if (!findReqId(n)) unlinkedReqNos.add(n);
+          const ids = rawNos.map((n) => findReqId(n)).filter((x): x is string => !!x);
           if (ids.length > 0) updPlan.run(JSON.stringify(ids), t, planId);
+          for (const rid of ids) linkedReqIds.add(rid); // T01995：零关联清点用
         });
       }
       // 3) 可选：WBS → 待办任务（便于 AI 推进执行），待办同样携带 req_ids
@@ -1585,7 +1608,7 @@ export const PlanService = {
         planIds.forEach((planId, i) => {
           const p = planItems[i];
           if (!p) return;
-          const ids = (p.reqNos ?? []).map((n) => noToId.get(n)).filter((x): x is string => !!x);
+          const ids = (p.reqNos ?? []).map((n) => findReqId(n)).filter((x): x is string => !!x);
           const taskId = uuid();
           insTask.run(taskId, nextTaskNo(), projectId, `[PRD] ${p.title}`, p.description ?? '', 'normal', ids.length ? JSON.stringify(ids) : null, t, t);
           linkPlan.run(taskId, t, planId);
@@ -1596,7 +1619,12 @@ export const PlanService = {
         // 仅导入需求（无计划）时属合法场景，不抛错
       }
     })();
-    return { requirements: reqs.length, plans: planItems.length, tasks: taskCount, unlinkedReqNos: [...unlinkedReqNos], prdId, reqNoMap, dupPlanTitles };
+    // T01995：本次新建却零计划/待办关联的需求行（仅在「有计划条目参与导入」时清点——
+    // 只导需求不导计划属合法场景，全部列为零关联会变成噪音）
+    const orphanRequirements = planItems.length > 0
+      ? newReqs.filter((x) => !linkedReqIds.has(x.id)).map((x) => ({ reqNo: x.reqNo, title: x.title }))
+      : [];
+    return { requirements: reqs.length, plans: planItems.length, tasks: taskCount, unlinkedReqNos: [...unlinkedReqNos], prdId, reqNoMap, dupPlanTitles, ambiguousReqNos: [...ambiguousReqNos], orphanRequirements };
   },
 
   // ---------- T00763：PRD 原文文档（存储 / 查看 / 反向更新 / AI 上下文反查） ----------

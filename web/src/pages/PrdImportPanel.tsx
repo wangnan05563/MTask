@@ -62,38 +62,12 @@ function persistParseResult(
   }
 }
 
-/** T00662：单文件解析响应（/plans/ai-parse-prd） */
-interface PrdParseResult {
-  requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>;
-  drafts: Array<{ title: string; description: string; durationDays: number; reqNos: string[]; kind?: 'milestone' | 'normal' | 'daily' }>;
-  coverageWarn?: string;
-  /** T00908：后端随解析返回的 PRD 提取全文，供确认导入时落库到 PRD 管理视图 */
-  textMd?: string;
-  /** T01156：首轮输出被截断、已用精简模式重试（需求可能静默丢失） */
-  truncatedNote?: string;
-}
-
-/** T00824：多文件解析结果合并——统一重编号 REQ-001…（各文件 AI 都从 REQ-001 起号，直接拼接会重号），
- *  并把每份 WBS 草稿的 reqNos 经 old→new 映射转换，保证计划/需求关联在合并后仍指向正确的需求 */
-function mergePrdResults(list: PrdParseResult[]): { requirements: PrdParseResult['requirements']; drafts: PrdParseResult['drafts'] } {
-  const map = new Map<string, string>();
-  const requirements: PrdParseResult['requirements'] = [];
-  let n = 1;
-  for (const r of list) {
-    for (const x of r.requirements) {
-      const nn = `REQ-${String(n++).padStart(3, '0')}`;
-      map.set(x.reqNo, nn);
-      requirements.push({ ...x, reqNo: nn });
-    }
-  }
-  const drafts: PrdParseResult['drafts'] = [];
-  for (const r of list) {
-    for (const d of r.drafts) {
-      drafts.push({ ...d, reqNos: d.reqNos.map((x) => map.get(x) ?? x) });
-    }
-  }
-  return { requirements, drafts };
-}
+/**
+ * T01995：PrdParseResult 与多文件合并逻辑挪到 prdMerge.ts（无依赖纯函数，脚本可逐字断言同一份实现）。
+ * 缺陷本身在旧版 mergePrdResults：old→new 重编号表跨文件共用一张，后份文档的 REQ-001 覆盖前份的同名旧号，
+ * 前份的 WBS 草稿因此整体偏移到后份的需求行上（实测 mtask四期 一次导 2 份 PRD，前 20 行零关联）。
+ */
+import { mergePrdResults, type PrdParseResult } from './prdMerge';
 
 /**
  * 从 PRD 导入项目计划面板（T00662）：上传 PRD → AI 拆 WBS + 逐条提取需求 →
@@ -248,7 +222,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       // T00908：把暂存的源文件 PRD 全文拼为 prdMd 一并入库——后端落库 prd_docs（PRD 管理视图）并为需求行回填 prd_id 建立关联
       const prdMd = prdSources.map((s) => `# 来源：${s.name}\n\n${s.text}`).join('\n\n---\n\n');
       const prdFilename = prdSources.length > 1 ? `${prdSources.length} 个来源文件` : prdSources[0]?.name;
-      const r = await api.post<{ requirements: number; plans: number; tasks: number; unlinkedReqNos?: string[]; prdId?: string; reqNoMap?: Array<{ from: string; to: string }>; dupPlanTitles?: Array<{ title: string; existing: number }> }>('/plans/import-prd', {
+      const r = await api.post<{ requirements: number; plans: number; tasks: number; unlinkedReqNos?: string[]; prdId?: string; reqNoMap?: Array<{ from: string; to: string }>; dupPlanTitles?: Array<{ title: string; existing: number }>; ambiguousReqNos?: string[]; orphanRequirements?: Array<{ reqNo: string; title: string }> }>('/plans/import-prd', {
         projectId,
         createTasks,
         requirements: rq.map(({ include: _inc, key: _key, ...rest }) => rest),
@@ -271,6 +245,16 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       // T00712（D-5）：无效需求编号不再静默丢弃——服务端返回 unlinkedReqNos 时在控制台给出可感知告警
       if (r.unlinkedReqNos?.length) {
         aiImportStore.log(`告警：${r.unlinkedReqNos.length} 个需求编号未命中本次导入的需求（${r.unlinkedReqNos.join('、')}），其计划/待办关联已被忽略，请核对编号或先补导对应需求`, 'error');
+      }
+      // T01995：跨来源编号歧义——同一旧编号被本次导入的两行争用（多份 PRD 各自从 REQ-001 起号且调用方未重编号）。
+      // 关联口径沿用既有「后登记者胜出」，所以先出现那份来源的行会整批零关联——必须当场点名，不能静默放过
+      if (r.ambiguousReqNos?.length) {
+        aiImportStore.log(`编号歧义：${r.ambiguousReqNos.length} 个需求编号在本次导入的多个来源中重复出现（${r.ambiguousReqNos.join('、')}），这些编号的计划/待办只挂到了其中一行（按最后出现的来源建立），先出现那份来源的行会整批零关联——多来源导入请确认各文件的需求编号已全局重排为连续号（REQ-001…）后再导入`, 'error');
+      }
+      // T01995：本次新建却零关联的需求行——错挂类缺陷的可见性补丁（编号存在性校验对此完全无感）。
+      // 与解析阶段的「反向覆盖告警」同源，故用 info 级：需求本就无对应计划是合法场景，不能变成狼来了
+      if (r.orphanRequirements?.length) {
+        aiImportStore.log(`零关联提醒：本次新建的 ${r.orphanRequirements.length} 条需求没有任何计划/待办关联（${r.orphanRequirements.slice(0, 12).map((x) => x.reqNo).join('、')}${r.orphanRequirements.length > 12 ? ' 等' : ''}）——若为多来源合并导入，请核对是否把关联挂到了别的来源的行上`, 'info');
       }
       // T00982：导入成功即清空完成戳，避免后续再按旧戳把已导入的结果拉回界面
       aiImportStore.patch({ lastSaved: r.plans, parseStamp: 0 });
