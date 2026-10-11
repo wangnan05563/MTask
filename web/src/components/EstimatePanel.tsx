@@ -11,7 +11,9 @@
  *    批量填充走 `mode=derive` / `mode=set`，`O>M` 之类的不合格值**由服务端拒**（400 + 中文文案），
  *    面板只是把那行标红——前端不复写一份 `pointsError`，否则「谁被拒」会变成两套判据。
  *    改完即时重取 `GET /api/estimates`：E/σ/汇总卡的新值仍由服务端算（§10-3 的「即时刷新」）。
- * ④ 区间条与图是 T02041（§5.4），导出区随 E6/E7——本文件不预留空壳按钮。
+ * ④ 区间条（§5.4 P0，T02041）只做**排版几何**：O/P/E 三个数一律取服务端那一份，
+ *    `whiskerGeometries()` 里唯一的除法是「按可见行最大 P 归一成百分比宽度」，不含任何 E/σ 公式。
+ *    导出区随 E6/E7——本文件不预留空壳按钮。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { groupTimelinePhases, type TlPlan } from './PlanTimeline';
@@ -164,6 +166,35 @@ export function buildPanelRows(
   });
 }
 
+/**
+ * §5.4 区间条几何（P0，T02041）：把「O——P，中间竖线标 E」换算成容器内百分比。
+ *
+ * 这是**排版几何**不是估算运算——O/P/E 三个数全部来自服务端那一份，本函数只做「除以可见行里最大的 P」
+ * 这一处除法（等价于 `left:${x}%` 的宽度换算），不含 E/σ 公式：零计算红线管的是「算式不许有两份」，
+ * 这里没有算式。写成纯函数导出，是为了让 verify 脚本能直接断言归一口径与单调性，不必经 DOM。
+ */
+export interface WhiskerGeom {
+  readonly planId: string;
+  /** 归一基数：参与渲染的行里最大的 P（同屏各行长度才可比；至少为 1 防除零） */
+  readonly scaleMax: number;
+  readonly loPct: number;
+  readonly hiPct: number;
+  readonly ePct: number;
+}
+
+export function whiskerGeometries(rows: readonly PanelRow[]): Map<string, WhiskerGeom> {
+  const pts = rows.filter((r) => r.optimistic !== null && r.pessimistic !== null && r.expected !== null);
+  const scaleMax = Math.max(1, ...pts.map((r) => r.pessimistic as number));
+  const pctOf = (v: number): number => Math.min(100, Math.max(0, (v / scaleMax) * 100));
+  return new Map(pts.map((r) => [r.planId, {
+    planId: r.planId,
+    scaleMax,
+    loPct: pctOf(r.optimistic as number),
+    hiPct: pctOf(r.pessimistic as number),
+    ePct: pctOf(r.expected as number),
+  }]));
+}
+
 /** PRD §5.1 的形态阈值：视口 <1200px 转覆盖式。写成纯函数是为了让 verify 脚本能断言边界，
  *  而不是把 1199/1200 这两个数只留在 matchMedia 字符串里（§10-13 走查 1200/1440/1920 三档）。 */
 export function estimatePanelModeForWidth(width: number): 'docked' | 'overlay' {
@@ -291,6 +322,9 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
   );
   const rowById = useMemo(() => new Map(rows.map((r) => [r.planId, r])), [rows]);
   const phases = useMemo(() => groupTimelinePhases(plans), [plans]);
+  // §5.4 区间条按**全部明细行**归一，不按「只看未复核」筛后的可见行：换一次筛选就改刻度，
+  // 同一行的条长会凭空变化，读者以为是估算变了——实际变的只是谁被遮住。
+  const whisker = useMemo(() => whiskerGeometries(rows), [rows]);
 
   /** 空态：一条估算都没落库（未录入 ≠ 全为 default——default 行也要先经「按规则推导」写入才存在） */
   const isEmpty = !loading && !error && (data?.items.length ?? 0) === 0;
@@ -732,12 +766,26 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
         )}
 
         {/* 4) 明细行（§5.2-3）：分组与折叠与时间线同源 */}
-        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '14px 0 6px' }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '14px 0 2px' }}>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>明细（O / M / P / E / σ）</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
             已计入 Σ {s.countedKeys.length} 行 · 未录入 {rc.excluded.unEstimated} 行
           </div>
         </div>
+        {/* §5.4 区间条图例：没有它，那条短线就是一个没人能自证含义的图形。
+            空态（一条区间都画不出来）时不渲染——图例解释的是一个当前并不存在的图形。 */}
+        {whisker.size > 0 && (
+        <div aria-label="区间条图例" style={{ fontSize: 11, color: 'var(--text-muted)', margin: '0 0 6px', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span aria-hidden style={{ display: 'inline-flex', alignItems: 'center', gap: 2, color: 'var(--accent)' }}>
+            <span style={{ width: 1, height: 7, background: 'currentColor', display: 'inline-block' }} />
+            <span style={{ width: 18, height: 1, background: 'currentColor', display: 'inline-block' }} />
+            <span style={{ width: 2, height: 9, background: 'currentColor', display: 'inline-block' }} />
+            <span style={{ width: 18, height: 1, background: 'currentColor', display: 'inline-block' }} />
+            <span style={{ width: 1, height: 7, background: 'currentColor', display: 'inline-block' }} />
+          </span>
+          <span>区间条：端点 O / P，粗竖线 E（横向按最大 P 归一，行间可比）</span>
+        </div>
+        )}
 
         {isEmpty && (
           <div style={{ border: '1px dashed var(--border-strong)', borderRadius: 8, padding: 10, marginBottom: 8, background: 'var(--card-bg)' }}>
@@ -788,6 +836,10 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                     {r.badge.label}
                   </span>
                 );
+                // §5.4 区间条：建议行（未落库）用次级色，与「建议值不进 Σ」的灰显口径一致——
+                // 一根同样长的 --accent 条会让读者把没落库的猜测当成已复核的报价依据。
+                const g = whisker.get(r.planId);
+                const wColor = r.suggestion ? 'var(--text-muted)' : 'var(--accent)';
                 return (
                   <div key={r.planId} style={{ borderBottom: '1px solid var(--border)', padding: '4px 0 4px 4px', fontSize: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
                     <input
@@ -808,6 +860,23 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>复杂度 {r.complexity ?? '—'}</span>
                         {err && <span style={{ fontSize: 11, color: 'var(--danger)' }}>{err}</span>}
                       </div>
+                      {g && (
+                        <div
+                          role="img"
+                          aria-label={`区间条 ${r.title}`}
+                          title={`O ${num(r.optimistic)} —— P ${num(r.pessimistic)}，竖线为 E ${num(r.expected)} 人天`
+                            + `${r.suggestion ? '（推导建议值，未落库、不进 Σ）' : ''}\n`
+                            + `横向刻度按明细行最大 P=${num(g.scaleMax)} 归一，行间长度可比`}
+                          style={{ position: 'relative', height: 8, marginTop: 3 }}
+                        >
+                          {/* 横线宽度：0.4% 是相对下限，minWidth 2px 是绝对下限——面板窄到 130px 时 0.4% 只有 0.5px，
+                              亚像素会让 O=P 的退化区间直接消失，读者误以为这一行没有估算。 */}
+                          <span aria-hidden style={{ position: 'absolute', top: 3, left: `${g.loPct}%`, width: `${Math.max(g.hiPct - g.loPct, 0.4)}%`, minWidth: 2, height: 1, background: wColor }} />
+                          <span aria-hidden style={{ position: 'absolute', top: 1, left: `${g.loPct}%`, width: 1, height: 6, background: wColor }} />
+                          <span aria-hidden style={{ position: 'absolute', top: 1, left: `${g.hiPct}%`, width: 1, height: 6, background: wColor }} />
+                          <span aria-hidden style={{ position: 'absolute', top: 0, left: `${g.ePct}%`, width: 2, height: 8, background: wColor, opacity: 0.85 }} />
+                        </div>
+                      )}
                     </div>
                     <div style={{ display: 'flex', gap: 4, fontFamily: MONO, textAlign: 'right', alignItems: 'center' }}>
                       {POINT_FIELDS.map((f) => (
