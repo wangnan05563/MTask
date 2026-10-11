@@ -18,6 +18,8 @@ const path = require('node:path');
 const http = require('node:http');
 const https = require('node:https');
 const fs = require('node:fs');
+// T02071：更新的取消/续传/安装回执决策内核（纯函数，可脱离 electron 单测）
+const { resumePlan, writePending, readPending, clearPending, reconcilePending, installOutcome } = require('./update-state');
 
 const DEV = process.env.MTask_DEV === '1';
 const VITE_PORT = 5175;
@@ -449,6 +451,9 @@ ipcMain.handle('dialog:open-directory', async () => {
 
 // ---------- T00878：一键下载并静默安装更新包 ----------
 
+/** T02071：等安装器退出码的上限；超时不判失败（可能正弹授权确认），留待下次启动对账 */
+const INSTALL_WAIT_MS = 60_000;
+
 /** 从下载 URL 提取文件名（末尾路径段，去掉查询串）；取不到则回退默认名 */
 function downloadFilename(url) {
   try {
@@ -458,78 +463,203 @@ function downloadFilename(url) {
   return `mtask-update-${Date.now()}.exe`;
 }
 
-// 流式写入下载响应：写完落盘改名，进度经 webContents 推送；失败清理半成品并 reject
-function pump(r, tmpPath, filePath, resolve, reject) {
-  // 失败清理：删掉残留别名文件，避免下次误判断下载完成
-  const cleanup = () => { try { fs.rmSync(tmpPath, { force: true }); } catch { /* 忽略 */ } };
-  const total = Number(r.headers['content-length'] || 0);
-  let received = 0;
-  const out = fs.createWriteStream(tmpPath);
+function fileSizeOf(p) {
+  try { return fs.statSync(p).size; } catch { return 0; }
+}
+
+function sendUpdateProgress(payload) {
+  if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('update:progress', payload);
+}
+
+/** 进行中的下载句柄（T02071 缺口 1）：update:cancel 需要拿到 request/响应流才能中途终止 */
+let activeDownload = null;
+
+/** 续传请求头：本地已有 .part 时带 Range，由服务端决定是否按段响应 */
+function downloadHeaders(partBytes) {
+  const headers = { 'User-Agent': 'MTask-Updater' };
+  if (partBytes > 0) headers.Range = `bytes=${partBytes}-`;
+  return headers;
+}
+
+// 流式写入下载响应：写完落盘改名，进度经 webContents 推送
+// 失败清理半成品；「用户取消」不清理——.part 就是断点续传的本体（T02071）
+function pump(r, ctx) {
+  const plan = resumePlan({ partBytes: ctx.partBytes, statusCode: r.statusCode, headers: r.headers });
+  if (!plan.append && ctx.partBytes > 0) {
+    // 服务端未按 Range 响应（200 全量）：半截文件不能再拼，从 0 重下
+    try { fs.rmSync(ctx.tmpPath, { force: true }); } catch { /* 忽略 */ }
+    ctx.partBytes = 0;
+  }
+  const total = plan.totalBytes || Number(r.headers['content-length'] || 0);
+  let received = ctx.partBytes;
+  const out = fs.createWriteStream(ctx.tmpPath, { flags: plan.append ? 'a' : 'w' });
+  ctx.out = out;
   r.on('data', (chunk) => {
     received += chunk.length;
     out.write(chunk);
     // 节流推送进度（每块都 send 会太频繁，这里按字节步进）——进度是给"若非流式会卡界面"的场景兜底的低频更新
-    if (received % (1 << 20) === 0 && mainWin && !mainWin.isDestroyed()) {
-      mainWin.webContents.send('update:progress', { status: 'downloading', received, total });
+    if (received % (1 << 20) === 0) {
+      sendUpdateProgress({ status: 'downloading', received, total, resumedFrom: plan.append ? ctx.partBytes : 0 });
     }
   });
   r.on('end', () => {
     out.end(() => {
-      try { fs.renameSync(tmpPath, filePath); } catch (e) {
-        cleanup();
-        reject(new Error(`写入安装包失败：${e.message}`));
+      try { fs.renameSync(ctx.tmpPath, ctx.filePath); } catch (e) {
+        ctx.abort(new Error(`写入安装包失败：${e.message}`));
         return;
       }
-      if (mainWin && !mainWin.isDestroyed()) {
-        mainWin.webContents.send('update:progress', { status: 'downloaded', received, total, filePath });
-      }
-      resolve(filePath);
+      sendUpdateProgress({ status: 'downloaded', received, total, filePath: ctx.filePath });
+      ctx.finish({ status: 'downloaded', filePath: ctx.filePath, resumedFrom: plan.append ? ctx.partBytes : 0, totalBytes: total });
     });
   });
-  r.on('error', (e) => { cleanup(); out.destroy(); reject(e); });
-  out.on('error', (e) => { cleanup(); reject(e); });
+  r.on('error', (e) => ctx.abort(e));
+  r.on('aborted', () => ctx.abort(new Error('下载连接中断')));
+  out.on('error', (e) => ctx.abort(e));
 }
 
-// 应用内下载更新安装包到系统下载目录，下载进度经 webContents.send 推给渲染进程
+// 应用内下载更新安装包到系统下载目录（T02071：支持中途取消 + 取消后继续＝Range 断点续传）
 ipcMain.handle('update:download', async (_evt, url) => {
   if (typeof url !== 'string' || !url) throw new Error('下载地址无效');
+  if (activeDownload) throw new Error('已有下载进行中，请先取消或等待完成');
   const filePath = path.join(app.getPath('downloads'), downloadFilename(url));
   // 流式下载到临时文件，写完再改名，避免下载中断残留半截"安装包"被误执行
-  const tmpPath = filePath + `.part`;
-
-  // 用 Node https 手动流：可精确拿到 content-length 与逐块字节数来推进度，
-  // 比 electron session downloadURL（走默认下载器、事件回调复杂）更可控、无侧栏打扰。
-  await new Promise((resolve, reject) => {
-    https.get(url, { headers: { 'User-Agent': 'MTask-Updater' } }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        // 跟随 302/303（GitHub Release asset 通常重定向到云端存储）
-        https.get(res.headers.location, { headers: { 'User-Agent': 'MTask-Updater' } }, (r2) => pump(r2, tmpPath, filePath, resolve, reject)).on('error', reject);
-        return;
-      }
-      if (res.statusCode !== 200) {
-        reject(new Error(`下载失败：HTTP ${res.statusCode}`));
-        res.resume();
-        return;
-      }
-      pump(res, tmpPath, filePath, resolve, reject);
-    }).on('error', reject);
+  const tmpPath = filePath + '.part';
+  const ctx = {
+    filePath, tmpPath, partBytes: fileSizeOf(tmpPath),
+    cancelled: false, done: false, req: null, res: null, out: null, resolve: null, reject: null,
+    // 正常完成/取消收口：保留 .part，只销毁流
+    finish: (value) => {
+      if (ctx.done) return; ctx.done = true;
+      try { ctx.res?.destroy(); } catch { /* 忽略 */ }
+      try { ctx.out?.destroy(); } catch { /* 忽略 */ }
+      try { ctx.req?.destroy(); } catch { /* 忽略 */ }
+      if (activeDownload === ctx) activeDownload = null;
+      ctx.resolve?.(value);
+    },
+    // 真实失败收口：删半成品，避免下次误判断已下载完（原行为）
+    abort: (err) => {
+      if (ctx.done) return; ctx.done = true;
+      try { ctx.out?.destroy(); } catch { /* 忽略 */ }
+      try { ctx.req?.destroy(); } catch { /* 忽略 */ }
+      if (!ctx.cancelled) { try { fs.rmSync(tmpPath, { force: true }); } catch { /* 忽略 */ } }
+      if (activeDownload === ctx) activeDownload = null;
+      ctx.reject?.(err);
+    },
+  };
+  return await new Promise((resolve, reject) => {
+    ctx.resolve = resolve;
+    ctx.reject = reject;
+    activeDownload = ctx;
+    const open = (target) => {
+      const req = https.get(target, { headers: downloadHeaders(ctx.partBytes) }, (res) => {
+        ctx.res = res;
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          // 跟随 302/303（GitHub Release asset 通常重定向到云端存储）；重定向后仍带 Range
+          res.resume();
+          open(new URL(res.headers.location, target).href);
+          return;
+        }
+        if (res.statusCode !== 200 && res.statusCode !== 206) {
+          res.resume();
+          ctx.abort(new Error(`下载失败：HTTP ${res.statusCode}`));
+          return;
+        }
+        pump(res, ctx);
+      });
+      ctx.req = req;
+      req.on('error', (e) => {
+        if (ctx.cancelled) {
+          ctx.finish({ status: 'cancelled', partialBytes: fileSizeOf(tmpPath), partPath: tmpPath, filePath });
+          return;
+        }
+        ctx.abort(e);
+      });
+    };
+    open(url);
+    if (ctx.partBytes > 0) sendUpdateProgress({ status: 'resuming', received: ctx.partBytes, total: 0 });
   });
-  return filePath;
 });
 
-// 静默安装已下载的安装包并退出当前应用：NSIS 安装器自身会 taskkill 旧 MTask 进程，故可无缝覆盖
-ipcMain.handle('update:install', async (_evt, filePath) => {
-  if (typeof filePath !== 'string' || !filePath || !fs.existsSync(filePath)) throw new Error('安装包不存在，或已失效');
-  try {
-    // /S=静默安装，detached 使安装器独立于本进程存活；stdio ignore 不阻塞主进程退出
-    const child = spawn(filePath, ['/S'], { detached: true, stdio: 'ignore' });
-    child.unref();
-  } catch (e) {
-    throw new Error(`启动安装程序失败：${e instanceof Error ? e.message : String(e)}`);
+// T02071 缺口 1：下载中途取消——终止连接但保留 .part，界面据此提供「继续下载」
+ipcMain.handle('update:cancel', async () => {
+  const ctx = activeDownload;
+  if (!ctx) return { status: 'idle' };
+  ctx.cancelled = true;
+  const partialBytes = fileSizeOf(ctx.tmpPath);
+  sendUpdateProgress({ status: 'cancelled', received: partialBytes, total: 0 });
+  ctx.finish({ status: 'cancelled', partialBytes, partPath: ctx.tmpPath, filePath: ctx.filePath });
+  return { status: 'cancelled', partialBytes };
+});
+
+// T02071 启动对账：上次静默安装被安装器接管退出时收不到退出码，靠「当前版本是否已达目标版本」回执
+let pendingUpdateResult = null;
+
+function reconcilePendingUpdateOnLaunch() {
+  const userData = app.getPath('userData');
+  const marker = readPending(userData);
+  if (!marker) return;
+  const outcome = reconcilePending(marker, app.getVersion());
+  clearPending(userData);
+  pendingUpdateResult = outcome;
+  // 失败当场弹一次系统通知（用户当时可能不在设置页），成功不打扰、仅在设置页静默回执
+  if (outcome.status === 'failed' && Notification.isSupported()) {
+    const n = new Notification({ title: 'MTask 更新未生效', body: outcome.reason });
+    n.on('click', () => { if (mainWin && !mainWin.isDestroyed()) mainWin.show(); });
+    n.show();
   }
-  // 给渲染进程留出闪现提示的时间，随即退出本应用让安装器接管
-  setTimeout(() => app.quit(), 1500);
-  return { ok: true };
+}
+
+// 静默安装已下载的安装包：等退出码给出回执（缺口 2），失败保持应用存活供重试，成功才退出
+ipcMain.handle('update:install', async (_evt, filePath, targetVersion) => {
+  if (typeof filePath !== 'string' || !filePath || !fs.existsSync(filePath)) throw new Error('安装包不存在，或已失效');
+  const target = typeof targetVersion === 'string' ? targetVersion : '';
+  // 先落「待回执」标记再拉起安装器——安装器会 taskkill 本应用，那时我们已无法自己写回执
+  writePending(app.getPath('userData'), {
+    filePath, targetVersion: target, currentVersion: app.getVersion(), startedAt: new Date().toISOString(),
+  });
+  return await new Promise((resolve) => {
+    let settled = false;
+    const settle = (value, { keepMarker = false } = {}) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (!keepMarker) clearPending(app.getPath('userData'));
+      resolve(value);
+    };
+    let child;
+    try {
+      // /S=静默安装；不再 detached+unref（T02071 缺口 2）——留在本进程以拿到安装器退出码
+      child = spawn(filePath, ['/S'], { detached: false, stdio: 'ignore' });
+    } catch (e) {
+      settle({ ok: false, status: 'failed', message: `启动安装程序失败：${e instanceof Error ? e.message : String(e)}`, filePath, targetVersion: target });
+      return;
+    }
+    const timer = setTimeout(() => {
+      // 等待超时不判失败（安装器可能在等授权确认）：标记保留，下次启动由对账收敛出真实结果
+      const o = installOutcome({ timedOut: true });
+      settle({ ok: false, status: 'pending', message: o.message, filePath, targetVersion: target }, { keepMarker: true });
+    }, INSTALL_WAIT_MS);
+    child.on('error', (e) => {
+      settle({ ok: false, status: 'failed', message: `安装进程异常：${e instanceof Error ? e.message : String(e)}`, filePath, targetVersion: target });
+    });
+    child.on('exit', (code) => {
+      const o = installOutcome({ code, timedOut: false });
+      if (o.status === 'installed') {
+        settle({ ok: true, status: 'installed', message: o.message });
+        // 给渲染进程留出闪现提示的时间，随即退出本应用让新版本接管
+        setTimeout(() => app.quit(), 800);
+        return;
+      }
+      settle({ ok: false, status: 'failed', message: o.message, code, filePath, targetVersion: target });
+    });
+  });
+});
+
+// 渲染进程取回上一次安装的回执（installed / failed），一次消费即清
+ipcMain.handle('update:pending-result', async () => {
+  const r = pendingUpdateResult;
+  pendingUpdateResult = null;
+  return r;
 });
 
 function setupWebProtocol() {
@@ -735,6 +865,8 @@ function maybeFinishSplash() {
 app.whenReady().then(async () => { // NOSONAR - S7785 顶层 await 在 CommonJS 中不可用，原因见上
   setupApiProxy();
   setupWebProtocol();
+  // T02071：先对账上一次静默安装的结果（安装器接管退出时我们没能自己写回执）
+  reconcilePendingUpdateOnLaunch();
 
   splashWin = await createSplash();
   if (splashWin) {
