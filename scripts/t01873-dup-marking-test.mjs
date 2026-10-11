@@ -49,11 +49,13 @@ if (!DB) {
 const db = new DatabaseSync(DB);
 const ins = db.prepare('INSERT INTO prd_requirements (id, project_id, req_no, title, content, source_ref, priority, status, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
 const stamp = new Date().toISOString();
+// id 带本次运行标记：同一隔离库可反复跑（每次是新项目，但主键不能复用）
+const tag = Date.now().toString(36);
 const seed = (id, no, title, order) => ins.run(id, pid, no, title, no, 'T01873', 'normal', 'todo', order, stamp, stamp);
-seed('t01873-a1', 'REQ-01', '脏数据·与基线 REQ-01 字面同号', 101);
-seed('t01873-b1', 'REQ-002', '脏数据·与基线 REQ-02 混写同号', 102);
-seed('t01873-b2', 'REQ-02', '脏数据·与上一行字面同号', 103);
-seed('t01873-c1', 'UC-010', '干扰·不同序号同前缀', 104);
+seed(`t01873-${tag}-a1`, 'REQ-01', '脏数据·与基线 REQ-01 字面同号', 101);
+seed(`t01873-${tag}-b1`, 'REQ-002', '脏数据·与基线 REQ-02 混写同号', 102);
+seed(`t01873-${tag}-b2`, 'REQ-02', '脏数据·与上一行字面同号', 103);
+seed(`t01873-${tag}-c1`, 'UC-010', '干扰·不同序号同前缀', 104);
 db.close();
 
 const dup = (await api('GET', `/api/plans/prd-requirements/duplicates?projectId=${pid}`)).json ?? {};
