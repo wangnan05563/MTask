@@ -694,6 +694,8 @@ planApi.patch('/:id', (req, res) => {
   }));
 });
 
+// T01874：彻底删除不可逆，前端先取连带影响（派生待办归档数 / 需求关联失配数）写进确认文案；DELETE 回传实际破坏面
+planApi.get('/:id/purge-impact', (req, res) => wrap(res, () => PlanService.purgeImpact(req.params.id)));
 planApi.delete('/:id', (req, res) => wrap(res, () => PlanService.purge(req.params.id)));
 
 // ---------- 归档（T00442 扩展：删除改归档，归档菜单提供恢复/彻底删除） ----------

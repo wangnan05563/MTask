@@ -8,6 +8,7 @@ import { v4 as uuid } from 'uuid';
 import ExcelJS from 'exceljs';
 import { AIService } from './AIService';
 import { nextTaskNo } from './TaskService'; // T00662：PRD 导入生成待办复用统一编号生成器
+import { ArchiveService } from './ArchiveService'; // T01874：计划彻底删除时连带归档其派生孤儿待办，走既有归档通道（含父进度重算）
 import { notifyChange } from './ChangeBus';
 // pizzip：docxtemplater 既有依赖，用于解压 .docx 提取 word/document.xml（T00439）
 import PizZip from 'pizzip';
@@ -701,6 +702,43 @@ function normalizePrdPlans(raw: unknown[]): Array<{ title: string; description: 
   return drafts;
 }
 
+/** T01874：计划彻底删除时的派生待办清点——命中返回待办 id，否则 null */
+interface PurgePlanRow {
+  id: string;
+  title: string;
+  req_ids: string | null;
+  linked_task_id: string | null;
+}
+
+/**
+ * 「无源孤儿」判定（T01874）：计划→待办的派生关系只存在 plan_tasks.linked_task_id 上（tasks 表无来源列），
+ * 计划行一删关系即消失，待办留下「来源计划已删除」的孤儿——标题带派生前缀却无任何入口解释它为何存在。
+ * 派生用两条创建通道的命名约定识别：createLinkedTodo 写 `[计划] <标题>`、importPrd 写 `[PRD] <标题>`；
+ * 手工建好后仅「关联」到计划的待办不在其中。仍另有来源的一律不动：被其它未归档计划行指向、
+ * 或本身挂在别的任务下（parent_id）。需求关联（req_ids）不算来源——它是追溯维度，随待办一并归档，
+ * 条数由 purge 的破坏面回传并写进前端确认文案，不再静默变化。
+ */
+function derivedTaskOfPurgedPlan(db: ReturnType<typeof getDb>, plan: PurgePlanRow): string | null {
+  const lid = plan.linked_task_id;
+  if (!lid) return null;
+  const t = db.prepare('SELECT id, title, parent_id FROM tasks WHERE id = ? AND archived = 0').get(lid) as
+    { id: string; title: string; parent_id: string | null } | undefined;
+  if (!t || t.parent_id) return null;
+  const base = (plan.title ?? '').replace(/\n/g, ''); // 对齐 createLinkedTodo 的 REPLACE(title, char(10)) 去重口径
+  const title = t.title.replace(/\n/g, '');
+  if (title !== `[计划] ${base}` && title !== `[PRD] ${base}`) return null;
+  if (db.prepare('SELECT 1 FROM plan_tasks WHERE archived = 0 AND linked_task_id = ? AND id != ? LIMIT 1').get(lid, plan.id)) return null;
+  return t.id;
+}
+
+/** 计划行 req_ids 里仍存活的需求行数——物理删除计划行会连带抹掉这些「已关联计划」指向 */
+function countLiveReqLinks(db: ReturnType<typeof getDb>, reqIdsJson: string | null): number {
+  const ids = parseLinkIds(reqIdsJson);
+  if (ids.length === 0) return 0;
+  const exists = db.prepare('SELECT 1 FROM prd_requirements WHERE id = ? LIMIT 1');
+  return ids.filter((x) => exists.get(x)).length;
+}
+
 export const PlanService = {
   /** T01058-FR1.3：就绪任务推荐——依赖满足（serial 前置已完成；parallel 不阻塞）或无 deps 的普通执行行；
    *  携带关联待办编号（linked_task_id → tasks.task_no）供「现在做这个」卡片跳转定位。
@@ -855,9 +893,34 @@ export const PlanService = {
     return true;
   },
 
-  /** 彻底删除（归档菜单专用）：物理删除行；已归档行不参与时间线，无需重排。恢复关联待办不受影响 */
-  purge(id: string): boolean {
-    return getDb().prepare('DELETE FROM plan_tasks WHERE id = ? AND archived = 1').run(id).changes > 0;
+  /** 彻底删除的连带影响预览（T01874）：删除不可逆，前端确认文案须先写明连带条数。只读，不落库 */
+  purgeImpact(id: string): { strippedTasksArchived: number; strippedReqLinks: number } {
+    const db = getDb();
+    const row = db.prepare('SELECT id, title, req_ids, linked_task_id FROM plan_tasks WHERE id = ?').get(id) as PurgePlanRow | undefined;
+    if (!row) return { strippedTasksArchived: 0, strippedReqLinks: 0 };
+    return { strippedTasksArchived: derivedTaskOfPurgedPlan(db, row) ? 1 : 0, strippedReqLinks: countLiveReqLinks(db, row.req_ids) };
+  },
+
+  /**
+   * 彻底删除（归档菜单专用）：物理删除行；已归档行不参与时间线，无需重排。
+   * T01874：连带把「仅由该计划派生」的孤儿待办一并归档（不删数据，与「待办删除=归档」同口径，可在归档菜单还原），
+   * 并回传破坏面 { strippedTasksArchived, strippedReqLinks }——原实现只返回 boolean，
+   * 待办变孤儿、矩阵「已关联计划」列少一条这两处变化全静默（用户报的「RTM 关联需求记录消失」有一半是这个）。
+   */
+  purge(id: string): { deleted: boolean; strippedTasksArchived: number; strippedReqLinks: number } {
+    const db = getDb();
+    const row = db.prepare('SELECT id, title, req_ids, linked_task_id, archived FROM plan_tasks WHERE id = ?').get(id) as
+      (PurgePlanRow & { archived: number }) | undefined;
+    if (!row?.archived) return { deleted: false, strippedTasksArchived: 0, strippedReqLinks: 0 };
+    const derivedTaskId = derivedTaskOfPurgedPlan(db, row);
+    const strippedReqLinks = countLiveReqLinks(db, row.req_ids);
+    let deleted = false;
+    db.transaction(() => {
+      deleted = db.prepare('DELETE FROM plan_tasks WHERE id = ? AND archived = 1').run(id).changes > 0;
+      if (deleted && derivedTaskId) ArchiveService.archive([derivedTaskId]);
+    })();
+    if (deleted && derivedTaskId) notifyChange('tasks');
+    return { deleted, strippedTasksArchived: deleted && derivedTaskId ? 1 : 0, strippedReqLinks };
   },
 
   /**

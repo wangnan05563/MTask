@@ -17,6 +17,22 @@ interface ArchivedPlan {
 
 const PAGE_SIZE = 20;
 
+/** 彻底删除计划的连带影响（T01874，DELETE /plans/:id 与 /plans/:id/purge-impact 同口径） */
+interface PurgeImpact {
+  strippedTasksArchived: number;
+  strippedReqLinks: number;
+}
+
+/** T01874：计划删除不可逆（物理删行），其派生待办会被一并归档、矩阵「已关联计划」会少一条——
+ *  条数必须在点「确定」之前看见，不再是删完才发现的静默变化。 */
+function purgeImpactText(i: PurgeImpact | null): string {
+  if (!i) return '';
+  const parts: string[] = [];
+  if (i.strippedTasksArchived > 0) parts.push(`其派生待办 ${i.strippedTasksArchived} 条将一并归档（数据不删，可在本页「归档任务」区还原）`);
+  if (i.strippedReqLinks > 0) parts.push(`需求矩阵中 ${i.strippedReqLinks} 条需求的「已关联计划」将失去该计划`);
+  return parts.length > 0 ? `\n连带影响：${parts.join('；')}。` : '\n连带影响：无（该计划没有派生待办，也没有需求关联）。';
+}
+
 /**
  * 归档管理页（T00442 扩展 / T00586）：任务与计划两个归档区。
  * T00586：参考项目计划页——多选 + 批量工具条（风格/布局一致）+ 搜索 + 分类/项目查询 + 分页。
@@ -123,9 +139,12 @@ export function ArchivePage() {
   }
 
   async function purgePlan(p: ArchivedPlan) {
-    const ok = await askConfirm(`确认彻底删除计划「${p.title}」？此操作不可恢复（归档后仅剩此副本）。`);
+    // T01874：先取连带影响再弹确认（预览失败退回原文案，不阻塞删除）
+    const impact = await api.get<PurgeImpact>(`/plans/${p.id}/purge-impact`).catch(() => null);
+    const ok = await askConfirm(`确认彻底删除计划「${p.title}」？此操作不可恢复（归档后仅剩此副本）。${purgeImpactText(impact)}`);
     if (!ok) return;
-    await api.del(`/plans/${p.id}`);
+    const r = await api.del<{ deleted: boolean } & PurgeImpact>(`/plans/${p.id}`);
+    if (r.deleted && r.strippedTasksArchived > 0) flash(`已彻底删除计划「${p.title}」，连带归档 ${r.strippedTasksArchived} 条派生待办`);
     void load();
   }
 
@@ -196,14 +215,22 @@ export function ArchivePage() {
 
   async function batchPurgePlans() {
     if (selPlanIds.length === 0) return;
-    if (!(await askConfirm(`彻底删除选中的 ${selPlanIds.length} 条归档计划？此操作不可恢复。`))) return;
+    // T01874：批量删除前合计各条的连带影响（单条预览失败按 0 计，不阻塞批量操作）
+    const impacts = await Promise.all(selPlanIds.map((id) => api.get<PurgeImpact>(`/plans/${id}/purge-impact`).catch(() => null)));
+    const sum = (pick: (i: PurgeImpact) => number) => impacts.reduce((n, i) => n + (i ? pick(i) : 0), 0);
+    const preview: PurgeImpact = { strippedTasksArchived: sum((i) => i.strippedTasksArchived), strippedReqLinks: sum((i) => i.strippedReqLinks) };
+    if (!(await askConfirm(`彻底删除选中的 ${selPlanIds.length} 条归档计划？此操作不可恢复。${purgeImpactText(preview)}`))) return;
     setBusy(true);
     let n = 0;
+    let strippedTasks = 0;
     try {
       for (const id of selPlanIds) {
-        try { await api.del(`/plans/${id}`); n += 1; } catch { /* 单条失败继续 */ }
+        try {
+          const r = await api.del<{ deleted: boolean; strippedTasksArchived: number }>(`/plans/${id}`);
+          if (r.deleted) { n += 1; strippedTasks += r.strippedTasksArchived; }
+        } catch { /* 单条失败继续 */ }
       }
-      flash(`已彻底删除 ${n} 条计划`);
+      flash(`已彻底删除 ${n} 条计划${strippedTasks > 0 ? `，连带归档 ${strippedTasks} 条派生待办` : ''}`);
       setSelPlanIds([]);
       void load();
     } finally { setBusy(false); }
