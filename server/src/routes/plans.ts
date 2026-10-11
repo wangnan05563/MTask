@@ -391,7 +391,10 @@ planApi.patch('/prd-requirements/:id', (req, res) => {
   }));
 });
 
-planApi.delete('/prd-requirements/:id', (req, res) => wrap(res, () => { PlanService.deleteRequirement(req.params.id); return { ok: true }; }));
+/** T01867：项目内重复需求编号分组（存量数据体检；新导入已按顺延器不会再产生重复） */
+planApi.get('/prd-requirements/duplicates', (req, res) => wrap(res, () => ({ groups: PlanService.duplicateReqNos(pid(req)) })));
+
+planApi.delete('/prd-requirements/:id', (req, res) => wrap(res, () => PlanService.deleteRequirement(req.params.id)));
 
 /** 关联调整：需求 ↔ 计划/待办（linked=true 建立关联，false 解除） */
 planApi.post('/prd-requirements/:id/link', (req, res) => {

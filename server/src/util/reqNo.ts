@@ -1,0 +1,75 @@
+/**
+ * T01867：需求编号（prd_requirements.req_no）项目内唯一性解析。
+ *
+ * 背景：AI 每次解析 PRD 都从 REQ-001 起编号，且 prd_requirements 没有编号唯一约束，
+ * 增量导入第二个 PRD 时与项目已有编号直接撞号（实测同项目出现 REQ-001 两行）。
+ * 编号一旦重复，矩阵/导出/用例的「按编号定位需求」就变成不确定命中，
+ * 后续删除其中一行会连带清理另一行的引用——这是 T01869 报告的「删增量致原数据断裂」的成因之一。
+ *
+ * 口径：本系统是**单一编号空间**（草稿态/正式态由 prd_docs.status 区分，需求行不按态分号），
+ * 故顺延只依据项目内现有编号的最大值，旧编号一律不改。
+ */
+
+/** 尾部为纯整数的编号（REQ-001 / A-12）：可安全顺延 */
+const TRAILING_INT = /^(\D*)(\d+)$/;
+
+/** 项目内该编号前缀已用过的最大序号（无则 0） */
+function maxSeqForPrefix(existing: ReadonlySet<string>, prefix: string): number {
+  let max = 0;
+  for (const no of existing) {
+    const m = TRAILING_INT.exec(no);
+    if (!m || m[1] !== prefix) continue;
+    max = Math.max(max, Number(m[2]));
+  }
+  return max;
+}
+
+function pad(n: number, width: number): string {
+  return String(n).padStart(width, '0');
+}
+
+/** 保证候选号不与 existing 冲突：冲突就继续 +1（防御批内并发取名） */
+function bumpUntilFree(existing: ReadonlySet<string>, prefix: string, start: number, width: number): string {
+  let n = start;
+  let no = `${prefix}${pad(n, width)}`;
+  while (existing.has(no)) no = `${prefix}${pad(++n, width)}`;
+  return no;
+}
+
+/**
+ * 解析出项目内可用的需求编号。
+ * @param existing 项目内已占用的编号集合（调用方需把同批已分配编号也加进来）
+ * @param requested AI/用户给出的编号；空串表示自动编号
+ * @returns 顺延后的唯一编号（requested 未占用时原样返回）
+ */
+export function resolveReqNo(existing: ReadonlySet<string>, requested?: string): string {
+  const req = (requested ?? '').trim();
+  if (!req) {
+    const prefix = 'REQ-';
+    return bumpUntilFree(existing, prefix, maxSeqForPrefix(existing, prefix) + 1, 3);
+  }
+  if (!existing.has(req)) return req;
+  const m = TRAILING_INT.exec(req);
+  if (m) {
+    const prefix = m[1];
+    // 宽度取「请求值」与「该前缀已用最长」的较大者，避免 REQ-9 顺延成 REQ-10 后排序错位
+    const width = Math.max(m[2].length, ...[...existing].filter((no) => no.startsWith(prefix)).map((no) => (TRAILING_INT.exec(no)?.[2] ?? '').length));
+    return bumpUntilFree(existing, prefix, maxSeqForPrefix(existing, prefix) + 1, width);
+  }
+  // 层级式编号（FR-1.1 / UC-2.3.4）尾部不是单一整数，无法用「最大号 +1」表达层级语义；
+  // 与 normalizeRequirementEntry 的批内去重同形态，追加批次后缀保唯一。
+  let k = 1;
+  while (existing.has(`${req}-${k}`)) k += 1;
+  return `${req}-${k}`;
+}
+
+/** 找出项目内重复的需求编号分组（供矩阵面板提示存量脏数据） */
+export function groupDuplicateReqNos(rows: Array<{ req_no: string | null }>): Array<{ reqNo: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const r of rows) {
+    const no = String(r.req_no ?? '').trim();
+    if (!no) continue;
+    counts.set(no, (counts.get(no) ?? 0) + 1);
+  }
+  return [...counts.entries()].filter(([, n]) => n > 1).map(([reqNo, count]) => ({ reqNo, count })).sort((a, b) => a.reqNo.localeCompare(b.reqNo));
+}

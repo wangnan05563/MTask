@@ -248,7 +248,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       // T00908：把暂存的源文件 PRD 全文拼为 prdMd 一并入库——后端落库 prd_docs（PRD 管理视图）并为需求行回填 prd_id 建立关联
       const prdMd = prdSources.map((s) => `# 来源：${s.name}\n\n${s.text}`).join('\n\n---\n\n');
       const prdFilename = prdSources.length > 1 ? `${prdSources.length} 个来源文件` : prdSources[0]?.name;
-      const r = await api.post<{ requirements: number; plans: number; tasks: number; unlinkedReqNos?: string[]; prdId?: string }>('/plans/import-prd', {
+      const r = await api.post<{ requirements: number; plans: number; tasks: number; unlinkedReqNos?: string[]; prdId?: string; reqNoMap?: Array<{ from: string; to: string }> }>('/plans/import-prd', {
         projectId,
         createTasks,
         requirements: rq.map(({ include: _inc, key: _key, ...rest }) => rest),
@@ -259,6 +259,11 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       const taskPart = r.tasks ? `、待办任务 ${r.tasks} 条` : '';
       const prdPart = r.prdId ? '；源 PRD 已录入「PRD 管理」并关联本次需求矩阵记录' : '';
       aiImportStore.log(`导入完成：需求 ${r.requirements} 条（已入需求跟踪矩阵）、计划 ${r.plans} 条${taskPart}${prdPart}`, 'ok');
+      // T01867：与项目已有编号撞号的需求由服务端按最大编号顺延，明细必须可见——
+      // 用户手里拿的是 PRD 原编号，静默改号会让后续按编号核对全部对不上
+      if (r.reqNoMap?.length) {
+        aiImportStore.log(`编号顺延：${r.reqNoMap.length} 条需求与矩阵已有编号重复，已改为项目内顺延号（${r.reqNoMap.map((x) => `${x.from}→${x.to}`).join('、')}），计划/待办关联按顺延后的编号建立`, 'error');
+      }
       // T00712（D-5）：无效需求编号不再静默丢弃——服务端返回 unlinkedReqNos 时在控制台给出可感知告警
       if (r.unlinkedReqNos?.length) {
         aiImportStore.log(`告警：${r.unlinkedReqNos.length} 个需求编号未命中本次导入的需求（${r.unlinkedReqNos.join('、')}），其计划/待办关联已被忽略，请核对编号或先补导对应需求`, 'error');

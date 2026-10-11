@@ -68,6 +68,8 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
   const [caseCounts, setCaseCounts] = useState<Record<string, number>>({});
   // T01486：反向跳转的瞬时态——滚到该行并加底色高亮，2.5s 后自行消退
   const [flashReqId, setFlashReqId] = useState('');
+  // T01867：修复前增量导入撞下的重复编号组——新导入已不会再产生，此处只用于暴露历史脏数据
+  const [dupGroups, setDupGroups] = useState<Array<{ reqNo: string; count: number }>>([]);
   // 消退定时器与「已消费过哪个跳转意图」都走 ref：既不参与渲染，也不会被 effect 重跑干扰
   const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const locatedRef = useRef('');
@@ -118,19 +120,21 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
 
   const load = useCallback(async () => {
     if (!projectId) return;
-    const [r, p, t, d, cv] = await Promise.all([
+    const [r, p, t, d, cv, dup] = await Promise.all([
       api.get<MatrixReq[]>(`/plans/prd-requirements?projectId=${projectId}`),
       api.get<PlanLite[]>(`/plans?projectId=${projectId}`).catch(() => []),
       api.get<Array<{ id: string; task_no: string | null; title: string }>>(`/tasks?projectId=${projectId}&archived=false`).catch(() => []),
       api.get<Array<{ id: string; filename: string }>>(`/plans/prd-docs?projectId=${projectId}`).catch(() => []),
       // 用例覆盖度取不到不能拖累矩阵主体：退化成「全部未覆盖」，矩阵照常渲染
       api.get<CaseCoverage>(`/plans/test-cases/coverage?projectId=${projectId}`).catch(() => null),
+      api.get<{ groups: Array<{ reqNo: string; count: number }> }>(`/plans/prd-requirements/duplicates?projectId=${projectId}`).catch(() => ({ groups: [] })),
     ]);
     setRows(r);
     setPlans(p);
     setTasks(t.map((x) => ({ id: x.id, taskNo: x.task_no, title: x.title })));
     setPrdDocs(d);
     setCaseCounts(Object.fromEntries((cv?.byReq ?? []).map((x) => [x.reqId, x.caseCount])));
+    setDupGroups(dup.groups);
     setLoaded(true);
   }, [projectId]);
 
@@ -321,6 +325,13 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
       <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
         共 {rows.length} 条需求，已关联计划/待办 {covered} 条；可增删改与调整关联
       </span>
+      {/* T01867：重复编号会让「按编号定位需求」（矩阵导出、用例导入复用）命中不确定行——只提示历史脏数据，不阻断操作 */}
+      {dupGroups.length > 0 && (
+        <span style={{ fontSize: 11, color: 'var(--danger)', border: '1px solid var(--danger)', borderRadius: 6, padding: '1px 6px' }}
+          title={`以下编号在本项目出现多行，按编号定位需求会命中不确定行，建议手动改为唯一编号：${dupGroups.map((g) => `${g.reqNo}×${g.count}`).join('、')}`}>
+          ⚠ 重复需求编号 {dupGroups.length} 组：{dupGroups.slice(0, 3).map((g) => `${g.reqNo}×${g.count}`).join('、')}{dupGroups.length > 3 ? ` 等 ${dupGroups.length} 组` : ''}
+        </span>
+      )}
       <span style={{ flex: 1 }} />
       {/* T00773：多选模式开关（参考项目计划 T00564）——勾选需求后批量改状态/删除 */}
       <button onClick={() => { setMulti((m) => !m); setSelIds([]); }} className="tbtn-anim"

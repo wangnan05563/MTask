@@ -14,6 +14,7 @@ import PizZip from 'pizzip';
 import { stripWordFieldCodes } from '../util/wordFields'; // T00814：清洗 Word 域代码（目录/页码/交叉引用）
 import { logService } from './LogService'; // T00821：覆盖录入行为留痕（覆盖时间/文件名/项目，单机无账号故操作人留空）
 import { parsePlanDeps, depsSatisfied } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7）
+import { resolveReqNo, groupDuplicateReqNos } from '../util/reqNo'; // T01867：需求编号项目内唯一顺延
 
 /** T01361：需求跟踪矩阵行（prd_requirements 全列 + 联表摘要）——具体化类型替代 Record<string, unknown>（Sonar S6551） */
 export interface RequirementRow {
@@ -1457,7 +1458,7 @@ export const PlanService = {
     createTasks?: boolean;
     prdMd?: string;
     prdFilename?: string;
-  }): { requirements: number; plans: number; tasks: number; unlinkedReqNos: string[]; prdId?: string } {
+  }): { requirements: number; plans: number; tasks: number; unlinkedReqNos: string[]; prdId?: string; reqNoMap: Array<{ from: string; to: string }> } {
     const db = getDb();
     if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
     const reqs = (input.requirements ?? []).filter((r) => r?.title?.trim());
@@ -1469,6 +1470,7 @@ export const PlanService = {
     const t = now();
     let taskCount = 0;
     const unlinkedReqNos = new Set<string>();
+    const reqNoMap: Array<{ from: string; to: string }> = []; // T01867：撞号顺延明细（请求编号 → 实际落库编号）
     // T00763：PRD 原文完整保留（Markdown 不截断），导入即生成文档记录并关联需求行
     // T01156-3：同名/同内容覆盖——重复导入不再堆重复文档（对齐 createPrdDoc 的 T00821 覆盖模式）：
     //   ① 同项目 + 同内容哈希(origin_hash) → 覆盖复用该行；② 同项目 + 同文件名 → 覆盖复用（保留状态流转）。
@@ -1501,16 +1503,28 @@ export const PlanService = {
       const noToId = new Map<string, string>();
       const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM prd_requirements WHERE project_id = ?').get(projectId) as { m: number }).m;
       let order = maxOrder;
+      // T01867：编号在项目内唯一——AI 每次解析都从 REQ-001 起号，增量导入必与存量撞号，
+      // 撞号后「按编号定位需求」（矩阵导出、用例 importDraft 的 reqNo→id 复用）变成不确定命中，
+      // 删掉其中一行会连带清掉另一行的引用。故落库前按项目现有最大编号顺延，旧编号一律不改。
+      const usedNos = new Set<string>(
+        (db.prepare('SELECT req_no FROM prd_requirements WHERE project_id = ?').all(projectId) as Array<{ req_no: string | null }>)
+          .map((r) => String(r.req_no ?? '').trim()).filter(Boolean),
+      );
       const insReq = db.prepare(
         `INSERT INTO prd_requirements (id, project_id, req_no, title, content, source_ref, priority, status, sort_order, prd_id, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?)`,
       );
       for (const r of reqs) {
         const id = uuid();
-        const reqNo = (r.reqNo ?? '').trim() || `REQ-${String(order + 1).padStart(3, '0')}`;
+        const requested = (r.reqNo ?? '').trim();
+        const reqNo = resolveReqNo(usedNos, requested);
+        usedNos.add(reqNo);
+        if (requested && requested !== reqNo) reqNoMap.push({ from: requested, to: reqNo });
         order += 1;
         insReq.run(id, projectId, reqNo, r.title.trim(), r.content ?? '', r.sourceRef ?? '', r.priority ?? 'normal', order, prdId ?? null, t, t);
         noToId.set(reqNo, id);
+        // 计划条目仍按 PRD 里的原编号引用：把「请求编号 → 本行 id」也登记，顺延后关联不断链
+        if (requested) noToId.set(requested, id);
       }
       // 2) 计划（含 req_ids 关联）
       let insertedPlans = 0;
@@ -1568,7 +1582,7 @@ export const PlanService = {
         // 仅导入需求（无计划）时属合法场景，不抛错
       }
     })();
-    return { requirements: reqs.length, plans: planItems.length, tasks: taskCount, unlinkedReqNos: [...unlinkedReqNos], prdId };
+    return { requirements: reqs.length, plans: planItems.length, tasks: taskCount, unlinkedReqNos: [...unlinkedReqNos], prdId, reqNoMap };
   },
 
   // ---------- T00763：PRD 原文文档（存储 / 查看 / 反向更新 / AI 上下文反查） ----------
@@ -1843,7 +1857,15 @@ export const PlanService = {
     const t = now();
     const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM prd_requirements WHERE project_id = ?').get(projectId) as { m: number }).m;
     const id = uuid();
-    const reqNo = (input.reqNo ?? '').trim() || `REQ-${String(maxOrder + 1).padStart(3, '0')}`;
+    // T01867：手工新增走「显式编号撞号即报错」——用户手打的编号是他引用的名字，静默改号比拒绝更糟；
+    // 自动编号（留空）走同一顺延器，不再用 MAX(sort_order)+1（删除中间行/改过排序后会与存量编号重复）。
+    const usedNos = new Set<string>(
+      (db.prepare('SELECT req_no FROM prd_requirements WHERE project_id = ?').all(projectId) as Array<{ req_no: string | null }>)
+        .map((r) => String(r.req_no ?? '').trim()).filter(Boolean),
+    );
+    const requested = (input.reqNo ?? '').trim();
+    if (requested && usedNos.has(requested)) throw new Error(`需求编号「${requested}」在本项目已存在，请换一个或直接留空由系统顺延`);
+    const reqNo = resolveReqNo(usedNos, requested);
     db.prepare(
       `INSERT INTO prd_requirements (id, project_id, req_no, title, content, source_ref, priority, status, sort_order, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1853,6 +1875,14 @@ export const PlanService = {
 
   updateRequirement(id: string, patch: { title?: string; content?: string; reqNo?: string; sourceRef?: string; priority?: string; status?: string; sortOrder?: number; prdId?: string }): Record<string, unknown> {
     const db = getDb();
+    // T01867：改成已被占用的编号同样拒绝（编号是按编号定位需求的键，两行同号会让关联指向不确定）
+    const targetNo = patch.reqNo === undefined ? undefined : String(patch.reqNo).trim();
+    if (targetNo) {
+      const self = db.prepare('SELECT project_id FROM prd_requirements WHERE id = ?').get(id) as { project_id: string } | undefined;
+      if (!self) throw new Error('需求不存在');
+      const taken = db.prepare('SELECT 1 FROM prd_requirements WHERE project_id = ? AND req_no = ? AND id <> ?').get(self.project_id, targetNo, id);
+      if (taken) throw new Error(`需求编号「${targetNo}」在本项目已被其他需求占用`);
+    }
     const sets: string[] = [];
     const vals: unknown[] = [];
     const map: Array<[keyof typeof patch, string]> = [['title', 'title'], ['content', 'content'], ['reqNo', 'req_no'], ['sourceRef', 'source_ref'], ['priority', 'priority'], ['status', 'status'], ['sortOrder', 'sort_order'], ['prdId', 'prd_id']];
@@ -1868,22 +1898,41 @@ export const PlanService = {
     return db.prepare('SELECT * FROM prd_requirements WHERE id = ?').get(id) as Record<string, unknown>;
   },
 
-  deleteRequirement(id: string): void {
+  /**
+   * 删除需求行：清理计划/待办上的悬空引用，返回破坏面（T01869）。
+   * 原实现全表扫描 plan_tasks/tasks（连项目条件都没有），项目多时每次删一行都要重写
+   * 无关项目的 updated_at；现按需求所属项目过滤。test_cases.req_id 是 CASCADE 外键，
+   * 删除需求会物理带走其下用例，故把条数一并回传，供调用方核对（前端弹前已有确认文案）。
+   */
+  deleteRequirement(id: string): { strippedPlans: number; strippedTasks: number; deletedCases: number } {
     const db = getDb();
-    // 同步清理计划/待办上的关联引用（避免矩阵残留悬空 id）
-    const plans = db.prepare("SELECT id, req_ids FROM plan_tasks WHERE COALESCE(req_ids,'') != ''").all() as Array<{ id: string; req_ids: string }>;
-    const tasks = db.prepare("SELECT id, req_ids FROM tasks WHERE COALESCE(req_ids,'') != ''").all() as Array<{ id: string; req_ids: string }>;
+    const req = db.prepare('SELECT project_id FROM prd_requirements WHERE id = ?').get(id) as { project_id: string } | undefined;
+    if (!req) throw new Error('需求不存在');
+    const projectId = req.project_id;
+    const plans = db.prepare("SELECT id, req_ids FROM plan_tasks WHERE project_id = ? AND COALESCE(req_ids,'') != ''").all(projectId) as Array<{ id: string; req_ids: string }>;
+    const tasks = db.prepare("SELECT id, req_ids FROM tasks WHERE project_id = ? AND COALESCE(req_ids,'') != ''").all(projectId) as Array<{ id: string; req_ids: string }>;
+    const deletedCases = (db.prepare('SELECT COUNT(*) AS n FROM test_cases WHERE req_id = ?').get(id) as { n: number }).n;
     const strip = (json: string): string | null => {
       try {
         const a = (JSON.parse(json) as unknown[]).filter((x) => x !== id);
         return a.length > 0 ? JSON.stringify(a) : null;
       } catch { return null; }
     };
+    let strippedPlans = 0;
+    let strippedTasks = 0;
     db.transaction(() => {
-      for (const p of plans) { const n = strip(p.req_ids); if (n !== p.req_ids) db.prepare('UPDATE plan_tasks SET req_ids = ?, updated_at = ? WHERE id = ?').run(n, now(), p.id); }
-      for (const x of tasks) { const n = strip(x.req_ids); if (n !== x.req_ids) db.prepare('UPDATE tasks SET req_ids = ?, updated_at = ? WHERE id = ?').run(n, now(), x.id); }
+      for (const p of plans) { const n = strip(p.req_ids); if (n !== p.req_ids) { db.prepare('UPDATE plan_tasks SET req_ids = ?, updated_at = ? WHERE id = ?').run(n, now(), p.id); strippedPlans += 1; } }
+      for (const x of tasks) { const n = strip(x.req_ids); if (n !== x.req_ids) { db.prepare('UPDATE tasks SET req_ids = ?, updated_at = ? WHERE id = ?').run(n, now(), x.id); strippedTasks += 1; } }
       db.prepare('DELETE FROM prd_requirements WHERE id = ?').run(id);
     })();
+    return { strippedPlans, strippedTasks, deletedCases };
+  },
+
+  /** T01867：项目内重复需求编号分组（存量脏数据可见化；新数据已不会再产生） */
+  duplicateReqNos(projectId: string): Array<{ reqNo: string; count: number }> {
+    const db = getDb();
+    const rows = db.prepare('SELECT req_no FROM prd_requirements WHERE project_id = ?').all(projectId) as Array<{ req_no: string | null }>;
+    return groupDuplicateReqNos(rows);
   },
 
   /** 关联调整：把需求关联到计划/待办（或解除）——矩阵面板的「关联调整」编辑入口 */
