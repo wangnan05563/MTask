@@ -28,6 +28,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { switchAbi, snapshotWorkspaceAbi, restoreWorkspaceAbi } from './lib/abi-switch.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const NODE = process.execPath;
@@ -78,20 +79,13 @@ log('版本号递增…');
 run(NODE, [path.join(ROOT, 'scripts', 'bump-version.js')]);
 const appVer = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 
-const switchAbi = (mode) => {
-  const src = path.join(ROOT, 'build', 'native', mode, 'better_sqlite3.node');
-  if (!fs.existsSync(src)) fail(`ABI 缓存缺失：${src}（可用 scripts/native-switch.bat dev 重建）`);
-  const dstDir = path.join(ROOT, 'node_modules', 'better-sqlite3', 'build', 'Release');
-  fs.mkdirSync(dstDir, { recursive: true });
-  fs.copyFileSync(src, path.join(dstDir, 'better_sqlite3.node'));
-  console.log(`[ABI] better-sqlite3 → ${mode}`);
-};
-
+// T02069：ABI 切换抽到 scripts/lib/abi-switch.mjs，与 scripts/dist.js 共用同一实现
+// （缓存缺失 fail-fast、打包前记录工作区二进制、打包后按字节原样还原）。
+const abiOpts = { fail, log: (m) => console.log(m) };
 log('切换 Electron ABI 并打包…');
 // 打包前记录工作区当前的原生二进制，打包后原样还原（见下方恢复段）。
-const bsNode = path.join(ROOT, 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
-const prevAbi = fs.existsSync(bsNode) ? fs.readFileSync(bsNode) : null;
-switchAbi('electron');
+const prevAbi = snapshotWorkspaceAbi(ROOT);
+switchAbi(ROOT, 'electron', abiOpts);
 
 // 输出目录兜底：release 被占用（win-unpacked 无法清理）时依次尝试 release2..9
 const candidates = ['release', 'release2', 'release3', 'release4', 'release5', 'release6', 'release7', 'release8', 'release9'];
@@ -117,12 +111,7 @@ run(NODE, [path.join(ROOT, 'node_modules', 'electron-builder', 'out', 'cli', 'cl
 
 // 恢复打包前的 ABI：build/native/dev 是针对旧 Node 运行时缓存的，本地 Node 升级后直接覆盖会让
 // server/dist 直跑报 ERR_DLOPEN_FAILED（实测 Node24/ABI137 环境 require 失败），故按字节原样还原。
-if (prevAbi) {
-  fs.writeFileSync(bsNode, prevAbi);
-  console.log('[ABI] better-sqlite3 → 还原打包前工作区版本');
-} else {
-  switchAbi('dev');
-}
+restoreWorkspaceAbi(ROOT, prevAbi, abiOpts);
 
 // 清理 win-unpacked（非致命）
 try {

@@ -17,6 +17,7 @@
     "typecheck": "npm run typecheck -w mtask-server",
     "test:api": "node scripts/run-api-tests.mjs",
     "verify:shell": "node scripts/verify-packaged-shell.mjs",
+    "verify:abi": "node scripts/verify-abi-switch.mjs",
     "electron": "electron electron/main.js",
     "dist": "node scripts/dist.js",
     "dist:dir": "node scripts/dist.js --dir",
