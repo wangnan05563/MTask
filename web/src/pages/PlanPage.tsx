@@ -1974,7 +1974,7 @@ export function PlanPage() {
           {estimateOpen && estimateMode === 'docked' && (
             <aside
               aria-label="估算面板"
-              style={{ flex: `0 0 ${ESTIMATE_PANEL_WIDTH}px`, maxWidth: '44vw', position: 'sticky', top: 0, height: 'calc(100vh - 150px)', minHeight: 320, border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}
+              style={{ flex: `0 0 ${ESTIMATE_PANEL_WIDTH}px`, maxWidth: '50vw', position: 'sticky', top: 0, height: 'calc(100vh - 150px)', minHeight: 320, border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}
             >
               <EstimatePanel projectId={projectId} plans={plans} collapsedMs={collapsedMs} onToggleMsCollapse={toggleMsCollapsed} onToast={flash} />
             </aside>

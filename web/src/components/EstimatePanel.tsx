@@ -31,8 +31,8 @@ import {
 import { saveBlob } from '../utils/download';
 import { askConfirm } from '../ui/dialogs';
 
-/** PRD §5.1：docked 分栏宽 420；<1200px 转 SlideOver 时沿用同宽（两处共用一个常量） */
-export const ESTIMATE_PANEL_WIDTH = 420;
+/** PRD §5.1：docked 分栏宽 520（T02124：用户反馈 420px 偏窄，时间线留白较多，收窄等空间给估算面板）；<1200px 转 SlideOver 时沿用同宽（两处共用一个常量） */
+export const ESTIMATE_PANEL_WIDTH = 520;
 
 /** 明细列的数字字体与右对齐口径（与 ResultDiff/时间线同一套 11~12px 阶梯） */
 const MONO = '"Cascadia Mono", "JetBrains Mono", Consolas, Menlo, monospace';
