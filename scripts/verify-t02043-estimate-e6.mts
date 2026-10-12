@@ -289,8 +289,10 @@ group('G3 公式轨（原始 XML 里的每一个 `<f>`）');
       && CELLS.get(`I${r}`)!.f === `IFERROR($H$35*H${r}/$H$40,"")`), CELLS.get('H36')!.f);
   ok('3-12 R40 = R35 × (1 + SUM(系数区间))，四列同形',
     ['E', 'F', 'G', 'H'].every((c) => CELLS.get(`${c}40`)!.f === `${c}35*(1+SUM(${c}36:${c}39))`), CELLS.get('H40')!.f);
-  ok('3-13 I40 = SUBTOTAL(9,I35:I39)（模板备注第 3 条要检查的那一格）',
-    CELLS.get('I40')!.f === 'SUBTOTAL(9,I35:I39)', CELLS.get('I40')!.f);
+  // T02047 ③轨实测把这一格从模板原式 `SUBTOTAL(9,I35:I39)` 改成了 `SUM(I35:I39)`：
+  // I35 是嵌套 SUBTOTAL，会被同区间求和排除，Excel 只算出 0.187，而备注第 3 条要的是 100%
+  ok('3-13 I40 = SUM(I35:I39)（模板备注第 3 条要检查的那一格；原式 SUBTOTAL 会排除嵌套的 I35，见 T02047 ③轨）',
+    CELLS.get('I40')!.f === 'SUM(I35:I39)', CELLS.get('I40')!.f);
   ok('3-14 没有一处把 20.83 写死进公式（一律走命名区域）',
     formulaRefs.every((r) => !CELLS.get(r)!.f.includes('20.83')));
 }

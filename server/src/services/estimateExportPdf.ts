@@ -102,7 +102,7 @@ export function buildEstimateReportMd(layout: EstimateLayout): string {
     push();
     sec('报价区间（内部依据）');
     push();
-    push('| 口径 | 人天 | 人月 |');
+    push('| 口径 | 人天（直接投入，未含系数） | 人月（实际预估，含 Σ系数） |');
     push('| --- | --- | --- |');
     push(`| P50（中位） | ${num(summary.quote.p50ManDays)} | ${num(summary.quote.p50ManMonth)} |`);
     push(`| P84（对外报价口径，裁决 D2） | ${num(summary.quote.p84ManDays)} | ${num(summary.quote.p84ManMonth)} |`);

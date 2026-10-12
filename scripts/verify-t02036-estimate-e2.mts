@@ -211,7 +211,12 @@ group('G3 汇总口径（§4.4 排除小计行 · §4.6 里程碑不进 Σ）');
     return naive > s.sigmaTotal + 1e-9;
   })());
   eq('3-15 报价 P84 = P50 + σ_total（§4.3 精确 84.13%）', s.quote.p84ManDays, s.quote.p50ManDays + s.sigmaTotal);
-  eq('3-16 报价人月 P50 == 理想人月 H35', s.quote.p50ManMonth, s.idealManMonths.expected);
+  eq('3-16 报价人月 P50 == 实际预估人月 R40（含 Σ系数；T02047 前旧口径误取理想人月，面板/PDF/交付件三处读数差 19%）',
+    s.quote.p50ManMonth, s.actualManMonths.expected);
+  eq('3-16b 报价人月 P84 = (直接投入人天 + σ_total) ÷ 人月标准 × (1+Σ系数)（人月含系数、人天不含，两列不同基）',
+    s.quote.p84ManMonth, (s.directManDays.expected + s.sigmaTotal) / s.config.manDaysPerManMonth * (1 + s.coefSum));
+  eq('3-16c 报价人月 P50 ≠ 理想人月（系数和不为 0 时必须不同——这条就是旧口径的反证）',
+    s.quote.p50ManMonth - s.idealManMonths.expected, s.idealManMonths.expected * s.coefSum);
   eq('3-17 devSectionRatio == dev 阶段比例（模板 I8:I31 单格合并的整体比例）', E.devSectionRatio(s), s.phases.find((p) => p.phase === 'dev')!.ratio);
   ok('3-18 rowRatios 含未进 Σ 的行（展示用），但 countedKeys 不含',
     s.rowRatios.some((r) => r.key === 'subtotal-dev') && !s.countedKeys.includes('subtotal-dev'),

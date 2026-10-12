@@ -576,8 +576,10 @@ export async function buildEstimateXlsx(layout: EstimateLayout): Promise<Buffer>
       result,
     });
   }
+  // 自检格（模板 I40）不用模板原式 `SUBTOTAL(9,I35:I39)`：Excel 16.0 实测（T02047 ③轨）只算出 0.187——
+  // I35 自身是嵌套 SUBTOTAL，会被同区间求和排除，而备注第 3 条要求这一格就是「I 列比例之和 = 100%」。
   formulaCell(ws.getCell(`I${layout.actualRow}`), {
-    formula: `SUBTOTAL(9,I${layout.totalRow}:I${coefLast})`,
+    formula: `SUM(I${layout.totalRow}:I${coefLast})`,
     result: i35 + layout.coefRows.reduce((a, c) => a + c.ratio, 0),
   });
 

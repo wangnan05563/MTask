@@ -302,7 +302,11 @@ export interface EstimateSummary {
   /** R40：实际预估人月四列 = R35 × (1 + Σ系数) */
   actualManMonths: ColumnSum;
   coefRows: CoefRow[];
-  /** 报价口径（§4.3 + 裁决 D2：对外 P84，内部同时看 P50） */
+  /**
+   * 报价口径（§4.3 + 裁决 D2：对外 P84，内部同时看 P50）。
+   * 人天列是**直接投入**（未含系数），人月列是**实际预估**（含 Σ系数）——P50 人月逐字等于 `actualManMonths.expected`，
+   * 与交付件 R40、PDF「实际预估人月」同一份数（T02047 真机走查抓到旧口径把理想人月当报价读数，差 1/(1+Σ系数)≈19%）。
+   */
   quote: { p50ManDays: number; p84ManDays: number; p50ManMonth: number; p84ManMonth: number; sigma: number };
   /**
    * 逐行期望值 / σ / 人天占比（开发段整体比例见 `phases` 里的 dev 项）。
@@ -415,8 +419,9 @@ export function buildSummary(rows: EstimateEngineRow[], config: EstimateConfig =
       ratio: denom === 0 ? 0 : toManMonth(expected(r.points), config) / denom,
     }));
 
-  // I40 = SUBTOTAL(9,I35:I39) = Σ阶段比例 + Σ系数比例；面板读数的偏差把未归阶段行也算进去
-  // （那些行在面板里有占比读数、却不在 H35 的分子里，正是 §4.4 要告警的场景）
+  // I40 自检 = Σ阶段比例 + Σ系数比例；面板读数的偏差把未归阶段行也算进去
+  // （那些行在面板里有占比读数、却不在 H35 的分子里，正是 §4.4 要告警的场景）。
+  // 导出件里这一格写 `SUM(I35:I39)` 而非模板原式 `SUBTOTAL(9,I35:I39)`——嵌套排除会让它只剩系数侧（T02047 ③轨实测）
   const sumRatio =
     phases.reduce((a, p) => a + p.ratio, 0) +
     coefRows.reduce((a, c) => a + c.ratio, 0) +
@@ -439,8 +444,8 @@ export function buildSummary(rows: EstimateEngineRow[], config: EstimateConfig =
     quote: {
       p50ManDays: directManDays.expected,
       p84ManDays: directManDays.expected + sigmaTotal,
-      p50ManMonth: idealManMonths.expected,
-      p84ManMonth: toManMonth(directManDays.expected + sigmaTotal, config),
+      p50ManMonth: actualManMonths.expected,
+      p84ManMonth: toManMonth(directManDays.expected + sigmaTotal, config) * coefMul,
       sigma: sigmaTotal,
     },
     rowRatios,
