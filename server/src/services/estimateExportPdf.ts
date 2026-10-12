@@ -11,19 +11,19 @@
  *     非 Windows 或字体缺失时中文为方框。裁决 D4：PDF 仅预览、Excel 为正式交付，
  *     **不为 PDF 中文版式追加字体依赖**。
  *  2. **脱敏发生在 Markdown 组装阶段**（§9：前端隐藏不算脱敏）：客户版的正文里根本不出现
- *     四个调节系数的分项、σ 与置信区间、§6.1 备注三条、附加 sheet 名——不是渲染时涂黑。
+ *     四个调节系数的分项、σ 与置信区间、§6.1 备注四条、附加 sheet 名——不是渲染时涂黑。
  *     断言因此可以直接读 PDF 的文本层（pypdf 能取出嵌入子集字体的中文）。
  *  3. **数字只从 `layout.summary` 来**（同 §11.1 E6 红线 2）：本文件不重算 E、不重算人月换算，
  *     连「÷ 每人月工天标准」这句话里的除数都取 `layout.input.config.manDaysPerManMonth`，不写死 20.83。
  */
 import { buildPrdPdf } from './prdExport';
 import {
+  TEMPLATE_COEF_LABELS,
   TEMPLATE_PHASE_LABELS,
   TEMPLATE_REMARKS,
   TEMPLATE_TEXTS,
   type EstimateLayout,
 } from './estimateExportXlsx';
-import { ESTIMATE_COEF_LABELS } from './estimate-engine';
 import type { EstimatePhase } from './EstimateService';
 
 /** 件名（PDF 首页大标题，与 Excel 主 sheet 标题同源，§6.1 逐格表） */
@@ -168,15 +168,16 @@ export function buildEstimateReportMd(layout: EstimateLayout): string {
     }
   }
 
-  // ---- 备注三条：§6.1 明写客户版不写（其第 2 条本身就是「别把内部依据给客户」的指令）----
+  // ---- 备注四条（T02084 起与原件逐字符一致）：§6.1 明写客户版不写（其第 2 条本身就是「别把内部依据给客户」的指令）----
   if (!client) {
     push();
     sec('备注/说明');
     push();
     for (const r of TEMPLATE_REMARKS) push(`- ${r}`);
     push();
-    push(`系数口径：${ESTIMATE_COEF_LABELS.collaboration} / ${ESTIMATE_COEF_LABELS.quality} / `
-      + `${ESTIMATE_COEF_LABELS.scope} / ${ESTIMATE_COEF_LABELS.schedule}（取值见项目参数页）。`);
+    // T02084：脚注与件内系数表同一套模板标签（带「系数」后缀）——同件里两个名字指同一行会读不通
+    push(`系数口径：${TEMPLATE_COEF_LABELS.collaboration} / ${TEMPLATE_COEF_LABELS.quality} / `
+      + `${TEMPLATE_COEF_LABELS.scope} / ${TEMPLATE_COEF_LABELS.schedule}（取值见项目参数页）。`);
   }
 
   // ---- 免责声明（两版都给，§6.2 要求的四类内容之一）----

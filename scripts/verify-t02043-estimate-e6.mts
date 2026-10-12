@@ -17,7 +17,7 @@
  *
  * 隔离纪律（skill 红线 8）：库、端口、临时文件全部临时的，不碰生产数据目录，跑完 kill + 回收。
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -290,8 +290,9 @@ group('G3 公式轨（原始 XML 里的每一个 `<f>`）');
   ok('3-12 R40 = R35 × (1 + SUM(系数区间))，四列同形',
     ['E', 'F', 'G', 'H'].every((c) => CELLS.get(`${c}40`)!.f === `${c}35*(1+SUM(${c}36:${c}39))`), CELLS.get('H40')!.f);
   // T02047 ③轨实测把这一格从模板原式 `SUBTOTAL(9,I35:I39)` 改成了 `SUM(I35:I39)`：
-  // I35 是嵌套 SUBTOTAL，会被同区间求和排除，Excel 只算出 0.187，而备注第 3 条要的是 100%
-  ok('3-13 I40 = SUM(I35:I39)（模板备注第 3 条要检查的那一格；原式 SUBTOTAL 会排除嵌套的 I35，见 T02047 ③轨）',
+  // I35 是嵌套 SUBTOTAL，会被同区间求和排除，Excel 只算出 0.187，而 §4.4 的自检格要的是 100%
+  // （T02084 订正：模板备注第 3 条只要求「检查 I 列比例是否在合理区间」，=100% 是 §4.4 的自检口径，不是备注原文）
+  ok('3-13 I40 = SUM(I35:I39)（§4.4 自检格：各阶段比例之和 100%；原式 SUBTOTAL 会排除嵌套的 I35，见 T02047 ③轨）',
     CELLS.get('I40')!.f === 'SUM(I35:I39)', CELLS.get('I40')!.f);
   ok('3-14 没有一处把 20.83 写死进公式（一律走命名区域）',
     formulaRefs.every((r) => !CELLS.get(r)!.f.includes('20.83')));
@@ -326,11 +327,11 @@ group('G4 缓存值轨（每个 `<v>` 与本脚本独立重算值逐格比对，
     eq(`4-14 系数行 R${36 + i}·I = R35×系数 ÷ R40`, cellNum(CELLS, `I${36 + i}`), (IDEAL_EXPECTED * v) / ACTUAL_EXPECTED);
   });
   eq('4-15 I8 = 开发段整体比例 = H31 ÷ 20.83 ÷ H40', cellNum(CELLS, 'I8'), cellNum(CELLS, 'H31') / STD / cellNum(CELLS, 'H40'));
-  eq('4-16 **I40 缓存值 = 1**（模板备注第 3 条：各阶段比例之和 100%）', cellNum(CELLS, 'I40'), 1);
+  eq('4-16 **I40 缓存值 = 1**（§4.4 自检口径：各阶段比例之和 100%）', cellNum(CELLS, 'I40'), 1);
   const phaseSum = ['6', '7', '8', '32', '33', '34'].reduce((a, r) => a + cellNum(CELLS, `I${r}`), 0);
   eq('4-17 逐格相加复核：五个阶段行 + 开发段整体（I8）= I35（SUBTOTAL 的缓存值就是这些行之和）',
     phaseSum, cellNum(CELLS, 'I35'), 1e-12);
-  eq('4-18 再复核一层：I35 + 四条系数行 = I40 = 1（备注第 3 条的两侧同值）',
+  eq('4-18 再复核一层：I35 + 四条系数行 = I40 = 1（§4.4 自检口径的两侧同值）',
     cellNum(CELLS, 'I35') + ['36', '37', '38', '39'].reduce((a, r) => a + cellNum(CELLS, `I${r}`), 0), 1, 1e-9);
   const missing = formulaRefs.filter((r) => CELLS.get(r)!.v === '');
   ok('4-19 每个公式格都带缓存值（预览类查看器只读 `<v>`，缺值等于交一张空表）', missing.length === 0, missing);
@@ -363,7 +364,7 @@ group('G5 结构轨（exceljs 只读回验：sheet 名 / 列宽 / 文案 / 合�
   ok('5-06 R35/R40 汇总行文案与 D31「小计：」',
     cellText(ws, 'B35') === X.TEMPLATE_TEXTS.ideal && cellText(ws, 'B40') === X.TEMPLATE_TEXTS.actual && cellText(ws, 'D31') === X.TEMPLATE_TEXTS.subtotal,
     [cellText(ws, 'B35'), cellText(ws, 'D31'), cellText(ws, 'B40')]);
-  ok('5-07 备注三条落在 R42（内部版必带，含 I40=100% 自检提示）',
+  ok('5-07 备注四条落在 R42（内部版必带；T02084 起逐字符对齐客户原件，G10 组交叉验证）',
     cellText(ws, 'B42').includes(X.TEMPLATE_TEXTS.remarks) && X.TEMPLATE_REMARKS.every((s) => cellText(ws, 'B42').includes(s)),
     cellText(ws, 'B42').slice(0, 60));
   ok('5-08 C 列模块名来自里程碑归属，D 列是清洗后的功能点描述',
@@ -442,7 +443,7 @@ group('G7 客户版轨（§6.2 脱敏发生在服务端，前端隐藏不算脱�
   eq('7-06 客户版 H40 = 内部版 H40（折叠不改动对外报价）', cellNum(cellsC, 'H40'), cellNum(CELLS, 'H40'));
   eq('7-07 客户版 I40 仍为 1（比例自检在交付件上成立）', cellNum(cellsC, 'I40'), 1);
   const wbc = await loadWb(BUFc);
-  ok('7-08 客户版不写备注（不把「本表宜作内部依据」这类内部话术交给客户）',
+  ok('7-08 客户版不写备注（不把「本报价单最好仅作为项目成本估算…」这类内部话术交给客户）',
     cellText(wbc.getWorksheet(X.SHEET_MAIN), 'B42') === '' && !(XMLc.includes('备注/说明')),
     cellText(wbc.getWorksheet(X.SHEET_MAIN), 'B42').slice(0, 40));
   ok('7-09 客户版仍带命名区域注释（取值依据是给客户看的，不是内部话术）',
@@ -543,6 +544,92 @@ print(json.dumps({
       eq('9-07 交叉轨复核 I40 = 100%', Number(j.I40_v), 1, 1e-9);
       ok('9-08 文案交叉：B6 聚合注记与 D31「小计：」在两套解析器下一致',
         String(j.B6).startsWith('需求分析（含 3 项') && String(j.D31) === '小计：', [j.B6, j.D31]);
+    }
+  }
+}
+
+// =====================================================================
+group('G10 第五轨：客户模板原件交叉（T02084：备注四条/系数标签的真值源是 Desktop 原件，不是抄进断言的第二份口径）');
+{
+  // python 探测链：T02084_PYTHON 显式指定 → PATH 里的 python → 本机 venv
+  // （openpyxl 只装在 venv，G9 的裸 python 因此在开发机必 SKIP——本组补上能真跑的那一双眼睛）
+  const pyCands = [process.env.T02084_PYTHON, 'python',
+    'C:/Users/hspcadmin/.workbuddy/binaries/python/envs/default/Scripts/python.exe',
+  ].filter(Boolean) as string[];
+  let py: string | null = null;
+  for (const c of pyCands) {
+    if (spawnSync(c, ['-c', 'import openpyxl'], { encoding: 'utf-8' }).status === 0) { py = c; break; }
+  }
+  const TPL = process.env.T02084_TEMPLATE
+    ?? 'C:/Users/hspcadmin/Desktop/工作量评估/阜新银行-票据系统优化-工作量评估V2.0.xlsx';
+  if (!py || !existsSync(TPL)) {
+    skipped('G10 模板原件交叉轨',
+      [!py ? 'python/openpyxl 不可用' : '', !existsSync(TPL) ? `原件不在 ${TPL}` : ''].filter(Boolean).join('；')
+      + '（T02084_PYTHON / T02084_TEMPLATE 可指定）');
+  } else {
+    const pyFile = join(DATA_DIR, 'tpl.py');
+    writeFileSync(pyFile, `import json, sys
+from openpyxl import load_workbook
+tpl, exp = sys.argv[1], sys.argv[2]
+def grab(p):
+    wb = load_workbook(p, read_only=True, data_only=True)
+    ws = wb.worksheets[0]
+    o = {'sheet': ws.title}
+    for a in ['B1','B3','B4','E4','I4','B5','D5','E5','F5','G5','H5','D31','B35','B36','B37','B38','B39','B40','B42']:
+        o[a] = ws[a].value
+    b42 = o['B42']
+    o['B42_lines'] = str(b42).split('\\n') if b42 else []
+    o['Bcol'] = {('B%d' % r): ws.cell(row=r, column=2).value
+                 for r in range(1, 45) if ws.cell(row=r, column=2).value not in (None, '')}
+    return o
+print(json.dumps({'tpl': grab(tpl), 'exp': grab(exp)}, ensure_ascii=False))
+`, 'utf-8');
+    const run = spawnSync(py, [pyFile, TPL, PATH], { encoding: 'utf-8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
+    if (run.status !== 0) {
+      skipped('G10 模板原件交叉轨', `读取失败：${(run.stderr || '').slice(0, 200)}`);
+    } else {
+      const j = JSON.parse((run.stdout.trim().split('\n').pop() as string)) as any;
+      const t = j.tpl as Record<string, any>;
+      const e = j.exp as Record<string, any>;
+      const COEF_ADDR = ['B36', 'B37', 'B38', 'B39'];
+      const PHASES = ['req', 'design', 'dev', 'impl', 'common', 'onsite'] as const;
+
+      ok('10-01 原件 B42 = 标签行 + 四条正文（PRD 附录 A 二手转述的「三条」是漏译，原件才是真值）',
+        Array.isArray(t.B42_lines) && t.B42_lines.length === 5 && t.B42_lines[0] === X.TEMPLATE_TEXTS.remarks,
+        t.B42_lines?.length);
+      ok('10-02 TEMPLATE_REMARKS 四条与原件 B42 拆行逐字符一致且顺序一致（全角引号“”、全角等号＝原样保留）',
+        X.TEMPLATE_REMARKS.length === 4 && X.TEMPLATE_REMARKS.every((s, i) => s === t.B42_lines[i + 1]),
+        X.TEMPLATE_REMARKS.map((s, i) => [i + 1, s === t.B42_lines[i + 1]]));
+      ok('10-03 拼接形态：remarks 标签 + 四条 \\n 相接 == 原件 B42 全值（导出件 cell.value 正是这个拼接）',
+        `${X.TEMPLATE_TEXTS.remarks}\n${X.TEMPLATE_REMARKS.join('\n')}` === t.B42);
+      ok('10-04 TEMPLATE_COEF_LABELS 四条与原件 B36~B39 逐字符一致（模板带「系数」后缀，此前误用引擎短标签）',
+        E.ESTIMATE_COEF_KEYS.every((k, i) => X.TEMPLATE_COEF_LABELS[k] === t[COEF_ADDR[i]]),
+        COEF_ADDR.map((a, i) => [a, X.TEMPLATE_COEF_LABELS[E.ESTIMATE_COEF_KEYS[i]], t[a]]));
+      ok('10-05 原件 E4 拼写保留：半角左括号 + 全角右括号（「估算结果(单位：人天，1人天=8人时）」，不「修正」）',
+        X.TEMPLATE_TEXTS.resultHeader === t.E4 && String(t.E4).includes('(单位') && String(t.E4).includes('人时）'),
+        t.E4);
+      ok('10-06 表头逐字符对齐原件（B4/E4/I4 行4 + B5/D5/E5/F5/G5/H5 行5 + B1 标题）',
+        X.TEMPLATE_TEXTS.taskBreakdown === t.B4 && X.TEMPLATE_TEXTS.ratioHeader === t.I4
+        && X.TEMPLATE_TEXTS.colBig === t.B5 && X.TEMPLATE_TEXTS.colSmall === t.D5
+        && X.TEMPLATE_TEXTS.likely === t.E5 && X.TEMPLATE_TEXTS.min === t.F5
+        && X.TEMPLATE_TEXTS.max === t.G5 && X.TEMPLATE_TEXTS.final === t.H5
+        && X.TEMPLATE_TEXTS.title === t.B1,
+        { B4: t.B4, I4: t.I4, B5: t.B5, D5: t.D5, E5: t.E5, F5: t.F5, G5: t.G5, H5: t.H5, B1: t.B1 });
+      ok('10-07 汇总区文案逐字符对齐原件（D31 小计 / B35 理想 / B40 实际）',
+        X.TEMPLATE_TEXTS.subtotal === t.D31 && X.TEMPLATE_TEXTS.ideal === t.B35 && X.TEMPLATE_TEXTS.actual === t.B40,
+        { D31: t.D31, B35: t.B35, B40: t.B40 });
+      ok('10-08 六个阶段名都能在原件 B 列精确找到（TEMPLATE_PHASE_LABELS 逐字符复制，不是照 PRD 文字臆造）',
+        PHASES.every((p) => Object.values(t.Bcol as Record<string, string>).includes(X.TEMPLATE_PHASE_LABELS[p])),
+        PHASES.map((p) => [p, X.TEMPLATE_PHASE_LABELS[p]]));
+      // ---- 件面对齐：导出件 vs 原件（标准几何同址：系数 R36~R39 / 小计 R31 / 备注 R42）----
+      ok('10-09 导出件 B42 与原件 B42 逐字符同值（交付件备注块 = 客户模板备注块）',
+        e.B42 === t.B42, { exp: String(e.B42).slice(0, 30), tpl: String(t.B42).slice(0, 30) });
+      ok('10-10 导出件 B36~B39 系数标签与原件同值（与客户模板并排看对得上名）',
+        COEF_ADDR.every((a) => e[a] === t[a]), COEF_ADDR.map((a) => [a, e[a], t[a]]));
+      ok('10-11 导出件 E4/H5/D31 与原件同格同值（表头拼写不漂）',
+        e.E4 === t.E4 && e.H5 === t.H5 && e.D31 === t.D31, { E4: e.E4, H5: e.H5, D31: e.D31 });
+      ok('10-12 导出件主 sheet 名与标题同原件（项目工作量估算表）',
+        e.sheet === t.sheet && e.B1 === t.B1, [e.sheet, e.B1]);
     }
   }
 }
@@ -770,7 +857,7 @@ if (!(await waitForServer())) {
     const cs = parseCells(mainXml(r.buf));
     eq('R-22 导出件 H28（实际预估人月）= 面板 actualManMonths.expected', cellNum(cs, 'H28'), s.actualManMonths.expected);
     eq('R-23 导出件 H23（理想人月）= 面板 idealManMonths.expected', cellNum(cs, 'H23'), s.idealManMonths.expected);
-    eq('R-24 导出件 I28 = 面板 ratioCheck.sumRatio（备注第 3 条两侧同值）', cellNum(cs, 'I28'), s.ratioCheck.sumRatio, 1e-9);
+    eq('R-24 导出件 I28 = 面板 ratioCheck.sumRatio（§4.4 自检口径两侧同值）', cellNum(cs, 'I28'), s.ratioCheck.sumRatio, 1e-9);
     ok('R-25 面板比例自检无 danger（完备数据 100%）', s.ratioCheck.danger === false && s.ratioCheck.unassigned.length === 0, s.ratioCheck);
     const snap = await api('GET', `/api/estimates/snapshots?${PQ}&limit=10`);
     const arr = (snap.json?.snapshots ?? []) as Array<Record<string, any>>;
@@ -807,7 +894,7 @@ if (!(await waitForServer())) {
       { e24: cf.get('E24')?.v, e25: cf.get('E25')?.v });
     const wbc = await loadWb(folded.buf);
     const wsc = wbc.getWorksheet(X.SHEET_MAIN);
-    ok('R-36 客户版不含备注三条与系数分项标签，含「综合调节系数（内部明细略）」',
+    ok('R-36 客户版不含备注四条与系数分项标签，含「综合调节系数（内部明细略）」',
       cellText(wsc, 'B30') === '' && !cellText(wsc, 'B24').includes('客户协作配合') && cellText(wsc, 'B24').includes(X.TEMPLATE_TEXTS.foldedCoef),
       cellText(wsc, 'B24'));
     eq('R-37 折叠版 I28 仍为 1（比例自检不因折叠失真）', cellNum(cf, 'I28'), 1);

@@ -56,6 +56,16 @@ export const TEMPLATE_PHASE_LABELS: Record<EstimatePhase, string> = {
   onsite: '现场维护（对于客户要求或我方拟计划项目交付后仍需安排人员现场驻员技术服务的）',
 };
 
+/** 系数行标签：**逐字符复制客户模板** B36~B39（T02084：模板带「系数」后缀，此前误用引擎短标签
+ *  `ESTIMATE_COEF_LABELS`（无后缀，面板口径）——交付件与客户模板并排看会对不上名，遂按
+ *  TEMPLATE_PHASE_LABELS 同款立一套模板侧标签；引擎标签保持不动（面板/内部用语另用） */
+export const TEMPLATE_COEF_LABELS: Record<'collaboration' | 'quality' | 'scope' | 'schedule', string> = {
+  collaboration: '客户协作配合/磨合调节系数',
+  quality: '项目质量要求调节系数',
+  scope: '项目范围/需求变更调节系数',
+  schedule: '项目进度变更调节系数',
+};
+
 /** 表头与汇总行文案（§6.1 逐字符，含原文里那个「缺右括号」的全角拼写） */
 export const TEMPLATE_TEXTS = {
   title: '项目工作量估算表',
@@ -80,12 +90,18 @@ export const TEMPLATE_TEXTS = {
   foldedCoef: '综合调节系数（内部明细略）',
 } as const;
 
-/** 附录 A 记的备注三条（内部版必带；客户版按 §6.1 不写）。
- *  ⚠ 客户模板原件不在本仓，逐字符对齐只能等原件；此处按附录 A 记录的要点落地并在 PRD v2.1 记了残余项 */
+/** R42 备注原文（内部版必带；客户版按 §6.1 不写）。
+ *  T02084：客户模板原件已在场并**逐字符对齐**——原件 `C:\Users\hspcadmin\Desktop\工作量评估\阜新银行-票据系统优化-工作量评估V2.0.xlsx`
+ *  的 B42（合并 B42:I42，`\n` 分隔的「备注/说明：」标签 + 四条正文）。⚠ 原文是**四条**不是三条：
+ *  PRD 附录 A 的二手转述漏掉了第 4 条（人月/工天/工时换算），且前三条是改写不是原文（本轮已按原件订正）。
+ *  含全角引号“”、全角等号＝等拼写，逐字符保留不「修正」。
+ *  回归保护：`scripts/verify-t02043-estimate-e6.mts` G10 组从原件重新提取与本常量逐字符比对——
+ *  期望值来自原件而非抄进断言的第二份口径。 */
 export const TEMPLATE_REMARKS: readonly string[] = [
-  '1. 本表仅适用项目型工作量评估，不含产品/研发分摊；',
-  '2. 本表宜作内部依据，直接提交客户应考虑屏蔽调节系数并删除本备注，引导从成本定价转向价值定价；',
-  '3. 估算完成后检查 I 列各阶段比例之和（I40）应为 100%。',
+  '1.本表格仅适用项目型工作量评估，不含产品/研发分摊。实际报价时，产品价格/研发分摊/远程开发工作量评估也应另外算上。',
+  '2.本报价单最好仅作为项目成本估算和最终提供给客户的按产品/业务/子系统/子项目综合报价的明细参考和内部依据，人月单价按公司当年度的实际人均成本费用参考和每年据实浮动调整，提供给客户的报价单非万不得已尽量不要直接使用本表格直接展现（若直接提交客户还应考虑是否需要屏蔽各调节系数，提交给客户的需删除/隐藏本备注说明章节内容），以引导客户及我们自己从关注成本到关注价值，引导和实现从成本定价转向价值定价。',
+  '3.请估算人估算完后仔细检查一下第I列“估算比例”字段各阶段、各模块的工作量占比，根据经验看看是否在合理区间，并据经验和软件工程理论、客户特性要求（比如对某个环节、某个阶段、某个模块特别重视等）反过来适当调整原始估算值到恰当比例。',
+  '4.按劳动合同法及国家规定的制度工作时间（261天-法定节假日11天=250天，每天法定工时8小时）要求，标准工作人月与标准工天、工时的换算标准为：1标准工作人月=20.83标准工作人天＝166.64人时。如实在需要提交客户并强制要求按客户另行标准进行评估提交的，请提交前更改调整“名称管理器”中的宏变量“每人月工天标准”，并删除/隐藏本备注说明章节内容。',
 ];
 
 /** 列宽（附录 A 实测；D 列 63.125 是关键——长描述不折行成糊墙） */
@@ -294,7 +310,7 @@ export function layoutEstimate(input: EstimateExportInput): EstimateLayout {
   // 报价数一分不差，但内部的分项依据不再出现在交付件里（§6.2 备注第 2 条要求的形态）
   const coefValues: Array<{ label: string; value: number }> = fold
     ? [{ label: TEMPLATE_TEXTS.foldedCoef, value: coefSum }, { label: '', value: 0 }, { label: '', value: 0 }, { label: '', value: 0 }]
-    : ESTIMATE_COEF_KEYS.map((k) => ({ label: ESTIMATE_COEF_LABELS[k], value: input.config.coefs[k] }));
+    : ESTIMATE_COEF_KEYS.map((k) => ({ label: TEMPLATE_COEF_LABELS[k], value: input.config.coefs[k] })); // T02084：交付件用模板标签（带「系数」后缀），与面板的引擎短标签是两套口径
   let r = totalRow + 1;
   for (const c of coefValues) {
     coefRows.push({ kind: 'coef', rowNo: r++, label: c.label, value: c.value, expected: c.value, ratio: 0 });
