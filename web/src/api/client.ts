@@ -61,6 +61,21 @@ export const api = {
     }
     return res.arrayBuffer();
   },
+  /**
+   * T02043：GET 下载并带回响应头——给「文件名来自服务端、还要读自定义头做对账」的导出用
+   * （`getBinary` 只给字节，Content-Disposition 与 `X-Estimate-Snapshot` 就丢了，
+   * 前端只能再拼一套命名规则，形成 §6.1 反对的第二套口径）。
+   */
+  async getDownload(path: string): Promise<{ blob: Blob; filename: string; headers: Headers }> {
+    const res = await fetch(`${apiBase}${path}`, { headers: accessToken ? { 'X-Access-Token': accessToken } : {} });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+    }
+    const filename = filenameFromDisposition(res.headers.get('Content-Disposition') ?? '')
+      || `export.${extFromContentType(res.headers.get('Content-Type') ?? '')}`;
+    return { blob: await res.blob(), filename, headers: res.headers };
+  },
   /** T01480：POST 下载——JSON 请求体换二进制文件（Content-Disposition 取文件名） */
   async postDownload(path: string, data: unknown): Promise<{ blob: Blob; filename: string }> {
     const res = await fetch(`${apiBase}${path}`, {

@@ -12,16 +12,18 @@
  *    面板只是把那行标红——前端不复写一份 `pointsError`，否则「谁被拒」会变成两套判据。
  *    改完即时重取 `GET /api/estimates`：E/σ/汇总卡的新值仍由服务端算（§10-3 的「即时刷新」）。
  * ④ 区间条（§5.4 P0，T02041）只做**排版几何**：O/P/E 三个数一律取服务端那一份，
- *    `whiskerGeometries()` 里唯一的除法是「按可见行最大 P 归一成百分比宽度」，不含任何 E/σ 公式。
- *    导出区随 E6/E7——本文件不预留空壳按钮。
+ *    `whiskerGeometries()` 里唯一的除法是「按明细行最大 P 归一成百分比宽度」，不含任何 E/σ 公式。
+ *    导出区（§5.2 第 4 段）Excel 侧随 E6/T02043 交付；PDF 属 E7，本文件不预留空壳按钮。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { groupTimelinePhases, type TlPlan } from './PlanTimeline';
 import { api } from '../api/client';
 import {
-  estimatesApi, toGrid,
-  type DeriveItem, type DeriveRule, type EstimateItem, type EstimateInput, type EstimateSource, type EstimatesResponse,
+  estimatesApi, parseSnapshotPayload, toGrid,
+  type DeriveItem, type DeriveRule, type EstimateExportAudience, type EstimateItem, type EstimateInput,
+  type EstimateSnapshot, type EstimateSource, type EstimatesResponse, type SnapshotDiff,
 } from '../api/estimates';
+import { saveBlob } from '../utils/download';
 import { askConfirm } from '../ui/dialogs';
 
 /** PRD §5.1：docked 分栏宽 420；<1200px 转 SlideOver 时沿用同宽（两处共用一个常量） */
@@ -169,9 +171,10 @@ export function buildPanelRows(
 /**
  * §5.4 区间条几何（P0，T02041）：把「O——P，中间竖线标 E」换算成容器内百分比。
  *
- * 这是**排版几何**不是估算运算——O/P/E 三个数全部来自服务端那一份，本函数只做「除以可见行里最大的 P」
+ * 这是**排版几何**不是估算运算——O/P/E 三个数全部来自服务端那一份，本函数只做「除以参与归一的明细行里最大的 P」
  * 这一处除法（等价于 `left:${x}%` 的宽度换算），不含 E/σ 公式：零计算红线管的是「算式不许有两份」，
- * 这里没有算式。写成纯函数导出，是为了让 verify 脚本能直接断言归一口径与单调性，不必经 DOM。
+ * 这里没有算式。**调用方传全量明细行而非筛后可见行**：换一次筛选就改刻度，同一行的条长会凭空变化（§5.4 v2.0 ②，真机 U-20）。
+ * 写成纯函数导出，是为了让 verify 脚本能直接断言归一口径与单调性，不必经 DOM。
  */
 export interface WhiskerGeom {
   readonly planId: string;
@@ -287,6 +290,16 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
   const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
   const [uniformOpen, setUniformOpen] = useState(false);
   const [uniform, setUniform] = useState<{ m: string; oMul: string; pMul: string }>({ m: '', oMul: '', pMul: '' });
+  // ---------- T02043（§5.2 第 4 段）：导出区 ----------
+  const [audience, setAudience] = useState<EstimateExportAudience>('internal');
+  /** §6.1 的 `scope` 只管「是否仅已估算行」，阶段筛选另有 `phases` 参数（面板暂不暴露，导出即全六阶段） */
+  const [estimatedOnly, setEstimatedOnly] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [snapshots, setSnapshots] = useState<EstimateSnapshot[]>([]);
+  const [snapshotError, setSnapshotError] = useState('');
+  const [cmpIds, setCmpIds] = useState<string[]>([]);
+  const [cmpDiff, setCmpDiff] = useState<{ a: EstimateSnapshot; b: EstimateSnapshot; diff: SnapshotDiff } | null>(null);
+  const [lastExport, setLastExport] = useState<{ filename: string; unreviewed: number } | null>(null);
   /** 同一格同一个被拒值不重复打接口（失焦是常态，否则一次错误输入会刷 N 次 400） */
   const rejectedSent = useRef<Set<string>>(new Set());
 
@@ -315,6 +328,19 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
   }, [projectId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  /** §6.3 快照列表（导出区下方「最近 5 次」）：失败只影响这一小块，不连带整面板进错误态 */
+  const loadSnapshots = useCallback(async (): Promise<void> => {
+    try {
+      const r = await estimatesApi.listSnapshots(projectId);
+      setSnapshots(r.snapshots);
+      setSnapshotError('');
+    } catch (e) {
+      setSnapshots([]);
+      setSnapshotError(errMsg(e));
+    }
+  }, [projectId]);
+  useEffect(() => { void loadSnapshots(); }, [loadSnapshots]);
 
   const rows = useMemo(
     () => buildPanelRows(plans, data?.items ?? [], derives, data?.summary.rowRatios ?? [], reqNosByPlan),
@@ -555,6 +581,54 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
       onToast(`撤销失败：${errMsg(e)}`);
     } finally {
       setBusy(false);
+    }
+  }
+
+  /**
+   * §6.1 导出：件名与快照 id 都取自服务端响应头（`api.exportXlsx`），面板不拼第二套命名口径；
+   * 「未人工复核 N 行」取的是**这份件**写进快照的那个数（§6.3 留痕侧），不是面板另算一遍的筛选计数。
+   */
+  async function runExport(): Promise<void> {
+    setExporting(true);
+    try {
+      const r = await estimatesApi.exportXlsx(projectId, {
+        audience,
+        scope: estimatedOnly ? 'estimated_only' : 'all',
+      });
+      saveBlob(r.blob, r.filename);
+      onToast(`已导出 ${r.filename}`);
+      const list = await estimatesApi.listSnapshots(projectId);
+      setSnapshots(list.snapshots);
+      setSnapshotError('');
+      const row = list.snapshots.find((x) => x.id === r.snapshotId);
+      const pl = row ? parseSnapshotPayload(row.payload) : null;
+      setLastExport(pl ? { filename: r.filename, unreviewed: pl.unreviewed } : null);
+      setCmpIds([]);
+      setCmpDiff(null);
+    } catch (e) {
+      onToast(`导出失败：${errMsg(e)}`);
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  /** 对比至多选两条（§5.2 第 4 段）：第三条进来时挤掉最早的一条，不给「先取消再选」的额外步骤 */
+  const toggleCmp = (id: string): void => {
+    setCmpIds((p) => {
+      const next = p.includes(id) ? p.filter((x) => x !== id) : [...p, id].slice(-2);
+      return next;
+    });
+    setCmpDiff(null);
+  };
+
+  async function runCompare(): Promise<void> {
+    if (cmpIds.length !== 2) return;
+    try {
+      const r = await estimatesApi.compareSnapshots(projectId, cmpIds[0], cmpIds[1]);
+      if (!r.compare) { onToast('两次快照无法比对（可能已不在最近 20 条内）'); setCmpDiff(null); return; }
+      setCmpDiff(r.compare);
+    } catch (e) {
+      onToast(`比对失败：${errMsg(e)}`);
     }
   }
 
@@ -949,6 +1023,96 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             ))}
           </div>
         )}
+
+        {/* 7) 导出区（§5.2 第 4 段 · E6）：Excel 内部版/客户版 + 最近快照与对比。
+            PDF 两枚按钮属 §6.2/E7，本段不预留空壳（v1.8「交付分段」口径）；
+            件名、未复核行数、合并区数一律取自服务端响应头与快照 payload——面板不拼第二套口径。 */}
+        <div role="region" aria-label="估算导出区" style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>导出（Excel 复刻客户模板）</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+            <label title="客户版不含「估算明细/参数」两个附加 sheet，也不写备注三条；开折叠后系数分项并进一行合计（报价数不变）"
+              style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}>
+              <input type="radio" name="estimate-audience" checked={audience === 'client'} onChange={() => setAudience('client')} />
+              客户版
+            </label>
+            <label title="内部版含全量明细 sheet（plan_id / 来源 / σ）与参数 sheet，供内部复核"
+              style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}>
+              <input type="radio" name="estimate-audience" checked={audience === 'internal'} onChange={() => setAudience('internal')} />
+              内部版
+            </label>
+            <label title={`scope=estimated_only：只有落了估算的行进件；不勾=全部计划（未估算行成行但三点留空，不把「没估」写成 0）`}
+              style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={estimatedOnly} onChange={(e) => setEstimatedOnly(e.target.checked)} />
+              只导已估算行
+            </label>
+            <button type="button" className="tbtn-anim" style={toolBtn('accent', exporting || Object.keys(rowErrors).length > 0)}
+              disabled={exporting || Object.keys(rowErrors).length > 0} onClick={() => void runExport()}
+              aria-label="导出 Excel 文件"
+              title={Object.keys(rowErrors).length > 0 ? '有行未通过录入校验（§5.2：导出禁用），先修正' : `按当前选择出件（${audience === 'client' ? '客户版' : '内部版'}）`}>
+              {exporting ? '导出中…' : '导出 Excel'}
+            </button>
+            {audience === 'client' && cfg.hideCoefsForClient && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>系数分项将折叠（参数页开关）</span>
+            )}
+          </div>
+          {lastExport && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+              本次件：{lastExport.filename}
+              {lastExport.unreviewed > 0 ? ` · 内含「${lastExport.unreviewed} 行为系统推导值，未人工复核」标注` : ' · 全部行为人工复核值'}
+            </div>
+          )}
+
+          {/* §5.2 第 4 段下半：最近 5 次快照 + 两条对比（§7「上次导出后计划已变化」的界面侧） */}
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', margin: '10px 0 4px' }}>
+            最近导出（{snapshots.length}）
+            {cmpIds.length === 2 && (
+              <button type="button" className="tbtn-anim" style={{ ...toolBtn(), marginLeft: 6 }} onClick={() => void runCompare()}>
+                对比所选两条
+              </button>
+            )}
+          </div>
+          {snapshotError && <div style={{ fontSize: 11, color: 'var(--danger)' }}>快照记录读取失败：{snapshotError}</div>}
+          {snapshots.length === 0 && !snapshotError && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>还没有导出记录（§6.3：每次导出写一条快照留痕）</div>
+          )}
+          {snapshots.map((sn) => {
+            const pl = parseSnapshotPayload(sn.payload);
+            const picked = cmpIds.includes(sn.id);
+            return (
+              <div key={sn.id} style={{ display: 'flex', gap: 6, alignItems: 'baseline', fontSize: 11, borderBottom: '1px solid var(--border)', padding: '3px 0' }}>
+                <input type="checkbox" checked={picked} onChange={() => toggleCmp(sn.id)} title="勾选两条可对比（§7 版本差异）" />
+                <span style={{ fontFamily: MONO }}>{(sn.created_at ?? '').slice(0, 16).replace('T', ' ')}</span>
+                <span style={{ color: pl?.audience === 'client' ? 'var(--accent)' : 'var(--text-muted)' }}>
+                  {pl?.audience === 'client' ? '客户版' : pl?.audience === 'internal' ? '内部版' : sn.format}
+                </span>
+                <span style={{ color: 'var(--text-muted)', marginLeft: 'auto', fontFamily: MONO }} title="该次导出的实际预估人月（ΣE）">
+                  {pl ? `${num(pl.actualManMonths?.expected)} 人月` : ''}
+                </span>
+              </div>
+            );
+          })}
+          {cmpDiff && (
+            <div role="group" aria-label="两次导出差异" style={{ marginTop: 6, border: '1px solid var(--border-strong)', borderRadius: 8, padding: 6, background: 'var(--card-bg)', fontSize: 11 }}>
+              <div style={{ color: 'var(--text-muted)', marginBottom: 4 }}>
+                对比：{(cmpDiff.a.created_at ?? '').slice(0, 16).replace('T', ' ')} → {(cmpDiff.b.created_at ?? '').slice(0, 16).replace('T', ' ')}
+              </div>
+              {cmpDiff.diff.phases.map((p) => (
+                <div key={p.phase} style={{ display: 'flex', gap: 6 }}>
+                  <span>{data.meta.phaseLabels[p.phase as keyof typeof data.meta.phaseLabels] ?? p.phase}</span>
+                  <span style={{ fontFamily: MONO, marginLeft: 'auto', color: p.expected.delta === 0 ? 'var(--text-muted)' : p.expected.delta > 0 ? 'var(--danger)' : 'var(--success)' }}>
+                    {p.expected.delta > 0 ? '+' : ''}{num(p.expected.delta)} 人天
+                  </span>
+                </div>
+              ))}
+              <div style={{ display: 'flex', gap: 6, marginTop: 4, borderTop: '1px solid var(--border)', paddingTop: 4 }}>
+                <span>实际预估人月</span>
+                <span style={{ fontFamily: MONO, marginLeft: 'auto', color: cmpDiff.diff.totals.actualManMonths === 0 ? 'var(--text-muted)' : 'var(--danger)' }}>
+                  {cmpDiff.diff.totals.actualManMonths > 0 ? '+' : ''}{num(cmpDiff.diff.totals.actualManMonths)}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

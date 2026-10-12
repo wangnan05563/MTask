@@ -6,10 +6,14 @@
  * PERT/汇总/参数解析在 `estimate-engine.ts`，三档推导在 `EstimateDerive`——
  * 路由只做参数收口与响应组装（§9「枚举与计算单源」）。
  *
- * 导出端点（export-xlsx / export-pdf）属 E6/E7，本文件不留占位路由。
+ * 导出端点：`export-xlsx` 已随 E6 落地（§6.1，本文件只做取数与编排，逐格复刻在
+ * `services/estimateExportXlsx.ts`）；`export-pdf` 属 E7，仍不留占位路由（空实现会被前端当成已就绪）。
  */
 import { Router } from 'express';
 import { getSetting, setSetting } from '../services/AppSettings';
+import { PlanService } from '../services/PlanService';
+import type { PlanTaskRow } from '../services/PlanService';
+import { exportGate } from '../util/export-gate';
 import { EstimateService, ESTIMATE_META, type EstimateInput } from '../services/EstimateService';
 import {
   DEFAULT_ESTIMATE_CONFIG,
@@ -39,6 +43,16 @@ import {
   writeDerives,
   type DeriveRule,
 } from '../services/EstimateDerive';
+import type { EstimatePhase } from '../services/EstimateService';
+import { safeExportName } from './plans';
+import {
+  ESTIMATE_EXPORT_SCOPES,
+  cleanDetail,
+  layoutEstimate,
+  type EstimateAudience,
+  type EstimateExportRow,
+  type EstimateExportScope,
+} from '../services/estimateExportXlsx';
 
 export const estimateApi = Router();
 
@@ -353,6 +367,219 @@ estimateApi.get('/', (req, res) =>
       },
     };
   }),
+);
+
+// ---------- Excel 导出（§6.1 · E6）----------
+
+/**
+ * 估算人取值键。
+ * ⚠ PRD §6.1 原文写的是 `estimate_settings.reviewer`，但库里没有这张表——估算参数全部走
+ * `app_settings` 的扁平 KV，§3.3 的八键里也不含署名项。这里按「单键读取、不参与 §3.3 读写校验」
+ * 落地（无值即留空由用户手填，正是 §6.1 给的「或留空」分支），不擅自把它塞进参数页的白名单。
+ */
+const ESTIMATE_REVIEWER_KEY = 'estimate.reviewer';
+
+/** 导出文件名时间戳 `YYYYMMDD-HHmmss`（§6.3 命名口径；用本地时钟而非 ISO 切片，避免报价件上的时间比客户所在时区早 8 小时） */
+function exportStamp(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+/**
+ * `phases` 查询串（§6.1「一个参数只表一件事」）。
+ * 未知阶段必须报错而不是忽略——静默吞掉会让「只导开发段」实际导出全部，报价件的范围悄悄变了。
+ */
+function parsePhases(raw: unknown): EstimatePhase[] {
+  const s = str(raw);
+  if (!s) return [...ESTIMATE_META.phases];
+  const list: EstimatePhase[] = [];
+  for (const piece of s.split(',')) {
+    const x = piece.trim();
+    if (!x) continue;
+    if (!(ESTIMATE_META.phases as readonly string[]).includes(x)) {
+      throw new Error(`未知阶段：${x}（可用 ${ESTIMATE_META.phases.join(' / ')}）`);
+    }
+    const p = x as EstimatePhase;
+    if (!list.includes(p)) list.push(p);
+  }
+  if (list.length === 0) throw new Error('phases 不能为空（不传即导全部阶段）');
+  return list;
+}
+
+function parseScope(raw: unknown): EstimateExportScope {
+  const s = str(raw);
+  if (!s) return 'all';
+  if (!(ESTIMATE_EXPORT_SCOPES as readonly string[]).includes(s)) {
+    throw new Error(`未知导出范围：${s}（可用 ${ESTIMATE_EXPORT_SCOPES.join(' / ')}）`);
+  }
+  return s as EstimateExportScope;
+}
+
+function parseAudience(raw: unknown): EstimateAudience {
+  const s = str(raw);
+  if (!s) return 'internal';
+  if (s !== 'internal' && s !== 'client') throw new Error(`未知导出版本：${s}（可用 internal / client）`);
+  return s;
+}
+
+/** `req_ids` 是 JSON 数组文本（与 `EstimateDerive` 的私有解析器同一语义） */
+function parseReqIds(json: string | null | undefined): string[] {
+  try {
+    const a = json ? (JSON.parse(json) as unknown) : [];
+    return Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string' && !!x) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * C 列（中模块）= 明细行归属的里程碑标题。
+ * ⚠ 归属判定**不能**用 `util/planDeps.parsePlanDeps`：它把 type 收窄成 `serial | parallel`
+ *   （排水语义），`child` 会被并成 `serial`（PRD §6.1 原文「按 util/planDeps 单源」在实测中不成立）。
+ *   与 `PlanService.recalcMilestoneEnvelope`（`PlanService.ts:305`）同一做法——读原始 JSON。
+ * 无 child 归属的行留空不合并（§6.1）。
+ */
+function milestoneTitleByChild(rows: PlanTaskRow[]): Map<string, string> {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const out = new Map<string, string>();
+  for (const r of rows) {
+    let deps: unknown;
+    try {
+      deps = JSON.parse(r.deps || '[]');
+    } catch {
+      continue; // 脏 deps：跳过归属，不做第二套宽容解析
+    }
+    if (!Array.isArray(deps)) continue;
+    for (const d of deps as Array<{ id?: unknown; type?: unknown }>) {
+      if (!d || typeof d.id !== 'string' || d.type !== 'child') continue;
+      const ms = byId.get(d.id);
+      if (ms && ms.kind === 'milestone') {
+        out.set(r.id, ms.title);
+        break; // 多个里程碑归属只认第一个（模板 C 列是一行一个模块，不表达多重归属）
+      }
+    }
+  }
+  return out;
+}
+
+/** 需求编号（附加 sheet 的追溯列）：`req_ids` → `prd_requirements.req_no` */
+function reqNoById(projectId: string): Map<string, string> {
+  const rows = PlanService.listRequirements(projectId) as Array<{ id?: unknown; req_no?: unknown }>;
+  const out = new Map<string, string>();
+  for (const r of rows) {
+    const id = str(r.id);
+    if (id) out.set(id, str(r.req_no));
+  }
+  return out;
+}
+
+/**
+ * 导出明细行：次序取 `listPlanSkeletons`（面板/时间线同一份，不引入第二套排序），
+ * 三点取 `estimate_items`，描述/复杂度/需求锚点取 `plan_tasks`。
+ * 本函数**不过滤**（scope/phases 由 `layoutEstimate` 统一处理），因为附加 sheet 要的是全量行。
+ */
+function collectExportRows(projectId: string): EstimateExportRow[] {
+  const views = new Map(EstimateService.listByProject(projectId, { includeArchived: false }).map((v) => [v.plan_id, v]));
+  const plans = PlanService.list(projectId);
+  const planById = new Map(plans.map((p) => [p.id, p]));
+  const msTitle = milestoneTitleByChild(plans);
+  const reqNo = reqNoById(projectId);
+  return listPlanSkeletons(projectId).map((s) => {
+    const p = planById.get(s.planId);
+    const v = views.get(s.planId);
+    const nos = parseReqIds(p?.req_ids).map((id) => reqNo.get(id) ?? '').filter(Boolean);
+    return {
+      planId: s.planId,
+      title: s.title,
+      detail: cleanDetail(p?.description ?? '', s.title, nos),
+      // 没有估算行的计划也要出现在 `scope=all` 的导出里：阶段按标题推断（§4.6 同一函数），
+      // 三点留空——留空与「估过 0 天」在报价件上是两回事。
+      phase: v ? v.phase : inferPhase(s.title),
+      planKind: s.kind,
+      milestone: msTitle.get(s.planId) ?? '',
+      optimistic: v ? v.optimistic : null,
+      likely: v ? v.likely : null,
+      pessimistic: v ? v.pessimistic : null,
+      source: v ? v.source : '',
+      complexity: v ? v.complexity : p?.complexity ?? null,
+      reqNos: nos,
+    };
+  });
+}
+
+/**
+ * §6.1 导出端点。并发闸用 `defer:true`（`export-gate.ts:50` 的实测教训：处理器里有 await 让出点
+ * 之外还要保证计数真的反映并发），闸名独立，不与 `plans-export` 顶号。
+ * 客户版脱敏发生在**服务端**（§9 安全项：前端隐藏不算脱敏）——不产附加 sheet、不写备注三条，
+ * 并按 `estimate.hideCoefsForClient` 把四个系数折叠成一行合计（R40 的 `SUM(X36:X39)` 结果不变，
+ * 报价数一分不差，分项依据不再出现在交付件里）。
+ */
+estimateApi.get(
+  '/export-xlsx',
+  exportGate('estimates-export-xlsx', undefined, { defer: true }),
+  async (req, res) => {
+    try {
+      const projectId = pid(req);
+      const scope = parseScope(req.query.scope);
+      const audience = parseAudience(req.query.audience);
+      const phases = parsePhases(req.query.phases);
+      const rows = collectExportRows(projectId);
+      const config = resolveEstimateConfig(readKv(projectId));
+      const project = PlanService.getProjectBrief(projectId);
+      const nowDate = new Date();
+      const layout = layoutEstimate({
+        projectId,
+        projectName: project.name,
+        estimateDate: nowDate.toISOString().slice(0, 10),
+        reviewer: str(getSetting(ESTIMATE_REVIEWER_KEY)),
+        rows,
+        config,
+        scope,
+        phases,
+        audience,
+        generatedAt: nowDate.toISOString(),
+      });
+      const { buildEstimateXlsx } = await import('../services/estimateExportXlsx');
+      const buf = await buildEstimateXlsx(layout);
+      const fname =
+        safeExportName(
+          `工作量评估${audience === 'client' ? '-客户版' : ''}-${project.name}-${exportStamp(nowDate)}`,
+          '工作量评估',
+        ) + '.xlsx';
+      // §6.3：全部导出写快照（payload 存汇总结果，供「上次导出后计划已变化」比对）
+      const snapshot = EstimateService.createSnapshot(projectId, {
+        format: 'xlsx',
+        filename: fname,
+        payload: {
+          projectId,
+          projectName: project.name,
+          scope,
+          audience,
+          // §7 比对器 `diffSnapshots` 读的是**顶层** `phases`（逐阶段 E/人月）与顶层
+          // `directManDays` / `actualManMonths`（E3 起的既成契约，见 verify-t02037 的 payloadOf）。
+          // 导出用的阶段筛选因此改名 `phaseFilter`——同名字段两种含义正是比对器静默出空表的成因。
+          phaseFilter: phases,
+          phases: layout.summary.phases,
+          directManDays: layout.summary.directManDays,
+          actualManMonths: layout.summary.actualManMonths,
+          estimateDate: layout.input.estimateDate,
+          generatedAt: layout.input.generatedAt,
+          detailRows: rows.length,
+          mainRows: layout.devRows.length + layout.phaseRows.filter((p) => p.points).length,
+          unreviewed: layout.unreviewed,
+          milestoneSkipped: layout.milestoneSkipped,
+          merges: layout.merges.length,
+          summary: layout.summary,
+        },
+      });
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fname)}`);
+      res.setHeader('X-Estimate-Snapshot', snapshot.id);
+      res.send(buf);
+    } catch (e) {
+      res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
 );
 
 // ---------- 单行（须最后注册，避免吃掉静态路径） ----------

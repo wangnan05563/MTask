@@ -240,7 +240,7 @@ planApi.patch('/prd-docs/:id/status', (req, res) => {
 });
 
 /** 导出文件名安全化：去掉路径分隔与非法字符（与前端 safeFilename 同口径，避免下载文件名带斜杠） */
-function safeExportName(name: string, fallback: string): string {
+export function safeExportName(name: string, fallback: string): string {
   const s = name.replaceAll(/[\\/:*?"<>|\n\r\t]/g, '-').replaceAll(/\s+/g, ' ').trim().slice(0, 80);
   return s || fallback;
 }

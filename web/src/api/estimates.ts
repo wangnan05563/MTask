@@ -214,6 +214,59 @@ export function toGrid(v: number): number {
   return Math.round(v * 2) / 2;
 }
 
+/** 导出区（§5.2 第 4 段 / §6.1）——版本与范围词表与服务端 `ESTIMATE_EXPORT_SCOPES`、`parseAudience` 同字面 */
+export type EstimateExportAudience = 'internal' | 'client';
+export type EstimateExportScope = 'all' | 'estimated_only';
+
+export interface EstimateExportOptions {
+  audience?: EstimateExportAudience;
+  scope?: EstimateExportScope;
+  /** 阶段子集（不传=全部六阶段）；服务端按此重排行号，件内公式区间同步收窄 */
+  phases?: EstimatePhase[];
+}
+
+/** §6.3 快照 payload（服务端导出时写入，仅存汇总与结构计数，非全量明细） */
+export interface EstimateSnapshotPayload {
+  projectId: string;
+  projectName: string;
+  scope: EstimateExportScope;
+  audience: EstimateExportAudience;
+  /** 本次导出的阶段筛选（与 §7 比对用的逐阶段汇总区分开） */
+  phaseFilter: EstimatePhase[];
+  /** §7 比对契约字段：逐阶段 E/人月 + 两个合计（服务端 `diffSnapshots` 读顶层这一份） */
+  phases: PhaseStat[];
+  directManDays: ColumnSum;
+  actualManMonths: ColumnSum;
+  estimateDate: string;
+  generatedAt: string;
+  detailRows: number;
+  mainRows: number;
+  unreviewed: number;
+  milestoneSkipped: number;
+  merges: number;
+  summary: EstimateSummary;
+}
+
+/** §7 两版差异（服务端 `diffSnapshots` 出数，前端只排版） */
+export interface SnapshotDiff {
+  phases: Array<{
+    phase: string;
+    expected: { a: number; b: number; delta: number };
+    manMonth: { a: number; b: number; delta: number };
+  }>;
+  totals: { directManDays: number; actualManMonths: number };
+}
+
+export interface EstimateSnapshot {
+  id: string;
+  project_id: string;
+  format: string;
+  filename: string;
+  /** 服务端 `SELECT *` 直接下发，payload 列是 JSON 文本 */
+  payload: string | EstimateSnapshotPayload;
+  created_at: string;
+}
+
 export const estimatesApi = {
   /** 面板首屏：明细 + 汇总 + 参数 + 校验（一次请求取全，避免前端拼接多套口径） */
   getAll: (projectId: string) => api.get<EstimatesResponse>(q(projectId)),
@@ -257,4 +310,36 @@ export const estimatesApi = {
   /** 显式清理脱离行（服务端只删确属该项目且仍脱离的 id，其余跳过并如实计数） */
   cleanupDetached: (projectId: string, ids: string[]) =>
     api.post<{ projectId: string; removed: number }>('/estimates/detach/cleanup', { projectId, ids }),
+  /**
+   * §6.1 导出 xlsx（E6）。文件名与快照 id 一律取自服务端响应头：
+   * 件名规则（`工作量评估-客户版-项目-日期`）已在服务端，前端再拼一套就是 §6.1 反对的第二口径。
+   */
+  exportXlsx: async (projectId: string, opts: EstimateExportOptions = {}) => {
+    const sp = new URLSearchParams({ projectId });
+    if (opts.audience) sp.set('audience', opts.audience);
+    if (opts.scope) sp.set('scope', opts.scope);
+    if (opts.phases?.length) sp.set('phases', opts.phases.join(','));
+    const r = await api.getDownload(`/estimates/export-xlsx?${sp.toString()}`);
+    return { blob: r.blob, filename: r.filename, snapshotId: r.headers.get('x-estimate-snapshot') ?? '' };
+  },
+  /** §6.3 导出快照列表（最近 N 次，服务端按 created_at 倒序） */
+  listSnapshots: (projectId: string, limit = 5) =>
+    api.get<{ projectId: string; snapshots: EstimateSnapshot[] }>(
+      `/estimates/snapshots?projectId=${encodeURIComponent(projectId)}&limit=${limit}`),
+  /** §7 两版快照差异（服务端算差值，前端只排版；id 必须都在返回的最近 N 条内） */
+  compareSnapshots: (projectId: string, a: string, b: string, limit = 5) =>
+    api.get<{ projectId: string; snapshots: EstimateSnapshot[]; compare: { a: EstimateSnapshot; b: EstimateSnapshot; diff: SnapshotDiff } | null }>(
+      `/estimates/snapshots?projectId=${encodeURIComponent(projectId)}&limit=${limit}`
+      + `&compare=${encodeURIComponent(`${a},${b}`)}`),
 };
+
+/** 快照 payload 在服务端是 JSON 文本列（`SELECT *` 原样下发），解析失败交调用方如实显示 */
+export function parseSnapshotPayload(raw: string | EstimateSnapshotPayload): EstimateSnapshotPayload | null {
+  if (typeof raw !== 'string') return raw;
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return v && typeof v === 'object' ? (v as EstimateSnapshotPayload) : null;
+  } catch {
+    return null;
+  }
+}
