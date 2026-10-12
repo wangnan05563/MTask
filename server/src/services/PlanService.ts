@@ -15,6 +15,7 @@ import PizZip from 'pizzip';
 import { stripWordFieldCodes } from '../util/wordFields'; // T00814：清洗 Word 域代码（目录/页码/交叉引用）
 import { logService } from './LogService'; // T00821：覆盖录入行为留痕（覆盖时间/文件名/项目，单机无账号故操作人留空）
 import { parsePlanDeps, depsSatisfied } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7）
+import { clampComplexity } from './PlanComplexity'; // T02122：复杂度钳位单源
 import { resolveReqNo, groupDuplicateReqNos, isReqNoTaken } from '../util/reqNo'; // T01867：需求编号项目内唯一顺延
 import { nextPlanTitle } from '../util/planTitle'; // T01875：计划标题撞名让号（与需求编号顺延同构）
 
@@ -686,9 +687,9 @@ function normalizePrdPlans(raw: unknown[]): Array<{ title: string; description: 
     const title = typeof o.title === 'string' ? o.title.trim() : '';
     if (!title) continue;
     const reqNos = Array.isArray(o.reqNos) ? o.reqNos.filter((x): x is string => typeof x === 'string') : [];
-    // T01058-FR2.1：AI 复杂度评级（1~5；非法/缺失为 undefined）
-    const cRaw = Number(o.complexity);
-    const complexity = Number.isFinite(cRaw) && cRaw >= 1 && cRaw <= 5 ? Math.round(cRaw) : undefined;
+    // T01058-FR2.1 / T02122：AI 复杂度评级（1~5；非法/缺失为 undefined），钳位走单源函数
+    const cClamped = clampComplexity(o.complexity);
+    const complexity = cClamped ?? undefined;
     drafts.push({
       title,
       description: typeof o.description === 'string' ? o.description : '',
@@ -2230,7 +2231,8 @@ export const PlanService = {
         const end = calcEndDate(start, duration, cal);
         const id = uuid();
         ids.push(id);
-        ins.run(id, projectId, it.title.trim(), it.description ?? '', start, end, duration, status, it.assignee ?? '', maxOrder + 1 + i, kind, it.complexity ?? null, t, t);
+        // T02122：createBatch 复杂度钳位（此前直写 it.complexity ?? null，外部 Agent/Excel 可把 0/7/3.5 原样落库）
+        ins.run(id, projectId, it.title.trim(), it.description ?? '', start, end, duration, status, it.assignee ?? '', maxOrder + 1 + i, kind, clampComplexity(it.complexity), t, t);
       });
     })();
     notifyChange('plans');

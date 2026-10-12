@@ -259,7 +259,8 @@ export async function createMCPServer(): Promise<McpServer> {
         // （PlanService.createBatch 内部支持 kind，仅 MCP schema 缺字段被 zod 剥离）。
         kind: z.enum(['normal', 'milestone', 'daily']).optional()
           .describe('计划类型：milestone=里程碑（汇总节点，如「5 M5 AI 编排大脑落地」，先子后父收口）/ normal=普通工作项（默认）/ daily=日常'),
-        complexity: z.number().optional().describe('T01058：AI 复杂度评级（数值），随导入落库供工期估算参考'),
+        // T02122：复杂度钳位早拒——非法值在入口处被 zod 拦截，服务层 clampComplexity 作兜底
+        complexity: z.number().int().min(1).max(5).optional().describe('T01058 / T02122：AI 复杂度评级（1~5 整数），随导入落库供工期估算参考'),
       })).describe('计划条目数组（按执行顺序排列）'),
     },
   }, async (a) => {

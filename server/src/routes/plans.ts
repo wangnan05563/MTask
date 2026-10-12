@@ -3,7 +3,7 @@ import { PlanService } from '../services/PlanService';
 import { TestCaseService } from '../services/TestCaseService'; // T01484：测试用例取数（PRD-测试用例管理 §6）
 import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput, DraftCaseImport, DraftReqImport } from '../services/TestCaseService';
 import { AIService } from '../services/AIService';
-import { backfillComplexity, listMissing as listMissingComplexity } from '../services/PlanComplexity'; // T01058 后续：计划行复杂度批量补算
+import { backfillComplexity, clampComplexity, listInvalid as listInvalidComplexity, listMissing as listMissingComplexity } from '../services/PlanComplexity'; // T01058 后续 / T02122：计划行复杂度批量补算 + 值域断言
 import { resolvePrdContext } from '../util/prdContext'; // T00763：计划关联 PRD → 评估上下文
 import { exportGate } from '../util/export-gate'; // T00789：导出类端点并发闸
 
@@ -769,13 +769,14 @@ planApi.post('/ai-evaluate', async (req, res) => {
   res.json({ ok: true, results });
 });
 
-// T01058 后续：计划行复杂度批量补算。
+// T01058 后续 / T02122：计划行复杂度批量补算 + 值域断言。
 // complexity 只在 PRD 导入时由 AI 给出，手工/Excel 导入与存量行恒为 NULL——
 // 「复杂度 ≥4 建议拆分」的提示对这些行不生效，故提供批量补算入口（按批调用，非逐条）。
+// T02122：响应体增加 invalid 计数，暴露「未归档行 complexity 非空但落在 1~5 之外」的非法行数量。
 planApi.get('/complexity/missing', (req, res) => {
   const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
   if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
-  wrap(res, () => ({ count: listMissingComplexity(projectId).length }));
+  wrap(res, () => ({ count: listMissingComplexity(projectId).length, invalid: listInvalidComplexity(projectId).length }));
 });
 planApi.post('/complexity/backfill', async (req, res) => {
   const { toolId, projectId, force, ids, batch } = (req.body ?? {}) as { toolId?: unknown; projectId?: unknown; force?: unknown; ids?: unknown; batch?: unknown };

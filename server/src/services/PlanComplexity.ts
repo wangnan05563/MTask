@@ -47,13 +47,29 @@ export function listMissing(projectId: string, opts: { force?: boolean; ids?: st
     .all(...args) as ComplexityRow[];
 }
 
-/** 复杂度钳位：AI 常返回 3.5 或 7 这类越界值，一律夹回 1~5 的整数，非法则丢弃该行 */
-function normalize(v: unknown): number | null {
+/** 复杂度钳位单源函数：AI / Excel / 手工批量常返回 3.5/7/0 这类越界值，一律夹回 1~5 的整数 */
+export function clampComplexity(v: unknown): number | null {
   const n = Number(v);
   if (!Number.isFinite(n)) return null;
   const r = Math.round(n);
   if (r < 1 || r > 5) return null;
   return r;
+}
+
+/** T02122：取未归档行中 complexity 非空但落在 1~5 之外的非法行 */
+export interface InvalidRow {
+  id: string;
+  title: string;
+  complexity: number;
+}
+
+export function listInvalid(projectId: string): InvalidRow[] {
+  const db = getDb();
+  return db
+    .prepare(
+      "SELECT id, title, complexity FROM plan_tasks WHERE project_id = ? AND archived = 0 AND complexity IS NOT NULL AND (complexity < 1 OR complexity > 5) ORDER BY sort_order, created_at",
+    )
+    .all(projectId) as InvalidRow[];
 }
 
 const SYSTEM = [
@@ -117,7 +133,7 @@ export async function backfillComplexity(
     const byId = new Map<string, number | null>();
     for (const item of res.data) {
       const id = typeof item?.id === 'string' ? item.id : '';
-      if (id) byId.set(id, normalize(item?.complexity));
+      if (id) byId.set(id, clampComplexity(item?.complexity));
     }
     for (const r of slice) {
       const c = byId.get(r.id);
