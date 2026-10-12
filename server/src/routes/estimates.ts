@@ -6,8 +6,9 @@
  * PERT/汇总/参数解析在 `estimate-engine.ts`，三档推导在 `EstimateDerive`——
  * 路由只做参数收口与响应组装（§9「枚举与计算单源」）。
  *
- * 导出端点：`export-xlsx` 已随 E6 落地（§6.1，本文件只做取数与编排，逐格复刻在
- * `services/estimateExportXlsx.ts`）；`export-pdf` 属 E7，仍不留占位路由（空实现会被前端当成已就绪）。
+ * 导出端点：`export-xlsx`（§6.1，逐格复刻在 `services/estimateExportXlsx.ts`）与 `export-pdf`
+ * （§6.2，中间文档与渲染在 `services/estimateExportPdf.ts`）都已落地，两者共用本文件的
+ * `buildEstimateArtifact()`——取数、参数解析、件名与快照 payload 只有一份实现。
  */
 import { Router } from 'express';
 import { getSetting, setSetting } from '../services/AppSettings';
@@ -52,6 +53,7 @@ import {
   type EstimateAudience,
   type EstimateExportRow,
   type EstimateExportScope,
+  type EstimateLayout,
 } from '../services/estimateExportXlsx';
 
 export const estimateApi = Router();
@@ -169,7 +171,14 @@ estimateApi.put('/params', (req, res) =>
     const projectId = pid(req);
     const incoming = body(req).settings as Record<string, unknown> | undefined;
     if (!incoming || typeof incoming !== 'object') throw new Error('settings 必填（键值对象）');
-    const allowed = new Set([...Object.values(ESTIMATE_SETTING_KEYS), SETTINGS_KEY_CASE_K, `${SETTINGS_KEY_CASE_K_PROJECT}${projectId}`]);
+    const allowed = new Set([
+      ...Object.values(ESTIMATE_SETTING_KEYS),
+      // 署名项：不是 §3.3 的八键（不进 `settingKeys` 面、不参与生效值试算），但必须有写入通道——
+      // E7 的 PDF 件要印「估算人」，没有这一键就恒为「（待填写）」。E13 参数页上线时按同一键绑定。
+      ESTIMATE_REVIEWER_KEY,
+      SETTINGS_KEY_CASE_K,
+      `${SETTINGS_KEY_CASE_K_PROJECT}${projectId}`,
+    ]);
     const entries: Array<[string, string]> = [];
     for (const [k, v] of Object.entries(incoming)) {
       if (!allowed.has(k)) throw new Error(`未知估算参数键：${k}`);
@@ -341,32 +350,39 @@ estimateApi.post('/detach/cleanup', (req, res) =>
 );
 
 // ---------- 全量估算（§8 GET /api/estimates：明细 + 汇总 + 参数 + 校验结果） ----------
+
+/**
+ * GET / 的取数体，抽成导出函数是给 MCP `mtask_get_estimates` 用的（E10）：
+ * 外部 Agent 取估算汇总如果另走一套组装，`includeArchived` 只影响 `items` 不影响 `summary`
+ * 这类实测校正就会在两处各自漂移（§3.1 口径）。
+ */
+export function estimatesSnapshot(projectId: string, opts: { includeArchived?: boolean } = {}) {
+  const includeArchived = opts.includeArchived === true;
+  const kv = readKv(projectId);
+  const config = resolveEstimateConfig(kv);
+  const items = EstimateService.listByProject(projectId, { includeArchived });
+  const { rows, estimated } = engineRows(projectId);
+  const summary = buildSummary(rows, config);
+  const cov = coverage(projectId);
+  return {
+    projectId,
+    items,
+    summary,
+    params: { config, caseWeightK: effectiveCaseK(projectId), settings: kv },
+    meta: ESTIMATE_META,
+    checks: {
+      ratioCheck: summary.ratioCheck,
+      coverage: cov,
+      estimated,
+      visiblePlans: rows.length,
+      // 「脱离计划」是 INNER JOIN 看不见的那批，只能由库里反查给出（§7）
+      detached: cov.detached,
+    },
+  };
+}
+
 estimateApi.get('/', (req, res) =>
-  wrap(res, () => {
-    const projectId = pid(req);
-    const includeArchived = truthy(req.query.includeArchived);
-    const kv = readKv(projectId);
-    const config = resolveEstimateConfig(kv);
-    const items = EstimateService.listByProject(projectId, { includeArchived });
-    const { rows, estimated } = engineRows(projectId);
-    const summary = buildSummary(rows, config);
-    const cov = coverage(projectId);
-    return {
-      projectId,
-      items,
-      summary,
-      params: { config, caseWeightK: effectiveCaseK(projectId), settings: kv },
-      meta: ESTIMATE_META,
-      checks: {
-        ratioCheck: summary.ratioCheck,
-        coverage: cov,
-        estimated,
-        visiblePlans: rows.length,
-        // 「脱离计划」是 INNER JOIN 看不见的那批，只能由库里反查给出（§7）
-        detached: cov.detached,
-      },
-    };
-  }),
+  wrap(res, () => estimatesSnapshot(pid(req), { includeArchived: truthy(req.query.includeArchived) })),
 );
 
 // ---------- Excel 导出（§6.1 · E6）----------
@@ -374,8 +390,10 @@ estimateApi.get('/', (req, res) =>
 /**
  * 估算人取值键。
  * ⚠ PRD §6.1 原文写的是 `estimate_settings.reviewer`，但库里没有这张表——估算参数全部走
- * `app_settings` 的扁平 KV，§3.3 的八键里也不含署名项。这里按「单键读取、不参与 §3.3 读写校验」
- * 落地（无值即留空由用户手填，正是 §6.1 给的「或留空」分支），不擅自把它塞进参数页的白名单。
+ * `app_settings` 的扁平 KV，§3.3 的八键里也不含署名项。这里按「单键读取、不进 §3.3 的生效值
+ * 试算与 `settingKeys` 面」落地（无值即留空由用户手填，正是 §6.1 给的「或留空」分支）；
+ * E7 的 PDF 件要印这一署名，所以 `PUT /params` 放行这一个键作为写入通道（T02044），
+ * 但它仍不是配置项——参数页（E13）上线时按同一键绑定，不另开第二个键名。
  */
 const ESTIMATE_REVIEWER_KEY = 'estimate.reviewer';
 
@@ -389,7 +407,7 @@ function exportStamp(d: Date): string {
  * `phases` 查询串（§6.1「一个参数只表一件事」）。
  * 未知阶段必须报错而不是忽略——静默吞掉会让「只导开发段」实际导出全部，报价件的范围悄悄变了。
  */
-function parsePhases(raw: unknown): EstimatePhase[] {
+export function parsePhases(raw: unknown): EstimatePhase[] {
   const s = str(raw);
   if (!s) return [...ESTIMATE_META.phases];
   const list: EstimatePhase[] = [];
@@ -406,7 +424,7 @@ function parsePhases(raw: unknown): EstimatePhase[] {
   return list;
 }
 
-function parseScope(raw: unknown): EstimateExportScope {
+export function parseScope(raw: unknown): EstimateExportScope {
   const s = str(raw);
   if (!s) return 'all';
   if (!(ESTIMATE_EXPORT_SCOPES as readonly string[]).includes(s)) {
@@ -415,7 +433,7 @@ function parseScope(raw: unknown): EstimateExportScope {
   return s as EstimateExportScope;
 }
 
-function parseAudience(raw: unknown): EstimateAudience {
+export function parseAudience(raw: unknown): EstimateAudience {
   const s = str(raw);
   if (!s) return 'internal';
   if (s !== 'internal' && s !== 'client') throw new Error(`未知导出版本：${s}（可用 internal / client）`);
@@ -508,6 +526,114 @@ function collectExportRows(projectId: string): EstimateExportRow[] {
 }
 
 /**
+ * §6.1 / §6.2 的两种交付格式。词表与 `ESTIMATE_SNAPSHOT_FORMATS`（`EstimateService.ts:31`）一致——
+ * 快照表从 E1 起就留了 `pdf`，本次只是终于有人往里写。
+ */
+export const ESTIMATE_ARTIFACT_FORMATS = ['xlsx', 'pdf'] as const;
+export type EstimateArtifactFormat = (typeof ESTIMATE_ARTIFACT_FORMATS)[number];
+
+export interface EstimateArtifactOptions {
+  scope: EstimateExportScope;
+  audience: EstimateAudience;
+  phases: EstimatePhase[];
+}
+
+/** 导出产物：件名与快照 id 由服务端一次定死（§6.3 响应头契约），前端与 MCP 都不再拼第二套 */
+export interface EstimateArtifact extends EstimateArtifactOptions {
+  projectId: string;
+  filename: string;
+  contentType: string;
+  buffer: Buffer;
+  snapshotId: string;
+  /** 出数用的行落位（断言与 MCP 摘要读它，不在别处重算） */
+  layout: EstimateLayout;
+}
+
+const ARTIFACT_CONTENT_TYPES: Record<EstimateArtifactFormat, string> = {
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pdf: 'application/pdf',
+};
+
+/**
+ * **导出流水线唯一实现处**：取明细行 → 解析参数 → `layoutEstimate` → 按格式出字节 → 写快照。
+ *
+ * 为什么是 `async`（与本页其余 `wrap()` 同步约定不同）：xlsx/pdf 构建器都按既有惯例动态 import
+ * （重依赖不进首屏），`buildEstimateXlsx` / `buildPrdPdf` 本身也是 `Promise<Buffer>`。
+ * 三个调用方（`/export-xlsx`、`/export-pdf`、MCP `mtask_export_estimate_workload`）走同一条，
+ * 于是「预览件与交付件数字不一致」「MCP 取到的件名与界面下载的不是一个」这类问题在结构上不会发生。
+ */
+export async function buildEstimateArtifact(
+  projectId: string,
+  format: EstimateArtifactFormat,
+  opts: EstimateArtifactOptions,
+): Promise<EstimateArtifact> {
+  const { scope, audience, phases } = opts;
+  const rows = collectExportRows(projectId);
+  const config = resolveEstimateConfig(readKv(projectId));
+  const project = PlanService.getProjectBrief(projectId);
+  const nowDate = new Date();
+  const layout = layoutEstimate({
+    projectId,
+    projectName: project.name,
+    estimateDate: nowDate.toISOString().slice(0, 10),
+    reviewer: str(getSetting(ESTIMATE_REVIEWER_KEY)),
+    rows,
+    config,
+    scope,
+    phases,
+    audience,
+    generatedAt: nowDate.toISOString(),
+  });
+  // 两种格式都只在「拿到 layout 之后」分叉：分叉点之前没有任何按格式改数据的余地
+  const buffer = format === 'pdf'
+    ? await (await import('../services/estimateExportPdf')).buildEstimatePdf(layout)
+    : await (await import('../services/estimateExportXlsx')).buildEstimateXlsx(layout);
+  const fname =
+    safeExportName(
+      `工作量评估${audience === 'client' ? '-客户版' : ''}-${project.name}-${exportStamp(nowDate)}`,
+      '工作量评估',
+    ) + `.${format}`;
+  // §6.3：全部导出写快照（payload 存汇总结果，供「上次导出后计划已变化」比对）
+  const snapshot = EstimateService.createSnapshot(projectId, {
+    format,
+    filename: fname,
+    payload: {
+      projectId,
+      projectName: project.name,
+      scope,
+      audience,
+      // §7 比对器 `diffSnapshots` 读的是**顶层** `phases`（逐阶段 E/人月）与顶层
+      // `directManDays` / `actualManMonths`（E3 起的既成契约，见 verify-t02037 的 payloadOf）。
+      // 导出用的阶段筛选因此改名 `phaseFilter`——同名字段两种含义正是比对器静默出空表的成因。
+      phaseFilter: phases,
+      phases: layout.summary.phases,
+      directManDays: layout.summary.directManDays,
+      actualManMonths: layout.summary.actualManMonths,
+      estimateDate: layout.input.estimateDate,
+      generatedAt: layout.input.generatedAt,
+      detailRows: rows.length,
+      mainRows: layout.devRows.length + layout.phaseRows.filter((p) => p.points).length,
+      unreviewed: layout.unreviewed,
+      milestoneSkipped: layout.milestoneSkipped,
+      merges: layout.merges.length,
+      summary: layout.summary,
+    },
+  });
+  return {
+    projectId, scope, audience, phases, filename: fname,
+    contentType: ARTIFACT_CONTENT_TYPES[format], buffer, snapshotId: snapshot.id, layout,
+  };
+}
+
+/** 导出端点公共收尾：§6.3 的两个响应头由这里写，两个端点都不许自己 `setHeader` */
+function sendArtifact(res: import('express').Response, a: EstimateArtifact): void {
+  res.setHeader('Content-Type', a.contentType);
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(a.filename)}`);
+  res.setHeader('X-Estimate-Snapshot', a.snapshotId);
+  res.send(a.buffer);
+}
+
+/**
  * §6.1 导出端点。并发闸用 `defer:true`（`export-gate.ts:50` 的实测教训：处理器里有 await 让出点
  * 之外还要保证计数真的反映并发），闸名独立，不与 `plans-export` 顶号。
  * 客户版脱敏发生在**服务端**（§9 安全项：前端隐藏不算脱敏）——不产附加 sheet、不写备注三条，
@@ -519,63 +645,33 @@ estimateApi.get(
   exportGate('estimates-export-xlsx', undefined, { defer: true }),
   async (req, res) => {
     try {
-      const projectId = pid(req);
-      const scope = parseScope(req.query.scope);
-      const audience = parseAudience(req.query.audience);
-      const phases = parsePhases(req.query.phases);
-      const rows = collectExportRows(projectId);
-      const config = resolveEstimateConfig(readKv(projectId));
-      const project = PlanService.getProjectBrief(projectId);
-      const nowDate = new Date();
-      const layout = layoutEstimate({
-        projectId,
-        projectName: project.name,
-        estimateDate: nowDate.toISOString().slice(0, 10),
-        reviewer: str(getSetting(ESTIMATE_REVIEWER_KEY)),
-        rows,
-        config,
-        scope,
-        phases,
-        audience,
-        generatedAt: nowDate.toISOString(),
-      });
-      const { buildEstimateXlsx } = await import('../services/estimateExportXlsx');
-      const buf = await buildEstimateXlsx(layout);
-      const fname =
-        safeExportName(
-          `工作量评估${audience === 'client' ? '-客户版' : ''}-${project.name}-${exportStamp(nowDate)}`,
-          '工作量评估',
-        ) + '.xlsx';
-      // §6.3：全部导出写快照（payload 存汇总结果，供「上次导出后计划已变化」比对）
-      const snapshot = EstimateService.createSnapshot(projectId, {
-        format: 'xlsx',
-        filename: fname,
-        payload: {
-          projectId,
-          projectName: project.name,
-          scope,
-          audience,
-          // §7 比对器 `diffSnapshots` 读的是**顶层** `phases`（逐阶段 E/人月）与顶层
-          // `directManDays` / `actualManMonths`（E3 起的既成契约，见 verify-t02037 的 payloadOf）。
-          // 导出用的阶段筛选因此改名 `phaseFilter`——同名字段两种含义正是比对器静默出空表的成因。
-          phaseFilter: phases,
-          phases: layout.summary.phases,
-          directManDays: layout.summary.directManDays,
-          actualManMonths: layout.summary.actualManMonths,
-          estimateDate: layout.input.estimateDate,
-          generatedAt: layout.input.generatedAt,
-          detailRows: rows.length,
-          mainRows: layout.devRows.length + layout.phaseRows.filter((p) => p.points).length,
-          unreviewed: layout.unreviewed,
-          milestoneSkipped: layout.milestoneSkipped,
-          merges: layout.merges.length,
-          summary: layout.summary,
-        },
-      });
-      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fname)}`);
-      res.setHeader('X-Estimate-Snapshot', snapshot.id);
-      res.send(buf);
+      sendArtifact(res, await buildEstimateArtifact(pid(req), 'xlsx', {
+        scope: parseScope(req.query.scope),
+        audience: parseAudience(req.query.audience),
+        phases: parsePhases(req.query.phases),
+      }));
+    } catch (e) {
+      res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+);
+
+/**
+ * §6.2 PDF 端点（E7）。参数词表、并发闸形态、响应头与 `/export-xlsx` 完全一致——
+ * E6 的实测补充明写「E7 的 PDF 端点请沿用同一对响应头，别再开第三种取件名通道」。
+ * PDF 定位为汇报/预览件（裁决 D4，正式交付以 Excel 为准），脱敏同样发生在服务端组装的
+ * `estimate-report.md` 阶段：客户版正文里根本不出现系数分项、σ/置信区间、备注三条与附加 sheet 名。
+ */
+estimateApi.get(
+  '/export-pdf',
+  exportGate('estimates-export-pdf', undefined, { defer: true }),
+  async (req, res) => {
+    try {
+      sendArtifact(res, await buildEstimateArtifact(pid(req), 'pdf', {
+        scope: parseScope(req.query.scope),
+        audience: parseAudience(req.query.audience),
+        phases: parsePhases(req.query.phases),
+      }));
     } catch (e) {
       res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
     }

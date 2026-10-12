@@ -24,6 +24,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { EstimateConfig, EstimatePhase, EstimateCoefKey } from '../server/src/services/estimate-engine.ts';
 import type { EstimateExportInput, EstimateExportRow } from '../server/src/services/estimateExportXlsx.ts';
+import { resolveServerLauncher } from './isolated-server-launcher.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02043-e6-'));
@@ -635,12 +636,15 @@ function mineRest() {
 }
 
 const PORT = Number(process.env.T02043_PORT ?? 39935);
-const tsxPath = join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
-const child: ChildProcess = spawn(process.execPath, [tsxPath, join(ROOT, 'server', 'src', 'index.ts')], {
+// 启动器按 native 模块 ABI 探测（打包.bat 会把 better-sqlite3 重编译成 Electron ABI，
+// 此时 process.execPath 直跑会 ERR_DLOPEN_FAILED）——见 isolated-server-launcher.mts
+const LAUNCHER = resolveServerLauncher(ROOT, join(ROOT, 'server', 'src', 'index.ts'));
+const child: ChildProcess = spawn(LAUNCHER.exec, LAUNCHER.tsx, {
   cwd: ROOT,
-  env: { ...process.env, MTask_PORT: String(PORT), MTask_DATA_DIR: DATA_DIR },
+  env: { ...process.env, ...LAUNCHER.env, MTask_PORT: String(PORT), MTask_DATA_DIR: DATA_DIR },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
+console.log(`隔离实例启动器：${LAUNCHER.label}`);
 const serverLog: string[] = [];
 child.stdout?.on('data', (b: Buffer) => serverLog.push(b.toString()));
 child.stderr?.on('data', (b: Buffer) => serverLog.push(b.toString()));
@@ -695,8 +699,19 @@ if (!(await waitForServer())) {
       badPh.status === 400 && String(badPh.json?.error).includes('未知阶段'), badPh.json);
     const badScope = await getXlsx(`?${PQ}&scope=bogus`);
     ok('R-09 未知范围 → 400', badScope.status === 400 && String(badScope.json?.error).includes('未知导出范围'), badScope.json);
-    const notFound = await api('GET', '/api/estimates/export-pdf');
-    ok('R-10 export-pdf 仍是 404（E7 未落地就不留占位路由，空实现会被前端当已就绪）', notFound.status === 404, notFound.status);
+    // R-10 曾断言 export-pdf 是 404（E6 当时的口径：「E7 未落地就不留占位路由」）。
+    // E7 已落地（T02044），这里改为回归面：PDF 与 xlsx 共用 `buildEstimateArtifact`——
+    // 两条通道都能出件、都带快照头，才证明「同一条流水线」不是文档说法。
+    const pdf = await fetch(`${BASE}/api/estimates/export-pdf?${PQ}`);
+    const pdfBuf = pdf.ok ? Buffer.from(await pdf.arrayBuffer()) : Buffer.alloc(0);
+    ok('R-10a export-pdf 已落地：200 + PDF 魔数（与 xlsx 同一条 buildEstimateArtifact）',
+      pdf.status === 200 && pdfBuf.slice(0, 5).toString() === '%PDF-' && pdfBuf.slice(-6).toString().includes('%%EOF'),
+      { status: pdf.status, size: pdfBuf.length });
+    ok('R-10b export-pdf 也回带快照 id（§6.3 留痕对两种格式一致）',
+      /^[\w-]+$/.test(String(pdf.headers.get('x-estimate-snapshot'))), pdf.headers.get('x-estimate-snapshot'));
+    const pdfNoPid = await fetch(`${BASE}/api/estimates/export-pdf`);
+    ok('R-10c export-pdf 缺 projectId → 400 中文文案（与 xlsx 同词表，不出半份件）',
+      pdfNoPid.status === 400 && String((await pdfNoPid.json().catch(() => ({})))?.error).includes('projectId'), pdfNoPid.status);
     const ghost = await getXlsx('?projectId=no-such-project-e6');
     if (ghost.status === 200) {
       const gc = parseCells(mainXml(ghost.buf));

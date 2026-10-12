@@ -267,6 +267,15 @@ export interface EstimateSnapshot {
   created_at: string;
 }
 
+/** 两种交付格式共用的 query 组装（服务端 `parseScope` / `parseAudience` / `parsePhases` 词表） */
+function exportQuery(projectId: string, opts: EstimateExportOptions): string {
+  const sp = new URLSearchParams({ projectId });
+  if (opts.audience) sp.set('audience', opts.audience);
+  if (opts.scope) sp.set('scope', opts.scope);
+  if (opts.phases?.length) sp.set('phases', opts.phases.join(','));
+  return sp.toString();
+}
+
 export const estimatesApi = {
   /** 面板首屏：明细 + 汇总 + 参数 + 校验（一次请求取全，避免前端拼接多套口径） */
   getAll: (projectId: string) => api.get<EstimatesResponse>(q(projectId)),
@@ -315,11 +324,15 @@ export const estimatesApi = {
    * 件名规则（`工作量评估-客户版-项目-日期`）已在服务端，前端再拼一套就是 §6.1 反对的第二口径。
    */
   exportXlsx: async (projectId: string, opts: EstimateExportOptions = {}) => {
-    const sp = new URLSearchParams({ projectId });
-    if (opts.audience) sp.set('audience', opts.audience);
-    if (opts.scope) sp.set('scope', opts.scope);
-    if (opts.phases?.length) sp.set('phases', opts.phases.join(','));
-    const r = await api.getDownload(`/estimates/export-xlsx?${sp.toString()}`);
+    const r = await api.getDownload(`/estimates/export-xlsx?${exportQuery(projectId, opts)}`);
+    return { blob: r.blob, filename: r.filename, snapshotId: r.headers.get('x-estimate-snapshot') ?? '' };
+  },
+  /**
+   * §6.2 导出 PDF（E7）：与 xlsx 同一个参数词表、同一对响应头（服务端 `buildEstimateArtifact`
+   * 把两条流水线并成了一份），所以这里除路径之外没有任何 PDF 专属逻辑。
+   */
+  exportPdf: async (projectId: string, opts: EstimateExportOptions = {}) => {
+    const r = await api.getDownload(`/estimates/export-pdf?${exportQuery(projectId, opts)}`);
     return { blob: r.blob, filename: r.filename, snapshotId: r.headers.get('x-estimate-snapshot') ?? '' };
   },
   /** §6.3 导出快照列表（最近 N 次，服务端按 created_at 倒序） */

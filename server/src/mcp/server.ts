@@ -21,6 +21,9 @@ import { resolvePrdContext } from '../util/prdContext'; // T00763：PRD 上下�
 import { TestCaseService, type CasePatch } from '../services/TestCaseService'; // T01493：测试用例 MCP 工具（复用服务层单源枚举与幂等落库）
 import { CASE_PRIORITY, CASE_TYPE, CASE_METHOD, CASE_STATUS, CASE_RESULT } from '../util/testCaseEnums'; // T01493：zod 枚举从单源导入，杜绝第三次口径漂移
 import { ArchiveService } from '../services/ArchiveService';
+import { EstimateService, ESTIMATE_META, ESTIMATE_PHASES, ESTIMATE_SOURCES } from '../services/EstimateService'; // T02044：估算 MCP 工具（枚举单源，zod 不许自造第二套词表）
+import { expected, sigma } from '../services/estimate-engine'; // T02044：回写后回执里的 E/σ 由引擎给，MCP 层不重算三点
+import { ESTIMATE_ARTIFACT_FORMATS, buildEstimateArtifact, estimatesSnapshot, parseAudience, parsePhases, parseScope } from '../routes/estimates'; // T02044：与 REST 同一份取数与导出流水线
 import {
   gatherReportData,
   generateReport,
@@ -1082,6 +1085,228 @@ ${a.result}`;
     try {
       const r = importBundle(a.data, a.mode as ImportMode);
       return ok(json(r), { result: r });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // ---------------- 估算视图（T02044 · E10：PRD-估算视图与工作量评估导出 §8 三枚工具） ----------------
+  // 分层与 `mtask_list_plans` 一致：三点校验、PERT 汇总、导出流水线全部复用既有导出
+  // （`routes/estimates.ts` 的 `estimatesSnapshot` / `buildEstimateArtifact`、`EstimateService`），
+  // MCP 层只做**定位参数翻译**（projectName / taskNo → id）与**响应体量控制**（默认精简 + 显式 full）。
+  // 体量口径沿用 T01490 的实测教训：给 LLM 的 `content[0].text` 恒为精简摘要，
+  // 全量数据只进 `structuredContent`——两处都塞全文会让 SSE 帧翻倍、大项目直接被截断。
+  const resolveEstimateProject = (a: { projectId?: string; projectName?: string }): { id: string; name: string } => {
+    const db = getDb();
+    const id = (a.projectId ?? '').trim();
+    const name = (a.projectName ?? '').trim();
+    if (id) {
+      const row = db.prepare('SELECT id, name FROM projects WHERE id = ?').get(id) as { id: string; name: string } | undefined;
+      if (!row) throw new Error(`项目不存在：${id}`); // 外部调用方拼错 id 必须报错，不能出一份空报价件
+      return row;
+    }
+    if (!name) throw new Error('projectId 或 projectName 必填');
+    const row = db.prepare('SELECT id, name FROM projects WHERE name = ?').get(name) as { id: string; name: string } | undefined;
+    if (!row) throw new Error(`项目不存在：${name}`);
+    return row;
+  };
+
+  /**
+   * taskNo → 计划行。权威 linkage 只有一处：`plan_tasks.linked_task_id`（`schema.ts:196`，
+   * 与「共享 req_ids 的软关联」是两套机制，`PlanService.ts:499` 已注明——估算是按 planId 记账的，
+   * 这里只认硬关联，多条命中时把消歧责任交回调用方，不猜。
+   */
+  const planByTaskNo = (taskNo: string): { planId: string; projectId: string; planTitle: string } => {
+    const rows = getDb()
+      .prepare(
+        `SELECT pt.id AS planId, pt.project_id AS projectId, pt.title AS planTitle
+           FROM plan_tasks pt JOIN tasks t ON t.id = pt.linked_task_id
+          WHERE t.task_no = ? AND t.archived = 0 AND COALESCE(pt.archived, 0) = 0`,
+      )
+      .all(taskNo) as Array<{ planId: string; projectId: string; planTitle: string }>;
+    if (rows.length === 0) throw new Error(`待办 ${taskNo} 没有关联计划行（plan_tasks.linked_task_id 为空），请改传 planId`);
+    if (rows.length > 1) {
+      throw new Error(`待办 ${taskNo} 关联了 ${rows.length} 条计划（${rows.map((r) => r.planTitle).join(' / ')}），请改传 planId 指明哪一条`);
+    }
+    return rows[0];
+  };
+
+  const r3 = (v: number): number => Math.round(v * 1000) / 1000;
+
+  /** 精简摘要（也是 full 模式给 LLM 的那段文本）：字段名与 REST `GET /api/estimates` 的 summary 同源 */
+  function estimateBriefView(s: ReturnType<typeof estimatesSnapshot>, projectName: string) {
+    const su = s.summary;
+    return {
+      projectName,
+      totals: {
+        directManDays: r3(su.directManDays.expected),
+        idealManMonths: r3(su.idealManMonths.expected),
+        actualManMonths: r3(su.actualManMonths.expected),
+        coefSum: r3(su.coefSum),
+        sigmaTotal: r3(su.sigmaTotal),
+      },
+      quote: {
+        p50ManDays: r3(su.quote.p50ManDays),
+        p84ManDays: r3(su.quote.p84ManDays),
+        p50ManMonth: r3(su.quote.p50ManMonth),
+        p84ManMonth: r3(su.quote.p84ManMonth),
+      },
+      phases: su.phases
+        .filter((p) => p.rowCount > 0)
+        .map((p) => ({
+          phase: p.phase,
+          label: ESTIMATE_META.phaseLabels[p.phase],
+          manDays: r3(p.expected),
+          idealManMonth: r3(p.idealManMonth),
+          ratio: r3(p.ratio),
+          rowCount: p.rowCount,
+        })),
+      coefs: su.coefRows.map((c) => ({ key: c.key, label: c.label, value: r3(c.expected) })),
+      checks: {
+        sumRatio: r3(su.ratioCheck.sumRatio),
+        deviationPct: r3(su.ratioCheck.deviationPct),
+        danger: su.ratioCheck.danger,
+        coverage: s.checks.coverage,
+        estimated: s.checks.estimated,
+        visiblePlans: s.checks.visiblePlans,
+        detached: s.checks.detached,
+      },
+      params: {
+        manDaysPerManMonth: s.params.config.manDaysPerManMonth,
+        hoursPerManDay: s.params.config.hoursPerManDay,
+        caseWeightK: s.params.caseWeightK,
+      },
+    };
+  }
+
+  server.registerTool('mtask_get_estimates', {
+    title: '读取估算汇总（可选明细）',
+    description: '读取某项目的估算数据：三点加权后的 E 人天、理想/实际预估人月、阶段构成、报价区间 P50/P84、调节系数与自检结果。**默认精简模式**（阶段汇总 + 计数，不含逐行明细，避免响应被截断 T01490）；full=true 才附 items 明细行（每条估算的 planId/planTitle/phase/optimistic/likely/pessimistic/source/note）。所有数字由服务端估算引擎产出，本工具不做二次计算；includeArchived 与 REST 同口径——只影响 items，不影响汇总（§3.1「归档行不进 Σ」）。外部 Agent 出报价取 actualManMonths.expected（= 理想人月 ×(1+Σ系数)），对外报价口径看 quote.p84*。',
+    inputSchema: {
+      projectId: z.string().optional().describe('项目 id，与 projectName 二选一'),
+      projectName: z.string().optional().describe('项目名称，按名称解析'),
+      full: z.boolean().optional().describe('true=附逐行明细 items；缺省为精简模式（只有汇总与计数）'),
+      includeArchived: z.boolean().optional().describe('明细是否包含已归档计划的估算行（默认否；不影响汇总数值）'),
+    },
+  }, async (a) => {
+    try {
+      const proj = resolveEstimateProject(a);
+      const snap = estimatesSnapshot(proj.id, { includeArchived: a.includeArchived === true });
+      const brief = estimateBriefView(snap, proj.name);
+      if (!a.full) return ok(json(brief), brief);
+      // full：text 仍是精简摘要（LLM 侧不必读全文），items/params/meta 进 structuredContent
+      return ok(json(brief), {
+        ...brief,
+        items: snap.items,
+        meta: snap.meta,
+        params: snap.params,
+        detailRows: snap.items.length,
+      });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_update_estimates', {
+    title: '回写三点估算',
+    description: '按 planId 或 taskNo 回写一条计划的三点估算（乐观/最可能/悲观，人天）。校验 O≤M≤P，不合格直接报错、不落库；写入走 `EstimateService.upsert`，与界面行内录入同一条通道（阶段、单位、updatedAt 与 §4.3 的 E/σ 由服务端重算，本工具不回写计算结果）。定位优先级：planId 优先；只给 taskNo 时按 `plan_tasks.linked_task_id` 反查计划，反查不到或命中多条会报错并要求改传 planId。source 缺省 `manual`——与 REST PATCH 同口径（人工/代理显式录入即视为已复核）；若只是按规则批量补数、不希望计入复核率，显式传 rule 或 default。项目定位可靠 planId 单独给出（由计划行反查项目），也可用 projectId/projectName 并做一致性校验。',
+    inputSchema: {
+      planId: z.string().optional().describe('计划任务 id（估算行的记账主键）'),
+      taskNo: z.string().optional().describe('待办编号（如 T00001），反查其关联计划行'),
+      projectId: z.string().optional().describe('项目 id；给了就与计划行所属项目比对'),
+      projectName: z.string().optional().describe('项目名，用于解析 projectId'),
+      optimistic: z.number().describe('乐观值（人天）'),
+      likely: z.number().describe('最可能值（人天）'),
+      pessimistic: z.number().describe('悲观值（人天）'),
+      phase: z.enum(ESTIMATE_PHASES).optional().describe('阶段；缺省沿用原值，新行按标题推断'),
+      source: z.enum(ESTIMATE_SOURCES).optional().describe('来源标记，缺省 manual'),
+      note: z.string().optional().describe('备注'),
+    },
+    annotations: { destructiveHint: false },
+  }, async (a) => {
+    try {
+      const planId = (a.planId ?? '').trim();
+      const taskNo = (a.taskNo ?? '').trim();
+      let resolved = { planId, projectId: '' };
+      let planTitle = '';
+      if (planId) {
+        const row = getDb()
+          .prepare('SELECT id, project_id AS projectId, title FROM plan_tasks WHERE id = ? AND COALESCE(archived, 0) = 0')
+          .get(planId) as { projectId: string; title: string } | undefined;
+        if (!row) throw new Error(`计划不存在或已归档：${planId}`);
+        resolved = { planId, projectId: row.projectId };
+        planTitle = row.title;
+      } else if (taskNo) {
+        const p = planByTaskNo(taskNo);
+        resolved = { planId: p.planId, projectId: p.projectId };
+        planTitle = p.planTitle;
+      } else {
+        return err('planId 与 taskNo 至少提供一个');
+      }
+      if (a.projectId?.trim() || a.projectName?.trim()) {
+        const proj = resolveEstimateProject(a);
+        if (proj.id !== resolved.projectId) {
+          throw new Error(`项目与计划不匹配：计划属于 ${resolved.projectId}，请求里给的是 ${proj.id}（${proj.name}）`);
+        }
+      }
+      const item = EstimateService.upsert(resolved.projectId, resolved.planId, {
+        optimistic: a.optimistic,
+        likely: a.likely,
+        pessimistic: a.pessimistic,
+        phase: a.phase,
+        source: a.source ?? 'manual',
+        note: a.note,
+      });
+      return ok(json({ planId: item.plan_id, planTitle, expected: r3(expected({ optimistic: item.optimistic, likely: item.likely, pessimistic: item.pessimistic })), sigma: r3(sigma({ optimistic: item.optimistic, likely: item.likely, pessimistic: item.pessimistic })) }), {
+        projectId: resolved.projectId,
+        planId: item.plan_id,
+        planTitle,
+        item,
+      });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_export_estimate_workload', {
+    title: '导出工作量评估件',
+    description: '生成《项目工作量评估》交付件并返回 base64。与界面「导出 Excel / 导出 PDF」走**同一条流水线**（`buildEstimateArtifact`）：同一份行落位与汇总、同一个件名口径、每次成功导出都写一条快照并回 snapshotId，因此外部 Agent 出的件与用户在面板上下载的是同一份数。format=xlsx 是正式交付（严格复刻客户模板、公式与缓存值双轨）；format=pdf 是汇报/预览件（裁决 D4，中文依赖系统黑体）。audience=client 时脱敏发生在服务端组装阶段：系数分项、σ/置信区间、备注三条、附加 sheet 名都不出现在件里，报价数不变。scope/phases/audience 的词表校验与 REST 一致，未知值直接报错而不是忽略。base64 是文件正文，调用方应直接落盘，不要读进上下文。',
+    inputSchema: {
+      projectId: z.string().optional().describe('项目 id，与 projectName 二选一'),
+      projectName: z.string().optional().describe('项目名称，按名称解析'),
+      format: z.enum(ESTIMATE_ARTIFACT_FORMATS).describe('交付格式：xlsx=正式交付件 / pdf=预览件'),
+      audience: z.string().optional().describe("internal（默认）/ client；客户版按服务端脱敏"),
+      scope: z.string().optional().describe("all（默认）/ estimated_only：只导已估算行"),
+      phases: z.string().optional().describe('阶段筛选，逗号分隔（req,design,dev,impl,common,onsite）；缺省全部六阶段'),
+    },
+  }, async (a) => {
+    try {
+      const proj = resolveEstimateProject(a);
+      const artifact = await buildEstimateArtifact(proj.id, a.format, {
+        audience: parseAudience(a.audience),
+        scope: parseScope(a.scope),
+        phases: parsePhases(a.phases),
+      });
+      const su = artifact.layout.summary;
+      return ok(
+        json({
+          filename: artifact.filename,
+          format: a.format,
+          size: artifact.buffer.length,
+          snapshotId: artifact.snapshotId,
+          actualManMonths: r3(su.actualManMonths.expected),
+          directManDays: r3(su.directManDays.expected),
+          unreviewed: artifact.layout.unreviewed,
+        }),
+        {
+          projectId: proj.id,
+          projectName: proj.name,
+          filename: artifact.filename,
+          format: a.format,
+          audience: artifact.audience,
+          scope: artifact.scope,
+          size: artifact.buffer.length,
+          base64: artifact.buffer.toString('base64'),
+          snapshotId: artifact.snapshotId,
+          unreviewed: artifact.layout.unreviewed,
+          milestoneSkipped: artifact.layout.milestoneSkipped,
+          actualManMonths: r3(su.actualManMonths.expected),
+        },
+      );
     } catch (e) { return err((e as Error).message); }
   });
 

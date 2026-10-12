@@ -20,7 +20,7 @@ import { groupTimelinePhases, type TlPlan } from './PlanTimeline';
 import { api } from '../api/client';
 import {
   estimatesApi, parseSnapshotPayload, toGrid,
-  type DeriveItem, type DeriveRule, type EstimateExportAudience, type EstimateItem, type EstimateInput,
+  type DeriveItem, type DeriveRule, type EstimateExportAudience, type EstimateExportOptions, type EstimateExportScope, type EstimateItem, type EstimateInput,
   type EstimateSnapshot, type EstimateSource, type EstimatesResponse, type SnapshotDiff,
 } from '../api/estimates';
 import { saveBlob } from '../utils/download';
@@ -294,7 +294,10 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
   const [audience, setAudience] = useState<EstimateExportAudience>('internal');
   /** §6.1 的 `scope` 只管「是否仅已估算行」，阶段筛选另有 `phases` 参数（面板暂不暴露，导出即全六阶段） */
   const [estimatedOnly, setEstimatedOnly] = useState(false);
-  const [exporting, setExporting] = useState(false);
+  // 三种出件（Excel / PDF 内部版 / PDF 客户版）共用一条并发闸，但「导出中…」只标在被点的那枚上——
+  // 三枚按钮同时亮同一个词等于让界面说不清此刻在出哪份件
+  const [exportingKind, setExportingKind] = useState<'xlsx' | 'pdf' | null>(null);
+  const exporting = exportingKind !== null;
   const [snapshots, setSnapshots] = useState<EstimateSnapshot[]>([]);
   const [snapshotError, setSnapshotError] = useState('');
   const [cmpIds, setCmpIds] = useState<string[]>([]);
@@ -585,16 +588,27 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
   }
 
   /**
-   * §6.1 导出：件名与快照 id 都取自服务端响应头（`api.exportXlsx`），面板不拼第二套命名口径；
-   * 「未人工复核 N 行」取的是**这份件**写进快照的那个数（§6.3 留痕侧），不是面板另算一遍的筛选计数。
+   * §6.1 / §6.2 导出：件名与快照 id 都取自服务端响应头（`api.exportXlsx` / `api.exportPdf`），
+   * 面板不拼第二套命名口径；「未人工复核 N 行」取的是**这份件**写进快照的那个数（§6.3 留痕侧），
+   * 不是面板另算一遍的筛选计数。两种格式在客户端只是路径不同——服务端 `buildEstimateArtifact`
+   * 保证同一份行落位、同一个件名规则、同一条快照留痕。
+   *
+   * `aud` 缺省跟随受众 radio（Excel 用），PDF 两枚按钮各带各的受众（§5.2 第 4 段：
+   * 「导出 PDF（内部版）」「导出 PDF（客户版）」——§10-9 要一次出两版对照，radio 只能表达一个）。
    */
-  async function runExport(): Promise<void> {
-    setExporting(true);
+  async function runExport(
+    fmt: 'xlsx' | 'pdf' = 'xlsx',
+    aud: EstimateExportAudience = audience,
+  ): Promise<void> {
+    setExportingKind(fmt);
+    const opts: EstimateExportOptions = {
+      audience: aud,
+      scope: (estimatedOnly ? 'estimated_only' : 'all') as EstimateExportScope,
+    };
     try {
-      const r = await estimatesApi.exportXlsx(projectId, {
-        audience,
-        scope: estimatedOnly ? 'estimated_only' : 'all',
-      });
+      const r = fmt === 'pdf'
+        ? await estimatesApi.exportPdf(projectId, opts)
+        : await estimatesApi.exportXlsx(projectId, opts);
       saveBlob(r.blob, r.filename);
       onToast(`已导出 ${r.filename}`);
       const list = await estimatesApi.listSnapshots(projectId);
@@ -608,7 +622,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
     } catch (e) {
       onToast(`导出失败：${errMsg(e)}`);
     } finally {
-      setExporting(false);
+      setExportingKind(null);
     }
   }
 
@@ -1024,9 +1038,9 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
           </div>
         )}
 
-        {/* 7) 导出区（§5.2 第 4 段 · E6）：Excel 内部版/客户版 + 最近快照与对比。
-            PDF 两枚按钮属 §6.2/E7，本段不预留空壳（v1.8「交付分段」口径）；
-            件名、未复核行数、合并区数一律取自服务端响应头与快照 payload——面板不拼第二套口径。 */}
+        {/* 7) 导出区（§5.2 第 4 段 · E6 Excel + E7 PDF）：Excel 内部版/客户版 + PDF 两枚 + 最近快照与对比。
+            件名、未复核行数、合并区数一律取自服务端响应头与快照 payload——面板不拼第二套口径。
+            PDF 两枚按钮各自定受众（§5.2 原文形态），因为 §10-9 的验收是「一次出两版对照脱敏」。 */}
         <div role="region" aria-label="估算导出区" style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>导出（Excel 复刻客户模板）</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
@@ -1046,14 +1060,33 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
               只导已估算行
             </label>
             <button type="button" className="tbtn-anim" style={toolBtn('accent', exporting || Object.keys(rowErrors).length > 0)}
-              disabled={exporting || Object.keys(rowErrors).length > 0} onClick={() => void runExport()}
+              disabled={exporting || Object.keys(rowErrors).length > 0} onClick={() => void runExport('xlsx')}
               aria-label="导出 Excel 文件"
               title={Object.keys(rowErrors).length > 0 ? '有行未通过录入校验（§5.2：导出禁用），先修正' : `按当前选择出件（${audience === 'client' ? '客户版' : '内部版'}）`}>
-              {exporting ? '导出中…' : '导出 Excel'}
+              {exportingKind === 'xlsx' ? '导出中…' : '导出 Excel'}
             </button>
             {audience === 'client' && cfg.hideCoefsForClient && (
               <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>系数分项将折叠（参数页开关）</span>
             )}
+          </div>
+          {/* §5.2 第 4 段的 PDF 两枚（E7）。裁决 D4：PDF 仅预览、Excel 为正式交付——这句要印在按钮旁边，
+              不能只在 PRD 里；脱敏由服务端在中间文档阶段完成，按钮标题里说清各版不含什么 */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginTop: 6 }}>
+            <button type="button" className="tbtn-anim" style={toolBtn('default', exporting || Object.keys(rowErrors).length > 0)}
+              disabled={exporting || Object.keys(rowErrors).length > 0} onClick={() => void runExport('pdf', 'internal')}
+              aria-label="导出 PDF 内部版"
+              title={Object.keys(rowErrors).length > 0 ? '有行未通过录入校验（§5.2：导出禁用），先修正'
+                : 'PDF 内部版：含系数分项、σ/P50/P84 区间、自检与备注三条（汇报/预览用，正式交付以 Excel 为准）'}>
+              {exportingKind === 'pdf' ? '导出中…' : '导出 PDF（内部版）'}
+            </button>
+            <button type="button" className="tbtn-anim" style={toolBtn('default', exporting || Object.keys(rowErrors).length > 0)}
+              disabled={exporting || Object.keys(rowErrors).length > 0} onClick={() => void runExport('pdf', 'client')}
+              aria-label="导出 PDF 客户版"
+              title={Object.keys(rowErrors).length > 0 ? '有行未通过录入校验（§5.2：导出禁用），先修正'
+                : 'PDF 客户版：服务端组装阶段就不写系数分项、σ/置信区间、备注三条与附加 sheet 名，报价数与内部版一致'}>
+              导出 PDF（客户版）
+            </button>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>PDF 为预览件，正式交付以 Excel 为准（裁决 D4）</span>
           </div>
           {lastExport && (
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
@@ -1082,6 +1115,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
               <div key={sn.id} style={{ display: 'flex', gap: 6, alignItems: 'baseline', fontSize: 11, borderBottom: '1px solid var(--border)', padding: '3px 0' }}>
                 <input type="checkbox" checked={picked} onChange={() => toggleCmp(sn.id)} title="勾选两条可对比（§7 版本差异）" />
                 <span style={{ fontFamily: MONO }}>{(sn.created_at ?? '').slice(0, 16).replace('T', ' ')}</span>
+                <span style={{ fontFamily: MONO, color: 'var(--text-muted)' }}>{sn.format.toUpperCase()}</span>
                 <span style={{ color: pl?.audience === 'client' ? 'var(--accent)' : 'var(--text-muted)' }}>
                   {pl?.audience === 'client' ? '客户版' : pl?.audience === 'internal' ? '内部版' : sn.format}
                 </span>
