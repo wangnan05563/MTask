@@ -19,8 +19,8 @@
  *     `I35 = 1/(1+Σ系数)`、系数行 `I_r = 系数/(1+Σ系数)`，所以偏差 >1% 只可能是四舍五入或
  *     存在未归入阶段的行——面板据此告警并列出具体行，而不是只显示一个不等于 100% 的数。
  */
-import { ESTIMATE_PHASES, type EstimatePhase } from './EstimateService';
-import { addWorkdays, type WorkdayCal } from '../util/workdays';
+import { ESTIMATE_PHASES, isClosedMilestone, type EstimatePhase } from './EstimateService';
+import { addWorkdays, countWorkdaysBetween, type WorkdayCal } from '../util/workdays';
 
 /** 三点（人天，输入精度 0.5，§4.1） */
 export interface ThreePoints {
@@ -189,6 +189,63 @@ export function toHours(manDays: number, cfg: EstimateConfig = DEFAULT_ESTIMATE_
 export function expectedEndWorkday(anchor: string, manDays: number, cal: WorkdayCal): string {
   return addWorkdays(anchor, Math.ceil(manDays), cal);
 }
+
+/**
+ * §7「数据联动与变更影响」的行级判据（E9）。全部计算留在这里、由路由下发，面板只做展示——
+ * 「零计算红线」不是风格偏好：徽标阈值一旦在两侧各写一遍，就会出现「界面标黄、导出件不认」的两套报价数。
+ *
+ *  1. **偏差徽标**：`E(人天) / duration_days` 越过 `1.5`（估算远重于排期）或低于 `0.67`（排期比估算松得多）
+ *     才提示，阈值成对写死在此（§7 原文），改一处即两侧同步。
+ *  2. **收口只读**：判据与 `EstimateService.requirePlan` 的写路径闸门共用 `isClosedMilestone`，
+ *     范围只含里程碑行——口径见 §7 v2.3。
+ *  3. **排期压力**：`E 人天 > 剩余排期工作日`（`[今天, endDate]` 区间，含加班日、去放假日）。
+ */
+export const DURATION_RATIO_HIGH = 1.5;
+export const DURATION_RATIO_LOW = 0.67;
+
+export interface RowDriftInput {
+  /** E 人天；该行未估算时传 null（未估算不参与偏差判定，也不该被标黄） */
+  expected: number | null;
+  durationDays: number | null;
+  endDate: string;
+  planKind: string;
+  planStatus: string;
+  planProgress: number;
+}
+
+export interface RowDriftResult {
+  ratio: number | null;
+  flag: 'high' | 'low' | null;
+  /** 里程碑已收口 → 估算行只读（§7） */
+  locked: boolean;
+  /** 剩余排期工作日；无排期日期时为 null（不参与压力判定） */
+  remainingWorkdays: number | null;
+  /** E 人天 > 剩余排期 */
+  pressure: boolean;
+}
+
+/** 单行判据（纯函数，日历与「今天」由调用方注入，便于断言） */
+export function rowDriftCheck(input: RowDriftInput, cal: WorkdayCal, today: string): RowDriftResult {
+  const e = typeof input.expected === 'number' && Number.isFinite(input.expected) ? input.expected : null;
+  const d = typeof input.durationDays === 'number' && Number.isFinite(input.durationDays) ? input.durationDays : null;
+  let ratio: number | null = null;
+  let flag: 'high' | 'low' | null = null;
+  if (e !== null && d !== null && d > 0) {
+    ratio = Math.round((e / d) * 100) / 100;
+    flag = ratio > DURATION_RATIO_HIGH ? 'high' : ratio < DURATION_RATIO_LOW ? 'low' : null;
+  }
+  const hasEnd = /^\d{4}-\d{2}-\d{2}$/.test(input.endDate || '');
+  const remaining = hasEnd ? countWorkdaysBetween(today, input.endDate, cal) : null;
+  return {
+    ratio,
+    flag,
+    locked: isClosedMilestone(input),
+    remainingWorkdays: remaining,
+    pressure: e !== null && remaining !== null && e > remaining,
+  };
+}
+
+/** 里程碑收口只读判据复用 `EstimateService.isClosedMilestone`（写路径闸门与面板读数同一份定义，见 §7 v2.3） */
 
 /** 四列（O/M/P/E）形态的段汇总，对应模板 R35/R40 的 E/F/G/H 四列都要写公式 */
 export interface ColumnSum {

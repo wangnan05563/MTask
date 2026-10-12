@@ -17,6 +17,7 @@
 import { getDb } from '../db/connection';
 import { v4 as uuid } from 'uuid';
 import { notifyChange } from './ChangeBus';
+import { buildCalendar, type WorkdayCal } from '../util/workdays';
 
 /** 阶段（§3.1）：与模板 R31/R35~R40 的阶段行对齐，写入非法值直接报错——错归一会让报价人月进错桶 */
 export const ESTIMATE_PHASES = ['req', 'design', 'dev', 'impl', 'common', 'onsite'] as const;
@@ -73,6 +74,8 @@ export interface EstimateView extends EstimateItemRow {
   endDate: string;
   durationDays: number;
   complexity: number | null;
+  /** 来源计划的最后修改时间——§7「上次导出后 N 条计划已变化」的比对基准（服务端单源，面板不再记时间戳） */
+  planUpdatedAt: string;
 }
 
 /** 录入入参：三点可缺省（PATCH 单字段场景）——新行缺任一即报错，已有行缺省则沿用原值 */
@@ -84,6 +87,8 @@ export interface EstimateInput {
   pessimistic?: number | string | null;
   source?: EstimateSource;
   note?: string;
+  /** §7 收口里程碑只读行的显式解锁（真值判定走 `unlockFlag`，不散落在各处） */
+  unlock?: unknown;
 }
 
 export interface EstimateWriteError {
@@ -110,6 +115,32 @@ const LIST_ORDER = 'COALESCE(p.sort_order, 0) ASC, p.start_date ASC, e.plan_id A
 
 function str(v: unknown): string {
   return v == null ? '' : String(v).trim();
+}
+
+/** §7 显式解锁的真值判定：只认 `1/true/on/yes` 与布尔真——空串、缺省、「0」都算未解锁（不做静默放行） */
+export function unlockFlag(v: unknown): boolean {
+  if (typeof v === 'boolean') return v;
+  return /^(1|true|on|yes)$/i.test(str(v));
+}
+
+/**
+ * §7「阶段里程碑收口 → 估算行只读」的唯一判据。
+ * 定义放在服务层而不是引擎：写路径闸门（`requirePlan`）与只读读数（引擎 `rowDriftCheck`）必须同语义——
+ * 两处各写一份 `kind==='milestone' && done` 的话，改一处就会让「面板显示只读、实际能改」或反之（双口径教训）。
+ * 只收**里程碑行**：普通计划行 done 后仍要能补录（四期存量 34/37 行已收口，全挡等于挡死正常录入）。
+ */
+export function isClosedMilestone(v: { planKind?: string; planStatus?: string; planProgress?: number }): boolean {
+  return v.planKind === 'milestone' && (v.planStatus === 'done' || (v.planProgress ?? 0) >= 100);
+}
+
+/**
+ * §7 剩余排期工作日要用的日历上下文。
+ * `PlanService` 里的同名 `loadCalendar()` 是模块私有函数（且该文件正被并发会话改动），
+ * 这里不导出第二套语义——直接用 `util/workdays.buildCalendar`（服务端工作日唯一实现）。
+ */
+export function workdayCalendar(): WorkdayCal {
+  const rows = getDb().prepare('SELECT date, kind FROM holidays').all() as Array<{ date: string; kind: string | null }>;
+  return buildCalendar(rows);
 }
 
 /** 数值取值：未传 → undefined（沿用原值/报必填）；传了但不是数 → NaN（交给 pointsError 报「必须是数字」） */
@@ -140,17 +171,35 @@ function requireProject(projectId: string): void {
   if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
 }
 
-/** 计划归属校验：估算行必须挂在同项目的计划条目上（跨项目 planId 是脏数据，不是笔误） */
-function requirePlan(projectId: string, planId: string): { id: string; title: string } {
+/**
+ * 计划归属校验：估算行必须挂在同项目的计划条目上（跨项目 planId 是脏数据，不是笔误）。
+ *
+ * §7「阶段里程碑收口（进度 100%）→ 估算行只读化」在这里落地，而不是在前端置灰：
+ * 只读的目的是不让已交付项被追溯改写报价，界面禁用挡不住 MCP、也挡不住下一个批量通道。
+ * 范围按 §7 原文只收**里程碑行**（`kind='milestone'` 且 done/100）——普通计划行 done 后仍可补录，
+ * 否则四期这种「34/37 行已收口」的存量项目会连正常补录都被挡死（口径见 PRD §7 v2.3）。
+ * 确需改写传 `unlock:true`（面板上的「解锁改写」，不做静默放行）。
+ */
+function requirePlan(
+  projectId: string,
+  planId: string,
+  opts: { unlock?: boolean } = {},
+): { id: string; title: string; kind: string; status: string; progress: number } {
   const db = getDb();
   if (!str(projectId)) throw new Error('projectId 必填');
   if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
   if (!str(planId)) throw new Error('planId 必填');
   const p = db
-    .prepare('SELECT id, project_id, title FROM plan_tasks WHERE id = ?')
-    .get(planId) as { id: string; project_id: string; title: string } | undefined;
+    .prepare('SELECT id, project_id, title, kind, status, progress FROM plan_tasks WHERE id = ?')
+    .get(planId) as
+    | { id: string; project_id: string; title: string; kind: string; status: string; progress: number }
+    | undefined;
   if (!p) throw new Error(`计划条目不存在：${planId}`);
   if (p.project_id !== projectId) throw new Error(`计划「${p.title}」不属于该项目`);
+  const closed = isClosedMilestone({ planKind: p.kind, planStatus: p.status, planProgress: p.progress });
+  if (closed && !opts.unlock) {
+    throw new Error(`里程碑「${p.title}」已收口（进度 ${p.progress ?? 0}%），其估算行只读——已交付项不得追溯改写报价（§7）；确需改写请显式解锁`);
+  }
   return p;
 }
 
@@ -163,7 +212,7 @@ function resolveItem(
   planId: string,
   input: EstimateInput,
 ): Omit<EstimateItemRow, 'id' | 'created_at'> {
-  requirePlan(projectId, planId);
+  requirePlan(projectId, planId, { unlock: unlockFlag(input.unlock) });
   const db = getDb();
   const prev = db
     .prepare('SELECT * FROM estimate_items WHERE project_id = ? AND plan_id = ?')
@@ -255,6 +304,7 @@ function toView(row: EstimateItemRow & Partial<Omit<EstimateView, keyof Estimate
     endDate: row.endDate ?? '',
     durationDays: row.durationDays ?? 1,
     complexity: row.complexity ?? null,
+    planUpdatedAt: row.planUpdatedAt ?? '',
   };
 }
 
@@ -263,7 +313,7 @@ const VIEW_FROM = `
          p.title AS planTitle, p.kind AS planKind, p.archived AS planArchived,
          p.status AS planStatus, p.progress AS planProgress,
          p.start_date AS startDate, p.end_date AS endDate, p.duration_days AS durationDays,
-         p.complexity AS complexity
+         p.complexity AS complexity, p.updated_at AS planUpdatedAt
     FROM estimate_items e
     JOIN plan_tasks p ON p.id = e.plan_id`;
 
@@ -295,6 +345,31 @@ export const EstimateService = {
   getForPlan(projectId: string, planId: string): EstimateView | null {
     requireProject(projectId);
     return loadView(projectId, planId);
+  },
+
+  /**
+   * §7「上次导出后计划已变化」的取数口：**全量在架计划**（含尚无估算行的），每条带计划与估算两侧的
+   * 最后修改时间。之所以单开一个查询而不是复用 `listByProject`：后者以 `estimate_items` 为主表，
+   * 未录入的计划根本不在结果里，而那类计划恰恰是「导出后又排了期」最常见的变更来源。
+   */
+  plansForDrift(projectId: string): Array<{
+    planId: string; title: string; kind: string; status: string; progress: number;
+    planUpdatedAt: string; estimateUpdatedAt: string;
+  }> {
+    requireProject(projectId);
+    return getDb()
+      .prepare(
+        `SELECT p.id AS planId, p.title, p.kind, p.status, p.progress,
+                p.updated_at AS planUpdatedAt, e.updated_at AS estimateUpdatedAt
+           FROM plan_tasks p
+           LEFT JOIN estimate_items e ON e.plan_id = p.id AND e.project_id = p.project_id
+          WHERE p.project_id = ? AND COALESCE(p.archived, 0) = 0
+          ORDER BY COALESCE(p.sort_order, 0) ASC, p.start_date ASC, p.id ASC`,
+      )
+      .all(projectId) as Array<{
+        planId: string; title: string; kind: string; status: string; progress: number;
+        planUpdatedAt: string; estimateUpdatedAt: string;
+      }>;
   },
 
   /** 单行录入（§8 PATCH 语义）：三点缺省时沿用原值，新行必须给全 */
@@ -333,9 +408,9 @@ export const EstimateService = {
   },
 
   /** 删除某计划的估算行（§9 数据一致：删除估算不影响 plan_tasks，反之删计划也不删这里的行） */
-  remove(projectId: string, planId: string): boolean {
+  remove(projectId: string, planId: string, opts: { unlock?: boolean } = {}): boolean {
     requireProject(projectId);
-    requirePlan(projectId, planId);
+    requirePlan(projectId, planId, opts);
     const db = getDb();
     const info = db
       .prepare('DELETE FROM estimate_items WHERE project_id = ? AND plan_id = ?')

@@ -15,17 +15,26 @@ import { getSetting, setSetting } from '../services/AppSettings';
 import { PlanService } from '../services/PlanService';
 import type { PlanTaskRow } from '../services/PlanService';
 import { exportGate } from '../util/export-gate';
-import { EstimateService, ESTIMATE_META, type EstimateInput } from '../services/EstimateService';
+import { EstimateService, ESTIMATE_META, pointsError, unlockFlag, workdayCalendar, type EstimateInput, type EstimateView } from '../services/EstimateService';
 import {
   DEFAULT_ESTIMATE_CONFIG,
+  DURATION_RATIO_HIGH,
+  DURATION_RATIO_LOW,
   ESTIMATE_COEF_LABELS,
   ESTIMATE_COEF_SETTING_KEYS,
+  ESTIMATE_COEF_KEYS,
   ESTIMATE_SETTING_KEYS,
   buildSummary,
   resolveEstimateConfig,
+  rowDriftCheck,
   toEngineRow,
+  type EstimateCoefKey,
   type EstimateEngineRow,
+  type EstimateSummary,
+  type RowDriftResult,
+  type ThreePoints,
 } from '../services/estimate-engine';
+import { fmtDate, type WorkdayCal } from '../util/workdays';
 import {
   CASE_PRIORITY_WEIGHTS,
   CASE_WEIGHT_K_DEFAULT,
@@ -349,7 +358,146 @@ estimateApi.post('/detach/cleanup', (req, res) =>
   }),
 );
 
+// ---------- §7 影响试算（E9：改系数/改行 → 实际预估人月 X → Y，零写入） ----------
+
+/** 试算响应里的「一侧」读数：只取面板与报价需要的四项，不整份 `EstimateSummary` 回传（响应体一半是公式中间量） */
+function whatIfSide(s: EstimateSummary) {
+  return {
+    directManDays: s.directManDays.expected,
+    idealManMonths: s.idealManMonths.expected,
+    actualManMonths: s.actualManMonths.expected,
+    coefSum: s.coefSum,
+    quote: s.quote,
+    phases: s.phases.map((p) => ({ phase: p.phase, expected: p.expected, idealManMonth: p.idealManMonth, ratio: p.ratio })),
+  };
+}
+
+/**
+ * §7「影响试算」通道：`coefs` / `manDaysPerManMonth` 覆盖 + 逐行三点覆盖 → 前后对比，**一条写入都没有**。
+ * 先例是 E4 的推导预览（`POST /derive` 的 `dryRun` 与 `caseWeightK` 覆盖）——「不落库先看数」的语义已经成立，
+ * E9 不再发明第二种试算态。校验复用 `resolveEstimateConfig`：与 `PUT /params` 同一把尺子（范围、非法值文案），
+ * 否则试算能过的值真写参数时会被拒，用户看到的就是一致性 bug。
+ */
+estimateApi.post('/what-if', (req, res) =>
+  wrap(res, () => {
+    const projectId = pid(req);
+    const b = body(req);
+    const kv = readKv(projectId);
+    const config = resolveEstimateConfig(kv);
+    const { rows } = engineRows(projectId);
+
+    const merged: Record<string, string | null> = { ...kv };
+    const coefsIn = (b.coefs ?? {}) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(coefsIn)) {
+      if (!(ESTIMATE_COEF_KEYS as readonly string[]).includes(k)) {
+        throw new Error(`未知调节系数：${k}（可用 ${ESTIMATE_COEF_KEYS.join(' / ')}）`);
+      }
+      merged[ESTIMATE_COEF_SETTING_KEYS[k as EstimateCoefKey]] = String(v);
+    }
+    if (b.manDaysPerManMonth !== undefined && b.manDaysPerManMonth !== null && String(b.manDaysPerManMonth).trim() !== '') {
+      merged[ESTIMATE_SETTING_KEYS.manDaysPerManMonth] = String(b.manDaysPerManMonth);
+    }
+    const configAfter = resolveEstimateConfig(merged);
+
+    const rowsIn = Array.isArray(b.rows) ? (b.rows as Array<Record<string, unknown>>) : [];
+    const overrides = new Map<string, ThreePoints>();
+    for (const r of rowsIn) {
+      const planId = str(r.planId);
+      if (!planId) throw new Error('试算行缺 planId');
+      if (!rows.some((x) => x.key === planId)) throw new Error(`试算行不属于该项目的在架计划：${planId}`);
+      const pts: ThreePoints = { optimistic: Number(r.optimistic), likely: Number(r.likely), pessimistic: Number(r.pessimistic) };
+      const err = pointsError(pts.optimistic, pts.likely, pts.pessimistic);
+      if (err) throw new Error(`试算行「${planId}」：${err}`);
+      overrides.set(planId, pts);
+    }
+
+    const before = buildSummary(rows, config);
+    const after = buildSummary(
+      rows.map((r) => (overrides.has(r.key) ? { ...r, points: overrides.get(r.key) as ThreePoints } : r)),
+      configAfter,
+    );
+    const round = (n: number) => Math.round(n * 1e4) / 1e4;
+    const diff = round(after.actualManMonths.expected - before.actualManMonths.expected);
+    return {
+      projectId,
+      before: whatIfSide(before),
+      after: whatIfSide(after),
+      delta: {
+        actualManMonths: diff,
+        // 基数为 0（一条估算都没有）时百分比无意义——返回 null 让面板显示「—」，不编造 100%
+        pct: before.actualManMonths.expected === 0 ? null : round((diff / before.actualManMonths.expected) * 100),
+        directManDays: round(after.directManDays.expected - before.directManDays.expected),
+        phases: after.phases.map((p) => ({
+          phase: p.phase,
+          before: before.phases.find((x) => x.phase === p.phase)?.expected ?? 0,
+          after: p.expected,
+          delta: round(p.expected - (before.phases.find((x) => x.phase === p.phase)?.expected ?? 0)),
+        })),
+      },
+      applied: {
+        coefs: Object.keys(coefsIn),
+        manDaysPerManMonth: configAfter.manDaysPerManMonth !== config.manDaysPerManMonth,
+        rows: [...overrides.keys()],
+      },
+      written: 0,
+    };
+  }),
+);
+
 // ---------- 全量估算（§8 GET /api/estimates：明细 + 汇总 + 参数 + 校验结果） ----------
+
+/**
+ * §7 行级变更影响（偏差徽标 / 收口只读 / 排期压力）随 `items` 下发。
+ * 判定全在引擎 `rowDriftCheck`（纯函数，日历与「今天」由调用方注入），路由只负责喂数——
+ * 面板的「零计算红线」（§5.2）意味着阈值和式子都不能出现在前端，否则面板读数与导出/试算读数
+ * 迟早分成两套（`util/planDeps` 双口径的教训）。E 值取 `summary.rowRatios`（含里程碑行），这里不重算 PERT。
+ */
+function attachDrift(
+  items: EstimateView[],
+  expectedByPlan: Map<string, number>,
+  cal: WorkdayCal,
+  today: string,
+): Array<EstimateView & { drift: RowDriftResult }> {
+  return items.map((it) => ({
+    ...it,
+    drift: rowDriftCheck(
+      {
+        expected: expectedByPlan.get(it.plan_id) ?? null,
+        durationDays: it.durationDays,
+        endDate: it.endDate,
+        planKind: it.planKind,
+        planStatus: it.planStatus,
+        planProgress: it.planProgress,
+      },
+      cal,
+      today,
+    ),
+  }));
+}
+
+/**
+ * §7「上次导出后 N 条计划已变化 → 建议重导」：与**最近一条快照**的 `created_at` 比时间戳。
+ * 两侧时间戳都由服务层 `new Date().toISOString()` 写入（`EstimateService.now()` / `PlanService.now()`
+ * 同格式才可比），故用字符串比较而不 `Date.parse`——历史脏值被解析成 NaN 会静默当成「没变」。
+ * 计划侧与估算侧都查：只查计划会漏掉「导出后又改了 O/M/P」这种最该重导的情况。
+ */
+function changedSinceExport(projectId: string) {
+  const last = EstimateService.listSnapshots(projectId, 1)[0];
+  if (!last) return { snapshotId: null, at: '', count: 0, rows: [] };
+  const cutoff = last.created_at;
+  const rows = EstimateService.plansForDrift(projectId)
+    .filter((p) => p.planUpdatedAt > cutoff || p.estimateUpdatedAt > cutoff)
+    .map((p) => ({
+      planId: p.planId,
+      title: p.title,
+      kind: p.kind,
+      planUpdatedAt: p.planUpdatedAt,
+      estimateUpdatedAt: p.estimateUpdatedAt,
+      // 点名「改了排期还是改了估算」，两者都改就都列
+      changed: [p.planUpdatedAt > cutoff ? 'plan' : null, p.estimateUpdatedAt > cutoff ? 'estimate' : null].filter(Boolean),
+    }));
+  return { snapshotId: last.id, at: cutoff, count: rows.length, rows };
+}
 
 /**
  * GET / 的取数体，抽成导出函数是给 MCP `mtask_get_estimates` 用的（E10）：
@@ -364,9 +512,12 @@ export function estimatesSnapshot(projectId: string, opts: { includeArchived?: b
   const { rows, estimated } = engineRows(projectId);
   const summary = buildSummary(rows, config);
   const cov = coverage(projectId);
+  const cal = workdayCalendar();
+  const today = fmtDate(new Date());
+  const withDrift = attachDrift(items, new Map(summary.rowRatios.map((r) => [r.key, r.expected])), cal, today);
   return {
     projectId,
-    items,
+    items: withDrift,
     summary,
     params: { config, caseWeightK: effectiveCaseK(projectId), settings: kv },
     meta: ESTIMATE_META,
@@ -377,6 +528,15 @@ export function estimatesSnapshot(projectId: string, opts: { includeArchived?: b
       visiblePlans: rows.length,
       // 「脱离计划」是 INNER JOIN 看不见的那批，只能由库里反查给出（§7）
       detached: cov.detached,
+      drift: {
+        today,
+        thresholds: { high: DURATION_RATIO_HIGH, low: DURATION_RATIO_LOW },
+        high: withDrift.filter((i) => i.drift.flag === 'high').length,
+        low: withDrift.filter((i) => i.drift.flag === 'low').length,
+        locked: withDrift.filter((i) => i.drift.locked).length,
+        pressure: withDrift.filter((i) => i.drift.pressure).length,
+      },
+      changedSinceExport: changedSinceExport(projectId),
     },
   };
 }
@@ -699,6 +859,9 @@ estimateApi.patch('/:planId', (req, res) =>
         return prev && prev.source !== 'manual' ? 'manual' : undefined;
       })(),
       note: b.note as EstimateInput['note'],
+      // §7 收口里程碑只读行的显式解锁：真值判定在 `EstimateService`（写路径唯一闸门），
+      // 路由只将原始入参透传——在这里 `truthy()` 一次、服务里再判一次就会分叉。
+      unlock: b.unlock,
     };
     return { projectId, planId: req.params.planId, item: EstimateService.upsert(projectId, req.params.planId, input) };
   }),
@@ -707,6 +870,8 @@ estimateApi.patch('/:planId', (req, res) =>
 estimateApi.delete('/:planId', (req, res) =>
   wrap(res, () => {
     const projectId = pid(req);
-    return { projectId, planId: req.params.planId, removed: EstimateService.remove(projectId, req.params.planId) };
+    // 删除同样受 §7 只读闸门管——「改不动就删了重建」会让只读化形同虚设
+    const unlock = unlockFlag(req.query.unlock ?? body(req).unlock);
+    return { projectId, planId: req.params.planId, removed: EstimateService.remove(projectId, req.params.planId, { unlock }) };
   }),
 );

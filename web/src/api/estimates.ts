@@ -17,6 +17,22 @@ import { api } from './client';
 export type EstimatePhase = 'req' | 'design' | 'dev' | 'impl' | 'common' | 'onsite';
 export type EstimateSource = 'manual' | 'rule' | 'default';
 
+/**
+ * §7 行级变更影响（E9）：判定式与阈值全在服务端引擎（`estimate-engine.rowDriftCheck`），
+ * 这里只有类型。面板「零计算红线」在 E9 的延伸——阈值 1.5/0.67 一旦在前端出现第二次，
+ * 调阈值就会变成只改一处的 bug（`util/planDeps` 双口径教训）。
+ */
+export interface RowDrift {
+  /** E ÷ 排期工作日 */
+  ratio: number | null;
+  flag: 'high' | 'low' | null;
+  /** 里程碑已收口 → 该行只读（写路径由服务端 `requirePlan` 拦住，不只是置灰） */
+  locked: boolean;
+  remainingWorkdays: number | null;
+  /** E 人天 > 剩余排期工作日 */
+  pressure: boolean;
+}
+
 /** `EstimateService.EstimateView`：估算行 + 计划左联 */
 export interface EstimateItem {
   id: string;
@@ -40,7 +56,15 @@ export interface EstimateItem {
   endDate: string;
   durationDays: number;
   complexity: number | null;
+  planUpdatedAt: string;
 }
+
+/**
+ * `GET /api/estimates` 的 `items` 行 = 视图行 + §7 行级判定。
+ * 单列一个类型而不是并进 `EstimateItem`：PATCH 的响应体是 `EstimateService.upsert` 的视图行，
+ * 没有 `drift`——写成一个类型会让「编辑后回读」拿到缺字段的对象还自称完整。
+ */
+export type EstimateListItem = EstimateItem & { drift: RowDrift };
 
 export interface ColumnSum {
   optimistic: number;
@@ -102,10 +126,20 @@ export interface EstimatesMeta {
   sources: EstimateSource[];
 }
 
+/** §7「上次导出后 N 条计划已变化」的单行（`changed` 点名改的是排期还是估算） */
+export interface ChangedPlan {
+  planId: string;
+  title: string;
+  kind: string;
+  planUpdatedAt: string;
+  estimateUpdatedAt: string;
+  changed: Array<'plan' | 'estimate'>;
+}
+
 /** `GET /api/estimates` 响应（§8：明细 + 汇总 + 参数 + 校验结果） */
 export interface EstimatesResponse {
   projectId: string;
-  items: EstimateItem[];
+  items: EstimateListItem[];
   summary: EstimateSummary;
   params: { config: EstimateConfigView; caseWeightK: number; settings: Record<string, string | null> };
   meta: EstimatesMeta;
@@ -115,7 +149,47 @@ export interface EstimatesResponse {
     estimated: number;
     visiblePlans: number;
     detached: number;
+    drift: {
+      today: string;
+      thresholds: { high: number; low: number };
+      high: number;
+      low: number;
+      locked: number;
+      pressure: number;
+    };
+    changedSinceExport: { snapshotId: string | null; at: string; count: number; rows: ChangedPlan[] };
   };
+}
+
+/** §7 影响试算（`POST /api/estimates/what-if`）：前后两侧只回四项读数 + 逐阶段 E，不做第二次汇总 */
+export interface WhatIfSide {
+  directManDays: number;
+  idealManMonths: number;
+  actualManMonths: number;
+  coefSum: number;
+  quote: EstimateSummary['quote'];
+  phases: Array<{ phase: EstimatePhase; expected: number; idealManMonth: number; ratio: number }>;
+}
+
+export interface WhatIfResponse {
+  projectId: string;
+  before: WhatIfSide;
+  after: WhatIfSide;
+  delta: {
+    actualManMonths: number;
+    /** 基数为 0（尚无估算）时百分比无意义，服务端给 null，面板显示「—」 */
+    pct: number | null;
+    directManDays: number;
+    phases: Array<{ phase: EstimatePhase; before: number; after: number; delta: number }>;
+  };
+  applied: { coefs: string[]; manDaysPerManMonth: boolean; rows: string[] };
+  written: number;
+}
+
+export interface WhatIfRequest {
+  coefs?: Record<string, number>;
+  manDaysPerManMonth?: number;
+  rows?: Array<{ planId: string; optimistic: number | string; likely: number | string; pessimistic: number | string }>;
 }
 
 /** `EstimateDerive.DeriveItem`：三档推导的单行结果（未落库时即面板的「建议值」） */
@@ -175,6 +249,8 @@ export interface EstimateInput {
   pessimistic?: number | string;
   source?: EstimateSource;
   note?: string;
+  /** §7 收口里程碑只读行的显式解锁：真值判定与拦截都在服务端 `requirePlan`，这里只是把用户意图带到 */
+  unlock?: boolean;
 }
 
 const q = (projectId: string, extra = ''): string =>
@@ -295,10 +371,11 @@ export const estimatesApi = {
   patchItem: (projectId: string, planId: string, input: EstimateInput) =>
     api.patch<{ projectId: string; planId: string; item: EstimateItem }>(
       `/estimates/${encodeURIComponent(planId)}?projectId=${encodeURIComponent(projectId)}`, input),
-  /** 撤销单行录入时若原态是「无估算行」，删除才等价于回滚 */
-  removeItem: (projectId: string, planId: string) =>
+  /** 撤销单行录入时若原态是「无估算行」，删除才等价于回滚；§7 只读行需带 `unlock`（删除同样受闸门管） */
+  removeItem: (projectId: string, planId: string, opts: { unlock?: boolean } = {}) =>
     api.del<{ projectId: string; planId: string; removed: boolean }>(
-      `/estimates/${encodeURIComponent(planId)}?projectId=${encodeURIComponent(projectId)}`),
+      `/estimates/${encodeURIComponent(planId)}?projectId=${encodeURIComponent(projectId)}`
+      + (opts.unlock ? '&unlock=1' : '')),
   /** 批量统一值写入（§5.3 模式 ③）：`source` 由调用方显式给，撤销回写时要能还原原来源 */
   batchSet: (projectId: string, items: Array<{ planId: string } & EstimateInput>) =>
     api.post<BatchSetResponse>('/estimates/batch', { projectId, mode: 'set', items }),
@@ -313,6 +390,13 @@ export const estimatesApi = {
       ...(opts.includeManual ? { includeManual: true } : {}),
       ...(opts.onlyRule ? { onlyRule: opts.onlyRule } : {}),
     }),
+  /**
+   * §7 影响试算（E9）：改系数或改某几行三点，看实际预估人月 X → Y（Δ Z%）。
+   * 服务端零写入（`written` 恒为 0），试算态不落在库里——面板显示的永远是「当前库里的数 + 本次试算的差」，
+   * 不会出现「试算值看起来像已保存」。校验与 `PUT /params` 共用 `resolveEstimateConfig`。
+   */
+  whatIf: (projectId: string, req: WhatIfRequest) =>
+    api.post<WhatIfResponse>('/estimates/what-if', { projectId, ...req }),
   /** 脱离计划的估算行（§7：计划被彻底删除后估算原样保留，面板给显式清理入口） */
   listDetached: (projectId: string) =>
     api.get<{ projectId: string; rows: DetachedRow[] }>(`/estimates/detach?projectId=${encodeURIComponent(projectId)}`),

@@ -62,3 +62,53 @@ export function addWorkdays(anchor: string, n: number, cal: WorkdayCal): string 
     }
   }
 }
+
+/** 日历集合里落在 `[from, to]` 且 `keep` 为真的天数（`YYYY-MM-DD` 字典序即时间序） */
+function countCalDates(
+  set: Set<string>,
+  from: string,
+  to: string,
+  keep: (date: string) => boolean,
+): number {
+  let n = 0;
+  for (const d of set) {
+    if (d >= from && d <= to && keep(d)) n += 1;
+  }
+  return n;
+}
+
+const isWeekend = (date: string): boolean => {
+  const wd = parseYmd(date).getDay();
+  return wd === 0 || wd === 6;
+};
+
+/**
+ * §7「E 人天 > 剩余排期」的**区间**口径：`[from, to]` 两端都含的工作日数（含加班日、去放假日）。
+ *  - `to < from`（排期已过期）→ 0，调用方据此判「剩余排期为 0」而不是负数把提示算成通过；
+ *  - 非法日期 → 0（缺排期的行不该因为缺日期就被判成冲突，由调用方先按「无排期」跳过）。
+ * 与 `PlanService` 模块私有的 `workdaysInRange` 同语义（那边是工期推导用，这里是估算剩余排期用），
+ * 差别只在入参已由调用方保证有序。
+ *
+ * **成本与日期跨度无关**：本函数在 `GET /api/estimates` 里逐行调用（行数 = 在架计划数），
+ * 而 `end_date` 是用户可填的任意日期——曾经的逐日推进实现让一条 `2099-12-31` 的排期把单次请求
+ * 拖成上万次 `isWorkday`。这里改成「整周数 × 5 + 不足一周的部分（≤6 次判定）」的算术口径，
+ * 再加减日历集合命中的周末加班日 / 工作日放假日，成本只与 `holidays` 行数有关。
+ * 语义由 `scripts/verify-t02046-estimate-e9.mts` 的网格比对钉住（与逐日推进的参照实现全等）。
+ */
+export function countWorkdaysBetween(from: string, to: string, cal: WorkdayCal): number {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from || '') || !/^\d{4}-\d{2}-\d{2}$/.test(to || '')) return 0;
+  if (to < from) return 0;
+  const a = parseYmd(from);
+  // 日差用 Math.round 消化 DST 的 23/25 小时日（国内部署无 DST，但零成本）
+  const dayDiff = Math.round((parseYmd(to).getTime() - a.getTime()) / 86400000);
+  const days = dayDiff + 1;
+  const startIdx = (a.getDay() + 6) % 7; // 周一=0 … 周日=6
+  let n = Math.floor(days / 7) * 5;
+  for (let k = 0; k < days % 7; k++) {
+    if ((startIdx + k) % 7 < 5) n += 1;
+  }
+  // 加班日优先于放假日（与 isWorkday 的判定顺序一致：同名日期两集都命中时算上班）
+  n -= countCalDates(cal.holidays, from, to, (d) => !isWeekend(d) && !cal.overtime.has(d));
+  n += countCalDates(cal.overtime, from, to, isWeekend);
+  return n;
+}

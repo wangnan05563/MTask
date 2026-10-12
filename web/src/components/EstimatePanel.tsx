@@ -14,14 +14,19 @@
  * ④ 区间条（§5.4 P0，T02041）只做**排版几何**：O/P/E 三个数一律取服务端那一份，
  *    `whiskerGeometries()` 里唯一的除法是「按明细行最大 P 归一成百分比宽度」，不含任何 E/σ 公式。
  *    导出区（§5.2 第 4 段）Excel 侧随 E6/T02043 交付；PDF 属 E7，本文件不预留空壳按钮。
+ * ⑤ §7 变更影响（E9，T02046）：偏差比值/阈值、收口只读、上次导出后变更、影响试算的**判定全在服务端**
+ *    （`estimate-engine.rowDriftCheck` + `EstimateService.requirePlan` + `POST /what-if`），面板只排版数字。
+ *    面板里出现的 1.5 / 0.67 只能是服务端下发的 `checks.drift.thresholds`，不许是字面量——
+ *    阈值写第二份，调阈值就变成「只改了一处」的 bug（同红线①，也同 `util/planDeps` 的教训）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { groupTimelinePhases, type TlPlan } from './PlanTimeline';
 import { api } from '../api/client';
 import {
   estimatesApi, parseSnapshotPayload, toGrid,
-  type DeriveItem, type DeriveRule, type EstimateExportAudience, type EstimateExportOptions, type EstimateExportScope, type EstimateItem, type EstimateInput,
-  type EstimateSnapshot, type EstimateSource, type EstimatesResponse, type SnapshotDiff,
+  type DeriveItem, type DeriveRule, type EstimateExportAudience, type EstimateExportOptions, type EstimateExportScope, type EstimateInput,
+  type EstimateListItem, type EstimateSnapshot, type EstimateSource, type EstimatesResponse,
+  type RowDrift, type SnapshotDiff, type WhatIfResponse,
 } from '../api/estimates';
 import { saveBlob } from '../utils/download';
 import { askConfirm } from '../ui/dialogs';
@@ -69,6 +74,11 @@ const pct = (v: number | null | undefined): string => (v === null || v === undef
 /** `ratioCheck.deviationPct` 服务端已是「百分数」本身（2.3 = 2.3%），不能再过一遍 pct */
 const devPct = (v: number): string => `${(Math.round(v * 10) / 10).toFixed(1)}%`;
 
+const numSigned = (v: number | null | undefined): string =>
+  v === null || v === undefined ? '—' : `${v > 0 ? '+' : ''}${num(v)}`;
+/** 服务端 `what-if` 的 `delta.pct` 已经是百分数本身（同 `deviationPct`），且可能为 null（基数为 0） */
+const pctSigned = (v: number | null): string => (v === null ? '—' : `${v > 0 ? '+' : ''}${(Math.round(v * 10) / 10).toFixed(1)}%`);
+
 /** 服务端 400 的中文文案直接上屏（`wrap()` 统一 `{ error }`，`api` 客户端已抛成 Error.message） */
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -100,6 +110,11 @@ export interface PanelRow {
   tip: string;
   /** 里程碑行：值照样显示但不进 Σ（§4.6 红线一） */
   inSigma: boolean;
+  /**
+   * §7 行级变更影响（偏差比值 / 收口只读 / 排期压力），服务端 `rowDriftCheck` 的原始结果。
+   * 面板不在此之上再判一次阈值——`null` 只出现在未落库行（未估算不参与偏差判定）与老快照。
+   */
+  drift: RowDrift | null;
 }
 
 /**
@@ -109,7 +124,7 @@ export interface PanelRow {
  */
 export function buildPanelRows(
   plans: ReadonlyArray<TlPlan>,
-  items: ReadonlyArray<EstimateItem>,
+  items: ReadonlyArray<EstimateListItem>,
   derives: ReadonlyArray<DeriveItem>,
   rowRatios: ReadonlyArray<{ key: string; expected: number; sigma: number }>,
   reqNosByPlan: Readonly<Record<string, string[]>>,
@@ -143,6 +158,7 @@ export function buildPanelRows(
         persisted: true,
         source: it.source,
         tip: it.note || `已落库估算行（${SOURCE_BADGE[it.source]?.label ?? it.source}）`,
+        drift: it.drift ?? null,
       };
     }
     if (dv) {
@@ -158,12 +174,14 @@ export function buildPanelRows(
         persisted: false,
         source: 'none',
         tip: dv.skip ? `不落库：${SKIP_LABEL[dv.skip] ?? dv.skip}` : dv.note,
+        drift: null,
       };
     }
     return {
       ...base, optimistic: null, likely: null, pessimistic: null, expected: null, sigma: null,
       badge: SOURCE_BADGE.none, suggestion: false, persisted: false, source: 'none',
       tip: '无估算行，也没有可用的推导依据',
+      drift: null,
     };
   });
 }
@@ -290,6 +308,17 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
   const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
   const [uniformOpen, setUniformOpen] = useState(false);
   const [uniform, setUniform] = useState<{ m: string; oMul: string; pMul: string }>({ m: '', oMul: '', pMul: '' });
+  // ---------- T02046（§7 变更影响与影响试算）----------
+  /** 本会话显式解锁过的行（§7「只读化（保留可解锁）」）：逐行、不持久化，写请求带 `unlock:true` 由服务端放行 */
+  const [unlockedRows, setUnlockedRows] = useState<string[]>([]);
+  const [whatIfOpen, setWhatIfOpen] = useState(false);
+  /** 只存「改过的」系数与行 P 值：空串=沿用服务端生效值。把空串发给服务端等于用 0 覆盖报价依据 */
+  const [whatIfCoefs, setWhatIfCoefs] = useState<Record<string, string>>({});
+  const [whatIfP, setWhatIfP] = useState<Record<string, string>>({});
+  const [whatIfBusy, setWhatIfBusy] = useState(false);
+  const [whatIfErr, setWhatIfErr] = useState('');
+  const [whatIf, setWhatIf] = useState<WhatIfResponse | null>(null);
+
   // ---------- T02043（§5.2 第 4 段）：导出区 ----------
   const [audience, setAudience] = useState<EstimateExportAudience>('internal');
   /** §6.1 的 `scope` 只管「是否仅已估算行」，阶段筛选另有 `phases` 参数（面板暂不暴露，导出即全六阶段） */
@@ -444,6 +473,9 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
       }
       if (r.phase) input.phase = r.phase as EstimateInput['phase'];
     }
+    // §7 收口里程碑的显式解锁：能走到这里的只读行都是本会话点过「解锁改写」的（其余输入框是 disabled）。
+    // 真拦截在服务端 `requirePlan`，这里的 `unlock` 只是把用户意图带到，面板不因为「看起来只读」就不发请求。
+    if (r.drift?.locked) input.unlock = true;
 
     setBusy(true);
     try {
@@ -472,6 +504,52 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
     const ratio = data?.params.config.ruleRatio;
     setUniform({ m: '', oMul: ratio ? String(ratio.oMul) : '', pMul: ratio ? String(ratio.pMul) : '' });
     setUniformOpen(true);
+  }
+
+  /** §7 收口里程碑的逐行解锁（只影响本会话的输入态与 `unlock` 入参，库里与参数都没有第二个开关） */
+  function toggleUnlock(planId: string): void {
+    setUnlockedRows((p) => (p.includes(planId) ? p.filter((x) => x !== planId) : [...p, planId]));
+  }
+
+  function openWhatIf(): void {
+    setWhatIfCoefs({});
+    setWhatIfP({});
+    setWhatIf(null);
+    setWhatIfErr('');
+    setWhatIfOpen(true);
+  }
+
+  /**
+   * §7 影响试算：把「改过的」系数与勾选行的 P 覆盖发给服务端，取回前后两端的读数。
+   * 面板不参与任何运算——连 Δ% 都是服务端算的（`delta.pct`），这里只做格式化与排版。
+   */
+  async function runWhatIf(): Promise<void> {
+    setWhatIfBusy(true);
+    setWhatIfErr('');
+    try {
+      const coefs: Record<string, number> = {};
+      for (const [k, v] of Object.entries(whatIfCoefs)) {
+        if (String(v).trim() !== '') coefs[k] = Number(v);
+      }
+      const rows = selRows
+        .filter((r) => r.persisted && String(whatIfP[r.planId] ?? '').trim() !== '')
+        .map((r) => ({
+          planId: r.planId,
+          optimistic: r.optimistic as number,
+          likely: r.likely as number,
+          pessimistic: Number(whatIfP[r.planId]),
+        }));
+      const resp = await estimatesApi.whatIf(projectId, {
+        ...(Object.keys(coefs).length > 0 ? { coefs } : {}),
+        ...(rows.length > 0 ? { rows } : {}),
+      });
+      setWhatIf(resp);
+    } catch (e) {
+      setWhatIf(null);
+      setWhatIfErr(errMsg(e));
+    } finally {
+      setWhatIfBusy(false);
+    }
   }
 
   /**
@@ -573,8 +651,9 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
         restored = r.written;
       }
       for (const id of drop) {
-        const r = await estimatesApi.removeItem(projectId, id);
-        if (r.removed) removed += 1;
+        // 只读行（§7）的删除同样要带 `unlock`——否则「解锁改写后撤销」会卡在删除这一步
+        const res = await estimatesApi.removeItem(projectId, id, { unlock: rowById.get(id)?.drift?.locked === true });
+        if (res.removed) removed += 1;
       }
       setUndoStack((p) => p.slice(0, -1));
       setSelIds([]);
@@ -619,6 +698,10 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
       setLastExport(pl ? { filename: r.filename, unreviewed: pl.unreviewed } : null);
       setCmpIds([]);
       setCmpDiff(null);
+      // §7「上次导出后 N 条计划已变化 → 建议重导」必须在这一次出件后归零：提示读的是
+      // `data.checks.changedSinceExport`，而 `listSnapshots` 只换快照列表、不动 checks——
+      // 少这一步，出件成功的界面反而会长期挂着一条已经不成立的「建议重导」（本地把计数写成 0 是第二套口径，不做）。
+      await load();
     } catch (e) {
       onToast(`导出失败：${errMsg(e)}`);
     } finally {
@@ -749,6 +832,37 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
           {card('理想人月（ΣE）', num(s.idealManMonths.expected), `直接投入 ${num(s.directManDays.expected)} 人天`)}
           {card('Σ估算比例（I40）', pct(rc.sumRatio), `偏差 ${devPct(rc.deviationPct)}`, rc.danger)}
         </div>
+        {/* §7 变更影响提示条（sticky 区常驻）：计数与文案口径都在服务端 checks，面板不做第二次判定 */}
+        {(data.checks.changedSinceExport.count > 0 || data.checks.drift.pressure > 0
+          || data.checks.drift.locked > 0 || data.checks.drift.high + data.checks.drift.low > 0) && (
+          <div role="status" aria-label="估算变更影响提示" style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+            {data.checks.changedSinceExport.count > 0 && (
+              <div
+                style={{ color: 'var(--warning, #c80)', cursor: 'help' }}
+                title={`上次导出：${data.checks.changedSinceExport.at}（快照 ${data.checks.changedSinceExport.snapshotId}）\n`
+                  + `其后有变更的计划：${data.checks.changedSinceExport.rows.map((c) => `${c.title}（${c.changed.join('+')}）`).join('、')}`}
+              >
+                上次导出后 {data.checks.changedSinceExport.count} 条计划已变化 → 建议重导
+              </div>
+            )}
+            {data.checks.drift.pressure > 0 && (
+              <div style={{ color: 'var(--danger)', cursor: 'help' }} title={`今日 ${data.checks.drift.today}；E 人天 > 剩余排期工作日的行（§7「排期与估算不一致」）`}>
+                {data.checks.drift.pressure} 行估算人天超过剩余排期工作日 —— 排期与估算不一致
+              </div>
+            )}
+            {data.checks.drift.high + data.checks.drift.low > 0 && (
+              <div style={{ color: 'var(--text-muted)', cursor: 'help' }}
+                title={`偏差比值 = E ÷ 排期工作日；阈值由服务端下发（高 >${data.checks.drift.thresholds.high}、低 <${data.checks.drift.thresholds.low}）`}>
+                {data.checks.drift.high + data.checks.drift.low} 行的 E 与排期偏差超阈值（黄色徽标，比值 = E ÷ 排期工作日）
+              </div>
+            )}
+            {data.checks.drift.locked > 0 && (
+              <div style={{ color: 'var(--text-muted)' }}>
+                {data.checks.drift.locked} 行属于已收口里程碑，服务端已置只读（§7，需逐行显式解锁）
+              </div>
+            )}
+          </div>
+        )}
         {/* §5.3 撤销：本会话内存栈顶（批量写入前抓的原值）；空栈不占位 */}
         {undoStack.length > 0 && (() => {
           const last = undoStack[undoStack.length - 1];
@@ -818,10 +932,13 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
               {BATCH_RULE_LABEL[rule]}
             </button>
           ))}
-          <button type="button" className="tbtn-anim" style={toolBtn('accent', busy || selRows.length === 0)}
-            disabled={busy || selRows.length === 0} onClick={openUniform}
+          <button type="button" className="tbtn-anim" style={toolBtn('accent', busy)} disabled={busy || selRows.length === 0} onClick={openUniform}
             title={`给选中的 ${selRows.length} 行写同一组三点（M + O/P 倍率，落 0.5 网格）`}>
             统一值…
+          </button>
+          <button type="button" className="tbtn-anim" style={toolBtn(whatIfOpen ? 'accent' : 'default')} onClick={openWhatIf}
+            title="§7 影响试算：改系数或改勾选行的 P 值，看实际预估人月 X → Y（Δ%）。零写入，试算值不落库">
+            影响试算…
           </button>
           <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>已选 {selRows.length} 行</span>
         </div>
@@ -852,6 +969,80 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             <button type="button" className="tbtn-anim" style={toolBtn()} onClick={() => setUniformOpen(false)}>取消</button>
           </div>
         )}
+
+        {/* §7 影响试算（E9）：面板只发「改过的」系数与勾选行的 P 覆盖；X → Y（Δ%）与逐阶段差全部读服务端 */}
+        {whatIfOpen && (() => {
+          const coefTouched = Object.values(whatIfCoefs).some((v) => String(v).trim() !== '');
+          const rowTouched = selRows.some((r) => String(whatIfP[r.planId] ?? '').trim() !== '');
+          return (
+            <div role="group" aria-label="影响试算表单"
+              style={{ border: '1px solid var(--border-strong)', borderRadius: 8, padding: 6, background: 'var(--card-bg)', fontSize: 11, marginTop: 6 }}>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 4 }}>
+                <span style={{ color: 'var(--text-muted)' }}>影响试算（零写入 · 不改配置）</span>
+                <button type="button" className="tbtn-anim" style={toolBtn()} onClick={() => { setWhatIfOpen(false); setWhatIf(null); }}>收起</button>
+              </div>
+              {s.coefRows.map((c) => (
+                <label key={c.key} title={`${c.label}：当前生效 ${num(c.points.likely)}，留空表示不改`}
+                  style={{ display: 'flex', gap: 4, alignItems: 'center', color: 'var(--text-muted)', marginBottom: 2 }}>
+                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.label}</span>
+                  <span style={{ fontFamily: MONO }}>{num(c.points.likely)}</span>
+                  <input type="number" step={0.01} min={0} max={1} value={whatIfCoefs[c.key] ?? ''} placeholder="改为"
+                    onChange={(e) => setWhatIfCoefs((p) => ({ ...p, [c.key]: e.target.value }))}
+                    style={{ width: 48, textAlign: 'right', fontFamily: MONO, fontSize: 12, padding: '1px 2px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
+                  />
+                </label>
+              ))}
+              {selRows.filter((r) => r.persisted).length > 0 && (
+                <div style={{ marginTop: 4 }}>
+                  <div style={{ color: 'var(--text-muted)', marginBottom: 2 }}>勾选行的悲观 P 覆盖（留空=不改）</div>
+                  {selRows.filter((r) => r.persisted).map((r) => (
+                    <label key={r.planId} title={`${r.title}：当前 P ${num(r.pessimistic)}`}
+                      style={{ display: 'flex', gap: 4, alignItems: 'center', color: 'var(--text-muted)', marginBottom: 2 }}>
+                      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.title}</span>
+                      <span style={{ fontFamily: MONO }}>{num(r.pessimistic)}</span>
+                      <input type="number" step={0.5} min={r.likely ?? 0} value={whatIfP[r.planId] ?? ''} placeholder="P"
+                        onChange={(e) => setWhatIfP((p) => ({ ...p, [r.planId]: e.target.value }))}
+                        style={{ width: 44, textAlign: 'right', fontFamily: MONO, fontSize: 12, padding: '1px 2px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
+                      />
+                    </label>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4, flexWrap: 'wrap' }}>
+                <button type="button" className="tbtn-anim" style={toolBtn('accent', whatIfBusy || !(coefTouched || rowTouched))}
+                  disabled={whatIfBusy || !(coefTouched || rowTouched)} onClick={() => void runWhatIf()}
+                  title="改系数或改勾选行 P 后点它：只算不写（服务端 what-if），要真改参数请去导出区上方的参数入口">
+                  试算
+                </button>
+                {!(coefTouched || rowTouched) && <span style={{ color: 'var(--text-muted)' }}>先改一个系数或某行 P</span>}
+                {whatIfErr && <span style={{ color: 'var(--danger)' }}>{whatIfErr}</span>}
+              </div>
+              {whatIf && (
+                <div role="status" aria-label="影响试算结果" style={{ marginTop: 4, borderTop: '1px solid var(--border)', paddingTop: 4 }}>
+                  <div>
+                    实际预估人月 {num(whatIf.before.actualManMonths)} → <b>{num(whatIf.after.actualManMonths)}</b>
+                    （Δ {numSigned(whatIf.delta.actualManMonths)} · {pctSigned(whatIf.delta.pct)}）
+                  </div>
+                  <div style={{ color: 'var(--text-muted)' }}>
+                    直接投入人天 {num(whatIf.before.directManDays)} → {num(whatIf.after.directManDays)}
+                    （Δ {numSigned(whatIf.delta.directManDays)}）· 系数和 {num(whatIf.before.coefSum)} → {num(whatIf.after.coefSum)}
+                  </div>
+                  {whatIf.delta.phases.filter((p) => Math.abs(p.delta) > 1e-9).length > 0 && (
+                    <div style={{ color: 'var(--text-muted)', fontFamily: MONO }}>
+                      {whatIf.delta.phases.filter((p) => Math.abs(p.delta) > 1e-9)
+                        .map((p) => `${data.meta.phaseLabels[p.phase] ?? p.phase} ${numSigned(p.delta)}`).join(' · ')}
+                    </div>
+                  )}
+                  <div style={{ color: 'var(--text-muted)' }}>
+                    本次试算未写入任何数据（服务端 written={whatIf.written}）；应用范围：
+                    {whatIf.applied.coefs.length > 0 ? `系数 ${whatIf.applied.coefs.length} 项` : '无系数'}
+                    {whatIf.applied.rows.length > 0 ? ` · 行 ${whatIf.applied.rows.length} 条` : ''}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* 4) 明细行（§5.2-3）：分组与折叠与时间线同源 */}
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '14px 0 2px' }}>
@@ -909,12 +1100,21 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                   <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>不进 Σ</span>
                 </div>
               )}
-              {!collapsed && group.items.map((p) => {
-                const r = rowById.get(p.id);
-                if (!r) return null;
+              {/* §7 收口只读的落点：`groupTimelinePhases` 把里程碑放在 `milestone` 字段而不是 `items`
+                  （T01621 口径），于是「已收口·只读」徽标 + 「解锁改写」这条 §7 判据的 UI 出口在按 items
+                  渲染时永远走不到——只读判定恰恰只对里程碑成立。这里把里程碑自己的估算行补进本段的渲染
+                  列表首位（分组仍单源于 `groupTimelinePhases`，折叠语义不变：段体随折叠整体收起）。 */}
+              {!collapsed && ([msRow, ...group.items.map((p) => rowById.get(p.id))]
+                .filter((r): r is PanelRow => !!r)
+                .map((r) => {
                 if (onlyUnreviewed && r.source === 'manual') return null;
                 const err = rowErrors[r.planId];
-                const editable = r.kind !== 'milestone';
+                // §7 只读态由服务端判定（`checks`/`items[].drift`），面板不自判一次；
+                // 「里程碑不落估算」（§4.6 红线一）仍由 kind 决定——两条规则叠出来的结果是：
+                // 未收口里程碑不可编辑（本来就不落估算），已收口里程碑要「解锁改写」才放开。
+                const locked = r.drift?.locked === true;
+                const unlocked = unlockedRows.includes(r.planId);
+                const editable = (r.kind !== 'milestone' && !locked) || (locked && unlocked);
                 const cellValue = (f: PointField): string =>
                   draft && draft.planId === r.planId && draft.field === f
                     ? draft.value
@@ -933,7 +1133,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                     <input
                       type="checkbox"
                       checked={selIds.includes(r.planId)}
-                      disabled={!editable}
+                      disabled={r.kind === 'milestone' || !editable}
                       onChange={() => toggleSel(r.planId)}
                       title={editable ? '勾选后参与批量填充' : '里程碑行不参与批量填充（§4.6 红线一）'}
                       style={{ margin: 0, flex: '0 0 auto' }}
@@ -943,9 +1143,43 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                         {r.reqNos.length > 0 && <span style={{ color: 'var(--text-muted)', marginRight: 4, fontFamily: MONO, fontSize: 11 }}>{r.reqNos.join('、')}</span>}
                         {r.title}
                       </div>
-                      <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 2 }}>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 2, flexWrap: 'wrap' }}>
                         {badge}
                         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>复杂度 {r.complexity ?? '—'}</span>
+                        {/* §7 偏差徽标：比值与阈值都来自服务端 `drift`，面板只把「黄色」这层语义画出来 */}
+                        {r.drift?.flag && (
+                          <span
+                            title={`偏差比值 = E ÷ 排期工作日 = ${num(r.drift.ratio)}\n`
+                              + `服务端阈值：> ${data.checks.drift.thresholds.high} 或 < ${data.checks.drift.thresholds.low}（§7「计划工期改动」行，面板不重算比值）`}
+                            style={{ fontSize: 10, padding: '0 4px', borderRadius: 3, border: '1px solid var(--warning, #c80)', color: 'var(--warning, #c80)', whiteSpace: 'nowrap' }}
+                          >
+                            偏差 {num(r.drift.ratio)}
+                          </span>
+                        )}
+                        {r.drift?.pressure && (
+                          <span
+                            title={`E ${num(r.expected)} 人天 > 剩余排期工作日 ${num(r.drift.remainingWorkdays)}（今日 ${data.checks.drift.today}，工作日已扣节假日/计加班日）`}
+                            style={{ fontSize: 10, padding: '0 4px', borderRadius: 3, border: '1px solid var(--danger)', color: 'var(--danger)', whiteSpace: 'nowrap' }}
+                          >
+                            超排期
+                          </span>
+                        )}
+                        {locked && (
+                          <span
+                            title={unlocked
+                              ? '本会话已解锁：改写会带 unlock 入参，服务端放行这一行（不改任何全局开关）'
+                              : '§7 已收口里程碑 → 估算行只读（已交付项不得追溯改写报价）；确需改写点右侧「解锁改写」'}
+                            style={{ fontSize: 10, padding: '0 4px', borderRadius: 3, border: `1px solid ${unlocked ? 'var(--accent)' : 'var(--border-strong)'}`, color: unlocked ? 'var(--accent)' : 'var(--text-muted)', whiteSpace: 'nowrap' }}
+                          >
+                            {unlocked ? '已解锁' : '已收口·只读'}
+                          </span>
+                        )}
+                        {locked && (
+                          <button type="button" className="tbtn-anim" style={toolBtn(unlocked ? 'danger' : 'accent')} onClick={() => toggleUnlock(r.planId)}
+                            title={unlocked ? '收回解锁，本行重新按只读处理' : '仅对本行、仅本会话放开编辑；写入仍走服务端校验'}>
+                            {unlocked ? '取消解锁' : '解锁改写'}
+                          </button>
+                        )}
                         {err && <span style={{ fontSize: 11, color: 'var(--danger)' }}>{err}</span>}
                       </div>
                       {g && (
@@ -978,8 +1212,10 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                           placeholder="—"
                           aria-label={`${r.title} ${POINT_LABEL[f]}（人天）`}
                           title={editable
-                            ? `${POINT_LABEL[f]}（人天，0.5 步进）：Enter 或失焦即落库，Esc 还原${err ? `\n${err}` : ''}`
-                            : '里程碑行不落估算（§4.6 红线一），值只作参考'}
+                            ? `${POINT_LABEL[f]}（人天，0.5 步进）：Enter 或失焦即落库，Esc 还原${locked && unlocked ? '（本行已显式解锁，写入带 unlock）' : ''}${err ? `\n${err}` : ''}`
+                            : locked
+                              ? '§7 里程碑已收口 → 估算行只读（已交付项不得追溯改写报价），需点「解锁改写」'
+                              : '里程碑行不落估算（§4.6 红线一），值只作参考'}
                           onChange={(e) => setDraft({ planId: r.planId, field: f, value: e.target.value })}
                           onFocus={() => setDraft({ planId: r.planId, field: f, value: cellValue(f) })}
                           onBlur={() => void commitDraft(draft)}
@@ -995,7 +1231,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                     </div>
                   </div>
                 );
-              })}
+                }))}
             </div>
           );
         })}
