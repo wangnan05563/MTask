@@ -1,7 +1,7 @@
 import { Router, raw } from 'express';
 import { PlanService } from '../services/PlanService';
 import { TestCaseService } from '../services/TestCaseService'; // T01484：测试用例取数（PRD-测试用例管理 §6）
-import { preflight } from '../services/kickoffService'; // T02095：启动会 PPT 前置校验聚合（PRD-项目启动会PPT生成 FR-2）
+import { kickoffOutline, preflight } from '../services/kickoffService'; // T02095/T02096：启动会 PPT 前置校验与大纲（PRD-项目启动会PPT生成 FR-2/FR-3）
 import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput, DraftCaseImport, DraftReqImport } from '../services/TestCaseService';
 import { AIService } from '../services/AIService';
 import { backfillComplexity, clampComplexity, listInvalid as listInvalidComplexity, listMissing as listMissingComplexity } from '../services/PlanComplexity'; // T01058 后续 / T02122：计划行复杂度批量补算 + 值域断言
@@ -56,6 +56,18 @@ planApi.get('/ready', (req, res) => {
 
 // T02095：启动会 PPT 前置校验（PRD-项目启动会PPT生成 §3.2 FR-2）——只读聚合、零 AI 调用（FR-2.3）
 planApi.get('/kickoff-preflight', (req, res) => wrap(res, () => preflight(pid(req))));
+
+// T02096 §2.2：启动会 PPT 大纲（1 次 askJson + schema 校验；不合规则触发自带重试后 400）
+planApi.post('/kickoff-ppt-outline', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const projectId = toStr(b.projectId);
+  const toolId = toStr(b.toolId);
+  if (!projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (!toolId) return res.status(400).json({ error: 'toolId 必填（大纲生成需要模型工具）' });
+  kickoffOutline(projectId, toolId, optStr(b.extraNote))
+    .then((r) => res.json(r))
+    .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
+});
 
 planApi.post('/holidays', (req, res) => {
   const { date, name, kind } = (req.body ?? {}) as { date?: unknown; name?: unknown; kind?: unknown };
