@@ -182,8 +182,10 @@ estimateApi.put('/params', (req, res) =>
     if (!incoming || typeof incoming !== 'object') throw new Error('settings 必填（键值对象）');
     const allowed = new Set([
       ...Object.values(ESTIMATE_SETTING_KEYS),
-      // 署名项：不是 §3.3 的八键（不进 `settingKeys` 面、不参与生效值试算），但必须有写入通道——
-      // E7 的 PDF 件要印「估算人」，没有这一键就恒为「（待填写）」。E13 参数页上线时按同一键绑定。
+      // 署名项（T02086 裁决「不进」，口径见 PRD §6.1 署名行 + §11-E13）：不是 §3.3 的八键
+      // （不进 `settingKeys` 面、不参与生效值试算），E13 参数页也**不出现**「估算人」输入框；
+      // 保留的只有这条 API 写入通道（E7/v2.2 起）——PDF 件要印「估算人」，没有这一键就恒为空。
+      // 未配置时导出件 H2 留空由用户手填（§6.1「或留空」分支），不写假名。
       ESTIMATE_REVIEWER_KEY,
       SETTINGS_KEY_CASE_K,
       `${SETTINGS_KEY_CASE_K_PROJECT}${projectId}`,
@@ -552,8 +554,10 @@ estimateApi.get('/', (req, res) =>
  * ⚠ PRD §6.1 原文写的是 `estimate_settings.reviewer`，但库里没有这张表——估算参数全部走
  * `app_settings` 的扁平 KV，§3.3 的八键里也不含署名项。这里按「单键读取、不进 §3.3 的生效值
  * 试算与 `settingKeys` 面」落地（无值即留空由用户手填，正是 §6.1 给的「或留空」分支）；
- * E7 的 PDF 件要印这一署名，所以 `PUT /params` 放行这一个键作为写入通道（T02044），
- * 但它仍不是配置项——参数页（E13）上线时按同一键绑定，不另开第二个键名。
+ * E7 的 PDF 件要印这一署名，所以 `PUT /params` 放行这一个键作为写入通道（T02044）。
+ * **T02086 裁决「不进」**（口径：PRD §6.1 署名行 + §11-E13 裁决条）：E13 参数页**不出现**
+ * 「估算人」输入框——本键保留的只有这条 API 级写入通道，不进参数页、不进生效值试算；
+ * 未配置时导出件 H2 留空由用户手填，不写「（待填写）」这类假名。
  */
 const ESTIMATE_REVIEWER_KEY = 'estimate.reviewer';
 

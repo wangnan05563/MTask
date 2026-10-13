@@ -390,6 +390,12 @@ group('G5 结构轨（exceljs 只读回验：sheet 名 / 列宽 / 文案 / 合�
   ok('5-15 参数 sheet 带对外报价 P84 与 ΣE（裁决 D2 的口径在件里可追溯）',
     p84Row !== undefined && Number(cellText(params, `B${p84Row}`)) > 0 && cellText(params, `B${p84Row}`) !== 'NaN',
     p84Row && [cellText(params, `A${p84Row}`), cellText(params, `B${p84Row}`)]);
+  // T02086（裁决「不进」）：reviewer 未配置时导出留空由用户手填——不报错、不写假名（§6.1「或留空」分支）
+  const noRev = await X.buildEstimateXlsx(X.layoutEstimate(input({ reviewer: '' })));
+  const wsnr = (await loadWb(noRev)).getWorksheet(X.SHEET_MAIN);
+  ok('5-16 reviewer 未配置（空串）导出不报错且 H2 留空——不写「（待填写）」这类假名（T02086 留空分支）',
+    cellText(wsnr, 'H2') === '' && cellText(ws, 'H2') === '王南',
+    [cellText(wsnr, 'H2'), cellText(ws, 'H2')]);
 }
 
 group('G6 命名区域与重算标记（红线 4 + 红线 5）');
@@ -947,6 +953,30 @@ if (!(await waitForServer())) {
       Array.isArray(pa?.phaseFilter) && typeof pa?.phaseFilter?.[0] === 'string'
       && Array.isArray(pa?.phases) && typeof pa?.phases?.[0] === 'object',
       { phaseFilter: pa?.phaseFilter, phases0: pa?.phases?.[0] });
+  }
+
+  group('R6 T02086 裁决「不进」：reviewer 的 API 写入通道 + 留空路径 + 不进参数面');
+  {
+    // 反面：本键不是 §3.3 八键——/meta 的 settingKeys 面没有它，不参与生效值试算
+    const meta = await api('GET', `/api/estimates/meta?${PQ}`);
+    ok('R-47 estimate.reviewer 不进 settingKeys 面（裁决「不进」：不是 §3.3 八键、不进 E13 参数页）',
+      !Object.values((meta.json?.settingKeys as Record<string, string> | undefined) ?? {}).includes('estimate.reviewer'),
+      Object.values((meta.json?.settingKeys as Record<string, string> | undefined) ?? {}).filter((k) => k.includes('reviewer')));
+    // 正面：API 级写入通道在（E7/v2.2 起为 PDF 署名开的口子），写后回读到导出件 H2
+    const putRev = await api('PUT', `/api/estimates/params?${PQ}`, { settings: { 'estimate.reviewer': '王南' } });
+    const withRev = await getXlsx(`?${PQ}`);
+    const wsr = await loadWb(withRev.buf);
+    ok('R-48 PUT /params 可写 reviewer 且落到导出件 H2（通道在、但参数页 UI 不出现该输入框）',
+      putRev.status === 200 && cellText(wsr.getWorksheet(X.SHEET_MAIN), 'H2') === '王南',
+      [putRev.status, cellText(wsr.getWorksheet(X.SHEET_MAIN), 'H2')]);
+    // 留空路径：显式清空 → 导出不报错、H2 不留假名（§6.1「或留空」分支，也是裁决「不进」的日常形态）
+    const clr = await api('PUT', `/api/estimates/params?${PQ}`, { settings: { 'estimate.reviewer': '' } });
+    const noRev = await getXlsx(`?${PQ}`);
+    const wsn = await loadWb(noRev.buf);
+    ok('R-49 清空 reviewer 后导出不报错且 H2 留空——cleared 如实回明、不写假名',
+      clr.status === 200 && ((clr.json?.cleared as string[] | undefined) ?? []).includes('estimate.reviewer')
+      && cellText(wsn.getWorksheet(X.SHEET_MAIN), 'H2') === '',
+      [clr.status, clr.json?.cleared, cellText(wsn.getWorksheet(X.SHEET_MAIN), 'H2')]);
   }
 }
 
