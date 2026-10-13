@@ -112,9 +112,9 @@ export function assertInBounds(box: Box, frame: Box = getContentFrame()): string
  * `gap` 下限钳到 `MIN_GAP`（0.3"）——把间距调小来「挤进去」会让页面失去呼吸感，
  * 拥挤应改由调用方降页或裁内容解决，所以这里钳而不缩。
  * 排不下时不静默截断：后续块继续生成、越界由 `assertInBounds` 逐条点名。
+ * `frame` 可传双栏的右栏框——纵向堆叠的单源口径不因栏宽而改变（门禁 3「禁止散写 y」）。
  */
-export function stackY(startY: number, blocks: Array<{ h: number }>, gap = MIN_GAP): Box[] {
-  const frame = getContentFrame();
+export function stackY(startY: number, blocks: Array<{ h: number }>, gap = MIN_GAP, frame: Box = getContentFrame()): Box[] {
   const step = Math.max(MIN_GAP, gap);
   const y0 = Math.max(startY, frame.y);
   let cursor = y0;
@@ -253,11 +253,14 @@ export interface LayoutFrames {
   cols?: [Box, Box];
 }
 
+export const TEXT_SPLIT = 0.6;
+
 /**
  * 版式框单源。`toc` 与 `cover` 同族不同框——封面标题居中占半屏，目录标题只占一行，
  * 靠 `sub` 区分而不是让调用方散写坐标（门禁 3「禁止散写 y」的另一半含义）。
+ * `split` 只影响双栏的左右配比（缺省对分；启动会按 PRD §5.3 的图文 6:4 传 `TEXT_SPLIT`）。
  */
-export function framesFor(family: LayoutFamily, sub?: string): LayoutFrames {
+export function framesFor(family: LayoutFamily, sub?: string, split = 0.5): LayoutFrames {
   const frame = getContentFrame();
   const titleH = 0.7;
   if (family === 'cover') {
@@ -274,9 +277,10 @@ export function framesFor(family: LayoutFamily, sub?: string): LayoutFrames {
     const title: Box = { x: frame.x, y: frame.y, w: frame.w, h: titleH };
     const top = frame.y + titleH + MIN_GAP;
     const bodyH = frame.y + frame.h - top;
-    const colW = (frame.w - MIN_GAP) / 2;
-    const left: Box = { x: frame.x, y: top, w: colW, h: bodyH };
-    const right: Box = { x: frame.x + colW + MIN_GAP, y: top, w: colW, h: bodyH };
+    const ratio = Math.min(0.85, Math.max(0.15, split));
+    const leftW = (frame.w - MIN_GAP) * ratio;
+    const left: Box = { x: frame.x, y: top, w: leftW, h: bodyH };
+    const right: Box = { x: frame.x + leftW + MIN_GAP, y: top, w: frame.w - leftW - MIN_GAP, h: bodyH };
     return { family, title, body: left, cols: [left, right] };
   }
   const title: Box = { x: frame.x, y: frame.y, w: frame.w, h: titleH };

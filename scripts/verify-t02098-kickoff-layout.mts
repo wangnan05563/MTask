@@ -175,6 +175,24 @@ ok('U-36 日期轴刻度等分且首尾贴内容框左右缘',
 ok('U-37 时间线绘制所需形状参数齐（rect 条 / diamond / line 轴，供 T02100 消费）',
   M.TIMELINE_BAR_H === 0.18 && diamond.w > M.TIMELINE_BAR_H && typeof M.xAt === 'function');
 
+// ---------- T02099 消费面回归（改动 stackY / framesFor 后必须仍成立） ----------
+ok('U-38 stackY 传栏框时 x/w 跟随栏宽（双栏堆叠同源，不再是散写 y）', (() => {
+  const col = { x: 5, y: 1, w: 3, h: 3 };
+  const bs = M.stackY(1, [{ h: 0.5 }, { h: 0.5 }], 0.3, col);
+  return bs.every((b) => b.x === 5 && b.w === 3) && Math.abs(bs[1].y - 1.8) < 1e-9;
+})(), M.stackY(1, [{ h: 0.5 }, { h: 0.5 }], 0.3, { x: 5, y: 1, w: 3, h: 3 }));
+ok('U-39 TEXT_SPLIT 单源 = 6:4（PRD §5.3 图文配比），双栏按它分且不重叠',
+  M.TEXT_SPLIT === 0.6 && (() => {
+    const f = M.framesFor('twoCol', undefined, M.TEXT_SPLIT);
+    const [l, r] = f.cols!;
+    return Math.abs(l.w / r.w - 1.5) < 0.02 && M.findOverlaps([l, r]).length === 0;
+  })(), M.framesFor('twoCol', undefined, M.TEXT_SPLIT).cols);
+ok('U-40 split 越界值被钳制（0.98 这种配比会把右栏压成 0 宽）', (() => {
+  const f = M.framesFor('twoCol', undefined, 0.98);
+  const [l, r] = f.cols!;
+  return l.w / r.w <= 0.85 / 0.15 + 0.01 && r.w > 0.5 && M.assertInBounds(r) === null;
+})(), M.framesFor('twoCol', undefined, 0.98).cols);
+
 // ---------- 输出 ----------
 mkdirSync(OUT_DIR, { recursive: true });
 writeFileSync(join(OUT_DIR, 't02098-gate-results.txt'), `T02098 版式断言层门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
