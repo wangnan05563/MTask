@@ -37,7 +37,7 @@ import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { notifyChange } from '../services/ChangeBus';
 import { v4 as uuid } from 'uuid';
 import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
-import { exportGate } from '../util/export-gate'; // T00789：导出类端点并发闸
+import { exportGate, REPORT_GATE } from '../util/export-gate'; // T00789：导出类并发闸；T02105：周报与启动会稿共用同一闸名
 import { listDirectories } from '../services/FsBrowseService'; // T00771 二轮：服务端目录枚举（工作空间降级选择）
 
 /** 低频集合列表 TTL（5s）：读多写少，写端点会主动 cacheClear 保持一致性 */
@@ -1448,7 +1448,7 @@ api.post('/ai/polish', async (req, res) => {
 
 // ---------- 报表生成与模板管理 ----------
 // T00789：report/generate 虽已走 worker 隔离，但仍 165~2162ms/次且无并发闸；此处仅加闸不改执行方式
-api.post('/report/generate', exportGate('report-generate'), async (req, res) => {
+api.post('/report/generate', exportGate(REPORT_GATE), async (req, res) => {
   const { period, format, projectId, templateId } = req.body ?? {};
   if (!['day', 'week', 'month'].includes(period)) return res.status(400).json({ error: 'period 非法' });
   if (!['xlsx', 'docx', 'pdf', 'pptx'].includes(format)) return res.status(400).json({ error: 'format 非法' });

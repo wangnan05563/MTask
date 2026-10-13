@@ -83,7 +83,9 @@ ReportConsole.tsx┘   (新)                 │               │    ├─ col
 `body { projectId, toolId, outline }`；SSE 事件与 `report/ai-generate-stream`（`routes/index.ts:1636-1674`）逐字同构：`stage {msg}` / `done {token, fileName, pageCount, warnings[]}` / `error {error}`。
 
 - `res.on('close')` → `ac.abort()`（`index.ts:1657` 范式），装配循环每页检查 `signal.aborted` 即返回，不留半成品（验收 9）。
-- 挂 `exportGate('kickoff-ppt-stream', undefined, { defer: true })`（`util/export-gate.ts:67`，上限 2、超限 429，与周报共用闸，FR-5）。
+- 挂 `exportGate(REPORT_GATE, undefined, { defer: true })`（`util/export-gate.ts`，上限 2、超限 429）。
+  **T02105 裁决**：闸名不取本端点专名而用 `REPORT_GATE`（值 `'report-generate'`）——FR-5 要的是「与周报共用同一闸」，
+  各自一名会变成两个独立上限（合计 4 路大稿），正好违背该条的立论（worker 池被并发大稿打满）。
 - 第 2 段 AI（风险/沟通措辞）在此发出，`askJson` 一次；失败不阻断——降级为本地规则文案并 `warnings.push('风险措辞 AI 失败，已用本地条目')`。
 - 逐页 `stage`：`页 <n>/<N> 已装配：<章节>`；装配完 Buffer → `saveReportBuffer` → 令牌。
 

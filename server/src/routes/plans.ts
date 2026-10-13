@@ -7,7 +7,7 @@ import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput, Dr
 import { AIService } from '../services/AIService';
 import { backfillComplexity, clampComplexity, listInvalid as listInvalidComplexity, listMissing as listMissingComplexity } from '../services/PlanComplexity'; // T01058 后续 / T02122：计划行复杂度批量补算 + 值域断言
 import { resolvePrdContext } from '../util/prdContext'; // T00763：计划关联 PRD → 评估上下文
-import { exportGate } from '../util/export-gate'; // T00789：导出类端点并发闸
+import { exportGate, REPORT_GATE } from '../util/export-gate'; // T00789：导出类并发闸；T02105：启动会稿与周报共用 REPORT_GATE
 
 /**
  * 项目计划路由（T00431，菜单位于周报前）。
@@ -74,7 +74,7 @@ planApi.post('/kickoff-ppt-outline', (req, res) => {
  * T02103 §2.3：启动会 PPT 流式生成（第 2 段）。事件形态与 `/report/ai-generate-stream`
  * （`routes/index.ts:1636`）逐字同构：`stage {msg}` / `done {token, fileName, pageCount, warnings[]}` / `error {error}`。
  */
-planApi.post('/kickoff-ppt-stream', exportGate('kickoff-ppt-stream', undefined, { defer: true }), async (req, res) => {
+planApi.post('/kickoff-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: true }), async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   const projectId = toStr(b.projectId);
   const toolId = toStr(b.toolId);

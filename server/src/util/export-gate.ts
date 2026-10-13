@@ -22,6 +22,13 @@ import { getSetting } from '../services/AppSettings';
 /** 闸门默认上限：同时 2 个导出在跑，第 3 个起拒绝（app_settings 未配置时的回退值） */
 export const EXPORT_GATE_LIMIT = 2;
 
+/**
+ * 周报四格式导出与启动会稿**共用**的闸名（PRD-项目启动会PPT生成 FR-5：
+ * 「启动会稿与周报共用同一闸，避免 worker 池被并发大稿打满」）。
+ * 命名成常量而非两处字面量，是因为「共用」本身是需求而不是巧合——写成两遍迟早被后来者拆回两个闸。
+ */
+export const REPORT_GATE = 'report-generate';
+
 /** 进行中计数：闸名 → 当前执行数 */
 const inflight = new Map<string, number>();
 

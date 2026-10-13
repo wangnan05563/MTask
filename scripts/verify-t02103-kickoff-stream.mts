@@ -74,7 +74,7 @@ ok('S-06 参数与大纲形状在 SSE 头之前快速失败（前端要拿到结
   streamRoute.indexOf('assertOutlineShape(b.outline)') < streamRoute.indexOf('res.flushHeaders?.()') &&
     /projectId 必填/.test(streamRoute) && /toolId 必填（生成需要模型工具）/.test(streamRoute));
 ok('S-07 挂并发闸且 defer（与周报共用闸语义，超限 429 由 T02105 实测）',
-  /planApi\.post\('\/kickoff-ppt-stream', exportGate\('kickoff-ppt-stream', undefined, \{ defer: true \}\)/.test(ROUTE));
+  /planApi\.post\('\/kickoff-ppt-stream', exportGate\(REPORT_GATE, undefined, \{ defer: true \}\)/.test(ROUTE));
 ok('S-08 中止消息单源（builder 抛出与 service 检查同一句，面板与门禁都认这句）',
   /export const KICKOFF_ABORT_MSG = '[^']*';/.test(SSRC) &&
     (BSRC.match(/throw new Error\(KICKOFF_ABORT_MSG\)/g) ?? []).length >= 2 &&
