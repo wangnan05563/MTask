@@ -8,6 +8,7 @@ import { AiPlanImportPanel } from './AiPlanImportPanel';
 import { PrdImportPanel } from './PrdImportPanel'; // T00662：从 PRD 导入项目计划
 import { PrdGenPanel } from './PrdGenPanel'; // T00769：原始需求生成 PRD
 import { TestCaseGenPanel } from './TestCaseGenPanel'; // T01492：从 PRD 生成测试用例
+import { KickoffPptPanel } from './KickoffPptPanel'; // T02108：项目启动会 PPT 工作面板
 import { useSessionState } from '../ui/session';
 import { usePrdGen } from '../stores/prdGenStore'; // T01038：PRD 生成卡片统一运行状态
 import { useTestCaseGen } from '../stores/testCaseGenStore'; // T01492：测试用例生成卡片运行状态
@@ -217,8 +218,12 @@ function PrdDocsPopup({ open, projectId, onAssociate, onClose }: {
 }
 
 /** 三块 AI 工作面板的条件渲染（S3776：条件块下沉为独立组件） */
-function ReportWorkPanels({ aiToolId, showPrdGen, closePrdGen, prdGenSaved, showTcGen, closeTcGen, tcImported, showPrdImport, closePrdImport, prdImportSaved, showAiImport, closeAiImport, aiImportSaved, prdImportKey }: {
+function ReportWorkPanels({ aiToolId, projectId, showKickoffPpt, closeKickoffPpt, openCard, showPrdGen, closePrdGen, prdGenSaved, showTcGen, closeTcGen, tcImported, showPrdImport, closePrdImport, prdImportSaved, showAiImport, closeAiImport, aiImportSaved, prdImportKey }: {
   readonly aiToolId: string;
+  readonly projectId: string;
+  readonly showKickoffPpt: boolean; readonly closeKickoffPpt: () => void;
+  /** T02108：启动会校验清单的「去补充」深链落到本页对应能力卡片（report?card=prd-import / tc-gen） */
+  readonly openCard: (key: 'prd-import' | 'tc-gen') => void;
   readonly showPrdGen: boolean; readonly closePrdGen: () => void; readonly prdGenSaved: (r: { issues: number }) => void;
   readonly showTcGen: boolean; readonly closeTcGen: () => void; readonly tcImported: (r: { imported: number }) => void;
   readonly showPrdImport: boolean; readonly closePrdImport: () => void; readonly prdImportSaved: (r: { requirements: number; plans: number; tasks: number }) => void;
@@ -228,6 +233,10 @@ function ReportWorkPanels({ aiToolId, showPrdGen, closePrdGen, prdGenSaved, show
 }) {
   return (
     <>
+      {/* T02108（PRD §5.2）：项目启动会 PPT 面板（第 7 张卡）——逐页装配日志走右侧控制台，停止/重置已接进控制台链 */}
+      {showKickoffPpt && (
+        <KickoffPptPanel projectId={projectId} toolId={aiToolId} onClose={closeKickoffPpt} openCard={openCard} />
+      )}
       {/* T01492：从 PRD 生成测试用例面板（日志/正文同走右侧控制台；停止已接进控制台 stopAll） */}
       {showTcGen && (
         <TestCaseGenPanel toolId={aiToolId} onClose={closeTcGen} onImported={tcImported} />
@@ -464,6 +473,15 @@ export function ReportPage() {
   const closePrdImport = () => setShowPrdImport(false);
   const closeAiImport = () => setShowAiImport(false);
   const aiImportSaved = (n: number) => flash(`AI 导入完成：已创建 ${n} 条计划（可在「项目计划」查看）`);
+  // T02108（PRD §5.2）：启动会面板关闭 + 校验清单深链落位——深链走「确保展开」而非卡片点击的 toggle
+  //（面板已展开时 toggle 会把它收起，用户点「去补充」反而看不到入口）；互斥仍复用 togglePanel 单一口径
+  const closeKickoffPpt = () => setShowKickoffPpt(false);
+  const openCard = (key: 'prd-import' | 'tc-gen') => {
+    const panel: PanelKey = key === 'prd-import' ? 'prdImport' : 'tcGen';
+    if (panelOpen[panel]) return;
+    togglePanel(panel);
+    flash(key === 'prd-import' ? '已切到「从 PRD 导入项目计划」——补齐 PRD 与需求矩阵后回到启动会卡片重开校验' : '已切到「从 PRD 生成测试用例」——生成用例后回到启动会卡片重开校验');
+  };
 
   // T01038：统一各能力卡片运行状态徽标——按 store 运行态推导状态/起始时间/最终耗时，集中映射避免散落。
   // ai-import 与 prd-import 共用 aiImportStore（kind: 'plan'|'prd'）；offline 仅本地短时计时。
@@ -726,7 +744,8 @@ export function ReportPage() {
         })}
       </div>
 
-      <ReportWorkPanels aiToolId={aiToolId}
+      <ReportWorkPanels aiToolId={aiToolId} projectId={projectId}
+        showKickoffPpt={showKickoffPpt} closeKickoffPpt={closeKickoffPpt} openCard={openCard}
         showPrdGen={showPrdGen} closePrdGen={closePrdGen} prdGenSaved={prdGenSaved}
         showTcGen={showTcGen} closeTcGen={closeTcGen} tcImported={tcImported}
         showPrdImport={showPrdImport} closePrdImport={closePrdImport} prdImportSaved={prdImportSaved}

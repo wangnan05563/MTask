@@ -352,8 +352,9 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard }: {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
         <input value={extraNote} onChange={(e) => setExtraNote(e.target.value)} placeholder="补充说明（可选，会拼进大纲提示词）" aria-label="大纲补充说明"
           style={{ ...cellInput, flex: '1 1 220px', minWidth: 180 }} disabled={streaming} />
-        <button onClick={() => void genOutline()} disabled={streaming || outlineBusy || !projectId || !toolId} className="tbtn-anim"
-          title="调用 AI 生成分页大纲（1 次模型调用）" aria-label="生成大纲"
+        {/* FR-2.4 硬阻塞时同时禁掉大纲发起：否则一次 AI 调用只换来一份空壳大纲，与「禁止生成空壳稿」同义 */}
+        <button onClick={() => void genOutline()} disabled={streaming || outlineBusy || !projectId || !toolId || blocked} className="tbtn-anim"
+          title={blocked ? '资料不足（PRD/需求矩阵/计划三项均缺），补齐后再生成大纲' : '调用 AI 生成分页大纲（1 次模型调用）'} aria-label="生成大纲"
           style={{ ...opBtn, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', padding: '5px 12px' }}>
           {outlineBusy ? <Loader2 size={12} className="task-breathe" /> : <Sparkles size={12} />} {rows.length ? '重新生成大纲' : '生成大纲'}
         </button>
