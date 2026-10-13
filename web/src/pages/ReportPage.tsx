@@ -14,7 +14,7 @@ import { useTestCaseGen } from '../stores/testCaseGenStore'; // T01492：测试�
 import { aiImportStore } from '../stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 import { RunStatusBadge, type RunStatus } from '../ui/runStatus'; // T01038：统一运行状态徽标
 import { FlowButton } from '../ui/FlowButton'; // T01068-FR4.4：流光按钮（loading 态）
-import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks } from 'lucide-react';
+import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation } from 'lucide-react';
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CARD } from '../ui/consoleReset'; // T01042：卡片侧重置入口（与控制台重置共用核心）
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
 import { focusTaskByNo } from '../ui/focusTask'; // T01057 建议：就绪任务跳转按编号定位（跨项目可命中）
@@ -313,6 +313,9 @@ export function ReportPage() {
   const [showPrdGen, setShowPrdGen] = useSessionState('report.showPrdGen', false);
   // T01492：从 PRD 生成测试用例面板展开态（第 6 张卡，与其余卡片互斥）
   const [showTcGen, setShowTcGen] = useSessionState('report.showTcGen', false);
+  // T02107（PRD FR-1.3）：项目启动会 PPT 面板展开态（第 7 张卡）——同样走会话级持久化，
+  // 生成是分钟级长任务，切页返回必须回到展开态，否则用户看不到进行中的大纲与进度
+  const [showKickoffPpt, setShowKickoffPpt] = useSessionState('report.showKickoffPpt', false);
   // T00908：「已上传 PRD 文档」弹层展开态 + 导入面板强制重挂载计数（选择文档后递增 key 触发面板重挂，
   //          使 useSessionState 重新读取 sessionStorage 中的目标项目与 docId，保证自动带入生效）
   const [prdDocsOpen, setPrdDocsOpen] = useState(false);
@@ -371,10 +374,12 @@ export function ReportPage() {
     prdImport: setShowPrdImport,
     prdGen: setShowPrdGen,
     tcGen: setShowTcGen,
+    kickoffPpt: setShowKickoffPpt,
   } as const;
   type PanelKey = keyof typeof panelSetters;
   const panelOpen: Record<PanelKey, boolean> = {
     aiImport: showAiImport, offline: showOffline, aiLive: showAiLive, prdImport: showPrdImport, prdGen: showPrdGen, tcGen: showTcGen,
+    kickoffPpt: showKickoffPpt,
   };
   /** 点击卡片：已展开则收起，否则只展开它（其余全部收起） */
   function togglePanel(key: PanelKey) {
@@ -438,6 +443,13 @@ export function ReportPage() {
       open: showTcGen,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('tcGen') },
+    // T02107（PRD FR-1.1/1.2）：第 7 张卡——数组尾部追加，标题/描述/hint 逐字取 PRD 口径，
+    // 复用 ReportCard 与既有图标风格（色值只走 CSS 变量，不新造卡片组件）
+    { key: 'kickoff-ppt', icon: <Presentation size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '项目启动会 PPT 生成',
+      desc: '按项目资料自动装配 Kickoff 材料（原生可编辑 .pptx）',
+      hint: '需 PRD/需求矩阵/计划至少各 1 条', aria: '项目启动会 PPT 生成',
+      open: showKickoffPpt,
+      onToggle: () => togglePanel('kickoffPpt') },
   ];
 
   // 工作面板开关回调（S3776：从 JSX 内联箭头下沉）
