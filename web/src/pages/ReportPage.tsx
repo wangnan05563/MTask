@@ -11,6 +11,7 @@ import { TestCaseGenPanel } from './TestCaseGenPanel'; // T01492：从 PRD 生�
 import { useSessionState } from '../ui/session';
 import { usePrdGen } from '../stores/prdGenStore'; // T01038：PRD 生成卡片统一运行状态
 import { useTestCaseGen } from '../stores/testCaseGenStore'; // T01492：测试用例生成卡片运行状态
+import { useKickoffPpt } from '../stores/kickoffPptStore'; // T02109：启动会 PPT 卡片运行状态
 import { aiImportStore } from '../stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 import { RunStatusBadge, type RunStatus } from '../ui/runStatus'; // T01038：统一运行状态徽标
 import { FlowButton } from '../ui/FlowButton'; // T01068-FR4.4：流光按钮（loading 态）
@@ -331,6 +332,7 @@ export function ReportPage() {
   const { streaming: aiStreaming, logs: aiLogs, streamText: aiStreamText, result: aiResult, startedAt: reportStartedAt, finalElapsed: reportFinal } = useReportStream();
   const prdSnap = usePrdGen();
   const tcSnap = useTestCaseGen(); // T01492：测试用例生成卡片运行状态供徽标共用
+  const kfSnap = useKickoffPpt(); // T02109：启动会 PPT 卡片运行状态供徽标共用
   const aiImp = useSyncExternalStore(aiImportStore.subscribe, aiImportStore.getSnapshot);
 
   const flash = (m: string) => {
@@ -449,6 +451,7 @@ export function ReportPage() {
       desc: '按项目资料自动装配 Kickoff 材料（原生可编辑 .pptx）',
       hint: '需 PRD/需求矩阵/计划至少各 1 条', aria: '项目启动会 PPT 生成',
       open: showKickoffPpt,
+      onReset: resetArtifacts,
       onToggle: () => togglePanel('kickoffPpt') },
   ];
 
@@ -478,6 +481,8 @@ export function ReportPage() {
         return { status: deriveStatus(prdSnap.streaming, prdSnap.finalElapsed), startedAt: prdSnap.startedAt, finalElapsed: prdSnap.finalElapsed };
       case 'tc-gen':
         return { status: deriveStatus(tcSnap.streaming, tcSnap.finalElapsed), startedAt: tcSnap.startedAt, finalElapsed: tcSnap.finalElapsed };
+      case 'kickoff-ppt':
+        return { status: deriveStatus(kfSnap.streaming, kfSnap.finalElapsed), startedAt: kfSnap.startedAt, finalElapsed: kfSnap.finalElapsed };
       case 'ai-import':
       case 'prd-import': {
         // 两面板共用同一 store——按运行类型 kind 分流，避免「从 PRD 导入」运行时「AI 项目计划导入」卡片也转圈（2026-09-26 用户反馈）。

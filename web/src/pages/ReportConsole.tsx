@@ -5,10 +5,11 @@ import { api, type AITool, type ReqCategory } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
 import { useSessionState } from '../ui/session';
 import { RunStatusBadge } from '../ui/runStatus'; // T01038：统一运行状态徽标（动画图标 + 实时秒数 + 最终耗时）
-import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput, GitCompare, FileUp, FilePlus2, Maximize, PanelLeftOpen, OctagonX, ListChecks } from 'lucide-react';
+import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput, GitCompare, FileUp, FilePlus2, Maximize, PanelLeftOpen, OctagonX, ListChecks, Presentation } from 'lucide-react';
 import { aiImportStore } from '../stores/aiImportStore';
 import { prdGenStore } from '../stores/prdGenStore'; // T00769 二轮：原始需求生成 PRD 的过程输出
 import { testCaseGenStore } from '../stores/testCaseGenStore'; // T01491：从 PRD 生成测试用例的过程输出
+import { kickoffPptStore } from '../stores/kickoffPptStore'; // T02109：项目启动会 PPT 的逐页装配过程输出
 import { reportStream, useReportStream } from '../reportStream'; // T00838：停止按钮需订阅周报流状态
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CONSOLE, CONSOLE_RESET_EVENT } from '../ui/consoleReset'; // T01042：控制台/卡片共用重置核心
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
@@ -76,6 +77,9 @@ const PRD_GEN_TAB = '__prdgen__';
 
 /** T01491：内置「从 PRD 生成测试用例」tab 固定 id（仿 PRD_GEN_TAB）——生成阶段日志 + 流式正文在此实时滚动 */
 const TEST_CASE_GEN_TAB = '__testcasegen__';
+
+/** T02109（PRD FR-1.4）：内置「项目启动会 PPT 生成」tab 固定 id——逐页装配 stage 事件在此实时滚动 */
+const KICKOFF_PPT_TAB = '__kickoffppt__';
 
 /**
  * 自定义 AI 工具选择器：收拢时仅显示已选工具的「模型名」（节省单行空间），
@@ -618,6 +622,9 @@ export function ReportConsole({
   // T01491：订阅测试用例生成 store（流式正文 + 阶段日志在此滚动，与 PRD 生成链路同构）
   const tcSnap = useSyncExternalStore(testCaseGenStore.subscribe, testCaseGenStore.get);
   const onTestCaseGenTab = activeId === TEST_CASE_GEN_TAB;
+  // T02109：订阅启动会 PPT store（逐页装配 stage 在此滚动）
+  const kfSnap = useSyncExternalStore(kickoffPptStore.subscribe, kickoffPptStore.get);
+  const onKickoffPptTab = activeId === KICKOFF_PPT_TAB;
   const activeTask = tasks.find((t) => t.id === activeId) ?? null;
   const onReportTab = activeId === REPORT_TAB;
   const runningCount = tasks.filter((t) => t.status === 'busy').length;
@@ -630,7 +637,7 @@ export function ReportConsole({
   const [notice, setNotice] = useState('');
   // 轻量 toast：本面板无全局 flash，就近以底部 transient 文本反馈结果/失败
   const flash = (m: string) => { setNotice(m); globalThis.setTimeout(() => setNotice(''), 3000); };
-  const canStop = report.streaming || prdSnap.streaming || tcSnap.streaming || aiSnap.busy || runningCount > 0;
+  const canStop = report.streaming || prdSnap.streaming || tcSnap.streaming || kfSnap.streaming || aiSnap.busy || runningCount > 0;
 
   // T00839：1s 心跳触发重渲染，使运行中 tab 的「已运行 xx」实时增长（store 变更不会带动计时刷新）
   const [, bumpClock] = useReducer((c: number) => c + 1, 0);
@@ -652,6 +659,8 @@ export function ReportConsole({
       if (prdSnap.streaming) prdGenStore.abort();
       // 2b) T01491：测试用例生成流：abort SSE + 清 store
       if (tcSnap.streaming) testCaseGenStore.abort();
+      // 2c) T02109：启动会 PPT 逐页装配流：abort SSE（后端随 signal 结束装配）
+      if (kfSnap.streaming) kickoffPptStore.abort();
       // 3) PRD 导入单次请求：本请求未 job 化，前端清 store 结束等待，后端自然结束
       if (aiSnap.busy) aiImportStore.reset();
       // 4) 周报生成流：abort SSE + 清 store
@@ -662,7 +671,7 @@ export function ReportConsole({
     } finally {
       setStopping(false);
     }
-  }, [stopping, tasks, prdSnap.streaming, tcSnap.streaming, aiSnap.busy, report.streaming]);
+  }, [stopping, tasks, prdSnap.streaming, tcSnap.streaming, kfSnap.streaming, aiSnap.busy, report.streaming]);
 
   // 阶段日志没有天然 id，按「内容 + 同内容出现序号」派生稳定 key：
   // 追加式日志的前缀条目 key 不变，避免用数组索引作 key 在重排时错误复用 DOM
@@ -699,11 +708,19 @@ export function ReportConsole({
     prevTcLogCount.current = tcLogCount;
   }, [tcLogCount]);
 
+  // T02109：启动会 PPT 逐页装配一开始输出 stage 日志就自动切到该 tab（同款机制）
+  const kfLogCount = kfSnap.logs.length;
+  const prevKfLogCount = useRef(0);
+  useEffect(() => {
+    if (kfLogCount > 0 && prevKfLogCount.current === 0) setActiveId(KICKOFF_PPT_TAB);
+    prevKfLogCount.current = kfLogCount;
+  }, [kfLogCount]);
+
   // 正在生成（AI 周报流式或手动任务进行中）时随内容滚到底部，保证流式输出始终跟随最新内容
-  const live = isLive(onReportTab, streaming, streamText, activeTask) || onAiImportTab || onPrdGenTab || onTestCaseGenTab;
+  const live = isLive(onReportTab, streaming, streamText, activeTask) || onAiImportTab || onPrdGenTab || onTestCaseGenTab || onKickoffPptTab;
   useEffect(() => {
     if (live) bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
-  }, [live, streamText, streamsLen(activeTask), prdSnap.streamText, prdSnap.logs.length, tcSnap.streamText, tcSnap.logs.length]);
+  }, [live, streamText, streamsLen(activeTask), prdSnap.streamText, prdSnap.logs.length, tcSnap.streamText, tcSnap.logs.length, kfSnap.logs.length]);
 
   // 统一按 id 局部更新任务字段，避免在并发更新中因闭包持有旧 tasks 而互相覆盖
   const updateTask = useCallback((id: string, patch: Partial<AnalysisTask>) => {
@@ -1018,6 +1035,29 @@ export function ReportConsole({
         </div>
       );
     }
+    // T02109（PRD FR-1.4）：启动会 PPT tab——逐页装配 stage 日志 + 产物摘要（仿 TEST_CASE_GEN_TAB，无流式正文只有分页进度）
+    if (onKickoffPptTab) {
+      return (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+            <Presentation size={13} style={{ color: 'var(--accent)' }} /> 项目启动会 PPT 生成
+            {kfSnap.streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
+            {kfSnap.result && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>
+                {kfSnap.result.pageCount} 页 · {kfSnap.result.fileName}
+                {kfSnap.result.warnings.length > 0 ? ` · ⚠ 降级 ${kfSnap.result.warnings.length} 处` : ''}
+              </span>
+            )}
+          </div>
+          {kfSnap.logs.map((l, i) => (
+            <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|失败|错误/.test(l) ? 'var(--warning, #c80)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
+          ))}
+          {!kfSnap.streaming && kfSnap.result && (
+            <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「项目启动会 PPT 生成」卡片点击下载（文件名为服务端校验值）。</div>
+          )}
+        </div>
+      );
+    }
     // T00569 三轮：AI 项目计划导入 tab——控制台式滚动输出执行日志（与导入面板深度整合）
     if (onAiImportTab) {
       const lv = logLevelColor;
@@ -1302,6 +1342,31 @@ export function ReportConsole({
             status={runStatus(tcSnap.streaming, tcSnap.finalElapsed)}
             startedAt={tcSnap.startedAt}
             finalElapsed={tcSnap.finalElapsed}
+            size={10}
+            showLabel={false}
+          />
+        </button>
+      )}
+      {/* T02109（PRD FR-1.4）：项目启动会 PPT tab——逐页装配 stage 与产物摘要在此实时滚动 */}
+      {(kfSnap.logs.length > 0 || kfSnap.streaming) && (
+        <button
+          onClick={() => setActiveId(KICKOFF_PPT_TAB)}
+          title={kfSnap.streaming
+            ? `启动会 PPT 生成中 · 已运行 ${startedElapsedText(kfSnap.startedAt)} · 大纲 ${kfSnap.outline.length} 页（切换卡片不中断，返回即恢复）`
+            : '项目启动会 PPT 生成 — 逐页装配过程与产物摘要在此实时滚动输出'}
+          aria-label="项目启动会 PPT 生成 tab"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+            border: '1px solid var(--border-strong)', background: onKickoffPptTab ? 'var(--accent)' : 'var(--card-bg)',
+            color: onKickoffPptTab ? 'var(--accent-text)' : 'var(--text)', maxWidth: 150,
+          }}
+        >
+          <Presentation size={11} />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>启动会 PPT</span>
+          <RunStatusBadge
+            status={runStatus(kfSnap.streaming, kfSnap.finalElapsed)}
+            startedAt={kfSnap.startedAt}
+            finalElapsed={kfSnap.finalElapsed}
             size={10}
             showLabel={false}
           />

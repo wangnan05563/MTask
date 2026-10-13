@@ -14,6 +14,7 @@ import { api } from '../api/client';
 import { reportStream } from '../reportStream';
 import { prdGenStore } from '../stores/prdGenStore';
 import { testCaseGenStore } from '../stores/testCaseGenStore'; // T01491：从 PRD 生成测试用例运行态
+import { kickoffPptStore } from '../stores/kickoffPptStore'; // T02109：项目启动会 PPT 逐页装配运行态
 import { aiImportStore } from '../stores/aiImportStore';
 
 /** 重置广播事件名：AI 控制台挂载时监听，收到后重置本地 state */
@@ -28,6 +29,7 @@ const ARTIFACT_SESSION_KEYS = [
   'prd-import.sources', // PERSIST_KEYS.sources
   'prdGen.conclusion', // PrdGenPanel PRD_CONCL_KEY
   'tcgen.draft', // TestCaseGenPanel 草稿快照（§8.7：重置控制台/卡片侧连带清空）
+  'kickoff.outline', // KickoffPptPanel 大纲编辑稿（T02109：与 store 运行态同源，重置后不回灌）
   'plan.showPrd', // PrdGenPanel 联动的 PRD 管理视图开关
 ] as const;
 
@@ -53,6 +55,7 @@ export async function resetWorkbenchArtifacts(): Promise<{ ok: boolean; error?: 
   try { reportStream.abort(); } catch { /* 幂等 */ }
   try { prdGenStore.abort(); } catch { /* 幂等 */ }
   try { testCaseGenStore.abort(); } catch { /* 幂等 */ }
+  try { kickoffPptStore.abort(); } catch { /* 幂等 */ }
   try { aiImportStore.reset('plan'); } catch { /* 幂等 */ }
   // 3. 草稿产物
   clearArtifactSession();
