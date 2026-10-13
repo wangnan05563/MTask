@@ -160,7 +160,7 @@
 |---|---|---|
 | GET | `/api/plans/kickoff-preflight?projectId=` | FR-2.1 校验聚合，返回 `{ items:[{key,count,status,note,deepLink}], blocked, missingHard }`；只读、无 AI 调用 |
 | POST | `/api/plans/kickoff-ppt-outline` | 第 1 段 AI：`{ projectId, toolId, extraNote? }` → `{ outline:[{section,title,bullets,dataKeys,layout}] }`（`askJson`） |
-| POST | `/api/plans/kickoff-ppt-stream` | 第 2 段：body `{ projectId, toolId, outline }`，SSE 事件 `stage`（逐页）/`done`（含 `downloadToken`、`fileName`、`warnings[]`）/`error`；形态对齐 `routes/index.ts:1491-1545`，客户端断开即 abort |
+| POST | `/api/plans/kickoff-ppt-stream` | 第 2 段：body `{ projectId, toolId, outline }`，SSE 事件 `stage`（逐页）/`done`（含 `token`、`fileName`、`pageCount`、`warnings[]`；`token` 是落盘一次性下载令牌——**下载即删、单次有效**，中止/无人接收时由服务端回收）/`error`；形态对齐 `routes/index.ts:1491-1545`，客户端断开即 abort |
 | POST | `/api/plans/kickoff-ppt-download` | 令牌换 Buffer（或复用 `/api/report/ai-download`，审批项 **A-2**） |
 
 约束：`toolId` 必填且取 `ai_tools` 表（`schema.ts:64-78`，CRUD `ConfigService.ts:78-241`，端点 `/api/aitools` `routes/index.ts:1176-1297`）；`AIService.runtimeWithModel` 要求已配 model（`AIService.ts:19-21`）——未配置时端点返 400 + 引导文案（不静默用默认模型烧配额，遵循「不擅改用户 AI 服务配置」）。
@@ -249,7 +249,7 @@
 1. 卡片出现在第 7 位、样式与其他 6 张逐像素同源（复用 `ReportCard`），点击开面板、再点其他卡片互斥关闭。
 2. 空项目 → `blocked:true`，3 条硬缺失点名 + 深链可跳转，生成按钮不可用；全程零 AI 调用（可用 `/api/aitools` 调用计数或日志佐证）。
 3. mtask四期（真实资料）→ 校验返回 P1~P7 条数与实际一致（与 `GET /api/plans/prd-requirements`、`GET /api/plans` 逐条对数）。
-4. 大纲可增删改；确认后页数落 12~18；`done` 事件带 `downloadToken` + `fileName`，下载得到可打开的 .pptx（`unzip -l` 含 `ppt/slides/slide*.xml`）。
+4. 大纲可增删改；确认后页数落 12~18；`done` 事件带 `token`（一次性下载令牌，下载即删）+ `fileName`，下载得到可打开的 .pptx（`unzip -l` 含 `ppt/slides/slide*.xml`）。
 5. **可编辑性硬检**：产物内文本框/表格/图表是原生对象（解包 XML 可见 `<a:t>` 文本、`<p:graphicFrame>` 表格），无「整页图片」型 slide（这是排除 Marp/Slidev 路线的验收落点）。
 6. FR-4.5 时间线页存在里程碑菱形与日期轴；FR-4.6 工作量页人天合计 = `Σ duration_days`（与 SQL 一致），且页脚含「非三点估算」标记。
 7. §6.3 断言：构造一个必然越界的长标题 → 该页降级为安全版式且 `warnings[]` 记录，产物仍能打开。
