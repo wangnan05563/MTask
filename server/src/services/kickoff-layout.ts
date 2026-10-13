@@ -412,9 +412,12 @@ export function diamondBox(dateMs: number, range: DateRange, frame: Box, axisY: 
   return { x: Math.min(Math.max(cx - size / 2, frame.x), frame.x + frame.w - size), y: axisY - size / 2, w: size, h: size };
 }
 
-/** 日期轴刻度（等分，返回位置与 YYYY-MM-DD 短标签） */
-export function axisTicks(range: DateRange, count = 4): Array<{ x: number; label: string }> {
-  const frame = getContentFrame();
+/**
+ * 日期轴刻度（等分，返回位置与 `M/D` 短标签）。
+ * `frame` 传刻度所依附的轴框——甘特页的轴在「任务名列」右侧，用默认全宽框会让
+ * 刻度与实际条形错位（同一口径：`xAt`/`barBox` 都按调用方给的框映射）。
+ */
+export function axisTicks(range: DateRange, count = 4, frame: Box = getContentFrame()): Array<{ x: number; label: string }> {
   const n = Math.max(2, count);
   return Array.from({ length: n }, (_, i) => {
     const t = range.min + ((range.max - range.min) * i) / (n - 1);

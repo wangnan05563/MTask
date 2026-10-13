@@ -17,9 +17,14 @@ import {
   MIN_GAP,
   PALETTE,
   TEXT_SPLIT,
+  TIMELINE_BAR_H,
   assertInBounds,
   auditPalette,
+  axisTicks,
+  barBox,
   checkPageText,
+  dateRangeOf,
+  diamondBox,
   findOverlaps,
   framesFor,
   layoutFamilyOf,
@@ -37,6 +42,8 @@ export interface Block {
   text?: { content: string; pt: number; bold?: boolean; color?: string; align?: 'left' | 'center' };
   table?: { header: string[]; rows: string[][] };
   chart?: { type: 'bar' | 'doughnut'; name: string; labels: string[]; values: number[] };
+  /** 原生形状（FR-4.5 时间线）：`addShape` 落 `<a:prstGeom>`，PowerPoint 里可拖拽改 */
+  shape?: { kind: 'rect' | 'diamond' | 'line'; tone: 'bar' | 'milestone' | 'axis' };
 }
 
 export interface KickoffBuildResult {
@@ -196,6 +203,137 @@ export function blocksForKey(key: KickoffDataKey, b: KickoffBundle): Array<Omit<
   }
 }
 
+// ---------- 时间线形状（FR-4.5：原生矩形条 + 里程碑菱形 + 日期轴） ----------
+
+/** 左侧任务名列宽（英寸）：条形区从这之后开始，刻度与条必须共用同一栏框，否则错位 */
+const TL_LABEL_W = 2.2;
+const TL_LABEL_GAP = 0.15;
+/** 轴带：刻度标签 + 轴线 + 骑在轴上的菱形 */
+const TL_AXIS_H = 0.78;
+/** 行高 = 条高 + 呼吸 */
+const TL_ROW_H = TIMELINE_BAR_H + 0.16;
+/** 甘特最多画这么多行：再挤下去条就成纸片，读者分不清哪条对应哪个任务 */
+const MAX_TL_ROWS = 8;
+/** 图内标注字号（行名/刻度/图例），与页脚 9pt 同口径，不受正文 ≥14pt 约束 */
+const TL_NOTE_PT = 10;
+/** 时间线区低于这个高度就画不出「轴 + 2 行」，回落列表版更诚实 */
+const TL_MIN_H = TL_AXIS_H + TL_ROW_H * 2;
+
+export interface TimelineResult {
+  blocks: Block[];
+  /** 缺起止日期、按口径不画的条数（不画猜出来的工期） */
+  undated: number;
+  /** 排进行尾「其余 n 条」提示而未画的条数 */
+  overflow: number;
+  /** 与同日里程碑并成一枚菱形绘制掉的里程碑数（一个都没少画，只是叠成一组） */
+  mergedMilestones: number;
+  /** 排完后的越界/重叠点名，非空即该页应降级 */
+  violations: string[];
+}
+
+/**
+ * 能否用形状版（技术方案 §4 P3/P4 口径）：
+ * 无可用起止日期 → 线性映射没有依据；里程碑 0 个 → 验收 6 要求的菱形无从存在。
+ * 两种情况都如实回落 `sort_order` 列表版，并把原因带进 warning 供面板复核。
+ */
+export function timelineDegradeReason(b: KickoffBundle): string | null {
+  if (!dateRangeOf(b.plans)) return '库内计划没有可用的起止日期';
+  if (b.milestones.length === 0) return '库内里程碑为 0 个';
+  return null;
+}
+
+/**
+ * 时间线页的形状装配（纯几何消费，坐标一律走 T02098 的 `barBox`/`diamondBox`/`axisTicks`）。
+ * 排布：轴带（刻度 + 轴线 + 菱形）在上，计划条按起始日期升序逐行在下。
+ * 同日挤在一起的里程碑按道下移，轴带容不下就**只计数不硬画**——压成叠在一起的两个菱形
+ * 等于一个都没画，还骗人以为看清了。
+ */
+export function timelineBlocks(b: KickoffBundle, frame: Box): TimelineResult {
+  const out: Block[] = [];
+  const range = dateRangeOf(b.plans);
+  if (!range) return { blocks: out, undated: b.plans.length, overflow: 0, mergedMilestones: 0, violations: ['无可用日期范围'] };
+
+  const bars: Box = {
+    x: frame.x + TL_LABEL_W + TL_LABEL_GAP,
+    y: frame.y,
+    w: Math.max(0.6, frame.w - TL_LABEL_W - TL_LABEL_GAP),
+    h: frame.h,
+  };
+  const axisY = frame.y + TL_AXIS_H - 0.26;
+  const rowsTop = frame.y + TL_AXIS_H + 0.06;
+  const bottom = frame.y + frame.h;
+
+  // 刻度：文本盒右移贴刻度点，末格钳回轴右缘（越出画布就是越界页）
+  for (const t of axisTicks(range, 4, bars)) {
+    out.push({
+      box: { x: Math.min(t.x, bars.x + bars.w - 0.62), y: frame.y + 0.04, w: 0.62, h: 0.24 },
+      text: { content: t.label, pt: TL_NOTE_PT, align: 'center' },
+    });
+  }
+  out.push({ box: { x: bars.x, y: axisY, w: bars.w, h: 0 }, shape: { kind: 'line', tone: 'axis' } });
+
+  const clusters: Array<{ box: Box; count: number }> = [];
+  const times = b.milestones
+    .map((m) => Date.parse(m.end_date || m.start_date || ''))
+    .filter((t) => Number.isFinite(t))
+    .sort((x, y) => x - y);
+  for (const t of times) {
+    const box = diamondBox(t, range, bars, axisY);
+    const last = clusters[clusters.length - 1];
+    // 相邻日期的菱形本就会叠在一起（跨度 3 周的稿里差 1 天 ≈ 0.29"，正好是一个菱形宽）：
+    // 并成一组而不是丢着不画——丢了就是「图上看 4 个、库里有 6 个」的假象
+    if (last && findOverlaps([last.box, box]).length > 0) {
+      last.count += 1;
+      continue;
+    }
+    clusters.push({ box, count: 1 });
+  }
+  const mergedMilestones = times.length - clusters.length;
+  for (const c of clusters) out.push({ box: c.box, shape: { kind: 'diamond', tone: 'milestone' } });
+
+  const ordered = [...b.plans].sort(
+    (p, q) => (p.start_date || '9999-12-31').localeCompare(q.start_date || '9999-12-31') || p.sort_order - q.sort_order
+  );
+  const capacity = Math.floor((bottom - rowsTop) / TL_ROW_H);
+  let limit = Math.min(MAX_TL_ROWS, ordered.length, capacity);
+  if (ordered.length > limit) limit = Math.min(limit, Math.floor((bottom - 0.32 - rowsTop) / TL_ROW_H));
+
+  let undated = 0;
+  for (const [i, p] of ordered.slice(0, Math.max(0, limit)).entries()) {
+    const rowY = rowsTop + i * TL_ROW_H;
+    out.push({ box: { x: frame.x, y: rowY - 0.01, w: TL_LABEL_W, h: TL_ROW_H - 0.03 }, text: { content: p.title.slice(0, 16), pt: TL_NOTE_PT } });
+    const bar = barBox(p, range, bars, rowY);
+    if (!bar) {
+      undated += 1;
+      out.push({ box: { x: bars.x, y: rowY, w: 1.3, h: TIMELINE_BAR_H }, text: { content: '无起止日期', pt: TL_NOTE_PT } });
+      continue;
+    }
+    out.push({ box: bar, shape: { kind: 'rect', tone: 'bar' } });
+  }
+
+  const overflow = ordered.length - Math.max(0, limit);
+  if (overflow > 0) {
+    out.push({ box: { x: frame.x, y: bottom - 0.28, w: frame.w, h: 0.26 }, text: { content: `其余 ${overflow} 条计划未绘出，见「项目计划」列表页`, pt: TL_NOTE_PT } });
+  }
+
+  const violations: string[] = [];
+  for (const blk of out) {
+    // 轴线按定义就是零高度参照线（`assertInBounds` 的「高度非正」只约束内容盒），
+    // 把它排除出越界集，否则每页时间线都被判成坏页
+    if (blk.shape?.tone === 'axis') continue;
+    const reason = assertInBounds(blk.box, frame);
+    if (reason) violations.push(`${blk.shape ? '形状' : '文本'}${reason}`);
+  }
+  // 轴线是参照线，菱形按设计就骑在它上面——把它排除出重叠集，否则每页都是「假越界」
+  const overlaps = findOverlaps(out.filter((blk) => blk.shape?.tone !== 'axis').map((blk) => blk.box));
+  if (overlaps.length) violations.push(`元素重叠 ${overlaps.length} 处`);
+  out.push({
+    box: { x: frame.x, y: axisY - 0.13, w: TL_LABEL_W, h: 0.28 },
+    text: { content: `◆ 里程碑 ${times.length} 个${mergedMilestones ? `（同日并成 ${clusters.length} 组）` : ''}`, pt: TL_NOTE_PT },
+  });
+  return { blocks: out, undated, overflow, mergedMilestones, violations };
+}
+
 // ---------- 数字防幻觉改写（FR-3.4 / 验收 8） ----------
 
 interface Metric {
@@ -254,12 +392,20 @@ const MIN_BLOCK_H = 0.45;
  * 正文块 + 数据块的排布（单栏纵向堆叠走 stackY 单源；双栏按 6:4 左右分）。
  * 排不下的块**省略并如实回报**，不硬塞——硬塞就是越界页，静默丢就是假数据页，
  * 两者都比「少一块内容 + 一条 warning」更糟。
+ * `layout === 'timeline'` 走形状版（FR-4.5）；日期或里程碑不满足绘制前提时回落列表版，
+ * 前提缺失与降级原因都进 `notes`，让面板如实告诉用户「这页为什么是列表」。
  */
-export function layoutBody(item: KickoffOutlineItem, b: KickoffBundle, frames: LayoutFrames, bullets: string[]): { blocks: Block[]; dropped: string[] } {
+export function layoutBody(
+  item: KickoffOutlineItem,
+  b: KickoffBundle,
+  frames: LayoutFrames,
+  bullets: string[]
+): { blocks: Block[]; dropped: string[]; notes: string[]; violations: string[] } {
   const body = frames.body;
   const dataBlocks = item.dataKeys.flatMap((k) => blocksForKey(k, b));
   const out: Block[] = [];
   const dropped: string[] = [];
+  const notes: string[] = [];
   const bottom = body.y + body.h;
 
   if (frames.cols) {
@@ -275,7 +421,7 @@ export function layoutBody(item: KickoffOutlineItem, b: KickoffBundle, frames: L
       }
       out.push({ box: { ...boxes[i], h: Math.min(boxes[i].h, avail) }, ...d });
     });
-    return { blocks: out, dropped };
+    return { blocks: out, dropped, notes, violations: [] };
   }
 
   let cursor = body.y;
@@ -285,6 +431,22 @@ export function layoutBody(item: KickoffOutlineItem, b: KickoffBundle, frames: L
     out.push({ box: { x: body.x, y: cursor, w: body.w, h }, text: { content, pt: MIN_BODY_PT } });
     cursor += h + 0.3;
   }
+
+  if (item.layout === 'timeline' && item.dataKeys.includes('timeline')) {
+    const reason = timelineDegradeReason(b);
+    const frame: Box = { x: body.x, y: cursor, w: body.w, h: bottom - cursor };
+    if (!reason && frame.h >= TL_MIN_H) {
+      const tl = timelineBlocks(b, frame);
+      out.push(...tl.blocks);
+      if (tl.undated) notes.push(`${tl.undated} 条计划缺起止日期，条形未绘制（起止日期补全后自动出现在时间线上）`);
+      if (tl.overflow) notes.push(`${tl.overflow} 条计划超出本页可排行数，已折成页脚提示`);
+      if (tl.mergedMilestones) notes.push(`${tl.mergedMilestones} 个里程碑与同日里程碑并成一枚菱形绘制（日期相同，逐个画会叠成一坨）`);
+      for (const k of item.dataKeys.filter((x) => x !== 'timeline')) dropped.push(...blocksForKey(k, b).map(describe));
+      return { blocks: out, dropped, notes, violations: tl.violations };
+    }
+    notes.push(`时间线回落列表版：${reason ?? `剩余高度 ${frame.h.toFixed(2)}" 排不下轴与 2 行条`}`);
+  }
+
   const boxes = stackY(cursor, dataBlocks.map((d) => ({ h: blockHeight(d, body.w) })));
   dataBlocks.forEach((d, i) => {
     const avail = bottom - boxes[i].y;
@@ -294,11 +456,11 @@ export function layoutBody(item: KickoffOutlineItem, b: KickoffBundle, frames: L
     }
     out.push({ box: { ...boxes[i], h: Math.min(boxes[i].h, avail) }, ...d });
   });
-  return { blocks: out, dropped };
+  return { blocks: out, dropped, notes, violations: [] };
 }
 
 function describe(src: Omit<Block, 'box'>): string {
-  return src.chart ? `图表「${src.chart.name}」` : src.table ? `表格（${src.table.rows.length + 1} 行）` : '文本块';
+  return src.chart ? `图表「${src.chart.name}」` : src.table ? `表格（${src.table.rows.length + 1} 行）` : src.shape ? `形状「${src.shape.kind}」` : '文本块';
 }
 
 /** 整页断言：标题与各块在内容框内、彼此不重叠（门禁 2 + 5 在此消费） */
@@ -309,11 +471,14 @@ export function pageViolations(title: Box, titleText: string, blocks: Block[], t
   // 长标题排不进标题带是验收 7 点名的越界形态，必须在写盘前判出来
   const needH = textHeight(titleText, title.w, titlePt);
   if (needH > title.h + 1e-6) issues.push(`标题需 ${needH.toFixed(2)}" 高于标题带 ${title.h.toFixed(2)}"`);
-  for (const b of blocks) {
-    const reason = assertInBounds(b.box);
-    if (reason) issues.push(`${b.table ? '表格' : b.chart ? '图表' : '文本'}${reason}`);
+  for (const blk of blocks) {
+    // 轴线既非内容盒也不占高度（零高度参照线），越界与重叠两道都不算它
+    if (blk.shape?.tone === 'axis') continue;
+    const reason = assertInBounds(blk.box);
+    if (reason) issues.push(`${blk.table ? '表格' : blk.chart ? '图表' : blk.shape ? '形状' : '文本'}${reason}`);
   }
-  const overlaps = findOverlaps([title, ...blocks.map((b) => b.box)]);
+  // 参照线（日期轴）不计入重叠集：里程碑菱形按设计骑在轴上，硬算就是每页都「假重叠」
+  const overlaps = findOverlaps([title, ...blocks.filter((blk) => blk.shape?.tone !== 'axis').map((blk) => blk.box)]);
   if (overlaps.length) issues.push(`元素重叠 ${overlaps.length} 处`);
   return issues;
 }
@@ -335,6 +500,16 @@ function degradeToSafe(item: KickoffOutlineItem, blocks: Block[], fromBody: Box)
 
 export function drawBlock(slide: any, block: Block): void {
   const geo = { x: +block.box.x.toFixed(3), y: +block.box.y.toFixed(3), w: +block.box.w.toFixed(3), h: +block.box.h.toFixed(3) };
+  if (block.shape) {
+    const tone = block.shape.tone;
+    const color = tone === 'milestone' ? PALETTE.warn : tone === 'bar' ? PALETTE.accent : PALETTE.ink;
+    if (block.shape.kind === 'line') {
+      slide.addShape('line', { ...geo, line: { color, width: 1.5 } });
+      return;
+    }
+    slide.addShape(block.shape.kind, { ...geo, fill: { color }, line: { type: 'none' } });
+    return;
+  }
   if (block.table) {
     const rows = [
       block.table.header.map((t) => ({ text: t, options: { bold: true, color: PALETTE.ink, fill: { color: PALETTE.headFill } } })),
@@ -389,9 +564,10 @@ export async function buildKickoffPpt(bundle: KickoffBundle, outline: KickoffOut
     const bullets = sanitizeBullets(item.bullets, bundle, pageNo, warnings);
     const frames = framesFor(layoutFamilyOf(item.layout), item.layout, item.layout === 'twoCol' ? TEXT_SPLIT : undefined);
     const titlePt = item.layout === 'cover' ? 32 : 22;
-    const { blocks, dropped } = layoutBody(item, bundle, frames, bullets);
+    const { blocks, dropped, notes, violations } = layoutBody(item, bundle, frames, bullets);
     if (dropped.length) warnings.push(`第 ${pageNo} 页空间不足，已省略 ${dropped.join('、')}（内容未丢，页面上少排一块，可拆分该页）`);
-    const issues = pageViolations(frames.title, item.title, blocks, titlePt);
+    for (const n of notes) warnings.push(`第 ${pageNo} 页：${n}`);
+    const issues = [...pageViolations(frames.title, item.title, blocks, titlePt), ...violations];
     let titleBox = frames.title;
     let bodyBlocks = blocks;
     if (issues.length) {
