@@ -240,7 +240,16 @@ export interface WorkloadStat {
   counted: number;
   /** 页脚动态文案（验收 6） */
   footer: string;
+  /** 人月换算因子（估算配置单源，页面文字与计算必须同一个数） */
+  manDaysPerManMonth: number;
+  /** 两种口径都取不到数（无估算行且 Σ duration_days=0）：页面出占位而不是「0 人天」 */
+  noData: boolean;
+  /** FR-2.2：warn 级降级必须在页面上留痕的页脚小字，不适用时为 null */
+  reviewTrace: string | null;
 }
+
+/** 缺失数据的页面占位用词单源（FR-4.1：占位可见，但禁止据此编造人名/日期） */
+export const KICKOFF_PLACEHOLDER = '待补充';
 
 export interface KickoffRisk {
   item: string;
@@ -293,9 +302,11 @@ function complexityDist(plans: PlanTaskRow[]): Array<{ level: string; count: num
  * 工作量口径（§5 · FR-4.6）：优先估算引擎汇总，无估算行降级 Σ duration_days。
  * 降级分支排除 `kind='milestone'`——里程碑工期是其下子任务之和（T01001 二轮），
  * 一起累加会把同一批工作量算两遍，报价页数字直接翻倍。
+ * P6（复杂度/工期填充率）warn 时按 FR-2.2 在页脚留痕，不允许只在 UI 提示。
  */
-function workloadOf(summary: EstimateSummary, plans: PlanTaskRow[]): WorkloadStat {
+export function workloadOf(summary: EstimateSummary, plans: PlanTaskRow[], preflight: PreflightResult): WorkloadStat {
   const dist = complexityDist(plans);
+  const p6Warn = preflight.items.find((i) => i.key === 'P6')?.status === 'warn';
   if (summary.countedKeys.length > 0) {
     const dm = summary.directManDays;
     return {
@@ -306,19 +317,28 @@ function workloadOf(summary: EstimateSummary, plans: PlanTaskRow[]): WorkloadSta
       phases: summary.phases.map((p) => ({ phase: p.phase, expected: p.expected, rowCount: p.rowCount })),
       complexity: dist,
       counted: summary.countedKeys.length,
+      manDaysPerManMonth: summary.config.manDaysPerManMonth,
       footer: `工作量来源：估算引擎（P50 ${summary.quote.p50ManDays} 人天 / P84 ${summary.quote.p84ManDays} 人天）`,
+      noData: false,
+      reviewTrace: null,
     };
   }
-  const execDays = plans.filter((p) => p.kind !== 'milestone').reduce((s, p) => s + (p.duration_days ?? 0), 0);
+  const execPlans = plans.filter((p) => p.kind !== 'milestone');
+  const execDays = execPlans.reduce((s, p) => s + (p.duration_days ?? 0), 0);
+  // 0 人天是「没填」而不是「工作量是零」——出占位，别让读者拿 0 当结论
+  const noData = execDays === 0;
   return {
     source: 'duration',
     manDays: { expected: execDays, optimistic: null, pessimistic: null },
-    manMonth: Math.round(toManMonth(execDays, summary.config) * 100) / 100,
+    manMonth: noData ? 0 : Math.round(toManMonth(execDays, summary.config) * 100) / 100,
     quote: null,
     phases: [],
     complexity: dist,
-    counted: plans.filter((p) => p.kind !== 'milestone').length,
-    footer: '工期口径，非三点估算',
+    counted: execPlans.length,
+    manDaysPerManMonth: summary.config.manDaysPerManMonth,
+    footer: noData ? '工作量数据待补充（无估算行、计划未填工期）' : '工期口径，非三点估算',
+    noData,
+    reviewTrace: noData ? null : p6Warn ? '本页工期由排期推导，未经估算复核' : null,
   };
 }
 
@@ -414,6 +434,7 @@ export function collectBundle(projectId: string): KickoffBundle {
   const contentMd = detail ? String(detail.content_md ?? '') : '';
   const excerpt = docId ? trimKickoffPrd(contentMd, docId) : { text: '', truncated: false };
   const now = new Date();
+  const pf = buildPreflight(g);
   return {
     project: { id: g.projectId, name: g.projectName, workspacePath: g.ws.path ?? '' },
     prdDocs: g.docs.map((d) => ({
@@ -433,8 +454,8 @@ export function collectBundle(projectId: string): KickoffBundle {
     coverage: { total: g.cov.total, covered: g.cov.covered, uncovered: g.cov.uncovered, rate: g.cov.rate },
     assignees: assigneesOf(g.plans),
     risks: risksOf(g),
-    workload: workloadOf(g.summary, g.plans),
-    preflight: buildPreflight(g),
+    workload: workloadOf(g.summary, g.plans, pf),
+    preflight: pf,
     workspaceNote: workspaceNote(g.ws.path),
     dataAsOf: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`,
   };
@@ -611,8 +632,8 @@ function outlineFacts(b: KickoffBundle): string {
     `需求 ${b.requirements.length} 条，优先级分布：${[...priority.entries()].map(([k, v]) => `${k} ${v}`).join('、') || '无'}`,
     `计划 ${b.plans.length} 条（里程碑 ${b.milestones.length} 条），状态分布：${[...byStatus.entries()].map(([k, v]) => `${k} ${v}`).join('、') || '无'}`,
     `排期范围：${dates[0] ?? '无'} ~ ${ends[ends.length - 1] ?? '无'}`,
-    `测试用例覆盖率：${b.coverage.rate}%（已覆盖 ${b.coverage.covered}/${b.coverage.total}）`,
-    `工作量口径：${b.workload.source === 'estimate' ? '估算引擎' : '排期工期推导'}，参与行数 ${b.workload.counted}，复杂度分布 ${b.workload.complexity.map((c) => `${c.level}:${c.count}`).join(' ')}`,
+    `测试用例覆盖率：${b.coverage.total ? `${b.coverage.rate}%（已覆盖 ${b.coverage.covered}/${b.coverage.total}）` : '本期未建用例——覆盖率页改写测试策略口径，不出百分比结论'}`,
+    `工作量口径：${b.workload.source === 'estimate' ? '估算引擎' : '排期工期推导'}，参与行数 ${b.workload.counted}，复杂度分布 ${b.workload.complexity.map((c) => `${c.level}:${c.count}`).join(' ')}${b.workload.noData ? '（无估算行且计划未填工期，工作量页出占位，不要写成 0 人天）' : ''}`,
     `承担人：${b.assignees.length} 人${b.assignees.length ? `（${b.assignees.slice(0, 8).map((a) => `${a.name} ${a.planCount}条`).join('、')}）` : ''}`,
     `本地风险信号：${b.risks.length} 条（${b.risks.map((r) => r.item).join('；')}）`,
     b.workspaceNote ?? '',

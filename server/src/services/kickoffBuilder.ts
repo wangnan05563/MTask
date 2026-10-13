@@ -34,7 +34,7 @@ import {
   type Box,
   type LayoutFrames,
 } from './kickoff-layout';
-import type { KickoffBundle, KickoffDataKey, KickoffOutlineItem } from './kickoffService';
+import { KICKOFF_PLACEHOLDER, type KickoffBundle, type KickoffDataKey, type KickoffOutlineItem } from './kickoffService';
 
 /** 单页装配产物：一个块 = 一个原生对象 */
 export interface Block {
@@ -66,6 +66,12 @@ function statusMark(status: string): string {
   return status === 'done' ? '已完成' : status === 'doing' ? '进行中' : status === 'blocked' ? '阻塞' : '未开始';
 }
 
+/** 缺失值出「待补充」占位（FR-4.1）：留空白会被读成「没有这项东西」，占位才表达「该去填」 */
+function cell(v: string | null | undefined): string {
+  const s = (v ?? '').trim();
+  return s || KICKOFF_PLACEHOLDER;
+}
+
 /** 表格统一收口：超限行折成一句「其余 n 条见 X」，比截断诚实，也不会让读者以为这就是全部 */
 function clampRows(rows: string[][], rest: (n: number) => string[], cols: number): string[][] {
   const keep = rows.slice(0, MAX_TABLE_ROWS - 1);
@@ -94,16 +100,23 @@ function reqListTable(b: KickoffBundle): NonNullable<Block['table']> {
 }
 
 function planRowsTable(b: KickoffBundle): NonNullable<Block['table']> {
-  const all = b.plans.map((p) => [p.title.slice(0, 20), `${p.start_date}~${p.end_date}`, p.assignee || '—', statusMark(p.status), `${p.progress}%`]);
+  const all = b.plans.map((p) => [p.title.slice(0, 20), `${cell(p.start_date)}~${cell(p.end_date)}`, cell(p.assignee), statusMark(p.status), `${p.progress}%`]);
   return { header: ['任务', '起止', '负责人', '状态', '进度'], rows: clampRows(all, (n) => [`其余 ${n} 条`, '见项目计划页'], 5) };
 }
 
 function milestonesTable(b: KickoffBundle): NonNullable<Block['table']> {
-  const all = b.milestones.map((m) => [m.title.slice(0, 22), m.start_date || '—', m.end_date || '—', statusMark(m.status), `${m.progress}%`]);
+  const all = b.milestones.map((m) => [m.title.slice(0, 22), cell(m.start_date), cell(m.end_date), statusMark(m.status), `${m.progress}%`]);
   return { header: ['里程碑', '起', '止', '状态', '进度'], rows: clampRows(all, (n) => [`其余 ${n} 个`, '见项目计划页'], 5) };
 }
 
 function coverageLines(b: KickoffBundle): string[] {
+  // P5 warn 承诺过的改写：零用例时不出「0 条 / 覆盖率 0%」这种把空缺冒充结论的数字
+  if (b.coverage.total === 0) {
+    return [
+      `测试用例：本期未建（${KICKOFF_PLACEHOLDER}）——测试策略按 PRD 验收标准描述，覆盖统计待用例生成后补`,
+      `需求 ${b.requirements.length} 条，尚无用例可比对覆盖`,
+    ];
+  }
   return [
     `测试用例 ${b.coverage.total} 条：覆盖 ${b.coverage.covered} / 未覆盖 ${b.coverage.uncovered}`,
     `需求覆盖率 ${b.coverage.rate}%`,
@@ -111,8 +124,24 @@ function coverageLines(b: KickoffBundle): string[] {
 }
 
 function assigneesTable(b: KickoffBundle): NonNullable<Block['table']> {
-  const all = b.assignees.map((a) => [a.name || '未指派', String(a.planCount)]);
+  const all = b.assignees.map((a) => [a.name || KICKOFF_PLACEHOLDER, String(a.planCount)]);
   return { header: ['负责人', '承担任务数'], rows: clampRows(all, (n) => [`其余 ${n} 人`, '见项目计划页'], 2) };
+}
+
+/** FR-4.1：assignee 全空时整页占位 + 一句口径说明，禁止由 AI 编人名 */
+function assigneesBlocks(b: KickoffBundle): Array<Omit<Block, 'box'>> {
+  if (b.assignees.length === 0) {
+    return [
+      {
+        text: {
+          content: `负责人来源为计划行的 assignee 字段，当前 ${b.plans.length} 条计划均未填写，一律记「${KICKOFF_PLACEHOLDER}」——会上现场确认后再补，页面不代填人名。`,
+          pt: MIN_BODY_PT,
+        },
+      },
+      { table: { header: ['负责人', '承担任务数'], rows: [[KICKOFF_PLACEHOLDER, String(b.plans.length)]] } },
+    ];
+  }
+  return [{ table: assigneesTable(b) }];
 }
 
 function risksTable(b: KickoffBundle): NonNullable<Block['table']> {
@@ -122,11 +151,20 @@ function risksTable(b: KickoffBundle): NonNullable<Block['table']> {
 
 function workloadLines(b: KickoffBundle): string[] {
   const w = b.workload;
+  if (w.noData) {
+    // FR-4.6 占位分支：库内既无估算行也无工期，出「待补充」而不是把空缺写成 0 人天
+    return [
+      `总工作量：${KICKOFF_PLACEHOLDER}（无估算行，且 ${w.counted} 条计划均未填工期）`,
+      `人月 = 人天 ÷ ${w.manDaysPerManMonth}（换算因子与估算视图同源），数据补齐后自动出数`,
+      w.footer,
+      `补数路径：估算工作台生成三点估算，或在项目计划逐条填「工期(工作日)」`,
+    ];
+  }
   const range = w.manDays.optimistic != null && w.manDays.pessimistic != null
     ? `${w.manDays.optimistic}~${w.manDays.pessimistic}（P50 ${w.manDays.expected}）`
     : `${w.manDays.expected}`;
   const lines = [
-    `总工作量 ${range} 人天 ≈ ${w.manMonth} 人月`,
+    `总工作量 ${range} 人天 ≈ ${w.manMonth} 人月（人月 = 人天 ÷ ${w.manDaysPerManMonth}）`,
     w.quote ? `报价区间：P50 ${w.quote.p50ManDays} / P84 ${w.quote.p84ManDays} 人天` : '报价区间：无三点估算，按工期口径',
     w.footer,
   ];
@@ -144,7 +182,7 @@ function workspaceLines(b: KickoffBundle): string[] {
 
 /** 时间线列表版（T02100 的甘特几何不可用时的回落形态，FR-4.5） */
 function timelineListTable(b: KickoffBundle): NonNullable<Block['table']> {
-  const all = b.plans.map((p) => [p.title.slice(0, 24), p.start_date || '—', p.end_date || '—', String(p.duration_days), statusMark(p.status)]);
+  const all = b.plans.map((p) => [p.title.slice(0, 24), cell(p.start_date), cell(p.end_date), String(p.duration_days), statusMark(p.status)]);
   return { header: ['任务', '起', '止', '工期(工作日)', '状态'], rows: clampRows(all, (n) => [`其余 ${n} 条`, '见项目计划页'], 5) };
 }
 
@@ -186,7 +224,7 @@ export function blocksForKey(key: KickoffDataKey, b: KickoffBundle): Array<Omit<
         ...(b.coverage.total > 0 ? [{ chart: { type: 'doughnut' as const, name: '用例覆盖', labels: ['已覆盖', '未覆盖'], values: [b.coverage.covered, b.coverage.uncovered] } }] : []),
       ];
     case 'assignees':
-      return [{ table: assigneesTable(b) }];
+      return assigneesBlocks(b);
     case 'risks':
       return [{ table: risksTable(b) }];
     case 'workload':
@@ -545,6 +583,19 @@ export function drawBlock(slide: any, block: Block): void {
 
 // ---------- 主入口 ----------
 
+/**
+ * 逐页脚注（FR-4.11）+ 工作量页动态口径（验收 6）+ warn 级留痕（FR-2.2）。
+ * 口径与留痕都必须落在页面上：客户会上追问依据时，脚注是第一道答案，不能只在面板里提示。
+ */
+export function footerOf(item: KickoffOutlineItem, b: KickoffBundle, pageNo: number, total: number): string {
+  const parts = [b.project.name, item.section || '正文', `数据截至 ${b.dataAsOf}`];
+  if (item.dataKeys.includes('workload')) {
+    parts.push(b.workload.footer);
+    if (b.workload.reviewTrace) parts.push(b.workload.reviewTrace);
+  }
+  return `${parts.join(' · ')} · 第 ${pageNo}/${total} 页`;
+}
+
 export async function buildKickoffPpt(bundle: KickoffBundle, outline: KickoffOutlineItem[]): Promise<KickoffBuildResult> {
   const warnings: string[] = [];
   const paletteIssues = auditPalette();
@@ -595,7 +646,7 @@ export async function buildKickoffPpt(bundle: KickoffBundle, outline: KickoffOut
         warnings.push(`第 ${pageNo} 页有元素写入失败（${e instanceof Error ? e.message : String(e)}），已跳过`);
       }
     }
-    slide.addText(`${bundle.project.name} · 数据截至 ${bundle.dataAsOf} · 第 ${pageNo}/${outline.length} 页`, {
+    slide.addText(footerOf(item, bundle, pageNo, outline.length), {
       x: 0.5,
       y: KICKOFF_LAYOUT_DEF.height - FOOTER_H - 0.08,
       w: 9,
@@ -603,6 +654,8 @@ export async function buildKickoffPpt(bundle: KickoffBundle, outline: KickoffOut
       fontSize: 9,
       color: PALETTE.ink,
       align: 'right',
+      // 脚注只有一行预算：换行会顶出画布下缘，宁可让长口径向左溢出（右对齐，仍在画布内）
+      wrap: false,
       fontFace: FONT.face,
     });
   });
