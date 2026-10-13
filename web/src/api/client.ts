@@ -1,9 +1,17 @@
 /** 轻量 API 客户端：统一前缀 /api，错误统一抛出 */
 
 /** Electron 壳（file:// 页面）走 api:// 自定义协议，由主进程转发到本地服务；浏览器访问用同源相对路径 */
-/** API 基础路径导出：供 EventSource/文件下载等无法走统一 request 的场景构建 URL */
+/**
+ * API 基础路径：从 document.baseURI 推导（页面地址 = index.html 落点）。
+ * 为什么不能写死 '/api'：根绝对路径会绕过前缀型隧道路由——内网穿透 pathPrefix 模式
+ * （如 Tailscale /mtask/）下页面在 /mtask/，'/api' 却打到 https://host/api，
+ * 完全落在隧道挂载之外，数据面全断（内网穿透×移动端实测发现）。
+ * baseURI 目录推导：根部署 '/?m=1' → '/api'（与旧行为一致）；前缀部署 '/mtask/?m=1' → '/mtask/api'。
+ */
 export const apiBase =
-  typeof location !== 'undefined' && !/^https?:$/.test(location.protocol) ? 'api://mtask' : '/api';
+  typeof location !== 'undefined' && !/^https?:$/.test(location.protocol)
+    ? 'api://mtask'
+    : new URL('api', document.baseURI).toString();
 
 // 访问令牌：启用内网穿透后，所有数据接口需携带 X-Access-Token。模块加载时从本地恢复，重启后仍生效
 const TOKEN_KEY = 'mtask.accessToken';

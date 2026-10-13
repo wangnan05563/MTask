@@ -3,9 +3,13 @@
  * 与 client.ts 独立，避免在统一请求封装里混入流式语义；apiBase 与访问令牌规则保持一致。
  */
 
-// Electron 壳（file:// 页面）走 api:// 自定义协议；浏览器访问用同源相对路径
+// Electron 壳（file:// 页面）走 api:// 自定义协议；浏览器访问用同源相对路径。
+// 从 baseURI 推导而非写死 '/api'：前缀型隧道（pathPrefix）下根绝对路径会绕过挂载前缀，
+// 详见 client.ts apiBase 注释（内网穿透×移动端实测发现）。
 const apiBase =
-  typeof location !== 'undefined' && !/^https?:$/.test(location.protocol) ? 'api://mtask' : '/api';
+  typeof location !== 'undefined' && !/^https?:$/.test(location.protocol)
+    ? 'api://mtask'
+    : new URL('api', document.baseURI).toString();
 
 // 访问令牌与 client.ts 对齐：启用内网穿透后需携带 X-Access-Token。
 // 用函数读取而非模块加载时缓存一次，使 setAccessToken 变更后本模块也能拿到最新值。

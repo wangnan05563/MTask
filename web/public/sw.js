@@ -24,10 +24,12 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
-  // 数据接口不缓存
-  if (url.pathname.startsWith('/api')) return;
-  // 静态资源：cache-first
-  if (url.pathname.startsWith('/assets')) {
+  // 数据接口不缓存。前缀兼容：apiBase 从 baseURI 推导后，前缀部署（如 /mtask/api）的
+  // pathname 带挂载前缀，根绝对 startsWith('/api') 会漏判 → API 请求掉进导航兜底分支，
+  // 失败时把 index.html 当 API 响应缓存（内网穿透×移动端实测发现）。按路径段判断两种形态都豁免。
+  if (url.pathname.split('/').includes('api')) return;
+  // 静态资源：cache-first（同上按路径段判断，前缀部署下 /mtask/assets/... 也命中）
+  if (url.pathname.split('/').includes('assets')) {
     event.respondWith(caches.match(req).then((r) => r || fetch(req)));
     return;
   }

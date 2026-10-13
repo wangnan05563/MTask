@@ -42,9 +42,14 @@ export function MobileShell() {
     toastTimer.current = setTimeout(() => setToast(''), 2500);
   }, []);
 
-  // 鉴权探测：无令牌配置则直接放行；已配置则需携带令牌
+  // 鉴权探测：无令牌配置则直接放行；已配置则需携带令牌。
+  // 探测端点必须是「真实存在 + 受 accessTokenGuard 保护 + 只读」的数据接口：
+  // - /health 在守卫里是探活豁免路径（index.ts L67-73），拿它探测永远 200，令牌屏永不出现；
+  // - 端点还必须真实存在——守卫挂在路由之前，无令牌时任何路径都 401（会掩护 404），
+  //   带正确令牌放行后才暴露路由缺失（/api/config 就不存在，首版修复踩过）。
+  // /projects 只读、廉价、移动端必消费。
   useEffect(() => {
-    api.get('/health').then(() => setNeedToken(false)).catch((e) => {
+    api.get('/projects').then(() => setNeedToken(false)).catch((e) => {
       if (e instanceof Error && e.message === 'unauthorized') setNeedToken(true);
     });
   }, []);
@@ -77,7 +82,8 @@ export function MobileShell() {
     if (!tokenInput.trim()) return;
     setAccessToken(tokenInput.trim());
     try {
-      await api.get('/health');
+      // 校验同样必须走真实存在且受守卫的端点：/health 豁免会让任意垃圾令牌「通过」
+      await api.get('/projects');
       setNeedToken(false);
     } catch (e) {
       setAccessToken('');
