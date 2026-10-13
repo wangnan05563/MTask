@@ -47,7 +47,7 @@ ok('S-04 只用稳定原生对象 API（addText/addTable/addChart），不整页
 ok('S-05 版式断言在写盘前消费（越界 → 降级 + warnings，验收 7）',
   /pageViolations\(/.test(B) && /safeFrames\(\)/.test(B) && /已降级为「标题 \+ 正文」安全版式/.test(B));
 ok('S-06 数字防幻觉改写规则成表且逐条记 warning（FR-3.4 / 验收 8）',
-  /const METRICS: Metric\[\] = \[/.test(B) && (B.match(/\{ re: \//g) ?? []).length >= 6 && /数字由系统改写/.test(B));
+  /const METRICS: Metric\[\] = \[/.test(B) && (B.match(/\bre: \//g) ?? []).length >= 6 && /数字由系统改写/.test(B));
 ok('S-07 几何判断委托 T02098（本层不自己算对比度/边界）',
   !/relativeLuminance|Math\.pow\(/.test(B) && /assertInBounds/.test(B) && /findOverlaps/.test(B) && /contrastRatio/.test(B) === false && /auditPalette\(\)/.test(B));
 ok('S-08 色值只走 PALETTE 单源', !/["'#][0-9a-fA-F]{6}/.test(B.replace(/\/\/.*$/gm, '')) && /PALETTE\./.test(B));
