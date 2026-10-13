@@ -171,6 +171,49 @@ export function computeWindow(
   return { start, end, padTop: start * rowH, padBottom: Math.max(0, (rowCount - end) * rowH) };
 }
 
+/**
+ * 变高窗口计算（T02121 估算明细段：里程碑表头 + 任务行高度不同）。
+ * `offsets` 为累计顶偏移数组（长度 n+1，offsets[0]=0, offsets[n]=总高），由调用方按各 entry 实际高度累加。
+ * 返回 [start,end) 渲染区间 + 顶/底占位高，与 `computeWindow` 同 `VWindow` 契约：
+ * 渲染行数上界 = 视口行 + 2×overscan，与 `rowCount` 无关；总占位恒等于 `offsets[n]`，滚动条长度与全量一致。
+ * 纯函数、脱离 DOM，可单测（见 .workbuddy/t02121-verify.mts）。
+ */
+export function computeWindowVar(
+  scrollTop: number, offsets: number[], viewportH: number, overscan = VIRTUAL_OVERSCAN,
+): VWindow {
+  const n = offsets.length - 1;
+  if (n <= 0) return { start: 0, end: 0, padTop: 0, padBottom: 0 };
+  const total = offsets[n];
+  // 视口内首条：最大的 i 使 offsets[i] <= scrollTop（该 entry 顶在视口上沿或上方）
+  const first = lastLE(offsets, scrollTop);
+  // 视口内末条之后：最小的 i 使 offsets[i] >= scrollTop + viewportH
+  const past = firstGE(offsets, scrollTop + viewportH);
+  const start = Math.max(0, first - overscan);
+  const end = Math.min(n, past + overscan);
+  return { start, end, padTop: offsets[start], padBottom: Math.max(0, total - offsets[end]) };
+}
+
+/** 最大下标 i 使 offsets[i] <= x（offsets 升序；x<offsets[0] 返回 0） */
+function lastLE(offsets: number[], x: number): number {
+  let lo = 0, hi = offsets.length - 1, ans = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (offsets[mid] <= x) { ans = mid; lo = mid + 1; }
+    else hi = mid - 1;
+  }
+  return ans;
+}
+/** 最小下标 i 使 offsets[i] >= x（offsets 升序；x>offsets[末] 返回 offsets.length） */
+function firstGE(offsets: number[], x: number): number {
+  let lo = 0, hi = offsets.length - 1, ans = offsets.length;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (offsets[mid] >= x) { ans = mid; hi = mid - 1; }
+    else lo = mid + 1;
+  }
+  return ans;
+}
+
 /** 执行结果着色（§7.3 列 8）：pass→success，fail→danger，blocked/skip→muted */
 export const RESULT_COLOR: Record<string, string> = {
   pass: 'var(--success)',

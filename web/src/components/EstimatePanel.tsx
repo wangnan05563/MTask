@@ -19,8 +19,14 @@
  *    面板里出现的 1.5 / 0.67 只能是服务端下发的 `checks.drift.thresholds`，不许是字面量——
  *    阈值写第二份，调阈值就变成「只改了一处」的 bug（同红线①，也同 `util/planDeps` 的教训）。
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement } from 'react';
 import { groupTimelinePhases, type TlPlan } from './PlanTimeline';
+import { computeWindowVar, VIRTUAL_OVERSCAN, VIRTUAL_VIEWPORT_H } from '../pages/testCaseModel';
+
+// T02121 明细段窗口化常量（与 testCaseModel 虚拟滚动同族；行高写死以保证窗口数学不漂，见 computeWindowVar）
+const EST_VIRTUAL_THRESHOLD = 120; // 明细行 >120 启用虚拟滚动（500 行首屏从 737ms 降至 <500ms；阈值留余量，指标不软化）
+const EST_HEADER_H = 30; // 里程碑表头行高（border-box：内容 ~24 + 段间距 6），折叠语义不变
+const EST_ITEM_H = 54; // 任务行高（border-box：padding8 + 边框1 + 标题/徽标/区间条 ~40），badges 行改 nowrap 防撑高
 import { PhaseBarChart, ParetoChart, TornadoChart, paretoGeometries, tornadoGeometries } from './estimateCharts';
 import { api } from '../api/client';
 import {
@@ -239,6 +245,11 @@ export function useEstimatePanelMode(): 'docked' | 'overlay' {
   return mode;
 }
 
+// T02121 明细段窗口化的扁平渲染条目（表头 / 任务行），折叠·筛选态在构建时即消费
+type EstFlatEntry =
+  | { kind: 'header'; key: string; group: ReturnType<typeof groupTimelinePhases>[number] }
+  | { kind: 'item'; key: string; row: PanelRow };
+
 export interface EstimatePanelProps {
   readonly projectId: string;
   /** 与时间线同源的计划集（未归档）；分组/折叠口径也同源 */
@@ -397,6 +408,38 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
     ),
     [rowRatios, rowById, milestoneIds],
   );
+
+  // T02121 明细段窗口化（§9 性能红线，500 行首屏 ≤500ms）：仅「全部」明细且行数 >阈值 启用，
+  // 折叠/筛选态由 estFlat 构建时即消费，渲染只切窗内行；几何与 testCaseModel.computeWindowVar 单源。
+  const [scrollTop, setScrollTop] = useState(0);
+  const estVirtual = rows.length > EST_VIRTUAL_THRESHOLD;
+  const estFlat = useMemo<EstFlatEntry[]>(() => {
+    const out: EstFlatEntry[] = [];
+    for (const group of phases) {
+      const ms = group.milestone;
+      if (ms) out.push({ kind: 'header', key: ms.id, group });
+      const collapsed = ms ? !!collapsedMs[ms.id] : false;
+      if (collapsed) continue; // 折叠态：段体随折叠整体收起（与列表/甘特共用 collapsedMs）
+      const msRow = ms ? rowById.get(ms.id) : null;
+      const items = [msRow, ...group.items.map((p) => rowById.get(p.id))].filter((r): r is PanelRow => !!r);
+      for (const r of items) {
+        if (onlyUnreviewed && r.source === 'manual') continue; // 与旧逻辑一致：手动已复核行在「只看未复核」下隐藏
+        out.push({ kind: 'item', key: r.planId, row: r });
+      }
+    }
+    return out;
+  }, [phases, rowById, collapsedMs, onlyUnreviewed]);
+  const estOffsets = useMemo(() => {
+    const off = [0];
+    let acc = 0;
+    for (const e of estFlat) {
+      acc += e.kind === 'header' ? EST_HEADER_H : EST_ITEM_H;
+      off.push(acc);
+    }
+    return off;
+  }, [estFlat]);
+  const estWin = estVirtual ? computeWindowVar(scrollTop, estOffsets, VIRTUAL_VIEWPORT_H, VIRTUAL_OVERSCAN) : null;
+  const estVisible = estWin ? estFlat.slice(estWin.start, estWin.end) : estFlat;
 
   /** 空态：一条估算都没落库（未录入 ≠ 全为 default——default 行也要先经「按规则推导」写入才存在） */
   const isEmpty = !loading && !error && (data?.items.length ?? 0) === 0;
@@ -793,6 +836,148 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
   }
   if (!data) return null;
 
+  // T02121：里程碑表头 / 任务行渲染（窗口化后作为扁平条目；显式 height+border-box 保证窗口数学不漂）
+  const renderHeader = (group: ReturnType<typeof groupTimelinePhases>[number]): ReactElement => {
+    const ms = group.milestone;
+    if (!ms) return <div key={group.items[0]?.id ?? 'prelude'} aria-hidden />;
+    const msRow = rowById.get(ms.id);
+    const collapsed = !!collapsedMs[ms.id];
+    const toggle = (): void => { onToggleMsCollapse(ms.id); };
+    return (
+      <div
+        key={ms.id}
+        role="button"
+        tabIndex={0}
+        onClick={toggle}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } }}
+        style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 2px', borderTop: '1px solid var(--border-strong)', cursor: 'pointer', fontSize: 12, fontWeight: 600, height: EST_HEADER_H, boxSizing: 'border-box' }}
+        title={collapsed ? '展开该阶段明细' : '收起该阶段明细（与列表/甘特共用折叠态）'}
+      >
+        <span style={{ color: 'var(--text-muted)' }}>{collapsed ? '▸' : '▾'}</span>
+        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ms.title}</span>
+        {msRow && <span style={{ fontFamily: MONO, color: 'var(--text-muted)', fontWeight: 400 }}>E {num(msRow.expected)}</span>}
+        <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>不进 Σ</span>
+      </div>
+    );
+  };
+
+  // T02121：任务行（窗口化后作为扁平条目；显式 height+border-box 保证窗口数学不漂；badges 改 nowrap 防撑高）
+  const renderItem = (r: PanelRow): ReactElement => {
+    const err = rowErrors[r.planId];
+    const locked = r.drift?.locked === true;
+    const unlocked = unlockedRows.includes(r.planId);
+    const editable = (r.kind !== 'milestone' && !locked) || (locked && unlocked);
+    const cellValue = (f: PointField): string =>
+      draft && draft.planId === r.planId && draft.field === f
+        ? draft.value
+        : (r[f] === null ? '' : String(r[f]));
+    const badge = (
+      <span title={r.tip} style={{ fontSize: 10, padding: '0 4px', borderRadius: 3, border: `1px solid ${r.badge.color}`, color: r.badge.color, whiteSpace: 'nowrap' }}>
+        {r.badge.label}
+      </span>
+    );
+    const g = whisker.get(r.planId);
+    const wColor = r.suggestion ? 'var(--text-muted)' : 'var(--accent)';
+    return (
+      <div key={r.planId} style={{ borderBottom: '1px solid var(--border)', padding: '4px 0 4px 4px', fontSize: 12, display: 'flex', gap: 6, alignItems: 'center', height: EST_ITEM_H, boxSizing: 'border-box', overflow: 'hidden' }}>
+        <input
+          type="checkbox"
+          checked={selIds.includes(r.planId)}
+          disabled={r.kind === 'milestone' || !editable}
+          onChange={() => toggleSel(r.planId)}
+          title={editable ? '勾选后参与批量填充' : '里程碑行不参与批量填充（§4.6 红线一）'}
+          style={{ margin: 0, flex: '0 0 auto' }}
+        />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: r.suggestion ? 'var(--text-muted)' : 'var(--text)' }} title={r.title}>
+            {r.reqNos.length > 0 && <span style={{ color: 'var(--text-muted)', marginRight: 4, fontFamily: MONO, fontSize: 11 }}>{r.reqNos.join('、')}</span>}
+            {r.title}
+          </div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 2, flexWrap: 'nowrap', overflow: 'hidden' }}>
+            {badge}
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>复杂度 {r.complexity ?? '—'}</span>
+            {r.drift?.flag && (
+              <span
+                title={`偏差比值 = E ÷ 排期工作日 = ${num(r.drift.ratio)}\n服务端阈值：> ${data.checks.drift.thresholds.high} 或 < ${data.checks.drift.thresholds.low}（§7「计划工期改动」行，面板不重算比值）`}
+                style={{ fontSize: 10, padding: '0 4px', borderRadius: 3, border: '1px solid var(--warning, #c80)', color: 'var(--warning, #c80)', whiteSpace: 'nowrap' }}
+              >
+                偏差 {num(r.drift.ratio)}
+              </span>
+            )}
+            {r.drift?.pressure && (
+              <span
+                title={`E ${num(r.expected)} 人天 > 剩余排期工作日 ${num(r.drift.remainingWorkdays)}（今日 ${data.checks.drift.today}，工作日已扣节假日/计加班日）`}
+                style={{ fontSize: 10, padding: '0 4px', borderRadius: 3, border: '1px solid var(--danger)', color: 'var(--danger)', whiteSpace: 'nowrap' }}
+              >
+                超排期
+              </span>
+            )}
+            {locked && (
+              <span
+                title={unlocked
+                  ? '本会话已解锁：改写会带 unlock 入参，服务端放行这一行（不改任何全局开关）'
+                  : '§7 已收口里程碑 → 估算行只读（已交付项不得追溯改写报价）；确需改写点右侧「解锁改写」'}
+                style={{ fontSize: 10, padding: '0 4px', borderRadius: 3, border: `1px solid ${unlocked ? 'var(--accent)' : 'var(--border-strong)'}`, color: unlocked ? 'var(--accent)' : 'var(--text-muted)', whiteSpace: 'nowrap' }}
+              >
+                {unlocked ? '已解锁' : '已收口·只读'}
+              </span>
+            )}
+            {locked && (
+              <button type="button" className="tbtn-anim" style={toolBtn(unlocked ? 'danger' : 'accent')} onClick={() => toggleUnlock(r.planId)}
+                title={unlocked ? '收回解锁，本行重新按只读处理' : '仅对本行、仅本会话放开编辑；写入仍走服务端校验'}>
+                {unlocked ? '取消解锁' : '解锁改写'}
+              </button>
+            )}
+            {err && <span style={{ fontSize: 11, color: 'var(--danger)' }}>{err}</span>}
+          </div>
+          {g && (
+            <div
+              role="img"
+              aria-label={`区间条 ${r.title}`}
+              title={`O ${num(r.optimistic)} —— P ${num(r.pessimistic)}，竖线为 E ${num(r.expected)} 人天`
+                + `${r.suggestion ? '（推导建议值，未落库、不进 Σ）' : ''}\n横向刻度按明细行最大 P=${num(g.scaleMax)} 归一，行间长度可比`}
+              style={{ position: 'relative', height: 8, marginTop: 3 }}
+            >
+              <span aria-hidden style={{ position: 'absolute', top: 3, left: `${g.loPct}%`, width: `${Math.max(g.hiPct - g.loPct, 0.4)}%`, minWidth: 2, height: 1, background: wColor }} />
+              <span aria-hidden style={{ position: 'absolute', top: 1, left: `${g.loPct}%`, width: 1, height: 6, background: wColor }} />
+              <span aria-hidden style={{ position: 'absolute', top: 1, left: `${g.hiPct}%`, width: 1, height: 6, background: wColor }} />
+              <span aria-hidden style={{ position: 'absolute', top: 0, left: `${g.ePct}%`, width: 2, height: 8, background: wColor, opacity: 0.85 }} />
+            </div>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 4, fontFamily: MONO, textAlign: 'right', alignItems: 'center' }}>
+          {POINT_FIELDS.map((f) => (
+            <input
+              key={f}
+              type="number"
+              step={0.5}
+              min={0}
+              disabled={!editable || busy}
+              value={cellValue(f)}
+              placeholder="—"
+              aria-label={`${r.title} ${POINT_LABEL[f]}（人天）`}
+              title={editable
+                ? `${POINT_LABEL[f]}（人天，0.5 步进）：Enter 或失焦即落库，Esc 还原${locked && unlocked ? '（本行已显式解锁，写入带 unlock）' : ''}${err ? `\n${err}` : ''}`
+                : locked
+                  ? '§7 里程碑已收口 → 估算行只读（已交付项不得追溯改写报价），需点「解锁改写」'
+                  : '里程碑行不落估算（§4.6 红线一），值只作参考'}
+              onChange={(e) => setDraft({ planId: r.planId, field: f, value: e.target.value })}
+              onFocus={() => setDraft({ planId: r.planId, field: f, value: cellValue(f) })}
+              onBlur={() => void commitDraft(draft)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); void commitDraft(draft); }
+                else if (e.key === 'Escape') { e.preventDefault(); setDraft(null); }
+              }}
+              style={{ ...pointInput(err), color: f === 'likely' ? 'var(--text)' : 'var(--text-muted)' }}
+            />
+          ))}
+          <span style={{ width: 38, textAlign: 'right' }} title="期望值 E（服务端算，只读）">{num(r.expected)}</span>
+          <span style={{ width: 34, textAlign: 'right', color: 'var(--text-muted)' }} title="σ（未落库行不计算）">{num(r.sigma)}</span>
+        </div>
+      </div>
+    );
+  };
+
   const s = data.summary;
   const cfg = data.params.config;
   const rc = s.ratioCheck;
@@ -1105,166 +1290,38 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
           </div>
         )}
 
-        {phases.map((group) => {
-          const ms = group.milestone;
-          const msRow = ms ? rowById.get(ms.id) : null;
-          // 折叠语义与 T01576 一致：折叠只摘掉段内任务行，里程碑行本身常驻；
-          // 折叠态是父级的 `plan.collapsedMs`，面板翻转它之后由父级重渲染回传，本组件不另存一份。
-          const collapsed = ms ? !!collapsedMs[ms.id] : false;
-          const toggle = (): void => { if (ms) onToggleMsCollapse(ms.id); };
-          return (
-            <div key={ms?.id ?? 'prelude'} style={{ marginBottom: 6 }}>
-              {ms && (
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={toggle}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } }}
-                  style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 2px', borderTop: '1px solid var(--border-strong)', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
-                  title={collapsed ? '展开该阶段明细' : '收起该阶段明细（与列表/甘特共用折叠态）'}
-                >
-                  <span style={{ color: 'var(--text-muted)' }}>{collapsed ? '▸' : '▾'}</span>
-                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ms.title}</span>
-                  {msRow && <span style={{ fontFamily: MONO, color: 'var(--text-muted)', fontWeight: 400 }}>E {num(msRow.expected)}</span>}
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>不进 Σ</span>
-                </div>
-              )}
-              {/* §7 收口只读的落点：`groupTimelinePhases` 把里程碑放在 `milestone` 字段而不是 `items`
-                  （T01621 口径），于是「已收口·只读」徽标 + 「解锁改写」这条 §7 判据的 UI 出口在按 items
-                  渲染时永远走不到——只读判定恰恰只对里程碑成立。这里把里程碑自己的估算行补进本段的渲染
-                  列表首位（分组仍单源于 `groupTimelinePhases`，折叠语义不变：段体随折叠整体收起）。 */}
-              {!collapsed && ([msRow, ...group.items.map((p) => rowById.get(p.id))]
-                .filter((r): r is PanelRow => !!r)
-                .map((r) => {
-                if (onlyUnreviewed && r.source === 'manual') return null;
-                const err = rowErrors[r.planId];
-                // §7 只读态由服务端判定（`checks`/`items[].drift`），面板不自判一次；
-                // 「里程碑不落估算」（§4.6 红线一）仍由 kind 决定——两条规则叠出来的结果是：
-                // 未收口里程碑不可编辑（本来就不落估算），已收口里程碑要「解锁改写」才放开。
-                const locked = r.drift?.locked === true;
-                const unlocked = unlockedRows.includes(r.planId);
-                const editable = (r.kind !== 'milestone' && !locked) || (locked && unlocked);
-                const cellValue = (f: PointField): string =>
-                  draft && draft.planId === r.planId && draft.field === f
-                    ? draft.value
-                    : (r[f] === null ? '' : String(r[f]));
-                const badge = (
-                  <span title={r.tip} style={{ fontSize: 10, padding: '0 4px', borderRadius: 3, border: `1px solid ${r.badge.color}`, color: r.badge.color, whiteSpace: 'nowrap' }}>
-                    {r.badge.label}
-                  </span>
-                );
-                // §5.4 区间条：建议行（未落库）用次级色，与「建议值不进 Σ」的灰显口径一致——
-                // 一根同样长的 --accent 条会让读者把没落库的猜测当成已复核的报价依据。
-                const g = whisker.get(r.planId);
-                const wColor = r.suggestion ? 'var(--text-muted)' : 'var(--accent)';
-                return (
-                  <div key={r.planId} style={{ borderBottom: '1px solid var(--border)', padding: '4px 0 4px 4px', fontSize: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
-                    <input
-                      type="checkbox"
-                      checked={selIds.includes(r.planId)}
-                      disabled={r.kind === 'milestone' || !editable}
-                      onChange={() => toggleSel(r.planId)}
-                      title={editable ? '勾选后参与批量填充' : '里程碑行不参与批量填充（§4.6 红线一）'}
-                      style={{ margin: 0, flex: '0 0 auto' }}
-                    />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: r.suggestion ? 'var(--text-muted)' : 'var(--text)' }} title={r.title}>
-                        {r.reqNos.length > 0 && <span style={{ color: 'var(--text-muted)', marginRight: 4, fontFamily: MONO, fontSize: 11 }}>{r.reqNos.join('、')}</span>}
-                        {r.title}
-                      </div>
-                      <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 2, flexWrap: 'wrap' }}>
-                        {badge}
-                        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>复杂度 {r.complexity ?? '—'}</span>
-                        {/* §7 偏差徽标：比值与阈值都来自服务端 `drift`，面板只把「黄色」这层语义画出来 */}
-                        {r.drift?.flag && (
-                          <span
-                            title={`偏差比值 = E ÷ 排期工作日 = ${num(r.drift.ratio)}\n`
-                              + `服务端阈值：> ${data.checks.drift.thresholds.high} 或 < ${data.checks.drift.thresholds.low}（§7「计划工期改动」行，面板不重算比值）`}
-                            style={{ fontSize: 10, padding: '0 4px', borderRadius: 3, border: '1px solid var(--warning, #c80)', color: 'var(--warning, #c80)', whiteSpace: 'nowrap' }}
-                          >
-                            偏差 {num(r.drift.ratio)}
-                          </span>
-                        )}
-                        {r.drift?.pressure && (
-                          <span
-                            title={`E ${num(r.expected)} 人天 > 剩余排期工作日 ${num(r.drift.remainingWorkdays)}（今日 ${data.checks.drift.today}，工作日已扣节假日/计加班日）`}
-                            style={{ fontSize: 10, padding: '0 4px', borderRadius: 3, border: '1px solid var(--danger)', color: 'var(--danger)', whiteSpace: 'nowrap' }}
-                          >
-                            超排期
-                          </span>
-                        )}
-                        {locked && (
-                          <span
-                            title={unlocked
-                              ? '本会话已解锁：改写会带 unlock 入参，服务端放行这一行（不改任何全局开关）'
-                              : '§7 已收口里程碑 → 估算行只读（已交付项不得追溯改写报价）；确需改写点右侧「解锁改写」'}
-                            style={{ fontSize: 10, padding: '0 4px', borderRadius: 3, border: `1px solid ${unlocked ? 'var(--accent)' : 'var(--border-strong)'}`, color: unlocked ? 'var(--accent)' : 'var(--text-muted)', whiteSpace: 'nowrap' }}
-                          >
-                            {unlocked ? '已解锁' : '已收口·只读'}
-                          </span>
-                        )}
-                        {locked && (
-                          <button type="button" className="tbtn-anim" style={toolBtn(unlocked ? 'danger' : 'accent')} onClick={() => toggleUnlock(r.planId)}
-                            title={unlocked ? '收回解锁，本行重新按只读处理' : '仅对本行、仅本会话放开编辑；写入仍走服务端校验'}>
-                            {unlocked ? '取消解锁' : '解锁改写'}
-                          </button>
-                        )}
-                        {err && <span style={{ fontSize: 11, color: 'var(--danger)' }}>{err}</span>}
-                      </div>
-                      {g && (
-                        <div
-                          role="img"
-                          aria-label={`区间条 ${r.title}`}
-                          title={`O ${num(r.optimistic)} —— P ${num(r.pessimistic)}，竖线为 E ${num(r.expected)} 人天`
-                            + `${r.suggestion ? '（推导建议值，未落库、不进 Σ）' : ''}\n`
-                            + `横向刻度按明细行最大 P=${num(g.scaleMax)} 归一，行间长度可比`}
-                          style={{ position: 'relative', height: 8, marginTop: 3 }}
-                        >
-                          {/* 横线宽度：0.4% 是相对下限，minWidth 2px 是绝对下限——面板窄到 130px 时 0.4% 只有 0.5px，
-                              亚像素会让 O=P 的退化区间直接消失，读者误以为这一行没有估算。 */}
-                          <span aria-hidden style={{ position: 'absolute', top: 3, left: `${g.loPct}%`, width: `${Math.max(g.hiPct - g.loPct, 0.4)}%`, minWidth: 2, height: 1, background: wColor }} />
-                          <span aria-hidden style={{ position: 'absolute', top: 1, left: `${g.loPct}%`, width: 1, height: 6, background: wColor }} />
-                          <span aria-hidden style={{ position: 'absolute', top: 1, left: `${g.hiPct}%`, width: 1, height: 6, background: wColor }} />
-                          <span aria-hidden style={{ position: 'absolute', top: 0, left: `${g.ePct}%`, width: 2, height: 8, background: wColor, opacity: 0.85 }} />
-                        </div>
-                      )}
-                    </div>
-                    <div style={{ display: 'flex', gap: 4, fontFamily: MONO, textAlign: 'right', alignItems: 'center' }}>
-                      {POINT_FIELDS.map((f) => (
-                        <input
-                          key={f}
-                          type="number"
-                          step={0.5}
-                          min={0}
-                          disabled={!editable || busy}
-                          value={cellValue(f)}
-                          placeholder="—"
-                          aria-label={`${r.title} ${POINT_LABEL[f]}（人天）`}
-                          title={editable
-                            ? `${POINT_LABEL[f]}（人天，0.5 步进）：Enter 或失焦即落库，Esc 还原${locked && unlocked ? '（本行已显式解锁，写入带 unlock）' : ''}${err ? `\n${err}` : ''}`
-                            : locked
-                              ? '§7 里程碑已收口 → 估算行只读（已交付项不得追溯改写报价），需点「解锁改写」'
-                              : '里程碑行不落估算（§4.6 红线一），值只作参考'}
-                          onChange={(e) => setDraft({ planId: r.planId, field: f, value: e.target.value })}
-                          onFocus={() => setDraft({ planId: r.planId, field: f, value: cellValue(f) })}
-                          onBlur={() => void commitDraft(draft)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') { e.preventDefault(); void commitDraft(draft); }
-                            else if (e.key === 'Escape') { e.preventDefault(); setDraft(null); }
-                          }}
-                          style={{ ...pointInput(err), color: f === 'likely' ? 'var(--text)' : 'var(--text-muted)' }}
-                        />
-                      ))}
-                      <span style={{ width: 38, textAlign: 'right' }} title="期望值 E（服务端算，只读）">{num(r.expected)}</span>
-                      <span style={{ width: 34, textAlign: 'right', color: 'var(--text-muted)' }} title="σ（未落库行不计算）">{num(r.sigma)}</span>
-                    </div>
-                  </div>
-                );
-                }))}
-            </div>
-          );
-        })}
-
+        {estVirtual ? (
+          <div
+            role="list"
+            aria-label="估算明细（虚拟滚动）"
+            style={{ maxHeight: VIRTUAL_VIEWPORT_H, overflowY: 'auto', marginTop: 8 }}
+            onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+          >
+            {estWin && estWin.padTop > 0 && <div aria-hidden style={{ height: estWin.padTop }} />}
+            {estVisible.map((e) => (e.kind === 'header' ? renderHeader(e.group) : renderItem(e.row)))}
+            {estWin && estWin.padBottom > 0 && <div aria-hidden style={{ height: estWin.padBottom }} />}
+          </div>
+        ) : (
+          phases.map((group) => {
+            const ms = group.milestone;
+            const msRow = ms ? rowById.get(ms.id) : null;
+            const collapsed = ms ? !!collapsedMs[ms.id] : false;
+            return (
+              <div key={ms?.id ?? 'prelude'} style={{ marginBottom: 0 }}>
+                {ms && renderHeader(group)}
+                {!collapsed && ([msRow, ...group.items.map((p) => rowById.get(p.id))]
+                  .filter((r): r is PanelRow => !!r)
+                  .filter((r) => !(onlyUnreviewed && r.source === 'manual'))
+                  .map((r) => renderItem(r)))}
+              </div>
+            );
+          })
+        )}
+        {estVirtual && (
+          <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+            明细已载入 {rows.length} 行（超过 {EST_VIRTUAL_THRESHOLD} 行自动启用虚拟滚动，仅渲染视口附近 {estVisible.length} 行）；折叠 / 筛选即时生效。
+          </div>
+        )}
         {/* 5) 告警条（§5.2 状态要求里「比例自检」那一档 + §7 脱离计划行） */}
         {(rc.danger || rc.unassigned.length > 0 || data.checks.detached > 0) && (
           <div style={{ marginTop: 10, border: `1px solid ${rc.danger ? 'var(--danger)' : 'var(--border-strong)'}`, borderRadius: 8, padding: 8, background: 'var(--card-bg)', fontSize: 12 }}>
