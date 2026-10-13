@@ -62,7 +62,7 @@ const cellInput = { fontSize: 12, padding: '3px 6px', border: '1px solid var(--b
 function statusIcon(status: PreflightStatus) {
   if (status === 'ok') return <CircleCheck size={13} style={{ color: 'var(--success, var(--accent))', flexShrink: 0 }} />;
   return status === 'warn'
-    ? <CircleAlert size={13} style={{ color: 'var(--warning, #c80)', flexShrink: 0 }} />
+    ? <CircleAlert size={13} style={{ color: 'var(--warn)', flexShrink: 0 }} />
     : <CircleX size={13} style={{ color: 'var(--danger)', flexShrink: 0 }} />;
 }
 
@@ -340,7 +340,7 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard }: {
               </div>
             )}
             {!blocked && pre.items.some((i) => i.status === 'warn') && (
-              <div style={{ marginTop: 6, fontSize: 11, color: 'var(--warning, #c80)' }}>
+              <div style={{ marginTop: 6, fontSize: 11, color: 'var(--warn)' }}>
                 ⚠ 级项可继续生成，但降级会在对应 PPT 页面页脚留痕（客户会上追问时页面上要有依据）。
               </div>
             )}
@@ -363,7 +363,7 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard }: {
       </div>
 
       {outlineWarnings.length > 0 && (
-        <div style={{ fontSize: 11, color: 'var(--warning, #c80)', marginBottom: 8 }}>
+        <div style={{ fontSize: 11, color: 'var(--warn)', marginBottom: 8 }}>
           {outlineWarnings.map((w, i) => <div key={`${w}-${i}`}>⚠ {w}</div>)}
         </div>
       )}
@@ -438,7 +438,7 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard }: {
       )}
 
       {result && result.warnings.length > 0 && (
-        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--warning, #c80)' }}>
+        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--warn)' }}>
           版式/降级提示 {result.warnings.length} 条（已如实写进稿内，未静默改数）：
           {result.warnings.map((w, i) => <div key={`${w}-${i}`}>• {w}</div>)}
         </div>

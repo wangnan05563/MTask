@@ -991,7 +991,7 @@ export function ReportConsole({
             {prdSnap.result && <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>PRD {prdSnap.result.prdMd.length} 字符 / 待确认问题 {prdSnap.result.issues.length} 条</span>}
           </div>
           {prdSnap.logs.map((l, i) => (
-            <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|失败|错误/.test(l) ? 'var(--warning, #c80)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
+            <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|失败|错误/.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
           ))}
           {!!prdSnap.streamText && (
             <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
@@ -1021,7 +1021,7 @@ export function ReportConsole({
             )}
           </div>
           {tcSnap.logs.map((l, i) => (
-            <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|warn|失败|错误/i.test(l) ? 'var(--warning, #c80)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
+            <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|warn|失败|错误/i.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
           ))}
           {!!tcSnap.streamText && (
             <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
@@ -1050,7 +1050,7 @@ export function ReportConsole({
             )}
           </div>
           {kfSnap.logs.map((l, i) => (
-            <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|失败|错误/.test(l) ? 'var(--warning, #c80)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
+            <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|失败|错误/.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
           ))}
           {!kfSnap.streaming && kfSnap.result && (
             <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「项目启动会 PPT 生成」卡片点击下载（文件名为服务端校验值）。</div>
