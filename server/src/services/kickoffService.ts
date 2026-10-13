@@ -17,6 +17,7 @@ import type { PlanTaskRow, RequirementRow } from './PlanService';
 import { TestCaseService } from './TestCaseService';
 import { AIService } from './AIService';
 import { estimatesSnapshot } from '../routes/estimates';
+import { saveReportBuffer } from './ReportService'; // T02103：生成物落盘/下载令牌单源（纠偏 C3）
 import { toManMonth, type EstimateSummary } from './estimate-engine';
 
 type Coverage = ReturnType<typeof TestCaseService.coverage>;
@@ -523,10 +524,15 @@ const BULLET_MAX_LINES = 6;
  * 从模型输出里抠出大纲数组。不复用 `PlanComplexity.extractJson`：那个只认顶层 JSON 数组，
  * 而大纲同样常见 `{"outline":[...]}` 包装，这里两种都收（askJson 的 parse 抛错即判无效，故必须稳健）。
  */
-function parseOutlinePayload(content: string): unknown {
+/** 模型爱把 JSON 包进代码围栏：解析前先剥外壳（大纲段与措辞段共用） */
+function stripFence(content: string): string {
   const s = content.trim();
   const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(s);
-  const body = (fence ? fence[1] : s).trim();
+  return (fence ? fence[1] : s).trim();
+}
+
+function parseOutlinePayload(content: string): unknown {
+  const body = stripFence(content);
   try {
     const direct = JSON.parse(body) as unknown;
     if (Array.isArray(direct)) return direct;
@@ -642,12 +648,18 @@ function outlineFacts(b: KickoffBundle): string {
     .join('\n');
 }
 
+/**
+ * FR-2.4 服务端二次拦截：UI 置灰不是保险，绕过面板直接调用同样要拒。
+ * 大纲段与生成段共用同一条口径（两处各写一遍迟早漂移）。
+ */
+function guardKickoffBlocked(bundle: KickoffBundle): void {
+  if (!bundle.preflight.blocked) return;
+  throw new Error(`资料不足，不能生成启动会稿：${bundle.preflight.missingHard.join('、')} 全部缺失——请先补齐 PRD 原文 / 需求矩阵 / 项目计划`);
+}
+
 export async function kickoffOutline(projectId: string, toolId: string, extraNote?: string): Promise<KickoffOutlineResult> {
   const bundle = collectBundle(projectId);
-  if (bundle.preflight.blocked) {
-    // FR-2.4 服务端二次拦截：UI 置灰不是保险，绕过面板直接调用同样要拒
-    throw new Error(`资料不足，不能生成启动会稿：${bundle.preflight.missingHard.join('、')} 全部缺失——请先补齐 PRD 原文 / 需求矩阵 / 项目计划`);
-  }
+  guardKickoffBlocked(bundle);
   const user = `【资料齐备性与真实计数】\n${outlineFacts(bundle)}\n\n【PRD 摘要】\n${bundle.prdExcerpt || '（无 PRD 原文）'}${
     extraNote ? `\n\n【用户补充要求】\n${extraNote}` : ''
   }\n\n请按上述约束输出 ${PAGE_MIN}~${PAGE_MAX} 页的大纲 JSON 数组。`;
@@ -668,5 +680,253 @@ export async function kickoffOutline(projectId: string, toolId: string, extraNot
     warnings,
     projectName: bundle.project.name,
     dataAsOf: bundle.dataAsOf,
+  };
+}
+
+// ---------- 流式生成（§2.3 · T02103） ----------
+
+/** 装配中途收手时抛出的消息（builder 与 service 单源：SSE `error`、门禁断言、面板提示都认这句） */
+export const KICKOFF_ABORT_MSG = '启动会稿装配已中止（客户端断开或用户取消）';
+/** 第 2 段措辞润色失败的降级告警用词（技术方案 §2.3 逐字；面板据此说明「稿子仍出了，风险页用的是本地条目」） */
+export const KICKOFF_WORDING_FALLBACK_MSG = '风险措辞 AI 失败，已用本地条目';
+
+const RISK_ITEM_MAX = 60;
+const RISK_IMPACT_MAX = 40;
+const RISK_MITIGATION_MAX = 40;
+/** 用户可编辑后送进来的页数上限：只兜「明显失控」，12~18 的编排铁律属大纲段（validateOutline） */
+const OUTLINE_PAGE_MAX = 40;
+
+const WORDING_SYSTEM = `你是项目启动会的会议主持稿撰写人。输入全部是系统按本地规则从库里取出的事实（风险条目、沟通口径），你只做一件事：把它们改写成会上好念、客户好懂的表述。
+硬性约束（违反任意一条即视为无效）：
+1. 条目数量与顺序必须与输入完全一致；不得新增、删除、合并、调序；输入没给的清单就回空数组 []。
+2. 数字（条数、百分比、复杂度值）必须逐字沿用输入里出现过的，严禁新增输入里没有的数字——数字由系统从库里取，不由你写。
+3. 「」内的计划名/需求名只能照抄输入里出现过的，不得改写、不得另起名字。
+4. 长度上限：风险 item ≤60 字、impact ≤40 字、mitigation ≤40 字；沟通口径每条 ≤42 字。
+5. 统一简体中文；不要「可能/大概/据了解」这类推责话术，也不要替客户下结论。
+6. 只输出一个 JSON：{"risks":[{"item":"…","impact":"…","mitigation":"…"}],"comms":["…"]}，不要代码围栏之外的解释文字。source（数据出处）由系统保留，不要输出。`;
+
+/** 措辞润色的入参与落点：风险页取 bundle.risks，沟通页取那一页大纲自己的 bullets（两处都有页面归宿，不造没落点的字段） */
+export interface KickoffWordingLocal {
+  risks: KickoffRisk[];
+  comms: string[];
+}
+
+export interface KickoffWording {
+  risks: KickoffRisk[];
+  comms: string[];
+}
+
+function numbersOf(s: string): string[] {
+  return s.match(/\d+(?:\.\d+)?/g) ?? [];
+}
+
+function quotedOf(s: string): string[] {
+  return s.match(/「[^」]*」/g) ?? [];
+}
+
+/** 单字段回锁：非空 + 长度 + 数字白名单 + 「」名称白名单（池=该条本地原文） */
+function pinField(v: unknown, pool: string, maxLen: number, label: string): string {
+  if (typeof v !== 'string') throw new Error(`${label} 必须是字符串`);
+  const s = v.trim();
+  if (!s) throw new Error(`${label} 为空`);
+  const len = [...s].length;
+  if (len > maxLen) throw new Error(`${label} 超 ${maxLen} 字（实际 ${len}）`);
+  for (const n of numbersOf(s)) {
+    if (!numbersOf(pool).includes(n)) throw new Error(`${label} 出现系统数据里没有的数字「${n}」`);
+  }
+  for (const q of quotedOf(s)) {
+    if (!pool.includes(q)) throw new Error(`${label} 出现系统数据里没有的名称 ${q}`);
+  }
+  return s;
+}
+
+/**
+ * 把模型改写回来的措辞钉回本地事实（纯函数，门禁 W 组逐条断言）：
+ * 条目数与顺序必须一致（AI 增删风险＝替客户改结论），数字与「」名称必须在本地池里出现过，
+ * `source` 一律保留本地值——溯源是「这条数字从哪张表来的」，不是措辞，不经模型（FR-3.4 / R4）。
+ */
+export function wordingFromAi(local: KickoffWordingLocal, raw: unknown): KickoffWording {
+  const o = (raw ?? {}) as Record<string, unknown>;
+  const listOf = (v: unknown, expectLen: number, key: string): unknown[] => {
+    if (v == null) {
+      if (expectLen === 0) return [];
+      throw new Error(`缺 ${key} 数组（本次需要 ${expectLen} 条）`);
+    }
+    if (!Array.isArray(v)) throw new Error(`${key} 必须是数组`);
+    return v;
+  };
+  const rawRisks = listOf(o.risks, local.risks.length, 'risks');
+  const rawComms = listOf(o.comms, local.comms.length, 'comms');
+  if (rawRisks.length !== local.risks.length) {
+    throw new Error(`风险条目数 ${rawRisks.length} 与系统枚举的 ${local.risks.length} 不一致（不得增删、不得合并）`);
+  }
+  if (rawComms.length !== local.comms.length) {
+    throw new Error(`沟通口径条数 ${rawComms.length} 与系统给出的 ${local.comms.length} 不一致（不得增删）`);
+  }
+  const risks = local.risks.map((r, i) => {
+    const row = (rawRisks[i] ?? {}) as Record<string, unknown>;
+    const pool = `${r.item} ${r.impact} ${r.mitigation} ${r.source}`;
+    const no = `第 ${i + 1} 条风险`;
+    return {
+      item: pinField(row.item, pool, RISK_ITEM_MAX, `${no} item`),
+      impact: pinField(row.impact, pool, RISK_IMPACT_MAX, `${no} impact`),
+      mitigation: pinField(row.mitigation, pool, RISK_MITIGATION_MAX, `${no} mitigation`),
+      source: r.source,
+    };
+  });
+  const commPool = local.comms.join(' ');
+  const comms = local.comms.map((_, i) => pinField(rawComms[i], commPool, BULLET_MAX_CHARS, `第 ${i + 1} 条沟通口径`));
+  return { risks, comms };
+}
+
+/** 大纲形状校验：入参是用户在面板上编辑过的 JSON，不校验就是把 undefined 送进装配器 */
+export function assertOutlineShape(raw: unknown): KickoffOutlineItem[] {
+  if (!Array.isArray(raw) || raw.length === 0) throw new Error('outline 必须是非空数组（请先在面板确认大纲）');
+  if (raw.length > OUTLINE_PAGE_MAX) throw new Error(`大纲页数 ${raw.length} 超出上限 ${OUTLINE_PAGE_MAX} 页`);
+  return raw.map((it, i) => {
+    const pageNo = i + 1;
+    const o = (it ?? {}) as Record<string, unknown>;
+    const title = typeof o.title === 'string' ? o.title.trim() : '';
+    if (!title) throw new Error(`第 ${pageNo} 页缺标题（title）`);
+    if (typeof o.layout !== 'string' || !KICKOFF_LAYOUTS.includes(o.layout as KickoffLayout)) {
+      throw new Error(`第 ${pageNo} 页版式「${String(o.layout)}」不在枚举（${KICKOFF_LAYOUTS.join(' / ')}）`);
+    }
+    if (!Array.isArray(o.dataKeys)) throw new Error(`第 ${pageNo} 页缺 dataKeys 数组`);
+    for (const k of o.dataKeys) {
+      if (typeof k !== 'string' || !KICKOFF_DATA_KEYS.includes(k as KickoffDataKey)) {
+        throw new Error(`第 ${pageNo} 页含未知数据键「${String(k)}」（可用：${KICKOFF_DATA_KEYS.join(' / ')}）`);
+      }
+    }
+    if (o.bullets != null && !Array.isArray(o.bullets)) throw new Error(`第 ${pageNo} 页 bullets 必须是数组`);
+    const bullets = (Array.isArray(o.bullets) ? o.bullets : []).map((x, bi) => {
+      if (typeof x !== 'string') throw new Error(`第 ${pageNo} 页第 ${bi + 1} 条要点不是字符串`);
+      return x.trim();
+    }).filter(Boolean);
+    const section = typeof o.section === 'string' && o.section.trim() ? o.section.trim() : '正文';
+    return { section, title, bullets, dataKeys: o.dataKeys as KickoffDataKey[], layout: o.layout as KickoffLayout };
+  });
+}
+
+/** 下载名（§2.4）；非法字符清洗与下载端点接线归 T02104，本层只定前后缀与日期形态 */
+export function kickoffFileName(projectName: string, dataAsOf: string): string {
+  return `项目启动会-${projectName}-${dataAsOf.replaceAll('-', '')}.pptx`;
+}
+
+function wordingUserPrompt(local: KickoffWordingLocal, projectName: string): string {
+  const riskBlock = local.risks.length
+    ? local.risks.map((r, i) => `${i + 1}. 风险：${r.item}\n   影响：${r.impact}\n   应对：${r.mitigation}\n   出处：${r.source}`).join('\n')
+    : '（本次未提供风险清单）';
+  const commBlock = local.comms.length ? local.comms.map((c, i) => `${i + 1}. ${c}`).join('\n') : '（本次未提供沟通口径）';
+  return [
+    `【项目】${projectName}`,
+    `【风险条目（系统按本地规则枚举，事实与数字不可改）】\n${riskBlock}`,
+    `【沟通口径（来自大纲的沟通管理页）】\n${commBlock}`,
+    `请按约束输出 {"risks":[${local.risks.length ? '…' : ''}],"comms":[${local.comms.length ? '…' : ''}]}，条数分别为 ${local.risks.length} 与 ${local.comms.length}。`,
+  ].join('\n\n');
+}
+
+/** 沟通管理页：AI 措辞的第二个落点（FR-4.9「协作口径由 AI 生成」），没有这页就不索要 comms */
+function commPageOf(outline: KickoffOutlineItem[]): number {
+  return outline.findIndex((o) => /沟通|协作/.test(`${o.section}${o.title}`));
+}
+
+/** 这次大纲是否需要第 2 段措辞：既无风险页也无沟通页就别烧配额 */
+function needsWording(outline: KickoffOutlineItem[], commIdx: number): boolean {
+  return outline.some((o) => o.dataKeys.includes('risks') || /风险/.test(`${o.section}${o.title}`)) || commIdx >= 0;
+}
+
+/** 第 2 段 AI（风险/沟通措辞）：一次 askJson；任何失败都不阻断生成，回本地条目并如实记 warning */
+async function polishWording(
+  bundle: KickoffBundle,
+  toolId: string,
+  local: KickoffWordingLocal,
+  warnings: string[],
+): Promise<KickoffWording> {
+  const fallback = (): KickoffWording => ({ risks: bundle.risks, comms: local.comms });
+  try {
+    const ai = await AIService.askJson<KickoffWording>(
+      toolId,
+      WORDING_SYSTEM,
+      wordingUserPrompt(local, bundle.project.name),
+      (content) => wordingFromAi(local, JSON.parse(stripFence(content))),
+      { temperature: 0 },
+    );
+    if (!ai.ok || ai.data === undefined) {
+      warnings.push(`${KICKOFF_WORDING_FALLBACK_MSG}（原因：${ai.error ?? '未知'}）`);
+      return fallback();
+    }
+    if (ai.retried) warnings.push('风险/沟通措辞首轮不合约束，已自动重试 1 次后通过');
+    return ai.data;
+  } catch (e) {
+    // runtimeWithModel 在工具未配 model 时同步抛错：同样只降级，不让措辞把整份稿拖死
+    warnings.push(`${KICKOFF_WORDING_FALLBACK_MSG}（原因：${e instanceof Error ? e.message : String(e)}）`);
+    return fallback();
+  }
+}
+
+export interface KickoffStreamResult {
+  token: string;
+  fileName: string;
+  pageCount: number;
+  warnings: string[];
+}
+
+/**
+ * 启动会 PPT 流式生成（§2.3）：采集 → 第 2 段措辞 → 逐页装配（每页一条 `stage`）→ 落盘换令牌。
+ * 中止语义（验收 9）：`signal` 命中即抛错收手，全程只有一个落盘点（令牌），
+ * 所以断连/取消后临时目录里不会有任何半成品或孤儿令牌。
+ */
+export async function kickoffPptStream(
+  projectId: string,
+  toolId: string,
+  rawOutline: unknown,
+  onStage: (msg: string) => void,
+  signal?: AbortSignal,
+): Promise<KickoffStreamResult> {
+  const outline = assertOutlineShape(rawOutline);
+  onStage('正在采集启动会资料…');
+  const bundle = collectBundle(projectId);
+  guardKickoffBlocked(bundle);
+  if (signal?.aborted) throw new Error(KICKOFF_ABORT_MSG);
+  onStage(
+    `已采集：需求 ${bundle.requirements.length} 条 / 计划 ${bundle.plans.length} 条 / 里程碑 ${bundle.milestones.length} 个，` +
+      `风险 ${bundle.risks.length} 条`,
+  );
+
+  const warnings: string[] = [];
+  if (bundle.prdTruncated) warnings.push(`PRD 摘要超出 ${KICKOFF_PRD_LIMIT} 字已保头保尾截断（全文见 PRD 文档 ${bundle.prdDoc?.id ?? ''}）`);
+
+  const commIdx = commPageOf(outline);
+  let built = { outline, risks: bundle.risks };
+  if (needsWording(outline, commIdx)) {
+    const local: KickoffWordingLocal = {
+      risks: outline.some((o) => o.dataKeys.includes('risks') || /风险/.test(`${o.section}${o.title}`)) ? bundle.risks : [],
+      comms: commIdx < 0 ? [] : outline[commIdx].bullets,
+    };
+    onStage(`风险/沟通措辞润色中（条目 ${local.risks.length} + ${local.comms.length}）…`);
+    const w = await polishWording(bundle, toolId, local, warnings);
+    // 措辞阶段等的是模型，客户端早就走了要在此收手——别把整份稿画完再扔
+    if (signal?.aborted) throw new Error(KICKOFF_ABORT_MSG);
+    built = {
+      outline: outline.map((o, i) => (i === commIdx && w.comms.length === o.bullets.length ? { ...o, bullets: w.comms } : o)),
+      risks: local.risks.length ? w.risks : bundle.risks,
+    };
+  } else {
+    onStage('大纲没有风险页与沟通页，跳过措辞润色（不消耗模型配额）。');
+  }
+
+  const { buildKickoffPpt } = await import('./kickoffBuilder'); // 动态加载：builder 静态引用本模块常量，两侧都静态 import 会成环
+  onStage(`开始逐页装配 ${built.outline.length} 页…`);
+  const assembled = await buildKickoffPpt({ ...bundle, risks: built.risks }, built.outline, {
+    onPage: (pageNo, item) => onStage(`页 ${pageNo}/${built.outline.length} 已装配：${item.section}`),
+    signal,
+  });
+  const token = saveReportBuffer(assembled.buffer);
+  onStage('文件已生成，可在左侧下载。');
+  return {
+    token,
+    fileName: kickoffFileName(bundle.project.name, bundle.dataAsOf),
+    pageCount: assembled.pageCount,
+    warnings: [...warnings, ...assembled.warnings],
   };
 }

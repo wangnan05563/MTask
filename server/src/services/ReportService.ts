@@ -92,6 +92,17 @@ export function isReportToken(token: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token);
 }
 
+/**
+ * 生成物落盘单源（纠偏 C3）：随机 UUID 即下载令牌，文件落在数据目录 tmp 下，下载即删。
+ * 启动会 PPT 等新链路必须走这里，不再各自内联 randomUUID+writeFileSync（令牌形态一旦分叉，
+ * isReportToken 白名单与下载端点就要到处加特例）。
+ */
+export function saveReportBuffer(buffer: Buffer): string {
+  const token = randomUUID();
+  writeFileSync(join(reportTmpDir(), token), buffer);
+  return token;
+}
+
 /** 读取并删除 AI 周报临时文件，返回 buffer；不存在返回 undefined */
 export function readAndDeleteReport(token: string): Buffer | undefined {
   const p = join(reportTmpDir(), token);
@@ -378,8 +389,7 @@ export async function aiGenerateReport(
   if (!res.ok || !res.content?.trim()) throw new Error(res.error ?? 'AI 生成失败');
   const insight = res.content.trim();
   const buffer = await buildInWorker({ format, data, aiInsight: insight });
-  const token = randomUUID();
-  writeFileSync(join(reportTmpDir(), token), buffer);
+  const token = saveReportBuffer(buffer);
   // T00443 / PRD AI-5：摘要推送（可配置，默认关）——AI 周报生成后把摘要写入收件箱项目任务
   if (getSetting('report.aiSummaryToInbox') === '1') {
     try {
@@ -436,8 +446,7 @@ export async function aiGenerateReportStream(
   onStage('洞察生成完成，正在按内置 skill 版式合成文件…');
   // worker 异步合成：主事件循环不被阻塞，SSE 仍可推送/响应其它请求
   const buffer = await buildInWorker({ format, data, aiInsight: insight });
-  const token = randomUUID();
-  writeFileSync(join(reportTmpDir(), token), buffer);
+  const token = saveReportBuffer(buffer);
   onStage('文件已生成，可在左侧下载。');
   // T00443 / PRD AI-5：流式版同样支持摘要推送（可配置）
   if (getSetting('report.aiSummaryToInbox') === '1') {

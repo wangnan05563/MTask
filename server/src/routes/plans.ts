@@ -1,7 +1,7 @@
 import { Router, raw } from 'express';
 import { PlanService } from '../services/PlanService';
 import { TestCaseService } from '../services/TestCaseService'; // T01484：测试用例取数（PRD-测试用例管理 §6）
-import { kickoffOutline, preflight } from '../services/kickoffService'; // T02095/T02096：启动会 PPT 前置校验与大纲（PRD-项目启动会PPT生成 FR-2/FR-3）
+import { assertOutlineShape, kickoffOutline, preflight, kickoffPptStream } from '../services/kickoffService'; // T02095/T02096/T02103：启动会 PPT 前置校验、大纲与 SSE 流式生成
 import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput, DraftCaseImport, DraftReqImport } from '../services/TestCaseService';
 import { AIService } from '../services/AIService';
 import { backfillComplexity, clampComplexity, listInvalid as listInvalidComplexity, listMissing as listMissingComplexity } from '../services/PlanComplexity'; // T01058 后续 / T02122：计划行复杂度批量补算 + 值域断言
@@ -67,6 +67,49 @@ planApi.post('/kickoff-ppt-outline', (req, res) => {
   kickoffOutline(projectId, toolId, optStr(b.extraNote))
     .then((r) => res.json(r))
     .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
+});
+
+/**
+ * T02103 §2.3：启动会 PPT 流式生成（第 2 段）。事件形态与 `/report/ai-generate-stream`
+ * （`routes/index.ts:1636`）逐字同构：`stage {msg}` / `done {token, fileName, pageCount, warnings[]}` / `error {error}`。
+ */
+planApi.post('/kickoff-ppt-stream', exportGate('kickoff-ppt-stream', undefined, { defer: true }), async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const projectId = toStr(b.projectId);
+  const toolId = toStr(b.toolId);
+  // SSE 头之前快速失败：前端拿得到结构化 400 与「哪一页不对」，而不是流建起来后才一条 error
+  if (!projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (!toolId) return res.status(400).json({ error: 'toolId 必填（生成需要模型工具）' });
+  try {
+    assertOutlineShape(b.outline);
+  } catch (e) {
+    return res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+  let closed = false;
+  const send = (event: string, payload: unknown) => {
+    if (closed || res.writableEnded) return;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+  };
+  // 必须监听 res 的 close（响应真正关闭才代表客户端断开）：SSE 请求体已被 express.json() 消费完，
+  // IncomingMessage 无数据可读时 req 会提前触发 close，监听 req 会把 stage/done 全误丢（T00838 实测坑）
+  const ac = new AbortController();
+  res.on('close', () => {
+    closed = true;
+    ac.abort();
+  });
+
+  try {
+    const r = await kickoffPptStream(projectId, toolId, b.outline, (msg) => send('stage', { msg }), ac.signal);
+    send('done', { token: r.token, fileName: r.fileName, pageCount: r.pageCount, warnings: r.warnings });
+  } catch (e) {
+    send('error', { error: e instanceof Error ? e.message : String(e) });
+  }
+  res.end();
 });
 
 planApi.post('/holidays', (req, res) => {

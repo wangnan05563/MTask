@@ -43,7 +43,10 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 // ---------- S 组：源码/契约守卫 ----------
 const svcSrc = readFileSync(join(ROOT, 'server', 'src', 'services', 'kickoffService.ts'), 'utf8');
 const routeSrc = readFileSync(join(ROOT, 'server', 'src', 'routes', 'plans.ts'), 'utf8');
-ok('S-01 校验实现零 AI 依赖（FR-2.3 只读、零配额）', !/AIService|askJson|fetch\(/.test(svcSrc));
+// 前置校验段的「零 AI 依赖」必须按段断言：大纲段（T02096）与流式段（T02103）后续落在同一文件里，
+// 整文件断言会让 FR-2.3 的守卫在合法演进中必然误红——口径与 T02096 的 preflightSrc 一致。
+const preflightSrc = svcSrc.slice(svcSrc.indexOf('// ---------- 前置校验'), svcSrc.indexOf('// ---------- 资料采集 Bundle'));
+ok('S-01 校验实现零 AI 依赖（FR-2.3 只读、零配额）', !/AIService|askJson|fetch\(/.test(preflightSrc));
 ok('S-02 未新增表/未写库（只读聚合，无 INSERT/UPDATE/DELETE）', !/\b(INSERT|UPDATE|DELETE)\b/i.test(svcSrc));
 ok('S-03 取数全部复用既有 Service 查询，仅工作空间一处直查 projects', (svcSrc.match(/getDb\(\)/g) ?? []).length === 1);
 ok('S-04 端点注册在 /:id 之前且走 wrap 统一错误口径',

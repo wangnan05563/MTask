@@ -34,7 +34,7 @@ import {
   type Box,
   type LayoutFrames,
 } from './kickoff-layout';
-import { KICKOFF_PLACEHOLDER, type KickoffBundle, type KickoffDataKey, type KickoffOutlineItem } from './kickoffService';
+import { KICKOFF_ABORT_MSG, KICKOFF_PLACEHOLDER, type KickoffBundle, type KickoffDataKey, type KickoffOutlineItem } from './kickoffService';
 
 /** 单页装配产物：一个块 = 一个原生对象 */
 export interface Block {
@@ -622,7 +622,25 @@ export function footerOf(item: KickoffOutlineItem, b: KickoffBundle, pageNo: num
   return `${parts.join(' · ')} · 第 ${pageNo}/${total} 页`;
 }
 
-export async function buildKickoffPpt(bundle: KickoffBundle, outline: KickoffOutlineItem[]): Promise<KickoffBuildResult> {
+/** 装配过程的可选接缝（T02103 SSE 链路用；不传即与 T02099 一次性装配行为一致） */
+export interface KickoffBuildOptions {
+  /** 逐页回调：SSE `stage` 的单源（FR-1.4），页码 1 起 */
+  onPage?: (pageNo: number, item: KickoffOutlineItem) => void;
+  /** 客户端断开/用户取消：每页开头检查，命中即抛错收手，绝不落半成品（验收 9） */
+  signal?: AbortSignal;
+}
+
+/**
+ * 让出一次事件循环。逐页画如果全挤在同一个同步轮里，stage 事件会憋到最后一次性下发，
+ * 客户端点「停止」也要等整份稿画完才生效——断连检查就成了摆设。
+ */
+const yieldToLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+export async function buildKickoffPpt(
+  bundle: KickoffBundle,
+  outline: KickoffOutlineItem[],
+  opts: KickoffBuildOptions = {},
+): Promise<KickoffBuildResult> {
   const warnings: string[] = [];
   const paletteIssues = auditPalette();
   if (paletteIssues.length) warnings.push(`配色对比度不达标：${paletteIssues.join('；')}`);
@@ -636,7 +654,9 @@ export async function buildKickoffPpt(bundle: KickoffBundle, outline: KickoffOut
   pptx.company = bundle.project.name;
 
   const degradedPages: number[] = [];
-  outline.forEach((item, idx) => {
+  for (let idx = 0; idx < outline.length; idx++) {
+    if (opts.signal?.aborted) throw new Error(KICKOFF_ABORT_MSG);
+    const item = outline[idx];
     const pageNo = idx + 1;
     const bullets = sanitizeBullets(item.bullets, bundle, pageNo, warnings);
     const frames = framesFor(layoutFamilyOf(item.layout), item.layout, item.layout === 'twoCol' ? TEXT_SPLIT : undefined);
@@ -684,8 +704,11 @@ export async function buildKickoffPpt(bundle: KickoffBundle, outline: KickoffOut
       wrap: false,
       fontFace: FONT.face,
     });
-  });
+    opts.onPage?.(pageNo, item);
+    await yieldToLoop();
+  }
 
+  if (opts.signal?.aborted) throw new Error(KICKOFF_ABORT_MSG);
   const out = await pptx.write({ outputType: 'nodebuffer' });
   return { buffer: Buffer.from(out as unknown as ArrayBuffer), warnings, pageCount: outline.length, degradedPages };
 }
