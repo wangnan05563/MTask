@@ -1,6 +1,7 @@
 import { Router, raw } from 'express';
 import { PlanService } from '../services/PlanService';
 import { TestCaseService } from '../services/TestCaseService'; // T01484：测试用例取数（PRD-测试用例管理 §6）
+import { preflight } from '../services/kickoffService'; // T02095：启动会 PPT 前置校验聚合（PRD-项目启动会PPT生成 FR-2）
 import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput, DraftCaseImport, DraftReqImport } from '../services/TestCaseService';
 import { AIService } from '../services/AIService';
 import { backfillComplexity, clampComplexity, listInvalid as listInvalidComplexity, listMissing as listMissingComplexity } from '../services/PlanComplexity'; // T01058 后续 / T02122：计划行复杂度批量补算 + 值域断言
@@ -52,6 +53,9 @@ planApi.get('/ready', (req, res) => {
   if (!projectId) return res.status(400).json({ error: 'projectId 必填' });
   wrap(res, () => PlanService.readyTasks(projectId, Math.min(10, Math.max(1, Number(req.query.limit) || 3))));
 });
+
+// T02095：启动会 PPT 前置校验（PRD-项目启动会PPT生成 §3.2 FR-2）——只读聚合、零 AI 调用（FR-2.3）
+planApi.get('/kickoff-preflight', (req, res) => wrap(res, () => preflight(pid(req))));
 
 planApi.post('/holidays', (req, res) => {
   const { date, name, kind } = (req.body ?? {}) as { date?: unknown; name?: unknown; kind?: unknown };
