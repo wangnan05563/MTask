@@ -30,6 +30,7 @@ import { estimateApi } from './estimates'; // T02037（估算视图 E3）：/api
 import { historyApi } from './history'; // T00589：历史资产（转移/统计）
 import { supervisorApi } from './supervisor'; // T01286：监督状态/审计/配置（FR-5.2~5.4）
 import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, gatherReportData, type ReportPeriod } from '../services/ReportService';
+import { DOWNLOAD_NAME_RE } from '../util/export-name'; // T02104：下载文件名白名单单源（与生成侧清洗同源）
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, statSync } from 'node:fs';
@@ -1676,8 +1677,8 @@ api.post('/report/ai-generate-stream', async (req, res) => {  const { period, fo
 api.post('/report/ai-download', (req, res) => {
   const { token, filename } = req.body ?? {};
   if (typeof token !== 'string' || !isReportToken(token)) return res.status(400).json({ error: 'token 非法' });
-  // 下载文件名做白名单清洗，避免注入非法字符
-  const safe = typeof filename === 'string' && /^[\w\-.()·\u4e00-\u9fa5 ]+\.(xlsx|docx|pdf|pptx)$/i.test(filename) ? filename : 'MTask-ai-report.xlsx';
+  // 下载文件名做白名单清洗，避免注入非法字符（正则单源见 util/export-name，T02104：生成侧必须洗到能过这里）
+  const safe = typeof filename === 'string' && DOWNLOAD_NAME_RE.test(filename) ? filename : 'MTask-ai-report.xlsx';
   const buf = readAndDeleteReport(token);
   if (!buf) return res.status(404).json({ error: '文件已过期，请重新生成' });
   const MIME: Record<string, string> = {

@@ -2,6 +2,7 @@ import { Router, raw } from 'express';
 import { PlanService } from '../services/PlanService';
 import { TestCaseService } from '../services/TestCaseService'; // T01484：测试用例取数（PRD-测试用例管理 §6）
 import { assertOutlineShape, kickoffOutline, preflight, kickoffPptStream } from '../services/kickoffService'; // T02095/T02096/T02103：启动会 PPT 前置校验、大纲与 SSE 流式生成
+import { safeExportName } from '../util/export-name'; // T02104：导出文件名单源（与下载白名单同源）
 import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput, DraftCaseImport, DraftReqImport } from '../services/TestCaseService';
 import { AIService } from '../services/AIService';
 import { backfillComplexity, clampComplexity, listInvalid as listInvalidComplexity, listMissing as listMissingComplexity } from '../services/PlanComplexity'; // T01058 后续 / T02122：计划行复杂度批量补算 + 值域断言
@@ -297,12 +298,6 @@ planApi.patch('/prd-docs/:id/status', (req, res) => {
   if (typeof b.status !== 'string') return res.status(400).json({ error: "status 必填（'prd' | 'confirmed'）" });
   wrap(res, () => PlanService.setPrdDocStatus(req.params.id, b.status as string));
 });
-
-/** 导出文件名安全化：去掉路径分隔与非法字符（与前端 safeFilename 同口径，避免下载文件名带斜杠） */
-export function safeExportName(name: string, fallback: string): string {
-  const s = name.replaceAll(/[\\/:*?"<>|\n\r\t]/g, '-').replaceAll(/\s+/g, ' ').trim().slice(0, 80);
-  return s || fallback;
-}
 
 /**
  * T00959：PRD 文档下载——按 format 产出 md/docx/pdf 三种格式。

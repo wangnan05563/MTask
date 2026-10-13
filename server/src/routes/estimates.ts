@@ -54,7 +54,7 @@ import {
   type DeriveRule,
 } from '../services/EstimateDerive';
 import type { EstimatePhase } from '../services/EstimateService';
-import { safeExportName } from './plans';
+import { safeExportName } from '../util/export-name'; // T02104：导出文件名单源
 import {
   ESTIMATE_EXPORT_SCOPES,
   cleanDetail,

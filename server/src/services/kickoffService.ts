@@ -18,6 +18,7 @@ import { TestCaseService } from './TestCaseService';
 import { AIService } from './AIService';
 import { estimatesSnapshot } from '../routes/estimates';
 import { saveReportBuffer } from './ReportService'; // T02103：生成物落盘/下载令牌单源（纠偏 C3）
+import { downloadSafeName } from '../util/export-name'; // T02104：下载名洗到必然过白名单
 import { toManMonth, type EstimateSummary } from './estimate-engine';
 
 type Coverage = ReturnType<typeof TestCaseService.coverage>;
@@ -809,7 +810,9 @@ export function assertOutlineShape(raw: unknown): KickoffOutlineItem[] {
 
 /** 下载名（§2.4）；非法字符清洗与下载端点接线归 T02104，本层只定前后缀与日期形态 */
 export function kickoffFileName(projectName: string, dataAsOf: string): string {
-  return `项目启动会-${projectName}-${dataAsOf.replaceAll('-', '')}.pptx`;
+  // 洗到必然通过下载白名单（T02104）：项目名里的 `&`「（）」等字符若原样拼进文件名，
+  // `report/ai-download` 会整体回退成 `MTask-ai-report.xlsx`——用户点 pptx 却拿到 xlsx 名，且无人报错。
+  return `${downloadSafeName(`项目启动会-${projectName}-${dataAsOf.replaceAll('-', '')}`, '项目启动会')}.pptx`;
 }
 
 function wordingUserPrompt(local: KickoffWordingLocal, projectName: string): string {
