@@ -29,7 +29,7 @@ import { planApi } from './plans';
 import { estimateApi } from './estimates'; // T02037（估算视图 E3）：/api/estimates*，PRD §8
 import { historyApi } from './history'; // T00589：历史资产（转移/统计）
 import { supervisorApi } from './supervisor'; // T01286：监督状态/审计/配置（FR-5.2~5.4）
-import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, gatherReportData, type ReportPeriod } from '../services/ReportService';
+import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, discardReport, gatherReportData, type ReportPeriod } from '../services/ReportService';
 import { DOWNLOAD_NAME_RE } from '../util/export-name'; // T02104：下载文件名白名单单源（与生成侧清洗同源）
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
@@ -1658,8 +1658,16 @@ api.post('/report/ai-generate-stream', exportGate(REPORT_GATE), async (req, res)
     res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
   };
   // T00838：客户端断开（含前端「停止」主动 abort）即中止底层 AI 请求
+  // T02144：断开时若令牌已落盘但 done 没送出去，前端就拿不到令牌、文件成孤儿——当场回收；
+  // done 已送达后的断开不能删（前端「停止」后仍可重试下载，T02105 口径），过期孤儿交给启动/每小时清扫
   const ac = new AbortController();
-  res.on('close', () => { closed = true; ac.abort(); });
+  let issuedToken: string | undefined;
+  let doneSent = false;
+  res.on('close', () => {
+    closed = true;
+    ac.abort();
+    if (issuedToken && !doneSent) discardReport(issuedToken);
+  });
 
   try {
     const r = await aiGenerateReportStream(
@@ -1670,7 +1678,15 @@ api.post('/report/ai-generate-stream', exportGate(REPORT_GATE), async (req, res)
       (text) => send('chunk', { text }),
       ac.signal,
     );
+    issuedToken = r.token;
+    // close 也可能早于 promise 落地（abort 时 done 还没发）：不补删就漏成孤儿，那次 close 已经跑完了
+    if (closed || res.writableEnded) {
+      discardReport(r.token);
+      issuedToken = undefined;
+      return;
+    }
     send('done', { token: r.token, filename: r.filename });
+    doneSent = true;
     res.end();
   } catch (e) {
     send('error', { error: e instanceof Error ? e.message : String(e) });

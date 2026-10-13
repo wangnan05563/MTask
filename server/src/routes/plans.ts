@@ -3,6 +3,7 @@ import { PlanService } from '../services/PlanService';
 import { TestCaseService } from '../services/TestCaseService'; // T01484：测试用例取数（PRD-测试用例管理 §6）
 import { assertOutlineShape, kickoffOutline, preflight, kickoffPptStream } from '../services/kickoffService'; // T02095/T02096/T02103：启动会 PPT 前置校验、大纲与 SSE 流式生成
 import { safeExportName } from '../util/export-name'; // T02104：导出文件名单源（与下载白名单同源）
+import { discardReport } from '../services/ReportService'; // T02144：中止且 done 未送达时当场回收落盘令牌
 import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput, DraftCaseImport, DraftReqImport } from '../services/TestCaseService';
 import { AIService } from '../services/AIService';
 import { backfillComplexity, clampComplexity, listInvalid as listInvalidComplexity, listMissing as listMissingComplexity } from '../services/PlanComplexity'; // T01058 后续 / T02122：计划行复杂度批量补算 + 值域断言
@@ -99,14 +100,27 @@ planApi.post('/kickoff-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
   // 必须监听 res 的 close（响应真正关闭才代表客户端断开）：SSE 请求体已被 express.json() 消费完，
   // IncomingMessage 无数据可读时 req 会提前触发 close，监听 req 会把 stage/done 全误丢（T00838 实测坑）
   const ac = new AbortController();
+  // T02144：done 已发出后用户不下载是正常放弃（归定时清扫回收，文件此刻还该留着）；
+  // 只有在「已落盘但 done 没送出去」的断开里当场回收，才既不留孤儿、也不误删待下载文件
+  let issuedToken: string | undefined;
+  let doneSent = false;
   res.on('close', () => {
     closed = true;
     ac.abort();
+    if (issuedToken && !doneSent) discardReport(issuedToken);
   });
 
   try {
     const r = await kickoffPptStream(projectId, toolId, b.outline, (msg) => send('stage', { msg }), ac.signal);
+    issuedToken = r.token;
+    // close 可能早于 promise 落地（ac.abort 时 done 还没发）：此时不补删就成孤儿，close 那次已跑完了
+    if (closed || res.writableEnded) {
+      discardReport(r.token);
+      issuedToken = undefined;
+      return;
+    }
     send('done', { token: r.token, fileName: r.fileName, pageCount: r.pageCount, warnings: r.warnings });
+    doneSent = true;
   } catch (e) {
     send('error', { error: e instanceof Error ? e.message : String(e) });
   }

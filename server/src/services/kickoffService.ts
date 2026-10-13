@@ -17,7 +17,7 @@ import type { PlanTaskRow, RequirementRow } from './PlanService';
 import { TestCaseService } from './TestCaseService';
 import { AIService } from './AIService';
 import { estimatesSnapshot } from '../routes/estimates';
-import { saveReportBuffer } from './ReportService'; // T02103：生成物落盘/下载令牌单源（纠偏 C3）
+import { saveReportBuffer, discardReport } from './ReportService'; // T02103：生成物落盘/下载令牌单源（纠偏 C3）；T02144：放弃即回收
 import { downloadSafeName } from '../util/export-name'; // T02104：下载名洗到必然过白名单
 import { toManMonth, type EstimateSummary } from './estimate-engine';
 
@@ -927,6 +927,12 @@ export async function kickoffPptStream(
     signal,
   });
   const token = saveReportBuffer(assembled.buffer);
+  // T02144：中止恰好落在「已落盘、尚未回报」的窗口时，done 事件不会再有人接收，令牌随前端状态归零丢失
+  //  → 立刻回收，不给 DATA_DIR/tmp 留孤儿（启动/每小时清扫是兜底，这里是最早的收口点）
+  if (signal?.aborted) {
+    discardReport(token);
+    throw new Error(KICKOFF_ABORT_MSG);
+  }
   onStage('文件已生成，可在左侧下载。');
   return {
     token,

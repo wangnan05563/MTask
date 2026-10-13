@@ -112,6 +112,55 @@ export function readAndDeleteReport(token: string): Buffer | undefined {
   return buf;
 }
 
+/** 放弃令牌（中止/无人接收 done）时立即回收落盘文件；失败不抛——清扫定时器仍是兜底 */
+export function discardReport(token: string): boolean {
+  try {
+    unlinkSync(join(reportTmpDir(), token));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * T02144：令牌文件的生命周期此前只有「写入」与「下载即删」两端，缺「过期/放弃回收」第三端——
+ * 生成后不下载即切走、或中止落在落盘之后，令牌随组件状态归零丢失，文件成为永久孤儿（tmp 单调增长）。
+ * 清扫只碰 tmp 下 UUID 命名的令牌文件（与 isReportToken 同一把白名单钥匙），目录内其他东西一律不动。
+ */
+export const REPORT_TMP_TTL_MS = 6 * 60 * 60 * 1000;
+
+/** 删除超过 TTL 的令牌文件，返回删除数（now 可注入供测试） */
+export function sweepReportTmp(ttlMs = REPORT_TMP_TTL_MS, now = Date.now()): number {
+  const dir = reportTmpDir();
+  let removed = 0;
+  for (const name of readdirSync(dir)) {
+    if (!isReportToken(name)) continue;
+    const p = join(dir, name);
+    try {
+      if (now - statSync(p).mtimeMs < ttlMs) continue;
+      unlinkSync(p);
+      removed += 1;
+    } catch { /* 单文件失败（占用/权限）不中断整轮 */ }
+  }
+  return removed;
+}
+
+/** 启动清一轮 + 每小时兜底（与 T01061 备份/T01064 事件保留期同一启动定时家族） */
+export function startReportTmpSweeper(intervalMs = 3_600_000): ReturnType<typeof setInterval> {
+  const run = () => {
+    try {
+      const n = sweepReportTmp();
+      if (n > 0) console.log(`[mtask] report-tmp sweep: ${n} abandoned export file(s) removed`);
+    } catch (e) {
+      console.error('[mtask] report-tmp sweep failed:', e);
+    }
+  };
+  run();
+  const timer = setInterval(run, intervalMs);
+  timer.unref?.(); // 清扫不该拖住进程退出
+  return timer;
+}
+
 /** 解析周期时间范围 [start, end)：按本地时区取当日 0 点，避免跨日误判 */
 function periodRange(period: ReportPeriod): { start: Date; end: Date } {
   const now = new Date();
@@ -447,6 +496,12 @@ export async function aiGenerateReportStream(
   // worker 异步合成：主事件循环不被阻塞，SSE 仍可推送/响应其它请求
   const buffer = await buildInWorker({ format, data, aiInsight: insight });
   const token = saveReportBuffer(buffer);
+  // T02144：与启动会侧同一收口点——中止若落在「已落盘、尚未回报」，done/stage 不会再有人接收，
+  // 令牌随前端状态归零丢失，文件即成孤儿；这里当场回收（定时清扫是兜底）
+  if (signal?.aborted) {
+    discardReport(token);
+    throw new Error('任务已停止');
+  }
   onStage('文件已生成，可在左侧下载。');
   // T00443 / PRD AI-5：流式版同样支持摘要推送（可配置）
   if (getSetting('report.aiSummaryToInbox') === '1') {
