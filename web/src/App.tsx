@@ -209,6 +209,11 @@ function Shell() {
         .nav-btn:hover:not(:disabled) { transform: scale(1.06) rotate(-2deg); }
         button.row-title-btn:hover:not(:disabled) { transform: scale(1.02) rotate(-1deg); }
         button { transition: transform .18s ease, background-color .15s ease; }
+        /* T02143：能力卡片容器（div role=button，内嵌角标按钮不能套在原生 button 里）补回全局
+           button 规则给过的悬浮/手感——否则这次 DOM 规范修复会顺带回退 T00494 的微交互体系 */
+        .card-btn { cursor: pointer; transition: transform .18s ease, background-color .15s ease; }
+        .card-btn:hover { transform: rotate(-1.5deg); }
+        .card-btn:active { transform: scale(0.95); }
         /* T00530：请求进行中的呼吸反馈上提为全局（任务页/计划页共用） */
         .task-breathe { animation: task-breathe 1.3s ease-in-out infinite; }
         @keyframes task-breathe {

@@ -94,8 +94,10 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, action, sta
   /** T01068-FR4.4：运行态流光延展——AI 运行中时卡片外框光晕呼吸（ai-shimmer 文字流光的容器延展形态） */
   readonly glow?: boolean;
 }) {
-  // T00908：容器从 <button> 改为 div role=button——右上角动作按钮不能嵌套在按钮内（HTML 语法/可达性），
-  //         保持同样的点击展开/键盘激活能力，动作按钮作为兄弟元素置于卡片右上角
+  // T00908：容器用 div role=button（不用原生 button）——右上角动作/重置按钮是交互子元素，
+  //         不能嵌套在按钮内（HTML 语法/可达性）；键盘激活能力由下方 onKeyDown 等价补齐。
+  //         T02143 复位：fdc6090 的「div role=button 转原生 button」批修没考虑内嵌角标按钮，
+  //         把非法 DOM 改了进来——容器含交互子元素时不得用原生 button 包裹，勿再改回。
   const [resetting, setResetting] = useState(false);
   async function handleReset() {
     if (resetting || !onReset) return;
@@ -105,13 +107,20 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, action, sta
   }
   const hasCorner = Boolean(action || onReset);
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onToggle}
+      onKeyDown={(e) => {
+        // 只认卡片自身获得焦点时的按键：角标按钮的 Enter/Space 会冒泡到这里，
+        // 不判 target 会让「键盘激活角标」顺带把卡片收起（T02143 实测踩到）
+        if (e.target !== e.currentTarget) return;
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); }
+      }}
       title={hint}
       aria-label={aria}
-      className={`ln${glow ? ' flow-glow' : ''}`}
-      style={{ position: 'relative', textAlign: 'left', padding: 14, border: open ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', color: 'inherit', font: 'inherit', cursor: 'pointer', display: 'flex', gap: 10, alignItems: 'flex-start', width: '100%' }}
+      className={`card-btn ln${glow ? ' flow-glow' : ''}`}
+      style={{ position: 'relative', textAlign: 'left', padding: 14, border: open ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', cursor: 'pointer', display: 'flex', gap: 10, alignItems: 'flex-start', width: '100%' }}
     >
       {icon}
       <span style={{ flex: 1 }}>
@@ -121,7 +130,7 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, action, sta
         {statusNode && <span style={{ display: 'block', marginTop: 6 }}>{statusNode}</span>}
       </span>
       {hasCorner && (
-        // S6848/S1082：容器本身不可交互，不再挂 onClick——冒泡阻断改由内部按钮各自 stopPropagation
+        // S6848/S1082：角标按钮各自 stopPropagation——冒泡到卡片会连带触发展开/收起
         <span style={{ position: 'absolute', top: 9, right: 9, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           {action}
           {onReset && (
@@ -137,7 +146,7 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, action, sta
           )}
         </span>
       )}
-    </button>
+    </div>
   );
 }
 
