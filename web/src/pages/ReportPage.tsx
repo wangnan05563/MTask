@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ChangeEvent, type CSSProperties } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api, type Project, type AITool } from '../api/client';
-import { streamEvents } from '../api/sse';
+import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import { reportStream, useReportStream } from '../reportStream';
 import { ReportConsole } from './ReportConsole';
 import { AiPlanImportPanel } from './AiPlanImportPanel';
@@ -611,8 +611,10 @@ export function ReportPage() {
       // 用户「停止」主动中止：状态已由 reportStream.abort() 清空，不再追加失败日志
       if (ac.signal.aborted) return;
       const msg = e instanceof Error ? e.message : String(e);
-      flash(msg);
-      reportStream.finish(`生成失败：${msg}`);
+      // T02142 §5：被并发闸拒不是「生成失败」——与启动会面板同口径走排队态文案（PRD §5 R6）
+      const queued = msg.includes(GATE_BUSY_MSG);
+      flash(queued ? `${msg}——前面有周报/启动会稿在装配，稍后重试即可（不是失败）` : msg);
+      reportStream.finish(queued ? `并发闸排队：${msg}` : `生成失败：${msg}`);
     } finally {
       reportStream.setAbortCtrl(null);
     }

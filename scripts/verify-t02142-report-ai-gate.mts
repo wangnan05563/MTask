@@ -9,8 +9,12 @@
  *        （AIService.ask 出洞察 + report-worker 合成文件），补挂后必须真的计入同一只闸；
  *     ② 报表族四条重活端点**齐全**挂闸（矩阵式断言，不是逐条点名——第 5 条新增时本断言会点名缺口）；
  *     ③ SSE 端点被拒时给的是**结构化 429 JSON**，不是半开的 event-stream（前端 streamEvents
- *        的非 2xx 分支因此有可读文案，无需新增前端改动）；
- *     ④ 挂闸不能把既有的入参校验吞掉（period/format 非法仍 400）。
+ *        的非 2xx 分支因此有可读文案）；
+ *     ④ 挂闸不能把既有的入参校验吞掉（period/format 非法仍 400）；
+ *     ⑤ **与启动会稿共用计数**（G-14 用两条长驻 kickoff SSE 占满闸位再打 AI 周报）与
+ *        **断开即放闸**（G-15）——这两条是本单 description 点名的实测项；
+ *     ⑥ 面板把「被闸拒」与「生成失败」分开显示（S-07/S-08：判定串升为 sse.ts 单源，
+ *        周报面板对齐启动会面板的排队态语气，且前端串必须是服务端 429 文案的子串）。
  *
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02142-report-ai-gate.mts
  * 环境变量：`T02142_PORT`（默认随机 39400+rand300）。
@@ -137,6 +141,19 @@ async function genReport(body: Record<string, unknown>) {
   return { status: res.status, buf: Buffer.from(await res.arrayBuffer()) };
 }
 
+/** 启动会稿开流（只为占闸）：3 页最小合法大纲，拿到响应头即算「已进入闸内」，收尾由调用方 abort */
+const KICKOFF_OUTLINE = Array.from({ length: 3 }, (_, i) => ({
+  section: '项目风险', title: `占闸页 ${i + 1}`, bullets: ['占位要点'], dataKeys: ['risks'], layout: 'table',
+}));
+async function kickoffOpen(toolId: string) {
+  const ac = new AbortController();
+  const res = await fetch(BASE + '/plans/kickoff-ppt-stream', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectId: FIVE_PID, toolId, outline: KICKOFF_OUTLINE }), signal: ac.signal,
+  }).catch(() => null);
+  return { status: res?.status ?? 0, ac };
+}
+
 // =====================================================================
 // S 组：矩阵齐全（纯源码断言，先于行为跑——缺一条 mount，行为组测的就是旧态）
 // =====================================================================
@@ -171,6 +188,23 @@ async function genReport(body: Record<string, unknown>) {
     !/exportGate\(['"]report-generate['"]/.test(IDX + PLANS) && (IDX.match(/exportGate\(REPORT_GATE\)/g) ?? []).length >= 3);
   ok('S-06 前端 streamEvents 对非 2xx 读出结构化 error 抛出（429 文案有归宿，本单无需改前端）',
     /if \(!res\.ok\)[\s\S]{0,160}body[\s\S]{0,80}\.error/.test(SSE));
+  // S-07/S-08 对应本单第 5 条：面板要把「被闸拒」与「生成失败」分开显示（PRD §5 R6 排队态文案）。
+  // 判定串此前只在启动会面板里各写一份；升到 sse.ts 单源后，两处面板共用一个常量——
+  // 单源本身要钉住，否则后来者又抄一份字面量，服务端改措辞时前端静默退化成红叉。
+  const KP = readFileSync(join(ROOT, 'web', 'src', 'pages', 'KickoffPptPanel.tsx'), 'utf8');
+  const RP = readFileSync(join(ROOT, 'web', 'src', 'pages', 'ReportPage.tsx'), 'utf8');
+  ok('S-07 排队态判定串单源在 sse.ts，两个面板各自 import（周报面板确有 queued 分支）',
+    /export const GATE_BUSY_MSG/.test(SSE)
+      && /import \{[^}]*GATE_BUSY_MSG[^}]*\} from '..\/api\/sse'/.test(RP)
+      && /import \{[^}]*GATE_BUSY_MSG[^}]*\} from '..\/api\/sse'/.test(KP)
+      && /msg\.includes\(GATE_BUSY_MSG\)/.test(RP)
+      && !/const GATE_BUSY_MSG/.test(KP + RP),
+    { rp_import: /from '..\/api\/sse'/.test(RP), kp_import: /from '..\/api\/sse'/.test(KP), rp_queued: /msg\.includes\(GATE_BUSY_MSG\)/.test(RP) });
+  const GATE_SRC = readFileSync(join(ROOT, 'server', 'src', 'util', 'export-gate.ts'), 'utf8');
+  const busyLit = (SSE.match(/export const GATE_BUSY_MSG = '([^']+)'/) ?? [])[1] ?? '';
+  ok('S-08 前端判定串确实是服务端 429 文案的子串（两端同源，不靠巧合）',
+    busyLit.length > 0 && (GATE_SRC.match(/res\.status\(429\)\.json\(\{ error: '([^']+)' \}\)/) ?? [])[1]?.includes(busyLit) === true,
+    { busyLit, serverMsg: (GATE_SRC.match(/res\.status\(429\)\.json\(\{ error: '([^']+)' \}\)/) ?? [])[1] });
 }
 
 // =====================================================================
@@ -240,6 +274,29 @@ if (!(await waitUp())) {
     mixPass >= 1 && mixPass <= 2 && mix429 >= 1, mix.map((r: any) => r.status));
   for (const r of mix as any[]) if (r.json?.token) tokens.push({ token: String(r.json.token), filename: String(r.json.filename) });
   await sleep(2_500);
+
+  // 跨链路占闸（本单第 2 条字面要求）：**启动会稿**占满 2 路时，AI 周报必须被同一计数挡下。
+  // G-07 用离线导出占闸证不了这条——离线导出跑完即放，占闸窗口太短；用两条长驻 SSE 才量得实。
+  {
+    mockDelayMs = AI_DELAY_MS;
+    const h1 = await kickoffOpen(toolId!);
+    const h2 = await kickoffOpen(toolId!);
+    await sleep(500); // 两路确实进闸（defer 只推迟 next()，计数在中间件里同步已加）
+    const during = await aiGen(aiBody('xlsx'));
+    ok('G-14 两路启动会稿在途时，AI 周报被**同一计数**挡下 429（FR-5 共用闸的跨链路实测）',
+      h1.status === 200 && h2.status === 200 && during.status === 429,
+      { kickoff: [h1.status, h2.status], aiReport: during.status, msg: during.json?.error });
+    // 断开即放闸（本单第 3 条）：闸位由 export-gate 的 res.once('close') 归还，此前只在离线导出侧实测过
+    h1.ac.abort();
+    h2.ac.abort();
+    await sleep(1_500);
+    const after = await Promise.all([aiGen(aiBody('xlsx')), aiGen(aiBody('docx'))]);
+    mockDelayMs = 0;
+    ok('G-15 启动会稿客户端断开后闸位归还（无幽灵占用：断两路后 2 路 AI 周报恢复全接受）',
+      after.every((r) => r.status !== 429), after.map((r) => r.status));
+    for (const r of after) if (r.json?.token) tokens.push({ token: String(r.json.token), filename: String(r.json.filename) });
+    await sleep(2_500);
+  }
 
   // app_settings 调限即时生效（只写副本库）
   {

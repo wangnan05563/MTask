@@ -61,6 +61,14 @@ async function readStream(
 }
 
 /**
+ * 并发闸拒绝文案的判定串（T02142 从 KickoffPptPanel 的本机常量升为共用）。
+ * 服务端 `export-gate.ts` 回的是「导出任务过多，请稍后再试」——这里用**包含**判定而非全等，
+ * 服务端日后调措辞前端不至于静默退化成红叉；两端同源由 verify-t02142 的门锁住。
+ * 被闸拒 ≠ 生成失败：面板要走「稍后重试」语气（PRD §5 R6 要求排队态明确文案）。
+ */
+export const GATE_BUSY_MSG = '导出任务过多';
+
+/**
  * 建立流式 POST 请求并按 SSE 事件分发给 onEvent(eventName, payload)。
  * 承诺：读取完整个流后 resolve；HTTP 错误时 reject 并携带后端 error 文案。
  * T00838：可选 signal——调用方点「停止」时 abort 该连接（触发后端 res.close → 中止底层 AI 请求）。

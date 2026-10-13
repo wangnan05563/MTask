@@ -15,7 +15,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
-import { streamEvents } from '../api/sse';
+import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import { kickoffPptStore, useKickoffPpt, type KickoffOutlineItem, type KickoffStreamResult } from '../stores/kickoffPptStore';
 import { FlowProgress } from '../ui/FlowProgress';
 import { askConfirm } from '../ui/dialogs';
@@ -53,8 +53,7 @@ const LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list']
 /** 大纲编辑态会话键（重置入口在 consoleReset 的产物键清单里，与控制台重置等效） */
 const OUTLINE_SESSION_KEY = 'kickoff.outline';
 
-/** 导出闸超限文案（服务端 export-gate 单源）——面板据此走「排队态」而非红叉失败（PRD §5 R6） */
-const GATE_BUSY_MSG = '导出任务过多';
+/** 导出闸超限文案判定串见 `api/sse.ts` 的 GATE_BUSY_MSG（T02142 起与周报面板共用同一单源） */
 
 const opBtn = { display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', padding: '3px 7px' } as const;
 const cellInput = { fontSize: 12, padding: '3px 6px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' } as const;
