@@ -21,6 +21,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { groupTimelinePhases, type TlPlan } from './PlanTimeline';
+import { PhaseBarChart, ParetoChart, TornadoChart, paretoGeometries, tornadoGeometries } from './estimateCharts';
 import { api } from '../api/client';
 import {
   estimatesApi, parseSnapshotPayload, toGrid,
@@ -383,6 +384,19 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
   // §5.4 区间条按**全部明细行**归一，不按「只看未复核」筛后的可见行：换一次筛选就改刻度，
   // 同一行的条长会凭空变化，读者以为是估算变了——实际变的只是谁被遮住。
   const whisker = useMemo(() => whiskerGeometries(rows), [rows]);
+  // §5.4 可视化（E11/E14）：里程碑行不进图（§4.6 红线一），过滤口径单源——只从面板 rows 取 kind。
+  const milestoneIds = useMemo(() => new Set(rows.filter((r) => r.kind === 'milestone').map((r) => r.planId)), [rows]);
+  // 帕累托/E14 几何只取服务端 summary（rowRatios），零计算；title 由 rowById 反查（仅显示用）。
+  // 此处早于 `if (!data) return null`，故用可选链 + 稳定空数组兜底（data 为空时组件会提前返回，memo 结果被丢弃）。
+  const rowRatios = data?.summary.rowRatios ?? [];
+  const pareto = useMemo(() => paretoGeometries(rowRatios, milestoneIds), [rowRatios, milestoneIds]);
+  const tornado = useMemo(
+    () => tornadoGeometries(
+      rowRatios.map((r) => ({ key: r.key, title: rowById.get(r.key)?.title ?? r.key, sigma: r.sigma })),
+      milestoneIds,
+    ),
+    [rowRatios, rowById, milestoneIds],
+  );
 
   /** 空态：一条估算都没落库（未录入 ≠ 全为 default——default 行也要先经「按规则推导」写入才存在） */
   const isEmpty = !loading && !error && (data?.items.length ?? 0) === 0;
@@ -907,6 +921,21 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             ))}
           </tbody>
         </table>
+
+        {/* §5.4 可视化图表（E11 阶段柱+误差线 / E11 帕累托 / E14 龙卷风）：数据只取服务端 summary，
+            零计算、纯 SVG、CSS 变量色、里程碑行不进图、空态不画图例 */}
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '2px 0 6px' }}>阶段柱与 ±1σ 误差线（E11）</div>
+          <PhaseBarChart phases={s.phases} phaseLabels={data.meta.phaseLabels} />
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '12px 0 6px' }}>帕累托（E11 · 按行 E 降序累计占比）</div>
+          {pareto.length > 0
+            ? <ParetoChart geoms={pareto} />
+            : <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '6px 0' }}>暂无有效估算行</div>}
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '12px 0 6px' }}>龙卷风（E14 · 敏感性，σ 降序）</div>
+          {tornado.length > 0
+            ? <TornadoChart geoms={tornado} />
+            : <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '6px 0' }}>暂无 σ 数据</div>}
+        </div>
 
         {/* 3) 明细工具条（§5.3 批量填充 + 只看未复核）：作用域=可见且非里程碑的行，里程碑由服务端红线排除 */}
         <div role="toolbar" aria-label="估算批量填充工具条" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', margin: '14px 0 6px' }}>
