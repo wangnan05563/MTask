@@ -75,6 +75,18 @@ ok('G-03 前端版式候选与服务端 KICKOFF_LAYOUTS 逐字同序',
   same(feLayouts, srvLayouts), { fe: feLayouts, srv: srvLayouts });
 ok('G-04 前端不硬编码下载文件名（fileName 取服务端校验值，洗名单源在 util/export-name）',
   !/\.pptx`/.test(PANEL) && /result\.fileName/.test(PANEL));
+// G-05/G-06（T02145）：PRD §7 的 done 字段名此前无任何门钉住，全靠人工比对——本单分歧
+// （PRD 写 downloadToken、三方实现用 token）就是这么漂移进来的，故把「文档 ⊆ 实现键集合」钉成门。
+const PRD_KICKOFF = readFileSync(join(ROOT, 'docs', 'PRD-项目启动会PPT生成.md'), 'utf8');
+const PLANS_ROUTES = readFileSync(join(ROOT, 'server', 'src', 'routes', 'plans.ts'), 'utf8');
+const prdRow = PRD_KICKOFF.split('\n').find((l) => l.includes('kickoff-ppt-stream') && l.includes('`done`')) ?? '';
+const prdFields = [...((/`done`（含\s*([^）]*)/.exec(prdRow)?.[1] ?? '').matchAll(/`([A-Za-z]\w*)/g))].map((m) => m[1]);
+const implDoneKeys = [...((/send\('done',\s*\{([\s\S]*?)\}\s*\);/.exec(PLANS_ROUTES)?.[1] ?? '').matchAll(/(\w+):/g))].map((m) => m[1]);
+ok('G-05 PRD §7 done 字段名必须是实现 send(\'done\',{…}) 键集合的子集（两侧都要解析得到，防改名致空集假绿）',
+  prdFields.length >= 3 && implDoneKeys.length >= 3 && prdFields.every((f) => implDoneKeys.includes(f)),
+  { PRD: prdFields, 实现: implDoneKeys });
+ok('G-06 PRD 全文零 downloadToken（T02145 已按用户裁决统一为 token，再出现即文档又漂移）',
+  !/downloadToken/.test(PRD_KICKOFF));
 
 // =====================================================================
 // mock AI：大纲段回「带幻觉数字」的 13 页稿；措辞段回合规改写
