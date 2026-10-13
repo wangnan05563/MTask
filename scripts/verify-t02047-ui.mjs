@@ -18,7 +18,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT_T0 = Date.now();
@@ -103,11 +103,13 @@ kbPlans.forEach(([id, title, dur, prog, st, kind, cx], i) => {
 closeDb();
 
 // ---------------- 2) 隔离服务 ----------------
-const tsxPath = join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
-const server = spawn(process.execPath, [tsxPath, join(ROOT, 'server', 'src', 'index.ts')], {
-  cwd: ROOT, env: { ...process.env, MTask_PORT: String(PORT), MTask_DATA_DIR: DATA_DIR },
+const { resolveServerLauncher } = await import(pathToFileURL(join(ROOT, 'scripts/isolated-server-launcher.mts')).href);
+const LAUNCHER = resolveServerLauncher(ROOT, join(ROOT, 'server', 'src', 'index.ts'));
+const server = spawn(LAUNCHER.exec, LAUNCHER.tsx, {
+  cwd: ROOT, env: { ...process.env, ...LAUNCHER.env, MTask_PORT: String(PORT), MTask_DATA_DIR: DATA_DIR },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
+console.log(`隔离实例启动器：${LAUNCHER.label}`);
 const serverLog = [];
 let serverExit = 'running';
 server.on('exit', (code, signal) => { serverExit = `code=${code} signal=${signal}`; });

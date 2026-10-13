@@ -26,6 +26,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveServerLauncher } from './isolated-server-launcher.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02046-e9-'));
@@ -300,12 +301,15 @@ insEst.run('e-tight', PID, 'pl-tight', 'dev', 8, 10, 12, 'rule', 'E=10，排期�
 insEst.run('e-expired', PID, 'pl-expired', 'dev', 3, 4, 5, 'rule', 'E=4，排期已过', T, T);
 
 closeDb();
-const tsxPath = join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
-const child: ChildProcess = spawn(process.execPath, [tsxPath, join(ROOT, 'server', 'src', 'index.ts')], {
+// 启动器按 native 模块 ABI 探测（打包.bat 会把 better-sqlite3 重编译成 Electron ABI，
+// 此时 process.execPath 直跑会 ERR_DLOPEN_FAILED）——见 isolated-server-launcher.mts
+const LAUNCHER = resolveServerLauncher(ROOT, join(ROOT, 'server', 'src', 'index.ts'));
+const child: ChildProcess = spawn(LAUNCHER.exec, LAUNCHER.tsx, {
   cwd: ROOT,
-  env: { ...process.env, MTask_PORT: String(PORT), MTask_DATA_DIR: DATA_DIR },
+  env: { ...process.env, ...LAUNCHER.env, MTask_PORT: String(PORT), MTask_DATA_DIR: DATA_DIR },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
+console.log(`隔离实例启动器：${LAUNCHER.label}`);
 const serverLog: string[] = [];
 child.stdout?.on('data', (b: Buffer) => serverLog.push(b.toString()));
 child.stderr?.on('data', (b: Buffer) => serverLog.push(b.toString()));

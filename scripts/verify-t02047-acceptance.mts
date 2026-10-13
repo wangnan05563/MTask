@@ -25,6 +25,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveServerLauncher } from './isolated-server-launcher.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02047-acc-'));
@@ -430,14 +431,15 @@ const insEst = db.prepare(
 });
 closeDb();
 
-// 与 E9 门同一写法：本进程的 Node 已经能加载 better-sqlite3（上面在临时库里插过数据），
-// 所以直接用它拉子进程，不绕 `resolveServerLauncher` 的打包 ABI 回落（那条路是给打包后环境用的）
-const tsxPath = join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
-const child = spawn(process.execPath, [tsxPath, join(ROOT, 'server', 'src', 'index.ts')], {
+// 启动器按 native 模块 ABI 探测（打包.bat 会把 better-sqlite3 重编译成 Electron ABI，
+// 此时 process.execPath 直跑会 ERR_DLOPEN_FAILED）——见 isolated-server-launcher.mts
+const LAUNCHER = resolveServerLauncher(ROOT, join(ROOT, 'server', 'src', 'index.ts'));
+const child = spawn(LAUNCHER.exec, LAUNCHER.tsx, {
   cwd: ROOT,
-  env: { ...process.env, MTask_PORT: String(PORT), MTask_DATA_DIR: DATA_DIR },
+  env: { ...process.env, ...LAUNCHER.env, MTask_PORT: String(PORT), MTask_DATA_DIR: DATA_DIR },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
+console.log(`隔离实例启动器：${LAUNCHER.label}`);
 const serverLog: string[] = [];
 let childExit = 'running';
 child.on('exit', (code: number | null, signal: string | null) => { childExit = `code=${code} signal=${signal}`; });
