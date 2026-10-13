@@ -324,6 +324,7 @@ export const AIService = {
    * parse 抛错即视为本次输出无效。返回 { ok, data, error }；失败时 error 末尾注明已重试。
    * 供 aiParsePrd / aiParseWbs 等结构化解析场景使用（普通对话仍走 ask）。
    * T01289：额外带出全部尝试累计的 token 用量（适配器未回传则缺省），供监督器预算护栏计量。
+   * T02141：新增可选 `opts.signal`——外部中止时本轮立即收手，且不进入重试。
    */
   async askJson<T>(
     toolId: string,
@@ -339,9 +340,14 @@ export const AIService = {
       /** T01275：首轮温度覆盖——监督决策要求 temperature=0 稳定复现，而工具默认温度偏高 */
       temperature?: number;
       timeoutMs?: number;
+      /**
+       * T02141：可选中止信号——SSE 客户端断开后不必等完整轮响应（适配器 abort 即回 `任务已停止`）。
+       * 与 T01289「超时不重试」同口径：abort 时**不触发重试**，否则「停止」会变成再等一轮、白烧一次配额。
+       */
+      signal?: AbortSignal;
     },
   ): Promise<{ ok: boolean; data?: T; error?: string; retried?: boolean; usage?: TokenUsage }> {
-    const { timeoutMs, retrySystem, maxTokens, temperature } = opts ?? {};
+    const { timeoutMs, retrySystem, maxTokens, temperature, signal } = opts ?? {};
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     const effective = timeoutMs == null ? config : { ...config, timeoutMs };
@@ -350,14 +356,15 @@ export const AIService = {
     for (let attempt = 1; attempt <= 2; attempt++) {
       acc.attempts = attempt;
       const startedAt = Date.now();
-      const res = await adapter.chat(attemptSystem(attempt, system, retrySystem), user, attemptConfig(base, attempt, maxTokens));
+      const res = await adapter.chat(attemptSystem(attempt, system, retrySystem), user, attemptConfig(base, attempt, maxTokens), signal);
       acc.usage = mergeUsage(acc.usage, res.usage);
       if (!res.ok || !res.content) {
         acc.lastError = res.error ?? 'AI 返回内容为空';
         recordUsage('ask-json', toolId, config.model, false, startedAt, 0, acc.lastError);
         // T01289：超时不重试——本轮已耗尽整个超时窗口，再试一次只会把等待时间翻倍；
         // 监督决策据此在 10s 内降级 ESCALATE（NFR-1），而不是 20s 后才降级。
-        if (res.timedOut) break;
+        // T02141：外部中止同理不重试——调用方已表示不要这一轮结果，重试等于白烧一次配额。
+        if (res.timedOut || signal?.aborted) break;
         continue;
       }
       try {

@@ -844,6 +844,7 @@ async function polishWording(
   toolId: string,
   local: KickoffWordingLocal,
   warnings: string[],
+  signal?: AbortSignal,
 ): Promise<KickoffWording> {
   const fallback = (): KickoffWording => ({ risks: bundle.risks, comms: local.comms });
   try {
@@ -852,7 +853,8 @@ async function polishWording(
       WORDING_SYSTEM,
       wordingUserPrompt(local, bundle.project.name),
       (content) => wordingFromAi(local, JSON.parse(stripFence(content))),
-      { temperature: 0 },
+      // T02141：带上 signal——客户端断开时本轮不再等完整响应、也不重试（此前只在下一次 await 后收手，配额已烧）
+      { temperature: 0, signal },
     );
     if (!ai.ok || ai.data === undefined) {
       warnings.push(`${KICKOFF_WORDING_FALLBACK_MSG}（原因：${ai.error ?? '未知'}）`);
@@ -907,8 +909,8 @@ export async function kickoffPptStream(
       comms: commIdx < 0 ? [] : outline[commIdx].bullets,
     };
     onStage(`风险/沟通措辞润色中（条目 ${local.risks.length} + ${local.comms.length}）…`);
-    const w = await polishWording(bundle, toolId, local, warnings);
-    // 措辞阶段等的是模型，客户端早就走了要在此收手——别把整份稿画完再扔
+    const w = await polishWording(bundle, toolId, local, warnings, signal);
+    // 兜底收手：abort 也可能落在「模型已回、尚未画页」的窗口里；T02141 后模型等待期本身也能被 abort 掐断
     if (signal?.aborted) throw new Error(KICKOFF_ABORT_MSG);
     built = {
       outline: outline.map((o, i) => (i === commIdx && w.comms.length === o.bullets.length ? { ...o, bullets: w.comms } : o)),
