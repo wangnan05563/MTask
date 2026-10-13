@@ -562,6 +562,11 @@ export function ReqPage() {
                   {/* T00494 调整：去掉拖拽把手图标（整行即可拖拽） */}
 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     {/* 标题可点击，切换内容展开/收起（默认收起，降低信息密度） */}
+                    {/* T02146：置顶图标提到标题按钮的**兄弟位**——HTML 不允许 button 套 button
+                        （dev React 报 validateDOMNesting，生产构建只是剥掉告警，DOM 依旧非法）。
+                        PinToggle 自带 stopPropagation，提到外面后「置顶」与「展开」互不干扰的行为不变，
+                        视觉位置仍是标题左侧。 */}
+                    <PinToggle pinned={Boolean(p.pinned)} onToggle={() => void togglePin(p)} />
                     <button
                       onClick={() => setExpandedIds((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
                       title={expandedIds[p.id] ? '点击收起通用需求内容' : '点击展开通用需求内容'}
@@ -569,7 +574,6 @@ export function ReqPage() {
                       className="row-title-btn"
                       style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6, border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', minWidth: 0 }}
                     >
-                      <PinToggle pinned={Boolean(p.pinned)} onToggle={() => void togglePin(p)} />
                       <span style={{ fontWeight: 600, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' , color: p.color || undefined }}>{p.title}</span>
                       {/* 展开/收起箭头：与任务页统一使用 lucide 图标，蓝色 13px */}
                       <span style={{ color: 'var(--accent)', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>{expandedIds[p.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}</span>

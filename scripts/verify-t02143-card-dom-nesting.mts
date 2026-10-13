@@ -128,11 +128,16 @@ function tagEnd(src: string, open: number): { end: number; selfClosing: boolean 
   }
   return { end: i, selfClosing: false };
 }
-/** 线性扫描 `<button>` 开/闭标签深度：返回「按钮套按钮」命中数与收口后的残留深度（深度不归零=切分错位） */
-function scanNested(src: string): { hits: number; depth: number } {
+/**
+ * 线性扫描 `<button>` 开/闭标签深度：返回「按钮套按钮」命中数与收口后的残留深度（深度不归零=切分错位）。
+ * `inButtonComponents`（T02146）：额外点名「自身渲染 button 的组件标签」——它们同文件扫不到，
+ * 但出现在 button 内部就是同一个非法 DOM，故按 button 深度同样计 `componentHits`。
+ */
+function scanNested(src: string, inButtonComponents: string[] = []): { hits: number; componentHits: number; depth: number } {
   let depth = 0;
   let i = 0;
   let hits = 0;
+  let componentHits = 0;
   while (i < src.length) {
     if (src[i] !== '<') { i += 1; continue; }
     if (src.startsWith('</', i)) {
@@ -142,13 +147,20 @@ function scanNested(src: string): { hits: number; depth: number } {
       i = end;
       continue;
     }
+    const comp = inButtonComponents.find((c) => src.startsWith(`<${c}`, i) && !/^<\/|[\w]/.test(src[i + 1 + c.length] ?? ' '));
+    if (comp) {
+      const { end } = tagEnd(src, i);
+      if (depth > 0) componentHits += 1;
+      i = end;
+      continue;
+    }
     if (!/^<button\b/.test(src.slice(i))) { i += 1; continue; }
     const { end, selfClosing } = tagEnd(src, i);
     if (depth > 0 && !selfClosing) hits += 1;
     if (!selfClosing) depth += 1;
     i = end;
   }
-  return { hits, depth };
+  return { hits, componentHits, depth };
 }
 const files: string[] = [];
 (function walk(dir: string) {
@@ -159,23 +171,26 @@ const files: string[] = [];
   }
 })(WEB_SRC);
 const byFile = new Map<string, number>();
+const compByFile = new Map<string, number>();
 let unbalanced = 0;
+/** T02146：自身渲染原生 button、可被误放进标题 button 内部的共享组件 */
+const IN_BUTTON_COMPONENTS = ['PinToggle'];
 for (const f of files) {
-  const { hits, depth } = scanNested(stripComments(readFileSync(f, 'utf8')));
+  const { hits, componentHits, depth } = scanNested(stripComments(readFileSync(f, 'utf8')), IN_BUTTON_COMPONENTS);
   if (depth !== 0) unbalanced += 1;
-  if (hits > 0) byFile.set(f.slice(ROOT.length + 1).replace(/\\/g, '/'), hits);
+  const rel = f.slice(ROOT.length + 1).replace(/\\/g, '/');
+  if (hits > 0) byFile.set(rel, hits);
+  if (componentHits > 0) compByFile.set(rel, componentHits);
 }
 /**
- * 登记在册的同根因违规（T02143 实测发现，按红线 7 派生单处理，不在本单顺手改）：
+ * 登记在册的同根因违规（T02143 实测发现，当时按红线 7 派生单处理，不在本单顺手改）：
  *   - TasksPage 项目切换行的置顶图标按钮套在项目行 button 里；
  *   - PlanPage 同形态（项目弹出列表行）。
  * 两处都在下拉**打开时**才渲染，故运行时全站首屏扫描看不见——正是本组静态扫描的价值所在。
  * B-03 会钉住「清单必须与实际命中逐文件相等」：修好了不同步删条目，门同样判红。
+ * T02146 已把两处行容器改为 `div role="button"` 并同步清空清单（口径 3）。
  */
-const REGISTERED: Record<string, number> = {
-  'web/src/pages/TasksPage.tsx': 1,
-  'web/src/pages/PlanPage.tsx': 1,
-};
+const REGISTERED: Record<string, number> = {};
 const found = Object.fromEntries([...byFile.entries()].sort());
 const expected = Object.fromEntries(Object.entries(REGISTERED).sort());
 const unregistered = [...byFile.entries()].filter(([f]) => !(f in REGISTERED));
@@ -196,6 +211,15 @@ ok('B-05 扫描器自证：真嵌套形态必须命中（守卫不是永远绿�
   scanNested(`<button aria-label="card"><span><button aria-label="corner">x</button></span></button>`).hits === 1);
 ok('B-06 全仓无「标签深度收不住」的文件（切分错位会让 B-01 假绿，必须先自证）',
   unbalanced === 0, { unbalanced });
+// T02146：B 组原只对「同文件 button 套 button」有效，跨文件组件（PinToggle 自身是 button）天生失明——
+// 提示词/通用需求两处 47+3 例就是这么漏掉的，故把组件点名进同一扫描器。
+ok('B-07 组件 `<PinToggle` 不出现在任何 button 内部（跨文件同根因，运行时才可见的那一族）',
+  compByFile.size === 0, [...compByFile.entries()]);
+ok('B-08 扫描器自证：button 内的 `<PinToggle/>` 必须命中（B-07 不是永远绿的摆设）',
+  scanNested('<button className="row-title-btn"><PinToggle pinned={false} onToggle={() => {}} /></button>',
+    IN_BUTTON_COMPONENTS).componentHits === 1 &&
+  scanNested('<div role="button"><PinToggle pinned onToggle={f} /></div>',
+    IN_BUTTON_COMPONENTS).componentHits === 0);
 
 const summary = `T02143 卡片 DOM 嵌套门：PASS ${pass} / FAIL ${fail}\n` + lines.join('\n');
 writeFileSync(join(ROOT, '.workbuddy', 't02143-gate-results.txt'), summary, 'utf8');

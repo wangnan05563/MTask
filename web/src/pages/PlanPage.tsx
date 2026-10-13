@@ -198,7 +198,10 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
         <div style={{ position: 'fixed', top: projDropPos.top, left: projDropPos.left, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 60, minWidth: 240, maxHeight: `calc(100vh - ${projDropPos.top + 12}px)`, overflowY: 'auto' }}>
           {/* T00663：项目下拉项——置顶图标在名称前；默认序下支持拖拽排序（持久化到服务端） */}
           {sortedProjects.map((p) => (
-            <button key={p.id} aria-pressed={p.id === projectId}
+            // T02146：行容器由原生 button 改 div role=button——行内的置顶图标本身是 button，
+            // HTML 不允许按钮套按钮（同 T02143 根因：a11y 批修把规则套到了含交互子元素的容器上）。
+            // 拖拽属性在 div 上等价可用；手感靠 .card-btn 补回（App.tsx 已落该类）。
+            <div key={p.id} role="button" tabIndex={0} className="card-btn" aria-pressed={p.id === projectId}
               draggable={projSortMode === 'default'}
               onDragStart={() => setDragProjId(p.id)}
               onDragOver={(e) => { if (projSortMode === 'default' && dragProjId) { e.preventDefault(); setOverProjId(p.id); } }}
@@ -206,6 +209,11 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
               onDrop={(e) => { e.preventDefault(); runAsync(dropReorder(p.id)); }}
               onDragEnd={() => { setDragProjId(''); setOverProjId(''); }}
               onClick={() => { setProjectId(p.id); setProjOpen(false); }}
+              onKeyDown={(e) => {
+                // 只认行容器自身的按键：角标按钮 Enter 冒泡会「切置顶 + 选项目」一并触发（T02143 实测口径）
+                if (e.target !== e.currentTarget) return;
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setProjectId(p.id); setProjOpen(false); }
+              }}
               title={projSortMode === 'default'
                 ? `${p.name}：已完成 ${p.plan_done ?? 0}，进行中 ${p.plan_doing ?? 0}，待开始 ${p.plan_open ?? 0}（可拖拽调整顺序）`
                 : `${p.name}：已完成 ${p.plan_done ?? 0}，进行中 ${p.plan_doing ?? 0}，待开始 ${p.plan_open ?? 0}（拖拽排序请切换到「默认（置顶优先）」）`}
@@ -223,7 +231,7 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
               <span title={`已完成 ${p.plan_done ?? 0}`} style={{ minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success)' }}>{p.plan_done ?? 0}</span>
               <span title={`进行中 ${p.plan_doing ?? 0}`} style={{ minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.plan_doing ?? 0}</span>
               <span title={`待开始 ${p.plan_open ?? 0}`} style={{ minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>{p.plan_open ?? 0}</span>
-            </button>
+            </div>
           ))}
         </div>
       )}

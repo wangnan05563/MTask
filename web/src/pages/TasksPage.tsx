@@ -2819,8 +2819,17 @@ export function TasksPage() {
           {projOpen && (
             <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 30, minWidth: 220 }}>
               {sortedProjects.map((p) => (
-                <button key={p.id} aria-pressed={p.id === activeProject}
+                // T02146：行容器由原生 button 改 div role=button——行内的置顶图标本身是 button，
+                // HTML 不允许按钮套按钮（fdc6090 的 a11y 批修把「div→button」规则套到了含交互子元素的
+                // 容器上，同 T02143 根因）。手感靠 .card-btn 补回（T02143 已在 App.tsx 落该类）。
+                <div key={p.id} role="button" tabIndex={0} className="card-btn" aria-pressed={p.id === activeProject}
                   onClick={() => { setActiveProject(p.id); setProjOpen(false); }}
+                  onKeyDown={(e) => {
+                    // 只认行容器自身的按键：角标按钮的 Enter/Space 会冒泡到这里，不判 target 会
+                    // 「切置顶」与「选项目」一次按两下（T02143 实测踩到）
+                    if (e.target !== e.currentTarget) return;
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActiveProject(p.id); setProjOpen(false); }
+                  }}
                   title={`${p.name}：待办 ${p.todo_count ?? 0} 条，未验证 ${p.unverified_count ?? 0} 条`}
                   style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, background: p.id === activeProject ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer' }}>
                   {/* T00655：置顶图标——位于项目名称之前，点击切换置顶（已置顶=实心 accent + 弹入动画） */}
@@ -2837,7 +2846,7 @@ export function TasksPage() {
                   <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
                   <span title={`待办 ${p.todo_count ?? 0} 条`} style={{ minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{p.todo_count ?? 0}</span>
                   <span title={`未验证 ${p.unverified_count ?? 0} 条`} style={{ minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.unverified_count ?? 0}</span>
-                </button>
+                </div>
               ))}
             </div>
           )}
