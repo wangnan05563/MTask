@@ -2,7 +2,9 @@
 // 覆盖：PRD 原文落库 / 矩阵行 prdDoc 关联 / 查看接口 / 反向更新（含空体 400）/ 上下文解析（超长截断）
 // 运行：node t00763-prd-context-test.mjs [baseUrl]
 import { readFileSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 const BASE = process.argv[2] ?? 'http://127.0.0.1:39902';
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const results = [];
 const ok = (id, name, pass, detail) => { results.push({ id, pass }); console.log(`${pass ? 'PASS' : 'FAIL'} ${id} ${name} :: ${detail}`); };
 const api = async (method, path, body, headers = {}) => {
@@ -73,12 +75,15 @@ const main = async () => {
 console.log(JSON.stringify(c ? { prdId: c.prdId, len: c.content.length, hasCut: c.content.includes('中段略去'), tailMark: c.content.includes('v2 修订版') } : null));`;
   const { writeFileSync, mkdtempSync } = await import('node:fs');
   const { join } = await import('node:path');
+  const { resolveServerLauncher } = await import(pathToFileURL(join(ROOT, 'scripts', 'isolated-server-launcher.mts')).href);
+  const LAUNCHER = resolveServerLauncher(ROOT, join(ROOT, 'server', 'src', 'index.ts'));
+  console.log(`PRD 上下文探针启动器：${LAUNCHER.label}`);
   const tmpDir = mkdtempSync(join(process.env.TEMP ?? 'D:/tmp', 't00763-'));
   const probeFile = join(tmpDir, 'probe.cjs');
   writeFileSync(probeFile, probe, 'utf8');
   let ctxOut = '';
   try {
-    ctxOut = execFileSync(process.execPath, [probeFile], { env: { ...process.env, MTask_DATA_DIR: process.env.MTASK_TEST_DATA_DIR ?? 'D:/tmp/mtask-t00763' }, encoding: 'utf8' }).trim();
+    ctxOut = execFileSync(LAUNCHER.exec, [probeFile], { env: { ...process.env, ...LAUNCHER.env, MTask_DATA_DIR: process.env.MTASK_TEST_DATA_DIR ?? 'D:/tmp/mtask-t00763' }, encoding: 'utf8' }).trim();
   } catch (e) { ctxOut = 'ERR ' + String(e.message).slice(0, 200); }
   let ctx = null; try { ctx = JSON.parse(ctxOut); } catch { /* 解析失败按 FAIL 处理 */ }
   ok('TC-07', '任务反查 PRD 上下文（超长保头保尾截断 + 反向更新内容可见）',
@@ -92,7 +97,7 @@ console.log(JSON.stringify(c ? { prdId: c.prdId, len: c.content.length, hasCut: 
   writeFileSync(probe2File, probe2, 'utf8');
   let ctx2 = '';
   try {
-    ctx2 = execFileSync(process.execPath, [probe2File], { env: { ...process.env, MTask_DATA_DIR: process.env.MTASK_TEST_DATA_DIR ?? 'D:/tmp/mtask-t00763' }, encoding: 'utf8' }).trim();
+    ctx2 = execFileSync(LAUNCHER.exec, [probe2File], { env: { ...process.env, ...LAUNCHER.env, MTask_DATA_DIR: process.env.MTASK_TEST_DATA_DIR ?? 'D:/tmp/mtask-t00763' }, encoding: 'utf8' }).trim();
   } catch (e) { ctx2 = "ERR " + String(e.message).slice(0, 200) + " | " + String((e.stderr ?? "")).slice(0, 300); }
   ok('TC-08', '未关联 PRD 的任务解析为 null', ctx2 === 'null', `result=${ctx2}`);
 
@@ -104,7 +109,7 @@ console.log(JSON.stringify(c ? { prdId: c.prdId, len: c.content.length, hasCut: 
   writeFileSync(probe3File, probe3, 'utf8');
   let ctx3 = '';
   try {
-    ctx3 = execFileSync(process.execPath, [probe3File], { env: { ...process.env, MTask_DATA_DIR: process.env.MTASK_TEST_DATA_DIR ?? 'D:/tmp/mtask-t00763' }, encoding: 'utf8' }).trim();
+    ctx3 = execFileSync(LAUNCHER.exec, [probe3File], { env: { ...process.env, ...LAUNCHER.env, MTask_DATA_DIR: process.env.MTASK_TEST_DATA_DIR ?? 'D:/tmp/mtask-t00763' }, encoding: 'utf8' }).trim();
   } catch (e) { ctx3 = "ERR " + String(e.message).slice(0, 200) + " | " + String((e.stderr ?? "")).slice(0, 300); }
   ok('TC-09', '计划条目反查 PRD 上下文命中', ctx3 === `HIT:${prdId}`, `result=${ctx3}`);
 

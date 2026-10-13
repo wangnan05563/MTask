@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const PORT = 39913;
 const BASE = `http://127.0.0.1:${PORT}/api`;
@@ -20,12 +21,16 @@ async function waitHealth(timeoutMs = 60000) {
   return false;
 }
 
-const NODE24 = process.platform === 'win32' ? 'D:/code/nodejs24/node.exe' : process.execPath;
-const server = spawn(NODE24, [path.join(REPO, 'node_modules', 'tsx', 'dist', 'cli.mjs'), 'src/index.ts'], {
-  cwd: path.join(REPO, 'server'),
-  env: { ...process.env, MTask_DATA_DIR: TMP, MTask_PORT: String(PORT) },
-  stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32',
+// 启动器按 native 模块 ABI 探测（打包.bat 会把 better-sqlite3 重编译成 Electron ABI，
+// 此时 process.execPath 直跑会 ERR_DLOPEN_FAILED）——见 isolated-server-launcher.mts
+const { resolveServerLauncher } = await import(pathToFileURL(path.join(REPO, 'scripts/isolated-server-launcher.mts')).href);
+const LAUNCHER = resolveServerLauncher(REPO, path.join(REPO, 'server', 'src', 'index.ts'));
+const server = spawn(LAUNCHER.exec, LAUNCHER.tsx, {
+  cwd: REPO,
+  env: { ...process.env, ...LAUNCHER.env, MTask_DATA_DIR: TMP, MTask_PORT: String(PORT) },
+  stdio: ['ignore', 'pipe', 'pipe'],
 });
+console.log(`隔离实例启动器：${LAUNCHER.label}`);
 server.stdout.on('data', (d) => process.stdout.write('[srv] ' + d));
 server.stderr.on('data', (d) => process.stdout.write('[srv-err] ' + d));
 

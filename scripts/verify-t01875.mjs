@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const PORT = 39500 + (process.pid % 40);
@@ -49,11 +49,14 @@ try {
   const occupied = await fetch(`${API}/health`).then(() => true).catch(() => false);
   check('S00 目标端口启动前未被占用（断言不会误连其他实例）', occupied === false, BASE);
   if (occupied) throw new Error('端口已被占用，终止以免对错误实例取证');
+  const { resolveServerLauncher } = await import(pathToFileURL(join(ROOT, 'scripts/isolated-server-launcher.mts')).href);
+  const LAUNCHER = resolveServerLauncher(ROOT, join(ROOT, 'server', 'src', 'index.ts'));
   server = spawn(
-    process.execPath,
-    [join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs'), 'src/index.ts'],
-    { cwd: join(ROOT, 'server'), env: { ...process.env, MTask_DATA_DIR: DIR, MTask_PORT: String(PORT), MTask_LOG_DIR: DIR }, stdio: 'ignore' },
+    LAUNCHER.exec,
+    LAUNCHER.tsx,
+    { cwd: ROOT, env: { ...process.env, ...LAUNCHER.env, MTask_DATA_DIR: DIR, MTask_PORT: String(PORT), MTask_LOG_DIR: DIR }, stdio: 'ignore' },
   );
+  console.log(`隔离实例启动器：${LAUNCHER.label}`);
   let up = false;
   for (let i = 0; i < 100; i++) {
     try { if ((await fetch(`${API}/health`)).ok) { up = true; break; } } catch { /* 未就绪 */ }
