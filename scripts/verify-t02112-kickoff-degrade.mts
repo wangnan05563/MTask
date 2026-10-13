@@ -285,6 +285,7 @@ if (!(await waitUp())) {
     dGen.status === 200 && dOutline[4].title.length > 30, { len: dOutline[4].title.length, status: dGen.status });
   ok('D-02 done.warnings 点名「版式越界…已降级为「标题 + 正文」安全版式」（不静默出坏页）',
     dWarn.some((w) => /版式越界/.test(w) && /安全版式/.test(w)), dWarn.slice(0, 4));
+  lines.push(`[证据] D-02 命中的降级告警原文：${dWarn.find((w) => /版式越界/.test(w)) ?? '（无）'}`);
   ok('D-03 降级点名到具体页码（第 5 页 = 构造的那一页）',
     dWarn.some((w) => /^第 5 页/.test(w) && /版式越界/.test(w)), dWarn.filter((w) => /越界/.test(w)));
   const dDl = dDone?.token ? await download(String(dDone.token), String(dDone.fileName)) : { status: 0, buf: Buffer.alloc(0) };
