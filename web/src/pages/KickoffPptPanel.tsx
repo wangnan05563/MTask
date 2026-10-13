@@ -19,6 +19,7 @@ import { streamEvents } from '../api/sse';
 import { kickoffPptStore, useKickoffPpt, type KickoffOutlineItem, type KickoffStreamResult } from '../stores/kickoffPptStore';
 import { FlowProgress } from '../ui/FlowProgress';
 import { askConfirm } from '../ui/dialogs';
+import { CONSOLE_RESET_EVENT } from '../ui/consoleReset'; // T02109：工作台重置广播——面板本地大纲稿随重置归零
 import { ChevronDown, ChevronUp, CircleAlert, CircleCheck, CircleX, Download, FileText, Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react';
 
 /** 服务端 `PreflightItem` 的前端镜像（单源：`server/src/services/kickoffService.ts`） */
@@ -136,6 +137,20 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard }: {
     if (rows.length === 0) return;
     try { sessionStorage.setItem(OUTLINE_SESSION_KEY, JSON.stringify(rows)); } catch { /* 忽略存储异常 */ }
   }, [rows]);
+
+  // ③ 重置联动：控制台/卡片侧 resetWorkbenchArtifacts 会清 store 与会话稿，
+  //    但组件本地 rows 不随之消失——不监听就会出现「重置后界面仍显示旧大纲、下次编辑又把它写回会话」的假重置
+  useEffect(() => {
+    const onReset = () => {
+      setRows([]);
+      setOutlineWarnings([]);
+      setExtraNote('');
+      setPageDone(0);
+      setPageTotal(0);
+    };
+    globalThis.addEventListener(CONSOLE_RESET_EVENT, onReset);
+    return () => { globalThis.removeEventListener(CONSOLE_RESET_EVENT, onReset); };
+  }, []);
 
   const blocked = pre?.blocked ?? false;
   const missingItems = useMemo(
