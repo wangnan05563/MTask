@@ -379,6 +379,11 @@ interface Metric {
   /** 真值文案模板；unit 用于把改写后的量词还原，避免「需求 14 人天」这类缝合怪 */
   format: (v: string) => string;
   truth: (b: KickoffBundle) => string;
+  /**
+   * 库内没有这项数据时的整句占位（缺数时把 AI 的数字改成「0 人天 / 覆盖率 0%」，
+   * 等于用一个假结论替换另一个假结论——这类指标缺数时只能出「待补充」）。
+   */
+  missing?: { when: (b: KickoffBundle) => boolean; format: () => string };
 }
 
 /**
@@ -389,9 +394,24 @@ const METRICS: Metric[] = [
   { re: /需求\s*(\d+(?:\.\d+)?)\s*条/, format: (v) => `需求 ${v} 条`, truth: (b) => String(b.requirements.length) },
   { re: /计划\s*(\d+(?:\.\d+)?)\s*条/, format: (v) => `计划 ${v} 条`, truth: (b) => String(b.plans.length) },
   { re: /里程碑\s*(\d+(?:\.\d+)?)\s*[个条]/, format: (v) => `里程碑 ${v} 个`, truth: (b) => String(b.milestones.length) },
-  { re: /用例\s*(\d+(?:\.\d+)?)\s*条/, format: (v) => `用例 ${v} 条`, truth: (b) => String(b.coverage.total) },
-  { re: /覆盖率\s*(\d+(?:\.\d+)?)\s*%/, format: (v) => `覆盖率 ${v}%`, truth: (b) => String(b.coverage.rate) },
-  { re: /(\d+(?:\.\d+)?)\s*人天/, format: (v) => `${v} 人天`, truth: (b) => String(b.workload.manDays.expected) },
+  {
+    re: /用例\s*(\d+(?:\.\d+)?)\s*条/,
+    format: (v) => `用例 ${v} 条`,
+    truth: (b) => String(b.coverage.total),
+    missing: { when: (b) => b.coverage.total === 0, format: () => `用例${KICKOFF_PLACEHOLDER}` },
+  },
+  {
+    re: /覆盖率\s*(\d+(?:\.\d+)?)\s*%/,
+    format: (v) => `覆盖率 ${v}%`,
+    truth: (b) => String(b.coverage.rate),
+    missing: { when: (b) => b.coverage.total === 0, format: () => `覆盖率${KICKOFF_PLACEHOLDER}` },
+  },
+  {
+    re: /(\d+(?:\.\d+)?)\s*人天/,
+    format: (v) => `${v} 人天`,
+    truth: (b) => String(b.workload.manDays.expected),
+    missing: { when: (b) => b.workload.noData, format: () => `工作量${KICKOFF_PLACEHOLDER}` },
+  },
 ];
 
 export function sanitizeBullets(bullets: string[], b: KickoffBundle, pageNo: number, warnings: string[]): string[] {
@@ -400,6 +420,12 @@ export function sanitizeBullets(bullets: string[], b: KickoffBundle, pageNo: num
     for (const m of METRICS) {
       const hit = m.re.exec(text);
       if (!hit) continue;
+      if (m.missing?.when(b)) {
+        const ph = m.missing.format();
+        text = text.replace(m.re, ph);
+        warnings.push(`第 ${pageNo} 页数字由系统改写：AI 写「${hit[0].trim()}」，库内无此项数据，已改占位「${ph}」`);
+        continue;
+      }
       const truth = m.truth(b);
       if (hit[1] === truth) continue;
       text = text.replace(m.re, m.format(truth));

@@ -185,6 +185,24 @@ ok('U-13 非工作量页不带口径文案（每页都贴工作量声明反而�
 ok('U-14 零数据页脚注如实写待补充（口径与正文同源）',
   B.footerOf(page('twoCol', ['workload'], '工作量'), bundleOf({ workload: zero }), 5, 12).includes('工作量数据待补充'));
 
+// ---------- U 组：AI 正文缺数时改占位（不许把幻觉改成 0） ----------
+const sanitize = (bullets: string[], b: any) => {
+  const w: string[] = [];
+  return { out: B.sanitizeBullets(bullets, b, 2, w), w };
+};
+const ph1 = sanitize(['整体工作量约 96 人天，含回归'], bundleOf({ workload: zero }));
+ok('U-15 零数据：AI 写「96 人天」改占位「工作量待补充」，绝不改成「0 人天」（空缺≠结论）',
+  ph1.out[0] === '整体工作量约工作量待补充，含回归' || /待补充/.test(ph1.out[0]) && !/0 人天/.test(ph1.out[0]),
+  ph1);
+const ph2 = sanitize(['用例 12 条已铺满，覆盖率 80%'], bundleOf({ coverage: { total: 0, covered: 0, uncovered: 0, rate: 0 } }));
+ok('U-16 零用例：用例数与覆盖率都改占位（与 P5「本期未建」口径一致，不出 0 条/0%）',
+  /用例待补充/.test(ph2.out[0]) && /覆盖率待补充/.test(ph2.out[0]) && !/0/.test(ph2.out[0]), ph2.out[0]);
+const ph3 = sanitize(['本期投入 96 人天'], bundleOf({ workload: dur }));
+ok('U-17 有数据时仍按库内真值改写（占位分支不吞掉正常的纠偏）',
+  ph3.out[0] === '本期投入 18 人天' && /库内实为/.test(ph3.w[0]), ph3);
+ok('U-18 占位改写会写进 warnings（面板要能点名是哪页哪句）',
+  /无此项数据/.test(ph1.w[0] ?? ''), ph1.w);
+
 // ---------- P 组：真产物 ----------
 mkdirSync(OUT_DIR, { recursive: true });
 const outline = [
