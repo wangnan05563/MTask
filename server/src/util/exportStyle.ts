@@ -74,3 +74,16 @@ export function paintDataRow(row: Row, zebra: boolean): void {
 export function markWarnCell(cell: Cell): void {
   cell.font = { color: { argb: WARN_FONT } };
 }
+
+/**
+ * T02098：正文深色墨值（PPT/导出共用的「近黑」，不用纯 000000——纯黑在浅靛蓝表头上偏硬）。
+ * 纳入本文件的原因：PRD-项目启动会PPT生成 §6.3 门禁 6 要求「色值单源」，
+ * 而规范 A 此前只有浅色底与提示红，缺一个可对白底过 WCAG 4.5 的正文色。
+ */
+export const INK_FONT = '1F2937';
+
+/** T02098：PPT 页背景（纯白，与 INK_FONT 的对比度由 kickoff-layout 断言把关） */
+export const PAPER_BG = 'FFFFFF';
+
+/** T02098：强调色（与表头同色系的深靛蓝，用于时间线轴、图例描边） */
+export const ACCENT_FONT = '3B5BDB';
