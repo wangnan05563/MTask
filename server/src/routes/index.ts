@@ -1477,7 +1477,11 @@ api.get('/report/templates', (_req, res) => {
   res.json(listTemplates());
 });
 
-api.post('/report/ai-generate', async (req, res) => {
+// T02142：AI 周报两条生成端点补挂同一只 REPORT_GATE——FR-5 立论是「AI 大稿共用一个闸」，
+// 此前只有离线四格式导出与启动会稿挂了这个闸，两条 AI 周报链路（最重的合成）反而在闸外，
+// 并发点生成时 worker 池与事件循环的保护从缺口漏掉。处理器均在首个 await 处让出事件循环
+// （不像 settings/export 那样同步堵死），故无需 defer，与 /report/generate 保持同形态。
+api.post('/report/ai-generate', exportGate(REPORT_GATE), async (req, res) => {
   const { period, format, projectId, toolId } = req.body ?? {};
   if (!['day', 'week', 'month'].includes(period)) return res.status(400).json({ error: 'period 非法' });
   if (!['xlsx', 'docx', 'pdf', 'pptx'].includes(format)) return res.status(400).json({ error: 'format 非法' });
@@ -1634,7 +1638,7 @@ api.post('/plans/testcase-generate-stream', raw({ type: () => true, limit: '30mb
   res.end();
 });
 
-api.post('/report/ai-generate-stream', async (req, res) => {  const { period, format, projectId, toolId } = req.body ?? {};
+api.post('/report/ai-generate-stream', exportGate(REPORT_GATE), async (req, res) => {  const { period, format, projectId, toolId } = req.body ?? {};
   if (!['day', 'week', 'month'].includes(period)) return res.status(400).json({ error: 'period 非法' });
   if (!['xlsx', 'docx', 'pdf', 'pptx'].includes(format)) return res.status(400).json({ error: 'format 非法' });
   if (typeof toolId !== 'string' || !toolId) return res.status(400).json({ error: '请选择 AI 模型' });
