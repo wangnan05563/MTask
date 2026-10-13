@@ -306,8 +306,17 @@ function wordingReply(user: string): string {
   }));
   const commBlock = user.split('【沟通口径')[1] ?? '';
   const comms = [...commBlock.matchAll(/^\d+\. (.+)$/gm)].map((m) => m[1].trim());
-  if (mockMode === 'badCount' && risks.length > 1) risks.pop();
-  if (mockMode === 'badNum' && risks.length) risks[0] = { item: '999 条计划全部阻塞', impact: AI_MARK_IMPACT, mitigation: AI_MARK_MITIGATION };
+  // 注入必须「一定违规」而不是「通常违规」：提示词里的本地条目数随库内数据而变（M6 推进后进度落后类
+  // 风险归零、只剩 1 条），旧的 `risks.length > 1` 门槛会让 pop 退化成空操作——两轮问答都合规、不降级、
+  // 整组静默假绿。风险数组空到无可 pop 时把违规挪到沟通数组，保证注入始终打得到校验。
+  if (mockMode === 'badCount') {
+    if (risks.length) risks.pop();
+    else if (comms.length) comms.pop();
+  }
+  if (mockMode === 'badNum') {
+    if (risks.length) risks[0] = { item: '999 条计划全部阻塞', impact: AI_MARK_IMPACT, mitigation: AI_MARK_MITIGATION };
+    else if (comms.length) comms[0] = '999 条计划全部阻塞';
+  }
   if (comms.length && mockMode === 'good') comms[0] = AI_MARK_COMM;
   return JSON.stringify({ risks, comms });
 }
@@ -542,11 +551,16 @@ if (!(await waitUp())) {
         .replace(/<[^>]+>/g, '|')
         .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
       // 逐条比对提示词里枚举的本地原文（库内真值随项目而变，写死断言话术等于猜数据）；
-      // 表列宽预算会把单元格截到 22 字（T02099 risksTable 口径），故按「页面应有的形态」比对前缀
-      const localItems = [...(mockRequests[0]?.user ?? '').matchAll(/^\d+\. 风险：(.+)$/gm)].map((m) => m[1].trim());
-      const missing = localItems.filter((s) => !t2.includes(s.slice(0, 22)));
-      ok(`E-04-${mode}b 风险页整表回落本地条目（与提示词枚举的库内真值逐条一致，不是空表也不是半路截行）`,
-        localItems.length > 0 && missing.length === 0, { localCount: localItems.length, missing: missing.slice(0, 2) });
+      // 表列宽预算会把单元格截到 22 字（T02099 risksTable 口径），故按「页面应有的形态」比对前缀。
+      // 风险与沟通两组都纳入比对：违规注入落在哪组，回落证据就在哪组页面。
+      const prompt0 = mockRequests[0]?.user ?? '';
+      const localItems = [...prompt0.matchAll(/^\d+\. 风险：(.+)$/gm)].map((m) => m[1].trim());
+      const localComms = [...(prompt0.split('【沟通口径')[1] ?? '').matchAll(/^\d+\. (.+)$/gm)].map((m) => m[1].trim());
+      const missing = [...localItems, ...localComms].filter((s) => !t2.includes(s.slice(0, 22)));
+      ok(`E-04-${mode}-0 提示词确有可注入的本地条目（两组皆空则本组等于空跑，先钉住再说降级）`,
+        localItems.length + localComms.length > 0, { risks: localItems.length, comms: localComms.length });
+      ok(`E-04-${mode}b 降级页整表回落本地条目（与提示词枚举的库内真值逐条一致，不是空表也不是半路截行）`,
+        missing.length === 0, { localCount: localItems.length + localComms.length, missing: missing.slice(0, 2) });
     }
   }
 
