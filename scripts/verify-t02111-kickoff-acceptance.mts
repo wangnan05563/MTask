@@ -9,7 +9,7 @@
  *
  * 断言组：
  *   G 组 白名单同源守卫：前后端章节/版式/数据键三份值域逐字相等（漂移即红，服务端是唯一权威）。
- *   A 组 验收 3：真项目 preflight P1~P7 条数与 SQL 独立复算逐条对数。
+ *   A 组 验收 3：PRD 点名真实资料项目（mtask四期）preflight P1~P7 条数与 SQL 独立复算逐条对数。
  *   B 组 验收 4：大纲端点（AI 出稿须落 12~18，失控 25 页整段判失败）→ done 带 token+fileName → 下载字节可解包、页数对得上。
  *   C 组 验收 5：解包硬检——每页有 <a:t> 文本、数据页有原生 <a:tbl>/graphicFrame、全稿零位图（不许整页贴图）。
  *   D 组 验收 6：时间线页 rect 条 + diamond 菱形 + line 轴齐备且轴上日期与库内起止同源；
@@ -220,15 +220,29 @@ function truthCounts(projectId: string) {
     P3: plans,
     P4: q<{ n: number }>("SELECT COUNT(*) n FROM plan_tasks WHERE project_id = ? AND archived = 0 AND kind = 'milestone'", projectId)[0].n,
     P5: q<{ n: number }>('SELECT COUNT(*) n FROM test_cases WHERE project_id = ?', projectId)[0].n,
+    // P6 = 有复杂度或有工期的计划条数（工作量页数据源完整性），P7 = 工作空间可用（路径登记且磁盘存在）
+    P6: q<{ n: number }>('SELECT COUNT(*) n FROM plan_tasks WHERE project_id = ? AND archived = 0 AND (complexity IS NOT NULL OR (duration_days IS NOT NULL AND duration_days > 0))', projectId)[0].n,
+    P7: (() => {
+      const w = q<{ p: string | null }>('SELECT workspace_path p FROM projects WHERE id = ?', projectId)[0];
+      return w?.p && existsSync(w.p) ? 1 : 0;
+    })(),
   };
 }
 
 const projects = q<{ id: string; name: string }>('SELECT id, name FROM projects WHERE archived = 0 ORDER BY name');
-// 对数样本：资料最全的项目（P1+P2+P3 均非零）——空项目由 T02108 UI 实测覆盖
-const sample = projects.filter((p) => {
-  const c = truthCounts(p.id);
-  return c.P1 > 0 && c.P2 > 0 && c.P3 > 0;
-}).slice(0, 3);
+// 对数样本：首位固定用 PRD §8 验收 3 点名的真实项目「mtask四期」——B~E 组整条生成链路都跑在它上面，
+// 这样「真实资料项目」的对数是点名验收而不是挑软柿子；再补两个带测试用例的项目让 P5/覆盖率口径进对数。
+// 空项目与硬阻塞由 T02108 的 UI 实测覆盖，不在本样本内。
+const namedSample = ['mtask四期', 'swork', 'aimsg二期'];
+const sample = namedSample
+  .map((n) => projects.find((p) => p.name === n))
+  .filter((p): p is { id: string; name: string } => {
+    if (!p) return false;
+    const c = truthCounts(p.id);
+    return c.P1 > 0 && c.P2 > 0 && c.P3 > 0;
+  });
+ok('A-00b 样本第 1 位是 PRD 验收 3 点名的 mtask四期（库内改名/归档就要同步本门，不静默换样本）',
+  sample[0]?.name === 'mtask四期', { sample: sample.map((p) => p.name) });
 
 if (!(await waitUp())) {
   ok('B-00 隔离实例启动', false, serverLog.join('').slice(-600));
@@ -259,6 +273,8 @@ if (!(await waitUp())) {
     const planList = await call('GET', `/plans?projectId=${p.id}`);
     const planRows = (Array.isArray(planList.body) ? planList.body : (planList.body?.items ?? [])).filter((r: any) => !r.archived);
     ok(`A-08 [${p.name}] P3 与 /plans 未归档行数一致`, planRows.length === t.P3, { ep: planRows.length, sql: t.P3 });
+    ok(`A-09 [${p.name}] P6 复杂度/工期条数 = 库内有计划数据的行数`, item('P6') === t.P6, { api: item('P6'), sql: t.P6 });
+    ok(`A-10 [${p.name}] P7 工作空间可用性与库内登记路径一致`, item('P7') === t.P7, { api: item('P7'), sql: t.P7 });
   }
 
   const PID = sample[0]?.id ?? '';
