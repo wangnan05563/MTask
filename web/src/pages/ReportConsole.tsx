@@ -598,6 +598,9 @@ export function ReportConsole({
   const [saveCategoryId, setSaveCategoryId] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
+  // T02157：AI 报表 tab 名 / 状态文案 / 下载文件名随所选周期联动。
+  // 修复前这些位置一律写死「AI 周报」，选「月报」点生成后全程仍显示周报——与后端提示词串台属同一类口吻问题。
+  const aiReportLabel = `AI ${periodLabelOf(period) ?? '周报'}`;
   const [saveError, setSaveError] = useState('');
   // T00443 / PRD AI-6：多模型对比模式——勾选的对比模型与主模型并行运行同一分析，结果 tab 并列对比
   const [compareMode, setCompareMode] = useState(false);
@@ -851,7 +854,7 @@ export function ReportConsole({
     if (!md) return;
     const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);
-    const name = onReportTab ? 'AI周报' : (activeTask?.title || 'analysis');
+    const name = onReportTab ? aiReportLabel.replace(/\s/g, '') : (activeTask?.title || 'analysis');
     const a = document.createElement('a');
     a.href = url;
     a.download = `mtask-ai-${name.replace(/[\\/:*?"<>|]/g, '_')}.md`; // NOSONAR - 需按非法文件名字符集合替换，replaceAll 只能替换字面字符串无法表达集合
@@ -1083,13 +1086,13 @@ export function ReportConsole({
     if (onReportTab) {
       const hasStream = streaming || logs.length > 0 || !!streamText;
       if (!hasStream) {
-        return <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>选择分析内容后点击「开始分析」，AI 结果会在下方以 Markdown 展示；点击左侧「AI 周报生成」此处会实时滚动生成全过程。</span>;
+        return <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>选择分析内容后点击「开始分析」，AI 结果会在下方以 Markdown 展示；点击左侧「{aiReportLabel}生成」此处会实时滚动生成全过程。</span>;
       }
       return (
         <div>
           {/* 生成中提示 + 阶段进度日志 */}
           <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-            <Sparkles size={13} style={{ color: 'var(--accent)' }} /> AI 周报生成
+            <Sparkles size={13} style={{ color: 'var(--accent)' }} /> {aiReportLabel}生成
             {streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
           </div>
           {logItems.map(({ id, log }) => (
@@ -1131,7 +1134,7 @@ export function ReportConsole({
   /** 底部状态文案 */
   function statusText() {
     if (onReportTab) {
-      if (streaming) return <span className="ai-shimmer" style={{ fontWeight: 600, fontSize: 12 }}>AI 周报生成中…</span>;
+      if (streaming) return <span className="ai-shimmer" style={{ fontWeight: 600, fontSize: 12 }}>{aiReportLabel}生成中…</span>;
       if (logs.length > 0 || (streamText?.length ?? 0) > 0) return <span style={{ color: 'var(--accent)' }}>✓ 生成完成</span>;
       return <span>就绪</span>;
     }
@@ -1257,8 +1260,8 @@ export function ReportConsole({
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
       <button
         onClick={() => setActiveId(REPORT_TAB)}
-        title={report.streaming ? `AI 周报生成中 · 已运行 ${startedElapsedText(report.startedAt)} · 已输出 ${streamText.length} 字符（切换卡片不中断，返回即恢复）` : 'AI 周报 — 左侧生成触发的流式过程在此展示'}
-        aria-label="AI 周报 tab"
+        title={report.streaming ? `${aiReportLabel}生成中 · 已运行 ${startedElapsedText(report.startedAt)} · 已输出 ${streamText.length} 字符（切换卡片不中断，返回即恢复）` : `${aiReportLabel} — 左侧生成触发的流式过程在此展示`}
+        aria-label={`${aiReportLabel} tab`}
         style={{
           display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
           border: '1px solid var(--border-strong)', background: onReportTab ? 'var(--accent)' : 'var(--card-bg)',
@@ -1266,7 +1269,7 @@ export function ReportConsole({
         }}
       >
         <Sparkles size={11} />
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>AI 周报</span>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{aiReportLabel}</span>
         {/* T01038：运行中显示统一动画图标 + 实时秒数；结束后保留最终耗时 */}
         <RunStatusBadge
           status={runStatus(report.streaming, report.finalElapsed)}
@@ -1416,7 +1419,7 @@ export function ReportConsole({
         <button
           onClick={() => void stopAll()}
           disabled={!canStop}
-          title="停止 — 中止正在进行的 PRD 生成 / 周报生成 / 手动分析 / PRD 导入，并清理相关产物"
+          title={`停止 — 中止正在进行的 PRD 生成 / ${aiReportLabel}生成 / 手动分析 / PRD 导入，并清理相关产物`}
           aria-label="停止：中止运行中的 AI 任务并清理相关产物"
           style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: canStop ? 'pointer' : 'not-allowed', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: canStop ? 'var(--danger, #dc2626)' : 'var(--text-muted)', opacity: canStop ? 1 : 0.5 }}
         >

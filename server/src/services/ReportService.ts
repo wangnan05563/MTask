@@ -177,7 +177,9 @@ function periodRange(period: ReportPeriod): { start: Date; end: Date } {
     nextMonday.setDate(monday.getDate() + 7);
     return { start: monday, end: nextMonday };
   }
-  return { start, end: new Date(start.getFullYear(), start.getMonth() + 1, 1) };
+  // T02157：月报起点必须是**本月 1 号 0 点**——此前误用「今日 0 点」，区间变成
+  // [今天, 下月1日)，既丢掉本月已发生的绝大部分活动，又混进尚未发生的未来日期
+  return { start: new Date(start.getFullYear(), start.getMonth(), 1), end: new Date(start.getFullYear(), start.getMonth() + 1, 1) };
 }
 
 const PERIOD_LABEL: Record<ReportPeriod, string> = { day: '日报', week: '周报', month: '月报' };
@@ -389,6 +391,41 @@ function buildInWorker(req: BuildRequest): Promise<Buffer> {
   });
 }
 
+/**
+ * T02157：周期口吻的提示词单源。
+ * 根因：此前 system 硬编码「AI 周报分析师…① 本周概况…④ 下周建议」——用户选月报，
+ * AI 仍被指令写周报（选日报同理），且 aiGenerateReport/aiGenerateReportStream 两个入口
+ * 各存一份完全相同的拷贝，改一处漏一处正是这类 bug 的温床。此处按 period 分派角色与
+ * 章节口吻，两个入口共用；周期数据口径（periodLabel/起止）仍由 gatherReportData 单源供给。
+ */
+const REPORT_PERSONA: Record<ReportPeriod, { role: string; overview: string; advice: string }> = {
+  day: { role: 'AI 日报分析师', overview: '今日概况与总体结论', advice: '明日工作建议' },
+  week: { role: 'AI 周报分析师', overview: '本周概况与总体结论', advice: '下周工作建议' },
+  month: { role: 'AI 月报分析师', overview: '本月概况与总体结论', advice: '下月工作建议' },
+};
+
+/** T02157：导出供门禁单测——周期口吻必须与 period 严格对应（选月报不得出周报口吻） */
+export function buildReportPrompt(period: ReportPeriod, data: ReportData, skill: { name: string; desc: string }): { system: string; user: string } {
+  const p = REPORT_PERSONA[period];
+  const system = [
+    `你是 MTask 的 ${p.role}。任务：基于给定周期的真实任务数据，遵循指定内置 SKILL 的版式规范，撰写一份专业、简洁、结构化的中文${PERIOD_LABEL[period]}洞察（Markdown 正文）。`,
+    '要求：',
+    '1. 严格依据提供的数据，不得虚构、不得使用占位或模拟数据',
+    `2. 内容依次包含：① ${p.overview}；② 各项目进展要点；③ 重点工作与高风险项；④ ${p.advice}`,
+    '3. 只输出洞察正文 Markdown，不要代码围栏、不要任何前置说明或寒暄',
+    // 报表为面向用户的中文交付物，显式锁定简体，避免随任务数据(可能含繁体)连带输出繁体
+    '4. 输出统一使用简体中文（简体字），严禁任何繁体字',
+  ].join('\n');
+  const user = [
+    `【内置 SKILL】${skill.name}：${skill.desc}`,
+    `【周期】${data.periodLabel} ${data.startDate} ~ ${data.endDate}`,
+    `【项目汇总】${JSON.stringify(data.projects)}`,
+    `【任务明细】${JSON.stringify(data.tasks)}`,
+    ...(data.plans.length > 0 ? [`【项目计划执行情况】${JSON.stringify(data.plans)}（含延期标记 overdue，请纳入进展要点与风险分析）`] : []),
+  ].join('\n\n');
+  return { system, user };
+}
+
 /** 生成报表，返回文件 buffer 与建议文件名 */
 export async function generateReport(
   period: ReportPeriod,
@@ -418,22 +455,7 @@ export async function aiGenerateReport(
 ): Promise<{ token: string; filename: string; insight: string }> {
   const data = gatherReportData(period, opts.projectId);
   const skill = SKILL_BY_FORMAT[format];
-  const system = [
-    '你是 MTask 的 AI 周报分析师。任务：基于给定周期的真实任务数据，遵循指定内置 SKILL 的版式规范，撰写一份专业、简洁、结构化的中文周报洞察（Markdown 正文）。',
-    '要求：',
-    '1. 严格依据提供的数据，不得虚构、不得使用占位或模拟数据',
-    '2. 内容依次包含：① 本周概况与总体结论；② 各项目进展要点；③ 重点工作与高风险项；④ 下周建议',
-    '3. 只输出洞察正文 Markdown，不要代码围栏、不要任何前置说明或寒暄',
-    // 周报为面向用户的中文交付物，显式锁定简体，避免随任务数据(可能含繁体)连带输出繁体
-    '4. 输出统一使用简体中文（简体字），严禁任何繁体字',
-  ].join('\n');
-  const user = [
-    `【内置 SKILL】${skill.name}：${skill.desc}`,
-    `【周期】${data.periodLabel} ${data.startDate} ~ ${data.endDate}`,
-    `【项目汇总】${JSON.stringify(data.projects)}`,
-    `【任务明细】${JSON.stringify(data.tasks)}`,
-    ...(data.plans.length > 0 ? [`【项目计划执行情况】${JSON.stringify(data.plans)}（含延期标记 overdue，请纳入进展要点与风险分析）`] : []),
-  ].join('\n\n');
+  const { system, user } = buildReportPrompt(period, data, skill);
   const res = await AIService.ask(opts.toolId, system, user, AI_REPORT_TIMEOUT);
   if (!res.ok || !res.content?.trim()) throw new Error(res.error ?? 'AI 生成失败');
   const insight = res.content.trim();
@@ -473,22 +495,7 @@ export async function aiGenerateReportStream(
   const data = gatherReportData(period, opts.projectId);
   const skill = SKILL_BY_FORMAT[format];
   onStage(`已聚合 ${data.projects.length} 个项目 / ${data.tasks.length} 条任务，正在调用模型生成洞察…`);
-  const system = [
-    '你是 MTask 的 AI 周报分析师。任务：基于给定周期的真实任务数据，遵循指定内置 SKILL 的版式规范，撰写一份专业、简洁、结构化的中文周报洞察（Markdown 正文）。',
-    '要求：',
-    '1. 严格依据提供的数据，不得虚构、不得使用占位或模拟数据',
-    '2. 内容依次包含：① 本周概况与总体结论；② 各项目进展要点；③ 重点工作与高风险项；④ 下周建议',
-    '3. 只输出洞察正文 Markdown，不要代码围栏、不要任何前置说明或寒暄',
-    // 周报为面向用户的中文交付物，显式锁定简体，避免随任务数据(可能含繁体)连带输出繁体
-    '4. 输出统一使用简体中文（简体字），严禁任何繁体字',
-  ].join('\n');
-  const user = [
-    `【内置 SKILL】${skill.name}：${skill.desc}`,
-    `【周期】${data.periodLabel} ${data.startDate} ~ ${data.endDate}`,
-    `【项目汇总】${JSON.stringify(data.projects)}`,
-    `【任务明细】${JSON.stringify(data.tasks)}`,
-    ...(data.plans.length > 0 ? [`【项目计划执行情况】${JSON.stringify(data.plans)}（含延期标记 overdue，请纳入进展要点与风险分析）`] : []),
-  ].join('\n\n');
+  const { system, user } = buildReportPrompt(period, data, skill);
   const res = await AIService.askStream(opts.toolId, system, user, onChunk, AI_REPORT_TIMEOUT, signal);
   if (!res.ok || !res.content?.trim()) throw new Error(res.error ?? 'AI 生成失败');
   const insight = res.content.trim();

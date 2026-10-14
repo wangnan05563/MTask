@@ -266,9 +266,10 @@ function ReportWorkPanels({ aiToolId, projectId, showKickoffPpt, closeKickoffPpt
   );
 }
 
-/** AI 周报生成成功后的下载入口（S3776：条件块下沉为独立组件） */
-function AiResultDownload({ aiResult, onDownload }: {
-  readonly aiResult: { filename: string }; readonly onDownload: () => Promise<void>;
+/** AI 报表生成成功后的下载入口（S3776：条件块下沉为独立组件）
+ *  T02157：按钮文案随所选周期联动——选月报时不再显示「下载 AI 周报」。 */
+function AiResultDownload({ aiResult, onDownload, periodLabel }: {
+  readonly aiResult: { filename: string }; readonly onDownload: () => Promise<void>; readonly periodLabel: string;
 }) {
   return (
     <div style={{ marginTop: 12, borderTop: '1px solid var(--surface-2)', paddingTop: 10 }}>
@@ -277,11 +278,11 @@ function AiResultDownload({ aiResult, onDownload }: {
       </div>
       <button
         onClick={() => void onDownload()}
-        title="下载 AI 周报 — 经令牌从后台取回（下载即删）"
-        aria-label="下载 AI 周报"
+        title={`下载 AI ${periodLabel} — 经令牌从后台取回（下载即删）`}
+        aria-label={`下载 AI ${periodLabel}`}
         style={{ padding: '6px 16px', background: 'var(--accent)', color: 'var(--accent-text)', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}
       >
-        <Download size={14} /> 下载 AI 周报
+        <Download size={14} /> 下载 AI {periodLabel}
       </button>
     </div>
   );
@@ -426,6 +427,11 @@ export function ReportPage() {
     const r = await resetWorkbenchArtifacts();
     if (!r.ok) globalThis.alert(`重置失败：${r.error ?? '未知错误'}（本地状态已清理，可再次重置兜底）`);
   };
+  // T02157：AI 报表侧文案随所选周期联动——选「月报」时不再写死显示「AI 周报生成」
+  const periodLabel = PERIODS.find((p) => p.key === period)?.label ?? '周报';
+  const aiReportLabel = `AI ${periodLabel}生成`;
+  const offlineReportLabel = `离线${periodLabel}生成`;
+
   const reportCards: ReportCardCfg[] = [
     { key: 'ai-import', icon: <FileUp size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: 'AI 项目计划导入',
       desc: '上传 Excel/需求文档，AI 解析为项目计划草稿（工期/依赖/负责人），确认后批量入库',
@@ -433,14 +439,14 @@ export function ReportPage() {
       open: showAiImport,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('aiImport') },
-    { key: 'offline', icon: <FileSpreadsheet size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '离线周报生成',
+    { key: 'offline', icon: <FileSpreadsheet size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: offlineReportLabel,
       desc: '本地聚合本周期任务数据，按模板或标准版式直接合成文件（无需联网）；含模板管理与导入',
-      hint: '离线周报生成 — 本地聚合数据按模板合成报表（工作面板内含模板管理）', aria: '离线周报生成',
+      hint: `${offlineReportLabel} — 本地聚合数据按模板合成报表（工作面板内含模板管理）`, aria: offlineReportLabel,
       open: showOffline,
       onToggle: () => togglePanel('offline') },
-    { key: 'ai-live', icon: <Sparkles size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: 'AI 周报生成',
+    { key: 'ai-live', icon: <Sparkles size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: aiReportLabel,
       desc: <>结合真实任务数据调用 AI 生成洞察，按内置 skill「{SKILL_BY_FORMAT[format]}」版式智能合成</>,
-      hint: 'AI 周报生成 — 结合真实数据由 AI 撰写洞察并按内置 skill 版式合成', aria: 'AI 周报生成',
+      hint: `${aiReportLabel} — 结合真实数据由 AI 撰写洞察并按内置 skill 版式合成`, aria: aiReportLabel,
       open: showAiLive,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('aiLive') },
@@ -641,7 +647,7 @@ export function ReportPage() {
       a.click();
       URL.revokeObjectURL(url);
       reportStream.setResult(null);
-      flash(`已下载 AI 周报 ${filename}`);
+      flash(`已下载 AI ${periodLabel} ${filename}`);
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
     }
@@ -808,9 +814,9 @@ export function ReportPage() {
         {showOffline && (
         <div style={{ flex: '1 1 320px', border: '1px solid var(--accent)', borderRadius: 10, padding: 14, background: 'var(--card-bg)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
-            <FileSpreadsheet size={15} style={{ color: 'var(--accent)' }} /> 离线周报生成 · 工作面板
+            <FileSpreadsheet size={15} style={{ color: 'var(--accent)' }} /> {offlineReportLabel} · 工作面板
             <span style={{ flex: 1 }} />
-            <button onClick={() => setShowOffline(false)} className="tbtn-anim" title="收起工作面板" aria-label="收起离线周报工作面板"
+            <button onClick={() => setShowOffline(false)} className="tbtn-anim" title="收起工作面板" aria-label={`收起 ${offlineReportLabel}工作面板`}
               style={{ border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 11, padding: '1px 6px' }}>收起 ↑</button>
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>本地聚合本周期任务数据，按模板或标准版式直接合成文件，无需联网。</div>
@@ -858,8 +864,8 @@ export function ReportPage() {
           <FlowButton
             onClick={() => void generate()}
             disabled={busy}
-            title="离线周报生成 — 本地聚合数据生成报表"
-            aria-label="离线周报生成：本地聚合数据生成报表"
+            title={`${offlineReportLabel} — 本地聚合数据生成报表`}
+            aria-label={`${offlineReportLabel}：本地聚合数据生成报表`}
             loading={busy}
             loadingText="生成中…"
           >
@@ -868,13 +874,13 @@ export function ReportPage() {
         </div>
         )}
 
-        {/* AI 周报生成工作面板：AI 洞察 + 内置技能说明（技能依据整合于此） */}
+        {/* AI 报表生成工作面板：AI 洞察 + 内置技能说明（技能依据整合于此） */}
         {showAiLive && (
         <div style={{ flex: '1 1 320px', border: '1px solid var(--accent)', borderRadius: 10, padding: 14, background: 'var(--card-bg)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
-            <Sparkles size={15} style={{ color: 'var(--accent)' }} /> AI 周报生成 · 工作面板
+            <Sparkles size={15} style={{ color: 'var(--accent)' }} /> {aiReportLabel} · 工作面板
             <span style={{ flex: 1 }} />
-            <button onClick={() => setShowAiLive(false)} className="tbtn-anim" title="收起工作面板" aria-label="收起 AI 周报工作面板"
+            <button onClick={() => setShowAiLive(false)} className="tbtn-anim" title="收起工作面板" aria-label={`收起 ${aiReportLabel}工作面板`}
               style={{ border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 11, padding: '1px 6px' }}>收起 ↑</button>
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
@@ -900,23 +906,23 @@ export function ReportPage() {
           <FlowButton
             onClick={() => void aiGenerate()}
             disabled={aiStreaming}
-            title="AI 周报生成 — 结合任务数据调用 AI 生成周报"
-            aria-label="AI 周报生成：结合任务数据调用 AI 生成周报"
+            title={`${aiReportLabel} — 结合任务数据调用 AI 生成${periodLabel}`}
+            aria-label={`${aiReportLabel}：结合任务数据调用 AI 生成${periodLabel}`}
             loading={aiStreaming}
             loadingText="AI 生成中…"
           >
-            <><Sparkles size={14} /> AI 周报生成</>
+            <><Sparkles size={14} /> {aiReportLabel}</>
           </FlowButton>
           {/* T00558 / PRD AI-5：生成后把 AI 洞察摘要写入收件箱任务 */}
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 10, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}
-            title="勾选后，AI 周报生成时会把洞察摘要写入「收件箱」项目的一条待办任务（便于后续跟进）">
+            title={`勾选后，${aiReportLabel}时会把洞察摘要写入「收件箱」项目的一条待办任务（便于后续跟进）`}>
             <input type="checkbox" checked={summaryToInbox} style={{ cursor: 'pointer' }}
               onChange={(e) => changeSummaryInbox(e.target.checked)} />
             {' '}
             生成后把摘要写入收件箱任务
           </label>
           {/* AI 洞察已移至右侧控制台流式展示，左侧仅在生成成功后保留下载入口 */}
-          {aiResult && <AiResultDownload aiResult={aiResult} onDownload={aiDownload} />}
+          {aiResult && <AiResultDownload aiResult={aiResult} onDownload={aiDownload} periodLabel={PERIODS.find((p) => p.key === period)?.label ?? '周报'} />}
         </div>
         )}
       </div>
@@ -927,7 +933,7 @@ export function ReportPage() {
       <input ref={fileRef} type="file" accept=".xlsx,.docx" style={FILE_INPUT_SR_ONLY} onChange={(e) => void onUpload(e)} />
 
       <div style={{ marginTop: 12, fontSize: 11, color: 'var(--text-muted)' }}>
-        说明：报表按本周期内更新过的任务（未归档）聚合，包含各项目汇总与任务明细；选用 Word 模板时以 {`{period}`}、{`{periodLabel}`}、{`{startDate}`}、{`{endDate}`}、{`{projects}`}、{`{tasks}`} 占位符渲染。模板导入入口在「离线周报生成」工作面板内（仅支持 .xlsx / .docx，≤10MB）。
+        说明：报表按本周期内更新过的任务（未归档）聚合，包含各项目汇总与任务明细；选用 Word 模板时以 {`{period}`}、{`{periodLabel}`}、{`{startDate}`}、{`{endDate}`}、{`{projects}`}、{`{tasks}`} 占位符渲染。模板导入入口在「{offlineReportLabel}」工作面板内（仅支持 .xlsx / .docx，≤10MB）。
       </div>
         </div>
         <aside style={{ boxSizing: 'border-box', alignSelf: 'stretch', display: consoleCollapsed ? 'none' : undefined, ...(splitCollapsed ? { width: '100%' } : { flex: '0 0 360px', maxWidth: '44vw' }) }}>
