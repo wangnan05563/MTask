@@ -135,38 +135,144 @@ export async function buildPrdDocx(md: string, title: string): Promise<Buffer> {
   return await Packer.toBuffer(doc);
 }
 
+// ---------- M6-6.1：Markdown → PDF（pdfkit 逐块渲染，含真实表格 + 柱状图） ----------
+type PDFDoc = PDFKit.PDFDocument;
+
 /**
- * Markdown → PDF（.pdf）：pdfkit 逐块渲染（标题分级字号、列表加项目符号、分页自动）。
- * 中文依赖系统黑体；非 Windows 或无该字体时回退默认字体（英文可读，中文可能显示为方框，属已知限制）。
- * M6-6.1：行循环改两遍式（parseMdBlocks → 块渲染），认知复杂度自 25 降至阈值内。
- * 行为等价性说明：quote 块为新增分支（原实现无 quote 处理，'>' 前缀会随正文输出）。
+ * 创建 A4 PDF 文档并写入大标题与导出时间；返回 doc、结束事件与取字节回调。
+ * 抽成公共入口，让 PRD 与估算 PDF 走同一条「建文档 → 渲染块 → 追加图表 → 收尾」链路。
  */
-export async function buildPrdPdf(md: string, title: string): Promise<Buffer> {
+async function newPdfDocImpl(title: string): Promise<{ doc: PDFDoc; done: Promise<void>; finish: () => Buffer }> {
   const PDFDocument = (await import('pdfkit')).default;
-  const doc = new PDFDocument({ size: 'A4', margin: 50 });
+  const doc: PDFDoc = new PDFDocument({ size: 'A4', margin: 50 }) as PDFDoc;
   if (process.platform === 'win32' && existsSync(PDF_FONT)) doc.font(PDF_FONT);
   const chunks: Buffer[] = [];
   doc.on('data', (c: Buffer) => chunks.push(c));
   const done = new Promise<void>((resolve) => doc.on('end', () => resolve()));
-
   doc.fontSize(18).text(title);
   doc.fontSize(9).text(`导出时间：${new Date().toLocaleString('zh-CN')}`).moveDown(0.6);
-  for (const b of parseMdBlocks(md)) {
-    if (b.k === 'heading') doc.moveDown(0.25).fontSize(Math.max(11, 17 - b.level * 1.5)).text(b.text, { underline: b.level === 1 }).moveDown(0.2);
-    else if (b.k === 'code') { doc.fontSize(9).text(b.code); doc.moveDown(0.4); }
-    else if (b.k === 'table') {
-      doc.moveDown(0.2).fontSize(10).text(b.head.join(' | '), { underline: true });
-      for (const r of b.body) doc.fontSize(9).text(r.join(' | '));
-      doc.moveDown(0.3);
-    }
-    else if (b.k === 'quote') doc.fontSize(10).text(plainInline(b.text), { indent: 20 }).moveDown(0.2);
-    else if (b.k === 'list') doc.fontSize(10).text(`• ${b.text}`);
-    else if (b.k === 'space') doc.moveDown(0.3);
-    else doc.fontSize(10).text(b.text);
+  return { doc, done, finish: () => Buffer.concat(chunks) };
+}
+
+/** 计算每列宽度：按内容自然宽度比例摊满可用宽度（过宽则压缩触发单元格换行，不再用 ` | ` 拼接） */
+function computeColWidths(doc: PDFDoc, head: string[], body: string[][], pageWidth: number): number[] {
+  const pad = 4;
+  doc.fontSize(9); // 测量统一按 9pt（与单元格渲染同字号），widthOfString 读当前字号
+  const natural = head.map((_, i) => {
+    const wHead = doc.widthOfString(head[i] || ' ');
+    const wBody = body.reduce((m, r) => Math.max(m, doc.widthOfString(r[i] || ' ')), 0);
+    return Math.max(wHead, wBody) + pad * 2;
+  });
+  const sum = natural.reduce((a, b) => a + b, 0) || 1;
+  const scale = pageWidth / sum;
+  return natural.map((w) => Math.max(28, w * scale));
+}
+
+/**
+ * 真实表格渲染（T02155 修复点）：列宽自适应 + 黑灰边框 + 表头浅底 + 单元格自动换行。
+ * 替代原 `head.join(' | ')` / `r.join(' | ')` 的纯文本拼接——那会留下可见 `|` 分隔符（格式符裸露）
+ * 且没有任何列对齐（表格错位）。
+ */
+function drawTable(doc: PDFDoc, head: string[], body: string[][]): void {
+  const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const top = doc.page.margins.top;
+  const bottom = doc.page.height - doc.page.margins.bottom;
+  const pad = 4;
+  const lineH = 12;
+  const colW = computeColWidths(doc, head, body, pageWidth);
+  const cellLines = (cells: string[]): number => {
+    let lines = 1;
+    cells.forEach((c, i) => {
+      const h = doc.heightOfString(c || ' ', { width: colW[i] - pad * 2 });
+      lines = Math.max(lines, Math.ceil(h / lineH));
+    });
+    return lines * lineH + pad * 2;
+  };
+  doc.x = doc.page.margins.left;
+  let y = doc.y;
+  const drawRow = (cells: string[], isHead: boolean) => {
+    const h = cellLines(cells);
+    if (y + h > bottom) { doc.addPage(); y = top; doc.x = doc.page.margins.left; }
+    const x0 = doc.page.margins.left;
+    doc.rect(x0, y, pageWidth, h).fill(isHead ? '#e8eef7' : '#ffffff');
+    let x = x0;
+    cells.forEach((c, i) => {
+      doc.fontSize(9).fillColor('#222222').text(c || '', x + pad, y + pad, { width: colW[i] - pad * 2, height: h - pad * 2, ellipsis: true });
+      x += colW[i];
+    });
+    doc.y = y + h; doc.x = x0; // 绝对定位后复位指针，避免 cell 文本的占位推进污染后续行
+    x = x0;
+    cells.forEach((_, i) => { doc.rect(x, y, colW[i], h).stroke(); x += colW[i]; });
+    y += h;
+  };
+  drawRow(head, true);
+  for (const r of body) drawRow(r, false);
+  doc.y = y + 6;
+  doc.x = doc.page.margins.left;
+}
+
+/**
+ * 简单柱状图（T02155 图表补全）：items.value 映射为柱高，柱顶标数值、柱底标类别，
+ * 自动处理页面换页。供估算 PDF 绘制「各阶段人天 / 占比」等数据图。
+ */
+function drawBarChartImpl(doc: PDFDoc, title: string, items: Array<{ label: string; value: number }>): void {
+  const top = doc.page.margins.top;
+  const bottom = doc.page.height - doc.page.margins.bottom;
+  const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  doc.x = doc.page.margins.left;
+  if (doc.y + 24 > bottom) doc.addPage();
+  doc.fontSize(12).fillColor('#08409C').text(title);
+  doc.moveDown(0.2);
+  const chartH = 150;
+  const baseY = doc.y + chartH;
+  const n = items.length;
+  const gap = 18;
+  const barW = (pageWidth - gap * (n + 1)) / n;
+  const max = Math.max(...items.map((i) => i.value), 1e-6);
+  doc.moveTo(doc.x, baseY).lineTo(doc.x + pageWidth, baseY).stroke();
+  let x = doc.x + gap;
+  for (const it of items) {
+    const h = (it.value / max) * (chartH - 18);
+    const yTop = baseY - h;
+    doc.rect(x, yTop, barW, h).fill('#0059E9');
+    doc.fontSize(8).fillColor('#222222').text(String(Math.round(it.value * 100) / 100), x, yTop - 10, { width: barW, align: 'center' });
+    doc.fontSize(8).fillColor('#444444').text(it.label, x, baseY + 4, { width: barW, align: 'center', height: 24 });
+    x += barW + gap;
   }
+  doc.y = baseY + 4 + 28;
+  doc.x = doc.page.margins.left;
+}
+
+/** Markdown → PDF 块渲染（标题/列表/引用/段落 + 真实表格），PRD 与估算 PDF 共用 */
+export function renderMdPdf(doc: PDFDoc, md: string): void {
+  doc.x = doc.page.margins.left;
+  for (const b of parseMdBlocks(md)) {
+    if (b.k === 'heading') doc.moveDown(0.25).fontSize(Math.max(11, 17 - b.level * 1.5)).fillColor('#08409C').text(b.text, { underline: b.level === 1 }).fillColor('#222222').moveDown(0.2);
+    else if (b.k === 'code') { doc.fontSize(9).fillColor('#333333').text(b.code); doc.moveDown(0.4); }
+    else if (b.k === 'table') drawTable(doc, b.head, b.body);
+    else if (b.k === 'quote') doc.fontSize(10).fillColor('#666666').text(plainInline(b.text), { indent: 20 }).fillColor('#222222').moveDown(0.2);
+    else if (b.k === 'list') doc.fontSize(10).fillColor('#222222').text(`• ${b.text}`);
+    else if (b.k === 'space') doc.moveDown(0.3);
+    else { doc.fontSize(10).fillColor('#222222').text(b.text); }
+  }
+}
+
+/** 柱状图绘制（导出供估算 PDF 绘制各阶段人天/占比图） */
+export function drawBarChart(doc: PDFDoc, title: string, items: Array<{ label: string; value: number }>): void {
+  drawBarChartImpl(doc, title, items);
+}
+
+/** 创建空白 PDF 文档（标题 + 导出时间），供估算 PDF 在 MD 渲染后追加图表 */
+export async function newPdfDoc(title: string): Promise<{ doc: PDFDoc; done: Promise<void>; finish: () => Buffer }> {
+  return await newPdfDocImpl(title);
+}
+
+export async function buildPrdPdf(md: string, title: string): Promise<Buffer> {
+  const { doc, done, finish } = await newPdfDoc(title);
+  renderMdPdf(doc, md);
   doc.end();
   await done;
-  return Buffer.concat(chunks);
+  return finish();
 }
 
 /** 需求跟踪矩阵行列定义（导出与前端展示同序，避免导出列与界面不一致） */

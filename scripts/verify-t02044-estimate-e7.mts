@@ -495,8 +495,9 @@ print(json.dumps(out,ensure_ascii=False))
         && [COEF_LABELS.collaboration, COEF_LABELS.quality, COEF_LABELS.scope, COEF_LABELS.schedule].every((t) => !tf.includes(flat(t)))
         && tf.includes(flat(X.TEMPLATE_TEXTS.foldedCoef)) && tf.includes(flat(String(Number(COEF_SUM.toFixed(2))))),
         tf.slice(tf.indexOf(flat('四、调节系数')), tf.indexOf(flat('四、调节系数')) + 60));
-      // 件里的表格行是「标签 | 数值 | …」，所以取数要在压平后的管道文本上匹配
-      const money = /实际预估人月\|([\d.]+)/;
+      // 件里的表格单元格为独立文本（T02155 起不再以 `标签 | 数值` 拼接，故取数不依赖竖线分隔符）：
+      // 标签与数值同单元格行相邻，用「标签后跟任意非数字再接数字」匹配，兼容旧 `|` 与新独立单元格两种件式
+      const money = /实际预估人月\D*?([\d.]+)/;
       const mi = money.exec(ti);
       const mc = money.exec(tc);
       ok('X-05 两版件上的「实际预估人月」数值相同（脱敏藏依据、不改报价数——真件层面取证）',

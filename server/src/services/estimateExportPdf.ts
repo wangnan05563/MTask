@@ -16,7 +16,7 @@
  *  3. **数字只从 `layout.summary` 来**（同 §11.1 E6 红线 2）：本文件不重算 E、不重算人月换算，
  *     连「÷ 每人月工天标准」这句话里的除数都取 `layout.input.config.manDaysPerManMonth`，不写死 20.83。
  */
-import { buildPrdPdf } from './prdExport';
+import { newPdfDoc, renderMdPdf, drawBarChart } from './prdExport';
 import {
   TEMPLATE_COEF_LABELS,
   TEMPLATE_PHASE_LABELS,
@@ -190,7 +190,17 @@ export function buildEstimateReportMd(layout: EstimateLayout): string {
   return lines.join('\n');
 }
 
-/** Markdown 中间文档 → PDF 字节（渲染链单源：`prdExport.buildPrdPdf`） */
+/** Markdown 中间文档 → PDF 字节；在 MD 渲染后再追加图表（T02155 图表补全） */
 export async function buildEstimatePdf(layout: EstimateLayout, md = buildEstimateReportMd(layout)): Promise<Buffer> {
-  return await buildPrdPdf(md, estimatePdfTitle(layout));
+  const { doc, done, finish } = await newPdfDoc(estimatePdfTitle(layout));
+  renderMdPdf(doc, md);
+  // 图表补全：取有明细的阶段，绘制「各阶段最终估算值（人天）」与「各阶段占比（%）」两张柱状图
+  const phases = layout.summary.phases.filter((p) => p.rowCount > 0);
+  if (phases.length > 0) {
+    drawBarChart(doc, '各阶段最终估算值（人天）', phases.map((p) => ({ label: phaseLabel(p.phase), value: p.expected })));
+    drawBarChart(doc, '各阶段占比（%）', phases.map((p) => ({ label: phaseLabel(p.phase), value: p.ratio * 100 })));
+  }
+  doc.end();
+  await done;
+  return finish();
 }
