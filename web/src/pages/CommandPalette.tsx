@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CornerDownLeft, Search } from 'lucide-react';
 import { api, type Prompt, type Task } from '../api/client';
+import { focusTaskByNo } from '../ui/focusTask'; // T02162：对齐通知中心：点击任务走同一套「解析→写键→派发 mtaskFocusTask→开抽屉」定位逻辑
 
 
 /** T00560：命令面板可直达的页面（与 App Tab 对齐的子集） */
@@ -66,22 +67,16 @@ export function CommandPalette({ open, onClose, onNavigate }: {
     }
     // 任务（跨项目）
       // T00836：点击任务除写入搜索词外，还下发 focusId/focusTab，任务页据此滚动定位 + 高亮 + 展开该记录
+      // T02162：改为复用通知中心同款 focusTaskByNo——它不仅写齐全部会话键，还派发 mtaskFocusTask 事件。
+      // 旧逻辑只写过次键 + onNavigate('tasks')=setTab：当用户本就停在任务页时 setTab 同值不触发重挂载，
+      // useSessionState 只在挂载时读一次键，于是「点击无反应 / 定位到上一条」（T01568 同一个坑，此前只修了通知中心）。
+      // focusTaskByNo 的事件路径让已挂载的任务页直接吃到定位意图；'notice' 同时按任务实际状态自动弹出详情抽屉。
       for (const t of tasks) {
         const label = `${t.task_no ?? 'T?????'} ${t.title}（${t.status === 'done' ? '已完成' : '待办'}）`;
         if (!kwLower || t.title.toLowerCase().includes(kwLower) || (t.task_no ?? '').toLowerCase().includes(kwLower)) {
           out.push({
             group: '任务', label, hint: '跳任务页并定位该任务（搜索编号）',
-            action: () => {
-              const ft = t.status === 'done' ? 'done' : 'todo';
-              setSessionState('tasks.search', t.task_no ?? t.title);
-              setSessionState('tasks.focusId', t.id);
-              // T00836 二轮：task 属于某个项目，而任务页当前 activeProject 不一定就是它——
-              // 不下发 projectId，定位会在「列表不含该任务」时失效（目标行不在当前项目列表）。
-              setSessionState('tasks.focusProjectId', t.project_id ?? '');
-              setSessionState('tasks.focusTab', ft);
-              setSessionState('tasks.activeTab', ft); // 列表 tab 与聚焦任务所在 tab 对齐，保证该行可见
-              onNavigate('tasks');
-            },
+            action: () => { void focusTaskByNo(t.task_no ?? t.title, 'notice'); },
           });
         }
       }
