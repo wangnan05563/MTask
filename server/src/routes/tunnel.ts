@@ -15,6 +15,7 @@ import {
   TunnelService,
   BinaryDownloadError,
   TailscaleFunnelAuthError,
+  TailscaleNotReadyError,
   CloudflareLoginService,
 } from '../tunnel/tunnel-service';
 import {
@@ -98,6 +99,16 @@ router.post('/start', async (_req, res) => {
         detail: err.message,
         errorType: 'tailscale_funnel_auth',
         authUrl: err.authUrl,
+      });
+      return;
+    }
+    // T02149：前置条件不满足（未安装/未登录/未开 MagicDNS/状态读不到）是用户侧可修复状态，
+    // 归 400 + errorType + reason——此前后置失败也走 500，用户看到「服务器错误」无从下手
+    if (err instanceof TailscaleNotReadyError) {
+      res.status(400).json({
+        detail: err.message,
+        errorType: 'tailscale_not_ready',
+        reason: err.reason,
       });
       return;
     }

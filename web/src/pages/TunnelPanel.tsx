@@ -78,7 +78,7 @@ export function TunnelPanel() {
       flash('隧道已启动');
     } catch (e) {
       // catch 的 e 已是 unknown，直接断言到目标类型即可，先转 unknown 属于冗余断言（S4325）
-      const err = e as { message?: string; errorType?: string; authUrl?: string; manualPath?: string; downloadUrls?: string[] };
+      const err = e as { message?: string; errorType?: string; reason?: string; authUrl?: string; manualPath?: string; downloadUrls?: string[] };
       const msg = err.message ?? String(e);
       if (err.errorType === 'tailscale_funnel_auth') {
         setAuthUrl(err.authUrl ?? '');
@@ -88,6 +88,17 @@ export function TunnelPanel() {
         flash(`${msg}（可点下方「重新生成」取得令牌）`, true);
       } else if (err.errorType === 'binary_download_failed') {
         flash(`${msg}\n请手动下载并放到: ${err.manualPath}\n${(err.downloadUrls ?? []).join('\n')}`, true);
+      } else if (err.errorType === 'tailscale_not_ready') {
+        // T02149：前置条件不满足（服务端已归 400 + reason）——按 reason 给可操作指引，
+        // 不再把「未登录客户端」当成服务器 500 抛给用户
+        const hint = err.reason === 'not_installed'
+          ? '\n请先安装 Tailscale：https://tailscale.com/download/windows'
+          : err.reason === 'not_logged_in'
+            ? '\n请打开 Tailscale 客户端完成登录后再启动'
+            : err.reason === 'magicdns_off'
+              ? '\n请在 Tailscale 管理后台 → DNS 中启用 MagicDNS'
+              : '\n请确认 Tailscale 客户端正在运行后再启动';
+        flash(`${msg}${hint}`, true);
       } else {
         flash(msg, true);
       }

@@ -39,6 +39,61 @@ export class TailscaleFunnelAuthError extends Error {
   }
 }
 
+/**
+ * T02149：Tailscale 前置条件不满足（未安装/未登录/未开 MagicDNS/状态读不到）。
+ * 这类失败全是**用户侧可修复**的状态，此前的实现是抛裸 Error，被路由一律映射成
+ * HTTP 500——用户看到「服务器错误」而非「去登录客户端」，且前端拿不到分类没法给指引。
+ * 带 reason 出厂，路由映射 400 + errorType，前端按 reason 渲染对应操作指引。
+ */
+export type TailscaleNotReadyReason = 'not_installed' | 'not_logged_in' | 'magicdns_off' | 'status_unavailable';
+
+export class TailscaleNotReadyError extends Error {
+  readonly reason: TailscaleNotReadyReason;
+  constructor(reason: TailscaleNotReadyReason, message: string) {
+    super(message);
+    this.name = 'TailscaleNotReadyError';
+    this.reason = reason;
+  }
+}
+
+/**
+ * T02149：`tailscale status --json` 输出 → 就绪判定（纯函数，start() 与门禁单测共用）。
+ * 三种不合格态各自给出可操作文案；JSON 解析失败（旧版 CLI 无 --json、输出被污染）归
+ * status_unavailable，不把 SyntaxError 的 "Unexpected token" 原样抛给用户。
+ */
+export function classifyTailscaleStatus(raw: string):
+  | { ok: true; dnsName: string }
+  | { ok: false; reason: TailscaleNotReadyReason; message: string } {
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return {
+      ok: false,
+      reason: 'status_unavailable',
+      message: '无法读取 Tailscale 状态（输出不是有效 JSON）。请确认 Tailscale 客户端正在运行，然后重新启动隧道',
+    };
+  }
+  if (data.BackendState !== 'Running') {
+    return {
+      ok: false,
+      reason: 'not_logged_in',
+      message: 'Tailscale 尚未登录：请打开 Tailscale 客户端完成登录后，重新启动隧道',
+    };
+  }
+  const selfInfo = data.Self as Record<string, unknown> | undefined;
+  const rawDnsName = typeof selfInfo?.DNSName === 'string' ? selfInfo.DNSName : '';
+  const dnsName = rawDnsName.trim().replace(/\.$/, '');
+  if (!dnsName.toLowerCase().endsWith('.ts.net')) {
+    return {
+      ok: false,
+      reason: 'magicdns_off',
+      message: 'Tailscale 尚未启用 MagicDNS，无法生成固定 ts.net 地址：请在 Tailscale 管理后台 → DNS 中启用 MagicDNS 后重试',
+    };
+  }
+  return { ok: true, dnsName };
+}
+
 // Provider 抽象基类：封装"二进制管理 + 子进程启动 + URL 解析 + 停止"通用流程。
 // 新增 provider 只需继承并实现抽象方法，无需改动 TunnelService。
 abstract class TunnelProvider {
@@ -449,7 +504,7 @@ class TailscaleProvider extends TunnelProvider {
       return;
     }
     if (this.binaryPath && !fs.existsSync(this.binaryPath)) {
-      throw new Error(`配置的 Tailscale 路径不存在: ${this.binaryPath}`);
+      throw new TailscaleNotReadyError('not_installed', `配置的 Tailscale 路径不存在: ${this.binaryPath}`);
     }
     // 检测顺序：where 命令 → Program Files 标准路径
     let discovered: string | null = null;
@@ -470,7 +525,7 @@ class TailscaleProvider extends TunnelProvider {
       }
     }
     if (!discovered) {
-      throw new Error('未检测到 Tailscale。请先安装并登录 Tailscale：https://tailscale.com/download/windows');
+      throw new TailscaleNotReadyError('not_installed', '未检测到 Tailscale。请先安装并登录 Tailscale：https://tailscale.com/download/windows');
     }
     this.detectedBinary = discovered;
   }
@@ -480,21 +535,21 @@ class TailscaleProvider extends TunnelProvider {
     await this.ensureBinary();
     this.recentLines = [];
 
-    // 前置检查：Tailscale 必须已登录 + 启用 MagicDNS
-    // 为什么改异步：避免 execFileSync 阻塞事件循环导致其他 API 无响应
-    const statusResult = await this.runCliAsync(['status', '--json']);
-    const statusData = JSON.parse(statusResult) as Record<string, unknown>;
-    if (statusData.BackendState !== 'Running') {
-      throw new Error('请先打开并登录 Tailscale，然后重新启动隧道');
+    // 前置检查：Tailscale 必须已登录 + 启用 MagicDNS（T02149：分类错误 + 可操作文案）
+    let statusResult: string;
+    try {
+      statusResult = await this.runCliAsync(['status', '--json']);
+    } catch (err) {
+      throw new TailscaleNotReadyError(
+        'status_unavailable',
+        `无法读取 Tailscale 状态：${err instanceof Error ? err.message : String(err)}。请确认 Tailscale 客户端正在运行，然后重新启动隧道`,
+      );
     }
-    const selfInfo = statusData.Self as Record<string, unknown> | undefined;
-    // 用 typeof 收窄替代 String() 显式转换：未知类型直接 String() 会被 S6551 标记，
-    // 显式类型守卫更安全且意图明确
-    const rawDnsName = typeof selfInfo?.DNSName === 'string' ? selfInfo.DNSName : '';
-    const dnsName = rawDnsName.trim().replace(/\.$/, '');
-    if (!dnsName.toLowerCase().endsWith('.ts.net')) {
-      throw new Error('Tailscale 尚未启用 MagicDNS，无法生成固定 ts.net 地址');
+    const verdict = classifyTailscaleStatus(statusResult);
+    if (!verdict.ok) {
+      throw new TailscaleNotReadyError(verdict.reason, verdict.message);
     }
+    const dnsName = verdict.dnsName;
 
     // Popen 非阻塞读取：首次启用会输出授权链接后不退出，等待用户浏览器授权
     const binary = this.detectedBinary!;
@@ -585,7 +640,12 @@ class TailscaleProvider extends TunnelProvider {
           this.publicUrl = `https://${dnsName}${this.pathPrefix}`;
           resolve();
         } else {
-          reject(new Error(`Tailscale Funnel 进程退出，code=${code}`));
+          // T02149：非零退出必须带上最近输出——`funnel --bg` 失败时常见「Funnel not
+          // enabled / 需先在管理台启用」等一行提示，不带输出用户只看到 code=1 无从判断
+          const recentOutput = this.recentLines.length > 0
+            ? `\n最近输出:\n${this.recentLines.join('\n')}`
+            : '\n（无输出）';
+          reject(new Error(`Tailscale Funnel 进程退出，code=${code}${recentOutput}`));
         }
       };
       const onError = (err: Error): void => {
