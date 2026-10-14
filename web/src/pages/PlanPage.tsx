@@ -6,6 +6,8 @@ import { EmptyState } from '../ui/EmptyState'; // T01072-FR1.10：统一空态�
 import { ReqMatrixPanel } from './ReqMatrixPanel'; // T00662：需求跟踪矩阵
 import { TestCasePanel } from './TestCasePanel'; // T01485：测试用例视图
 import { PrdPanel } from './PrdPanel'; // T00770：PRD 管理视图（文档生命周期 + 待确认问题）
+import { EstimateGanttOverlay } from '../components/estimateGanttOverlay'; // T02082：E8 甘特估算区间叠加层（O~P 带 + E 标记，纯几何零二次计算）
+import { estimatesApi, type EstimatesResponse } from '../api/estimates'; // T02082：叠加层数据源——只读服务端三点值（§9 零计算红线）
 import { ProjectGuideDialog, hasSeenProjectGuide, markProjectGuideSeen } from './ProjectGuide'; // T00665：项目管理向导（T00706：已看状态改由调用方在关闭时记录）
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin, reorderProjects, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { FontColorButton } from '../ui/FontColorButton';
@@ -1286,6 +1288,21 @@ export function PlanPage() {
   const [estimateOpen, setEstimateOpen] = useSessionState<boolean>('plan.estimatePanelOpen', false);
   const estimateMode = useEstimatePanelMode(); // docked（≥1200px）/ overlay（<1200px 转覆盖式抽屉）
 
+  // T02082：甘特估算区间叠加开关与数据源——与估算面板开关互相独立（§5.2：面板打开时甘特视图不变）。
+  // 数据懒加载：首次打开才取 GET /api/estimates（O/P 取 items 三点，E 取 summary.rowRatios 服务端期望值，
+  // 本页零 PERT 二次运算）；失败静默降级为无叠加 + toast，不阻塞甘特本体。
+  const [showGanttEstimate, setShowGanttEstimate] = useState(false);
+  const [ganttEst, setGanttEst] = useState<EstimatesResponse | null>(null);
+  const toggleGanttEstimate = (): void => {
+    const next = !showGanttEstimate;
+    setShowGanttEstimate(next);
+    if (next && projectId && !ganttEst) {
+      estimatesApi.getAll(projectId)
+        .then((r) => setGanttEst(r))
+        .catch(() => flash('估算数据加载失败，本次不叠加区间'));
+    }
+  };
+
   // ---------- T01059 后续：甘特条拖动（move / 左右边缘 resize → 联动 start_date 与 duration_days）----------
   // 拖动期间只改本地预览态，松手才落库（走既有 updatePlan → PATCH /plans/:id，服务端按工作日历重算 end_date
   // 并沿显式 deps 传播）。这样一次拖动只发一个请求，也不会在拖动过程中被 reload 打断。
@@ -2079,6 +2096,18 @@ export function PlanPage() {
 
     return (
       <div style={{ border: '1px solid var(--border-strong)', borderRadius: 8, overflow: 'hidden' }}>
+        {/* T02082：甘特估算叠加开关——独立于估算面板开关（§5.2 口径）；懒加载失败时仍可看甘特本体 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px', borderBottom: '1px solid var(--border)', fontSize: 12 }}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', color: 'var(--text)' }}>
+            <input type="checkbox" checked={showGanttEstimate} onChange={toggleGanttEstimate} aria-label="甘特估算区间叠加开关" />
+            估算区间叠加
+          </label>
+          <span style={{ color: 'var(--text-muted)' }}>
+            {showGanttEstimate
+              ? (ganttEst ? '半透明带 = 服务端 O~P 三点区间，竖线 = 服务端期望值 E（里程碑行无估算不叠加）' : '估算数据加载中…')
+              : '勾选后在甘特条上叠加服务端估算区间（不影响面板）'}
+          </span>
+        </div>
         <div style={{ overflowX: 'auto' }}>
           <div style={{ width: 220 + totalDays * DAY_W, minWidth: '100%' }}>
             {/* 月份刻度 */}
@@ -2140,6 +2169,34 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             <svg width={220 + totalDays * DAY_W} height={plans.length * 30} style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none', zIndex: 2 }}>
               {renderDepsOverlay({ plans: ganttPlans, toIdx, totalDays, DAY_W, depsOfPlan, planById, criticalEdges })}
             </svg>
+            {/* T02082：E8 估算区间叠加层——同一 relative 容器内、依赖连线 SVG 之上（zIndex 3>2）。
+                O/P 取 items 三点、E 取 summary.rowRatios 服务端期望值，此处只装配 Map 不做任何运算（§9 红线）；
+                里程碑/daily 行无估算条目，经组件内非法行剔除自然不叠加（§4.6 红线一）。 */}
+            {showGanttEstimate && ganttEst && (() => {
+              const itByPlan = new Map(ganttEst.items.map((x) => [x.plan_id, x] as const));
+              const rrByPlan = new Map(ganttEst.summary.rowRatios.map((x) => [x.key, x] as const));
+              return (
+                <EstimateGanttOverlay
+                  rows={ganttPlans.map((p, i) => {
+                    const it = itByPlan.get(p.id);
+                    const rr = rrByPlan.get(p.id);
+                    return {
+                      id: p.id,
+                      title: p.title,
+                      startDate: p.start_date,
+                      endDate: p.end_date,
+                      rowIndex: i,
+                      estimate: it && rr
+                        ? { optimistic: it.optimistic, pessimistic: it.pessimistic, expected: rr.expected }
+                        : undefined,
+                    };
+                  })}
+                  rangeStart={rangeStart}
+                  totalDays={totalDays}
+                  visible={showGanttEstimate}
+                />
+              );
+            })()}
             </div>
           </div>
         </div>
