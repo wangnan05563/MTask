@@ -15,6 +15,8 @@ import { startDailyBackupTimer } from './services/BackupService'; // T01061-FR5.
 import { RecurringService, TokenService } from './services/RecurringService'; // T01073：循环任务 + API Token
 import { SupervisorService } from './services/SupervisorService'; // T01273：监督器 tick（含 T01270 会话停滞兜底）
 import { reconcileLinkedPlanStatuses } from './services/PlanService';
+import { reconcileReqStatuses } from './services/reqStatusSync'; // T02087：需求状态启动对账
+import { reconcileMilestoneProgresses } from './services/milestoneProgress'; // T02090：里程碑进度启动对账
 import { startStaleRunningGuard } from './services/TaskService'; // T01368 后续（P1）：running 超时兜底定时收敛（移出读路径）
 import { startEventRetentionTimer } from './services/EventRetention'; // T01064 后续：事件表 90 天保留期清理
 import { startReportTmpSweeper } from './services/ReportService'; // T02144：导出令牌临时文件回收
@@ -182,6 +184,24 @@ try {
   if (fixed > 0) console.log(`[mtask] plan-task reconcile: ${fixed} plan record(s) aligned to done`);
 } catch (e) {
   console.error('[mtask] plan-task reconcile failed:', e);
+}
+// T02087：需求状态对账——同一兜底家族的需求侧成员：关联计划/待办全部 done 的需求归位
+// （旧版本从未派生过的存量 + 直写库绕过钩子的变更，都在这里对齐；changed 与无关联行不动）
+try {
+  const reqFixed = reconcileReqStatuses();
+  if (reqFixed > 0) console.log(`[mtask] req-status reconcile: ${reqFixed} requirement(s) re-derived`);
+} catch (e) {
+  console.error('[mtask] req-status reconcile failed:', e);
+}
+// T02090：里程碑进度对账——兜底家族第三名成员：带子项（deps child）的里程碑按子项 done 数
+// 收敛 progress/status（T02042 实测「子项全 done 里程碑仍 0%」的存量 + 直写库绕过聚合的变更）。
+//  必须排在 plan-task reconcile **之后**：那一步按「关联待办 done → 计划 done」单向对齐，
+//  已按 milestoneHasChildren 排除聚合作主的里程碑；这里再按子项实况做权威聚合。
+try {
+  const msFixed = reconcileMilestoneProgresses();
+  if (msFixed > 0) console.log(`[mtask] milestone-progress reconcile: ${msFixed} milestone(s) re-aggregated`);
+} catch (e) {
+  console.error('[mtask] milestone-progress reconcile failed:', e);
 }
 app.listen(PORT, HOST, () => {
   console.log(`[mtask] server ready at http://${HOST}:${PORT}`);

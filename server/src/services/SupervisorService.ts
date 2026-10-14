@@ -128,11 +128,12 @@ const TOOL_KEY = 'supervisor.toolId';
 /** 待办优先级排序权重（SQL CASE 与之一致，改这里需同步改 collectSnapshot 的 ORDER BY） */
 const PRIORITY_CASE = "CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 9 END";
 
-/** 快照里的前置依赖项（源：plan_tasks.deps，T00499） */
+/** 快照里的前置依赖项（源：plan_tasks.deps，T00499；T02090 起含 child 归属边） */
 export interface SnapshotDep {
   planTaskId: string;
   title: string;
-  type: 'serial' | 'parallel';
+  /** T02090：child=结构性归属（里程碑父子），不阻塞排水；serial/parallel 语义同 FR-3.7 */
+  type: 'serial' | 'parallel' | 'child';
   /** 前置计划是否已完成；计划行已不存在时按「已完成」处理，与 PlanService.readyTasks 同口径 */
   done: boolean;
 }
@@ -143,7 +144,7 @@ export interface SnapshotPending {
   title: string;
   priority: string;
   deps: SnapshotDep[];
-  /** 依赖满足（serial 前置均已完成；parallel 不阻塞；无 deps 视为就绪）——FR-3.1/3.7 排水判定输入 */
+  /** 依赖满足（serial 前置均已完成；parallel/child 不阻塞；无 deps 视为就绪）——FR-3.1/3.7 排水判定输入 */
   ready: boolean;
 }
 

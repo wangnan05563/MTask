@@ -244,10 +244,19 @@ export async function createMCPServer(): Promise<McpServer> {
 
   server.registerTool('mtask_create_plans', {
     title: '批量创建项目计划',
-    description: '把 WBS/需求拆解结果批量写入指定项目的计划时间线（串行瀑布：任务按顺序自动按工作日排期，跳过周末与节假日；首条可带 startDate 作锚点）。适用于「把需求文档/PRD 拆分为项目计划」类回写。item.kind 可指定 milestone 建里程碑（如「5 M5 AI 编排大脑落地」），缺省为 normal。',
+    description: '把 WBS/需求拆解结果批量写入指定项目的计划时间线（各行日期独立；首条可带 startDate 作锚点）。适用于「把需求文档/PRD 拆分为项目计划」类回写。item.kind 可指定 milestone 建里程碑（如「5 M5 AI 编排大脑落地」），缺省为 normal。落库前会查重：本批标题与项目已有计划同名占比过高时按「同一份拆解重复回写」拦截（T01868），需确认新增时传 allowDuplicates。⚠ T02131：不传关联字段时本工具只写计划行——既无需求跟踪矩阵（RTM）关联也无待办联动，会留下「计划孤岛」（四期 K1~K8 事故）。PRD/需求拆解类回写必须带上 requirements + items[].reqNos（或 createTasks 生成待办），此时走与页面 PRD 导入同一条联动通道：矩阵行、计划、待办三者一次建齐并回填 req_ids/linked_task_id。',
     inputSchema: {
       projectId: z.string().optional().describe('目标项目 id，与 projectName 二选一'),
       projectName: z.string().optional().describe('项目名称，按名称解析'),
+      // T02131：关联通道入口——与 PlanService.importPrd 同语义（编号在项目内唯一，撞号自动顺延并回传 reqNoMap）
+      requirements: z.array(z.object({
+        reqNo: z.string().optional().describe('需求编号（如 REQ-001，可缺省由服务端顺延）；与 items[].reqNos 对应'),
+        title: z.string().describe('需求标题（必填）'),
+        content: z.string().optional().describe('需求正文/验收口径'),
+        sourceRef: z.string().optional().describe('来源出处（PRD 章节/页码等定位串）'),
+        priority: z.string().optional().describe('优先级，缺省 normal'),
+      })).optional().describe('同批写入需求跟踪矩阵的行；计划条目经 reqNos 挂到这些编号上'),
+      createTasks: z.boolean().optional().describe('true 时为每条计划生成 [PRD] 前缀待办，并回填 plan.linked_task_id 与 tasks.req_ids（计划↔待办联动）。需求拆解类回写建议开启。'),
       items: z.array(z.object({
         title: z.string().describe('任务标题（必填，建议带 WBS 编号）'),
         description: z.string().optional().describe('描述'),
@@ -261,7 +270,19 @@ export async function createMCPServer(): Promise<McpServer> {
           .describe('计划类型：milestone=里程碑（汇总节点，如「5 M5 AI 编排大脑落地」，先子后父收口）/ normal=普通工作项（默认）/ daily=日常'),
         // T02122：复杂度钳位早拒——非法值在入口处被 zod 拦截，服务层 clampComplexity 作兜底
         complexity: z.number().int().min(1).max(5).optional().describe('T01058 / T02122：AI 复杂度评级（1~5 整数），随导入落库供工期估算参考'),
+        // T02131：需求锚点——引用本批 requirements[].reqNo，或库内已存在的同编号矩阵行（增量回写不断链）
+        reqNos: z.array(z.string()).optional().describe('本条计划覆盖的需求编号列表，落库到 plan_tasks.req_ids；缺省则该条无矩阵关联'),
+        // T01704：结构化依赖——ref 为本条目在本批次内的临时标识，deps 用 ref/planId/planTitle 引用其它条目
+        ref: z.string().optional().describe('本批次内唯一临时标识（如 "W005"），供同批其它条目的 deps 引用，不落库'),
+        deps: z.array(z.object({
+          ref: z.string().optional().describe('引用同批次条目的 ref（与 planId/planTitle 三选一）'),
+          planId: z.string().optional().describe('引用库内已有计划条目的 id'),
+          planTitle: z.string().optional().describe('按标题引用库内已有计划条目（同项目内唯一匹配）'),
+          type: z.enum(['serial', 'parallel', 'child']).describe('serial=串行前置（排在被引条目之后）/ parallel=并行（同起）/ child=归属里程碑（本条为里程碑下的子任务，写在本条；里程碑工期自动按子任务包络收口）'),
+        })).optional().describe('依赖/归属关系；serial/parallel 驱动排期联动，child 表达里程碑↔子任务归属'),
       })).describe('计划条目数组（按执行顺序排列）'),
+      // T01868：AI 通道防重入——同一份拆解重复回写会留下并排两套计划，默认拦截并拒写
+      allowDuplicates: z.boolean().optional().describe('默认 false：本批标题与项目已有计划同名占比过高时判定为重复拆解并拒写。确为新增/补录条目时传 true 放行（仅回警告）。'),
     },
   }, async (a) => {
     try {
@@ -272,8 +293,200 @@ export async function createMCPServer(): Promise<McpServer> {
         pid = p.id;
       }
       if (!pid) return err('projectId 或 projectName 必填');
-      const r = PlanService.createBatch(pid, a.items);
-      return ok(json(r), { ok: true, ...r });
+      const warnings: string[] = [];
+      // 显式标注条目形状：handler 参数经 zod 推断后在本闭包内的 forEach 回调无法保留类型
+      type ItemShape = { title: string; description?: string; startDate?: string; durationDays?: number; assignee?: string; status?: 'todo' | 'doing' | 'done' | 'blocked'; kind?: 'normal' | 'milestone' | 'daily'; complexity?: number; reqNos?: string[]; ref?: string; deps?: Array<{ ref?: string; planId?: string; planTitle?: string; type: 'serial' | 'parallel' | 'child' }> };
+      const items = a.items as ItemShape[];
+      // T02131：关联通道判定——带矩阵行 / 带需求编号 / 要求生成待办三者之一，即改走 importPrd
+      // （与页面「PRD 导入」同一条链路：需求项→计划 req_ids→待办 linked_task_id，含里程碑工期汇总与 child 边）。
+      // 不传关联字段仍走 createBatch 纯计划通道，保持既有轻量语义与 T01868 拦截口径。
+      const wantLinkage = (a.requirements?.length ?? 0) > 0 || items.some((it) => it.reqNos?.length) || a.createTasks === true;
+      // T01704：依赖解析——创建完成后把 ref/planId/planTitle 引用解析为 [{id,type}] 落库
+      //（serial/parallel 触发排期联动；child 归属触发里程碑包络收口，均在 PlanService.update 内完成）
+      // T02131：两条通道共用，rowIds 必须与 items 下标对齐（关联通道用 importPrd 的 planRowIds，
+      // 因为撞名让号/复用命中会让「按标题找 id」不可靠）。
+      const resolveDeps = (rowIds: Array<string | null>) => {
+        if (!items.some((it) => it.deps?.length)) return;
+        const refToId = new Map<string, string>();
+        items.forEach((it, i) => { const id = rowIds[i]; if (it.ref?.trim() && id) refToId.set(it.ref.trim(), id); });
+        items.forEach((it, i) => {
+          const id = rowIds[i];
+          if (!id || !it.deps?.length) return;
+          const parsed: Array<{ id: string; type: string }> = [];
+          for (const d of it.deps) {
+            let target: string | undefined;
+            if (d.ref?.trim()) target = refToId.get(d.ref.trim());
+            else if (d.planId?.trim()) target = d.planId.trim();
+            else if (d.planTitle?.trim()) {
+              const row = getDb().prepare('SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0').get(pid, d.planTitle.trim()) as { id: string } | undefined;
+              target = row?.id;
+            }
+            if (!target) {
+              warnings.push(`条目「${it.title}」的依赖 ${d.ref ?? d.planId ?? d.planTitle}（${d.type}）未解析到，已跳过`);
+              continue;
+            }
+            parsed.push({ id: target, type: d.type });
+          }
+          if (parsed.length > 0) PlanService.update(id, { deps: JSON.stringify(parsed) });
+        });
+      };
+      if (wantLinkage) {
+        // T01868 防重入前检：importPrd 内部按 T01875 默认口径给撞名行加「（2）」后缀，
+        // 会让重复拆解静默落成第二条轨道（比 createBatch 的拦截更隐蔽），故在入口按同阈值先拒。
+        if (!a.allowDuplicates) {
+          const titles = new Set(items.map((it) => it.title.trim()));
+          const countSame = getDb().prepare('SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0');
+          const dups: string[] = [];
+          for (const title of titles) {
+            if ((countSame.get(pid, title) as { n: number }).n > 0) dups.push(title);
+          }
+          if (dups.length >= 3 && dups.length / titles.size >= 0.6) {
+            return err(`防重入拦截：本批 ${dups.length}/${titles.size} 个标题与项目已有计划同名，判定为同一份拆解重复落库（示例：${dups.slice(0, 5).join('、')}）。确属新增条目请显式传 allowDuplicates`);
+          }
+        }
+        type ReqShape = { reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string };
+        const r = PlanService.importPrd(pid, {
+          requirements: (a.requirements as ReqShape[] | undefined)?.map((x) => ({ reqNo: x.reqNo, title: x.title, content: x.content, sourceRef: x.sourceRef, priority: x.priority })),
+          plans: items.map((it) => ({
+            title: it.title, description: it.description, startDate: it.startDate, durationDays: it.durationDays,
+            assignee: it.assignee, kind: it.kind, complexity: it.complexity, status: it.status, reqNos: it.reqNos,
+          })),
+          createTasks: a.createTasks === true,
+        });
+        resolveDeps(r.planRowIds);
+        if (r.reqNoMap.length > 0) {
+          warnings.push(`需求编号已按项目内唯一顺延（避免与存量矩阵撞号）：${r.reqNoMap.slice(0, 5).map((x) => `${x.from}→${x.to}`).join('、')}${r.reqNoMap.length > 5 ? ` 等 ${r.reqNoMap.length} 项` : ''}`);
+        }
+        for (const n of r.unlinkedReqNos) warnings.push(`计划引用的需求编号「${n}」在矩阵中不存在，关联未落`);
+        for (const n of r.ambiguousReqNos) warnings.push(`本批有两条需求争用同一编号「${n}」，关联按后登记者落位，请核对归属`);
+        if (r.orphanRequirements.length > 0) {
+          warnings.push(`${r.orphanRequirements.length} 条新建需求零关联（无任何计划/待办挂到它）：${r.orphanRequirements.slice(0, 5).map((x) => `${x.reqNo} ${x.title}`).join('、')}`);
+        }
+        const unanchored = items.filter((it, i) => it.kind !== 'milestone' && !it.reqNos?.length && r.planRowIds[i]).length;
+        if (unanchored > 0) warnings.push(`${unanchored} 条计划未带 reqNos，本轮只建了计划行（无矩阵关联）`);
+        const result = {
+          channel: 'prd_import' as const, requirements: r.requirements, plans: r.plans, reusedPlans: r.reusedPlans,
+          tasks: r.tasks, unlinkedReqNos: r.unlinkedReqNos, reqNoMap: r.reqNoMap, dupPlanTitles: r.dupPlanTitles,
+          ambiguousReqNos: r.ambiguousReqNos, orphanRequirements: r.orphanRequirements, planRowIds: r.planRowIds, warnings,
+        };
+        return ok(json(result), result);
+      }
+      const r = PlanService.createBatch(pid, items, { dupPolicy: a.allowDuplicates ? 'warn' : 'block' });
+      warnings.unshift(...(r.warnings ?? []));
+      resolveDeps(r.ids);
+      // T02131：孤儿回写点名——纯计划通道不会写 req_ids/linked_task_id（四期 K1~K8 12 行孤儿当时零提示）。
+      // 只对成规模的拆解回写（≥3 条）提示，一两条的临时补录不值得报警。
+      if (items.length >= 3) {
+        warnings.push(`本批 ${items.length} 条计划走的是纯计划通道：无需求矩阵关联（req_ids 空）、无待办联动（linked_task_id 空）。需求/PRD 拆解类回写请改传 requirements + items[].reqNos（并按需 createTasks）`);
+      }
+      return ok(json({ ...r, warnings }), { ok: true, ...r, warnings });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // T01704：计划条目维护工具——补齐「只能建不能改/删」缺口（swork 20 条日期失真由此可修正）
+  server.registerTool('mtask_update_plan', {
+    title: '更新计划条目',
+    description: '按 id 或标题更新计划条目（日期/工期/进度/状态/负责人/类型/描述/依赖）。serial/parallel 依赖变更会触发后续条目排期联动；child 归属变更会触发父里程碑按子任务包络重算起止与工期（里程碑止期不再晚于其子任务）。',
+    inputSchema: {
+      projectId: z.string().optional().describe('项目 id（按标题定位时用于限定范围，与 projectName 二选一）'),
+      projectName: z.string().optional().describe('项目名称（按标题定位时用于限定范围）'),
+      id: z.string().optional().describe('计划条目 id（与 title 二选一）'),
+      title: z.string().optional().describe('当前标题（与 id 二选一；同项目内唯一匹配，用于定位）'),
+      newTitle: z.string().optional().describe('新标题'),
+      description: z.string().optional(),
+      startDate: z.string().optional().describe('开始日期 YYYY-MM-DD'),
+      durationDays: z.number().optional().describe('工期（工作日数，≥1）'),
+      progress: z.number().optional().describe('进度 0~100'),
+      status: z.enum(['todo', 'doing', 'done', 'blocked']).optional(),
+      assignee: z.string().optional(),
+      kind: z.enum(['normal', 'milestone', 'daily']).optional(),
+      color: z.string().optional().describe('强调色 hex，如 #2563eb'),
+      deps: z.array(z.object({
+        planId: z.string().optional().describe('被引条目 id（与 planTitle 二选一）'),
+        planTitle: z.string().optional().describe('被引条目标题（同项目内唯一匹配）'),
+        type: z.enum(['serial', 'parallel', 'child']).describe('serial/parallel=排期依赖；child=归属里程碑（写在本条上）'),
+      })).optional().describe('依赖/归属关系；传空数组表示清空依赖'),
+    },
+  }, async (a) => {
+    try {
+      const db = getDb();
+      let pid = a.projectId?.trim() || '';
+      if (!pid && a.projectName?.trim()) {
+        const p = db.prepare('SELECT id FROM projects WHERE name = ?').get(a.projectName.trim()) as { id: string } | undefined;
+        if (!p) return err(`项目不存在：${a.projectName}`);
+        pid = p.id;
+      }
+      let id = a.id?.trim() || '';
+      if (!id && a.title?.trim()) {
+        if (!pid) return err('按标题定位需要 projectId 或 projectName');
+        const row = db.prepare('SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0').get(pid, a.title.trim()) as { id: string } | undefined;
+        if (!row) return err(`计划条目不存在：${a.title}`);
+        id = row.id;
+      }
+      if (!id) return err('id 或 title 必填');
+      let depsStr: string | undefined;
+      if (a.deps !== undefined) {
+        const cur = db.prepare('SELECT project_id FROM plan_tasks WHERE id = ?').get(id) as { project_id: string } | undefined;
+        if (!cur) return err('计划条目不存在：' + id);
+        const warnings: string[] = [];
+        const parsed: Array<{ id: string; type: string }> = [];
+        for (const d of a.deps) {
+          let target: string | undefined;
+          if (d.planId?.trim()) target = d.planId.trim();
+          else if (d.planTitle?.trim()) {
+            const row = db.prepare('SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0').get(cur.project_id, d.planTitle.trim()) as { id: string } | undefined;
+            target = row?.id;
+          }
+          if (!target) { warnings.push(`依赖 ${d.planId ?? d.planTitle}（${d.type}）未解析到，已跳过`); continue; }
+          parsed.push({ id: target, type: d.type });
+        }
+        depsStr = JSON.stringify(parsed);
+        const row = PlanService.update(id, {
+          title: a.newTitle, description: a.description, startDate: a.startDate, durationDays: a.durationDays,
+          progress: a.progress, status: a.status, assignee: a.assignee, kind: a.kind, color: a.color, deps: depsStr,
+        });
+        if (!row) return err('计划条目不存在：' + id);
+        return ok(json({ plan: row, warnings }), { ok: true, warnings });
+      }
+      const row = PlanService.update(id, {
+        title: a.newTitle, description: a.description, startDate: a.startDate, durationDays: a.durationDays,
+        progress: a.progress, status: a.status, assignee: a.assignee, kind: a.kind, color: a.color,
+      });
+      if (!row) return err('计划条目不存在：' + id);
+      // 展开为字面量对象：PlanTaskRow 接口不满足 json/ok 的 Record<string, unknown> 索引签名约束
+      return ok(json({ ...row }), { ...row });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_delete_plan', {
+    title: '删除计划条目',
+    description: '归档（软删）指定计划条目：从计划时间线移除并衔接重排，可在归档菜单恢复——不物理删除，避免依赖引用悬空。',
+    inputSchema: {
+      id: z.string().optional().describe('计划条目 id（与 title 二选一）'),
+      projectId: z.string().optional().describe('项目 id（按标题定位时限定范围，与 projectName 二选一）'),
+      projectName: z.string().optional().describe('项目名称'),
+      title: z.string().optional().describe('当前标题（与 id 二选一；同项目内唯一匹配）'),
+    },
+  }, async (a) => {
+    try {
+      const db = getDb();
+      let pid = a.projectId?.trim() || '';
+      if (!pid && a.projectName?.trim()) {
+        const p = db.prepare('SELECT id FROM projects WHERE name = ?').get(a.projectName.trim()) as { id: string } | undefined;
+        if (!p) return err(`项目不存在：${a.projectName}`);
+        pid = p.id;
+      }
+      let id = a.id?.trim() || '';
+      if (!id && a.title?.trim()) {
+        if (!pid) return err('按标题定位需要 projectId 或 projectName');
+        const row = db.prepare('SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0').get(pid, a.title.trim()) as { id: string } | undefined;
+        if (!row) return err(`计划条目不存在：${a.title}`);
+        id = row.id;
+      }
+      if (!id) return err('id 或 title 必填');
+      const okDel = PlanService.archive(id);
+      if (!okDel) return err('计划条目不存在或已归档：' + id);
+      return ok(json({ ok: true, id, archived: true }), { ok: true, id });
     } catch (e) { return err((e as Error).message); }
   });
 
@@ -497,7 +710,7 @@ export async function createMCPServer(): Promise<McpServer> {
       sourceRef: z.string().optional().describe('PRD 原文定位（章节/段落）'),
       priority: z.enum(['low', 'normal', 'high', 'urgent', 'P0', 'P1', 'P2', 'P3', 'p0', 'p1', 'p2', 'p3']).optional()
         .describe('优先级：low|normal|high|urgent 或 P0~P3（P 档自动换算入库：P0=urgent / P1=high / P2=normal / P3=low，与用例词表统一）'),
-      status: z.enum(['todo', 'doing', 'done', 'changed']).optional().describe('需求状态'),
+      status: z.enum(['todo', 'doing', 'done', 'changed']).optional().describe('需求状态（todo/doing/done 会随关联计划与待办的完成度自动派生：全部完成→done、有进行中或部分完成→doing、全部未开始→todo；changed 为人工业务状态不被覆盖。留空则不改动）'),
       kind: z.enum(['plan', 'task']).optional().describe('link 时使用：关联目标类型'),
       targetId: z.string().optional().describe('link 时使用：计划或待办的任务 id'),
       linked: z.boolean().optional().describe('link 时使用：true 建立关联 / false 解除（默认 true）'),

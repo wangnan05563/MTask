@@ -5,6 +5,8 @@ import { v4 as uuid } from 'uuid';
 import { cachedPrepare } from '../util/stmt-cache'; // T00792：热点 SQL 语句复用
 import { TaskImageService, type TaskImageMeta } from './TaskImageService';
 import { ReqEntryService } from './ReqService';
+import { parseReqIds, syncReqStatuses } from './reqStatusSync'; // T02087：需求状态随执行进度派生
+import { recalcMilestonesOfChild } from './milestoneProgress'; // T02090：里程碑进度聚合（任务完成度是聚合输入）
 import { parsePlanDeps, depsSatisfied, topoOrder, type PlanDep } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7）
 import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化（拉取侧平台偏好匹配）
 
@@ -187,6 +189,19 @@ function syncPlanOnStatusChange(id: string, status: string): void {
   const planStatus = status === 'done' ? 'done' : 'doing';
   db.prepare('UPDATE plan_tasks SET status = ?, progress = CASE WHEN ? = 100 THEN 100 ELSE progress END, updated_at = ? WHERE linked_task_id = ?')
     .run(planStatus, planStatus === 'done' ? 100 : -1, now(), id);
+  // T02087：需求状态随执行进度派生。任务与计划可各自经 req_ids 关联需求，任一侧的完成度
+  // 变化都可能改变需求读数，故两侧 req_ids 都喂给派生（任务侧覆盖「直挂任务」的需求，
+  // 计划侧覆盖 linked_task_id 关联的计划所挂的需求——用户报「AI 完成任务后计划更新了、
+  // 需求状态不动」正是缺这一环）。
+  const taskRow = db.prepare('SELECT project_id, req_ids FROM tasks WHERE id = ?').get(id) as { project_id: string; req_ids: string | null } | undefined;
+  if (taskRow) {
+    const planRows = db.prepare('SELECT id, req_ids FROM plan_tasks WHERE linked_task_id = ?').all(id) as Array<{ id: string; req_ids: string | null }>;
+    // T02090：任务完成度是里程碑进度聚合的输入之一——关联计划的父里程碑按子项实况重算
+    // （任务 done → 计划 done → 里程碑 progress/ done 收敛；关联待办在里程碑自动 done 时置 unread）
+    for (const p of planRows) recalcMilestonesOfChild(db, p.id);
+    const reqIds = [taskRow.req_ids, ...planRows.map((p) => p.req_ids)].flatMap((v) => parseReqIds(v));
+    syncReqStatuses(db, taskRow.project_id, reqIds);
+  }
   // T00450 配套：子任务状态变更后汇总父任务进度（按子任务完成比例），全完成时父自动 done
   const childRow = db.prepare('SELECT parent_id FROM tasks WHERE id = ?').get(id) as { parent_id: string | null } | undefined;
   if (childRow?.parent_id) recalcParentProgress(childRow.parent_id);
