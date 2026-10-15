@@ -1085,10 +1085,13 @@ export async function kickoffPptStream(
     onStage('大纲没有风险页与沟通页，跳过措辞润色（不消耗模型配额）。');
   }
 
-  const { buildKickoffPpt } = await import('./kickoffBuilder'); // 动态加载：builder 静态引用本模块常量，两侧都静态 import 会成环
-  onStage(`开始逐页装配 ${built.outline.length} 页…`);
-  const assembled = await buildKickoffPpt({ ...bundle, risks: built.risks }, built.outline, {
-    onPage: (pageNo, item) => onStage(`页 ${pageNo}/${built.outline.length} 已装配：${item.section}`),
+  const { buildKickoffPpt, expandTimelinePages } = await import('./kickoffBuilder'); // 动态加载：builder 静态引用本模块常量，两侧都静态 import 会成环
+  const bundleForBuild = { ...bundle, risks: built.risks };
+  // T02171：计划排不下一页会展开成续页——进度按真实渲染页数计，否则出现「页 12/11」
+  const renderTotal = expandTimelinePages(bundleForBuild, built.outline).length;
+  onStage(`开始逐页装配 ${renderTotal} 页…`);
+  const assembled = await buildKickoffPpt(bundleForBuild, built.outline, {
+    onPage: (pageNo, item) => onStage(`页 ${pageNo}/${renderTotal} 已装配：${item.section}`),
     signal,
   });
   const token = saveReportBuffer(assembled.buffer);

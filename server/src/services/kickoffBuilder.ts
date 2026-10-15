@@ -354,12 +354,29 @@ const MAX_TL_ROWS = 8;
 const TL_NOTE_PT = 10;
 /** 时间线区低于这个高度就画不出「轴 + 2 行」，回落列表版更诚实 */
 const TL_MIN_H = TL_AXIS_H + TL_ROW_H * 2;
+/** T02171：计划超出单页可排行数时最多续几页。6 页≈一个排期章节的篇幅上限，再多该按阶段拆排期而不是继续加页 */
+const MAX_TL_PAGES = 6;
+
+/**
+ * 时间线分页窗口（T02171）：把「排不下的计划折成页脚提示」改成「换页继续画」。
+ * `offset` 从第几条计划起画；`last` 是否本页序列的末页——只有末页才出「其余 n 条未绘出」注块，
+ * 中间页的剩余量由下一页承载，注了就是谎报。
+ */
+export interface TimelineWindow {
+  offset?: number;
+  last?: boolean;
+}
+
+/** 渲染页 = 大纲项 + 可选的时间线窗口（分页后的续页仍是完整大纲项，页码/页脚口径不变） */
+export type KickoffRenderPage = KickoffOutlineItem & { tlWindow?: TimelineWindow };
 
 export interface TimelineResult {
   blocks: Block[];
   /** 缺起止日期、按口径不画的条数（不画猜出来的工期） */
   undated: number;
-  /** 排进行尾「其余 n 条」提示而未画的条数 */
+  /** 本页实绘的计划条数（分页探针据此前移 `offset`） */
+  drawn: number;
+  /** 本页之后仍未绘出的条数（末页折注 / 中间页续页口径） */
   overflow: number;
   /** 与同日里程碑并成一枚菱形绘制掉的里程碑数（一个都没少画，只是叠成一组） */
   mergedMilestones: number;
@@ -441,11 +458,13 @@ function timelineViolations(blocks: Block[], frame: Box): string[] {
  * 排布：轴带（刻度 + 轴线 + 菱形）在上，计划条按起始日期升序逐行在下。
  * 同日挤在一起的里程碑按道下移，轴带容不下就**只计数不硬画**——压成叠在一起的两个菱形
  * 等于一个都没画，还骗人以为看清了。
+ * `window`（T02171）：本页承载哪一段计划。缺省 = 从第 0 条起、按版面与 `MAX_TL_ROWS` 收，
+ * 装不下的尾注口径与改造前一致（`last` 缺省为真）。
  */
-export function timelineBlocks(b: KickoffBundle, frame: Box): TimelineResult {
+export function timelineBlocks(b: KickoffBundle, frame: Box, window: TimelineWindow = {}): TimelineResult {
   const out: Block[] = [];
   const range = dateRangeOf(b.plans);
-  if (!range) return { blocks: out, undated: b.plans.length, overflow: 0, mergedMilestones: 0, violations: ['无可用日期范围'] };
+  if (!range) return { blocks: out, undated: b.plans.length, drawn: 0, overflow: 0, mergedMilestones: 0, violations: ['无可用日期范围'] };
 
   const bars: Box = {
     x: frame.x + TL_LABEL_W + TL_LABEL_GAP,
@@ -478,15 +497,19 @@ export function timelineBlocks(b: KickoffBundle, frame: Box): TimelineResult {
     (p, q) => (p.start_date || '9999-12-31').localeCompare(q.start_date || '9999-12-31') || p.sort_order - q.sort_order
   );
   const capacity = Math.floor((bottom - rowsTop) / TL_ROW_H);
-  let limit = Math.min(MAX_TL_ROWS, ordered.length, capacity);
-  if (ordered.length > limit) limit = Math.min(limit, Math.floor((bottom - 0.32 - rowsTop) / TL_ROW_H));
+  // T02171：按窗口取本页待承载的计划切片；`limit` 仍受版面容量钳制（分页只搬运，不放宽物理上限）
+  const offset = Math.max(0, window.offset ?? 0);
+  const rest = Math.max(0, ordered.length - offset);
+  let limit = Math.min(MAX_TL_ROWS, rest, capacity);
+  if (rest > limit) limit = Math.min(limit, Math.floor((bottom - 0.32 - rowsTop) / TL_ROW_H));
+  limit = Math.max(0, Math.min(limit, rest));
 
-  const drawn = planBarBlocks(ordered.slice(0, Math.max(0, limit)), range, bars, frame.x, rowsTop);
-  out.push(...drawn.blocks);
-  const undated = drawn.undated;
+  const rows = planBarBlocks(ordered.slice(offset, offset + limit), range, bars, frame.x, rowsTop);
+  out.push(...rows.blocks);
+  const undated = rows.undated;
 
-  const overflow = ordered.length - Math.max(0, limit);
-  if (overflow > 0) {
+  const overflow = rest - limit;
+  if (overflow > 0 && (window.last ?? true)) {
     out.push({ box: { x: frame.x, y: bottom - 0.28, w: frame.w, h: 0.26 }, text: { content: `其余 ${overflow} 条计划未绘出，见「项目计划」列表页`, pt: TL_NOTE_PT } });
   }
 
@@ -496,7 +519,7 @@ export function timelineBlocks(b: KickoffBundle, frame: Box): TimelineResult {
     box: { x: frame.x, y: axisY - 0.13, w: TL_LABEL_W, h: 0.28 },
     text: { content: `◆ 里程碑 ${times.length} 个${mergedNote}`, pt: TL_NOTE_PT },
   });
-  return { blocks: out, undated, overflow, mergedMilestones, violations };
+  return { blocks: out, undated, drawn: limit, overflow, mergedMilestones, violations };
 }
 
 // ---------- 数字防幻觉改写（FR-3.4 / 验收 8） ----------
@@ -694,33 +717,40 @@ function pushStackedBlocks(out: Block[], dropped: string[], dataBlocks: Array<Om
 }
 
 /** 形状版时间线的口径脚注：为 0 的项不说，避免「0 条计划缺日期」这种把空缺冒充结论 */
-function timelineResultNotes(tl: TimelineResult): string[] {
+function timelineResultNotes(tl: TimelineResult, window: TimelineWindow): string[] {
   const notes: string[] = [];
   if (tl.undated) notes.push(`${tl.undated} 条计划缺起止日期，条形未绘制（起止日期补全后自动出现在时间线上）`);
-  if (tl.overflow) notes.push(`${tl.overflow} 条计划超出本页可排行数，已折成页脚提示`);
+  if (tl.overflow) {
+    notes.push(
+      (window.last ?? true)
+        ? `${tl.overflow} 条计划超出本页可排行数，已折成页脚提示`
+        : `${tl.overflow} 条计划续排到下页（分页承载，一条不丢）`
+    );
+  }
   if (tl.mergedMilestones) notes.push(`${tl.mergedMilestones} 个里程碑与同日里程碑并成一枚菱形绘制（日期相同，逐个画会叠成一坨）`);
   return notes;
 }
 
 /** 时间线页这一趟：画得动就把形状块并进 `out` 并带回口径/违规；画不动只带回回落原因 */
 function timelineShapePass(
-  item: KickoffOutlineItem,
+  item: KickoffRenderPage,
   b: KickoffBundle,
   body: Box,
   cursor: number,
-  out: Block[]
-): { drawn: true; notes: string[]; dropped: string[]; violations: string[] } | { drawn: false; note: string } {
+  out: Block[],
+  window: TimelineWindow
+): { drawn: true; rows: number; notes: string[]; dropped: string[]; violations: string[] } | { drawn: false; rows: 0; note: string } {
   const frame: Box = { x: body.x, y: cursor, w: body.w, h: body.y + body.h - cursor };
   const reason = timelineDegradeReason(b);
   if (reason || frame.h < TL_MIN_H) {
     const fallback = reason ?? `剩余高度 ${frame.h.toFixed(2)}" 排不下轴与 2 行条`;
-    return { drawn: false, note: `时间线回落列表版：${fallback}` };
+    return { drawn: false, rows: 0, note: `时间线回落列表版：${fallback}` };
   }
-  const tl = timelineBlocks(b, frame);
+  const tl = timelineBlocks(b, frame, window);
   out.push(...tl.blocks);
   const dropped: string[] = [];
   for (const k of item.dataKeys.filter((x) => x !== 'timeline')) dropped.push(...blocksForKey(k, b).map(describe));
-  return { drawn: true, notes: timelineResultNotes(tl), dropped, violations: tl.violations };
+  return { drawn: true, rows: tl.drawn, notes: timelineResultNotes(tl, window), dropped, violations: tl.violations };
 }
 
 /**
@@ -729,13 +759,16 @@ function timelineShapePass(
  * 两者都比「少一块内容 + 一条 warning」更糟。
  * `layout === 'timeline'` 走形状版（FR-4.5）；日期或里程碑不满足绘制前提时回落列表版，
  * 前提缺失与降级原因都进 `notes`，让面板如实告诉用户「这页为什么是列表」。
+ * `item.tlWindow`（T02171）：本页承载计划的时间线窗口；返回值 `tlDrawn` 是版面实收的行数，
+ * 分页探针就按它前移下一页的 `offset`——用同一条排布链路问「这页画得下几条」，
+ * 而不是在别处重算一遍几何（公式抄两份必漂移）。
  */
 export function layoutBody(
-  item: KickoffOutlineItem,
+  item: KickoffRenderPage,
   b: KickoffBundle,
   frames: LayoutFrames,
   bullets: string[]
-): { blocks: Block[]; dropped: string[]; notes: string[]; violations: string[] } {
+): { blocks: Block[]; dropped: string[]; notes: string[]; violations: string[]; tlDrawn: number } {
   const body = frames.body;
   const out: Block[] = [];
   const dropped: string[] = [];
@@ -756,7 +789,7 @@ export function layoutBody(
     if (bullets.length) out.push({ box: left, text: { content: bullets.join('\n'), pt: MIN_BODY_PT } });
     const boxes = fitStack(right.y, dataBlocks, right.y + right.h, right.w, right);
     pushStackedBlocks(out, dropped, dataBlocks, boxes, right.y + right.h);
-    return { blocks: out, dropped, notes, violations: [] };
+    return { blocks: out, dropped, notes, violations: [], tlDrawn: 0 };
   }
 
   const flexReserve = flexStrip(rawBlocks);
@@ -790,12 +823,13 @@ export function layoutBody(
     }
   }
 
+  let tlDrawn = 0;
   if (item.layout === 'timeline' && item.dataKeys.includes('timeline')) {
-    const pass = timelineShapePass(item, b, body, cursor, out);
+    const pass = timelineShapePass(item, b, body, cursor, out, item.tlWindow ?? {});
     if (pass.drawn) {
       notes.push(...pass.notes);
       dropped.push(...pass.dropped);
-      return { blocks: out, dropped, notes, violations: pass.violations };
+      return { blocks: out, dropped, notes, violations: pass.violations, tlDrawn: pass.rows };
     }
     notes.push(pass.note);
   }
@@ -806,7 +840,52 @@ export function layoutBody(
     : dataBlocks;
   const boxes = fitStack(cursor, stackBlocks, bottom, body.w, body);
   pushStackedBlocks(out, dropped, stackBlocks, boxes, bottom);
-  return { blocks: out, dropped, notes, violations: [] };
+  return { blocks: out, dropped, notes, violations: [], tlDrawn };
+}
+
+/**
+ * 时间线/计划页超行数 → 分页承载（T02171）。
+ * 原口径是「少画但不谎称画全」：23 条计划只画前几条，其余折成一句页脚。
+ * 数据没丢，可稿子里看不到完整排期。这里改成换页继续画：逐页拿 `layoutBody` 问
+ * 「这一页的版面实收几条」，按真实绘制量前移窗口，最多 `MAX_TL_PAGES` 页；
+ * 只有真被页数上限挡住时，末页才保留「其余 n 条」页脚。
+ * 续页只带时间线本身（要点与其他数据块留在首页）——同一张表在每页重画一遍不是承载，是凑数。
+ * 只处理形状版时间线：列表版与其他表格页的「其余 n 条」是信息密度上限（`clampRows`），另一层口径。
+ */
+export function expandTimelinePages(b: KickoffBundle, outline: KickoffOutlineItem[]): KickoffRenderPage[] {
+  const pages: KickoffRenderPage[] = [];
+  for (const item of outline) {
+    if (!(item.layout === 'timeline' && item.dataKeys.includes('timeline') && timelineDegradeReason(b) === null)) {
+      pages.push(item);
+      continue;
+    }
+    // 探针入参与真实装配同源：同一套 frames + 清洗后的要点，问出来的行数才是本页真值
+    const scratch: string[] = [];
+    const bullets = sanitizeBullets(item.bullets, b, 0, scratch);
+    const frames = framesFor(layoutFamilyOf(item.layout), item.layout);
+    const mkPage = (window: TimelineWindow, i: number): KickoffRenderPage =>
+      i === 0 ? { ...item, tlWindow: window } : { ...item, title: `${item.title}（续）`, bullets: [], dataKeys: ['timeline'], tlWindow: window };
+
+    const total = b.plans.length;
+    const windows: TimelineWindow[] = [];
+    let offset = 0;
+    for (;;) {
+      const first = windows.length === 0;
+      const window: TimelineWindow = { offset };
+      const probe = layoutBody(mkPage(window, windows.length), b, frames, first ? bullets : []);
+      // 画不动（版面留不下轴+2 行）：不再分页，交回原有列表版降级口径，别造出空壳续页
+      if (probe.tlDrawn <= 0) {
+        windows.push({ ...window, last: true });
+        break;
+      }
+      window.last = offset + probe.tlDrawn >= total || windows.length === MAX_TL_PAGES - 1;
+      windows.push(window);
+      offset += probe.tlDrawn;
+      if (window.last || offset >= total) break;
+    }
+    windows.forEach((w, i) => pages.push(mkPage(w, i)));
+  }
+  return pages;
 }
 
 /** 省略点名（给 warning 用的块类型 + 规模） */
@@ -980,7 +1059,7 @@ interface KickoffSlideHost {
 interface PageAppendInput {
   pptx: KickoffSlideHost;
   bundle: KickoffBundle;
-  item: KickoffOutlineItem;
+  item: KickoffRenderPage;
   pageNo: number;
   total: number;
   sectionNo: number;
@@ -1144,18 +1223,20 @@ export async function buildKickoffPpt(
   pptx.company = bundle.project.name;
 
   const degradedPages: number[] = [];
+  // T02171：先把「一页承载不下」的时间线展开成续页，页码/页脚/进度都按展开后的渲染页计
+  const renderPages = expandTimelinePages(bundle, outline);
   let sectionNo = 0; // T02156：章节页编号按出现序递增（01/02…），与页码解耦
-  for (let idx = 0; idx < outline.length; idx++) {
+  for (let idx = 0; idx < renderPages.length; idx++) {
     if (opts.signal?.aborted) throw new Error(KICKOFF_ABORT_MSG);
-    const item = outline[idx];
+    const item = renderPages[idx];
     const pageNo = idx + 1;
     if (item.layout === 'section') sectionNo += 1;
-    appendOutlinePage({ pptx, bundle, item, pageNo, total: outline.length, sectionNo, warnings, degradedPages });
+    appendOutlinePage({ pptx, bundle, item, pageNo, total: renderPages.length, sectionNo, warnings, degradedPages });
     opts.onPage?.(pageNo, item);
     await yieldToLoop();
   }
 
   if (opts.signal?.aborted) throw new Error(KICKOFF_ABORT_MSG);
   const out = await pptx.write({ outputType: 'nodebuffer' });
-  return { buffer: Buffer.from(out as unknown as ArrayBuffer), warnings, pageCount: outline.length, degradedPages };
+  return { buffer: Buffer.from(out as unknown as ArrayBuffer), warnings, pageCount: renderPages.length, degradedPages };
 }

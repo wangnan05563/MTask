@@ -250,16 +250,24 @@ ok('U-29 整份稿不含图片元素（验收 5 的反面：不许整页贴图�
   { media: Object.keys(zip.files).filter((n) => n.startsWith('ppt/media/')), pic: /<p:pic/.test(tlXml) });
 ok('U-30 时间线页不因形状触发降级（常规数据下版式本来就够）',
   !built.degradedPages.includes(2), built.degradedPages);
+// T02171：计划超行数会展开时间线续页，「大纲第 n 页 = 第 n 张幻灯片」不再成立——
+// 本节凡按页取 XML 的，都按渲染页序反查（续页归给它所属的时间线索引）。
+const renderOf = (o: any[]) => M.expandTimelinePages(bundle, o) as any[];
+const slideIdxOfOutline = (o: any[], oi: number) => renderOf(o.slice(0, oi + 1)).length - 1;
+const tlSlideCount = renderOf(outline).length - outline.length;
+
 ok('U-31 列表页仍出原生表格（本单接线没把别的页带崩）',
-  /<a:tbl>/.test(listXml) && !/prst="diamond"/.test(listXml));
+  /<a:tbl>/.test(await slideXml(slideIdxOfOutline(outline, 2) + 1)) && !/prst="diamond"/.test(await slideXml(slideIdxOfOutline(outline, 2) + 1)),
+  { tlSlideCount });
 ok('U-32 绘制前提缺失的整份稿：时间线页零菱形 + warnings 点名回落原因', await (async () => {
   const degraded = await M.buildKickoffPpt(bundleOf({ milestones: [] }), outline);
   const xml = await (await JSZip.loadAsync(degraded.buffer)).file('ppt/slides/slide2.xml')!.async('string');
   return !/prst="diamond"/.test(xml) && /<a:tbl>/.test(xml) && degraded.warnings.some((w) => /回落列表版/.test(w));
 })());
-ok('U-33 warnings 如实带上「缺日期/超行数」的量（页面上看不出来的取舍要能被复核）',
-  built.warnings.some((w) => /其余 \d+ 条计划超出本页可排行数/.test(w)) || built.warnings.some((w) => /折成页脚提示/.test(w)),
-  built.warnings.filter((w) => /时间线|页：/.test(w)));
+ok('U-33 warnings 如实带上「缺日期/续页承载」的量（页面上看不出来的取舍要能被复核）',
+  built.warnings.some((w: string) => /其余 \d+ 条计划超出本页可排行数/.test(w) || /折成页脚提示/.test(w) ||
+    /条计划续排到下页/.test(w) || /缺起止日期/.test(w)),
+  built.warnings.filter((w: string) => /时间线|页：/.test(w)));
 ok('U-34 时间线页形状数随库内数据变化（不是写死的模板画）', await (async () => {
   const few = await M.buildKickoffPpt(bundleOf({ plans: bundle.plans.slice(0, 3), milestones: bundle.milestones.slice(0, 2) }), outline);
   const xml = await (await JSZip.loadAsync(few.buffer)).file('ppt/slides/slide2.xml')!.async('string');

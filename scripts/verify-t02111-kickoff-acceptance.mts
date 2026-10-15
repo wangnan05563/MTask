@@ -313,8 +313,12 @@ if (!(await waitUp())) {
   const done = st.events.find((e) => e.event === 'done')?.data;
   // stage 里除逐页装配还有取数/措辞等过程播报，只数「页 n/N 已装配」这一类（否则条数永远对不上）
   const pageStages = st.events.filter((e) => e.event === 'stage' && /页 \d+\/\d+ 已装配/.test(String(e.data?.msg ?? '')));
-  ok('B-06 SSE 逐页 stage 条数 = 页数（不是最后一把梭）', pageStages.length === edited.length, { stages: pageStages.length, pages: edited.length });
-  ok('B-07 done 带 token + fileName + pageCount', !!done?.token && !!done?.fileName && done?.pageCount === edited.length, done);
+  // T02171：页数分母取装配层报告的渲染页数（时间线续页会加页），大纲页数只是下界
+  ok('B-06 SSE 逐页 stage 条数 = 渲染页数（不是最后一把梭）',
+    pageStages.length === Number(done?.pageCount ?? -1) && pageStages.length >= edited.length,
+    { stages: pageStages.length, outlinePages: edited.length, pageCount: done?.pageCount });
+  ok('B-07 done 带 token + fileName + pageCount（pageCount ≥ 大纲页数）',
+    !!done?.token && !!done?.fileName && Number(done?.pageCount ?? 0) >= edited.length, done);
   ok('B-08 fileName 通过下载白名单正则（生成侧与下载侧同源洗名，T02104）',
     /^[A-Za-z0-9._\u4e00-\u9fa5-]+\.pptx$/.test(String(done?.fileName ?? '')), done?.fileName);
 
@@ -357,9 +361,15 @@ if (!(await waitUp())) {
     name: (s.match(/name="([^"]*)"/) ?? [])[1] ?? '',
   })).filter((o) => /^Shape\b/.test(o.name));
   // 页位按大纲下标定位（按关键词全文找会命中封面/附录的引用文案，把别的页当成时间线页）
+  // T02171：时间线页超行数会展开续页，「大纲下标 = 幻灯片下标」不再成立——
+  // 用装配层同一口径 expandTimelinePages 反查，续页归给它所属的时间线，后续页整体后移。
+  const Svc = await import('../server/src/services/kickoffService.ts');
+  const bundle = Svc.collectBundle(PID);
+  const Builder = await import('../server/src/services/kickoffBuilder.ts');
+  const slidePosOf = (oi: number) => (oi < 0 ? -1 : Builder.expandTimelinePages(bundle, edited.slice(0, oi + 1) as any[]).length - 1);
   const posOf = (key: string) => edited.findIndex((o: any) => (o.dataKeys ?? []).includes(key));
   const tlPos = posOf('timeline');
-  const tlXml = tlPos >= 0 ? allXml[tlPos] ?? '' : '';
+  const tlXml = allXml[slidePosOf(tlPos)] ?? '';
   const tlShapes = shapesIn(tlXml);
   const msCount = truthCounts(PID).P4;
   const dateRange = one<{ s: string | null; e: string | null }>(
@@ -380,11 +390,9 @@ if (!(await waitUp())) {
     { range: dateRange, ticks: axisText.slice(0, 6), degraded: tlDegraded });
 
   const wlPos = posOf('workload');
-  const wlXml = wlPos >= 0 ? allXml[wlPos] ?? '' : '';
-  const Svc = await import('../server/src/services/kickoffService.ts');
-  const bundle = Svc.collectBundle(PID);
+  const wlXml = allXml[slidePosOf(wlPos)] ?? '';
   const wlNums = (wlXml.match(/(\d+(?:\.\d+)?)\s*人天/g) ?? []);
-  ok('D-05 工作量页存在且含人天数字', wlPos >= 0 && wlNums.length > 0, { page: wlPos + 1, nums: wlNums.slice(0, 4) });
+  ok('D-05 工作量页存在且含人天数字', wlPos >= 0 && wlNums.length > 0, { page: slidePosOf(wlPos) + 1, nums: wlNums.slice(0, 4) });
   ok('D-06 工作量页人天合计 = 服务端口径 expected（页面数字与取数同源，非 AI 措辞）',
     wlNums.some((s) => parseFloat(s) === bundle.workload.manDays.expected),
     { page: wlNums.slice(0, 4), expected: bundle.workload.manDays.expected, source: bundle.workload.source });

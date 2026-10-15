@@ -3,6 +3,8 @@
  *   A 组：AI 大纲的 bullets **有指代**（引用库内真实需求/计划/里程碑名），不是无指代套话（P1-1）。
  *   B 组：真实 AI 措辞段不再因尾逗号被判失败（P0-2）——warnings 里不出现「风险措辞 AI 失败」「is not valid JSON」。
  *   C 组：真产物**不再整块丢数据**（P0-1/P1-2）——无「空间不足，已省略」，无越界降级页，各页正文有实质字数。
+ *          T02171 后时间线页会按版面分页：页码↔幻灯片映射按装配层的**渲染页**序列，
+ *          并加 C-07「页脚不再折计数」/C-08「续页仍是原生甘特」两条承接口径。
  *
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02166-kickoff-ai.mts
  * 隔离纪律（skill 红线 8）：生产库只读副本 → D: 盘临时 DATA_DIR（C: 常年 0 可用），端口随机，收尾删副本。
@@ -202,11 +204,27 @@ if (!(await waitUp())) {
   const slideNames = Object.keys(zip.files).filter((n) => /^ppt\/slides\/slide\d+\.xml$/i.test(n)).sort((a, b) => Number(/(\d+)\.xml/.exec(a)![1]) - Number(/(\d+)\.xml/.exec(b)![1]));
   const xmls: string[] = [];
   for (const n of slideNames) xmls.push(await zip.file(n)!.async('string'));
-  ok('C-02 页数与大纲一致', xmls.length === outline.length, { slides: xmls.length, outline: outline.length });
+  // T02171：计划超行数会展开成时间线续页——「页码 ↔ 幻灯片」的映射一律按装配层同一口径
+  // 先算出的渲染页序列，不再假设一页大纲对应一张幻灯片（否则续页会把后面的判据整体错位）。
+  const builder = (await import('../server/src/services/kickoffBuilder.ts')) as unknown as {
+    expandTimelinePages: (b: unknown, o: unknown[]) => Array<{ layout: string; title: string; dataKeys: string[] }>;
+  };
+  const renderPages = builder.expandTimelinePages(facts, outline);
+  const tlRenderIdx = renderPages.map((p, i) => (p.layout === 'timeline' ? i : -1)).filter((i) => i >= 0);
+  ok(`C-02 页数与渲染页一致（大纲 ${outline.length} 页 → 时间线分页后 ${renderPages.length} 页，幻灯片 ${xmls.length} 张）`,
+    xmls.length === renderPages.length && renderPages.length >= outline.length,
+    { slides: xmls.length, outline: outline.length, render: renderPages.length });
+  ok('C-07 页脚不再出现「超出本页可排行数」（计划全部有页承载；仅时间线页数触顶时才允许留计数注）',
+    !warns.some((w) => /超出本页可排行数|折成页脚提示/.test(w)) || tlRenderIdx.length >= 6,
+    warns.filter((w) => /时间线|页：/.test(w)));
+  ok('C-08 续页与首页同为原生甘特（每页都有轴+条，不是把剩余行塞成文字）',
+    tlRenderIdx.length > 1 &&
+      tlRenderIdx.every((i) => /prst="line"/.test(xmls[i]) && /prst="rect"/.test(xmls[i]) && !/<a:tbl>/.test(xmls[i])),
+    tlRenderIdx.map((i) => renderPages[i].title));
 
   // 「空间不足，已省略」只允许出现在**时间线形状页**：那一页同一批里程碑已由菱形/条形承载，
   // 同页再挂一张表格是重复信息，省略它是版式取舍；其他任何页丢块都是真丢内容（必须为 0）。
-  const tlPageNos = new Set(outline.map((o, i) => (o.layout === 'timeline' ? i + 1 : -1)).filter((n) => n > 0));
+  const tlPageNos = new Set(tlRenderIdx.map((i) => i + 1));
   const droppedWarns = warns.filter((w) => /空间不足，已省略/.test(w));
   const badDrops = droppedWarns.filter((w) => {
     const no = Number(/第 (\d+) 页/.exec(w)?.[1] ?? '-1');
@@ -219,7 +237,7 @@ if (!(await waitUp())) {
 
   // 每个**带数据块的页**都要有实质字数（章节页/封面/目录/致谢是纯版式页，不参与此判据）
   const pageTextLen = xmls.map((x) => (x.match(/<a:t>[^<]*/g) ?? []).map((s) => s.slice(4)).join('').replace(/\s/g, '').length);
-  const dataIdx = outline.map((o, i) => (o.dataKeys.length > 0 && o.layout !== 'cover' && o.layout !== 'toc' ? i : -1)).filter((i) => i >= 0);
+  const dataIdx = renderPages.map((o, i) => (o.dataKeys.length > 0 && o.layout !== 'cover' && o.layout !== 'toc' ? i : -1)).filter((i) => i >= 0);
   const thinPages = dataIdx.filter((i) => pageTextLen[i] < 60).map((i) => ({ no: i + 1, n: pageTextLen[i] }));
   ok(`C-05 数据页正文实字（≥60 字/页），实测数据页最少 ${Math.min(...dataIdx.map((i) => pageTextLen[i]))} 字`,
     dataIdx.length >= 4 && thinPages.length === 0, { thinPages, pageTextLen });

@@ -87,11 +87,12 @@ ok('S-10 溯源 source 一律保留本地值（措辞是话术，出处不是，
 ok('S-11 无风险页且无沟通页就不发这次模型调用（不烧没落点的配额）',
   /function needsWording\(/.test(streamSrc) && /跳过措辞润色（不消耗模型配额）/.test(streamSrc));
 ok('S-12 service→builder 用动态 import（builder 静态引用本模块常量，双向静态 import 成环）',
-  /const \{ buildKickoffPpt \} = await import\('\.\/kickoffBuilder'\)/.test(streamSrc));
+  /const \{ buildKickoffPpt[^}]*\} = await import\('\.\/kickoffBuilder'\)/.test(streamSrc));
 ok('S-13 生成链路零落库（A-3 决定日志只进控制台 SSE 流，不建 kickoff_ppt_logs）',
   !/INSERT INTO|UPDATE /.test(streamSrc));
-ok('S-14 逐页 stage 文案按 §2.3 口径「页 n/N 已装配：<章节>」',
-  /页 \$\{pageNo\}\/\$\{built\.outline\.length\} 已装配：\$\{item\.section\}/.test(streamSrc));
+ok('S-14 逐页 stage 文案按 §2.3 口径「页 n/N 已装配：<章节>」（N=渲染页数，T02171 分页后不等于大纲页数）',
+  /页 \$\{pageNo\}\/\$\{renderTotal\} 已装配：\$\{item\.section\}/.test(streamSrc) &&
+    /renderTotal = expandTimelinePages\(/.test(streamSrc));
 ok('S-15 装配循环每页开头检查 signal.aborted 且逐页让出事件循环（否则 stage 憋到最后、取消形同虚设）',
   /if \(opts\.signal\?\.aborted\) throw new Error\(KICKOFF_ABORT_MSG\)/.test(BSRC) &&
     /await yieldToLoop\(\);/.test(BSRC) && /setImmediate\(resolve\)/.test(BSRC));
@@ -489,16 +490,19 @@ if (!(await waitUp())) {
   const good1 = await sse('/plans/kickoff-ppt-stream', body());
   const stages = good1.events.filter((e) => e.event === 'stage');
   const dones = good1.events.filter((e) => e.event === 'done');
-  const pageStages = stages.filter((e) => /页 \d+\/13 已装配：/.test(String(e.data.msg)));
+  // T02171：大纲 13 页是**下界**——计划超行数的时间线页会展开续页，产物页数由装配层报，
+  // 判据改成「stage 页序 / done.pageCount / 解包页数三者同源」，比钉死 13 更严。
+  const reportPages = Number(dones[0]?.data?.pageCount ?? 0);
+  const pageStages = stages.filter((e) => /页 \d+\/\d+ 已装配：/.test(String(e.data.msg)));
   ok('E-02a done 事件恰好 1 条且无 error 事件', dones.length === 1 && !good1.events.some((e) => e.event === 'error'),
     good1.events.map((e) => e.event).join(','));
-  ok('E-02b done 负载字段齐（token 是 UUID、fileName 合规、pageCount=13、warnings 是数组）',
+  ok('E-02b done 负载字段齐（token 是 UUID、fileName 合规、pageCount ≥ 大纲 13 页、warnings 是数组）',
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(dones[0]?.data?.token)) &&
-      /^项目启动会-.+-20\d{6}\.pptx$/.test(String(dones[0]?.data?.fileName)) && dones[0]?.data?.pageCount === 13 &&
+      /^项目启动会-.+-20\d{6}\.pptx$/.test(String(dones[0]?.data?.fileName)) && reportPages >= 13 &&
       Array.isArray(dones[0]?.data?.warnings), dones[0]?.data);
-  ok('E-02c 逐页 stage 13 条按页序，且不是一条不拆（FR-1.4 过程留痕的原料）',
-    pageStages.length === 13 && pageStages.every((e, i) => String(e.data.msg).startsWith(`页 ${i + 1}/13 已装配：`)),
-    stages.map((e) => e.data.msg).slice(0, 6));
+  ok('E-02c 逐页 stage 按页序一条不拆，且分母与 done.pageCount 同源（分页后页码不错位）',
+    pageStages.length === reportPages && pageStages.every((e, i) => String(e.data.msg).startsWith(`页 ${i + 1}/${reportPages} 已装配：`)),
+    { stages: stages.map((e) => e.data.msg).slice(0, 6), reportPages });
   ok('E-02d 措辞段发过一次 askJson 且提示词写明「数字/名称/条数」三道禁令',
     mockRequests.length === 1 && /严禁新增输入里没有的数字/.test(mockRequests[0].system) &&
       /「」内的计划名/.test(mockRequests[0].system) && /条目数量与顺序必须与输入完全一致/.test(mockRequests[0].system),
@@ -525,7 +529,9 @@ if (!(await waitUp())) {
   const allText = slides.join('\n').replace(/<[^>]+>/g, '|');
   ok('E-03a 令牌经 /report/ai-download 换回 .pptx（A-2 零改动：白名单已含 pptx）',
     dlRes.status === 200 && buf.length > 20_000 && buf.subarray(0, 2).toString() === 'PK', { status: dlRes.status, bytes: buf.length });
-  ok('E-03b 产物页数 = done.pageCount（13 页原生页，非贴图）', slides.length === 13 && !/id="Picture/.test(allText), slides.length);
+  ok('E-03b 产物页数 = done.pageCount（原生页，非贴图；T02171 后含时间线续页）',
+    slides.length === Number(dones[0]?.data?.pageCount ?? -1) && slides.length >= 13 && !/id="Picture/.test(allText),
+    { slides: slides.length, pageCount: dones[0]?.data?.pageCount });
   ok('E-03c 第 2 段措辞真落到风险页（AI 改的词在页面上，不是只改了内存）',
     allText.includes(AI_MARK_IMPACT) || allText.includes(AI_MARK_MITIGATION), allText.slice(allText.indexOf('风险'), allText.indexOf('风险') + 240));
   ok('E-03d 沟通页 bullets 同样被改写（FR-4.9 协作口径走 AI）', allText.includes(AI_MARK_COMM),

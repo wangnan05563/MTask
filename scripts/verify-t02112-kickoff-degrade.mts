@@ -297,9 +297,11 @@ if (!(await waitUp())) {
   const slideNames = Object.keys(zip.files).filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n));
   const allXml: string[] = [];
   for (let i = 1; i <= slideNames.length; i += 1) allXml.push(await zip.file(`ppt/slides/slide${i}.xml`)!.async('string'));
-  ok('D-04 降级后产物仍可解包且页数不变（宁可素也不出坏页，验收 7 后半句）',
-    slideNames.length === dDone?.pageCount && slideNames.length === dOutline.length,
-    { unzipped: slideNames.length, pageCount: dDone?.pageCount });
+  // T02171：时间线页超行数会展开续页，产物页数 ≥ 大纲页数——这里的不变量是
+  // 「解包页数 == 服务端报告的 pageCount」（降级不吞页），大纲数只作下界。
+  ok('D-04 降级后产物仍可解包且页数与报告一致（宁可素也不出坏页，验收 7 后半句）',
+    slideNames.length === dDone?.pageCount && slideNames.length >= dOutline.length,
+    { unzipped: slideNames.length, pageCount: dDone?.pageCount, outline: dOutline.length });
   const page5 = allXml[4] ?? '';
   const shapesIn = (xml: string) => xml.split('<p:sp>').slice(1).map((s) => ({
     prst: (s.match(/prst="([a-zA-Z]+)"/) ?? [])[1] ?? '',
