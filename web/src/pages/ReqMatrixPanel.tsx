@@ -232,9 +232,12 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
   for (const g of dupGroups) {
     for (const id of g.ids) {
       const others = g.ids.filter((x) => x !== id).map((x) => rows.find((r) => r.id === x)).filter((x): x is MatrixReq => !!x);
-      dupInfo[id] = `此编号在本项目有 ${g.count} 行，另一行为 ${others.map((o) => `「${o.req_no} ${o.title}」`).join('、')}——按编号定位需求会命中不确定行，建议把本行改为唯一编号`;
+      const othersDesc = others.map((o) => `「${o.req_no} ${o.title}」`).join('、'); // S4624：内层模板串先赋值再插值
+      dupInfo[id] = `此编号在本项目有 ${g.count} 行，另一行为 ${othersDesc}——按编号定位需求会命中不确定行，建议把本行改为唯一编号`;
     }
   }
+  // S4624：banner 悬浮说明的重复编号清单「REQ-01/REQ-001×2」——内层模板串先赋值再插值
+  const dupGroupsDesc = dupGroups.map((g) => `${g.variants.join('/')}×${g.count}`).join('、');
 
   /** T01873：点 banner 直达重复行——滚动 + 复用 flashReqId 瞬时高亮；连点按组轮换，不必刷新页面 */
   function locateDuplicateGroup() {
@@ -356,7 +359,7 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
           T01873：整条改为可点按钮——点一次滚到该组最靠前的行并瞬时高亮；连点在各组间轮换 */}
       {dupGroups.length > 0 && (
         <button onClick={locateDuplicateGroup} className="tbtn-anim"
-          title={`点击定位到重复编号的行（连点切换下一组）。以下编号在本项目出现多行，按编号定位需求会命中不确定行，建议手动改为唯一编号：${dupGroups.map((g) => `${g.variants.join('/')}×${g.count}`).join('、')}`}
+          title={`点击定位到重复编号的行（连点切换下一组）。以下编号在本项目出现多行，按编号定位需求会命中不确定行，建议手动改为唯一编号：${dupGroupsDesc}`}
           aria-label="定位重复需求编号的行"
           style={{ fontSize: 11, color: 'var(--danger)', border: '1px solid var(--danger)', borderRadius: 6, padding: '1px 6px', background: 'transparent', cursor: 'pointer' }}>
           ⚠ 重复需求编号 {dupGroups.length} 组：{dupGroups.slice(0, 3).map((g) => `${g.variants.join('/')}×${g.count}`).join('、')}{dupGroups.length > 3 ? ` 等 ${dupGroups.length} 组` : ''}
@@ -556,13 +559,13 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
   return (
     // T01486：给面板加可访问名——双向跳转需要稳定地定位「矩阵侧」DOM（与用例面板的
     // `section[aria-label="测试用例面板"]` 同约定），同时让读屏用户知道这片区域是什么
-    <div role="region" aria-label="需求跟踪矩阵面板"
+    <section aria-label="需求跟踪矩阵面板"
       style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 14 }}>
       {renderToolbar()}
       {renderNewReqRow()}
       <MatrixTable p={tableProps} flash={flash} />
       {renderLinkPanel()}
       {renderPrdModal()}
-    </div>
+    </section>
   );
 }

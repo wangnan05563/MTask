@@ -209,7 +209,11 @@ function now(): string {
 
 /** 文本列取值：null/undefined → 空串（这些列 DDL 均 NOT NULL DEFAULT ''），并去首尾空白 */
 function str(v: unknown): string {
-  return v == null ? '' : String(v).trim();
+  if (v == null) return '';
+  if (typeof v === 'string') return v.trim();
+  if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return String(v).trim();
+  // 入参偶发是对象/数组（AI 生成链路脏值），直接 String() 会得到 [object Object]，序列化保留内容
+  return JSON.stringify(v) ?? '';
 }
 
 /** 动态 IN 占位符（值一律参数绑定，不拼字面量） */
@@ -349,6 +353,35 @@ function resolveCaseIds(db: ReturnType<typeof getDb>, ids: readonly string[]): {
   const projects = new Set(rows.map((r) => r.project_id));
   if (projects.size > 1) throw new Error('批量操作仅限同一项目');
   return { ids: uniq, projectId: String(rows[0].project_id) };
+}
+
+/** update() 文本列片段：省略=不改；title 空值=报错（其余列允许 '' 清空） */
+function addCaseTextAssignments(patch: CasePatch, add: (col: string, v: unknown) => void): void {
+  for (const [key, col] of CASE_TEXT_FIELDS) {
+    const raw = patch[key];
+    if (raw === undefined) continue;
+    const v = str(raw);
+    if (col === 'title' && !v) throw new Error('用例标题不能为空');
+    add(col, v);
+  }
+}
+
+/** update() 枚举/外键/数值列片段：脏枚举回落默认，与 `create` 同口径 */
+function addCaseColumnAssignments(
+  db: ReturnType<typeof getDb>,
+  patch: CasePatch,
+  projectId: string,
+  add: (col: string, v: unknown) => void,
+): void {
+  if (patch.reqId !== undefined) add('req_id', resolveReqId(db, patch.reqId, projectId));
+  if (patch.priority !== undefined) add('priority', enumVal(patch.priority, CASE_PRIORITY, CASE_DEFAULTS.priority));
+  if (patch.type !== undefined) add('type', enumVal(patch.type, CASE_TYPE, CASE_DEFAULTS.type));
+  if (patch.method !== undefined) add('method', enumVal(patch.method, CASE_METHOD, CASE_DEFAULTS.method));
+  if (patch.status !== undefined) add('status', enumVal(patch.status, CASE_STATUS, CASE_DEFAULTS.status));
+  if (patch.lastResult !== undefined) add('last_result', enumVal(patch.lastResult, CASE_RESULT, CASE_DEFAULTS.lastResult));
+  if (patch.sortOrder !== undefined && Number.isFinite(Number(patch.sortOrder))) add('sort_order', Math.trunc(Number(patch.sortOrder)));
+  if (patch.sourceKey !== undefined) add('source_key', str(patch.sourceKey));
+  if (patch.sourceHash !== undefined) add('source_hash', str(patch.sourceHash));
 }
 
 /** 列表 WHERE 构造（供计数与取页共用，保证 total 与 items 同一套条件） */
@@ -529,24 +562,10 @@ export const TestCaseService = {
       sets.push(`${col} = ?`);
       vals.push(v);
     };
-    for (const [key, col] of CASE_TEXT_FIELDS) {
-      const raw = patch[key];
-      if (raw === undefined) continue;
-      const v = str(raw);
-      if (col === 'title' && !v) throw new Error('用例标题不能为空');
-      add(col, v);
-    }
-    if (patch.reqId !== undefined) add('req_id', resolveReqId(db, patch.reqId, cur.project_id));
-    if (patch.priority !== undefined) add('priority', enumVal(patch.priority, CASE_PRIORITY, CASE_DEFAULTS.priority));
-    if (patch.type !== undefined) add('type', enumVal(patch.type, CASE_TYPE, CASE_DEFAULTS.type));
-    if (patch.method !== undefined) add('method', enumVal(patch.method, CASE_METHOD, CASE_DEFAULTS.method));
-    if (patch.status !== undefined) add('status', enumVal(patch.status, CASE_STATUS, CASE_DEFAULTS.status));
-    if (patch.lastResult !== undefined) add('last_result', enumVal(patch.lastResult, CASE_RESULT, CASE_DEFAULTS.lastResult));
-    if (patch.sortOrder !== undefined && Number.isFinite(Number(patch.sortOrder))) add('sort_order', Math.trunc(Number(patch.sortOrder)));
-    if (patch.sourceKey !== undefined) add('source_key', str(patch.sourceKey));
-    if (patch.sourceHash !== undefined) add('source_hash', str(patch.sourceHash));
+    addCaseTextAssignments(patch, add);
+    addCaseColumnAssignments(db, patch, cur.project_id, add);
     if (sets.length > 0) add('updated_at', now());
-    const caseNo = patch.caseNo !== undefined ? str(patch.caseNo) : '';
+    const caseNo = patch.caseNo === undefined ? '' : str(patch.caseNo);
     db.transaction(() => {
       if (sets.length > 0) {
         runGuardingUnique(() => db.prepare(`UPDATE test_cases SET ${sets.join(', ')} WHERE id = ?`).run(...vals, id), caseNo);
@@ -744,46 +763,50 @@ export const TestCaseService = {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
+    // 事务体的两段写入抽为局部闭包（计数器等经外层 let 闭包共享，行为逐字不变）
+    const writeNewRequirements = (): void => {
+      for (const rq of (Array.isArray(input.requirements) ? input.requirements : [])) {
+        const no = str(rq.reqNo);
+        const title = str(rq.title);
+        if (!no || !title) continue;
+        if (reqNoToId.has(reqNoKey(no))) continue; // 矩阵已有同编号（含 REQ-01/REQ-001 混写）：复用不重复建（幂等）
+        reqOrder += 1;
+        const id = uuid();
+        insReq.run(id, input.projectId, no, title, str(rq.content), str(rq.sourceRef), str(rq.priority) || 'normal', reqOrder, t, t);
+        reqNoToId.set(reqNoKey(no), id);
+        created += 1;
+      }
+    };
+    const importCaseRow = (c: DraftCaseImport): void => {
+      const reqNo = str(c.reqNo);
+      const title = str(c.title);
+      const sourceKey = caseSourceKey(reqNo, title);
+      if (existingKeys.has(sourceKey)) { skipped += 1; return; } // 幂等跳过：同去重键已入库
+      seq += 1;
+      order += 1;
+      const caseId = uuid();
+      const sourceHash = caseContentHash({
+        reqNo, module: str(c.module), preconditions: str(c.preconditions), expected: str(c.expected), testData: str(c.testData),
+        steps: (Array.isArray(c.steps) ? c.steps : []).map((s) => ({ action: str(s.action), expected: str(s.expected) })),
+      });
+      insCase.run(
+        caseId, input.projectId, reqNoToId.get(reqNoKey(reqNo)) ?? null, caseNoOf(seq), str(c.module), title,
+        str(c.preconditions), str(c.expected), str(c.testData), str(c.postconditions),
+        enumVal(c.priority, CASE_PRIORITY, CASE_DEFAULTS.priority),
+        enumVal(c.type, CASE_TYPE, CASE_DEFAULTS.type),
+        enumVal(c.method, CASE_METHOD, CASE_DEFAULTS.method),
+        CASE_DEFAULTS.status,
+        CASE_DEFAULTS.lastResult, str(c.tags),
+        sourceKey, sourceHash, order, t, t,
+      );
+      insertSteps(db, caseId, Array.isArray(c.steps) ? c.steps : [], t);
+      existingKeys.add(sourceKey); // 同批内也防重（同 source_key 两次只入一条）
+      imported += 1;
+    };
+
     db.transaction(() => {
-      if (input.writeRequirements) {
-        for (const rq of (Array.isArray(input.requirements) ? input.requirements : [])) {
-          const no = str(rq.reqNo);
-          const title = str(rq.title);
-          if (!no || !title) continue;
-          if (reqNoToId.has(reqNoKey(no))) continue; // 矩阵已有同编号（含 REQ-01/REQ-001 混写）：复用不重复建（幂等）
-          reqOrder += 1;
-          const id = uuid();
-          insReq.run(id, input.projectId, no, title, str(rq.content), str(rq.sourceRef), str(rq.priority) || 'normal', reqOrder, t, t);
-          reqNoToId.set(reqNoKey(no), id);
-          created += 1;
-        }
-      }
-      for (const c of wanted) {
-        const reqNo = str(c.reqNo);
-        const title = str(c.title);
-        const sourceKey = caseSourceKey(reqNo, title);
-        if (existingKeys.has(sourceKey)) { skipped += 1; continue; } // 幂等跳过：同去重键已入库
-        seq += 1;
-        order += 1;
-        const caseId = uuid();
-        const sourceHash = caseContentHash({
-          reqNo, module: str(c.module), preconditions: str(c.preconditions), expected: str(c.expected), testData: str(c.testData),
-          steps: (Array.isArray(c.steps) ? c.steps : []).map((s) => ({ action: str(s.action), expected: str(s.expected) })),
-        });
-        insCase.run(
-          caseId, input.projectId, reqNoToId.get(reqNoKey(reqNo)) ?? null, caseNoOf(seq), str(c.module), title,
-          str(c.preconditions), str(c.expected), str(c.testData), str(c.postconditions),
-          enumVal(c.priority, CASE_PRIORITY, CASE_DEFAULTS.priority),
-          enumVal(c.type, CASE_TYPE, CASE_DEFAULTS.type),
-          enumVal(c.method, CASE_METHOD, CASE_DEFAULTS.method),
-          CASE_DEFAULTS.status,
-          CASE_DEFAULTS.lastResult, str(c.tags),
-          sourceKey, sourceHash, order, t, t,
-        );
-        insertSteps(db, caseId, Array.isArray(c.steps) ? c.steps : [], t);
-        existingKeys.add(sourceKey); // 同批内也防重（同 source_key 两次只入一条）
-        imported += 1;
-      }
+      if (input.writeRequirements) writeNewRequirements();
+      for (const c of wanted) importCaseRow(c);
     })();
 
     if (imported > 0 || created > 0) notifyChange('plans');

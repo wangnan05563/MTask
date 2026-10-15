@@ -14,7 +14,8 @@ import { FlaskConical } from 'lucide-react';
 /** 需求编号 + 标题摘要（chip 悬浮提示用，缺任一段自动省略） */
 export const caseCellTitle = (reqNo: string, title: string, count: number): string => {
   const seg = [reqNo, title].filter(Boolean).join(' ');
-  return `用例 ${count} 条 — 点击在测试用例视图中只看该需求${seg ? `\n${seg}` : ''}`;
+  const tail = seg ? `\n${seg}` : '';
+  return `用例 ${count} 条 — 点击在测试用例视图中只看该需求${tail}`;
 };
 
 /**

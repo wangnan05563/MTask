@@ -81,10 +81,15 @@ const pct = (v: number | null | undefined): string => (v === null || v === undef
 /** `ratioCheck.deviationPct` 服务端已是「百分数」本身（2.3 = 2.3%），不能再过一遍 pct */
 const devPct = (v: number): string => `${(Math.round(v * 10) / 10).toFixed(1)}%`;
 
-const numSigned = (v: number | null | undefined): string =>
-  v === null || v === undefined ? '—' : `${v > 0 ? '+' : ''}${num(v)}`;
+const numSigned = (v: number | null | undefined): string => {
+  if (v === null || v === undefined) return '—';
+  return `${v > 0 ? '+' : ''}${num(v)}`;
+};
 /** 服务端 `what-if` 的 `delta.pct` 已经是百分数本身（同 `deviationPct`），且可能为 null（基数为 0） */
-const pctSigned = (v: number | null): string => (v === null ? '—' : `${v > 0 ? '+' : ''}${(Math.round(v * 10) / 10).toFixed(1)}%`);
+const pctSigned = (v: number | null): string => {
+  if (v === null) return '—';
+  return `${v > 0 ? '+' : ''}${(Math.round(v * 10) / 10).toFixed(1)}%`;
+};
 
 /** 服务端 400 的中文文案直接上屏（`wrap()` 统一 `{ error }`，`api` 客户端已抛成 Error.message） */
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -230,14 +235,14 @@ export function estimatePanelModeForWidth(width: number): 'docked' | 'overlay' {
 }
 
 const currentMode = (): 'docked' | 'overlay' =>
-  typeof window === 'undefined' || typeof window.matchMedia !== 'function'
-    ? 'docked' : estimatePanelModeForWidth(window.innerWidth);
+  globalThis.window === undefined || typeof globalThis.window.matchMedia !== 'function'
+    ? 'docked' : estimatePanelModeForWidth(globalThis.window.innerWidth);
 
 /** 面板挂载形态：<1200px 覆盖式抽屉（PRD §5.1）。监听 resize 而非挂载时读一次——拖动窗口要即时切换。 */
 export function useEstimatePanelMode(): 'docked' | 'overlay' {
   const [mode, setMode] = useState<'docked' | 'overlay'>(currentMode);
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (globalThis.window === undefined) return;
     const onChange = (): void => setMode(currentMode());
     window.addEventListener('resize', onChange);
     return () => window.removeEventListener('resize', onChange);
@@ -290,9 +295,28 @@ export function snapshotRow(r: PanelRow): EstimateInput | null {
     pessimistic: r.pessimistic ?? undefined,
     source: r.source === 'none' ? undefined : r.source,
   };
-  if (r.phase) s.phase = r.phase as EstimateInput['phase'];
+  if (r.phase) s.phase = r.phase as EstimateInput['phase'] | undefined;
   return s;
 }
+
+/** 统一值表单字段的值/步进对（S3776 L306：自 JSX 内联表达式抽出的局部纯函数，行为不变） */
+const uniformFieldState = (key: 'm' | 'oMul' | 'pMul', form: { m: string; oMul: string; pMul: string }): [string, number] => {
+  if (key === 'm') return [form.m, 0.5];
+  return [form[key], 0.1];
+};
+
+/** 快照行的受众标签（S3358 L1442：嵌套三元 → 早返回；未识别时兜底为原格式名） */
+const snapshotAudienceLabel = (aud: unknown, format: string): string => {
+  if (aud === 'client') return '客户版';
+  if (aud === 'internal') return '内部版';
+  return format;
+};
+
+/** 两次导出差异的着色（S3358 L1458：嵌套三元 → 单层分支函数） */
+const deltaTone = (delta: number): string => {
+  if (delta === 0) return 'var(--text-muted)';
+  return delta > 0 ? 'var(--danger)' : 'var(--success)';
+};
 
 /**
  * 「统一值 + 相对幅度」模式的三点生成（§5.3 模式 ③）。
@@ -301,6 +325,184 @@ export function snapshotRow(r: PanelRow): EstimateInput | null {
  */
 export function uniformPoints(m: number, oMul: number, pMul: number): { optimistic: number; likely: number; pessimistic: number } {
   return { optimistic: toGrid(m * oMul), likely: toGrid(m), pessimistic: toGrid(m * pMul) };
+}
+
+/**
+ * 单字段 PATCH 入参的三点继承校验（S3776：自 commitDraft 抽出，逻辑逐字保留）。
+ * 建议行落库=新建估算行，三点必填才过得了服务端校验；未编辑的两点继承推导值。
+ * 返回 null 表示缺可继承值（已按原逻辑 toast 提示），调用方直接放弃提交。
+ */
+function buildPatchInput(
+  field: PointField,
+  raw: string,
+  row: { phase: string; optimistic: number | null; likely: number | null; pessimistic: number | null },
+  onMissing: (label: string) => void,
+): EstimateInput | null {
+  const input: EstimateInput = {};
+  for (const f of POINT_FIELDS) {
+    const v = f === field ? raw : row[f];
+    if (v === null || v === undefined) {
+      onMissing(POINT_LABEL[f]);
+      return null;
+    }
+    input[f] = v;
+  }
+  if (row.phase) input.phase = row.phase as EstimateInput['phase'];
+  return input;
+}
+
+/** 统一值预览文案（S3776/S2004：自渲染体 JSX 的 IIFE 抽出为局部纯函数，行为不变） */
+function previewUniform(form: { m: string; oMul: string; pMul: string }): string {
+  const [m, o, p] = [form.m, form.oMul, form.pMul].map(Number);
+  const filled = form.m.trim() !== '' && Number.isFinite(m) && Number.isFinite(o) && Number.isFinite(p) && m > 0 && o > 0 && p > 0;
+  if (!filled) return '待填';
+  const pts = uniformPoints(m, o, p);
+  return `O ${num(pts.optimistic)} / M ${num(pts.likely)} / P ${num(pts.pessimistic)}`;
+}
+
+/** 汇总卡（S3776：自组件体抽出的无状态局部函数，样式与结构原样保留） */
+function card(title: string, main: string, sub?: string, danger = false): ReactElement {
+  return (
+    <div style={{ flex: 1, minWidth: 0, padding: 8, background: 'var(--card-bg)', border: `1px solid ${danger ? 'var(--danger)' : 'var(--border)'}`, borderRadius: 8 }}>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>{title}</div>
+      <div style={{ fontSize: 16, fontFamily: MONO, color: danger ? 'var(--danger)' : 'var(--text)' }}>{main}</div>
+      {sub && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>{sub}</div>}
+    </div>
+  );
+}
+
+/** 工具条按钮配色档（S4323：联合类型提别名，三处签名共用） */
+type ToolBtnTone = 'default' | 'accent' | 'danger';
+
+/** 工具条按钮边框色（S3358：嵌套三元拆为单层分支函数） */
+const toneBorder = (tone: ToolBtnTone): string => {
+  if (tone === 'danger') return 'var(--danger)';
+  return tone === 'accent' ? 'var(--accent)' : 'var(--border-strong)';
+};
+
+/** 工具条按钮文字色（S3358：嵌套三元拆为单层分支函数） */
+const toneText = (tone: ToolBtnTone): string => {
+  if (tone === 'danger') return 'var(--danger)';
+  return tone === 'accent' ? 'var(--accent)' : 'var(--text)';
+};
+
+/** 工具条小按钮（11px 档，同 §5.5 字号阶梯；禁用态只降色不改形，避免按钮跳动） */
+function toolBtn(tone: ToolBtnTone = 'default', disabled = false): CSSProperties {
+  return {
+    border: `1px solid ${toneBorder(tone)}`,
+    borderRadius: 6,
+    padding: '3px 8px',
+    background: 'var(--card-bg)',
+    color: disabled ? 'var(--text-muted)' : toneText(tone),
+    cursor: disabled ? 'default' : 'pointer',
+    fontSize: 11,
+  };
+}
+
+/** 行内录入的数字输入框（40px 定宽 = 原 span 列宽，面板 420 的账不变；appearance 只去箭头不改 step 语义） */
+function pointInput(err: string | undefined): CSSProperties {
+  return {
+    width: 40,
+    textAlign: 'right',
+    fontFamily: MONO,
+    fontSize: 12,
+    padding: '1px 2px',
+    borderRadius: 4,
+    border: `1px solid ${err ? 'var(--danger)' : 'var(--border)'}`,
+    background: 'var(--card-bg)',
+    color: 'var(--text)',
+    WebkitAppearance: 'textfield',
+    appearance: 'textfield',
+  };
+}
+
+/** <ul>/<li> 视口重置（S6819：role="list" 改原生 ul/li 后保持原 div 排版的 UA 重置） */
+const UL_RESET: CSSProperties = { margin: 0, padding: 0, listStyle: 'none' };
+const LI_RESET: CSSProperties = { listStyle: 'none', margin: 0, padding: 0 };
+
+/** 图表区块：有几何数据才画图（S3776：自组件 JSX 的三处同构三元抽为局部函数，空态文案原样） */
+function chartBlock(title: string, hasData: boolean, chart: ReactElement, emptyText: string): ReactElement {
+  return (
+    <>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '12px 0 6px' }}>{title}</div>
+      {hasData ? chart : <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '6px 0' }}>{emptyText}</div>}
+    </>
+  );
+}
+
+/** 虚拟滚动窗口切片（S2004/S3776：自渲染体 map 抽出，逻辑逐字保留） */
+function estWindowSlice(entries: EstFlatEntry[], win: { start: number; end: number } | null): EstFlatEntry[] {
+  if (!win) return entries;
+  return entries.slice(Math.max(0, win.start), Math.min(entries.length, win.end));
+}
+
+/** S3776：组件体渲染三元提出为模块级纯函数（分支平铺 if/return，判据、文案与求值顺序逐字不变） */
+function audienceTagLabel(audience: EstimateExportAudience): string {
+  if (audience === 'client') return '客户版';
+  return '内部版';
+}
+
+function headingTitleStyle(hidden: boolean): CSSProperties {
+  return {
+    fontSize: 13,
+    fontWeight: 600,
+    visibility: hidden ? 'hidden' : 'visible',
+  };
+}
+
+function whatIfBtnStyle(open: boolean): CSSProperties {
+  if (open) return toolBtn('accent');
+  return toolBtn('default');
+}
+
+function deriveBtnStyle(busy: boolean): CSSProperties {
+  return {
+    border: '1px solid var(--accent)',
+    borderRadius: 6,
+    padding: '4px 10px',
+    background: 'var(--card-bg)',
+    color: 'var(--accent)',
+    cursor: busy ? 'default' : 'pointer',
+    fontSize: 12,
+  };
+}
+
+function deriveBtnLabel(busy: boolean): string {
+  if (busy) return '推导中…';
+  return '按规则推导';
+}
+
+function exportBtnLabel(exporting: boolean, idleLabel: string): string {
+  if (exporting) return '导出中…';
+  return idleLabel;
+}
+
+function excelExportTitle(blocked: boolean, audienceTag: string): string {
+  if (blocked) return '有行未通过录入校验（§5.2：导出禁用），先修正';
+  return `按当前选择出件（${audienceTag}）`;
+}
+
+function pdfExportTitle(blocked: boolean, okTitle: string): string {
+  if (blocked) return '有行未通过录入校验（§5.2：导出禁用），先修正';
+  return okTitle;
+}
+
+function exportUnreviewedNote(unreviewed: number): string {
+  if (unreviewed > 0) return ` · 内含「${unreviewed} 行为系统推导值，未人工复核」标注`;
+  return ' · 全部行为人工复核值';
+}
+
+function diffTotalStyle(deltaMonths: number): CSSProperties {
+  return {
+    fontFamily: MONO,
+    marginLeft: 'auto',
+    color: deltaMonths === 0 ? 'var(--text-muted)' : 'var(--danger)',
+  };
+}
+
+function diffTotalSign(deltaMonths: number): string {
+  if (deltaMonths > 0) return '+';
+  return '';
 }
 
 export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollapse, onToast, hideHeading = false }: EstimatePanelProps) {
@@ -362,7 +564,17 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
       setData(all);
       setDerives(dv.items);
       const map: Record<string, string[]> = {};
-      for (const r of matrix) for (const lp of r.linkedPlans ?? []) (map[lp.id] ??= []).push(r.req_no);
+      for (const r of matrix) {
+        for (const lp of r.linkedPlans ?? []) {
+          // S1121：`(map[lp.id] ??= []).push(...)` 的赋值从表达式中拆出为独立语句，行为不变
+          let list = map[lp.id];
+          if (!list) {
+            list = [];
+            map[lp.id] = list;
+          }
+          list.push(r.req_no);
+        }
+      }
       setReqNosByPlan(map);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -439,10 +651,17 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
     return off;
   }, [estFlat]);
   const estWin = estVirtual ? computeWindowVar(scrollTop, estOffsets, VIRTUAL_VIEWPORT_H, VIRTUAL_OVERSCAN) : null;
-  const estVisible = estWin ? estFlat.slice(estWin.start, estWin.end) : estFlat;
+  const estVisible = estWindowSlice(estFlat, estWin);
 
   /** 空态：一条估算都没落库（未录入 ≠ 全为 default——default 行也要先经「按规则推导」写入才存在） */
   const isEmpty = !loading && !error && (data?.items.length ?? 0) === 0;
+
+  /** 明细非虚拟分支的扁平行（S3776：自 phases.map 回调里的链式 filter/map 抽为局部函数，口径不变） */
+  const flatGroupRows = (group: ReturnType<typeof groupTimelinePhases>[number]): PanelRow[] => {
+    const msRow = group.milestone ? rowById.get(group.milestone.id) : null;
+    const items = [msRow, ...group.items.map((p) => rowById.get(p.id))].filter((r): r is PanelRow => !!r);
+    return items.filter((r) => !onlyUnreviewed || r.source !== 'manual');
+  };
 
   async function fillByRules(): Promise<void> {
     setDeriveBusy(true);
@@ -456,7 +675,9 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
       );
       if (!go) return;
       const w = await estimatesApi.deriveWrite(projectId);
-      onToast(`已按规则推导写入 ${w.written ?? 0} 行${(w.errors?.length ?? 0) > 0 ? `，${w.errors?.length} 行被拒` : ''}`);
+      // S4624：嵌套模板串先赋给局部 const 再插值，文案逐字不变
+      const rejectedNote = (w.errors?.length ?? 0) > 0 ? `，${w.errors?.length} 行被拒` : '';
+      onToast(`已按规则推导写入 ${w.written ?? 0} 行${rejectedNote}`);
       await load();
     } catch (e) {
       onToast(`推导失败：${e instanceof Error ? e.message : String(e)}`);
@@ -490,6 +711,16 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
     setUndoStack((p) => [...p, { label, count, before }]);
   }
 
+  /** 清除某行的被拒标红（S3776：两处重复的 setRowErrors 撤销逻辑抽为局部函数，行为不变） */
+  const clearRowError = (planId: string): void => {
+    setRowErrors((prev) => {
+      if (!(planId in prev)) return prev;
+      const next = { ...prev };
+      delete next[planId];
+      return next;
+    });
+  };
+
   /**
    * 单格保存（§5.3：Enter / 失焦即 PATCH）。
    * 值的合法性一律交服务端：`O>M`、负数、非数字都由 400 中文文案回，面板只把该行标红——
@@ -506,29 +737,21 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
     const key = `${d.planId}|${d.field}|${raw}`;
     if (rejectedSent.current.has(key)) return; // 同一个被拒值不重打接口（失焦会连着触发）
     if (r.persisted && String(r[d.field] ?? '') === raw) {
-      setRowErrors((p) => {
-        if (!(d.planId in p)) return p;
-        const n = { ...p };
-        delete n[d.planId];
-        return n;
-      });
+      clearRowError(d.planId);
       return;
     }
 
-    const input: EstimateInput = {};
+    let input: EstimateInput;
     if (r.persisted) {
-      input[d.field] = raw; // 单字段 PATCH：另外两点由服务端沿用原值（§8 PATCH 语义）
+      // 单字段 PATCH：另外两点由服务端沿用原值（§8 PATCH 语义）
+      const single: EstimateInput = {};
+      single[d.field] = raw;
+      input = single;
     } else {
       // 建议行落库=新建估算行，三点必填才过得了服务端校验；未编辑的两点继承推导值
-      for (const f of POINT_FIELDS) {
-        const v = f === d.field ? raw : r[f];
-        if (v === null || v === undefined) {
-          onToast(`该行没有可继承的推导值，请把「${POINT_LABEL[f]}」一起填上`);
-          return;
-        }
-        input[f] = v;
-      }
-      if (r.phase) input.phase = r.phase as EstimateInput['phase'];
+      const filled = buildPatchInput(d.field, raw, r, (label) => onToast(`该行没有可继承的推导值，请把「${label}」一起填上`));
+      if (!filled) return;
+      input = filled;
     }
     // §7 收口里程碑的显式解锁：能走到这里的只读行都是本会话点过「解锁改写」的（其余输入框是 disabled）。
     // 真拦截在服务端 `requirePlan`，这里的 `unlock` 只是把用户意图带到，面板不因为「看起来只读」就不发请求。
@@ -538,12 +761,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
     try {
       await estimatesApi.patchItem(projectId, d.planId, input);
       rejectedSent.current.delete(key);
-      setRowErrors((p) => {
-        if (!(d.planId in p)) return p;
-        const n = { ...p };
-        delete n[d.planId];
-        return n;
-      });
+      clearRowError(d.planId);
       await load(); // E/σ/汇总卡的新值仍由服务端算（§10-3「即时刷新」的实现方式）
     } catch (e) {
       rejectedSent.current.add(key);
@@ -610,79 +828,101 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
   }
 
   /**
+   * 批量填充·统一值模式（§5.3 模式 ③，S3776：自 runBatch 抽出的局部函数，行为逐字保留）。
+   */
+  async function runUniformBatch(): Promise<void> {
+    const nums = [uniform.m, uniform.oMul, uniform.pMul].map((v) => v.trim());
+    if (nums.some((v) => v === '' || !Number.isFinite(Number(v)))) {
+      onToast('统一值模式需要「最可能 M」与两个倍率都填数字');
+      return;
+    }
+    const mArr = nums.map(Number);
+    const [m, oMul, pMul] = [mArr[0], mArr[1], mArr[2]];
+    if (m <= 0 || oMul <= 0 || pMul <= 0) { onToast('统一值与倍率必须是正数'); return; }
+    const pts = uniformPoints(m, oMul, pMul);
+    const items = selRows.map((r) => ({
+      planId: r.planId,
+      ...pts,
+      source: 'manual' as const, // 人给的统一值就是人工复核，不能让批量通道把徽标留在「规则」
+      ...(r.phase ? { phase: r.phase as EstimateInput['phase'] } : {}),
+    }));
+    const go = await askConfirm(
+      `将把 ${items.length} 行的三点设为 O ${num(pts.optimistic)} / M ${num(pts.likely)} / P ${num(pts.pessimistic)} 人天`
+      + `（M=${num(m)}，倍率 ${num(oMul)} / ${num(pMul)}，落 0.5 网格）。\n`
+      + '已有估算的行会被覆盖并转「人工」，确认写入？',
+    );
+    if (!go) return;
+    const before = selRows.map((r) => ({ planId: r.planId, snapshot: snapshotRow(r) }));
+    const w = await estimatesApi.batchSet(projectId, items);
+    if (w.written === 0) {
+      // 服务端「任一行不合格零写入」：把行级错误摊到对应行上，一行都不动
+      const next: Record<string, string> = {};
+      w.errors.forEach((e) => { next[e.planId] = e.message; });
+      setRowErrors((p) => ({ ...p, ...next }));
+      onToast(`批量填充被拒绝：${w.errors.length > 0 ? w.errors[0].message : '未写入任何行'}`);
+      return;
+    }
+    pushUndo(`统一值填充 ${w.written} 行`, w.written, before);
+    // S4624：嵌套模板串先赋给局部 const 再插值，文案逐字不变
+    const rejectedNote = w.errors.length > 0 ? `，${w.errors.length} 行被拒` : '';
+    onToast(`已填充 ${w.written} 行${rejectedNote}`);
+    await load();
+  }
+
+  /**
+   * 批量填充·规则重推模式（§5.3 模式 ①②，S3776：自 runBatch 抽出的局部函数，行为逐字保留）。
+   * includeManual 缺省 false：§4.6 红线二在批量通道同样生效——人工复核过的行由服务端跳过
+   * （skip='manual'），面板如实报数，而不是替用户决定「覆盖你复核过的值」。
+   * `onlyRule` 是这三个按钮的全部区别：不带它，「按用例加权重推」会和「按复杂度重推」做同一件事。
+   */
+  async function runRuleBatch(mode: DeriveRule): Promise<void> {
+    const deriveOpts = { planIds: selRows.map((r) => r.planId), scope: 'all' as const, onlyRule: mode };
+    const preview = await estimatesApi.batchDerive(projectId, { ...deriveOpts, dryRun: true });
+    const n = preview.writableCount;
+    if (n === 0) {
+      onToast(`没有可${BATCH_RULE_LABEL[mode]}的行（${preview.skipped.length} 行全部被跳过，原因见明细 tooltip）`);
+      return;
+    }
+    const skipped = preview.skipped.length;
+    // S4624：嵌套模板串先赋给局部 const 再插值，文案逐字不变
+    const skipNote = skipped > 0
+      ? `，${skipped} 行跳过（其中 ${countSkip(preview, 'offRule')} 行不属于该档、${countSkip(preview, 'manual')} 行为人工复核过的行）`
+      : '';
+    const go = await askConfirm(
+      `${BATCH_RULE_LABEL[mode]}：选中 ${selRows.length} 行中 ${n} 行可写入${skipNote}。\n`
+      + `用例加权档的 k=${preview.caseWeightK}（来源：${preview.caseWeightKFrom}）。\n预览行数与写入行数同源，确认即写入？`,
+    );
+    if (!go) return;
+    const before = new Map(selRows.map((r) => [r.planId, snapshotRow(r)]));
+    const w = await estimatesApi.batchDerive(projectId, deriveOpts);
+    // 撤销快照只覆盖**真正被写入**的行：优先取服务端回传的 `writtenPlanIds`（等长才非空），
+    // 拿不到时按本次选中的可写行兜底——绝不拿「全选可见」当作用域，否则会碰到没写过的行。
+    // S3358：嵌套三元拆成两个独立语句（兜底 ids 为纯计算，提前求值不改变行为）
+    const fallbackIds = (w.written ?? 0) > 0 ? selRows.filter((r) => preview.items.some((it) => it.planId === r.planId && it.writable)).map((r) => r.planId) : [];
+    const ids = w.writtenPlanIds && w.writtenPlanIds.length > 0 ? w.writtenPlanIds : fallbackIds;
+    pushUndo(`${BATCH_RULE_LABEL[mode]} ${w.written ?? 0} 行`, w.written ?? 0, ids.map((id) => ({ planId: id, snapshot: before.get(id) ?? null })));
+    // S4624：嵌套模板串先赋给局部 const 再插值，文案逐字不变
+    const rejectedNote = (w.errors?.length ?? 0) > 0 ? `，${w.errors?.length} 行被拒` : '';
+    onToast(`已${BATCH_RULE_LABEL[mode]}写入 ${w.written ?? 0} 行${rejectedNote}`);
+    await load();
+  }
+
+  /**
    * 批量填充（§5.3 三模式）：预览 → `askConfirm` → 写入 → 压撤销栈。
    * 模式 ①② 走 `mode=derive` + `onlyRule`：**过滤不是强制改算式**——某行的自然择档不是它时
    * 服务端整行跳过（`skip='offRule'`），面板如实报「N 行不属于该档」。没有复杂度档的行被
    * 「按复杂度」硬填出数来就是假数据，这条是本次实施给服务端补的口径。
+   * （S3776：两种模式的执行体抽为 runUniformBatch / runRuleBatch 局部函数，闸与错误口径留在入口。）
    */
   async function runBatch(mode: BatchMode): Promise<void> {
     if (selRows.length === 0) { onToast('先勾选要批量填充的行（里程碑行不参与）'); return; }
     setBusy(true);
     try {
       if (mode === 'uniform') {
-        const nums = [uniform.m, uniform.oMul, uniform.pMul].map((v) => v.trim());
-        if (nums.some((v) => v === '' || !Number.isFinite(Number(v)))) {
-          onToast('统一值模式需要「最可能 M」与两个倍率都填数字');
-          return;
-        }
-        const [m, oMul, pMul] = nums.map(Number);
-        if (m <= 0 || oMul <= 0 || pMul <= 0) { onToast('统一值与倍率必须是正数'); return; }
-        const pts = uniformPoints(m, oMul, pMul);
-        const items = selRows.map((r) => ({
-          planId: r.planId,
-          ...pts,
-          source: 'manual' as const, // 人给的统一值就是人工复核，不能让批量通道把徽标留在「规则」
-          ...(r.phase ? { phase: r.phase as EstimateInput['phase'] } : {}),
-        }));
-        const go = await askConfirm(
-          `将把 ${items.length} 行的三点设为 O ${num(pts.optimistic)} / M ${num(pts.likely)} / P ${num(pts.pessimistic)} 人天`
-          + `（M=${num(m)}，倍率 ${num(oMul)} / ${num(pMul)}，落 0.5 网格）。\n`
-          + '已有估算的行会被覆盖并转「人工」，确认写入？',
-        );
-        if (!go) return;
-        const before = selRows.map((r) => ({ planId: r.planId, snapshot: snapshotRow(r) }));
-        const w = await estimatesApi.batchSet(projectId, items);
-        if (w.written === 0) {
-          // 服务端「任一行不合格零写入」：把行级错误摊到对应行上，一行都不动
-          const next: Record<string, string> = {};
-          w.errors.forEach((e) => { next[e.planId] = e.message; });
-          setRowErrors((p) => ({ ...p, ...next }));
-          onToast(`批量填充被拒绝：${w.errors.length > 0 ? w.errors[0].message : '未写入任何行'}`);
-          return;
-        }
-        pushUndo(`统一值填充 ${w.written} 行`, w.written, before);
-        onToast(`已填充 ${w.written} 行${w.errors.length > 0 ? `，${w.errors.length} 行被拒` : ''}`);
-        await load();
+        await runUniformBatch();
         return;
       }
-
-      // includeManual 缺省 false：§4.6 红线二在批量通道同样生效——人工复核过的行由服务端跳过
-      // （skip='manual'），面板如实报数，而不是替用户决定「覆盖你复核过的值」。
-      // `onlyRule` 是这三个按钮的全部区别：不带它，「按用例加权重推」会和「按复杂度重推」做同一件事。
-      const deriveOpts = { planIds: selRows.map((r) => r.planId), scope: 'all' as const, onlyRule: mode as DeriveRule };
-      const preview = await estimatesApi.batchDerive(projectId, { ...deriveOpts, dryRun: true });
-      const n = preview.writableCount;
-      if (n === 0) {
-        onToast(`没有可${BATCH_RULE_LABEL[mode]}的行（${preview.skipped.length} 行全部被跳过，原因见明细 tooltip）`);
-        return;
-      }
-      const skipped = preview.skipped.length;
-      const go = await askConfirm(
-        `${BATCH_RULE_LABEL[mode]}：选中 ${selRows.length} 行中 ${n} 行可写入`
-        + `${skipped > 0 ? `，${skipped} 行跳过（其中 ${countSkip(preview, 'offRule')} 行不属于该档、${countSkip(preview, 'manual')} 行为人工复核过的行）` : ''}。\n`
-        + `用例加权档的 k=${preview.caseWeightK}（来源：${preview.caseWeightKFrom}）。\n预览行数与写入行数同源，确认即写入？`,
-      );
-      if (!go) return;
-      const before = new Map(selRows.map((r) => [r.planId, snapshotRow(r)]));
-      const w = await estimatesApi.batchDerive(projectId, deriveOpts);
-      // 撤销快照只覆盖**真正被写入**的行：优先取服务端回传的 `writtenPlanIds`（等长才非空），
-      // 拿不到时按本次选中的可写行兜底——绝不拿「全选可见」当作用域，否则会碰到没写过的行。
-      const ids = w.writtenPlanIds && w.writtenPlanIds.length > 0
-        ? w.writtenPlanIds
-        : ((w.written ?? 0) > 0 ? selRows.filter((r) => preview.items.some((it) => it.planId === r.planId && it.writable)).map((r) => r.planId) : []);
-      pushUndo(`${BATCH_RULE_LABEL[mode]} ${w.written ?? 0} 行`, w.written ?? 0, ids.map((id) => ({ planId: id, snapshot: before.get(id) ?? null })));
-      onToast(`已${BATCH_RULE_LABEL[mode]}写入 ${w.written ?? 0} 行${(w.errors?.length ?? 0) > 0 ? `，${w.errors?.length} 行被拒` : ''}`);
-      await load();
+      await runRuleBatch(mode);
     } catch (e) {
       onToast(`批量填充失败：${errMsg(e)}`);
     } finally {
@@ -692,7 +932,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
 
   /** 撤销最近一次批量写入（§5.3：会话内存栈；原态是「无估算行」的，删除才等价于回滚） */
   async function undoLast(): Promise<void> {
-    const entry = undoStack[undoStack.length - 1];
+    const entry = undoStack.at(-1);
     if (!entry) return;
     setBusy(true);
     try {
@@ -714,7 +954,9 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
       }
       setUndoStack((p) => p.slice(0, -1));
       setSelIds([]);
-      onToast(`已撤销「${entry.label}」：还原 ${restored} 行${removed > 0 ? `，删除 ${removed} 行新建估算` : ''}`);
+      // S4624：嵌套模板串先赋给局部 const 再插值，文案逐字不变
+      const removedNote = removed > 0 ? `，删除 ${removed} 行新建估算` : '';
+      onToast(`已撤销「${entry.label}」：还原 ${restored} 行${removedNote}`);
       await load();
     } catch (e) {
       onToast(`撤销失败：${errMsg(e)}`);
@@ -801,7 +1043,9 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
       );
       if (!go) return;
       const r = await estimatesApi.cleanupDetached(projectId, ids);
-      onToast(`已清理 ${r.removed} 条脱离计划的估算行${r.removed !== ids.length ? `，${ids.length - r.removed} 条未删（已不满足脱离条件）` : ''}`);
+      // S7735：取反条件改正向（分支互换）；S4624：嵌套模板串先赋给局部 const 再插值。文案逐字不变
+      const undelNote = r.removed === ids.length ? '' : `，${ids.length - r.removed} 条未删（已不满足脱离条件）`;
+      onToast(`已清理 ${r.removed} 条脱离计划的估算行${undelNote}`);
       await load();
     } catch (e) {
       onToast(`清理失败：${errMsg(e)}`);
@@ -842,22 +1086,19 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
     if (!ms) return <div key={group.items[0]?.id ?? 'prelude'} aria-hidden />;
     const msRow = rowById.get(ms.id);
     const collapsed = !!collapsedMs[ms.id];
-    const toggle = (): void => { onToggleMsCollapse(ms.id); };
     return (
-      <div
+      <button
+        type="button"
         key={ms.id}
-        role="button"
-        tabIndex={0}
-        onClick={toggle}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } }}
-        style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 2px', borderTop: '1px solid var(--border-strong)', cursor: 'pointer', fontSize: 12, fontWeight: 600, height: EST_HEADER_H, boxSizing: 'border-box' }}
+        onClick={() => { onToggleMsCollapse(ms.id); }}
+        style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 2px', width: '100%', textAlign: 'left', font: 'inherit', color: 'inherit', background: 'transparent', border: 'none', borderTop: '1px solid var(--border-strong)', cursor: 'pointer', fontSize: 12, fontWeight: 600, height: EST_HEADER_H, boxSizing: 'border-box' }}
         title={collapsed ? '展开该阶段明细' : '收起该阶段明细（与列表/甘特共用折叠态）'}
       >
         <span style={{ color: 'var(--text-muted)' }}>{collapsed ? '▸' : '▾'}</span>
         <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ms.title}</span>
         {msRow && <span style={{ fontFamily: MONO, color: 'var(--text-muted)', fontWeight: 400 }}>E {num(msRow.expected)}</span>}
         <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>不进 Σ</span>
-      </div>
+      </button>
     );
   };
 
@@ -867,10 +1108,21 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
     const locked = r.drift?.locked === true;
     const unlocked = unlockedRows.includes(r.planId);
     const editable = (r.kind !== 'milestone' && !locked) || (locked && unlocked);
-    const cellValue = (f: PointField): string =>
-      draft && draft.planId === r.planId && draft.field === f
-        ? draft.value
-        : (r[f] === null ? '' : String(r[f]));
+    // S3358：嵌套三元 → 早返回 + 单层三元，取值口径不变
+    const cellValue = (f: PointField): string => {
+      if (draft && draft.planId === r.planId && draft.field === f) return draft.value;
+      return r[f] === null ? '' : String(r[f]);
+    };
+    // S3358/S4624：嵌套三元与嵌套模板串 → 局部函数内早返回 + 单层 const（文案逐字不变）
+    const cellTitle = (f: PointField): string => {
+      if (!editable) {
+        if (locked) return '§7 里程碑已收口 → 估算行只读（已交付项不得追溯改写报价），需点「解锁改写」';
+        return '里程碑行不落估算（§4.6 红线一），值只作参考';
+      }
+      const unlockNote = locked && unlocked ? '（本行已显式解锁，写入带 unlock）' : '';
+      const errNote = err ? `\n${err}` : '';
+      return `${POINT_LABEL[f]}（人天，0.5 步进）：Enter 或失焦即落库，Esc 还原${unlockNote}${errNote}`;
+    };
     const badge = (
       <span title={r.tip} style={{ fontSize: 10, padding: '0 4px', borderRadius: 3, border: `1px solid ${r.badge.color}`, color: r.badge.color, whiteSpace: 'nowrap' }}>
         {r.badge.label}
@@ -931,7 +1183,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             {err && <span style={{ fontSize: 11, color: 'var(--danger)' }}>{err}</span>}
           </div>
           {g && (
-            <div
+            <div /* NOSONAR: S6819 误报——区间条由多个子元素绘制的复合图形，无原生元素可承载，改<img>会毁掉渲染 */
               role="img"
               aria-label={`区间条 ${r.title}`}
               title={`O ${num(r.optimistic)} —— P ${num(r.pessimistic)}，竖线为 E ${num(r.expected)} 人天`
@@ -956,11 +1208,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
               value={cellValue(f)}
               placeholder="—"
               aria-label={`${r.title} ${POINT_LABEL[f]}（人天）`}
-              title={editable
-                ? `${POINT_LABEL[f]}（人天，0.5 步进）：Enter 或失焦即落库，Esc 还原${locked && unlocked ? '（本行已显式解锁，写入带 unlock）' : ''}${err ? `\n${err}` : ''}`
-                : locked
-                  ? '§7 里程碑已收口 → 估算行只读（已交付项不得追溯改写报价），需点「解锁改写」'
-                  : '里程碑行不落估算（§4.6 红线一），值只作参考'}
+              title={cellTitle(f)}
               onChange={(e) => setDraft({ planId: r.planId, field: f, value: e.target.value })}
               onFocus={() => setDraft({ planId: r.planId, field: f, value: cellValue(f) })}
               onBlur={() => void commitDraft(draft)}
@@ -982,98 +1230,83 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
   const cfg = data.params.config;
   const rc = s.ratioCheck;
 
-  const card = (title: string, main: string, sub?: string, danger = false) => (
-    <div style={{ flex: 1, minWidth: 0, padding: 8, background: 'var(--card-bg)', border: `1px solid ${danger ? 'var(--danger)' : 'var(--border)'}`, borderRadius: 8 }}>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>{title}</div>
-      <div style={{ fontSize: 16, fontFamily: MONO, color: danger ? 'var(--danger)' : 'var(--text)' }}>{main}</div>
-      {sub && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>{sub}</div>}
-    </div>
-  );
-
-  /** 工具条小按钮（11px 档，同 §5.5 字号阶梯；禁用态只降色不改形，避免按钮跳动） */
-  const toolBtn = (tone: 'default' | 'accent' | 'danger' = 'default', disabled = false): CSSProperties => ({
-    border: `1px solid ${tone === 'danger' ? 'var(--danger)' : tone === 'accent' ? 'var(--accent)' : 'var(--border-strong)'}`,
-    borderRadius: 6,
-    padding: '3px 8px',
-    background: 'var(--card-bg)',
-    color: disabled ? 'var(--text-muted)' : tone === 'danger' ? 'var(--danger)' : tone === 'accent' ? 'var(--accent)' : 'var(--text)',
-    cursor: disabled ? 'default' : 'pointer',
-    fontSize: 11,
-  });
-
-  /** 行内录入的数字输入框（40px 定宽 = 原 span 列宽，面板 420 的账不变；appearance 只去箭头不改 step 语义） */
-  const pointInput = (err: string | undefined): CSSProperties => ({
-    width: 40,
-    textAlign: 'right',
-    fontFamily: MONO,
-    fontSize: 12,
-    padding: '1px 2px',
-    borderRadius: 4,
-    border: `1px solid ${err ? 'var(--danger)' : 'var(--border)'}`,
-    background: 'var(--card-bg)',
-    color: 'var(--text)',
-    WebkitAppearance: 'textfield',
-    appearance: 'textfield',
-  });
+  // S4624：嵌套模板串（外层 title 串内再嵌 rows.map 的模板串）→ 内层先赋 const 再插值。文案逐字不变
+  const changedRowsNote = data.checks.changedSinceExport.rows
+    .map((c) => `${c.title}（${c.changed.join('+')}）`)
+    .join('、');
+  // S3358：嵌套三元（Excel 导出按钮 title 里嵌受众三元）→ 独立 const
+  const audienceTag = audienceTagLabel(audience);
+  // S3776：偏差提示区四个判据先命名再组合（布尔代数与原式等价），并从 JSX 条件中提出
+  const hasChangedSinceExport = data.checks.changedSinceExport.count > 0;
+  const hasDriftPressure = data.checks.drift.pressure > 0;
+  const hasDriftLocked = data.checks.drift.locked > 0;
+  const hasDriftDeviation = data.checks.drift.high + data.checks.drift.low > 0;
+  const hasDriftNotices = hasChangedSinceExport || hasDriftPressure || hasDriftLocked || hasDriftDeviation;
+  // S3776：导出禁用判据提出为命名 const（`disabled={}` 中直接 false 分支，行为等价）
+  const hasBlockedRows = Object.keys(rowErrors).length > 0;
+  const rowErrorCount = Object.keys(rowErrors).length;
+  const rowErrorIds = Object.keys(rowErrors);
+  // S3776：批量档按钮名单（自 JSX 的 Object.keys(...).map 链提出，口径不变）
+  const batchRuleKeys = Object.keys(BATCH_RULE_LABEL) as DeriveRule[];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}>
       {/* 1) 汇总卡（sticky，§5.2-1）——读数全部来自服务端 summary */}
       <div style={{ position: 'sticky', top: 0, zIndex: 2, padding: 10, background: 'var(--surface)', borderBottom: '1px solid var(--border)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, visibility: hideHeading ? 'hidden' : 'visible' }}>估算面板</div>
+          <div style={headingTitleStyle(hideHeading)}>估算面板</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: MONO }}>
             {cfg.manDaysPerManMonth} 人天/人月 · 系数和 {num(s.coefSum)}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
-          {card('实际预估人月 P50 / P84', `${num(s.quote.p50ManMonth)} / ${num(s.quote.p84ManMonth)}`, `σ_total ${num(s.quote.sigma)} 人天`)}
-          {card('理想人月（ΣE）', num(s.idealManMonths.expected), `直接投入 ${num(s.directManDays.expected)} 人天`)}
-          {card('Σ估算比例（I40）', pct(rc.sumRatio), `偏差 ${devPct(rc.deviationPct)}`, rc.danger)}
+          <div style={{ flex: 1, minWidth: 0 }}>{card('实际预估人月 P50 / P84', `${num(s.quote.p50ManMonth)} / ${num(s.quote.p84ManMonth)}`, `σ_total ${num(s.quote.sigma)} 人天`)}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>{card('理想人月（ΣE）', num(s.idealManMonths.expected), `直接投入 ${num(s.directManDays.expected)} 人天`)}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>{card('Σ估算比例（I40）', pct(rc.sumRatio), `偏差 ${devPct(rc.deviationPct)}`, rc.danger)}</div>
         </div>
         {/* §7 变更影响提示条（sticky 区常驻）：计数与文案口径都在服务端 checks，面板不做第二次判定 */}
-        {(data.checks.changedSinceExport.count > 0 || data.checks.drift.pressure > 0
-          || data.checks.drift.locked > 0 || data.checks.drift.high + data.checks.drift.low > 0) && (
-          <div role="status" aria-label="估算变更影响提示" style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
-            {data.checks.changedSinceExport.count > 0 && (
+        {hasDriftNotices && (
+          <output aria-label="估算变更影响提示" style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+            {hasChangedSinceExport && (
               <div
                 style={{ color: 'var(--warning, #c80)', cursor: 'help' }}
-                title={`上次导出：${data.checks.changedSinceExport.at}（快照 ${data.checks.changedSinceExport.snapshotId}）\n`
-                  + `其后有变更的计划：${data.checks.changedSinceExport.rows.map((c) => `${c.title}（${c.changed.join('+')}）`).join('、')}`}
+                title={`上次导出：${data.checks.changedSinceExport.at}（快照 ${data.checks.changedSinceExport.snapshotId}）\n其后有变更的计划：${changedRowsNote}`}
               >
                 上次导出后 {data.checks.changedSinceExport.count} 条计划已变化 → 建议重导
               </div>
             )}
-            {data.checks.drift.pressure > 0 && (
+            {hasDriftPressure && (
               <div style={{ color: 'var(--danger)', cursor: 'help' }} title={`今日 ${data.checks.drift.today}；E 人天 > 剩余排期工作日的行（§7「排期与估算不一致」）`}>
                 {data.checks.drift.pressure} 行估算人天超过剩余排期工作日 —— 排期与估算不一致
               </div>
             )}
-            {data.checks.drift.high + data.checks.drift.low > 0 && (
+            {hasDriftDeviation && (
               <div style={{ color: 'var(--text-muted)', cursor: 'help' }}
                 title={`偏差比值 = E ÷ 排期工作日；阈值由服务端下发（高 >${data.checks.drift.thresholds.high}、低 <${data.checks.drift.thresholds.low}）`}>
                 {data.checks.drift.high + data.checks.drift.low} 行的 E 与排期偏差超阈值（黄色徽标，比值 = E ÷ 排期工作日）
               </div>
             )}
-            {data.checks.drift.locked > 0 && (
+            {hasDriftLocked && (
               <div style={{ color: 'var(--text-muted)' }}>
                 {data.checks.drift.locked} 行属于已收口里程碑，服务端已置只读（§7，需逐行显式解锁）
               </div>
             )}
-          </div>
+          </output>
         )}
         {/* §5.3 撤销：本会话内存栈顶（批量写入前抓的原值）；空栈不占位 */}
         {undoStack.length > 0 && (() => {
-          const last = undoStack[undoStack.length - 1];
+          const last = undoStack.at(-1);
+          if (!last) return null;
+          const stepNote = undoStack.length > 1 ? `（剩 ${undoStack.length - 1} 步）` : '';
           return (
-            <div role="status" aria-label="批量填充撤销条" style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+            <output aria-label="批量填充撤销条" style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
               <span>已填充 {last.count} 行 · 撤销</span>
               <button type="button" className="tbtn-anim" style={toolBtn('accent', busy)} disabled={busy}
                 title={`${last.label}（本会话第 ${undoStack.length} 步，仅还原最近一次批量写入）`}
                 onClick={() => void undoLast()}>
-                撤销{undoStack.length > 1 ? `（剩 ${undoStack.length - 1} 步）` : ''}
+                撤销{stepNote}
               </button>
-            </div>
+            </output>
           );
         })()}
       </div>
@@ -1112,14 +1345,8 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
         <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '2px 0 6px' }}>阶段柱与 ±1σ 误差线（E11）</div>
           <PhaseBarChart phases={s.phases} phaseLabels={data.meta.phaseLabels} />
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '12px 0 6px' }}>帕累托（E11 · 按行 E 降序累计占比）</div>
-          {pareto.length > 0
-            ? <ParetoChart geoms={pareto} />
-            : <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '6px 0' }}>暂无有效估算行</div>}
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '12px 0 6px' }}>龙卷风（E14 · 敏感性，σ 降序）</div>
-          {tornado.length > 0
-            ? <TornadoChart geoms={tornado} />
-            : <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '6px 0' }}>暂无 σ 数据</div>}
+          {chartBlock('帕累托（E11 · 按行 E 降序累计占比）', pareto.length > 0, <ParetoChart geoms={pareto} />, '暂无有效估算行')}
+          {chartBlock('龙卷风（E14 · 敏感性，σ 降序）', tornado.length > 0, <TornadoChart geoms={tornado} />, '暂无 σ 数据')}
         </div>
 
         {/* 3) 明细工具条（§5.3 批量填充 + 只看未复核）：作用域=可见且非里程碑的行，里程碑由服务端红线排除 */}
@@ -1129,7 +1356,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}
           >
             <input type="checkbox" checked={onlyUnreviewed} onChange={(e) => setOnlyUnreviewed(e.target.checked)} />
-            只看未复核
+            <span>只看未复核</span>
           </label>
           <button type="button" className="tbtn-anim" style={toolBtn()} onClick={selectAllVisible}
             title={`选中当前可见的 ${batchableIds.length} 行（里程碑行不参与批量填充）`}>
@@ -1139,7 +1366,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             onClick={() => setSelIds([])}>
             清空
           </button>
-          {(Object.keys(BATCH_RULE_LABEL) as DeriveRule[]).map((rule) => (
+          {batchRuleKeys.map((rule) => (
             <button key={rule} type="button" className="tbtn-anim" style={toolBtn('accent', busy || selRows.length === 0)}
               disabled={busy || selRows.length === 0} onClick={() => void runBatch(rule)}
               title={`把选中行里自然择档为「${RULE_LABEL[rule]}」的那些按 §4.6 该档重推；不属于该档的行由服务端整行跳过（offRule），不硬凑假数据`}>
@@ -1150,7 +1377,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             title={`给选中的 ${selRows.length} 行写同一组三点（M + O/P 倍率，落 0.5 网格）`}>
             统一值…
           </button>
-          <button type="button" className="tbtn-anim" style={toolBtn(whatIfOpen ? 'accent' : 'default')} onClick={openWhatIf}
+          <button type="button" className="tbtn-anim" style={whatIfBtnStyle(whatIfOpen)} onClick={openWhatIf}
             title="§7 影响试算：改系数或改勾选行的 P 值，看实际预估人月 X → Y（Δ%）。零写入，试算值不落库">
             影响试算…
           </button>
@@ -1158,39 +1385,41 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
         </div>
 
         {uniformOpen && (
-          <div role="group" aria-label="统一值批量填充表单"
-            style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', border: '1px solid var(--border-strong)', borderRadius: 8, padding: 6, background: 'var(--card-bg)', fontSize: 11 }}>
+          <fieldset aria-label="统一值批量填充表单"
+            style={{ margin: 0, minWidth: 0, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', border: '1px solid var(--border-strong)', borderRadius: 8, padding: 6, background: 'var(--card-bg)', fontSize: 11 }}>
             <span style={{ color: 'var(--text-muted)' }}>统一值 + 相对幅度</span>
-            {([['m', '最可能 M', '人天'], ['oMul', 'O 倍率', '如 0.8'], ['pMul', 'P 倍率', '如 1.4']] as const).map(([key, label, hint]) => (
+            {([['m', '最可能 M', '人天'], ['oMul', 'O 倍率', '如 0.8'], ['pMul', 'P 倍率', '如 1.4']] as const).map(([key, label, hint]) => {
+              // S1121：三元中的解构赋值 `[[uval, ustep]] = …` 提为独立取值语句（previewUniform 同：JSX IIFE → 局部纯函数）
+              const [uval, ustep] = uniformFieldState(key, uniform);
+              return (
               <label key={key} title={`${label}（${hint}）`} style={{ display: 'flex', gap: 3, alignItems: 'center', color: 'var(--text-muted)' }}>
                 {label}
-                <input type="number" step={key === 'm' ? 0.5 : 0.1} min={0} value={uniform[key]}
+                <input type="number" step={ustep} min={0} value={uval}
                   onChange={(e) => setUniform((p) => ({ ...p, [key]: e.target.value }))}
                   style={{ width: 52, textAlign: 'right', fontFamily: MONO, fontSize: 12, padding: '1px 2px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
                 />
               </label>
-            ))}
-            <span style={{ color: 'var(--text-muted)' }}>→ {(() => {
-              const m = Number(uniform.m), o = Number(uniform.oMul), p = Number(uniform.pMul);
-              return uniform.m.trim() !== '' && Number.isFinite(m) && Number.isFinite(o) && Number.isFinite(p) && m > 0 && o > 0 && p > 0
-                ? `O ${num(uniformPoints(m, o, p).optimistic)} / M ${num(uniformPoints(m, o, p).likely)} / P ${num(uniformPoints(m, o, p).pessimistic)}`
-                : '待填';
-            })()}</span>
+              );
+            })}
+            <span style={{ color: 'var(--text-muted)' }}>→ {previewUniform(uniform)}</span>
             <button type="button" className="tbtn-anim" style={toolBtn('accent', busy || selRows.length === 0)}
               disabled={busy || selRows.length === 0} onClick={() => void runBatch('uniform')}>
               写入 {selRows.length} 行
             </button>
             <button type="button" className="tbtn-anim" style={toolBtn()} onClick={() => setUniformOpen(false)}>取消</button>
-          </div>
+          </fieldset>
         )}
 
         {/* §7 影响试算（E9）：面板只发「改过的」系数与勾选行的 P 覆盖；X → Y（Δ%）与逐阶段差全部读服务端 */}
         {whatIfOpen && (() => {
           const coefTouched = Object.values(whatIfCoefs).some((v) => String(v).trim() !== '');
           const rowTouched = selRows.some((r) => String(whatIfP[r.planId] ?? '').trim() !== '');
+          // S2004 L1204/L1218：onChange 里 5 层嵌套的函数式更新闭包提为具名局部函数（行为不变）
+          const setCoef = (key: string, value: string): void => setWhatIfCoefs((p) => ({ ...p, [key]: value }));
+          const setRowP = (planId: string, value: string): void => setWhatIfP((p) => ({ ...p, [planId]: value }));
           return (
-            <div role="group" aria-label="影响试算表单"
-              style={{ border: '1px solid var(--border-strong)', borderRadius: 8, padding: 6, background: 'var(--card-bg)', fontSize: 11, marginTop: 6 }}>
+            <fieldset aria-label="影响试算表单"
+              style={{ margin: 0, minWidth: 0, border: '1px solid var(--border-strong)', borderRadius: 8, padding: 6, background: 'var(--card-bg)', fontSize: 11, marginTop: 6 }}>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 4 }}>
                 <span style={{ color: 'var(--text-muted)' }}>影响试算（零写入 · 不改配置）</span>
                 <button type="button" className="tbtn-anim" style={toolBtn()} onClick={() => { setWhatIfOpen(false); setWhatIf(null); }}>收起</button>
@@ -1201,12 +1430,12 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                   <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.label}</span>
                   <span style={{ fontFamily: MONO }}>{num(c.points.likely)}</span>
                   <input type="number" step={0.01} min={0} max={1} value={whatIfCoefs[c.key] ?? ''} placeholder="改为"
-                    onChange={(e) => setWhatIfCoefs((p) => ({ ...p, [c.key]: e.target.value }))}
+                    onChange={(e) => setCoef(c.key, e.target.value)}
                     style={{ width: 48, textAlign: 'right', fontFamily: MONO, fontSize: 12, padding: '1px 2px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
                   />
                 </label>
               ))}
-              {selRows.filter((r) => r.persisted).length > 0 && (
+              {selRows.some((r) => r.persisted) && (
                 <div style={{ marginTop: 4 }}>
                   <div style={{ color: 'var(--text-muted)', marginBottom: 2 }}>勾选行的悲观 P 覆盖（留空=不改）</div>
                   {selRows.filter((r) => r.persisted).map((r) => (
@@ -1215,7 +1444,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                       <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.title}</span>
                       <span style={{ fontFamily: MONO }}>{num(r.pessimistic)}</span>
                       <input type="number" step={0.5} min={r.likely ?? 0} value={whatIfP[r.planId] ?? ''} placeholder="P"
-                        onChange={(e) => setWhatIfP((p) => ({ ...p, [r.planId]: e.target.value }))}
+                        onChange={(e) => setRowP(r.planId, e.target.value)}
                         style={{ width: 44, textAlign: 'right', fontFamily: MONO, fontSize: 12, padding: '1px 2px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
                       />
                     </label>
@@ -1232,7 +1461,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                 {whatIfErr && <span style={{ color: 'var(--danger)' }}>{whatIfErr}</span>}
               </div>
               {whatIf && (
-                <div role="status" aria-label="影响试算结果" style={{ marginTop: 4, borderTop: '1px solid var(--border)', paddingTop: 4 }}>
+                <output aria-label="影响试算结果" style={{ display: 'block', marginTop: 4, borderTop: '1px solid var(--border)', paddingTop: 4 }}>
                   <div>
                     实际预估人月 {num(whatIf.before.actualManMonths)} → <b>{num(whatIf.after.actualManMonths)}</b>
                     （Δ {numSigned(whatIf.delta.actualManMonths)} · {pctSigned(whatIf.delta.pct)}）
@@ -1241,7 +1470,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                     直接投入人天 {num(whatIf.before.directManDays)} → {num(whatIf.after.directManDays)}
                     （Δ {numSigned(whatIf.delta.directManDays)}）· 系数和 {num(whatIf.before.coefSum)} → {num(whatIf.after.coefSum)}
                   </div>
-                  {whatIf.delta.phases.filter((p) => Math.abs(p.delta) > 1e-9).length > 0 && (
+                  {whatIf.delta.phases.some((p) => Math.abs(p.delta) > 1e-9) && (
                     <div style={{ color: 'var(--text-muted)', fontFamily: MONO }}>
                       {whatIf.delta.phases.filter((p) => Math.abs(p.delta) > 1e-9)
                         .map((p) => `${data.meta.phaseLabels[p.phase] ?? p.phase} ${numSigned(p.delta)}`).join(' · ')}
@@ -1252,9 +1481,9 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                     {whatIf.applied.coefs.length > 0 ? `系数 ${whatIf.applied.coefs.length} 项` : '无系数'}
                     {whatIf.applied.rows.length > 0 ? ` · 行 ${whatIf.applied.rows.length} 条` : ''}
                   </div>
-                </div>
+                </output>
               )}
-            </div>
+            </fieldset>
           );
         })()}
 
@@ -1284,35 +1513,36 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
           <div style={{ border: '1px dashed var(--border-strong)', borderRadius: 8, padding: 10, marginBottom: 8, background: 'var(--card-bg)' }}>
             <div style={{ fontSize: 12, color: 'var(--text)', marginBottom: 6 }}>尚未录入估算——点「按规则推导」用复杂度/用例/工期生成初始值。</div>
             <button type="button" className="tbtn-anim" disabled={deriveBusy} onClick={() => void fillByRules()}
-              style={{ border: '1px solid var(--accent)', borderRadius: 6, padding: '4px 10px', background: 'var(--card-bg)', color: 'var(--accent)', cursor: deriveBusy ? 'default' : 'pointer', fontSize: 12 }}>
-              {deriveBusy ? '推导中…' : '按规则推导'}
+              style={deriveBtnStyle(deriveBusy)}>
+              {deriveBtnLabel(deriveBusy)}
             </button>
           </div>
         )}
 
         {estVirtual ? (
-          <div
-            role="list"
+          // S6819 L1294：role="list" → 原生 <ul>/<li>（UL_RESET/LI_RESET 抵消 UA 默认边距与符号，排版与原 div 一致）
+          <ul
             aria-label="估算明细（虚拟滚动）"
-            style={{ maxHeight: VIRTUAL_VIEWPORT_H, overflowY: 'auto', marginTop: 8 }}
+            style={{ ...UL_RESET, maxHeight: VIRTUAL_VIEWPORT_H, overflowY: 'auto', marginTop: 8 }}
             onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
           >
-            {estWin && estWin.padTop > 0 && <div aria-hidden style={{ height: estWin.padTop }} />}
-            {estVisible.map((e) => (e.kind === 'header' ? renderHeader(e.group) : renderItem(e.row)))}
-            {estWin && estWin.padBottom > 0 && <div aria-hidden style={{ height: estWin.padBottom }} />}
-          </div>
+            {estWin && estWin.padTop > 0 && <li aria-hidden style={{ ...LI_RESET, height: estWin.padTop }} />}
+            {estVisible.map((e) => (
+              <li key={e.key} style={LI_RESET}>
+                {e.kind === 'header' ? renderHeader(e.group) : renderItem(e.row)}
+              </li>
+            ))}
+            {estWin && estWin.padBottom > 0 && <li aria-hidden style={{ ...LI_RESET, height: estWin.padBottom }} />}
+          </ul>
         ) : (
           phases.map((group) => {
             const ms = group.milestone;
-            const msRow = ms ? rowById.get(ms.id) : null;
             const collapsed = ms ? !!collapsedMs[ms.id] : false;
+            // S3776 L306：链式 filter/map 提出为局部函数 flatGroupRows（口径不变）
             return (
               <div key={ms?.id ?? 'prelude'} style={{ marginBottom: 0 }}>
                 {ms && renderHeader(group)}
-                {!collapsed && ([msRow, ...group.items.map((p) => rowById.get(p.id))]
-                  .filter((r): r is PanelRow => !!r)
-                  .filter((r) => !(onlyUnreviewed && r.source === 'manual'))
-                  .map((r) => renderItem(r)))}
+                {!collapsed && flatGroupRows(group).map((r) => renderItem(r))}
               </div>
             );
           })
@@ -1348,10 +1578,10 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
         )}
 
         {/* 6) 行内录入错误条（§5.2 状态要求：被拒的行逐行点名 + 底部计数；判据全在服务端，面板只转录 400 文案） */}
-        {Object.keys(rowErrors).length > 0 && (
+        {rowErrorIds.length > 0 && (
           <div role="alert" aria-label="行内录入错误提示"
             style={{ marginTop: 10, border: '1px solid var(--danger)', borderRadius: 8, padding: 8, background: 'var(--card-bg)', fontSize: 12, color: 'var(--danger)' }}>
-            <div>{Object.keys(rowErrors).length} 行不满足录入校验（O≤M≤P），导出前须修正</div>
+            <div>{rowErrorCount} 行不满足录入校验（O≤M≤P），导出前须修正</div>
             {Object.entries(rowErrors).map(([id, msg]) => (
               <div key={id} style={{ color: 'var(--text-muted)', marginTop: 2 }}>
                 {rowById.get(id)?.title ?? id}：{msg}
@@ -1363,29 +1593,29 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
         {/* 7) 导出区（§5.2 第 4 段 · E6 Excel + E7 PDF）：Excel 内部版/客户版 + PDF 两枚 + 最近快照与对比。
             件名、未复核行数、合并区数一律取自服务端响应头与快照 payload——面板不拼第二套口径。
             PDF 两枚按钮各自定受众（§5.2 原文形态），因为 §10-9 的验收是「一次出两版对照脱敏」。 */}
-        <div role="region" aria-label="估算导出区" style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+        <section aria-label="估算导出区" style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>导出（Excel 复刻客户模板）</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
             <label title="客户版不含「估算明细/参数」两个附加 sheet，也不写备注三条；开折叠后系数分项并进一行合计（报价数不变）"
               style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}>
               <input type="radio" name="estimate-audience" checked={audience === 'client'} onChange={() => setAudience('client')} />
-              客户版
+              <span>客户版</span>
             </label>
             <label title="内部版含全量明细 sheet（plan_id / 来源 / σ）与参数 sheet，供内部复核"
               style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}>
               <input type="radio" name="estimate-audience" checked={audience === 'internal'} onChange={() => setAudience('internal')} />
-              内部版
+              <span>内部版</span>
             </label>
             <label title={`scope=estimated_only：只有落了估算的行进件；不勾=全部计划（未估算行成行但三点留空，不把「没估」写成 0）`}
               style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}>
               <input type="checkbox" checked={estimatedOnly} onChange={(e) => setEstimatedOnly(e.target.checked)} />
-              只导已估算行
+              <span>只导已估算行</span>
             </label>
-            <button type="button" className="tbtn-anim" style={toolBtn('accent', exporting || Object.keys(rowErrors).length > 0)}
-              disabled={exporting || Object.keys(rowErrors).length > 0} onClick={() => void runExport('xlsx')}
+            <button type="button" className="tbtn-anim" style={toolBtn('accent', exporting || hasBlockedRows)}
+              disabled={exporting || hasBlockedRows} onClick={() => void runExport('xlsx')}
               aria-label="导出 Excel 文件"
-              title={Object.keys(rowErrors).length > 0 ? '有行未通过录入校验（§5.2：导出禁用），先修正' : `按当前选择出件（${audience === 'client' ? '客户版' : '内部版'}）`}>
-              {exportingKind === 'xlsx' ? '导出中…' : '导出 Excel'}
+              title={excelExportTitle(hasBlockedRows, audienceTag)}>
+              {exportBtnLabel(exportingKind === 'xlsx', '导出 Excel')}
             </button>
             {audience === 'client' && cfg.hideCoefsForClient && (
               <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>系数分项将折叠（参数页开关）</span>
@@ -1397,15 +1627,15 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             <button type="button" className="tbtn-anim" style={toolBtn('default', exporting || Object.keys(rowErrors).length > 0)}
               disabled={exporting || Object.keys(rowErrors).length > 0} onClick={() => void runExport('pdf', 'internal')}
               aria-label="导出 PDF 内部版"
-              title={Object.keys(rowErrors).length > 0 ? '有行未通过录入校验（§5.2：导出禁用），先修正'
-                : 'PDF 内部版：含系数分项、σ/P50/P84 区间、自检与备注三条（汇报/预览用，正式交付以 Excel 为准）'}>
-              {exportingKind === 'pdf' ? '导出中…' : '导出 PDF（内部版）'}
+              title={pdfExportTitle(Object.keys(rowErrors).length > 0,
+                'PDF 内部版：含系数分项、σ/P50/P84 区间、自检与备注三条（汇报/预览用，正式交付以 Excel 为准）')}>
+              {exportBtnLabel(exportingKind === 'pdf', '导出 PDF（内部版）')}
             </button>
             <button type="button" className="tbtn-anim" style={toolBtn('default', exporting || Object.keys(rowErrors).length > 0)}
               disabled={exporting || Object.keys(rowErrors).length > 0} onClick={() => void runExport('pdf', 'client')}
               aria-label="导出 PDF 客户版"
-              title={Object.keys(rowErrors).length > 0 ? '有行未通过录入校验（§5.2：导出禁用），先修正'
-                : 'PDF 客户版：服务端组装阶段就不写系数分项、σ/置信区间、备注三条与附加 sheet 名，报价数与内部版一致'}>
+              title={pdfExportTitle(Object.keys(rowErrors).length > 0,
+                'PDF 客户版：服务端组装阶段就不写系数分项、σ/置信区间、备注三条与附加 sheet 名，报价数与内部版一致')}>
               导出 PDF（客户版）
             </button>
             <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>PDF 为预览件，正式交付以 Excel 为准（裁决 D4）</span>
@@ -1413,7 +1643,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
           {lastExport && (
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
               本次件：{lastExport.filename}
-              {lastExport.unreviewed > 0 ? ` · 内含「${lastExport.unreviewed} 行为系统推导值，未人工复核」标注` : ' · 全部行为人工复核值'}
+              {exportUnreviewedNote(lastExport.unreviewed)}
             </div>
           )}
 
@@ -1439,7 +1669,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                 <span style={{ fontFamily: MONO }}>{(sn.created_at ?? '').slice(0, 16).replace('T', ' ')}</span>
                 <span style={{ fontFamily: MONO, color: 'var(--text-muted)' }}>{sn.format.toUpperCase()}</span>
                 <span style={{ color: pl?.audience === 'client' ? 'var(--accent)' : 'var(--text-muted)' }}>
-                  {pl?.audience === 'client' ? '客户版' : pl?.audience === 'internal' ? '内部版' : sn.format}
+                  {snapshotAudienceLabel(pl?.audience, sn.format)}
                 </span>
                 <span style={{ color: 'var(--text-muted)', marginLeft: 'auto', fontFamily: MONO }} title="该次导出的实际预估人月（ΣE）">
                   {pl ? `${num(pl.actualManMonths?.expected)} 人月` : ''}
@@ -1448,27 +1678,27 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             );
           })}
           {cmpDiff && (
-            <div role="group" aria-label="两次导出差异" style={{ marginTop: 6, border: '1px solid var(--border-strong)', borderRadius: 8, padding: 6, background: 'var(--card-bg)', fontSize: 11 }}>
+            <fieldset aria-label="两次导出差异" style={{ margin: 0, marginTop: 6, minWidth: 0, border: '1px solid var(--border-strong)', borderRadius: 8, padding: 6, background: 'var(--card-bg)', fontSize: 11 }}>
               <div style={{ color: 'var(--text-muted)', marginBottom: 4 }}>
                 对比：{(cmpDiff.a.created_at ?? '').slice(0, 16).replace('T', ' ')} → {(cmpDiff.b.created_at ?? '').slice(0, 16).replace('T', ' ')}
               </div>
               {cmpDiff.diff.phases.map((p) => (
                 <div key={p.phase} style={{ display: 'flex', gap: 6 }}>
                   <span>{data.meta.phaseLabels[p.phase as keyof typeof data.meta.phaseLabels] ?? p.phase}</span>
-                  <span style={{ fontFamily: MONO, marginLeft: 'auto', color: p.expected.delta === 0 ? 'var(--text-muted)' : p.expected.delta > 0 ? 'var(--danger)' : 'var(--success)' }}>
+                  <span style={{ fontFamily: MONO, marginLeft: 'auto', color: deltaTone(p.expected.delta) }}>
                     {p.expected.delta > 0 ? '+' : ''}{num(p.expected.delta)} 人天
                   </span>
                 </div>
               ))}
               <div style={{ display: 'flex', gap: 6, marginTop: 4, borderTop: '1px solid var(--border)', paddingTop: 4 }}>
                 <span>实际预估人月</span>
-                <span style={{ fontFamily: MONO, marginLeft: 'auto', color: cmpDiff.diff.totals.actualManMonths === 0 ? 'var(--text-muted)' : 'var(--danger)' }}>
-                  {cmpDiff.diff.totals.actualManMonths > 0 ? '+' : ''}{num(cmpDiff.diff.totals.actualManMonths)}
+                <span style={diffTotalStyle(cmpDiff.diff.totals.actualManMonths)}>
+                  {diffTotalSign(cmpDiff.diff.totals.actualManMonths)}{num(cmpDiff.diff.totals.actualManMonths)}
                 </span>
               </div>
-            </div>
+            </fieldset>
           )}
-        </div>
+        </section>
       </div>
     </div>
   );

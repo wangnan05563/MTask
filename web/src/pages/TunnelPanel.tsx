@@ -3,7 +3,49 @@ import { api, setAccessToken } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { Copy, Network, Pause, Play, Save, ExternalLink, RefreshCw, PlugZap, KeyRound } from 'lucide-react';
 
-/** 内网穿透：设置页面板。启动后把本地 Web 服务暴露到公网，可手机/远程浏览器访问。 */
+/** T02149：tailscale_not_ready 的服务端 reason → 可操作指引文案（if/return 链，不留嵌套三元） */
+function tailscaleNotReadyHint(reason?: string): string {
+  if (reason === 'not_installed') return '\n请先安装 Tailscale：https://tailscale.com/download/windows';
+  if (reason === 'not_logged_in') return '\n请打开 Tailscale 客户端完成登录后再启动';
+  if (reason === 'magicdns_off') return '\n请在 Tailscale 管理后台 → DNS 中启用 MagicDNS';
+  return '\n请确认 Tailscale 客户端正在运行后再启动';
+}
+
+/**
+ * 启动失败的文案与引导：按 errorType 逐条分派（从 start 的 catch 抽出，
+ * 状态更新与提示的先后顺序与抽出前一致：授权链接 setAuthUrl 在前、flash 在后）。
+ */
+function reportStartError(
+  e: unknown,
+  setAuthUrl: (v: string) => void,
+  flash: (m: string, isErr?: boolean) => void
+): void {
+  // catch 的 e 已是 unknown，直接断言到目标类型即可，先转 unknown 属于冗余断言（S4325）
+  const err = e as { message?: string; errorType?: string; reason?: string; authUrl?: string; manualPath?: string; downloadUrls?: string[] };
+  const msg = err.message ?? String(e);
+  if (err.errorType === 'tailscale_funnel_auth') {
+    setAuthUrl(err.authUrl ?? '');
+    flash(msg, true);
+    return;
+  }
+  if (err.errorType === 'access_token_required') {
+    // T01341：未配令牌被拒——提示直达「生成访问令牌」，而不是让用户在启动失败里猜
+    flash(`${msg}（可点下方「重新生成」取得令牌）`, true);
+    return;
+  }
+  if (err.errorType === 'binary_download_failed') {
+    flash(`${msg}\n请手动下载并放到: ${err.manualPath}\n${(err.downloadUrls ?? []).join('\n')}`, true);
+    return;
+  }
+  if (err.errorType === 'tailscale_not_ready') {
+    // T02149：前置条件不满足（服务端已归 400 + reason）——按 reason 给可操作指引，
+    // 不再把「未登录客户端」当成服务器 500 抛给用户
+    flash(`${msg}${tailscaleNotReadyHint(err.reason)}`, true);
+    return;
+  }
+  flash(msg, true);
+}
+
 export function TunnelPanel() {
   const [status, setStatus] = useState<{ status: string; publicUrl: string | null; provider: string }>({ status: 'stopped', publicUrl: null, provider: '' });
   const [provider, setProvider] = useState<'cloudflare' | 'cpolar' | 'tailscale'>('cloudflare');
@@ -77,31 +119,7 @@ export function TunnelPanel() {
       setStatus(r);
       flash('隧道已启动');
     } catch (e) {
-      // catch 的 e 已是 unknown，直接断言到目标类型即可，先转 unknown 属于冗余断言（S4325）
-      const err = e as { message?: string; errorType?: string; reason?: string; authUrl?: string; manualPath?: string; downloadUrls?: string[] };
-      const msg = err.message ?? String(e);
-      if (err.errorType === 'tailscale_funnel_auth') {
-        setAuthUrl(err.authUrl ?? '');
-        flash(msg, true);
-      } else if (err.errorType === 'access_token_required') {
-        // T01341：未配令牌被拒——提示直达「生成访问令牌」，而不是让用户在启动失败里猜
-        flash(`${msg}（可点下方「重新生成」取得令牌）`, true);
-      } else if (err.errorType === 'binary_download_failed') {
-        flash(`${msg}\n请手动下载并放到: ${err.manualPath}\n${(err.downloadUrls ?? []).join('\n')}`, true);
-      } else if (err.errorType === 'tailscale_not_ready') {
-        // T02149：前置条件不满足（服务端已归 400 + reason）——按 reason 给可操作指引，
-        // 不再把「未登录客户端」当成服务器 500 抛给用户
-        const hint = err.reason === 'not_installed'
-          ? '\n请先安装 Tailscale：https://tailscale.com/download/windows'
-          : err.reason === 'not_logged_in'
-            ? '\n请打开 Tailscale 客户端完成登录后再启动'
-            : err.reason === 'magicdns_off'
-              ? '\n请在 Tailscale 管理后台 → DNS 中启用 MagicDNS'
-              : '\n请确认 Tailscale 客户端正在运行后再启动';
-        flash(`${msg}${hint}`, true);
-      } else {
-        flash(msg, true);
-      }
+      reportStartError(e, setAuthUrl, flash);
     } finally { setBusy(false); }
   };
 

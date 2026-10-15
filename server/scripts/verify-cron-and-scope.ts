@@ -7,7 +7,7 @@ process.env.MTask_DATA_DIR = process.env.MTask_DATA_DIR ?? require('node:os').tm
 
 import { getDb } from '../src/db/connection';
 import { initSchema } from '../src/db/schema';
-import { parseCron, nextCronRun, validateCron, nextCronRunText } from '../src/util/cron';
+import { nextCronRun, validateCron, nextCronRunText } from '../src/util/cron';
 import { TokenService, RecurringService, normalizeScope } from '../src/services/RecurringService';
 
 let failed = 0;

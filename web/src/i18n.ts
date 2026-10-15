@@ -65,7 +65,8 @@ export function onLangChange(fn: () => void): () => void {
  * 逐页迁移时每个页面加一行 `useLang()` 即可，比给每个组件套 Provider 轻得多。
  */
 export function useLang(): Lang {
-  const [lang, setLocal] = useState<Lang>(current);
+  // setter 取名 setLocal 是刻意的：对称的 setLang 会遮蔽模块级导出的 setLang（L50）
+  const [lang, setLocal] = useState<Lang>(current); // NOSONAR: 误报，已解构
   useEffect(() => onLangChange(() => setLocal(current)), []);
   return lang;
 }

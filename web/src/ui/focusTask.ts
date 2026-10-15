@@ -140,7 +140,7 @@ export async function focusTaskByNo(
   if (!taskNo) { navigateToTasks(); return; }
   try {
     const t = await api.get<Task>(`/tasks/by-no/${encodeURIComponent(taskNo)}`);
-    if (!t || !t.id) throw new Error('empty');
+    if (!t?.id) throw new Error('empty');
     applyFocus(t, taskNo, open);
   } catch {
     setSessionState('tasks.search', taskNo);

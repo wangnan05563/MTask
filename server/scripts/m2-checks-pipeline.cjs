@@ -69,6 +69,133 @@ function seedProject(name, reqCount = 2) {
   return pid;
 }
 
+/** 以下 scenarioXxx 各自对应一组验收断言（S3776 拆分自 run，语句顺序与内容逐字不变）。 */
+
+async function scenarioFullCoverage() {
+  // ===== A11 全覆盖 + A9 阶段 + A10 草稿/导入 + A12 二次幂等（主场景）=====
+  adaptersMod.getAdapter = () => makeStub('full');
+  const pid1 = seedProject('M2-full');
+  const stages1 = [];
+  const content = '# PRD\n需求：REQ-001 用户登录；REQ-002 订单取消。';
+  const draft = await gen.generateTestCasesStream({
+    projectId: pid1, toolId: 'stub', content, source: '内部 PRD',
+    onStage: (m) => stages1.push(m), onDelta: () => {},
+  });
+
+  // A9：阶段日志 ≥6 条
+  ck('A9_stage_logs_ge_6', stages1.length >= 6, `stages=${stages1.length} :: ${stages1.slice(0, 3).join(' | ')}`);
+  // A11：全覆盖率 = 100%，未覆盖 = 0
+  ck('A11_full_coverage_rate_100', draft.coverage.rate === 100 && draft.coverage.uncovered === 0, `cov=${JSON.stringify(draft.coverage)}`);
+  // A10：草稿结构完整（2 需求 + ≥2 用例，每用例带步骤/预期）
+  ck('A10_draft_shape', Array.isArray(draft.requirements) && draft.requirements.length === 2 && draft.cases.length >= 2 && draft.cases.every((c) => c.title && c.expected), `reqs=${draft.requirements.length} cases=${draft.cases.length}`);
+
+  // A10：确认导入落库 + 关联正确
+  const imp1 = TestCaseService.importDraft({ projectId: pid1, requirements: draft.requirements, cases: draft.cases, writeRequirements: false });
+  ck('A10_import_inserts_all', imp1.imported === draft.cases.length && imp1.skipped === 0, `imp=${JSON.stringify(imp1)}`);
+  const listed = TestCaseService.list({ projectId: pid1, limit: 0 });
+  const linkOk = listed.items.length === draft.cases.length && listed.items.every((x) => x.reqNo && /^REQ-00[12]$/.test(String(x.reqNo)));
+  ck('A10_cases_linked_to_req', linkOk, `linked=${listed.items.map((x) => x.reqNo).join(',')}`);
+
+  // A12：同一份 PRD 二次生成——生成期即标 alreadyImported，再导入不产生重复，用例总数不变
+  const draft2 = await gen.generateTestCasesStream({
+    projectId: pid1, toolId: 'stub', content, source: '内部 PRD', onStage: () => {}, onDelta: () => {},
+  });
+  ck('A12_second_gen_marked_already_imported', draft2.cases.length > 0 && draft2.cases.every((c) => c.alreadyImported === true), `alreadyImported=${draft2.cases.map((c) => c.alreadyImported).join(',')}`);
+  const imp2 = TestCaseService.importDraft({ projectId: pid1, requirements: draft2.requirements, cases: draft2.cases, writeRequirements: false });
+  ck('A12_second_import_imported_0', imp2.imported === 0 && imp2.skipped === draft2.cases.length, `imp2=${JSON.stringify(imp2)}`);
+  const listed2 = TestCaseService.list({ projectId: pid1, limit: 0 });
+  ck('A12_total_unchanged', listed2.items.length === listed.items.length, `before=${listed.items.length} after=${listed2.items.length}`);
+}
+
+async function scenarioPartialCoverage() {
+  // ===== A11 部分覆盖：只覆盖 REQ-001 → 未覆盖项有显式告警 =====
+  adaptersMod.getAdapter = () => makeStub('partial');
+  const pid2 = seedProject('M2-partial');
+  let warnSeen = false;
+  const draftP = await gen.generateTestCasesStream({
+    projectId: pid2, toolId: 'stub', content: '# PRD\nREQ-001 登录；REQ-002 取消。', source: '内部 PRD',
+    onStage: (m) => { if (/未覆盖|仍未产出|补生成/.test(m)) warnSeen = true; }, onDelta: () => {},
+  });
+  ck('A11_partial_rate_50', draftP.coverage.rate === 50 && draftP.coverage.uncovered === 1, `cov=${JSON.stringify(draftP.coverage)}`);
+  ck('A11_partial_explicit_warning', warnSeen || draftP.notes.some((n) => /未覆盖|仍未产出/.test(n)), `notes=${draftP.notes.join(' / ').slice(0, 120)}`);
+}
+
+async function scenarioAbort() {
+  // ===== A9 中断：预置 aborted 信号 → pipeline 立即抛「生成已中止」 =====
+  adaptersMod.getAdapter = () => makeStub('full');
+  const pid3 = seedProject('M2-abort');
+  const ac = new AbortController();
+  ac.abort();
+  let abortErr = '';
+  try {
+    await gen.generateTestCasesStream({ projectId: pid3, toolId: 'stub', content: '# PRD REQ-001', source: 'x', onStage: () => {}, onDelta: () => {}, signal: ac.signal });
+  } catch (e) { abortErr = e && e.message; }
+  ck('A9_abort_honored', /中止|aborted/i.test(abortErr), `err=${abortErr}`);
+
+  // ===== A9 中断（生成中）：勾选「重新拆分」走 step1 拆分→桩在拆分调用时 abort→步骤后 signal 检查点抛中止
+  // （证明中断在真实 AI 调用之后仍被 pipeline 检查点捕获，非仅起始检查）=====
+  const ac2 = new AbortController();
+  adaptersMod.getAdapter = () => makeStub('full', { onCall: () => ac2.abort() });
+  let abortMid = '';
+  try {
+    await gen.generateTestCasesStream({ projectId: seedProject('M2-abortmid'), toolId: 'stub', content: '# PRD REQ-001 REQ-002', source: 'x', resplitRequirements: true, onStage: () => {}, onDelta: () => {}, signal: ac2.signal });
+  } catch (e) { abortMid = e && e.message; }
+  ck('A9_abort_mid_generation', /中止|aborted/i.test(abortMid), `err=${abortMid}`);
+}
+
+async function scenarioTolerance() {
+  // ===== TOL 块级容错（用户报障回归闸门）：单块调用失败不得报废整轮、不得丢已生成结果 =====
+  // 6 需求 → 2 块（CHUNK_SIZE=5：[REQ-001..005] + [REQ-006]）；桩对含 REQ-006 的调用抛 fetch failed
+  const throwOn = (no) => ({
+    chatStream: async (_sys, user) => {
+      if ((user.match(/REQ-\d+/g) || []).includes(no)) throw new Error('fetch failed（原因：ECONNREFUSED 127.0.0.1:1）');
+      return makeStub('full').chatStream(_sys, user);
+    },
+  });
+  adaptersMod.getAdapter = () => throwOn('REQ-006');
+  const pidT = seedProject('M2-tol', 6);
+  const stagesT = [];
+  let tolErr = '';
+  let draftT = null;
+  try {
+    draftT = await gen.generateTestCasesStream({
+      projectId: pidT, toolId: 'stub', content: '# PRD 需求文档', source: 'x',
+      onStage: (m) => stagesT.push(m), onDelta: () => {},
+    });
+  } catch (e) { tolErr = e && e.message; }
+  ck('TOL_partial_failure_does_not_abort', !tolErr && !!draftT, `err=${tolErr}`);
+  ck('TOL_generated_cases_kept', !!draftT && draftT.cases.length === 5 && draftT.cases.every((c) => c.reqNo !== 'REQ-006'), `cases=${draftT && draftT.cases.map((c) => c.reqNo).join(',')}`);
+  ck('TOL_failed_block_warned_and_noted', !!draftT && stagesT.some((m) => /生成失败/.test(m)) && draftT.notes.some((n) => /因调用失败被跳过/.test(n)), `notes=${draftT && draftT.notes.join(' / ').slice(0, 140)}`);
+  ck('TOL_coverage_marks_failure', !!draftT && draftT.coverage.uncovered === 1 && draftT.coverage.rate === Math.round((5 / 6) * 1000) / 10, `cov=${draftT && JSON.stringify({ r: draftT.coverage.rate, u: draftT.coverage.uncovered })}`);
+}
+
+async function scenarioToleranceEdges() {
+  // 全部块失败（零产出）→ 必须整体抛错并带原始故障原因，不给空草稿假成功
+  adaptersMod.getAdapter = () => ({ chatStream: async () => { throw new Error('fetch failed（原因：ENOTFOUND api.invalid）'); } });
+  let zeroErr = '';
+  try {
+    await gen.generateTestCasesStream({ projectId: seedProject('M2-tolzero'), toolId: 'stub', content: '# PRD', source: 'x', onStage: () => {}, onDelta: () => {} });
+  } catch (e) { zeroErr = e && e.message; }
+  ck('TOL_zero_output_still_throws', /所有需求块生成失败/.test(zeroErr) && /ENOTFOUND/.test(zeroErr), `err=${zeroErr}`);
+
+  // 中止信号不被容错吞掉：块循环中途 abort → 立即整体上抛
+  const ac3 = new AbortController();
+  let calls3 = 0;
+  adaptersMod.getAdapter = () => ({
+    chatStream: async (_sys, user) => {
+      calls3 += 1;
+      if (calls3 === 1) return makeStub('full').chatStream(_sys, user);
+      ac3.abort();
+      return { ok: false, error: '任务已停止' };
+    },
+  });
+  let abortTol = '';
+  try {
+    await gen.generateTestCasesStream({ projectId: seedProject('M2-tolabort', 6), toolId: 'stub', content: '# PRD', source: 'x', onStage: () => {}, onDelta: () => {}, signal: ac3.signal });
+  } catch (e) { abortTol = e && e.message; }
+  ck('TOL_abort_not_swallowed', /停止|中止|aborted/.test(abortTol), `err=${abortTol}`);
+}
+
 async function run() {
   getDb();
   initSchema();
@@ -77,120 +204,11 @@ async function run() {
   const origGetAdapter = adaptersMod.getAdapter;
 
   try {
-    // ===== A11 全覆盖 + A9 阶段 + A10 草稿/导入 + A12 二次幂等（主场景）=====
-    adaptersMod.getAdapter = () => makeStub('full');
-    const pid1 = seedProject('M2-full');
-    const stages1 = [];
-    const content = '# PRD\n需求：REQ-001 用户登录；REQ-002 订单取消。';
-    const draft = await gen.generateTestCasesStream({
-      projectId: pid1, toolId: 'stub', content, source: '内部 PRD',
-      onStage: (m) => stages1.push(m), onDelta: () => {},
-    });
-
-    // A9：阶段日志 ≥6 条
-    ck('A9_stage_logs_ge_6', stages1.length >= 6, `stages=${stages1.length} :: ${stages1.slice(0, 3).join(' | ')}`);
-    // A11：全覆盖率 = 100%，未覆盖 = 0
-    ck('A11_full_coverage_rate_100', draft.coverage.rate === 100 && draft.coverage.uncovered === 0, `cov=${JSON.stringify(draft.coverage)}`);
-    // A10：草稿结构完整（2 需求 + ≥2 用例，每用例带步骤/预期）
-    ck('A10_draft_shape', Array.isArray(draft.requirements) && draft.requirements.length === 2 && draft.cases.length >= 2 && draft.cases.every((c) => c.title && c.expected), `reqs=${draft.requirements.length} cases=${draft.cases.length}`);
-
-    // A10：确认导入落库 + 关联正确
-    const imp1 = TestCaseService.importDraft({ projectId: pid1, requirements: draft.requirements, cases: draft.cases, writeRequirements: false });
-    ck('A10_import_inserts_all', imp1.imported === draft.cases.length && imp1.skipped === 0, `imp=${JSON.stringify(imp1)}`);
-    const listed = TestCaseService.list({ projectId: pid1, limit: 0 });
-    const linkOk = listed.items.length === draft.cases.length && listed.items.every((x) => x.reqNo && /^REQ-00[12]$/.test(String(x.reqNo)));
-    ck('A10_cases_linked_to_req', linkOk, `linked=${listed.items.map((x) => x.reqNo).join(',')}`);
-
-    // A12：同一份 PRD 二次生成——生成期即标 alreadyImported，再导入不产生重复，用例总数不变
-    const draft2 = await gen.generateTestCasesStream({
-      projectId: pid1, toolId: 'stub', content, source: '内部 PRD', onStage: () => {}, onDelta: () => {},
-    });
-    ck('A12_second_gen_marked_already_imported', draft2.cases.length > 0 && draft2.cases.every((c) => c.alreadyImported === true), `alreadyImported=${draft2.cases.map((c) => c.alreadyImported).join(',')}`);
-    const imp2 = TestCaseService.importDraft({ projectId: pid1, requirements: draft2.requirements, cases: draft2.cases, writeRequirements: false });
-    ck('A12_second_import_imported_0', imp2.imported === 0 && imp2.skipped === draft2.cases.length, `imp2=${JSON.stringify(imp2)}`);
-    const listed2 = TestCaseService.list({ projectId: pid1, limit: 0 });
-    ck('A12_total_unchanged', listed2.items.length === listed.items.length, `before=${listed.items.length} after=${listed2.items.length}`);
-
-    // ===== A11 部分覆盖：只覆盖 REQ-001 → 未覆盖项有显式告警 =====
-    adaptersMod.getAdapter = () => makeStub('partial');
-    const pid2 = seedProject('M2-partial');
-    let warnSeen = false;
-    const draftP = await gen.generateTestCasesStream({
-      projectId: pid2, toolId: 'stub', content: '# PRD\nREQ-001 登录；REQ-002 取消。', source: '内部 PRD',
-      onStage: (m) => { if (/未覆盖|仍未产出|补生成/.test(m)) warnSeen = true; }, onDelta: () => {},
-    });
-    ck('A11_partial_rate_50', draftP.coverage.rate === 50 && draftP.coverage.uncovered === 1, `cov=${JSON.stringify(draftP.coverage)}`);
-    ck('A11_partial_explicit_warning', warnSeen || draftP.notes.some((n) => /未覆盖|仍未产出/.test(n)), `notes=${draftP.notes.join(' / ').slice(0, 120)}`);
-
-    // ===== A9 中断：预置 aborted 信号 → pipeline 立即抛「生成已中止」 =====
-    adaptersMod.getAdapter = () => makeStub('full');
-    const pid3 = seedProject('M2-abort');
-    const ac = new AbortController();
-    ac.abort();
-    let abortErr = '';
-    try {
-      await gen.generateTestCasesStream({ projectId: pid3, toolId: 'stub', content: '# PRD REQ-001', source: 'x', onStage: () => {}, onDelta: () => {}, signal: ac.signal });
-    } catch (e) { abortErr = e && e.message; }
-    ck('A9_abort_honored', /中止|aborted/i.test(abortErr), `err=${abortErr}`);
-
-    // ===== A9 中断（生成中）：勾选「重新拆分」走 step1 拆分→桩在拆分调用时 abort→步骤后 signal 检查点抛中止
-    // （证明中断在真实 AI 调用之后仍被 pipeline 检查点捕获，非仅起始检查）=====
-    const ac2 = new AbortController();
-    adaptersMod.getAdapter = () => makeStub('full', { onCall: () => ac2.abort() });
-    let abortMid = '';
-    try {
-      await gen.generateTestCasesStream({ projectId: seedProject('M2-abortmid'), toolId: 'stub', content: '# PRD REQ-001 REQ-002', source: 'x', resplitRequirements: true, onStage: () => {}, onDelta: () => {}, signal: ac2.signal });
-    } catch (e) { abortMid = e && e.message; }
-    ck('A9_abort_mid_generation', /中止|aborted/i.test(abortMid), `err=${abortMid}`);
-
-    // ===== TOL 块级容错（用户报障回归闸门）：单块调用失败不得报废整轮、不得丢已生成结果 =====
-    // 6 需求 → 2 块（CHUNK_SIZE=5：[REQ-001..005] + [REQ-006]）；桩对含 REQ-006 的调用抛 fetch failed
-    const throwOn = (no) => ({
-      chatStream: async (_sys, user) => {
-        if ((user.match(/REQ-\d+/g) || []).includes(no)) throw new Error('fetch failed（原因：ECONNREFUSED 127.0.0.1:1）');
-        return makeStub('full').chatStream(_sys, user);
-      },
-    });
-    adaptersMod.getAdapter = () => throwOn('REQ-006');
-    const pidT = seedProject('M2-tol', 6);
-    const stagesT = [];
-    let tolErr = '';
-    let draftT = null;
-    try {
-      draftT = await gen.generateTestCasesStream({
-        projectId: pidT, toolId: 'stub', content: '# PRD 需求文档', source: 'x',
-        onStage: (m) => stagesT.push(m), onDelta: () => {},
-      });
-    } catch (e) { tolErr = e && e.message; }
-    ck('TOL_partial_failure_does_not_abort', !tolErr && !!draftT, `err=${tolErr}`);
-    ck('TOL_generated_cases_kept', !!draftT && draftT.cases.length === 5 && draftT.cases.every((c) => c.reqNo !== 'REQ-006'), `cases=${draftT && draftT.cases.map((c) => c.reqNo).join(',')}`);
-    ck('TOL_failed_block_warned_and_noted', !!draftT && stagesT.some((m) => /生成失败/.test(m)) && draftT.notes.some((n) => /因调用失败被跳过/.test(n)), `notes=${draftT && draftT.notes.join(' / ').slice(0, 140)}`);
-    ck('TOL_coverage_marks_failure', !!draftT && draftT.coverage.uncovered === 1 && draftT.coverage.rate === Math.round((5 / 6) * 1000) / 10, `cov=${draftT && JSON.stringify({ r: draftT.coverage.rate, u: draftT.coverage.uncovered })}`);
-
-    // 全部块失败（零产出）→ 必须整体抛错并带原始故障原因，不给空草稿假成功
-    adaptersMod.getAdapter = () => ({ chatStream: async () => { throw new Error('fetch failed（原因：ENOTFOUND api.invalid）'); } });
-    let zeroErr = '';
-    try {
-      await gen.generateTestCasesStream({ projectId: seedProject('M2-tolzero'), toolId: 'stub', content: '# PRD', source: 'x', onStage: () => {}, onDelta: () => {} });
-    } catch (e) { zeroErr = e && e.message; }
-    ck('TOL_zero_output_still_throws', /所有需求块生成失败/.test(zeroErr) && /ENOTFOUND/.test(zeroErr), `err=${zeroErr}`);
-
-    // 中止信号不被容错吞掉：块循环中途 abort → 立即整体上抛
-    const ac3 = new AbortController();
-    let calls3 = 0;
-    adaptersMod.getAdapter = () => ({
-      chatStream: async (_sys, user) => {
-        calls3 += 1;
-        if (calls3 === 1) return makeStub('full').chatStream(_sys, user);
-        ac3.abort();
-        return { ok: false, error: '任务已停止' };
-      },
-    });
-    let abortTol = '';
-    try {
-      await gen.generateTestCasesStream({ projectId: seedProject('M2-tolabort', 6), toolId: 'stub', content: '# PRD', source: 'x', onStage: () => {}, onDelta: () => {}, signal: ac3.signal });
-    } catch (e) { abortTol = e && e.message; }
-    ck('TOL_abort_not_swallowed', /停止|中止|aborted/.test(abortTol), `err=${abortTol}`);
+    await scenarioFullCoverage();
+    await scenarioPartialCoverage();
+    await scenarioAbort();
+    await scenarioTolerance();
+    await scenarioToleranceEdges();
   } catch (e) {
     ck('PIPELINE_NO_EXCEPTION', false, 'pipeline 驱动异常：' + (e && (e.stack || e.message)));
   } finally {

@@ -41,7 +41,9 @@ const TD_STYLE = { padding: '4px 6px' } as const;
  *  与测试用例列表（P0~P3 词表）同屏时无需人工换算；存量矩阵值即存储枚举，标注为只读换算。 */
 const PRIO_P_LABEL: Record<string, string> = { urgent: 'P0', high: 'P1', normal: 'P2', low: 'P3' };
 const prioWithP = (p: string | undefined): string => {
-  const v = p || 'normal';
+  // S7760：不改成默认参数——默认参数只在 undefined 时兜底，而 priority 是必选 string，
+  // 存量数据可能为空串；保持「'' 与 undefined 都归一 normal」的原语义，故显式判空。
+  const v = p === undefined || p === '' ? 'normal' : p;
   return PRIO_P_LABEL[v] ? `${v}（${PRIO_P_LABEL[v]}）` : v;
 };
 const PLAIN_INPUT = {

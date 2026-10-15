@@ -47,6 +47,33 @@ function fileToBase64(f: File): Promise<string> {
 
 const opBtn = { display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', padding: '3px 8px' } as const;
 
+/** 生成前置校验（来源二选一 + 扩展名白名单）：返回需提示的文案，null 表示可开始生成 */
+function checkGenSource(args: { toolId: string; docId: string; pickedFile: File | null }): string | null {
+  if (!args.toolId) return '请先在控制台选择 AI 模型（顶部模型下拉）';
+  if (!args.docId && !args.pickedFile) return '请选择内部 PRD 文档，或上传外部文档';
+  if (args.pickedFile) {
+    const lower = args.pickedFile.name.toLowerCase();
+    if (lower.endsWith('.doc') || lower.endsWith('.xls')) return '老式 .doc/.xls 请先另存为 .docx/.xlsx';
+    if (!/\.(docx|xlsx|csv|md|markdown|txt)$/i.test(lower)) return '支持 .docx/.xlsx/.csv/.md/.txt';
+  }
+  return null;
+}
+
+/** 来源标签：内部文档名优先（缺档案名回落到占位名），否则上传文件名 */
+function sourceLabelOf(useDoc: boolean, docs: Array<{ id: string; filename: string }>, docId: string, pickedFile: File | null): string {
+  if (useDoc) return docs.find((d) => d.id === docId)?.filename ?? '内部 PRD 文档';
+  return pickedFile?.name ?? '';
+}
+
+/** SSE 事件落点：stage/chunk/done 直接写控制台与 store；error 返回错误文案交由调用方收尾 */
+function handleGenEvent(name: string, payload: unknown): string | null {
+  if (name === 'stage') testCaseGenStore.pushLog((payload as { msg: string }).msg);
+  else if (name === 'chunk') testCaseGenStore.appendText((payload as { text: string }).text);
+  else if (name === 'done') testCaseGenStore.setResult(payload as TestCaseGenResult);
+  else if (name === 'error') return (payload as { error: string }).error;
+  return null;
+}
+
 export function TestCaseGenPanel({ toolId, onClose, onImported }: {
   readonly toolId: string;
   readonly onClose?: () => void;
@@ -135,15 +162,10 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
   /** 发起流式生成：来源二选一（内部文档优先，否则上传文件），过程写右侧控制台 */
   async function generate(): Promise<void> {
     if (!projectId) { flash('请先选择目标项目'); testCaseGenStore.pushLog('缺少目标项目，已中止'); return; }
-    if (!toolId) { flash('请先在控制台选择 AI 模型（顶部模型下拉）'); return; }
+    const blocked = checkGenSource({ toolId, docId, pickedFile });
+    if (blocked) { flash(blocked); return; }
     const useDoc = !!docId;
-    if (!useDoc && !pickedFile) { flash('请选择内部 PRD 文档，或上传外部文档'); return; }
-    if (pickedFile) {
-      const lower = pickedFile.name.toLowerCase();
-      if (lower.endsWith('.doc') || lower.endsWith('.xls')) { flash('老式 .doc/.xls 请先另存为 .docx/.xlsx'); return; }
-      if (!/\.(docx|xlsx|csv|md|markdown|txt)$/i.test(lower)) { flash('支持 .docx/.xlsx/.csv/.md/.txt'); return; }
-    }
-    const sourceLabel = useDoc ? (docs.find((d) => d.id === docId)?.filename ?? '内部 PRD 文档') : (pickedFile?.name ?? '');
+    const sourceLabel = sourceLabelOf(useDoc, docs, docId, pickedFile);
     const ac = new AbortController();
     testCaseGenStore.setAbortCtrl(ac);
     testCaseGenStore.begin();
@@ -159,12 +181,7 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
       await streamEvents(
         `/plans/testcase-generate-stream?projectId=${encodeURIComponent(projectId)}&toolId=${encodeURIComponent(toolId)}`,
         body,
-        (name, payload) => {
-          if (name === 'stage') testCaseGenStore.pushLog((payload as { msg: string }).msg);
-          else if (name === 'chunk') testCaseGenStore.appendText((payload as { text: string }).text);
-          else if (name === 'done') testCaseGenStore.setResult(payload as TestCaseGenResult);
-          else if (name === 'error') errMsg = (payload as { error: string }).error;
-        },
+        (name, payload) => { errMsg = handleGenEvent(name, payload) ?? errMsg; },
         ac.signal,
       );
       if (errMsg) throw new Error(errMsg);
@@ -194,7 +211,6 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
 
   /** 按 reqNo 分组渲染（保留全局下标用于编辑） */
   const groups = useMemo(() => {
-    const reqNos = draftReqs.map((r) => r.reqNo);
     const byReq = new Map<string, number[]>();
     draftCases.forEach((c, idx) => {
       const arr = byReq.get(c.reqNo);
@@ -203,7 +219,6 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
     const ordered: Array<{ req: DraftRequirement | null; reqNo: string; idxs: number[] }> = [];
     for (const r of draftReqs) { const idxs = byReq.get(r.reqNo) ?? []; byReq.delete(r.reqNo); ordered.push({ req: r, reqNo: r.reqNo, idxs }); }
     for (const [reqNo, idxs] of byReq) ordered.push({ req: null, reqNo, idxs });
-    void reqNos;
     return ordered;
   }, [draftCases, draftReqs]);
 
@@ -292,24 +307,24 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
 
       {/* 生成偏好 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10, fontSize: 11, color: 'var(--text-muted)' }}>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>每需求用例数
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span>每需求用例数</span>
           <select value={perReq} onChange={(e) => setPerReq(e.target.value)} disabled={streaming} style={{ padding: '2px 4px', fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
             {['2', '3', '5', '8'].map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
         </label>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>粒度
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span>粒度</span>
           <select value={granularity} onChange={(e) => setGranularity(e.target.value as 'steps' | 'points')} disabled={streaming} style={{ padding: '2px 4px', fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
             <option value="steps">包含步骤</option>
             <option value="points">仅要点</option>
           </select>
         </label>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>负向用例
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span>负向用例</span>
           <select value={includeNegative ? 'yes' : 'no'} onChange={(e) => setIncludeNegative(e.target.value === 'yes')} disabled={streaming} style={{ padding: '2px 4px', fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
             <option value="yes">包含</option>
             <option value="no">不含</option>
           </select>
         </label>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>优先级策略
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span>优先级策略</span>
           <select value={priorityStrategy} onChange={(e) => setPriorityStrategy(e.target.value)} disabled={streaming} style={{ padding: '2px 4px', fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
             {['风险驱动', '均衡分布', '核心优先'].map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
@@ -406,7 +421,7 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
             <button onClick={() => setAllInclude(true)} disabled={streaming} className="tbtn-anim" title="全选" style={opBtn}>全选</button>
             <button onClick={invertInclude} disabled={streaming} className="tbtn-anim" title="反选" style={opBtn}>反选</button>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>选中 {selectedCount} / {draftCases.length} 条{pendingCount !== selectedCount ? `（待入库 ${pendingCount}）` : ''}</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>选中 {selectedCount} / {draftCases.length} 条{selectedCount === pendingCount ? '' : `（待入库 ${pendingCount}）`}</span>
             <span style={{ flex: 1 }} />
             <button onClick={clearDraft} disabled={streaming} className="tbtn-anim" title="清空草稿" style={opBtn}><X size={11} /> 清空</button>
             <button onClick={() => void doImport()} disabled={streaming || importing || pendingCount === 0} className="tbtn-anim"

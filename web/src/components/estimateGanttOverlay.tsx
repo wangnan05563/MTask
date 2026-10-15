@@ -88,7 +88,7 @@ function toIdx(d: string, rangeStart: string): number {
   );
 }
 
-const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
+const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
 
 /**
  * 计算每行叠加几何。仅做比值钳位，无任何 PERT/E/σ 运算。
@@ -142,7 +142,7 @@ export function ganttEstimateGeometries(
  * E8 叠加层 SVG：与依赖连线 SVG 同尺寸、同坐标、绝对定位覆盖在甘特行容器之上。
  * 半透明 O~P 带（铺满甘特条宽，表示区间）+ E 细线（区间内定位）+ O/P 两端刻度。
  */
-export function EstimateGanttOverlay(props: EstimateGanttOverlayProps): ReactElement | null {
+export function EstimateGanttOverlay(props: Readonly<EstimateGanttOverlayProps>): ReactElement | null {
   const {
     rows,
     rangeStart,

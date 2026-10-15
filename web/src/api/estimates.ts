@@ -424,10 +424,13 @@ export const estimatesApi = {
     api.get<{ projectId: string; snapshots: EstimateSnapshot[] }>(
       `/estimates/snapshots?projectId=${encodeURIComponent(projectId)}&limit=${limit}`),
   /** §7 两版快照差异（服务端算差值，前端只排版；id 必须都在返回的最近 N 条内） */
-  compareSnapshots: (projectId: string, a: string, b: string, limit = 5) =>
-    api.get<{ projectId: string; snapshots: EstimateSnapshot[]; compare: { a: EstimateSnapshot; b: EstimateSnapshot; diff: SnapshotDiff } | null }>(
+  compareSnapshots: (projectId: string, a: string, b: string, limit = 5) => {
+    // S4624：内层模板先赋常量再插值，URL 拼装结果逐字节不变
+    const pair = `${a},${b}`;
+    return api.get<{ projectId: string; snapshots: EstimateSnapshot[]; compare: { a: EstimateSnapshot; b: EstimateSnapshot; diff: SnapshotDiff } | null }>(
       `/estimates/snapshots?projectId=${encodeURIComponent(projectId)}&limit=${limit}`
-      + `&compare=${encodeURIComponent(`${a},${b}`)}`),
+      + `&compare=${encodeURIComponent(pair)}`);
+  },
 };
 
 /** 快照 payload 在服务端是 JSON 文本列（`SELECT *` 原样下发），解析失败交调用方如实显示 */

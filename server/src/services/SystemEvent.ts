@@ -36,7 +36,8 @@ export function logSystemEvent(detail: string): boolean {
     const recent = db
       .prepare('SELECT detail, created_at FROM task_events WHERE task_id = ? AND kind = ? ORDER BY created_at DESC LIMIT 1')
       .get(SYSTEM_TASK_ID, SYSTEM_EVENT_KIND) as { detail: string; created_at: string } | undefined;
-    if (recent && recent.detail === detail && Date.now() - new Date(recent.created_at).getTime() < DEDUPE_WINDOW_MS) {
+    // 可选链判等不参与 TS 收窄，补一句 recent 守卫供 created_at 取值
+    if (recent?.detail === detail && recent && Date.now() - new Date(recent.created_at).getTime() < DEDUPE_WINDOW_MS) {
       return false;
     }
     db.prepare('INSERT INTO task_events (id, task_id, task_no, project_id, kind, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')

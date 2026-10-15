@@ -144,7 +144,7 @@ type PDFDoc = PDFKit.PDFDocument;
  */
 async function newPdfDocImpl(title: string): Promise<{ doc: PDFDoc; done: Promise<void>; finish: () => Buffer }> {
   const PDFDocument = (await import('pdfkit')).default;
-  const doc: PDFDoc = new PDFDocument({ size: 'A4', margin: 50 }) as PDFDoc;
+  const doc: PDFDoc = new PDFDocument({ size: 'A4', margin: 50 });
   if (process.platform === 'win32' && existsSync(PDF_FONT)) doc.font(PDF_FONT);
   const chunks: Buffer[] = [];
   doc.on('data', (c: Buffer) => chunks.push(c));
@@ -216,7 +216,6 @@ function drawTable(doc: PDFDoc, head: string[], body: string[][]): void {
  * 自动处理页面换页。供估算 PDF 绘制「各阶段人天 / 占比」等数据图。
  */
 function drawBarChartImpl(doc: PDFDoc, title: string, items: Array<{ label: string; value: number }>): void {
-  const top = doc.page.margins.top;
   const bottom = doc.page.height - doc.page.margins.bottom;
   const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   doc.x = doc.page.margins.left;

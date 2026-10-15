@@ -679,27 +679,46 @@ function computeAutoAiState(opts: { aiState?: string; verified?: unknown; status
   return opts.aiState;
 }
 
+/** PATCH 入参值域校验：返回错误文案（null=通过）——状态与归档两项都在边界拒收，避免脏数据进库 */
+function checkTaskPatchFields(status: string | undefined, archived: boolean | undefined): string | null {
+  if (status !== undefined && !TASK_STATUSES.has(status)) return `状态非法：${status}（待办状态仅 todo|done，中间态由进度承载）`;
+  if (archived !== undefined && typeof archived !== 'boolean') return 'archived 必须为布尔值';
+  return null;
+}
+
+/** parentId 变更校验：返回错误文案（null=通过）——不可自挂；两级层级下父任务不可已是子任务 */
+function checkParentChange(taskId: string, parentId: unknown): string | null {
+  if (parentId === taskId) return '父任务不能是任务自身';
+  if (!parentId) return null;
+  const parent = getDb().prepare('SELECT id, project_id, parent_id FROM tasks WHERE id = ?').get(parentId as string) as { id: string; project_id: string; parent_id: string | null } | undefined;
+  if (!parent) return '父任务不存在';
+  // T00450 评审修复：两级层级约束——父任务本身不可是子任务（防 A→B→C 三级链破坏 arrange 分组渲染）
+  if (parent.parent_id) return '父任务已是子任务，层级限制两级';
+  return null;
+}
+
+/** parentId 落库口径：未传=不改该列，传空=解除挂接（null），其余原样写入 */
+function toParentIdColumn(parentId: unknown): string | null | undefined {
+  if (parentId === undefined) return undefined;
+  return parentId ? (parentId as string) : null;
+}
+
 api.patch('/tasks/:id', (req, res) => {
   const { title, description, priority, status, verified, aiSummary, handleResult, pinned, categoryId, parentId, color, aiState, derivedFrom, archived } = req.body ?? {}; // T00566：aiState AI 处理状态 // T00490：color 记录字体颜色 // T00779：archived 归档（派生单闭环）
   // T02070 裁决（待办状态二元口径）：tasks 表无 CHECK 约束，本端点与 POST /tasks 是仅有的两个
   // 非类型化写入口。第三值（doing/blocked）不会报错却会让任务从「待办/已完成」两页签同时消失并
   // 脱离 AI 待处理/监控队列，故在边界拒收，而不是让脏数据进库。
-  if (status !== undefined && !TASK_STATUSES.has(status)) { res.status(400).json({ error: `状态非法：${status}（待办状态仅 todo|done，中间态由进度承载）` }); return; }
-  if (archived !== undefined && typeof archived !== 'boolean') { res.status(400).json({ error: 'archived 必须为布尔值' }); return; }
+  const invalid = checkTaskPatchFields(status, archived);
+  if (invalid) { res.status(400).json({ error: invalid }); return; }
   // T00450：parentId 挂接/换父/解除（null）——同项目校验；父任务不可挂到自己或其后代（两级层级下后代不存在，仅防自挂）
   if (parentId !== undefined) {
-    if (parentId === req.params.id) return res.status(400).json({ error: '父任务不能是任务自身' });
-    if (parentId) {
-      const parent = getDb().prepare('SELECT id, project_id, parent_id FROM tasks WHERE id = ?').get(parentId) as { id: string; project_id: string; parent_id: string | null } | undefined;
-      if (!parent) return res.status(400).json({ error: '父任务不存在' });
-      // T00450 评审修复：两级层级约束——父任务本身不可是子任务（防 A→B→C 三级链破坏 arrange 分组渲染）
-      if (parent.parent_id) return res.status(400).json({ error: '父任务已是子任务，层级限制两级' });
-    }
+    const parentError = checkParentChange(req.params.id, parentId);
+    if (parentError) return res.status(400).json({ error: parentError });
   }
   // T00566 二轮：状态**自动驱动**（REST 侧同样不依赖技能）——显式 aiState 优先；
   // 否则按语义推导：验证失败→failed；标记完成→unread；回传处理结果→unread
   const autoAiState = computeAutoAiState({ aiState, verified, status, handleResult });
-  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId, parent_id: parentId === undefined ? undefined : (parentId || null), color, ai_state: autoAiState, derived_from: derivedFrom, archived })); // T00779：archived 归档
+  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId, parent_id: toParentIdColumn(parentId), color, ai_state: autoAiState, derived_from: derivedFrom, archived })); // T00779：archived 归档
 });
 
 api.post('/tasks/move', (req, res) => {
@@ -1557,53 +1576,111 @@ api.post('/plans/prd-generate-stream', raw({ type: () => true, limit: '30mb' }),
 });
 
 // ---------- T01491：从 PRD 生成测试用例（AI 控制台卡片，内置技能 testcase-generate 驱动，SSE 流式输出） ----------
+/** 上传文档的扩展名白名单校验：返回错误文案（null=通过）——在 SSE 建立前快速失败，前端才拿得到结构化 400 */
+function checkPrdUploadExt(fname: string): string | null {
+  const extMatch = /\.[a-z0-9]+$/.exec(fname.toLowerCase());
+  const ext = extMatch ? extMatch[0] : '';
+  if (!['.doc', '.docx', '.xls', '.xlsx', '.csv', '.md', '.markdown', '.txt'].includes(ext)) {
+    return `不支持的文件格式「${ext || fname}」——支持 .docx/.xlsx/.csv/.md/.txt`;
+  }
+  if (ext === '.doc') return '老式 .doc 暂不支持，请用 Word 另存为 .docx 后重新上传';
+  if (ext === '.xls') return '老式 .xls 暂不支持，请用 Excel 另存为 .xlsx 后重新上传';
+  return null;
+}
+
+/** 请求体归一：application/json 时全局 express.json() 已解析为对象（streamEvents 走这条），否则 raw() 给 Buffer */
+function toObjectPayload(body: unknown): Record<string, unknown> {
+  return body && !Buffer.isBuffer(body) && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+}
+
+/** 字段取值：请求体里的非空字符串优先，其次 query 同名字段，都没有则空串 */
+function pickField(payload: Record<string, unknown>, key: string, fromQuery?: string): string {
+  const raw = payload[key];
+  const inBody = typeof raw === 'string' ? raw : '';
+  return inBody || fromQuery || '';
+}
+
+/** prefs 只认对象形态：脏值（字符串/数字）一律当未传，交服务端默认 */
+function pickPrefs(payload: Record<string, unknown>): GenPrefs | undefined {
+  const prefs = payload.prefs;
+  return prefs && typeof prefs === 'object' ? (prefs as GenPrefs) : undefined;
+}
+
+/** PRD 来源解析两型（S4323：内联联合提别名，判别式 ok 不变） */
+type UploadedPrdResult = { ok: true; fname: string; text: string } | { ok: false; error: string };
+type PrdSourceResult = { ok: true; text: string; source: string } | { ok: false; error: string };
+/** raw Body 形态：express.json 解析出的对象，或 raw 中间件产出的 Buffer，或两者皆无 */
+type PrdUploadBody = Buffer | Record<string, unknown> | undefined;
+
+/** 上传形态的 PRD 取文本：raw Buffer 或 contentBase64 → 纯文本；校验不过则回 400 文案（抽取失败照旧抛出） */
+async function extractUploadedPrdText(
+  body: PrdUploadBody,
+  payload: Record<string, unknown>,
+  filename: string,
+): Promise<UploadedPrdResult> {
+  let fileBuf: Buffer | undefined;
+  if (Buffer.isBuffer(body) && body.length) fileBuf = body;
+  else if (typeof payload.contentBase64 === 'string') fileBuf = Buffer.from(payload.contentBase64, 'base64');
+  if (!fileBuf?.length) return { ok: false, error: '请提供 PRD 来源（内部文档 prdDocId 或上传文件）' };
+  const fname = filename || '需求文档.md';
+  const extError = checkPrdUploadExt(fname);
+  if (extError) return { ok: false, error: extError };
+  return { ok: true, fname, text: await PrdGenService.extractSourceText(fname, fileBuf) };
+}
+
+/** 解析 PRD 原文：内部文档优先（content_md 已是 Markdown），否则把上传文件二进制抽取为文本。
+ *  成功返回文本与来源标签；任一校验不过则返回 error 文案（调用方据此回 400），与原内联逻辑逐路径一致。
+ *  入参收进单对象，避免抽参后函数形参 >3 触发 S107。 */
+async function resolvePrdSource(opts: {
+  body: PrdUploadBody;
+  payload: Record<string, unknown>;
+  filename: string;
+  prdDocId: string;
+  sourceLabel: string;
+}): Promise<PrdSourceResult> {
+  const { body, payload, filename, prdDocId, sourceLabel } = opts;
+  let text = '';
+  let resolvedSource = sourceLabel;
+  try {
+    if (prdDocId) {
+      const doc = PlanService.getPrdDoc(prdDocId) as { filename?: string; content_md?: string } | undefined;
+      if (!doc) return { ok: false, error: 'PRD 文档不存在' };
+      text = doc.content_md ?? '';
+      resolvedSource = resolvedSource || doc.filename || '内部 PRD 文档';
+    } else {
+      const r = await extractUploadedPrdText(body, payload, filename);
+      if (!r.ok) return { ok: false, error: r.error };
+      text = r.text;
+      resolvedSource = resolvedSource || r.fname;
+    }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  if (!text.trim()) return { ok: false, error: 'PRD 内容为空，无法生成用例' };
+  return { ok: true, text, source: resolvedSource };
+}
+
 // 与 prd-generate-stream 同处同构：raw(30mb) 兼容「application/json（streamEvents 通道，body 为对象）」与
 // 「文件二进制（raw Buffer）」两种上送形态；来源支持内部 PRD 文档（prdDocId）或上传外部文档（contentBase64）。
 api.post('/plans/testcase-generate-stream', raw({ type: () => true, limit: '30mb' }), async (req, res) => {
   const { projectId, toolId } = req.query as Record<string, string | undefined>;
   if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
   if (!toolId) { res.status(400).json({ error: '请选择 AI 模型' }); return; }
-  // 请求体归一：application/json 时全局 express.json() 已解析为对象（streamEvents 走这条），否则 raw() 给 Buffer
-  const body = req.body as Buffer | Record<string, unknown> | undefined;
-  const payload: Record<string, unknown> = body && !Buffer.isBuffer(body) && typeof body === 'object' ? body : {};
-  const qfilename = req.query.filename as string | undefined;
-  const filename = (typeof payload.filename === 'string' && payload.filename) || qfilename || '';
-  const prdDocId = (typeof payload.prdDocId === 'string' && payload.prdDocId) || (req.query.prdDocId as string | undefined) || '';
-  const sourceLabel = (typeof payload.source === 'string' && payload.source) || (req.query.source as string | undefined) || '';
+  const body = req.body as PrdUploadBody;
+  const payload = toObjectPayload(body);
+  const filename = pickField(payload, 'filename', req.query.filename as string | undefined);
+  const prdDocId = pickField(payload, 'prdDocId', req.query.prdDocId as string | undefined);
+  const sourceLabel = pickField(payload, 'source', req.query.source as string | undefined);
   const resplit = payload.resplit === true || req.query.resplit === '1';
-  const prefs = payload.prefs && typeof payload.prefs === 'object' ? (payload.prefs as GenPrefs) : undefined;
+  const prefs = pickPrefs(payload);
 
   if (!getDb().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) { res.status(400).json({ error: '项目不存在' }); return; }
 
-  // 解析 PRD 原文：内部文档优先（content_md 已是 Markdown），否则把上传文件二进制抽取为文本
-  let text = '';
-  let resolvedSource = sourceLabel;
-  try {
-    if (prdDocId) {
-      const doc = PlanService.getPrdDoc(prdDocId) as { filename?: string; content_md?: string } | undefined;
-      if (!doc) { res.status(400).json({ error: 'PRD 文档不存在' }); return; }
-      text = doc.content_md ?? '';
-      resolvedSource = resolvedSource || doc.filename || '内部 PRD 文档';
-    } else {
-      let fileBuf: Buffer | undefined;
-      if (Buffer.isBuffer(body) && body.length) fileBuf = body;
-      else if (typeof payload.contentBase64 === 'string') fileBuf = Buffer.from(payload.contentBase64, 'base64');
-      if (!fileBuf?.length) { res.status(400).json({ error: '请提供 PRD 来源（内部文档 prdDocId 或上传文件）' }); return; }
-      const fname = filename || '需求文档.md';
-      const extMatch = /\.[a-z0-9]+$/.exec(fname.toLowerCase());
-      const ext = extMatch ? extMatch[0] : '';
-      if (!['.doc', '.docx', '.xls', '.xlsx', '.csv', '.md', '.markdown', '.txt'].includes(ext)) {
-        res.status(400).json({ error: `不支持的文件格式「${ext || fname}」——支持 .docx/.xlsx/.csv/.md/.txt` }); return;
-      }
-      if (ext === '.doc') { res.status(400).json({ error: '老式 .doc 暂不支持，请用 Word 另存为 .docx 后重新上传' }); return; }
-      if (ext === '.xls') { res.status(400).json({ error: '老式 .xls 暂不支持，请用 Excel 另存为 .xlsx 后重新上传' }); return; }
-      text = await PrdGenService.extractSourceText(fname, fileBuf);
-      resolvedSource = resolvedSource || fname;
-    }
-  } catch (e) {
-    res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); return;
-  }
-  if (!text.trim()) { res.status(400).json({ error: 'PRD 内容为空，无法生成用例' }); return; }
+  // 解析 PRD 原文（内部文档优先，否则抽取上传文件）——抽到 resolvePrdSource 以降认知复杂度（S3776），逐路径文案/顺序不变
+  const resolved = await resolvePrdSource({ body, payload, filename, prdDocId, sourceLabel });
+  if (!resolved.ok) { res.status(400).json({ error: resolved.error }); return; }
+  const text = resolved.text;
+  const resolvedSource = resolved.source;
 
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache');

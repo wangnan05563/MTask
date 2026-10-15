@@ -18,7 +18,7 @@ import { parsePlanDeps } from '../util/planDeps'; // T01689：deps 解析单源�
 import { ExecSessionService } from '../services/ExecSessionService'; // T01269：执行会话心跳上报（FR-1.2）
 import { SupervisorService } from '../services/SupervisorService'; // T01286：监督状态查询（FR-5.2）
 import { resolvePrdContext } from '../util/prdContext'; // T00763：PRD 上下文反查
-import { TestCaseService, type CasePatch } from '../services/TestCaseService'; // T01493：测试用例 MCP 工具（复用服务层单源枚举与幂等落库）
+import { TestCaseService, type CaseBatchPatch, type CasePatch } from '../services/TestCaseService'; // T01493：测试用例 MCP 工具（复用服务层单源枚举与幂等落库）
 import { CASE_PRIORITY, CASE_TYPE, CASE_METHOD, CASE_STATUS, CASE_RESULT } from '../util/testCaseEnums'; // T01493：zod 枚举从单源导入，杜绝第三次口径漂移
 import { ArchiveService } from '../services/ArchiveService';
 import { EstimateService, ESTIMATE_META, ESTIMATE_PHASES, ESTIMATE_SOURCES } from '../services/EstimateService'; // T02044：估算 MCP 工具（枚举单源，zod 不许自造第二套词表）
@@ -79,6 +79,151 @@ function validateParent(parentId: string | undefined, pid: string): string | nul
     if (parent.project_id !== pid) return '子任务与父任务必须同项目';
   }
   return null;
+}
+
+/**
+ * mtask_import_plan 的条目形状：handler 参数经 zod 推断后在闭包/辅助函数的回调里会丢类型，
+ * 故显式标注（同时供下面几条 import_plan 辅助共用）。
+ */
+type PlanImportItem = { title: string; description?: string; startDate?: string; durationDays?: number; assignee?: string; status?: 'todo' | 'doing' | 'done' | 'blocked'; kind?: 'normal' | 'milestone' | 'daily'; complexity?: number; reqNos?: string[]; ref?: string; deps?: Array<{ ref?: string; planId?: string; planTitle?: string; type: 'serial' | 'parallel' | 'child' }> };
+
+/**
+ * T01704：依赖解析——创建完成后把 ref/planId/planTitle 引用解析为 [{id,type}] 落库
+ * （serial/parallel 触发排期联动；child 归属触发里程碑包络收口，均在 PlanService.update 内完成）。
+ * T02131：两条通道共用，rowIds 必须与 items 下标对齐（关联通道用 importPrd 的 planRowIds，
+ * 因为撞名让号/复用命中会让「按标题找 id」不可靠）。未解析到的引用写进 warnings。
+ */
+function applyPlanItemDeps(pid: string, items: PlanImportItem[], rowIds: Array<string | null>, warnings: string[]): void {
+  if (!items.some((it) => it.deps?.length)) return;
+  const refToId = new Map<string, string>();
+  items.forEach((it, i) => { const id = rowIds[i]; if (it.ref?.trim() && id) refToId.set(it.ref.trim(), id); });
+  items.forEach((it, i) => {
+    const id = rowIds[i];
+    if (!id || !it.deps?.length) return;
+    const parsed: Array<{ id: string; type: string }> = [];
+    for (const d of it.deps) {
+      let target: string | undefined;
+      if (d.ref?.trim()) target = refToId.get(d.ref.trim());
+      else if (d.planId?.trim()) target = d.planId.trim();
+      else if (d.planTitle?.trim()) {
+        const row = getDb().prepare('SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0').get(pid, d.planTitle.trim()) as { id: string } | undefined;
+        target = row?.id;
+      }
+      if (!target) {
+        warnings.push(`条目「${it.title}」的依赖 ${d.ref ?? d.planId ?? d.planTitle}（${d.type}）未解析到，已跳过`);
+        continue;
+      }
+      parsed.push({ id: target, type: d.type });
+    }
+    if (parsed.length > 0) PlanService.update(id, { deps: JSON.stringify(parsed) });
+  });
+}
+
+/** T01868 防重入前检：回传本批里与项目已有计划同名的标题清单 + 去重后的标题总数（供占比判定与文案） */
+function scanDuplicatePlanTitles(pid: string, items: PlanImportItem[]): { dups: string[]; titleCount: number } {
+  const titles = new Set(items.map((it) => it.title.trim()));
+  const countSame = getDb().prepare('SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0');
+  const dups: string[] = [];
+  for (const title of titles) {
+    if ((countSame.get(pid, title) as { n: number }).n > 0) dups.push(title);
+  }
+  return { dups, titleCount: titles.size };
+}
+
+/** T02131：importPrd 回执的可读告警汇总（编号顺延 / 断链 / 争号 / 零关联需求 / 未挂矩阵的计划） */
+function pushPrdImportWarnings(warnings: string[], r: ReturnType<typeof PlanService.importPrd>, items: PlanImportItem[]): void {
+  if (r.reqNoMap.length > 0) {
+    const moved = r.reqNoMap.slice(0, 5).map((x) => `${x.from}→${x.to}`).join('、');
+    const moreNote = r.reqNoMap.length > 5 ? ` 等 ${r.reqNoMap.length} 项` : '';
+    warnings.push(`需求编号已按项目内唯一顺延（避免与存量矩阵撞号）：${moved}${moreNote}`);
+  }
+  for (const n of r.unlinkedReqNos) warnings.push(`计划引用的需求编号「${n}」在矩阵中不存在，关联未落`);
+  for (const n of r.ambiguousReqNos) warnings.push(`本批有两条需求争用同一编号「${n}」，关联按后登记者落位，请核对归属`);
+  if (r.orphanRequirements.length > 0) {
+    const orphanList = r.orphanRequirements.slice(0, 5).map((x) => `${x.reqNo} ${x.title}`).join('、');
+    warnings.push(`${r.orphanRequirements.length} 条新建需求零关联（无任何计划/待办挂到它）：${orphanList}`);
+  }
+  const unanchored = items.filter((it, i) => it.kind !== 'milestone' && !it.reqNos?.length && r.planRowIds[i]).length;
+  if (unanchored > 0) warnings.push(`${unanchored} 条计划未带 reqNos，本轮只建了计划行（无矩阵关联）`);
+}
+
+/** update/delete 计划条目共用定位：projectId → projectName 解析项目，再按 id 或标题解析计划条目 id；失败回错误文案 */
+function locatePlanEntry(a: { projectId?: string; projectName?: string; id?: string; title?: string }): { pid: string; id: string; error?: string } {
+  const db = getDb();
+  let pid = a.projectId?.trim() || '';
+  if (!pid && a.projectName?.trim()) {
+    const p = db.prepare('SELECT id FROM projects WHERE name = ?').get(a.projectName.trim()) as { id: string } | undefined;
+    if (!p) return { pid, id: '', error: `项目不存在：${a.projectName}` };
+    pid = p.id;
+  }
+  let id = a.id?.trim() || '';
+  if (!id && a.title?.trim()) {
+    if (!pid) return { pid, id: '', error: '按标题定位需要 projectId 或 projectName' };
+    const row = db.prepare('SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0').get(pid, a.title.trim()) as { id: string } | undefined;
+    if (!row) return { pid, id: '', error: `计划条目不存在：${a.title}` };
+    id = row.id;
+  }
+  if (!id) return { pid, id: '', error: 'id 或 title 必填' };
+  return { pid, id };
+}
+
+/** 把 update_plan 传入的 deps 引用（planId/planTitle）解析为 [{id,type}] 的 JSON 串，未解析到的回警告 */
+function serializePlanDeps(pid: string, deps: Array<{ planId?: string; planTitle?: string; type: string }>): { depsStr: string; warnings: string[] } {
+  const warnings: string[] = [];
+  const parsed: Array<{ id: string; type: string }> = [];
+  for (const d of deps) {
+    let target: string | undefined;
+    if (d.planId?.trim()) target = d.planId.trim();
+    else if (d.planTitle?.trim()) {
+      const row = getDb().prepare('SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0').get(pid, d.planTitle.trim()) as { id: string } | undefined;
+      target = row?.id;
+    }
+    if (!target) { warnings.push(`依赖 ${d.planId ?? d.planTitle}（${d.type}）未解析到，已跳过`); continue; }
+    parsed.push({ id: target, type: d.type });
+  }
+  return { depsStr: JSON.stringify(parsed), warnings };
+}
+
+/** mtask_update_testcases 各通道（省略字段 = 不改，落库与枚举回落都在 TestCaseService） */
+function buildCasePatch(a: CasePatch): CasePatch {
+  const patch: CasePatch = {};
+  if (a.title !== undefined) patch.title = a.title;
+  if (a.caseNo !== undefined) patch.caseNo = a.caseNo;
+  if (a.module !== undefined) patch.module = a.module;
+  if (a.preconditions !== undefined) patch.preconditions = a.preconditions;
+  if (a.expected !== undefined) patch.expected = a.expected;
+  if (a.testData !== undefined) patch.testData = a.testData;
+  if (a.postconditions !== undefined) patch.postconditions = a.postconditions;
+  if (a.priority !== undefined) patch.priority = a.priority;
+  if (a.type !== undefined) patch.type = a.type;
+  if (a.method !== undefined) patch.method = a.method;
+  if (a.status !== undefined) patch.status = a.status;
+  if (a.lastResult !== undefined) patch.lastResult = a.lastResult;
+  if (a.tags !== undefined) patch.tags = a.tags;
+  if (a.reqId !== undefined) patch.reqId = a.reqId;
+  if (a.steps !== undefined) patch.steps = a.steps;
+  return patch;
+}
+
+/** batch-patch 通道：参数校验（缺 caseIds/patch 拒写）+ 服务层批量落库 */
+function patchCasesInBatch(caseIds: string[] | undefined, patch: CaseBatchPatch | undefined): CallToolResult {
+  if (!Array.isArray(caseIds) || caseIds.length === 0) return err('batch-patch 需要 caseIds 数组');
+  if (!patch) return err('batch-patch 需要 patch');
+  const r = TestCaseService.batchPatch(caseIds, patch);
+  return ok(JSON.stringify({ ok: true, ...r }), { ok: true, ...r });
+}
+
+/** link 通道：reqId 必传（空串或 null 即解除关联） */
+function linkCaseToReq(caseId: string, reqId: string | null | undefined): CallToolResult {
+  if (reqId === undefined) return err('link 需要 reqId（传空串或 null 解除关联）');
+  const row = TestCaseService.update(caseId, { reqId });
+  return ok(JSON.stringify(row), { ...row });
+}
+
+/** update 通道：并入显式提供的字段后交服务层 */
+function patchSingleCase(caseId: string, patch: CasePatch): CallToolResult {
+  const row = TestCaseService.update(caseId, patch);
+  return ok(JSON.stringify(row), { ...row });
 }
 
 /** 创建 MCP server 并注册全部工具 */
@@ -294,54 +439,18 @@ export async function createMCPServer(): Promise<McpServer> {
       }
       if (!pid) return err('projectId 或 projectName 必填');
       const warnings: string[] = [];
-      // 显式标注条目形状：handler 参数经 zod 推断后在本闭包内的 forEach 回调无法保留类型
-      type ItemShape = { title: string; description?: string; startDate?: string; durationDays?: number; assignee?: string; status?: 'todo' | 'doing' | 'done' | 'blocked'; kind?: 'normal' | 'milestone' | 'daily'; complexity?: number; reqNos?: string[]; ref?: string; deps?: Array<{ ref?: string; planId?: string; planTitle?: string; type: 'serial' | 'parallel' | 'child' }> };
-      const items = a.items as ItemShape[];
+      const items = a.items as PlanImportItem[];
       // T02131：关联通道判定——带矩阵行 / 带需求编号 / 要求生成待办三者之一，即改走 importPrd
       // （与页面「PRD 导入」同一条链路：需求项→计划 req_ids→待办 linked_task_id，含里程碑工期汇总与 child 边）。
       // 不传关联字段仍走 createBatch 纯计划通道，保持既有轻量语义与 T01868 拦截口径。
       const wantLinkage = (a.requirements?.length ?? 0) > 0 || items.some((it) => it.reqNos?.length) || a.createTasks === true;
-      // T01704：依赖解析——创建完成后把 ref/planId/planTitle 引用解析为 [{id,type}] 落库
-      //（serial/parallel 触发排期联动；child 归属触发里程碑包络收口，均在 PlanService.update 内完成）
-      // T02131：两条通道共用，rowIds 必须与 items 下标对齐（关联通道用 importPrd 的 planRowIds，
-      // 因为撞名让号/复用命中会让「按标题找 id」不可靠）。
-      const resolveDeps = (rowIds: Array<string | null>) => {
-        if (!items.some((it) => it.deps?.length)) return;
-        const refToId = new Map<string, string>();
-        items.forEach((it, i) => { const id = rowIds[i]; if (it.ref?.trim() && id) refToId.set(it.ref.trim(), id); });
-        items.forEach((it, i) => {
-          const id = rowIds[i];
-          if (!id || !it.deps?.length) return;
-          const parsed: Array<{ id: string; type: string }> = [];
-          for (const d of it.deps) {
-            let target: string | undefined;
-            if (d.ref?.trim()) target = refToId.get(d.ref.trim());
-            else if (d.planId?.trim()) target = d.planId.trim();
-            else if (d.planTitle?.trim()) {
-              const row = getDb().prepare('SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0').get(pid, d.planTitle.trim()) as { id: string } | undefined;
-              target = row?.id;
-            }
-            if (!target) {
-              warnings.push(`条目「${it.title}」的依赖 ${d.ref ?? d.planId ?? d.planTitle}（${d.type}）未解析到，已跳过`);
-              continue;
-            }
-            parsed.push({ id: target, type: d.type });
-          }
-          if (parsed.length > 0) PlanService.update(id, { deps: JSON.stringify(parsed) });
-        });
-      };
       if (wantLinkage) {
         // T01868 防重入前检：importPrd 内部按 T01875 默认口径给撞名行加「（2）」后缀，
         // 会让重复拆解静默落成第二条轨道（比 createBatch 的拦截更隐蔽），故在入口按同阈值先拒。
         if (!a.allowDuplicates) {
-          const titles = new Set(items.map((it) => it.title.trim()));
-          const countSame = getDb().prepare('SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0');
-          const dups: string[] = [];
-          for (const title of titles) {
-            if ((countSame.get(pid, title) as { n: number }).n > 0) dups.push(title);
-          }
-          if (dups.length >= 3 && dups.length / titles.size >= 0.6) {
-            return err(`防重入拦截：本批 ${dups.length}/${titles.size} 个标题与项目已有计划同名，判定为同一份拆解重复落库（示例：${dups.slice(0, 5).join('、')}）。确属新增条目请显式传 allowDuplicates`);
+          const { dups, titleCount } = scanDuplicatePlanTitles(pid, items);
+          if (dups.length >= 3 && dups.length / titleCount >= 0.6) {
+            return err(`防重入拦截：本批 ${dups.length}/${titleCount} 个标题与项目已有计划同名，判定为同一份拆解重复落库（示例：${dups.slice(0, 5).join('、')}）。确属新增条目请显式传 allowDuplicates`);
           }
         }
         type ReqShape = { reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string };
@@ -353,17 +462,8 @@ export async function createMCPServer(): Promise<McpServer> {
           })),
           createTasks: a.createTasks === true,
         });
-        resolveDeps(r.planRowIds);
-        if (r.reqNoMap.length > 0) {
-          warnings.push(`需求编号已按项目内唯一顺延（避免与存量矩阵撞号）：${r.reqNoMap.slice(0, 5).map((x) => `${x.from}→${x.to}`).join('、')}${r.reqNoMap.length > 5 ? ` 等 ${r.reqNoMap.length} 项` : ''}`);
-        }
-        for (const n of r.unlinkedReqNos) warnings.push(`计划引用的需求编号「${n}」在矩阵中不存在，关联未落`);
-        for (const n of r.ambiguousReqNos) warnings.push(`本批有两条需求争用同一编号「${n}」，关联按后登记者落位，请核对归属`);
-        if (r.orphanRequirements.length > 0) {
-          warnings.push(`${r.orphanRequirements.length} 条新建需求零关联（无任何计划/待办挂到它）：${r.orphanRequirements.slice(0, 5).map((x) => `${x.reqNo} ${x.title}`).join('、')}`);
-        }
-        const unanchored = items.filter((it, i) => it.kind !== 'milestone' && !it.reqNos?.length && r.planRowIds[i]).length;
-        if (unanchored > 0) warnings.push(`${unanchored} 条计划未带 reqNos，本轮只建了计划行（无矩阵关联）`);
+        applyPlanItemDeps(pid, items, r.planRowIds, warnings);
+        pushPrdImportWarnings(warnings, r, items);
         const result = {
           channel: 'prd_import' as const, requirements: r.requirements, plans: r.plans, reusedPlans: r.reusedPlans,
           tasks: r.tasks, unlinkedReqNos: r.unlinkedReqNos, reqNoMap: r.reqNoMap, dupPlanTitles: r.dupPlanTitles,
@@ -373,7 +473,7 @@ export async function createMCPServer(): Promise<McpServer> {
       }
       const r = PlanService.createBatch(pid, items, { dupPolicy: a.allowDuplicates ? 'warn' : 'block' });
       warnings.unshift(...(r.warnings ?? []));
-      resolveDeps(r.ids);
+      applyPlanItemDeps(pid, items, r.ids, warnings);
       // T02131：孤儿回写点名——纯计划通道不会写 req_ids/linked_task_id（四期 K1~K8 12 行孤儿当时零提示）。
       // 只对成规模的拆解回写（≥3 条）提示，一两条的临时补录不值得报警。
       if (items.length >= 3) {
@@ -410,37 +510,14 @@ export async function createMCPServer(): Promise<McpServer> {
   }, async (a) => {
     try {
       const db = getDb();
-      let pid = a.projectId?.trim() || '';
-      if (!pid && a.projectName?.trim()) {
-        const p = db.prepare('SELECT id FROM projects WHERE name = ?').get(a.projectName.trim()) as { id: string } | undefined;
-        if (!p) return err(`项目不存在：${a.projectName}`);
-        pid = p.id;
-      }
-      let id = a.id?.trim() || '';
-      if (!id && a.title?.trim()) {
-        if (!pid) return err('按标题定位需要 projectId 或 projectName');
-        const row = db.prepare('SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0').get(pid, a.title.trim()) as { id: string } | undefined;
-        if (!row) return err(`计划条目不存在：${a.title}`);
-        id = row.id;
-      }
-      if (!id) return err('id 或 title 必填');
-      let depsStr: string | undefined;
+      const loc = locatePlanEntry(a);
+      if (loc.error) return err(loc.error);
+      const id = loc.id;
       if (a.deps !== undefined) {
         const cur = db.prepare('SELECT project_id FROM plan_tasks WHERE id = ?').get(id) as { project_id: string } | undefined;
         if (!cur) return err('计划条目不存在：' + id);
-        const warnings: string[] = [];
-        const parsed: Array<{ id: string; type: string }> = [];
-        for (const d of a.deps) {
-          let target: string | undefined;
-          if (d.planId?.trim()) target = d.planId.trim();
-          else if (d.planTitle?.trim()) {
-            const row = db.prepare('SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0').get(cur.project_id, d.planTitle.trim()) as { id: string } | undefined;
-            target = row?.id;
-          }
-          if (!target) { warnings.push(`依赖 ${d.planId ?? d.planTitle}（${d.type}）未解析到，已跳过`); continue; }
-          parsed.push({ id: target, type: d.type });
-        }
-        depsStr = JSON.stringify(parsed);
+        // 依赖引用先解析成 [{id,type}] JSON（未解析到的项回警告并跳过），再与其余字段一并交服务层
+        const { depsStr, warnings } = serializePlanDeps(cur.project_id, a.deps);
         const row = PlanService.update(id, {
           title: a.newTitle, description: a.description, startDate: a.startDate, durationDays: a.durationDays,
           progress: a.progress, status: a.status, assignee: a.assignee, kind: a.kind, color: a.color, deps: depsStr,
@@ -832,41 +909,15 @@ export async function createMCPServer(): Promise<McpServer> {
         });
         return ok(JSON.stringify(row), { ...row });
       }
-      if (a.action === 'batch-patch') {
-        if (!Array.isArray(a.caseIds) || a.caseIds.length === 0) return err('batch-patch 需要 caseIds 数组');
-        if (!a.patch) return err('batch-patch 需要 patch');
-        const r = TestCaseService.batchPatch(a.caseIds, a.patch);
-        return ok(JSON.stringify({ ok: true, ...r }), { ok: true, ...r });
-      }
+      if (a.action === 'batch-patch') return patchCasesInBatch(a.caseIds, a.patch);
       if (!a.caseId) return err(`${a.action} 需要 caseId`);
       if (a.action === 'delete') {
         TestCaseService.remove(a.caseId);
         return ok(JSON.stringify({ ok: true, deleted: a.caseId }), { ok: true, deleted: a.caseId });
       }
-      if (a.action === 'link') {
-        if (a.reqId === undefined) return err('link 需要 reqId（传空串或 null 解除关联）');
-        const row = TestCaseService.update(a.caseId, { reqId: a.reqId });
-        return ok(JSON.stringify(row), { ...row });
-      }
+      if (a.action === 'link') return linkCaseToReq(a.caseId, a.reqId);
       // update：仅把调用方显式提供的字段并入 patch（省略=不改）
-      const patch: CasePatch = {};
-      if (a.title !== undefined) patch.title = a.title;
-      if (a.caseNo !== undefined) patch.caseNo = a.caseNo;
-      if (a.module !== undefined) patch.module = a.module;
-      if (a.preconditions !== undefined) patch.preconditions = a.preconditions;
-      if (a.expected !== undefined) patch.expected = a.expected;
-      if (a.testData !== undefined) patch.testData = a.testData;
-      if (a.postconditions !== undefined) patch.postconditions = a.postconditions;
-      if (a.priority !== undefined) patch.priority = a.priority;
-      if (a.type !== undefined) patch.type = a.type;
-      if (a.method !== undefined) patch.method = a.method;
-      if (a.status !== undefined) patch.status = a.status;
-      if (a.lastResult !== undefined) patch.lastResult = a.lastResult;
-      if (a.tags !== undefined) patch.tags = a.tags;
-      if (a.reqId !== undefined) patch.reqId = a.reqId;
-      if (a.steps !== undefined) patch.steps = a.steps;
-      const row = TestCaseService.update(a.caseId, patch);
-      return ok(JSON.stringify(row), { ...row });
+      return patchSingleCase(a.caseId, buildCasePatch(a));
     } catch (e) { return err((e as Error).message); }
   });
 
@@ -1437,7 +1488,8 @@ ${a.result}`;
     try {
       const planId = (a.planId ?? '').trim();
       const taskNo = (a.taskNo ?? '').trim();
-      let resolved = { planId, projectId: '' };
+      // 定位结果在下面两个分支各自赋值（第三分支直接 return），初值不会被读到，故只声明不赋死值
+      let resolved: { planId: string; projectId: string };
       let planTitle = '';
       if (planId) {
         const row = getDb()

@@ -42,6 +42,14 @@ function advanceNext(freq: Freq, from = new Date(), cron = ''): string {
   return d.toISOString().slice(0, 19).replace('T', ' ');
 }
 
+/** S6551：unknown 值直接 String() 遇对象会得 [object Object]——显式类型分支（null/undefined 走兜底，对象序列化） */
+function freqText(v: unknown, fallback: string): string {
+  if (v == null) return fallback;
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return String(v);
+  return JSON.stringify(v) ?? '';
+}
+
 export const RecurringService = {
   list(): Array<Record<string, unknown>> {
     return getDb().prepare(
@@ -99,7 +107,7 @@ export const RecurringService = {
     } else {
       // 清空 cron：freq 需退回一个可用的频率，否则 'cron' 无表达式时会走按天兜底、与用户预期不符
       const row = this.byId(id);
-      const back = row && String(row.freq) === 'cron' ? 'weekly' : String(row?.freq ?? 'weekly');
+      const back = row && freqText(row.freq, '') === 'cron' ? 'weekly' : freqText(row?.freq, 'weekly');
       getDb().prepare('UPDATE recurring_rules SET cron_expr = ?, freq = ? WHERE id = ?').run('', back, id);
     }
     return this.byId(id);

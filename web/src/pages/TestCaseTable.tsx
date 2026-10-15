@@ -110,67 +110,103 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
     </td>
   );
 
+  /** 多选模式的勾选格 */
+  const renderSelCell = (row: CaseRow) => (
+    <td style={TH_TD}>
+      <input type="checkbox" checked={selIds.includes(row.id)} onChange={() => onToggleSel(row.id)}
+        title={`选中 ${row.case_no}`} aria-label={`选中用例 ${row.title}`} style={{ cursor: 'pointer' }} />
+    </td>
+  );
+
+  /** 用例编号行内编辑格（失焦保存） */
+  const renderNoCell = (row: CaseRow) => (
+    <td style={{ ...TH_TD, width: 100 }}>
+      <input defaultValue={row.case_no} disabled={busy} aria-label="用例编号" title="用例编号（失焦保存，项目内唯一）"
+        onBlur={(e) => { if (e.target.value.trim() !== row.case_no) onPatch(row.id, { caseNo: e.target.value }, '已改用例编号'); }}
+        style={{ ...CELL_INPUT, width: 88, color: 'var(--accent)' }} />
+    </td>
+  );
+
+  /** 标题格：标题行内编辑输入 + 展开/收起箭头按钮（§7.4） */
+  const renderTitleCell = (row: CaseRow, opened: boolean) => {
+    const toggleHint = opened ? '收起详情与步骤' : '展开详情与步骤\n（前置/数据/预期/后置 + 步骤增删排序）';
+    return (
+      <td style={{ ...TH_TD, minWidth: 200 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <input defaultValue={row.title} disabled={busy} aria-label="用例标题" title="用例标题（失焦保存）；点右侧箭头展开详情与步骤"
+            onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== row.title) onPatch(row.id, { title: v }, '已改标题'); }}
+            style={{ ...CELL_INPUT, flex: 1, minWidth: 150 }} />
+          <button onClick={virtual ? undefined : () => onToggleExpand(row.id)} disabled={virtual} className="tbtn-anim"
+            title={virtual ? '全部模式(>1000)为性能关闭行内展开——编辑步骤请切 200/500 分页或按需求筛选' : toggleHint}
+            aria-label={`展开用例 ${row.case_no} 详情`} aria-expanded={opened}
+            style={{ border: 'none', background: 'transparent', cursor: virtual ? 'default' : 'pointer', color: opened ? 'var(--accent)' : 'var(--text-muted)', padding: 2, display: 'inline-flex', flexShrink: 0, opacity: virtual ? 0.4 : 1 }}>
+            {opened ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          </button>
+        </div>
+        {row.module === '' && row.tags === '' && <div style={{ fontSize: 10, color: 'var(--text-muted)', paddingLeft: 4 }}>（未填模块与标签）</div>}
+      </td>
+    );
+  };
+
+  /** 所属模块行内编辑格（datalist 可选已有模块） */
+  const renderModuleCell = (row: CaseRow) => (
+    <td style={{ ...TH_TD, width: 120 }}>
+      <input defaultValue={row.module} list="tc-module-options" disabled={busy} aria-label="所属模块"
+        title="所属模块（失焦保存，可下拉选已有模块）"
+        onBlur={(e) => { if (e.target.value.trim() !== row.module) onPatch(row.id, { module: e.target.value }, '已改所属模块'); }}
+        style={{ ...CELL_INPUT, width: 108 }} />
+    </td>
+  );
+
+  /** 步骤数列格：点击进行步骤行内编辑（虚拟模式禁用） */
+  const renderStepsCell = (row: CaseRow, opened: boolean) => {
+    const base = `步骤 ${row.steps.length} 条`;
+    const foldHint = opened ? '收起' : '展开';
+    return (
+      <td style={{ ...TH_TD, width: 70, textAlign: 'center' }}>
+        <button onClick={virtual ? undefined : () => onToggleExpand(row.id)} disabled={virtual} className="tbtn-anim"
+          title={virtual ? `${base} — 全部模式(>1000)已关闭行内展开，请切分页/筛选后编辑` : `${base} — 点击${foldHint}行内编辑`}
+          aria-label={`编辑用例 ${row.case_no} 的步骤`} aria-expanded={opened}
+          style={{ ...CHIP, cursor: virtual ? 'default' : 'pointer', background: opened ? 'var(--accent)' : 'transparent', color: opened ? 'var(--accent-text)' : 'var(--text)', borderColor: opened ? 'var(--accent)' : 'var(--border-strong)', opacity: virtual ? 0.7 : 1 }}>
+          {row.steps.length}
+        </button>
+      </td>
+    );
+  };
+
+  /** 操作格：复制/删除 */
+  const renderOpsCell = (row: CaseRow) => (
+    <td style={{ ...TH_TD, whiteSpace: 'nowrap' }}>
+      <button onClick={() => onDuplicate(row)} disabled={busy} className="tbtn-anim" style={ICON_BTN}
+        title="复制用例 — 编号自动重排，副本状态回到草稿、执行结论重置" aria-label={`复制用例 ${row.case_no}`}>
+        <Copy size={12} />
+      </button>
+      <button onClick={() => onRemove(row)} disabled={busy} className="tbtn-anim" style={{ ...ICON_BTN, color: 'var(--danger)', marginLeft: 4 }}
+        title="删除用例 — 连带删除其步骤，此操作不可撤销" aria-label={`删除用例 ${row.case_no}`}>
+        <Trash2 size={12} />
+      </button>
+    </td>
+  );
+
   const renderRow = (row: CaseRow) => {
     const opened = !virtual && expandedId === row.id; // T01495：>1000 虚拟模式下关闭行内展开（步骤编辑请切分页/按需求筛选后进行）
     // 每行渲染「主行 + 可选展开行」两个 <tr>，故用 Fragment 包一层；key 必须挂在 Fragment 上，
     // 否则列表缺 key 会让 React 按下标复用节点——排序/分页变动时行内输入框的脏值会串到别的用例上
+    // （S3776：原先各列的输入/按钮格都写在本函数内，认知复杂度 40；已按列抽成 render*Cell 局部函数，逐列组装）
     return (
       <Fragment key={row.id}>
         <tr style={{ borderTop: '1px solid var(--border)', ...(virtual ? { height: VIRTUAL_ROW_H } : {}) }}>
-          {multi && (
-            <td style={TH_TD}>
-              <input type="checkbox" checked={selIds.includes(row.id)} onChange={() => onToggleSel(row.id)}
-                title={`选中 ${row.case_no}`} aria-label={`选中用例 ${row.title}`} style={{ cursor: 'pointer' }} />
-            </td>
-          )}
-          <td style={{ ...TH_TD, width: 100 }}>
-            <input defaultValue={row.case_no} disabled={busy} aria-label="用例编号" title="用例编号（失焦保存，项目内唯一）"
-              onBlur={(e) => { if (e.target.value.trim() !== row.case_no) onPatch(row.id, { caseNo: e.target.value }, '已改用例编号'); }}
-              style={{ ...CELL_INPUT, width: 88, color: 'var(--accent)' }} />
-          </td>
-          <td style={{ ...TH_TD, minWidth: 200 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-              <input defaultValue={row.title} disabled={busy} aria-label="用例标题" title="用例标题（失焦保存）；点右侧箭头展开详情与步骤"
-                onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== row.title) onPatch(row.id, { title: v }, '已改标题'); }}
-                style={{ ...CELL_INPUT, flex: 1, minWidth: 150 }} />
-              <button onClick={virtual ? undefined : () => onToggleExpand(row.id)} disabled={virtual} className="tbtn-anim"
-                title={virtual ? '全部模式(>1000)为性能关闭行内展开——编辑步骤请切 200/500 分页或按需求筛选' : opened ? '收起详情与步骤' : '展开详情与步骤\n（前置/数据/预期/后置 + 步骤增删排序）'}
-                aria-label={`展开用例 ${row.case_no} 详情`} aria-expanded={opened}
-                style={{ border: 'none', background: 'transparent', cursor: virtual ? 'default' : 'pointer', color: opened ? 'var(--accent)' : 'var(--text-muted)', padding: 2, display: 'inline-flex', flexShrink: 0, opacity: virtual ? 0.4 : 1 }}>
-                {opened ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-              </button>
-            </div>
-            {row.module === '' && row.tags === '' && <div style={{ fontSize: 10, color: 'var(--text-muted)', paddingLeft: 4 }}>（未填模块与标签）</div>}
-          </td>
-          <td style={{ ...TH_TD, width: 120 }}>
-            <input defaultValue={row.module} list="tc-module-options" disabled={busy} aria-label="所属模块"
-              title="所属模块（失焦保存，可下拉选已有模块）"
-              onBlur={(e) => { if (e.target.value.trim() !== row.module) onPatch(row.id, { module: e.target.value }, '已改所属模块'); }}
-              style={{ ...CELL_INPUT, width: 108 }} />
-          </td>
+          {multi && renderSelCell(row)}
+          {renderNoCell(row)}
+          {renderTitleCell(row, opened)}
+          {renderModuleCell(row)}
           {renderReqCell(row)}
           {renderEnumCell(row, 'priority', meta?.priority ?? [], 'priorityLabel', 88, '优先级')}
           {renderEnumCell(row, 'type', meta?.type ?? [], 'typeLabel', 96, '类型')}
           {renderEnumCell(row, 'status', meta?.status ?? [], 'statusLabel', 96, '状态')}
           {renderEnumCell(row, 'lastResult', meta?.result ?? [], 'resultLabel', 96, '执行结果', RESULT_COLOR[row.last_result] ?? 'var(--text)')}
-          <td style={{ ...TH_TD, width: 70, textAlign: 'center' }}>
-            <button onClick={virtual ? undefined : () => onToggleExpand(row.id)} disabled={virtual} className="tbtn-anim"
-              title={virtual ? `步骤 ${row.steps.length} 条 — 全部模式(>1000)已关闭行内展开，请切分页/筛选后编辑` : `步骤 ${row.steps.length} 条 — 点击${opened ? '收起' : '展开'}行内编辑`}
-              aria-label={`编辑用例 ${row.case_no} 的步骤`} aria-expanded={opened}
-              style={{ ...CHIP, cursor: virtual ? 'default' : 'pointer', background: opened ? 'var(--accent)' : 'transparent', color: opened ? 'var(--accent-text)' : 'var(--text)', borderColor: opened ? 'var(--accent)' : 'var(--border-strong)', opacity: virtual ? 0.7 : 1 }}>
-              {row.steps.length}
-            </button>
-          </td>
-          <td style={{ ...TH_TD, whiteSpace: 'nowrap' }}>
-            <button onClick={() => onDuplicate(row)} disabled={busy} className="tbtn-anim" style={ICON_BTN}
-              title="复制用例 — 编号自动重排，副本状态回到草稿、执行结论重置" aria-label={`复制用例 ${row.case_no}`}>
-              <Copy size={12} />
-            </button>
-            <button onClick={() => onRemove(row)} disabled={busy} className="tbtn-anim" style={{ ...ICON_BTN, color: 'var(--danger)', marginLeft: 4 }}
-              title="删除用例 — 连带删除其步骤，此操作不可撤销" aria-label={`删除用例 ${row.case_no}`}>
-              <Trash2 size={12} />
-            </button>
-          </td>
+          {renderStepsCell(row, opened)}
+          {renderOpsCell(row)}
         </tr>
         {opened && renderExpanded(row, colSpan)}
       </Fragment>
@@ -182,15 +218,23 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
     // 保留 id 就是为了做 key：步骤行如果按下标 key，重排/删除后 React 会按位置复用同一 DOM 节点，
     // 而未受控输入框的 value 已被用户写过（dirty 位已置），`defaultValue` 变更不会回写界面——
     // 最终变成「库里已重排、屏幕上仍是旧顺序」的假象；用 id 做 key 让节点跟着数据走
-    const steps = row.steps.map((s) => ({ id: s.id, action: s.action, expected: s.expected }));
     /** 步骤整体重写提交（新增/删除/改文本/拖拽位都是「算出新数组再 PATCH」，端点只有一个） */
     const save = (next: Array<{ action: string; expected: string }>, label: string): void => onPatch(row.id, stepsBody(next), label);
+    type StepItem = { id: string; action: string; expected: string };
+    const steps: StepItem[] = row.steps.map((s) => ({ id: s.id, action: s.action, expected: s.expected }));
     const moved = (from: number, to: number): Array<{ action: string; expected: string }> | null => {
       if (to < 0 || to >= steps.length || from === to) return null;
       const next = [...steps];
       const [hit] = next.splice(from, 1);
       next.splice(to, 0, hit);
       return next;
+    };
+    // S2004：改文本/删除原先在 steps.map 回调里再嵌一层 map/filter 回调（第 5 层），抽成局部函数降深
+    const patchStep = (i: number, patch: { action?: string; expected?: string }, label: string): void => {
+      save(steps.map((x, j) => (j === i ? { ...x, ...patch } : x)), label);
+    };
+    const removeStep = (i: number, label: string): void => {
+      save(steps.filter((_, j) => j !== i), label);
     };
     return (
       <tr>
@@ -210,26 +254,28 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
             <span>操作 → 预期结果；改动即时保存，手柄可拖拽排序（键盘可用上下箭头）</span>
           </div>
           {steps.map((s, i) => (
-            <div key={s.id || i} style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 3 }}
+            <div key={s.id || i} /* NOSONAR: 拖放落点，非交互控件 */
+              style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 3 }}
               onDragOver={(e) => e.preventDefault()}
               onDrop={() => { if (dragFrom >= 0 && dragFrom !== i) { const next = moved(dragFrom, i); if (next) save(next, `已把步骤排到第 ${i + 1} 位`); } setDragFrom(-1); }}>
               <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 16, textAlign: 'right' }}>{i + 1}.</span>
-              <span draggable role="button" aria-label={`拖拽排序步骤 ${i + 1}`} title="拖拽调整步骤顺序"
+              {/* S6819/S6852：拖拽手柄由 role=button 的 span 改为原生 button（补 border/background/padding 重置，观感与原 span 一致） */}
+              <button type="button" draggable aria-label={`拖拽排序步骤 ${i + 1}`} title="拖拽调整步骤顺序"
                 onDragStart={() => setDragFrom(i)} onDragEnd={() => setDragFrom(-1)}
-                style={{ cursor: 'grab', display: 'inline-flex', color: 'var(--text-muted)' }}>
+                style={{ cursor: 'grab', display: 'inline-flex', color: 'var(--text-muted)', border: 'none', background: 'transparent', padding: 0 }}>
                 <GripVertical size={12} />
-              </span>
+              </button>
               <input defaultValue={s.action} disabled={busy} placeholder="操作描述" aria-label={`步骤 ${i + 1} 操作`}
-                onBlur={(e) => { if (e.target.value !== s.action) save(steps.map((x, j) => (j === i ? { ...x, action: e.target.value } : x)), `已改步骤 ${i + 1} 操作`); }}
+                onBlur={(e) => { if (e.target.value !== s.action) patchStep(i, { action: e.target.value }, `已改步骤 ${i + 1} 操作`); }}
                 style={{ ...CELL_INPUT, flex: 1, minWidth: 120, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 11, padding: '2px 4px' }} />
               <input defaultValue={s.expected} disabled={busy} placeholder="预期结果" aria-label={`步骤 ${i + 1} 预期`}
-                onBlur={(e) => { if (e.target.value !== s.expected) save(steps.map((x, j) => (j === i ? { ...x, expected: e.target.value } : x)), `已改步骤 ${i + 1} 预期`); }}
+                onBlur={(e) => { if (e.target.value !== s.expected) patchStep(i, { expected: e.target.value }, `已改步骤 ${i + 1} 预期`); }}
                 style={{ ...CELL_INPUT, flex: 1, minWidth: 120, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 11, padding: '2px 4px' }} />
               <button onClick={() => { const up = moved(i, i - 1); if (up) save(up, `步骤 ${i + 1} 上移`); }} disabled={busy || i === 0} className="tbtn-anim"
                 title="上移该步骤" aria-label={`上移步骤 ${i + 1}`} style={{ ...ICON_BTN, padding: '1px 4px' }}><ChevronUp size={11} /></button>
               <button onClick={() => { const dn = moved(i, i + 1); if (dn) save(dn, `步骤 ${i + 1} 下移`); }} disabled={busy || i === steps.length - 1} className="tbtn-anim"
                 title="下移该步骤" aria-label={`下移步骤 ${i + 1}`} style={{ ...ICON_BTN, padding: '1px 4px' }}><ChevronDown size={11} /></button>
-              <button onClick={() => save(steps.filter((_, j) => j !== i), `已删除步骤 ${i + 1}`)} disabled={busy} className="tbtn-anim"
+              <button onClick={() => removeStep(i, `已删除步骤 ${i + 1}`)} disabled={busy} className="tbtn-anim"
                 title="删除该步骤（其后步骤自动前移编号）" aria-label={`删除步骤 ${i + 1}`}
                 style={{ ...ICON_BTN, padding: '1px 4px', color: 'var(--danger)' }}><Trash2 size={11} /></button>
             </div>
@@ -312,7 +358,7 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
     <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 4px' }}>
       {filtered ? (
         <>
-          无匹配结果。
+          <span>无匹配结果。</span>
           <button onClick={onClearFilter} className="tbtn-anim" style={{ ...BTN, marginLeft: 6 }}
             title="清除全部筛选条件，回到完整列表" aria-label="清除筛选">清除筛选</button>
         </>
@@ -358,9 +404,9 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           {renderHead()}
           <tbody key={`body-${syncNonce}${virtual ? '-v' : ''}`}>
-            {win && win.padTop > 0 && <tr aria-hidden style={{ height: win.padTop }}><td colSpan={colSpan} style={{ padding: 0, border: 'none' }} /></tr>}
+            {win && win.padTop > 0 && <tr data-spacer="1" style={{ height: win.padTop, visibility: 'hidden' }}><td colSpan={colSpan} style={{ padding: 0, border: 'none' }} /></tr>}
             {bodyRows.map((row) => renderRow(row))}
-            {win && win.padBottom > 0 && <tr aria-hidden style={{ height: win.padBottom }}><td colSpan={colSpan} style={{ padding: 0, border: 'none' }} /></tr>}
+            {win && win.padBottom > 0 && <tr data-spacer="1" style={{ height: win.padBottom, visibility: 'hidden' }}><td colSpan={colSpan} style={{ padding: 0, border: 'none' }} /></tr>}
           </tbody>
         </table>
       </div>

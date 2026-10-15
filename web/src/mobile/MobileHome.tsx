@@ -18,6 +18,27 @@ const PRIO_COLOR: Record<string, string> = {
 };
 const PRIO_LABEL: Record<string, string> = { low: '低', normal: '中', high: '高', urgent: '紧急' };
 
+/**
+ * 启动项目定位（从首页 useEffect 抽出，S3776 降复杂度；调用顺序与副作用完全不变）。
+ * T01663：`lastProject` 是用户偏好（首页上次浏览项目），`note-project` 只是系统默认归属。
+ * 原先正条件分支用后者无条件覆写缓存 → 用户手选项目开机即被抹掉。改「偏好优先」，
+ * 仅在偏好缺失/项目已删时回落；离线（list 空）与空项目时都不写缓存，保住 T01425 缓存降级。
+ */
+async function resolveStartupProject(list: Project[]): Promise<string> {
+  let pref = '';
+  try { pref = localStorage.getItem('mtask.mobile.lastProject') ?? ''; } catch { /* 忽略 */ }
+  let pid = list.some((p) => p.id === pref) ? pref : '';
+  if (!pid && list.length > 0) {
+    try { pid = (await api.get<{ projectId: string }>('/settings/note-project')).projectId; } catch { /* 忽略 */ }
+    if (!list.some((p) => p.id === pid)) pid = list[0]?.id ?? '';
+  }
+  if (!pid) pid = pref;
+  if (pid && list.length > 0) {
+    try { localStorage.setItem('mtask.mobile.lastProject', pid); } catch { /* 忽略 */ }
+  }
+  return pid;
+}
+
 export function MobileHome({ onQuickNote, notify }: Props) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState('');
@@ -132,20 +153,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
       try { setCategories(await api.get<TaskCategory[]>('/task-categories')); } catch { /* 离线时分类缺失可接受 */ }
       let list: Project[] = [];
       try { list = await api.get<Project[]>('/projects'); setProjects(list); } catch { /* T01425：离线降级，用上次项目走缓存 */ }
-      // T01663：`lastProject` 是用户偏好（首页上次浏览项目），`note-project` 只是系统默认归属。
-      // 原先正条件分支用后者无条件覆写缓存 → 用户手选项目开机即被抹掉。改「偏好优先」，
-      // 仅在偏好缺失/项目已删时回落；离线（list 空）与空项目时都不写缓存，保住 T01425 缓存降级。
-      let pref = '';
-      try { pref = localStorage.getItem('mtask.mobile.lastProject') ?? ''; } catch { /* 忽略 */ }
-      let pid = list.some((p) => p.id === pref) ? pref : '';
-      if (!pid && list.length > 0) {
-        try { pid = (await api.get<{ projectId: string }>('/settings/note-project')).projectId; } catch { /* 忽略 */ }
-        if (!list.some((p) => p.id === pid)) pid = list[0]?.id ?? '';
-      }
-      if (!pid) pid = pref;
-      if (pid && list.length > 0) {
-        try { localStorage.setItem('mtask.mobile.lastProject', pid); } catch { /* 忽略 */ }
-      }
+      const pid = await resolveStartupProject(list);
       if (!pid) return;
       setProjectId(pid);
       await load(pid);

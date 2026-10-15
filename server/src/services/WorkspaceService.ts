@@ -471,9 +471,9 @@ export const WorkspaceService = {
     { exts: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'], kind: 'function', re: /(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/g },
     { exts: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'], kind: 'class', re: /(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/g },
     { exts: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'], kind: 'const', re: /export\s+const\s+([A-Za-z_$][\w$]*)\s*[:=]/g },
-    { exts: ['.py'], kind: 'function', re: /(?:^|\n)\s*def\s+([A-Za-z_]\w*)/g },
-    { exts: ['.py'], kind: 'class', re: /(?:^|\n)\s*class\s+([A-Za-z_]\w*)/g },
-    { exts: ['.java', '.cs'], kind: 'class', re: /(?:(?:public|private|protected|internal|final|abstract|static)\s+)*(?:class|interface|enum)\s+([A-Za-z_]\w*)/g },
+    { exts: ['.py'], kind: 'function', re: /^[^\S\r\n]*def\s+([A-Za-z_]\w*)/gm },
+    { exts: ['.py'], kind: 'class', re: /^[^\S\r\n]*class\s+([A-Za-z_]\w*)/gm },
+    { exts: ['.java', '.cs'], kind: 'class', re: /(?:(?:public|private|protected|internal|final|abstract|static)[^\S\r\n]+)*(?:class|interface|enum)\s+([A-Za-z_]\w*)/g },
   ],
 
   /** T00780：清空某项目的符号索引（工作空间换绑/解绑时用） */

@@ -25,6 +25,7 @@ const PORT = Number(process.env.MTask_PORT ?? 39876);
 const HOST = '127.0.0.1';
 
 const app = express();
+app.disable('x-powered-by'); // S5689：funnel/cloudflared 隧道开启时不把框架信息带出公网
 // 尽早拦截 console，使 server ready / 请求日志等后续输出都能进入日志缓冲
 logService.init();
 // 上限覆盖截图粘贴：单图解码后 ≤ 8MB（TaskImageService 内校验），base64 膨胀约 4/3

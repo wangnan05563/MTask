@@ -283,6 +283,20 @@ function round2(v: number): number {
 }
 
 /**
+ * 单行跳过原因判定（S3776 抽出；优先级：milestone > 择档过滤 > 已有行保护，返回 '' 表示可写）。
+ * 择档过滤排在保护规则之前：这一行本就不属于所选档，跳过原因要说的是「不是该档」，
+ * 而不是拿「已有行/人工行」盖掉真实原因（批量填充 40 行时，误标的跳过没法排查）。
+ */
+function planSkipReason(plan: PlanFact, item: DeriveItem, existing: DeriveItem['existing'], scope: 'missing' | 'all', opts: DeriveOptions): DeriveSkip {
+  if (plan.kind === 'milestone') return 'milestone';
+  if (opts.onlyRule && item.rule !== opts.onlyRule) return 'offRule';
+  if (existing && (scope === 'missing' || (existing === 'manual' && !opts.includeManual))) {
+    return existing === 'manual' ? 'manual' : 'exists';
+  }
+  return '';
+}
+
+/**
  * 项目（或指定计划集）的三档推导结果。顺序与面板一致；milestone 行只出参考值。
  */
 export function deriveEstimates(projectId: string, opts: DeriveOptions): {
@@ -297,7 +311,6 @@ export function deriveEstimates(projectId: string, opts: DeriveOptions): {
   if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
 
   const scope = opts.scope === 'all' ? 'all' : 'missing';
-  const includeManual = opts.includeManual === true;
   const { k, from } = resolveCaseWeightK(projectId, opts.caseWeightK);
   const plans = readPlans(projectId, opts.planIds);
   const cases = readCaseWeights(projectId);
@@ -316,12 +329,7 @@ export function deriveEstimates(projectId: string, opts: DeriveOptions): {
       cases: plan.reqIds.length > 0 ? sumCases(plan.reqIds, cases) : null,
       existing,
     });
-    let skip: DeriveSkip = '';
-    if (plan.kind === 'milestone') skip = 'milestone';
-    // 择档过滤排在保护规则之前：这一行本就不属于所选档，跳过原因要说的是「不是该档」，
-    // 而不是拿「已有行/人工行」盖掉真实原因（批量填充 40 行时，误标的跳过没法排查）。
-    else if (opts.onlyRule && item.rule !== opts.onlyRule) skip = 'offRule';
-    else if (existing && (scope === 'missing' || (existing === 'manual' && !includeManual))) skip = existing === 'manual' ? 'manual' : 'exists';
+    const skip = planSkipReason(plan, item, existing, scope, opts);
     item.skip = skip;
     item.writable = skip === '';
     if (skip) skipped.push({ planId: item.planId, title: item.title, skip });

@@ -529,7 +529,8 @@ ipcMain.handle('update:download', async (_evt, url) => {
     cancelled: false, done: false, req: null, res: null, out: null, resolve: null, reject: null,
     // 正常完成/取消收口：保留 .part，只销毁流
     finish: (value) => {
-      if (ctx.done) return; ctx.done = true;
+      if (ctx.done) { return; }
+      ctx.done = true;
       try { ctx.res?.destroy(); } catch { /* 忽略 */ }
       try { ctx.out?.destroy(); } catch { /* 忽略 */ }
       try { ctx.req?.destroy(); } catch { /* 忽略 */ }
@@ -538,7 +539,8 @@ ipcMain.handle('update:download', async (_evt, url) => {
     },
     // 真实失败收口：删半成品，避免下次误判断已下载完（原行为）
     abort: (err) => {
-      if (ctx.done) return; ctx.done = true;
+      if (ctx.done) { return; }
+      ctx.done = true;
       try { ctx.out?.destroy(); } catch { /* 忽略 */ }
       try { ctx.req?.destroy(); } catch { /* 忽略 */ }
       if (!ctx.cancelled) { try { fs.rmSync(tmpPath, { force: true }); } catch { /* 忽略 */ } }

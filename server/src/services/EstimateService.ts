@@ -78,13 +78,16 @@ export interface EstimateView extends EstimateItemRow {
   planUpdatedAt: string;
 }
 
+/** 三点入参联合：数字、可转数字的字符串，或 null（PATCH 清空/沿用原值）——重复三处，抽为别名 */
+type EstimatePointInput = number | string | null;
+
 /** 录入入参：三点可缺省（PATCH 单字段场景）——新行缺任一即报错，已有行缺省则沿用原值 */
 export interface EstimateInput {
   phase?: EstimatePhase;
   unit?: EstimateUnit;
-  optimistic?: number | string | null;
-  likely?: number | string | null;
-  pessimistic?: number | string | null;
+  optimistic?: EstimatePointInput;
+  likely?: EstimatePointInput;
+  pessimistic?: EstimatePointInput;
   source?: EstimateSource;
   note?: string;
   /** §7 收口里程碑只读行的显式解锁（真值判定走 `unlockFlag`，不散落在各处） */
@@ -114,7 +117,11 @@ function now(): string {
 const LIST_ORDER = 'COALESCE(p.sort_order, 0) ASC, p.start_date ASC, e.plan_id ASC';
 
 function str(v: unknown): string {
-  return v == null ? '' : String(v).trim();
+  if (v == null) return '';
+  if (typeof v === 'string') return v.trim();
+  if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return String(v).trim();
+  // 对象/数组显式序列化，避免 String(obj) 得到 '[object Object]'；JSON 文本无首尾空白，等价于原 .trim()
+  return JSON.stringify(v) ?? '';
 }
 
 /** §7 显式解锁的真值判定：只认 `1/true/on/yes` 与布尔真——空串、缺省、「0」都算未解锁（不做静默放行） */
@@ -147,7 +154,7 @@ export function workdayCalendar(): WorkdayCal {
 function num(v: unknown): number | undefined {
   if (v === undefined || v === null || v === '') return undefined;
   const n = typeof v === 'number' ? v : Number(v);
-  return Number.isFinite(n) ? n : NaN;
+  return Number.isFinite(n) ? n : Number.NaN;
 }
 
 /**

@@ -95,10 +95,14 @@ const HELPERS = `(function () {
     byAria: function (v, root) { return t.btns(root).find(function (b) { return (b.getAttribute('aria-label') || '') === v; }); },
     ariaPrefix: function (v, root) { return t.btns(root).find(function (b) { return (b.getAttribute('aria-label') || '').indexOf(v) === 0; }); },
     byText: function (v, root) { return t.btns(root).find(function (b) { return (b.textContent || '').indexOf(v) >= 0; }); },
-    // A7：能力卡是 button.ln[aria-label]，取其可视样式
-    cards: function () { return Array.prototype.slice.call(document.querySelectorAll('button.ln[aria-label]')); },
+    // A7：能力卡容器自 T02143 起是 div[role=button]（卡片右上角有原生 button 角标，HTML 禁止按钮套按钮），
+    //      早先的 d69b16c 探针只查 button.ln——容器复位后恒为 0，属探针滞后而非产品缺陷。
+    //      这里按「可交互元素」取，button 与 [role=button] 两态都认，断言语义不变。
+    interactive: function (root) { return Array.prototype.slice.call((root || document).querySelectorAll('button, [role="button"]')); },
+    cardByAria: function (v, root) { return t.interactive(root).find(function (b) { return (b.getAttribute('aria-label') || '') === v; }); },
+    cards: function () { return Array.prototype.slice.call(document.querySelectorAll('button.ln[aria-label], [role="button"].ln[aria-label]')); },
     cardStyle: function (aria) {
-      var b = t.btns(document).find(function (x) { return x.classList.contains('ln') && (x.getAttribute('aria-label') || '') === aria; });
+      var b = t.interactive(document).find(function (x) { return x.classList.contains('ln') && (x.getAttribute('aria-label') || '') === aria; });
       if (!b) return null;
       var cs = getComputedStyle(b);
       var title = b.querySelector('span > span');
@@ -185,7 +189,7 @@ async function main() {
 
     /* ================= A8 双通道共存 + 确认后才触发（前端门控） ================= */
     const a8 = await c.evalIn(`(function(){ var t=window.__m3;
-      var card = t.byAria('从 PRD 生成测试用例'); if (card) card.click();
+      var card = t.cardByAria('从 PRD 生成测试用例'); if (card) card.click();
       return !!card; })()`);
     await new Promise((r) => setTimeout(r, 800));
     const a8b = await c.evalIn(`(function(){ var t=window.__m3;
@@ -239,13 +243,13 @@ async function main() {
       var s=document.querySelector('section[aria-label="测试用例面板"]');
       var note = s ? Array.prototype.slice.call(s.querySelectorAll('div')).some(function(d){return (d.textContent||'').indexOf('启用虚拟滚动')>=0;}) : false;
       var trCount = t.tcBody() ? t.tcBody().querySelectorAll('tr').length : -1;
-      var hidden = t.tcBody() ? t.tcBody().querySelectorAll('tr[aria-hidden]').length : -1;
+      var hidden = t.tcBody() ? t.tcBody().querySelectorAll('tr[data-spacer]').length : -1;
       return { trCount: trCount, hidden: hidden, note: note, pagerText: (function(){ var el=Array.prototype.slice.call((s||document).querySelectorAll('span')).find(function(x){return (x.textContent||'').indexOf('共')===0;}); return el?(el.textContent||'').trim():''; })() };
     })(); })()`);
     push('M3_virtualEngaged', vReady.note === true && vReady.trCount > 0, `全部模式载入 ${CASES_N} 条 → 虚拟提示=${vReady.note} tbody tr=${vReady.trCount}`);
     push('M3_domRowsBounded_notLinearInCount', vReady.trCount > 0 && vReady.trCount <= 40,
       `DOM <tr>=${vReady.trCount}（上界≈窗口36+占位2=38），远小于 ${CASES_N}；若退化为全量渲染将≈${CASES_N}`);
-    push('M3_spacerRowsPresent', vReady.hidden >= 1, `占位 <tr aria-hidden>=${vReady.hidden}（撑出与全量一致的滚动区间）`);
+    push('M3_spacerRowsPresent', vReady.hidden >= 1, `占位行（tr[data-spacer]）=${vReady.hidden}（撑出与全量一致的滚动区间）`);
 
     // 滚到底：窗口滑动但 DOM 行数仍有界（不退化增长）
     const scrolled = await c.evalIn(`(function(){ var t=window.__m3; return (async function(){
@@ -253,7 +257,7 @@ async function main() {
       sc.scrollTop = sc.scrollHeight; sc.dispatchEvent(new Event('scroll'));
       await t.sleep(500);
       tb=t.tcBody();
-      return { trCount: tb.querySelectorAll('tr').length, hidden: tb.querySelectorAll('tr[aria-hidden]').length };
+      return { trCount: tb.querySelectorAll('tr').length, hidden: tb.querySelectorAll('tr[data-spacer]').length };
     })(); })()`);
     push('M3_domBoundedAfterScrollToBottom', scrolled.trCount > 0 && scrolled.trCount <= 40,
       `滚到底后 DOM <tr>=${scrolled.trCount}（仍 ≤40，窗口随滚动滑动，证明非全量渲染）`);
@@ -269,7 +273,7 @@ async function main() {
       var note = s ? Array.prototype.slice.call(s.querySelectorAll('div')).some(function(d){return (d.textContent||'').indexOf('启用虚拟滚动')>=0;}) : true;
       await t.sleep(300);
       tb=t.tcBody();
-      return { trCount: tb?tb.querySelectorAll('tr').length:-1, hidden: tb?tb.querySelectorAll('tr[aria-hidden]').length:-1, note: note };
+      return { trCount: tb?tb.querySelectorAll('tr').length:-1, hidden: tb?tb.querySelectorAll('tr[data-spacer]').length:-1, note: note };
     })(); })()`);
     push('M3_pagination200_domEqualsPageSize', pag.trCount === 200, `200 档 DOM <tr>=${pag.trCount}（应=页大小200，勿过度设计不虚拟）`);
     push('M3_pagination200_notVirtual', pag.note === false && pag.hidden === 0, `200 档无虚拟提示=${pag.note === false} 无占位行=${pag.hidden === 0}`);

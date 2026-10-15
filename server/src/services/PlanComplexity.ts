@@ -83,6 +83,29 @@ const SYSTEM = [
   '4. 必须为每个输入行都输出一项，id 原样回抄，不得增删行。',
 ].join('\n');
 
+/** 单行的提示词条目：id 原样回抄，描述截断（整篇 PRD 塞进提示词会把注意力吃光） */
+function rowPromptLine(r: ComplexityRow): string {
+  const desc = r.description ? ` | 描述=${r.description.slice(0, 200)}` : '';
+  return `- id=${r.id} | kind=${r.kind} | 工期=${r.duration_days}天 | 标题=${r.title}${desc}`;
+}
+
+/** askJson 的解析器：模型偶尔带代码围栏/前后废话，抠完还必须真是数组，否则抛错让本批判失败 */
+function parseBatchOutput(content: string): Array<{ id?: unknown; complexity?: unknown }> {
+  const parsed: unknown = JSON.parse(extractJson(content));
+  if (!Array.isArray(parsed)) throw new Error('输出不是 JSON 数组');
+  return parsed as Array<{ id?: unknown; complexity?: unknown }>;
+}
+
+/** 按 id 建索引：模型偶尔漏行/改 id，逐 id 匹配比按数组下标对齐稳（下标错位会把分数写错行） */
+function indexScoresByid(items: Array<{ id?: unknown; complexity?: unknown }>): Map<string, number | null> {
+  const byId = new Map<string, number | null>();
+  for (const item of items) {
+    const id = typeof item?.id === 'string' ? item.id : '';
+    if (id) byId.set(id, clampComplexity(item?.complexity));
+  }
+  return byId;
+}
+
 /**
  * 批量补算复杂度。
  *
@@ -111,30 +134,19 @@ export async function backfillComplexity(
   for (let offset = 0; offset < rows.length; offset += size) {
     const slice = rows.slice(offset, offset + size);
     const batch: { offset: number; size: number; updated: number } = { offset, size: slice.length, updated: 0 };
-    const user = slice
-      .map((r) => `- id=${r.id} | kind=${r.kind} | 工期=${r.duration_days}天 | 标题=${r.title}${r.description ? ` | 描述=${r.description.slice(0, 200)}` : ''}`)
-      .join('\n');
+    const user = slice.map(rowPromptLine).join('\n');
     const res = await AIService.askJson<Array<{ id?: unknown; complexity?: unknown }>>(
       toolId,
       SYSTEM,
       `【待评定的计划行（共 ${slice.length} 行）】\n${user}`,
-      (content) => {
-        const parsed: unknown = JSON.parse(extractJson(content));
-        if (!Array.isArray(parsed)) throw new Error('输出不是 JSON 数组');
-        return parsed as Array<{ id?: unknown; complexity?: unknown }>;
-      },
+      parseBatchOutput,
       { maxTokens: 4096, temperature: 0 },
     );
     if (!res.ok || !res.data) {
       out.batches.push({ ...batch, error: res.error ?? 'AI 调用失败' });
       continue;
     }
-    // 按 id 建索引：模型偶尔漏行/改 id，逐 id 匹配比按数组下标对齐稳（下标错位会把分数写错行）
-    const byId = new Map<string, number | null>();
-    for (const item of res.data) {
-      const id = typeof item?.id === 'string' ? item.id : '';
-      if (id) byId.set(id, clampComplexity(item?.complexity));
-    }
+    const byId = indexScoresByid(res.data);
     for (const r of slice) {
       const c = byId.get(r.id);
       if (c == null) continue; // 该行未给出合法评级 → 保持原值，下一轮可重跑

@@ -107,7 +107,7 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, action, sta
   }
   const hasCorner = Boolean(action || onReset);
   return (
-    <div
+    <div /* NOSONAR: S6819 豁免——T02143：卡片右上角动作/重置是原生 button 子元素，HTML 禁止按钮套按钮；键盘支持已在下方 onKeyDown 等价补齐，勿再改回原生 button */
       role="button"
       tabIndex={0}
       onClick={onToggle}

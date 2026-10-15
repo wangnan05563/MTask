@@ -126,7 +126,7 @@ export function PhaseBarChart({ phases, phaseLabels }: {
   const slot = (R - L) / geoms.length;
   const barW = Math.min(26, slot * 0.6);
   return (
-    <svg viewBox={`0 0 280 158`} width="100%" role="img" aria-label="阶段柱与误差线（E11）"
+    <svg viewBox={`0 0 280 158`} width="100%" role="img" aria-label="阶段柱与误差线（E11）" /* NOSONAR: 内联 SVG 复合图形，role=img 为 W3C 推荐无障碍写法，无等价原生元素 */
       style={{ display: 'block', maxWidth: 360 }}>
       {geoms.map((g, i) => {
         const cx = L + i * slot + slot / 2;
@@ -173,7 +173,7 @@ export function ParetoChart({ geoms }: { readonly geoms: readonly ParetoGeom[] }
     return `${cx},${BASE - (g.cumPct / 100) * H}`;
   }).join(' ');
   return (
-    <svg viewBox={`0 0 480 ${BASE + 24}`} width="100%" role="img" aria-label="帕累托图（E11）"
+    <svg viewBox={`0 0 480 ${BASE + 24}`} width="100%" role="img" aria-label="帕累托图（E11）" /* NOSONAR: 内联 SVG 复合图形，role=img 为 W3C 推荐无障碍写法，无等价原生元素 */
       style={{ display: 'block' }}>
       {/* 80% 累计参考线 */}
       <line x1={L} y1={y80} x2={R} y2={y80} stroke="var(--text-muted)" strokeWidth={1} strokeDasharray="4 3" />
@@ -206,7 +206,7 @@ export function TornadoChart({ geoms }: { readonly geoms: readonly TornadoGeom[]
   const H = Math.max(70, n * 20 + 28);
   const LABEL_W = 132, X0 = 138, X1 = 462, barMaxW = X1 - X0;
   return (
-    <svg viewBox={`0 0 480 ${H}`} width="100%" role="img" aria-label="龙卷风图（E14 敏感性）"
+    <svg viewBox={`0 0 480 ${H}`} width="100%" role="img" aria-label="龙卷风图（E14 敏感性）" /* NOSONAR: 内联 SVG 复合图形，role=img 为 W3C 推荐无障碍写法，无等价原生元素 */
       style={{ display: 'block' }}>
       {n > 0 && (
         <text x={X0} y={14} fontSize={9} fill="var(--text-muted)">条长 ∝ σ（降序）· 最长 = 最影响总价</text>

@@ -84,7 +84,10 @@ const COVERAGE_COLUMNS = [
 /** 步骤拍平成多行文本：`1. 操作 → 预期结果`（无预期时只出操作，不留孤零零的箭头） */
 function stepsText(c: TestCaseWithSteps): string {
   return c.steps
-    .map((s) => `${s.step_no}. ${s.action}${s.expected ? ` → ${s.expected}` : ''}`)
+    .map((s) => {
+      const tail = s.expected ? ` → ${s.expected}` : '';
+      return `${s.step_no}. ${s.action}${tail}`;
+    })
     .join('\n');
 }
 
@@ -149,7 +152,8 @@ function coverageRows(cov: CaseCoverageSummary): Array<{ reqNo: string; title: s
 
 /** Markdown 表格单元格转义：竖线会截列，换行会截行 */
 function mdCell(text: string): string {
-  return text.replaceAll('|', '\\|').replaceAll('\n', '<br>');
+  // String.raw`\|` 与 '\\|' 完全等价，写成原文可避免多余转义
+  return text.replaceAll('|', String.raw`\|`).replaceAll('\n', '<br>');
 }
 
 /**
@@ -223,20 +227,24 @@ export async function buildCaseDocx(input: CaseExportInput): Promise<Buffer> {
     for (const m of groupByModule(g.cases)) {
       children.push(new Paragraph({ text: m.label, heading: HeadingLevel.HEADING_2 }));
       for (const c of m.cases) {
-        children.push(new Paragraph({ text: `${c.case_no} ${oneLine(c.title)}`, heading: HeadingLevel.HEADING_3 }));
-        children.push(table(['字段', '值'], CASE_FIELD_COLUMNS.map((col) => [col.header, col.get(c)])));
-        children.push(new Paragraph({ text: '测试步骤', spacing: { before: 120, after: 60 } }));
-        children.push(c.steps.length === 0
-          ? new Paragraph({ text: '（未填写步骤）' })
-          : table(['序号', '操作', '预期结果'], c.steps.map((s) => [String(s.step_no), s.action, s.expected])));
+        children.push(
+          new Paragraph({ text: `${c.case_no} ${oneLine(c.title)}`, heading: HeadingLevel.HEADING_3 }),
+          table(['字段', '值'], CASE_FIELD_COLUMNS.map((col) => [col.header, col.get(c)])),
+          new Paragraph({ text: '测试步骤', spacing: { before: 120, after: 60 } }),
+          c.steps.length === 0
+            ? new Paragraph({ text: '（未填写步骤）' })
+            : table(['序号', '操作', '预期结果'], c.steps.map((s) => [String(s.step_no), s.action, s.expected])),
+        );
       }
     }
   }
-  children.push(new Paragraph({ text: '需求覆盖率汇总', heading: HeadingLevel.HEADING_1, spacing: { before: 240 } }));
-  children.push(table(
-    COVERAGE_COLUMNS.map((col) => col.header),
-    coverageRows(input.coverage).map((r) => [r.reqNo, r.title, String(r.caseCount), r.covered]),
-  ));
+  children.push(
+    new Paragraph({ text: '需求覆盖率汇总', heading: HeadingLevel.HEADING_1, spacing: { before: 240 } }),
+    table(
+      COVERAGE_COLUMNS.map((col) => col.header),
+      coverageRows(input.coverage).map((r) => [r.reqNo, r.title, String(r.caseCount), r.covered]),
+    ),
+  );
   const doc = new Document({ sections: [{ children }] });
   return await Packer.toBuffer(doc);
 }

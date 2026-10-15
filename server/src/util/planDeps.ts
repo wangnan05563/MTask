@@ -25,6 +25,14 @@ export interface PlanDep {
   type: 'serial' | 'parallel' | 'child';
 }
 
+/** type 归一（S3358：拆出嵌套三元）——口径与原实现逐字一致：仅 parallel/child 保留，
+ *  其余（含缺失 type、任何脏值）一律按 serial；放宽等于悄悄解锁并发，故保守。 */
+function normDepType(t: unknown): PlanDep['type'] {
+  if (t === 'parallel') return 'parallel';
+  if (t === 'child') return 'child';
+  return 'serial';
+}
+
 /** 解析 `plan_tasks.deps`：非数组/缺 id 的脏数据跳过（与既有三处解析口径一致）；
  *  T02090：`child` 保留为独立类型（旧实现会并成 serial，造成倒挂卡死） */
 export function parsePlanDeps(raw: string | null | undefined): PlanDep[] {
@@ -33,7 +41,7 @@ export function parsePlanDeps(raw: string | null | undefined): PlanDep[] {
     if (!Array.isArray(v)) return [];
     return v
       .filter((d): d is { id: string; type?: unknown } => !!d && typeof d.id === 'string')
-      .map((d) => ({ id: d.id, type: d.type === 'parallel' ? 'parallel' : d.type === 'child' ? 'child' : 'serial' }));
+      .map((d) => ({ id: d.id, type: normDepType(d.type) }));
   } catch {
     return [];
   }

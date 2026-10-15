@@ -373,6 +373,16 @@ function taskTabTitle(t: AnalysisTask): string {
   return `${t.title} · ${t.status === 'done' ? '已完成' : '失败'}`;
 }
 
+/** tab 按钮配色单源（选中态）：强调底+强调字；与未选中态同口径，由调用点按选中与否取用 */
+function selectedTabTone(): { background: string; color: string } {
+  return { background: 'var(--accent)', color: 'var(--accent-text)' };
+}
+
+/** tab 按钮配色单源（未选中态）：卡片底+主文本（各 tab 按钮同一口径） */
+function unselectedTabTone(): { background: string; color: string } {
+  return { background: 'var(--card-bg)', color: 'var(--text)' };
+}
+
 /** T00839：轮询重建快照时保留上一次的本地发起时间（startAt），使耗时全程连续、不随刷新重置 */
 function mergeJobSnapshots(prev: AnalysisTask[], jobs: Parameters<typeof rowToTask>[0][]): AnalysisTask[] {
   return jobs.map((rj) => {
@@ -854,7 +864,7 @@ export function ReportConsole({
     if (!md) return;
     const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);
-    const name = onReportTab ? aiReportLabel.replace(/\s/g, '') : (activeTask?.title || 'analysis');
+    const name = onReportTab ? aiReportLabel.replaceAll(/\s/g, '') : (activeTask?.title || 'analysis');
     const a = document.createElement('a');
     a.href = url;
     a.download = `mtask-ai-${name.replace(/[\\/:*?"<>|]/g, '_')}.md`; // NOSONAR - 需按非法文件名字符集合替换，replaceAll 只能替换字面字符串无法表达集合
@@ -982,149 +992,163 @@ export function ReportConsole({
     }
   }
 
-  /** 结果区内容：AI 周报流或聚焦任务按 tab 分支渲染 */
+  /** 结果区内容：AI 周报流或聚焦任务按 tab 分支渲染（各 tab 正文单独成函数，各自计认知复杂度，避免一处超阈值） */
   function renderBody() {
     // T00769 二轮：原始需求生成 PRD tab——阶段日志 + 正文增量实时滚动（修复「右侧控制台无任何输出」）
-    if (onPrdGenTab) {
-      return (
-        <div>
-          <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-            <FilePlus2 size={13} style={{ color: 'var(--accent)' }} /> 原始需求生成 PRD
-            {prdSnap.streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
-            {prdSnap.result && <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>PRD {prdSnap.result.prdMd.length} 字符 / 待确认问题 {prdSnap.result.issues.length} 条</span>}
-          </div>
-          {prdSnap.logs.map((l, i) => (
-            <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|失败|错误/.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
-          ))}
-          {!!prdSnap.streamText && (
-            <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>PRD 正文（实时）</div>
-              <div style={{ fontSize: 12, color: 'var(--text)' }}>
-                <MarkdownContent content={cleanPrdStreamText(prdSnap.streamText)} />
-              </div>
-            </div>
-          )}
-          {!prdSnap.streaming && prdSnap.result && (
-            <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧交互表格填写问题结论后录入 PRD 管理视图。</div>
-          )}
-        </div>
-      );
-    }
+    if (onPrdGenTab) return renderPrdGenBody();
     // T01491：从 PRD 生成测试用例 tab——阶段日志 + 流式协议正文实时滚动（仿 PRD_GEN_TAB）
-    if (onTestCaseGenTab) {
-      return (
-        <div>
-          <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-            <ListChecks size={13} style={{ color: 'var(--accent)' }} /> 从 PRD 生成测试用例
-            {tcSnap.streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
-            {tcSnap.result && (
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>
-                需求 {tcSnap.result.requirements.length} 条 / 用例 {tcSnap.result.cases.length} 条 / 覆盖 {tcSnap.result.coverage.rate}%{tcSnap.result.truncated ? ' · ⚠ 本轮可能被截断' : ''}
-              </span>
-            )}
-          </div>
-          {tcSnap.logs.map((l, i) => (
-            <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|warn|失败|错误/i.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
-          ))}
-          {!!tcSnap.streamText && (
-            <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>生成输出（实时·协议原文）</div>
-              <div style={{ fontSize: 11, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'monospace', maxHeight: 260, overflowY: 'auto' }}>{tcSnap.streamText}</div>
-            </div>
-          )}
-          {!tcSnap.streaming && tcSnap.result && (
-            <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「从 PRD 生成测试用例」卡片草稿视图勾选确认后导入。</div>
-          )}
-        </div>
-      );
-    }
+    if (onTestCaseGenTab) return renderTestCaseGenBody();
     // T02109（PRD FR-1.4）：启动会 PPT tab——逐页装配 stage 日志 + 产物摘要（仿 TEST_CASE_GEN_TAB，无流式正文只有分页进度）
-    if (onKickoffPptTab) {
-      return (
-        <div>
-          <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-            <Presentation size={13} style={{ color: 'var(--accent)' }} /> 项目启动会 PPT 生成
-            {kfSnap.streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
-            {kfSnap.result && (
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>
-                {kfSnap.result.pageCount} 页 · {kfSnap.result.fileName}
-                {kfSnap.result.warnings.length > 0 ? ` · ⚠ 降级 ${kfSnap.result.warnings.length} 处` : ''}
-              </span>
-            )}
-          </div>
-          {kfSnap.logs.map((l, i) => (
-            <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|失败|错误/.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
-          ))}
-          {!kfSnap.streaming && kfSnap.result && (
-            <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「项目启动会 PPT 生成」卡片点击下载（文件名为服务端校验值）。</div>
-          )}
-        </div>
-      );
-    }
+    if (onKickoffPptTab) return renderKickoffPptBody();
     // T00569 三轮：AI 项目计划导入 tab——控制台式滚动输出执行日志（与导入面板深度整合）
-    if (onAiImportTab) {
-      const lv = logLevelColor;
-      return (
-        <div>
-          <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-            <FileUp size={13} style={{ color: 'var(--accent)' }} /> {aiImportStore.label()}
-            {aiSnap.busy && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>执行中…</span>}
-            {aiSnap.fileName && <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>{aiSnap.fileName}</span>}
-            {aiSnap.rows.length > 0 && <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>草稿 {aiSnap.rows.length} 条</span>}
-            {aiSnap.lastSaved > 0 && <span style={{ fontSize: 11, color: 'var(--success, var(--accent))', fontWeight: 400 }}>最近保存 {aiSnap.lastSaved} 条</span>}
-          </div>
-          {aiSnap.logs.length === 0
-            ? <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>在「AI 工作台」展开「AI 项目计划导入」卡片并选择文件后，解析与入库过程将在此逐行滚动输出。</span>
-            : aiSnap.logs.map((l, i) => (
-              <div key={`${l.t}-${i}`} style={{ fontSize: 11, color: lv(l.level), padding: '2px 0', fontFamily: 'monospace' }}>
-                [{l.t}] {l.msg}
-              </div>
-            ))}
-        </div>
-      );
-    }
-    if (onReportTab) {
-      const hasStream = streaming || logs.length > 0 || !!streamText;
-      if (!hasStream) {
-        return <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>选择分析内容后点击「开始分析」，AI 结果会在下方以 Markdown 展示；点击左侧「{aiReportLabel}生成」此处会实时滚动生成全过程。</span>;
-      }
-      return (
-        <div>
-          {/* 生成中提示 + 阶段进度日志 */}
-          <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-            <Sparkles size={13} style={{ color: 'var(--accent)' }} /> {aiReportLabel}生成
-            {streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
-          </div>
-          {logItems.map(({ id, log }) => (
-            <div key={id} style={{ fontSize: 11, color: 'var(--text-secondary)', padding: '2px 0' }}>• {log}</div>
-          ))}
-          {/* AI 洞察正文：流式增量实时渲染 */}
-          {!!streamText && (
-            <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>AI 洞察（实时）</div>
-              <div style={{ fontSize: 12, color: 'var(--text)' }}>
-                <MarkdownContent content={streamText} />
-              </div>
-            </div>
-          )}
-          {!streaming && !!streamText && (
-            <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 洞察生成完成，可在左侧下载文件。</div>
-          )}
-        </div>
-      );
-    }
+    if (onAiImportTab) return renderAiImportBody();
+    if (onReportTab) return renderReportBody();
     if (!activeTask) return null;
+    return renderFocusTaskBody(activeTask);
+  }
+
+  function renderPrdGenBody() {
     return (
       <div>
-        {activeTask.status === 'busy' && (
-          <div style={{ fontSize: 12, color: activeTask.answer ? 'var(--text)' : 'var(--text-muted)' }}>
-            {activeTask.answer ? <MarkdownContent content={activeTask.answer} /> : 'AI 正在分析…'}
+        <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+          <FilePlus2 size={13} style={{ color: 'var(--accent)' }} /> 原始需求生成 PRD
+          {prdSnap.streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
+          {prdSnap.result && <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>PRD {prdSnap.result.prdMd.length} 字符 / 待确认问题 {prdSnap.result.issues.length} 条</span>}
+        </div>
+        {prdSnap.logs.map((l, i) => (
+          <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|失败|错误/.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
+        ))}
+        {!!prdSnap.streamText && (
+          <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>PRD 正文（实时）</div>
+            <div style={{ fontSize: 12, color: 'var(--text)' }}>
+              <MarkdownContent content={cleanPrdStreamText(prdSnap.streamText)} />
+            </div>
           </div>
         )}
-        {activeTask.status === 'done' && <MarkdownContent content={activeTask.answer} />}
-        {activeTask.status === 'error' && (
+        {!prdSnap.streaming && prdSnap.result && (
+          <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧交互表格填写问题结论后录入 PRD 管理视图。</div>
+        )}
+      </div>
+    );
+  }
+
+  function renderTestCaseGenBody() {
+    return (
+      <div>
+        <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+          <ListChecks size={13} style={{ color: 'var(--accent)' }} /> 从 PRD 生成测试用例
+          {tcSnap.streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
+          {tcSnap.result && (
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>
+              需求 {tcSnap.result.requirements.length} 条 / 用例 {tcSnap.result.cases.length} 条 / 覆盖 {tcSnap.result.coverage.rate}%{tcSnap.result.truncated ? ' · ⚠ 本轮可能被截断' : ''}
+            </span>
+          )}
+        </div>
+        {tcSnap.logs.map((l, i) => (
+          <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|warn|失败|错误/i.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
+        ))}
+        {!!tcSnap.streamText && (
+          <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>生成输出（实时·协议原文）</div>
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'monospace', maxHeight: 260, overflowY: 'auto' }}>{tcSnap.streamText}</div>
+          </div>
+        )}
+        {!tcSnap.streaming && tcSnap.result && (
+          <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「从 PRD 生成测试用例」卡片草稿视图勾选确认后导入。</div>
+        )}
+      </div>
+    );
+  }
+
+  function renderKickoffPptBody() {
+    return (
+      <div>
+        <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+          <Presentation size={13} style={{ color: 'var(--accent)' }} /> 项目启动会 PPT 生成
+          {kfSnap.streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
+          {kfSnap.result && (
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>
+              {kfSnap.result.pageCount} 页 · {kfSnap.result.fileName}
+              {kfSnap.result.warnings.length > 0 ? ` · ⚠ 降级 ${kfSnap.result.warnings.length} 处` : ''}
+            </span>
+          )}
+        </div>
+        {kfSnap.logs.map((l, i) => (
+          <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|失败|错误/.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
+        ))}
+        {!kfSnap.streaming && kfSnap.result && (
+          <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「项目启动会 PPT 生成」卡片点击下载（文件名为服务端校验值）。</div>
+        )}
+      </div>
+    );
+  }
+
+  function renderAiImportBody() {
+    const lv = logLevelColor;
+    return (
+      <div>
+        <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+          <FileUp size={13} style={{ color: 'var(--accent)' }} /> {aiImportStore.label()}
+          {aiSnap.busy && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>执行中…</span>}
+          {aiSnap.fileName && <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>{aiSnap.fileName}</span>}
+          {aiSnap.rows.length > 0 && <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>草稿 {aiSnap.rows.length} 条</span>}
+          {aiSnap.lastSaved > 0 && <span style={{ fontSize: 11, color: 'var(--success, var(--accent))', fontWeight: 400 }}>最近保存 {aiSnap.lastSaved} 条</span>}
+        </div>
+        {aiSnap.logs.length === 0
+          ? <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>在「AI 工作台」展开「AI 项目计划导入」卡片并选择文件后，解析与入库过程将在此逐行滚动输出。</span>
+          : aiSnap.logs.map((l, i) => (
+            <div key={`${l.t}-${i}`} style={{ fontSize: 11, color: lv(l.level), padding: '2px 0', fontFamily: 'monospace' }}>
+              [{l.t}] {l.msg}
+            </div>
+          ))}
+      </div>
+    );
+  }
+
+  function renderReportBody() {
+    const hasStream = streaming || logs.length > 0 || !!streamText;
+    if (!hasStream) {
+      return <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>选择分析内容后点击「开始分析」，AI 结果会在下方以 Markdown 展示；点击左侧「{aiReportLabel}生成」此处会实时滚动生成全过程。</span>;
+    }
+    return (
+      <div>
+        {/* 生成中提示 + 阶段进度日志 */}
+        <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+          <Sparkles size={13} style={{ color: 'var(--accent)' }} /> {aiReportLabel}生成
+          {streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
+        </div>
+        {logItems.map(({ id, log }) => (
+          <div key={id} style={{ fontSize: 11, color: 'var(--text-secondary)', padding: '2px 0' }}>• {log}</div>
+        ))}
+        {/* AI 洞察正文：流式增量实时渲染 */}
+        {!!streamText && (
+          <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>AI 洞察（实时）</div>
+            <div style={{ fontSize: 12, color: 'var(--text)' }}>
+              <MarkdownContent content={streamText} />
+            </div>
+          </div>
+        )}
+        {!streaming && !!streamText && (
+          <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 洞察生成完成，可在左侧下载文件。</div>
+        )}
+      </div>
+    );
+  }
+
+  function renderFocusTaskBody(focused: AnalysisTask) {
+    return (
+      <div>
+        {focused.status === 'busy' && (
+          <div style={{ fontSize: 12, color: focused.answer ? 'var(--text)' : 'var(--text-muted)' }}>
+            {focused.answer ? <MarkdownContent content={focused.answer} /> : 'AI 正在分析…'}
+          </div>
+        )}
+        {focused.status === 'done' && <MarkdownContent content={focused.answer} />}
+        {focused.status === 'error' && (
           <div style={{ fontSize: 12, color: 'var(--danger)' }}>
-            {activeTask.error || '分析失败'}
+            {focused.error || '分析失败'}
           </div>
         )}
       </div>
@@ -1264,8 +1288,7 @@ export function ReportConsole({
         aria-label={`${aiReportLabel} tab`}
         style={{
           display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
-          border: '1px solid var(--border-strong)', background: onReportTab ? 'var(--accent)' : 'var(--card-bg)',
-          color: onReportTab ? 'var(--accent-text)' : 'var(--text)', maxWidth: 120,
+          border: '1px solid var(--border-strong)', ...(onReportTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 120,
         }}
       >
         <Sparkles size={11} />
@@ -1287,8 +1310,7 @@ export function ReportConsole({
           aria-label="AI 项目计划导入 tab"
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
-            border: '1px solid var(--border-strong)', background: onAiImportTab ? 'var(--accent)' : 'var(--card-bg)',
-            color: onAiImportTab ? 'var(--accent-text)' : 'var(--text)', maxWidth: 150,
+            border: '1px solid var(--border-strong)', ...(onAiImportTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
           }}
         >
           <FileUp size={11} />
@@ -1311,8 +1333,7 @@ export function ReportConsole({
           aria-label="原始需求生成 PRD tab"
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
-            border: '1px solid var(--border-strong)', background: onPrdGenTab ? 'var(--accent)' : 'var(--card-bg)',
-            color: onPrdGenTab ? 'var(--accent-text)' : 'var(--text)', maxWidth: 150,
+            border: '1px solid var(--border-strong)', ...(onPrdGenTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
           }}
         >
           <FilePlus2 size={11} />
@@ -1335,8 +1356,7 @@ export function ReportConsole({
           aria-label="从 PRD 生成测试用例 tab"
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
-            border: '1px solid var(--border-strong)', background: onTestCaseGenTab ? 'var(--accent)' : 'var(--card-bg)',
-            color: onTestCaseGenTab ? 'var(--accent-text)' : 'var(--text)', maxWidth: 150,
+            border: '1px solid var(--border-strong)', ...(onTestCaseGenTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
           }}
         >
           <ListChecks size={11} />
@@ -1360,8 +1380,7 @@ export function ReportConsole({
           aria-label="项目启动会 PPT 生成 tab"
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
-            border: '1px solid var(--border-strong)', background: onKickoffPptTab ? 'var(--accent)' : 'var(--card-bg)',
-            color: onKickoffPptTab ? 'var(--accent-text)' : 'var(--text)', maxWidth: 150,
+            border: '1px solid var(--border-strong)', ...(onKickoffPptTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
           }}
         >
           <Presentation size={11} />
@@ -1381,8 +1400,7 @@ export function ReportConsole({
           title={taskTabTitle(t)}
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 4px', borderRadius: 6,
-            border: '1px solid var(--border-strong)', background: activeId === t.id ? 'var(--accent)' : 'var(--card-bg)',
-            color: activeId === t.id ? 'var(--accent-text)' : 'var(--text)', maxWidth: 150,
+            border: '1px solid var(--border-strong)', ...(activeId === t.id ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
           }}
         >
           {/* 切换 tab 与关闭拆成两个并列原生 button：避免 button 嵌套 button 的非法 DOM，也满足可访问性要求 */}

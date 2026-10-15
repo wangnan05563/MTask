@@ -68,4 +68,4 @@ async function main(): Promise<void> {
   process.exit(failed === 0 ? 0 : 1);
 }
 
-void main();
+void main(); /* NOSONAR: 脚本按 CommonJS 运行（server/tsconfig.json "module": "CommonJS"、无 package.json "type": "module"，且依赖 require/__dirname），顶层 await 不可用；MTask_DATA_DIR 须前置设置再进模块加载，改 ESM 会让冒烟门读到真实数据目录 */

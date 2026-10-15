@@ -129,21 +129,67 @@ type TlRow =
  *  - 无显式子任务的里程碑：沿用位置分组（T01565 既有行为不回退）；
  *  - 指向不存在里程碑（被归档/过滤）的显式子任务不丢失，尾部无名段承接。
  */
-export function groupTimelinePhases(plans: ReadonlyArray<TlPlan>): Array<{ milestone: TlPlan | null; items: TlPlan[] }> {
-  type Phase = { milestone: TlPlan | null; items: TlPlan[] };
-  const sorted = [...plans].sort((a, b) => {
-    if (!a.start_date) return 1;
-    if (!b.start_date) return -1;
-    return a.start_date < b.start_date ? -1 : a.start_date > b.start_date ? 1 : 0;
-  });
-  // 预扫：哪些里程碑拥有显式子任务（这类里程碑的阶段成员=显式子集，不再吞位置后继）
-  const msIds = new Set(sorted.filter((p) => p.kind === 'milestone').map((p) => p.id));
+/** 时间线阶段分组结构（模块内辅助函数共享；与 groupTimelinePhases 返回类型同构） */
+type Phase = { milestone: TlPlan | null; items: TlPlan[] };
+
+/** start_date 升序比较：未排期（空日期）沉底（S3776/S3358 提取，比较结果与原嵌套三元逐字一致） */
+function byStartDateAsc(a: TlPlan, b: TlPlan): number {
+  if (!a.start_date) return 1;
+  if (!b.start_date) return -1;
+  if (a.start_date < b.start_date) return -1;
+  if (a.start_date > b.start_date) return 1;
+  return 0;
+}
+
+/** 预扫：哪些里程碑拥有显式子任务（这类里程碑的阶段成员=显式子集，不再吞位置后继） */
+function findExplicitMsIds(sorted: ReadonlyArray<TlPlan>, msIds: ReadonlySet<string>): Set<string> {
   const explicitMsIds = new Set<string>();
   for (const p of sorted) {
     if (p.kind === 'milestone') continue;
     const msId = childParentIdOf(p.deps);
     if (msId && msIds.has(msId)) explicitMsIds.add(msId);
   }
+  return explicitMsIds;
+}
+
+/** 里程碑行入场：先落袋当前无名段（prelude / loose），保持时间序——否则段内任务随 cur 切换被丢弃（夹具 A 实证）；再开新阶段 */
+function startMilestonePhase(
+  ms: TlPlan, cur: Phase, result: Phase[],
+  phaseByMsId: Map<string, Phase>, pending: Map<string, TlPlan[]>,
+): Phase {
+  if (!cur.milestone && cur.items.length) result.push(cur);
+  const ph: Phase = { milestone: ms, items: pending.get(ms.id) ?? [] };
+  pending.delete(ms.id);
+  result.push(ph);
+  phaseByMsId.set(ms.id, ph);
+  return ph;
+}
+
+/** 显式子任务挂接：阶段已出现则直接入列，否则暂存（start_date 早于里程碑）；与原 `??` 链式写法等价 */
+function attachExplicitChild(p: TlPlan, msId: string, phaseByMsId: Map<string, Phase>, pending: Map<string, TlPlan[]>): void {
+  const ph = phaseByMsId.get(msId);
+  if (ph) {
+    ph.items.push(p);
+    return;
+  }
+  const list = pending.get(msId) ?? [];
+  list.push(p);
+  pending.set(msId, list);
+}
+
+/** 非成员普通任务：若当前阶段属于「有显式子任务」的里程碑，另起无名段（不并入，保持折叠集合一致） */
+function placeLooseTask(p: TlPlan, cur: Phase, explicitMsIds: ReadonlySet<string>): Phase {
+  if (cur.milestone && explicitMsIds.has(cur.milestone.id)) {
+    const fresh: Phase = { milestone: null, items: [] };
+    fresh.items.push(p);
+    return fresh;
+  }
+  cur.items.push(p);
+  return cur;
+}
+
+/** 顺序累积阶段分组（groupTimelinePhases 主体拆分，口径与行为完全不变） */
+function accumulatePhases(sorted: TlPlan[], explicitMsIds: Set<string>): Phase[] {
   const result: Phase[] = [];
   const phaseByMsId = new Map<string, Phase>();
   const pending = new Map<string, TlPlan[]>(); // 里程碑行尚未出现时的显式子任务暂存（start_date 早于里程碑）
@@ -151,27 +197,15 @@ export function groupTimelinePhases(plans: ReadonlyArray<TlPlan>): Array<{ miles
   let cur: Phase = prelude;
   for (const p of sorted) {
     if (p.kind === 'milestone') {
-      // 先落袋当前无名段（prelude / loose），保持时间序——否则段内任务随 cur 切换被丢弃（夹具 A 实证）
-      if (!cur.milestone && cur.items.length) result.push(cur);
-      const ph: Phase = { milestone: p, items: pending.get(p.id) ?? [] };
-      pending.delete(p.id);
-      result.push(ph);
-      phaseByMsId.set(p.id, ph);
-      cur = ph;
+      cur = startMilestonePhase(p, cur, result, phaseByMsId, pending);
       continue;
     }
     const msId = childParentIdOf(p.deps);
     if (msId && explicitMsIds.has(msId)) {
-      const ph = phaseByMsId.get(msId);
-      if (ph) ph.items.push(p);
-      else (pending.get(msId) ?? pending.set(msId, []).get(msId)!).push(p);
+      attachExplicitChild(p, msId, phaseByMsId, pending);
       continue;
     }
-    // 非成员普通任务：若当前阶段属于「有显式子任务」的里程碑，另起无名段（不并入，保持折叠集合一致）
-    if (cur.milestone && explicitMsIds.has(cur.milestone.id)) {
-      cur = { milestone: null, items: [] };
-    }
-    cur.items.push(p);
+    cur = placeLooseTask(p, cur, explicitMsIds);
   }
   // 收尾：指向不存在里程碑（被归档/过滤）的显式子任务不丢失——尾部无名段承接（保持时间序）
   const leftover: TlPlan[] = [];
@@ -179,6 +213,12 @@ export function groupTimelinePhases(plans: ReadonlyArray<TlPlan>): Array<{ miles
   if (leftover.length) result.push({ milestone: null, items: leftover });
   if (!cur.milestone && cur.items.length && !result.includes(cur)) result.push(cur);
   return result;
+}
+
+export function groupTimelinePhases(plans: ReadonlyArray<TlPlan>): Array<{ milestone: TlPlan | null; items: TlPlan[] }> {
+  const sorted = [...plans].sort(byStartDateAsc);
+  const msIds = new Set(sorted.filter((p) => p.kind === 'milestone').map((p) => p.id));
+  return accumulatePhases(sorted, findExplicitMsIds(sorted, msIds));
 }
 
 export function PlanTimeline({ plans, granularity, spacing = 'uniform', onSelect, collapsedMs = {}, onToggleMsCollapse, onJumpToLinked }: {
@@ -264,7 +304,10 @@ export function PlanTimeline({ plans, granularity, spacing = 'uniform', onSelect
     // T01577：可跳转时在卡右上角留白（跳转控件是卡的兄弟节点，见下方 row 渲染）；
     // 里程碑卡右上角还有折叠控件，两者并存时留白要再让出一个角标位。
     const badge = !!p.linked_task_id && !!onJumpToLinked;
-    const padRight = !badge ? (isMs ? 34 : 11) : isMs ? 92 : 84;
+    // S3358/S7735 修复：拆中间变量 + 正向条件单层三元，取值与原嵌套三元逐一对应
+    const noBadgePad = isMs ? 34 : 11;
+    const badgePad = isMs ? 92 : 84;
+    const padRight = badge ? badgePad : noBadgePad;
     return (
       <button
         onClick={() => onSelect(p)}
@@ -300,94 +343,115 @@ export function PlanTimeline({ plans, granularity, spacing = 'uniform', onSelect
     );
   }
 
+  /** 刻度行（S3776：自 rows.map 回调拆分；S6819：role="listitem" → 原生 <li>，样式原样保留） */
+  function renderTickRow(r: Extract<TlRow, { type: 'tick' }>): ReactNode {
+    return (
+      <li key={r.key} data-tl="tick" aria-label={`时间刻度 ${r.label}`} style={{ position: 'relative', margin: '12px 0 6px' }}>
+        <span aria-hidden="true" style={{ position: 'absolute', left: -31, top: 2, width: 12, height: 12, borderRadius: '50%', background: 'var(--surface-2)', border: '2px solid var(--accent)' }} />
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent)', letterSpacing: .3 }}>{r.label}</span>
+      </li>
+    );
+  }
+
+  /** 间距行（S3776 拆分；S6819：去掉 role="presentation"——纯装饰间距由 aria-hidden 屏蔽即可，div 本无隐式语义） */
+  function renderSpacerRow(r: Extract<TlRow, { type: 'spacer' }>): ReactNode {
+    return (
+      <li key={r.key} data-tl="spacer" data-tl-px={r.px} data-tl-days={r.days}
+        aria-hidden={r.days === 0 || undefined}
+        style={{ height: r.px, position: 'relative' }}>
+        {r.days > 0 && (
+          <span style={{
+            position: 'absolute', left: 4, top: '50%', transform: 'translateY(-50%)',
+            fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap',
+            border: '1px dashed var(--border-strong)', borderRadius: 5, padding: '1px 7px', background: 'var(--card-bg)',
+          }}>⋯ 空档 {r.days} 天（按自然日，比例尺已压缩；甘特为工作日口径）</span>
+        )}
+      </li>
+    );
+  }
+
+  /** 阶段汇总行（S3776 拆分；S6819：role="listitem" → 原生 <li>） */
+  function renderSumRow(r: Extract<TlRow, { type: 'sum' }>): ReactNode {
+    return (
+      <li key={r.key} data-tl="sum" data-tl-collapsed={r.collapsed ? '1' : '0'}
+        aria-label={`阶段汇总 ${r.text}`}
+        style={{ fontSize: 12, color: r.collapsed ? 'var(--accent)' : 'var(--text-muted)', margin: '4px 0 8px' }}>{r.text}</li>
+    );
+  }
+
+  /** 里程碑/任务节点行（S3776 拆分；S6819：<li>；S3358：data-tl-collapsed 嵌套三元拆为中间变量；
+   *  S4624：title 嵌套模板串拆出 linkedTitle/jumpTitle 两层常量） */
+  function renderNodeRow(r: Extract<TlRow, { type: 'ms' | 'item' }>): ReactNode {
+    const msRow = r.type === 'ms' ? r : null;
+    const isMs = msRow !== null;
+    const collapsed = msRow?.collapsed === true;
+    const collapsedFlag = collapsed ? '1' : '0';
+    const linkedTitle = r.p.linked_task_title ? `「${r.p.linked_task_title}」` : '';
+    const jumpTitle = `跳转到该计划关联的待办${linkedTitle}`;
+    return (
+      <li key={r.key} data-tl={isMs ? 'ms' : 'item'} data-tl-collapsed={isMs ? collapsedFlag : undefined} aria-label={`${isMs ? '里程碑' : '计划任务'} ${r.p.title}`} style={{ position: 'relative', marginBottom: 8 }}>
+        <span
+          aria-hidden="true"
+          style={
+            isMs
+              ? { position: 'absolute', left: -31, top: 12, width: 14, height: 14, transform: 'rotate(45deg)', background: 'var(--accent)', border: '2px solid var(--card-bg)', borderRadius: 3 }
+              : { position: 'absolute', left: -28, top: 14, width: 10, height: 10, borderRadius: '50%', background: STATUS_META[r.p.status]?.color ?? 'var(--accent)', border: '2px solid var(--card-bg)' }
+          }
+        />
+        {nodeCard(r.p, isMs)}
+        {/* T01576：折叠控件——真实 <button>（键盘 Tab 可达、Enter/Space 触发），带 aria-expanded。
+            不能嵌进节点卡（卡本身是 button，HTML 不允许按钮套按钮），故作为兄弟节点绝对定位在卡右上角。 */}
+        {msRow && onToggleMsCollapse && msRow.itemCount > 0 && (
+          <button
+            type="button"
+            data-tl="collapse"
+            onClick={() => onToggleMsCollapse(msRow.p.id)}
+            aria-expanded={!collapsed}
+            aria-label={`${collapsed ? '展开' : '收起'}阶段：${msRow.p.title}（${msRow.itemCount} 个任务）`}
+            title={`${collapsed ? '展开' : '收起'}该阶段内的 ${msRow.itemCount} 个任务节点（与列表视图折叠态同源）`}
+            style={{
+              position: 'absolute', right: 6, top: 8, zIndex: 1, padding: 2,
+              border: '1px solid var(--accent)', borderRadius: 5, background: 'var(--card-bg)',
+              color: 'var(--accent)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', lineHeight: 0,
+            }}
+          >
+            {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+            <span style={{ fontSize: 10, marginLeft: 1 }}>{msRow.itemCount}</span>
+          </button>
+        )}
+        {/* T01577：关联待办跳转角标——节点卡本身是 button（不能嵌套按钮），故与折叠控件同法，
+            作为卡的兄弟节点绝对定位在右上角；里程碑卡的右上角已被折叠控件占用，角标让位到其左侧。 */}
+        {r.p.linked_task_id && onJumpToLinked && (
+          <button
+            type="button"
+            data-tl="jump-linked"
+            className="tl-chip"
+            onClick={() => onJumpToLinked(r.p)}
+            aria-label={`打开关联待办：${r.p.linked_task_title || r.p.title}`}
+            title={jumpTitle}
+            style={{
+              position: 'absolute', right: isMs ? 38 : 6, top: 8, zIndex: 1,
+              padding: '2px 7px', fontSize: 11, whiteSpace: 'nowrap',
+              border: '1px solid var(--success)', borderRadius: 5,
+              background: 'var(--card-bg)', color: 'var(--success)', cursor: 'pointer',
+            }}
+          >↗ 待办</button>
+        )}
+      </li>
+    );
+  }
+
+  /** 行分发器（S3776：原 map 回调认知复杂度 21，按行型拆分为四个渲染函数） */
+  function renderRow(r: TlRow): ReactNode {
+    if (r.type === 'tick') return renderTickRow(r);
+    if (r.type === 'spacer') return renderSpacerRow(r);
+    if (r.type === 'sum') return renderSumRow(r);
+    return renderNodeRow(r);
+  }
+
   return (
-    <div role="list" aria-label="计划时间线" style={{ padding: '2px 2px 2px 24px', marginLeft: 8, borderLeft: '2px solid var(--border-strong)', position: 'relative' }}>
-      {rows.map((r) => {
-        if (r.type === 'tick') {
-          return (
-            <div key={r.key} role="listitem" data-tl="tick" aria-label={`时间刻度 ${r.label}`} style={{ position: 'relative', margin: '12px 0 6px' }}>
-              <span aria-hidden="true" style={{ position: 'absolute', left: -31, top: 2, width: 12, height: 12, borderRadius: '50%', background: 'var(--surface-2)', border: '2px solid var(--accent)' }} />
-              <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent)', letterSpacing: .3 }}>{r.label}</span>
-            </div>
-          );
-        }
-        if (r.type === 'spacer') {
-          return (
-            <div key={r.key} data-tl="spacer" data-tl-px={r.px} data-tl-days={r.days}
-              role={r.days > 0 ? undefined : 'presentation'} aria-hidden={r.days === 0 || undefined}
-              style={{ height: r.px, position: 'relative' }}>
-              {r.days > 0 && (
-                <span style={{
-                  position: 'absolute', left: 4, top: '50%', transform: 'translateY(-50%)',
-                  fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap',
-                  border: '1px dashed var(--border-strong)', borderRadius: 5, padding: '1px 7px', background: 'var(--card-bg)',
-                }}>⋯ 空档 {r.days} 天（按自然日，比例尺已压缩；甘特为工作日口径）</span>
-              )}
-            </div>
-          );
-        }
-        if (r.type === 'sum') {
-          return (
-            <div key={r.key} role="listitem" data-tl="sum" data-tl-collapsed={r.collapsed ? '1' : '0'}
-              aria-label={`阶段汇总 ${r.text}`}
-              style={{ fontSize: 12, color: r.collapsed ? 'var(--accent)' : 'var(--text-muted)', margin: '4px 0 8px' }}>{r.text}</div>
-          );
-        }
-        const msRow = r.type === 'ms' ? r : null;
-        const isMs = msRow !== null;
-        const collapsed = msRow?.collapsed === true;
-        return (
-          <div key={r.key} role="listitem" data-tl={isMs ? 'ms' : 'item'} data-tl-collapsed={isMs ? (collapsed ? '1' : '0') : undefined} aria-label={`${isMs ? '里程碑' : '计划任务'} ${r.p.title}`} style={{ position: 'relative', marginBottom: 8 }}>
-            <span
-              aria-hidden="true"
-              style={
-                isMs
-                  ? { position: 'absolute', left: -31, top: 12, width: 14, height: 14, transform: 'rotate(45deg)', background: 'var(--accent)', border: '2px solid var(--card-bg)', borderRadius: 3 }
-                  : { position: 'absolute', left: -28, top: 14, width: 10, height: 10, borderRadius: '50%', background: STATUS_META[r.p.status]?.color ?? 'var(--accent)', border: '2px solid var(--card-bg)' }
-              }
-            />
-            {nodeCard(r.p, isMs)}
-            {/* T01576：折叠控件——真实 <button>（键盘 Tab 可达、Enter/Space 触发），带 aria-expanded。
-                不能嵌进节点卡（卡本身是 button，HTML 不允许按钮套按钮），故作为兄弟节点绝对定位在卡右上角。 */}
-            {msRow && onToggleMsCollapse && msRow.itemCount > 0 && (
-              <button
-                type="button"
-                data-tl="collapse"
-                onClick={() => onToggleMsCollapse(msRow.p.id)}
-                aria-expanded={!collapsed}
-                aria-label={`${collapsed ? '展开' : '收起'}阶段：${msRow.p.title}（${msRow.itemCount} 个任务）`}
-                title={`${collapsed ? '展开' : '收起'}该阶段内的 ${msRow.itemCount} 个任务节点（与列表视图折叠态同源）`}
-                style={{
-                  position: 'absolute', right: 6, top: 8, zIndex: 1, padding: 2,
-                  border: '1px solid var(--accent)', borderRadius: 5, background: 'var(--card-bg)',
-                  color: 'var(--accent)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', lineHeight: 0,
-                }}
-              >
-                {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-                <span style={{ fontSize: 10, marginLeft: 1 }}>{msRow.itemCount}</span>
-              </button>
-            )}
-            {/* T01577：关联待办跳转角标——节点卡本身是 button（不能嵌套按钮），故与折叠控件同法，
-                作为卡的兄弟节点绝对定位在右上角；里程碑卡的右上角已被折叠控件占用，角标让位到其左侧。 */}
-            {r.p.linked_task_id && onJumpToLinked && (
-              <button
-                type="button"
-                data-tl="jump-linked"
-                className="tl-chip"
-                onClick={() => onJumpToLinked(r.p)}
-                aria-label={`打开关联待办：${r.p.linked_task_title || r.p.title}`}
-                title={`跳转到该计划关联的待办${r.p.linked_task_title ? `「${r.p.linked_task_title}」` : ''}`}
-                style={{
-                  position: 'absolute', right: isMs ? 38 : 6, top: 8, zIndex: 1,
-                  padding: '2px 7px', fontSize: 11, whiteSpace: 'nowrap',
-                  border: '1px solid var(--success)', borderRadius: 5,
-                  background: 'var(--card-bg)', color: 'var(--success)', cursor: 'pointer',
-                }}
-              >↗ 待办</button>
-            )}
-          </div>
-        );
-      })}
-    </div>
+    <ul aria-label="计划时间线" style={{ listStyle: 'none', padding: '2px 2px 2px 24px', margin: '0 0 0 8px', borderLeft: '2px solid var(--border-strong)', position: 'relative' }}>
+      {rows.map(renderRow)}
+    </ul>
   );
 }

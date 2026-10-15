@@ -50,7 +50,8 @@ export function TestCaseFilterBar({ meta, reqs, reqFilter, scope, newTitle, keyw
       </button>
 
       <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
-        仅显示
+        {/* S6772：裸文本与 <select> 相邻的空格由 JSX 折叠规则决定——包 span 后作为独立 flex item，渲染不变且间距显式化 */}
+        <span>仅显示</span>
         <select value={scope} onChange={(e) => onScope(e.target.value as CaseScope)}
           title="视图范围切换" aria-label="视图范围"
           style={{ ...SELECT_STYLE, maxWidth: 150 }}>
@@ -104,8 +105,8 @@ export function TestCaseFilterBar({ meta, reqs, reqFilter, scope, newTitle, keyw
       )}
 
       <span style={{ flex: 1 }} />
-      {/* role=status 让提示文本对辅助技术即时播报（与全站内联 notice 同位置，同时便于自动化断言取当前提示） */}
-      {notice && <span role="status" aria-live="polite" style={{ fontSize: 11, color: 'var(--accent)' }}>{notice}</span>}
+      {/* <output>（隐式 role=status）让提示文本对辅助技术即时播报——与全站内联 notice 同位置，同时便于自动化断言取当前提示；S6819 要求用原生 output 替代 role=status */}
+      {notice && <output aria-live="polite" style={{ fontSize: 11, color: 'var(--accent)' }}>{notice}</output>}
     </div>
   );
 }

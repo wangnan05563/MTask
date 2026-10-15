@@ -37,38 +37,47 @@ const RANGES: Record<'minute' | 'hour' | 'dom' | 'month' | 'dow', [number, numbe
 
 const FIELD_NAMES = ['分', '时', '日', '月', '周'] as const;
 
+/** 解析单段中的「范围[/步长]」：只做形态拆分与 lo/hi/step 计算，界值校验留在 parseField（与原实现的检查顺序一致：先步长后界值） */
+function segmentBounds(seg: string, [min, max]: [number, number], name: string): { lo: number; hi: number; step: number; star: boolean } {
+  const [rangePart, stepPart] = seg.split('/');
+  const step = stepPart === undefined ? 1 : Number(stepPart);
+  if (!Number.isInteger(step) || step < 1) throw new Error(`cron 第「${name}」段步长非法：${seg}`);
+  if (rangePart === '*') return { lo: min, hi: max, step, star: true };
+  if (rangePart.includes('-')) {
+    const [a, b] = rangePart.split('-');
+    return { lo: Number(a), hi: Number(b), step, star: false };
+  }
+  const lo = Number(rangePart);
+  return { lo, hi: stepPart === undefined ? lo : max, step, star: false };
+}
+
+/** 段界值校验：非法即抛（文案与原实现逐字一致，错误信息直接回给 UI） */
+function assertBounds(lo: number, hi: number, [min, max]: [number, number], name: string, seg: string): void {
+  if (!Number.isInteger(lo) || !Number.isInteger(hi) || lo < min || hi > max || lo > hi) {
+    throw new Error(`cron 第「${name}」段取值非法：${seg}（允许 ${min}~${max}）`);
+  }
+}
+
+/** 展开 [lo, hi]（含端点）为步长序列；dow 段（max 为 7）把 7 归一到 0=周日以免重复 */
+function expandRange(lo: number, hi: number, step: number, max: number): number[] {
+  const vals: number[] = [];
+  for (let v = lo; v <= hi; v += step) {
+    vals.push(max === 7 && v === 7 ? 0 : v);
+  }
+  return vals;
+}
+
 /** 解析单段：通配星号、带步长、单值 a、区间 a-b、列表 a,b,c（步长写法为「星号或区间 后接 /n」） */
-function parseField(raw: string, [min, max]: [number, number], name: string): { values: number[]; star: boolean } {
+function parseField(raw: string, range: [number, number], name: string): { values: number[]; star: boolean } {
   const out = new Set<number>();
   let star = false;
   for (const part of raw.split(',')) {
     const seg = part.trim();
     if (!seg) throw new Error(`cron 第「${name}」段含空项`);
-    const [rangePart, stepPart] = seg.split('/');
-    const step = stepPart === undefined ? 1 : Number(stepPart);
-    if (!Number.isInteger(step) || step < 1) throw new Error(`cron 第「${name}」段步长非法：${seg}`);
-    let lo: number;
-    let hi: number;
-    if (rangePart === '*') {
-      star = true;
-      lo = min;
-      hi = max;
-    } else if (rangePart.includes('-')) {
-      const [a, b] = rangePart.split('-');
-      lo = Number(a);
-      hi = Number(b);
-    } else {
-      lo = Number(rangePart);
-      hi = stepPart === undefined ? lo : max;
-    }
-    if (!Number.isInteger(lo) || !Number.isInteger(hi) || lo < min || hi > max || lo > hi) {
-      throw new Error(`cron 第「${name}」段取值非法：${seg}（允许 ${min}~${max}）`);
-    }
-    for (let v = lo; v <= hi; v += step) {
-      // dow：7 与 0 同为周日，归一到 0 以免重复
-      if (max === 7 && v === 7) out.add(0);
-      else out.add(v);
-    }
+    const b = segmentBounds(seg, range, name);
+    star = star || b.star;
+    assertBounds(b.lo, b.hi, range, name, seg);
+    for (const v of expandRange(b.lo, b.hi, b.step, range[1])) out.add(v);
   }
   if (out.size === 0) throw new Error(`cron 第「${name}」段无有效取值`);
   return { values: [...out].sort((x, y) => x - y), star };
@@ -133,7 +142,7 @@ function dayMatches(spec: CronSpec, y: number, mo: number, d: number): boolean {
 export function nextCronRun(expr: string, from: Date = new Date()): Date | null {
   const spec = parseCron(expr);
   // 起算点：from 的下一分钟（cron 不含秒级精度；等于当前分钟的已过期）
-  const start = new Date(from.getTime());
+  const start = new Date(from);
   start.setSeconds(0, 0);
   start.setMinutes(start.getMinutes() + 1);
 

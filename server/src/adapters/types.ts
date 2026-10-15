@@ -127,12 +127,31 @@ export function outputStoppedError(label: string, chars: number): string {
 }
 
 /**
+ * cause 常是 undici 挂上的普通对象（errno / syscall / code），直接 String() 只会得到 `[object Object]`；
+ * 显式 JSON 化才能带出真实原因。无法序列化的对象（循环引用）宁可省略原因，也不给出无意义的字符串。
+ */
+function stringifyCause(cause: unknown): string {
+  if (typeof cause === 'string') return cause;
+  if (typeof cause === 'number' || typeof cause === 'boolean' || typeof cause === 'bigint') return String(cause);
+  // symbol/function 形态的 cause 在本链路不可达（cause 由 undici 网络层挂为对象或字符串），兜底空串
+  if (typeof cause !== 'object') return '';
+  // 对象/数组显式 JSON 化；无法序列化的对象（循环引用）宁可省略原因，也不给出 [object Object]
+  try {
+    return JSON.stringify(cause) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/**
  * 网络层异常归因：undici 的 fetch 失败只报 `fetch failed`（TypeError），真实原因（ECONNREFUSED /
  * ENOTFOUND / socket hang up 等）藏在 e.cause——不带出来用户无法自查端点/网络问题。
  */
 export function describeError(e: unknown): string {
   if (!(e instanceof Error)) return String(e);
   const cause: unknown = (e as { cause?: unknown }).cause;
-  const causeMsg = cause instanceof Error ? cause.message : cause ? String(cause) : '';
+  let causeMsg = '';
+  if (cause instanceof Error) causeMsg = cause.message;
+  else if (cause) causeMsg = stringifyCause(cause);
   return causeMsg && !e.message.includes(causeMsg) ? `${e.message}（原因：${causeMsg}）` : e.message;
 }

@@ -48,7 +48,7 @@ interface PreflightResult {
  * 两份清单的一致性由 `verify-t02111` 的源码守卫断言，不靠人记。
  */
 const SECTIONS = ['封面', '议程', '项目团队介绍', '项目背景', '项目需求', '项目范围', '项目计划', '工作量评估', '测试与质量策略', '项目风险', '沟通管理', '附录'];
-const LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list'];
+const LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list', 'section', 'thanks'];
 
 /** 大纲编辑态会话键（重置入口在 consoleReset 的产物键清单里，与控制台重置等效） */
 const OUTLINE_SESSION_KEY = 'kickoff.outline';
@@ -85,6 +85,222 @@ function goDeepLink(link: string, projectId: string, openCard?: (key: 'prd-impor
   } catch { /* 跳转异常静默：校验结论本身已展示 */ }
 }
 
+/**
+ * 「开始生成」按钮的禁用原因：正向条件逐级早返回，空串=可以生成。
+ * 从面板主体的四段取反嵌套三元拆出（渲染文案不变）。
+ */
+function generateBlockReasonOf(projectId: string, toolId: string, blocked: boolean, rowCount: number): string {
+  if (!projectId) return '先在页面顶部选择项目范围';
+  if (!toolId) return '请先在右侧控制台选择 AI 模型工具';
+  if (blocked) return '资料不足（PRD/需求矩阵/计划三项均缺），请先补齐后重开校验';
+  if (rowCount === 0) return '请先生成并确认大纲';
+  return '';
+}
+
+/** 单条校验项卡片（✓/⚠/✕ + 条数 + 怎么补 + 深链按钮） */
+function PreflightItemCard({ it, projectId, openCard }: {
+  readonly it: PreflightItem;
+  readonly projectId: string;
+  readonly openCard?: (key: 'prd-import' | 'tc-gen') => void;
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11, border: '1px solid var(--border)', borderRadius: 6, padding: '5px 7px' }}>
+      {statusIcon(it.status)}
+      <span style={{ flex: 1 }}>
+        <span style={{ fontWeight: 600 }}>{it.label}</span>
+        <span style={{ color: 'var(--text-muted)' }}> · {it.count} 条{it.hard ? '（必需）' : ''}</span>
+        <span style={{ display: 'block', color: 'var(--text-secondary)', marginTop: 2 }}>{it.note}</span>
+      </span>
+      {it.status !== 'ok' && (
+        <button onClick={() => goDeepLink(it.deepLink, projectId, openCard)} className="tbtn-anim"
+          title={`去补充 — ${it.deepLink}`} aria-label={`去补充${it.label}`} style={opBtn}>去补充</button>
+      )}
+    </div>
+  );
+}
+
+/** ① 前置校验 checklist 段（网格 + 硬阻塞横幅 + ⚠ 级提示） */
+function PreflightChecklist({ pre, preLoading, preError, projectId, blocked, missingItems, openCard }: {
+  readonly pre: PreflightResult | null;
+  readonly preLoading: boolean;
+  readonly preError: string;
+  readonly projectId: string;
+  readonly blocked: boolean;
+  readonly missingItems: PreflightItem[];
+  readonly openCard?: (key: 'prd-import' | 'tc-gen') => void;
+}) {
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+        资料齐备性校验（只读，不调用 AI）
+        {preLoading && <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: 6 }}>校验中…</span>}
+      </div>
+      {!projectId && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>先在页面顶部选择项目范围，校验与生成都以该项目为准。</div>}
+      {projectId && preError && <div style={{ fontSize: 11, color: 'var(--danger)' }}>校验失败：{preError}</div>}
+      {pre && (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 6 }}>
+            {pre.items.map((it) => <PreflightItemCard key={it.key} it={it} projectId={projectId} openCard={openCard} />)}
+          </div>
+          {blocked && (
+            <div style={{ marginTop: 8, border: '1px solid var(--danger)', borderRadius: 6, padding: '6px 8px', fontSize: 11, color: 'var(--danger)' }}>
+              硬阻塞：{missingItems.map((i) => i.label).join('、')} 均无数据，生成只会得到空壳稿——已禁止发起。
+              <span style={{ display: 'inline-flex', gap: 6, marginLeft: 6, flexWrap: 'wrap' }}>
+                {missingItems.map((i) => (
+                  <button key={i.key} onClick={() => goDeepLink(i.deepLink, projectId, openCard)} className="tbtn-anim"
+                    title={`去补充 — ${i.deepLink}`} aria-label={`去补充${i.label}`} style={opBtn}>{i.label}</button>
+                ))}
+              </span>
+            </div>
+          )}
+          {!blocked && pre.items.some((i) => i.status === 'warn') && (
+            <div style={{ marginTop: 6, fontSize: 11, color: 'var(--warn)' }}>
+              ⚠ 级项可继续生成，但降级会在对应 PPT 页面页脚留痕（客户会上追问时页面上要有依据）。
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** ② 大纲段工具条（补充说明 + 生成/重新生成 + 清空 + 页数提示） */
+function OutlineToolbar({ extraNote, onExtraNoteChange, streaming, outlineBusy, blocked, genDisabled, rowCount, onGenOutline, onClear }: {
+  readonly extraNote: string;
+  readonly onExtraNoteChange: (value: string) => void;
+  readonly streaming: boolean;
+  readonly outlineBusy: boolean;
+  readonly blocked: boolean;
+  readonly genDisabled: boolean;
+  readonly rowCount: number;
+  readonly onGenOutline: () => void;
+  readonly onClear: () => void;
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+      <input value={extraNote} onChange={(e) => onExtraNoteChange(e.target.value)} placeholder="补充说明（可选，会拼进大纲提示词）" aria-label="大纲补充说明"
+        style={{ ...cellInput, flex: '1 1 220px', minWidth: 180 }} disabled={streaming} />
+      {/* FR-2.4 硬阻塞时同时禁掉大纲发起：否则一次 AI 调用只换来一份空壳大纲，与「禁止生成空壳稿」同义 */}
+      <button onClick={onGenOutline} disabled={genDisabled} className="tbtn-anim"
+        title={blocked ? '资料不足（PRD/需求矩阵/计划三项均缺），补齐后再生成大纲' : '调用 AI 生成分页大纲（1 次模型调用）'} aria-label="生成大纲"
+        style={{ ...opBtn, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', padding: '5px 12px' }}>
+        {outlineBusy ? <Loader2 size={12} className="task-breathe" /> : <Sparkles size={12} />} {rowCount ? '重新生成大纲' : '生成大纲'}
+      </button>
+      {rowCount > 0 && <button onClick={onClear} disabled={streaming} className="tbtn-anim" title="清空大纲稿" aria-label="清空大纲" style={opBtn}><Trash2 size={11} /> 清空</button>}
+      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{rowCount ? `共 ${rowCount} 页（建议 12~18）` : '大纲 12~18 页，可改标题/要点/版式，可增删页与调序'}</span>
+    </div>
+  );
+}
+
+/** ② 大纲编辑列表：就地改章节/标题/版式/要点 + 上移下移删除 + 追加一页 */
+function OutlinePageList({ rows, streaming, onPatch, onRemove, onMove, onAdd }: {
+  readonly rows: KickoffOutlineItem[];
+  readonly streaming: boolean;
+  readonly onPatch: (idx: number, patch: Partial<KickoffOutlineItem>) => void;
+  readonly onRemove: (idx: number) => void;
+  readonly onMove: (idx: number, dir: -1 | 1) => void;
+  readonly onAdd: () => void;
+}) {
+  return (
+    <div style={{ maxHeight: 340, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6, marginBottom: 10 }}>
+      {rows.map((r, idx) => (
+        <div key={`${r.section}-${idx}`} style={{ borderBottom: '1px solid var(--border)', padding: 8, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 22, textAlign: 'right', marginTop: 6 }}>{idx + 1}</span>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 5 }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <select value={r.section} onChange={(e) => onPatch(idx, { section: e.target.value })} disabled={streaming}
+                title="章节" aria-label={`第${idx + 1}页章节`} style={cellInput}>
+                {SECTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <input value={r.title} onChange={(e) => onPatch(idx, { title: e.target.value })} disabled={streaming}
+                placeholder="页标题（≤30 字）" aria-label={`第${idx + 1}页标题`} style={{ ...cellInput, flex: 1, minWidth: 160 }} />
+              <select value={r.layout} onChange={(e) => onPatch(idx, { layout: e.target.value })} disabled={streaming}
+                title="版式" aria-label={`第${idx + 1}页版式`} style={cellInput}>
+                {LAYOUTS.map((l) => <option key={l} value={l}>{l}</option>)}
+              </select>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', alignSelf: 'center' }}>
+                取数：{r.dataKeys.length ? r.dataKeys.join('、') : '无'}
+              </span>
+            </div>
+            <textarea value={r.bullets.join('\n')} onChange={(e) => onPatch(idx, { bullets: e.target.value.split('\n') })}
+              disabled={streaming} rows={Math.min(6, Math.max(2, r.bullets.length))}
+              placeholder="每行一条要点（每条 ≤42 字，每页 ≤6 条）" aria-label={`第${idx + 1}页要点`}
+              style={{ ...cellInput, width: '100%', resize: 'vertical', fontFamily: 'inherit' }} />
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <button onClick={() => onMove(idx, -1)} disabled={streaming || idx === 0} className="tbtn-anim" title="上移" aria-label="上移" style={{ ...opBtn, padding: '1px 5px' }}><ChevronUp size={11} /></button>
+            <button onClick={() => onMove(idx, 1)} disabled={streaming || idx === rows.length - 1} className="tbtn-anim" title="下移" aria-label="下移" style={{ ...opBtn, padding: '1px 5px' }}><ChevronDown size={11} /></button>
+            <button onClick={() => onRemove(idx)} disabled={streaming} className="tbtn-anim" title="删除该页" aria-label="删除该页"
+              style={{ ...opBtn, padding: '1px 5px', color: 'var(--danger)', border: 'none', background: 'transparent' }}><Trash2 size={11} /></button>
+          </div>
+        </div>
+      ))}
+      <div style={{ padding: 6 }}>
+        <button onClick={onAdd} disabled={streaming} className="tbtn-anim" title="追加一页" aria-label="追加一页" style={opBtn}><Plus size={11} /> 加一页</button>
+      </div>
+    </div>
+  );
+}
+
+/** ③ 生成与下载条 */
+function GenerateBar({ streaming, canGenerate, blockReason, result, downloading, onGenerate, onDownload }: {
+  readonly streaming: boolean;
+  readonly canGenerate: boolean;
+  readonly blockReason: string;
+  readonly result: KickoffStreamResult | null;
+  readonly downloading: boolean;
+  readonly onGenerate: () => void;
+  readonly onDownload: () => void;
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+      <button onClick={onGenerate} disabled={!canGenerate} className="tbtn-anim"
+        title={blockReason || '逐页装配 .pptx 并落盘换下载令牌'} aria-label="开始生成启动会 PPT"
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 12, border: 'none', borderRadius: 6,
+          background: canGenerate ? 'var(--accent)' : 'var(--border-strong)', color: canGenerate ? 'var(--accent-text)' : 'var(--text-muted)',
+          cursor: canGenerate ? 'pointer' : 'default', padding: '5px 12px' }}>
+        {streaming ? <Loader2 size={12} className="task-breathe" /> : <Sparkles size={12} />} 开始生成
+      </button>
+      {!!blockReason && <span style={{ fontSize: 11, color: 'var(--danger)' }}>{blockReason}</span>}
+      {streaming && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>点右侧控制台「停止」可中断（服务端不留半成品）</span>}
+      {result && !streaming && (
+        <button onClick={onDownload} disabled={downloading} className="tbtn-anim"
+          title={`下载 ${result.fileName}`} aria-label="下载启动会 PPT"
+          style={{ ...opBtn, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', padding: '5px 12px' }}>
+          {downloading ? <Loader2 size={12} className="task-breathe" /> : <Download size={12} />} 下载 .pptx（{result.pageCount} 页）
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** ③ 装配进度与降级提示区 */
+function BuildProgressPanel({ streaming, pageDone, pageTotal, result }: {
+  readonly streaming: boolean;
+  readonly pageDone: number;
+  readonly pageTotal: number;
+  readonly result: KickoffStreamResult | null;
+}) {
+  return (
+    <>
+      {(streaming || pageTotal > 0) && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
+            {streaming ? `装配中 ${pageDone}/${pageTotal} 页` : `已装配 ${pageDone}/${pageTotal} 页`}
+          </div>
+          <FlowProgress value={pageTotal ? (pageDone / pageTotal) * 100 : 0} aria-label="逐页装配进度" />
+        </div>
+      )}
+      {result && result.warnings.length > 0 && (
+        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--warn)' }}>
+          版式/降级提示 {result.warnings.length} 条（已如实写进稿内，未静默改数）：
+          {result.warnings.map((w, i) => <div key={`${w}-${i}`}>• {w}</div>)}
+        </div>
+      )}
+    </>
+  );
+}
+
 export function KickoffPptPanel({ projectId, toolId, onClose, openCard }: {
   readonly projectId: string;
   readonly toolId: string;
@@ -92,7 +308,8 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard }: {
   readonly openCard?: (key: 'prd-import' | 'tc-gen') => void;
 }) {
   const snap = useKickoffPpt();
-  const { streaming, outline, result } = snap;
+  // store 快照里的 outline 本面板从不读取（大纲编辑态一律用本地 rows + store），故不解构它
+  const { streaming, result } = snap;
   const [pre, setPre] = useState<PreflightResult | null>(null);
   const [preLoading, setPreLoading] = useState(false);
   const [preError, setPreError] = useState('');
@@ -187,7 +404,11 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard }: {
       setRows(r.outline);
       setOutlineWarnings(r.warnings ?? []);
       kickoffPptStore.setOutline(r.outline, r.warnings ?? []);
-      kickoffPptStore.pushLog(`大纲就绪：${r.outline.length} 页${r.truncated ? '（已按 18 页上限裁剪）' : ''}${(r.warnings ?? []).length ? `，降级提示 ${r.warnings.length} 条` : ''}`);
+      // 嵌套模板串拆成中间变量：拼接结果与原实现逐字一致
+      const truncatedMark = r.truncated ? '（已按 18 页上限裁剪）' : '';
+      const warnCount = (r.warnings ?? []).length;
+      const warnMark = warnCount ? `，降级提示 ${warnCount} 条` : '';
+      kickoffPptStore.pushLog(`大纲就绪：${r.outline.length} 页${truncatedMark}${warnMark}`);
       flash(`大纲已生成 ${r.outline.length} 页——请确认后开始装配`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -234,7 +455,9 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard }: {
       if (done) {
         setPageTotal(done.pageCount);
         setPageDone(done.pageCount);
-        kickoffPptStore.pushLog(`装配完成：${done.pageCount} 页 · ${done.fileName}${done.warnings.length ? ` · 降级 ${done.warnings.length} 条` : ''}`);
+        // 嵌套模板串拆成中间变量：拼接结果与原实现逐字一致
+        const degradedMark = done.warnings.length ? ` · 降级 ${done.warnings.length} 条` : '';
+        kickoffPptStore.pushLog(`装配完成：${done.pageCount} 页 · ${done.fileName}${degradedMark}`);
         flash('已生成，点「下载 .pptx」取回（下载即删令牌）');
       }
     } catch (e) {
@@ -278,15 +501,7 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard }: {
   }
 
   const canGenerate = !streaming && !outlineBusy && !!projectId && !!toolId && rows.length > 0 && !blocked;
-  const generateBlockReason = !projectId
-    ? '先在页面顶部选择项目范围'
-    : !toolId
-      ? '请先在右侧控制台选择 AI 模型工具'
-      : blocked
-        ? '资料不足（PRD/需求矩阵/计划三项均缺），请先补齐后重开校验'
-        : rows.length === 0
-          ? '请先生成并确认大纲'
-          : '';
+  const generateBlockReason = generateBlockReasonOf(projectId, toolId, blocked, rows.length);
 
   return (
     <div style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 14 }}>
@@ -302,64 +517,13 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard }: {
       </div>
 
       {/* ① 前置校验 checklist */}
-      <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
-          资料齐备性校验（只读，不调用 AI）
-          {preLoading && <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: 6 }}>校验中…</span>}
-        </div>
-        {!projectId && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>先在页面顶部选择项目范围，校验与生成都以该项目为准。</div>}
-        {projectId && preError && <div style={{ fontSize: 11, color: 'var(--danger)' }}>校验失败：{preError}</div>}
-        {pre && (
-          <>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 6 }}>
-              {pre.items.map((it) => (
-                <div key={it.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11, border: '1px solid var(--border)', borderRadius: 6, padding: '5px 7px' }}>
-                  {statusIcon(it.status)}
-                  <span style={{ flex: 1 }}>
-                    <span style={{ fontWeight: 600 }}>{it.label}</span>
-                    <span style={{ color: 'var(--text-muted)' }}> · {it.count} 条{it.hard ? '（必需）' : ''}</span>
-                    <span style={{ display: 'block', color: 'var(--text-secondary)', marginTop: 2 }}>{it.note}</span>
-                  </span>
-                  {it.status !== 'ok' && (
-                    <button onClick={() => goDeepLink(it.deepLink, projectId, openCard)} className="tbtn-anim"
-                      title={`去补充 — ${it.deepLink}`} aria-label={`去补充${it.label}`} style={opBtn}>去补充</button>
-                  )}
-                </div>
-              ))}
-            </div>
-            {blocked && (
-              <div style={{ marginTop: 8, border: '1px solid var(--danger)', borderRadius: 6, padding: '6px 8px', fontSize: 11, color: 'var(--danger)' }}>
-                硬阻塞：{missingItems.map((i) => i.label).join('、')} 均无数据，生成只会得到空壳稿——已禁止发起。
-                <span style={{ display: 'inline-flex', gap: 6, marginLeft: 6, flexWrap: 'wrap' }}>
-                  {missingItems.map((i) => (
-                    <button key={i.key} onClick={() => goDeepLink(i.deepLink, projectId, openCard)} className="tbtn-anim"
-                      title={`去补充 — ${i.deepLink}`} aria-label={`去补充${i.label}`} style={opBtn}>{i.label}</button>
-                  ))}
-                </span>
-              </div>
-            )}
-            {!blocked && pre.items.some((i) => i.status === 'warn') && (
-              <div style={{ marginTop: 6, fontSize: 11, color: 'var(--warn)' }}>
-                ⚠ 级项可继续生成，但降级会在对应 PPT 页面页脚留痕（客户会上追问时页面上要有依据）。
-              </div>
-            )}
-          </>
-        )}
-      </div>
+      <PreflightChecklist pre={pre} preLoading={preLoading} preError={preError} projectId={projectId}
+        blocked={blocked} missingItems={missingItems} openCard={openCard} />
 
       {/* ② 大纲编辑 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-        <input value={extraNote} onChange={(e) => setExtraNote(e.target.value)} placeholder="补充说明（可选，会拼进大纲提示词）" aria-label="大纲补充说明"
-          style={{ ...cellInput, flex: '1 1 220px', minWidth: 180 }} disabled={streaming} />
-        {/* FR-2.4 硬阻塞时同时禁掉大纲发起：否则一次 AI 调用只换来一份空壳大纲，与「禁止生成空壳稿」同义 */}
-        <button onClick={() => void genOutline()} disabled={streaming || outlineBusy || !projectId || !toolId || blocked} className="tbtn-anim"
-          title={blocked ? '资料不足（PRD/需求矩阵/计划三项均缺），补齐后再生成大纲' : '调用 AI 生成分页大纲（1 次模型调用）'} aria-label="生成大纲"
-          style={{ ...opBtn, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', padding: '5px 12px' }}>
-          {outlineBusy ? <Loader2 size={12} className="task-breathe" /> : <Sparkles size={12} />} {rows.length ? '重新生成大纲' : '生成大纲'}
-        </button>
-        {rows.length > 0 && <button onClick={() => void clearOutline()} disabled={streaming} className="tbtn-anim" title="清空大纲稿" aria-label="清空大纲" style={opBtn}><Trash2 size={11} /> 清空</button>}
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{rows.length ? `共 ${rows.length} 页（建议 12~18）` : '大纲 12~18 页，可改标题/要点/版式，可增删页与调序'}</span>
-      </div>
+      <OutlineToolbar extraNote={extraNote} onExtraNoteChange={setExtraNote} streaming={streaming} outlineBusy={outlineBusy}
+        blocked={blocked} genDisabled={streaming || outlineBusy || !projectId || !toolId || blocked} rowCount={rows.length}
+        onGenOutline={() => void genOutline()} onClear={() => void clearOutline()} />
 
       {outlineWarnings.length > 0 && (
         <div style={{ fontSize: 11, color: 'var(--warn)', marginBottom: 8 }}>
@@ -368,80 +532,14 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard }: {
       )}
 
       {rows.length > 0 && (
-        <div style={{ maxHeight: 340, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6, marginBottom: 10 }}>
-          {rows.map((r, idx) => (
-            <div key={`${r.section}-${idx}`} style={{ borderBottom: '1px solid var(--border)', padding: 8, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 22, textAlign: 'right', marginTop: 6 }}>{idx + 1}</span>
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 5 }}>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  <select value={r.section} onChange={(e) => update(idx, { section: e.target.value })} disabled={streaming}
-                    title="章节" aria-label={`第${idx + 1}页章节`} style={cellInput}>
-                    {SECTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-                  </select>
-                  <input value={r.title} onChange={(e) => update(idx, { title: e.target.value })} disabled={streaming}
-                    placeholder="页标题（≤30 字）" aria-label={`第${idx + 1}页标题`} style={{ ...cellInput, flex: 1, minWidth: 160 }} />
-                  <select value={r.layout} onChange={(e) => update(idx, { layout: e.target.value })} disabled={streaming}
-                    title="版式" aria-label={`第${idx + 1}页版式`} style={cellInput}>
-                    {LAYOUTS.map((l) => <option key={l} value={l}>{l}</option>)}
-                  </select>
-                  <span style={{ fontSize: 10, color: 'var(--text-muted)', alignSelf: 'center' }}>
-                    取数：{r.dataKeys.length ? r.dataKeys.join('、') : '无'}
-                  </span>
-                </div>
-                <textarea value={r.bullets.join('\n')} onChange={(e) => update(idx, { bullets: e.target.value.split('\n') })}
-                  disabled={streaming} rows={Math.min(6, Math.max(2, r.bullets.length))}
-                  placeholder="每行一条要点（每条 ≤42 字，每页 ≤6 条）" aria-label={`第${idx + 1}页要点`}
-                  style={{ ...cellInput, width: '100%', resize: 'vertical', fontFamily: 'inherit' }} />
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <button onClick={() => move(idx, -1)} disabled={streaming || idx === 0} className="tbtn-anim" title="上移" aria-label="上移" style={{ ...opBtn, padding: '1px 5px' }}><ChevronUp size={11} /></button>
-                <button onClick={() => move(idx, 1)} disabled={streaming || idx === rows.length - 1} className="tbtn-anim" title="下移" aria-label="下移" style={{ ...opBtn, padding: '1px 5px' }}><ChevronDown size={11} /></button>
-                <button onClick={() => remove(idx)} disabled={streaming} className="tbtn-anim" title="删除该页" aria-label="删除该页"
-                  style={{ ...opBtn, padding: '1px 5px', color: 'var(--danger)', border: 'none', background: 'transparent' }}><Trash2 size={11} /></button>
-              </div>
-            </div>
-          ))}
-          <div style={{ padding: 6 }}>
-            <button onClick={addPage} disabled={streaming} className="tbtn-anim" title="追加一页" aria-label="追加一页" style={opBtn}><Plus size={11} /> 加一页</button>
-          </div>
-        </div>
+        <OutlinePageList rows={rows} streaming={streaming} onPatch={update} onRemove={remove} onMove={move} onAdd={addPage} />
       )}
 
       {/* ③ 生成与下载 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <button onClick={() => void generate()} disabled={!canGenerate} className="tbtn-anim"
-          title={generateBlockReason || '逐页装配 .pptx 并落盘换下载令牌'} aria-label="开始生成启动会 PPT"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 12, border: 'none', borderRadius: 6,
-            background: canGenerate ? 'var(--accent)' : 'var(--border-strong)', color: canGenerate ? 'var(--accent-text)' : 'var(--text-muted)',
-            cursor: canGenerate ? 'pointer' : 'default', padding: '5px 12px' }}>
-          {streaming ? <Loader2 size={12} className="task-breathe" /> : <Sparkles size={12} />} 开始生成
-        </button>
-        {!!generateBlockReason && <span style={{ fontSize: 11, color: 'var(--danger)' }}>{generateBlockReason}</span>}
-        {streaming && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>点右侧控制台「停止」可中断（服务端不留半成品）</span>}
-        {result && !streaming && (
-          <button onClick={() => void download()} disabled={downloading} className="tbtn-anim"
-            title={`下载 ${result.fileName}`} aria-label="下载启动会 PPT"
-            style={{ ...opBtn, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', padding: '5px 12px' }}>
-            {downloading ? <Loader2 size={12} className="task-breathe" /> : <Download size={12} />} 下载 .pptx（{result.pageCount} 页）
-          </button>
-        )}
-      </div>
+      <GenerateBar streaming={streaming} canGenerate={canGenerate} blockReason={generateBlockReason} result={result}
+        downloading={downloading} onGenerate={() => void generate()} onDownload={() => void download()} />
 
-      {(streaming || pageTotal > 0) && (
-        <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
-            {streaming ? `装配中 ${pageDone}/${pageTotal} 页` : `已装配 ${pageDone}/${pageTotal} 页`}
-          </div>
-          <FlowProgress value={pageTotal ? (pageDone / pageTotal) * 100 : 0} aria-label="逐页装配进度" />
-        </div>
-      )}
-
-      {result && result.warnings.length > 0 && (
-        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--warn)' }}>
-          版式/降级提示 {result.warnings.length} 条（已如实写进稿内，未静默改数）：
-          {result.warnings.map((w, i) => <div key={`${w}-${i}`}>• {w}</div>)}
-        </div>
-      )}
+      <BuildProgressPanel streaming={streaming} pageDone={pageDone} pageTotal={pageTotal} result={result} />
 
       {notice && <output className="flash-toast">{notice}</output>}
     </div>

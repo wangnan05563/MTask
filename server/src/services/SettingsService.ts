@@ -199,7 +199,7 @@ function normalize(db: Database.Database, table: string, rows: unknown[]): unkno
       let buf = Buffer.alloc(0);
       try {
         const decoded = Buffer.from(b64, 'base64');
-        if (decoded.toString('base64').replace(/=+$/, '') === b64.replace(/=+$/, '')) buf = decoded;
+        if (decoded.toString('base64').replace(/=+$/, '') === b64.replace(/={0,3}$/, '')) buf = decoded;
       } catch { /* 非法 base64 → 保留空缓冲 */ }
       return { ...r, data: buf };
     });
