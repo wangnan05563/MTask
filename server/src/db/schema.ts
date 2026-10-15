@@ -479,6 +479,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('tasks', 'task_no', 'task_no TEXT');
   // 处理结果：AI 可把根因分析/解决方案等结论同步到任务（MCP mtask_update_task_result 写入），前端查看/编辑
   ensureColumn('tasks', 'handle_result', 'handle_result TEXT');
+  // T02164：AI 摘要的生成时刻（ISO）——摘要视图强制标注「更新时间」，据此判断摘要相对任务变更是否老旧
+  ensureColumn('tasks', 'ai_summary_at', 'ai_summary_at TEXT');
   // T00566：AI 处理状态动画（'' 已读/无 | running 运行中 | failed 运行失败 | unread 未读）
   ensureColumn('tasks', 'ai_state', "ai_state TEXT DEFAULT ''");
   // T01057-FR1.2：失败重试计数——手动重试时 +1，任务行显示「重试×N」，历史保留在 handle_result 追加段

@@ -209,6 +209,8 @@ export interface Task {
   archived: boolean;
   archived_at: string | null;
   ai_summary: string | null;
+  /** T02164：AI 摘要生成时刻（ISO）——摘要视图强制标注「更新时间」并据此判断时效性 */
+  ai_summary_at?: string | null;
   /** 处理结果：AI 分析结论（根因/解决方案）等，可查看/编辑 */
   handle_result: string | null;
   /** T00566：AI 处理状态动画（'' 已读/无 | running 运行中 | failed 运行失败 | unread 未读） */

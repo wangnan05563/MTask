@@ -48,6 +48,8 @@ export interface TaskRow {
   /** T00589：历史资产时间（非空即已沉淀至历史资产，与归档独立） */
   history_at: string | null;
   ai_summary: string | null;
+  /** T02164：AI 摘要生成时刻（ISO）——摘要视图标注「更新时间」与时效性判断的数据源 */
+  ai_summary_at: string | null;
   /** 处理结果：AI 分析结论（根因/解决方案）等，由 MCP 或前端编辑写入 */
   handle_result: string | null;
   /** T00566：AI 处理状态动画（'' 已读/无 | running 运行中 | failed 运行失败 | unread 未读） */
@@ -83,6 +85,8 @@ export interface TaskView {
   /** T00589：历史资产时间（非空即已沉淀，与归档独立） */
   history_at: string | null;
   ai_summary: string | null;
+  /** T02164：AI 摘要生成时刻（ISO），供前端标注「更新时间」 */
+  ai_summary_at: string | null;
   handle_result: string | null;
   /** T00566：AI 处理状态动画（'' 已读/无 | running failed unread） */
   ai_state: string;
@@ -828,8 +832,21 @@ export const TaskService = {
     if (!content?.trim()) throw new Error('采纳内容不能为空');
     if (!this.getById(id)) throw new Error('任务不存在');
     const db = getDb();
-    db.prepare('UPDATE tasks SET ai_summary = ?, status = ?, updated_at = ? WHERE id = ?')
-      .run(content, 'done', now(), id);
+    // T02164：采纳写入的同样是摘要，必须一起记生成时刻——否则摘要视图有正文却显示「未标注」，
+    // 更新时间与时效提示双双失效。取同一时刻，避免两个字段差出毫秒级「摘要已旧」误报。
+    const t = now();
+    db.prepare('UPDATE tasks SET ai_summary = ?, ai_summary_at = ?, status = ?, updated_at = ? WHERE id = ?')
+      .run(content, t, 'done', t, id);
+    return this.getById(id)!;
+  },
+
+  /** T02164：保存「生成总结摘要」的结果并记录生成时刻。
+   *  不改 updated_at：它是「任务正文是否又被动过」的判据，摘要相对它更晚即视为新鲜；
+   *  若摘要写入也刷新 updated_at，两个时间永远相等，时效性提示便失去意义。 */
+  saveAiSummary(id: string, content: string): TaskView {
+    if (!this.getById(id)) throw new Error('任务不存在');
+    getDb().prepare('UPDATE tasks SET ai_summary = ?, ai_summary_at = ? WHERE id = ?')
+      .run(content, now(), id);
     return this.getById(id)!;
   },
 };

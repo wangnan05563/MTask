@@ -1164,6 +1164,18 @@ api.post('/tasks/:id/adopt', (req, res) => {
   }
 });
 
+// T02164：AI 摘要视图的「生成总结摘要」——按任务全量信息出全面总结，落库 ai_summary + 生成时刻。
+// toolId 可选：不传即走「默认整理工具」，抽屉因此无需向父页取工具选择态（自包含原则）。
+api.post('/tasks/:id/ai-summary', async (req, res) => {
+  const { toolId } = req.body ?? {};
+  if (toolId !== undefined && typeof toolId !== 'string') return res.status(400).json({ error: 'toolId 需为字符串' });
+  try {
+    res.json(await AIService.summarizeTask(req.params.id, toolId || undefined));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 // ---------- 任务截图/图片附件（FR1.3 图文混合描述） ----------
 // 上传：body { data: base64（不含 data: 前缀）, mimeType? }，支持 dataURL 自动去前缀
 api.post('/tasks/:id/images', (req, res) => {

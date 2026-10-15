@@ -1,11 +1,12 @@
 import { getDb } from '../db/connection';
 import { ConfigService } from './ConfigService';
 import { QueueService, type QueueJobRow } from './QueueService';
-import { TaskService } from './TaskService';
+import { TaskService, type TaskView } from './TaskService';
+import { parseReqIds } from './reqStatusSync'; // T02164：摘要上下文需要任务/计划两侧的需求挂接，复用同一 req_ids 解析口径
 import { logService } from './LogService';
 import { v4 as uuid } from 'uuid';
 import { getAdapter } from '../adapters';
-import { resolvePrdContext } from '../util/prdContext'; // T00763：任务关联 PRD → AI 上下文自动注入（util 独立避免循环依赖）
+import { resolvePrdContext, type PrdContext } from '../util/prdContext'; // T00763：任务关联 PRD → AI 上下文自动注入（util 独立避免循环依赖）
 import { WorkspaceService } from './WorkspaceService'; // T00777：工作空间检索增强
 import type { StreamResult, SubmitResult, PollResult, TokenUsage } from '../adapters/types';
 import type { ToolConfig } from '../adapters';
@@ -123,6 +124,131 @@ async function organizeOne(
   recordUsage('organize', toolId, config.model, result.ok, startedAt, result.content?.length ?? 0, result.error);
 }
 
+/** T02164：摘要提示词的关联区块取数上限——长任务的时间线可达数百条事件，
+ *  全量塞进提示词会把任务正文挤出上下文窗口，取最近若干条已足够支撑「全面总结」。 */
+const SUMMARY_EVENT_LIMIT = 20;
+const SUMMARY_PLAN_LIMIT = 10;
+
+const SUMMARY_STATUS_LABEL: Record<string, string> = { todo: '待办', doing: '进行中', changed: '已变更', done: '已完成' };
+const SUMMARY_PRIORITY_LABEL: Record<string, string> = { urgent: '紧急', high: '高', normal: '普通', low: '低' };
+const SUMMARY_AI_STATE_LABEL: Record<string, string> = { running: '运行中', unread: '已回传待读', failed: '处理失败' };
+const SUMMARY_PLAN_KIND_LABEL: Record<string, string> = { normal: '普通计划', milestone: '里程碑', daily: '日常任务' };
+const SUMMARY_REQ_STATUS_LABEL: Record<string, string> = { todo: '待开始', doing: '进行中', done: '已完成', changed: '已变更' };
+const SUMMARY_EVENT_KIND_LABEL: Record<string, string> = { status: '状态变更', verified: '验证标记', ai_state: 'AI 状态', result: '结果回传' };
+
+/** ISO 时刻压成提示词里可读的 `YYYY-MM-DD HH:mm`（原样截取，模型只做转述、不参与时区换算） */
+function briefTime(iso: string | null | undefined): string {
+  if (!iso) return '（未知）';
+  return iso.slice(0, 16).replace('T', ' ');
+}
+
+/** 「基本信息」段：逐条确定性事实，避免模型从正文反推状态/归属 */
+function summaryFactsBlock(task: TaskView, projectName: string, categoryName: string | null): string {
+  const lines = [
+    `- 任务编号：${task.task_no ?? '（未编号）'}`,
+    `- 标题：${task.title}`,
+    `- 所属项目：${projectName}`,
+    `- 状态：${SUMMARY_STATUS_LABEL[task.status] ?? task.status}`,
+    `- 优先级：${SUMMARY_PRIORITY_LABEL[task.priority] ?? task.priority}`,
+    `- AI 处理状态：${SUMMARY_AI_STATE_LABEL[task.ai_state] ?? '未开始'}`,
+    `- 创建：${briefTime(task.created_at)}　最后更新：${briefTime(task.updated_at)}`,
+  ];
+  if (task.verified) lines.push('- 已完成且标记「已验证」');
+  if (task.archived) lines.push('- 已归档');
+  if (task.shelved) lines.push('- 已搁置');
+  if (categoryName) lines.push(`- 任务分类：${categoryName}`);
+  if (task.derived_from) lines.push(`- 派生自原任务：${task.derived_from}`);
+  if (task.history_at) lines.push(`- 已沉淀为历史资产：${briefTime(task.history_at)}`);
+  if (task.retry_count) lines.push(`- 失败重试次数：${task.retry_count}`);
+  if (task.images.length > 0) lines.push(`- 截图附件：${task.images.length} 张`);
+  return lines.join('\n');
+}
+
+/** 「任务正文」段：描述与处理结果是信息量最大的两块，原样带上不再二次摘要 */
+function summaryTextBlock(task: TaskView): string {
+  const parts: string[] = [];
+  const desc = task.description.trim();
+  if (desc) parts.push(`【任务描述】\n${desc}`);
+  const result = task.handle_result?.trim();
+  if (result) parts.push(`【处理结果】\n${result}`);
+  return parts.join('\n\n');
+}
+
+/** 关联需求行（id → 编号/标题/状态）；无 id 时不查库。占位符按 id 条数生成，值仍走绑定参数 */
+function summaryRequirementLines(db: ReturnType<typeof getDb>, reqIds: string[]): string[] {
+  if (reqIds.length === 0) return [];
+  const rows = db.prepare(
+    `SELECT req_no, title, status FROM prd_requirements
+      WHERE id IN (${reqIds.map(() => '?').join(',')}) ORDER BY sort_order`,
+  ).all(...reqIds) as Array<{ req_no: string; title: string; status: string }>;
+  return rows.map((r) => {
+    const status = SUMMARY_REQ_STATUS_LABEL[r.status] ?? r.status;
+    return `- 关联需求：${r.req_no} ${r.title}（状态 ${status}）`;
+  });
+}
+
+/** 「关联信息」段：linked_task_id 挂接的计划（含里程碑）+ 任务与计划两侧的需求矩阵行 */
+function summaryRelatedBlock(db: ReturnType<typeof getDb>, taskId: string, taskReqIds: string | null): string {
+  const plans = db.prepare(
+    `SELECT title, kind, status, progress, start_date, end_date, req_ids FROM plan_tasks
+      WHERE linked_task_id = ? AND archived = 0 ORDER BY start_date LIMIT ?`,
+  ).all(taskId, SUMMARY_PLAN_LIMIT) as
+    Array<{ title: string; kind: string; status: string; progress: number; start_date: string; end_date: string; req_ids: string | null }>;
+  const lines = plans.map((p) => {
+    const kind = SUMMARY_PLAN_KIND_LABEL[p.kind] ?? p.kind;
+    const status = SUMMARY_STATUS_LABEL[p.status] ?? p.status;
+    return `- 关联计划：${p.title}（${kind}，状态 ${status}，进度 ${p.progress}%，${p.start_date} ~ ${p.end_date}）`;
+  });
+  const reqIds = [...new Set([...parseReqIds(taskReqIds), ...plans.flatMap((p) => parseReqIds(p.req_ids))])];
+  lines.push(...summaryRequirementLines(db, reqIds));
+  return lines.join('\n');
+}
+
+/** 「历史状态」段：时间线事件（旧→新），单条 detail 截断防超长日志撑爆提示词 */
+function summaryHistoryBlock(db: ReturnType<typeof getDb>, taskId: string): string {
+  const events = db.prepare(
+    'SELECT kind, detail, created_at FROM task_events WHERE task_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?',
+  ).all(taskId, SUMMARY_EVENT_LIMIT) as Array<{ kind: string; detail: string | null; created_at: string }>;
+  return events
+    .reverse()
+    .map((e) => {
+      const kind = SUMMARY_EVENT_KIND_LABEL[e.kind] ?? e.kind;
+      return `- ${briefTime(e.created_at)} ${kind}：${(e.detail ?? '').slice(0, 120)}`;
+    })
+    .join('\n');
+}
+
+/** 摘要提示词的全量上下文装配：基本信息 / 正文 / 关联 / 历史 / 关联 PRD 原文 */
+function buildSummaryUserPrompt(deps: {
+  readonly task: TaskView; readonly projectName: string; readonly categoryName: string | null;
+  readonly taskReqIds: string | null; readonly prd: PrdContext | null;
+  readonly db: ReturnType<typeof getDb>;
+}): string {
+  const { task, db } = deps;
+  const related = summaryRelatedBlock(db, task.id, deps.taskReqIds);
+  const history = summaryHistoryBlock(db, task.id);
+  const blocks = [
+    `【基本信息】\n${summaryFactsBlock(task, deps.projectName, deps.categoryName)}`,
+    summaryTextBlock(task),
+    related ? `【关联信息（计划 / 需求矩阵）】\n${related}` : '',
+    history ? `【历史状态（时间线，旧→新）】\n${history}` : '',
+  ];
+  const prd = deps.prd;
+  if (prd) blocks.push(`【关联 PRD 原文】\nPRD 文档《${prd.filename || '未命名'}》相关原文：\n${prd.content}`);
+  return blocks.filter((b) => b.trim().length > 0).join('\n\n');
+}
+
+const SUMMARY_SYSTEM = [
+  '你是 MTask 的任务摘要专家。给定一个待办任务的全量信息，输出一段覆盖该任务全部关键事实的全面总结摘要。',
+  '要求：',
+  '1. 覆盖以下维度，输入里没有的维度如实说明「未记录」，不得虚构：任务目标与背景、关键约束与要求、当前进展与已得结论、关联信息（项目/计划/需求/PRD）、历史状态变化要点、遗留事项与风险',
+  '2. 结论要可直接使用：写清「做到了什么、卡在哪、下一步是什么」，而不是复述原文',
+  '3. 使用 Markdown 分节组织，小节标题从具体内容开始，不要输出「任务摘要」这类文档级大标题',
+  '4. 不要输出任何「更新时间 / 生成时间」字段——时间标注由系统统一追加，模型写了反而是错的',
+  '5. 无论输入是繁体还是简体，输出必须统一使用简体中文（简体字），严禁繁体字',
+  '6. 只输出摘要正文，不要寒暄、不要解释你做了什么',
+].join('\n');
+
 /**
  * M6-6.1：askJson 的每次尝试配置（原内联三元）。
  * 重试降 temperature=0 提高结构化 JSON 命中率；maxTokens 覆盖两轮一致生效。
@@ -151,6 +277,14 @@ function mergeUsage(prev: TokenUsage | undefined, cur?: TokenUsage): TokenUsage 
   };
 }
 
+/** T02164：摘要工具取用口径——显式指定优先，否则回落「默认整理工具」；两者都没有时给出可执行的提示 */
+function resolveSummaryToolId(toolId?: string): string {
+  if (toolId) return toolId;
+  const fallback = ConfigService.getDefaults().organize;
+  if (fallback) return fallback;
+  throw new Error('未配置默认整理工具，请先在「模型管理」添加并选择一个整理工具');
+}
+
 export const AIService = {
   /**
    * FR2.1/2.2 单条或批量梳理：调用指定（默认整理）工具，产出结构化文本。
@@ -167,6 +301,41 @@ export const AIService = {
       await organizeOne(taskId, deps);
     }
     return results;
+  },
+
+  /**
+   * T02164：单条任务的「生成总结摘要」——汇总该任务的全量信息（基本信息/正文/关联计划与需求/
+   * 时间线事件/关联 PRD 原文）交模型做全面总结，成功后回填 ai_summary 并记录生成时刻。
+   * 与 organize 的分工：organize 面向「把描述改写成可执行提示词」，本方法面向「把已有信息收拢成结论」。
+   */
+  async summarizeTask(taskId: string, toolId?: string): Promise<TaskView> {
+    const task = TaskService.getById(taskId);
+    if (!task) throw new Error('任务不存在');
+    const db = getDb();
+    const meta = db.prepare(
+      `SELECT p.name AS project_name, c.name AS category_name, t.req_ids AS req_ids
+         FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+         LEFT JOIN task_categories c ON c.id = t.category_id
+        WHERE t.id = ?`,
+    ).get(taskId) as { project_name: string | null; category_name: string | null; req_ids: string | null } | undefined;
+    const tool = resolveSummaryToolId(toolId);
+    const { type, config } = runtimeWithModel(tool);
+    const adapter = getAdapter(type);
+    const user = buildSummaryUserPrompt({
+      task,
+      db,
+      projectName: meta?.project_name ?? '',
+      categoryName: meta?.category_name ?? null,
+      taskReqIds: meta?.req_ids ?? null,
+      prd: resolvePrdContext({ taskId }),
+    });
+    const startedAt = Date.now();
+    logService.log('INFO', 'ai', `[任务总结摘要] task=${task.task_no ?? taskId} tool=${tool} type=${type} model=${config.model ?? ''}`);
+    const result = await adapter.chat(SUMMARY_SYSTEM, user, config);
+    recordUsage('summary', tool, config.model, result.ok, startedAt, result.content?.length ?? 0, result.error);
+    const content = result.content?.trim();
+    if (!result.ok || !content) throw new Error(result.error ?? '模型未返回摘要内容，请稍后重试');
+    return TaskService.saveAiSummary(taskId, content);
   },
 
   /**
