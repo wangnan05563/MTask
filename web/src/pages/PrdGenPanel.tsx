@@ -146,8 +146,11 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
 
   // T00820：结论输入实时写入会话快照（按正文指纹分代存：{问题:结论}），切页返回据此恢复。
   // 只在填写非空结论时落盘，且同一批只保留最新值；rows 变化即同步，卸载前无需额外收尾。
+  // T02203（门实测发现）：rows 为空时**不能**落盘——切页返回的首帧永远是 rows=[]（填充 effect 的
+  // setRows 还没生效），此时按「用户把结论都清掉了」处理会把本批结论从会话快照里删掉，
+  // 紧接着的填充 effect 再读就是空 → 填写过的结论切页丢失。真·清空走的是下面的 delete 分支（rows 非空）。
   useEffect(() => {
-    if (!result) return;
+    if (!result || rows.length === 0) return;
     const key = hashStr(result.prdMd);
     const collected: Record<string, string> = {};
     for (const r of rows) {
