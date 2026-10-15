@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type CSSProperties } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api, type Project, type AITool } from '../api/client';
+import { ProjectListHint, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import { reportStream, useReportStream } from '../reportStream';
 import { ReportConsole } from './ReportConsole';
@@ -418,7 +419,9 @@ export function ReportPage() {
   // 用户选项与已产生结果改为会话级持久化（useSessionState）：切换页面返回后仍保留选择与上次分析结果
   const [period, setPeriod] = useSessionState<'day' | 'week' | 'month'>('report.period', 'week');
   const [format, setFormat] = useSessionState<ReportFormat>('report.format', 'xlsx');
-  const [projects, setProjects] = useState<Project[]>([]);
+  // T02201：项目列表走统一容错层（加载中/失败可见 + 重试；空范围仍是合法的「全部项目」口径，故只显式提示不锁死）
+  const projectList = useProjectList();
+  const { projects } = projectList;
   // T02165：项目范围由单选升级为多选（sessionStorage 键 report.projects）；旧 report.project 单值自动迁移。
   // 空数组 = 全部项目（与原单选「全部项目」口径一致），勾选顺序即报表与 AI 里的项目分块顺序。
   const [projectIds, setProjectIds] = useSessionState<string[]>('report.projects', useMemo(legacyProjectScope, []));
@@ -696,7 +699,6 @@ export function ReportPage() {
   }, [setAiToolId]);
 
   useEffect(() => {
-    void api.get<Project[]>('/projects').then(setProjects).catch(() => {});
     void loadTemplates();
     void loadAiTools();
   }, [loadTemplates, loadAiTools]);
@@ -951,6 +953,8 @@ export function ReportPage() {
           <div style={{ width: 240, maxWidth: '100%' }}>
             <ProjectScopePicker projects={projects} value={projectIds} onChange={setProjectIds} />
           </div>
+          {/* T02201：取数失败/加载中显式化（此前一次失败即整页项目选择器空到下次进页，且无提示） */}
+          <ProjectListHint view={projectList} />
         </div>
       </div>
 

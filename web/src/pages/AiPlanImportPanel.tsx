@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useSyncExternalStore } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
-import { api, type Project } from '../api/client';
+import { api } from '../api/client';
 import { Save, Sparkles, Upload, X } from 'lucide-react';
 import { useSessionState } from '../ui/session';
+import { ProjectListHint, projectListPlaceholder, useProjectList } from '../ui/projectList';
 import { aiImportStore, type AiImportDraftRow } from '../stores/aiImportStore';
 
 /**
@@ -17,14 +18,11 @@ export function AiPlanImportPanel({ toolId, onClose, onSaved }: {
   readonly onSaved?: (n: number) => void;
 }) {
   const snap = useSyncExternalStore(aiImportStore.subscribe, aiImportStore.getSnapshot);
-  const [projects, setProjects] = useSessionState<Project[]>('ai-import.projects.cache', []);
+  // T02201：项目列表走统一容错层（加载中/失败可见 + 重试，失败不写缓存）
+  const projectList = useProjectList();
+  const { projects } = projectList;
   const [projectId, setProjectId] = useSessionState<string>('ai-import.project', '');
   const { busy, fileName, error, rows } = snap;
-
-  useEffect(() => {
-    void api.get<Project[]>('/projects').then(setProjects).catch(() => undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   /** 上传文件 → 后端解析（Excel 表格文本 + AI 识别；md/docx 走 WBS 拆分）→ 草稿预览 */
   const parse = useCallback(async (file: File) => {
@@ -108,12 +106,13 @@ export function AiPlanImportPanel({ toolId, onClose, onSaved }: {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-        <select value={projectId} onChange={(e) => setProjectId(e.target.value)} disabled={busy}
+        <select value={projectId} onChange={(e) => setProjectId(e.target.value)} disabled={busy || projectList.unusable}
           aria-label="目标项目" title="计划将导入到该项目"
           style={{ padding: 4, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
-          <option value="">选择目标项目…</option>
+          <option value="">{projectListPlaceholder(projectList, '选择目标项目…')}</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
+        <ProjectListHint view={projectList} />
         <label className="tbtn-anim" title="选择计划 Excel（.xlsx/.csv）或需求文档（.md/.docx）"
           style={{ cursor: busy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--accent)', color: 'var(--accent)', fontSize: 12 }}>
           <Upload size={13} /> 选择文件

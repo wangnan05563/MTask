@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, type Project, type Prompt, type PromptCategory, type Task, type TaskCategory } from '../api/client';
+import { api, type Prompt, type PromptCategory, type Task, type TaskCategory } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { Check, ListChecks, Search, Trash2, Undo2, X } from 'lucide-react';
 import { relTime } from '../ui/format';
 import { useSessionState } from '../ui/session';
+import { ProjectListHint, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 
 /** 项目计划归档条目（T00442 扩展：计划「删除」改归档后，在此恢复或彻底删除） */
 interface ArchivedPlan {
@@ -40,7 +41,12 @@ function purgeImpactText(i: PurgeImpact | null): string {
 export function ArchivePage() {
   const [archived, setArchived] = useState<Task[]>([]);
   // 项目 id -> 名称 映射，用于标注归档任务所属项目（任务本身只带 project_id）
-  const [projectNames, setProjectNames] = useState<Record<string, string>>({});
+  // T02201：改由统一容错层派生——取数失败不再让整页 load() 抛断（原先项目名缺失会让归档列表显示「未知项目」）
+  const projectList = useProjectList();
+  const projectNames = useMemo(
+    () => Object.fromEntries(projectList.projects.map((p) => [p.id, p.name])),
+    [projectList.projects],
+  );
   // T00442 扩展：项目计划归档列表
   const [archivedPlans, setArchivedPlans] = useState<ArchivedPlan[]>([]);
   const [cats, setCats] = useState<TaskCategory[]>([]);
@@ -66,7 +72,7 @@ export function ArchivePage() {
   const load = useCallback(async () => {
     // M7-7.2：显式 limit=500（服务端默认上限生效后的桌面适配）——归档超 500 时显示截断提示
     setArchived(await api.get<Task[]>('/tasks?archived=1&limit=500'));
-    setProjectNames(Object.fromEntries((await api.get<Project[]>('/projects')).map((p) => [p.id, p.name])));
+    // T02201：项目名映射改由 useProjectList 派生，此处不再自行取数（失败不再抛断整页 load）
     try { setCats(await api.get<TaskCategory[]>('/tasks/categories')); } catch { /* 旧版后端忽略 */ }
     try {
       // 归档计划接口走 plans 路由（T00442 扩展），后端未升级时静默降级不阻塞任务归档区
@@ -365,6 +371,8 @@ export function ArchivePage() {
           <option value="">全部项目</option>
           {Object.entries(projectNames).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
         </select>
+        {/* T02201：项目名取数失败时筛选器只剩「全部项目」，此处显式给出原因与重试入口 */}
+        <ProjectListHint view={projectList} />
       </div>
       {renderBatchBar('plan')}
       {filteredPlans.length === 0 && <p style={{ color: 'var(--text-muted)' }}>暂无归档的项目计划（或当前筛选无结果）。</p>}

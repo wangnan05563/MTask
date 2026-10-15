@@ -9,6 +9,7 @@ import { MarkdownContent } from '../ui/Markdown';
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { TaskDetailDrawer, type TaskDetailTab, type TaskPatch } from '../components/TaskDetailDrawer'; // T01562：真抽屉详情
 import { focusPlanNode, focusTaskByNo, type FocusTaskIntent } from '../ui/focusTask'; // T01568：外部跳转定位意图（通知/铃铛/就绪条）；T02196：徽标点击定位
+import { ProjectListHint, getProjectListSnapshot, patchProject, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
@@ -155,7 +156,9 @@ export function TasksPage() {
   const [newDescOpen, setNewDescOpen] = useSessionState('tasks.new.descOpen', false);
   const [newDesc, setNewDesc] = useSessionState('tasks.new.desc', '');
   const [newImages, setNewImages] = useSessionState<PastedImage[]>('tasks.new.images', []);
-  const [projects, setProjects] = useState<Project[]>([]);
+  // T02201：项目列表取数交统一容错层（加载中/失败可见 + 重试，失败不缓存冒充正常数据）
+  const projectList = useProjectList();
+  const { projects } = projectList;
   // 复用（复制）任务弹窗状态：reuseOpen 存待复制任务 id（null 关闭）；projectId 为选中的目标项目
   const [reuseOpen, setReuseOpen] = useState<string | null>(null);
   const reusePanelRef = useRef<HTMLDivElement>(null);
@@ -326,8 +329,8 @@ export function TasksPage() {
   };
 
   const loadProjects = useCallback(async () => {
-    const list = await api.get<Project[]>('/projects');
-    setProjects(list);
+    await refreshProjectList();
+    const list = getProjectListSnapshot();
     if (list.length === 0) return;
     // 持久化的 activeProject 可能已失效（项目被删）：不在列表内则回退到首个有效项目并纠正持久化，避免反复踩空
     if (!activeProject || !list.some((p) => p.id === activeProject)) {
@@ -769,7 +772,7 @@ export function TasksPage() {
   /** T00771：绑定工作空间到项目（PATCH + 本地状态同步，项目切换时下拉条自动联动回显） */
   async function bindWorkspace(projectId: string, path: string) {
     const updated = await api.patch<Project>(`/projects/${projectId}`, { workspacePath: path });
-    setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, workspace_path: updated?.workspace_path ?? path } : p)));
+    patchProject(projectId, { workspace_path: updated?.workspace_path ?? path });
     flash(`已绑定工作空间：${path}`);
   }
 
@@ -2911,6 +2914,10 @@ export function TasksPage() {
           </button>
           {projOpen && (
             <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 30, minWidth: 220, maxWidth: 'min(360px, calc(100vw - 24px))', overflowX: 'hidden' }}>
+              {/* T02201：面板顶部显式承载加载/失败态——取数失败时点开项目切换不再是一片空白，且带重试入口 */}
+              {projectList.phase !== 'ready' && (
+                <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border)' }}><ProjectListHint view={projectList} /></div>
+              )}
               {sortedProjects.map((p) => (
                 // T02146：行容器由原生 button 改 div role=button——行内的置顶图标本身是 button，
                 // HTML 不允许按钮套按钮（fdc6090 的 a11y 批修把「div→button」规则套到了含交互子元素的

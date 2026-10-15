@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
-import { api, type Project } from '../api/client';
+import { api } from '../api/client';
 import { FileUp, Save, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import { useSessionState } from '../ui/session';
+import { ProjectListHint, projectListPlaceholder, useProjectList } from '../ui/projectList';
 import { aiImportStore } from '../stores/aiImportStore';
 
 /** T00662：PRD 解析结果（需求项 + WBS 计划草稿） */
@@ -80,7 +81,9 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   readonly onSaved?: (n: { requirements: number; plans: number; tasks: number }) => void;
 }) {
   const snap = useSyncExternalStore(aiImportStore.subscribe, aiImportStore.getSnapshot);
-  const [projects, setProjects] = useSessionState<Project[]>('prd-import.projects.cache', []);
+  // T02201：项目列表走统一容错层（加载中/失败可见 + 重试，失败不写缓存）
+  const projectList = useProjectList();
+  const { projects } = projectList;
   const [projectId, setProjectId] = useSessionState<string>('prd-import.project', '');
   const [createTasks, setCreateTasks] = useSessionState<boolean>('prd-import.createTasks', true);
   const [reqs, setReqs] = useSessionState<PrdReq[]>('prd-import.reqs', []);
@@ -123,7 +126,6 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
 
   useEffect(() => {
     aiImportStore.patch({ kind: 'prd' });
-    void api.get<Project[]>('/projects').then(setProjects).catch(() => undefined);
     // T00907：消费「从 PRD 管理视图」跳转自动带入的文档标记（一次性，读取即清不重复触发）
     const docId = sessionStorage.getItem('prd-import.docId');
     if (docId && !autoPullDone.current) {
@@ -297,12 +299,13 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-        <select value={projectId} onChange={(e) => setProjectId(e.target.value)} disabled={busy}
+        <select value={projectId} onChange={(e) => setProjectId(e.target.value)} disabled={busy || projectList.unusable}
           aria-label="目标项目" title="PRD 将导入到该项目（计划 + 需求矩阵 + 可选待办）"
           style={{ padding: 4, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
-          <option value="">选择目标项目…</option>
+          <option value="">{projectListPlaceholder(projectList, '选择目标项目…')}</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
+        <ProjectListHint view={projectList} />
         <label className="tbtn-anim" title="选择 PRD 文件（可多选 .docx/.md/.markdown/.txt/.xlsx/.csv/.pdf，将合并分析为单一需求矩阵与项目计划）"
           style={{ cursor: busy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--accent)', color: 'var(--accent)', fontSize: 12 }}>
           <Upload size={13} /> 选择 PRD 文件{pickedFiles.length > 0 ? `（已选 ${pickedFiles.length}）` : ''}

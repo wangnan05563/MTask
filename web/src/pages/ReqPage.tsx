@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Archive, CalendarRange, ChevronDown, ChevronUp, FolderInput, FolderPlus, ListTodo, Loader2, Minimize2, Pencil, Plus, Save, Sparkles, SquarePen, Trash2, Wand2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
 import { CopyButton } from '../ui/CopyButton';
 import { FontColorButton } from '../ui/FontColorButton';
-import { api, type Project, type ReqCategory, type ReqEntry } from '../api/client';
+import { api, type ReqCategory, type ReqEntry } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { clearSessionState, useSessionState } from '../ui/session';
+import { ProjectListHint, loadProjectList, useProjectList } from '../ui/projectList'; // T02201
 import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：通用需求正文 AI 美化
@@ -24,7 +25,8 @@ export function ReqPage() {
   const [taskCopyEntry, setTaskCopyEntry] = useState<ReqEntry | null>(null);
   const [taskCopyProjectId, setTaskCopyProjectId] = useState('');
   const [taskCopyBusy, setTaskCopyBusy] = useState(false);
-  const [projects, setProjects] = useState<Project[]>([]);
+  const projectList = useProjectList(); // T02201：项目列表统一走容错层
+  const { projects } = projectList;
   // 排序条件：sortKey 排序字段，sortDir 升降序（默认时间降序，与后端默认一致）
   const [sortKey, setSortKey] = useState<'updated_at' | 'created_at' | 'title' | 'manual'>('updated_at');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
@@ -186,9 +188,9 @@ export function ReqPage() {
   async function copyToTask(p: ReqEntry) {
     setTaskCopyEntry(p);
     setTaskCopyProjectId('');
-    try {
-      setProjects(await api.get<Project[]>('/projects'));
-    } catch { /* 加载失败仍可用默认收件箱 */ }
+    // T02201：弹窗打开时强制刷新一次（单飞 + 超时 + 重试由容错层承担），
+    // 失败不再静默——下拉显示占位文案并可点重试；不选项目仍落默认收件箱。
+    void loadProjectList(true);
   }
 
   /** T00629：确认复制到待办（目标项目可选） */
@@ -685,6 +687,9 @@ export function ReqPage() {
                   <option value="">默认记事项目（收件箱）</option>
                   {projects.map((pj) => <option key={pj.id} value={pj.id}>{pj.name}</option>)}
                 </select>
+                <div style={{ marginTop: 4 }}>
+                  <ProjectListHint view={projectList} />
+                </div>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
                   目标项目若已存在同标题待办，将自动复用（不重复创建）。
                 </div>

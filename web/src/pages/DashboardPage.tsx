@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Activity, BarChart3, CheckCircle2, Clock3, ListTodo, ShieldCheck } from 'lucide-react';
-import { api, type Project } from '../api/client';
+import { api } from '../api/client';
 import { FlowProgress } from '../ui/FlowProgress'; // T01068-FR4.4：流光进度条
+import { ProjectListHint, useProjectList } from '../ui/projectList';
 
 /** T01059-FR2.2：统计仪表盘——周吞吐/AI 成功率/AI 平均耗时/验证通过率四指标 + 吞吐趋势条形图。
  *  数据源 /api/stats/dashboard；纯 CSS 条形图（无图表库依赖）；项目/时间窗筛选。 */
@@ -31,15 +32,14 @@ function StatCard({ icon, label, value, sub, accent }: { readonly icon: React.Re
 }
 
 export function DashboardPage() {
-  const [projects, setProjects] = useState<Project[]>([]);
+  // T02201：项目筛选列表走统一容错层（收件箱不作为统计对象，沿用原过滤口径）
+  const projectList = useProjectList({ excludeInbox: true });
+  const { projects } = projectList;
   const [projectId, setProjectId] = useState('');
   const [days, setDays] = useState(30);
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    void api.get<Project[]>('/projects').then((ps) => setProjects(ps.filter((p) => p.id !== 'sys-inbox'))).catch(() => {});
-  }, []);
   useEffect(() => {
     const q = new URLSearchParams({ days: String(days) });
     if (projectId) q.set('projectId', projectId);
@@ -66,6 +66,8 @@ export function DashboardPage() {
           <option value="">全部项目</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
+        {/* T02201：「全部项目」在列表取数失败时仍是有效范围，故不禁用下拉，只把失败与重试入口显式化 */}
+        <ProjectListHint view={projectList} />
         <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }}>
           {RANGES.map((r) => (
             <button key={r.days} onClick={() => setDays(r.days)}

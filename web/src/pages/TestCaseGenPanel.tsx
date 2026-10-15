@@ -11,9 +11,10 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
-import { api, type Project } from '../api/client';
+import { api } from '../api/client';
 import { streamEvents } from '../api/sse';
 import { useSessionState } from '../ui/session';
+import { ProjectListHint, projectListPlaceholder, useProjectList } from '../ui/projectList';
 import {
   testCaseGenStore, useTestCaseGen,
   type TestCaseGenResult, type DraftCase, type DraftRequirement,
@@ -81,7 +82,9 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
 }) {
   const snap = useTestCaseGen();
   const { streaming } = snap;
-  const [projects, setProjects] = useSessionState<Project[]>('tcgen.projects.cache', []);
+  // T02201：项目列表改走统一容错层（原 tcgen.projects.cache 会话缓存会把一次空/旧结果复用到整场会话）
+  const projectList = useProjectList();
+  const { projects } = projectList;
   const [projectId, setProjectId] = useSessionState<string>('tcgen.project', '');
   const [docs, setDocs] = useState<Array<{ id: string; filename: string }>>([]);
   const [docId, setDocId] = useSessionState<string>('tcgen.docId', '');
@@ -106,7 +109,7 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
 
   const flash = useCallback((m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3500); }, []);
 
-  useEffect(() => { void api.get<Project[]>('/projects').then(setProjects).catch(() => undefined); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  // T02201：项目列表取数与容错（加载中/失败可见 + 重试）由 useProjectList 统一承担，此处不再自行拉取
 
   // 项目变更 → 拉该项目的 PRD 文档列表与用例枚举 meta（meta 供草稿视图 priority/type 下拉）
   useEffect(() => {
@@ -277,12 +280,13 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
 
       {/* 输入区 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-        <select value={projectId} onChange={(e) => { setProjectId(e.target.value); setDocId(''); }} disabled={streaming}
+        <select value={projectId} onChange={(e) => { setProjectId(e.target.value); setDocId(''); }} disabled={streaming || projectList.unusable}
           title="目标项目 — 用例与需求将挂到该项目" aria-label="选择目标项目"
           style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', minWidth: 160 }}>
-          <option value="">选择项目…</option>
+          <option value="">{projectListPlaceholder(projectList)}</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
+        <ProjectListHint view={projectList} />
 
         <select value={docId} onChange={(e) => { setDocId(e.target.value); if (e.target.value) setPickedFile(null); }} disabled={streaming || !projectId}
           title="① 内部选择：已录入的 PRD 文档" aria-label="选择内部 PRD 文档"

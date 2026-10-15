@@ -3,6 +3,7 @@ import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视
 import { api, type Project } from '../api/client';
 import { streamEvents } from '../api/sse';
 import { useSessionState } from '../ui/session';
+import { ProjectListHint, patchProject, projectListPlaceholder, useProjectList } from '../ui/projectList';
 import { MarkdownContent } from '../ui/Markdown';
 import { prdGenStore, usePrdGen, type PrdGenIssue } from '../stores/prdGenStore';
 import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00769 二轮：未绑定工作空间时原位提供绑定入口
@@ -82,7 +83,9 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
   readonly onSaved?: (r: { docs: number; issues: number }) => void;
 }) {
   const snap = usePrdGen();
-  const [projects, setProjects] = useSessionState<Project[]>('prd-gen.projects.cache', []);
+  // T02201：项目列表走统一容错层；原 prd-gen.projects.cache 会话缓存会把一次空/旧结果复用整场会话
+  const projectList = useProjectList();
+  const { projects } = projectList;
   const [projectId, setProjectId] = useSessionState<string>('prd-gen.project', '');
   const [rows, setRows] = useState<IssueRow[]>([]);
   const [saving, setSaving] = useState(false);
@@ -104,10 +107,6 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
     : snap.result), [activeItem, snap.result]);
 
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
-  useEffect(() => {
-    void api.get<Project[]>('/projects').then(setProjects).catch(() => undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // T00769 二轮：工作空间绑定状态——未绑定时缺少项目源码上下文，待确认问题识别质量显著下降
   const activeProject = projects.find((p) => p.id === projectId) ?? null;
@@ -119,7 +118,7 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
     if (!projectId) { flash('请先选择目标项目'); return; }
     try {
       const updated = await api.patch<Project>(`/projects/${projectId}`, { workspacePath: path });
-      setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, workspace_path: updated?.workspace_path ?? path } : p)));
+      patchProject(projectId, { workspace_path: updated?.workspace_path ?? path });
       flash(`已绑定工作空间：${path} —— 重新生成即可带上项目源码上下文`);
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
@@ -353,12 +352,13 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-        <select value={projectId} onChange={(e) => setProjectId(e.target.value)} disabled={streaming}
+        <select value={projectId} onChange={(e) => setProjectId(e.target.value)} disabled={streaming || projectList.unusable}
           title="目标项目 — 生成的 PRD 将挂到该项目" aria-label="选择目标项目"
           style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', minWidth: 180 }}>
-          <option value="">选择项目…</option>
+          <option value="">{projectListPlaceholder(projectList)}</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
+        <ProjectListHint view={projectList} />
         <label className="tbtn-anim" title="选择原始需求（.docx/.xlsx/.csv/.md/.txt；老式 .doc/.xls 请先另存）——支持一次选择多个"
           style={{ ...opBtn, display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
           <Upload size={12} /> 选择原始需求

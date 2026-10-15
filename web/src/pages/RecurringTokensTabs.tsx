@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs'; // T01699：确认框归一（原生 confirm 阻塞渲染线程且样式不一致）
+import { ProjectListHint, loadProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表统一容错层
 import { getLang, onLangChange, registerDict, setLang as setGlobalLang, t, term, useLang, type Lang } from '../i18n';
 
 /**
@@ -28,6 +29,9 @@ registerDict('en', {
   '，如': ', e.g.',
   '= 每周一 9:00，按本地时区；留空则按上面的频率粗粒度生成。': '= every Monday at 9:00 in local time; leave empty to fall back to the frequency above.',
   '选择项目…': 'Select project…',
+  // T02201：项目列表容错态占位文案
+  '项目列表加载中…': 'Loading projects…',
+  '项目列表加载失败': 'Failed to load the project list',
   '任务标题（如：写周报）': 'Task title (e.g. write weekly report)',
   '循环任务项目': 'Recurring task project',
   '循环任务标题': 'Recurring task title',
@@ -94,7 +98,6 @@ export function LangSwitch() {
   );
 }
 
-interface ProjectRowLite { id: string; name: string }
 interface RecurringRule {
   id: string; project_id: string; project_name: string; title: string;
   freq: string; cron_expr?: string; next_run_at: string; last_task_no: string | null; enabled: number; created_at: string;
@@ -108,7 +111,8 @@ const CRON_PLACEHOLDER = '0 9 * * 1';
 export function RecurringTab() {
   useLang(); // T01071 后续：语言切换后重渲染（t() 结果随之更新）
   const [rules, setRules] = useState<RecurringRule[]>([]);
-  const [projects, setProjects] = useState<ProjectRowLite[]>([]);
+  const projectList = useProjectList({ excludeInbox: true }); // T02201
+  const { projects } = projectList;
   const [projectId, setProjectId] = useState('');
   const [title, setTitle] = useState('');
   const [freq, setFreq] = useState('weekly');
@@ -119,9 +123,10 @@ export function RecurringTab() {
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
 
   const load = useCallback(async () => {
+    // T02201：项目列表改由容错层取数——与规则列表解绑，任一条取数失败不再连带把另一条也拖成空态
+    void loadProjectList();
     try {
       setRules(await api.get<RecurringRule[]>('/recurring'));
-      setProjects((await api.get<ProjectRowLite[]>('/projects')).filter((p) => p.id !== 'sys-inbox'));
     } catch { /* 忽略 */ }
   }, []);
   useEffect(() => { void load(); }, [load]);
@@ -164,10 +169,14 @@ export function RecurringTab() {
 
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
         <select value={projectId} onChange={(e) => setProjectId(e.target.value)} aria-label={t('循环任务项目', '循环任务项目')}
+          disabled={projectList.unusable}
           style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
-          <option value="">{t('选择项目…', '选择项目…')}</option>
+          <option value="">{projectList.phase === 'error' ? t('项目列表加载失败', '项目列表加载失败')
+            : projectList.phase === 'loading' ? t('项目列表加载中…', '项目列表加载中…')
+            : t('选择项目…', '选择项目…')}</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
+        <ProjectListHint view={projectList} />
         <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('任务标题（如：写周报）', '任务标题（如：写周报）')} aria-label={t('循环任务标题', '循环任务标题')}
           style={{ flex: 1, minWidth: 180, padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
         <select value={freq} onChange={(e) => setFreq(e.target.value)} aria-label={t('循环频率', '循环频率')}

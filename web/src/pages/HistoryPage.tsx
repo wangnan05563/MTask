@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, type Project } from '../api/client';
+import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { Archive, ChevronDown, ChevronUp, FolderInput, History, RotateCcw, Search, X } from 'lucide-react';
 import { relTime } from '../ui/format';
 import { useSessionState } from '../ui/session';
+import { ProjectListHint, projectListPlaceholder, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 
 /** 快照内任务（只读） */
 interface SnapTask {
@@ -57,7 +58,9 @@ const PAGE_SIZE = 10;
  * 本页以**项目为单位**查看快照全量内容，并支持整体恢复（回活跃）或归档删除（转归档区）。
  */
 export function HistoryPage() {
-  const [activeProjects, setActiveProjects] = useState<Project[]>([]);
+  // T02201：活跃项目走统一容错层（此前与历史列表绑在同一 Promise.all，项目接口一挂整页 load 抛出）
+  const projectList = useProjectList();
+  const { projects: activeProjects } = projectList;
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [summary, setSummary] = useState<HistorySummary | null>(null);
   const [busy, setBusy] = useState(false);
@@ -70,14 +73,18 @@ export function HistoryPage() {
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3200); };
 
   const load = useCallback(async () => {
-    const [ps, data, sum] = await Promise.all([
-      api.get<Project[]>('/projects'),                       // 默认仅活跃项目（沉淀后自动不在其中）
-      api.get<{ snapshots: Snapshot[] }>('/history/list'),
-      api.get<HistorySummary>('/history/summary').catch(() => null),
-    ]);
-    setActiveProjects(ps);
-    setSnapshots(data.snapshots);
-    setSummary(sum);
+    // T02201：活跃项目改由统一容错层取数（原先与历史列表绑在同一 Promise.all，
+    // 项目接口一挂整页 load 抛出且无提示）；本页其余取数失败也补了可见反馈。
+    try {
+      const [data, sum] = await Promise.all([
+        api.get<{ snapshots: Snapshot[] }>('/history/list'),
+        api.get<HistorySummary>('/history/summary').catch(() => null),
+      ]);
+      setSnapshots(data.snapshots);
+      setSummary(sum);
+    } catch (e) {
+      flash(`历史数据加载失败：${e instanceof Error ? e.message : String(e)}`);
+    }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
@@ -172,10 +179,12 @@ export function HistoryPage() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)', marginBottom: 12 }}>
         <select value={transferProject} onChange={(e) => setTransferProject(e.target.value)}
           aria-label="选择要沉淀的项目" title="选择一个活跃项目整体沉淀为历史快照"
+          disabled={projectList.unusable}
           style={{ padding: 4, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
-          <option value="">选择项目…</option>
+          <option value="">{projectListPlaceholder(projectList)}</option>
           {activeProjects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
+        <ProjectListHint view={projectList} />
         <button onClick={() => void transfer()} disabled={busy || !transferProject} className="tbtn-anim"
           title="把所选项目整体沉淀为历史资产快照" aria-label="沉淀为历史快照"
           style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, cursor: transferProject ? 'pointer' : 'not-allowed', border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)', fontSize: 12, opacity: transferProject ? 1 : 0.5 }}>

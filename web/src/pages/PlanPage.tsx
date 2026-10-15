@@ -10,6 +10,7 @@ import { EstimateGanttOverlay } from '../components/estimateGanttOverlay'; // T0
 import { estimatesApi, type EstimatesResponse } from '../api/estimates'; // T02082：叠加层数据源——只读服务端三点值（§9 零计算红线）
 import { ProjectGuideDialog, hasSeenProjectGuide, markProjectGuideSeen } from './ProjectGuide'; // T00665：项目管理向导（T00706：已看状态改由调用方在关闭时记录）
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin, reorderProjects, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
+import { ProjectListHint, getProjectListSnapshot, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
@@ -1176,7 +1177,9 @@ function milestoneMeta(plans: PlanTask[], i: number): { isMilestone: boolean; in
 let planAiBatchRunning = false;
 
 export function PlanPage() {
-  const [projects, setProjects] = useState<ProjectRow[]>([]);
+  // T02201：项目列表取数交统一容错层（加载中/失败可见 + 重试，失败不缓存冒充正常数据）
+  const projectList = useProjectList();
+  const { projects } = projectList;
   // T00460：切页保状态——项目选择会话级持久化，切回不重置
   const [projectId, setProjectId] = useSessionState('plan.projectId', '');
   const [plans, setPlans] = useState<PlanTask[]>([]);
@@ -1349,10 +1352,10 @@ export function PlanPage() {
 
   const flash = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(''), 3000); };
 
-  /** T00657：项目列表（下拉徽标含待办/未验证与计划计数）——抽为可重复调用的加载函数 */
+  /** T00657：项目列表（下拉徽标含待办/未验证与计划计数）——取数交 T02201 统一容错层，本函数保留「首个项目兜底选中」语义 */
   const loadProjects = useCallback(async () => {
-    const ps = await api.get<ProjectRow[]>('/projects');
-    setProjects(ps);
+    await refreshProjectList();
+    const ps = getProjectListSnapshot();
     if (ps.length > 0) setProjectId((cur) => cur || ps[0].id);
   }, []);
   useEffect(() => { void loadProjects(); }, [loadProjects]);
@@ -2476,6 +2479,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
           projSortOpen={projSortOpen} setProjSortOpen={setProjSortOpen} projSortMode={projSortMode} setProjSortMode={setProjSortMode}
           dragProjId={dragProjId} setDragProjId={setDragProjId} overProjId={overProjId} setOverProjId={setOverProjId}
           dropReorder={dropReorder} togglePin={togglePin} isProjectPinned={isProjectPinned} />
+        {/* T02201：项目取数失败/加载中在工具条显式给出原因与重试入口（此前空下拉与真无项目同形） */}
+        <ProjectListHint view={projectList} />
         {/* T00506 调整：任务类型选择移入「新建计划任务」弹窗（默认普通任务），工具栏不再展示 */}
         <PlanCreateImportButtons busy={busy} createPlan={createPlan} importExcel={importExcel} exportExcel={exportExcel} exportMarkdown={exportMarkdown} downloadTemplate={downloadTemplate} />
         <PlanEvalButton batchEvaluatePlans={batchEvaluatePlans} evalBusy={evalBusy} busy={busy} evalLabel={evalLabel} plans={plans} />

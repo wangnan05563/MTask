@@ -5,6 +5,7 @@ import { FontColorButton } from '../ui/FontColorButton';
 import { api, type Project, type Prompt, type PromptCategory, type ReqCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { clearSessionState, useSessionState } from '../ui/session';
+import { ProjectListHint, loadProjectList, useProjectList, type ProjectListView } from '../ui/projectList'; // T02201：项目列表取数容错层
 import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { relTime } from '../ui/format';
@@ -183,10 +184,10 @@ function comparePrompts(
 }
 
 /** T00629：复制到待办任务——目标项目选择弹窗（不选则落默认记事项目/收件箱） */
-function TaskCopyModal({ taskCopyPrompt, taskCopyBusy, setTaskCopyPrompt, taskCopyProjectId, setTaskCopyProjectId, projects, confirmCopyToTask }: {
+function TaskCopyModal({ taskCopyPrompt, taskCopyBusy, setTaskCopyPrompt, taskCopyProjectId, setTaskCopyProjectId, projects, view, confirmCopyToTask }: {
   readonly taskCopyPrompt: Prompt; readonly taskCopyBusy: boolean; readonly setTaskCopyPrompt: (v: Prompt | null) => void;
   readonly taskCopyProjectId: string; readonly setTaskCopyProjectId: React.Dispatch<React.SetStateAction<string>>;
-  readonly projects: Project[]; readonly confirmCopyToTask: () => Promise<void> | void;
+  readonly projects: Project[]; readonly view: ProjectListView; readonly confirmCopyToTask: () => Promise<void> | void;
 }) {
   return (
     <div /* NOSONAR - 遮罩点击为鼠标便捷关闭，取消按钮提供键盘可达通路 */
@@ -211,6 +212,8 @@ function TaskCopyModal({ taskCopyPrompt, taskCopyBusy, setTaskCopyPrompt, taskCo
               <option value="">默认记事项目（收件箱）</option>
               {projects.map((pj) => <option key={pj.id} value={pj.id}>{pj.name}</option>)}
             </select>
+            {/* T02201：目标项目取数失败时显式提示并给重试入口（此前静默只剩「收件箱」可选） */}
+            <ProjectListHint view={view} />
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
               目标项目若已存在同标题待办，将自动复用（不重复创建）。
             </div>
@@ -285,7 +288,9 @@ export function PromptsPage() {
   const [taskCopyPrompt, setTaskCopyPrompt] = useState<Prompt | null>(null);
   const [taskCopyProjectId, setTaskCopyProjectId] = useState('');
   const [taskCopyBusy, setTaskCopyBusy] = useState(false);
-  const [projects, setProjects] = useState<Project[]>([]);
+  // T02201：目标项目列表走统一容错层（弹窗打开时强刷一次的口径不变）
+  const projectList = useProjectList();
+  const { projects } = projectList;
   // 内容 展开/收起：expandedIds 记录已展开的提示词 id，默认全部收起（点击标题切换，降低信息密度）
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
   // 记录高亮：保存/新增成功后对目标行打标记，flashAt 值变化触发行动画重放
@@ -468,9 +473,8 @@ export function PromptsPage() {
   async function copyToTask(p: Prompt) {
     setTaskCopyPrompt(p);
     setTaskCopyProjectId('');
-    try {
-      setProjects(await api.get<Project[]>('/projects'));
-    } catch { /* 项目列表加载失败时仍可用默认收件箱 */ }
+    // T02201：交统一容错层强刷一次（失败不再静默落回「只有收件箱」——弹窗内显式提示并可重试）
+    void loadProjectList(true);
   }
 
   /** T00629：确认复制到待办（目标项目可选） */
@@ -917,7 +921,7 @@ export function PromptsPage() {
       {taskCopyPrompt && (
         <TaskCopyModal taskCopyPrompt={taskCopyPrompt} taskCopyBusy={taskCopyBusy} setTaskCopyPrompt={setTaskCopyPrompt}
           taskCopyProjectId={taskCopyProjectId} setTaskCopyProjectId={setTaskCopyProjectId}
-          projects={projects} confirmCopyToTask={confirmCopyToTask} />
+          projects={projects} view={projectList} confirmCopyToTask={confirmCopyToTask} />
       )}
 
       {/* T00873：移动提示词分组弹窗（目标分组 + 通用需求分类归属；取消/移动确认） */}

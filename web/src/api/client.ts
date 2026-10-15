@@ -51,7 +51,8 @@ function extFromContentType(ct: string): string {
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path),
+  /** T02201：可选 AbortSignal——取数容错层用它实现「短超时」，后端阻塞时不至于无限占着加载态 */
+  get: <T>(path: string, signal?: AbortSignal) => request<T>(path, signal ? { signal } : {}),
   post: <T>(path: string, data?: unknown, signal?: AbortSignal) =>
     request<T>(path, { method: 'POST', body: data === undefined ? undefined : JSON.stringify(data), ...(signal ? { signal } : {}) }),
   patch: <T>(path: string, data?: unknown) =>

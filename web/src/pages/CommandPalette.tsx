@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { CornerDownLeft, Search } from 'lucide-react';
 import { api, type Prompt, type Task } from '../api/client';
 import { focusTaskByNo } from '../ui/focusTask'; // T02162：对齐通知中心：点击任务走同一套「解析→写键→派发 mtaskFocusTask→开抽屉」定位逻辑
+import { loadProjectList, ProjectListHint, useProjectList } from '../ui/projectList'; // T02201：项目取数走统一容错层
 
 
 /** T00560：命令面板可直达的页面（与 App Tab 对齐的子集） */
@@ -12,7 +13,7 @@ type AppTab = 'tasks' | 'aitools' | 'prompts' | 'req' | 'plan' | 'queue' | 'repo
 function setSessionState(key: string, value: unknown): void {
   try { sessionStorage.setItem(key, JSON.stringify(value)); } catch { /* 配额异常静默 */ }
 }
-interface ProjectLite { id: string; name: string }
+/** T02201：项目条目改用统一容错层的 Project（原本地 ProjectLite 已冗余） */
 
 /**
  * 全局命令面板（T00443 / PRD UX-4，P2）：Ctrl+F 唤起（T00560 调整），跨实体搜索（任务/提示词/页面直达），
@@ -26,7 +27,8 @@ export function CommandPalette({ open, onClose, onNavigate }: {
   const [kw, setKw] = useState('');
   const [tasks, setTasks] = useState<Task[]>([]);
   const [prompts, setPrompts] = useState<Prompt[]>([]);
-  const [projects, setProjects] = useState<ProjectLite[]>([]);
+  const projectList = useProjectList();
+  const { projects } = projectList;
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -35,7 +37,7 @@ export function CommandPalette({ open, onClose, onNavigate }: {
     setKw(''); setActive(0);
     void api.get<Task[]>('/tasks?archived=0&limit=500').then(setTasks).catch(() => undefined);
     void api.get<Prompt[]>('/prompts').then(setPrompts).catch(() => undefined);
-    void api.get<ProjectLite[]>('/projects').then(setProjects).catch(() => undefined);
+    void loadProjectList(true); // T02201：项目取数交统一容错层（打开面板强刷一次的口径不变，失败态见下方提示行）
     // 等 DOM 挂载后聚焦
     setTimeout(() => inputRef.current?.focus(), 30);
   }, [open]);
@@ -131,6 +133,8 @@ export function CommandPalette({ open, onClose, onNavigate }: {
         </div>
         <div style={{ padding: '6px 14px', borderTop: '1px solid var(--border)', fontSize: 10, color: 'var(--text-muted)' }}>
           ↑↓ 选择 · Enter 执行 · Esc 关闭 —— 选中任务/项目/提示词会跳转对应页面并自动定位
+          {/* T02201：项目取数失败时显式给出原因与重试入口，不再只剩「无匹配结果」 */}
+          <ProjectListHint view={projectList} />
         </div>
       </div>
     </div>,
