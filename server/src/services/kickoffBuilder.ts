@@ -49,7 +49,7 @@ import { KICKOFF_ABORT_MSG, KICKOFF_PLACEHOLDER, type KickoffBundle, type Kickof
 /** 单页装配产物：一个块 = 一个原生对象 */
 export interface Block {
   box: Box;
-  text?: { content: string; pt: number; bold?: boolean; color?: string; align?: 'left' | 'center' };
+  text?: { content: string; pt: number; bold?: boolean; color?: string; align?: 'left' | 'center'; shrink?: boolean };
   table?: { header: string[]; rows: string[][] };
   chart?: { type: 'bar' | 'doughnut'; name: string; labels: string[]; values: number[] };
   /**
@@ -1139,14 +1139,16 @@ export function pageViolations(title: Box, titleText: string, blocks: Block[], t
 /**
  * 降级页（验收 7）：换版式 = 缩放（门禁 4），把原正文块整体映射进安全版式的正文框；
  * 映射后仍越界就退回安全框本身——两条路都收敛到「标题+正文」，不再出现半越界页。
+ * T02199：两条路都开 `fit:'shrink'`。安全版式是「已知会装不下原文」的页，预测量在这里
+ * 反而最不可靠（框换了、字数没换），所以交给渲染期收缩；正文页不走这里。
  */
 function degradeToSafe(item: KickoffOutlineItem, blocks: Block[], fromBody: Box): Block[] {
   const safe = safeFrames();
   const text = blocks.find((b) => b.text && b.box.w > 1);
-  if (!text?.text) return [{ box: safe.body, text: { content: item.bullets.join('\n'), pt: MIN_BODY_PT } }];
+  if (!text?.text) return [{ box: safe.body, text: { content: item.bullets.join('\n'), pt: MIN_BODY_PT, shrink: true } }];
   const mapped = scaleBox(text.box, fromBody, safe.body);
   const reason = assertInBounds(mapped);
-  return [{ box: reason ? safe.body : mapped, text: text.text }];
+  return [{ box: reason ? safe.body : mapped, text: { ...text.text, shrink: true } }];
 }
 
 // ---------- 原生对象写入（只用稳定特性，兼容 PowerPoint 2016+ / WPS） ----------
@@ -1238,6 +1240,9 @@ export function drawBlock(slide: any, block: Block): void {
     align: t.align ?? 'left',
     valign: 'top',
     fontFace: FONT.face,
+    // T02199：渲染期收缩兜底只在降级页开启——正文页维持「预测量 + 截字留痕」，
+    // 否则长文会静默缩成小字，读者看不到也问不出「这页被缩过」。
+    ...(t.shrink ? { fit: 'shrink' as const } : {}),
   });
 }
 
@@ -1303,7 +1308,14 @@ interface ResolvePageBoxesInput {
   degradedPages: number[];
 }
 
-/** 断言通过 → 原样落版并做文本体检；不通过 → 整体换进安全版式并留痕（验收 7） */
+/**
+ * 断言通过 → 原样落版并做文本体检；不通过 → 整体换进安全版式并留痕（验收 7）。
+ * 末尾再过一道**空正文页收口**（T02199 D）：每页强制写标题带与脚注（`appendOutlinePage`），
+ * 所以 v1 的「无块且无标题」永不成立——真实形态是「正文无可绘内容」：AI 交出空 bullets +
+ * 空 dataKeys 的内容页，或降级路径回塞出一个 content 为空的文本块（块在、页上没字）。
+ * 这类页比越界页更难在抽查里被发现，所以生成时拦截并登记降级，而不是留给真链路门间接兜。
+ * 封面/目录族按设计就是留白页，不参与该收口（否则给封面无字页塞一行标题重复，是凑数）。
+ */
 function resolvePageBoxes({
   item,
   bullets,
@@ -1314,15 +1326,43 @@ function resolvePageBoxes({
   warnings,
   degradedPages,
 }: ResolvePageBoxesInput): { titleBox: Box; bodyBlocks: Block[] } {
-  if (!issues.length) {
+  let titleBox = frames.title;
+  let bodyBlocks = blocks;
+  if (issues.length) {
+    degradedPages.push(pageNo);
+    warnings.push(`第 ${pageNo} 页版式越界（${issues[0]}），已降级为「标题 + 正文」安全版式`);
+    // 口径同步：降级页走 fit:shrink，正文页那句「多余部分按 pptxgenjs 截字」对它不成立——
+    // 字是被缩小的，不是被截掉的，留痕要说清是哪一种。
+    warnings.push(`第 ${pageNo} 页正文改用 fit:shrink 渲染期收缩兜底（不截字，整段仍在本页内）`);
+    const safe = safeFrames();
+    titleBox = safe.title;
+    bodyBlocks = degradeToSafe(item, blocks, frames.body);
+  } else {
     const textIssues = checkPageText({ title: item.title, bullets }, frames.body.w);
     if (textIssues.length) warnings.push(`第 ${pageNo} 页文本提示：${textIssues.join('；')}`);
-    return { titleBox: frames.title, bodyBlocks: blocks };
   }
-  degradedPages.push(pageNo);
-  warnings.push(`第 ${pageNo} 页版式越界（${issues[0]}），已降级为「标题 + 正文」安全版式`);
-  const safe = safeFrames();
-  return { titleBox: safe.title, bodyBlocks: degradeToSafe(item, blocks, frames.body) };
+  // 空正文收口只管「本该有正文的页」：封面/目录（cover 族）按设计就是标题 + 背景留白，
+  // 章节页/结束页另走 appendBrandPage——把它们也「回塞」就是画蛇添足。
+  // 判据取「有没有可绘内容」而不是「块数为 0」：降级路径可能回塞出一个 content 为空的
+  // 文本块（块在、页上没字），只数块数就漏掉了真正该拦的形态。
+  const drawable = (blk: Block) =>
+    (blk.text != null && blk.text.content.trim().length > 0) || blk.table != null || blk.chart != null || blk.shape != null;
+  const whitespaceByDesign = layoutFamilyOf(item.layout) === 'cover';
+  if (!bodyBlocks.some(drawable) && !whitespaceByDesign) {
+    const safe = safeFrames();
+    if (!degradedPages.includes(pageNo)) degradedPages.push(pageNo);
+    warnings.push(bullets.length
+      ? `第 ${pageNo} 页正文无可绘内容（数据块均因版面不足被省略），已按安全版式回塞要点（正文按渲染期收缩承载，不截字）`
+      : `第 ${pageNo} 页正文与要点皆空（本页无可承载内容），已降级为「标题 + 章节式留白」（正文按渲染期收缩承载，不截字）`);
+    titleBox = safe.title;
+    bodyBlocks = [{
+      box: safe.body,
+      text: bullets.length
+        ? { content: bullets.join('\n'), pt: MIN_BODY_PT, shrink: true }
+        : { content: item.title, pt: MIN_BODY_PT, align: 'center', color: PALETTE.brandDeep, shrink: true },
+    }];
+  }
+  return { titleBox, bodyBlocks };
 }
 
 /** 逐块写盘：第三方库（R1）个别元素写崩不该拖垮整份稿，跳该元素并如实点名 */
@@ -1370,7 +1410,7 @@ function appendBrandPage({
     warnings.push(`第 ${pageNo} 页版式越界（${issues[0]}），已降级为「标题 + 正文」安全版式`);
     const safe = safeFrames();
     titleBox = safe.title;
-    bodyBlocks = [{ box: safe.body, text: { content: isSection ? `${num} ${item.title}` : item.title, pt: MIN_BODY_PT, align: 'center' } }];
+    bodyBlocks = [{ box: safe.body, text: { content: isSection ? `${num} ${item.title}` : item.title, pt: MIN_BODY_PT, align: 'center', shrink: true } }];
   }
 
   const slide = pptx.addSlide({ masterName: BG_LAYOUT_NAMES[bgKindOf(item.layout)] });
