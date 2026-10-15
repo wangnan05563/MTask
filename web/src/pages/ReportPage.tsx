@@ -562,15 +562,16 @@ export function ReportPage() {
   const offlineReportLabel = `离线${periodLabel}生成`;
 
   // T02190：顶部范围选择器可多选（T02165 起周报/报表链路按 projectIds 聚合），但「启动会 PPT」
-  // 「从 PRD 导入项目计划」是**单项目工件**（一份 PPT / 一次导入只属于一个项目，后端也无多项目入参），
-  // 实际取的是范围首个项目。多选时不标注就会形成「范围显示 3 个项目、卡片只按第 1 个生成」的口径分裂，
-  // 故在卡片描述与启动会面板内各明示一次（口径 1：提示优先，产物仍单项目；不改动 projectIds 语义）。
+  // 是**单项目工件**（一份 PPT 只属于一个项目，后端无多项目入参），面板整体取范围首个项目；
+  // 「从 PRD 导入项目计划」面板自带目标项目下拉，只有卡片角标的「已上传 PRD 文档」入口取 projectIds[0]。
+  // 多选时不标注就会形成「范围显示 3 个项目、产物只按第 1 个生成」的口径分裂，
+  // 故按各自真实落位分别明示（口径 1：提示优先，产物仍单项目；不改动 projectIds 语义）。
+  const scopeName = projects.find((p) => p.id === projectId)?.name ?? projectId;
   const scopeNoteOf = (subject: string): string => (projectIds.length > 1
-    ? `${subject}按首个项目「${projects.find((p) => p.id === projectId)?.name ?? projectId}」生成，多项目范围仅作用于周报/报表`
+    ? `${subject}按首个项目「${scopeName}」生成，多项目范围仅作用于周报/报表`
     : '');
-  const singleScopeNote = scopeNoteOf('本卡片');
-  const withScopeNote = (d: React.ReactNode): React.ReactNode => (singleScopeNote
-    ? <>{d}<span style={{ display: 'block', marginTop: 4, fontSize: 11, color: 'var(--warn)' }}>{singleScopeNote}</span></>
+  const withScopeNote = (d: React.ReactNode, note: string): React.ReactNode => (note
+    ? <>{d}<span style={{ display: 'block', marginTop: 4, fontSize: 11, color: 'var(--warn)' }}>{note}</span></>
     : d);
 
   const reportCards: ReportCardCfg[] = [
@@ -598,7 +599,10 @@ export function ReportPage() {
       onReset: resetArtifacts,
       onToggle: () => togglePanel('prdGen') },
     { key: 'prd-import', icon: <FileUp size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '从 PRD 导入项目计划',
-      desc: withScopeNote('AI 拆分 WBS + 逐条提取需求 → 生成计划与需求跟踪矩阵（可选同步待办任务）'),
+      desc: withScopeNote('AI 拆分 WBS + 逐条提取需求 → 生成计划与需求跟踪矩阵（可选同步待办任务）',
+        projectIds.length > 1
+          ? `角标「已上传 PRD 文档」只列首个项目「${scopeName}」的文档；导入目标项目以面板内下拉为准`
+          : ''),
       hint: '从 PRD 导入项目计划 — 上传 PRD（Word/Excel/Markdown/文本/PDF），AI 拆分 WBS 并逐条提取需求，确认后导入计划与需求跟踪矩阵', aria: '从 PRD 导入项目计划',
       open: showPrdImport,
       action: prdDocsAction,
@@ -613,7 +617,7 @@ export function ReportPage() {
     // T02107（PRD FR-1.1/1.2）：第 7 张卡——数组尾部追加，标题/描述/hint 逐字取 PRD 口径，
     // 复用 ReportCard 与既有图标风格（色值只走 CSS 变量，不新造卡片组件）
     { key: 'kickoff-ppt', icon: <Presentation size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '项目启动会 PPT 生成',
-      desc: withScopeNote('按项目资料自动装配 Kickoff 材料（原生可编辑 .pptx）'),
+      desc: withScopeNote('按项目资料自动装配 Kickoff 材料（原生可编辑 .pptx）', scopeNoteOf('本卡片')),
       hint: '需 PRD/需求矩阵/计划至少各 1 条', aria: '项目启动会 PPT 生成',
       open: showKickoffPpt,
       onReset: resetArtifacts,
