@@ -5,7 +5,7 @@ import { getAdapter, type AIAdapter, type ToolConfig } from '../adapters';
 import { ConfigService } from './ConfigService';
 import { PlanService } from './PlanService';
 import { logService } from './LogService';
-import { ContextBudget, WorkspaceService, loadIgnoreRules, isIgnored } from './WorkspaceService';
+import { ContextBudget, WorkspaceService, loadIgnoreRules, isIgnored, yieldToEventLoop } from './WorkspaceService';
 import { parseIssuesJson, parsePrdIssues, splitPrdBody, inlineIssuesSection, type PrdGenIssue } from './prdIssues'; // T00814：问题清单解析抽为可测模块；T00818：清单内联正文章节
 
 /**
@@ -46,8 +46,14 @@ export async function extractSourceText(filename: string, buffer: Buffer): Promi
   throw new Error(`不支持的文件格式「${ext || filename}」——支持 .doc/.docx/.xls/.xlsx/.md/.txt`);
 }
 
-/** 项目源码上下文：目录树（忽略构建/依赖目录）+ README/package.json 片段。读取失败返回空串（跳过并注明）。 */
-export function loadWorkspaceContext(workspacePath: string): string {
+/**
+ * 项目源码上下文：目录树（忽略构建/依赖目录）+ README/package.json 片段。读取失败返回空串（跳过并注明）。
+ * T02200（与符号索引/检索 memo 同族的让路改造）：目录树采样原是一次性跑完的同步递归，
+ * 现改为显式栈 + 每 25ms 让出事件循环。深度 3、TREE_LIMIT 与输出口径不变。
+ */
+const WS_TREE_SLICE_MS = 25;
+
+export async function loadWorkspaceContext(workspacePath: string): Promise<string> {
   if (!workspacePath) return '';
   try {
     statSync(workspacePath);
@@ -56,9 +62,11 @@ export function loadWorkspaceContext(workspacePath: string): string {
   }
   const tree: string[] = [];
   const rules = loadIgnoreRules(workspacePath); // M-4：与文件搜索共用同一忽略规则源（含 .mtaskignore），消除双轨
-  const walk = (dir: string, rel: string, depth: number): void => {
+  type TreeFrame = { dir: string; rel: string; depth: number; entries: Array<{ name: string; isDir: boolean; relChild: string }>; i: number };
+  const stack: TreeFrame[] = [];
+  const pushDir = (dir: string, rel: string, depth: number): void => {
     if (depth > 3 || tree.length >= TREE_LIMIT) return;
-    let entries: Array<{ name: string; isDir: boolean; relChild: string }>;
+    let entries: TreeFrame['entries'];
     try {
       entries = readdirSync(dir, { withFileTypes: true })
         .map((e) => ({ name: e.name, isDir: e.isDirectory(), relChild: rel ? `${rel}/${e.name}` : e.name }))
@@ -67,14 +75,26 @@ export function loadWorkspaceContext(workspacePath: string): string {
     } catch {
       return;
     }
-    for (const e of entries) {
-      if (tree.length >= TREE_LIMIT) { tree.push('…（超出采样上限，已截断）'); return; }
-      tree.push(`${'  '.repeat(depth)}${e.isDir ? '[目录] ' : ''}${e.name}`);
-      if (e.isDir) walk(join(dir, e.name), e.relChild, depth + 1);
-    }
+    stack.push({ dir, rel, depth, entries, i: 0 });
   };
-  walk(workspacePath, '', 0);
+  pushDir(workspacePath, '', 0);
+  let done = false;
+  while (!done) {
+    const until = Date.now() + WS_TREE_SLICE_MS;
+    while (!done && Date.now() < until) {
+      // 采样上限命中：注明截断并整体终止（原实现在每层递归各补一次说明，内容等价，此处只留一条）
+      if (tree.length >= TREE_LIMIT) { tree.push('…（超出采样上限，已截断）'); stack.length = 0; done = true; break; }
+      const frame = stack[stack.length - 1];
+      if (!frame) { done = true; break; }
+      if (frame.i >= frame.entries.length) { stack.pop(); continue; }
+      const e = frame.entries[frame.i++];
+      tree.push(`${'  '.repeat(frame.depth)}${e.isDir ? '[目录] ' : ''}${e.name}`);
+      if (e.isDir) pushDir(join(frame.dir, e.name), e.relChild, frame.depth + 1);
+    }
+    if (!done) await yieldToEventLoop();
+  }
   const parts = [`项目目录树（深度 3，最多 ${TREE_LIMIT} 项）：\n${tree.join('\n')}`];
+  await yieldToEventLoop(); // T02200：说明文件片段读取同样给只读接口让路
   for (const f of ['README.md', 'readme.md', 'package.json']) {
     try {
       const p = join(workspacePath, f);
@@ -106,17 +126,18 @@ export type { PrdGenIssue } from './prdIssues'; // T00814：类型定义随解�
  * 流式生成 PRD：内置技能 prompt + 原始需求 + 项目上下文 → adapter.chatStream。
  * onStage 推阶段日志、onDelta 推正文增量；完成后按 <<<PRD>>>/<<<ISSUES>>> 协议解析。
  */
-/** 检索增强：按需求关键词搜索代码，注入 top 片段；失败不阻塞主流程（返回空串） */
-function buildRetrieveBlock(
+/** 检索增强：按需求关键词搜索代码，注入 top 片段；失败不阻塞主流程（返回空串）。
+ *  T02200：改异步——符号索引刷新与 memo 预扫描都在片间让出事件循环，不再饿死只读接口。 */
+async function buildRetrieveBlock(
   project: { workspace_path: string | null },
   input: { projectId: string; content: string; onStage: (msg: string) => void },
-): string {
+): Promise<string> {
   if (!project.workspace_path) return '';
   try {
-    const stat = WorkspaceService.refreshSymbols(input.projectId);
-    input.onStage(`符号索引刷新：文件 ${stat.files} 个、符号 ${stat.symbols} 个（未变跳过 ${stat.skipped}）`);
+    const stat = await WorkspaceService.refreshSymbols(input.projectId);
+    input.onStage(`符号索引刷新：文件 ${stat.files} 个、符号 ${stat.symbols} 个（未变跳过 ${stat.skipped}）${stat.deferred ? '，超预算余量已交后台续跑（T02200 让路，下次刷新补齐）' : ''}`);
     const kws = WorkspaceService.extractKeywords(input.content);
-    const block = WorkspaceService.autoContext(input.projectId, kws);
+    const block = await WorkspaceService.autoContext(input.projectId, kws);
     input.onStage(block ? `检索增强：按关键词 [${kws.slice(0, 6).join(', ')}] 命中代码片段已注入上下文` : '检索增强：无命中片段，跳过注入');
     return block;
   } catch { return ''; /* 检索增强失败不阻塞主流程 */ }
@@ -220,10 +241,10 @@ export async function generatePrdStream(input: {
   if (!wsStatus.ok) input.onStage(wsStatus.msg);
 
   input.onStage('加载项目源码上下文…');
-  const ws = loadWorkspaceContext(project.workspace_path ?? '');
+  const ws = await loadWorkspaceContext(project.workspace_path ?? '');
   input.onStage(ws ? '项目源码上下文已加载（目录树 + 说明文件片段）' : '跳过源码上下文（工作空间未绑定或不可读）');
 
-  const retrieveBlock = buildRetrieveBlock(project, input);
+  const retrieveBlock = await buildRetrieveBlock(project, input);
 
   input.onStage(`原始需求文本提取完成：${input.filename}（${input.content.length} 字符），开始 AI 生成…`);
 

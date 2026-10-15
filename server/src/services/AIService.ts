@@ -74,16 +74,17 @@ function stripPromptHeading(md: string): string {
  * FR2 协助整理 与 FR4 队列分发的 AI 调用层。
  * 梳理结果回填 ai_summary（用户确认后保存）；分发结果仅保存文本（待人工合并）。
  */
-/** 组装单条任务整理用的描述文本：带工作空间检索增强片段（关联 PRD 文案由调用方注入，此处只拼检索片段） */
-function buildOrganizeDescription(
+/** 组装单条任务整理用的描述文本：带工作空间检索增强片段（关联 PRD 文案由调用方注入，此处只拼检索片段）。
+ *  T02200：改异步——autoContext 的分片 memo 预扫描在片间让出事件循环，批量梳理期间只读接口不再被饿死。 */
+async function buildOrganizeDescription(
   task: { title: string; description?: string | null; project_id: string },
   project: { workspace_path: string | null } | undefined,
-): string {
+): Promise<string> {
   let description = task.description ?? '';
   if (!project?.workspace_path) return description;
   try {
     const kws = WorkspaceService.extractKeywords(`${task.title} ${task.description ?? ''}`);
-    const ctx = WorkspaceService.autoContext(task.project_id, kws);
+    const ctx = await WorkspaceService.autoContext(task.project_id, kws);
     if (ctx) description = `${description}\n\n【工作空间检索片段（自动检索）】\n${ctx}`.trim();
   } catch { /* 无工作空间/读取失败：跳过注入 */ }
   return description;
@@ -108,7 +109,7 @@ async function organizeOne(
   // T00763：任务关联了 PRD（req_ids → prd_requirements.prd_id）时自动加载原文作为上下文注入
   const prd = resolvePrdContext({ taskId });
   // T00777：工作空间检索增强——按任务标题/描述关键词搜代码，top 片段拼入描述（预算内；失败不阻塞）
-  const description = buildOrganizeDescription(task, project);
+  const description = await buildOrganizeDescription(task, project);
   const result = await adapter.send(
     {
       taskId: task.id,

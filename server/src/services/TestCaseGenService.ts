@@ -90,14 +90,15 @@ function runtimeWithModel(toolId: string) {
   return { type, config };
 }
 
-/** 检索增强（镜像 PrdGenService.buildRetrieveBlock）：按关键词搜索代码注入 top 片段，失败不阻塞主流程（返回空串） */
-function buildRetrieveBlock(project: { workspace_path: string | null }, input: { projectId: string; content: string; onStage: (m: string) => void }): string {
+/** 检索增强（镜像 PrdGenService.buildRetrieveBlock）：按关键词搜索代码注入 top 片段，失败不阻塞主流程（返回空串）。
+ * T02200（本单同族让路）：异步分片，符号索引刷新/memo 预扫描不再饿死只读接口。 */
+async function buildRetrieveBlock(project: { workspace_path: string | null }, input: { projectId: string; content: string; onStage: (m: string) => void }): Promise<string> {
   if (!project.workspace_path) return '';
   try {
-    const stat = WorkspaceService.refreshSymbols(input.projectId);
-    input.onStage(`符号索引刷新：文件 ${stat.files} 个、符号 ${stat.symbols} 个（未变跳过 ${stat.skipped}）`);
+    const stat = await WorkspaceService.refreshSymbols(input.projectId);
+    input.onStage(`符号索引刷新：文件 ${stat.files} 个、符号 ${stat.symbols} 个（未变跳过 ${stat.skipped}）${stat.deferred ? '，超预算余量已交后台续跑（T02200 让路，下次刷新补齐）' : ''}`);
     const kws = WorkspaceService.extractKeywords(input.content);
-    const block = WorkspaceService.autoContext(input.projectId, kws);
+    const block = await WorkspaceService.autoContext(input.projectId, kws);
     input.onStage(block ? `检索增强：按关键词 [${kws.slice(0, 6).join(', ')}] 命中代码片段已注入上下文` : '检索增强：无命中片段，跳过注入');
     return block;
   } catch {
@@ -171,9 +172,9 @@ export async function generateTestCasesStream(input: {
   input.onStage(`已载入 PRD：${srcLabel}（${input.content.length.toLocaleString('en-US')} 字）`);
 
   // ---- 工作空间上下文 + 检索增强（可选，失败静默跳过）----
-  const ws = loadWorkspaceContext(project.workspace_path ?? '');
+  const ws = await loadWorkspaceContext(project.workspace_path ?? '');
   input.onStage(ws ? '项目源码上下文已加载（目录树 + 说明文件片段）' : '跳过源码上下文（工作空间未绑定或不可读）');
-  const retrieveBlock = buildRetrieveBlock(project, input);
+  const retrieveBlock = await buildRetrieveBlock(project, input);
 
   // 共享上下文块（拆分与分块生成都带上）
   const contextBlock = [

@@ -52,6 +52,25 @@ const MEMO_MAX_BYTES = 96 * 1024 * 1024;
 const SEARCH_MEMO_TTL_MS = 5 * 60 * 1000;
 /** T00782 N-8：符号索引条数上限（原为散落字面量 5000，抽出常量供 walk 入口与循环共用） */
 const SYMBOL_LIMIT = 5000;
+/**
+ * T02200（T00782 遗留项续办）：符号索引与检索 memo 扫描的「让路」预算。
+ * 原实现把整棵工作空间的遍历放在一个同步调用里（T00790① 又用单个事务包住全程，把本可让出的
+ * 空隙合并成一段更长的独占临界区）。实测 bemp（6,984 文件）冷建 139,970ms、热刷 8,000~73,514ms，
+ * 同窗口内 GET /api/projects 挂 12,418ms 后以 ECONNRESET 失败——而 AI 生成链路的检索增强正走这条路。
+ * 现按时间片切分：片内一次提交，片间 setImmediate 让出事件循环。
+ *   SYMBOL_SLICE_MS=25：单片只处理个位数文件，让出点足够密（25ms 远在交互接口可感延迟之内）。
+ *   SYMBOL_INLINE_BUDGET_MS=300：小工作空间（含既有符号 API 测试用的临时目录）仍在一次请求内建完，
+ *   契约不变；超预算的大仓库把余量交后台续跑，返回值以 deferred 明示，下次刷新自然补齐。
+ */
+const SYMBOL_SLICE_MS = 25;
+const SYMBOL_INLINE_BUDGET_MS = 300;
+/** T02200：memo 预扫描只让路、不延迟——本次生成就要用它的检索结果，故只切片，不设内联预算 */
+const MEMO_SLICE_MS = 25;
+
+/** T02200：让出事件循环一个宏任务，让只读接口在遍历片间获得服务机会 */
+export function yieldToEventLoop(): Promise<void> {
+  return new Promise((done) => setImmediate(done));
+}
 interface SearchMemo {
   at: number;
   /** 本次预扫描把整棵树里「每个文件的可检索行」摊平后常驻，供任意关键词零 IO 复用（text 已小写） */
@@ -325,30 +344,92 @@ function indexFileSymbols(ctx: SymbolIndexCtx, abs: string, relChild: string): v
   ctx.files++;
 }
 
-/** 符号索引目录递归（T00782 N-8：符号上限判断前置到 walk 入口，避免「已达上限仍全量 readdir 递归」；
- *  T00790①：整体由 db.transaction() 包裹，把逐符号 autocommit 收敛为单次提交） */
-function symbolIndexWalk(ctx: SymbolIndexCtx, dir: string, rel: string): void {
-  if (ctx.symbols >= SYMBOL_LIMIT) return; // N-8：入口即判，不再进入 readdir
+/**
+ * T02200：可中断续跑的符号索引遍历状态。原递归 `symbolIndexWalk` 一次性跑完整棵树，
+ * 中途无法让出事件循环；改为显式栈后，「处理一个条目」就是可切片的最小工作单元。
+ */
+interface SymbolWalkState {
+  ctx: SymbolIndexCtx;
+  /** 帧 = 目录 + 其条目 + 游标；弹栈即回到父目录续走下一个条目（深度优先顺序与递归版一致） */
+  stack: Array<{ dir: string; rel: string; entries: Array<{ name: string; isDir: boolean }>; i: number }>;
+  done: boolean;
+}
+
+/** 目录展开入栈（readdirSync 失败=不可读目录，与原实现一致静默跳过） */
+function symbolPushDir(state: SymbolWalkState, dir: string, rel: string): void {
   let entries: Array<{ name: string; isDir: boolean }>;
-  try { entries = readdirSync(dir, { withFileTypes: true }).map((e) => ({ name: e.name, isDir: e.isDirectory() })); } catch { return; }
-  for (const e of entries) {
-    if (ctx.symbols >= SYMBOL_LIMIT) return; // 防炸上限（保持原语义，仅在循环内提前退出）
-    const relChild = rel ? `${rel}/${e.name}` : e.name;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true }).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
+  } catch { return; }
+  state.stack.push({ dir, rel, entries, i: 0 });
+}
+
+/**
+ * 走一个工作单元（一次真正的文件索引，或一次目录展开）。
+ * 语义逐条对齐原 `symbolIndexWalk`（T00782 N-8 上限前置判断、忽略规则、扩展名过滤、深度优先）。
+ */
+function symbolWalkStep(state: SymbolWalkState): void {
+  const { ctx } = state;
+  while (state.stack.length > 0) {
+    if (ctx.symbols >= SYMBOL_LIMIT) { state.done = true; state.stack.length = 0; return; } // N-8：达上限整体终止
+    const frame = state.stack[state.stack.length - 1];
+    if (frame.i >= frame.entries.length) { state.stack.pop(); continue; }
+    const e = frame.entries[frame.i++];
+    const relChild = frame.rel ? `${frame.rel}/${e.name}` : e.name;
     if (isIgnored(relChild, e.isDir, ctx.rules)) continue;
-    const abs = join(dir, e.name);
-    if (e.isDir) { symbolIndexWalk(ctx, abs, relChild); continue; }
+    const abs = join(frame.dir, e.name);
+    if (e.isDir) { symbolPushDir(state, abs, relChild); continue; }
     if (!ctx.countExts.has(extname(e.name).toLowerCase())) continue;
     indexFileSymbols(ctx, abs, relChild);
+    return;
+  }
+  state.done = true;
+}
+
+/**
+ * 跑一个时间片并在片尾提交。
+ * T02200：better-sqlite3 的事务不能跨 await，故提交粒度由 T00790① 的「整轮一次」改为「每片一次」——
+ * 片内仍是单次提交（逐符号 autocommit 的老问题不回退），片间让路。
+ */
+function runSymbolSlice(state: SymbolWalkState): void {
+  const until = Date.now() + SYMBOL_SLICE_MS;
+  state.ctx.db.transaction(() => {
+    while (!state.done && Date.now() < until) symbolWalkStep(state);
+  })();
+}
+
+/** T02200：项目级后台续跑任务（同一项目同时至多一个；新请求取代旧任务，避免两轮遍历交错写同一批行） */
+interface SymbolRefreshJob {
+  state: SymbolWalkState;
+  superseded: boolean;
+}
+const symbolJobs = new Map<string, SymbolRefreshJob>();
+
+/** 后台续跑循环：片间让出，直到遍历完成或被新请求取代 */
+async function pumpSymbolJob(projectId: string, job: SymbolRefreshJob): Promise<void> {
+  try {
+    while (!job.state.done && !job.superseded) {
+      await yieldToEventLoop();
+      if (job.superseded || job.state.done) break;
+      runSymbolSlice(job.state);
+    }
+    if (job.superseded) return;
+    if (symbolJobs.get(projectId) === job) symbolJobs.delete(projectId);
+    invalidateSearchMemo(projectId);
+    const { ctx } = job.state;
+    console.log(`[workspace] 符号索引后台续跑完成：project=${projectId} 文件 ${ctx.files} 个、符号 ${ctx.symbols} 个、跳过 ${ctx.skipped} 个`);
+  } catch (e) {
+    if (symbolJobs.get(projectId) === job) symbolJobs.delete(projectId);
+    console.warn(`[workspace] 符号索引后台续跑失败：project=${projectId} ${(e as Error).message}`);
   }
 }
 
 /**
- * T00782 M-1：获取（必要时构建）某项目的检索 memo。
+ * T00782 M-1：检索 memo 预扫描家族——一次扫树、供 5 分钟内任意关键词复用。
  *
- * 预扫描一次整棵工作空间，把「可检索行」摊平为 {path,line,text} 列表常驻内存（≤5 分钟）。
- * 与 `search()` 的区别：search 是「给一个关键词、扫一次树」；本函数是「扫一次树、供任意关键词复用」。
- * 预算独立于 `search`（MEMO_MAX_FILES / MEMO_MAX_BYTES，约 4 倍上限）：它扫一次供
- * 5 分钟内的全部关键词复用，摊薄后单次成本远低于逐关键词检索，超限同样置 truncated。
+ * 预扫描把整棵工作空间的「可检索行」摊平为 {path,line,text} 列表常驻内存（≤5 分钟）。
+ * 与 `search()` 的区别：search 是「给一个关键词、扫一次树」；本家族是「扫一次树、供任意关键词复用」。
+ * 预算独立于 `search`（MEMO_MAX_FILES / MEMO_MAX_BYTES，约 4 倍上限），超限同样置 truncated。
  */
 /** M6-6.1：memo 预扫描共享状态（walk 递归可变状态对象化，替代闭包捕获） */
 type MemoScanState = {
@@ -378,32 +459,74 @@ function memoScanFile(state: MemoScanState, abs: string, relChild: string): numb
   return buf.length;
 }
 
-/** memo 预扫描递归（预算超限置 truncated 并整层退出） */
-function memoWalk(state: MemoScanState, rules: IgnoreRule[], dir: string, rel: string): void {
-  if (state.scannedFiles >= MEMO_MAX_FILES || state.scannedBytes >= MEMO_MAX_BYTES) { state.truncated = true; return; }
+/** T02200：memo 预扫描的可续跑状态（同 symbolWalkStep 思路，保持「预算超限置 truncated 并整体退出」原语义） */
+interface MemoWalkState {
+  state: MemoScanState;
+  rules: IgnoreRule[];
+  stack: Array<{ dir: string; rel: string; entries: Array<{ name: string; isDir: boolean }>; i: number }>;
+  done: boolean;
+}
+
+const memoOverBudget = (s: MemoScanState): boolean =>
+  s.scannedFiles >= MEMO_MAX_FILES || s.scannedBytes >= MEMO_MAX_BYTES;
+
+/** 目录展开入栈（readdirSync 失败静默跳过，与原 memoWalk 一致） */
+function memoPushDir(ms: MemoWalkState, dir: string, rel: string): void {
   let entries: Array<{ name: string; isDir: boolean }>;
   try {
     entries = readdirSync(dir, { withFileTypes: true }).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
   } catch { return; }
-  for (const e of entries) {
-    if (state.scannedFiles >= MEMO_MAX_FILES || state.scannedBytes >= MEMO_MAX_BYTES) { state.truncated = true; return; }
-    const relChild = rel ? `${rel}/${e.name}` : e.name;
-    if (isIgnored(relChild, e.isDir, rules)) continue;
-    const abs = join(dir, e.name);
-    if (e.isDir) { memoWalk(state, rules, abs, relChild); continue; }
-    if (BINARY_EXTS.has(extname(e.name).toLowerCase())) continue;
-    memoScanFile(state, abs, relChild);
-  }
+  ms.stack.push({ dir, rel, entries, i: 0 });
 }
 
-function getSearchMemo(projectId: string): SearchMemo {
+/** 走一个工作单元：一次文件读取（或一次目录展开）；预算超限按原语义置 truncated 并整体终止 */
+function memoWalkStep(ms: MemoWalkState): void {
+  while (ms.stack.length > 0) {
+    if (memoOverBudget(ms.state)) { ms.state.truncated = true; ms.done = true; ms.stack.length = 0; return; }
+    const frame = ms.stack[ms.stack.length - 1];
+    if (frame.i >= frame.entries.length) { ms.stack.pop(); continue; }
+    const e = frame.entries[frame.i++];
+    const relChild = frame.rel ? `${frame.rel}/${e.name}` : e.name;
+    if (isIgnored(relChild, e.isDir, ms.rules)) continue;
+    const abs = join(frame.dir, e.name);
+    if (e.isDir) { memoPushDir(ms, abs, relChild); continue; }
+    if (BINARY_EXTS.has(extname(e.name).toLowerCase())) continue;
+    memoScanFile(ms.state, abs, relChild);
+    return;
+  }
+  ms.done = true;
+}
+
+/** T02200：同项目并发构建合流——生成链路与 organize 队列同时触发时只扫一次树 */
+const memoBuilds = new Map<string, Promise<SearchMemo>>();
+
+/**
+ * T02200：memo 构建改为分片异步（原同步 `getSearchMemo` 一次 readFileSync 读完 ≤3000 文件/96MB，
+ * 与同请求里的符号索引刷新阻塞相加，是 T02191 实测阻塞的第二来源）。缓存命中/TTL 语义不变，
+ * 构建期间每 MEMO_SLICE_MS 让出一次事件循环，结果内容与耗时口径与原版一致（不延迟、不截断）。
+ */
+async function getSearchMemoAsync(projectId: string): Promise<SearchMemo> {
   const cached = searchMemo.get(projectId);
   if (cached && Date.now() - cached.at < SEARCH_MEMO_TTL_MS) return cached;
+  const inflight = memoBuilds.get(projectId);
+  if (inflight) return inflight;
+  const promise = buildSearchMemo(projectId).finally(() => {
+    if (memoBuilds.get(projectId) === promise) memoBuilds.delete(projectId);
+  });
+  memoBuilds.set(projectId, promise);
+  return promise;
+}
 
+async function buildSearchMemo(projectId: string): Promise<SearchMemo> {
   const { workspace, rules } = getProjectWorkspace(projectId);
   const state: MemoScanState = { lines: [], files: [], scannedFiles: 0, scannedBytes: 0, truncated: false };
-  memoWalk(state, rules, workspace, '');
-
+  const ms: MemoWalkState = { state, rules, stack: [], done: false };
+  memoPushDir(ms, workspace, '');
+  while (!ms.done) {
+    const until = Date.now() + MEMO_SLICE_MS;
+    while (!ms.done && Date.now() < until) memoWalkStep(ms);
+    if (!ms.done) await yieldToEventLoop();
+  }
   const memo: SearchMemo = { at: Date.now(), ...state };
   searchMemo.set(projectId, memo);
   return memo;
@@ -485,10 +608,11 @@ export const WorkspaceService = {
 
   /** 增量刷新符号索引：mtime 未变的文件跳过；变化则重建该文件条目。返回统计。
    *  T00780：工作空间根路径变化（换绑）时先清空旧索引，避免查到已不属于当前工作空间的路径。
-   *  T00790①：整轮重建包在单个事务里——原先逐符号 DELETE/INSERT 各自 autocommit
-   *  （每条一次 fsync），600 文件冷建索引实测 1655ms；事务化后收敛为一次提交。
-   *  T00790②：启动时一次性载入 (path → mtime) Map，替代逐文件 SELECT MAX(file_mtime) 的 N+1。 */
-  refreshSymbols(projectId: string): { files: number; symbols: number; skipped: number; cleared: number } {
+   *  T00790②：启动时一次性载入 (path → 已知 mtime) Map，替代逐文件 SELECT MAX(file_mtime) 的 N+1。
+   *  T02200：遍历改为分片可让路（原 T00790① 的整轮单事务按片拆细）。SYMBOL_INLINE_BUDGET_MS 内
+   *  跑完的仍等价于「同步等结果」（小工作空间与既有 API 测试契约不变）；超预算则余量交后台续跑，
+   *  返回值标 deferred。符号索引是检索增强的补充信号，可延迟收敛而不影响当次生成质量。 */
+  async refreshSymbols(projectId: string, inlineBudgetMs = SYMBOL_INLINE_BUDGET_MS): Promise<{ files: number; symbols: number; skipped: number; cleared: number; deferred: boolean }> {
     const { workspace, rules } = getProjectWorkspace(projectId);
     const db = getDb();
     // 根路径与建索引时不同（换绑）→ 旧索引整体失效，清空重建
@@ -507,11 +631,20 @@ export const WorkspaceService = {
       insStmt: db.prepare('INSERT INTO workspace_symbols (id, project_id, path, symbol, line, kind, file_mtime, workspace) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
       delStmt: db.prepare('DELETE FROM workspace_symbols WHERE project_id = ? AND path = ?'),
     };
-    // T00790①：walk 全程（含所有 DELETE/INSERT）在单事务内执行
-    const run = db.transaction(() => symbolIndexWalk(ctx, workspace, ''));
-    run();
+    // T02200：取代仍在续跑的旧任务（显式刷新要看当前文件系统状态，两轮遍历交错会重复删插同一批行）
+    const prev = symbolJobs.get(projectId);
+    if (prev) { prev.superseded = true; symbolJobs.delete(projectId); }
+    const state: SymbolWalkState = { ctx, stack: [], done: false };
+    symbolPushDir(state, workspace, '');
+    const until = Date.now() + inlineBudgetMs;
+    while (!state.done && Date.now() < until) runSymbolSlice(state);
     invalidateSearchMemo(projectId); // T00782：索引刷新后检索 memo 失效（内容可能已变）
-    return { files: ctx.files, symbols: ctx.symbols, skipped: ctx.skipped, cleared };
+    if (!state.done) {
+      const job: SymbolRefreshJob = { state, superseded: false };
+      symbolJobs.set(projectId, job);
+      void pumpSymbolJob(projectId, job);
+    }
+    return { files: ctx.files, symbols: ctx.symbols, skipped: ctx.skipped, cleared, deferred: !state.done };
   },
 
   /** 符号查询：symbol LIKE 匹配（q ≥2 字符），返回 {path, symbol, line, kind} */
@@ -541,9 +674,9 @@ export const WorkspaceService = {
    * 现改为：首次调用触发**一次**全树预扫描，把所有「可检索行」摊平进 memo（按 projectId 缓存 5 分钟），
    * 后续任意关键词（含跨任务）都在内存里零 IO 匹配，扫描次数从 O(任务数×关键词数) 收敛为 O(1)/5min。
    */
-  autoContext(projectId: string, keywords: string[], budgetChars = ContextBudget.searchHitsChars): string {
+  async autoContext(projectId: string, keywords: string[], budgetChars = ContextBudget.searchHitsChars): Promise<string> {
     if (!keywords || keywords.length === 0) return '';
-    const memo = getSearchMemo(projectId);
+    const memo = await getSearchMemoAsync(projectId);
     const collected: SearchHit[] = [];
     const seen = new Set<string>();
     for (const kw of keywords) {

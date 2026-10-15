@@ -249,6 +249,11 @@ function wsWrap(res: import('express').Response, fn: () => unknown): void {
   try { res.json(fn()); } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 }
 
+/** T02200：wsWrap 的 await 版——符号索引刷新已改为分片让路，服务端点不能再跑在同步阻塞路径上 */
+async function wsWrapAsync(res: import('express').Response, fn: () => Promise<unknown>): Promise<void> {
+  try { res.json(await fn()); } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+}
+
 api.get('/workspace/search', (req, res) => {
   const { projectId, q, glob } = req.query as Record<string, string | undefined>;
   if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
@@ -277,7 +282,9 @@ api.get('/workspace/file', (req, res) => {
 api.post('/workspace/symbols/refresh', (req, res) => {
   const { projectId } = (req.body ?? {}) as Record<string, string | undefined>;
   if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
-  wsWrap(res, () => WorkspaceService.refreshSymbols(projectId));
+  // T02200：分片让路后返回值多一个 deferred——true 表示内联预算（300ms）用尽、余量交后台续跑，
+  // 小工作空间仍在本次请求内建完（既有符号 API 测试的即时断言语义不变）
+  void wsWrapAsync(res, () => WorkspaceService.refreshSymbols(projectId));
 });
 
 api.get('/workspace/symbols', (req, res) => {

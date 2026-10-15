@@ -28,6 +28,7 @@ const SUITES = [
   't00777-symbols-api-test.mjs',
   't00779-stream-truncate-test.mjs',
   't00780-symbols-lifecycle-test.mjs',
+  't02200-yielding-test.mjs',
   't00781-writeback-dedupe-test.mjs',
   't01921-reqno-uniqueness-test.mjs',
 ];
