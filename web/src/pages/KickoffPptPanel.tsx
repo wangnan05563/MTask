@@ -120,7 +120,7 @@ function PreflightItemCard({ it, projectId, openCard }: {
 }
 
 /** ① 前置校验 checklist 段（网格 + 硬阻塞横幅 + ⚠ 级提示） */
-function PreflightChecklist({ pre, preLoading, preError, projectId, blocked, missingItems, openCard }: {
+function PreflightChecklist({ pre, preLoading, preError, projectId, blocked, missingItems, openCard, scopeNote }: {
   readonly pre: PreflightResult | null;
   readonly preLoading: boolean;
   readonly preError: string;
@@ -128,6 +128,8 @@ function PreflightChecklist({ pre, preLoading, preError, projectId, blocked, mis
   readonly blocked: boolean;
   readonly missingItems: PreflightItem[];
   readonly openCard?: (key: 'prd-import' | 'tc-gen') => void;
+  /** T02190：顶部范围多选时，明示本面板实际落位的首个项目（启动会是单项目工件，不参与多项目聚合） */
+  readonly scopeNote?: string;
 }) {
   return (
     <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
@@ -136,6 +138,7 @@ function PreflightChecklist({ pre, preLoading, preError, projectId, blocked, mis
         {preLoading && <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: 6 }}>校验中…</span>}
       </div>
       {!projectId && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>先在页面顶部选择项目范围，校验与生成都以该项目为准。</div>}
+      {projectId && scopeNote && <div style={{ fontSize: 11, color: 'var(--warn)' }}>{scopeNote}</div>}
       {projectId && preError && <div style={{ fontSize: 11, color: 'var(--danger)' }}>校验失败：{preError}</div>}
       {pre && (
         <>
@@ -301,11 +304,13 @@ function BuildProgressPanel({ streaming, pageDone, pageTotal, result }: {
   );
 }
 
-export function KickoffPptPanel({ projectId, toolId, onClose, openCard }: {
+export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNote }: {
   readonly projectId: string;
   readonly toolId: string;
   readonly onClose?: () => void;
   readonly openCard?: (key: 'prd-import' | 'tc-gen') => void;
+  /** T02190：多项目范围下卡片/面板实际按首个项目生成时的明示文案（空=单选或不限范围，无需提示） */
+  readonly scopeNote?: string;
 }) {
   const snap = useKickoffPpt();
   // store 快照里的 outline 本面板从不读取（大纲编辑态一律用本地 rows + store），故不解构它
@@ -518,7 +523,7 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard }: {
 
       {/* ① 前置校验 checklist */}
       <PreflightChecklist pre={pre} preLoading={preLoading} preError={preError} projectId={projectId}
-        blocked={blocked} missingItems={missingItems} openCard={openCard} />
+        blocked={blocked} missingItems={missingItems} openCard={openCard} scopeNote={scopeNote} />
 
       {/* ② 大纲编辑 */}
       <OutlineToolbar extraNote={extraNote} onExtraNoteChange={setExtraNote} streaming={streaming} outlineBusy={outlineBusy}

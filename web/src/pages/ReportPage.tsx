@@ -350,9 +350,11 @@ function ProjectScopePicker({ projects, value, onChange }: {
 }
 
 /** 三块 AI 工作面板的条件渲染（S3776：条件块下沉为独立组件） */
-function ReportWorkPanels({ aiToolId, projectId, showKickoffPpt, closeKickoffPpt, openCard, showPrdGen, closePrdGen, prdGenSaved, showTcGen, closeTcGen, tcImported, showPrdImport, closePrdImport, prdImportSaved, showAiImport, closeAiImport, aiImportSaved, prdImportKey }: {
+function ReportWorkPanels({ aiToolId, projectId, scopeNote, showKickoffPpt, closeKickoffPpt, openCard, showPrdGen, closePrdGen, prdGenSaved, showTcGen, closeTcGen, tcImported, showPrdImport, closePrdImport, prdImportSaved, showAiImport, closeAiImport, aiImportSaved, prdImportKey }: {
   readonly aiToolId: string;
   readonly projectId: string;
+  /** T02190：多项目范围时单项目工件卡片的明示文案（见 ReportPage 的 singleScopeNote） */
+  readonly scopeNote: string;
   readonly showKickoffPpt: boolean; readonly closeKickoffPpt: () => void;
   /** T02108：启动会校验清单的「去补充」深链落到本页对应能力卡片（report?card=prd-import / tc-gen） */
   readonly openCard: (key: 'prd-import' | 'tc-gen') => void;
@@ -367,7 +369,7 @@ function ReportWorkPanels({ aiToolId, projectId, showKickoffPpt, closeKickoffPpt
     <>
       {/* T02108（PRD §5.2）：项目启动会 PPT 面板（第 7 张卡）——逐页装配日志走右侧控制台，停止/重置已接进控制台链 */}
       {showKickoffPpt && (
-        <KickoffPptPanel projectId={projectId} toolId={aiToolId} onClose={closeKickoffPpt} openCard={openCard} />
+        <KickoffPptPanel projectId={projectId} toolId={aiToolId} onClose={closeKickoffPpt} openCard={openCard} scopeNote={scopeNote} />
       )}
       {/* T01492：从 PRD 生成测试用例面板（日志/正文同走右侧控制台；停止已接进控制台 stopAll） */}
       {showTcGen && (
@@ -559,6 +561,18 @@ export function ReportPage() {
   const aiReportLabel = `AI ${periodLabel}生成`;
   const offlineReportLabel = `离线${periodLabel}生成`;
 
+  // T02190：顶部范围选择器可多选（T02165 起周报/报表链路按 projectIds 聚合），但「启动会 PPT」
+  // 「从 PRD 导入项目计划」是**单项目工件**（一份 PPT / 一次导入只属于一个项目，后端也无多项目入参），
+  // 实际取的是范围首个项目。多选时不标注就会形成「范围显示 3 个项目、卡片只按第 1 个生成」的口径分裂，
+  // 故在卡片描述与启动会面板内各明示一次（口径 1：提示优先，产物仍单项目；不改动 projectIds 语义）。
+  const scopeNoteOf = (subject: string): string => (projectIds.length > 1
+    ? `${subject}按首个项目「${projects.find((p) => p.id === projectId)?.name ?? projectId}」生成，多项目范围仅作用于周报/报表`
+    : '');
+  const singleScopeNote = scopeNoteOf('本卡片');
+  const withScopeNote = (d: React.ReactNode): React.ReactNode => (singleScopeNote
+    ? <>{d}<span style={{ display: 'block', marginTop: 4, fontSize: 11, color: 'var(--warn)' }}>{singleScopeNote}</span></>
+    : d);
+
   const reportCards: ReportCardCfg[] = [
     { key: 'ai-import', icon: <FileUp size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: 'AI 项目计划导入',
       desc: '上传 Excel/需求文档，AI 解析为项目计划草稿（工期/依赖/负责人），确认后批量入库',
@@ -584,7 +598,7 @@ export function ReportPage() {
       onReset: resetArtifacts,
       onToggle: () => togglePanel('prdGen') },
     { key: 'prd-import', icon: <FileUp size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '从 PRD 导入项目计划',
-      desc: 'AI 拆分 WBS + 逐条提取需求 → 生成计划与需求跟踪矩阵（可选同步待办任务）',
+      desc: withScopeNote('AI 拆分 WBS + 逐条提取需求 → 生成计划与需求跟踪矩阵（可选同步待办任务）'),
       hint: '从 PRD 导入项目计划 — 上传 PRD（Word/Excel/Markdown/文本/PDF），AI 拆分 WBS 并逐条提取需求，确认后导入计划与需求跟踪矩阵', aria: '从 PRD 导入项目计划',
       open: showPrdImport,
       action: prdDocsAction,
@@ -599,7 +613,7 @@ export function ReportPage() {
     // T02107（PRD FR-1.1/1.2）：第 7 张卡——数组尾部追加，标题/描述/hint 逐字取 PRD 口径，
     // 复用 ReportCard 与既有图标风格（色值只走 CSS 变量，不新造卡片组件）
     { key: 'kickoff-ppt', icon: <Presentation size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '项目启动会 PPT 生成',
-      desc: '按项目资料自动装配 Kickoff 材料（原生可编辑 .pptx）',
+      desc: withScopeNote('按项目资料自动装配 Kickoff 材料（原生可编辑 .pptx）'),
       hint: '需 PRD/需求矩阵/计划至少各 1 条', aria: '项目启动会 PPT 生成',
       open: showKickoffPpt,
       onReset: resetArtifacts,
@@ -888,7 +902,7 @@ export function ReportPage() {
         })}
       </div>
 
-      <ReportWorkPanels aiToolId={aiToolId} projectId={projectId}
+      <ReportWorkPanels aiToolId={aiToolId} projectId={projectId} scopeNote={scopeNoteOf('本面板')}
         showKickoffPpt={showKickoffPpt} closeKickoffPpt={closeKickoffPpt} openCard={openCard}
         showPrdGen={showPrdGen} closePrdGen={closePrdGen} prdGenSaved={prdGenSaved}
         showTcGen={showTcGen} closeTcGen={closeTcGen} tcImported={tcImported}
