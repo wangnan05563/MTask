@@ -530,7 +530,7 @@ export const KICKOFF_SECTIONS = [
   '沟通管理',
   '附录',
 ] as const;
-export const KICKOFF_LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list', 'section', 'thanks'] as const;
+export const KICKOFF_LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list', 'flow', 'chip', 'section', 'thanks'] as const;
 export const KICKOFF_DATA_KEYS = [
   'prdDoc',
   'reqList',
@@ -775,6 +775,8 @@ const OUTLINE_SYSTEM = `你是项目启动会 PPT 的大纲编排器。只输出
    每个大章节开始可用一页 section 作章节页（只写章节名标题，dataKeys 置空，bullets 可空）；
    最后一页用 thanks 作结束页（标题写致谢语，dataKeys 置空）；
    其余内容页按数据形态选 twoCol/table/chart/timeline/list；
+   T02198 图示版式：里程碑阶段链用 layout:'flow'（dataKeys 写 milestones），人员分工标签用 layout:'chip'
+   （dataKeys 写 assignees），两者各至多一页；节点与标签文字由系统按库内真值绘制，bullets 不复述阶段名与人名、不自造步骤。
 10. T02166：bullets 必须引用【样例事实】里给过的具体名称（用「」包裹）；不得空写「各方配合」「相关任务有序推进」这类无指代套话。
    名称只能照抄【样例事实】里出现过的，不得自造、不得改写；数字仍归 dataKeys 覆盖，bullets 不写数字。
 11. T02166：bullets 不是数据块的目录——不得写「××分布见数据」「详见下表」「计划起止时间见数据」这类只指路不自证的空指针句；
@@ -784,7 +786,7 @@ const OUTLINE_SYSTEM_RETRY = `只输出 JSON 数组（${PAGE_MIN}~${PAGE_MAX} �
 section∈[${KICKOFF_SECTIONS.join('|')}] layout∈[${KICKOFF_LAYOUTS.join('|')}] dataKeys⊆[${KICKOFF_DATA_KEYS.join('|')}]
 每页 dataKeys **≤${DATA_KEYS_MAX} 个**（超出会被系统截断）；
 bullets 每条≤${BULLET_MAX_CHARS}字；必须有含 timeline 的一页和含 workload 的一页；数字一律用 dataKeys 表示，禁止编造数字。
-第 1 页 cover、第 2 页 toc、末页 thanks；章节分隔用 section（dataKeys 空）。`;
+第 1 页 cover、第 2 页 toc、末页 thanks；章节分隔用 section（dataKeys 空）；阶段链用 flow、人员标签用 chip（各至多一页）。`;
 
 /** 齐备性摘要 + 真实计数：喂给模型的是口径与可用源，数字仍由装配层覆盖（FR-3.4） */
 function outlineFacts(b: KickoffBundle): string {

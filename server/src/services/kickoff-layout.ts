@@ -254,7 +254,7 @@ export function auditPalette(): string[] {
  */
 export type LayoutFamily = 'cover' | 'twoCol' | 'data' | 'section' | 'thanks';
 
-/** 大纲 layout（9 值）→ 物理版式族（5 套）：一个大纲值落到哪套框架 */
+/** 大纲 layout（11 值）→ 物理版式族（5 套）：一个大纲值落到哪套框架 */
 export function layoutFamilyOf(layout: string): LayoutFamily {
   if (layout === 'cover' || layout === 'toc') return 'cover';
   if (layout === 'twoCol') return 'twoCol';

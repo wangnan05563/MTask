@@ -67,7 +67,7 @@ const feLayouts = strArray(PANEL, /const LAYOUTS = \[([\s\S]*?)\];/);
 const same = (a: string[], b: string[]) => a.length > 0 && a.length === b.length && a.every((v, i) => v === b[i]);
 
 ok('G-01 服务端三份白名单都解析得到（解析不到就是改名了，守卫本身失效）',
-  srvSections.length === 12 && srvLayouts.length === 7 && srvKeys.length === 12,
+  srvSections.length === 12 && srvLayouts.length === 11 && srvKeys.length === 12,
   { sections: srvSections.length, layouts: srvLayouts.length, keys: srvKeys.length });
 ok('G-02 前端章节候选与服务端 KICKOFF_SECTIONS 逐字同序（AI 出稿越界由服务端 400，前端不该自成一套）',
   same(feSections, srvSections), { fe: feSections, srv: srvSections });

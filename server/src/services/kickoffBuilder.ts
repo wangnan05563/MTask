@@ -33,6 +33,7 @@ import {
   checkPageText,
   dateRangeOf,
   diamondBox,
+  estimateTextWidthIn,
   findOverlaps,
   framesFor,
   layoutFamilyOf,
@@ -51,8 +52,17 @@ export interface Block {
   text?: { content: string; pt: number; bold?: boolean; color?: string; align?: 'left' | 'center' };
   table?: { header: string[]; rows: string[][] };
   chart?: { type: 'bar' | 'doughnut'; name: string; labels: string[]; values: number[] };
-  /** 原生形状（FR-4.5 时间线）：`addShape` 落 `<a:prstGeom>`，PowerPoint 里可拖拽改 */
-  shape?: { kind: 'rect' | 'diamond' | 'line'; tone: 'bar' | 'milestone' | 'axis' };
+  /**
+   * 原生形状（FR-4.5 时间线）：`addShape` 落 `<a:prstGeom>`，PowerPoint 里可拖拽改。
+   * `label`（T02198）：形状自带的居中标签，走 `addText` 的 `shape` 选项。
+   * 必须是**一块一形状一带字**——「rect 块 + 叠一个 text 块」会被 `findOverlaps` 判成
+   * 每对节点都重叠，等于给每个 flow 节点都造一次假坏页。
+   */
+  shape?: {
+    kind: 'rect' | 'roundRect' | 'diamond' | 'line' | 'rightArrow';
+    tone: 'bar' | 'milestone' | 'axis' | 'flowNode' | 'flow' | 'chip';
+    label?: { text: string; pt: number; color?: string };
+  };
 }
 
 export interface KickoffBuildResult {
@@ -771,6 +781,147 @@ function timelineShapePass(
   return { drawn: true, rows: tl.drawn, notes: timelineResultNotes(tl, window), dropped, violations: tl.violations };
 }
 
+// ---------- T02198：flow / chip 图示版式（一页一个组件，内部几何自管） ----------
+
+/**
+ * flow 节点上限：横向链路超过 5 格，每格就窄到排不下一个阶段名——
+ * 与其画 8 个谁也读不清的小框（块确实 placed 了），不如收前 5 个并如实注明余下数量。
+ */
+const FLOW_MAX_NODES = 5;
+const FLOW_NODE_H = 0.62;
+const FLOW_NOTE_H = 0.26;
+/** flow 组件整体最小占位高：低于它节点里的阶段名就排不下，宁可回落表格版 */
+const FLOW_MIN_H = FLOW_NODE_H + FLOW_NOTE_H;
+const FLOW_ARROW_W = 0.24;
+const FLOW_ARROW_H = 0.2;
+const FLOW_NODE_GAP = 0.1;
+const FLOW_NODE_PT = 10;
+
+const CHIP_H = 0.3;
+const CHIP_ROW_STEP = CHIP_H + 0.1;
+/** chip 组件最小占位高：一行标签都排不下就没有画的意义 */
+const CHIP_MIN_H = CHIP_ROW_STEP;
+const CHIP_GAP = 0.12;
+/** 标签左右内边距：文字贴着形状边缘会读成「被裁了」 */
+const CHIP_PAD_X = 0.16;
+const CHIP_PT = 10;
+
+export interface DiagramResult {
+  blocks: Block[];
+  /** 实绘的节点/标签数：0 = 组件画不出来，调用方据此回落表格版 */
+  drawn: number;
+  overflow: number;
+  notes: string[];
+  violations: string[];
+}
+
+/** flow 页成立前提：不足 3 个里程碑就没有「链」，如实回落 milestones 表格版 */
+export function flowDegradeReason(b: KickoffBundle): string | null {
+  return b.milestones.length < 3 ? `库内里程碑只有 ${b.milestones.length} 个，排不出阶段链` : null;
+}
+
+/** 阶段链取数：按截止日（缺则起始日）升序，标题一律照抄库内真值——节点文字不给 AI 编的机会 */
+function milestoneChain(b: KickoffBundle): KickoffBundle['milestones'] {
+  const due = (m: KickoffBundle['milestones'][number]) => m.end_date || m.start_date || '';
+  return [...b.milestones].sort((x, y) => due(x).localeCompare(due(y)));
+}
+
+/** 标签按框宽截断（补「…」并留痕）：压字与静默缩字都是谎报，截断必须看得见 */
+function fitLabel(text: string, width: number, pt: number): { text: string; clipped: boolean } {
+  const usable = width - CHIP_PAD_X * 2;
+  if (estimateTextWidthIn(text, pt) <= usable) return { text, clipped: false };
+  let kept = text;
+  while (kept.length > 1 && estimateTextWidthIn(`${kept}…`, pt) > usable) kept = kept.slice(0, -1);
+  return { text: `${kept}…`, clipped: true };
+}
+
+/** 组件内部的越界/重叠点名：箭头是连接装饰（同 `axis` 口径），既不算内容盒也不参与重叠 */
+function diagramViolations(blocks: Block[], frame: Box): string[] {
+  const issues: string[] = [];
+  for (const blk of blocks) {
+    if (blk.shape?.tone === 'flow') continue;
+    const reason = assertInBounds(blk.box, frame);
+    if (reason) issues.push(`${blk.shape ? '形状' : '文本'}${reason}`);
+  }
+  const overlaps = findOverlaps(blocks.filter((blk) => blk.shape?.tone !== 'flow').map((blk) => blk.box));
+  if (overlaps.length) issues.push(`元素重叠 ${overlaps.length} 处`);
+  return issues;
+}
+
+/**
+ * 横向阶段链：n 个带字节点 + n-1 枚箭头，整组自成一个绘制单元。
+ * 口径关键：**不进 `fitStack`/`flexStrip`**。按块累加的分型可读高（T02172）会把
+ * 「5 节点 + 4 箭头 = 9 块」判成 6.75" ≫ 正文框 3.225" 而整块 drop——那条收口对独立
+ * 内容块是对的，对内部自排的组件是误伤，所以这里只在版面层预留一次 `FLOW_MIN_H`。
+ */
+export function flowBlocks(b: KickoffBundle, frame: Box): DiagramResult {
+  const chain = milestoneChain(b);
+  const nodes = chain.slice(0, FLOW_MAX_NODES);
+  if (nodes.length === 0 || frame.h < FLOW_MIN_H) {
+    return { blocks: [], drawn: 0, overflow: chain.length, notes: [], violations: [] };
+  }
+  const nodeW = (frame.w - (nodes.length - 1) * (FLOW_ARROW_W + FLOW_NODE_GAP * 2)) / nodes.length;
+  const step = nodeW + FLOW_ARROW_W + FLOW_NODE_GAP * 2;
+  const out: Block[] = [];
+  const notes: string[] = [];
+  let clipped = 0;
+  for (const [i, m] of nodes.entries()) {
+    const x = frame.x + i * step;
+    const label = fitLabel(m.title, nodeW, FLOW_NODE_PT);
+    if (label.clipped) clipped++;
+    out.push({
+      box: { x, y: frame.y, w: nodeW, h: FLOW_NODE_H },
+      shape: { kind: 'roundRect', tone: 'flowNode', label: { text: label.text, pt: FLOW_NODE_PT, color: PALETTE.onBrand } },
+    });
+    const due = (m.end_date || m.start_date || '').slice(5);
+    out.push({
+      box: { x, y: frame.y + FLOW_NODE_H + 0.02, w: nodeW, h: FLOW_NOTE_H - 0.02 },
+      text: { content: due ? `截止 ${due}` : '未排截止日', pt: 9, align: 'center' },
+    });
+    if (i < nodes.length - 1) {
+      out.push({
+        box: { x: x + nodeW + FLOW_NODE_GAP, y: frame.y + (FLOW_NODE_H - FLOW_ARROW_H) / 2, w: FLOW_ARROW_W, h: FLOW_ARROW_H },
+        shape: { kind: 'rightArrow', tone: 'flow' },
+      });
+    }
+  }
+  const overflow = chain.length - nodes.length;
+  if (overflow > 0) notes.push(`阶段链只承载前 ${nodes.length} 个里程碑，其余 ${overflow} 个见时间线页（一条不丢）`);
+  if (clipped > 0) notes.push(`${clipped} 个阶段名超出节点宽度，已截断显示（完整名称见里程碑页）`);
+  return { blocks: out, drawn: nodes.length, overflow, notes, violations: diagramViolations(out, frame) };
+}
+
+/** 人员标签流：宽度按 `estimateTextWidthIn` 实算、超宽换行，排不下的如实计数不硬画 */
+export function chipBlocks(b: KickoffBundle, frame: Box): DiagramResult {
+  const labels = b.assignees.map((a) => `${a.name}·${a.planCount} 项`);
+  const out: Block[] = [];
+  const notes: string[] = [];
+  let x = frame.x;
+  let y = frame.y;
+  let drawn = 0;
+  let clipped = 0;
+  for (const raw of labels) {
+    const fitted = fitLabel(raw, frame.w, CHIP_PT);
+    if (fitted.clipped) clipped++;
+    const w = Math.min(frame.w, estimateTextWidthIn(fitted.text, CHIP_PT) + CHIP_PAD_X * 2);
+    if (x > frame.x && x + w > frame.x + frame.w) {
+      x = frame.x;
+      y += CHIP_ROW_STEP;
+    }
+    if (y + CHIP_H > frame.y + frame.h) break;
+    out.push({
+      box: { x, y, w, h: CHIP_H },
+      shape: { kind: 'roundRect', tone: 'chip', label: { text: fitted.text, pt: CHIP_PT, color: PALETTE.brandDeep } },
+    });
+    x += w + CHIP_GAP;
+    drawn++;
+  }
+  const overflow = labels.length - drawn;
+  if (overflow > 0) notes.push(`本页版面只排得下 ${drawn} 个人员标签，其余 ${overflow} 人见分工页与工作量页（一条不丢）`);
+  if (clipped > 0) notes.push(`${clipped} 个标签过长已截断显示`);
+  return { blocks: out, drawn, overflow, notes, violations: diagramViolations(out, frame) };
+}
+
 /**
  * 正文块 + 数据块的排布（单栏纵向堆叠走 stackY 单源；双栏按 6:4 左右分）。
  * 排不下的块**省略并如实回报**，不硬塞——硬塞就是越界页，静默丢就是假数据页，
@@ -796,9 +947,15 @@ export function layoutBody(
   // 时间线页：形状版自成一格（只需留 TL_MIN_H），回落列表版才是一张刚性表格
   const tlPage = item.layout === 'timeline' && item.dataKeys.includes('timeline');
   const tlShape = tlPage && timelineDegradeReason(b) === null;
+  // T02198：flow/chip 页由组件自己绘制，其数据块（里程碑链 / 人员标签）不进堆叠预算
+  const diagramKey: KickoffDataKey | null =
+    item.layout === 'flow' ? 'milestones' : item.layout === 'chip' ? 'assignees' : null;
+  const diagramOn =
+    diagramKey !== null && (item.layout === 'flow' ? flowDegradeReason(b) === null : b.assignees.length > 0);
+  const diagramMinH = item.layout === 'flow' ? FLOW_MIN_H : CHIP_MIN_H;
   // 形状版自己绘制时间线块，不让它进刚性表格预算（否则时间线区被算两次，要点被无端压扁）
   const rawBlocks = item.dataKeys
-    .filter((k) => !(tlShape && k === 'timeline'))
+    .filter((k) => !(tlShape && k === 'timeline') && !(diagramOn && k === diagramKey))
     .flatMap((k) => blocksForKey(k, b));
 
   if (frames.cols) {
@@ -814,7 +971,11 @@ export function layoutBody(
   const dataBlocks = fitRigidTables(
     rawBlocks,
     body.w,
-    bodyAvail - flexReserve - (bullets.length ? MIN_BLOCK_H + MIN_GAP : 0) - (tlShape ? TL_MIN_H + MIN_GAP : 0)
+    bodyAvail -
+      flexReserve -
+      (bullets.length ? MIN_BLOCK_H + MIN_GAP : 0) -
+      (tlShape ? TL_MIN_H + MIN_GAP : 0) -
+      (diagramOn ? diagramMinH + MIN_GAP : 0)
   );
 
   let cursor = body.y;
@@ -827,7 +988,8 @@ export function layoutBody(
     const rigidUsed =
       dataBlocks.filter((d) => d.table != null).reduce((s, d) => s + blockHeight(d, body.w) + MIN_GAP, 0) +
       flexStrip(dataBlocks) +
-      (tlShape ? TL_MIN_H + MIN_GAP : 0);
+      (tlShape ? TL_MIN_H + MIN_GAP : 0) +
+      (diagramOn ? diagramMinH + MIN_GAP : 0);
     const capH = bodyAvail - rigidUsed;
     if (capH >= MIN_BLOCK_H) {
       const h = Math.min(naturalH, capH);
@@ -852,9 +1014,26 @@ export function layoutBody(
     notes.push(pass.note);
   }
 
+  // T02198：flow/chip 组件页——整组自绘后直接收口，不进堆叠预算（同时间线形状版的旁路口径）
+  if (diagramOn && diagramKey) {
+    const frame: Box = { x: body.x, y: cursor, w: body.w, h: bottom - cursor };
+    const pass = item.layout === 'flow' ? flowBlocks(b, frame) : chipBlocks(b, frame);
+    if (pass.drawn > 0) {
+      out.push(...pass.blocks);
+      notes.push(...pass.notes);
+      return { blocks: out, dropped, notes, violations: pass.violations, tlDrawn: 0 };
+    }
+    notes.push(
+      item.layout === 'flow'
+        ? `阶段链回落表格版：剩余高度 ${frame.h.toFixed(2)}" 排不下节点与截止日注`
+        : `人员标签回落表格版：库内无可排的负责人标签`
+    );
+  }
+
   // 走到这里 = 时间线只能用列表版：把形状版排除掉的表格块补回来，并按剩余高度再收一次行
-  const stackBlocks = tlShape
-    ? fitRigidTables([...dataBlocks, ...blocksForKey('timeline', b)], body.w, bottom - cursor)
+  const reAddKey: KickoffDataKey | null = tlShape ? 'timeline' : diagramOn ? diagramKey : null;
+  const stackBlocks = reAddKey
+    ? fitRigidTables([...dataBlocks, ...blocksForKey(reAddKey, b)], body.w, bottom - cursor)
     : dataBlocks;
   const boxes = fitStack(cursor, stackBlocks, bottom, body.w, body);
   pushStackedBlocks(out, dropped, stackBlocks, boxes, bottom);
@@ -926,16 +1105,21 @@ function blockKindLabel(blk: Block): string {
 function blockBoundsIssues(blocks: Block[]): string[] {
   const issues: string[] = [];
   for (const blk of blocks) {
-    if (blk.shape?.tone === 'axis') continue;
+    // 参照线（日期轴）与 flow 箭头都是装饰件不是内容盒：前者零高度会被判「高度非正」，
+    // 后者按设计就贴在节点之间，硬算就是每页都「假越界」
+    if (blk.shape?.tone === 'axis' || blk.shape?.tone === 'flow') continue;
     const reason = assertInBounds(blk.box);
     if (reason) issues.push(`${blockKindLabel(blk)}${reason}`);
   }
   return issues;
 }
 
-/** 参与重叠判定的块框：参照线（日期轴）排除在外——里程碑菱形按设计骑在轴上，硬算就是每页都「假重叠」 */
+/** 参与重叠判定的块框：参照线（日期轴）与 flow 箭头排除在外——里程碑菱形按设计骑在轴上、
+ *  箭头按设计挨着节点，硬算就是每页都「假重叠」 */
 function contentBoxes(blocks: Block[]): Box[] {
-  return blocks.filter((blk) => blk.shape?.tone !== 'axis').map((blk) => blk.box);
+  return blocks
+    .filter((blk) => blk.shape?.tone !== 'axis' && blk.shape?.tone !== 'flow')
+    .map((blk) => blk.box);
 }
 
 /** 整页断言：标题与各块在内容框内、彼此不重叠（门禁 2 + 5 在此消费） */
@@ -973,6 +1157,11 @@ function shapeToneColor(tone: NonNullable<Block['shape']>['tone']): string {
   // 与模板背景的蓝色装饰同族；不再用报告系的靛蓝/警示红（那套色与品牌模板打架）
   if (tone === 'milestone') return PALETTE.brandDeep;
   if (tone === 'bar') return PALETTE.brandBright;
+  // T02198：flow 节点深底（承载阶段名，要压得住），箭头亮蓝（连接装饰，不抢节点），
+  // chip 浅底（人员标签，靠品牌深蓝字读出来）
+  if (tone === 'flowNode') return PALETTE.brandDeep;
+  if (tone === 'flow') return PALETTE.brandBright;
+  if (tone === 'chip') return PALETTE.brandPale;
   return PALETTE.brandDeep;
 }
 
@@ -982,6 +1171,23 @@ export function drawBlock(slide: any, block: Block): void {
     const color = shapeToneColor(block.shape.tone);
     if (block.shape.kind === 'line') {
       slide.addShape('line', { ...geo, line: { color, width: 1.5 } });
+      return;
+    }
+    const label = block.shape.label;
+    if (label) {
+      // T02198：带字形状 = `addText` 的 `shape` 选项（形状与文字同一个原生对象）。
+      // 不用「addShape + 叠 addText」两块：两块同框就是 `findOverlaps` 眼里的重叠。
+      slide.addText(label.text, {
+        ...geo,
+        shape: block.shape.kind,
+        fill: { color },
+        line: { type: 'none' },
+        color: label.color ?? PALETTE.onBrand,
+        fontSize: label.pt,
+        align: 'center',
+        valign: 'middle',
+        fontFace: FONT.face,
+      });
       return;
     }
     slide.addShape(block.shape.kind, { ...geo, fill: { color }, line: { type: 'none' } });

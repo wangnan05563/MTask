@@ -48,7 +48,7 @@ interface PreflightResult {
  * 两份清单的一致性由 `verify-t02111` 的源码守卫断言，不靠人记。
  */
 const SECTIONS = ['封面', '议程', '项目团队介绍', '项目背景', '项目需求', '项目范围', '项目计划', '工作量评估', '测试与质量策略', '项目风险', '沟通管理', '附录'];
-const LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list', 'section', 'thanks'];
+const LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list', 'flow', 'chip', 'section', 'thanks'];
 
 /** 大纲编辑态会话键（重置入口在 consoleReset 的产物键清单里，与控制台重置等效） */
 const OUTLINE_SESSION_KEY = 'kickoff.outline';
