@@ -245,8 +245,11 @@ function Shell() {
         .tl-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
         .abtn:hover, .ghost:hover { background: var(--surface-2); }`}</style>
 
-      {/* 菜单行：置顶，导航项居左；后端连接状态用 margin-left:auto 推到右端且垂直居中，与菜单项同行 */}
-      <nav style={{ display: 'flex', alignItems: 'center', gap: 4, margin: '0', padding: '12px 0', borderBottom: '1px solid var(--border)' }}>
+      {/* 菜单行：置顶，导航项居左；后端连接状态用 margin-left:auto 推到右端且垂直居中，与菜单项同行。
+          T02174：窄窗口下导航项 + 行尾三枚动态元素（未读角标/连接状态/向导按钮）总宽必然超过容器，
+          nowrap 会把末元素顶出 nav 边框（456px 实测越界 142px）——改 wrap + rowGap 折行兜底，
+          与 TasksPage.renderToolbar 同口径；宽窗口仍是单行，布局不变。 */}
+      <nav style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4, rowGap: 6, margin: '0', padding: '12px 0', borderBottom: '1px solid var(--border)' }}>
         {TABS.map((t) => {
           // 菜单图标置于文字前：使用开源 lucide 图标库，与全局视觉一致
           const Icon = t.icon;
