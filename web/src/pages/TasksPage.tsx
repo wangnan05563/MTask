@@ -203,8 +203,8 @@ export function TasksPage() {
   // T02196：标题区「派生自」徽标点击定位——badgeLocate 承载待定位的父任务，locateFlashId 驱动高亮动画。
   // 高亮用 state 加类而非 locateTaskRow 那套命令式改 style：定位期间列表会随任意状态重渲染，
   // 内联样式会被 React 按 props 覆写回原值，动画一闪即没。
-  // id 为空表示走编号检索回落（此时父任务不在当前列表，只有编号），until 是该意图的放弃时刻。
-  const [badgeLocate, setBadgeLocate] = useState<{ taskNo: string; id: string; tab: ActiveTab; until: number } | null>(null);
+  // id 为空表示只有编号可用（父任务不在当前已加载列表里）；retrieved=已发起编号检索；until 是该意图的放弃时刻。
+  const [badgeLocate, setBadgeLocate] = useState<{ taskNo: string; id: string; tab: ActiveTab; retrieved: boolean; until: number } | null>(null);
   const [locateFlashId, setLocateFlashId] = useState('');
   // T00757：列表 tab——待办/已完成/搁置三个列表标题并排为 tab，仅渲染激活 tab 的列表（会话级保持）
   const [activeTab, setActiveTab] = useSessionState<ActiveTab>('tasks.activeTab', 'todo');
@@ -543,7 +543,7 @@ export function TasksPage() {
   // T02196：标题区「派生自」徽标点击的落地——目标行就在当前已加载列表里时，只做
   // 「必要时切 tab + 滚动居中 + 短暂高亮」，不写搜索词、不清筛选、不动排序
   // （任务原文约束「不得重置用户的其他筛选或排序条件」）。
-  // 数组里有该行但 DOM 查不到（看板视图无 data-ttask-id、或分页之外）时，才退回 focusTaskByNo
+  // 列表里没有该行，或有但视图没呈现（分页之外、被当前筛选条件筛掉）时，才退回 focusTaskByNo
   // 的编号检索通道，并先给出提示——让「视图被改变」始终是明示而非静默发生。
   // 回落时定位意图不丢：检索是异步的（换项目→重载列表→渲染），故意图带截止时间留在 state 里，
   // 列表每次变化都按编号再认一次目标行，命中后同样给 .locate-flash 高亮。
@@ -553,17 +553,23 @@ export function TasksPage() {
     const el = badgeLocate.id
       ? document.querySelector<HTMLElement>(`[data-ttask-id="${badgeLocate.id}"]`)
       : findRowElByNo(badgeLocate.taskNo);
-    if (!(el instanceof HTMLElement)) {
-      if (Date.now() > badgeLocate.until) setBadgeLocate(null); // 超时未命中（编号不可达/被筛掉）即放弃，不让意图滞留
+    if (el instanceof HTMLElement) {
+      const flashId = el.getAttribute('data-ttask-id') ?? '';
+      setBadgeLocate(null);
+      try { el.scrollIntoView({ block: 'center' }); } catch { /* 忽略滚动异常 */ }
+      if (flashId) {
+        setLocateFlashId(flashId);
+        globalThis.setTimeout(() => setLocateFlashId((cur) => (cur === flashId ? '' : cur)), 1500);
+      }
       return;
     }
-    const flashId = el.getAttribute('data-ttask-id') ?? '';
-    setBadgeLocate(null);
-    try { el.scrollIntoView({ block: 'center' }); } catch { /* 忽略滚动异常 */ }
-    if (flashId) {
-      setLocateFlashId(flashId);
-      globalThis.setTimeout(() => setLocateFlashId((cur) => (cur === flashId ? '' : cur)), 1500);
+    if (badgeLocate.retrieved) {
+      if (Date.now() > badgeLocate.until) setBadgeLocate(null); // 检索也没带来该行（编号不可达/被筛掉）即放弃，不让意图滞留
+      return;
     }
+    flash(`原任务 ${badgeLocate.taskNo} 不在当前列表（视图未呈现该行），已按编号检索定位`);
+    setBadgeLocate({ ...badgeLocate, id: '', retrieved: true, until: Date.now() + 8000 });
+    void focusTaskByNo(badgeLocate.taskNo);
   }, [badgeLocate, activeTab, todo, done, shelvedTasks]);
 
   /** T02196：「派生自 xxx」徽标点击——按编号在当前已加载列表里找父任务，命中即原地定位（零视图状态变更）。
@@ -573,16 +579,12 @@ export function TasksPage() {
     const no = taskNo?.trim();
     if (!no) return;
     const hit = [...todo, ...done, ...shelvedTasks].find((x) => x.task_no === no);
+    let tab: ActiveTab = 'todo';
     if (hit) {
-      let tab: ActiveTab = 'todo';
       if (shelvedTasks.includes(hit)) tab = 'shelved';
       else if (done.includes(hit)) tab = 'done';
-      setBadgeLocate({ taskNo: no, id: hit.id, tab, until: Date.now() + 8000 });
-      return;
     }
-    flash(`原任务 ${no} 不在当前列表（跨项目/被筛选或分页在外），已按编号检索定位`);
-    setBadgeLocate({ taskNo: no, id: '', tab: activeTab, until: Date.now() + 8000 });
-    void focusTaskByNo(no);
+    setBadgeLocate({ taskNo: no, id: hit?.id ?? '', tab: hit ? tab : activeTab, retrieved: false, until: Date.now() + 8000 });
   };
 
   // T01562：外部跳转（focusTaskByNo openDrawer=true）写入 focusDrawerId 后，自动唤起右侧真抽屉；
