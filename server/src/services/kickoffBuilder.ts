@@ -5,11 +5,19 @@
  * 本模块是全仓业务层 **唯一** import pptxgenjs 的地方（风险 R1：适配层独占，不散用）；
  * 几何与色彩判断一律委托 `kickoff-layout.ts`（T02098），这里只负责「把内容摆进框里并落成原生对象」。
  *
+ * T02156：恒生模板视觉落地（PRD §7 非目标 N1 的 E-1 补单）。背景图取自
+ * `server/src/services/assets/kickoff/`（2023恒生PPT模板.pptx 五页面角色背景的 1280×720 副本：
+ * 封面/目录/章节/正文/结束各一张），品牌色走 `PALETTE.brand*` 单源；背景图缺失时降级为纯色纸面，
+ * 绝不因此丢内容或出坏页。大纲新增 `section`（章节页：编号+标题）与 `thanks`（结束页）两个版式，
+ * 与恒生模板的五页面结构对齐。
+ *
  * 三条不可让的口径：
  * 1. 页面上的数字只来自 Bundle（库内真值）；AI 文本里可对错的数字一律改写并记 warning（FR-3.4 / 验收 8）。
  * 2. 只用 `addText/addTable/addChart/addShape` 原生对象（验收 5：PowerPoint/WPS 里可编辑），不整页贴图。
  * 3. 版式断言不过 → 该页降级「标题 + 正文」安全版式并 `warnings.push`（验收 7）——宁可素，不出坏页。
  */
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   FONT,
   KICKOFF_LAYOUT_DEF,
@@ -32,6 +40,7 @@ import {
   scaleBox,
   stackY,
   type Box,
+  type DateRange,
   type LayoutFrames,
 } from './kickoff-layout';
 import { KICKOFF_ABORT_MSG, KICKOFF_PLACEHOLDER, type KickoffBundle, type KickoffDataKey, type KickoffOutlineItem } from './kickoffService';
@@ -55,15 +64,92 @@ export interface KickoffBuildResult {
 }
 
 const TABLE_ROW_H = 0.3;
+/** 表格外框留白（pptxgenjs 给表格的边距），行数换算时都要算上 */
+const TABLE_PAD = 0.12;
 const CHART_H = 2.4;
 const MAX_TABLE_ROWS = 9;
 /** 时间线条高之外，页脚带高度（底带 0.4" 内） */
 const FOOTER_H = 0.3;
 
+// ---------- T02156：恒生模板背景（E-1：模板视觉规范的单点落地） ----------
+
+/**
+ * 背景图定位候选：dev 态 `__dirname=server/src/services`（tsx 直跑 src），
+ * 打包态 `=server/dist/services`（build 时 `src/services/assets` 整目录复制到 dist，见 server/package.json）。
+ * 与 PrdGenService/TestCaseGenService 的 skills 定位同构——两处都找不到就不登记该版式（降级默认白版式）。
+ */
+const BG_DIR_CANDIDATES = [join(__dirname, 'assets', 'kickoff'), join(__dirname, '..', '..', 'src', 'services', 'assets', 'kickoff')];
+
+/**
+ * 恒生模板五页面角色 → 背景文件（来源：2023恒生PPT模板.pptx 各 slide 实际使用的版式背景）。
+ * cover=模板 slide1/layout1 的 image1.jpg；toc=slide2/layout3 的 image2.jpeg；
+ * section=slide3/layout5 的 image3.jpeg（中部浅蓝色带托章节标题）；
+ * content=layout6 的纯白底 + 标题左侧蓝色装饰 image5.png 的合成件；
+ * thanks=slide11/layout9 的 image6.jpeg（THANKS + LOGO + 版权区）。
+ */
+const BG_FILES = {
+  cover: 'bg-cover.jpg',
+  toc: 'bg-toc.jpg',
+  section: 'bg-section.jpg',
+  content: 'bg-content.jpg',
+  thanks: 'bg-thanks.jpg',
+} as const;
+type BgKind = keyof typeof BG_FILES;
+
+/** 背景种类 → 自定义版式名（defineSlideMaster 登记，页面按 layout 选版式） */
+const BG_LAYOUT_NAMES: Record<BgKind, string> = {
+  cover: 'KICKOFF_BG_COVER',
+  toc: 'KICKOFF_BG_TOC',
+  section: 'KICKOFF_BG_SECTION',
+  content: 'KICKOFF_BG_CONTENT',
+  thanks: 'KICKOFF_BG_THANKS',
+};
+
+/** 大纲 layout → 背景种类：封面/目录/章节/结束各一张，其余内容页共用（正文页白底+标题装饰） */
+function bgKindOf(layout: string): BgKind {
+  if (layout === 'cover') return 'cover';
+  if (layout === 'toc') return 'toc';
+  if (layout === 'section') return 'section';
+  if (layout === 'thanks') return 'thanks';
+  return 'content';
+}
+
+function brandBgPath(kind: BgKind): string | null {
+  for (const dir of BG_DIR_CANDIDATES) {
+    const p = join(dir, BG_FILES[kind]);
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
+/**
+ * 把五张恒生背景登记为自定义版式（`defineSlideMaster` 的 `background`——
+ * 注意 `defineLayout` 只登记尺寸不接背景，版式背景入口是 defineSlideMaster）。
+ * 走版式而不是逐页 `slide.background`：同一张背景 14 页共用只落一份媒体
+ * （逐页贴背景会被 pptxgenjs 按页复制成 14 份，1MB 稿里 76KB 图背 14 遍）。
+ * 背景缺失的种类不登记——`addSlide({ masterName })` 找不到版式时回落默认白版式，
+ * 丢的只是背景，内容与版式断言一条不受影响（与验收 7「宁可素不出坏页」同构）。
+ */
+function defineBrandBackgrounds(pptx: any): void {
+  for (const kind of ['cover', 'toc', 'section', 'content', 'thanks'] as BgKind[]) {
+    const bgPath = brandBgPath(kind);
+    if (!bgPath) continue;
+    pptx.defineSlideMaster({ title: BG_LAYOUT_NAMES[kind], background: { path: bgPath } });
+  }
+}
+
+/** 数字呈现格式化（T02156：修「P84 43.020620726159656 人天」这类原始浮点直出） */
+function fmtNum(n: number): string {
+  return String(Math.round(n * 10) / 10);
+}
+
 // ---------- dataKeys 取数（数字唯一来源） ----------
 
 function statusMark(status: string): string {
-  return status === 'done' ? '已完成' : status === 'doing' ? '进行中' : status === 'blocked' ? '阻塞' : '未开始';
+  if (status === 'done') return '已完成';
+  if (status === 'doing') return '进行中';
+  if (status === 'blocked') return '阻塞';
+  return '未开始';
 }
 
 /** 缺失值出「待补充」占位（FR-4.1）：留空白会被读成「没有这项东西」，占位才表达「该去填」 */
@@ -160,16 +246,24 @@ function workloadLines(b: KickoffBundle): string[] {
       `补数路径：估算工作台生成三点估算，或在项目计划逐条填「工期(工作日)」`,
     ];
   }
+  // 合计行保持库内原值不取整（验收 6「页面数字与取数同源」按此断言）；
+  // 取整只作用于派生量（报价/人月/阶段分布）的呈现，修「P84 43.020620726159656」直出
   const range = w.manDays.optimistic != null && w.manDays.pessimistic != null
     ? `${w.manDays.optimistic}~${w.manDays.pessimistic}（P50 ${w.manDays.expected}）`
     : `${w.manDays.expected}`;
   const lines = [
     `总工作量 ${range} 人天 ≈ ${w.manMonth} 人月（人月 = 人天 ÷ ${w.manDaysPerManMonth}）`,
-    w.quote ? `报价区间：P50 ${w.quote.p50ManDays} / P84 ${w.quote.p84ManDays} 人天` : '报价区间：无三点估算，按工期口径',
+    w.quote ? `报价区间：P50 ${fmtNum(w.quote.p50ManDays)} / P84 ${fmtNum(w.quote.p84ManDays)} 人天` : '报价区间：无三点估算，按工期口径',
     w.footer,
   ];
-  if (w.phases.length) lines.push(`阶段分布：${w.phases.map((p) => `${p.phase} ${p.expected}`).join(' / ')} 人天`);
-  if (w.complexity.length) lines.push(`复杂度分布：${w.complexity.map((c) => `${c.level}×${c.count}`).join(' / ')}`);
+  if (w.phases.length) {
+    const phaseText = w.phases.map((p) => `${p.phase} ${fmtNum(p.expected)}`).join(' / ');
+    lines.push(`阶段分布：${phaseText} 人天`);
+  }
+  if (w.complexity.length) {
+    const complexityText = w.complexity.map((c) => `${c.level}×${c.count}`).join(' / ');
+    lines.push(`复杂度分布：${complexityText}`);
+  }
   return lines;
 }
 
@@ -187,7 +281,11 @@ function timelineListTable(b: KickoffBundle): NonNullable<Block['table']> {
 }
 
 function preflightTable(b: KickoffBundle): NonNullable<Block['table']> {
-  const mark = (s: string) => (s === 'ok' ? '✓' : s === 'warn' ? '⚠' : '✕');
+  const mark = (s: string): string => {
+    if (s === 'ok') return '✓';
+    if (s === 'warn') return '⚠';
+    return '✕';
+  };
   return {
     header: ['项', '结论', '条数', '说明'],
     rows: b.preflight.items.map((i) => [`${i.key} ${i.label}`, mark(i.status), String(i.count), i.note.slice(0, 30)]),
@@ -281,6 +379,64 @@ export function timelineDegradeReason(b: KickoffBundle): string | null {
 }
 
 /**
+ * 同日里程碑并组：相邻日期的菱形本就会叠在一起（跨度 3 周的稿里差 1 天 ≈ 0.29"，正好是一个菱形宽），
+ * 并成一组而不是丢着不画——丢了就是「图上看 4 个、库里有 6 个」的假象。
+ */
+function clusterMilestones(times: number[], range: DateRange, bars: Box, axisY: number): Array<{ box: Box; count: number }> {
+  const clusters: Array<{ box: Box; count: number }> = [];
+  for (const t of times) {
+    const box = diamondBox(t, range, bars, axisY);
+    const last = clusters.at(-1);
+    if (last && findOverlaps([last.box, box]).length > 0) {
+      last.count += 1;
+      continue;
+    }
+    clusters.push({ box, count: 1 });
+  }
+  return clusters;
+}
+
+/** 计划条逐行排布（按行序取 `plans`）：行名 + 条形，缺起止日期的行出「无起止日期」占位 */
+function planBarBlocks(
+  plans: Array<{ title: string; start_date: string; end_date: string }>,
+  range: DateRange,
+  bars: Box,
+  labelX: number,
+  rowsTop: number
+): { blocks: Block[]; undated: number } {
+  const blocks: Block[] = [];
+  let undated = 0;
+  for (const [i, p] of plans.entries()) {
+    const rowY = rowsTop + i * TL_ROW_H;
+    blocks.push({ box: { x: labelX, y: rowY - 0.01, w: TL_LABEL_W, h: TL_ROW_H - 0.03 }, text: { content: p.title.slice(0, 16), pt: TL_NOTE_PT } });
+    const bar = barBox(p, range, bars, rowY);
+    if (!bar) {
+      undated += 1;
+      blocks.push({ box: { x: bars.x, y: rowY, w: 1.3, h: TIMELINE_BAR_H }, text: { content: '无起止日期', pt: TL_NOTE_PT } });
+      continue;
+    }
+    blocks.push({ box: bar, shape: { kind: 'rect', tone: 'bar' } });
+  }
+  return { blocks, undated };
+}
+
+/** 排完后的越界 / 重叠点名（轴线的两道豁免随检查一起搬到这里） */
+function timelineViolations(blocks: Block[], frame: Box): string[] {
+  const violations: string[] = [];
+  for (const blk of blocks) {
+    // 轴线按定义就是零高度参照线（`assertInBounds` 的「高度非正」只约束内容盒），
+    // 把它排除出越界集，否则每页时间线都被判成坏页
+    if (blk.shape?.tone === 'axis') continue;
+    const reason = assertInBounds(blk.box, frame);
+    if (reason) violations.push(`${blk.shape ? '形状' : '文本'}${reason}`);
+  }
+  // 轴线是参照线，菱形按设计就骑在它上面——把它排除出重叠集，否则每页都是「假越界」
+  const overlaps = findOverlaps(blocks.filter((blk) => blk.shape?.tone !== 'axis').map((blk) => blk.box));
+  if (overlaps.length) violations.push(`元素重叠 ${overlaps.length} 处`);
+  return violations;
+}
+
+/**
  * 时间线页的形状装配（纯几何消费，坐标一律走 T02098 的 `barBox`/`diamondBox`/`axisTicks`）。
  * 排布：轴带（刻度 + 轴线 + 菱形）在上，计划条按起始日期升序逐行在下。
  * 同日挤在一起的里程碑按道下移，轴带容不下就**只计数不硬画**——压成叠在一起的两个菱形
@@ -310,22 +466,11 @@ export function timelineBlocks(b: KickoffBundle, frame: Box): TimelineResult {
   }
   out.push({ box: { x: bars.x, y: axisY, w: bars.w, h: 0 }, shape: { kind: 'line', tone: 'axis' } });
 
-  const clusters: Array<{ box: Box; count: number }> = [];
   const times = b.milestones
     .map((m) => Date.parse(m.end_date || m.start_date || ''))
     .filter((t) => Number.isFinite(t))
     .sort((x, y) => x - y);
-  for (const t of times) {
-    const box = diamondBox(t, range, bars, axisY);
-    const last = clusters[clusters.length - 1];
-    // 相邻日期的菱形本就会叠在一起（跨度 3 周的稿里差 1 天 ≈ 0.29"，正好是一个菱形宽）：
-    // 并成一组而不是丢着不画——丢了就是「图上看 4 个、库里有 6 个」的假象
-    if (last && findOverlaps([last.box, box]).length > 0) {
-      last.count += 1;
-      continue;
-    }
-    clusters.push({ box, count: 1 });
-  }
+  const clusters = clusterMilestones(times, range, bars, axisY);
   const mergedMilestones = times.length - clusters.length;
   for (const c of clusters) out.push({ box: c.box, shape: { kind: 'diamond', tone: 'milestone' } });
 
@@ -336,38 +481,20 @@ export function timelineBlocks(b: KickoffBundle, frame: Box): TimelineResult {
   let limit = Math.min(MAX_TL_ROWS, ordered.length, capacity);
   if (ordered.length > limit) limit = Math.min(limit, Math.floor((bottom - 0.32 - rowsTop) / TL_ROW_H));
 
-  let undated = 0;
-  for (const [i, p] of ordered.slice(0, Math.max(0, limit)).entries()) {
-    const rowY = rowsTop + i * TL_ROW_H;
-    out.push({ box: { x: frame.x, y: rowY - 0.01, w: TL_LABEL_W, h: TL_ROW_H - 0.03 }, text: { content: p.title.slice(0, 16), pt: TL_NOTE_PT } });
-    const bar = barBox(p, range, bars, rowY);
-    if (!bar) {
-      undated += 1;
-      out.push({ box: { x: bars.x, y: rowY, w: 1.3, h: TIMELINE_BAR_H }, text: { content: '无起止日期', pt: TL_NOTE_PT } });
-      continue;
-    }
-    out.push({ box: bar, shape: { kind: 'rect', tone: 'bar' } });
-  }
+  const drawn = planBarBlocks(ordered.slice(0, Math.max(0, limit)), range, bars, frame.x, rowsTop);
+  out.push(...drawn.blocks);
+  const undated = drawn.undated;
 
   const overflow = ordered.length - Math.max(0, limit);
   if (overflow > 0) {
     out.push({ box: { x: frame.x, y: bottom - 0.28, w: frame.w, h: 0.26 }, text: { content: `其余 ${overflow} 条计划未绘出，见「项目计划」列表页`, pt: TL_NOTE_PT } });
   }
 
-  const violations: string[] = [];
-  for (const blk of out) {
-    // 轴线按定义就是零高度参照线（`assertInBounds` 的「高度非正」只约束内容盒），
-    // 把它排除出越界集，否则每页时间线都被判成坏页
-    if (blk.shape?.tone === 'axis') continue;
-    const reason = assertInBounds(blk.box, frame);
-    if (reason) violations.push(`${blk.shape ? '形状' : '文本'}${reason}`);
-  }
-  // 轴线是参照线，菱形按设计就骑在它上面——把它排除出重叠集，否则每页都是「假越界」
-  const overlaps = findOverlaps(out.filter((blk) => blk.shape?.tone !== 'axis').map((blk) => blk.box));
-  if (overlaps.length) violations.push(`元素重叠 ${overlaps.length} 处`);
+  const violations = timelineViolations(out, frame);
+  const mergedNote = mergedMilestones ? `（同日并成 ${clusters.length} 组）` : '';
   out.push({
     box: { x: frame.x, y: axisY - 0.13, w: TL_LABEL_W, h: 0.28 },
-    text: { content: `◆ 里程碑 ${times.length} 个${mergedMilestones ? `（同日并成 ${clusters.length} 组）` : ''}`, pt: TL_NOTE_PT },
+    text: { content: `◆ 里程碑 ${times.length} 个${mergedNote}`, pt: TL_NOTE_PT },
   });
   return { blocks: out, undated, overflow, mergedMilestones, violations };
 }
@@ -445,12 +572,113 @@ function textHeight(content: string, width: number, pt: number): number {
 
 function blockHeight(src: Omit<Block, 'box'>, width: number): number {
   if (src.chart) return CHART_H;
-  if (src.table) return TABLE_ROW_H * (src.table.rows.length + 1) + 0.12;
+  if (src.table) return TABLE_ROW_H * (src.table.rows.length + 1) + TABLE_PAD;
   return textHeight(src.text?.content ?? '', width, src.text?.pt ?? MIN_BODY_PT);
 }
 
 /** 块最小可排高度：低于它画出来就是压扁的字或看不见的图，不如省略 */
 const MIN_BLOCK_H = 0.45;
+
+/** `clampRows` 折行提示行的形态：`其余 n 条/个/人/项` */
+const REST_ROW_RE = /^其余\s*(\d+)\s*(条|个|人|项)/;
+
+/**
+ * 版面收行（T02166）：`clampRows` 的上限是**信息密度**上限，不是**版面**上限。
+ * 同页还有要点时，9 行表格的自然高（3.12"）会超过剩余高度——旧逻辑整块 drop，
+ * 页面就只剩套话（用户反馈的「各页没有实际项目内容」）。这里按剩余高度反推可排行数，
+ * 被再收掉的行**并进已有的「其余 n 条」计数**（没有提示行的补一行），
+ * 保持「少画但不谎称画全」，同时绝不越页（表格是刚性块，裁盒无效）。
+ */
+export function fitTableRows(table: NonNullable<Block['table']>, maxRows: number): NonNullable<Block['table']> {
+  const restIdx = table.rows.findIndex((r) => REST_ROW_RE.test((r[0] ?? '').trim()));
+  const dataRows = restIdx >= 0 ? table.rows.filter((_, i) => i !== restIdx) : table.rows;
+  if (restIdx < 0 && dataRows.length <= maxRows) return table;
+  const restMatch = restIdx >= 0 ? REST_ROW_RE.exec((table.rows[restIdx][0] ?? '').trim()) : null;
+  const visible = dataRows.slice(0, Math.max(1, Math.min(dataRows.length, maxRows - 1)));
+  const hidden = (restMatch ? Number(restMatch[1]) : 0) + dataRows.length - visible.length;
+  if (hidden <= 0) return { ...table, rows: visible };
+  const restRow = restIdx >= 0 ? [...table.rows[restIdx]] : table.header.map(() => '');
+  restRow[0] = `其余 ${hidden} ${restMatch?.[2] ?? '条'}`;
+  while (restRow.length < table.header.length) restRow.push('');
+  return { ...table, rows: [...visible, restRow] };
+}
+
+/** 行数上限：给定可用高度能排下几行数据（含表头与留白） */
+function maxRowsFor(height: number): number {
+  return Math.max(1, Math.floor((height - TABLE_PAD) / TABLE_ROW_H) - 1);
+}
+
+/**
+ * 把刚性表格收到版面预算内（同页多表均分预算）。
+ * `budget` 已经扣掉要点/其他块要占的高度；排得下就原样返回，不无端收行。
+ */
+function fitRigidTables(blocks: Array<Omit<Block, 'box'>>, width: number, budget: number): Array<Omit<Block, 'box'>> {
+  const rigid = blocks.filter((d) => d.table != null);
+  if (!rigid.length) return blocks;
+  const natural = rigid.reduce((s, d) => s + blockHeight(d, width) + MIN_GAP, 0);
+  if (natural <= budget + 1e-6) return blocks;
+  const per = Math.max(0, (budget - MIN_GAP * (rigid.length - 1)) / rigid.length);
+  const maxRows = maxRowsFor(per);
+  return blocks.map((d) => (d.table ? { ...d, table: fitTableRows(d.table, maxRows) } : d));
+}
+
+/**
+ * 纵向堆叠的数据块：排不下就省略并如实回报，不硬塞。
+ * T02166：只把 **表格** 当刚性——pptxgenjs `addTable` 会按 rows×rowH 自然铺开，
+ * 传入的 h 只当最小高度；avail 不够时裁 h 无效，实际仍越过页面底带，
+ * 而 `assertInBounds` 检的是裁后的假盒 → 既不降级也不 warning，用户看到「表格越出 PPT」。
+ * 图表/文本可裁：addChart 是矢量渲染到指定盒；addText wrap 会在框内截字。二者按 avail 裁即可。
+ */
+function pushStackedBlocks(out: Block[], dropped: string[], dataBlocks: Array<Omit<Block, 'box'>>, boxes: Box[], bottom: number): void {
+  dataBlocks.forEach((d, i) => {
+    const natural = boxes[i].h;
+    const avail = bottom - boxes[i].y;
+    if (d.table != null) {
+      // 1e-6 容差：版面预算与逐块 avail 是两次浮点减法，等值时必须算「排得下」
+      if (avail + 1e-6 < natural) {
+        dropped.push(describe(d));
+        return;
+      }
+      out.push({ box: boxes[i], ...d });
+      return;
+    }
+    if (avail < MIN_BLOCK_H) {
+      dropped.push(describe(d));
+      return;
+    }
+    out.push({ box: { ...boxes[i], h: Math.min(natural, avail) }, ...d });
+  });
+}
+
+/** 形状版时间线的口径脚注：为 0 的项不说，避免「0 条计划缺日期」这种把空缺冒充结论 */
+function timelineResultNotes(tl: TimelineResult): string[] {
+  const notes: string[] = [];
+  if (tl.undated) notes.push(`${tl.undated} 条计划缺起止日期，条形未绘制（起止日期补全后自动出现在时间线上）`);
+  if (tl.overflow) notes.push(`${tl.overflow} 条计划超出本页可排行数，已折成页脚提示`);
+  if (tl.mergedMilestones) notes.push(`${tl.mergedMilestones} 个里程碑与同日里程碑并成一枚菱形绘制（日期相同，逐个画会叠成一坨）`);
+  return notes;
+}
+
+/** 时间线页这一趟：画得动就把形状块并进 `out` 并带回口径/违规；画不动只带回回落原因 */
+function timelineShapePass(
+  item: KickoffOutlineItem,
+  b: KickoffBundle,
+  body: Box,
+  cursor: number,
+  out: Block[]
+): { drawn: true; notes: string[]; dropped: string[]; violations: string[] } | { drawn: false; note: string } {
+  const frame: Box = { x: body.x, y: cursor, w: body.w, h: body.y + body.h - cursor };
+  const reason = timelineDegradeReason(b);
+  if (reason || frame.h < TL_MIN_H) {
+    const fallback = reason ?? `剩余高度 ${frame.h.toFixed(2)}" 排不下轴与 2 行条`;
+    return { drawn: false, note: `时间线回落列表版：${fallback}` };
+  }
+  const tl = timelineBlocks(b, frame);
+  out.push(...tl.blocks);
+  const dropped: string[] = [];
+  for (const k of item.dataKeys.filter((x) => x !== 'timeline')) dropped.push(...blocksForKey(k, b).map(describe));
+  return { drawn: true, notes: timelineResultNotes(tl), dropped, violations: tl.violations };
+}
 
 /**
  * 正文块 + 数据块的排布（单栏纵向堆叠走 stackY 单源；双栏按 6:4 左右分）。
@@ -466,65 +694,108 @@ export function layoutBody(
   bullets: string[]
 ): { blocks: Block[]; dropped: string[]; notes: string[]; violations: string[] } {
   const body = frames.body;
-  const dataBlocks = item.dataKeys.flatMap((k) => blocksForKey(k, b));
   const out: Block[] = [];
   const dropped: string[] = [];
   const notes: string[] = [];
   const bottom = body.y + body.h;
+  const bodyAvail = bottom - body.y;
+  // 时间线页：形状版自成一格（只需留 TL_MIN_H），回落列表版才是一张刚性表格
+  const tlPage = item.layout === 'timeline' && item.dataKeys.includes('timeline');
+  const tlShape = tlPage && timelineDegradeReason(b) === null;
+  // 形状版自己绘制时间线块，不让它进刚性表格预算（否则时间线区被算两次，要点被无端压扁）
+  const rawBlocks = item.dataKeys
+    .filter((k) => !(tlShape && k === 'timeline'))
+    .flatMap((k) => blocksForKey(k, b));
 
   if (frames.cols) {
     const [left, right] = frames.cols;
+    const dataBlocks = fitRigidTables(rawBlocks, right.w, right.h);
     if (bullets.length) out.push({ box: left, text: { content: bullets.join('\n'), pt: MIN_BODY_PT } });
     const colFrame: Box = { x: right.x, y: right.y, w: right.w, h: right.h };
     const boxes = stackY(right.y, dataBlocks.map((d) => ({ h: blockHeight(d, right.w) })), MIN_GAP, colFrame);
-    dataBlocks.forEach((d, i) => {
-      const avail = bottom - boxes[i].y;
-      if (avail < MIN_BLOCK_H) {
-        dropped.push(describe(d));
-        return;
-      }
-      out.push({ box: { ...boxes[i], h: Math.min(boxes[i].h, avail) }, ...d });
-    });
+    pushStackedBlocks(out, dropped, dataBlocks, boxes, bottom);
     return { blocks: out, dropped, notes, violations: [] };
   }
+
+  const dataBlocks = fitRigidTables(
+    rawBlocks,
+    body.w,
+    bodyAvail - (bullets.length || rawBlocks.some((d) => d.table == null) ? MIN_BLOCK_H + MIN_GAP : 0) - (tlShape ? TL_MIN_H + MIN_GAP : 0)
+  );
 
   let cursor = body.y;
   if (bullets.length) {
     const content = bullets.join('\n');
-    const h = Math.min(textHeight(content, body.w, MIN_BODY_PT), bottom - cursor);
-    out.push({ box: { x: body.x, y: cursor, w: body.w, h }, text: { content, pt: MIN_BODY_PT } });
-    cursor += h + 0.3;
+    const naturalH = textHeight(content, body.w, MIN_BODY_PT);
+    // T02166：同页带**刚性数据**（表格 / 时间线区）时先给它留位，否则要点吃光 body。
+    // 表格已由 fitRigidTables 按剩余高度收过行，这里要点取表格排完后的真实余量；
+    // 余量不足一个最小块时要点整块让位并如实留痕——留数据、不留套话。
+    const rigidUsed =
+      dataBlocks.filter((d) => d.table != null).reduce((s, d) => s + blockHeight(d, body.w) + MIN_GAP, 0) +
+      dataBlocks.filter((d) => d.table == null).reduce((s, d) => s + MIN_BLOCK_H + MIN_GAP, 0) +
+      (tlShape ? TL_MIN_H + MIN_GAP : 0);
+    const capH = bodyAvail - rigidUsed;
+    if (capH >= MIN_BLOCK_H) {
+      const h = Math.min(naturalH, capH);
+      out.push({ box: { x: body.x, y: cursor, w: body.w, h }, text: { content, pt: MIN_BODY_PT } });
+      if (h < naturalH - 1e-6) {
+        notes.push(`要点为表格让位压缩排版（自然高 ${naturalH.toFixed(2)}" → 实排 ${h.toFixed(2)}"，多余部分按 pptxgenjs 截字）`);
+      }
+      cursor += h + MIN_GAP;
+    } else {
+      notes.push(`要点为本页表格让位，未排入版面（剩余 ${capH.toFixed(2)}"，可拆分该页）`);
+    }
   }
 
   if (item.layout === 'timeline' && item.dataKeys.includes('timeline')) {
-    const reason = timelineDegradeReason(b);
-    const frame: Box = { x: body.x, y: cursor, w: body.w, h: bottom - cursor };
-    if (!reason && frame.h >= TL_MIN_H) {
-      const tl = timelineBlocks(b, frame);
-      out.push(...tl.blocks);
-      if (tl.undated) notes.push(`${tl.undated} 条计划缺起止日期，条形未绘制（起止日期补全后自动出现在时间线上）`);
-      if (tl.overflow) notes.push(`${tl.overflow} 条计划超出本页可排行数，已折成页脚提示`);
-      if (tl.mergedMilestones) notes.push(`${tl.mergedMilestones} 个里程碑与同日里程碑并成一枚菱形绘制（日期相同，逐个画会叠成一坨）`);
-      for (const k of item.dataKeys.filter((x) => x !== 'timeline')) dropped.push(...blocksForKey(k, b).map(describe));
-      return { blocks: out, dropped, notes, violations: tl.violations };
+    const pass = timelineShapePass(item, b, body, cursor, out);
+    if (pass.drawn) {
+      notes.push(...pass.notes);
+      dropped.push(...pass.dropped);
+      return { blocks: out, dropped, notes, violations: pass.violations };
     }
-    notes.push(`时间线回落列表版：${reason ?? `剩余高度 ${frame.h.toFixed(2)}" 排不下轴与 2 行条`}`);
+    notes.push(pass.note);
   }
 
-  const boxes = stackY(cursor, dataBlocks.map((d) => ({ h: blockHeight(d, body.w) })));
-  dataBlocks.forEach((d, i) => {
-    const avail = bottom - boxes[i].y;
-    if (avail < MIN_BLOCK_H) {
-      dropped.push(describe(d));
-      return;
-    }
-    out.push({ box: { ...boxes[i], h: Math.min(boxes[i].h, avail) }, ...d });
-  });
+  // 走到这里 = 时间线只能用列表版：把形状版排除掉的表格块补回来，并按剩余高度再收一次行
+  const stackBlocks = tlShape
+    ? fitRigidTables([...dataBlocks, ...blocksForKey('timeline', b)], body.w, bottom - cursor)
+    : dataBlocks;
+  const boxes = stackY(cursor, stackBlocks.map((d) => ({ h: blockHeight(d, body.w) })));
+  pushStackedBlocks(out, dropped, stackBlocks, boxes, bottom);
   return { blocks: out, dropped, notes, violations: [] };
 }
 
+/** 省略点名（给 warning 用的块类型 + 规模） */
 function describe(src: Omit<Block, 'box'>): string {
-  return src.chart ? `图表「${src.chart.name}」` : src.table ? `表格（${src.table.rows.length + 1} 行）` : src.shape ? `形状「${src.shape.kind}」` : '文本块';
+  if (src.chart) return `图表「${src.chart.name}」`;
+  if (src.table) return `表格（${src.table.rows.length + 1} 行）`;
+  if (src.shape) return `形状「${src.shape.kind}」`;
+  return '文本块';
+}
+
+/** 违规点名里的块类型前缀 */
+function blockKindLabel(blk: Block): string {
+  if (blk.table) return '表格';
+  if (blk.chart) return '图表';
+  if (blk.shape) return '形状';
+  return '文本';
+}
+
+/** 逐块越界点名（轴线既非内容盒也不占高度，不算它） */
+function blockBoundsIssues(blocks: Block[]): string[] {
+  const issues: string[] = [];
+  for (const blk of blocks) {
+    if (blk.shape?.tone === 'axis') continue;
+    const reason = assertInBounds(blk.box);
+    if (reason) issues.push(`${blockKindLabel(blk)}${reason}`);
+  }
+  return issues;
+}
+
+/** 参与重叠判定的块框：参照线（日期轴）排除在外——里程碑菱形按设计骑在轴上，硬算就是每页都「假重叠」 */
+function contentBoxes(blocks: Block[]): Box[] {
+  return blocks.filter((blk) => blk.shape?.tone !== 'axis').map((blk) => blk.box);
 }
 
 /** 整页断言：标题与各块在内容框内、彼此不重叠（门禁 2 + 5 在此消费） */
@@ -535,14 +806,8 @@ export function pageViolations(title: Box, titleText: string, blocks: Block[], t
   // 长标题排不进标题带是验收 7 点名的越界形态，必须在写盘前判出来
   const needH = textHeight(titleText, title.w, titlePt);
   if (needH > title.h + 1e-6) issues.push(`标题需 ${needH.toFixed(2)}" 高于标题带 ${title.h.toFixed(2)}"`);
-  for (const blk of blocks) {
-    // 轴线既非内容盒也不占高度（零高度参照线），越界与重叠两道都不算它
-    if (blk.shape?.tone === 'axis') continue;
-    const reason = assertInBounds(blk.box);
-    if (reason) issues.push(`${blk.table ? '表格' : blk.chart ? '图表' : blk.shape ? '形状' : '文本'}${reason}`);
-  }
-  // 参照线（日期轴）不计入重叠集：里程碑菱形按设计骑在轴上，硬算就是每页都「假重叠」
-  const overlaps = findOverlaps([title, ...blocks.filter((blk) => blk.shape?.tone !== 'axis').map((blk) => blk.box)]);
+  issues.push(...blockBoundsIssues(blocks));
+  const overlaps = findOverlaps([title, ...contentBoxes(blocks)]);
   if (overlaps.length) issues.push(`元素重叠 ${overlaps.length} 处`);
   return issues;
 }
@@ -562,11 +827,19 @@ function degradeToSafe(item: KickoffOutlineItem, blocks: Block[], fromBody: Box)
 
 // ---------- 原生对象写入（只用稳定特性，兼容 PowerPoint 2016+ / WPS） ----------
 
+/** 形状配色：按 tone 取调色板色值（hex 单源来自 kickoff-layout 的 PALETTE） */
+function shapeToneColor(tone: NonNullable<Block['shape']>['tone']): string {
+  // T02156：恒生品牌色系——计划条用品牌亮蓝，里程碑菱形与日期轴用品牌深蓝，
+  // 与模板背景的蓝色装饰同族；不再用报告系的靛蓝/警示红（那套色与品牌模板打架）
+  if (tone === 'milestone') return PALETTE.brandDeep;
+  if (tone === 'bar') return PALETTE.brandBright;
+  return PALETTE.brandDeep;
+}
+
 export function drawBlock(slide: any, block: Block): void {
   const geo = { x: +block.box.x.toFixed(3), y: +block.box.y.toFixed(3), w: +block.box.w.toFixed(3), h: +block.box.h.toFixed(3) };
   if (block.shape) {
-    const tone = block.shape.tone;
-    const color = tone === 'milestone' ? PALETTE.warn : tone === 'bar' ? PALETTE.accent : PALETTE.ink;
+    const color = shapeToneColor(block.shape.tone);
     if (block.shape.kind === 'line') {
       slide.addShape('line', { ...geo, line: { color, width: 1.5 } });
       return;
@@ -576,7 +849,8 @@ export function drawBlock(slide: any, block: Block): void {
   }
   if (block.table) {
     const rows = [
-      block.table.header.map((t) => ({ text: t, options: { bold: true, color: PALETTE.ink, fill: { color: PALETTE.headFill } } })),
+      // T02156：表头改品牌深底白字（恒生模板表格头样式），与浅蓝页面背景成「卡片」层次
+      block.table.header.map((t) => ({ text: t, options: { bold: true, color: PALETTE.onBrand, fill: { color: PALETTE.brandDeep } } })),
       ...block.table.rows.map((r, i) => r.map((t) => ({ text: t, options: { color: PALETTE.ink, fill: { color: i % 2 === 1 ? PALETTE.zebraFill : PALETTE.paper } } }))),
     ];
     slide.addTable(rows, { ...geo, fontSize: 10, fontFace: FONT.face, border: { type: 'solid', pt: 0.5, color: PALETTE.border }, valign: 'middle' });
@@ -585,13 +859,27 @@ export function drawBlock(slide: any, block: Block): void {
   if (block.chart) {
     slide.addChart(block.chart.type, [{ name: block.chart.name, labels: block.chart.labels, values: block.chart.values }], {
       ...geo,
-      chartColors: [PALETTE.accent, PALETTE.warn, PALETTE.headFill],
+      chartColors: [PALETTE.brandBright, PALETTE.brandDeep, PALETTE.headFill],
       showLegend: true,
       legendPos: 'r',
       showTitle: false,
       barDir: 'col',
       dataLabelFontSize: 9,
       showValue: block.chart.type === 'bar',
+      // T02156：图表文字此前后台默认 Arial + 纯黑，与正文微软雅黑/墨色「串行」——
+      // 轴/数据/图例的字体与颜色全部显式声明，图表才和页面同一个设计系统
+      catAxisLabelFontFace: FONT.face,
+      valAxisLabelFontFace: FONT.face,
+      dataLabelFontFace: FONT.face,
+      legendFontFace: FONT.face,
+      catAxisLabelColor: PALETTE.ink,
+      valAxisLabelColor: PALETTE.ink,
+      dataLabelColor: PALETTE.ink,
+      legendColor: PALETTE.ink,
+      // 白底绘图区：浅蓝页面背景上成「图表卡片」，网格线与轴线用边框灰不抢品牌色
+      plotArea: { fill: { color: PALETTE.paper } },
+      catAxisLineColor: PALETTE.border,
+      valAxisLineColor: PALETTE.border,
     });
     return;
   }
@@ -636,6 +924,164 @@ export interface KickoffBuildOptions {
  */
 const yieldToLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+/** 本模块对 pptxgenjs 实例的唯一消费点就是 `addSlide`（R1：适配层独占，不引第三方类型） */
+interface KickoffSlideHost {
+  /** T02156：`masterName` 选自定义背景版式（defineLayout 登记的恒生三背景） */
+  addSlide(opts?: { masterName?: string }): any;
+}
+
+/**
+ * 单页装配的公共入参（同源于 `buildKickoffPpt` 的逐页循环）。
+ * 字段名沿用循环里的现有变量名，入参对象只是将同源参数收拢，取值顺序与逐页副作用不变。
+ */
+interface PageAppendInput {
+  pptx: KickoffSlideHost;
+  bundle: KickoffBundle;
+  item: KickoffOutlineItem;
+  pageNo: number;
+  total: number;
+  sectionNo: number;
+  warnings: string[];
+  degradedPages: number[];
+}
+
+/** 整页断言 → 落版/降级的入参（与 `PageAppendInput` 同源，另带本页排版产物） */
+interface ResolvePageBoxesInput {
+  item: KickoffOutlineItem;
+  bullets: string[];
+  blocks: Block[];
+  frames: LayoutFrames;
+  issues: string[];
+  pageNo: number;
+  warnings: string[];
+  degradedPages: number[];
+}
+
+/** 断言通过 → 原样落版并做文本体检；不通过 → 整体换进安全版式并留痕（验收 7） */
+function resolvePageBoxes({
+  item,
+  bullets,
+  blocks,
+  frames,
+  issues,
+  pageNo,
+  warnings,
+  degradedPages,
+}: ResolvePageBoxesInput): { titleBox: Box; bodyBlocks: Block[] } {
+  if (!issues.length) {
+    const textIssues = checkPageText({ title: item.title, bullets }, frames.body.w);
+    if (textIssues.length) warnings.push(`第 ${pageNo} 页文本提示：${textIssues.join('；')}`);
+    return { titleBox: frames.title, bodyBlocks: blocks };
+  }
+  degradedPages.push(pageNo);
+  warnings.push(`第 ${pageNo} 页版式越界（${issues[0]}），已降级为「标题 + 正文」安全版式`);
+  const safe = safeFrames();
+  return { titleBox: safe.title, bodyBlocks: degradeToSafe(item, blocks, frames.body) };
+}
+
+/** 逐块写盘：第三方库（R1）个别元素写崩不该拖垮整份稿，跳该元素并如实点名 */
+function writePageBlocks(slide: any, blocks: Block[], pageNo: number, warnings: string[]): void {
+  for (const block of blocks) {
+    try {
+      drawBlock(slide, block);
+    } catch (e) {
+      warnings.push(`第 ${pageNo} 页有元素写入失败（${e instanceof Error ? e.message : String(e)}），已跳过`);
+    }
+  }
+}
+
+/** 单页装配：取数排版 → 整页断言 →（必要时）降级 → 标题/正文/脚注落成原生对象 */
+/**
+ * 章节页/结束页装配（T02156 恒生五页面角色）。
+ * 章节页：32pt 编号（01/02…按出现序）+ 28pt 章节标题，双双居中——编号悬在模板背景上部，
+ * 标题压在中部浅蓝色带上（模板 slide3/layout5 的同款几何）；不排 dataKeys（校验层已清空）。
+ * 结束页：致谢标题 + 一行「项目名 · 数据截至」，背景自带 THANKS 主视觉，页面只做口径标注。
+ * 两页都走同一套越界断言：标题排不下就降级「标题+正文」安全版式并留痕，不出坏页。
+ */
+function appendBrandPage({
+  pptx,
+  bundle,
+  item,
+  pageNo,
+  total,
+  sectionNo,
+  warnings,
+  degradedPages,
+}: PageAppendInput): void {
+  const isSection = item.layout === 'section';
+  const frames = framesFor(isSection ? 'section' : 'thanks', item.layout);
+  const titlePt = isSection ? 28 : 32;
+  const num = String(sectionNo).padStart(2, '0');
+  const blocks: Block[] = isSection
+    ? [{ box: frames.number!, text: { content: num, pt: 32, bold: true, align: 'center', color: PALETTE.brandDeep } }]
+    : [{ box: frames.body, text: { content: `${bundle.project.name} · 数据截至 ${bundle.dataAsOf}`, pt: MIN_BODY_PT, align: 'center' } }];
+  const issues = pageViolations(frames.title, item.title, blocks, titlePt);
+  let titleBox = frames.title;
+  let bodyBlocks = blocks;
+  if (issues.length) {
+    // 与内容页同一降级口径：换安全版式 + 留痕。章节号并进正文，不让编号在降级页里独活
+    degradedPages.push(pageNo);
+    warnings.push(`第 ${pageNo} 页版式越界（${issues[0]}），已降级为「标题 + 正文」安全版式`);
+    const safe = safeFrames();
+    titleBox = safe.title;
+    bodyBlocks = [{ box: safe.body, text: { content: isSection ? `${num} ${item.title}` : item.title, pt: MIN_BODY_PT, align: 'center' } }];
+  }
+
+  const slide = pptx.addSlide({ masterName: BG_LAYOUT_NAMES[bgKindOf(item.layout)] });
+  writePageBlocks(slide, [
+    { box: titleBox, text: { content: item.title, pt: titlePt, bold: true, align: 'center', color: PALETTE.brandDeep } },
+    ...bodyBlocks,
+  ], pageNo, warnings);
+  slide.addText(footerOf(item, bundle, pageNo, total), {
+    x: 0.5,
+    y: KICKOFF_LAYOUT_DEF.height - FOOTER_H - 0.08,
+    w: 9,
+    h: FOOTER_H,
+    fontSize: 9,
+    color: PALETTE.brandDeep,
+    align: 'right',
+    wrap: false,
+    fontFace: FONT.face,
+  });
+}
+
+function appendOutlinePage(input: PageAppendInput): void {
+  const { pptx, bundle, item, pageNo, total, warnings, degradedPages } = input;
+  if (item.layout === 'section' || item.layout === 'thanks') {
+    appendBrandPage(input);
+    return;
+  }
+  const bullets = sanitizeBullets(item.bullets, bundle, pageNo, warnings);
+  const frames = framesFor(layoutFamilyOf(item.layout), item.layout, item.layout === 'twoCol' ? TEXT_SPLIT : undefined);
+  const titlePt = item.layout === 'cover' ? 32 : 22;
+  const { blocks, dropped, notes, violations } = layoutBody(item, bundle, frames, bullets);
+  if (dropped.length) warnings.push(`第 ${pageNo} 页空间不足，已省略 ${dropped.join('、')}（内容未丢，页面上少排一块，可拆分该页）`);
+  for (const n of notes) warnings.push(`第 ${pageNo} 页：${n}`);
+  const issues = [...pageViolations(frames.title, item.title, blocks, titlePt), ...violations];
+  const { titleBox, bodyBlocks } = resolvePageBoxes({ item, bullets, blocks, frames, issues, pageNo, warnings, degradedPages });
+
+  const slide = pptx.addSlide({ masterName: BG_LAYOUT_NAMES[bgKindOf(item.layout)] });
+  const centered = item.layout === 'cover' || item.layout === 'toc';
+  const titleBlock: Block = {
+    box: titleBox,
+    // T02156：标题用品牌深蓝（恒生模板各级标题实色），不再用墨黑——与背景/表头同一色系
+    text: { content: item.title, pt: titlePt, bold: true, align: centered ? 'center' : 'left', color: PALETTE.brandDeep },
+  };
+  writePageBlocks(slide, [titleBlock, ...bodyBlocks], pageNo, warnings);
+  slide.addText(footerOf(item, bundle, pageNo, total), {
+    x: 0.5,
+    y: KICKOFF_LAYOUT_DEF.height - FOOTER_H - 0.08,
+    w: 9,
+    h: FOOTER_H,
+    fontSize: 9,
+    color: PALETTE.brandDeep,
+    align: 'right',
+    // 脚注只有一行预算：换行会顶出画布下缘，宁可让长口径向左溢出（右对齐，仍在画布内）
+    wrap: false,
+    fontFace: FONT.face,
+  });
+}
+
 export async function buildKickoffPpt(
   bundle: KickoffBundle,
   outline: KickoffOutlineItem[],
@@ -649,61 +1095,19 @@ export async function buildKickoffPpt(
   const pptx = new PptxGenJS();
   pptx.defineLayout(KICKOFF_LAYOUT_DEF); // 尺寸单源来自 T02098
   pptx.layout = KICKOFF_LAYOUT_DEF.name;
+  defineBrandBackgrounds(pptx); // T02156：恒生五背景登记为自定义版式（缺图不登记，回落默认版式）
   pptx.title = `${bundle.project.name} 项目启动会`;
   pptx.author = 'MTask';
   pptx.company = bundle.project.name;
 
   const degradedPages: number[] = [];
+  let sectionNo = 0; // T02156：章节页编号按出现序递增（01/02…），与页码解耦
   for (let idx = 0; idx < outline.length; idx++) {
     if (opts.signal?.aborted) throw new Error(KICKOFF_ABORT_MSG);
     const item = outline[idx];
     const pageNo = idx + 1;
-    const bullets = sanitizeBullets(item.bullets, bundle, pageNo, warnings);
-    const frames = framesFor(layoutFamilyOf(item.layout), item.layout, item.layout === 'twoCol' ? TEXT_SPLIT : undefined);
-    const titlePt = item.layout === 'cover' ? 32 : 22;
-    const { blocks, dropped, notes, violations } = layoutBody(item, bundle, frames, bullets);
-    if (dropped.length) warnings.push(`第 ${pageNo} 页空间不足，已省略 ${dropped.join('、')}（内容未丢，页面上少排一块，可拆分该页）`);
-    for (const n of notes) warnings.push(`第 ${pageNo} 页：${n}`);
-    const issues = [...pageViolations(frames.title, item.title, blocks, titlePt), ...violations];
-    let titleBox = frames.title;
-    let bodyBlocks = blocks;
-    if (issues.length) {
-      degradedPages.push(pageNo);
-      warnings.push(`第 ${pageNo} 页版式越界（${issues[0]}），已降级为「标题 + 正文」安全版式`);
-      const safe = safeFrames();
-      titleBox = safe.title;
-      bodyBlocks = degradeToSafe(item, blocks, frames.body);
-    } else {
-      const textIssues = checkPageText({ title: item.title, bullets }, frames.body.w);
-      if (textIssues.length) warnings.push(`第 ${pageNo} 页文本提示：${textIssues.join('；')}`);
-    }
-
-    const slide = pptx.addSlide();
-    const centered = item.layout === 'cover' || item.layout === 'toc';
-    const titleBlock: Block = {
-      box: titleBox,
-      text: { content: item.title, pt: titlePt, bold: true, align: centered ? 'center' : 'left' },
-    };
-    for (const block of [titleBlock, ...bodyBlocks]) {
-      try {
-        drawBlock(slide, block);
-      } catch (e) {
-        // 第三方库（R1）个别元素写崩不该拖垮整份稿：跳该元素并如实点名
-        warnings.push(`第 ${pageNo} 页有元素写入失败（${e instanceof Error ? e.message : String(e)}），已跳过`);
-      }
-    }
-    slide.addText(footerOf(item, bundle, pageNo, outline.length), {
-      x: 0.5,
-      y: KICKOFF_LAYOUT_DEF.height - FOOTER_H - 0.08,
-      w: 9,
-      h: FOOTER_H,
-      fontSize: 9,
-      color: PALETTE.ink,
-      align: 'right',
-      // 脚注只有一行预算：换行会顶出画布下缘，宁可让长口径向左溢出（右对齐，仍在画布内）
-      wrap: false,
-      fontFace: FONT.face,
-    });
+    if (item.layout === 'section') sectionNo += 1;
+    appendOutlinePage({ pptx, bundle, item, pageNo, total: outline.length, sectionNo, warnings, degradedPages });
     opts.onPage?.(pageNo, item);
     await yieldToLoop();
   }

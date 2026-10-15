@@ -64,6 +64,14 @@ function pct(n: number, d: number): number {
   return d === 0 ? 0 : Math.round((n / d) * 1000) / 10;
 }
 
+/** 安全字符串化：null/undefined 出空串，对象出 JSON 文本——避免 `String(obj)` 落到「[object Object]」把脏值带进 PPT */
+function asText(v: unknown): string {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return String(v);
+  return JSON.stringify(v) ?? '';
+}
+
 /** 与工作空间实际语义一致：路径存在且是目录才算「可引用素材」（同 `WorkspaceService.getProjectWorkspace` 的三条守卫） */
 function workspaceInfo(projectId: string): { path: string | null; reason: string } {
   const row = getDb()
@@ -110,15 +118,59 @@ function gatherInputs(projectId: string): KickoffInputs {
   };
 }
 
-function buildPreflight(g: KickoffInputs): PreflightResult {
+/** P3/P6 填充率与 P2 关联数的中间口径（buildPreflight 拆出的局部统计，避免主函数嵌套三元膨胀） */
+interface KickoffFillRates {
+  dated: number;
+  rated: number;
+  linkedReq: number;
+  dateRateOk: boolean;
+  workloadRateOk: boolean;
+}
+
+function fillRatesOf(g: KickoffInputs): KickoffFillRates {
   // P3 的日期口径要起止都有：时间线按 min(start)~max(end) 线性映射，缺任一端就画不出条
   const dated = g.plans.filter((p) => !!p.start_date?.trim() && !!p.end_date?.trim()).length;
   const rated = g.plans.filter((p) => p.complexity != null || (p.duration_days ?? 0) > 0).length;
   const linkedReq = g.reqs.filter((r) => r.linkedPlans.length > 0).length;
   const dateRateOk = g.plans.length > 0 && dated / g.plans.length >= MIN_DATE_FILL_RATE;
   const workloadRateOk = g.plans.length > 0 && rated / g.plans.length >= MIN_WORKLOAD_FILL_RATE;
+  return { dated, rated, linkedReq, dateRateOk, workloadRateOk };
+}
 
-  const items: PreflightItem[] = [
+function p3Status(planCount: number, dateRateOk: boolean): PreflightStatus {
+  if (planCount < MIN_PLANS) return 'fail';
+  return dateRateOk ? 'ok' : 'warn';
+}
+
+function p3Note(planCount: number, dated: number, dateRateOk: boolean): string {
+  if (planCount < MIN_PLANS) {
+    return `未归档计划仅 ${planCount} 条（<${MIN_PLANS}）——用 AI 工作台「从 PRD 导入项目计划」拆分 WBS`;
+  }
+  if (dateRateOk) {
+    return dated === planCount
+      ? `${planCount} 条计划均有起止日期，时间线页按真实排期绘制`
+      : `${dated}/${planCount} 条有起止日期（${pct(dated, planCount)}%，≥60%）——剩余 ${planCount - dated} 条无排期，时间线页画不出这些条`;
+  }
+  return `${planCount} 条计划中 ${planCount - dated} 条缺起止日期（填充率 ${pct(dated, planCount)}%，<60%）——时间线页将降级为列表，请在项目管理页补齐日期`;
+}
+
+function p5Note(total: number, cov: Coverage): string {
+  if (total === 0) return '本期未建用例——覆盖率页改写「测试策略按 PRD 验收标准描述」';
+  const uncoveredNote = cov.uncovered > 0 ? `（${cov.uncovered} 条需求未覆盖，页面上如实标注）` : '';
+  return `${total} 条用例，需求覆盖率 ${cov.rate}%${uncoveredNote}`;
+}
+
+function p6Note(rated: number, planCount: number, workloadRateOk: boolean): string {
+  if (planCount === 0) return '无计划行可校验——工作量页无数据源';
+  if (workloadRateOk) {
+    return `${rated}/${planCount} 条有计划数据（${pct(rated, planCount)}%），工作量页数据完整`;
+  }
+  return `仅 ${rated}/${planCount} 条有计划数据（${pct(rated, planCount)}%，<80%）——工作量页页脚标注「工期由排期推导，建议复核」`;
+}
+
+/** 硬缺失三项（P1/P2/P3，FR-2.4 阻塞判定口径） */
+function corePreflightItems(g: KickoffInputs, r: KickoffFillRates): PreflightItem[] {
+  return [
     {
       key: 'P1',
       label: 'PRD 文档',
@@ -138,7 +190,7 @@ function buildPreflight(g: KickoffInputs): PreflightResult {
       deepLink: 'plan?menu=matrix',
       status: g.reqs.length >= MIN_REQUIREMENTS ? 'ok' : 'fail',
       note: g.reqs.length >= MIN_REQUIREMENTS
-        ? `${g.reqs.length} 条需求，其中 ${linkedReq} 条已关联计划`
+        ? `${g.reqs.length} 条需求，其中 ${r.linkedReq} 条已关联计划`
         : `需求矩阵仅 ${g.reqs.length} 条（<${MIN_REQUIREMENTS} 视为未梳理）——矩阵面板可直接补录，或走「从 PRD 导入项目计划」批量提取`,
     },
     {
@@ -147,16 +199,15 @@ function buildPreflight(g: KickoffInputs): PreflightResult {
       count: g.plans.length,
       hard: true,
       deepLink: 'report?card=prd-import',
-      status: g.plans.length < MIN_PLANS ? 'fail' : dateRateOk ? 'ok' : 'warn',
-      note:
-        g.plans.length < MIN_PLANS
-          ? `未归档计划仅 ${g.plans.length} 条（<${MIN_PLANS}）——用 AI 工作台「从 PRD 导入项目计划」拆分 WBS`
-          : !dateRateOk
-            ? `${g.plans.length} 条计划中 ${g.plans.length - dated} 条缺起止日期（填充率 ${pct(dated, g.plans.length)}%，<60%）——时间线页将降级为列表，请在项目管理页补齐日期`
-            : dated === g.plans.length
-              ? `${g.plans.length} 条计划均有起止日期，时间线页按真实排期绘制`
-              : `${dated}/${g.plans.length} 条有起止日期（${pct(dated, g.plans.length)}%，≥60%）——剩余 ${g.plans.length - dated} 条无排期，时间线页画不出这些条`,
+      status: p3Status(g.plans.length, r.dateRateOk),
+      note: p3Note(g.plans.length, r.dated, r.dateRateOk),
     },
+  ];
+}
+
+/** 可降级五项（P4~P7，warn 级只留痕不阻塞） */
+function supportPreflightItems(g: KickoffInputs, r: KickoffFillRates): PreflightItem[] {
+  return [
     {
       key: 'P4',
       label: '里程碑',
@@ -175,24 +226,16 @@ function buildPreflight(g: KickoffInputs): PreflightResult {
       hard: false,
       deepLink: 'report?card=tc-gen',
       status: g.cases.total > 0 ? 'ok' : 'warn',
-      note:
-        g.cases.total === 0
-          ? '本期未建用例——覆盖率页改写「测试策略按 PRD 验收标准描述」'
-          : `${g.cases.total} 条用例，需求覆盖率 ${g.cov.rate}%${g.cov.uncovered > 0 ? `（${g.cov.uncovered} 条需求未覆盖，页面上如实标注）` : ''}`,
+      note: p5Note(g.cases.total, g.cov),
     },
     {
       key: 'P6',
       label: '复杂度/工期',
-      count: rated,
+      count: r.rated,
       hard: false,
       deepLink: 'plan',
-      status: workloadRateOk ? 'ok' : 'warn',
-      note:
-        g.plans.length === 0
-          ? '无计划行可校验——工作量页无数据源'
-          : workloadRateOk
-            ? `${rated}/${g.plans.length} 条有计划数据（${pct(rated, g.plans.length)}%），工作量页数据完整`
-            : `仅 ${rated}/${g.plans.length} 条有计划数据（${pct(rated, g.plans.length)}%，<80%）——工作量页页脚标注「工期由排期推导，建议复核」`,
+      status: r.workloadRateOk ? 'ok' : 'warn',
+      note: p6Note(r.rated, g.plans.length, r.workloadRateOk),
     },
     {
       key: 'P7',
@@ -204,6 +247,11 @@ function buildPreflight(g: KickoffInputs): PreflightResult {
       note: g.ws.path ? `${g.ws.path} 可访问，技术章节可引用其中素材` : `${g.ws.reason}——技术章节只写计划口径`,
     },
   ];
+}
+
+function buildPreflight(g: KickoffInputs): PreflightResult {
+  const rates = fillRatesOf(g);
+  const items: PreflightItem[] = [...corePreflightItems(g, rates), ...supportPreflightItems(g, rates)];
 
   const hardItems = items.filter((i) => i.hard);
   const missingHard = hardItems.filter((i) => i.status === 'fail').map((i) => i.key);
@@ -320,7 +368,9 @@ export function workloadOf(summary: EstimateSummary, plans: PlanTaskRow[], prefl
       complexity: dist,
       counted: summary.countedKeys.length,
       manDaysPerManMonth: summary.config.manDaysPerManMonth,
-      footer: `工作量来源：估算引擎（P50 ${summary.quote.p50ManDays} 人天 / P84 ${summary.quote.p84ManDays} 人天）`,
+      // T02156：P84 是期望×分布因子的派生量，原值直出会带 43.020620726159656 这种浮点尾巴，
+      // 脚注按 1 位小数呈现；P50 与 manDays.expected 同源（验收 6 的比对值），取整不改变其值
+      footer: `工作量来源：估算引擎（P50 ${Math.round(summary.quote.p50ManDays * 10) / 10} 人天 / P84 ${Math.round(summary.quote.p84ManDays * 10) / 10} 人天）`,
       noData: false,
       reviewTrace: null,
     };
@@ -329,6 +379,7 @@ export function workloadOf(summary: EstimateSummary, plans: PlanTaskRow[], prefl
   const execDays = execPlans.reduce((s, p) => s + (p.duration_days ?? 0), 0);
   // 0 人天是「没填」而不是「工作量是零」——出占位，别让读者拿 0 当结论
   const noData = execDays === 0;
+  const durationReviewTrace = p6Warn ? '本页工期由排期推导，未经估算复核' : null;
   return {
     source: 'duration',
     manDays: { expected: execDays, optimistic: null, pessimistic: null },
@@ -340,7 +391,7 @@ export function workloadOf(summary: EstimateSummary, plans: PlanTaskRow[], prefl
     manDaysPerManMonth: summary.config.manDaysPerManMonth,
     footer: noData ? '工作量数据待补充（无估算行、计划未填工期）' : '工期口径，非三点估算',
     noData,
-    reviewTrace: noData ? null : p6Warn ? '本页工期由排期推导，未经估算复核' : null,
+    reviewTrace: noData ? null : durationReviewTrace,
   };
 }
 
@@ -433,7 +484,7 @@ export function collectBundle(projectId: string): KickoffBundle {
   const newest = g.docs[0];
   const docId = newest ? String(newest.id) : '';
   const detail = docId ? PlanService.getPrdDoc(docId) : null;
-  const contentMd = detail ? String(detail.content_md ?? '') : '';
+  const contentMd = detail ? asText(detail.content_md) : '';
   const excerpt = docId ? trimKickoffPrd(contentMd, docId) : { text: '', truncated: false };
   const now = new Date();
   const pf = buildPreflight(g);
@@ -441,12 +492,12 @@ export function collectBundle(projectId: string): KickoffBundle {
     project: { id: g.projectId, name: g.projectName, workspacePath: g.ws.path ?? '' },
     prdDocs: g.docs.map((d) => ({
       id: String(d.id),
-      filename: String(d.filename ?? ''),
-      updatedAt: String(d.updated_at ?? d.created_at ?? ''),
+      filename: asText(d.filename),
+      updatedAt: asText(d.updated_at ?? d.created_at),
       contentChars: Number(d.content_chars ?? 0),
     })),
     prdDoc: docId
-      ? { id: docId, filename: String(detail?.filename ?? ''), updatedAt: String(detail?.updated_at ?? ''), contentMd }
+      ? { id: docId, filename: asText(detail?.filename), updatedAt: asText(detail?.updated_at), contentMd }
       : null,
     prdExcerpt: excerpt.text,
     prdTruncated: excerpt.truncated,
@@ -479,7 +530,7 @@ export const KICKOFF_SECTIONS = [
   '沟通管理',
   '附录',
 ] as const;
-export const KICKOFF_LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list'] as const;
+export const KICKOFF_LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list', 'section', 'thanks'] as const;
 export const KICKOFF_DATA_KEYS = [
   'prdDoc',
   'reqList',
@@ -532,10 +583,45 @@ function stripFence(content: string): string {
   return (fence ? fence[1] : s).trim();
 }
 
+/**
+ * T02166：AI 常见「合规语义 + 尾逗号」输出（`{"a":1,}` / `[1,2,]`），`JSON.parse` 直抛；
+ * `askJson` 温度 0 重试同一模型大概率再出同样尾巴，等于把可用的 AI 结果判成失败。
+ * 这里只剥**结构位**的尾逗号（跳过字符串字面量与转义），把「解析器太严」这一类
+ * 与数据无关的失败从降级路径里剔出去；真正的语义违规仍由 `wordingFromAi` 硬约束拦下。
+ */
+export function stripJsonTrailingCommas(raw: string): string {
+  let out = '';
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (inStr) {
+      out += c;
+      if (esc) { esc = false; continue; }
+      if (c === '\\') { esc = true; continue; }
+      if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; out += c; continue; }
+    if (c === ',') {
+      let j = i + 1;
+      while (j < raw.length && /\s/.test(raw[j])) j++;
+      if (raw[j] === ']' || raw[j] === '}') continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
+/** 剥围栏 + 修尾逗号后的安全解析；两处 askJson parse 回调共用 */
+export function parseAiJson(content: string): unknown {
+  return JSON.parse(stripJsonTrailingCommas(stripFence(content)));
+}
+
 function parseOutlinePayload(content: string): unknown {
   const body = stripFence(content);
   try {
-    const direct = JSON.parse(body) as unknown;
+    const direct = JSON.parse(stripJsonTrailingCommas(body)) as unknown;
     if (Array.isArray(direct)) return direct;
     if (direct && typeof direct === 'object' && Array.isArray((direct as { outline?: unknown }).outline)) {
       return (direct as { outline: unknown }).outline;
@@ -546,7 +632,80 @@ function parseOutlinePayload(content: string): unknown {
   const start = body.indexOf('[');
   const end = body.lastIndexOf(']');
   if (start < 0 || end <= start) throw new Error('未找到大纲 JSON 数组');
-  return JSON.parse(body.slice(start, end + 1)) as unknown;
+  return JSON.parse(stripJsonTrailingCommas(body.slice(start, end + 1))) as unknown;
+}
+
+/** dataKeys 逐项校验 + 去重（§3.2）：含未知项即硬失败，触发 askJson 自带重试 */
+function dedupeDataKeys(rawKeys: unknown[], at: string): KickoffDataKey[] {
+  const dataKeys: KickoffDataKey[] = [];
+  for (const k of rawKeys) {
+    const key = String(k);
+    if (!(KICKOFF_DATA_KEYS as readonly string[]).includes(key)) {
+      throw new Error(`${at} dataKeys 含未知项「${key}」（可用 ${KICKOFF_DATA_KEYS.join(' / ')}）`);
+    }
+    if (!dataKeys.includes(key as KickoffDataKey)) dataKeys.push(key as KickoffDataKey);
+  }
+  return dataKeys;
+}
+
+/** 单条 bullet 超字数是模型能自己改对的项——硬失败；超行数属版式收敛，调用侧截断 */
+function assertBulletChars(bullets: string[], at: string): void {
+  for (const b of bullets) {
+    if (b.length > BULLET_MAX_CHARS) throw new Error(`${at} 单条 bullet 超出 ${BULLET_MAX_CHARS} 字：${b.slice(0, 20)}…`);
+  }
+}
+
+/** 章节名归一：缺失补「正文」，不在标准清单只记 warning 保留原值（不把可用大纲打死） */
+function normalizeSection(rawSection: unknown, at: string, warnings: string[]): string {
+  const sectionRaw = asText(rawSection).trim();
+  if (!sectionRaw) {
+    warnings.push(`${at} 未给章节，已补「正文」`);
+    return '正文';
+  }
+  if (!(KICKOFF_SECTIONS as readonly string[]).includes(sectionRaw)) {
+    warnings.push(`${at} 章节「${sectionRaw}」不在标准清单，保留原值`);
+  }
+  return sectionRaw;
+}
+
+/** 标题归一：缺失硬失败，超长截断 + 记 warning（§3.2 版式收敛口径） */
+function normalizeTitle(rawTitle: unknown, at: string, warnings: string[]): string {
+  const title = asText(rawTitle).trim();
+  if (!title) throw new Error(`${at} 缺少标题`);
+  if (title.length > TITLE_MAX) {
+    warnings.push(`${at} 标题 ${title.length} 字超出 ${TITLE_MAX} 字，已截断`);
+    return title.slice(0, TITLE_MAX);
+  }
+  return title;
+}
+
+/** 单页 schema 校验与规范化（validateOutline 的逐页体，拆出来压低认知复杂度） */
+function validateOutlinePage(v: unknown, index: number, warnings: string[]): KickoffOutlineItem {
+  const at = `第 ${index + 1} 页`;
+  if (!v || typeof v !== 'object') throw new Error(`${at} 不是对象`);
+  const o = v as Record<string, unknown>;
+  const layout = asText(o.layout);
+  if (!(KICKOFF_LAYOUTS as readonly string[]).includes(layout)) {
+    throw new Error(`${at} layout「${layout || '空'}」不在枚举（可用 ${KICKOFF_LAYOUTS.join(' / ')}）`);
+  }
+  const rawKeys = Array.isArray(o.dataKeys) ? o.dataKeys : [];
+  const dataKeys = dedupeDataKeys(rawKeys, at);
+  const rawBullets = Array.isArray(o.bullets) ? o.bullets : [];
+  const bullets = rawBullets.map((b) => String(b ?? '').trim()).filter((b) => b.length > 0);
+  assertBulletChars(bullets, at);
+  if (bullets.length > BULLET_MAX_LINES) {
+    warnings.push(`${at} bullet ${bullets.length} 条超出 ${BULLET_MAX_LINES} 条，已截断`);
+    bullets.length = BULLET_MAX_LINES;
+  }
+  const section = normalizeSection(o.section, at, warnings);
+  const title = normalizeTitle(o.title, at, warnings);
+  // T02156：章节页/结束页是纯版式页（编号+标题/致谢），挂 dataKeys 只会被装配层忽略——
+  // 这里显式清空并记 warning，让面板能看见「这页本不带数」而不是静默吃掉
+  if ((layout === 'section' || layout === 'thanks') && dataKeys.length > 0) {
+    warnings.push(`${at} 是${layout === 'section' ? '章节页' : '结束页'}，dataKeys 已被清空（该页只渲染编号与标题）`);
+    dataKeys.length = 0;
+  }
+  return { section, title, bullets, dataKeys, layout: layout as KickoffLayout };
 }
 
 /**
@@ -560,44 +719,7 @@ export function validateOutline(raw: unknown): { outline: KickoffOutlineItem[]; 
     throw new Error(`页数 ${raw.length} 不在 ${PAGE_MIN}~${PAGE_MAX} 区间`);
   }
   const warnings: string[] = [];
-  const outline: KickoffOutlineItem[] = raw.map((v, i) => {
-    const at = `第 ${i + 1} 页`;
-    if (!v || typeof v !== 'object') throw new Error(`${at} 不是对象`);
-    const o = v as Record<string, unknown>;
-    const layout = String(o.layout ?? '');
-    if (!(KICKOFF_LAYOUTS as readonly string[]).includes(layout)) {
-      throw new Error(`${at} layout「${layout || '空'}」不在枚举（可用 ${KICKOFF_LAYOUTS.join(' / ')}）`);
-    }
-    const rawKeys = Array.isArray(o.dataKeys) ? o.dataKeys : [];
-    const dataKeys: KickoffDataKey[] = [];
-    for (const k of rawKeys) {
-      const key = String(k);
-      if (!(KICKOFF_DATA_KEYS as readonly string[]).includes(key)) {
-        throw new Error(`${at} dataKeys 含未知项「${key}」（可用 ${KICKOFF_DATA_KEYS.join(' / ')}）`);
-      }
-      if (!dataKeys.includes(key as KickoffDataKey)) dataKeys.push(key as KickoffDataKey);
-    }
-    const rawBullets = Array.isArray(o.bullets) ? o.bullets : [];
-    const bullets = rawBullets.map((b) => String(b ?? '').trim()).filter((b) => b.length > 0);
-    for (const b of bullets) {
-      if (b.length > BULLET_MAX_CHARS) throw new Error(`${at} 单条 bullet 超出 ${BULLET_MAX_CHARS} 字：${b.slice(0, 20)}…`);
-    }
-    if (bullets.length > BULLET_MAX_LINES) {
-      warnings.push(`${at} bullet ${bullets.length} 条超出 ${BULLET_MAX_LINES} 条，已截断`);
-      bullets.length = BULLET_MAX_LINES;
-    }
-    const sectionRaw = String(o.section ?? '').trim();
-    if (!sectionRaw) warnings.push(`${at} 未给章节，已补「正文」`);
-    else if (!(KICKOFF_SECTIONS as readonly string[]).includes(sectionRaw)) warnings.push(`${at} 章节「${sectionRaw}」不在标准清单，保留原值`);
-    const section = sectionRaw || '正文';
-    let title = String(o.title ?? '').trim();
-    if (!title) throw new Error(`${at} 缺少标题`);
-    if (title.length > TITLE_MAX) {
-      warnings.push(`${at} 标题 ${title.length} 字超出 ${TITLE_MAX} 字，已截断`);
-      title = title.slice(0, TITLE_MAX);
-    }
-    return { section, title, bullets, dataKeys, layout: layout as KickoffLayout };
-  });
+  const outline: KickoffOutlineItem[] = raw.map((v, i) => validateOutlinePage(v, i, warnings));
   // 必含两页（FR-4.5 时间线 / FR-4.6 工作量）——缺任一页等于稿子不可用，硬失败让模型补齐
   if (!outline.some((p) => p.dataKeys.includes('timeline'))) throw new Error(`大纲缺少时间线页（须有一页 dataKeys 含 'timeline'）`);
   if (!outline.some((p) => p.dataKeys.includes('workload'))) throw new Error(`大纲缺少工作量页（须有一页 dataKeys 含 'workload'）`);
@@ -613,11 +735,18 @@ const OUTLINE_SYSTEM = `你是项目启动会 PPT 的大纲编排器。只输出
 5. 每页 bullets ≤${BULLET_MAX_LINES} 条，每条 ≤${BULLET_MAX_CHARS} 字；
 6. 必须至少一页 dataKeys 含 "timeline"，至少一页 dataKeys 含 "workload"；
 7. 铁律：凡涉及条数、合计、覆盖率、日期等数字，一律只写 dataKeys 引用，由系统按库内真实数据填充——严禁自行写数字或改写数字；
-8. 只依据【资料齐备性】里标注为可用的数据源，未标注可用的不要引用（引用缺失源会导致页面空壳）。`;
+8. 只依据【资料齐备性】里标注为可用的数据源，未标注可用的不要引用（引用缺失源会导致页面空壳）；
+9. 页面角色（T02156 恒生模板五页面）：第 1 页 cover（封面），第 2 页 toc（目录）；
+   每个大章节开始可用一页 section 作章节页（只写章节名标题，dataKeys 置空，bullets 可空）；
+   最后一页用 thanks 作结束页（标题写致谢语，dataKeys 置空）；
+   其余内容页按数据形态选 twoCol/table/chart/timeline/list；
+10. T02166：bullets 必须引用【样例事实】里给过的具体名称（用「」包裹）；不得空写「各方配合」「相关任务有序推进」这类无指代套话。
+   名称只能照抄【样例事实】里出现过的，不得自造、不得改写；数字仍归 dataKeys 覆盖，bullets 不写数字。`;
 
 const OUTLINE_SYSTEM_RETRY = `只输出 JSON 数组（${PAGE_MIN}~${PAGE_MAX} 个元素），元素：{section,title,bullets,dataKeys,layout}。
 section∈[${KICKOFF_SECTIONS.join('|')}] layout∈[${KICKOFF_LAYOUTS.join('|')}] dataKeys⊆[${KICKOFF_DATA_KEYS.join('|')}]
-bullets 每条≤${BULLET_MAX_CHARS}字；必须有含 timeline 的一页和含 workload 的一页；数字一律用 dataKeys 表示，禁止编造数字。`;
+bullets 每条≤${BULLET_MAX_CHARS}字；必须有含 timeline 的一页和含 workload 的一页；数字一律用 dataKeys 表示，禁止编造数字。
+第 1 页 cover、第 2 页 toc、末页 thanks；章节分隔用 section（dataKeys 空）。`;
 
 /** 齐备性摘要 + 真实计数：喂给模型的是口径与可用源，数字仍由装配层覆盖（FR-3.4） */
 function outlineFacts(b: KickoffBundle): string {
@@ -629,20 +758,51 @@ function outlineFacts(b: KickoffBundle): string {
     const k = (r.priority ?? '').trim() || '未标注';
     priority.set(k, (priority.get(k) ?? 0) + 1);
   }
-  const dates = b.plans.map((p) => p.start_date).filter(Boolean).sort();
-  const ends = b.plans.map((p) => p.end_date).filter(Boolean).sort();
+  const dates = b.plans.map((p) => p.start_date).filter(Boolean).sort((x, y) => x.localeCompare(y));
+  const ends = b.plans.map((p) => p.end_date).filter(Boolean).sort((x, y) => x.localeCompare(y));
   const usable = b.preflight.items.filter((i) => i.status === 'ok').map((i) => i.key);
+  const priorityFacts = [...priority.entries()].map(([k, v]) => `${k} ${v}`).join('、') || '无';
+  const statusFacts = [...byStatus.entries()].map(([k, v]) => `${k} ${v}`).join('、') || '无';
+  const coverageFacts = b.coverage.total
+    ? `${b.coverage.rate}%（已覆盖 ${b.coverage.covered}/${b.coverage.total}）`
+    : '本期未建用例——覆盖率页改写测试策略口径，不出百分比结论';
+  const complexityFacts = b.workload.complexity.map((c) => `${c.level}:${c.count}`).join(' ');
+  const workloadTrace = b.workload.noData ? '（无估算行且计划未填工期，工作量页出占位，不要写成 0 人天）' : '';
+  const assigneeNames = b.assignees.slice(0, 8).map((a) => `${a.name} ${a.planCount}条`).join('、');
+  const assigneeDetail = b.assignees.length ? `（${assigneeNames}）` : '';
+  // T02166：样例事实——把真实的名称摊给模型（仅名称，数字仍归 dataKeys 覆盖）。
+  // 此前只喂汇总统计，模型只能编「各方配合到位」类套话；补 3 条需求/3 条进行中或阻塞计划
+  // 与里程碑名，让 bullets 有可指代的具体项，页面文本才和 dataKeys 表格形成呼应而不是空转。
+  const clip = (s: string, n = 18) => (s.length > n ? `${s.slice(0, n)}…` : s);
+  const reqSamples = b.requirements
+    .slice(0, 3)
+    .map((r) => `${r.req_no ?? ''} ${clip(r.title ?? '')}`.trim())
+    .filter((s) => s.length > 0);
+  const doingSamples = b.plans
+    .filter((p) => p.status === 'doing')
+    .slice(0, 3)
+    .map((p) => clip(p.title));
+  const blockedSamples = b.plans
+    .filter((p) => p.status === 'blocked')
+    .slice(0, 3)
+    .map((p) => clip(p.title));
+  const milestoneSamples = b.milestones.slice(0, 3).map((m) => `${clip(m.title)}（${m.end_date || KICKOFF_PLACEHOLDER}）`);
   return [
     `项目：${b.project.name}（数据截至 ${b.dataAsOf}）`,
     `资料齐备性：${status}`,
     `可用数据源（校验 ✓ 的项）：${usable.join('、') || '无'}`,
-    `需求 ${b.requirements.length} 条，优先级分布：${[...priority.entries()].map(([k, v]) => `${k} ${v}`).join('、') || '无'}`,
-    `计划 ${b.plans.length} 条（里程碑 ${b.milestones.length} 条），状态分布：${[...byStatus.entries()].map(([k, v]) => `${k} ${v}`).join('、') || '无'}`,
-    `排期范围：${dates[0] ?? '无'} ~ ${ends[ends.length - 1] ?? '无'}`,
-    `测试用例覆盖率：${b.coverage.total ? `${b.coverage.rate}%（已覆盖 ${b.coverage.covered}/${b.coverage.total}）` : '本期未建用例——覆盖率页改写测试策略口径，不出百分比结论'}`,
-    `工作量口径：${b.workload.source === 'estimate' ? '估算引擎' : '排期工期推导'}，参与行数 ${b.workload.counted}，复杂度分布 ${b.workload.complexity.map((c) => `${c.level}:${c.count}`).join(' ')}${b.workload.noData ? '（无估算行且计划未填工期，工作量页出占位，不要写成 0 人天）' : ''}`,
-    `承担人：${b.assignees.length} 人${b.assignees.length ? `（${b.assignees.slice(0, 8).map((a) => `${a.name} ${a.planCount}条`).join('、')}）` : ''}`,
+    `需求 ${b.requirements.length} 条，优先级分布：${priorityFacts}`,
+    `计划 ${b.plans.length} 条（里程碑 ${b.milestones.length} 条），状态分布：${statusFacts}`,
+    `排期范围：${dates[0] ?? '无'} ~ ${ends.at(-1) ?? '无'}`,
+    `测试用例覆盖率：${coverageFacts}`,
+    `工作量口径：${b.workload.source === 'estimate' ? '估算引擎' : '排期工期推导'}，参与行数 ${b.workload.counted}，复杂度分布 ${complexityFacts}${workloadTrace}`,
+    `承担人：${b.assignees.length} 人${assigneeDetail}`,
     `本地风险信号：${b.risks.length} 条（${b.risks.map((r) => r.item).join('；')}）`,
+    `样例事实（bullets 只能引用下列名称，不得杜撰；数字仍由 dataKeys 覆盖）：` +
+      `需求样例 ${reqSamples.length ? reqSamples.map((s) => `「${s}」`).join('、') : '无'}` +
+      `；进行中计划 ${doingSamples.length ? doingSamples.map((s) => `「${s}」`).join('、') : '无'}` +
+      `；阻塞计划 ${blockedSamples.length ? blockedSamples.map((s) => `「${s}」`).join('、') : '无'}` +
+      `；里程碑 ${milestoneSamples.length ? milestoneSamples.map((s) => `「${s}」`).join('、') : '无'}`,
     b.workspaceNote ?? '',
   ]
     .filter(Boolean)
@@ -812,7 +972,8 @@ export function assertOutlineShape(raw: unknown): KickoffOutlineItem[] {
 export function kickoffFileName(projectName: string, dataAsOf: string): string {
   // 洗到必然通过下载白名单（T02104）：项目名里的 `&`「（）」等字符若原样拼进文件名，
   // `report/ai-download` 会整体回退成 `MTask-ai-report.xlsx`——用户点 pptx 却拿到 xlsx 名，且无人报错。
-  return `${downloadSafeName(`项目启动会-${projectName}-${dataAsOf.replaceAll('-', '')}`, '项目启动会')}.pptx`;
+  const safeBase = `项目启动会-${projectName}-${dataAsOf.replaceAll('-', '')}`;
+  return `${downloadSafeName(safeBase, '项目启动会')}.pptx`;
 }
 
 function wordingUserPrompt(local: KickoffWordingLocal, projectName: string): string {
@@ -852,7 +1013,9 @@ async function polishWording(
       toolId,
       WORDING_SYSTEM,
       wordingUserPrompt(local, bundle.project.name),
-      (content) => wordingFromAi(local, JSON.parse(stripFence(content))),
+      // T02166：走带尾逗号修复的统一解析器——此前直接 JSON.parse(stripFence(...)) 会把
+      // 「AI 语义合规但输出尾逗号」判成解析失败，风险页永远走本地条目（本地条目措辞偏生硬）
+      (content) => wordingFromAi(local, parseAiJson(content)),
       // T02141：带上 signal——客户端断开时本轮不再等完整响应、也不重试（此前只在下一次 await 后收手，配额已烧）
       { temperature: 0, signal },
     );

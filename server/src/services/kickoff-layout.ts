@@ -18,8 +18,12 @@
 import {
   ACCENT_FONT,
   BORDER_ARGB,
+  BRAND_DEEP,
+  BRAND_BRIGHT,
+  BRAND_PALE,
   HEAD_FILL,
   INK_FONT,
+  ON_BRAND,
   PAPER_BG,
   WARN_FONT,
   ZEBRA_FILL,
@@ -170,7 +174,7 @@ function hexToRgb(hex: string): [number, number, number] | null {
   const h = hex.replace('#', '').trim();
   const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
   if (!/^[0-9a-fA-F]{6}$/.test(full)) return null;
-  return [parseInt(full.slice(0, 2), 16), parseInt(full.slice(2, 4), 16), parseInt(full.slice(4, 6), 16)];
+  return [Number.parseInt(full.slice(0, 2), 16), Number.parseInt(full.slice(2, 4), 16), Number.parseInt(full.slice(4, 6), 16)];
 }
 
 /** sRGB 通道线性化（WCAG 2.1 相对亮度定义） */
@@ -214,6 +218,11 @@ export const PALETTE = {
   border: BORDER_ARGB,
   warn: WARN_FONT,
   accent: ACCENT_FONT,
+  /** T02156 恒生品牌四色（与模板背景图同源，见 exportStyle 注释） */
+  brandDeep: BRAND_DEEP,
+  brandBright: BRAND_BRIGHT,
+  brandPale: BRAND_PALE,
+  onBrand: ON_BRAND,
 } as const;
 
 /** 自检：正文/提示/强调三种前景分别压过 4.5，返回不达标项（装配阶段调用，问题早暴露） */
@@ -224,6 +233,9 @@ export function auditPalette(): string[] {
     ['正文/斑马底', PALETTE.ink, PALETTE.zebraFill],
     ['提示红/纸面', PALETTE.warn, PALETTE.paper],
     ['强调蓝/纸面', PALETTE.accent, PALETTE.paper],
+    ['表头字/品牌底', PALETTE.onBrand, PALETTE.brandDeep],
+    ['品牌深/纸面', PALETTE.brandDeep, PALETTE.paper],
+    ['品牌亮/纸面', PALETTE.brandBright, PALETTE.paper],
   ];
   const bad: string[] = [];
   for (const [name, fg, bg] of pairs) {
@@ -233,24 +245,32 @@ export function auditPalette(): string[] {
   return bad;
 }
 
-// ---------- 版式族（PRD §5.3 三套内置版式） ----------
+// ---------- 版式族（PRD §5.3 三套内置版式 → T02156 恒生五页面角色扩为五套） ----------
 
-/** 三套物理版式：封面目录（cover/toc 共用）、图文双栏、数据页（表/图/时间线/列表共用框架） */
-export type LayoutFamily = 'cover' | 'twoCol' | 'data';
+/**
+ * 三套物理版式：封面目录（cover/toc 共用）、图文双栏、数据页（表/图/时间线/列表共用框架）。
+ * T02156：恒生模板五页面角色——封面/目录/标题页（章节页）/正文页/结束页，
+ * 对应 `section`（编号+标题，背景 bg-section）与 `thanks`（结束页，背景 bg-thanks）两套新族。
+ */
+export type LayoutFamily = 'cover' | 'twoCol' | 'data' | 'section' | 'thanks';
 
-/** 大纲 layout（7 值）→ 物理版式族（3 套）：一个大纲值落到哪套框架 */
+/** 大纲 layout（9 值）→ 物理版式族（5 套）：一个大纲值落到哪套框架 */
 export function layoutFamilyOf(layout: string): LayoutFamily {
   if (layout === 'cover' || layout === 'toc') return 'cover';
   if (layout === 'twoCol') return 'twoCol';
+  if (layout === 'section') return 'section';
+  if (layout === 'thanks') return 'thanks';
   return 'data';
 }
 
-/** 各版式族的框：标题带 + 正文区（双栏另有左右栏框） */
+/** 各版式族的框：标题带 + 正文区（双栏另有左右栏框；章节页另有编号框） */
 export interface LayoutFrames {
   family: LayoutFamily;
   title: Box;
   body: Box;
   cols?: [Box, Box];
+  /** 章节页编号框（T02156：模板 layout5 的 "01" 占位，居中于标题上方） */
+  number?: Box;
 }
 
 export const TEXT_SPLIT = 0.6;
@@ -259,22 +279,41 @@ export const TEXT_SPLIT = 0.6;
  * 版式框单源。`toc` 与 `cover` 同族不同框——封面标题居中占半屏，目录标题只占一行，
  * 靠 `sub` 区分而不是让调用方散写坐标（门禁 3「禁止散写 y」的另一半含义）。
  * `split` 只影响双栏的左右配比（缺省对分；启动会按 PRD §5.3 的图文 6:4 传 `TEXT_SPLIT`）。
+ * T02156：`section`/`thanks` 两套族照恒生模板 layout5/layout9 的占位几何——
+ * 章节页编号 32pt 居中于 y≈1.4、标题 28pt 居中于 y≈2.6（压在模板背景的中浅蓝色带上）；
+ * 数据/双栏族标题 x 右移 0.5" 给正文页背景左上的蓝色装饰（0~0.92"）让位，不再压字。
  */
 export function framesFor(family: LayoutFamily, sub?: string, split = 0.5): LayoutFrames {
   const frame = getContentFrame();
   const titleH = 0.7;
+  if (family === 'section') {
+    return {
+      family,
+      number: { x: frame.x + (frame.w - 2) / 2, y: 1.35, w: 2, h: 0.8 },
+      title: { x: frame.x, y: 2.55, w: frame.w, h: 0.65 },
+      body: { x: frame.x, y: 3.4, w: frame.w, h: frame.y + frame.h - 3.4 },
+    };
+  }
+  if (family === 'thanks') {
+    return {
+      family,
+      title: { x: frame.x, y: 1, w: frame.w, h: 0.8 },
+      body: { x: frame.x, y: 2, w: frame.w, h: 0.6 },
+    };
+  }
   if (family === 'cover') {
     const centered = sub === 'toc';
     const title: Box = centered
       ? { x: frame.x, y: frame.y, w: frame.w, h: titleH }
       : { x: frame.x, y: frame.y + frame.h * 0.28, w: frame.w, h: titleH * 1.6 };
+    // 目录页正文右移让开背景左上的浅蓝色带（模板目录条目排在白区，与编号列表同侧）
     const body: Box = centered
-      ? { x: frame.x, y: frame.y + titleH + MIN_GAP, w: frame.w, h: frame.h - titleH - MIN_GAP }
+      ? { x: 2.6, y: frame.y + titleH + MIN_GAP, w: frame.x + frame.w - 2.6, h: frame.h - titleH - MIN_GAP }
       : { x: frame.x, y: frame.y + frame.h * 0.28 + titleH * 1.6 + MIN_GAP, w: frame.w, h: frame.h * 0.34 };
     return { family, title, body };
   }
   if (family === 'twoCol') {
-    const title: Box = { x: frame.x, y: frame.y, w: frame.w, h: titleH };
+    const title: Box = { x: frame.x + 0.5, y: frame.y, w: frame.w - 0.5, h: titleH };
     const top = frame.y + titleH + MIN_GAP;
     const bodyH = frame.y + frame.h - top;
     const ratio = Math.min(0.85, Math.max(0.15, split));
@@ -283,7 +322,7 @@ export function framesFor(family: LayoutFamily, sub?: string, split = 0.5): Layo
     const right: Box = { x: frame.x + leftW + MIN_GAP, y: top, w: frame.w - leftW - MIN_GAP, h: bodyH };
     return { family, title, body: left, cols: [left, right] };
   }
-  const title: Box = { x: frame.x, y: frame.y, w: frame.w, h: titleH };
+  const title: Box = { x: frame.x + 0.5, y: frame.y, w: frame.w - 0.5, h: titleH };
   const body: Box = { x: frame.x, y: frame.y + titleH + MIN_GAP, w: frame.w, h: frame.h - titleH - MIN_GAP };
   return { family, title, body };
 }
@@ -363,18 +402,14 @@ export interface DateRange {
  * 无有效日期返回 `null`——调用方据此降级为 `sort_order` 列表版（P3 预警已在 preflight 给出）。
  */
 export function dateRangeOf(rows: Array<{ start_date?: string | null; end_date?: string | null }>): DateRange | null {
-  let min = Infinity;
-  let max = -Infinity;
-  for (const r of rows) {
-    for (const v of [r.start_date, r.end_date]) {
-      if (!v) continue;
-      const t = Date.parse(v);
-      if (!Number.isFinite(t)) continue;
-      if (t < min) min = t;
-      if (t > max) max = t;
-    }
-  }
-  if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+  // 先摊平为有限时间戳列表，避免双层循环 + 多重 if 抬高认知复杂度（口径与逐条比较等价）
+  const times = rows
+    .flatMap((r) => [r.start_date, r.end_date])
+    .map((v) => (v ? Date.parse(v) : Number.NaN))
+    .filter(Number.isFinite);
+  if (times.length === 0) return null;
+  const min = Math.min(...times);
+  const max = Math.max(...times);
   // 单日项目给 1 天宽度，避免除零
   return { min, max: max === min ? min + 86400000 : max };
 }
@@ -396,8 +431,8 @@ export function barBox(
   frame: Box,
   rowY: number
 ): Box | null {
-  const s = row.start_date ? Date.parse(row.start_date) : NaN;
-  const e = row.end_date ? Date.parse(row.end_date) : NaN;
+  const s = row.start_date ? Date.parse(row.start_date) : Number.NaN;
+  const e = row.end_date ? Date.parse(row.end_date) : Number.NaN;
   if (!Number.isFinite(s) || !Number.isFinite(e) || e < s) return null;
   const x1 = xAt(s, range, frame);
   const x2 = xAt(Math.max(e, s), range, frame);
