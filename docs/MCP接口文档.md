@@ -71,10 +71,16 @@ Headers: X-Access-Token: <访问令牌>   # 已配置令牌时必填，否则请
 | `mtask_list_tasks`         | 列任务      | projectId 或 projectName 二选一, archived(默认 false)                                                             | tasks(含 task\_no)           | readOnly |
 | `mtask_get_task`           | 查任务      | id 或 taskNo(二选一)                                                                                            | task(含 task\_no、images 元信息) | readOnly |
 | `mtask_update_task_result` | 同步任务处理结果 | id 或 taskNo(二选一), result(Markdown：根因分析/解决方案/结论)                                                             | task(含 handle\_result)      | <br />   |
+| `mtask_summarize_task`     | 生成任务全量总结摘要（T02168） | id 或 taskNo(二选一), toolId(可选，缺省回落「默认整理工具」)                       | task\_no、ai\_summary、ai\_summary\_at、task | <br />   |
 | `mtask_move_tasks`         | 批量移项目    | taskIds\[], projectId                                                                                       | -                           | <br />   |
 | `mtask_set_tasks_archived` | 归档/还原    | taskIds\[], archived                                                                                        | tasks                       | <br />   |
 
 > 入参与现有 REST 完全同构，服务层校验一致（不存在项目、空标题、外键冲突均返回错误）。
+>
+> `mtask_summarize_task`（T02168）与页面抽屉「AI 摘要 → 生成总结摘要」、REST `POST /api/tasks/:id/ai-summary` 复用同一条
+> `AIService.summarizeTask`，取数与提示词不另写一套。**时间口径**：`ai_summary_at` 由服务端在保存成功那一刻记录，模型不产出时间——
+> 外部 Agent 不要把时间戳写进摘要正文，否则界面与 Agent 各说一套时间。未配置默认整理工具且未显式传 `toolId` 时返回
+> 「未配置默认整理工具，请先在「模型管理」添加并选择一个整理工具」，不静默失败。
 
 ### 3.2 提示词管理
 

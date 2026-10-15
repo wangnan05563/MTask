@@ -12,6 +12,7 @@ import { getDb } from '../db/connection';
 import { getDefaultNoteProjectId } from '../services/AppSettings';
 import { readPoolStatus, poolFullHint } from '../services/ConcurrencyPool'; // T01066 后续：MCP 领取路径池满提示
 import { TaskService } from '../services/TaskService';
+import { AIService } from '../services/AIService'; // T02168：mtask_summarize_task 直接复用页面/REST 同一条摘要链
 import { TaskImageService } from '../services/TaskImageService'; // T00610：截图读取（供 AI 识别验证失败反馈截图）
 import { PlanService } from '../services/PlanService';
 import { parsePlanDeps } from '../util/planDeps'; // T01689：deps 解析单源复用（T01284 统一实现，MCP 层不再自造第二套口径）
@@ -1016,6 +1017,29 @@ ${a.result}`;
         }
       }
       return ok(`已同步处理结果到任务 ${task.task_no ?? target.id}${merged}`, { task, mergedTo: originNo || undefined });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // T02168：外部 Agent 侧触发「生成总结摘要」——与抽屉入口、REST POST /tasks/:id/ai-summary
+  // 复用同一条 AIService.summarizeTask（取数与提示词不另写一套）。
+  server.registerTool('mtask_summarize_task', {
+    title: '生成任务全量总结摘要',
+    description: '按 id 或任务编号 taskNo 触发一次任务全量总结摘要：把基本信息/正文/关联计划与需求/时间线事件/关联 PRD 原文交模型收拢成结论，'
+      + '成功后写入任务 ai_summary，并返回最新的 ai_summary 与 ai_summary_at。toolId 可选，不传则回落到配置里的「默认整理工具」，两者都没有时返回可读错误。'
+      + '【时间口径】ai_summary_at 由服务端在保存成功那一刻记录，模型不产出时间——不要把时间戳写进摘要正文，否则界面与 Agent 各说一套时间。'
+      + '【分工】本工具面向「把已有信息收拢成结论」；把任务描述改写成可执行提示词仍走页面/AI 梳理通道。',
+    inputSchema: {
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
+      toolId: z.string().optional().describe('可选：指定整理类工具 id；不传则回落「默认整理工具」'),
+    },
+  }, async (a) => {
+    try {
+      const target = resolveTask(a);
+      if (!target) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
+      const task = await AIService.summarizeTask(target.id, a.toolId);
+      return ok(`已生成任务 ${task.task_no ?? target.id} 的总结摘要（更新时间 ${task.ai_summary_at ?? '未记录'}）\n\n${task.ai_summary ?? ''}`,
+        { task_no: task.task_no, ai_summary: task.ai_summary, ai_summary_at: task.ai_summary_at, task });
     } catch (e) { return err((e as Error).message); }
   });
 
