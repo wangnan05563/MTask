@@ -270,9 +270,27 @@ if (!(await waitUp())) {
       !existsSync(TMP_DIR) || readdirSync(TMP_DIR).length === 0, existsSync(TMP_DIR) ? readdirSync(TMP_DIR) : 'no tmp dir');
   }
   const PANEL = readFileSync(join(ROOT, 'web', 'src', 'pages', 'KickoffPptPanel.tsx'), 'utf8');
-  ok('N-09 面板「生成大纲」禁用与 blocked 同源（验收 2 的按钮不可用只有一个真值来源）',
-    /disabled=\{[^}]*blocked[^}]*\}/.test(PANEL) && /canGenerate = [\s\S]{0,200}!blocked/.test(PANEL),
-    (PANEL.match(/const canGenerate = .*/) ?? [''])[0]);
+  /**
+   * T02202：判据跟「语义同源」不跟 JSX 字面。旧写法要求 JSX 里出现 `disabled={…blocked…}`，
+   * 而 `66eb5cd` 的等价重构把两个按钮改成吃派生值（`!canGenerate` / `genDisabled`），断言遂恒假
+   * ——那是门失效而不是功能回归，但验收 2「按钮不可用只有一个真值来源」也因此失去保护。
+   * 现按完整链路各查一刀：blocked 唯一取值源 → 两个派生表达式各含 blocked → 面板里所有
+   * 「发起生成」按钮的 disabled 都必须是这两个派生名之一（属性顺序无关，新增入口绕过同源即点名）。
+   */
+  const genBtnTags = [...PANEL.matchAll(/<button\b[^>]*>/g)]
+    .map((m) => m[0])
+    .filter((t) => /onClick=\{(?:onGenOutline|onGenerate)\}/.test(t));
+  ok('N-09 两个生成入口的禁用都派生自 preflight 的 blocked（真值来源唯一；跟语义不跟字面）',
+    /const blocked = pre\?\.blocked \?\? false/.test(PANEL) &&
+      /const canGenerate = [^\n]*&& !blocked;/.test(PANEL) &&
+      /genDisabled=\{[^}]*\|\| blocked\}/.test(PANEL) &&
+      genBtnTags.length === 2 &&
+      genBtnTags.every((t) => /disabled=\{(?:!canGenerate|genDisabled)\}/.test(t)),
+    {
+      btns: genBtnTags.map((t) => (/disabled=\{([^}]*)\}/.exec(t)?.[1] ?? '（该按钮无 disabled）')),
+      canGenerate: (PANEL.match(/const canGenerate = .*/) ?? [''])[0],
+      genDisabled: (PANEL.match(/genDisabled=\{[^}]*\}/) ?? [''])[0],
+    });
 
   // ---------------- D 组：验收 7 越界长标题 → 真链路降级 ----------------
   const PID = noCaseProject?.id ?? '';
