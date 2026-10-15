@@ -16,7 +16,7 @@
  *  3. **数字只从 `layout.summary` 来**（同 §11.1 E6 红线 2）：本文件不重算 E、不重算人月换算，
  *     连「÷ 每人月工天标准」这句话里的除数都取 `layout.input.config.manDaysPerManMonth`，不写死 20.83。
  */
-import { newPdfDoc, renderMdPdf, drawBarChart } from './prdExport';
+import { newPdfDoc, renderMdPdf, drawBarChart, drawParetoChart, drawTornadoChart } from './prdExport';
 import {
   TEMPLATE_COEF_LABELS,
   TEMPLATE_PHASE_LABELS,
@@ -220,15 +220,76 @@ export function buildEstimateReportMd(layout: EstimateLayout): string {
   return lines.join('\n');
 }
 
+/**
+ * 图表数据（T02155 图表补全）：与面板 E11/E14 同一口径，取数只从 `layout.summary` 来。
+ *  - 帕累托：按行 E 降序、柱高按同批最大 E 归一、累计占比基数取全批之和；里程碑行不进图。
+ *  - 龙卷风：按 σ 降序、条长按同批最大 σ 归一；σ 属内部依据，客户版不出此图（§6.2 脱敏四项之一）。
+ * 页面上限：帕累托 12 柱、龙卷风 10 条——再密就读不出来了，且图必须整块落在一页内。
+ */
+const PARETO_TOP = 12;
+const TORNADO_TOP = 10;
+
+interface ChartData {
+  phases: Array<{ label: string; value: number }>;
+  phasePct: Array<{ label: string; value: number }>;
+  pareto: Array<{ label: string; value: number; cumPct: number }>;
+  tornado: Array<{ label: string; sigma: number; pct: number }>;
+}
+
+/** 行标题取计划标题，压到 16 字以内（图上标签位宽有限，长标题会挤成一团） */
+function shortLabel(title: string): string {
+  const s = (title || '').replaceAll(/\s+/g, ' ').trim();
+  return s.length <= 16 ? s : `${s.slice(0, 15)}…`;
+}
+
+function buildChartData(layout: EstimateLayout): ChartData {
+  const { summary } = layout;
+  const phases = summary.phases.filter((p) => p.rowCount > 0);
+  const titleByKey = new Map(layout.input.rows.map((r) => [r.planId, r.title]));
+  const milestoneIds = new Set(layout.input.rows.filter((r) => r.planKind === 'milestone').map((r) => r.planId));
+  const valid = summary.rowRatios
+    .filter((r) => !milestoneIds.has(r.key) && r.expected > 0)
+    .sort((a, b) => b.expected - a.expected);
+  const totalE = valid.reduce((s, r) => s + r.expected, 0);
+  let cum = 0;
+  const pareto = valid.slice(0, PARETO_TOP).map((r) => {
+    cum += r.expected;
+    return { label: shortLabel(titleByKey.get(r.key) ?? r.key), value: r.expected, cumPct: totalE > 0 ? (cum / totalE) * 100 : 0 };
+  });
+  const sig = summary.rowRatios
+    .filter((r) => !milestoneIds.has(r.key) && r.sigma > 0)
+    .sort((a, b) => b.sigma - a.sigma)
+    .slice(0, TORNADO_TOP);
+  const maxS = Math.max(...sig.map((r) => r.sigma), 1e-9);
+  const tornado = sig.map((r) => ({
+    label: shortLabel(titleByKey.get(r.key) ?? r.key),
+    sigma: r.sigma,
+    pct: (r.sigma / maxS) * 100,
+  }));
+  return {
+    phases: phases.map((p) => ({ label: phaseLabel(p.phase), value: p.expected })),
+    phasePct: phases.map((p) => ({ label: phaseLabel(p.phase), value: p.ratio * 100 })),
+    pareto,
+    tornado,
+  };
+}
+
 /** Markdown 中间文档 → PDF 字节；在 MD 渲染后再追加图表（T02155 图表补全） */
 export async function buildEstimatePdf(layout: EstimateLayout, md = buildEstimateReportMd(layout)): Promise<Buffer> {
+  const client = layout.input.audience === 'client';
   const { doc, done, finish } = await newPdfDoc(estimatePdfTitle(layout));
   renderMdPdf(doc, md);
-  // 图表补全：取有明细的阶段，绘制「各阶段最终估算值（人天）」与「各阶段占比（%）」两张柱状图
-  const phases = layout.summary.phases.filter((p) => p.rowCount > 0);
-  if (phases.length > 0) {
-    drawBarChart(doc, '各阶段最终估算值（人天）', phases.map((p) => ({ label: phaseLabel(p.phase), value: p.expected })));
-    drawBarChart(doc, '各阶段占比（%）', phases.map((p) => ({ label: phaseLabel(p.phase), value: p.ratio * 100 })));
+  const c = buildChartData(layout);
+  if (c.phases.length > 0) {
+    drawBarChart(doc, '各阶段最终估算值（人天）', c.phases);
+    drawBarChart(doc, '各阶段占比（%）', c.phasePct);
+  }
+  if (c.pareto.length > 0) {
+    drawParetoChart(doc, `帕累托（按行最终估算值降序 · 累计占比 · 前 ${c.pareto.length} 行）`, c.pareto);
+  }
+  // 客户版不含 σ（§6.2）：龙卷风图整体不画，连标题文字也不进文本层
+  if (!client && c.tornado.length > 0) {
+    drawTornadoChart(doc, `龙卷风（敏感性 σ 降序 · 人天 · 前 ${c.tornado.length} 行）`, c.tornado);
   }
   doc.end();
   await done;

@@ -12,6 +12,9 @@ import { DOCX_HEAD_SHADING, paintDataRow, paintHeaderRow } from '../util/exportS
 /** 与报表构建器同口径的中文字体（Windows 环境下用于 PDF 渲染） */
 const PDF_FONT = 'C:/Windows/Fonts/simhei.ttf';
 
+/** 图表标题占位高度（12pt 字号 + 行距）：整块换页判定按「标题 + 图体 + 轴标签」总高算 */
+const TITLE_H = 18;
+
 /** 去除 Markdown 行内标记（加粗/行内代码/链接），保留可读文字 */
 function plainInline(text: string): string {
   return text
@@ -165,7 +168,11 @@ function computeColWidths(doc: PDFDoc, head: string[], body: string[][], pageWid
   });
   const sum = natural.reduce((a, b) => a + b, 0) || 1;
   const scale = pageWidth / sum;
-  return natural.map((w) => Math.max(28, w * scale));
+  const clamped = natural.map((w) => Math.max(28, w * scale));
+  // 28pt 下限会把窄列顶宽：直接返回会让各列之和超过页宽，最后一列画到页外（横向截断）。
+  // 故按实际和再归一一次，保证总宽恒等于可用页宽。
+  const total = clamped.reduce((a, b) => a + b, 0);
+  return clamped.map((w) => (w * pageWidth) / total);
 }
 
 /**
@@ -212,24 +219,34 @@ function drawTable(doc: PDFDoc, head: string[], body: string[][]): void {
 }
 
 /**
- * 简单柱状图（T02155 图表补全）：items.value 映射为柱高，柱顶标数值、柱底标类别，
- * 自动处理页面换页。供估算 PDF 绘制「各阶段人天 / 占比」等数据图。
+ * 图表整块换页判定（T02155 截断修复的根因处）：pdfkit 的 `rect/moveTo/lineTo` 是绝对坐标绘制，
+ * 越过页底**不会**自动分页，只有 `text()` 会——于是柱体被页底裁掉、数值标签却跑到下一页，
+ * 出现「一根柱子 + 下一页孤零零一个数」。图表必须先按「标题 + 图体 + 轴标签」总高判定留位。
+ */
+function ensureChartSpace(doc: PDFDoc, need: number): void {
+  const bottom = doc.page.height - doc.page.margins.bottom;
+  if (doc.y + need > bottom) doc.addPage();
+  doc.x = doc.page.margins.left;
+}
+
+/**
+ * 简单柱状图（T02155 图表补全）：items.value 映射为柱高，柱顶标数值、柱底标类别。
+ * 供估算 PDF 绘制「各阶段人天 / 占比」等数据图。
  */
 function drawBarChartImpl(doc: PDFDoc, title: string, items: Array<{ label: string; value: number }>): void {
-  const bottom = doc.page.height - doc.page.margins.bottom;
   const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-  doc.x = doc.page.margins.left;
-  if (doc.y + 24 > bottom) doc.addPage();
+  const chartH = 150;
+  const labelH = 30;
+  ensureChartSpace(doc, TITLE_H + chartH + labelH);
   doc.fontSize(12).fillColor('#08409C').text(title);
   doc.moveDown(0.2);
-  const chartH = 150;
   const baseY = doc.y + chartH;
   const n = items.length;
   const gap = 18;
   const barW = (pageWidth - gap * (n + 1)) / n;
   const max = Math.max(...items.map((i) => i.value), 1e-6);
-  doc.moveTo(doc.x, baseY).lineTo(doc.x + pageWidth, baseY).stroke();
-  let x = doc.x + gap;
+  doc.moveTo(doc.page.margins.left, baseY).lineTo(doc.page.margins.left + pageWidth, baseY).stroke();
+  let x = doc.page.margins.left + gap;
   for (const it of items) {
     const h = (it.value / max) * (chartH - 18);
     const yTop = baseY - h;
@@ -238,8 +255,91 @@ function drawBarChartImpl(doc: PDFDoc, title: string, items: Array<{ label: stri
     doc.fontSize(8).fillColor('#444444').text(it.label, x, baseY + 4, { width: barW, align: 'center', height: 24 });
     x += barW + gap;
   }
-  doc.y = baseY + 4 + 28;
+  doc.y = baseY + labelH;
   doc.x = doc.page.margins.left;
+}
+
+/**
+ * 帕累托图（E11，T02155 补全）：柱=单行 E（按同批最大 E 归一，行间可比），折线=累计占比
+ * （基数取全批之和，与面板 `paretoGeometries` 同一口径），并画 80% 参考线。
+ * 行多时只画调用方传入的前 N 行（标题已按页宽截断），累计折线仍覆盖到页尾。
+ */
+export function drawParetoChart(
+  doc: PDFDoc,
+  title: string,
+  items: Array<{ label: string; value: number; cumPct: number }>,
+): void {
+  const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const chartH = 150;
+  const labelH = 34;
+  ensureChartSpace(doc, TITLE_H + chartH + labelH);
+  doc.fontSize(12).fillColor('#08409C').text(title);
+  doc.moveDown(0.2);
+  const left = doc.page.margins.left;
+  const baseY = doc.y + chartH;
+  const n = items.length;
+  const gap = 8;
+  const barW = (pageWidth - gap * (n + 1)) / n;
+  const maxE = Math.max(...items.map((i) => i.value), 1e-6);
+  doc.moveTo(left, baseY).lineTo(left + pageWidth, baseY).stroke();
+  // 80% 累计参考线（虚线）：帕累托的读图锚点，没有它就只剩一串柱子
+  const y80 = baseY - 0.8 * chartH;
+  doc.lineWidth(0.6).dash(3, { space: 3 })
+    .moveTo(left, y80).lineTo(left + pageWidth, y80).stroke()
+    .undash().lineWidth(1);
+  let x = left + gap;
+  let prev: [number, number] | null = null;
+  for (const it of items) {
+    const h = (it.value / maxE) * (chartH - 18);
+    doc.rect(x, baseY - h, barW, h).fill('#9CC3F5');
+    const cx = x + barW / 2;
+    const cy = baseY - (Math.min(100, Math.max(0, it.cumPct)) / 100) * chartH;
+    if (prev) doc.strokeColor('#08409C').moveTo(prev[0], prev[1]).lineTo(cx, cy).stroke();
+    doc.circle(cx, cy, 2).fill('#08409C');
+    doc.fontSize(7).fillColor('#08409C').text(`${Math.round(it.cumPct)}%`, cx - barW / 2, cy - 12, { width: barW, align: 'center' });
+    doc.fontSize(7).fillColor('#444444').text(it.label, x, baseY + 4, { width: barW, align: 'center', height: 28, ellipsis: true });
+    prev = [cx, cy];
+    x += barW + gap;
+  }
+  doc.fontSize(8).fillColor('#666666').text('柱=单行最终估算值（同批最大归一） · 折线=累计占比 · 虚线=80%', left, baseY + labelH - 4);
+  doc.y = baseY + labelH + 10;
+  doc.x = left;
+}
+
+/**
+ * 龙卷风图（E14 敏感性，T02155 补全）：横向条按 σ 降序，条长 = σ ÷ 同批最大 σ，条尾标 σ 值。
+ * 与面板 `tornadoGeometries` 同口径（σ 唯一来源是引擎逐行 sigma）。σ 属内部依据，
+ * **客户版不得调用**（§6.2 四项无条件脱敏之一）。
+ */
+export function drawTornadoChart(
+  doc: PDFDoc,
+  title: string,
+  items: Array<{ label: string; sigma: number; pct: number }>,
+): void {
+  const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const labelW = 130;
+  const rowH = 16;
+  const chartH = items.length * rowH + 14;
+  ensureChartSpace(doc, TITLE_H + chartH + 14);
+  const left = doc.page.margins.left;
+  doc.fontSize(12).fillColor('#08409C').text(title);
+  doc.moveDown(0.2);
+  let y = doc.y + 4;
+  const barMax = pageWidth - labelW - 46;
+  for (const it of items) {
+    doc.fontSize(8).fillColor('#444444').text(it.label, left, y + 2, { width: labelW - 6, ellipsis: true });
+    const w = Math.max(1, (Math.min(100, Math.max(0, it.pct)) / 100) * barMax);
+    doc.rect(left + labelW, y, w, rowH - 6).fill('#0059E9');
+    doc.fontSize(8).fillColor('#222222').text(numSigma(it.sigma), left + labelW + w + 4, y + 2, { width: 42 });
+    y += rowH;
+  }
+  doc.y = y + 6;
+  doc.x = left;
+}
+
+/** σ 读数：保留两位并去尾零，0.50 → 0.5 */
+function numSigma(v: number): string {
+  return String(Math.round(v * 100) / 100);
 }
 
 /** Markdown → PDF 块渲染（标题/列表/引用/段落 + 真实表格），PRD 与估算 PDF 共用 */

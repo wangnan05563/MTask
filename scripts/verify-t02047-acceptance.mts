@@ -378,8 +378,12 @@ group('S 组 源码守卫：§9 安全 / 可维护、§12-R4 字体、R6 会话�
     filesWith(`'estimate.coef.collaboration'`).map(rel).join() === 'server/src/services/estimate-engine.ts',
     filesWith(`'estimate.coef.collaboration'`).map(rel));
   const PDF_CODE = stripComments(PDF_SRC);
-  ok('S-06 §12-R4·估算 PDF 复用 `prdExport.buildPrdPdf` 渲染链，代码里不出现第二套字体加载（裁决 D4 的落点）',
-    /buildPrdPdf/.test(PDF_CODE) && !/simhei|Fonts[\\/]\/|registerFont/.test(PDF_CODE),
+  // T02155：估算 PDF 要「正文渲染完再逐张画图」，整件封装的 buildPrdPdf 表达不了这个时序，
+  // 改为复用同一条链的下层出口（newPdfDoc 建 doc + renderMdPdf 渲正文，字体守卫仍只在 prdExport 里）。
+  // 门禁意图不变（§12-R4 / 裁决 D4：不开第二套字体加载），只是把「链」的名字改成实际调用的出口。
+  ok('S-06 §12-R4·估算 PDF 复用 `prdExport` 渲染链（buildPrdPdf 或 newPdfDoc+renderMdPdf），代码里不出现第二套字体加载（裁决 D4 的落点）',
+    /buildPrdPdf|newPdfDoc/.test(PDF_CODE) && /renderMdPdf/.test(PDF_CODE)
+    && !/simhei|Fonts[\\/]\/|registerFont/.test(PDF_CODE),
     PDF_CODE.match(/font[^\n]{0,80}/gi)?.slice(0, 3));
   ok('S-06b §12-R4·字体守卫在渲染链里且是「win32 + existsSync」双条件（非 Windows 不崩，PDF 定位为预览）',
     /existsSync/.test(PRD_EXPORT_SRC) && /simhei/i.test(PRD_EXPORT_SRC)
