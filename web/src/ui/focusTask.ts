@@ -22,6 +22,22 @@ function navigateToTasks(): void {
   globalThis.dispatchEvent(new CustomEvent('mtaskNavigate', { detail: { tab: 'tasks' } }));
 }
 
+/**
+ * T02196：按「计划行 id」定位到项目管理 WBS 视图的对应节点（任务标题旁「计划/里程碑」徽标）。
+ *
+ * 与 `focusTaskByNo` 同构但更轻：徽标点击发生在任务页（PlanPage 必然未挂载，页面按 tab 条件挂载），
+ * 因此只写会话键 + 切页即可——计划页挂载时读键接管，无需事件通道。
+ * 键消费后即清（PlanPage 侧），避免下次进入计划页重复定位。
+ * 项目 id 一并下发：目标计划行属于非当前项目时，列表根本不含该行。
+ */
+export function focusPlanNode(planId: string | null | undefined, projectId: string | null | undefined): boolean {
+  if (!planId) return false;
+  setSessionState('plan.locateNodeId', planId);
+  if (projectId) setSessionState('plan.projectId', projectId);
+  globalThis.dispatchEvent(new CustomEvent('mtaskNavigate', { detail: { tab: 'plan' } }));
+  return true;
+}
+
 /** 解析后需要落地的最小任务信息：直接用完整 Task 视图（by-no 接口本就返回全量，无需另造窄类型） */
 
 /**

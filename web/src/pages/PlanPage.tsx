@@ -926,6 +926,7 @@ function PlanGanttRow({ p, i, plans, seqs, isMilestone, inner, innerCount, inner
 }) {
   return (
     <tr
+      data-plan-id={p.id}
       draggable
       onDragStart={() => setDragId(p.id)}
       onDragEnd={() => { setDragId(''); setOverId(''); }}
@@ -1340,6 +1341,9 @@ export function PlanPage() {
   // 两者不新建第三套筛选状态，分别复用 `tc.reqFilter` 与矩阵行高亮。
   const [tcFocusReqId, setTcFocusReqId] = useSessionState<string>('plan.tcFocusReqId', '');
   const [matrixLocateReqId, setMatrixLocateReqId] = useSessionState<string>('plan.matrixLocateReqId', '');
+  // T02196：任务徽标「计划/里程碑」点击带来的定位意图（值=plan_tasks 行 id）——与会话键同机制，
+  // 本页按 tab 条件挂载，未挂载时由挂载读取、挂载后由本 effect 消费即清。
+  const [locateNodeId, setLocateNodeId] = useSessionState<string>('plan.locateNodeId', '');
   // T01486 A4：下钻序号（不入会话：它只是「刚刚点了一下」这种瞬时信号，跨刷新保持它反而会让面板重复应用筛选）
   const [tcDrillSeq, setTcDrillSeq] = useState(0);
 
@@ -1419,6 +1423,38 @@ export function PlanPage() {
   }, [projectId]);
   useEffect(() => { reload(); }, [reload]);
   useEffect(() => { void api.get<Array<{ date: string; name: string; kind: string }>>('/plans/holidays').then(setHolidays).catch(() => undefined); }, []);
+
+  // T02196：按「计划行 id」定位来源节点并高亮（任务标题旁「计划/里程碑」徽标点击）。
+  // 口径：只有「不看这一屏就看不到目标行」的状态才允许改变——父里程碑处于收起态时展开它；
+  // 标题/列筛选、排序、视图模式一律不动（任务原文约束「不得重置用户的其他筛选或排序条件」），
+  // 因此三种视图（列表/甘特/时间线）各自只要该行在 DOM 里就原地滚动定位，被筛掉时如实提示而非偷偷清筛。
+  useEffect(() => {
+    if (!locateNodeId) return;
+    if (!projectId) { setLocateNodeId(''); return; }
+    if (plans.length === 0) return; // 该项目计划尚未加载完：plans 变更后重跑本 effect
+    const target = plans.find((p) => p.id === locateNodeId);
+    if (!target) {
+      setLocateNodeId('');
+      flash('未找到对应的计划节点（可能已归档或删除）');
+      return;
+    }
+    const parentMs = childMilestoneOf(target, plans);
+    if (parentMs && collapsedMs[parentMs.id]) {
+      setCollapsedMs((prev) => ({ ...prev, [parentMs.id]: false }));
+      return; // 展开后重渲染，下一轮再定位
+    }
+    const el = document.querySelector(`[data-plan-id="${locateNodeId}"]`);
+    setLocateNodeId('');
+    if (!(el instanceof HTMLElement)) {
+      flash('目标计划节点在当前视图中不可见（被筛选条件筛掉，或该视图未呈现无排期行）');
+      return;
+    }
+    try { el.scrollIntoView({ block: 'center' }); } catch { /* 忽略滚动异常 */ }
+    // 高亮走临时加类（动画 .locate-flash）：行 className 由 props 计算且本轮不变，
+    // React 不会覆写命令式加的类（与任务页 locateTaskRow 同一口径）
+    el.classList.add('locate-flash');
+    globalThis.setTimeout(() => el.classList.remove('locate-flash'), 1500);
+  }, [locateNodeId, plans, projectId, collapsedMs, viewMode]);
 
   // ---------- 计划任务操作 ----------
 
@@ -2133,7 +2169,7 @@ export function PlanPage() {
               const left = toIdx(effStart) * DAY_W;
               const width = Math.max(DAY_W, (toIdx(effEnd) - toIdx(effStart) + 1) * DAY_W);
               return (
-                <div key={p.id} style={{ display: 'flex', alignItems: 'center', height: 30, borderBottom: '1px solid var(--surface-2)', fontSize: 12 }}>
+                <div key={p.id} data-plan-id={p.id} style={{ display: 'flex', alignItems: 'center', height: 30, borderBottom: '1px solid var(--surface-2)', fontSize: 12 }}>
                   <div style={{ width: 220, flexShrink: 0, padding: '0 8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }} title={p.title}>
                     {i + 1}. {p.title}
                   </div>

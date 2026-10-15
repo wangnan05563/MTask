@@ -220,6 +220,16 @@ function Shell() {
           0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.35); }
           50% { transform: scale(1.06); box-shadow: 0 0 0 5px rgba(37, 99, 235, 0); }
         }
+        /* T02196：跨视图「定位成功」反馈——徽标点击后目标行短暂高亮（任务行 div 与计划行 tr 共用）。
+           由页面 state 加类驱动：行会随任意状态重渲染，命令式改 el.style 会被 React 覆写回原值。 */
+        .locate-flash { animation: locate-flash 1.5s ease; }
+        @keyframes locate-flash {
+          0%, 55% { background: var(--accent-soft); outline: 2px solid var(--accent); outline-offset: -2px; }
+          100% { background: transparent; outline: 2px solid transparent; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .locate-flash { animation: none; background: var(--accent-soft); }
+        }
         /* T00491：菜单操作控件/搜索框统一「默认隐藏、悬浮宿主区显示」（后代选择器支持嵌套组） */
         .op-host .op-hidden { opacity: 0; visibility: hidden; transition: opacity .2s ease, visibility 0s linear .2s; }
         .op-host:hover .op-hidden, .op-host:focus-within .op-hidden { opacity: 1; visibility: visible; transition: opacity .2s ease, visibility 0s; }

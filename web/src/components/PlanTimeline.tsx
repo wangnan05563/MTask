@@ -389,7 +389,7 @@ export function PlanTimeline({ plans, granularity, spacing = 'uniform', onSelect
     const linkedTitle = r.p.linked_task_title ? `「${r.p.linked_task_title}」` : '';
     const jumpTitle = `跳转到该计划关联的待办${linkedTitle}`;
     return (
-      <li key={r.key} data-tl={isMs ? 'ms' : 'item'} data-tl-collapsed={isMs ? collapsedFlag : undefined} aria-label={`${isMs ? '里程碑' : '计划任务'} ${r.p.title}`} style={{ position: 'relative', marginBottom: 8 }}>
+      <li key={r.key} data-tl={isMs ? 'ms' : 'item'} data-plan-id={r.p.id} data-tl-collapsed={isMs ? collapsedFlag : undefined} aria-label={`${isMs ? '里程碑' : '计划任务'} ${r.p.title}`} style={{ position: 'relative', marginBottom: 8 }}>
         <span
           aria-hidden="true"
           style={

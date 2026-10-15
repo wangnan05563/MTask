@@ -227,6 +227,8 @@ export interface Task {
   fromPlanTitle?: string;
   /** T01037：来源计划类型——milestone=里程碑联动任务（徽标显示「里程碑」），其余显示「计划」 */
   fromPlanKind?: string;
+  /** T02196：来源计划行 id——点击「计划/里程碑」徽标时据此在计划 WBS 视图定位该节点 */
+  fromPlanId?: string;
   /** T00446：手动排序权重（拖拽排序结果；manual 排序模式生效） */
   user_sort: number | null;
   /** 置顶：true=固定到列表顶部 */

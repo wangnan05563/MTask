@@ -8,7 +8,7 @@ import { askConfirm, askInput } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown';
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { TaskDetailDrawer, type TaskDetailTab, type TaskPatch } from '../components/TaskDetailDrawer'; // T01562：真抽屉详情
-import type { FocusTaskIntent } from '../ui/focusTask'; // T01568：外部跳转定位意图（通知/铃铛/就绪条）
+import { focusPlanNode, focusTaskByNo, type FocusTaskIntent } from '../ui/focusTask'; // T01568：外部跳转定位意图（通知/铃铛/就绪条）；T02196：徽标点击定位
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
@@ -200,6 +200,12 @@ export function TasksPage() {
   const [drawerTab, setDrawerTab] = useState<TaskDetailTab | null>(null);
   const [focusDrawerId, setFocusDrawerId] = useSessionState<string>('tasks.focusDrawerId', '');
   const [focusDrawerTab, setFocusDrawerTab] = useSessionState<string>('tasks.focusDrawerTab', '');
+  // T02196：标题区「派生自」徽标点击定位——badgeLocate 承载待定位的父任务，locateFlashId 驱动高亮动画。
+  // 高亮用 state 加类而非 locateTaskRow 那套命令式改 style：定位期间列表会随任意状态重渲染，
+  // 内联样式会被 React 按 props 覆写回原值，动画一闪即没。
+  // id 为空表示走编号检索回落（此时父任务不在当前列表，只有编号），until 是该意图的放弃时刻。
+  const [badgeLocate, setBadgeLocate] = useState<{ taskNo: string; id: string; tab: ActiveTab; until: number } | null>(null);
+  const [locateFlashId, setLocateFlashId] = useState('');
   // T00757：列表 tab——待办/已完成/搁置三个列表标题并排为 tab，仅渲染激活 tab 的列表（会话级保持）
   const [activeTab, setActiveTab] = useSessionState<ActiveTab>('tasks.activeTab', 'todo');
   // 主列表分页：后端按页拉取 + 加载更多；hasMore=true 表示当前页刚好满页、可能还有更多
@@ -526,6 +532,58 @@ export function TasksPage() {
     locateTaskRow(focusTaskId);
     // 依赖 待办/已完成/activeTab/activeProject/filters：目标列表渲染后再定位；仅定位一次后即清空
   }, [focusTaskId, todo, done, activeTab, activeProject, focusProjectId, catFilter, priorityFilter]);
+
+  /** T02196：按编号在「已渲染」的标题行里认目标——回落通道此时只有编号、没有 id */
+  const findRowElByNo = (no: string): HTMLElement | null => {
+    const label = `任务编号 ${no}`;
+    return [...document.querySelectorAll<HTMLElement>('[data-ttask-id]')]
+      .find((el) => el.querySelector(`[aria-label="${label}"]`) != null) ?? null;
+  };
+
+  // T02196：标题区「派生自」徽标点击的落地——目标行就在当前已加载列表里时，只做
+  // 「必要时切 tab + 滚动居中 + 短暂高亮」，不写搜索词、不清筛选、不动排序
+  // （任务原文约束「不得重置用户的其他筛选或排序条件」）。
+  // 数组里有该行但 DOM 查不到（看板视图无 data-ttask-id、或分页之外）时，才退回 focusTaskByNo
+  // 的编号检索通道，并先给出提示——让「视图被改变」始终是明示而非静默发生。
+  // 回落时定位意图不丢：检索是异步的（换项目→重载列表→渲染），故意图带截止时间留在 state 里，
+  // 列表每次变化都按编号再认一次目标行，命中后同样给 .locate-flash 高亮。
+  useEffect(() => {
+    if (!badgeLocate) return;
+    if (badgeLocate.id && badgeLocate.tab !== activeTab) { setActiveTab(badgeLocate.tab); return; }
+    const el = badgeLocate.id
+      ? document.querySelector<HTMLElement>(`[data-ttask-id="${badgeLocate.id}"]`)
+      : findRowElByNo(badgeLocate.taskNo);
+    if (!(el instanceof HTMLElement)) {
+      if (Date.now() > badgeLocate.until) setBadgeLocate(null); // 超时未命中（编号不可达/被筛掉）即放弃，不让意图滞留
+      return;
+    }
+    const flashId = el.getAttribute('data-ttask-id') ?? '';
+    setBadgeLocate(null);
+    try { el.scrollIntoView({ block: 'center' }); } catch { /* 忽略滚动异常 */ }
+    if (flashId) {
+      setLocateFlashId(flashId);
+      globalThis.setTimeout(() => setLocateFlashId((cur) => (cur === flashId ? '' : cur)), 1500);
+    }
+  }, [badgeLocate, activeTab, todo, done, shelvedTasks]);
+
+  /** T02196：「派生自 xxx」徽标点击——按编号在当前已加载列表里找父任务，命中即原地定位（零视图状态变更）。
+   *  派生单与原任务同项目是常态，故绝大多数点击走的是这条通道；只有列表里确实没有该行
+   *  （跨项目、分页之外、被当前筛选条件筛掉）才退回 focusTaskByNo 的编号检索定位。 */
+  const locateDerivedTask = (taskNo: string | null | undefined): void => {
+    const no = taskNo?.trim();
+    if (!no) return;
+    const hit = [...todo, ...done, ...shelvedTasks].find((x) => x.task_no === no);
+    if (hit) {
+      let tab: ActiveTab = 'todo';
+      if (shelvedTasks.includes(hit)) tab = 'shelved';
+      else if (done.includes(hit)) tab = 'done';
+      setBadgeLocate({ taskNo: no, id: hit.id, tab, until: Date.now() + 8000 });
+      return;
+    }
+    flash(`原任务 ${no} 不在当前列表（跨项目/被筛选或分页在外），已按编号检索定位`);
+    setBadgeLocate({ taskNo: no, id: '', tab: activeTab, until: Date.now() + 8000 });
+    void focusTaskByNo(no);
+  };
 
   // T01562：外部跳转（focusTaskByNo openDrawer=true）写入 focusDrawerId 后，自动唤起右侧真抽屉；
   // 与行内展开（快速预览）并存，抽屉=完整操作台。解析到任务即唤起并清空会话键。
@@ -1786,25 +1844,33 @@ export function TasksPage() {
           </button>
         )}
         {/* T00462/T00451：计划联动任务区分徽标——悬浮显示来源计划标题（反向引用）
-            T01037：来源计划是里程碑时徽标显示「里程碑」，不再一律显示「计划」（里程碑≠普通计划条目） */}
+            T01037：来源计划是里程碑时徽标显示「里程碑」，不再一律显示「计划」（里程碑≠普通计划条目）
+            T02196：徽标改为可点击——跳「项目管理」并在计划 WBS 视图中定位/高亮来源节点（滚动到位由计划页完成） */}
         {t.fromPlanTitle && (() => {
           const isMs = t.fromPlanKind === 'milestone';
+          const noun = isMs ? '里程碑' : '计划';
           return (
-            <span title={isMs
-              ? `里程碑联动任务 — 来源里程碑：${t.fromPlanTitle}；请先处理其下子任务，全部完成后由里程碑汇总状态`
-              : `计划联动任务 — 来源计划：${t.fromPlanTitle}；完成状态与项目计划双向同步`}
-              aria-label={isMs ? '里程碑联动任务' : '计划联动任务'}
-              style={{ fontSize: 10, color: isMs ? 'var(--accent)' : 'var(--text-muted)', border: `1px solid ${isMs ? 'var(--accent)' : 'var(--border-strong)'}`, padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'default', fontWeight: isMs ? 600 : undefined }}>
-              {isMs ? '里程碑' : '计划'}
-            </span>
+            <button type="button" title={isMs
+              ? `里程碑联动任务 — 来源里程碑：${t.fromPlanTitle}；请先处理其下子任务，全部完成后由里程碑汇总状态。点击定位到该里程碑节点`
+              : `计划联动任务 — 来源计划：${t.fromPlanTitle}；完成状态与项目计划双向同步。点击定位到该计划节点`}
+              aria-label={isMs ? '里程碑联动任务：点击定位来源里程碑节点' : '计划联动任务：点击定位来源计划节点'}
+              onClick={() => {
+                if (!focusPlanNode(t.fromPlanId, t.project_id ?? '')) flash(`未取到${noun}节点标识，无法定位（来源${noun}：${t.fromPlanTitle}）`);
+              }}
+              style={{ fontSize: 10, color: isMs ? 'var(--accent)' : 'var(--text-muted)', border: `1px solid ${isMs ? 'var(--accent)' : 'var(--border-strong)'}`, padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'pointer', background: 'transparent', fontFamily: 'inherit', fontWeight: isMs ? 600 : undefined }}>
+              {noun}
+            </button>
           );
         })()}
-        {/* T00577：派生单溯源徽标——AI 处理完成后结论自动整合回原任务 */}
+        {/* T00577：派生单溯源徽标——AI 处理完成后结论自动整合回原任务
+            T02196：点击定位并高亮原任务（当前列表内命中则零视图变更，否则退回编号检索定位） */}
         {t.derived_from && (
-          <span title={`派生自原任务 ${t.derived_from} — 处理完成后结论自动整合回原任务`}
-            style={{ fontSize: 10, color: 'var(--text-muted)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0 }}>
+          <button type="button" title={`派生自原任务 ${t.derived_from} — 处理完成后结论自动整合回原任务；点击定位并高亮该原任务`}
+            aria-label={`派生自 ${t.derived_from}：点击定位原任务`}
+            onClick={() => locateDerivedTask(t.derived_from)}
+            style={{ fontSize: 10, color: 'var(--text-muted)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0, cursor: 'pointer', background: 'transparent', fontFamily: 'inherit' }}>
             派生自 {t.derived_from}
-          </span>
+          </button>
         )}
         {renderTaskTitle(t, titleEditing)}
       </div>
@@ -2598,7 +2664,9 @@ export function TasksPage() {
     const editing = titleEditing || descEditing ? ' task-editing' : '';
     const flush = refreshFlash && t.updated_at && Date.parse(t.updated_at) >= refreshFlash ? ' flush' : '';
     const press = pressId === t.id ? ' item-pressing' : '';
-    return `task-item cv-auto${editing}${dragCls}${flush}${press}${drawerTask?.id === t.id ? ' task-drawer-open' : ''}`;
+    // T02196：徽标定位成功反馈——目标行短暂高亮（动画定义在全局样式 .locate-flash）
+    const locate = locateFlashId === t.id ? ' locate-flash' : '';
+    return `task-item cv-auto${editing}${dragCls}${flush}${press}${locate}${drawerTask?.id === t.id ? ' task-drawer-open' : ''}`;
   }
 
   /** M6-6.1：任务行 style 预计算（避免 JSX 内联三元） */
