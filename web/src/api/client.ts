@@ -253,6 +253,16 @@ export interface TaskCategory {
   updated_at: string;
 }
 
+/**
+ * T02208：服务端本地配置体检回传的问题项（与 server/src/adapters/configCheck.ts 同形状）。
+ * `fixed` 存在即表示可一键规范化（非 ASCII / 形近字符已换成 ASCII 等价物）。
+ */
+export interface ConfigIssue {
+  field: 'apiKey' | 'endpoint' | 'model';
+  message: string;
+  fixed?: string;
+}
+
 export interface AITool {
   id: string;
   name: string;

@@ -1311,6 +1311,16 @@ api.post('/aitools/:id/test', async (req, res) => {
   }
 });
 
+// T02208：最小实调探测——真实调用通道（chat）的一次极小请求，是提前发现 402/401 的唯一途径。
+// 它会消耗少量额度，因此不接进连接测试，只在用户于配置行显式点击时发起。
+api.post('/aitools/:id/probe', async (req, res) => {
+  try {
+    res.json(await ConfigService.probe(req.params.id));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 // 已保存工具的可用模型列表（服务端解密密钥后拉取，带 5 分钟缓存）
 api.post('/aitools/:id/models', async (req, res) => {
   try {

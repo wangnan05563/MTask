@@ -1,5 +1,5 @@
 import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult, SubmitResult, PollResult } from './types';
-import { withTimeout, formatHttpError } from './netutil';
+import { withTimeout, formatHttpError, probeOkMessage } from './netutil';
 import { describeError } from './types';
 
 /**
@@ -35,7 +35,7 @@ export class WorkBuddyAdapter implements AIAdapter {
       if (!res.ok) return { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
       const data = (await res.json()) as { ok?: boolean; message?: string };
       return data.ok
-        ? { ok: true, message: data.message ?? '连接成功' }
+        ? { ok: true, message: data.message ?? probeOkMessage('中继可达（ping 已回）') }
         : { ok: false, message: data.message ?? '返回异常' };
     } catch (e) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) };

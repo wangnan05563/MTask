@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { Archive, ChevronDown, ChevronUp, Code2, Cpu, Copy, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, Save, Star, X, Check } from 'lucide-react';
-import { api, type AITool } from '../api/client';
+import { Archive, ChevronDown, ChevronUp, Code2, Cpu, Copy, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, Save, Star, X, Check, Zap } from 'lucide-react';
+import { api, type AITool, type ConfigIssue } from '../api/client';
 import { UsagePanel } from './UsagePanel';
 import { askConfirm } from '../ui/dialogs';
 import { PinToggle } from '../ui/PinToggle';
@@ -38,11 +38,14 @@ function emptyForm(defaultType: string): ToolForm {
 interface ToolActionsCellProps {
   readonly tool: AITool;
   readonly testing: boolean;
+  readonly probing: boolean;
   readonly fetchingModels: boolean;
   readonly testResult: { ok: boolean; msg: string } | undefined;
+  readonly probeResult: { ok: boolean; msg: string } | undefined;
   readonly modelsResult: readonly string[] | undefined;
   readonly onOpenEdit: (t: AITool) => void;
   readonly onTest: (t: AITool) => void;
+  readonly onProbe: (t: AITool) => void;
   readonly onFetchRowModels: (t: AITool) => void;
   readonly onSetDefault: (t: AITool, kind: 'organize' | 'develop') => void;
   readonly onRemove: (t: AITool) => void;
@@ -50,7 +53,7 @@ interface ToolActionsCellProps {
 }
 
 /** 操作列（S3776 拆分）：集中放置悬停显现按钮与测试/模型结果，独立成组件后行组件与页面组件复杂度均降至阈值内 */
-function ToolActionsCell({ tool, testing, fetchingModels, testResult, modelsResult, onOpenEdit, onTest, onFetchRowModels, onSetDefault, onRemove, flash }: ToolActionsCellProps) {
+function ToolActionsCell({ tool, testing, probing, fetchingModels, testResult, probeResult, modelsResult, onOpenEdit, onTest, onProbe, onFetchRowModels, onSetDefault, onRemove, flash }: ToolActionsCellProps) {
   // T00587：复制反馈——点击后图标切换为对勾并弹入，1.5s 复原（与其他复制交互一致）
   const [copied, setCopied] = useState(false);
   return (
@@ -80,6 +83,15 @@ function ToolActionsCell({ tool, testing, fetchingModels, testResult, modelsResu
         style={{ fontSize: 12, marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
       >
         {testing ? <Loader2 size={13} className="aispin" /> : <PlugZap size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
+      </button>
+      <button
+        className="abtn" onClick={() => onProbe(tool)}
+        disabled={probing}
+        title={probing ? '实调探测中…' : '实调探测 — 发一条极小真实请求，验证该模型当前能否调用（会消耗少量额度，仅点击时发起）'}
+        aria-label={probing ? '探测中：正在发起最小实调探测' : '实调探测：发一条极小真实请求验证模型可调用'}
+        style={{ fontSize: 12, marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+      >
+        {probing ? <Loader2 size={13} className="aispin" /> : <Zap size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
       </button>
       <button
         className="abtn" onClick={() => onFetchRowModels(tool)}
@@ -140,7 +152,13 @@ function ToolActionsCell({ tool, testing, fetchingModels, testResult, modelsResu
       </button>
       {testResult && (
         <div style={{ fontSize: 11, color: testResult.ok ? 'var(--success)' : 'var(--danger)', marginTop: 4, whiteSpace: 'normal', maxWidth: 200 }}>
-          {testResult.ok ? '✓ 连接成功：' : '✗ '}{testResult.msg}
+          {/* T02208：连接测试只做目录型探测，「成功」不再由前端断言——文案口径交给服务端给出 */}
+          {testResult.ok ? '✓ ' : '✗ '}{testResult.msg}
+        </div>
+      )}
+      {probeResult && (
+        <div style={{ fontSize: 11, color: probeResult.ok ? 'var(--success)' : 'var(--danger)', marginTop: 4, whiteSpace: 'normal', maxWidth: 200 }}>
+          {probeResult.ok ? '✓ ' : '✗ '}{probeResult.msg}
         </div>
       )}
       {modelsResult && (
@@ -270,8 +288,10 @@ function ToolModelCell(props: {
 interface ToolRowProps {
   readonly tool: AITool;
   readonly testing: Record<string, boolean>;
+  readonly probing: Record<string, boolean>;
   readonly fetchingModels: Record<string, boolean>;
   readonly testResult: Record<string, { ok: boolean; msg: string }>;
+  readonly probeResult: Record<string, { ok: boolean; msg: string }>;
   readonly modelsResult: Record<string, string[]>;
   readonly revealed: Record<string, string>;
   readonly remarkExpanded: Record<string, boolean>;
@@ -282,6 +302,7 @@ interface ToolRowProps {
   readonly onToggleRemark: (id: string) => void;
   readonly onOpenEdit: (t: AITool) => void;
   readonly onTest: (t: AITool) => void;
+  readonly onProbe: (t: AITool) => void;
   readonly onFetchRowModels: (t: AITool) => void;
   readonly onSetDefault: (t: AITool, kind: 'organize' | 'develop') => void;
   readonly onRemove: (t: AITool) => void;
@@ -385,17 +406,43 @@ function ToolRow(props: ToolRowProps) {
       <ToolActionsCell
         tool={tool}
         testing={props.testing[tool.id] ?? false}
+        probing={props.probing[tool.id] ?? false}
         fetchingModels={props.fetchingModels[tool.id] ?? false}
         testResult={props.testResult[tool.id]}
+        probeResult={props.probeResult[tool.id]}
         modelsResult={props.modelsResult[tool.id]}
         onOpenEdit={props.onOpenEdit}
         onTest={props.onTest}
+        onProbe={props.onProbe}
         onFetchRowModels={props.onFetchRowModels}
         onSetDefault={props.onSetDefault}
         onRemove={props.onRemove}
         flash={props.flash}
       />
     </tr>
+  );
+}
+
+/** 配置体检提示块（T02208）：保存/草稿测试时服务端本地判定回传的问题项，可规范化的给一键修复 */
+function ConfigWarnings({ warnings, onFix }: { readonly warnings: readonly ConfigIssue[]; readonly onFix: (w: ConfigIssue) => void }) {
+  if (warnings.length === 0) return null;
+  return (
+    <div style={{ gridColumn: '1 / -1', border: '1px solid var(--warning, var(--danger))', borderRadius: 6, padding: 8, background: 'var(--surface-2)' }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>配置体检（本地字符串判定，未发起外部请求）</div>
+      {warnings.map((w) => (
+        <div key={`${w.field}:${w.message}`} style={{ fontSize: 11, color: 'var(--danger)', marginTop: 2, whiteSpace: 'normal', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span>· {w.message}</span>
+          {w.fixed !== undefined && (
+            <button
+              onClick={() => onFix(w)}
+              title="一键规范化 — 用 ASCII 等价字符替换该字段中的不可见字符"
+              aria-label="一键规范化：以 ASCII 等价字符替换该字段中的不可见字符"
+              style={{ fontSize: 11, padding: '1px 8px', cursor: 'pointer' }}
+            >一键规范化</button>
+          )}
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -409,11 +456,14 @@ interface ToolFormDialogProps {
   readonly formFetching: boolean;
   readonly formTest: { msg: string; ok: boolean } | null;
   readonly formModels: readonly string[];
+  /** T02208：保存/草稿测试时服务端本地体检回传的问题项（含可一键规范化的目标值） */
+  readonly formWarnings: readonly ConfigIssue[];
   readonly onFieldChange: (patch: Partial<ToolForm>) => void;
   readonly onClose: () => void;
   readonly onSave: () => void;
   readonly onTestDraft: () => void;
   readonly onFetchModels: () => void;
+  readonly onFixWarning: (w: ConfigIssue) => void;
 }
 
 /** 新增/编辑弹窗（S3776/S6848/S6853 拆分修复）：label 通过 htmlFor 显式关联控件 */
@@ -460,12 +510,17 @@ function ToolFormDialog(props: ToolFormDialogProps) {
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>填写后，列表「控制台」按钮可直接打开该厂商官方控制台页面</div>
           </div>
           {/* 草稿连接测试：未保存即可验证 Endpoint + Key 连通性 */}
-          <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <button onClick={props.onTestDraft} disabled={props.formTesting} title={props.formTesting ? '测试中…' : '测试连接 — 用当前表单值验证连通性'} aria-label={props.formTesting ? '测试中：验证连通性' : '测试连接：用当前表单值验证连通性'} style={{ fontSize: 12, padding: '4px 12px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}>
               {props.formTesting ? <Loader2 size={13} className="aispin" /> : <PlugZap size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
             </button>
             {props.formTest && <span style={{ fontSize: 12, color: props.formTest.ok ? 'var(--success)' : 'var(--danger)' }}>{props.formTest.msg}</span>}
+            {/* T02208：口径说明——连接测试走的是模型目录探测，读不到余额与模型权限，别再把它当「能调用」 */}
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', gridColumn: '1 / -1' }}>
+              连接测试只读服务商的模型目录，查不出账户余额与「该密钥能否调用该模型」；保存后用列表行的 <Zap size={11} style={{ display: 'inline-block', verticalAlign: '-1px' }} /> 实调探测 发一条极小真实请求确认（会消耗少量额度）。
+            </div>
           </div>
+          <ConfigWarnings warnings={props.formWarnings} onFix={props.onFixWarning} />
           <div>
             <label style={labelStyle}>API Key{props.editingId ? '（留空保留原值）' : '（可留空）'}</label>
             <input
@@ -539,8 +594,11 @@ export function AIToolsPage() {
   const [tools, setTools] = useState<AITool[]>([]);
   const [types, setTypes] = useState<string[]>([]);
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; msg: string }>>({});
+  // T02208：实调探测结果（与连接测试分列——两者口径不同，合并展示会重新制造「测试成功=能调用」的误读）
+  const [probeResult, setProbeResult] = useState<Record<string, { ok: boolean; msg: string }>>({});
   // 连接测试 / 模型获取 的运行中状态（列表行按工具 id，用于按钮加载动画）
   const [testing, setTesting] = useState<Record<string, boolean>>({});
+  const [probing, setProbing] = useState<Record<string, boolean>>({});
   const [fetchingModels, setFetchingModels] = useState<Record<string, boolean>>({});
   // 表单草稿内「测试连接 / 获取模型」的运行中状态
   const [formTesting, setFormTesting] = useState(false);
@@ -569,6 +627,8 @@ export function AIToolsPage() {
   // 表单内草稿测试/模型拉取结果（不落库，用当前表单值提前验证）
   const [formTest, setFormTest] = useState<{ msg: string; ok: boolean } | null>(null);
   const [formModels, setFormModels] = useState<string[]>([]);
+  // T02208：保存/草稿测试时服务端本地体检回传的配置问题（含一键规范化目标值）
+  const [formWarnings, setFormWarnings] = useState<readonly ConfigIssue[]>([]);
 
   const flash = (msg: string) => {
     setNotice(msg);
@@ -601,6 +661,7 @@ export function AIToolsPage() {
     setEditingId('');
     setFormTest(null);
     setFormModels([]);
+    setFormWarnings([]);
   }
 
   function openEdit(t: AITool) {
@@ -613,15 +674,28 @@ export function AIToolsPage() {
     setEditingId(t.id);
     setFormTest(null);
     setFormModels([]);
+    setFormWarnings([]);
   }
 
   function closeForm() {
     setForm(null);
     setEditingId('');
+    setFormWarnings([]);
   }
 
   // 表单字段统一以 patch 合并：弹窗组件只上报变更，不持有 setForm，保持状态单向流动
-  const patchForm = (patch: Partial<ToolForm>) => setForm((f) => (f ? { ...f, ...patch } : f));
+  const patchForm = (patch: Partial<ToolForm>) => {
+    setForm((f) => (f ? { ...f, ...patch } : f));
+    // T02208：字段一改就撤掉该字段的体检提示，避免「已改好却仍挂着告警」
+    const changed = Object.keys(patch);
+    setFormWarnings((prev) => (prev.length === 0 ? prev : prev.filter((w) => !changed.includes(w.field))));
+  };
+
+  /** T02208：一键规范化——用服务端给出的 ASCII 等价文本回填对应字段 */
+  function fixWarning(w: ConfigIssue) {
+    if (w.fixed === undefined) return;
+    patchForm({ [w.field]: w.fixed } as Partial<ToolForm>);
+  }
 
   async function saveForm() {
     if (!form || saving) return;
@@ -642,17 +716,22 @@ export function AIToolsPage() {
     };
     setSaving(true);
     try {
-      if (editingId) {
-        await api.patch(`/aitools/${editingId}`, payload);
-        setFlashAt((prev) => ({ ...prev, [editingId]: Date.now() }));
-        flash('配置已更新');
-      } else {
-        await api.post('/aitools', payload);
-        flash('配置已新增');
-      }
-      closeForm();
+      // T02208：保存响应可带 warnings（本地配置体检），命中时不关弹窗——就地给出「一键规范化」
+      type SaveResult = { warnings?: ConfigIssue[] };
+      const r = editingId
+        ? await api.patch<SaveResult>(`/aitools/${editingId}`, payload)
+        : await api.post<SaveResult>('/aitools', payload);
+      if (editingId) setFlashAt((prev) => ({ ...prev, [editingId]: Date.now() }));
       setRevealed({});
       void load();
+      const warnings = r?.warnings ?? [];
+      setFormWarnings(warnings);
+      if (warnings.length > 0) {
+        flash(`已保存，但配置体检发现 ${warnings.length} 处问题（实调必失败），见表单内提示`);
+        return;
+      }
+      flash('配置已保存');
+      closeForm();
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
     } finally {
@@ -691,6 +770,20 @@ export function AIToolsPage() {
       setTestResult((prev) => ({ ...prev, [t.id]: { ok: false, msg: e instanceof Error ? e.message : String(e) } }));
     } finally {
       setTesting((prev) => ({ ...prev, [t.id]: false }));
+    }
+  }
+
+  /** T02208：实调探测——真实调用通道的一次极小请求（会计费），只在用户显式点击该行按钮时发起 */
+  async function probe(t: AITool) {
+    setProbing((prev) => ({ ...prev, [t.id]: true }));
+    setProbeResult((prev) => ({ ...prev, [t.id]: { ok: true, msg: '实调探测中…' } }));
+    try {
+      const r = await api.post<{ ok: boolean; message: string }>(`/aitools/${t.id}/probe`);
+      setProbeResult((prev) => ({ ...prev, [t.id]: { ok: r.ok, msg: r.message } }));
+    } catch (e) {
+      setProbeResult((prev) => ({ ...prev, [t.id]: { ok: false, msg: e instanceof Error ? e.message : String(e) } }));
+    } finally {
+      setProbing((prev) => ({ ...prev, [t.id]: false }));
     }
   }
 
@@ -760,13 +853,15 @@ export function AIToolsPage() {
     setFormTesting(true);
     setFormTest({ msg: '测试中…', ok: true });
     try {
-      const r = await api.post<{ ok: boolean; message: string }>('/aitools/test', {
+      const r = await api.post<{ ok: boolean; message: string; warnings?: ConfigIssue[] }>('/aitools/test', {
         type: form.type,
         endpoint: form.endpoint.trim(),
         apiKey: form.apiKey || undefined,
         model: form.model.trim() || undefined,
       });
       setFormTest({ msg: r.message, ok: r.ok });
+      // T02208：草稿测试同样带回地检结果，就地点在表单上（不必等到保存）
+      setFormWarnings(r.warnings ?? []);
     } catch (e) {
       setFormTest({ msg: e instanceof Error ? e.message : String(e), ok: false });
     } finally {
@@ -916,6 +1011,7 @@ export function AIToolsPage() {
                 setToolDragId(''); setToolOverId('');
               }}
               testing={testing}
+              probing={probing}
               fetchingModels={fetchingModels}
               modelMenuId={modelMenuId}
               modelMenuPos={modelMenuPos}
@@ -924,6 +1020,7 @@ export function AIToolsPage() {
               onSelectModel={selectRowModel}
               flash={flash}
               testResult={testResult}
+              probeResult={probeResult}
               modelsResult={modelsResult}
               revealed={revealed}
               remarkExpanded={remarkExpanded}
@@ -934,6 +1031,7 @@ export function AIToolsPage() {
               onToggleRemark={(id) => setRemarkExpanded((prev) => ({ ...prev, [id]: !prev[id] }))}
               onOpenEdit={openEdit}
               onTest={(tool) => void test(tool)}
+              onProbe={(tool) => void probe(tool)}
               onFetchRowModels={(tool) => void fetchRowModels(tool)}
               onSetDefault={(tool, kind) => void setDefault(tool, kind)}
               onRemove={(tool) => void remove(tool)}
@@ -956,10 +1054,12 @@ export function AIToolsPage() {
           formFetching={formFetching}
           formTest={formTest}
           formModels={formModels}
+          formWarnings={formWarnings}
           onFieldChange={patchForm}
           onClose={closeForm}
           onSave={() => void saveForm()}
           onTestDraft={() => void testDraftFromForm()}
+          onFixWarning={fixWarning}
           onFetchModels={() => void fetchFormModels()}
         />
       )}

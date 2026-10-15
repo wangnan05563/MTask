@@ -1,5 +1,5 @@
 import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult } from './types';
-import { withTimeout, formatHttpError, normalizeModels, readStreamLines } from './netutil';
+import { withTimeout, formatHttpError, normalizeModels, readStreamLines, probeOkMessage } from './netutil';
 import { streamTruncatedError } from './types'; // T00779：流式截断统一错误文案
 
 interface ChatResp {
@@ -21,7 +21,7 @@ export class OllamaAdapter implements AIAdapter {
       const url = `${this.baseUrl(config.endpoint)}/api/tags`;
       const res = await withTimeout(fetch(url), config.timeoutMs ?? 10000);
       return res.ok
-        ? { ok: true, message: '连接成功' }
+        ? { ok: true, message: probeOkMessage('本地服务可达，模型目录可读') }
         : { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
     } catch (e) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) };

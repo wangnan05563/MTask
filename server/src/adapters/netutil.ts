@@ -99,6 +99,18 @@ export function normalizeModels(json: unknown): string[] {
 }
 
 /**
+ * T02208：「连接测试」成功文案的统一口径。
+ * 这条通道只做目录型探测（GET /models、GET /api/tags、中继 ping），而各厂商该接口的
+ * 鉴权/计费门禁并不统一——实测：OpenRouter 行填 Groq 密钥仍「连接成功」（/models 近乎公开目录）、
+ * 硅基流动欠费 402 时 /models 依旧 200（不受余额门禁约束）。
+ * 因此文案只声明它真正证明过的东西（网关可达 + 目录可读），不写「连接成功」这种
+ * 会被读成「可以调用」的字样，并把能否实调显式指向「实调探测」。
+ */
+export function probeOkMessage(scope: string, extra = ''): string {
+  return `${scope}${extra}——仅代表服务可达与目录可读，不代表该模型可调用；请用「实调探测」确认`;
+}
+
+/**
  * 逐行读取 HTTP 响应流：将 response body 按行回调（按 \n 切分，去除行尾 \r）。
  * OpenAI 兼容（data: 行）、Claude（data: 行）与 Ollama（纯 JSON 行）的流式响应均可复用。
  * 超时/中断由调用方用 AbortController 控制，此处不做额外竞速。

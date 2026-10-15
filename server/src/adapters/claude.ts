@@ -78,8 +78,10 @@ export class ClaudeAdapter implements AIAdapter {
         }),
         config.timeoutMs ?? 10000,
       );
+      // T02208：本通道与其他适配器不同——testConnection 走的是最小实调（POST /v1/messages），
+      // 因此「连接成功」在这里确实是「可调用」的证据，文案把这一点讲明，避免与目录型探测混淆
       return res.ok
-        ? { ok: true, message: '连接成功' }
+        ? { ok: true, message: '连接成功（本通道用最小实调验证，模型可正常返回）' }
         : { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
     } catch (e) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) };

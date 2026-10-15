@@ -15,12 +15,15 @@ const KIND_LABELS: Record<string, string> = {
   'parse-doc': '文档解析', report: '周报生成',
   // T00796：验证失败反馈等正文的 AI 美化（与 beautify 的「标题美化」区分）
   polish: '正文美化',
+  // T02208：最小实调探测——真实调用通道的一次极小请求，会消耗额度，只有用户显式点击才会出现
+  probe: '实调探测',
 };
 
 const KIND_COLOR: Record<string, string> = {
   optimize: 'var(--accent)', beautify: 'var(--accent)', ask: 'var(--text)', stream: 'var(--accent)',
   organize: 'var(--text)', classify: 'var(--text)', send: 'var(--text)', wbs: 'var(--accent)',
   'parse-doc': 'var(--accent)', report: 'var(--accent)', polish: 'var(--accent)',
+  probe: 'var(--warning, var(--accent))',
 };
 
 const cellStyle: React.CSSProperties = { padding: '5px 8px', borderBottom: '1px solid var(--surface-2)', fontSize: 12 };

@@ -1,7 +1,9 @@
 import { getDb } from '../db/connection';
 import { encrypt, decrypt, maskSecret } from '../util/crypto';
 import { v4 as uuid } from 'uuid';
-import { listAdapterTypes, testAdapter, listAdapterModels } from '../adapters';
+import { listAdapterTypes, testAdapter, listAdapterModels, probeAdapter } from '../adapters';
+import { checkToolConfig, summarizeIssues } from '../adapters/configCheck';
+import type { ConfigIssue } from '../adapters/configCheck';
 import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
 
 export interface AIToolRow {
@@ -68,6 +70,31 @@ function toSafe(row: AIToolRow) {
   };
 }
 
+/**
+ * T02208：探测调用同样落 ai_usage（kind='probe'），用量面板才能看见这笔真实开销。
+ * 用 SELECT 取 tool_name：与 AIService.recordUsage 同口径，且不额外多一次查询。
+ * 记录失败不影响探测结果本身（与 AIService 的容错一致）。
+ */
+function recordProbeUsage(id: string, model: string, ok: boolean, ms: number, contentChars: number, error?: string): void {
+  try {
+    getDb().prepare(
+      `INSERT INTO ai_usage (id, tool_id, tool_name, model, kind, ok, duration_ms, content_chars, error, created_at)
+       SELECT ?, id, name, ?, 'probe', ?, ?, ?, ?, ? FROM ai_tools WHERE id = ?`,
+    ).run(uuid(), id, model, ok ? 1 : 0, ms, contentChars, (error ?? '').slice(0, 300) || null, new Date().toISOString(), id);
+  } catch { /* 用量记录失败不影响探测结果 */ }
+}
+
+/**
+ * T02208：把本地体检结果拼进「连接测试」出参。
+ * 连接测试是目录型探测，对「密钥与厂商不匹配」是瞎的（OpenRouter 的 /models 近乎公开目录，
+ * 填 Groq 密钥照样通过），因此这里在同一行结果里补上点名：不改 ok 语义（服务确实可达），
+ * 但把「实调必失败」的原因摆到用户眼前，并额外带出 warnings 供前端做一键规范化。
+ */
+function withLocalCheck<T extends { ok: boolean; message: string }>(result: T, issues: ConfigIssue[]): T & { warnings?: ConfigIssue[] } {
+  if (issues.length === 0) return result;
+  return { ...result, warnings: issues, message: `${result.message}｜配置体检：${summarizeIssues(issues)}` };
+}
+
 /** FR3 AI 工具配置管理 */
 export const ConfigService = {
   create(input: AIToolInput) {
@@ -84,7 +111,10 @@ export const ConfigService = {
       input.enabled === false ? 0 : 1, input.remark ?? '', input.consoleUrl ?? '', t, t,
     );
     cacheClear('aitools'); // 工具列表缓存失效，新建立即可见
-    return this.getById(id);
+    // T02208：保存时本地体检（零外部请求）——命中即以 warnings 点名，不阻断保存
+    const issues = checkToolConfig({ endpoint: input.endpoint, apiKey: input.apiKey, model: input.model });
+    const created = this.getById(id);
+    return issues.length ? { ...created, warnings: issues } : created;
   },
 
   getById(id: string) {
@@ -134,7 +164,11 @@ export const ConfigService = {
       db.prepare('UPDATE ai_tools SET pinned = ?, updated_at = ? WHERE id = ?').run(patch.pinned ? 1 : 0, now(), id);
     }
     cacheClear('aitools'); // 编辑/置顶影响列表展示，失效缓存
-    return this.getById(id);
+    // T02208：编辑同样体检，且按「生效值」判：密钥留空 = 沿用原密文，须解密后参与厂商匹配
+    const effectiveKey = patch.apiKey ? patch.apiKey : row.api_key_enc ? decrypt(row.api_key_enc) : undefined;
+    const issues = checkToolConfig({ endpoint: next.endpoint, apiKey: effectiveKey, model: next.model });
+    const updated = this.getById(id);
+    return issues.length ? { ...updated, warnings: issues } : updated;
   },
 
   /** T00587：归档（软删）——记录保留在库中，列表默认隐藏；可经 restore 恢复 */
@@ -164,24 +198,26 @@ export const ConfigService = {
   async testConnection(id: string) {
     const row = getDb().prepare('SELECT * FROM ai_tools WHERE id = ?').get(id) as AIToolRow;
     if (!row) throw new Error('AI 工具不存在');
+    const apiKey = row.api_key_enc ? decrypt(row.api_key_enc) : undefined;
     const result = await testAdapter(row.type, {
       endpoint: row.endpoint,
       model: row.model ?? undefined,
-      apiKey: row.api_key_enc ? decrypt(row.api_key_enc) : undefined,
+      apiKey,
       timeoutMs: row.timeout_ms,
     });
-    return result;
+    return withLocalCheck(result, checkToolConfig({ endpoint: row.endpoint, apiKey, model: row.model ?? undefined }));
   },
 
   /** FR3.3 草稿连接测试：用表单未保存的值提前验证连通性，避免保存后才发现配置错误 */
   async testDraft(input: { type: string; endpoint: string; apiKey?: string; model?: string }) {
     if (!input?.type || !input?.endpoint) throw new Error('缺少厂商类型或 Endpoint');
-    return testAdapter(input.type, {
+    const result = await testAdapter(input.type, {
       endpoint: input.endpoint,
       model: input.model || undefined,
       apiKey: input.apiKey || undefined,
       timeoutMs: 15000,
     });
+    return withLocalCheck(result, checkToolConfig({ endpoint: input.endpoint, apiKey: input.apiKey, model: input.model }));
   },
 
   /** 获取已保存工具的可用模型列表（解密后拉取，带 5 分钟缓存） */
@@ -241,6 +277,28 @@ export const ConfigService = {
     const organize = db.prepare('SELECT id FROM ai_tools WHERE is_default_organize = 1 LIMIT 1').get() as { id: string } | undefined;
     const develop = db.prepare('SELECT id FROM ai_tools WHERE is_default_develop = 1 LIMIT 1').get() as { id: string } | undefined;
     return { organize: organize?.id ?? null, develop: develop?.id ?? null };
+  },
+
+  /**
+   * T02208：最小实调探测——用一条极小 chat 请求走真实调用通道，检查「这把钥匙 + 这个模型」
+   * 现在能不能真的调通。402（余额门禁）与 401/403（密钥与厂商不匹配）只有这条通道能提前发现：
+   * 连接测试读的 GET /models 不受这两道门约束（T02197 实测：欠费与串厂密钥都报「连接成功」）。
+   * 会消耗少量额度，因此只由用户在配置行显式点击触发，绝不接进保存或连接测试。
+   */
+  async probe(id: string): Promise<{ ok: boolean; message: string; ms: number }> {
+    const { type, config } = this.getRuntimeConfig(id);
+    if (!config.model) throw new Error('该配置未填写默认模型，无法进行实调探测');
+    const startedAt = Date.now();
+    const res = await probeAdapter(type, config);
+    const ms = Date.now() - startedAt;
+    recordProbeUsage(id, config.model, res.ok, ms, res.content?.length ?? 0, res.error);
+    return {
+      ok: res.ok,
+      message: res.ok
+        ? `实调通过（${ms}ms，输出 ${res.content?.length ?? 0} 字符）：该模型当前可正常调用`
+        : `实调失败（${ms}ms）：${res.error ?? '模型未返回内容'}`,
+      ms,
+    };
   },
 
   /** 供调度使用：拿到含解密密钥的运行时配置 */

@@ -1,5 +1,5 @@
 import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult, TokenUsage } from './types';
-import { withTimeout, formatHttpError, normalizeModels, readStreamLines, TIMEOUT_CODE, extractVendorError, statusHint } from './netutil';
+import { withTimeout, formatHttpError, normalizeModels, readStreamLines, TIMEOUT_CODE, extractVendorError, statusHint, probeOkMessage } from './netutil';
 import { streamTruncatedError, outputStoppedError, describeError } from './types'; // T00779：流式截断统一错误文案
 
 interface ChatCompletionResp {
@@ -143,9 +143,12 @@ export class OpenAICompatAdapter implements AIAdapter {
       const res = await withTimeout(fetch(url, {
         headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {},
       }), config.timeoutMs ?? 10000);
-      return res.ok
-        ? { ok: true, message: '连接成功' }
-        : { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
+      if (!res.ok) return { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
+      // T02208：不再报「连接成功」。这里把目录体读出来，一是给出「目录确实可读」的证据（模型条数），
+      // 二是如实标明本次请求是否真带了密钥——不带密钥也能通过，正说明该接口不校验鉴权。
+      const models = normalizeModels(await res.json().catch(() => null));
+      const extra = `（${models.length > 0 ? `${models.length} 个模型` : '目录为空'}${config.apiKey ? '' : '，且本次未带密钥'}）`;
+      return { ok: true, message: probeOkMessage('网关可达，模型目录可读', extra) };
     } catch (e) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) };
     }
