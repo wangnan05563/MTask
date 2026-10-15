@@ -1,5 +1,5 @@
 import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult, TokenUsage } from './types';
-import { withTimeout, formatHttpError, normalizeModels, readStreamLines, TIMEOUT_CODE } from './netutil';
+import { withTimeout, formatHttpError, normalizeModels, readStreamLines, TIMEOUT_CODE, extractVendorError, statusHint } from './netutil';
 import { streamTruncatedError, outputStoppedError, describeError } from './types'; // T00779：流式截断统一错误文案
 
 interface ChatCompletionResp {
@@ -32,18 +32,19 @@ function readUsage(u: ChatCompletionResp['usage']): TokenUsage | undefined {
 
 /**
  * M6-6.1：非流式 HTTP 失败体换算（原 chat() 内联分支）。
- * 服务商错误体优先，其次 HTTP 状态；404 额外补 Base URL 排障提示（T01346）。
+ * T02207：改为吃「错误体原文」而非已解析对象——厂商形状不统一（`{code,message}`/纯文本/HTML），
+ * 原先只认 `data.error?.message`，硅基流动 402 只剩裸 `HTTP 402`；现在原文与状态码同时可见，
+ * 并对 402/401/403 追加定向提示（404 的既有排障文案保持不变）。
  */
-function httpFailure(status: number, data: ChatCompletionResp): JobResult {
-  const base = data.error?.message ?? `HTTP ${status}`;
-  // T01346：裸「HTTP 404」无法排障——404 几乎总是 Base URL 路径拼错（多/少版本段），
-  // 给出可操作提示，让用户自己就能对照修正（其余状态码保持原文不干扰既有断言）。
-  return {
-    ok: false,
-    error: status === 404
-      ? `${base} — 404 多为 Base URL 路径不对：请检查是否重复/缺失版本段（自带版本者如智谱应填 https://open.bigmodel.cn/api/paas/v4，不要再补 /v1）`
-      : base,
-  };
+function httpFailure(status: number, errText: string): JobResult {
+  const detail = extractVendorError(errText);
+  const base = detail
+    ? status === 200 ? detail : `${detail}（HTTP ${status}）`
+    : `HTTP ${status}`;
+  const hint = status === 404
+    ? '404 多为 Base URL 路径不对：请检查是否重复/缺失版本段（自带版本者如智谱应填 https://open.bigmodel.cn/api/paas/v4，不要再补 /v1）'
+    : statusHint(status);
+  return { ok: false, error: hint ? `${base} — ${hint}` : base };
 }
 
 /**
@@ -215,16 +216,24 @@ export class OpenAICompatAdapter implements AIAdapter {
         config.timeoutMs ?? 60000,
       );
 
-      const data = (await res.json()) as ChatCompletionResp;
-      if (!res.ok || data.error) return httpFailure(res.status, data);
-      const choice = data.choices?.[0];
+      // T02207：先取文本再试解析。原先直接 `res.json()`，厂商返回非 JSON 错误体（网关 HTML/纯文本）时
+      // 抛的解析异常会顶替真实原因，错误文案与厂商原文完全无关；正文也只剩一次读取通道可用。
+      const text = await res.text().catch(() => '');
+      let data: ChatCompletionResp | null = null;
+      try {
+        data = text ? JSON.parse(text) as ChatCompletionResp : null;
+      } catch {
+        data = null;
+      }
+      if (!res.ok || data?.error) return httpFailure(res.status, text);
+      const choice = data?.choices?.[0];
       const content = choice?.message?.content ?? '';
       // T00714（D-6 修复）：截断/风控/空正文一律显式报错，不再把残缺输出静默交给上层做 JSON 解析
       // （曾表现为「AI 未返回有效的 PRD 解析结果」误导排障）；记 ok=false 进 ai_usage。
       const stopped = stoppedFailure(choice, content);
       if (stopped) return stopped;
       // T01289：成功时带出 token 用量（服务商未回传则缺省），供监督器成本预算护栏累加
-      return { ok: true, content, usage: readUsage(data.usage) };
+      return { ok: true, content, usage: readUsage(data?.usage) };
     } catch (e) {
       return failureFromError(e, signal);
     }

@@ -24,19 +24,52 @@ export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }
 
-/** 解析厂商 HTTP 错误响应：优先提取 OpenAI 兼容协议的 error.message（error 为对象或字符串两种形态） */
-export function formatHttpError(status: number, errText: string): string {
-  let detail = `API 返回 ${status}`;
+/**
+ * T02207：厂商 HTTP 错误体的原文抽取。
+ * 各家形状并不统一：OpenAI 兼容 `{error:{message}}`（`error` 也可能是字符串）、
+ * 硅基流动等国内网关 `{code,message}` / `{msg}` / `{error_message}`，网关拦截干脆是 HTML/纯文本。
+ * 只认 OpenAI 形状会让 402「账户门禁」退化成裸状态码，用户无从判断是计费还是请求问题（T02197 实测）。
+ * 抽不到具名信息时回退原始文本前 200 字符——「厂商原文 + 状态码同时可见」是本函数的底线口径。
+ */
+export function extractVendorError(errText: string): string {
+  if (!errText) return '';
   try {
-    const errJson = JSON.parse(errText) as { error?: { message?: string } | string };
-    const msg = typeof errJson.error === 'string' ? errJson.error : errJson.error?.message;
-    if (msg) detail += `: ${msg}`;
-  } catch {
-    if (errText) detail += `: ${errText.slice(0, 200)}`;
-  }
+    const j = JSON.parse(errText) as Record<string, unknown>;
+    const pick = (v: unknown): string => (typeof v === 'string' && v.trim() ? v.trim() : '');
+    const err = j.error as Record<string, unknown> | string | undefined;
+    const msg = pick(err)
+      || (err && typeof err === 'object' ? pick(err.message) || pick(err.type) : '')
+      || pick(j.message) || pick(j.msg) || pick(j.error_message) || pick(j.detail);
+    if (msg) {
+      const code = typeof j.code === 'string' || typeof j.code === 'number' ? `（code ${j.code}）` : '';
+      return msg + code;
+    }
+  } catch { /* 非 JSON：落到原始文本 */ }
+  return errText.slice(0, 200);
+}
+
+/**
+ * T02207：状态码定向提示——只给「用户自己就能核对」的方向，不替厂商下结论。
+ * 402 是计费/余额门禁（请求本身没问题，重试无意义）；401/403 高发原因是密钥与 Endpoint 厂商不匹配。
+ * 404 的排障文案由调用方各自维持（措辞已成形，不在此重排），429 保留厂商原文不加戏。
+ */
+export function statusHint(status: number): string {
+  if (status === 402) return '402 为厂商侧计费/余额门禁（请求本身无误，重试无效）：请到厂商控制台确认额度或充值后重试';
+  if (status === 401 || status === 403) return '401/403 多为密钥与该 Endpoint 的厂商不匹配：OpenRouter 须 sk-or-v1- 前缀、Groq 须 gsk_ 前缀，另核对是否漏填/重复 Bearer 前缀';
+  return '';
+}
+
+/** 解析厂商 HTTP 错误响应：优先提取错误体原文（多形状兼容），并附状态码定向提示 */
+export function formatHttpError(status: number, errText: string): string {
+  const detail = extractVendorError(errText);
+  let out = detail ? `API 返回 ${status}: ${detail}` : `API 返回 ${status}`;
   // T01346：404 多为 Base URL 路径不对（多/少版本段），补一句可操作提示
-  if (status === 404) detail += '（404 多为 Base URL 路径不对：请检查是否重复/缺失版本段）';
-  return detail;
+  if (status === 404) out += '（404 多为 Base URL 路径不对：请检查是否重复/缺失版本段）';
+  else {
+    const hint = statusHint(status);
+    if (hint) out += `（${hint}）`;
+  }
+  return out;
 }
 
 /** 归一化服务商返回的模型列表为统一的 string[]。
