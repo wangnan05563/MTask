@@ -712,18 +712,53 @@ function validateOutlinePage(v: unknown, index: number, warnings: string[]): Kic
  * schema 校验（§3.2）：在 `askJson` 的 parse 回调内逐条硬失败，不合格即抛错触发自带重试。
  * 只对「模型能自己改对」的项硬失败（页数/layout/dataKeys/bullet 字数/必含页）；
  * 标题超长、bullet 超行这类属版式收敛，规范化 + 记 warnings，不把可用大纲打死。
+ *
+ * `lenientDataKeys`（T02172）：提示词里「一页 dataKeys ≤2」原本是**软约束**——模型给 3 块时
+ * 全靠版面兜底，于是同页图表被压到不可读（见 T02166 派生）。现在首轮按硬约束抛错走 RETRY；
+ * 重试轮仍超限就不再打死整份大纲，截断为前 2 个并在 warnings 点名被去掉的键（有回执的软着陆）。
  */
-export function validateOutline(raw: unknown): { outline: KickoffOutlineItem[]; warnings: string[] } {
+export function validateOutline(raw: unknown, opts: { lenientDataKeys?: boolean } = {}): { outline: KickoffOutlineItem[]; warnings: string[] } {
   if (!Array.isArray(raw)) throw new Error('大纲必须是 JSON 数组');
   if (raw.length < PAGE_MIN || raw.length > PAGE_MAX) {
     throw new Error(`页数 ${raw.length} 不在 ${PAGE_MIN}~${PAGE_MAX} 区间`);
   }
   const warnings: string[] = [];
   const outline: KickoffOutlineItem[] = raw.map((v, i) => validateOutlinePage(v, i, warnings));
+  outline.forEach((p, i) => assertDataKeyBudget(p, i, outline, warnings, opts.lenientDataKeys === true));
   // 必含两页（FR-4.5 时间线 / FR-4.6 工作量）——缺任一页等于稿子不可用，硬失败让模型补齐
   if (!outline.some((p) => p.dataKeys.includes('timeline'))) throw new Error(`大纲缺少时间线页（须有一页 dataKeys 含 'timeline'）`);
   if (!outline.some((p) => p.dataKeys.includes('workload'))) throw new Error(`大纲缺少工作量页（须有一页 dataKeys 含 'workload'）`);
   return { outline, warnings };
+}
+
+/** 一页可挂的数据块上限：3 块加要点必然挤爆版面（装配层只能压扁或整块省略） */
+const DATA_KEYS_MAX = 2;
+
+/**
+ * `dataKeys ≤ ${DATA_KEYS_MAX}` 的执行体。严格模式抛错（触发自带重试）；
+ * 宽松模式截断——但**全稿唯一的必含键（timeline/workload）优先保留**：
+ * 截断把唯一的时间线页截没了，就是用软约束制造了一次硬失败。
+ */
+function assertDataKeyBudget(
+  page: KickoffOutlineItem,
+  index: number,
+  outline: KickoffOutlineItem[],
+  warnings: string[],
+  lenient: boolean
+): void {
+  if (page.dataKeys.length <= DATA_KEYS_MAX) return;
+  const at = `第 ${index + 1} 页`;
+  if (!lenient) {
+    throw new Error(`${at} dataKeys ${page.dataKeys.length} 个超出 ${DATA_KEYS_MAX} 个上限（${page.dataKeys.join('/')}）——一页 3 块加要点会挤爆版面`);
+  }
+  const uniqueRequired = page.dataKeys.filter(
+    (k) => (k === 'timeline' || k === 'workload') && outline.filter((q) => q.dataKeys.includes(k)).length === 1
+  );
+  const kept = [...uniqueRequired, ...page.dataKeys.filter((k) => !uniqueRequired.includes(k))].slice(0, DATA_KEYS_MAX);
+  const dropped = page.dataKeys.filter((k) => !kept.includes(k));
+  warnings.push(`${at} dataKeys ${page.dataKeys.length} 个超出 ${DATA_KEYS_MAX} 个上限，重试后仍超限，已截断为 ${kept.join('/')}（去掉：${dropped.join('/')}）`);
+  page.dataKeys.length = 0;
+  page.dataKeys.push(...kept);
 }
 
 const OUTLINE_SYSTEM = `你是项目启动会 PPT 的大纲编排器。只输出一个 JSON 数组，不要任何解释文字、不要代码围栏之外的内容。
@@ -747,6 +782,7 @@ const OUTLINE_SYSTEM = `你是项目启动会 PPT 的大纲编排器。只输出
 
 const OUTLINE_SYSTEM_RETRY = `只输出 JSON 数组（${PAGE_MIN}~${PAGE_MAX} 个元素），元素：{section,title,bullets,dataKeys,layout}。
 section∈[${KICKOFF_SECTIONS.join('|')}] layout∈[${KICKOFF_LAYOUTS.join('|')}] dataKeys⊆[${KICKOFF_DATA_KEYS.join('|')}]
+每页 dataKeys **≤${DATA_KEYS_MAX} 个**（超出会被系统截断）；
 bullets 每条≤${BULLET_MAX_CHARS}字；必须有含 timeline 的一页和含 workload 的一页；数字一律用 dataKeys 表示，禁止编造数字。
 第 1 页 cover、第 2 页 toc、末页 thanks；章节分隔用 section（dataKeys 空）。`;
 
@@ -826,11 +862,17 @@ export async function kickoffOutline(projectId: string, toolId: string, extraNot
   const user = `【资料齐备性与真实计数】\n${outlineFacts(bundle)}\n\n【PRD 摘要】\n${bundle.prdExcerpt || '（无 PRD 原文）'}${
     extraNote ? `\n\n【用户补充要求】\n${extraNote}` : ''
   }\n\n请按上述约束输出 ${PAGE_MIN}~${PAGE_MAX} 页的大纲 JSON 数组。`;
+  // T02172：dataKeys 上限的执行时机——第 1 次解析严格（超限抛错，让 askJson 用 RETRY 提示再问一轮），
+  // 第 2 次解析起转软（截断 + warning 点名）。用解析回调的调用次数当轮次，不去改 askJson 的通用重试协议。
+  let parseRound = 0;
   const ai = await AIService.askJson<{ outline: KickoffOutlineItem[]; warnings: string[] }>(
     toolId,
     OUTLINE_SYSTEM,
     user,
-    (content) => validateOutline(parseOutlinePayload(content)),
+    (content) => {
+      parseRound++;
+      return validateOutline(parseOutlinePayload(content), { lenientDataKeys: parseRound > 1 });
+    },
     { retrySystem: OUTLINE_SYSTEM_RETRY, temperature: 0 },
   );
   if (!ai.ok || ai.data === undefined) throw new Error(`AI 未返回合规大纲：${ai.error ?? '未知原因'}`);

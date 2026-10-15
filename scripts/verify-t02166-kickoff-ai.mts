@@ -222,6 +222,17 @@ if (!(await waitUp())) {
       tlRenderIdx.every((i) => /prst="line"/.test(xmls[i]) && /prst="rect"/.test(xmls[i]) && !/<a:tbl>/.test(xmls[i])),
     tlRenderIdx.map((i) => renderPages[i].title));
 
+  // T02172：图表压到 0.45" 是 placed 但读不出结论——实排高按类型设下限，低于下限只能整块省略并点名
+  const chartsIn = (x: string) =>
+    (x.match(/<p:graphicFrame>[\s\S]*?<\/p:graphicFrame>/g) ?? [])
+      .filter((f) => /\/chart/.test(f))
+      .map((f) => Number(/<a:ext cx="(\d+)" cy="(\d+)"/.exec(f)?.[2] ?? 0) / 914_400);
+  const chartHeights = xmls.flatMap(chartsIn);
+  const chartDrops = warns.filter((w) => /空间不足，已省略/.test(w) && /图表/.test(w));
+  ok('C-09 真产物每张图表实排高 ≥ 1.2" 可读下限；画不下的必须带 drop 留痕（placed 或点名，二选一，不许静默压扁）',
+    chartHeights.every((h) => h >= 1.2 - 1e-4) && (chartHeights.length > 0 || chartDrops.length > 0),
+    { heights: chartHeights.map((h) => Number(h.toFixed(2))), chartDrops });
+
   // 「空间不足，已省略」只允许出现在**时间线形状页**：那一页同一批里程碑已由菱形/条形承载，
   // 同页再挂一张表格是重复信息，省略它是版式取舍；其他任何页丢块都是真丢内容（必须为 0）。
   const tlPageNos = new Set(tlRenderIdx.map((i) => i + 1));

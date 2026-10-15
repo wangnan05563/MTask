@@ -601,6 +601,17 @@ function blockHeight(src: Omit<Block, 'box'>, width: number): number {
 
 /** 块最小可排高度：低于它画出来就是压扁的字或看不见的图，不如省略 */
 const MIN_BLOCK_H = 0.45;
+/**
+ * 图表的最小**可读**高（T02172）：文本压到 0.45" 只是截字，图表压到 0.45" 是刻度、
+ * 图例、环心全部叠成一团——块确实 placed 了（不丢内容），但人读不出任何结论，
+ * 那比「少一块并点名」更糟。所以图表按类型另设下限，低于它宁可 drop 并留痕。
+ */
+const MIN_CHART_H = 1.2;
+
+/** 柔性块的分型下限：图表要能读，文本只要不压字 */
+function minReadableH(src: Omit<Block, 'box'>): number {
+  return src.chart ? MIN_CHART_H : MIN_BLOCK_H;
+}
 
 /** `clampRows` 折行提示行的形态：`其余 n 条/个/人/项` */
 const REST_ROW_RE = /^其余\s*(\d+)\s*(条|个|人|项)/;
@@ -617,7 +628,11 @@ export function fitTableRows(table: NonNullable<Block['table']>, maxRows: number
   const dataRows = restIdx >= 0 ? table.rows.filter((_, i) => i !== restIdx) : table.rows;
   if (restIdx < 0 && dataRows.length <= maxRows) return table;
   const restMatch = restIdx >= 0 ? REST_ROW_RE.exec((table.rows[restIdx][0] ?? '').trim()) : null;
-  const visible = dataRows.slice(0, Math.max(1, Math.min(dataRows.length, maxRows - 1)));
+  // T02172：`maxRows` 是**总行数**上限（含折行提示行）。此前用 `Math.max(1, …)` 兜底恒留 1 条数据行，
+  // 于是 maxRows=1 时仍排「1 数据 + 1 计数」= 2 行 → 刚性表格超出预算 0.05" → 被整块 drop。
+  // 图表抬到 1.2" 可读高后这类极限页变多，收无可收时让计数行单独成表：仍然「一条不谎称画全」，
+  // 但块是 placed 的（少一块比画一块越界的更糟）。
+  const visible = dataRows.slice(0, Math.max(0, Math.min(dataRows.length, maxRows - 1)));
   const hidden = (restMatch ? Number(restMatch[1]) : 0) + dataRows.length - visible.length;
   if (hidden <= 0) return { ...table, rows: visible };
   const restRow = restIdx >= 0 ? [...table.rows[restIdx]] : table.header.map(() => '');
@@ -633,7 +648,7 @@ function maxRowsFor(height: number): number {
 
 /** 柔性块（文本/图表）的保底占位：裁到不能再裁也就这么多，预算与实排都按这个口径算 */
 function flexStrip(blocks: Array<Omit<Block, 'box'>>): number {
-  return blocks.filter((d) => d.table == null).length * (MIN_BLOCK_H + MIN_GAP);
+  return blocks.filter((d) => d.table == null).reduce((s, d) => s + minReadableH(d) + MIN_GAP, 0);
 }
 
 /**
@@ -660,13 +675,15 @@ function fitStack(cursor: number, blocks: Array<Omit<Block, 'box'>>, bottom: num
   for (;;) {
     const poolNat = pool.reduce((s, i) => s + naturals[i], 0);
     const budget = flexBudget - reserved;
-    const firstBelowFloor = pool.find((i) => poolNat > 0 && (naturals[i] / poolNat) * budget < MIN_BLOCK_H);
+    // T02172：触底线按块类型取（图表 1.2" / 文本 0.45"），不再统一 0.45"
+    const firstBelowFloor = pool.find((i) => poolNat > 0 && (naturals[i] / poolNat) * budget < minReadableH(blocks[i]));
     if (firstBelowFloor === undefined) {
       for (const i of pool) heights[i] = poolNat > 0 ? Math.min(naturals[i], (naturals[i] / poolNat) * budget) : 0;
       break;
     }
-    reserved += MIN_BLOCK_H;
-    heights[firstBelowFloor] = MIN_BLOCK_H;
+    const floor = minReadableH(blocks[firstBelowFloor]);
+    reserved += floor;
+    heights[firstBelowFloor] = floor;
     pool = pool.filter((i) => i !== firstBelowFloor);
     if (!pool.length) break;
   }
@@ -708,7 +725,8 @@ function pushStackedBlocks(out: Block[], dropped: string[], dataBlocks: Array<Om
       out.push({ box: boxes[i], ...d });
       return;
     }
-    if (avail < MIN_BLOCK_H) {
+    if (avail < minReadableH(d)) {
+      // T02172：图表拿不到可读高就整块省略并点名（宁可少一块，不画一块看不清的）
       dropped.push(describe(d));
       return;
     }

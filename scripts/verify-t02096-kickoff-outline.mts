@@ -56,8 +56,8 @@ const bundleSrc = svcSrc.slice(svcSrc.indexOf('// ---------- 资料采集 Bundle
 const preflightSrc = svcSrc.slice(svcSrc.indexOf('// ---------- 前置校验'), svcSrc.indexOf('// ---------- 资料采集 Bundle'));
 
 ok('S-01 前置校验段零 AI 依赖（FR-2.3 只读、零配额）', !/AIService|askJson|fetch\(/.test(preflightSrc));
-ok('S-02 schema 校验在 askJson 的 parse 回调内（不合格即触发自带重试）',
-  /askJson[\s\S]{0,200}\(content\) => validateOutline\(parseOutlinePayload\(content\)\)/.test(outlineSrc));
+ok('S-02 schema 校验在 askJson 的 parse 回调内（不合格即触发自带重试；T02172 起第 2 轮才转软截断）',
+  /askJson[\s\S]{0,600}parseRound\+\+[\s\S]{0,160}validateOutline\(parseOutlinePayload\(content\), \{ lenientDataKeys: parseRound > 1 \}\)/.test(outlineSrc));
 ok('S-03 页数 12~18 与必含 timeline/workload 硬失败并点名',
   /页数 \$\{raw\.length\} 不在/.test(outlineSrc) && /缺少时间线页/.test(outlineSrc) && /缺少工作量页/.test(outlineSrc));
 ok('S-04 数字铁律写进 system 提示（数字只走 dataKeys，禁止模型自填）',
