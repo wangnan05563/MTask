@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api, type Project } from '../api/client';
 import { streamEvents } from '../api/sse';
@@ -96,9 +96,12 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
   const removePickedFile = (idx: number) => setPickedFiles((prev) => prev.filter((_, i) => i !== idx));
   const { streaming } = snap;
   const activeItem = activeBatchId ? snap.batch.find((b) => b.id === activeBatchId) ?? null : null;
-  const result = activeItem && !activeItem.failed
+  // T02192：result 必须引用稳定。原先每次渲染都新建 `{prdMd, issues}` 字面量，
+  // 使下方 useEffect 的 `[result]` 依赖每帧都判为「已变化」→ setRows → 再渲染，形成无限重渲染；
+  // 待确认表格随之每次提交整体重挂载——点击无法聚焦、拖拽无法圈选、自定义问题行一闪即被重置。
+  const result = useMemo(() => (activeItem && !activeItem.failed
     ? { prdMd: activeItem.prdMd, issues: activeItem.issues }
-    : snap.result;
+    : snap.result), [activeItem, snap.result]);
 
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
   useEffect(() => {
@@ -135,8 +138,10 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
   useEffect(() => {
     if (result) {
       const batch = readConclusionBatch(result.prdMd);
-      const stamp = Date.now();
-      setRows(result.issues.map((x, i) => ({ ...x, answer: batch[x.question] ?? '', key: `gi-${stamp}-${i}` })));
+      // T02192：行标识取正文指纹而非 Date.now()——同一份 PRD 再次填充时键保持不变，React 才会复用原
+      // 行节点（时间戳键会让每次填充都重挂载整张表，正在聚焦/圈选的节点当场被替换）
+      const gen = hashStr(result.prdMd);
+      setRows(result.issues.map((x, i) => ({ ...x, answer: batch[x.question] ?? '', key: `gi-${gen}-${i}` })));
     }
   }, [result]);
 
