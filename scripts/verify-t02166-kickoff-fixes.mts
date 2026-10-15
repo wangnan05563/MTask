@@ -9,6 +9,8 @@
  *        无表格页保留原排版（不无端压 bullets）。
  *   F 组：`fitTableRows` 版面收行——表格排不下时按剩余高度收行并把被收掉的行并进
  *        「其余 n 条」计数，而不是整块 drop（整块 drop 就是用户反馈的「各页只剩套话」）。
+ *   G 组：真链路（真实 AI 大纲 + 真项目）回灌的两形态——表格+文本+要点同页不得把预算算成负数，
+ *        文本+图表同页时图表等比裁（`fitStack`）而不是被「空间不足」整块省略。
  *
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02166-kickoff-fixes.mts
  * 结果落 .workbuddy/t02166-gate-results.txt。
@@ -331,6 +333,94 @@ ok('F-06 收行后的表格不越页（刚性块只在「连 1 行都排不下�
     return tlPageF.blocks.filter((b) => b.table).every((b) => b.box.y + b.box.h <= bottom + 1e-6);
   })(),
   tlPageF.blocks.filter((b) => b.table).map((b) => ({ y: b.box.y, h: b.box.h })));
+
+// ---------- G 组：真链路回灌（mtask五期 真 AI 大纲暴露的两形态） ----------
+// 第 4 页形态：表格 + 文本块 + 要点同页。此前预算只给要点留位、没给文本块留位，
+// 实排时文本块又吃掉一段 → 剩余算成负数 → 要点被「让位」整块不排（面板报 剩余 -0.05"）。
+const mixedPage = (M as unknown as {
+  layoutBody: (item: unknown, b: unknown, frames: unknown, bullets: string[]) => {
+    blocks: Array<{ box: { y: number; h: number }; table?: unknown; text?: unknown }>;
+    dropped: string[];
+    notes: string[];
+  };
+}).layoutBody(
+  { title: 't', bullets: ['核心功能需求一', '核心功能需求二', '核心功能需求三'], dataKeys: ['reqList', 'reqStats'], layout: 'table', section: '正文' },
+  bigBundle,
+  lay.framesFor('data'),
+  ['核心功能需求一', '核心功能需求二', '核心功能需求三']
+);
+ok('G-01 表格+文本+要点同页：三块都 placed，无丢块且无「让位不排」（预算与实排同口径）',
+  mixedPage.dropped.length === 0 &&
+    mixedPage.blocks.filter((b) => b.table).length === 1 &&
+    mixedPage.blocks.filter((b) => b.text).length === 2 &&
+    !mixedPage.notes.some((n) => /未排入版面/.test(n)),
+  { dropped: mixedPage.dropped, notes: mixedPage.notes, blocks: mixedPage.blocks.length });
+
+// 第 7 页形态：文本 + 图表（自然高 2.4"）+ 要点。此前图表按自然高排队，末尾只剩零点几英寸
+// → 被当「排不下」整块省略，页面少一块真数据。现在柔性块等比裁，图必须在。
+// workload 的柱图只在有阶段分布时才出块（phases ≥ 2），fixture 必须造真实分布
+const phaseBundle = {
+  ...bigBundle,
+  workload: {
+    ...bigBundle.workload,
+    phases: [
+      { phase: '需求分析', expected: 12, optimistic: 9, pessimistic: 18 },
+      { phase: '开发', expected: 30, optimistic: 24, pessimistic: 42 },
+      { phase: '测试', expected: 14, optimistic: 10, pessimistic: 20 },
+    ],
+  },
+};
+const chartPage = (M as unknown as {
+  layoutBody: (item: unknown, b: unknown, frames: unknown, bullets: string[]) => {
+    blocks: Array<{ box: { y: number; h: number }; chart?: unknown; text?: unknown }>;
+    dropped: string[];
+    notes: string[];
+  };
+}).layoutBody(
+  { title: 't', bullets: longBullets, dataKeys: ['workload'], layout: 'chart', section: '正文' },
+  phaseBundle,
+  lay.framesFor('data'),
+  longBullets
+);
+ok('G-02 文本+图表页余量不足：图表等比裁后 placed（不再被「空间不足」整块省略）',
+  chartPage.dropped.length === 0 && chartPage.blocks.some((b) => b.chart),
+  { dropped: chartPage.dropped, blocks: chartPage.blocks.map((b) => ({ h: Number(b.box.h.toFixed(2)), kind: b.chart ? 'chart' : 'text' })) });
+
+ok('G-03 裁后仍在画布内（柔性块缩到保底高度也不越页）',
+  (() => {
+    const bottom = lay.getContentFrame().y + lay.getContentFrame().h;
+    return [...mixedPage.blocks, ...chartPage.blocks].every((b) => b.box.y + b.box.h <= bottom + 1e-6);
+  })(),
+  [...mixedPage.blocks, ...chartPage.blocks].map((b) => ({ y: Number(b.box.y.toFixed(2)), h: Number(b.box.h.toFixed(2)) })));
+
+// 第 9 页形态（真链路 mtask五期）：双栏页同时挂 要点 + 覆盖率文本 + 覆盖率图 + 需求表。
+// 旧 fitStack 逐块取 `max(下限, 自然高比例)`：先触底的文本块把自己垫到 0.45，图表仍按
+// **全预算**分比例（0.73），两块合计 1.18 > 预算 1.005 → 超出的 0.18 把同页表格挤到
+// avail 不足 → 表格整块被省略（就是用户看到的「这页怎么没内容」）。注水分配后：
+// 触底块退出竞争，余量在未完成块之间重分，柔性块合计恒 ≤ 预算。
+const flexOverrunPage = (M as unknown as {
+  layoutBody: (item: unknown, b: unknown, frames: unknown, bullets: string[]) => {
+    blocks: Array<{ box: { y: number; h: number }; table?: unknown; chart?: unknown; text?: unknown }>;
+    dropped: string[];
+  };
+}).layoutBody(
+  { title: 't', bullets: longBullets, dataKeys: ['coverage', 'reqList'], layout: 'twoCol', section: '正文' },
+  covBundle,
+  lay.framesFor('twoCol', 'twoCol', lay.TEXT_SPLIT),
+  longBullets
+);
+ok('G-04 双栏页 要点+文本+图表+表格：柔性块注水不超预算，表格与图表都 placed（真链路第 9 页形态）',
+  flexOverrunPage.dropped.length === 0 &&
+    flexOverrunPage.blocks.some((b) => b.table) &&
+    flexOverrunPage.blocks.some((b) => b.chart),
+  {
+    dropped: flexOverrunPage.dropped,
+    blocks: flexOverrunPage.blocks.map((b) => ({
+      kind: b.table ? 'table' : b.chart ? 'chart' : 'text',
+      y: Number(b.box.y.toFixed(2)),
+      h: Number(b.box.h.toFixed(2)),
+    })),
+  });
 
 // 源码层守门：确认 clip 表 h 的路径只对非 table 生效
 ok('R-05 源码：pushStackedBlocks 中 table 走 drop 分支，chart/text 走 clip 分支',

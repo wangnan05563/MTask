@@ -608,6 +608,49 @@ function maxRowsFor(height: number): number {
   return Math.max(1, Math.floor((height - TABLE_PAD) / TABLE_ROW_H) - 1);
 }
 
+/** 柔性块（文本/图表）的保底占位：裁到不能再裁也就这么多，预算与实排都按这个口径算 */
+function flexStrip(blocks: Array<Omit<Block, 'box'>>): number {
+  return blocks.filter((d) => d.table == null).length * (MIN_BLOCK_H + MIN_GAP);
+}
+
+/**
+ * 纵向排布：刚性表格保自然高（裁盒无效），柔性块（文本/图表）在剩余高度内
+ * 按自然高比例**等比裁**（T02166）——此前它们拿自然高排队，末尾的图表只剩
+ * 零点几英寸 → 被 `pushStackedBlocks` 当「排不下」整块省略，页面少一块真数据。
+ *
+ * 等比裁用「注水」而非逐块 `max(下限, 比例)`：逐块取上限时，先触底的块把自己
+ * 垫到下限、剩下的块仍按**全预算**分比例，两者相加就超出 `flexBudget`
+ * （真链路第 9 页要点 0.45 + 图表 0.73 = 1.18 > 预算 1.005，多出的 0.18 直接把
+ * 同页表格挤到「排不下」→ 又被整块省略）。注水口径：触底的块退出分配，
+ * 余下预算在未完成块之间重分，因此柔性块合计恒 ≤ 预算（下限本身超预算时除外，
+ * 那种页是真的装不下，仍走如实 drop）。
+ */
+function fitStack(cursor: number, blocks: Array<Omit<Block, 'box'>>, bottom: number, width: number, body: Box): Box[] {
+  const naturals = blocks.map((d) => blockHeight(d, width));
+  const gaps = MIN_GAP * Math.max(0, blocks.length - 1);
+  const rigidSum = blocks.reduce((s, d, i) => s + (d.table ? naturals[i] : 0), 0);
+  const flexIdx = blocks.map((d, i) => (d.table ? -1 : i)).filter((i) => i >= 0);
+  const flexBudget = Math.max(0, bottom - cursor - gaps - rigidSum);
+  const heights = naturals.slice();
+  let reserved = 0;
+  let pool = flexIdx.slice();
+  for (;;) {
+    const poolNat = pool.reduce((s, i) => s + naturals[i], 0);
+    const budget = flexBudget - reserved;
+    const firstBelowFloor = pool.find((i) => poolNat > 0 && (naturals[i] / poolNat) * budget < MIN_BLOCK_H);
+    if (firstBelowFloor === undefined) {
+      for (const i of pool) heights[i] = poolNat > 0 ? Math.min(naturals[i], (naturals[i] / poolNat) * budget) : 0;
+      break;
+    }
+    reserved += MIN_BLOCK_H;
+    heights[firstBelowFloor] = MIN_BLOCK_H;
+    pool = pool.filter((i) => i !== firstBelowFloor);
+    if (!pool.length) break;
+  }
+  return stackY(cursor, heights.map((h) => ({ h })), MIN_GAP, { x: body.x, y: cursor, w: body.w, h: bottom - cursor });
+}
+
+
 /**
  * 把刚性表格收到版面预算内（同页多表均分预算）。
  * `budget` 已经扣掉要点/其他块要占的高度；排得下就原样返回，不无端收行。
@@ -709,18 +752,18 @@ export function layoutBody(
 
   if (frames.cols) {
     const [left, right] = frames.cols;
-    const dataBlocks = fitRigidTables(rawBlocks, right.w, right.h);
+    const dataBlocks = fitRigidTables(rawBlocks, right.w, right.h - flexStrip(rawBlocks));
     if (bullets.length) out.push({ box: left, text: { content: bullets.join('\n'), pt: MIN_BODY_PT } });
-    const colFrame: Box = { x: right.x, y: right.y, w: right.w, h: right.h };
-    const boxes = stackY(right.y, dataBlocks.map((d) => ({ h: blockHeight(d, right.w) })), MIN_GAP, colFrame);
-    pushStackedBlocks(out, dropped, dataBlocks, boxes, bottom);
+    const boxes = fitStack(right.y, dataBlocks, right.y + right.h, right.w, right);
+    pushStackedBlocks(out, dropped, dataBlocks, boxes, right.y + right.h);
     return { blocks: out, dropped, notes, violations: [] };
   }
 
+  const flexReserve = flexStrip(rawBlocks);
   const dataBlocks = fitRigidTables(
     rawBlocks,
     body.w,
-    bodyAvail - (bullets.length || rawBlocks.some((d) => d.table == null) ? MIN_BLOCK_H + MIN_GAP : 0) - (tlShape ? TL_MIN_H + MIN_GAP : 0)
+    bodyAvail - flexReserve - (bullets.length ? MIN_BLOCK_H + MIN_GAP : 0) - (tlShape ? TL_MIN_H + MIN_GAP : 0)
   );
 
   let cursor = body.y;
@@ -732,7 +775,7 @@ export function layoutBody(
     // 余量不足一个最小块时要点整块让位并如实留痕——留数据、不留套话。
     const rigidUsed =
       dataBlocks.filter((d) => d.table != null).reduce((s, d) => s + blockHeight(d, body.w) + MIN_GAP, 0) +
-      dataBlocks.filter((d) => d.table == null).reduce((s, d) => s + MIN_BLOCK_H + MIN_GAP, 0) +
+      flexStrip(dataBlocks) +
       (tlShape ? TL_MIN_H + MIN_GAP : 0);
     const capH = bodyAvail - rigidUsed;
     if (capH >= MIN_BLOCK_H) {
@@ -761,7 +804,7 @@ export function layoutBody(
   const stackBlocks = tlShape
     ? fitRigidTables([...dataBlocks, ...blocksForKey('timeline', b)], body.w, bottom - cursor)
     : dataBlocks;
-  const boxes = stackY(cursor, stackBlocks.map((d) => ({ h: blockHeight(d, body.w) })));
+  const boxes = fitStack(cursor, stackBlocks, bottom, body.w, body);
   pushStackedBlocks(out, dropped, stackBlocks, boxes, bottom);
   return { blocks: out, dropped, notes, violations: [] };
 }

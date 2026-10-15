@@ -731,7 +731,7 @@ const OUTLINE_SYSTEM = `你是项目启动会 PPT 的大纲编排器。只输出
 1. 页数 ${PAGE_MIN}~${PAGE_MAX}；
 2. section 只能取：${KICKOFF_SECTIONS.join(' / ')}；
 3. layout 只能取：${KICKOFF_LAYOUTS.join(' / ')}；
-4. dataKeys 只能取：${KICKOFF_DATA_KEYS.join(' / ')}；一页可多个；
+4. dataKeys 只能取：${KICKOFF_DATA_KEYS.join(' / ')}；一页可多个，但**最多 2 个**（3 个数据块加要点必然挤爆版面，装配层只能整块省略，页面就缺内容）；
 5. 每页 bullets ≤${BULLET_MAX_LINES} 条，每条 ≤${BULLET_MAX_CHARS} 字；
 6. 必须至少一页 dataKeys 含 "timeline"，至少一页 dataKeys 含 "workload"；
 7. 铁律：凡涉及条数、合计、覆盖率、日期等数字，一律只写 dataKeys 引用，由系统按库内真实数据填充——严禁自行写数字或改写数字；
@@ -741,7 +741,9 @@ const OUTLINE_SYSTEM = `你是项目启动会 PPT 的大纲编排器。只输出
    最后一页用 thanks 作结束页（标题写致谢语，dataKeys 置空）；
    其余内容页按数据形态选 twoCol/table/chart/timeline/list；
 10. T02166：bullets 必须引用【样例事实】里给过的具体名称（用「」包裹）；不得空写「各方配合」「相关任务有序推进」这类无指代套话。
-   名称只能照抄【样例事实】里出现过的，不得自造、不得改写；数字仍归 dataKeys 覆盖，bullets 不写数字。`;
+   名称只能照抄【样例事实】里出现过的，不得自造、不得改写；数字仍归 dataKeys 覆盖，bullets 不写数字。
+11. T02166：bullets 不是数据块的目录——不得写「××分布见数据」「详见下表」「计划起止时间见数据」这类只指路不自证的空指针句；
+    一条要点要把一件事说完（谁/什么/处于什么状态），具体名称按第 10 条从【样例事实】照抄。`;
 
 const OUTLINE_SYSTEM_RETRY = `只输出 JSON 数组（${PAGE_MIN}~${PAGE_MAX} 个元素），元素：{section,title,bullets,dataKeys,layout}。
 section∈[${KICKOFF_SECTIONS.join('|')}] layout∈[${KICKOFF_LAYOUTS.join('|')}] dataKeys⊆[${KICKOFF_DATA_KEYS.join('|')}]
