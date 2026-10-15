@@ -24,7 +24,9 @@
  *   T02192_GATE_PORT（默认 39941）、T02192_GATE_CDP（默认 39942）、T02192_GATE_CHROME、
  *   T02192_GATE_TMP_ROOT（默认 D:/code/tmp，**勿指 C:**——C: 常年 0 可用会假性失败）、
  *   T02192_GATE_DBG=1 打印点击坐标/圈选矩形/断言失败现场（门的失败信息必须自解释）、
- *   T02192_GATE_SKIP_BUILD=1 复用现有 web/dist（改过前端源码时别用：门的判据必须来自当前源码）
+ *   T02192_GATE_SKIP_BUILD=1 复用现有 web/dist（改过前端源码时别用：门的判据必须来自当前源码；
+ *     E-03 会比对 dist 与 web/src 的最新 mtime，dist 落后即拒绝跑交互组——本轮实测就是靠这条
+ *     拦住了「负对照把 dist 重建成缺陷态后，SKIP_BUILD 复跑报出缺陷签名被误读成修复回退」）
  * 前置：探针启动前用 addScriptToEvaluateOnNewDocument 把各菜单「使用向导」的 seen 标记种好——
  *   PageGuideDialog 是 native <dialog open>（top-layer 模态），DOM 与 elementFromPoint 看起来一切正常，
  *   但真实指针事件全被它吃掉；首轮实测就是被这条挡住，误判成「卡片点了没反应」。
@@ -32,7 +34,7 @@
  *   node node_modules/tsx/dist/cli.mjs scripts/verify-t02192-prdgen-pointer.mts --negative-control
  *   把 PrdGenPanel.tsx 临时改回「渲染期新建字面量 + Date.now() 行键」，重建 dist 后跑同一组断言，
  *   要求交互组（U/R/F/C/Q/X/G 前缀）**必须出现 FAIL**；原文按字节备份，finally 与 exit 钩子双重回写，
- *   残留备份在下次启动时先回写（自愈）。
+ *   残留备份在下次启动时先回写（自愈）；收尾会按还原后的源码再重建一次 web/dist，不把缺陷产物留给下一次跑。
  *
  * 结果同时打 stdout 与写 `.workbuddy/t02192-pointer-gate-results.txt`（首行 `PASS=… FAIL=…`）。
  */
@@ -189,6 +191,31 @@ function buildWeb(): void {
     throw new Error('vite build 失败——源码不可构建时门不给结论');
   }
 }
+
+/** 递归取目录下匹配文件的最新 mtime（附路径）；空目录返回 {at:0,path:''} */
+function newest(dir: string, re: RegExp): { at: number; path: string } {
+  let best = { at: 0, path: '' };
+  if (!existsSync(dir)) return best;
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    const got = e.isDirectory() ? newest(p, re) : re.test(e.name) ? { at: statSync(p).mtimeMs, path: p } : null;
+    if (got && got.at > best.at) best = got;
+  }
+  return best;
+}
+
+/**
+ * dist 与源码的新鲜度：源码改过但没重建时，门判的是旧产物，结论不可信。
+ * 本轮实测踩过：跑完 --negative-control（它会把 dist 重建成缺陷态）再用 SKIP_BUILD=1 复跑正对照，
+ * 报出的是缺陷签名（PASS=12 FAIL=7），一度被误读成「修复回退了」。
+ */
+function distFreshness(): { fresh: boolean; distAt: number; srcAt: number; srcPath: string; skipBuild: boolean } {
+  const d = newest(DIST, /\.(html|js|css)$/);
+  const s = newest(join(WEB, 'src'), /\.(tsx?|css)$/);
+  return { fresh: d.at > 0 && d.at >= s.at, distAt: d.at, srcAt: s.at, srcPath: s.path, skipBuild: process.env.T02192_GATE_SKIP_BUILD === '1' };
+}
+
+const stamp = (ms: number): string => (ms ? new Date(ms).toISOString().slice(0, 19).replace('T', ' ') : '无');
 
 // ---------------- CDP 客户端（Node 18+ 全局 WebSocket，无外部依赖） ----------------
 type Cdp = {
@@ -389,7 +416,9 @@ async function dumpPage(ev: Eval, where: string): Promise<void> {
 /**
  * 静态特征扫描（T02203 加分项）：组件体内 `const x = cond ? { … } : …`（未被 useMemo 包裹）
  * 且该 `x` 出现在某个 useEffect 依赖数组里 → 命中即告警。
- * 只认两空格缩进的声明行，避免把回调/函数内的局部对象误报进来。
+ * 只认两空格缩进的声明行（组件体顶层），避免把回调/函数内的局部对象误报进来。
+ * 三元两分支必须**跨行**也能咬住：T02192 的缺陷原文就是 `? {` 换行写的，
+ * 单行版正则只在负对照里失效过一次（门的静态守卫不能只认一种排版）。
  */
 function scanRenderPhaseDeps(): { files: number; hits: string[] } {
   const hits: string[] = [];
@@ -399,12 +428,19 @@ function scanRenderPhaseDeps(): { files: number; hits: string[] } {
     .map((f: string) => join(srcRoot, f));
   for (const file of files) {
     const text = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
-    const decl = /^ {2}const ([A-Za-z_$][\w$]*) = (?![^\n]{0,24}(?:useMemo|useCallback))[^\n]*?\?\s*\{/gm;
+    // 声明 → 到第一个分号为止的初始值（可跨行，上限 400 字符防失控）
+    const decl = /^ {2}const ([A-Za-z_$][\w$]*) = ([^;]{0,400});/gm;
     let m: RegExpExecArray | null;
     while ((m = decl.exec(text))) {
-      const name = m[1];
-      if (new RegExp(`\\}\\s*,\\s*\\[[^\\]]*\\b${name}\\b[^\\]]*\\]`).test(text)) {
-        hits.push(`${file.slice(ROOT.length + 1)}：const ${name} = cond ? { … } 且出现在某 useEffect 依赖数组里`);
+      const [, name, init] = m;
+      if (/^\s*(?:useMemo|useCallback)\s*[<(]/.test(init) || init.includes('useMemo(') || init.includes('useCallback(')) continue;
+      // 「渲染期新建字面量」的形态：三元真分支是对象/数组字面量，或初始值本身就是字面量。
+      // 刻意不认「冒号分支是字面量」——那会被 TS 类型标注里的 `xx?: { … }` 误咬（SettingsPage 实测踩过）。
+      const buildsLiteral = /\?\s*[[{]/.test(init) || /^\s*[[{]/.test(init);
+      if (!buildsLiteral) continue;
+      // 依赖数组必须是 hook 尾（`}, [x])`）而非任意 `[x]`——对象下标访问 `obj?.[k]` 不算
+      if (new RegExp(`\\}\\s*,\\s*\\[[^\\]]*\\b${name}\\b[^\\]]*\\]\\)`).test(text)) {
+        hits.push(`${file.slice(ROOT.length + 1)}：const ${name} = … 在渲染期新建字面量，且出现在某 useEffect 依赖数组里`);
       }
     }
   }
@@ -421,6 +457,18 @@ async function runUiChecks(): Promise<void> {
   ok('E-01 Chrome 可执行文件在场（可用 T02192_GATE_CHROME 覆盖）', existsSync(CHROME), CHROME);
   ok('E-02 web/dist 已就绪（index.html 存在）', existsSync(join(DIST, 'index.html')));
   if (!existsSync(CHROME) || !existsSync(join(DIST, 'index.html'))) return;
+
+  // E-03：判据必须来自当前源码。dist 比源码旧时，交互组跑的是旧产物——本轮实测被这条坑过一次
+  // （负对照把 dist 重建成缺陷态后，SKIP_BUILD 复跑正对照报出缺陷签名，误读成「修复回退了」）。
+  const fresh = distFreshness();
+  ok('E-03 web/dist 不早于 web/src 最新源码（门的判据来自当前源码）', fresh.fresh,
+    `dist=${stamp(fresh.distAt)} 源码=${stamp(fresh.srcAt)} 最新源码=${fresh.srcPath.replace(/\\/g, '/')}`);
+  if (!fresh.fresh && !NEGATIVE) {
+    console.log('  ⚠ dist 比源码旧：交互组判的是旧产物，结论不作数。'
+      + `${fresh.skipBuild ? '（当前 T02192_GATE_SKIP_BUILD=1）' : ''}`
+      + '请去掉 SKIP_BUILD 让门自行构建后复跑；刚跑过 --negative-control 时 dist 会被重建为缺陷态。');
+    return;
+  }
 
   const stub = startStubServer();
   let chrome: ReturnType<typeof spawn> | null = null;
@@ -664,12 +712,12 @@ if (!NEGATIVE) {
   ok('S-04 结论落盘 effect 以 rows 非空为门槛（切页首帧 rows=[] 不得被当成「用户清空结论」）',
     /if \(!result \|\| rows\.length === 0\) return;/.test(src));
 }
-const scan = scanRenderPhaseDeps();
-ok(`S-03 静态特征扫描：渲染期新建对象作 effect 依赖的组合为 0 处（扫 ${scan.files} 个 tsx，命中 ${scan.hits.length}）`,
-  scan.hits.length === 0, scan.hits.slice(0, 5));
-
 const negativeControl = NEGATIVE ? applyNegativeControl() : null;
 try {
+  // S-03 放在负对照打补丁**之后**评：否则负对照跑出来的 S-03 判的是未打补丁的源码，那个 PASS 是假的。
+  const scan = scanRenderPhaseDeps();
+  ok(`S-03 静态特征扫描：渲染期新建对象作 effect 依赖的组合为 0 处（扫 ${scan.files} 个 tsx，命中 ${scan.hits.length}）`,
+    scan.hits.length === 0, scan.hits.slice(0, 5));
   buildWeb();
   await runUiChecks();
 } catch (e) {
@@ -679,6 +727,19 @@ try {
   fail += 1;
 } finally {
   negativeControl?.restore();
+  if (NEGATIVE) {
+    // 负对照期间 dist 是按缺陷源码构建的；不复原就会污染下一次 SKIP_BUILD 复跑（E-03 拦的那条）。
+    // 源码已 restore，这里强制重建一次，让工作区回到「dist 与当前源码一致」。
+    const saved = process.env.T02192_GATE_SKIP_BUILD;
+    delete process.env.T02192_GATE_SKIP_BUILD;
+    try {
+      buildWeb();
+      console.log('  (负对照收尾：web/dist 已按还原后的源码重建)');
+    } catch (e) {
+      console.log(`  ⚠ 负对照收尾重建 dist 失败：${e instanceof Error ? e.message : String(e)}——下一次正对照请勿用 SKIP_BUILD`);
+    }
+    if (saved !== undefined) process.env.T02192_GATE_SKIP_BUILD = saved;
+  }
 }
 
 const interaction = lines.filter((l) => /^\[(PASS|FAIL)\] [URFCQXG]-/.test(l));
