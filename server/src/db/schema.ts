@@ -564,6 +564,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('prompts', 'sort_weight', 'sort_weight INTEGER NOT NULL DEFAULT 0');
   // T00837：可选的「通用需求分类」归属——指向 req_categories（独立于自身提示词分类；空=未归属）
   ensureColumn('prompts', 'req_category_id', "req_category_id TEXT DEFAULT ''");
+  // T02165：控制台周期类任务的多项目范围（JSON id 数组串，空=全部项目）——
+  // 任务落库后异步运行，切页/重启都要能按原范围复现取数，故范围必须持久化而非只随请求传
+  ensureColumn('console_jobs', 'project_ids', "project_ids TEXT DEFAULT ''");
   // 老库 queue_jobs 的 task_id/tool_id 外键缺 ON DELETE CASCADE，删除关联任务/工具/项目时
   // 会被外键约束阻断（500）。SQLite 不支持 ALTER 外键，需整表重建，按幂等方式检测后执行
   ensureQueueJobsCascade();

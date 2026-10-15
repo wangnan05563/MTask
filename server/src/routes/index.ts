@@ -29,7 +29,7 @@ import { planApi } from './plans';
 import { estimateApi } from './estimates'; // T02037（估算视图 E3）：/api/estimates*，PRD §8
 import { historyApi } from './history'; // T00589：历史资产（转移/统计）
 import { supervisorApi } from './supervisor'; // T01286：监督状态/审计/配置（FR-5.2~5.4）
-import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, discardReport, gatherReportData, type ReportPeriod } from '../services/ReportService';
+import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, discardReport, gatherReportData, validateProjectIds, type ReportPeriod } from '../services/ReportService';
 import { DOWNLOAD_NAME_RE } from '../util/export-name'; // T02104：下载文件名白名单单源（与生成侧清洗同源）
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
@@ -1478,14 +1478,26 @@ api.post('/ai/polish', async (req, res) => {
 });
 
 // ---------- 报表生成与模板管理 ----------
+/**
+ * T02165：解析请求体的报表项目范围。projectIds（多选数组）优先于 projectId（单串，兼容旧客户端），
+ * 二者皆空 = 全部项目。校验交给 validateProjectIds（上限、类型、不存在的 id），返回可读 400 文案。
+ */
+function reportScope(body: unknown): { ids: string[]; error?: string } {
+  const b = (body ?? {}) as Record<string, unknown>;
+  const raw = Array.isArray(b.projectIds) ? (b.projectIds as unknown[]) : (typeof b.projectId === 'string' && b.projectId ? b.projectId : undefined);
+  return validateProjectIds(raw as string | string[] | undefined);
+}
+
 // T00789：report/generate 虽已走 worker 隔离，但仍 165~2162ms/次且无并发闸；此处仅加闸不改执行方式
 api.post('/report/generate', exportGate(REPORT_GATE), async (req, res) => {
-  const { period, format, projectId, templateId } = req.body ?? {};
+  const { period, format, templateId } = req.body ?? {};
   if (!['day', 'week', 'month'].includes(period)) return res.status(400).json({ error: 'period 非法' });
   if (!['xlsx', 'docx', 'pdf', 'pptx'].includes(format)) return res.status(400).json({ error: 'format 非法' });
+  const scope = reportScope(req.body);
+  if (scope.error) return res.status(400).json({ error: scope.error });
   try {
     const { buffer, filename } = await generateReport(period, format, {
-      projectId: projectId || undefined,
+      projectIds: scope.ids,
       templateId: templateId || undefined,
     });
     // 各格式对应 MIME：xlsx/docx 为 OOXML，pdf 为 application/pdf，pptx 为演示文稿 OOXML
@@ -1513,14 +1525,16 @@ api.get('/report/templates', (_req, res) => {
 // 并发点生成时 worker 池与事件循环的保护从缺口漏掉。处理器均在首个 await 处让出事件循环
 // （不像 settings/export 那样同步堵死），故无需 defer，与 /report/generate 保持同形态。
 api.post('/report/ai-generate', exportGate(REPORT_GATE), async (req, res) => {
-  const { period, format, projectId, toolId } = req.body ?? {};
+  const { period, format, toolId } = req.body ?? {};
   if (!['day', 'week', 'month'].includes(period)) return res.status(400).json({ error: 'period 非法' });
   if (!['xlsx', 'docx', 'pdf', 'pptx'].includes(format)) return res.status(400).json({ error: 'format 非法' });
   if (typeof toolId !== 'string' || !toolId) return res.status(400).json({ error: '请选择 AI 模型' });
+  const scope = reportScope(req.body);
+  if (scope.error) return res.status(400).json({ error: scope.error });
   try {
     // AI 周报：先落临时文件，返回下载令牌与洞察正文（前端再经 ai-download 下载即删）
     const r = await aiGenerateReport(period, format, {
-      projectId: projectId || undefined,
+      projectIds: scope.ids,
       toolId,
     });
     res.json({ ok: true, token: r.token, filename: r.filename, insight: r.insight });
@@ -1727,10 +1741,14 @@ api.post('/plans/testcase-generate-stream', raw({ type: () => true, limit: '30mb
   res.end();
 });
 
-api.post('/report/ai-generate-stream', exportGate(REPORT_GATE), async (req, res) => {  const { period, format, projectId, toolId } = req.body ?? {};
+api.post('/report/ai-generate-stream', exportGate(REPORT_GATE), async (req, res) => {  const { period, format, toolId } = req.body ?? {};
   if (!['day', 'week', 'month'].includes(period)) return res.status(400).json({ error: 'period 非法' });
   if (!['xlsx', 'docx', 'pdf', 'pptx'].includes(format)) return res.status(400).json({ error: 'format 非法' });
   if (typeof toolId !== 'string' || !toolId) return res.status(400).json({ error: '请选择 AI 模型' });
+  // 范围校验必须早于 SSE 头：一旦 flushHeaders，响应就是 200+事件流，非法 projectIds 只能以
+  // error 事件的形式出现，前端进度条会先「开始」再「失败」，看起来像模型出错而非请求写错
+  const scope = reportScope(req.body);
+  if (scope.error) return res.status(400).json({ error: scope.error });
 
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache');
@@ -1762,7 +1780,7 @@ api.post('/report/ai-generate-stream', exportGate(REPORT_GATE), async (req, res)
     const r = await aiGenerateReportStream(
       period,
       format,
-      { projectId: projectId || undefined, toolId },
+      { projectIds: scope.ids, toolId },
       (msg) => send('stage', { msg }),
       (text) => send('chunk', { text }),
       ac.signal,
@@ -1826,18 +1844,24 @@ api.delete('/report/templates/:id', (req, res) => {
 // 不带 period（自定义问答）则保持纯对话，不注入数据。
 const REPORT_PERIODS = new Set<ReportPeriod>(['day', 'week', 'month']);
 api.post('/ai/chat', async (req, res) => {
-  const { toolId, system, user, period, projectId } = req.body ?? {};
+  const { toolId, system, user, period } = req.body ?? {};
   if (!toolId) return res.status(400).json({ error: 'toolId 必填' });
   if (typeof user !== 'string' || !user.trim()) return res.status(400).json({ error: 'user 必填' });
+  // T02165：控制台问答与持久化任务共用同一范围口径（projectIds 优先，projectId 兼容）
+  const scope = reportScope(req.body);
+  if (scope.error) return res.status(400).json({ error: scope.error });
 
   let sys = typeof system === 'string' ? system : '';
   let usr = user.trim();
   if (typeof period === 'string' && REPORT_PERIODS.has(period as ReportPeriod)) {
-    const data = gatherReportData(period as ReportPeriod, typeof projectId === 'string' && projectId ? projectId : undefined);
+    const data = gatherReportData(period as ReportPeriod, scope.ids);
+    const scopeLine = data.projectScope && data.projectScope.length > 1
+      ? `\n【项目范围=${data.projectScope.join('、')}（${data.projectScope.length} 个项目聚合；结论按项目分块逐一覆盖，不得遗漏）】`
+      : '';
     // 限定模型必须依据随附真实数据作答，提示所依据周期，避免常识性发挥与用户预期不符
     sys = `${sys}\n本次必须严格依据随附的当前周期真实任务数据进行作答，不得虚构任务或数据；请点明所依据周期（${data.periodLabel} ${data.startDate}~${data.endDate}）。`.trim();
     usr = [
-      `【周期=${data.periodLabel} ${data.startDate} ~ ${data.endDate}】`,
+      `【周期=${data.periodLabel} ${data.startDate} ~ ${data.endDate}】${scopeLine}`,
       `【项目汇总】${JSON.stringify(data.projects)}`,
       `【任务明细】${JSON.stringify(data.tasks)}`,
       `\n问题：${usr}`,
@@ -1860,12 +1884,17 @@ api.post('/console-jobs', (req, res) => {
   if (!title || typeof title !== 'string' || !title.trim()) return res.status(400).json({ error: 'title 必填' });
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) return res.status(400).json({ error: 'prompt 必填' });
   if (!toolId || typeof toolId !== 'string') return res.status(400).json({ error: 'toolId 必填' });
+  // T02165：受理即校验并固化范围——任务在后台异步运行，等到 buildConsoleChat 取数时才发现
+  // 非法 id 只会得到一条 error 任务，用户已看不到失败原因
+  const scope = reportScope(req.body);
+  if (scope.error) return res.status(400).json({ error: scope.error });
   const p = typeof period === 'string' && CONSOLE_PERIODS.has(period) ? (period as 'day' | 'week' | 'month') : null;
   const job = ConsoleJobService.create({
     title: title.trim(),
     prompt: prompt.trim(),
     category: typeof category === 'string' && category ? category : 'custom',
     period: p,
+    projectIds: scope.ids,
   });
   // 不 await：受理即返回，后台 promise 完成后 markDone/markError 回写库
   void ConsoleJobService.runJob(job.id, toolId);

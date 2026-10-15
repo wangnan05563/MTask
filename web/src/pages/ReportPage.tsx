@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ChangeEvent, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type CSSProperties } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api, type Project, type AITool } from '../api/client';
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
@@ -16,7 +16,7 @@ import { useKickoffPpt } from '../stores/kickoffPptStore'; // T02109：启动会
 import { aiImportStore } from '../stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 import { RunStatusBadge, type RunStatus } from '../ui/runStatus'; // T01038：统一运行状态徽标
 import { FlowButton } from '../ui/FlowButton'; // T01068-FR4.4：流光按钮（loading 态）
-import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation } from 'lucide-react';
+import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation, ChevronDown } from 'lucide-react';
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CARD } from '../ui/consoleReset'; // T01042：卡片侧重置入口（与控制台重置共用核心）
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
 import { focusTaskByNo } from '../ui/focusTask'; // T01057 建议：就绪任务跳转按编号定位（跨项目可命中）
@@ -42,6 +42,11 @@ const FORMATS = [
 ] as const;
 
 type ReportFormat = 'xlsx' | 'docx' | 'pdf' | 'pptx';
+/**
+ * T02165：一次聚合的项目数上限——与 server `REPORT_PROJECT_MAX` 同值。
+ * 前端用它把超限的复选项置灰，后端仍是最终裁决（直接打接口时返回可读 400）。
+ */
+const REPORT_PROJECT_MAX = 8;
 /** 标准版式按输出格式对应的内置 skill 生成 */
 const SKILL_BY_FORMAT: Record<ReportFormat, string> = { xlsx: 'xlsx-trae', docx: 'docx-trae', pdf: 'pdf-trae', pptx: 'pptx-trae' };
 
@@ -226,6 +231,124 @@ function PrdDocsPopup({ open, projectId, onAssociate, onClose }: {
   );
 }
 
+/**
+ * T02165：旧会话遗留的单选范围迁移——多选改造把存储键从 `report.project`（单串）换成
+ * `report.projects`（数组），首次读取时把单值转成单元素数组，避免升级后范围被重置为「全部项目」。
+ */
+function legacyProjectScope(): string[] {
+  try {
+    const raw = sessionStorage.getItem('report.project');
+    if (!raw) return [];
+    const v = JSON.parse(raw) as unknown;
+    return typeof v === 'string' && v ? [v] : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 范围摘要文案：0 个=全部项目，1 个=项目名，多个=「A + B 等 N 个项目」。
+ * T02165：多选器、生成按钮文案、AI 控制台回显共用一份，避免三处各写一种范围写法。
+ */
+function scopeSummary(names: string[]): string {
+  if (names.length === 0) return '全部项目';
+  if (names.length === 1) return names[0];
+  return `${names[0]} + ${names[1]}${names.length > 2 ? ` 等 ${names.length} 个项目` : ''}`;
+}
+
+/** 勾选顺序即报表里的项目分块顺序，序号徽标让它可见（后端按同一顺序聚合） */
+const scopeRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '4px 6px', borderRadius: 6, cursor: 'pointer', fontSize: 13, minWidth: 0 };
+
+/**
+ * T02165：项目范围多选器（替换原「项目范围」单选 select）。
+ * 触发钮摘要：未勾选 = 全部项目（旧默认口径）；1 个 = 项目名；多个 = 「A + B 等 N 个项目」。
+ * 面板是复选框列表 + 「全部项目（不限范围）」清除项；勾选顺序即后端分块顺序，用序号徽标显式回显。
+ * 宽度收缩沿用 T02167 口径：宿主 minWidth:0、名称单行省略、徽标与箭头 flexShrink:0——
+ * 否则窄窗口下中文项目名会把触发钮撑成竖排。
+ */
+function ProjectScopePicker({ projects, value, onChange }: {
+  readonly projects: Project[];
+  readonly value: string[];
+  readonly onChange: (ids: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const hostRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (hostRef.current && !hostRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  const nameOf = (id: string) => projects.find((p) => p.id === id)?.name ?? id;
+  const summary = scopeSummary(value.map(nameOf));
+
+  function toggle(id: string) {
+    // 取消勾选直接移出；新增受 REPORT_PROJECT_MAX 约束（面板已满时该项置灰，见 disabled）
+    if (value.includes(id)) { onChange(value.filter((x) => x !== id)); return; }
+    if (value.length >= REPORT_PROJECT_MAX) return;
+    onChange([...value, id]);
+  }
+
+  return (
+    <div ref={hostRef} style={{ position: 'relative', minWidth: 0 }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        title={`项目范围：${value.length ? summary : '全部项目（不限范围）'} — 可勾选 2~${REPORT_PROJECT_MAX} 个项目聚合生成`}
+        aria-label="项目范围：选择要聚合的项目（多选）"
+        aria-expanded={open}
+        style={{ ...fieldStyle, display: 'flex', alignItems: 'center', gap: 6, width: '100%', maxWidth: '100%', minWidth: 0, cursor: 'pointer', textAlign: 'left', boxSizing: 'border-box' }}
+      >
+        <span style={{ flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{summary}</span>
+        <span style={{ flex: '1 1 auto' }} />
+        <span style={{ flexShrink: 0, fontSize: 11, color: 'var(--text-muted)' }}>{value.length ? `${value.length}/${REPORT_PROJECT_MAX}` : '不限'}</span>
+        <ChevronDown size={12} style={{ flexShrink: 0 }} />
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 30, boxSizing: 'border-box',
+          minWidth: 240, maxWidth: 'min(360px, calc(100vw - 24px))', maxHeight: 280, overflowY: 'auto',
+          border: '1px solid var(--border-strong)', borderRadius: 8, background: 'var(--card-bg)',
+          color: 'var(--text)', boxShadow: '0 6px 18px rgba(0,0,0,.14)', padding: 6,
+        }}>
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => onChange([])}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onChange([]); } }}
+            style={{ ...scopeRowStyle, color: value.length === 0 ? 'var(--accent)' : 'var(--text-muted)', fontWeight: value.length === 0 ? 600 : 400 }}
+          >
+            <X size={12} style={{ flexShrink: 0 }} />
+            <span>全部项目（不限范围）</span>
+          </div>
+          {projects.map((p) => {
+            const idx = value.indexOf(p.id);
+            const checked = idx >= 0;
+            // 已达上限时未勾选项置灰而非静默失效（后端同上限会 400，前端提前拦住更直观）
+            const blocked = !checked && value.length >= REPORT_PROJECT_MAX;
+            return (
+              <label key={p.id} style={{ ...scopeRowStyle, opacity: blocked ? 0.45 : 1, cursor: blocked ? 'not-allowed' : 'pointer' }}>
+                <input type="checkbox" checked={checked} disabled={blocked} onChange={() => toggle(p.id)}
+                  aria-label={`纳入项目 ${p.name}`} style={{ flexShrink: 0, cursor: 'pointer' }} />
+                <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+                {checked && (
+                  <span title="勾选顺序（报表按此顺序分块）" style={{ flexShrink: 0, fontSize: 11, color: 'var(--accent)' }}>{idx + 1}</span>
+                )}
+              </label>
+            );
+          })}
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 6px 0' }}>
+            {value.length === 0 ? '未勾选任何项目：按全部项目聚合（与单选「全部项目」一致）'
+              : `已选 ${value.length} 个，最多 ${REPORT_PROJECT_MAX} 个；报表头部与 AI 提示会标注该范围`}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** 三块 AI 工作面板的条件渲染（S3776：条件块下沉为独立组件） */
 function ReportWorkPanels({ aiToolId, projectId, showKickoffPpt, closeKickoffPpt, openCard, showPrdGen, closePrdGen, prdGenSaved, showTcGen, closeTcGen, tcImported, showPrdImport, closePrdImport, prdImportSaved, showAiImport, closeAiImport, aiImportSaved, prdImportKey }: {
   readonly aiToolId: string;
@@ -294,7 +417,11 @@ export function ReportPage() {
   const [period, setPeriod] = useSessionState<'day' | 'week' | 'month'>('report.period', 'week');
   const [format, setFormat] = useSessionState<ReportFormat>('report.format', 'xlsx');
   const [projects, setProjects] = useState<Project[]>([]);
-  const [projectId, setProjectId] = useSessionState('report.project', '');
+  // T02165：项目范围由单选升级为多选（sessionStorage 键 report.projects）；旧 report.project 单值自动迁移。
+  // 空数组 = 全部项目（与原单选「全部项目」口径一致），勾选顺序即报表与 AI 里的项目分块顺序。
+  const [projectIds, setProjectIds] = useSessionState<string[]>('report.projects', useMemo(legacyProjectScope, []));
+  // 单项目产物的消费方（启动会 PPT / PRD 导入目标 / 已上传 PRD 弹层 / 就绪任务推荐）仍按项目级口径，取首个勾选项目
+  const projectId = projectIds[0] ?? '';
   // T01058-FR1.3：就绪任务推荐——deps 前置均完成的执行行（跟随工作台项目选择刷新）
   const [readyPlans, setReadyPlans] = useState<Array<{ id: string; title: string; duration_days: number; complexity: number | null; start_date: string; task_no: string | null }>>([]);
   useEffect(() => {
@@ -566,7 +693,7 @@ export function ReportPage() {
       const { blob, filename } = await api.download('/report/generate', {
         period,
         format,
-        projectId: projectId || undefined,
+        projectIds,
         templateId: templateId || undefined,
       });
       const url = URL.createObjectURL(blob);
@@ -599,7 +726,7 @@ export function ReportPage() {
     try {
       await streamEvents(
         '/report/ai-generate-stream',
-        { period, format, projectId: projectId || undefined, toolId: aiToolId },
+        { period, format, projectIds, toolId: aiToolId },
         (name, payload) => {
           switch (name) {
             case 'stage':
@@ -684,8 +811,8 @@ export function ReportPage() {
     }
   }
 
-  /** 覆盖全部项目或指定单项目 */
-  const scoped = projectId ? ({ label: '当前项目', value: projects.find((p) => p.id === projectId)?.name ?? projectId }) : ({ label: '范围', value: '全部项目' });
+  /** T02165：范围摘要（全部项目 / 单项目名 / 「A + B 等 N 个项目」），生成按钮与 AI 控制台回显共用 */
+  const scopeLabel = scopeSummary(projectIds.map((id) => projects.find((p) => p.id === id)?.name ?? id));
 
   return (
     <section>
@@ -800,11 +927,12 @@ export function ReportPage() {
           </select>
         </div>
         <div>
-          <div style={labelStyle}>项目范围</div>
-          <select value={projectId} onChange={(e) => setProjectId(e.target.value)} style={fieldStyle}>
-            <option value="">全部项目</option>
-            {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
+          {/* T02165：单选下拉 → 复选多选（可勾 2~8 个项目聚合，勾选顺序即报表分块顺序）；
+              宿主给确定宽度，面板里的触发钮才能按 width:100% 铺满而不随内容塌陷 */}
+          <div style={labelStyle}>项目范围（可多选）</div>
+          <div style={{ width: 240, maxWidth: '100%' }}>
+            <ProjectScopePicker projects={projects} value={projectIds} onChange={setProjectIds} />
+          </div>
         </div>
       </div>
 
@@ -869,7 +997,7 @@ export function ReportPage() {
             loading={busy}
             loadingText="生成中…"
           >
-            <><Download size={14} /> 离线生成{PERIODS.find((p) => p.key === period)?.label}（{scoped.value}）</>
+            <><Download size={14} /> 离线生成{PERIODS.find((p) => p.key === period)?.label}（{scopeLabel}）</>
           </FlowButton>
         </div>
         )}
@@ -937,7 +1065,7 @@ export function ReportPage() {
       </div>
         </div>
         <aside style={{ boxSizing: 'border-box', alignSelf: 'stretch', display: consoleCollapsed ? 'none' : undefined, ...(splitCollapsed ? { width: '100%' } : { flex: '0 0 360px', maxWidth: '44vw' }) }}>
-          <ReportConsole tools={aiTools} toolId={aiToolId} onToolIdChange={setAiToolId} period={period} streaming={aiStreaming} logs={aiLogs} streamText={aiStreamText}
+          <ReportConsole tools={aiTools} toolId={aiToolId} onToolIdChange={setAiToolId} period={period} projectIds={projectIds} scopeLabel={scopeLabel} streaming={aiStreaming} logs={aiLogs} streamText={aiStreamText}
             onCollapse={() => setSplitCollapsed((v) => !v)} collapsed={splitCollapsed} />
         </aside>
       </div>

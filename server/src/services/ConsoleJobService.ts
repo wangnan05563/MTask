@@ -31,6 +31,8 @@ export interface ConsoleJobRow {
   error: string | null;
   created_at: string;
   updated_at: string;
+  /** T02165：多项目范围（JSON id 数组串，空=全部项目）；老库补列后为 '' */
+  project_ids?: string | null;
 }
 
 export interface ConsoleJobInput {
@@ -38,6 +40,20 @@ export interface ConsoleJobInput {
   prompt: string;
   category: string;
   period: ReportPeriod | null;
+  /** T02165：本次分析的项目范围 id 数组；空/不传 = 全部项目（旧口径） */
+  projectIds?: string[];
+}
+
+/** T02165：范围列反序列化——脏值（非数组/非字符串项）一律回落「全部项目」，不让旧任务因列内容报错 */
+function parseScope(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw) as unknown;
+    if (!Array.isArray(v)) return [];
+    return v.filter((x): x is string => typeof x === 'string' && !!x.trim());
+  } catch {
+    return [];
+  }
 }
 
 function now(): string {
@@ -99,11 +115,16 @@ function buildConsoleChat(job: ConsoleJobRow): { sys: string; usr: string } {
     return { sys, usr };
   }
   if (per && REPORT_PERIODS.has(per)) {
-    const data = gatherReportData(per);
+    // T02165：按任务落库的项目范围取数（空=全部项目，与改造前一致），并把范围写进提示，
+    // 否则模型看到 3 个项目的汇总却被告知是「本周期」，会把无活动项目当成不存在
+    const data = gatherReportData(per, parseScope(job.project_ids));
+    const scopeLine = data.projectScope && data.projectScope.length > 1
+      ? `\n【项目范围=${data.projectScope.join('、')}（${data.projectScope.length} 个项目聚合；概览给合并指标，结论必须按项目分块逐一覆盖，不得遗漏任一项目）】`
+      : '';
     // 限定模型必须依据随附真实数据作答，提示所依据周期，避免常识性发挥与用户预期不符
     sys = `${sys}\n本次必须严格依据随附的当前周期真实任务数据进行作答，不得虚构任务或数据；请点明所依据周期（${data.periodLabel} ${data.startDate}~${data.endDate}）。`.trim();
     usr = [
-      `【周期=${data.periodLabel} ${data.startDate} ~ ${data.endDate}】`,
+      `【周期=${data.periodLabel} ${data.startDate} ~ ${data.endDate}】${scopeLine}`,
       `【项目汇总】${JSON.stringify(data.projects)}`,
       `【任务明细】${JSON.stringify(data.tasks)}`,
       `\n问题：${usr}`,
@@ -123,9 +144,10 @@ export const ConsoleJobService = {
     const id = uuid();
     const t = now();
     db.prepare(
-      `INSERT INTO console_jobs (id, title, prompt, category, period, status, answer, error, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'busy', NULL, NULL, ?, ?)`,
-    ).run(id, input.title, input.prompt, input.category, input.period, t, t);
+      `INSERT INTO console_jobs (id, title, prompt, category, period, project_ids, status, answer, error, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'busy', NULL, NULL, ?, ?)`,
+    ).run(id, input.title, input.prompt, input.category, input.period,
+      input.projectIds?.length ? JSON.stringify(input.projectIds) : '', t, t);
     cacheClear(LIST_CACHE_KEY); // 新建任务后列表立刻可见（不等 5s TTL）
     return this.get(id)!;
   },

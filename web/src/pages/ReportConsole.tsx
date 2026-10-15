@@ -571,6 +571,8 @@ export function ReportConsole({
   toolId,
   onToolIdChange,
   period,
+  projectIds = [],
+  scopeLabel = '',
   streaming = false,
   logs = [],
   streamText = '',
@@ -582,6 +584,10 @@ export function ReportConsole({
   readonly onToolIdChange: (id: string) => void;
   /** 当前分析周期；周期类预设（汇总/风险/建议）据此附带周期让后端注入真实数据 */
   readonly period?: ReportPeriod;
+  /** T02165：页面顶部勾选的项目范围（空=全部项目），随 job 落库供后端按范围取数 */
+  readonly projectIds?: string[];
+  /** T02165：范围的可读摘要（如「项目A + 项目B」），仅用于控制台回显 */
+  readonly scopeLabel?: string;
   readonly streaming?: boolean;
   readonly logs?: string[];
   readonly streamText?: string;
@@ -771,6 +777,9 @@ export function ReportConsole({
     // 周期类预设（非自定义）附带当前周期，后端据此聚合真实任务数据注入；自定义问答不附带以保持纯对话；
     // T00652 数据清洗同理不附带周期（改用全量已完成任务数据）
     if (cat !== 'custom' && cat !== 'clean' && per) body.period = per;
+    // T02165：周期类分析附带项目范围（空数组=全部项目，与改造前一致）。范围由后端写入 job 行，
+    // 「重新分析」沿用同一范围，不必担心切页后前端状态丢失导致复跑口径变化
+    if (cat !== 'custom' && cat !== 'clean' && projectIds.length > 0) body.projectIds = projectIds;
     if (toolId) body.toolId = toolId;
     try {
       // 后端受理即创建 busy job 并后台异步运行；本地仅持有其 id 作为展示快照
@@ -1221,6 +1230,15 @@ export function ReportConsole({
               </option>
             ))}
           </select>
+          {/* T02165：回显本次分析的项目范围——分析结论出来后最容易忘记的就是「这是哪几个项目的」 */}
+          {projectIds.length > 0 && (
+            <span
+              title={`分析范围：${scopeLabel || projectIds.join('、')}`}
+              style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 10, padding: '2px 8px', flex: '0 1 auto' }}
+            >
+              范围：{scopeLabel || `${projectIds.length} 个项目`}
+            </span>
+          )}
           <button
             onClick={() => void newAnalysis()}
             disabled={noTool || customInvalid}

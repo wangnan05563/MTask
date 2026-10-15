@@ -58,6 +58,65 @@ export interface ReportData {
   tasks: ReportTaskRow[];
   /** T00452 / PRD INT-3：项目计划执行情况（本期有活动或已过期未完成），供周报联动展示 */
   plans: ReportPlanRow[];
+  /**
+   * T02165：多项目聚合范围（按用户勾选顺序的项目名）。
+   * 仅在勾选 >1 个项目时写入——单选/全部保持 undefined，标题与既有报表版式逐字不变
+   * （既有 PDF/表格门禁断言依赖单项目标题串，范围行只在多项目下才出现）。
+   */
+  projectScope?: string[];
+}
+
+/** T02165：一次聚合的项目数上限——报表与 AI prompt 随项目数线性膨胀，超限直接拒绝而非静默截断 */
+export const REPORT_PROJECT_MAX = 8;
+
+/** 报表项目范围：不传/空 = 全部项目；字符串 = 单项目（旧口径）；数组 = 多项目聚合 */
+export type ReportScope = string | string[] | undefined;
+
+/** 范围归一：剔除空串与重复项，保留传入顺序（报表按此顺序分块展示各项目） */
+export function normalizeScope(scope: ReportScope): string[] {
+  if (scope == null) return [];
+  const raw = Array.isArray(scope) ? scope : [scope];
+  const out: string[] = [];
+  for (const v of raw) {
+    const id = typeof v === 'string' ? v.trim() : '';
+    if (id && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * T02165：多项目范围校验（路由/MCP 入口共用）。
+ * 返回 `{ ids, error }`，error 是可直接回给前端的中文文案：
+ * 空范围 = 全部项目（旧行为）；非字符串项、超上限、不存在的 id 各自点名——
+ * 尤其「不存在的 id」不能静默丢掉，否则「勾了 3 个只出 2 个」无从排查。
+ */
+export function validateProjectIds(scope: ReportScope): { ids: string[]; error?: string } {
+  if (scope == null || scope === '') return { ids: [] };
+  const raw = Array.isArray(scope) ? scope : [scope];
+  if (raw.some((v) => typeof v !== 'string')) return { ids: [], error: 'projectIds 需为项目 id 字符串数组' };
+  const ids = normalizeScope(scope);
+  if (ids.length === 0) return { ids: [] };
+  if (ids.length > REPORT_PROJECT_MAX) {
+    return { ids: [], error: `一次最多聚合 ${REPORT_PROJECT_MAX} 个项目，当前选择了 ${ids.length} 个` };
+  }
+  const db = getDb();
+  const found = new Set(
+    (db
+      .prepare(`SELECT id FROM projects WHERE id IN (${ids.map(() => '?').join(',')})`)
+      .all(...ids) as Array<{ id: string }>).map((r) => r.id),
+  );
+  const missing = ids.filter((id) => !found.has(id));
+  if (missing.length) return { ids: [], error: `项目不存在或已删除：${missing.join('、')}` };
+  return { ids };
+}
+
+/** 按 ids 顺序取项目名（不存在的跳过），供多项目标题/范围行展示 */
+function projectNamesInOrder(db: ReturnType<typeof getDb>, ids: string[]): string[] {
+  const rows = db
+    .prepare(`SELECT id, name FROM projects WHERE id IN (${ids.map(() => '?').join(',')})`)
+    .all(...ids) as Array<{ id: string; name: string }>;
+  const byId = new Map(rows.map((r) => [r.id, r.name]));
+  return ids.map((id) => byId.get(id)).filter((n): n is string => !!n);
 }
 
 /** 用户导入模板存放目录（与应用数据同目录，避免重装丢失） */
@@ -199,14 +258,19 @@ interface TaskRow {
   category: string | null;
 }
 
-/** 聚合指定周期内任务数据（按 updated_at 落在区间判定，即该周期内有活动的任务） */
-export function gatherReportData(period: ReportPeriod, projectId?: string): ReportData {
+/**
+ * 聚合指定周期内任务数据（按 updated_at 落在区间判定，即该周期内有活动的任务）。
+ * T02165：第二参从单个 projectId 放宽为 string | string[]——数组用 `project_id IN (…)` 聚合多项目，
+ * 单串与不传分别等价于旧的「单项目」「全部项目」口径，SQL 与返回结构不变。
+ */
+export function gatherReportData(period: ReportPeriod, projectScope?: ReportScope): ReportData {
   const db = getDb();
+  const ids = normalizeScope(projectScope);
   const { start, end } = periodRange(period);
   // updated_at 以 UTC ISO 落库，边界转成同一坐标系（toISOString）做字典序比较，避免本地日期串与 ISO 不匹配
   const s = start.toISOString();
   const e = end.toISOString();
-  const params = projectId ? [s, e, projectId] : [s, e];
+  const taskFilter = ids.length > 0 ? `AND t.project_id IN (${ids.map(() => '?').join(',')})` : '';
   const rows = db
     .prepare(
       `SELECT t.id, t.title, t.priority, t.status, t.verified, t.updated_at, t.ai_summary, t.handle_result, t.category_id,
@@ -215,10 +279,10 @@ export function gatherReportData(period: ReportPeriod, projectId?: string): Repo
        JOIN projects p ON p.id = t.project_id
        LEFT JOIN task_categories c ON c.id = t.category_id
        WHERE t.archived = 0 AND t.updated_at >= ? AND t.updated_at < ?
-       ${projectId ? 'AND t.project_id = ?' : ''}
+       ${taskFilter}
        ORDER BY p.sort_weight, t.priority`,
     )
-    .all(...params) as TaskRow[];
+    .all(s, e, ...ids) as TaskRow[];
 
   // 按项目聚合统计（保持 DU 顺序一致）
   const projMap = new Map<string, ReportProject>();
@@ -247,16 +311,17 @@ export function gatherReportData(period: ReportPeriod, projectId?: string): Repo
   });
 
   // T00452 / PRD INT-3：项目计划执行情况——本期有变动的计划 + 已过期未完成的计划（延期）
+  const planFilter = ids.length > 0 ? `AND pt.project_id IN (${ids.map(() => '?').join(',')})` : '';
   const planRows = db
     .prepare(
       `SELECT pt.title, pt.status, pt.start_date, pt.end_date, pt.progress, pt.updated_at, pr.name AS project
        FROM plan_tasks pt
        JOIN projects pr ON pr.id = pt.project_id
        WHERE pt.archived = 0
-       ${projectId ? 'AND pt.project_id = ?' : ''}
+       ${planFilter}
        ORDER BY pr.sort_weight, pt.sort_order`,
     )
-    .all(...(projectId ? [projectId] : [])) as Array<{
+    .all(...ids) as Array<{
     title: string; status: string; start_date: string; end_date: string; progress: number; updated_at: string; project: string;
   }>;
   const todayStr = ymd(new Date());
@@ -267,15 +332,29 @@ export function gatherReportData(period: ReportPeriod, projectId?: string): Repo
       progress: r.progress, project: r.project, overdue: r.status !== 'done' && r.end_date < todayStr,
     }));
 
+  // T02165：多项目聚合时按「用户勾选顺序」排列汇总与范围名（单选/全部维持原有 sort_weight 口径），
+  // 使报表标题「周报：A + B」、汇总表与 AI prompt 的分区顺序三者一致
+  const selectedNames = ids.length > 1 ? projectNamesInOrder(db, ids) : undefined;
+  const projects = [...projMap.values()];
+  if (selectedNames) {
+    const rank = new Map(selectedNames.map((n, i) => [n, i]));
+    const byRank = (a: string, b: string) => (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER);
+    projects.sort((a, b) => byRank(a.name, b.name));
+    plans.sort((a, b) => byRank(a.project, b.project));
+    // tasks 段内顺序（优先级）由 SQL 决定，此处按项目稳定分组，同项目内相对顺序不变
+    tasks.sort((a, b) => byRank(a.project, b.project));
+  }
+
   return {
     period,
     periodLabel: PERIOD_LABEL[period],
     startDate: ymd(start),
     endDate: ymd(end),
     generatedAt: nowStr(),
-    projects: [...projMap.values()],
+    projects,
     tasks,
     plans,
+    projectScope: selectedNames,
   };
 }
 
@@ -419,6 +498,11 @@ export function buildReportPrompt(period: ReportPeriod, data: ReportData, skill:
   const user = [
     `【内置 SKILL】${skill.name}：${skill.desc}`,
     `【周期】${data.periodLabel} ${data.startDate} ~ ${data.endDate}`,
+    // T02165：多项目聚合必须把范围显式喂给模型——否则它只能从数据里猜有几个项目，
+    // 常把无活动项目漏掉、或把汇总指标写成单项目口吻
+    ...(data.projectScope && data.projectScope.length > 1
+      ? [`【项目范围】本${data.periodLabel}覆盖 ${data.projectScope.length} 个项目：${data.projectScope.join('、')}（概览给跨项目合并指标，进展与风险必须按项目分块逐一覆盖，不得遗漏任一项目，也不得把各项目数据混为一段）`]
+      : []),
     `【项目汇总】${JSON.stringify(data.projects)}`,
     `【任务明细】${JSON.stringify(data.tasks)}`,
     ...(data.plans.length > 0 ? [`【项目计划执行情况】${JSON.stringify(data.plans)}（含延期标记 overdue，请纳入进展要点与风险分析）`] : []),
@@ -426,13 +510,13 @@ export function buildReportPrompt(period: ReportPeriod, data: ReportData, skill:
   return { system, user };
 }
 
-/** 生成报表，返回文件 buffer 与建议文件名 */
+/** 生成报表，返回文件 buffer 与建议文件名（T02165：opts.projectIds 多项目聚合，与 projectId 兼容共存） */
 export async function generateReport(
   period: ReportPeriod,
   format: ReportFormat,
-  opts: { projectId?: string; templateId?: string } = {},
+  opts: { projectId?: string; projectIds?: string[]; templateId?: string } = {},
 ): Promise<{ buffer: Buffer; filename: string }> {
-  const data = gatherReportData(period, opts.projectId);
+  const data = gatherReportData(period, opts.projectIds ?? opts.projectId);
   let templateBuf: Buffer | undefined;
   if (opts.templateId) {
     const tpl = join(templatesDir(), opts.templateId);
@@ -451,9 +535,9 @@ export async function generateReport(
 export async function aiGenerateReport(
   period: ReportPeriod,
   format: ReportFormat,
-  opts: { projectId?: string; toolId: string },
+  opts: { projectId?: string; projectIds?: string[]; toolId: string },
 ): Promise<{ token: string; filename: string; insight: string }> {
-  const data = gatherReportData(period, opts.projectId);
+  const data = gatherReportData(period, opts.projectIds ?? opts.projectId);
   const skill = SKILL_BY_FORMAT[format];
   const { system, user } = buildReportPrompt(period, data, skill);
   const res = await AIService.ask(opts.toolId, system, user, AI_REPORT_TIMEOUT);
@@ -470,7 +554,7 @@ export async function aiGenerateReport(
       db.prepare(
         `INSERT INTO tasks (id, project_id, title, description, priority, status, verified, archived, pinned, created_at, updated_at)
          VALUES (?, ?, ?, ?, 'normal', 'todo', 0, 0, 0, ?, ?)`,
-      ).run(tid, INBOX_PROJECT_ID, `[周报摘要] ${data.periodLabel} ${data.startDate}~${data.endDate}`, insight.slice(0, 4000), t, t);
+      ).run(tid, INBOX_PROJECT_ID, inboxSummaryTitle(data), insight.slice(0, 4000), t, t);
       logService.log('INFO', 'ai', `[周报摘要推送] 已写入收件箱任务（${data.periodLabel}）`);
     } catch (e) {
       logService.log('ERROR', 'ai', `[周报摘要推送] 失败：${e instanceof Error ? e.message : String(e)}`);
@@ -480,21 +564,33 @@ export async function aiGenerateReport(
 }
 
 /**
+ * T02165：收件箱摘要标题。多项目聚合时把范围写进标题——否则不同项目组合产出的摘要
+ * 顶着同一个「周报 起止」无范围标题，事后无法分辨来自哪个范围。
+ */
+function inboxSummaryTitle(data: ReportData): string {
+  const scope = data.projectScope && data.projectScope.length > 1 ? `（${data.projectScope.join(' + ')}）` : '';
+  return `[周报摘要] ${data.periodLabel} ${data.startDate}~${data.endDate}${scope}`;
+}
+
+/**
  * AI 周报生成（流式版）：链路与 aiGenerateReport 一致，但通过 onStage 推送阶段进度、onChunk 逐片推送 AI 洞察正文。
  * 供 SSE 路由实时转发到前端 AI 控制台，实现"按钮联动控制台 + 流式滚动输出"。
  */
 export async function aiGenerateReportStream(
   period: ReportPeriod,
   format: ReportFormat,
-  opts: { projectId?: string; toolId: string },
+  opts: { projectId?: string; projectIds?: string[]; toolId: string },
   onStage: (msg: string) => void,
   onChunk: (text: string) => void,
   signal?: AbortSignal, // T00838：可选中止信号——周报生成可被「停止」按钮中断
 ): Promise<{ token: string; filename: string; insight: string }> {
   onStage(`正在聚合${PERIOD_LABEL[period]}任务数据…`);
-  const data = gatherReportData(period, opts.projectId);
+  const data = gatherReportData(period, opts.projectIds ?? opts.projectId);
   const skill = SKILL_BY_FORMAT[format];
-  onStage(`已聚合 ${data.projects.length} 个项目 / ${data.tasks.length} 条任务，正在调用模型生成洞察…`);
+  // T02165：进度里显式回显所选范围——data.projects 只统计「本期有活动」的项目，
+  // 勾选 3 个可能只聚出 2 个，不回显范围用户会以为漏勾或漏数据
+  const scopeLabel = data.projectScope ? `（范围：${data.projectScope.join(' + ')}）` : '';
+  onStage(`已聚合 ${data.projects.length} 个项目${scopeLabel} / ${data.tasks.length} 条任务，正在调用模型生成洞察…`);
   const { system, user } = buildReportPrompt(period, data, skill);
   const res = await AIService.askStream(opts.toolId, system, user, onChunk, AI_REPORT_TIMEOUT, signal);
   if (!res.ok || !res.content?.trim()) throw new Error(res.error ?? 'AI 生成失败');
@@ -519,7 +615,7 @@ export async function aiGenerateReportStream(
       db.prepare(
         `INSERT INTO tasks (id, project_id, title, description, priority, status, verified, archived, pinned, created_at, updated_at)
          VALUES (?, ?, ?, ?, 'normal', 'todo', 0, 0, 0, ?, ?)`,
-      ).run(tid, INBOX_PROJECT_ID, `[周报摘要] ${data.periodLabel} ${data.startDate}~${data.endDate}`, insight.slice(0, 4000), t, t);
+      ).run(tid, INBOX_PROJECT_ID, inboxSummaryTitle(data), insight.slice(0, 4000), t, t);
       logService.log('INFO', 'ai', `[周报摘要推送] 已写入收件箱任务（${data.periodLabel}，流式）`);
     } catch (e) {
       logService.log('ERROR', 'ai', `[周报摘要推送] 失败：${e instanceof Error ? e.message : String(e)}`);

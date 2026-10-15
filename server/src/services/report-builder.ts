@@ -10,9 +10,31 @@ import {
 } from 'docx';
 import type { ReportData } from './ReportService';
 
-/** 报表标题行 */
+/**
+ * 报表标题行。
+ * T02165：多项目聚合时在标题内标出范围（「周报：A + B」），单项目/全部维持原串不变——
+ * 既有 PDF 门禁按单项目标题串断言，范围后缀只在 >1 项目时出现。
+ */
 function titleLine(data: ReportData): string {
-  return `MTask ${data.periodLabel}（${data.period} · ${data.startDate} ~ ${data.endDate}）`;
+  return `MTask ${data.periodLabel}${scopeSuffix(data)}（${data.period} · ${data.startDate} ~ ${data.endDate}）`;
+}
+
+/** 多项目标题后缀（`:A + B`），单项目/全部返回空串 */
+function scopeSuffix(data: ReportData): string {
+  const scope = data.projectScope;
+  return scope && scope.length > 1 ? `：${scope.join(' + ')}` : '';
+}
+
+/**
+ * 头部「项目范围」行（PRD 约束 5 / 执行步骤 4）：列出被选中的项目名称，
+ * 并点明「按项目分块」的读法，避免多项目汇总表被当成单项目数据误读。
+ * brief=true 用于空间受限的版面（PPT 副标题），只留范围不带读法说明。
+ */
+function scopeLine(data: ReportData, brief = false): string | undefined {
+  const scope = data.projectScope;
+  if (!scope || scope.length <= 1) return undefined;
+  const head = `项目范围：${scope.join('、')}（${scope.length} 个项目聚合`;
+  return brief ? `${head}）` : `${head}，以下汇总为跨项目合并指标，明细按项目分块）`;
 }
 
 // ---------- Excel 生成（exceljs） ----------
@@ -44,6 +66,9 @@ export async function buildXlsx(data: ReportData, templateBuf?: Buffer, aiInsigh
   ];
   ws.addRow([]);
   ws.addRow([titleLine(data)]);
+  // T02165：多项目聚合在标题下补一行范围说明
+  const xlsxScope = scopeLine(data);
+  if (xlsxScope) ws.addRow([xlsxScope]);
   ws.addRow([`生成时间：${data.generatedAt}`]);
   ws.addRow([]);
   headerRow(ws.addRow(['项目', '任务数', '待办', '已完成', '已验证', '高', '中', '低']));
@@ -155,8 +180,10 @@ export async function buildDocx(data: ReportData, templateBuf?: Buffer, aiInsigh
     return out;
   }
 
+  const docScope = scopeLine(data);
   const children: (Paragraph | Table)[] = [
     new Paragraph({ text: titleLine(data), heading: HeadingLevel.TITLE }),
+    ...(docScope ? [new Paragraph({ children: [new TextRun({ text: docScope, color: '4B5563' })] })] : []),
     new Paragraph({ text: `生成时间：${data.generatedAt}` }),
     new Paragraph(''),
     new Paragraph({ text: '项目汇总', heading: HeadingLevel.HEADING_2 }),
@@ -223,8 +250,12 @@ export async function buildPptx(data: ReportData, aiInsight?: string): Promise<B
   pptx.defineLayout({ name: 'WIDE', width: 10, height: 5.63 });
   pptx.layout = 'WIDE';
   const s = pptx.addSlide();
-  s.addText(`MTask ${data.periodLabel}`, { x: 0.5, y: 0.35, w: 9, h: 0.7, fontSize: 24, bold: true, color: '1F2937' });
-  s.addText(`周期：${data.startDate} ~ ${data.endDate}    生成：${data.generatedAt}`, { x: 0.5, y: 1.1, w: 9, h: 0.4, fontSize: 10, color: '6B7280' });
+  // T02165：多项目范围进标题与副标题；无范围时两处串与版式与原来逐字一致
+  const pptScope = scopeLine(data, true);
+  s.addText(`MTask ${data.periodLabel}${scopeSuffix(data)}`, { x: 0.5, y: 0.35, w: 9, h: 0.7, fontSize: 24, bold: true, color: '1F2937' });
+  s.addText(`周期：${data.startDate} ~ ${data.endDate}    生成：${data.generatedAt}${pptScope ? `\n${pptScope}` : ''}`, {
+    x: 0.5, y: 1.1, w: 9, h: pptScope ? 0.55 : 0.4, fontSize: 10, color: '6B7280',
+  });
 
   const header = ['项目', '任务数', '待办', '已完成', '已验证'];
   const body = data.projects.map((p) => [p.name, String(p.total), String(p.todo), String(p.done), String(p.verified)]);
@@ -269,7 +300,9 @@ export async function buildPdf(data: ReportData, aiInsight?: string): Promise<Bu
   doc.on('data', (c: Buffer) => chunks.push(c));
   const done = new Promise<void>((resolve) => doc.on('end', () => resolve()));
 
-  doc.fontSize(18).text(`MTask ${data.periodLabel}（${data.startDate} ~ ${data.endDate}）`);
+  doc.fontSize(18).text(`MTask ${data.periodLabel}${scopeSuffix(data)}（${data.startDate} ~ ${data.endDate}）`);
+  const pdfScope = scopeLine(data);
+  if (pdfScope) doc.fontSize(10).text(pdfScope);
   doc.fontSize(10).text(`生成时间：${data.generatedAt}\n`);
   doc.fontSize(13).text('项目汇总', { underline: true }).moveDown(0.3);
   if (data.projects.length) {

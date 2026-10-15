@@ -30,6 +30,7 @@ import {
   generateReport,
   aiGenerateReport,
   readAndDeleteReport,
+  validateProjectIds,
   type ReportPeriod,
   type ReportFormat,
 } from '../services/ReportService';
@@ -1294,36 +1295,44 @@ ${a.result}`;
   });
 
   // ---------------- 周报生成 ----------------
+  // T02165：三张报表工具的范围口径与页面/REST 一致——projectIds 数组优先（多项目聚合），
+  // projectId 单串保留兼容；上限与非法 id 由 validateProjectIds 统一点名，不静默丢项目
   server.registerTool('mtask_gather_report_data', {
     title: '聚合周期数据',
-    description: '聚合指定周期（day/week/month）内的真实任务数据（项目汇总 + 任务明细），供 AI 据此分析。只读，不生成文件。',
+    description: '聚合指定周期（day/week/month）内的真实任务数据（项目汇总 + 任务明细），供 AI 据此分析。只读，不生成文件。支持多项目聚合：projectIds 传 2~8 个项目 id（缺省或空数组=全部项目）。',
     inputSchema: {
       period: z.enum(PERIODS).describe('周期：day=日报/week=周报/month=月报'),
-      projectId: z.string().optional().describe('项目 id，缺省聚合全部项目'),
+      projectId: z.string().optional().describe('项目 id（单选，旧口径），缺省聚合全部项目'),
+      projectIds: z.array(z.string()).optional().describe('多项目聚合的项目 id 数组（优先级高于 projectId），上限 8'),
     },
   }, async (a) => {
     try {
       if (!(PERIODS as readonly string[]).includes(a.period)) return err('period 非法（day|week|month）');
-      const data = gatherReportData(a.period as ReportPeriod, a.projectId);
+      const scope = validateProjectIds(a.projectIds ?? a.projectId);
+      if (scope.error) return err(scope.error);
+      const data = gatherReportData(a.period as ReportPeriod, scope.ids);
       return ok(json(data), { data });
     } catch (e) { return err((e as Error).message); }
   });
 
   server.registerTool('mtask_generate_report', {
     title: '生成周期报表文件',
-    description: '按周期+格式生成标准报表文件（真实数据排版），返回 base64 文件内容与文件名。',
+    description: '按周期+格式生成标准报表文件（真实数据排版），返回 base64 文件内容与文件名。支持多项目聚合（projectIds），多项目时报表头部带「项目范围」行。',
     inputSchema: {
       period: z.enum(PERIODS).describe('周期'),
       format: z.enum(FORMATS).describe('输出格式'),
-      projectId: z.string().optional().describe('项目 id，缺省全项目'),
+      projectId: z.string().optional().describe('项目 id（单选，旧口径），缺省全项目'),
+      projectIds: z.array(z.string()).optional().describe('多项目聚合的项目 id 数组（优先级高于 projectId），上限 8'),
       templateId: z.string().optional().describe('用户模板文件名（仅 xlsx/docx）'),
     },
   }, async (a) => {
     try {
       if (!(PERIODS as readonly string[]).includes(a.period)) return err('period 非法（day|week|month）');
       if (!(FORMATS as readonly string[]).includes(a.format)) return err('format 非法（xlsx|docx|pdf|pptx）');
+      const scope = validateProjectIds(a.projectIds ?? a.projectId);
+      if (scope.error) return err(scope.error);
       const r = await generateReport(a.period as ReportPeriod, a.format as ReportFormat, {
-        projectId: a.projectId, templateId: a.templateId,
+        projectIds: scope.ids, templateId: a.templateId,
       });
       return ok('', { filename: r.filename, format: a.format, size: r.buffer.length, base64: r.buffer.toString('base64') });
     } catch (e) { return err((e as Error).message); }
@@ -1331,19 +1340,22 @@ ${a.result}`;
 
   server.registerTool('mtask_ai_generate_report', {
     title: 'AI 生成周报',
-    description: '基于周期真实数据由 AI 撰写洞察并合成指定格式文件；返回洞察正文 Markdown + 文件 base64。toolId 为已配置且可用的 AI 工具。',
+    description: '基于周期真实数据由 AI 撰写洞察并合成指定格式文件；返回洞察正文 Markdown + 文件 base64。toolId 为已配置且可用的 AI 工具。支持多项目聚合（projectIds），多项目时提示词显式携带项目范围并要求按项目分块作答。',
     inputSchema: {
       period: z.enum(PERIODS).describe('周期'),
       format: z.enum(FORMATS).describe('输出格式'),
       toolId: z.string().describe('AI 工具 id'),
-      projectId: z.string().optional().describe('项目 id，缺省全项目'),
+      projectId: z.string().optional().describe('项目 id（单选，旧口径），缺省全项目'),
+      projectIds: z.array(z.string()).optional().describe('多项目聚合的项目 id 数组（优先级高于 projectId），上限 8'),
     },
   }, async (a) => {
     try {
       if (!(PERIODS as readonly string[]).includes(a.period)) return err('period 非法（day|week|month）');
       if (!(FORMATS as readonly string[]).includes(a.format)) return err('format 非法（xlsx|docx|pdf|pptx）');
+      const scope = validateProjectIds(a.projectIds ?? a.projectId);
+      if (scope.error) return err(scope.error);
       const { token, filename, insight } = await aiGenerateReport(a.period as ReportPeriod, a.format as ReportFormat, {
-        projectId: a.projectId, toolId: a.toolId,
+        projectIds: scope.ids, toolId: a.toolId,
       });
       // 消费一次性临时文件：读取即删除，换取 base64 供调用方直接存储/使用
       const buf = readAndDeleteReport(token);
