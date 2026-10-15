@@ -365,14 +365,29 @@ group('S 组 源码守卫：§9 安全 / 可维护、§12-R4 字体、R6 会话�
     (ROUTE_SRC.match(/exportGate[^\n]*/g) ?? []).slice(0, 4));
   ok('S-04 §9 可维护·PERT/σ 算式只存在于引擎：面板与取数层源码里没有 (o+4m+p)/6、没有 Math.sqrt',
     !/4\s*\*/.test(CODE.panel) && !/Math\.sqrt/.test(CODE.panel) && !/Math\.sqrt/.test(CODE.api));
+  // T02173：单源判定从「字面量子串」改为「常量名 + 完整字面量」双判，并补守模板侧单源。
+  // 历史误判：旧探针拿引擎短标签（面板口径，无「系数」后缀）做裸子串匹配，而 T02084 起导出侧另立
+  // TEMPLATE_COEF_LABELS（逐字符复刻客户模板 B36~B39，带「系数」后缀）——两者是**不同字符串**且
+  // 明确不许混用，短前缀子串却把后者也算成「引擎被抄第二份」。
+  const ENGINE = 'server/src/services/estimate-engine.ts';
+  const XLSX = 'server/src/services/estimateExportXlsx.ts';
   ok('S-05 §9 可维护·系数键/标签/默认值单源在引擎（E13 参数页不得再抄一份）',
-    filesWith('export const ESTIMATE_COEF_KEYS').map(rel).join() === 'server/src/services/estimate-engine.ts'
-    && filesWith('客户协作配合/磨合调节').map(rel).join() === 'server/src/services/estimate-engine.ts'
-    && filesWith(`manDaysPerManMonth: 20.83`).map(rel).join() === 'server/src/services/estimate-engine.ts',
+    filesWith('export const ESTIMATE_COEF_KEYS').map(rel).join() === ENGINE
+    && filesWith('export const ESTIMATE_COEF_LABELS').map(rel).join() === ENGINE
+    && filesWith(`'${E.ESTIMATE_COEF_LABELS.collaboration}'`).map(rel).join() === ENGINE
+    && filesWith('manDaysPerManMonth: 20.83').map(rel).join() === ENGINE,
     {
       keys: filesWith('export const ESTIMATE_COEF_KEYS').map(rel),
-      labels: filesWith('客户协作配合/磨合调节').map(rel),
+      labels: filesWith('export const ESTIMATE_COEF_LABELS').map(rel),
+      labelLiteral: filesWith(`'${E.ESTIMATE_COEF_LABELS.collaboration}'`).map(rel),
       std: filesWith('manDaysPerManMonth: 20.83').map(rel),
+    });
+  ok('S-05c §9 可维护·交付件模板文案单源在导出构造器（模板口径与引擎面板口径各守一份，互不越界）',
+    filesWith('export const TEMPLATE_COEF_LABELS').map(rel).join() === XLSX
+    && filesWith('export const TEMPLATE_PHASE_LABELS').map(rel).join() === XLSX,
+    {
+      coef: filesWith('export const TEMPLATE_COEF_LABELS').map(rel),
+      phase: filesWith('export const TEMPLATE_PHASE_LABELS').map(rel),
     });
   ok('S-05b §9 可维护·八个估算参数键名单源（`estimate.coef.collaboration` 字面量只出现在引擎）',
     filesWith(`'estimate.coef.collaboration'`).map(rel).join() === 'server/src/services/estimate-engine.ts',
@@ -394,11 +409,18 @@ group('S 组 源码守卫：§9 安全 / 可维护、§12-R4 字体、R6 会话�
     && /'plan\.viewMode'/.test(PLAN_PAGE_SRC) && /'plan\.collapsedMs'/.test(PLAN_PAGE_SRC)
     && !/estimatePanelOpen/.test(stripComments(PANEL_SRC)),
     { keys: stripComments(PLAN_PAGE_SRC).match(/'plan\.[A-Za-z]+'/g)?.slice(0, 8) });
-  ok('S-08 §9 可访问性·面板带语义标注（role=toolbar/region/status/alert/group + 区间条 role=img aria-label）',
-    /role="toolbar"/.test(PANEL_SRC) && /role="region" aria-label="估算导出区"/.test(PANEL_SRC)
-    && /role="status"/.test(PANEL_SRC) && /role="alert"/.test(PANEL_SRC)
-    && /role="img"/.test(PANEL_SRC) && /aria-label=\{`区间条/.test(PANEL_SRC),
-    (PANEL_SRC.match(/role="[a-z]+"/g) ?? []).slice(0, 8));
+  // T02173：可访问性守卫按「语义等价」判定，不按 role= 字面量。
+  // 面板在 E11/E14 迭代里把这些区块改用了原生语义元素（<section aria-label> = region、
+  // <output> = status、<fieldset aria-label> = group），并显式移除了 role="list" 那类冗余标注
+  // （S6819 批修）；旧探针只认 role="region"/role="status" 字符串，把「换成原生元素」误判成「丢标注」。
+  const hasSem = (role: string, nativeRe: RegExp): boolean =>
+    new RegExp(`role="${role}"`).test(PANEL_SRC) || nativeRe.test(PANEL_SRC);
+  ok('S-08 §9 可访问性·面板带语义标注（toolbar/region/status/alert/group 显式 role 或原生等价元素皆可 + 区间条 role=img aria-label）',
+    hasSem('toolbar', /<toolbar|role="toolbar"/) && hasSem('region', /<section[^>]*aria-label/)
+    && hasSem('status', /<output[^>]*aria-label/) && hasSem('group', /<fieldset[^>]*aria-label/)
+    && hasSem('alert', /role="alert"/) && hasSem('img', /role="img"/) && /aria-label=\{`区间条/.test(PANEL_SRC),
+    { roles: (PANEL_SRC.match(/role="[a-z]+"/g) ?? []).slice(0, 8),
+      natives: (PANEL_SRC.match(/<(section|output|fieldset)[^>]*aria-label/g) ?? []).slice(0, 6) });
 }
 
 // ---------------------------------------------------------------------------
