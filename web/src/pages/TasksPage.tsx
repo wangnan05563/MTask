@@ -193,6 +193,10 @@ export function TasksPage() {
   // T00836 二轮：聚焦任务所属项目——任务可能属于非当前 activeProject 的项目，
   // 若不下发此 id，切换列表后会因「目标行不在当前项目列表」而定位失败。
   const [focusProjectId, setFocusProjectId] = useSessionState<string>('tasks.focusProjectId', '');
+  // T02206：定位意图的放弃时刻（0=无在途）。原一次性 DOM 检查会在首轮（列表尚未按新项目重载完、
+  // 目标行还不存在）就清键，高亮静默丢失；改为带截止时间的重试收口——列表每次变化都重认目标行，
+  // 到点仍未命中才清空并给一次明示提示（与 T02196 徽标通道同口径）。
+  const [focusDeadline, setFocusDeadline] = useState(0);
   // T01562：真抽屉详情——当前打开抽屉的任务（按 task.id 作 key，切换任务即重挂载）；focusDrawerId 由 focusTaskByNo 写入
   const [drawerTask, setDrawerTask] = useState<Task | null>(null);
   // T01568：抽屉落位标签页——外部跳转（focusTaskByNo 传 'result' 等）写入 focusDrawerTab，开抽屉即落该页；
@@ -505,33 +509,47 @@ export function TasksPage() {
     return false;
   };
 
-  // M6-6.1：在已渲染列表中定位目标任务行并高亮（找不到则清空聚焦态）
-  const locateTaskRow = (focusTaskId: string): void => {
+  // M6-6.1：在已渲染列表中定位目标任务行并高亮。T02206：返回是否命中——未命中不再就地清键，
+  // 交由调用方按截止时间重试收口（跨项目跳转必然经历「换项目→重载列表→再渲染」，首轮检查基本都落空）。
+  const locateTaskRow = (focusTaskId: string): boolean => {
     const el = document.querySelector(`[data-ttask-id="${focusTaskId}"]`);
-    if (el instanceof HTMLElement) {
-      try { el.scrollIntoView({ block: 'center' }); } catch { /* 忽略滚动异常 */ }
-      const prevOutline = el.style.outline;
-      const prevBg = el.style.background;
-      el.style.outline = '2px solid var(--accent)';
-      el.style.outlineOffset = '2px';
-      el.style.background = 'var(--accent-soft)';
-      setDescExpanded((p) => ({ ...p, [focusTaskId]: true }));
-      setResultOpen((p) => ({ ...p, [focusTaskId]: true }));
-      const done = () => { el.style.outline = prevOutline; el.style.background = prevBg; setFocusTaskId(''); setFocusTab(''); };
-      globalThis.setTimeout(done, 3000);
-    } else {
-      setFocusTaskId(''); setFocusTab('');
-    }
+    if (!(el instanceof HTMLElement)) return false;
+    try { el.scrollIntoView({ block: 'center' }); } catch { /* 忽略滚动异常 */ }
+    const prevOutline = el.style.outline;
+    const prevBg = el.style.background;
+    el.style.outline = '2px solid var(--accent)';
+    el.style.outlineOffset = '2px';
+    el.style.background = 'var(--accent-soft)';
+    setDescExpanded((p) => ({ ...p, [focusTaskId]: true }));
+    setResultOpen((p) => ({ ...p, [focusTaskId]: true }));
+    setFocusDeadline(0); // 命中即撤收口定时器，不让它在高亮窗口期内误清聚焦态
+    const restore = () => { el.style.outline = prevOutline; el.style.background = prevBg; setFocusTaskId(''); setFocusTab(''); };
+    globalThis.setTimeout(restore, 3000);
+    return true;
   };
 
   useEffect(() => {
-    if (!focusTaskId) return;
+    if (!focusTaskId) { if (focusDeadline) setFocusDeadline(0); return; }
     // 上一节清空过滤后列表重载完成、projectId 无实际目标，进入正式定位流程
     if (focusProjectId === '__fetch_filter__') setFocusProjectId('');
     if (runFocusPreCheck(focusTaskId)) return;
-    locateTaskRow(focusTaskId);
-    // 依赖 待办/已完成/activeTab/activeProject/filters：目标列表渲染后再定位；仅定位一次后即清空
-  }, [focusTaskId, todo, done, activeTab, activeProject, focusProjectId, catFilter, priorityFilter]);
+    if (locateTaskRow(focusTaskId)) return;
+    // 目标行尚未渲染：保留定位意图（focusTaskId 不清），列表每次变化都会重跑本 effect 再认一次
+    if (!focusDeadline) setFocusDeadline(Date.now() + 8000);
+  }, [focusTaskId, todo, done, activeTab, activeProject, focusProjectId, catFilter, priorityFilter, focusDeadline]);
+
+  // T02206：到点收口。列表若一直不再变化，重试等不到下一次触发，故用定时器兜底放弃并**明示**一次
+  //（原实现在此处静默清键，用户只看到视图变了却不知定位到哪）。
+  useEffect(() => {
+    if (!focusTaskId || !focusDeadline) return;
+    const timer = globalThis.setTimeout(() => {
+      setFocusDeadline(0);
+      setFocusTaskId('');
+      setFocusTab('');
+      flash('定位目标行未出现在渲染结果中（可能被当前筛选条件筛掉，或在分页之外）');
+    }, Math.max(0, focusDeadline - Date.now()));
+    return () => clearTimeout(timer);
+  }, [focusTaskId, focusDeadline]);
 
   /** T02196：按编号在「已渲染」的标题行里认目标——回落通道此时只有编号、没有 id */
   const findRowElByNo = (no: string): HTMLElement | null => {
