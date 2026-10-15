@@ -2801,28 +2801,33 @@ export function TasksPage() {
   function renderToolbar() {
     return (
       <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span className="op-host" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
-        <div ref={projDropRef} style={{ position: 'relative', display: 'inline-flex' }}>
-          <button onClick={() => { setProjOpen((o) => { if (!o) refreshProjCounts(); return !o; }); }} aria-haspopup="listbox" aria-expanded={projOpen}
+        <span className="op-host" style={{ display: 'inline-flex', gap: 8, alignItems: 'center', minWidth: 0 }}>
+        <div ref={projDropRef} style={{ position: 'relative', display: 'inline-flex', minWidth: 0 }}>
+          <button onClick={() => { setProjOpen((o) => { if (!o) { refreshProjCounts(); } return !o; }); }} aria-haspopup="listbox" aria-expanded={projOpen}
             title="切换项目 — 项目名后徽标：红=待办数、黄=未验证数（悬浮查看详情）"
             aria-label="切换项目"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, cursor: 'pointer' }}>
-            {projects.find((p) => p.id === activeProject)?.name ?? '选择项目'}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, cursor: 'pointer', maxWidth: 220, minWidth: 0 }}>
+            {/* T02167：项目名改为可收缩的单行省略项（与 WorkspaceSelect 同口径）。
+                原来是裸文本节点——CJK 无空格可断，min-content 只有 1 字宽，工具条变窄时按钮被压到
+                比内容还小，右侧统计徽标溢出边框。徽标与箭头一律 flexShrink:0，只让名称让步。 */}
+            <span style={{ flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {projects.find((p) => p.id === activeProject)?.name ?? '选择项目'}
+            </span>
             {(() => { const cur = projects.find((p) => p.id === activeProject); return cur ? (
               <>
-                <span title={`待办 ${cur.todo_count ?? 0} 条`} style={{ minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{cur.todo_count ?? 0}</span>
-                <span title={`未验证 ${cur.unverified_count ?? 0} 条`} style={{ minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{cur.unverified_count ?? 0}</span>
+                <span title={`待办 ${cur.todo_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{cur.todo_count ?? 0}</span>
+                <span title={`未验证 ${cur.unverified_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{cur.unverified_count ?? 0}</span>
               </>
             ) : null; })()}
-            <ChevronDown size={12} />
+            <ChevronDown size={12} style={{ flexShrink: 0 }} />
           </button>
           {projOpen && (
-            <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 30, minWidth: 220 }}>
+            <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 30, minWidth: 220, maxWidth: 'min(360px, calc(100vw - 24px))', overflowX: 'hidden' }}>
               {sortedProjects.map((p) => (
                 // T02146：行容器由原生 button 改 div role=button——行内的置顶图标本身是 button，
                 // HTML 不允许按钮套按钮（fdc6090 的 a11y 批修把「div→button」规则套到了含交互子元素的
                 // 容器上，同 T02143 根因）。手感靠 .card-btn 补回（T02143 已在 App.tsx 落该类）。
-                <div key={p.id} role="button" tabIndex={0} className="card-btn" aria-pressed={p.id === activeProject}
+                <div key={p.id} role="button" tabIndex={0} className="card-btn" aria-pressed={p.id === activeProject} /* NOSONAR: S6819 豁免——T02146：行内含原生置顶button，HTML禁止按钮套按钮；键盘支持已在onKeyDown保留 */
                   onClick={() => { setActiveProject(p.id); setProjOpen(false); }}
                   onKeyDown={(e) => {
                     // 只认行容器自身的按键：角标按钮的 Enter/Space 会冒泡到这里，不判 target 会
@@ -2831,7 +2836,7 @@ export function TasksPage() {
                     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActiveProject(p.id); setProjOpen(false); }
                   }}
                   title={`${p.name}：待办 ${p.todo_count ?? 0} 条，未验证 ${p.unverified_count ?? 0} 条`}
-                  style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, background: p.id === activeProject ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer' }}>
+                  style={{ display: 'flex', width: '100%', boxSizing: 'border-box', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, background: p.id === activeProject ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer' }}>
                   {/* T00655：置顶图标——位于项目名称之前，点击切换置顶（已置顶=实心 accent + 弹入动画） */}
                   <button
                     type="button"
@@ -2843,9 +2848,11 @@ export function TasksPage() {
                   >
                     <Pin size={12} style={{ transform: isProjectPinned(p) ? 'rotate(-45deg)' : 'none', transition: 'transform .18s ease, color .18s ease', fill: isProjectPinned(p) ? 'currentColor' : 'none' }} />
                   </button>
-                  <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
-                  <span title={`待办 ${p.todo_count ?? 0} 条`} style={{ minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{p.todo_count ?? 0}</span>
-                  <span title={`未验证 ${p.unverified_count ?? 0} 条`} style={{ minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.unverified_count ?? 0}</span>
+                  {/* T02167：flex:1 不足以收缩——裸 flex 项 min-width:auto 会卡在 nowrap 文本的
+                      min-content（整行名称宽）上，长名把右侧徽标顶出面板边框；minWidth:0 才真正让名称省略 */}
+                  <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+                  <span title={`待办 ${p.todo_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{p.todo_count ?? 0}</span>
+                  <span title={`未验证 ${p.unverified_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.unverified_count ?? 0}</span>
                 </div>
               ))}
             </div>

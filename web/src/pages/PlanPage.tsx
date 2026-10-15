@@ -153,7 +153,7 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
 }) {
   const cur = projects.find((p) => p.id === projectId);
   return (
-    <div ref={projDropRef} style={{ position: 'relative', display: 'inline-flex' }}>
+    <div ref={projDropRef} style={{ position: 'relative', display: 'inline-flex', minWidth: 0 }}>
       <button onClick={(e) => {
         // T00520：展开时以按钮视口坐标 fixed 定位面板——脱离父容器 overflow 裁剪，不受窗口/容器大小限制
         const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -163,16 +163,20 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
       }} aria-haspopup="listbox" aria-expanded={projOpen}
         title="选择项目 — 项目名后徽标：绿=已完成、蓝=进行中、灰=待开始（悬浮查看详情）"
         aria-label="选择项目"
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 8px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, cursor: 'pointer' }}>
-        {cur?.name ?? '选择项目'}
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 8px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, cursor: 'pointer', maxWidth: 220, minWidth: 0 }}>
+        {/* T02167：与任务页项目下拉条同修——名称让步（单行省略），徽标与箭头 flexShrink:0 不让步，
+            否则窄窗口下裸文本节点被压到 1 字宽、统计徽标溢出按钮边框 */}
+        <span style={{ flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {cur?.name ?? '选择项目'}
+        </span>
         {cur ? (
           <>
-            <span title={`已完成 ${cur.plan_done ?? 0}`} style={{ minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success)' }}>{cur.plan_done ?? 0}</span>
-            <span title={`进行中 ${cur.plan_doing ?? 0}`} style={{ minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{cur.plan_doing ?? 0}</span>
-            <span title={`待开始 ${cur.plan_open ?? 0}`} style={{ minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>{cur.plan_open ?? 0}</span>
+            <span title={`已完成 ${cur.plan_done ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success)' }}>{cur.plan_done ?? 0}</span>
+            <span title={`进行中 ${cur.plan_doing ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{cur.plan_doing ?? 0}</span>
+            <span title={`待开始 ${cur.plan_open ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>{cur.plan_open ?? 0}</span>
           </>
         ) : null}
-        <ChevronDown size={12} />
+        <ChevronDown size={12} style={{ flexShrink: 0 }} />
       </button>
       {/* T00663：项目排序按钮（复用任务菜单同款排序方式与逻辑；默认隐藏、悬浮工具条显示） */}
       <span ref={sortDropRef} style={{ position: 'relative', display: 'inline-flex' }}>
@@ -197,13 +201,13 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
         )}
       </span>
       {projOpen && projDropPos && (
-        <div style={{ position: 'fixed', top: projDropPos.top, left: projDropPos.left, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 60, minWidth: 240, maxHeight: `calc(100vh - ${projDropPos.top + 12}px)`, overflowY: 'auto' }}>
+        <div style={{ position: 'fixed', top: projDropPos.top, left: projDropPos.left, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 60, minWidth: 240, maxWidth: `min(360px, calc(100vw - ${projDropPos.left + 12}px))`, overflowX: 'hidden', maxHeight: `calc(100vh - ${projDropPos.top + 12}px)`, overflowY: 'auto' }}>
           {/* T00663：项目下拉项——置顶图标在名称前；默认序下支持拖拽排序（持久化到服务端） */}
           {sortedProjects.map((p) => (
             // T02146：行容器由原生 button 改 div role=button——行内的置顶图标本身是 button，
             // HTML 不允许按钮套按钮（同 T02143 根因：a11y 批修把规则套到了含交互子元素的容器上）。
             // 拖拽属性在 div 上等价可用；手感靠 .card-btn 补回（App.tsx 已落该类）。
-            <div key={p.id} role="button" tabIndex={0} className="card-btn" aria-pressed={p.id === projectId}
+            <div key={p.id} role="button" tabIndex={0} className="card-btn" aria-pressed={p.id === projectId} /* NOSONAR: S6819 豁免——T02146：行内含原生置顶button，HTML禁止按钮套按钮；键盘支持已在onKeyDown保留 */
               draggable={projSortMode === 'default'}
               onDragStart={() => setDragProjId(p.id)}
               onDragOver={(e) => { if (projSortMode === 'default' && dragProjId) { e.preventDefault(); setOverProjId(p.id); } }}
@@ -219,7 +223,7 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
               title={projSortMode === 'default'
                 ? `${p.name}：已完成 ${p.plan_done ?? 0}，进行中 ${p.plan_doing ?? 0}，待开始 ${p.plan_open ?? 0}（可拖拽调整顺序）`
                 : `${p.name}：已完成 ${p.plan_done ?? 0}，进行中 ${p.plan_doing ?? 0}，待开始 ${p.plan_open ?? 0}（拖拽排序请切换到「默认（置顶优先）」）`}
-              style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, opacity: dragProjId === p.id ? 0.5 : 1, borderTop: overProjId === p.id ? '2px solid var(--accent)' : '2px solid transparent', background: p.id === projectId ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', cursor: projSortMode === 'default' ? 'grab' : 'pointer' }}>
+              style={{ display: 'flex', width: '100%', boxSizing: 'border-box', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, opacity: dragProjId === p.id ? 0.5 : 1, borderTop: overProjId === p.id ? '2px solid var(--accent)' : '2px solid transparent', background: p.id === projectId ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', cursor: projSortMode === 'default' ? 'grab' : 'pointer' }}>
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); runAsync(togglePin(p)); }}
@@ -229,10 +233,11 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
               >
                 <Pin size={12} style={{ transform: isProjectPinned(p) ? 'rotate(-45deg)' : 'none', transition: 'transform .18s ease, color .18s ease', fill: isProjectPinned(p) ? 'currentColor' : 'none' }} />
               </button>
-              <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
-              <span title={`已完成 ${p.plan_done ?? 0}`} style={{ minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success)' }}>{p.plan_done ?? 0}</span>
-              <span title={`进行中 ${p.plan_doing ?? 0}`} style={{ minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.plan_doing ?? 0}</span>
-              <span title={`待开始 ${p.plan_open ?? 0}`} style={{ minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>{p.plan_open ?? 0}</span>
+              {/* T02167：同任务页——名称 flex:1 + minWidth:0 才能收缩省略，三枚计划徽标 flexShrink:0 不让步 */}
+              <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+              <span title={`已完成 ${p.plan_done ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success)' }}>{p.plan_done ?? 0}</span>
+              <span title={`进行中 ${p.plan_doing ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.plan_doing ?? 0}</span>
+              <span title={`待开始 ${p.plan_open ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>{p.plan_open ?? 0}</span>
             </div>
           ))}
         </div>
