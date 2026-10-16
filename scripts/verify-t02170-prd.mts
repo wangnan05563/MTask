@@ -101,6 +101,32 @@ ok('F-C5 卡片现状：kickoff-ppt 已在位（第 7 张），summary-ppt 尚�
 ok('F-C6 PRD 记录竞品检索日期与联网核验方式（2026-10-16 WebSearch）',
   PRD.includes('2026-10-16') && /WebSearch/.test(PRD));
 
+// ---------- F-C7~F-C12：评审（v1.0→v1.1）取证结论固化，防口径回退 ----------
+const retention = read('server/src/services/EventRetention.ts');
+const msProg = read('server/src/services/milestoneProgress.ts');
+const kickoffSvc = read('server/src/services/kickoffService.ts');
+const reportBuilder = read('server/src/services/report-builder.ts');
+ok('F-C7 B1 前提：task_events 默认保留 90 天且可配；PRD 生效口径已收敛为 90 天并加 S9 事件覆盖率',
+  // 注：「92 天」在 v1.1 修订清单里是旧值记述（合法），故只校验生效口径句
+  /DEFAULT_RETENTION_DAYS = 90/.test(retention) && /readEventRetentionDays/.test(retention)
+  && /S9/.test(PRD) && /事件覆盖率/.test(PRD) && /自定义区间上限 \*\*90 天\*\*/.test(PRD));
+ok('F-C8 I3 前提：里程碑无子项时不聚合（保留人工 progress）；PRD 已分两态渲染',
+  /if \(total === 0\) return/.test(msProg) && /milestoneHasChildren/.test(msProg) && PRD.includes('milestoneHasChildren'));
+ok('F-C9 I4 前提：kickoffService 四函数为单项目 projectId 签名；PRD 已限定复用口径为版式层+端点范式',
+  /export function preflight\(projectId: string\)/.test(kickoffSvc)
+  && /export function collectBundle\(projectId: string\)/.test(kickoffSvc)
+  && /kickoffOutline\(projectId: string/.test(kickoffSvc)
+  && /版式层 \+ 端点范式/.test(PRD));
+ok('F-C10 I5 前提：仓内第二条 pptx 路径 buildPptx 在位（已支持多项目）；PRD 已作对照说明',
+  /export async function buildPptx\(data: ReportData/.test(reportBuilder)
+  && /scopeLine\(data, true\)/.test(reportBuilder) && PRD.includes('buildPptx'));
+ok('F-C11 I1 前提：页面级 ProjectScopePicker + report.projects 会话键在位；PRD 改为消费而非新建',
+  /ProjectScopePicker/.test(reportPage) && /useSessionState<string\[\]>\('report.projects'/.test(reportPage)
+  && PRD.includes('report.projects'));
+ok('F-C12 防回退：生效口径句必须是 90 天上限（原 92）与按项目数自适应预算（原每项目 1500 字）',
+  /自定义区间上限 \*\*90 天\*\*（原 92）/.test(PRD)
+  && /按项目数自适应/.test(PRD) && /每项目 = 6000\/N/.test(PRD));
+
 // ---------- G 组：需求覆盖（对照 T02170 任务步骤） ----------
 ok('G-01 交互流程：选中项目 / 设置汇报周期 / 选择模板风格',
   /选中项目|项目范围/.test(PRD) && /汇报周期/.test(PRD) && /模板风格|版式/.test(PRD));
