@@ -80,7 +80,11 @@ ok('S-01 MCP create_plans schema 带 requirements / items[].reqNos / createTasks
 ok('S-02 关联请求路由到 importPrd（不复制一份联动逻辑，单源）',
   /const wantLinkage = /.test(mcpSrc) && /PlanService\.importPrd\(pid, \{/.test(mcpSrc));
 ok('S-03 importPrd 回传 planRowIds 且 MCP 依赖解析改用它（下标对齐，撞名让号不断链）',
-  /planRowIds = planTargets\.map\(/.test(planServiceSrc) && /resolveDeps\(r\.planRowIds\)/.test(mcpSrc));
+  // 锚点口径（2026-10-17）：66eb5cd Sonar 治理把内联 resolveDeps(r.planRowIds) 提成共享
+  // applyPlanItemDeps(pid, items, r.planRowIds, warnings)——行为不变（R-06 实测仍绿），
+  // 故断言改为「deps 解析入口收到 r.planRowIds」，不再锁死函数名。
+  /planRowIds = planTargets\.map\(/.test(planServiceSrc)
+  && /applyPlanItemDeps\([^)]*r\.planRowIds/.test(mcpSrc));
 ok('S-04 编号解析第三层回落：可挂到既往导入已建的矩阵行（按项目内唯一 req_no 定位）',
   /SELECT id FROM prd_requirements WHERE project_id = \? AND req_no = \?/.test(planServiceSrc)
   && /requestedToId\.get\(n\) \?\? noToId\.get\(n\) \?\? existingReqId\(n\)/.test(planServiceSrc));
@@ -347,7 +351,29 @@ try {
           "SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND archived = 1 AND created_at = '2026-10-12T14:30:16.529Z'",
         ).get(FOUR) as { n: number }).n;
         ok('R-12a 生产库四期未归档行中无 K/M-K 孤儿批次（本单收口判据）', liveOrphan === 0, { liveOrphan });
-        ok('R-12b 归档可逆留痕：K1~K8 + M-K1~M-K4 整批 12 行在归档态可查（软删而非硬删）', archivedOrphan === 12, { archivedOrphan });
+        // R-12b（2026-10-17 改造）：归档留痕改由门自身数据自证。原断言把生产库某批次的时间戳写死成
+        // `= 12 行`，而那 12 行后续经 T01874「彻底删除」通道（PlanService.ts:1276
+        // `DELETE FROM plan_tasks WHERE id = ? AND archived = 1`，用户主动清理）被清掉——
+        // 依赖易变的生产数据会让门失去复跑价值（恒红）。
+        const sample = qAll(
+          "SELECT id, title FROM plan_tasks WHERE project_id = ? AND archived = 0 AND req_ids IS NOT NULL AND req_ids NOT IN ('', '[]') LIMIT 3", PID,
+        ) as Array<{ id: string }>;
+        for (const p of sample) await api('POST', `/plans/${p.id}/archive`);
+        const softArchived = (q1('SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND archived = 1', PID) as { n: number }).n;
+        const softRowsStillThere = qAll(
+          'SELECT id, req_ids, linked_task_id FROM plan_tasks WHERE project_id = ? AND archived = 1', PID,
+        ).filter((r: { req_ids: string | null }) => parseArr(r.req_ids).length > 0).length;
+        for (const p of sample) await api('POST', `/plans/${p.id}/restore`);
+        const afterRestore = (q1('SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND archived = 1', PID) as { n: number }).n;
+        ok('R-12b 归档可逆留痕（门内自证）：软删行仍在库可查且关联字段不丢，恢复后归档态清零',
+          sample.length === 3 && softArchived === 3 && softRowsStillThere === 3 && afterRestore === 0,
+          { sample: sample.length, softArchived, softRowsStillThere, afterRestore });
+        if (archivedOrphan !== 12) {
+          skipped('R-12c 生产库 K/M-K 批次归档留痕',
+            `生产库该批现存 ${archivedOrphan} 行——已由 T01874 彻底删除通道清掉（属用户主动清理，非软删失效）；留痕判据改由 R-12b 在隔离库自证`);
+        } else {
+          ok('R-12c 生产库 K/M-K 批次归档留痕：整批 12 行在归档态可查', true, { archivedOrphan });
+        }
         dst.close();
         srcDb.close();
       }
