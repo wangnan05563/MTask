@@ -303,13 +303,24 @@ export function framesFor(family: LayoutFamily, sub?: string, split = 0.5): Layo
   }
   if (family === 'cover') {
     const centered = sub === 'toc';
+    // T02204：封面族的标题带按「该族字号的两行」给，不再按单行。
+    // 装配层判越界用的是「标题带高 ÷ 行高」，而大纲层的字数上限是全局 30 字——两套口径之间
+    // 漏出来的标题（封面 26 字 = 32pt 两行 = 1.38" > 1.12"）在装配层就是「第 1 页版式越界，已降级」，
+    // 整页降级丢掉的是封面版式本身，正是母单点名的「越界」形态里最没道理的一种。
+    // 30 字上限下：封面 32pt 两行 1.378" ≤ 1.4"，目录 22pt 两行 0.947" ≤ 0.95"，闭环成立。
+    const coverTitleH = 1.4;
+    const tocTitleH = 0.95;
     const title: Box = centered
-      ? { x: frame.x, y: frame.y, w: frame.w, h: titleH }
-      : { x: frame.x, y: frame.y + frame.h * 0.28, w: frame.w, h: titleH * 1.6 };
+      ? { x: frame.x, y: frame.y, w: frame.w, h: tocTitleH }
+      : { x: frame.x, y: frame.y + frame.h * 0.28, w: frame.w, h: coverTitleH };
     // 目录页正文右移让开背景左上的浅蓝色带（模板目录条目排在白区，与编号列表同侧）
+    // 正文起点一律跟着 title.h 走（标题带改高时不必两处各改一遍，漏一处就是重叠）；
+    // 高度按「到内容框底的剩余空间」封顶——封面标题带加高后，原来的固定 0.34 比例会把正文顶出框底。
+    const bodyY = title.y + title.h + MIN_GAP;
+    const fillH = frame.y + frame.h - bodyY;
     const body: Box = centered
-      ? { x: 2.6, y: frame.y + titleH + MIN_GAP, w: frame.x + frame.w - 2.6, h: frame.h - titleH - MIN_GAP }
-      : { x: frame.x, y: frame.y + frame.h * 0.28 + titleH * 1.6 + MIN_GAP, w: frame.w, h: frame.h * 0.34 };
+      ? { x: 2.6, y: bodyY, w: frame.x + frame.w - 2.6, h: fillH }
+      : { x: frame.x, y: bodyY, w: frame.w, h: Math.min(frame.h * 0.34, fillH) };
     return { family, title, body };
   }
   if (family === 'twoCol') {

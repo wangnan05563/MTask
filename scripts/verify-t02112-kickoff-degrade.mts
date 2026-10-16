@@ -14,6 +14,7 @@
  * 断言组：
  *   N 组 验收 2：空项目 blocked + 3 条硬缺失点名深链 + 零 AI 调用 + 零落盘 + 前端禁用同源。
  *   D 组 验收 7：长标题越界 → done.warnings 点名降级 → 产物仍可解包、越界页只留标题正文、形状不出画布。
+ *                T02204 补 D-09~D-11：封面族标题带按两行给足后，长封面标题不再被整页降级（产物层 + 版式层双证）。
  *   P 组 占位：零用例→覆盖率页占位无百分比；无里程碑→时间线降级为表格且无菱形；零估算→页脚工期口径且人天=SQL 复算。
  *   C 组 验收 9：生成中客户端断开 → 无残留临时文件、闸位即时归还、实例仍健康、日志无未捕获异常。
  *
@@ -211,6 +212,8 @@ function baseOutline(longTitlePages: Record<number, string> = {}): any[] {
 }
 /** 必然越界：56 字标题直达版式层（`assertOutlineShape` 只校验枚举，不裁长度——面板手打长标题走的就是这条路） */
 const OVERFLOW_TITLE = '本页标题刻意超长以逼出越界'.repeat(4);
+/** T02204：26 字封面标题——32pt 下要两行（1.38"），旧封面标题带 1.12" 就把它判成越界整页降级 */
+const COVER_TITLE = '项目启动会封面标题按三十六字上限排两行仍要落回本页内';
 
 const projects = q<{ id: string; name: string }>('SELECT id, name FROM projects WHERE archived = 0 AND name != ? ORDER BY name', '收件箱');
 const counts = (id: string) => ({
@@ -295,7 +298,7 @@ if (!(await waitUp())) {
   // ---------------- D 组：验收 7 越界长标题 → 真链路降级 ----------------
   const PID = noCaseProject?.id ?? '';
   const PNAME = noCaseProject?.name ?? '';
-  const dOutline = baseOutline({ 4: OVERFLOW_TITLE });
+  const dOutline = baseOutline({ 0: COVER_TITLE, 4: OVERFLOW_TITLE });
   const dGen = await streamGen(`/plans/kickoff-ppt-stream?projectId=${PID}&toolId=${toolId}`, { projectId: PID, toolId, outline: dOutline });
   const dDone = dGen.events.find((e) => e.event === 'done')?.data;
   const dWarn: string[] = dDone?.warnings ?? [];
@@ -336,6 +339,34 @@ if (!(await waitUp())) {
     allXml.every((x) => shapesIn(x).every((s) => s.off.length === 2 && s.ext.length === 2 &&
       s.off[0] >= 0 && s.off[1] >= 0 && s.off[0] + s.ext[0] <= 10 + 1e-6 && s.off[1] + s.ext[1] <= 5.625 + 1e-6)),
     allXml.map((x) => shapesIn(x).filter((s) => s.off?.[0] + s.ext?.[0] > 10.000001).length).filter((n) => n > 0));
+
+  // T02204 C-04：封面长标题（32pt 两行）此前被判「版式越界」并把封面整页降级——
+  // 越界判据没错，错的是标题带只给了一行。同一份稿里封面（够带高，不降级）与第 5 页（真越界，降级）
+  // 并存，才证明降级是「按页判」而不是「一报错就全稿收敛」。
+  ok(`D-09 ${COVER_TITLE.length} 字封面标题不触版式降级（done.warnings 无「第 1 页…越界」，同稿第 5 页照常降级）`,
+    !dWarn.some((w) => /^第 1 页.*越界/.test(w)) && dWarn.some((w) => /^第 5 页.*越界/.test(w)),
+    dWarn.filter((w) => /越界/.test(w)).slice(0, 3));
+  const LAY = (await import('../server/src/services/kickoff-layout.ts')) as unknown as {
+    framesFor: (f: string, s?: string) => { title: any; body: any };
+    findOverlaps: (b: any[]) => unknown[];
+    assertInBounds: (b: any) => string | null;
+  };
+  const BLD = (await import('../server/src/services/kickoffBuilder.ts')) as unknown as {
+    pageViolations: (t: any, txt: string, blocks: unknown[], pt: number) => string[];
+  };
+  const coverF = LAY.framesFor('cover');
+  const tocF = LAY.framesFor('cover', 'toc');
+  // 判据走装配层真口径（pageViolations 内部就是 textHeight vs 带高），不在此重实行高公式
+  ok('D-10 版式层同口径：封面 32pt 两行 / 目录 22pt 两行标题在 pageViolations 下零越界',
+    BLD.pageViolations(coverF.title, COVER_TITLE, [], 32).length === 0 &&
+      BLD.pageViolations(tocF.title, COVER_TITLE, [], 22).length === 0,
+    { cover: BLD.pageViolations(coverF.title, COVER_TITLE, [], 32), toc: BLD.pageViolations(tocF.title, COVER_TITLE, [], 22) });
+  ok('D-11 标题带加高后正文框仍与标题不重叠、不出画布（改一处几何不许牵连版式不变量）',
+    LAY.findOverlaps([coverF.title, coverF.body]).length === 0 && LAY.findOverlaps([tocF.title, tocF.body]).length === 0 &&
+      LAY.assertInBounds(coverF.body) === null && LAY.assertInBounds(tocF.body) === null,
+    { coverBody: coverF.body, tocBody: tocF.body });
+  ok('D-12 产物第 1 页仍是封面版式（32pt 标题 run 在页上，没被降级成 22pt 正文页）',
+    /sz="3200"/.test(allXml[0] ?? ''), (allXml[0]?.match(/sz="\d+"/g) ?? []).slice(0, 4));
 
   // ---------------- P 组：占位与缺数据降级（全在真产物上） ----------------
   const cPage = allXml.find((x) => /用例|覆盖/.test(x)) ?? '';

@@ -204,7 +204,35 @@ if (!(await waitUp())) {
   ok('R-03b system 提示词含数字禁令与三套枚举',
     /严禁自行写数字/.test(sys) && sys.includes('timeline') && sys.includes('dataKeys'));
   const facts = user.split('【PRD 摘要】')[0] ?? '';
-  ok('R-03c 真实计数段不含占位假数（999/XXX/待补充）', !/999|XXX|待补充/.test(facts), facts.match(/.{0,30}(999|XXX|待补充).{0,30}/)?.[0]);
+  // T02204：「占位假数」与「空源缺口口径」是两件事。999/XXX 这类测试哨兵必须零出现；
+  // 「待补充」是 FR-4.1 的可见占位词，允许出现在**同时点名了缺失原因**的行——
+  // 承担人全空时喂「承担人：待补充（N 条计划均未填）」，就是为了挡住模型抄出「0 人」这种像结论的数。
+  const gapLines = facts.split('\n').filter((l) => /待补充/.test(l));
+  ok('R-03c 真实计数段不含占位假数（999/XXX 零出现），「待补充」只在点名了缺失原因的行里',
+    !/999|XXX/.test(facts) && gapLines.every((l) => /未填|未建|均无|暂无|未提供|样例/.test(l)),
+    { gapLines });
+
+  // T02204：真链路门 A-02a（bullets 锚点率 ≥60%）回落时，服务侧只负责一件事——
+  // **有没有把可指代的真实名称喂进去**。喂不出名字，模型只能写套话；喂得出而模型不引用，
+  // 才是提示词/模型侧的问题（那半归真链路门）。这条把「供给半」钉成不依赖配额的机检判据。
+  // 判据自证：命中 0 处时把维度名单与样例段原文一起打出来，别让人猜是数据没了还是喂法改了。
+  const sampleLine = facts.split('\n').find((l) => /样例事实/.test(l)) ?? '';
+  const dims = ['需求样例', '进行中计划', '阻塞计划', '已完成计划', '里程碑'];
+  const quotedNames = sampleLine.match(/「[^」]{2,}」/g) ?? [];
+  ok('R-03d 样例事实五维齐备且可指代名称 ≥6 个（A-02a 的服务侧供给半）',
+    dims.every((d) => sampleLine.includes(d)) && quotedNames.length >= 6,
+    { 缺维度: dims.filter((d) => !sampleLine.includes(d)), 名称数: quotedNames.length, 样例段原文: sampleLine.slice(0, 300) });
+  ok('R-03e 提示词带可机检锚点约束（每页≥1 条「」指代 / 全稿 6 成 = A-02a 的 60% 同口径 / 空源不写「0 人」）',
+    /至少 1 条用「」/.test(sys) && /6 成/.test(sys) && /不得把「没填」写成「0 人/.test(sys),
+    { "sys 锚点段": sys.slice(-300) });
+  // T02204 归因实验：HEAD 副本（无第 12 条）真链路报「第 3 页 缺少标题 / 缺时间线页」，
+  // 加了第 12 条后同一厂商改报「单条 bullet 超出 42 字」——模型为了凑指代，把 PRD 整段原文、
+  // 反引号代码标识符、「工作空间 D:\\…」、以及「共 14 条需求」这类统计句整条塞进 bullets。
+  // 所以第 12 条必须自带「只放名称本体 + 占位词不计数 + 不许加长句子」这三道收窄，否则锚点约束
+  // 自身就成了新的 400 来源（也是 A-02a 的漏洞：「待补充」包进「」就能白拿一个锚点）。
+  ok('R-03f 第 12 条自带收窄：「」只放≤12 字名称本体 / 禁整段原文·路径·代码 / 占位词不计入指代配额',
+    /名称本体.*≤\s*12\s*字/.test(sys) && /整段原文、代码标识符、文件路径/.test(sys) && /不计入指代配额/.test(sys),
+    { "sys 第 12 条": sys.slice(sys.indexOf('12. T02204'), sys.indexOf('12. T02204') + 520) });
 
   // R-04 页数不合规 → 重试后 400 点名
   mockQueue = [{ content: outlineJson(5) }];
@@ -221,6 +249,16 @@ if (!(await waitUp())) {
   ok('R-05 首轮坏/次轮好 → 200 且 warnings 记录已重试',
     flaky.status === 200 && flaky.body?.outline?.length === 12 && (flaky.body?.warnings ?? []).some((w: string) => /已自动重试 1 次/.test(w)),
     { status: flaky.status, warnings: flaky.body?.warnings, error: flaky.body?.error });
+  // T02204：重试轮走的是另一份 system（OUTLINE_SYSTEM_RETRY），锚点约束只写在首轮等于半条判据——
+  // 而恰恰是首轮不合格的稿才会进重试轮。断言两轮的约束同口径在位（同 A-02a 的 6 成 = 60%）。
+  const retrySys = mockRequests[1]?.system ?? '';
+  ok('R-05b 重试轮 system 同样带「每页≥1 条「」指代 / 6 成 / 空源不写 0 人」约束（不是只有首轮）',
+    mockRequests.length === 2 && /至少|每页.*1 条/.test(retrySys) && /6 成/.test(retrySys) && /0 人/.test(retrySys),
+    { asks: mockRequests.length, retrySysTail: retrySys.slice(-260) });
+  // 重试轮恰恰是「上一轮已经超长」的那一稿——不收窄指代写法，重试只是把同一条 42 字违规再说一遍。
+  ok('R-05c 重试轮同样带收窄（≤12 字名称本体 / 不放路径代码整段 / 占位词不计数），不是只重申 42 字上限',
+    /≤\s*12\s*字的名称本体/.test(retrySys) && /不放整段原文、路径、代码标识符/.test(retrySys) && /不计入指代配额/.test(retrySys),
+    { retrySysTail: retrySys.slice(-320) });
 
   // R-06 非法 dataKey
   const badKey = JSON.parse(outlineJson(12)) as any[];

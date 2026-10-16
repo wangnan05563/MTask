@@ -123,6 +123,7 @@ interface KickoffFillRates {
   dated: number;
   rated: number;
   linkedReq: number;
+  assigned: number;
   dateRateOk: boolean;
   workloadRateOk: boolean;
 }
@@ -134,7 +135,7 @@ function fillRatesOf(g: KickoffInputs): KickoffFillRates {
   const linkedReq = g.reqs.filter((r) => r.linkedPlans.length > 0).length;
   const dateRateOk = g.plans.length > 0 && dated / g.plans.length >= MIN_DATE_FILL_RATE;
   const workloadRateOk = g.plans.length > 0 && rated / g.plans.length >= MIN_WORKLOAD_FILL_RATE;
-  return { dated, rated, linkedReq, dateRateOk, workloadRateOk };
+  return { dated, rated, linkedReq, assigned: assigneesOf(g.plans).length, dateRateOk, workloadRateOk };
 }
 
 function p3Status(planCount: number, dateRateOk: boolean): PreflightStatus {
@@ -142,16 +143,28 @@ function p3Status(planCount: number, dateRateOk: boolean): PreflightStatus {
   return dateRateOk ? 'ok' : 'warn';
 }
 
-function p3Note(planCount: number, dated: number, dateRateOk: boolean): string {
+function p3Note(planCount: number, dated: number, dateRateOk: boolean, assigned: number): string {
   if (planCount < MIN_PLANS) {
     return `未归档计划仅 ${planCount} 条（<${MIN_PLANS}）——用 AI 工作台「从 PRD 导入项目计划」拆分 WBS`;
   }
+  const gap = assigneeGapNote(planCount, assigned);
   if (dateRateOk) {
     return dated === planCount
-      ? `${planCount} 条计划均有起止日期，时间线页按真实排期绘制`
-      : `${dated}/${planCount} 条有起止日期（${pct(dated, planCount)}%，≥60%）——剩余 ${planCount - dated} 条无排期，时间线页画不出这些条`;
+      ? `${planCount} 条计划均有起止日期，时间线页按真实排期绘制${gap}`
+      : `${dated}/${planCount} 条有起止日期（${pct(dated, planCount)}%，≥60%）——剩余 ${planCount - dated} 条无排期，时间线页画不出这些条${gap}`;
   }
-  return `${planCount} 条计划中 ${planCount - dated} 条缺起止日期（填充率 ${pct(dated, planCount)}%，<60%）——时间线页将降级为列表，请在项目管理页补齐日期`;
+  return `${planCount} 条计划中 ${planCount - dated} 条缺起止日期（填充率 ${pct(dated, planCount)}%，<60%）——时间线页将降级为列表，请在项目管理页补齐日期${gap}`;
+}
+
+/**
+ * T02204：承担人一条不填时，预检必须把它点名为缺口。
+ * 此前这里沉默，模型只能从「承担人：0 人」这句汇总里抄出一个**像结论的数**写进人员分工页——
+ * 页面读起来是「本项目无承担人」，而真相是「库里没填」，二者在启动会上是两个完全不同的动作。
+ * 不新增预检项（P1~P7 是页面/门/前端三处镜像的既有口径），把缺口挂在同源的 P3 文案上。
+ */
+function assigneeGapNote(planCount: number, assigned: number): string {
+  if (planCount === 0 || assigned > 0) return '';
+  return `；${planCount} 条计划均未填承担人——人员分工页按「${KICKOFF_PLACEHOLDER}」口径，别把「未填」写成「0 人」`;
 }
 
 function p5Note(total: number, cov: Coverage): string {
@@ -200,7 +213,7 @@ function corePreflightItems(g: KickoffInputs, r: KickoffFillRates): PreflightIte
       hard: true,
       deepLink: 'report?card=prd-import',
       status: p3Status(g.plans.length, r.dateRateOk),
-      note: p3Note(g.plans.length, r.dated, r.dateRateOk),
+      note: p3Note(g.plans.length, r.dated, r.dateRateOk, r.assigned),
     },
   ];
 }
@@ -780,13 +793,24 @@ const OUTLINE_SYSTEM = `你是项目启动会 PPT 的大纲编排器。只输出
 10. T02166：bullets 必须引用【样例事实】里给过的具体名称（用「」包裹）；不得空写「各方配合」「相关任务有序推进」这类无指代套话。
    名称只能照抄【样例事实】里出现过的，不得自造、不得改写；数字仍归 dataKeys 覆盖，bullets 不写数字。
 11. T02166：bullets 不是数据块的目录——不得写「××分布见数据」「详见下表」「计划起止时间见数据」这类只指路不自证的空指针句；
-    一条要点要把一件事说完（谁/什么/处于什么状态），具体名称按第 10 条从【样例事实】照抄。`;
+    一条要点要把一件事说完（谁/什么/处于什么状态），具体名称按第 10 条从【样例事实】照抄。
+12. T02204（可机检锚点，逐页自查）：每一页的 bullets 里**至少 1 条用「」包住一个具体名称**，全稿带「」指代的 bullets 不低于 6 成——
+    写不出指代的那条就是套话，删掉它或改写成人/事/状态，不要留空句占位。
+    「」里只放**名称本体**（≤12 字，从【样例事实】清单项或【PRD 摘要】的模块名/术语里照抄，不得改写、不得自造）；
+    不得把整段原文、代码标识符、文件路径、统计句塞进「」或塞进同一条 bullet——第 5 条每条 ≤${BULLET_MAX_CHARS} 字是硬门，
+    加指代的方式是换掉句子里的废话，不是把句子加长（超长＝整页判废重来，比少一个指代严重得多）。
+    「待补充」这类占位词**不计入指代配额**：只有空源页可以写它，其它页拿它凑数同样按套话处理。
+    数据源为空时（【资料齐备性】标 warn/fail 的项，如未填承担人）照实写「待补充」并点名要补什么，
+    不得把「没填」写成「0 人 / 0 条」这类看着像结论的数；第 7 条不变——本条不授权你写统计数字，条数/占比一律走 dataKeys。`;
 
 const OUTLINE_SYSTEM_RETRY = `只输出 JSON 数组（${PAGE_MIN}~${PAGE_MAX} 个元素），元素：{section,title,bullets,dataKeys,layout}。
 section∈[${KICKOFF_SECTIONS.join('|')}] layout∈[${KICKOFF_LAYOUTS.join('|')}] dataKeys⊆[${KICKOFF_DATA_KEYS.join('|')}]
 每页 dataKeys **≤${DATA_KEYS_MAX} 个**（超出会被系统截断）；
 bullets 每条≤${BULLET_MAX_CHARS}字；必须有含 timeline 的一页和含 workload 的一页；数字一律用 dataKeys 表示，禁止编造数字。
-第 1 页 cover、第 2 页 toc、末页 thanks；章节分隔用 section（dataKeys 空）；阶段链用 flow、人员标签用 chip（各至多一页）。`;
+第 1 页 cover、第 2 页 toc、末页 thanks；章节分隔用 section（dataKeys 空）；阶段链用 flow、人员标签用 chip（各至多一页）。
+每页至少 1 条 bullets 用「」照抄输入里出现过的具体名称，全稿带「」指代的 bullets ≥6 成；
+「」内只放 ≤12 字的名称本体（不放整段原文、路径、代码标识符），整条仍≤${BULLET_MAX_CHARS}字——放不下就删废话，别加长句子；「待补充」不计入指代配额；
+空源写「待补充」，不写「0 人」这类像结论的数。`;
 
 /** 齐备性摘要 + 真实计数：喂给模型的是口径与可用源，数字仍由装配层覆盖（FR-3.4） */
 function outlineFacts(b: KickoffBundle): string {
@@ -809,24 +833,34 @@ function outlineFacts(b: KickoffBundle): string {
   const complexityFacts = b.workload.complexity.map((c) => `${c.level}:${c.count}`).join(' ');
   const workloadTrace = b.workload.noData ? '（无估算行且计划未填工期，工作量页出占位，不要写成 0 人天）' : '';
   const assigneeNames = b.assignees.slice(0, 8).map((a) => `${a.name} ${a.planCount}条`).join('、');
-  const assigneeDetail = b.assignees.length ? `（${assigneeNames}）` : '';
+  // T02204：空源不喂「承担人：0 人」。这句喂进去，模型抄出来的就是「承担人配置：0 人」——
+  // 数字像结论、实为「库里没填」，真链路门 A-02a 把它判成无锚点套话是对的（它确实不指代任何事实）。
+  // 改喂缺口口径后，页面写「待补充」，与装配层占位词同源（KICKOFF_PLACEHOLDER）。
+  const assigneeFacts = b.assignees.length
+    ? `承担人：${b.assignees.length} 人（${assigneeNames}）`
+    : `承担人：${KICKOFF_PLACEHOLDER}（${b.plans.length} 条计划均未填）——人员分工页只写「承担人${KICKOFF_PLACEHOLDER}，需在项目计划行补齐」，严禁写「0 人」这类像结论的数`;
   // T02166：样例事实——把真实的名称摊给模型（仅名称，数字仍归 dataKeys 覆盖）。
-  // 此前只喂汇总统计，模型只能编「各方配合到位」类套话；补 3 条需求/3 条进行中或阻塞计划
+  // 此前只喂汇总统计，模型只能编「各方配合到位」类套话；补需求/进行中/阻塞/已完成计划
   // 与里程碑名，让 bullets 有可指代的具体项，页面文本才和 dataKeys 表格形成呼应而不是空转。
   const clip = (s: string, n = 18) => (s.length > n ? `${s.slice(0, n)}…` : s);
   const reqSamples = b.requirements
-    .slice(0, 3)
+    .slice(0, 5)
     .map((r) => `${r.req_no ?? ''} ${clip(r.title ?? '')}`.trim())
     .filter((s) => s.length > 0);
   const doingSamples = b.plans
     .filter((p) => p.status === 'doing')
-    .slice(0, 3)
+    .slice(0, 4)
     .map((p) => clip(p.title));
   const blockedSamples = b.plans
     .filter((p) => p.status === 'blocked')
     .slice(0, 3)
     .map((p) => clip(p.title));
-  const milestoneSamples = b.milestones.slice(0, 3).map((m) => `${clip(m.title)}（${m.end_date || KICKOFF_PLACEHOLDER}）`);
+  // T02204：补齐「已完成」一维——进度/成果页此前无名称可指代，只能写成「各模块有序推进」。
+  const doneSamples = b.plans
+    .filter((p) => p.status === 'done')
+    .slice(0, 4)
+    .map((p) => clip(p.title));
+  const milestoneSamples = b.milestones.slice(0, 5).map((m) => `${clip(m.title)}（${m.end_date || KICKOFF_PLACEHOLDER}）`);
   return [
     `项目：${b.project.name}（数据截至 ${b.dataAsOf}）`,
     `资料齐备性：${status}`,
@@ -836,12 +870,13 @@ function outlineFacts(b: KickoffBundle): string {
     `排期范围：${dates[0] ?? '无'} ~ ${ends.at(-1) ?? '无'}`,
     `测试用例覆盖率：${coverageFacts}`,
     `工作量口径：${b.workload.source === 'estimate' ? '估算引擎' : '排期工期推导'}，参与行数 ${b.workload.counted}，复杂度分布 ${complexityFacts}${workloadTrace}`,
-    `承担人：${b.assignees.length} 人${assigneeDetail}`,
+    assigneeFacts,
     `本地风险信号：${b.risks.length} 条（${b.risks.map((r) => r.item).join('；')}）`,
     `样例事实（bullets 只能引用下列名称，不得杜撰；数字仍由 dataKeys 覆盖）：` +
       `需求样例 ${reqSamples.length ? reqSamples.map((s) => `「${s}」`).join('、') : '无'}` +
       `；进行中计划 ${doingSamples.length ? doingSamples.map((s) => `「${s}」`).join('、') : '无'}` +
       `；阻塞计划 ${blockedSamples.length ? blockedSamples.map((s) => `「${s}」`).join('、') : '无'}` +
+      `；已完成计划 ${doneSamples.length ? doneSamples.map((s) => `「${s}」`).join('、') : '无'}` +
       `；里程碑 ${milestoneSamples.length ? milestoneSamples.map((s) => `「${s}」`).join('、') : '无'}`,
     b.workspaceNote ?? '',
   ]
@@ -941,8 +976,12 @@ function pinField(v: unknown, pool: string, maxLen: number, label: string): stri
   for (const n of numbersOf(s)) {
     if (!numbersOf(pool).includes(n)) throw new Error(`${label} 出现系统数据里没有的数字「${n}」`);
   }
+  // T02204：名称白名单按去空白比对。系统自己的本地文案里也带「」术语（如「≥4 建议拆分」），
+  // 模型照抄时吞掉那个空格是排版抖动，不是编造——按字面比对时它每次都判「出现系统数据里没有的
+  // 名称」并整段回退本地条目，风险页的措辞润色等于没做。名称本体不同照样咬（幽灵模块）。
+  const poolFlat = pool.replace(/\s+/g, '');
   for (const q of quotedOf(s)) {
-    if (!pool.includes(q)) throw new Error(`${label} 出现系统数据里没有的名称 ${q}`);
+    if (!poolFlat.includes(q.replace(/\s+/g, ''))) throw new Error(`${label} 出现系统数据里没有的名称 ${q}`);
   }
   return s;
 }

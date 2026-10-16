@@ -7,6 +7,7 @@
  *          并加 C-07「页脚不再折计数」/C-08「续页仍是原生甘特」两条承接口径。
  *
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02166-kickoff-ai.mts
+ * 环境变量：`T02166AI_PORT`、`T02166_AI_TOOL`（钉选厂商名/id；不钉则取库内默认开发工具，会随他人改配置而变）。
  * 隔离纪律（skill 红线 8）：生产库只读副本 → D: 盘临时 DATA_DIR（C: 常年 0 可用），端口随机，收尾删副本。
  * 结果落 .workbuddy/t02166-ai-gate-results.txt 与 t02166-ai.pptx（人工抽查）。
  */
@@ -52,9 +53,16 @@ const byDoc = q<{ project_id: string }>('SELECT project_id FROM prd_docs WHERE i
 const projRow = byDoc
   ? q<{ id: string; name: string }>('SELECT id, name FROM projects WHERE id = ?', byDoc.project_id)[0]
   : q<{ id: string; name: string }>("SELECT id, name FROM projects WHERE name = 'mtask四期'")[0];
-const tool = q<{ id: string; name: string; model: string | null }>(
-  'SELECT id, name, model FROM ai_tools WHERE enabled = 1 ORDER BY is_default_develop DESC, updated_at DESC LIMIT 1'
-)[0];
+// T02204：默认口径取「默认开发工具」，但它是库内可变状态（并发会话/用户在 AI 配置页一改，
+// 同一道门下一轮就换了厂商）——真链路门的判据要可比，得能钉住厂商。
+// T02166_AI_TOOL 写工具名（如 groq / Agnes）或 id；钉了库里没有的名字直接判缺前提，不静默回落。
+const pinnedTool = process.env.T02166_AI_TOOL?.trim();
+const tool = pinnedTool
+  ? q<{ id: string; name: string; model: string | null }>(
+    'SELECT id, name, model FROM ai_tools WHERE enabled = 1 AND (name = ? OR id = ?)', pinnedTool, pinnedTool)[0]
+  : q<{ id: string; name: string; model: string | null }>(
+    'SELECT id, name, model FROM ai_tools WHERE enabled = 1 ORDER BY is_default_develop DESC, updated_at DESC LIMIT 1'
+  )[0];
 if (!projRow || !tool) {
   writeFileSync(join(OUT_DIR, 't02166-ai-gate-results.txt'), '真链路门缺前提：项目或可用 AI 工具不存在\n', 'utf8');
   console.log('missing premise', { projRow, tool });
@@ -173,8 +181,11 @@ if (!(await waitUp())) {
     for (const k of nameKeys) if (clean.includes(k)) return true;
     return false;
   };
+  // T02204：占位词包在「」里**不算指代**——实测厂商拿「待补充」凑锚点配额（提示词第 12 条已明写不计数），
+  // 判据若仍把它算绿，6 成阈值就成了可自证的空转。真缺口另有 honestGap 那条路：按该页 dataKeys 的源是否真空豁免。
   const anchored = (b: string): boolean =>
-    nameHit(b) || /「[^」]{2,}」/.test(b) || /(T\d{4}|N\d+|P\d|v\d+(\.\d+)?|\d+(\.\d+)?\s*(条|页|字|人天|%|分钟))/.test(b);
+    nameHit(b) || /「(?!(?:待补充|待确认|需核查|暂缺|未提供|待完善|未填))[^」]{2,}」/.test(b)
+    || /(T\d{4}|N\d+|P\d|v\d+(\.\d+)?|\d+(\.\d+)?\s*(条|页|字|人天|%|分钟))/.test(b);
   const withAnchor = bulletPages.filter((x) => anchored(x.b) || honestGap(x.page, x.b));
   const referred = allBullets.filter(nameHit);
   ok(`A-02a 数据页 bullets 锚点率 ≥ 60%（真实测得 ${((withAnchor.length / Math.max(1, allBullets.length)) * 100).toFixed(0)}%，${withAnchor.length}/${allBullets.length}）`,
@@ -187,6 +198,22 @@ if (!(await waitUp())) {
   ok('A-03 无指代套话句式不成为多数（「各方配合」「有序推进」这类空句 ≤ 2 条）',
     allBullets.filter((b) => /各方配合|有序推进|顺利开展|高度重视|圆满成功/.test(b)).length <= 2,
     allBullets.filter((b) => /各方配合|有序推进|顺利开展|高度重视|圆满成功/.test(b)));
+  // T02204：空源必须写成「缺口」而不是「结论」。承担人全空时模型抄汇总数就写出「承担人配置：0 人」，
+  // 页面读起来像「本项目无人承担」，真相是库里没填——预检点名 + bullets 不出现「0 人」两头都要钉住。
+  const pfBody = (await (await fetch(`${BASE}/plans/kickoff-preflight?projectId=${PID}`)).json().catch(() => null)) as
+    { items?: Array<{ key: string; note: string }> } | null;
+  const p3note = String((pfBody?.items ?? []).find((i) => i.key === 'P3')?.note ?? '');
+  const emptyAssignees = facts.assignees.length === 0;
+  const zeroHeadcount = allBullets.filter((b) => /0\s*人(?!天)/.test(b));
+  const assigneeBullets = allBullets.filter((b) => /承担人/.test(b));
+  ok(emptyAssignees
+    ? 'A-04 空源写成缺口不写结论数（承担人 0 人未填 → 预检 P3 点名「未填承担人」，bullets 无「0 人」，写了承担人的那条要点「待补充」）'
+    : 'A-04 空源口径（承担人非空，本条只核预检不误报）',
+    emptyAssignees
+      ? /未填承担人/.test(p3note) && zeroHeadcount.length === 0 &&
+        (assigneeBullets.length === 0 || assigneeBullets.every((b) => /待补充|未填/.test(b)))
+      : !/未填承担人/.test(p3note),
+    { emptyAssignees: facts.assignees.length, p3note, zeroHeadcount, assigneeBullets: assigneeBullets.slice(0, 3) });
   writeFileSync(join(OUT_DIR, 't02166-ai-outline.txt'), JSON.stringify(outline, null, 2), 'utf8');
 
   // ---------- B/C 组：真 AI 生成产物 ----------
@@ -197,9 +224,20 @@ if (!(await waitUp())) {
     !!done && !warns.some((w) => /措辞 AI 失败|is not valid JSON|Unexpected token/.test(w)),
     { events: gen.events.map((e) => e.event), warns: warns.slice(0, 6) });
 
-  const buf = done?.token ? (await download(String(done.token), String(done.fileName))).buf : Buffer.alloc(0);
+  const dl = done?.token ? await download(String(done.token), String(done.fileName)) : { status: 0, buf: Buffer.alloc(0) };
+  const buf = dl.buf;
   ok('C-01 产物可下载且为合法 pptx（PK 头 + 可解包）',
-    buf[0] === 0x50 && buf[1] === 0x4b && buf.length > 20_000, { bytes: buf.length });
+    buf[0] === 0x50 && buf[1] === 0x4b && buf.length > 20_000,
+    { bytes: buf.length, status: dl.status, hasDone: !!done, done: done ?? null, events: gen.events.map((e) => e.event) });
+  // T02204：产物缺失时把证据落进门结果再正常收口。原先直接 JSZip.loadAsync(空) 抛栈，
+  // 整轮 PASS/FAIL（含 A/B 组已经跑出来的真证据）连同结果文件一起丢失——读的人只剩一段
+  // stack，分不清「功能坏了」「AI 侧没出稿」「环境缺配额」，这正是判据最没用的形态。
+  if (buf[0] !== 0x50 || buf[1] !== 0x4b) {
+    lines.push(`[证据] 真产物缺失：download status=${dl.status} bytes=${buf.length} · SSE 流尾=${gen.text.slice(-600)}`);
+    lines.push(`[证据] 隔离实例日志尾：${serverLog.join('').slice(-1_200)}`);
+    for (const n of ['C-02', 'C-07', 'C-08', 'C-09', 'C-03', 'C-04', 'C-05', 'C-06'])
+      ok(`${n} 无法实测（真产物缺失，见 C-01 证据行）`, false);
+  } else {
   const zip = await JSZip.loadAsync(buf);
   const slideNames = Object.keys(zip.files).filter((n) => /^ppt\/slides\/slide\d+\.xml$/i.test(n)).sort((a, b) => Number(/(\d+)\.xml/.exec(a)![1]) - Number(/(\d+)\.xml/.exec(b)![1]));
   const xmls: string[] = [];
@@ -267,6 +305,7 @@ if (!(await waitUp())) {
     return out;
   });
   ok('C-06 表格/图表框底边不出画布（越页在产物层被证伪）', violations.length === 0, violations.slice(0, 5));
+  }
 
   if (buf.length) writeFileSync(join(OUT_DIR, 't02166-ai.pptx'), buf);
   lines.push('', `样本项目：${PNAME} · AI 工具：${tool.name}`, `warnings（全 ${warns.length} 条）：`, ...warns.map((w) => `  · ${w}`));
