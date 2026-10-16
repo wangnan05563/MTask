@@ -1,7 +1,8 @@
 # PRD：AI 控制台「代码评审会议讲稿生成」（MTask）
 
-> 来源任务：T02169 ｜ 版本：v1.0（草案，待审批） ｜ 日期：2026-10-16 ｜ 作者：AI 工作台产品助手 ｜ 状态：**待审批**（本文件只定义需求与设计，不含实现）
-> 影响项目：mtask四期（工作空间 `D:\code\otherProjects\26_MTask`）
+> 来源任务：T02169 ｜ 版本：**v1.1（评审修订版，待审批）** ｜ 日期：2026-10-16 ｜ 作者：AI 工作台产品助手 ｜ 状态：**待审批**（本文件只定义需求与设计，不含实现；含 4 个开放决策点 E-1~E-4，§9）
+> 影响项目：**mtask六期**（MTask 项目 `bea1ce5b-67c1-4a0d-a08c-db0d5a3d9136`，2026-10-15 建；工作空间 `D:\code\otherProjects\26_MTask`——与四期同仓不同项目，T02169 归属六期）
+> 评审报告：`docs/PRD评审报告-代码评审会议讲稿生成.md`（v1.0 → v1.1 的 1 阻塞 / 4 重要 / 3 建议问题及处置）
 > 关联既有 PRD：`docs/PRD-项目启动会PPT生成.md`（T01844，v1.1 已批准，同属「AI 控制台能力卡片」家族，产物链路与下载令牌口径复用）、`docs/PRD-竞品调研与优化需求.md`
 > 取证方式：全文每条技术断言锚到本仓 `路径:行号`（取证日 2026-10-16，全部只读）；「不存在」结论标注 grep 范围（§2.3）
 
@@ -16,7 +17,7 @@
 | 作者 | AI 起草（T02169），审批人待定 |
 | 状态 | 待审批——含 4 个开放决策点 E-1~E-4（§9），批准前不得进入实施 |
 | 对应任务 | T02169「编写代码评审会议讲稿功能PRD文档」 |
-| 变更记录 | v1.0：首版，含竞品调研（§5）、UX 优化建议（§5.4）、交互设计规范（§6）、非功能需求（§7）、验收标准（§8） |
+| 变更记录 | v1.0：首版，含竞品调研（§5）、UX 优化建议（§5.4）、交互设计规范（§6）、非功能需求（§7）、验收标准（§8）<br>v1.1（评审修订）：① 修正 `projects.color` 虚构字段（§6.3 改 exportStyle 色板）；② 影响项目四期→六期；③ 补「第 8 张卡」与 T02170 PRD 的冲突声明；④ FR-1.1 补 git 输出编码配置（UTF-8/quotepath）与 CRLF 口径；⑤ FR-4.3 补锚点时效与 blob 标识；⑥ FR-1.4 补截断优先级因子；⑦ §8 A-3 扩中文可读断言；详见评审报告 |
 
 ---
 
@@ -36,10 +37,10 @@
 
 | 事实 | 实测证据 | 对本功能的约束 |
 |---|---|---|
-| 「AI 控制台」卡片页是 `ReportPage.tsx`，现共 **7 张卡**（ai-import / offline / ai-live / prd-gen / prd-import / tc-gen / kickoff-ppt） | `web/src/pages/ReportPage.tsx:580 const reportCards`、`:622` kickoff-ppt | 新卡片是第 8 张，必须进 `reportCards` 数组并复用 `ReportCard` 组件，**不得新造卡片组件**（一致性约束，与启动会 PPT 卡同规） |
+| 「AI 控制台」卡片页是 `ReportPage.tsx`，现共 **7 张卡**（ai-import / offline / ai-live / prd-gen / prd-import / tc-gen / kickoff-ppt） | `web/src/pages/ReportPage.tsx:584 const reportCards`、`:626` kickoff-ppt | 新卡片按 `reportCards` **数组尾部追加**、复用 `ReportCard` 组件，**不得新造卡片组件**（一致性约束，与启动会 PPT 卡同规）。**卡位冲突声明（评审新增）**：T02170「阶段性项目总结汇报 PPT」PRD（已批准）同争该位——两张卡均按尾部追加，**先落地者为第 8 张、后落地者为第 9 张**，以实际追加时点定序，不得互相顶替或改标题（口径与 `docs/PRD-阶段性项目总结汇报PPT.md` §12 对齐） |
 | 长耗时 AI 生成的既有范式是 **SSE 流** | `POST /api/plans/prd-generate-stream`（`server/src/routes/index.ts:1568`，raw 30mb 接收）、`/plans/testcase-generate-stream`（`:1711`）、`/report/ai-generate-stream`（`:1764`）；客户端断开即 abort | 新端点必须走 `*-stream` 同构形态（§4.2 FR-5），复用 `web/src/api/sse.ts` 消费层 |
 | AI 通道只有文本 chat | `server/src/services/AIService.ts`：`organize:294 / ask:474 / askJson:499 / askStream:556`；适配器 `server/src/adapters/types.ts:93 AIAdapter`，`chatStream:101`，类型 `openai-compatible|claude|ollama|workbuddy`（`:110`） | 代码上下文只能以**文本 diff/文件内容**注入；无 embedding 检索、无全仓索引承诺（呼应任务约束「考虑大模型上下文限制，避免过度承诺」） |
-| 上下文截断有既成口径 | `server/src/util/prdContext.ts:25 PRD_CONTEXT_LIMIT=6000`，保头保尾截断（`:77-78`） | 讲稿场景预算远大于 6000，需新建独立预算常量与分段装配策略（§4.2 FR-3），但截断「保头保尾 + 显式告警」的纪律沿用 |
+| 上下文截断有既成口径 | `server/src/util/prdContext.ts:25 PRD_CONTEXT_LIMIT=6000`，保头保尾截断（`:77-79`） | 讲稿场景预算远大于 6000，需新建独立预算常量与分段装配策略（§4.2 FR-3），但截断「保头保尾 + 显式告警」的纪律沿用 |
 | **本仓无任何 Git 操作能力** | grep `git diff|simple-git|rev-parse` 于 `server/src` 零命中；`server/package.json` 无 git 类依赖；`child_process` 仅 `tunnel/tunnel-service.ts:1,8`（spawn/execFile 先例）与打包脚本；`WorkspaceService` 反而**显式忽略 .git**（`server/src/services/WorkspaceService.ts:15 DEFAULT_IGNORE_DIRS`） | Git 数据采集是**全新能力**（FR-1），只能走子进程调用系统 git（spawn 先例在位）；必须严格只读（禁 checkout/commit/fetch 等写命令，§7 安全）；无 git 环境须有降级路（FR-1.3） |
 | 工作空间文件读取能力在位 | 端点 `GET /api/workspace/search`（`routes/index.ts:257`）、`GET /api/workspace/file`（`:274`）、`POST /api/workspace/symbols/refresh`（`:282`）、`GET /api/workspace/symbols`（`:290`） | 讲稿的「变更文件上下文展开」（读被改函数的所在类/调用方）可用 symbols 能力，不新建检索机制 |
 | 产物落盘与下载链路齐备 | 临时文件 + 令牌换文件：`POST /report/ai-download`（`routes/index.ts:1824`）；pptx 生成在位：`server/src/services/report-builder.ts:247 buildPptx()`，依赖 `pptxgenjs ^4.0.1`（`server/package.json:23`） | 讲稿导出 md/docx/pptx 复用 ai-download 令牌口径与既有装配器，**不新增下载端点、不新增依赖** |
@@ -111,10 +112,12 @@ flowchart TD
 ### 4.2 功能需求清单
 
 **FR-1 Git 数据采集引擎（新能力，最高风险项）**
-- FR-1.1 只读命令白名单：仅允许 `git rev-parse --is-inside-work-tree`、`git log`、`git diff --stat`、`git diff`、`git show`；参数一律数组化 `execFile` 传入（spawn 先例 `tunnel-service.ts:179`），**禁止字符串拼接与 shell=True**（命令注入红线，§7.1）。
-- FR-1.2 区间三形态：① `base..head`（分支/标签/commit）；② commit 范围（首末 SHA）；③ 时间窗（`--since`，落地「近 14 天」类诉求）。输出统一为 `{ files[], hunks[], commits[], stats }`。
+- FR-1.1 只读命令白名单：仅允许 `git rev-parse --is-inside-work-tree`、`git log`、`git diff --stat`、`git diff`、`git show`；参数一律数组化 `execFile` 传入（现成先例 `server/src/tunnel/tunnel-service.ts:15 execFileAsync`，其 `:14` 注释「不走 shell，参数数组传递避免路径转义问题，适合带路径参数的 CLI 调用」即本需求的论据），**禁止字符串拼接与 shell=True**（命令注入红线，§7.1）。
+- **FR-1.1a 输出编码红线（评审新增，Windows 硬约束）**：所有采集命令统一注入两个配置项——`-c i18n.logOutputEncoding=utf-8`（否则中文 Windows 上 commit message 按 cp936/GBK 输出，Node 按 utf8 解码即**乱码**，而 commit message 正是 FR-4.3「为什么改」的第一证据源）与 `-c core.quotepath=false`（否则非 ASCII 路径被转义为 `\xxX`，锚点文件名不可读、A-4 定位失效）。注入走命令行 `-c` 参数，**不得修改用户全局/仓库 git 配置**。
+- **FR-1.1b 行尾口径（评审新增）**：diff 采集加 `--ignore-cr-at-eol`（或等价处理），规避 Windows `core.autocrlf=true`（git 安装默认项）导致未改行尾的文件整文件进 diff——否则预检统计虚高、上下文预算被行尾噪声吃掉。该处理是**静默降质**防护，与 G4 直接相关。
+- FR-1.2 区间三形态：① `base..head`（分支/标签/commit）；② commit 范围（首末 SHA）；③ 时间窗（`--since`，落地「近 14 天」类诉求）。输出统一为 `{ files[], hunks[], commits[], stats }`；统一按 UTF-8 解码（FR-1.1a 保证上游输出即 UTF-8）。
 - FR-1.3 降级：工作空间无 git（`rev-parse` 非 0）或系统无 git 命令 → 卡片内显式提示并切换「粘贴 patch」模式（接受 unified diff 全文，上限沿用 raw 30mb，`routes/index.ts:1568` 同构）。
-- FR-1.4 硬边界：单仓采集 diff 文本上限（默认 2MB，超出按文件优先级截断并告警）、子进程超时 30s、`maxBuffer` 显式设置。不访问远程（禁 `fetch/pull/clone`），仓库状态零改动（只读命令集合本身保证）。
+- FR-1.4 硬边界：单仓采集 diff 文本上限（默认 2MB，超出按文件优先级截断并告警）、子进程超时 30s、`maxBuffer` 显式设置。不访问远程（禁 `fetch/pull/clone`），仓库状态零改动（只读命令集合本身保证）。**截断优先级因子（评审新增）**：变更行数多者优先 → 安全敏感路径（`auth`/`crypto`/`sql`/`exec` 等）优先 → 被 workspace symbols 引用多者优先；被丢弃文件在预检逐一点名（FR-7.1）。
 
 **FR-2 范围选择（单/多项目）**
 - FR-2.1 项目多选：源为现有 projects 列表（含 `workspace_path`）；每项目独立选区间形态，未配置 workspace 的项目置灰并提示补配。
@@ -128,7 +131,7 @@ flowchart TD
 **FR-4 讲稿生成**
 - FR-4.1 大纲先行：首步 `askJson` 产出 `{ sections[], discussion_questions[] }`，`outline_ready` 事件下发，用户可增删改后二次提交（复用 kickoff 卡的两段交互）。
 - FR-4.2 固定骨架（验收断言对象，§8 A-2）：`开场白 / 变更摘要 / 逐项目-逐模块讲解 / 风险清单 / 规范检查 / 改进建议 / 讨论问题 / 结语`。
-- FR-4.3 逐文件讲解四段式：**要点（改了什么+为什么）/ 潜在风险 / 规范检查 / 改进建议**；每条带锚点 `[file#Lx-Ly]`；commit message 为「为什么」的第一证据源，无据可推时写「意图不明，需会上确认」，**禁止编造**（对齐 Copilot 官方对 hallucination 的定性，§5.2）。
+- FR-4.3 逐文件讲解四段式：**要点（改了什么+为什么）/ 潜在风险 / 规范检查 / 改进建议**；每条带锚点 `[file#Lx-Ly]`；commit message 为「为什么」的第一证据源，无据可推时写「意图不明，需会上确认」，**禁止编造**（对齐 Copilot 官方对 hallucination 的定性，§5.2）。**锚点时效（评审新增）**：行号是**生成时点的快照**——生成后若有新提交/格式化，定位可能偏差；锚点同时记录 blob SHA 与 base commit，定位时校验并在不符时提示「代码已变动，锚点可能失准」（借鉴阿里 OCR 的定位/反思模块思路，§5.2）。
 - FR-4.4 多项目汇总策略：总-分-总——跨项目变更主题归并（开场）、每项目独立章（按 FR-4.3）、收束页输出「跨项目关联与不一致点」（结语）。差异化展示：项目章节带色标与统计条。
 - FR-4.5 讲稿语言为「可照念」口语句式（每段 ≤3 句），与评论体区分——提示词层约束，验收含人工抽测项（§8 A-7）。
 
@@ -163,7 +166,7 @@ flowchart TD
 - **CodeRabbit**：读 diff 后写「大白话讲解」+ 时序图、逐行评论、PR 高层摘要可更新、从互动中学习个性化；信噪比口碑居前。→ 最强对标：它的「白话讲解 + 摘要」证明本功能输入侧可行性；但它面向 PR 页展示，无会议口径、无跨仓汇总。
 - **Qodo Merge / PR-Agent**：`/describe /review /improve /test` 命令族把评审拆成显式阶段，用户按命令干预；开源自托管、数据自主。→ 借鉴：把「大纲确认/逐节展开」做成显式两段（FR-4.1）即同族思想；开源版的 token 控制（增量审查阈值）值得抄参数化做法。
 - **Sourcery**：综合报告 + 模块化/设计层点评 + 安全审查，强调「来源背景对齐」（把变更与需求/issue 对齐）。→ 与本系统 MTask 管理侧上下文天然契合：讲稿「为什么改」应取 commit message，未来可挂 MTask 待办（E-2）。
-- **Open Code Review（阿里开源）**：内部工具外溢，对比口径提示自托管与成本可控是大厂关切；报道中其 token 消耗对比 PR-Agent 低约一个数量级。→ 借鉴：预算/成本应作为一等产品指标（§8 A-6、FR-7.1 明示预估）。
+- **Open Code Review（阿里开源）**：内部工具外溢（2026-05-18 开源，Apache-2.0），对比口径提示自托管与成本可控是大厂关切；报道中其 token 消耗对比 PR-Agent 低约一个数量级。→ 借鉴两条：① 预算/成本应作为一等产品指标（§8 A-6、FR-7.1 明示预估）；② **其「确定性工程管线（文件选择/分包/规则匹配）+ 外部定位与反思模块」正是为对抗行号漂移与评论不准而设计**——本功能锚点 `[file#Lx-Ly]` 的防漂移（FR-4.3 时效声明 + blob 校验）即借鉴此架构，把「定位」这类确定性步骤与 LLM 叙事分离。
 - **GitLab（非 GitHub 参照）**：GitLab 生态评审工具同样收敛于 MR 评论 + 摘要形态。→ 结论稳健性佐证：跨平台无人做「会议讲稿」。
 
 ### 5.3 对比表（任务指定三维 + 缺口）
@@ -206,7 +209,7 @@ flowchart TD
 ### 6.3 文案与视觉纪律
 
 - 阶段文案中文动宾（「采集项目A变更…」「装配第3/6节…」）；错误文案带出路（无 git → 引导粘贴 patch）。
-- 风险分级色：高=红、中=橙、低=灰，复用品牌色板（`exportStyle` 单源先例）；多项目章节色标取自项目色（`projects.color` 字段在位）。
+- 风险分级色：高=红、中=橙、低=灰，复用品牌色板（`server/src/util/exportStyle.ts` 单源）；**多项目章节色标从同一色板按项目索引分配**（评审修正：`projects` 表无 color 字段——schema.ts 的 color 列仅在 `tasks/prompts/req_entries/plan_tasks`；若确需项目自有色，须新增 `projects.color` 列并走迁移，列为扩展项由 E-4 类裁决决定，本期不做）。
 - 空态/降级态必须显式：commit message 缺失、diff 截断、预算丢弃文件均渲染告警 chip，不得静默。
 
 ---
@@ -216,12 +219,12 @@ flowchart TD
 ### 7.1 安全（命令注入与只读红线）
 
 - Git 采集仅 `execFile` 参数数组 + 白名单子命令（FR-1.1）；工作目录固定为该项目 `workspace_path`，路径解析后校验仍在空间内（防穿越）。
-- 讲稿文本按现有 XSS 纪律渲染（前端既有 Markdown 渲染守卫沿用）。
+- 讲稿文本按现有 XSS 纪律渲染：复用 `web/src/ui/Markdown.tsx`（`:11` markdown-it `html:false` 关闭原始 HTML 直通 + 链接统一 `rel/noopener noreferrer`，既有守卫，本功能不新造渲染器）。
 - AI 厂商配置与 API Key 加密存储体系零改动，本功能不新增任何密钥形态。
 
 ### 7.2 性能与时效
 
-- 预检 ≤3s 返回（纯本地 git 统计）；单节流式首字 ≤8s（P50，取决于厂商通道）；34 文件规模端到端目标 ≤6 分钟（§8 A-6）；>30 分钟场景由分段天然打断进度，无单请求长挂。
+- 预检 ≤3s 返回（P50，万行级以下仓库的纯本地 git 统计；超大仓超时则先返回部分统计并流式补全，不得空等）；单节流式首字 ≤8s（P50，取决于厂商通道）；34 文件规模端到端目标 ≤6 分钟（§8 A-6）；>30 分钟场景由分段天然打断进度，无单请求长挂。
 
 ### 7.3 隐私与合规
 
@@ -251,7 +254,7 @@ flowchart TD
 
 - A-1 采集正确性：对既有 git 仓库样例（本仓即可），三种区间形态的 `stats` 与 `git log --stat` 人工比对一致；无 git 工作空间 → 粘贴 patch 模式可用。
 - A-2 结构完备性：导出稿断言八段骨架标题齐全（程序化 grep），多项目稿每项目成章且有统计条。
-- A-3 只读红线：采集全过程 `git status` 前后一致、无网络子命令日志；注入用例（路径含 `;`、反引号）不产生命令执行。
+- A-3 只读红线：采集全过程 `git status` 前后一致、无网络子命令日志；注入用例（路径含 `;`、反引号）不产生命令执行；**中文可读断言（评审新增）**：对本仓含中文 commit message/文件名的真实样本采集，输出为可读 UTF-8 中文——无 GBK 乱码、无 `\xxX` 路径转义（FR-1.1a/1.1b 的验收落点，命令链可自动测）。
 - A-4 锚点可用：随机抽 10 条锚点点击均正确定位高亮（UI 实测项，verified 前置）。
 - A-5 幻觉控制：抽测 20 条「变更意图」表述，无锚点/无 commit 依据的断言数为 0（凡无据必走「需会上确认」文案）。
 - A-6 时效：34 文件/双项目基准样本端到端 ≤6 分钟且预检明示预估。
@@ -271,8 +274,9 @@ flowchart TD
 
 ---
 
-## 10. 信息来源（竞品部分）
+## 10. 信息来源（竞品部分，均为 2026-10 检索；star/成本数字为时点快照，仅判活跃度不作选型依据）
 
+- [alibaba/open-code-review（官方仓库，Apache-2.0）](https://github.com/alibaba/open-code-review) ｜ [Open Code Review 官方站](https://open-codereview.ai)（定位/反思模块、token 对比口径）
 - [GitHub Copilot 负责任使用：Code Review（hallucination/custom instructions 定义）](https://docs.github.com/zh/copilot/responsible-use/code-review)
 - [What is GitHub Copilot?（功能总览）](https://docs.github.com/en/copilot/get-started/what-is-github-copilot)
 - [GitHub 2026 年 9 月官方更新汇总（Copilot Code Review 自动审批预览、Content exclusions GA、评审用量指标 API）](https://www.mydata-api.com/info/1889.html)
