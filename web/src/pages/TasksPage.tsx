@@ -2914,15 +2914,20 @@ export function TasksPage() {
   function renderToolbar() {
     return (
       <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span className="op-host" style={{ display: 'inline-flex', gap: 8, alignItems: 'center', minWidth: 0 }}>
-        <div ref={projDropRef} style={{ position: 'relative', display: 'inline-flex', minWidth: 0 }}>
+        {/* T02167 二轮：宿主组改可换行——窄窗（≤430px）时行内容纳不下整组（项目条+工作空间+图标钮），
+            原 nowrap 会把压缩全部转嫁给 minWidth:0 的项目条（它当时是唯一可压缩项），实测 380px 宽
+            按钮被压到 40px、两枚统计徽标越出按钮边框 29px。改换行后由换行让位，项目条保住 min-content。 */}
+        <span className="op-host" style={{ display: 'inline-flex', gap: 8, alignItems: 'center', minWidth: 0, flexWrap: 'wrap' }}>
+        <div ref={projDropRef} style={{ position: 'relative', display: 'inline-flex' }}>
           <button onClick={() => { setProjOpen((o) => { if (!o) { refreshProjCounts(); } return !o; }); }} aria-haspopup="listbox" aria-expanded={projOpen}
             title="切换项目 — 项目名后徽标：红=待办数、黄=未验证数（悬浮查看详情）"
             aria-label="切换项目"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, cursor: 'pointer', maxWidth: 220, minWidth: 0 }}>
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, cursor: 'pointer', maxWidth: 220 }}>
             {/* T02167：项目名改为可收缩的单行省略项（与 WorkspaceSelect 同口径）。
                 原来是裸文本节点——CJK 无空格可断，min-content 只有 1 字宽，工具条变窄时按钮被压到
-                比内容还小，右侧统计徽标溢出边框。徽标与箭头一律 flexShrink:0，只让名称让步。 */}
+                比内容还小，右侧统计徽标溢出边框。徽标与箭头一律 flexShrink:0，只让名称让步。
+                二轮：按钮/容器不再 minWidth:0——它会让弹性压缩把按钮压到低于「徽标+箭头」的
+                min-content（约 88px），徽标照样越出边框；去掉后 min-width:auto 以 min-content 兜底。 */}
             <span style={{ flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {projects.find((p) => p.id === activeProject)?.name ?? '选择项目'}
             </span>
@@ -2935,7 +2940,9 @@ export function TasksPage() {
             <ChevronDown size={12} style={{ flexShrink: 0 }} />
           </button>
           {projOpen && (
-            <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 30, minWidth: 220, maxWidth: 'min(360px, calc(100vw - 24px))', overflowX: 'hidden' }}>
+            // T02167 二轮：右缘预算 24px→48px——面板左缩进约 26px，原「100vw−24px」公式按 0 缩进
+            // 推算，380px 窗口下面板右缘越出窗口 2px；预留 48px 后右缘恒留 ~22px 余量
+            <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 30, minWidth: 220, maxWidth: 'min(360px, calc(100vw - 48px))', overflowX: 'hidden' }}>
               {/* T02201：面板顶部显式承载加载/失败态——取数失败时点开项目切换不再是一片空白，且带重试入口 */}
               {projectList.phase !== 'ready' && (
                 <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border)' }}><ProjectListHint view={projectList} /></div>
