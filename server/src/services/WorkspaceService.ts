@@ -1,4 +1,5 @@
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, watch } from 'node:fs';
+import type { FSWatcher } from 'node:fs';
 import { join, resolve, sep, extname } from 'node:path';
 import { getDb } from '../db/connection';
 import { v4 as uuid } from 'uuid';
@@ -70,6 +71,149 @@ const MEMO_SLICE_MS = 25;
 /** T02200：让出事件循环一个宏任务，让只读接口在遍历片间获得服务机会 */
 export function yieldToEventLoop(): Promise<void> {
   return new Promise((done) => setImmediate(done));
+}
+
+/**
+ * T02210（承接 T02200 让路）：未变更热刷的短路通道。
+ *
+ * T02200 解决的是「谁在跑」（切片让路 + 后台续跑），本段解决的是「还要不要跑」：
+ * 判定「哪些文件变了」原先必然要 stat 全量候选文件（bemp 实测 7,233 次 stat ≈ 1.3s，
+ * 仍超 300ms 内联预算，deferred 恒为 true）。而「文件内容被改」这件事在文件系统上
+ * 没有免费的探测手段——目录 mtime 只随增删改名变化，不随内容写入变化，因此
+ * 「目录条目指纹」只能证明结构未变，不能证明内容未变。
+ *
+ * 所以短路必须有两个正交前提，缺一不可：
+ *   ① 目录条目指纹一致（即时捕捉新增/删除/改名，含整目录增删）；
+ *   ② 该工作空间的文件监视器自上次深扫以来零事件（捕捉内容写入）。
+ * 监视器不可用/报错/事件丢失时 `unsupported` 置位，短路整体失效 → 退回 T02200 的原行为，
+ * 宁可慢也不漏。另加两道护栏：深扫最长间隔 SYMBOL_DEEP_VERIFY_MS（监视器静默失效时的
+ * 最坏收敛时间，与既有 SEARCH_MEMO_TTL_MS 同量级，不引入新的陈旧级别），以及
+ * SYMBOL_FAST_PATH_MIN_FILES（小树 stat 本就几十毫秒，短路省不出量级，反而让语义多一层分支）。
+ */
+const SYMBOL_DEEP_VERIFY_MS = 5 * 60 * 1000;
+const SYMBOL_FAST_PATH_MIN_FILES = 200;
+/** 快照遍历的目录数上限：超限说明目录结构本身已是负担，放弃短路（返回 null 即走深扫） */
+const SYMBOL_SNAPSHOT_MAX_DIRS = 20000;
+
+/** relDir（posix 相对路径，根为 ''）→ 该目录未忽略条目的「名字+是否目录」摘要 */
+type DirSnapshot = Map<string, string>;
+
+interface TreeSnapshot {
+  dirs: DirSnapshot;
+  /** 上次深扫真正 stat 到的候选文件数；短路时用它如实回报 skipped */
+  candidateFiles: number;
+  /** 上次深扫完成时刻（配合 SYMBOL_DEEP_VERIFY_MS） */
+  deepVerifiedAt: number;
+  /** 上次深扫完成时刻的监视事件计数（事件数未变 = 期间无人改过文件） */
+  eventsAtSnapshot: number;
+}
+
+const treeSnapshots = new Map<string, TreeSnapshot>();
+
+interface WorkspaceWatch {
+  workspaceAbs: string;
+  watcher?: FSWatcher;
+  /** 自挂监视器以来收到的变更/改名事件计数 */
+  events: number;
+  /** 平台不支持递归监视或监视器报错 → 短路整体停用（退回逐文件 stat 的原语义） */
+  unsupported: boolean;
+}
+
+const workspaceWatches = new Map<string, WorkspaceWatch>();
+
+/**
+ * 监视事件路径是否落在忽略集内——这些路径永不入索引，它们的变动不该作废短路。
+ * 祖先段直接按目录判定；末段要问文件系统：Windows 把「目录内增删条目」报成目录名本身
+ * （事件路径就是一个裸的 `node_modules` / `.git`），按文件判定会让这类事件漏过过滤，
+ * 短路在真实仓库里几乎命中不了。末段 stat 失败（刚被删/不可访问）保守按「未忽略」计，
+ * 宁可多走一次深扫，也不放过真实变更。
+ */
+function watchEventIgnored(relPath: string, rules: IgnoreRule[], workspaceAbs: string): boolean {
+  const segs = relPath.split(/[\\/]/).filter(Boolean);
+  if (segs.length === 0) return false;
+  for (let i = 0; i < segs.length - 1; i++) {
+    if (isIgnored(segs.slice(0, i + 1).join('/'), true, rules)) return true;
+  }
+  let leafIsDir = false;
+  try { leafIsDir = statSync(resolve(workspaceAbs, relPath)).isDirectory(); } catch { /* 已删除：按未忽略处理 */ }
+  return isIgnored(segs.join('/'), leafIsDir, rules);
+}
+
+/**
+ * 取（或建立）项目工作空间的递归文件监视器。
+ * 换绑工作空间时关掉旧的、重建；建立失败（平台不支持 recursive / 目录不可读）只记
+ * unsupported，不影响深扫本身。
+ *
+ * 事件按忽略规则过滤：`.git`/`node_modules` 的写入极频繁（提交、装依赖），但它们永不入索引，
+ * 不过滤会让短路在真实仓库里几乎命中不了。忽略规则在每次刷新时重新载入，
+ * 规则本身的变化由结构指纹差异兜住（条目集变了必然走深扫）。
+ */
+function ensureWorkspaceWatch(projectId: string, workspaceAbs: string, rules: IgnoreRule[]): WorkspaceWatch {
+  const cur = workspaceWatches.get(projectId);
+  if (cur && cur.workspaceAbs === workspaceAbs) return cur;
+  if (cur?.watcher) { try { cur.watcher.close(); } catch { /* 已关闭 */ } }
+  const state: WorkspaceWatch = { workspaceAbs: workspaceAbs, events: 0, unsupported: false };
+  try {
+    state.watcher = watch(workspaceAbs, { recursive: true }, (_event, filename) => {
+      // 回调只做计数 + 一次末段 stat：真正的判定留在刷新入口，回调里不碰 db
+      if (!filename) { state.events++; return; } // 无路径的事件（如溢出）无法归类，按「有变更」计
+      if (!watchEventIgnored(String(filename), rules, workspaceAbs)) state.events++;
+    });
+    state.watcher.on('error', () => {
+      state.unsupported = true;
+      state.events++; // 静默失效也要让下一轮走深扫
+      try { state.watcher?.close(); } catch { /* 已关闭 */ }
+      state.watcher = undefined;
+    });
+  } catch {
+    state.unsupported = true;
+  }
+  workspaceWatches.set(projectId, state);
+  return state;
+}
+
+/** 关掉并移除监视器（工作空间解绑/清空索引时调用，避免句柄泄漏与跨目录误报） */
+function dropWorkspaceWatch(projectId: string): void {
+  const cur = workspaceWatches.get(projectId);
+  if (cur?.watcher) { try { cur.watcher.close(); } catch { /* 已关闭 */ } }
+  workspaceWatches.delete(projectId);
+}
+
+/** 只遍历目录（沿用同一忽略规则源），产出目录条目指纹；读不动的目录或超上限返回 null */
+function buildDirSnapshot(workspace: string, rules: IgnoreRule[]): DirSnapshot | null {
+  const dirs: DirSnapshot = new Map();
+  const stack: Array<{ dir: string; rel: string }> = [{ dir: workspace, rel: '' }];
+  while (stack.length > 0) {
+    if (dirs.size >= SYMBOL_SNAPSHOT_MAX_DIRS) return null;
+    const frame = stack.pop() as { dir: string; rel: string };
+    let entries: Array<{ name: string; isDir: boolean }>;
+    try {
+      entries = readdirSync(frame.dir, { withFileTypes: true }).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
+    } catch { return null; }
+    const sig: string[] = [];
+    for (const e of entries) {
+      const relChild = frame.rel ? `${frame.rel}/${e.name}` : e.name;
+      if (isIgnored(relChild, e.isDir, rules)) continue;
+      sig.push(e.isDir ? `${e.name}/` : e.name);
+      if (e.isDir) stack.push({ dir: join(frame.dir, e.name), rel: relChild });
+    }
+    sig.sort();
+    dirs.set(frame.rel, sig.join('\u0000'));
+  }
+  return dirs;
+}
+
+function snapshotEqual(a: DirSnapshot, b: DirSnapshot): boolean {
+  if (a.size !== b.size) return false;
+  for (const [k, v] of a) if (b.get(k) !== v) return false;
+  return true;
+}
+
+/** 深扫完成后登记快照；快照不可得时清除旧快照（下次仍走深扫） */
+function commitTreeSnapshot(projectId: string, workspace: string, rules: IgnoreRule[], candidateFiles: number, events: number): void {
+  const dirs = buildDirSnapshot(workspace, rules);
+  if (!dirs) { treeSnapshots.delete(projectId); return; }
+  treeSnapshots.set(projectId, { dirs, candidateFiles, deepVerifiedAt: Date.now(), eventsAtSnapshot: events });
 }
 interface SearchMemo {
   at: number;
@@ -312,6 +456,8 @@ interface SymbolIndexCtx {
   skipped: number;
   /** T00790②：启动时一次性载入的 (path → 已知 mtime) 映射，消除逐文件 SELECT MAX(file_mtime) 的 N+1 */
   knownMtime: Map<string, number>;
+  /** T02210：本轮深扫期间挂在该工作空间上的监视器（事件数用于登记快照） */
+  watch: WorkspaceWatch;
   /** 准备语句复用（避免逐文件重复 prepare） */
   insStmt: AnyStatement;
   delStmt: AnyStatement;
@@ -353,6 +499,8 @@ interface SymbolWalkState {
   /** 帧 = 目录 + 其条目 + 游标；弹栈即回到父目录续走下一个条目（深度优先顺序与递归版一致） */
   stack: Array<{ dir: string; rel: string; entries: Array<{ name: string; isDir: boolean }>; i: number }>;
   done: boolean;
+  /** T02210：因 SYMBOL_LIMIT 提前收摊（树没走完）→ 不得登记结构快照 */
+  truncated: boolean;
 }
 
 /** 目录展开入栈（readdirSync 失败=不可读目录，与原实现一致静默跳过） */
@@ -371,7 +519,7 @@ function symbolPushDir(state: SymbolWalkState, dir: string, rel: string): void {
 function symbolWalkStep(state: SymbolWalkState): void {
   const { ctx } = state;
   while (state.stack.length > 0) {
-    if (ctx.symbols >= SYMBOL_LIMIT) { state.done = true; state.stack.length = 0; return; } // N-8：达上限整体终止
+    if (ctx.symbols >= SYMBOL_LIMIT) { state.done = true; state.truncated = true; state.stack.length = 0; return; } // N-8：达上限整体终止
     const frame = state.stack[state.stack.length - 1];
     if (frame.i >= frame.entries.length) { state.stack.pop(); continue; }
     const e = frame.entries[frame.i++];
@@ -417,6 +565,8 @@ async function pumpSymbolJob(projectId: string, job: SymbolRefreshJob): Promise<
     if (symbolJobs.get(projectId) === job) symbolJobs.delete(projectId);
     invalidateSearchMemo(projectId);
     const { ctx } = job.state;
+    // T02210：走完才登记快照（因符号上限提前收摊的轮次树未走全，登记会让后续短路漏建）
+    if (!job.state.truncated) commitTreeSnapshot(projectId, ctx.workspaceAbs, ctx.rules, ctx.files + ctx.skipped, ctx.watch.events);
     console.log(`[workspace] 符号索引后台续跑完成：project=${projectId} 文件 ${ctx.files} 个、符号 ${ctx.symbols} 个、跳过 ${ctx.skipped} 个`);
   } catch (e) {
     if (symbolJobs.get(projectId) === job) symbolJobs.delete(projectId);
@@ -603,6 +753,8 @@ export const WorkspaceService = {
   clearSymbols(projectId: string): number {
     const r = getDb().prepare('DELETE FROM workspace_symbols WHERE project_id = ?').run(projectId);
     invalidateSearchMemo(projectId); // T00782：索引清空 → 检索 memo 同步失效
+    treeSnapshots.delete(projectId); // T02210：索引已空，结构快照不再能代表「已建过」
+    dropWorkspaceWatch(projectId); // T02210：解绑/换绑后旧目录的监视事件不该再短路新工作空间
     return r.changes;
   },
 
@@ -611,12 +763,29 @@ export const WorkspaceService = {
    *  T00790②：启动时一次性载入 (path → 已知 mtime) Map，替代逐文件 SELECT MAX(file_mtime) 的 N+1。
    *  T02200：遍历改为分片可让路（原 T00790① 的整轮单事务按片拆细）。SYMBOL_INLINE_BUDGET_MS 内
    *  跑完的仍等价于「同步等结果」（小工作空间与既有 API 测试契约不变）；超预算则余量交后台续跑，
-   *  返回值标 deferred。符号索引是检索增强的补充信号，可延迟收敛而不影响当次生成质量。 */
-  async refreshSymbols(projectId: string, inlineBudgetMs = SYMBOL_INLINE_BUDGET_MS): Promise<{ files: number; symbols: number; skipped: number; cleared: number; deferred: boolean }> {
+   *  返回值标 deferred。符号索引是检索增强的补充信号，可延迟收敛而不影响当次生成质量。
+   *  T02210：承接让路的「降本」——未变更的热刷整轮不进逐文件 stat（详见上方短路注释块）。 */
+  async refreshSymbols(projectId: string, inlineBudgetMs = SYMBOL_INLINE_BUDGET_MS): Promise<{ files: number; symbols: number; skipped: number; cleared: number; deferred: boolean; shortCircuited: boolean }> {
     const { workspace, rules } = getProjectWorkspace(projectId);
     const db = getDb();
     // 根路径与建索引时不同（换绑）→ 旧索引整体失效，清空重建
-    const cleared = db.prepare('DELETE FROM workspace_symbols WHERE project_id = ? AND workspace <> ?').run(projectId, resolve(workspace)).changes;
+    const workspaceAbs = resolve(workspace);
+    const cleared = db.prepare('DELETE FROM workspace_symbols WHERE project_id = ? AND workspace <> ?').run(projectId, workspaceAbs).changes;
+    // T02210：监视器在本轮遍历「之前」挂上——遍历期间落盘的写入会计入事件，
+    // 登记快照时即可看出「本轮结果是否已被后续变更作废」，不留静默窗口
+    const watchState = ensureWorkspaceWatch(projectId, workspaceAbs, rules);
+    const snap = treeSnapshots.get(projectId);
+    if (snap && snap.candidateFiles >= SYMBOL_FAST_PATH_MIN_FILES
+      && !watchState.unsupported && watchState.watcher
+      && watchState.events === snap.eventsAtSnapshot
+      && Date.now() - snap.deepVerifiedAt < SYMBOL_DEEP_VERIFY_MS) {
+      const current = buildDirSnapshot(workspaceAbs, rules);
+      // 结构指纹一致（无增删改名）+ 期间零监视事件（无内容写入）→ 整轮 stat 可省；
+      // 此时也不失效检索 memo——内容既然没变，让 memo 继续命中才是短路的完整收益
+      if (current && snapshotEqual(snap.dirs, current)) {
+        return { files: 0, symbols: 0, skipped: snap.candidateFiles, cleared, deferred: false, shortCircuited: true };
+      }
+    }
     // T00790②：一次查询建 (path → 已知 mtime) 映射（同 path 取最大 mtime，与原 MAX 语义一致）
     const knownMtime = new Map<string, number>();
     for (const row of db.prepare('SELECT path, MAX(file_mtime) AS m FROM workspace_symbols WHERE project_id = ? GROUP BY path').all(projectId) as Array<{ path: string; m: number | null }>) {
@@ -625,16 +794,17 @@ export const WorkspaceService = {
     const ctx: SymbolIndexCtx = {
       db, projectId, rules, extractors: this.SYMBOL_EXTRACTORS,
       countExts: new Set(this.SYMBOL_EXTRACTORS.flatMap((x) => x.exts)),
-      workspaceAbs: resolve(workspace),
+      workspaceAbs,
       files: 0, symbols: 0, skipped: 0,
       knownMtime,
+      watch: watchState,
       insStmt: db.prepare('INSERT INTO workspace_symbols (id, project_id, path, symbol, line, kind, file_mtime, workspace) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
       delStmt: db.prepare('DELETE FROM workspace_symbols WHERE project_id = ? AND path = ?'),
     };
     // T02200：取代仍在续跑的旧任务（显式刷新要看当前文件系统状态，两轮遍历交错会重复删插同一批行）
     const prev = symbolJobs.get(projectId);
     if (prev) { prev.superseded = true; symbolJobs.delete(projectId); }
-    const state: SymbolWalkState = { ctx, stack: [], done: false };
+    const state: SymbolWalkState = { ctx, stack: [], done: false, truncated: false };
     symbolPushDir(state, workspace, '');
     const until = Date.now() + inlineBudgetMs;
     while (!state.done && Date.now() < until) runSymbolSlice(state);
@@ -643,8 +813,11 @@ export const WorkspaceService = {
       const job: SymbolRefreshJob = { state, superseded: false };
       symbolJobs.set(projectId, job);
       void pumpSymbolJob(projectId, job);
+    } else if (!state.truncated) {
+      // T02210：一次请求内走完 → 当场登记结构快照，下一轮同状态热刷即短路
+      commitTreeSnapshot(projectId, workspaceAbs, rules, ctx.files + ctx.skipped, watchState.events);
     }
-    return { files: ctx.files, symbols: ctx.symbols, skipped: ctx.skipped, cleared, deferred: !state.done };
+    return { files: ctx.files, symbols: ctx.symbols, skipped: ctx.skipped, cleared, deferred: !state.done, shortCircuited: false };
   },
 
   /** 符号查询：symbol LIKE 匹配（q ≥2 字符），返回 {path, symbol, line, kind} */
