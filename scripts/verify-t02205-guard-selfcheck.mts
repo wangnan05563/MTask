@@ -308,7 +308,7 @@ for (const g of gateFiles) {
 const unresolvable = all.filter((a) => a.hits === -4);
 const anchorCountOf = (g: string): number => all.filter((a) => a.gate === g).length;
 const control = ['verify-t02096-kickoff-outline.mts', 'verify-t02111-kickoff-acceptance.mts', 'verify-t02198-kickoff-flow.mts'];
-ok(`W-01 审计自身在位（实测枚举 ${guardGates.length} 门 / ${all.length} 锚点；控制组抽不出锚点＝审计器失配，不许当成全绿）`,
+ok(`W-01 审计自身在位（实测枚举 ${guardGates.length} 门 / ${all.length} 锚点，其中目标路径不可静态判定 ${unresolvable.length} 条；控制组抽不出锚点＝审计器失配，不许当成全绿）`,
   guardGates.length >= 20 && all.length >= 150 && control.every((g) => anchorCountOf(g) >= 3)
   && unresolvable.length <= all.length * 0.4,
   { 门数: guardGates.length, 锚点数: all.length, 控制组: control.map((g) => `${g}=${anchorCountOf(g)}`), 路径不可判定: unresolvable.length });
@@ -362,7 +362,7 @@ for (const a of probeTargets) {
   const named = zeroHitsOf([{ ...a, hits: hitsAfter }]).length === 1;
   if (hitsAfter === 0 && !named) mutatedMiss.push(`${a.gate}:${a.line} ${a.anchor}`);
 }
-ok('W-07 反向探针前提：改坏写法后锚点命中数归 0（若仍有残留＝抽取器求值口径与门里不一致）',
+ok(`W-07 反向探针前提（实测 ${probeTargets.length} 条探针 / 覆盖 ${new Set(probeTargets.map((a) => a.gate)).size} 门）：改坏写法后锚点命中数归 0（若仍有残留＝抽取器求值口径与门里不一致）`,
   stillAlive.length === 0, { 残留: stillAlive.slice(0, 6), 探针数: probeTargets.length });
 ok('W-08 反向探针点名：命中 0 处的锚点必然被恒假清单收录（与 W-04 复用同一判据，不是另写一遍）',
   probeTargets.length >= 40 && new Set(probeTargets.map((a) => a.gate)).size >= 20 && mutatedMiss.length === 0,
