@@ -2,10 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, FolderPlus, ListTodo, Loader2, Move, Pencil, Plus, Save, SquarePen, Trash2, UnfoldVertical, FoldVertical, Wand2, X, Archive, Layers } from 'lucide-react';
 import { CopyButton } from '../ui/CopyButton';
 import { FontColorButton } from '../ui/FontColorButton';
-import { api, type Project, type Prompt, type PromptCategory, type ReqCategory } from '../api/client';
+import { api, type AITool, type Project, type Prompt, type PromptCategory, type ReqCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { clearSessionState, useSessionState } from '../ui/session';
 import { ProjectListHint, loadProjectList, useProjectList, type ProjectListView } from '../ui/projectList'; // T02201：项目列表取数容错层
+import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：AI 整理工具取数改走可见失败态层
 import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { relTime } from '../ui/format';
@@ -324,20 +325,24 @@ export function PromptsPage() {
   };
 
   // T00636：加载 AI 整理工具（模型菜单默认配置优先）——提示词优化使用
+  // T02213：取数改走可见失败态层——此前吞异常后 organizeToolId 保持空，点「优化」只会得到
+  // 「请先在模型菜单添加并选择工具」，把后端故障说成了用户的配置问题。
+  const toolsView = useResource<AITool[]>(() => api.get<AITool[]>('/aitools'));
   useEffect(() => {
-    void api.get<Array<{ id: string; isDefaultOrganize?: boolean }>>('/aitools')
-      .then((ts) => {
-        const def = ts.find((t) => t.isDefaultOrganize) ?? ts[0];
-        if (def) setOrganizeToolId(def.id);
-      })
-      .catch(() => undefined);
-  }, []);
+    const ts = toolsView.data;
+    if (!ts) return;
+    const def = ts.find((t) => t.isDefaultOrganize) ?? ts[0];
+    if (def) setOrganizeToolId(def.id);
+  }, [toolsView.data]);
 
   /** T00636：提示词优化——把标题/内容交给 AI 改写为结构化提示词，结果回写草稿供确认后保存。
    *  与任务页「提示词优化」同款：内容为空时回退用标题作输入；结果剥离代码围栏。 */
   async function optimizeContent(key: string, title: string, content: string, apply: (v: string) => void) {
     if (optimizing[key]) return;
-    if (!organizeToolId) return flash('请先在「模型菜单」添加并选择工具');
+    // T02213：取数失败时不再把它报成「请先添加并选择工具」——那是配置问题，此刻是后端问题
+    if (!organizeToolId) {
+      return flash(toolsView.phase === 'error' ? 'AI 整理工具列表加载失败，请先用工具条的「重试」再优化' : '请先在「模型菜单」添加并选择工具');
+    }
     let text = content.trim();
     const source = text ? '内容' : '标题';
     if (!text) text = title.trim();
@@ -777,6 +782,8 @@ export function PromptsPage() {
           className="op-hidden" // T00760：默认隐藏悬浮显示
           style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, marginLeft: 'auto' }}
         />
+        {/* T02213：AI 整理工具取数失败时给出原因与重试入口——否则「优化」只会误报「请先添加并选择工具」 */}
+        <ResourceHint view={toolsView} label="AI 整理工具" />
         {notice && <output className="flash-toast">{notice}</output>}
       </div>
 

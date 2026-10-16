@@ -4,6 +4,7 @@ import { CornerDownLeft, Search } from 'lucide-react';
 import { api, type Prompt, type Task } from '../api/client';
 import { focusTaskByNo } from '../ui/focusTask'; // T02162：对齐通知中心：点击任务走同一套「解析→写键→派发 mtaskFocusTask→开抽屉」定位逻辑
 import { loadProjectList, ProjectListHint, useProjectList } from '../ui/projectList'; // T02201：项目取数走统一容错层
+import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：任务/提示词取数改走可见失败态层
 
 
 /** T00560：命令面板可直达的页面（与 App Tab 对齐的子集） */
@@ -14,6 +15,9 @@ function setSessionState(key: string, value: unknown): void {
   try { sessionStorage.setItem(key, JSON.stringify(value)); } catch { /* 配额异常静默 */ }
 }
 /** T02201：项目条目改用统一容错层的 Project（原本地 ProjectLite 已冗余） */
+// T02213：空列表用常驻引用，避免每次渲染现造新数组让 items 的 useMemo 依赖整表变化。
+const NO_TASKS: Task[] = [];
+const NO_PROMPTS: Prompt[] = [];
 
 /**
  * 全局命令面板（T00443 / PRD UX-4，P2）：Ctrl+F 唤起（T00560 调整），跨实体搜索（任务/提示词/页面直达），
@@ -25,8 +29,12 @@ export function CommandPalette({ open, onClose, onNavigate }: {
   readonly onNavigate: (tab: AppTab) => void;
 }) {
   const [kw, setKw] = useState('');
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [prompts, setPrompts] = useState<Prompt[]>([]);
+  // T02213：任务/提示词取数改走可见失败态层——此前两处 `.catch(() => undefined)` 让
+  // 「后端没答上」与「库里真没数据」同形，面板只显示「无匹配结果」，用户无从判断该重试还是该接受。
+  const tasksView = useResource<Task[]>(() => api.get<Task[]>('/tasks?archived=0&limit=500'), { enabled: open });
+  const promptsView = useResource<Prompt[]>(() => api.get<Prompt[]>('/prompts'), { enabled: open });
+  const tasks = tasksView.data ?? NO_TASKS;
+  const prompts = promptsView.data ?? NO_PROMPTS;
   const projectList = useProjectList();
   const { projects } = projectList;
   const [active, setActive] = useState(0);
@@ -35,8 +43,6 @@ export function CommandPalette({ open, onClose, onNavigate }: {
   useEffect(() => {
     if (!open) return;
     setKw(''); setActive(0);
-    void api.get<Task[]>('/tasks?archived=0&limit=500').then(setTasks).catch(() => undefined);
-    void api.get<Prompt[]>('/prompts').then(setPrompts).catch(() => undefined);
     void loadProjectList(true); // T02201：项目取数交统一容错层（打开面板强刷一次的口径不变，失败态见下方提示行）
     // 等 DOM 挂载后聚焦
     setTimeout(() => inputRef.current?.focus(), 30);
@@ -131,10 +137,13 @@ export function CommandPalette({ open, onClose, onNavigate }: {
             </div>
           ))}
         </div>
-        <div style={{ padding: '6px 14px', borderTop: '1px solid var(--border)', fontSize: 10, color: 'var(--text-muted)' }}>
+        <div style={{ padding: '6px 14px', borderTop: '1px solid var(--border)', fontSize: 10, color: 'var(--text-muted)', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
           ↑↓ 选择 · Enter 执行 · Esc 关闭 —— 选中任务/项目/提示词会跳转对应页面并自动定位
           {/* T02201：项目取数失败时显式给出原因与重试入口，不再只剩「无匹配结果」 */}
           <ProjectListHint view={projectList} />
+          {/* T02213：任务/提示词取数同理——三者任一模糊都会让「无匹配结果」失真，逐源给原因 */}
+          <ResourceHint view={tasksView} label="任务列表" />
+          <ResourceHint view={promptsView} label="提示词列表" />
         </div>
       </div>
     </div>,

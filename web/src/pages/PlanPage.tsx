@@ -11,6 +11,7 @@ import { estimatesApi, type EstimatesResponse } from '../api/estimates'; // T020
 import { ProjectGuideDialog, hasSeenProjectGuide, markProjectGuideSeen } from './ProjectGuide'; // T00665：项目管理向导（T00706：已看状态改由调用方在关闭时记录）
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin, reorderProjects, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { ProjectListHint, getProjectListSnapshot, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
+import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：节假日取数改走可见失败态层（工期换算依赖）
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
@@ -134,6 +135,11 @@ function childMilestoneOf(p: PlanTask, plans: PlanTask[]): PlanTask | null {
 type PlanPatch = Partial<Pick<PlanTask, 'title' | 'description' | 'duration_days' | 'assignee' | 'progress' | 'status' | 'start_date' | 'color' | 'deps'>>;
 
 type HolidayTab = 'manage' | 'national' | 'calendar';
+
+/** 节假日/加班日行（T00764）：kind= holiday 放假日 | overtime 加班日 */
+type Holiday = { date: string; name: string; kind: string };
+/** 取数未成功时的空列表用常驻引用，避免每次渲染现造新数组让 workdayCtx 等 useMemo 整表重算 */
+const NO_HOLIDAYS: Holiday[] = [];
 
 /** 甘特页项目选择器：触发按钮 + 排序菜单 + 项目下拉（T00663，S3776 抽取） */
 function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, projDropRef, sortDropRef, projOpen, setProjOpen, projDropPos, setProjDropPos, projSortOpen, setProjSortOpen, projSortMode, setProjSortMode, dragProjId, setDragProjId, overProjId, setOverProjId, dropReorder, togglePin, isProjectPinned, onExpand }: {
@@ -610,7 +616,10 @@ function PlanDurationHeader({ durationUnit, setDurationUnit }: {
   );
 }
 
-/** 异步动作触发（S3735：以 catch 兜底替代 void 运算符，忽略 Promise 拒绝） */
+/** 异步动作触发（S3735：以 catch 兜底替代 void 运算符，忽略 Promise 拒绝）。
+ *  T02213 登记：**这里吞异常是有意的**——它是写操作（保存/删除/重排等）的 fire-and-forget 收口，
+ *  失败提示由各动作函数内部 flash/弹窗自行给出，此处再挂一套失败态只会重复报同一件事。
+ *  本单只收敛「取数被吞成无数据」，故此处不改，避免后续把它误判为漏改。 */
 function runAsync(action: Promise<void> | void): void {
   if (action instanceof Promise) action.catch(() => undefined);
 }
@@ -1006,13 +1015,14 @@ function HolidayCalendar({ calYear, setCalYear, holiBusy, renderMonthGrid }: {
 }
 
 /** 节假日多功能弹窗：手动维护 / 联网导入法定节假日 / 万年历 */
-function HolidayModal({ holiBusy, setHoliOpen, holiTab, setHoliTab, holiNewKind, setHoliNewKind, holiNewDate, setHoliNewDate, holiNewName, setHoliNewName, holidays, addHolidayInModal, removeHoliday, natYear, setNatYear, importNational, natMsg, calYear, setCalYear, renderMonthGrid }: {
+function HolidayModal({ holiBusy, setHoliOpen, holiTab, setHoliTab, holiNewKind, setHoliNewKind, holiNewDate, setHoliNewDate, holiNewName, setHoliNewName, holidays, holidaysHint, addHolidayInModal, removeHoliday, natYear, setNatYear, importNational, natMsg, calYear, setCalYear, renderMonthGrid }: {
   readonly holiBusy: boolean; readonly setHoliOpen: (v: boolean) => void;
   readonly holiTab: HolidayTab; readonly setHoliTab: React.Dispatch<React.SetStateAction<HolidayTab>>;
   readonly holiNewKind: 'holiday' | 'overtime'; readonly setHoliNewKind: React.Dispatch<React.SetStateAction<'holiday' | 'overtime'>>;
   readonly holiNewDate: string; readonly setHoliNewDate: React.Dispatch<React.SetStateAction<string>>;
   readonly holiNewName: string; readonly setHoliNewName: React.Dispatch<React.SetStateAction<string>>;
   readonly holidays: Array<{ date: string; name: string; kind: string }>;
+  readonly holidaysHint?: React.ReactNode;
   readonly addHolidayInModal: () => Promise<void> | void; readonly removeHoliday: (date: string) => Promise<void> | void;
   readonly natYear: number; readonly setNatYear: React.Dispatch<React.SetStateAction<number>>;
   readonly importNational: () => Promise<void> | void; readonly natMsg: string;
@@ -1053,6 +1063,8 @@ function HolidayModal({ holiBusy, setHoliOpen, holiTab, setHoliTab, holiNewKind,
                 <input value={holiNewName} placeholder={holiNewKind === 'overtime' ? '备注（如：项目冲刺加班）' : '名称（如：国庆节）'} onChange={(e) => setHoliNewName(e.target.value)} style={{ ...inputStyle, width: 140 }} aria-label="名称" />
                 <button onClick={() => runAsync(addHolidayInModal())} disabled={holiBusy} style={btnStyle}>添加</button>
                 <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>共 {holidays.length} 条（加班日 {holidays.filter((h) => h.kind === 'overtime').length}）</span>
+                {/* T02213：弹窗内同样给出取数失败原因与重试入口——遮罩盖住工具条，只放外面等于看不见 */}
+                {holidaysHint}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: '44vh', overflowY: 'auto' }}>
                 {holidays.length === 0 && <div style={{ color: 'var(--text-muted)' }}>暂无节假日/加班日。可手动添加，或在「联网导入」页签拉取国家法定节假日。</div>}
@@ -1183,7 +1195,12 @@ export function PlanPage() {
   // T00460：切页保状态——项目选择会话级持久化，切回不重置
   const [projectId, setProjectId] = useSessionState('plan.projectId', '');
   const [plans, setPlans] = useState<PlanTask[]>([]);
-  const [holidays, setHolidays] = useState<Array<{ date: string; name: string; kind: string }>>([]); // T00764：kind= holiday 放假日 | overtime 加班日
+  // T00764：kind= holiday 放假日 | overtime 加班日
+  // T02213：节假日是**工期换算的输入**（buildWorkdayCtx / 甘特着色 / 汇总天数都吃它），
+  // 此前取数失败被 `.catch(() => undefined)` 吞成空数组，工期就按「无节假日」口径静默算错。
+  const holidaysView = useResource<Holiday[]>(() => api.get<Holiday[]>('/plans/holidays'));
+  const setHolidays = holidaysView.setData;
+  const holidays = holidaysView.data ?? NO_HOLIDAYS;
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   // T00438 AI 导入：模型列表与选中工具（持久化）、解析弹窗状态、可编辑草稿行
@@ -1425,7 +1442,6 @@ export function PlanPage() {
     void api.get<PlanTask[]>(`/plans?projectId=${projectId}`).then(setPlans).catch((e) => flash(String(e.message ?? e)));
   }, [projectId]);
   useEffect(() => { reload(); }, [reload]);
-  useEffect(() => { void api.get<Array<{ date: string; name: string; kind: string }>>('/plans/holidays').then(setHolidays).catch(() => undefined); }, []);
 
   // T02196：按「计划行 id」定位来源节点并高亮（任务标题旁「计划/里程碑」徽标点击）。
   // 口径：只有「不看这一屏就看不到目标行」的状态才允许改变——父里程碑处于收起态时展开它；
@@ -2497,6 +2513,11 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         <PlanPanelToggles showPrd={showPrd} setShowPrd={setShowPrd} showMatrix={showMatrix} setShowMatrix={setShowMatrix}
           showTestCases={showTestCases} setShowTestCases={setShowTestCases} />
         <button onClick={openHolidayManager} style={btnStyle} title="节假日管理 — 手动维护 / 联网导入法定节假日 / 万年历视图">节假日（{holidays.length}）</button>
+        {/* T02213：节假日取数失败/过期时显式提示——它是工期换算的输入，静默为空会让天数按自然日口径算错 */}
+        <ResourceHint view={holidaysView} label="节假日数据（工期换算依赖）" />
+        {holidaysView.phase === 'error' && holidays.length === 0 && (
+          <span data-t02213="holidays-math-warning" style={{ fontSize: 11, color: 'var(--danger)' }}>当前工期按「无节假日」口径计算</span>
+        )}
         <button onClick={reload} style={btnStyle} title="刷新"><RefreshCw size={13} /></button>
         {/* T00735：移除本页原有的「向导」按钮——与全局导航右上角常驻按钮重复（两者打开同一份项目管理向导内容），
             统一保留全局那个（已改为静态图标、无呼吸动画） */}
@@ -2633,6 +2654,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         <HolidayModal holiBusy={holiBusy} setHoliOpen={setHoliOpen} holiTab={holiTab} setHoliTab={setHoliTab}
           holiNewKind={holiNewKind} setHoliNewKind={setHoliNewKind} holiNewDate={holiNewDate} setHoliNewDate={setHoliNewDate}
           holiNewName={holiNewName} setHoliNewName={setHoliNewName} holidays={holidays}
+          holidaysHint={<ResourceHint view={holidaysView} label="节假日数据（工期换算依赖）" />}
           addHolidayInModal={addHolidayInModal} removeHoliday={removeHoliday}
           natYear={natYear} setNatYear={setNatYear} importNational={importNational} natMsg={natMsg}
           calYear={calYear} setCalYear={setCalYear} renderMonthGrid={renderMonthGrid} />

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api, type Project, type AITool } from '../api/client';
 import { ProjectListHint, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
+import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：开关状态取数改走可见失败态层
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import { reportStream, useReportStream } from '../reportStream';
 import { ReportConsole } from './ReportConsole';
@@ -475,10 +476,10 @@ export function ReportPage() {
   const [aiTools, setAiTools] = useState<AITool[]>([]);
   const [aiToolId, setAiToolId] = useSessionState('report.aiTool', '');
   // T00558 / PRD AI-5：周报摘要写入收件箱开关（服务端 report.aiSummaryToInbox）——开关状态持久于服务端
-  const [summaryToInbox, setSummaryToInbox] = useState(false);
-  useEffect(() => {
-    void api.get<{ enabled: boolean }>('/settings/ai-summary-inbox').then((r) => setSummaryToInbox(r.enabled)).catch(() => undefined);
-  }, []);
+  // T02213：取值改走可见失败态层。此前 GET 失败被 `.catch(() => undefined)` 吞掉，界面按初始 false
+  // 渲染成「后端是关的」——而真实值可能是开的，回显与后端不一致会直接误导一次生成结果的去向。
+  const summaryInboxView = useResource<{ enabled: boolean }>(() => api.get<{ enabled: boolean }>('/settings/ai-summary-inbox'));
+  const summaryToInbox = summaryInboxView.data?.enabled ?? false;
   // T01038：订阅各模块级 store 的运行态，供卡片统一状态徽标 + 导航 Tab 旋转指示共用（跨 Tab 切换天然保持）
   const { streaming: aiStreaming, logs: aiLogs, streamText: aiStreamText, result: aiResult, startedAt: reportStartedAt, finalElapsed: reportFinal } = useReportStream();
   const prdSnap = usePrdGen();
@@ -493,8 +494,11 @@ export function ReportPage() {
 
   // T00558：摘要写入收件箱开关（S3776：回调下沉）
   const changeSummaryInbox = (v: boolean) => {
-    setSummaryToInbox(v);
-    void api.post('/settings/ai-summary-inbox', { enabled: v }).catch(() => setSummaryToInbox(!v));
+    summaryInboxView.setData({ enabled: v });
+    void api.post('/settings/ai-summary-inbox', { enabled: v }).catch((e) => {
+      summaryInboxView.setData({ enabled: !v });
+      flash(`开关保存失败，已回退：${e instanceof Error ? e.message : String(e)}`);
+    });
   };
 
   // T00662：PRD 导入完成回调（S4624：内层模板抽出为变量，避免嵌套模板字符串）
@@ -1064,13 +1068,17 @@ export function ReportPage() {
             <><Sparkles size={14} /> {aiReportLabel}</>
           </FlowButton>
           {/* T00558 / PRD AI-5：生成后把 AI 洞察摘要写入收件箱任务 */}
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 10, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}
+          {/* T02213：状态未经服务端确认（加载中/取数失败）时禁用开关并如实标注——
+              此前 GET 失败被吞，界面按 false 渲染成「后端是关的」，而真实值可能是开的 */}
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 10, fontSize: 12, color: 'var(--text-secondary)', cursor: summaryInboxView.phase === 'ready' ? 'pointer' : 'not-allowed' }}
             title={`勾选后，${aiReportLabel}时会把洞察摘要写入「收件箱」项目的一条待办任务（便于后续跟进）`}>
-            <input type="checkbox" checked={summaryToInbox} style={{ cursor: 'pointer' }}
+            <input type="checkbox" checked={summaryToInbox} disabled={summaryInboxView.phase !== 'ready'}
+              style={{ cursor: summaryInboxView.phase === 'ready' ? 'pointer' : 'not-allowed' }}
               onChange={(e) => changeSummaryInbox(e.target.checked)} />
             {' '}
             生成后把摘要写入收件箱任务
           </label>
+          <ResourceHint view={summaryInboxView} label="摘要写入收件箱开关状态" showLoading style={{ marginLeft: 6 }} />
           {/* AI 洞察已移至右侧控制台流式展示，左侧仅在生成成功后保留下载入口 */}
           {aiResult && <AiResultDownload aiResult={aiResult} onDownload={aiDownload} periodLabel={PERIODS.find((p) => p.key === period)?.label ?? '周报'} />}
         </div>

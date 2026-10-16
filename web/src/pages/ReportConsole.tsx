@@ -66,6 +66,17 @@ interface AnalysisTask {
   readonly startAt?: number;
 }
 
+/** T02213：一次对比任务的创建入参（失败时连同它一起登记，供「重试」原样复跑） */
+interface CompareJob {
+  readonly title: string;
+  readonly body: Record<string, unknown>;
+  readonly prompt: string;
+  readonly category: AnalysisTask['category'];
+  readonly period?: ReportPeriod;
+  /** 仅失败登记时有值：展示给用户的失败原因 */
+  readonly reason?: string;
+}
+
 /** 内置「AI 周报」tab 固定 id：始终存在，内容由父级传入的 SSE 流式状态驱动 */
 const REPORT_TAB = '__report__';
 
@@ -656,6 +667,9 @@ export function ReportConsole({
   const [notice, setNotice] = useState('');
   // 轻量 toast：本面板无全局 flash，就近以底部 transient 文本反馈结果/失败
   const flash = (m: string) => { setNotice(m); globalThis.setTimeout(() => setNotice(''), 3000); };
+  // T02213：对比任务创建失败的登记簿。此前吞异常后只是「少一个结果 tab」，
+  // 用户会以为是该模型没答上来；失败需点名到模型并给重试入口。
+  const [compareFailed, setCompareFailed] = useState<CompareJob[]>([]);
   const canStop = report.streaming || prdSnap.streaming || tcSnap.streaming || kfSnap.streaming || aiSnap.busy || runningCount > 0;
 
   // T00839：1s 心跳触发重渲染，使运行中 tab 的「已运行 xx」实时增长（store 变更不会带动计时刷新）
@@ -766,6 +780,29 @@ export function ReportConsole({
     return () => clearInterval(timer);
   }, [refreshJobs]);
 
+  /** T02213：创建单个对比任务。成功即并入任务列表并撤销该条失败登记；
+   *  失败不再吞成「少一个 tab」，而是带原因登记，底部条给出模型名与重试入口。 */
+  async function createCompareJob(job: CompareJob): Promise<void> {
+    try {
+      const cr = await api.post<{ id: string }>('/console-jobs', job.body);
+      setTasks((prev) => [...prev, {
+        id: cr.id, title: job.title, prompt: job.prompt, category: job.category, period: job.period,
+        status: 'busy', answer: '', error: '', startAt: Date.now(),
+      }]);
+      setCompareFailed((prev) => prev.filter((x) => x.title !== job.title));
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      setCompareFailed((prev) => [...prev.filter((x) => x.title !== job.title), { ...job, reason }]);
+    }
+  }
+
+  /** T02213：重试全部失败的对比任务（先清空登记，成功者自然不再回来） */
+  function retryFailedCompares() {
+    const pending = compareFailed;
+    setCompareFailed([]);
+    for (const job of pending) void createCompareJob(job);
+  }
+
   /** 新建一个并行分析任务：创建持久化 job 并聚焦它。发起时固化 prompt 与周期，供「重新分析」复用 */
   async function newAnalysis() {
     const user = category === 'custom' ? custom.trim() : presetPrompt(category, periodLabel);
@@ -792,13 +829,13 @@ export function ReportConsole({
         if (ct === toolId) continue;
         const ctool = tools.find((x) => x.id === ct);
         if (!ctool) continue;
-        const cbody = { ...body, title: `${title}【对比·${ctool.name}】`, toolId: ct };
-        void api.post<{ id: string }>('/console-jobs', cbody).then((cr) => {
-          setTasks((prev) => [...prev, { id: cr.id, title: cbody.title, prompt: user, category: cat, period: per, status: 'busy', answer: '', error: '', startAt: Date.now() }]);
-        }).catch(() => undefined);
+        const jobTitle = `${title}【对比·${ctool.name}】`;
+        void createCompareJob({ title: jobTitle, body: { ...body, title: jobTitle, toolId: ct }, prompt: user, category: cat, period: per });
       }
-    } catch {
+    } catch (e) {
       // 创建失败（如后端未就绪）：不写入本地视图，避免出现无后端实体的假任务，等待用户重试
+      // T02213：同函数的主任务失败此前也是全静默——补一句可读原因（重试入口就是再次点「分析」）
+      flash(`分析任务创建失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -1450,6 +1487,20 @@ export function ReportConsole({
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, fontSize: 11 }}>
       <span style={{ color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center' }}>{statusText()}</span>
       <span style={{ color: 'var(--accent)', opacity: notice ? 1 : 0, transition: 'opacity .2s', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 180 }}>{notice}</span>
+      {/* T02213：对比任务创建失败点名到模型并给重试入口，不再只剩「tab 少一个」 */}
+      {compareFailed.length > 0 && (
+        <span role="status" data-t02213="compare-error" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', color: 'var(--danger)' }}>
+          对比任务创建失败：{compareFailed.map((x) => x.title).join('、')} · {compareFailed[0].reason ?? '请求失败'}
+          <button
+            onClick={retryFailedCompares}
+            title="重新创建失败的对比任务"
+            aria-label="重试创建对比任务"
+            style={{ fontSize: 11, padding: '2px 8px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+          >
+            重试
+          </button>
+        </span>
+      )}
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
         {/* T00838：停止按钮——任一任务运行中即可用，点击中止对应后端 AI 请求并清理产物（幂等） */}
         <button

@@ -10,6 +10,7 @@ import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { TaskDetailDrawer, type TaskDetailTab, type TaskPatch } from '../components/TaskDetailDrawer'; // T01562：真抽屉详情
 import { focusPlanNode, focusTaskByNo, type FocusTaskIntent } from '../ui/focusTask'; // T01568：外部跳转定位意图（通知/铃铛/就绪条）；T02196：徽标点击定位
 import { ProjectListHint, getProjectListSnapshot, patchProject, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
+import { ResourceHint } from '../ui/resourceState'; // T02213：选中项有效性校验失败态提示
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
@@ -477,6 +478,16 @@ export function TasksPage() {
     });
   }, []);
 
+  // T02213：选中项有效性校验的失败态。此前取数异常被 `.catch(() => undefined)` 吞掉——
+  // 校验没跑成，选中集合里可能留着已被他人删除/归档的任务，后续批量操作就作用在用户看不见的行上。
+  const [pruneError, setPruneError] = useState('');
+  const validateSelected = useCallback(() => {
+    if (!activeProject) return;
+    void api.get<Task[]>(`/tasks?projectId=${activeProject}&archived=false`)
+      .then((list) => { setPruneError(''); pruneSelectedIds(list); })
+      .catch((e) => setPruneError(e instanceof Error ? e.message : String(e)));
+  }, [activeProject, pruneSelectedIds]);
+
   useEffect(() => { void loadProjects(); }, [loadProjects]);
   // 初始/切项目加载；搜索与分类变化会重建 loadTasks（经 fetchTasks 依赖透传），此处防抖 300ms 后重置分页拉取，
   // 避免搜索框逐击键都打后端
@@ -708,6 +719,8 @@ export function TasksPage() {
   const [csvPreview, setCsvPreview] = useState<{ items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>; errors: Array<{ row: number; message: string }> } | null>(null);
   const [csvImportKind, setCsvImportKind] = useState<'csv' | 'json'>('csv'); // T00556：导入类型分流
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // T02213：选中集清空后撤掉校验失败提示——否则下次勾选会把上一次的失败原因原样带出来
+  useEffect(() => { if (selectedIds.size === 0) setPruneError(''); }, [selectedIds]);
   // T01065-FR1.6：批量操作撤销快照栈（操作前旧值；栈顶=最近一次；归档类不入栈，归档页可自行恢复）
   // T01065 后续：由「只留最近一次」改为最多 MAX_UNDO_STEPS 级的栈——连续多次批量操作可逐级回退，
   // 也可以从步骤列表直接回到中间某一步（撤销该步及其之后的所有步）。
@@ -750,12 +763,10 @@ export function TasksPage() {
         void loadProjects();
         // 评审 P2-1 修复：选中项有效性校验移出 setState updater（原嵌套异步 setState 为反模式）；
         // 串行 SSE 通知下幂等：重复校验以 alive 集合为准，size 不变时返回原引用避免重渲染
-        if (selectedIds.size > 0) {
-          void api.get<Task[]>(`/tasks?projectId=${activeProject}&archived=false`).then(pruneSelectedIds).catch(() => undefined);
-        }
+        if (selectedIds.size > 0) validateSelected();
       }
     });
-  }, [activeProject, loadTasks, selectedIds, pruneSelectedIds]);
+  }, [activeProject, loadTasks, selectedIds, validateSelected]);
   // 工具下拉展开期间监听全局焦点移出：内部元素间切换时 relatedTarget 仍在容器内不收起，移出容器才收起。
   // 挂在 document 上而非容器 div，可避免为挂 onBlur 而给非交互容器加 tabIndex/role
 
@@ -1397,6 +1408,13 @@ export function TasksPage() {
     return (
       <div style={{ position: 'sticky', top: 0, zIndex: 50, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: '1px solid var(--accent)', boxShadow: '0 4px 12px rgba(0,0,0,.12)', fontSize: 12 }}>
         <strong style={{ color: 'var(--accent)' }}>已选 {selectedIds.size} 条</strong>
+        {/* T02213：选中项有效性校验取数失败时如实提示——此刻选中集里可能留着已删除/归档的任务 */}
+        {pruneError && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <ResourceHint view={{ phase: 'error', error: pruneError, stale: false, reload: validateSelected }} label="选中项有效性" />
+            <span style={{ fontSize: 11, color: 'var(--danger)' }}>选中列表可能含已删除/归档的任务，执行批量操作前请先重试</span>
+          </span>
+        )}
         {/* T00588：批量操作对齐计划页风格——纯图标 + 下拉相邻 + 悬浮提示。
             T00704：批量条按钮**移除 task-op**（悬浮显隐依赖任务行 hover，批量条浮于列表上方无 hover 触发，
             导致归档等按钮不可见、被误判「缺少」）——批量条出现即全部常显。 */}
