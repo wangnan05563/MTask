@@ -33,6 +33,7 @@ const SUITES = [
   't02208-conn-probe-semantics-test.mjs',
   't02210-hot-refresh-shortcircuit-test.mjs',
   't02211-file-size-cap-test.mjs',
+  't02278-probe-usage-test.mjs', // 自带隔离实例（不吃传入 baseUrl），见脚本头
   't00781-writeback-dedupe-test.mjs',
   't01921-reqno-uniqueness-test.mjs',
 ];
