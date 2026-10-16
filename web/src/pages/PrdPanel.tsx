@@ -38,6 +38,15 @@ const ISSUE_LEVEL_META: Record<string, { label: string; color: string }> = {
   custom: { label: '自定义', color: 'var(--accent)' },
 };
 
+/** T02218：批量操作响应（成功/失败逐项明细；失败项供结果面板展开原因） */
+interface BatchReport {
+  succeeded: Array<{ id: string; question: string; prdId?: string; filename?: string }>;
+  failed: Array<{ id: string; question: string; reason: string }>;
+}
+
+/** T02218：单次批量操作上限（与服务端 MAX_BATCH_ISSUES 一致，超限前端拦截提示分批） */
+const BATCH_MAX_ISSUES = 100;
+
 /** T00959：PRD 下载支持的格式（选项菜单顺序与图标） */
 const PRD_DOWNLOAD_FORMATS = [
   { key: 'md', label: 'Markdown（.md）', desc: '导出 PRD 正文原文，便于二次编辑与纳入版本管理', Icon: FileText },
@@ -123,11 +132,90 @@ export function PrdPanel({ projectId, onClose }: {
   const [editMd, setEditMd] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
+  // T02218：批量勾选与操作——勾选集按 id 存放（列表刷新不丢，随行消失自动剔除）；
+  // batchResult 记录最近一次批量操作的成功/失败明细，供结果面板展开
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchBusy, setBatchBusy] = useState<'' | 'writeback' | 'delete'>('');
+  const [batchResult, setBatchResult] = useState<null | { kind: 'writeback' | 'delete'; ok: number; failed: BatchReport['failed'] }>(null);
+  const headCbRef = useRef<HTMLInputElement>(null);
 
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
   const selected = docs.find((d) => d.id === selectedId) ?? null;
   const confirmedCount = docs.filter((d) => d.status === 'confirmed').length;
   const openIssues = issues.filter((i) => i.status === 'open').length;
+
+  // T02218：勾选集随列表存活度收敛——行删除/刷新后自动剔除失效 id；size 不变时保持原引用避免多余重渲染
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (prev.size === 0) return prev;
+      const alive = new Set(issues.map((i) => i.id));
+      const next = new Set([...prev].filter((id) => alive.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [issues]);
+
+  // T02218：切换项目重置勾选与结果面板（面板组件跨项目复用同一实例）
+  useEffect(() => { setSelectedIds(new Set()); setBatchResult(null); }, [projectId]);
+
+  const selIssues = issues.filter((i) => selectedIds.has(i.id));
+  const allSelected = issues.length > 0 && selIssues.length === issues.length;
+  const someSelected = selIssues.length > 0 && !allSelected;
+  const eligibleWriteback = selIssues.filter((i) => i.status === 'resolved' && i.prd_id).length;
+  // 表头全选框的「部分选中」态只能用 DOM 属性表达（React 无 indeterminate prop）
+  useEffect(() => { if (headCbRef.current) headCbRef.current.indeterminate = someSelected; }, [someSelected]);
+
+  function toggleIssue(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  /** 全选/取消全选：作用于当前列表集（本视图无分页/筛选，即全部条目；对齐「全选仅当前结果集」约束） */
+  function toggleAll() {
+    setSelectedIds(allSelected ? new Set() : new Set(issues.map((i) => i.id)));
+  }
+
+  /** T02218：批量回写前的前端拦截（超限提示分批）；执行结果成功项取消勾选、失败项保留便于修正后重试 */
+  async function batchWriteback() {
+    const ids = selIssues.map((i) => i.id);
+    if (ids.length === 0) return;
+    if (ids.length > BATCH_MAX_ISSUES) return flash(`已选 ${ids.length} 条超出单次上限 ${BATCH_MAX_ISSUES} 条，请分批处理`);
+    if (!(await askConfirm(`批量回写：把已选 ${ids.length} 条中已确认（${eligibleWriteback} 条）问题的结论回写到各自 PRD？\n\n未确认 / 未关联文档的条目将跳过，并在结果中列出原因。`))) return;
+    setBatchBusy('writeback');
+    try {
+      const r = await api.post<BatchReport>('/plans/prd-issues/batch-writeback', { ids });
+      setBatchResult({ kind: 'writeback', ok: r.succeeded.length, failed: r.failed });
+      const okIds = new Set(r.succeeded.map((x) => x.id));
+      setSelectedIds((prev) => new Set([...prev].filter((id) => !okIds.has(id))));
+      flash(`批量回写完成：成功 ${r.succeeded.length} 条，失败 ${r.failed.length} 条`);
+      await load();
+      // 回写命中的文档就是当前展开的文档时刷新详情（与单条回写同口径）
+      if (selectedId && r.succeeded.some((x) => x.prdId === selectedId)) {
+        const d = await api.get<{ filename: string; content_md: string }>(`/plans/prd-docs/${selectedId}`);
+        setDetail({ filename: d.filename, content_md: d.content_md });
+        setMode('view');
+      }
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); } finally { setBatchBusy(''); }
+  }
+
+  /** T02218：批量删除（软删除）——确认弹窗列出数量与摘要；被删行随 load 消失，勾选经收敛 effect 自动剔除 */
+  async function batchDelete() {
+    const targets = selIssues;
+    if (targets.length === 0) return;
+    if (targets.length > BATCH_MAX_ISSUES) return flash(`已选 ${targets.length} 条超出单次上限 ${BATCH_MAX_ISSUES} 条，请分批处理`);
+    const preview = targets.slice(0, 3).map((i) => `· ${i.question.slice(0, 40)}`).join('\n');
+    const more = targets.length > 3 ? `\n· …等共 ${targets.length} 条` : '';
+    if (!(await askConfirm(`批量删除已选 ${targets.length} 条待确认问题？\n\n${preview}${more}\n\n删除为软删除：数据保留，可由管理员在「设置 → 数据维护」恢复，操作写入日志。`))) return;
+    setBatchBusy('delete');
+    try {
+      const r = await api.post<BatchReport>('/plans/prd-issues/batch-delete', { ids: targets.map((i) => i.id) });
+      setBatchResult({ kind: 'delete', ok: r.succeeded.length, failed: r.failed });
+      flash(`批量删除完成：成功 ${r.succeeded.length} 条，失败 ${r.failed.length} 条`);
+      await load();
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); } finally { setBatchBusy(''); }
+  }
 
   const load = useCallback(async () => {
     const [ds, is] = await Promise.all([
@@ -413,6 +501,13 @@ export function PrdPanel({ projectId, onClose }: {
       {/* 待确认问题区 */}
       <div style={{ marginTop: 10, border: '1px solid var(--border-strong)', borderRadius: 8, padding: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+          {/* T02218：全选框——勾选/取消当前列表全部条目；部分选中显示 indeterminate */}
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-muted)', cursor: issues.length ? 'pointer' : 'default' }}
+            title="全选 / 取消全选（作用于当前列表全部条目）">
+            <input ref={headCbRef} type="checkbox" checked={allSelected} disabled={issues.length === 0}
+              onChange={toggleAll} aria-label="全选待确认问题" style={{ accentColor: 'var(--accent)', cursor: issues.length ? 'pointer' : 'default', margin: 0 }} />
+            全选
+          </label>
           <strong style={{ fontSize: 12 }}>待确认问题</strong>
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>确认后可把结论回写到对应 PRD</span>
           <span style={{ flex: 1 }} />
@@ -420,11 +515,35 @@ export function PrdPanel({ projectId, onClose }: {
             <Plus size={11} />
           </button>
         </div>
+        {/* T02218：批量操作栏——有勾选才浮现；显示已选与可回写数量，按钮执行期间禁用并显示进度 */}
+        {selIssues.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', marginBottom: 6, borderRadius: 6, border: '1px solid var(--accent)', background: 'var(--accent-weak, rgba(0,0,0,.04))', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12 }}>已选 <strong>{selIssues.length}</strong> 条</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>其中可回写 {eligibleWriteback} 条（需已确认且关联 PRD）</span>
+            <span style={{ flex: 1 }} />
+            <button onClick={() => { void batchWriteback(); }} disabled={!!batchBusy} className="tbtn-anim"
+              title="批量回写 PRD — 把所选已确认问题的结论写入各自 PRD 文档；未确认/未关联条目计入失败明细"
+              aria-label="批量回写 PRD" style={{ ...opBtn, opacity: batchBusy ? 0.6 : 1 }}>
+              {batchBusy === 'writeback' ? <Loader2 size={11} className="task-breathe" /> : <SendToBack size={11} />} 批量回写 PRD
+            </button>
+            <button onClick={() => { void batchDelete(); }} disabled={!!batchBusy} className="tbtn-anim"
+              title="批量删除 — 软删除所选条目（数据保留可在「设置 → 数据维护」恢复，操作写入日志）"
+              aria-label="批量删除" style={{ ...opBtn, color: 'var(--danger)', opacity: batchBusy ? 0.6 : 1 }}>
+              {batchBusy === 'delete' ? <Loader2 size={11} className="task-breathe" /> : <Trash2 size={11} />} 批量删除
+            </button>
+            <button onClick={() => setSelectedIds(new Set())} disabled={!!batchBusy} className="tbtn-anim"
+              title="取消选择" aria-label="取消选择" style={opBtn}>取消选择</button>
+          </div>
+        )}
         {issues.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 0' }}>暂无待确认问题。</div>}
         {issues.map((i) => {
           const docName = docs.find((d) => d.id === i.prd_id)?.filename ?? '';
           return (
             <div key={i.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '4px 2px', flexWrap: 'wrap', borderBottom: '1px dashed var(--border-weak, var(--border-strong))' }}>
+              {/* T02218：行勾选框——批量操作的选择入口 */}
+              <input type="checkbox" checked={selectedIds.has(i.id)} onChange={() => toggleIssue(i.id)}
+                aria-label={`选择问题：${i.question.slice(0, 30)}`} title="勾选后可批量回写 / 批量删除"
+                style={{ marginTop: 3, flex: 'none', accentColor: 'var(--accent)', cursor: 'pointer' }} />
               <span title={i.status === 'resolved' ? '已确认' : '待确认'}
                 style={{ fontSize: 10, padding: '1px 6px', borderRadius: 8, flex: 'none', marginTop: 1,
                   border: `1px solid ${i.status === 'resolved' ? 'var(--success)' : 'var(--warning, #c80)'}`,
@@ -462,6 +581,30 @@ export function PrdPanel({ projectId, onClose }: {
             </div>
           );
         })}
+        {/* T02218：最近一次批量操作的结果反馈——成功/失败计数 + 可展开的失败明细 */}
+        {batchResult && (
+          <div style={{ marginTop: 8, border: '1px solid var(--border-strong)', borderRadius: 6, padding: '6px 10px', fontSize: 12 }}
+            data-t02218="batch-result">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span>{batchResult.kind === 'writeback' ? '批量回写' : '批量删除'}完成：成功
+                <strong style={{ color: 'var(--success)' }}> {batchResult.ok} </strong>条，失败
+                <strong style={{ color: batchResult.failed.length ? 'var(--danger)' : 'var(--text-muted)' }}> {batchResult.failed.length} </strong>条</span>
+              {batchResult.failed.length === 0 && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>全部处理成功</span>}
+              <span style={{ flex: 1 }} />
+              <button onClick={() => setBatchResult(null)} className="tbtn-anim" title="关闭结果" aria-label="关闭批量结果" style={{ ...opBtn, padding: '1px 5px' }}><X size={11} /></button>
+            </div>
+            {batchResult.failed.length > 0 && (
+              <details style={{ marginTop: 4 }}>
+                <summary style={{ cursor: 'pointer', fontSize: 11, color: 'var(--danger)' }}>展开失败明细（{batchResult.failed.length} 条）</summary>
+                {batchResult.failed.map((f) => (
+                  <div key={f.id} style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                    「{f.question ? f.question.slice(0, 40) : f.id.slice(0, 8)}」— {f.reason}
+                  </div>
+                ))}
+              </details>
+            )}
+          </div>
+        )}
       </div>
 
       {notice && <output className="flash-toast">{notice}</output>}

@@ -534,6 +534,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('prd_issues', 'level', "level TEXT DEFAULT ''");
   // T00817：AI 建议——针对该问题的建议选项（"选项A：… / 选项B：…"），辅助决策；空=暂无建议
   ensureColumn('prd_issues', 'suggestion', "suggestion TEXT DEFAULT ''");
+  // T02218：软删除——删除改为逻辑删除（deleted_at 非空=已删），列表/回写等消费方过滤；
+  // 数据保留，可由管理员在「设置 → 数据维护」把 deleted_at 置空恢复
+  ensureColumn('prd_issues', 'deleted_at', "deleted_at TEXT DEFAULT ''");
   // T00780：符号索引生命周期——记录建索引时的工作空间根路径，换绑/解绑时据此判定旧索引失效需清理
   ensureColumn('workspace_symbols', 'workspace', "workspace TEXT NOT NULL DEFAULT ''");
   // T00771：项目工作空间根路径——项目上下文锚点（多项目可指向同一目录，仅存路径引用）；

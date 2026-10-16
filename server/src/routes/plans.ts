@@ -393,6 +393,35 @@ planApi.post('/prd-issues/batch', (req, res) => {
 /** 回写：把已确认问题的「问题 + 结论」写入对应 PRD 文档 Markdown */
 planApi.post('/prd-issues/:id/writeback', (req, res) => wrap(res, () => PlanService.writebackIssue(req.params.id)));
 
+/** T02218：批量接口的 ids 参数校验——非空字符串数组且不超单次上限（超限给出分批提示） */
+const MAX_BATCH_ISSUES = 100;
+function batchIssueIds(res: import('express').Response, body: Record<string, unknown>): string[] | null {
+  const ids = Array.isArray(body.ids) ? body.ids.filter((x): x is string => typeof x === 'string' && !!x.trim()) : [];
+  if (ids.length === 0) {
+    res.status(400).json({ error: 'ids 必须为非空字符串数组' });
+    return null;
+  }
+  if (ids.length > MAX_BATCH_ISSUES) {
+    res.status(400).json({ error: `单次批量操作上限 ${MAX_BATCH_ISSUES} 条（本次 ${ids.length} 条），请分批处理` });
+    return null;
+  }
+  return ids;
+}
+
+/** T02218：批量回写——逐条独立（部分失败不阻断），200 响应含成功/失败逐项明细 */
+planApi.post('/prd-issues/batch-writeback', (req, res) => {
+  const ids = batchIssueIds(res, (req.body ?? {}) as Record<string, unknown>);
+  if (!ids) return;
+  wrap(res, () => PlanService.batchWritebackIssues(ids));
+});
+
+/** T02218：批量删除（逻辑删除，数据保留可恢复；操作写日志），明细同批量回写 */
+planApi.post('/prd-issues/batch-delete', (req, res) => {
+  const ids = batchIssueIds(res, (req.body ?? {}) as Record<string, unknown>);
+  if (!ids) return;
+  wrap(res, () => PlanService.batchDeleteIssues(ids));
+});
+
 // ---------- T00662：需求跟踪矩阵 CRUD ----------
 
 planApi.get('/prd-requirements', (req, res) => wrap(res, () => PlanService.listRequirements(pid(req))));

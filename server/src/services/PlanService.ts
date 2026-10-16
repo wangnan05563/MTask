@@ -2074,13 +2074,13 @@ export const PlanService = {
     return this.getPrdDoc(id);
   },
 
-  /** 待确认问题列表（按项目；可按文档过滤） */
+  /** 待确认问题列表（按项目；可按文档过滤；T02218：软删除条目不出现在任何列表） */
   listIssues(projectId: string, prdId?: string): Array<Record<string, unknown>> {
     const db = getDb();
     if (prdId) {
-      return db.prepare('SELECT * FROM prd_issues WHERE project_id = ? AND prd_id = ? ORDER BY sort_order, created_at').all(projectId, prdId) as Array<Record<string, unknown>>;
+      return db.prepare("SELECT * FROM prd_issues WHERE project_id = ? AND prd_id = ? AND COALESCE(deleted_at, '') = '' ORDER BY sort_order, created_at").all(projectId, prdId) as Array<Record<string, unknown>>;
     }
-    return db.prepare('SELECT * FROM prd_issues WHERE project_id = ? ORDER BY sort_order, created_at').all(projectId) as Array<Record<string, unknown>>;
+    return db.prepare("SELECT * FROM prd_issues WHERE project_id = ? AND COALESCE(deleted_at, '') = '' ORDER BY sort_order, created_at").all(projectId) as Array<Record<string, unknown>>;
   },
 
   /** 新增待确认问题（prd_id 可空=项目级泛问题） */
@@ -2098,12 +2098,13 @@ export const PlanService = {
     return db.prepare('SELECT * FROM prd_issues WHERE id = ?').get(id) as Record<string, unknown>;
   },
 
-  /** 编辑待确认问题（问题内容 / 结论 / 状态 open↔resolved / AI建议） */
+  /** 编辑待确认问题（问题内容 / 结论 / 状态 open↔resolved / AI建议；T02218：已软删除的拒绝编辑） */
   updateIssue(id: string, patch: { question?: string; answer?: string; status?: string; suggestion?: string }): Record<string, unknown> {
     const db = getDb();
     const row = db.prepare('SELECT * FROM prd_issues WHERE id = ?').get(id) as
-      { status: string; answer: string } | undefined;
+      { status: string; answer: string; deleted_at: string | null } | undefined;
     if (!row) throw new Error('待确认问题不存在');
+    if (row.deleted_at) throw new Error('待确认问题已删除，无法编辑');
     if (patch.status !== undefined && patch.status !== 'open' && patch.status !== 'resolved') {
       throw new Error("status 仅支持 'open' | 'resolved'");
     }
@@ -2117,11 +2118,15 @@ export const PlanService = {
     return db.prepare('SELECT * FROM prd_issues WHERE id = ?').get(id) as Record<string, unknown>;
   },
 
-  /** 删除待确认问题 */
+  /** T02218：删除改为逻辑删除（deleted_at 置时间）——数据保留，可由管理员在「设置 → 数据维护」恢复；
+   *  单条与批量删除共用此通道，操作写入日志（T02218 约束：删除保留操作日志）。 */
   deleteIssue(id: string): void {
     const db = getDb();
-    if (!db.prepare('SELECT id FROM prd_issues WHERE id = ?').get(id)) throw new Error('待确认问题不存在');
-    db.prepare('DELETE FROM prd_issues WHERE id = ?').run(id);
+    const row = db.prepare('SELECT id, question FROM prd_issues WHERE id = ?').get(id) as { id: string; question: string } | undefined;
+    if (!row) throw new Error('待确认问题不存在');
+    const t = now();
+    db.prepare('UPDATE prd_issues SET deleted_at = ?, updated_at = ? WHERE id = ?').run(t, t, id);
+    logService.log('INFO', 'prd', `[待确认问题删除] 软删除 id=${id} question=${row.question.slice(0, 120)}（可在 设置→数据维护 恢复）`);
   },
 
   /** T00769：批量录入待确认问题（AI 生成的问题清单 + 用户自定义一次入库），返回新建行 */
@@ -2151,6 +2156,52 @@ export const PlanService = {
   },
 
   /**
+   * T02218：批量回写——逐条复用 writebackIssue（同一套判重/锚点/事务逻辑），
+   * 单条失败（未确认/无结论/未关联文档/已回写）不影响其余，原因逐项返回供前端展开；
+   * 不做整体事务：批量语义即「部分成功」。
+   */
+  batchWritebackIssues(ids: string[]): {
+    succeeded: Array<{ id: string; question: string; prdId: string; filename: string }>;
+    failed: Array<{ id: string; question: string; reason: string }>;
+  } {
+    const db = getDb();
+    const succeeded: Array<{ id: string; question: string; prdId: string; filename: string }> = [];
+    const failed: Array<{ id: string; question: string; reason: string }> = [];
+    for (const id of ids) {
+      const row = db.prepare('SELECT question FROM prd_issues WHERE id = ?').get(id) as { question: string } | undefined;
+      const question = row?.question ?? '';
+      try {
+        const r = this.writebackIssue(id);
+        succeeded.push({ id, question, prdId: String(r.doc.id ?? ''), filename: String(r.doc.filename ?? '') });
+      } catch (e) {
+        failed.push({ id, question, reason: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return { succeeded, failed };
+  },
+
+  /** T02218：批量删除（逻辑删除）——逐条调用 deleteIssue（含操作日志），部分失败不阻断其余 */
+  batchDeleteIssues(ids: string[]): {
+    succeeded: Array<{ id: string; question: string }>;
+    failed: Array<{ id: string; question: string; reason: string }>;
+  } {
+    const db = getDb();
+    const succeeded: Array<{ id: string; question: string }> = [];
+    const failed: Array<{ id: string; question: string; reason: string }> = [];
+    for (const id of ids) {
+      const row = db.prepare('SELECT question FROM prd_issues WHERE id = ?').get(id) as { question: string } | undefined;
+      const question = row?.question ?? '';
+      try {
+        this.deleteIssue(id);
+        succeeded.push({ id, question });
+      } catch (e) {
+        failed.push({ id, question, reason: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return { succeeded, failed };
+  },
+
+  /**
    * 回写：把已确认问题的「问题 + 结论」写入对应 PRD 文档的 Markdown。
    * 规则：文档含「## 待确认问题结论」节 → 条目插入该节标题后（节内最前，保证节内聚合）；
    *       无该节 → 在文档末尾追加节 + 条目。重复回写同一问题会被拒绝（按问题文本判重）。
@@ -2158,8 +2209,9 @@ export const PlanService = {
   writebackIssue(id: string): { doc: Record<string, unknown>; issue: Record<string, unknown> } {
     const db = getDb();
     const issue = db.prepare('SELECT * FROM prd_issues WHERE id = ?').get(id) as
-      { id: string; prd_id: string | null; question: string; answer: string; status: string } | undefined;
+      { id: string; prd_id: string | null; question: string; answer: string; status: string; deleted_at: string | null } | undefined;
     if (!issue) throw new Error('待确认问题不存在');
+    if (issue.deleted_at) throw new Error('待确认问题已删除，无法回写');
     if (issue.status !== 'resolved') throw new Error('问题尚未确认（status=resolved）——请先填写结论并确认');
     if (!issue.answer.trim()) throw new Error('结论（answer）为空，无法回写');
     if (!issue.prd_id) throw new Error('该问题未关联 PRD 文档，无法回写');
