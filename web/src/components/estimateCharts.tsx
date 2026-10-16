@@ -204,7 +204,11 @@ export function ParetoChart({ geoms }: { readonly geoms: readonly ParetoGeom[] }
 export function TornadoChart({ geoms }: { readonly geoms: readonly TornadoGeom[] }): ReactElement {
   const n = geoms.length;
   const H = Math.max(70, n * 20 + 28);
-  const LABEL_W = 132, X0 = 138, X1 = 462, barMaxW = X1 - X0;
+  // T02083 实测修复：σ 数值画在条尾右侧（textAnchor 默认 start）。原来 X1 顶到 462，最长条
+  // （= 该图唯一要人读的那一行）的数值从 x≈466 起画，直接越过 viewBox 宽 480 被 SVG 裁掉。
+  // 故按「最长数值标签（如 108.5）」预留固定宽度，条区右界退到预留位之前，保证任何 σ 都画得下。
+  const SIGMA_LABEL_RESERVE = 46;
+  const LABEL_W = 132, X0 = 138, X1 = 480 - SIGMA_LABEL_RESERVE, barMaxW = X1 - X0;
   return (
     <svg viewBox={`0 0 480 ${H}`} width="100%" role="img" aria-label="龙卷风图（E14 敏感性）" /* NOSONAR: 内联 SVG 复合图形，role=img 为 W3C 推荐无障碍写法，无等价原生元素 */
       style={{ display: 'block' }}>
