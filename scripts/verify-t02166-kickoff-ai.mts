@@ -13,7 +13,10 @@
  * 隔离纪律（skill 红线 8）：生产库只读副本 → D: 盘临时 DATA_DIR（C: 常年 0 可用），端口随机，收尾删副本。
  *          T02269：结果文件与「子进程 kill + 副本 close + DATA_DIR 删除」放进 finally，
  *          任何一处抛出（含超时穿透）都保证证据落盘、不留孤儿实例与 DATA_DIR 残留。
- * 结果落 .workbuddy/t02166-ai-gate-results.txt 与 t02166-ai.pptx（人工抽查）。
+ * 结果落 .workbuddy/t02166-ai-gate-results-<端口>.txt、t02166-ai-outline-<端口>.txt 与
+ * t02166-ai-<端口>.pptx（人工抽查）；隔离数据目录同规则 `.workbuddy/t02166-ai-data-<端口>`。
+ *          T02285：目录与产物名一律带门端口——并发跑门是常态，固定名会互删副本库、互覆产物，
+ *          甚至让后写 pptx 的一方拿 EBUSY 被误记成「门脚本异常中断」。本轮归属见结果首行。
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -26,7 +29,14 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02166AI_PORT ?? 41_600 + Math.floor(Math.random() * 300));
 const BASE = `http://127.0.0.1:${PORT}/api`;
 const OUT_DIR = join(ROOT, '.workbuddy');
-const DATA_DIR = join(OUT_DIR, 't02166-ai-data');
+// T02285：隔离目录与产物一律随门端口唯一化。固定名在并发跑门时是互踩源——后起的门会在下面那句
+// rmSync 里直接删掉前一个还在跑的门的活动副本库（含 -wal/-shm，前者的断言于是变成假失败），
+// T02269 新加的 finally 清理又会主动删对方正在用的目录；两个进程同写一个 pptx 时后写者拿 EBUSY，
+// 会被顶层 catch 记成「门脚本异常中断」这种根本不存在的中断。目录名带端口后各自只碰自己的。
+const DATA_DIR = join(OUT_DIR, `t02166-ai-data-${PORT}`);
+const RESULTS_FILE = join(OUT_DIR, `t02166-ai-gate-results-${PORT}.txt`);
+const OUTLINE_FILE = join(OUT_DIR, `t02166-ai-outline-${PORT}.txt`);
+const PPTX_FILE = join(OUT_DIR, `t02166-ai-${PORT}.pptx`);
 rmSync(DATA_DIR, { recursive: true, force: true });
 mkdirSync(DATA_DIR, { recursive: true });
 mkdirSync(join(DATA_DIR, 'tmp'), { recursive: true });
@@ -36,6 +46,8 @@ process.env.TMPDIR = DATA_DIR;
 let pass = 0;
 let fail = 0;
 const lines: string[] = [];
+// 归属行：并发时人工核对「这条结论是哪一轮跑的」只看这一行即可（残留点名行也带同一个目录名）。
+lines.push(`本轮门实例：端口 ${PORT} · 数据目录 ${DATA_DIR} · 结果文件 ${RESULTS_FILE}`);
 const ok = (name: string, cond: boolean, extra?: unknown) => {
   cond ? (pass += 1) : (fail += 1);
   lines.push(`[${cond ? 'PASS' : 'FAIL'}] ${name}${cond || extra === undefined ? '' : ` → ${JSON.stringify(extra).slice(0, 500)}`}`);
@@ -51,7 +63,7 @@ const fmtErr = (e: unknown) => {
   const x = e as { name?: string; message?: string; cause?: { code?: string } };
   return `${x?.name ?? 'Error'}: ${x?.message ?? String(e)}${x?.cause?.code ? ` cause=${x.cause.code}` : ''}`;
 };
-const writeResults = () => writeFileSync(join(OUT_DIR, 't02166-ai-gate-results.txt'), `T02166 真链路门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
+const writeResults = () => writeFileSync(RESULTS_FILE, `T02166 真链路门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
 
 // ---------- 生产库只读副本 ----------
 const prodDb = join(process.env.APPDATA ?? '', 'MTask', 'data', 'mtask.db');
@@ -79,7 +91,7 @@ const tool = pinnedTool
     'SELECT id, name, model FROM ai_tools WHERE enabled = 1 ORDER BY is_default_develop DESC, updated_at DESC LIMIT 1'
   )[0];
 if (!projRow || !tool) {
-  writeFileSync(join(OUT_DIR, 't02166-ai-gate-results.txt'), '真链路门缺前提：项目或可用 AI 工具不存在\n', 'utf8');
+  writeFileSync(RESULTS_FILE, `真链路门缺前提：项目或可用 AI 工具不存在\n本轮门实例：端口 ${PORT} · 数据目录 ${DATA_DIR}\n`, 'utf8');
   console.log('missing premise', { projRow, tool });
   // T02269：这条早退同样不能让 DATA_DIR 残留（此前 exit 直接跳过收尾清理）；
   // 副本连接不先 close，Windows 下删不掉正被占用的 mask.db 句柄。
@@ -261,7 +273,7 @@ try {
           (assigneeBullets.length === 0 || assigneeBullets.every((b) => /待补充|未填/.test(b)))
         : !/未填承担人/.test(p3note),
       { emptyAssignees: facts.assignees.length, p3note, zeroHeadcount, assigneeBullets: assigneeBullets.slice(0, 3) });
-    writeFileSync(join(OUT_DIR, 't02166-ai-outline.txt'), JSON.stringify(outline, null, 2), 'utf8');
+    writeFileSync(OUTLINE_FILE, JSON.stringify(outline, null, 2), 'utf8');
 
     // ---------- B/C 组：真 AI 生成产物 ----------
     const gen = await streamGen(`/plans/kickoff-ppt-stream?projectId=${PID}&toolId=${tool.id}`, { projectId: PID, toolId: tool.id, outline });
@@ -357,7 +369,7 @@ try {
     ok('C-06 表格/图表框底边不出画布（越页在产物层被证伪）', violations.length === 0, violations.slice(0, 5));
     }
 
-    if (buf.length) writeFileSync(join(OUT_DIR, 't02166-ai.pptx'), buf);
+    if (buf.length) writeFileSync(PPTX_FILE, buf);
     lines.push('', `样本项目：${PNAME} · AI 工具：${tool.name}`, `warnings（全 ${warns.length} 条）：`, ...warns.map((w) => `  · ${w}`));
   }
 } catch (e) {
