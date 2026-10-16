@@ -231,6 +231,18 @@ group('G3 汇总口径（§4.4 排除小计行 · §4.6 里程碑不进 Σ）');
     diff, E.expected(msPoints));
   ok('3-20 里程碑行计入 excluded.milestone 且不进 countedKeys',
     withMsExcluded.ratioCheck.excluded.milestone === 1 && !withMsExcluded.countedKeys.includes('ms1'), withMsExcluded.ratioCheck.excluded);
+
+  // T02123：`subtotal` / `milestone` 是**结构性排除**，判定必须先于 `!points`。
+  // 旧顺序把「没有三点值的里程碑/小计行」计进 unEstimated——面板「未录入 N 行」据此把
+  // mtask四期 10 条里程碑虚报成待录入（真机实测：修复后 unEstimated=0、milestone=10）。
+  const structural = E.buildSummary([
+    row('ms-nopoints', 'dev', null, { planKind: 'milestone' }),
+    row('sub-nopoints', 'dev', null, { role: 'subtotal' }),
+  ], cfg);
+  ok('3-21 无点值的里程碑/小计行按结构性排除归类，不虚报为「未录入」（T02123 分类顺序回归）',
+    structural.ratioCheck.excluded.milestone === 1 && structural.ratioCheck.excluded.subtotal === 1
+    && structural.ratioCheck.excluded.unEstimated === 0 && structural.countedKeys.length === 0,
+    structural.ratioCheck.excluded);
 }
 
 // =====================================================================

@@ -332,22 +332,27 @@ const addCol = (t: ColumnSum, p: ThreePoints): void => {
  * 主入口：明细/阶段行 + 配置 → 汇总（§4.3/§4.4）。
  * 求和集合 = 归入六阶段、`points` 非空、`role ≠ 'subtotal'`、`planKind ≠ 'milestone'` 的行；
  * 其余行的期望值照样返回在 `rowRatios` 里供展示，只是不进 Σ。
+ *
+ * ⚠ 分类顺序即口径（T02123）：`subtotal` / `milestone` 是**结构性排除**——与行有没有三点无关，
+ *   必须先于 `!points` 判定。旧顺序把无点值的小计行/里程碑误计进 `unEstimated`：
+ *   面板「未录入 N 行」把里程碑算成待录入（mtask四期 49 行里 14 行是里程碑，虚报 14 行待录入），
+ *   PDF 备注把导出小计行算成未估算（wiki二期 35 行未录入只报 1 行）。
  */
 export function buildSummary(rows: EstimateEngineRow[], config: EstimateConfig = DEFAULT_ESTIMATE_CONFIG): EstimateSummary {
   const excluded = { subtotal: 0, milestone: 0, unEstimated: 0 };
   const unassigned: Array<{ key: string; phase: string }> = [];
   const counted: EstimateEngineRow[] = [];
   for (const r of rows) {
-    if (!r.points) {
-      excluded.unEstimated += 1;
-      continue;
-    }
     if (r.role === 'subtotal') {
       excluded.subtotal += 1;
       continue;
     }
     if (r.planKind === 'milestone') {
       excluded.milestone += 1;
+      continue;
+    }
+    if (!r.points) {
+      excluded.unEstimated += 1;
       continue;
     }
     if (!isPhase(r.phase)) {
