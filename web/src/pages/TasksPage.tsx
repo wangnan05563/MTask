@@ -242,6 +242,10 @@ export function TasksPage() {
   // 任务分类：分类列表 + 顶部筛选（会话级）+ 新建任务所选分类（会话级）
   const [taskCats, setTaskCats] = useState<TaskCategory[]>([]);
   const [catFilter, setCatFilter] = useSessionState('tasks.catFilter', '');
+  // T02283：主列表取数的显式状态。分页装载结构（todo/done/hasMore）保持不变，只把失败显式化，
+  // 形态与 T02213 的 ResourceHintView 同构（loading|ready|error + reload），可直接喂 ResourceHint。
+  const [tasksPhase, setTasksPhase] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [tasksError, setTasksError] = useState('');
   // T00474：优先级筛选（urgent/high/normal/low，会话级保持；空=全部）
   const [priorityFilter, setPriorityFilter] = useSessionState('tasks.priorityFilter', '');
   const [newCategory, setNewCategory] = useSessionState<string>('tasks.new.category', '');
@@ -380,7 +384,18 @@ export function TasksPage() {
     if (catFilter === 'none') p.set('categoryId', 'none');
     else if (catFilter) p.set('categoryId', catFilter);
     if (priorityFilter) p.set('priority', priorityFilter);
-    const list = await api.get<Task[]>(`/tasks?${p.toString()}`);
+    // T02283：主列表拉取失败此前一路冒泡——`void loadTasks(activeProject)`（约 30 处调用点）不接拒绝，
+    // 断供时既刷出 unhandled rejection，界面又停在「暂无待办任务」空态冒充正常。
+    // 改为就地收下：失败只置 error 态，绝不覆盖上次成功数据（与 T02213 同口径）。
+    let list: Task[];
+    try {
+      list = await api.get<Task[]>(`/tasks?${p.toString()}`);
+      setTasksPhase('ready'); setTasksError('');
+    } catch (e) {
+      setTasksPhase('error');
+      setTasksError(e instanceof Error ? e.message : String(e));
+      return;
+    }
     const nextTodo = list.filter((t) => t.status === 'todo');
     const nextDone = list.filter((t) => t.status === 'done');
     setTodo((prev) => (replace ? nextTodo : [...prev, ...nextTodo]));
@@ -3060,6 +3075,11 @@ export function TasksPage() {
           style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}>
           {/* 图标指示下一步动作：有展开内容 → 将收起（折叠图标）；全部收起 → 将展开（展开图标） */}
           {anyFoldOpen() ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />}
+        {/* T02283：主列表断供时给出原因与重试入口；失败态下不再渲染「暂无待办任务」空态 */}
+        <ResourceHint
+          view={{ phase: tasksPhase, error: tasksError, stale: tasksPhase === 'error' && (todo.length > 0 || done.length > 0), reload: () => void loadTasks(activeProject) }}
+          label="任务列表"
+        />
         </button>
         <label className="task-op" title="导入数据 — CSV/JSON（JSON 支持 Trello 导出与 JSON 数组），预览确认后入库"
           style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', display: 'inline-block' }}>
@@ -3321,7 +3341,9 @@ export function TasksPage() {
           </select>
         </div>
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleTodo.map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'todo', visibleTodo.map((x) => x.id))}</Fragment>)}</ul>
-        {visibleTodo.length === 0 && !multiSelect && (
+        {/* T02283：取数失败时不渲染空态——「暂无待办任务」会把后端故障说成没活干（项目列表失败导致
+            连 activeProject 都拿不到时同理） */}
+        {visibleTodo.length === 0 && !multiSelect && tasksPhase !== 'error' && projectList.phase !== 'error' && (
           <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12, border: '1px dashed var(--border-strong)', borderRadius: 8, margin: '8px 0', lineHeight: 1.8 }}>
             当前项目暂无待办任务——在上方输入框输入标题回车即可创建；
             {tools.length === 0
@@ -3366,7 +3388,7 @@ export function TasksPage() {
           </select>
         </div>
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleDone.map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'done', visibleDone.map((x) => x.id))}</Fragment>)}</ul>
-        {visibleDone.length === 0 && (
+        {visibleDone.length === 0 && tasksPhase !== 'error' && (
           <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>暂无已完成任务——完成任务后在此集中查看与验证。</div>
         )}
         </>)}

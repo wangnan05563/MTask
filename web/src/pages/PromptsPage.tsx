@@ -258,7 +258,6 @@ function describeMove(t: { p: Prompt }, movedCat?: string, movedReq?: string): s
 
 /** 提示词仓库：按分类管理提示词，支持增删改查与一键复制 */
 export function PromptsPage() {
-  const [categories, setCategories] = useState<PromptCategory[]>([]);
   // T00837：通用需求分类列表（调整分组浮层第二区数据源，实时同步 req_categories）
   const [reqCats, setReqCats] = useState<ReqCategory[]>([]);
   // T00873 四轮：按「通用需求分类」过滤列表——归入某分类后要能在该维度检索到（T00837「组织与检索效率」）；
@@ -268,7 +267,6 @@ export function PromptsPage() {
   const [lastMove, setLastMove] = useState<{ id: string; prevCategoryId: string; prevReqCategoryId: string } | null>(null);
   // 当前分类：跨切换会话记忆用户选择，便于切回后继续操作
   const [activeCat, setActiveCat] = useSessionState('prompts.activeCat', '');
-  const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [search, setSearch] = useSessionState<string>('prompts.search', ''); // T00560：命令面板跳转写入搜索词
   const [notice, setNotice] = useState('');
   // 排序条件：sortKey 排序字段，sortDir 升降序（默认时间降序，与后端默认一致）
@@ -362,28 +360,41 @@ export function PromptsPage() {
     }
   }
 
-  const loadCategories = useCallback(async () => {
+  // T02283：分类与提示词列表接入共享可见失败态层（T02213 口径）。此前两处 `api.get` 抛错后要么被
+  // 调用方 try/catch 只 flash 一句、要么直接落空，断供时分类下拉变空、列表显示「暂无分类，请先新建
+  // 分类」——把后端故障伪装成用户尚未开始使用的初始态，且没有任何重试入口。
+  const categoriesView = useResource<PromptCategory[]>(async () => {
     const cats = await api.get<PromptCategory[]>('/prompt-categories');
-    setCategories(cats);
     // 保持当前选中；选中项被删除或首次加载时回落到第一个分类
     setActiveCat((cur) => (cats.some((c) => c.id === cur) ? cur : cats[0]?.id ?? ''));
-  }, []);
+    return cats;
+  });
+  const categories = categoriesView.data ?? [];
 
   // T00837：拉取通用需求分类，供「调整分组」第二区选择（通用需求菜单分类变更后输入此处同步）
   const loadReqCats = useCallback(async () => {
     try { setReqCats(await api.get<ReqCategory[]>('/req-categories')); } catch { /* 忽略 */ }
   }, []);
 
-  const loadPrompts = useCallback(async (categoryId: string, keyword: string) => {
-    if (!categoryId) { setPrompts([]); return; }
-    const qs = new URLSearchParams({ categoryId });
-    if (keyword.trim()) qs.set('keyword', keyword.trim());
-    setPrompts(await api.get<Prompt[]>(`/prompts?${qs.toString()}`));
-  }, []);
+  // enabled:false 关掉 hook 的挂载自跑，取数统一由下方 [activeCat, search] effect 触发（与原 L386
+  // 语义一致，避免挂载时重复请求）
+  const promptsView = useResource<Prompt[]>(async () => {
+    if (!activeCat) return [];
+    const qs = new URLSearchParams({ categoryId: activeCat });
+    if (search.trim()) qs.set('keyword', search.trim());
+    return api.get<Prompt[]>(`/prompts?${qs.toString()}`);
+  }, { enabled: false });
+  const prompts = promptsView.data ?? [];
 
-  useEffect(() => { void loadCategories(); }, [loadCategories]);
+  // 同名 shim：保留既有 ~18 处 `void/await loadCategories()`、`loadPrompts(activeCat, search)` 调用点。
+  // loader 闭包由 useResource 每轮渲染刷新（loadRef），传入的参数就是当前 state，无需再参与取数。
+  const loadCategories = useCallback(async () => { categoriesView.reload(); }, [categoriesView.reload]);
+  const loadPrompts = useCallback(async (_categoryId?: string, _keyword?: string) => {
+    promptsView.reload();
+  }, [promptsView.reload]);
+
+  useEffect(() => { promptsView.reload(); }, [activeCat, search]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { void loadReqCats(); }, [loadReqCats]);
-  useEffect(() => { void loadPrompts(activeCat, search); }, [activeCat, search, loadPrompts]);
 
   // ---------- 分类管理 ----------
   async function addCategory() {
@@ -647,6 +658,8 @@ export function PromptsPage() {
     reqScopedPrompts = prompts.filter((p) => p.req_category_id === reqFilter);
   }
   const sortedPrompts = [...reqScopedPrompts].sort((a, b) => comparePrompts(a, b, sortKey, sortDir));
+  // T02283：取数失败时绝不把「加载失败」降格成「暂无分类/暂无提示词」空态（那是用户还没用过的口吻）
+  const listFailed = categoriesView.phase === 'error' || promptsView.phase === 'error';
   let emptyListHint: string;
   if (categories.length === 0) {
     emptyListHint = '暂无分类，请先新建分类。';
@@ -683,6 +696,8 @@ export function PromptsPage() {
         <select value={activeCat} onChange={(e) => setActiveCat(e.target.value)} style={{ padding: 6, fontSize: 12, minWidth: 180, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           {categories.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.promptCount ?? 0}）</option>)}
         </select>
+        {/* T02283：断供时给出原因与重试入口，而不是让下拉静默变空 */}
+        <ResourceHint view={categoriesView} label="提示词分类" />
         {/* T00510 调整：分类管理三按钮与任务菜单项目按钮组同款——纯图标+边框、同组紧跟下拉、悬浮显示 */}
         <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
         <button onClick={() => void addCategory()} title="新建分类 — 新增一个提示词分类" aria-label="新建分类：新增一个提示词分类"
@@ -784,6 +799,8 @@ export function PromptsPage() {
         />
         {/* T02213：AI 整理工具取数失败时给出原因与重试入口——否则「优化」只会误报「请先添加并选择工具」 */}
         <ResourceHint view={toolsView} label="AI 整理工具" />
+        {/* T02283：提示词列表取数失败态（配合上方 listFailed 空态抑制，断供不再冒充「暂无提示词」） */}
+        <ResourceHint view={promptsView} label="提示词列表" />
         {notice && <output className="flash-toast">{notice}</output>}
       </div>
 
@@ -798,7 +815,7 @@ export function PromptsPage() {
       )}
 
       {/* 提示词列表 */}
-      {sortedPrompts.length === 0 && (
+      {sortedPrompts.length === 0 && !listFailed && (
         <p style={{ color: 'var(--text-muted)' }}>
           {emptyListHint}
         </p>

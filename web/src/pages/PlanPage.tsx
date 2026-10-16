@@ -1219,7 +1219,8 @@ export function PlanPage() {
   const toggleMsCollapsed = (id: string) => setCollapsedMs((prev) => ({ ...prev, [id]: !prev[id] }));
   const evaluateRow = (row: PlanTask) => {
     if (evalBusy || planAiBatchRunning) { flash('批量 AI 任务进行中，请等待其完成'); return; }
-    if (!aiToolId) { flash('请先在模型菜单配置默认 AI 工具'); return; }
+    // T02283：工具列表没加载出来是后端问题，不能报成用户的配置问题
+    if (!aiToolId) { flash(aiToolsView.phase === 'error' ? 'AI 工具列表加载失败，请点工具条的「重试」后再评估' : '请先在模型菜单配置默认 AI 工具'); return; }
     void evaluateOnePlan(row).then((okk) => { if (okk) flash('AI 评估已写入该行描述'); });
   };
 
@@ -1427,7 +1428,15 @@ export function PlanPage() {
   }, [planSelIds, plans]);
   // T00438：AI 模型列表（默认整理工具排最前，与任务页模型选择一致）
   // T00534：统一以模型菜单配置为准——AI 导入/评估固定使用默认整理工具，不再由本页选择
-  useEffect(() => { void api.get<AITool[]>('/aitools').then((list) => { const sorted = [...list].sort(compareOrganize); setAiToolId(sorted[0]?.id ?? ''); }); }, []);
+  // T02283：/aitools 接入共享失败态层（T02213 口径）。此前 `void api.get(...).then(...)` 无 catch——
+  // 断供时既是 unhandled rejection，又让 aiToolId 保持空，点「AI 评估」只会把后端故障说成
+  // 「请先在模型菜单配置默认 AI 工具」。
+  const aiToolsView = useResource<AITool[]>(async () => {
+    const list = await api.get<AITool[]>('/aitools');
+    const sorted = [...list].sort(compareOrganize);
+    setAiToolId(sorted[0]?.id ?? '');
+    return list;
+  });
   useEffect(() => {
     if (!depMenuId) return;
     const onDoc = (e: MouseEvent) => {
@@ -1591,7 +1600,7 @@ export function PlanPage() {
   /** 批量评估：确认后逐条串行评估并自动录入描述，进度动态计数（k/N） */
   function batchEvaluatePlans(targetIds?: string[]) {
     if (evalBusy || planAiBatchRunning) { flash('已有批量 AI 任务在进行中，请等待其完成'); return; }
-    if (!aiToolId) { flash('请先选择 AI 模型（AI 导入旁的模型下拉）'); return; }
+    if (!aiToolId) { flash(aiToolsView.phase === 'error' ? 'AI 工具列表加载失败，请点工具条的「重试」后再试' : '请先选择 AI 模型（AI 导入旁的模型下拉）'); return; }
     const target = targetIds ? plans.filter((p) => targetIds.includes(p.id)) : plans;
     if (target.length === 0) { flash('当前项目暂无计划条目'); return; }
     const msg = `将对 ${target.length} 条计划逐条 AI 评估（工期合理性/风险/建议），结果自动录入各条描述（可后续手动编辑或删除），确认开始？`;
@@ -1627,7 +1636,7 @@ export function PlanPage() {
    */
   async function backfillComplexity(force: boolean) {
     if (evalBusy || planAiBatchRunning) { flash('已有批量 AI 任务在进行中，请等待其完成'); return; }
-    if (!aiToolId) { flash('请先选择 AI 模型（AI 导入旁的模型下拉）'); return; }
+    if (!aiToolId) { flash(aiToolsView.phase === 'error' ? 'AI 工具列表加载失败，请点工具条的「重试」后再试' : '请先选择 AI 模型（AI 导入旁的模型下拉）'); return; }
     if (!projectId) { flash('请先选择项目'); return; }
     planAiBatchRunning = true;
     setEvalBusy(true);
@@ -2573,6 +2582,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             flash('已展开需求跟踪矩阵并定位该需求行');
           }} />
       )}
+        {/* T02283：AI 工具列表断供时给出原因与重试入口，与上面的评估误报文案改动配对 */}
+        <ResourceHint view={aiToolsView} label="AI 工具列表" />
 
       {/* T01564：三模式分派——timeline / gantt 走视图函数，list 仍是下方表格（原为两层嵌套三元，S3358） */}
       {viewMode === 'list' ? (
