@@ -8,6 +8,8 @@
  *  B 轨 图在件上（去「缺图」）：帕累托内部版/客户版都要有；龙卷风**只在内部版**
  *    （§6.2 客户版隐藏 σ，连标题文字都不许进文本层，否则 X-04 脱敏门被自己的新图打穿）。
  *  C 轨 标题与图体同页（去「截断」的另一种形态）：标题在最后一页、图体在下一页 = 读者看到的仍是半张图。
+ *  D 轨 三轮（2026-10-17）：拿真实生产库快照出件后**逐页看图**补的两条——图表类别名不得直出引擎内部
+ *    行键（`phase:common` 曾进客户版），窄数字列不得被等比压缩到硬断数字（`155.5` 曾被拆成两行）。
  *
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02155-pdf-truncation.mts
  * 环境变量：T02155_KEEP=1 保留产物目录（默认写系统临时目录并打印路径）
@@ -144,6 +146,7 @@ def page_checks(path):
                        for t in ['帕累托', '龙卷风', '各阶段最终估算值', '各阶段占比', '累计占比', '报价结论', 'σ_total']},
             'sigma_pages': [i + 1 for i, s in enumerate(texts) if 'σ' in s],
             'pipe_total': sum(s.count('|') for s in texts),
+            'key_leak': sum(s.count('phase:') + s.count('subtotal:') for s in texts),
             'full_text_len': sum(len(s) for s in texts)}
 
 out = {'internal': page_checks(sys.argv[1]), 'client': page_checks(sys.argv[2]),
@@ -200,6 +203,45 @@ ok('C-03 明细表文本层无裸竖线拼接残留（上轮 md 修复不回退�
   [INT.pipe_total, CLI.pipe_total]);
 ok('C-04 件有实质正文（文字层非空，排除渲染中断）', INT.full_text_len > 800 && CLI.full_text_len > 500,
   [INT.full_text_len, CLI.full_text_len]);
+
+// ------------------------------------------------------------------ D 轨（T02155 三轮：生产数据肉眼复核）
+// 三轮不是复跑上轮，而是拿**真实生产库快照**（mtask四期 27 行估算）出件后用 pymupdf 逐页看图，
+// 看出两个上轮几何取证抓不到的缺陷：① 帕累托/龙卷风的类别名把引擎内部行键 `phase:common` 直出到
+// 客户版图上；② 窄数字列被等比压缩到放不下 "155.5"，pdfkit 硬断成「155. / 5」两行。
+console.log('\n== D 轨 图表标签无内部键 + 列宽不硬断数字');
+ok('D-01 两版文字层都不出现引擎内部行键（phase: / subtotal:）',
+  INT.key_leak === 0 && CLI.key_leak === 0, [INT.key_leak, CLI.key_leak]);
+
+const HEAD = ['阶段', '最小', '最可能', '最大', '最终估算值（人天）', '占比', '条目数'];
+const BODY = [
+  ['开发/研发（编码，单元测试，联调，评审等）', '93', '93', '147', '102', '76.8 %', '25'],
+  ['公共&远程投入（如项目管理、质量管理、远程开发和技术支持、产品研发分摊等）', '5.5', '5.5', '8.5', '6', '4.5%', '1'],
+  ['合计', '98.5', '98.5', '155.5', '108', '—', '26'],
+];
+const { doc: measDoc } = await PRD.newPdfDoc('列宽测量');
+const PW = measDoc.page.width - measDoc.page.margins.left - measDoc.page.margins.right;
+const PAD = 8; // drawTable 每格左右各 4pt 内边距，文字可用宽 = 列宽 − PAD
+const colNeed = (i: number) => PRD.minUnbreakableWidth(measDoc, [HEAD[i], ...BODY.map((r) => r[i])]);
+const violOf = (widths: number[]) => HEAD.map((h, i) => ({
+  col: h, need: Math.round(colNeed(i) * 10) / 10, got: Math.round((widths[i] - PAD) * 10) / 10,
+})).filter((v) => v.got < v.need - 0.5);
+
+const cwNew = PRD.computeColWidths(measDoc, HEAD, BODY, PW);
+ok('D-02 阶段构成表每列宽度容得下该列最长不可断串（数字不被拆成两行）', violOf(cwNew).length === 0, violOf(cwNew));
+ok('D-02b 列宽之和恒等于可用页宽（不横向溢出）',
+  Math.abs(cwNew.reduce((a, b) => a + b, 0) - PW) < 0.5, [cwNew.reduce((a, b) => a + b, 0), PW]);
+
+// 负对照：上轮的「等比压缩 + 28pt 下限」算法在同一夹具上必须违约，否则 D-02 是空转断言
+const natural = HEAD.map((_, i) => {
+  measDoc.fontSize(9);
+  const wH = measDoc.widthOfString(HEAD[i]);
+  const wB = BODY.reduce((m, r) => Math.max(m, measDoc.widthOfString(r[i])), 0);
+  return Math.max(wH, wB) + PAD;
+});
+const sc = PW / (natural.reduce((a, b) => a + b, 0) || 1);
+const clamped = natural.map((w) => Math.max(28, w * sc));
+const cwOld = clamped.map((w) => (w * PW) / clamped.reduce((a, b) => a + b, 0));
+ok('D-03 负对照：上轮等比压缩算法在同一夹具上确实违约（证明 D-02 不是空转）', violOf(cwOld).length > 0, violOf(cwOld));
 
 console.log(`\n结果：${pass} PASS / ${fail} FAIL`);
 console.log(`产物：${DATA_DIR}`);

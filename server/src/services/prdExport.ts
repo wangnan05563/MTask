@@ -157,8 +157,29 @@ async function newPdfDocImpl(title: string): Promise<{ doc: PDFDoc; done: Promis
   return { doc, done, finish: () => Buffer.concat(chunks) };
 }
 
-/** 计算每列宽度：按内容自然宽度比例摊满可用宽度（过宽则压缩触发单元格换行，不再用 ` | ` 拼接） */
-function computeColWidths(doc: PDFDoc, head: string[], body: string[][], pageWidth: number): number[] {
+/**
+ * 一列里「不可再断」的最长串宽度（9pt，与单元格渲染同字号）。
+ * 换行机会只发生在空白与中日韩字符前后：`155.5`、`76.8`、`ESTIMATE_COEF_LABELS` 这类连续串
+ * 一旦被压到比自身还窄，pdfkit 只能从中间硬切——「155. / 5」这种断数就是这么来的。
+ */
+export function minUnbreakableWidth(doc: PDFDoc, cells: string[]): number {
+  doc.fontSize(9);
+  let w = doc.widthOfString('一'); // 至少容得下一个汉字（纯 ASCII 列时这也是下限）
+  for (const cell of cells) {
+    const spaced = String(cell ?? '').replace(/[\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/g, ' ');
+    for (const tok of spaced.split(/\s+/)) {
+      if (tok) w = Math.max(w, doc.widthOfString(tok));
+    }
+  }
+  return w;
+}
+
+/**
+ * 计算每列宽度：按内容自然宽度摊满可用页宽；放不下时**只压缩有余量的列**（文本列），
+ * 每列保底到「最长不可断串 + 左右内边距」，避免窄数字列被等比压穿后硬断数字（T02155 三轮）。
+ * 导出供门禁直接断言这条不变量（`verify-t02155-pdf-truncation.mts` D 轨）。
+ */
+export function computeColWidths(doc: PDFDoc, head: string[], body: string[][], pageWidth: number): number[] {
   const pad = 4;
   doc.fontSize(9); // 测量统一按 9pt（与单元格渲染同字号），widthOfString 读当前字号
   const natural = head.map((_, i) => {
@@ -167,12 +188,21 @@ function computeColWidths(doc: PDFDoc, head: string[], body: string[][], pageWid
     return Math.max(wHead, wBody) + pad * 2;
   });
   const sum = natural.reduce((a, b) => a + b, 0) || 1;
-  const scale = pageWidth / sum;
-  const clamped = natural.map((w) => Math.max(28, w * scale));
-  // 28pt 下限会把窄列顶宽：直接返回会让各列之和超过页宽，最后一列画到页外（横向截断）。
-  // 故按实际和再归一一次，保证总宽恒等于可用页宽。
-  const total = clamped.reduce((a, b) => a + b, 0);
-  return clamped.map((w) => (w * pageWidth) / total);
+  if (sum <= pageWidth) {
+    // 本来就放得下：按比例放大铺满页宽（与旧口径同观感）
+    return natural.map((w) => (w * pageWidth) / sum);
+  }
+  const minW = head.map((_, i) => Math.max(28, minUnbreakableWidth(doc, [head[i], ...body.map((r) => r[i])]) + pad * 2));
+  const slack = natural.map((w, i) => Math.max(0, w - minW[i]));
+  const totalSlack = slack.reduce((a, b) => a + b, 0);
+  if (totalSlack <= 0) return natural.map((w) => (w * pageWidth) / sum);
+  const cut = Math.min(1, (sum - pageWidth) / totalSlack);
+  const w = natural.map((n, i) => n - slack[i] * cut);
+  const t = w.reduce((a, b) => a + b, 0);
+  // 各列都退到保底宽仍超页宽（内容本身太宽）：只能整体归一，优先保证不横向溢出
+  if (t > pageWidth) return w.map((x) => (x * pageWidth) / t);
+  // 压缩后还有富余：按自然宽分配，表格仍然铺满页宽
+  return w.map((x, i) => x + (pageWidth - t) * (natural[i] / sum));
 }
 
 /**

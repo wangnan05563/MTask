@@ -242,6 +242,18 @@ function shortLabel(title: string): string {
   return s.length <= 16 ? s : `${s.slice(0, 15)}…`;
 }
 
+/**
+ * 图表类别名：`summary.rowRatios` 的键有两种来源——计划行是 `planId`，非 dev 阶段的聚合行是
+ * `phase:<阶段>`。后者不在 `titleByKey` 里，直接兜底原键会把内部标识画到图上（真实生产数据出件时，
+ * 客户版帕累托第 4 柱写的是 `phase:common`）。阶段名走 `TEMPLATE_PHASE_LABELS` 单源，
+ * 与「阶段构成」表同一套文案。
+ */
+function chartRowLabel(key: string, titleByKey: Map<string, string>): string {
+  const phase = /^phase:(.+)$/.exec(key)?.[1];
+  if (phase && phase in TEMPLATE_PHASE_LABELS) return TEMPLATE_PHASE_LABELS[phase as EstimatePhase];
+  return titleByKey.get(key) ?? key;
+}
+
 function buildChartData(layout: EstimateLayout): ChartData {
   const { summary } = layout;
   const phases = summary.phases.filter((p) => p.rowCount > 0);
@@ -254,7 +266,7 @@ function buildChartData(layout: EstimateLayout): ChartData {
   let cum = 0;
   const pareto = valid.slice(0, PARETO_TOP).map((r) => {
     cum += r.expected;
-    return { label: shortLabel(titleByKey.get(r.key) ?? r.key), value: r.expected, cumPct: totalE > 0 ? (cum / totalE) * 100 : 0 };
+    return { label: shortLabel(chartRowLabel(r.key, titleByKey)), value: r.expected, cumPct: totalE > 0 ? (cum / totalE) * 100 : 0 };
   });
   const sig = summary.rowRatios
     .filter((r) => !milestoneIds.has(r.key) && r.sigma > 0)
@@ -262,7 +274,7 @@ function buildChartData(layout: EstimateLayout): ChartData {
     .slice(0, TORNADO_TOP);
   const maxS = Math.max(...sig.map((r) => r.sigma), 1e-9);
   const tornado = sig.map((r) => ({
-    label: shortLabel(titleByKey.get(r.key) ?? r.key),
+    label: shortLabel(chartRowLabel(r.key, titleByKey)),
     sigma: r.sigma,
     pct: (r.sigma / maxS) * 100,
   }));
