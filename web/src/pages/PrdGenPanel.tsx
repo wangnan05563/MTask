@@ -35,6 +35,8 @@ function safeFilename(s: string): string {
 // T00820：结论(填写即确认)的会话持久化键——存「正文指纹 → {问题:结论}」映射。
 // 用 sessionStorage（非 localStorage）：只求切页/Tab 往返保留，新开会话或刷新后面板回到初始态、需重新生成。
 const PRD_CONCL_KEY = 'prdGen.conclusion';
+// T02214：自定义问题行的会话持久化键——存「正文指纹 → 行记录[]」，与结论快照同代际口径。
+const PRD_CUSTOM_KEY = 'prdGen.customRows';
 
 /** T00820：稳定字符串指纹（djb2），用正文 prdMd 区分"批"，同一批切换页可恢复、不同批不串 */
 function hashStr(s: string): string {
@@ -51,9 +53,37 @@ function readConclusionBatch(prdMd: string): Record<string, string> {
   } catch { return {}; }
 }
 
-/** T00820：清理全部旧批结论——每次重新生成新 PRD 时调用，避免跨代数据残留与无限累积 */
+/** T02214：自定义行会话快照记录（id 即行键 `uc-<代际>-<n>`；answer 独立存一份，行内问题为空时也能带回结论） */
+type CustomRowRecord = Omit<IssueRow, 'key'> & { id: string };
+
+/** T02214：读取某一批已存的自定义问题行；无则空数组 */
+function readCustomRows(prdMd: string): CustomRowRecord[] {
+  try {
+    const m = JSON.parse(sessionStorage.getItem(PRD_CUSTOM_KEY) || '{}');
+    const list = (m[hashStr(prdMd)] as CustomRowRecord[]) || [];
+    return Array.isArray(list) ? list.filter((x) => x && typeof x.id === 'string') : [];
+  } catch { return []; }
+}
+
+/** T02214：自定义行稳定键 `uc-<代际指纹>-<n>`（n 取现存同代最大序号+1）。
+ *  勿用 Date.now()——行键必须在反复填充间稳定（T02192 教训），否则行节点持续重挂载、输入当场被重置。 */
+function nextCustomKey(gen: string, rows: IssueRow[]): string {
+  const prefix = `uc-${gen}-`;
+  let max = 0;
+  for (const r of rows) {
+    if (!r.key.startsWith(prefix)) continue;
+    const n = Number.parseInt(r.key.slice(prefix.length), 10);
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  return `${prefix}${max + 1}`;
+}
+
+/** T00820/T02214：清理全部旧批结论与自定义行快照——每次重新生成新 PRD 时调用，避免跨代数据残留与无限累积 */
 function clearConclusionBatches(): void {
-  try { sessionStorage.removeItem(PRD_CONCL_KEY); } catch { /* 忽略存储异常 */ }
+  try {
+    sessionStorage.removeItem(PRD_CONCL_KEY);
+    sessionStorage.removeItem(PRD_CUSTOM_KEY);
+  } catch { /* 忽略存储异常 */ }
 }
 
 /** 把已确认结论合入 PRD 正文（与 T00770 回写格式一致：文末「## 待确认问题结论」节） */
@@ -133,14 +163,22 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
     if (first) setActiveBatchId(first.id);
   }, [streaming, snap.batch, activeBatchId]);
 
-  /** 生成完成 → 问题清单填充交互表格；若该批已有会话内暂存的结论则一并恢复（T00820 切页不丢） */
+  /** 生成完成 → 问题清单填充交互表格；若该批已有会话内暂存的结论/自定义行则一并恢复（T00820/T02214 切页不丢） */
   useEffect(() => {
     if (result) {
       const batch = readConclusionBatch(result.prdMd);
       // T02192：行标识取正文指纹而非 Date.now()——同一份 PRD 再次填充时键保持不变，React 才会复用原
       // 行节点（时间戳键会让每次填充都重挂载整张表，正在聚焦/圈选的节点当场被替换）
       const gen = hashStr(result.prdMd);
-      setRows(result.issues.map((x, i) => ({ ...x, answer: batch[x.question] ?? '', key: `gi-${gen}-${i}` })));
+      // T02214：自定义行随同代际快照一并恢复——此前只重建 AI 行，用户手工新增行切页即整行丢失
+      const customs = readCustomRows(result.prdMd);
+      setRows([
+        ...result.issues.map((x, i) => ({ ...x, answer: batch[x.question] ?? '', key: `gi-${gen}-${i}` })),
+        ...customs.map((c) => ({
+          level: c.level || 'custom', question: c.question, context: c.context,
+          suggestion: c.suggestion, answer: c.answer || batch[c.question] || '', key: c.id,
+        })),
+      ]);
     }
   }, [result]);
 
@@ -149,18 +187,28 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
   // T02203（门实测发现）：rows 为空时**不能**落盘——切页返回的首帧永远是 rows=[]（填充 effect 的
   // setRows 还没生效），此时按「用户把结论都清掉了」处理会把本批结论从会话快照里删掉，
   // 紧接着的填充 effect 再读就是空 → 填写过的结论切页丢失。真·清空走的是下面的 delete 分支（rows 非空）。
+  // T02214：自定义行的存在性/正文/结论纳入同代际快照（prdGen.customRows）；且只认**本代际**行键
+  // （gi/uc 前缀都带 bucket），切批/切页首帧 rows 还是上一代——不过滤会把旧行误写进新批快照。
   useEffect(() => {
     if (!result || rows.length === 0) return;
-    const key = hashStr(result.prdMd);
+    const bucket = hashStr(result.prdMd);
+    const genRows = rows.filter((r) => r.key.startsWith(`gi-${bucket}-`) || r.key.startsWith(`uc-${bucket}-`));
+    if (genRows.length === 0) return; // 过渡帧（rows 仍属上一代）：不落盘
     const collected: Record<string, string> = {};
-    for (const r of rows) {
+    for (const r of genRows) {
       if (r.answer.trim() && r.question.trim()) collected[r.question] = r.answer.trim();
     }
+    const customs: CustomRowRecord[] = genRows
+      .filter((r) => r.key.startsWith(`uc-${bucket}-`))
+      .map((r) => ({ id: r.key, level: r.level, question: r.question, context: r.context, suggestion: r.suggestion, answer: r.answer }));
     try {
       const m = JSON.parse(sessionStorage.getItem(PRD_CONCL_KEY) || '{}');
-      if (Object.keys(collected).length === 0) delete m[key];
-      else m[key] = collected;
+      if (Object.keys(collected).length === 0) delete m[bucket];
+      else m[bucket] = collected;
       sessionStorage.setItem(PRD_CONCL_KEY, JSON.stringify(m));
+      const cm = JSON.parse(sessionStorage.getItem(PRD_CUSTOM_KEY) || '{}');
+      cm[bucket] = customs; // 空数组即「自定义行已被全部移除」，防止切页复活已删行
+      sessionStorage.setItem(PRD_CUSTOM_KEY, JSON.stringify(cm));
     } catch { /* 忽略存储异常 */ }
   }, [rows, result]);
 
@@ -466,7 +514,7 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
             <strong style={{ fontSize: 12 }}>待确认问题（{rows.length} 条）</strong>
             <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>填写结论即视为确认；结论将回写 PRD 并随问题入库</span>
             <span style={{ flex: 1 }} />
-            <button onClick={() => { setRows([...rows, { level: 'custom', question: '', context: '', suggestion: '', answer: '', key: `uc-${Date.now()}` }]); }}
+            <button onClick={() => { setRows([...rows, { level: 'custom', question: '', context: '', suggestion: '', answer: '', key: nextCustomKey(hashStr(result.prdMd), rows) }]); }}
               className="tbtn-anim" title="新增自定义问题" style={opBtn}><Plus size={11} /> 自定义问题</button>
           </div>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>

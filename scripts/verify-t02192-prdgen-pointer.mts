@@ -629,21 +629,34 @@ async function runUiChecks(): Promise<void> {
     if (backAgain) {
       const back = await ev(`
         const first = window.__tbody.querySelector('tr td:nth-child(4) input');
+        const trs = [...window.__tbody.querySelectorAll('tr')];
         return {
-          rows: window.__tbody.querySelectorAll('tr').length,
+          rows: trs.length,
+          aiRows: trs.filter((tr) => tr.querySelector('td:nth-child(2) span')).length,
           firstAnswer: first?.value ?? '',
           firstQuestion: window.__tbody.querySelector('tr td:nth-child(2)')?.textContent?.slice(0, 18) ?? '',
           conclBeforeNav: ${JSON.stringify(beforeNav)},
           conclAfterNav: sessionStorage.getItem('prdGen.conclusion'),
         };
       `);
-      // 口径（T00820）：切页保留的是「结果正文 + 按问题文本键存的结论」，行数应回到 AI 问题条数；
-      // 用户临时新增的自定义问题行不落 store，切页即复位——那是另一条数据丢失问题（已建派生单跟踪），
-      // 不属本门要守的 T02192 回归面，故这里断言 AI 行与已填结论，不断言自定义行。
-      ok(`G-02 切页往返后 AI 问题行数不变（结果未被丢，实测 ${back?.rows} 行 / 桩产出 ${ISSUES.length} 行）`,
-        back?.rows === ISSUES.length, back);
+      // 口径（T00820/T02214）：切页保留「结果正文 + 会话快照里的行集合」——AI 行按正文指纹重建，
+      // 自定义行随同一代际快照恢复（T02214 前该行不落快照、切页整行消失，G-04/G-05 即守此回归面）。
+      // AI 行按 DOM 结构计（问题单元格是 <span>，自定义行是 <input>），与总行数解耦。
+      ok(`G-02 切页往返后 AI 问题行数不变（结果未被丢，实测 AI ${back?.aiRows} 行 / 总 ${back?.rows} 行 / 桩产出 ${ISSUES.length} 行）`,
+        back?.aiRows === ISSUES.length, back);
       ok(`G-03 切页往返后首行已填结论按会话口径恢复（实测「${back?.firstAnswer}」）`,
         back?.firstAnswer === TYPED_ANSWER, back);
+      const customBack = await ev(`
+        const box = document.querySelector('${GATE.customQuestion}');
+        return {
+          rows: window.__tbody.querySelectorAll('tr').length,
+          customQ: box?.value ?? '',
+        };
+      `);
+      ok(`G-04 切页往返后行数 = AI ${ISSUES.length} + 自定义 1（实测 ${customBack?.rows} 行）`,
+        customBack?.rows === ISSUES.length + 1, customBack);
+      ok(`G-05 切页往返后自定义行问题正文按同一 DOM 语义取回（实测「${customBack?.customQ}」）`,
+        customBack?.customQ === TYPED_CUSTOM, customBack);
     }
 
     await shot(cdp, join(OUT_DIR, NEGATIVE ? 't02192-pointer-negative.png' : 't02192-pointer-positive.png'));
