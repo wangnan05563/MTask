@@ -54,6 +54,15 @@ const SEARCH_MEMO_TTL_MS = 5 * 60 * 1000;
 /** T00782 N-8：符号索引条数上限（原为散落字面量 5000，抽出常量供 walk 入口与循环共用） */
 const SYMBOL_LIMIT = 5000;
 /**
+ * T02211：单个文件的字节上限——与检索侧 `SEARCH_FILE_MAX_BYTES` 同族同值。
+ * 让路（T02200）以「一个文件」为最小工作单元，但那一单元的成本过去无界：一个几 MB 的
+ * `.min.js`/`.map`/打包产物会让单次 `symbolWalkStep` 就跑几百毫秒（T02200 实测 380ms 尖峰
+ * 即来自 bemp 的真实大文件），片间让出点形同虚设。
+ * 取与检索侧同一个阈值不是巧合：超过它的正文本来就进不了 `search`/memo 的读取窗口
+ * （两处都按 `SEARCH_FILE_MAX_BYTES` 直接返回 0/-1），索引它换来的检索召回为零，只赔上让路。
+ */
+const SYMBOL_FILE_MAX_BYTES = SEARCH_FILE_MAX_BYTES;
+/**
  * T02200（T00782 遗留项续办）：符号索引与检索 memo 扫描的「让路」预算。
  * 原实现把整棵工作空间的遍历放在一个同步调用里（T00790① 又用单个事务包住全程，把本可让出的
  * 空隙合并成一段更长的独占临界区）。实测 bemp（6,984 文件）冷建 139,970ms、热刷 8,000~73,514ms，
@@ -102,6 +111,8 @@ interface TreeSnapshot {
   dirs: DirSnapshot;
   /** 上次深扫真正 stat 到的候选文件数；短路时用它如实回报 skipped */
   candidateFiles: number;
+  /** T02211：上次深扫按字节上限跳过的文件数（短路时如实复述，不让规模分布被抹成 0） */
+  oversized: number;
   /** 上次深扫完成时刻（配合 SYMBOL_DEEP_VERIFY_MS） */
   deepVerifiedAt: number;
   /** 上次深扫完成时刻的监视事件计数（事件数未变 = 期间无人改过文件） */
@@ -210,10 +221,10 @@ function snapshotEqual(a: DirSnapshot, b: DirSnapshot): boolean {
 }
 
 /** 深扫完成后登记快照；快照不可得时清除旧快照（下次仍走深扫） */
-function commitTreeSnapshot(projectId: string, workspace: string, rules: IgnoreRule[], candidateFiles: number, events: number): void {
+function commitTreeSnapshot(projectId: string, workspace: string, rules: IgnoreRule[], candidateFiles: number, oversized: number, events: number): void {
   const dirs = buildDirSnapshot(workspace, rules);
   if (!dirs) { treeSnapshots.delete(projectId); return; }
-  treeSnapshots.set(projectId, { dirs, candidateFiles, deepVerifiedAt: Date.now(), eventsAtSnapshot: events });
+  treeSnapshots.set(projectId, { dirs, candidateFiles, oversized, deepVerifiedAt: Date.now(), eventsAtSnapshot: events });
 }
 interface SearchMemo {
   at: number;
@@ -454,6 +465,8 @@ interface SymbolIndexCtx {
   files: number;
   symbols: number;
   skipped: number;
+  /** T02211：因超单文件字节上限被跳过的文件数（skipped 的子集，单独报数以免规模分布被抹平） */
+  oversized: number;
   /** T00790②：启动时一次性载入的 (path → 已知 mtime) 映射，消除逐文件 SELECT MAX(file_mtime) 的 N+1 */
   knownMtime: Map<string, number>;
   /** T02210：本轮深扫期间挂在该工作空间上的监视器（事件数用于登记快照） */
@@ -470,7 +483,18 @@ function indexFileSymbols(ctx: SymbolIndexCtx, abs: string, relChild: string): v
   try { st = statSync(abs); } catch { return; }
   const mtime = Math.floor(st.mtimeMs);
   // T00790②：改为查内存 Map（原先每个文件一条 SELECT MAX(file_mtime)）
-  if (ctx.knownMtime.get(relChild) === mtime) { ctx.skipped++; return; }
+  const seen = ctx.knownMtime.get(relChild) === mtime;
+  // T02211：单文件字节上限。超限的巨型产物正则扫它要几百毫秒（且正文本就进不了检索窗口），
+  //   按「本轮不索引」处理。放在 mtime 判定之前是为了让 `oversized` 每轮都如实报数
+  //   （放后面会让第二轮走增量跳过、观测值在 1 与 0 之间跳），删除条目只在首次/变化时做一次。
+  if (st.size > SYMBOL_FILE_MAX_BYTES) {
+    // (path → 已知 mtime) 映射只由「已索引的行」构成，故 has() 为真才说明历史上收过它的条目 → 清一次；
+    // 超限文件不建行，下一轮仍走这里（代价 = 主键索引上一条幂等 DELETE，bemp 全库仅 3 个文件命中）
+    if (ctx.knownMtime.has(relChild)) ctx.delStmt.run(projectId, relChild);
+    ctx.skipped++; ctx.oversized++;
+    return;
+  }
+  if (seen) { ctx.skipped++; return; }
   // 提取
   const text = (() => { try { return readFileSync(abs, 'utf8'); } catch { return null; } })();
   if (text === null || text.includes('\0')) return;
@@ -566,8 +590,8 @@ async function pumpSymbolJob(projectId: string, job: SymbolRefreshJob): Promise<
     invalidateSearchMemo(projectId);
     const { ctx } = job.state;
     // T02210：走完才登记快照（因符号上限提前收摊的轮次树未走全，登记会让后续短路漏建）
-    if (!job.state.truncated) commitTreeSnapshot(projectId, ctx.workspaceAbs, ctx.rules, ctx.files + ctx.skipped, ctx.watch.events);
-    console.log(`[workspace] 符号索引后台续跑完成：project=${projectId} 文件 ${ctx.files} 个、符号 ${ctx.symbols} 个、跳过 ${ctx.skipped} 个`);
+    if (!job.state.truncated) commitTreeSnapshot(projectId, ctx.workspaceAbs, ctx.rules, ctx.files + ctx.skipped, ctx.oversized, ctx.watch.events);
+    console.log(`[workspace] 符号索引后台续跑完成：project=${projectId} 文件 ${ctx.files} 个、符号 ${ctx.symbols} 个、跳过 ${ctx.skipped} 个（其中超 ${Math.round(SYMBOL_FILE_MAX_BYTES / 1024)}KB 上限 ${ctx.oversized} 个）`);
   } catch (e) {
     if (symbolJobs.get(projectId) === job) symbolJobs.delete(projectId);
     console.warn(`[workspace] 符号索引后台续跑失败：project=${projectId} ${(e as Error).message}`);
@@ -765,7 +789,7 @@ export const WorkspaceService = {
    *  跑完的仍等价于「同步等结果」（小工作空间与既有 API 测试契约不变）；超预算则余量交后台续跑，
    *  返回值标 deferred。符号索引是检索增强的补充信号，可延迟收敛而不影响当次生成质量。
    *  T02210：承接让路的「降本」——未变更的热刷整轮不进逐文件 stat（详见上方短路注释块）。 */
-  async refreshSymbols(projectId: string, inlineBudgetMs = SYMBOL_INLINE_BUDGET_MS): Promise<{ files: number; symbols: number; skipped: number; cleared: number; deferred: boolean; shortCircuited: boolean }> {
+  async refreshSymbols(projectId: string, inlineBudgetMs = SYMBOL_INLINE_BUDGET_MS): Promise<{ files: number; symbols: number; skipped: number; oversized: number; cleared: number; deferred: boolean; shortCircuited: boolean }> {
     const { workspace, rules } = getProjectWorkspace(projectId);
     const db = getDb();
     // 根路径与建索引时不同（换绑）→ 旧索引整体失效，清空重建
@@ -783,7 +807,7 @@ export const WorkspaceService = {
       // 结构指纹一致（无增删改名）+ 期间零监视事件（无内容写入）→ 整轮 stat 可省；
       // 此时也不失效检索 memo——内容既然没变，让 memo 继续命中才是短路的完整收益
       if (current && snapshotEqual(snap.dirs, current)) {
-        return { files: 0, symbols: 0, skipped: snap.candidateFiles, cleared, deferred: false, shortCircuited: true };
+        return { files: 0, symbols: 0, skipped: snap.candidateFiles, oversized: snap.oversized, cleared, deferred: false, shortCircuited: true };
       }
     }
     // T00790②：一次查询建 (path → 已知 mtime) 映射（同 path 取最大 mtime，与原 MAX 语义一致）
@@ -795,7 +819,7 @@ export const WorkspaceService = {
       db, projectId, rules, extractors: this.SYMBOL_EXTRACTORS,
       countExts: new Set(this.SYMBOL_EXTRACTORS.flatMap((x) => x.exts)),
       workspaceAbs,
-      files: 0, symbols: 0, skipped: 0,
+      files: 0, symbols: 0, skipped: 0, oversized: 0,
       knownMtime,
       watch: watchState,
       insStmt: db.prepare('INSERT INTO workspace_symbols (id, project_id, path, symbol, line, kind, file_mtime, workspace) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
@@ -815,9 +839,12 @@ export const WorkspaceService = {
       void pumpSymbolJob(projectId, job);
     } else if (!state.truncated) {
       // T02210：一次请求内走完 → 当场登记结构快照，下一轮同状态热刷即短路
-      commitTreeSnapshot(projectId, workspaceAbs, rules, ctx.files + ctx.skipped, watchState.events);
+      commitTreeSnapshot(projectId, workspaceAbs, rules, ctx.files + ctx.skipped, ctx.oversized, watchState.events);
     }
-    return { files: ctx.files, symbols: ctx.symbols, skipped: ctx.skipped, cleared, deferred: !state.done, shortCircuited: false };
+    if (ctx.oversized > 0) {
+      console.log(`[workspace] 符号索引：project=${projectId} 按单文件字节上限跳过 ${ctx.oversized} 个（>${Math.round(SYMBOL_FILE_MAX_BYTES / 1024)}KB，正文本就超出检索读取窗口）`);
+    }
+    return { files: ctx.files, symbols: ctx.symbols, skipped: ctx.skipped, oversized: ctx.oversized, cleared, deferred: !state.done, shortCircuited: false };
   },
 
   /** 符号查询：symbol LIKE 匹配（q ≥2 字符），返回 {path, symbol, line, kind} */

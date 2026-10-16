@@ -32,6 +32,7 @@ const SUITES = [
   't02207-vendor-error-body-test.mjs',
   't02208-conn-probe-semantics-test.mjs',
   't02210-hot-refresh-shortcircuit-test.mjs',
+  't02211-file-size-cap-test.mjs',
   't00781-writeback-dedupe-test.mjs',
   't01921-reqno-uniqueness-test.mjs',
 ];
