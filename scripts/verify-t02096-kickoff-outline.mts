@@ -10,7 +10,9 @@
  *     R-03 喂给模型的上下文带库内真实计数（需求/计划条数与端点一致）与数字禁令，不含编造数；
  *     R-04 页数不合规 → 触发自带重试（mock 收到 2 次请求）后 400 点名原因；
  *     R-05 首轮坏次轮好 → 200 且 warnings 记录重试；
- *     R-06 非法 dataKey / R-08 缺 timeline 页 / R-07a bullet 超 42 字 → 400 逐条点名；
+ *     R-06 非法 dataKey / R-08 缺 timeline 页 → 400 逐条点名；
+ *     R-07a 超长 bullet 首轮拒、重试轮裁剪为 42 字省略号收口（T02223）→ 200 + warnings；
+ *     R-07c 裁剪结果过装配层字数自检（不把越界从服务层搬到版式层）；
  *     R-07b 标题超长、bullet 超行 → 200 + warnings（版式收敛类不把可用大纲打死）；
  *     R-09 硬阻塞项目 → 400 拒生成，且 mock 零请求（校验阶段不烧配额）；
  *     R-10 代码围栏与 {"outline":[...]} 包装两种输出形态均能收；
@@ -37,6 +39,8 @@ const FIVE_PID = '95f31a46-92f6-4046-8cb6-ee3c4e228a44'; // mtask五期
 const SECTIONS = ['封面', '议程', '项目团队介绍', '项目背景', '项目需求', '项目范围', '项目计划', '工作量评估', '测试与质量策略', '项目风险', '沟通管理', '附录', '正文'];
 
 const { resolveServerLauncher } = await import('./isolated-server-launcher.mts');
+// T02223：装配层同口径自检（裁剪后不得再触发「超出 42 字」越界）——直接引 layout 单源，不经 HTTP
+const LAY = await import('../server/src/services/kickoff-layout.ts');
 
 let pass = 0;
 let fail = 0;
@@ -56,8 +60,8 @@ const bundleSrc = svcSrc.slice(svcSrc.indexOf('// ---------- 资料采集 Bundle
 const preflightSrc = svcSrc.slice(svcSrc.indexOf('// ---------- 前置校验'), svcSrc.indexOf('// ---------- 资料采集 Bundle'));
 
 ok('S-01 前置校验段零 AI 依赖（FR-2.3 只读、零配额）', !/AIService|askJson|fetch\(/.test(preflightSrc));
-ok('S-02 schema 校验在 askJson 的 parse 回调内（不合格即触发自带重试；T02172 起第 2 轮才转软截断）',
-  /askJson[\s\S]{0,600}parseRound\+\+[\s\S]{0,160}validateOutline\(parseOutlinePayload\(content\), \{ lenientDataKeys: parseRound > 1 \}\)/.test(outlineSrc));
+ok('S-02 schema 校验在 askJson 的 parse 回调内（不合格即触发自带重试；T02172/T02223 起第 2 轮才转软截断：dataKeys 截断 / 超长 bullet 裁剪）',
+  /askJson[\s\S]{0,600}parseRound\+\+[\s\S]{0,200}validateOutline\(parseOutlinePayload\(content\), \{ lenientDataKeys: parseRound > 1, lenientBullets: parseRound > 1 \}\)/.test(outlineSrc));
 ok('S-03 页数 12~18 与必含 timeline/workload 硬失败并点名',
   /页数 \$\{raw\.length\} 不在/.test(outlineSrc) && /缺少时间线页/.test(outlineSrc) && /缺少工作量页/.test(outlineSrc));
 ok('S-04 数字铁律写进 system 提示（数字只走 dataKeys，禁止模型自填）',
@@ -267,12 +271,26 @@ if (!(await waitUp())) {
   const r6 = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
   ok('R-06 非法 dataKey → 400 点名未知项', r6.status === 400 && /dataKeys 含未知项「reqCount」/.test(String(r6.body?.error)), r6.body?.error);
 
-  // R-07a bullet 超 42 字
+  // R-07a 单条 bullet 超 42 字：首轮硬失败触发重试；重试轮仍超限（T02223）→ 裁到上限 + warning，不再整稿 400
   const longBullet = JSON.parse(outlineJson(12)) as any[];
-  longBullet[3].bullets = ['一'.repeat(43)];
+  longBullet[3].bullets = ['一'.repeat(60)];
   mockQueue = [{ content: JSON.stringify(longBullet) }];
+  mockRequests.length = 0;
   const r7a = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
-  ok('R-07a 单条 bullet 超 42 字 → 400 点名页码', r7a.status === 400 && /第 4 页 单条 bullet 超出 42 字/.test(String(r7a.body?.error)), r7a.body?.error);
+  const clipped = String(r7a.body?.outline?.[3]?.bullets?.[0] ?? '');
+  ok('R-07a 单条 bullet 超 42 字：首轮拒（mock 收到 2 次）→ 重试轮裁剪为 42 字省略号收口 → 200 + warnings 点名',
+    r7a.status === 200 && mockRequests.length === 2 &&
+    [...clipped].length === 42 && clipped.endsWith('…') &&
+    (r7a.body?.warnings ?? []).some((w: string) => /第 4 页 第 1 条 bullet 60 字超出 42 字，重试后仍超限，已裁剪为 42 字/.test(w)),
+    { status: r7a.status, asks: mockRequests.length, clippedLen: [...clipped].length, clipped, warnings: r7a.body?.warnings, error: r7a.body?.error });
+  // T02223：裁剪只打通服务层字数门，装配层（kickoffBuilder 调 checkPageText）用自己的码点口径——
+  // 裁后若仍报「超出 42 字」，等于把越界从服务层搬到版式层（降级页换汤不换药）。
+  const clipIssues = LAY.checkPageText({ title: '启动会页 4', bullets: [clipped] });
+  const cw = LAY.getContentFrame().w;
+  ok('R-07c 裁剪结果过装配层同口径自检（无「超出 42 字」项；行数估算与 42 字合规上界同域）',
+    !clipIssues.some((s: string) => /超出 42 字/.test(s)) &&
+    LAY.bulletLineCount(clipped, cw, LAY.MIN_BODY_PT) === LAY.bulletLineCount('一'.repeat(42), cw, LAY.MIN_BODY_PT),
+    { issues: clipIssues, clipped, lineCount: LAY.bulletLineCount(clipped, cw, LAY.MIN_BODY_PT) });
 
   // R-07b 标题超长/bullet 超行 → 规范化 + warnings，不硬失败
   const soft = JSON.parse(outlineJson(12)) as any[];

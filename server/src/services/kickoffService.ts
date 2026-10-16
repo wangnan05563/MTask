@@ -661,10 +661,19 @@ function dedupeDataKeys(rawKeys: unknown[], at: string): KickoffDataKey[] {
   return dataKeys;
 }
 
-/** 单条 bullet 超字数是模型能自己改对的项——硬失败；超行数属版式收敛，调用侧截断 */
-function assertBulletChars(bullets: string[], at: string): void {
-  for (const b of bullets) {
-    if (b.length > BULLET_MAX_CHARS) throw new Error(`${at} 单条 bullet 超出 ${BULLET_MAX_CHARS} 字：${b.slice(0, 20)}…`);
+/**
+ * 单条 bullet 超字数：首轮硬失败（模型能自己改对——42 字是提示词第 5 条的硬约束）；超行数属版式收敛走截断。
+ * 重试轮仍超限（T02223）不再整稿判废——裁到上限 + 省略号收口并记 warning（同 T02172 dataKeys 口径）：
+ * 真链路实测两家 agnes 工具四轮全 400 都是「单条 bullet 超出 42 字」，「有内容但写长了」不该等于「没有内容」。
+ * 判据与裁剪均按码点：装配层 `checkPageText` 用 `[...b].length` 判「超出 42 字」，裁后 42 码点不再二次越界。
+ */
+function normalizeBulletChars(bullets: string[], at: string, warnings: string[], lenient: boolean): void {
+  for (let i = 0; i < bullets.length; i++) {
+    const pts = [...bullets[i]];
+    if (pts.length <= BULLET_MAX_CHARS) continue;
+    if (!lenient) throw new Error(`${at} 单条 bullet 超出 ${BULLET_MAX_CHARS} 字：${pts.slice(0, 20).join('')}…`);
+    bullets[i] = pts.slice(0, BULLET_MAX_CHARS - 1).join('') + '…';
+    warnings.push(`${at} 第 ${i + 1} 条 bullet ${pts.length} 字超出 ${BULLET_MAX_CHARS} 字，重试后仍超限，已裁剪为 ${BULLET_MAX_CHARS} 字（省略号收口）`);
   }
 }
 
@@ -693,7 +702,7 @@ function normalizeTitle(rawTitle: unknown, at: string, warnings: string[]): stri
 }
 
 /** 单页 schema 校验与规范化（validateOutline 的逐页体，拆出来压低认知复杂度） */
-function validateOutlinePage(v: unknown, index: number, warnings: string[]): KickoffOutlineItem {
+function validateOutlinePage(v: unknown, index: number, warnings: string[], lenient: boolean): KickoffOutlineItem {
   const at = `第 ${index + 1} 页`;
   if (!v || typeof v !== 'object') throw new Error(`${at} 不是对象`);
   const o = v as Record<string, unknown>;
@@ -705,7 +714,7 @@ function validateOutlinePage(v: unknown, index: number, warnings: string[]): Kic
   const dataKeys = dedupeDataKeys(rawKeys, at);
   const rawBullets = Array.isArray(o.bullets) ? o.bullets : [];
   const bullets = rawBullets.map((b) => String(b ?? '').trim()).filter((b) => b.length > 0);
-  assertBulletChars(bullets, at);
+  normalizeBulletChars(bullets, at, warnings, lenient);
   if (bullets.length > BULLET_MAX_LINES) {
     warnings.push(`${at} bullet ${bullets.length} 条超出 ${BULLET_MAX_LINES} 条，已截断`);
     bullets.length = BULLET_MAX_LINES;
@@ -729,14 +738,17 @@ function validateOutlinePage(v: unknown, index: number, warnings: string[]): Kic
  * `lenientDataKeys`（T02172）：提示词里「一页 dataKeys ≤2」原本是**软约束**——模型给 3 块时
  * 全靠版面兜底，于是同页图表被压到不可读（见 T02166 派生）。现在首轮按硬约束抛错走 RETRY；
  * 重试轮仍超限就不再打死整份大纲，截断为前 2 个并在 warnings 点名被去掉的键（有回执的软着陆）。
+ *
+ * `lenientBullets`（T02223）：同族口径——超长 bullet 首轮抛错走 RETRY，重试轮裁到 `BULLET_MAX_CHARS`
+ * （省略号收口）+ warnings 点名，不再整稿判废。
  */
-export function validateOutline(raw: unknown, opts: { lenientDataKeys?: boolean } = {}): { outline: KickoffOutlineItem[]; warnings: string[] } {
+export function validateOutline(raw: unknown, opts: { lenientDataKeys?: boolean; lenientBullets?: boolean } = {}): { outline: KickoffOutlineItem[]; warnings: string[] } {
   if (!Array.isArray(raw)) throw new Error('大纲必须是 JSON 数组');
   if (raw.length < PAGE_MIN || raw.length > PAGE_MAX) {
     throw new Error(`页数 ${raw.length} 不在 ${PAGE_MIN}~${PAGE_MAX} 区间`);
   }
   const warnings: string[] = [];
-  const outline: KickoffOutlineItem[] = raw.map((v, i) => validateOutlinePage(v, i, warnings));
+  const outline: KickoffOutlineItem[] = raw.map((v, i) => validateOutlinePage(v, i, warnings, opts.lenientBullets === true));
   outline.forEach((p, i) => assertDataKeyBudget(p, i, outline, warnings, opts.lenientDataKeys === true));
   // 必含两页（FR-4.5 时间线 / FR-4.6 工作量）——缺任一页等于稿子不可用，硬失败让模型补齐
   if (!outline.some((p) => p.dataKeys.includes('timeline'))) throw new Error(`大纲缺少时间线页（须有一页 dataKeys 含 'timeline'）`);
@@ -908,7 +920,7 @@ export async function kickoffOutline(projectId: string, toolId: string, extraNot
     user,
     (content) => {
       parseRound++;
-      return validateOutline(parseOutlinePayload(content), { lenientDataKeys: parseRound > 1 });
+      return validateOutline(parseOutlinePayload(content), { lenientDataKeys: parseRound > 1, lenientBullets: parseRound > 1 });
     },
     { retrySystem: OUTLINE_SYSTEM_RETRY, temperature: 0 },
   );
