@@ -3110,13 +3110,15 @@ export function TasksPage() {
   function renderNewTaskForm() {
     return (
       <>
-        <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+        <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap', rowGap: 8 }}>
           <input
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && !creating) void createTask(); }}
             placeholder="输入任务标题，回车创建"
-            style={{ flex: 1, padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}
+            // T02277：min-width 给到 80 而非 0——0 时本项可缩到零，行内永不触发换行，
+            // 容器 flexWrap 兜底形同虚设（极窄窗口下输入框塌成一条）；80 让 ≤340px 时按钮换行回视口
+            style={{ flex: 1, minWidth: 80, padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}
           />
           <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
           <select value={newPriority} onChange={(e) => setNewPriority(e.target.value)} title="优先级" aria-label="新建任务优先级" style={{ padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}>
