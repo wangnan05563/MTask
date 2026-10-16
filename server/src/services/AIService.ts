@@ -507,6 +507,12 @@ export const AIService = {
       retrySystem?: string;
       /** T01156：首轮输出预算上限（覆盖工具默认 max_tokens）——结构化解析输出较长时抬高以防截断触发精简重试丢数据 */
       maxTokens?: number;
+      /**
+       * T02275：预算**下限**语义——`Math.max(工具 max_tokens, minMaxTokens)`。
+       * 与 maxTokens（硬覆盖）相反：工具在模型管理里配得更高时**不再被砍回**，调大才真正生效；
+       * 配得更低时托底到本值，避免长输出触顶截断。两者同时提供时 maxTokens 优先（保持旧调用方语义不变）。
+       */
+      minMaxTokens?: number;
       /** T01275：首轮温度覆盖——监督决策要求 temperature=0 稳定复现，而工具默认温度偏高 */
       temperature?: number;
       timeoutMs?: number;
@@ -517,16 +523,27 @@ export const AIService = {
       signal?: AbortSignal;
     },
   ): Promise<{ ok: boolean; data?: T; error?: string; retried?: boolean; usage?: TokenUsage }> {
-    const { timeoutMs, retrySystem, maxTokens, temperature, signal } = opts ?? {};
+    const { timeoutMs, retrySystem, maxTokens, minMaxTokens, temperature, signal } = opts ?? {};
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     const effective = timeoutMs == null ? config : { ...config, timeoutMs };
     const base = temperature == null ? effective : { ...effective, temperature };
+    // T02275：下限语义在此收敛为一个具体选值——工具配得更高时保留更高值，更低时托底到 minMaxTokens。
+    let budgetMax = maxTokens ?? (minMaxTokens == null ? undefined : Math.max(config.maxTokens ?? 4096, minMaxTokens));
     const acc: { usage?: TokenUsage; lastError: string; attempts: number } = { lastError: '', attempts: 0 };
     for (let attempt = 1; attempt <= 2; attempt++) {
       acc.attempts = attempt;
       const startedAt = Date.now();
-      const res = await adapter.chat(attemptSystem(attempt, system, retrySystem), user, attemptConfig(base, attempt, maxTokens), signal);
+      const sys = attemptSystem(attempt, system, retrySystem);
+      let res = await adapter.chat(sys, user, attemptConfig(base, attempt, budgetMax), signal);
+      // T02275：抬高的预算被模型拒收（请求 400 直指 max_tokens）→ **同轮内**回退到下限值重打一次，
+      // 不占用「截断精简重试」轮次（先例 PrdGenService.ts:278-281：只在错误确指预算时回退，其余照旧）。
+      if (!res.ok && minMaxTokens != null && budgetMax != null && budgetMax > minMaxTokens
+        && /max_tokens|max_completion_tokens|too large|invalid/i.test(res.error ?? '')) {
+        recordUsage('ask-json', toolId, config.model, false, startedAt, 0, `预算 ${budgetMax} 被拒，回退 ${minMaxTokens} 重试：${res.error ?? ''}`);
+        budgetMax = minMaxTokens;
+        res = await adapter.chat(sys, user, attemptConfig(base, attempt, budgetMax), signal);
+      }
       acc.usage = mergeUsage(acc.usage, res.usage);
       if (!res.ok || !res.content) {
         acc.lastError = res.error ?? 'AI 返回内容为空';
