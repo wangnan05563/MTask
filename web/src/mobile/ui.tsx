@@ -30,6 +30,15 @@ export const rowStyle: CSSProperties = { display: 'flex', gap: 10, alignItems: '
 /** 次要说明文本 */
 export const mutedStyle: CSSProperties = { color: 'var(--text-muted)', fontSize: 12, padding: '4px 2px' };
 
+/**
+ * 状态提示行的窄屏版（T02212）：占满整行并允许换行。
+ * 公共层的失败提示默认是内联形态，桌面端表单够用；移动端 360px 宽下
+ * 「失败原因 + 过期标注 + 重试按钮」一行放不下，被裁掉就等于没有提示。
+ * `boxSizing:border-box` 是实测出来的必需项：提示件常带左右内边距贴边排版，
+ * content-box 下 `width:100%` 会变成「容器宽 + 内边距」，正好把页面顶出横向滚动。
+ */
+export const wideHintStyle: CSSProperties = { width: '100%', flexWrap: 'wrap', boxSizing: 'border-box' };
+
 export type BadgeTone = 'neutral' | 'accent' | 'success' | 'danger';
 
 /** 徽标配色（全部走 CSS 变量，暗色自动跟随） */

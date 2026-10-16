@@ -3,9 +3,10 @@
  * 配置记录管理 / 归档 / 周报 / 日志 / 设置。点按进入只读视图或引导桌面端。
  * 设置子页含：隧道连接状态、默认记事项目、主题、退出（清除本机令牌）。
  */
-import { pageStyle as page, tapCardStyle as row, cardStyle as card, mutedStyle as muted, EmptyState, Skeleton } from './ui';
+import { pageStyle as page, tapCardStyle as row, cardStyle as card, mutedStyle as muted, EmptyState, Skeleton, wideHintStyle } from './ui';
 import { useEffect, useRef, useState } from 'react';
-import { api, setAccessToken, type AITool, type Project, type Task } from '../api/client';
+import { api, setAccessToken, type AITool, type Task } from '../api/client';
+import { ProjectListHint, loadProjectList, projectListPlaceholder, useProjectList } from '../ui/projectList'; // T02212：项目取数接入 T02201 统一容错层
 import { useSettings } from '../settings';
 import { Boxes, Archive, BarChart3, Terminal, Activity, Settings, ExternalLink, LogOut, Moon, Sun, Monitor, ChevronRight } from 'lucide-react';
 import { MobileExecSessions } from './MobileExecSessions';
@@ -218,16 +219,17 @@ function LogsView({ notify }: { readonly notify: (msg: string) => void }) {
 // ---------- 设置 ----------
 function SettingsView({ notify, openDesktop, theme, setTheme, accent, setAccent, zen, setZen }: { readonly notify: (msg: string, isErr?: boolean) => void; readonly openDesktop: () => void; readonly theme: string; readonly setTheme: (t: 'auto' | 'light' | 'dark') => void; readonly accent: string; readonly setAccent: (v: string) => void; readonly zen: boolean; readonly setZen: (v: boolean) => void }) {
   const [status, setStatus] = useState<{ status: string; publicUrl: string | null }>({ status: 'stopped', publicUrl: null });
-  const [projects, setProjects] = useState<Project[]>([]);
+  const projectList = useProjectList(); // T02212：项目列表由统一容错层供给（失败可见 + 重试 + 上次数据标注过期）
   const [noteProject, setNoteProject] = useState('');
   useEffect(() => {
     void (async () => {
       try { setStatus(await api.get('/tunnel/status')); } catch { /* 忽略 */ }
+      void loadProjectList();
+      // T02212：原「取项目列表 + 取默认记事项目」同处一个 try，项目列表一失败就把
+      // 默认项目一起拖没（且整段静默）。拆开后设置项单独兜底，项目列表的失败态交给提示行呈现。
       try {
-        const list = await api.get<Project[]>('/projects');
-        setProjects(list);
         setNoteProject((await api.get<{ projectId: string }>('/settings/note-project')).projectId);
-      } catch { /* 忽略 */ }
+      } catch { /* 取不到默认项目时下拉留空，不阻塞其余设置 */ }
     })();
   }, []);
 
@@ -289,9 +291,11 @@ function SettingsView({ notify, openDesktop, theme, setTheme, accent, setAccent,
       <div style={setRow}>
         <span style={setLabel}>默认记事项目</span>
         <select value={noteProject} onChange={(e) => void saveNoteProject(e)} style={sel}>
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          {projectList.projects.length === 0 && <option value="">{projectListPlaceholder(projectList)}</option>}
+          {projectList.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
       </div>
+      <ProjectListHint view={projectList} style={{ ...wideHintStyle, padding: '0 14px 8px' }} />
 
       <div style={setRow}>
         <span style={setLabel}>主题</span>

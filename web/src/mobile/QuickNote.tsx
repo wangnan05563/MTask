@@ -3,10 +3,11 @@
  * 录入方式：文本（主）/ 语音（Web Speech API，不支持则隐藏）/ 快捷模板（提示词预填）/ 图片贴图。
  * 提交复用 POST /api/tasks；离线时落本地草稿，联网后由 MobileShell 自动补提。
  */
-import { Badge, EmptyState, pageStyle as page, headerStyle as header } from './ui';
+import { Badge, EmptyState, pageStyle as page, headerStyle as header, wideHintStyle } from './ui';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { useEffect, useRef, useState } from 'react';
-import { api, type Project, type Task, type TaskCategory, type Prompt } from '../api/client';
+import { api, type Task, type TaskCategory, type Prompt } from '../api/client';
+import { ProjectListHint, getProjectListSnapshot, loadProjectList, projectListPlaceholder, useProjectList } from '../ui/projectList'; // T02212
 import { addDraft, submitQuickNote } from './offline';
 import { Mic, FileText, ImagePlus, Paperclip, Check } from 'lucide-react';
 
@@ -82,7 +83,8 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
   const [projectId, setProjectId] = useState('');
   const [projectName, setProjectName] = useState('收件箱');
   const [images, setImages] = useState<string[]>([]);
-  const [projects, setProjects] = useState<Project[]>([]);
+  const projectList = useProjectList(); // T02212：项目列表由统一容错层供给（失败可见 + 重试，离线时仍给上次数据）
+  const projects = projectList.projects;
   const [categories, setCategories] = useState<TaskCategory[]>([]);
   const [busy, setBusy] = useState(false);
   const [syntax, setSyntax] = useState<ReturnType<typeof parseQuickSyntax> | null>(null); // T01431：短语法解析预览
@@ -99,13 +101,14 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
 
   useEffect(() => {
     void (async () => {
-      try { setProjects(await api.get<Project[]>('/projects')); } catch { /* 忽略 */ }
+      await loadProjectList(); // T02212：项目取数交统一容错层（原 `catch { /* 忽略 */ }` 会让下拉静默空）
       try { setCategories(await api.get<TaskCategory[]>('/task-categories')); } catch { /* 忽略 */ }
       try {
         const np = await api.get<{ projectId: string }>('/settings/note-project');
         setProjectId(np.projectId);
         // 评审修复：用本次拉取的项目列表匹配（原闭包读 projects state，恒为 [] 永远回退收件箱）
-        setProjectName((await api.get<Project[]>('/projects')).find((x) => x.id === np.projectId)?.name ?? '收件箱');
+        // T02212：同一份列表改由容错层快照给出（原来这里为取一个名字又发一次 /projects）
+        setProjectName(getProjectListSnapshot().find((x) => x.id === np.projectId)?.name ?? '收件箱');
       } catch { /* 忽略，回退收件箱 */ }
       // T01426：记忆上次——优先级/分类默认带出上次选择（项目仍以「默认记事项目」设置优先）
       try {
@@ -271,10 +274,14 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
             {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
           <select value={projectId} onChange={(e) => { setProjectId(e.target.value); setProjectName(projects.find((x) => x.id === e.target.value)?.name ?? ''); }} aria-label="项目" style={attrSelect}>
+            {projects.length === 0 && !projectId && <option value="">{projectListPlaceholder(projectList)}</option>}
             {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             {!projects.some((x) => x.id === projectId) && <option value={projectId}>{projectName}</option>}
           </select>
         </div>
+
+        {/* T02212：项目取数失败/加载中的可见提示（附「上次数据可能过期」与重试入口），不再静默落成空下拉 */}
+        <ProjectListHint view={projectList} style={{ ...wideHintStyle, marginTop: 8 }} />
 
         {/* T01431：短语法解析预览条——提交前展示命中结果，属性行可修正 */}
         {syntax && (syntax.priority || syntax.projectId || syntax.categoryId || syntax.dueNote) && (
@@ -357,6 +364,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
         <div style={{ marginTop: 14 }}>
           <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 6 }}>归属项目</div>
           <select value={projectId} onChange={(e) => { setProjectId(e.target.value); const p = projects.find((x) => x.id === e.target.value); setProjectName(p?.name ?? '收件箱'); }} style={selectFull}>
+            {projects.length === 0 && !projectId && <option value="">{projectListPlaceholder(projectList)}</option>}
             {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>默认记事项目：{projectName}（随手记缺省落入，可在「更多→设置」更改）</div>

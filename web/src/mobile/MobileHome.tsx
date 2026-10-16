@@ -4,7 +4,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, type Project, type Task, type TaskCategory } from '../api/client';
-import { Badge, EmptyState, headerStyle, pageStyle, PullRefresh, rowStyle, Skeleton } from './ui';
+import { Badge, EmptyState, headerStyle, pageStyle, PullRefresh, rowStyle, Skeleton, wideHintStyle } from './ui';
+import { ProjectListHint, getProjectListSnapshot, loadProjectList, projectListPlaceholder, useProjectList } from '../ui/projectList'; // T02212：项目取数接入 T02201 统一容错层
 import { MobileTaskDetail } from './MobileTaskDetail';
 import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
 
@@ -23,6 +24,10 @@ const PRIO_LABEL: Record<string, string> = { low: '低', normal: '中', high: '�
  * T01663：`lastProject` 是用户偏好（首页上次浏览项目），`note-project` 只是系统默认归属。
  * 原先正条件分支用后者无条件覆写缓存 → 用户手选项目开机即被抹掉。改「偏好优先」，
  * 仅在偏好缺失/项目已删时回落；离线（list 空）与空项目时都不写缓存，保住 T01425 缓存降级。
+ * T02212：`list` 改由统一容错层给出——取数失败时它是「上次成功的项目列表」（可能为空），
+ * 本函数的降级链（偏好优先 / 空列表不写缓存）不变，故离线仍能落到上次项目。
+ * 同批记一条 `lastProjectName`：冷启动遇后端不可用时列表是空的，光有 id 下拉只能显示空白，
+ * 有了名字才能把「仍在用上次项目，只是列表没取到」这句话讲圆。
  */
 async function resolveStartupProject(list: Project[]): Promise<string> {
   let pref = '';
@@ -34,14 +39,27 @@ async function resolveStartupProject(list: Project[]): Promise<string> {
   }
   if (!pid) pid = pref;
   if (pid && list.length > 0) {
-    try { localStorage.setItem('mtask.mobile.lastProject', pid); } catch { /* 忽略 */ }
+    try {
+      localStorage.setItem('mtask.mobile.lastProject', pid);
+      const name = list.find((p) => p.id === pid)?.name ?? '';
+      if (name) localStorage.setItem('mtask.mobile.lastProjectName', name);
+    } catch { /* 忽略 */ }
   }
   return pid;
 }
 
+/** T02212：读上次项目名（冷启动取数失败时的下拉回退文案用） */
+function readLastProjectName(): string {
+  try { return localStorage.getItem('mtask.mobile.lastProjectName') ?? ''; } catch { return ''; }
+}
+
 export function MobileHome({ onQuickNote, notify }: Props) {
-  const [projects, setProjects] = useState<Project[]>([]);
+  // T02212：项目列表改由统一容错层供给（加载中/失败可见 + 重试，失败时仍有上次成功数据）
+  const projectList = useProjectList();
+  const projects = projectList.projects;
   const [projectId, setProjectId] = useState('');
+  const [lastProjectName, setLastProjectName] = useState(''); // T02212：上次项目名，取数失败时下拉回退文案用
+  const bootedRef = useRef(false); // 首轮项目定位是否已拿到项目（决定重取成功后要不要补一次定位）
   const [tasks, setTasks] = useState<Task[]>([]);
   const [categories, setCategories] = useState<TaskCategory[]>([]);
   const [detailTask, setDetailTask] = useState<Task | null>(null); // T01423：详情半屏抽屉
@@ -150,21 +168,57 @@ export function MobileHome({ onQuickNote, notify }: Props) {
 
   useEffect(() => {
     void (async () => {
+      setLastProjectName(readLastProjectName());
       try { setCategories(await api.get<TaskCategory[]>('/task-categories')); } catch { /* 离线时分类缺失可接受 */ }
-      let list: Project[] = [];
-      try { list = await api.get<Project[]>('/projects'); setProjects(list); } catch { /* T01425：离线降级，用上次项目走缓存 */ }
+      await loadProjectList(); // T02212：取数交统一容错层（与 useProjectList 单飞合流，失败不再静默）
+      const list = getProjectListSnapshot();
       const pid = await resolveStartupProject(list);
       if (!pid) return;
+      bootedRef.current = true;
+      setLastProjectName(readLastProjectName()); // 定位过程可能刚写入新名字，回读一次
       setProjectId(pid);
       await load(pid);
     })();
   }, [load]);
+
+  /**
+   * T02212：首轮取数失败（list 空、也没上次项目偏好）时上面会直接 return，
+   * 下拉在此时被「重试」或窗口重新可见兜底救回来后，项目定位得补做一次——
+   * 否则「失败→重试成功」仍停在无任务态，与治的静默失败同族。
+   */
+  useEffect(() => {
+    if (bootedRef.current || projectList.phase !== 'ready' || projectList.projects.length === 0) return;
+    bootedRef.current = true;
+    void (async () => {
+      const pid = await resolveStartupProject(projectList.projects);
+      if (!pid) { bootedRef.current = false; return; }
+      setProjectId(pid);
+      setLastProjectName(readLastProjectName());
+      await load(pid);
+    })();
+  }, [projectList.phase, projectList.projects, load]);
 
   async function toggleDone(t: Task) {
     try {
       await api.patch(`/tasks/${t.id}`, { status: t.status === 'todo' ? 'done' : 'todo' });
       void load(projectId);
     } catch (e) { notify(e instanceof Error ? e.message : String(e)); }
+  }
+
+  /**
+   * T02212：切换项目同时落 id + 名。
+   * 名字是给「冷启动时后端取不到、列表为空」那次渲染用的回退文案——只存 id 的话
+   * 下拉只能显示空白，看上去和「一个项目都没有」同形，正是本单要治的形态。
+   */
+  function selectProject(pid: string) {
+    setProjectId(pid);
+    const name = projects.find((p) => p.id === pid)?.name ?? '';
+    if (name) setLastProjectName(name);
+    try {
+      localStorage.setItem('mtask.mobile.lastProject', pid);
+      if (name) localStorage.setItem('mtask.mobile.lastProjectName', name);
+    } catch { /* 忽略 */ }
+    void load(pid);
   }
 
   /** M6-6.4：行滑动视觉样式。抽出以消除 JSX 中的嵌套三元（S3358）。 */
@@ -209,10 +263,18 @@ export function MobileHome({ onQuickNote, notify }: Props) {
             </button>
           </div>
         </div>
-        <select value={projectId} onChange={(e) => { setProjectId(e.target.value); try { localStorage.setItem('mtask.mobile.lastProject', e.target.value); } catch { /* 忽略 */ } void load(e.target.value); }} style={projSelect}>
+        <select value={projectId} onChange={(e) => selectProject(e.target.value)} style={projSelect}>
+          {projects.length === 0 && (
+            <option value={projectId || ''}>
+              {projectId ? `上次项目：${lastProjectName || projectId}（列表未加载）` : projectListPlaceholder(projectList)}
+            </option>
+          )}
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
       </header>
+
+      {/* T02212：取数失败/加载中的可见提示（含「上次数据可能过期」标注与重试入口），窄屏整行换行 */}
+      <ProjectListHint view={projectList} style={{ ...wideHintStyle, padding: '0 12px', margin: '6px 0 -4px' }} />
 
       {/* T01424：失败/AI 待读聚合告警条——有告警才渲染，红点常驻，点击切换过滤视图 */}
       {(failedTasks.length > 0 || unreadTasks.length > 0) && (

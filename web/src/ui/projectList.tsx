@@ -173,17 +173,20 @@ export function projectListPlaceholder(view: Pick<ProjectListView, 'phase'>, idl
 /**
  * 失败/加载中提示行（放在项目下拉旁）：
  * 加载中只在空列表时占位（有旧数据不必打断操作），失败态始终给出原因与重试入口。
+ * `style`（T02212 新增可选属性）供窄屏覆盖布局——默认内联形态在桌面端表单里合适，
+ * 移动端 360px 宽下「失败原因 + 过期标注 + 重试」需要整行换行才读得全。
  */
-export function ProjectListHint({ view, showLoading = true }: {
+export function ProjectListHint({ view, showLoading = true, style }: {
   readonly view: Pick<ProjectListView, 'phase' | 'error' | 'stale' | 'unusable' | 'retry'>;
   readonly showLoading?: boolean;
+  readonly style?: React.CSSProperties;
 }) {
   if (view.phase === 'error') {
     return (
       <span
         role="status"
         data-t02201="project-list-error"
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--danger)' }}
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--danger)', ...style }}
       >
         项目列表加载失败 · {view.error}
         {view.stale && '（以下为上次成功的数据，可能过期）'}
@@ -203,7 +206,7 @@ export function ProjectListHint({ view, showLoading = true }: {
       <span
         role="status"
         data-t02201="project-list-loading"
-        style={{ fontSize: 12, color: 'var(--text-muted)' }}
+        style={{ fontSize: 12, color: 'var(--text-muted)', ...style }}
       >
         项目列表加载中…
       </span>
