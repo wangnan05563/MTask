@@ -10,7 +10,7 @@ import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { TaskDetailDrawer, type TaskDetailTab, type TaskPatch } from '../components/TaskDetailDrawer'; // T01562：真抽屉详情
 import { focusPlanNode, focusTaskByNo, type FocusTaskIntent } from '../ui/focusTask'; // T01568：外部跳转定位意图（通知/铃铛/就绪条）；T02196：徽标点击定位
 import { ProjectListHint, getProjectListSnapshot, patchProject, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
-import { ResourceHint } from '../ui/resourceState'; // T02213：选中项有效性校验失败态提示
+import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：选中项有效性校验失败态提示；T02257：AI 工具列表同层接入
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
@@ -220,8 +220,25 @@ export function TasksPage() {
   const PAGE_SIZE = 200;
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [tools, setTools] = useState<AITool[]>([]);
   const [organizeToolId, setOrganizeToolId] = usePersistentState('tasks.organizeToolId', '');
+  // T02257：/aitools 接入 T02213 共享失败态层——此前首个 await 在 try 之外，
+  // /aitools 失败时 void loadTools() 不接拒绝（unhandled rejection），工具列表还静默为空，
+  // AI 按钮点开只提示「先添加模型」，把取数故障误导成未配置。
+  const toolsRes = useResource<AITool[]>(async () => {
+    const list = await api.get<AITool[]>('/aitools');
+    // T00534：统一以模型菜单配置为准——始终使用默认整理工具，不再由本页下拉选择
+    try {
+      const defaults = await api.get<{ organize: string | null; develop: string | null }>('/aitools/defaults');
+      const def = list.find((t) => t.id === defaults.organize) ?? list[0];
+      if (def) setOrganizeToolId(def.id);
+    } catch { /* 默认查询失败则保持空选 */ }
+    return list;
+  });
+  // 默认整理工具排最前，便于选择
+  const tools = useMemo(
+    () => [...(toolsRes.data ?? [])].sort((a, b) => Number(b.isDefaultOrganize) - Number(a.isDefaultOrganize)),
+    [toolsRes.data],
+  );
   // 任务分类：分类列表 + 顶部筛选（会话级）+ 新建任务所选分类（会话级）
   const [taskCats, setTaskCats] = useState<TaskCategory[]>([]);
   const [catFilter, setCatFilter] = useSessionState('tasks.catFilter', '');
@@ -449,18 +466,6 @@ export function TasksPage() {
     return () => document.removeEventListener('mousedown', onDoc);
   }, [verifyMenuId]);
 
-  const loadTools = useCallback(async () => {
-    const list = await api.get<AITool[]>('/aitools');
-    // 默认整理工具排最前，便于选择
-    setTools([...list].sort((a, b) => Number(b.isDefaultOrganize) - Number(a.isDefaultOrganize)));
-    // T00534：统一以模型菜单配置为准——始终使用默认整理工具，不再由本页下拉选择
-    try {
-      const defaults = await api.get<{ organize: string | null; develop: string | null }>('/aitools/defaults');
-      const def = list.find((t) => t.id === defaults.organize) ?? list[0];
-      if (def) setOrganizeToolId(def.id);
-    } catch { /* 默认查询失败则保持空选 */ }
-  }, []);
-
   const loadCategories = useCallback(async () => {
     // 分类下拉不因加载失败而阻塞任务页：失败时保持空列表，仅分类功能不可用
     try {
@@ -496,7 +501,6 @@ export function TasksPage() {
     const t = setTimeout(() => void loadTasks(activeProject), 300);
     return () => clearTimeout(t);
   }, [activeProject, loadTasks]);
-  useEffect(() => { void loadTools(); }, [loadTools]);
   useEffect(() => { void loadCategories(); }, [loadCategories]);
 
   // T00836：命令面板定位意图处理——若目标 tab 与当前不一致先切 tab（等该列表渲染后再定位）；
@@ -3023,6 +3027,8 @@ export function TasksPage() {
         </span>
         {renderBeautifyToolbarButton()}
         {renderClassifyButton()}
+        {/* T02257：AI 工具列表取数失败时在工具条给出可见失败态与重试入口（此前静默为空） */}
+        <ResourceHint view={toolsRes} label="AI 工具列表" />
         {renderViewToggle()}
         {renderMultiSelectButton()}
         {/* T00481/T00720/T00728：全部收起/展开——描述、AI 摘要、处理结果三组折叠状态联动，覆盖待办+已完成全部列表；
