@@ -3,7 +3,7 @@ import { api, type Prompt, type PromptCategory, type Task, type TaskCategory } f
 import { askConfirm } from '../ui/dialogs';
 import { Check, ListChecks, Search, Trash2, Undo2, X } from 'lucide-react';
 import { relTime } from '../ui/format';
-import { useSessionState } from '../ui/session';
+import { useSessionState, usePersistentState } from '../ui/session';
 import { ProjectListHint, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 
 /** 项目计划归档条目（T00442 扩展：计划「删除」改归档后，在此恢复或彻底删除） */
@@ -16,7 +16,9 @@ interface ArchivedPlan {
   project_name: string;
 }
 
-const PAGE_SIZE = 20;
+// T02258：每页条数选择器档位；默认 20 与既有分页默认一致
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
+const DEFAULT_PAGE_SIZE = 20;
 
 /** 彻底删除计划的连带影响（T01874，DELETE /plans/:id 与 /plans/:id/purge-impact 同口径） */
 interface PurgeImpact {
@@ -66,6 +68,10 @@ export function ArchivePage() {
   const [page, setPage] = useState(1);
   const [planPage, setPlanPage] = useState(1);
   const [promptPage, setPromptPage] = useState(1); // T00872：归档提示词分页页脚
+  // T02258：每页条数——三个列表区共用一值；localStorage 持久化，刷新后保持上次选择。
+  // 存储值做档位白名单收敛：localStorage 被手工改脏（如 999）时回退默认档，不出现异常页长
+  const [pageSizeStored, setPageSize] = usePersistentState<number>('archive.pageSize', DEFAULT_PAGE_SIZE);
+  const pageSize = (PAGE_SIZE_OPTIONS as readonly number[]).includes(pageSizeStored) ? pageSizeStored : DEFAULT_PAGE_SIZE;
 
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
 
@@ -87,6 +93,9 @@ export function ArchivePage() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  // T02258：切换条数后各列表重置到第 1 页（总页数由下方派生计算随新条数自动更新）
+  useEffect(() => { setPage(1); setPlanPage(1); setPromptPage(1); }, [pageSize]);
 
   // ---------- 过滤 + 分页（T00586） ----------
 
@@ -114,16 +123,16 @@ export function ArchivePage() {
     return archivedPrompts.filter((p) => !k || p.title.toLowerCase().includes(k));
   }, [archivedPrompts, kw]);
 
-  const promptPages = Math.max(1, Math.ceil(filteredPrompts.length / PAGE_SIZE));
+  const promptPages = Math.max(1, Math.ceil(filteredPrompts.length / pageSize));
 
-  const taskPages = Math.max(1, Math.ceil(filteredTasks.length / PAGE_SIZE));
-  const planPages = Math.max(1, Math.ceil(filteredPlans.length / PAGE_SIZE));
+  const taskPages = Math.max(1, Math.ceil(filteredTasks.length / pageSize));
+  const planPages = Math.max(1, Math.ceil(filteredPlans.length / pageSize));
   const curTaskPage = Math.min(page, taskPages);
   const curPlanPage = Math.min(planPage, planPages);
-  const pageTasks = filteredTasks.slice((curTaskPage - 1) * PAGE_SIZE, curTaskPage * PAGE_SIZE);
-  const pagePlans = filteredPlans.slice((curPlanPage - 1) * PAGE_SIZE, curPlanPage * PAGE_SIZE);
+  const pageTasks = filteredTasks.slice((curTaskPage - 1) * pageSize, curTaskPage * pageSize);
+  const pagePlans = filteredPlans.slice((curPlanPage - 1) * pageSize, curPlanPage * pageSize);
   const curPromptPage = Math.min(promptPage, promptPages);
-  const pagePrompts = filteredPrompts.slice((curPromptPage - 1) * PAGE_SIZE, curPromptPage * PAGE_SIZE);
+  const pagePrompts = filteredPrompts.slice((curPromptPage - 1) * pageSize, curPromptPage * pageSize);
 
   // ---------- 单条操作（原有） ----------
 
@@ -277,11 +286,10 @@ export function ArchivePage() {
     );
   }
 
-  /** 分页控件（T00586） */
-  function renderPager(cur: number, total: number, set: (n: number) => void) {
-    if (total <= 1) return null;
+  /** 分页控件（T00586；T02258：右侧附「每页条数」选择器——切换立即生效并回到第 1 页，窄屏随行换行不遮挡） */
+  function renderPager(cur: number, total: number, set: (n: number) => void, listLabel: string) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0', fontSize: 12, color: 'var(--text-muted)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0', fontSize: 12, color: 'var(--text-muted)', flexWrap: 'wrap' }}>
         <button onClick={() => set(Math.max(1, cur - 1))} disabled={cur <= 1} className="tbtn-anim"
           title="上一页" aria-label="上一页"
           style={{ cursor: cur <= 1 ? 'default' : 'pointer', padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', opacity: cur <= 1 ? 0.5 : 1 }}>上一页</button>
@@ -289,6 +297,15 @@ export function ArchivePage() {
         <button onClick={() => set(Math.min(total, cur + 1))} disabled={cur >= total} className="tbtn-anim"
           title="下一页" aria-label="下一页"
           style={{ cursor: cur >= total ? 'default' : 'pointer', padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', opacity: cur >= total ? 0.5 : 1 }}>下一页</button>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          每页
+          <select value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}
+            title={`每页条数（${listLabel}）— 切换后立即生效并回到第 1 页`} aria-label={`每页条数（${listLabel}）`}
+            style={{ padding: '2px 4px', fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+            {PAGE_SIZE_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+          条
+        </label>
       </div>
     );
   }
@@ -360,7 +377,7 @@ export function ArchivePage() {
           </li>
         ))}
       </ul>
-      {renderPager(curTaskPage, taskPages, (n) => setPage(n))}
+      {renderPager(curTaskPage, taskPages, (n) => setPage(n), '归档任务')}
 
       {/* T00442 扩展：项目计划归档区——计划「删除」改归档后在此恢复或彻底删除 */}
       <h4 style={{ fontSize: 14, margin: '20px 0 8px' }}>归档项目计划（{filteredPlans.length}）</h4>
@@ -390,7 +407,7 @@ export function ArchivePage() {
           </li>
         ))}
       </ul>
-      {renderPager(curPlanPage, planPages, (n) => setPlanPage(n))}
+      {renderPager(curPlanPage, planPages, (n) => setPlanPage(n), '归档项目计划')}
 
       {/* T00872：归档提示词区——提示词「归档」（软删）后在此还原或彻底删除 */}
       <h4 style={{ fontSize: 14, margin: '20px 0 8px' }}>归档提示词（{filteredPrompts.length}）</h4>
@@ -407,7 +424,7 @@ export function ArchivePage() {
           </li>
         ))}
       </ul>
-      {renderPager(curPromptPage, promptPages, (n) => setPromptPage(n))}
+      {renderPager(curPromptPage, promptPages, (n) => setPromptPage(n), '归档提示词')}
     </section>
   );
 }
