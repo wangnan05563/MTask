@@ -90,11 +90,13 @@ const fakeDb = {
           toolsTable.set(row.id, row);
         } else if (/^INSERT INTO ai_usage/i.test(sql)) {
           // 探测记账：INSERT ... SELECT ?, id, name, ?, 'probe', ?, ?, ?, ?, ? FROM ai_tools WHERE id = ?
-          const id = params[1];
+          // T02215：占位符 8 个（id/name 是列引用不占参）——曾按 9 参（多一个 id）的错位口径取参，
+          // 生产 SQL 因 better-sqlite3 RangeError 被静默吞掉，此处反而全绿；现按修复后的位置对齐。
+          const id = params.at(-1);
           const row = toolsTable.get(id);
           usageRows.push({
-            tool_id: id, tool_name: row?.name ?? '', model: params[2], kind: 'probe',
-            ok: params[3], duration_ms: params[4], content_chars: params[5], error: params[6],
+            tool_id: id, tool_name: row?.name ?? '', model: params[1], kind: 'probe',
+            ok: params[2], duration_ms: params[3], content_chars: params[4], error: params[5],
           });
         } else if (/^UPDATE ai_tools/i.test(sql)) {
           applyUpdate(sql, params);

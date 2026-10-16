@@ -80,7 +80,9 @@ function recordProbeUsage(id: string, model: string, ok: boolean, ms: number, co
     getDb().prepare(
       `INSERT INTO ai_usage (id, tool_id, tool_name, model, kind, ok, duration_ms, content_chars, error, created_at)
        SELECT ?, id, name, ?, 'probe', ?, ?, ?, ?, ? FROM ai_tools WHERE id = ?`,
-    ).run(uuid(), id, model, ok ? 1 : 0, ms, contentChars, (error ?? '').slice(0, 300) || null, new Date().toISOString(), id);
+      // T02215：SELECT 里的 id/name 是 ai_tools 的列引用（不占 ?），参数恰好 8 个；
+      // 曾多传一个 id → better-sqlite3 RangeError 被下方 catch 吞掉，probe 用量从未落库
+    ).run(uuid(), model, ok ? 1 : 0, ms, contentChars, (error ?? '').slice(0, 300) || null, new Date().toISOString(), id);
   } catch { /* 用量记录失败不影响探测结果 */ }
 }
 
