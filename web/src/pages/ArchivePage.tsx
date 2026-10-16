@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api, type Prompt, type PromptCategory, type Task, type TaskCategory } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { Check, ListChecks, Search, Trash2, Undo2, X } from 'lucide-react';
 import { relTime } from '../ui/format';
 import { useSessionState, usePersistentState } from '../ui/session';
 import { ProjectListHint, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
+import { ResourceHint, useResource } from '../ui/resourceState'; // T02284：分页列表取数走同一可见失败态层
 
 /** 项目计划归档条目（T00442 扩展：计划「删除」改归档后，在此恢复或彻底删除） */
 interface ArchivedPlan {
@@ -16,9 +17,37 @@ interface ArchivedPlan {
   project_name: string;
 }
 
+/** T02284：服务端分页信封（与 server/src/util/list-page.ts 的 Paged 同形状，由 `total=1` 加性通道返回） */
+interface Paged<T> {
+  items: T[];
+  total: number;
+}
+
 // T02258：每页条数选择器档位；默认 20 与既有分页默认一致
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
 const DEFAULT_PAGE_SIZE = 20;
+
+/**
+ * T02284：越界页码收敛。服务端分页后 total 会随操作变化（如批量删完整末页），
+ * 停在越界页会得到「0 条 / 第 N 页」的空页——拉回最后一页由调用方的取数 effect 再取一次。
+ */
+function clampPage(total: number | undefined, page: number, pageSize: number, set: (n: number) => void): void {
+  if (total == null) return;
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  if (page > pages) set(pages);
+}
+
+/**
+ * T02284：「全选本页」的页域切换。
+ * 服务端分页后选中集跨页保留，故全选/取消只作用于本页 id，其他页的已选原样保留
+ * （旧实现 `prev.length === pageTasks.length ? [] : …` 在跨页场景会把别的页一并清空）。
+ */
+function togglePageSelection(prev: string[], pageIds: string[]): string[] {
+  const onPage = new Set(pageIds);
+  const others = prev.filter((id) => !onPage.has(id));
+  const allOnPage = pageIds.length > 0 && pageIds.every((id) => prev.includes(id));
+  return allOnPage ? others : [...others, ...pageIds];
+}
 
 /** 彻底删除计划的连带影响（T01874，DELETE /plans/:id 与 /plans/:id/purge-impact 同口径） */
 interface PurgeImpact {
@@ -41,7 +70,6 @@ function purgeImpactText(i: PurgeImpact | null): string {
  * T00586：参考项目计划页——多选 + 批量工具条（风格/布局一致）+ 搜索 + 分类/项目查询 + 分页。
  */
 export function ArchivePage() {
-  const [archived, setArchived] = useState<Task[]>([]);
   // 项目 id -> 名称 映射，用于标注归档任务所属项目（任务本身只带 project_id）
   // T02201：改由统一容错层派生——取数失败不再让整页 load() 抛断（原先项目名缺失会让归档列表显示「未知项目」）
   const projectList = useProjectList();
@@ -49,11 +77,8 @@ export function ArchivePage() {
     () => Object.fromEntries(projectList.projects.map((p) => [p.id, p.name])),
     [projectList.projects],
   );
-  // T00442 扩展：项目计划归档列表
-  const [archivedPlans, setArchivedPlans] = useState<ArchivedPlan[]>([]);
+  // 引用数据（下拉/名称映射，非分页列表）：任务分类、提示词分类名
   const [cats, setCats] = useState<TaskCategory[]>([]);
-  // T00872：归档提示词列表 + 分类名映射（后端 /prompts?archived=1 返回软删数据，可在此还原/彻底删除）
-  const [archivedPrompts, setArchivedPrompts] = useState<Prompt[]>([]);
   const [promptCatNames, setPromptCatNames] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
@@ -75,82 +100,91 @@ export function ArchivePage() {
 
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
 
-  const load = useCallback(async () => {
-    // M7-7.2：显式 limit=500（服务端默认上限生效后的桌面适配）——归档超 500 时显示截断提示
-    setArchived(await api.get<Task[]>('/tasks?archived=1&limit=500'));
-    // T02201：项目名映射改由 useProjectList 派生，此处不再自行取数（失败不再抛断整页 load）
-    try { setCats(await api.get<TaskCategory[]>('/tasks/categories')); } catch { /* 旧版后端忽略 */ }
-    try {
-      // 归档计划接口走 plans 路由（T00442 扩展），后端未升级时静默降级不阻塞任务归档区
-      setArchivedPlans(await api.get<ArchivedPlan[]>('/plans/archived'));
-    } catch { /* 后端为旧版时忽略 */ }
-    try {
-      // T00872：归档提示词——/prompts?archived=1 返回软删提示词；还原走 PATCH archived=false，删除走 DELETE
-      setArchivedPrompts(await api.get<Prompt[]>('/prompts?archived=1'));
-      const pcs = await api.get<PromptCategory[]>('/prompt-categories');
-      setPromptCatNames(Object.fromEntries(pcs.map((c) => [c.id, c.name])));
-    } catch { /* 后端为旧版时忽略 */ }
+  // T02284：筛选/关键词下推服务端后不再逐字符打接口——300ms 防抖（与移动端归档视图 T01442 同口径）
+  const [kwQuery, setKwQuery] = useState(() => kw.trim());
+  useEffect(() => {
+    const next = kw.trim();
+    if (next === kwQuery) return;
+    const t = setTimeout(() => setKwQuery(next), 300);
+    return () => clearTimeout(t);
+  }, [kw, kwQuery]);
+
+  // T02284：三个归档列表切**服务端分页**——limit/offset + 关键词/分类/项目全部走查询参数，
+  // 不再一次拉 500 条本地过滤。取数复用 T02213 的 useResource：请求令牌防竞态（迟到的上一轮响应
+  // 不覆盖新一轮，等价于移动端归档视图的 seqRef）、失败保留上次数据并给出原因与重试入口。
+  const tasksView = useResource<Paged<Task>>(async () => {
+    const q = new URLSearchParams({ archived: '1', total: '1', limit: String(pageSize), offset: String((page - 1) * pageSize) });
+    if (kwQuery) q.set('keyword', kwQuery);
+    if (catFilter) q.set('categoryId', catFilter);
+    return api.get<Paged<Task>>(`/tasks?${q.toString()}`);
+  }, { enabled: false });
+  const plansView = useResource<Paged<ArchivedPlan>>(async () => {
+    const q = new URLSearchParams({ total: '1', limit: String(pageSize), offset: String((planPage - 1) * pageSize) });
+    if (kwQuery) q.set('keyword', kwQuery);
+    if (projFilter) q.set('projectId', projFilter);
+    return api.get<Paged<ArchivedPlan>>(`/plans/archived?${q.toString()}`);
+  }, { enabled: false });
+  const promptsView = useResource<Paged<Prompt>>(async () => {
+    const q = new URLSearchParams({ archived: '1', total: '1', limit: String(pageSize), offset: String((promptPage - 1) * pageSize) });
+    if (kwQuery) q.set('keyword', kwQuery);
+    return api.get<Paged<Prompt>>(`/prompts?${q.toString()}`);
+  }, { enabled: false });
+
+  // 引用数据只在挂载时取一次（失败沿用旧口径静默降级：仅影响名称显示，不影响列表数据）
+  useEffect(() => {
+    // T01722 修复：端点误写为 /tasks/categories（404 被吞、归档任务分类名恒缺失）——与 TasksPage 同口径走 /task-categories
+    void api.get<TaskCategory[]>('/task-categories').then(setCats).catch(() => { /* 旧版后端忽略 */ });
+    // T00872：归档提示词的分类名映射（/prompts?archived=1 返回软删数据，可在此还原/彻底删除）
+    void api.get<PromptCategory[]>('/prompt-categories')
+      .then((pcs) => setPromptCatNames(Object.fromEntries(pcs.map((c) => [c.id, c.name]))))
+      .catch(() => { /* 旧版后端忽略 */ });
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  // 首屏与「页码 / 每页条数 / 关键词 / 筛选」变化时重取**当前页**（enabled:false 关掉挂载自跑，统一由这里触发）
+  useEffect(() => { tasksView.reload(); }, [page, pageSize, kwQuery, catFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { plansView.reload(); }, [planPage, pageSize, kwQuery, projFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { promptsView.reload(); }, [promptPage, pageSize, kwQuery]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // T02258：切换条数后各列表重置到第 1 页（总页数由下方派生计算随新条数自动更新）
+  // T02258：切换条数后各列表重置到第 1 页
   useEffect(() => { setPage(1); setPlanPage(1); setPromptPage(1); }, [pageSize]);
 
-  // ---------- 过滤 + 分页（T00586） ----------
+  // T02284：写操作后 total 变化 → 越界页码收敛到最后一页（避免停在空页）
+  useEffect(() => { clampPage(tasksView.data?.total, page, pageSize, setPage); }, [tasksView.data, page, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { clampPage(plansView.data?.total, planPage, pageSize, setPlanPage); }, [plansView.data, planPage, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { clampPage(promptsView.data?.total, promptPage, pageSize, setPromptPage); }, [promptsView.data, promptPage, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const filteredTasks = useMemo(() => {
-    const k = kw.trim().toLowerCase();
-    return archived.filter((t) => {
-      if (k && !`${t.title} ${t.task_no ?? ''}`.toLowerCase().includes(k)) return false;
-      if (catFilter && (t.category_id ?? '') !== catFilter) return false;
-      return true;
-    });
-  }, [archived, kw, catFilter]);
+  // ---------- 派生视图数据（T02284：条数/页数由服务端 total 派生，不再本地过滤） ----------
 
-  const filteredPlans = useMemo(() => {
-    const k = kw.trim().toLowerCase();
-    return archivedPlans.filter((p) => {
-      if (k && !`${p.title} ${p.project_name}`.toLowerCase().includes(k)) return false;
-      if (projFilter && p.project_id !== projFilter) return false;
-      return true;
-    });
-  }, [archivedPlans, kw, projFilter]);
-
-  // T00872：归档提示词——支持关键词过滤（标题），与任务/计划区共用 kw
-  const filteredPrompts = useMemo(() => {
-    const k = kw.trim().toLowerCase();
-    return archivedPrompts.filter((p) => !k || p.title.toLowerCase().includes(k));
-  }, [archivedPrompts, kw]);
-
-  const promptPages = Math.max(1, Math.ceil(filteredPrompts.length / pageSize));
-
-  const taskPages = Math.max(1, Math.ceil(filteredTasks.length / pageSize));
-  const planPages = Math.max(1, Math.ceil(filteredPlans.length / pageSize));
+  const pageTasks = tasksView.data?.items ?? [];
+  const pagePlans = plansView.data?.items ?? [];
+  const pagePrompts = promptsView.data?.items ?? [];
+  const taskTotal = tasksView.data?.total ?? 0;
+  const planTotal = plansView.data?.total ?? 0;
+  const promptTotal = promptsView.data?.total ?? 0;
+  const taskPages = Math.max(1, Math.ceil(taskTotal / pageSize));
+  const planPages = Math.max(1, Math.ceil(planTotal / pageSize));
+  const promptPages = Math.max(1, Math.ceil(promptTotal / pageSize));
   const curTaskPage = Math.min(page, taskPages);
   const curPlanPage = Math.min(planPage, planPages);
-  const pageTasks = filteredTasks.slice((curTaskPage - 1) * pageSize, curTaskPage * pageSize);
-  const pagePlans = filteredPlans.slice((curPlanPage - 1) * pageSize, curPlanPage * pageSize);
   const curPromptPage = Math.min(promptPage, promptPages);
-  const pagePrompts = filteredPrompts.slice((curPromptPage - 1) * pageSize, curPromptPage * pageSize);
 
-  // ---------- 单条操作（原有） ----------
+  // ---------- 单条操作（T02284：只刷新所属列表的当前页，不再整页三端点全量重拉） ----------
 
   async function restore(task: Task) {
     await api.post('/archive/restore', { taskIds: [task.id] });
-    void load();
+    tasksView.reload();
   }
 
   async function remove(task: Task) {
     const ok = await askConfirm(`确认永久删除任务「${task.title}」？此操作不可恢复。`);
     if (!ok) return;
     await api.del('/archive', { taskIds: [task.id] });
-    void load();
+    tasksView.reload();
   }
 
   async function restorePlan(p: ArchivedPlan) {
     await api.post(`/plans/${p.id}/restore`);
-    void load();
+    plansView.reload();
   }
 
   async function purgePlan(p: ArchivedPlan) {
@@ -160,20 +194,22 @@ export function ArchivePage() {
     if (!ok) return;
     const r = await api.del<{ deleted: boolean } & PurgeImpact>(`/plans/${p.id}`);
     if (r.deleted && r.strippedTasksArchived > 0) flash(`已彻底删除计划「${p.title}」，连带归档 ${r.strippedTasksArchived} 条派生待办`);
-    void load();
+    plansView.reload();
+    // 彻底删除计划会连带归档其派生待办——归档任务区的数据确实变了，一并只刷当前页
+    if (r.deleted && r.strippedTasksArchived > 0) tasksView.reload();
   }
 
   // T00872：归档提示词还原（PATCH archived=false）与彻底删除（DELETE /prompts/:id）
   async function restorePrompt(p: Prompt) {
     await api.patch(`/prompts/${p.id}`, { archived: false });
-    void load();
+    promptsView.reload();
   }
 
   async function removePrompt(p: Prompt) {
     const ok = await askConfirm(`确认彻底删除提示词「${p.title}」？此操作不可恢复。`);
     if (!ok) return;
     await api.del(`/prompts/${p.id}`);
-    void load();
+    promptsView.reload();
   }
 
   // ---------- T00586：批量操作（参考计划页批量工具条） ----------
@@ -185,10 +221,10 @@ export function ArchivePage() {
     setSelPlanIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
   function selectAllTasks() {
-    setSelTaskIds((prev) => (prev.length === pageTasks.length ? [] : pageTasks.map((t) => t.id)));
+    setSelTaskIds((prev) => togglePageSelection(prev, pageTasks.map((t) => t.id)));
   }
   function selectAllPlans() {
-    setSelPlanIds((prev) => (prev.length === pagePlans.length ? [] : pagePlans.map((p) => p.id)));
+    setSelPlanIds((prev) => togglePageSelection(prev, pagePlans.map((p) => p.id)));
   }
 
   async function batchRestoreTasks() {
@@ -198,7 +234,7 @@ export function ArchivePage() {
       await api.post('/archive/restore', { taskIds: selTaskIds });
       flash(`已还原 ${selTaskIds.length} 条归档任务`);
       setSelTaskIds([]);
-      void load();
+      tasksView.reload();
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
   }
 
@@ -210,7 +246,7 @@ export function ArchivePage() {
       await api.del('/archive', { taskIds: selTaskIds });
       flash(`已永久删除 ${selTaskIds.length} 条任务`);
       setSelTaskIds([]);
-      void load();
+      tasksView.reload();
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
   }
 
@@ -224,7 +260,7 @@ export function ArchivePage() {
       }
       flash(`已恢复 ${n} 条归档计划`);
       setSelPlanIds([]);
-      void load();
+      plansView.reload();
     } finally { setBusy(false); }
   }
 
@@ -245,9 +281,13 @@ export function ArchivePage() {
           if (r.deleted) { n += 1; strippedTasks += r.strippedTasksArchived; }
         } catch { /* 单条失败继续 */ }
       }
-      flash(`已彻底删除 ${n} 条计划${strippedTasks > 0 ? `，连带归档 ${strippedTasks} 条派生待办` : ''}`);
+      // S4624：内层模板先赋值再插值，文案逐字不变
+      const strippedNote = strippedTasks > 0 ? `，连带归档 ${strippedTasks} 条派生待办` : '';
+      flash(`已彻底删除 ${n} 条计划${strippedNote}`);
       setSelPlanIds([]);
-      void load();
+      plansView.reload();
+      // 同 purgePlan：连带归档了派生待办，归档任务区也要重取当前页
+      if (strippedTasks > 0) tasksView.reload();
     } finally { setBusy(false); }
   }
 
@@ -256,11 +296,15 @@ export function ArchivePage() {
     const ids = kind === 'task' ? selTaskIds : selPlanIds;
     if (ids.length === 0) return null;
     // S3358：将嵌套三元拆为独立变量，避免嵌套条件表达式
-    const pageCount = kind === 'task' ? pageTasks.length : pagePlans.length;
-    const selectAllTitle = ids.length === pageCount ? '取消全选本页' : '全选本页';
+    const pageIds = (kind === 'task' ? pageTasks : pagePlans).map((x) => x.id);
+    const onPage = pageIds.filter((id) => ids.includes(id)).length;
+    const selectAllTitle = pageIds.length > 0 && onPage === pageIds.length ? '取消全选本页' : '全选本页';
+    // T02284：跨页选中保留——计数显式标注「含其他页 N 条」，避免「已选 25 条」被误读成本页全选
+    const offPage = ids.length - onPage;
+    const offPageNote = offPage > 0 ? `（含其他页 ${offPage} 条）` : '';
     return (
       <div style={{ position: 'sticky', top: 0, zIndex: 50, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '6px 10px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: '1px solid var(--accent)', boxShadow: '0 4px 12px rgba(0,0,0,.12)', fontSize: 12 }}>
-        <strong style={{ color: 'var(--accent)' }}>已选 {ids.length} 条</strong>
+        <strong style={{ color: 'var(--accent)' }}>已选 {ids.length} 条{offPageNote}</strong>
         <button onClick={kind === 'task' ? selectAllTasks : selectAllPlans} disabled={busy} className="tbtn-anim"
           title={selectAllTitle}
           aria-label="全选本页"
@@ -343,12 +387,9 @@ export function ArchivePage() {
         </span>
       </div>
 
-      <h4 style={{ fontSize: 14, margin: '0 0 8px' }}>归档任务（{filteredTasks.length}）</h4>
-      {archived.length >= 500 && (
-        <div style={{ fontSize: 12, color: 'var(--warn)', margin: '0 0 8px' }}>
-          ⚠ 已达单次拉取上限 500 条——更多归档请用关键词/分类过滤缩小范围（M7-7.2）
-        </div>
-      )}
+      {/* T02284：条数来自服务端 total（跨全部页），不再是本地过滤后的长度；500 条截断警告随服务端分页撤销 */}
+      <h4 style={{ fontSize: 14, margin: '0 0 8px' }}>归档任务（共 {taskTotal} 条）</h4>
+      <ResourceHint view={tasksView} label="归档任务列表" />
       {/* 任务区筛选：分类 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <select value={catFilter} onChange={(e) => { setCatFilter(e.target.value); setPage(1); }}
@@ -359,7 +400,10 @@ export function ArchivePage() {
         </select>
       </div>
       {renderBatchBar('task')}
-      {filteredTasks.length === 0 && <p style={{ color: 'var(--text-muted)' }}>暂无归档任务（或当前筛选无结果）。待办/已完成任务归档后在此管理。</p>}
+      {/* 空态只在「取数成功且本页为空」时出现——失败态由上方 ResourceHint 承载，两者不再同形 */}
+      {tasksView.phase === 'ready' && pageTasks.length === 0 && (
+        <p style={{ color: 'var(--text-muted)' }}>暂无归档任务（或当前筛选无结果）。待办/已完成任务归档后在此管理。</p>
+      )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {pageTasks.map((t) => (
           <li key={t.id} className="arena-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
@@ -380,7 +424,8 @@ export function ArchivePage() {
       {renderPager(curTaskPage, taskPages, (n) => setPage(n), '归档任务')}
 
       {/* T00442 扩展：项目计划归档区——计划「删除」改归档后在此恢复或彻底删除 */}
-      <h4 style={{ fontSize: 14, margin: '20px 0 8px' }}>归档项目计划（{filteredPlans.length}）</h4>
+      <h4 style={{ fontSize: 14, margin: '20px 0 8px' }}>归档项目计划（共 {planTotal} 条）</h4>
+      <ResourceHint view={plansView} label="归档计划列表" />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <select value={projFilter} onChange={(e) => { setProjFilter(e.target.value); setPlanPage(1); }}
           aria-label="按项目筛选归档计划" title="按项目筛选归档计划"
@@ -392,7 +437,9 @@ export function ArchivePage() {
         <ProjectListHint view={projectList} />
       </div>
       {renderBatchBar('plan')}
-      {filteredPlans.length === 0 && <p style={{ color: 'var(--text-muted)' }}>暂无归档的项目计划（或当前筛选无结果）。</p>}
+      {plansView.phase === 'ready' && pagePlans.length === 0 && (
+        <p style={{ color: 'var(--text-muted)' }}>暂无归档的项目计划（或当前筛选无结果）。</p>
+      )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {pagePlans.map((p) => (
           <li key={p.id} className="arena-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
@@ -410,8 +457,11 @@ export function ArchivePage() {
       {renderPager(curPlanPage, planPages, (n) => setPlanPage(n), '归档项目计划')}
 
       {/* T00872：归档提示词区——提示词「归档」（软删）后在此还原或彻底删除 */}
-      <h4 style={{ fontSize: 14, margin: '20px 0 8px' }}>归档提示词（{filteredPrompts.length}）</h4>
-      {filteredPrompts.length === 0 && <p style={{ color: 'var(--text-muted)' }}>暂无归档提示词（或当前筛选无结果）。提示词页归档后的条目会出现在这里。</p>}
+      <h4 style={{ fontSize: 14, margin: '20px 0 8px' }}>归档提示词（共 {promptTotal} 条）</h4>
+      <ResourceHint view={promptsView} label="归档提示词列表" />
+      {promptsView.phase === 'ready' && pagePrompts.length === 0 && (
+        <p style={{ color: 'var(--text-muted)' }}>暂无归档提示词（或当前筛选无结果）。提示词页归档后的条目会出现在这里。</p>
+      )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {pagePrompts.map((p) => (
           <li key={p.id} className="arena-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>

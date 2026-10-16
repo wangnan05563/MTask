@@ -8,6 +8,7 @@ import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput, Dr
 import { AIService } from '../services/AIService';
 import { backfillComplexity, clampComplexity, listInvalid as listInvalidComplexity, listMissing as listMissingComplexity } from '../services/PlanComplexity'; // T01058 后续 / T02122：计划行复杂度批量补算 + 值域断言
 import { resolvePrdContext } from '../util/prdContext'; // T00763：计划关联 PRD → 评估上下文
+import { parseLimit, parseOffset, wantsTotal } from '../util/list-page'; // T02284：列表分页参数统一口径（limit/offset/total=1）
 import { exportGate, REPORT_GATE } from '../util/export-gate'; // T00789：导出类并发闸；T02105：启动会稿与周报共用 REPORT_GATE
 
 /**
@@ -798,7 +799,21 @@ planApi.get('/:id/purge-impact', (req, res) => wrap(res, () => PlanService.purge
 planApi.delete('/:id', (req, res) => wrap(res, () => PlanService.purge(req.params.id)));
 
 // ---------- 归档（T00442 扩展：删除改归档，归档菜单提供恢复/彻底删除） ----------
-planApi.get('/archived', (_req, res) => wrap(res, () => PlanService.listArchived()));
+// T02284：归档区是增长最快的数据集之一，补 limit/offset + keyword/projectId 服务端筛选（口径同 /tasks：
+// 显式 limit 钳 [1,500]、缺省=全量以兼容 MCP 与验收脚本）；`total=1` 加性通道换成 {items,total} 信封，
+// 不带该参数时响应体逐字仍是裸数组。
+planApi.get('/archived', (req, res) => wrap(res, () => {
+  const { limit, offset, keyword, projectId, total } = req.query;
+  const opts = {
+    keyword: typeof keyword === 'string' && keyword.trim() ? keyword.trim() : undefined,
+    projectId: typeof projectId === 'string' && projectId ? projectId : undefined,
+    limit: parseLimit(limit),
+    offset: parseOffset(offset),
+  };
+  const items = PlanService.listArchived(opts);
+  if (wantsTotal(total)) return { items, total: PlanService.countArchived(opts) };
+  return items;
+}));
 planApi.post('/:id/archive', (req, res) => wrap(res, () => PlanService.archive(req.params.id)));
 planApi.post('/:id/restore', (req, res) => wrap(res, () => PlanService.restore(req.params.id)));
 

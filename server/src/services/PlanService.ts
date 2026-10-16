@@ -1083,15 +1083,50 @@ export const PlanService = {
     }));
   },
 
-  /** 归档计划列表（全库，含项目名）——供「归档」菜单的恢复/彻底删除操作（T00442 扩展） */
-  listArchived(): Array<PlanTaskRow & { project_name: string }> {
-    return getDb().prepare(
-      `SELECT p.*, pr.name AS project_name, t.title AS linked_task_title
+  /**
+   * 归档计划列表（含项目名）——供「归档」菜单的恢复/彻底删除操作（T00442 扩展）。
+   * T02284：支持 keyword（标题/项目名，与归档页原本地过滤同口径）、projectId 服务端筛选与 limit/offset 分页。
+   * ⚠ 缺省 limit=全量：MCP（mtask_list_plans 归档分支）与 `scripts/verify-t01874.mjs` 依赖不带分页参数的全量语义。
+   */
+  listArchived(opts: { keyword?: string; projectId?: string; limit?: number; offset?: number } = {}): Array<PlanTaskRow & { project_name: string }> {
+    const where = ['p.archived = 1'];
+    const values: unknown[] = [];
+    if (opts.projectId) { where.push('p.project_id = ?'); values.push(opts.projectId); }
+    if (opts.keyword) {
+      // 转义 LIKE 通配符（%/_），让搜索词按字面匹配（与 TaskService.buildTaskFilter 同规则）
+      const kw = `%${opts.keyword.replaceAll(/[%_]/g, (m) => '\\' + m)}%`;
+      where.push(String.raw`(p.title LIKE ? ESCAPE '\' OR pr.name LIKE ? ESCAPE '\')`);
+      values.push(kw, kw);
+    }
+    let sql = `SELECT p.*, pr.name AS project_name, t.title AS linked_task_title
        FROM plan_tasks p
        JOIN projects pr ON pr.id = p.project_id
        LEFT JOIN tasks t ON t.id = p.linked_task_id
-       WHERE p.archived = 1 ORDER BY p.archived_at DESC, p.project_id, p.sort_order`,
-    ).all() as Array<PlanTaskRow & { project_name: string; linked_task_title: string | null }>;
+       WHERE ${where.join(' AND ')} ORDER BY p.archived_at DESC, p.project_id, p.sort_order`;
+    if (opts.limit) {
+      sql += ' LIMIT ? OFFSET ?';
+      values.push(opts.limit, opts.offset ?? 0);
+    }
+    return getDb().prepare(sql).all(...values) as Array<PlanTaskRow & { project_name: string; linked_task_title: string | null }>;
+  },
+
+  /** T02284：与 listArchived 同一套过滤条件的总数（归档页服务端分页的「共 N 条」） */
+  countArchived(opts: { keyword?: string; projectId?: string } = {}): number {
+    const where = ['p.archived = 1'];
+    const values: unknown[] = [];
+    if (opts.projectId) { where.push('p.project_id = ?'); values.push(opts.projectId); }
+    if (opts.keyword) {
+      const kw = `%${opts.keyword.replaceAll(/[%_]/g, (m) => '\\' + m)}%`;
+      where.push(String.raw`(p.title LIKE ? ESCAPE '\' OR pr.name LIKE ? ESCAPE '\')`);
+      values.push(kw, kw);
+    }
+    const row = getDb().prepare(
+      `SELECT COUNT(*) AS n
+       FROM plan_tasks p
+       JOIN projects pr ON pr.id = p.project_id
+       WHERE ${where.join(' AND ')}`,
+    ).get(...values) as { n: number };
+    return row.n;
   },
 
   get(id: string): PlanTaskRow | null {

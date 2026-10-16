@@ -38,6 +38,7 @@ import { notifyChange } from '../services/ChangeBus';
 import { v4 as uuid } from 'uuid';
 import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
 import { exportGate, REPORT_GATE } from '../util/export-gate'; // T00789：导出类并发闸；T02105：周报与启动会稿共用同一闸名
+import { parseLimit, parseOffset, wantsTotal } from '../util/list-page'; // T02284：列表分页参数统一口径（limit/offset/total=1）
 import { listDirectories } from '../services/FsBrowseService'; // T00771 二轮：服务端目录枚举（工作空间降级选择）
 
 /** 低频集合列表 TTL（5s）：读多写少，写端点会主动 cacheClear 保持一致性 */
@@ -597,7 +598,7 @@ api.delete('/tokens/:id', (req, res) => {
 });
 
 api.get('/tasks', (req, res) => {
-  const { projectId, archived, limit, offset, keyword, categoryId, priority, sort, shelved, status, attention } = req.query;
+  const { projectId, archived, limit, offset, keyword, categoryId, priority, sort, shelved, status, attention, total } = req.query;
   // M7-7.2：默认分页上限——未带 limit 或非法 limit 一律按 DEFAULT 截断（原「非法忽略=全量」语义废止）。
   // 全量语义保留给 MCP（mtask_list_tasks 走 TaskService.list，不经本路由）；已盘点 HTTP 消费方：
   // 桌面 TasksPage 200/页、移动端 100/页（7.1 改造）、CommandPalette/QueuePage/ArchivePage 显式 500。
@@ -613,7 +614,7 @@ api.get('/tasks', (req, res) => {
   } else {
     limitN = DEFAULT;
   }
-  res.json(TaskService.list({
+  const listOpts: TaskListOptions = {
     projectId: projectId as string | undefined,
     archived: archived === '1' || archived === 'true',
     priority: priority as string | undefined,
@@ -629,7 +630,13 @@ api.get('/tasks', (req, res) => {
     status: status as TaskListOptions['status'],
     // M7-7.1：移动端「需关注」服务端过滤（failed/unread），省去全量下发后本地筛
     attention: attention === 'failed' || attention === 'unread' ? attention : undefined,
-  }));
+  };
+  const items = TaskService.list(listOpts);
+  // T02284：`total=1` 加性通道——带该参数时响应体换成 `{items,total}` 信封（归档页服务端分页要「共 N 条」）。
+  // 不带时逐字返回裸数组：/tasks 的既有契约（桌面任务页、移动端、CommandPalette、QueuePage、
+  // scripts/verify-*.mjs 与 perf jmx 直取数组）不受任何影响，故本端点不改参数、不把裸数组变成对象。
+  if (wantsTotal(total)) return res.json({ items, total: TaskService.count(listOpts) });
+  res.json(items);
 });
 
 // 按任务编号查询单个任务：AI Agent / 前端凭 task_no 定位（编号全局唯一）
@@ -2327,7 +2334,7 @@ api.delete('/prompt-categories/:id', (req, res) => {
 });
 
 api.get('/prompts', (req, res) => {
-  const { categoryId, keyword, archived } = req.query;
+  const { categoryId, keyword, archived, limit, offset, total } = req.query;
   const where: string[] = [];
   const values: unknown[] = [];
   // T00525 默认只列未归档；T00872：归档页传 archived=1 应**只返回归档提示词**（软删查询）。
@@ -2343,8 +2350,20 @@ api.get('/prompts', (req, res) => {
   }
   // WHERE 子句先独立拼接，避免模板字面量嵌套
   const whereSql = where.length ? ` WHERE ${where.join(' AND ')}` : '';
-  const sql = `SELECT * FROM prompts${whereSql} ORDER BY pinned DESC, CASE WHEN sort_weight = 0 THEN 1 ELSE 0 END, sort_weight, updated_at DESC`;
-  res.json(getDb().prepare(sql).all(...values));
+  const orderSql = ' ORDER BY pinned DESC, CASE WHEN sort_weight = 0 THEN 1 ELSE 0 END, sort_weight, updated_at DESC';
+  // T02284：limit/offset 服务端分页（归档提示词区切服务端分页）。缺省 limit=全量以兼容既有无分页消费方
+  // （CommandPalette `/prompts`、移动端 MobilePrompts/QuickNote）；显式值钳 [1,500]，口径同 /tasks。
+  const limitN = parseLimit(limit);
+  const sql = `SELECT * FROM prompts${whereSql}${orderSql}${limitN === undefined ? '' : ' LIMIT ? OFFSET ?'}`;
+  const items = limitN === undefined
+    ? getDb().prepare(sql).all(...values)
+    : getDb().prepare(sql).all(...values, limitN, parseOffset(offset));
+  // T02284：total=1 加性通道（不带时响应体逐字不变，仍是裸数组）
+  if (wantsTotal(total)) {
+    const row = getDb().prepare(`SELECT COUNT(*) AS n FROM prompts${whereSql}`).get(...values) as { n: number };
+    return res.json({ items, total: row.n });
+  }
+  res.json(items);
 });
 
 api.post('/prompts', (req, res) => {
