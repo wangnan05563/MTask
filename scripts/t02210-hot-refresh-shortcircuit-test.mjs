@@ -275,6 +275,9 @@ check('E-02 深扫间隔上限（静默失效最坏收敛时间）', /Date\.now\
 check('E-03 快照只在非截断轮次登记', src.includes('else if (!state.truncated)') && src.includes('if (!job.state.truncated) commitTreeSnapshot'), '内联完成与后台续跑完成两处都受截断护栏');
 check('E-04 索引清空/换绑同时作废快照与监视器', src.includes('treeSnapshots.delete(projectId); // T02210') && src.includes('dropWorkspaceWatch(projectId)'), 'clearSymbols 双失效');
 check('E-05 短路返回发生在 memo 失效之前（不赔上全文重扫）', src.indexOf('shortCircuited: true }') < src.indexOf('invalidateSearchMemo(projectId); // T00782：索引刷新后'), '短路分支先返回，深扫路径才失效 memo');
+const routesSrc = origRead(join(ROOT, 'server', 'src', 'routes', 'index.ts'), 'utf8');
+const delRoute = routesSrc.slice(routesSrc.indexOf("api.delete('/projects/:id'"), routesSrc.indexOf("api.delete('/projects/:id'") + 900);
+check('E-06 删除项目同路回收监视器与快照（内存态随 projectId 存活）', /WorkspaceService\.clearSymbols\(req\.params\.id\)/.test(delRoute), 'delete /projects/:id → clearSymbols');
 
 // ---------- 收尾：关掉全部监视器（否则句柄挂到进程退出），清理临时目录 ----------
 for (const p of [pid, pid2, pid3, pid4]) WorkspaceService.clearSymbols(p);

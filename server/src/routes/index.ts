@@ -334,6 +334,9 @@ api.delete('/projects/:id', (req, res) => {
     return res.status(400).json({ error: '系统收件箱项目不可删除' });
   }
   getDb().prepare('DELETE FROM projects WHERE id = ?').run(req.params.id); // 级联删任务
+  // T02210：符号索引的监视器/结构快照是按 projectId 存活的内存态——项目删除后
+  //   既不会再被引用，也仍握着目录句柄（递归 fs.watch），必须随项目一起收掉
+  try { WorkspaceService.clearSymbols(req.params.id); } catch { /* 索引清理失败不阻塞删除 */ }
   cacheClear('projects');
   res.status(204).end();
 });
