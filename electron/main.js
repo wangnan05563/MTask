@@ -316,7 +316,13 @@ function setupApiProxy() {
         headers.set('Access-Control-Allow-Origin', '*');
         return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
       })
-      .catch((err) => new Response(`api proxy error: ${err.message}`, { status: 502 }));
+      // T02282：失败体必须回 JSON。前端 client.ts 的 request() 以 `res.json().catch(() => ({}))` 取错误，
+      // text/plain 时 body.error 为空 → 页面只剩「HTTP 502」，断连具体原因（fetch failed/ECONNREFUSED）丢失。
+      // CORS 头与成功分支对齐，否则渲染进程跨源读不到这条 502。
+      .catch((err) => new Response(JSON.stringify({ error: `api proxy error: ${err.message}` }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      }));
   });
 }
 
