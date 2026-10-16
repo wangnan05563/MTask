@@ -150,6 +150,32 @@ ok('G-07 开放问题 Q-1~Q-3 待裁决（含 tasks.status 二元决策冲突声
 ok('G-08 既有 PRD 引用对齐（T02169/T02170 已批准登记不重复拆解）',
   PRD.includes('T02169') && PRD.includes('T02170') && PRD.includes('T02219') && PRD.includes('T02259'));
 
+// ---------- F-C11~F-C15：v1.1 评审修订的取证结论固化（需求依赖的字段/能力必须有 schema 证据） ----------
+const taskCols = (schema.match(/ensureColumn\('tasks',\s*'[^']+'/g) ?? []).join(',');
+ok('F-C11 tasks 无排期字段（19 条 ensureColumn 全列扫描）且 PRD 不得声称任务级逾期预测',
+  !/start_date|duration_days|due_date|estimate/.test(taskCols)
+  && !/按任务工期/.test(PRD) && PRD.includes('无任何排期字段') && PRD.includes('计划级'));
+ok('F-C12 批量操作既有能力在位（multiSelect/selectedIds/5 种 ACTION_LABEL/10 级撤销栈）且 PM-105 标注为增强',
+  /const \[multiSelect, setMultiSelect\] = useState/.test(tasksPage)
+  && /const \[selectedIds, setSelectedIds\]/.test(tasksPage)
+  && /ACTION_LABEL: Record<'status' \| 'category' \| 'priority' \| 'color' \| 'archive'/.test(tasksPage)
+  && /MAX_UNDO_STEPS = 10/.test(tasksPage)
+  && /批量操作增强/.test(PRD) && /T00457/.test(PRD) && /T01065/.test(PRD));
+const aiUsageCols = schema.match(/CREATE TABLE IF NOT EXISTS ai_usage \(([\s\S]*?)\n    \);/)?.[1] ?? '';
+const promptCols = schema.match(/CREATE TABLE IF NOT EXISTS prompts \(([\s\S]*?)\n    \);/)?.[1] ?? '';
+ok('F-C13 ai_usage 无 token/成本/卡片维度；prompts 无计数字段；app_settings 为应用级（PRD 已给替代方案）',
+  !/token|cost|card/.test(aiUsageCols) && !/usage_count/.test(promptCols)
+  && /CREATE TABLE IF NOT EXISTS app_settings \(\s*\n\s*key\s+TEXT PRIMARY KEY/.test(schema)
+  && PRD.includes('usage_count') && PRD.includes('代理指标') && PRD.includes('guide.dismiss.<projectId>'));
+const retention = read('server/src/services/EventRetention.ts');
+ok('F-C14 事件默认保留 90 天在位且 PM-205 声明快照表为长历史唯一来源',
+  /DEFAULT_RETENTION_DAYS = 90/.test(retention) && PRD.includes('EventRetention.ts:23')
+  && /唯一来源是自建日快照表/.test(PRD));
+ok('F-C15 裁决记录：Q-1~Q-3 已签字（§1.1）+ 新增开放问题 Q-4~Q-6',
+  /### 1\.1 裁决记录/.test(PRD) && /已裁决/.test(PRD)
+  && /\| \*\*Q-4\*\* \|/.test(PRD) && /\| \*\*Q-5\*\* \|/.test(PRD) && /\| \*\*Q-6\*\* \|/.test(PRD)
+  && /v1\.1（按建议改写方案 \+ 评审修订/.test(PRD));
+
 mkdirSync(OUT_DIR, { recursive: true });
 writeFileSync(join(OUT_DIR, 't02272-gate-results.txt'), `T02272 PRD 交付质量门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
 console.log(`PASS=${pass} FAIL=${fail}`);
