@@ -131,12 +131,17 @@ const fakeBundle = {
   },
   workspaceNote: '', dataAsOf: '2026-10-15',
 };
-// 反射访问非导出的 outlineFacts——通过 kickoffOutline 的 user 拼装路径太长，
-// 这里以源码 grep 覆盖：outlineFacts 应引用 clip() 剪短长标题，防止样例段本身爆量。
-ok('O-04 样例事实里标题走 clip() 剪短（≤18 字），不炸 outline prompt 体积', /clip\(s: string, n = 18\)|clip: .{0,10}18/.test(S) || /const clip = \(s: string, n = 18\)/.test(S));
+// 反射访问非导出的 outlineFacts——通过 kickoffOutline 的 user 拼装路径太长。
+// T02205：锚语义化——原三条备择全是「声明行写法」的字面变体（改名/换写法即全灭）。
+// 改锚「clip 单源声明（默认 n=18）+ 在 outlineFacts 正文被调用 ≥3 处」：剪短是行为语义，不锁声明行怎么写。
+const ofMatch = /function outlineFacts\(b: KickoffBundle\)[\s\S]*?\r?\n}\r?\n/.exec(S);
+const clipDecl = /const\s+clip\s*=\s*\(s:\s*string,\s*n\s*=\s*(\d+)\)/.exec(S);
+const clipUses = ofMatch ? (ofMatch[0].match(/clip\(/g) ?? []).length : 0;
+ok('O-04 样例事实里标题走 clip() 剪短（默认 n=18；outlineFacts 正文调用 ≥3 处——声明或剪短没了即点名）',
+  !!clipDecl && Number(clipDecl[1]) === 18 && clipUses >= 3,
+  { 声明: clipDecl?.[0], 调用处数: clipUses });
 
 // 直接反射调用：把 outlineFacts 通过源码替换暴露成可求值的临时函数
-const ofMatch = /function outlineFacts\(b: KickoffBundle\)[\s\S]*?\r?\n}\r?\n/.exec(S);
 ok('O-05 outlineFacts 函数体可反射读取（保证 O 组后续断言作用在真实代码路径上）', !!ofMatch, ofMatch ? ofMatch[0].slice(0, 100) : 'no match');
 
 // ---------- R 组：pushStackedBlocks 刚性判定 ----------

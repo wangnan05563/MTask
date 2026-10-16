@@ -66,9 +66,19 @@ const feSections = strArray(PANEL, /const SECTIONS = \[([\s\S]*?)\];/);
 const feLayouts = strArray(PANEL, /const LAYOUTS = \[([\s\S]*?)\];/);
 const same = (a: string[], b: string[]) => a.length > 0 && a.length === b.length && a.every((v, i) => v === b[i]);
 
-ok('G-01 服务端三份白名单都解析得到（解析不到就是改名了，守卫本身失效）',
-  srvSections.length === 12 && srvLayouts.length === 11 && srvKeys.length === 12,
-  { sections: srvSections.length, layouts: srvLayouts.length, keys: srvKeys.length });
+// T02205：条数不再硬编码（原为 12/11/12）——改锚「源码解析 ≡ 运行时导出」。
+// 加/删白名单项不必改门；改名或换写法让解析落空时，两侧长度当场点名（下行 G-02/G-03 的前端同源比较也才有意义）。
+const SVC_MOD = await import('../server/src/services/kickoffService.ts');
+const rtSections = [...(SVC_MOD.KICKOFF_SECTIONS ?? [])];
+const rtLayouts = [...(SVC_MOD.KICKOFF_LAYOUTS ?? [])];
+const rtKeys = [...(SVC_MOD.KICKOFF_DATA_KEYS ?? [])];
+ok('G-01 服务端三份白名单：源码解析与运行时导出的数组逐字同序（加/删项不必改门；改名或换写法导致解析落空即点名）',
+  same(srvSections, rtSections) && same(srvLayouts, rtLayouts) && same(srvKeys, rtKeys),
+  {
+    源码解析: [srvSections.length, srvLayouts.length, srvKeys.length],
+    运行时导出: [rtSections.length, rtLayouts.length, rtKeys.length],
+    解析摘样: srvSections.slice(0, 2), 运行时摘样: rtSections.slice(0, 2),
+  });
 ok('G-02 前端章节候选与服务端 KICKOFF_SECTIONS 逐字同序（AI 出稿越界由服务端 400，前端不该自成一套）',
   same(feSections, srvSections), { fe: feSections, srv: srvSections });
 ok('G-03 前端版式候选与服务端 KICKOFF_LAYOUTS 逐字同序',
