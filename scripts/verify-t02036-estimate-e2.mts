@@ -17,15 +17,22 @@
  *
  * 隔离纪律（skill 红线 8）：G6 用 `os.tmpdir()/t02036-e2-*` 新建空库，不碰生产库，跑完回收。
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolveServerLauncher } from './isolated-server-launcher.mts';
+import { okPair } from './lib/anchor-pair.mts'; // T02293 判据 3：文案锚必须配行为断言
 
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02036-e2-'));
 process.env.MTask_DATA_DIR = DATA_DIR;
 
 const E = await import('../server/src/services/estimate-engine.ts');
 const { addWorkdays, buildCalendar } = await import('../server/src/util/workdays.ts');
+// 单源词干表（G7 改名模拟要改的就是这个对象；引擎与门进程引用同一份 on-disk estimateCopy，改表即改文案）
+const { ESTIMATE_ERRORS } = await import('../server/src/services/EstimateService.ts');
 
 let pass = 0;
 let fail = 0;
@@ -41,6 +48,20 @@ const eq = (name: string, a: number, b: number, tol = 1e-9) =>
 const errOf = (fn: () => unknown): string => {
   try { fn(); return ''; } catch (e) { return e instanceof Error ? e.message : String(e); }
 };
+/**
+ * 同进程抛错类断言的配对器（T02293 判据 3）：
+ * 行为侧 = 确实抛了错（`extraBehavior` 再叠一枚「合法入参照样通过」，把「静默不校验」与「只是换了措辞」分开）；
+ * 字面侧 = 文案含产品**单源词干**（`ESTIMATE_ERRORS`，见 `server/src/services/estimateCopy.ts`），门不重打整句。
+ */
+const rejectedMsg = (
+  label: string,
+  msg: string,
+  stem: string,
+  extraBehavior?: () => boolean,
+) => okPair(ok, label,
+  () => msg.length > 0 && (extraBehavior ? extraBehavior() : true),
+  () => msg.includes(stem),
+  () => ({ 文案: msg.slice(0, 140) }));
 const group = (t: string) => console.log(`\n== ${t}`);
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
 const P = (o: number, m: number, p: number) => ({ optimistic: o, likely: m, pessimistic: p });
@@ -133,15 +154,25 @@ group('G2 参数配置与换算（§3.3 裁决 D1 + §4.5）');
   ok('2-04 覆盖生效（20 / 6 / scope 0.1 / 隐藏系数 / 0.8:4:1.4）',
     over.manDaysPerManMonth === 20 && over.hoursPerManDay === 6 && over.coefs.scope === 0.1
     && over.hideCoefsForClient === true && over.ruleRatio.oMul === 0.8 && over.ruleRatio.pMul === 1.4, over);
-  ok('2-05 非法值一律报错不静默：非数字 / 越界 / 系数 >1 / 人月标准 >30',
-    errOf(() => E.resolveEstimateConfig({ 'estimate.manDaysPerManMonth': 'abc' })).includes('必须是数字')
-    && errOf(() => E.resolveEstimateConfig({ 'estimate.manDaysPerManMonth': '0' })).includes('不得小于')
-    && errOf(() => E.resolveEstimateConfig({ 'estimate.coef.quality': '1.5' })).includes('不得大于')
-    && errOf(() => E.resolveEstimateConfig({ 'estimate.hoursPerManDay': '25' })).includes('不得大于'));
+  // 非法值一律报错不静默——四支各自配「合法入参照样通过」的行为侧，字面侧取单源词干而非整句抄本。
+  // 原门把四类拒绝 AND 成一条 `ok`，红的时候读不出是哪一类失守；拆成四对 okPair 后覆盖面不缩、红因可定位。
+  const cfgOk = () => E.resolveEstimateConfig({ 'estimate.manDaysPerManMonth': '20.83', 'estimate.hoursPerManDay': '8' });
+  rejectedMsg('2-05a 参数非数字 → 抛「必须是数字」（且合法入参照样解析）',
+    errOf(() => E.resolveEstimateConfig({ 'estimate.manDaysPerManMonth': 'abc' })), ESTIMATE_ERRORS.notNumber, () => !!cfgOk());
+  rejectedMsg('2-05b 低于下限 → 抛「不得小于」（且合法入参照样解析）',
+    errOf(() => E.resolveEstimateConfig({ 'estimate.manDaysPerManMonth': '0' })), ESTIMATE_ERRORS.paramMin, () => !!cfgOk());
+  rejectedMsg('2-05c 系数越上限 → 抛「不得大于」（且合法入参照样解析）',
+    errOf(() => E.resolveEstimateConfig({ 'estimate.coef.quality': '1.5' })), ESTIMATE_ERRORS.paramMax, () => !!cfgOk());
+  rejectedMsg('2-05d 工时越上限 → 抛「不得大于」（且合法入参照样解析）',
+    errOf(() => E.resolveEstimateConfig({ 'estimate.hoursPerManDay': '25' })), ESTIMATE_ERRORS.paramMax, () => !!cfgOk());
   const ratioErr = errOf(() => E.parseRuleRatio('1:5:1.6'));
-  ok('2-06 ratio 中段必须是 PERT 权重 4（写错直接报错，不猜口径）', ratioErr.includes('必须是 PERT 权重 4'), ratioErr);
-  ok('2-07 ratio 段数/负值报错', errOf(() => E.parseRuleRatio('1:4')).includes('三段正数')
-    && errOf(() => E.parseRuleRatio('1:4:-1.6')).includes('三段正数'));
+  rejectedMsg('2-06 ratio 中段必须是 PERT 权重 4（写错直接报错，不猜口径；合法比例仍解析）',
+    ratioErr, ESTIMATE_ERRORS.ratioMidPert,
+    () => JSON.stringify(E.parseRuleRatio('1:4:1.6')) === JSON.stringify({ oMul: 1, pMul: 1.6 }));
+  rejectedMsg('2-07a ratio 段数不足 → 抛三段正数（合法比例仍解析）',
+    errOf(() => E.parseRuleRatio('1:4')), ESTIMATE_ERRORS.ratioFormat, () => !!E.parseRuleRatio('1:4:1'));
+  rejectedMsg('2-07b ratio 含负值 → 抛三段正数（合法比例仍解析）',
+    errOf(() => E.parseRuleRatio('1:4:-1.6')), ESTIMATE_ERRORS.ratioFormat, () => !!E.parseRuleRatio('1:4:1'));
   eq('2-08 人天 → 人月 ÷20.83', E.toManMonth(20.83), 1);
   eq('2-09 人天 → 人时 ×8', E.toHours(2.5), 20);
   const cal = buildCalendar([
@@ -415,6 +446,116 @@ group('G6 与 E1 数据层的接缝（隔离库 → EstimateService 视图行 �
   ok('6-07 视图行的 phase 全部落在引擎可识别阶段（两侧枚举不会漂移：同一个 ESTIMATE_PHASES 数组）',
     views.every((v) => E.buildSummary([E.toEngineRow(v as never)]).phases.length === 6));
   closeDb();
+}
+
+// =====================================================================
+group('G7 单源词干改名模拟（T02293 判据 4·同进程引擎层）');
+{
+  // 把 `ESTIMATE_ERRORS` 的词干逐支改成 `ZZZ-<key>` 再触发同一拒绝，要求「照样拒绝、文案随单源移动、
+  // 旧词干零残留、还原逐字符相同」。任一不成立即说明某层留了第二份抄本——那正是判据 1 要消灭的东西。
+  // 引擎这两个校验（resolveEstimateConfig / parseRuleRatio）是纯函数，不写库，故零副作用天然成立。
+  const ERR_TABLE = ESTIMATE_ERRORS as unknown as Record<string, string>;
+  const cases: Array<{ key: string; title: string; run: () => string }> = [
+    { key: 'notNumber', title: '参数非数字', run: () => errOf(() => E.resolveEstimateConfig({ 'estimate.manDaysPerManMonth': 'abc' })) },
+    { key: 'paramMin', title: '参数下限', run: () => errOf(() => E.resolveEstimateConfig({ 'estimate.manDaysPerManMonth': '0' })) },
+    { key: 'paramMax', title: '参数上限', run: () => errOf(() => E.resolveEstimateConfig({ 'estimate.coef.quality': '1.5' })) },
+    { key: 'paramLabel', title: '参数名前缀', run: () => errOf(() => E.resolveEstimateConfig({ 'estimate.coef.scope': '-0.1' })) },
+    { key: 'ratioMidPert', title: '推导比例中段', run: () => errOf(() => E.parseRuleRatio('1:5:1.6')) },
+    { key: 'ratioFormat', title: '推导比例格式', run: () => errOf(() => E.parseRuleRatio('1:4')) },
+  ];
+  const zj: string[] = [];
+  for (const c of cases) {
+    const stem = ERR_TABLE[c.key];
+    const before = c.run();
+    if (!before.includes(stem)) { zj.push(`${c.title}：原始件文案没命中单源词干「${stem}」（实际「${before.slice(0, 60)}」）`); continue; }
+    const renamed = `ZZZ-${c.key}`;
+    ERR_TABLE[c.key] = renamed;
+    let after = '';
+    try { after = c.run(); } finally { ERR_TABLE[c.key] = stem; }
+    if (after === '') zj.push(`${c.title}：改名后引擎不再拒绝——校验失守（文案不是唯一挡点）`);
+    else if (!after.includes(renamed)) zj.push(`${c.title}：改名后文案未随单源表移动（该层留了写死抄本）`);
+    if (after.includes(stem)) zj.push(`${c.title}：改名后文案仍含旧词干「${stem}」= 第二份抄本`);
+    if (c.run() !== before) zj.push(`${c.title}：还原后文案与原始件不逐字符相同（改表污染）`);
+  }
+  ok('G7-01 词干改名模拟全项通过（拒绝在、文案随单源移动、旧词干零残留、还原逐字符相同、纯函数零副作用）',
+    zj.length === 0, zj);
+  ok('G7-02 改名模拟覆盖引擎层单源词干 ≥6 支',
+    cases.length >= 6, { 支数: cases.length, 去重词干: new Set(cases.map((c) => c.key)).size });
+}
+
+// =====================================================================
+group('G8 跨进程同源自证（另起进程重算引擎文案，逐字符比对）');
+{
+  // 本门无 REST 服务端，判据 4 的「服务端原文 vs 门进程」适配为「子进程重算 vs 门进程」：
+  // 子进程独立 import 同一份 on-disk 引擎，打同样五枚非法入参，把抛出的文案逐字符回传。
+  // 门把自己的 `errOf` 结果与之比对——只要两侧读同一张 `estimateCopy`，改措辞门不假红；
+  // 若门抄了整句当字面量，跨进程重算就对不上。假词干零命中保证比对不是恒真式。
+  const snippet = join(DATA_DIR, 't02036-xproc.mts');
+  const engineUrl = pathToFileURL(resolve(ROOT, 'server', 'src', 'services', 'estimate-engine.ts')).href;
+  writeFileSync(snippet, [
+    `const E = await import(${JSON.stringify(engineUrl)});`,
+    `const fire = (fn) => { try { fn(); return ''; } catch (e) { return e instanceof Error ? e.message : String(e); } };`,
+    `const calls = [`,
+    `  () => E.resolveEstimateConfig({ 'estimate.manDaysPerManMonth': 'abc' }),`,
+    `  () => E.resolveEstimateConfig({ 'estimate.manDaysPerManMonth': '0' }),`,
+    `  () => E.resolveEstimateConfig({ 'estimate.coef.quality': '1.5' }),`,
+    `  () => E.parseRuleRatio('1:5:1.6'),`,
+    `  () => E.parseRuleRatio('1:4'),`,
+    `];`,
+    `console.log('XPROC_JSON::' + JSON.stringify(calls.map(fire)));`,
+  ].join('\n'));
+  const LAUNCHER = resolveServerLauncher(ROOT, snippet);
+  const mine = [
+    () => E.resolveEstimateConfig({ 'estimate.manDaysPerManMonth': 'abc' }),
+    () => E.resolveEstimateConfig({ 'estimate.manDaysPerManMonth': '0' }),
+    () => E.resolveEstimateConfig({ 'estimate.coef.quality': '1.5' }),
+    () => E.parseRuleRatio('1:5:1.6'),
+    () => E.parseRuleRatio('1:4'),
+  ].map(errOf);
+  let child: string[] = [];
+  let raw = '';
+  let xprocErr = '';
+  try {
+    raw = execFileSync(LAUNCHER.exec, LAUNCHER.tsx, {
+      cwd: ROOT, env: { ...process.env, ...LAUNCHER.env, MTask_DATA_DIR: DATA_DIR },
+      encoding: 'utf8', timeout: 120_000, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const line = raw.split('\n').find((l) => l.startsWith('XPROC_JSON::'));
+    child = line ? (JSON.parse(line.slice('XPROC_JSON::'.length)) as string[]) : [];
+  } catch (e) { xprocErr = String((e as Error)?.message).slice(0, 240); }
+  const stems = Object.values(ESTIMATE_ERRORS);
+  ok('G8-01 子进程与门进程各 5 条拒绝文案逐字符相同（跨进程同源）',
+    xprocErr === '' && child.length === 5 && child.every((m, i) => m === mine[i]),
+    { 启动器: LAUNCHER.label, xprocErr, childMsgs: child.map((m) => m.slice(0, 50)), 门进程: mine.map((m) => m.slice(0, 50)) });
+  ok('G8-02 每条子进程拒绝文案都命中单源词干（门断言的是词干，不是整句抄本）',
+    child.length === 5 && child.every((m) => stems.some((s) => m.includes(s))),
+    child.map((m) => m.slice(0, 50)));
+  const fake = 'ZZZ-本门不存在的词干';
+  ok('G8-03 假词干对子进程全部文案零命中（G8-01/G8-02 的比对不是恒真式）',
+    child.length > 0 && child.every((m) => !m.includes(fake)) && !raw.includes(fake), { 命中: raw.includes(fake) });
+}
+
+// =====================================================================
+group('G9 配对器三态反证（负控·判据 3~4）');
+{
+  // 用 spy 版 ok 捕获配对器落账结果（不动全局计数），证明 okPair 真能分辨「行为失守」与「字面锚点失配」：
+  // 造一份「文案含真词干、但行为缺失」的夹具，配对器必须判红且红因=行为失守，而不是被文案带绿。
+  const seen: Array<{ cond: boolean; 红因?: string }> = [];
+  const spy = (_name: string, cond: boolean, extra?: unknown) => {
+    seen.push({ cond, 红因: (extra as Record<string, unknown> | undefined)?.红因 as string | undefined });
+  };
+  okPair(spy, 'NC-01（预期被配对器判红：行为失守）',
+    () => false, () => `估算参数xx${ESTIMATE_ERRORS.notNumber}`.includes(ESTIMATE_ERRORS.notNumber));
+  okPair(spy, 'NC-02（预期被配对器判红：锚点失配）',
+    () => true, () => '必须是数字'.includes('完全不存在的旧词'));
+  okPair(spy, 'NC-03（预期绿：双绿基准）',
+    () => true, () => ESTIMATE_ERRORS.notNumber.includes(ESTIMATE_ERRORS.notNumber));
+  ok('G9-01 负控：含真词干但行为缺失 → 配对器判红且红因=行为失守（非锚点失配）',
+    seen[0]?.cond === false && /行为失守/.test(seen[0]?.红因 ?? ''), seen[0]);
+  ok('G9-02 负控：行为在但锚抄错词 → 红因=字面锚点失配（行为在）',
+    seen[1]?.cond === false && /字面锚点失配/.test(seen[1]?.红因 ?? ''), seen[1]);
+  ok('G9-03 双绿基准：行为与锚同时成立才判绿',
+    seen[2]?.cond === true, seen[2]);
 }
 
 // =====================================================================
