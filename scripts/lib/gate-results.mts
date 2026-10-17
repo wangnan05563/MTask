@@ -14,8 +14,10 @@
  * 用法（门侧只改写点，不改判据）：
  *   writeGateResults(OUT_DIR, 't02098-gate-results.txt', summary, { port: PORT, dataDir: DATA_DIR });
  *   writeFileSync(gateArtifactPath(OUT_DIR, 't02099-sample.pptx'), built.buffer); // T02309：旁证同标识
+ *   const SHOTS = gateShotsDir('t02046');                                        // T02312：截图每轮一个子目录
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 export type GateRunMeta = { port?: number | string; dataDir?: string; note?: string };
@@ -39,6 +41,22 @@ export function gateResultsPath(outDir: string, base: string): string {
  */
 export function gateArtifactPath(outDir: string, base: string): string {
   return gateResultsPath(outDir, base);
+}
+
+/**
+ * T02312：截图这类「整图二进制产物」的落盘**目录**口径（`.mjs` UI 门用）。
+ *
+ * 仓库根固定名目录（`ROOT/.t020XX-shots/`）在同名步骤上会被并发跑门的后写者整图覆盖，
+ * 人工复核看到的截图不属于自己那一轮，且长期在仓库根堆未纳管产物。改为
+ * 「隔离根 / `<门名>-<RUN_TAG>` / `<步骤名>.png`」：
+ * - 每轮一个子目录 → 跨会话不可能互覆；
+ * - 目录名带与文本产物同一 RUN_TAG → 一轮的截图与结果文本可按标识配对；
+ * - 根目录移出仓库根，可用 `MTASK_GATE_ARTIFACT_DIR` 指定（本机 C: 常年 0 可用，
+ *   验证门临时产物应落 D:，见 memory「验证门临时目录必须落 D:」）。
+ */
+export function gateShotsDir(gateName: string): string {
+  const root = process.env.MTASK_GATE_ARTIFACT_DIR || join(tmpdir(), 'mtask-gate-shots');
+  return join(root, `${gateName}-${RUN_TAG}`);
 }
 
 /** 归属行——沿用 T02285 在 t02166-ai 门落地的写法，字段按可得性拼接。 */

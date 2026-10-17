@@ -59,3 +59,7 @@ server/MTask_DATA_DIR/
 .trae
 generated-images
 .workbuddy
+
+# T02312：验收门截图产物（历史固定名目录 + 现在的隔离根）一律不入库
+.t0*-shots/
+.gate-shots/

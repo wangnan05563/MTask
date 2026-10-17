@@ -15,7 +15,7 @@
  *   环境变量：T02043_UI_PORT（默认 39936）、T02043_UI_CDP（默认 9346）
  *
  * 隔离纪律（skill 红线 8）：MTask_DATA_DIR 指临时目录、端口自配，不碰生产库与用户实例；
- * 下载在页面内拦截（不写盘），截图落 .t02043-shots/。
+ * 下载在页面内拦截（不写盘），截图落每轮独立子目录（`MTASK_GATE_ARTIFACT_DIR/<门名>-<运行标识>/`，T02312：不再落仓库根固定名目录，防并发整图互覆）。
  */
 import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -26,7 +26,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02043-ui-'));
 const CHROME_PROFILE = mkdtempSync(join(tmpdir(), 't02043-ui-chrome-'));
-const SHOTS = join(ROOT, '.t02043-shots');
+// T02312：截图不落仓库根固定名目录（并发跑门时同一步骤名整图互覆，且仓库根长期堆未纳管产物）——
+// 改用 gate-results 的进程级 RUN_TAG 子目录，与本轮文本产物同标识，可按标识核对归属。
+const { gateShotsDir } = await import(pathToFileURL(join(ROOT, 'scripts/lib/gate-results.mts')).href);
+const SHOTS = gateShotsDir('t02043');
 const PORT = Number(process.env.T02043_UI_PORT ?? 39936);
 const CDP = Number(process.env.T02043_UI_CDP ?? 9346);
 const CHROME = process.env.T02043_UI_CHROME ?? 'C:/Program Files/Google/Chrome/Application/chrome.exe';
@@ -168,7 +171,7 @@ async function shot(name) {
     if (b64) {
       const file = join(SHOTS, `${name}.png`);
       writeFileSync(file, Buffer.from(b64, 'base64'));
-      shotFiles.push(`${name}.png`);
+      shotFiles.push(file);
       return file;
     }
     await sleep(700);

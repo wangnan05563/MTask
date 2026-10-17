@@ -11,7 +11,7 @@
  *   <node22> node_modules/tsx/dist/cli.mjs scripts/verify-t02047-ui.mjs
  *   环境变量：T02047_UI_PORT / T02047_UI_CDP（缺省随机，避开 Windows 动态端口保留区）、T02047_UI_KEEP=1 保留临时目录
  *
- * 隔离纪律（skill 红线 8）：MTask_DATA_DIR 指临时目录、端口自配，不碰生产库与用户实例；截图落 .t02047-shots/。
+ * 隔离纪律（skill 红线 8）：MTask_DATA_DIR 指临时目录、端口自配，不碰生产库与用户实例；截图落每轮独立子目录（`MTASK_GATE_ARTIFACT_DIR/<门名>-<运行标识>/`，T02312：不再落仓库根固定名目录，防并发整图互覆）。
  * 本仓内置 Browser 无视口不能点击/截图（见 memory），故走 CDP + headless=new。
  */
 import { spawn } from 'node:child_process';
@@ -24,7 +24,10 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT_T0 = Date.now();
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02047-ui-'));
 const CHROME_PROFILE = mkdtempSync(join(tmpdir(), 't02047-ui-chrome-'));
-const SHOTS = join(ROOT, '.t02047-shots');
+// T02312：截图不落仓库根固定名目录（并发跑门时同一步骤名整图互覆，且仓库根长期堆未纳管产物）——
+// 改用 gate-results 的进程级 RUN_TAG 子目录，与本轮文本产物同标识，可按标识核对归属。
+const { gateShotsDir } = await import(pathToFileURL(join(ROOT, 'scripts/lib/gate-results.mts')).href);
+const SHOTS = gateShotsDir('t02047');
 const rndPort = (base) => base + Math.floor(Math.random() * 400);
 const PORT = Number(process.env.T02047_UI_PORT ?? rndPort(39100));
 const CDP = Number(process.env.T02047_UI_CDP ?? rndPort(9400));
@@ -209,7 +212,7 @@ async function shot(name) {
   for (let i = 0; i < 3; i++) {
     const r = await send('Page.captureScreenshot', { format: 'png', fromSurface: true });
     const b64 = r.result && r.result.data;
-    if (b64) { const file = join(SHOTS, `${name}.png`); writeFileSync(file, Buffer.from(b64, 'base64')); shotFiles.push(`${name}.png`); return file; }
+    if (b64) { const file = join(SHOTS, `${name}.png`); writeFileSync(file, Buffer.from(b64, 'base64')); shotFiles.push(file); return file; }
     await sleep(700);
   }
   return '';
