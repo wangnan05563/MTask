@@ -637,17 +637,35 @@ export function parseAiJson(content: string, hits?: string[]): unknown {
 /**
  * T02311：白名单外非法转义的有约束清洗。模型偶发输出 `\d` / `\'` / 未双写的 `\`，
  * `JSON.parse` 直抛「Bad escaped character in JSON at position N」——而合法 JSON 的每个
- * 反斜杠后面只可能跟 `"` `\` `/` `b` `f` `n` `r` `t` `u` 七种字符，故本正则
- * （反斜杠后不是这七种之一）不会碰任何合法输入，只把模型笔误双写成 `\\`。
+ * 反斜杠后面只可能跟 `"` `\` `/` `b` `f` `n` `r` `t` `u` 七种字符。
+ *
+ * **必须边走边认转义态**（成对消费合法转义），不能用无状态正则：无状态正则会把我方合法的
+ * `\\`（如 Windows 路径 `D:\\code`）的后半个反斜杠误判为非法——它的后一个字符是 `c`，
+ * 不在白名单里——双写后反而造出 `\\\c` 这种**真非法**序列。2026-10-17 真链路 41981 轮
+ * 就这么把一份合法 JSON 改崩（A-01 400「Bad escaped character at position 512」），
+ * 而 41980 轮的 `\d` 是独立非法转义，两种输入对无状态正则一过一崩。
+ *
  * 命中计次由调用方追 warning——不静默改写（与尾逗号修复、超长 bullet 裁剪同一口径）。
  */
 export function relaxIllegalEscapes(raw: string): { text: string; fixed: number } {
+  let out = '';
   let fixed = 0;
-  const text = raw.replace(/\\(?!["\\/bfnrtu])/g, () => {
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (c !== '\\') {
+      out += c;
+      continue;
+    }
+    const next = raw[i + 1];
+    if (next !== undefined && '"\\/bfnrtu'.includes(next)) {
+      out += c + next; // 合法转义：成对消费，不判定
+      i++;
+      continue;
+    }
+    out += '\\\\'; // 非法转义：只双写这一个反斜杠，其后字符下一轮照常判定
     fixed += 1;
-    return '\\\\';
-  });
-  return { text, fixed };
+  }
+  return { text: out, fixed };
 }
 
 /** 清洗命中即追一条 warning（调用方传入收集数组；无数组则静默修正，供无 warning 通道的路径用） */

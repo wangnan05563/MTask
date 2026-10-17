@@ -340,6 +340,18 @@ if (!(await waitUp())) {
     && String(r13.body?.outline?.[1]?.bullets?.[0] ?? '').includes('\\d'),
     { status: r13.status, warnings: r13.body?.warnings, error: r13.body?.error });
 
+  // R-13b 合法转义序列（Windows 路径）不被清洗误伤（T02311 真链路 41981 轮回归：无状态正则曾把
+  // 合法的 `D:\\code` 后半个反斜杠误判非法、双写后造出 `\\\c` 把合法 JSON 改崩）
+  const arr13b = JSON.parse(outlineJson(12)) as Array<{ bullets: string[] }>;
+  arr13b[1].bullets[0] = '工作空间：D:\\code\\otherProjects 已配置'; // JS 串 = D:\code\otherProjects（单反斜杠）
+  mockQueue = [{ content: JSON.stringify(arr13b) }];
+  const r13b = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
+  ok('R-13b 合法转义序列（Windows 路径 \\）原样通过——清洗不把 \\\\ 误判成非法、不误报 warning',
+    r13b.status === 200 && r13b.body?.outline?.length === 12
+    && String(r13b.body?.outline?.[1]?.bullets?.[0] ?? '').includes('D:\\code')
+    && !(r13b.body?.warnings ?? []).some((w: string) => /非法转义/.test(w)),
+    { status: r13b.status, warnings: r13b.body?.warnings, bullet: r13b.body?.outline?.[1]?.bullets?.[0] });
+
   // R-14 清洗修不了的非法转义（\u 后非四位 hex）：400 报错带位置上下文切片 + 厂商原始响应落档非空（T02311）
   const arr14 = JSON.parse(outlineJson(12)) as Array<{ bullets: string[] }>;
   arr14[1].bullets[0] = '范围含\\u00不完整转义'; // JS 串：反斜杠 + u + 0 + 0（u 在白名单内不清洗，parse 必失败）

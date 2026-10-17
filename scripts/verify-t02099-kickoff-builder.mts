@@ -227,6 +227,45 @@ ok('U-29 降级页只留标题与正文文本（数据块被舍弃而非溢出�
   { degraded: degraded.degradedPages, hitLen: hit.length });
 writeFileSync(gateArtifactPath(OUT_DIR, 't02099-degraded.pptx'), degraded.buffer);
 
+// ---------- U-6 占位表格降级（T02313：真链路 C-03 丢块的 mock 先声） ----------
+// 复现形态：table 版式页 dataKeys=[workload,assignees] 且库内 assignee 全空——
+// workload 产 text+chart（柔性保底 1.5"+0.75"），assignees 再产 text+「待补充」表格（1.02"），
+// 柔性保底合计 3.0" 吃去 body 3.225" 的 93%，表格被挤出版面 →「空间不足，已省略」（C-03）。
+const emptyAsg = M.blocksForKey('assignees', bundleOf({ assignees: [] }) as any);
+ok('U-30 空 assignee 的整页占位形态不变（blocksForKey 仍产 说明文本+待补充表格，t02101 U-07 同口径）',
+  emptyAsg.length === 2 && emptyAsg[0].table == null && emptyAsg[1].table != null
+  && emptyAsg[1].table!.rows[0][0] === '待补充',
+  emptyAsg.map((x) => Object.keys(x).join('+')));
+const comboBullets = ['Σ「人天」从「计划行数 17」累计', '复杂度分布 1:7 2:9 3:4 4:3', '「承担人」待补充，页脚注明非三点估算'];
+const comboPage = { section: '正文', title: '工作量与承担人', bullets: comboBullets, dataKeys: ['workload', 'assignees'], layout: 'table' };
+const comboLayout = M.layoutBody(comboPage as any, bundleOf({ assignees: [] }) as any, lay.framesFor('data', 'table'), comboBullets) as any;
+ok('U-30b 多键同页时占位表格被降级去掉、说明文本保留（T02313：零信息刚性块不挤真数据）',
+  comboLayout.blocks.some((b: any) => b.text != null && /不代填人名/.test(b.text.content))
+  && !comboLayout.blocks.some((b: any) => b.table != null && b.table.rows[0]?.[0] === '待补充')
+  && !(comboLayout.dropped ?? []).some((d: string) => /省略/.test(d)),
+  { kinds: comboLayout.blocks.map((b: any) => Object.keys(b).filter((k) => k !== 'box').join('+')), dropped: comboLayout.dropped });
+const combo = outlineOf(13, (pages) => {
+  pages[2] = { ...comboPage };
+});
+const comboBuilt = await M.buildKickoffPpt(bundleOf({ assignees: [] }) as any, combo as any);
+ok('U-31 同型页（workload+assignees 且 assignee 空）不再丢块——第 3 页无「空间不足，已省略」',
+  // 收窄到本单修复的组合页：夹具第 13 页是 layout:'timeline'+dataKeys:['workload'] 的无效组合
+  // （outlineOf 强制 dataKeys 不改 layout 的副产品，validateOutline 在生产侧会拦），其图表省略
+  // 是夹具既有限缺陷、与本单无关，真实 deck（t02166-ai）不存在该形态——不塞进本断言。
+  !(comboBuilt.warnings ?? []).some((w: string) => /第 3 页空间不足，已省略/.test(w)),
+  (comboBuilt.warnings ?? []).filter((w: string) => /省略|让位/.test(w)));
+const czip = await JSZip.loadAsync(comboBuilt.buffer);
+const cSlideXmls = await Promise.all(
+  Object.keys(czip.files)
+    .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+    .sort((a, b) => Number(/(\d+)\.xml/.exec(a)![1]) - Number(/(\d+)\.xml/.exec(b)![1]))
+    .map(async (n) => await czip.file(n)!.async('string')),
+);
+const cAllText = cSlideXmls.map((x) => (x.match(/<a:t>([^<]*)<\/a:t>/g) ?? []).join(' ')).join(' ');
+ok('U-32 同型页承担人信息仍在产物里（降级为文本而非整块消失）',
+  /不代填人名/.test(cAllText),
+  { pageCount: comboBuilt.pageCount, hit: /不代填人名/.test(cAllText) });
+
 // ---------- 输出 ----------
 writeGateResults(OUT_DIR, 't02099-gate-results.txt', `T02099 装配器门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);

@@ -227,6 +227,9 @@ function assigneesTable(b: KickoffBundle): NonNullable<Block['table']> {
 /** FR-4.1：assignee 全空时整页占位 + 一句口径说明，禁止由 AI 编人名 */
 function assigneesBlocks(b: KickoffBundle): Array<Omit<Block, 'box'>> {
   if (b.assignees.length === 0) {
+    // 整页占位形态（t02101 U-07 / t02198 H-06 钉住）：说明文本 + 「待补充」表格行。
+    // 注意：该表格信息量为零（文本已全覆盖），独占一页时是「有意的占位」；
+    // 与其他数据块同页时的版面代价由 layoutBody 的占位表格降级规则处理（T02313）。
     return [
       {
         text: {
@@ -238,6 +241,17 @@ function assigneesBlocks(b: KickoffBundle): Array<Omit<Block, 'box'>> {
     ];
   }
   return [{ table: assigneesTable(b) }];
+}
+
+/**
+ * T02313：占位表格降级判据——无真实数据时产生的「待补充」单行表格（assignees 全空）。
+ * 独占一页时它是「整页占位」（t02101 U-07 / t02198 H-06 的钉住形态，保留）；
+ * 与其他数据块同页时它信息量为零（同 dataKey 的说明文本已全覆盖）却要占 1.02" 刚性高，
+ * 会把同页真数据挤出版面——真链路第 14 页（workload+assignees 同页）就是这样丢的表格
+ * （C-03「非时间线页零丢块」）。同页即降级去掉，信息不丢（文本还在）。
+ */
+function isPlaceholderTable(d: Omit<Block, 'box'>): boolean {
+  return d.table != null && d.table.rows.length === 1 && d.table.rows[0]?.[0] === KICKOFF_PLACEHOLDER;
 }
 
 function risksTable(b: KickoffBundle): NonNullable<Block['table']> {
@@ -954,9 +968,12 @@ export function layoutBody(
     diagramKey !== null && (item.layout === 'flow' ? flowDegradeReason(b) === null : b.assignees.length > 0);
   const diagramMinH = item.layout === 'flow' ? FLOW_MIN_H : CHIP_MIN_H;
   // 形状版自己绘制时间线块，不让它进刚性表格预算（否则时间线区被算两次，要点被无端压扁）
-  const rawBlocks = item.dataKeys
+  const baseBlocks = item.dataKeys
     .filter((k) => !(tlShape && k === 'timeline') && !(diagramOn && k === diagramKey))
     .flatMap((k) => blocksForKey(k, b));
+  // T02313：多键同页时降级占位表格（零信息刚性块会把同页真数据挤出版面 → C-03 丢块）；
+  // 独占一页时保留「整页占位」形态（t02101 U-07 / t02198 H-06 钉住的既有设计）。
+  const rawBlocks = item.dataKeys.length > 1 ? baseBlocks.filter((d) => !isPlaceholderTable(d)) : baseBlocks;
 
   if (frames.cols) {
     const [left, right] = frames.cols;
