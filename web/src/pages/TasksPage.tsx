@@ -24,6 +24,12 @@ import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：正文
 /** 顶部 tab 三态：待办 / 已完成 / 搁置（S4323：具名类型别名替代内联联合类型） */
 type ActiveTab = 'todo' | 'done' | 'shelved';
 
+/** T02291：`total=1` 加性通道的分页信封（与 server/src/util/list-page.ts 的 Paged、ArchivePage 同形状） */
+interface Paged<T> {
+  items: T[];
+  total: number;
+}
+
 /** T01568：详情抽屉合法标签页（会话键 focusDrawerTab 的白名单校验口径，与 TaskDetailDrawer 标签页一致） */
 const DRAWER_TABS: readonly TaskDetailTab[] = ['desc', 'result', 'summary', 'timeline', 'plans'];
 
@@ -246,6 +252,8 @@ export function TasksPage() {
   // 形态与 T02213 的 ResourceHintView 同构（loading|ready|error + reload），可直接喂 ResourceHint。
   const [tasksPhase, setTasksPhase] = useState<'loading' | 'ready' | 'error'>('loading');
   const [tasksError, setTasksError] = useState('');
+  // T02291：筛选命中的服务端总条数（走 `total=1` 通道；null=本会话还没成功取过数，页脚不猜数）
+  const [serverTotal, setServerTotal] = useState<number | null>(null);
   // T02290：搁置列表此前是裸吞 catch——失败后 shelvedTasks 保持旧值/空数组，页面既无失败态也无重试入口，
   // 「暂无搁置任务」空态会把取数故障冒充成「本来就没数据」。补一份与主列表同形的显式状态喂 ResourceHint。
   const [shelvedPhase, setShelvedPhase] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -393,7 +401,14 @@ export function TasksPage() {
     // 改为就地收下：失败只置 error 态，绝不覆盖上次成功数据（与 T02213 同口径）。
     let list: Task[];
     try {
-      list = await api.get<Task[]>(`/tasks?${p.toString()}`);
+      const pTotal = new URLSearchParams(p);
+      pTotal.set('total', '1');
+      // T02284 通道在旧安装包后端上不存在（实测装机 39877 带 total=1 仍回裸数组），
+      // 故按可空信封解析：拿不到 total 时页脚不显示总数，主列表不受影响。
+      const res = await api.get<Paged<Task> | Task[]>(`/tasks?${pTotal.toString()}`);
+      const page = Array.isArray(res) ? { items: res, total: null as number | null } : { items: res.items, total: res.total };
+      list = page.items;
+      setServerTotal(page.total);
       setTasksPhase('ready'); setTasksError('');
     } catch (e) {
       setTasksPhase('error');
@@ -3447,7 +3462,11 @@ export function TasksPage() {
   /** 分页加载更多：当前页满页时追加下一页；hasMore=false 表示已到底 */
   function renderLoadMore() {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', margin: '12px 0' }}>
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 10, margin: '12px 0' }}>
+        {serverTotal != null && (
+          <span data-t02291="task-total" style={{ fontSize: 12, color: 'var(--text-muted)' }}>共 {serverTotal} 条</span>
+        )}
+        {hasMore && (
         <button
           onClick={() => void loadMore()}
           disabled={loadingMore}
@@ -3457,6 +3476,7 @@ export function TasksPage() {
         >
           {loadingMore ? '加载中…' : '加载更多'}
         </button>
+        )}
       </div>
     );
   }
@@ -3742,7 +3762,7 @@ export function TasksPage() {
       )}
       {renderNewTaskForm()}
       {renderTaskLists()}
-      {hasMore && renderLoadMore()}
+      {renderLoadMore()}
       {reuseOpen && renderReuseDialog()}
       {/* T00610：验证失败反馈录入弹窗——支持截图（粘贴/选择文件），截图随反馈落库供 MCP 读取识别 */}
       {failDialog && (
