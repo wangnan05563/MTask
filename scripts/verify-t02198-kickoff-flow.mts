@@ -8,13 +8,20 @@
  *        >5 只画前 5 并如实点名余数；超宽阶段名截断留痕。
  *   H 组 chip 人员标签：标签全部来自 assignees；宽度按 estimateTextWidthIn 实算、超宽换行；
  *        版面排不下的如实计数（其余 n 人见分工页），不硬画越界；assignees 空则整页走原表格路径。
- *   V 组 接线：layout 枚举含 flow/chip 且落 data 族框；validateOutline 接受；提示词话术带
- *        「各至多一页 / bullets 不复述」；带字形状走 addText 的 shape 选项（addShape+叠 addText
- *        两块同框会被 findOverlaps 判重叠）；色值仍全部取自 PALETTE（不破门禁 6）。
+ *   V 组 接线：layout 枚举含 flow/chip 且落 data 族框；validateOutline 接受；带字形状走 addText
+ *        的 shape 选项（addShape+叠 addText 两块同框会被 findOverlaps 判重叠）；色值仍全部取自
+ *        PALETTE（不破门禁 6）；版式层豁免与绘制层一致（装饰箭头不计越界/重叠）。
+ *        T02293 改判：提示词话术（V-04/V-05）不再正则读 kickoffService.ts，改看**真链路里实际
+ *        发往厂商的 system 请求体**（scripts/lib/outline-harness.mts）；装饰件豁免（V-07）改看
+ *        `pageViolations` 对造形输入的两种反应；色值（V-06）以产物里的 srgbClr 为主判据，
+ *        「builder 零 hex 字面量」降为与之配对的静态红线（规约第 3 条：主判据不红才算它）。
+ *        F-10/F-10b 的「最小高单源」改为 63/67 档纵向预算自洽扫描（朴素表格页排得下的每一档，
+ *        图示页要么画出组件、要么如实回落表格）；每条改判各配负对照：F-10b 用 rowIsBad 正反例自证
+ *        判据是活的，T-01 用造形色值自证 P-06 能红。
  *   P 组 真产物：解包 .pptx 证 roundRect 形状框内真的带文字（形状与文字同一原生对象）、
  *        箭头数 = 节点数-1、flow/chip 页没被降级也没有「已省略」。
  *
- * 隔离纪律：不连生产库、不起服务、不调 AI（Bundle 脚本内构造）。
+ * 隔离纪律：不连生产库、不起服务、不调真实 AI（Bundle 脚本内构造；V 组真链路用门内自建临时库 + 本机 mock 桩）。
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02198-kickoff-flow.mts
  * 结果落 .workbuddy/t02198-gate-results-<运行标识>.txt 与 t02198-flow-<运行标识>.pptx（T02309 旁证同标识）。
  */
@@ -23,6 +30,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
 import { writeGateResults, gateArtifactPath } from './lib/gate-results.mts';
+import { startOutlineHarness } from './lib/outline-harness.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -40,7 +48,6 @@ const M = await import('../server/src/services/kickoffBuilder.ts');
 const LAY = await import('../server/src/services/kickoff-layout.ts');
 const SVC = await import('../server/src/services/kickoffService.ts');
 const BLD_SRC = readFileSync(join(ROOT, 'server/src/services/kickoffBuilder.ts'), 'utf8');
-const SVC_SRC = readFileSync(join(ROOT, 'server/src/services/kickoffService.ts'), 'utf8');
 
 const FLOW_MIN_H = 0.88; // FLOW_NODE_H + FLOW_NOTE_H
 const DAY = 86400000;
@@ -117,10 +124,16 @@ ok('F-04 箭头是连接装饰：数量 = 节点数-1，且不参与越界/重�
   arrowsOf(flowPass).length === nodesOf(flowPass).length - 1 &&
     arrowsOf(flowPass).every((a: any) => a.shape.kind === 'rightArrow') && flowPass.violations.length === 0,
   { arrows: arrowsOf(flowPass).length, violations: flowPass.violations });
-ok('F-05 带字形状走 addText 的 shape 选项（形状与文字同一个原生对象；两块同框会被 findOverlaps 判重叠）',
-  /const label = block\.shape\.label;/.test(BLD_SRC) &&
-    /slide\.addText\(label\.text,\s*\{[\s\S]{0,240}shape: block\.shape\.kind/.test(BLD_SRC),
-  BLD_SRC.slice(BLD_SRC.indexOf('const label = block.shape.label'), BLD_SRC.indexOf('const label = block.shape.label') + 320));
+ok('F-05 带字形状的文字内联在形状块自身（不是另起一块同框文本——两块同框就是 findOverlaps 的假重叠）',
+  (() => {
+    const labeled = flowPass.blocks.filter((b: any) => b.shape?.label?.text);
+    if (labeled.length !== nodesOf(flowPass).length) return false;
+    return labeled.every((b: any) =>
+      !flowPass.blocks.some((o: any) => o !== b &&
+        Math.abs(o.box.x - b.box.x) < 1e-6 && Math.abs(o.box.y - b.box.y) < 1e-6 &&
+        Math.abs(o.box.w - b.box.w) < 1e-6 && Math.abs(o.box.h - b.box.h) < 1e-6));
+  })() && flowPass.violations.length === 0,
+  { 带字形状块: flowPass.blocks.filter((b: any) => b.shape?.label?.text).length, 总块数: flowPass.blocks.length });
 ok('F-06 截止日注来自库内日期（每节点一条），不是套话',
   flowPass.blocks.filter((b: any) => b.text && /截止 \d{2}-\d{2}/.test(b.text.content)).length === nodesOf(flowPass).length,
   flowPass.blocks.filter((b: any) => b.text).map((b: any) => b.text.content));
@@ -140,10 +153,56 @@ const squeezedFlow = M.layoutBody(flowItem as any, B, squeezedFrames as any, flo
 ok('F-09 剩余高度排不下节点+截止日注：组件让位并点名「回落表格版」，不硬画（硬画就是越界页）',
   nodesOf(squeezedFlow).length === 0 && squeezedFlow.notes.some((n: string) => /阶段链回落表格版/.test(n)),
   { notes: squeezedFlow.notes, kinds: squeezedFlow.blocks.map(kindOf) });
-ok('F-10 flow 组件最小高单源：版面预留与绘制前提都用同一个 FLOW_MIN_H（两处各写一份必漂移）',
-  (BLD_SRC.match(/const FLOW_MIN_H = FLOW_NODE_H \+ FLOW_NOTE_H/g) ?? []).length === 1 &&
-    /frame\.h < FLOW_MIN_H/.test(BLD_SRC) && /\(diagramOn \? diagramMinH \+ MIN_GAP : 0\)/.test(BLD_SRC),
-  (BLD_SRC.match(/FLOW_MIN_H/g) ?? []).length);
+// F-10（T02293 改判）：「最小高单源」不再数 FLOW_MIN_H 在源码里出现几次，改问**预留与绘制前提是否自洽**。
+// 若 layoutBody 给组件留的高与组件自己肯画的高是两个数，就会出现这种页面：组件嫌矮不画，
+// 回落的表格又因为预算早被那份「假预留」吃掉而整块省略——同一份数据在页面上什么都不剩。
+// 判据因此打在「同余量下与朴素表格页比不更少画」这条产物关系上（0.3"~3.4" 每 0.05" 一档）。
+const atH = (item: any, h: number) =>
+  M.layoutBody(item as any, B, { ...dataFrames, body: { ...body, h: +h.toFixed(2) } } as any, item.bullets) as any;
+const GRID = Array.from({ length: 63 }, (_, i) => +(0.3 + i * 0.05).toFixed(2));
+// chip 一行标签只要 0.3"（CHIP_H），63 档全在最上一行里画得出来——所以 chip 侧的扫描从 0.1" 起排，
+// 把「矮到连一行标签都排不下」的那几档也纳入：那正是「组件不画 ⇒ 必须换成表格」的分界区。
+const GRID_CHIP = Array.from({ length: 67 }, (_, i) => +(0.1 + i * 0.05).toFixed(2));
+const isTable = (b: any) => kindOf(b) === 'table';
+/** 「两头都不画」档的判据（抽成具名函数是为了给它配负对照，见 F-10b 末尾两行） */
+const rowIsBad = (r: { 表格页可排: boolean; 组件数: number; 有表格: boolean; dropped: number; violations: number }) =>
+  r.表格页可排 && (r.violations > 0 || r.dropped > 0 || (r.组件数 === 0 && !r.有表格));
+const selfConsistencyScan = (diagramItem: any, tableKeys: string[], grid = GRID) => {
+  const plainPage = { ...diagramItem, layout: 'table', dataKeys: tableKeys };
+  const rows = grid.map((h) => {
+    const t = atH(plainPage, h);
+    const d = atH(diagramItem, h);
+    return {
+      h,
+      表格页可排: t.dropped.length === 0 && t.violations.length === 0 && t.blocks.some(isTable),
+      组件数: d.blocks.filter((b: any) => b.shape).length,
+      有表格: d.blocks.some(isTable),
+      dropped: d.dropped.length,
+      violations: d.violations.length,
+    };
+  });
+  return {
+    bad: rows.filter(rowIsBad),
+    画链档位: rows.filter((r) => r.组件数 > 0).length,
+    回落档位: rows.filter((r) => r.组件数 === 0 && r.有表格).length,
+    画不出档位: rows.filter((r) => r.组件数 === 0).length,
+    可比档位: rows.filter((r) => r.表格页可排).length,
+  };
+};
+const flowScan = selfConsistencyScan(flowItem, ['milestones']);
+const chipScan = selfConsistencyScan(chipItem, ['assignees'], GRID_CHIP);
+ok('F-10 flow 页纵向预算自洽（63 档）：朴素表格页排得下的每一档，flow 页要么画出链、要么如实回落表格，绝不整块省略/越界',
+  flowScan.bad.length === 0 && flowScan.画链档位 > 0 && flowScan.回落档位 > 0 && flowScan.可比档位 > 0,
+  { 异常档位: flowScan.bad.slice(0, 6), 画链档位: flowScan.画链档位, 回落档位: flowScan.回落档位, 可比档位: flowScan.可比档位 });
+// chip 侧口径同 F-10，但设计不同源：标签组件排不下时是「少画几个 + 如实报余数」（H-03/H-06 钉住），
+// 不是退回表格，所以这里不要求「回落档位」，改为要求扫描真的走到「一行标签都排不下」的那几档，
+// 并把判据本身拿到反例上过一遍（正例不误伤、反例必点名）——否则 63 档全绿也可能是一条空判据。
+ok('F-10b chip 页同口径扫描（标签组件与表格回落之间也不许出现「两头都不画」，判据另配反例自证是活的）',
+  chipScan.bad.length === 0 && chipScan.画链档位 > 0 && chipScan.可比档位 > 0 && chipScan.画不出档位 > 0 &&
+    rowIsBad({ 表格页可排: true, 组件数: 0, 有表格: false, dropped: 0, violations: 0 }) &&
+    !rowIsBad({ 表格页可排: true, 组件数: 0, 有表格: true, dropped: 0, violations: 0 }) &&
+    !rowIsBad({ 表格页可排: false, 组件数: 0, 有表格: false, dropped: 1, violations: 0 }),
+  { 异常档位: chipScan.bad.slice(0, 6), 画标签档位: chipScan.画链档位, 一行都排不下的档位: chipScan.画不出档位, 可比档位: chipScan.可比档位 });
 
 // ---------- H 组：chip 人员标签 ----------
 const chipPass = M.layoutBody(chipItem as any, B, dataFrames, chipItem.bullets) as any;
@@ -199,22 +258,59 @@ let vErr = '';
 try { SVC.validateOutline(outlineOf()); } catch (e) { vErr = e instanceof Error ? e.message : String(e); }
 ok('V-03 validateOutline 接受 flow+milestones / chip+assignees 组合（合法 dataKeys 不被误杀）',
   vErr === '' && SVC.validateOutline(outlineOf()).outline[3].layout === 'flow', vErr);
-ok('V-04 提示词话术带图示版式约束：各至多一页 + 文字由系统按库内真值绘制 + bullets 不复述',
-  /layout:'flow'（dataKeys 写 milestones）/.test(SVC_SRC) && /layout:'chip'\s*（dataKeys 写 assignees）/.test(SVC_SRC) &&
-    /两者各至多一页/.test(SVC_SRC) && /不复述阶段名与人名、不自造步骤/.test(SVC_SRC),
-  SVC_SRC.slice(SVC_SRC.indexOf('T02198 图示版式'), SVC_SRC.indexOf('T02198 图示版式') + 300));
-ok('V-05 重试那一轮也知道有图示版式（RETRY 话术同步，否则重试退回旧 9 值口径）',
-  /阶段链用 flow、人员标签用 chip（各至多一页）/.test(SVC_SRC.slice(SVC_SRC.indexOf('OUTLINE_SYSTEM_RETRY'), SVC_SRC.indexOf('OUTLINE_SYSTEM_RETRY') + 900)),
-  SVC_SRC.slice(SVC_SRC.indexOf('const OUTLINE_SYSTEM_RETRY'), SVC_SRC.indexOf('const OUTLINE_SYSTEM_RETRY') + 620));
+// V-04 / V-05（T02293 改判）：提示词类断言原先一律 readFileSync(kickoffService.ts) 再匹配中文话术，
+// 把话术挪个位置、改个模板串就让门恒红，而模型收到的输入一个字没变。改判成**实际发往厂商的请求体**：
+// 门内自建隔离库 + 本机 mock 桩跑真 kickoffOutline（scripts/lib/outline-harness.mts），断言的对象是发出去的那一段 system。
+const VH = await startOutlineHarness({
+  projectId: 't02198-flow',
+  projectName: 'mtask五期（图示版式门夹具）',
+  workspacePath: ROOT,
+  plans: Array.from({ length: 12 }, (_, i) => ({
+    id: `q${i}`, title: `任务 ${i + 1}`, start_date: iso(T0, i * 3), end_date: iso(T0, i * 3 + 6),
+    duration_days: 5, progress: i < 8 ? 100 : 20, status: i < 8 ? 'done' : 'doing', assignee: '张三', complexity: (i % 5) + 1,
+  })),
+});
+const D0 = await VH.run([JSON.stringify(outlineOf())]);
+ok('V-04 首轮发往厂商的 system 里就写着图示版式约束（flow 写 milestones / chip 写 assignees、各至多一页、文字由系统按库内真值绘制、bullets 不复述）',
+  D0.asks === 1 && /flow/.test(D0.systems[0]) && /chip/.test(D0.systems[0]) &&
+    /milestones/.test(D0.systems[0]) && /assignees/.test(D0.systems[0]) &&
+    /各至多一页/.test(D0.systems[0]) && /不复述/.test(D0.systems[0]),
+  { 请求次数: D0.asks, 话术片段: D0.systems[0].slice(D0.systems[0].indexOf('T02198'), D0.systems[0].indexOf('T02198') + 320) });
+// 让首轮被判失败（第 4 页塞 3 个 dataKeys）→ 第 2 轮的话术才是真正发给模型的那一份
+const badOnce = outlineOf();
+badOnce[3] = { ...badOnce[3], dataKeys: ['milestones', 'planRows', 'reqList'] };
+const D1 = await VH.run([JSON.stringify(badOnce), JSON.stringify(badOnce)]);
+ok('V-05 重试那一轮的请求体同样带着图示版式口径（否则重试退回旧 9 值版式认知，模型再也想不到可以画 flow/chip）',
+  D1.asks === 2 && /flow/.test(D1.systems[1]) && /chip/.test(D1.systems[1]) && /各至多一页/.test(D1.systems[1]),
+  { 请求次数: D1.asks, 重试话术: D1.systems[1].slice(0, 420) });
 const toneBody = BLD_SRC.slice(BLD_SRC.indexOf('function shapeToneColor'), BLD_SRC.indexOf('export function drawBlock'));
-ok('V-06 色值单源不破门禁 6：三个新 tone 全取 PALETTE，builder 里零 hex 字面量',
-  ['flowNode', "'flow'", 'chip'].every((t) => new RegExp(`tone === ${t.startsWith("'") ? t : `'${t}'`}\\) return PALETTE\\.`).test(toneBody)) &&
-    (BLD_SRC.match(/#[0-9A-Fa-f]{6}\b/g) ?? []).length === 0,
-  { hex: BLD_SRC.match(/#[0-9A-Fa-f]{6}\b/g), tone: toneBody });
-ok('V-07 版式层豁免与绘制层一致：blockBoundsIssues / contentBoxes 都把 tone=flow 箭头排除（漏一处就是假违规）',
-  /blk\.shape\?\.tone === 'axis' \|\| blk\.shape\?\.tone === 'flow'/.test(BLD_SRC) &&
-    /blk\.shape\?\.tone !== 'axis' && blk\.shape\?\.tone !== 'flow'/.test(BLD_SRC),
-  { bounds: /tone === 'flow'/.test(BLD_SRC), content: /tone !== 'flow'/.test(BLD_SRC) });
+// V-06 的**主判据在产物里**（P-06：逐个形状的 srgbClr 必须命中 PALETTE），所以这条静态红线被降到
+// 「配对腿」：它在 P 组之后才落笔，且只在产物判据不红时才算绿（规约第 3 条——行为红⇒这条必红，
+// 行为绿而字面红⇒交人判定是改锚还是改码，不允许静默放行）。下面两个变量由 P-06 写入。
+let paletteArtifactOk = true;
+let paletteUnknown: string[] = [];
+
+// V-07（T02293 改判）：装饰件豁免原先数的是两处源码里的 tone 比较，改问**同一份版面在版式层得到什么**。
+// 把真产物里的箭头故意挪出内容框、再故意与节点完全重叠：两处豁免都在 → 仍判零违规；
+// 任一处不再认 flow（漂移）→ 立刻冒出「越界 / 元素重叠」。同形改到非装饰的节点上必须报违规（对照，证 pageViolations 是活的）。
+const decorExempt = (() => {
+  const clone = () => flowPass.blocks.map((b: any) => ({ ...b, box: { ...b.box } }));
+  const decor = clone();
+  const arrows = decor.filter((b: any) => b.shape?.tone === 'flow');
+  const nodes = decor.filter((b: any) => b.shape?.tone === 'flowNode');
+  if (arrows.length < 2 || nodes.length < 1) return { 可造形: false, 基线: [], 装饰件豁免后违规: [], 对照: [] };
+  arrows[0].box = { x: 9.6, y: 5.3, w: 1.2, h: 0.24 }; // 越出 10"×5.625" 画布
+  arrows[1].box = { ...nodes[0].box };                 // 与节点完全重叠
+  const 装饰件豁免后违规 = M.pageViolations(dataFrames.title, flowItem.title, decor);
+  const ctrl = clone();
+  ctrl.find((b: any) => b.shape?.tone === 'flowNode')!.box = { x: 9.6, y: 5.3, w: 1.2, h: 0.24 };
+  const 对照 = M.pageViolations(dataFrames.title, flowItem.title, ctrl);
+  return { 可造形: true, 基线: M.pageViolations(dataFrames.title, flowItem.title, clone()), 装饰件豁免后违规, 对照 };
+})();
+ok('V-07 版式层两处豁免与绘制层一致：箭头挪出画布 + 压住节点仍判零违规，而同样的形改在节点上必须报违规（漏一处豁免就是每页假违规）',
+  decorExempt.可造形 && decorExempt.基线.length === 0 &&
+    decorExempt.装饰件豁免后违规.length === 0 && decorExempt.对照.length > 0,
+  { 基线: decorExempt.基线, 豁免后: decorExempt.装饰件豁免后违规, 对照: decorExempt.对照 });
 
 const PANEL_SRC = readFileSync(join(ROOT, 'web/src/pages/KickoffPptPanel.tsx'), 'utf8');
 const feLayouts = [...(PANEL_SRC.match(/const LAYOUTS = \[([^\]]*)\]/)?.[1] ?? '').matchAll(/'([^']*)'/g)].map((x) => x[1]);
@@ -262,6 +358,43 @@ ok('P-05 flow 页几何不越页：节点+箭头底边都在正文框内（EMU �
   }),
   spsOf(flowXml, 'roundRect').map((sp) => /<a:off x="(-?\d+)" y="(-?\d+)"\/><a:ext cx="(\d+)" cy="(\d+)"/.exec(sp)?.slice(1).map((v) => +(Number(v) / 914400).toFixed(2))));
 
+// V-06 的主判据：色值单源在**产物**里可核对——图示版式每个形状对象上的填充/描边/字色
+// 都必须命中 PALETTE 的取值（外加中性黑白），出现任何一个没登记的色值就是门禁 6 被带崩。
+const paletteHexes = new Set(Object.values(LAY.PALETTE).map((v) => String(v).replace(/^#/, '').toUpperCase()).filter((v) => /^[0-9A-F]{6}$/.test(v)));
+['FFFFFF', '000000'].forEach((h) => paletteHexes.add(h));
+const colorsOfShapes = (xml: string, prst: string) =>
+  spsOf(xml, prst).flatMap((sp) => (sp.match(/<a:srgbClr val="([0-9A-Fa-f]{6})"\/>/g) ?? [])
+    .map((m) => /val="([0-9A-Fa-f]{6})"/.exec(m)![1].toUpperCase()));
+const shapeColors = [
+  ...colorsOfShapes(flowXml, 'roundRect'), ...colorsOfShapes(flowXml, 'rightArrow'), ...colorsOfShapes(chipXml, 'roundRect'),
+];
+paletteUnknown = [...new Set(shapeColors.filter((c) => !paletteHexes.has(c)))];
+paletteArtifactOk = shapeColors.length > 0 && paletteUnknown.length === 0;
+ok('P-06 flow/chip 页每一个形状用到的颜色都命中 PALETTE（色值单源打在产物上，门禁 6 没被图示版式带崩）',
+  paletteArtifactOk, { 形状色值数: shapeColors.length, 未知色: paletteUnknown, 调色板: [...paletteHexes] });
+ok('V-06 静态红线（与 P-06 配对，P-06 不红才算它）：三个新 tone 的取色分支都指向 PALETTE，builder 里零 hex 字面量',
+  paletteArtifactOk &&
+    ['flowNode', "'flow'", 'chip'].every((t) => new RegExp(`tone === ${t.startsWith("'") ? t : `'${t}'`}\\) return PALETTE\\.`).test(toneBody)) &&
+    (BLD_SRC.match(/#[0-9A-Fa-f]{6}\b/g) ?? []).length === 0,
+  { hex: BLD_SRC.match(/#[0-9A-Fa-f]{6}\b/g), tone: toneBody.slice(0, 320), 产物判据未过: !paletteArtifactOk, 未知色: paletteUnknown });
+
+// 负对照（规约第 4 条）：P-06 的判据本身要能红。取产物里一个真 roundRect 形状，把它的第一个色值
+// 换成未登记的 123456 ⇒ 必须被点名；换回 PALETTE 里的值 ⇒ 必须放行。
+// 没有这条，「未知色为空」可能只是因为压根没抽到色（形状变了形、正则失配都是静默通过）。
+const paletteVerdict = (xml: string) => {
+  const cs = colorsOfShapes(xml, 'roundRect');
+  return { 抽到: cs.length, 未知: cs.filter((c) => !paletteHexes.has(c)) };
+};
+const oneNode = spsOf(flowXml, 'roundRect')[0] ?? '';
+const firstClr = /<a:srgbClr val="[0-9A-Fa-f]{6}"\/>/;
+const rogue = paletteVerdict(oneNode.replace(firstClr, '<a:srgbClr val="123456"/>'));
+const backToPalette = paletteVerdict(oneNode.replace(firstClr, `<a:srgbClr val="${LAY.PALETTE.brandPale}"/>`));
+ok('T-01 负对照：色值判据能红——形状里塞一个未登记色必须被点名，塞回 PALETTE 值必须放行（否则 P-06 是空判据）',
+  oneNode !== '' && paletteVerdict(oneNode).抽到 > 0 && rogue.未知.join(',') === '123456' &&
+    backToPalette.未知.length === 0 && backToPalette.抽到 === paletteVerdict(oneNode).抽到,
+  { 反例: rogue, 正例: backToPalette, 原形状抽到: paletteVerdict(oneNode).抽到 });
+
+VH.close();
 writeFileSync(gateArtifactPath(OUT_DIR, 't02198-flow.pptx'), built.buffer);
 writeGateResults(OUT_DIR, 't02198-gate-results.txt', `T02198 flow/chip 图示版式门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);

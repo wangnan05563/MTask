@@ -17,25 +17,21 @@
  *        与**返回的大纲**，不是 kickoffService.ts 里有没有 `parseRound++` 那行字。
  *   P 组 真产物：解包 .pptx 用 EMU 证每张图表实排高 ≥1.2"，页面上没图的必须带 drop 留痕。
  *
- * 隔离纪律：不连生产库（G 组夹具由门自己写进临时 DATA_DIR）、不起服务、不调真实 AI
- * （mock 是本机监听 127.0.0.1 随机端口的 OpenAI 兼容桩，零配额）。
+ * 隔离纪律：不连生产库（G 组夹具 = scripts/lib/outline-harness.mts 自建临时库）、不起服务、
+ * 不调真实 AI（桩是本机 127.0.0.1 随机端口的 OpenAI 兼容服务，零配额）。
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02172-kickoff-flex-floor.mts
  * 结果落 .workbuddy/t02172-gate-results-<运行标识>.txt 与 t02172-flex-<运行标识>.pptx（T02309 旁证同标识）。
  */
-import { createServer } from 'node:http';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
 import { writeGateResults, gateArtifactPath } from './lib/gate-results.mts';
+import { startOutlineHarness } from './lib/outline-harness.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
 mkdirSync(OUT_DIR, { recursive: true });
-// G 组要在进程内跑 collectBundle，数据目录必须在任何 db 模块被调用前就钉死成临时目录
-const DATA_DIR = mkdtempSync(join(tmpdir(), 't02172-flex-'));
-process.env.MTask_DATA_DIR = DATA_DIR;
 
 let pass = 0;
 let fail = 0;
@@ -250,74 +246,33 @@ ok('V-08 既有「章节页/结束页 dataKeys 清空」口径未被新校验带
   SVC.validateOutline(outlineOf(['reqStats'], [true, true])).outline[11].dataKeys.length === 0);
 
 // ---------- G 组：大纲段真链路（门内自建隔离库 + 本地 mock 厂商，零真实配额） ----------
-// V-01~V-08 问的是纯函数 `validateOutline`；那两条「首轮严格 / 第 2 轮起转软」与「重试话术带着
-// 新硬约束」原先靠正则读 kickoffService.ts 的源码文本（let parseRound = 0 / parseRound++ /
-// 每页 dataKeys **≤${DATA_KEYS_MAX} 个**）——等价重构一次就恒红。本组把它们改判成
-// **发往厂商的请求体**与**返回的大纲**：跑真 kickoffOutline → 真 AIService.askJson → 真重试协议。
-const DB = await import('../server/src/db/connection.ts');
-const { initSchema } = await import('../server/src/db/schema.ts');
-initSchema();
-const gdb = DB.getDb();
-const NOW = '2026-10-11T00:00:00.000Z';
+// V-01~V-08 问的是纯函数 `validateOutline`；原先另两条腿（V-06「RETRY 话术带新硬约束」、
+// V-07「按解析轮次切软硬」）靠正则读 kickoffService.ts 的源码文本
+// （let parseRound = 0 / parseRound++ / 每页 dataKeys **≤${DATA_KEYS_MAX} 个**）——等价重构一次就恒红。
+// 本组把它们改判成**发往厂商的请求体**与**返回的大纲**：真 kickoffOutline → 真 AIService.askJson → 真重试协议。
+// 夹具（隔离库 + mock 桩）由 scripts/lib/outline-harness.mts 单源提供，别的门复用同一套。
 const GPID = 't02172-flex';
-const GTOOL = 't02172-mock-tool';
-gdb.prepare('INSERT INTO projects (id, name, description, sort_weight, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)')
-  .run(GPID, 'mtask五期（下限门夹具）', '', NOW, NOW);
-// 工作空间指向仓库根：workspaceInfo 只做 statSync.isDirectory()，不给路径则 P4 记 warn（不影响硬门）
-gdb.prepare('UPDATE projects SET workspace_path = ? WHERE id = ?').run(ROOT, GPID);
-gdb.prepare('INSERT INTO prd_docs (id, project_id, filename, content_md, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-  .run('d-flex', GPID, 'PRD-项目启动会PPT生成.md', '# 背景\n门内自造的口径来源说明，正文够预检判定即可。', NOW, NOW);
-const insReq = gdb.prepare(
-  `INSERT INTO prd_requirements (id, project_id, req_no, title, content, source_ref, priority, status, sort_order, created_at, updated_at, prd_id)
-   VALUES (?, ?, ?, ?, '', '', 'normal', ?, ?, ?, ?, 'd-flex')`,
-);
-Array.from({ length: 14 }, (_, i) => insReq.run(`r${i}`, GPID, `R${i + 1}`, `需求 ${i + 1}`, i < 6 ? 'done' : 'doing', i, NOW, NOW));
-const insPlan = gdb.prepare(
-  `INSERT INTO plan_tasks (id, project_id, title, description, start_date, end_date, duration_days, progress, status,
-     assignee, sort_order, created_at, updated_at, kind, complexity, req_ids, deps)
-   VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, '张三', ?, ?, ?, ?, ?, NULL, '')`,
-);
-Array.from({ length: 12 }, (_, i) =>
-  insPlan.run(`q${i}`, GPID, `任务 ${i + 1}`, iso(T0, i * 3), iso(T0, i * 3 + 6), 5, i < 8 ? 100 : 20,
-    i < 8 ? 'done' : 'doing', i, NOW, NOW, 'normal', (i % 5) + 1));
-Array.from({ length: 3 }, (_, i) =>
-  insPlan.run(`m${i}`, GPID, `M${i + 1} 里程碑`, iso(T0, i * 12), iso(T0, i * 12 + 2), 2, 0, 'todo', 90 + i, NOW, NOW, 'milestone', 3));
-gdb.prepare(
-  `INSERT INTO ai_tools (id, name, type, purpose, endpoint, api_key_enc, model, temperature, max_tokens, timeout_ms, enabled, created_at, updated_at)
-   VALUES (?, ?, 'openai-compatible', 'develop', ?, NULL, 'mock-outline', 0, 4096, 20000, 1, ?, ?)`,
-).run(GTOOL, 't02172-mock', '__endpoint_pending__', NOW, NOW);
-
-/** mock OpenAI 兼容桩：记录每一轮**实际发出的 system 话术**，回复内容按场景排队给 */
-const mockRequests: Array<{ system: string; user: string }> = [];
-let mockQueue: string[] = [];
-const mock = createServer((req, res) => {
-  let raw = '';
-  req.on('data', (c: Buffer) => (raw += c.toString()));
-  req.on('end', () => {
-    const body = JSON.parse(raw || '{}') as { messages?: Array<{ role: string; content: string }> };
-    mockRequests.push({ system: body.messages?.[0]?.content ?? '', user: body.messages?.[1]?.content ?? '' });
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      choices: [{ message: { content: mockQueue.shift() ?? '[]' }, finish_reason: 'stop' }],
-      usage: { total_tokens: 10 },
-    }));
-  });
+const H = await startOutlineHarness({
+  projectId: GPID,
+  projectName: 'mtask五期（下限门夹具）',
+  workspacePath: ROOT,
+  prdFilename: 'PRD-项目启动会PPT生成.md',
+  prdContentMd: '# 背景\n门内自造的口径来源说明，正文够预检判定即可。',
+  plans: [
+    ...Array.from({ length: 12 }, (_, i) => ({
+      id: `q${i}`, title: `任务 ${i + 1}`, start_date: iso(T0, i * 3), end_date: iso(T0, i * 3 + 6),
+      duration_days: 5, progress: i < 8 ? 100 : 20, status: i < 8 ? 'done' : 'doing', assignee: '张三', complexity: (i % 5) + 1,
+    })),
+    ...Array.from({ length: 3 }, (_, i) => ({
+      id: `m${i + 1}`, title: `M${i + 1} 里程碑`, start_date: iso(T0, i * 12), end_date: iso(T0, i * 12 + 2),
+      duration_days: 2, kind: 'milestone', complexity: 3,
+    })),
+  ],
 });
-await new Promise<void>((r) => mock.listen(0, '127.0.0.1', r));
-gdb.prepare('UPDATE ai_tools SET endpoint = ? WHERE id = ?')
-  .run(`http://127.0.0.1:${(mock.address() as { port: number }).port}`, GTOOL);
-
-/** 跑一轮真链路：replies = 模型第 1/2 轮要吐出的原文（JSON 数组文本） */
-const runOutline = async (replies: string[]) => {
-  mockRequests.length = 0;
-  mockQueue = replies.slice();
-  const res = await SVC.kickoffOutline(GPID, GTOOL);
-  return { res, systems: mockRequests.map((m) => m.system), asks: mockRequests.length };
-};
 
 // 场景 A：模型两轮都写 3 个 dataKeys（超限页正好在第 4 页）
 const over = JSON.stringify(outlineOf(['coverage', 'reqList', 'milestones']));
-const A = await runOutline([over, over]);
+const A = await H.run([over, over]);
 ok('G-01 首轮超限在真链路上确实触发了第 2 次厂商请求（「第 1 轮严格」不是纯函数层的自说自话）',
   A.asks === 2 && A.res.outline.length >= 10, { 请求次数: A.asks, 页数: A.res.outline.length });
 ok('G-02 第 2 轮发出去的话术带着新硬约束（dataKeys ≤2）与首轮具体违规原因——看请求体，不看源码',
@@ -334,7 +289,7 @@ ok('G-03 重试轮仍超限也不打死整稿：返回大纲第 4 页收到 2 �
 // A 的「必发第 2 轮」与 B 的「只发 1 轮」是一对判别式点位：若首轮就转软，B 与 A 都会只发一次；
 // 若永远严格，A 会整稿失败——两条同时成立才说明「按解析轮次切软硬」真的接在链路上。
 const withinLimits = JSON.stringify(outlineOf(['coverage', 'reqList']));
-const B = await runOutline([withinLimits]);
+const B = await H.run([withinLimits]);
 ok('G-04 反证侧：首轮合规只发一次请求、无截断回执（证明 G-01/G-03 不是恒真）',
   B.asks === 1 && B.res.outline[3].dataKeys.length === 2 &&
     !B.res.warnings.some((w: string) => /超出 2 个上限/.test(w)),
@@ -342,7 +297,7 @@ ok('G-04 反证侧：首轮合规只发一次请求、无截断回执（证明 G
 
 // 场景 C：全稿唯一的时间线页正好是超限页——真链路上也必须保住必含键
 const tlOver = JSON.stringify(outlineOf(['reqList', 'milestones', 'timeline'], [false, true]));
-const C = await runOutline([tlOver, tlOver]);
+const C = await H.run([tlOver, tlOver]);
 ok('G-05 真链路同样不把全稿唯一的必含键截没（timeline 优先保留，V-05 的端到端版）',
   C.asks === 2 && C.res.outline[3].dataKeys.includes('timeline') &&
     C.res.outline.some((p: any) => p.dataKeys.includes('timeline')),
@@ -379,12 +334,8 @@ ok('P-03 全稿无越界降级页、无版式违规告警（下限抬高没把�
   { degraded: built.degradedPages, warnings: built.warnings });
 
 writeFileSync(gateArtifactPath(OUT_DIR, 't02172-flex.pptx'), built.buffer);
-// G 组收口：关桩 → 关库句柄（动态 import 自持 SQLite 句柄，不关会让删目录打转）→ 删临时库
-mock.close();
-DB.closeDb();
+// G 组收口交给夹具：关桩 → 关库句柄 → 删临时库（动态 import 自持 SQLite 句柄，不关会让删目录打转）
+H.close();
 writeGateResults(OUT_DIR, 't02172-gate-results.txt', `T02172 柔性块可读高与 dataKeys 硬校验门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);
-for (let i = 0; i < 10; i++) {
-  try { rmSync(DATA_DIR, { recursive: true, force: true }); break; } catch { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500); }
-}
 process.exit(fail ? 1 : 0);
