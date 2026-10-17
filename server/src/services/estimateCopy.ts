@@ -47,7 +47,27 @@ export const ESTIMATE_ERRORS = {
   unknownParamKey: '未知估算参数键',
   unknownBatchMode: '未知批量模式',
   compareNeedsTwo: 'compare 需要两个快照 id（形如 ?compare=idA,idB）',
+  unknownScope: '未知导出范围',
+  unknownAudience: '未知导出版本',
+  emptyPhases: 'phases 不能为空（不传即导全部阶段）',
+  // —— MCP 侧（mcp/server.ts 估算三枚工具：定位参数只在这里翻译，第二份抄本会让门假绿）——
+  projectOrNameRequired: 'projectId 或 projectName 必填',
+  planLocateRequired: 'planId 与 taskNo 至少提供一个',
+  planMissingOrArchived: '计划不存在或已归档',
+  planProjectMismatch: '项目与计划不匹配',
+  planOwnerPrefix: '计划属于',
+  requestProjectPrefix: '请求里给的是',
+  taskNoNoPlanLink: '没有关联计划行',
+  taskNoAmbiguousTail: '请改传 planId 指明哪一条',
 } as const;
+
+/**
+ * §6.3 件名口径单源：`工作量评估[-客户版]-项目名-时间戳`。
+ * 三处出口（REST 下载头、MCP base64 件、快照表 filename）都从这里拼，门按同一张表断言——
+ * 件名是交付物的一部分，抄两份迟早一份漂移。
+ */
+export const ESTIMATE_FILE_BASE = '工作量评估';
+export const ESTIMATE_FILE_CLIENT_MARK = '-客户版';
 
 /** 三点字段的中文标签单源（校验文案与门断言共用这一份，改措辞不留第二份抄本） */
 export const ESTIMATE_POINT_LABELS = {

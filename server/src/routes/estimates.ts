@@ -55,6 +55,7 @@ import {
 } from '../services/EstimateDerive';
 import type { EstimatePhase } from '../services/EstimateService';
 import { safeExportName } from '../util/export-name'; // T02104：导出文件名单源
+import { ESTIMATE_FILE_BASE, ESTIMATE_FILE_CLIENT_MARK } from '../services/estimateCopy'; // §6.3 件名口径单源
 import {
   ESTIMATE_EXPORT_SCOPES,
   cleanDetail,
@@ -567,13 +568,23 @@ function exportStamp(d: Date): string {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
-/** 参数校验错误文案前缀单源（T02293 规约判据 1）：门断言「400 + 前缀同源」，不再抄第二份中文 */
-export const ESTIMATE_PARAM_ERRORS = {
-  unknownPhase: ESTIMATE_ERRORS.unknownPhase,
-  emptyPhases: 'phases 不能为空（不传即导全部阶段）',
-  unknownScope: '未知导出范围',
-  unknownAudience: '未知导出版本',
-} as const;
+/**
+ * §6.3 件名口径单源拼装：`工作量评估[-客户版]-项目名-时间戳`。
+ * 导出成函数（而不是各处手写模板串）——REST、MCP、快照表三处出口与验收门都取这一份，
+ * 前缀常量改名时件名随之移动，不会有第二处写死「工作量评估」。
+ */
+export function estimateArtifactName(projectName: string, audience: EstimateAudience, d: Date): string {
+  return safeExportName(
+    `${ESTIMATE_FILE_BASE}${audience === 'client' ? ESTIMATE_FILE_CLIENT_MARK : ''}-${projectName}-${exportStamp(d)}`,
+    ESTIMATE_FILE_BASE,
+  );
+}
+
+/**
+ * 参数校验文案一律取 `estimateCopy` 的 `ESTIMATE_ERRORS`（T02293 判据 1）。
+ * 这里曾有一张 `ESTIMATE_PARAM_ERRORS` 别名表——它在模块加载期把字符串抄成常量，
+ * 单源表改了它不动，正是 E3 改名模拟要抓的第二份抄本，故直接删除、四处 throw 逐字取表。
+ */
 
 /**
  * `phases` 查询串（§6.1「一个参数只表一件事」）。
@@ -587,12 +598,12 @@ export function parsePhases(raw: unknown): EstimatePhase[] {
     const x = piece.trim();
     if (!x) continue;
     if (!(ESTIMATE_META.phases as readonly string[]).includes(x)) {
-      throw new Error(`${ESTIMATE_PARAM_ERRORS.unknownPhase}：${x}（可用 ${ESTIMATE_META.phases.join(' / ')}）`);
+      throw new Error(`${ESTIMATE_ERRORS.unknownPhase}：${x}（可用 ${ESTIMATE_META.phases.join(' / ')}）`);
     }
     const p = x as EstimatePhase;
     if (!list.includes(p)) list.push(p);
   }
-  if (list.length === 0) throw new Error(ESTIMATE_PARAM_ERRORS.emptyPhases);
+  if (list.length === 0) throw new Error(ESTIMATE_ERRORS.emptyPhases);
   return list;
 }
 
@@ -600,7 +611,7 @@ export function parseScope(raw: unknown): EstimateExportScope {
   const s = str(raw);
   if (!s) return 'all';
   if (!(ESTIMATE_EXPORT_SCOPES as readonly string[]).includes(s)) {
-    throw new Error(`${ESTIMATE_PARAM_ERRORS.unknownScope}：${s}（可用 ${ESTIMATE_EXPORT_SCOPES.join(' / ')}）`);
+    throw new Error(`${ESTIMATE_ERRORS.unknownScope}：${s}（可用 ${ESTIMATE_EXPORT_SCOPES.join(' / ')}）`);
   }
   return s as EstimateExportScope;
 }
@@ -608,7 +619,7 @@ export function parseScope(raw: unknown): EstimateExportScope {
 export function parseAudience(raw: unknown): EstimateAudience {
   const s = str(raw);
   if (!s) return 'internal';
-  if (s !== 'internal' && s !== 'client') throw new Error(`${ESTIMATE_PARAM_ERRORS.unknownAudience}：${s}（可用 internal / client）`);
+  if (s !== 'internal' && s !== 'client') throw new Error(`${ESTIMATE_ERRORS.unknownAudience}：${s}（可用 internal / client）`);
   return s;
 }
 
@@ -760,11 +771,7 @@ export async function buildEstimateArtifact(
   const buffer = format === 'pdf'
     ? await (await import('../services/estimateExportPdf')).buildEstimatePdf(layout)
     : await (await import('../services/estimateExportXlsx')).buildEstimateXlsx(layout);
-  const fname =
-    safeExportName(
-      `工作量评估${audience === 'client' ? '-客户版' : ''}-${project.name}-${exportStamp(nowDate)}`,
-      '工作量评估',
-    ) + `.${format}`;
+  const fname = estimateArtifactName(project.name, audience, nowDate) + `.${format}`;
   // §6.3：全部导出写快照（payload 存汇总结果，供「上次导出后计划已变化」比对）
   const snapshot = EstimateService.createSnapshot(projectId, {
     format,
