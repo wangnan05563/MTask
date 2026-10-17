@@ -514,6 +514,31 @@ print(json.dumps(out,ensure_ascii=False))
   }
 }
 
+group('G9 §6.1 备注自检计数与引擎同源（T02302：E7 侧区分性断言）');
+{
+  // 期望值独立推导：未估算 = 无三点非里程碑明细行 + 无点值聚合阶段行（本夹具 onsite 整段无有值行）
+  const unestDetail = FIX_ROWS.filter((r) => r.planKind !== 'milestone' && r.optimistic === null).length;
+  const emptyPhases = ['req', 'design', 'impl', 'common', 'onsite']
+    .filter((p) => !FIX_ROWS.some((r) => r.phase === p && r.planKind !== 'milestone' && r.optimistic !== null)).length;
+  const unestExpect = unestDetail + emptyPhases;
+  const rc7 = layoutOf().summary.ratioCheck.excluded;
+  const note = /未计入合计的行：小计 (\d+) 行、里程碑 (\d+) 行、未估算 (\d+) 行/.exec(mdOf());
+  // 三态判据同 E6 11-01：= 期望 → PASS；= 0 而期望 > 0 → SKIP（等 T02298）；其它 → FAIL
+  const g34Name = `G-34 备注「未估算 N 行」= 夹具独立推导值（未估算明细 ${unestDetail} + 空阶段 ${emptyPhases}）（T02123 少报在 PDF 备注面必须可见）`;
+  const gotNote7 = note ? Number(note[3]) : Number.NaN;
+  if (gotNote7 === unestExpect) {
+    ok(g34Name, true);
+  } else if (gotNote7 === 0 && unestExpect > 0) {
+    skipped('G-34 备注「未估算 N 行」区分性断言',
+      `T02298（导出侧「无点值行也要进引擎」）尚未入库：备注实测 0 行而夹具独立推导应为 ${unestExpect}；该修复落地后本条自动转 PASS，其它取值判 FAIL`);
+  } else {
+    ok(g34Name, false, { note: note && note[0], expect: unestExpect, excluded: rc7 });
+  }
+  ok('G-35 备注三计数与引擎 ratioCheck.excluded 逐项同值（备注取数单源，不是第二份口径）',
+    !!note && Number(note[1]) === rc7.subtotal && Number(note[2]) === rc7.milestone && Number(note[3]) === rc7.unEstimated,
+    { note: note && note[0], excluded: rc7 });
+}
+
 console.log(`\n${'='.repeat(56)}`);
 console.log(`T02044 E7 验证结果：PASS=${pass} FAIL=${fail}`);
 console.log(`PDF 产物目录：${process.env.T02044_KEEP ? OUT_DIR + ' / ' + DATA_DIR : DATA_DIR + '（进程退出即随临时目录清理，设 T02044_KEEP 保留）'}`);

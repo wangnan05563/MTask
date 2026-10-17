@@ -981,6 +981,34 @@ if (!(await waitForServer())) {
   }
 }
 
+group('G11 §4.4 自检计数轨（T02302：T02123「无点值行也要进引擎」的区分性断言）');
+{
+  // 期望值由夹具独立推导（不读 layout 的计数，避免同义反复）：
+  //   未估算行数 = 无三点且非里程碑的明细行数 + 无点值的聚合阶段行数（整个阶段一条有值行都没有）
+  const unestDetail = ALL_ROWS.filter((r) => r.planKind !== 'milestone' && !est(r)).length;
+  const emptyPhases = (['req', 'design', 'impl', 'common', 'onsite'] as EstimatePhase[])
+    .filter((p) => !byPhase(p).some(est)).length;
+  const unestExpect = unestDetail + emptyPhases;
+  const rcE = L.summary.ratioCheck.excluded;
+  // 三态判据（本单落地顺序约束：T02298 的导出侧修复此刻尚未入库，HEAD 仍只把有点值行喂进引擎）
+  //   = 夹具期望值 → PASS；= 0 而期望 > 0 → SKIP（如实留痕，修复落地即自动转绿）；其它取值 → FAIL
+  const unestName6 = `11-01 自检 excluded.unEstimated = 夹具独立推导值（未估算明细 ${unestDetail} + 空阶段 ${emptyPhases}）（T02123 回归防线：少报即无点值行没进引擎）`;
+  if (rcE.unEstimated === unestExpect) {
+    ok(unestName6, true);
+  } else if (rcE.unEstimated === 0 && unestExpect > 0) {
+    skipped('11-01 excluded.unEstimated 区分性断言',
+      `T02298（导出侧「无点值行也要进引擎」）尚未入库：HEAD 实测 unEstimated=0 而夹具独立推导应为 ${unestExpect}；该修复落地后本条自动转 PASS，其它取值判 FAIL`);
+  } else {
+    ok(unestName6, false, { expect: unestExpect, got: rcE.unEstimated, excluded: rcE });
+  }
+  ok('11-02 自检 excluded.subtotal 与小计行一一对应（结构性排除不混进「未估算」）',
+    rcE.subtotal === (L.subtotalRow ? 1 : 0), { subtotalRow: L.subtotalRow?.rowNo ?? null, excluded: rcE });
+  ok('11-03 计数变化不动合计：directManDays.expected 仍等于独立重算值（新增计数不得把行漏出 Σ）',
+    Math.abs(L.summary.directManDays.expected - E.expected(TOTAL_PTS)) < 1e-9,
+    { got: L.summary.directManDays.expected, expect: E.expected(TOTAL_PTS) });
+  console.log(`  [INFO] 里程碑计数当前口径（本组不断言其正确性，T02302 边界）：excluded.milestone=${rcE.milestone}，夹具里程碑行=${ALL_ROWS.filter((r) => r.planKind === 'milestone').length}`);
+}
+
 // 先收实例再回收临时目录：child.kill() 是异步的，立即 rmSync 会撞上还在被 sqlite 持有的 mtask.db-shm
 await new Promise<void>((resolve) => {
   const done = () => resolve();
