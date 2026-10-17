@@ -246,6 +246,10 @@ export function TasksPage() {
   // 形态与 T02213 的 ResourceHintView 同构（loading|ready|error + reload），可直接喂 ResourceHint。
   const [tasksPhase, setTasksPhase] = useState<'loading' | 'ready' | 'error'>('loading');
   const [tasksError, setTasksError] = useState('');
+  // T02290：搁置列表此前是裸吞 catch——失败后 shelvedTasks 保持旧值/空数组，页面既无失败态也无重试入口，
+  // 「暂无搁置任务」空态会把取数故障冒充成「本来就没数据」。补一份与主列表同形的显式状态喂 ResourceHint。
+  const [shelvedPhase, setShelvedPhase] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [shelvedError, setShelvedError] = useState('');
   // T00474：优先级筛选（urgent/high/normal/low，会话级保持；空=全部）
   const [priorityFilter, setPriorityFilter] = useSessionState('tasks.priorityFilter', '');
   const [newCategory, setNewCategory] = useSessionState<string>('tasks.new.category', '');
@@ -422,6 +426,8 @@ export function TasksPage() {
       ps.delete('offset');
       const nextShelved = await api.get<Task[]>(`/tasks?${ps.toString()}`);
       setShelvedTasks(nextShelved);
+      setShelvedPhase('ready');
+      setShelvedError('');
       setDrawerTask((cur) => {
         if (!cur) return cur;
         const next = nextShelved.find((x) => x.id === cur.id);
@@ -429,7 +435,12 @@ export function TasksPage() {
         if ((next.updated_at ?? '') < (cur.updated_at ?? '')) return cur;
         return next;
       });
-    } catch { /* 搁置列表拉取失败不打断主列表 */ }
+    } catch (e) {
+      // T02290：保留「搁置拉取失败不打断主列表」的既有取舍，只是不再无声——置 error 让搁置 tab 给出原因与重试，
+      // 旧数据仍在 shelvedTasks 里，由 ResourceHint 的 stale 语义标成「上次成功的数据，可能过期」。
+      setShelvedPhase('error');
+      setShelvedError(e instanceof Error ? e.message : String(e));
+    }
   }, [search, catFilter, priorityFilter]);
 
   const loadTasks = useCallback(async (projectId: string) => {
@@ -3416,8 +3427,15 @@ export function TasksPage() {
             {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </div>
+        {/* T02290：搁置列表取数失败此前无任何出口——挂共享失败态层，给出原因/重试，并在旧数据在位时标「可能过期」 */}
+        <div style={{ margin: '4px 0' }}>
+          <ResourceHint
+            view={{ phase: shelvedPhase, error: shelvedError, stale: shelvedPhase === 'error' && visibleShelved.length > 0, reload: () => void loadTasks(activeProject) }}
+            label="搁置列表"
+          />
+        </div>
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleShelved.map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'shelved', visibleShelved.map((x) => x.id))}</Fragment>)}</ul>
-        {visibleShelved.length === 0 && (
+        {visibleShelved.length === 0 && shelvedPhase !== 'error' && (
           <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>暂无搁置任务——点击任务行的「搁置」按钮（归档按钮前）可把任务移到这里，AI 处理待办时自动忽略。</div>
         )}
         </>)}
