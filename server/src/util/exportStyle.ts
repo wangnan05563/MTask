@@ -87,3 +87,21 @@ export const PAPER_BG = 'FFFFFF';
 
 /** T02098：强调色（与表头同色系的深靛蓝，用于时间线轴、图例描边） */
 export const ACCENT_FONT = '3B5BDB';
+
+/**
+ * T02156：恒生品牌色（来源：`2023恒生PPT模板.pptx` 各 slideLayout 的 shape 取色，
+ * 深蓝 08409C / 亮蓝 0059E9 是该模板唯二的品牌实色）。
+ * 落地背景：PRD §7 非目标 N1「不做 .pptx 母版/模板文件套用」的根因是装机版无 Python
+ * 运行时读模板母版；本次 E-1 需求（T02156 用户硬要求）用 pptxgenjs 原生背景图 +
+ * 品牌色常量绕过，不走母版套用、不引 Python。色值仍按 §6.3 门禁 6 纳入本单源。
+ */
+export const BRAND_DEEP = '08409C';
+
+/** 品牌亮蓝：图形（时间线条/图表首色/强调）与次强调文本 */
+export const BRAND_BRIGHT = '0059E9';
+
+/** 品牌浅蓝：与模板浅蓝背景同族的装饰线/弱提示底（门禁 6 下只作形状色，不作正文底） */
+export const BRAND_PALE = 'C9DCF6';
+
+/** 品牌深底上的正文色（表格表头白字，对 08409C 对比度 ≈9.5） */
+export const ON_BRAND = 'FFFFFF';
