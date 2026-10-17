@@ -15,6 +15,11 @@
  *   writeGateResults(OUT_DIR, 't02098-gate-results.txt', summary, { port: PORT, dataDir: DATA_DIR });
  *   writeFileSync(gateArtifactPath(OUT_DIR, 't02099-sample.pptx'), built.buffer); // T02309：旁证同标识
  *   const SHOTS = gateShotsDir('t02046');                                        // T02312：截图每轮一个子目录
+ *
+ * 新建/改造门还有一条判据规约（T02293）：见 `docs/验收门判据规约.md`——
+ * 断言打在行为或产物上（HTTP 响应 / 库查询 / PPTX·XLSX 产物 / 渲染后 DOM / 纯函数返回值），
+ * 不打在源码文本上；夹具门内自造、不锁生产数据；保留字面锚点的必须配同义行为断言；
+ * 每条改判配负对照（把被测行为真破坏掉，断言必须因此变红）。
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
