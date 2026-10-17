@@ -15,7 +15,7 @@
  * 退出连 Chrome 子进程树一起回收（taskkill /T），截图落每轮独立子目录（`MTASK_GATE_ARTIFACT_DIR/<门名>-<运行标识>/`，T02312：不再落仓库根固定名目录，防并发整图互覆）。
  */
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -73,6 +73,15 @@ for (const [id, title, dur, sort, kind, cx, reqs, deps] of seeds) {
 db.prepare('UPDATE plan_tasks SET archived = 1, archived_at = ? WHERE id = ?').run(T, 'u-arch');
 db.prepare(`INSERT INTO prd_requirements (id, project_id, req_no, title, content, source_ref, priority, status, sort_order, created_at, updated_at)
    VALUES (?, ?, ?, ?, '', '', 'normal', 'todo', 0, ?, ?)`).run('rq-1', PID, 'REQ-001', '面板需求编号列', T, T);
+// T02315：断言的期望值改由夹具自身派生（门内自证），不再在判据里写死「4」「2」——
+// 写死的数字正是 U-13/U-14 恒红的根因（里程碑行也开始带来源徽标后，「总徽标数=普通行数」不再成立）。
+// 归档行 u-arch 不在可见口径内，故排除。
+const visibleSeeds = seeds.filter(([id]) => id !== 'u-arch');
+const FIXTURE = {
+  rows: visibleSeeds.length,                                        // 可见计划行 = 应带来源徽标的行数
+  milestones: visibleSeeds.filter((s) => s[4] === 'milestone').length, // 分组表头数
+  normals: visibleSeeds.filter((s) => s[4] === 'normal').length,       // 「按规则推导」应写入的行数
+};
 [['tc-1', 'P0'], ['tc-2', 'P1'], ['tc-3', 'P2']].forEach(([id, pri], i) => {
   db.prepare(`INSERT INTO test_cases (id, project_id, req_id, case_no, title, priority, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(id, PID, 'rq-1', `C-${i + 1}`, `用例${i + 1}`, pri, T, T);
@@ -186,7 +195,7 @@ ok('U-04b 无首次向导浮层遮挡（走查取证看的是面板本身）',
   await until(`!document.body.innerText.includes('认识「项目管理」')`, 5_000));
 
 // ---------------- 4) 面板开合（§10-1） ----------------
-// 先显式定视口：不设的话 headless 窗口宽度含滚动条，420 的对账会漂几 px，断言就成了猜
+// 先显式定视口：不设的话 headless 窗口宽度含滚动条，与声明宽度的对账会漂几 px，断言就成了猜
 await setViewport(1920, 1000);
 ok('U-05 默认关闭：时间线旁无估算面板', await until(`(() => !document.querySelector('aside[aria-label="估算面板"]'))()`, 3000));
 await ev(`(() => { const b = [...document.querySelectorAll('button')].find(x => (x.title || '').includes('打开估算面板')); b?.click(); return !!b; })()`);
@@ -195,11 +204,24 @@ const panelGeom = await until(`(() => {
   if (!a) return '';
   return JSON.stringify({ box: Math.round(a.getBoundingClientRect().width), inner: a.clientWidth, vw: window.innerWidth });
 })()`);
-ok('U-06 工具条按钮打开面板（1920 停靠为 aside，列宽 420 ± 2 内含 box-sizing 差异）',
-  !!panelGeom && (() => {
+// T02315：停靠宽度是设计口径（PRD §5.1），T02124 依用户反馈把 420 调到 520
+// （`web/src/components/EstimatePanel.tsx` 的 `export const ESTIMATE_PANEL_WIDTH`）。
+// 门里写死 420 等于把「某一版实现细节」当长期判据 → 设计一变即恒红。
+// 改从该单一来源常量读期望值：设计调整时门自动跟随，而面板没按声明宽度渲染时仍然红。
+const declaredWidth = (() => {
+  const src = readFileSync(join(ROOT, 'web', 'src', 'components', 'EstimatePanel.tsx'), 'utf8');
+  const m = src.match(/export const ESTIMATE_PANEL_WIDTH\s*=\s*(\d+)/);
+  return m ? Number(m[1]) : null;
+})();
+ok('U-06 工具条按钮打开面板（1920 停靠为 aside，宽度=实现声明的 ESTIMATE_PANEL_WIDTH ±2，差值内含 box-sizing）',
+  declaredWidth !== null && !!panelGeom && (() => {
     const g = JSON.parse(panelGeom);
-    return Math.abs(g.box - 420) <= 2 && Math.abs(g.inner - 420) <= 2 && g.vw >= 1900;
-  })(), panelGeom);
+    // 下限 300 / 上限 760：停靠分栏必须容得下区间条与徽标列（低于 300 直接截断，见 U-18 的 clipped 判据），
+    // 又不能在 1200 断点下把时间线挤没（U-08 要求时间线可视 >400）。这条带宽是「跟常量走」之外的兜底，
+    // 防止设计值被改成荒谬数后仍与 DOM 自洽而假绿。
+    return Math.abs(g.box - declaredWidth) <= 2 && Math.abs(g.inner - declaredWidth) <= 2
+      && g.vw >= 1900 && declaredWidth >= 300 && declaredWidth <= 760;
+  })(), { declaredWidth, geom: panelGeom });
 ok('U-07 面板数据加载完成（汇总卡读数 20.83 人天/人月 来自服务端 params）',
   await until(`document.querySelector('aside[aria-label="估算面板"]').innerText.includes('20.83 人天/人月')`));
 const mode1920 = await ev(`(() => {
@@ -207,7 +229,7 @@ const mode1920 = await ev(`(() => {
   const a = document.querySelector('aside[aria-label="估算面板"]');
   return { tlW: Math.round(tl.getBoundingClientRect().width), aside: !!a, dialog: !!document.querySelector('[role="dialog"][aria-modal="true"]') };
 })()`);
-ok('U-08 分栏共存：面板 420 挤压时间线，但时间线仍有可视宽度且未退化成抽屉',
+ok('U-08 分栏共存：面板按声明宽度挤压时间线，但时间线仍有可视宽度且未退化成抽屉',
   mode1920.aside && !mode1920.dialog && mode1920.tlW > 400, mode1920);
 
 // ---------------- 5) 空态一键填充（§10-5） ----------------
@@ -249,13 +271,19 @@ const rowInfo = await ev(`(() => {
     milestoneIn: txt.includes('M-A 需求阶段') && txt.includes('不进 Σ'),
     reqNo: txt.includes('REQ-001'),
     cx: txt.includes('复杂度 3'),
-    groups: [...a.querySelectorAll('[role="button"]')].length,
+    // T02315：里程碑折叠表头自 S6819 起是原生 button（隐式 role，无显式 role 属性），
+    // 旧探针只匹配 [role="button"] 属性选择器 → 恒为 0，U-14/U-16 因此恒红。
+    // 改为「原生 + 显式」并集，并按可访问语义（阶段折叠 title）圈定表头，避免把工具条按钮算进来。
+    groups: [...a.querySelectorAll('button,[role="button"]')]
+      .filter(b => /阶段明细/.test(b.getAttribute('title') || '')).length,
+    sigmaMarks: [...a.querySelectorAll('*')].filter(e => !e.children.length && e.textContent.trim() === '不进 Σ').length,
   };
 })()`);
-ok('U-13 明细覆盖全部可见计划（4 普通行全部在列 + 徽标各就各位）',
-  rowInfo.allTitles && rowInfo.ruleBadges === 4 && rowInfo.badgeCount === 4, rowInfo);
-ok('U-14 里程碑行常驻并显式标注「不进 Σ」（分组复用时间线口径，未另造第三套）',
-  rowInfo.milestoneIn && rowInfo.groups === 2, rowInfo);
+ok('U-13 明细覆盖全部可见计划（每条可见计划行各一枚来源徽标；规则徽标数与写入行数同源）',
+  rowInfo.allTitles && rowInfo.badgeCount === FIXTURE.rows
+  && rowInfo.ruleBadges === restAfter.items.length && restAfter.items.length === FIXTURE.normals, rowInfo);
+ok('U-14 里程碑行常驻并显式标注「不进 Σ」（折叠表头数与「不进 Σ」标注数=夹具里程碑数）',
+  rowInfo.milestoneIn && rowInfo.groups === FIXTURE.milestones && rowInfo.sigmaMarks === FIXTURE.milestones, rowInfo);
 ok('U-15 需求编号列与复杂度列出自现成接口（REQ-001 反查 + plan.complexity 投影）',
   rowInfo.reqNo && rowInfo.cx, rowInfo);
 
@@ -265,8 +293,29 @@ ok('U-15 需求编号列与复杂度列出自现成接口（REQ-001 反查 + pla
 await send('Page.navigate', { url: `${BASE}/?m=0` });
 await until(`[...document.querySelectorAll('button')].some(x => x.textContent.trim() === '项目管理')`, 25_000);
 await ev(`(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim() === '项目管理'); b?.click(); return !!b; })()`);
-ok('U-16 刷新并重新进入页面后面板仍打开：开合态由 sessionStorage 恢复',
-  await until(`!!document.querySelector('aside[aria-label="估算面板"] [role="button"]')`, 25_000));
+// 恢复判据要连面板内容一起等：刷新后 aside 先在场、行数据随后到位，
+// 只判 aside 在场会把「取数中」的空壳当成恢复成功（首轮即栽在这里：headers 恒 0 却拿到 aside）。
+const reopened = await until(`(() => {
+  const a = document.querySelector('aside[aria-label="估算面板"]');
+  if (!a) return null;
+  const headers = [...a.querySelectorAll('button,[role="button"]')]
+    .filter(b => /阶段明细/.test(b.getAttribute('title') || '')).length;
+  return headers === ${FIXTURE.milestones}
+    ? { session: sessionStorage.getItem('plan.estimatePanelOpen'), headers }
+    : null;
+})()`, 25_000);
+// 失败时给可读证据（是 aside 没回来、还是回来了但表头没齐），否则本条只留一个 null
+const reopenDiag = reopened ?? await ev(`(() => {
+  const a = document.querySelector('aside[aria-label="估算面板"]');
+  return {
+    asidePresent: !!a,
+    session: sessionStorage.getItem('plan.estimatePanelOpen'),
+    headers: a ? [...a.querySelectorAll('button,[role="button"]')]
+      .filter(b => /阶段明细/.test(b.getAttribute('title') || '')).length : null,
+  };
+})()`);
+ok('U-16 刷新并重新进入页面后面板仍打开：开合态由 sessionStorage 恢复（分组表头一并重现）',
+  !!reopened && reopened.session === 'true' && reopened.headers === FIXTURE.milestones, reopenDiag);
 const persist = await ev(`JSON.stringify({
   session: sessionStorage.getItem('plan.estimatePanelOpen'),
   local: localStorage.getItem('plan.estimatePanelOpen'),
