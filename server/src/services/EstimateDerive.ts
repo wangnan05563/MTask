@@ -23,7 +23,7 @@
  */
 import { getDb } from '../db/connection';
 import { getSetting } from './AppSettings';
-import { EstimateService, type EstimatePhase } from './EstimateService';
+import { EstimateService, ESTIMATE_ERRORS, type EstimatePhase } from './EstimateService';
 import { expected, type EstimateConfig, type ThreePoints } from './estimate-engine';
 
 /** 三档规则标识（面板/导出按它标注来源，`source` 统一写 'rule'） */
@@ -173,7 +173,7 @@ export interface PlanSkeleton {
  * 比例恒等于 1，自检就成了空转。
  */
 export function listPlanSkeletons(projectId: string): PlanSkeleton[] {
-  if (!projectId?.trim()) throw new Error('projectId 必填');
+  if (!projectId?.trim()) throw new Error(ESTIMATE_ERRORS.projectIdRequired);
   return getDb()
     .prepare(
       `SELECT p.id AS planId, p.title, p.kind FROM plan_tasks p
@@ -208,7 +208,7 @@ export type CaseWeightKSource = 'override' | 'project' | 'global' | 'default';
 
 export function resolveCaseWeightK(projectId: string, override?: number): { k: number; from: CaseWeightKSource } {
   if (override !== undefined) {
-    if (!Number.isFinite(override) || override <= 0) throw new Error(`用例权重系数 k 必须是正数，当前值「${override}」`);
+    if (!Number.isFinite(override) || override <= 0) throw new Error(`${ESTIMATE_ERRORS.caseWeightK} ${ESTIMATE_ERRORS.mustBePositive}，当前值「${override}」`);
     return { k: override, from: 'override' };
   }
   const rawP = getSetting(`${SETTINGS_KEY_CASE_K_PROJECT}${projectId}`);
@@ -216,7 +216,7 @@ export function resolveCaseWeightK(projectId: string, override?: number): { k: n
   const pick = (raw: string | null, from: 'project' | 'global') => {
     if (raw === null || raw.trim() === '') return null;
     const n = Number(raw);
-    if (!Number.isFinite(n) || n <= 0) throw new Error(`用例权重系数 k（${from}）必须是正数，当前值「${raw}」`);
+    if (!Number.isFinite(n) || n <= 0) throw new Error(`${ESTIMATE_ERRORS.caseWeightK}（${from}）${ESTIMATE_ERRORS.mustBePositive}，当前值「${raw}」`);
     return { k: n, from };
   };
   return pick(rawP, 'project') ?? pick(rawG, 'global') ?? { k: CASE_WEIGHT_K_DEFAULT, from: 'default' };
@@ -306,9 +306,9 @@ export function deriveEstimates(projectId: string, opts: DeriveOptions): {
   skipped: Array<{ planId: string; title: string; skip: Exclude<DeriveSkip, ''> }>;
   writableCount: number;
 } {
-  if (!projectId?.trim()) throw new Error('projectId 必填');
+  if (!projectId?.trim()) throw new Error(ESTIMATE_ERRORS.projectIdRequired);
   const db = getDb();
-  if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
+  if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error(ESTIMATE_ERRORS.projectNotFound);
 
   const scope = opts.scope === 'all' ? 'all' : 'missing';
   const { k, from } = resolveCaseWeightK(projectId, opts.caseWeightK);

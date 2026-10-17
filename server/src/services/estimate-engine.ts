@@ -20,6 +20,7 @@
  *     存在未归入阶段的行——面板据此告警并列出具体行，而不是只显示一个不等于 100% 的数。
  */
 import { ESTIMATE_PHASES, isClosedMilestone, type EstimatePhase } from './EstimateService';
+import { ESTIMATE_ERRORS } from './estimateCopy';
 import { addWorkdays, countWorkdaysBetween, type WorkdayCal } from '../util/workdays';
 
 /** 三点（人天，输入精度 0.5，§4.1） */
@@ -105,10 +106,10 @@ export function parseRuleRatio(raw: string | number | boolean | null | undefined
   if (!s) return { ...DEFAULT_ESTIMATE_CONFIG.ruleRatio };
   const parts = s.split(':').map((x) => Number(x.trim()));
   if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n) || n <= 0)) {
-    throw new Error(`估算推导比例配置格式应为「O:M权重:P」三段正数（如 1:4:1.6），当前值「${raw}」`);
+    throw new Error(`${ESTIMATE_ERRORS.ratioFormat}，当前值「${raw}」`);
   }
   if (parts[1] !== 4) {
-    throw new Error(`估算推导比例中段必须是 PERT 权重 4（式子 (O+4M+P)/6），当前值「${raw}」`);
+    throw new Error(`${ESTIMATE_ERRORS.ratioMidPert}，当前值「${raw}」`);
   }
   return { oMul: parts[0], pMul: parts[2] };
 }
@@ -121,9 +122,9 @@ export function resolveEstimateConfig(
     const raw = kv[key];
     if (raw === undefined || raw === null || String(raw).trim() === '') return def;
     const n = Number(raw);
-    if (!Number.isFinite(n)) throw new Error(`估算参数「${key}」必须是数字，当前值「${raw}」`);
-    if (opts.min !== undefined && n < opts.min) throw new Error(`估算参数「${key}」不得小于 ${opts.min}，当前值 ${n}`);
-    if (opts.max !== undefined && n > opts.max) throw new Error(`估算参数「${key}」不得大于 ${opts.max}，当前值 ${n}`);
+    if (!Number.isFinite(n)) throw new Error(`${ESTIMATE_ERRORS.paramLabel}「${key}」${ESTIMATE_ERRORS.notNumber}，当前值「${raw}」`);
+    if (opts.min !== undefined && n < opts.min) throw new Error(`${ESTIMATE_ERRORS.paramLabel}「${key}」${ESTIMATE_ERRORS.paramMin} ${opts.min}，当前值 ${n}`);
+    if (opts.max !== undefined && n > opts.max) throw new Error(`${ESTIMATE_ERRORS.paramLabel}「${key}」${ESTIMATE_ERRORS.paramMax} ${opts.max}，当前值 ${n}`);
     return n;
   };
   const coefs = {} as Record<EstimateCoefKey, number>;

@@ -18,12 +18,12 @@ import { getDb } from '../db/connection';
 import { v4 as uuid } from 'uuid';
 import { notifyChange } from './ChangeBus';
 import { buildCalendar, type WorkdayCal } from '../util/workdays';
-
-/** 阶段（§3.1）：与模板 R31/R35~R40 的阶段行对齐，写入非法值直接报错——错归一会让报价人月进错桶 */
+import { ESTIMATE_ERRORS, ESTIMATE_POINT_LABELS, pointLabelList } from './estimateCopy';
 
 /** 「查不到项目」错误文案单源（T02293 规约判据 1）：门据此断言，不再抄字面量 */
-export const ESTIMATE_PROJECT_NOT_FOUND = '项目不存在';
+export { ESTIMATE_PROJECT_NOT_FOUND, ESTIMATE_ERRORS, ESTIMATE_POINT_LABELS, pointLabelList } from './estimateCopy';
 
+/** 阶段（§3.1）：与模板 R31/R35~R40 的阶段行对齐，写入非法值直接报错——错归一会让报价人月进错桶 */
 export const ESTIMATE_PHASES = ['req', 'design', 'dev', 'impl', 'common', 'onsite'] as const;
 export type EstimatePhase = (typeof ESTIMATE_PHASES)[number];
 /** 来源标记（§2.3-8 / §4.6）：人工改过即转 manual，面板徽标与上线度量（§9 复核率）都按它出数 */
@@ -166,20 +166,21 @@ function num(v: unknown): number | undefined {
  * 文案带具体数值——批量 40 行时「校验失败」这类无主语错误没法定位（PlanService 导入的老痛点）。
  */
 export function pointsError(o: number, m: number, p: number): string | null {
-  const pairs: Array<[number, string]> = [[o, '乐观值 O'], [m, '最可能值 M'], [p, '悲观值 P']];
+  const pairs: Array<[number, string]> = [[o, ESTIMATE_POINT_LABELS.optimistic], [m, ESTIMATE_POINT_LABELS.likely], [p, ESTIMATE_POINT_LABELS.pessimistic]];
   for (const [v, label] of pairs) {
-    if (Number.isNaN(v)) return `${label}必须是数字`;
-    if (v < 0) return `${label}不能为负（当前 ${v}）`;
+    if (Number.isNaN(v)) return `${label}${ESTIMATE_ERRORS.notNumber}`;
+    if (v < 0) return `${label}${ESTIMATE_ERRORS.negative}（当前 ${v}）`;
   }
-  if (o > m) return `乐观值 O（${o}）不能大于最可能值 M（${m}）`;
-  if (m > p) return `最可能值 M（${m}）不能大于悲观值 P（${p}）`;
+  const [LO, LM, LP] = pointLabelList();
+  if (o > m) return `${LO}（${o}）${ESTIMATE_ERRORS.ordering}${LM}（${m}）`;
+  if (m > p) return `${LM}（${m}）${ESTIMATE_ERRORS.ordering}${LP}（${p}）`;
   return null;
 }
 
 function requireProject(projectId: string): void {
-  if (!str(projectId)) throw new Error('projectId 必填');
+  if (!str(projectId)) throw new Error(ESTIMATE_ERRORS.projectIdRequired);
   const db = getDb();
-  if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error(ESTIMATE_PROJECT_NOT_FOUND);
+  if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error(ESTIMATE_ERRORS.projectNotFound);
 }
 
 /**
@@ -197,19 +198,19 @@ function requirePlan(
   opts: { unlock?: boolean } = {},
 ): { id: string; title: string; kind: string; status: string; progress: number } {
   const db = getDb();
-  if (!str(projectId)) throw new Error('projectId 必填');
-  if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error(ESTIMATE_PROJECT_NOT_FOUND);
-  if (!str(planId)) throw new Error('planId 必填');
+  if (!str(projectId)) throw new Error(ESTIMATE_ERRORS.projectIdRequired);
+  if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error(ESTIMATE_ERRORS.projectNotFound);
+  if (!str(planId)) throw new Error(ESTIMATE_ERRORS.planIdRequired);
   const p = db
     .prepare('SELECT id, project_id, title, kind, status, progress FROM plan_tasks WHERE id = ?')
     .get(planId) as
     | { id: string; project_id: string; title: string; kind: string; status: string; progress: number }
     | undefined;
-  if (!p) throw new Error(`计划条目不存在：${planId}`);
-  if (p.project_id !== projectId) throw new Error(`计划「${p.title}」不属于该项目`);
+  if (!p) throw new Error(`${ESTIMATE_ERRORS.planMissing}：${planId}`);
+  if (p.project_id !== projectId) throw new Error(`计划「${p.title}」${ESTIMATE_ERRORS.planNotInProject}`);
   const closed = isClosedMilestone({ planKind: p.kind, planStatus: p.status, planProgress: p.progress });
   if (closed && !opts.unlock) {
-    throw new Error(`里程碑「${p.title}」已收口（进度 ${p.progress ?? 0}%），其估算行只读——已交付项不得追溯改写报价（§7）；确需改写请显式解锁`);
+    throw new Error(`里程碑「${p.title}」${ESTIMATE_ERRORS.milestoneReadonly}（进度 ${p.progress ?? 0}%），其估算行只读——已交付项不得追溯改写报价（§7）；确需改写请显式解锁`);
   }
   return p;
 }
@@ -233,7 +234,7 @@ function resolveItem(
   const m = num(input.likely) ?? prev?.likely;
   const p = num(input.pessimistic) ?? prev?.pessimistic;
   if (o === undefined || m === undefined || p === undefined) {
-    throw new Error('乐观值 O / 最可能值 M / 悲观值 P 必填（该计划尚无估算行）');
+    throw new Error(`${pointLabelList().join(' / ')} ${ESTIMATE_ERRORS.pointsRequired}`);
   }
   const err = pointsError(o, m, p);
   if (err) throw new Error(err);
@@ -241,13 +242,13 @@ function resolveItem(
   if (input.phase !== undefined) {
     const phase = String(input.phase);
     if (!(ESTIMATE_PHASES as readonly string[]).includes(phase)) {
-      throw new Error(`未知阶段：${phase}（可用 ${ESTIMATE_PHASES.join(' / ')}）`);
+      throw new Error(`${ESTIMATE_ERRORS.unknownPhase}：${phase}（可用 ${ESTIMATE_PHASES.join(' / ')}）`);
     }
   }
   if (input.unit !== undefined) {
     const unit = String(input.unit);
     if (!(ESTIMATE_UNITS as readonly string[]).includes(unit)) {
-      throw new Error(`未知计量单位：${unit}（本期仅 ${ESTIMATE_UNITS.join(' / ')}）`);
+      throw new Error(`${ESTIMATE_ERRORS.unknownUnit}：${unit}（本期仅 ${ESTIMATE_UNITS.join(' / ')}）`);
     }
   }
   // source 非法回落 manual：它来自 AI/批量通道，纠正比 500 可用（同 TestCaseService 枚举口径）
@@ -296,7 +297,7 @@ function writeItem(row: Omit<EstimateItemRow, 'id' | 'created_at'>): EstimateIte
   } catch (e) {
     // 并发/重复提交撞上唯一索引时转成用户可读文案（ SQLITE_CONSTRAINT 原文含列名，不便直接抛给前端）
     if (String((e as Error).message).includes('UNIQUE')) {
-      throw new Error(`该计划已存在估算行，请刷新后重试（plan_id=${row.plan_id}）`);
+      throw new Error(`${ESTIMATE_ERRORS.rowConflict}，请刷新后重试（plan_id=${row.plan_id}）`);
     }
     throw e;
   }
@@ -388,7 +389,7 @@ export const EstimateService = {
     const written = writeItem(resolveItem(projectId, planId, input));
     notifyChange('plans');
     const view = loadView(projectId, written.plan_id);
-    if (!view) throw new Error('估算行写入后回读失败（不应发生）');
+    if (!view) throw new Error(`${ESTIMATE_ERRORS.rowRereadFailed}（不应发生）`);
     return view;
   },
 
@@ -401,7 +402,7 @@ export const EstimateService = {
     items: Array<{ planId: string } & EstimateInput>,
   ): { written: number; errors: EstimateWriteError[] } {
     requireProject(projectId);
-    if (!Array.isArray(items) || items.length === 0) throw new Error('批量写入内容为空');
+    if (!Array.isArray(items) || items.length === 0) throw new Error(ESTIMATE_ERRORS.batchEmpty);
     const errors: EstimateWriteError[] = [];
     const rows: Array<Omit<EstimateItemRow, 'id' | 'created_at'>> = [];
     items.forEach((it, index) => {
@@ -450,7 +451,7 @@ export const EstimateService = {
   /** 显式清理脱离行（§7「清理为显式手动操作」）：只删确属该项目且已脱离的行，其余跳过并如实计数 */
   removeDetached(projectId: string, ids: string[]): number {
     requireProject(projectId);
-    if (!Array.isArray(ids) || ids.length === 0) throw new Error('未选择要清理的估算行');
+    if (!Array.isArray(ids) || ids.length === 0) throw new Error(ESTIMATE_ERRORS.nothingToClean);
     const db = getDb();
     const findOrphan = db.prepare(
       `SELECT e.id FROM estimate_items e
@@ -480,13 +481,13 @@ export const EstimateService = {
     requireProject(projectId);
     const fmt = String(input.format);
     if (!(ESTIMATE_SNAPSHOT_FORMATS as readonly string[]).includes(fmt)) {
-      throw new Error(`未知导出格式：${fmt}（可用 ${ESTIMATE_SNAPSHOT_FORMATS.join(' / ')}）`);
+      throw new Error(`${ESTIMATE_ERRORS.unknownSnapshotFormat}：${fmt}（可用 ${ESTIMATE_SNAPSHOT_FORMATS.join(' / ')}）`);
     }
     let payload: string;
     try {
       payload = JSON.stringify(input.payload ?? {});
     } catch {
-      throw new Error('快照 payload 无法序列化为 JSON');
+      throw new Error(`快照 payload ${ESTIMATE_ERRORS.payloadUnserializable}`);
     }
     const db = getDb();
     const id = uuid();

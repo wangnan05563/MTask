@@ -4,13 +4,20 @@
  * 用法（Node 版本必须与 node_modules/better-sqlite3 的预编译 ABI 对齐，本机 Node22 ABI127 可加载）：
  *   <node22> node_modules/tsx/dist/cli.mjs scripts/verify-t02037-estimate-e3.mts
  *
- * 两段结构：
+ * 四段结构：
  *   S 段（同进程·只读）：`EstimateDerive` 三档规则逐档取值、0.5 网格、里程碑/人工行保护、覆盖面、
  *     「Σ 含里程碑 − Σ 仅 normal = 里程碑推导值」恒等式（§4.6 v1.4 判据）。**不落库**，
  *     把写路径完整留给 R 段的 REST，避免「服务层先写一遍、REST 再断言一遍」的同义反复。
+ *   G 段（同进程·判据 3~4）：**改名模拟**——把 `ESTIMATE_ERRORS` / `ESTIMATE_POINT_LABELS` 的词干
+ *     逐支改成 `ZZZ-<key>` 再触发同一校验，要求「照样拒绝、文案随单源表移动、旧词干零残留、还原逐字符
+ *     相同、零副作用」；任一失守即说明某层留了第二份抄本。另含里程碑分类口径（T02123 / 3e4b613）的
+ *     **新旧顺序反证**：R-09/R-20 的数字变化钉的是「结构性排除先于未估算」这条规则，不是数字本身。
  *   R 段（隔离实例·REST）：起一个 `MTask_PORT` + `MTask_DATA_DIR` 的临时服务进程，按 §8 端点清单
  *     逐条打真请求——路由挂载、静态路径优先于 `:planId`、`wrap` 的 400 中文文案、批量零写入、
  *     PATCH 人工转 manual、参数读写校验、快照 compare、脱离行清理、归档行不进 Σ。
+ *     所有文案断言走 `rejected400`（行为侧=400+非空文案+拒绝即零写入，字面侧=单源词干）。
+ *   H 段（跨进程·判据 4）：R 段登记的服务端原文与门进程词干表做同一性比对（逐条命中 + 假词干零命中
+ *     + 同入参文案逐字符相同），自证「改措辞门不假红」靠的是同源，不是抄本。
  *
  * 隔离纪律（skill 红线 8）：库与端口都是临时的，不碰生产数据目录，跑完 kill + 回收临时目录。
  */
@@ -20,6 +27,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveServerLauncher } from './isolated-server-launcher.mts';
+import { okPair } from './lib/anchor-pair.mts'; // T02293 判据 3：文案锚必须配行为断言
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02037-e3-'));
@@ -29,7 +37,8 @@ process.env.MTask_DATA_DIR = DATA_DIR;
 const { getDb, closeDb } = await import('../server/src/db/connection.ts');
 const { initSchema } = await import('../server/src/db/schema.ts');
 const D = await import('../server/src/services/EstimateDerive.ts');
-const { buildSummary, resolveEstimateConfig, expected, DEFAULT_ESTIMATE_CONFIG } = await import('../server/src/services/estimate-engine.ts');
+const { buildSummary, resolveEstimateConfig, parseRuleRatio, expected, DEFAULT_ESTIMATE_CONFIG } = await import('../server/src/services/estimate-engine.ts');
+const { pointsError, ESTIMATE_ERRORS, ESTIMATE_POINT_LABELS, ESTIMATE_META, EstimateService } = await import('../server/src/services/EstimateService.ts');
 
 let pass = 0;
 let fail = 0;
@@ -40,6 +49,41 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   }
 };
 const near = (a: number, b: number, eps = 1e-9) => Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) < eps;
+/**
+ * 400 类断言的配对器（T02293 判据 3）。
+ * 行为侧 = 请求真的被拒（400 + 非空错误文案，可再叠「库里没多出东西」这类副作用检查）；
+ * 字面侧 = 文案含产品**单源词干**（`ESTIMATE_ERRORS`，见 `server/src/services/estimateCopy.ts`）。
+ * 服务端进程与门进程读同一份常量表，所以改措辞时两侧一起动、门不假红；
+ * 这个「跨进程同源」本身由 H-01 专门自证，不靠注释宣称。
+ * 每条 400 文案同时登记进 `rest400`，供 H 段拿服务端原文与门进程词干做同一性比对。
+ */
+const rest400: Array<{ label: string; error: string }> = [];
+const rejected400 = (
+  label: string,
+  res: { status: number; json?: Record<string, any> },
+  stem: string,
+  extraBehavior?: () => boolean,
+) => {
+  if (res.status === 400) rest400.push({ label, error: String(res.json?.error ?? '') });
+  return okPair(ok, label,
+    () => res.status === 400 && String(res.json?.error ?? '').length > 0 && (extraBehavior ? extraBehavior() : true),
+    () => String(res.json?.error ?? '').includes(stem),
+    () => ({ status: res.status, error: String(res.json?.error ?? '').slice(0, 140) }));
+};
+/** S 段（同进程抛错）的配对器：行为侧 = 确实抛了错（可叠「合法入参仍通过」），字面侧 = 命中单源词干 */
+const rejectedMsg = (
+  label: string,
+  msg: string,
+  stem: string,
+  extraBehavior?: () => boolean,
+) => okPair(ok, label,
+  () => msg.length > 0 && (extraBehavior ? extraBehavior() : true),
+  () => msg.includes(stem),
+  () => ({ 文案: msg.slice(0, 140) }));
+/** 把「应当抛错的调用」收成文案（不抛则空串，交给配对器的行为侧判红） */
+const fire = (fn: () => unknown): string => {
+  try { fn(); return ''; } catch (e) { return e instanceof Error ? e.message : String(e); }
+};
 const T = '2026-10-11T00:00:00.000Z';
 const PID = 'p-e3';
 const PID_B = 'p-e3b';
@@ -177,7 +221,9 @@ ok('S-02 未命中关键字回落 dev（与 EstimateService 缺省同口径）',
     r12c3?.pessimistic === 4, r12c3);
   let kErr = '';
   try { D.deriveEstimates(PID, { config: CFG, caseWeightK: 0 }); } catch (e) { kErr = (e as Error).message; }
-  ok('S-22 k=0 直接报错而不是静默回落', kErr.includes('正数'), kErr);
+  okPair(ok, 'S-22 k=0 直接报错而不是静默回落',
+    () => kErr !== '' && D.resolveCaseWeightK(PID, 1).k === 1,
+    () => kErr.includes(ESTIMATE_ERRORS.mustBePositive), () => ({ 文案: kErr }));
 
   // S23 clamp
   const huge = D.deriveEstimates(PID, { config: CFG, caseWeightK: 100 });
@@ -215,7 +261,114 @@ ok('S-02 未命中关键字回落 dev（与 EstimateService 缺省同口径）',
     r.items.length === 0 && r.writableCount === 0 && D.coverage(PID_B).normal === 0);
   let err = '';
   try { D.deriveEstimates('no-such-project', { config: CFG }); } catch (e) { err = (e as Error).message; }
-  ok('S-29 不存在的项目报错', err.includes('项目不存在'), err);
+  rejectedMsg('S-29 不存在的项目报错', err, ESTIMATE_ERRORS.projectNotFound,
+    // 行为侧再钉一枚「合法项目照样出数」——只有报错文案变了不算失守，能报错又不误伤合法入参才是原口径
+    () => D.deriveEstimates(PID, { config: CFG }).items.length === 7);
+}
+
+console.log('\n=== G 段：单源词干改名模拟 + 口径破行为反证（T02293 判据 3~4·同进程） ===');
+{
+  /**
+   * 改名模拟（判据 4）：REST 层在另一个进程里，门改不动它的常量——所以这一支走**同进程的产品纯路径**
+   * （引擎 / 服务层 / derive 三层都能直达），把 `ESTIMATE_ERRORS` 的词干改成 `ZZZ-<key>` 后重新触发同一校验，
+   * 要求「照样拒绝、文案随单源移动、旧词干零残留、还原后逐字符相同」。
+   * 任一条不成立即说明该文案在某层留了第二份抄本——那正是判据 1 要消灭的东西。
+   */
+  const ERR_TABLE = ESTIMATE_ERRORS as unknown as Record<string, string>;
+  const LABEL_TABLE = ESTIMATE_POINT_LABELS as unknown as Record<string, string>;
+  const estIds = () => (db.prepare('SELECT id FROM estimate_items').all() as Array<{ id: string }>)
+    .map((r) => r.id).sort().join(',');
+  const baselineIds = estIds();
+  const cases: Array<{ table: Record<string, string>; key: string; title: string; run: () => string }> = [
+    { table: ERR_TABLE, key: 'ordering', title: '三点顺序 O>M', run: () => pointsError(9, 5, 6) ?? '' },
+    { table: ERR_TABLE, key: 'ordering', title: '三点顺序 M>P', run: () => pointsError(1, 5, 2) ?? '' },
+    { table: ERR_TABLE, key: 'notNumber', title: '三点非数字', run: () => pointsError(Number.NaN, 1, 1) ?? '' },
+    { table: ERR_TABLE, key: 'negative', title: '三点为负', run: () => pointsError(-1, 1, 1) ?? '' },
+    { table: LABEL_TABLE, key: 'optimistic', title: '点值标签（乐观）', run: () => pointsError(9, 5, 6) ?? '' },
+    { table: LABEL_TABLE, key: 'likely', title: '点值标签（最可能）', run: () => pointsError(1, 5, 2) ?? '' },
+    { table: ERR_TABLE, key: 'ratioFormat', title: '推导比例格式', run: () => fire(() => parseRuleRatio('1:4')) },
+    { table: ERR_TABLE, key: 'ratioMidPert', title: '推导比例中段', run: () => fire(() => parseRuleRatio('1:5:1.6')) },
+    { table: ERR_TABLE, key: 'paramMin', title: '参数下限', run: () => fire(() => resolveEstimateConfig({ 'estimate.coef.scope': '-0.1' })) },
+    { table: ERR_TABLE, key: 'paramMax', title: '参数上限', run: () => fire(() => resolveEstimateConfig({ 'estimate.coef.scope': '1.5' })) },
+    { table: ERR_TABLE, key: 'notNumber', title: '参数非数字', run: () => fire(() => resolveEstimateConfig({ 'estimate.manDaysPerManMonth': 'abc' })) },
+    { table: ERR_TABLE, key: 'caseWeightK', title: '用例权重 k 标签', run: () => fire(() => D.resolveCaseWeightK(PID, 0)) },
+    { table: ERR_TABLE, key: 'mustBePositive', title: '用例权重 k 正值', run: () => fire(() => D.resolveCaseWeightK(PID, -1)) },
+    { table: ERR_TABLE, key: 'projectIdRequired', title: 'projectId 缺失', run: () => fire(() => EstimateService.listByProject('')) },
+    { table: ERR_TABLE, key: 'projectNotFound', title: '项目不存在', run: () => fire(() => EstimateService.listByProject('no-such-project')) },
+    { table: ERR_TABLE, key: 'planIdRequired', title: 'planId 缺失', run: () => fire(() => EstimateService.upsert(PID, '', { optimistic: 1, likely: 1, pessimistic: 1 })) },
+    { table: ERR_TABLE, key: 'planMissing', title: '计划不存在', run: () => fire(() => EstimateService.upsert(PID, 'pl-nope', { optimistic: 1, likely: 1, pessimistic: 1 })) },
+    { table: ERR_TABLE, key: 'planNotInProject', title: '计划跨项目', run: () => fire(() => EstimateService.upsert(PID_B, 'pl-c1', { optimistic: 1, likely: 1, pessimistic: 1 })) },
+    { table: ERR_TABLE, key: 'unknownPhase', title: '未知阶段', run: () => fire(() => EstimateService.upsert(PID, 'pl-c1', { optimistic: 1, likely: 1, pessimistic: 1, phase: 'qa' })) },
+    { table: ERR_TABLE, key: 'pointsRequired', title: '三点必填', run: () => fire(() => EstimateService.upsert(PID, 'pl-case', { optimistic: 1 })) },
+    { table: ERR_TABLE, key: 'paramLabel', title: '参数名前缀', run: () => fire(() => resolveEstimateConfig({ 'estimate.coef.scope': '-0.1' })) },
+    { table: ERR_TABLE, key: 'unknownUnit', title: '未知计量单位', run: () => fire(() => EstimateService.upsert(PID, 'pl-c1', { optimistic: 1, likely: 1, pessimistic: 1, unit: 'hour' })) },
+  ];
+  // 里程碑只读支单独铺数据（夹具里 pl-ms 未收口），跑完恢复原状，不影响 R 段 PATCH
+  db.prepare("UPDATE plan_tasks SET status = 'done', progress = 100 WHERE id = 'pl-ms'").run();
+  cases.push({
+    table: ERR_TABLE, key: 'milestoneReadonly', title: '收口里程碑只读',
+    run: () => fire(() => EstimateService.upsert(PID, 'pl-ms', { optimistic: 1, likely: 1, pessimistic: 1 })),
+  });
+  const zj: string[] = [];
+  for (const c of cases) {
+    const stem = c.table[c.key];
+    const before = c.run();
+    if (!before.includes(stem)) {
+      zj.push(`${c.title}：原始件文案没命中单源词干「${stem}」（实际「${before.slice(0, 60)}」）`);
+      continue;
+    }
+    const renamed = `ZZZ-${c.key}`;
+    c.table[c.key] = renamed;
+    let after = '';
+    try { after = c.run(); } finally { c.table[c.key] = stem; }
+    if (after === '') zj.push(`${c.title}：改名后产品不再拒绝——校验本身失守（文案不是唯一挡点）`);
+    else if (!after.includes(renamed)) zj.push(`${c.title}：改名后文案未随单源表移动（该层留了写死抄本）`);
+    if (after.includes(stem)) zj.push(`${c.title}：改名后文案仍含旧词干「${stem}」= 第二份抄本`);
+    if (c.run() !== before) zj.push(`${c.title}：还原后文案与原始件不逐字符相同（改表污染）`);
+    if (estIds() !== baselineIds) {
+      zj.push(`${c.title}：拒绝失效并落了行（副作用非零）`);
+      for (const id of estIds().split(',').filter((id) => !baselineIds.split(',').includes(id))) {
+        db.prepare('DELETE FROM estimate_items WHERE id = ?').run(id);
+      }
+    }
+  }
+  db.prepare("UPDATE plan_tasks SET status = 'todo', progress = 0 WHERE id = 'pl-ms'").run();
+  ok('G-01 词干改名模拟全项通过（拒绝在、文案随单源移动、旧词干零残留、还原逐字符相同、零副作用）',
+    zj.length === 0, zj);
+  ok('G-02 改名模拟覆盖的词干数足够（本门 ≥ 15 支、四层都能触达）',
+    cases.length >= 15, { 支数: cases.length, 去重词干: new Set(cases.map((c) => c.key)).size });
+
+  // G-03 里程碑分类口径（T02123 / commit 3e4b613）的破行为反证。
+  // R-09/R-20 的数字变了，不是因为「门写错了」，而是引擎的分类顺序改了：
+  // 结构性排除（subtotal / milestone）先于「有没有三点」判定，无点值里程碑记 `excluded.milestone`。
+  // 只把数字 5 改成 4 的门，换个人看不懂为什么——这里把新旧两种顺序喂同一份夹具，钉住「是哪条规则在生效」。
+  type EngineRowLike = { key: string; phase: string; role: 'detail'; planKind: string; points: null };
+  const oldOrder = (rows: EngineRowLike[]) => {
+    const ex = { subtotal: 0, milestone: 0, unEstimated: 0 };
+    for (const r of rows) {
+      if (!r.points) { ex.unEstimated += 1; continue; }            // 旧顺序：先判点值
+      if (r.planKind === 'milestone') { ex.milestone += 1; continue; }
+    }
+    return ex;
+  };
+  const mk = (key: string, planKind: string): EngineRowLike => ({ key, phase: 'dev', role: 'detail', planKind, points: null });
+  const msNull = [mk('m1', 'milestone')];
+  const detNull = [mk('d1', 'normal')];
+  const newMsNull = buildSummary(msNull, CFG).ratioCheck.excluded;
+  ok('G-03a 无点值里程碑记 excluded.milestone、不虚报未估算（T02123 口径）',
+    newMsNull.milestone === 1 && newMsNull.unEstimated === 0, newMsNull);
+  ok('G-03b 无点值明细行仍记 unEstimated（口径只收里程碑，没放宽成全盘排除）',
+    buildSummary(detNull, CFG).ratioCheck.excluded.unEstimated === 1
+    && buildSummary(detNull, CFG).ratioCheck.excluded.milestone === 0, buildSummary(detNull, CFG).ratioCheck.excluded);
+  ok('G-03c 破行为反证成立：同一夹具在旧顺序下结论相反 → 断言钉的是规则不是数字',
+    oldOrder(msNull).unEstimated === 1 && oldOrder(msNull).milestone === 0
+    && JSON.stringify(newMsNull) !== JSON.stringify(oldOrder(msNull)), { 新: newMsNull, 旧: oldOrder(msNull) });
+  ok('G-03d 有点值里程碑两版口径同判 milestone（改的只是无点值那一支）',
+    (() => {
+      const rows = [{ key: 'm2', phase: 'dev', role: 'detail' as const, planKind: 'milestone', points: { optimistic: 5, likely: 5, pessimistic: 8 } }];
+      const ex = buildSummary(rows, CFG).ratioCheck.excluded;
+      return ex.milestone === 1 && ex.unEstimated === 0 && JSON.stringify(ex) === JSON.stringify(oldOrder(rows as unknown as EngineRowLike[]));
+    })(), buildSummary([{ key: 'm2', phase: 'dev', role: 'detail' as const, planKind: 'milestone', points: { optimistic: 5, likely: 5, pessimistic: 8 } }], CFG).ratioCheck.excluded);
 }
 
 console.log('\n=== R 段：/api/estimates* REST（隔离实例） ===');
@@ -272,12 +425,18 @@ if (!(await waitForServer())) {
   ok('R-02 静态路径 /params 不被 /:planId 抢占（plans.ts 同条红线）',
     params.status === 200 && params.json?.config?.manDaysPerManMonth === 20.83, params.json?.config);
   const meta = await api('GET', '/api/estimates/meta');
-  ok('R-03 meta 单源下发阶段/系数标签与推导常量',
-    meta.status === 200 && meta.json?.phaseLabels?.req === '需求分析'
-    && meta.json?.complexityBaseDays?.[3] === 3.5 && meta.json?.casePriorityWeights?.P0 === 3
-    && meta.json?.durationMul?.pMul === 1.4, meta.json && Object.keys(meta.json));
+  okPair(ok, 'R-03 meta 单源下发阶段/系数标签与推导常量',
+    () => meta.status === 200
+      && JSON.stringify(Object.keys(meta.json?.phaseLabels ?? {})) === JSON.stringify([...ESTIMATE_META.phases])
+      && ESTIMATE_META.phases.every((p) => meta.json?.phaseLabels?.[p] === ESTIMATE_META.phaseLabels[p])
+      && meta.json?.complexityBaseDays?.[3] === 3.5 && meta.json?.casePriorityWeights?.P0 === 3
+      && meta.json?.durationMul?.pMul === 1.4,
+    // 字面侧取的是单源表**当前值**（不是文案抄本）：改措辞时两侧一起动，等价重构不会让门假红
+    () => meta.json?.phaseLabels?.req === ESTIMATE_META.phaseLabels.req,
+    () => ({ 下发: meta.json?.phaseLabels, 单源: ESTIMATE_META.phaseLabels }));
   const noPid = await api('GET', '/api/estimates');
-  ok('R-04 projectId 必填走 400 中文文案', noPid.status === 400 && noPid.json?.error === 'projectId 必填', noPid.json);
+  rejected400('R-04 projectId 必填走 400 中文文案', noPid, ESTIMATE_ERRORS.projectIdRequired,
+    () => params.status === 200);
 
   // R5 GET 全量
   const g0 = await api('GET', `/api/estimates${Q}`);
@@ -290,10 +449,12 @@ if (!(await waitForServer())) {
     near(g0.json.summary.directManDays.expected, 6.5, 1e-9), g0.json.summary.directManDays);
   ok('R-08 自检集合含未估算计划（visiblePlans=7：6 normal + 1 milestone）',
     g0.json.checks.visiblePlans === 7, g0.json.checks);
-  // 引擎的排除分类按「先未估算、再小计/里程碑」计数：未估算的里程碑行归 unEstimated（5=4 明细+1 里程碑），
-  // 里程碑一旦有了估算值才记进 excluded.milestone（R-53 断言那一支）
-  ok('R-09 未估算计划计入自检（unEstimated=5），里程碑不进 countedKeys',
-    g0.json.summary.ratioCheck.excluded.unEstimated === 5
+  // 引擎的排除分类（T02123 / commit 3e4b613）：**结构性排除先于未估算判定**——
+  // 里程碑行不论有没有三点都记 `excluded.milestone`，不再虚报成「未录入」（四期 49 行里 14 行里程碑曾被误报待录入）。
+  // 故此处 unEstimated = 4 条无点值明细（pl-c3/pl-c1/pl-case/pl-dur），里程碑单独记 1。口径失守由 G-03 反证。
+  ok('R-09 未估算明细计入自检（unEstimated=4）、里程碑计入结构性排除（milestone=1）',
+    g0.json.summary.ratioCheck.excluded.unEstimated === 4
+    && g0.json.summary.ratioCheck.excluded.milestone === 1
     && !(g0.json.summary.countedKeys ?? []).includes('pl-ms'), g0.json.summary.ratioCheck);
   ok('R-10 sumRatio 恒等自检不报错（danger=false，偏差 <1%）',
     g0.json.summary.ratioCheck.danger === false && near(g0.json.summary.ratioCheck.sumRatio, 1, 1e-6),
@@ -325,9 +486,10 @@ if (!(await waitForServer())) {
     && byId.get('pl-case')?.phase === 'dev' && byId.get('pl-dur')?.phase === 'impl', byId.get('pl-c3'));
   ok('R-19 人工行原值未动（3/4/8）',
     byId.get('pl-man')?.optimistic === 3 && byId.get('pl-man')?.likely === 4 && byId.get('pl-man')?.pessimistic === 8);
-  ok('R-20 里程碑仍无估算行（derive 限定 normal）且不在 Σ 里',
+  ok('R-20 里程碑仍无估算行（derive 限定 normal）且不在 Σ 里；落库后未估算归零、里程碑仍记结构性排除',
     !byId.has('pl-ms') && !(g2.json.summary.countedKeys ?? []).includes('pl-ms')
-    && g2.json.summary.ratioCheck.excluded.unEstimated === 1, g2.json.summary.ratioCheck);
+    && g2.json.summary.ratioCheck.excluded.unEstimated === 0
+    && g2.json.summary.ratioCheck.excluded.milestone === 1, g2.json.summary.ratioCheck);
   ok('R-21 汇总随落库更新：E = 6.5 + 3.8333+1.0833+3.75+7.25 = 22.4166667',
     near(g2.json.summary.directManDays.expected, 22.416666666666668, 1e-9), g2.json.summary.directManDays);
   ok('R-22 覆盖面收口：estimated=6 / missing=0',
@@ -343,10 +505,15 @@ if (!(await waitForServer())) {
   const p2 = await api('PATCH', `/api/estimates/pl-c3${Q}`, { likely: 5, source: 'rule' });
   ok('R-26 显式 source 优先（AI/批量通道仍可写回 rule）', p2.json?.item?.source === 'rule');
   const p3 = await api('PATCH', `/api/estimates/pl-c3${Q}`, { optimistic: 9, likely: 5, pessimistic: 6 });
-  ok('R-27 三点校验走 400 中文文案（O>M）',
-    p3.status === 400 && String(p3.json?.error).includes('乐观值'), p3.json);
   const p4 = await api('PATCH', `/api/estimates/pl-nope${Q}`, { optimistic: 1, likely: 1, pessimistic: 1 });
-  ok('R-28 不存在的计划报错', p4.status === 400 && String(p4.json?.error).includes('计划条目不存在'), p4.json);
+  const gP = await api('GET', `/api/estimates${Q}`);
+  const itemsP = gP.json?.items ?? [];
+  const rowP = itemsP.find((i: any) => i.plan_id === 'pl-c3');
+  rejected400('R-27 三点校验走 400 中文文案（O>M）', p3, ESTIMATE_ERRORS.ordering,
+    // 行为侧钉「拒绝即零写入」：被拒的 9/5/6 没落库，原值仍是 R-24 的 4/5/6
+    () => rowP?.optimistic === 4 && rowP?.likely === 5 && rowP?.pessimistic === 6);
+  rejected400('R-28 不存在的计划报错', p4, ESTIMATE_ERRORS.planMissing,
+    () => !itemsP.some((i: any) => i.plan_id === 'pl-nope') && itemsP.length === 6);
 
   // R29 批量
   const b1 = await api('POST', '/api/estimates/batch', {
@@ -366,9 +533,13 @@ if (!(await waitForServer())) {
   });
   ok('R-31 批量 mode=set 正常写入', b2.json?.written === 1 && b2.json?.errors?.length === 0, b2.json);
   const b3 = await api('POST', '/api/estimates/batch', { projectId: PID, mode: 'explode', items: [] });
-  ok('R-32 未知批量模式报错', b3.status === 400 && String(b3.json?.error).includes('批量模式'), b3.json);
   const b4 = await api('POST', '/api/estimates/batch', { projectId: PID, mode: 'set', items: [] });
-  ok('R-33 空批量内容报错（不是静默成功）', b4.status === 400 && String(b4.json?.error).includes('批量写入内容为空'), b4.json);
+  const gB = await api('GET', `/api/estimates${Q}`);
+  const itemsB = (gB.json?.items ?? []).map((i: any) => `${i.plan_id}/${i.optimistic}/${i.likely}/${i.pessimistic}`);
+  rejected400('R-32 未知批量模式报错', b3, ESTIMATE_ERRORS.unknownBatchMode, () => itemsB.length === 6);
+  rejected400('R-33 空批量内容报错（不是静默成功）', b4, ESTIMATE_ERRORS.batchEmpty,
+    // 行为侧：两次坏批次都没改动库——上一步 R-31 写的 pl-c1=1/2/3 原样在
+    () => itemsB.length === 6 && itemsB.includes('pl-c1/1/2/3'));
   const b5 = await api('POST', '/api/estimates/batch', { projectId: PID, mode: 'derive', dryRun: true });
   ok('R-34 mode=derive + dryRun 只预览（written=0）', b5.json?.mode === 'derive' && b5.json?.dryRun === true && b5.json?.written === 0);
 
@@ -386,13 +557,15 @@ if (!(await waitForServer())) {
   const bad = await api('PUT', `/api/estimates/params${Q}`, {
     settings: { 'estimate.manDaysPerManMonth': '25', 'estimate.rule.default.ratio': '1:5:1.6' },
   });
-  ok('R-37 比例中段非 4 → 400 且整批零写入（一位小数写歪就是钱）',
-    bad.status === 400 && String(bad.json?.error).includes('PERT') && bad.json?.error !== undefined, bad.json);
+  rejected400('R-37 比例中段非 4 → 400 且整批零写入（一位小数写歪就是钱）', bad, ESTIMATE_ERRORS.ratioMidPert);
   const g5 = await api('GET', `/api/estimates/params${Q}`);
   ok('R-38 失败批次里合法键也没落库（manDays 仍 20）',
     g5.json?.config?.manDaysPerManMonth === 20, g5.json?.config);
   const unk = await api('PUT', `/api/estimates/params${Q}`, { settings: { 'estimate.nope': '1' } });
-  ok('R-39 未知参数键拒绝', unk.status === 400 && String(unk.json?.error).includes('未知估算参数键'), unk.json);
+  const g5b = await api('GET', `/api/estimates/params${Q}`);
+  rejected400('R-39 未知参数键拒绝', unk, ESTIMATE_ERRORS.unknownParamKey,
+    // 行为侧：未知键整批被拒后，上一批落库的 manDays=20 仍在（没有部分写入）
+    () => g5b.json?.config?.manDaysPerManMonth === 20);
   const kpu = await api('PUT', `/api/estimates/params${Q}`, { settings: { [`estimate.caseWeightK.${PID}`]: '1' } });
   ok('R-40 项目级 k 覆盖生效（§4.6 规则2「项目级可配」）',
     kpu.status === 200 && kpu.json?.caseWeightK?.k === 1 && kpu.json?.caseWeightK?.from === 'project', kpu.json?.caseWeightK);
@@ -401,7 +574,10 @@ if (!(await waitForServer())) {
   ok('R-41 derive 走项目级 k：M=grid(6.5×1)=6.5、P=grid(6.5×1.2)=8',
     cse?.likely === 6.5 && cse?.pessimistic === 8, cse);
   const badK = await api('PUT', `/api/estimates/params${Q}`, { settings: { 'estimate.caseWeightK': '0' } });
-  ok('R-42 k=0 拒绝（正数才有效）', badK.status === 400 && String(badK.json?.error).includes('正数'), badK.json);
+  const gK = await api('GET', `/api/estimates/params${Q}`);
+  rejected400('R-42 k=0 拒绝（正数才有效）', badK, ESTIMATE_ERRORS.mustBePositive,
+    // 行为侧：坏的全局 k 没落库，R-40 设的项目级 k=1 仍是生效值（拒绝即零写入）
+    () => gK.json?.caseWeightK?.k === 1 && gK.json?.caseWeightK?.from === 'project');
   const clr = await api('PUT', `/api/estimates/params${Q}`, {
     settings: { 'estimate.manDaysPerManMonth': '', 'estimate.coef.scope': '', 'estimate.rule.default.ratio': '', 'estimate.hideCoefsForClient': 'true' },
   });
@@ -420,7 +596,8 @@ if (!(await waitForServer())) {
     && near(cmp.json.compare.diff.totals.directManDays, 4, 1e-9)
     && near(cmp.json.compare.diff.totals.actualManMonths, 0.4, 1e-9), cmp.json?.compare?.diff);
   const cmpBad = await api('GET', `/api/estimates/snapshots${Q}&compare=sn-a`);
-  ok('R-46 compare 参数非两枚报错', cmpBad.status === 400 && String(cmpBad.json?.error).includes('两个快照'), cmpBad.json);
+  rejected400('R-46 compare 参数非两枚报错', cmpBad, ESTIMATE_ERRORS.compareNeedsTwo,
+    () => cmp.status === 200);
 
   // R47 归档行与脱离行
   const pa = await api('PATCH', `/api/estimates/pl-arch${Q}`, { optimistic: 2, likely: 2, pessimistic: 2 });
@@ -456,6 +633,24 @@ if (!(await waitForServer())) {
     && g9.json.summary.ratioCheck.excluded.milestone === 1);
 
   ok('R-54 服务日志无 estimates 相关异常', !/estimates[\s\S]{0,200}(Error|throw)/i.test(serverLog.join('')));
+
+  // ============ H 段：跨进程同源自证（T02293 判据 4） ============
+  // 上面每条 400 的文案出自**隔离服务进程**，门进程只持有 `ESTIMATE_ERRORS` 词干表。
+  // 若门抄的是整句当下措辞，产品改词后本应一起红的两侧会分成「行为在、锚点失配」——配对器能分辨，
+  // 但更彻底的做法是直接证明两边读的是同一张表：H-01 逐条词干命中，H-03/H-04 同入参逐字符相同。
+  const stems = Object.values(ESTIMATE_ERRORS);
+  const h1Miss = rest400.filter((r) => !stems.some((s) => r.error.includes(s)));
+  ok('H-01 服务端 400 原文逐条命中门进程单源词干（≥8 条全中）',
+    rest400.length >= 8 && h1Miss.length === 0, { 条数: rest400.length, 未命中: h1Miss.map((r) => r.label) });
+  const fakeStem = 'ZZZ-本门不存在的词干';
+  ok('H-02 假词干对全部 400 原文零命中（H-01 的比对不是恒真式）',
+    rest400.length > 0 && rest400.every((r) => !r.error.includes(fakeStem)), { 条数: rest400.length });
+  ok('H-03 三点校验：同一入参在服务端与门进程产出的文案逐字符相同',
+    String(p3.json?.error ?? '') === (pointsError(9, 5, 6) ?? ''),
+    { 服务端: p3.json?.error, 门进程: pointsError(9, 5, 6) });
+  ok('H-04 比例中段校验：同一入参在服务端与门进程产出的文案逐字符相同',
+    String(bad.json?.error ?? '') === fire(() => parseRuleRatio('1:5:1.6')),
+    { 服务端: bad.json?.error, 门进程: fire(() => parseRuleRatio('1:5:1.6')) });
 }
 
 console.log(`\nPASS=${pass} FAIL=${fail}`);

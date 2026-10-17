@@ -12,11 +12,17 @@
  *
  * 覆盖面：A 建表与索引口径 / B 三点校验 / C 服务 CRUD·归档过滤·脱离计划 /
  *   D 批量「任一行失败整体不入库」 / E 快照 20 条裁剪 / F addWorkdays
- *   （含**服务端与前端镜像逐日网格全等**——§9 单源诉求的正面对策，同 planDeps 双口径教训）。
+ *   （含**服务端与前端镜像逐日网格全等**——§9 单源诉求的正面对策，同 planDeps 双口径教训）/
+ *   G 单源锚点的负对照（T02293 判据 3~4：改名模拟 + 破行为反证）。
+ *
+ * 断言口径（T02293 改判）：中文文案一律**不抄第二份**，改读产品的 `ESTIMATE_ERRORS` /
+ *   `ESTIMATE_POINT_LABELS` 单源常量；且每条「拒绝」断言的行为侧是**抛错 + 该行零副作用**
+ *   （调用前后比对行快照），只比对文案的断言已按判据 3 交给 okPair 配对。
  */
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { okPair } from './lib/anchor-pair.mts'; // T02293 判据 3：文案锚必须配行为断言
 
 // ---- 隔离库：环境变量必须在任何 getDb() 落到磁盘之前设好 ----
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02034-e1-'));
@@ -27,6 +33,7 @@ const { initSchema } = await import('../server/src/db/schema.ts');
 const { changeBus } = await import('../server/src/services/ChangeBus.ts');
 const {
   EstimateService: S, pointsError, ESTIMATE_PHASES, ESTIMATE_SOURCES, SNAPSHOT_RETAIN, ESTIMATE_META,
+  ESTIMATE_ERRORS, ESTIMATE_POINT_LABELS,
 } = await import('../server/src/services/EstimateService.ts');
 const { addWorkdays, buildCalendar, isWorkday } = await import('../server/src/util/workdays.ts');
 const {
@@ -43,12 +50,35 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
     console.log(`  [FAIL] ${name}${extra !== undefined ? ` → ${JSON.stringify(extra).slice(0, 300)}` : ''}`);
   }
 };
-const throws = (fn: () => unknown, includes?: string): boolean => {
-  try { fn(); return false; } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    return !includes || message.includes(includes);
+/**
+ * 拒绝类断言的统一探针（T02293 判据 1/3）。
+ * 行为侧 = **抛错且该计划行没被多出/被改写**（用调用前后的行快照比对）；
+ * 字面侧 = 文案含产品单源词干（`ESTIMATE_ERRORS` / `ESTIMATE_POINT_LABELS`），改措辞不会让本门假红。
+ * 只断言「抛了什么中文」会放行最危险的一种失守：文案照旧、但脏数据真的写进了库。
+ */
+interface Reject { threw: boolean; msg: string; dirty: boolean }
+const rowSnap = (projectId: string, planId: string) => JSON.stringify(
+  db.prepare('SELECT optimistic, likely, pessimistic, phase, unit, source, note FROM estimate_items WHERE project_id = ? AND plan_id = ?').get(projectId, planId) ?? null);
+function probe(fn: () => unknown, snapshot: () => unknown): Reject {
+  const before = JSON.stringify(snapshot());
+  try {
+    fn();
+    return { threw: false, msg: '', dirty: JSON.stringify(snapshot()) !== before };
+  } catch (e) {
+    return { threw: true, msg: e instanceof Error ? e.message : String(e), dirty: JSON.stringify(snapshot()) !== before };
   }
-};
+}
+function reject(fn: () => unknown, projectId: string, planId: string): Reject {
+  return probe(fn, () => rowSnap(projectId, planId));
+}
+const refused = (r: Reject) => r.threw && !r.dirty;
+const saysStem = (r: Reject, stem: string) => r.threw && r.msg.includes(stem);
+const rejectedPair = (label: string, r: Reject, stem: string) => okPair(
+  ok, label, () => refused(r), () => saysStem(r, stem), () => ({ 文案: r.msg.slice(0, 120), 行快照: r.dirty }));
+const estRows = (projectId: string) => () =>
+  (db.prepare('SELECT COUNT(*) AS n FROM estimate_items WHERE project_id = ?').get(projectId) as { n: number }).n;
+const snapRows = (projectId: string) => () =>
+  (db.prepare('SELECT COUNT(*) AS n FROM estimate_snapshots WHERE project_id = ?').get(projectId) as { n: number }).n;
 const errOf = (fn: () => unknown): string => {
   try { fn(); return ''; } catch (e) { return e instanceof Error ? e.message : String(e); }
 };
@@ -132,17 +162,31 @@ db.prepare("DELETE FROM estimate_items WHERE id='raw-1'").run();
 
 // ================= B 三点校验纯函数 =================
 group('B 三点校验（§3.1 optimistic ≤ likely ≤ pessimistic）');
-ok('B-01 O>M 被拒且文案带具体数值（批量 40 行要能定位）', (pointsError(5, 3, 8) ?? '').includes('乐观值 O（5）'), pointsError(5, 3, 8));
-ok('B-02 M>P 被拒', (pointsError(1, 8, 3) ?? '').includes('悲观值 P（3）'), pointsError(1, 8, 3));
-ok('B-03 负值被拒', (pointsError(-1, 2, 3) ?? '').includes('不能为负'), pointsError(-1, 2, 3));
-ok('B-04 非数字（NaN）报「必须是数字」', (pointsError(NaN, 2, 3) ?? '').includes('必须是数字'), pointsError(NaN, 2, 3));
+const bOgM = pointsError(5, 3, 8);
+okPair(ok, 'B-01 O>M 被拒（行为：非法序拒、合法序放行）',
+  () => bOgM !== null && pointsError(1, 2, 3) === null,
+  () => (bOgM ?? '').includes(`${ESTIMATE_POINT_LABELS.optimistic}（5）`), () => ({ 文案: bOgM }));
+const bMgP = pointsError(1, 8, 3);
+okPair(ok, 'B-02 M>P 被拒且文案指到被拒的那个点',
+  () => bMgP !== null && pointsError(1, 2, 3) === null,
+  () => (bMgP ?? '').includes(`${ESTIMATE_POINT_LABELS.pessimistic}（3）`), () => ({ 文案: bMgP }));
+const bNeg = pointsError(-1, 2, 3);
+okPair(ok, 'B-03 负值被拒（0 是合法下界，不误伤全 0 行）',
+  () => bNeg !== null && pointsError(0, 0, 0) === null,
+  () => (bNeg ?? '').includes(ESTIMATE_ERRORS.negative), () => ({ 文案: bNeg }));
+const bNaN = pointsError(NaN, 2, 3);
+okPair(ok, 'B-04 非数字（NaN）被拒',
+  () => bNaN !== null,
+  () => (bNaN ?? '').includes(ESTIMATE_ERRORS.notNumber), () => ({ 文案: bNaN }));
 ok('B-05 O=M=P 合法（模板实测形态即 O=M，§3.3 ratio 1:4:1.6）', pointsError(2, 2, 2) === null);
 ok('B-06 小数合法', pointsError(0.5, 1.5, 2.5) === null);
 ok('B-07 全 0 合法（未投入行可记 0/0/0）', pointsError(0, 0, 0) === null);
 ok('B-08 阶段/来源/单位/快照格式枚举单源可下发（E3 meta 接口据此渲染下拉）',
   ESTIMATE_META.phases === ESTIMATE_PHASES && ESTIMATE_SOURCES.join(',') === 'manual,rule,default'
-  && ESTIMATE_PHASES.length === 6 && ESTIMATE_META.phaseLabels.req === '需求分析'
-  && ESTIMATE_META.phaseLabels.common === '公共&远程投入' && ESTIMATE_META.snapshotRetain === SNAPSHOT_RETAIN);
+  && ESTIMATE_PHASES.length === 6 && ESTIMATE_META.snapshotRetain === SNAPSHOT_RETAIN
+  && ESTIMATE_PHASES.every((p: string) => typeof ESTIMATE_META.phaseLabels[p] === 'string' && ESTIMATE_META.phaseLabels[p].length > 0)
+  && new Set(ESTIMATE_PHASES.map((p: string) => ESTIMATE_META.phaseLabels[p])).size === ESTIMATE_PHASES.length
+  && ESTIMATE_PHASES.every((p: string) => ESTIMATE_META.phaseLabels[p] !== p));
 
 // ================= C 服务 CRUD / 归档过滤 / 脱离计划 =================
 group('C EstimateService CRUD（§8 PATCH 语义 + §7 联动）');
@@ -168,20 +212,29 @@ const rowA2 = db.prepare("SELECT * FROM estimate_items WHERE plan_id='pl-a'").ge
 ok('C-08 PATCH 走 UPDATE：主键不变、created_at 不被重置、updated_at 不回退（同毫秒相等是允许的）',
   rowA2.id === rowA1.id && rowA2.created_at === rowA1.created_at && rowA2.updated_at >= rowA1.updated_at, rowA2);
 
-ok('C-09 新行缺三点报必填', throws(() => S.upsert('P1', 'pl-b', { optimistic: 1 }), '必填'));
-ok('C-10 O>M 经服务层拒绝（不靠前端输入框兜）', throws(() => S.upsert('P1', 'pl-b', { optimistic: 9, likely: 1, pessimistic: 2 }), '不能大于'));
-ok('C-11 非数字入参（字符串 abc）被拒', throws(() => S.upsert('P1', 'pl-b', { optimistic: 'abc', likely: 1, pessimistic: 2 }), '必须是数字'));
+rejectedPair('C-09 新行缺三点被拒（不落半行、不静默默认）',
+  reject(() => S.upsert('P1', 'pl-b', { optimistic: 1 }), 'P1', 'pl-b'), ESTIMATE_ERRORS.pointsRequired);
+rejectedPair('C-10 O>M 经服务层拒绝（不靠前端输入框兜）',
+  reject(() => S.upsert('P1', 'pl-b', { optimistic: 9, likely: 1, pessimistic: 2 }), 'P1', 'pl-b'), ESTIMATE_ERRORS.ordering);
+rejectedPair('C-11 非数字入参（字符串 abc）被拒',
+  reject(() => S.upsert('P1', 'pl-b', { optimistic: 'abc', likely: 1, pessimistic: 2 }), 'P1', 'pl-b'), ESTIMATE_ERRORS.notNumber);
 ok('C-12 字符串数字接受（JSON 传 "3" 不误拒）', S.upsert('P1', 'pl-b', { optimistic: '1', likely: '2', pessimistic: '3' }).likely === 2);
-ok('C-13 未知阶段被拒且文案列可用值', throws(() => S.upsert('P1', 'pl-b', { optimistic: 1, likely: 2, pessimistic: 3, phase: 'qa' as never }), '未知阶段'));
-ok('C-14 未知计量单位被拒', throws(() => S.upsert('P1', 'pl-b', { optimistic: 1, likely: 2, pessimistic: 3, unit: 'man_hour' as never }), '未知计量单位'));
+rejectedPair('C-13 未知阶段被拒（文案列可用值由单源枚举拼出）',
+  reject(() => S.upsert('P1', 'pl-b', { optimistic: 1, likely: 2, pessimistic: 3, phase: 'qa' as never }), 'P1', 'pl-b'), ESTIMATE_ERRORS.unknownPhase);
+rejectedPair('C-14 未知计量单位被拒',
+  reject(() => S.upsert('P1', 'pl-b', { optimistic: 1, likely: 2, pessimistic: 3, unit: 'man_hour' as never }), 'P1', 'pl-b'), ESTIMATE_ERRORS.unknownUnit);
 ok('C-15 非法 source 回落 manual（来自 AI/批量通道，纠正优于 500）',
   S.upsert('P1', 'pl-b', { optimistic: 1, likely: 2, pessimistic: 3, source: 'ai' as never }).source === 'manual');
-ok('C-16 跨项目 planId 被拒（脏引用不是笔误）', throws(() => S.upsert('P1', 'pl-b1', { optimistic: 1, likely: 2, pessimistic: 3 }), '不属于该项目'));
-ok('C-17 不存在的 planId 被拒', throws(() => S.upsert('P1', 'ghost', { optimistic: 1, likely: 2, pessimistic: 3 }), '计划条目不存在'));
-ok('C-18 不存在的项目被拒', throws(() => S.upsert('P0', 'pl-a', { optimistic: 1, likely: 2, pessimistic: 3 }), '项目不存在'));
-ok('C-19 projectId / planId 空串被拒',
-  throws(() => S.upsert('', 'pl-a', { optimistic: 1, likely: 2, pessimistic: 3 }), 'projectId 必填')
-  && throws(() => S.upsert('P1', '', { optimistic: 1, likely: 2, pessimistic: 3 }), 'planId 必填'));
+rejectedPair('C-16 跨项目 planId 被拒（脏引用不是笔误）',
+  reject(() => S.upsert('P1', 'pl-b1', { optimistic: 1, likely: 2, pessimistic: 3 }), 'P1', 'pl-b1'), ESTIMATE_ERRORS.planNotInProject);
+rejectedPair('C-17 不存在的 planId 被拒',
+  reject(() => S.upsert('P1', 'ghost', { optimistic: 1, likely: 2, pessimistic: 3 }), 'P1', 'ghost'), ESTIMATE_ERRORS.planMissing);
+rejectedPair('C-18 不存在的项目被拒（不在别处留同名行）',
+  reject(() => S.upsert('P0', 'pl-a', { optimistic: 1, likely: 2, pessimistic: 3 }), 'P0', 'pl-a'), ESTIMATE_ERRORS.projectNotFound);
+const c19a = reject(() => S.upsert('', 'pl-a', { optimistic: 1, likely: 2, pessimistic: 3 }), '', 'pl-a');
+const c19b = reject(() => S.upsert('P1', '', { optimistic: 1, likely: 2, pessimistic: 3 }), 'P1', '');
+rejectedPair('C-19a projectId 空串被拒', c19a, ESTIMATE_ERRORS.projectIdRequired);
+rejectedPair('C-19b planId 空串被拒', c19b, ESTIMATE_ERRORS.planIdRequired);
 
 const vm = S.upsert('P1', 'pl-m', { optimistic: 4, likely: 8, pessimistic: 12, phase: 'dev', source: 'rule' });
 ok('C-20 里程碑行可录入推导值供参考（Σ 侧才排除它，§4.6 v1.4 归 E3）',
@@ -220,7 +273,8 @@ ok('C-31 脱离行不进常规面板（INNER JOIN 天然过滤，不会渲染成
 ok('C-32 显式清理只删脱离行；仍挂在计划上的行不被动（§7 清理为手动操作）',
   S.removeDetached('P1', ['ghost-id', detached[0].id, vm.id]) === 1
   && S.listDetached('P1').length === 0 && S.getForPlan('P1', 'pl-m') !== null);
-ok('C-33 removeDetached 空选择报错（不当作静默 no-op）', throws(() => S.removeDetached('P1', []), '未选择'));
+rejectedPair('C-33 removeDetached 空选择报错（不当作静默 no-op，也不误删有主行）',
+  probe(() => S.removeDetached('P1', []), estRows('P1')), ESTIMATE_ERRORS.nothingToClean);
 
 // ================= D 批量写入：任一行失败整体不入库 =================
 group('D 批量写入（§8 batch + §3.1 整体不入库口径）');
@@ -233,9 +287,12 @@ const badBatch = S.upsertBatch('P1', [
 const cntAfterBad = (db.prepare("SELECT COUNT(*) AS n FROM estimate_items WHERE project_id='P1'").get() as { n: number }).n;
 ok('D-01 任一行不合格 → written=0 且零写入（不是「能写多少写多少」）',
   badBatch.written === 0 && cntAfterBad === cntBefore, { written: badBatch.written, before: cntBefore, after: cntAfterBad });
-ok('D-02 行级错误逐条回传 index + planId + 文案',
-  badBatch.errors.length === 2 && badBatch.errors[0].index === 1 && badBatch.errors[0].message.includes('不能大于')
-  && badBatch.errors[1].index === 2 && badBatch.errors[1].message.includes('不属于该项目'), badBatch.errors);
+okPair(ok, 'D-02 行级错误逐条回传 index + planId（行为：定位到错的这两行）',
+  () => badBatch.errors.length === 2 && badBatch.errors[0].index === 1 && badBatch.errors[1].index === 2
+    && badBatch.errors[0].planId === 'pl-m' && badBatch.errors[1].planId === 'pl-b1',
+  () => (badBatch.errors[0]?.message ?? '').includes(ESTIMATE_ERRORS.ordering)
+    && (badBatch.errors[1]?.message ?? '').includes(ESTIMATE_ERRORS.planNotInProject),
+  () => badBatch.errors);
 ok('D-03 全合法批量落库 written=N 并只广播一次 plans', (() => {
   changeEvents = [];
   const r = S.upsertBatch('P1', [
@@ -244,7 +301,8 @@ ok('D-03 全合法批量落库 written=N 并只广播一次 plans', (() => {
   ]);
   return r.written === 2 && r.errors.length === 0 && changeEvents.filter((k) => k === 'plans').length === 1;
 })());
-ok('D-04 空数组直接报错（不是「写入 0 行」的成功假象）', throws(() => S.upsertBatch('P1', []), '批量写入内容为空'));
+rejectedPair('D-04 空数组直接报错（不是「写入 0 行」的成功假象）',
+  probe(() => S.upsertBatch('P1', []), estRows('P1')), ESTIMATE_ERRORS.batchEmpty);
 ok('D-05 批量里的非法阶段同样转行级错误（与单行同口径）',
   S.upsertBatch('P1', [{ planId: 'pl-arch', optimistic: 1, likely: 2, pessimistic: 3, phase: 'nope' as never }]).errors.length === 1);
 ok('D-06 批量沿用 PATCH 语义（只给 P 时 O/M 沿用原值）', (() => {
@@ -270,16 +328,21 @@ ok('E-03 裁剪按项目独立（别项目 2 条不受牵连）',
 const one = S.createSnapshot('P1', { format: 'xlsx', filename: 'latest.xlsx', payload: { phases: { dev: { e: 12.5, sigma: 1.2 } }, coefs: { quality: 0.06 } } });
 ok('E-04 payload 落库原样读回（汇总结果 JSON，不存原始三点）',
   one.filename === 'latest.xlsx' && JSON.parse(one.payload).phases.dev.e === 12.5);
-ok('E-05 未知导出格式被拒', throws(() => S.createSnapshot('P1', { format: 'docx' as never, payload: {} }), '未知导出格式'));
+const e05 = probe(() => S.createSnapshot('P1', { format: 'docx' as never, payload: {} }), snapRows('P1'));
+rejectedPair('E-05 未知导出格式被拒（不留一条记不出来的留档）', e05, ESTIMATE_ERRORS.unknownSnapshotFormat);
 const circ: Record<string, unknown> = {};
 circ.self = circ;
-ok('E-06 payload 不可序列化时报中文错（不外泄 RangeError）',
-  throws(() => S.createSnapshot('P1', { format: 'xlsx', payload: circ }), '无法序列化'));
+const e06 = probe(() => S.createSnapshot('P1', { format: 'xlsx', payload: circ }), snapRows('P1'));
+okPair(ok, 'E-06 payload 不可序列化时报中文错（不外泄 RangeError、不留半条快照）',
+  () => refused(e06) && !/RangeError|circular/i.test(e06.msg),
+  () => saysStem(e06, ESTIMATE_ERRORS.payloadUnserializable),
+  () => ({ 文案: e06.msg.slice(0, 120) }));
 ok('E-07 列表按时间倒序、limit 可收窄且不超保留上限', (() => {
   const l = S.listSnapshots('P1', 3);
   return l.length === 3 && l[0].filename === 'latest.xlsx' && S.listSnapshots('P1', 999).length === SNAPSHOT_RETAIN;
 })());
-ok('E-08 项目不存在时快照被拒（不留孤儿留档）', throws(() => S.createSnapshot('PX', { format: 'xlsx', payload: {} }), '项目不存在'));
+rejectedPair('E-08 项目不存在时快照被拒（不留孤儿留档）',
+  probe(() => S.createSnapshot('PX', { format: 'xlsx', payload: {} }), snapRows('PX')), ESTIMATE_ERRORS.projectNotFound);
 ok('E-09 快照 format 落库为给定值（xlsx/pdf 两态供 §9 导出次数度量出数）',
   (db.prepare("SELECT format FROM estimate_snapshots WHERE id=?").get(one.id) as { format: string }).format === 'xlsx');
 
@@ -366,6 +429,86 @@ ok('F-17 网格确覆盖工作日/周末/放假/加班四类日（防空转断�
 })());
 ok('F-18 前端 n<=0 与非法规式锚点行为与服务端一致（镜像不留边角差异）',
   feAddWorkdays('', 2, gridFe) === '' && feAddWorkdays('2026-11-01', 0, gridFe) === addWorkdays('2026-11-01', 0, gridCal));
+
+// ================= G 单源锚点的负对照（T02293 判据 3~4） =================
+group('G 单源锚点的负对照（改名模拟 + 破行为反证）');
+plan('pl-g', 'P1', '反证计划', '2026-10-20', 1, 9);
+plan('pl-gm', 'P1', '反证里程碑', '2026-10-20', 2, 10, 'milestone');
+db.prepare("UPDATE plan_tasks SET status='done', progress=100 WHERE id='pl-gm'").run();
+
+type StemKey = keyof typeof ESTIMATE_ERRORS;
+const stemCases: Array<{ key: StemKey; run: () => Reject }> = [
+  { key: 'projectIdRequired', run: () => probe(() => S.upsert('', 'pl-g', { optimistic: 1, likely: 2, pessimistic: 3 }), estRows('P1')) },
+  { key: 'planIdRequired', run: () => probe(() => S.upsert('P1', '', { optimistic: 1, likely: 2, pessimistic: 3 }), estRows('P1')) },
+  { key: 'planMissing', run: () => reject(() => S.upsert('P1', 'ghost-g', { optimistic: 1, likely: 2, pessimistic: 3 }), 'P1', 'ghost-g') },
+  { key: 'planNotInProject', run: () => reject(() => S.upsert('P1', 'pl-b1', { optimistic: 1, likely: 2, pessimistic: 3 }), 'P1', 'pl-b1') },
+  { key: 'projectNotFound', run: () => reject(() => S.upsert('P0', 'pl-g', { optimistic: 1, likely: 2, pessimistic: 3 }), 'P0', 'pl-g') },
+  { key: 'milestoneReadonly', run: () => reject(() => S.upsert('P1', 'pl-gm', { optimistic: 1, likely: 2, pessimistic: 3 }), 'P1', 'pl-gm') },
+  { key: 'pointsRequired', run: () => reject(() => S.upsert('P1', 'pl-g', {}), 'P1', 'pl-g') },
+  { key: 'notNumber', run: () => reject(() => S.upsert('P1', 'pl-g', { optimistic: 'abc', likely: 2, pessimistic: 3 }), 'P1', 'pl-g') },
+  { key: 'negative', run: () => reject(() => S.upsert('P1', 'pl-g', { optimistic: -1, likely: 2, pessimistic: 3 }), 'P1', 'pl-g') },
+  { key: 'ordering', run: () => reject(() => S.upsert('P1', 'pl-g', { optimistic: 9, likely: 2, pessimistic: 3 }), 'P1', 'pl-g') },
+  { key: 'unknownPhase', run: () => reject(() => S.upsert('P1', 'pl-g', { optimistic: 1, likely: 2, pessimistic: 3, phase: 'qa' as never }), 'P1', 'pl-g') },
+  { key: 'unknownUnit', run: () => reject(() => S.upsert('P1', 'pl-g', { optimistic: 1, likely: 2, pessimistic: 3, unit: 'man_hour' as never }), 'P1', 'pl-g') },
+  { key: 'batchEmpty', run: () => probe(() => S.upsertBatch('P1', []), estRows('P1')) },
+  { key: 'nothingToClean', run: () => probe(() => S.removeDetached('P1', []), estRows('P1')) },
+  { key: 'unknownSnapshotFormat', run: () => probe(() => S.createSnapshot('P1', { format: 'docx' as never, payload: {} }), snapRows('P1')) },
+  { key: 'payloadUnserializable', run: () => probe(() => S.createSnapshot('P1', { format: 'xlsx', payload: circ }), snapRows('P1')) },
+];
+const moved: string[] = [];
+const stuck: Array<{ 词干: string; 症结: string }> = [];
+for (const c of stemCases) {
+  const table = ESTIMATE_ERRORS as unknown as Record<StemKey, string>;
+  const orig = table[c.key];
+  const renamed = `ZZZ-${c.key}`;
+  const before = c.run();
+  table[c.key] = renamed;
+  let after: Reject;
+  try {
+    after = c.run();
+  } finally {
+    table[c.key] = orig;
+  }
+  const back = c.run();
+  if (!refused(before) || !saysStem(before, orig)) stuck.push({ 词干: c.key, 症结: '原始件就没拒绝或锚点不命中' });
+  else if (!refused(after)) stuck.push({ 词干: c.key, 症结: '改名后连拒绝都没有了（行为被措辞绑架）' });
+  else if (!after.msg.includes(renamed)) stuck.push({ 词干: c.key, 症结: '文案没随单源移动（产品里另有抄本）' });
+  else if (after.msg.includes(orig)) stuck.push({ 词干: c.key, 症结: '改名后仍残留旧词干（同一句话有两处来源）' });
+  else if (back.msg !== before.msg) stuck.push({ 词干: c.key, 症结: '还原后与初始文案不逐字符相同（模拟留了残渣）' });
+  else moved.push(c.key);
+}
+ok(`G-01 改名模拟：${stemCases.length} 个词干逐一同源移动（门读常量、产品无第二份抄本、还原后逐字符相同）`,
+  stuck.length === 0 && moved.length === stemCases.length, { stuck, 已通过: moved.length });
+
+// G-02 反证「抄本会被改名模拟抓到」：故意留一份字面量当锚点，单源改名后它必然失配。
+const copiedLiteral = '未知阶段';
+const g02Table = ESTIMATE_ERRORS as unknown as Record<StemKey, string>;
+const g02Orig = g02Table.unknownPhase;
+const g02Renamed = 'ZZZ-假名';
+g02Table.unknownPhase = g02Renamed;
+const g02Msg = errOf(() => S.upsert('P1', 'pl-g', { optimistic: 1, likely: 2, pessimistic: 3, phase: 'qa' as never }));
+g02Table.unknownPhase = g02Orig;
+ok('G-02 抄本可被抓：拿字面量当锚点时，改名后锚点失配而单源仍命中（证明 G-01 的判据有牙）',
+  !g02Msg.includes(copiedLiteral) && g02Msg.includes(g02Renamed) && g02Msg.includes('：qa（可用'),
+  { 文案: g02Msg.slice(0, 80) });
+
+const g03Real = reject(() => S.upsert('P1', 'pl-g', { optimistic: 9, likely: 2, pessimistic: 3 }), 'P1', 'pl-g');
+const g03Fake: Reject = { threw: true, msg: g03Real.msg, dirty: true };
+ok('G-03 破行为反证：文案逐字相同但脏数据真写进了库，行为侧判红；只看字面锚点会放行',
+  refused(g03Real) && !refused(g03Fake) && saysStem(g03Fake, ESTIMATE_ERRORS.ordering),
+  { 只看字面: saysStem(g03Fake, ESTIMATE_ERRORS.ordering), 配对判定: refused(g03Fake) });
+const g04Silent: Reject = { threw: false, msg: '', dirty: false };
+ok('G-04 破行为反证：静默放行（不抛错也不写行）同样判红——拒绝必须真的发生',
+  !refused(g04Silent) && !saysStem(g04Silent, ESTIMATE_ERRORS.ordering));
+
+const rec: Array<{ name: string; cond: boolean; extra?: unknown }> = [];
+const spy = (name: string, cond: boolean, extra?: unknown) => { rec.push({ name, cond, extra }); };
+okPair(spy, '行为失守样', () => false, () => true);
+okPair(spy, '锚点失配样', () => true, () => false);
+okPair(spy, '双绿样', () => true, () => true);
+ok('G-05 红因可区分：行为失守与字面锚点失配记成两条不同的红（等价重构不该被读成功能失守）',
+  rec.length === 3 && rec[0].cond === false && JSON.stringify(rec[0].extra).includes('行为失守')
+  && rec[1].cond === false && JSON.stringify(rec[1].extra).includes('字面锚点失配') && rec[2].cond === true, rec);
 
 // ================= 汇总 =================
 console.log(`\n== 合计 PASS=${pass} FAIL=${fail}（隔离库 ${DATA_DIR}）`);

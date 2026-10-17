@@ -15,7 +15,7 @@ import { getSetting, setSetting } from '../services/AppSettings';
 import { PlanService } from '../services/PlanService';
 import type { PlanTaskRow } from '../services/PlanService';
 import { exportGate } from '../util/export-gate';
-import { EstimateService, ESTIMATE_META, pointsError, unlockFlag, workdayCalendar, type EstimateInput, type EstimateView } from '../services/EstimateService';
+import { EstimateService, ESTIMATE_ERRORS, ESTIMATE_META, pointsError, unlockFlag, workdayCalendar, type EstimateInput, type EstimateView } from '../services/EstimateService';
 import {
   DEFAULT_ESTIMATE_CONFIG,
   DURATION_RATIO_HIGH,
@@ -81,7 +81,7 @@ function pid(req: import('express').Request): string {
   const q = typeof req.query.projectId === 'string' ? req.query.projectId.trim() : '';
   const b = req.body && typeof req.body === 'object' ? (req.body as Record<string, unknown>).projectId : undefined;
   const s = q || (typeof b === 'string' ? b.trim() : '');
-  if (!s) throw new Error('projectId 必填');
+  if (!s) throw new Error(ESTIMATE_ERRORS.projectIdRequired);
   return s;
 }
 
@@ -121,7 +121,7 @@ function parseOnlyRule(v: unknown): DeriveRule | undefined {
   const s = str(v);
   if (!s) return undefined;
   if (!(DERIVE_RULES as readonly string[]).includes(s)) {
-    throw new Error(`未知推导档位：${s}（可用 ${DERIVE_RULES.join(' / ')}）`);
+    throw new Error(`${ESTIMATE_ERRORS.unknownDeriveRule}：${s}（可用 ${DERIVE_RULES.join(' / ')}）`);
   }
   return s as DeriveRule;
 }
@@ -192,7 +192,7 @@ estimateApi.put('/params', (req, res) =>
     ]);
     const entries: Array<[string, string]> = [];
     for (const [k, v] of Object.entries(incoming)) {
-      if (!allowed.has(k)) throw new Error(`未知估算参数键：${k}`);
+      if (!allowed.has(k)) throw new Error(`${ESTIMATE_ERRORS.unknownParamKey}：${k}`);
       if (v === null || v === undefined || String(v).trim() === '') continue; // 显式清空=回落默认
       entries.push([k, String(v).trim()]);
     }
@@ -222,7 +222,7 @@ estimateApi.get('/snapshots', (req, res) =>
     const compare = str(req.query.compare);
     if (!compare) return { projectId, snapshots: rows, compare: null };
     const ids = compare.split(',').map((s) => s.trim()).filter(Boolean);
-    if (ids.length !== 2) throw new Error('compare 需要两个快照 id（形如 ?compare=idA,idB）');
+    if (ids.length !== 2) throw new Error(ESTIMATE_ERRORS.compareNeedsTwo);
     const find = (id: string) => {
       const row = rows.find((r) => r.id === id);
       if (!row) throw new Error(`快照不存在或不在最近 ${rows.length} 条内：${id}`);
@@ -318,7 +318,7 @@ estimateApi.post('/batch', (req, res) =>
     const projectId = pid(req);
     const b = body(req);
     const mode = str(b.mode) || 'set';
-    if (mode !== 'set' && mode !== 'derive') throw new Error(`未知批量模式：${mode}（可用 set / derive）`);
+    if (mode !== 'set' && mode !== 'derive') throw new Error(`${ESTIMATE_ERRORS.unknownBatchMode}：${mode}（可用 set / derive）`);
     if (mode === 'derive') {
       const onlyRule = parseOnlyRule(b.onlyRule);
       const r = deriveEstimates(projectId, {
@@ -334,7 +334,7 @@ estimateApi.post('/batch', (req, res) =>
       return { projectId, mode, dryRun: false, onlyRule, ...r, ...write };
     }
     const items = b.items;
-    if (!Array.isArray(items) || items.length === 0) throw new Error('批量写入内容为空（items 需为非空数组）');
+    if (!Array.isArray(items) || items.length === 0) throw new Error(`${ESTIMATE_ERRORS.batchEmpty}（items 需为非空数组）`);
     const list = items as Array<{ planId?: unknown } & EstimateInput>;
     const r = EstimateService.upsertBatch(
       projectId,
@@ -569,7 +569,7 @@ function exportStamp(d: Date): string {
 
 /** 参数校验错误文案前缀单源（T02293 规约判据 1）：门断言「400 + 前缀同源」，不再抄第二份中文 */
 export const ESTIMATE_PARAM_ERRORS = {
-  unknownPhase: '未知阶段',
+  unknownPhase: ESTIMATE_ERRORS.unknownPhase,
   emptyPhases: 'phases 不能为空（不传即导全部阶段）',
   unknownScope: '未知导出范围',
   unknownAudience: '未知导出版本',
