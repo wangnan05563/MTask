@@ -21,7 +21,7 @@
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02112-kickoff-degrade.mts
  * 环境变量：`T02112_PORT`（默认随机 39600+rand300）。
  * 隔离纪律（skill 红线 8）：生产库**只读副本**落临时目录，端口/数据全临时，mock 不消耗真实配额，收尾删临时目录。
- * 结果落 .workbuddy/t02112-gate-results-<运行标识>.txt 与 t02112-degraded.pptx（人工抽查用）。
+ * 结果落 .workbuddy/t02112-gate-results-<运行标识>.txt 与 t02112-degraded-<运行标识>.pptx（人工抽查用，T02309 旁证同标识）。
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -30,7 +30,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
-import { writeGateResults } from './lib/gate-results.mts';
+import { writeGateResults, gateArtifactPath } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02112_PORT ?? 39_600 + Math.floor(Math.random() * 300));
@@ -314,7 +314,7 @@ if (!(await waitUp())) {
   ok('D-07 越界不阻断交付：仍能换回 .pptx 字节（>20KB）',
     dDl.status === 200 && dDl.buf.length > 20_000, { status: dDl.status, bytes: dDl.buf.length });
   if (!existsSync(OUT_DIR)) mkdirSync(OUT_DIR, { recursive: true });
-  writeFileSync(join(OUT_DIR, 't02112-degraded.pptx'), dDl.buf);
+  writeFileSync(gateArtifactPath(OUT_DIR, 't02112-degraded.pptx'), dDl.buf);
   const zip = await JSZip.loadAsync(dDl.buf);
   const slideNames = Object.keys(zip.files).filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n));
   const allXml: string[] = [];

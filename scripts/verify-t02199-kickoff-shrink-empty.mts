@@ -14,13 +14,13 @@
  *
  * 隔离纪律：不连生产库、不起服务、不调 AI（Bundle 脚本内构造）。
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02199-kickoff-shrink-empty.mts
- * 结果落 .workbuddy/t02199-gate-results-<运行标识>.txt 与 t02199-shrink.pptx。
+ * 结果落 .workbuddy/t02199-gate-results-<运行标识>.txt 与 t02199-shrink-<运行标识>.pptx（T02309 旁证同标识）。
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
-import { writeGateResults } from './lib/gate-results.mts';
+import { writeGateResults, gateArtifactPath } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -210,7 +210,7 @@ ok('C-02 收缩不冒充截字、截字不冒充收缩：两条文案分别只�
 ok('C-03 收缩页仍零版式违规（回塞/降级文本没顶出安全框）',
   !built.warnings.some((w) => /越出|超出页面/.test(w)), built.warnings.filter((w) => /越|超/.test(w)));
 
-writeFileSync(join(OUT_DIR, 't02199-shrink.pptx'), built.buffer);
+writeFileSync(gateArtifactPath(OUT_DIR, 't02199-shrink.pptx'), built.buffer);
 writeGateResults(OUT_DIR, 't02199-gate-results.txt', `T02199 降级页收缩与空正文收口门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);
 lines.filter((l) => l.startsWith('[FAIL]')).forEach((l) => console.log(l));

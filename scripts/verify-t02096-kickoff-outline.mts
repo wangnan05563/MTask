@@ -30,7 +30,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeGateResults } from './lib/gate-results.mts';
+import { writeGateResults, gateArtifactPath } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02096_PORT ?? 39_700 + Math.floor(Math.random() * 300));
@@ -366,7 +366,7 @@ if (!(await waitUp())) {
     blocked.status === 400 && /资料不足，不能生成启动会稿：P1、P2、P3 全部缺失/.test(String(blocked.body?.error)) && mockRequests.length === 0,
     { status: blocked.status, error: blocked.body?.error, asks: mockRequests.length });
 
-  writeFileSync(join(ROOT, '.workbuddy', 't02096-outline-sample.json'), JSON.stringify(good.body, null, 2), 'utf8');
+  writeFileSync(gateArtifactPath(join(ROOT, '.workbuddy'), 't02096-outline-sample.json'), JSON.stringify(good.body, null, 2), 'utf8');
 }
 
 try { spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* 已退出 */ }

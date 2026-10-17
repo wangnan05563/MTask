@@ -3,13 +3,14 @@
  *   ① 表格不再以 ` | ` 文本拼接（无裸 `|` 残留、列单元齐全且被 pdfkit 框为独立文本）；
  *   ② 柱状图可绘制（drawBarChart 不抛错且产出非空字节）；
  *   ③ 标题/引用/列表等块仍正常渲染。
- * 产出两份样本：.workbuddy/t02155-sample-table.pdf、t02155-sample-charts.pdf。
+ * 产出两份样本：.workbuddy/t02155-sample-table-<运行标识>.pdf、t02155-sample-charts-<运行标识>.pdf（T02309 旁证同标识；实际路径见 stdout）。
  * 文本层断言（裸 `|` 残留 / 关键单元格是否在文本层）交由同目录 verify-t02155-extract.py 完成。
  */
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildPrdPdf, newPdfDoc, renderMdPdf, drawBarChart } from '../server/src/services/prdExport';
+import { gateArtifactPath } from './lib/gate-results.mts'; // T02309：样本 PDF 按运行标识命名
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, '.workbuddy');
@@ -41,7 +42,8 @@ const md = [
 ].join('\n');
 
 const tablePdf = await buildPrdPdf(md, '估算报告（内部版）');
-writeFileSync(join(OUT, 't02155-sample-table.pdf'), tablePdf);
+const tablePdfPath = gateArtifactPath(OUT, 't02155-sample-table.pdf');
+writeFileSync(tablePdfPath, tablePdf);
 
 // 图表样本：基于 MD 渲染后再追加两张柱状图
 const { doc, done, finish } = await newPdfDoc('估算图表样本');
@@ -59,6 +61,9 @@ drawBarChart(doc, '各阶段占比（%）', [
 doc.end();
 await done;
 const chartPdf = finish();
-writeFileSync(join(OUT, 't02155-sample-charts.pdf'), chartPdf);
+const chartPdfPath = gateArtifactPath(OUT, 't02155-sample-charts.pdf');
+writeFileSync(chartPdfPath, chartPdf);
 
-console.log(`table.pdf=${tablePdf.length} bytes, charts.pdf=${chartPdf.length} bytes`);
+// T02309：样本名带运行标识后，把实际路径打出来——文本层断言由同目录 verify-t02155-extract.py 人工执行，路径不能靠猜
+console.log(`table.pdf=${tablePdf.length} bytes → ${tablePdfPath}`);
+console.log(`charts.pdf=${chartPdf.length} bytes → ${chartPdfPath}`);

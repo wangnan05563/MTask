@@ -11,13 +11,13 @@
  *
  * 隔离纪律：不连生产库、不起服务、不调 AI（Bundle 脚本内构造）。
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02171-kickoff-tl-paging.mts
- * 结果落 .workbuddy/t02171-gate-results-<运行标识>.txt 与 t02171-paging.pptx。
+ * 结果落 .workbuddy/t02171-gate-results-<运行标识>.txt 与 t02171-paging-<运行标识>.pptx（T02309 旁证同标识）。
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
-import { writeGateResults } from './lib/gate-results.mts';
+import { writeGateResults, gateArtifactPath } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -167,7 +167,7 @@ const outline = [
   { section: '项目计划', title: '用例覆盖', bullets: [], dataKeys: ['coverage'], layout: 'chart' },
 ] as any[];
 const built = await M.buildKickoffPpt(bundle, outline);
-writeFileSync(join(OUT_DIR, 't02171-paging.pptx'), built.buffer);
+writeFileSync(gateArtifactPath(OUT_DIR, 't02171-paging.pptx'), built.buffer);
 const zip = await JSZip.loadAsync(built.buffer);
 const slideNames = Object.keys(zip.files)
   .filter((n) => /^ppt\/slides\/slide\d+\.xml$/i.test(n))

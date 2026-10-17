@@ -20,7 +20,7 @@
  *   node node_modules/tsx/dist/cli.mjs scripts/verify-t02111-kickoff-acceptance.mts
  * 环境变量：`T02111_PORT`（默认随机 39500+rand300）。
  * 隔离纪律（skill 红线 8）：生产库**只读副本**落临时目录，端口/临时目录全临时，mock 不消耗真实配额。
- * 结果落 .workbuddy/t02111-gate-results-<运行标识>.txt 与 t02111-acceptance.pptx（人工抽查用）。
+ * 结果落 .workbuddy/t02111-gate-results-<运行标识>.txt 与 t02111-acceptance-<运行标识>.pptx（人工抽查用，T02309 旁证同标识）。
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -29,7 +29,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
-import { writeGateResults } from './lib/gate-results.mts';
+import { writeGateResults, gateArtifactPath } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02111_PORT ?? 39_500 + Math.floor(Math.random() * 300));
@@ -340,7 +340,7 @@ if (!(await waitUp())) {
   const buf = Buffer.from(await dl.arrayBuffer());
   ok('B-09 令牌换回 .pptx 字节（>20KB，非空壳）', dl.status === 200 && buf.length > 20_000, { status: dl.status, bytes: buf.length });
   if (!existsSync(OUT_DIR)) mkdirSync(OUT_DIR, { recursive: true });
-  writeFileSync(join(OUT_DIR, 't02111-acceptance.pptx'), buf);
+  writeFileSync(gateArtifactPath(OUT_DIR, 't02111-acceptance.pptx'), buf);
   const zip = await JSZip.loadAsync(buf);
   const slideNames = Object.keys(zip.files).filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n));
   ok('B-10 解包页数 = done.pageCount（unzip -l 含 ppt/slides/slide*.xml，验收 4）',
@@ -357,8 +357,9 @@ if (!(await waitUp())) {
     allXml.every((x) => /<a:t>[^<]/.test(x)), allXml.map((x) => (x.match(/<a:t>/g) ?? []).length));
   ok('C-02 数据页出原生表格 <a:tbl>（不是表格截图）',
     allXml.some((x) => /<a:tbl>/.test(x)), allXml.map((x, i) => (/<a:tbl>/.test(x) ? i + 1 : 0)).filter(Boolean));
-  ok('C-03 全稿零位图：ppt/media 下没有真图（整页贴图是 Marp 路线的指纹）',
-    !Object.keys(zip.files).some((n) => n.startsWith('ppt/media/') && !n.endsWith('/')),
+  ok('C-03 内容零位图：无 <p:pic>，且每页每个 r:embed 都来自 <p:bg>（T02156 起允许恒生模板背景图——背景是版式不是内容；整页贴图/内容截图仍是红线）',
+    allXml.every((x) => !/<p:pic/.test(x)) &&
+      allXml.every((x) => (x.match(/r:embed="/g) ?? []).length === (x.match(/<p:bg>/g) ?? []).length),
     Object.keys(zip.files).filter((n) => n.startsWith('ppt/media/')));
   ok('C-04 无 <p:pic> 图片元素（文本框/表格/图表全是可编辑对象）',
     allXml.every((x) => !/<p:pic/.test(x)));

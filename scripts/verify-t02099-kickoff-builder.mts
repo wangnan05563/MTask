@@ -10,12 +10,12 @@
  *
  * 隔离纪律：不连生产库、不起服务、不调 AI（Bundle 由脚本内构造，字段形状对齐 KickoffBundle）。
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02099-kickoff-builder.mts
- * 结果落 .workbuddy/t02099-gate-results-<运行标识>.txt 与 t02099-sample.pptx。
+ * 结果落 .workbuddy/t02099-gate-results-<运行标识>.txt 与 t02099-sample-<运行标识>.pptx（T02309 旁证同标识）。
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeGateResults } from './lib/gate-results.mts';
+import { writeGateResults, gateArtifactPath } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -204,7 +204,7 @@ ok('U-25 画布尺寸 = 10 × 5.625（presentation.xml 的 sldSz 来自 KICKOFF_
   !!sizeHit && Math.abs(Number(sizeHit[1]) / 914400 - 10) < 0.02 && Math.abs(Number(sizeHit[2]) / 914400 - 5.625) < 0.02,
   sizeHit?.slice(1));
 mkdirSync(OUT_DIR, { recursive: true });
-writeFileSync(join(OUT_DIR, 't02099-sample.pptx'), built.buffer);
+writeFileSync(gateArtifactPath(OUT_DIR, 't02099-sample.pptx'), built.buffer);
 
 // ---------- U-5 越界降级（验收 7） ----------
 const overflow = outlineOf(12, (pages) => {
@@ -225,7 +225,7 @@ const hit = degraded.degradedPages.map((pno) => dXml.find((x) => x.includes(`第
 ok('U-29 降级页只留标题与正文文本（数据块被舍弃而非溢出，页脚仍在）',
   /本页标题刻意超长|超长标题第二例/.test(hit) && !/其余 \d+ 条/.test(hit),
   { degraded: degraded.degradedPages, hitLen: hit.length });
-writeFileSync(join(OUT_DIR, 't02099-degraded.pptx'), degraded.buffer);
+writeFileSync(gateArtifactPath(OUT_DIR, 't02099-degraded.pptx'), degraded.buffer);
 
 // ---------- 输出 ----------
 writeGateResults(OUT_DIR, 't02099-gate-results.txt', `T02099 装配器门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);

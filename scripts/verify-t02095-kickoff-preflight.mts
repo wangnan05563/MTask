@@ -16,14 +16,14 @@
  * 用法（better-sqlite3 需与当前 Node ABI 匹配；不匹配时用 scripts/vendor/bs137.tar.gz 恢复，
  *   与 T02126/T02131 同口径）：node node_modules/tsx/dist/cli.mjs scripts/verify-t02095-kickoff-preflight.mts
  * 环境变量：`T02095_PORT`（默认随机 39600+rand300）。
- * 断言输出落 .workbuddy/t02095-gate-results-<运行标识>.txt 与 t02095-preflight-payload.json（GBK 控制台乱码，以文件为权威）。
+ * 断言输出落 .workbuddy/t02095-gate-results-<运行标识>.txt 与 t02095-preflight-payload-<运行标识>.json（T02309 旁证同标识；GBK 控制台乱码，以文件为权威）。
  */
 import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeGateResults } from './lib/gate-results.mts';
+import { writeGateResults, gateArtifactPath } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02095_PORT ?? 39_600 + Math.floor(Math.random() * 300));
@@ -159,7 +159,7 @@ if (!(await waitUp())) {
 
   // 真实项目不应被阻塞
   ok('R-17 mtask五期不被硬阻塞', pf.body?.blocked === false);
-  writeFileSync(join(ROOT, '.workbuddy', 't02095-preflight-payload.json'), JSON.stringify({ 五期: pf.body, 空项目: blockedPf.body }, null, 2), 'utf8');
+  writeFileSync(gateArtifactPath(join(ROOT, '.workbuddy'), 't02095-preflight-payload.json'), JSON.stringify({ 五期: pf.body, 空项目: blockedPf.body }, null, 2), 'utf8');
 }
 
 async function post<T = any>(path: string, json: unknown): Promise<{ status: number; body: T }> {

@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import type { EstimateConfig, EstimatePhase, EstimateCoefKey } from '../server/src/services/estimate-engine.ts';
 import type { EstimateExportInput, EstimateExportRow } from '../server/src/services/estimateExportXlsx.ts';
 import { resolveServerLauncher } from './isolated-server-launcher.mts';
+import { gateArtifactPath } from './lib/gate-results.mts'; // T02309：旁证产物按运行标识命名
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02043-e6-'));
@@ -437,7 +438,7 @@ group('G7 客户版轨（§6.2 脱敏发生在服务端，前端隐藏不算脱�
     Lc.totalRow === 35 && Lc.actualRow === 40 && Lc.remarkRow === null,
     { totalRow: Lc.totalRow, actualRow: Lc.actualRow, remarkRow: Lc.remarkRow });
   const BUFc = await X.buildEstimateXlsx(Lc);
-  writeFileSync(join(OUT_DIR, 'client.xlsx'), BUFc);
+  writeFileSync(gateArtifactPath(OUT_DIR, 'client.xlsx'), BUFc);
   const zc = unzip(BUFc);
   ok('7-04 客户版**只有 1 个 sheet**（明细/参数两个内部 sheet 不产出）',
     zc.file('xl/worksheets/sheet2.xml') === null && zc.file('xl/worksheets/sheet3.xml') === null,

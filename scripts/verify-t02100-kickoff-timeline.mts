@@ -8,13 +8,13 @@
  *
  * 隔离纪律：不连生产库、不起服务、不调 AI（Bundle 脚本内构造）。
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02100-kickoff-timeline.mts
- * 结果落 .workbuddy/t02100-gate-results-<运行标识>.txt 与 t02100-timeline.pptx。
+ * 结果落 .workbuddy/t02100-gate-results-<运行标识>.txt 与 t02100-timeline-<运行标识>.pptx（T02309 旁证同标识）。
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
-import { writeGateResults } from './lib/gate-results.mts';
+import { writeGateResults, gateArtifactPath } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -204,11 +204,12 @@ const outline = [
   { section: '项目计划', title: '里程碑', bullets: [], dataKeys: ['milestones'], layout: 'table' },
 ] as any[];
 const built = await M.buildKickoffPpt(bundle, outline);
-writeFileSync(join(OUT_DIR, 't02100-timeline.pptx'), built.buffer);
+writeFileSync(gateArtifactPath(OUT_DIR, 't02100-timeline.pptx'), built.buffer);
 const zip = await JSZip.loadAsync(built.buffer);
 const slideXml = async (n: number) => await zip.file(`ppt/slides/slide${n}.xml`)!.async('string');
 const tlXml = await slideXml(2);
 const listXml = await slideXml(3);
+const coverXml = await slideXml(1);
 
 /**
  * 只数「真形状」：pptxgenjs 给文本盒也写 `prst="rect"`，按 prst 直接计数会把 4 个刻度
@@ -244,10 +245,12 @@ ok('U-27 每个形状都是可编辑的 <p:sp> 且带 offset/ext，条高 = TIME
 ok('U-28 形状坐标全部落在 10 × 5.625 画布内（越界的形状就是坏页）',
   tlShapes.length > 0 && tlShapes.every((s) => s.off[0] >= 0 && s.off[1] >= 0 && s.off[0] + s.ext[0] <= 10 + 1e-6 && s.off[1] + s.ext[1] <= 5.625 + 1e-6),
   tlShapes.filter((s) => s.off[0] + s.ext[0] > 10.000001));
-ok('U-29 整份稿不含图片元素（验收 5 的反面：不许整页贴图）',
-  // pptxgenjs 会留一个空的 `ppt/media/` 目录项，只要里面没有真图就不算贴图
-  !Object.keys(zip.files).some((n) => n.startsWith('ppt/media/') && !n.endsWith('/')) &&
-    !/<p:pic/.test(tlXml) && !/<p:pic/.test(listXml),
+ok('U-29 整份稿不含内容图片（验收 5 的反面：不许整页贴图）',
+  // T02156：允许 `<p:bg>` 背景图（恒生模板版式资产——背景是版式不是内容）。
+  // 判据相应收紧为「内容零位图」：无 <p:pic>，且 slide 里每个 r:embed 都来自 <p:bg>；
+  // pptxgenjs 会留一个空的 `ppt/media/` 目录项，那不算贴图
+  [coverXml, tlXml, listXml].every((x) => !/<p:pic/.test(x)) &&
+    [coverXml, tlXml, listXml].every((x) => (x.match(/r:embed="/g) ?? []).length === (x.match(/<p:bg>/g) ?? []).length),
   { media: Object.keys(zip.files).filter((n) => n.startsWith('ppt/media/')), pic: /<p:pic/.test(tlXml) });
 ok('U-30 时间线页不因形状触发降级（常规数据下版式本来就够）',
   !built.degradedPages.includes(2), built.degradedPages);

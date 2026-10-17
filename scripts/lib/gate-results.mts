@@ -13,6 +13,7 @@
  *
  * 用法（门侧只改写点，不改判据）：
  *   writeGateResults(OUT_DIR, 't02098-gate-results.txt', summary, { port: PORT, dataDir: DATA_DIR });
+ *   writeFileSync(gateArtifactPath(OUT_DIR, 't02099-sample.pptx'), built.buffer); // T02309：旁证同标识
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -29,6 +30,15 @@ export function gateResultsPath(outDir: string, base: string): string {
   const dot = base.lastIndexOf('.');
   const tagged = dot < 0 ? `${base}-${RUN_TAG}` : `${base.slice(0, dot)}-${RUN_TAG}${base.slice(dot)}`;
   return join(outDir, tagged);
+}
+
+/**
+ * T02309：旁证产物（payload JSON / pptx / pdf / report JSON 等）的命名口径。
+ * 与 {@link gateResultsPath} **同一进程级 RUN_TAG**——同一次运行的汇总与旁证共用一个标识，
+ * 人工复核时按标识即可配对「这轮的结果」与「这轮的稿子」；二进制/JSON 不加归属行（JSON 保持可 parse）。
+ */
+export function gateArtifactPath(outDir: string, base: string): string {
+  return gateResultsPath(outDir, base);
 }
 
 /** 归属行——沿用 T02285 在 t02166-ai 门落地的写法，字段按可得性拼接。 */

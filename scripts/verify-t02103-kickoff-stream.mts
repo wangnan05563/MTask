@@ -14,7 +14,7 @@
  *   node node_modules/tsx/dist/cli.mjs scripts/verify-t02103-kickoff-stream.mts
  * 环境变量：`T02103_PORT`（默认随机 39700+rand300）。
  * 隔离纪律（skill 红线 8）：库副本/端口/临时目录全临时，不写生产库，mock 不消耗真实配额。
- * 结果落 .workbuddy/t02103-gate-results-<运行标识>.txt 与 t02103-stream.pptx。
+ * 结果落 .workbuddy/t02103-gate-results-<运行标识>.txt 与 t02103-stream-<运行标识>.pptx（T02309 旁证同标识）。
  */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
-import { writeGateResults } from './lib/gate-results.mts';
+import { writeGateResults, gateArtifactPath } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02103_PORT ?? 39_700 + Math.floor(Math.random() * 300));
@@ -277,7 +277,7 @@ const outlinePages = (n: number) =>
   mkdirSync(TMP_DIR, { recursive: true });
   const before = readdirSync(TMP_DIR);
   const built13 = await B.buildKickoffPpt(fixtureBundle, outlinePages(6));
-  writeFileSync(join(OUT_DIR, 't02103-builder.pptx'), built13.buffer);
+  writeFileSync(gateArtifactPath(OUT_DIR, 't02103-builder.pptx'), built13.buffer);
   ok('B-05 builder 层零落盘（只回 Buffer，令牌落盘只在 saveReportBuffer 一处）',
     readdirSync(TMP_DIR).length === before.length, { before, after: readdirSync(TMP_DIR) });
 }
@@ -519,7 +519,7 @@ if (!(await waitUp())) {
   const buf = Buffer.from(await dlRes.arrayBuffer());
   let slides: string[] = [];
   if (buf.length > 1000) {
-    writeFileSync(join(OUT_DIR, 't02103-stream.pptx'), buf);
+    writeFileSync(gateArtifactPath(OUT_DIR, 't02103-stream.pptx'), buf);
     const zip = await JSZip.loadAsync(buf);
     slides = await Promise.all(
       Object.keys(zip.files).filter((f) => /^ppt\/slides\/slide\d+\.xml$/.test(f))

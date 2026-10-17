@@ -4,19 +4,36 @@
 - 关键单元格文本（阶段名 / 数值）应存在于文本层（说明表格被渲染而非丢失）
 - 引用块 `>` 前缀不应残留
 - 图表样本应含柱顶数值文本
+
+T02309：样本 PDF 名带运行标识（gateArtifactPath），本脚本不再猜固定名——用法：
+    python scripts/verify-t02155-extract.py <table.pdf 路径> <charts.pdf 路径>
+路径取 verify-t02155-pdf-render.mts stdout 打印的实际落盘路径；不带参数时回退扫描
+.workbuddy 下最新的 t02155-sample-*.pdf（兼容人工旧习惯）。
 """
 import sys
+import glob
+import os
 from pypdf import PdfReader
 
 OUT = ".workbuddy"
 
-def text_of(name):
-    r = PdfReader(f"{OUT}/{name}")
+def latest(prefix):
+    hits = sorted(glob.glob(f"{OUT}/{prefix}-*.pdf"), key=os.path.getmtime)
+    if not hits:
+        sys.exit(f"找不到 {prefix}-*.pdf（先跑 verify-t02155-pdf-render.mts，或把路径作为参数传入）")
+    return hits[-1]
+
+def text_of(path):
+    r = PdfReader(path)
     return "\n".join((p.extract_text() or "") for p in r.pages)
 
 def main():
+    args = [a for a in sys.argv[1:]]
+    table = args[0] if len(args) > 0 else latest("t02155-sample-table")
+    charts = args[1] if len(args) > 1 else latest("t02155-sample-charts")
+    print(f"table={table}\ncharts={charts}")
     fails = []
-    t = text_of("t02155-sample-table.pdf")
+    t = text_of(table)
     # ① 裸 ` | ` 拼接残留：真实表格现在逐格绘制，文本层不应含 " | "
     if " | " in t or t.count("|") > 0:
         # 允许其它出现？本报告正文无竖线语义；任何竖线都判失败
@@ -29,7 +46,7 @@ def main():
     if t.strip().startswith(">"):
         fails.append("table.pdf 仍残留引用前缀 '>'")
 
-    c = text_of("t02155-sample-charts.pdf")
+    c = text_of(charts)
     for v in ["14.3", "89.7", "11.9", "74.5"]:
         if v not in c:
             fails.append(f"charts.pdf 缺失柱状图数值文本：{v}")

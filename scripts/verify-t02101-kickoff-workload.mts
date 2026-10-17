@@ -9,12 +9,13 @@
  *
  * 隔离纪律：不连生产库、不起服务、不调 AI（Bundle/Summary 脚本内构造）。
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02101-kickoff-workload.mts
- * 结果落 .workbuddy/t02101-gate-results.txt 与 t02101-workload.pptx。
+ * 结果落 .workbuddy/t02101-gate-results-<运行标识>.txt 与 t02101-workload-<运行标识>.pptx（T02309 旁证同标识）。
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
+import { gateArtifactPath } from './lib/gate-results.mts'; // T02309：旁证产物按运行标识命名
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -213,7 +214,7 @@ const outline = [
 ] as any[];
 const gapBundle = bundleOf({ workload: zero, assignees: [], coverage: { total: 0, covered: 0, uncovered: 0, rate: 0 } });
 const built = await B.buildKickoffPpt(gapBundle, outline);
-writeFileSync(join(OUT_DIR, 't02101-workload.pptx'), built.buffer);
+writeFileSync(gateArtifactPath(OUT_DIR, 't02101-workload.pptx'), built.buffer);
 const zip = await JSZip.loadAsync(built.buffer);
 const slideTexts = async (n: number) => {
   const xml = await zip.file(`ppt/slides/slide${n}.xml`)!.async('string');
@@ -222,6 +223,7 @@ const slideTexts = async (n: number) => {
 const s2 = await slideTexts(2);
 const s3 = await slideTexts(3);
 const s4 = await slideTexts(4);
+const slideXmls = await Promise.all([1, 2, 3, 4].map(async (n) => await zip.file(`ppt/slides/slide${n}.xml`)!.async('string')));
 
 ok('P-01 产物工作量页正文出「待补充」，全页无「0 人天」（空缺不冒充结论）',
   /总工作量：待补充/.test(s2) && !/0 人天/.test(s2 + s3 + s4), s2.slice(0, 200));
@@ -241,7 +243,11 @@ ok('P-06 有估算 + 有工期时页脚动态切换（同一装配器两口径�
   return /工期口径，非三点估算/.test(t2) && /未经估算复核/.test(t2) && /总工作量 18 人天/.test(t2);
 })(), '见 slide2 文本');
 ok('P-07 全稿仍是原生对象（无整页贴图，验收 5）',
-  !Object.keys(zip.files).some((f) => /^ppt\/media\/.+/.test(f)) && !/<p:pic>/.test(s2));
+  // T02156：允许 `<p:bg>` 背景图（恒生模板版式资产——背景是版式不是内容），
+  // 判据收紧为「内容零位图」：无 <p:pic>，且每页每个 r:embed 都来自 <p:bg>
+  [1, 2, 3, 4].every((n) => !/<p:pic/.test(slideXmls[n - 1])) &&
+    [1, 2, 3, 4].every((n) => (slideXmls[n - 1].match(/r:embed="/g) ?? []).length === (slideXmls[n - 1].match(/<p:bg>/g) ?? []).length),
+  { media: Object.keys(zip.files).filter((n) => n.startsWith('ppt/media/')) });
 
 console.log(`PASS=${pass} FAIL=${fail}`);
 console.log(lines.join('\n'));
