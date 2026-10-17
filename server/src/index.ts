@@ -158,7 +158,11 @@ app.use('/api/tunnel', tunnelRouter);
 
 // 静态伺服前端构建产物：让隧道 URL / 浏览器访问时能打开可操作的 Web 界面。
 // dev 态 __dirname=server/src，打包态=resources/app/server/dist，均回溯到根/web/dist
-const webDist = path.resolve(__dirname, '..', '..', 'web', 'dist');
+// T02289：MTASK_STATIC_DIR 覆盖静态目录（与 MTask_DATA_DIR 同族的隔离通道）——回归门需要把 dist
+// 复制到临时目录再伺服，避免门在运行期改写主仓共享 web/dist（原蓝本正是这么污染工作树的）。
+const webDist = process.env.MTASK_STATIC_DIR
+  ? path.resolve(process.env.MTASK_STATIC_DIR)
+  : path.resolve(__dirname, '..', '..', 'web', 'dist');
 if (existsSync(path.join(webDist, 'index.html'))) {
   app.use(express.static(webDist));
   // SPA 兜底：非 /api、未命中静态文件的 GET 一律回显 index.html
