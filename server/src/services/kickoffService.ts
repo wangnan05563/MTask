@@ -875,6 +875,9 @@ const OUTLINE_SYSTEM = `你是项目启动会 PPT 的大纲编排器。只输出
 4. dataKeys 只能取：${KICKOFF_DATA_KEYS.join(' / ')}；一页可多个，但**最多 2 个**（3 个数据块加要点必然挤爆版面，装配层只能整块省略，页面就缺内容）；
 5. 每页 bullets ≤${BULLET_MAX_LINES} 条，每条 ≤${BULLET_MAX_CHARS} 字；
 6. 必须至少一页 dataKeys 含 "timeline"，至少一页 dataKeys 含 "workload"；
+   ⚠ 常见错误：把 layout 设成 "timeline" 但 dataKeys 里没有 "timeline" 这个键（如
+   \`{layout:'timeline', dataKeys:['milestones','planRows']}\`）——这**不算**时间线页，会被判定
+   「大纲缺少时间线页」整稿退回。正确写法：该页 dataKeys 必须含 "timeline" 键本身（可再带 planRows）；
 7. 铁律：凡涉及条数、合计、覆盖率、日期等数字，一律只写 dataKeys 引用，由系统按库内真实数据填充——严禁自行写数字或改写数字；
 8. 只依据【资料齐备性】里标注为可用的数据源，未标注可用的不要引用（引用缺失源会导致页面空壳）；
 9. 页面角色（T02156 恒生模板五页面）：第 1 页 cover（封面），第 2 页 toc（目录）；
@@ -899,7 +902,7 @@ const OUTLINE_SYSTEM = `你是项目启动会 PPT 的大纲编排器。只输出
 const OUTLINE_SYSTEM_RETRY = `只输出 JSON 数组（${PAGE_MIN}~${PAGE_MAX} 个元素），元素：{section,title,bullets,dataKeys,layout}。
 section∈[${KICKOFF_SECTIONS.join('|')}] layout∈[${KICKOFF_LAYOUTS.join('|')}] dataKeys⊆[${KICKOFF_DATA_KEYS.join('|')}]
 每页 dataKeys **≤${DATA_KEYS_MAX} 个**（超出会被系统截断）；
-bullets 每条≤${BULLET_MAX_CHARS}字；必须有含 timeline 的一页和含 workload 的一页；数字一律用 dataKeys 表示，禁止编造数字。
+bullets 每条≤${BULLET_MAX_CHARS}字；必须至少一页 dataKeys 含 "timeline"（只把 layout 设成 'timeline' 而 dataKeys 里没这个键不算，会被整稿退回）、至少一页 dataKeys 含 "workload"；数字一律用 dataKeys 表示，禁止编造数字。
 第 1 页 cover、第 2 页 toc、末页 thanks；章节分隔用 section（dataKeys 空）；阶段链用 flow、人员标签用 chip（各至多一页）。
 每页至少 1 条 bullets 用「」照抄输入里出现过的具体名称，全稿带「」指代的 bullets ≥6 成；
 「」内只放 ≤12 字的名称本体（不放整段原文、路径、代码标识符），整条仍≤${BULLET_MAX_CHARS}字——放不下就删废话，别加长句子；「待补充」不计入指代配额；
@@ -1014,7 +1017,14 @@ export async function kickoffOutline(projectId: string, toolId: string, extraNot
         throw new Error(file ? `${msg}\n厂商原始响应已留档：${file}（${content.length} 字符）` : msg);
       }
     },
-    { retrySystem: OUTLINE_SYSTEM_RETRY, temperature: 0 },
+    {
+      retrySystem: OUTLINE_SYSTEM_RETRY,
+      // T02314：把首轮具体违规原因原样回喂给模型——「大纲缺少时间线页（须有一页 dataKeys 含
+      // 'timeline'）」比静态精简提示词更能让它改对（真链路 41981/41982/41983 三轮连续栽在
+      // 「用了 timeline 版式但没放 timeline 数据键」，静态重试提示词已声明过该要求仍不遵守）。
+      retrySystemFromError: (lastError) => `${OUTLINE_SYSTEM_RETRY}\n\n【上一轮输出被拒的原因，必须逐条修正后重新输出】\n${lastError}`,
+      temperature: 0,
+    },
   );
   if (!ai.ok || ai.data === undefined) throw new Error(`AI 未返回合规大纲：${ai.error ?? '未知原因'}`);
   const warnings = [...ai.data.warnings];

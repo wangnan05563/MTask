@@ -80,6 +80,11 @@ ok('S-10 风险四类本地枚举齐（blocked/进度落后/需求无关联/复�
   /status === 'blocked'/.test(bundleSrc) && /expectedProgress\(/.test(bundleSrc) && /linkedPlans\.length === 0/.test(bundleSrc)
   && /RISK_COMPLEXITY_MIN/.test(bundleSrc) && /系统内暂无风险信号/.test(bundleSrc));
 ok('S-11 大纲路由注册在 /:id 之前', routeSrc.indexOf('/kickoff-ppt-outline') < routeSrc.indexOf("planApi.patch('/:id'"));
+ok('S-12 时间线页要求在两处提示词均按 dataKeys 口径写明且带否定示例（T02314：模型常把 layout:timeline 误当数据键齐全）',
+  /必须至少一页 dataKeys 含 "timeline"/.test(outlineSrc)
+  && /只把 layout 设成 'timeline' 而 dataKeys 里没这个键不算/.test(outlineSrc)
+  && /必须至少一页 dataKeys 含 "timeline"（只把 layout 设成 'timeline'/.test(outlineSrc),
+  { main: /必须至少一页 dataKeys 含 "timeline"/.test(outlineSrc), retry: /必须至少一页 dataKeys 含 "timeline"（只把 layout/.test(outlineSrc) });
 
 // =====================================================================
 // mock OpenAI 兼容服务（本地、零真实配额）
@@ -362,6 +367,18 @@ if (!(await waitUp())) {
   ok('R-14 清洗修不了的非法转义 → 400 报错含位置上下文切片与留档文件名 + 数据目录内 raw 旁证非空',
     r14.status === 400 && /报错上下文/.test(String(r14.body?.error)) && /厂商原始响应已留档/.test(String(r14.body?.error)) && rawNonEmpty,
     { status: r14.status, error: String(r14.body?.error).slice(0, 160), rawFiles });
+
+  // R-15 重试提示词注入首轮具体违规原因（T02314：真链路连续三轮栽在「有 timeline 版式无 timeline 数据键」）
+  const noTl = (JSON.parse(outlineJson(12)) as any[]).map((p, i) => (i === 6 ? { ...p, dataKeys: p.dataKeys.filter((k: string) => k !== 'timeline') } : p));
+  mockQueue = [{ content: JSON.stringify(noTl) }, { content: outlineJson(12) }];
+  mockRequests.length = 0;
+  const r15 = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
+  ok('R-15 首轮缺时间线页 → 重试提示词原样回喂该原因且二轮出合规稿（200 + 12 页）',
+    r15.status === 200 && r15.body?.outline?.length === 12
+    && mockRequests.length === 2
+    && /缺少时间线页/.test(String(mockRequests[1]?.system ?? ''))
+    && /必须逐条修正/.test(String(mockRequests[1]?.system ?? '')),
+    { status: r15.status, asks: mockRequests.length, retrySysTail: String(mockRequests[1]?.system ?? '').slice(-160), error: r15.body?.error });
 
   // R-12 参数校验
   const noTool = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID });

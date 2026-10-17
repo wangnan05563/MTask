@@ -505,6 +505,12 @@ export const AIService = {
     opts?: {
       /** T00707：重试时改用的「精简提示词」——首次输出被截断/解析失败时用它压缩输出规模再试 */
       retrySystem?: string;
+      /**
+       * T02314：按**首轮具体失败原因**定制重试提示词——parse 抛错的 message 本身就是可执行的
+       * 修正指令（如「大纲缺少时间线页」「第 4 页单条 bullet 超出 42 字」），回喂给模型比
+       * 静态精简提示词（retrySystem）命中率高。提供时优先于 retrySystem；lastError 为空时回退到它。
+       */
+      retrySystemFromError?: (lastError: string) => string;
       /** T01156：首轮输出预算上限（覆盖工具默认 max_tokens）——结构化解析输出较长时抬高以防截断触发精简重试丢数据 */
       maxTokens?: number;
       /**
@@ -523,7 +529,7 @@ export const AIService = {
       signal?: AbortSignal;
     },
   ): Promise<{ ok: boolean; data?: T; error?: string; retried?: boolean; usage?: TokenUsage }> {
-    const { timeoutMs, retrySystem, maxTokens, minMaxTokens, temperature, signal } = opts ?? {};
+    const { timeoutMs, retrySystem, retrySystemFromError, maxTokens, minMaxTokens, temperature, signal } = opts ?? {};
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     const effective = timeoutMs == null ? config : { ...config, timeoutMs };
@@ -534,7 +540,12 @@ export const AIService = {
     for (let attempt = 1; attempt <= 2; attempt++) {
       acc.attempts = attempt;
       const startedAt = Date.now();
-      const sys = attemptSystem(attempt, system, retrySystem);
+      // T02314：第二轮优先用「首轮具体失败原因」定制的重试提示词——模型缺哪页、哪条超长，
+      // 原样说给它听；无首轮错误或调用方没提供钩子时回退静态 retrySystem。
+      const retrySys = attempt === 2 && acc.lastError && retrySystemFromError
+        ? retrySystemFromError(acc.lastError)
+        : retrySystem;
+      const sys = attemptSystem(attempt, system, retrySys);
       let res = await adapter.chat(sys, user, attemptConfig(base, attempt, budgetMax), signal);
       // T02275：抬高的预算被模型拒收（请求 400 直指 max_tokens）→ **同轮内**回退到下限值重打一次，
       // 不占用「截断精简重试」轮次（先例 PrdGenService.ts:278-281：只在错误确指预算时回退，其余照旧）。
