@@ -228,6 +228,42 @@ export function whiskerGeometries(rows: readonly PanelRow[]): Map<string, Whiske
   }]));
 }
 
+/**
+ * §5.4 区间条**绘制件**（T02293 判据规约：把可测边界从 700 行的面板里切出来，
+ * 让验证脚本断言 `react-dom/server` 渲染串而不是面板源文本——
+ * role/aria-label、配色口径、退化区间最小可见宽度都在这三行 JSX 上，
+ * 留在 `renderItem` 内部就只能靠读源码守，改个变量名就误红、删个 aria-label 反而不红）。
+ * 几何与行值由调用方传入，本件不算任何数。
+ */
+export function WhiskerBar({ row, geom }: { row: PanelRow; geom: WhiskerGeom | undefined }): ReactElement | null {
+  if (!geom) return null; // 无几何（里程碑行、无三点行）不画——§4.6 红线一的绘制层
+  const wColor = row.suggestion ? 'var(--text-muted)' : 'var(--accent)';
+  const barTitle = `O ${num(row.optimistic)} —— P ${num(row.pessimistic)}，竖线为 E ${num(row.expected)} 人天`
+    + `${row.suggestion ? '（推导建议值，未落库、不进 Σ）' : ''}\n横向刻度按明细行最大 P=${num(geom.scaleMax)} 归一，行间长度可比`;
+  return (
+    <div /* NOSONAR: S6819 误报——区间条由多个子元素绘制的复合图形，无原生元素可承载，改<img>会毁掉渲染 */
+      role="img"
+      aria-label={`区间条 ${row.title}`}
+      title={barTitle}
+      style={{ position: 'relative', height: 8, marginTop: 3 }}
+    >
+      <span aria-hidden style={{ position: 'absolute', top: 3, left: `${geom.loPct}%`, width: `${Math.max(geom.hiPct - geom.loPct, 0.4)}%`, minWidth: 2, height: 1, background: wColor }} />
+      <span aria-hidden style={{ position: 'absolute', top: 1, left: `${geom.loPct}%`, width: 1, height: 6, background: wColor }} />
+      <span aria-hidden style={{ position: 'absolute', top: 1, left: `${geom.hiPct}%`, width: 1, height: 6, background: wColor }} />
+      <span aria-hidden style={{ position: 'absolute', top: 0, left: `${geom.ePct}%`, width: 2, height: 8, background: wColor, opacity: 0.85 }} />
+    </div>
+  );
+}
+
+/**
+ * §5.4 图例可见性（T02293 判据规约）：把「一条区间都画不出来时不解释一个不存在的图形」
+ * 写成可断言的谓词，而不是只留在 JSX 里的 `whisker.size > 0`——
+ * 原来验证门用正则匹配那半行源码（等价重构即红、把守卫删掉反而不红），现在门直接问谓词两态。
+ */
+export function whiskerLegendShown(geomCount: number): boolean {
+  return geomCount > 0;
+}
+
 /** PRD §5.1 的形态阈值：视口 <1200px 转覆盖式。写成纯函数是为了让 verify 脚本能断言边界，
  *  而不是把 1199/1200 这两个数只留在 matchMedia 字符串里（§10-13 走查 1200/1440/1920 三档）。 */
 export function estimatePanelModeForWidth(width: number): 'docked' | 'overlay' {
@@ -1132,7 +1168,6 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
       </span>
     );
     const g = whisker.get(r.planId);
-    const wColor = r.suggestion ? 'var(--text-muted)' : 'var(--accent)';
     return (
       <div key={r.planId} style={{ borderBottom: '1px solid var(--border)', padding: '4px 0 4px 4px', fontSize: 12, display: 'flex', gap: 6, alignItems: 'center', height: EST_ITEM_H, boxSizing: 'border-box', overflow: 'hidden' }}>
         <input
@@ -1185,20 +1220,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             )}
             {err && <span style={{ fontSize: 11, color: 'var(--danger)' }}>{err}</span>}
           </div>
-          {g && (
-            <div /* NOSONAR: S6819 误报——区间条由多个子元素绘制的复合图形，无原生元素可承载，改<img>会毁掉渲染 */
-              role="img"
-              aria-label={`区间条 ${r.title}`}
-              title={`O ${num(r.optimistic)} —— P ${num(r.pessimistic)}，竖线为 E ${num(r.expected)} 人天`
-                + `${r.suggestion ? '（推导建议值，未落库、不进 Σ）' : ''}\n横向刻度按明细行最大 P=${num(g.scaleMax)} 归一，行间长度可比`}
-              style={{ position: 'relative', height: 8, marginTop: 3 }}
-            >
-              <span aria-hidden style={{ position: 'absolute', top: 3, left: `${g.loPct}%`, width: `${Math.max(g.hiPct - g.loPct, 0.4)}%`, minWidth: 2, height: 1, background: wColor }} />
-              <span aria-hidden style={{ position: 'absolute', top: 1, left: `${g.loPct}%`, width: 1, height: 6, background: wColor }} />
-              <span aria-hidden style={{ position: 'absolute', top: 1, left: `${g.hiPct}%`, width: 1, height: 6, background: wColor }} />
-              <span aria-hidden style={{ position: 'absolute', top: 0, left: `${g.ePct}%`, width: 2, height: 8, background: wColor, opacity: 0.85 }} />
-            </div>
-          )}
+          <WhiskerBar row={r} geom={g} />
         </div>
         <div style={{ display: 'flex', gap: 4, fontFamily: MONO, textAlign: 'right', alignItems: 'center' }}>
           {POINT_FIELDS.map((f) => (
@@ -1499,7 +1521,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
         </div>
         {/* §5.4 区间条图例：没有它，那条短线就是一个没人能自证含义的图形。
             空态（一条区间都画不出来）时不渲染——图例解释的是一个当前并不存在的图形。 */}
-        {whisker.size > 0 && (
+        {whiskerLegendShown(whisker.size) && (
         <div aria-label="区间条图例" style={{ fontSize: 11, color: 'var(--text-muted)', margin: '0 0 6px', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
           <span aria-hidden style={{ display: 'inline-flex', alignItems: 'center', gap: 2, color: 'var(--accent)' }}>
             <span style={{ width: 1, height: 7, background: 'currentColor', display: 'inline-block' }} />
