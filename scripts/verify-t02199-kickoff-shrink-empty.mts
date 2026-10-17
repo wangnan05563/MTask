@@ -16,7 +16,7 @@
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02199-kickoff-shrink-empty.mts
  * 结果落 .workbuddy/t02199-gate-results-<运行标识>.txt 与 t02199-shrink-<运行标识>.pptx（T02309 旁证同标识）。
  */
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
@@ -36,7 +36,6 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 
 const M = await import('../server/src/services/kickoffBuilder.ts');
 const LAY = await import('../server/src/services/kickoff-layout.ts');
-const BLD_SRC = readFileSync(join(ROOT, 'server/src/services/kickoffBuilder.ts'), 'utf8');
 
 // ---------- 测试夹具 ----------
 const DAY = 86400000;
@@ -136,18 +135,6 @@ ok('S-03 layoutBody 的三组产出（含被压缩的正文页）都不带 shrin
   layouts.every((r) => r.blocks.every((b: any) => !b.text?.shrink)),
   layouts.map((r) => r.blocks.map((b: any) => !!b.text?.shrink)));
 
-ok('S-04 源码单点：fit:shrink 只有一个写入点，且 layoutBody 函数体内不出现 shrink',
-  (BLD_SRC.match(/fit: 'shrink'/g) ?? []).length === 1 &&
-    (() => {
-      const i = BLD_SRC.indexOf('export function layoutBody');
-      const seg = BLD_SRC.slice(i, BLD_SRC.indexOf('\nfunction ', i + 10));
-      return !/shrink/.test(seg);
-    })(),
-  { sites: (BLD_SRC.match(/fit: 'shrink'/g) ?? []).length });
-
-ok('S-05 旧判据「块数为 0」已换成「无可绘内容」（content 为空也算空，块在页上没字就是空页）',
-  /!bodyBlocks\.some\(drawable\)/.test(BLD_SRC) && !/bodyBlocks\.length === 0 && !whitespaceByDesign/.test(BLD_SRC));
-
 const emptyTextRec = rec();
 M.drawBlock(emptyTextRec, { box: body, text: { content: '   ', pt: 14, shrink: true } });
 ok('S-06 「块在、页上没字」的形态真实存在（空 content 仍会 addText，只数块数确实会漏）',
@@ -199,6 +186,31 @@ ok('E-05 越界 + 内容全空同页只记一次降级（三条留痕都在，de
 ok('E-06 降级页集合恰为 {4,5,6}，其余页面零降级（收口没有把整稿带崩）',
   JSON.stringify([...new Set(built.degradedPages)].sort((a, b) => a - b)) === JSON.stringify(DEGRADED),
   built.degradedPages);
+
+// ---------- S-04 / S-05：T02293 改判（原来是读 kickoffBuilder.ts 源码正则） ----------
+// S-04 原写法：`fit:'shrink'` 在源码里只出现一次 + layoutBody 函数体内不出现 shrink。
+// 那是「写在哪个函数、用词出现几次」的形态，等价重构（把收缩开关挪进 drawBlock 的入参归一化、
+// 或把 layoutBody 拆成两段）必红，而机制有没有坏掉，S-03（单元层）+ S-07/S-08（产物层）已各自答过。
+// 改判后钉行为：降级页写 normAutofit、非降级页一律不写；同页里 S-02 证明「要收缩时确实写得出」，
+// 于是 S-08 的零出现不是恒绿（这正是本条的负对照配对）。
+ok('S-04 收缩只落在降级路径（行为腿：layoutBody 三组产出无 shrink + 产物层降级页有 normAutofit、非降级页零 normAutofit；'
+  + '反证腿：S-02 证明 shrink 入参确实会写出 fit，所以零出现不是恒绿）',
+  layouts.every((r) => r.blocks.every((b: any) => !b.text?.shrink))
+    && DEGRADED.every((pg) => autofit(slideNames[pg - 1]))
+    && PLAIN.every((pg) => !autofit(slideNames[pg - 1]))
+    && shrunk.calls[0]?.o.fit === 'shrink',
+  { degradedHasAutofit: DEGRADED.map((pg) => autofit(slideNames[pg - 1])),
+    plainHasAutofit: PLAIN.map((pg) => autofit(slideNames[pg - 1])) });
+
+// S-05 原写法：源码里出现 `!bodyBlocks.some(drawable)` 且不再出现 `bodyBlocks.length === 0`。
+// 判据换代的正确证据不是字面量，而是「新判据抓得到、旧判据抓不到」的那个形态：
+// S-06 已证「块在页上、content 全空白」时 addText 仍被调用（块数=1，旧判据数块会放行），
+// E-01 证同一个页面（第 5 页）现在被拦并降级——两条同时成立才算机制真的换了口径。
+ok('S-05 空页判定按「有没有可绘内容」而非「有没有块」：空白 content 仍会 addText（旧判据数块会放行，S-06），'
+  + '而该页确实被拦+降级（新判据，E-01）',
+  emptyTextRec.calls.length === 1 && emptyTextRec.calls[0].t.trim() === ''
+    && built.warnings.some((w) => /^第 5 页/.test(w) && /皆空/.test(w)) && built.degradedPages.includes(5),
+  { 块数: emptyTextRec.calls.length, warn5: warnOf(5), degraded: built.degradedPages });
 
 // ---------- C 组：两套留痕互不冒充 ----------
 ok('C-01 正文页「截字」口径仍在：第 7 页要点为表格让位仍如实报截字',

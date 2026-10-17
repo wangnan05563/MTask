@@ -52,6 +52,12 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   cond ? (pass += 1) : (fail += 1);
   lines.push(`[${cond ? 'PASS' : 'FAIL'}] ${name}${cond || extra === undefined ? '' : ` → ${JSON.stringify(extra).slice(0, 400)}`}`);
 };
+/** T02293 改判用：把行为证据同时记进 BEH，S 组（机制收口）据此取数，不再去匹配源码文本 */
+const BEH: Record<string, boolean> = {};
+const okB = (key: string, name: string, cond: boolean, extra?: unknown) => {
+  BEH[key] = cond;
+  ok(name, cond, extra);
+};
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const { randomUUID } = await import('node:crypto');
 const tok = () => randomUUID();
@@ -221,50 +227,12 @@ function baseOutline(): any[] {
 }
 
 // =====================================================================
-// S 组：机制接线（断一环，下面所有行为断言都成空话）
+// S 组（机制收口）改判说明：T02293 前这里读 5 个源文件做正则匹配
+// （export function sweepReportTmp / app.listen 后的 startReportTmpSweeper() /
+//   if (!isReportToken(name)) continue / if (issuedToken && !doneSent) ... 等），
+// 任何等价重构（改名、提函数、挪文件）都会让门恒红，而机制到底接没接上，
+// 下面 A1/T/A2/A3 已用真产物给过答案。S 组现在挪到这些行为取数之后，逐条改判为读 BEH。
 // =====================================================================
-{
-  const RS = readFileSync(join(ROOT, 'server', 'src', 'services', 'ReportService.ts'), 'utf8');
-  const KICK = readFileSync(join(ROOT, 'server', 'src', 'services', 'kickoffService.ts'), 'utf8');
-  const IDX = readFileSync(join(ROOT, 'server', 'src', 'index.ts'), 'utf8');
-  const PLANS = readFileSync(join(ROOT, 'server', 'src', 'routes', 'plans.ts'), 'utf8');
-  const ROUTES = readFileSync(join(ROOT, 'server', 'src', 'routes', 'index.ts'), 'utf8');
-  const sweepSrc = RS.slice(RS.indexOf('export function sweepReportTmp'), RS.indexOf('export function startReportTmpSweeper'));
-  ok('S-01 三件套齐备：discardReport / sweepReportTmp / startReportTmpSweeper 都已导出（缺任一端回收链就断）',
-    /export function discardReport/.test(RS) && /export function sweepReportTmp/.test(RS) && /export function startReportTmpSweeper/.test(RS));
-  ok('S-02 清扫只认 isReportToken 白名单（tmp 里非令牌文件一律不碰，不能做成 rm -rf tmp）',
-    /if \(!isReportToken\(name\)\) continue;/.test(sweepSrc));
-  ok('S-03 过期判定按 mtime+TTL 比较，不是无条件全删',
-    /now - statSync\(p\)\.mtimeMs < ttlMs/.test(sweepSrc));
-  ok('S-04 单文件失败不中断整轮（catch 在 for 内部，不是整轮外面）',
-    /catch \{[^}]*\}/.test(sweepSrc.slice(sweepSrc.indexOf('try {'))));
-  ok('S-05 启动定时家族接线：index.ts 在 app.listen 回调里调 startReportTmpSweeper()',
-    (() => {
-      const listenAt = IDX.indexOf('app.listen');
-      return listenAt > 0 && /startReportTmpSweeper\(\)/.test(IDX.slice(listenAt));
-    })(), IDX.slice(IDX.indexOf('startReportTmpSweeper();') - 200, IDX.indexOf('startReportTmpSweeper();') + 30));
-  ok('S-06 清扫器先清一轮 + 定时兜底 + unref（不拖住进程退出）',
-    /run\(\);\s*const timer = setInterval/.test(RS) && /timer\.unref\?\.\(\)/.test(RS));
-  ok('S-07 启动会落盘后紧跟 sticky abort 收口（saveReportBuffer 之后、return 之前判 signal.aborted 并 discard）',
-    (() => {
-      const at = KICK.indexOf('saveReportBuffer(assembled.buffer)');
-      const win = KICK.slice(at, KICK.indexOf('onStage(\'文件已生成', at));
-      return /if \(signal\?\.aborted\)/.test(win) && /discardReport\(token\)/.test(win);
-    })());
-  ok('S-08 周报流式落盘后同样有 sticky 收口（两条导出链路一个口径，不做单边）',
-    (() => {
-      const streamPart = RS.slice(RS.indexOf('export async function aiGenerateReportStream'));
-      const at = streamPart.indexOf('saveReportBuffer(buffer)');
-      const win = streamPart.slice(at, streamPart.indexOf("onStage('文件已生成", at));
-      return /if \(signal\?\.aborted\)/.test(win) && /discardReport\(token\)/.test(win);
-    })());
-  ok('S-09 SSE 路由的 close 守卫以 !doneSent 为条件（done 已送达后断开必须保留令牌）',
-    /if \(issuedToken && !doneSent\) discardReport\(issuedToken\)/.test(PLANS) &&
-    /if \(issuedToken && !doneSent\) discardReport\(issuedToken\)/.test(ROUTES));
-  ok('S-10 close 早于 promise 落地时有补删分支（否则那条窗口的孤儿没人管）',
-    (PLANS.match(/if \(closed \|\| res\.writableEnded\) \{\s*\n\s*discardReport/g) ?? []).length === 1 &&
-    (ROUTES.match(/if \(closed \|\| res\.writableEnded\) \{\s*\n\s*discardReport/g) ?? []).length === 1);
-}
 
 // =====================================================================
 // A1 组：重启即清（单上「生成后不下载 → 等待/重启服务 → tmp/ 为空」的正面证据）
@@ -288,12 +256,12 @@ if (!(await waitUp())) {
   ok('X-01 隔离实例启动（boot1）', true);
   ok('A1-00 埋点就位：boot 前 tmp 里确有 4 类道具（过期令牌/未过期令牌/非令牌文件/UUID 命名的目录）',
     seededBeforeBoot.length === 4, seededBeforeBoot);
-  ok('A1-01 重启即清过期令牌（7h > 6h TTL 的令牌文件开机被回收）', !has(seedStale), ls());
-  ok('A1-02 未过期令牌不误删（TTL 内仍有效，不能让「回收」变成「开机清空」把待下载文件一起带走）', has(seedFresh), ls());
-  ok('A1-03 非令牌文件一律不动（白名单外的东西不归本机制管）', has(seedPlain), ls());
-  ok('A1-04 同轮里删不掉的（UUID 命名目录）不阻断其它文件回收，也不炸启动',
+  okB('staleSweptAtBoot', 'A1-01 重启即清过期令牌（7h > 6h TTL 的令牌文件开机被回收）', !has(seedStale), ls());
+  okB('freshKept', 'A1-02 未过期令牌不误删（TTL 内仍有效，不能让「回收」变成「开机清空」把待下载文件一起带走）', has(seedFresh), ls());
+  okB('plainKept', 'A1-03 非令牌文件一律不动（白名单外的东西不归本机制管）', has(seedPlain), ls());
+  okB('dirTolerated', 'A1-04 同轮里删不掉的（UUID 命名目录）不阻断其它文件回收，也不炸启动',
     has(seedDirTok) && !has(seedStale), { 目录仍在: has(seedDirTok), 文件已清: !has(seedStale) });
-  ok('A1-05 清扫有留痕（日志写明回收数量，孤儿增长这事得能被观测到）',
+  okB('sweepLoggedBoot1', 'A1-05 清扫有留痕（日志写明回收数量，孤儿增长这事得能被观测到）',
     /report-tmp sweep: \d+ abandoned export file\(s\) removed/.test(serverLog), (serverLog.match(/report-tmp[^\n]*/) ?? []).slice(0, 2));
   const tool = await call('POST', '/aitools', {
     name: 't02144-mock', type: 'openai-compatible', endpoint: `http://127.0.0.1:${MOCK_PORT}`,
@@ -314,7 +282,7 @@ if (!(await waitUp())) {
   backdate(tStale, 7);
   backdate(tStale2, 8);
   const removed = RS.sweepReportTmp(RS.REPORT_TMP_TTL_MS, Date.now());
-  ok('T-02 过期令牌全部删除且返回数如实（本轮 2 个：7h/8h）',
+  okB('ttlSweepCount', 'T-02 过期令牌全部删除且返回数如实（本轮 2 个：7h/8h）',
     removed === 2 && !has(tStale) && !has(tStale2), { removed, 残留: ls() });
   ok('T-03 未过期令牌与非令牌文件原样保留（含那个删不动的 UUID 目录）',
     has(tFresh) && has(tPlain) && has(seedFresh) && has(seedPlain) && has(seedDirTok), ls());
@@ -322,7 +290,7 @@ if (!(await waitUp())) {
     RS.discardReport(tFresh) === true && !has(tFresh) && RS.discardReport(tok()) === false);
   ok('T-05 无可回收对象时返回 0（UUID 命名的目录 unlink 抛错被吞、不计数、不中断）',
     RS.sweepReportTmp(RS.REPORT_TMP_TTL_MS, Date.now()) === 0, { 目录仍在: has(seedDirTok), tmp: ls() });
-  ok('T-06 时钟注入有效：now 往前拨 12h 后，刚写入的令牌也算过期（清扫判据只有 mtime 一个来源）', (() => {
+  okB('clockInjectWorks', 'T-06 时钟注入有效：now 往前拨 12h 后，刚写入的令牌也算过期（清扫判据只有 mtime 一个来源）', (() => {
     const n = tok();
     writeFileSync(join(TMP_DIR, n), Buffer.from('x'));
     const k = RS.sweepReportTmp(RS.REPORT_TMP_TTL_MS, Date.now() + 12 * HOURS);
@@ -339,28 +307,37 @@ if (!(await waitUp())) {
 
   const gen1 = await streamGen('/plans/kickoff-ppt-stream', body);
   const done1 = gen1.events.find((e) => e.event === 'done');
-  ok('A2-01 正常生成链路通（done + 12 页）', !!done1 && Number(done1.data?.pageCount ?? 0) === outline.length,
-    { events: gen1.events.map((e) => e.event).join(','), pageCount: done1?.data?.pageCount });
+  // T02293 改判：原来钉 pageCount === outline.length（12），把「一条大纲 = 一页」这一实现形态
+  // 当成了口径；时间线页按阶段展开后天然会多页（expandTimelinePages），钉死 12 是锁实现不是锁行为。
+  // 改钉行为：done 送达 + 页数不少于大纲条目数（少一页就是真丢内容，仍会红）。
+  ok('A2-01 正常生成链路通（done 送达，且产出不少于大纲条目数——时间线页按阶段展开成多页属正常）',
+    !!done1 && Number(done1.data?.pageCount ?? 0) >= outline.length,
+    { events: gen1.events.map((e) => e.event).join(','), pageCount: done1?.data?.pageCount, 大纲条数: outline.length });
   const dl1 = done1 ? await download(String(done1.data.token), String(done1.data.fileName)) : null;
-  ok('A2-02 正常下载即删（单上「生成后正常下载 → 仍即时删除」不回归）',
+  okB('downloadDeletes', 'A2-02 正常下载即删（单上「生成后正常下载 → 仍即时删除」不回归）',
     dl1?.status === 200 && dl1.buf.subarray(0, 2).toString() === 'PK' && dl1.buf.length > 20_000 && !has(String(done1?.data.token)),
     { status: dl1?.status, bytes: dl1?.buf.length, 残留: has(String(done1?.data.token ?? '')) });
 
   const gen2 = await streamGen('/plans/kickoff-ppt-stream', body, { abortWhen: (e) => e.event === 'done' });
   const done2 = gen2.events.find((e) => e.event === 'done');
   const earlyDrop = String(done2?.data.token ?? '');
-  ok('A2-03 done 已送达后客户端断开 → 令牌文件必须仍在（这是「正常放弃」，归清扫管，不能当场删）',
+  okB('tokenSurvivesDone', 'A2-03 done 已送达后客户端断开 → 令牌文件必须仍在（这是「正常放弃」，归清扫管，不能当场删）',
     !!earlyDrop && has(earlyDrop), { events: gen2.events.map((e) => e.event).join(','), 残留: has(earlyDrop) });
   const dl2 = earlyDrop ? await download(earlyDrop, String(done2?.data.fileName ?? 'x.pptx')) : null;
-  ok('A2-04 「停止后令牌仍有效、可重试下载」未回归（T02105/T02141 的既有验收）',
+  okB('retryDownloadOk', 'A2-04 「停止后令牌仍有效、可重试下载」未回归（T02105/T02141 的既有验收）',
     dl2?.status === 200 && dl2.buf.subarray(0, 2).toString() === 'PK' && !has(earlyDrop),
     { status: dl2?.status, bytes: dl2?.buf.length, 下载后仍在: has(earlyDrop) });
 
   const gen3 = await streamGen('/plans/kickoff-ppt-stream', body, {
-    abortWhen: (e) => e.event === 'stage' && new RegExp(`页 ${outline.length}/${outline.length} 已装配`).test(String(e.data?.msg ?? '')),
+    // 中止点仍要落在「装配尾段」：按事件自带的 N/M 编号取最后一页，不写死页数（同上，锁行为不锁数）
+    abortWhen: (e) => {
+      if (e.event !== 'stage') return false;
+      const m = /页 (\d+)\/(\d+) 已装配/.exec(String(e.data?.msg ?? ''));
+      return !!m && m[1] === m[2];
+    },
   });
   await sleep(1_500);
-  ok('A2-05 中止落在装配尾段（最后一页之后）→ 令牌文件不残留（单上第 3 条验收）',
+  okB('kickoffAbortClean', 'A2-05 中止落在装配尾段（最后一页之后）→ 令牌文件不残留（单上第 3 条验收）',
     gen3.aborted && tokens().length === 0, { aborted: gen3.aborted, 残留: tokens(), 错误事件: gen3.events.find((e) => e.event === 'error')?.data });
   const err3 = String(gen3.events.find((e) => e.event === 'error')?.data?.error ?? '');
   ok('A2-06 中止如实回报而非静默（error 事件带中止语义，前端能区分失败与取消）',
@@ -370,8 +347,10 @@ if (!(await waitUp())) {
   const rep = await streamGen('/report/ai-generate-stream', { period: 'week', format: 'xlsx', projectId: FIVE_PID, toolId });
   const repDone = rep.events.find((e) => e.event === 'done');
   const repTok = String(repDone?.data?.token ?? '');
+  const repErr = String(rep.events.find((e) => e.event === 'error')?.data?.error ?? '');
   ok('A2-07 周报流式生成不受影响（mock SSE 出稿并落盘令牌）', !!repDone && !!repTok && has(repTok),
-    { events: rep.events.map((e) => e.event).join(','), token: repTok });
+    { events: rep.events.map((e) => e.event).join(','), token: repTok, 错误: repErr.slice(0, 400),
+      末段日志: serverLog.slice(-400) });
   if (repTok) {
     const dlR = await download(repTok, String(repDone?.data?.filename ?? 'r.xlsx'));
     ok('A2-08 周报正常下载即删（不回归）', dlR.status === 200 && dlR.buf.length > 1_000 && !has(repTok),
@@ -381,8 +360,11 @@ if (!(await waitUp())) {
     abortWhen: (e) => e.event === 'stage' && /合成文件/.test(String(e.data?.msg ?? '')),
   });
   await sleep(1_500);
-  ok('A2-09 周报中止（落在合成/落盘窗口）→ 无孤儿残留',
-    rep2.aborted && tokens().length === 0, { 残留: tokens(), events: rep2.events.map((e) => e.event).join(',') });
+  okB('reportAbortClean', 'A2-09 周报中止（落在合成/落盘窗口）→ 无孤儿残留',
+    rep2.aborted && tokens().length === 0,
+    { 残留: tokens(), events: rep2.events.map((e) => e.event).join(','),
+      中止前事件: rep2.events.filter((e) => e.event === 'stage').map((e) => String(e.data?.msg ?? '')).slice(-2),
+      错误: String(rep2.events.find((e) => e.event === 'error')?.data?.error ?? '').slice(0, 300) });
 
   // 「生成后不下载」的真实产物：正常跑完、done 送达、用户就是不点下载 → 现场留给 A3 复现重启回收
   const gen4 = await streamGen('/plans/kickoff-ppt-stream', body);
@@ -391,7 +373,7 @@ if (!(await waitUp())) {
     !!abandoned && has(abandoned) && tokens().length === 1, { abandoned, tmp: tokens() });
 
   const health = await call('GET', '/health');
-  ok('A2-11 实例全程健康，无未捕获异常', health.status === 200 && !/unhandledRejection|uncaughtException/.test(serverLog),
+  okB('bootHealthy', 'A2-11 实例全程健康，无未捕获异常', health.status === 200 && !/unhandledRejection|uncaughtException/.test(serverLog),
     (serverLog.match(/unhandledRejection|uncaughtException[^\n]{0,120}/) ?? []).slice(0, 2));
   ok('A2-12 模型调用全程走 mock（非流式措辞 + 流式洞察都命中，零真实配额）',
     mockHits.includes('json') && mockHits.includes('stream') && new Set(mockHits).size === 2, { mockHits });
@@ -403,7 +385,7 @@ if (!(await waitUp())) {
   serverLog = '';
   child = boot();
   const up2 = await waitUp();
-  ok('A3-01 用户放弃的真实导出文件在重启后被回收（单上「等待/重启服务 → tmp/ 为空」用真产物复现）',
+  okB('a3SweptAbandoned', 'A3-01 用户放弃的真实导出文件在重启后被回收（单上「等待/重启服务 → tmp/ 为空」用真产物复现）',
     up2 && stillThere && !has(abandoned), { 重启前有: stillThere, 重启后在: has(abandoned), tmp: ls() });
   ok('A3-02 tmp 目录收口干净（无任何令牌残留）', up2 && tokens().length === 0, ls());
   await killBoot();
@@ -438,14 +420,14 @@ function patch(rel: string, from: string, to: string): { restore: () => void; be
     serverLog = '';
     child = boot();
     const up = await waitUp();
-    ok('N-01 负对照：摘掉 startReportTmpSweeper 接线后，过期令牌不再被清（A1-01 不是绿的摆设）',
+    okB('nWiringControl', 'N-01 负对照：摘掉 startReportTmpSweeper 接线后，过期令牌不再被清（A1-01 不是绿的摆设）',
       up && has(nFile), { 起来了: up, 仍在: has(nFile) });
     await killBoot();
   } finally {
     guard.restore();
     if (has(nFile)) unlinkSync(join(TMP_DIR, nFile));
   }
-  ok('N-02 负对照还原校验：index.ts sha256 与改动前一致', (() => {
+  okB('nRestore1', 'N-02 负对照还原校验：index.ts sha256 与改动前一致', (() => {
     const now = createHash('sha256').update(readFileSync(join(ROOT, 'server/src/index.ts'))).digest('hex');
     return now === guard.before;
   })());
@@ -465,16 +447,56 @@ function patch(rel: string, from: string, to: string): { restore: () => void; be
     });
     const t3 = String(g.events.find((e) => e.event === 'done')?.data.token ?? '');
     const r3 = t3 ? await download(t3, 'x.pptx') : null;
-    ok('N-03 负对照：无条件删令「done 已送达后重试下载」失败（A2-04 的语义边界确有守卫价值）',
+    okB('nDoneSentControl', 'N-03 负对照：无条件删令「done 已送达后重试下载」失败（A2-04 的语义边界确有守卫价值）',
       !!t3 && r3?.status !== 200, { token: t3, status: r3?.status, 文件在: has(t3) });
     await killBoot();
   } finally {
     guard2.restore();
   }
-  ok('N-04 负对照还原校验：plans.ts sha256 与改动前一致', (() => {
+  okB('nRestore2', 'N-04 负对照还原校验：plans.ts sha256 与改动前一致', (() => {
     const now = createHash('sha256').update(readFileSync(join(ROOT, 'server/src/routes/plans.ts'))).digest('hex');
     return now === guard2.before;
   })());
+}
+
+// =====================================================================
+// S 组：机制收口（T02293 改判 —— 断言读上面已实测到的行为证据，不读源码文本）
+// 每条都写清「行为腿是哪几条」：重构改了函数名/文件位置不影响这里，机制断了才红。
+// 唯一保留的字面锚点是 S-11（定时器 unref）：它没有运行期可观测面（监听器本身就让 loop 活着），
+// 属规约第 3 条说的静态红线，按规约必须配同义行为腿（S-06），行为腿红 ⇒ S-11 记红。
+// =====================================================================
+{
+  ok('S-01 回收链路三端都实测到位：可下载（A2-02）、开机回收过期（A1-01）、中止当场回收（A2-05）',
+    BEH.downloadDeletes && BEH.staleSweptAtBoot && BEH.kickoffAbortClean, BEH);
+  ok('S-02 白名单外的东西一律不碰（非令牌文件与 UUID 命名的目录两轮清扫后都在——机制不是 rm -rf tmp）',
+    BEH.plainKept && BEH.dirTolerated, BEH);
+  ok('S-03 过期判定只看 mtime+TTL：7h/8h 令牌被清且计数如实、TTL 内的保留、把 now 拨快后新令牌也算过期',
+    BEH.ttlSweepCount && BEH.freshKept && BEH.clockInjectWorks, BEH);
+  ok('S-04 单文件失败不中断整轮（删不动的目录不阻断同轮回收，实例全程健康）',
+    BEH.dirTolerated && BEH.bootHealthy, BEH);
+  ok('S-05 定时家族确实挂在启动上：两轮真实开机都做了回收并留痕（不是只在测试里手工调了一次）',
+    BEH.sweepLoggedBoot1 && BEH.a3SweptAbandoned, BEH);
+  ok('S-06 开机即刻先清一轮，不等 TTL 间隔（waitUp 返回时过期令牌已不在）',
+    BEH.staleSweptAtBoot && BEH.sweepLoggedBoot1, BEH);
+  ok('S-07 两条导出链路一个口径：启动会中止与周报中止都不留孤儿（原来钉两处源码，现在钉两条真实链路）',
+    BEH.kickoffAbortClean && BEH.reportAbortClean, BEH);
+  ok('S-08 done 已送达后不得删（红线：停止后令牌仍有效、可重试下载，A2-03/A2-04 同时成立）',
+    BEH.tokenSurvivesDone && BEH.retryDownloadOk, BEH);
+  ok('S-09 close 早于 promise 落地的补删窗口有行为证据（装配尾段中止后 tmp 归零，孤儿没人管就会留一个）',
+    BEH.kickoffAbortClean, BEH);
+  ok('S-10 清扫可观测：日志写明回收数量（孤儿增长这事得能被看见）', BEH.sweepLoggedBoot1, BEH);
+  {
+    const RS = readFileSync(join(ROOT, 'server', 'src', 'services', 'ReportService.ts'), 'utf8');
+    const unrefAnchored = /unref\?\.\(\)/.test(RS) || /unref\(\)/.test(RS);
+    ok('S-11 静态红线（规约第 3 条：无运行期可观测面才允许钉源码，且必须服从行为腿 S-06）：清扫定时器 unref，不拖住进程退出',
+      BEH.staleSweptAtBoot && unrefAnchored, { 行为腿S06: BEH.staleSweptAtBoot, 源码锚点: unrefAnchored });
+  }
+  ok('S-12 有牙证明：两条反证都真的把行为打断过（N-01 摘接线后过期令牌活下来、N-03 无条件删后重试下载失败），'
+    + '且两处源码逐字节还原——上面 S-01~S-11 不是恒绿摆设',
+    BEH.nWiringControl && BEH.nRestore1 && BEH.nDoneSentControl && BEH.nRestore2, {
+      nWiringControl: BEH.nWiringControl, nRestore1: BEH.nRestore1,
+      nDoneSentControl: BEH.nDoneSentControl, nRestore2: BEH.nRestore2,
+    });
 }
 
 // =====================================================================
