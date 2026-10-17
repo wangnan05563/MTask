@@ -22,7 +22,7 @@
  *   node node_modules/tsx/dist/cli.mjs scripts/verify-t02096-kickoff-outline.mts
  * 环境变量：`T02096_PORT`（默认随机 39700+rand300）。
  * 隔离纪律（skill 红线 8）：库副本/端口/临时目录全临时，跑完 kill + 回收。
- * 结果落 .workbuddy/t02096-gate-results.txt（GBK 控制台乱码，以文件为权威）。
+ * 结果落 .workbuddy/t02096-gate-results-<运行标识>.txt（GBK 控制台乱码，以文件为权威）。
  */
 import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -30,6 +30,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02096_PORT ?? 39_700 + Math.floor(Math.random() * 300));
@@ -349,7 +350,7 @@ try { spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignor
 mock.close();
 const summary = `T02096 大纲生成与校验门：PASS=${pass} FAIL=${fail}\n` + lines.join('\n') + '\n';
 mkdirSync(join(ROOT, '.workbuddy'), { recursive: true });
-writeFileSync(join(ROOT, '.workbuddy', 't02096-gate-results.txt'), summary, 'utf8');
+writeGateResults(join(ROOT, '.workbuddy'), 't02096-gate-results.txt', summary, { port: PORT, dataDir: DATA_DIR });
 for (let i = 0; i < 5; i++) {
   try { rmSync(DATA_DIR, { recursive: true, force: true }); break; } catch { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500); }
 }

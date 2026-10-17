@@ -13,7 +13,7 @@
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02104-kickoff-naming.mts
  * 环境变量：`T02104_PORT`（默认随机 39800+rand300）。
  * 隔离纪律（skill 红线 8）：库副本/端口/临时目录全临时；本门不调模型（零配额）。
- * 结果落 .workbuddy/t02104-gate-results.txt。
+ * 结果落 .workbuddy/t02104-gate-results-<运行标识>.txt（汇总行后紧跟归属行，口径见 scripts/lib/gate-results.mts）。
  */
 import { mkdtempSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -21,13 +21,15 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02104_PORT ?? 39_800 + Math.floor(Math.random() * 300));
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02104-naming-'));
 const BASE = `http://127.0.0.1:${PORT}/api`;
 const TMP_DIR = join(DATA_DIR, 'tmp');
-const OUT = join(ROOT, '.workbuddy', 't02104-gate-results.txt');
+const OUT_DIR = join(ROOT, '.workbuddy');
+const OUT_BASE = 't02104-gate-results.txt';
 
 let pass = 0;
 let fail = 0;
@@ -236,5 +238,5 @@ for (let i = 0; i < 25; i++) {
   }
 }
 lines.unshift(`T02104 命名与下载门：PASS=${pass} FAIL=${fail}`);
-writeFileSync(OUT, lines.join('\n'), 'utf8');
+writeGateResults(OUT_DIR, OUT_BASE, lines.join('\n'), { port: PORT, dataDir: DATA_DIR });
 process.exit(fail === 0 ? 0 : 1);

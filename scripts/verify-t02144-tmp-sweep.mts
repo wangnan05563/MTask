@@ -14,7 +14,7 @@
  * 环境变量：T02144_PORT（默认随机 39600+rand300）、T02144_SANDBOX（临时 DATA_DIR 根，默认仓库上两级 tmp/）。
  * 隔离纪律（skill 红线 8）：DATA_DIR/TMP 一律落 D:（C: 盘实测 0 可用会触发 SQLITE_FULL）；
  *   生产库只读副本、端口全临时、模型走进程内 mock（零真实配额）、收尾删目录（副本含明文密钥配置）。
- * 结果落 .workbuddy/t02144-gate-results.txt。
+ * 结果落 .workbuddy/t02144-gate-results-<运行标识>.txt。
  */
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
@@ -26,6 +26,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02144_PORT ?? 39_600 + Math.floor(Math.random() * 300));
@@ -484,6 +485,6 @@ mock.close();
 try { rmSync(DATA_DIR, { recursive: true, force: true }); } catch { /* Windows 句柄释放延迟 */ }
 
 const summary = `T02144 导出令牌临时文件回收门：PASS ${pass} / FAIL ${fail}\n` + lines.join('\n');
-writeFileSync(join(OUT_DIR, 't02144-gate-results.txt'), summary, 'utf8');
+writeGateResults(OUT_DIR, 't02144-gate-results.txt', summary, { port: PORT, dataDir: DATA_DIR });
 console.log(`PASS=${pass} FAIL=${fail}\nDATA_DIR=${DATA_DIR}`);
 process.exit(fail === 0 ? 0 : 1);

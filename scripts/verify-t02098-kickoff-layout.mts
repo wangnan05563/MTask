@@ -9,11 +9,12 @@
  *     版式族三套框互不越界 · 文本宽度预留（R3）· 时间线几何（FR-4.5 交 T02100 绘制）。
  *
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02098-kickoff-layout.mts
- * 断言输出落 .workbuddy/t02098-gate-results.txt（GBK 控制台乱码，以文件为权威）。
+ * 断言输出落 .workbuddy/t02098-gate-results-<运行标识>.txt（GBK 控制台乱码，以文件为权威）。
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -195,6 +196,6 @@ ok('U-40 split 越界值被钳制（0.98 这种配比会把右栏压成 0 宽）
 
 // ---------- 输出 ----------
 mkdirSync(OUT_DIR, { recursive: true });
-writeFileSync(join(OUT_DIR, 't02098-gate-results.txt'), `T02098 版式断言层门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
+writeGateResults(OUT_DIR, 't02098-gate-results.txt', `T02098 版式断言层门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

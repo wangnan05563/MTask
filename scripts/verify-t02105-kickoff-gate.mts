@@ -12,21 +12,23 @@
  * 环境变量：`T02105_PORT`（默认随机 39900+rand200）。
  * 隔离纪律（skill 红线 8）：库副本/端口/临时目录全临时；设置项只写进副本库，不碰生产 app_settings；
  *   mock 不消耗真实配额。
- * 结果落 .workbuddy/t02105-gate-results.txt。
+ * 结果落 .workbuddy/t02105-gate-results-<运行标识>.txt（汇总行后紧跟归属行，口径见 scripts/lib/gate-results.mts）。
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02105_PORT ?? 39_900 + Math.floor(Math.random() * 200));
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02105-gate-'));
 const BASE = `http://127.0.0.1:${PORT}/api`;
 const FIVE_PID = '95f31a46-92f6-4046-8cb6-ee3c4e228a44'; // mtask五期（资料齐备，能真装配）
-const OUT = join(ROOT, '.workbuddy', 't02105-gate-results.txt');
+const OUT_DIR = join(ROOT, '.workbuddy');
+const OUT_BASE = 't02105-gate-results.txt';
 const TMP_DIR = join(DATA_DIR, 'tmp');
 
 let pass = 0;
@@ -275,5 +277,5 @@ for (let i = 0; i < 25; i++) {
 }
 mock.close();
 lines.unshift(`T02105 并发闸门：PASS=${pass} FAIL=${fail}`);
-writeFileSync(OUT, lines.join('\n'), 'utf8');
+writeGateResults(OUT_DIR, OUT_BASE, lines.join('\n'), { port: PORT, dataDir: DATA_DIR });
 process.exit(fail === 0 ? 0 : 1);

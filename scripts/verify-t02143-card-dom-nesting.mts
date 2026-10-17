@@ -24,11 +24,12 @@
  * 证据落在 .workbuddy/t02143-{before,after}-report.json / -console.txt。
  *
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02143-card-dom-nesting.mts
- * 结果落 .workbuddy/t02143-gate-results.txt。
+ * 结果落 .workbuddy/t02143-gate-results-<运行标识>.txt。
  */
 import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WEB_SRC = join(ROOT, 'web', 'src');
@@ -222,6 +223,6 @@ ok('B-08 扫描器自证：button 内的 `<PinToggle/>` 必须命中（B-07 不�
     IN_BUTTON_COMPONENTS).componentHits === 0);
 
 const summary = `T02143 卡片 DOM 嵌套门：PASS ${pass} / FAIL ${fail}\n` + lines.join('\n');
-writeFileSync(join(ROOT, '.workbuddy', 't02143-gate-results.txt'), summary, 'utf8');
+writeGateResults(join(ROOT, '.workbuddy'), 't02143-gate-results.txt', summary);
 console.log(summary);
 process.exit(fail === 0 ? 0 : 1);

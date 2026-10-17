@@ -20,7 +20,7 @@
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02113-kickoff-regression.mts
  * 环境变量：`T02113_PORT`（默认随机 39700+rand300）。
  * 隔离纪律（skill 红线 8）：生产库只读副本落临时目录，设置项只写进副本，端口临时，收尾删目录。
- * 结果落 .workbuddy/t02113-gate-results.txt。
+ * 结果落 .workbuddy/t02113-gate-results-<运行标识>.txt。
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -28,6 +28,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02113_PORT ?? 39_700 + Math.floor(Math.random() * 300));
@@ -267,6 +268,6 @@ try { rmSync(DATA_DIR, { recursive: true, force: true }); } catch { /* Windows �
 
 const summary = `T02113 回归门：PASS ${pass} / FAIL ${fail}\n` + lines.join('\n');
 if (!existsSync(OUT_DIR)) mkdirSync(OUT_DIR, { recursive: true });
-writeFileSync(join(OUT_DIR, 't02113-gate-results.txt'), summary, 'utf8');
+writeGateResults(OUT_DIR, 't02113-gate-results.txt', summary, { port: PORT, dataDir: DATA_DIR });
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

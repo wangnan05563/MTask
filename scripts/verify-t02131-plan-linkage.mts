@@ -32,13 +32,14 @@
  *     R-12 收口判据：生产库副本四期未归档行中无 K/M-K 孤儿批次残留。
  *
  * 隔离纪律（skill 红线 8）：库、端口、临时文件全部临时的，不碰生产数据目录，跑完 kill + 回收。
- * 断言输出落 .workbuddy/t02131-gate-results.txt（中文 stdout 在本机 GBK 控制台会乱码，以文件为准）。
+ * 断言输出落 .workbuddy/t02131-gate-results-<运行标识>.txt（中文 stdout 在本机 GBK 控制台会乱码，以文件为准）。
  */
 import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02131_PORT ?? 39_500 + Math.floor(Math.random() * 400));
@@ -394,8 +395,8 @@ try {
 const summary = `T02131 计划回写关联通道（矩阵/待办/req_ids）：PASS=${pass} FAIL=${fail}\n`
   + results.map((r) => `${r.ok ? 'PASS' : 'FAIL'} ${r.name}${r.extra ? ` :: ${r.extra}` : ''}`).join('\n') + '\n';
 mkdirSync(join(ROOT, '.workbuddy'), { recursive: true });
-writeFileSync(join(ROOT, '.workbuddy', 't02131-gate-results.txt'), summary, 'utf8');
-writeFileSync(join(ROOT, '.workbuddy', 't02131-gate-results.json'), JSON.stringify({ pass, fail, results }, null, 2), 'utf8');
+writeGateResults(join(ROOT, '.workbuddy'), 't02131-gate-results.txt', summary, { port: PORT, dataDir: DATA_DIR });
+writeGateResults(join(ROOT, '.workbuddy'), 't02131-gate-results.json', JSON.stringify({ pass, fail, results }, null, 2), { port: PORT, dataDir: DATA_DIR });
 console.log(`\n${summary}`);
 
 for (let i = 0; i < 5; i++) {

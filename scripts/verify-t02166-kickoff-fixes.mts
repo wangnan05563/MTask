@@ -13,11 +13,12 @@
  *        文本+图表同页时图表等比裁（`fitStack`）而不是被「空间不足」整块省略。
  *
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02166-kickoff-fixes.mts
- * 结果落 .workbuddy/t02166-gate-results.txt。
+ * 结果落 .workbuddy/t02166-gate-results-<运行标识>.txt。
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -460,6 +461,6 @@ ok('E-02 越界降级页数为 0（此前若有 clip 越页会触发 pageViolati
   built.degradedPages.length === 0,
   { degraded: built.degradedPages, warnings: built.warnings });
 
-writeFileSync(join(OUT_DIR, 't02166-gate-results.txt'), `T02166 修复门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
+writeGateResults(OUT_DIR, 't02166-gate-results.txt', `T02166 修复门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`T02166: PASS=${pass} FAIL=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

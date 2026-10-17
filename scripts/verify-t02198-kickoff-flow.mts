@@ -16,12 +16,13 @@
  *
  * 隔离纪律：不连生产库、不起服务、不调 AI（Bundle 脚本内构造）。
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02198-kickoff-flow.mts
- * 结果落 .workbuddy/t02198-gate-results.txt 与 t02198-flow.pptx。
+ * 结果落 .workbuddy/t02198-gate-results-<运行标识>.txt 与 t02198-flow.pptx。
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -262,6 +263,6 @@ ok('P-05 flow 页几何不越页：节点+箭头底边都在正文框内（EMU �
   spsOf(flowXml, 'roundRect').map((sp) => /<a:off x="(-?\d+)" y="(-?\d+)"\/><a:ext cx="(\d+)" cy="(\d+)"/.exec(sp)?.slice(1).map((v) => +(Number(v) / 914400).toFixed(2))));
 
 writeFileSync(join(OUT_DIR, 't02198-flow.pptx'), built.buffer);
-writeFileSync(join(OUT_DIR, 't02198-gate-results.txt'), `T02198 flow/chip 图示版式门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
+writeGateResults(OUT_DIR, 't02198-gate-results.txt', `T02198 flow/chip 图示版式门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail ? 1 : 0);

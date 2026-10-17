@@ -15,12 +15,13 @@
  *      三周期提示词语句与周期严格对应（月报无「周」味、日报无「周/月」味）。
  *
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02157-report-period.mts
- * 结果落 .workbuddy/t02157-gate-results.txt。
+ * 结果落 .workbuddy/t02157-gate-results-<运行标识>.txt。
  */
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -128,6 +129,6 @@ if (!existsSync(prodDb)) {
 }
 
 mkdirSync(OUT_DIR, { recursive: true });
-writeFileSync(join(OUT_DIR, 't02157-gate-results.txt'), `T02157 报表周期口吻/窗口门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
+writeGateResults(OUT_DIR, 't02157-gate-results.txt', `T02157 报表周期口吻/窗口门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

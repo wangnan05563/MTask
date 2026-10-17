@@ -9,11 +9,12 @@
  * 解析 id/项目/tab → 写齐会话键 → 派发 mtaskFocusTask 事件（已挂载页直吃意图）→ 导航 + 自动弹抽屉。
  *
  * 断言组：S 组源码守卫（面板改走 focusTaskByNo 单 seam、不再手写过次键、'notice' 触发抽屉）。
- * 结果落 .workbuddy/t02162-gate-results.txt。
+ * 结果落 .workbuddy/t02162-gate-results-<运行标识>.txt。
  */
 import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -47,6 +48,6 @@ ok('S-05 通知中心与命令面板共用 focusTaskByNo（两入口统一，不
   && /globalThis\.dispatchEvent\(new CustomEvent\('mtaskFocusTask'/.test(FT));
 
 mkdirSync(OUT_DIR, { recursive: true });
-writeFileSync(join(OUT_DIR, 't02162-gate-results.txt'), `T02162 命令面板点击定位对齐通知中心门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
+writeGateResults(OUT_DIR, 't02162-gate-results.txt', `T02162 命令面板点击定位对齐通知中心门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

@@ -10,11 +10,12 @@
  *  F 组 事实锚点（引用文件/端点/行号与代码一致；projects.color 不存在且不得再被声称；
  *        git 编码红线在位；卡位冲突提示在位——防口径回退）
  *  G 组 需求覆盖（对照 T02169 任务步骤逐条）
- * 结果落 .workbuddy/t02169-gate-results.txt。
+ * 结果落 .workbuddy/t02169-gate-results-<运行标识>.txt。
  */
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -34,7 +35,7 @@ const exists = (p: string) => existsSync(join(ROOT, p));
 ok('D-00 PRD 文件存在（docs/PRD-代码评审会议讲稿生成.md）', existsSync(PRD_PATH));
 if (!existsSync(PRD_PATH)) {
   mkdirSync(OUT_DIR, { recursive: true });
-  writeFileSync(join(OUT_DIR, 't02169-gate-results.txt'), `T02169 PRD 门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
+  writeGateResults(OUT_DIR, 't02169-gate-results.txt', `T02169 PRD 门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
   console.log(`PASS=${pass} FAIL=${fail}`);
   process.exit(1);
 }
@@ -134,6 +135,6 @@ ok('G-06 开放决策点 E-1~E-4 待签字',
   && PRD.includes('批准前不得进入实施'));
 
 mkdirSync(OUT_DIR, { recursive: true });
-writeFileSync(join(OUT_DIR, 't02169-gate-results.txt'), `T02169 PRD 交付质量门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
+writeGateResults(OUT_DIR, 't02169-gate-results.txt', `T02169 PRD 交付质量门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

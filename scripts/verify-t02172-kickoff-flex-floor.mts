@@ -12,12 +12,13 @@
  *
  * 隔离纪律：不连生产库、不起服务、不调 AI（Bundle 脚本内构造）。
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02172-kickoff-flex-floor.mts
- * 结果落 .workbuddy/t02172-gate-results.txt 与 t02172-flex.pptx。
+ * 结果落 .workbuddy/t02172-gate-results-<运行标识>.txt 与 t02172-flex.pptx。
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -216,6 +217,6 @@ ok('P-03 全稿无越界降级页、无版式违规告警（下限抬高没把�
   { degraded: built.degradedPages, warnings: built.warnings });
 
 writeFileSync(join(OUT_DIR, 't02172-flex.pptx'), built.buffer);
-writeFileSync(join(OUT_DIR, 't02172-gate-results.txt'), `T02172 柔性块可读高与 dataKeys 硬校验门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
+writeGateResults(OUT_DIR, 't02172-gate-results.txt', `T02172 柔性块可读高与 dataKeys 硬校验门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail ? 1 : 0);

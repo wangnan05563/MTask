@@ -14,11 +14,12 @@
  *     新增失配会在 CI 里直接 FAIL，而不是再等一轮没人发现。
  *
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02205-guard-selfcheck.mts
- * 产物：.workbuddy/t02205-gate-results.txt
+ * 产物：.workbuddy/t02205-gate-results-<运行标识>.txt
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const GATE_DIR = join(ROOT, 'scripts');
@@ -368,8 +369,7 @@ ok('W-08 反向探针点名：命中 0 处的锚点必然被恒假清单收录�
   probeTargets.length >= 40 && new Set(probeTargets.map((a) => a.gate)).size >= 20 && mutatedMiss.length === 0,
   { 漏点名: mutatedMiss, 探针数: probeTargets.length, 覆盖门数: new Set(probeTargets.map((a) => a.gate)).size });
 
-writeFileSync(join(OUT_DIR, 't02205-gate-results.txt'),
-  [`T02205 源码守卫自证门：PASS=${pass} FAIL=${fail}`, ...lines].join('\n'), 'utf8');
+writeGateResults(OUT_DIR, 't02205-gate-results.txt', [`T02205 源码守卫自证门：PASS=${pass} FAIL=${fail}`, ...lines].join('\n'));
 console.log(`T02205 源码守卫自证门：PASS=${pass} FAIL=${fail}`);
 for (const l of lines) console.log(l);
 process.exit(fail > 0 ? 1 : 0);

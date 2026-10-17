@@ -9,11 +9,12 @@
  *  D 组 文档结构（存在、必含章节、附录、无占位符、简体中文规模）
  *  F 组 事实锚点（引用的表/文件/端点在代码库真实存在；关键口径与代码一致——防虚构 API）
  *  G 组 需求覆盖（对照 T02170 任务步骤逐条：交互流程/生成逻辑/批量机制/非功能/验收审批）
- * 结果落 .workbuddy/t02170-gate-results.txt。
+ * 结果落 .workbuddy/t02170-gate-results-<运行标识>.txt。
  */
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -33,7 +34,7 @@ const exists = (p: string) => existsSync(join(ROOT, p));
 ok('D-00 PRD 文件存在（docs/PRD-阶段性项目总结汇报PPT.md）', existsSync(PRD_PATH));
 if (!existsSync(PRD_PATH)) {
   mkdirSync(OUT_DIR, { recursive: true });
-  writeFileSync(join(OUT_DIR, 't02170-gate-results.txt'), `T02170 PRD 门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
+  writeGateResults(OUT_DIR, 't02170-gate-results.txt', `T02170 PRD 门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
   console.log(`PASS=${pass} FAIL=${fail}`);
   process.exit(1);
 }
@@ -144,6 +145,6 @@ ok('G-06 竞品样本 3~5 个代表项目且逐个有「对本 PRD 的落点」'
   && /对本 PRD 的落点/.test(PRD) && /PptxGenJS/.test(PRD) && /Presenton/.test(PRD) && /PPTAgent/.test(PRD));
 
 mkdirSync(OUT_DIR, { recursive: true });
-writeFileSync(join(OUT_DIR, 't02170-gate-results.txt'), `T02170 PRD 交付质量门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
+writeGateResults(OUT_DIR, 't02170-gate-results.txt', `T02170 PRD 交付质量门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

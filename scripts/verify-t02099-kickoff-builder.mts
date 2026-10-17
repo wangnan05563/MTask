@@ -10,11 +10,12 @@
  *
  * 隔离纪律：不连生产库、不起服务、不调 AI（Bundle 由脚本内构造，字段形状对齐 KickoffBundle）。
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02099-kickoff-builder.mts
- * 结果落 .workbuddy/t02099-gate-results.txt 与 t02099-sample.pptx。
+ * 结果落 .workbuddy/t02099-gate-results-<运行标识>.txt 与 t02099-sample.pptx。
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -227,6 +228,6 @@ ok('U-29 降级页只留标题与正文文本（数据块被舍弃而非溢出�
 writeFileSync(join(OUT_DIR, 't02099-degraded.pptx'), degraded.buffer);
 
 // ---------- 输出 ----------
-writeFileSync(join(OUT_DIR, 't02099-gate-results.txt'), `T02099 装配器门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
+writeGateResults(OUT_DIR, 't02099-gate-results.txt', `T02099 装配器门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

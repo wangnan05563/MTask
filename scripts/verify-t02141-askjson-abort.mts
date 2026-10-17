@@ -15,7 +15,7 @@
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02141-askjson-abort.mts
  * 环境变量：`T02141_PORT`（默认随机 39500+rand300）。
  * 隔离纪律（skill 红线 8）：生产库只读副本落临时目录；端口/数据全临时；模型走进程内 mock（零真实配额）；收尾删目录。
- * 结果落 .workbuddy/t02141-gate-results.txt。
+ * 结果落 .workbuddy/t02141-gate-results-<运行标识>.txt。
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -23,6 +23,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02141_PORT ?? 39_500 + Math.floor(Math.random() * 300));
@@ -319,6 +320,6 @@ mock.close();
 try { rmSync(DATA_DIR, { recursive: true, force: true }); } catch { /* Windows 句柄释放延迟 */ }
 
 const summary = `T02141 askJson 中止门：PASS ${pass} / FAIL ${fail}\n` + lines.join('\n');
-writeFileSync(join(OUT_DIR, 't02141-gate-results.txt'), summary, 'utf8');
+writeGateResults(OUT_DIR, 't02141-gate-results.txt', summary, { port: PORT, dataDir: DATA_DIR });
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

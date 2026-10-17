@@ -11,12 +11,13 @@
  *
  * 隔离纪律：不连生产库、不起服务、不调 AI（Bundle 脚本内构造）。
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02171-kickoff-tl-paging.mts
- * 结果落 .workbuddy/t02171-gate-results.txt 与 t02171-paging.pptx。
+ * 结果落 .workbuddy/t02171-gate-results-<运行标识>.txt 与 t02171-paging.pptx。
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -207,7 +208,7 @@ ok('U-05 时间线各页形状底边都不越画布（分页后依旧不越页�
 ok('U-06 分页页不触发整页降级（越界判据仍按页计，续页不被误判坏页）',
   built.degradedPages.length === 0, built.degradedPages);
 
-writeFileSync(join(OUT_DIR, 't02171-gate-results.txt'), `T02171 时间线分页门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
+writeGateResults(OUT_DIR, 't02171-gate-results.txt', `T02171 时间线分页门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);
 console.log(lines.filter((l) => l.startsWith('[FAIL]')).join('\n'));
 process.exit(fail ? 1 : 0);

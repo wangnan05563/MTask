@@ -13,12 +13,13 @@
  *        确定性触发 not_installed → 400 + errorType + reason，不依赖机器 Tailscale 状态）。
  *
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02149-tailscale-start.mts
- * 结果落 .workbuddy/t02149-gate-results.txt。
+ * 结果落 .workbuddy/t02149-gate-results-<运行标识>.txt。
  */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -108,6 +109,6 @@ try {
 }
 
 mkdirSync(OUT_DIR, { recursive: true });
-writeFileSync(join(OUT_DIR, 't02149-gate-results.txt'), `T02149 Tailscale 启动 500 修复门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
+writeGateResults(OUT_DIR, 't02149-gate-results.txt', `T02149 Tailscale 启动 500 修复门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

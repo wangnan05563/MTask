@@ -36,7 +36,8 @@
  *   要求交互组（U/R/F/C/Q/X/G 前缀）**必须出现 FAIL**；原文按字节备份，finally 与 exit 钩子双重回写，
  *   残留备份在下次启动时先回写（自愈）；收尾会按还原后的源码再重建一次 web/dist，不把缺陷产物留给下一次跑。
  *
- * 结果同时打 stdout 与写 `.workbuddy/t02192-pointer-gate-results.txt`（首行 `PASS=… FAIL=…`）。
+ * 结果同时打 stdout 与写 `.workbuddy/t02192-pointer-gate-results-<运行标识>.txt`
+ *   （汇总行 `PASS=… FAIL=…` 在最前，紧随其后是一行归属行；口径见 scripts/lib/gate-results.mts）。
  */
 import { spawn, spawnSync } from 'node:child_process';
 import {
@@ -46,13 +47,14 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WEB = join(ROOT, 'web');
 const DIST = join(WEB, 'dist');
 const PANEL_SRC = join(WEB, 'src', 'pages', 'PrdGenPanel.tsx');
 const OUT_DIR = join(ROOT, '.workbuddy');
-const RESULTS = join(OUT_DIR, 't02192-pointer-gate-results.txt');
+const OUT_BASE = 't02192-pointer-gate-results.txt';
 const BACKUP = join(OUT_DIR, 't02192-pointer-source-backup.tsx');
 
 const NEGATIVE = process.argv.includes('--negative-control');
@@ -765,6 +767,6 @@ if (NEGATIVE) {
   fail = caught ? 0 : 1;
 }
 
-writeFileSync(RESULTS, `T02192 指针回归门${NEGATIVE ? '（负对照）' : ''}：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
-console.log(`\nPASS=${pass} FAIL=${fail} → ${RESULTS}`);
+const resultsFile = writeGateResults(OUT_DIR, OUT_BASE, `T02192 指针回归门${NEGATIVE ? '（负对照）' : ''}：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, { port: PORT });
+console.log(`\nPASS=${pass} FAIL=${fail} → ${resultsFile}`);
 process.exit(fail === 0 ? 0 : 1);

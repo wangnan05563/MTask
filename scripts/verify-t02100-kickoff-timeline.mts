@@ -8,12 +8,13 @@
  *
  * 隔离纪律：不连生产库、不起服务、不调 AI（Bundle 脚本内构造）。
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02100-kickoff-timeline.mts
- * 结果落 .workbuddy/t02100-gate-results.txt 与 t02100-timeline.pptx。
+ * 结果落 .workbuddy/t02100-gate-results-<运行标识>.txt 与 t02100-timeline.pptx。
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -284,6 +285,6 @@ ok('U-35 时间线页越界时同样收敛到「标题+正文」：降级页不�
 })());
 
 mkdirSync(OUT_DIR, { recursive: true });
-writeFileSync(join(OUT_DIR, 't02100-gate-results.txt'), `T02100 时间线形状门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
+writeGateResults(OUT_DIR, 't02100-gate-results.txt', `T02100 时间线形状门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail ? 1 : 0);

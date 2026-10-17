@@ -8,11 +8,12 @@
  *  F 组 事实锚点（MTask 现状锚点文件存在；board/三视图/reportCards 行号；「无暗色/无 Webhook」
  *       否定性结论与代码 grep 一致；五竞品与关键 2026 事实在位；附录链接数）
  *  G 组 任务覆盖（调研范围两模块、四维度、非功能四块、分期、优先级依据、术语双语、验证缺口声明）
- * 结果落 .workbuddy/t02272-gate-results.txt。
+ * 结果落 .workbuddy/t02272-gate-results-<运行标识>.txt。
  */
 import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -49,7 +50,7 @@ function grepFileCount(dirRel: string, pattern: RegExp): number {
 ok('D-00 PRD 文件存在（docs/PRD-竞品调研-项目管理与AI工作台优化.md）', existsSync(PRD_PATH));
 if (!existsSync(PRD_PATH)) {
   mkdirSync(OUT_DIR, { recursive: true });
-  writeFileSync(join(OUT_DIR, 't02272-gate-results.txt'), `T02272 PRD 门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
+  writeGateResults(OUT_DIR, 't02272-gate-results.txt', `T02272 PRD 门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
   console.log(`PASS=${pass} FAIL=${fail}`);
   process.exit(1);
 }
@@ -177,6 +178,6 @@ ok('F-C15 裁决记录：Q-1~Q-3 已签字（§1.1）+ 新增开放问题 Q-4~Q-
   && /v1\.1（按建议改写方案 \+ 评审修订/.test(PRD));
 
 mkdirSync(OUT_DIR, { recursive: true });
-writeFileSync(join(OUT_DIR, 't02272-gate-results.txt'), `T02272 PRD 交付质量门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, 'utf8');
+writeGateResults(OUT_DIR, 't02272-gate-results.txt', `T02272 PRD 交付质量门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

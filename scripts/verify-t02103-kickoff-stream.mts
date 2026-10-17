@@ -14,7 +14,7 @@
  *   node node_modules/tsx/dist/cli.mjs scripts/verify-t02103-kickoff-stream.mts
  * 环境变量：`T02103_PORT`（默认随机 39700+rand300）。
  * 隔离纪律（skill 红线 8）：库副本/端口/临时目录全临时，不写生产库，mock 不消耗真实配额。
- * 结果落 .workbuddy/t02103-gate-results.txt 与 t02103-stream.pptx。
+ * 结果落 .workbuddy/t02103-gate-results-<运行标识>.txt 与 t02103-stream.pptx。
  */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02103_PORT ?? 39_700 + Math.floor(Math.random() * 300));
@@ -626,6 +627,6 @@ rmSync(TMP_DIR, { recursive: true, force: true });
 lines.push('');
 lines.push(`PASS=${pass} FAIL=${fail}`);
 mkdirSync(OUT_DIR, { recursive: true });
-writeFileSync(join(OUT_DIR, 't02103-gate-results.txt'), lines.join('\n'), 'utf8');
+writeGateResults(OUT_DIR, 't02103-gate-results.txt', lines.join('\n'), { port: PORT, dataDir: DATA_DIR });
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

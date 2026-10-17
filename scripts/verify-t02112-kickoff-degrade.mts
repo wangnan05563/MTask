@@ -21,7 +21,7 @@
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02112-kickoff-degrade.mts
  * 环境变量：`T02112_PORT`（默认随机 39600+rand300）。
  * 隔离纪律（skill 红线 8）：生产库**只读副本**落临时目录，端口/数据全临时，mock 不消耗真实配额，收尾删临时目录。
- * 结果落 .workbuddy/t02112-gate-results.txt 与 t02112-degraded.pptx（人工抽查用）。
+ * 结果落 .workbuddy/t02112-gate-results-<运行标识>.txt 与 t02112-degraded.pptx（人工抽查用）。
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -30,6 +30,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02112_PORT ?? 39_600 + Math.floor(Math.random() * 300));
@@ -457,6 +458,6 @@ try { rmSync(DATA_DIR, { recursive: true, force: true }); } catch { /* Windows �
 
 const sampleNames = [emptyProject?.name, noCaseProject?.name, noMilestoneProject?.name].filter(Boolean).join('、');
 const summary = `T02112 降级与异常门：PASS ${pass} / FAIL ${fail}（样本：空项目 ${sampleNames}）\n` + lines.join('\n');
-writeFileSync(join(OUT_DIR, 't02112-gate-results.txt'), summary, 'utf8');
+writeGateResults(OUT_DIR, 't02112-gate-results.txt', summary, { port: PORT, dataDir: DATA_DIR });
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

@@ -20,7 +20,7 @@
  *   node node_modules/tsx/dist/cli.mjs scripts/verify-t02111-kickoff-acceptance.mts
  * 环境变量：`T02111_PORT`（默认随机 39500+rand300）。
  * 隔离纪律（skill 红线 8）：生产库**只读副本**落临时目录，端口/临时目录全临时，mock 不消耗真实配额。
- * 结果落 .workbuddy/t02111-gate-results.txt 与 t02111-acceptance.pptx（人工抽查用）。
+ * 结果落 .workbuddy/t02111-gate-results-<运行标识>.txt 与 t02111-acceptance.pptx（人工抽查用）。
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -29,6 +29,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02111_PORT ?? 39_500 + Math.floor(Math.random() * 300));
@@ -452,6 +453,6 @@ mock.close();
 try { rmSync(DATA_DIR, { recursive: true, force: true }); } catch { /* Windows 句柄释放延迟 */ }
 
 const summary = `T02111 验收门：PASS ${pass} / FAIL ${fail}（样本项目 ${sample.map((p) => p.name).join('、') || '无'}）\n` + lines.join('\n');
-writeFileSync(join(OUT_DIR, 't02111-gate-results.txt'), summary, 'utf8');
+writeGateResults(OUT_DIR, 't02111-gate-results.txt', summary, { port: PORT, dataDir: DATA_DIR });
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

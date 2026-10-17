@@ -19,13 +19,14 @@
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02142-report-ai-gate.mts
  * 环境变量：`T02142_PORT`（默认随机 39400+rand300）。
  * 隔离纪律（skill 红线 8）：生产库只读副本落临时目录；上限调校只写副本；模型走进程内 mock（零真实配额）；收尾删目录。
- * 结果落 .workbuddy/t02142-gate-results.txt。
+ * 结果落 .workbuddy/t02142-gate-results-<运行标识>.txt。
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02142_PORT ?? 39_400 + Math.floor(Math.random() * 300));
@@ -360,6 +361,6 @@ try { rmSync(DATA_DIR, { recursive: true, force: true }); } catch { /* Windows �
 
 const summary = `T02142 AI 周报补挂闸门：PASS ${pass} / FAIL ${fail}\n` + lines.join('\n');
 if (!existsSync(OUT_DIR)) mkdirSync(OUT_DIR, { recursive: true });
-writeFileSync(join(OUT_DIR, 't02142-gate-results.txt'), summary, 'utf8');
+writeGateResults(OUT_DIR, 't02142-gate-results.txt', summary, { port: PORT, dataDir: DATA_DIR });
 console.log(`PASS=${pass} FAIL=${fail}`);
 process.exit(fail === 0 ? 0 : 1);
