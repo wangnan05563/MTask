@@ -8,8 +8,9 @@
  *   - `kickoff-layout.ts` 引 `exportStyle` 的 BRAND_* 四导出，而那 18 行导出留在工作树未提交
  *     → HEAD 副本 `tsc` 报 4×TS2305（由 T02310/d678d79 补提收口）。
  * 门侧之所以抓不到：`scripts/verify-*` 一律 tsx 直载 `src/`，而 **tsx 是 transpile-only 不做类型检查**。
- * 判发布真正的硬前置是 `scripts/打包.mjs` 第 [3] 步 `tsc --noEmit -p server/tsconfig.json`——
- * 本门把它前置成一条可随时复跑的判据，且不看工作树一眼。
+ * 判发布真正的硬前置是 `scripts/打包.mjs` 的 server typecheck 步（T02321 起为第 [4] 步）——
+ * 本门把它前置成一条可随时复跑的判据，且不看工作树一眼。T02321 再把本门接进打包链路：
+ * 成为第 [3] 步 **HEAD 自洽性预检**，判红即中止打包（`--skip-head-check` 是显式逃生开关）。
  *
  * 用法（不需要起服务、不读生产数据；只在 D: 上建临时 worktree 副本）：
  *   node node_modules/tsx/dist/cli.mjs scripts/verify-t02295-head-selfconsistency.mts
