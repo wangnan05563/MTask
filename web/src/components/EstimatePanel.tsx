@@ -612,7 +612,10 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
   // 帕累托/E14 几何只取服务端 summary（rowRatios），零计算；title 由 rowById 反查（仅显示用）。
   // 此处早于 `if (!data) return null`，故用可选链 + 稳定空数组兜底（data 为空时组件会提前返回，memo 结果被丢弃）。
   const rowRatios = data?.summary.rowRatios ?? [];
-  const pareto = useMemo(() => paretoGeometries(rowRatios, milestoneIds), [rowRatios, milestoneIds]);
+  const pareto = useMemo(() => paretoGeometries(
+    rowRatios.map((r) => ({ key: r.key, expected: r.expected, title: rowById.get(r.key)?.title ?? r.key })),
+    milestoneIds,
+  ), [rowRatios, rowById, milestoneIds]);
   const tornado = useMemo(
     () => tornadoGeometries(
       rowRatios.map((r) => ({ key: r.key, title: rowById.get(r.key)?.title ?? r.key, sigma: r.sigma })),

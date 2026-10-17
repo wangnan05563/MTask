@@ -56,6 +56,10 @@ export function phaseBarGeometries(phases: readonly PhaseStat[]): PhaseBarGeom[]
 
 export interface ParetoGeom {
   readonly key: string;
+  /** 行标题（仅 tooltip 显示用，与龙卷风同源 rowById 反查） */
+  readonly title: string;
+  /** 单行 expected（人天），仅供 tooltip 读数，不参与几何 */
+  readonly expected: number;
   /** 单条柱高百分比（expected ÷ 同批最大 expected） */
   readonly ePct: number;
   /** 累计占比百分比（累计 expected ÷ 全批 expected 之和） */
@@ -69,7 +73,7 @@ export interface ParetoGeom {
  * 里程碑行不进图（调用方先按 `milestoneIds` 滤掉）。无有效行返回空（空态不画）。
  */
 export function paretoGeometries(
-  rows: ReadonlyArray<{ key: string; expected: number }>,
+  rows: ReadonlyArray<{ key: string; expected: number; title?: string }>,
   milestoneIds: ReadonlySet<string>,
 ): ParetoGeom[] {
   const valid = rows.filter((r) => !milestoneIds.has(r.key) && r.expected > 0);
@@ -80,7 +84,8 @@ export function paretoGeometries(
   let cum = 0;
   return sorted.map((r) => {
     cum += r.expected;
-    return { key: r.key, ePct: (r.expected / maxE) * 100, cumPct: (cum / total) * 100 };
+    return { key: r.key, title: r.title ?? r.key, expected: r.expected,
+      ePct: (r.expected / maxE) * 100, cumPct: (cum / total) * 100 };
   });
 }
 
@@ -183,7 +188,9 @@ export function ParetoChart({ geoms }: { readonly geoms: readonly ParetoGeom[] }
         const barH = (g.ePct / 100) * H;
         return (
           <rect key={g.key} x={cx} y={BASE - barH} width={barW} height={Math.max(1, barH)} rx={1}
-            fill="var(--accent)" opacity={0.85} />
+            fill="var(--accent)" opacity={0.85}>
+            <title>{`${i + 1}. ${g.title} · E ${num(g.expected)} · 累计 ${Math.round(g.cumPct)}%`}</title>
+          </rect>
         );
       })}
       {/* 累计占比折线（实心点，红线路语义过重，用主文本色） */}
@@ -192,7 +199,10 @@ export function ParetoChart({ geoms }: { readonly geoms: readonly ParetoGeom[] }
         const cx = L + i * slot + slot / 2;
         return <circle key={`c-${g.key}`} cx={cx} cy={BASE - (g.cumPct / 100) * H} r={1.6} fill="var(--text)" />;
       })}
-      {n <= 14 && geoms.map((g, i) => {
+      {/* T02296：密集时不再清空整条 x 轴——n≤14 全标，否则每 5 根标一次且始终标末根；
+          「柱子↔条目」的对应另由每柱 <title> tooltip 兜住，轴刻度只是定位提示。 */}
+      {geoms.map((g, i) => {
+        if (!(n <= 14 || i % 5 === 0 || i === n - 1)) return null;
         const cx = L + i * slot + slot / 2;
         return <text key={`t-${g.key}`} x={cx} y={BASE + 12} textAnchor="middle" fontSize={8} fill="var(--text-muted)">{i + 1}</text>;
       })}
