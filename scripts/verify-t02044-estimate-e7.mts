@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveServerLauncher } from './isolated-server-launcher.mts';
+import { okPair } from './lib/anchor-pair.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02044-e7-'));
@@ -29,7 +30,9 @@ const OUT_DIR = join(DATA_DIR, 'out');
 const E = await import('../server/src/services/estimate-engine.ts');
 const X = await import('../server/src/services/estimateExportXlsx.ts');
 const PDFSVC = await import('../server/src/services/estimateExportPdf.ts');
-const { ESTIMATE_PHASES } = await import('../server/src/services/EstimateService.ts');
+const { ESTIMATE_PHASES, ESTIMATE_PROJECT_NOT_FOUND } = await import('../server/src/services/EstimateService.ts');
+/** T02293 规约判据 1：交付件文案的期望值一律取自 `PDF_TEXTS` 单源——断言里不再抄第二份中文口径 */
+const PT = PDFSVC.PDF_TEXTS;
 
 let pass = 0;
 let fail = 0;
@@ -107,16 +110,21 @@ const flat = (s: string) => s.replace(/\s+/g, '');
 group('G1 内部版结构与必备内容（§6.2 四类内容 + §6.3 首页标注）');
 {
   const md = mdOf();
-  ok('G-01 件名沿用模板标题（不是自造一个「工作量评估报告」）', md.includes(`${X.TEMPLATE_TEXTS.title}（内部版）`) || PDFSVC.estimatePdfTitle(layoutOf()) === `${X.TEMPLATE_TEXTS.title}（内部版）`, PDFSVC.estimatePdfTitle(layoutOf()));
-  const must = ['一、报价结论', '二、报价区间', '三、阶段构成', '四、开发段明细', '五、调节系数', '六、自检与对账', '七、备注/说明', '八、免责声明'];
+  ok('G-01 件名沿用模板标题（不是自造一个「工作量评估报告」）', md.includes(`${X.TEMPLATE_TEXTS.title}（${PT.audienceInternal}）`) || PDFSVC.estimatePdfTitle(layoutOf()) === `${X.TEMPLATE_TEXTS.title}（${PT.audienceInternal}）`, PDFSVC.estimatePdfTitle(layoutOf()));
+  const CNH = ['一', '二', '三', '四', '五', '六', '七', '八'];
+  // 章节清单取 PDF_TEXTS 单源全名（此前抄的是截断形态「四、开发段明细」，改一次文案打一次与功能无关的红）
+  const must = [PT.secQuote, PT.secRange, PT.secPhases, PT.secDev, PT.secCoefs, PT.secSelfCheck, PT.secRemarks, PT.secDisclaimer]
+    .map((t, i) => `${CNH[i]}、${t}`);
   ok('G-02 内部版八个章节齐全且按序出现', must.every((h, i) => { const p = md.indexOf(h); return p >= 0 && (i === 0 || p > md.indexOf(must[i - 1])); }), must.filter((h) => !md.includes(h)));
-  ok('G-03 表格式汇总（Markdown 表格行存在，pdfkit 渲染为 `a | b` 文本行）', /\|[^\n]*直接投入人天[^\n]*\|/.test(md) && /\|[^\n]*实际预估人月[^\n]*\|/.test(md));
+  ok('G-03 表格式汇总（Markdown 表格行存在，pdfkit 渲染为 `a | b` 文本行；行标签取单源）',
+    new RegExp(`\\|[^\\n]*${PT.quoteDirect}[^\\n]*\\|`).test(md) && new RegExp(`\\|[^\\n]*${PT.quoteActual}[^\\n]*\\|`).test(md),
+    { need: [PT.quoteDirect, PT.quoteActual] });
   ok('G-04 §6.2 要求的「置信区间说明」在内部版出现（P50/P84 + σ_total）', md.includes('P50') && md.includes('P84') && md.includes('σ_total'));
   ok('G-05 备注三条逐条出现（§6.1 内部版必带，取自 TEMPLATE_REMARKS 单源）', X.TEMPLATE_REMARKS.every((r) => md.includes(r)));
-  ok('G-06 免责声明落在件尾（PDF 是预览件这件事必须写在件里，不只是 PRD 里）', md.lastIndexOf('免责声明') > md.lastIndexOf('备注/说明') && md.includes('正式交付以 Excel'));
-  ok('G-07 首页待复核标注（§6.3：PDF 首页显著标注）在前 400 字符内', md.indexOf('行为系统推导值，未人工复核') > 0 && md.indexOf('行为系统推导值，未人工复核') < 400, md.slice(0, 260));
+  ok('G-06 免责声明落在件尾（PDF 是预览件这件事必须写在件里，不只是 PRD 里）', md.lastIndexOf(PT.secDisclaimer) > md.lastIndexOf(PT.secRemarks) && md.includes(PT.disclaimerDelivery), { need: PT.disclaimerDelivery });
+  ok('G-07 首页待复核标注（§6.3：PDF 首页显著标注）在前 400 字符内', md.indexOf(PT.unreviewedTail) > 0 && md.indexOf(PT.unreviewedTail) < 400, md.slice(0, 260));
   ok('G-08 项目名/估算日期/估算人进抬头', md.includes('T02044-E7验证') && md.includes('2026-10-12') && md.includes('王南'));
-  ok('G-09 估算人为空时写「（待填写）」而不是留白塌陷成 `| | |`', mdOf({ reviewer: '' }).includes('（待填写）'));
+  ok('G-09 估算人为空时写「（待填写）」而不是留白塌陷成 `| | |`', mdOf({ reviewer: '' }).includes(PT.pendingReviewer), { need: PT.pendingReviewer });
   ok('G-10 阶段标签用模板文案（不是面板标签：内部版标签给客户看会长出客户没见过的词）',
     md.includes(X.TEMPLATE_PHASE_LABELS.design) && !md.includes('| 系统设计 |'));
 }
@@ -129,22 +137,22 @@ group('G2 数字与独立重算一致（§11.1 E6 红线 2：预览件与交付�
     const m = new RegExp(`${label}[^\\d-]*([\\d.]+)`).exec(md);
     return m ? Number(m[1]) : null;
   };
-  ok('G-11 直接投入人天 = Σ(O+4M+P)/6（脚本手算对照）', Math.abs((grab('直接投入人天') ?? NaN) - HAND_SUM_E) < 0.01,
-    { got: grab('直接投入人天'), want: HAND_SUM_E });
+  ok('G-11 直接投入人天 = Σ(O+4M+P)/6（脚本手算对照）', Math.abs((grab(PT.quoteDirect) ?? NaN) - HAND_SUM_E) < 0.01,
+    { got: grab(PT.quoteDirect), want: HAND_SUM_E });
   ok('G-12 理想人月 = 直接人天 ÷ 每人月工天标准（除数取配置，不写死 20.83）',
-    Math.abs((grab('理想人月') ?? NaN) - HAND_IDEAL_MM) < 0.005 && md.includes(`÷ 每人月工天标准 ${STD}`),
-    { got: grab('理想人月'), want: HAND_IDEAL_MM });
-  ok('G-13 实际预估人月 = 理想人月 ×(1+Σ系数)', Math.abs((grab('实际预估人月') ?? NaN) - HAND_ACTUAL_MM) < 0.005,
-    { got: grab('实际预估人月'), want: HAND_ACTUAL_MM });
+    Math.abs((grab(PT.quoteIdeal) ?? NaN) - HAND_IDEAL_MM) < 0.005 && md.includes(`÷ ${X.NAMED_RANGE_STD} ${STD}`),
+    { got: grab(PT.quoteIdeal), want: HAND_IDEAL_MM });
+  ok('G-13 实际预估人月 = 理想人月 ×(1+Σ系数)', Math.abs((grab(PT.quoteActual) ?? NaN) - HAND_ACTUAL_MM) < 0.005,
+    { got: grab(PT.quoteActual), want: HAND_ACTUAL_MM });
   ok('G-14 里程碑行（5/5/5）不进 Σ：件里合计等于非里程碑行之和',
     Math.abs(l.summary.directManDays.expected - HAND_SUM_E) < 1e-9 && HAND_SUM_E !== 0);
   ok('G-15 阶段构成合计行与报价结论的直接人天同数（一处算、两处读）',
-    (md.match(new RegExp(`合计 \\| [\\d.]+ \\| [\\d.]+ \\| [\\d.]+ \\| ${String(Number(HAND_SUM_E.toFixed(2)))}`, '')) ?? []).length === 1,
-    md.split('\n').find((s) => s.startsWith('| 合计')));
-  ok('G-16 未估算行写成「未估算」而不是 0（§6.1：没估 ≠ 估了 0 天）', md.includes('| 未估算 |') && !md.includes('| 0 | 未估算'));
+    (md.match(new RegExp(`${PT.totalRow} \\| [\\d.]+ \\| [\\d.]+ \\| [\\d.]+ \\| ${String(Number(HAND_SUM_E.toFixed(2)))}`, '')) ?? []).length === 1,
+    md.split('\n').find((s) => s.startsWith(`| ${PT.totalRow}`)));
+  ok('G-16 未估算行写成「未估算」而不是 0（§6.1：没估 ≠ 估了 0 天）', md.includes(`| ${PT.unEstimatedCell} |`) && !md.includes(`| 0 | ${PT.unEstimatedCell}`));
   ok('G-17 空阶段（onsite 无明细）不出现在阶段构成表里', !md.includes(X.TEMPLATE_PHASE_LABELS.onsite));
   ok('G-18 待复核计数 N 与 layout.unreviewed 同一个数（§6.3 只认服务端那一份）',
-    HAND_UNREVIEWED === layoutOf().unreviewed && md.includes(`有 ${HAND_UNREVIEWED} 行为系统推导值`), { md: HAND_UNREVIEWED, layout: layoutOf().unreviewed });
+    HAND_UNREVIEWED === layoutOf().unreviewed && md.includes(`有 ${HAND_UNREVIEWED} ${PT.unreviewedTail}`), { md: HAND_UNREVIEWED, layout: layoutOf().unreviewed });
 }
 
 group('G3 客户版脱敏（§6.2 四项：系数分项 / σ·置信区间 / 备注三条 / 附加 sheet 引用）');
@@ -153,23 +161,23 @@ group('G3 客户版脱敏（§6.2 四项：系数分项 / σ·置信区间 / 备
   const mdInt = mdOf({ audience: 'internal' });
   const hidden = [COEF_LABELS.collaboration, COEF_LABELS.quality, COEF_LABELS.scope, COEF_LABELS.schedule,
     'P50', 'P84', 'σ_total', '置信', X.TEMPLATE_REMARKS[0], X.TEMPLATE_REMARKS[1], X.TEMPLATE_REMARKS[2],
-    '备注/说明', X.SHEET_DETAIL, X.SHEET_PARAMS, '自检与对账'];
+    PT.secRemarks, X.SHEET_DETAIL, X.SHEET_PARAMS, PT.secSelfCheck];
   const leaked = hidden.filter((t) => mdCli.includes(t));
   ok('G-19 客户版正文不含：四系数分项 / P50·P84·σ / 备注三条 / 附加 sheet 名 / 自检段', leaked.length === 0, leaked);
   ok('G-20 内部版这些都含（脱敏是真分支，不是两边都缺的假绿）',
     [COEF_LABELS.collaboration, 'P84', 'σ_total', X.TEMPLATE_REMARKS[0], X.SHEET_DETAIL].every((t) => mdInt.includes(t)));
   ok('G-21 客户版仍含报价三数（藏依据不改数）',
-    ['直接投入人天', '理想人月', '实际预估人月'].every((k) => flat(mdCli).includes(flat(k))));
+    [PT.quoteDirect, PT.quoteIdeal, PT.quoteActual].every((k) => flat(mdCli).includes(flat(k))));
   const numLine = (md: string, label: string): string => {
     const m = new RegExp(`\\| ${label} \\| ([^|]+) \\|`).exec(md);
     return m ? m[1].trim() : '';
   };
   ok('G-22 两版的三个报价数字逐字相同（字符串相等，不是四舍五入后相等）',
-    ['直接投入人天', '理想人月', '实际预估人月'].every((k) => numLine(mdCli, k) === numLine(mdInt, k) && numLine(mdInt, k) !== ''),
-    ['直接投入人天', '理想人月', '实际预估人月'].map((k) => [numLine(mdInt, k), numLine(mdCli, k)]));
-  ok('G-23 客户版件名标（客户版）', PDFSVC.estimatePdfTitle(layoutOf({ audience: 'client' })).endsWith('（客户版）'));
+    [PT.quoteDirect, PT.quoteIdeal, PT.quoteActual].every((k) => numLine(mdCli, k) === numLine(mdInt, k) && numLine(mdInt, k) !== ''),
+    [PT.quoteDirect, PT.quoteIdeal, PT.quoteActual].map((k) => [numLine(mdInt, k), numLine(mdCli, k)]));
+  ok('G-23 客户版件名标（客户版）', PDFSVC.estimatePdfTitle(layoutOf({ audience: 'client' })).endsWith(`（${PT.audienceClient}）`));
   ok('G-24 待复核标注对客户版同样保留（§6.3 没有受众例外：少报待复核行比少报系数更贵）',
-    mdCli.includes(`有 ${HAND_UNREVIEWED} 行为系统推导值，未人工复核`));
+    mdCli.includes(`有 ${HAND_UNREVIEWED} ${PT.unreviewedTail}`));
   const heads = (md: string) => md.split('\n').filter((l) => l.startsWith('## ')).map((l) => l.slice(3).split('、')[0]);
   const CN = ['一', '二', '三', '四', '五', '六', '七', '八'];
   ok('G-25 章节号按「实际出现的节」连续（客户版一~五 / 内部版一~八，隐藏章节不占号）',
@@ -178,7 +186,7 @@ group('G3 客户版脱敏（§6.2 四项：系数分项 / σ·置信区间 / 备
   // 阶段筛选把开发段整段筛掉时也必须连续：编号写死会跳成「一、二、四、五」，件面像漏了内容
   const mdNoDev = PDFSVC.buildEstimateReportMd(X.layoutEstimate(input({ audience: 'client', phases: ['impl'] }) as any) as any);
   ok('G-25b 开发段整段不在件上时，客户版章节号仍连续且不出现「开发段明细」',
-    heads(mdNoDev).join('') === CN.slice(0, heads(mdNoDev).length).join('') && !mdNoDev.includes('开发段明细'),
+    heads(mdNoDev).join('') === CN.slice(0, heads(mdNoDev).length).join('') && !mdNoDev.includes(PT.secDev),
     heads(mdNoDev));
 }
 
@@ -199,13 +207,13 @@ group('G5 scope / phases 口径');
 {
   const mdEst = mdOf({ scope: 'estimated_only' });
   ok('G-29 estimated_only 时未估算行不成行（r-dev-4 正文不出现）', !mdEst.includes('这一行还没有三点'));
-  ok('G-30 口径行写「仅已估算行」（件里说清这次导了什么范围）', mdEst.includes('仅已估算行') && mdOf().includes('全部计划行'));
+  ok('G-30 口径行写「仅已估算行」（件里说清这次导了什么范围）', mdEst.includes(PT.scopeEstimatedOnly) && mdOf().includes(PT.scopeAll), { need: [PT.scopeEstimatedOnly, PT.scopeAll] });
   const mdDev = mdOf({ phases: ['dev'] });
   ok('G-31 phases=dev 时其他阶段不上件（模板阶段标签不出现）',
     !mdDev.includes(X.TEMPLATE_PHASE_LABELS.req) && !mdDev.includes(X.TEMPLATE_PHASE_LABELS.impl) && mdDev.includes('登录与权限模块'));
   ok('G-32 阶段筛选只缩范围、不改筛选后阶段的算价口径（Σ 仍等于该阶段行之和）',
-    (() => { const m = new RegExp(`合计 \\| [\\d.]+ \\| [\\d.]+ \\| [\\d.]+ \\| ([\\d.]+)`).exec(mdDev); return m ? Math.abs(Number(m[1]) - HAND_DEV_E) < 0.01 : false; })(),
-    mdDev.split('\n').find((s) => s.startsWith('| 合计')), HAND_DEV_E);
+    (() => { const m = new RegExp(`${PT.totalRow} \\| [\\d.]+ \\| [\\d.]+ \\| [\\d.]+ \\| ([\\d.]+)`).exec(mdDev); return m ? Math.abs(Number(m[1]) - HAND_DEV_E) < 0.01 : false; })(),
+    mdDev.split('\n').find((s) => s.startsWith(`| ${PT.totalRow}`)), HAND_DEV_E);
   ok('G-33 需求编号 / 复杂度 不在 PDF 正文里（PDF 是预览件，追溯列属 Excel 附加 sheet）',
     !mdOf().includes('REQ-') && !mdOf().includes('复杂度'));
 }
@@ -325,11 +333,15 @@ if (!(await waitForServer())) {
     const noPid = await getPdf('');
     ok('R-11 projectId 缺失 → 400 中文文案', noPid.status === 400 && noPid.json?.error === 'projectId 必填', noPid.json);
     const badAud = await getPdf(`?${PQ}&audience=both`);
-    ok('R-12 未知版本 → 400（不放行「看起来合理」的值）', badAud.status === 400 && String(badAud.json?.error).includes('未知导出版本'), badAud.json);
+    // 规约判据 3：错误消息是路由内联文案（门不便 import 路由），故配行为断言（400）兜底并区分红因
+    okPair(ok, 'R-12 未知版本 → 400（不放行「看起来合理」的值）',
+      () => badAud.status === 400, () => String(badAud.json?.error).includes('未知导出版本'), () => badAud.json);
     const badScope = await getPdf(`?${PQ}&scope=both`);
-    ok('R-13 未知范围 → 400', badScope.status === 400 && String(badScope.json?.error).includes('未知导出范围'), badScope.json);
+    okPair(ok, 'R-13 未知范围 → 400', () => badScope.status === 400,
+      () => String(badScope.json?.error).includes('未知导出范围'), () => badScope.json);
     const badPh = await getPdf(`?${PQ}&phases=dev,bogus`);
-    ok('R-14 未知阶段 → 400', badPh.status === 400 && String(badPh.json?.error).includes('未知阶段'), badPh.json);
+    okPair(ok, 'R-14 未知阶段 → 400', () => badPh.status === 400,
+      () => String(badPh.json?.error).includes('未知阶段'), () => badPh.json);
     writeFileSync(join(DATA_DIR, 'r-internal.pdf'), r.buf);
     writeFileSync(join(DATA_DIR, 'r-client.pdf'), cli.buf);
     ok('R-15 R 段两份件已落盘（X 轨读它们）', r.buf.length > 0 && cli.buf.length > 0 && r.buf.length !== cli.buf.length,
@@ -434,7 +446,7 @@ if (!(await waitForServer())) {
       r.status === 200 && r.buf.subarray(0, 5).toString() === '%PDF-', r.status);
     const ghost = await getPdf('?projectId=no-such-project-e7');
     ok('R-51 不存在的项目：200 空件或 400 中文报错，二者之一（不许 500、不许半份件）',
-      ghost.status === 400 ? String(ghost.json?.error).includes('项目不存在') : ghost.status === 200,
+      ghost.status === 400 ? String(ghost.json?.error).includes(ESTIMATE_PROJECT_NOT_FOUND) : ghost.status === 200,
       { status: ghost.status, json: ghost.json });
   }
 }
@@ -477,7 +489,7 @@ print(json.dumps(out,ensure_ascii=False))
       const ti = flat(parsed.internal.text);
       const tc = flat(parsed.client.text);
       ok('X-01 pypdf 能读出中文文字层（系统黑体 + ToUnicode 映射有效，不是方框）',
-        ti.includes('项目工作量估算表') && ti.includes('报价结论'), parsed.internal.text.slice(0, 60));
+        ti.includes(flat(X.TEMPLATE_TEXTS.title)) && ti.includes(flat(PT.secQuote)), parsed.internal.text.slice(0, 60));
       ok('X-02 内部版件里取得出系数分项与 P84/σ（真件层面确认「内部版全含」，§10-9）',
         [COEF_LABELS.collaboration, 'P84', 'σ_total'].map(flat).every((t) => ti.includes(t)), []);
       ok('X-03 内部版件里取得出备注三条与附加 sheet 名',
@@ -543,6 +555,53 @@ group('G9 §6.1 备注自检计数与引擎同源（T02302：E7 侧区分性断�
   ok('G-36 备注「里程碑 M 行」= 夹具里程碑行数独立推导值（不再恒 0，与 milestoneSkipped 同值）（T02304）',
     !!note && Number(note[2]) === msExpect7 && rc7.milestone === msExpect7 && layoutOf().milestoneSkipped === msExpect7,
     { note: note && note[0], expect: msExpect7, got: note && Number(note[2]), milestoneSkipped: layoutOf().milestoneSkipped, excluded: rc7 });
+}
+
+group('G7 文案锚点单源自证（T02293 判据 1/3/4：改文案不该打红门，破行为/抄第二份口径必须打红门）');
+{
+  // 反证 A · 配对器语义自测（判据 4）：三种输入必须落出三种结果，且红因可区分。
+  //   配对器若写成「只看字面锚点」或「红因不分」，下面三条里必有一条红——即本组自身带判别力。
+  const rec: Array<{ name: string; cond: boolean; extra?: unknown }> = [];
+  const probeOk = (name: string, cond: boolean, extra?: unknown) => { rec.push({ name, cond, extra }); };
+  okPair(probeOk, 'A 行为失守', () => false, () => true);
+  okPair(probeOk, 'B 行为在、锚点失配', () => true, () => false);
+  okPair(probeOk, 'C 双绿', () => true, () => true);
+  const why = (i: number): string => String((rec[i]?.extra as any)?.红因 ?? '');
+  ok('G-37 okPair 三态语义：行为失守判红且红因指行为、行为在而锚点失配判红且红因指锚点、双绿才 PASS',
+    rec.length === 3 && rec[0].cond === false && why(0).includes('行为失守')
+      && rec[1].cond === false && why(1).includes('字面锚点失配') && rec[2].cond === true, rec);
+
+  // 反证 B · 改文案自证（判据 1）：把 PDF_TEXTS 某条换成探针词后现场重建正文——
+  //   正文随常量移动 ⇒ 门与产物同一份口径，日后改文案只改一处、门不会凭空红；
+  //   正文不随动 ⇒ 该处仍在产物里硬编码（或门抄了第二份），本条判红。
+  const lay = layoutOf();
+  // 探针词与原文**不相含**（否则 includes(orig) 会被探针自身命中，判据失真）；
+  // 每条用自己的 layout：口径行只在 scope=estimated_only 时才长出「仅已估算行」，用默认件测它必然假红。
+  const probes: Array<{ key: keyof typeof PT; probe: string; lay: any }>[] = [
+    { key: 'secDisclaimer', probe: '丁卯探针尾', lay: lay },
+    { key: 'unreviewedTail', probe: '戊辰探针注', lay: lay },
+    { key: 'scopeEstimatedOnly', probe: '己巳探针径', lay: layoutOf({ scope: 'estimated_only' }) },
+    { key: 'quoteIdeal', probe: '庚午探针月', lay: lay },
+    { key: 'quoteDirect', probe: '辛未探针天', lay: lay },
+  ];
+  for (const { key, probe, lay: l } of probes) {
+    const orig = PT[key] as string;
+    const mdBaseline = PDFSVC.buildEstimateReportMd(l as any);
+    let moved = false;
+    let residual = '';
+    try {
+      (PT as Record<string, string>)[key] = probe;
+      const mdAfter = PDFSVC.buildEstimateReportMd(l as any);
+      moved = mdAfter.includes(probe) && !mdAfter.includes(orig);
+      if (!moved && mdAfter.includes(probe)) residual = `正文别处还留着「${orig}」的第二份抄写`;
+    } finally {
+      (PT as Record<string, string>)[key] = orig;
+    }
+    ok(`G-38 文案改名单源自证 ${String(key)}：正文随 PDF_TEXTS 同步移动且旧文案不留第二处（断言与产物同源，改文案不打红门）`,
+      moved, { key: String(key), probe, orig, residual });
+    ok(`G-39 还原 ${String(key)} 后正文与改名前逐字符相同（自证不留残留状态）`,
+      PDFSVC.buildEstimateReportMd(l as any) === mdBaseline, { key: String(key) });
+  }
 }
 
 console.log(`\n${'='.repeat(56)}`);

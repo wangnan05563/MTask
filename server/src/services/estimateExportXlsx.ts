@@ -41,9 +41,22 @@ export const SHEET_DETAIL = '估算明细（MTask）';
 export const SHEET_PARAMS = '参数';
 /** 全表唯一命名区域：常量形态（不是单元格引用），公式里直接引用它 */
 export const NAMED_RANGE_STD = '每人月工天标准';
+/** 命名区域缺失错误文案单源（T02293 规约判据 1） */
+export const NAMED_RANGE_MISSING_ERROR = '未在 workbook.xml 中找到';
+/** 参数页行标签单源（门断言行存在性时同源取词） */
+export const PARAM_SHEET_TEXTS = { conflictHint: '口径冲突提示', p84: '对外报价 P84 人天' } as const;
+/** 「待人工复核」这句话的措辞单源：Excel 明细 sheet 注与 PDF 首页标注共用一条口径 */
+export const UNREVIEWED_PHRASE = '行为系统推导值，未人工复核';
+/** 聚合阶段行的「含 N 项」注记模板（B 列文案，门按同一模板拼期望值） */
+export const AGG_NOTE = { lead: '（含 ', mid: ' 项，详见内部导出版）' } as const;
+/** 明细 sheet 尾部注的引导词（计数走 UNREVIEWED_PHRASE 同一口径） */
+export const DETAIL_NOTE_LEAD = '注：';
+
+/** 命名区域注释里「240 工作日」那一小句（T02293 判据 1：门断言注释存在时取这一句，不再抄第二份） */
+export const STD_WORKDAY_CLAUSE = '每人年平均预估约 240 工作日';
 /** 命名区域原文注释（附录 A 实测自客户模板 `xl/workbook.xml`）——红线 5 */
 export const NAMED_RANGE_STD_COMMENT =
-  '去除法定休息日、节假日、年休假、日常基本培训和会议保障后，每人年平均预估约 240 工作日（即每月平均约 20 工作日），每工作日标准工作时间为 8 工时。';
+  `去除法定休息日、节假日、年休假、日常基本培训和会议保障后，${STD_WORKDAY_CLAUSE}（即每月平均约 20 工作日），每工作日标准工作时间为 8 工时。`;
 
 /** B 列阶段文案：**逐字符复制客户模板**（§6.1）。与面板用的 `ESTIMATE_META.phaseLabels` 是两套口径——
  *  模板文案给客户看、面板标签给内部看，混用会让导出件长出客户没见过的词 */
@@ -501,7 +514,7 @@ export async function buildEstimateXlsx(layout: EstimateLayout): Promise<Buffer>
 
   // ---- 阶段行（req/design/impl/common/onsite）----
   for (const p of layout.phaseRows) {
-    head(p.rowNo, p.mergedCount > 1 ? `${p.label}（含 ${p.mergedCount} 项，详见内部导出版）` : p.label);
+    head(p.rowNo, p.mergedCount > 1 ? `${p.label}${AGG_NOTE.lead}${p.mergedCount}${AGG_NOTE.mid}` : p.label);
     if (!p.points) continue; // 空数据阶段：E/F/G/H/I 全留空，不写 0
     num(ws.getCell(`E${p.rowNo}`), p.points.likely);
     num(ws.getCell(`F${p.rowNo}`), p.points.optimistic);
@@ -653,7 +666,7 @@ export async function attachDefinedNameComment(buf: Buffer, name: string, commen
   if (!entry) throw new Error('导出件缺少 xl/workbook.xml（不应发生）');
   const xml = entry.asText();
   const patched = injectComment(xml, name, comment);
-  if (patched === xml) throw new Error(`命名区域「${name}」未在 workbook.xml 中找到，注释注入失败`);
+  if (patched === xml) throw new Error(`命名区域「${name}」${NAMED_RANGE_MISSING_ERROR}，注释注入失败`);
   zip.file('xl/workbook.xml', patched);
   return zip.generate({ type: 'nodebuffer' }) as unknown as Buffer;
 }
@@ -711,7 +724,7 @@ function addDetailSheet(wb: import('exceljs').Workbook, layout: EstimateLayout):
   const tail = ws.addRow({ detail: `生成时间：${layout.input.generatedAt}` });
   tail.font = { italic: true };
   if (layout.unreviewed > 0) {
-    ws.addRow({ detail: `注：${layout.unreviewed} 行为系统推导值，未人工复核` }).font = { italic: true };
+    ws.addRow({ detail: `${DETAIL_NOTE_LEAD}${layout.unreviewed} ${UNREVIEWED_PHRASE}` }).font = { italic: true };
   }
   ws.views = [{ state: 'frozen', ySplit: 1 }];
 }
@@ -727,13 +740,13 @@ function addParamsSheet(wb: import('exceljs').Workbook, layout: EstimateLayout):
   ws.getRow(1).font = { bold: true };
   const cfg = layout.input.config;
   ws.addRow({ k: NAMED_RANGE_STD, v: cfg.manDaysPerManMonth, d: `命名区域常量，公式直接引用它。${NAMED_RANGE_STD_COMMENT}` });
-  ws.addRow({ k: '口径冲突提示', v: '', d: '客户模板正文另处按 20 工作日/月描述，取值却是 20.83（=250/12）；裁决 D1 采 20.83，改值需在参数页显式操作并留痕。' });
+  ws.addRow({ k: PARAM_SHEET_TEXTS.conflictHint, v: '', d: '客户模板正文另处按 20 工作日/月描述，取值却是 20.83（=250/12）；裁决 D1 采 20.83，改值需在参数页显式操作并留痕。' });
   ws.addRow({ k: '每工作日工时', v: cfg.hoursPerManDay, d: '模板 E4 文案：1 人天 = 8 人时' });
   for (const c of layout.coefRows) ws.addRow({ k: `调节系数 ${c.label || '（折叠）'}`, v: c.value, d: '模板 R36~R39 按三点行处理：E=F=G=系数' });
   ws.addRow({ k: 'Σ调节系数', v: round6(layout.summary.coefSum), d: 'R40 = R35 × (1 + Σ系数)' });
   ws.addRow({ k: '直接投入人天 ΣE', v: round6(layout.summary.directManDays.expected), d: '不含小计行与里程碑行（§4.4）' });
   ws.addRow({ k: '实际预估人月 ΣE', v: round6(layout.summary.actualManMonths.expected), d: '对应导出件 R40 的 H 列' });
-  ws.addRow({ k: '对外报价 P84 人天', v: round6(layout.summary.quote.p84ManDays), d: 'E + 1σ（裁决 D2；未计行间相关性）' });
+  ws.addRow({ k: PARAM_SHEET_TEXTS.p84, v: round6(layout.summary.quote.p84ManDays), d: 'E + 1σ（裁决 D2；未计行间相关性）' });
   ws.addRow({ k: '导出范围', v: layout.input.scope, d: `阶段筛选：${(layout.input.phases ?? ESTIMATE_PHASES).join(',')}｜版本：${layout.input.audience}` });
   ws.addRow({ k: '生成时间', v: layout.input.generatedAt, d: '' });
   ws.getRow(2).font = { color: { argb: 'B42318' } };

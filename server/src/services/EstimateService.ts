@@ -20,6 +20,10 @@ import { notifyChange } from './ChangeBus';
 import { buildCalendar, type WorkdayCal } from '../util/workdays';
 
 /** 阶段（§3.1）：与模板 R31/R35~R40 的阶段行对齐，写入非法值直接报错——错归一会让报价人月进错桶 */
+
+/** 「查不到项目」错误文案单源（T02293 规约判据 1）：门据此断言，不再抄字面量 */
+export const ESTIMATE_PROJECT_NOT_FOUND = '项目不存在';
+
 export const ESTIMATE_PHASES = ['req', 'design', 'dev', 'impl', 'common', 'onsite'] as const;
 export type EstimatePhase = (typeof ESTIMATE_PHASES)[number];
 /** 来源标记（§2.3-8 / §4.6）：人工改过即转 manual，面板徽标与上线度量（§9 复核率）都按它出数 */
@@ -175,7 +179,7 @@ export function pointsError(o: number, m: number, p: number): string | null {
 function requireProject(projectId: string): void {
   if (!str(projectId)) throw new Error('projectId 必填');
   const db = getDb();
-  if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
+  if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error(ESTIMATE_PROJECT_NOT_FOUND);
 }
 
 /**
@@ -194,7 +198,7 @@ function requirePlan(
 ): { id: string; title: string; kind: string; status: string; progress: number } {
   const db = getDb();
   if (!str(projectId)) throw new Error('projectId 必填');
-  if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
+  if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error(ESTIMATE_PROJECT_NOT_FOUND);
   if (!str(planId)) throw new Error('planId 必填');
   const p = db
     .prepare('SELECT id, project_id, title, kind, status, progress FROM plan_tasks WHERE id = ?')

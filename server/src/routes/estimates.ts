@@ -567,6 +567,14 @@ function exportStamp(d: Date): string {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
+/** 参数校验错误文案前缀单源（T02293 规约判据 1）：门断言「400 + 前缀同源」，不再抄第二份中文 */
+export const ESTIMATE_PARAM_ERRORS = {
+  unknownPhase: '未知阶段',
+  emptyPhases: 'phases 不能为空（不传即导全部阶段）',
+  unknownScope: '未知导出范围',
+  unknownAudience: '未知导出版本',
+} as const;
+
 /**
  * `phases` 查询串（§6.1「一个参数只表一件事」）。
  * 未知阶段必须报错而不是忽略——静默吞掉会让「只导开发段」实际导出全部，报价件的范围悄悄变了。
@@ -579,12 +587,12 @@ export function parsePhases(raw: unknown): EstimatePhase[] {
     const x = piece.trim();
     if (!x) continue;
     if (!(ESTIMATE_META.phases as readonly string[]).includes(x)) {
-      throw new Error(`未知阶段：${x}（可用 ${ESTIMATE_META.phases.join(' / ')}）`);
+      throw new Error(`${ESTIMATE_PARAM_ERRORS.unknownPhase}：${x}（可用 ${ESTIMATE_META.phases.join(' / ')}）`);
     }
     const p = x as EstimatePhase;
     if (!list.includes(p)) list.push(p);
   }
-  if (list.length === 0) throw new Error('phases 不能为空（不传即导全部阶段）');
+  if (list.length === 0) throw new Error(ESTIMATE_PARAM_ERRORS.emptyPhases);
   return list;
 }
 
@@ -592,7 +600,7 @@ export function parseScope(raw: unknown): EstimateExportScope {
   const s = str(raw);
   if (!s) return 'all';
   if (!(ESTIMATE_EXPORT_SCOPES as readonly string[]).includes(s)) {
-    throw new Error(`未知导出范围：${s}（可用 ${ESTIMATE_EXPORT_SCOPES.join(' / ')}）`);
+    throw new Error(`${ESTIMATE_PARAM_ERRORS.unknownScope}：${s}（可用 ${ESTIMATE_EXPORT_SCOPES.join(' / ')}）`);
   }
   return s as EstimateExportScope;
 }
@@ -600,7 +608,7 @@ export function parseScope(raw: unknown): EstimateExportScope {
 export function parseAudience(raw: unknown): EstimateAudience {
   const s = str(raw);
   if (!s) return 'internal';
-  if (s !== 'internal' && s !== 'client') throw new Error(`未知导出版本：${s}（可用 internal / client）`);
+  if (s !== 'internal' && s !== 'client') throw new Error(`${ESTIMATE_PARAM_ERRORS.unknownAudience}：${s}（可用 internal / client）`);
   return s;
 }
 

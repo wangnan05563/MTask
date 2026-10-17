@@ -26,6 +26,7 @@ import type { EstimateConfig, EstimatePhase, EstimateCoefKey } from '../server/s
 import type { EstimateExportInput, EstimateExportRow } from '../server/src/services/estimateExportXlsx.ts';
 import { resolveServerLauncher } from './isolated-server-launcher.mts';
 import { gateArtifactPath } from './lib/gate-results.mts'; // T02309：旁证产物按运行标识命名
+import { okPair } from './lib/anchor-pair.mts'; // T02293 判据 3：文案锚必须配行为断言
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02043-e6-'));
@@ -35,6 +36,10 @@ process.env.MTask_DATA_DIR = DATA_DIR;
 
 const E = await import('../server/src/services/estimate-engine.ts');
 const X = await import('../server/src/services/estimateExportXlsx.ts');
+const { ESTIMATE_PROJECT_NOT_FOUND } = await import('../server/src/services/EstimateService.ts');
+/** T02293 判据 1：交付件文案的期望值取服务层单源。下面两个派生词只在「前缀形态」断言里用，不再手抄 */
+const COEF_COLLAB = X.TEMPLATE_COEF_LABELS.collaboration.split('/')[0];
+const REMARKS_LABEL = X.TEMPLATE_TEXTS.remarks.replace(/：$/, '');
 const PizZip = (await import('pizzip')).default;
 const ExcelJSMod: any = await import('exceljs');
 const NewWorkbook = (): import('exceljs').Workbook => new (ExcelJSMod.default ?? ExcelJSMod).Workbook();
@@ -152,6 +157,14 @@ const allEstRows = [...devEst, ...(['req', 'design', 'impl', 'common', 'onsite']
 const TOTAL_PTS = sumP(allEstRows) as Points;
 const IDEAL_EXPECTED = E.expected(TOTAL_PTS) / STD;
 const ACTUAL_EXPECTED = IDEAL_EXPECTED * (1 + COEF_SUM);
+// σ_total 的独立重算按**导出侧聚合口径**走：非 dev 明细先在件里聚合成 1 条阶段行，
+// 方差按聚合行计（不是按底层明细行计）——这正是 §4.4「聚合行代替明细行进 Σ」的可证形态。
+const REQ_COUNT = ALL_ROWS.filter((r) => r.phase === 'req').length;
+const VARIANCE_SELF = devEst.reduce((a, r) => a + E.sigma(r as Points) ** 2, 0)
+  + (['req', 'design', 'impl', 'common', 'onsite'] as EstimatePhase[])
+    .map((p) => sumP(byPhase(p))).filter((x): x is Points => x !== null)
+    .reduce((a, x) => a + E.sigma(x) ** 2, 0);
+const P84_SELF = E.expected(TOTAL_PTS) + Math.sqrt(VARIANCE_SELF);
 
 // ---- xlsx 字节 → 轨道读取工具 ----
 const unesc = (s: string) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
@@ -192,6 +205,38 @@ const cellText = (ws: import('exceljs').Worksheet | undefined, a: string): strin
   if (v instanceof Date) return v.toISOString();
   if (typeof v === 'object') return String((v as { text?: string; result?: number }).text ?? (v as { result?: number }).result ?? '');
   return String(v);
+};
+
+// ---- T02293 判据 4：数字型断言的判定函数——断言与反证（G12）共用同一份代码，反证才有判别力 ----
+type W = import('exceljs').Worksheet | undefined;
+/** 5-05：聚合行的「含 N 项」数量必须等于夹具里 req 行的条数（独立推导，不读 layout） */
+const aggNoteBehavior = (ws: W): boolean => {
+  const t = cellText(ws, 'B6');
+  const n = Number(/（含\s*(\d+)\s*项/.exec(t)?.[1] ?? NaN);
+  return t.startsWith(X.TEMPLATE_PHASE_LABELS.req) && n === REQ_COUNT;
+};
+const aggNoteLiteral = (ws: W): boolean =>
+  cellText(ws, 'B6') === `${X.TEMPLATE_PHASE_LABELS.req}${X.AGG_NOTE.lead}${REQ_COUNT}${X.AGG_NOTE.mid}`;
+/** 5-13：尾部注的计数以**交付件自身**的来源列为准（不是 layout.unreviewed，也不是文案字面） */
+const unreviewedBehavior = (detail: W, nDetail: number): boolean => {
+  const inArtifact = Array.from({ length: nDetail }, (_, i) => i + 2)
+    .filter((r) => ['rule', 'default'].includes(cellText(detail, `K${r}`))
+      && cellText(detail, `I${r}`) !== '').length;
+  return Number(/注：(\d+)/.exec(cellText(detail, `D${nDetail + 3}`))?.[1] ?? NaN) === inArtifact;
+};
+const unreviewedLiteral = (detail: W, nDetail: number, unreviewed: number): boolean =>
+  cellText(detail, `D${nDetail + 3}`) === `${X.DETAIL_NOTE_LEAD}${unreviewed} ${X.UNREVIEWED_PHRASE}`;
+/** 5-15：P84 行按说明列的裁决 D2 依据定位，取值须等于独立重算的 E+1σ */
+const p84RowOf = (params: W): number | undefined => Array.from({ length: params?.rowCount ?? 0 }, (_, i) => i + 1)
+  .find((r) => cellText(params, `C${r}`).includes('D2'));
+const p84Behavior = (params: W): boolean => {
+  const r = p84RowOf(params);
+  return r !== undefined && Math.abs(Number(cellText(params, `B${r}`)) - P84_SELF) < 1e-6;
+};
+const p84Literal = (params: W): boolean => {
+  const r = p84RowOf(params);
+  return r !== undefined && cellText(params, `A${r}`) === X.PARAM_SHEET_TEXTS.p84
+    && Number(cellText(params, `B${r}`)) > 0;
 };
 
 // =====================================================================
@@ -360,8 +405,10 @@ group('G5 结构轨（exceljs 只读回验：sheet 名 / 列宽 / 文案 / 合�
   ok('5-04 B 列阶段文案用**模板文案**而非面板标签（两套口径不得混用）',
     cellText(ws, 'B7').startsWith(X.TEMPLATE_PHASE_LABELS.design) && cellText(ws, 'B8') === X.TEMPLATE_PHASE_LABELS.dev,
     [cellText(ws, 'B7'), cellText(ws, 'B8')]);
-  ok('5-05 聚合阶段带「含 N 项」注记（req 3 条聚合成 1 行，客户看得见数量）',
-    cellText(ws, 'B6') === '需求分析（含 3 项，详见内部导出版）', cellText(ws, 'B6'));
+  // T02293 判据 1/3：聚合注记的「数量」是从夹具独立推导的行为断言，文案形态另配字面锚——
+  // 只留字面会随产品改文案假红，只留数量则丢「客户看得见数量」这层可交付形态
+  okPair(ok, '5-05 聚合阶段带「含 N 项」注记（req 3 条聚合成 1 行，客户看得见数量）',
+    () => aggNoteBehavior(ws), () => aggNoteLiteral(ws), () => ({ got: cellText(ws, 'B6'), expectCount: REQ_COUNT }));
   ok('5-06 R35/R40 汇总行文案与 D31「小计：」',
     cellText(ws, 'B35') === X.TEMPLATE_TEXTS.ideal && cellText(ws, 'B40') === X.TEMPLATE_TEXTS.actual && cellText(ws, 'D31') === X.TEMPLATE_TEXTS.subtotal,
     [cellText(ws, 'B35'), cellText(ws, 'D31'), cellText(ws, 'B40')]);
@@ -380,17 +427,22 @@ group('G5 结构轨（exceljs 只读回验：sheet 名 / 列宽 / 文案 / 合�
   const nDetail = ALL_ROWS.filter((r) => r.planKind !== 'milestone').length;
   ok('5-12 明细 sheet 逐行给全（非 dev 明细不被聚合掉，内部对账要能看到每一条）',
     nDetail === 32 && detail !== undefined, nDetail);
-  ok('5-13 明细 sheet 尾部「N 行为系统推导值，未人工复核」（§6.3 复核标注）',
-    cellText(detail, `D${nDetail + 3}`) === `注：${L.unreviewed} 行为系统推导值，未人工复核`, cellText(detail, `D${nDetail + 3}`));
+  // T02293 判据 1/3：注里的计数以**交付件自身**的来源列为准（见 unreviewedBehavior）
+  okPair(ok, '5-13 明细 sheet 尾部「N 行为系统推导值，未人工复核」（§6.3 复核标注）',
+    () => unreviewedBehavior(detail, nDetail),
+    () => unreviewedLiteral(detail, nDetail, L.unreviewed),
+    () => ({ got: cellText(detail, `D${nDetail + 3}`), unreviewed: L.unreviewed }));
   const params = wb.getWorksheet(X.SHEET_PARAMS);
-  ok('5-14 参数 sheet 第 2 行就是命名区域取值，第 3 行是 20 vs 20.83 口径冲突提示（D1 依据进交付件）',
-    cellText(params, 'A2') === X.NAMED_RANGE_STD && cellText(params, 'A3').includes('口径冲突'),
-    [cellText(params, 'A2'), cellText(params, 'A3')]);
-  const p84Row = Array.from({ length: params?.rowCount ?? 0 }, (_, i) => i + 1)
-    .find((r) => cellText(params, `A${r}`) === '对外报价 P84 人天');
-  ok('5-15 参数 sheet 带对外报价 P84 与 ΣE（裁决 D2 的口径在件里可追溯）',
-    p84Row !== undefined && Number(cellText(params, `B${p84Row}`)) > 0 && cellText(params, `B${p84Row}`) !== 'NaN',
-    p84Row && [cellText(params, `A${p84Row}`), cellText(params, `B${p84Row}`)]);
+  okPair(ok, '5-14 参数 sheet 第 2 行就是命名区域取值，第 3 行是 20 vs 20.83 口径冲突提示（D1 依据进交付件）',
+    () => cellText(params, 'A2') === X.NAMED_RANGE_STD
+      && Math.abs(Number(cellText(params, 'B2')) - STD) < 1e-9
+      && cellText(params, `C3`).includes(String(STD)),
+    () => cellText(params, 'A3') === X.PARAM_SHEET_TEXTS.conflictHint,
+    () => [cellText(params, 'A2'), cellText(params, 'B2'), cellText(params, 'A3')]);
+  // T02293 判据 1/3：P84 行按语义定位、取值对齐独立重算的 E+1σ（见 p84Behavior），标签只作字面锚
+  okPair(ok, '5-15 参数 sheet 带对外报价 P84 与 ΣE（裁决 D2 的口径在件里可追溯）',
+    () => p84Behavior(params), () => p84Literal(params),
+    () => { const r = p84RowOf(params); return r && [cellText(params, `A${r}`), cellText(params, `B${r}`), P84_SELF]; });
   // T02086（裁决「不进」）：reviewer 未配置时导出留空由用户手填——不报错、不写假名（§6.1「或留空」分支）
   const noRev = await X.buildEstimateXlsx(X.layoutEstimate(input({ reviewer: '' })));
   const wsnr = (await loadWb(noRev)).getWorksheet(X.SHEET_MAIN);
@@ -416,7 +468,11 @@ group('G6 命名区域与重算标记（红线 4 + 红线 5）');
     X.injectComment('<definedName name="A">1</definedName>', 'A', 'x<&>"y').includes('comment="x&lt;&amp;&gt;&quot;y"'));
   let throwMsg = '';
   try { await X.attachDefinedNameComment(BUF, '不存在的名字', 'x'); } catch (e) { throwMsg = (e as Error).message; }
-  ok('6-06 补丁找不到命名区域时**报错而不是交出一份丢掉取值依据的件**', throwMsg.includes('未在 workbook.xml 中找到'), throwMsg);
+  // T02293 判据 3：行为=「宁可不交货也要抛错」，字面=错误文案（取服务层单源）
+  okPair(ok, '6-06 补丁找不到命名区域时**报错而不是交出一份丢掉取值依据的件**',
+    () => throwMsg !== '',
+    () => throwMsg.includes(X.NAMED_RANGE_MISSING_ERROR),
+    () => throwMsg);
   const wb2 = await loadWb(BUF);
   const re2 = Buffer.from(await wb2.xlsx.writeBuffer() as ArrayBuffer);
   const BK2 = bookXml(re2);
@@ -450,11 +506,15 @@ group('G7 客户版轨（§6.2 脱敏发生在服务端，前端隐藏不算脱�
   eq('7-06 客户版 H40 = 内部版 H40（折叠不改动对外报价）', cellNum(cellsC, 'H40'), cellNum(CELLS, 'H40'));
   eq('7-07 客户版 I40 仍为 1（比例自检在交付件上成立）', cellNum(cellsC, 'I40'), 1);
   const wbc = await loadWb(BUFc);
-  ok('7-08 客户版不写备注（不把「本报价单最好仅作为项目成本估算…」这类内部话术交给客户）',
-    cellText(wbc.getWorksheet(X.SHEET_MAIN), 'B42') === '' && !(XMLc.includes('备注/说明')),
-    cellText(wbc.getWorksheet(X.SHEET_MAIN), 'B42').slice(0, 40));
-  ok('7-09 客户版仍带命名区域注释（取值依据是给客户看的，不是内部话术）',
-    /<definedName name="每人月工天标准"[^>]*comment=/.test(bookXml(BUFc)));
+  okPair(ok, '7-08 客户版不写备注（不把「本报价单最好仅作为项目成本估算…」这类内部话术交给客户）',
+    () => cellText(wbc.getWorksheet(X.SHEET_MAIN), 'B42') === '',
+    () => !XMLc.includes(REMARKS_LABEL),
+    () => cellText(wbc.getWorksheet(X.SHEET_MAIN), 'B42').slice(0, 40));
+  okPair(ok, '7-09 客户版仍带命名区域注释（取值依据是给客户看的，不是内部话术）',
+    () => (bookXml(BUFc).match(/<definedName[^>]*comment="([^"]*)"/g) || [])
+      .some((s) => unesc(/comment="([^"]*)"/.exec(s)![1]) === X.NAMED_RANGE_STD_COMMENT),
+    () => new RegExp(`<definedName name="${X.NAMED_RANGE_STD}"[^>]*comment=`).test(bookXml(BUFc)),
+    () => /<definedName [^>]*>/.exec(bookXml(BUFc))?.[0]);
   ok('7-10 客户版合并区 27 处、sheet 数 1',
     (XMLc.match(/<mergeCell /g) || []).length === 27 && wbc.worksheets.length === 1,
     [(XMLc.match(/<mergeCell /g) || []).length, wbc.worksheets.length]);
@@ -462,7 +522,7 @@ group('G7 客户版轨（§6.2 脱敏发生在服务端，前端隐藏不算脱�
   const wbc2 = await loadWb(internalFold);
   const wsi = wbc2.getWorksheet(X.SHEET_MAIN);
   ok('7-11 折叠只作用于客户版：内部版即使开关打开仍保留四个系数分项（内部依据不能一起藏掉）',
-    wbc2.worksheets.length === 3 && cellText(wsi, 'B36').includes('客户协作配合') && Math.abs(cellNum(CELLS, 'H40') - cellNum(parseCells(mainXml(internalFold)), 'H40')) < 1e-9,
+    wbc2.worksheets.length === 3 && cellText(wsi, 'B36').includes(COEF_COLLAB) && Math.abs(cellNum(CELLS, 'H40') - cellNum(parseCells(mainXml(internalFold)), 'H40')) < 1e-9,
     cellText(wsi, 'B36'));
 }
 
@@ -542,7 +602,7 @@ print(json.dumps({
       ok('9-02 openpyxl 数到 28 处合并区（与 exceljs / 原始 XML 两轨同值）', j.merges === 28, j.merges);
       ok('9-03 命名区域被解析成常量 20.83', j.defined?.[X.NAMED_RANGE_STD]?.value === '20.83', j.defined);
       ok('9-04 命名区域的 comment 被独立读出（红线 5 的第二双眼睛）',
-        String(j.defined?.[X.NAMED_RANGE_STD]?.comment || '').includes('每人年平均预估约 240 工作日'),
+        String(j.defined?.[X.NAMED_RANGE_STD]?.comment || '').includes(X.STD_WORKDAY_CLAUSE),
         String(j.defined?.[X.NAMED_RANGE_STD]?.comment || '').slice(0, 40));
       const f6 = String(j.H6_f ?? '').replace(/^=/, '');
       ok('9-05 公式交叉：openpyxl 读到的 H6 就是模板原式，且没有 `==` 畸形',
@@ -550,7 +610,7 @@ print(json.dumps({
       eq('9-06 缓存值交叉：openpyxl 的 H40 与 XML 轨同值', Number(j.H40_v), cellNum(CELLS, 'H40'));
       eq('9-07 交叉轨复核 I40 = 100%', Number(j.I40_v), 1, 1e-9);
       ok('9-08 文案交叉：B6 聚合注记与 D31「小计：」在两套解析器下一致',
-        String(j.B6).startsWith('需求分析（含 3 项') && String(j.D31) === '小计：', [j.B6, j.D31]);
+        String(j.B6).startsWith(`${X.TEMPLATE_PHASE_LABELS.req}${X.AGG_NOTE.lead}3`) && String(j.D31) === X.TEMPLATE_TEXTS.subtotal, [j.B6, j.D31]);
     }
   }
 }
@@ -787,14 +847,27 @@ if (!(await waitForServer())) {
       cd.includes("filename*=UTF-8''") && decodeURIComponent(cd.split("filename*=UTF-8''")[1]).startsWith('工作量评估-T02043-导出R段'), cd.slice(0, 80));
     ok('R-05 响应头回带快照 id（§6.3 每次导出留痕）', /^[\w-]+$/.test(String(r.headers.get('x-estimate-snapshot'))), r.headers.get('x-estimate-snapshot'));
     const noPid = await getXlsx('');
-    ok('R-06 projectId 缺失 → 400 中文文案（不是半份导出件）', noPid.status === 400 && noPid.json?.error === 'projectId 必填', noPid.json);
+    // T02293 判据 3：R-06~R-09 保留文案字面锚（400 的错误消息是对外契约的一部分），
+    // 但每条都配「拒绝出件」的行为断言——行为失守判红因「功能未达成」，只有文案变了才判「锚点失配」
+    okPair(ok, 'R-06 projectId 缺失 → 400 中文文案（不是半份导出件）',
+      () => noPid.status === 400 && noPid.buf.length === 0 && noPid.json?.error !== undefined,
+      () => noPid.json?.error === 'projectId 必填',
+      () => noPid.json);
     const badAud = await getXlsx(`?${PQ}&audience=bogus`);
-    ok('R-07 未知版本 → 400（不能静默回落内部版，把内部 sheet 交给客户）', badAud.status === 400 && String(badAud.json?.error).includes('未知导出版本'), badAud.json);
+    okPair(ok, 'R-07 未知版本 → 400（不能静默回落内部版，把内部 sheet 交给客户）',
+      () => badAud.status === 400 && badAud.buf.length === 0 && String(badAud.json?.error||'').length > 0,
+      () => String(badAud.json?.error).includes('未知导出版本'),
+      () => badAud.json);
     const badPh = await getXlsx(`?${PQ}&phases=bogus`);
-    ok('R-08 未知阶段 → 400（静默吞掉会让「只导开发段」实际导出全部，报价范围悄悄变了）',
-      badPh.status === 400 && String(badPh.json?.error).includes('未知阶段'), badPh.json);
+    okPair(ok, 'R-08 未知阶段 → 400（静默吞掉会让「只导开发段」实际导出全部，报价范围悄悄变了）',
+      () => badPh.status === 400 && badPh.buf.length === 0 && String(badPh.json?.error||'').length > 0,
+      () => String(badPh.json?.error).includes('未知阶段'),
+      () => badPh.json);
     const badScope = await getXlsx(`?${PQ}&scope=bogus`);
-    ok('R-09 未知范围 → 400', badScope.status === 400 && String(badScope.json?.error).includes('未知导出范围'), badScope.json);
+    okPair(ok, 'R-09 未知范围 → 400',
+      () => badScope.status === 400 && badScope.buf.length === 0 && String(badScope.json?.error||'').length > 0,
+      () => String(badScope.json?.error).includes('未知导出范围'),
+      () => badScope.json);
     // R-10 曾断言 export-pdf 是 404（E6 当时的口径：「E7 未落地就不留占位路由」）。
     // E7 已落地（T02044），这里改为回归面：PDF 与 xlsx 共用 `buildEstimateArtifact`——
     // 两条通道都能出件、都带快照头，才证明「同一条流水线」不是文档说法。
@@ -814,8 +887,10 @@ if (!(await waitForServer())) {
       ok('R-11 不存在的项目：不 500、不编造数字（空件汇总缓存值为 0）',
         Number.isFinite(cellNum(gc, 'H16')) && cellNum(gc, 'H16') === 0, { status: ghost.status, h: cellNum(gc, 'H16') });
     } else {
-      ok('R-11 不存在的项目：直接 400 中文报错（不交出一份看起来有数的空件）',
-        ghost.status === 400 && String(ghost.json?.error).includes('项目不存在'), { status: ghost.status, json: ghost.json });
+      okPair(ok, 'R-11 不存在的项目：直接 400 中文报错（不交出一份看起来有数的空件）',
+        () => ghost.status === 400 && ghost.buf.length === 0 && String(ghost.json?.error || '').length > 0,
+        () => String(ghost.json?.error).includes(ESTIMATE_PROJECT_NOT_FOUND),
+        () => ({ status: ghost.status, json: ghost.json }));
     }
   }
 
@@ -902,7 +977,7 @@ if (!(await waitForServer())) {
     const wbc = await loadWb(folded.buf);
     const wsc = wbc.getWorksheet(X.SHEET_MAIN);
     ok('R-36 客户版不含备注四条与系数分项标签，含「综合调节系数（内部明细略）」',
-      cellText(wsc, 'B30') === '' && !cellText(wsc, 'B24').includes('客户协作配合') && cellText(wsc, 'B24').includes(X.TEMPLATE_TEXTS.foldedCoef),
+      cellText(wsc, 'B30') === '' && !cellText(wsc, 'B24').includes(COEF_COLLAB) && cellText(wsc, 'B24').includes(X.TEMPLATE_TEXTS.foldedCoef),
       cellText(wsc, 'B24'));
     eq('R-37 折叠版 I28 仍为 1（比例自检不因折叠失真）', cellNum(cf, 'I28'), 1);
     await api('PUT', `/api/estimates/params?${PQ}`, { settings: { 'estimate.hideCoefsForClient': '' } });
@@ -1013,6 +1088,105 @@ group('G11 §4.4 自检计数轨（T02302：T02123「无点值行也要进引擎
   ok('11-04 自检 excluded.milestone = 夹具里程碑行数（与 milestoneSkipped、与面板 excluded.milestone 三口径同值）（T02304）',
     rcE.milestone === msExpect && L.milestoneSkipped === msExpect,
     { expect: msExpect, got: rcE.milestone, milestoneSkipped: L.milestoneSkipped, excluded: rcE });
+}
+
+// =====================================================================
+// T02293 判据 1/3/4 的自证组：本门里的中文期望值必须取自服务层单源，
+// 且「改文案不该打红门、抄第二份口径必须打红门」要用可判别的方式证出来，不靠人读代码。
+group('G12 文案锚点单源自证（T02293：配对器语义 + 交付件内改名模拟）');
+{
+  const rec: Array<{ name: string; cond: boolean; extra?: unknown }> = [];
+  const probeOk = (name: string, cond: boolean, extra?: unknown) => { rec.push({ name, cond, extra }); };
+  okPair(probeOk, 'A 行为失守', () => false, () => true);
+  okPair(probeOk, 'B 行为在、锚点失配', () => true, () => false);
+  okPair(probeOk, 'C 双绿', () => true, () => true);
+  const why = (i: number): string => String((rec[i]?.extra as any)?.红因 ?? '');
+  ok('12-01 okPair 三态语义：行为失守/锚点失配各判红且红因可区分，双绿才 PASS（判据 4：本组自带判别力）',
+    rec.length === 3 && rec[0].cond === false && why(0).includes('行为失守')
+      && rec[1].cond === false && why(1).includes('字面锚点失配') && rec[2].cond === true, rec);
+
+  // 改名模拟：把一条中文常量换成探针词后**现场重建交付件**——件内文案随常量同步移动，
+  //   证明门与产物读同一份口径（日后改文案只改一处，门不会凭空红）；
+  //   不随动则该处仍是第二份抄写（或产物侧硬编码），判红。
+  //   只覆盖对象形态常量：`export const S = '...'` 这类原始值导出在 ESM 里不可外部改写，
+  //   但门对它们本就是零抄写（期望值直接取自产品），改文案同样不会打红门。
+  const artText = (buf: Buffer): string => {
+    const z = unzip(buf);
+    return Object.keys(z.files as object).filter((k) => k.startsWith('xl/'))
+      .map((k) => z.file(k)?.asText() ?? '').join('|');
+  };
+  type Mut = { host: Record<string, string>; key: string };
+  const probes: Array<{ label: string; mut: () => Mut; probe: string; inp: () => EstimateExportInput }> = [
+    { label: 'PARAM_SHEET_TEXTS.p84', mut: () => ({ host: X.PARAM_SHEET_TEXTS as any, key: 'p84' }), probe: '壬申探针值', inp: () => input() },
+    { label: 'PARAM_SHEET_TEXTS.conflictHint', mut: () => ({ host: X.PARAM_SHEET_TEXTS as any, key: 'conflictHint' }), probe: '癸酉探针示', inp: () => input() },
+    { label: 'AGG_NOTE.mid', mut: () => ({ host: X.AGG_NOTE as any, key: 'mid' }), probe: '甲戌探针版', inp: () => input() },
+    { label: 'AGG_NOTE.lead', mut: () => ({ host: X.AGG_NOTE as any, key: 'lead' }), probe: '乙亥探针含', inp: () => input() },
+    // 折叠标签在 layoutEstimate 阶段就写进 coefRows：必须在改名**之后**重新布局，否则测的是改名前的旧布局
+    { label: 'TEMPLATE_TEXTS.foldedCoef', mut: () => ({ host: X.TEMPLATE_TEXTS as any, key: 'foldedCoef' }), probe: '丙子探针数',
+      inp: () => input({ audience: 'client', config: { ...CFG, hideCoefsForClient: true } }) },
+  ];
+  const mkArt = async (inp: () => EstimateExportInput): Promise<string> =>
+    artText(await X.buildEstimateXlsx(X.layoutEstimate(inp())));
+  for (const { label, mut, probe, inp } of probes) {
+    const { host, key } = mut();
+    const orig = host[key];
+    const baseText = await mkArt(inp);
+    let moved = false;
+    let residual = '';
+    try {
+      host[key] = probe;
+      const after = await mkArt(inp);
+      moved = after.includes(probe) && !after.includes(orig);
+      if (!moved && after.includes(probe)) residual = `件内别处还留着「${orig}」的第二份抄写`;
+      if (!after.includes(probe)) residual = `改名后件内没有探针词：该处仍是布局期抄写或产物侧硬编码`;
+    } finally {
+      host[key] = orig;
+    }
+    ok(`12-02 文案改名单源自证 ${label}：交付件随常量同步移动且旧文案不留第二处`,
+      moved, { label, key, probe, orig, residual });
+    ok(`12-03 还原 ${label} 后重建件与改名前逐字符相同（自证不留残留状态）`,
+      await mkArt(inp) === baseText, { label, key });
+  }
+
+  // 反证 C · 破行为必须打红门（判据 4）：把 layout 里的数改错后重建交付件，用**同一条判定函数**再判一次。
+  //   改数后仍判绿 ⇒ 该断言是空断言（读不出行为变化）；这里要求三条全红。
+  const sheetTexts = async (l: any) => {
+    const wbx = await loadWb(await X.buildEstimateXlsx(l));
+    return {
+      main: wbx.getWorksheet(X.SHEET_MAIN),
+      detail: wbx.getWorksheet(X.SHEET_DETAIL),
+      params: wbx.getWorksheet(X.SHEET_PARAMS),
+    };
+  };
+  const nDet = ALL_ROWS.filter((r) => r.planKind !== 'milestone').length;
+  const lExtraReq: any = X.layoutEstimate(input({
+    rows: [...ALL_ROWS, mk({ planId: 'pl-req-x', phase: 'req', ...P(1, 1, 1) })],
+  }));
+  const lBadUnrev: any = { ...L, unreviewed: L.unreviewed + 1 };
+  const lBadP84: any = { ...L, summary: { ...L.summary, quote: { ...L.summary.quote, p84ManDays: L.summary.quote.p84ManDays + 5 } } };
+  const realSheets = await sheetTexts(L);
+  for (const [name, l, judge] of [
+    ['5-05 聚合行数（夹具多 1 条 req 行后件内数量与期望不符）',
+      lExtraReq, (s: Awaited<ReturnType<typeof sheetTexts>>) => aggNoteBehavior(s.main)],
+    ['5-13 未复核计数（注里的数被改大、明细来源列未变）',
+      lBadUnrev, (s: Awaited<ReturnType<typeof sheetTexts>>) => unreviewedBehavior(s.detail, nDet)],
+    ['5-15 对外报价 P84（件里的 P84 被改离 E+1σ）',
+      lBadP84, (s: Awaited<ReturnType<typeof sheetTexts>>) => p84Behavior(s.params)],
+  ] as Array<[string, any, (s: Awaited<ReturnType<typeof sheetTexts>>) => boolean]>) {
+    const sabotaged = await sheetTexts(l);
+    // 同一条判定函数：真件判绿 + 破坏件判红才叫有判别力（只要求判红会放行「恒 false 的空断言」）
+    ok(`12-04 反证 ${name}：同一判定函数在真件为真、行为破坏后必须为假（否则该断言无判别力）`,
+      judge(realSheets) === true && judge(sabotaged) === false,
+      { real: judge(realSheets), sabotaged: judge(sabotaged) });
+  }
+  // 反证 D：上面两条「注里的数被改大」「P84 被改离」如果只看字面锚点，改数后仍逐字符匹配——
+  //   这正是规约判据 3 要求配行为断言的原因：字面锚点单独放行错数，本条把这点固化成断言。
+  const litOnly = [
+    (await sheetTexts(lBadUnrev)).detail,
+    (await sheetTexts(lBadP84)).params,
+  ];
+  ok('12-05 反证「只看字面锚点会放行错数」：改坏数值后 unreviewedLiteral/p84Literal 仍为真（固化判据 3 要求配行为断言的必要性）',
+    unreviewedLiteral(litOnly[0], nDet, L.unreviewed + 1) === true && p84Literal(litOnly[1]) === true);
 }
 
 // 先收实例再回收临时目录：child.kill() 是异步的，立即 rmSync 会撞上还在被 sqlite 持有的 mtask.db-shm
