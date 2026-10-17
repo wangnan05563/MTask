@@ -101,8 +101,25 @@ export function yieldToEventLoop(): Promise<void> {
  */
 const SYMBOL_DEEP_VERIFY_MS = 5 * 60 * 1000;
 const SYMBOL_FAST_PATH_MIN_FILES = 200;
-/** 快照遍历的目录数上限：超限说明目录结构本身已是负担，放弃短路（返回 null 即走深扫） */
-const SYMBOL_SNAPSHOT_MAX_DIRS = 20000;
+/**
+ * 快照遍历的目录数上限：超限说明目录结构本身已是负担，放弃短路（返回 null 即走深扫）。
+ * T02288 方案 A：20000 → 50000。依据 bemp（`D:\code\QJ\BEMP5.0DEV`）实测 24,866 个非忽略目录：
+ * 20000 帽下 `buildDirSnapshot` 对该树恒返回 null → 快照永不登记 → 每一轮都走完整深扫
+ * （T02216 暖轮实测 19~21s）；50000 不撞帽且留 2× 余量。不取消帽——取消等于给无界树开无界内存。
+ * 单一来源：帽值只在此定义，读取一律经 `snapshotMaxDirs()`。
+ * export 仅为验收门读值断言「帽只有一个来源、默认值确为 50000」（T02288 门 A 段），产品代码内不重新硬编码。
+ */
+export const SYMBOL_SNAPSHOT_MAX_DIRS = 50000;
+
+/**
+ * 生效帽：默认取上面的常量，`MTASK_SYMBOL_SNAPSHOT_MAX_DIRS` 可下调。
+ * 存在是为了验收门能在毫秒级复现「撞帽」分支——造 2 万个真实目录既慢又不稳定，
+ * 而注入小帽走的是同一段判定代码。非法值（非数、≤0）回落默认，不让一个笔误关掉护栏。
+ */
+export function snapshotMaxDirs(): number {
+  const raw = Number(process.env.MTASK_SYMBOL_SNAPSHOT_MAX_DIRS);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : SYMBOL_SNAPSHOT_MAX_DIRS;
+}
 
 /** relDir（posix 相对路径，根为 ''）→ 该目录未忽略条目的「名字+是否目录」摘要 */
 type DirSnapshot = Map<string, string>;
@@ -188,14 +205,34 @@ function dropWorkspaceWatch(projectId: string): void {
   const cur = workspaceWatches.get(projectId);
   if (cur?.watcher) { try { cur.watcher.close(); } catch { /* 已关闭 */ } }
   workspaceWatches.delete(projectId);
+  capHitLogged.delete(projectId); // 换绑/清空后是新树，旧的「已告警过」不能替新树沉默
 }
 
-/** 只遍历目录（沿用同一忽略规则源），产出目录条目指纹；读不动的目录或超上限返回 null */
-function buildDirSnapshot(workspace: string, rules: IgnoreRule[]): DirSnapshot | null {
+/**
+ * 撞帽告警去重位（T02288）：短路对某棵树永久失效这件事此前完全静默——日志里看不出
+ * 「快照没建成」，用户侧只表现为「热刷为什么老是十几秒」，运维无从判断是性能问题还是配置问题。
+ * 口径：一个深扫周期内至多一条。周期终点是「快照登记成功」（`commitTreeSnapshot` 复位），
+ * 故永久撞帽的树只记一条，不会随热刷次数刷屏；树缩回帽内后若再次撞帽会重新可见。
+ */
+const capHitLogged = new Set<string>();
+
+function noteCapHit(projectId: string, workspace: string, dirs: number, cap: number): void {
+  if (capHitLogged.has(projectId)) return;
+  capHitLogged.add(projectId);
+  console.warn(`[workspace] 符号快照撞帽，热刷短路对该树停用：project=${projectId} dirs=${dirs} cap=${cap} workspace=${workspace}（深扫每轮照常，仅省 stat 的短路失效；目录数接近帽时考虑上调 MTASK_SYMBOL_SNAPSHOT_MAX_DIRS）`);
+}
+
+/** 只遍历目录（沿用同一忽略规则源），产出目录条目指纹；读不动的目录或超上限返回 null。
+ *  export 供验收门在真实大树上直接验证「换帽前后的撞帽差异」（T02288 门 F 段），无需跑完整深扫。 */
+export function buildDirSnapshot(workspace: string, rules: IgnoreRule[], projectId = ''): DirSnapshot | null {
+  const cap = snapshotMaxDirs();
   const dirs: DirSnapshot = new Map();
   const stack: Array<{ dir: string; rel: string }> = [{ dir: workspace, rel: '' }];
   while (stack.length > 0) {
-    if (dirs.size >= SYMBOL_SNAPSHOT_MAX_DIRS) return null;
+    if (dirs.size >= cap) {
+      noteCapHit(projectId || workspace, workspace, dirs.size, cap);
+      return null;
+    }
     const frame = stack.pop() as { dir: string; rel: string };
     let entries: Array<{ name: string; isDir: boolean }>;
     try {
@@ -222,8 +259,9 @@ function snapshotEqual(a: DirSnapshot, b: DirSnapshot): boolean {
 
 /** 深扫完成后登记快照；快照不可得时清除旧快照（下次仍走深扫） */
 function commitTreeSnapshot(projectId: string, workspace: string, rules: IgnoreRule[], candidateFiles: number, oversized: number, events: number): void {
-  const dirs = buildDirSnapshot(workspace, rules);
+  const dirs = buildDirSnapshot(workspace, rules, projectId);
   if (!dirs) { treeSnapshots.delete(projectId); return; }
+  capHitLogged.delete(projectId); // 快照建成 = 该树本次未撞帽，告警位复位（若日后重新撞帽会再记一条）
   treeSnapshots.set(projectId, { dirs, candidateFiles, oversized, deepVerifiedAt: Date.now(), eventsAtSnapshot: events });
 }
 interface SearchMemo {
@@ -803,7 +841,7 @@ export const WorkspaceService = {
       && !watchState.unsupported && watchState.watcher
       && watchState.events === snap.eventsAtSnapshot
       && Date.now() - snap.deepVerifiedAt < SYMBOL_DEEP_VERIFY_MS) {
-      const current = buildDirSnapshot(workspaceAbs, rules);
+      const current = buildDirSnapshot(workspaceAbs, rules, projectId);
       // 结构指纹一致（无增删改名）+ 期间零监视事件（无内容写入）→ 整轮 stat 可省；
       // 此时也不失效检索 memo——内容既然没变，让 memo 继续命中才是短路的完整收益
       if (current && snapshotEqual(snap.dirs, current)) {
