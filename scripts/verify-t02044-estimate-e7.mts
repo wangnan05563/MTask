@@ -537,6 +537,12 @@ group('G9 §6.1 备注自检计数与引擎同源（T02302：E7 侧区分性断�
   ok('G-35 备注三计数与引擎 ratioCheck.excluded 逐项同值（备注取数单源，不是第二份口径）',
     !!note && Number(note[1]) === rc7.subtotal && Number(note[2]) === rc7.milestone && Number(note[3]) === rc7.unEstimated,
     { note: note && note[0], excluded: rc7 });
+  // T02304 口径甲：备注面的「里程碑 M 行」此前恒 0（导出侧没把里程碑行喂进引擎），
+  // 期望值由夹具里程碑行数独立推导。
+  const msExpect7 = FIX_ROWS.filter((r) => r.planKind === 'milestone').length;
+  ok('G-36 备注「里程碑 M 行」= 夹具里程碑行数独立推导值（不再恒 0，与 milestoneSkipped 同值）（T02304）',
+    !!note && Number(note[2]) === msExpect7 && rc7.milestone === msExpect7 && layoutOf().milestoneSkipped === msExpect7,
+    { note: note && note[0], expect: msExpect7, got: note && Number(note[2]), milestoneSkipped: layoutOf().milestoneSkipped, excluded: rc7 });
 }
 
 console.log(`\n${'='.repeat(56)}`);

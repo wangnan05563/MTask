@@ -327,6 +327,18 @@ export function layoutEstimate(input: EstimateExportInput): EstimateLayout {
     if (d.points) engineRows.push({ key: d.planId, phase: 'dev', points: d.points, role: 'detail' });
   }
   if (subtotalRow) engineRows.push({ key: `subtotal:dev`, phase: 'dev', points: null, role: 'subtotal' });
+  // T02304 口径甲：里程碑行照样喂进引擎并带 `planKind`——buildSummary 先按 planKind 判为结构性
+  // 排除（不进 Σ、图里也被 milestoneIds 滤掉），所以报价数不变，但 §4.4 备注的「里程碑 M 行」
+  // 从导出侧恒 0 变成与面板 excluded.milestone 同值。
+  for (const m of input.rows.filter((r) => r.planKind === 'milestone')) {
+    engineRows.push({
+      key: m.planId, phase: m.phase,
+      points: isPoint(m)
+        ? { optimistic: m.optimistic as number, likely: m.likely as number, pessimistic: m.pessimistic as number }
+        : null,
+      role: 'detail', planKind: 'milestone',
+    });
+  }
   const summary = buildSummary(engineRows, input.config);
 
   const denom = summary.actualManMonths.expected;

@@ -1006,7 +1006,13 @@ group('G11 §4.4 自检计数轨（T02302：T02123「无点值行也要进引擎
   ok('11-03 计数变化不动合计：directManDays.expected 仍等于独立重算值（新增计数不得把行漏出 Σ）',
     Math.abs(L.summary.directManDays.expected - E.expected(TOTAL_PTS)) < 1e-9,
     { got: L.summary.directManDays.expected, expect: E.expected(TOTAL_PTS) });
-  console.log(`  [INFO] 里程碑计数当前口径（本组不断言其正确性，T02302 边界）：excluded.milestone=${rcE.milestone}，夹具里程碑行=${ALL_ROWS.filter((r) => r.planKind === 'milestone').length}`);
+  console.log(`  [INFO] 里程碑计数口径（T02304 裁定甲后已升为断言 11-04）：excluded.milestone=${rcE.milestone}，夹具里程碑行=${ALL_ROWS.filter((r) => r.planKind === 'milestone').length}`);
+  // T02304 口径甲：导出侧把里程碑行喂进引擎（buildSummary 判为结构性排除，不进 Σ），
+  // 期望值由夹具行数独立推导，不读 layout 的计数——「备注里程碑 M 行」此前在导出路径恒 0。
+  const msExpect = ALL_ROWS.filter((r) => r.planKind === 'milestone').length;
+  ok('11-04 自检 excluded.milestone = 夹具里程碑行数（与 milestoneSkipped、与面板 excluded.milestone 三口径同值）（T02304）',
+    rcE.milestone === msExpect && L.milestoneSkipped === msExpect,
+    { expect: msExpect, got: rcE.milestone, milestoneSkipped: L.milestoneSkipped, excluded: rcE });
 }
 
 // 先收实例再回收临时目录：child.kill() 是异步的，立即 rmSync 会撞上还在被 sqlite 持有的 mtask.db-shm
