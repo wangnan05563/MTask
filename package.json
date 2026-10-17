@@ -21,6 +21,7 @@
     "verify:update": "node scripts/verify-t02071-update-flow.mjs",
     "verify:prdgen-pointer": "node node_modules/tsx/dist/cli.mjs scripts/verify-t02192-prdgen-pointer.mts",
     "verify:head-selfconsistency": "node node_modules/tsx/dist/cli.mjs scripts/verify-t02295-head-selfconsistency.mts",
+    "verify:pack-precheck": "node node_modules/tsx/dist/cli.mjs scripts/verify-t02321-pack-precheck.mts",
     "electron": "electron electron/main.js",
     "dist": "node scripts/dist.js",
     "dist:dir": "node scripts/dist.js --dir",
