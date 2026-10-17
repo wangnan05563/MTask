@@ -14,15 +14,19 @@
  * 环境变量：T02144_PORT（默认随机 39600+rand300）、T02144_SANDBOX（临时 DATA_DIR 根，默认仓库上两级 tmp/）。
  * 隔离纪律（skill 红线 8）：DATA_DIR/TMP 一律落 D:（C: 盘实测 0 可用会触发 SQLITE_FULL）；
  *   生产库只读副本、端口全临时、模型走进程内 mock（零真实配额）、收尾删目录（副本含明文密钥配置）。
+ * 负对照工作区（T02293）：N 组要把接线摘掉/把守卫改错再重启，**不在本仓工作树上动源码**——
+ *   那等于在别人正在编辑的文件里读-改-写（并发会话的丢更新窗口），门中途崩了还会把仓库留在被改坏的状态。
+ *   改为 `git worktree add --detach` 出一份 HEAD 副本，node_modules 用 junction 复用（原生模块 ABI 必须与主仓一致），
+ *   用完先摘 junction 再 worktree remove；主仓工作树全程零写入（N-05 用 sha256 自证）。
  * 结果落 .workbuddy/t02144-gate-results-<运行标识>.txt。
  */
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
-  utimesSync, unlinkSync, writeFileSync,
+  utimesSync, unlinkSync, writeFileSync, symlinkSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -114,7 +118,6 @@ const MOCK_PORT = (mock.address() as { port: number }).port;
 // 隔离实例：生产库只读副本 → 临时 DATA_DIR（D:）
 // =====================================================================
 const { resolveServerLauncher } = await import('./isolated-server-launcher.mts');
-const LAUNCHER = resolveServerLauncher(ROOT, join(ROOT, 'server', 'src', 'index.ts'));
 const prodDb = join(process.env.APPDATA ?? '', 'MTask', 'data', 'mtask.db');
 const Database = (await import('better-sqlite3')).default;
 {
@@ -126,10 +129,21 @@ ok('X-00 生产库只读副本已生成（本门零写生产库）', existsSync(
 
 let child: ChildProcess | null = null;
 let serverLog = '';
-function boot(): ChildProcess {
-  const c = spawn(LAUNCHER.exec, LAUNCHER.tsx, {
-    cwd: ROOT,
-    env: { ...process.env, ...LAUNCHER.env, MTask_PORT: String(PORT), MTask_DATA_DIR: DATA_DIR, TMP: SANDBOX_ROOT, TEMP: SANDBOX_ROOT },
+/** 副本工作区与主仓各自的启动器（原生模块 ABI 探测按 root 走，两份缓存） */
+const LAUNCHERS = new Map<string, ReturnType<typeof resolveServerLauncher>>();
+function launcherFor(root: string) {
+  let l = LAUNCHERS.get(root);
+  if (!l) {
+    l = resolveServerLauncher(root, join(root, 'server', 'src', 'index.ts'));
+    LAUNCHERS.set(root, l);
+  }
+  return l;
+}
+function boot(root: string = ROOT): ChildProcess {
+  const L = launcherFor(root);
+  const c = spawn(L.exec, L.tsx, {
+    cwd: root,
+    env: { ...process.env, ...L.env, MTask_PORT: String(PORT), MTask_DATA_DIR: DATA_DIR, TMP: SANDBOX_ROOT, TEMP: SANDBOX_ROOT },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   c.stdout?.on('data', (b: Buffer) => (serverLog += b.toString()));
@@ -393,70 +407,116 @@ if (!(await waitUp())) {
 
 // =====================================================================
 // N 组：负对照（把改动摘掉/改错，对应断言必须变红——证明本门有牙）
+// T02293 改判两条：
+//   ① 落点：原先直接改本仓工作树的 server/src/index.ts、server/src/routes/plans.ts。那两个文件正是
+//      并发会话在编辑的对象，读-改-写的窗口就是别人的丢更新窗口，门中途崩了仓库还留在被摘掉接线的状态。
+//      现在一律在 HEAD 的 detached worktree 副本里做，主仓工作树只读（N-05 用 sha256 自证零写入）。
+//   ② 定位：原先钉的是「整行字面量（含缩进）」，缩进一变就 throw，整门崩栈；现在按语义正则定位，
+//      命不中只让对应负对照腿记红并写明原因（负对照缺席=本门没牙，这是判据问题，不是门脚本崩溃的理由）。
 // =====================================================================
-function patch(rel: string, from: string, to: string): { restore: () => void; before: string } {
-  const p = join(ROOT, rel);
+const NEG_ROOT = join(SANDBOX_ROOT, `t02144-negwt-${process.pid}`);
+const NEG_FILES = ['server/src/index.ts', 'server/src/routes/plans.ts'];
+const shaOf = (p: string) => createHash('sha256').update(readFileSync(p)).digest('hex');
+function buildNegWorkspace(): boolean {
+  try {
+    if (existsSync(NEG_ROOT)) rmSync(NEG_ROOT, { recursive: true, force: true });
+    execFileSync('git', ['worktree', 'add', '--detach', NEG_ROOT, 'HEAD'], { cwd: ROOT, stdio: 'pipe', timeout: 180_000 });
+    // junction（实测本机无需管理员权限；普通 symlink 需要），依赖仍用主仓那一份——原生模块 ABI 必须一致
+    symlinkSync(join(ROOT, 'node_modules'), join(NEG_ROOT, 'node_modules'), 'junction');
+    return existsSync(join(NEG_ROOT, 'server', 'src', 'index.ts')) && existsSync(join(NEG_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs'));
+  } catch (e) {
+    serverLog += `\n[负对照工作区创建失败] ${e instanceof Error ? e.message : String(e)}\n`;
+    return false;
+  }
+}
+function dropNegWorkspace(): void {
+  // 先摘 junction（Node 的 rmSync 只删链接本身，实测不会顺着删进主仓 node_modules），再删副本
+  try { rmSync(join(NEG_ROOT, 'node_modules'), { recursive: true, force: true }); } catch { /* 没建成就无需解除 */ }
+  try { execFileSync('git', ['worktree', 'remove', '--force', NEG_ROOT], { cwd: ROOT, stdio: 'ignore', timeout: 180_000 }); }
+  catch { rmSync(NEG_ROOT, { recursive: true, force: true }); }
+  try { execFileSync('git', ['worktree', 'prune'], { cwd: ROOT, stdio: 'ignore', timeout: 60_000 }); } catch { /* 尽力 */ }
+}
+/** 在副本里按语义正则打一处补丁；返回 null 表示没命中（调用方据此记红，不抛） */
+function patchIn(root: string, rel: string, find: RegExp, to: (m: RegExpExecArray) => string):
+  { sha: string; hit: string; restore: () => void } | null {
+  const p = join(root, rel);
   const before = readFileSync(p, 'utf8');
-  const at = before.indexOf(from);
-  if (at < 0) throw new Error(`负对照锚点未命中：${rel}`);
-  writeFileSync(p, before.slice(0, at) + to + before.slice(at + from.length));
+  const m = find.exec(before);
+  if (!m) return null;
+  writeFileSync(p, before.slice(0, m.index) + to(m) + before.slice(m.index + m[0].length));
   const sha = createHash('sha256').update(before).digest('hex');
   return {
-    before: sha,
+    sha, hit: m[0].trim(),
     restore: () => {
       writeFileSync(p, before);
-      const now = createHash('sha256').update(readFileSync(p)).digest('hex');
-      if (now !== sha) throw new Error(`负对照还原后 sha256 不一致：${rel}`);
+      if (shaOf(p) !== sha) throw new Error(`负对照还原后 sha256 不一致：${rel}`);
     },
   };
 }
 {
-  // N-01 摘掉启动清扫接线 → 过期令牌必须活下来
-  const nFile = tok();
-  writeFileSync(join(TMP_DIR, nFile), Buffer.from('n01'));
-  backdate(nFile, 7);
-  const guard = patch('server/src/index.ts', '  startReportTmpSweeper();', '  // (负对照临时摘除)');
+  const negReady = buildNegWorkspace();
+  okB('negWorkspace', 'N-00 负对照工作区就绪：HEAD 的 detached worktree 副本 + node_modules junction（主仓工作树全程只读）',
+    negReady, { NEG_ROOT, 创建方式: 'git worktree add --detach + fs junction' });
+  const repoBefore = new Map(NEG_FILES.map((f) => [f, shaOf(join(ROOT, f))]));
   try {
-    serverLog = '';
-    child = boot();
-    const up = await waitUp();
-    okB('nWiringControl', 'N-01 负对照：摘掉 startReportTmpSweeper 接线后，过期令牌不再被清（A1-01 不是绿的摆设）',
-      up && has(nFile), { 起来了: up, 仍在: has(nFile) });
-    await killBoot();
-  } finally {
-    guard.restore();
-    if (has(nFile)) unlinkSync(join(TMP_DIR, nFile));
-  }
-  okB('nRestore1', 'N-02 负对照还原校验：index.ts sha256 与改动前一致', (() => {
-    const now = createHash('sha256').update(readFileSync(join(ROOT, 'server/src/index.ts'))).digest('hex');
-    return now === guard.before;
-  })());
+    if (!negReady) throw new Error('负对照工作区未建成（见 serverLog）');
 
-  // N-03 把 close 守卫改成无条件删 → done 送达后重试下载必须失败（证明 !doneSent 这个条件是必要的）
-  const guard2 = patch('server/src/routes/plans.ts',
-    '    if (issuedToken && !doneSent) discardReport(issuedToken);',
-    '    if (issuedToken) discardReport(issuedToken);');
-  try {
-    const mockTool = await (async () => { child = boot(); await waitUp(); return call('POST', '/aitools', {
-      name: 't02144-mock3', type: 'openai-compatible', endpoint: `http://127.0.0.1:${MOCK_PORT}`,
-      apiKey: 'mock-key', model: 'mock-wording', timeoutMs: 20_000,
-    }); })();
-    const toolId3 = mockTool.body?.id as string;
-    const g = await streamGen('/plans/kickoff-ppt-stream', { projectId: FIVE_PID, toolId: toolId3, outline: baseOutline() }, {
-      abortWhen: (e) => e.event === 'done',
-    });
-    const t3 = String(g.events.find((e) => e.event === 'done')?.data.token ?? '');
-    const r3 = t3 ? await download(t3, 'x.pptx') : null;
-    okB('nDoneSentControl', 'N-03 负对照：无条件删令「done 已送达后重试下载」失败（A2-04 的语义边界确有守卫价值）',
-      !!t3 && r3?.status !== 200, { token: t3, status: r3?.status, 文件在: has(t3) });
-    await killBoot();
+    // N-01 摘掉启动清扫接线 → 过期令牌必须活下来
+    const nFile = tok();
+    writeFileSync(join(TMP_DIR, nFile), Buffer.from('n01'));
+    backdate(nFile, 7);
+    const guard = patchIn(NEG_ROOT, 'server/src/index.ts', /^[ \t]*startReportTmpSweeper\(\);[ \t]*$/m,
+      () => '  /* 负对照：启动清扫接线摘除 */');
+    if (!guard) throw new Error('N-01 接线锚点未命中：副本里找不到「启动时调用清扫定时器」这一行');
+    try {
+      serverLog = '';
+      child = boot(NEG_ROOT);
+      const up = await waitUp();
+      okB('nWiringControl', 'N-01 负对照：在副本里摘掉启动清扫接线后，过期令牌不再被清（A1-01 不是绿的摆设）',
+        up && has(nFile), { 起来了: up, 仍在: has(nFile), 摘除的接线: guard.hit });
+      await killBoot();
+    } finally {
+      guard.restore();
+      if (has(nFile)) unlinkSync(join(TMP_DIR, nFile));
+    }
+    okB('nRestore1', 'N-02 负对照还原校验：副本 index.ts 的 sha256 与改动前一致（补丁没留下残渣）', shaOf(join(NEG_ROOT, 'server/src/index.ts')) === guard.sha);
+
+    // N-03 把 close 守卫改成无条件删 → done 送达后重试下载必须失败（证明 !doneSent 这个条件是必要的）
+    const guard2 = patchIn(NEG_ROOT, 'server/src/routes/plans.ts',
+      /if \(issuedToken && !doneSent\) discardReport\(issuedToken\);/,
+      () => 'if (issuedToken) discardReport(issuedToken);');
+    if (!guard2) throw new Error('N-03 守卫锚点未命中：副本里找不到「未送达才回收令牌」这条守卫');
+    try {
+      const mockTool = await (async () => { child = boot(NEG_ROOT); await waitUp(); return call('POST', '/aitools', {
+        name: 't02144-mock3', type: 'openai-compatible', endpoint: `http://127.0.0.1:${MOCK_PORT}`,
+        apiKey: 'mock-key', model: 'mock-wording', timeoutMs: 20_000,
+      }); })();
+      const toolId3 = mockTool.body?.id as string;
+      const g = await streamGen('/plans/kickoff-ppt-stream', { projectId: FIVE_PID, toolId: toolId3, outline: baseOutline() }, {
+        abortWhen: (e) => e.event === 'done',
+      });
+      const t3 = String(g.events.find((e) => e.event === 'done')?.data.token ?? '');
+      const r3 = t3 ? await download(t3, 'x.pptx') : null;
+      okB('nDoneSentControl', 'N-03 负对照：无条件删令「done 已送达后重试下载」失败（A2-04 的语义边界确有守卫价值）',
+        !!t3 && r3?.status !== 200, { token: t3, status: r3?.status, 文件在: has(t3) });
+      await killBoot();
+    } finally {
+      guard2.restore();
+    }
+    okB('nRestore2', 'N-04 负对照还原校验：副本 plans.ts 的 sha256 与改动前一致', shaOf(join(NEG_ROOT, 'server/src/routes/plans.ts')) === guard2.sha);
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    serverLog += `\n[N 组负对照未完成] ${why}\n`;
+    okB('nWiringControl', 'N-01 负对照：在副本里摘掉启动清扫接线后，过期令牌不再被清（A1-01 不是绿的摆设）', false, `未完成：${why}`);
+    okB('nRestore1', 'N-02 负对照还原校验：副本 index.ts 的 sha256 与改动前一致（补丁没留下残渣）', false, `未完成：${why}`);
+    okB('nDoneSentControl', 'N-03 负对照：无条件删令「done 已送达后重试下载」失败（A2-04 的语义边界确有守卫价值）', false, `未完成：${why}`);
+    okB('nRestore2', 'N-04 负对照还原校验：副本 plans.ts 的 sha256 与改动前一致', false, `未完成：${why}`);
   } finally {
-    guard2.restore();
+    if (existsSync(NEG_ROOT)) dropNegWorkspace();
   }
-  okB('nRestore2', 'N-04 负对照还原校验：plans.ts sha256 与改动前一致', (() => {
-    const now = createHash('sha256').update(readFileSync(join(ROOT, 'server/src/routes/plans.ts'))).digest('hex');
-    return now === guard2.before;
-  })());
+  okB('repoUntouched', 'N-05 本仓工作树零写入：N 组跑完后主仓两个源码文件的 sha256 与进入 N 组前逐字一致（负对照只在副本里动刀）',
+    NEG_FILES.every((f) => shaOf(join(ROOT, f)) === repoBefore.get(f)),
+    NEG_FILES.map((f) => ({ f, 前: repoBefore.get(f)?.slice(0, 12), 后: shaOf(join(ROOT, f)).slice(0, 12) })));
 }
 
 // =====================================================================
