@@ -229,19 +229,25 @@ if (!(await waitUp())) {
   const mix429 = mix.filter((r: any) => r.status === 429).length;
   ok('G-04 混跑同闸生效：启动会在途 + 3 路周报 → 总接受数不超上限 2 且确有请求被拒（两处共用一闸的行为证据，不只是同名）',
     mixOk >= 1 && mixOk <= 2 && mix429 >= 1, mix.map((r: any) => r.status));
-  await sleep(2_000);
-
   {
     const wdb = new Database(join(DATA_DIR, 'mtask.db'));
     wdb.prepare("insert into app_settings(key,value) values('exportGateLimit.report-generate','1') " +
       'on conflict(key) do update set value=excluded.value').run();
     wdb.close();
   }
+  // G-04 那一路启动会在 4s 就 abort 了客户端，但服务端仍要把在途稿跑完才归还闸位，
+  // 固定 sleep 猜不准归还时刻——闸位没空时，上限 1 会把这里的 2 路全拒（实测 [429,429]）。
+  // 改用单发探面：上限已经是 1，一次 200 就是「在途计数归零」的行为证据，拿它当前置条件。
+  let drained = false;
+  for (let i = 0; i < 40 && !drained; i++) {
+    drained = (await genReport('docx', pid.id)).status === 200;
+    if (!drained) await sleep(500);
+  }
   await sleep(300);
   const pair = await Promise.all([genReport('xlsx', pid.id), genReport('pdf', pid.id)]);
   ok('G-05 上限经 app_settings 即时生效（副本库调 report-generate=1 → 2 路只放 1 路；只写副本不碰生产）',
-    pair.filter((r) => r.status === 200).length === 1 && pair.filter((r) => r.status === 429).length === 1,
-    pair.map((r) => r.status));
+    drained && pair.filter((r) => r.status === 200).length === 1 && pair.filter((r) => r.status === 429).length === 1,
+    { 闸位归零探面: drained, 两路状态: pair.map((r) => r.status) });
   {
     const wdb = new Database(join(DATA_DIR, 'mtask.db'));
     wdb.prepare("delete from app_settings where key = 'exportGateLimit.report-generate'").run();
