@@ -330,34 +330,53 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
    * T02300：勾选过滤 + PRD 全文拼接 + 处置口径收成**同一个** payload 构造函数。
    * 预演与导入必须投同一份 payload——各拼一份的话预演计数与实落库必然分叉，本单红线。
    * 返回 null = 一条都没勾选（调用方各自给提示）。
+   * 顺带把「被勾选过滤丢弃的 reqNos」原样交出（不改 payload，只供播报）：面板既有口径一直是静默丢弃，
+   * 实测预演时暴露出「编号打错/漏勾」在界面里连一行提示都没有——预演的立项理由就是让连带影响可见，
+   * 这条丢弃属于同一类影响，故在此点名；服务端 `unlinkedReqNos` 告警仍照常工作（它看到的是丢弃后的 payload）。
    */
-  function composeImportPayload(): Record<string, unknown> | null {
+  function composeImportPayload(): { payload: Record<string, unknown>; droppedReqNos: string[] } | null {
     const rq = reqs.filter((x) => x.include && x.title.trim());
     const pl = plans.filter((x) => x.include && x.title.trim());
     if (rq.length === 0 && pl.length === 0) return null;
     // 勾选过滤：仅提交勾选项；reqNos 需与提交的需求编号保持一致（未勾选需求的引用自动丢弃）
     const keptNos = new Set(rq.map((x) => x.reqNo));
+    const droppedReqNos = [...new Set(pl.flatMap((p) => p.reqNos.filter((n) => !keptNos.has(n))))];
     // T00908：把暂存的源文件 PRD 全文拼为 prdMd 一并入库——后端落库 prd_docs（PRD 管理视图）并为需求行回填 prd_id 建立关联
     const prdMd = prdSources.map((s) => `# 来源：${s.name}\n\n${s.text}`).join('\n\n---\n\n');
     const prdFilename = prdSources.length > 1 ? `${prdSources.length} 个来源文件` : prdSources[0]?.name;
     return {
-      projectId,
-      createTasks,
-      requirements: rq.map(({ include: _inc, key: _key, ...rest }) => rest),
-      plans: pl.map(({ include: _inc, key: _key, ...rest }) => ({ ...rest, reqNos: rest.reqNos.filter((n) => keptNos.has(n)) })),
-      prdMd: prdMd || undefined,
-      prdFilename: prdFilename || undefined,
-      // T02076：同名计划处置——'reuse' 走幂等补写，缺省新建让号
-      onDuplicatePlan: onDuplicatePlan === 'reuse' ? 'reuse' : undefined,
+      payload: {
+        projectId,
+        createTasks,
+        requirements: rq.map(({ include: _inc, key: _key, ...rest }) => rest),
+        plans: pl.map(({ include: _inc, key: _key, ...rest }) => ({ ...rest, reqNos: rest.reqNos.filter((n) => keptNos.has(n)) })),
+        prdMd: prdMd || undefined,
+        prdFilename: prdFilename || undefined,
+        // T02076：同名计划处置——'reuse' 走幂等补写，缺省新建让号
+        onDuplicatePlan: onDuplicatePlan === 'reuse' ? 'reuse' : undefined,
+      },
+      droppedReqNos,
     };
+  }
+
+  /** 勾选过滤丢弃的编号必须可见（实测：面板此前静默丢弃，导入后关联凭空少一条且无从追溯） */
+  function logDroppedReqNos(dropped: string[], when: string): void {
+    if (dropped.length === 0) return;
+    aiImportStore.log(
+      `${when}提示：${dropped.length} 个需求编号被已勾选的计划引用，但不在本次勾选的需求行里（${dropped.join('、')}）——`
+      + '按既有口径这些引用会被丢弃，导入后对应关联不会建立；请核对是否漏勾了需求行或编号写错',
+      'error',
+    );
   }
 
   /** T02300：导入前预演——打只读端点 `/plans/import-prd/preview`，同一份 payload 先问清「这次会动什么」 */
   async function doPreview() {
-    const payload = composeImportPayload();
-    if (!payload) { aiImportStore.log('未勾选任何需求或计划，无法预演', 'error'); return; }
+    const composed = composeImportPayload();
+    if (!composed) { aiImportStore.log('未勾选任何需求或计划，无法预演', 'error'); return; }
+    const { payload } = composed;
     aiImportStore.patch({ busy: true, error: '' });
     aiImportStore.log('预演中：只读统计本次导入的连带影响，不改动任何数据…');
+    logDroppedReqNos(composed.droppedReqNos, '预演');
     try {
       const p = await api.post<PrdPreviewResult>('/plans/import-prd/preview', payload);
       logPreviewResult(p);
@@ -372,12 +391,14 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
 
   /** 确认导入：事务创建需求项（矩阵）+ 计划（关联需求）+ 可选待办任务 */
   async function doImport() {
-    const payload = composeImportPayload();
-    if (!payload) { aiImportStore.patch({ error: '请至少勾选一条需求或计划' }); aiImportStore.log('未勾选任何条目，已中止导入', 'error'); return; }
+    const composed = composeImportPayload();
+    if (!composed) { aiImportStore.patch({ error: '请至少勾选一条需求或计划' }); aiImportStore.log('未勾选任何条目，已中止导入', 'error'); return; }
+    const payload = composed.payload;
     const rqCount = ((payload.requirements as unknown[]) ?? []).length;
     const plCount = ((payload.plans as unknown[]) ?? []).length;
     aiImportStore.patch({ busy: true, error: '' });
     aiImportStore.log(`导入中：需求 ${rqCount} 条、计划 ${plCount} 条${createTasks ? '，并同步生成待办任务' : ''}…`);
+    logDroppedReqNos(composed.droppedReqNos, '导入');
     try {
       const r = await api.post<ImportPrdResult>('/plans/import-prd', payload);
       logImportResult(r);
