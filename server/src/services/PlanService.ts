@@ -826,24 +826,40 @@ interface PrdImportDupPlanTitle { title: string; existing: number; renamedTo?: s
  *   此前每次导入都 INSERT 新行，同一 PRD 导 N 次堆 N 份相同文档，旧需求删除后沦为孤儿（aimsg 实测 3 份同文档、2 份零引用）。
  * 返回本次导入使用的 prd_docs.id；未带原文（或原文全空白）时返回 undefined（与原实现一致：整段不执行）。
  */
-function persistPrdDocForImport(
-  db: ReturnType<typeof getDb>, projectId: string, rawPrdMd: string | undefined, rawFilename: string | undefined, t: string,
-): string | undefined {
+/**
+ * T02300：PRD 原文判重的**纯读半段**（口径与 T01156-3 一字不改，抽出来供 import 与 preview 共用）。
+ * preview 若在自身里另写一套「同内容/同名」判定，两边会立刻分叉——这正是本单「边界」段落禁止的事。
+ */
+type PrdDocTarget = { action: 'none' } | { action: 'reuse'; id: string; by: 'hash' | 'name' } | { action: 'create' };
+
+function resolvePrdDocTarget(
+  db: ReturnType<typeof getDb>, projectId: string, rawPrdMd: string | undefined, rawFilename: string | undefined,
+): { target: PrdDocTarget; prdMd: string; filename: string; contentHash: string } {
   const prdMd = typeof rawPrdMd === 'string' ? rawPrdMd : '';
-  if (!prdMd.trim()) return undefined;
   const filename = (rawFilename ?? '').trim();
+  if (!prdMd.trim()) return { target: { action: 'none' }, prdMd, filename, contentHash: '' };
   const contentHash = createHash('sha256').update(prdMd).digest('hex').slice(0, 24);
   const byHash = db.prepare('SELECT id FROM prd_docs WHERE project_id = ? AND origin_hash = ?').get(projectId, contentHash) as { id: string } | undefined;
   const byName = filename
     ? db.prepare('SELECT id FROM prd_docs WHERE project_id = ? AND filename = ? ORDER BY created_at DESC LIMIT 1').get(projectId, filename) as { id: string } | undefined
     : undefined;
   const existing = byHash ?? byName;
-  if (existing) {
+  return existing
+    ? { target: { action: 'reuse', id: existing.id, by: byHash ? 'hash' : 'name' }, prdMd, filename, contentHash }
+    : { target: { action: 'create' }, prdMd, filename, contentHash };
+}
+
+function persistPrdDocForImport(
+  db: ReturnType<typeof getDb>, projectId: string, rawPrdMd: string | undefined, rawFilename: string | undefined, t: string,
+): string | undefined {
+  const { target, prdMd, filename, contentHash } = resolvePrdDocTarget(db, projectId, rawPrdMd, rawFilename);
+  if (target.action === 'none') return undefined;
+  if (target.action === 'reuse') {
     // 覆盖：更新正文/哈希/时间戳；filename 仅在本次带值时覆盖；status 保留原值（不重置用户确认态）
     db.prepare("UPDATE prd_docs SET content_md = ?, filename = CASE WHEN ? <> '' THEN ? ELSE filename END, origin_hash = ?, updated_at = ? WHERE id = ?")
-      .run(prdMd, filename, filename, contentHash, t, existing.id);
-    logService.log('INFO', 'prd', `[PRD导入覆盖] project=${projectId} doc=${existing.id} filename=${filename}（同内容/同名复用，不新建）`);
-    return existing.id;
+      .run(prdMd, filename, filename, contentHash, t, target.id);
+    logService.log('INFO', 'prd', `[PRD导入覆盖] project=${projectId} doc=${target.id} filename=${filename}（同内容/同名复用，不新建）`);
+    return target.id;
   }
   const createdId = uuid();
   db.prepare(
@@ -909,22 +925,29 @@ function resolveImportPlanTargets(
  * 复用命中时绝不改写存量行（status/编号/标题/内容一律不动，与 T01875 对计划行的保护同构）；
  * 同一「标题+内容」键在存量里命中多行时不复用——宁可新建也不静默合并歧义行。
  */
-function insertPrdRequirementsForImport(
-  db: ReturnType<typeof getDb>, projectId: string, reqs: PrdImportReqItem[], ctx: {
-    t: string;
-    prdId: string | undefined;
-    noToId: Map<string, string>;
-    requestedToId: Map<string, string>;
-    ambiguousReqNos: Set<string>;
-    reqNoMap: Array<{ from: string; to: string }>;
-    newReqs: Array<{ id: string; reqNo: string; title: string }>;
-    reuseMode: boolean;
-    reusedReqs: Array<{ id: string; reqNo: string; title: string }>;
-  },
-): void {
-  const { t, prdId, noToId, requestedToId, ambiguousReqNos, reqNoMap, newReqs, reuseMode, reusedReqs } = ctx;
-  const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM prd_requirements WHERE project_id = ?').get(projectId) as { m: number }).m;
-  let order = maxOrder;
+/**
+ * T02300：需求侧「判重 + 让号」的**纯读半段**（`importPrd` 与 `previewPrdImport` 共用同一张查找表，
+ * 杜绝「preview 里另写一套判重」的分叉——那是本单「边界」段落明令禁止的事）。
+ * 判据与 T01867/T01995/T02303 甲一字未改，只是不再 INSERT：每行给出「实际落库编号 + 复用命中的存量 id」，
+ * 写侧由 `insertPrdRequirementsForImport` 消费、预演侧直接计数，两侧计数因此不可能分叉。
+ * `targetRef` 是行身份替身：复用命中=存量行 id，新建=`:new:<下标>`。可以用占位符是因为
+ * `requestedToId`/`noToId`/`linkedReqIds` 三处判定只看「是否同一身份」，新建行的真实 uuid 与占位符
+ * 在这些判定里等价（批内互不相同，且不等于任何存量 id）。
+ */
+interface PrdImportReqPlanRow {
+  requested: string;
+  reqNo: string;
+  reuseId: string | null;
+  targetRef: string;
+  title: string;
+  ambiguousRequested: boolean;
+  src: PrdImportReqItem;
+}
+
+function resolveImportReqPlan(
+  db: ReturnType<typeof getDb>, projectId: string, reqs: PrdImportReqItem[], reuseMode: boolean,
+  reqNoMap: Array<{ from: string; to: string }>,
+): { rows: PrdImportReqPlanRow[]; willCreate: number; willReuse: number } {
   const usedNos = new Set<string>(
     (db.prepare('SELECT req_no FROM prd_requirements WHERE project_id = ?').all(projectId) as Array<{ req_no: string | null }>)
       .map((r) => String(r.req_no ?? '').trim()).filter(Boolean),
@@ -940,42 +963,88 @@ function insertPrdRequirementsForImport(
       reusable.set(k, reusable.has(k) ? null : { id: row.id, reqNo: String(row.req_no ?? '').trim() });
     }
   }
+  const rows: PrdImportReqPlanRow[] = [];
+  const claimedByRequested = new Map<string, string>();
+  let willCreate = 0;
+  let willReuse = 0;
+  reqs.forEach((r, i) => {
+    const requested = (r.reqNo ?? '').trim();
+    const title = r.title.trim();
+    const push = (targetRef: string, reqNo: string, reuseId: string | null) => {
+      // T01995 ①：同一原编号被本次两行争用时点名（后登记者仍按既有覆盖口径胜出），不再静默
+      let ambiguousRequested = false;
+      if (requested) {
+        const claimed = claimedByRequested.get(requested);
+        ambiguousRequested = claimed !== undefined && claimed !== targetRef;
+        claimedByRequested.set(requested, targetRef);
+      }
+      rows.push({ requested, reqNo, reuseId, targetRef, title, ambiguousRequested, src: r });
+    };
+    if (reuseMode) {
+      const hit = reusable.get(reqKey(r.title, r.content));
+      if (hit) {
+        // 让号明细照记：请求编号 → 复用到的既有编号（调用方据此知道「这条编号落在了哪一行」）
+        if (requested && requested !== hit.reqNo) reqNoMap.push({ from: requested, to: hit.reqNo });
+        push(hit.id, hit.reqNo, hit.id);
+        willReuse += 1;
+        return;
+      }
+    }
+    const reqNo = resolveReqNo(usedNos, requested);
+    usedNos.add(reqNo);
+    if (requested && requested !== reqNo) reqNoMap.push({ from: requested, to: reqNo });
+    push(`:new:${i}`, reqNo, null);
+    willCreate += 1;
+  });
+  return { rows, willCreate, willReuse };
+}
+
+/**
+ * 需求项（矩阵行）落库——只消费 `resolveImportReqPlan` 的判定结果做写，判据不在这里。
+ * T01995：两个编号空间分开登记——
+ *   noToId         落库编号（顺延后的实际编号）→ id，权威；
+ *   requestedToId  PRD 原编号 → id，计划条目引用的就是这个空间（T01921 的顺延不断链靠它）。
+ * T02303 甲：复用命中时绝不改写存量行（status/编号/标题/内容一律不动，与 T01875 对计划行的保护同构）。
+ */
+function insertPrdRequirementsForImport(
+  db: ReturnType<typeof getDb>, projectId: string, plan: { rows: PrdImportReqPlanRow[] }, ctx: {
+    t: string;
+    prdId: string | undefined;
+    noToId: Map<string, string>;
+    requestedToId: Map<string, string>;
+    ambiguousReqNos: Set<string>;
+    newReqs: Array<{ id: string; reqNo: string; title: string }>;
+    reusedReqs: Array<{ id: string; reqNo: string; title: string }>;
+  },
+): void {
+  const { t, prdId, noToId, requestedToId, ambiguousReqNos, newReqs, reusedReqs } = ctx;
+  const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM prd_requirements WHERE project_id = ?').get(projectId) as { m: number }).m;
+  let order = maxOrder;
   const insReq = db.prepare(
     `INSERT INTO prd_requirements (id, project_id, req_no, title, content, source_ref, priority, status, sort_order, prd_id, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?)`,
   );
-  for (const r of reqs) {
-    const requested = (r.reqNo ?? '').trim();
-    if (reuseMode) {
-      const hit = reusable.get(reqKey(r.title, r.content));
-      if (hit) {
-        noToId.set(hit.reqNo, hit.id);
-        if (requested) {
-          const claimed = requestedToId.get(requested);
-          if (claimed && claimed !== hit.id) ambiguousReqNos.add(requested);
-          requestedToId.set(requested, hit.id);
-        }
-        // 让号明细照记：请求编号 → 复用到的既有编号（调用方据此知道「这条编号落在了哪一行」）
-        if (requested && requested !== hit.reqNo) reqNoMap.push({ from: requested, to: hit.reqNo });
-        reusedReqs.push({ id: hit.id, reqNo: hit.reqNo, title: r.title.trim() });
-        continue;
+  for (const row of plan.rows) {
+    if (row.reuseId) {
+      noToId.set(row.reqNo, row.reuseId);
+      if (row.requested) {
+        if (row.ambiguousRequested) ambiguousReqNos.add(row.requested);
+        requestedToId.set(row.requested, row.reuseId);
       }
+      reusedReqs.push({ id: row.reuseId, reqNo: row.reqNo, title: row.title });
+      continue;
     }
     const id = uuid();
-    const reqNo = resolveReqNo(usedNos, requested);
-    usedNos.add(reqNo);
-    if (requested && requested !== reqNo) reqNoMap.push({ from: requested, to: reqNo });
     order += 1;
-    insReq.run(id, projectId, reqNo, r.title.trim(), r.content ?? '', r.sourceRef ?? '', r.priority ?? 'normal', order, prdId ?? null, t, t);
-    noToId.set(reqNo, id);
+    const r = row.src;
+    insReq.run(id, projectId, row.reqNo, row.title, r.content ?? '', r.sourceRef ?? '', r.priority ?? 'normal', order, prdId ?? null, t, t);
+    noToId.set(row.reqNo, id);
     // 计划条目仍按 PRD 里的原编号引用：把「请求编号 → 本行 id」登记到原编号空间（顺延后关联不断链，T01921）
-    // T01995：同一原编号被本次两行争用时点名（后登记者仍按既有口径胜出），不再静默
-    if (requested) {
-      const claimed = requestedToId.get(requested);
-      if (claimed && claimed !== id) ambiguousReqNos.add(requested);
-      requestedToId.set(requested, id);
+    if (row.requested) {
+      if (row.ambiguousRequested) ambiguousReqNos.add(row.requested);
+      requestedToId.set(row.requested, id);
     }
-    newReqs.push({ id, reqNo, title: r.title.trim() });
+    newReqs.push({ id, reqNo: row.reqNo, title: row.title });
   }
 }
 
@@ -1984,8 +2053,11 @@ export const PlanService = {
       };
       const findReqId = (n: string) => requestedToId.get(n) ?? noToId.get(n) ?? existingReqId(n);
       // T01867 / T01995：需求项落库与两个编号空间登记（口径见 insertPrdRequirementsForImport）
-      insertPrdRequirementsForImport(db, projectId, reqs, {
-        t, prdId, noToId, requestedToId, ambiguousReqNos, reqNoMap, newReqs, reuseMode, reusedReqs,
+      // T02300：判重+让号摘成纯读函数，落库只消费其结果——preview 与 import 从此共用同一张查找表，
+      // 「预演报的数」与「实落库的数」不可能分叉（分叉正是 T01869 那类误判的温床）。
+      const reqPlan = resolveImportReqPlan(db, projectId, reqs, reuseMode, reqNoMap);
+      insertPrdRequirementsForImport(db, projectId, reqPlan, {
+        t, prdId, noToId, requestedToId, ambiguousReqNos, newReqs, reusedReqs,
       });
       // 2) 计划（含 req_ids 关联）
       // T01875：planIds 与 planItems 下标对齐，元素是该条目实际落库的计划 id——
@@ -2080,6 +2152,93 @@ export const PlanService = {
       ambiguousReqNos: [...ambiguousReqNos],
       orphanRequirements,
       planRowIds,
+    };
+  },
+
+  /**
+   * T02300：PRD 导入**预演**（只读）。body 与 `importPrd` 完全一致，同一份 payload 可直接投。
+   * 零写库红线：不开 `db.transaction`、全文零 INSERT/UPDATE/DELETE——「点一下预演会不会动数据」正是
+   * 这条链路要消灭的顾虑，验收门用「preview 前后全库快照逐字节不变」守它。
+   * 判据同源：计划侧 `resolveImportPlanTargets` + 需求侧 `resolveImportReqPlan` + 原文侧 `resolvePrdDocTarget`，
+   * 全是 `importPrd` 自己在用的那几个函数；本方法不重复实现任何一条判定（另写一套判重即分叉，本单明令禁止）。
+   */
+  previewPrdImport(projectId: string, input: {
+    requirements?: Array<{ reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string }>;
+    plans?: Array<{ title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string; kind?: PlanKind; complexity?: number; status?: PlanStatus }>;
+    createTasks?: boolean;
+    prdMd?: string;
+    prdFilename?: string;
+    onDuplicatePlan?: 'new' | 'reuse';
+  }): {
+    willCreatePlans: number; willReusePlans: number; willRenamePlans: number;
+    dupPlanTitles: PrdImportDupPlanTitle[];
+    requirements: number; willCreateReqs: number; willReuseReqs: number;
+    reqNoMap: Array<{ from: string; to: string }>;
+    ambiguousReqNos: string[]; unlinkedReqNos: string[];
+    orphanRequirements: Array<{ reqNo: string; title: string }>;
+    prdDoc: { action: 'none' | 'reuse' | 'create'; id?: string; by?: 'hash' | 'name' };
+    planRowsPreview: Array<{ title: string; reuseId: string | null }>;
+    createTasks: boolean;
+    readOnly: true;
+  } {
+    const db = getDb();
+    if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
+    const reqs = (input.requirements ?? []).filter((r) => r?.title?.trim());
+    const planItems = (input.plans ?? []).filter((p) => p?.title?.trim());
+    if (reqs.length === 0 && planItems.length === 0) throw new Error('没有可导入的需求或计划条目');
+    const reuseMode = input.onDuplicatePlan === 'reuse';
+    const reqNoMap: Array<{ from: string; to: string }> = [];
+    const { planTargets, dupPlanTitles } = resolveImportPlanTargets(db, projectId, planItems, reuseMode);
+    const reqPlan = resolveImportReqPlan(db, projectId, reqs, reuseMode, reqNoMap);
+    const { target: prdDoc } = resolvePrdDocTarget(db, projectId, input.prdMd, input.prdFilename);
+    // 与 importPrd 的 findReqId 同三层口径：本次原编号空间 → 本次落库编号 → 存量按号定位（T02131 回落）
+    const requestedToId = new Map<string, string>();
+    const noToId = new Map<string, string>();
+    for (const row of reqPlan.rows) {
+      noToId.set(row.reqNo, row.targetRef);
+      if (row.requested) requestedToId.set(row.requested, row.targetRef);
+    }
+    const existingReqCache = new Map<string, string | null>();
+    const existingReqId = (n: string): string | null => {
+      const key = n.trim();
+      if (!key) return null;
+      if (existingReqCache.has(key)) return existingReqCache.get(key) ?? null;
+      const row = db.prepare('SELECT id FROM prd_requirements WHERE project_id = ? AND req_no = ?').get(projectId, key) as { id: string } | undefined;
+      const id = row?.id ?? null;
+      existingReqCache.set(key, id);
+      return id;
+    };
+    const findReqId = (n: string) => requestedToId.get(n) ?? noToId.get(n) ?? existingReqId(n);
+    const unlinkedReqNos = new Set<string>();
+    const linkedRefs = new Set<string>();
+    for (const p of planItems) {
+      for (const n of p.reqNos ?? []) {
+        const ref = findReqId(n);
+        if (!ref) unlinkedReqNos.add(n); else linkedRefs.add(ref);
+      }
+    }
+    // T01995 ②：本次要新建却零计划引用的需求行（import 侧只对 newReqs 清点，这里同口径）
+    const orphanRequirements = planItems.length > 0
+      ? reqPlan.rows.filter((x) => !x.reuseId && !linkedRefs.has(x.targetRef)).map((x) => ({ reqNo: x.reqNo, title: x.title }))
+      : [];
+    const baseTitles = planItems.map((p) => p.title.trim());
+    return {
+      willCreatePlans: planTargets.filter((x) => !x.reuseId).length,
+      willReusePlans: planTargets.filter((x) => x.reuseId).length,
+      // 让号行：新建且实际标题被加了「（N）」后缀（与 dupPlanTitles 的 renamedTo 同源，计数按行）
+      willRenamePlans: planTargets.filter((x, i) => !x.reuseId && x.title !== baseTitles[i]).length,
+      dupPlanTitles,
+      requirements: reqs.length,
+      willCreateReqs: reqPlan.willCreate,
+      willReuseReqs: reqPlan.willReuse,
+      reqNoMap,
+      ambiguousReqNos: reqPlan.rows.filter((x) => x.ambiguousRequested).map((x) => x.requested),
+      unlinkedReqNos: [...unlinkedReqNos],
+      orphanRequirements,
+      prdDoc,
+      planRowsPreview: planTargets.map((x) => ({ title: x.title, reuseId: x.reuseId })),
+      createTasks: input.createTasks === true,
+      readOnly: true,
     };
   },
 

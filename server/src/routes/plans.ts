@@ -6,7 +6,7 @@ import { safeExportName } from '../util/export-name'; // T02104：导出文件�
 import { discardReport } from '../services/ReportService'; // T02144：中止且 done 未送达时当场回收落盘令牌
 import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput, DraftCaseImport, DraftReqImport } from '../services/TestCaseService';
 import { AIService } from '../services/AIService';
-import { backfillComplexity, clampComplexity, listInvalid as listInvalidComplexity, listMissing as listMissingComplexity } from '../services/PlanComplexity'; // T01058 后续 / T02122：计划行复杂度批量补算 + 值域断言
+import { backfillComplexity, listInvalid as listInvalidComplexity, listMissing as listMissingComplexity } from '../services/PlanComplexity'; // T01058 后续 / T02122：计划行复杂度批量补算 + 值域断言
 import { resolvePrdContext } from '../util/prdContext'; // T00763：计划关联 PRD → 评估上下文
 import { parseLimit, parseOffset, wantsTotal } from '../util/list-page'; // T02284：列表分页参数统一口径（limit/offset/total=1）
 import { exportGate, REPORT_GATE } from '../util/export-gate'; // T00789：导出类并发闸；T02105：启动会稿与周报共用 REPORT_GATE
@@ -262,19 +262,44 @@ planApi.post('/ai-parse-prd', raw({ type: () => true, limit: '30mb' }), (req, re
     .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
 });
 
+/**
+ * T02300：`/import-prd` 与 `/import-prd/preview` 共用的入参归一。
+ * 两条路由必须投同一份 payload 才有「预演=实落库」的可比性，所以归一逻辑也只此一份——
+ * 各写一套的话，preview 的计数与实际导入会随参数面漂移而分叉（正是本单要防的）。
+ */
+function normalizePrdImportBody(b: Record<string, unknown>) {
+  return {
+    projectId: b.projectId as string,
+    input: {
+      requirements: Array.isArray(b.requirements) ? b.requirements as Parameters<typeof PlanService.importPrd>[1]['requirements'] : undefined,
+      plans: Array.isArray(b.plans) ? b.plans as Parameters<typeof PlanService.importPrd>[1]['plans'] : undefined,
+      createTasks: b.createTasks === true,
+      prdMd: typeof b.prdMd === 'string' ? b.prdMd : undefined, // T00763：PRD Markdown 原文完整落库
+      prdFilename: typeof b.prdFilename === 'string' ? b.prdFilename : undefined,
+      // T01875：撞名计划处置口径——'reuse' 走幂等补写，其余（含缺省）保持新建并给新行加「（N）」区分后缀
+      onDuplicatePlan: b.onDuplicatePlan === 'reuse' ? 'reuse' as const : undefined,
+    },
+  };
+}
+
 /** PRD 确认导入：事务创建需求项 + 计划（含关联）+ 可选同步生成待办任务 */
 planApi.post('/import-prd', (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   if (typeof b.projectId !== 'string' || !b.projectId) return res.status(400).json({ error: 'projectId 必填' });
-  wrap(res, () => PlanService.importPrd(b.projectId as string, {
-    requirements: Array.isArray(b.requirements) ? b.requirements as Parameters<typeof PlanService.importPrd>[1]['requirements'] : undefined,
-    plans: Array.isArray(b.plans) ? b.plans as Parameters<typeof PlanService.importPrd>[1]['plans'] : undefined,
-    createTasks: b.createTasks === true,
-    prdMd: typeof b.prdMd === 'string' ? b.prdMd : undefined, // T00763：PRD Markdown 原文完整落库
-    prdFilename: typeof b.prdFilename === 'string' ? b.prdFilename : undefined,
-    // T01875：撞名计划处置口径——'reuse' 走幂等补写，其余（含缺省）保持新建并给新行加「（N）」区分后缀
-    onDuplicatePlan: b.onDuplicatePlan === 'reuse' ? 'reuse' : undefined,
-  }));
+  const { projectId, input } = normalizePrdImportBody(b);
+  wrap(res, () => PlanService.importPrd(projectId, input));
+});
+
+/**
+ * T02300：PRD 导入**预演**（只读，零写库）。同一份 payload 先投这里，用户在点「导入」之前就能看到
+ * 本次将新建/复用/让号多少行——T01869 的「重导后两行同名、一行被读成 todo/0」之所以被误判成
+ * 「原有计划被回档」，就是因为导入前连带影响完全不可见。
+ */
+planApi.post('/import-prd/preview', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof b.projectId !== 'string' || !b.projectId) return res.status(400).json({ error: 'projectId 必填' });
+  const { projectId, input } = normalizePrdImportBody(b);
+  wrap(res, () => PlanService.previewPrdImport(projectId, input));
 });
 
 // ---------- T00763：PRD 原文文档（查看 / 反向更新） ----------
@@ -656,6 +681,20 @@ const CASE_EXPORT_MIME: Record<string, string> = {
 };
 
 /**
+ * 按导出格式分发渲染器（嵌套三元改独立函数早返回）。
+ * 构建器由调用方动态 import 后传入——保持 exceljs/docx 只在真正导出时加载。
+ */
+async function renderCaseExport<T>(
+  format: string,
+  payload: T,
+  builders: { xlsx: (p: T) => Promise<Buffer>; docx: (p: T) => Promise<Buffer>; md: (p: T) => Buffer },
+): Promise<Buffer> {
+  if (format === 'xlsx') return await builders.xlsx(payload);
+  if (format === 'docx') return await builders.docx(payload);
+  return builders.md(payload);
+}
+
+/**
  * T01487：测试用例导出（§6.4）。用 POST 不用 GET：请求体要带选择集（可达上百个 id）与筛选条件。
  * 范围优先级 选中 ids > 单需求 reqId > 当前筛选 > 全量（§7.6），取数一律回到
  * `TestCaseService`——与列表同一套 `buildCaseWhere`，界面看到什么就导出什么，不在路由里另写查询。
@@ -687,11 +726,7 @@ planApi.post('/test-cases/export', exportGate('testcase-export', undefined, { de
     const project = PlanService.getProjectBrief(projectId);
     const { buildCaseDocx, buildCaseMd, buildCaseXlsx } = await import('../services/testCaseExport'); // 按需加载 exceljs/docx
     const payload = { projectName: project.name, cases, coverage: TestCaseService.coverage(projectId) };
-    const buf = format === 'xlsx'
-      ? await buildCaseXlsx(payload)
-      : format === 'docx'
-        ? await buildCaseDocx(payload)
-        : buildCaseMd(payload);
+    const buf = await renderCaseExport(format, payload, { xlsx: buildCaseXlsx, docx: buildCaseDocx, md: buildCaseMd });
     const ymd = new Date().toISOString().slice(0, 10).replaceAll('-', '');
     const fname = safeExportName(`测试用例-${project.name}-${ymd}`, '测试用例') + `.${format}`;
     res.setHeader('Content-Type', CASE_EXPORT_MIME[format]);

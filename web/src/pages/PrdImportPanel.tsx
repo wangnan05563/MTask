@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api } from '../api/client';
-import { FileUp, Save, Sparkles, Trash2, Upload, X } from 'lucide-react';
+import { Eye, FileUp, Save, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import { useSessionState } from '../ui/session';
 import { ProjectListHint, projectListPlaceholder, useProjectList } from '../ui/projectList';
 import { aiImportStore } from '../stores/aiImportStore';
@@ -34,6 +34,119 @@ function recalcMilestoneDurations(list: PrdPlan[]): PrdPlan[] {
     if (sum > 0) out[i] = { ...out[i], durationDays: sum };
   }
   return out;
+}
+
+/** /plans/import-prd 响应（S3776：doImport 的结果播报分支抽为 logImportResult，字段口径与原文案一字未改） */
+interface ImportPrdResult {
+  requirements: number; plans: number; tasks: number;
+  unlinkedReqNos?: string[]; prdId?: string;
+  reqNoMap?: Array<{ from: string; to: string }>;
+  dupPlanTitles?: Array<{ title: string; existing: number; renamedTo?: string; reusedPlanId?: string }>;
+  reusedPlans?: number; ambiguousReqNos?: string[];
+  orphanRequirements?: Array<{ reqNo: string; title: string }>;
+  /** T02303 甲：payload 条数之外，本次「真新建」与「复用存量」的需求行数 */
+  requirementsCreated?: number; reusedRequirements?: number;
+}
+
+/** T02300：/plans/import-prd/preview 响应（只读预演，字段口径与 importPrd 同源） */
+interface PrdPreviewResult {
+  willCreatePlans: number; willReusePlans: number; willRenamePlans: number;
+  dupPlanTitles: Array<{ title: string; existing: number; renamedTo?: string; reusedPlanId?: string }>;
+  requirements: number; willCreateReqs: number; willReuseReqs: number;
+  reqNoMap: Array<{ from: string; to: string }>;
+  ambiguousReqNos: string[]; unlinkedReqNos: string[];
+  orphanRequirements: Array<{ reqNo: string; title: string }>;
+  prdDoc: { action: 'none' | 'reuse' | 'create'; id?: string; by?: 'hash' | 'name' };
+  planRowsPreview: Array<{ title: string; reuseId: string | null }>;
+  createTasks: boolean;
+  readOnly: true;
+}
+
+/**
+ * T02300：预演结果播报。放在导入按钮之前，让用户点「导入」**前**就看到连带影响——
+ * T01869 的原始症状（重导后两行同名、一行被读成 todo/0）之所以被误判成「原有计划被回档」，
+ * 正是因为导入前的连带影响完全不可见。文案必须写清两条事实（实测口径）：
+ * ① 存量矩阵/计划行不会被删除或改写（importPrd 全文零 DELETE）；
+ * ② reuse 模式下「同标题 + 同内容」的需求行会被复用（T02303 甲），只有内容变化的才新建并顺延编号。
+ */
+function logPreviewResult(p: PrdPreviewResult): void {
+  const docPart = p.prdDoc.action === 'reuse'
+    ? `PRD 原文命中存量文档（按${p.prdDoc.by === 'hash' ? '同内容' : '同文件名'}复用并覆盖其正文，不新建）`
+    : p.prdDoc.action === 'create' ? 'PRD 原文将新建一条文档记录' : '本次未带 PRD 正文，不落文档';
+  aiImportStore.log(
+    `预演结果（只读，未改动任何数据）：需求 新建 ${p.willCreateReqs} 条 / 复用同标题同内容存量 ${p.willReuseReqs} 条；`
+    + `计划 新建 ${p.willCreatePlans} 条（其中撞名让号 ${p.willRenamePlans} 条）/ 复用同名存量 ${p.willReusePlans} 条；${docPart}`
+    + `${p.createTasks ? '；已勾选同步生成待办（只给新建的计划行派生待办）' : ''}`,
+    'info',
+  );
+  aiImportStore.log('预演补充：以上计数不改存量行——导入只新增/补写，既有需求与计划的状态、进度、编号一律不被删除或改写', 'info');
+  if (p.willReuseReqs) {
+    aiImportStore.log(`需求侧复用：${p.willReuseReqs} 条与存量「同标题且同内容」的需求行命中，将复用原行不新建（内容有一字之差即视为新行）`, 'info');
+  }
+  if (p.reqNoMap?.length) {
+    const pairs = p.reqNoMap.slice(0, 12).map((x) => `${x.from}→${x.to}`).join('、');
+    aiImportStore.log(`编号让号预告：${p.reqNoMap.length} 条需求编号会与矩阵已有编号冲突，将改为项目内顺延号（${pairs}${p.reqNoMap.length > 12 ? ' 等' : ''}）`, 'info');
+  }
+  if (p.dupPlanTitles?.length) {
+    const renamed = p.dupPlanTitles.filter((x) => x.renamedTo);
+    const reused = p.dupPlanTitles.filter((x) => x.reusedPlanId);
+    if (renamed.length) aiImportStore.log(`同名计划让号预告：${renamed.length} 个标题在项目内已存在（${renamed.slice(0, 8).map((x) => `${x.title}→「${x.renamedTo}」`).join('、')}${renamed.length > 8 ? ' 等' : ''}），原行不变、新行带后缀`, 'info');
+    if (reused.length) aiImportStore.log(`同名计划复用预告：${reused.length} 个标题命中存量同名行，将补写到原行（status/progress 一字不动）`, 'info');
+  }
+  if (p.unlinkedReqNos?.length) {
+    aiImportStore.log(`预演告警：${p.unlinkedReqNos.length} 个需求编号在本次导入里找不到对应需求行（${p.unlinkedReqNos.join('、')}），其计划/待办关联将被忽略——请核对编号或先补导对应需求`, 'error');
+  }
+  if (p.ambiguousReqNos?.length) {
+    aiImportStore.log(`预演告警：${p.ambiguousReqNos.length} 个需求编号在本次 payload 的多个来源里重复（${p.ambiguousReqNos.join('、')}），关联只会挂到其中一行——多来源导入请先全局重排编号`, 'error');
+  }
+  if (p.orphanRequirements?.length) {
+    aiImportStore.log(`预演提醒：本次要新建的 ${p.orphanRequirements.length} 条需求没有任何计划/待办引用（${p.orphanRequirements.slice(0, 12).map((x) => x.reqNo).join('、')}${p.orphanRequirements.length > 12 ? ' 等' : ''}）`, 'info');
+  }
+}
+
+/** 导入结果明细播报（自 doImport 逐字搬出，判定顺序与日志级别不变） */
+function logImportResult(r: ImportPrdResult): void {
+  const taskPart = r.tasks ? `、待办任务 ${r.tasks} 条` : '';
+  const prdPart = r.prdId ? '；源 PRD 已录入「PRD 管理」并关联本次需求矩阵记录' : '';
+  const reusedPart = r.reusedPlans ? `（另复用同名计划 ${r.reusedPlans} 条）` : '';
+  aiImportStore.log(`导入完成：需求 ${r.requirements} 条（已入需求跟踪矩阵）、新建计划 ${r.plans} 条${reusedPart}${taskPart}${prdPart}`, 'ok');
+  // T02303 甲（文案随 T02300 同步）：reuse 口径下需求侧不再「整批新建」——同标题同内容的存量行会被复用，
+  // 旧说法「需求行全部按新号新建」已不成立，按实回传的两条计数说清，否则用户看不出补写到底幂等了没有
+  if (r.reusedRequirements) {
+    aiImportStore.log(`需求侧复用：${r.reusedRequirements} 条命中存量「同标题且同内容」的需求行，已复用原行未新建（本次真新建 ${r.requirementsCreated ?? r.requirements - r.reusedRequirements} 条，原行状态/编号一字未动）`, 'info');
+  }
+  // T01867：与项目已有编号撞号的需求由服务端按最大编号顺延，明细必须可见——
+  // 用户手里拿的是 PRD 原编号，静默改号会让后续按编号核对全部对不上
+  if (r.reqNoMap?.length) {
+    const reqNoPairs = r.reqNoMap.map((x) => `${x.from}→${x.to}`).join('、');
+    aiImportStore.log(`编号顺延：${r.reqNoMap.length} 条需求与矩阵已有编号重复，已改为项目内顺延号（${reqNoPairs}），计划/待办关联按顺延后的编号建立`, 'error');
+  }
+  // T01869→T01875：撞名计划的新行落库时已带「（N）」区分后缀，不再是与原行无法分辨的同名行；
+  // 明细点名哪个原号让成了哪个新标题，消除「原有任务被重置」的误读面
+  if (r.dupPlanTitles?.length) {
+    const renamed = r.dupPlanTitles.filter((x) => x.renamedTo);
+    if (renamed.length) {
+      const renamedDetail = renamed.map((x) => `${x.title} → 新行「${x.renamedTo}」，原有 ${x.existing} 条`).join('、');
+      aiImportStore.log(`同名让号：本次有 ${renamed.length} 个计划标题在项目内已存在（${renamedDetail}）——原条目状态与进度一字未动，新增那条用后缀区分，不会与原计划混淆`, 'info');
+    }
+    if (r.reusedPlans) {
+      aiImportStore.log(`同名复用：${r.reusedPlans} 条计划命中项目内已有同名行（未新建），仅补齐空描述/空复杂度与需求关联（只增不减），其状态与进度保持不变`, 'info');
+    }
+  }
+  // T00712（D-5）：无效需求编号不再静默丢弃——服务端返回 unlinkedReqNos 时在控制台给出可感知告警
+  if (r.unlinkedReqNos?.length) {
+    aiImportStore.log(`告警：${r.unlinkedReqNos.length} 个需求编号未命中本次导入的需求（${r.unlinkedReqNos.join('、')}），其计划/待办关联已被忽略，请核对编号或先补导对应需求`, 'error');
+  }
+  // T01995：跨来源编号歧义——同一旧编号被本次导入的两行争用（多份 PRD 各自从 REQ-001 起号且调用方未重编号）。
+  // 关联口径沿用既有「后登记者胜出」，所以先出现那份来源的行会整批零关联——必须当场点名，不能静默放过
+  if (r.ambiguousReqNos?.length) {
+    aiImportStore.log(`编号歧义：${r.ambiguousReqNos.length} 个需求编号在本次导入的多个来源中重复出现（${r.ambiguousReqNos.join('、')}），这些编号的计划/待办只挂到了其中一行（按最后出现的来源建立），先出现那份来源的行会整批零关联——多来源导入请确认各文件的需求编号已全局重排为连续号（REQ-001…）后再导入`, 'error');
+  }
+  // T01995：本次新建却零关联的需求行——错挂类缺陷的可见性补丁（编号存在性校验对此完全无感）。
+  // 与解析阶段的「反向覆盖告警」同源，故用 info 级：需求本就无对应计划是合法场景，不能变成狼来了
+  if (r.orphanRequirements?.length) {
+    aiImportStore.log(`零关联提醒：本次新建的 ${r.orphanRequirements.length} 条需求没有任何计划/待办关联（${r.orphanRequirements.slice(0, 12).map((x) => x.reqNo).join('、')}${r.orphanRequirements.length > 12 ? ' 等' : ''}）——若为多来源合并导入，请核对是否把关联挂到了别的来源的行上`, 'info');
+  }
 }
 
 /** T00982：解析结果落盘键（与 useSessionState 同键）——切页恢复靠它们，改键名需同步改面板的读取键 */
@@ -86,6 +199,8 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   const { projects } = projectList;
   const [projectId, setProjectId] = useSessionState<string>('prd-import.project', '');
   const [createTasks, setCreateTasks] = useSessionState<boolean>('prd-import.createTasks', true);
+  // T02076：同名计划处置开关——缺省新建让号，显式选 'reuse' 走幂等补写（不改原行 status/progress）
+  const [onDuplicatePlan, setOnDuplicatePlan] = useSessionState<'rename' | 'reuse'>('prd-import.onDuplicatePlan', 'rename');
   const [reqs, setReqs] = useSessionState<PrdReq[]>('prd-import.reqs', []);
   const [plans, setPlans] = useSessionState<PrdPlan[]>('prd-import.plans', []);
   // T00841：待解析的已选 PRD 文件——选择仅追加到列表，用户点「确认」才触发 parseAll；确认前可增删
@@ -211,60 +326,61 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     aiImportStore.patch({ busy: false, parseStamp: stamp });
   }, [projectId, toolId, setReqs, setPlans, setPrdSources]);
 
-  /** 确认导入：事务创建需求项（矩阵）+ 计划（关联需求）+ 可选待办任务 */
-  async function doImport() {
+  /**
+   * T02300：勾选过滤 + PRD 全文拼接 + 处置口径收成**同一个** payload 构造函数。
+   * 预演与导入必须投同一份 payload——各拼一份的话预演计数与实落库必然分叉，本单红线。
+   * 返回 null = 一条都没勾选（调用方各自给提示）。
+   */
+  function composeImportPayload(): Record<string, unknown> | null {
     const rq = reqs.filter((x) => x.include && x.title.trim());
     const pl = plans.filter((x) => x.include && x.title.trim());
-    if (rq.length === 0 && pl.length === 0) { aiImportStore.patch({ error: '请至少勾选一条需求或计划' }); aiImportStore.log('未勾选任何条目，已中止导入', 'error'); return; }
+    if (rq.length === 0 && pl.length === 0) return null;
+    // 勾选过滤：仅提交勾选项；reqNos 需与提交的需求编号保持一致（未勾选需求的引用自动丢弃）
+    const keptNos = new Set(rq.map((x) => x.reqNo));
+    // T00908：把暂存的源文件 PRD 全文拼为 prdMd 一并入库——后端落库 prd_docs（PRD 管理视图）并为需求行回填 prd_id 建立关联
+    const prdMd = prdSources.map((s) => `# 来源：${s.name}\n\n${s.text}`).join('\n\n---\n\n');
+    const prdFilename = prdSources.length > 1 ? `${prdSources.length} 个来源文件` : prdSources[0]?.name;
+    return {
+      projectId,
+      createTasks,
+      requirements: rq.map(({ include: _inc, key: _key, ...rest }) => rest),
+      plans: pl.map(({ include: _inc, key: _key, ...rest }) => ({ ...rest, reqNos: rest.reqNos.filter((n) => keptNos.has(n)) })),
+      prdMd: prdMd || undefined,
+      prdFilename: prdFilename || undefined,
+      // T02076：同名计划处置——'reuse' 走幂等补写，缺省新建让号
+      onDuplicatePlan: onDuplicatePlan === 'reuse' ? 'reuse' : undefined,
+    };
+  }
+
+  /** T02300：导入前预演——打只读端点 `/plans/import-prd/preview`，同一份 payload 先问清「这次会动什么」 */
+  async function doPreview() {
+    const payload = composeImportPayload();
+    if (!payload) { aiImportStore.log('未勾选任何需求或计划，无法预演', 'error'); return; }
     aiImportStore.patch({ busy: true, error: '' });
-    aiImportStore.log(`导入中：需求 ${rq.length} 条、计划 ${pl.length} 条${createTasks ? '，并同步生成待办任务' : ''}…`);
+    aiImportStore.log('预演中：只读统计本次导入的连带影响，不改动任何数据…');
     try {
-      // 勾选过滤：仅提交勾选项；reqNos 需与提交的需求编号保持一致（未勾选需求的引用自动丢弃）
-      const keptNos = new Set(rq.map((x) => x.reqNo));
-      // T00908：把暂存的源文件 PRD 全文拼为 prdMd 一并入库——后端落库 prd_docs（PRD 管理视图）并为需求行回填 prd_id 建立关联
-      const prdMd = prdSources.map((s) => `# 来源：${s.name}\n\n${s.text}`).join('\n\n---\n\n');
-      const prdFilename = prdSources.length > 1 ? `${prdSources.length} 个来源文件` : prdSources[0]?.name;
-      const r = await api.post<{ requirements: number; plans: number; tasks: number; unlinkedReqNos?: string[]; prdId?: string; reqNoMap?: Array<{ from: string; to: string }>; dupPlanTitles?: Array<{ title: string; existing: number; renamedTo?: string; reusedPlanId?: string }>; reusedPlans?: number; ambiguousReqNos?: string[]; orphanRequirements?: Array<{ reqNo: string; title: string }> }>('/plans/import-prd', {
-        projectId,
-        createTasks,
-        requirements: rq.map(({ include: _inc, key: _key, ...rest }) => rest),
-        plans: pl.map(({ include: _inc, key: _key, ...rest }) => ({ ...rest, reqNos: rest.reqNos.filter((n) => keptNos.has(n)) })),
-        prdMd: prdMd || undefined,
-        prdFilename: prdFilename || undefined,
-      });
-      const taskPart = r.tasks ? `、待办任务 ${r.tasks} 条` : '';
-      const prdPart = r.prdId ? '；源 PRD 已录入「PRD 管理」并关联本次需求矩阵记录' : '';
-      aiImportStore.log(`导入完成：需求 ${r.requirements} 条（已入需求跟踪矩阵）、新建计划 ${r.plans} 条${r.reusedPlans ? `（另复用同名计划 ${r.reusedPlans} 条）` : ''}${taskPart}${prdPart}`, 'ok');
-      // T01867：与项目已有编号撞号的需求由服务端按最大编号顺延，明细必须可见——
-      // 用户手里拿的是 PRD 原编号，静默改号会让后续按编号核对全部对不上
-      if (r.reqNoMap?.length) {
-        aiImportStore.log(`编号顺延：${r.reqNoMap.length} 条需求与矩阵已有编号重复，已改为项目内顺延号（${r.reqNoMap.map((x) => `${x.from}→${x.to}`).join('、')}），计划/待办关联按顺延后的编号建立`, 'error');
-      }
-      // T01869→T01875：撞名计划的新行落库时已带「（N）」区分后缀，不再是与原行无法分辨的同名行；
-      // 明细点名哪个原号让成了哪个新标题，消除「原有任务被重置」的误读面
-      if (r.dupPlanTitles?.length) {
-        const renamed = r.dupPlanTitles.filter((x) => x.renamedTo);
-        if (renamed.length) {
-          aiImportStore.log(`同名让号：本次有 ${renamed.length} 个计划标题在项目内已存在（${renamed.map((x) => `${x.title} → 新行「${x.renamedTo}」，原有 ${x.existing} 条`).join('、')}）——原条目状态与进度一字未动，新增那条用后缀区分，不会与原计划混淆`, 'info');
-        }
-        if (r.reusedPlans) {
-          aiImportStore.log(`同名复用：${r.reusedPlans} 条计划命中项目内已有同名行（未新建），仅补齐空描述/空复杂度与需求关联（只增不减），其状态与进度保持不变`, 'info');
-        }
-      }
-      // T00712（D-5）：无效需求编号不再静默丢弃——服务端返回 unlinkedReqNos 时在控制台给出可感知告警
-      if (r.unlinkedReqNos?.length) {
-        aiImportStore.log(`告警：${r.unlinkedReqNos.length} 个需求编号未命中本次导入的需求（${r.unlinkedReqNos.join('、')}），其计划/待办关联已被忽略，请核对编号或先补导对应需求`, 'error');
-      }
-      // T01995：跨来源编号歧义——同一旧编号被本次导入的两行争用（多份 PRD 各自从 REQ-001 起号且调用方未重编号）。
-      // 关联口径沿用既有「后登记者胜出」，所以先出现那份来源的行会整批零关联——必须当场点名，不能静默放过
-      if (r.ambiguousReqNos?.length) {
-        aiImportStore.log(`编号歧义：${r.ambiguousReqNos.length} 个需求编号在本次导入的多个来源中重复出现（${r.ambiguousReqNos.join('、')}），这些编号的计划/待办只挂到了其中一行（按最后出现的来源建立），先出现那份来源的行会整批零关联——多来源导入请确认各文件的需求编号已全局重排为连续号（REQ-001…）后再导入`, 'error');
-      }
-      // T01995：本次新建却零关联的需求行——错挂类缺陷的可见性补丁（编号存在性校验对此完全无感）。
-      // 与解析阶段的「反向覆盖告警」同源，故用 info 级：需求本就无对应计划是合法场景，不能变成狼来了
-      if (r.orphanRequirements?.length) {
-        aiImportStore.log(`零关联提醒：本次新建的 ${r.orphanRequirements.length} 条需求没有任何计划/待办关联（${r.orphanRequirements.slice(0, 12).map((x) => x.reqNo).join('、')}${r.orphanRequirements.length > 12 ? ' 等' : ''}）——若为多来源合并导入，请核对是否把关联挂到了别的来源的行上`, 'info');
-      }
+      const p = await api.post<PrdPreviewResult>('/plans/import-prd/preview', payload);
+      logPreviewResult(p);
+    } catch (e) {
+      const msg = String((e as Error).message ?? e);
+      aiImportStore.patch({ error: msg });
+      aiImportStore.log(`预演失败：${msg}`, 'error');
+    } finally {
+      aiImportStore.patch({ busy: false });
+    }
+  }
+
+  /** 确认导入：事务创建需求项（矩阵）+ 计划（关联需求）+ 可选待办任务 */
+  async function doImport() {
+    const payload = composeImportPayload();
+    if (!payload) { aiImportStore.patch({ error: '请至少勾选一条需求或计划' }); aiImportStore.log('未勾选任何条目，已中止导入', 'error'); return; }
+    const rqCount = ((payload.requirements as unknown[]) ?? []).length;
+    const plCount = ((payload.plans as unknown[]) ?? []).length;
+    aiImportStore.patch({ busy: true, error: '' });
+    aiImportStore.log(`导入中：需求 ${rqCount} 条、计划 ${plCount} 条${createTasks ? '，并同步生成待办任务' : ''}…`);
+    try {
+      const r = await api.post<ImportPrdResult>('/plans/import-prd', payload);
+      logImportResult(r);
       // T00982：导入成功即清空完成戳，避免后续再按旧戳把已导入的结果拉回界面
       aiImportStore.patch({ lastSaved: r.plans, parseStamp: 0 });
       setReqs([]); setPlans([]); setPrdSources([]);
@@ -468,12 +584,32 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       )}
 
       {(reqs.length > 0 || plans.length > 0) && (
-        <button onClick={() => void doImport()} disabled={busy} className="tbtn-anim"
-          title="导入勾选的条目——需求进矩阵、计划进甘特（含需求关联）、可选生成待办任务"
-          aria-label="导入 PRD 解析结果"
-          style={{ marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12, cursor: busy ? 'default' : 'pointer' }}>
-          <Save size={13} /> 导入（需求 {includedReqs} 条 / 计划 {includedPlans} 条{createTasks ? ' + 待办' : ''}）
-        </button>
+        <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          {/* T02076：同名计划处置开关——缺省新建让号，显式选 reuse 走幂等补写 */}
+          <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <span>同名计划处置：</span>
+            <select value={onDuplicatePlan} onChange={(e) => setOnDuplicatePlan(e.target.value as 'rename' | 'reuse')} disabled={busy}
+              title="新建让号 = 撞名时加「（N）」后缀并建为新行；幂等复用 = 撞名时补写到原计划行（不改 status/progress），并连带复用「同标题+同内容」的存量需求行（T02303 甲）"
+              style={{ padding: '2px 4px', fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+              <option value="rename">新建让号（默认）</option>
+              <option value="reuse">幂等复用原行</option>
+            </select>
+          </label>
+          {/* T02300：导入前预演（只读端点）——把「这次会新建/复用/让号多少行」摊在点导入之前，
+              T01869 那类「重导后两行同名被读成回档」的误判就没了生长空间 */}
+          <button onClick={() => void doPreview()} disabled={busy}
+            title="只读预演：按当前勾选项与处置口径，算出本次导入将新建/复用/让号多少行，零写库（不改任何数据）"
+            aria-label="预演本次 PRD 导入的连带影响"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12, cursor: busy ? 'default' : 'pointer' }}>
+            <Eye size={13} /> 预演（只读）
+          </button>
+          <button onClick={() => void doImport()} disabled={busy} className="tbtn-anim"
+            title="导入勾选的条目——需求进矩阵、计划进甘特（含需求关联）、可选生成待办任务"
+            aria-label="导入 PRD 解析结果"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12, cursor: busy ? 'default' : 'pointer' }}>
+            <Save size={13} /> 导入（需求 {includedReqs} 条 / 计划 {includedPlans} 条{createTasks ? ' + 待办' : ''}）
+          </button>
+        </div>
       )}
     </div>
   );
