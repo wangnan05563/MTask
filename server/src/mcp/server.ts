@@ -12,6 +12,7 @@ import { getDb } from '../db/connection';
 import { getDefaultNoteProjectId } from '../services/AppSettings';
 import { readPoolStatus, poolFullHint } from '../services/ConcurrencyPool'; // T01066 后续：MCP 领取路径池满提示
 import { TaskService } from '../services/TaskService';
+import { resolveCreateOrigin, alreadyMerged } from '../services/derivedOrigin'; // T02320：溯源兜底 + 归并幂等（与 REST 建单共用同一判据）
 import { AIService } from '../services/AIService'; // T02168：mtask_summarize_task 直接复用页面/REST 同一条摘要链
 import { TaskImageService } from '../services/TaskImageService'; // T00610：截图读取（供 AI 识别验证失败反馈截图）
 import { PlanService } from '../services/PlanService';
@@ -290,7 +291,11 @@ export async function createMCPServer(): Promise<McpServer> {
       let parentId = a.parentId?.trim() || undefined;
       const perr = validateParent(parentId, pid);
       if (perr) return err(perr);
-      const task = TaskService.create({ derived_from: a.derivedFrom?.trim() || null, /* T00577 */
+      // T02320：溯源兜底——derivedFrom 缺省时按正文首行「来源：Txxxx」回填（只在母单真实存在时认），
+      // 认不到但标题带【AI回写待审核】时把告警回显到响应里，不再让结论静默躺在子单。
+      const origin = resolveCreateOrigin({ derivedFrom: a.derivedFrom, description: a.description, title: a.title });
+      if (origin.warning) console.warn(`[mtask-mcp] mtask_create_task 溯源告警（${a.title.trim()}）：${origin.warning}`);
+      const task = TaskService.create({ derived_from: origin.derived_from, /* T00577 / T02320 */
         projectId: pid,
         title: a.title,
         description: a.description,
@@ -305,7 +310,9 @@ export async function createMCPServer(): Promise<McpServer> {
       if ((task.status ?? 'todo') === 'todo') {
         fresh = TaskService.setAiState(task.id, 'unread') ?? task;
       }
-      return ok(json(fresh), { task: fresh });
+      return ok(json(fresh) + (origin.warning ? `\n\n⚠ 溯源告警：${origin.warning}` : ''), {
+        task: fresh, ...(origin.warning ? { create_warning: origin.warning } : {}),
+      });
     } catch (e) { return err((e as Error).message); }
   });
 
@@ -1003,7 +1010,14 @@ export async function createMCPServer(): Promise<McpServer> {
       let merged = '';
       if (originNo) {
         const origin = TaskService.findByNo(originNo);
-        if (origin) {
+        if (!origin) {
+          // T02320：编号查无（历史脏值/母单已被物理删除）⇒ 如实回告，不猜目标、不静默
+          merged = `；⚠ 溯源母单 ${originNo} 在库中查无，结论未归并（请补正 derived_from 或按脚本 merge 手工补录）`;
+        } else if (alreadyMerged(origin.handle_result, task.task_no)) {
+          // T02320 归并幂等：母单已含本单号的标记（自动归并节或脚本补录节）⇒ 跳过，
+          // 否则重复提交会把同一段结论在母单里叠加两遍
+          merged = `；母单 ${originNo} 已含本单归并记录，未重复追加`;
+        } else {
           const stamp = new Date().toISOString().slice(0, 10);
           const originText = (origin.handle_result ?? '').trim();
           const prefix = originText ? originText + '\n\n' : '';

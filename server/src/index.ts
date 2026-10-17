@@ -16,6 +16,7 @@ import { RecurringService, TokenService } from './services/RecurringService'; //
 import { SupervisorService } from './services/SupervisorService'; // T01273：监督器 tick（含 T01270 会话停滞兜底）
 import { reconcileLinkedPlanStatuses } from './services/PlanService';
 import { reconcileReqStatuses } from './services/reqStatusSync'; // T02087：需求状态启动对账
+import { reconcileDerivedFrom } from './services/derivedOrigin'; // T02320：派生单溯源（正文首行「来源：Txxxx」）启动回填
 import { reconcileMilestoneProgresses } from './services/milestoneProgress'; // T02090：里程碑进度启动对账
 import { startStaleRunningGuard } from './services/TaskService'; // T01368 后续（P1）：running 超时兜底定时收敛（移出读路径）
 import { startEventRetentionTimer } from './services/EventRetention'; // T01064 后续：事件表 90 天保留期清理
@@ -203,6 +204,17 @@ try {
   if (msFixed > 0) console.log(`[mtask] milestone-progress reconcile: ${msFixed} milestone(s) re-aggregated`);
 } catch (e) {
   console.error('[mtask] milestone-progress reconcile failed:', e);
+}
+// T02320：派生单溯源对账——兜底家族第四名成员。历史建单把派生关系只写进正文首行「来源：Txxxx」
+// 而 derived_from 为空 ⇒ 结论从未被自动归并回母单（实测 4 张完成单即此形态）；这里按同一判据回填，
+// 母单编号查无的行只计数不猜。
+try {
+  const rec = reconcileDerivedFrom();
+  if (rec.backfilled > 0 || rec.missingOrigin > 0) {
+    console.log(`[mtask] derived-from reconcile: ${rec.backfilled} task(s) backfilled, ${rec.missingOrigin} 来源编号查无母单（不回填）, scanned ${rec.scanned}`);
+  }
+} catch (e) {
+  console.error('[mtask] derived-from reconcile failed:', e);
 }
 app.listen(PORT, HOST, () => {
   console.log(`[mtask] server ready at http://${HOST}:${PORT}`);

@@ -5,6 +5,7 @@ import { PlanService } from '../services/PlanService'; // T01491：读取内部 
 import { WorkspaceService } from '../services/WorkspaceService'; // T00776：工作空间搜索/读文件
 import { getDb } from '../db/connection';
 import { TaskService, nextTaskNo, TASK_STATUSES, type TaskInput, type TaskListOptions } from '../services/TaskService';
+import { resolveCreateOrigin } from '../services/derivedOrigin'; // T02320：建单溯源判据与 MCP 通道同一实现
 import { RecurringService, TokenService } from '../services/RecurringService'; // T01073：循环任务 + API Token
 import { readEventRetentionDays, setEventRetentionDays, pruneTaskEvents, countEvents } from '../services/EventRetention'; // T01064 后续：事件表保留期清理
 import { readPoolStatus, setPoolLimit } from '../services/ConcurrencyPool'; // T01066 后续：并行任务池单源
@@ -664,7 +665,7 @@ api.post('/tasks/by-no/:taskNo/retry', (req, res) => {
 });
 
 api.post('/tasks', (req, res) => {
-  const { projectId, title, description, priority, status, categoryId, parentId } = req.body ?? {};
+  const { projectId, title, description, priority, status, categoryId, parentId, derivedFrom } = req.body ?? {};
   if (!title || typeof title !== 'string' || !title.trim()) return res.status(400).json({ error: 'title 必填' });
   // T02070 裁决：同 PATCH——第三态落库即成「两个页签都看不见」的幽灵行，写入口拒收
   if (status !== undefined && !TASK_STATUSES.has(status)) { res.status(400).json({ error: `状态非法：${status}（待办状态仅 todo|done，中间态由进度承载）` }); return; }
@@ -682,7 +683,17 @@ api.post('/tasks', (req, res) => {
     if (!parent) return res.status(400).json({ error: '父任务不存在' });
     if (parent.project_id !== pid) return res.status(400).json({ error: '子任务与父任务必须同项目' });
   }
-  res.status(201).json(TaskService.create({ projectId: pid, title: title.trim(), description, priority, status, categoryId, parentId: parent?.id }));
+  // T02320：REST 建单与 MCP 走同一条溯源判据（单源在 derivedOrigin）——
+  // derivedFrom 缺省时按正文首行「来源：Txxxx」回填，认不到母单不猜；
+  // 标题带【AI回写待审核】却无溯源时随响应回显 create_warning，不再静默失联。
+  const origin = resolveCreateOrigin({
+    derivedFrom: typeof derivedFrom === 'string' ? derivedFrom : null,
+    description: typeof description === 'string' ? description : null,
+    title: title.trim(),
+  });
+  if (origin.warning) console.warn(`[mtask] POST /tasks 溯源告警（${title.trim()}）：${origin.warning}`);
+  const created = TaskService.create({ projectId: pid, title: title.trim(), description, priority, status, categoryId, parentId: parent?.id, derived_from: origin.derived_from });
+  res.status(201).json(origin.warning ? { ...created, create_warning: origin.warning } : created);
 });
 
 /** T00566 二轮：状态自动驱动推导（REST 侧）——返回待写入的 ai_state；优先采用显式 aiState，否则按语义推导 */
