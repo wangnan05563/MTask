@@ -58,10 +58,14 @@ function fallbackOpen(file: string): Database.Database {
 /** SQLite 连接单例。数据文件默认放在 server/data/mtask.db，可用 MTask_DATA_DIR 覆盖。 */
 let db: Database.Database | null = null;
 
+/** 数据目录单源（T02311：失败留档旁证与库文件同目录，避免双处解析漂移） */
+export function dataDir(): string {
+  return process.env.MTask_DATA_DIR ?? join(__dirname, '..', 'data');
+}
+
 /** 主库文件绝对路径（T01061-FR5.1：备份/恢复共用同一解析，避免双处维护漂移） */
 export function dbFilePath(): string {
-  const dir = process.env.MTask_DATA_DIR ?? join(__dirname, '..', 'data');
-  return join(dir, 'mtask.db');
+  return join(dataDir(), 'mtask.db');
 }
 
 export function getDb(): Database.Database {

@@ -441,8 +441,9 @@ ok('J-06 polishWording 使用 parseAiJson（不再直 JSON.parse(stripFence)）'
   /wordingFromAi\(local, parseAiJson\(content\)\)/.test(S) && !/wordingFromAi\(local, JSON\.parse\(stripFence/.test(S));
 
 // parseOutlinePayload 也带尾逗号修复
+// T02311：第二路 parse 的目标串提为 sliced 变量（失败注记要复用同一串做位置切片），两处仍都过 stripJsonTrailingCommas
 ok('J-07 parseOutlinePayload 两处 JSON.parse 都过 stripJsonTrailingCommas',
-  /JSON\.parse\(stripJsonTrailingCommas\(body\)\)/.test(S) && /JSON\.parse\(stripJsonTrailingCommas\(body\.slice/.test(S));
+  /JSON\.parse\(stripJsonTrailingCommas\(body\)\)/.test(S) && /JSON\.parse\(stripJsonTrailingCommas\(sliced\)\)/.test(S));
 
 // 端到端：build 一份含表格+长 bullets 的大纲，产物 XML 中至少一个表格存在且未越页
 const built = await (M as unknown as {

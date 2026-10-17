@@ -24,7 +24,7 @@
  * 隔离纪律（skill 红线 8）：库副本/端口/临时目录全临时，跑完 kill + 回收。
  * 结果落 .workbuddy/t02096-gate-results-<运行标识>.txt（GBK 控制台乱码，以文件为权威）。
  */
-import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -61,8 +61,8 @@ const bundleSrc = svcSrc.slice(svcSrc.indexOf('// ---------- 资料采集 Bundle
 const preflightSrc = svcSrc.slice(svcSrc.indexOf('// ---------- 前置校验'), svcSrc.indexOf('// ---------- 资料采集 Bundle'));
 
 ok('S-01 前置校验段零 AI 依赖（FR-2.3 只读、零配额）', !/AIService|askJson|fetch\(/.test(preflightSrc));
-ok('S-02 schema 校验在 askJson 的 parse 回调内（不合格即触发自带重试；T02172/T02223 起第 2 轮才转软截断：dataKeys 截断 / 超长 bullet 裁剪）',
-  /askJson[\s\S]{0,600}parseRound\+\+[\s\S]{0,200}validateOutline\(parseOutlinePayload\(content\), \{ lenientDataKeys: parseRound > 1, lenientBullets: parseRound > 1 \}\)/.test(outlineSrc));
+ok('S-02 schema 校验在 askJson 的 parse 回调内（不合格即触发自带重试；T02172/T02223 起第 2 轮才转软截断：dataKeys 截断 / 超长 bullet 裁剪；T02311 起回调内带 cleanHits 收集与失败留档）',
+  /askJson[\s\S]{0,600}parseRound\+\+[\s\S]{0,400}validateOutline\(parseOutlinePayload\(content(, cleanHits)?\), \{ lenientDataKeys: parseRound > 1, lenientBullets: parseRound > 1 \}\)/.test(outlineSrc));
 ok('S-03 页数 12~18 与必含 timeline/workload 硬失败并点名',
   /页数 \$\{raw\.length\} 不在/.test(outlineSrc) && /缺少时间线页/.test(outlineSrc) && /缺少工作量页/.test(outlineSrc));
 ok('S-04 数字铁律写进 system 提示（数字只走 dataKeys，禁止模型自填）',
@@ -327,6 +327,29 @@ if (!(await waitUp())) {
   mockRequests.length = 0;
   await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId, extraNote: '客户强调两周内出原型' });
   ok('R-11 extraNote 原文注入 user 提示词', (mockRequests[0]?.user ?? '').includes('客户强调两周内出原型'), mockRequests[0]?.user?.slice(-120));
+
+  // R-13 白名单外非法转义：清洗后 200 + warning 点名（T02311，mock 离线可测）
+  // 构造法：先 JSON.stringify（会把 \d 转义成合法的 \\d），再把文本里的 \\d 换回单反斜杠 \d —— 这才是模型笔误的非法形态
+  const arr13 = JSON.parse(outlineJson(12)) as Array<{ bullets: string[] }>;
+  arr13[1].bullets[0] = '范围含\\d非法转义'; // JS 串：反斜杠 + d
+  mockQueue = [{ content: JSON.stringify(arr13).replace('\\\\d', '\\d') }];
+  const r13 = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
+  ok('R-13 模型输出含白名单外非法转义（\\d）→ 有约束清洗后 200 + warning 点名（不静默改写）',
+    r13.status === 200 && r13.body?.outline?.length === 12
+    && (r13.body?.warnings ?? []).some((w: string) => /非法转义/.test(w))
+    && String(r13.body?.outline?.[1]?.bullets?.[0] ?? '').includes('\\d'),
+    { status: r13.status, warnings: r13.body?.warnings, error: r13.body?.error });
+
+  // R-14 清洗修不了的非法转义（\u 后非四位 hex）：400 报错带位置上下文切片 + 厂商原始响应落档非空（T02311）
+  const arr14 = JSON.parse(outlineJson(12)) as Array<{ bullets: string[] }>;
+  arr14[1].bullets[0] = '范围含\\u00不完整转义'; // JS 串：反斜杠 + u + 0 + 0（u 在白名单内不清洗，parse 必失败）
+  mockQueue = [{ content: JSON.stringify(arr14).replace('\\\\u00', '\\u00') }];
+  const r14 = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
+  const rawFiles = existsSync(DATA_DIR) ? readdirSync(DATA_DIR).filter((f) => f.startsWith('kickoff-outline-raw-')).sort() : [];
+  const rawNonEmpty = rawFiles.length > 0 && statSync(join(DATA_DIR, rawFiles[rawFiles.length - 1])).size > 0;
+  ok('R-14 清洗修不了的非法转义 → 400 报错含位置上下文切片与留档文件名 + 数据目录内 raw 旁证非空',
+    r14.status === 400 && /报错上下文/.test(String(r14.body?.error)) && /厂商原始响应已留档/.test(String(r14.body?.error)) && rawNonEmpty,
+    { status: r14.status, error: String(r14.body?.error).slice(0, 160), rawFiles });
 
   // R-12 参数校验
   const noTool = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID });

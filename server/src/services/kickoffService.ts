@@ -12,6 +12,7 @@
  */
 import { statSync, readdirSync } from 'node:fs';
 import { getDb } from '../db/connection';
+import { dumpDiagText } from '../util/diagDump'; // T02311：失败旁证落盘（S-03：不经本服务直写文件系统）
 import { PlanService } from './PlanService';
 import type { PlanTaskRow, RequirementRow } from './PlanService';
 import { TestCaseService } from './TestCaseService';
@@ -627,25 +628,87 @@ export function stripJsonTrailingCommas(raw: string): string {
 }
 
 /** 剥围栏 + 修尾逗号后的安全解析；两处 askJson parse 回调共用 */
-export function parseAiJson(content: string): unknown {
-  return JSON.parse(stripJsonTrailingCommas(stripFence(content)));
+export function parseAiJson(content: string, hits?: string[]): unknown {
+  const relaxed = relaxIllegalEscapes(stripFence(content));
+  noteEscapeHits(hits, relaxed.fixed, 'JSON');
+  return JSON.parse(stripJsonTrailingCommas(relaxed.text));
 }
 
-function parseOutlinePayload(content: string): unknown {
-  const body = stripFence(content);
+/**
+ * T02311：白名单外非法转义的有约束清洗。模型偶发输出 `\d` / `\'` / 未双写的 `\`，
+ * `JSON.parse` 直抛「Bad escaped character in JSON at position N」——而合法 JSON 的每个
+ * 反斜杠后面只可能跟 `"` `\` `/` `b` `f` `n` `r` `t` `u` 七种字符，故本正则
+ * （反斜杠后不是这七种之一）不会碰任何合法输入，只把模型笔误双写成 `\\`。
+ * 命中计次由调用方追 warning——不静默改写（与尾逗号修复、超长 bullet 裁剪同一口径）。
+ */
+export function relaxIllegalEscapes(raw: string): { text: string; fixed: number } {
+  let fixed = 0;
+  const text = raw.replace(/\\(?!["\\/bfnrtu])/g, () => {
+    fixed += 1;
+    return '\\\\';
+  });
+  return { text, fixed };
+}
+
+/** 清洗命中即追一条 warning（调用方传入收集数组；无数组则静默修正，供无 warning 通道的路径用） */
+function noteEscapeHits(hits: string[] | undefined, fixed: number, what: string): void {
+  if (fixed > 0 && hits) hits.push(`${what} 含 ${fixed} 处白名单外非法转义（如 \\d），已双写修正`);
+}
+
+/**
+ * T02311：大纲失败的证据面——把厂商原始响应全文落盘到数据目录（与库同源，门与排障都能找），
+ * 供事后定性「模型输出非法 vs 我方预处理改坏」。只补证据、不改行为：留档失败不阻断主流程。
+ * 落盘走 util/diagDump（S-03：kickoffService 不自己碰文件系统，报告/旁证通道分立）。
+ */
+function dumpOutlineRaw(raw: string): string {
+  return dumpDiagText('kickoff-outline-raw', raw);
+}
+
+/** 失败注记：JSON.parse 报错位置前后各 120 字符切片 + 原始响应留档文件名（parseTarget=实际送进 JSON.parse 的串） */
+function outlineParseFailNote(err: unknown, parseTarget: string, raw: string): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  let note = '';
+  const pos = /position (\d+)/.exec(msg);
+  if (pos) {
+    const p = Number(pos[1]);
+    const from = Math.max(0, p - 120);
+    note += `\n报错上下文（[${from}..${p + 120}]）：${JSON.stringify(parseTarget.slice(from, p + 120))}`;
+  }
+  const file = dumpOutlineRaw(raw);
+  if (file) note += `\n厂商原始响应已留档：${file}（${raw.length} 字符）`;
+  return note;
+}
+
+function parseOutlinePayload(content: string, hits?: string[]): unknown {
+  const relaxed = relaxIllegalEscapes(stripFence(content));
+  noteEscapeHits(hits, relaxed.fixed, '大纲 JSON');
+  const body = relaxed.text;
+  let firstErr: unknown;
   try {
     const direct = JSON.parse(stripJsonTrailingCommas(body)) as unknown;
     if (Array.isArray(direct)) return direct;
     if (direct && typeof direct === 'object' && Array.isArray((direct as { outline?: unknown }).outline)) {
       return (direct as { outline: unknown }).outline;
     }
-  } catch {
-    /* 落到下面的取片断 */
+  } catch (e) {
+    firstErr = e; // 落到下面的取片断（prose 包裹数组的常见形态），两路都失败才在末尾统一注记
   }
   const start = body.indexOf('[');
   const end = body.lastIndexOf(']');
-  if (start < 0 || end <= start) throw new Error('未找到大纲 JSON 数组');
-  return JSON.parse(stripJsonTrailingCommas(body.slice(start, end + 1))) as unknown;
+  if (start < 0 || end <= start) {
+    // 连数组括号都没有：此时第一路报错比「未找到」信息量大，带上它（含留档注记）
+    throw new Error(firstErr instanceof Error
+      ? `${firstErr.message}${outlineParseFailNote(firstErr, body, content)}`
+      : '未找到大纲 JSON 数组');
+  }
+  const sliced = body.slice(start, end + 1);
+  try {
+    return JSON.parse(stripJsonTrailingCommas(sliced)) as unknown;
+  } catch (e) {
+    // 第二路也失败：以第二路报错为准（更接近真正送解析的串），注记位置上下文 + 落档原始响应
+    const err = e ?? firstErr;
+    throw new Error(`${err instanceof Error ? err.message : String(err)}${outlineParseFailNote(err, sliced, content)}`);
+  }
 }
 
 /** dataKeys 逐项校验 + 去重（§3.2）：含未知项即硬失败，触发 askJson 自带重试 */
@@ -914,18 +977,30 @@ export async function kickoffOutline(projectId: string, toolId: string, extraNot
   // T02172：dataKeys 上限的执行时机——第 1 次解析严格（超限抛错，让 askJson 用 RETRY 提示再问一轮），
   // 第 2 次解析起转软（截断 + warning 点名）。用解析回调的调用次数当轮次，不去改 askJson 的通用重试协议。
   let parseRound = 0;
+  // T02311：清洗命中与失败留档的证据收集数组（跨 askJson 两次尝试累计；成功路径转 warnings，失败路径已拼进错误文本）
+  const cleanHits: string[] = [];
   const ai = await AIService.askJson<{ outline: KickoffOutlineItem[]; warnings: string[] }>(
     toolId,
     OUTLINE_SYSTEM,
     user,
     (content) => {
       parseRound++;
-      return validateOutline(parseOutlinePayload(content), { lenientDataKeys: parseRound > 1, lenientBullets: parseRound > 1 });
+      try {
+        return validateOutline(parseOutlinePayload(content, cleanHits), { lenientDataKeys: parseRound > 1, lenientBullets: parseRound > 1 });
+      } catch (e) {
+        // T02311：schema 类失败（页码/缺页/超长未收窄）同样留档原始响应——「模型到底输出了什么」
+        // 是定性的一半证据；parse 类失败已在 parseOutlinePayload 内注记（含位置切片），不重复落档。
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes('厂商原始响应已留档')) throw e;
+        const file = dumpOutlineRaw(content);
+        throw new Error(file ? `${msg}\n厂商原始响应已留档：${file}（${content.length} 字符）` : msg);
+      }
     },
     { retrySystem: OUTLINE_SYSTEM_RETRY, temperature: 0 },
   );
   if (!ai.ok || ai.data === undefined) throw new Error(`AI 未返回合规大纲：${ai.error ?? '未知原因'}`);
   const warnings = [...ai.data.warnings];
+  for (const hit of new Set(cleanHits)) warnings.push(hit);
   if (bundle.prdTruncated) warnings.push(`PRD 摘要超出 ${KICKOFF_PRD_LIMIT} 字已保头保尾截断（全文见 PRD 文档 ${bundle.prdDoc?.id ?? ''}）`);
   if (ai.retried) warnings.push('首轮大纲不合 schema，已自动重试 1 次后通过');
   return {

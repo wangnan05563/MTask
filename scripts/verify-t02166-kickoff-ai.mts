@@ -13,12 +13,13 @@
  * 隔离纪律（skill 红线 8）：生产库只读副本 → D: 盘临时 DATA_DIR（C: 常年 0 可用），端口随机，收尾删副本。
  *          T02269：结果文件与「子进程 kill + 副本 close + DATA_DIR 删除」放进 finally，
  *          任何一处抛出（含超时穿透）都保证证据落盘、不留孤儿实例与 DATA_DIR 残留。
- * 结果落 .workbuddy/t02166-ai-gate-results-<端口>.txt、t02166-ai-outline-<端口>.txt 与
+ * 结果落 .workbuddy/t02166-ai-gate-results-<端口>.txt、t02166-ai-outline-<端口>.txt、
+ * t02166-ai-outline-raw-<端口>.txt（T02311：A-01 失败时的厂商原始响应旁证）与
  * t02166-ai-<端口>.pptx（人工抽查）；隔离数据目录同规则 `.workbuddy/t02166-ai-data-<端口>`。
  *          T02285：目录与产物名一律带门端口——并发跑门是常态，固定名会互删副本库、互覆产物，
  *          甚至让后写 pptx 的一方拿 EBUSY 被误记成「门脚本异常中断」。本轮归属见结果首行。
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, copyFileSync, writeFileSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +37,8 @@ const OUT_DIR = join(ROOT, '.workbuddy');
 const DATA_DIR = join(OUT_DIR, `t02166-ai-data-${PORT}`);
 const RESULTS_FILE = join(OUT_DIR, `t02166-ai-gate-results-${PORT}.txt`);
 const OUTLINE_FILE = join(OUT_DIR, `t02166-ai-outline-${PORT}.txt`);
+// T02311：A-01 失败时的厂商原始响应旁证（服务端落数据目录，门复制到带端口名再断言）
+const RAW_FILE = join(OUT_DIR, `t02166-ai-outline-raw-${PORT}.txt`);
 const PPTX_FILE = join(OUT_DIR, `t02166-ai-${PORT}.pptx`);
 rmSync(DATA_DIR, { recursive: true, force: true });
 mkdirSync(DATA_DIR, { recursive: true });
@@ -196,6 +199,22 @@ try {
     if (outlineErr) {
       lines.push(`[证据] outline 调用失败：${outlineErr}（超时上限 ${OUTLINE_TIMEOUT_MS}ms）· 隔离实例日志尾：${serverLog.join('').slice(-800)}`);
     }
+
+    // T02311：A-01 失败时的证据面——厂商原始响应必须留档（raw 旁证非空），否则事后无法定性
+    // 「模型输出非法转义 vs 我方预处理改坏」（T02223 复验时旁证只有解析后的 []，零原始响应）。
+    // A-01 通过时无失败路径，本条空过（计数稳定为 17，现有 16 条判据与断言名不改）。
+    const a01Failed = (outlineRes?.status ?? 0) !== 200 || outline.length < 6;
+    let rawDumped = '';
+    if (a01Failed) {
+      const raws = existsSync(DATA_DIR) ? readdirSync(DATA_DIR).filter((f) => f.startsWith('kickoff-outline-raw-')).sort() : [];
+      if (raws.length) {
+        copyFileSync(join(DATA_DIR, raws[raws.length - 1]), RAW_FILE);
+        rawDumped = readFileSync(RAW_FILE, 'utf8');
+      }
+    }
+    ok('A-01r 大纲失败时厂商原始响应已留档（raw 旁证存在且非空；A-01 通过则无失败路径）',
+      !a01Failed || (existsSync(RAW_FILE) && statSync(RAW_FILE).size > 0),
+      { a01Failed, rawBytes: rawDumped.length, rawTail: rawDumped.slice(-160) || undefined });
 
     // 库内真实名称集合（与 outlineFacts 喂给模型的口径同源）
     const names = [
