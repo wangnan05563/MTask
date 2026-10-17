@@ -6,15 +6,25 @@
  *        ① 预算不足先让同页表格继续收行；② 图表拿不到 1.2" 才整块省略并点名；
  *        ③ 文本仍按 0.45"（一刀切抬高会把本来能读的文本也挤掉）；
  *        ④ 收无可收的表格允许「计数行单独成表」——仍不谎称画全，但不再因 0.05" 被整块丢。
- *   V 组 dataKeys≤2：提示词软约束变硬约束——首轮超限抛错触发自带 RETRY，重试轮仍超限
- *        截断为前 2 个并在 warnings 点名；截断不得把全稿唯一的必含键（timeline/workload）截没。
+ *        T02293 改判：下限「单源」不再读源码里的常量与函数名，改为**双分支 × 多档预算扫描**
+ *        同一条不变式（placed 的图表必 ≥1.2"、少画的图必点名、页面无版式违规）——
+ *        两栏与整栏两条分支各自都会走完 flexStrip / fitStack / pushStackedBlocks，
+ *        任何一处漏下限都会在某个预算点位露出一张 <1.2" 的图。
+ *   V 组 dataKeys≤2（纯函数层）：超限判失败、重试轮转软截断、截断有回执、≤2 不误伤、
+ *        截断不得把全稿唯一的必含键（timeline/workload）截没。
+ *   G 组 dataKeys≤2（真链路层，T02293 由 V-06/V-07 源码锚点改判）：门内自建隔离库 + 本地
+ *        mock 厂商，跑真 `kickoffOutline` → 真 AIService → 真重试协议。看的是**发出去的请求体**
+ *        与**返回的大纲**，不是 kickoffService.ts 里有没有 `parseRound++` 那行字。
  *   P 组 真产物：解包 .pptx 用 EMU 证每张图表实排高 ≥1.2"，页面上没图的必须带 drop 留痕。
  *
- * 隔离纪律：不连生产库、不起服务、不调 AI（Bundle 脚本内构造）。
+ * 隔离纪律：不连生产库（G 组夹具由门自己写进临时 DATA_DIR）、不起服务、不调真实 AI
+ * （mock 是本机监听 127.0.0.1 随机端口的 OpenAI 兼容桩，零配额）。
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02172-kickoff-flex-floor.mts
  * 结果落 .workbuddy/t02172-gate-results-<运行标识>.txt 与 t02172-flex-<运行标识>.pptx（T02309 旁证同标识）。
  */
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
@@ -23,6 +33,9 @@ import { writeGateResults, gateArtifactPath } from './lib/gate-results.mts';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
 mkdirSync(OUT_DIR, { recursive: true });
+// G 组要在进程内跑 collectBundle，数据目录必须在任何 db 模块被调用前就钉死成临时目录
+const DATA_DIR = mkdtempSync(join(tmpdir(), 't02172-flex-'));
+process.env.MTask_DATA_DIR = DATA_DIR;
 
 let pass = 0;
 let fail = 0;
@@ -35,8 +48,6 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 const M = await import('../server/src/services/kickoffBuilder.ts');
 const LAY = await import('../server/src/services/kickoff-layout.ts');
 const SVC = await import('../server/src/services/kickoffService.ts');
-const BLD_SRC = readFileSync(join(ROOT, 'server/src/services/kickoffBuilder.ts'), 'utf8');
-const SVC_SRC = readFileSync(join(ROOT, 'server/src/services/kickoffService.ts'), 'utf8');
 
 const EMU = 914400;
 const CHART_FLOOR = 1.2;
@@ -94,7 +105,11 @@ const blockOf = (r: any, kind: string) => r.blocks.find((b: any) => kindOf(b) ==
 const rightCol = twoCol.cols![1];
 
 // ---------- F 组：柔性块分型下限 ----------
-ok('F-01 极限双栏页：图表 placed 且实排高 ≥ 1.2" 可读下限（不再靠压扁换 placed）',
+
+/** 分型下限不变式（F-10 改判的判据本体，T02293 规约第 1 条：打在排布产物上，不打在源码文本上）：
+ *  ① placed 的图表实排高必 ≥1.2"；② 该画而没画上的图表必须在 dropped 点名；③ 页面无版式违规。
+ *  「三处排布路径守同一张图表下限」由「两条分支 × 多档预算」覆盖：双栏分支与整栏分支各自都会
+ *  走完 flexStrip / fitStack / pushStackedBlocks，任何一处漏下限都会在某个点位露出 <1.2" 的图。 */ok('F-01 极限双栏页：图表 placed 且实排高 ≥ 1.2" 可读下限（不再靠压扁换 placed）',
   !!blockOf(squeezed, 'chart') && blockOf(squeezed, 'chart').box.h >= CHART_FLOOR - 1e-6,
   { chart: blockOf(squeezed, 'chart')?.box, dropped: squeezed.dropped });
 ok('F-02 图表抬下限的同页表格仍 placed，且底边不越出分栏（收表格而不是丢表格）',
@@ -130,13 +145,66 @@ ok('F-08 收无可收时「计数行单独成表」：总行数（不含表头�
   oneRow.rows.length <= 1, { rows: oneRow.rows });
 ok('F-09 单独成表仍如实报未绘条数（不谎称画全）',
   /^其余\s*\d+\s*(条|个|人|项)/.test((oneRow.rows[0]?.[0] ?? '').trim()), oneRow.rows);
-ok('F-10 图表下限单源：builder 里 MIN_CHART_H 只定义一次，排布三处都走 minReadableH',
-  (BLD_SRC.match(/const MIN_CHART_H = 1\.2/g) ?? []).length === 1 &&
-    ['flexStrip', 'fitStack', 'pushStackedBlocks'].every((fn) => {
-      const body = BLD_SRC.slice(BLD_SRC.indexOf(`function ${fn}`), BLD_SRC.indexOf(`function ${fn}`) + 1600);
-      return /minReadableH\(/.test(body);
-    }),
-  ['flexStrip', 'fitStack', 'pushStackedBlocks'].map((fn) => BLD_SRC.slice(BLD_SRC.indexOf(`function ${fn}`), BLD_SRC.indexOf(`function ${fn}`) + 1600).includes('minReadableH')));
+/** 本页可出的图表数（用于「少画了图必须点名」那一半判据） */
+const chartsAvailable = (keys: string[]) =>
+  keys.reduce((s, k) => s + M.blocksForKey(k as any, bundle).filter((d: any) => !!d.chart).length, 0);
+const SQUEEZE_KEYS = ['coverage', 'reqList'];
+const AVAIL_CHARTS = chartsAvailable(SQUEEZE_KEYS);
+
+const checkFloor = (r: any, avail: number): { ok: boolean; why: unknown } => {
+  const charts = r.blocks.filter((b: any) => kindOf(b) === 'chart');
+  const squashed = charts.filter((b: any) => b.box.h < CHART_FLOOR - 1e-6).map((b: any) => +b.box.h.toFixed(2));
+  const silent = charts.length < avail && !r.dropped.some((d: string) => /图表/.test(d));
+  return {
+    ok: squashed.length === 0 && !silent && r.violations.length === 0,
+    why: {
+      压扁的图: squashed, 静默丢图: silent, 违规: r.violations,
+      图高: charts.map((b: any) => +b.box.h.toFixed(2)), 点名: r.dropped,
+    },
+  };
+};
+
+/** 只压纵向预算（x/w 跟着版式族走不动）——双栏族压两栏、整栏族压 body */
+const pressFrames = (frames: any, ratio: number): any => ({
+  ...frames,
+  body: { ...frames.body, h: frames.body.h * ratio },
+  cols: frames.cols ? frames.cols.map((c: any) => ({ ...c, h: c.h * ratio })) : undefined,
+});
+
+/** 一档版面 × 七档预算 → 违反不变式的点位 + 是否真排上过图（防空扫描：全程没一张图也「绿」） */
+const sweepFloor = (frames: any) => {
+  const points = [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.45].map((ratio) => {
+    const r = M.layoutBody(squeezeItem as any, bundle, pressFrames(frames, ratio), longBullets) as any;
+    return { ratio, placed: r.blocks.filter((b: any) => kindOf(b) === 'chart').length, ...checkFloor(r, AVAIL_CHARTS) };
+  });
+  return { bad: points.filter((p) => !p.ok), 排上过图的点位数: points.filter((p) => p.placed > 0).length };
+};
+
+const twoColFloor = sweepFloor(twoCol);
+const dataFloor = sweepFloor(LAY.framesFor('data'));
+
+ok('F-10 双栏分支：预算从充裕连压到 45%（七档）每张 placed 的图表仍 ≥1.2"，让位的必点名，且确有档位排上图',
+  twoColFloor.bad.length === 0 && twoColFloor['排上过图的点位数'] > 0, twoColFloor);
+ok('F-11 整栏分支（data 族）同一扫描同样成立——这条排布路径旧门从没测过，只靠读源码里的 minReadableH 撑着',
+  dataFloor.bad.length === 0 && dataFloor['排上过图的点位数'] > 0, dataFloor);
+
+// 有牙证明（规约第 4 条）：在真实产物上做两次破坏，不变式判定必须随之转红
+const teethSquash = (() => {
+  const r = M.layoutBody(squeezeItem as any, bundle, twoCol, longBullets) as any;
+  const chart = r.blocks.find((b: any) => kindOf(b) === 'chart');
+  if (!chart) return { 有图: false, 转红: false };
+  chart.box.h = 0.6; // 模拟「某处排布路径漏掉图表下限」的产物
+  return { 有图: true, 转红: !checkFloor(r, AVAIL_CHARTS).ok };
+})();
+const teethSilent = (() => {
+  const named = tight.dropped.slice(); // F-05 那张让位页：图没画，但点了名
+  tight.dropped.length = 0;
+  const turnedRed = !checkFloor(tight, AVAIL_CHARTS).ok;
+  tight.dropped.push(...named);
+  return { 原本点名: named, turnedRed };
+})();
+ok('F-12 不变式有牙：把 placed 图表人为压回 0.6"、或抹掉整块省略时的点名，两条判定都转红（不是恒绿摆设）',
+  teethSquash.有图 && teethSquash.转红 && teethSilent.turnedRed, { teethSquash, teethSilent });
 
 // ---------- V 组：dataKeys ≤2 硬校验 ----------
 const page = (i: number, dataKeys: string[], layout = 'twoCol') => ({
@@ -178,13 +246,107 @@ ok('V-05 截断不把全稿唯一的必含键截没（timeline 优先保留）',
   keptTl.outline[3].dataKeys.includes('timeline') && keptTl.outline.some((p: any) => p.dataKeys.includes('timeline')),
   { page4: keptTl.outline[3].dataKeys, warn: keptTl.warnings.filter((w: string) => /超出/.test(w)) });
 
-ok('V-06 RETRY 话术带着新硬约束（重试那一轮模型知道要收回到 2 个）',
-  /每页 dataKeys \*\*≤\$\{DATA_KEYS_MAX\} 个\*\*/.test(SVC_SRC) || /每页 dataKeys/.test(SVC_SRC),
-  SVC_SRC.slice(SVC_SRC.indexOf('const OUTLINE_SYSTEM_RETRY'), SVC_SRC.indexOf('const OUTLINE_SYSTEM_RETRY') + 520));
-ok('V-07 接线：按解析轮次切软硬（第 1 轮严格抛错触发自带重试，第 2 轮起才截断）',
-  /let parseRound = 0/.test(SVC_SRC) && /parseRound\+\+/.test(SVC_SRC) && /lenientDataKeys: parseRound > 1/.test(SVC_SRC));
 ok('V-08 既有「章节页/结束页 dataKeys 清空」口径未被新校验带崩',
   SVC.validateOutline(outlineOf(['reqStats'], [true, true])).outline[11].dataKeys.length === 0);
+
+// ---------- G 组：大纲段真链路（门内自建隔离库 + 本地 mock 厂商，零真实配额） ----------
+// V-01~V-08 问的是纯函数 `validateOutline`；那两条「首轮严格 / 第 2 轮起转软」与「重试话术带着
+// 新硬约束」原先靠正则读 kickoffService.ts 的源码文本（let parseRound = 0 / parseRound++ /
+// 每页 dataKeys **≤${DATA_KEYS_MAX} 个**）——等价重构一次就恒红。本组把它们改判成
+// **发往厂商的请求体**与**返回的大纲**：跑真 kickoffOutline → 真 AIService.askJson → 真重试协议。
+const DB = await import('../server/src/db/connection.ts');
+const { initSchema } = await import('../server/src/db/schema.ts');
+initSchema();
+const gdb = DB.getDb();
+const NOW = '2026-10-11T00:00:00.000Z';
+const GPID = 't02172-flex';
+const GTOOL = 't02172-mock-tool';
+gdb.prepare('INSERT INTO projects (id, name, description, sort_weight, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)')
+  .run(GPID, 'mtask五期（下限门夹具）', '', NOW, NOW);
+// 工作空间指向仓库根：workspaceInfo 只做 statSync.isDirectory()，不给路径则 P4 记 warn（不影响硬门）
+gdb.prepare('UPDATE projects SET workspace_path = ? WHERE id = ?').run(ROOT, GPID);
+gdb.prepare('INSERT INTO prd_docs (id, project_id, filename, content_md, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+  .run('d-flex', GPID, 'PRD-项目启动会PPT生成.md', '# 背景\n门内自造的口径来源说明，正文够预检判定即可。', NOW, NOW);
+const insReq = gdb.prepare(
+  `INSERT INTO prd_requirements (id, project_id, req_no, title, content, source_ref, priority, status, sort_order, created_at, updated_at, prd_id)
+   VALUES (?, ?, ?, ?, '', '', 'normal', ?, ?, ?, ?, 'd-flex')`,
+);
+Array.from({ length: 14 }, (_, i) => insReq.run(`r${i}`, GPID, `R${i + 1}`, `需求 ${i + 1}`, i < 6 ? 'done' : 'doing', i, NOW, NOW));
+const insPlan = gdb.prepare(
+  `INSERT INTO plan_tasks (id, project_id, title, description, start_date, end_date, duration_days, progress, status,
+     assignee, sort_order, created_at, updated_at, kind, complexity, req_ids, deps)
+   VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, '张三', ?, ?, ?, ?, ?, NULL, '')`,
+);
+Array.from({ length: 12 }, (_, i) =>
+  insPlan.run(`q${i}`, GPID, `任务 ${i + 1}`, iso(T0, i * 3), iso(T0, i * 3 + 6), 5, i < 8 ? 100 : 20,
+    i < 8 ? 'done' : 'doing', i, NOW, NOW, 'normal', (i % 5) + 1));
+Array.from({ length: 3 }, (_, i) =>
+  insPlan.run(`m${i}`, GPID, `M${i + 1} 里程碑`, iso(T0, i * 12), iso(T0, i * 12 + 2), 2, 0, 'todo', 90 + i, NOW, NOW, 'milestone', 3));
+gdb.prepare(
+  `INSERT INTO ai_tools (id, name, type, purpose, endpoint, api_key_enc, model, temperature, max_tokens, timeout_ms, enabled, created_at, updated_at)
+   VALUES (?, ?, 'openai-compatible', 'develop', ?, NULL, 'mock-outline', 0, 4096, 20000, 1, ?, ?)`,
+).run(GTOOL, 't02172-mock', '__endpoint_pending__', NOW, NOW);
+
+/** mock OpenAI 兼容桩：记录每一轮**实际发出的 system 话术**，回复内容按场景排队给 */
+const mockRequests: Array<{ system: string; user: string }> = [];
+let mockQueue: string[] = [];
+const mock = createServer((req, res) => {
+  let raw = '';
+  req.on('data', (c: Buffer) => (raw += c.toString()));
+  req.on('end', () => {
+    const body = JSON.parse(raw || '{}') as { messages?: Array<{ role: string; content: string }> };
+    mockRequests.push({ system: body.messages?.[0]?.content ?? '', user: body.messages?.[1]?.content ?? '' });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      choices: [{ message: { content: mockQueue.shift() ?? '[]' }, finish_reason: 'stop' }],
+      usage: { total_tokens: 10 },
+    }));
+  });
+});
+await new Promise<void>((r) => mock.listen(0, '127.0.0.1', r));
+gdb.prepare('UPDATE ai_tools SET endpoint = ? WHERE id = ?')
+  .run(`http://127.0.0.1:${(mock.address() as { port: number }).port}`, GTOOL);
+
+/** 跑一轮真链路：replies = 模型第 1/2 轮要吐出的原文（JSON 数组文本） */
+const runOutline = async (replies: string[]) => {
+  mockRequests.length = 0;
+  mockQueue = replies.slice();
+  const res = await SVC.kickoffOutline(GPID, GTOOL);
+  return { res, systems: mockRequests.map((m) => m.system), asks: mockRequests.length };
+};
+
+// 场景 A：模型两轮都写 3 个 dataKeys（超限页正好在第 4 页）
+const over = JSON.stringify(outlineOf(['coverage', 'reqList', 'milestones']));
+const A = await runOutline([over, over]);
+ok('G-01 首轮超限在真链路上确实触发了第 2 次厂商请求（「第 1 轮严格」不是纯函数层的自说自话）',
+  A.asks === 2 && A.res.outline.length >= 10, { 请求次数: A.asks, 页数: A.res.outline.length });
+ok('G-02 第 2 轮发出去的话术带着新硬约束（dataKeys ≤2）与首轮具体违规原因——看请求体，不看源码',
+  /dataKeys/.test(A.systems[1]) && /≤\s*2\s*个/.test(A.systems[1]) &&
+    /第 4 页 dataKeys 3 个超出 2 个上限/.test(A.systems[1]) &&
+    !/上一轮输出被拒/.test(A.systems[0]),
+  { 首轮话术尾部: A.systems[0].slice(-160), 重试话术: A.systems[1].slice(0, 420) });
+ok('G-03 重试轮仍超限也不打死整稿：返回大纲第 4 页收到 2 个键、warnings 点名被去掉的 milestones',
+  A.res.outline[3].dataKeys.join(',') === 'coverage,reqList' &&
+    A.res.warnings.some((w: string) => /去掉：milestones/.test(w)),
+  { 第4页: A.res.outline[3].dataKeys, warnings: A.res.warnings });
+
+// 场景 B（互为反证）：模型首轮就写对 → 只发一次请求、不截断。
+// A 的「必发第 2 轮」与 B 的「只发 1 轮」是一对判别式点位：若首轮就转软，B 与 A 都会只发一次；
+// 若永远严格，A 会整稿失败——两条同时成立才说明「按解析轮次切软硬」真的接在链路上。
+const withinLimits = JSON.stringify(outlineOf(['coverage', 'reqList']));
+const B = await runOutline([withinLimits]);
+ok('G-04 反证侧：首轮合规只发一次请求、无截断回执（证明 G-01/G-03 不是恒真）',
+  B.asks === 1 && B.res.outline[3].dataKeys.length === 2 &&
+    !B.res.warnings.some((w: string) => /超出 2 个上限/.test(w)),
+  { 请求次数: B.asks, 第4页: B.res.outline[3].dataKeys, warnings: B.res.warnings });
+
+// 场景 C：全稿唯一的时间线页正好是超限页——真链路上也必须保住必含键
+const tlOver = JSON.stringify(outlineOf(['reqList', 'milestones', 'timeline'], [false, true]));
+const C = await runOutline([tlOver, tlOver]);
+ok('G-05 真链路同样不把全稿唯一的必含键截没（timeline 优先保留，V-05 的端到端版）',
+  C.asks === 2 && C.res.outline[3].dataKeys.includes('timeline') &&
+    C.res.outline.some((p: any) => p.dataKeys.includes('timeline')),
+  { 第4页: C.res.outline[3].dataKeys, 请求次数: C.asks, warnings: C.res.warnings.filter((w: string) => /超出/.test(w)) });
 
 // ---------- P 组：真产物 ----------
 const built = await M.buildKickoffPpt(bundle as any, [
@@ -217,6 +379,12 @@ ok('P-03 全稿无越界降级页、无版式违规告警（下限抬高没把�
   { degraded: built.degradedPages, warnings: built.warnings });
 
 writeFileSync(gateArtifactPath(OUT_DIR, 't02172-flex.pptx'), built.buffer);
+// G 组收口：关桩 → 关库句柄（动态 import 自持 SQLite 句柄，不关会让删目录打转）→ 删临时库
+mock.close();
+DB.closeDb();
 writeGateResults(OUT_DIR, 't02172-gate-results.txt', `T02172 柔性块可读高与 dataKeys 硬校验门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);
+for (let i = 0; i < 10; i++) {
+  try { rmSync(DATA_DIR, { recursive: true, force: true }); break; } catch { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500); }
+}
 process.exit(fail ? 1 : 0);
