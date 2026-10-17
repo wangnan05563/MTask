@@ -80,10 +80,16 @@ const DEP = (ms) => JSON.stringify([{ id: ms, type: 'child' }]);
 const plans = [
   ['ms-done', MS_DONE, TODAY, FAR, 6, 100, 'done', 'milestone', null, null],
   ['ms-open', MS_OPEN, TODAY, FAR, 4, 40, 'doing', 'milestone', null, null],
-  ['r-high', R_HIGH, TODAY, FAR, 2, 0, 'doing', 'normal', 3, DEP('ms-done')],   // E15/2=7.5 → high
-  ['r-low', R_LOW, TODAY, FAR, 20, 0, 'todo', 'normal', 2, DEP('ms-done')],     // E2/20=0.1 → low
-  ['r-ok', R_OK, TODAY, FAR, 5, 0, 'todo', 'normal', 2, DEP('ms-done')],        // E4/5=0.8 → 无徽标
-  ['r-tight', R_TIGHT, TODAY, TIGHT, 10, 0, 'todo', 'normal', 3, DEP('ms-done')], // 比值 1.0 不偏差，但 E10 > 剩余 ~2 → 超排期
+  // T02299(1)：这四条子项原先留 doing/todo，会被 T02090 里程碑进度聚合（启动必跑
+  // reconcileMilestoneProgresses）把 ms-done 从 done/100 打回 todo/0 → isClosedMilestone 恒 false
+  // → 「已收口·只读」徽标/解锁按钮/§7 提示条整簇消失，11 条断言恒红（红的是布点，不是 §7 红线）。
+  // 聚合口径是「有子项的里程碑以子项聚合为准」，故按口径把子项布成 done/100 才是合法布点；
+  // 偏差徽标只吃 duration_days/end_date，不吃 status，V-22/V-23 那组判据不受影响。
+  // ms-open 仍保留未完子项（它要测的正是「未收口里程碑不落估算」）。
+  ['r-high', R_HIGH, TODAY, FAR, 2, 100, 'done', 'normal', 3, DEP('ms-done')],   // E15/2=7.5 → high
+  ['r-low', R_LOW, TODAY, FAR, 20, 100, 'done', 'normal', 2, DEP('ms-done')],     // E2/20=0.1 → low
+  ['r-ok', R_OK, TODAY, FAR, 5, 100, 'done', 'normal', 2, DEP('ms-done')],        // E4/5=0.8 → 无徽标
+  ['r-tight', R_TIGHT, TODAY, TIGHT, 10, 100, 'done', 'normal', 3, DEP('ms-done')], // 比值 1.0 不偏差，但 E10 > 剩余 ~2 → 超排期
   ['r-unest', '未估算行', TODAY, FAR, 5, 0, 'todo', 'normal', 1, DEP('ms-open')],
 ];
 plans.forEach(([id, title, s, e, dur, prog, st, kind, cx, deps], i) => {
@@ -392,17 +398,20 @@ ok('V-37 两条里程碑行都不给勾选，普通任务行给（§4.6 红线�
 await shot('01-milestone-readonly-unlock');
 
 console.log('\n=== 折叠语义未破：段体（含里程碑行）随组头收起，组头常驻 ===');
-const collapse = PE`const h=[...p().querySelectorAll('[role="button"]')].find(x=>x.textContent.includes(${JSON.stringify(MS_DONE)}));
+// T02299(1b)：S6819 起分组表头是原生 <button>（隐式 role，无显式 role 属性），
+// 本组原来的 [role="button"] 属性选择器取不到表头 → collapse 返回 'noheader'、折叠从未发生 → V-38 恒红
+// （V-39 因两端同为 0 而假绿）。与 T02315 同因同修法：改「原生 + 显式」并集。
+const collapse = PE`const h=[...p().querySelectorAll('button,[role="button"]')].find(x=>x.textContent.includes(${JSON.stringify(MS_DONE)}));
   if(!h) return 'noheader'; h.click(); return 'clicked';`;
-const headWas = await ev(PE`return [...p().querySelectorAll('[role="button"]')].filter(x=>x.textContent.includes('不进 Σ')).length;`);
+const headWas = await ev(PE`return [...p().querySelectorAll('button,[role="button"]')].filter(x=>x.textContent.includes('不进 Σ')).length;`);
 await ev(collapse);
 ok('V-38 折叠该里程碑后段内任务行与里程碑自己的估算行一起收起，组头仍常驻（与 T01576 口径一致）',
   await until(PE`return row(${JSON.stringify(R_HIGH)}) === null && row(${JSON.stringify(MS_DONE)}) === null
-    && [...p().querySelectorAll('[role="button"]')].some(x=>x.textContent.includes(${JSON.stringify(MS_DONE)})) ? 1 : '';`, 12_000) === 1);
+    && [...p().querySelectorAll('button,[role="button"]')].some(x=>x.textContent.includes(${JSON.stringify(MS_DONE)})) ? 1 : '';`, 12_000) === 1);
 await ev(collapse);
 ok('V-39 展开回来后徽标与只读行都在（折叠不丢 §7 判定，也不重复计数）',
   await until(PE`const r=row(${JSON.stringify(MS_DONE)}); return r && badges(r).includes('已收口·只读') && row(${JSON.stringify(R_HIGH)}) ? 1 : '';`, 12_000) === 1
-    && await ev(PE`return [...p().querySelectorAll('[role="button"]')].filter(x=>x.textContent.includes('不进 Σ')).length;`) === headWas);
+    && await ev(PE`return [...p().querySelectorAll('button,[role="button"]')].filter(x=>x.textContent.includes('不进 Σ')).length;`) === headWas);
 
 console.log('\n=== 影响试算（零写入）===');
 await ev(clickLabeled('影响试算…'));

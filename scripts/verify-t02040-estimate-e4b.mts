@@ -25,6 +25,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveServerLauncher } from './isolated-server-launcher.mts';
+import { shimWebDocumentForNode } from './lib/web-dom-shim.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02040-e4b-'));
@@ -37,6 +38,7 @@ const { ESTIMATE_SOURCES } = await import('../server/src/services/EstimateServic
 const {
   DERIVE_RULES, DERIVE_SKIPS, COMPLEXITY_BASE_DAYS, toGrid: srvToGrid,
 } = await import('../server/src/services/EstimateDerive.ts');
+shimWebDocumentForNode(PORT);
 const P = await import('../web/src/components/EstimatePanel.tsx');
 const FE = await import('../web/src/api/estimates.ts');
 

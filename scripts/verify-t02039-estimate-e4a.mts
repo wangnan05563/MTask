@@ -22,6 +22,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveServerLauncher } from './isolated-server-launcher.mts';
+import { shimWebDocumentForNode } from './lib/web-dom-shim.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02039-e4a-'));
@@ -33,6 +34,9 @@ const { initSchema } = await import('../server/src/db/schema.ts');
 const { ESTIMATE_SOURCES, ESTIMATE_PHASES } = await import('../server/src/services/EstimateService.ts');
 const { DERIVE_RULES } = await import('../server/src/services/EstimateDerive.ts');
 const { sigma, expected } = await import('../server/src/services/estimate-engine.ts');
+// 面板模块的取数逻辑是纯函数，但它 transitively import 了 `api/client.ts`（顶层要用 document.baseURI）
+// ——Node 侧没有 DOM，进门即 ReferenceError，整段 S/R 都没机会跑。见 lib/web-dom-shim.mts。
+shimWebDocumentForNode(PORT);
 const P = await import('../web/src/components/EstimatePanel.tsx');
 
 let pass = 0;
@@ -184,7 +188,16 @@ const mkDerive = (planId: string, rule: string, o: number, m: number, p: number,
   ok('S-16 形态阈值 = PRD §5.1 的 1200px（1199 覆盖式 / 1200 与更宽停靠）',
     P.estimatePanelModeForWidth(1199) === 'overlay' && P.estimatePanelModeForWidth(1200) === 'docked'
     && P.estimatePanelModeForWidth(1440) === 'docked' && P.estimatePanelModeForWidth(1920) === 'docked');
-  ok('S-17 面板宽 420（与 PRD §5.1 布局图同值）', P.ESTIMATE_PANEL_WIDTH === 420);
+  // T02299(4)：S-17 原本写死 `=== 420`（PRD §5.1 第 11 条当时的值）。T02124 依用户反馈把停靠宽
+  // 调到 520，PRD 那一条没有回写 → 门里继续钉 420，等于把「文档里一版过期的实现细节」当长期判据，
+  // 设计一动即恒红（同一常量已被 verify-t02039-e4-ui 改成「读实现声明值」）。
+  // 这里只钉两条到今天仍然成立的口径：宽度是**单一来源常量**（全仓只声明一次、页面无第二处字面量），
+  // 且落在停靠面板的合理带宽内。「PRD §5.1 第 11 条 420 vs 实现 520」属需求文档未回写的口径漂移，另立单裁决。
+  const decls = [...(src.match(/ESTIMATE_PANEL_WIDTH\s*=\s*\d+/g) || []), ...(page.match(/ESTIMATE_PANEL_WIDTH\s*=\s*\d+/g) || [])];
+  ok('S-17 面板宽是单一来源常量（面板+页面合计只声明一次）且落在停靠带宽 320~760',
+    Number.isInteger(P.ESTIMATE_PANEL_WIDTH) && P.ESTIMATE_PANEL_WIDTH >= 320 && P.ESTIMATE_PANEL_WIDTH <= 760
+    && decls.length === 1,
+    { width: P.ESTIMATE_PANEL_WIDTH, decls });
 }
 
 console.log('\n=== R 段：按面板真实取数路径打 REST（隔离实例） ===');

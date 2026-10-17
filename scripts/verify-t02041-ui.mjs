@@ -76,10 +76,33 @@ const insEst = db.prepare(
   `INSERT INTO estimate_items (id, project_id, plan_id, phase, unit, optimistic, likely, pessimistic, source, note, created_at, updated_at)
    VALUES (?, ?, ?, ?, 'man_day', ?, ?, ?, ?, ?, ?, ?)`,
 );
-insEst.run('es-wide', PID, 'r-wide', 'impl', 4, 8, 16, 'manual', '最大 P 行（决定归一基数）', T, T);
-insEst.run('es-mid', PID, 'r-mid', 'dev', 2, 3, 4, 'rule', '', T, T);
-insEst.run('es-degen', PID, 'r-degen', 'test', 6, 6, 6, 'manual', 'O=M=P 的退化区间', T, T);
+// T02299(4)：三点数值与来源在这里声明一次，下面的判据（归一基数、该被筛掉的行、各档百分比）
+// 全部从这份夹具数据派生——断言里不再重抄 16 / 4 / 「两条 manual」这类夹具数字（同 T02315 口径）。
+const estSeeds = [
+  { id: 'es-wide', planId: 'r-wide', phase: 'impl', o: 4, m: 8, p: 16, source: 'manual', note: '最大 P 行（决定归一基数）' },
+  { id: 'es-mid', planId: 'r-mid', phase: 'dev', o: 2, m: 3, p: 4, source: 'rule', note: '' },
+  { id: 'es-degen', planId: 'r-degen', phase: 'test', o: 6, m: 6, p: 6, source: 'manual', note: 'O=M=P 的退化区间' },
+];
+for (const e of estSeeds) insEst.run(e.id, PID, e.planId, e.phase, e.o, e.m, e.p, e.source, e.note, T, T);
 closeDb();
+
+const titleOf = (planId) => seeds.find((s) => s[0] === planId)[2];
+/**
+ * 期望区间条集合 = 夹具三点齐全的明细行 + 里程碑参考行。
+ * T02041 建门时只有前者（写死 4），后来 `EstimateDerive` 让里程碑行「只出参考值、不落库、不进 Σ」，
+ * 于是参考行也画条 → 4 变成恒假判据。这里把两类分开算，并另设 U-04b：
+ * 多出来的条必须逐条对上「里程碑 + tooltip 声明不进 Σ + 服务端 skip='milestone'」，条数不许无声增长。
+ */
+const EXP = {
+  normals: seeds.filter((s) => s[1] === PID && s[5] === 'normal').map((s) => s[2]),
+  milestones: seeds.filter((s) => s[1] === PID && s[5] === 'milestone').map((s) => s[2]),
+  manual: estSeeds.filter((e) => e.source === 'manual').map((e) => titleOf(e.planId)),
+  base: Math.max(...estSeeds.map((e) => e.p)),
+};
+EXP.bars = EXP.normals.length + EXP.milestones.length;
+const maxSeed = estSeeds.find((e) => e.p === EXP.base);
+/** 归一后的期望像素：值 ÷ 基数 × 容器宽（基数由夹具声明，U-16 再用面板自己的 tooltip 对账） */
+const pct = (v) => v / EXP.base;
 
 // ---------------- 2) 隔离服务 ----------------
 const { resolveServerLauncher } = await import(pathToFileURL(join(ROOT, 'scripts/isolated-server-launcher.mts')).href);
@@ -182,6 +205,16 @@ const PE = (strings, ...exprs) => {
   return `(() => { ${PJ}${body} })()`;
 };
 const clickBtn = (text) => `(() => { ${PJ}const b=[...p().querySelectorAll('button')].find(x=>x.textContent.trim().includes(${JSON.stringify(text)})); if(!b) return 'nobtn'; b.click(); return 'clicked'; })()`;
+/** 取色归一（CSS 变量可能是 #rrggbb 或 rgb()，两套主题各读一次）——U-04b 起就要用，提到探针之前 */
+const toRgb = (s) => {
+  const txt = String(s ?? '');
+  const m = /rgba?\(([^)]+)\)/.exec(txt);
+  if (m) return m[1].split(',').slice(0, 3).map((x) => Math.round(Number(x.trim()))).join(',');
+  const h = /^#?([0-9a-f]{6})$/i.exec(txt.trim());
+  if (!h) return txt;
+  const n = parseInt(h[1], 16);
+  return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
+};
 /**
  * 「只看未复核」在面板里是 label + checkbox，不是 button（真机抓到的第一版断言假绿：
  * clickBtn 找不到按钮静默返回 'nobtn'，筛选根本没开，区间条数量当然是 4）。
@@ -241,31 +274,60 @@ ok('U-02 页面加载完成（桌面 UI）',
 await ev(`(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim() === '项目管理'); b?.click(); return 1; })()`);
 await setViewport(1920, 1000);
 ok('U-03 估算面板已打开（会话态种入开键）', await until(PE`return !!p();`), '面板未出现');
-const geo0 = await until(GEOF.replace('return out;', 'return out.length===4 ? out : \'\';'), 25_000);
-ok('U-04 四条三点齐全的行都画出了区间条（含未落库的建议行）', Array.isArray(geo0) && geo0.length === 4, geo0?.length);
+// 服务端那一份数据先取到手：建议行的三点（U-11/U-31）与 E 竖线（U-08）都以它为期望值，
+// 门里不重算 PERT 公式（零第二份算式），也不写死 3.5 / 5.5 / 52⁄6 这类「当时实测出来的数」。
+const est0 = await rest(`/estimates?projectId=${PID}`);
+const derive0 = await fetch(`${BASE}/api/estimates/derive`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ projectId: PID, dryRun: true, scope: 'all' }),
+}).then((r) => r.json());
+const dvByPlan = new Map((derive0.items || []).map((i) => [i.planId, i]));
+const eByPlan = new Map((est0.summary?.rowRatios || []).map((r) => [r.key, r.expected]));
+const accentVars = await ev(PE`const cs=getComputedStyle(p());return {accent:cs.getPropertyValue('--accent').trim(),muted:cs.getPropertyValue('--text-muted').trim()};`);
+const geoRaw = await until(GEOF.replace('return out;', `return out.length===${EXP.bars} && out.every((x)=>x.boxW>0) ? out : '';`), 25_000);
+// geo0 恒为数组：拿不满期望条数时让后面每条断言各自红，而不是 undefined 直接把门打断在 U-04 之后
+// （旧版正是这样——连「结果：PASS=… FAIL=…」那行汇总都打不出来，事后无法定性）。
+const geo0 = Array.isArray(geoRaw) ? geoRaw : (await ev(GEOF) || []);
+ok('U-04 夹具里三点齐全的明细行都画出区间条（含未落库的建议行），且条数不多不少',
+  EXP.normals.every((t) => geo0.some((g) => String(g.label).endsWith(t))) && geo0.length === EXP.bars,
+  { 期望: EXP.bars, 实得: geo0.length, 缺行: EXP.normals.filter((t) => !geo0.some((g) => String(g.label).endsWith(t))), 标签: geo0.map((g) => g.label) });
+ok('U-04b 夹具明细之外的区间条只能是里程碑参考行：tooltip 声明不进 Σ，且服务端 skip=milestone（§4.6 红线一的视觉层）',
+  geo0.every((g) => {
+    const label = String(g.label);
+    if (EXP.normals.some((t) => label.endsWith(t))) return true;
+    const ms = EXP.milestones.find((t) => label.endsWith(t));
+    if (!ms) return false;
+    return /不进 Σ/.test(g.title) && toRgb(g.kids[0].rgb) === toRgb(accentVars.muted)
+      && dvByPlan.get(seeds.find((s) => s[2] === ms)?.[0])?.skip === 'milestone';
+  }) && EXP.milestones.every((t) => geo0.some((g) => String(g.label).endsWith(t))),
+  { 里程碑条: geo0.filter((g) => EXP.milestones.some((t) => String(g.label).endsWith(t))).map((g) => ({ label: g.label, title: g.title.slice(0, 40), rgb: g.kids[0].rgb, skip: EXP.milestones.map((t) => dvByPlan.get(seeds.find((s) => s[2] === t)?.[0])?.skip) })) });
 
-console.log('\n=== 归一几何：像素位置 = 服务端值 ÷ 同一基数（max P=16） ===');
-const W = geo0[0].boxW;
-ok('U-05 四行共用同一容器宽（行间长度可比的前提）', geo0.every((g) => near(g.boxW, W, 0.6)), geo0.map((g) => g.boxW));
-const wide = byTitle(geo0, '实施主线');
-const mid = byTitle(geo0, '窄区间任务');
-const degen = byTitle(geo0, '三点收敛');
-const sug = byTitle(geo0, '仅建议行');
+console.log(`\n=== 归一几何：像素位置 = 服务端值 ÷ 同一基数（max P=${EXP.base}） ===`);
+const W = geo0.length ? Math.max(...geo0.map((g) => g.boxW)) : NaN;
+ok('U-05 各行共用同一容器宽（行间长度可比的前提）',
+  geo0.length === EXP.bars && geo0.every((g) => near(g.boxW, W, 0.6)), geo0.map((g) => g.boxW));
+const wide = byTitle(geo0, titleOf(maxSeed.planId));
+const mid = byTitle(geo0, titleOf('r-mid'));
+const degen = byTitle(geo0, titleOf('r-degen'));
+const sug = byTitle(geo0, titleOf('r-sug'));
+const midSeed = estSeeds.find((e) => e.planId === 'r-mid');
+const sugDv = dvByPlan.get('r-sug');
+const eOf = (planId) => eByPlan.get(planId);
 ok('U-06 每行四条线：横线 + O 端帽 + P 端帽 + E 竖线（顺序与渲染一致）',
   geo0.every((g) => g.kids.length === 4 && g.kids[0].width > 0), geo0.map((g) => g.kids.length));
-ok('U-07 最大 P 行（16）的 P 端帽贴满容器右边缘', wide && near(wide.kids[2].left + 1, W, 1.5), { left: wide?.kids[2].left, W });
-ok('U-08 实施主线：O 端帽在 25%（4/16）、E 竖线在 54.17%（(4+32+16)/6 ÷ 16）',
-  wide && near(wide.kids[1].left, W * 0.25) && near(wide.kids[3].left, W * (52 / 6 / 16)),
-  { o: wide?.kids[1].left, e: wide?.kids[3].left, expectE: W * (52 / 6 / 16) });
-ok('U-09 窄区间任务：O 12.5%（2/16）、P 25%（4/16）、E 18.75%（3/16）',
-  mid && near(mid.kids[1].left, W * 0.125) && near(mid.kids[2].left, W * 0.25) && near(mid.kids[3].left, W * 0.1875),
-  mid && { o: mid.kids[1].left, p: mid.kids[2].left, e: mid.kids[3].left });
+ok(`U-07 最大 P 行（P=${EXP.base}）的 P 端帽贴满容器右边缘`, wide && near(wide.kids[2].left + 1, W, 1.5), { left: wide?.kids[2].left, W });
+ok(`U-08 ${titleOf(maxSeed.planId)}：O 端帽=${maxSeed.o}/${EXP.base}、E 竖线用服务端 rowRatios 那一份 E（门里不重算 PERT）`,
+  !!wide && eOf(maxSeed.planId) != null && near(wide.kids[1].left, W * pct(maxSeed.o)) && near(wide.kids[3].left, W * pct(eOf(maxSeed.planId))),
+  { o: wide?.kids[1].left, expectO: W * pct(maxSeed.o), e: wide?.kids[3].left, expectE: W * pct(eOf(maxSeed.planId)), serverE: eOf(maxSeed.planId) });
+ok(`U-09 ${titleOf('r-mid')}：O ${midSeed.o}/${EXP.base}、P ${midSeed.p}/${EXP.base}、E 取服务端 rowRatios`,
+  !!mid && near(mid.kids[1].left, W * pct(midSeed.o)) && near(mid.kids[2].left, W * pct(midSeed.p)) && near(mid.kids[3].left, W * pct(eOf('r-mid'))),
+  mid && { o: mid.kids[1].left, p: mid.kids[2].left, e: mid.kids[3].left, serverE: eOf('r-mid') });
 ok('U-10 三点收敛行：O=P 时两端帽重合，横线只剩最小可见宽度（不为零所以看得见）',
   degen && near(degen.kids[1].left, degen.kids[2].left, 0.6) && degen.kids[0].width >= 1 && degen.kids[0].width <= 4,
   degen && { rail: degen.kids[0].width, lo: degen.kids[1].left, hi: degen.kids[2].left });
-ok('U-11 建议行（未落库）同样按服务端推导值画：O 21.875%（3.5/16）、P 34.375%（5.5/16）',
-  sug && near(sug.kids[1].left, W * 0.21875) && near(sug.kids[2].left, W * 0.34375),
-  sug && { o: sug.kids[1].left, p: sug.kids[2].left });
+ok(`U-11 建议行（未落库）按服务端推导响应的那份三点画：O ${sugDv?.optimistic}/${EXP.base}、P ${sugDv?.pessimistic}/${EXP.base}`,
+  !!sug && sugDv != null && near(sug.kids[1].left, W * pct(sugDv.optimistic)) && near(sug.kids[2].left, W * pct(sugDv.pessimistic)),
+  sug && { o: sug.kids[1].left, p: sug.kids[2].left, server: { o: sugDv?.optimistic, p: sugDv?.pessimistic } });
 ok('U-12 每行 E 竖线不越出两端帽（几何层不重排三点）',
   geo0.every((g) => g.kids[1].left - 1 <= g.kids[3].left && g.kids[3].left <= g.kids[2].left + 1),
   geo0.map((g) => [g.kids[1].left, g.kids[3].left, g.kids[2].left]));
@@ -273,27 +335,20 @@ ok('U-12 每行 E 竖线不越出两端帽（几何层不重排三点）',
 await shot('00-whisker-base16');
 
 console.log('\n=== 语义配色与可访问性 ===');
-const accentRgb = await ev(PE`const cs=getComputedStyle(p());return {accent:cs.getPropertyValue('--accent').trim(),muted:cs.getPropertyValue('--text-muted').trim()};`);
-const toRgb = (s) => {
-  const txt = String(s ?? '');
-  const m = /rgba?\(([^)]+)\)/.exec(txt);
-  if (m) return m[1].split(',').slice(0, 3).map((x) => Math.round(Number(x.trim()))).join(',');
-  const h = /^#?([0-9a-f]{6})$/i.exec(txt.trim());
-  if (!h) return txt;
-  const n = parseInt(h[1], 16);
-  return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
-};
 ok('U-13 已落库行的线色 = 解析后的 --accent（不是硬编码色值）',
-  wide && toRgb(wide.kids[0].rgb) === toRgb(accentRgb.accent), { measured: wide?.kids[0].rgb, accent: accentRgb.accent });
+  wide && toRgb(wide.kids[0].rgb) === toRgb(accentVars.accent), { measured: wide?.kids[0].rgb, accent: accentVars.accent });
 ok('U-14 建议行的线色 = --text-muted，且与 --accent 不同（灰显口径延伸到区间条）',
-  sug && toRgb(sug.kids[0].rgb) === toRgb(accentRgb.muted) && toRgb(accentRgb.muted) !== toRgb(accentRgb.accent),
-  { measured: sug?.kids[0].rgb, muted: accentRgb.muted, accent: accentRgb.accent });
+  sug && toRgb(sug.kids[0].rgb) === toRgb(accentVars.muted) && toRgb(accentVars.muted) !== toRgb(accentVars.accent),
+  { measured: sug?.kids[0].rgb, muted: accentVars.muted, accent: accentVars.accent });
 ok('U-15 aria-label 以「区间条 + 计划标题」开头（屏幕阅读器与走查脚本都不靠类名）',
   geo0.every((g) => String(g.label).startsWith('区间条 ')), geo0.map((g) => g.label));
 ok('U-16 tooltip 写明三点数值与归一基数（读者不必猜那条线是什么）',
-  wide && /O 4 —— P 16/.test(wide.title) && /最大 P=16/.test(wide.title), wide?.title);
-ok('U-17 里程碑组头不画区间条（§4.6 红线一在视觉层同样生效）',
-  await ev(PE`const hs=[...p().querySelectorAll('[role="button"]')].filter(x=>x.innerText.includes('不进 Σ'));
+  wide && new RegExp(`O ${maxSeed.o} —— P ${maxSeed.p}`).test(wide.title) && new RegExp(`最大 P=${EXP.base}`).test(wide.title), wide?.title);
+ok('U-16b 每条区间条声明的归一基数都等于夹具最大 P（基数只有一份，行内不各算各的）',
+  geo0.length === EXP.bars && geo0.every((g) => new RegExp(`最大 P=${EXP.base}`).test(g.title)),
+  geo0.map((g) => [g.label, (String(g.title).match(/最大 P=[\d.]+/) || [''])[0]]));
+ok('U-17 里程碑组头不画区间条（§4.6 红线一在视觉层同样生效；组头是原生 button，选择器取并集）',
+  await ev(PE`const hs=[...p().querySelectorAll('button,[role="button"]')].filter(x=>x.innerText.includes('不进 Σ'));
     return hs.length > 0 && hs.every((h)=>!h.querySelector('[role="img"]'));`),
   '里程碑组头里出现了图形');
 ok('U-18 图例存在并解释端点与竖线含义',
@@ -304,8 +359,13 @@ const ratiosBefore = geo0.map((g) => ({ label: g.label, lo: g.kids[1].left / g.b
 const t19 = await ev(setFilter(true));
 await idle('U-19');
 const geoFiltered = await ev(GEOF);
-ok('U-19 「只看未复核」把两条 manual 行筛掉（面板少 2 条区间条）',
-  t19 === 'ok' && Array.isArray(geoFiltered) && geoFiltered.length === 2, { click: t19, before: geo0.length, after: geoFiltered?.length });
+// 期望筛后条集合 = 全部条 −（夹具里 source=manual 的那几行）；里程碑参考行不是 manual，按规则留下
+const expKept = EXP.bars - EXP.manual.length;
+ok(`U-19 「只看未复核」筛掉 ${EXP.manual.length} 条 manual 行（区间条剩 ${expKept} 条，被筛掉的正是 manual 那几行）`,
+  t19 === 'ok' && Array.isArray(geoFiltered) && geoFiltered.length === expKept
+  && EXP.manual.every((t) => !geoFiltered.some((g) => String(g.label).endsWith(t)))
+  && geoFiltered.every((g) => geo0.some((x) => x.label === g.label)),
+  { click: t19, before: geo0.length, after: geoFiltered?.length, manual: EXP.manual, labels: (geoFiltered || []).map((g) => g.label) });
 const sameRatio = (geoFiltered || []).every((g) => {
   const b = ratiosBefore.find((x) => x.label === g.label);
   return b && near(b.lo, g.kids[1].left / g.boxW, 0.005) && near(b.hi, g.kids[2].left / g.boxW, 0.005);
@@ -314,39 +374,41 @@ ok('U-20 筛选后仍可见行的归一比例分毫未变（基数取全部明�
   { before: ratiosBefore, after: (geoFiltered || []).map((g) => [g.label, g.kids[1].left / g.boxW, g.kids[2].left / g.boxW]) });
 const t21 = await ev(setFilter(false));
 await idle('U-21');
-ok('U-21 关掉筛选后四行区间条回来（筛选态不破坏几何）',
-  t21 === 'ok' && (await ev(GEOF))?.length === 4, { click: t21 });
+ok(`U-21 关掉筛选后 ${EXP.bars} 条区间条全部回来（筛选态不破坏几何）`,
+  t21 === 'ok' && (await ev(GEOF))?.length === EXP.bars, { click: t21 });
 
-// 行内改 P：窄区间任务 4 → 60，基数应易主，两条线的长度关系整体重排
-const label = '窄区间任务 悲观 P（人天）';
-await ev(`(() => { ${PJ}const el=[...p().querySelectorAll('input[type="number"]')].find(i=>(i.getAttribute('aria-label')||'')===${JSON.stringify(label)});
-  if(!el) return 'missing'; el.focus(); return 'focused'; })()`);
+// 行内改 P：窄区间任务 P 由夹具值改成 NEWP，基数应易主，两条线的长度关系整体重排
+const NEWP = 60;
+const label = `${titleOf('r-mid')} 悲观 P（人天）`;
+const inputBy = (aria) => `(() => { ${PJ}const el=[...p().querySelectorAll('input[type="number"]')].find(i=>(i.getAttribute('aria-label')||'')===${JSON.stringify(aria)});`;
+await ev(`${inputBy(label)}if(!el) return 'missing'; el.focus(); return 'focused'; })()`);
 await sleep(150);
-await ev(`(() => { ${PJ}const el=[...p().querySelectorAll('input[type="number"]')].find(i=>(i.getAttribute('aria-label')||'')===${JSON.stringify(label)});
+await ev(`${inputBy(label)}
   const d=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');
-  d.set.call(el,'60'); el.dispatchEvent(new Event('input',{bubbles:true})); return el.value; })()`);
+  d.set.call(el,${JSON.stringify(String(NEWP))}); el.dispatchEvent(new Event('input',{bubbles:true})); return el.value; })()`);
 await sleep(200);
-await ev(`(() => { ${PJ}const el=[...p().querySelectorAll('input[type="number"]')].find(i=>(i.getAttribute('aria-label')||'')===${JSON.stringify(label)});
+await ev(`${inputBy(label)}
   el.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true})); return 1; })()`);
-const after = await until(GEOF.replace('return out;', 'return out.length && out.every(x=>x.title.includes("最大 P=60")) ? out : \'\';'), 25_000);
-ok('U-22 改值后区间条按新基数重画：窄行 P=60 成为新基数并贴满右边缘',
-  Array.isArray(after) && near(byTitle(after, '窄区间任务')?.kids[2].left, after[0].boxW, 1.5),
-  after && { w: after[0].boxW, hi: byTitle(after, '窄区间任务')?.kids[2].left });
-ok('U-23 原最大行（16）相对缩水到 26.67%（16/60）——同屏长度仍可互比',
-  Array.isArray(after) && near(byTitle(after, '实施主线')?.kids[2].left, after[0].boxW * (16 / 60), 1.5),
-  after && { hi: byTitle(after, '实施主线')?.kids[2].left, expect: after[0].boxW * (16 / 60) });
+const after = await until(GEOF.replace('return out;', `return out.length===${EXP.bars} && out.every(x=>x.title.includes("最大 P=${NEWP}")) ? out : '';`), 25_000);
+const afterW = Array.isArray(after) && after.length ? Math.max(...after.map((g) => g.boxW)) : NaN;
+ok(`U-22 改值后区间条按新基数重画：${titleOf('r-mid')} 的新 P=${NEWP} 成为基数并贴满右边缘`,
+  Array.isArray(after) && near(byTitle(after, titleOf('r-mid'))?.kids[2].left, afterW, 1.5),
+  after && { w: afterW, hi: byTitle(after, titleOf('r-mid'))?.kids[2].left });
+ok(`U-23 原最大行（P=${EXP.base}）相对缩水到 ${EXP.base}/${NEWP}——同屏长度仍可互比`,
+  Array.isArray(after) && near(byTitle(after, titleOf(maxSeed.planId))?.kids[2].left, afterW * (EXP.base / NEWP), 1.5),
+  after && { hi: byTitle(after, titleOf(maxSeed.planId))?.kids[2].left, expect: afterW * (EXP.base / NEWP) });
 const itemP = await rest(`/estimates?projectId=${PID}`);
 const midItem = (itemP.items || []).find((i) => i.plan_id === 'r-mid');
-ok('U-24 改的是真落库值（服务端 pessimistic=60，不是内存态），且该行转为 manual',
-  midItem && midItem.pessimistic === 60 && midItem.source === 'manual', midItem);
+ok(`U-24 改的是真落库值（服务端 pessimistic=${NEWP}，不是内存态），且该行转为 manual`,
+  midItem && midItem.pessimistic === NEWP && midItem.source === 'manual', midItem);
 await shot('01-whisker-remeasured');
 
 // 还原，避免夹具状态影响后续断言
-await ev(`(() => { ${PJ}const el=[...p().querySelectorAll('input[type="number"]')].find(i=>(i.getAttribute('aria-label')||'')===${JSON.stringify(label)});
+await ev(`${inputBy(label)}
   el.focus(); const d=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');
-  d.set.call(el,'4'); el.dispatchEvent(new Event('input',{bubbles:true}));
+  d.set.call(el,${JSON.stringify(String(midSeed.p))}); el.dispatchEvent(new Event('input',{bubbles:true}));
   el.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true})); return 1; })()`);
-await until(PE`return p().innerText.includes('窄区间任务') && [...p().querySelectorAll('[aria-label^="区间条"]')].some(x=>(x.getAttribute('title')||'').includes('最大 P=16'));`, 25_000);
+await until(PE`return p().innerText.includes(${JSON.stringify(titleOf('r-mid'))}) && [...p().querySelectorAll('[aria-label^="区间条"]')].some(x=>(x.getAttribute('title')||'').includes('最大 P=${EXP.base}'));`, 25_000);
 await send('Page.reload');
 // 刷新后应用落在默认模块，估算面板要重新点进「项目管理」才挂载（U-02/U-03 同一动作）——
 // 少这一步，p() 为 null、GEOF 返回 undefined，U-25/26/27 会连带假失败。
@@ -354,10 +416,10 @@ await until(`[...document.querySelectorAll('button')].some(x=>x.textContent.trim
 await ev(`(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim() === '项目管理'); b?.click(); return 1; })()`);
 const panelBack = await until(PE`return !!p();`, 25_000);
 const geoReload = panelBack
-  ? await until(GEOF.replace('return out;', 'return out.length===4 && out.every(x=>x.title.includes("最大 P=16")) ? out : \'\';'), 25_000)
+  ? await until(GEOF.replace('return out;', `return out.length===${EXP.bars} && out.every(x=>x.title.includes("最大 P=${EXP.base}")) ? out : '';`), 25_000)
   : null;
-ok('U-25 刷新后区间条仍在且基数回到 16（写路径真落库，几何无本地缓存）',
-  Array.isArray(geoReload) && geoReload.length === 4,
+ok(`U-25 刷新后区间条仍在且基数回到 ${EXP.base}（写路径真落库，几何无本地缓存）`,
+  Array.isArray(geoReload) && geoReload.length === EXP.bars,
   { panel: !!panelBack, n: geoReload?.length, title: String(geoReload?.[0]?.title || '').slice(0, 90) });
 
 console.log('\n=== 空项目不画图例 / 三档视口 / 覆盖式 / 明暗双验 ===');
@@ -368,13 +430,13 @@ ok('U-26 三档视口（1920/1440/1200）面板内无横向滚动且区间条照
     res.push(await ev(PE`const s=p().scrollWidth - p().clientWidth;
       return { w:${w}, overflow: s > 1, n: p().querySelectorAll('[role="img"][aria-label^="区间条"]').length };`));
   }
-  return res.every((r) => r && !r.overflow && r.n === 4);
+  return res.every((r) => r && !r.overflow && r.n === EXP.bars);
 })());
 await setViewport(1100, 1000);
 ok('U-27 <1200px 转覆盖式后区间条仍渲染、无横向滚动（§10-13 挤压复验）',
   await until(PE`const d=[...document.querySelectorAll('[role="dialog"][aria-modal="true"]')].find(x=>x.innerText.includes('实际预估人月'));
     return d ? { n: d.querySelectorAll('[role="img"][aria-label^="区间条"]').length, overflow: d.scrollWidth - d.clientWidth > 1 } : '';`, 15_000)
-    .then((r) => !!r && r.n === 4 && !r.overflow));
+    .then((r) => !!r && r.n === EXP.bars && !r.overflow));
 await shot('02-whisker-overlay-1100');
 await setViewport(1920, 1000);
 await ev(PE`document.documentElement.dataset.theme='dark';return 1;`);
@@ -382,11 +444,11 @@ await sleep(500);
 const darkVars = await ev(PE`const cs=getComputedStyle(p());return {accent:cs.getPropertyValue('--accent').trim(),muted:cs.getPropertyValue('--text-muted').trim()};`);
 const geoDark = await ev(GEOF);
 ok('U-28 暗色主题下线色仍等于当套 --accent（配色跟变量，不跟字面量）',
-  darkVars && toRgb(byTitle(geoDark, '实施主线')?.kids[0].rgb) === toRgb(darkVars.accent),
-  { measured: toRgb(byTitle(geoDark, '实施主线')?.kids[0].rgb), accent: toRgb(darkVars.accent) });
+  darkVars && toRgb(byTitle(geoDark, titleOf(maxSeed.planId))?.kids[0].rgb) === toRgb(darkVars.accent),
+  { measured: toRgb(byTitle(geoDark, titleOf(maxSeed.planId))?.kids[0].rgb), accent: toRgb(darkVars.accent) });
 ok('U-29 主题切换过程中没有把面板切崩（区间条数量不变、页面无 JS 报错）',
-  geoDark?.length === 4 && (await ev(`(window.__errs||[]).length`)) === 0,
-  { n: geoDark?.length, errs: await ev(`(window.__errs||[]).slice(-2)`) });
+  geoDark?.length === EXP.bars && (await ev(`(window.__errs||[]).length`)) === 0,
+  { n: geoDark?.length, 期望: EXP.bars, errs: await ev(`(window.__errs||[]).slice(-2)`) });
 await shot('03-whisker-dark');
 await ev(PE`document.documentElement.dataset.theme='light';return 1;`);
 
@@ -398,8 +460,14 @@ const dv = await fetch(`${BASE}/api/estimates/derive`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ projectId: PID, dryRun: true, scope: 'all' }),
 }).then((r) => r.json());
-ok('U-31 建议行的区间值与服务端推导响应一致（面板未预置、也未被本地算过）',
-  (dv.items || []).some((i) => i.planId === 'r-sug' && i.optimistic === 3.5 && i.pessimistic === 5.5), dv.items);
+// T02299(4)：原判据把当时实测出来的 3.5 / 5.5 写死在断言里——推导档一改即恒红。
+// 改为「面板画出来的位置 == 这份响应里的三点 ÷ 基数」：同源关系成立，数值随服务端动。
+const sugNow = (dv.items || []).find((i) => i.planId === 'r-sug');
+ok('U-31 建议行的区间值与服务端推导响应同源（画出的 O/P 位置就是响应里那两份值，门内不预设具体数）',
+  !!sug && !!sugNow && sugNow.optimistic != null && sugNow.pessimistic != null
+  && near(sug.kids[1].left, W * (sugNow.optimistic / EXP.base), 1.2)
+  && near(sug.kids[2].left, W * (sugNow.pessimistic / EXP.base), 1.2),
+  { server: sugNow && { o: sugNow.optimistic, p: sugNow.pessimistic, skip: sugNow.skip }, drawn: sug && [sug.kids[1].left, sug.kids[2].left], W, base: EXP.base });
 ok('U-32 服务日志无 estimates/几何相关异常',
   !/estimates.*(500|异常|Error)/i.test(serverLog.join('')), serverLog.join('').split('\n').filter((l) => /estimates/i.test(l)).slice(-3));
 

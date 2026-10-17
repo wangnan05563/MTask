@@ -297,14 +297,26 @@ const repaint = await ev(`(async () => {
     requestAnimationFrame(chk);
   }); })()`);
 console.log(`  [INFO] 首开 ${firstPaint?.ms?.toFixed(0)}ms（含取数） / 二次开（数据已在缓存） ${repaint?.ms?.toFixed(0)}ms / 面板内输入框 ${repaint?.inputs} 个`);
-ok('V-12 规模确实到位：面板渲染出的录入行数与服务端明细条数一致（不是数到 3 就交差）',
-  await (async () => {
-    const d = await rest(`/estimates?projectId=${BIG}`);
-    const live = d.items.filter((i) => i.plan_kind !== 'milestone' && i.optimistic !== null);
-    return { expected: live.length, painted: firstPaint?.rows ?? 0, inputs: firstPaint?.inputs ?? 0 };
-  })()
-    .then((s) => { console.log(`  [INFO] 服务端明细 ${s.expected} 行 / 面板录入 ${s.painted} 行 / 数字输入 ${s.inputs} 个`); return s.expected > 0 && s.inputs === s.expected * 3; }),
-  '录入框数与明细行数不匹配（面板可能有虚拟化或漏渲染）');
+// T02299(3)：T02121 给明细段加了虚拟滚动（EstimatePanel.tsx:27 阈值 120，>120 行只渲染窗内），
+// 旧判据「渲染录入行数 == 服务端明细条数」与 §9 性能红线（V-11 首屏 <500ms）互斥，永无复绿可能。
+// 改判为三条同时成立，期望值全部来自服务端与面板自己的窗口化说明行，门里不写死 500/20 这类规模数字：
+//   ① 面板自述「共 N 行」== 服务端明细条数（窗口化不缩口径）；
+//   ② 实渲染行数 == 面板自述窗内行数 M（窗口数学与 DOM 一致，M 由面板自己声明、非门猜）；
+//   ③ M < N 且 N 越过阈值 → 证明确实走的是窗口化路径且规模到位（不是数到 3 就交差）。
+const v12 = await (async () => {
+  const d = await rest(`/estimates?projectId=${BIG}`);
+  const live = d.items.filter((i) => i.plan_kind !== 'milestone' && i.optimistic !== null);
+  const declared = await ev(PE`const el = p(); if (!el) return null;
+    const t = el.innerText.match(/明细已载入 (\\d+) 行/);
+    const w = el.innerText.match(/仅渲染视口附近 (\\d+) 行/);
+    return t && w ? { total: Number(t[1]), inWindow: Number(w[1]) } : null;`);
+  return { expected: live.length, painted: firstPaint?.rows ?? 0, inputs: firstPaint?.inputs ?? 0, declared };
+})();
+console.log(`  [INFO] 服务端明细 ${v12.expected} 行 / 面板自述 ${v12.declared ? `共 ${v12.declared.total} 行、窗内 ${v12.declared.inWindow} 行` : '无窗口化说明行'} / 实渲染 ${v12.painted} 行（${v12.inputs} 个数字输入）`);
+ok('V-12 规模确实到位：面板自述总行数=服务端明细条数，实渲染行数=自述窗内行数，且窗口化确已触发（虚拟滚动下不再要求全量渲染）',
+  v12.expected > 0 && !!v12.declared && v12.declared.total === v12.expected
+  && v12.painted > 0 && v12.painted === v12.declared.inWindow
+  && v12.declared.inWindow < v12.declared.total, v12);
 let v13evidence = {};
 ok('V-13 500 行下面板「实际预估人月」卡读数 == 服务端 actualManMonths.expected（规模与口径都不改变出数）',
   await (async () => {
@@ -402,8 +414,12 @@ ok('V-31 §9 可访问性：从首个可见录入框起 Tab 走遍面板内全�
 const unnamed = (inv || []).filter((x) => x.vis && !x.dis && !x.aria && !x.wrap);
 ok('V-32 面板内每个可见录入控件都有可被读出的名字（aria-label，或包裹 label 的隐式名——两者皆无才算无名）',
   unnamed.length === 0, { unnamed, 无aria但靠label命名: (inv || []).filter((x) => x.vis && !x.aria && x.wrap).map((x) => x.wrap) });
+// T02299(2)：66eb5cd（Sonar 治理）把面板三处 <div role="status"> 换成 <output aria-label=…>，
+// <output> 的隐式 ARIA role 就是 status（读屏语义未丢，属等价重构），但只认显式属性的
+// `[role="status"]` 恒为 0 → V-33 永红。选择器改「显式属性 + 原生等价元素」并集
+// （与 memory 里 button,[role=button] 同一处理方式）；不回退他人的等价重构。
 const roles = await ev(PE`const q=(s)=>p().querySelectorAll(s).length;
-  return { aside: p().tagName.toLowerCase(), toolbar: q('[role="toolbar"]'), status: q('[role="status"]'),
+  return { aside: p().tagName.toLowerCase(), toolbar: q('[role="toolbar"]'), status: q('[role="status"], output'),
     img: q('[role="img"][aria-label]'), group: q('[role="group"]'), alert: q('[role="alert"]') };`);
 ok('V-33 面板常驻语义标注在 DOM 上成立（aside + toolbar/status + 区间条 role=img 带 aria-label）',
   !!roles && roles.aside === 'aside' && roles.toolbar >= 1 && roles.status >= 1 && roles.img >= 1, roles);
@@ -456,15 +472,23 @@ ok('V-43 回时间线：面板自动回到打开态（开合态由键决定，�
 const r1 = await readSum();
 ok('V-44 三圈切换后汇总读数不变（切换视图不重算、不掉数）', r0 && r0 === r1, { r0, r1 });
 await ev(`(() => { location.reload(); return 1; })()`);
+// T02299(3)：失败证据必须能定性——原写法把 back/same 折进 .then 后只回传 sessionStorage，
+// 红的时候看不出是「面板没回来」还是「读数变了」。状态整个留住再判。
+const v45 = await (async () => {
+  await sleep(1500);
+  await until(`[...document.querySelectorAll('button')].some(x=>x.textContent.trim()==='项目管理')`, 30000);
+  await ev(`(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim() === '项目管理'); b?.click(); return 1; })()`);
+  const back = await until(PE`return !!p();`, 20000);
+  // aside 在场 ≠ 卡已出数：刷新后 summary 还要一轮请求，readSum 立刻取会拿到空串。
+  // 等到读数非空再比，超时把「等了多久仍为空」如实写进证据（真丢数与拿太早可区分）。
+  const waitFrom = Date.now();
+  const rr = await until(PE`const c=card('实际预估人月'); const s=c.length?c[0].innerText.replace(/\\s+/g,' '):''; return /\\d/.test(s)?s:'';`, 20000);
+  const open = await ev(PE`return sessionStorage.getItem('plan.estimatePanelOpen');`);
+  return { back, same: rr === r1, rr, r1, open, waitMs: Date.now() - waitFrom,
+    aside: await ev(`!!document.querySelector('aside[aria-label="估算面板"]')`) };
+})();
 ok('V-45 刷新后面板仍开且读数一致（§10-1「刷新后保持」）',
-  await (async () => {
-    await sleep(1500);
-    await until(`[...document.querySelectorAll('button')].some(x=>x.textContent.trim()==='项目管理')`, 30000);
-    await ev(`(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim() === '项目管理'); b?.click(); return 1; })()`);
-    const back = await until(PE`return !!p();`, 20000);
-    const rr = await readSum();
-    return { back, same: rr === r1, rr };
-  })().then((s) => s.back && s.same), await ev(PE`return {open:sessionStorage.getItem('plan.estimatePanelOpen')};`));
+  !!v45.back && v45.same === true, v45);
 await shot('v45-after-reload');
 
 group('V-90 全程无脚本错误与服务端 5xx');

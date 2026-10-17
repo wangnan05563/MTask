@@ -391,21 +391,43 @@ ok('U-20b 还原后的三点=写入前快照（3.5/4/5.5）、来源仍是 manua
 await shot('04-uniform-undo');
 
 // ---------------- 9) 只看未复核筛选 + 里程碑不参与 ----------------
+// T02299(4)：这一段原先钉死「12 个数字格 → 9 个」和「里程碑一个格子都不给（msInput=false）」。
+// 两个数都来自「面板只渲染 4 条明细行 × 3 格」那一版实现；里程碑行后来改为渲染**只读参考格**
+// （禁用、不落库、不进 Σ——与 T02046/T02047 真机口径一致），12 与「不许有格子」同时过期。
+// 期望值改由夹具 seeds 派生；红线一的判据从「格子不存在」改成「格子存在但必须禁用」——
+// 它约束的是可写性，不是有没有一份参考读数。
+const msTitles = seeds.filter((s) => s[4] === 'milestone').map((s) => s[1]);
+const normTitles = seeds.filter((s) => s[4] === 'normal').map((s) => s[1]);
+const CELLS = 3;
+const EXP_CELLS = (msTitles.length + normTitles.length) * CELLS;
+const titleById = (id) => seeds.find((s) => s[0] === id)?.[1];
 await ev(clickBtn('取涁'));
 const filterOn = await ev(PE`const l=[...p().querySelectorAll('label')].find(x=>x.textContent.includes('只看未复核'));
   const before=[...p().querySelectorAll('input[type="number"]')].filter(i=>(i.getAttribute('aria-label')||'').includes('（人天）')).length;
   const cb=l.querySelector('input[type="checkbox"]'); cb.click();
   return { before };`);
-const afterFilter = await until(PE`return [...p().querySelectorAll('input[type="number"]')].filter(i=>(i.getAttribute('aria-label')||'').includes('（人天）')).length;`, 15_000);
-ok('U-21 「只看未复核」把已复核（manual）行摘出列表：12 个数字格 → 9 个（其余三行仍是建议值）',
-  filterOn.before === 12 && afterFilter === 9, { before: filterOn.before, after: afterFilter });
+const manNow = ((await rest(`/estimates?projectId=${PID}`)).items || []).filter((i) => i.source === 'manual').map((i) => titleById(i.plan_id)).filter(Boolean);
+const expAfter = EXP_CELLS - manNow.length * CELLS;
+const afterCells = await until(PE`const a=[...p().querySelectorAll('input[type="number"]')].filter(i=>(i.getAttribute('aria-label')||'').includes('（人天）'));
+  return a.length===${expAfter} ? { n:a.length, labels:a.map(x=>x.getAttribute('aria-label')) } : '';`, 15_000);
+ok(`U-21 「只看未复核」把已复核（manual）行整行摘出列表：${EXP_CELLS} 个数字格 → ${expAfter} 个，摘掉的正是那 ${manNow.length} 条 manual 行`,
+  !!afterCells && filterOn.before === EXP_CELLS && afterCells.n === expAfter
+  && manNow.every((t) => !afterCells.labels.some((l) => String(l).startsWith(t)))
+  && normTitles.filter((t) => !manNow.includes(t)).every((t) => afterCells.labels.filter((l) => String(l).startsWith(t)).length === CELLS),
+  { before: filterOn.before, after: afterCells || { n: null }, manual: manNow });
 await ev(PE`const l=[...p().querySelectorAll('label')].find(x=>x.textContent.includes('只看未复核')); l.querySelector('input[type="checkbox"]').click(); return 1;`);
-await until(PE`return [...p().querySelectorAll('input[type="number"]')].filter(i=>(i.getAttribute('aria-label')||'').includes('（人天）')).length===12?'1':''`, 15_000);
-const msGuard = await ev(PE`const t=p().innerText; const inputs=[...p().querySelectorAll('input[type="number"]')].filter(i=>(i.getAttribute('aria-label')||'').includes('（人天）'));
-  return { milestoneInHeader: t.includes('不进 Σ'), msInput: inputs.some(i=>(i.getAttribute('aria-label')||'').startsWith('M-A')),
-    allEnabled: inputs.every(i=>!i.disabled), n: inputs.length };`);
-ok('U-22 里程碑只在组头显示「不进 Σ」，不给可写格子；其余 12 格都可编辑（红线一在 UI 层同样成立）',
-  msGuard.milestoneInHeader === true && msGuard.msInput === false && msGuard.allEnabled === true && msGuard.n === 12, msGuard);
+await until(PE`return [...p().querySelectorAll('input[type="number"]')].filter(i=>(i.getAttribute('aria-label')||'').includes('（人天）')).length===${EXP_CELLS}?'1':''`, 15_000);
+const msGuard = await ev(PE`const t=p().innerText;
+  const msT=${JSON.stringify(msTitles)};
+  const all=[...p().querySelectorAll('input[type="number"]')].filter(i=>(i.getAttribute('aria-label')||'').includes('（人天）'));
+  const isMs=(el)=>msT.some(ti=>String(el.getAttribute('aria-label')||'').startsWith(ti));
+  const ms=all.filter(isMs), norm=all.filter((el)=>!isMs(el));
+  return { milestoneInHeader: t.includes('不进 Σ'), msCells: ms.length, msDisabled: ms.length>0 && ms.every(i=>i.disabled),
+    normCells: norm.length, normEnabled: norm.every(i=>!i.disabled), n: all.length,
+    msLabels: ms.map(i=>({ l: i.getAttribute('aria-label'), d: i.disabled })) };`);
+ok('U-22 里程碑只给**只读**参考格（存在但禁用）且组头标「不进 Σ」；明细格全部可编辑（红线一管的是可写性，不是有没有读数）',
+  msGuard.milestoneInHeader === true && msGuard.msCells === msTitles.length * CELLS && msGuard.msDisabled === true
+  && msGuard.normCells === normTitles.length * CELLS && msGuard.normEnabled === true && msGuard.n === EXP_CELLS, msGuard);
 
 // ---------------- 10) 窄视口：写路径新增的工具条不撑破覆盖式（§10-13 回归） ----------------
 await setViewport(1100, 900);
