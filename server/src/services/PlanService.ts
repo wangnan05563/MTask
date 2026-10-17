@@ -903,6 +903,11 @@ function resolveImportPlanTargets(
  * T01867：编号在项目内唯一——AI 每次解析都从 REQ-001 起号，增量导入必与存量撞号，
  * 撞号后「按编号定位需求」（矩阵导出、用例 importDraft 的 reqNo→id 复用）变成不确定命中，
  * 删掉其中一行会连带清掉另一行的引用。故落库前按项目现有最大编号顺延，旧编号一律不改。
+ * T02303（裁定口径甲）：`onDuplicatePlan:'reuse'` 时需求侧也幂等——同标题且同内容的存量行直接复用其 id，
+ * 不再新建。实测原坑：reuse 只让计划侧幂等，需求行整批新建（35→70）、关联边翻倍（57→114），
+ * 等于把 T01869 的「同标题双行被读成 todo/0%」从计划侧搬到了需求侧。
+ * 复用命中时绝不改写存量行（status/编号/标题/内容一律不动，与 T01875 对计划行的保护同构）；
+ * 同一「标题+内容」键在存量里命中多行时不复用——宁可新建也不静默合并歧义行。
  */
 function insertPrdRequirementsForImport(
   db: ReturnType<typeof getDb>, projectId: string, reqs: PrdImportReqItem[], ctx: {
@@ -913,22 +918,50 @@ function insertPrdRequirementsForImport(
     ambiguousReqNos: Set<string>;
     reqNoMap: Array<{ from: string; to: string }>;
     newReqs: Array<{ id: string; reqNo: string; title: string }>;
+    reuseMode: boolean;
+    reusedReqs: Array<{ id: string; reqNo: string; title: string }>;
   },
 ): void {
-  const { t, prdId, noToId, requestedToId, ambiguousReqNos, reqNoMap, newReqs } = ctx;
+  const { t, prdId, noToId, requestedToId, ambiguousReqNos, reqNoMap, newReqs, reuseMode, reusedReqs } = ctx;
   const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM prd_requirements WHERE project_id = ?').get(projectId) as { m: number }).m;
   let order = maxOrder;
   const usedNos = new Set<string>(
     (db.prepare('SELECT req_no FROM prd_requirements WHERE project_id = ?').all(projectId) as Array<{ req_no: string | null }>)
       .map((r) => String(r.req_no ?? '').trim()).filter(Boolean),
   );
+  // T02303 甲的复用查找表：按项目隔离，键 = trim(标题)+trim(内容)；值为 null 表示该键在存量里歧义命中多行
+  const reqKey = (title: unknown, content: unknown) => `${String(title ?? '').trim()}\u0000${String(content ?? '').trim()}`;
+  const reusable = new Map<string, { id: string; reqNo: string } | null>();
+  if (reuseMode) {
+    const existRows = db.prepare('SELECT id, req_no, title, content FROM prd_requirements WHERE project_id = ?')
+      .all(projectId) as Array<{ id: string; req_no: string | null; title: string; content: string | null }>;
+    for (const row of existRows) {
+      const k = reqKey(row.title, row.content);
+      reusable.set(k, reusable.has(k) ? null : { id: row.id, reqNo: String(row.req_no ?? '').trim() });
+    }
+  }
   const insReq = db.prepare(
     `INSERT INTO prd_requirements (id, project_id, req_no, title, content, source_ref, priority, status, sort_order, prd_id, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?)`,
   );
   for (const r of reqs) {
-    const id = uuid();
     const requested = (r.reqNo ?? '').trim();
+    if (reuseMode) {
+      const hit = reusable.get(reqKey(r.title, r.content));
+      if (hit) {
+        noToId.set(hit.reqNo, hit.id);
+        if (requested) {
+          const claimed = requestedToId.get(requested);
+          if (claimed && claimed !== hit.id) ambiguousReqNos.add(requested);
+          requestedToId.set(requested, hit.id);
+        }
+        // 让号明细照记：请求编号 → 复用到的既有编号（调用方据此知道「这条编号落在了哪一行」）
+        if (requested && requested !== hit.reqNo) reqNoMap.push({ from: requested, to: hit.reqNo });
+        reusedReqs.push({ id: hit.id, reqNo: hit.reqNo, title: r.title.trim() });
+        continue;
+      }
+    }
+    const id = uuid();
     const reqNo = resolveReqNo(usedNos, requested);
     usedNos.add(reqNo);
     if (requested && requested !== reqNo) reqNoMap.push({ from: requested, to: reqNo });
@@ -1893,7 +1926,7 @@ export const PlanService = {
     prdMd?: string;
     prdFilename?: string;
     onDuplicatePlan?: 'new' | 'reuse';
-  }): { requirements: number; plans: number; tasks: number; unlinkedReqNos: string[]; prdId?: string; reqNoMap: Array<{ from: string; to: string }>; dupPlanTitles: Array<{ title: string; existing: number; renamedTo?: string; reusedPlanId?: string }>; reusedPlans: number; ambiguousReqNos: string[]; orphanRequirements: Array<{ reqNo: string; title: string }>; planRowIds: Array<string | null> } {
+  }): { requirements: number; requirementsCreated: number; reusedRequirements: number; plans: number; tasks: number; unlinkedReqNos: string[]; prdId?: string; reqNoMap: Array<{ from: string; to: string }>; dupPlanTitles: Array<{ title: string; existing: number; renamedTo?: string; reusedPlanId?: string }>; reusedPlans: number; ambiguousReqNos: string[]; orphanRequirements: Array<{ reqNo: string; title: string }>; planRowIds: Array<string | null> } {
     const db = getDb();
     if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
     const reqs = (input.requirements ?? []).filter((r) => r?.title?.trim());
@@ -1914,6 +1947,8 @@ export const PlanService = {
     //    「挂错行」因编号存在而完全不报警，这里按行清点，让同类问题不再静默通过。
     const ambiguousReqNos = new Set<string>();
     const newReqs: Array<{ id: string; reqNo: string; title: string }> = [];
+    // T02303 甲：reuse 模式下命中的存量需求行（不新建、不改写），供回传 reusedRequirements 计数
+    const reusedReqs: Array<{ id: string; reqNo: string; title: string }> = [];
     const linkedReqIds = new Set<string>();
     // T00763 / T01156-3：PRD 原文落库与同名/同内容覆盖复用（口径与逐段说明见 persistPrdDocForImport）
     const prdId = persistPrdDocForImport(db, projectId, input.prdMd, input.prdFilename, t);
@@ -1949,7 +1984,9 @@ export const PlanService = {
       };
       const findReqId = (n: string) => requestedToId.get(n) ?? noToId.get(n) ?? existingReqId(n);
       // T01867 / T01995：需求项落库与两个编号空间登记（口径见 insertPrdRequirementsForImport）
-      insertPrdRequirementsForImport(db, projectId, reqs, { t, prdId, noToId, requestedToId, ambiguousReqNos, reqNoMap, newReqs });
+      insertPrdRequirementsForImport(db, projectId, reqs, {
+        t, prdId, noToId, requestedToId, ambiguousReqNos, reqNoMap, newReqs, reuseMode, reusedReqs,
+      });
       // 2) 计划（含 req_ids 关联）
       // T01875：planIds 与 planItems 下标对齐，元素是该条目实际落库的计划 id——
       // 新建行取 createBatch 返回值，reuse 行指向命中的原行（不新建）。
@@ -2026,7 +2063,24 @@ export const PlanService = {
     // T02131：把「输入 plans 下标 → 实际落库计划行 id」交还调用方。
     // MCP 计划回写通道需要它来做依赖回填——撞名让号/复用命中都会让「按标题找 id」不可靠，只有下标对齐才准确。
     const planRowIds = planTargets.map((x, i) => x.reuseId ?? planIds[i] ?? null);
-    return { requirements: reqs.length, plans: insertedPlans, tasks: taskCount, unlinkedReqNos: [...unlinkedReqNos], prdId, reqNoMap, dupPlanTitles, reusedPlans, ambiguousReqNos: [...ambiguousReqNos], orphanRequirements, planRowIds };
+    return {
+      requirements: reqs.length,
+      // T02303 甲：把「本次 payload 需求数」与「实际新建/复用数」分开回传——
+      // 旧返回只有 requirements=reqs.length，调用方（含面板/MCP）无法看出 reuse 到底有没有真的幂等，
+      // 「补写一次就多出一套同标题需求行」因此长期静默。
+      requirementsCreated: newReqs.length,
+      reusedRequirements: reusedReqs.length,
+      plans: insertedPlans,
+      tasks: taskCount,
+      unlinkedReqNos: [...unlinkedReqNos],
+      prdId,
+      reqNoMap,
+      dupPlanTitles,
+      reusedPlans,
+      ambiguousReqNos: [...ambiguousReqNos],
+      orphanRequirements,
+      planRowIds,
+    };
   },
 
   // ---------- T00763：PRD 原文文档（存储 / 查看 / 反向更新 / AI 上下文反查） ----------

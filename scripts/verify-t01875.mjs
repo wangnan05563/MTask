@@ -3,6 +3,8 @@
 // ——两套同名计划并排、无法幂等重跑。本单把口径定下来并验证两种模式都不碰原行的 status/progress：
 //   默认 new   ：撞名的新行加「（N）」区分后缀（与 T01867/T01921 需求编号顺延同构），原行一字不动；
 //   显式 reuse ：命中未归档同名原行做幂等补写——只补空描述/空复杂度与需求关联（只增不减），不新建、不改状态与进度。
+// T02303（裁定口径甲）扩展 B12~B16：reuse 连带需求侧幂等——同标题且同内容的存量需求行复用其 id，
+//   不新建第二套 prd_requirements、不翻倍关联边；同标题不同内容仍新建；查找表按项目隔离。B12~B16 见下方断言。
 // 用法：<node22runtime> scripts/verify-t01875.mjs
 //   前提：better-sqlite3 与运行 node ABI 匹配（本机 ABI127 runtime 可用；Node24 会 ERR_DLOPEN_FAILED）
 //   走隔离实例：MTask_PORT + MTask_DATA_DIR=临时目录，绝不碰用户生产库
@@ -141,6 +143,11 @@ try {
   const yiDates = (await plansOf(pidB)).find((p) => p.id === yiB.id);
   const jiaSnap = (await plansOf(pidB)).find((p) => p.id === jiaB.id);
 
+  // T02303 甲：reuse 前的需求侧基线（行数、逐行字段与关联边），用于断言「重导不再造第二套需求行」
+  const reqRowsBefore = await matrixOf(pidB);
+  const otherProjReqBefore = await matrixOf(pidA);
+  const reqSig = (r) => JSON.stringify([r.id, r.req_no, r.title, r.content, r.status, r.priority, (r.linkedPlans ?? []).map((x) => x.id).sort()]);
+
   const b2 = await post('/plans/import-prd', {
     projectId: pidB,
     requirements: REQS,
@@ -178,6 +185,41 @@ try {
   const req01 = mB.find((r) => r.req_no === 'REQ-01');
   check('B10 原需求行关联不因 reuse 丢失（REQ-01 仍挂着那条计划）', (req01?.linkedPlans ?? []).some((x) => x.id === jiaB.id),
     `REQ-01 linkedPlans=${(req01?.linkedPlans ?? []).length}`);
+
+  // ---------- T02303 甲：reuse 连带需求侧幂等（B12~B16）----------
+  check('B12 reuse 不新建需求行（requirementsCreated=0 / reusedRequirements=2，矩阵行数不变）',
+    b2.body?.requirementsCreated === 0 && b2.body?.reusedRequirements === 2 && mB.length === reqRowsBefore.length,
+    `created=${b2.body?.requirementsCreated} reused=${b2.body?.reusedRequirements} rows=${reqRowsBefore.length}→${mB.length}`);
+
+  const beforeSig = reqRowsBefore.map(reqSig).sort();
+  const afterSig = mB.map(reqSig).sort();
+  check('B13 存量需求行逐字段一字未动（id/编号/标题/内容/状态/优先级）',
+    beforeSig.length === afterSig.length && beforeSig.every((s, i) => s === afterSig[i]),
+    `差异=${JSON.stringify(afterSig.filter((s) => !beforeSig.includes(s)).slice(0, 2))}|${JSON.stringify(beforeSig.filter((s) => !afterSig.includes(s)).slice(0, 2))}`);
+
+  const edges = (rows) => rows.reduce((n, r) => n + (r.linkedPlans ?? []).length, 0);
+  check('B14 需求↔计划关联边不翻倍（重导同一份 PRD 不产生第二套边）',
+    edges(reqRowsBefore) === edges(mB), `边数=${edges(reqRowsBefore)}→${edges(mB)}`);
+
+  // 同标题但内容不同 ⇒ 不是「同一份拆解的重复导入」，宁可新建也不静默改写存量行
+  const b5 = await post('/plans/import-prd', {
+    projectId: pidB,
+    requirements: [{ reqNo: 'REQ-01', title: '需求甲', content: '甲的原文要点（本次改了口径）' }, { reqNo: 'REQ-02', title: '需求乙', content: '乙的原文要点' }],
+    plans: [{ title: '计划甲', reqNos: ['REQ-01'] }],
+    onDuplicatePlan: 'reuse',
+  });
+  const mB5 = await matrixOf(pidB);
+  const req01AfterDiff = mB5.find((r) => r.id === reqRowsBefore.find((x) => x.req_no === 'REQ-01')?.id);
+  check('B15 同标题不同内容不误复用（新建 1 行、存量 REQ-01 原文行不被改写）',
+    b5.body?.requirementsCreated === 1 && b5.body?.reusedRequirements === 1
+    && mB5.length === mB.length + 1 && reqSig(req01AfterDiff) === reqSig(reqRowsBefore.find((x) => x.req_no === 'REQ-01')),
+    `created=${b5.body?.requirementsCreated} reused=${b5.body?.reusedRequirements} rows=${mB.length}→${mB5.length}`);
+
+  const otherProjReqAfter = await matrixOf(pidA);
+  check('B16 复用查找按项目隔离（另一项目的同名需求行既不被复用也不被改写）',
+    otherProjReqAfter.length === otherProjReqBefore.length
+    && otherProjReqAfter.map(reqSig).sort().every((s, i) => s === otherProjReqBefore.map(reqSig).sort()[i]),
+    `pidA 需求行=${otherProjReqBefore.length}→${otherProjReqAfter.length}`);
 
   // reuse 与 new 混用不得互相污染：同一项目再走默认导入，仍按让号新建
   const b3 = await post('/plans/import-prd', { projectId: pidB, requirements: REQS, plans: plansPayload() });
