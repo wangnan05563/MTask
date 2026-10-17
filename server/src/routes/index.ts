@@ -2250,11 +2250,23 @@ api.get('/ai/usage', (req, res) => {
             SUM(content_chars) AS contentChars
      FROM ai_usage WHERE created_at >= ? GROUP BY tool_name, model, kind ORDER BY calls DESC`,
   ).all(since);
+  // T02308：`recent` 原为无窗口 `LIMIT 30`——厂商快速失败风暴（~340ms/次）会独占 30 行，
+  // 其它厂商错误原文一行都取不到。现与 summary/byTool 同窗，并按厂商采样：
+  // 每厂商最多取 perTool 条，且每厂商最近一条**优先入选**（rn=1 组排在前），保证逐厂商复核通道。
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 60));
+  const perTool = Math.min(20, Math.max(1, Number(req.query.perTool) || 5));
   const recent = db.prepare(
-    `SELECT tool_name, model, kind, ok, duration_ms, content_chars, error, created_at
-     FROM ai_usage ORDER BY created_at DESC LIMIT 30`,
-  ).all();
-  res.json({ days, summary, byTool, recent });
+    `WITH ranked AS (
+       SELECT tool_name, model, kind, ok, duration_ms, content_chars, error, created_at,
+              ROW_NUMBER() OVER (PARTITION BY tool_name ORDER BY created_at DESC) AS rn
+       FROM ai_usage WHERE created_at >= ?
+     )
+     SELECT tool_name, model, kind, ok, duration_ms, content_chars, error, created_at
+     FROM ranked WHERE rn <= ?
+     ORDER BY CASE WHEN rn = 1 THEN 0 ELSE 1 END, created_at DESC
+     LIMIT ?`,
+  ).all(since, perTool, limit);
+  res.json({ days, limit, perTool, summary, byTool, recent });
 });
 
 api.post('/prompts/:id/to-task', (req, res) => {

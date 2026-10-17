@@ -34,13 +34,16 @@ export function UsagePanel() {
   const [summary, setSummary] = useState<UsageSummaryRow[]>([]);
   const [byTool, setByTool] = useState<UsageToolRow[]>([]);
   const [recent, setRecent] = useState<UsageRecent[]>([]);
+  // T02308：取数口径随窗口与采样参数回传，面板标题如实标注，消除「汇总近 N 天 + 明细不受 N 天约束」两口径同屏
+  const [recentMeta, setRecentMeta] = useState<{ days: number; perTool: number }>({ days: 7, perTool: 5 });
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await api.get<{ summary: UsageSummaryRow[]; byTool: UsageToolRow[]; recent: UsageRecent[] }>(`/ai/usage?days=${days}`);
+      const r = await api.get<{ summary: UsageSummaryRow[]; byTool: UsageToolRow[]; recent: UsageRecent[]; days: number; perTool: number }>(`/ai/usage?days=${days}`);
       setSummary(r.summary); setByTool(r.byTool); setRecent(r.recent);
+      setRecentMeta({ days: r.days ?? days, perTool: r.perTool ?? 5 });
     } catch { /* 后端不可用静默 */ } finally { setLoading(false); }
   }, [days]);
 
@@ -128,7 +131,7 @@ export function UsagePanel() {
       {/* 最近调用明细 */}
       {recent.length > 0 && (
         <div>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>最近调用（{recent.length}）</div>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>最近调用（近 {recentMeta.days} 天，每厂商≤{recentMeta.perTool} 条，{recent.length}）</div>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead><tr>{['时间', '工具', '类型', '状态', '耗时', '输出', '错误'].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
             <tbody>
