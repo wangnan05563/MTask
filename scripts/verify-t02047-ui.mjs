@@ -407,6 +407,31 @@ const roles = await ev(PE`const q=(s)=>p().querySelectorAll(s).length;
     img: q('[role="img"][aria-label]'), group: q('[role="group"]'), alert: q('[role="alert"]') };`);
 ok('V-33 面板常驻语义标注在 DOM 上成立（aside + toolbar/status + 区间条 role=img 带 aria-label）',
   !!roles && roles.aside === 'aside' && roles.toolbar >= 1 && roles.status >= 1 && roles.img >= 1, roles);
+// T02316：给 T02297 的静态字宽估算门补一条**真机度量校准**（零估算）。
+// 静态门 verify-t02297-svg-bounds.mts 判「龙卷风图 σ 数值不越 viewBox」用的是估算字宽
+// （CJK 1.0×字号、其余 0.55×字号），首轮曾因此假红过一次；本条用 `getBBox()` 量实际渲染宽度，
+// viewBox 宽从该 SVG 自身属性读（不写死 480），越界即说明 SIGMA_LABEL_RESERVE 的预留不再成立。
+// 只加这一条，不改既有判据与断言名（该组三条恒红属 T02299 范围）。
+const sigma = await ev(PE`
+  const svg = p().querySelector('svg[aria-label^="龙卷风图"]');
+  if (!svg) return { missing: 'tornado-svg-not-rendered' };
+  const vb = (svg.getAttribute('viewBox') || '').trim().split(' ').filter(Boolean).map(Number);
+  const vbW = vb.length >= 3 ? vb[2] : NaN;
+  const isNum = (s) => s.length > 0 && [...s].every((ch) => (ch >= '0' && ch <= '9') || ch === '.');
+  const got = [...svg.querySelectorAll('text')]
+    .map((t) => ({ text: (t.textContent || '').trim(), b: t.getBBox() }))
+    .filter((x) => isNum(x.text))
+    .map((x) => ({ text: x.text, x: +x.b.x.toFixed(2), width: +x.b.width.toFixed(2), right: +(x.b.x + x.b.width).toFixed(2) }));
+  return { vbW, fontSize: getComputedStyle(svg.querySelector('text')).fontSize,
+    count: got.length, maxRight: got.length ? Math.max(...got.map((g) => g.right)) : null,
+    over: got.filter((g) => !(g.right <= vbW + 0.01)), worst: got.length ? got.find((g) => g.right === Math.max(...got.map((k) => k.right))) : null };`);
+if (sigma && sigma.count) {
+  const est = (sigma.worst.text.length * 0.55 * (parseFloat(sigma.fontSize) || 9));
+  console.log(`  [INFO] σ 标签真机度量 vs T02297 静态估算：实测宽 ${sigma.worst.width} / 估算宽 ${est.toFixed(2)} / 差 ${(sigma.worst.width - est).toFixed(2)}px`
+    + `（viewBox 宽 ${sigma.vbW}，最右界 ${sigma.maxRight}，字号 ${sigma.fontSize}）`);
+}
+ok('V-34 真机度量：龙卷风图 σ 数值 getBBox() 右界 ≤ 该 SVG viewBox 宽（T02297 静态估算的度量校准）',
+  !!sigma && sigma.count > 0 && Number.isFinite(sigma.vbW) && sigma.over.length === 0, sigma);
 await shot('v3x-keyboard-1440');
 
 group('V-40 §12-R6 视图切换与刷新不动面板开合态');
