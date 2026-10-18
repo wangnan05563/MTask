@@ -1,5 +1,5 @@
 /**
- * T02192/T02203 门：把「真实指针事件 + DOM 变更计数」的取证手段固化为可复跑的 UI 回归门。
+ * T02192/T02203 门（T02293 改判版）：把「真实指针事件 + DOM 变更计数」的取证手段固化为可复跑的 UI 回归门。
  *
  * 拦的缺陷族：渲染期新建对象/数组字面量作为 useEffect 依赖值 → 无限重渲染 → 受控 UI 节点被反复重挂载。
  * 这类缺陷编译器不报错、`tsc --noEmit` 不报错、生产构建连控制台警告都不留（React 开发期警告被构建剥掉），
@@ -10,12 +10,26 @@
  * `useEffect([result])` 每帧触发 `setRows`，且行键用 `Date.now()` → 待确认问题表每次提交整表重挂载，
  * 表现为点击无法聚焦、拖拽无法圈选、「自定义问题」行一闪即被重置。
  *
- * 四步实现（与 T02192 取证探针一致）：
- *   1. 静态伺服 `web/dist` + 最小 API 桩（/health、/projects、/aitools、/plans/prd-generate-stream 回合法 SSE），
- *      不依赖真实模型与真实库（不起后端进程、不碰生产实例与生产数据目录）；
- *   2. 无头 Chrome + 原生 CDP 真实 mousedown / mousemove / mouseup；
- *   3. 断言重渲染计数 / 聚焦 / 输入留存 / 圈选 / 自定义行留存；
- *   4. 同页放一段对照文本（面板标题），确认「选不中」是区域缺陷而非探针坐标问题。
+ * ── 本轮 T02293 改判口径（四条硬判据 + 反模式 11/14，样板 verify-t02104/2105）──
+ * ① 旧版 S-01/S-02/S-04 是「读工作树 PrdGenPanel.tsx 正则匹配实现写法」的字面锚，S-03 静态扫描读的
+ *    也是工作树——等价重构一改写法门恒红，而重构**真的把行为改坏**（重渲染回归）时旧锚反而可能照常绿。
+ *    本版把四条全部降级为 `okPair` 的**字面腿**，行为腿取本门实测：空闲期 tbody 移除节点计数（R-01）、
+ *    点击后聚焦/输入留存/同节点（F 组）、自定义行留存（X 组）、切页结论恢复（G 组）——
+ *    「`useMemo` 在不在」不是判据，「表格还挂不挂得住」才是。字面腿与 S-03 扫描源一律取
+ *    `git show HEAD:<path>`（反模式 11：工作树可能躺着并发会话的过期 WIP）。
+ * ② 配对项声明成**惰性数组**，交互组实测全部完成后统一发射（反模式 14）；实测数据没取到（浏览器
+ *    通道断在交互组中途）记 skipped()，不拿「源码里有这句」冒充行为腿。
+ * ③ 本门不起后端、不碰库：夹具数据全由门内桩服现造（/api/projects 等回桩值），零生产数据依赖。
+ * ④ 负对照三层：
+ *    N-01 字面腿牙齿——把 HEAD 源码文本在内存里逐条改回缺陷形态（剥 useMemo / 行键换 Date.now() /
+ *      去掉 rows 非空门槛），同一字面判据必须转假，原样必须为真；
+ *    N-02 静态扫描牙齿——喂合成缺陷片段必命中、合成合规片段必不命中（防「扫描恒 0」的空转）；
+ *    N-03 计数器牙齿——在**已修好的页面**里用 clone+replace 模拟整表重挂载，R-01 同款 MutationObserver
+ *      计数必须当场抓到 >0（防「恒 0 也算通过」的空判据）；
+ *    --negative-control 全链真缺陷——旧版直接改**主仓工作树**的 PrdGenPanel.tsx 再重建共享 web/dist
+ *      （违反规约「破坏只发生在副本」的边界，且与并发会话互相踩），本版改在 `git worktree add --detach`
+ *      的 HEAD 副本 + node_modules junction 里打缺陷补丁、在副本里独立 vite build、桩服伺服副本 dist——
+ *      主仓工作树与共享 web/dist 全程零写入，交互组（U/R/F/C/Q/X/G）与 S 组行为腿必须转红。
  *
  * 用法（系统 Chrome；本仓内置 Browser 无视口不能点击/截图，见 memory）：
  *   node node_modules/tsx/dist/cli.mjs scripts/verify-t02192-prdgen-pointer.mts
@@ -25,37 +39,34 @@
  *   T02192_GATE_TMP_ROOT（默认 D:/code/tmp，**勿指 C:**——C: 常年 0 可用会假性失败）、
  *   T02192_GATE_DBG=1 打印点击坐标/圈选矩形/断言失败现场（门的失败信息必须自解释）、
  *   T02192_GATE_SKIP_BUILD=1 复用现有 web/dist（改过前端源码时别用：门的判据必须来自当前源码；
- *     E-03 会比对 dist 与 web/src 的最新 mtime，dist 落后即拒绝跑交互组——本轮实测就是靠这条
- *     拦住了「负对照把 dist 重建成缺陷态后，SKIP_BUILD 复跑报出缺陷签名被误读成修复回退」）
+ *     E-03 会比对 dist 与 web/src 的最新 mtime，dist 落后即拒绝跑交互组）
+ * 负对照：
+ *   node node_modules/tsx/dist/cli.mjs scripts/verify-t02192-prdgen-pointer.mts --negative-control
  * 前置：探针启动前用 addScriptToEvaluateOnNewDocument 把各菜单「使用向导」的 seen 标记种好——
  *   PageGuideDialog 是 native <dialog open>（top-layer 模态），DOM 与 elementFromPoint 看起来一切正常，
  *   但真实指针事件全被它吃掉；首轮实测就是被这条挡住，误判成「卡片点了没反应」。
- * 负对照（T02203 验收标准第 2 条，证明门真的拦得住）：
- *   node node_modules/tsx/dist/cli.mjs scripts/verify-t02192-prdgen-pointer.mts --negative-control
- *   把 PrdGenPanel.tsx 临时改回「渲染期新建字面量 + Date.now() 行键」，重建 dist 后跑同一组断言，
- *   要求交互组（U/R/F/C/Q/X/G 前缀）**必须出现 FAIL**；原文按字节备份，finally 与 exit 钩子双重回写，
- *   残留备份在下次启动时先回写（自愈）；收尾会按还原后的源码再重建一次 web/dist，不把缺陷产物留给下一次跑。
  *
  * 结果同时打 stdout 与写 `.workbuddy/t02192-pointer-gate-results-<运行标识>.txt`
- *   （汇总行 `PASS=… FAIL=…` 在最前，紧随其后是一行归属行；口径见 scripts/lib/gate-results.mts）。
+ *   （汇总行 `PASS=… FAIL=…` 在最前；口径见 scripts/lib/gate-results.mts）。
  */
 import { spawn, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync,
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeGateResults } from './lib/gate-results.mts';
+import { okPair } from './lib/anchor-pair.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WEB = join(ROOT, 'web');
 const DIST = join(WEB, 'dist');
-const PANEL_SRC = join(WEB, 'src', 'pages', 'PrdGenPanel.tsx');
+const PANEL_REL = 'web/src/pages/PrdGenPanel.tsx';
 const OUT_DIR = join(ROOT, '.workbuddy');
 const OUT_BASE = 't02192-pointer-gate-results.txt';
-const BACKUP = join(OUT_DIR, 't02192-pointer-source-backup.tsx');
 
 const NEGATIVE = process.argv.includes('--negative-control');
 const PORT = Number(process.env.T02192_GATE_PORT ?? 39941);
@@ -63,7 +74,7 @@ const CDP_PORT = Number(process.env.T02192_GATE_CDP ?? 39942);
 const CHROME = process.env.T02192_GATE_CHROME ?? 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const BASE = `http://127.0.0.1:${PORT}`;
 const IDLE_REMOVAL_WINDOW_MS = 1500;
-/** 缺陷态实测 2684 个被移除节点 / 修复态 0——阈值钉死 0，任何整表重挂载都算回归 */
+/** 缺陷态实测 2684 个被移除节点 / 修复态 0——阈值钉死 0，任何整表重挂载都算回归（牙齿由 N-03 钉） */
 const MAX_IDLE_REMOVALS = 0;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -71,6 +82,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0;
 let fail = 0;
 const lines: string[] = [];
+const skippedList: string[] = [];
 /** 页面未捕获异常（CDP Runtime.exceptionThrown）——断言红时用来直接给出原因 */
 const pageErrors: string[] = [];
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -79,8 +91,25 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   lines.push(`[${cond ? 'PASS' : 'FAIL'}] ${name}${tail}`);
   console.log(`  [${cond ? 'PASS' : 'FAIL'}] ${name}${tail}`);
 };
+const skipped = (range: string, why: string) => {
+  skippedList.push(`${range}：${why}`);
+  lines.push(`[SKIP] ${range} —— ${why}（不计 PASS）`);
+  console.log(`  [SKIP] ${range} —— ${why}`);
+};
+const info = (s: string) => { lines.push(`[INFO] ${s}`); console.log(`  [INFO] ${s}`); };
 
-// ---------------- 桩服数据（形状对齐 web/src/api/client.ts 的 Project / AITool） ----------------
+/** 字面锚一律取已提交树（反模式 11）：工作树的 PrdGenPanel/web/src 可能是并发会话的过期 WIP */
+const headCache = new Map<string, string | null>();
+function headText(rel: string): string | null {
+  if (headCache.has(rel)) return headCache.get(rel);
+  let out: string | null = null;
+  try { out = execFileSync('git', ['show', `HEAD:${rel}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }); }
+  catch { out = null; }
+  headCache.set(rel, out);
+  return out;
+}
+
+// ---------------- 桩服数据（形状对齐 web/src/api/client.ts 的 Project / AITool；全部门内自造） ----------------
 const PID = 'gate-t02192-project';
 const PRD_MD = [
   '# 门禁验证 PRD',
@@ -131,6 +160,8 @@ const MIME: Record<string, string> = {
   '.txt': 'text/plain; charset=utf-8', '.webp': 'image/webp',
 };
 
+/** 桩服伺服哪个 dist：正对照=主仓 web/dist（当前源码构建），负对照=HEAD 副本里独立构建的缺陷 dist */
+let SERVE_DIST = DIST;
 function startStubServer(): { close: () => Promise<void> } {
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', BASE);
@@ -165,11 +196,11 @@ function startStubServer(): { close: () => Promise<void> } {
     // 其余 /api/* 给中性空值：本门不依赖真实后端，多余接口不该把门带红。
     // GET 默认回 `[]`（本仓取数接口绝大多数是列表；回 `{}` 会让 `.map` 直接炸首屏），写操作回 `{}`。
     if (p.startsWith('/api/')) return json(200, (req.method ?? 'GET') === 'GET' ? [] : {});
-    // 静态伺服 web/dist（带 SPA 兜底）
+    // 静态伺服 SERVE_DIST（带 SPA 兜底）
     const rel = decodeURIComponent(p).replace(/^\/+/, '');
-    const file = rel ? join(DIST, rel) : join(DIST, 'index.html');
-    const candidate = existsSync(file) && statSync(file).isFile() ? file : join(DIST, 'index.html');
-    if (!existsSync(candidate)) return json(404, { error: 'web/dist 不存在——门会先跑一次构建' });
+    const file = rel ? join(SERVE_DIST, rel) : join(SERVE_DIST, 'index.html');
+    const candidate = existsSync(file) && statSync(file).isFile() ? file : join(SERVE_DIST, 'index.html');
+    if (!existsSync(candidate)) return json(404, { error: 'dist 不存在——门会先跑一次构建' });
     res.writeHead(200, { 'Content-Type': MIME[extname(candidate)] ?? 'application/octet-stream' });
     res.end(readFileSync(candidate));
     return undefined;
@@ -178,20 +209,25 @@ function startStubServer(): { close: () => Promise<void> } {
   return { close: () => new Promise((done) => { server.closeAllConnections?.(); server.close(() => done()); }) };
 }
 
+/** 在指定 web 根构建（负对照在 HEAD 副本里构建缺陷产物，主仓 web/dist 零写入） */
+function buildWebAt(webRoot: string): void {
+  const r = spawnSync(process.execPath, [join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), 'build'], {
+    cwd: webRoot, encoding: 'utf8',
+  });
+  if (r.status !== 0) {
+    console.error(String(r.stdout ?? '').slice(-2000));
+    console.error(String(r.stderr ?? '').slice(-2000));
+    throw new Error(`vite build 失败（${webRoot}）——源码不可构建时门不给结论`);
+  }
+}
+
 /** 默认每次重建 dist：门的判据必须来自当前源码，否则负对照与回归都无从谈起 */
 function buildWeb(): void {
   if (process.env.T02192_GATE_SKIP_BUILD === '1') {
     console.log('  (跳过构建：T02192_GATE_SKIP_BUILD=1，复用现有 web/dist)');
     return;
   }
-  const r = spawnSync(process.execPath, [join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), 'build'], {
-    cwd: WEB, encoding: 'utf8',
-  });
-  if (r.status !== 0) {
-    console.error(String(r.stdout ?? '').slice(-2000));
-    console.error(String(r.stderr ?? '').slice(-2000));
-    throw new Error('vite build 失败——源码不可构建时门不给结论');
-  }
+  buildWebAt(WEB);
 }
 
 /** 递归取目录下匹配文件的最新 mtime（附路径）；空目录返回 {at:0,path:''} */
@@ -208,8 +244,7 @@ function newest(dir: string, re: RegExp): { at: number; path: string } {
 
 /**
  * dist 与源码的新鲜度：源码改过但没重建时，门判的是旧产物，结论不可信。
- * 本轮实测踩过：跑完 --negative-control（它会把 dist 重建成缺陷态）再用 SKIP_BUILD=1 复跑正对照，
- * 报出的是缺陷签名（PASS=12 FAIL=7），一度被误读成「修复回退了」。
+ * 本轮实测踩过：负对照把产物建成缺陷态后，SKIP_BUILD 复跑正对照报出缺陷签名，误读成「修复回退了」。
  */
 function distFreshness(): { fresh: boolean; distAt: number; srcAt: number; srcPath: string; skipBuild: boolean } {
   const d = newest(DIST, /\.(html|js|css)$/);
@@ -359,12 +394,10 @@ async function dragSelect(
   if (process.env.T02192_GATE_DBG === '1') {
     const info = await ev(`const el = (${elementExpr}); return el ? { text: (el.textContent ?? '').slice(0, 24), w: Math.round(el.getBoundingClientRect().width), tag: el.tagName } : null;`);
     console.log(`  · 圈选目标 ${JSON.stringify(info)} 矩形 ${JSON.stringify(rect)}`);
-    // 起/终点各被谁接住——top-layer 的浮层（toast/向导/遮罩）不参与 elementFromPoint 的语义差异，这里一并看清
     const hits = await ev(`
       const a = document.elementFromPoint(${rect.x1}, ${rect.y});
       const b = document.elementFromPoint(${rect.x2}, ${rect.y});
-      const top = [...document.querySelectorAll('dialog[open], [aria-modal="true"], [class*=toast], [class*=notice]')].map(e => e.tagName + '.' + String(e.className).slice(0, 20));
-      return { start: a ? a.tagName + ':' + (a.textContent ?? '').slice(0, 12) : null, end: b ? b.tagName + ':' + (b.textContent ?? '').slice(0, 12) : null, top };
+      return { start: a ? a.tagName + ':' + (a.textContent ?? '').slice(0, 12) : null, end: b ? b.tagName + ':' + (b.textContent ?? '').slice(0, 12) : null };
     `);
     console.log(`  · 圈选命中 ${JSON.stringify(hits)}`);
   }
@@ -400,14 +433,9 @@ async function dumpPage(ev: Eval, where: string): Promise<void> {
     const hit = r ? document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) : null;
     return {
       rootChildren: document.querySelector('#root')?.children.length ?? -1,
-      cards: [...document.querySelectorAll('[aria-label="原始需求生成 PRD"]')].map(e => e.tagName + '/' + (e.getAttribute('role') ?? '')),
       cardRect: (() => { const r = card && card.getBoundingClientRect(); return r ? Math.round(r.width) + 'x' + Math.round(r.height) + '@' + Math.round(r.x) + ',' + Math.round(r.y) : null; })(),
       hit: hit ? hit.tagName + '#' + (hit.getAttribute('aria-label') ?? '') + '.' + String(hit.className).slice(0, 40) : null,
-      hitIsCardOrChild: !!hit && !!(card && (hit === card || card.contains(hit))),
-      hitChain: (() => { const a = []; let n = hit; while (n && a.length < 5) { a.push(n.tagName + '.' + String(n.className).slice(0, 24)); n = n.parentElement; } return a.join(' < '); })(),
-      select: !!document.querySelector('[aria-label="选择目标项目"]'),
-      showPrdGenKey: sessionStorage.getItem('report.showPrdGen'),
-      strongs: [...document.querySelectorAll('strong')].map(e => e.textContent).slice(0, 10),
+      select: !!document.querySelector('${GATE.select}'),
       dialogs: document.querySelectorAll('dialog[open], [role="dialog"]').length,
     };
   `);
@@ -415,39 +443,58 @@ async function dumpPage(ev: Eval, where: string): Promise<void> {
   if (pageErrors.length > 0) console.log(`  · 页面异常：${pageErrors.slice(-3).join(' || ')}`);
 }
 
-/**
- * 静态特征扫描（T02203 加分项）：组件体内 `const x = cond ? { … } : …`（未被 useMemo 包裹）
- * 且该 `x` 出现在某个 useEffect 依赖数组里 → 命中即告警。
- * 只认两空格缩进的声明行（组件体顶层），避免把回调/函数内的局部对象误报进来。
- * 三元两分支必须**跨行**也能咬住：T02192 的缺陷原文就是 `? {` 换行写的，
- * 单行版正则只在负对照里失效过一次（门的静态守卫不能只认一种排版）。
- */
-function scanRenderPhaseDeps(): { files: number; hits: string[] } {
+// =====================================================================
+// 静态特征扫描（S-03 的字面腿）：**扫描源=git show HEAD:** 的 tsx 文件集（反模式 11），
+// 判据本体抽成 scanText，正判与牙齿（N-02）共用同一实现。
+// 组件体内 `const x = cond ? { … } : …`（未被 useMemo 包裹）且该 x 出现在某 useEffect 依赖数组里 → 命中。
+// 只认两空格缩进的声明行（组件体顶层），避免把回调/函数内的局部对象误报进来。
+// 三元两分支必须跨行也能咬住（T02192 缺陷原文就是 `? {` 换行写的）。
+// =====================================================================
+function scanText(rel: string, rawText: string): string[] {
   const hits: string[] = [];
-  const srcRoot = join(WEB, 'src');
-  const files = readdirSync(srcRoot, { recursive: true, encoding: 'utf8' })
-    .filter((f: string) => f.endsWith('.tsx'))
-    .map((f: string) => join(srcRoot, f));
-  for (const file of files) {
-    const text = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
-    // 声明 → 到第一个分号为止的初始值（可跨行，上限 400 字符防失控）
-    const decl = /^ {2}const ([A-Za-z_$][\w$]*) = ([^;]{0,400});/gm;
-    let m: RegExpExecArray | null;
-    while ((m = decl.exec(text))) {
-      const [, name, init] = m;
-      if (/^\s*(?:useMemo|useCallback)\s*[<(]/.test(init) || init.includes('useMemo(') || init.includes('useCallback(')) continue;
-      // 「渲染期新建字面量」的形态：三元真分支是对象/数组字面量，或初始值本身就是字面量。
-      // 刻意不认「冒号分支是字面量」——那会被 TS 类型标注里的 `xx?: { … }` 误咬（SettingsPage 实测踩过）。
-      const buildsLiteral = /\?\s*[[{]/.test(init) || /^\s*[[{]/.test(init);
-      if (!buildsLiteral) continue;
-      // 依赖数组必须是 hook 尾（`}, [x])`）而非任意 `[x]`——对象下标访问 `obj?.[k]` 不算
-      if (new RegExp(`\\}\\s*,\\s*\\[[^\\]]*\\b${name}\\b[^\\]]*\\]\\)`).test(text)) {
-        hits.push(`${file.slice(ROOT.length + 1)}：const ${name} = … 在渲染期新建字面量，且出现在某 useEffect 依赖数组里`);
-      }
+  const text = rawText.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  const decl = /^ {2}const ([A-Za-z_$][\w$]*) = ([^;]{0,400});/gm;
+  let m: RegExpExecArray | null;
+  while ((m = decl.exec(text))) {
+    const [, name, init] = m;
+    if (/^\s*(?:useMemo|useCallback)\s*[<(]/.test(init) || init.includes('useMemo(') || init.includes('useCallback(')) continue;
+    const buildsLiteral = /\?\s*[[{]/.test(init) || /^\s*[[{]/.test(init);
+    if (!buildsLiteral) continue;
+    if (new RegExp(`\\}\\s*,\\s*\\[[^\\]]*\\b${name}\\b[^\\]]*\\]\\)`).test(text)) {
+      hits.push(`${rel}：const ${name} = … 在渲染期新建字面量，且出现在某 useEffect 依赖数组里`);
     }
+  }
+  return hits;
+}
+function scanHeadRenderPhaseDeps(): { files: number; hits: string[] } {
+  const hits: string[] = [];
+  let files: string[] = [];
+  try {
+    files = execFileSync('git', ['ls-tree', '-r', '--name-only', 'HEAD', 'web/src'], { cwd: ROOT, encoding: 'utf8' })
+      .split('\n').filter((f) => f.endsWith('.tsx'));
+  } catch { return { files: 0, hits: ['(git ls-tree 失败)'] }; }
+  for (const f of files) {
+    const t = headText(f);
+    if (t !== null) hits.push(...scanText(f, t));
   }
   return { files: files.length, hits };
 }
+
+// =====================================================================
+// 实测记录（行为腿取值来源；配对项在实测完成后统一发射——反模式 14）
+// =====================================================================
+interface Measured {
+  uiDone: boolean;          // 交互组是否完整跑到 G 组
+  removals?: number;        // R-01 空闲窗口移除节点数
+  sameNode?: boolean;       // F-03 输入 800ms 后同一节点
+  valueKept?: string;       // F-02 输入留存值
+  customSameNode?: boolean; // X-02 自定义行同节点
+  firstAnswerKept?: boolean; // X-03 新增自定义行未冲掉首行结论
+  answerAfterNav?: string;  // G-03 切页后首行结论
+  rowsAfterNav?: number;    // G-04 切页后行数
+  teethRemovals?: number;   // N-03 模拟重挂载时同款计数器的读数（必须 >0）
+}
+const M: Measured = { uiDone: false };
 
 async function runUiChecks(): Promise<void> {
   const tmpRoot = process.env.T02192_GATE_TMP_ROOT ?? 'D:/code/tmp';
@@ -457,19 +504,28 @@ async function runUiChecks(): Promise<void> {
   mkdirSync(profile, { recursive: true });
 
   ok('E-01 Chrome 可执行文件在场（可用 T02192_GATE_CHROME 覆盖）', existsSync(CHROME), CHROME);
-  ok('E-02 web/dist 已就绪（index.html 存在）', existsSync(join(DIST, 'index.html')));
-  if (!existsSync(CHROME) || !existsSync(join(DIST, 'index.html'))) return;
-
-  // E-03：判据必须来自当前源码。dist 比源码旧时，交互组跑的是旧产物——本轮实测被这条坑过一次
-  // （负对照把 dist 重建成缺陷态后，SKIP_BUILD 复跑正对照报出缺陷签名，误读成「修复回退了」）。
-  const fresh = distFreshness();
-  ok('E-03 web/dist 不早于 web/src 最新源码（门的判据来自当前源码）', fresh.fresh,
-    `dist=${stamp(fresh.distAt)} 源码=${stamp(fresh.srcAt)} 最新源码=${fresh.srcPath.replace(/\\/g, '/')}`);
-  if (!fresh.fresh && !NEGATIVE) {
-    console.log('  ⚠ dist 比源码旧：交互组判的是旧产物，结论不作数。'
-      + `${fresh.skipBuild ? '（当前 T02192_GATE_SKIP_BUILD=1）' : ''}`
-      + '请去掉 SKIP_BUILD 让门自行构建后复跑；刚跑过 --negative-control 时 dist 会被重建为缺陷态。');
+  ok('E-02 被测 dist 已就绪（index.html 存在）', existsSync(join(SERVE_DIST, 'index.html')), SERVE_DIST);
+  if (!existsSync(CHROME)) {
+    skipped('U/R/F/C/Q/X/G 与 S 配对组', `Chrome 不在场（${CHROME}），交互行为无法实测——不拿源码文本冒充 PASS`);
+    await removeTree(TMP);
     return;
+  }
+  if (!existsSync(join(SERVE_DIST, 'index.html'))) {
+    skipped('U/R/F/C/Q/X/G 与 S 配对组', 'dist 不存在，交互组无产物可测');
+    await removeTree(TMP);
+    return;
+  }
+  if (!NEGATIVE) {
+    // E-03：判据必须来自当前源码。dist 比源码旧时，交互组跑的是旧产物——本轮实测被这条坑过一次
+    const fresh = distFreshness();
+    ok('E-03 web/dist 不早于 web/src 最新源码（门的判据来自当前源码）', fresh.fresh,
+      `dist=${stamp(fresh.distAt)} 源码=${stamp(fresh.srcAt)} 最新源码=${fresh.srcPath.replace(/\\/g, '/')}`);
+    if (!fresh.fresh) {
+      skipped('U/R/F/C/Q/X/G 与 S 配对组', 'dist 比源码旧：交互组判的是旧产物，结论不作数'
+        + (fresh.skipBuild ? '（当前 T02192_GATE_SKIP_BUILD=1）' : '') + '——请去掉 SKIP_BUILD 复跑');
+      await removeTree(TMP);
+      return;
+    }
   }
 
   const stub = startStubServer();
@@ -486,9 +542,7 @@ async function runUiChecks(): Promise<void> {
 
     await cdp.send('Page.enable');
     await cdp.send('Runtime.enable');
-    // T00706 的「首次进入菜单 · 使用向导」是 native <dialog open>，位于 top-layer：
-    // DOM 里卡片仍在原处、elementFromPoint 也照样命中卡片，但真实指针事件全被模态层吃掉——
-    // 首轮就在这里踩过「点了卡片没反应」。本门测的是重渲染/聚焦/圈选，不是向导，
+    // T00706 的「首次进入菜单 · 使用向导」是 native <dialog open>，位于 top-layer：真实指针事件全被模态层吃掉，
     // 故在应用脚本之前把各菜单的 seen 标记种好（localStorage 正是 markGuideSeen 用的口径）。
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
       source: `for (const k of ${JSON.stringify(GUIDE_SEEN_KEYS)}) { try { localStorage.setItem(k, '1'); } catch { /* 隐私模式忽略 */ } }`,
@@ -543,9 +597,9 @@ async function runUiChecks(): Promise<void> {
       return 1;
     `);
     await sleep(IDLE_REMOVAL_WINDOW_MS);
-    const removals = Number(await ev(`window.__obs.disconnect(); return window.__rem;`));
-    ok(`R-01 空闲 ${IDLE_REMOVAL_WINDOW_MS}ms 内 tbody 被移除节点数 ≤ ${MAX_IDLE_REMOVALS}（实测 ${removals}；缺陷态实测 2684）`,
-      removals <= MAX_IDLE_REMOVALS, { removals });
+    M.removals = Number(await ev(`window.__obs.disconnect(); return window.__rem;`));
+    ok(`R-01 空闲 ${IDLE_REMOVAL_WINDOW_MS}ms 内 tbody 被移除节点数 ≤ ${MAX_IDLE_REMOVALS}（实测 ${M.removals}；缺陷态实测 2684）`,
+      M.removals <= MAX_IDLE_REMOVALS, { removals: M.removals });
 
     // ---------- F 组：真实点击聚焦 + 输入留存 ----------
     const answerBox = await ev(`
@@ -573,8 +627,10 @@ async function runUiChecks(): Promise<void> {
       const el = window.__tbody.querySelector('tr td:nth-child(4) input');
       return { sameNode: el?.__t02192 === 1, value: el?.value ?? '' };
     `);
-    ok(`F-02 输入「${TYPED_ANSWER}」后 800ms 值仍在（实测「${kept?.value}」）`, kept?.value === TYPED_ANSWER, kept);
-    ok('F-03 800ms 后仍是同一 DOM 节点（未被整表重挂载顶替）', kept?.sameNode === true, kept);
+    M.sameNode = kept?.sameNode === true;
+    M.valueKept = String(kept?.value ?? '');
+    ok(`F-02 输入「${TYPED_ANSWER}」后 800ms 值仍在（实测「${M.valueKept}」）`, kept?.value === TYPED_ANSWER, kept);
+    ok('F-03 800ms 后仍是同一 DOM 节点（未被整表重挂载顶替）', M.sameNode, kept);
 
     // ---------- C/Q 组：真实拖拽圈选 ----------
     const control = await dragSelect(cdp, ev, `
@@ -617,8 +673,10 @@ async function runUiChecks(): Promise<void> {
         firstAnswer: first?.value ?? '',
       };
     `);
-    ok('X-02 自定义行 1200ms 后仍是同一节点且内容未丢', customKept?.sameNode === true && customKept?.value === TYPED_CUSTOM, customKept);
-    ok('X-03 新增自定义行未冲掉首行已填结论（整表未被重填）', customKept?.firstAnswer === TYPED_ANSWER, customKept);
+    M.customSameNode = customKept?.sameNode === true;
+    M.firstAnswerKept = customKept?.firstAnswer === TYPED_ANSWER;
+    ok('X-02 自定义行 1200ms 后仍是同一节点且内容未丢', M.customSameNode && customKept?.value === TYPED_CUSTOM, customKept);
+    ok('X-03 新增自定义行未冲掉首行已填结论（整表未被重填）', M.firstAnswerKept, customKept);
 
     // ---------- G 组：切页往返（T02192 同族的会话/store 复现通道） ----------
     const beforeNav = await ev(`return sessionStorage.getItem('prdGen.conclusion');`);
@@ -636,18 +694,18 @@ async function runUiChecks(): Promise<void> {
           rows: trs.length,
           aiRows: trs.filter((tr) => tr.querySelector('td:nth-child(2) span')).length,
           firstAnswer: first?.value ?? '',
-          firstQuestion: window.__tbody.querySelector('tr td:nth-child(2)')?.textContent?.slice(0, 18) ?? '',
           conclBeforeNav: ${JSON.stringify(beforeNav)},
           conclAfterNav: sessionStorage.getItem('prdGen.conclusion'),
         };
       `);
       // 口径（T00820/T02214）：切页保留「结果正文 + 会话快照里的行集合」——AI 行按正文指纹重建，
       // 自定义行随同一代际快照恢复（T02214 前该行不落快照、切页整行消失，G-04/G-05 即守此回归面）。
-      // AI 行按 DOM 结构计（问题单元格是 <span>，自定义行是 <input>），与总行数解耦。
+      M.answerAfterNav = String(back?.firstAnswer ?? '');
+      M.rowsAfterNav = Number(back?.rows ?? -1);
       ok(`G-02 切页往返后 AI 问题行数不变（结果未被丢，实测 AI ${back?.aiRows} 行 / 总 ${back?.rows} 行 / 桩产出 ${ISSUES.length} 行）`,
         back?.aiRows === ISSUES.length, back);
-      ok(`G-03 切页往返后首行已填结论按会话口径恢复（实测「${back?.firstAnswer}」）`,
-        back?.firstAnswer === TYPED_ANSWER, back);
+      ok(`G-03 切页往返后首行已填结论按会话口径恢复（实测「${M.answerAfterNav}」）`,
+        M.answerAfterNav === TYPED_ANSWER, back);
       const customBack = await ev(`
         const box = document.querySelector('${GATE.customQuestion}');
         return {
@@ -659,7 +717,29 @@ async function runUiChecks(): Promise<void> {
         customBack?.rows === ISSUES.length + 1, customBack);
       ok(`G-05 切页往返后自定义行问题正文按同一 DOM 语义取回（实测「${customBack?.customQ}」）`,
         customBack?.customQ === TYPED_CUSTOM, customBack);
+      M.uiDone = true;
     }
+
+    // ---------- N-03 计数器牙齿：在已修好的页面上模拟整表重挂载，同款判据必须当场转红 ----------
+    // 没有这条，R-01 的「恒 ≤0」在观察器接错目标/计数通道坏掉时也会恒绿（空表比空表）。
+    M.teethRemovals = Number(await ev(`
+      return (async () => {
+        let rem = 0;
+        const obs = new MutationObserver((muts) => {
+          for (const m of muts) for (const n of m.removedNodes) if (n.nodeType === 1) rem += 1;
+        });
+        obs.observe(window.__tbody, { childList: true, subtree: true });
+        const iv = setInterval(() => {
+          const tr = window.__tbody && window.__tbody.querySelector('tr');
+          if (tr) window.__tbody.replaceChild(tr.cloneNode(true), tr);
+        }, 120);
+        await new Promise((r) => setTimeout(r, 900));
+        clearInterval(iv); obs.disconnect();
+        return rem;
+      })()`));
+    ok(`N-03 R-01 计数器有牙齿：页面内模拟整表重挂载（每 120ms 换掉首行）时，同款观察器必须计到 >0（实测 ${M.teethRemovals}）——`
+      + '同时本轮真实空闲读数必须为 ≤0 侧（判据区分两态，不是恒 0 也不是恒非 0）',
+      M.teethRemovals > 0, { teeth: M.teethRemovals, real: M.removals });
 
     await shot(cdp, join(OUT_DIR, NEGATIVE ? 't02192-pointer-negative.png' : 't02192-pointer-positive.png'));
   } finally {
@@ -680,93 +760,157 @@ async function removeTree(dir: string): Promise<void> {
   console.log(`  ⚠ 临时目录未能即时删除（Chrome 仍占用），请手动清理：${dir}`);
 }
 
-// ---------------- 负对照：把源码改回缺陷形态，要求同一组交互断言必须红 ----------------
+// =====================================================================
+// S 组配对项：字面腿（HEAD 源码文本）+ 行为腿（上面实测）。
+// **惰性数组**——行为腿取的是交互组跑完才有的值，实测组之后统一发射（反模式 14）。
+// =====================================================================
+const LIT = {
+  useMemo: (s: string) => /const result = useMemo\(/.test(s) && !/^ {2}const result = activeItem/m.test(s),
+  rowKey: (s: string) => /const gen = hashStr\(result\.prdMd\);/.test(s) && /key: `gi-\$\{gen\}-\$\{i\}`/.test(s),
+  rowsGate: (s: string) => /if \(!result \|\| rows\.length === 0\) return;/.test(s),
+};
+const literalPairs: Array<() => void> = [
+  () => okPair(ok,
+    'S-01 result 引用稳定（字面腿=HEAD 源码走 useMemo 且无渲染期裸三元；行为腿=实测空闲窗口 tbody 移除节点 ≤0 且输入 800ms 后同节点）',
+    () => M.removals !== undefined && M.sameNode !== undefined && M.removals <= MAX_IDLE_REMOVALS && M.sameNode === true,
+    () => { const s = headText(PANEL_REL); return s !== null && LIT.useMemo(s); },
+    () => ({ removals: M.removals, sameNode: M.sameNode })),
+  () => okPair(ok,
+    'S-02 行键取正文指纹（字面腿=HEAD 源码 hashStr + gi-<gen>-<i>；行为腿=实测结论输入框与自定义行都挺过重渲染窗口不换新节点——行键若是 Date.now()，每帧重挂载会把同节点判据打回假）',
+    () => M.sameNode === true && M.customSameNode === true && M.valueKept === TYPED_ANSWER,
+    () => { const s = headText(PANEL_REL); return s !== null && LIT.rowKey(s); },
+    () => ({ sameNode: M.sameNode, customSameNode: M.customSameNode })),
+  () => okPair(ok,
+    'S-03 渲染期新建字面量作 effect 依赖的静态红线为 0 处（字面腿=HEAD 树全量 tsx 扫描；行为腿=R-01 ≤0 + 首行结论未被重填打丢）',
+    () => M.removals !== undefined && M.removals <= MAX_IDLE_REMOVALS && M.firstAnswerKept === true,
+    () => scanHeadRenderPhaseDeps().hits.length === 0,
+    () => ({ removals: M.removals, firstAnswerKept: M.firstAnswerKept })),
+  () => okPair(ok,
+    'S-04 结论落盘以 rows 非空为门槛（字面腿=HEAD 源码那句门槛；行为腿=切页往返后首行结论按会话口径恢复——门槛缺失时首帧 rows=[] 会把结论清空，G-03 当场转红）',
+    () => M.answerAfterNav === TYPED_ANSWER,
+    () => { const s = headText(PANEL_REL); return s !== null && LIT.rowsGate(s); },
+    () => ({ answerAfterNav: M.answerAfterNav, rowsAfterNav: M.rowsAfterNav })),
+];
+
+// =====================================================================
+// N 组（常驻牙齿）：字面判据与扫描器自己的反证
+// =====================================================================
+function emitTeeth(): void {
+  const head = headText(PANEL_REL);
+  ok('N-01 字面腿有牙齿：把 HEAD 源码在内存里逐条改回缺陷形态（剥 useMemo 外壳/行键换 Date.now()/去掉 rows 门槛），'
+    + '同一字面判据必须转假，原样必须为真（否则 S-01/S-02/S-04 是恒真锚）',
+    head !== null && (() => {
+      const unwrapped = head!.replace(/const result = useMemo\(\(\) => \(/, 'const result = (');
+      const dateKey = head!.replace('const gen = hashStr(result.prdMd);', 'const gen = `st-${Date.now()}`;');
+      const noGate = head!.replace('if (!result || rows.length === 0) return;', 'if (!result) return;');
+      return LIT.useMemo(head!) === true && LIT.useMemo(unwrapped) === false
+        && LIT.rowKey(head!) === true && LIT.rowKey(dateKey) === false
+        && LIT.rowsGate(head!) === true && LIT.rowsGate(noGate) === false
+        && unwrapped !== head! && dateKey !== head! && noGate !== head!;
+    })(), '三条篡改必须全部转假');
+  ok('N-02 静态扫描有牙齿：合成缺陷片段必命中、合成合规片段（useMemo 包裹）必不命中'
+    + '（防「扫描恒 0 的空转」——扫描器咬不住就没有红线可言）',
+    (() => {
+      const offender = [
+        'export function P() {',
+        '  const result = activeItem ? {',
+        "    prdMd: '', issues: [],",
+        '  } : snap.result;',
+        '  useEffect(() => { fillRows(result); }, [result]);',
+        '}',
+      ].join('\n');
+      const clean = [
+        'export function P() {',
+        '  const result = useMemo(() => (activeItem ? {',
+        "    prdMd: '', issues: [],",
+        '  } : snap.result), [activeItem]);',
+        '  useEffect(() => { fillRows(result); }, [result]);',
+        '}',
+      ].join('\n');
+      return scanText('synthetic-offender.tsx', offender).length === 1 && scanText('synthetic-clean.tsx', clean).length === 0;
+    })());
+}
+
+// =====================================================================
+// 负对照（全链真缺陷）：HEAD 副本 worktree 里打缺陷补丁 + 副本独立构建 + 桩服伺服副本 dist
+// ——主仓工作树与共享 web/dist 全程零写入（规约「临时副本与破坏性反证的边界」）。
+// =====================================================================
 const REVERTS: Array<[RegExp, string]> = [
   [/const result = useMemo\(\(\) => \(activeItem && !activeItem\.failed\n([\s\S]*?)\), \[activeItem, snap\.result\]\);/,
     'const result = activeItem && !activeItem.failed$1;'],
   [/const gen = hashStr\(result\.prdMd\);/, 'const gen = `st-${Date.now()}`;'],
 ];
 
-function applyNegativeControl(): { restore: () => void } {
+function main(): void {
   mkdirSync(OUT_DIR, { recursive: true });
-  if (existsSync(BACKUP)) {
-    // 上一轮被硬杀留下的备份——先回写，绝不把备份当原文再备份一次
-    writeFileSync(PANEL_SRC, readFileSync(BACKUP, 'utf8'), 'utf8');
-    rmSync(BACKUP, { force: true });
-    console.log('  负对照：发现残留备份，已先回写 PrdGenPanel.tsx');
-  }
-  const original = readFileSync(PANEL_SRC, 'utf8');
-  writeFileSync(BACKUP, original, 'utf8');
-  let patched = original;
-  for (const [re, to] of REVERTS) {
-    if (!re.test(patched)) throw new Error(`负对照锚点未命中（源码形态变了，请同步本脚本）：${re.source.slice(0, 70)}`);
-    patched = patched.replace(re, to);
-  }
-  writeFileSync(PANEL_SRC, patched, 'utf8');
-  const restore = () => {
-    if (!existsSync(BACKUP)) return;
-    writeFileSync(PANEL_SRC, readFileSync(BACKUP, 'utf8'), 'utf8');
-    rmSync(BACKUP, { force: true });
-  };
-  process.on('exit', restore);
-  console.log(`  负对照：已把 PrdGenPanel.tsx 改回缺陷形态（原文备份 ${BACKUP}）`);
-  return { restore };
+  console.log(`T02192 指针回归门${NEGATIVE ? '【负对照·HEAD 副本】' : ''} · 桩服 ${BASE} · CDP ${CDP_PORT}`);
 }
 
-// ---------------- 主流程 ----------------
-mkdirSync(OUT_DIR, { recursive: true });
-console.log(`T02192 指针回归门${NEGATIVE ? '【负对照】' : ''} · 桩服 ${BASE} · CDP ${CDP_PORT}`);
-
-const src = readFileSync(PANEL_SRC, 'utf8');
-if (!NEGATIVE) {
-  ok('S-01 PrdGenPanel 的 result 走 useMemo（引用稳定，非渲染期新建字面量）',
-    /const result = useMemo\(/.test(src) && !/^ {2}const result = activeItem/m.test(src));
-  ok('S-02 交互表格行键取正文指纹（hashStr）而非 Date.now()',
-    /const gen = hashStr\(result\.prdMd\);/.test(src) && /key: `gi-\$\{gen\}-\$\{i\}`/.test(src));
-  // 本轮跑门时实测出来的同族缺陷（切页后已填结论被会话快照抹掉）——落盘必须以「表格已填充」为前提
-  ok('S-04 结论落盘 effect 以 rows 非空为门槛（切页首帧 rows=[] 不得被当成「用户清空结论」）',
-    /if \(!result \|\| rows\.length === 0\) return;/.test(src));
-}
-const negativeControl = NEGATIVE ? applyNegativeControl() : null;
+main();
 try {
-  // S-03 放在负对照打补丁**之后**评：否则负对照跑出来的 S-03 判的是未打补丁的源码，那个 PASS 是假的。
-  const scan = scanRenderPhaseDeps();
-  ok(`S-03 静态特征扫描：渲染期新建对象作 effect 依赖的组合为 0 处（扫 ${scan.files} 个 tsx，命中 ${scan.hits.length}）`,
-    scan.hits.length === 0, scan.hits.slice(0, 5));
-  buildWeb();
-  await runUiChecks();
+  if (NEGATIVE) {
+    const tmpRoot = process.env.T02192_GATE_TMP_ROOT ?? 'D:/code/tmp';
+    mkdirSync(tmpRoot, { recursive: true });
+    const WTROOT = mkdtempSync(join(tmpRoot, 't02192-negwt-'));
+    const WT = join(WTROOT, 'wt');
+    execFileSync('git', ['worktree', 'add', '--detach', WT, 'HEAD'], { cwd: ROOT, stdio: 'pipe', timeout: 300_000 });
+    symlinkSync(join(ROOT, 'node_modules'), join(WT, 'node_modules'), 'junction');
+    symlinkSync(join(ROOT, 'web', 'node_modules'), join(WT, 'web', 'node_modules'), 'junction');
+    try {
+      const panelPath = join(WT, 'web', 'src', 'pages', 'PrdGenPanel.tsx');
+      // 注意：core.autocrlf=true，worktree checkout 落盘是 CRLF；
+      // REVERTS 的锚点按 git blob（LF）书写，先归一再打补丁，否则多行锚点必失配。
+      let patched = readFileSync(panelPath, 'utf8').replace(/\r\n/g, '\n');
+      for (const [re, to] of REVERTS) {
+        if (!re.test(patched)) throw new Error(`负对照锚点未命中（HEAD 形态变了，请同步本脚本）：${re.source.slice(0, 70)}`);
+        patched = patched.replace(re, to);
+      }
+      writeFileSync(panelPath, patched, 'utf8');
+      info('负对照：缺陷补丁已落在 HEAD 副本（主仓工作树零写入）');
+      buildWebAt(join(WT, 'web'));
+      SERVE_DIST = join(WT, 'web', 'dist');
+      await runUiChecks();
+    } finally {
+      try { rmSync(join(WT, 'web', 'node_modules'), { recursive: true, force: true }); } catch { /* */ }
+      try { rmSync(join(WT, 'node_modules'), { recursive: true, force: true }); } catch { /* */ }
+      try { execFileSync('git', ['worktree', 'remove', '--force', WT], { cwd: ROOT, stdio: 'ignore', timeout: 180_000 }); }
+      catch { rmSync(WT, { recursive: true, force: true }); }
+      try { execFileSync('git', ['worktree', 'prune'], { cwd: ROOT, stdio: 'ignore', timeout: 60_000 }); } catch { /* 尽力 */ }
+      rmSync(WTROOT, { recursive: true, force: true });
+    }
+  } else {
+    buildWeb();
+    await runUiChecks();
+  }
 } catch (e) {
   const msg = e instanceof Error ? e.message : String(e);
   console.log(`  ⚠ 门执行异常：${msg}`);
   lines.push(`[CRASH] 门自身执行抛异常（崩溃即门失效，不得当成通过）→ ${msg}`);
   fail += 1;
-} finally {
-  negativeControl?.restore();
-  if (NEGATIVE) {
-    // 负对照期间 dist 是按缺陷源码构建的；不复原就会污染下一次 SKIP_BUILD 复跑（E-03 拦的那条）。
-    // 源码已 restore，这里强制重建一次，让工作区回到「dist 与当前源码一致」。
-    const saved = process.env.T02192_GATE_SKIP_BUILD;
-    delete process.env.T02192_GATE_SKIP_BUILD;
-    try {
-      buildWeb();
-      console.log('  (负对照收尾：web/dist 已按还原后的源码重建)');
-    } catch (e) {
-      console.log(`  ⚠ 负对照收尾重建 dist 失败：${e instanceof Error ? e.message : String(e)}——下一次正对照请勿用 SKIP_BUILD`);
-    }
-    if (saved !== undefined) process.env.T02192_GATE_SKIP_BUILD = saved;
-  }
 }
+
+// S 配对组与牙齿在实测完成后统一发射/评点（行为腿已有值或已定性缺失）
+if (M.uiDone) {
+  for (const emit of literalPairs) emit();
+} else {
+  for (let i = 0; i < literalPairs.length; i++) skipped(`S-0${i + 1}`, '交互组实测没完整跑到 G 组，行为腿无值——不拿源码文本冒充 PASS');
+}
+emitTeeth();
 
 const interaction = lines.filter((l) => /^\[(PASS|FAIL)\] [URFCQXG]-/.test(l));
 const interactionFail = interaction.filter((l) => l.startsWith('[FAIL]')).length;
+const sFail = lines.filter((l) => /^\[FAIL\] S-0/.test(l)).length;
 if (NEGATIVE) {
-  const caught = interaction.length > 0 && interactionFail > 0;
-  lines.unshift(`[NEG] 负对照判定：缺陷形态下交互组 FAIL=${interactionFail}/${interaction.length} —— ${caught ? '门拦得住（合格）' : '门拦不住（失效，必须修门）'}`);
+  const caught = interaction.length > 0 && (interactionFail > 0 || sFail > 0);
+  lines.unshift(`[NEG] 负对照判定：缺陷形态（HEAD 副本构建）下交互组 FAIL=${interactionFail}/${interaction.length}、S 行为腿 FAIL=${sFail} —— `
+    + `${caught ? '门拦得住（合格）' : '门拦不住（失效，必须修门）'}`);
   console.log(`\n${lines[0]}`);
   pass = caught ? 1 : 0;
   fail = caught ? 0 : 1;
 }
 
-const resultsFile = writeGateResults(OUT_DIR, OUT_BASE, `T02192 指针回归门${NEGATIVE ? '（负对照）' : ''}：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`, { port: PORT });
-console.log(`\nPASS=${pass} FAIL=${fail} → ${resultsFile}`);
+const resultsFile = writeGateResults(OUT_DIR, OUT_BASE,
+  `T02192 指针回归门${NEGATIVE ? '（负对照·副本）' : ''}：PASS=${pass} FAIL=${fail}${skippedList.length ? ` SKIP=${skippedList.length}` : ''}\n${lines.join('\n')}\n${skippedList.length ? `跳过项：\n${skippedList.join('\n')}\n` : ''}`,
+  { port: PORT });
+console.log(`\nPASS=${pass} FAIL=${fail}${skippedList.length ? ` SKIP=${skippedList.length}` : ''} → ${resultsFile}`);
 process.exit(fail === 0 ? 0 : 1);

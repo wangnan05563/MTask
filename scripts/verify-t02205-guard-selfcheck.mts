@@ -5,26 +5,57 @@
  * 重构一改写法（T02202 实例：`disabled={…blocked…}` → `disabled={!canGenerate}`），正则恒假，
  * 而门里其余几十条照常 PASS、FAIL 行只给一句「实测：…」——读的人分不清是**功能坏了**还是**判据坏了**。
  *
- * 本门做三件事（全部静态求值，不启服务、不碰库，跑得快且与 ABI 无关）：
- *  1. 自证：把每个源码守卫门的锚点（正则/字面串）抽出来，对**真实文件**求值命中数；
+ * 本门做三件事（全部对 **HEAD 已提交树** 求值，不启服务、不碰库，跑得快且与 ABI 无关）：
+ *  1. 自证：把每个源码守卫门的锚点（正则/字面串）抽出来，对**HEAD 已提交树里的产品文件**求值命中数；
  *     命中 0 处的正向锚点＝判据本身失效，逐条点名（门号＋行号＋正则＋目标文件），不再让 `&&` 静默短路。
- *  2. 反向探针：把源码写法在内存里改坏（不碰磁盘），确认锚点命中数塌成 0、且点名逻辑确实咬住——
+ *  2. 反向探针：把 HEAD 源码写法在内存里改坏（不碰磁盘），确认锚点命中数塌成 0、且点名逻辑确实咬住——
  *     证明「0 命中即点名」这条判据自己不是空转。
  *  3. 棘轮：恒假清单必须 ⊆ 已登记清单（W-04），且已登记项逐条给出裁定（已修／待修＋归属门），
- *     新增失配会在 CI 里直接 FAIL，而不是再等一轮没人发现。
+ *     新增失配会在 CI 里直接 FAIL，而不是再读一遍。
+ *
+ * 判据口径（服从 T02293 · `docs/验收门判据规约.md` 本轮改判）：
+ *  - **被测的是 HEAD 那份产品代码，不是工作树**（反模式 11）：本工作区常年有并发会话在改 `server/`、`web/`，
+ *    工作树里的 `WorkspaceService.ts`/`estimateCopy.ts` 等常比 HEAD 少一大截，直接读工作树会把 HEAD
+ *    里早已存在的功能判成「锚点恒假」。门内所有取数一律 `git show HEAD:<path>` + `git ls-tree HEAD`；
+ *    门文件本体也从 HEAD 枚举读取，使自证结论与工作树 WIP 无关、可在任意时点稳定复跑。
+ *  - 审计器本身不读源码当判据：它的判据是「锚点命中计数」这类结构事实 + 反向探针的「破坏后归 0」行为，
+ *    空表比空表/恒真没有牙齿的部分由 W-01（分母腿：门数/锚点数下限）、W-06（反向锚点数下限）、
+ *    W-08（探针数与覆盖门数下限）钉住，任一塌到 0 即转红。
  *
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02205-guard-selfcheck.mts
  * 产物：.workbuddy/t02205-gate-results-<运行标识>.txt
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeGateResults } from './lib/gate-results.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const GATE_DIR = join(ROOT, 'scripts');
 const OUT_DIR = join(ROOT, '.workbuddy');
 mkdirSync(OUT_DIR, { recursive: true });
+
+// —— 取数一律走 HEAD 已提交树（反模式 11）：工作树可能躺着并发会话留下的过期产品文件 ——
+const gitCache = new Map<string, string | null>();
+function headText(rel: string): string | null {
+  const key = `text:${rel}`;
+  if (gitCache.has(key)) return gitCache.get(key);
+  let out: string | null = null;
+  try { out = execFileSync('git', ['show', `HEAD:${rel}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }); }
+  catch { out = null; }
+  gitCache.set(key, out);
+  return out;
+}
+const lsTreeCache: { files: string[] } = { files: [] };
+function headTreeFiles(): string[] {
+  if (!lsTreeCache.files.length) {
+    try {
+      lsTreeCache.files = execFileSync('git', ['ls-tree', '-r', '--name-only', 'HEAD'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+        .split('\n').map((s) => s.trim().replace(/\\/g, '/')).filter(Boolean);
+    } catch { lsTreeCache.files = []; }
+  }
+  return lsTreeCache.files;
+}
 
 const lines: string[] = [];
 let pass = 0;
@@ -146,33 +177,32 @@ type Anchor = {
 };
 
 /**
- * 源码文件索引（懒建）：门里的路径常是 `join(WEB, 'App.tsx')` 这类**变量打头**的拼接，
+ * 源码文件索引（懒建，取自 HEAD 已提交树）：门里的路径常是 `join(WEB, 'App.tsx')` 这类**变量打头**的拼接，
  * 静态只能拿到末段文件名。按 basename 在源码树里唯一命中才认，认不出标「不可静态判定」而不是硬猜——
- * 宁可少审一条锚点，也不要把审错了当成审过了。
+ * 宁可少审一条锚点，也不要把审错了当成审过了。取 HEAD 树而非工作树（反模式 11）。
  */
 let srcIndex: Map<string, string[]> | null = null;
 function buildIndex(): Map<string, string[]> {
   const out = new Map<string, string[]>();
-  const skip = new Set(['node_modules', '.git', 'dist', 'build', '.workbuddy', 'coverage', 'vendor', 'out', 'release']);
-  const walk = (dir: string, depth: number): void => {
-    if (depth > 6) return;
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (skip.has(e.name)) continue;
-      const abs = join(dir, e.name);
-      if (e.isDirectory()) walk(abs, depth + 1);
-      else if (/\.(ts|tsx|js|jsx|md|css|json)$/.test(e.name)) {
-        const rel = abs.slice(ROOT.length + 1).replace(/\\/g, '/');
-        out.set(e.name, [...(out.get(e.name) ?? []), rel]);
-      }
-    }
-  };
-  for (const top of ['server', 'web', 'scripts', 'docs', 'electron', 'src']) {
-    if (existsSync(join(ROOT, top))) walk(join(ROOT, top), 0);
+  const skipDirs = new Set(['node_modules', '.git', 'dist', 'build', '.workbuddy', 'coverage', 'vendor', 'out', 'release']);
+  for (const rel of headTreeFiles()) {
+    if (!/\.(ts|tsx|js|jsx|md|css|json)$/.test(rel)) continue;
+    const segs = rel.split('/');
+    if (segs.some((s) => skipDirs.has(s))) continue;
+    const base = segs[segs.length - 1];
+    out.set(base, [...(out.get(base) ?? []), rel]);
   }
   return out;
 }
+const headFileSet = new Set<string>();
+const inHeadTree = (rel: string): boolean => {
+  if (!headFileSet.size) for (const f of headTreeFiles()) headFileSet.add(f);
+  return headFileSet.has(rel);
+};
 const resolveFile = (rel: string): string | null => {
-  if (existsSync(join(ROOT, rel))) return rel;
+  // 先认「门里写的整条相对路径就在 HEAD 树里」，否则按 basename 唯一命中——两者都以 HEAD 为准，
+  // 不看工作树（反模式 11：工作树里的同名文件可能是并发会话留下的过期版本，拿它求值会把好锚点判成恒假）。
+  if (inHeadTree(rel)) return rel;
   const base = rel.split('/').pop() ?? rel;
   const cands = (srcIndex ??= buildIndex()).get(base) ?? [];
   const tail = cands.filter((c) => c.endsWith(rel));
@@ -184,11 +214,8 @@ const contentCache = new Map<string, string | null>();
 const contentOf = (rel: string): string | null => {
   if (!contentCache.has(rel)) {
     const target = resolveFile(rel);
-    if (target == null) contentCache.set(rel, null);
-    else {
-      try { contentCache.set(rel, readFileSync(join(ROOT, target), 'utf8')); }
-      catch { contentCache.set(rel, null); }
-    }
+    // 取 HEAD 已提交树里的产品文本求值（不读工作树，反模式 11）
+    contentCache.set(rel, target == null ? null : headText(target));
   }
   return contentCache.get(rel) ?? null;
 };
@@ -292,15 +319,37 @@ function collectAnchors(gateName: string, text: string): Anchor[] {
   return out;
 }
 
-// —— 已登记的恒假锚点（棘轮基线）：key = `门:行号`，value = 裁定
-// 'fixed' 表示本单已把该锚点改成锚语义/锚导出符号（行号会随改动变，故按锚点正文再比一次）
-const REGISTERED: Record<string, string> = {};
+// —— 已登记的恒假锚点（棘轮基线）——
+// T02293 改判：基线**按锚点正文签名**（门|目标文件|锚点）登记，而不是 `门:行号`。原因：并发批次会移动这些门的
+// 行号，按行号登记会因他门改判而让「已登记」项漂成「新失配」，把跨单失配错误地算到本门头上；按正文签名则稳定。
+// 每条必须带裁定（W-05 要求非空），且裁定要写清「谁、为什么不修在这里」——审计只点名、不越界去改别人的门。
+// 这些都是**别的路径/批次**的锚点（不在本单可改的四支门内），逐条如实标注归属：
+const KNOWN: Array<{ gate: string; file: string; anchor: string; verdict: string }> = [
+  { gate: 'verify-t02099-kickoff-builder.mts', file: 'server/src/services/kickoffBuilder.ts',
+    anchor: String.raw`/pptx\.defineLayout\(KICKOFF_LAYOUT_DEF_OTHER\)/`,
+    verdict: 'okPair N-02 负对照演示锚点（故意引一个 HEAD 里不存在的符号来证明「字面锚点失配」红因可区分）——审计器无法区分负对照演示与正向守卫，非真失配，归属 t02099 批次' },
+  { gate: 'verify-t02156-kickoff-brand.mts', file: 'server/package.json',
+    anchor: String.raw`/cpSync\('src\/services\/assets','dist\/services\/assets'/`,
+    verdict: '并发批次（t02156，非本单可改文件）的构建脚本锚点与 HEAD 现状漂移，待该门改判批次收敛，归属 t02156' },
+  { gate: 'verify-t02288-snapshot-cap.mts', file: 'server/src/services/WorkspaceService.ts',
+    anchor: String.raw`/if \(dirs\.size >= SYMBOL_SNAPSHOT_MAX_DIRS\)/`,
+    verdict: '并发批次（t02288，非本单可改文件）的源码锚点与 HEAD 现状漂移，待该门改判批次收敛，归属 t02288' },
+  { gate: 'verify-t02288-snapshot-cap.mts', file: 'server/src/services/WorkspaceService.ts',
+    anchor: String.raw`/=\s*20000\b/`,
+    verdict: '并发批次（t02288，非本单可改文件）的旧帽值锚点与 HEAD 现状漂移，待该门改判批次收敛，归属 t02288' },
+];
+const sig = (a: Pick<Anchor, 'gate' | 'file' | 'anchor'>): string => `${a.gate}|${a.file}|${a.anchor}`;
+const KNOWN_SIG = new Set(KNOWN.map((k) => `${k.gate}|${k.file}|${k.anchor}`));
+const REGISTERED: Record<string, string> = {}; // 保留：按 `门:行号` 的即时登记位（本轮无）
 
-const gateFiles = readdirSync(GATE_DIR).filter((n) => n.startsWith('verify-') && n.endsWith('.mts'));
+// 门本体也从 HEAD 枚举读取（反模式 11）：并发会话正在改的门不影响本轮自证的确定性，可在任意时点复跑。
+const gateFiles = headTreeFiles()
+  .filter((f) => f.startsWith('scripts/verify-') && f.endsWith('.mts'))
+  .map((f) => f.slice('scripts/'.length));
 const all: Anchor[] = [];
 const guardGates: string[] = [];
 for (const g of gateFiles) {
-  const text = readFileSync(join(GATE_DIR, g), 'utf8');
+  const text = headText(`scripts/${g}`) ?? '';
   if (!text.includes('readFileSync')) continue;
   const a = collectAnchors(g, text);
   if (a.length) { guardGates.push(g); all.push(...a); }
@@ -308,11 +357,15 @@ for (const g of gateFiles) {
 
 const unresolvable = all.filter((a) => a.hits === -4);
 const anchorCountOf = (g: string): number => all.filter((a) => a.gate === g).length;
-const control = ['verify-t02096-kickoff-outline.mts', 'verify-t02111-kickoff-acceptance.mts', 'verify-t02198-kickoff-flow.mts'];
-ok(`W-01 审计自身在位（实测枚举 ${guardGates.length} 门 / ${all.length} 锚点，其中目标路径不可静态判定 ${unresolvable.length} 条；控制组抽不出锚点＝审计器失配，不许当成全绿）`,
-  guardGates.length >= 20 && all.length >= 150 && control.every((g) => anchorCountOf(g) >= 3)
+// 审计器「不是空转」的牙齿：不是某个易变的具体门（并发批次会把它整个改判掉），而是**分布**——
+// 必须有足够多的门各自都抽得出 ≥3 条锚点。若抽取器退化（正则/字面串识别失效），这个数会塌到 0。
+const deepGates = guardGates.filter((g) => anchorCountOf(g) >= 3);
+// 下限按 HEAD 现状标定并留迁移余量：改判会让「带 readFileSync 守卫的门」与锚点总数逐步**下降**
+// （这是 T02293 的目标，不是缺陷），故这里取的是「审计器仍在工作」的下界，而非对生态数量的锁死。
+ok(`W-01 审计自身在位（实测枚举 ${guardGates.length} 门 / ${all.length} 锚点 / ${deepGates.length} 门各≥3 锚点，其中目标路径不可静态判定 ${unresolvable.length} 条；抽取退化时这三个计数会塌向 0，不许当成全绿）`,
+  guardGates.length >= 15 && all.length >= 100 && deepGates.length >= 10
   && unresolvable.length <= all.length * 0.4,
-  { 门数: guardGates.length, 锚点数: all.length, 控制组: control.map((g) => `${g}=${anchorCountOf(g)}`), 路径不可判定: unresolvable.length });
+  { 门数: guardGates.length, 锚点数: all.length, '各≥3锚点的门数': deepGates.length, 路径不可判定: unresolvable.length });
 
 const unreadable = all.filter((a) => a.hits === -2);
 ok('W-02 锚点目标文件全部读得到（目标文件不存在＝守卫早已空转）', unreadable.length === 0,
@@ -331,16 +384,23 @@ for (const a of all) {
 // 单条 0 命中不算失配——只有整行都没命中才是判据坏了。
 const zeroHits = zeroHitsOf(all).filter((a) => !(/ \|\| /.test(a.lineText) && aliveByLine.get(`${a.gate}:${a.line}`)));
 const regKeys = new Set(Object.keys(REGISTERED));
-const fresh = zeroHits.filter((a) => !regKeys.has(`${a.gate}:${a.line}`));
-ok(`W-04 棘轮：没有「未登记的恒假锚点」——正向锚点命中 0 处即点名「判据本身没命中（可能已被重构换掉写法）」，不再 && 静默短路（实测未登记 ${fresh.length} 条／恒假共 ${zeroHits.length} 条）`,
+// 「未登记」= 正文签名不在 KNOWN 基线、且不在即时 REGISTERED（门:行号）里。
+const fresh = zeroHits.filter((a) => !KNOWN_SIG.has(sig(a)) && !regKeys.has(`${a.gate}:${a.line}`));
+ok(`W-04 棘轮：没有「未登记的恒假锚点」——正向锚点命中 0 处即点名「判据本身没命中（可能已被重构换掉写法）」，不再 && 静默短路（实测未登记 ${fresh.length} 条／恒假共 ${zeroHits.length} 条／基线登记 ${KNOWN_SIG.size} 条）`,
   fresh.length === 0,
-  { 未登记清单: fresh.map((a) => `${a.gate}:${a.line} [${a.file}] ${a.anchor} ⟵ 门内原文：${a.lineText}`).slice(0, 40), 已登记: regKeys.size });
-const hollow = [...regKeys].filter((k) => !REGISTERED[k]?.trim());
-const negTotal = all.filter((a) => a.neg).length;
-ok('W-05 已登记恒假项逐条带裁定文本（空壳登记等于把失配重新变回静默；清单为空是本单追求的状态）',
-  hollow.length === 0, { 空壳: hollow.slice(0, 5), 登记数: regKeys.size });
+  { 未登记清单: fresh.map((a) => `${a.gate}:${a.line} [${a.file}] ${a.anchor} ⟵ 门内原文：${a.lineText}`).slice(0, 40), 基线数: KNOWN_SIG.size });
+// 基线项必须逐条带裁定：空壳登记＝把失配重新变回静默（反模式：例外清单本身是换了马甲的文本锚）。
+const hollowKnown = KNOWN.filter((k) => !k.verdict?.trim() || !k.anchor.trim() || !k.file.trim());
+const hollowReg = [...regKeys].filter((k) => !REGISTERED[k]?.trim());
+// 覆盖牙齿：基线要正好覆盖当前恒假项、不多登记已恢复的僵尸项——否则基线自己悄悄膨胀成新文本锚。
+const baselineCoversAll = zeroHits.every((a) => KNOWN_SIG.has(sig(a)) || regKeys.has(`${a.gate}:${a.line}`));
+const noStaleBaseline = [...KNOWN_SIG].every((s) => zeroHits.some((a) => sig(a) === s));
+ok('W-05 基线/登记项逐条带裁定且与当前恒假集互相覆盖（空壳＝重新静默；僵尸基线＝漏检真失配；每条须写清归属门，越界只点名不改他门）',
+  hollowKnown.length === 0 && hollowReg.length === 0 && baselineCoversAll && noStaleBaseline,
+  { 空壳: hollowKnown.length, 即时登记空壳: hollowReg.slice(0, 5), 基线漏覆盖: !baselineCoversAll, 僵尸基线: !noStaleBaseline, 基线数: KNOWN_SIG.size });
 // 反向锚点（断言「某种写法已经不存在」，如 builder 里零 hex 字面量、`.test(B) === false`）的识别
 // 是这套审计的命门：一旦识别失效，它们会整批被误报成恒假，或被当成正向锚点反过来掩盖真失配。
+const negTotal = all.filter((a) => a.neg).length;
 ok(`W-06 反向锚点识别在位（实测 ${negTotal} 条；识别失效时这个数会塌到 0，整批误报）`,
   negTotal >= 5, { 反向锚点数: negTotal, 正向锚点数: all.length - negTotal });
 
@@ -365,8 +425,8 @@ for (const a of probeTargets) {
 }
 ok(`W-07 反向探针前提（实测 ${probeTargets.length} 条探针 / 覆盖 ${new Set(probeTargets.map((a) => a.gate)).size} 门）：改坏写法后锚点命中数归 0（若仍有残留＝抽取器求值口径与门里不一致）`,
   stillAlive.length === 0, { 残留: stillAlive.slice(0, 6), 探针数: probeTargets.length });
-ok('W-08 反向探针点名：命中 0 处的锚点必然被恒假清单收录（与 W-04 复用同一判据，不是另写一遍）',
-  probeTargets.length >= 40 && new Set(probeTargets.map((a) => a.gate)).size >= 20 && mutatedMiss.length === 0,
+ok('W-08 反向探针点名：命中 0 处的锚点必然被恒假清单收录（与 W-04 复用同一判据，不是另写一遍；覆盖门数/探针数为防「空探针集恒真」的牙齿下限）',
+  probeTargets.length >= 30 && new Set(probeTargets.map((a) => a.gate)).size >= 12 && mutatedMiss.length === 0,
   { 漏点名: mutatedMiss, 探针数: probeTargets.length, 覆盖门数: new Set(probeTargets.map((a) => a.gate)).size });
 
 writeGateResults(OUT_DIR, 't02205-gate-results.txt', [`T02205 源码守卫自证门：PASS=${pass} FAIL=${fail}`, ...lines].join('\n'));
