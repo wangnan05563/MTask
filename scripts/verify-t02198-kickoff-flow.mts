@@ -18,6 +18,10 @@
  *        F-10/F-10b 的「最小高单源」改为 63/67 档纵向预算自洽扫描（朴素表格页排得下的每一档，
  *        图示页要么画出组件、要么如实回落表格）；每条改判各配负对照：F-10b 用 rowIsBad 正反例自证
  *        判据是活的，T-01 用造形色值自证 P-06 能红。
+ *        批⑧ 收尾（本门是全仓普查里最后一个 T1）：V-06 的 builder 源码、V-08 的前端面板源码**都不再
+ *        读工作区文件**——字面腿只许打在 `git show HEAD:<path>` 上（反模式 11），V-08 的行为腿改成
+ *        把 HEAD 里那份面板模块真打包、真 import，读它 `<select>` 实际渲染的那一份数组；
+ *        N-01 空源码真空探针证两条字面腿不是空判据，N-02 造形改判证运行时通道真的随模块内容变。
  *   P 组 真产物：解包 .pptx 证 roundRect 形状框内真的带文字（形状与文字同一原生对象）、
  *        箭头数 = 节点数-1、flow/chip 页没被降级也没有「已省略」。
  *
@@ -25,16 +29,23 @@
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02198-kickoff-flow.mts
  * 结果落 .workbuddy/t02198-gate-results-<运行标识>.txt 与 t02198-flow-<运行标识>.pptx（T02309 旁证同标识）。
  */
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { execFileSync } from 'node:child_process';
+import { build } from 'esbuild';
 import JSZip from 'jszip';
 import { writeGateResults, gateArtifactPath } from './lib/gate-results.mts';
 import { startOutlineHarness } from './lib/outline-harness.mts';
+import { okPair } from './lib/anchor-pair.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
 mkdirSync(OUT_DIR, { recursive: true });
+
+/** 反模式 11：字面锚点只打在 HEAD 的提交内容上——工作区里并发会话未提交的副本不参与判定。 */
+const headText = (p: string) => execFileSync('git', ['show', `HEAD:${p}`], { cwd: ROOT, encoding: 'utf8' });
+
 
 let pass = 0;
 let fail = 0;
@@ -47,7 +58,44 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 const M = await import('../server/src/services/kickoffBuilder.ts');
 const LAY = await import('../server/src/services/kickoff-layout.ts');
 const SVC = await import('../server/src/services/kickoffService.ts');
-const BLD_SRC = readFileSync(join(ROOT, 'server/src/services/kickoffBuilder.ts'), 'utf8');
+const BLD_SRC = headText('server/src/services/kickoffBuilder.ts');
+
+/**
+ * 前端版式候选的**运行时**取数通道（替代「正则读 KickoffPptPanel.tsx」）。
+ * `LAYOUTS` 是模块私有 const，页面里只以 `<option>` 渲染出来，从外部读不到——所以在打包时对该模块
+ * 源码追加一行导出，再把产物写成 node 能加载的 ESM（补最小 DOM 桩：模块顶层会算 apiBase、读 localStorage），
+ * 真 import 后拿到的就是那一排下拉实际渲染的数组。落 .workbuddy/ 下（gitignore 内，且 node 能沿路解析 react）。
+ */
+const DOM_STUB = `
+if (typeof globalThis.document === 'undefined') globalThis.document = { baseURI: 'http://127.0.0.1:1/index.html', addEventListener(){}, removeEventListener(){}, documentElement:{style:{}}, createElement:()=>({style:{},setAttribute(){},appendChild(){},classList:{add(){},remove(){}}}), body:{appendChild(){},removeChild(){}}, querySelector:()=>null, querySelectorAll:()=>[], getElementById:()=>null };
+if (typeof globalThis.window === 'undefined') globalThis.window = globalThis;
+if (typeof globalThis.localStorage === 'undefined') { const m = new Map(); globalThis.localStorage = { getItem:(k)=>m.has(k)?m.get(k):null, setItem:(k,v)=>m.set(k,String(v)), removeItem:(k)=>m.delete(k), clear:()=>m.clear() }; }
+if (typeof globalThis.navigator === 'undefined') globalThis.navigator = { userAgent: 'gate' };
+if (typeof globalThis.location === 'undefined') globalThis.location = { href:'http://127.0.0.1:1/index.html', origin:'http://127.0.0.1:1', protocol:'http:', host:'127.0.0.1:1', hostname:'127.0.0.1', pathname:'/index.html', search:'', hash:'' };
+if (typeof globalThis.matchMedia === 'undefined') globalThis.matchMedia = () => ({matches:false, addEventListener(){}, removeEventListener(){}});
+`;
+const FE_TMP = join(ROOT, '.workbuddy', `gate-t02198-fe-${process.pid}`);
+let feSeq = 0;
+async function feLayoutsFrom(src: string): Promise<string[]> {
+  mkdirSync(FE_TMP, { recursive: true });
+  const r = await build({
+    stdin: {
+      contents: `${src}\nexport const GATE_LAYOUTS = LAYOUTS;\n`,
+      resolveDir: join(ROOT, 'web/src/pages'),
+      sourcefile: 'KickoffPptPanel.tsx',
+      loader: 'tsx',
+    },
+    bundle: true, format: 'esm', platform: 'node', jsx: 'automatic', write: false, treeShaking: false,
+    external: ['react', 'react-dom', 'react/jsx-runtime', 'lucide-react'],
+    loader: { '.css': 'empty', '.svg': 'empty', '.png': 'empty' },
+  });
+  const p = join(FE_TMP, `panel-${(feSeq += 1)}.mjs`);
+  writeFileSync(p, DOM_STUB + r.outputFiles[0].text);
+  const m: any = await import(pathToFileURL(p).href);
+  if (!Array.isArray(m.GATE_LAYOUTS)) throw new Error(`${p} 未导出数组 GATE_LAYOUTS`);
+  return m.GATE_LAYOUTS as string[];
+}
+
 
 const FLOW_MIN_H = 0.88; // FLOW_NODE_H + FLOW_NOTE_H
 const DAY = 86400000;
@@ -283,12 +331,20 @@ const D1 = await VH.run([JSON.stringify(badOnce), JSON.stringify(badOnce)]);
 ok('V-05 重试那一轮的请求体同样带着图示版式口径（否则重试退回旧 9 值版式认知，模型再也想不到可以画 flow/chip）',
   D1.asks === 2 && /flow/.test(D1.systems[1]) && /chip/.test(D1.systems[1]) && /各至多一页/.test(D1.systems[1]),
   { 请求次数: D1.asks, 重试话术: D1.systems[1].slice(0, 420) });
-const toneBody = BLD_SRC.slice(BLD_SRC.indexOf('function shapeToneColor'), BLD_SRC.indexOf('export function drawBlock'));
+// V-06 的两条腿都写成「源码进、判定出」的纯函数：字面腿打在 HEAD 文本上，N-01 用空源码自证它会红。
+const toneBranchOk = (src: string) => {
+  const body = src.slice(src.indexOf('function shapeToneColor'), src.indexOf('export function drawBlock'));
+  return body.length > 0 && ['flowNode', "'flow'", 'chip'].every(
+    (t) => new RegExp(`tone === ${t.startsWith("'") ? t : `'${t}'`}\\) return PALETTE\\.`).test(body),
+  );
+};
+const noHexLiteral = (src: string) => (src.match(/#[0-9A-Fa-f]{6}\b/g) ?? []).length === 0;
 // V-06 的**主判据在产物里**（P-06：逐个形状的 srgbClr 必须命中 PALETTE），所以这条静态红线被降到
 // 「配对腿」：它在 P 组之后才落笔，且只在产物判据不红时才算绿（规约第 3 条——行为红⇒这条必红，
 // 行为绿而字面红⇒交人判定是改锚还是改码，不允许静默放行）。下面两个变量由 P-06 写入。
 let paletteArtifactOk = true;
 let paletteUnknown: string[] = [];
+
 
 // V-07（T02293 改判）：装饰件豁免原先数的是两处源码里的 tone 比较，改问**同一份版面在版式层得到什么**。
 // 把真产物里的箭头故意挪出内容框、再故意与节点完全重叠：两处豁免都在 → 仍判零违规；
@@ -312,10 +368,38 @@ ok('V-07 版式层两处豁免与绘制层一致：箭头挪出画布 + 压住�
     decorExempt.装饰件豁免后违规.length === 0 && decorExempt.对照.length > 0,
   { 基线: decorExempt.基线, 豁免后: decorExempt.装饰件豁免后违规, 对照: decorExempt.对照 });
 
-const PANEL_SRC = readFileSync(join(ROOT, 'web/src/pages/KickoffPptPanel.tsx'), 'utf8');
-const feLayouts = [...(PANEL_SRC.match(/const LAYOUTS = \[([^\]]*)\]/)?.[1] ?? '').matchAll(/'([^']*)'/g)].map((x) => x[1]);
-ok('V-08 三处同源不漏第三处：前端大纲编辑下拉的版式候选与服务端枚举逐字同序（漏了手工改稿就选不到 flow/chip）',
-  feLayouts.join(',') === SVC.KICKOFF_LAYOUTS.join(','), { fe: feLayouts, srv: [...SVC.KICKOFF_LAYOUTS] });
+const PANEL_SRC = headText('web/src/pages/KickoffPptPanel.tsx');
+const layoutsFromText = (src: string) =>
+  [...(src.match(/const LAYOUTS = \[([^\]]*)\]/)?.[1] ?? '').matchAll(/'([^']*)'/g)].map((x) => x[1]);
+const srvLayouts = [...SVC.KICKOFF_LAYOUTS] as string[];
+let feRuntime: string[] | undefined;
+let feErr = '';
+try { feRuntime = await feLayoutsFrom(PANEL_SRC); } catch (e) { feErr = e instanceof Error ? e.message : String(e); }
+okPair(ok, 'V-08 三处同源不漏第三处：前端大纲编辑下拉实际渲染的版式数组与服务端枚举逐字同序（漏了手工改稿就选不到 flow/chip）',
+  () => !!feRuntime && feRuntime.join(',') === srvLayouts.join(','),
+  () => layoutsFromText(PANEL_SRC).join(',') === srvLayouts.join(','),
+  () => ({ 运行时: feRuntime, 打包失败: feErr, 字面抽取: layoutsFromText(PANEL_SRC), 服务端: srvLayouts }));
+
+// ---------- N 组：本门改判自身的负对照（规约第 4 条 + 反模式 20）----------
+// N-01 真空探针：两条字面腿喂一份空源码必须为假。否则「字面腿绿」可能只是抽到了空数组/空片段——
+// 空集上的 every() 与「零个 hex」都会静默放行，那跟没有判据等价。
+ok('N-01 字面腿不是空判据：喂空源码时取色分支腿必须为假、版式抽取必须抽不到东西；喂一份带 hex 的源码时零 hex 腿必须为假',
+  toneBranchOk('') === false && layoutsFromText('').length === 0 && noHexLiteral('const c = "#123456";') === false &&
+    toneBranchOk(BLD_SRC) === true && layoutsFromText(PANEL_SRC).length === srvLayouts.length,
+  { 空源码取色腿: toneBranchOk(''), 空源码版式抽取: layoutsFromText(''), 带hex样本: noHexLiteral('const c = "#123456";'), HEAD版式抽取条数: layoutsFromText(PANEL_SRC).length });
+
+// N-02 运行时通道真的随模块内容变：把 HEAD 那份面板里的 'flow' 抹掉再打包 import——
+// 拿到的数组必须少掉 flow（而服务端枚举仍有 flow ⇒ 行为腿此刻为假）。
+// 没有这条，「运行时数组 == 服务端数组」可能只是因为通道压根读不到东西、被某个默认值兜住了。
+const mutatedPanel = PANEL_SRC.replace("'flow', ", '');
+let feMutated: string[] | undefined;
+let feMutatedErr = '';
+try { feMutated = await feLayoutsFrom(mutatedPanel); } catch (e) { feMutatedErr = e instanceof Error ? e.message : String(e); }
+ok('N-02 改判造形有牙：抹掉源码里的 flow 后，运行时数组真的少一个且与枚举不再同序（证明 V-08 行为腿量的是这份模块，不是硬编码期望）',
+  mutatedPanel !== PANEL_SRC && !!feMutated && !feMutated.includes('flow') &&
+    feMutated.join(',') !== srvLayouts.join(',') && (feRuntime?.includes('flow') ?? false),
+  { 原样: feRuntime, 抹除后: feMutated, 打包失败: feMutatedErr, 服务端: srvLayouts });
+
 
 // ---------- P 组：真产物 ----------
 const built = await M.buildKickoffPpt(B as any, [
@@ -372,11 +456,12 @@ paletteUnknown = [...new Set(shapeColors.filter((c) => !paletteHexes.has(c)))];
 paletteArtifactOk = shapeColors.length > 0 && paletteUnknown.length === 0;
 ok('P-06 flow/chip 页每一个形状用到的颜色都命中 PALETTE（色值单源打在产物上，门禁 6 没被图示版式带崩）',
   paletteArtifactOk, { 形状色值数: shapeColors.length, 未知色: paletteUnknown, 调色板: [...paletteHexes] });
-ok('V-06 静态红线（与 P-06 配对，P-06 不红才算它）：三个新 tone 的取色分支都指向 PALETTE，builder 里零 hex 字面量',
-  paletteArtifactOk &&
-    ['flowNode', "'flow'", 'chip'].every((t) => new RegExp(`tone === ${t.startsWith("'") ? t : `'${t}'`}\\) return PALETTE\\.`).test(toneBody)) &&
-    (BLD_SRC.match(/#[0-9A-Fa-f]{6}\b/g) ?? []).length === 0,
-  { hex: BLD_SRC.match(/#[0-9A-Fa-f]{6}\b/g), tone: toneBody.slice(0, 320), 产物判据未过: !paletteArtifactOk, 未知色: paletteUnknown });
+okPair(ok, 'V-06 静态红线（与 P-06 配对，P-06 不红才算它）：三个新 tone 的取色分支都指向 PALETTE，builder 里零 hex 字面量',
+  () => paletteArtifactOk,
+  () => toneBranchOk(BLD_SRC) && noHexLiteral(BLD_SRC),
+  () => ({ 产物判据未过: !paletteArtifactOk, 未知色: paletteUnknown, 形状色值数: shapeColors.length,
+    hex: BLD_SRC.match(/#[0-9A-Fa-f]{6}\b/g), 取色分支命中: toneBranchOk(BLD_SRC), 零hex: noHexLiteral(BLD_SRC) }));
+
 
 // 负对照（规约第 4 条）：P-06 的判据本身要能红。取产物里一个真 roundRect 形状，把它的第一个色值
 // 换成未登记的 123456 ⇒ 必须被点名；换回 PALETTE 里的值 ⇒ 必须放行。
@@ -395,6 +480,8 @@ ok('T-01 负对照：色值判据能红——形状里塞一个未登记色必�
   { 反例: rogue, 正例: backToPalette, 原形状抽到: paletteVerdict(oneNode).抽到 });
 
 VH.close();
+rmSync(FE_TMP, { recursive: true, force: true });
+process.on('exit', () => rmSync(FE_TMP, { recursive: true, force: true }));
 writeFileSync(gateArtifactPath(OUT_DIR, 't02198-flow.pptx'), built.buffer);
 writeGateResults(OUT_DIR, 't02198-gate-results.txt', `T02198 flow/chip 图示版式门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);
 console.log(`PASS=${pass} FAIL=${fail}`);
