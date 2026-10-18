@@ -474,10 +474,13 @@ async function main() {
       symlinkSync(join(ROOT, 'node_modules'), join(negRoot, 'node_modules'), 'junction');
       const negFile = join(negRoot, 'server', 'src', 'mcp', 'server.ts');
       const src = readFileSync(negFile, 'utf8');
-      const anchor = "      fileBase64: z.string().describe('文件内容的 base64（不含 data: 前缀）'),";
-      const hit = src.includes(anchor);
-      writeFileSync(negFile, src.replace(anchor, `${anchor}\n      dryRun: z.boolean().optional(),`));
-      check('N-02a', hit, '副本缺陷变体已就位：只在 HEAD 的入参 schema 里补一句 dryRun（handler 不认账，直接落库）——主仓未被写入，改动只打在 worktree 副本', hit ? '锚点命中' : '锚点未命中（变体没打上）');
+      // 缺陷变体构造随产品现状走：HEAD 里 dryRun 已有 schema + handler 两条腿，
+      // 把 handler 那条短路掉才是「广告了参数却不认账」的缺陷本体（旧写法是给 schema 补一行，
+      // 在产品已支持 dryRun 之后打上去等于没打——负对照会因「红线没被触发」而假红）。
+      const anchor = '      if (a.dryRun === true) {';
+      const hit = src.includes(anchor) && /dryRun: z\.boolean\(\)\.optional\(\)/.test(src);
+      writeFileSync(negFile, src.replace(anchor, '      if (a.dryRun === true && false) {'));
+      check('N-02a', hit, '副本缺陷变体已就位：HEAD 副本里只短路 dryRun 的 handler 分支（schema 照旧广告、值不认账，直接落库）——主仓未被写入，改动只打在 worktree 副本', hit ? '两条腿锚点命中' : '锚点未命中（变体没打上）');
       const negData = join(tmp, 'neg-data');
       await startServer(negRoot, negData, tmp);
       const nName = `T02354 缺陷变体项目-${Date.now()}`;
