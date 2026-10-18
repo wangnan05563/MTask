@@ -19,7 +19,8 @@
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02099-kickoff-builder.mts
  * 结果落 .workbuddy/t02099-gate-results-<运行标识>.txt 与 t02099-sample-<运行标识>.pptx（T02309 旁证同标识）。
  */
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeGateResults, gateArtifactPath } from './lib/gate-results.mts';
@@ -37,18 +38,49 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 // ---------- 字面锚点专用料（判据 3：只作 okPair 的字面侧，行为侧全部走 M/lay 模块与真产物） ----------
-const B = readFileSync(join(ROOT, 'server', 'src', 'services', 'kickoffBuilder.ts'), 'utf8');
-const LAY_SRC = readFileSync(join(ROOT, 'server', 'src', 'services', 'kickoff-layout.ts'), 'utf8');
+/**
+ * 取证面 = **已提交树**（反模式 11）：S 组的字面腿若读工作树，测的可能是并发会话留下的过期产品文件，
+ * 红因会指错地方（本门历史上有过整轮红都是这个根因）。行为腿不受影响——它跑的是 tsx 直接 import 的同一份模块。
+ */
+const HEAD_CACHE = new Map<string, string>();
+function headSrc(rel: string): string {
+  if (!HEAD_CACHE.has(rel)) {
+    let t = '';
+    try {
+      t = execFileSync('git', ['show', `HEAD:${rel}`], { cwd: ROOT, maxBuffer: 32 * 1024 * 1024 }).toString('utf8');
+    } catch (e) {
+      lines.push(`[WARN] git show HEAD:${rel} 取证失败：${(e as Error).message.slice(0, 140)}`);
+    }
+    HEAD_CACHE.set(rel, t);
+  }
+  return HEAD_CACHE.get(rel) as string;
+}
+const B = headSrc('server/src/services/kickoffBuilder.ts');
+const LAY_SRC = headSrc('server/src/services/kickoff-layout.ts');
 const stripComments = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 const BODY = stripComments(B);
-const plansSrc = stripComments(readFileSync(join(ROOT, 'server', 'src', 'routes', 'plans.ts'), 'utf8'));
+const plansSrc = stripComments(headSrc('server/src/routes/plans.ts'));
+
+/**
+ * 文案无关的取数判据（T02293 批⑪）：「库内真值上没上页面」问的是**数字集合**，不是产品把数字
+ * 排版成的哪句话。行为腿用 numsOf/hasAll，字面腿才看那句中文——产品改词只红字面腿，交人判定；
+ * 取数通道断了才红行为腿，那才是功能失守。
+ */
+const numsOf = (s: string) => (s.match(/\d+(?:\.\d+)?/g) ?? []).map(Number);
+/** 解包出来的 <a:t> 文本段：判据问「bundle 里的值上没上页面」，不问产品把值排成哪句中文 */
+const aTexts = (x: string) => (x.match(/<a:t>([^<]*)<\/a:t>/g) ?? []).map((s) => s.replace(/<\/?a:t>/g, ''));
+const hasAll = (s: string, ns: number[]) => ns.every((n) => numsOf(s).includes(n));
 const IMPORTS = (B.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').match(/^import[\s\S]*?;$/gm) ?? []).join('\n');
 // S 组的字面锚点（源码正则）现在只作为 okPair 的字面侧，绿必须先在产物/纯函数行为侧成立；见下方「S 组：契约守卫」。
 // import okPair 在文件顶部；M（builder 模块）与 lay（layout 模块）在夹具段之后按需 await import。
 
 // ---------- 测试夹具（字段形状对齐 KickoffBundle） ----------
+// 夹具项目名**不能**等于生产项目名（T02293 批⑪）：同名时「产物里出现了这个名字」这条判据分不清
+// 「产品把门自造夹具写上了页面」与「产品漏了生产数据」——T02142 那轮改判的红线正是后者。
+const FIX_NAME = '门夹具启动会项目';
+const FIX_ASOF = '2026-10-13';
 const bundleOf = (over: Record<string, unknown> = {}) => ({
-  project: { id: 'p1', name: 'mtask五期', workspacePath: 'D:\\code\\otherProjects\\26_MTask' },
+  project: { id: 'p1', name: FIX_NAME, workspacePath: 'D:\\code\\otherProjects\\26_MTask' },
   prdDocs: [{ id: 'd1', filename: 'PRD-项目启动会PPT生成.md', updatedAt: '2026-10-12', contentChars: 1200 }],
   prdDoc: { id: 'd1', filename: 'PRD-项目启动会PPT生成.md', updatedAt: '2026-10-12', contentMd: '# 背景\n本节说明启动会稿的口径来源。\n## 目标\n把条数与工期对齐页面。' },
   prdExcerpt: '# 背景\n本节说明启动会稿的口径来源。\n## 目标\n把条数与工期对齐页面。',
@@ -80,14 +112,14 @@ const bundleOf = (over: Record<string, unknown> = {}) => ({
     footer: '工作量来源：估算引擎（P50 96 人天 / P84 118 人天）',
   },
   preflight: {
-    projectId: 'p1', projectName: 'mtask五期', blocked: false, missingHard: [], workloadSource: 'estimate',
+    projectId: 'p1', projectName: FIX_NAME, blocked: false, missingHard: [], workloadSource: 'estimate',
     items: (['P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7'] as const).map((key, i) => ({
       key, label: `项${key}`, count: [1, 14, 23, 6, 0, 23, 1][i], status: (i === 4 ? 'warn' : 'ok') as 'ok' | 'warn' | 'fail',
       note: '示例说明文字', deepLink: 'plan', hard: i < 3,
     })),
   },
   workspaceNote: '工作空间可访问，技术章节可引用其中素材',
-  dataAsOf: '2026-10-13',
+  dataAsOf: FIX_ASOF,
   ...over,
 }) as any;
 
@@ -120,19 +152,31 @@ ok('U-02 表格行数受 MAX_TABLE_ROWS 约束（23 条计划 → 含「其余 n
     const t = M.blocksForKey('planRows', bundle)[0].table!;
     return t.rows.length <= 9 && t.rows.some((r) => /其余 \d+ 条/.test(r[0] ?? ''));
   })(), M.blocksForKey('planRows', bundle)[0].table?.rows?.map((r) => r[0]));
-ok('U-03 覆盖率页取数用库内真值（40/32/8/80%），非模板假数',
-  M.blocksForKey('coverage', bundle)[0].text!.content.includes('测试用例 40 条') && M.blocksForKey('coverage', bundle)[0].text!.content.includes('需求覆盖率 80%'));
-ok('U-04 工作量页三点区间与页脚来源如实（估算分支）',
-  (() => {
-    const c = M.blocksForKey('workload', bundle)[0].text!.content;
-    return c.includes('78~132（P50 96）') && c.includes('P50 96 / P84 118') && c.includes('工作量来源：估算引擎');
-  })(), M.blocksForKey('workload', bundle)[0].text?.content);
-ok('U-05 duration 降级分支不谎称三点（optimistic/pessimistic 为空 → 不输出区间）',
-  (() => {
-    const b2 = bundleOf({ workload: { ...(bundleOf() as any).workload, source: 'duration', manDays: { expected: 69, optimistic: null, pessimistic: null }, quote: null, footer: '工期口径，非三点估算' } });
-    const c = M.blocksForKey('workload', b2)[0].text!.content;
-    return c.includes('总工作量 69 人天') && !c.includes('~') && c.includes('工期口径');
-  })(), M.blocksForKey('workload', bundleOf({ workload: { ...(bundleOf() as any).workload, quote: null } }))[0].text?.content);
+// ---------- 批⑪ 取数页判据：行为腿只问「bundle 里的值上没上页面」，字面腿才问中文排版（判据 3 / 反模式 20） ----------
+const covText = () => M.blocksForKey('coverage', bundle)[0]?.text?.content ?? '';
+const wlText = (b: any = bundle) => M.blocksForKey('workload', b)[0]?.text?.content ?? '';
+/** 字面腿参数化：期望短语与判据分离，负对照才能把「改名副本」喂进同一条判据 */
+const litPhrases = (txt: string, phrases: string[]) => phrases.every((ph) => txt.includes(ph));
+const COV_LIT = ['测试用例 40 条', '需求覆盖率 80%'];
+const WL_LIT = ['78~132（P50 96）', 'P50 96 / P84 118', '工作量来源：估算引擎'];
+okPair(ok, 'U-03 覆盖率页取数用库内真值（40/32/8/80%），非模板假数',
+  // 行为侧：coverage 四个真值逐个上页面，且页面不含任何表外假数（12 是 U-11 那支 AI 假覆盖率）
+  () => Object.values(bundle.coverage).every((v) => numsOf(covText()).includes(v)) && !numsOf(covText()).includes(12),
+  () => litPhrases(covText(), COV_LIT),
+  () => ({ 页面: covText(), 抽数: numsOf(covText()), 库内: bundle.coverage }));
+okPair(ok, 'U-04 工作量页三点区间与页脚来源如实（估算分支）',
+  // 行为侧：乐观/期望/悲观/P84 四个数逐个上页面，页脚口径行**逐字等于 bundle.workload.footer**（值通道，不是产品自己写的句子）
+  () => hasAll(wlText(), [78, 132, 96, 118]) && wlText().includes(bundle.workload.footer),
+  () => litPhrases(wlText(), WL_LIT),
+  () => ({ 页面: wlText(), 抽数: numsOf(wlText()), 页脚通道值: bundle.workload.footer }));
+{
+  const b2 = bundleOf({ workload: { ...(bundleOf() as any).workload, source: 'duration', manDays: { expected: 69, optimistic: null, pessimistic: null }, quote: null, footer: '工期口径，非三点估算' } });
+  okPair(ok, 'U-05 duration 降级分支不谎称三点（optimistic/pessimistic 为空 → 不输出区间）',
+    // 行为侧：期望值在页上、页面上**没有任何「数~数」区间形态**（缺两点就不许摆出三点的样子）、口径行仍是 bundle 给的那句
+    () => { const c = wlText(b2); return numsOf(c).includes(69) && !/\d\s*[~～–—-]\s*\d/.test(c) && c.includes(b2.workload.footer); },
+    () => { const c = wlText(b2); return c.includes('总工作量 69 人天') && c.includes('工期口径'); },
+    () => ({ 页面: wlText(b2), 抽数: numsOf(wlText(b2)) }));
+}
 ok('U-06 无估算行时不硬出饼图（用例 0 条 → coverage 只有文本块）',
   M.blocksForKey('coverage', bundleOf({ coverage: { total: 0, covered: 0, uncovered: 0, rate: 0 } })).length === 1);
 ok('U-07 阶段 <2 时不出柱图（单阶段画出来没有信息量且易崩）',
@@ -141,11 +185,19 @@ ok('U-07 阶段 <2 时不出柱图（单阶段画出来没有信息量且易崩�
 // ---------- U-2 数字防幻觉 ----------
 const warns: string[] = [];
 const rewritten = M.sanitizeBullets(['需求 999 条已就绪', '计划 23 条', '里程碑 3 个', '两周内出原型', '覆盖率 12%'], bundle, 4, warns);
-ok('U-08 假数字改写为库内真值（需求 999 → 14）', rewritten[0].includes('需求 14 条'), rewritten[0]);
+okPair(ok, 'U-08 假数字改写为库内真值（需求 999 → 14）',
+  // 行为侧：这一行里的**数字**被换成库内真值、假值不再出现（不管改写后拼成哪句话）
+  () => numsOf(rewritten[0]).includes(14) && !numsOf(rewritten[0]).includes(999),
+  () => rewritten[0].includes('需求 14 条'),
+  () => rewritten[0]);
 ok('U-09 真数字原样保留（计划 23 条不动、也不产生 warning）',
   rewritten[1] === '计划 23 条' && !warns.some((w) => /计划/.test(w)), { line: rewritten[1], warns });
 ok('U-10 修辞数字不误伤（「两周内出原型」保持原句）', rewritten[3] === '两周内出原型', rewritten[3]);
-ok('U-11 覆盖率假数改写且不产生「覆盖率 12%%」双写', rewritten[4].includes('覆盖率 80%') && !/%%/.test(rewritten[4]), rewritten[4]);
+okPair(ok, 'U-11 覆盖率假数改写且不产生「覆盖率 12%%」双写',
+  // 行为侧：80 上页、12 被换掉、且不出现 `%%` 这种把模板占位符直接拼进结果的痕迹
+  () => { const ns = numsOf(rewritten[4]); return ns.includes(80) && !ns.includes(12) && !/%%/.test(rewritten[4]); },
+  () => rewritten[4].includes('覆盖率 80%'),
+  () => rewritten[4]);
 ok('U-12 每次改写都留下可复核 warning（点名页码 + AI 原值 + 库内值）',
   warns.length === 3 && warns.every((w) => /第 4 页数字由系统改写/.test(w)) && warns.some((w) => /AI 写「999」，库内实为「14」/.test(w)), warns);
 
@@ -187,10 +239,16 @@ ok('U-20 文本是原生 <a:t> 对象而非整页贴图（验收 5）', /<a:t>/.
 ok('U-21 表格落成原生 graphicFrame/table（PowerPoint 里可编辑）', /<a:tbl>/.test(allXml) && /<p:graphicFrame>/.test(allXml));
 ok('U-22 图表落成 chart 部件（非图片）', Object.keys(zip.files).some((n) => /ppt\/charts\/chart\d+\.xml$/.test(n)) && Object.keys(zip.files).some((n) => /ppt\/embeddings\//.test(n)), Object.keys(zip.files).filter((n) => /chart/.test(n)).slice(0, 3));
 const allText = slideXmls.map((x) => (x.match(/<a:t>([^<]*)<\/a:t>/g) ?? []).join(' ')).join(' ');
-ok('U-23 产物文本里的数字就是库内真值（需求 14 / 计划 23 / 覆盖率 80%，且全文无 999，验收 8）',
-  allText.includes('需求 14 条') && allText.includes('计划 23 条') && allText.includes('覆盖率 80%') && !/999/.test(allText),
-  { req: allText.match(/需求 \d+ 条/)?.[0], plan: allText.match(/计划 \d+ 条/)?.[0], cov: allText.match(/覆盖率 \d+%/)?.[0], has999: /999/.test(allText) });
-ok('U-24 每页页脚带项目名与数据截至日（口径可追溯）', slideXmls.every((x) => /mtask五期/.test(x) && /2026-10-13/.test(x)));
+okPair(ok, 'U-23 产物文本里的数字就是库内真值（需求 14 / 计划 23 / 覆盖率 80%，且全文无 999，验收 8）',
+  // 行为侧：三个真值数字都在全文里、999 一次都没出现（验收 8 问的是数，不是那句中文）
+  () => hasAll(allText, [14, 23, 80]) && !/999/.test(allText),
+  () => litPhrases(allText, ['需求 14 条', '计划 23 条', '覆盖率 80%']),
+  () => ({ 抽数缺项: [14, 23, 80, 999].filter((n) => numsOf(allText).includes(n) !== (n !== 999)) }));
+okPair(ok, 'U-24 每页页脚带项目名与数据截至日（口径可追溯）',
+  // 行为侧：页面文本里确实有 bundle 那两个**值**；夹具名与生产同名时这条永远分不出漏没漏，故先改名
+  () => slideXmls.every((x) => { const j = aTexts(x).join('|'); return j.includes(FIX_NAME) && j.includes(FIX_ASOF); }),
+  () => slideXmls.every((x) => x.includes(FIX_NAME) && /数据截至/.test(x)),
+  () => ({ 首页文本段: aTexts(slideXmls[0] ?? '').slice(0, 8) }));
 const presXml = await zip.file('ppt/presentation.xml')!.async('string');
 const sizeHit = /sldSz[^/]*cx="(\d+)" cy="(\d+)"/.exec(presXml);
 ok('U-25 画布尺寸 = 10 × 5.625（presentation.xml 的 sldSz 来自 KICKOFF_LAYOUT_DEF 单源）',
@@ -262,6 +320,11 @@ ok('U-32 同型页承担人信息仍在产物里（降级为文本而非整块�
 // ================= S 组：契约守卫（T02293 判据 3：源码字面锚点只作字面侧，绿先在产物/纯函数行为侧成立） =================
 lines.push('');
 lines.push('== S 组：契约守卫（字面锚点 + 同义行为断言）');
+// 反模式 20：取证对象非空——HEAD 三份源码没读到（不在 git 仓、路径搬家）时，
+// 形如 !/xxx/.test(B) 的字面腿会**恒真**，整组 S 判据全绿但零承重。
+ok('S-00 字面腿取证对象非空（三份 HEAD 源码都读到了，不是拿空串比空串）',
+  B.length > 3000 && LAY_SRC.length > 1500 && plansSrc.length > 1500,
+  { builder: B.length, layout: LAY_SRC.length, plans: plansSrc.length });
 
 /** 产物解包公共料：页 XML / 页文本 / presentation.xml / 画布尺寸（EMUS） */
 const slidesOf = async (buffer: Buffer): Promise<string[]> => {
@@ -435,6 +498,8 @@ okPair(ok, 'S-06 数字防幻觉改写规则成表且逐条记 warning（FR-3.4 
 // 几何判断委托模拟：改 T02098 的画布表，装配层的越界判定必须一起搬
 const CANVAS_TBL = lay.CANVAS as unknown as { width: number; height: number };
 const geoChecks: string[] = [];
+/** 窄画布下装配层给出的第一条告警原文（只作 S-07b 的字面腿输入） */
+let overflowWording = '';
 {
   const longTitle = '标'.repeat(40);
   const frameBefore = JSON.stringify(lay.getContentFrame());
@@ -445,13 +510,20 @@ const geoChecks: string[] = [];
     const verdictNow = JSON.stringify(M.pageViolations(lay.framesFor('data').title!, longTitle, [], 22));
     if (frameNow === frameBefore) geoChecks.push('改了 T02098 的画布表而 getContentFrame 不动——几何另有抄本');
     if (verdictNow === verdictBefore) geoChecks.push('画布表改了而装配层判定不动——装配层自己算了几何');
-    if (!verdictNow.includes('越出')) geoChecks.push(`窄画布下装配层没判出越界：${verdictNow}`);
+    // 行为侧只看「窄画布下到底判没判出越界」；「越出」这个措辞挪进 S-07b 的字面腿，
+    // 否则产品把告警改成同义词就会让 S-07 报「行为失守」——红因归错地方（批⑪）
+    if ((M.pageViolations(lay.framesFor('data').title!, longTitle, [], 22) as string[]).length === 0) geoChecks.push(`窄画布下装配层没判出越界：${verdictNow}`);
+    overflowWording = (M.pageViolations(lay.framesFor('data').title!, longTitle, [], 22) as string[])[0] ?? '';
   } finally {
     CANVAS_TBL.width = 10; CANVAS_TBL.height = 5.625;
   }
   if (JSON.stringify(lay.getContentFrame()) !== frameBefore) geoChecks.push('画布表还原失败（模拟留了残渣）');
   if (JSON.stringify(M.pageViolations(dataTitle, longTitle, [], 22)) !== verdictBefore) geoChecks.push('还原后装配层判定与基线逐字不一致');
 }
+okPair(ok, 'S-07b 窄画布越界告警的「越出」措辞只作字面腿（行为=确有告警）',
+  () => geoChecks.length === 0 && overflowWording.length > 0,
+  () => /越出/.test(overflowWording),
+  () => ({ 告警原文: overflowWording }));
 okPair(ok, 'S-07 几何判断委托 T02098（本层不自己算对比度/边界）',
   () => geoChecks.length === 0,
   () => !/relativeLuminance|Math\.pow\(/.test(B) && /assertInBounds/.test(B) && /findOverlaps/.test(B) && /contrastRatio/.test(B) === false && /auditPalette\(\)/.test(B),
@@ -512,8 +584,8 @@ lines.push('== X 组：单源表改名模拟');
   const stripGateText = (t: string) => (simOutline as any[]).reduce((s, p) => s.split(String(p.title)).join(''), t);
   const chFindings: string[] = [];
   const channels: Array<{ name: string; oldVal: string; mk: () => any }> = [
-    { name: 'project.name', oldVal: 'mtask五期', mk: () => { const b = bundleOf(); b.project = { ...b.project, name: 'ZZZ-项目名' }; return b; } },
-    { name: 'dataAsOf', oldVal: '2026-10-13', mk: () => bundleOf({ dataAsOf: '2099-12-31' }) },
+    { name: 'project.name', oldVal: FIX_NAME, mk: () => { const b = bundleOf(); b.project = { ...b.project, name: 'ZZZ-项目名' }; return b; } },
+    { name: 'dataAsOf', oldVal: FIX_ASOF, mk: () => bundleOf({ dataAsOf: '2099-12-31' }) },
     { name: 'coverage 真值', oldVal: '测试用例 40 条', mk: () => bundleOf({ coverage: { total: 51, covered: 42, uncovered: 9, rate: 82 } }) },
   ];
   const baseText = stripGateText(await textOf(simBase.buffer));
@@ -562,8 +634,12 @@ lines.push('== N 组：负对照（证明判据有牙）');
   } finally {
     (lay.PALETTE as unknown as Record<string, string>).ink = ink0;
   }
-  ok('N-03 色板门禁有牙：改坏单源表一支色后 auditPalette 必报红，还原即归零',
-    palTeeth.includes('对比度不足') && lay.auditPalette().length === 0, { palTeeth });
+  okPair(sOk, 'N-03 色板门禁有牙：改坏单源表一支色后 auditPalette 必报红，还原即归零',
+    // 行为侧：告警确实**指着被改坏的那支色**（DDDDDD 出现在消息里），且还原后自检归零
+    () => palTeeth.includes('DDDDDD') && lay.auditPalette().length === 0,
+    () => /对比度不足/.test(palTeeth),
+    () => ({ palTeeth }));
+  ok('N-03b 配对落账：色板门禁判绿走的是同一条 okPair 通道', spy.length === 3 && spy[2].cond === true, spy[2]);
 
   // N-04 表外色值判据有牙：往 XML 里掺一支表外色，扫描器必须点出来（恒绿的扫描器不算判据）
   ok('N-04 色值单源判据有牙：掺入表外色后扫描必出 offender，基线出参为空',
@@ -580,6 +656,24 @@ lines.push('== N 组：负对照（证明判据有牙）');
     ok('N-05 越界降级判据有牙：标题修短的同一份大纲降级归零，超长那份仍报 2 页',
       cleanDeck.degradedPages.length === 0 && degraded.degradedPages.length === 2 && cleanDeck.pageCount === 12,
       { clean: cleanDeck.degradedPages, overflow: degraded.degradedPages });
+  }
+
+  // N-07 数值腿真空探针（反模式 20）：把 coverage 通道值改掉后，U-03 的行为腿必须跟着假
+  //        —— 否则那条「四值都在页上」的判据其实是拿常量字符串在比，改判等于没改
+  {
+    const b3 = bundleOf({ coverage: { total: 61, covered: 50, uncovered: 11, rate: 82 } });
+    const c3 = M.blocksForKey('coverage', b3)[0]?.text?.content ?? '';
+    ok('N-07 数值腿有牙：换掉库内真值后 U-03 行为判据必假（旧值 40 不再承重）',
+      Object.values(b3.coverage).every((v) => numsOf(c3).includes(v)) && !numsOf(c3).includes(40),
+      { 新页: c3, 抽数: numsOf(c3) });
+  }
+
+  // N-08 字面腿有牙：产品把中文重排（同义换词、数值不动）时，行为腿仍绿、字面腿必须红
+  {
+    const drift = covText().replace('测试用例', '本期用例');
+    ok('N-08 字面腿有牙：同义换词副本上 litPhrases 必假、而数值判据仍真（两种红可区分）',
+      drift !== covText() && !litPhrases(drift, COV_LIT) && Object.values(bundle.coverage).every((v) => numsOf(drift).includes(v)) && litPhrases(covText(), COV_LIT),
+      { drift: drift.slice(0, 80) });
   }
 
   // N-06 改写判据有牙：AI 恰好写对了数就不改也不留 warning（纠偏不是逢数字必改）

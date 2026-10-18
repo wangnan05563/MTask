@@ -31,6 +31,24 @@ const E = await import('../server/src/services/estimate-engine.ts');
 const X = await import('../server/src/services/estimateExportXlsx.ts');
 const PDFSVC = await import('../server/src/services/estimateExportPdf.ts');
 const { ESTIMATE_PHASES, ESTIMATE_PROJECT_NOT_FOUND } = await import('../server/src/services/EstimateService.ts');
+/**
+ * T02293 批⑪：件名判据不再由门手写「工作量评估」前缀自证——取产品的两份单源
+ * （文案常量 + 清洗函数），把观测到的件名重组成**同一函数的输出**来比。
+ * 只 import util/service，不 import routes（那会带进 express/DB 副作用，门进程与服务实例是两套环境）。
+ */
+const { ESTIMATE_FILE_BASE, ESTIMATE_FILE_CLIENT_MARK } = await import('../server/src/services/estimateCopy.ts');
+const { safeExportName } = await import('../server/src/util/export-name.ts');
+
+/**
+ * 件名单源自证（判据 1）：门直接取产品的两份单源（文案常量 + 清洗函数）重拼观测件名，
+ * **逐字相同**才算数——门不手写 `startsWith('工作量评估-…')` 当判据，也不另抄一份拼装模板。
+ * 与 `routes/estimates.ts:774` 同口径：`safeExportName(基名[-客户版]-项目名-时间戳) + '.pdf'`
+ * （扩展名在清洗函数之外附加，比对时一并补回；不 import routes，那会把 express/DB 副作用带进门进程）。
+ */
+const reraiseName = (observed: string, audience: 'internal' | 'client', proj: string): boolean => {
+  const m = new RegExp(`^(${ESTIMATE_FILE_BASE})(${audience === 'client' ? ESTIMATE_FILE_CLIENT_MARK : ''})-${proj}-(\\d{8}-\\d{6})\\.pdf$`).exec(observed);
+  return !!m && observed === `${safeExportName(`${m[1]}${m[2]}-${proj}-${m[3]}`, ESTIMATE_FILE_BASE)}.pdf`;
+};
 /** T02293 规约判据 1：交付件文案的期望值一律取自 `PDF_TEXTS` 单源——断言里不再抄第二份中文口径 */
 const PT = PDFSVC.PDF_TEXTS;
 
@@ -123,7 +141,15 @@ group('G1 内部版结构与必备内容（§6.2 四类内容 + §6.3 首页标�
   ok('G-05 备注三条逐条出现（§6.1 内部版必带，取自 TEMPLATE_REMARKS 单源）', X.TEMPLATE_REMARKS.every((r) => md.includes(r)));
   ok('G-06 免责声明落在件尾（PDF 是预览件这件事必须写在件里，不只是 PRD 里）', md.lastIndexOf(PT.secDisclaimer) > md.lastIndexOf(PT.secRemarks) && md.includes(PT.disclaimerDelivery), { need: PT.disclaimerDelivery });
   ok('G-07 首页待复核标注（§6.3：PDF 首页显著标注）在前 400 字符内', md.indexOf(PT.unreviewedTail) > 0 && md.indexOf(PT.unreviewedTail) < 400, md.slice(0, 260));
-  ok('G-08 项目名/估算日期/估算人进抬头', md.includes('T02044-E7验证') && md.includes('2026-10-12') && md.includes('王南'));
+  okPair(ok, 'G-08 项目名/估算日期/估算人进抬头',
+    // 行为侧：三个夹具值都落在**抬头区**（首个小节标题之前）——旧判据只问「全文有没有」，
+    //        值掉到件尾也照样绿，那已经不是「进抬头」这条口径了
+    () => {
+      const head = md.split(/\n(?=#{2,3}\s)/)[0];
+      return ['T02044-E7验证', '2026-10-12', '王南'].every((v) => head.includes(v));
+    },
+    () => md.includes('T02044-E7验证') && md.includes('2026-10-12') && md.includes('王南'),
+    () => ({ 抬头区: md.split(/\n(?=#{2,3}\s)/)[0].slice(0, 260) }));
   ok('G-09 估算人为空时写「（待填写）」而不是留白塌陷成 `| | |`', mdOf({ reviewer: '' }).includes(PT.pendingReviewer), { need: PT.pendingReviewer });
   ok('G-10 阶段标签用模板文案（不是面板标签：内部版标签给客户看会长出客户没见过的词）',
     md.includes(X.TEMPLATE_PHASE_LABELS.design) && !md.includes('| 系统设计 |'));
@@ -206,7 +232,12 @@ group('G4 hideCoefsForClient 只管折叠（与 E6 的 Excel 语义一致，不�
 group('G5 scope / phases 口径');
 {
   const mdEst = mdOf({ scope: 'estimated_only' });
-  ok('G-29 estimated_only 时未估算行不成行（r-dev-4 正文不出现）', !mdEst.includes('这一行还没有三点'));
+  okPair(ok, 'G-29 estimated_only 时未估算行不成行（r-dev-4 正文不出现）',
+    // 行为侧：对照面先证「全量口径下这行确实会上件」，再证 estimated_only 下它整行消失、
+    //        且正文仍有其它行（防「导出空文档」也让「不含该行」为真）
+    () => mdOf().includes('这一行还没有三点') && !mdEst.includes('这一行还没有三点') && mdEst.includes('登录与权限模块'),
+    () => !mdEst.includes('这一行还没有三点'),
+    () => ({ 全量面含此行: mdOf().includes('这一行还没有三点'), estimated_only表格行数: mdEst.split('\n').filter((s) => s.trim().startsWith('|')).length }));
   ok('G-30 口径行写「仅已估算行」（件里说清这次导了什么范围）', mdEst.includes(PT.scopeEstimatedOnly) && mdOf().includes(PT.scopeAll), { need: [PT.scopeEstimatedOnly, PT.scopeAll] });
   const mdDev = mdOf({ phases: ['dev'] });
   ok('G-31 phases=dev 时其他阶段不上件（模板阶段标签不出现）',
@@ -214,8 +245,32 @@ group('G5 scope / phases 口径');
   ok('G-32 阶段筛选只缩范围、不改筛选后阶段的算价口径（Σ 仍等于该阶段行之和）',
     (() => { const m = new RegExp(`${PT.totalRow} \\| [\\d.]+ \\| [\\d.]+ \\| [\\d.]+ \\| ([\\d.]+)`).exec(mdDev); return m ? Math.abs(Number(m[1]) - HAND_DEV_E) < 0.01 : false; })(),
     mdDev.split('\n').find((s) => s.startsWith(`| ${PT.totalRow}`)), HAND_DEV_E);
-  ok('G-33 需求编号 / 复杂度 不在 PDF 正文里（PDF 是预览件，追溯列属 Excel 附加 sheet）',
-    !mdOf().includes('REQ-') && !mdOf().includes('复杂度'));
+  {
+    // 行为侧（结构判据）：正文里的表格**每行列数一致**，且没有任何一列的表头是追溯列
+    //（单元格级判定）。旧判据只问「这两个汉字在全文任何位置都不出现」——正文里出现一句无关的
+    // 「复杂度」就会假红，而真的多出一列却可能因为列名换了而漏判。
+    // 件里可以有多张表（封面信息表 4 列、报价表 N 列…），所以列数一致性只能在**每张表内部**判；
+    // 跨表统一列数会把正常的多表结构判成失守。
+    const tablesOf = (s: string) => {
+      const out: string[][][] = [];
+      let cur: string[][] = [];
+      for (const line of s.split('\n')) {
+        if (/^\s*\|.*\|\s*$/.test(line)) cur.push(line.trim().slice(1, -1).split('|').map((c) => c.trim()));
+        else if (cur.length) { out.push(cur); cur = []; }
+      }
+      if (cur.length) out.push(cur);
+      return out;
+    };
+    okPair(ok, 'G-33 需求编号 / 复杂度 不在 PDF 正文里（PDF 是预览件，追溯列属 Excel 附加 sheet）',
+      () => {
+        const ts = tablesOf(mdOf());
+        return ts.length >= 2 && ts.every((t) => t.length >= 2 && t.every((r) => r.length === t[0].length))
+          && !ts.some((t) => t[0].some((h) => /需求编号|追溯|复杂度/.test(h)))
+          && !ts.some((t) => t.some((r) => r.some((c) => /^REQ-/.test(c))));
+      },
+      () => !mdOf().includes('REQ-') && !mdOf().includes('复杂度'),
+      () => ({ 表格数: tablesOf(mdOf()).length, 各表表头: tablesOf(mdOf()).map((t) => t[0]), 列数不齐的表: tablesOf(mdOf()).filter((t) => !t.every((r) => r.length === t[0].length)).map((t) => t.map((r) => r.length)) }));
+  }
 }
 
 // ---------------------------------------------------------------- P 轨：PDF 字节
@@ -323,13 +378,28 @@ if (!(await waitForServer())) {
     ok('R-07 字节是 PDF（%PDF- 头），且体量与纯计算轨同量级', r.buf.subarray(0, 5).toString() === '%PDF-' && r.buf.length > 4_000, r.buf.length);
     const cd = String(r.headers.get('content-disposition'));
     const fname = decodeURIComponent(cd.split("filename*=UTF-8''")[1] ?? '');
-    ok('R-08 件名走 RFC5987 + §6.3 命名口径（中文项目名不变成 ???）',
-      cd.includes("filename*=UTF-8''") && fname.startsWith('工作量评估-T02044-E7R段-') && fname.endsWith('.pdf'), fname);
+    okPair(ok, 'R-08 件名走 RFC5987 + §6.3 命名口径（中文项目名不变成 ???）',
+      // 行为侧：观测件名就是「产品单源常量 + 产品清洗函数」重拼出来的那一个字，且夹具项目名段完整存活（没被洗成 ??? 或空）
+      () => cd.includes("filename*=UTF-8''") && reraiseName(fname, 'internal', 'T02044-E7R段') && fname.includes('T02044-E7R段'),
+      () => fname.startsWith('工作量评估-T02044-E7R段-') && fname.endsWith('.pdf'),
+      () => ({ cd, fname }));
+    ok('R-08b 件名判据有牙：多一段/换项目名的副本必须不被自证放行（防「形状恰好匹配」的空判据）',
+      reraiseName(`抄${ESTIMATE_FILE_BASE}-T02044-E7R段-20260101-000000.pdf`, 'internal', 'T02044-E7R段') === false
+      && reraiseName(fname, 'client', 'T02044-E7R段') === false
+      && reraiseName(fname.replace('T02044-E7R段', '别的项目'), 'internal', 'T02044-E7R段') === false
+      && reraiseName(fname, 'internal', 'T02044-E7R段') === true,
+      fname);
     ok('R-09 响应头回带快照 id（§6.3 每次导出留痕）', /^[\w-]+$/.test(String(r.headers.get('x-estimate-snapshot'))), r.headers.get('x-estimate-snapshot'));
     const cli = await getPdf(`?${PQ}&audience=client`);
     const cliName = decodeURIComponent(String(cli.headers.get('content-disposition')).split("filename*=UTF-8''")[1] ?? '');
-    ok('R-10 客户版件名带 -客户版（与 Excel 同一套件名规则，不开第三种取件名通道）',
-      cliName.startsWith('工作量评估-客户版-T02044-E7R段-') && cliName.endsWith('.pdf'), cliName);
+    okPair(ok, 'R-10 客户版件名带 -客户版（与 Excel 同一套件名规则，不开第三种取件名通道）',
+      // 行为侧：客户版件名 = 内部版件名**只差单源标记段**（同一规则的两个输出，不是第二处手写模板），
+      //         且它自己也能过一遍同源自证。时间戳段先摘掉再比——两次导出跨秒是常态，
+      //         把秒差当成「命名规则不同」会让判据随机红（反模式：门的时钟依赖不是产品的行为差异）。
+      () => reraiseName(cliName, 'client', 'T02044-E7R段')
+        && cliName.replace(/-\d{8}-\d{6}\.pdf$/, '') === fname.replace(/-\d{8}-\d{6}\.pdf$/, '').replace(`${ESTIMATE_FILE_BASE}-`, `${ESTIMATE_FILE_BASE}${ESTIMATE_FILE_CLIENT_MARK}-`),
+      () => cliName.startsWith('工作量评估-客户版-T02044-E7R段-') && cliName.endsWith('.pdf'),
+      () => ({ fname, cliName }));
     const noPid = await getPdf('');
     ok('R-11 projectId 缺失 → 400 中文文案', noPid.status === 400 && noPid.json?.error === 'projectId 必填', noPid.json);
     const badAud = await getPdf(`?${PQ}&audience=both`);

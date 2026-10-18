@@ -8,6 +8,9 @@
  *                  行为侧一律取**隔离实例的 HTTP 响应 + mock 端收到的提示词工件 + 进程内纯函数返回值**，
  *                  夹具由门自建（判据 2：S 组风险/干净两个项目 + 门内长/短 PRD），不读生产业务行。
  *   R 组 隔离实例 + 本地 mock OpenAI 兼容服务（不消耗真实配额）：
+ *                  数据面 = 门内自建「主夹具」项目（五维样例事实 + 超摘要预算的门内 PRD），
+ *                  判据 2 起不再复制生产库、不再硬编码生产 projectId——门红只可能是功能坏，
+ *                  不会是「生产库里那几条业务行变了」。
  *     R-01 工具未配 model → 400 且原文透传「所选模型未配置…」（PRD §4 不静默回落）；
  *     R-02 合规 13 页大纲 → 200，页数/dataAsOf/truncated 如实；
  *     R-03 喂给模型的上下文带库内真实计数（需求/计划条数与端点一致）与数字禁令，不含编造数；
@@ -27,9 +30,9 @@
  * 隔离纪律（skill 红线 8）：库副本/端口/临时目录全临时，跑完 kill + 回收。
  * 结果落 .workbuddy/t02096-gate-results-<运行标识>.txt（GBK 控制台乱码，以文件为权威）。
  */
-import { mkdirSync, mkdtempSync, existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, existsSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,7 +43,6 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02096_PORT ?? 39_700 + Math.floor(Math.random() * 300));
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02096-outline-'));
 const BASE = `http://127.0.0.1:${PORT}/api`;
-const FIVE_PID = '95f31a46-92f6-4046-8cb6-ee3c4e228a44'; // mtask五期
 const SECTIONS = ['封面', '议程', '项目团队介绍', '项目背景', '项目需求', '项目范围', '项目计划', '工作量评估', '测试与质量策略', '项目风险', '沟通管理', '附录', '正文'];
 
 const { resolveServerLauncher } = await import('./isolated-server-launcher.mts');
@@ -59,9 +61,24 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 
 // =====================================================================
 // 字面锚点专用料（判据 3：源码正则只作 okPair 的字面侧，行为侧见文件末尾「S 组：契约守卫」）
+// 取证面 = **已提交树**（反模式 11）：读工作树可能读到并发会话留下的过期产品文件，
+// 红因会指错地方。行为腿不受影响——它跑的是 tsx 直接 import 的同一份模块。
 // =====================================================================
-const svcSrc = readFileSync(join(ROOT, 'server', 'src', 'services', 'kickoffService.ts'), 'utf8');
-const routeSrc = readFileSync(join(ROOT, 'server', 'src', 'routes', 'plans.ts'), 'utf8');
+const HEAD_CACHE = new Map<string, string>();
+function headSrc(rel: string): string {
+  if (!HEAD_CACHE.has(rel)) {
+    let t = '';
+    try {
+      t = execFileSync('git', ['show', `HEAD:${rel}`], { cwd: ROOT, maxBuffer: 32 * 1024 * 1024 }).toString('utf8');
+    } catch (e) {
+      lines.push(`[WARN] git show HEAD:${rel} 取证失败：${(e as Error).message.slice(0, 140)}`);
+    }
+    HEAD_CACHE.set(rel, t);
+  }
+  return HEAD_CACHE.get(rel) as string;
+}
+const svcSrc = headSrc('server/src/services/kickoffService.ts');
+const routeSrc = headSrc('server/src/routes/plans.ts');
 const outlineSrc = svcSrc.slice(svcSrc.indexOf('// ---------- 大纲生成与校验'));
 const bundleSrc = svcSrc.slice(svcSrc.indexOf('// ---------- 资料采集 Bundle'), svcSrc.indexOf('// ---------- 大纲生成与校验'));
 const preflightSrc = svcSrc.slice(svcSrc.indexOf('// ---------- 前置校验'), svcSrc.indexOf('// ---------- 资料采集 Bundle'));
@@ -100,18 +117,12 @@ await new Promise<void>((r) => mock.listen(0, '127.0.0.1', r));
 const MOCK_PORT = (mock.address() as { port: number }).port;
 
 // =====================================================================
-// R 组：隔离实例（生产库副本，只读打开后复制）
+// R 组：隔离实例（空数据目录 + 门内自建夹具；判据 2 起不复制生产库）
 // =====================================================================
 const LAUNCHER = resolveServerLauncher(ROOT, join(ROOT, 'server', 'src', 'index.ts'));
-const prodDb = join(process.env.APPDATA ?? '', 'MTask', 'data', 'mtask.db');
-const copyPath = join(DATA_DIR, 'mtask.db');
-{
-  const Database = (await import('better-sqlite3')).default;
-  const src = new Database(prodDb, { readonly: true });
-  await src.backup(copyPath);
-  src.close();
-}
-ok('R-00a 生产库副本已生成', existsSync(copyPath));
+// 起服务前数据目录必须是空的：这条是「门没把生产库搬进来」的自证——
+// 一旦有人重新接上 src.backup(copyPath)，此处立刻红。
+ok('R-00a 隔离数据目录为空（无生产库副本，门内夹具稍后自建）', readdirSync(DATA_DIR).length === 0, readdirSync(DATA_DIR));
 
 const child: ChildProcess = spawn(LAUNCHER.exec, LAUNCHER.tsx, {
   cwd: ROOT,
@@ -166,9 +177,49 @@ if (!(await waitUp())) {
   const noModelId = String(toolNoModel.body?.id ?? '');
   ok('R-00b 两个测试工具已建（含无 model 的那个）', !!mockId && toolNoModel.status === 201 && !toolNoModel.body?.model, toolNoModel.body?.model);
 
+  // =====================================================================
+  // 门内夹具（判据 2）：R 组与 S 组的数据面全部由门自建。
+  // T02293 批⑪ 前，R 组跑在「生产库副本 + 硬编码五期 projectId」上：那等于让门去断言
+  // 生产库里某几条业务行仍然存在——业务数据一变动门就红，而红的含义是「数据变了」不是「功能坏了」，
+  // 且门每次实跑都在读生产库内容。现改为门内项目，夹具形状对齐判据所需：
+  // 五维样例事实（需求/进行中/阻塞/已完成/里程碑）齐备、可指代名称 ≥6、PRD 超摘要预算（truncated 才有真值）。
+  // =====================================================================
+  const stamp = Date.now();
+  const DAY = 86_400_000;
+  const dstr = (off: number) => new Date(Date.now() + off * DAY).toISOString().slice(0, 10);
+  const mkProject = async (label: string): Promise<string> => String((await call('POST', '/projects', { name: `T02096 ${label} ${stamp}` })).body?.id ?? '');
+  const SENT = { head: '【门内首标SENTINELHEAD】', mid: '【门内中段禁入SENTINELMIDDLE】', tail: '【门内尾标SENTINELTAIL】' };
+  const filler = (n: number, mark: string) => Array.from({ length: n }, (_, i) => `${mark}${i}：本节写明启动会稿的口径来源与验收标准，用来把门内文档撑到摘要预算之外。`).join('\n');
+  const longPrd = `${SENT.head}\n${filler(200, '甲')}\n${SENT.mid}\n${filler(200, '乙')}\n${SENT.tail}\n`;
+  const shortPrd = `${SENT.head}\n${filler(6, '丙')}\n${SENT.mid}\n${SENT.tail}\n`;
+
+  const fxMain = await mkProject('主夹具');
+  await call('POST', '/plans/import-prd', {
+    projectId: fxMain, prdMd: longPrd, prdFilename: `T02096-门内主夹具PRD-${stamp}.md`,
+    requirements: [
+      { reqNo: 'REQ-921', title: '主夹具需求大纲契约校验', priority: 'high' },
+      { reqNo: 'REQ-922', title: '主夹具需求前置校验面板', priority: 'normal' },
+      { reqNo: 'REQ-923', title: '主夹具需求工作量口径对齐', priority: 'normal' },
+      { reqNo: 'REQ-924', title: '主夹具需求时间线图绘制', priority: 'normal' },
+      { reqNo: 'REQ-925', title: '主夹具需求风险信号枚举', priority: 'normal' },
+    ],
+    plans: [
+      { title: '主夹具计划阻塞态样例', durationDays: 5, startDate: dstr(-30), reqNos: ['REQ-921'], status: 'blocked', complexity: 2 },
+      { title: '主夹具计划进度落后样例', durationDays: 10, startDate: dstr(-60), reqNos: ['REQ-922'], status: 'doing', complexity: 3 },
+      { title: '主夹具计划已完成样例', durationDays: 6, startDate: dstr(-40), reqNos: ['REQ-923'], status: 'done', complexity: 2 },
+      { title: '主夹具计划高复杂度样例', durationDays: 8, startDate: dstr(5), reqNos: ['REQ-924'], complexity: 5, status: 'todo' },
+      { title: '主夹具里程碑启动会稿', durationDays: 20, startDate: dstr(10), kind: 'milestone' },
+    ],
+  });
+  const mainReqs = await call('GET', `/plans/prd-requirements?projectId=${fxMain}`);
+  const mainPlans = await call('GET', `/plans?projectId=${fxMain}`);
+  ok('R-00c 门内主夹具落位（5 需求 / 5 计划含阻塞·落后·已完成·复杂度5·里程碑，PRD 超摘要预算）',
+    !!fxMain && (mainReqs.body?.length ?? 0) === 5 && (mainPlans.body?.length ?? 0) === 5 && longPrd.length > 6000,
+    { fxMain, reqs: mainReqs.body?.length, plans: mainPlans.body?.length, prdLen: longPrd.length });
+
   // R-01 未配模型：错误原文透传，不静默回落
   mockQueue = [];
-  const noModel = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: noModelId });
+  const noModel = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxMain, toolId: noModelId });
   ok('R-01 未配 model → 400 透传「所选模型未配置…」且零 mock 请求',
     noModel.status === 400 && /所选模型未配置，请先在「模型管理」为该工具填写默认模型/.test(String(noModel.body?.error)) && mockRequests.length === 0,
     noModel.body);
@@ -176,7 +227,7 @@ if (!(await waitUp())) {
   // R-02 合规大纲
   mockQueue = [{ content: outlineJson(13) }];
   mockRequests.length = 0;
-  const good = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
+  const good = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxMain, toolId: mockId });
   ok('R-02 合规 13 页 → 200 且 outline/dataAsOf 如实',
     good.status === 200 && good.body?.outline?.length === 13 && typeof good.body?.truncated === 'boolean' && /^\d{4}-\d{2}-\d{2}$/.test(String(good.body?.dataAsOf)),
     { status: good.status, pages: good.body?.outline?.length, err: good.body?.error });
@@ -186,8 +237,8 @@ if (!(await waitUp())) {
     { truncated: good.body?.truncated, warnings: good.body?.warnings });
 
   // R-03 提示词带真实计数（与 T02095 端点同源），数字禁令在位
-  const reqs = await call('GET', `/plans/prd-requirements?projectId=${FIVE_PID}`);
-  const plans = await call('GET', `/plans?projectId=${FIVE_PID}`);
+  const reqs = await call('GET', `/plans/prd-requirements?projectId=${fxMain}`);
+  const plans = await call('GET', `/plans?projectId=${fxMain}`);
   const sys = mockRequests[0]?.system ?? '';
   const user = mockRequests[0]?.user ?? '';
   ok('R-03a user 提示词含库内真实需求/计划条数',
@@ -229,7 +280,7 @@ if (!(await waitUp())) {
   // R-04 页数不合规 → 重试后 400 点名
   mockQueue = [{ content: outlineJson(5) }];
   mockRequests.length = 0;
-  const fewPages = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
+  const fewPages = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxMain, toolId: mockId });
   ok('R-04 页数 5 → 自动重试（mock 收到 2 次）后 400 点名页数区间',
     fewPages.status === 400 && mockRequests.length === 2 && /AI 未返回合规大纲/.test(String(fewPages.body?.error)) && /不在 12~18 区间/.test(String(fewPages.body?.error)),
     { status: fewPages.status, asks: mockRequests.length, error: fewPages.body?.error });
@@ -237,7 +288,7 @@ if (!(await waitUp())) {
   // R-05 首轮坏次轮好 → 200 + warnings 记录
   mockQueue = [{ content: '这不是 JSON' }, { content: outlineJson(12) }];
   mockRequests.length = 0;
-  const flaky = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
+  const flaky = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxMain, toolId: mockId });
   ok('R-05 首轮坏/次轮好 → 200 且 warnings 记录已重试',
     flaky.status === 200 && flaky.body?.outline?.length === 12 && (flaky.body?.warnings ?? []).some((w: string) => /已自动重试 1 次/.test(w)),
     { status: flaky.status, warnings: flaky.body?.warnings, error: flaky.body?.error });
@@ -256,7 +307,7 @@ if (!(await waitUp())) {
   const badKey = JSON.parse(outlineJson(12)) as any[];
   badKey[2].dataKeys = ['reqCount'];
   mockQueue = [{ content: JSON.stringify(badKey) }];
-  const r6 = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
+  const r6 = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxMain, toolId: mockId });
   ok('R-06 非法 dataKey → 400 点名未知项', r6.status === 400 && /dataKeys 含未知项「reqCount」/.test(String(r6.body?.error)), r6.body?.error);
 
   // R-07a 单条 bullet 超 42 字：首轮硬失败触发重试；重试轮仍超限（T02223）→ 裁到上限 + warning，不再整稿 400
@@ -264,7 +315,7 @@ if (!(await waitUp())) {
   longBullet[3].bullets = ['一'.repeat(60)];
   mockQueue = [{ content: JSON.stringify(longBullet) }];
   mockRequests.length = 0;
-  const r7a = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
+  const r7a = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxMain, toolId: mockId });
   const clipped = String(r7a.body?.outline?.[3]?.bullets?.[0] ?? '');
   ok('R-07a 单条 bullet 超 42 字：首轮拒（mock 收到 2 次）→ 重试轮裁剪为 42 字省略号收口 → 200 + warnings 点名',
     r7a.status === 200 && mockRequests.length === 2 &&
@@ -286,7 +337,7 @@ if (!(await waitUp())) {
   soft[1].bullets = Array.from({ length: 9 }, (_, i) => `要点${i + 1}`);
   soft[5].section = '技术架构';
   mockQueue = [{ content: JSON.stringify(soft) }];
-  const r7b = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
+  const r7b = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxMain, toolId: mockId });
   ok('R-07b 标题超长/bullet 超行/章节非清单 → 200 + warnings 逐条点名',
     r7b.status === 200 && r7b.body?.outline?.[1]?.title?.length === 30
     && (r7b.body?.warnings ?? []).some((w: string) => /标题 35 字超出 30 字，已截断/.test(w))
@@ -297,14 +348,14 @@ if (!(await waitUp())) {
   // R-08 缺 timeline 页
   const noTimeline = (JSON.parse(outlineJson(12)) as any[]).map((p) => ({ ...p, dataKeys: p.dataKeys.filter((k: string) => k !== 'timeline') }));
   mockQueue = [{ content: JSON.stringify(noTimeline) }];
-  const r8 = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
+  const r8 = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxMain, toolId: mockId });
   ok('R-08 缺时间线页 → 400 点名', r8.status === 400 && /缺少时间线页/.test(String(r8.body?.error)), r8.body?.error);
 
   // R-10 代码围栏 / {"outline":[]} 包装两种形态
   mockQueue = [{ content: '```json\n' + outlineJson(14) + '\n```' }];
-  const fenced = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
+  const fenced = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxMain, toolId: mockId });
   mockQueue = [{ content: JSON.stringify({ outline: JSON.parse(outlineJson(15)) }) }];
-  const wrapped = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
+  const wrapped = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxMain, toolId: mockId });
   ok('R-10 围栏输出与 {"outline":[...]} 包装均可收',
     fenced.status === 200 && fenced.body?.outline?.length === 14 && wrapped.status === 200 && wrapped.body?.outline?.length === 15,
     { fenced: fenced.status, wrapped: wrapped.status, e1: fenced.body?.error, e2: wrapped.body?.error });
@@ -312,7 +363,7 @@ if (!(await waitUp())) {
   // R-11 extraNote 原文进提示词
   mockQueue = [{ content: outlineJson(12) }];
   mockRequests.length = 0;
-  await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId, extraNote: '客户强调两周内出原型' });
+  await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxMain, toolId: mockId, extraNote: '客户强调两周内出原型' });
   ok('R-11 extraNote 原文注入 user 提示词', (mockRequests[0]?.user ?? '').includes('客户强调两周内出原型'), mockRequests[0]?.user?.slice(-120));
 
   // R-13 白名单外非法转义：清洗后 200 + warning 点名（T02311，mock 离线可测）
@@ -320,7 +371,7 @@ if (!(await waitUp())) {
   const arr13 = JSON.parse(outlineJson(12)) as Array<{ bullets: string[] }>;
   arr13[1].bullets[0] = '范围含\\d非法转义'; // JS 串：反斜杠 + d
   mockQueue = [{ content: JSON.stringify(arr13).replace('\\\\d', '\\d') }];
-  const r13 = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
+  const r13 = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxMain, toolId: mockId });
   ok('R-13 模型输出含白名单外非法转义（\\d）→ 有约束清洗后 200 + warning 点名（不静默改写）',
     r13.status === 200 && r13.body?.outline?.length === 12
     && (r13.body?.warnings ?? []).some((w: string) => /非法转义/.test(w))
@@ -332,7 +383,7 @@ if (!(await waitUp())) {
   const arr13b = JSON.parse(outlineJson(12)) as Array<{ bullets: string[] }>;
   arr13b[1].bullets[0] = '工作空间：D:\\code\\otherProjects 已配置'; // JS 串 = D:\code\otherProjects（单反斜杠）
   mockQueue = [{ content: JSON.stringify(arr13b) }];
-  const r13b = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
+  const r13b = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxMain, toolId: mockId });
   ok('R-13b 合法转义序列（Windows 路径 \\）原样通过——清洗不把 \\\\ 误判成非法、不误报 warning',
     r13b.status === 200 && r13b.body?.outline?.length === 12
     && String(r13b.body?.outline?.[1]?.bullets?.[0] ?? '').includes('D:\\code')
@@ -343,7 +394,7 @@ if (!(await waitUp())) {
   const arr14 = JSON.parse(outlineJson(12)) as Array<{ bullets: string[] }>;
   arr14[1].bullets[0] = '范围含\\u00不完整转义'; // JS 串：反斜杠 + u + 0 + 0（u 在白名单内不清洗，parse 必失败）
   mockQueue = [{ content: JSON.stringify(arr14).replace('\\\\u00', '\\u00') }];
-  const r14 = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
+  const r14 = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxMain, toolId: mockId });
   const rawFiles = existsSync(DATA_DIR) ? readdirSync(DATA_DIR).filter((f) => f.startsWith('kickoff-outline-raw-')).sort() : [];
   const rawNonEmpty = rawFiles.length > 0 && statSync(join(DATA_DIR, rawFiles[rawFiles.length - 1])).size > 0;
   ok('R-14 清洗修不了的非法转义 → 400 报错含位置上下文切片与留档文件名 + 数据目录内 raw 旁证非空',
@@ -354,7 +405,7 @@ if (!(await waitUp())) {
   const noTl = (JSON.parse(outlineJson(12)) as any[]).map((p, i) => (i === 6 ? { ...p, dataKeys: p.dataKeys.filter((k: string) => k !== 'timeline') } : p));
   mockQueue = [{ content: JSON.stringify(noTl) }, { content: outlineJson(12) }];
   mockRequests.length = 0;
-  const r15 = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID, toolId: mockId });
+  const r15 = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxMain, toolId: mockId });
   ok('R-15 首轮缺时间线页 → 重试提示词原样回喂该原因且二轮出合规稿（200 + 12 页）',
     r15.status === 200 && r15.body?.outline?.length === 12
     && mockRequests.length === 2
@@ -363,7 +414,7 @@ if (!(await waitUp())) {
     { status: r15.status, asks: mockRequests.length, retrySysTail: String(mockRequests[1]?.system ?? '').slice(-160), error: r15.body?.error });
 
   // R-12 参数校验
-  const noTool = await call('POST', '/plans/kickoff-ppt-outline', { projectId: FIVE_PID });
+  const noTool = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxMain });
   const noPid = await call('POST', '/plans/kickoff-ppt-outline', { toolId: mockId });
   ok('R-12 projectId/toolId 缺失各自 400 点名', noTool.status === 400 && /toolId 必填/.test(String(noTool.body?.error)) && noPid.status === 400 && /projectId 必填/.test(String(noPid.body?.error)),
     { noTool: noTool.body, noPid: noPid.body });
@@ -380,19 +431,16 @@ if (!(await waitUp())) {
   // =====================================================================
   // S 组（T02293 改判）：契约守卫——源码字面锚点只作 okPair 的字面侧，行为侧走
   // 隔离实例 HTTP 响应 / mock 端收到的提示词工件 / 进程内纯函数返回值。
-  // 夹具全部由门自建（判据 2）：两个新项目 + 门内长/短 PRD + 门内风险/干净计划组合。
+  // 夹具全部由门自建（判据 2，见文件上方 R-00c 的夹具节）：主夹具 + 风险/干净两个项目
+  // + 门内长/短 PRD + 门内风险/干净计划组合。
   // =====================================================================
   lines.push('');
   lines.push('== S 组：契约守卫（字面锚点 + 同义行为断言）');
 
-  const stamp = Date.now();
-  const DAY = 86_400_000;
-  const dstr = (off: number) => new Date(Date.now() + off * DAY).toISOString().slice(0, 10);
-  const mkProject = async (label: string): Promise<string> => String((await call('POST', '/projects', { name: `T02096 S组${label} ${stamp}` })).body?.id ?? '');
-  const SENT = { head: '【门内首标SENTINELHEAD】', mid: '【门内中段禁入SENTINELMIDDLE】', tail: '【门内尾标SENTINELTAIL】' };
-  const filler = (n: number, mark: string) => Array.from({ length: n }, (_, i) => `${mark}${i}：本节写明启动会稿的口径来源与验收标准，用来把门内文档撑到摘要预算之外。`).join('\n');
-  const longPrd = `${SENT.head}\n${filler(200, '甲')}\n${SENT.mid}\n${filler(200, '乙')}\n${SENT.tail}\n`;
-  const shortPrd = `${SENT.head}\n${filler(6, '丙')}\n${SENT.mid}\n${SENT.tail}\n`;
+  // 取证面自证：git show 失败时 headSrc 返回空串，空串会让所有「不含某写法」型字面腿恒绿——先钉住取证对象非空。
+  ok('S-00 字面腿取证对象非空（HEAD 源码切片都取到了）',
+    svcSrc.length > 3000 && routeSrc.length > 1500 && outlineSrc.length > 500 && bundleSrc.length > 500 && preflightSrc.length > 200,
+    { svc: svcSrc.length, route: routeSrc.length, outline: outlineSrc.length, bundle: bundleSrc.length, preflight: preflightSrc.length });
 
   // 风险夹具：四类信号各埋一条（阻塞态 / 进度落后 / 需求无承载 / 复杂度≥4）+ 超预算 PRD
   const fxRisk = await mkProject('风险夹具');
