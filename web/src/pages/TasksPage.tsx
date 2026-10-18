@@ -34,24 +34,48 @@ interface Paged<T> {
 const DRAWER_TABS: readonly TaskDetailTab[] = ['desc', 'result', 'summary', 'timeline', 'plans'];
 
 // ---------- T00552：批量分类运行态模块级化——切页后循环继续、返回不卡死 ----------
-export const classifyStore: { busy: boolean; hit: number; total: number; done: boolean } = { busy: false, hit: 0, total: 0, done: false };
+// T02365：补「没命中」的原因分桶——AI 判定无匹配、调用失败、分类候选为空要分得开，
+// 否则一律显示「未能为这些任务匹配到合适分类」，用户既不知道是配置问题还是模型没选中。
+export const classifyStore: {
+  busy: boolean; hit: number; total: number; done: boolean;
+  none: number; fail: number; lastError: string;
+} = { busy: false, hit: 0, total: 0, done: false, none: 0, fail: 0, lastError: '' };
+
+/** T02365：把分桶计数拼成一句可读结论（失败原因只取首条，避免刷屏） */
+function classifySummary(s: typeof classifyStore, includeHit = true): string {
+  const parts: string[] = [];
+  if (includeHit && s.hit > 0) parts.push(`成功 ${s.hit} 条`);
+  if (s.none > 0) parts.push(`${s.none} 条 AI 判定无合适分类`);
+  if (s.fail > 0) parts.push(`${s.fail} 条调用失败${s.lastError ? `（${s.lastError.slice(0, 120)}）` : ''}`);
+  return parts.join('，');
+}
+
 async function runBatchClassifyModule(target: Array<{ id: string; title: string; priority: string }>, toolId: string, cats: Array<{ id: string; name: string }>): Promise<void> {
   if (classifyStore.busy) return;
   classifyStore.busy = true;
   classifyStore.hit = 0; classifyStore.total = target.length; classifyStore.done = false;
+  classifyStore.none = 0; classifyStore.fail = 0; classifyStore.lastError = '';
   try {
     for (const t of target) {
       if (!classifyStore.busy) break; // 防御：外部复位即中止
       try {
-        const r = await api.post<{ ok: boolean; categoryId?: string | null; priority?: string | null }>('/tasks/classify', {
+        const r = await api.post<{ ok: boolean; categoryId?: string | null; priority?: string | null; error?: string }>('/tasks/classify', {
           title: t.title.trim(), toolId, categories: cats,
         });
-        if (!(r.ok && r.categoryId)) continue;
+        if (!r.ok) {
+          classifyStore.fail += 1;
+          if (!classifyStore.lastError && r.error) classifyStore.lastError = r.error;
+          continue;
+        }
+        if (!r.categoryId) { classifyStore.none += 1; continue; }
         const patch: { categoryId: string; priority?: string } = { categoryId: r.categoryId };
         if (t.priority === 'normal' && r.priority) { patch.priority = r.priority; }
         await api.patch(`/tasks/${t.id}`, patch);
         classifyStore.hit += 1;
-      } catch { /* 单条失败不中断批量 */ }
+      } catch (e) {
+        classifyStore.fail += 1;
+        if (!classifyStore.lastError) classifyStore.lastError = e instanceof Error ? e.message : String(e);
+      }
     }
   } finally {
     classifyStore.done = true;
@@ -284,12 +308,19 @@ export function TasksPage() {
     const timer = globalThis.setInterval(() => {
       if (!classifyStore.busy) {
         setClassifyBusy(false);
-        flash(classifyStore.hit > 0 ? `批量分类完成 ${classifyStore.hit}/${classifyStore.total} 条` : '未能为这些任务匹配到合适分类');
+        // T02365：结论按「成功 / AI 无匹配 / 调用失败」分桶说清，失败时带上首条错误原文，
+        // 不再用一句「未能匹配」把配置故障和模型未选中混为一谈。
+        const rest = classifySummary(classifyStore, false);
+        flash(classifyStore.hit > 0
+          ? `批量分类完成 ${classifyStore.hit}/${classifyStore.total} 条${rest ? `（其余：${rest}）` : ''}`
+          : classifyStore.fail > 0
+            ? `批量分类未完成：${rest}`
+            : `AI 判定 ${classifyStore.total} 条任务均无合适分类（候选：${taskCats.map((c) => c.name).slice(0, 6).join('、') || '无'}）`);
         void loadTasks(activeProject);
       }
     }, 1500);
     return () => globalThis.clearInterval(timer);
-  }, [classifyBusy, activeProject]);
+  }, [classifyBusy, activeProject, taskCats]);
   // 进行中请求的取消控制器：美化已入 beautifyStore.aborts（模块级，切页存活）；提示词优化仍按页内隔离
   const optimizeAborts = useRef<Record<string, AbortController>>({});
   // 是否有美化类操作进行中（单条或批量）：驱动工具条「取消/批量美化」按钮
@@ -1536,6 +1567,12 @@ export function TasksPage() {
   async function batchClassify() {
     if (classifyBusy) return flash('正在批量分类中，请稍候');
     if (!organizeToolId) return flash('请先在「模型管理」页添加并选择整理工具');
+    // T02365：无候选分类时逐条请求会全部回 categoryId=null，最终被笼统说成「未能匹配」——
+    // 这里直接点名是分类没建/分类列表没加载成功，并顺手重拉一次
+    if (taskCats.length === 0) {
+      void loadCategories();
+      return flash('当前没有可用任务分类——请先在任务分类中新建分类，再执行批量分类');
+    }
     // T00432：分类范围包含已完成任务——未分类的待办与已完成一并纳入
     const target = [...todo, ...done].filter((t) => !t.category_id && t.title.trim());
     if (target.length === 0) return flash('当前项目没有未分类的任务');
