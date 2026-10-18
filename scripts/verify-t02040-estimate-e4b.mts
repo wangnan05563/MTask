@@ -5,7 +5,7 @@
  *   与 verify-t02039-estimate-e4a 同写法，不在 package.json 硬编码 node 绝对路径）：
  *   <node22> node_modules/tsx/dist/cli.mjs scripts/verify-t02040-estimate-e4b.mts
  *
- * 两段结构（沿用 E4 首段 e4a 的取证范式）：
+ * 分段结构（沿用 E4 首段 e4a 的取证范式）：
  *   S 段（同进程·纯函数 + 源码守卫）：
  *     1) `toGrid` 前端镜像与服务端逐格对照——「统一值 + 相对幅度」是面板唯一一处算术，
  *        镜像漂移就会让面板与 Excel 出两套数；
@@ -15,6 +15,14 @@
  *     PATCH 单字段（沿用原值 + 规则行转人工）、建议行首次落库、`O>M` 与非数字被 400 拒且零写入、
  *     batch mode=set 任一行不合格零写入、batch mode=derive 的 `onlyRule` 过滤（offRule 整行跳过、
  *     不换个档硬凑）、撤销的两条通道（还原快照含 source / 删除本次新建行）、脱离计划行的显式清理。
+ *   G 段（同进程·T02293 判据 1/3/4，须在 REST 实例启动前跑）：
+ *     改名模拟——把 `ESTIMATE_ERRORS`/`ESTIMATE_POINT_LABELS` 的词干逐支改成 `ZZZ-<key>` 后触发
+ *     同一校验，要求「照样拒绝、文案随单源表移动、旧词干零残留、还原逐字符相同、零副作用」；
+ *     任一条失守即说明某层留了第二份抄本。另证「改名期间合法值照旧通过」（校验不是按字面量写的）。
+ *   H 段（跨进程·判据 4）：R 段每条 400 原文登记在册，逐条要能用门进程的单源词干解释，
+ *     且同一入参在门进程直调 `pointsError` 得到的文案与服务端逐字符相同
+ *     （REST 的 400 体是裸 `{ error }`，没有 MCP 那种信封要剥）；末尾两条反证钉住配对器的判别力
+ *     （字面在、行为无 ⇒ 判红且红因指行为；连合法对照都被拒 ⇒ 判红，门不会因为「什么都拒」而绿）。
  *
  * 隔离纪律（skill 红线 8）：库与端口都是临时的，不碰生产数据目录，跑完 kill + 回收临时目录。
  * 真机 UI 走查（§10-3/4/5）不在本脚本内，见 scripts/verify-t02040-ui.mjs。
@@ -26,6 +34,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveServerLauncher } from './isolated-server-launcher.mts';
 import { shimWebDocumentForNode } from './lib/web-dom-shim.mts';
+import { okPair } from './lib/anchor-pair.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02040-e4b-'));
@@ -34,7 +43,8 @@ process.env.MTask_DATA_DIR = DATA_DIR;
 
 const { getDb, closeDb } = await import('../server/src/db/connection.ts');
 const { initSchema } = await import('../server/src/db/schema.ts');
-const { ESTIMATE_SOURCES } = await import('../server/src/services/EstimateService.ts');
+const { ESTIMATE_SOURCES, pointsError, ESTIMATE_ERRORS, ESTIMATE_POINT_LABELS, EstimateService }
+  = await import('../server/src/services/EstimateService.ts');
 const {
   DERIVE_RULES, DERIVE_SKIPS, COMPLEXITY_BASE_DAYS, toGrid: srvToGrid,
 } = await import('../server/src/services/EstimateDerive.ts');
@@ -55,6 +65,38 @@ const T = '2026-10-11T00:00:00.000Z';
 const PID = 'p-e4b';
 const PANEL_SRC = readFileSync(join(ROOT, 'web', 'src', 'components', 'EstimatePanel.tsx'), 'utf8');
 const API_SRC = readFileSync(join(ROOT, 'web', 'src', 'api', 'estimates.ts'), 'utf8');
+/** 输入网格步进：由服务端 `toGrid` 反推（0.26 与 0.24 落两格），不在门里写死「0.5」 */
+const GRID_STEP = srvToGrid(0.26) - srvToGrid(0.24);
+/** 把「应当抛错的调用」收成文案（不抛则空串，交给配对器的行为侧判红） */
+const fire = (fn: () => unknown): string => {
+  try { fn(); return ''; } catch (e) { return e instanceof Error ? e.message : String(e); }
+};
+/**
+ * 400 类断言的配对器（T02293 判据 3）。
+ * 行为侧 = 请求真的被拒（400 + 非空文案），调用方再叠两件：拒绝后**零副作用**的读数、
+ * 以及只差一个合法值的对照调用仍能成功——后者防的是「把什么都拒掉换字面锚点全绿」。
+ * 字面侧 = 文案含产品**单源词干**（`ESTIMATE_ERRORS`/`ESTIMATE_POINT_LABELS`，见 `server/src/services/estimateCopy.ts`），
+ * 门里一个字都不抄；每条 400 原文同时登记进 `rest400`，供 H 段与服务端做同一性比对。
+ */
+const rest400: Array<{ label: string; error: string }> = [];
+const rejectedPair = (
+  label: string,
+  res: { status: number; json: Record<string, any> },
+  stems: string | readonly string[],
+  extraBehavior?: () => boolean,
+) => {
+  const list = Array.isArray(stems) ? stems : [stems as string];
+  const msg = String(res.json?.error ?? '');
+  if (res.status === 400) rest400.push({ label, error: msg });
+  return okPair(ok, label,
+    () => res.status === 400 && msg.length > 0 && (extraBehavior ? extraBehavior() : true),
+    () => list.every((s) => msg.includes(s)),
+    () => ({ status: res.status, error: msg.slice(0, 140) }));
+};
+/** 同一入参在门进程直调产品函数的文案，与登记的 400 原文配对存下来，由 H-03 逐字符比对 */
+const sameSource: Array<{ label: string; server: string; mine: string }> = [];
+/** 路由层拼装的那一条（档名清单来自 `DERIVE_RULES`），由 H-04 按部件比对 */
+let bogusRouteParts: { server: string; bad: string; rules: string } | null = null;
 
 // ---------------- 夹具：直接写隔离测试库（不经 REST，也不碰生产） ----------------
 initSchema();
@@ -162,10 +204,38 @@ console.log('\n=== S 段：写路径的纯函数与红线守卫（同进程·不
     ['O>likely 判据', /optimistic\s*>/],
     ['likely>P 判据', /likely\s*>/],
     ['服务端校验函数名', /pointsError/],
-    ['服务端错误原文', /不能大于最可能值|必须是数字/],
   ];
-  const hit = guards.filter(([, re]) => re.test(CODE)).map(([n]) => n);
+  // 「服务端错误原文」这一路原来抄的是整句中文（`不能大于最可能值|必须是数字`），
+  // 换成从单源表取词干（判据 1）：词干比整句更宽，守卫只会更严不会更松；
+  // 产品日后改措辞时守卫随表移动，不会因门里的抄本过时而误报面板「留了第二份判据」。
+  const copyStems = [ESTIMATE_ERRORS.ordering, ESTIMATE_ERRORS.notNumber, ESTIMATE_ERRORS.negative];
+  const hit = [
+    ...guards.filter(([, re]) => re.test(CODE)).map(([n]) => n),
+    ...copyStems.filter((s) => CODE.includes(s)).map(() => '服务端错误原文'),
+  ];
   ok('S-09 行内录入不前置判 O≤M≤P：判据只有一份（服务端），面板只转录 400 文案', hit.length === 0, hit);
+  // 配对器口径（判据 3）：行为侧证明「判定权真的不在面板」——纯函数拿到一组自相矛盾的三点
+  // 照样出行、不带任何本地拒绝标记，也不从面板模块导出第二份判据函数。
+  {
+    type Row = ReturnType<typeof P.buildPanelRows>[number];
+    const bad = {
+      id: 'e-bad', project_id: PID, plan_id: 'pl-bad', phase: 'dev', unit: 'man_day',
+      optimistic: 12, likely: 6, pessimistic: 9.5, source: 'manual', note: '', created_at: T, updated_at: T,
+      planTitle: 'pl-bad', planKind: 'normal', planArchived: 0, planStatus: 'todo', planProgress: 0,
+      startDate: '2026-10-12', endDate: '2026-10-12', durationDays: 3, complexity: null,
+    } as unknown as Parameters<typeof P.buildPanelRows>[1][number];
+    const plan = {
+      id: 'pl-bad', title: 'pl-bad', description: null, kind: 'normal', start_date: '2026-10-12',
+      end_date: '2026-10-12', duration_days: 3, progress: 0, status: 'todo', assignee: null,
+      linked_task_id: null, complexity: null,
+    };
+    const rows = P.buildPanelRows([plan], [bad], [], [], {}) as unknown as Array<Row & Record<string, unknown>>;
+    const veto = rows.filter((r) => 'error' in r || 'rejected' in r || 'invalid' in r).length;
+    okPair(ok, 'S-09b 三点判据唯一份在服务端：面板纯函数收下 O>M 的行不拒绝，服务端却按单源词干拒绝',
+      () => rows.length === 1 && rows[0].optimistic === 12 && rows[0].likely === 6 && veto === 0 && !('pointsError' in P),
+      () => (pointsError(12, 6, 9.5) ?? '').includes(ESTIMATE_ERRORS.ordering),
+      () => ({ 面板行: rows[0], 服务端文案: pointsError(12, 6, 9.5) }));
+  }
   const pert = [/\boptimistic\s*\+\s*likely/, /likely\s*\*\s*4/, /\/\s*6\b/, /sigma\s*\(/, /\bexpected\s*=\s*\(/];
   const pertHit = pert.map((re) => re.source).filter((s) => new RegExp(s).test(PANEL_SRC));
   ok('S-10 写路径落地后零计算红线仍在（不含 PERT/σ 式子；新增的只有 M×倍率与落网格）', pertHit.length === 0, pertHit);
@@ -176,17 +246,59 @@ console.log('\n=== S 段：写路径的纯函数与红线守卫（同进程·不
     { hasFetch: /\bfetch\(/.test(PANEL_SRC) });
   ok('S-12 二次确认全部走 askConfirm，不用 Electron 里不可靠的原生 confirm/prompt',
     /askConfirm/.test(PANEL_SRC) && !/window\.(confirm|prompt|alert)/.test(PANEL_SRC));
-  const ui: Array<[string, string]> = [
-    ['行内编辑三列', 'type="number"'],
-    ['0.5 步进', 'step={0.5}'],
-    ['撤销提示（§5.3 原文口径）', '行 · 撤销'],
-    ['只看未复核筛选', '只看未复核'],
-    ['批量工具条', 'aria-label="估算批量填充工具条"'],
-    ['底部行内错误条', 'aria-label="行内录入错误提示"'],
-    ['脱离行显式清理入口', '清理脱离行'],
+  // 界面要素不能只对文案：每个要素都配一条「接线在不在」的行为断言（判据 3，与 S-13b/S-13c 同一口径）。
+  // 这些短语都是 JSX 内联字面量、产品侧没有导出常量可取（清单见 T02293 报告），
+  // 所以字面侧只能继续对源文本，靠行为侧 + S-13z 的破行为反证兜住：措辞变了红因写「字面锚点失配（行为在）」，
+  // 接线掉了红因写「行为失守」，两者不会混在同一条红里。
+  const ui: Array<[name: string, phrase: string, wire: (code: string) => boolean]> = [
+    ['行内编辑三列', 'type="number"', (c) => /POINT_FIELDS\.map\(\(f\) => \(/.test(c)
+      && /onChange=\{\(e\) => setDraft\(\{ planId: r\.planId, field: f, value: e\.target\.value \}\)\}/.test(c)
+      && /onBlur=\{\(\) => void commitDraft\(draft\)\}/.test(c)],
+    ['0.5 步进', 'step={0.5}', (c) => Number(/step=\{([\d.]+)\}\s+min=\{0\}/.exec(c)?.[1] ?? Number.NaN) === GRID_STEP],
+    ['撤销提示（§5.3 原文口径）', '行 · 撤销', (c) => /onClick=\{\(\) => void undoLast\(\)\}/.test(c)
+      && /, w\.written/.test(c) && /\{last\.count\}/.test(c)],
+    ['只看未复核筛选', '只看未复核', (c) => /onlyUnreviewed && r\.source === 'manual'/.test(c)
+      && /onChange=\{\(e\) => setOnlyUnreviewed\(e\.target\.checked\)\}/.test(c)],
+    ['批量工具条', 'aria-label="估算批量填充工具条"', (c) => /role="toolbar"/.test(c)
+      && /batchRuleKeys\.map\(\(rule\) => \(/.test(c)],
+    ['底部行内错误条', 'aria-label="行内录入错误提示"', (c) => /role="alert"/.test(c)
+      && /Object\.entries\(rowErrors\)\.map/.test(c) && /setRowErrors/.test(c)],
+    ['脱离行显式清理入口', '清理脱离行', (c) => /onClick=\{\(\) => void cleanupDetached\(\)\}/.test(c)
+      && /estimatesApi\.listDetached\(projectId\)/.test(c)],
   ];
   const miss = ui.filter(([, s]) => !PANEL_SRC.includes(s)).map(([n]) => n);
   ok(`S-13 §5.3/§5.2 承诺的界面要素全部存在（${ui.length} 项）`, miss.length === 0, miss);
+  for (const [name, phrase, wire] of ui) {
+    okPair(ok, `S-13w ${name}：接线真的挂着（行为侧）+ 要素文案在面板里（字面侧）`,
+      () => wire(CODE), () => PANEL_SRC.includes(phrase), () => ({ 短语: phrase }));
+  }
+  // 反证（判据 4）：只抹接线、不动文案，同一条判定函数必须判假；
+  // 否则行为侧读不出功能变化，S-13w 就退化成第二次文案对账（真机走查抓到过的「按钮有、onClick 没挂」照旧放行）。
+  const breakers: Array<[string, (c: string) => string]> = [
+    ['行内编辑三列', (c) => c.replace(/onBlur=\{\(\) => void commitDraft\(draft\)\}/g, '')],
+    ['0.5 步进', (c) => c.replace(/step=\{0\.5\}/g, 'step={0.1}')],
+    ['撤销提示（§5.3 原文口径）', (c) => c.replace(/onClick=\{\(\) => void undoLast\(\)\}/g, '')],
+    ['只看未复核筛选', (c) => c.replace(/onlyUnreviewed && r\.source === 'manual'/g, '')],
+    ['批量工具条', (c) => c.replace(/role="toolbar"/g, '')],
+    ['底部行内错误条', (c) => c.replace(/Object\.entries\(rowErrors\)\.map/g, '')],
+    ['脱离行显式清理入口', (c) => c.replace(/onClick=\{\(\) => void cleanupDetached\(\)\}/g, '')],
+  ];
+  const toothless: string[] = [];
+  for (const [name, breakIt] of breakers) {
+    const item = ui.find(([n]) => n === name);
+    if (!item) { toothless.push(`反证缺判定函数：${name}`); continue; }
+    if (item[2](breakIt(CODE)) === true) toothless.push(`${name}：抹掉接线后行为侧仍判真（该断言无判别力）`);
+    if (!PANEL_SRC.includes(item[1])) toothless.push(`${name}：反证过程破坏了文案侧，字面短语反查不到了`);
+  }
+  ok('S-13z 反证：七项界面要素的行为侧都有牙（只破坏行为、短语仍在，判定必须翻假）', toothless.length === 0, toothless);
+  // 反证 · 配对器语义（判据 4）：「短语确实在源码里、但行为没有」必须判红且红因指行为。
+  {
+    const spy: Array<{ name: string; cond: boolean; extra?: unknown }> = [];
+    okPair((name, cond, extra) => spy.push({ name, cond, extra }), '伪造件：文案在、筛选不接线',
+      () => false, () => PANEL_SRC.includes('只看未复核'));
+    ok('S-13x 反证：字面锚点命中而行为缺失时配对器判红，红因写「行为失守」（绿不是文案给的）',
+      spy.length === 1 && spy[0].cond === false && String((spy[0].extra as any)?.红因 ?? '').includes('行为失守'), spy);
+  }
   // 真机走查抓到过的问题：三个规则按钮若不把 `onlyRule` 传给接口，就只有文案不同、行为全是「服务端自动择档」，
   // 面板却宣称「不属于该档的行整行跳过」。断言只看代码体（头部注释里也写了 onlyRule）。
   ok('S-13b 三个规则按钮各自收口档位：runBatch 把 onlyRule 传给预览与写入两个调用',
@@ -197,6 +309,95 @@ console.log('\n=== S 段：写路径的纯函数与红线守卫（同进程·不
     /onClick=\{\(\) => void runBatch\(rule\)\}/.test(CODE));
   ok('S-14 API 层不含任何三点运算（只有 toGrid 一处网格镜像；E/σ/汇总仍在服务端）',
     !/\/\s*6\b/.test(API_SRC) && !/sigma\s*\(/.test(API_SRC) && /export function toGrid/.test(API_SRC));
+}
+
+console.log('\n=== G 段：单源词干改名模拟（T02293 判据 1/3/4·同进程，必须在 REST 实例启动前） ===');
+{
+  /**
+   * 改名模拟：REST 那条腿在另一个进程里，门改不动它的常量——所以这一支走**同进程的产品路径**
+   * （`pointsError` 与 `EstimateService` 的各写入口都能直达），把词干改成 `ZZZ-<key>` 后用同一入参
+   * 再触发一次，要求五件事全部成立：照样拒绝、文案随单源表移动、旧词干零残留、还原逐字符相同、零副作用。
+   * 任一条不成立即说明该文案在某层留了第二份抄本（或校验本身是按字面量写的）。
+   */
+  const ERR_TABLE = ESTIMATE_ERRORS as unknown as Record<string, string>;
+  const LABEL_TABLE = ESTIMATE_POINT_LABELS as unknown as Record<string, string>;
+  const estIds = () => (db.prepare('SELECT id FROM estimate_items').all() as Array<{ id: string }>)
+    .map((r) => r.id).sort().join(',');
+  const baselineIds = estIds();
+  const full = { optimistic: 1, likely: 1, pessimistic: 1 };
+  // R-04/R-05/R-05b 三条用同一组原值（pl-dur 此时是 5.5/6/9.5），改名模拟也照这组值触达，
+  // 这样「门里对的词干」和「R 段服务端回的文案」是同一条代码路径产出的。
+  const cases: Array<{ table: Record<string, string>; key: string; title: string; run: () => string }> = [
+    { table: ERR_TABLE, key: 'ordering', title: '三点顺序 O>M', run: () => pointsError(12, 6, 9.5) ?? '' },
+    { table: ERR_TABLE, key: 'ordering', title: '三点顺序 M>P', run: () => pointsError(1, 5, 2) ?? '' },
+    { table: ERR_TABLE, key: 'notNumber', title: '三点非数字', run: () => pointsError(Number.NaN, 6, 9.5) ?? '' },
+    { table: ERR_TABLE, key: 'negative', title: '三点为负', run: () => pointsError(5.5, -1, 9.5) ?? '' },
+    { table: LABEL_TABLE, key: 'optimistic', title: '点值标签（乐观）', run: () => pointsError(Number.NaN, 1, 1) ?? '' },
+    { table: LABEL_TABLE, key: 'likely', title: '点值标签（最可能）', run: () => pointsError(1, 5, 2) ?? '' },
+    { table: LABEL_TABLE, key: 'pessimistic', title: '点值标签（悲观）', run: () => pointsError(1, 1, 0) ?? '' },
+    { table: ERR_TABLE, key: 'unknownPhase', title: '未知阶段', run: () => fire(() => EstimateService.upsert(PID, 'pl-dur', { ...full, phase: 'qa' as never })) },
+    { table: ERR_TABLE, key: 'planMissing', title: '计划不存在', run: () => fire(() => EstimateService.upsert(PID, 'pl-nope-e4b', full)) },
+    { table: ERR_TABLE, key: 'pointsRequired', title: '三点必填（建议行首次落库）', run: () => fire(() => EstimateService.upsert(PID, 'pl-cx', { optimistic: 1 } as never)) },
+    { table: ERR_TABLE, key: 'batchEmpty', title: '批量内容为空', run: () => fire(() => EstimateService.upsertBatch(PID, [])) },
+    { table: ERR_TABLE, key: 'nothingToClean', title: '清理未选行', run: () => fire(() => EstimateService.removeDetached(PID, [])) },
+    { table: ERR_TABLE, key: 'projectIdRequired', title: 'projectId 缺失', run: () => fire(() => EstimateService.listByProject('')) },
+    { table: ERR_TABLE, key: 'projectNotFound', title: '项目不存在', run: () => fire(() => EstimateService.listByProject('no-such-project-e4b')) },
+  ];
+  // 跨项目那一支要一个「别人的项目」：临时建、跑完删，不给 R 段留额外读数
+  db.prepare('INSERT INTO projects (id, name, description, sort_weight, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)')
+    .run('p-e4b-x', 'T02040-改名模拟用他项目', '', T, T);
+  cases.push({
+    table: ERR_TABLE, key: 'planNotInProject', title: '计划跨项目',
+    run: () => fire(() => EstimateService.upsert('p-e4b-x', 'pl-dur', full)),
+  });
+  // 收口里程碑只读（§7 闸门）：本门 R 段不碰它，但同一张词干表得一并自证——临时收口 ms-1，跑完还原
+  db.prepare("UPDATE plan_tasks SET status = 'done', progress = 100 WHERE id = 'ms-1'").run();
+  cases.push({
+    table: ERR_TABLE, key: 'milestoneReadonly', title: '收口里程碑只读',
+    run: () => fire(() => EstimateService.upsert(PID, 'ms-1', full)),
+  });
+  const zj: string[] = [];
+  for (const c of cases) {
+    const stem = c.table[c.key];
+    const before = c.run();
+    if (!before.includes(stem)) {
+      zj.push(`${c.title}：原始件文案没命中单源词干「${stem}」（实际「${before.slice(0, 60)}」）`);
+      continue;
+    }
+    const renamed = `ZZZ-${c.key}`;
+    c.table[c.key] = renamed;
+    let after = '';
+    try { after = c.run(); } finally { c.table[c.key] = stem; }
+    if (after === '') zj.push(`${c.title}：改名后产品不再拒绝——校验本身失守（文案不是唯一挡点）`);
+    else if (!after.includes(renamed)) zj.push(`${c.title}：改名后文案未随单源表移动（该层留了写死抄本）`);
+    if (after.includes(stem)) zj.push(`${c.title}：改名后文案仍含旧词干「${stem}」= 第二份抄本`);
+    if (c.run() !== before) zj.push(`${c.title}：还原后文案与原始件不逐字符相同（改表污染）`);
+    if (estIds() !== baselineIds) {
+      zj.push(`${c.title}：拒绝失效并落了行（副作用非零）`);
+      for (const id of estIds().split(',').filter((x) => !baselineIds.split(',').includes(x))) {
+        db.prepare('DELETE FROM estimate_items WHERE id = ?').run(id);
+      }
+    }
+  }
+  db.prepare("UPDATE plan_tasks SET status = 'todo', progress = 0 WHERE id = 'ms-1'").run();
+  db.prepare('DELETE FROM projects WHERE id = ?').run('p-e4b-x');
+  ok('G-01 词干改名模拟全项通过（拒绝在、文案随单源移动、旧词干零残留、还原逐字符相同、零副作用）',
+    zj.length === 0, zj);
+  ok('G-02 改名模拟覆盖的词干数足够（本门 ≥ 14 支：三点判据 + 各写入口 + 归属校验）',
+    cases.length >= 14, { 支数: cases.length, 去重词干: new Set(cases.map((c) => c.key)).size });
+  // 反证：改名期间**合法入参必须照旧通过**。若把词干改名后连合法值都开始报错，说明校验是按字面量写的
+  // （文案反过来决定了行为），那才是判据 1 最怕的形态。
+  ok('G-03 改名期间合法值不受影响（三点判据不是按字面量写的，校验不会因文案改造反向变严）', (() => {
+    const orig = ESTIMATE_ERRORS.ordering;
+    try {
+      ERR_TABLE.ordering = 'ZZZ-ordering';
+      return pointsError(1, 2, 3) === null && pointsError(0, 0, 0) === null;
+    } finally {
+      ERR_TABLE.ordering = orig;
+    }
+  })(), { ordering: ESTIMATE_ERRORS.ordering });
+  ok('G-04 三点判据本身零副作用（改名模拟与纯判据都不会写库，estimate_items 集合与进入 G 段时一致）',
+    estIds() === baselineIds, { 现在: estIds(), 基线: baselineIds });
 }
 
 console.log('\n=== R 段：按面板真实写路径打 REST（隔离实例） ===');
@@ -275,17 +476,50 @@ ok('R-00 隔离服务启动（临时端口 + 临时库）', true);
 
 // R4/R5 不合格值由服务端拒且零写入
 {
+  const base = await rowOf('pl-dur');
   const bad = await api('PATCH', `/estimates/pl-dur?${qs}`, { optimistic: 12 });
-  ok('R-04 O>M 被服务端拒（400 + 中文文案点名两个值，前端不另判一遍）',
-    bad.status === 400 && /不能大于最可能值/.test(String(bad.json.error)), bad.json);
+  // 零副作用的读数必须在**合法对照调用之前**取：对照自己也写一次，取晚了就把对照的写入算到坏请求头上
+  const afterBad = await rowOf('pl-dur');
+  rejectedPair('R-04 O>M 被服务端拒（400 + 文案点名两个值，前端不另判一遍）', bad,
+    [ESTIMATE_ERRORS.ordering, ESTIMATE_POINT_LABELS.optimistic, ESTIMATE_POINT_LABELS.likely],
+    () => afterBad?.optimistic === base?.optimistic && afterBad?.likely === base?.likely);
+  sameSource.push({
+    label: 'R-04', server: String(bad.json.error ?? ''),
+    mine: pointsError(12, base?.likely ?? Number.NaN, base?.pessimistic ?? Number.NaN) ?? '',
+  });
   const after = await rowOf('pl-dur');
   ok('R-04b 被拒后原值不动（O 仍 5.5、M 仍 6）', after?.optimistic === 5.5 && after?.likely === 6, after);
+  const ctrlOrder = await api('PATCH', `/estimates/pl-dur?${qs}`, { pessimistic: 9.5 });
+  const ctrlRow = await rowOf('pl-dur');
+  ok('R-04c 合法对照仍成功：同一 PATCH 通道写回合法值 200（门不是因为「什么都拒」才绿）',
+    ctrlOrder.status === 200 && ctrlRow?.optimistic === 5.5 && ctrlRow?.likely === 6 && ctrlRow?.pessimistic === 9.5,
+    { status: ctrlOrder.status, row: ctrlRow });
 
   const nan = await api('PATCH', `/estimates/pl-dur?${qs}`, { optimistic: 'abc' });
-  ok('R-05 非数字值由服务端判「必须是数字」（面板把输入框原值直接送出，不预筛）',
-    nan.status === 400 && /必须是数字/.test(String(nan.json.error)), nan.json);
+  const afterNan = await rowOf('pl-dur');
+  rejectedPair('R-05 非数字值由服务端判「必须是数字」（面板把输入框原值直接送出，不预筛）', nan,
+    [ESTIMATE_ERRORS.notNumber, ESTIMATE_POINT_LABELS.optimistic],
+    () => afterNan?.optimistic === base?.optimistic && afterNan?.likely === base?.likely);
+  sameSource.push({
+    label: 'R-05', server: String(nan.json.error ?? ''),
+    mine: pointsError(Number.NaN, base?.likely ?? Number.NaN, base?.pessimistic ?? Number.NaN) ?? '',
+  });
+  const ctrlNan = await api('PATCH', `/estimates/pl-dur?${qs}`, { optimistic: 5.5 });
+  ok('R-05c 合法数字走同一通道即落库 200（拒的是这一枚值，不是这条写路径）',
+    ctrlNan.status === 200 && (await rowOf('pl-dur'))?.optimistic === 5.5, ctrlNan.json);
+
   const neg = await api('PATCH', `/estimates/pl-dur?${qs}`, { likely: -1 });
-  ok('R-05b 负值同样被拒（不能为负）', neg.status === 400 && /不能为负/.test(String(neg.json.error)), neg.json);
+  const afterNeg = await rowOf('pl-dur');
+  rejectedPair('R-05b 负值同样被拒（不能为负）', neg,
+    [ESTIMATE_ERRORS.negative, ESTIMATE_POINT_LABELS.likely],
+    () => afterNeg?.optimistic === base?.optimistic && afterNeg?.likely === base?.likely && afterNeg?.pessimistic === base?.pessimistic);
+  sameSource.push({
+    label: 'R-05b', server: String(neg.json.error ?? ''),
+    mine: pointsError(base?.optimistic ?? Number.NaN, -1, base?.pessimistic ?? Number.NaN) ?? '',
+  });
+  const ctrlNeg = await api('PATCH', `/estimates/pl-dur?${qs}`, { likely: 6 });
+  ok('R-05d 0 与负数被拒、正常 M 值仍写得住（合法对照成功，闸门没有全关）',
+    ctrlNeg.status === 200 && (await rowOf('pl-dur'))?.likely === 6, ctrlNeg.json);
 }
 
 // R6 batch mode=set：任一行不合格 → 整体零写入 + 行级错误
@@ -304,6 +538,13 @@ ok('R-00 隔离服务启动（临时端口 + 临时库）', true);
   const afterCase = await rowOf('pl-case');
   ok('R-06b 零写入是真的零写入：合格那行的原值一字未改',
     afterCase?.optimistic === beforeCase?.optimistic && afterCase?.likely === beforeCase?.likely, { beforeCase, afterCase });
+  // 行级错误的文案同样只认单源词干；合法对照就是紧接其后的 R-07（同一条批量通道写入 2 行）。
+  const rowMsg = String((r.json.errors as Array<Record<string, any>>)[0]?.message ?? '');
+  sameSource.push({ label: 'R-06', server: rowMsg, mine: pointsError(9, 1, 2) ?? '' });
+  okPair(ok, 'R-06c 批量行级错误文案与三点判据同源（词干取自 ESTIMATE_ERRORS，门里不抄整句）',
+    () => r.json.written === 0 && rowMsg.length > 0 && afterCase?.likely === beforeCase?.likely,
+    () => rowMsg.includes(ESTIMATE_ERRORS.ordering),
+    () => ({ message: rowMsg.slice(0, 140) }));
 }
 
 // R7 batch mode=set 全合格：显式 source 被保留（撤销回写还原原来源的依据）
@@ -355,9 +596,20 @@ ok('R-00 隔离服务启动（临时端口 + 临时库）', true);
     && afterMan?.likely === beforeMan?.likely && afterMan?.source === 'manual',
     { beforeDur, afterDur, beforeMan, afterMan });
 
+  // 非法档名的「零副作用」读数取在合法对照之前，且对照用 dryRun（不写行，只证这条通道没被整体关掉）
+  const cntBefore = ((await api('GET', `/estimates?${qs}`)).json.items as unknown[]).length;
   const bogus = await api('POST', '/estimates/batch', { projectId: PID, mode: 'derive', onlyRule: 'bogus', dryRun: true });
-  ok('R-10d 档位名非法直接 400（不让拼错的档名静默退化成「全档自动择」）',
-    bogus.status === 400 && /未知推导档位/.test(String(bogus.json.error)), bogus.json);
+  const cntAfter = ((await api('GET', `/estimates?${qs}`)).json.items as unknown[]).length;
+  const okRule = await api('POST', '/estimates/batch', { projectId: PID, mode: 'derive', onlyRule: 'complexity', dryRun: true });
+  rejectedPair('R-10d 档位名非法直接 400（不让拼错的档名静默退化成「全档自动择」）', bogus,
+    ESTIMATE_ERRORS.unknownDeriveRule,
+    // 行为侧：拒绝后明细行数分毫未动，且只差一个合法档名的同端点请求照常出预览
+    () => cntAfter === cntBefore && okRule.status === 200 && Array.isArray(okRule.json.items));
+  ok('R-10e 合法档名的预览照常出（对照证明 R-10d 的 400 不是「什么都拒」换来的）',
+    okRule.status === 200 && (okRule.json.skipped as unknown[]).length > 0, { status: okRule.status });
+  // 这一支的整句由路由层拼装（`未知推导档位：<值>（可用 <档名清单>）`），门进程够不到那个私有函数，
+  // 所以不进 sameSource 逐字符队列，改由 H-04 对它的**两个单源部件**（词干 + DERIVE_RULES 清单）取证。
+  bogusRouteParts = { server: String(bogus.json.error ?? ''), bad: 'bogus', rules: DERIVE_RULES.join(' / ') };
 }
 
 // R11 撤销的两条通道：快照回写（含 source）/ 删除本次新建行
@@ -410,6 +662,63 @@ const logText = serverLog.join('');
 ok('R-14 服务日志无 estimates 写路径相关异常',
   !/estimates[\s\S]{0,160}(Error|异常|unhandled)/i.test(logText) && !/UnhandledPromiseRejection/.test(logText),
   logText.split('\n').filter((l) => /error|异常/i.test(l)).slice(0, 3));
+
+console.log('\n=== H 段：跨进程同源自证 + 配对器反证（T02293 判据 4） ===');
+{
+  // 上面每条 400 的文案出自**隔离服务进程**，门进程只持有单源词干表。
+  // 若门抄的是整句当下措辞，产品改词后本应一起红的两侧会分成「行为在、锚点失配」——配对器能分辨，
+  // 但更彻底的做法是直接证明两边读的是同一张表：H-01 逐条词干命中，H-03 同入参逐字符相同。
+  const stems = Object.values(ESTIMATE_ERRORS);
+  const h1Miss = rest400.filter((r) => !stems.some((s) => r.error.includes(s)));
+  ok('H-01 服务端 400 原文逐条命中门进程单源词干（≥4 条全中）',
+    rest400.length >= 4 && h1Miss.length === 0, { 条数: rest400.length, 未命中: h1Miss.map((r) => r.label) });
+  ok('H-02 假词干（改名模拟的 ZZZ- 前缀 + 本门不存在的措辞）对全部 400 原文零命中（H-01 不是恒真式）',
+    rest400.length > 0 && rest400.every((r) => !r.error.includes('ZZZ-') && !r.error.includes('未知天晓得')),
+    rest400.map((r) => r.error.slice(0, 40)));
+  const h3Bad = sameSource.filter((x) => x.server !== x.mine);
+  ok('H-03 同一入参在服务端与门进程直调产品函数产出的文案逐字符相同（REST 400 体是裸 { error }，无信封要剥）',
+    sameSource.length >= 4 && h3Bad.length === 0,
+    sameSource.map((x) => ({ ...x, 相同: x.server === x.mine })));
+  ok('H-04 路由层拼装的档名错误也由两个单源部件解释得通（词干开头 + 内嵌 DERIVE_RULES 清单）',
+    !!bogusRouteParts && bogusRouteParts.server.startsWith(ESTIMATE_ERRORS.unknownDeriveRule)
+    && bogusRouteParts.server.includes(bogusRouteParts.bad) && bogusRouteParts.server.includes(bogusRouteParts.rules),
+    bogusRouteParts);
+
+  // 反证一 · 配对器三态语义：三种输入落出三种结果且红因可区分——配对器若退化成「只看字面锚点」，
+  // 下面必有一条红，即本组自身带判别力。
+  const rec: Array<{ name: string; cond: boolean; extra?: unknown }> = [];
+  const probeOk = (name: string, cond: boolean, extra?: unknown) => { rec.push({ name, cond, extra }); };
+  okPair(probeOk, 'A 行为失守', () => false, () => true);
+  okPair(probeOk, 'B 行为在、锚点失配', () => true, () => false);
+  okPair(probeOk, 'C 双绿', () => true, () => true);
+  const why = (i: number): string => String((rec[i]?.extra as any)?.红因 ?? '');
+  ok('H-05 okPair 三态语义：行为失守判红且红因指行为、行为在而锚点失配判红且红因指锚点、双绿才 PASS',
+    rec.length === 3 && rec[0].cond === false && why(0).includes('行为失守')
+    && rec[1].cond === false && why(1).includes('字面锚点失配') && rec[2].cond === true, rec);
+
+  // 反证二 · 伪造件：文案里就放着服务端那句原话，但请求实际**没被拒**（200）——配对器必须判红。
+  // 这一支钉的是「R-04/R-05 的绿不是文案给的」：只看 `includes(词干)` 的门会照样放行这份假件。
+  {
+    const fakeMsg = pointsError(12, 6, 9.5) ?? '';
+    const spy: Array<{ name: string; cond: boolean; extra?: unknown }> = [];
+    okPair((name, cond, extra) => spy.push({ name, cond, extra }), '伪造件：三点被拒了但其实写进去',
+      () => false, () => String(fakeMsg).includes(ESTIMATE_ERRORS.ordering));
+    ok('H-06 反证：字面词干原样出现在「没有拒绝」的响应里，配对器仍判红（红因指行为）',
+      spy.length === 1 && spy[0].cond === false && String((spy[0].extra as any)?.红因 ?? '').includes('行为失守')
+      && fakeMsg.includes(ESTIMATE_ERRORS.ordering), spy);
+  }
+  // 反证三 · 「把什么都拒掉」换不来绿：坏请求 400 + 文案对，但合法对照也 400 时配对器必须判红。
+  {
+    const spy: Array<{ name: string; cond: boolean; extra?: unknown }> = [];
+    const label = '伪造件：闸门全关（坏请求被拒、合法对照也被拒）';
+    const fakeBad = { status: 400, json: { error: pointsError(12, 6, 9.5) ?? '' } };
+    okPair((name, cond, extra) => spy.push({ name, cond, extra }), label,
+      () => fakeBad.status === 400 && false, // 行为侧：合法对照失败 → 整体行为不成立
+      () => String(fakeBad.json.error).includes(ESTIMATE_ERRORS.ordering));
+    ok('H-07 反证：合法对照被一并拒掉时配对器判红（本门的绿必须建立在「坏的被拒、好的仍能过」两侧都成立上）',
+      spy.length === 1 && spy[0].cond === false && String((spy[0].extra as any)?.红因 ?? '').includes('行为失守'), spy);
+  }
+}
 
 child.kill();
 await new Promise((r) => setTimeout(r, 600));
