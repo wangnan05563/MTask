@@ -818,7 +818,14 @@ export function TasksPage() {
   async function createProject() {
     const name = await askInput({ title: '新项目名称', placeholder: '请输入项目名称' });
     if (!name) return;
-    const created = await api.post<Project>('/projects', { name });
+    let created: Project | undefined;
+    try {
+      created = await api.post<Project>('/projects', { name });
+    } catch (e) {
+      // T02481：重名（含历史资产/归档区占用）后端会回 400，以前这里没有 catch，
+      // 点击后既不建项目也不提示，看起来像按钮没反应。与改名/删除保持一致，把原文提示出来。
+      return flash(e instanceof Error ? e.message : String(e));
+    }
     setActiveProject('');
     void loadProjects();
     // T00771：新建项目后顺带弹出工作空间绑定（可跳过）——建立项目名与工作空间路径的绑定关系

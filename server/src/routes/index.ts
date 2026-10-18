@@ -138,9 +138,12 @@ api.post('/projects', (req, res) => {
   const { name, description = '' } = req.body ?? {};
   if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name 必填' });
   // T00589 二轮：项目名全局唯一——**含历史资产快照中的项目名**与已归档项目（避免与沉淀快照重名混淆）
-  const dup = getDb().prepare('SELECT name, history_at FROM projects WHERE name = ?').get(name.trim()) as { name: string; history_at: string | null } | undefined;
+  const dup = getDb().prepare('SELECT name, history_at, archived FROM projects WHERE name = ?').get(name.trim()) as { name: string; history_at: string | null; archived: number } | undefined;
   if (dup) {
-    return res.status(400).json({ error: dup.history_at ? `项目名「${name.trim()}」已被历史资产中的项目使用，请换名` : `项目名「${name.trim()}」已存在` });
+    // T02481：归档区的项目不在常规列表里，只说「已存在」用户会以为按钮没反应/列表没刷新——点名占用方在哪
+    if (dup.history_at) return res.status(400).json({ error: `项目名「${name.trim()}」已被历史资产中的项目使用，请换名` });
+    if (dup.archived) return res.status(400).json({ error: `项目名「${name.trim()}」已被归档区的项目占用（可在归档区恢复该项目或改名后再建）` });
+    return res.status(400).json({ error: `项目名「${name.trim()}」已存在` });
   }
   const id = uuid();
   getDb().prepare('INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
