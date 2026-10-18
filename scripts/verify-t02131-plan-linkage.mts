@@ -29,17 +29,24 @@
  *     R-09 纯计划通道仍可用且带孤儿告警（不破坏既有轻量语义）；
  *     R-10 防重入：关联通道同样拦截重复拆解；
  *     R-11 status 透传（MCP 传 doing 不再被一律打成 todo）；
- *     R-12 收口判据：生产库副本四期未归档行中无 K/M-K 孤儿批次残留。
+ *     R-12a 收口判据门内自证：本门关联通道写回的应关联行（LINK_TITLES）无一留下空 req_ids（不再断言生产库某批行存在性）；
+ *     R-12b 归档可逆留痕（门内软删→查→恢复）；
+ *     R-12c 生产库 K/M-K 批次现状：**只留痕不判定**（skipped，判据 2 禁止门拿生产业务数据判红）；
+ *     R-13 复杂度防线：合法 4 原样落库；越界 99 在 MCP schema 层被拒收且该行零落库。
+ *   N-06 clampComplexity/listInvalid 用产品真函数取证（越界档翻红 + 门自身临时库造脏值让 listInvalid 点名）。
+ *   N 组 负对照：字面腿无永真式 / S-02 锚点改名各自翻红 / 抽掉运行期料行为腿全红 /
+ *               门自身临时库**副本**上造反例验证孤儿判据与「真未关联」判据会翻脸。
  *
  * 隔离纪律（skill 红线 8）：库、端口、临时文件全部临时的，不碰生产数据目录，跑完 kill + 回收。
  * 断言输出落 .workbuddy/t02131-gate-results-<运行标识>.txt（中文 stdout 在本机 GBK 控制台会乱码，以文件为准）。
  */
 import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeGateResults } from './lib/gate-results.mts';
+import { okPair } from './lib/anchor-pair.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02131_PORT ?? 39_500 + Math.floor(Math.random() * 400));
@@ -66,47 +73,106 @@ const skipped = (name: string, why: string) => {
 };
 const group = (t: string) => console.log(`\n== ${t}`);
 
+/** 关联通道夹具的 8 个应关联标题（故意悬空的 K5 不在列，它由 R-08 的告警点名兜住） */
+const LINK_TITLES = ['K1 材料收集', 'K2 稿件撰写', 'K3 评审收口', 'K4 增量补录',
+  'M1 里程碑', 'M1a 里程碑后子项', 'C04 合法复杂度'];
+const parseArr = (v: unknown): string[] => {
+  if (typeof v !== 'string' || !v.trim()) return [];
+  try { const j = JSON.parse(v); return Array.isArray(j) ? j.map((x: any) => String(x?.id ?? x)) : []; } catch { return []; }
+};
+/** 孤儿收口判据（R-12a 与 N-04 共用同一份，负对照才有牙）：应关联标题中 req_ids 为空的行 */
+const orphanTitles = (rows: Array<{ title: string; req_ids?: string | null }>) =>
+  rows.filter((r) => LINK_TITLES.includes(r.title) && parseArr(r.req_ids).length === 0).map((r) => r.title);
+/** 纯计划通道行是否真的没挂上关联（S-06 行为腿，N-05 共用） */
+const reallyUnlinked = (row: { req_ids?: string | null; linked_task_id?: string | null } | undefined) =>
+  !!row && parseArr(row.req_ids).length === 0 && !row.linked_task_id;
+
 // =====================================================================
-// S 组：源码守卫
+// S 组：契约守卫（HEAD 字面锚 × 运行期实测）——反模式 11/14：
+//  字面腿只取 `git show HEAD:<path>`；行为腿取 R 组实测回来的 RT，故 S 组**延后到 R 组跑完再发射**，
+//  这里只声明判据，不在此处判定。
 // =====================================================================
-group('S 组：源码守卫（关联通道接线是否真落在代码里）');
-const src = (p: string) => readFileSync(join(ROOT, p), 'utf8');
+group('S 组：契约守卫（声明期，实际发射在 R 组之后）');
+const src = (p: string) => {
+  // 反模式 11：工作树可能躺着并发会话留下的过期产品文件，字面锚一律回**已提交树**取
+  try { return execFileSync('git', ['show', `HEAD:${p}`], { cwd: ROOT, encoding: 'utf8' }); }
+  catch { return ''; }
+};
 const mcpSrc = src('server/src/mcp/server.ts');
 const planServiceSrc = src('server/src/services/PlanService.ts');
+/** R 组实测回填的行为料（发射 S 组前必须已取值） */
+const RT: Record<string, unknown> = {};
+/** 字面腿一律以「传入的源码」为取证面（而不是闭包捕获 mcpSrc），负对照才能拿篡改副本喂同一条判据 */
+type SPair = { label: string; behavior: () => boolean; literal: (mcp: string, plan: string) => boolean; ctx: () => unknown };
+const S_PAIRS: SPair[] = [
+  {
+    label: 'S-01 MCP create_plans schema 带 requirements / items[].reqNos / createTasks 三个关联入口',
+    behavior: () => RT.linked === true && RT.counts === '2/3/3',
+    literal: (mcp) => /requirements: z\.array\(z\.object\(\{/.test(mcp)
+      && /reqNos: z\.array\(z\.string\(\)\)\.optional\(\)/.test(mcp)
+      && /createTasks: z\.boolean\(\)\.optional\(\)/.test(mcp),
+    ctx: () => ({ 关联通道实测: RT.linked, 一次调用建行数: RT.counts }),
+  },
+  {
+    label: 'S-02 关联请求路由到 importPrd（不复制一份联动逻辑，单源）',
+    behavior: () => RT.channel === 'prd_import',
+    literal: (mcp) => /const wantLinkage = /.test(mcp) && /PlanService\.importPrd\(pid, \{/.test(mcp),
+    ctx: () => ({ channel: RT.channel }),
+  },
+  {
+    label: 'S-03 importPrd 回传 planRowIds 且 MCP 依赖解析改用它（下标对齐，撞名让号不断链）',
+    behavior: () => RT.refEdgeToK1Id === true && RT.unresolvedDepWarn === false,
+    literal: (mcp, plan) => /planRowIds = planTargets\.map\(/.test(plan)
+      && /applyPlanItemDeps\([^)]*r\.planRowIds/.test(mcp),
+    ctx: () => ({ K2的serial边指向: RT.refEdgeTarget, 未解析告警: RT.unresolvedDepWarn }),
+  },
+  {
+    label: 'S-04 编号解析第三层回落：可挂到既往导入已建的矩阵行（按项目内唯一 req_no 定位）',
+    behavior: () => RT.incrementalAttachedExisting === true && RT.incrementalNewReqs === 0,
+    literal: (_mcp, plan) => /SELECT id FROM prd_requirements WHERE project_id = \? AND req_no = \?/.test(plan)
+      && /requestedToId\.get\(n\) \?\? noToId\.get\(n\) \?\? existingReqId\(n\)/.test(plan),
+    ctx: () => ({ 增量回写挂到的行: RT.incrementalReqIds, 新建矩阵行: RT.incrementalNewReqs }),
+  },
+  {
+    label: 'S-05 关联通道保留 T01868 防重入前检（importPrd 默认让号会静默造第二条轨，必须先拒）',
+    behavior: () => RT.reentrantRejected === true && RT.reentrantZeroWrite === true,
+    literal: (mcp) => /防重入拦截/.test(mcp),
+    ctx: () => ({ 拦截前: RT.planCountBefore, 拦截后: RT.planCountAfter }),
+  },
+  {
+    label: 'S-06 纯计划通道补孤儿告警（K1~K8 当时零提示）',
+    behavior: () => RT.plainWarnHasChannelHint === true && RT.plainRowsReallyUnlinked === true,
+    literal: (mcp) => /纯计划通道/.test(mcp),
+    ctx: () => ({ 告警: RT.plainWarn, 纯通道行req_ids: RT.plainRowReqIds }),
+  },
+  {
+    label: 'S-07 createBatch 纯计划通道未被替换（不带关联字段时保持既有轻量语义）',
+    behavior: () => RT.plainInserted === 3 && RT.plainChannelUndefined === true,
+    literal: (mcp) => /PlanService\.createBatch\(pid, items, \{ dupPolicy/.test(mcp),
+    ctx: () => ({ inserted: RT.plainInserted, channel: RT.plainChannel }),
+  },
+  {
+    label: 'S-08 importPrd 计划行 status 透传（MCP 侧 doing/done 不再一律打回 todo）',
+    behavior: () => RT.k2Status === 'doing',
+    literal: (_mcp, plan) => /status: planItems\[i\]\.status \?\? \('todo' as PlanStatus\)/.test(plan),
+    ctx: () => ({ K2落库status: RT.k2Status }),
+  },
+  {
+    label: 'S-09 T02122 复杂度防线未被本轮改动破坏（越界值进不了关联通道、合法值原样落库）',
+    behavior: () => RT.clampOutOfRangeRejected === true && RT.clampInRangeLanded === 4,
+    literal: (_mcp, plan) => (plan.match(/clampComplexity\(/g) ?? []).length >= 2
+      && /const cClamped = clampComplexity\(o\.complexity\)/.test(plan),
+    ctx: () => ({ 越界99被拒收: RT.clampOutOfRangeRejected, 合法4落库: RT.clampInRangeLanded }),
+  },
+  {
+    label: 'S-10 关联通道的编号顺延/未关联/歧义三类事实全部转成告警回传（不再只埋在返回值里）',
+    behavior: () => RT.unlinkedNamedInWarn === true && RT.warningFieldsExposed === true,
+    literal: (mcp) => /for \(const n of r\.unlinkedReqNos\) warnings\.push/.test(mcp)
+      && /r\.ambiguousReqNos/.test(mcp) && /r\.reqNoMap\.length > 0/.test(mcp),
+    ctx: () => ({ 未关联告警: RT.warn8, 三类字段可见: RT.warningFieldsExposed }),
+  },
+];
 
-ok('S-01 MCP create_plans schema 带 requirements / items[].reqNos / createTasks 三个关联入口',
-  /requirements: z\.array\(z\.object\(\{/.test(mcpSrc)
-  && /reqNos: z\.array\(z\.string\(\)\)\.optional\(\)/.test(mcpSrc)
-  && /createTasks: z\.boolean\(\)\.optional\(\)/.test(mcpSrc));
-ok('S-02 关联请求路由到 importPrd（不复制一份联动逻辑，单源）',
-  /const wantLinkage = /.test(mcpSrc) && /PlanService\.importPrd\(pid, \{/.test(mcpSrc));
-ok('S-03 importPrd 回传 planRowIds 且 MCP 依赖解析改用它（下标对齐，撞名让号不断链）',
-  // 锚点口径（2026-10-17）：66eb5cd Sonar 治理把内联 resolveDeps(r.planRowIds) 提成共享
-  // applyPlanItemDeps(pid, items, r.planRowIds, warnings)——行为不变（R-06 实测仍绿），
-  // 故断言改为「deps 解析入口收到 r.planRowIds」，不再锁死函数名。
-  /planRowIds = planTargets\.map\(/.test(planServiceSrc)
-  && /applyPlanItemDeps\([^)]*r\.planRowIds/.test(mcpSrc));
-ok('S-04 编号解析第三层回落：可挂到既往导入已建的矩阵行（按项目内唯一 req_no 定位）',
-  /SELECT id FROM prd_requirements WHERE project_id = \? AND req_no = \?/.test(planServiceSrc)
-  && /requestedToId\.get\(n\) \?\? noToId\.get\(n\) \?\? existingReqId\(n\)/.test(planServiceSrc));
-ok('S-05 关联通道保留 T01868 防重入前检（importPrd 默认让号会静默造第二条轨，必须先拒）',
-  /防重入拦截/.test(mcpSrc));
-ok('S-06 纯计划通道补孤儿告警（K1~K8 当时零提示）',
-  /纯计划通道/.test(mcpSrc));
-ok('S-07 createBatch 纯计划通道未被替换（不带关联字段时保持既有轻量语义）',
-  /PlanService\.createBatch\(pid, items, \{ dupPolicy/.test(mcpSrc));
-ok('S-08 importPrd 计划行 status 透传（MCP 侧 doing/done 不再一律打回 todo）',
-  /status: planItems\[i\]\.status \?\? \('todo' as PlanStatus\)/.test(planServiceSrc));
-ok('S-09 T02122 复杂度钳位单源未被本轮改动破坏（PlanService 内两处调用点仍在）',
-  (planServiceSrc.match(/clampComplexity\(/g) ?? []).length >= 2,
-  (planServiceSrc.match(/clampComplexity\(/g) ?? []).length);
-ok('S-10 关联通道的编号顺延/未关联/歧义三类事实全部转成告警回传（不再只埋在返回值里）',
-  /for \(const n of r\.unlinkedReqNos\) warnings\.push/.test(mcpSrc)
-  && /r\.ambiguousReqNos/.test(mcpSrc) && /r\.reqNoMap\.length > 0/.test(mcpSrc));
-
-// =====================================================================
-// R 组：隔离实例
-// =====================================================================
 group('R 组：隔离实例（MCP 关联通道 + 直读库复核）');
 const LAUNCHER = resolveServerLauncher(ROOT, join(ROOT, 'server', 'src', 'index.ts'));
 const child: ChildProcess = spawn(LAUNCHER.exec, LAUNCHER.tsx, {
@@ -191,12 +257,8 @@ try {
     const q1 = (sql: string, ...a: unknown[]) => new Database(DB_PATH(), { readonly: true }).prepare(sql).get(...a) as any;
     const qAll = (sql: string, ...a: unknown[]) => new Database(DB_PATH(), { readonly: true }).prepare(sql).all(...a) as any[];
     const planRow = (title: string) => q1(
-      'SELECT id, title, kind, status, req_ids, linked_task_id, deps FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0', PID, title,
+      'SELECT id, title, kind, status, req_ids, linked_task_id, deps, complexity FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0', PID, title,
     );
-    const parseArr = (v: unknown): string[] => {
-      if (typeof v !== 'string' || !v.trim()) return [];
-      try { const j = JSON.parse(v); return Array.isArray(j) ? j.map((x: any) => String(x?.id ?? x)) : []; } catch { return []; }
-    };
 
     // ---- R-01 建隔离项目 ----
     const proj = (await api('POST', '/projects', { name: `T02131 门-计划关联 ${Date.now() % 100000}` })).json;
@@ -334,11 +396,91 @@ try {
     ok('R-10b 拦截后零落库（计划行数与拦截前一致）',
       planCountAfter === planCountBefore && planCountBefore === 10, { planCountBefore, planCountAfter });
 
-    // ---- R-12 生产库副本收口判据（只读，四期 K/M-K 孤儿批次已归档）----
+    // ---- R-13 复杂度越界防线（S-09 的行为料）：合法 4 原样落库；99 在 MCP schema 层即被拒、该行零落库 ----
+    const okBatch = await callTool('mtask_create_plans', {
+      projectId: PID,
+      requirements: [{ reqNo: 'REQ-013', title: '复杂度合法档', content: '4 档原样落库' }],
+      items: [{ title: 'C04 合法复杂度', durationDays: 2, reqNos: ['REQ-013'], complexity: 4 }],
+    });
+    const overBatch = await callTool('mtask_create_plans', {
+      projectId: PID,
+      requirements: [{ reqNo: 'REQ-014', title: '复杂度越界档', content: '99 应被拒收' }],
+      items: [{ title: 'C99 越界复杂度', durationDays: 2, reqNos: ['REQ-014'], complexity: 99 }],
+    });
+    const c04 = planRow('C04 合法复杂度');
+    const c99 = planRow('C99 越界复杂度');
+    ok('R-13a complexity=4 经关联通道原样落库（合法档不被误伤）',
+      !okBatch.isError && !!c04 && Number(c04.complexity) === 4,
+      { isError: okBatch.isError, C04: c04?.complexity, text: okBatch.text.slice(0, 160) });
+    ok('R-13b complexity=99 越界值进不了库（MCP schema 前置拒收 + 该行零落库；脏值无从谈起）',
+      overBatch.isError && c99 === undefined,
+      { isError: overBatch.isError, text: overBatch.text.slice(0, 200), C99行: c99 ?? null });
+
+    // ---- 行为料回填（S 组在 R 组之后发射，反模式 14）----
+    RT.linked = !linkBatch.isError;
+    RT.counts = `${st?.requirements}/${st?.plans}/${st?.tasks}`;
+    RT.channel = st?.channel;
+    RT.refEdgeTarget = k2depsObjs.find((d) => d.type === 'serial')?.id ?? null;
+    RT.refEdgeToK1Id = k2depsObjs.some((d) => d.id === k1?.id && d.type === 'serial');
+    RT.unresolvedDepWarn = ((st?.warnings ?? []) as string[]).some((w) => w.includes('未解析到'));
+    RT.incrementalAttachedExisting = !!k4 && parseArr(k4.req_ids).join() === reqIds['REQ-001'];
+    RT.incrementalNewReqs = inc.structured?.requirements ?? -1;
+    RT.incrementalReqIds = k4?.req_ids ?? null;
+    RT.reentrantRejected = reRun.isError && reRun.text.includes('防重入拦截');
+    RT.reentrantZeroWrite = planCountAfter === planCountBefore;
+    RT.planCountBefore = planCountBefore;
+    RT.planCountAfter = planCountAfter;
+    RT.plainWarn = plainWarn.slice(0, 200);
+    RT.plainWarnHasChannelHint = plainWarn.includes('纯计划通道') && plainWarn.includes('requirements');
+    RT.plainRowReqIds = p1?.req_ids ?? null;
+    RT.plainRowsReallyUnlinked = reallyUnlinked(p1);
+    RT.plainInserted = plain.structured?.inserted ?? -1;
+    RT.plainChannel = plain.structured?.channel;
+    RT.plainChannelUndefined = plain.structured?.channel === undefined;
+    RT.k2Status = k2?.status;
+    RT.clampOutOfRangeRejected = overBatch.isError && c99 === undefined;
+    RT.clampInRangeLanded = c04 ? Number(c04.complexity) : null;
+    RT.unlinkedNamedInWarn = (bad.structured?.unlinkedReqNos ?? []).includes('REQ-999') && warn8.includes('REQ-999');
+    RT.warningFieldsExposed = ['warnings', 'unlinkedReqNos', 'reqNoMap']
+      .every((k) => k in (bad.structured ?? {}));
+    RT.matrixRowsPerProject = (q1('SELECT COUNT(*) AS n FROM prd_requirements WHERE project_id = ?', PID) as { n: number }).n;
+    RT.danglingCount = dangling.length;
+
+    // ---- R-12a/R-12b 收口判据门内自证（判据 2：不靠生产库某批业务行的存在性）----
+    ok('R-12a 孤儿收口判据改门内自证（判据 2：本单收口不靠生产库某批行）：关联通道写回的应关联行无一留下空 req_ids，故意悬空的那行是唯一例外且已被告警点名',
+      (() => {
+        const rows = qAll('SELECT title, req_ids FROM plan_tasks WHERE project_id = ? AND archived = 0', PID);
+        return rows.filter((r: any) => LINK_TITLES.includes(r.title)).length === LINK_TITLES.length
+          && orphanTitles(rows).length === 0
+          && parseArr(planRow('K5 悬空引用')?.req_ids ?? '').length === 0
+          && ((bad.structured?.warnings ?? []) as string[]).join('；').includes('REQ-999');
+      })(),
+      { 应关联行数: LINK_TITLES.length, 孤儿行: orphanTitles(qAll('SELECT title, req_ids FROM plan_tasks WHERE project_id = ? AND archived = 0', PID)) });
+
+    // R-12b（2026-10-17 改造）：归档留痕改由门自身数据自证。原断言把生产库某批次的时间戳写死成
+    // `= 12 行`，而那 12 行后续经 T01874「彻底删除」通道（PlanService.ts:1276
+    // `DELETE FROM plan_tasks WHERE id = ? AND archived = 1`，用户主动清理）被清掉——
+    // 依赖易变的生产数据会让门失去复跑价值（恒红）。
+    const sample = qAll(
+      "SELECT id, title FROM plan_tasks WHERE project_id = ? AND archived = 0 AND req_ids IS NOT NULL AND req_ids NOT IN ('', '[]') LIMIT 3", PID,
+    ) as Array<{ id: string }>;
+    for (const p of sample) await api('POST', `/plans/${p.id}/archive`);
+    const softArchived = (q1('SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND archived = 1', PID) as { n: number }).n;
+    const softRowsStillThere = qAll(
+      'SELECT id, req_ids, linked_task_id FROM plan_tasks WHERE project_id = ? AND archived = 1', PID,
+    ).filter((r: { req_ids: string | null }) => parseArr(r.req_ids).length > 0).length;
+    for (const p of sample) await api('POST', `/plans/${p.id}/restore`);
+    const afterRestore = (q1('SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND archived = 1', PID) as { n: number }).n;
+    ok('R-12b 归档可逆留痕（门内自证）：软删行仍在库可查且关联字段不丢，恢复后归档态清零',
+      sample.length === 3 && softArchived === 3 && softRowsStillThere === 3 && afterRestore === 0,
+      { sample: sample.length, softArchived, softRowsStillThere, afterRestore });
+
+    // ---- R-12c 生产库现状：只留痕、不判定（判据 2 禁止门断言生产业务数据存在性）——
+    //      四期那批 K/M-K 行此后可能被用户走 T01874 彻底删除通道清掉，拿它判红等于让门失去复跑价值。
     try {
       const prodDbPath = join(process.env.APPDATA ?? '', 'MTask', 'data', 'mtask.db');
       if (!existsSync(prodDbPath)) {
-        skipped('R-12 生产库副本：四期未归档行无 K/M-K 孤儿批次', `生产库不存在（${prodDbPath}）`);
+        skipped('R-12c 生产库 K/M-K 批次现状（仅留痕，不参与判定）', `生产库不存在（${prodDbPath}）`);
       } else {
         const FOUR = 'a9911922-3f07-47a3-bc7b-bb4aac62bc16';
         const srcDb = new Database(prodDbPath, { readonly: true });
@@ -349,35 +491,15 @@ try {
           "SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND archived = 0 AND (title LIKE 'K%' OR title LIKE 'M-K%')",
         ).get(FOUR) as { n: number }).n;
         const archivedOrphan = (dst.prepare(
-          "SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND archived = 1 AND created_at = '2026-10-12T14:30:16.529Z'",
+          "SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND archived = 1",
         ).get(FOUR) as { n: number }).n;
-        ok('R-12a 生产库四期未归档行中无 K/M-K 孤儿批次（本单收口判据）', liveOrphan === 0, { liveOrphan });
-        // R-12b（2026-10-17 改造）：归档留痕改由门自身数据自证。原断言把生产库某批次的时间戳写死成
-        // `= 12 行`，而那 12 行后续经 T01874「彻底删除」通道（PlanService.ts:1276
-        // `DELETE FROM plan_tasks WHERE id = ? AND archived = 1`，用户主动清理）被清掉——
-        // 依赖易变的生产数据会让门失去复跑价值（恒红）。
-        const sample = qAll(
-          "SELECT id, title FROM plan_tasks WHERE project_id = ? AND archived = 0 AND req_ids IS NOT NULL AND req_ids NOT IN ('', '[]') LIMIT 3", PID,
-        ) as Array<{ id: string }>;
-        for (const p of sample) await api('POST', `/plans/${p.id}/archive`);
-        const softArchived = (q1('SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND archived = 1', PID) as { n: number }).n;
-        const softRowsStillThere = qAll(
-          'SELECT id, req_ids, linked_task_id FROM plan_tasks WHERE project_id = ? AND archived = 1', PID,
-        ).filter((r: { req_ids: string | null }) => parseArr(r.req_ids).length > 0).length;
-        for (const p of sample) await api('POST', `/plans/${p.id}/restore`);
-        const afterRestore = (q1('SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND archived = 1', PID) as { n: number }).n;
-        ok('R-12b 归档可逆留痕（门内自证）：软删行仍在库可查且关联字段不丢，恢复后归档态清零',
-          sample.length === 3 && softArchived === 3 && softRowsStillThere === 3 && afterRestore === 0,
-          { sample: sample.length, softArchived, softRowsStillThere, afterRestore });
-        if (archivedOrphan !== 12) {
-          skipped('R-12c 生产库 K/M-K 批次归档留痕',
-            `生产库该批现存 ${archivedOrphan} 行——已由 T01874 彻底删除通道清掉（属用户主动清理，非软删失效）；留痕判据改由 R-12b 在隔离库自证`);
-        } else {
-          ok('R-12c 生产库 K/M-K 批次归档留痕：整批 12 行在归档态可查', true, { archivedOrphan });
-        }
         dst.close();
         srcDb.close();
+        skipped('R-12c 生产库 K/M-K 批次现状（仅留痕，不参与判定）',
+          `生产库副本现状：未归档 K/M-K ${liveOrphan} 行、归档态 ${archivedOrphan} 行。本单收口判据已由 R-12a 在门内数据自证、
+          R-12b 自证归档可逆；此处只记录外部现状供人工对照，门不据此判红（判据 2）`);
       }
+
     } catch (e) {
       skipped('R-12 生产库副本收口判据', `生产库不可读：${(e as Error).message}`);
     }
@@ -387,6 +509,136 @@ try {
 } finally {
   try { child.kill(); } catch { /* 已退出 */ }
   try { spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* 已退出 */ }
+}
+
+// 隔离实例收口（本机门族通坑）：taskkill 是异步的，子进程句柄没释放就删目录会留下残骸
+await new Promise<void>((res) => {
+  if (child.exitCode !== null || child.signalCode !== null) return res();
+  child.once('exit', () => res());
+  setTimeout(res, 8000);
+});
+Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 800);
+
+// =====================================================================
+// S 组发射（反模式 14：行为腿依赖 R 组实测料，必须等运行期跑完再判）
+// =====================================================================
+group('S 组：契约守卫发射（HEAD 字面锚 × 运行期实测）');
+okPair(ok, 'S-00 字面腿取证对象非空（HEAD 源码读到了，不是拿空串比空串）',
+  () => RT.channel !== undefined || RT.linked !== undefined,
+  () => mcpSrc.length > 2000 && planServiceSrc.length > 2000,
+  () => ({ mcp行数: mcpSrc.split('\n').length, planService行数: planServiceSrc.split('\n').length }));
+if (RT.channel === undefined) {
+  S_PAIRS.forEach((s) => skipped(s.label, 'R 组隔离实例未跑通（缺 channel 等运行期料）——行为料缺失时不以字面锚冒充 PASS'));
+} else {
+  S_PAIRS.forEach((s) => okPair(ok, s.label, s.behavior, () => s.literal(mcpSrc, planServiceSrc), s.ctx));
+}
+
+// =====================================================================
+// N 组：负对照（本轮每条改判都配牙齿——判据红得下来才算真判据）
+// =====================================================================
+group('N 组：负对照');
+try {
+  // N-01 空源码探针：10 条字面腿喂空串必须全红（否则该腿是永真式，不承重）
+  const vacuous = S_PAIRS.filter((s) => s.literal('', '') === true).map((s) => s.label);
+  ok('N-01 字面腿无永真式（喂空源码 10 条全部翻红）', vacuous.length === 0, { 空串仍为真的腿: vacuous });
+
+  // N-02 具体变异对照：把 S-02 的两个字面锚目标分别改名，同一条判据必须各自翻红；先自证变异真的落进了副本
+  const s02 = S_PAIRS[1];
+  const tamperLinkage = mcpSrc.replace('const wantLinkage = ', 'const gateRenamedLink = ');
+  const tamperImportCall = mcpSrc.replace('PlanService.importPrd(pid, {', 'PlanService.gateRenamedImport(pid, {');
+  ok('N-02 字面腿有牙（S-02 两个锚点分别改名后同一条判据各自翻红，非换皮永真）',
+    tamperLinkage !== mcpSrc && tamperImportCall !== mcpSrc
+    && s02.literal(mcpSrc, planServiceSrc) === true
+    && s02.literal(tamperLinkage, planServiceSrc) === false
+    && s02.literal(tamperImportCall, planServiceSrc) === false,
+    { 原文为真: s02.literal(mcpSrc, planServiceSrc), 改wantLinkage后: s02.literal(tamperLinkage, planServiceSrc), 改importPrd调用后: s02.literal(tamperImportCall, planServiceSrc) });
+
+  // N-03 行为腿敏感性：抽掉运行期料（清空 RT）后 10 条行为腿必须全红，恢复后全绿
+  const savedRT = { ...RT };
+  Object.keys(RT).forEach((k) => { delete RT[k]; });
+  const insensitive = S_PAIRS.filter((s) => s.behavior() === true).map((s) => s.label);
+  Object.entries(savedRT).forEach(([k, v]) => { RT[k] = v; });
+  const afterRestore = S_PAIRS.filter((s) => s.behavior() !== true).map((s) => s.label);
+  ok('N-03 行为腿不空转（清空运行期料后全红、恢复后全绿）',
+    insensitive.length === 0 && afterRestore.length === 0,
+    { 无料仍为真: insensitive, 恢复后为假: afterRestore });
+
+  // N-04/N-05 判据 SQL 有牙：在**门自身临时库的副本**上造反例（绝不写生产库、也不再写活实例的库）
+  const Database = (await import('better-sqlite3')).default;
+  const copyPath = join(DATA_DIR, 'negative-copy.db');
+  if (!PID || !existsSync(DB_PATH())) {
+    skipped('N-04/N-05 孤儿判据与纯通道判据的反例对照', `门内夹具库不可用（PID=${PID || '未建'}）`);
+  } else {
+    const live = new Database(DB_PATH());
+    await live.backup(copyPath);
+    live.close();
+    const neg = new Database(copyPath);
+    const readRows = () => neg.prepare(
+      'SELECT title, req_ids, linked_task_id FROM plan_tasks WHERE project_id = ? AND archived = 0',
+    ).all(PID) as Array<{ title: string; req_ids: string | null; linked_task_id: string | null }>;
+
+    const beforeOrphans = orphanTitles(readRows());
+    const k1 = neg.prepare("UPDATE plan_tasks SET req_ids = '[]' WHERE project_id = ? AND title = 'K1 材料收集'").run(PID);
+    const k1NowEmpty = parseArr((neg.prepare(
+      "SELECT req_ids FROM plan_tasks WHERE project_id = ? AND title = 'K1 材料收集'",
+    ).get(PID) as { req_ids: string }).req_ids).length === 0;
+    const afterOrphans = orphanTitles(readRows());
+    ok('N-04 孤儿收口判据有牙（副本上把 K1 的 req_ids 清空，同一谓词必须点名它；且自证 UPDATE 真的落进副本）',
+      k1.changes === 1 && beforeOrphans.length === 0 && k1NowEmpty
+      && afterOrphans.length === 1 && afterOrphans[0] === 'K1 材料收集',
+      { 清空前: beforeOrphans, 清空后: afterOrphans, UPDATE影响行: k1.changes });
+
+    const plainBefore = reallyUnlinked(readRows().find((r) => r.title === 'P1 纯计划A'));
+    const p2 = neg.prepare("UPDATE plan_tasks SET req_ids = '[\"REQ-901\"]', linked_task_id = 'gate-fake-task' WHERE project_id = ? AND title = 'P1 纯计划A'").run(PID);
+    const plainAfter = reallyUnlinked(readRows().find((r) => r.title === 'P1 纯计划A'));
+    ok('N-05 纯计划通道「真未关联」判据有牙（副本上补上 req_ids+linked_task_id，判据必须翻假）',
+      p2.changes === 1 && plainBefore === true && plainAfter === false,
+      { 补关联前: plainBefore, 补关联后: plainAfter });
+    neg.close();
+  }
+
+  // N-06 用**产品真函数**取证（不是把判据文案抄一遍）：clampComplexity 边界语义 + listInvalid 能点名脏值
+  try {
+    const PC = await import('../server/src/services/PlanComplexity.ts');
+    const sweep: Array<[unknown, number | null]> =
+      [[1, 1], [5, 5], ['4', 4], [3.5, 4], [0, null], [6, null], [99, null], [NaN, null], ['abc', null], [null, null]];
+    const wrong = sweep.filter(([v, want]) => PC.clampComplexity(v) !== want)
+      .map(([v, want]) => `${String(v)}→${String(PC.clampComplexity(v))}（期望 ${String(want)}）`);
+    ok('N-06a clampComplexity 真函数边界语义（1/5/"4"/3.5 归位；0/6/99/NaN/abc/null 一律为 null）',
+      wrong.length === 0, { 偏差: wrong, 实测: sweep.map(([v]) => `${String(v)}→${String(PC.clampComplexity(v))}`).join(' ') });
+
+    if (!PID || !existsSync(DB_PATH())) {
+      skipped('N-06b listInvalid 反例对照', `门内夹具库不可用（PID=${PID || '未建'}）`);
+    } else {
+      const raw = new Database(DB_PATH());
+      const cols = (raw.prepare('PRAGMA table_info(plan_tasks)').all() as Array<{ name: string }>).map((c) => c.name);
+      const seed = raw.prepare(
+        'SELECT * FROM plan_tasks WHERE project_id = ? AND archived = 0 ORDER BY id LIMIT 1',
+      ).get(PID) as Record<string, unknown> | undefined;
+      if (!seed) {
+        skipped('N-06b listInvalid 反例对照', '门内库无计划行可作脏值模板');
+      } else {
+        const before = PC.listInvalid(PID).length;
+        const dirty = { ...seed, id: 'gate-n06-dirty', title: 'N06 脏复杂度', complexity: 99, archived: 0 };
+        raw.prepare(`INSERT INTO plan_tasks (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`)
+          .run(...cols.map((c) => dirty[c] ?? null));
+        const hit = PC.listInvalid(PID) as Array<{ title: string; complexity: number }>;
+        raw.prepare("DELETE FROM plan_tasks WHERE id = 'gate-n06-dirty'").run();
+        const after = PC.listInvalid(PID).length;
+        ok('N-06b listInvalid 有牙（门自身临时库里造一行 complexity=99，产品函数必须点名它；清掉后即归位）',
+          hit.length === before + 1 && hit.some((h) => h.title === 'N06 脏复杂度' && h.complexity === 99) && after === before,
+          { 造脏值前: before, 命中: hit.map((h) => `${h.title}=${h.complexity}`), 清掉后: after });
+      }
+      raw.close();
+    }
+    // 产品模块在父进程里另开了一条连接，不收掉会锁住临时库文件、让结尾的 DATA_DIR 回收失败
+    const { closeDb } = await import('../server/src/db/connection.ts');
+    closeDb();
+  } catch (e) {
+    skipped('N-06 clampComplexity/listInvalid 产品真函数取证', `产品模块不可导入：${(e as Error).message.slice(0, 120)}`);
+  }
+} catch (e) {
+  ok('N 组执行异常', false, { error: (e as Error).message, stack: (e as Error).stack?.slice(0, 400) });
 }
 
 // =====================================================================
@@ -399,7 +651,10 @@ writeGateResults(join(ROOT, '.workbuddy'), 't02131-gate-results.txt', summary, {
 writeGateResults(join(ROOT, '.workbuddy'), 't02131-gate-results.json', JSON.stringify({ pass, fail, results }, null, 2), { port: PORT, dataDir: DATA_DIR });
 console.log(`\n${summary}`);
 
-for (let i = 0; i < 5; i++) {
-  try { rmSync(DATA_DIR, { recursive: true, force: true }); break; } catch { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500); }
+let cleaned = false;
+for (let i = 0; i < 12; i++) {
+  try { rmSync(DATA_DIR, { recursive: true, force: true }); cleaned = true; break; }
+  catch { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500); }
 }
+if (!cleaned) console.log(`⚠ 临时库目录未回收（句柄仍被占用，需手工删）：${DATA_DIR}`);
 process.exit(fail === 0 ? 0 : 1);
