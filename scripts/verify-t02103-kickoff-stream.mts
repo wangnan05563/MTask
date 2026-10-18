@@ -2,9 +2,11 @@
  * T02103 门：SSE 流式生成接口（技术方案 §2.3 / PRD FR-1.4 FR-4.8 验收 9）。
  *
  * 断言：
- *   S 组 契约守卫（T02293 判据 1/3 改判）：15 条字面锚点**全部降级为配对项的字面腿**——
+ *   S 组 契约守卫（T02293 判据 1/3 改判）：18 条字面锚点**全部降级为配对项的字面腿**——
  *                  行为腿取自 G/E 组的线上帧、下载工件、tmp 目录、并发闸实测与 B 组夹具调用，
  *                  在 E 组跑完后统一发射（okPair），红因区分「行为失守」与「等价重构换措辞」。
+ *                  字面腿的取证对象是 `git show HEAD:` 的已提交树（批⑫ · 反模式 11：读工作树会把
+ *                  并发会话的半成品算成本门的红），并有一条 S-00 钉住「四份源码都取到了」。
  *   G 组 现场行为：措辞配额自检（无风险/沟通页零模型调用）、落盘唯一性（未下载时 tmp 恰一个 UUID 文件）、
  *                  周报两条链路令牌可下载（同一收口点）、并发闸 3+1 路实测（2 放行 / 1 拒 / 周报同闸被拒）。
  *   X 组 改名模拟（判据 3~4）：门内夹具项目改名后下载名跟着改、旧名零残留。
@@ -21,12 +23,12 @@
  * 用法（与 T02095/T02096 同口径，better-sqlite3 需匹配当前 Node ABI）：
  *   node node_modules/tsx/dist/cli.mjs scripts/verify-t02103-kickoff-stream.mts
  * 环境变量：`T02103_PORT`（默认随机 39700+rand300）。
- * 隔离纪律（skill 红线 8）：库副本/端口/临时目录全临时，不写生产库，mock 不消耗真实配额。
+ * 隔离纪律（skill 红线 8）：空库（批⑫ 起不再复制生产库）+ 随机端口 + 临时目录，全程不读不写生产库，mock 不消耗真实配额。
  * 结果落 .workbuddy/t02103-gate-results-<运行标识>.txt 与 t02103-stream-<运行标识>.pptx（T02309 旁证同标识）。
  */
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,6 +68,7 @@ const RT = {
   bAbortMsg: '', bMidAbortMsg: '', bTimerAbortMsg: '', bCallbackCount: 0, bBuiltPages: 0,
   bSeq: '', builderTmpDelta: 0,
   fastNoPid: 0, fastNoTool: 0, fastBadShape: 0, fastBadShapeCtype: '', fastAsks: 0,
+  doneFileName: '', promptBansOk: false, promptRiskBlockOk: false, noModelWarnText: '',
   unknownToolStatus: 0, unknownToolCtype: '', unknownToolErrorFrames: 0, errorShapeOk: false,
   stageShapesOk: false, doneFieldsOk: false, stageDenomOk: false, pageCount: 0,
   dlBytes: 0, dlMagic: false, tmpEmptyAfterDl: false, tmpFilesWhenKept: [] as string[],
@@ -99,14 +102,35 @@ let tables0 = '';
 const S = await import('../server/src/services/kickoffService.ts');
 const B = await import('../server/src/services/kickoffBuilder.ts');
 
-const RSRC = readFileSync(join(ROOT, 'server', 'src', 'services', 'ReportService.ts'), 'utf8');
-const SSRC = readFileSync(join(ROOT, 'server', 'src', 'services', 'kickoffService.ts'), 'utf8');
-const BSRC = readFileSync(join(ROOT, 'server', 'src', 'services', 'kickoffBuilder.ts'), 'utf8');
-const ROUTE = readFileSync(join(ROOT, 'server', 'src', 'routes', 'plans.ts'), 'utf8');
+/**
+ * 字面腿的取证对象 = **已提交树**（T02293 批⑫ / 反模式 11）。
+ * 读工作树时，并发会话留下的未完成产品文件会让红因指错地方（本门与 t02099 同族历史踩过）；
+ * 行为腿不受影响——它跑的是 tsx 直接 import 的同一份模块，两者不一致时恰好暴露「工作树未提交」。
+ */
+const HEAD_CACHE = new Map<string, string>();
+function headSrc(rel: string): string {
+  if (!HEAD_CACHE.has(rel)) {
+    let t = '';
+    try {
+      t = execFileSync('git', ['show', `HEAD:${rel}`], { cwd: ROOT, maxBuffer: 32 * 1024 * 1024 }).toString('utf8');
+    } catch (e) {
+      lines.push(`[WARN] git show HEAD:${rel} 取证失败：${(e as Error).message.slice(0, 140)}`);
+    }
+    HEAD_CACHE.set(rel, t);
+  }
+  return HEAD_CACHE.get(rel) as string;
+}
+const RSRC = headSrc('server/src/services/ReportService.ts');
+const SSRC = headSrc('server/src/services/kickoffService.ts');
+const BSRC = headSrc('server/src/services/kickoffBuilder.ts');
+const ROUTE = headSrc('server/src/routes/plans.ts');
 // 只截本端点这一段：plans.ts 有 900+ 行别的注册，整文件断言会把别人的写法算到我头上
 const routeCut = ROUTE.indexOf("planApi.post('/kickoff-ppt-stream'");
 const streamRoute = routeCut < 0 ? '' : ROUTE.slice(routeCut, ROUTE.indexOf('\nplanApi.', routeCut + 10));
 const streamSrc = SSRC.slice(SSRC.indexOf('// ---------- 流式生成'));
+ok('S-00 字面腿取证对象非空（git show HEAD: 四份源码都取到了，锚点不是对着空气判的）',
+  RSRC.length > 3000 && SSRC.length > 8000 && BSRC.length > 3000 && ROUTE.length > 3000 && !!streamRoute && !!streamSrc,
+  { ReportService: RSRC.length, kickoffService: SSRC.length, kickoffBuilder: BSRC.length, plans: ROUTE.length, streamRoute: streamRoute.length, streamSrc: streamSrc.length });
 
 // =====================================================================
 // S 组：契约守卫（T02293 判据 1/3 改判）
@@ -237,6 +261,30 @@ const S_PAIRS: Array<{ label: string; needsE?: boolean; behavior: () => boolean;
       /await yieldToLoop\(\);/.test(BSRC) && /setImmediate\(resolve\)/.test(BSRC),
     ctx: () => ({ 第2页取消后回调数: RT.bCallbackCount, 外部timer插入: RT.bTimerAbortMsg }),
   },
+  {
+    // 批⑫：下载名的三段式文案是 §2.4 契约文本，但「名字对不对」的行为事实不靠这四个字
+    label: 'S-16 下载名走 §2.4 三段式（类型前缀-项目名-数据日.pptx）：项目名与日期确实由入参推导',
+    needsE: true,
+    behavior: () =>
+      RT.doneFileName.endsWith('.pptx') && RT.doneFileName.includes(RT.fixtureName) && /20\d{6}/.test(RT.doneFileName),
+    literal: () => /^项目启动会-.+-20\d{6}\.pptx$/.test(RT.doneFileName),
+    ctx: () => ({ fileName: RT.doneFileName, 夹具名: RT.fixtureName }),
+  },
+  {
+    // 批⑫：提示词禁令是产品文案（模型行为由它决定），行为腿取「违约真被拒收」这一不依赖措辞的事实
+    label: 'S-17 措辞提示词写明数字/名称/条数三道禁令（禁令有牙：违约轮真被拒并降级，而非照单全收）',
+    needsE: true,
+    behavior: () => RT.degradeBadCount && RT.degradeBadNum,
+    literal: () => RT.promptBansOk,
+    ctx: () => ({ 提示词禁令命中: RT.promptBansOk, badCount降级: RT.degradeBadCount, badNum降级: RT.degradeBadNum }),
+  },
+  {
+    label: 'S-18 风险清单的本地条目原文进提示词（AI 只在系统枚举的事实上改措辞，看不到就没法编）',
+    needsE: true,
+    behavior: () => RT.sourceLocalInArtifact && RT.aiWordingInArtifact,
+    literal: () => RT.promptRiskBlockOk,
+    ctx: () => ({ 未落到页面上的本地出处: RT.sourceLocalMissing, 产物含AI措辞: RT.aiWordingInArtifact }),
+  },
 ];
 
 // =====================================================================
@@ -256,20 +304,32 @@ const good = {
   comms: ['周会跟里程碑节点走', '变更先登记进需求跟踪矩阵'],
 };
 const w1 = S.wordingFromAi(local, good);
-ok('W-01 合规改写通过：三条措辞落到页面文案', w1.risks[1].item.includes('14 条需求') && w1.comms[0] === '周会跟里程碑节点走');
+ok('W-01 合规改写通过：条目原样采纳（不裁字、不丢条、不改数）',
+  w1.risks.length === good.risks.length && w1.comms.length === good.comms.length &&
+    w1.risks.every((r, i) => r.item === good.risks[i].item && r.impact === good.risks[i].impact && r.mitigation === good.risks[i].mitigation) &&
+    w1.comms.every((c, i) => c === good.comms[i]),
+  { risks: w1.risks.map((r) => r.item), comms: w1.comms });
 ok('W-02 source 保持本地原值（模型没机会改溯源）', w1.risks.every((r, i) => r.source === LOCAL_RISKS[i].source));
-ok('W-03 增删条目拒收：风险条数 1≠2 点名「不得增删」',
-  /风险条目数 1 与系统枚举的 2 不一致/.test((() => { try { S.wordingFromAi(local, { ...good, risks: [good.risks[0]] }); return ''; } catch (e) { return String(e); } })()));
-ok('W-04 沟通口径条数同样钉死',
-  /沟通口径条数 3 与系统给出的 2 不一致/.test((() => { try { S.wordingFromAi(local, { ...good, comms: ['a', 'b', 'c'] }); return ''; } catch (e) { return String(e); } })()));
+/**
+ * 判据 3：措辞校验器抛出的**消息文案**是契约文本（面板/日志按它区分违约类型），
+ * 但「等价重构换了说法」与「根本不拒收了」两种红必须分开——所以每条都配对：
+ * 行为腿 = 这一路确实被拒收（抛错）；字面腿 = 消息里仍是这句人话。
+ */
 const expectErr = (label: string, payload: unknown, re: RegExp) => {
+  let threw = false;
+  let msg = '';
   try {
     S.wordingFromAi(local, payload);
-    ok(label, false, '未抛错');
   } catch (e) {
-    ok(label, re.test(String(e)), String(e));
+    threw = true;
+    msg = String(e);
   }
+  okPair(ok, label, () => threw, () => threw && re.test(msg), () => ({ 抛错: threw, 消息: msg.slice(0, 200) }));
 };
+expectErr('W-03 增删条目拒收：风险条数 1≠2 点名「不得增删」',
+  { ...good, risks: [good.risks[0]] }, /风险条目数 1 与系统枚举的 2 不一致/);
+expectErr('W-04 沟通口径条数同样钉死',
+  { ...good, comms: ['a', 'b', 'c'] }, /沟通口径条数 3 与系统给出的 2 不一致/);
 expectErr('W-05 数字幻觉拒收：凭空多出的 999 条', { ...good, comms: ['999 条变更每周复盘', good.comms[1]] }, /没有的数字「999」/);
 expectErr('W-06 百分比幻觉同样拒收', { ...good, comms: ['覆盖率 80% 每周复盘', good.comms[1]] }, /没有的数字「80」/);
 expectErr('W-07 名称幻觉拒收：「」里出现输入中没有的计划名',
@@ -291,35 +351,65 @@ ok('W-13 两份清单都空时只回空对象（不因此放弃整份稿）',
 const page = (i: number, over: Record<string, unknown> = {}) => ({
   section: '项目计划', title: `启动会页 ${i}`, bullets: ['范围与交付物'], dataKeys: ['preflight'], layout: 'table', ...over,
 });
-const shapeErr = (label: string, raw: unknown, re: RegExp, withPage = true) => {
+/**
+ * O 组同样按判据 3 配对：拒收（抛错）+ 点名坏字段所在页/坏值本身是**行为**，
+ * 「第 N 页缺标题」这类消息措辞是**字面锚点**。opts.page/echo 让行为腿不依赖措辞。
+ */
+const shapeErr = (label: string, raw: unknown, re: RegExp, opts: { page?: number; echo?: string } = {}) => {
+  let threw = false;
+  let msg = '';
   try {
     S.assertOutlineShape(raw);
-    ok(label, false, '未抛错');
   } catch (e) {
-    const msg = String(e);
-    ok(label, re.test(msg), msg);
-    if (withPage) ok(`${label}——逐页点名（面板才知道去改哪一页）`, /第 \d+ 页/.test(msg), msg);
+    threw = true;
+    msg = String(e);
+  }
+  const { page, echo } = opts;
+  okPair(ok, label, () => threw && (echo ? msg.includes(echo) : true), () => threw && re.test(msg),
+    () => ({ 抛错: threw, 消息: msg.slice(0, 200), 点名坏值: echo }));
+  if (page !== undefined) {
+    const nums = (msg.match(/\d+/g) ?? []).map(Number);
+    okPair(ok, `${label}——逐页点名（面板才知道去改哪一页）`,
+      () => threw && nums.includes(page), () => threw && /第 \d+ 页/.test(msg),
+      () => ({ 消息: msg.slice(0, 200), 点到的数字: nums, 期望页: page }));
   }
 };
 ok('O-01 合规大纲原样收（section/bullets/dataKeys/layout 齐）',
   S.assertOutlineShape([page(1), page(2)]).length === 2);
-shapeErr('O-02 空数组拒收（面板没确认就别开工）', [], /非空数组/, false);
-shapeErr('O-03 非数组拒收', { outline: [] }, /非空数组/, false);
-shapeErr('O-04 缺标题逐页点名', [page(1), page(2, { title: '  ' })], /第 2 页缺标题/);
-shapeErr('O-05 版式不在枚举 → 拒收（不能让 builder 拿到未知 layout 猜一套）', [page(1, { layout: 'gantt' })], /版式「gantt」不在枚举/);
-shapeErr('O-06 未知 dataKey → 拒收（拼错键会静默少一整块内容）', [page(1, { dataKeys: ['reqlists'] })], /未知数据键「reqlists」/);
-shapeErr('O-07 缺 dataKeys 数组 → 拒收', [page(1, { dataKeys: undefined })], /缺 dataKeys 数组/);
-shapeErr('O-08 bullet 混进非字符串 → 拒收', [page(1, { bullets: [3] })], /第 1 页第 2? 条要点不是字符串|不是字符串/);
-ok('O-09 section 缺失补「正文」（§3.2 口径），空 bullet 丢弃',
-  (() => {
+shapeErr('O-02 空数组拒收（面板没确认就别开工）', [], /非空数组/);
+shapeErr('O-03 非数组拒收', { outline: [] }, /非空数组/);
+shapeErr('O-04 缺标题逐页点名', [page(1), page(2, { title: '  ' })], /第 2 页缺标题/, { page: 2 });
+shapeErr('O-05 版式不在枚举 → 拒收（不能让 builder 拿到未知 layout 猜一套）', [page(1, { layout: 'gantt' })], /版式「gantt」不在枚举/, { page: 1, echo: 'gantt' });
+shapeErr('O-06 未知 dataKey → 拒收（拼错键会静默少一整块内容）', [page(1, { dataKeys: ['reqlists'] })], /未知数据键「reqlists」/, { page: 1, echo: 'reqlists' });
+shapeErr('O-07 缺 dataKeys 数组 → 拒收', [page(1, { dataKeys: undefined })], /缺 dataKeys 数组/, { page: 1 });
+shapeErr('O-08 bullet 混进非字符串 → 拒收', [page(1, { bullets: [3] })], /第 1 页第 2? 条要点不是字符串|不是字符串/, { page: 1 });
+okPair(ok, 'O-09 section 缺失补默认分组名（§3.2 口径），空 bullet 丢弃',
+  () => {
     const r = S.assertOutlineShape([page(1, { section: '  ', bullets: ['甲', '  ', '乙'] })]);
-    return r[0].section === '正文' && r[0].bullets.join() === '甲,乙';
-  })());
+    return r[0].bullets.join() === '甲,乙' && r[0].section.trim().length > 0 && r[0].section !== '  ';
+  },
+  () => {
+    const r = S.assertOutlineShape([page(1, { section: '  ', bullets: ['甲', '  ', '乙'] })]);
+    return r[0].section === '正文';
+  },
+  () => S.assertOutlineShape([page(1, { section: '  ', bullets: ['甲', '  ', '乙'] })])[0]);
 shapeErr('O-10 页数失控（>40）拒收，但 9 页这种用户手删不拦——12~18 是 AI 编排铁律不是装配铁律',
-  Array.from({ length: 41 }, (_, i) => page(i + 1)), /超出上限 40 页/, false);
+  Array.from({ length: 41 }, (_, i) => page(i + 1)), /超出上限 40 页/, { echo: '41' });
 ok('O-11 用户删到 9 页仍能装配（不把大纲段规则二次套上）', S.assertOutlineShape(Array.from({ length: 9 }, (_, i) => page(i + 1))).length === 9);
-ok('O-12 下载名按 §2.4：项目启动会-<项目名>-<YYYYMMDD>.pptx',
-  S.kickoffFileName('mtask五期', '2026-10-13') === '项目启动会-mtask五期-20261013.pptx');
+/**
+ * 判据 1/3：下载名的**模板文案**（`项目启动会-` 前缀 + `.pptx` 后缀）是 §2.4 契约文本，留作字面腿；
+ * 行为腿换成与文案无关的结构事实——同一函数换任意项目名/日期都得到「含该名、含紧凑日期、以 .pptx 结尾」，
+ * 且两个不同输入产出两个不同名字（名字真由入参推导，不是哪里写死的一串）。
+ */
+okPair(ok, 'O-12 下载名按 §2.4：项目启动会-<项目名>-<YYYYMMDD>.pptx',
+  () => {
+    const a = S.kickoffFileName('甲项目', '2026-01-05');
+    const b = S.kickoffFileName('乙项目', '2027-12-31');
+    return a.includes('甲项目') && a.includes('20260105') && a.endsWith('.pptx') &&
+      b.includes('乙项目') && b.includes('20271231') && b.endsWith('.pptx') && a !== b;
+  },
+  () => S.kickoffFileName('mtask五期', '2026-10-13') === '项目启动会-mtask五期-20261013.pptx',
+  () => ({ 甲: S.kickoffFileName('甲项目', '2026-01-05'), 乙: S.kickoffFileName('乙项目', '2027-12-31') }));
 
 // =====================================================================
 // B 组：装配接缝（夹具内构造，不连库不起服务）
@@ -379,13 +469,17 @@ const outlinePages = (n: number) =>
 
 {
   const seen: Array<{ n: number; section: string }> = [];
-  const built = await B.buildKickoffPpt(fixtureBundle, outlinePages(5), {
+  const fxOutline5 = outlinePages(5);
+  const built = await B.buildKickoffPpt(fixtureBundle, fxOutline5, {
     onPage: (n, item) => seen.push({ n, section: item.section }),
   });
   RT.bBuiltPages = built.pageCount;
   RT.bSeq = seen.map((s) => s.n).join();
-  ok('B-01 onPage 逐页回调：页码连续 1..N 且带章节名（stage 文案的原料）',
-    seen.map((s) => s.n).join() === '1,2,3,4,5' && seen[2].section === '项目风险' && seen[3].section === '沟通管理');
+  // 章节名比的是「回调里的那一页 == 传进去的那一页」（回显忠实），不是「产品里恰好有『项目风险』这四个字」
+  ok('B-01 onPage 逐页回调：页码连续 1..N 且章节名逐页回显（stage 文案的原料）',
+    seen.map((s) => s.n).join() === '1,2,3,4,5' && seen.length === fxOutline5.length &&
+      seen.every((s, i) => s.section === fxOutline5[i].section) && seen.every((s) => s.section.length > 0),
+    { seen, want: fxOutline5.map((o) => o.section) });
   ok('B-01b 不传 opts 与 T02099 行为一致（pageCount/warnings 齐，向后兼容既有门禁）',
     built.pageCount === 5 && Array.isArray(built.warnings) && built.buffer.length > 10_000);
 
@@ -534,14 +628,16 @@ const okE = (name: string, cond: boolean, extra?: unknown) => {
 };
 const { resolveServerLauncher } = await import('./isolated-server-launcher.mts');
 const LAUNCHER = resolveServerLauncher(ROOT, join(ROOT, 'server', 'src', 'index.ts'));
-const prodDb = join(process.env.APPDATA ?? '', 'MTask', 'data', 'mtask.db');
-{
-  const Database = (await import('better-sqlite3')).default;
-  const src = new Database(prodDb, { readonly: true });
-  await src.backup(join(DATA_DIR, 'mtask.db'));
-  src.close();
-}
-ok('E-00a 生产库只读副本已生成（不写生产库）', existsSync(join(DATA_DIR, 'mtask.db')));
+/**
+ * 判据 2（T02293 批⑫）：隔离实例从**空目录**起，库表由服务自身迁移建出。
+ * 旧写法 `new Database(生产库).backup(DATA_DIR/mtask.db)` 有两重问题：
+ * ① 门把生产业务数据搬进测试面，E 组的「能装配」里混着库里真实项目/计划；
+ * ② 「副本已生成」这条断言本身就是在断言生产库某条业务行的存在性（判据 2 明令禁止）。
+ * 夹具项目/计划全部由门在 E-00c 自建，因此空库不影响任何一条判据。
+ */
+ok('E-00a 隔离数据目录里没有库文件（不复制生产库，库表由服务自建；门内夹具稍后再建）',
+  readdirSync(DATA_DIR).every((f) => f === 'tmp') && !readdirSync(DATA_DIR).some((f) => /\.(db|sqlite3?|db-wal|db-shm)$/i.test(f)),
+  readdirSync(DATA_DIR));
 
 const child: ChildProcess = spawn(LAUNCHER.exec, LAUNCHER.tsx, {
   cwd: ROOT,
@@ -704,10 +800,11 @@ if (!(await waitUp())) {
   // 快速失败探针可能各自落过盘（未知工具那类会降级出稿），先清场再测「零残留」——
   // 否则 E-03e 的空目录判据会被自己的前一个探针污染（实测踩过：残留 1 个令牌）
   readdirSync(TMP_DIR).forEach((f) => rmSync(join(TMP_DIR, f), { force: true }));
-  okE('E-01 缺 projectId / 缺 toolId / 大纲坏形状 → 结构化 400 且不是 event-stream（零 mock 请求、零装配）',
-    noPid.status === 400 && !noPid.ctype.includes('event-stream') && noTool.status === 400 &&
-      badShape.status === 400 && /第 1 页缺标题/.test(String(badShape.json?.error)) && mockRequests.length === 0,
-    { noPid: noPid.status, noTool: noTool.status, badShape: badShape.json, asks: mockRequests.length });
+  okPair(okE, 'E-01 缺 projectId / 缺 toolId / 大纲坏形状 → 结构化 400 且不是 event-stream（零 mock 请求、零装配）',
+    () => noPid.status === 400 && !noPid.ctype.includes('event-stream') && noTool.status === 400 &&
+      badShape.status === 400 && mockRequests.length === 0 && !!String(badShape.json?.error ?? ''),
+    () => /第 1 页缺标题/.test(String(badShape.json?.error)),
+    () => ({ noPid: noPid.status, noTool: noTool.status, badShape: badShape.json, asks: mockRequests.length }));
 
   // E-02 正常链路：逐页 stage + done
   mockMode = 'good';
@@ -733,20 +830,26 @@ if (!(await waitUp())) {
     !((dones[0]?.data?.warnings ?? []) as string[]).some((w) => w.startsWith(S.KICKOFF_WORDING_FALLBACK_MSG));
   okE('E-02a done 事件恰好 1 条且无 error 事件', dones.length === 1 && !good1.events.some((e) => e.event === 'error'),
     good1.events.map((e) => e.event).join(','));
-  okE('E-02b done 负载字段齐（token 是 UUID、fileName 合规、pageCount ≥ 大纲 13 页、warnings 是数组）',
+  RT.doneFileName = String(dones[0]?.data?.fileName ?? '');
+  okE('E-02b done 负载字段齐（token 是 UUID、名字由入参推导、pageCount ≥ 大纲 13 页、warnings 是数组）',
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(dones[0]?.data?.token)) &&
-      /^项目启动会-.+-20\d{6}\.pptx$/.test(String(dones[0]?.data?.fileName)) && reportPages >= 13 &&
-      Array.isArray(dones[0]?.data?.warnings), dones[0]?.data);
+      RT.doneFileName.endsWith('.pptx') && RT.doneFileName.includes(RT.fixtureName) && /20\d{6}/.test(RT.doneFileName) &&
+      reportPages >= 13 && Array.isArray(dones[0]?.data?.warnings), dones[0]?.data);
+  // 这里的正则是**取材选择器**（从 stage 流里挑出逐页装配那几条），判据本身是条数/页序/分母同源；
+  // 「页 n/N 已装配」这句文案作为契约锚点在 S-14 配对（行为腿 = 下面这条同源事实）。
   okE('E-02c 逐页 stage 按页序一条不拆，且分母与 done.pageCount 同源（分页后页码不错位）',
     pageStages.length === reportPages && pageStages.every((e, i) => String(e.data.msg).startsWith(`页 ${i + 1}/${reportPages} 已装配：`)),
     { stages: stages.map((e) => e.data.msg).slice(0, 6), reportPages });
-  okE('E-02d 措辞段发过一次 askJson 且提示词写明「数字/名称/条数」三道禁令',
+  RT.promptBansOk =
     mockRequests.length === 1 && /严禁新增输入里没有的数字/.test(mockRequests[0].system) &&
-      /「」内的计划名/.test(mockRequests[0].system) && /条目数量与顺序必须与输入完全一致/.test(mockRequests[0].system),
-    mockRequests.length);
-  okE('E-02e 风险清单原文进提示词（AI 只能在这四条本地条目上改措辞，看不到就别编）',
-    /风险条目（系统按本地规则枚举/.test(mockRequests[0]?.user ?? '') && /出处：plan_tasks\./.test(mockRequests[0]?.user ?? ''),
-    (mockRequests[0]?.user ?? '').slice(0, 200));
+      /「」内的计划名/.test(mockRequests[0].system) && /条目数量与顺序必须与输入完全一致/.test(mockRequests[0].system);
+  okE('E-02d 措辞段恰好发一次 askJson（一次调用覆盖风险+沟通两段，不逐条烧配额）',
+    mockRequests.length === 1 && mockRequests[0].user.length > 200, { asks: mockRequests.length, systemLen: mockRequests[0]?.system?.length });
+  const promptSources = [...(mockRequests[0]?.user ?? '').matchAll(/出处：([^\n|]+)/g)].map((m) => m[1].trim()).filter(Boolean);
+  RT.promptRiskBlockOk =
+    /风险条目（系统按本地规则枚举/.test(mockRequests[0]?.user ?? '') && /出处：plan_tasks\./.test(mockRequests[0]?.user ?? '');
+  okE('E-02e 提示词把本地枚举行的「出处」逐条带上（可数：至少一条且每条都非空，出处是库里原文不经模型）',
+    promptSources.length >= 1 && promptSources.every((s) => s.length > 3), { 枚举出处: promptSources });
 
   // E-03 令牌换回真产物（下载即删，命名走 §2.4）
   const token1 = String(dones[0]?.data?.token);
@@ -841,12 +944,13 @@ if (!(await waitUp())) {
   mockRequests.length = 0;
   const noModel = await sse('/plans/kickoff-ppt-stream', body({ toolId: noModelId }));
   const noModelDone = noModel.events.find((e) => e.event === 'done');
-  RT.degradeNoModel =
-    !!noModelDone && mockRequests.length === 0 && ((noModelDone?.data?.warnings ?? []) as string[]).some((w) => /所选模型未配置/.test(w));
-  okE('E-06 未配 model 的工具 → 仍出稿，warnings 原文透传「所选模型未配置…」且零 mock 请求',
-    !!noModelDone && mockRequests.length === 0 &&
-      ((noModelDone?.data?.warnings ?? []) as string[]).some((w) => /所选模型未配置/.test(w)),
-    { warns: (noModelDone?.data?.warnings ?? []).slice(0, 2), asks: mockRequests.length });
+  const noModelWarns = ((noModelDone?.data?.warnings ?? []) as string[]);
+  RT.noModelWarnText = noModelWarns.join(' | ');
+  RT.degradeNoModel = !!noModelDone && mockRequests.length === 0 && noModelWarns.length > 0;
+  okPair(okE, 'E-06 未配 model 的工具 → 仍出稿，warnings 原文透传「所选模型未配置…」且零 mock 请求',
+    () => RT.degradeNoModel,
+    () => /所选模型未配置/.test(RT.noModelWarnText),
+    () => ({ warns: noModelWarns.slice(0, 2), asks: mockRequests.length }));
 
   // -------------------------------------------------------------------
   // G 组：单源收口 / 共用闸 / 配额自检的**现场行为**（S 组配对项的行为腿来源）
@@ -916,9 +1020,10 @@ if (!(await waitUp())) {
   RT.weeklyRejected = weeklyRes.status === 429;
   okE('G-04a 并发闸有牙：3 路 kickoff 同时进来 → 恰好 1 路 429（闸被摘掉时这里 0×429）',
     RT.gateAccepted === 2 && RT.gateRejected === 1, { 放行: RT.gateAccepted, 拒绝: RT.gateRejected, 状态: kick.map((r) => r.status) });
-  okE('G-04b 与周报共用同一闸：kickoff 占满时周报请求同样被拒 429',
-    RT.weeklyRejected && /导出任务过多/.test(String(weeklyRes.body?.error ?? '')),
-    { status: weeklyRes.status, error: weeklyRes.body?.error });
+  okPair(okE, 'G-04b 与周报共用同一闸：kickoff 占满时周报请求同样被拒 429',
+    () => RT.weeklyRejected && weeklyRes.status === 429,
+    () => /导出任务过多/.test(String(weeklyRes.body?.error ?? '')),
+    () => ({ status: weeklyRes.status, error: weeklyRes.body?.error }));
   readdirSync(TMP_DIR).forEach((f) => rmSync(join(TMP_DIR, f), { force: true }));
 
   // -------------------------------------------------------------------
@@ -1047,6 +1152,27 @@ lines.push('== N 组：负对照（证明上面的判据有牙，不是恒绿）
     listTablesAt(scratch) !== tables0 && listTables() === tables0,
     { 临时库: listTablesAt(scratch).slice(0, 60), 门内库含zzz: listTables().includes('zzz') });
   rmSync(scratch, { force: true });
+
+  // N-08 配对器本身的对照面（批⑫ 新加的 6 条腿全靠这套归因，归因错了等于没配对）
+  {
+    const rec: Array<{ name: string; cond: boolean; extra?: unknown }> = [];
+    const fakeOk = (name: string, cond: boolean, extra?: unknown) => { rec.push({ name, cond, extra }); };
+    okPair(fakeOk, 'p1', () => false, () => true, () => null);
+    okPair(fakeOk, 'p2', () => true, () => false, () => null);
+    okPair(fakeOk, 'p3', () => true, () => true, () => null);
+    const dump = JSON.stringify(rec);
+    ok('N-08 配对器分得清两种红：行为假记「行为失守」、字面假记「字面锚点失配（行为在）」、双真才 PASS（恒真式配对在这里会红）',
+      rec.length === 3 && rec[0].cond === false && /行为失守/.test(dump) &&
+        rec[1].cond === false && /字面锚点失配/.test(dump) && rec[2].cond === true, dump.slice(0, 300));
+  }
+  // N-09 名字判据两条腿各有反例：只换前缀是等价重构（行为真/字面假），把项目名整个摘掉才是行为失守
+  {
+    const nameStruct = (n: string, proj: string, dateCompact: string) => n.endsWith('.pptx') && n.includes(proj) && n.includes(dateCompact);
+    ok('N-09 下载名两条腿都有对照面：等价换前缀时行为真而字面假；丢了项目名时行为假（S-16/O-12 不是恒真式）',
+      nameStruct('启动会-甲项目-20260105.pptx', '甲项目', '20260105') === true &&
+        /^项目启动会-.+-20\d{6}\.pptx$/.test('启动会-甲项目-20260105.pptx') === false &&
+        nameStruct('项目启动会--20260105.pptx', '甲项目', '20260105') === false);
+  }
 }
 
 child.kill();
