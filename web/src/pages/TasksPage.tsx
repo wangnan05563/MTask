@@ -8,6 +8,7 @@ import { askConfirm, askInput } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown';
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { TaskDetailDrawer, type TaskDetailTab, type TaskPatch } from '../components/TaskDetailDrawer'; // T01562：真抽屉详情
+import { FilePreviewDrawer } from '../components/FilePreviewDrawer'; // T02389：正文文件超链接抽屉预览
 import { focusPlanNode, focusTaskByNo, type FocusTaskIntent } from '../ui/focusTask'; // T01568：外部跳转定位意图（通知/铃铛/就绪条）；T02196：徽标点击定位
 import { ProjectListHint, getProjectListSnapshot, patchProject, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：选中项有效性校验失败态提示；T02257：AI 工具列表同层接入
@@ -236,6 +237,8 @@ export function TasksPage() {
   // T01568：抽屉落位标签页——外部跳转（focusTaskByNo 传 'result' 等）写入 focusDrawerTab，开抽屉即落该页；
   // 手动开抽屉不写（保持 null → 抽屉默认「描述」），两套入口互不污染。
   const [drawerTab, setDrawerTab] = useState<TaskDetailTab | null>(null);
+  // T02389：正文文件链接 → 右侧预览抽屉（同一时刻只展示一个文件；再次点击替换 path）
+  const [filePreview, setFilePreview] = useState<{ taskId: string; path: string } | null>(null);
   const [focusDrawerId, setFocusDrawerId] = useSessionState<string>('tasks.focusDrawerId', '');
   const [focusDrawerTab, setFocusDrawerTab] = useSessionState<string>('tasks.focusDrawerTab', '');
   // T02196：标题区「派生自」徽标点击定位——badgeLocate 承载待定位的父任务，locateFlashId 驱动高亮动画。
@@ -768,6 +771,7 @@ export function TasksPage() {
   const openDetailDrawer = (t: Task, tab?: TaskDetailTab | null): void => {
     setDrawerTab(tab === undefined ? drawerTabFromInline(t) : tab);
     setDrawerTask(t);
+    setFilePreview(null); // T02389：详情抽屉与文件预览不同层叠加，开详情先收起文件预览
   };
 
   /**
@@ -2378,7 +2382,12 @@ export function TasksPage() {
         {t.description && (
           // MarkdownContent 提供「渲染/源码」切换，样式与提示词管理页一致；
           // 外层不再设高度/滚动限制，避免渲染视图被截断而出现差异（滚动由组件内部处理）
-          <MarkdownContent content={t.description} showCopy />
+          // T02389：正文中的文件路径渲染为可点击链接，点击后在右侧抽屉预览
+          <MarkdownContent
+            content={t.description}
+            showCopy
+            onFileClick={(path) => setFilePreview({ taskId: t.id, path })}
+          />
         )}
         {t.images.length > 0 && (
           <div style={{ marginTop: t.description ? 8 : 0, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -2601,7 +2610,11 @@ export function TasksPage() {
           // 有值展示 Markdown；无值且展开（理论上按钮点击即进入编辑，此处为收起按钮单独状态兜底）
           <div style={{ padding: 6 }}>
             {t.handle_result ? (
-              <MarkdownContent content={t.handle_result} showCopy />
+              <MarkdownContent
+                content={t.handle_result}
+                showCopy
+                onFileClick={(path) => setFilePreview({ taskId: t.id, path })}
+              />
             ) : (
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>暂无处理结果</span>
             )}
@@ -3916,6 +3929,14 @@ export function TasksPage() {
           onChanged={(patch) => applyTaskPatch(drawerTask.id, patch)}
         />
       )}
+
+      {/* T02389：正文文件链接 → 右侧抽屉预览（同一时刻仅一个文件，再次点击替换） */}
+      <FilePreviewDrawer
+        open={filePreview !== null}
+        projectId={activeProject}
+        path={filePreview?.path ?? ''}
+        onClose={() => setFilePreview(null)}
+      />
     </section>
   );
 }

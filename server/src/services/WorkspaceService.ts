@@ -1,6 +1,6 @@
-import { readFileSync, readdirSync, statSync, watch } from 'node:fs';
+import { readFileSync, readdirSync, statSync, watch, openSync, readSync, closeSync } from 'node:fs';
 import type { FSWatcher } from 'node:fs';
-import { join, resolve, sep, extname } from 'node:path';
+import { join, resolve, sep, extname, basename } from 'node:path';
 import { getDb } from '../db/connection';
 import { v4 as uuid } from 'uuid';
 import { isWordFieldToken } from '../util/wordFields'; // T00814：关键词提取排除 Word 域代码标识符
@@ -416,6 +416,78 @@ function safeResolve(workspace: string, relPath: string): string {
   return abs;
 }
 
+/**
+ * T02389：任务描述/处理结果里的文件超链接预览。
+ * 只做「读文本 / 读图片字节」，不执行、不下载、不内嵌 HTML/SVG：
+ * 可执行与二进制类型一律返回 unsupported 提示；工作空间内相对路径沿用防穿越 + 忽略规则，
+ * 外部路径仅允许本机普通文件，拒绝 UNC/设备路径与 Windows 保留设备名。
+ */
+const PREVIEW_TEXT_MAX_BYTES = 256 * 1024;
+const PREVIEW_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+
+const PREVIEW_IMAGE_MIME: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.webp': 'image/webp', '.bmp': 'image/bmp', '.ico': 'image/x-icon',
+};
+
+/** 明确不读的可执行/二进制类型（与「未知类型按文本嗅探」区分，直接给友好提示） */
+const PREVIEW_BLOCKED_EXTS = new Set([
+  '.exe', '.dll', '.msi', '.msix', '.com', '.scr', '.sys', '.drv', '.ocx', '.cpl',
+  '.jar', '.node', '.so', '.dylib', '.bin', '.iso', '.img', '.zip', '.7z', '.rar', '.gz',
+  '.tar', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.db', '.sqlite',
+]);
+
+const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+
+/** file:// URL → 本机绝对路径；网络共享（file://host/...）拒绝 */
+function decodeFileUrl(raw: string): string {
+  if (!/^file:/i.test(raw)) return raw;
+  let s = raw.replace(/^file:\/\//i, '');
+  try { s = decodeURIComponent(s); } catch { throw new Error('文件链接的百分号编码不合法'); }
+  if (s.startsWith('//')) throw new Error('不支持网络共享（UNC）文件链接，仅允许本机文件');
+  if (/^localhost\//i.test(s)) s = s.slice('localhost/'.length);
+  // file:///D:/x → /D:/x；POSIX 的 /home/... 保持原样
+  if (/^\/[A-Za-z]:[\\/]/.test(s)) s = s.slice(1);
+  return s;
+}
+
+/** 去掉链接里常见的行号锚（#L12 / :12），失败时由调用方提示原始路径 */
+function stripLineAnchor(raw: string): string {
+  let s = raw.replace(/#L\d+(?:-L\d+)?$/i, '');
+  if (!/^[A-Za-z]:/.test(s)) s = s.replace(/:\d+(?::\d+)?$/, '');
+  return s;
+}
+
+function assertPreviewPath(p: string): void {
+  if (!p) throw new Error('文件路径为空');
+  if (p.length > 4096) throw new Error('文件路径过长');
+  if (p.includes('\0')) throw new Error('文件路径包含非法字符');
+  if (/^\\\\|^\/\//.test(p)) throw new Error('不支持网络共享（UNC）或设备路径，仅允许本机文件');
+  for (const seg of p.replaceAll('\\', '/').split('/')) {
+    if (WINDOWS_RESERVED_NAME.test(seg.replace(/\.[^.]*$/, ''))) throw new Error('不支持系统保留设备名路径');
+  }
+}
+
+/** 只读文件头部，避免大文件整读进内存 */
+function readHead(abs: string, maxBytes: number, size: number): Buffer {
+  const length = Math.min(maxBytes, size);
+  if (length <= 0) return Buffer.alloc(0);
+  const fd = openSync(abs, 'r');
+  try {
+    const buf = Buffer.alloc(length);
+    const read = readSync(fd, buf, 0, length, 0);
+    return read === length ? buf : buf.subarray(0, read);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export type FilePreview =
+  | { kind: 'text' | 'markdown'; path: string; name: string; source: 'workspace' | 'external'; size: number; mtime: string; content: string; truncated: boolean }
+  | { kind: 'image'; path: string; name: string; source: 'workspace' | 'external'; size: number; mtime: string; dataUrl: string; mime: string }
+  | { kind: 'unsupported'; path: string; name: string; source: 'workspace' | 'external'; size: number; mtime: string; reason: string };
+
+
 interface SearchCtx {
   rules: IgnoreRule[];
   globRe: RegExp | null;
@@ -797,6 +869,57 @@ export const WorkspaceService = {
       out.push(l);
     }
     return { path: relPosix, totalLines: lines.length, offset: off, lines: out, truncated: off + out.length < lines.length };
+  },
+
+  /**
+   * T02389：按任务正文里的链接打开文件预览。
+   * relPath 支持 workspace 相对路径、本机绝对路径、file:// URL；返回文本 / Markdown / 图片 data URL，
+   * 其余类型给 unsupported 原因（不读取可执行内容）。所有错误以中文原因抛出，由路由转 400 供抽屉友好展示。
+   */
+  previewFile(projectId: string, rawPath: string): FilePreview {
+    const requested = stripLineAnchor(decodeFileUrl(String(rawPath ?? '').trim()).trim());
+    assertPreviewPath(requested);
+    const absolute = /^[A-Za-z]:[\\/]/.test(requested) || requested.startsWith('/') || requested.startsWith('\\');
+    let abs: string;
+    let source: 'workspace' | 'external';
+    if (absolute) {
+      abs = resolve(requested);
+      source = 'external';
+    } else {
+      const { workspace, rules } = getProjectWorkspace(projectId);
+      const relPosix = requested.replaceAll('\\', '/').replace(/^\.\//, '').replace(/^\/+/, '');
+      if (!relPosix) throw new Error('文件路径为空');
+      if (isIgnored(relPosix, false, rules)) throw new Error('该文件在忽略列表内（.mtaskignore / 内置规则），不可读取');
+      abs = safeResolve(workspace, relPosix);
+      source = 'workspace';
+    }
+    let st;
+    try { st = statSync(abs); } catch { throw new Error(`文件不存在或不可访问：${abs}`); }
+    if (!st.isFile()) throw new Error(st.isDirectory() ? '目标是文件夹，暂不支持文件夹预览' : '目标不是普通文件，无法预览');
+    const name = basename(abs);
+    const ext = extname(abs).toLowerCase();
+    const meta = { path: abs, name, source, size: st.size, mtime: new Date(st.mtimeMs).toISOString() };
+    if (PREVIEW_BLOCKED_EXTS.has(ext)) {
+      return { ...meta, kind: 'unsupported', reason: `暂不支持预览 ${ext} 类型（不会加载或执行该文件）` };
+    }
+    const imageMime = PREVIEW_IMAGE_MIME[ext];
+    if (imageMime) {
+      if (st.size > PREVIEW_IMAGE_MAX_BYTES) throw new Error(`图片过大（${(st.size / 1024 / 1024).toFixed(1)}MB），超过 10MB 预览上限`);
+      const buf = readHead(abs, PREVIEW_IMAGE_MAX_BYTES, st.size);
+      return { ...meta, kind: 'image', dataUrl: `data:${imageMime};base64,${buf.toString('base64')}`, mime: imageMime };
+    }
+    // 已知文本类型，或无扩展名/未知类型：嗅探 NUL。未知类型也只读头部，二进制直接给提示
+    const head = readHead(abs, PREVIEW_TEXT_MAX_BYTES, st.size);
+    if (head.includes(0)) {
+      return { ...meta, kind: 'unsupported', reason: '该文件是二进制内容，暂不支持预览（不会加载或执行）' };
+    }
+    const content = head.toString('utf8').replace(/^\uFEFF/, '');
+    return {
+      ...meta,
+      kind: ext === '.md' || ext === '.markdown' || ext === '.mdx' ? 'markdown' : 'text',
+      content,
+      truncated: st.size > head.length,
+    };
   },
 
   // ---------- T00777：轻量符号索引（P1：读得懂） ----------

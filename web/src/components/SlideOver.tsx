@@ -8,12 +8,17 @@ import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 
-export function SlideOver({ open, title, onClose, children, width = 480 }: {
+/** T02389：抽屉可嵌套（任务详情 → 文件预览），ESC 只应由最上层响应，避免一次按键连关两层 */
+const openDrawers: symbol[] = [];
+
+export function SlideOver({ open, title, onClose, children, width = 480, passthrough = false }: {
   readonly open: boolean;
   readonly title?: string;
   readonly onClose: () => void;
   readonly children: ReactNode;
   readonly width?: number;
+  /** T02389：非阻塞模式——遮罩不拦截背景点击（文件预览打开时可直接点正文里的下一个链接替换内容） */
+  readonly passthrough?: boolean;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const prevFocus = useRef<HTMLElement | null>(null);
@@ -34,6 +39,8 @@ export function SlideOver({ open, title, onClose, children, width = 480 }: {
 
   useEffect(() => {
     if (!open) return;
+    const token = Symbol('slideover');
+    openDrawers.push(token);
     prevFocus.current = document.activeElement as HTMLElement | null;
     // 打开后将焦点移入抽屉首个可聚焦控件
     const id = globalThis.setTimeout(() => {
@@ -43,31 +50,37 @@ export function SlideOver({ open, title, onClose, children, width = 480 }: {
       el?.focus();
     }, 60);
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.stopPropagation(); close(); }
+      if (e.key !== 'Escape') return;
+      if (openDrawers[openDrawers.length - 1] !== token) return; // 嵌套时先关最上层
+      e.stopPropagation(); close();
     };
     document.addEventListener('keydown', onKey, true);
     const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden'; // 抽屉打开期间锁定背景滚动
+    if (!passthrough) document.body.style.overflow = 'hidden'; // 抽屉打开期间锁定背景滚动（非阻塞层不锁）
     return () => {
       globalThis.clearTimeout(id);
       document.removeEventListener('keydown', onKey, true);
+      const at = openDrawers.lastIndexOf(token);
+      if (at >= 0) openDrawers.splice(at, 1);
       document.body.style.overflow = prevOverflow;
       prevFocus.current?.focus?.(); // 兜底：父级直接卸载（非经 close）时仍尝试归还焦点
     };
-  }, [open]);
+  }, [open, passthrough]);
 
   return createPortal(
     <div
       style={{
         position: 'fixed', inset: 0, zIndex: 1100,
-        pointerEvents: open ? 'auto' : 'none',
+        pointerEvents: open && !passthrough ? 'auto' : 'none',
         visibility: open ? 'visible' : 'hidden',
       }}
       aria-hidden={!open}
     >
       {/* 遮罩：rgba(0,0,0,.32) 点按关闭，淡入 200ms。
           键盘可达由组件自身的全局 Escape 监听（见上方 onKey）与面板右上角原生关闭按钮负责；
-          此处另补 Enter/Space 激活，使鼠标便捷路径与键盘路径同效。 */}
+          此处另补 Enter/Space 激活，使鼠标便捷路径与键盘路径同效。
+          T02389：passthrough 模式不渲染遮罩，背景正文保持可点击（用于连续点击不同文件链接替换预览）。 */}
+      {!passthrough && (
       <div /* NOSONAR: S6848 豁免——同项目遮罩统一口径（PlanPage:1029/TasksPage:3598 等）：点空白关闭是便捷辅助，正式关闭入口为 Esc 与原生关闭按钮；改原生 button 会被 App.tsx:207 全局 `button:hover…{transform:rotate(-1.5deg)}` 命中，整屏遮罩悬停即倾斜；补 role="button" 则复现 S6819 */
         tabIndex={-1}
         onClick={close}
@@ -77,11 +90,12 @@ export function SlideOver({ open, title, onClose, children, width = 480 }: {
           opacity: open ? 1 : 0, transition: 'opacity 200ms ease',
         }}
       />
+      )}
       {/* 抽屉面板：右进右出 translateX(100%)→0 300ms */}
       <div /* NOSONAR: S6819 豁免——面板常驻挂载、以transform/visibility/pointer-events动画；原生<dialog>不调showModal()不渲染且位于顶层，切换将重写开合动画模型 */
         ref={panelRef}
         role="dialog"
-        aria-modal="true"
+        aria-modal={passthrough ? undefined : 'true'}
         aria-labelledby={title ? titleId : undefined}
         aria-label={title ? undefined : '抽屉'}
         tabIndex={-1}
@@ -90,6 +104,7 @@ export function SlideOver({ open, title, onClose, children, width = 480 }: {
           width: `min(${width}px, 92vw)`, background: 'var(--card-bg)',
           boxShadow: '-8px 0 24px rgba(0,0,0,.18)', borderLeft: '1px solid var(--border)',
           display: 'flex', flexDirection: 'column',
+          pointerEvents: 'auto',
           transform: open ? 'translateX(0)' : 'translateX(100%)',
           transition: 'transform 300ms cubic-bezier(.22,1,.36,1)',
         }}
