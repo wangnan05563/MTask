@@ -334,10 +334,10 @@ export function layoutEstimate(input: EstimateExportInput): EstimateLayout {
   // ---- 引擎出数（红线 2：缓存值只来自这里）----
   const engineRows: EstimateEngineRow[] = [];
   for (const p of phaseRows) {
-    if (p.points) engineRows.push({ key: `phase:${p.phase}`, phase: p.phase, points: p.points, role: 'detail' });
+    engineRows.push({ key: `phase:${p.phase}`, phase: p.phase, points: p.points, role: 'detail' });
   }
   for (const d of devRows) {
-    if (d.points) engineRows.push({ key: d.planId, phase: 'dev', points: d.points, role: 'detail' });
+    engineRows.push({ key: d.planId, phase: 'dev', points: d.points, role: 'detail' });
   }
   if (subtotalRow) engineRows.push({ key: `subtotal:dev`, phase: 'dev', points: null, role: 'subtotal' });
   // T02304 口径甲：里程碑行照样喂进引擎并带 `planKind`——buildSummary 先按 planKind 判为结构性
