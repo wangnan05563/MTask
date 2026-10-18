@@ -21,6 +21,7 @@ import { FontColorButton } from '../ui/FontColorButton';
 import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00771：工作空间选择器（项目上下文根路径）
 import { WorkspaceSearchPanel } from '../ui/WorkspaceSearchPanel'; // T00786：工作空间全文检索面板（partial 提示）
 import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：正文 AI 美化（反馈/处理结果共用）
+import { classifyResultMessage, createClassifyStore, runClassifyBatch, type ClassifyResponse, type ClassifyStoreState } from './tasksClassifyBatch'; // T02307：批量分类三态分流 + 账户级门禁/连续失败熔断
 
 /** 顶部 tab 三态：待办 / 已完成 / 搁置（S4323：具名类型别名替代内联联合类型） */
 type ActiveTab = 'todo' | 'done' | 'shelved';
@@ -37,49 +38,20 @@ const DRAWER_TABS: readonly TaskDetailTab[] = ['desc', 'result', 'summary', 'tim
 // ---------- T00552：批量分类运行态模块级化——切页后循环继续、返回不卡死 ----------
 // T02365：补「没命中」的原因分桶——AI 判定无匹配、调用失败、分类候选为空要分得开，
 // 否则一律显示「未能为这些任务匹配到合适分类」，用户既不知道是配置问题还是模型没选中。
-export const classifyStore: {
-  busy: boolean; hit: number; total: number; done: boolean;
-  none: number; fail: number; lastError: string;
-} = { busy: false, hit: 0, total: 0, done: false, none: 0, fail: 0, lastError: '' };
-
-/** T02365：把分桶计数拼成一句可读结论（失败原因只取首条，避免刷屏） */
-function classifySummary(s: typeof classifyStore, includeHit = true): string {
-  const parts: string[] = [];
-  if (includeHit && s.hit > 0) parts.push(`成功 ${s.hit} 条`);
-  if (s.none > 0) parts.push(`${s.none} 条 AI 判定无合适分类`);
-  if (s.fail > 0) parts.push(`${s.fail} 条调用失败${s.lastError ? `（${s.lastError.slice(0, 120)}）` : ''}`);
-  return parts.join('，');
-}
+// T02307：三态判定与熔断（账户级门禁首次即停 / 连续 K 次失败）收敛在 tasksClassifyBatch.ts，门可直接驱动。
+export const classifyStore: ClassifyStoreState = createClassifyStore();
 
 async function runBatchClassifyModule(target: Array<{ id: string; title: string; priority: string }>, toolId: string, cats: Array<{ id: string; name: string }>): Promise<void> {
   if (classifyStore.busy) return;
   classifyStore.busy = true;
-  classifyStore.hit = 0; classifyStore.total = target.length; classifyStore.done = false;
-  classifyStore.none = 0; classifyStore.fail = 0; classifyStore.lastError = '';
   try {
-    for (const t of target) {
-      if (!classifyStore.busy) break; // 防御：外部复位即中止
-      try {
-        const r = await api.post<{ ok: boolean; categoryId?: string | null; priority?: string | null; error?: string }>('/tasks/classify', {
-          title: t.title.trim(), toolId, categories: cats,
-        });
-        if (!r.ok) {
-          classifyStore.fail += 1;
-          if (!classifyStore.lastError && r.error) classifyStore.lastError = r.error;
-          continue;
-        }
-        if (!r.categoryId) { classifyStore.none += 1; continue; }
-        const patch: { categoryId: string; priority?: string } = { categoryId: r.categoryId };
-        if (t.priority === 'normal' && r.priority) { patch.priority = r.priority; }
-        await api.patch(`/tasks/${t.id}`, patch);
-        classifyStore.hit += 1;
-      } catch (e) {
-        classifyStore.fail += 1;
-        if (!classifyStore.lastError) classifyStore.lastError = e instanceof Error ? e.message : String(e);
-      }
-    }
+    await runClassifyBatch({
+      target, toolId, categories: cats, store: classifyStore,
+      post: (path, body) => api.post<ClassifyResponse>(path, body),
+      patch: (path, body) => api.patch(path, body),
+      isActive: () => classifyStore.busy, // 防御：外部复位即中止
+    });
   } finally {
-    classifyStore.done = true;
     classifyStore.busy = false;
   }
 }
@@ -313,12 +285,8 @@ export function TasksPage() {
         setClassifyBusy(false);
         // T02365：结论按「成功 / AI 无匹配 / 调用失败」分桶说清，失败时带上首条错误原文，
         // 不再用一句「未能匹配」把配置故障和模型未选中混为一谈。
-        const rest = classifySummary(classifyStore, false);
-        flash(classifyStore.hit > 0
-          ? `批量分类完成 ${classifyStore.hit}/${classifyStore.total} 条${rest ? `（其余：${rest}）` : ''}`
-          : classifyStore.fail > 0
-            ? `批量分类未完成：${rest}`
-            : `AI 判定 ${classifyStore.total} 条任务均无合适分类（候选：${taskCats.map((c) => c.name).slice(0, 6).join('、') || '无'}）`);
+        // T02307：熔断中止时改说「中止 + 额度/限流」，与「无合适分类」彻底分开。
+        flash(classifyResultMessage(classifyStore, taskCats.map((c) => c.name)));
         void loadTasks(activeProject);
       }
     }, 1500);
