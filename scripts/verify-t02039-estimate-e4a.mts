@@ -232,7 +232,9 @@ const mkDerive = (planId: string, rule: string, o: number, m: number, p: number,
   // 调到 520，PRD 那一条没有回写 → 门里继续钉 420，等于把「文档里一版过期的实现细节」当长期判据，
   // 设计一动即恒红（同一常量已被 verify-t02039-e4-ui 改成「读实现声明值」）。
   // 这里只钉两条到今天仍然成立的口径：宽度是**单一来源常量**（全仓只声明一次、页面无第二处字面量），
-  // 且落在停靠面板的合理带宽内。「PRD §5.1 第 11 条 420 vs 实现 520」属需求文档未回写的口径漂移，另立单裁决。
+  // 且落在停靠面板的合理带宽内。「PRD §5.1 第 11 条 420 vs 实现 520」已由 T02318 裁决 A（以实现为准）
+  // 回写为 520（§5.1/§5.2/§10-13 同步）；按 T02293，S-17 不退回「等于某个字面量」——宽度仍允许在
+  // 320~760 带宽内演进，文档随实现同步。
   const decls = [...(src.match(/ESTIMATE_PANEL_WIDTH\s*=\s*\d+/g) || []), ...(page.match(/ESTIMATE_PANEL_WIDTH\s*=\s*\d+/g) || [])];
   ok('S-17 面板宽是单一来源常量（面板+页面合计只声明一次）且落在停靠带宽 320~760',
     Number.isInteger(P.ESTIMATE_PANEL_WIDTH) && P.ESTIMATE_PANEL_WIDTH >= 320 && P.ESTIMATE_PANEL_WIDTH <= 760
