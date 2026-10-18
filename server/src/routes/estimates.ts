@@ -12,6 +12,8 @@
  */
 import { Router } from 'express';
 import { getSetting, setSetting } from '../services/AppSettings';
+import { getDb } from '../db/connection'; // T02120：参数写入与留痕的同一事务
+import { EstimateParamLogService } from '../services/EstimateParamLog'; // T02120：参数改值留痕
 import { PlanService } from '../services/PlanService';
 import type { PlanTaskRow } from '../services/PlanService';
 import { exportGate } from '../util/export-gate';
@@ -172,6 +174,9 @@ estimateApi.get('/params', (req, res) =>
       config: resolveEstimateConfig(kv),
       defaults: DEFAULT_ESTIMATE_CONFIG,
       caseWeightK: effectiveCaseK(projectId),
+      // T02120（§12-R1 后半）：改值留痕随 params 一并下发——E13 参数页的「改值历史」区
+      // 直接读它，不为展示另开端点（留痕只有这一个消费面）。
+      logs: EstimateParamLogService.list(projectId),
     };
   }),
 );
@@ -198,19 +203,44 @@ estimateApi.put('/params', (req, res) =>
       entries.push([k, String(v).trim()]);
     }
     // 先全量试算再落库：一位小数写歪就是钱（与 EstimateService 批量通道同口径）
-    const merged: Record<string, string | null> = { ...readKv(projectId) };
+    const kvBefore = readKv(projectId); // T02120：留痕的「旧值」取自这一份原件（未合并本次写入）
+    const merged: Record<string, string | null> = { ...kvBefore };
     for (const [k, v] of entries) merged[k] = v;
-    resolveEstimateConfig(merged); // 只做校验，生效值在写后回读
+    resolveEstimateConfig(merged); // 只做校验，生效值在写后回读——越界在此抛出，零写入连留痕也没有
     for (const [k, v] of entries) {
       // k 不在 §3.3 的八键里，resolveEstimateConfig 看不到它——单独用同一把尺子（正数）校验
       if (k === SETTINGS_KEY_CASE_K || k.startsWith(SETTINGS_KEY_CASE_K_PROJECT)) resolveCaseWeightK(projectId, Number(v));
     }
-    for (const [k, v] of entries) setSetting(k, v);
+    // T02120：actor 取改前署名（本次操作者），未署名时回退本次新署名，再没有则空串
+    // （单机无账号体系，与 LogService 覆盖留痕「操作人可空」同口径）。
+    const actorBefore = (getSetting(ESTIMATE_REVIEWER_KEY) ?? '').trim();
+    const actorIncoming = ESTIMATE_REVIEWER_KEY in incoming
+      ? String(incoming[ESTIMATE_REVIEWER_KEY] ?? '').trim() : '';
+    const actor = actorBefore || actorIncoming;
     const cleared = Object.keys(incoming).filter((k) => !entries.some(([e]) => e === k));
-    for (const k of cleared) setSetting(k, '');
-    // 回读**写后**的生效值：拿试算时的 merged 当响应的话，清空类操作会显示成「没生效」
-    const after = readKv(projectId);
-    return { saved: Object.fromEntries(entries), cleared, config: resolveEstimateConfig(after), caseWeightK: effectiveCaseK(projectId) };
+    // 写入与留痕同一事务：要么连值带审计一起落，要么都不落（不存在「改了却没留痕」的中间态）
+    const written = getDb().transaction(() => {
+      for (const [k, v] of entries) setSetting(k, v);
+      for (const k of cleared) setSetting(k, '');
+      // 回读**写后**的生效值：拿试算时的 merged 当响应的话，清空类操作会显示成「没生效」
+      const after = readKv(projectId);
+      const config = resolveEstimateConfig(after);
+      const logged = EstimateParamLogService.recordChanges(
+        projectId,
+        actor,
+        kvBefore,
+        [...entries, ...cleared.map((k): [string, string] => [k, ''])],
+        config,
+      );
+      return { after, config, logged };
+    })();
+    return {
+      saved: Object.fromEntries(entries),
+      cleared,
+      config: written.config,
+      caseWeightK: effectiveCaseK(projectId),
+      logged: written.logged, // 本次实际留痕条数（no-op 写入为 0）
+    };
   }),
 );
 

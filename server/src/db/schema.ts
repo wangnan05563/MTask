@@ -453,6 +453,23 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_estimate_snapshots_project ON estimate_snapshots(project_id, created_at);
+
+    -- T02120（PRD §12-R1 后半）：估算参数改值留痕。PUT /api/estimates/params 每次成功写入
+    -- 按「实际发生变化的键」逐键落一条：谁（estimate.reviewer，单机无账号故可空）/何时/
+    -- 哪个键/旧值->新值/生效值快照（Σ系数、人月标准）。旧值取自同一份 KV 读、新值取自
+    -- 同一份 resolveEstimateConfig 生效结果——不为留痕开第二套估算数。越界被拒的 PUT
+    -- 零写入，连留痕一起不产生（§12-R1 与 R-40b 的零写入语义连审计一起守住）。
+    CREATE TABLE IF NOT EXISTS estimate_param_logs (
+      id         TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      actor      TEXT NOT NULL DEFAULT '',
+      key        TEXT NOT NULL,
+      old_value  TEXT NOT NULL DEFAULT '',
+      new_value  TEXT NOT NULL DEFAULT '',
+      effective  TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_estimate_param_logs_project ON estimate_param_logs(project_id, created_at);
   `);
 
   // 迁移兜底：老库缺列时补列（CREATE TABLE IF NOT EXISTS 对已存在表不生效）
