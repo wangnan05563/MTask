@@ -25,8 +25,8 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM [1/6] dependency check (npm workspaces installs node_modules at root)
-echo [1/6] Check dependencies...
+REM [1/7] dependency check (npm workspaces installs node_modules at root)
+echo [1/7] Check dependencies...
 if not exist "node_modules" (
     echo   node_modules missing, running npm install...
     call npm install --no-audit --no-fund
@@ -39,8 +39,8 @@ if not exist "node_modules" (
     echo   [OK] node_modules exists
 )
 
-REM [2/6] ensure electron binary is downloaded
-echo [2/6] Check electron binary...
+REM [2/7] ensure electron binary is downloaded
+echo [2/7] Check electron binary...
 if not exist "node_modules\electron\dist\electron.exe" (
     echo   electron.exe missing, downloading...
     call node "node_modules\electron\install.js"
@@ -53,8 +53,26 @@ if not exist "node_modules\electron\dist\electron.exe" (
     echo   [OK] electron.exe exists
 )
 
-REM [3/6] typecheck server
-echo [3/6] Typecheck server...
+REM [3/7] HEAD self-consistency precheck (T02355).
+REM The worktree is HEAD plus uncommitted WIP of concurrent sessions, so a green worktree
+REM typecheck does NOT prove the commit can be rebuilt. One shared implementation with
+REM the Node packing script step 3 and scripts/dist.js: scripts/lib/head-precheck.mjs.
+echo [3/7] HEAD self-consistency precheck...
+if /i "%MTASK_SKIP_HEAD_CHECK%"=="1" echo   [WARN] MTASK_SKIP_HEAD_CHECK is set - precheck not run, treat the artifact as an unreproducible temp build.
+node "scripts\lib\head-precheck.mjs" %*
+if errorlevel 1 (
+    echo [ERROR] HEAD is not self-consistent. Packaging aborted before any build step.
+    echo   Commit the missing definition first, or set MTASK_SKIP_HEAD_CHECK=1 for a temp build.
+    pause
+    exit /b 1
+)
+if /i "%MTASK_BUILD_STOP_AFTER_PRECHECK%"=="1" (
+    echo   Step [3/7] finished. Stop-after-precheck requested, build steps not entered.
+    exit /b 0
+)
+
+REM [4/7] typecheck server
+echo [4/7] Typecheck server...
 pushd server
 call npm run typecheck
 if errorlevel 1 (
@@ -65,8 +83,8 @@ if errorlevel 1 (
 )
 popd
 
-REM [4/6] build server
-echo [4/6] Build server...
+REM [5/7] build server
+echo [5/7] Build server...
 pushd server
 call npm run build
 if errorlevel 1 (
@@ -77,8 +95,8 @@ if errorlevel 1 (
 )
 popd
 
-REM [5/6] build web
-echo [5/6] Build web...
+REM [6/7] build web
+echo [6/7] Build web...
 pushd web
 call npm run build
 if errorlevel 1 (
@@ -89,11 +107,11 @@ if errorlevel 1 (
 )
 popd
 
-REM [6/6] package electron exe.
+REM [7/7] package electron exe.
 REM Bump version first so each build gets a distinct version.
 REM bump-version.js writes <major>.<minor>.<MMDD>.<seq>; both segments stay
 REM within Windows' 0..65535 per-segment limit (a raw 8-digit date would overflow).
-echo [6/6] Package electron exe...
+echo [7/7] Package electron exe...
 node "scripts\bump-version.js"
 if errorlevel 1 (
     echo [ERROR] version bump failed

@@ -19,6 +19,11 @@
  *      → 还原打包前 ABI → 尝试清理 win-unpacked
  *
  * 说明：
+ *  - **[3] 为什么必须在工作树 typecheck 之前**：本仓常年有并发会话 WIP，工作树是「HEAD + 未提交
+ *    hunk」的叠加态——「引用已入库、定义没入库」的缺口会被另一个会话的 WIP 恰好补齐，于是 [4] 步
+ *    全绿、安装包照样产出，但按那个 commit 重新 checkout 就编译不出来（发布件不可复现）。
+ *  - `--skip-head-check`：显式跳过 [3]，供「明知 HEAD 红、只想出临时包」使用；跳过会打成醒目一行，
+ *    不静默（静默跳过等于没这道门）。
  *  - electron-builder 子进程统一带 CODEBUDDY_SAFE_DELETE_ENABLED=0（shim 官方逃生开关）：
  *    打包产物目录的批量删除属构建必需行为，不能被安全删除守卫拦截。
  *  - 输出目录兜底：release/win-unpacked 被占用时依次尝试 release2..release9。
@@ -45,11 +50,6 @@ const runCapture = (cmd, args) => {
   return r.stdout.trim();
 };
 const log = (msg) => console.log(`[${++step}/7] ${msg}`);
-const softCapture = (cmd, args) => {
-  const r = spawnSync(cmd, args, { cwd: ROOT, encoding: 'utf8', shell: false });
-  return r.status === 0 ? r.stdout.trim() : '';
-};
-
 
 // [1] 依赖检查
 log('依赖检查…');
@@ -65,23 +65,16 @@ if (!fs.existsSync(path.join(ROOT, 'node_modules', 'electron', 'dist', 'electron
 }
 
 // [3] HEAD 自洽性预检（T02321）：判据打在提交上，不是工作树叠加态
-const SKIP_HEAD_CHECK = process.argv.includes('--skip-head-check');
-const TSX = path.join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
-const headSha = softCapture('git', ['rev-parse', '--short', 'HEAD']);
+// T02355：实现收口到 scripts/lib/head-precheck.mjs，与 dist.js / 构建打包.bat / build-pack-t.bat 共用同一份
+const { runHeadPrecheck, isRequestedSkip, shortHead } = await import('./lib/head-precheck.mjs');
+const SKIP_HEAD_CHECK = isRequestedSkip();
+const headSha = shortHead();
 if (SKIP_HEAD_CHECK) {
-  console.log(`\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!`);
-  console.log(`[3/7] !! SKIP-HEAD-CHECK：已跳过 HEAD 自洽性预检——commit ${headSha || '未知'} 可能编译不过，`);
-  console.log(`      本次产物按「不可复现的临时包」对待，不要作为正式版本分发。`);
-  console.log(`!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n`);
+  runHeadPrecheck({ skip: true, sha: headSha });
   step = 3; // 占位：保持后续步骤编号连续
 } else {
   log(`HEAD 自洽性预检（commit ${headSha || '未知'}）…`);
-  // 预检的临时 worktree 副本落在**仓库同级目录**——不猜盘符：那里必然是可写盘
-  // （本机 C: 常年 0 可用，指过去会假性写失败/SQLITE_FULL，把绿 HEAD 报成红）。
-  const r = spawnSync(NODE, [TSX, path.join(ROOT, 'scripts', 'verify-t02295-head-selfconsistency.mts')], {
-    stdio: 'inherit', cwd: ROOT, shell: false,
-    env: { ...process.env, T02295_TMP_ROOT: process.env.T02295_TMP_ROOT || path.join(path.dirname(ROOT), '.mtask-pack-tmp') },
-  });
+  const r = runHeadPrecheck({ sha: headSha });
   if (r.status !== 0) {
     fail(`HEAD 自洽性预检未通过（commit ${headSha || '未知'}）：该提交单独 checkout 编译不过，`
       + `安装包将不可复现。请补齐漏掉的提交（常见成因：定义留在工作树未入库）；`
@@ -118,25 +111,12 @@ log('切换 Electron ABI 并打包…');
 const prevAbi = snapshotWorkspaceAbi(ROOT);
 switchAbi(ROOT, 'electron', abiOpts);
 
-// 输出目录兜底：release 被占用（win-unpacked 无法清理）时依次尝试 release2..9
-const candidates = ['release', 'release2', 'release3', 'release4', 'release5', 'release6', 'release7', 'release8', 'release9'];
-let outDir = '';
-for (const dir of candidates) {
-  const unpacked = path.join(ROOT, dir, 'win-unpacked');
-  if (!fs.existsSync(unpacked)) { outDir = dir; break; }
-  try { fs.rmSync(unpacked, { recursive: true, force: true }); outDir = dir; break; } catch { /* 被占用，尝试下一目录 */ }
-}
-if (!outDir) fail('release 及 release2..9 的 win-unpacked 均被占用，无法打包。请关闭相关进程或删除目录后重试。');
-if (outDir !== 'release') console.log(`[WARN] release 被占用，打包到 ${outDir}`);
+// T02079：输出目录兜底 + 安全删除开关抽到 scripts/lib/abi-switch.mjs，与 scripts/dist.js 共用
+const { resolveOutputDir, buildChildEnv } = await import('./lib/abi-switch.mjs');
+const outDir = resolveOutputDir(ROOT, { fail, log: (m) => console.log(m) });
 
-// 安全删除守卫逃生开关：仅作用于 electron-builder 子进程（打包产物的批量删除是构建必需行为）；
-// 非 WorkBuddy 沙箱环境下该变量无任何作用。
-const childEnv = {
-  ...process.env,
-  CODEBUDDY_SAFE_DELETE_ENABLED: '0',
-  ELECTRON_MIRROR: process.env.ELECTRON_MIRROR ?? 'https://npmmirror.com/mirrors/electron/',
-  ELECTRON_BUILDER_BINARIES_MIRROR: process.env.ELECTRON_BUILDER_BINARIES_MIRROR ?? 'https://npmmirror.com/mirrors/electron-builder-binaries/',
-};
+// 子进程环境变量：安全删除开关 + Electron/electron-builder 镜像
+const childEnv = buildChildEnv();
 run(NODE, [path.join(ROOT, 'node_modules', 'electron-builder', 'out', 'cli', 'cli.js'),
   '--win', `-c.buildVersion=${appVer}`, `--config.directories.output=${outDir}`, '--publish=never'], { env: childEnv });
 
