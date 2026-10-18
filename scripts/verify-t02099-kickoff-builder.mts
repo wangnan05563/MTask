@@ -2,11 +2,18 @@
  * T02099 门：启动会 PPT 装配器（PRD-项目启动会PPT生成 FR-4 / 技术方案 §3.3 §4）。
  *
  * 断言：
- *   S 组 源码守卫：pptxgenjs 只在适配层、装配层不查库不调 AI、尺寸不散写、只用稳定原生对象 API、
- *                  降级路径与数字改写规则存在。
+ *   S 组 契约守卫（T02293 判据 3 起为「字面锚点 + 同义行为断言」配对项）：pptxgenjs 只在适配层、
+ *                  装配层不查库不调 AI、尺寸不散写、只用稳定原生对象 API、降级路径与数字改写规则存在。
  *   U 组 纯函数 + 真产物：12 个 dataKey 全覆盖取数、堆叠/双栏不越界不重叠、假数字被改写真数字不动、
  *                  `buildKickoffPpt` 出真 .pptx 并解包 XML 断言（原生文本/表格/图表、无整页图片、
  *                  条数与库内真值一致 = 验收 5/6/8 的先声；越界页降级 = 验收 7 的先声）。
+ *   X 组 单源表改名模拟（判据 3~4）：改 `PALETTE` 用色表 → 产物用色随表移动、旧值计数下降、还原逐字相同；
+ *                  改 Bundle 取数通道（项目名/截至日/覆盖率真值）→ 页面文案随通道移动、旧值零残留。
+ *   N 组 负对照（判据 4）：只看字面会放行的假夹具必须判红且红因可区分；色板门禁、表外色扫描、
+ *                  越界降级、数字纠偏四类判据各配一发「破行为即转红」的反证。
+ *
+ * 断言口径（T02293 改判）：每条源码字面锚点都配一条同义行为断言，绿必须先由产物/纯函数行为侧成立；
+ *  红因区分「行为失守」与「字面锚点失配（行为在）」（`scripts/lib/anchor-pair.mts`）。
  *
  * 隔离纪律：不连生产库、不起服务、不调 AI（Bundle 由脚本内构造，字段形状对齐 KickoffBundle）。
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/verify-t02099-kickoff-builder.mts
@@ -16,6 +23,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeGateResults, gateArtifactPath } from './lib/gate-results.mts';
+import { okPair } from './lib/anchor-pair.mts'; // T02293 判据 3：字面锚点必须配同义行为断言
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -28,30 +36,15 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   lines.push(`[${cond ? 'PASS' : 'FAIL'}] ${name}${cond || extra === undefined ? '' : ` → ${JSON.stringify(extra).slice(0, 400)}`}`);
 };
 
-// ---------- S 组：源码/契约守卫 ----------
+// ---------- 字面锚点专用料（判据 3：只作 okPair 的字面侧，行为侧全部走 M/lay 模块与真产物） ----------
 const B = readFileSync(join(ROOT, 'server', 'src', 'services', 'kickoffBuilder.ts'), 'utf8');
-const LAY = readFileSync(join(ROOT, 'server', 'src', 'services', 'kickoff-layout.ts'), 'utf8');
-const IMPORTS = (B.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').match(/^import[\s\S]*?;$/gm) ?? []).join('\n');
-
+const LAY_SRC = readFileSync(join(ROOT, 'server', 'src', 'services', 'kickoff-layout.ts'), 'utf8');
 const stripComments = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 const BODY = stripComments(B);
 const plansSrc = stripComments(readFileSync(join(ROOT, 'server', 'src', 'routes', 'plans.ts'), 'utf8'));
-ok('S-01 pptxgenjs 只在适配层被 import（风险 R1：kickoff 链路不散用）',
-  /import\('pptxgenjs'\)/.test(BODY) && !/pptxgenjs/.test(stripComments(LAY)) && !/pptxgenjs/.test(plansSrc),
-  { inBody: /import\('pptxgenjs'\)/.test(BODY), inLayout: /pptxgenjs/.test(stripComments(LAY)), inRoutes: /pptxgenjs/.test(plansSrc) });
-ok('S-02 装配层不查库、不调 AI（取数全部来自 Bundle 入参）',
-  !/better-sqlite3|getDb|AIService|askJson|fetch\(/.test(IMPORTS) && !/from '\.\.\/db\//.test(B));
-ok('S-03 画布尺寸不散写：defineLayout 用 KICKOFF_LAYOUT_DEF，产物里不出现第二份 5.625',
-  /pptx\.defineLayout\(KICKOFF_LAYOUT_DEF\)/.test(B) && !/5\.625/.test(B));
-ok('S-04 只用稳定原生对象 API（addText/addTable/addChart），不整页贴图（验收 5）',
-  /slide\.addText\(/.test(B) && /slide\.addTable\(/.test(B) && /slide\.addChart\(/.test(B) && !/addImage\(/.test(B));
-ok('S-05 版式断言在写盘前消费（越界 → 降级 + warnings，验收 7）',
-  /pageViolations\(/.test(B) && /safeFrames\(\)/.test(B) && /已降级为「标题 \+ 正文」安全版式/.test(B));
-ok('S-06 数字防幻觉改写规则成表且逐条记 warning（FR-3.4 / 验收 8）',
-  /const METRICS: Metric\[\] = \[/.test(B) && (B.match(/\bre: \//g) ?? []).length >= 6 && /数字由系统改写/.test(B));
-ok('S-07 几何判断委托 T02098（本层不自己算对比度/边界）',
-  !/relativeLuminance|Math\.pow\(/.test(B) && /assertInBounds/.test(B) && /findOverlaps/.test(B) && /contrastRatio/.test(B) === false && /auditPalette\(\)/.test(B));
-ok('S-08 色值只走 PALETTE 单源', !/["'#][0-9a-fA-F]{6}/.test(B.replace(/\/\/.*$/gm, '')) && /PALETTE\./.test(B));
+const IMPORTS = (B.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').match(/^import[\s\S]*?;$/gm) ?? []).join('\n');
+// S 组的字面锚点（源码正则）现在只作为 okPair 的字面侧，绿必须先在产物/纯函数行为侧成立；见下方「S 组：契约守卫」。
+// import okPair 在文件顶部；M（builder 模块）与 lay（layout 模块）在夹具段之后按需 await import。
 
 // ---------- 测试夹具（字段形状对齐 KickoffBundle） ----------
 const bundleOf = (over: Record<string, unknown> = {}) => ({
@@ -265,6 +258,339 @@ const cAllText = cSlideXmls.map((x) => (x.match(/<a:t>([^<]*)<\/a:t>/g) ?? []).j
 ok('U-32 同型页承担人信息仍在产物里（降级为文本而非整块消失）',
   /不代填人名/.test(cAllText),
   { pageCount: comboBuilt.pageCount, hit: /不代填人名/.test(cAllText) });
+
+// ================= S 组：契约守卫（T02293 判据 3：源码字面锚点只作字面侧，绿先在产物/纯函数行为侧成立） =================
+lines.push('');
+lines.push('== S 组：契约守卫（字面锚点 + 同义行为断言）');
+
+/** 产物解包公共料：页 XML / 页文本 / presentation.xml / 画布尺寸（EMUS） */
+const slidesOf = async (buffer: Buffer): Promise<string[]> => {
+  const z = await JSZip.loadAsync(buffer);
+  const names = Object.keys(z.files)
+    .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+    .sort((a, b) => Number(/(\d+)\.xml/.exec(a)![1]) - Number(/(\d+)\.xml/.exec(b)![1]));
+  return Promise.all(names.map(async (n) => await z.file(n)!.async('string')));
+};
+const xmlOf = async (buffer: Buffer) => (await slidesOf(buffer)).join('\n');
+const textOf = async (buffer: Buffer) => (await slidesOf(buffer)).map((x) => (x.match(/<a:t>([^<]*)<\/a:t>/g) ?? []).join('\n')).join('\n');
+const presOf = async (buffer: Buffer) => await (await JSZip.loadAsync(buffer)).file('ppt/presentation.xml')!.async('string');
+const sldSzOf = (pres: string) => {
+  const m = /sldSz[^/]*cx="(\d+)" cy="(\d+)"/.exec(pres);
+  return m ? { cx: Number(m[1]), cy: Number(m[2]) } : null;
+};
+/** 产物里出现的全部 6 位色值（散写的第二份色值会在这里露出来） */
+const hexesOf = (xml: string) => [...new Set([...xml.matchAll(/srgbClr val="([0-9A-Fa-f]{6})"/g)].map((m) => m[1].toUpperCase()))];
+const PAL_VALUES = new Set(Object.values(lay.PALETTE).map((v) => String(v).toUpperCase()));
+const offPalette = (xml: string) => hexesOf(xml).filter((h) => !PAL_VALUES.has(h));
+/** 非适配层的函数返回的都是可 JSON 化的纯数据（pptx 对象模型不漏到取数/几何层） */
+const plainData = (v: unknown) => {
+  if (v instanceof Promise || Buffer.isBuffer(v)) return false;
+  try { return typeof JSON.stringify(v) === 'string'; } catch { return false; }
+};
+const nonAdapterFns: Array<[string, () => unknown]> = [
+  ['M.blocksForKey', () => M.blocksForKey('coverage', bundle)],
+  ['M.layoutBody', () => M.layoutBody({ title: 't', bullets: [], dataKeys: ['coverage'], layout: 'table', section: '正文' } as any, bundle, lay.framesFor('data'), [])],
+  ['M.pageViolations', () => M.pageViolations(dataTitle, '标题', [], 22)],
+  ['M.sanitizeBullets', () => M.sanitizeBullets(['需求 14 条'], bundle, 2, [])],
+  ['lay.framesFor', () => lay.framesFor('data')],
+  ['lay.safeFrames', () => lay.safeFrames()],
+  ['lay.getContentFrame', () => lay.getContentFrame()],
+  ['lay.assertInBounds', () => lay.assertInBounds(dataTitle)],
+  ['lay.findOverlaps', () => lay.findOverlaps(single.blocks.map((b: any) => b.box))],
+  ['lay.auditPalette', () => lay.auditPalette()],
+  ['lay.checkPageText', () => lay.checkPageText({ title: '标题', bullets: ['要点甲'] })],
+  ['lay.dateRangeOf', () => lay.dateRangeOf(bundle.plans)],
+];
+
+okPair(ok, 'S-01 pptxgenjs 只在适配层被 import（风险 R1：kickoff 链路不散用）',
+  // 行为侧：除 buildKickoffPpt 外，取数层与几何层的所有导出都只给纯数据、不给 pptx 对象也不给 Promise；
+  // pptx 字节只在适配层的产物里出现（built.buffer 是唯一的 Buffer 出口，且它就是那份 .pptx）
+  () => nonAdapterFns.every(([n, f]) => { try { return plainData(f()); } catch { return n.startsWith('nope'); } }) && nonAdapterFns.length >= 10 && Buffer.isBuffer(built.buffer) && built.buffer[0] === 0x50 && built.buffer[1] === 0x4b,
+  () => /import\('pptxgenjs'\)/.test(BODY) && !/pptxgenjs/.test(stripComments(LAY_SRC)) && !/pptxgenjs/.test(plansSrc),
+  () => ({ 纯数据出口: nonAdapterFns.map(([n]) => n), 漏出: nonAdapterFns.filter(([, f]) => { try { return !plainData(f()); } catch { return true; } }).map(([n]) => n) }));
+
+// 取数只吃 Bundle 入参的镜像夹具：三个口径字段换值，出参必须跟着换、旧值不得残留
+const mirrorAlt = bundleOf({
+  coverage: { total: 51, covered: 42, uncovered: 9, rate: 82 },
+  workload: {
+    ...bundle.workload, manDays: { expected: 137, optimistic: 119, pessimistic: 166 },
+    quote: { p50ManDays: 137, p84ManDays: 159 },
+    footer: '工作量来源：估算引擎（P50 137 人天 / P84 159 人天）',
+  },
+  risks: [{ item: 'ZZZ 风险项', impact: '甲', mitigation: '乙', source: '计划表' }],
+}) as any;
+const mirrorChecks: string[] = [];
+if (JSON.stringify(M.blocksForKey('coverage', bundle)) !== JSON.stringify(M.blocksForKey('coverage', bundle))) {
+  mirrorChecks.push('同入参两次取数出参不同——取数走了入参之外的源（库/缓存/AI）');
+}
+for (const [key, oldStr, newStr] of [
+  ['coverage', '测试用例 40 条', '测试用例 51 条'],
+  ['workload', 'P50 96', 'P50 137'],
+  ['risks', '3 条计划阻塞', 'ZZZ 风险项'],
+] as const) {
+  const altJson = JSON.stringify(M.blocksForKey(key, mirrorAlt));
+  if (!altJson.includes(newStr)) mirrorChecks.push(`${key}：出参没随 Bundle 新值「${newStr}」移动 → ${altJson.slice(0, 120)}`);
+  if (altJson.includes(oldStr)) mirrorChecks.push(`${key}：换了 Bundle 仍留旧值「${oldStr}」——那个数不是从入参来的`);
+  if (JSON.stringify(M.blocksForKey(key, bundle)).includes(newStr)) mirrorChecks.push(`${key}：基线 Bundle 就带新值（夹具串味，镜像取证无效）`);
+}
+okPair(ok, 'S-02 装配层不查库、不调 AI（取数全部来自 Bundle 入参）',
+  () => mirrorChecks.length === 0,
+  () => !/better-sqlite3|getDb|AIService|askJson|fetch\(/.test(IMPORTS) && !/from '\.\.\/db\//.test(B),
+  () => mirrorChecks);
+
+// 画布尺寸单源模拟：改 T02098 的 KICKOFF_LAYOUT_DEF，产物 sldSz 必须跟着搬、还原后逐字相同
+const DEF = lay.KICKOFF_LAYOUT_DEF as unknown as { name: string; width: number; height: number };
+const defBefore = { ...DEF };
+const baseSz = sldSzOf(presXml)!;
+const sizeChecks: string[] = [];
+{
+  const simOutline = outlineOf(13);
+  try {
+    DEF.height = 4.25;
+    const moved = await M.buildKickoffPpt(bundle, simOutline as any);
+    const msz = sldSzOf(await presOf(moved.buffer));
+    if (!msz) sizeChecks.push('改表后产物里没有 sldSz');
+    else if (Math.abs(msz.cy - Math.round(4.25 * 914400)) > 1) sizeChecks.push(`产物高度没随单源表移动（cy=${msz.cy}，期望 ${Math.round(4.25 * 914400)}）`);
+    if (moved.pageCount !== 13) sizeChecks.push(`改画布后页数从 13 变成 ${moved.pageCount}（尺寸散写会让版式各算各的）`);
+  } finally {
+    Object.assign(DEF, defBefore);
+  }
+  const restored = await M.buildKickoffPpt(bundle, simOutline as any);
+  const rsz = sldSzOf(await presOf(restored.buffer));
+  if (!rsz || rsz.cx !== baseSz.cx || rsz.cy !== baseSz.cy) sizeChecks.push(`还原后 sldSz 没回到基线：${JSON.stringify(rsz)} vs ${JSON.stringify(baseSz)}`);
+  if ((await xmlOf(restored.buffer)) !== allXml) sizeChecks.push('还原后幻灯片 XML 不逐字相同（模拟留了残渣）');
+  // 「不散写」的产物侧取证：整包里带画布高度 EMU 的部件只应有 presentation.xml
+  const zc = await JSZip.loadAsync(built.buffer);
+  const hits: string[] = [];
+  for (const n of Object.keys(zc.files).filter((f) => !zc.files[f].dir && /\.(xml|rels)$/.test(f))) {
+    const c = await zc.file(n)!.async('string').catch(() => '');
+    if (c.includes(String(baseSz.cy))) hits.push(n);
+  }
+  if (hits.some((n) => n !== 'ppt/presentation.xml')) sizeChecks.push(`画布高度散写进了 ${hits.join(', ')}（尺寸不止一个来源）`);
+}
+okPair(ok, 'S-03 画布尺寸不散写：defineLayout 用 KICKOFF_LAYOUT_DEF，产物里不出现第二份 5.625',
+  () => sizeChecks.length === 0 && Math.abs(baseSz.cx / 914400 - lay.KICKOFF_LAYOUT_DEF.width) < 0.02 && Math.abs(baseSz.cy / 914400 - lay.KICKOFF_LAYOUT_DEF.height) < 0.02,
+  () => /pptx\.defineLayout\(KICKOFF_LAYOUT_DEF\)/.test(B) && !/5\.625/.test(B),
+  () => ({ sizeChecks, 基线: baseSz }));
+
+okPair(ok, 'S-04 只用稳定原生对象 API（addText/addTable/addChart），不整页贴图（验收 5）',
+  // 行为侧全部在解包产物上：原生文本运行/原生表格/独立图表部件，且内容层零位图
+  () => {
+    const runs = (allXml.match(/<a:t>/g) ?? []).length;
+    const chartParts = Object.keys(zip.files).filter((n) => /ppt\/charts\/chart\d+\.xml$/.test(n)).length;
+    return runs > 200 && /<a:tbl>/.test(allXml) && /<p:graphicFrame>/.test(allXml) && chartParts >= 1 && !/<p:pic>/.test(allXml);
+  },
+  () => /slide\.addText\(/.test(B) && /slide\.addTable\(/.test(B) && /slide\.addChart\(/.test(B) && !/addImage\(/.test(B),
+  () => ({ runs: (allXml.match(/<a:t>/g) ?? []).length, pic: /<p:pic>/.test(allXml) }));
+
+okPair(ok, 'S-05 版式断言在写盘前消费（越界 → 降级 + warnings，验收 7）',
+  // 行为侧：降级页码 = 判定函数在写盘前点名的页；产物里降级页只留标题正文（数据块被舍弃）、包仍合法
+  () => {
+    const flagged = overflow.map((p: any, i: number) => i + 1).filter((no: number) => M.pageViolations(dataTitle, overflow[no - 1].title, [], 22).length > 0);
+    return degraded.degradedPages.length === 2 && JSON.stringify([...degraded.degradedPages].sort()) === JSON.stringify(flagged)
+      && degraded.warnings.some((w) => /降级/.test(w))
+      && degraded.pageCount === 12 && degraded.buffer[0] === 0x50 && !/其余 \d+ 条/.test(hit);
+  },
+  () => /pageViolations\(/.test(B) && /safeFrames\(\)/.test(B) && /已降级为「标题 \+ 正文」安全版式/.test(B),
+  () => ({ degradedPages: degraded.degradedPages, warnings: degraded.warnings.filter((w) => /降级/.test(w)).slice(0, 2) }));
+
+// 数字防幻觉：多条规则同表生效，且规则取的数随 Bundle 走（两份 Bundle 各改各的真值）
+const fakeBullets = ['需求 999 条已就绪', '计划 23 条', '里程碑 88 个', '两周内出原型', '覆盖率 12%', '工作量 777 人天'];
+const altTruth = bundleOf({
+  requirements: bundle.requirements.slice(0, 7),
+  milestones: bundle.milestones.slice(0, 2),
+  coverage: { total: 10, covered: 6, uncovered: 4, rate: 60 },
+  workload: {
+    ...bundle.workload, manDays: { expected: 44, optimistic: 40, pessimistic: 50 },
+    quote: { p50ManDays: 44, p84ManDays: 48 },
+    footer: '工作量来源：估算引擎（P50 44 人天 / P84 48 人天）',
+  },
+}) as any;
+const metricChecks: Array<{ name: string; hits: string[]; truth: string }> = [
+  { name: '需求', hits: ['999'], truth: '14' },
+  { name: '里程碑', hits: ['88'], truth: '6' },
+  { name: '覆盖率', hits: ['12'], truth: '80' },
+  { name: '工作量', hits: ['777'], truth: '96' },
+];
+const rewriteChecks: string[] = [];
+{
+  const wA: string[] = [];
+  const outA = M.sanitizeBullets(fakeBullets, bundle, 7, wA);
+  const wB: string[] = [];
+  const outB = M.sanitizeBullets(fakeBullets, altTruth, 7, wB);
+  for (const m of metricChecks) {
+    if (!outA.some((l) => l.includes(`${m.name} ${m.truth}`))) rewriteChecks.push(`${m.name}：基线 Bundle 的假数没被改写成「${m.truth}」→ ${outA.join(' | ').slice(0, 160)}`);
+    if (!outB.some((l) => new RegExp(`${m.name}\\s*(7|2|60|44)`).test(l))) rewriteChecks.push(`${m.name}：换 Bundle 后改写值没跟着走（写死在规则里）→ ${outB.join(' | ').slice(0, 160)}`);
+  }
+  if (outA[1] !== '计划 23 条' || outB[1] !== '计划 23 条') rewriteChecks.push('真数字被动了（纠偏变成了无脑替换）');
+  if (outA[3] !== '两周内出原型') rewriteChecks.push(`修辞数字被误伤：${outA[3]}`);
+  if (wA.length !== 4 || wB.length !== 4) rewriteChecks.push(`warning 条数与改写条数不符（A=${wA.length} B=${wB.length}）`);
+  if (!wA.every((w) => /第 7 页数字由系统改写/.test(w) && /AI 写「\d+」，库内实为「\d+」/.test(w))) rewriteChecks.push('warning 没逐条点名页码与原值/真值', wA);
+}
+okPair(ok, 'S-06 数字防幻觉改写规则成表且逐条记 warning（FR-3.4 / 验收 8）',
+  () => rewriteChecks.length === 0 && metricChecks.length >= 4,
+  () => /const METRICS: Metric\[\] = \[/.test(B) && (B.match(/\bre: \//g) ?? []).length >= 6 && /数字由系统改写/.test(B),
+  () => rewriteChecks);
+
+// 几何判断委托模拟：改 T02098 的画布表，装配层的越界判定必须一起搬
+const CANVAS_TBL = lay.CANVAS as unknown as { width: number; height: number };
+const geoChecks: string[] = [];
+{
+  const longTitle = '标'.repeat(40);
+  const frameBefore = JSON.stringify(lay.getContentFrame());
+  const verdictBefore = JSON.stringify(M.pageViolations(dataTitle, longTitle, [], 22));
+  try {
+    CANVAS_TBL.width = 4; CANVAS_TBL.height = 2;
+    const frameNow = JSON.stringify(lay.getContentFrame());
+    const verdictNow = JSON.stringify(M.pageViolations(lay.framesFor('data').title!, longTitle, [], 22));
+    if (frameNow === frameBefore) geoChecks.push('改了 T02098 的画布表而 getContentFrame 不动——几何另有抄本');
+    if (verdictNow === verdictBefore) geoChecks.push('画布表改了而装配层判定不动——装配层自己算了几何');
+    if (!verdictNow.includes('越出')) geoChecks.push(`窄画布下装配层没判出越界：${verdictNow}`);
+  } finally {
+    CANVAS_TBL.width = 10; CANVAS_TBL.height = 5.625;
+  }
+  if (JSON.stringify(lay.getContentFrame()) !== frameBefore) geoChecks.push('画布表还原失败（模拟留了残渣）');
+  if (JSON.stringify(M.pageViolations(dataTitle, longTitle, [], 22)) !== verdictBefore) geoChecks.push('还原后装配层判定与基线逐字不一致');
+}
+okPair(ok, 'S-07 几何判断委托 T02098（本层不自己算对比度/边界）',
+  () => geoChecks.length === 0,
+  () => !/relativeLuminance|Math\.pow\(/.test(B) && /assertInBounds/.test(B) && /findOverlaps/.test(B) && /contrastRatio/.test(B) === false && /auditPalette\(\)/.test(B),
+  () => geoChecks);
+
+okPair(ok, 'S-08 色值只走 PALETTE 单源',
+  // 行为侧：产物里出现的每一支 6 位色值都取得自导出的单源表（散写的第六支色会在这里露出来），
+  // 且确有 ≥3 支角色色上了页面、色板自检（门禁 6）通过
+  () => offPalette(allXml).length === 0 && hexesOf(allXml).length >= 3 && hexesOf(allXml).every((h) => PAL_VALUES.has(h)) && lay.auditPalette().length === 0,
+  () => !/["'#][0-9a-fA-F]{6}/.test(B.replace(/\/\/.*$/gm, '')) && /PALETTE\./.test(B),
+  () => ({ 产物色值: hexesOf(allXml), 表外色值: offPalette(allXml) }));
+
+// ================= X 组：单源表改名模拟（T02293 判据 3~4） =================
+lines.push('');
+lines.push('== X 组：单源表改名模拟');
+{
+  /**
+   * X-01 用色单源表改名模拟：装配层每次上色现取 `PALETTE`，把上了页面的色换成另一支同样过对比度门禁的
+   * 替色后重跑同一装配器，要求页数/结构不变、用色随表移动、旧色值出现**次数随之下降**、还原后 XML 逐字相同。
+   * 判据用「次数下降 + 增减相等」而不是「旧值零残留」：paper 与 onBrand 是两个角色恰好同值（都是 FFFFFF，
+   * 见 server/src/util/exportStyle.ts:86,107），纸面色搬家后品牌带上的白字仍留该值——那是另一支单源常量。
+   */
+  const ALT: Record<string, string> = { ink: '26333F', paper: 'FDFDFD', border: 'C8CFDA', brandDeep: '0B4AAE' };
+  const countOf = (xml: string, v: string) => xml.split(v).length - 1;
+  const simOutline = outlineOf(13);
+  const simBase = await M.buildKickoffPpt(bundle, simOutline as any);
+  const baseXml = await xmlOf(simBase.buffer);
+  const targets = Object.entries(ALT).filter(([k]) => baseXml.includes(String(lay.PALETTE[k as keyof typeof lay.PALETTE])));
+  const findings: string[] = [];
+  const pal = lay.PALETTE as unknown as Record<string, string>;
+  for (const [k, to] of targets) {
+    const from = pal[k];
+    let movedXml = '';
+    try {
+      pal[k] = to;
+      const moved = await M.buildKickoffPpt(bundle, simOutline as any);
+      if (lay.auditPalette().length > 0) findings.push(`${k}：替色 ${to} 自身过不了门禁 6，结论不可用`);
+      movedXml = await xmlOf(moved.buffer);
+      if (moved.pageCount !== simBase.pageCount) findings.push(`${k}：改色后页数变了（版式行为被用色绑架）`);
+      if (!movedXml.includes(to)) findings.push(`${k}：产物没随单源表移动（装配层另有抄本）`);
+      if (countOf(movedXml, from) >= countOf(baseXml, from)) findings.push(`${k}：旧色值 ${from} 次数没下降（${countOf(baseXml, from)} → ${countOf(movedXml, from)}）——那一处用的是抄本`);
+      if (countOf(movedXml, to) - countOf(baseXml, to) !== countOf(baseXml, from) - countOf(movedXml, from)) findings.push(`${k}：新色值增加数与旧色值减少数不等（挪走的格子没全接上表）`);
+    } finally {
+      pal[k] = from;
+    }
+    const restored = await M.buildKickoffPpt(bundle, simOutline as any);
+    if ((await xmlOf(restored.buffer)) !== baseXml) findings.push(`${k}：还原后幻灯片 XML 不逐字相同`);
+    if (offPalette(await xmlOf(restored.buffer)).length > 0) findings.push(`${k}：还原后产物出现表外色值`);
+  }
+  ok(`X-01 用色单源表改名模拟：${targets.length} 支上页面的色逐一同源移动（结构不变、随表移动、旧值计数下降、还原 XML 逐字相同）`,
+    targets.length >= 3 && findings.length === 0, { findings, 参与色: targets.map(([k]) => k) });
+
+  /**
+   * X-02 取数通道的改名模拟：项目名 / 数据截至日 / 覆盖率真值是产品把口径送进页面的通道，
+   * 通道值改了，页面上那句话必须整体跟着改、旧值零残留、还原后 XML 逐字相同。
+   * 装配层若写死其中任何一句，这一改就露出第二份来源。
+   */
+  const stripGateText = (t: string) => (simOutline as any[]).reduce((s, p) => s.split(String(p.title)).join(''), t);
+  const chFindings: string[] = [];
+  const channels: Array<{ name: string; oldVal: string; mk: () => any }> = [
+    { name: 'project.name', oldVal: 'mtask五期', mk: () => { const b = bundleOf(); b.project = { ...b.project, name: 'ZZZ-项目名' }; return b; } },
+    { name: 'dataAsOf', oldVal: '2026-10-13', mk: () => bundleOf({ dataAsOf: '2099-12-31' }) },
+    { name: 'coverage 真值', oldVal: '测试用例 40 条', mk: () => bundleOf({ coverage: { total: 51, covered: 42, uncovered: 9, rate: 82 } }) },
+  ];
+  const baseText = stripGateText(await textOf(simBase.buffer));
+  for (const ch of channels) {
+    if (!baseText.includes(ch.oldVal)) { chFindings.push(`${ch.name}：基线页面上没有「${ch.oldVal}」（通道没落到页面，无从取证）`); continue; }
+    const b2 = ch.mk();
+    const deck2 = await M.buildKickoffPpt(b2, simOutline as any);
+    const t2 = stripGateText(await textOf(deck2.buffer));
+    if ((await slidesOf(deck2.buffer)).length !== (await slidesOf(simBase.buffer)).length) chFindings.push(`${ch.name}：改通道后页数变了`);
+    const newVal = ch.name === 'project.name' ? 'ZZZ-项目名' : ch.name === 'dataAsOf' ? '2099-12-31' : '测试用例 51 条';
+    if (!t2.includes(newVal)) chFindings.push(`${ch.name}：页面文案没随通道移动（新值「${newVal}」不在页面上）`);
+    if (t2.includes(ch.oldVal)) chFindings.push(`${ch.name}：通道改名后页面仍残留旧值「${ch.oldVal}」——那句话另有抄本`);
+  }
+  const restoredCh = await M.buildKickoffPpt(bundle, simOutline as any);
+  if ((await xmlOf(restoredCh.buffer)) !== baseXml) chFindings.push('还原通道值后幻灯片 XML 不逐字相同');
+  ok(`X-02 取数通道改名模拟：${channels.length} 条通道逐一动到页面上（页数不变、随通道移动、旧值零残留、还原 XML 逐字相同）`,
+    chFindings.length === 0, chFindings);
+}
+
+// ================= N 组：负对照（T02293 判据 4） =================
+lines.push('');
+lines.push('== N 组：负对照（证明判据有牙）');
+{
+  const spy: Array<{ name: string; cond: boolean; extra?: unknown }> = [];
+  const sOk = (name: string, cond: boolean, extra?: unknown) => spy.push({ name, cond, extra });
+
+  // N-01 假夹具：字面那句「测试用例 40 条」确实在出参里，但换入参后值不动——只看字面会放行
+  okPair(sOk, 'N-01 假夹具：取数文案在、镜像行为不在，配对必须判红',
+    () => JSON.stringify(M.blocksForKey('coverage', bundle)).includes('测试用例 51 条'),
+    () => JSON.stringify(M.blocksForKey('coverage', bundle)).includes('测试用例 40 条'),
+    () => ({ 说明: '字面锚点只问「有没有这句」，行为锚点问「换入参后跟不跟」' }));
+  ok('N-01 负对照落地：配对判红且红因是「行为失守」',
+    spy.length === 1 && spy[0].cond === false && JSON.stringify(spy[0].extra).includes('行为失守'), spy);
+
+  // N-02 红因可区分：行为在、字面锚点被等价重构换掉 → 红因必须是「字面锚点失配」
+  okPair(sOk, 'N-02 红因区分样：行为绿、锚点失配', () => mirrorChecks.length === 0, () => /pptx\.defineLayout\(KICKOFF_LAYOUT_DEF_OTHER\)/.test(B));
+  ok('N-02 负对照落地：两种红各带自己的红因，不都读成「功能挂了」',
+    spy.length === 2 && spy[1].cond === false && JSON.stringify(spy[1].extra).includes('字面锚点失配'), spy[1]);
+
+  // N-03 门禁 6 有牙：把单源表的一支色改成低对比度，自检必须报红，还原后归零
+  const ink0 = (lay.PALETTE as unknown as Record<string, string>).ink;
+  let palTeeth = '';
+  try {
+    (lay.PALETTE as unknown as Record<string, string>).ink = 'DDDDDD';
+    palTeeth = lay.auditPalette()[0] ?? '';
+  } finally {
+    (lay.PALETTE as unknown as Record<string, string>).ink = ink0;
+  }
+  ok('N-03 色板门禁有牙：改坏单源表一支色后 auditPalette 必报红，还原即归零',
+    palTeeth.includes('对比度不足') && lay.auditPalette().length === 0, { palTeeth });
+
+  // N-04 表外色值判据有牙：往 XML 里掺一支表外色，扫描器必须点出来（恒绿的扫描器不算判据）
+  ok('N-04 色值单源判据有牙：掺入表外色后扫描必出 offender，基线出参为空',
+    offPalette(`${allXml}<a:srgbClr val="FF8800"/>`).includes('FF8800') && offPalette(allXml).length === 0,
+    { 掺色后: offPalette(`${allXml}<a:srgbClr val="FF8800"/>`) });
+
+  // N-05 降级判据有牙：同一份大纲把超长标题修短后，降级必须归零（否则 S-05 打的是常驻字）
+  {
+    const repaired = outlineOf(12, (pages) => {
+      pages[3].title = '正常标题甲';
+      pages[5].title = '正常标题乙';
+    });
+    const cleanDeck = await M.buildKickoffPpt(bundle, repaired as any);
+    ok('N-05 越界降级判据有牙：标题修短的同一份大纲降级归零，超长那份仍报 2 页',
+      cleanDeck.degradedPages.length === 0 && degraded.degradedPages.length === 2 && cleanDeck.pageCount === 12,
+      { clean: cleanDeck.degradedPages, overflow: degraded.degradedPages });
+  }
+
+  // N-06 改写判据有牙：AI 恰好写对了数就不改也不留 warning（纠偏不是逢数字必改）
+  {
+    const wN: string[] = [];
+    const exact = M.sanitizeBullets(['需求 14 条已就绪', '计划 23 条', '里程碑 6 个', '覆盖率 80%'], bundle, 9, wN);
+    ok('N-06 数字纠偏判据有牙：真值原样保留且零 warning，同表假值仍被改写',
+      exact.join('|') === '需求 14 条已就绪|计划 23 条|里程碑 6 个|覆盖率 80%' && wN.length === 0 && rewriteChecks.length === 0,
+      { exact, wN });
+  }
+}
 
 // ---------- 输出 ----------
 writeGateResults(OUT_DIR, 't02099-gate-results.txt', `T02099 装配器门：PASS=${pass} FAIL=${fail}\n${lines.join('\n')}\n`);

@@ -2,8 +2,11 @@
  * T02096 门：启动会 PPT 大纲生成与 schema 校验（PRD-项目启动会PPT生成 §3.3 FR-3、技术方案 §2.2 §3.2）。
  *
  * 断言：
- *   S 组 源码守卫：校验在 parse 回调内、必含页/页数硬失败、数字铁律入提示词、未配模型不静默回落、
- *                  硬阻塞服务端二次拦截、里程碑不进 Σ 工期、人月因子单源、风险四类本地枚举。
+ *   S 组 契约守卫（T02293 判据 3 起为「字面锚点 + 同义行为断言」配对项）：校验在 parse 回调内、
+ *                  必含页/页数硬失败、数字铁律入提示词、未配模型不静默回落、硬阻塞服务端二次拦截、
+ *                  里程碑不进 Σ 工期、人月因子单源、风险四类本地枚举、路由注册顺序、时间线口径两处提示词。
+ *                  行为侧一律取**隔离实例的 HTTP 响应 + mock 端收到的提示词工件 + 进程内纯函数返回值**，
+ *                  夹具由门自建（判据 2：S 组风险/干净两个项目 + 门内长/短 PRD），不读生产业务行。
  *   R 组 隔离实例 + 本地 mock OpenAI 兼容服务（不消耗真实配额）：
  *     R-01 工具未配 model → 400 且原文透传「所选模型未配置…」（PRD §4 不静默回落）；
  *     R-02 合规 13 页大纲 → 200，页数/dataAsOf/truncated 如实；
@@ -31,6 +34,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeGateResults, gateArtifactPath } from './lib/gate-results.mts';
+import { okPair } from './lib/anchor-pair.mts'; // T02293 判据 3：字面锚点必须配同义行为断言
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02096_PORT ?? 39_700 + Math.floor(Math.random() * 300));
@@ -42,6 +46,8 @@ const SECTIONS = ['封面', '议程', '项目团队介绍', '项目背景', '项
 const { resolveServerLauncher } = await import('./isolated-server-launcher.mts');
 // T02223：装配层同口径自检（裁剪后不得再触发「超出 42 字」越界）——直接引 layout 单源，不经 HTTP
 const LAY = await import('../server/src/services/kickoff-layout.ts');
+// T02293：S 组的行为侧走进程内纯函数（workloadOf / validateOutline / assertOutlineShape）——只读导出，不碰库
+const SVC = await import('../server/src/services/kickoffService.ts');
 
 let pass = 0;
 let fail = 0;
@@ -52,39 +58,15 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 // =====================================================================
-// S 组：源码守卫
+// 字面锚点专用料（判据 3：源码正则只作 okPair 的字面侧，行为侧见文件末尾「S 组：契约守卫」）
 // =====================================================================
 const svcSrc = readFileSync(join(ROOT, 'server', 'src', 'services', 'kickoffService.ts'), 'utf8');
 const routeSrc = readFileSync(join(ROOT, 'server', 'src', 'routes', 'plans.ts'), 'utf8');
 const outlineSrc = svcSrc.slice(svcSrc.indexOf('// ---------- 大纲生成与校验'));
 const bundleSrc = svcSrc.slice(svcSrc.indexOf('// ---------- 资料采集 Bundle'), svcSrc.indexOf('// ---------- 大纲生成与校验'));
 const preflightSrc = svcSrc.slice(svcSrc.indexOf('// ---------- 前置校验'), svcSrc.indexOf('// ---------- 资料采集 Bundle'));
-
-ok('S-01 前置校验段零 AI 依赖（FR-2.3 只读、零配额）', !/AIService|askJson|fetch\(/.test(preflightSrc));
-ok('S-02 schema 校验在 askJson 的 parse 回调内（不合格即触发自带重试；T02172/T02223 起第 2 轮才转软截断：dataKeys 截断 / 超长 bullet 裁剪；T02311 起回调内带 cleanHits 收集与失败留档）',
-  /askJson[\s\S]{0,600}parseRound\+\+[\s\S]{0,400}validateOutline\(parseOutlinePayload\(content(, cleanHits)?\), \{ lenientDataKeys: parseRound > 1, lenientBullets: parseRound > 1 \}\)/.test(outlineSrc));
-ok('S-03 页数 12~18 与必含 timeline/workload 硬失败并点名',
-  /页数 \$\{raw\.length\} 不在/.test(outlineSrc) && /缺少时间线页/.test(outlineSrc) && /缺少工作量页/.test(outlineSrc));
-ok('S-04 数字铁律写进 system 提示（数字只走 dataKeys，禁止模型自填）',
-  /一律只写 dataKeys 引用/.test(outlineSrc) && /严禁自行写数字或改写数字/.test(outlineSrc));
-ok('S-05 大纲端点不静默回落模型：toolId 必填 + 400 原样透传错误',
-  /toolId 必填（大纲生成需要模型工具）/.test(routeSrc) && /kickoffOutline\(projectId, toolId/.test(routeSrc));
-ok('S-06 硬阻塞在服务端二次拦截（UI 置灰不是保险）', /bundle\.preflight\.blocked/.test(outlineSrc) && /资料不足，不能生成启动会稿/.test(outlineSrc));
-ok('S-07 降级工期排除里程碑（T01001 里程碑工期=子任务之和，重复累加会翻倍）',
-  /p\.kind !== 'milestone'/.test(bundleSrc));
-ok('S-08 人月因子单源复用 toManMonth，不在 kickoff 内重复定义 20.83',
-  /toManMonth\(/.test(svcSrc) && !/20\.83/.test(svcSrc));
-ok('S-09 PRD 摘要预算 6000 保头保尾（同 prdContext 策略，不跨模块改私有符号）',
-  /KICKOFF_PRD_LIMIT = 6000/.test(bundleSrc) && /中段略去/.test(bundleSrc));
-ok('S-10 风险四类本地枚举齐（blocked/进度落后/需求无关联/复杂度≥4）+ 无命中兜底',
-  /status === 'blocked'/.test(bundleSrc) && /expectedProgress\(/.test(bundleSrc) && /linkedPlans\.length === 0/.test(bundleSrc)
-  && /RISK_COMPLEXITY_MIN/.test(bundleSrc) && /系统内暂无风险信号/.test(bundleSrc));
-ok('S-11 大纲路由注册在 /:id 之前', routeSrc.indexOf('/kickoff-ppt-outline') < routeSrc.indexOf("planApi.patch('/:id'"));
-ok('S-12 时间线页要求在两处提示词均按 dataKeys 口径写明且带否定示例（T02314：模型常把 layout:timeline 误当数据键齐全）',
-  /必须至少一页 dataKeys 含 "timeline"/.test(outlineSrc)
-  && /只把 layout 设成 'timeline' 而 dataKeys 里没这个键不算/.test(outlineSrc)
-  && /必须至少一页 dataKeys 含 "timeline"（只把 layout 设成 'timeline'/.test(outlineSrc),
-  { main: /必须至少一页 dataKeys 含 "timeline"/.test(outlineSrc), retry: /必须至少一页 dataKeys 含 "timeline"（只把 layout/.test(outlineSrc) });
+// S-01~S-12 的源码正则不再单独定绿：它们逐条搬到了下方 S 组 okPair 的字面侧，
+// 绿必须先由「隔离实例 HTTP 响应 / mock 收到的提示词工件 / 纯函数返回值」成立。
 
 // =====================================================================
 // mock OpenAI 兼容服务（本地、零真实配额）
@@ -394,6 +376,361 @@ if (!(await waitUp())) {
   ok('R-09 硬阻塞项目 → 400 点名 P1~P3 且零 mock 请求（校验阶段不烧配额）',
     blocked.status === 400 && /资料不足，不能生成启动会稿：P1、P2、P3 全部缺失/.test(String(blocked.body?.error)) && mockRequests.length === 0,
     { status: blocked.status, error: blocked.body?.error, asks: mockRequests.length });
+
+  // =====================================================================
+  // S 组（T02293 改判）：契约守卫——源码字面锚点只作 okPair 的字面侧，行为侧走
+  // 隔离实例 HTTP 响应 / mock 端收到的提示词工件 / 进程内纯函数返回值。
+  // 夹具全部由门自建（判据 2）：两个新项目 + 门内长/短 PRD + 门内风险/干净计划组合。
+  // =====================================================================
+  lines.push('');
+  lines.push('== S 组：契约守卫（字面锚点 + 同义行为断言）');
+
+  const stamp = Date.now();
+  const DAY = 86_400_000;
+  const dstr = (off: number) => new Date(Date.now() + off * DAY).toISOString().slice(0, 10);
+  const mkProject = async (label: string): Promise<string> => String((await call('POST', '/projects', { name: `T02096 S组${label} ${stamp}` })).body?.id ?? '');
+  const SENT = { head: '【门内首标SENTINELHEAD】', mid: '【门内中段禁入SENTINELMIDDLE】', tail: '【门内尾标SENTINELTAIL】' };
+  const filler = (n: number, mark: string) => Array.from({ length: n }, (_, i) => `${mark}${i}：本节写明启动会稿的口径来源与验收标准，用来把门内文档撑到摘要预算之外。`).join('\n');
+  const longPrd = `${SENT.head}\n${filler(200, '甲')}\n${SENT.mid}\n${filler(200, '乙')}\n${SENT.tail}\n`;
+  const shortPrd = `${SENT.head}\n${filler(6, '丙')}\n${SENT.mid}\n${SENT.tail}\n`;
+
+  // 风险夹具：四类信号各埋一条（阻塞态 / 进度落后 / 需求无承载 / 复杂度≥4）+ 超预算 PRD
+  const fxRisk = await mkProject('风险夹具');
+  await call('POST', '/plans/import-prd', {
+    projectId: fxRisk, prdMd: longPrd, prdFilename: `T02096-门内长PRD-${stamp}.md`,
+    requirements: [
+      { reqNo: 'REQ-901', title: '门内需求甲（有承载）', priority: 'high' },
+      { reqNo: 'REQ-902', title: '门内需求乙（有承载）', priority: 'normal' },
+      { reqNo: 'REQ-903', title: '门内需求丙（无承载）', priority: 'normal' },
+    ],
+    plans: [
+      { title: '门内阻塞计划', durationDays: 5, startDate: dstr(-30), reqNos: ['REQ-901'], status: 'blocked', complexity: 2 },
+      { title: '门内落后计划', durationDays: 10, startDate: dstr(-60), reqNos: ['REQ-902'], status: 'doing', complexity: 3 },
+      { title: '门内重复杂度计划', durationDays: 8, startDate: dstr(5), complexity: 5, status: 'todo' },
+      { title: '门内里程碑', durationDays: 20, startDate: dstr(10), kind: 'milestone' },
+    ],
+  });
+  // 干净夹具：四类信号一条都不埋 + PRD 在预算内（兜底分支与「不截断」的反证材料）
+  const fxClean = await mkProject('干净夹具');
+  await call('POST', '/plans/import-prd', {
+    projectId: fxClean, prdMd: shortPrd, prdFilename: `T02096-门内短PRD-${stamp}.md`,
+    requirements: [
+      { reqNo: 'REQ-911', title: '门内需求一', priority: 'high' },
+      { reqNo: 'REQ-912', title: '门内需求二', priority: 'normal' },
+      { reqNo: 'REQ-913', title: '门内需求三', priority: 'normal' },
+    ],
+    plans: [
+      { title: '门内正常计划甲', durationDays: 5, startDate: dstr(3), reqNos: ['REQ-911'], complexity: 2, status: 'todo' },
+      { title: '门内正常计划乙', durationDays: 5, startDate: dstr(8), reqNos: ['REQ-912'], complexity: 3, status: 'todo' },
+      { title: '门内正常计划丙', durationDays: 5, startDate: dstr(13), reqNos: ['REQ-913'], complexity: 2, status: 'todo' },
+    ],
+  });
+  ok('S-00a 门内夹具落位（两个项目 + 长 PRD 超预算、短 PRD 在预算内）',
+    !!fxRisk && !!fxClean && longPrd.length > 6000 && shortPrd.length < 6000,
+    { fxRisk, fxClean, longLen: longPrd.length, shortLen: shortPrd.length });
+
+  /** 走一次大纲生成，顺带取回 mock 端真正收到的提示词工件 */
+  const askOutline = async (projectId: string, content: string, extra?: Record<string, unknown>) => {
+    mockQueue = [{ content }];
+    mockRequests.length = 0;
+    const res = await call('POST', '/plans/kickoff-ppt-outline', { projectId, toolId: mockId, ...(extra ?? {}) });
+    return { res, asks: mockRequests.length, sys: mockRequests[0]?.system ?? '', user: mockRequests[0]?.user ?? '', retrySys: mockRequests[1]?.system ?? '' };
+  };
+  const riskRound = await askOutline(fxRisk, outlineJson(13));
+  const cleanRound = await askOutline(fxClean, outlineJson(13));
+  // 重试轮的 system 只有「首轮不合格」才收得到：单独造一次坏输出
+  const retryRound = await askOutline(fxRisk, outlineJson(5));
+
+  // ---------- S-01 前置校验只读零 AI ----------
+  mockRequests.length = 0;
+  const pfRisk = await call('GET', `/plans/kickoff-preflight?projectId=${fxRisk}`);
+  const pfClean = await call('GET', `/plans/kickoff-preflight?projectId=${fxClean}`);
+  okPair(ok, 'S-01 前置校验段零 AI 依赖（FR-2.3 只读、零配额）',
+    () => {
+      const items = pfRisk.body?.items ?? [];
+      return pfRisk.status === 200 && items.length === 7 && items.every((i: any) => ['ok', 'warn', 'fail'].includes(i.status))
+        && pfClean.body?.blocked === false && pfRisk.body?.blocked === false
+        && JSON.stringify(items.map((i: any) => i.key)) === JSON.stringify(['P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7'])
+        && mockRequests.length === 0;
+    },
+    () => !/AIService|askJson|fetch\(/.test(preflightSrc),
+    () => ({ items: (pfRisk.body?.items ?? []).map((i: any) => `${i.key}=${i.status}`), blocked: pfRisk.body?.blocked, asks: mockRequests.length }));
+
+  // ---------- S-02 校验在 parse 回调内：不合格即触发自带重试 ----------
+  const badShape = await askOutline(fxRisk, outlineJson(6));
+  const goodShape = await askOutline(fxRisk, outlineJson(13));
+  okPair(ok, 'S-02 schema 校验在 askJson 的 parse 回调内（不合格即触发自带重试；第 2 轮才转软截断；失败留档）',
+    () => badShape.res.status === 400 && badShape.asks === 2 && goodShape.res.status === 200 && goodShape.asks === 1
+      && /AI 未返回合规大纲/.test(String(badShape.res.body?.error)) && /不在 12~18 区间/.test(String(badShape.res.body?.error))
+      && /不在 12~18 区间/.test(String(badShape.retrySys)) && /必须逐条修正/.test(String(badShape.retrySys)),
+    () => /askJson[\s\S]{0,600}parseRound\+\+[\s\S]{0,400}validateOutline\(parseOutlinePayload\(content(, cleanHits)?\), \{ lenientDataKeys: parseRound > 1, lenientBullets: parseRound > 1 \}\)/.test(outlineSrc),
+    () => ({ badAsks: badShape.asks, goodAsks: goodShape.asks, err: badShape.res.body?.error, retrySys: String(badShape.retrySys).slice(0, 120) }));
+
+  // ---------- S-03 页数区间与必含页：纯函数 + HTTP 双取 ----------
+  const verdict = (raw: unknown) => {
+    try { SVC.validateOutline(raw); return 'accepted'; }
+    catch (e) { return `rejected:${(e as Error).message.slice(0, 28)}`; }
+  };
+  const bandChecks: string[] = [];
+  for (const [pages, want] of [[12, true], [18, true], [11, false], [19, false]] as const) {
+    const v = verdict(JSON.parse(outlineJson(pages)));
+    if (want !== (v === 'accepted')) bandChecks.push(`纯函数侧 ${pages} 页判成 ${v}`);
+    const r = await askOutline(fxRisk, outlineJson(pages));
+    if ((r.res.status === 200) !== want) bandChecks.push(`HTTP 侧 ${pages} 页回 ${r.res.status}（期望 ${want ? '200' : '400'}）`);
+    if (!want && !/不在 12~18 区间/.test(String(r.res.body?.error))) bandChecks.push(`${pages} 页的 400 没点名页数区间：${r.res.body?.error}`);
+  }
+  const noTlKeys = (arr: any[]) => arr.map((p) => ({ ...p, dataKeys: p.dataKeys.filter((k: string) => k !== 'timeline') }));
+  const noWlKeys = (arr: any[]) => arr.map((p) => ({ ...p, dataKeys: p.dataKeys.filter((k: string) => k !== 'workload') }));
+  const mustChecks: string[] = [];
+  for (const [name, mutate, needle] of [
+    ['缺时间线页', noTlKeys, '缺少时间线页'],
+    ['缺工作量页', noWlKeys, '缺少工作量页'],
+  ] as const) {
+    const pure = verdict(mutate(JSON.parse(outlineJson(13))));
+    if (!pure.includes(needle)) mustChecks.push(`${name}：纯函数侧判成 ${pure}`);
+    const r = await askOutline(fxRisk, JSON.stringify(mutate(JSON.parse(outlineJson(13)))));
+    if (r.res.status !== 400 || !String(r.res.body?.error).includes(needle)) mustChecks.push(`${name}：HTTP 侧回 ${r.res.status} / ${r.res.body?.error}`);
+  }
+  okPair(ok, 'S-03 页数 12~18 与必含 timeline/workload 硬失败并点名',
+    () => bandChecks.length === 0 && mustChecks.length === 0,
+    () => /页数 \$\{raw\.length\} 不在/.test(outlineSrc) && /缺少时间线页/.test(outlineSrc) && /缺少工作量页/.test(outlineSrc),
+    () => ({ bandChecks, mustChecks }));
+
+  // ---------- S-04 数字铁律真的交付给了模型（首轮 + 重试轮都收到） ----------
+  okPair(ok, 'S-04 数字铁律写进 system 提示（数字只走 dataKeys，禁止模型自填）',
+    () => /一律只写 dataKeys 引用/.test(riskRound.sys) && /严禁自行写数字或改写数字/.test(riskRound.sys)
+      && /数字一律用 dataKeys 表示，禁止编造数字/.test(retryRound.retrySys)
+      && (riskRound.res.body?.outline ?? []).every((p: any) => Array.isArray(p.dataKeys) && p.dataKeys.length > 0),
+    () => /一律只写 dataKeys 引用/.test(outlineSrc) && /严禁自行写数字或改写数字/.test(outlineSrc),
+    () => ({ 首轮含铁律: /严禁自行写数字/.test(riskRound.sys), 重试轮含铁律: /禁止编造数字/.test(retryRound.retrySys), 重试轮: retryRound.retrySys.slice(0, 80) }));
+
+  // ---------- S-05 toolId 必填 + 不静默回落 ----------
+  const noToolId = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxRisk });
+  mockQueue = [{ content: outlineJson(13) }];
+  mockRequests.length = 0;
+  const noModelCall = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxRisk, toolId: noModelId });
+  const noModelAsks = mockRequests.length;
+  const withTool = await call('POST', '/plans/kickoff-ppt-outline', { projectId: fxRisk, toolId: mockId });
+  okPair(ok, 'S-05 大纲端点不静默回落模型：toolId 必填 + 400 原样透传错误',
+    () => noToolId.status === 400 && /toolId 必填/.test(String(noToolId.body?.error))
+      && noModelCall.status === 400 && /所选模型未配置/.test(String(noModelCall.body?.error)) && noModelAsks === 0
+      && withTool.status === 200,
+    () => /toolId 必填（大纲生成需要模型工具）/.test(routeSrc) && /kickoffOutline\(projectId, toolId/.test(routeSrc),
+    () => ({ noToolId: noToolId.body?.error, noModel: noModelCall.body?.error, noModelAsks, withTool: withTool.status }));
+
+  // ---------- S-06 硬阻塞服务端二次拦截（绕过面板直接调用同样拒） ----------
+  const fxEmpty = await mkProject('空夹具');
+  const pfEmpty = await call('GET', `/plans/kickoff-preflight?projectId=${fxEmpty}`);
+  const blockedRound = await askOutline(fxEmpty, outlineJson(13));
+  okPair(ok, 'S-06 硬阻塞在服务端二次拦截（UI 置灰不是保险）',
+    () => pfEmpty.body?.blocked === true && JSON.stringify(pfEmpty.body?.missingHard) === JSON.stringify(['P1', 'P2', 'P3'])
+      && blockedRound.res.status === 400 && /资料不足，不能生成启动会稿/.test(String(blockedRound.res.body?.error))
+      && blockedRound.asks === 0 && riskRound.res.status === 200,
+    () => /bundle\.preflight\.blocked/.test(outlineSrc) && /资料不足，不能生成启动会稿/.test(outlineSrc),
+    () => ({ missingHard: pfEmpty.body?.missingHard, err: blockedRound.res.body?.error, asks: blockedRound.asks }));
+
+  // ---------- S-07 降级工期排除里程碑（纯函数） ----------
+  const mkP = (i: number, days: number, kind = 'normal') => ({
+    id: `q${i}`, project_id: 'p1', title: `门内任务 ${i}`, kind, duration_days: days,
+    start_date: '2026-01-05', end_date: '2026-01-12', progress: 0, status: 'todo', assignee: '', complexity: 3,
+  }) as any;
+  const sumNoEst = (over: Record<string, unknown> = {}) => ({ countedKeys: [], phases: [], directManDays: { expected: 0, optimistic: null, pessimistic: null }, config: { manDaysPerManMonth: 20.83 }, quote: { p50ManDays: 0, p84ManDays: 0 }, ...over } as any);
+  const pfOk = { items: [{ key: 'P6', status: 'ok' }] } as any;
+  const mixed = SVC.workloadOf(sumNoEst(), [mkP(1, 10), mkP(2, 8), mkP(3, 20, 'milestone')], pfOk);
+  okPair(ok, 'S-07 降级工期排除里程碑（T01001 里程碑工期=子任务之和，重复累加会翻倍）',
+    () => mixed.source === 'duration' && mixed.manDays.expected === 18 && mixed.counted === 2
+      && SVC.workloadOf(sumNoEst(), [mkP(1, 10, 'milestone'), mkP(2, 20, 'milestone')], pfOk).noData === true,
+    () => /p\.kind !== 'milestone'/.test(bundleSrc),
+    () => ({ expected: mixed.manDays.expected, counted: mixed.counted }));
+
+  // ---------- S-08 人月因子取估算配置（不写死 20.83） ----------
+  const mmAt = (factor: number) => SVC.workloadOf({ countedKeys: ['k1'], directManDays: { expected: 96, optimistic: 78, pessimistic: 132 }, config: { manDaysPerManMonth: factor }, quote: { p50ManDays: 96, p84ManDays: 118 }, phases: [] } as any, [mkP(1, 10)], pfOk);
+  const mm1 = mmAt(20.83);
+  const mm2 = mmAt(24);
+  okPair(ok, 'S-08 人月换算因子取估算配置，kickoff 内不重复定义 20.83',
+    () => Math.abs(mm1.manMonth - Math.round((96 / 20.83) * 100) / 100) < 1e-9
+      && Math.abs(mm2.manMonth - 4) < 1e-9 && mm2.manMonth !== mm1.manMonth
+      && mm1.manDaysPerManMonth === 20.83 && mm2.manDaysPerManMonth === 24,
+    () => /toManMonth\(/.test(svcSrc) && !/20\.83/.test(svcSrc),
+    () => ({ 因子20_83: mm1.manMonth, 因子24: mm2.manMonth }));
+
+  // ---------- S-09 PRD 摘要预算：保头保尾截断落在真实交付的提示词上 ----------
+  const riskSummary = riskRound.user.split('【PRD 摘要】')[1] ?? '';
+  const cleanSummary = cleanRound.user.split('【PRD 摘要】')[1] ?? '';
+  okPair(ok, 'S-09 PRD 摘要预算 6000 保头保尾（同 prdContext 策略，不跨模块改私有符号）',
+    () => riskSummary.includes(SENT.head) && riskSummary.includes(SENT.tail) && !riskSummary.includes(SENT.mid)
+      && /中段略去 \d+ 字符，全文见 PRD 文档/.test(riskSummary)
+      && riskRound.res.body?.truncated === true
+      && (riskRound.res.body?.warnings ?? []).some((w: string) => /PRD 摘要超出/.test(w))
+      && riskSummary.length < longPrd.length / 2,
+    () => /KICKOFF_PRD_LIMIT = 6000/.test(bundleSrc) && /中段略去/.test(bundleSrc),
+    () => ({ 全文: longPrd.length, 摘要: riskSummary.length, 略去: /中段略去 (\d+) 字符/.exec(riskSummary)?.[1], truncated: riskRound.res.body?.truncated }));
+
+  // ---------- S-10 风险四类本地枚举齐 + 无命中兜底 ----------
+  const RISK_MARKS = ['阻塞态', '进度落后', '未关联任何计划', '复杂度 ≥4'];
+  const riskLine = /本地风险信号：(\d+) 条（(.*)）/.exec(riskRound.user) ?? [];
+  const cleanLine = /本地风险信号：(\d+) 条（(.*)）/.exec(cleanRound.user) ?? [];
+  const riskChecks: string[] = [];
+  for (const m of RISK_MARKS) if (!riskLine[2]?.includes(m)) riskChecks.push(`风险夹具的提示词里没有「${m}」这一类信号`);
+  if (!(Number(riskLine[1]) >= 4)) riskChecks.push(`风险条数只有 ${riskLine[1]}（四类应各命中）`);
+  if (!cleanLine[2]?.includes('系统内暂无风险信号')) riskChecks.push(`干净夹具没走兜底分支：${cleanLine[2]}`);
+  if (RISK_MARKS.some((m) => cleanLine[2]?.includes(m))) riskChecks.push('干净夹具仍报出实信号（枚举规则没跟着夹具走）');
+  okPair(ok, 'S-10 风险四类本地枚举齐（blocked/进度落后/需求无关联/复杂度≥4）+ 无命中兜底',
+    () => riskChecks.length === 0 && riskRound.res.status === 200 && cleanRound.res.status === 200,
+    () => /status === 'blocked'/.test(bundleSrc) && /expectedProgress\(/.test(bundleSrc) && /linkedPlans\.length === 0/.test(bundleSrc)
+      && /RISK_COMPLEXITY_MIN/.test(bundleSrc) && /系统内暂无风险信号/.test(bundleSrc),
+    () => ({ riskChecks, 风险条: riskLine[2]?.slice(0, 200), 干净条: cleanLine[2]?.slice(0, 80) }));
+
+  // ---------- S-11 大纲路由注册在 /:id 之前（字面路径可直达，参数路由仍活） ----------
+  const fxPlans = await call('GET', `/plans?projectId=${fxRisk}`);
+  const onePlanId = String(fxPlans.body?.[0]?.id ?? '');
+  const patched = await call('PATCH', `/plans/${onePlanId}`, { title: `门内改名计划 ${stamp}` });
+  const plansAfter = await call('GET', `/plans?projectId=${fxRisk}`);
+  const ghostPath = await call('POST', '/plans/kickoff-ppt-outline-not-a-route', { projectId: fxRisk, toolId: mockId });
+  okPair(ok, 'S-11 大纲路由注册在 /:id 之前',
+    () => noToolId.status === 400 && /toolId 必填/.test(String(noToolId.body?.error))
+      && patched.status === 200 && plansAfter.body?.some((p: any) => p.title === `门内改名计划 ${stamp}`)
+      && ghostPath.status !== 400 && !/toolId 必填/.test(String(ghostPath.body?.error ?? '')),
+    () => routeSrc.indexOf('/kickoff-ppt-outline') < routeSrc.indexOf("planApi.patch('/:id'"),
+    () => ({ literal: noToolId.status, patch: patched.status, ghost: ghostPath.status }));
+
+  // ---------- S-12 时间线口径在两处提示词均按 dataKeys 写明且带否定示例 ----------
+  const layoutOnly = JSON.parse(outlineJson(13)) as any[];
+  layoutOnly[6].dataKeys = ['planRows']; // layout 仍是 'timeline'，但键被摘掉——T02314 的常见错形
+  const layoutOnlyRound = await askOutline(fxRisk, JSON.stringify(layoutOnly));
+  okPair(ok, 'S-12 时间线页要求在两处提示词均按 dataKeys 口径写明且带否定示例（T02314）',
+    () => /必须至少一页 dataKeys 含 "timeline"/.test(riskRound.sys) && /把 layout 设成 "timeline" 但 dataKeys 里没有/.test(riskRound.sys)
+      && /必须至少一页 dataKeys 含 "timeline"（只把 layout 设成 'timeline' 而 dataKeys 里没这个键不算/.test(retryRound.retrySys)
+      && layoutOnlyRound.asks === 2 && /缺少时间线页/.test(layoutOnlyRound.retrySys)
+      && layoutOnlyRound.res.status === 400 && /缺少时间线页/.test(String(layoutOnlyRound.res.body?.error))
+      && riskRound.res.status === 200,
+    () => /必须至少一页 dataKeys 含 "timeline"/.test(outlineSrc)
+      && /只把 layout 设成 'timeline' 而 dataKeys 里没这个键不算/.test(outlineSrc)
+      && /必须至少一页 dataKeys 含 "timeline"（只把 layout 设成 'timeline'/.test(outlineSrc),
+    () => ({ 首轮示例: /把 layout 设成 "timeline"/.test(riskRound.sys), 重试轮示例: /没这个键不算/.test(retryRound.retrySys), 回喂: layoutOnlyRound.retrySys.slice(-120), layoutOnly: layoutOnlyRound.res.body?.error }));
+
+  // =====================================================================
+  // X 组：单源表改名模拟（判据 3~4）
+  // =====================================================================
+  lines.push('');
+  lines.push('== X 组：单源表改名模拟');
+  {
+    /**
+     * X-01 数据键单源表的改名模拟：`SVC.KICKOFF_DATA_KEYS` 是合法键集与提示词枚举的同源表。
+     *  ① 同源自证（跨进程）：服务真正交付给模型的那行键枚举，逐字等于门内读到的导出表——
+     *     服务侧若另抄一份键清单，这一条先红；
+     *  ② 改名模拟（进程内）：把 'assignees' 改名后合法键集随表移动（新键被接受、旧键判未知项），
+     *     还原后判定逐字复位。
+     */
+    const keys = SVC.KICKOFF_DATA_KEYS as unknown as string[];
+    const idx = keys.indexOf('assignees');
+    const xf: string[] = [];
+    const enumLine = (sys: string) => sys.split('\n').find((l) => l.startsWith('4. dataKeys 只能取：')) ?? '';
+    const baseRound = await askOutline(fxRisk, outlineJson(13));
+    const delivered = enumLine(baseRound.sys).replace('4. dataKeys 只能取：', '').split('；')[0].trim();
+    if (delivered !== keys.join(' / ')) xf.push(`交付给模型的键枚举与导出单源表不一致（第二来源）：${delivered.slice(0, 160)}`);
+    if (idx < 0) xf.push('KICKOFF_DATA_KEYS 里没有 assignees（表形态变了，模拟需重新接线）');
+    else {
+      const orig = keys[idx];
+      const renamed = 'ZZZ-assignees';
+      const verdictKey = (k: string) => {
+        try { SVC.assertOutlineShape([{ section: '项目团队介绍', title: 't', bullets: [], dataKeys: [k], layout: 'list' }]); return 'accepted'; }
+        catch { return 'rejected'; }
+      };
+      const beforeOld = verdictKey(orig);
+      const beforeNew = verdictKey(renamed);
+      try {
+        keys[idx] = renamed;
+        if (verdictKey(renamed) !== beforeOld) xf.push(`新键没被同口径接受（${beforeOld} → ${verdictKey(renamed)}）`);
+        if (verdictKey(orig) !== beforeNew) xf.push(`旧键改名后判定没变（合法键集没随单源表移动）：${verdictKey(orig)}`);
+      } finally {
+        keys[idx] = orig;
+      }
+      if (verdictKey(orig) !== beforeOld) xf.push('还原后合法键判定与初始不一致');
+      if (enumLine((await askOutline(fxRisk, outlineJson(13))).sys) !== enumLine(baseRound.sys)) xf.push('还原后提示词键枚举行与初始不逐字相同');
+    }
+    ok(`X-01 数据键单源表改名模拟：交付枚举行逐字等于导出表、合法键集随表移动、旧键失效、还原复位`, xf.length === 0, xf);
+
+    /**
+     * X-02 真实计数通道的改名模拟：需求/计划条数与样例名称是产品把库内事实送进提示词的唯一通道。
+     * 通道内容改了（门内改名 / 门内补一条需求），提示词必须整体跟着改、旧名称零残留。
+     */
+    const factsOf = (user: string) => (user.split('【PRD 摘要】')[0] ?? '');
+    const baseFacts = factsOf(riskRound.user);
+    const chf: string[] = [];
+    const reqCount = (f: string) => Number(/需求 (\d+) 条/.exec(f)?.[1] ?? -1);
+    const before = reqCount(baseFacts);
+    const listBefore = await call('GET', `/plans/prd-requirements?projectId=${fxRisk}`);
+    if (before !== (listBefore.body?.length ?? -1)) chf.push(`基线提示词的「需求 N 条」(${before}) 与端点条数 (${listBefore.body?.length}) 不一致`);
+    await call('POST', '/plans/prd-requirements', { projectId: fxRisk, reqNo: 'REQ-904', title: '门内补录需求丁' });
+    const afterR = await askOutline(fxRisk, outlineJson(13));
+    const afterFacts = factsOf(afterR.user);
+    if (reqCount(afterFacts) !== before + 1) chf.push(`补一条需求后提示词条数没跟上（${before} → ${reqCount(afterFacts)}）`);
+    if (!afterFacts.includes('门内补录需求丁')) chf.push('新需求名称没进样例事实（计数通道动了、名称通道没动）');
+    const renamed = await askOutline(fxRisk, outlineJson(13));
+    if (!factsOf(renamed.user).includes(`门内改名计划 ${stamp}`)) chf.push('计划改名后提示词的样例名称没跟上');
+    if (factsOf(renamed.user).includes('门内阻塞计划')) {
+      chf.push('计划改名后提示词仍残留旧名称「门内阻塞计划」——名称通道另有抄本');
+    }
+    ok(`X-02 真实计数通道改名模拟：条数与名称逐一动到交付提示词上（+1 计数、新名称到位、旧名称零残留）`, chf.length === 0, chf);
+  }
+
+  // =====================================================================
+  // N 组：负对照（判据 4）
+  // =====================================================================
+  lines.push('');
+  lines.push('== N 组：负对照（证明判据有牙）');
+  {
+    const spy: Array<{ name: string; cond: boolean; extra?: unknown }> = [];
+    const sOk = (name: string, cond: boolean, extra?: unknown) => spy.push({ name, cond, extra });
+
+    // N-01 假夹具：源码那句「严禁自行写数字」在（字面绿），但它没被交付给模型（行为红）
+    okPair(sOk, 'N-01 假夹具：铁律在源码里、没发到模型端，配对必须判红',
+      () => /严禁自行写数字/.test(retryRound.sys) && retryRound.sys.length > 0 && mockRequests.length === 0,
+      () => /严禁自行写数字或改写数字/.test(outlineSrc),
+      () => ({ 说明: '只看源码正则会把「写了但没发」放行' }));
+    ok('N-01 负对照落地：只看字面会放行，配对判红且红因是「行为失守」',
+      spy.length === 1 && spy[0].cond === false && JSON.stringify(spy[0].extra).includes('行为失守'), spy);
+
+    // N-02 红因可区分：行为绿、锚点被等价重构换掉 → 红因必须是「字面锚点失配」
+    okPair(sOk, 'N-02 红因区分样：行为绿、锚点失配',
+      () => riskRound.res.status === 200,
+      () => /KICKOFF_PRD_LIMIT = 8888/.test(bundleSrc));
+    ok('N-02 负对照落地：两种红各带自己的红因，不都读成「功能挂了」',
+      spy.length === 2 && spy[1].cond === false && JSON.stringify(spy[1].extra).includes('字面锚点失配'), spy[1]);
+
+    // N-03 PRD 预算判据有牙：预算内的门内 PRD 不截断（否则 S-09 的标记判据是恒绿的）
+    ok('N-03 摘要截断判据有牙：短 PRD 夹具全文入提示词、无略去标记、truncated 为假',
+      cleanSummary.includes(SENT.mid) && !/中段略去/.test(cleanSummary) && cleanRound.res.body?.truncated === false,
+      { 摘要长: cleanSummary.length, truncated: cleanRound.res.body?.truncated });
+
+    // N-04 重试判据有牙：合规稿只发 1 次，坏稿发 2 次（重试不是常驻）
+    ok('N-04 自动重试判据有牙：合规稿 1 请求、不合规稿 2 请求且第二轮带回喂原因',
+      goodShape.asks === 1 && badShape.asks === 2 && badShape.retrySys.length > 0,
+      { goodAsks: goodShape.asks, badAsks: badShape.asks });
+
+    // N-05 里程碑排除判据有牙：同一批行改成 normal 后 Σ 必须随之变大（排除不是恒等式）
+    const asNormal = SVC.workloadOf(sumNoEst(), [mkP(1, 10), mkP(2, 8), mkP(3, 20)], pfOk);
+    ok('N-05 里程碑排除判据有牙：同批行 kind 换成 normal 后 Σ 工期含进 20（208 侧对照）',
+      asNormal.manDays.expected === 38 && asNormal.manDays.expected !== mixed.manDays.expected,
+      { normal: asNormal.manDays.expected, mixed: mixed.manDays.expected });
+
+    // N-06 人月因子判据有牙：因子换 24 后人月必换（写死 20.83 就不会动）
+    const mm3 = mmAt(12);
+    ok('N-06 人月换算判据有牙：因子 12/20.83/24 三档人月各不相同且等于 96/因子',
+      mm3.manMonth === Math.round((96 / 12) * 100) / 100 && new Set([mm3.manMonth, mm1.manMonth, mm2.manMonth]).size === 3,
+      { f12: mm3.manMonth, f20_83: mm1.manMonth, f24: mm2.manMonth });
+
+    // N-07 阻塞拦截判据有牙：同一端点对门内齐备项目放行（拦截不是逢请求即拒）
+    ok('N-07 硬阻塞判据有牙：空夹具 400 且零 AI 请求、齐备夹具 200',
+      blockedRound.res.status === 400 && blockedRound.asks === 0 && riskRound.res.status === 200 && riskRound.asks === 1,
+      { blocked: blockedRound.res.status, blockedAsks: blockedRound.asks, ready: riskRound.res.status });
+
+    // N-08 路由判据有牙：字面路径直达 400 点名，伪路径不被大纲路由吞（否则 S-11 判据恒绿）
+    ok('N-08 路由判据有牙：toolId 缺失走大纲路由点名，伪路径不返回该点名',
+      noToolId.status === 400 && /toolId 必填/.test(String(noToolId.body?.error)) && !/toolId 必填/.test(String(ghostPath.body?.error ?? '')),
+      { noToolId: noToolId.body?.error, ghost: ghostPath.status, ghostBody: ghostPath.body?.error });
+  }
 
   writeFileSync(gateArtifactPath(join(ROOT, '.workbuddy'), 't02096-outline-sample.json'), JSON.stringify(good.body, null, 2), 'utf8');
 }
