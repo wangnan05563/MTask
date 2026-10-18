@@ -280,16 +280,27 @@ async function realClickByText(cdp: Cdp, ev: Ev, text: string): Promise<boolean>
   return true;
 }
 
-/** 页面现场摘要：失败态钩子、空态文案、夹具行是否在场 */
+/**
+ * 页面现场摘要：失败态钩子、空态文案、夹具行是否在场。
+ * ⚠ T02293 改判：探针**不用产品文案当选择器**。「哪一条提示属于搁置段」由门自己的桩令牌
+ *   （STUB_REASON，只有搁置那个端点会返回它）认领，令牌读不到时退「全场只有一条提示」这一
+ *   结构事实（桩只掐搁置一段，主列表永远不会失败）。中文串因此只出现在 okPair 的字面腿里——
+ *   产品改词时选择器不会拿错对象，字面腿会红着把「文案变了」这件事交到人手上。
+ */
 const PROBE = `
   const hints = [...document.querySelectorAll('[data-t02213="resource-error"]')].map(e => (e.textContent ?? '').replace(/\\s+/g, ' ').trim());
   const body = (document.body.innerText ?? '').replace(/\\s+/g, ' ');
+  const tok = ${JSON.stringify(STUB_REASON)};
+  const withTok = hints.find(h => h.includes(tok));
+  const shelved = withTok ?? (hints.length === 1 ? hints[0] : '');
+  const btns = [...document.querySelectorAll('[data-t02213="resource-error"] button')].map(b => (b.textContent ?? '').replace(/\\s+/g, ' ').trim());
   return {
     mounted: (document.querySelector('#root')?.children.length ?? 0) > 0,
     hints,
-    shelvedHint: hints.find(h => h.includes('搁置列表')) ?? '',
-    todoHint: hints.find(h => h.includes('任务列表')) ?? '',
-    retryBtn: hints.length > 0 && [...document.querySelectorAll('[data-t02213="resource-error"] button')].some(b => (b.textContent ?? '').includes('重试')),
+    shelvedHint: shelved,
+    todoHint: hints.filter(h => h !== shelved).join(' | '),
+    retryBtn: hints.length > 0 && btns.length > 0,
+    btnTexts: btns,
     emptyState: body.includes('暂无搁置任务'),
     staleMark: body.includes('可能过期'),
     hasTodo: body.includes('门夹具活待办样本'),
@@ -297,6 +308,11 @@ const PROBE = `
     rejections: (window.__rej ?? []),
   };
 `;
+/** 从 DOM 实际串里反解出产品自己渲染的 label（连接器取自 HEAD 单源模板，不新造字面量） */
+function labelFromHint(hint: string, connector: string): string {
+  const i = connector ? hint.indexOf(connector) : -1;
+  return i > 0 ? hint.slice(0, i) : '';
+}
 
 async function probe(ev: Ev): Promise<any> { return ev(PROBE); }
 
@@ -318,37 +334,71 @@ async function runInteraction(cdp: Cdp, ev: Ev, shots: string): Promise<void> {
   ok('A-00 视图确实切到「搁置」tab（待办区行不在当前视图，夹具搁置行接管）',
     base.hasTodo === false && base.mounted === true, base);
   ok('A-01 正常态：搁置区渲染门夹具行（桩数据真的进了列表）', base.hasShelved === true, base);
-  ok('A-02 正常态：不出现「搁置列表加载失败」提示（不虚报故障）', String(base.shelvedHint ?? '') === '', base.shelvedHint);
-  ok('A-03 正常态：有数据时不显示「暂无搁置任务」空态', base.emptyState === false, base.emptyState);
+  okPair(ok, 'A-02 正常态：不出现「搁置列表加载失败」提示（不虚报故障）',
+    () => base.hints.length === 0 && String(base.shelvedHint ?? '') === '',
+    () => base.hints.every((h: string) => !h.includes(LABEL) && !h.includes(contractCopy().connector)),
+    () => ({ hints: base.hints }));
+  okPair(ok, 'A-03 正常态：有数据时不显示「暂无搁置任务」空态',
+    () => base.hasShelved === true && base.hints.length === 0,
+    () => base.emptyState === false,
+    () => ({ emptyState: base.emptyState, hasShelved: base.hasShelved }));
 
   fail.mode = 'http500';
   const cold = await reloadToShelvedTab(cdp, ev);
-  ok('B-01 冷启动 500：搁置区给出可见失败态（含「搁置列表」与「加载失败」）',
-    cold.shelvedHint.includes('搁置列表') && cold.shelvedHint.includes('加载失败'), cold.shelvedHint);
+  okPair(ok, 'B-01 冷启动 500：搁置区给出可见失败态（含「搁置列表」与「加载失败」）',
+    () => cold.hints.length === 1 && cold.shelvedHint.includes(STUB_REASON),
+    () => cold.shelvedHint.includes('搁置列表') && cold.shelvedHint.includes('加载失败'),
+    () => ({ hint: cold.shelvedHint, hints: cold.hints }));
   ok('B-02 冷启动 500：失败原因真的透到界面（不是泛化文案）', cold.shelvedHint.includes(STUB_REASON), cold.shelvedHint);
   // 中文文案不锁死字面量：把 DOM 实际串与「共享失败态层单源模板组装出的期望串」对表（行为腿=原因透到界面，字面腿=模板仍在且组装一致）
   okPair(ok, 'B-09 冷启动 500：失败态文案 == 由 resourceState 单源模板组装的期望串（措辞随产品移动）',
-    () => cold.shelvedHint.includes(LABEL) && cold.shelvedHint.includes(STUB_REASON),
+    () => {
+      const c = contractCopy();
+      // 行为腿用**运行时反解出的 label**：DOM 里那条提示的前段就是产品渲染的 label，
+      // 它非空、且与连接器+原因按模板顺序拼起来正好等于整条提示——不依赖门里抄的那份词。
+      const rt = labelFromHint(cold.shelvedHint, c.connector);
+      return rt.length > 0 && cold.shelvedHint === `${rt}${c.connector}${cold.shelvedHint.slice(rt.length + c.connector.length)}`
+        && cold.shelvedHint.slice(rt.length + c.connector.length).startsWith(STUB_REASON);
+    },
     () => {
       const c = contractCopy();
       return c.connector !== '' && c.retryToken === '重试' && c.staleToken === '可能过期'
-        && cold.shelvedHint.startsWith(`${LABEL}${c.connector}${STUB_REASON}`);
+        && cold.shelvedHint.startsWith(expectFail(c));
     },
-    () => ({ hint: cold.shelvedHint, expected: expectFail() }));
-  ok('B-03 冷启动 500：不再用「暂无搁置任务」空态冒充正常', cold.emptyState === false, cold.emptyState);
-  ok('B-04 冷启动 500：主列表未被牵连（无「任务列表」失败态）', String(cold.todoHint ?? '') === '' && cold.hints.length === 1,
-    { shelved: cold.shelvedHint, todo: cold.todoHint, all: cold.hints });
-  ok('B-05 冷启动 500：给出重试入口', cold.retryBtn === true, cold);
+    () => ({ hint: cold.shelvedHint, expected: expectFail(), 运行时label: labelFromHint(cold.shelvedHint, contractCopy().connector) }));
+  okPair(ok, 'B-03 冷启动 500：不再用「暂无搁置任务」空态冒充正常',
+    () => cold.hints.length === 1 && cold.shelvedHint.includes(STUB_REASON),
+    () => cold.emptyState === false,
+    () => ({ emptyState: cold.emptyState, hint: cold.shelvedHint }));
+  okPair(ok, 'B-04 冷启动 500：主列表未被牵连（无「任务列表」失败态）',
+    () => String(cold.todoHint ?? '') === '' && cold.hints.length === 1,
+    () => cold.hints.every((h: string) => !h.includes('任务列表')),
+    () => ({ shelved: cold.shelvedHint, todo: cold.todoHint, all: cold.hints }));
+  okPair(ok, 'B-05 冷启动 500：给出重试入口（钩子里真有按钮＝入口可点，文案是字面腿）',
+    () => cold.retryBtn === true && Array.isArray(cold.btnTexts) && cold.btnTexts.length >= 1,
+    () => cold.btnTexts.some((t: string) => t.includes('重试')),
+    () => ({ btnTexts: cold.btnTexts }));
   ok('B-06 冷启动 500：异常被接住，无未捕获 rejection', Array.isArray(cold.rejections) && cold.rejections.length === 0, cold.rejections);
   await (async () => { const r = await cdp.send('Page.captureScreenshot', { format: 'png' }); if (r?.data) writeFileSync(join(shots, 'B-cold-500.png'), Buffer.from(String(r.data), 'base64')); })();
 
   fail.mode = 'destroy';
   const conn = await reloadToShelvedTab(cdp, ev);
-  ok('B-07 连接级断供（socket 直接断，等价后端进程被杀）同样给出失败态',
-    conn.shelvedHint.includes('搁置列表') && conn.shelvedHint.includes('加载失败') && conn.emptyState === false, conn.shelvedHint);
-  ok('B-08 连接级断供：原因可读且无未捕获 rejection',
-    conn.shelvedHint.replace('搁置列表加载失败 ·', '').trim().length > 0 && (conn.rejections ?? []).length === 0,
-    { hint: conn.shelvedHint, rejections: conn.rejections });
+  okPair(ok, 'B-07 连接级断供（socket 直接断，等价后端进程被杀）同样给出失败态',
+    // 断供时原因由 fetch/浏览器给出（不是桩令牌），所以行为腿认结构：全场恰有一条失败态、
+    // 且它带一个可点的重试入口——这才叫「有出口」，与文案无关。
+    () => conn.hints.length === 1 && conn.retryBtn === true && conn.emptyState === false,
+    () => conn.shelvedHint.includes('搁置列表') && conn.shelvedHint.includes('加载失败'),
+    () => ({ hint: conn.shelvedHint, hints: conn.hints, emptyState: conn.emptyState }));
+  okPair(ok, 'B-08 连接级断供：原因可读且无未捕获 rejection',
+    () => {
+      const c = contractCopy();
+      const rt = labelFromHint(conn.shelvedHint, c.connector);
+      // 「原因可读」= 模板连接器之后还有非空正文（长度判据，不锁某句错误消息）
+      return rt.length > 0 && conn.shelvedHint.slice(rt.length + c.connector.length).trim().length > 0
+        && (conn.rejections ?? []).length === 0;
+    },
+    () => conn.shelvedHint.replace(`${LABEL}${contractCopy().connector}`, '').trim().length > 0 && (conn.rejections ?? []).length === 0,
+    () => ({ hint: conn.shelvedHint, rejections: conn.rejections }));
 
   // 表现②：先成功装载，再让刷新失败——旧数据必须被标成「可能过期」而不是冒充新数据
   fail.mode = 'off';
@@ -366,15 +416,22 @@ async function runInteraction(cdp: Cdp, ev: Ev, shots: string): Promise<void> {
   await sleep(1_800);
   const stale = await probe(ev);
   ok('C-02 刷新失败：旧数据仍在（不是整块清空）', stale.hasShelved === true, stale);
-  ok('C-03 刷新失败：给出「搁置列表加载失败」且标注「可能过期」',
-    stale.shelvedHint.includes('搁置列表') && stale.staleMark === true, { hint: stale.shelvedHint, staleMark: stale.staleMark });
-  ok('C-04 刷新失败：不再显示「暂无搁置任务」空态', stale.emptyState === false, stale.emptyState);
+  okPair(ok, 'C-03 刷新失败：给出「搁置列表加载失败」且标注「可能过期」',
+    // 行为腿是 stale 的定义本身：既报失败（原因在场）又仍留着上一次的旧数据
+    () => stale.shelvedHint.includes(STUB_REASON) && stale.hasShelved === true,
+    () => stale.shelvedHint.includes('搁置列表') && stale.staleMark === true,
+    () => ({ hint: stale.shelvedHint, staleMark: stale.staleMark, hasShelved: stale.hasShelved }));
+  okPair(ok, 'C-04 刷新失败：不再显示「暂无搁置任务」空态',
+    () => stale.hints.length === 1 && stale.shelvedHint.includes(STUB_REASON),
+    () => stale.emptyState === false,
+    () => ({ emptyState: stale.emptyState }));
 
   // 恢复：把故障关掉后点重试——失败态必须整条消失且不残留「可能过期」
   fail.mode = 'off';
-  ok('D-01 点重试（真实指针点击）可恢复', await (async () => {
+  let recovered: any = null;
+  ok('D-01 点重试（真实指针点击）可恢复（结构判据：钩子清空 + 夹具行回位）', await (async () => {
     const p = await ev(`
-      const b = [...document.querySelectorAll('[data-t02213="resource-error"] button')].find(x => (x.textContent ?? '').includes('重试'));
+      const b = document.querySelector('[data-t02213="resource-error"] button');
       if (!b) return null;
       b.scrollIntoView({ block: 'center' });
       const r = b.getBoundingClientRect();
@@ -385,17 +442,32 @@ async function runInteraction(cdp: Cdp, ev: Ev, shots: string): Promise<void> {
     await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: p.x, y: p.y, button: 'left', clickCount: 1 });
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: p.x, y: p.y, button: 'left', clickCount: 1 });
     await sleep(2_000);
-    const after = await ev(`
-      const hints = [...document.querySelectorAll('[data-t02213="resource-error"]')].map(e => e.textContent ?? '');
-      const body = (document.body.innerText ?? '').replace(/\\s+/g, ' ');
-      return { gone: !hints.some(h => h.includes('搁置列表')), back: body.includes('门夹具活搁置样本'), noStale: !body.includes('可能过期') };
-    `);
-    return !!(after?.gone && after?.back && after?.noStale);
+    recovered = await probe(ev);
+    return recovered?.hints?.length === 0 && recovered?.hasShelved === true;
   })(), undefined);
+  okPair(ok, 'D-01b 恢复后文案侧不留痕（「可能过期」标注与失败态文案都不在场）',
+    () => recovered !== null && recovered.hints.length === 0 && recovered.shelvedHint === '' && recovered.hasShelved === true,
+    () => recovered !== null && recovered.staleMark === false && recovered.emptyState === false
+      && recovered.hints.every((h: string) => !h.includes(LABEL)),
+    () => ({ recovered: recovered && { hints: recovered.hints, staleMark: recovered.staleMark, emptyState: recovered.emptyState } }));
 
   const r = await cdp.send('Page.captureScreenshot', { format: 'png' });
   if (r?.data) writeFileSync(join(shots, 'D-recovered.png'), Buffer.from(String(r.data), 'base64'));
   ok('D-02 全程页面未捕获异常为 0（失败态接线没引入新崩溃）', pageErrors.length === 0, pageErrors.slice(0, 3));
+
+  // 字面腿自己的牙齿（T02293 反模式 20）：配对里的字面判据不能是恒真正则——
+  // ① 反解函数对空串/空连接器必须给不出 label（否则「label 非空」那条行为腿是空判据）；
+  // ② 按 HEAD 模板原样组装必须与 DOM 实际串相等（证明相等是拼对了，不是巧合）；
+  // ③ 把 label 换成门没用过的词，同一组装式必须立刻失配（产品改词时字面腿会红着交人，不会假绿）。
+  {
+    const c = contractCopy();
+    const assembled = expectFail(c);
+    const drift = assembled.replace(LABEL, '搁置清单（门未使用）');
+    ok('B-10 字面腿牙齿：反解函数在空输入上给不出 label、HEAD 模板原样组装与 DOM 串相等、label 一漂即失配（B-09 的字面判据对文案漂移敏感，不是恒真正则）',
+      labelFromHint('', c.connector) === '' && labelFromHint(cold.shelvedHint, '') === ''
+        && cold.shelvedHint.startsWith(assembled) && drift !== assembled && !cold.shelvedHint.startsWith(drift),
+      { 连接器: c.connector, 组装: assembled.slice(0, 40), 漂移: drift.slice(0, 40), 实际: cold.shelvedHint.slice(0, 40) });
+  }
 }
 
 // ---------------- 负对照：把源码改回缺陷形态，门必须拦得住 ----------------
