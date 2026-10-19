@@ -38,7 +38,7 @@ function judge(samples, { minSamples = 50, p99Limit = 500, maxLimit = 500 } = {}
   return { okFlag: true, why: `n=${samples.length} P99=${p99} max=${max}` };
 }
 
-// ---- 大工作空间夹具：25 目录 × 180 文件 = 4,500 个 .ts（每个 1 个导出函数，共 4,500 符号 < 5,000 上限） ----
+// ---- 大工作空间夹具：25 目录 × 180 文件 = 4,500 个 .ts（每个 1 个导出函数，共 4,501 符号；T02280 起上限按规模自适应，冷建取上界 50,000，本夹具远低于它 → 让路语义不受限值影响） ----
 const DIRS = 25, PER = 180, TOTAL = DIRS * PER + 1; // +1：末段目录的收敛探针文件
 const WS = mkdtempSync(join(TMP, 'mtask-t02200-'));
 for (let d = 0; d < DIRS; d++) {

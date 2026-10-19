@@ -63,7 +63,14 @@ const fakeDb = {
         }
         return { changes: 0 };
       },
-      get: (id) => (/^SELECT workspace_path FROM projects WHERE id = \?/i.test(s) ? { workspace_path: projects.get(id) ?? null } : undefined),
+      get: (id) => {
+        if (/^SELECT workspace_path FROM projects WHERE id = \?/i.test(s)) return { workspace_path: projects.get(id) ?? null };
+        // T02280：符号上限按规模自适应，需要本项目已索引行数
+        if (/^SELECT COUNT\(\*\) AS n FROM workspace_symbols WHERE project_id = \?/i.test(s)) {
+          return { n: symRows.reduce((a, r) => a + (r.project_id === id ? 1 : 0), 0) };
+        }
+        return undefined;
+      },
       all: (...p) => {
         if (/^SELECT path, MAX\(file_mtime\) AS m FROM workspace_symbols/i.test(s)) {
           const agg = new Map();

@@ -41,7 +41,7 @@ fsMod.readFileSync = (...a) => { readCalls++; return origRead(...a); };
 fsMod.readdirSync = (...a) => { readdirCalls++; return origReaddir(...a); };
 fsMod.watch = (...a) => watchImpl(...a);
 
-// ---------- 内存假库：只实现 WorkspaceService 实际用到的 5 类语句 ----------
+// ---------- 内存假库：只实现 WorkspaceService 实际用到的 6 类语句（T02280 起含自适应上限的 COUNT） ----------
 const projects = new Map(); // projectId → workspace_path
 const symRows = []; // { id, project_id, path, symbol, line, kind, file_mtime, workspace }
 
@@ -71,7 +71,14 @@ const fakeDb = {
         }
         return { changes: 0 };
       },
-      get: (id) => (/^SELECT workspace_path FROM projects WHERE id = \?/i.test(s) ? { workspace_path: projects.get(id) ?? null } : undefined),
+      get: (id) => {
+        if (/^SELECT workspace_path FROM projects WHERE id = \?/i.test(s)) return { workspace_path: projects.get(id) ?? null };
+        // T02280：自适应上限要读「本项目已索引行数」（另一条是 knownMtime 带的 distinct path）
+        if (/^SELECT COUNT\(\*\) AS n FROM workspace_symbols WHERE project_id = \?/i.test(s)) {
+          return { n: symRows.reduce((a, r) => a + (r.project_id === id ? 1 : 0), 0) };
+        }
+        return undefined;
+      },
       all: (...p) => {
         if (/^SELECT path, MAX\(file_mtime\) AS m FROM workspace_symbols/i.test(s)) {
           const agg = new Map();
@@ -252,21 +259,41 @@ check('D-05 索引清空后首轮必深扫（快照同步作废）', afterClear?
 
 const WS3 = join(BASE, `t02210-trunc-${Date.now().toString(36)}`);
 mkdirSync(WS3, { recursive: true });
-// 260 文件 × ≥20 符号 > SYMBOL_LIMIT(5000)：达上限收摊的那一轮树没走完，不许登记快照
-for (let d = 0; d < 13; d++) {
-  const dir = join(WS3, `t${d}`);
-  mkdirSync(dir, { recursive: true });
-  for (let f = 0; f < 20; f++) {
-    const body = Array.from({ length: 20 }, (_, i) => `export function tr_${d}_${f}_${i}() {}`).join('\n');
-    writeFileSync(join(dir, `t${d}_${f}.ts`), `${body}\n`);
+// T02280 规模自适应上限取证树。每枚目录 20 个文件 × 20 符号 = 400 符号。
+// 旧口径是绝对上限 5000：260 文件（5,200 符号）冷建就会截断。新口径冷建不设观测值 → 首轮直接收完，
+// 截断只发生在「观测到的规模」明显小于剩余树量时（见下面把树长大一倍的 D-07）。
+const truncWrite = (dFrom, dTo) => {
+  for (let d = dFrom; d < dTo; d++) {
+    const dir = join(WS3, `t${d}`);
+    mkdirSync(dir, { recursive: true });
+    for (let f = 0; f < 20; f++) {
+      const body = Array.from({ length: 20 }, (_, i) => `export function tr_${d}_${f}_${i}() {}`).join('\n');
+      writeFileSync(join(dir, `t${d}_${f}.ts`), `${body}\n`);
+    }
   }
-}
+};
+truncWrite(0, 13); // 260 文件 = 5,200 符号
 const pid4 = 'p-trunc';
 projects.set(pid4, WS3);
 const t1 = await WorkspaceService.refreshSymbols(pid4, 120000);
+check('D-06 单轮覆盖推进：5,200 符号的树冷建一轮收完（旧口径每轮封顶 5000 会在本轮截断）',
+  t1?.limit === 50000 && t1?.symbols === 5200 && t1?.deferred === false,
+  JSON.stringify({ limit: t1?.limit, symbols: t1?.symbols, deferred: t1?.deferred }));
+truncWrite(13, 26); // 树长大一倍 → 剩余 10,400 符号，而观测规模仍是 260 文件 × 密度 20 = 5,200
 const t2 = await WorkspaceService.refreshSymbols(pid4, 120000);
-check('D-06 达符号上限截断 → 不登记快照（否则半棵树被当成已扫完）', t1?.deferred === false && t2?.shortCircuited === false, JSON.stringify({ t1done: t1?.deferred, t2sc: t2?.shortCircuited, symbols: t1?.symbols }));
-check('D-07 截断轮次的索引确实按上限收口', t1?.symbols <= 5000 + 200, `symbols=${t1?.symbols}`);
+check('D-07 上限是观测出来的规模值而非常量：树长大一倍后本轮 limit = 候选 260 × 密度 20 = 5200',
+  t2?.limit === 5200 && t2?.deferred === false && t2?.symbols <= 5200 + 20,
+  JSON.stringify({ limit: t2?.limit, symbols: t2?.symbols }));
+const t3 = await WorkspaceService.refreshSymbols(pid4, 120000);
+check('D-08 达上限截断的那一轮不登记快照（否则半棵树被当成已扫完 → 下轮误短路）',
+  t3?.shortCircuited === false, JSON.stringify({ sc: t3?.shortCircuited, limit: t3?.limit }));
+check('D-09 走完的一轮把上限随观测规模一起推进（5200 → 10400，证明 limit 跟着树长）',
+  t3?.limit === 10400 && t3?.symbols <= 10400, JSON.stringify({ limit: t3?.limit, symbols: t3?.symbols }));
+const t4 = await WorkspaceService.refreshSymbols(pid4, 120000);
+check('D-10 短路轮不重算上限，如实复述登记快照那轮生效的值',
+  t4?.shortCircuited === true && t4?.limit === 10400, JSON.stringify({ sc: t4?.shortCircuited, limit: t4?.limit }));
+check('D-11 小树稳态轮上限落回 5000 下界（自适应不为小规模放大预算）',
+  s2?.limit === 5000, JSON.stringify({ limit: s2?.limit, files: s2?.files }));
 
 console.log('--- 8. 接线静态核对 ---');
 const src = origRead(join(ROOT, 'server', 'src', 'services', 'WorkspaceService.ts'), 'utf8');
@@ -274,7 +301,8 @@ check('E-01 短路条件含监视器不可用护栏', /!watchState\.unsupported 
 check('E-02 深扫间隔上限（静默失效最坏收敛时间）', /Date\.now\(\) - snap\.deepVerifiedAt < SYMBOL_DEEP_VERIFY_MS/.test(src), `SYMBOL_DEEP_VERIFY_MS = ${5 * 60}000ms`);
 check('E-03 快照只在非截断轮次登记', src.includes('else if (!state.truncated)') && src.includes('if (!job.state.truncated) commitTreeSnapshot'), '内联完成与后台续跑完成两处都受截断护栏');
 check('E-04 索引清空/换绑同时作废快照与监视器', src.includes('treeSnapshots.delete(projectId); // T02210') && src.includes('dropWorkspaceWatch(projectId)'), 'clearSymbols 双失效');
-check('E-05 短路返回发生在 memo 失效之前（不赔上全文重扫）', src.indexOf('shortCircuited: true }') < src.indexOf('invalidateSearchMemo(projectId); // T00782：索引刷新后'), '短路分支先返回，深扫路径才失效 memo');
+check('E-05 短路返回发生在 memo 失效之前（不赔上全文重扫）', src.indexOf('shortCircuited: true,') < src.indexOf('invalidateSearchMemo(projectId); // T00782：索引刷新后'), '短路分支先返回，深扫路径才失效 memo');
+check('E-06b 上限不再写死：walk 判的是本轮 ctx.limit，常量只剩上下界', src.includes('if (ctx.symbols >= ctx.limit)') && src.includes('const SYMBOL_LIMIT_CEIL = 50000;') && !/ctx\.symbols >= SYMBOL_LIMIT\b/.test(src), 'T02280 自适应上限接线核对');
 const routesSrc = origRead(join(ROOT, 'server', 'src', 'routes', 'index.ts'), 'utf8');
 const delRoute = routesSrc.slice(routesSrc.indexOf("api.delete('/projects/:id'"), routesSrc.indexOf("api.delete('/projects/:id'") + 900);
 check('E-06 删除项目同路回收监视器与快照（内存态随 projectId 存活）', /WorkspaceService\.clearSymbols\(req\.params\.id\)/.test(delRoute), 'delete /projects/:id → clearSymbols');
