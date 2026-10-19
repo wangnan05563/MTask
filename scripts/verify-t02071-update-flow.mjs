@@ -7,7 +7,7 @@
  * 字节与原包逐字节一致；主进程/预加载/界面的接线原以静态断言钉住，批㉖ 起改为「真跑接线 + 字面锚点配对」
  * （静态锚只在行为腿通过时才算绿，见文末批㉖ 说明）。
  *
- * 用法（判据 ②③④ 见 `docs/验收门判据规约.md`，本门断言数 35 → 58）：
+ * 用法（判据 ②③④ 见 `docs/验收门判据规约.md`，本门断言数 35 → 58 → 63）：
  *   node scripts/verify-t02071-update-flow.mjs         # 或 npm run verify:update
  *   ⚠ 必须在 HEAD 干净的副本里跑（`git worktree add --detach`）：字面腿取 `git show HEAD:`，
  *     行为腿直接 `require` 仓库内文件——工作树若躺着别的会话的过期文件，两条腿会各说各话。
@@ -22,10 +22,17 @@
  * B 组里最有判别力的是 B-06a/B-06b（同一现场「本地有 .part + 服务端忽略 Range 回 200」：真内核判不追加→删半截从 0
  * 重写→逐字节一致；把内核 append 结论强改为 true→主进程立刻把整包拼到旧半截后面，体积多出前缀、sha 不再一致。
  * 「没有第二套判定」只能靠这种依赖注入反证测出来，正则锚点测不出）与 B-09（重试期间服务端下载请求数零增长，
- * 才真等于「复用安装包」）。B-16 是驱动过程中实测撞出的**产品缺陷**现状钉住（206 的 Content-Range 起点与本地
+ * 才真等于「复用安装包」）。B-16 原本是驱动过程中实测撞出的**产品缺陷**现状钉住（206 的 Content-Range 起点与本地
  * .part 不符时，半截响应体被当整包落盘并回 downloaded，无总量/校验和兜底），已按规约建派生单 T02644 而非在本单修产品。
  * N 组负对照从无到有 8 条（本门原先一条都没有）：空源码同义反复探针、HEAD 取证面在场性、逐锚变异（含反模式 31
  * 两坑）、行为袋抽干、逐键孤立检测、空注册表反证、okPair 契约、八项关键数值点名。
+ *
+ * 批㉗（T02644 修复轮）：产品侧修好后，按规约「现状钉住不得当行为腿」把 B-16 从钉缺陷改为**正向安全不变量**，
+ * 并补三条同源现场：B-17（分段响应提前干净收尾 → 抛「下载不完整」、既不落 .exe 也不留 .part）、
+ * B-18（本地无 .part 的首下却收到 206 → 判「无法拼包」，且重取严格单次：服务端死性不改也只发两个请求，不循环）、
+ * N-11（变异负对照：把 206 起点守卫或体积兜底改成恒假，半截包立刻复现被当整包落盘——证明这两条腿有牙齿）。
+ * 连带改判 B-06b：依赖注入反证的「结局」从「产物被拼坏」变成「坏包被体积兜底当场拦死」，
+ * 委托证据不变（结局仍随内核结论翻转），但口径必须跟着产品行为更新，否则它就成了新的现状钉住。
  */
 import http from 'node:http';
 import fs from 'node:fs';
@@ -49,6 +56,10 @@ const ok = (name, cond, detail = '') => {
   else { fail++; console.log(`FAIL ${name}${tail}`); }
 };
 const group = (title) => console.log(`\n---- ${title} ----`);
+/** N-11 变异的临时主进程文件（必须落在 electron/ 内相对 require 才解析得到），退出时一律删干净 */
+const MUT_FILES = [];
+const dropMutants = () => { for (const f of MUT_FILES.splice(0)) { try { fs.rmSync(f, { force: true }); } catch { /* 忽略 */ } } };
+process.on('exit', dropMutants);
 
 // ---------- 版本号比较（对账判定用） ----------
 group('U 组 决策内核（纯函数，可脱离 electron）');
@@ -202,7 +213,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
 /** 起一个「假 electron 主进程」：真 require electron/main.js，只替换平台边界 */
-function bootMain({ dirs, version, installers, kernel }) {
+function bootMain({ dirs, version, installers, kernel, mainPath = MAIN_PATH }) {
   const handlers = new Map();
   const quitCalls = [];
   const spawnLog = [];
@@ -246,9 +257,9 @@ function bootMain({ dirs, version, installers, kernel }) {
     if (kernel && request === './update-state') return kernel;
     return origLoad.call(this, request, parent, isMain);
   };
-  delete require.cache[MAIN_PATH];
+  delete require.cache[mainPath];
   Module._load = hook;
-  try { require(MAIN_PATH); } finally { Module._load = origLoad; }
+  try { require(mainPath); } finally { Module._load = origLoad; }
   return { handlers, quitCalls, spawnLog };
 }
 
@@ -281,27 +292,42 @@ function bootPreload(handlers) {
 // 门自建夹具：一个按 Range 分段、每段限速的真实下载服务器 + 三个「真实退出码」的假安装器
 const TMP2 = fs.mkdtempSync(path.join(TMP_ROOT, 't02071-host-'));
 const mk = (n) => { const p = path.join(TMP2, n); fs.mkdirSync(p, { recursive: true }); return p; };
-// 一套宿主跑多个「下载现场」：dl-a 首下/续传、dl-c 服务端忽略 Range、dl-e 206 起点错位；dl-b 归 Spy 内核宿主
+// 一套宿主跑多个「下载现场」：dl-a 首下/续传、dl-c 服务端忽略 Range、dl-e 206 起点错位、
+// dl-g 分段响应提前结束（声明总量 > 实收）、dl-h 首下即收到按段应答；dl-b 归 Spy 内核宿主
 const DIRS_A = { dl: mk('dl-a'), ud: mk('ud-a') };
 const DIRS_B = { dl: mk('dl-b'), ud: mk('ud-b') };
 const UD_E = mk('ud-e');
 const DL_C = mk('dl-c');
 const DL_E = mk('dl-e');
+const DL_G = mk('dl-g');
+const DL_H = mk('dl-h');
 
 const CHUNK = 8192;
 const blob2 = crypto.randomBytes(400_000);
 const blob2Sha = sha(blob2);
 const BAD_START = 32_768; // 「服务端按另一个偏移应答」的现场（CDN 夹断 Range 的真实形态）
+const CLIP = 100_000; // 「分段应答但提前结束」现场：实收远少于 Content-Range 声明的总量
 const reqLog = [];
 const srv2 = http.createServer(async (req, res) => {
   const ignore = /ignore/.test(req.url);
   const badStart = /badstart/.test(req.url);
+  const clip = /clip/.test(req.url);
+  const always206 = /always206/.test(req.url);
   const m = ignore ? null : /^bytes=(\d+)-(\d*)$/.exec(req.headers.range ?? '');
+  if (clip || always206) {
+    // 两种「按段应答但不成包」的畸形现场：Content-Range 声明总量 400000，实际只给一段就干净收尾
+    const start = always206 ? 0 : (m ? Number(m[1]) : 0);
+    const len = Math.min(CLIP, blob2.length - start);
+    reqLog.push({ url: req.url, range: req.headers.range ?? null, status: 206, servedFrom: start });
+    res.writeHead(206, { 'content-length': String(len), 'content-range': `bytes ${start}-${start + len - 1}/${blob2.length}` });
+    res.end(blob2.subarray(start, start + len));
+    return;
+  }
   const start = m ? (badStart ? BAD_START : Number(m[1])) : 0;
   const end = m && m[2] ? Number(m[2]) : blob2.length - 1;
   const status = m ? 206 : 200;
   reqLog.push({ url: req.url, range: req.headers.range ?? null, status, servedFrom: start });
-  if (m) res.writeHead(206, { 'content-length': String(end - start + 1), 'content-range': `bytes ${start}-${end}/${blob2.length}` });
+  if (status === 206) res.writeHead(206, { 'content-length': String(end - start + 1), 'content-range': `bytes ${start}-${end}/${blob2.length}` });
   else res.writeHead(200, { 'content-length': String(blob2.length) });
   for (let p = start; p <= end; p += CHUNK) {
     if (res.destroyed || res.writableEnded) return;
@@ -315,6 +341,8 @@ const PORT2 = srv2.address().port;
 const url2 = `http://127.0.0.1:${PORT2}/pkg.exe`;
 const urlIgnore = `http://127.0.0.1:${PORT2}/pkg-ignore.exe`;
 const urlBadStart = `http://127.0.0.1:${PORT2}/pkg-badstart.exe`;
+const urlClip = `http://127.0.0.1:${PORT2}/pkg-clip.exe`;
+const urlAlways206 = `http://127.0.0.1:${PORT2}/pkg-always206.exe`;
 
 // 假安装器：真实子进程、真实退出码（第一次 5、重试 0 的「同一包」正是重试复用的现场）
 const counterFile = path.join(TMP2, 'retry-count.txt');
@@ -346,8 +374,11 @@ ok('B-00 假 electron 宿主可真加载主进程（后续所有行为腿的前�
 
 let cancelRes = null; let dl1 = null; let dl2 = null; let diskAfter = 0; let spliceSha = '';
 let ignoreRes = null; let ignoreSha = ''; let ignoreSize = 0;
-let spyRes = null; let spySpliceSha = ''; let spySizeB = 0; let prefixBytes = 65_536;
-let badRes = null; let badSize = 0; let badSha = '';
+let spyRes = null; let spyErr = ''; let spySizeB = 0; let prefixBytes = 65_536;
+let badRes = null; let badSize = 0; let badSha = ''; let badRounds = [];
+let clipErr = ''; let clipExe = 0; let clipPart = 0; let clipRounds = 0;
+let a206Err = ''; let a206Exe = 0; let a206Part = 0; let a206Rounds = 0;
+let mutBadSize = 0; let mutBadSha = ''; let mutClipExe = 0;
 let irFail = null; let irRetry = null; let quitAfterFail = -1; let quitAfterInstalled = -1; let retryReqDelta = -1;
 let pendingNow = null; let idleRes = null; let preload = null; let preloadErr = '';
 if (host) {
@@ -407,8 +438,10 @@ if (host) {
   ok('B-11 installed 才 app.quit 且恰一次（失败路径 0 次、成功路径 1 次）', BEV.quitOnlyAfterInstalled,
     { 失败后: quitAfterFail, 刚返回时: quitAfterInstalled, '1.3s 后': quitFinal });
   // ⑤ 判定委托（依赖注入反证）：同一现场「本地有 .part + 服务端忽略 Range 回 200 全量」，
-  //    真内核判「不追加」→ 删 .part 从 0 重写 → 逐字节一致；把内核结论强改为「追加」→ 产物立刻被拼坏。
-  //    产物随内核结论而变，才是「主进程没有第二套判定」的可证事实（正则锚点永远测不出这件事）。
+  //    真内核判「不追加」→ 删 .part 从 0 重写 → 逐字节一致；把内核结论强改为「追加」→ 同一现场立刻变结局。
+  //    结局随内核结论而变，才是「主进程没有第二套判定」的可证事实（正则锚点永远测不出这件事）。
+  //    T02644 修复后的口径：错判「追加」会把 65536 半截 + 400000 全量拼成 465536 字节的坏包，
+  //    现在由体积兜底当场拦下（抛「下载不完整」且不落 .exe）——拦下本身就是委托成立的证据。
   DIRS_A.dl = DL_C;
   fs.writeFileSync(path.join(DL_C, 'pkg-ignore.exe.part'), blob2.subarray(0, prefixBytes));
   ignoreRes = await H.get('update:download')(null, urlIgnore);
@@ -419,30 +452,49 @@ if (host) {
   ok('B-06a 服务端忽略 Range 回 200 全量时，主进程删半截 .part 从 0 重写并逐字节一致', BEV.ignoreRangeRewindsFromZero,
     { status: ignoreRes?.status, resumedFrom: ignoreRes?.resumedFrom, 落盘: ignoreSize, 原包: blob2.length });
   fs.writeFileSync(path.join(DIRS_B.dl, 'pkg-ignore.exe.part'), blob2.subarray(0, prefixBytes));
-  spyRes = await hostB.handlers.get('update:download')(null, urlIgnore);
+  try { spyRes = await hostB.handlers.get('update:download')(null, urlIgnore); spyErr = ''; }
+  catch (e) { spyRes = null; spyErr = e instanceof Error ? e.message : String(e); }
   spySizeB = sizeOf(path.join(DIRS_B.dl, 'pkg-ignore.exe'));
-  spySpliceSha = spySizeB ? sha(fs.readFileSync(path.join(DIRS_B.dl, 'pkg-ignore.exe'))) : '';
   BEV.kernelDelegationProven = BEV.ignoreRangeRewindsFromZero === true
-    && spyRes?.status === 'downloaded' && spySizeB === blob2.length + prefixBytes
-    && spySpliceSha !== blob2Sha && host.spyCalls.length > 0;
-  ok('B-06b 判定只有一套（内核结论即写流 flag）：同一现场把内核 append 强改为 true，主进程立刻把整包拼到旧半截后（体积 +65536、sha 不再一致）', BEV.kernelDelegationProven,
-    { 真内核落盘: ignoreSize, 换内核后落盘: spySizeB, 原包: blob2.length, 内核被问了几次: host.spyCalls.length });
-  // ⑥ 缺陷现场刻画（T02644 已建单）：206 但 Content-Range 起点 ≠ 本地 .part 字节数
-  //    内核结论「不可拼」是对的，主进程的动作却是「删 .part + 把这条从错误偏移开始的响应体从 0 写完并改名」——
-  //    半截包被当成整包，且回 status=downloaded。本条钉的是**现状**（缺陷修好后此条会转红，须同步改成断言「丢弃并重取/长度校验失败」）。
-  //    缺陷已按规约建派生单 T02644（四期「【AI回写待审核】应用内更新续传：206 起点错位时半截响应体被当整包落盘并回 downloaded」）。
-  //    注意本条是**现状钉住**而非行为腿：它不参与任何字面锚点的绿判定（缺陷修好后本条转红即应改断言），
-  //    故不能塞进 BEV 袋——否则 W-05 一类锚点会因产品修好而被误标「行为失守」。
+    && spySizeB === 0 && /下载不完整/.test(spyErr) && host.spyCalls.length > 0;
+  ok('B-06b 判定只有一套（内核结论即写流 flag）：同一现场把内核 append 强改为 true，主进程立刻按「追加」拼出 465536 字节的坏包并被体积兜底拦死（不产出 .exe），而真内核同一现场逐字节成功', BEV.kernelDelegationProven,
+    { 真内核落盘: ignoreSize, 换内核后落盘exe: spySizeB, 换内核后结局: spyErr.slice(0, 60), 原包: blob2.length, 内核被问了几次: host.spyCalls.length });
+  // ⑥ T02644 修复后的安全不变量（原为「缺陷现状钉住」，产品修好后按规约改判为正向断言）：
+  //    206 但 Content-Range 起点 ≠ 本地 .part 字节数 → 这条响应体既不是整包也不是「本地之后那段」，
+  //    主进程必须丢弃它、发一次不带 Range 的请求重取，落盘体积 == 服务端声明总量且逐字节一致。
   DIRS_A.dl = DL_E;
   fs.writeFileSync(path.join(DL_E, 'pkg-badstart.exe.part'), blob2.subarray(0, prefixBytes));
+  const roundsBad = reqLog.length;
   badRes = await H.get('update:download')(null, urlBadStart);
+  badRounds = reqLog.slice(roundsBad);
   badSize = sizeOf(path.join(DL_E, 'pkg-badstart.exe'));
   badSha = badSize ? sha(fs.readFileSync(path.join(DL_E, 'pkg-badstart.exe'))) : '';
-  const expectCorrupt = blob2.length - BAD_START;
-  const badPin = badRes?.status === 'downloaded' && badSize === expectCorrupt && badSha !== blob2Sha;
-  ok('B-16 现状钉住（缺陷 T02644 已建单；修好后此条应转红并改断言）：206 起点错位时主进程把「从 32768 起的半截体」当整包落盘并回 downloaded（无总量/校验和兜底）', badPin,
-    { status: badRes?.status, 落盘: badSize, 应为整包: blob2.length, 半截起点: BAD_START });
-  // ⑥ 预加载面：执行真 preload，把 invoke 路由到真主进程 handler
+  ok('B-16 起点错位的 206 被丢弃并不带 Range 重取：落盘恰为整包（体积 == 服务端声明总量、sha 逐字节一致），第二轮请求无 Range',
+    badRes?.status === 'downloaded' && badSize === blob2.length && badSha === blob2Sha
+    && badRounds.length === 2 && badRounds[0]?.servedFrom === BAD_START && badRounds[1]?.range === null && badRounds[1]?.status === 200,
+    { status: badRes?.status, 落盘: badSize, 应为整包: blob2.length, 请求序列: badRounds.map((x) => `${x.status}/${x.range ?? 'no-range'}`) });
+  // ⑥b 体积兜底：分段响应「提前干净收尾」（Content-Range 声明 400000、实给 100000）时绝不能改名成安装包
+  DIRS_A.dl = DL_G;
+  fs.writeFileSync(path.join(DL_G, 'pkg-clip.exe.part'), blob2.subarray(0, prefixBytes));
+  const roundsClip = reqLog.length;
+  try { await H.get('update:download')(null, urlClip); clipErr = ''; } catch (e) { clipErr = e instanceof Error ? e.message : String(e); }
+  clipRounds = reqLog.length - roundsClip;
+  clipExe = sizeOf(path.join(DL_G, 'pkg-clip.exe'));
+  clipPart = sizeOf(path.join(DL_G, 'pkg-clip.exe.part'));
+  ok('B-17 实收字节 < 声明总量时以「下载不完整」失败收口：不产出 .exe、且清掉 .part（界面回到重新下载而非安装）',
+    /下载不完整/.test(clipErr) && clipExe === 0 && clipPart === 0 && clipRounds === 1,
+    { 报错: clipErr.slice(0, 120), 落盘exe: clipExe, 残留part: clipPart, 请求数: clipRounds });
+  // ⑥c 首下（本地无 .part）却收到按段应答：同样不能当整包；单次不带 Range 重取后仍是 206 → 失败收口，绝不无限重试
+  DIRS_A.dl = DL_H;
+  const rounds206 = reqLog.length;
+  try { await H.get('update:download')(null, urlAlways206); a206Err = ''; } catch (e) { a206Err = e instanceof Error ? e.message : String(e); }
+  a206Rounds = reqLog.length - rounds206;
+  a206Exe = sizeOf(path.join(DL_H, 'pkg-always206.exe'));
+  a206Part = sizeOf(path.join(DL_H, 'pkg-always206.exe.part'));
+  ok('B-18 无 .part 首下即收到 206：判为无法拼包并失败收口，重取严格单次（共 2 个请求，不循环），不产出 .exe',
+    /无法拼包/.test(a206Err) && a206Rounds === 2 && a206Exe === 0 && a206Part === 0,
+    { 报错: a206Err.slice(0, 120), 请求数: a206Rounds, 落盘exe: a206Exe, 残留part: a206Part });
+  // ⑥d 预加载面：执行真 preload，把 invoke 路由到真主进程 handler
   try {
     preload = bootPreload(H);
     const keys = Object.keys(preload.api ?? {});
@@ -692,21 +744,54 @@ const detailCtx = (spec) => ({ 锚点: spec.anchors.map((a) => a.token) });
     ['重试期间服务端下载请求零增长', retryReqDelta, (v) => v === 0],
     ['installed 后 app.quit 恰一次', host?.quitCalls.length, (v) => v === 1],
     ['真内核忽略 Range 现场从 0 重写（体积恰等于原包）', ignoreSize, (v) => v === blob2.length && ignoreRes?.resumedFrom === 0],
-    ['换内核（append 强改 true）后体积多出半截前缀', spySizeB, (v) => v === blob2.length + prefixBytes && spySpliceSha !== blob2Sha],
-    ['206 起点错位现场半截体被当整包（缺陷钉住的体积口径）', badSize, (v) => v === blob2.length - BAD_START],
+    ['换内核（append 强改 true）后同一现场结局翻转：坏包被体积兜底拦下、不产出 exe', spySizeB, (v) => v === 0 && /下载不完整/.test(spyErr)],
+    ['起点错位现场重取后落盘恰为整包（原缺陷口径已被替换）', badSize, (v) => v === blob2.length && badSha === blob2Sha],
+    ['起点错位现场共两个请求（第二轮无 Range）', badRounds.length, (v) => v === 2 && badRounds[1]?.range === null],
+    ['分段提前结束现场既无 exe 也无 part 残留', clipExe, (v) => v === 0 && clipPart === 0 && /下载不完整/.test(clipErr)],
+    ['首下即 206 现场重取严格单次且不落包', a206Rounds, (v) => v === 2 && a206Exe === 0 && a206Part === 0],
   ];
   const bad = expect.filter(([, v, p]) => !p(v)).map(([label]) => label);
-  ok('N-10 八项关键实测数值逐条点名（取消量/续传起点/退出码/重试请求数/quit 次数/两种内核结论下的体积/缺陷体积）', bad.length === 0,
-    { 失配: bad, 实测: { diskAfter, resumedFrom: dl2?.resumedFrom, code: irFail?.code, retryReqDelta, quit: host?.quitCalls.length, ignoreSize, spySizeB, badSize } });
+  ok('N-10 十一项关键实测数值逐条点名（取消量/续传起点/退出码/重试请求数/quit 次数/两种内核结论下的体积/T02644 三种现场）', bad.length === 0,
+    { 失配: bad, 实测: { diskAfter, resumedFrom: dl2?.resumedFrom, code: irFail?.code, retryReqDelta, quit: host?.quitCalls.length, ignoreSize, spySizeB, badSize, badRounds: badRounds.length, clipExe, clipPart, a206Rounds, a206Exe } });
+}
+// N-11 T02644 修复的变异负对照：把两处守卫分别改成恒假，缺陷必须当场复现（证明 B-16/B-17 不是摆设）
+{
+  const mainSrc = fs.readFileSync(MAIN_PATH, 'utf8');
+  const muts = [
+    { name: 'guard206', from: 'if (r.statusCode === 206 && !plan.append) {', to: 'if (false) {',
+      dl: mk('dl-mut-guard'), part: 'pkg-badstart.exe.part', url: urlBadStart },
+    { name: 'sizeBackstop', from: 'if (total > 0 && (received !== total || written !== total)) {', to: 'if (false) {',
+      dl: mk('dl-mut-backstop'), part: 'pkg-clip.exe.part', url: urlClip },
+  ];
+  const notes = [];
+  for (const m of muts) {
+    const mutated = mainSrc.replace(m.from, m.to);
+    if (mutated === mainSrc) { notes.push({ 变异: m.name, 落地: false }); continue; }
+    const mutPath = path.join(ROOT, 'electron', `.verify-t02644-mut-${process.pid}-${m.name}.js`);
+    MUT_FILES.push(mutPath);
+    fs.writeFileSync(mutPath, mutated);
+    const hosts = bootMain({ dirs: { dl: m.dl, ud: mk(`ud-mut-${m.name}`) }, version: '0.1.1011.194', installers, mainPath: mutPath });
+    fs.writeFileSync(path.join(m.dl, m.part), blob2.subarray(0, prefixBytes));
+    let res = null; let err = '';
+    try { res = await hosts.handlers.get('update:download')(null, m.url); } catch (e) { err = e instanceof Error ? e.message : String(e); }
+    const base = m.part.replace('.part', '');
+    const exe = sizeOf(path.join(m.dl, base));
+    if (m.name === 'guard206') { mutBadSize = exe; mutBadSha = exe ? sha(fs.readFileSync(path.join(m.dl, base))) : ''; }
+    if (m.name === 'sizeBackstop') mutClipExe = exe;
+    notes.push({ 变异: m.name, 落地: true, status: res?.status ?? `抛错:${err.slice(0, 40)}`, 落盘exe: exe });
+  }
+  const guardReproduced = mutBadSize === blob2.length - BAD_START && mutBadSha !== '' && mutBadSha !== blob2Sha;
+  const backstopReproduced = mutClipExe === prefixBytes + CLIP;
+  ok('N-11 变异负对照：摘掉 206 起点守卫→半截包（367232 字节）复现被当整包；摘掉体积兜底→提前收尾的分段体复现落盘为 exe',
+    notes.length === 2 && notes.every((n) => n.落地) && guardReproduced && backstopReproduced,
+    { 变异现场: notes, 摘守卫落盘: mutBadSize, 应为半截: blob2.length - BAD_START, 摘兜底落盘: mutClipExe, 应为半截拼接: prefixBytes + CLIP });
 }
 
 // ---------- 收口 ----------
+dropMutants();
 srv2.closeAllConnections?.();
 await new Promise((r) => srv2.close(r));
 fs.rmSync(TMP2, { recursive: true, force: true });
-
-console.log(`verify-t02071-update-flow: PASS=${pass} FAIL=${fail}`);
-process.exitCode = fail > 0 ? 1 : 0; // 自然退出（硬 exit 会与未释放的 undici 句柄撞 libuv 断言）
 
 console.log(`verify-t02071-update-flow: PASS=${pass} FAIL=${fail}`);
 process.exitCode = fail > 0 ? 1 : 0; // 自然退出（硬 exit 会与未释放的 undici 句柄撞 libuv 断言）

@@ -489,8 +489,21 @@ function downloadHeaders(partBytes) {
 
 // 流式写入下载响应：写完落盘改名，进度经 webContents 推送
 // 失败清理半成品；「用户取消」不清理——.part 就是断点续传的本体（T02071）
-function pump(r, ctx) {
+// T02644：能落盘的响应体只有两种——200 全量、206 且 Content-Range 起点 == 本地 .part 字节数。
+// 其余分段响应（起点错位、无 .part 却按段应答）就地写会拼出「体积看着像整包」的坏安装包，
+// 必须丢弃本条响应、改为不带 Range 重取一次（单次标志防循环），仍不行即判失败。
+function pump(r, ctx, attempt) {
   const plan = resumePlan({ partBytes: ctx.partBytes, statusCode: r.statusCode, headers: r.headers });
+  if (r.statusCode === 206 && !plan.append) {
+    if (!ctx.retriedWithoutRange && ctx.restartWithoutRange) {
+      attempt.discarded = true;
+      try { r.destroy(); } catch { /* 忽略 */ }
+      ctx.restartWithoutRange();
+      return;
+    }
+    ctx.abort(new Error('下载失败：服务端按段应答且起点与本地文件不符，无法拼包'));
+    return;
+  }
   if (!plan.append && ctx.partBytes > 0) {
     // 服务端未按 Range 响应（200 全量）：半截文件不能再拼，从 0 重下
     try { fs.rmSync(ctx.tmpPath, { force: true }); } catch { /* 忽略 */ }
@@ -510,6 +523,13 @@ function pump(r, ctx) {
   });
   r.on('end', () => {
     out.end(() => {
+      // T02644 体积兜底：实收字节与落盘字节都必须等于服务端声明的总量，差一个字节也不改名——
+      // 半截包一旦被当成 downloaded 交给「安装」，后果比下载失败严重
+      const written = fileSizeOf(ctx.tmpPath);
+      if (total > 0 && (received !== total || written !== total)) {
+        ctx.abort(new Error(`下载不完整：已落盘 ${written} 字节，应为 ${total} 字节`));
+        return;
+      }
       try { fs.renameSync(ctx.tmpPath, ctx.filePath); } catch (e) {
         ctx.abort(new Error(`写入安装包失败：${e.message}`));
         return;
@@ -518,9 +538,9 @@ function pump(r, ctx) {
       ctx.finish({ status: 'downloaded', filePath: ctx.filePath, resumedFrom: plan.append ? ctx.partBytes : 0, totalBytes: total });
     });
   });
-  r.on('error', (e) => ctx.abort(e));
-  r.on('aborted', () => ctx.abort(new Error('下载连接中断')));
-  out.on('error', (e) => ctx.abort(e));
+  r.on('error', (e) => { if (!attempt.discarded) { ctx.abort(e); } });
+  r.on('aborted', () => { if (!attempt.discarded) { ctx.abort(new Error('下载连接中断')); } });
+  out.on('error', (e) => { if (!attempt.discarded) { ctx.abort(e); } });
 }
 
 // 应用内下载更新安装包到系统下载目录（T02071：支持中途取消 + 取消后继续＝Range 断点续传）
@@ -533,6 +553,7 @@ ipcMain.handle('update:download', async (_evt, url) => {
   const ctx = {
     filePath, tmpPath, partBytes: fileSizeOf(tmpPath),
     cancelled: false, done: false, req: null, res: null, out: null, resolve: null, reject: null,
+    retriedWithoutRange: false, restartWithoutRange: null,
     // 正常完成/取消收口：保留 .part，只销毁流
     finish: (value) => {
       if (ctx.done) { return; }
@@ -558,13 +579,16 @@ ipcMain.handle('update:download', async (_evt, url) => {
     ctx.resolve = resolve;
     ctx.reject = reject;
     activeDownload = ctx;
-    const open = (target) => {
-      const req = https.get(target, { headers: downloadHeaders(ctx.partBytes) }, (res) => {
+    const open = (target, withRange = true) => {
+      // 本轮响应是否被主动弃用（T02644 起点错位重取）：弃用后旧请求的 error/aborted 不算下载失败
+      const attempt = { discarded: false };
+      const req = https.get(target, { headers: downloadHeaders(withRange ? ctx.partBytes : 0) }, (res) => {
+        if (attempt.discarded) { res.resume(); return; }
         ctx.res = res;
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           // 跟随 302/303（GitHub Release asset 通常重定向到云端存储）；重定向后仍带 Range
           res.resume();
-          open(new URL(res.headers.location, target).href);
+          open(new URL(res.headers.location, target).href, withRange);
           return;
         }
         if (res.statusCode !== 200 && res.statusCode !== 206) {
@@ -572,16 +596,24 @@ ipcMain.handle('update:download', async (_evt, url) => {
           ctx.abort(new Error(`下载失败：HTTP ${res.statusCode}`));
           return;
         }
-        pump(res, ctx);
+        pump(res, ctx, attempt);
       });
       ctx.req = req;
       req.on('error', (e) => {
+        if (attempt.discarded) return;
         if (ctx.cancelled) {
           ctx.finish({ status: 'cancelled', partialBytes: fileSizeOf(tmpPath), partPath: tmpPath, filePath });
           return;
         }
         ctx.abort(e);
       });
+    };
+    // T02644：分段响应对不上本地文件时，丢掉这条响应改发一次「不带 Range」的全量请求（单次，靠
+    // ctx.retriedWithoutRange 防循环）；本地半截 .part 由全量轮以 flag 'w' 覆盖，不需要先删。
+    ctx.restartWithoutRange = () => {
+      ctx.retriedWithoutRange = true;
+      ctx.partBytes = 0;
+      open(url, false);
     };
     open(url);
     if (ctx.partBytes > 0) sendUpdateProgress({ status: 'resuming', received: ctx.partBytes, total: 0 });
