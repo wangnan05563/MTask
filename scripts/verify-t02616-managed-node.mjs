@@ -11,8 +11,9 @@
  *  - 主判据打在**行为**上：夹具版本目录喂给 `scripts/lib/resolve-managed-node.ps1`，看它返回哪个目录
  *    （R 组）；把 `.bat` 在 `REM [1/7]` 之前截断后交给 cmd 真跑，看它把哪个 exe 顶到了 PATH 前面、
  *    回落时有没有出声（B 组）；`scripts/lib/abi-hint.mjs` 从二进制符号读出的三个 ABI 数值与 warn 位（A 组）。
- *  - 字面锚点（纯 ASCII/LF、不再有写死的版本目录、块内 echo 无未转义圆括号）一律 `okPair` 配同义行为腿，
- *    行为腿就是这些 `.bat` 文本已被 cmd 真解析执行过（不是我又抄了一份平行文本）。
+ *  - 字面锚点（纯 ASCII 且行尾不混用、不再有写死的版本目录、块内 echo 无未转义圆括号）一律 `okPair` 配同义行为腿，
+ *    行为腿就是这些 `.bat` 文本已被 cmd 真解析执行过（不是我又抄了一份平行文本）。行尾只判「不混用」：
+ *    本仓 `core.autocrlf=true`，锚成「必须 LF」会在 HEAD 副本 checkout（CRLF）里假红——实测踩过，见 P-02 注释。
  *  - 取证面按**改判前**定位（不硬写 HEAD，否则入库即恒红）：HEAD 还写着死路径时反证面就是 HEAD；本单入库后再跑，
  *    用 `git log -S` 定位「摘掉写死路径那次提交」的父提交。P-03 要求改判前两枚仍写着、工作树与入库后的 HEAD 都不再写；
  *    N-01 把**改判前那版 .bat**做成同款截断夹具跑一遍，复现「静默」——证明新判据不是恒红，也证明缺陷确实在改判前。
@@ -167,11 +168,17 @@ ok('P-01 前置：两枚入口 / 解析器 / ABI 提示都在位，powershell �
 
 const batBytes = BATS.map((b) => ({ b, buf: readFileSync(path.join(ROOT, 'scripts', b)) }));
 const isAscii = (buf) => !buf.some((x) => x > 0x7f);
-const noCR = (buf) => !buf.includes(0x0d);
-okPair(ok, 'P-02 两枚 .bat 仍是纯 ASCII + LF（cmd 在 ANSI 代码页下可靠解析的前提）——行为腿：同一份文本已被 cmd 解析执行到切断点',
+/**
+ * 行尾只判「不混用」，不判「必须是 LF」。原判锚写成「无 CR」，HEAD 副本 worktree 里当场假红：
+ * 本仓 `core.autocrlf=true`，跟踪的 blob 是 LF，但 checkout 落盘就是 CRLF——锚住的是我手改那次的
+ * 工作树字节形态，不是仓库形态；行为腿（cmd 真解析执行）两边都绿，正是规约判据 3 说的「字面锚点失配（行为在）」。
+ * cmd 真正怕的是非 ASCII 字节在 ANSI 代码页下被误解，与行尾无关。
+ */
+const oneEnding = (buf) => buf.includes(0x0d) === /\r\n/.test(buf.toString('latin1')) && !buf.toString('latin1').includes('\n\r');
+okPair(ok, 'P-02 两枚 .bat 仍是纯 ASCII、行尾不混用（cmd 在 ANSI 代码页下可靠解析的前提；LF/CRLF 由 autocrlf 决定，门不锚死其中一种）——行为腿：同一份文本已被 cmd 解析执行到切断点',
   () => BATS.every((b) => runs[b].absent.code === 0 && hasLine(runs[b].absent.out, CUT_MARK) && hasLine(runs[b].live.out, CUT_MARK)),
-  () => batBytes.every(({ buf }) => isAscii(buf) && noCR(buf)),
-  () => ({ 非ASCII: batBytes.filter(({ buf }) => !isAscii(buf)).map((x) => x.b), 含CR: batBytes.filter(({ buf }) => !noCR(buf)).map((x) => x.b) }));
+  () => batBytes.every(({ buf }) => isAscii(buf) && oneEnding(buf)),
+  () => ({ 非ASCII: batBytes.filter(({ buf }) => !isAscii(buf)).map((x) => x.b), 行尾混用: batBytes.filter(({ buf }) => !oneEnding(buf)).map((x) => x.b), 行尾形态: batBytes.map(({ b, buf }) => `${b}:${buf.includes(0x0d) ? 'CRLF' : 'LF'}`) }));
 
 const worktreePinned = BATS.filter((b) => PINNED_RE.test(batBodies.get(b)));
 const prePinned = BATS.filter((b) => PINNED_RE.test(preBodies.get(b)));
