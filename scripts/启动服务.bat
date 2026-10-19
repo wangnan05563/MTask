@@ -6,8 +6,24 @@ cd /d "%~dp0.."
 setlocal enabledelayedexpansion
 
 REM 优先使用 WorkBuddy managed Node
-set "MGNode=C:\Users\hspcadmin\.workbuddy\binaries\node\versions\22.22.2"
-if exist "%MGNode%\node.exe" set "PATH=%MGNode%;%PATH%"
+REM T02616: this used to be one hard-coded version dir (22.22.2). That directory is gone,
+REM so "if exist" judged false, the PATH override silently stopped happening and every start
+REM ran on whatever node sat on PATH. Resolution is now by availability (current pointer first,
+REM then the highest version dir that really has node.exe); MTASK_MG_NODE_ROOT overrides the
+REM root and no version is ever pinned by name.
+if not defined MTASK_MG_NODE_ROOT set "MTASK_MG_NODE_ROOT=C:\Users\hspcadmin\.workbuddy\binaries\node\versions"
+set "MGNode="
+for /f "usebackq delims=" %%D in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0lib\resolve-managed-node.ps1"`) do set "MGNode=%%D"
+if defined MGNode set "PATH=%MGNode%;%PATH%"
+
+REM T02616: say out loud which interpreter this start runs on - a missing managed node must
+REM show up in the log instead of being a silent PATH fallback.
+if defined MGNode (
+    echo   managed node: %MGNode%
+) else (
+    echo   [WARN] no usable managed node under %MTASK_MG_NODE_ROOT%
+    echo   [WARN] this service runs on the node already on PATH - native module ABI is not guaranteed
+)
 
 set "SERVER_PORT=39876"
 set "WEB_PORT=5175"

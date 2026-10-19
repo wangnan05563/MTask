@@ -40,6 +40,11 @@ import { writeGateResults } from './lib/gate-results.mts';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const NODE = process.execPath;
 const BATS = ['构建打包.bat', 'build-pack-t.bat'];
+// T02616 的改动点矩阵不止这两枚：写死托管 Node 版本目录的同一处退化还在
+// 日常开发入口 启动服务.bat 与三枚 .bat 的生成器模板 _gen_bat.py 里（漏改一处，下次重生成就把修复抹掉）。
+const DEV_BAT = '启动服务.bat';
+const GEN_REL = '_gen_bat.py';
+const PINN_FILES = [...BATS, DEV_BAT, GEN_REL];
 const PS_REL = path.join('scripts', 'lib', 'resolve-managed-node.ps1');
 const HINT_REL = path.join('scripts', 'lib', 'abi-hint.mjs');
 const CUT_MARK = 'T02616-CUT-OK';
@@ -70,7 +75,7 @@ const git = (...args) => {
 const HEAD_SHA = git('rev-parse', 'HEAD').trim();
 const SQLITE_NODE = path.join(ROOT, 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
 const SQLITE_BEFORE = sha(SQLITE_NODE);
-const BAT_BEFORE = new Map(BATS.map((b) => [b, sha(path.join(ROOT, 'scripts', b))]));
+const BAT_BEFORE = new Map(PINN_FILES.map((f) => [f, sha(path.join(ROOT, 'scripts', f))]));
 const WT_BEFORE = git('worktree', 'list').trim().split(/\r?\n/).length;
 
 mkdirSync(TMP, { recursive: true });
@@ -122,6 +127,19 @@ function makeBatFixture(label, batName, body) {
   return { fx, bat: path.join(fx, 'scripts', batName), head };
 }
 
+/** 字节级截断夹具：GBK 入口（启动服务.bat 带 chcp 936）不能按 utf8/ascii 重编码，逐字节保真到截断锚之前。 */
+function makeBatFixtureBytes(label, batName, bodyLatin1, cutAnchor) {
+  const fx = path.join(TMP, `fx-${label}`);
+  rmSync(fx, { recursive: true, force: true });
+  mkdirSync(path.join(fx, 'scripts', 'lib'), { recursive: true });
+  const idx = bodyLatin1.indexOf(cutAnchor);
+  if (idx < 0) throw new Error(`${batName} 里找不到 ${cutAnchor} 截断锚（入口结构变了，门要跟着改）`);
+  const head = bodyLatin1.slice(0, idx);
+  writeFileSync(path.join(fx, 'scripts', batName), `${head}\r\necho ${CUT_MARK}\r\nexit /b 0\r\n`, 'latin1');
+  for (const rel of [PS_REL, HINT_REL]) writeFileSync(path.join(fx, rel), readFileSync(path.join(ROOT, rel)), 'utf8');
+  return { fx, bat: path.join(fx, 'scripts', batName), head };
+}
+
 /** cmd 里跑一枚 .bat（路径含中文，引号必须交给 cmd 自己解析 → windowsVerbatimArguments）。 */
 function runBat(absBat, cwd, extraEnv = {}) {
   const r = spawnSync('cmd.exe', ['/d', '/s', '/c', `call "${absBat}"`], {
@@ -158,14 +176,18 @@ for (const b of BATS) {
   const f = makeBatFixture(`run-${b}`, b, batBodies.get(b));
   runs[b] = { f, absent: runBat(f.bat, f.fx, { MTASK_MG_NODE_ROOT: ABSENT }), live: runBat(f.bat, f.fx, { MTASK_MG_NODE_ROOT: MG_LIVE }) };
 }
+const devBody = readFileSync(path.join(ROOT, 'scripts', DEV_BAT)).toString('latin1');
+const DEV_CUT = 'REM [1/6]'; // 第 [1/6] 步是「清理旧进程」——门绝不放行到那里（那会真起服务）
+const devFx = makeBatFixtureBytes('run-dev', DEV_BAT, devBody, DEV_CUT);
+const devRuns = { absent: runBat(devFx.bat, devFx.fx, { MTASK_MG_NODE_ROOT: ABSENT }), live: runBat(devFx.bat, devFx.fx, { MTASK_MG_NODE_ROOT: MG_LIVE }) };
 // 对照组：同一 env 下 PATH 上第一个 node 是谁（B-奇数条用它证明「回落真的落到了 PATH」）
 const pathWinRes = spawnSync('cmd.exe', ['/d', '/s', '/c', 'where node'], { encoding: 'utf8', shell: false, windowsVerbatimArguments: true, cwd: ROOT, env: envFor({ MTASK_MG_NODE_ROOT: ABSENT }) });
 const pathWin = (pathWinRes.stdout ?? '').split(/\r?\n/)[0].trim();
 
 // ---------- P 组：前置与卫生（含改判前面配对取证） ----------
 const chanPs = spawnSync('powershell.exe', ['-NoProfile', '-Command', '1+1'], { encoding: 'utf8' });
-ok('P-01 前置：两枚入口 / 解析器 / ABI 提示都在位，powershell 与 cmd→node 两条通道起得来',
-  BATS.every((b) => existsSync(path.join(ROOT, 'scripts', b))) && existsSync(path.join(ROOT, PS_REL)) && existsSync(path.join(ROOT, HINT_REL))
+ok('P-01 前置：三枚入口 + 生成器模板 / 解析器 / ABI 提示都在位，powershell 与 cmd→node 两条通道起得来',
+  PINN_FILES.every((f) => existsSync(path.join(ROOT, 'scripts', f))) && existsSync(path.join(ROOT, PS_REL)) && existsSync(path.join(ROOT, HINT_REL))
   && chanPs.status === 0 && runs[BATS[0]].absent.code !== undefined && runs[BATS[0]].absent.err === '',
   `ps=${chanPs.status}｜cmd 通道首枚 exit=${runs[BATS[0]].absent.code} error=${runs[BATS[0]].absent.err || '(无)'}`);
 
@@ -196,11 +218,18 @@ okPair(ok, 'P-03 死路径换成按可用性解析：工作树两枚 .bat 都不
   () => prePinned.length === 2 && worktreePinned.length === 0 && (PRE_REF === 'HEAD' || pinnedIn('HEAD').length === 0),
   () => ({ 反证面: PRE_REF, 工作树仍写死: worktreePinned, 改判前写死: prePinned.map((b) => `${b}:${(PINNED_RE.exec(preBodies.get(b)) ?? [''])[0]}`) }));
 
+const matrixPinned = PINN_FILES.filter((f) => PINNED_RE.test(readFileSync(path.join(ROOT, 'scripts', f), 'latin1')));
+okPair(ok, 'P-07 改动点矩阵枚举完整：写死托管 Node 版本目录的不止两枚发布入口——三枚 .bat（含日常开发入口 启动服务.bat）与生成器 _gen_bat.py 的两处模板都不再写死，且都改走解析器（漏一处，下次重生成就把本单修复抹掉）——行为腿：三枚入口都被 cmd 真解析执行到切断点',
+  () => BATS.every((b) => runs[b].absent.code === 0 && hasLine(runs[b].absent.out, CUT_MARK))
+    && devRuns.absent.code === 0 && hasLine(devRuns.absent.out, CUT_MARK),
+  () => matrixPinned.length === 0 && PINN_FILES.every((f) => /resolve-managed-node\.ps1/.test(readFileSync(path.join(ROOT, 'scripts', f), 'latin1'))),
+  () => ({ 矩阵: PINN_FILES, 仍写死: matrixPinned }));
+
 /** 历史坑：0.1.0913.63 那次构建在解析期 abort，因为 ( ... ) 块内 echo 文本有未转义圆括号。 */
-const parenRisk = BATS.flatMap((b) => {
+const parenRisk = PINN_FILES.filter((f) => f.endsWith('.bat')).flatMap((b) => {
   const out = [];
   let depth = 0;
-  batBodies.get(b).split(/\r?\n/).forEach((l, i) => {
+  (b === DEV_BAT ? devBody : batBodies.get(b)).split(/\r?\n/).forEach((l, i) => {
     const t = l.trim();
     if (depth > 0 && /^echo\b/i.test(t) && /\)/.test(t.replace(/^echo\s\.?/i, ''))) out.push(`${b}:${i + 1}:${t.slice(0, 70)}`);
     depth += (l.match(/\(/g) ?? []).length - (l.match(/\)/g) ?? []).length;
@@ -209,7 +238,8 @@ const parenRisk = BATS.flatMap((b) => {
   return out;
 });
 okPair(ok, 'P-04 块内 echo 没有未转义右括号（守 cmd 提前终止块那条实测坑）——行为腿：含新块的夹具整段被 cmd 执行到切断点',
-  () => BATS.every((b) => runs[b].live.code === 0 && hasLine(runs[b].live.out, CUT_MARK)),
+  () => BATS.every((b) => runs[b].live.code === 0 && hasLine(runs[b].live.out, CUT_MARK))
+    && devRuns.live.code === 0 && hasLine(devRuns.live.out, CUT_MARK),
   () => parenRisk.length === 0,
   () => ({ 风险行: parenRisk }));
 
@@ -277,6 +307,20 @@ BATS.forEach((b, i) => {
 ok('B-05 夹具诚实性：两个截断夹具的头部逐字是对应真实 .bat 的前缀（跑的就是产品那段文本，不是门里另写的平行版本）',
   BATS.every((b) => batBodies.get(b).startsWith(runs[b].f.head) && runs[b].f.head.includes('resolve-managed-node.ps1')),
   BATS.map((b) => `${b}:${runs[b].f.head.length}/${batBodies.get(b).length}`).join(' '));
+
+ok('B-07 日常开发入口 启动服务.bat：托管根缺失时同样出声回落（两行 WARN 点名根目录），且在到达切断点之前**没有**进入第 [1/6] 步（门不真起服务）',
+  devRuns.absent.code === 0 && hasLine(devRuns.absent.out, 'no usable managed node') && hasLine(devRuns.absent.out, ABSENT)
+  && !hasLine(devRuns.absent.out, 'managed node: ') && hasLine(devRuns.absent.out, CUT_MARK)
+  && !hasLine(devRuns.absent.out, '[1/6]'),
+  `exit=${devRuns.absent.code}｜WARN=${(devRuns.absent.out.match(/\[WARN\]/g) ?? []).length} 条`);
+ok('B-08 同一枚入口在托管根可用时打 managed node 行并选中夹具里那个真有 node.exe 的目录、零 WARN（证明 B-07 的绿不是恒走回落分支）',
+  devRuns.live.code === 0 && hasLine(devRuns.live.out, `managed node: ${MG_LIVE_CHOSEN}`) && hasLine(devRuns.live.out, CUT_MARK)
+  && !hasLine(devRuns.live.out, '[WARN]'),
+  `exit=${devRuns.live.code}｜期望选中=${MG_LIVE_CHOSEN}`);
+ok('B-09 开发入口夹具诚实性：截断头逐字是 启动服务.bat 的前缀（跑的就是产品那段文本），且 GBK 原文按字节保真、新增块是纯 ASCII',
+  devBody.startsWith(devFx.head) && devFx.head.includes('resolve-managed-node.ps1')
+  && /[\x80-\xff]/.test(devBody) && !/[\x80-\xff]/.test(devBody.slice(devBody.indexOf('MTASK_MG_NODE_ROOT'), devBody.indexOf('native module ABI'))),
+  `头长度=${devFx.head.length}/${devBody.length}｜GBK 字节数=${Buffer.from(devBody, 'latin1').filter((x) => x > 0x7f).length}`);
 
 const fullRuns = {};
 for (const b of BATS) {
@@ -377,6 +421,14 @@ ok('N-04 变异：把回落分支的两行 WARN 换成合法的空 echo（块还
   && !hasLine(m04.out, 'no usable managed node'),
   `exit=${m04.code}｜切断点到达=${hasLine(m04.out, CUT_MARK)}｜仍有 [INFO]=${hasLine(m04.out, 'build interpreter:')}`);
 
+const mutDevSrc = devBody.replace(
+  / {4}echo   \[WARN\] no usable managed node[^\n]*\n {4}echo   \[WARN\] this service runs on the node[^\n]*/, '    echo.');
+const mutDevFx = makeBatFixtureBytes('n08', DEV_BAT, mutDevSrc, DEV_CUT);
+const m08 = runBat(mutDevFx.bat, mutDevFx.fx, { MTASK_MG_NODE_ROOT: ABSENT });
+ok('N-08 变异：对日常开发入口做同一件事（两行 WARN 换成合法空 echo，块还在、语法没错）→ 同场景重新变回静默却仍 exit 0（B-07 的牙齿来自「不许静默」，不是文案碰巧在场）',
+  mutDevSrc !== devBody && m08.code === 0 && hasLine(m08.out, CUT_MARK) && !hasLine(m08.out, 'no usable managed node'),
+  `exit=${m08.code}｜切断点到达=${hasLine(m08.out, CUT_MARK)}`);
+
 const MUT_HINT = path.join(TMP, 'mut-hint.mjs');
 const hintSrc = readFileSync(path.join(ROOT, HINT_REL), 'utf8');
 const mutHintSrc = hintSrc.replace("typeof found.dev === 'number' && found.dev !== nodeAbi", "typeof found.dev === 'number'");
@@ -402,14 +454,16 @@ ok('N-07 空根反证 + 红因可区分：解析器对空根返回空输出而�
 
 // ---------- 收口：真实仓库零污染 ----------
 const SQLITE_AFTER = sha(SQLITE_NODE);
-const drifted = BATS.filter((b) => sha(path.join(ROOT, 'scripts', b)) !== BAT_BEFORE.get(b));
+const drifted = PINN_FILES.filter((f) => sha(path.join(ROOT, 'scripts', f)) !== BAT_BEFORE.get(f));
 const WT_AFTER = git('worktree', 'list').trim().split(/\r?\n/).length;
-ok('P-05 真实仓库零污染：两枚 .bat 与 node_modules 原生二进制逐字节未变、HEAD 未动、worktree 数量不增',
+ok('P-05 真实仓库零污染：三枚入口 .bat 与生成器模板、node_modules 原生二进制逐字节未变、HEAD 未动、worktree 数量不增',
   drifted.length === 0 && SQLITE_AFTER === SQLITE_BEFORE && git('rev-parse', 'HEAD').trim() === HEAD_SHA && WT_AFTER <= WT_BEFORE,
   `漂移=${drifted.join('、') || '(无)'} better_sqlite3=${SQLITE_BEFORE}→${SQLITE_AFTER} worktree ${WT_BEFORE}→${WT_AFTER}`);
 const junctionAlive = existsSync(path.join(MG_REAL, 'node.exe'));
 const linksLeft = [];
-for (const b of BATS) { for (const k of ['absent', 'live']) { const p = runs[b][k].out; if (/ERR_DLOPEN|CreateProcess|SPAWN-FAILED/.test(p)) linksLeft.push(`${b}/${k}`); } }
+const outsForScan = [...BATS.flatMap((b) => [[`${b}/absent`, runs[b].absent.out], [`${b}/live`, runs[b].live.out]]),
+  [`${DEV_BAT}/absent`, devRuns.absent.out], [`${DEV_BAT}/live`, devRuns.live.out]];
+for (const [name, p] of outsForScan) { if (/ERR_DLOPEN|CreateProcess|SPAWN-FAILED/.test(p)) linksLeft.push(name); }
 ok('P-06 夹具没伤到本体：junction 目标目录仍可执行（node.exe 在位），且没有任何一轮 .bat 输出里出现原生模块加载失败或起不来',
   junctionAlive && linksLeft.length === 0, `目标在位=${junctionAlive} 异常轮=${linksLeft.join('、') || '(无)'}`);
 

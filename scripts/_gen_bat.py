@@ -16,8 +16,20 @@ REM 脚本位于 scripts/ 目录，cd 回到项目根目录
 cd /d "%~dp0.."
 
 REM 优先使用 WorkBuddy managed Node
-set "MGNode=C:\Users\hspcadmin\.workbuddy\binaries\node\versions\22.22.2"
-if exist "%MGNode%\node.exe" set "PATH=%MGNode%;%PATH%"
+REM T02616: no version dir is pinned by name any more - the two pinned directories this used
+REM to write are gone, "if exist" judged false and the PATH override silently stopped happening.
+REM Resolution is by availability via scripts\lib\resolve-managed-node.ps1; MTASK_MG_NODE_ROOT
+REM overrides the root. Keep this block in sync with scripts\*\*.bat - see the T02616 gate.
+if not defined MTASK_MG_NODE_ROOT set "MTASK_MG_NODE_ROOT=C:\Users\hspcadmin\.workbuddy\binaries\node\versions"
+set "MGNode="
+for /f "usebackq delims=" %%D in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0lib\resolve-managed-node.ps1"`) do set "MGNode=%%D"
+if defined MGNode set "PATH=%MGNode%;%PATH%"
+if defined MGNode (
+    echo   managed node: %MGNode%
+) else (
+    echo   [WARN] no usable managed node under %MTASK_MG_NODE_ROOT%
+    echo   [WARN] this run uses the node already on PATH - native module ABI is not guaranteed
+)
 
 REM 覆盖 Electron 下载镜像：全局 .npmrc 的 electron_mirror 指向不可达的内网 artifactory，
 REM 改用 npmmirror，保证 electron 二进制下载与 electron-builder 打包缓存可用
@@ -142,8 +154,20 @@ cd /d "%~dp0.."
 setlocal enabledelayedexpansion
 
 REM 优先使用 WorkBuddy managed Node
-set "MGNode=C:\Users\hspcadmin\.workbuddy\binaries\node\versions\22.22.2"
-if exist "%MGNode%\node.exe" set "PATH=%MGNode%;%PATH%"
+REM T02616: no version dir is pinned by name any more - the two pinned directories this used
+REM to write are gone, "if exist" judged false and the PATH override silently stopped happening.
+REM Resolution is by availability via scripts\lib\resolve-managed-node.ps1; MTASK_MG_NODE_ROOT
+REM overrides the root. Keep this block in sync with scripts\*\*.bat - see the T02616 gate.
+if not defined MTASK_MG_NODE_ROOT set "MTASK_MG_NODE_ROOT=C:\Users\hspcadmin\.workbuddy\binaries\node\versions"
+set "MGNode="
+for /f "usebackq delims=" %%D in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0lib\resolve-managed-node.ps1"`) do set "MGNode=%%D"
+if defined MGNode set "PATH=%MGNode%;%PATH%"
+if defined MGNode (
+    echo   managed node: %MGNode%
+) else (
+    echo   [WARN] no usable managed node under %MTASK_MG_NODE_ROOT%
+    echo   [WARN] this run uses the node already on PATH - native module ABI is not guaranteed
+)
 
 set "SERVER_PORT=39876"
 set "WEB_PORT=5175"
