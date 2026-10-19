@@ -5,9 +5,18 @@ cd /d "%~dp0.."
 REM MTask build script: install deps, typecheck, build server, build web, package exe.
 REM This file is pure ASCII on purpose so cmd (ANSI codepage) parses it reliably.
 
-REM Prefer the WorkBuddy managed Node (matches better-sqlite3 ABI).
-set "MGNode=C:\Users\hspcadmin\.workbuddy\binaries\node\versions\22.22.2"
-if exist "%MGNode%\node.exe" set "PATH=%MGNode%;%PATH%"
+REM Prefer the WorkBuddy managed Node - its ABI matches build\native\dev (see T02616 below).
+REM T02616: this used to be one hard-coded version dir (22.22.2 here, 22.22.2-3 in the twin).
+REM Both directories are gone, "if exist" judged false, the PATH override silently stopped
+REM happening and every build ran on whatever node sat on PATH - a different
+REM NODE_MODULE_VERSION than the dev ABI cache, with no signal at all. Resolution is now by
+REM availability: the "current" pointer file first, then the highest version dir that really
+REM has node.exe. MTASK_MG_NODE_ROOT overrides the root (the verification gate points it at a
+REM fixture); no version is ever pinned by name.
+if not defined MTASK_MG_NODE_ROOT set "MTASK_MG_NODE_ROOT=C:\Users\hspcadmin\.workbuddy\binaries\node\versions"
+set "MGNode="
+for /f "usebackq delims=" %%D in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0lib\resolve-managed-node.ps1"`) do set "MGNode=%%D"
+if defined MGNode set "PATH=%MGNode%;%PATH%"
 
 REM Use npmmirror so electron + electron-builder binaries can be downloaded.
 set "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/"
@@ -18,12 +27,30 @@ echo  MTask Build
 echo ============================================
 echo.
 
+REM T02616: say out loud which interpreter this build runs on. A missing managed node must
+REM show up in the log instead of being a silent PATH fallback.
+if defined MGNode (
+    echo   managed node: %MGNode%
+) else (
+    echo   [WARN] no usable managed node under %MTASK_MG_NODE_ROOT%
+    echo   [WARN] this build runs on the node already on PATH - native module ABI is not guaranteed
+)
+
 node --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] node not found. Install Node or configure managed node.
     pause
     exit /b 1
 )
+
+REM T02616: record node version + NODE_MODULE_VERSION + which exe won the PATH lookup, then
+REM print the ABI picture read from the native binaries themselves (never from constants).
+REM The hint is advisory: its exit code is deliberately not checked.
+set "NODEEXE="
+for /f "usebackq delims=" %%N in (`where node 2^>nul`) do if not defined NODEEXE set "NODEEXE=%%N"
+for /f "usebackq delims=" %%V in (`node -p "process.version + ' ABI ' + process.versions.modules"`) do set "NODEVER=%%V"
+echo   [INFO] build interpreter: %NODEVER%   exe=%NODEEXE%
+node "scripts\lib\abi-hint.mjs"
 
 REM [1/7] dependency check (npm workspaces installs node_modules at root)
 echo [1/7] Check dependencies...
