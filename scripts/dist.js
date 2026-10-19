@@ -17,6 +17,9 @@
  *
  * T02355 补 HEAD 自洽性预检：与 scripts/打包.mjs 第 [3] 步共用 scripts/lib/head-precheck.mjs，
  * 红 HEAD 在切 ABI 之前就中止（`MTASK_SKIP_HEAD_CHECK=1` 等价于 `--skip-head-check`）。
+ * T02617 提交纪律：提交这几条发布入口**必须带明确路径**（`git commit -- scripts/dist.js …`）——
+ * 本仓索引里常躺着并发会话 staged 的旧版入口，一次不带路径的提交就能把守卫调用行静默抹掉。
+ * 预检入口现在先自检「工作树 / HEAD / 索引 三条面都还调用守卫」，任一面丢引用即在构建/切 ABI 之前拦下。
  */
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');

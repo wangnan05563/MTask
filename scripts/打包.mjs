@@ -66,6 +66,10 @@ if (!fs.existsSync(path.join(ROOT, 'node_modules', 'electron', 'dist', 'electron
 
 // [3] HEAD 自洽性预检（T02321）：判据打在提交上，不是工作树叠加态
 // T02355：实现收口到 scripts/lib/head-precheck.mjs，与 dist.js / 构建打包.bat / build-pack-t.bat 共用同一份
+// T02617 提交纪律：本仓索引里常躺着并发会话 staged 的**旧版发布入口**（那次实测是摘掉预检、步骤计数还停在
+//   /6 的 打包.mjs）。不带路径的 `git commit` 会把那份旧副本写进提交，守卫调用行就此消失，而工作树看着全绿。
+//   所以提交这几条入口时必须带明确路径：`git commit -- scripts/打包.mjs scripts/lib/head-precheck.mjs`。
+//   预检自己也会先自检「三条面（工作树/HEAD/索引）都还调用守卫」，任一面丢引用即在构建之前中止。
 const { runHeadPrecheck, isRequestedSkip, shortHead } = await import('./lib/head-precheck.mjs');
 const SKIP_HEAD_CHECK = isRequestedSkip();
 const headSha = shortHead();

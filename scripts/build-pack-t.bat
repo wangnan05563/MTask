@@ -57,6 +57,13 @@ REM [3/7] HEAD self-consistency precheck (T02355).
 REM The worktree is HEAD plus uncommitted WIP of concurrent sessions, so a green worktree
 REM typecheck does NOT prove the commit can be rebuilt. One shared implementation with
 REM the Node packing script step 3 and scripts/dist.js: scripts/lib/head-precheck.mjs.
+REM COMMIT RULE (T02617): the index of this repo often already holds OTHER sessions' staged
+REM   files, including a stale copy of these four release entries. A plain "git commit"
+REM   without path arguments commits that stale copy and silently removes the precheck call
+REM   above, while the worktree still looks green. Always commit with explicit paths:
+REM     git commit -- scripts/<pack-entry> scripts/lib/head-precheck.mjs
+REM   The step below self-checks the call line in three faces (worktree / HEAD / index)
+REM   and aborts before any build step if one of them lost it.
 echo [3/7] HEAD self-consistency precheck...
 if /i "%MTASK_SKIP_HEAD_CHECK%"=="1" echo   [WARN] MTASK_SKIP_HEAD_CHECK is set - precheck not run, treat the artifact as an unreproducible temp build.
 node "scripts\lib\head-precheck.mjs" %*
