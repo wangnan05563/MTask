@@ -1058,24 +1058,17 @@ if (!(await waitForServer())) {
 
 group('G11 §4.4 自检计数轨（T02302：T02123「无点值行也要进引擎」的区分性断言）');
 {
-  // 期望值由夹具独立推导（不读 layout 的计数，避免同义反复）：
-  //   未估算行数 = 无三点且非里程碑的明细行数 + 无点值的聚合阶段行数（整个阶段一条有值行都没有）
+  // 期望值由夹具独立推导（不读 layout 的计数，避免同义反复）。
+  // T02630 裁定乙′后分两桶：`unEstimated` 只数**明细行**，`unEstimatedPhases` 数**阶段**——
+  // 以前两者混在一个键里，导致同一个 `unEstimated` 在面板读 0、在交付件读 4（四期）/ 33（wiki二期）。
   const unestDetail = ALL_ROWS.filter((r) => r.planKind !== 'milestone' && !est(r)).length;
   const emptyPhases = (['req', 'design', 'impl', 'common', 'onsite'] as EstimatePhase[])
     .filter((p) => !byPhase(p).some(est)).length;
-  const unestExpect = unestDetail + emptyPhases;
   const rcE = L.summary.ratioCheck.excluded;
-  // 三态判据（本单落地顺序约束：T02298 的导出侧修复此刻尚未入库，HEAD 仍只把有点值行喂进引擎）
-  //   = 夹具期望值 → PASS；= 0 而期望 > 0 → SKIP（如实留痕，修复落地即自动转绿）；其它取值 → FAIL
-  const unestName6 = `11-01 自检 excluded.unEstimated = 夹具独立推导值（未估算明细 ${unestDetail} + 空阶段 ${emptyPhases}）（T02123 回归防线：少报即无点值行没进引擎）`;
-  if (rcE.unEstimated === unestExpect) {
-    ok(unestName6, true);
-  } else if (rcE.unEstimated === 0 && unestExpect > 0) {
-    skipped('11-01 excluded.unEstimated 区分性断言',
-      `T02298（导出侧「无点值行也要进引擎」）尚未入库：HEAD 实测 unEstimated=0 而夹具独立推导应为 ${unestExpect}；该修复落地后本条自动转 PASS，其它取值判 FAIL`);
-  } else {
-    ok(unestName6, false, { expect: unestExpect, got: rcE.unEstimated, excluded: rcE });
-  }
+  ok(`11-01 自检 excluded.unEstimated = 夹具独立推导的无三点明细行数（${unestDetail}）（T02123 少报防线 + T02630 乙′ 分桶：空阶段不混进明细桶）`,
+    rcE.unEstimated === unestDetail, { expect: unestDetail, got: rcE.unEstimated, excluded: rcE });
+  ok(`11-01b 自检 excluded.unEstimatedPhases = 夹具独立推导的空阶段个数（${emptyPhases}）（T02630 乙′：阶段缺口单独可见，不再伪装成「第 N 条待录入」）`,
+    rcE.unEstimatedPhases === emptyPhases, { expect: emptyPhases, got: rcE.unEstimatedPhases, excluded: rcE });
   ok('11-02 自检 excluded.subtotal 与小计行一一对应（结构性排除不混进「未估算」）',
     rcE.subtotal === (L.subtotalRow ? 1 : 0), { subtotalRow: L.subtotalRow?.rowNo ?? null, excluded: rcE });
   ok('11-03 计数变化不动合计：directManDays.expected 仍等于独立重算值（新增计数不得把行漏出 Σ）',

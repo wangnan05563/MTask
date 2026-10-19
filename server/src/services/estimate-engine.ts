@@ -31,7 +31,7 @@ export interface ThreePoints {
 }
 
 /** 行角色：`detail`=明细行、`phase`=阶段汇总行（模板 R6/R7/R32~R34）、`subtotal`=小计行（模板 R31，不进 Σ）、`coef`=调节系数行（模板 R36~R39） */
-export type EstimateRowRole = 'detail' | 'phase' | 'subtotal' | 'coef';
+export type EstimateRowRole = 'detail' | 'phase' | 'subtotal' | 'coef' | 'count';
 
 /** 引擎输入行（E3 从 `estimate_items` + `plan_tasks` 左联结果映射而来） */
 export interface EstimateEngineRow {
@@ -42,6 +42,11 @@ export interface EstimateEngineRow {
   /** null=未估算（不参与 Σ，也不进比例） */
   points: ThreePoints | null;
   role?: EstimateRowRole;
+  /**
+   * `phase`=件面上的阶段聚合行（有值进 Σ，空行只算「未估阶段」不算「第 N 条待录入」）；
+   * `count`=只为计数喂进来的非 dev 明细行（T02630 乙′：件面由聚合行代表，但「哪几条还没估」在
+   *   面板与交付件必须是同一个数 → 这类行**永不进 Σ**，只进排除桶）。
+   */
   /** `plan_tasks.kind`：milestone 行不进 Σ（§4.6 里程碑不重复计） */
   planKind?: string;
 }
@@ -302,7 +307,7 @@ export interface RatioCheck {
   /** 未归入阶段的行：偏差的真实来源，面板要点名到行 */
   unassigned: Array<{ key: string; phase: string }>;
   /** 被排除出 Σ 的行数，对账用 */
-  excluded: { subtotal: number; milestone: number; unEstimated: number };
+  excluded: { subtotal: number; milestone: number; unEstimated: number; unEstimatedPhases: number };
 }
 
 export interface EstimateSummary {
@@ -354,9 +359,15 @@ const addCol = (t: ColumnSum, p: ThreePoints): void => {
  *   必须先于 `!points` 判定。旧顺序把无点值的小计行/里程碑误计进 `unEstimated`：
  *   面板「未录入 N 行」把里程碑算成待录入（mtask四期 49 行里 14 行是里程碑，虚报 14 行待录入），
  *   PDF 备注把导出小计行算成未估算（wiki二期 35 行未录入只报 1 行）。
+ *
+ * ⚠ `unEstimated` 只数**明细行**（T02630 裁定乙′）。交付件把非 dev 阶段各并成 1 条 `role: 'phase'`
+ *   模板行，这类行是「阶段」而不是「第 N 条待录入」：空阶段行从前混进 `unEstimated`，会让同一个键在
+ *   面板读 0、在交付件读 4（mtask四期）/ 33（wiki二期）。阶段缺口改由 `unEstimatedPhases` 承载，
+ *   口径 = 六个标准阶段里「没有任何有值行进入 Σ」的**阶段个数**，与喂行粒度无关——面板（全明细）
+ *   与交付件（dev 明细 + 阶段聚合）逐键同值。求和集合不受影响：聚合行有值照进 Σ，报价数一分不差。
  */
 export function buildSummary(rows: EstimateEngineRow[], config: EstimateConfig = DEFAULT_ESTIMATE_CONFIG): EstimateSummary {
-  const excluded = { subtotal: 0, milestone: 0, unEstimated: 0 };
+  const excluded = { subtotal: 0, milestone: 0, unEstimated: 0, unEstimatedPhases: 0 };
   const unassigned: Array<{ key: string; phase: string }> = [];
   const counted: EstimateEngineRow[] = [];
   for (const r of rows) {
@@ -369,9 +380,12 @@ export function buildSummary(rows: EstimateEngineRow[], config: EstimateConfig =
       continue;
     }
     if (!r.points) {
-      excluded.unEstimated += 1;
+      // T02630 乙′：`role: 'phase'` 是模板里的**阶段聚合行**，空阶段记进 `unEstimatedPhases`（下面按阶段算），
+      // 不混进「第 N 条待录入」——否则交付件与面板同名不同数（四期 0 vs 4、wiki二期 0 vs 33）。
+      if (r.role !== 'phase') excluded.unEstimated += 1;
       continue;
     }
+    if (r.role === 'count') continue;   // 有值的计数行不进 Σ——同阶段的聚合行已代表它，再进就重复计
     if (!isPhase(r.phase)) {
       unassigned.push({ key: r.key, phase: r.phase });
       continue;
@@ -388,6 +402,10 @@ export function buildSummary(rows: EstimateEngineRow[], config: EstimateConfig =
     b.varSum += sigma(p) ** 2;
     b.n += 1;
   }
+  // T02630 乙′：阶段缺口 = 六个标准阶段里「没有任何有值行进入 Σ」的阶段**个数**。
+  // 只由 `byPhase[*].n` 派生，与喂行是明细还是阶段聚合无关 → 面板（全明细）与交付件（dev 明细 + 5 条
+  // 阶段聚合行）逐键同值；`scope=estimated_only` 之类的取数过滤另说（门里按默认全量口径钉相等）。
+  excluded.unEstimatedPhases = ESTIMATE_PHASES.filter((ph) => byPhase.get(ph)!.n === 0).length;
 
   const directManDays = sumCols();
   for (const r of counted) addCol(directManDays, r.points as ThreePoints);

@@ -352,6 +352,10 @@ console.log('\n=== G 段：单源词干改名模拟 + 口径破行为反证（T0
     return ex;
   };
   const mk = (key: string, planKind: string): EngineRowLike => ({ key, phase: 'dev', role: 'detail', planKind, points: null });
+  // T02630 乙′后 excluded 多了 `unEstimatedPhases`，反证面比的是**这三个结构性计数**——
+  // 直接 JSON.stringify 整包会让「键数不同」冒充「口径不同」，反证就失去意义。
+  const threeKeys = (o: { subtotal: number; milestone: number; unEstimated: number }) =>
+    JSON.stringify({ subtotal: o.subtotal, milestone: o.milestone, unEstimated: o.unEstimated });
   const msNull = [mk('m1', 'milestone')];
   const detNull = [mk('d1', 'normal')];
   const newMsNull = buildSummary(msNull, CFG).ratioCheck.excluded;
@@ -362,12 +366,12 @@ console.log('\n=== G 段：单源词干改名模拟 + 口径破行为反证（T0
     && buildSummary(detNull, CFG).ratioCheck.excluded.milestone === 0, buildSummary(detNull, CFG).ratioCheck.excluded);
   ok('G-03c 破行为反证成立：同一夹具在旧顺序下结论相反 → 断言钉的是规则不是数字',
     oldOrder(msNull).unEstimated === 1 && oldOrder(msNull).milestone === 0
-    && JSON.stringify(newMsNull) !== JSON.stringify(oldOrder(msNull)), { 新: newMsNull, 旧: oldOrder(msNull) });
+    && threeKeys(newMsNull) !== threeKeys(oldOrder(msNull)), { 新: newMsNull, 旧: oldOrder(msNull) });
   ok('G-03d 有点值里程碑两版口径同判 milestone（改的只是无点值那一支）',
     (() => {
       const rows = [{ key: 'm2', phase: 'dev', role: 'detail' as const, planKind: 'milestone', points: { optimistic: 5, likely: 5, pessimistic: 8 } }];
       const ex = buildSummary(rows, CFG).ratioCheck.excluded;
-      return ex.milestone === 1 && ex.unEstimated === 0 && JSON.stringify(ex) === JSON.stringify(oldOrder(rows as unknown as EngineRowLike[]));
+      return ex.milestone === 1 && ex.unEstimated === 0 && threeKeys(ex) === threeKeys(oldOrder(rows as unknown as EngineRowLike[]));
     })(), buildSummary([{ key: 'm2', phase: 'dev', role: 'detail' as const, planKind: 'milestone', points: { optimistic: 5, likely: 5, pessimistic: 8 } }], CFG).ratioCheck.excluded);
 }
 

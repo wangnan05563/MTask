@@ -94,7 +94,7 @@ export interface RatioCheck {
   deviationPct: number;
   danger: boolean;
   unassigned: Array<{ key: string; phase: string }>;
-  excluded: { subtotal: number; milestone: number; unEstimated: number };
+  excluded: { subtotal: number; milestone: number; unEstimated: number; unEstimatedPhases: number };
 }
 
 /** `estimate-engine.EstimateSummary`（服务端算好，面板直接读） */

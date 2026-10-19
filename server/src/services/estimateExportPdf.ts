@@ -189,7 +189,7 @@ function appendSelfCheck(w: MdWriter, layout: EstimateLayout): void {
   w.sec(PDF_TEXTS.secSelfCheck);
   w.emit();
   w.emit(`- 各阶段占比之和（I40）= ${pct(rc.sumRatio)}，偏差 ${num(rc.deviationPct)}%${rc.danger ? '（超过 1%，需复核阶段归集）' : ''}。`);
-  w.emit(`- 未计入合计的行：小计 ${rc.excluded.subtotal} 行、里程碑 ${rc.excluded.milestone} 行、未估算 ${rc.excluded.unEstimated} 行。`);
+  w.emit(`- 未计入合计的行：小计 ${rc.excluded.subtotal} 行、里程碑 ${rc.excluded.milestone} 行、未估算明细 ${rc.excluded.unEstimated} 行、未估阶段 ${rc.excluded.unEstimatedPhases} 个。`);
   w.emit(`- 本次排除的里程碑行数（只做分组，不重复计）：${layout.milestoneSkipped}。`);
   w.emit(`- 待人工复核行数（来源为规则/默认推导）：${layout.unreviewed}。`);
   if (rc.unassigned.length > 0) {

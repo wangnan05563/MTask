@@ -1569,8 +1569,9 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
         {/* 4) 明细行（§5.2-3）：分组与折叠与时间线同源 */}
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '14px 0 2px' }}>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>明细（O / M / P / E / σ）</div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-            已计入 Σ {s.countedKeys.length} 行 · 未录入 {rc.excluded.unEstimated} 行
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}
+            title="未录入明细=还没有三点值的明细行数；未估阶段=六个标准阶段里没有任何有值行进入 Σ 的阶段个数（与交付件 §4.4 备注同键同值，T02630 乙′）">
+            已计入 Σ {s.countedKeys.length} 行 · 未录入明细 {rc.excluded.unEstimated} 行 · 未估阶段 {rc.excluded.unEstimatedPhases} 个
           </div>
         </div>
         {/* §5.4 区间条图例：没有它，那条短线就是一个没人能自证含义的图形。
