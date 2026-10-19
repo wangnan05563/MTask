@@ -32,10 +32,11 @@ import { api } from '../api/client';
 import {
   estimatesApi, parseSnapshotPayload, toGrid,
   type DeriveItem, type DeriveRule, type EstimateExportAudience, type EstimateExportOptions, type EstimateExportScope, type EstimateInput,
-  type EstimateListItem, type EstimateSnapshot, type EstimateSource, type EstimatesResponse,
+  type EstimateListItem, type EstimateParamLog, type EstimateParamLogEffective, type EstimateSnapshot, type EstimateSource, type EstimatesResponse,
   type RowDrift, type SnapshotDiff, type WhatIfResponse,
 } from '../api/estimates';
 import { saveBlob } from '../utils/download';
+import { fullTime } from '../ui/format';
 import { askConfirm } from '../ui/dialogs';
 
 /** PRD §5.1：docked 分栏宽 520（T02124：用户反馈 420px 偏窄，时间线留白较多，收窄等空间给估算面板）；<1200px 转 SlideOver 时沿用同宽（两处共用一个常量） */
@@ -58,6 +59,35 @@ export const RULE_LABEL: Record<DeriveRule, string> = {
   caseWeight: '默认·用例',
   duration: '默认·工期',
 };
+
+/**
+ * §11-E13「改值历史」的三个可断言谓词（T02293 判据规约：把口径从 JSX 里切出来给门判，
+ * 而不是让门正则匹配那半行渲染代码——等价重构即红、删掉守卫反而不红）。
+ * 三者都不做运算，只做「服务端下发的那一份怎么读给人看」。
+ */
+
+/** 键 → 中文标签：单源是 `GET /api/estimates/meta` 的 `settingLabels`；库里出现名单外的键就照原样显示，不编造标签 */
+export function paramLogKeyLabel(key: string, labels: Record<string, string>): string {
+  return labels[key] ?? key;
+}
+
+/** §6.1「或留空」分支的既有口径：未署名显示「未署名」，不留空单元格让复核的人以为漏了一列 */
+export function paramLogActorLabel(actor: string | null | undefined): string {
+  const a = (actor ?? '').trim();
+  return a === '' ? '未署名' : a;
+}
+
+/** `effective` 是服务端写死的 JSON 文本；解析失败按「读不出」处理，不猜数也不让整块历史消失 */
+export function parseParamLogEffective(raw: string | null | undefined): EstimateParamLogEffective | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw) as Partial<EstimateParamLogEffective>;
+    if (typeof v?.manDaysPerManMonth !== 'number' || typeof v?.hoursPerManDay !== 'number' || typeof v?.coefSum !== 'number') return null;
+    return { manDaysPerManMonth: v.manDaysPerManMonth, hoursPerManDay: v.hoursPerManDay, coefSum: v.coefSum };
+  } catch {
+    return null;
+  }
+}
 
 /** §5.3 批量填充的档位入口文案（与 `RULE_LABEL` 同一批档名，不另起一套叫法） */
 export const BATCH_RULE_LABEL: Record<DeriveRule, string> = {
@@ -582,6 +612,11 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
   const [cmpIds, setCmpIds] = useState<string[]>([]);
   const [cmpDiff, setCmpDiff] = useState<{ a: EstimateSnapshot; b: EstimateSnapshot; diff: SnapshotDiff } | null>(null);
   const [lastExport, setLastExport] = useState<{ filename: string; unreviewed: number } | null>(null);
+  // ---------- T02624（§11-E13 改值历史 · §12-R1 后半）----------
+  /** 留痕取自 `GET /params` 的 `logs`（服务端已按新→旧、限 50 条）；标签取自 `/meta`，前端不抄名单 */
+  const [paramLogs, setParamLogs] = useState<EstimateParamLog[]>([]);
+  const [paramLogLabels, setParamLogLabels] = useState<Record<string, string>>({});
+  const [paramLogsError, setParamLogsError] = useState('');
   /** 同一格同一个被拒值不重复打接口（失焦是常态，否则一次错误输入会刷 N 次 400） */
   const rejectedSent = useRef<Set<string>>(new Set());
 
@@ -633,6 +668,25 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
     }
   }, [projectId]);
   useEffect(() => { void loadSnapshots(); }, [loadSnapshots]);
+
+  /**
+   * §11-E13 改值历史（T02624）：失败只影响这一小块（与快照同一处置），不连带整面板进错误态。
+   * 参数是在面板外改的（`PUT /params`），所以重取走显式入口，不塞进 `load()`——
+   * 行内每次录入都会触发 `load()`，把两次额外请求挂在写路径上没有意义。
+   */
+  const loadParamLogs = useCallback(async (): Promise<void> => {
+    try {
+      const [p, meta] = await Promise.all([estimatesApi.getParams(projectId), estimatesApi.getSettingMeta()]);
+      setParamLogs(p.logs);
+      setParamLogLabels(meta.settingLabels);
+      setParamLogsError('');
+    } catch (e) {
+      setParamLogs([]);
+      setParamLogLabels({});
+      setParamLogsError(errMsg(e));
+    }
+  }, [projectId]);
+  useEffect(() => { void loadParamLogs(); }, [loadParamLogs]);
 
   const rows = useMemo(
     () => buildPanelRows(plans, data?.items ?? [], derives, data?.summary.rowRatios ?? [], reqNosByPlan),
@@ -1614,6 +1668,61 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             ))}
           </div>
         )}
+
+        {/* 6b) 改值历史（§11-E13 · §12-R1 后半，T02624）：留痕数据源只有 `GET /params` 的 `logs`
+            这一面（T02120 的设计约束），键名标签走 `/meta` 的 `settingLabels` 单源，排序/条数
+            一律服务端说了算——前端不排、不截、不自算第二套口径。 */}
+        <section aria-label="估算参数改值历史" style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6, display: 'flex', gap: 6, alignItems: 'center' }}>
+            <span>改值历史（最近 {paramLogs.length} 条，新→旧）</span>
+            <button type="button" className="tbtn-anim" style={toolBtn()} onClick={() => void loadParamLogs()}
+              aria-label="刷新改值历史"
+              title="参数是在面板外改的（API / 参数页），这里给一枚显式重取的入口">
+              刷新
+            </button>
+          </div>
+          {paramLogsError && (
+            <div role="alert" style={{ fontSize: 11, color: 'var(--danger)' }}>改值历史读取失败：{paramLogsError}</div>
+          )}
+          {!paramLogsError && paramLogs.length === 0 && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              本次版本起尚无改值记录（此前的参数变更没有留痕，因为留痕表是这一版才建的，不是查询失败）
+            </div>
+          )}
+          {paramLogs.length > 0 && (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-muted)', textAlign: 'left' }}>
+                  <th scope="col" style={{ padding: '3px 6px 3px 0', fontWeight: 400 }}>改值时间</th>
+                  <th scope="col" style={{ padding: '3px 6px 3px 0', fontWeight: 400 }}>参数</th>
+                  <th scope="col" style={{ padding: '3px 6px 3px 0', fontWeight: 400 }}>旧值 → 新值</th>
+                  <th scope="col" style={{ padding: '3px 6px 3px 0', fontWeight: 400 }}>操作人</th>
+                  <th scope="col" style={{ padding: '3px 0 3px 0', fontWeight: 400 }}>改后生效值</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paramLogs.map((log) => {
+                  const eff = parseParamLogEffective(log.effective);
+                  return (
+                    <tr key={log.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td style={{ padding: '4px 6px 4px 0', whiteSpace: 'nowrap' }} title={fullTime(log.created_at)}>
+                        {fullTime(log.created_at)}
+                      </td>
+                      <td style={{ padding: '4px 6px 4px 0' }}>{paramLogKeyLabel(log.key, paramLogLabels)}</td>
+                      <td style={{ padding: '4px 6px 4px 0', fontFamily: MONO }}>
+                        {(log.old_value || '（未设置）')} → {log.new_value || '（清空回落默认）'}
+                      </td>
+                      <td style={{ padding: '4px 6px 4px 0' }}>{paramLogActorLabel(log.actor)}</td>
+                      <td style={{ padding: '4px 0', fontFamily: MONO, color: 'var(--text-muted)' }}>
+                        {eff ? `${num(eff.manDaysPerManMonth)} 人天/人月 · ${num(eff.hoursPerManDay)} 人时/天 · Σ系数 ${num(eff.coefSum)}` : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </section>
 
         {/* 7) 导出区（§5.2 第 4 段 · E6 Excel + E7 PDF）：Excel 内部版/客户版 + PDF 两枚 + 最近快照与对比。
             件名、未复核行数、合并区数一律取自服务端响应头与快照 payload——面板不拼第二套口径。

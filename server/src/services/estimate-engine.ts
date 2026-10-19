@@ -76,6 +76,22 @@ export const ESTIMATE_COEF_SETTING_KEYS: Record<EstimateCoefKey, string> = {
   schedule: ESTIMATE_SETTING_KEYS.coefSchedule,
 };
 
+/**
+ * §3.3 八键的中文标签（单源：文案取自 PRD §3.3 的「含义」列）。
+ * 四个系数键的标签**不在这里重写**，从 `ESTIMATE_COEF_LABELS` 派生——同一条红线：
+ * 「E13 参数页不得再抄一份」（§9 可维护行）。系数标签若在前端出现第二次，
+ * 改标签就会变成只改一处的 bug。
+ */
+export const ESTIMATE_SETTING_LABELS: Record<string, string> = {
+  [ESTIMATE_SETTING_KEYS.manDaysPerManMonth]: '每人月工天标准',
+  [ESTIMATE_SETTING_KEYS.hoursPerManDay]: '1 人天 = 几人时',
+  [ESTIMATE_SETTING_KEYS.ruleDefaultRatio]: '规则推导的 O:M:P 比例',
+  [ESTIMATE_SETTING_KEYS.hideCoefsForClient]: '客户版隐藏系数分项与备注',
+  ...Object.fromEntries(
+    ESTIMATE_COEF_KEYS.map((k) => [ESTIMATE_COEF_SETTING_KEYS[k], ESTIMATE_COEF_LABELS[k]]),
+  ),
+};
+
 export interface EstimateConfig {
   manDaysPerManMonth: number;
   hoursPerManDay: number;

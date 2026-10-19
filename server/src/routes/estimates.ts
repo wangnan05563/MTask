@@ -26,6 +26,7 @@ import {
   ESTIMATE_COEF_SETTING_KEYS,
   ESTIMATE_COEF_KEYS,
   ESTIMATE_SETTING_KEYS,
+  ESTIMATE_SETTING_LABELS,
   buildSummary,
   resolveEstimateConfig,
   rowDriftCheck,
@@ -149,6 +150,8 @@ estimateApi.get('/meta', (_req, res) =>
   wrap(res, () => ({
     ...ESTIMATE_META,
     settingKeys: ESTIMATE_SETTING_KEYS,
+    // T02624（§11-E13 改值历史）：八键中文标签随 meta 下发，前端不再抄第二份名单
+    settingLabels: ESTIMATE_SETTING_LABELS,
     coefSettingKeys: ESTIMATE_COEF_SETTING_KEYS,
     coefLabels: ESTIMATE_COEF_LABELS,
     defaults: DEFAULT_ESTIMATE_CONFIG,

@@ -126,6 +126,48 @@ export interface EstimatesMeta {
   sources: EstimateSource[];
 }
 
+/**
+ * §12-R1 改值留痕行（`EstimateParamLogService.list` 的 `SELECT *` 原样下发）。
+ * 字段名与排序（`created_at DESC, rowid DESC`）是 T02120 E2E 已断言的契约，UI 侧适配它、不改它。
+ */
+export interface EstimateParamLog {
+  id: string;
+  project_id: string;
+  /** 改值时的署名（`estimate.reviewer` 的改前值，未署名为空串） */
+  actor: string;
+  key: string;
+  old_value: string;
+  new_value: string;
+  /** JSON 文本：`{ manDaysPerManMonth, hoursPerManDay, coefSum }`（服务端按两位小数落盘） */
+  effective: string;
+  created_at: string;
+}
+
+/** 留痕 `effective` 快照的形态（服务端 `effectiveSnapshot()` 的三个键，前端不自行换算） */
+export interface EstimateParamLogEffective {
+  manDaysPerManMonth: number;
+  hoursPerManDay: number;
+  coefSum: number;
+}
+
+/** `GET /api/estimates/params`（§3.3）：`logs` 是 §11-E13「改值历史」的唯一消费面，不另开端点 */
+export interface EstimateParamsResponse {
+  projectId: string;
+  settings: Record<string, string | null>;
+  config: EstimateConfigView;
+  defaults: EstimateConfigView;
+  caseWeightK: number;
+  logs: EstimateParamLog[];
+}
+
+/** `GET /api/estimates/meta`（§9 标签单源）：八键/系数标签与默认值只从这里取，前端不抄名单 */
+export interface EstimatesSettingMeta {
+  settingKeys: Record<string, string>;
+  settingLabels: Record<string, string>;
+  coefSettingKeys: Record<string, string>;
+  coefLabels: Record<string, string>;
+}
+
 /** §7「上次导出后 N 条计划已变化」的单行（`changed` 点名改的是排期还是估算） */
 export interface ChangedPlan {
   planId: string;
@@ -355,6 +397,14 @@ function exportQuery(projectId: string, opts: EstimateExportOptions): string {
 export const estimatesApi = {
   /** 面板首屏：明细 + 汇总 + 参数 + 校验（一次请求取全，避免前端拼接多套口径） */
   getAll: (projectId: string) => api.get<EstimatesResponse>(q(projectId)),
+  /**
+   * §3.3 参数面 + §12-R1 改值留痕（T02624）。首屏的 `params` 只带生效值、不带 `logs`，
+   * 所以留痕单独取这一份——它仍是**唯一**消费面（T02120 的设计约束），没有第二个「查历史」端点。
+   */
+  getParams: (projectId: string) =>
+    api.get<EstimateParamsResponse>(`/estimates/params?projectId=${encodeURIComponent(projectId)}`),
+  /** §9 标签单源：八键中文标签从这里出，改值历史显示键名时不硬编码 `estimate.xxx` */
+  getSettingMeta: () => api.get<EstimatesSettingMeta>('/estimates/meta'),
   /** 三档推导：默认 dryRun 预览（§4.6 红线「人工行不可被规则覆盖」由服务端判定，前端只转录） */
   derivePreview: (projectId: string, opts: BatchDeriveOptions = {}) =>
     api.post<DeriveResponse>('/estimates/derive', {
