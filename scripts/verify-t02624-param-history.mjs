@@ -177,6 +177,8 @@ const ENG = await import(pathToFileURL(join(ROOT, 'server', 'src', 'services', '
 const { ESTIMATE_SETTING_KEYS, ESTIMATE_COEF_KEYS, ESTIMATE_COEF_LABELS, ESTIMATE_COEF_SETTING_KEYS, ESTIMATE_SETTING_LABELS } = ENG;
 const SETTING_KEYS = Object.values(ESTIMATE_SETTING_KEYS);
 const COEF_SETTING_KEYS = Object.values(ESTIMATE_COEF_SETTING_KEYS);
+/** 系数键本身就在 §3.3 八键里，两侧并集要去重后再比名单（否则八键会被数成十二键） */
+const LABEL_KEY_UNION = [...new Set([...SETTING_KEYS, ...COEF_SETTING_KEYS])];
 /** 署名键只在夹具里当**写入输入**用一次（它是 routes 里的模块常量，不在 §3.3 名单里，正是本组要验的「名单外」）*/
 const K_REVIEWER = 'estimate.reviewer';
 const K_MD = ESTIMATE_SETTING_KEYS.manDaysPerManMonth;
@@ -205,9 +207,10 @@ ok('A-02 名单外的键不编造标签：库里出现没登记过的键时照�
 ok('A-03 §9 单源红线：系数键标签从 `ESTIMATE_COEF_LABELS` 派生，两处取到同一份值（改标签不会只改一处）',
   COEF_SETTING_KEYS.length === 4 && ESTIMATE_COEF_KEYS.every((k) => ESTIMATE_SETTING_LABELS[ESTIMATE_COEF_SETTING_KEYS[k]] === ESTIMATE_COEF_LABELS[k]),
   ESTIMATE_COEF_KEYS.map((k) => [ESTIMATE_COEF_SETTING_KEYS[k], ESTIMATE_SETTING_LABELS[ESTIMATE_COEF_SETTING_KEYS[k]], ESTIMATE_COEF_LABELS[k]]));
-ok('A-04 标签名单恰等于 §3.3 八键 ∪ 四系数键，不掺进署名项（T02086 裁决：参数面不出现「估算人」那一栏，API 写入通道保留）',
-  JSON.stringify(Object.keys(ESTIMATE_SETTING_LABELS).slice().sort()) === JSON.stringify([...SETTING_KEYS, ...COEF_SETTING_KEYS].sort()),
-  { 名单: Object.keys(ESTIMATE_SETTING_LABELS).sort(), 应为: [...SETTING_KEYS, ...COEF_SETTING_KEYS].sort() });
+ok('A-04 标签名单恰等于 §3.3 八键（含四系数键），不掺进署名项（T02086 裁决：参数面不出现「估算人」那一栏，API 写入通道保留）',
+  LABEL_KEY_UNION.length === 8
+  && JSON.stringify(Object.keys(ESTIMATE_SETTING_LABELS).slice().sort()) === JSON.stringify(LABEL_KEY_UNION.slice().sort()),
+  { 名单: Object.keys(ESTIMATE_SETTING_LABELS).sort(), 应为: LABEL_KEY_UNION.slice().sort() });
 ok('A-05 未署名态：空串/纯空白/null → 「未署名」，有名去空白照原样（不留空单元格让复核的人以为漏了一列）',
   P.paramLogActorLabel('') === '未署名' && P.paramLogActorLabel('   ') === '未署名'
   && P.paramLogActorLabel(null) === '未署名' && P.paramLogActorLabel(' 张三 ') === '张三');
@@ -449,9 +452,9 @@ ok('R-01 `/meta` 随参数面下发 `settingLabels`（§9 标签单源：八键�
   metaR.status === 200 && Object.values(metaR.json?.settingKeys ?? {}).every((k) => typeof labelMap[k] === 'string' && labelMap[k].length > 0)
   && ESTIMATE_COEF_KEYS.every((k) => labelMap[metaR.json.coefSettingKeys[k]] === metaR.json.coefLabels[k]),
   { 名单: Object.keys(labelMap), 系数: ESTIMATE_COEF_KEYS.map((k) => [labelMap[metaR.json.coefSettingKeys[k]], metaR.json.coefLabels[k]]) });
-ok('R-02 `/meta` 的标签名单恰好是 §3.3 八键 ∪ 四系数键（署名项不在名单里，参数面不会长出「估算人」那一栏）',
+ok('R-02 `/meta` 的标签名单恰好是 §3.3 八键（含系数键），不掺进署名项（参数面不会长出「估算人」那一栏）',
   metaR.status === 200 && JSON.stringify(Object.keys(labelMap).slice().sort())
-    === JSON.stringify([...Object.values(metaR.json.settingKeys), ...Object.values(metaR.json.coefSettingKeys)].sort())
+    === JSON.stringify([...new Set([...Object.values(metaR.json.settingKeys), ...Object.values(metaR.json.coefSettingKeys)])].sort())
   && labelMap[K_REVIEWER] === undefined,
   Object.keys(labelMap));
 
@@ -469,11 +472,11 @@ const logs3 = (await GETP()).json?.logs ?? [];
 evSet('logCount', logs3.length);
 ok('R-06 PUT#3 后共 4 条（1+2+1）且严格新→旧：同一次多键写入时间戳相同也能定序（rowid 兜底，面板不重排）',
   put3.status === 200 && put3.json?.logged === 1 && logs3.length === 4
-  && logs3.every((l, i) => i === 0 || new Date(l.created_at).getTime() >= new Date(logs3[i - 1].created_at).getTime()),
+  && logs3.every((l, i) => i === 0 || new Date(l.created_at).getTime() <= new Date(logs3[i - 1].created_at).getTime()),
   logs3.map((l) => ({ key: l.key, old: l.old_value, nu: l.new_value, actor: l.actor, at: l.created_at })));
 const mdSeq = byKey(logs3, K_MD).map((l) => [l.old_value, l.new_value]);
-ok(`R-07 旧值取自上一次写入（不是本次生效值、也不是默认值）：同一键按新→旧为 20→24 / 20→22 / （空）→20`,
-  JSON.stringify(mdSeq) === JSON.stringify([['20', '24'], ['20', '22'], ['', '20']]), mdSeq);
+ok('R-07 旧值取自上一次写入（不是本次生效值、也不是默认值）：同一键按新→旧为 22→24 / 20→22 / （空）→20',
+  JSON.stringify(mdSeq) === JSON.stringify([['22', '24'], ['20', '22'], ['', '20']]), mdSeq);
 ok('R-08 actor 口径：署名之后的三条都带署名，署名之前那条恒为空串（由 UI 落「未署名」，不是查询缺列）',
   byKey(logs3, K_MD).every((l) => (l.new_value === '20' ? l.actor === '' : l.actor === '历史门访客'))
   && byKey(logs3, K_REVIEWER).length === 1,
@@ -632,12 +635,17 @@ console.log('\n=== N 组 负对照：判据必须能翻红 ===');
     && spy[1].cond === false && reason(spy[1]).includes('字面锚点失配') && spy[2].cond === true,
     spy.map((s) => ({ 条: s.name, 判: s.cond, 红因: reason(s).slice(0, 40) })));
 
-  const wt = (() => { try { return readFileSync(join(ROOT, EP_REL), 'utf8'); } catch { return ''; } })();
-  const same = wt === EP_HEAD;
-  const headOnly = ['paramLogKeyLabel', 'paramLogActorLabel', 'parseParamLogEffective'].filter((a) => EP_HEAD.includes(a) && !wt.includes(a));
-  ok('N-06 取证面核验：S 组字面腿读的是 git show HEAD:（不是工作树）——两树不一致时点名 HEAD 独有的标识符',
-    EP_HEAD.length > 400 && (same || headOnly.length > 0),
-    { 两树相同: same, HEAD独有: headOnly, HEAD长度: EP_HEAD.length, 工作树长度: wt.length });
+  {
+    // 行尾差异不算内容差异（本仓 core.autocrlf=true：blob 是 LF，checkout 落盘是 CRLF）
+    const wt = (() => { try { return readFileSync(join(ROOT, EP_REL), 'utf8').replace(/\r\n/g, '\n'); } catch { return ''; } })();
+    const same = wt === EP_HEAD;
+    const ids = ['WhiskerBar', 'whiskerLegendShown', 'paramLogKeyLabel', 'paramLogActorLabel', 'parseParamLogEffective'];
+    const headOnly = ids.filter((a) => EP_HEAD.includes(a) && !wt.includes(a));
+    const wtOnly = ids.filter((a) => wt.includes(a) && !EP_HEAD.includes(a));
+    ok('N-06 取证面核验：S 组字面腿读的是 git show HEAD:（不是工作树）——两树行尾归一后仍不一致时，双向点名只属于一侧的标识符',
+      EP_HEAD.length > 400 && (same || headOnly.length > 0 || wtOnly.length > 0),
+      { 两树相同: same, HEAD独有: headOnly, 工作树独有: wtOnly, HEAD长度: EP_HEAD.length, 工作树长度: wt.length });
+  }
 
   if (EV.ran === true) {
     const before = await ev(PE`const b=ph().querySelector('button[aria-label*="改值历史"]'); if(!b) return 'nobtn';
