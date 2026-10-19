@@ -176,8 +176,14 @@ const isAscii = (buf) => !buf.some((x) => x > 0x7f);
  * 本仓 `core.autocrlf=true`，跟踪的 blob 是 LF，但 checkout 落盘就是 CRLF——锚住的是我手改那次的
  * 工作树字节形态，不是仓库形态；行为腿（cmd 真解析执行）两边都绿，正是规约判据 3 说的「字面锚点失配（行为在）」。
  * cmd 真正怕的是非 ASCII 字节在 ANSI 代码页下被误解，与行尾无关。
+ * 第二层坑：粗写的「不含 `\n\r`」判据自己也是错的——统一 CRLF 的文本里，任何一个空行都是 `\r\n\r\n`，
+ * 其中就含 `\n\r`，于是把健康的 CRLF 文件误判成「混用」。真判据只能问「有没有落单的 CR / 落单的 LF」。
  */
-const oneEnding = (buf) => buf.includes(0x0d) === /\r\n/.test(buf.toString('latin1')) && !buf.toString('latin1').includes('\n\r');
+const oneEnding = (buf) => {
+  const s = buf.toString('latin1');
+  if (!s.includes('\r')) return true;
+  return !/\r(?!\n)/.test(s) && !/(?<!\r)\n/.test(s);
+};
 okPair(ok, 'P-02 两枚 .bat 仍是纯 ASCII、行尾不混用（cmd 在 ANSI 代码页下可靠解析的前提；LF/CRLF 由 autocrlf 决定，门不锚死其中一种）——行为腿：同一份文本已被 cmd 解析执行到切断点',
   () => BATS.every((b) => runs[b].absent.code === 0 && hasLine(runs[b].absent.out, CUT_MARK) && hasLine(runs[b].live.out, CUT_MARK)),
   () => batBytes.every(({ buf }) => isAscii(buf) && oneEnding(buf)),
