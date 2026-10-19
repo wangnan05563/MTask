@@ -51,9 +51,12 @@ const origLog = console.log;
 console.log = (...a) => { LINES.push(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ')); origLog(...a); };
 let pass = 0;
 let fail = 0;
+// 详情可能是对象（okPair 的红因就是对象）——模板字符串会把对象打成 [object Object]，红因当场读不出来
+// （本门第一次 HEAD 副本假红时就只看到 [object Object]）。这里统一序列化，保证 stdout 自带证据。
+const fmt = (d) => (typeof d === 'string' ? d : JSON.stringify(d));
 const ok = (name, cond, detail = '') => {
-  if (cond === true) { pass++; console.log(`PASS ${name} :: ${detail}`); return true; }
-  fail++; console.log(`FAIL ${name} :: ${detail}`); return false;
+  if (cond === true) { pass++; console.log(`PASS ${name} :: ${fmt(detail)}`); return true; }
+  fail++; console.log(`FAIL ${name} :: ${fmt(detail)}`); return false;
 };
 const { okPair } = await import(new URL('./lib/anchor-pair.mts', import.meta.url).href);
 const note = (s) => console.log(s);
