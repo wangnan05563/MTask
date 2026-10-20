@@ -21,13 +21,14 @@
  *
  * 隔离纪律（skill 红线 8）：库与端口都是临时的，不碰生产数据目录，跑完 kill + 回收临时目录。
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveServerLauncher } from './isolated-server-launcher.mts';
 import { okPair } from './lib/anchor-pair.mts'; // T02293 判据 3：文案锚必须配行为断言
+import { waitIsolatedServer, bootEvidence, bootSelftest } from './lib/gate-boot.mts'; // T02712：就绪=身份校验+upMs 证据+预算可覆盖
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = mkdtempSync(join(tmpdir(), 't02037-e3-'));
@@ -42,12 +43,24 @@ const { pointsError, ESTIMATE_ERRORS, ESTIMATE_POINT_LABELS, ESTIMATE_META, Esti
 
 let pass = 0;
 let fail = 0;
+let skip = 0;
+const skipped = (name: string, why: string) => { skip += 1; console.log(`  [SKIP] ${name} :: ${why}`); };
 const ok = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass += 1; console.log(`  [PASS] ${name}`); } else {
     fail += 1;
     console.log(`  [FAIL] ${name}${extra !== undefined ? ` -> ${JSON.stringify(extra).slice(0, 260)}` : ''}`);
   }
 };
+// T02712 判据 4：就绪判据自己要有负对照道——`--boot-selftest` 不起真服务，
+// 用三个本地假 health 应答（别的服务 / 本仓服务 / 应答非 JSON）+ 一个无人应答端口，
+// 证明「身份校验有牙、B-01 不是恒假式、起不来时 last 带出抛错形态」。
+if (process.argv.includes('--boot-selftest')) {
+  await bootSelftest(ok);
+  console.log(`\nPASS=${pass} FAIL=${fail} SKIP=${skip}（--boot-selftest：只考就绪判据自身）`);
+  try { rmSync(DATA_DIR, { recursive: true, force: true }); } catch { /* Windows 句柄未放 */ }
+  process.exit(fail === 0 ? 0 : 1);
+}
+
 const near = (a: number, b: number, eps = 1e-9) => Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) < eps;
 /**
  * 400 类断言的配对器（T02293 判据 3）。
@@ -378,7 +391,7 @@ console.log('\n=== G 段：单源词干改名模拟 + 口径破行为反证（T0
 console.log('\n=== R 段：/api/estimates* REST（隔离实例） ===');
 closeDb();
 
-// 启动器按 native 模块 ABI 探测（打包.bat 会把 better-sqlite3 重编译成 Electron ABI，
+// 启动器按 native 模块 ABI 探测（构建打包.bat 会把 better-sqlite3 重编译成 Electron ABI，
 // 此时 process.execPath 直跑会 ERR_DLOPEN_FAILED）——见 isolated-server-launcher.mts
 const LAUNCHER = resolveServerLauncher(ROOT, join(ROOT, 'server', 'src', 'index.ts'));
 const child: ChildProcess = spawn(LAUNCHER.exec, LAUNCHER.tsx, {
@@ -392,18 +405,6 @@ child.stdout?.on('data', (b: Buffer) => serverLog.push(b.toString()));
 child.stderr?.on('data', (b: Buffer) => serverLog.push(b.toString()));
 
 const BASE = `http://127.0.0.1:${PORT}`;
-async function waitForServer(ms = 45_000): Promise<boolean> {
-  const t0 = Date.now();
-  while (Date.now() - t0 < ms) {
-    try {
-      const res = await fetch(`${BASE}/api/health`);
-      if (res.ok) return true;
-    } catch { /* 还没起来 */ }
-    await new Promise((r) => setTimeout(r, 400));
-  }
-  return false;
-}
-
 type Resp = { status: number; json: Record<string, any> | null };
 async function api(method: string, path: string, body?: unknown): Promise<Resp> {
   const res = await fetch(BASE + path, {
@@ -417,10 +418,15 @@ async function api(method: string, path: string, body?: unknown): Promise<Resp> 
 }
 const Q = `?projectId=${PID}`;
 
-if (!(await waitForServer())) {
-  console.log('  [FAIL] 隔离服务未就绪，R 段整体跳过');
-  console.log(serverLog.join('').slice(-1500));
-  fail += 1;
+const boot = await waitIsolatedServer({ base: BASE, budgetMs: 180_000, envName: 'T02037_BOOT_BUDGET' });
+ok('S0 隔离实例就绪（判据=GET /api/health 的 service=mtask-server，不是「端口能连」）', boot.up,
+  `${bootEvidence(boot)}｜子进程输出尾部 ${String(serverLog.join('')).slice(-600)}`);
+// 绿的时候也要能读到等了多久——否则「就绪窗口够不够」这件事只有红一轮才留下证据
+console.log(`  · 就绪读数：${bootEvidence(boot)}`);
+if (!boot.up) {
+  skipped('R-01…R-54 + H-01…H-04 实例内全部断言',
+    `前置件未就位：等待 ${boot.upMs}ms 已超预算 ${boot.budgetMs}ms（轮询 ${boot.attempts} 次，最后一次读数 ${boot.last}）`
+    + '——「环境没起来」不记成「判据失守」，但也不拿空读数凑绿');
 } else {
   // R1 路由挂载 + 静态路径优先
   const health = await api('GET', '/api/health');
@@ -657,8 +663,23 @@ if (!(await waitForServer())) {
     { 服务端: bad.json?.error, 门进程: fire(() => parseRuleRatio('1:5:1.6')) });
 }
 
-console.log(`\nPASS=${pass} FAIL=${fail}`);
+console.log(`\nPASS=${pass} FAIL=${fail} SKIP=${skip}`);
 child.kill();
-await new Promise((r) => setTimeout(r, 300));
-try { rmSync(DATA_DIR, { recursive: true, force: true }); } catch { /* Windows 句柄未放 */ }
-process.exit(fail === 0 ? 0 : 1);
+// Z1 kill 是异步的：轮询到端口真的没人应答为止（上限 15s），否则下一轮同端口起服务会被上一轮占着
+const tZ1 = Date.now();
+let portVacuum = false;
+while (Date.now() - tZ1 < 15_000) {
+  try { await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(400) }); } catch { portVacuum = true; break; }
+  await new Promise((r) => setTimeout(r, 200));
+}
+ok('Z1 端口已真空（隔离服务确实收口，不给下一轮留占端口残影）', portVacuum,
+  `耗时 ${Date.now() - tZ1}ms / 上限 15000ms`);
+// Z2 rmSync 在 Windows 上会删光子项却留空目录（sqlite 句柄晚于进程释放），轮询重试并把「真没了」做成判据
+let removed = false;
+for (let i = 0; i < 20; i++) {
+  try { rmSync(DATA_DIR, { recursive: true, force: true }); } catch { /* 句柄未放 */ }
+  if (!existsSync(DATA_DIR)) { removed = true; break; }
+  await new Promise((r) => setTimeout(r, 500));
+}
+ok('Z2 临时目录已删净（不靠人肉清残留）', removed, DATA_DIR);
+process.exit(fail > 0 ? 1 : (skip > 0 ? 2 : 0));
