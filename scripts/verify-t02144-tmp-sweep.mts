@@ -230,13 +230,16 @@ async function call(method: string, path: string, json?: unknown) {
   return { status: res.status, body };
 }
 /**
- * 门→隔离实例的每个请求都带 `Connection: close`（T02293 批㉘ 第四轮实测根因）。
- * A2-01 连着两轮红在「首条 SSE 零帧」，把 `e.cause` 打出来后才知道是 `ECONNRESET read ECONNRESET`：
- * undici 会复用 keep-alive 连接，而 Node 服务端 `keepAliveTimeout` 默认 5s——门在 X-02 建工具之后
- * 还要跑一整段 T 组（进程内直调 + 改 mtime + 清扫）与 A1 组，空闲远超 5s，服务端早已悄悄关掉这条连接，
- * 客户端下一次 POST 却照旧把它捡起来，于是「一个字节都没发出去」就被重置。慢开机轮必红、快开机轮不红，
- * 正是这条时序竞态的指纹（实测：boot 18s 轮 49/0；boot 173s/382s 轮 46/3）。
- * 不是产品缺陷（同一进程内后续同路由请求全部正常），是门的客户端姿势问题；`Connection: close` 不复用连接即根治。
+ * 门→隔离实例的每个请求都带 `Connection: close`（T02293 批㉘）。
+ * A2-01 连着两轮红在「首条 SSE 零帧」，把 `e.cause` 打出来后是 `ECONNRESET read ECONNRESET`；
+ * 指纹是「慢开机轮必红、快开机轮不红」（实测 boot 18s 轮 49/0；boot 173s/382s 轮 46/3），
+ * 同一进程内后续同路由请求全部正常，所以不是产品缺陷，是门这条连接姿势的问题。
+ * **归因诚实标注**：原本推测是「undici 复用服务端 keepAliveTimeout(默认 5s) 之后悄悄关掉的连接」，
+ * 但用最小夹具（/d/code/tmp/b28-keepalive-probe.mts：空闲远超 timeout 一次 + 卡关闭边界 12 次）实测**未复现**
+ * ——undici 对 FIN 会优雅重连，本机 12/12 没炸。故这里只把已证实的部分写下：
+ * 已证实 = 两轮红在传输层 ECONNRESET 且只与空闲时长相关；未证实 = 具体是哪一侧先关的连接。
+ * `Connection: close` 是让整族「复用连接上的时序红」无从发生的手段（消除而非证明），
+ * 用完即换下一条连接，代价是每请求一次握手——门内量级可忽略。
  */
 const NO_KEEPALIVE = { 'Content-Type': 'application/json', connection: 'close' };
 /** 上一次「门→实例」请求的时刻，用来把「空闲多久」写进 A2-01 证据（keep-alive 竞态的直接读数） */
