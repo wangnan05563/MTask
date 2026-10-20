@@ -68,6 +68,25 @@ const ok = (label: string, cond: boolean, extra?: unknown): void => {
 const esc = (s: string): string => s.replace(/[$()*+.?[\]\\^{|}]/g, '\\$&');
 const BIND_HEAD = /(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*readFileSync\s*\(/g;
 
+/**
+ * 批㉘ 补的第二条绑定通道（反模式 41：门越合规、审计越瞎）。
+ * T02293 改判把「读工作树」收成「读 HEAD」，各门于是改用**本文件内的小 helper**取数
+ * （`const B = headSrc('server/src/services/kickoffBuilder.ts')`、`const PKG_H = headSource('server/package.json') ?? ''`，
+ * 甚至套一层清洗 `const B_H = strip(headSource('…')) ?? ''`）。BIND_HEAD 只认 `readFileSync(` 直取，
+ * 于是这批门整体从审计视野里消失——HEAD 实测有 10+ 支门用这种形态。
+ * 这里按「行首 const/let + 行内出现取源码动作 + 行内第一条像仓库相对路径的字面量」补绑定；
+ * 路径认不出时 countHits 返回 -4（不可静态判定，进 W-01 比例），不硬猜成某个文件——宁可少审一条，
+ * 也不要把审错了当成审过了。
+ */
+const READ_FN = /\b(?:readFileSync|headSrc|headSource|headText|headTextAt|headShow|headBlob|gitShow|showHead|gitFile)\s*\(/;
+/** 「这支门有没有取源码动作」的入门判据（比 READ_FN 宽：也认内联 `git show HEAD:`） */
+const READ_ENTRY = /readFileSync|headSrc|headSource|headText|headShow|gitShow|showHead|git show HEAD|show HEAD:/;
+// 覆盖面含 `.bat/.ps1/.html/.py/.yml` 等非 JS 产物：T02293 的改判对象里有一批门钉的就是发布入口
+// （`verify-t02616-managed-node.mjs` 等读 .bat，其中还有 GBK 文件名的 `启动服务.bat`——路径字符类要收 CJK），
+// 只列 JS 系扩展名会让这些门整体落在审计盲区。
+const CJK = '\\u4e00-\\u9fff';
+const PATH_LIT = new RegExp(`['"\`]((?:[\\w.@\\-${CJK}]+/)*[\\w.@\\-${CJK}]+\\.(?:ts|tsx|mts|js|jsx|mjs|cjs|css|json|md|bat|ps1|cmd|html|py|ya?ml))['"\`]`);
+
 /** 取 readFileSync( … ) 的第一个实参（内层括号/引号按平衡扫描） */
 function balanced(s: string, open: number): string | null {
   let depth = 0;
@@ -155,10 +174,22 @@ function stringMask(line: string): boolean[] {
 
 /** 正则字面量只能出现在「期望一个值」的位置；出现在标识符/右括号之后那是除法 */
 const RE_ALLOWED_BEFORE = new Set(['(', '=', '!', '&', '|', '?', ':', ',', ';', '{', '[', '<', '>', '+', '-', '*', '%', '~', '^']);
+/**
+ * 关键字后面也是「期望一个值」的位置（批㉘ 补，反模式 42）。原写法只认单字符前邻，
+ * `return /readonly periodLabel: string;/.test(RP)` 这种「关键字 + 正则」被整条跳过，
+ * 扫描随后从**闭合斜杠**处重新起算，把 `.test(RP) && ` 中间的斜杠对当成正则——
+ * 抽出 `/.test(RP) && /` 这类跨锚点噪声，并让真锚点漏检（t02157:270 实测）。
+ */
+const RE_AFTER_KEYWORD = /^(?:return|typeof|instanceof|in|of|new|delete|void|case|do|else|yield|await)$/;
 function canStartRegex(line: string, p: number): boolean {
   let i = p - 1;
   while (i >= 0 && /\s/.test(line[i])) i -= 1;
   if (i < 0) return true;
+  let j = i;
+  while (j >= 0 && /[\w$]/.test(line[j])) j -= 1;
+  const word = line.slice(j + 1, i + 1);
+  // 前邻是标识符（且不是关键字）→ 那是除法/属性名，不是正则
+  if (word) return RE_AFTER_KEYWORD.test(word);
   return RE_ALLOWED_BEFORE.has(line[i]);
 }
 
@@ -186,7 +217,7 @@ function buildIndex(): Map<string, string[]> {
   const out = new Map<string, string[]>();
   const skipDirs = new Set(['node_modules', '.git', 'dist', 'build', '.workbuddy', 'coverage', 'vendor', 'out', 'release']);
   for (const rel of headTreeFiles()) {
-    if (!/\.(ts|tsx|js|jsx|md|css|json)$/.test(rel)) continue;
+    if (!/\.(ts|tsx|mts|js|jsx|mjs|cjs|md|css|json|bat|ps1|cmd|html|py|ya?ml)$/.test(rel)) continue;
     const segs = rel.split('/');
     if (segs.some((s) => skipDirs.has(s))) continue;
     const base = segs[segs.length - 1];
@@ -260,35 +291,105 @@ function collectAnchors(gateName: string, text: string): Anchor[] {
     if (!rel || rel.includes('$')) continue;
     binds.set(m[1], rel);
   }
+  // 第二条绑定通道：helper 取数形态（见 READ_FN 注释）。逐行判，行首必须是 const/let，
+  // 以免把门体里那些「夹具源码字符串」（缩进后带引号开头的假源码）误当绑定。
+  text.split('\n').forEach((line) => {
+    const bm = /^\s*(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=/.exec(line);
+    if (!bm || binds.has(bm[1]) || !READ_FN.test(line)) return;
+    const pm = PATH_LIT.exec(line);
+    if (pm) binds.set(bm[1], pm[1]);
+  });
   if (!binds.size) return out;
+  const byKey = new Map<string, Anchor>();
+  /** 锚点 key → 它被赋给的布尔变量名（反模式 43：禁词写成「先赋值、后取非」） */
+  const assignedTo = new Map<string, string>();
   text.split('\n').forEach((line, idx) => {
     const mask = stringMask(line);
     for (const [v, rel] of binds) {
       const vRe = new RegExp(`\\b${esc(v)}\\b`);
       if (!vRe.test(line)) continue;
-      const add = (a: Omit<Anchor, 'gate' | 'line' | 'hits' | 'lineText'>) => {
+      const add = (a: Omit<Anchor, 'gate' | 'line' | 'hits' | 'lineText'>, declName?: string) => {
         if (!a.body) return;
         const key = `${idx + 1}:${a.anchor}`;
         if (seen.has(key)) return;
         seen.add(key);
-        out.push({ gate: gateName, line: idx + 1, ...a, hits: countHits(a), lineText: line.trim().slice(0, 220) });
+        const pushed: Anchor = { gate: gateName, line: idx + 1, ...a, hits: countHits(a), lineText: line.trim().slice(0, 220) };
+        out.push(pushed);
+        byKey.set(key, pushed);
+        if (declName) assignedTo.set(key, declName);
       };
+      const PIPELINE = new RegExp(`${esc(v)}\\s*\\.\\s*(?:replace|replaceAll|split|slice|substring|indexOf|lastIndexOf|search|concat|padStart|padEnd)\\s*\\(\\s*$`);
+      /** head 里当前是否停在「当实参用的对象字面量」内部（ok/okPair 的第三个参数＝取证上下文） */
+      const inArgObject = (head: string, lineMask: boolean[]): boolean => {
+        let d = 0;
+        for (let i = head.length - 1; i >= 0; i -= 1) {
+          if (lineMask[i]) continue;
+          const c = head[i];
+          if (c === ')' || c === ']' || c === '}') d += 1;
+          else if (c === '(' || c === '[') { if (d > 0) d -= 1; }
+          else if (c === '{') {
+            if (d > 0) { d -= 1; continue; }
+            let k = i - 1;
+            while (k >= 0 && /\s/.test(head[k])) k -= 1;
+            // 只有「实参位的对象字面量」才是取证上下文；赋值位（`const x = { a: /re/.test(V) }`）
+            // 语义歧义（也可能是守卫集合），保守按判据收——审计宁可多抽不误删。
+            return k >= 0 && (head[k] === '(' || head[k] === ',');
+          }
+        }
+        return false;
+      };
+      /**
+       * 「这个位置上的字面量算不算判据」（批㉘ 补，三条分支共用同一谓词，不各写各的）：
+       *  - 证据字段不是判据：`{ hex: V.match(/re/g) }`、`取色分支命中: fn(V)` 只是把取证结果写进
+       *    上下文，红了的是别的判据，把它当锚点会凭空造出「恒假」；`key: /re/`（紧跟）与
+       *    `key: fn(/re/)`（套一层取证函数）两种形态都要认。
+       *  - 取证管线不是判据：`V.replace(/\\r\\n/g, '\\n')`、`V.split(...)` 只是把取来的源码归一形态，
+       *    把它当守卫锚点会抽出 `/\r\n/g` 这种与产品内容无关的行尾噪声（t02290/t02291 实测）。
+       * 歧义只留在「冒号」这一处：`a ? b : /re/.test(V)` 的 else 分支前邻也是标识符+冒号。
+       * 先用**括号深度**判它到底在不在取证对象里（反模式 44）——原来只看「行内有没有 `?`」，
+       * 而 t02288:137 的取证对象里带了个 `?? []`，于是那条 `旧值仍在: /re/.test(srcWs)` 被当成判据，
+       * 与真禁词锚点同形混进恒假清单。行内没进取证对象、又出现过 `?`，才按判据处理（宁可多抽一条噪声，
+       * 也不把真判据当证据字段——那是审计瞎）；管线那条不受此歧义影响：`V.replace(` 紧贴字面量，写法唯一。
+       */
+      const isGuardPosition = (head: string, lineMask: boolean[]): boolean => {
+        if (PIPELINE.test(head)) return false;
+        // 键名的字符类要收 CJK：本仓门的取证字段十有八九写成 `{ 旧值仍在: … }`，
+        // 用 `[\w$]` 认不出中文键名，取证字段就连同真判据一起进了恒假清单（批㉘ t02288:137 实测）
+        const colonKey = new RegExp(`[\\w$${CJK}]\\s*:\\s*(?:[\\w$.${CJK}]*\\(\\s*)?$`);
+        if (colonKey.test(head)) {
+          if (inArgObject(head, lineMask)) return false;
+          return head.includes('?');
+        }
+        return true;
+      };
+      // 「正则紧贴 .test(V) / .exec(V)」才是这条锚点属于 V 的凭据。原来只看 40 字符窗口里有没有出现变量名，
+      // 于是 `/A/.test(SSRC) && /B/.test(BSRC)` 这种链式条件里，第一条正则会因为窗口越过第二个变量而被
+      // **错误归到 BSRC 那份文件上**（t02101:193 实测：`/const noData = execDays === 0/` 本属于 SSRC=
+      // kickoffService.ts 且命中 1，被算到 kickoffBuilder.ts 上成 0 命中 → 假「恒假」）。
+      const TEST_ADJ = new RegExp(`^\\s*\\.\\s*(?:test|exec)\\s*\\(\\s*(?:[\\w$.]+\\(\\s*)?${esc(v)}\\b`);
+      /**
+       * 「这条判据的结果被赋给了谁」：禁词常写成 `const old = /re/.test(src); … !old`，
+       * 取非挂在中间变量上、字面量那行前邻没有 `!`（反模式 43，方向由收尾的间接取非道判）。
+       * 只认「整个赋值表达式就是这条判据」的写法：`const X =` 直接接字面量，或 `const X = V.test(/includes(/match(`。
+       */
+      const DECL_HEAD = /^\s*(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:(?:[A-Za-z_$][\w$.]*\s*\.\s*(?:test|includes|match|exec)\s*\()?)$/;
+      const declNameOf = (head: string): string | undefined => DECL_HEAD.exec(head)?.[1];
       let p = line.indexOf('/');
       while (p >= 0) {
         const lit = mask[p] || !canStartRegex(line, p) ? null : literal(line, p);
         if (lit) {
           const tail = line.slice(lit.end, lit.end + 40);
-          if (vRe.test(tail)) {
+          if (TEST_ADJ.test(tail)) {
             // 反向锚点三种写法都要认：`!/re/.test(V)` 前缀非、`/re/.test(V) === false` 后缀非、
             // `V.match(/re/) … length === 0` 计数为零。认漏一种就会把「断言某写法已消失」误判成「判据恒假」。
             const head = line.slice(0, p).trimEnd();
-            const isEvidence = /[\w$]\s*:\s*$/.test(head) && !head.endsWith('?:');
             const neg = head.endsWith('!')
               || /^\s*(===|==)\s*false\b/.test(tail.replace(/^\s*\.\s*test\(\s*[^)]*\)/, ''));
-            if (!isEvidence) {
+            if (isGuardPosition(head, mask)) {
+              // 「先赋值给变量、之后整体取非」也是禁词写法——变量名交给收尾的间接取非道去判方向
               add({
                 file: rel, kind: 're', body: lit.src, flags: lit.flags, anchor: `/${lit.src}/${lit.flags}`, neg,
-              });
+              }, declNameOf(head));
             }
           }
           p = line.indexOf('/', lit.end);
@@ -303,19 +404,46 @@ function collectAnchors(gateName: string, text: string): Anchor[] {
         const before = line.slice(0, m.index ?? 0);
         const after = line.slice((m.index ?? 0) + m[0].length + lit.src.length + lit.flags.length + 2, (m.index ?? 0) + m[0].length + 120);
         const negCount = /length\s*(===|==)\s*0\b|\)\s*\.\s*length\s*===\s*0/.test(after);
-        if (!/[\w$]\s*:\s*$/.test(before.trimEnd())) {
+        // 用「整条取数表达式」判位置（`{ hex: V.match(/re/g) }` 的冒号在函数名之前，只看 V 前面会漏）；
+        // m[0] 末尾含匹配用的 `/`，判位置时要去掉，否则表达式不再以 `(` 结尾、字段冒号认不出
+        if (isGuardPosition(line.slice(0, (m.index ?? 0) + m[0].length - 1), mask)) {
           add({
             file: rel, kind: 're', body: lit.src, flags: lit.flags, anchor: `/${lit.src}/${lit.flags}`,
             neg: /!\s*$/.test(before) || negCount,
-          });
+          }, declNameOf(line.slice(0, (m.index ?? 0) + m[0].length - 1)));
         }
       }
       // V.includes('str')——引号字符类用 \x27\x22\x60 写，避免反引号把模板串提前终止
       for (const m of line.matchAll(new RegExp(`${esc(v)}\\s*\\.\\s*includes\\(\\s*([\\x27\\x22\\x60])([^\\x27\\x22\\x60]*)\\1`, 'g'))) {
-        add({ file: rel, kind: 'str', body: m[3], flags: '', anchor: JSON.stringify(m[3]), neg: false });
+        // 与 match 分支同一口径：前面挂 `!` 的是「不得含」负锚，抽成正锚会把「删掉即绿」判成「删掉即红」
+        const headFull = line.slice(0, (m.index ?? 0) + m[0].length - 1);
+        const neg = /!\s*$/.test(line.slice(0, m.index ?? 0).trimEnd());
+        if (!isGuardPosition(headFull, mask)) continue;
+        add({ file: rel, kind: 'str', body: m[2], flags: '', anchor: JSON.stringify(m[2]), neg }, declNameOf(headFull));
       }
     }
   });
+  // 反模式 43（批㉘）：禁词的「取非」挂在中间变量上——`const oldCapAsCap = /=\\s*20000\\b/.test(srcWs);`
+  // 之后 `!oldCapAsCap`。字面量那行前邻没有 `!`，逐行判方向必然把它当正向守卫，于是「命中 0 处」
+  // （＝禁词确已消失，本是判据想要的好结果）被报成「判据恒假」。按整篇文本回看该变量的用法：
+  // **全部用法都是取非**才翻向；同篇里还正着用（`assert(x)`）的不翻（宁可留一条假恒假给人看，
+  // 也不把真失配静默掉）。t02288 W-A04 两条即此形态。
+  for (const [key, name] of assignedTo) {
+    const a = byKey.get(key);
+    if (!a || a.neg) continue;
+    let negUse = 0;
+    let otherUse = 0;
+    // 只取匹配点两侧各 12 字符的窗口判方向（整篇 slice 会把这一节变成 O(变量数 × 出现次数 × 文本长度)，
+    // 实测门体上千行时一轮审计从 6 分钟涨到 14 分钟）
+    for (const m of text.matchAll(new RegExp(`\\b${esc(name)}\\b`, 'g'))) {
+      const at = m.index ?? 0;
+      const before = text.slice(Math.max(0, at - 12), at);
+      const after = text.slice(at + name.length, at + name.length + 12);
+      if (/\b(?:const|let|var)\s+$/.test(before)) continue; // 声明位自身不算用法
+      if (/!\s*$/.test(before) || /^\s*(?:===|==)\s*false\b/.test(after)) negUse += 1; else otherUse += 1;
+    }
+    if (negUse > 0 && otherUse === 0) a.neg = true;
+  }
   return out;
 }
 
@@ -324,48 +452,142 @@ function collectAnchors(gateName: string, text: string): Anchor[] {
 // 行号，按行号登记会因他门改判而让「已登记」项漂成「新失配」，把跨单失配错误地算到本门头上；按正文签名则稳定。
 // 每条必须带裁定（W-05 要求非空），且裁定要写清「谁、为什么不修在这里」——审计只点名、不越界去改别人的门。
 // 这些都是**别的路径/批次**的锚点（不在本单可改的四支门内），逐条如实标注归属：
+// 批㉘ 删除过三条：
+// ① `verify-t02156-kickoff-brand.mts | server/package.json | /cpSync\('src\/services\/assets'…/`
+// ——该锚点已随 t02156 的改判退出门体（现在只在注释里被提及，判据改成了 `skipped()` 环境缺口），
+// 签名不再被抽出＝W-05 的僵尸基线，按判据删登记而不是留着让它变成「谁都不会来看一眼」的例外清单。
+// ②③ `verify-t02288-snapshot-cap.mts | server/src/services/WorkspaceService.ts` 的两条
+// （`/if \(dirs\.size >= SYMBOL_SNAPSHOT_MAX_DIRS\)/` 与 `/=\s*20000\b/`）——**登记的裁定原本是错的**：
+// 当时写成「t02288 的源码锚点与 HEAD 现状漂移，待该门改判批次收敛」，实测 HEAD 的 t02288 W-A04 是
+// 「禁词已消失」的正常绿判据，恒假是**本审计**把「取非挂在中间变量上的禁词」（反模式 43）与
+// 「中文键名的取证字段」（反模式 44）当成正向判据造成的。修抽取器后这两条签名自然退出恒假集，
+// 僵尸点名（W-05）如实报出——留着一张写着别人名字的例外清单，就是把审计器的瞎转嫁成他门的债。
 const KNOWN: Array<{ gate: string; file: string; anchor: string; verdict: string }> = [
   { gate: 'verify-t02099-kickoff-builder.mts', file: 'server/src/services/kickoffBuilder.ts',
     anchor: String.raw`/pptx\.defineLayout\(KICKOFF_LAYOUT_DEF_OTHER\)/`,
     verdict: 'okPair N-02 负对照演示锚点（故意引一个 HEAD 里不存在的符号来证明「字面锚点失配」红因可区分）——审计器无法区分负对照演示与正向守卫，非真失配，归属 t02099 批次' },
-  { gate: 'verify-t02156-kickoff-brand.mts', file: 'server/package.json',
-    anchor: String.raw`/cpSync\('src\/services\/assets','dist\/services\/assets'/`,
-    verdict: '并发批次（t02156，非本单可改文件）的构建脚本锚点与 HEAD 现状漂移，待该门改判批次收敛，归属 t02156' },
-  { gate: 'verify-t02288-snapshot-cap.mts', file: 'server/src/services/WorkspaceService.ts',
-    anchor: String.raw`/if \(dirs\.size >= SYMBOL_SNAPSHOT_MAX_DIRS\)/`,
-    verdict: '并发批次（t02288，非本单可改文件）的源码锚点与 HEAD 现状漂移，待该门改判批次收敛，归属 t02288' },
-  { gate: 'verify-t02288-snapshot-cap.mts', file: 'server/src/services/WorkspaceService.ts',
-    anchor: String.raw`/=\s*20000\b/`,
-    verdict: '并发批次（t02288，非本单可改文件）的旧帽值锚点与 HEAD 现状漂移，待该门改判批次收敛，归属 t02288' },
 ];
 const sig = (a: Pick<Anchor, 'gate' | 'file' | 'anchor'>): string => `${a.gate}|${a.file}|${a.anchor}`;
 const KNOWN_SIG = new Set(KNOWN.map((k) => `${k.gate}|${k.file}|${k.anchor}`));
 const REGISTERED: Record<string, string> = {}; // 保留：按 `门:行号` 的即时登记位（本轮无）
 
 // 门本体也从 HEAD 枚举读取（反模式 11）：并发会话正在改的门不影响本轮自证的确定性，可在任意时点复跑。
+// T02293 批㉘：枚举面从「只有 .mts」扩到全部 JS 系门体。原写法把 `.mjs/.js/.ts` 整族排除在外，
+// 而 `verify-t02616-managed-node.mjs`／`verify-t02617-guard-reference.mjs` 等确实有
+// `const X = readFileSync(...)` 形态的源码守卫——审计看不见它们，census 报出来的「残留门数」就是虚低。
 const gateFiles = headTreeFiles()
-  .filter((f) => f.startsWith('scripts/verify-') && f.endsWith('.mts'))
+  .filter((f) => f.startsWith('scripts/verify-') && /\.(?:mts|mjs|js|ts)$/.test(f))
   .map((f) => f.slice('scripts/'.length));
 const all: Anchor[] = [];
 const guardGates: string[] = [];
 for (const g of gateFiles) {
   const text = headText(`scripts/${g}`) ?? '';
-  if (!text.includes('readFileSync')) continue;
+  // 入门判据与绑定通道同源（批㉘）：原来写死 `text.includes('readFileSync')`，而 T02293 改判后的门改用
+  // 本文件内的 HEAD 取数 helper（t02099 全文不含 `readFileSync` 这个词）——于是这些门**连被枚举的资格都没有**，
+  // 「僵尸基线」的红其实是这里漏门。用 READ_ENTRY 而不是 READ_FN：还要认 `git show HEAD:` 内联取数。
+  if (!READ_ENTRY.test(text)) continue;
   const a = collectAnchors(g, text);
   if (a.length) { guardGates.push(g); all.push(...a); }
 }
 
 const unresolvable = all.filter((a) => a.hits === -4);
+// 审计盲区点名（留痕，不判成败）：门里有取源码动作、但抽取器一条锚点都认不出——多半是取数走了
+// 间接形态（helper 函数 `read(...)`、变量拼路径 `readFileSync(srcPath)`），静态判不出目标文件。
+// 不点名就会把「审计看不见」误读成「没有残留」（批㉗ 教训的另一个方向）。
+const INDIRECT_GATES = gateFiles.filter((g) => {
+  if (guardGates.includes(g)) return false;
+  const t = headText(`scripts/${g}`) ?? '';
+  return READ_ENTRY.test(t);
+});
 const anchorCountOf = (g: string): number => all.filter((a) => a.gate === g).length;
-// 审计器「不是空转」的牙齿：不是某个易变的具体门（并发批次会把它整个改判掉），而是**分布**——
-// 必须有足够多的门各自都抽得出 ≥3 条锚点。若抽取器退化（正则/字面串识别失效），这个数会塌到 0。
+// 「审计器自己不是空转」的证据（T02293 批㉘ 重做）。
+// 原写法拿 HEAD 生态数量当在位下限（≥15 门 / ≥100 锚点 / ≥10 门各≥3 锚点），但那三个数正是 T02293
+// 要往下压的量——每收口一支门，本门就为自己的进度红一次（本轮 HEAD 实测 11 门 / 79 锚点 / 9 深门，
+// W-01 与 W-08 双双转红，红的是改判成果而不是判据坏了）。在位性改由 W-09 的**内存夹具自证**承担，
+// 生态数量降级为事实留痕（写进标签供人看趋势，不参与成败）。
 const deepGates = guardGates.filter((g) => anchorCountOf(g) >= 3);
-// 下限按 HEAD 现状标定并留迁移余量：改判会让「带 readFileSync 守卫的门」与锚点总数逐步**下降**
-// （这是 T02293 的目标，不是缺陷），故这里取的是「审计器仍在工作」的下界，而非对生态数量的锁死。
-ok(`W-01 审计自身在位（实测枚举 ${guardGates.length} 门 / ${all.length} 锚点 / ${deepGates.length} 门各≥3 锚点，其中目标路径不可静态判定 ${unresolvable.length} 条；抽取退化时这三个计数会塌向 0，不许当成全绿）`,
-  guardGates.length >= 15 && all.length >= 100 && deepGates.length >= 10
-  && unresolvable.length <= all.length * 0.4,
-  { 门数: guardGates.length, 锚点数: all.length, '各≥3锚点的门数': deepGates.length, 路径不可判定: unresolvable.length });
+
+/**
+ * W-09 夹具自证：假门体 + 假产品文本全在内存里（零落盘、与 HEAD 数量无关）。
+ * 夹具门含 8 条守卫锚点：正向正则 / 正向字面串 / 前缀非反向锚 / 计数归零反向锚 /
+ * **helper 取数通道**的正向锚 / **取非挂在中间变量上的禁词**（反模式 43）/ 两条与取证同现行的正向锚。
+ * 另有 3 处**不该**产出锚点：一条行尾归一管线 + 两条 ok 的取证上下文对象字段（test 形态、match 形态）。
+ * 抽取器退化、把反向锚认成正向、把取证字段当判据、或第二条绑定通道没把 helper 变量认成取数面，
+ * 这一组都会当场塌——而 HEAD 上的门数怎么减少它都恒绿，这才是「审计器在位」的正确凭据。
+ */
+const FIXTURE_PRODUCT = [
+  'export const WIDGET_LIMIT = 42;',
+  'function renderWidget(el) {',
+  "  return el.setAttribute('role', 'img');",
+  '}',
+].join('\n');
+const FIXTURE_GATE = [
+  "const FP = readFileSync(join(ROOT, 'fixture-widget.ts'), 'utf8');",
+  // helper 取数形态：变量名不叫 readFileSync、外面还套了一层清洗函数
+  "const FP2 = stripComments(headSrc('fixture-widget.ts'));",
+  "ok('F-01 常量单一来源', /WIDGET_LIMIT\\s*=\\s*42/.test(FP));",
+  "ok('F-02 可访问属性接线', FP.includes('role'));",
+  "ok('F-03 旧写法已退役', !/var\\s+LIMIT\\b/.test(FP));",
+  "ok('F-04 旧标识符计数归零', FP.match(/\\blegacyLimit\\b/g)?.length === 0);",
+  "ok('F-05 helper 通道的锚点也进审计', /renderWidget\\s*\\(/.test(FP2));",
+  // 反模式 43 的夹具面（t02288 W-A04 同款写法）：禁词的取非不在字面量那行，而在中间变量上
+  'const legacyFlag = /\\blegacyToken\\b/.test(FP);',
+  "ok('F-06 旧符号禁词（间接取非）', FP.includes('role') && !legacyFlag);",
+  // 下面三行都**不该**产出守卫锚点：一条行尾归一管线 + 两条取证上下文对象字段（test 形态 / match 形态）。
+  // 抽取器把取证动作误当判据，就会凭空造出「恒假锚点」（t02198/t02288:137/t02290/t02291 实测的同款假阳性）。
+  'const normalized = FP.replace(/\\r\\n/g, "\\n");',
+  "ok('F-07 判据与取证同现', /WIDGET_LIMIT/.test(FP), { 旧写法命中: /\\blegacyOther\\b/.test(FP) });",
+  "ok('F-08 计数取证字段', /renderWidget/.test(FP), { 计数: FP.match(/legacyCountX/g)?.length });",
+].join('\n');
+// 夹具锚点不走真实文件解析（目标文件只存在于内存），求值口径改喂 FIXTURE_PRODUCT
+const fixAnchors = collectAnchors('verify-fixture-selfcheck.mts', FIXTURE_GATE)
+  .map((a) => ({ ...a, hits: hitsIn(FIXTURE_PRODUCT, a) }));
+const fixBy = (anchor: string) => fixAnchors.filter((a) => a.anchor === anchor);
+// F-01 与 F-07 的正向锚同现于两处（不同行＝不同 key），故夹具按「锚点正文」计数而非条数去重
+const FIX_EXPECT: Array<{ anchor: string; kind: 're' | 'str'; neg: boolean; hits: number; count: number }> = [
+  { anchor: String.raw`/WIDGET_LIMIT\s*=\s*42/`, kind: 're', neg: false, hits: 1, count: 1 },
+  { anchor: JSON.stringify('role'), kind: 'str', neg: false, hits: 1, count: 2 },
+  { anchor: String.raw`/var\s+LIMIT\b/`, kind: 're', neg: true, hits: 0, count: 1 },
+  { anchor: String.raw`/\blegacyLimit\b/g`, kind: 're', neg: true, hits: 0, count: 1 },
+  { anchor: String.raw`/renderWidget\s*\(/`, kind: 're', neg: false, hits: 1, count: 1 },
+  { anchor: String.raw`/\blegacyToken\b/`, kind: 're', neg: true, hits: 0, count: 1 },
+  { anchor: String.raw`/WIDGET_LIMIT/`, kind: 're', neg: false, hits: 1, count: 1 },
+  { anchor: String.raw`/renderWidget/`, kind: 're', neg: false, hits: 1, count: 1 },
+];
+const FIX_EXPECT_TOTAL = FIX_EXPECT.reduce((n, e) => n + e.count, 0);
+const fixtureBefore = { pass, fail };
+// 取证字段/管线一旦误收，正文里必然带这些标识符或行尾转义（夹具产品文本里没有它们）
+const FIX_FORBIDDEN = ['legacyOther', 'legacyCountX', '\\r'];
+const fixtureNoise = fixAnchors.filter((a) => FIX_FORBIDDEN.some((f) => a.body.includes(f)));
+ok(`W-09a 夹具抽取识别：${FIX_EXPECT.length} 种守卫锚点（共 ${FIX_EXPECT_TOTAL} 条，含 helper 取数通道与「取非挂变量」的禁词）全部认出、3 处非判据面（行尾归一管线 + 两条取证上下文字段）不误收（实测 ${fixAnchors.length} 条，逐条 kind/neg/命中数/目标文件与预期对齐）`,
+  fixAnchors.length === FIX_EXPECT_TOTAL && fixtureNoise.length === 0 && FIX_EXPECT.every((e) => {
+    const got = fixBy(e.anchor);
+    return got.length === e.count && got.every((a) => a.kind === e.kind && a.neg === e.neg && a.hits === e.hits && a.file === 'fixture-widget.ts');
+  }), { 实抽: fixAnchors.map((a) => `${a.anchor} kind=${a.kind} neg=${a.neg} hits=${a.hits} line=${a.line} file=${a.file}`), 误收非判据: fixtureNoise.map((a) => a.anchor) });
+const fixMutated = FIXTURE_PRODUCT.replace('export const WIDGET_LIMIT = 42;', 'export const WidgetLimitValue = 42;');
+const fixAfter = fixAnchors.map((a) => ({ ...a, hits: hitsIn(fixMutated, a) }));
+const fixNamed = zeroHitsOf(fixAfter);
+// 改名后被点名的条数＝夹具预期里「锚正文取自那个被改名的常量、且是正向锚」的条数（不手数）
+const FIX_MUTATED_NAMED = FIX_EXPECT
+  .filter((e) => !e.neg && e.anchor.includes('WIDGET_LIMIT'))
+  .reduce((n, e) => n + e.count, 0);
+ok('W-09b 夹具求值与点名：把写法等价改坏（常量改名）后，以常量名为锚的正向锚命中归 0，且恒假清单当场点名它们（不多不少、禁词与取证字段不进清单）——「0 命中即点名」这条判据自己咬得住',
+  fixMutated !== FIXTURE_PRODUCT && /WidgetLimitValue/.test(fixMutated)
+  && fixNamed.length === FIX_MUTATED_NAMED && fixNamed.every((a) => a.body.includes('WIDGET_LIMIT'))
+  && fixAfter.filter((a) => a.anchor === FIX_EXPECT[0].anchor).every((a) => a.hits === 0),
+  { 点名: fixNamed.map((a) => `${a.anchor}@${a.line}`), 应为: FIX_MUTATED_NAMED });
+const fixOld = `${FIXTURE_PRODUCT}\nvar LIMIT = 7;`;
+const fixRevive = fixAnchors.map((a) => ({ ...a, hits: hitsIn(fixOld, a) }));
+const FIX_NEG_TOTAL = FIX_EXPECT.filter((e) => e.neg).reduce((n, e) => n + e.count, 0);
+ok(`W-09c 反向锚识别方向正确：夹具里 ${FIX_NEG_TOTAL} 条禁词（前缀非／计数归零／取非挂变量三种写法各一）命中 0 却不进恒假清单（否则整批「断言某写法已消失」会被误报成判据坏了）；把旧写法插回后禁词命中数立刻 >0（门的禁词判据会转红）`,
+  zeroHitsOf(fixAnchors).length === 0 && fixAnchors.filter((a) => a.neg).length === FIX_NEG_TOTAL
+  && fixRevive.find((a) => a.anchor === FIX_EXPECT[2].anchor)?.hits === 1,
+  { 夹具恒假清单: zeroHitsOf(fixAnchors).map((a) => a.anchor), 实抽禁词: fixAnchors.filter((a) => a.neg).map((a) => a.anchor), 插回后命中: fixRevive.find((a) => a.anchor === FIX_EXPECT[2].anchor)?.hits });
+// 夹具组的绿数必须**增量**核对（不假设本组是门里第一批断言：以后在前面加判据也不会把这条变成恒真）
+const fixtureGreen = fail === fixtureBefore.fail && pass === fixtureBefore.pass + 3;
+ok(`W-01 审计枚举在位（实测 ${guardGates.length} 门 / ${all.length} 锚点 / ${deepGates.length} 门各≥3 锚点——这三个数是 HEAD 生态的**事实留痕**，随 T02293 改判下降属预期、不判成败）：门数与锚点数均 >0、目标路径不可静态判定占比 ≤ 40%，且 W-09 夹具自证三条全绿（在位性由夹具承担）`,
+  fixtureGreen && guardGates.length >= 1 && all.length >= 1 && unresolvable.length <= all.length * 0.4,
+  { 夹具组: fixtureGreen ? '全绿' : '有红（见 W-09a/b/c）', 门数: guardGates.length, 锚点数: all.length, 各: deepGates.length, 路径不可判定: unresolvable.length });
 
 const unreadable = all.filter((a) => a.hits === -2);
 ok('W-02 锚点目标文件全部读得到（目标文件不存在＝守卫早已空转）', unreadable.length === 0,
@@ -394,10 +616,14 @@ const hollowKnown = KNOWN.filter((k) => !k.verdict?.trim() || !k.anchor.trim() |
 const hollowReg = [...regKeys].filter((k) => !REGISTERED[k]?.trim());
 // 覆盖牙齿：基线要正好覆盖当前恒假项、不多登记已恢复的僵尸项——否则基线自己悄悄膨胀成新文本锚。
 const baselineCoversAll = zeroHits.every((a) => KNOWN_SIG.has(sig(a)) || regKeys.has(`${a.gate}:${a.line}`));
-const noStaleBaseline = [...KNOWN_SIG].every((s) => zeroHits.some((a) => sig(a) === s));
+// 僵尸基线必须**点名到 sig**（T02293 批㉘）：基线按 `门|文件|锚点` 签名登记，而他门改判会把锚点本身删掉
+// ——签名随之消失。原写法只输出一个 `僵尸基线:true`，读的人不知道是哪条该删，等于把棘轮的另一半做成哑判据。
+const zombie = [...KNOWN].filter((k) => !zeroHits.some((a) => `${k.gate}|${k.file}|${k.anchor}` === sig(a)));
+const noStaleBaseline = zombie.length === 0;
 ok('W-05 基线/登记项逐条带裁定且与当前恒假集互相覆盖（空壳＝重新静默；僵尸基线＝漏检真失配；每条须写清归属门，越界只点名不改他门）',
   hollowKnown.length === 0 && hollowReg.length === 0 && baselineCoversAll && noStaleBaseline,
-  { 空壳: hollowKnown.length, 即时登记空壳: hollowReg.slice(0, 5), 基线漏覆盖: !baselineCoversAll, 僵尸基线: !noStaleBaseline, 基线数: KNOWN_SIG.size });
+  { 空壳: hollowKnown.length, 即时登记空壳: hollowReg.slice(0, 5), 基线漏覆盖: !baselineCoversAll,
+    僵尸基线: zombie.map((k) => `${k.gate}|${k.file}|${k.anchor} ⟵ 裁定原文：${k.verdict}`), 基线数: KNOWN_SIG.size });
 // 反向锚点（断言「某种写法已经不存在」，如 builder 里零 hex 字面量、`.test(B) === false`）的识别
 // 是这套审计的命门：一旦识别失效，它们会整批被误报成恒假，或被当成正向锚点反过来掩盖真失配。
 const negTotal = all.filter((a) => a.neg).length;
@@ -425,9 +651,28 @@ for (const a of probeTargets) {
 }
 ok(`W-07 反向探针前提（实测 ${probeTargets.length} 条探针 / 覆盖 ${new Set(probeTargets.map((a) => a.gate)).size} 门）：改坏写法后锚点命中数归 0（若仍有残留＝抽取器求值口径与门里不一致）`,
   stillAlive.length === 0, { 残留: stillAlive.slice(0, 6), 探针数: probeTargets.length });
-ok('W-08 反向探针点名：命中 0 处的锚点必然被恒假清单收录（与 W-04 复用同一判据，不是另写一遍；覆盖门数/探针数为防「空探针集恒真」的牙齿下限）',
-  probeTargets.length >= 30 && new Set(probeTargets.map((a) => a.gate)).size >= 12 && mutatedMiss.length === 0,
-  { 漏点名: mutatedMiss, 探针数: probeTargets.length, 覆盖门数: new Set(probeTargets.map((a) => a.gate)).size });
+// W-08 原判据写死「探针 ≥30 条、覆盖 ≥12 门」——同反模式 39：把 HEAD 生态数量当在位下限，
+// 改判把带活锚点的门收口掉，探针数与覆盖门数就跟着掉，本门为自己的进度红（本轮实测 29 条／11 门即红）。
+// 改成**比例判据**：凡「有活锚点的门」都必须被探针覆盖到（漏一门即红），且每门至少探到一条；
+// 分母非空由 `gatesWithAliveAnchor.size > 0` 自证（防空分母恒真，反模式 20 同族）。
+const gatesWithAliveAnchor = new Set(all.filter((a) => !a.neg && a.hits > 0).map((a) => a.gate));
+const coveredGates = new Set(probeTargets.map((a) => a.gate));
+const uncovered = [...gatesWithAliveAnchor].filter((g) => !coveredGates.has(g));
+ok(`W-08 反向探针覆盖全部「有活锚点的门」并逐条点名：命中 0 处的锚点必然被恒假清单收录（与 W-04 复用同一判据，不是另写一遍）；覆盖按比例判——漏一门即红，不锁 HEAD 生态数量（实测有活锚点 ${gatesWithAliveAnchor.size} 门 / 已覆盖 ${coveredGates.size} 门 / 探针 ${probeTargets.length} 条）`,
+  gatesWithAliveAnchor.size > 0 && uncovered.length === 0 && probeTargets.length >= coveredGates.size && mutatedMiss.length === 0,
+  { 漏点名: mutatedMiss, 漏覆盖门: uncovered, 探针数: probeTargets.length, 覆盖门数: coveredGates.size, 有活锚点门数: gatesWithAliveAnchor.size });
+
+// —— census 留痕（不进成败判定，反模式 37 的留痕道）：批㉗ 的教训是「普查必须按 HEAD 实测定量报数，
+// 沿用上一批的定性条数会让残留清单虚高、下一批入口选错」。本门即定量口径的唯一出处。
+lines.push('');
+lines.push(`[census] 枚举 JS 系门体 ${gateFiles.length} 支，其中带可静态判定源码守卫的 ${guardGates.length} 支：`);
+lines.push(guardGates.map((g) => `  - ${g}：锚点 ${all.filter((a) => a.gate === g).length} 条（反向 ${all.filter((a) => a.gate === g && a.neg).length}）`).join('\n'));
+lines.push(`[census] 当前恒假锚点 ${zeroHits.length} 条（已登记基线 ${KNOWN_SIG.size} 条）：`);
+lines.push(zeroHits.length ? zeroHits.map((a) => `  - ${a.gate}:${a.line} [${a.file}] ${a.anchor}`).join('\n') : '  （无）');
+lines.push(`[census] 取了源码却一条静态可判定的守卫锚点都没抽出（本审计的盲区：helper 拼路径、判据只落在渲染产物/HTTP 响应上、或纯 prose 提到 readFileSync）的 verify-* 门 ${INDIRECT_GATES.length} 支：`);
+lines.push(INDIRECT_GATES.length
+  ? [...INDIRECT_GATES.slice(0, 60).map((g) => `  - ${g}`), ...(INDIRECT_GATES.length > 60 ? [`  （其余 ${INDIRECT_GATES.length - 60} 支从略）`] : [])].join('\n')
+  : '  （无）');
 
 writeGateResults(OUT_DIR, 't02205-gate-results.txt', [`T02205 源码守卫自证门：PASS=${pass} FAIL=${fail}`, ...lines].join('\n'));
 console.log(`T02205 源码守卫自证门：PASS=${pass} FAIL=${fail}`);

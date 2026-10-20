@@ -19,11 +19,21 @@
  * 真机走查（§10-1/2/13 三档视口、改值后条长跟变、筛选不改刻度、明暗双验、空项目不画图例）
  * 见 scripts/verify-t02041-ui.mjs。
  */
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { okPair } from './lib/anchor-pair.mts';
 
-const PANEL_SRC = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'web/src/components/EstimatePanel.tsx'), 'utf8');
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+/**
+ * 面板源码取自 **HEAD 已提交树**（T02293 批㉘）：原来 `readFileSync` 读工作树，并发会话留下的半成品
+ * 会让这条接线锚点凭空地判成失配（红因还被写成「等价重构」，等于把别人的 WIP 当本门的缺陷）。
+ * helper 命名沿用房内约定（`headSrc`），`verify-t02205` 的审计器才能认出这条字面锚并逐轮核对它。
+ */
+function headSrc(rel: string): string {
+  return execFileSync('git', ['show', `HEAD:${rel}`], { cwd: ROOT, encoding: 'utf8' });
+}
+const PANEL_SRC = headSrc('web/src/components/EstimatePanel.tsx');
 const T = '2026-10-11T00:00:00.000Z';
 const PID = 'geom-e6';
 
@@ -166,8 +176,21 @@ ok('C-02 无几何的行不产生任何图形节点；图例谓词两态都对�
   msBar === '' && P.whiskerLegendShown(0) === false && P.whiskerLegendShown(sugGeo.size) === true && sugGeo.size > 0,
   { msBar, 几何条数: sugGeo.size });
 // 规约第 3 条：这一条是「接线」事实，谓词本身真了还不够，面板得真的用它——留字面锚点配行为兜底。
-ok('C-02b 面板图例确实走 whiskerLegendShown（谓词红了这条也红，不是各写各的）',
-  PANEL_SRC.includes('whiskerLegendShown(whisker.size)') && P.whiskerLegendShown(0) === false, undefined);
+// 批㉘ 改判：`&&` 短路换成 okPair（红时能分出「功能失守」还是「等价重构换了写法」），取证面换 HEAD。
+okPair(ok, 'C-02b 面板图例确实走 whiskerLegendShown（行为腿：谓词两态；字面腿：面板真的调用它）',
+  () => P.whiskerLegendShown(0) === false && P.whiskerLegendShown(1) === true,
+  () => PANEL_SRC.includes('whiskerLegendShown(whisker.size)'),
+  () => ({ 谓词两态: [P.whiskerLegendShown(0), P.whiskerLegendShown(1)] }));
+{
+  // 判据 4（字面腿自己也得有牙）：把面板里那处调用换成等价写法后，同一条字面判据必须转假，
+  // 而行为腿照旧为真——这才证明 C-02b 的红会指对方向（锚点失配），而不是恒真摆设。
+  const legL = (src: string): boolean => src.includes('whiskerLegendShown(whisker.size)');
+  const rewired = PANEL_SRC.replace('whiskerLegendShown(whisker.size)', 'whiskerLegendShown(whiskerRows.size)');
+  ok('C-02c 反证：接线写法一换（谓词仍被用、变量名不同），C-02b 的字面腿必须转红、行为腿不受影响',
+    rewired !== PANEL_SRC && legL(PANEL_SRC) === true && legL(rewired) === false
+    && P.whiskerLegendShown(0) === false && P.whiskerLegendShown(1) === true,
+    { 命中原物: legL(PANEL_SRC), 命中改写后: legL(rewired) });
+}
 ok('C-03 归一基数来自「传进来的那一份全量明细行」：给全量得 16，给筛后子集就变小——所以面板必须传全量（真机 U-20 守接线）',
   geo.get('g-1')?.scaleMax === 16
   && P.whiskerGeometries(rows.filter((r) => r.planId !== 'g-2')).get('g-1')?.scaleMax === 6,
