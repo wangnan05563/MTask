@@ -14,6 +14,17 @@
  *   - 反模式 11：字面腿取证面一律 `git show HEAD:`（工作树可能躺着别的会话的过期产品文件）。
  *   - 临时根优先 D:（C: 常年 0 可用会假性 SQLITE_FULL）。
  *
+ * T02769 批㉜ 改判（中文串条件逐条三分判定 + 取数键拆配，实测读数见 N-07/N-08/N-09）：
+ *   - 判据 3 补齐：门自造 mock 的**路由键/计数键**、逐页装配 stage 的**取数键**、量词「人天 / 条」
+ *     原先都是「产品文案 + 行为计数」混在同一条件里，改措辞（等价重构）与功能失守都红且红因不可区分；
+ *     现主键改走文案无关面（JSON 字段契约、n/N 分式、<a:t> 数字抽取），中文面降级为字面腿/兜底，
+ *     N-08c 逐把键点名今日落在哪一面（落到兜底=形态漂移，不再让功能腿冒红）。
+ *   - 反模式 49 新形态：`done.warnings` 里根本没有「时间线/回落列表」字样（kickoffBuilder 的 note
+ *     不进 warnings），旧降级键是**恒假死通道**——被当豁免前置件等于豁免永不生效却无人点名。
+ *     降级判据改结构键（刚性表格 + 无轴/菱形），N-08a 用两份合成副本一正一反证两键的承重关系。
+ *   - 判据 2/4 的「被证明的豁免」：N-07 逐条登记每条中文串「是谁生成的」并 `git show HEAD:` 命中生成者；
+ *     N-07b 证明三条门自造夹具文案在启动会产品四面零命中，且带正对照（探针坏了不能算零命中）。
+ *
  * 用法（better-sqlite3 需匹配当前 Node ABI）：
  *   node node_modules/tsx/dist/cli.mjs scripts/verify-t02111-kickoff-acceptance.mts
  * 环境变量：`T02111_PORT`（默认随机 39500+rand300）。
@@ -220,6 +231,11 @@ const prdFields = prdFieldsOf(HEAD.prd);
 // =====================================================================
 let outlinePrompt = '';
 let wordingCalls = 0;
+// 批㉜（T02769，反模式 49）：mock 原先只拿产品提示词里的中文串「【风险条目」当路由键。
+// 产品改了措辞⇒措辞请求会被当大纲请求回答⇒wordingCalls=0，E-05 以「AI 措辞没进产物」的红出现，
+// 真因却是 mock 取数键失配。现双键路由（JSON 字段契约优先、中文措辞兜底）并把命中的是哪把键留证。
+let mockRouteBy = '未发起措辞请求';
+let mockCountSrc = '未发起措辞请求';
 const hallucinatedBullets = (section: string): string[] =>
   section === '项目需求' ? ['需求 999 条已梳理', '计划 999 条排期中'] : ['范围与交付物', '责任分工'];
 
@@ -255,14 +271,18 @@ const mock = createServer((req, res) => {
       sys = String((j.messages ?? []).filter((m: any) => m.role === 'system').map((m: any) => m.content).join('\n'));
       user = String((j.messages ?? []).filter((m: any) => m.role === 'user').map((m: any) => m.content).join('\n'));
     } catch { /* 坏请求直接回空 */ }
-    const isWording = /【风险条目/.test(user);
+    const jsonKey = /"risks"\s*:\s*\[/.test(user) && /"comms"\s*:\s*\[/.test(user) && !/"outline"/.test(user);
+    const cnKey = /【风险条目/.test(user);
+    const isWording = jsonKey || cnKey;
     let content: string;
     if (isWording) {
       wordingCalls += 1;
+      mockRouteBy = jsonKey ? 'JSON 字段契约（文案无关）' : '中文措辞兜底（漂移信号）';
       const want = /条数分别为 (\d+) 与 (\d+)。/.exec(user);
-      const nRisks = want ? +want[1] : 0;
-      const nComms = want ? +want[2] : 0;
       const items = [...user.matchAll(/^\d+\. 风险：(.+)$/gm)].map((m) => m[1].trim());
+      const nRisks = want ? +want[1] : items.length;
+      const nComms = want ? +want[2] : 0;
+      mockCountSrc = want ? '文案键「条数分别为 N 与 M」' : `兜底：枚举行计数 ${items.length} 条（文案键已失配）`;
       content = JSON.stringify({
         risks: Array.from({ length: nRisks }, (_, i) => ({
           item: (items[i] ?? `风险 ${i + 1}`).slice(0, 40),
@@ -416,7 +436,7 @@ const J = {
   d09: (e: Record<string, any>) => e.durWorkload?.source === 'duration'
     && e.durWorkload?.expected === FIXTURE.dur.sumDays,
   e04: (e: Record<string, any>) => !!e.warnings?.some((w: string) => w.includes('999') && w.includes(String(e.reqTruth)))
-    && String(e.reqPage ?? '').includes(`${e.reqTruth} 条`),
+    && (e.reqNums ?? []).includes(String(e.reqTruth)) && !(e.reqNums ?? []).includes('999'),
   e05: (e: Record<string, any>) => Number(e.wordingCalls) >= 1
     && !!e.allXml?.some((x: string) => x.includes('周会跟里程碑节点开')),
 };
@@ -524,10 +544,16 @@ if (!(await waitUp())) {
   const done = st.events.find((e) => e.event === 'done')?.data;
   EV.done = done;
   EV.outlinePrompt = outlinePrompt;
-  // stage 里除逐页装配还有取数/措辞等过程播报，只数「页 n/N 已装配」这一类
-  const pageStages = st.events.filter((e) => e.event === 'stage' && /页 \d+\/\d+ 已装配/.test(String(e.data?.msg ?? '')));
-  EV.pageStages = pageStages.length;
-  EV.stageCount = st.events.filter((e) => e.event === 'stage').length;
+  // stage 里除逐页装配还有取数/措辞等过程播报。批㉜（T02769，反模式 49）：取数键不能只认产品文案
+  // 「页 n/N 已装配」——文案一改，pageStages=0 会让 B-06 以「逐页装配失守」的红出现。
+  // 现按「文案锚优先、n/N 分式兜底」两把键取数，并把命中的是哪把键留证（N-08 探针据此分辨漂移与失守）。
+  const stageMsgs = st.events.filter((e) => e.event === 'stage').map((e) => String(e.data?.msg ?? ''));
+  const pageStagesText = stageMsgs.filter((m) => /页 \d+\/\d+ 已装配/.test(m)).length;
+  const pageStagesFrac = stageMsgs.filter((m) => /\d+\/\d+/.test(m)).length;
+  EV.pageStages = pageStagesText > 0 ? pageStagesText : pageStagesFrac;
+  EV.pageStageKey = pageStagesText > 0 ? '文案锚「页 n/N 已装配」'
+    : pageStagesFrac > 0 ? '分式兜底 n/N（文案锚已失配）' : '两键皆失配（stage 在场但无可计数形态）';
+  EV.stageCount = stageMsgs.length;
   ok('B-07 done 带 token + fileName + pageCount（pageCount ≥ 大纲页数）',
     !!done?.token && !!done?.fileName && Number(done?.pageCount ?? 0) >= edited.length, done);
   ok('B-08 fileName 通过下载白名单正则（生成侧与下载侧同源洗名，T02104）',
@@ -591,7 +617,21 @@ if (!(await waitUp())) {
   const msCount = truthCounts(PID).P4;
   const dateRange = one<{ s: string | null; e: string | null }>(
     "SELECT MIN(start_date) s, MAX(end_date) e FROM plan_tasks WHERE project_id = ? AND archived = 0 AND start_date IS NOT NULL AND start_date != '' AND end_date IS NOT NULL AND end_date != ''", PID);
-  const tlDegraded = ((done?.warnings ?? []) as string[]).some((w) => /时间线|回落列表/.test(w));
+  // 批㉜（T02769，反模式 49）：文本抽取器成对准备——「<a:t> 里的数字」是文案无关面，
+  // 「N 人天 / N 条」是产品措辞面。前者作行为腿，后者作字面腿，二者各自可红。
+  const aTexts = (xml: string) => [...xml.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map((m) => m[1]);
+  const numsIn = (xml: string) => aTexts(xml).flatMap((t) => t.match(/\d+(?:\.\d+)?/g) ?? []);
+  const tlHasTable = /<a:tbl>/.test(tlXml);
+  const tlHasAxisShapes = tlShapes.some((s) => s.prst === 'diamond') && tlShapes.some((s) => s.prst === 'line');
+  // 降级判据取结构面（回落列表版＝一张刚性表格且没有轴/菱形），不再取 done.warnings 的文案：
+  // 实测 done.warnings 里没有「时间线/回落列表」字样（kickoffBuilder 的 note 不进 warnings，见 kickoffBuilder.ts:877），
+  // 旧文案键是恒假的死通道——用它当豁免前置件等于「豁免永不生效却没人点名」（N-08 有正反照自证）。
+  const tlDegraded = tlHasTable && !tlHasAxisShapes;
+  const tlWarnChannelHits = ((done?.warnings ?? []) as string[]).filter((w) => /时间线|回落列表/.test(w)).length;
+  EV.tlDegradedStruct = tlDegraded;
+  EV.tlWarnChannelHits = tlWarnChannelHits;
+  EV.tlHasTable = tlHasTable;
+  EV.tlHasAxisShapes = tlHasAxisShapes;
   ok('D-01 时间线页落在大纲指定位次（页位与请求一致，不串页）',
     tlPos >= 0 && tlXml.includes(String(edited[tlPos]?.title ?? '').slice(0, 6)), { tlPos, title: edited[tlPos]?.title });
   ok('D-02 时间线页几何：rect 条 + diamond 菱形 + line 轴三类齐备（夹具日期/里程碑齐全，不应降级）',
@@ -609,10 +649,18 @@ if (!(await waitUp())) {
   const wlPos = posOf('workload');
   const wlXml = allXml[slidePosOf(wlPos)] ?? '';
   const wlNums = (wlXml.match(/(\d+(?:\.\d+)?)\s*人天/g) ?? []);
-  ok('D-05 工作量页存在且含人天数字', wlPos >= 0 && wlNums.length > 0, { page: slidePosOf(wlPos) + 1, nums: wlNums.slice(0, 4) });
-  ok('D-06 工作量页人天合计 = 服务端口径 expected（页面数字与取数同源，非 AI 措辞）',
-    wlNums.some((s) => parseFloat(s) === bundle.workload.manDays.expected),
-    { page: wlNums.slice(0, 4), expected: bundle.workload.manDays.expected, source: bundle.workload.source });
+  const wlAnyNums = numsIn(wlXml);
+  EV.wlNumsText = wlNums.length;
+  EV.wlNumsAny = wlAnyNums.length;
+  EV.wlUnitTexts = wlNums;
+  EV.wlAnyTexts = wlAnyNums;
+  ok('D-05 工作量页存在且页面有数字（行为腿：文案无关面——<a:t> 里确有数值，不认单位措辞）',
+    wlPos >= 0 && wlAnyNums.length > 0, { page: slidePosOf(wlPos) + 1, 文案无关数字: wlAnyNums.slice(0, 4), 带人天单位: wlNums.slice(0, 4) });
+  ok('D-05b 工作量页单位措辞锚点「人天」（字面腿：产品把「人天」改成别的量词只红这一行，不冒充工作量失守）',
+    wlNums.length > 0, { 带人天单位: wlNums.slice(0, 4), 生成者: 'server/src/services/kickoffBuilder.ts:604/284' });
+  ok('D-06 工作量页数字 = 服务端口径 expected（行为腿：文案无关面命中同值，页面数字与取数同源、非 AI 措辞）',
+    wlAnyNums.some((s) => parseFloat(s) === bundle.workload.manDays.expected),
+    { 文案无关数字: wlAnyNums.slice(0, 6), expected: bundle.workload.manDays.expected, source: bundle.workload.source });
   ok('D-07 页脚口径文案随真实数据源切换（估算引擎页脚出自 bundle，不是硬编码）',
     wlXml.includes(bundle.workload.footer.slice(0, 8)),
     { footer: bundle.workload.footer, source: bundle.workload.source });
@@ -636,9 +684,13 @@ if (!(await waitUp())) {
   const reqIdx = posOf('reqList');
   const reqPage = allXml[slidePosOf(reqIdx)] ?? '';
   EV.reqPage = reqPage;
-  ok('E-02 产物里需求条数 = 库内真实条数（AI 写的 999 不落地）',
-    reqIdx >= 0 && reqPage.includes(`${reqTruth} 条`) && !/999 条/.test(reqPage),
-    { truth: reqTruth, page: (reqPage.match(/\d+ 条/g) ?? []).slice(0, 6) });
+  const reqNums = numsIn(reqPage);
+  EV.reqNums = reqNums;
+  ok('E-02 产物里需求条数 = 库内真实条数（行为腿：文案无关面命中真值数字且不含被注入的 999）',
+    reqIdx >= 0 && reqNums.includes(String(reqTruth)) && !reqNums.includes('999'),
+    { truth: reqTruth, 页面数字: reqNums.slice(0, 8), 带量词: (reqPage.match(/\d+ 条/g) ?? []).slice(0, 6) });
+  ok('E-02b 需求页量词措辞锚点「N 条」（字面腿：产品把量词换成别的写法只红这一行，不冒充防幻觉失守）',
+    reqPage.includes(`${reqTruth} 条`), { truth: reqTruth, 生成者: 'server/src/services/kickoffBuilder.ts:573 TRUTH_TEXT 模板' });
   ok('E-03 全稿任何页都不出现被注入的 999',
     allXml.every((x) => !/>[^<]*999[^<]*<\/a:t>/.test(x)), allXml.map((x) => (x.match(/999/g) ?? []).length).filter((n) => n > 0));
   const warnList: string[] = done?.warnings ?? [];
@@ -751,7 +803,7 @@ console.log('\n=== N 组：负对照 ===');
   tamper((t) => { t.err25Status = 200; }, J.b03, 'B-03 25 页未拒绝后仍判真');
   tamper((t) => { t.slideCount += 1; }, J.b06, 'B-06 产物页数与 done 不一致后仍判真');
   tamper((t) => { t.durWorkload.source = 'estimate'; }, J.d09, 'D-09 工期口径变估算后仍判真');
-  tamper((t) => { t.reqPage = '没有真值'; }, J.e04, 'E-04 产物未落真数后仍判真');
+  tamper((t) => { t.reqNums = []; }, J.e04, 'E-04 产物未落真数后仍判真');
   tamper((t) => { t.wordingCalls = 0; }, J.e05, 'E-05 措辞段未跑后仍判真');
   ok('N-04 破坏形态反证：11 条行为腿各按一类「功能失守」副本（清空运行时/前端漂移/文件名丢项目/缺字段/多 downloadToken/未拒 25 页/页数不一致/口径错/产物无真数/措辞未跑）转假',
     broken.length === 0, { 未转假: broken });
@@ -773,6 +825,85 @@ console.log('\n=== N 组：负对照 ===');
   ok('N-06 判据 2 反证：样本夹具自证有牙——混入生产项目名/ID 的样本列表被判假（本门不再以生产数据集为对数对象）',
     sampleJudge(sample) === true && sampleJudge(tamperedSample) === false,
     { sample: sample.map((p) => p.name), tampered: tamperedSample.map((p) => p.name) });
+
+  // N-07 中文串条件三分登记表（T02769）：本门每一条「拿中文字面串当判据/取数键」的条件逐条登记
+  // 「这串文案是谁生成的」，并用 git show HEAD: 证明生成者真生成它。豁免必须是「被证明的豁免」。
+  const CAT: Array<{ 串: string; 类: string; 用处: string; 生成者: string }> = [
+    { 串: '不在 ', 类: '① 产品生成', 用处: 'B-03 字面腿（模板含 ${PAGE_MIN}~${PAGE_MAX} 插值，区间一改本腿该红并交人判定）', 生成者: 'server/src/services/kickoffService.ts' },
+    { 串: '已装配：', 类: '① 产品生成', 用处: 'B-06 字面腿 + 逐页 stage 取数键（现已加 n/N 分式兜底，见 N-08c）', 生成者: 'server/src/services/kickoffService.ts' },
+    { 串: '工期口径，非三点估算', 类: '① 产品生成', 用处: 'D-09 字面腿', 生成者: 'server/src/services/kickoffService.ts' },
+    { 串: '库内实为', 类: '① 产品生成', 用处: 'E-04 字面腿', 生成者: 'server/src/services/kickoffBuilder.ts' },
+    { 串: '风险措辞 AI 失败', 类: '① 产品生成', 用处: 'E-05 负向字面腿（KICKOFF_WORDING_FALLBACK_MSG）', 生成者: 'server/src/services/kickoffService.ts' },
+    { 串: ' 人天', 类: '① 产品生成', 用处: 'D-05b 量词字面腿（行为腿已改走文案无关数字面，见 N-09）', 生成者: 'server/src/services/kickoffBuilder.ts' },
+    { 串: ' 条', 类: '① 产品生成', 用处: 'E-02b 量词字面腿（行为腿改走 numsIn，J.e04 同步摘掉文案依赖）', 生成者: 'server/src/services/kickoffBuilder.ts' },
+    { 串: '【风险条目', 类: '① 产品生成', 用处: 'mock 路由兜底键（主键已改 JSON 字段契约）', 生成者: 'server/src/services/kickoffService.ts' },
+    { 串: '条数分别为 ', 类: '① 产品生成', 用处: 'mock 计数键（失配时落枚举行计数兜底，由 N-08c 点名）', 生成者: 'server/src/services/kickoffService.ts' },
+    { 串: '时间线回落列表版', 类: '① 产品生成（但不进 done.warnings）', 用处: '旧降级取数键——实测是死通道，已退役为证据面，降级判据改结构键（见 N-08a/b）', 生成者: 'server/src/services/kickoffBuilder.ts' },
+    { 串: '人工改过', 类: '② 门自造夹具', 用处: 'B-05 大纲可改标题（本门注入 product 只是原样渲染）', 生成者: 'scripts/verify-t02111-kickoff-acceptance.mts' },
+    { 串: '周会跟里程碑节点开', 类: '② 门自造夹具', 用处: 'J.e05 行为腿（mock 专属回复，产品面零命中见 N-07b）', 生成者: 'scripts/verify-t02111-kickoff-acceptance.mts' },
+    { 串: '会上确认影响面', 类: '② 门自造夹具', 用处: 'mock 措辞回复料', 生成者: 'scripts/verify-t02111-kickoff-acceptance.mts' },
+    { 串: '行为失守（功能未达成，与文案无关）', 类: '② 门禁库文案', 用处: 'N-05 契约判据', 生成者: 'scripts/lib/anchor-pair.mts' },
+    { 串: '字面锚点失配（行为在）', 类: '② 门禁库文案', 用处: 'N-05 契约判据', 生成者: 'scripts/lib/anchor-pair.mts' },
+  ];
+  const catMiss = CAT.filter((c) => !headSource(c.生成者).includes(c.串)).map((c) => `${c.类} | ${c.串} | 声称生成者 ${c.生成者}`);
+  ok(`N-07 ${CAT.length} 条中文串条件逐条命中其声称的生成者 HEAD 副本（逐条取证「这串文案是谁生成的」，不按计数猜；产品把整串搬走/删掉即点名失配）`,
+    catMiss.length === 0, { 未命中: catMiss, 登记: CAT.map((c) => `${c.类}:${c.串}`) });
+  const gateOnly = ['周会跟里程碑节点开', '会上确认影响面', '变更先登记进需求跟踪矩阵'];
+  const kickoffTree = ['server/src/services/kickoffService.ts', 'server/src/services/kickoffBuilder.ts', 'server/src/routes/plans.ts', 'web/src/pages/KickoffPptPanel.tsx'];
+  const grepProbe = (word: string, paths: string[]) => {
+    try {
+      return { ok: true, hits: execFileSync('git', ['--no-pager', 'grep', '-l', '-F', '-e', word, 'HEAD', '--', ...paths],
+        { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().split('\n').filter(Boolean) };
+    } catch (e) {
+      if ((e as { status?: number }).status === 1) return { ok: true, hits: [] as string[] };
+      return { ok: false, hits: [] as string[], err: String((e as Error).message).slice(0, 60) };
+    }
+  };
+  const catControl = grepProbe('已装配：', ['server']);
+  const catProbe = gateOnly.map((w) => ({ 串: w, ...grepProbe(w, kickoffTree) }));
+  ok('N-07b 门自造三条夹具文案在启动会产品四面零命中 + 探针道自证（正对照「已装配：」必须命中 server，否则「零命中」只是探针坏了——反模式 48 的负对照空转形态）',
+    catControl.ok && catControl.hits.length > 0 && catProbe.every((x) => x.ok && x.hits.length === 0),
+    { 正对照: { 命中: catControl.hits.slice(0, 3), 取数失败: (catControl as { err?: string }).err ?? null }, 门料产品面命中: catProbe.map((x) => ({ 串: x.串, 命中: x.hits.slice(0, 2), 取数失败: (x as { err?: string }).err ?? null })) });
+
+  // N-08 取数面探针：降级判据的结构键 vs 文案键（正反照），以及三把取数键今日落在哪一面。
+  const degProbe = (xml: string, prsts: string[], warns: string[]) => ({
+    结构键: /<a:tbl>/.test(xml) && !(prsts.includes('diamond') && prsts.includes('line')),
+    文案键: warns.some((w) => /时间线|回落列表/.test(w)),
+  });
+  const degFake = degProbe('<a:tbl><a:t>列表版</a:t></a:tbl>', [], ['要点为本页表格让位，未排入版面']);
+  const shapeFake = degProbe('<p:sp><a:prstGeom prst="diamond"/></p:sp><p:sp><a:prstGeom prst="line"/></p:sp>', ['diamond', 'line', 'rect'], ['要点为本页表格让位，未排入版面']);
+  ok('N-08a 降级判据自证：同一份「列表版」副本结构键判降级、文案键判不降级（done.warnings 里根本没有降级播报，文案键是恒假死通道）；形状版副本两键都判不降级（结构键不是恒真摆设）',
+    degFake.结构键 === true && degFake.文案键 === false && shapeFake.结构键 === false,
+    { 列表版副本: degFake, 形状版副本: shapeFake, 实测时间线: { hasTable: EV.tlHasTable, hasAxisShapes: EV.tlHasAxisShapes, degraded: EV.tlDegradedStruct, warnHits: EV.tlWarnChannelHits } });
+  ok('N-08b 实测降级面读数：夹具时间线走结构键确为未降级，且 done.warnings 文案键命中数恰为 0（旧键哪天开始命中，本行立刻点名形态变化，不让功能腿冒红）',
+    EV.tlDegradedStruct === false && EV.tlWarnChannelHits === 0 && EV.tlHasAxisShapes === true,
+    { 结构: { hasTable: EV.tlHasTable, hasAxisShapes: EV.tlHasAxisShapes, degraded: EV.tlDegradedStruct }, 文案键命中: EV.tlWarnChannelHits });
+  ok('N-08c 三把取数键今日落点：逐页装配=文案锚（分式兜底未启用）、mock 路由=JSON 字段契约（中文兜底未启用）、mock 计数=文案键（枚举行兜底未启用）；落到兜底面时本行点名「形态漂移」',
+    String(EV.pageStageKey) === '文案锚「页 n/N 已装配」' && mockRouteBy === 'JSON 字段契约（文案无关）' && mockCountSrc === '文案键「条数分别为 N 与 M」',
+    { 装配键: EV.pageStageKey, 路由键: mockRouteBy, 计数键: mockCountSrc, pageStages: EV.pageStages, stageCount: EV.stageCount, wordingCalls });
+
+  // N-09 拆配形状反证（判据 4）：批㉜ 新拆的量词腿族跑三变异，红因必须各归其位——
+  // 「只换措辞」若连行为腿一起红，说明两条腿读的是同一串文案（假拆配）。
+  const unitCase = (label: string, anchor: string, texts: string[], nums: string[], reworded: string[]) => {
+    const behavior = (n: string[]) => n.length > 0;
+    const literal = (t: string[]) => t.some((x) => x.includes(anchor));
+    return {
+      label, anchor,
+      双绿: behavior(nums) && literal(texts),
+      换文案: behavior(nums) && !literal(reworded),
+      破功能: !behavior([]) && literal(texts),
+      实测在场: literal(texts),
+    };
+  };
+  const unitCases = [
+    unitCase('D-05/D-05b', ' 人天', (EV.wlUnitTexts ?? []) as string[], (EV.wlAnyTexts ?? []) as string[],
+      ((EV.wlAnyTexts ?? []) as string[]).map((n) => `${n} person-days`)),
+    unitCase('E-02/E-02b', ' 条', [String(EV.reqPage ?? '')], (EV.reqNums ?? []) as string[],
+      [String(EV.reqPage ?? '').replace(/ 条/g, ' items')]),
+  ];
+  const unitBad = unitCases.filter((u) => !(u.双绿 && u.换文案 && u.破功能 && u.实测在场)).map((u) => u.label);
+  ok(`N-09 ${unitCases.length} 组新拆量词对的形状反证（双绿／只换措辞→行为腿仍绿而字面腿该红／只清空数字面→行为腿该红，且锚点在实测料里真在场）`,
+    unitBad.length === 0, { 不合格: unitBad, 读数: unitCases });
 }
 
 // =====================================================================
