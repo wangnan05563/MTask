@@ -11,6 +11,9 @@
  *      N-02 负对照把守卫改成无条件删，该断言必须变红，否则本门是绿的摆设。
  *
  * 用法：TMP=/d/code/tmp TEMP=/d/code/tmp node node_modules/tsx/dist/cli.mjs scripts/verify-t02144-tmp-sweep.mts
+ *   （必须走 tsx，不能用 `node --experimental-strip-types` 直跑：T 组会进程内 import 产品源码
+ *    `server/src/services/ReportService.ts`，而它内部是 `./db/connection` 这类无扩展名说明符，
+ *    node 的类型剥离不做补全解析，会在门体中途炸成 ERR_MODULE_NOT_FOUND、连 PASS 行都不产出。）
  * 环境变量：T02144_PORT（默认随机 39600+rand300）、T02144_SANDBOX（临时 DATA_DIR 根，默认仓库上两级 tmp/）。
  * 隔离纪律（skill 红线 8）：DATA_DIR/TMP 一律落 D:（C: 盘实测 0 可用会触发 SQLITE_FULL）；
  *   生产库只读副本、端口全临时、模型走进程内 mock（零真实配额）、收尾删目录（副本含明文密钥配置）。
@@ -31,6 +34,16 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeGateResults } from './lib/gate-results.mts';
+import { okPair } from './lib/anchor-pair.mts';
+
+/**
+ * 静态红线那条（S-11）的字面腿从 **HEAD 已提交树**取数（T02293 批㉘）：读工作树时，并发会话的半成品
+ * 会把「等价重构」的红因扣在本门头上。helper 命名沿用房内 `headSrc` 约定，`verify-t02205` 才认得出
+ * 这条锚点并逐轮核对。行为腿才是主判据，字面腿只在行为绿时兜底。
+ */
+function headSrc(rel: string): string {
+  return execFileSync('git', ['show', `HEAD:${rel}`], { cwd: ROOT, encoding: 'utf8' });
+}
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.T02144_PORT ?? 39_600 + Math.floor(Math.random() * 300));
@@ -129,6 +142,8 @@ ok('X-00 生产库只读副本已生成（本门零写生产库）', existsSync(
 
 let child: ChildProcess | null = null;
 let serverLog = '';
+/** 上一次 killBoot 的端口确认结果（负对照据此判断「health 应答来自副本还是旧实例」） */
+let lastKill: { freed: boolean; waitedMs: number } = { freed: true, waitedMs: 0 };
 /** 副本工作区与主仓各自的启动器（原生模块 ABI 探测按 root 走，两份缓存） */
 const LAUNCHERS = new Map<string, ReturnType<typeof resolveServerLauncher>>();
 function launcherFor(root: string) {
@@ -150,20 +165,58 @@ function boot(root: string = ROOT): ChildProcess {
   c.stderr?.on('data', (b: Buffer) => (serverLog += b.toString()));
   return c;
 }
-async function waitUp(ms = 120_000): Promise<boolean> {
+/**
+ * 等待隔离实例就绪。**开机预算 120s → 300s → 600s，并把实测耗时写进证据**（T02293 批㉘）：
+ * X-00 喂给实例的是生产库的**只读副本**（本轮实测 94MB），开机要走 req-status reconcile、
+ * derived-from 回填、自动备份一整套，本机有并发负载时实测 120~140s 才 listen——120s 的预算
+ * 把「起得慢」判成「起不来」，X-01 一红就连带 15 条行为判据全红（本轮即此形态，红的全是门、产品零改动）。
+ * 判据该问「实例是否就绪」，不该赌机器此刻多闲；真起不来时照旧红，且证据里有实测等待时长可用。
+ * 第二轮把预算再放宽到 600s 并改成可环境变量覆盖：本轮把本门与 `verify-t02205`（全程高 CPU 的
+ * 96 门枚举）并发跑，首次开机 300s 都没起来——门的预算要为「本机有别的工作在跑」留余量。
+ * 残余问题记入台账交下一批：boot 输入本应是门自造的夹具库（规约判据 2），拿生产副本当输入
+ * 会让本门耗时随生产数据增长继续漂。
+ */
+const BOOT_BUDGET_MS = Number(process.env.T02144_BOOT_BUDGET ?? 600_000);
+async function waitUp(ms = BOOT_BUDGET_MS): Promise<{ up: boolean; waitedMs: number }> {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
     try {
       const res = await fetch(`${BASE}/health`);
-      if (res.ok && (await res.json().catch(() => null))?.service === 'mtask-server') return true;
+      if (res.ok && (await res.json().catch(() => null))?.service === 'mtask-server') return { up: true, waitedMs: Date.now() - t0 };
     } catch { /* 还没起来 */ }
     await sleep(400);
   }
-  return false;
+  return { up: false, waitedMs: Date.now() - t0 };
 }
 async function killBoot(): Promise<void> {
-  child?.kill();
+  const c = child;
   child = null;
+  /**
+   * 按**进程树**杀，不是只杀句柄进程（T02293 批㉘ 第二轮）。`spawn(exec, [tsx/cli.mjs, entry])` 里
+   * tsx CLI 还会再拉起一个真正跑 server 的子进程：`child.kill()` 只终止父进程，孤儿子实例照样 listen、
+   * 照样在 startup 做一轮 `sweepReportTmp()`。它既会顶替新实例回答 health（负对照测错对象），
+   * 又会把负对照刚埋下的过期令牌删掉——本轮实测的 N-01「摘掉接线过期令牌仍被清」即此形态。
+   */
+  if (process.platform === 'win32' && c?.pid) {
+    try { execFileSync('taskkill', ['/PID', String(c.pid), '/T', '/F'], { stdio: 'ignore', timeout: 20_000 }); }
+    catch { c.kill(); }
+  } else c?.kill();
+  /**
+   * kill 之后**确认端口真的空了**再返回（T02293 批㉘ 第二轮补）。`kill()` 是异步的，Windows 上
+   * 被 kill 的实例可能仍在 listen；不确认就重启，下一次 `waitUp` 拿到的 health 应答可能来自
+   * **上一个进程**，负对照于是测错对象——本轮实测形态：N-01 在副本里摘掉启动清扫接线后
+   * 「过期令牌仍被清」判红，红因不是守卫没用，而是主仓那个接线完好的旧实例回答了 health，
+   * 打了补丁的副本实例根本没被访问过。这一条不修，N 组既能假红也能假绿。
+   */
+  const t0 = Date.now();
+  let freed = false;
+  while (Date.now() - t0 < 30_000) {
+    let alive = false;
+    try { alive = (await fetch(`${BASE}/health`)).ok; } catch { /* 端口已空 */ }
+    if (!alive) { freed = true; break; }
+    await sleep(500);
+  }
+  lastKill = { freed, waitedMs: Date.now() - t0 };
   await sleep(1_200); // 等句柄释放，Windows 上否则临时目录删不净
 }
 async function call(method: string, path: string, json?: unknown) {
@@ -185,15 +238,26 @@ async function download(token: string, fileName: string) {
 }
 /** 走 SSE；abortWhen 命中即在客户端断开（服务端的 close 守卫由此被触发） */
 async function streamGen(path: string, body: unknown, opts: { abortWhen?: (ev: { event: string; data: any }) => boolean } = {}): Promise<{
-  events: Array<{ event: string; data: any }>; aborted: boolean;
+  events: Array<{ event: string; data: any }>; aborted: boolean; status: number; contentType: string; failure: string;
 }> {
   const ac = new AbortController();
   const events: Array<{ event: string; data: any }> = [];
   let aborted = false;
+  let status = 0;
+  let contentType = '';
+  // 批㉘：原来 `catch {}` 把所有失败咽进同一口「events 空」的井——A2-01 红时既分不清「服务端在出第一帧
+  // 之前就炸了（非 SSE 应答）」还是「流被中断/解析不出帧」，红因不可辨（本轮实测首轮生成即此形态）。
+  let failure = '';
   try {
     const res = await fetch(BASE + path, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: ac.signal,
     });
+    status = res.status;
+    contentType = res.headers.get('content-type') ?? '';
+    if (!res.ok || !contentType.includes('event-stream')) {
+      failure = `HTTP ${status} content-type=${contentType || '(空)'} 响应体: ${(await res.text().catch(() => '')).slice(0, 400)}`;
+      return { events, aborted, status, contentType, failure };
+    }
     let raw = '';
     const reader = res.body!.getReader();
     const dec = new TextDecoder();
@@ -210,12 +274,16 @@ async function streamGen(path: string, body: unknown, opts: { abortWhen?: (ev: {
           data: (() => { try { return JSON.parse(/^data: (.*)$/m.exec(chunk)?.[1] ?? '{}'); } catch { return {}; } })(),
         };
         events.push(ev);
-        if (opts.abortWhen?.(ev)) { aborted = true; ac.abort(); return { events, aborted }; }
+        if (opts.abortWhen?.(ev)) { aborted = true; ac.abort(); return { events, aborted, status, contentType, failure }; }
         i = raw.indexOf('\n\n');
       }
     }
-  } catch { /* 客户端 abort：预期内 */ }
-  return { events, aborted };
+  } catch (e) {
+    const s = String(e);
+    // 客户端主动 abort 是预期内（N 组靠它验中止），不算失败
+    if (!aborted && !/abort/i.test(s)) failure = `读流出错: ${s}`;
+  }
+  return { events, aborted, status, contentType, failure };
 }
 
 /** 12 页标准稿（含风险页 + 沟通页，措辞段必然被调用） */
@@ -264,10 +332,16 @@ backdate(seedDirTok, 7);
 const seededBeforeBoot = ls().slice().sort();
 
 child = boot();
-if (!(await waitUp())) {
-  ok('X-01 隔离实例启动', false, serverLog.slice(-600));
+const boot1 = await waitUp();
+if (!boot1.up) {
+  ok('X-01 隔离实例启动', false, {
+    等待: `${boot1.waitedMs}ms（预算 ${Math.round(BOOT_BUDGET_MS / 1000)}s）`,
+    末段日志: serverLog.slice(-600),
+    日志字节: serverLog.length,
+    子进程: child ? { pid: child.pid, 已退出: child.exitCode !== null, 退出码: child.exitCode, 信号: child.signalCode } : '已回收',
+  });
 } else {
-  ok('X-01 隔离实例启动（boot1）', true);
+  ok(`X-01 隔离实例启动（boot1，实测就绪耗时 ${Math.round(boot1.waitedMs / 1000)}s；预算 ${Math.round(BOOT_BUDGET_MS / 1000)}s，起得慢不等于起不来）`, true);
   ok('A1-00 埋点就位：boot 前 tmp 里确有 4 类道具（过期令牌/未过期令牌/非令牌文件/UUID 命名的目录）',
     seededBeforeBoot.length === 4, seededBeforeBoot);
   okB('staleSweptAtBoot', 'A1-01 重启即清过期令牌（7h > 6h TTL 的令牌文件开机被回收）', !has(seedStale), ls());
@@ -326,11 +400,19 @@ if (!(await waitUp())) {
   // 改钉行为：done 送达 + 页数不少于大纲条目数（少一页就是真丢内容，仍会红）。
   ok('A2-01 正常生成链路通（done 送达，且产出不少于大纲条目数——时间线页按阶段展开成多页属正常）',
     !!done1 && Number(done1.data?.pageCount ?? 0) >= outline.length,
-    { events: gen1.events.map((e) => e.event).join(','), pageCount: done1?.data?.pageCount, 大纲条数: outline.length });
-  const dl1 = done1 ? await download(String(done1.data.token), String(done1.data.fileName)) : null;
+    {
+      events: gen1.events.map((e) => e.event).join(','), pageCount: done1?.data?.pageCount, 大纲条数: outline.length,
+      // 批㉘：红因可读性——零帧时把 HTTP 状态/content-type/失败面一起打出来，不再只留一个空 events 串
+      应答: `HTTP ${gen1.status} ${gen1.contentType || '(无 content-type)'}`, 失败面: gen1.failure || '(无)',
+    });
+  const tok1 = done1 ? String(done1.data?.token ?? '') : '';
+  const dl1 = tok1 ? await download(tok1, String(done1?.data?.fileName ?? '')) : null;
+  // 批㉘：A2-02 原来在 A2-01 已红（done1 不存在 → tok1 空）时仍去 has('')，而
+  // existsSync(join(TMP_DIR,'')) 判的是目录本身，恒真——把上一断言的红，误报成本断言的「残留:true」。
+  // 改钉「拿到令牌才算这一腿成立」：无令牌时如实标 skipped 并指回 A2-01，不与真残留混成一类红。
   okB('downloadDeletes', 'A2-02 正常下载即删（单上「生成后正常下载 → 仍即时删除」不回归）',
-    dl1?.status === 200 && dl1.buf.subarray(0, 2).toString() === 'PK' && dl1.buf.length > 20_000 && !has(String(done1?.data.token)),
-    { status: dl1?.status, bytes: dl1?.buf.length, 残留: has(String(done1?.data.token ?? '')) });
+    !!tok1 && dl1?.status === 200 && dl1.buf.subarray(0, 2).toString() === 'PK' && dl1.buf.length > 20_000 && !has(tok1),
+    { status: dl1?.status, bytes: dl1?.buf.length, 令牌: tok1 || '(A2-01 未产出 done，本腿无对象)', 残留: tok1 ? has(tok1) : false });
 
   const gen2 = await streamGen('/plans/kickoff-ppt-stream', body, { abortWhen: (e) => e.event === 'done' });
   const done2 = gen2.events.find((e) => e.event === 'done');
@@ -398,7 +480,7 @@ if (!(await waitUp())) {
   backdate(abandoned, 7); // 代表「用户放了 7 小时没下载」（TTL=6h）
   serverLog = '';
   child = boot();
-  const up2 = await waitUp();
+  const { up: up2 } = await waitUp();
   okB('a3SweptAbandoned', 'A3-01 用户放弃的真实导出文件在重启后被回收（单上「等待/重启服务 → tmp/ 为空」用真产物复现）',
     up2 && stillThere && !has(abandoned), { 重启前有: stillThere, 重启后在: has(abandoned), tmp: ls() });
   ok('A3-02 tmp 目录收口干净（无任何令牌残留）', up2 && tokens().length === 0, ls());
@@ -470,10 +552,14 @@ function patchIn(root: string, rel: string, find: RegExp, to: (m: RegExpExecArra
     if (!guard) throw new Error('N-01 接线锚点未命中：副本里找不到「启动时调用清扫定时器」这一行');
     try {
       serverLog = '';
+      // 记 boot 之前的端口确认：端口没空就 boot，health 可能由**上一个实例**应答，
+      // 那这条负对照测的就不是副本里摘了接线的进程（上轮实测即此形态）。
+      const portClearBeforeBoot = lastKill.freed;
       child = boot(NEG_ROOT);
-      const up = await waitUp();
+      const { up } = await waitUp();
       okB('nWiringControl', 'N-01 负对照：在副本里摘掉启动清扫接线后，过期令牌不再被清（A1-01 不是绿的摆设）',
-        up && has(nFile), { 起来了: up, 仍在: has(nFile), 摘除的接线: guard.hit });
+        up && portClearBeforeBoot && has(nFile),
+        { 起来了: up, 仍在: has(nFile), 摘除的接线: guard.hit, 启动前端口已空: portClearBeforeBoot });
       await killBoot();
     } finally {
       guard.restore();
@@ -487,6 +573,7 @@ function patchIn(root: string, rel: string, find: RegExp, to: (m: RegExpExecArra
       () => 'if (issuedToken) discardReport(issuedToken);');
     if (!guard2) throw new Error('N-03 守卫锚点未命中：副本里找不到「未送达才回收令牌」这条守卫');
     try {
+      const n3PortClear = lastKill.freed;
       const mockTool = await (async () => { child = boot(NEG_ROOT); await waitUp(); return call('POST', '/aitools', {
         name: 't02144-mock3', type: 'openai-compatible', endpoint: `http://127.0.0.1:${MOCK_PORT}`,
         apiKey: 'mock-key', model: 'mock-wording', timeoutMs: 20_000,
@@ -498,7 +585,7 @@ function patchIn(root: string, rel: string, find: RegExp, to: (m: RegExpExecArra
       const t3 = String(g.events.find((e) => e.event === 'done')?.data.token ?? '');
       const r3 = t3 ? await download(t3, 'x.pptx') : null;
       okB('nDoneSentControl', 'N-03 负对照：无条件删令「done 已送达后重试下载」失败（A2-04 的语义边界确有守卫价值）',
-        !!t3 && r3?.status !== 200, { token: t3, status: r3?.status, 文件在: has(t3) });
+        n3PortClear && !!t3 && r3?.status !== 200, { token: t3, status: r3?.status, 文件在: has(t3), 启动前端口已空: n3PortClear });
       await killBoot();
     } finally {
       guard2.restore();
@@ -524,6 +611,8 @@ function patchIn(root: string, rel: string, find: RegExp, to: (m: RegExpExecArra
 // 每条都写清「行为腿是哪几条」：重构改了函数名/文件位置不影响这里，机制断了才红。
 // 唯一保留的字面锚点是 S-11（定时器 unref）：它没有运行期可观测面（监听器本身就让 loop 活着），
 // 属规约第 3 条说的静态红线，按规约必须配同义行为腿（S-06），行为腿红 ⇒ S-11 记红。
+// 批㉘：S-11 写成 okPair（红因分「行为失守 / 锚点失配」两种落账）、取数面换 `git show HEAD:`（不读并发工作树），
+// 并加 S-11b 反证给字面腿配牙——N-01 摘接线时 S-11 应红在行为腿上。
 // =====================================================================
 {
   ok('S-01 回收链路三端都实测到位：可下载（A2-02）、开机回收过期（A1-01）、中止当场回收（A2-05）',
@@ -546,10 +635,20 @@ function patchIn(root: string, rel: string, find: RegExp, to: (m: RegExpExecArra
     BEH.kickoffAbortClean, BEH);
   ok('S-10 清扫可观测：日志写明回收数量（孤儿增长这事得能被看见）', BEH.sweepLoggedBoot1, BEH);
   {
-    const RS = readFileSync(join(ROOT, 'server', 'src', 'services', 'ReportService.ts'), 'utf8');
-    const unrefAnchored = /unref\?\.\(\)/.test(RS) || /unref\(\)/.test(RS);
-    ok('S-11 静态红线（规约第 3 条：无运行期可观测面才允许钉源码，且必须服从行为腿 S-06）：清扫定时器 unref，不拖住进程退出',
-      BEH.staleSweptAtBoot && unrefAnchored, { 行为腿S06: BEH.staleSweptAtBoot, 源码锚点: unrefAnchored });
+    const RSRC = headSrc('server/src/services/ReportService.ts');
+    okPair(ok, 'S-11 静态红线（规约第 3 条：无运行期可观测面才允许钉源码，且必须服从行为腿 S-06）：清扫定时器 unref，不拖住进程退出',
+      () => BEH.staleSweptAtBoot === true,
+      () => /unref\?\.\(\)/.test(RSRC) || /unref\(\)/.test(RSRC),
+      () => ({ 行为腿S06: BEH.staleSweptAtBoot, 取数面: 'git show HEAD:server/src/services/ReportService.ts' }));
+    // 判据 4（字面腿自己也得有牙）：把 unref 写法换掉，同一条字面判据必须转假——S-11 不是恒真摆设。
+    // 变异面必须覆盖**全部**出现处：ReportService 里有两枚定时器（清扫 + 空闲回收），只摘第一处
+    // 会让第二处把字面腿照旧撑成真，那是「反证没落地」而不是「判据有牙」（批㉘ 首轮实测即此红）。
+    const legL = (src: string): boolean => /unref\?\.\(\)/.test(src) || /unref\(\)/.test(src);
+    const unrefHits = (RSRC.match(/unref\?\.\(\)|unref\(\)/g) ?? []).length;
+    const mutated = RSRC.replace(/unref\?\.\(\)/g, 'unref && void 0').replace(/unref\(\)/g, 'unref && void 0');
+    ok('S-11b 反证：unref 写法全部摘掉后，S-11 的字面腿必须转红（原物为真、改写串确实不同、出现次数如实报出）',
+      mutated !== RSRC && unrefHits >= 1 && legL(RSRC) === true && legL(mutated) === false,
+      { unref出现次数: unrefHits, 命中原物: legL(RSRC), 命中改写后: legL(mutated) });
   }
   ok('S-12 有牙证明：两条反证都真的把行为打断过（N-01 摘接线后过期令牌活下来、N-03 无条件删后重试下载失败），'
     + '且两处源码逐字节还原——上面 S-01~S-11 不是恒绿摆设',
