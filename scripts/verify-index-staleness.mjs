@@ -14,6 +14,8 @@
  *   W  工作树 blob 与索引、HEAD 三方互异 → 并发混装，需人工判定（只点名不判红，避免替他人做决定）
  *   F  索引 blob 在该路径的已提交版本链里查无此版 → 异源/前向态（多半是他人未提交的暂存工作）：
  *     按索引提交不会**回退**已落地内容，所以不判红、也不计入规模。
+ *   N  索引里有、HEAD 里没有的路径（他人新增并已暂存） → 不是陈旧、不判红，但必须点名：裸 `git commit`
+ *     会把这些别人的新文件一起带进本次提交（本轮实测本机为 0 条，用 `--diff-filter=A` 复核过）。
  *   ⚠ 本轮实测自抓的口径缺陷：初版把「索引 blob ≠ HEAD blob」一律塞进 S 判红——但 `索引 ≠ HEAD`
  *     有两种危害相反的形态：索引是 HEAD 的**更旧**版本（一提交就回退已落地工作，真红）与索引是
  *     HEAD「之后」/异源的第三态（他人未提交的暂存工作，一提交正好帮它落地，不该红）。同判红 ⇒
@@ -47,15 +49,17 @@
  *
  * 用法：
  *   node scripts/verify-index-staleness.mjs            # 扫当前仓库索引（只读，A-05 自证字节未变）
- *   node scripts/verify-index-staleness.mjs --selftest # 变异负对照：临时索引造 D/S/F 三态 + 规模两端，必须当场点名
+ *   node scripts/verify-index-staleness.mjs --selftest # 变异负对照：临时索引造 D/S/F/N 四态 + 规模边界，必须当场点名
  *   INDEX_STALE_MAX_DELS=500 node scripts/verify-index-staleness.mjs
- * 实测读数（2026-10-20 本机，方向取证版）：`--selftest` 连跑两轮均 **10 PASS / 0 FAIL**（首跑曾 7/1——
+ * 实测读数（2026-10-20 本机，方向取证版）：`--selftest` 连跑两轮均 **12 PASS / 0 FAIL**（首跑曾 7/1——
  * 夹具误用打印器取数导致半截抛错，靠 ST-AB 判红，见规约 52/54；第二跑 9/0 后把靶子换成他人正在改的
- * 文件又变 7/2——夹具前置条件不固定，见规约 55，现由 ST-00c 钉住）；正常模式 3 PASS / 3 FAIL：
- * D 9 路径（含本守卫自己这个文件与 364 行的 `verify-t02630-excluded-parity.mjs`，即共享索引把已入库的
- * 守卫整文件摘掉，门当场点名了自己）、S 63 路径（全部带「落后 N 版」取证）、F 0、W 10、回退风险规模
- * 17850 行 vs 阀值 200（`diff --cached HEAD` 总量 19496；S/W 计数会随并发会话抖动，本轮 63/10，
- * 上一轮 64/9）。红是事实不是门坏；本守卫不代做收口，只点名给选项。
+ * 文件又变 7/2——夹具前置条件不固定，见规约 55，现由 ST-00c 钉住）。新增的 N 形态腿做过反证：
+ * 把 `forms.N` 的收集注释掉再跑 ⇒ 11 PASS / 1 FAIL（ST-07 红、exit 1），改回即复绿——这条腿有牙。
+ * 正常模式 3 PASS / 3 FAIL：D 9 路径（含本守卫自己这个文件与 364 行的 `verify-t02630-excluded-parity.mjs`，
+ * 即共享索引把已入库的守卫整文件摘掉，门当场点名了自己）、S 63 路径（全部带「落后 N 版」取证）、
+ * F 0、W 10、N 0（本机当前索引里没有「他人新增已暂存」的路径，`--diff-filter=A` 复核为空）、
+ * 回退风险规模 17984 行 vs 阀值 200（`diff --cached HEAD` 总量 19632；这几个数随并发会话每次提交抖动，
+ * 前一分钟实测为 17850/19496，量级稳定在 1.8 万行）。红是事实不是门坏；本守卫不代做收口，只点名给选项。
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -115,11 +119,14 @@ function scanIndex(env = {}) {
     idx.set(e.path, e.blob); // 同路径多 stage（冲突态）取最后一条，冲突数另行点名
   }
   const conflictStages = indexLines.filter((l) => { const e = parseIndexLine(l); return e && e.stage > 0; }).length;
-  const forms = { D: [], S: [], F: [], W: [] };
+  const forms = { D: [], S: [], F: [], W: [], N: [] };
   // 解析器不认的行数如实带出去（由调用方判红）：绝不能把它当成「索引里没有这条」继续往下算——
   // 那会把整片健康路径误报成 D 形态，红因与真实风险无关（实测：一次正则写错就造成 610/610 误报）。
   if (unparsed > 0) return { forms, conflictStages, ins: 0, dels: 0, riskDels: 0, classified: 0, headCount: headPaths.length, idxCount: idx.size, unparsed, sample: indexLines.find((l) => !parseIndexLine(l)) ?? '' };
   let classified = 0;
+  // N 形态：索引里有、HEAD 里没有的路径（他人新增并已暂存的文件）。它不是「陈旧」，但一次裸
+  // `git commit` 会把这些别人的新文件一起带进我的提交——不点名就成了隐性裹挟面。只出声不判红。
+  for (const [rel, blob] of idx) if (!head.has(rel)) forms.N.push({ rel, indexBlob: blob, lines: 0 });
   for (const rel of headPaths) {
     const headBlob = head.get(rel);
     const indexBlob = idx.get(rel);
@@ -214,7 +221,10 @@ function headList(env = {}) {
 const scaleBreached = (r, limit) => r.riskDels > limit;
 
 const topMovers = (f) => [...f].sort((a, b) => (b.lines || 0) - (a.lines || 0)).slice(0, 12)
-  .map((x) => `${x.rel}（HEAD ${x.lines} 行${x.depth >= 0 ? `，落后 ${x.depth} 版` : ''}${x.indexBlob ? `，索引 blob ${x.indexBlob.slice(0, 8)} ≠ HEAD ${x.headBlob.slice(0, 8)}` : '，索引无此路径'}）`);
+  .map((x) => `${x.rel}（HEAD ${x.lines || 0} 行${x.depth >= 0 ? `，落后 ${x.depth} 版` : ''}`
+    + `${x.indexBlob && x.headBlob ? `，索引 blob ${x.indexBlob.slice(0, 8)} ≠ HEAD ${x.headBlob.slice(0, 8)}` : ''}`
+    + `${x.indexBlob && !x.headBlob ? `，索引 blob ${x.indexBlob.slice(0, 8)}，HEAD 无此路径` : ''}`
+    + `${!x.indexBlob ? '，索引无此路径' : ''}）`);
 
 function report(r) {
   console.log(`  索引三方比对：HEAD ${r.headCount} 路径 / 索引 ${r.idxCount} 路径 / 冲突态 ${r.conflictStages} / 方向取证 ${r.classified} 路径`);
@@ -225,6 +235,7 @@ function report(r) {
     ['S', '索引存 HEAD 的旧版本（按索引提交=文件回退，已取证落后版本数）'],
     ['F', '异源/前向态（他人未提交的暂存工作；按索引提交不会回退已落地内容 ⇒ 不判红）'],
     ['W', '三方互异（并发混装，只点名不判红）'],
+    ['N', '索引有、HEAD 无（他人新增并已暂存的文件 ⇒ 裸 `git commit` 会把这些新文件一起带进本次提交；只点名不判红）'],
   ]) {
     console.log(`  ${k} 形态 ${r.forms[k].length} 路径 :: ${label}`);
     topMovers(r.forms[k]).forEach((s) => console.log(`      · ${s}`));
@@ -302,10 +313,24 @@ if (SELFTEST) {
     const r3 = scanIndex(env);
     ok('ST-05 索引==HEAD 时四形态全零且删除规模为 0（守卫对健康索引不误报）',
       r3.forms.D.length === 0 && r3.forms.S.length === 0 && r3.forms.F.length === 0 && r3.forms.W.length === 0
-      && r3.dels === 0 && r3.riskDels === 0
+      && r3.forms.N.length === 0 && r3.dels === 0 && r3.riskDels === 0
       && r3.idxCount === r3.headCount && !r3.unparsed,
-      `D=${r3.forms.D.length} S=${r3.forms.S.length} F=${r3.forms.F.length} W=${r3.forms.W.length} dels=${r3.dels} riskDels=${r3.riskDels} 索引解析出 ${r3.idxCount}/${r3.headCount} 路径 未解析 ${r3.unparsed ?? 0} 行`);
-    // ST-06（本轮新增的口径牙）：把**别的路径**的 HEAD blob 塞进靶子的索引位——它从来不是靶子的已提交
+      `D=${r3.forms.D.length} S=${r3.forms.S.length} F=${r3.forms.F.length} W=${r3.forms.W.length} N=${r3.forms.N.length} dels=${r3.dels} riskDels=${r3.riskDels} 索引解析出 ${r3.idxCount}/${r3.headCount} 路径 未解析 ${r3.unparsed ?? 0} 行`);
+    // ST-07：索引里有、HEAD 里没有的路径（他人新增并暂存的文件）。它不是陈旧、不该判红，
+    // 但必须点名——否则「裸 commit 会把别人的新文件一起带进本次提交」这件事没人说出来。
+    const GHOST = 'idx-staleness-probe/__foreign_new_file__.txt';
+    git(['read-tree','HEAD'], env);
+    git(['update-index','--add','--cacheinfo', `100644,${oldBlob},${GHOST}`], env);
+    const r5 = scanIndex(env);
+    ok('ST-07 索引多出 HEAD 没有的路径 ⇒ 归入 N 并点名（不判红、不进回退风险规模）',
+      r5.forms.N.some((x) => x.rel === GHOST) && r5.forms.D.length === 0 && r5.forms.S.length === 0
+      && r5.riskDels === 0 && r5.idxCount === r5.headCount + 1,
+      `N=${r5.forms.N.length} D=${r5.forms.D.length} S=${r5.forms.S.length} riskDels=${r5.riskDels} 索引 ${r5.idxCount}/HEAD ${r5.headCount}｜${topMovers(r5.forms.N)[0] ?? '(没点名)'}`);
+    git(['update-index','--force-remove', GHOST], env);
+    const r6 = scanIndex(env);
+    ok('ST-07b 把该新增路径摘掉 ⇒ N 归零（这条腿不是恒真式）', r6.forms.N.length === 0,
+      `N=${r6.forms.N.length}`);
+    // ST-06：把**别的路径**的 HEAD blob 塞进靶子的索引位——它从来不是靶子的已提交
     // 版本，属「异源/前向态」（模拟他人未提交的暂存工作）。必须落 F 而不是 S：既不能判红，
     // 也不能把它的删除量算进回退风险规模，否则「他人正在干的活」会被报成「已落地工作要被回退」。
     // 供体从 ls-tree 全表里按扩展名挑文本路径，逐条试到「F 命中且 dels>0」为止。
@@ -365,6 +390,7 @@ try {
       `冲突态 ${r.conflictStages} 条`);
     // W 形态只出声：他人并发态不由本守卫判红（口径：判红必须是我方可归因的事实）
     if (r.forms.W.length) console.log(`  · W 形态 ${r.forms.W.length} 条三方互异路径（需人工判定，本守卫不判红）：${topMovers(r.forms.W).slice(0, 6).join(' ｜ ')}`);
+    if (r.forms.N.length) console.log(`  · N 形态 ${r.forms.N.length} 条「索引有、HEAD 无」路径（他人新增并已暂存 ⇒ 裸 commit 会把它们带进本次提交，本守卫不判红只点名）：${topMovers(r.forms.N).slice(0, 6).join(' ｜ ')}`);
     console.log('\n收口选项（只提示，不代做）：');
     console.log('  1) 逐路径把索引刷新到 HEAD：`git update-index --add <path>`（要连工作树一起回 HEAD 才用 `git checkout HEAD -- <path>`）');
     console.log('  2) 确认他人不再需要这些暂存态后：`git restore --staged <path>`');
