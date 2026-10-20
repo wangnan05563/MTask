@@ -278,10 +278,15 @@ async function streamGen(path: string, body: unknown, opts: { abortWhen?: (ev: {
         i = raw.indexOf('\n\n');
       }
     }
-  } catch (e) {
+  } catch (e: any) {
     const s = String(e);
     // 客户端主动 abort 是预期内（N 组靠它验中止），不算失败
-    if (!aborted && !/abort/i.test(s)) failure = `读流出错: ${s}`;
+    if (!aborted && !/abort/i.test(s)) {
+      // `TypeError: fetch failed` 本身不带原因，原因在 e.cause（ECONNRESET / ECONNREFUSED / UND_ERR_*）。
+      // 第二轮实测 A2-01 就红在这里（173s 开机后首条 SSE 连不上），只打 String(e) 等于没打。
+      const c = e?.cause;
+      failure = `读流出错: ${s}｜cause=${c?.code ?? c?.name ?? ''} ${c?.message ?? ''}`.trim();
+    }
   }
   return { events, aborted, status, contentType, failure };
 }
