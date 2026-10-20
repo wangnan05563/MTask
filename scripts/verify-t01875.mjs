@@ -10,7 +10,7 @@
 //   走隔离实例：MTask_PORT + MTask_DATA_DIR=临时目录，绝不碰用户生产库
 //   开机预算：T01875_BOOT_BUDGET（默认 180000ms）——就绪超时按 SKIP 收口（反模式 47），exit=2 出声
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -344,7 +344,16 @@ try {
   }
   check('Z1 隔离实例已退出（不留驻进程/不锁 better_sqlite3.node）', stillUp === false,
     `端口真空实测等待 ${Date.now() - t0down}ms :: ${BASE}`);
-  try { rmSync(DIR, { recursive: true, force: true }); } catch { /* 句柄未释放时留给系统临时目录 */ }
+  // 批㉘「门不留残留」落到删除动作：Windows 上 rmSync 可能删光子项却留空目录（sqlite 句柄晚于进程释放），
+  // 原先它 `catch {}` 一声不响——残骸靠人肉清理。改为轮询重试，并把「目录真的没了」做成判据（Z2）。
+  let removed = false;
+  for (let i = 0; i < 20; i++) {
+    try { rmSync(DIR, { recursive: true, force: true }); } catch { /* 句柄未放，下一轮再试 */ }
+    removed = !existsSync(DIR);
+    if (removed) break;
+    await sleep(500);
+  }
+  check('Z2 临时数据目录已删除（不积累残骸）', removed, `${DIR}（重试至 ${removed ? '成功' : '超时 10s'}）`);
   console.log(`\n==== T01875 断言：${pass} PASS / ${fail} FAIL / ${skip} SKIP ====`);
   process.exit(fail > 0 ? 1 : (skip > 0 ? 2 : 0));
 }
