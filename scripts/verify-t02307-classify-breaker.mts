@@ -9,9 +9,15 @@
  *     + `GET /api/ai/usage` 的 `byTool` 增量；不读产品源码文本。
  *  2. 门内自造数据：隔离端口 + 隔离 DATA_DIR，空库由服务自建；AI 工具经 `POST /api/aitools` 建、
  *     跑完删除；mock 厂商是门自己的 HTTP 服务。
- *  3. 无字面锚点（不适用 okPair）。
+ *  3. **字面锚点（批㉙ 改判，原判据写的是「无字面锚点（不适用 okPair）」——那句是错的）**：
+ *     收尾文案由本仓 `classifyResultMessage()` 生成，`msg.includes('中止' / '无合适分类' / '批量分类完成')`
+ *     就是字面锚；改措辞（等价重构）与熔断失守都会让 `&&` 链变红而红因不可区分。现按判据 3 拆成
+ *     `okPair`——行为腿只认 store/计数，字面腿只认文案；文案里透传的**厂商原文**片段（`rate limit`/`quota`）
+ *     属外部文本、不锁本仓措辞，留在字面腿里但由行为腿决定成败。P-01/P-02/N-01/I-01/I-02 本就是行为断言，不动。
  *  4. 负对照：同一判据喂 `enableBreaker:false`（模拟熔断被移除）必须翻红——实发请求打满 30 条，
- *     且 ai_usage 增量同为 30，证明判据不是空转。
+ *     且 ai_usage 增量同为 30，证明判据不是空转。批㉙ 另加 PA-01/PA-02：
+ *     「改字不改行为」必须判成「字面锚点失配（行为在）」、「改行为不改字」必须判成「行为失守」——
+ *     即拆配对本身有牙，不是把两条断言并排放着好看。
  *
  * 用法：
  *   TMP=/d/code/tmp TEMP=/d/code/tmp node node_modules/tsx/dist/cli.mjs scripts/verify-t02307-classify-breaker.mts
@@ -25,6 +31,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveServerLauncher } from './isolated-server-launcher.mts';
 import { writeGateResults } from './lib/gate-results.mts';
+import { okPair } from './lib/anchor-pair.mts';
 import {
   MAX_CONSECUTIVE_FAILURES, classifyResultMessage, createClassifyStore, runClassifyBatch,
   type ClassifyResponse, type ClassifyStoreState,
@@ -44,6 +51,19 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 const skipped = (name: string, why: string) => { skip += 1; console.log(`  [SKIP] ${name} -> ${why}`); };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const targets = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `t${i}`, title: `任务${i}`, priority: n % 2 ? 'normal' : 'high' }));
+
+/**
+ * 判据 4（拆配对自身要有牙）：用只收集不落账的假 `ok` 跑一遍 `okPair`，把红因取回来。
+ * 三种输入各测一次——「改字不改行为」必须落「字面锚点失配」，「改行为不改字」必须落「行为失守」，
+ * 「两绿」必须落 PASS。没有这三条，把 `&&` 拆成 pair 只是换个写法，不构成证据。
+ */
+const pairVerdict = (behavior: () => boolean, literal: () => boolean): string => {
+  let why = '';
+  okPair((_n: string, cond: boolean, extra?: unknown) => {
+    if (!cond) why = String((extra as { 红因?: string } | undefined)?.红因 ?? '(红但没记红因)');
+  }, '', behavior, literal);
+  return why || 'PASS';
+};
 
 // ---------- mock 厂商：按端点前缀回 429/402；每次请求计数 ----------
 let vendorHits = 0;
@@ -87,8 +107,10 @@ console.log('=== P 组：纯函数腿（三态分流 + 熔断 + 文案） ===');
   ok('P-01 429 账户门禁：30 条目标只发 1 次请求即熔断', p.calls() === 1 && store.fail === 1 && store.aborted === true && store.done === true, { calls: p.calls(), store });
   ok('P-02 熔断原因保留厂商原文', String(store.abortReason).includes('rate limit'), store.abortReason);
   const msg429 = classifyResultMessage(store, ['开发']);
-  ok('P-03 收尾文案含「中止/额度/限流」与厂商原文，不再说「无合适分类」',
-    msg429.includes('中止') && /额度|限流/.test(msg429) && msg429.includes('rate limit') && !msg429.includes('未能为这些任务匹配到合适分类'), msg429);
+  okPair(ok, 'P-03 收尾文案含「中止/额度/限流」与厂商原文，不再说「无合适分类」',
+    () => store.aborted === true && store.fail >= 1 && store.done === true,
+    () => msg429.includes('中止') && /额度|限流/.test(msg429) && msg429.includes('rate limit') && !msg429.includes('未能为这些任务匹配到合适分类'),
+    () => ({ 熔断: store.aborted, 失败: store.fail, 收尾: store.done, msg: msg429.slice(0, 140) }));
 }
 {
   // P-04：402 额度耗尽同样首次即停
@@ -122,7 +144,10 @@ console.log('=== P 组：纯函数腿（三态分流 + 熔断 + 文案） ===');
   const p = mockPost(() => ({ ok: true, categoryId: null }));
   await runClassifyBatch({ target: targets(30), toolId: 'x', categories: [{ id: 'c1', name: '开发' }], store, post: p.post, patch: async () => undefined, isActive: () => true });
   const msg = classifyResultMessage(store, ['开发', '测试']);
-  ok('P-07 30 条均判定无匹配：不熔断，文案走「无合适分类」', p.calls() === 30 && store.none === 30 && store.aborted === false && msg.includes('无合适分类') && !msg.includes('中止'), { calls: p.calls(), store, msg });
+  okPair(ok, 'P-07 30 条均判定无匹配：不熔断，文案走「无合适分类」',
+    () => p.calls() === 30 && store.none === 30 && store.aborted === false,
+    () => msg.includes('无合适分类') && !msg.includes('中止'),
+    () => ({ calls: p.calls(), store, msg }));
 }
 {
   // P-08：全部命中：hit/patch 各 30 次
@@ -131,7 +156,22 @@ console.log('=== P 组：纯函数腿（三态分流 + 熔断 + 文案） ===');
   const p = mockPost(() => ({ ok: true, categoryId: 'c1', priority: 'high' }));
   await runClassifyBatch({ target: targets(30), toolId: 'x', categories: [{ id: 'c1', name: '开发' }], store, post: p.post, patch: async () => { patched += 1; }, isActive: () => true });
   const msg = classifyResultMessage(store, []);
-  ok('P-08 全部命中：30 次分类 + 30 次 PATCH，文案为完成', p.calls() === 30 && patched === 30 && store.hit === 30 && store.aborted === false && msg.includes('批量分类完成'), { calls: p.calls(), patched, store, msg });
+  const beh8 = () => p.calls() === 30 && patched === 30 && store.hit === 30 && store.aborted === false;
+  const lit8 = () => msg.includes('批量分类完成');
+  okPair(ok, 'P-08 全部命中：30 次分类 + 30 次 PATCH，文案为完成', beh8, lit8,
+    () => ({ calls: p.calls(), patched, store, msg }));
+  // PA-01..04（判据 4）：拆出来的两条腿各自有牙——不是把 `&&` 换个写法就交差。
+  const msgRenamed = msg.replace('批量分类完成', '分类已结束');
+  ok('PA-01 拆配对自证：只改文案（等价重构）→ 红因必须是「字面锚点失配（行为在）」',
+    pairVerdict(beh8, () => msgRenamed.includes('批量分类完成')).startsWith('字面锚点失配'),
+    { 红因: pairVerdict(beh8, () => msgRenamed.includes('批量分类完成')) });
+  ok('PA-02 拆配对自证：行为失守而文案照旧 → 红因必须是「行为失守」，字面腿根本不参与判定',
+    pairVerdict(() => store.hit === 31, lit8).startsWith('行为失守'),
+    { 红因: pairVerdict(() => store.hit === 31, lit8), hit: store.hit });
+  ok('PA-03 拆配对自证：行为与文案都真 → 必须 PASS（pair 不是恒红机器）',
+    pairVerdict(beh8, lit8) === 'PASS', { 判定: pairVerdict(beh8, lit8) });
+  ok('PA-04 变异确有对象：PA-01 的改字真的动了那串文案（否则反证在测同一份文本＝没测）',
+    lit8() && !msgRenamed.includes('批量分类完成'), { 原文: msg, 变异后: msgRenamed });
 }
 {
   // P-09：外部复位（切页取消）即中止，不误报熔断
@@ -228,7 +268,10 @@ if (!child || !BASE) {
       ok('I-01 429 真实链路：30 条目标实发 /tasks/classify = 1（不是 30）', dCalls === 1 && dVendor === dCalls && store.fail === 1 && store.aborted === true, { dCalls, dVendor, store });
       ok('I-02 ai_usage 增量与实发请求一致（不重复记账）', dUsage === dCalls, { dUsage, dCalls });
       const msg = classifyResultMessage(store, ['开发']);
-      ok('I-03 收尾文案含额度/限流与厂商原文，且不出现「无合适分类」', /额度|限流/.test(msg) && msg.includes('rate limit') && !msg.includes('未能为这些任务匹配到合适分类'), msg);
+      okPair(ok, 'I-03 收尾文案含额度/限流与厂商原文，且不出现「无合适分类」',
+        () => store.aborted === true && store.fail === 1 && dCalls === 1,
+        () => /额度|限流/.test(msg) && msg.includes('rate limit') && !msg.includes('未能为这些任务匹配到合适分类'),
+        () => ({ 熔断: store.aborted, dCalls, msg: msg.slice(0, 140) }));
 
       // N-01：真实链路负对照——同一判据，熔断移除后必须打满 30
       const v1 = vendorHits; const c1 = classifyCalls; const u1 = await usageCalls(t429.name);
@@ -248,8 +291,10 @@ if (!child || !BASE) {
       await runClassifyBatch({ target: targets(30), toolId: t402.id, categories: [{ id: 'c1', name: '开发' }], store, post: realPost, patch, isActive: () => true });
       const dVendor = vendorHits - v0; const dCalls = classifyCalls - c0; const dUsage = (await usageCalls(t402.name)) - u0;
       const msg = classifyResultMessage(store, ['开发']);
-      ok('I-05 402 真实链路：实发=1、ai_usage=1、文案含 quota/额度且非「无合适分类」',
-        dCalls === 1 && dVendor === 1 && dUsage === 1 && store.aborted === true && msg.includes('quota') && !msg.includes('未能为这些任务匹配到合适分类'), { dCalls, dVendor, dUsage, store, msg });
+      okPair(ok, 'I-05 402 真实链路：实发=1、ai_usage=1、文案含 quota/额度且非「无合适分类」',
+        () => dCalls === 1 && dVendor === 1 && dUsage === 1 && store.aborted === true,
+        () => msg.includes('quota') && /额度|限流/.test(msg) && !msg.includes('未能为这些任务匹配到合适分类'),
+        () => ({ dCalls, dVendor, dUsage, store, msg: msg.slice(0, 140) }));
       await jfetch('DELETE', `/api/aitools/${t402.id}`);
     }
   } finally {
