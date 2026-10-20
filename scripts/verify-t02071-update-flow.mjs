@@ -47,6 +47,10 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
 const U = require(path.join(ROOT, 'electron', 'update-state.js'));
+// 批㉜（T02769）：okPair 与 cp 提到文件头——U 组 U-16 也要用配对器（原先只有 W 组用，
+// 导致 U/B 组里那些「行为 && 中文串」的混合条件无处拆，红因不可区分）。
+const cp = require('node:child_process');
+const { okPair } = await import(new URL('./lib/anchor-pair.mts', import.meta.url).href);
 
 // 临时根必须落 D:（C: 常年吃紧，mkdtemp/写盘失败会伪装成产品失败）
 const TMP_ROOT = fs.existsSync('D:/code/tmp') ? 'D:/code/tmp' : os.tmpdir();
@@ -119,10 +123,17 @@ ok('U-14 对账不看安装器日志，只认版本：当前更高也算 install
 
 // ---------- 安装进程退出码 → 回执 ----------
 ok('U-15 退出码 0 → installed', U.installOutcome({ code: 0, timedOut: false }).status === 'installed');
-ok('U-16 非 0 退出码 → failed 且原始码随行带出（界面点明原因）', (() => {
-  const o = U.installOutcome({ code: 5, timedOut: false });
-  return o.status === 'failed' && o.code === 5 && o.message.includes('退出码 5');
-})());
+// U-16 原为混合条件 `status==='failed' && code===5 && message.includes('退出码 5')`（判据 3 违例形态）：
+// 产品侧把模板改成「退出码：${code}」这类等价重构，与「原始码没带出来」这种真失守，红在同一行且不可区分。
+// 现按判据 3 拆：行为腿只认结构化字段（status/code——界面重试要用的就是这两个字段），字面腿只认回执里带出模板词。
+{
+  const o16 = U.installOutcome({ code: 5, timedOut: false });
+  okPair(ok,
+    'U-16 非 0 退出码 → failed 且原始码随行带出（行为腿：status=failed 且结构化 code=5；字面腿：回执文案含「退出码」）',
+    () => o16.status === 'failed' && o16.code === 5,
+    () => o16.message.includes('退出码'),
+    () => ({ status: o16.status, code: o16.code, message: o16.message.slice(0, 60) }));
+}
 ok('U-17 等待超时不判失败（可能正弹授权确认）→ pending 留待下次对账', U.installOutcome({ code: null, timedOut: true }).status === 'pending');
 
 // ---------- 真实 Range 协议：证明「取消后继续」拼出的字节与原包逐字节一致 ----------
@@ -179,8 +190,7 @@ fs.rmSync(tmpDir, { recursive: true, force: true });
 fs.rmSync(userData, { recursive: true, force: true });
 
 // ---------- 批㉖ ①：取证面切到 HEAD（反模式 11：工作树可能躺着别的会话的过期文件） ----------
-const cp = require('node:child_process');
-const { okPair } = await import(new URL('./lib/anchor-pair.mts', import.meta.url).href);
+// （okPair / cp 已在文件头声明——批㉜ T02769）
 const headSrc = (rel) => {
   try { return cp.execFileSync('git', ['show', `HEAD:${rel}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 }); } catch { return ''; }
 };
@@ -432,11 +442,17 @@ if (host) {
   quitAfterInstalled = host.quitCalls.length;
   await sleep(1300); // 成功路径的 app.quit 在 800ms 后
   const quitFinal = host.quitCalls.length;
-  BEV.retryReusesPackageWithoutDownload = irRetry?.status === 'installed' && reqLog.length === roundsAtRetry && irRetry?.message?.includes('安装完成');
+  BEV.retryReusesPackageWithoutDownload = irRetry?.status === 'installed' && reqLog.length === roundsAtRetry;
+  // 批㉜（T02769）判据 3 拆配：「安装完成」是 electron/update-state.js:88 产品生成的成功文案，
+  // 从行为判据里摘出来单独作字面腿——产品换措辞时这条记「字面锚点失配（行为在）」，不再冒充「重试不复用包」。
+  const retryWordingInstalled = irRetry?.message?.includes('安装完成') === true;
   retryReqDelta = reqLog.length - roundsAtRetry;
   BEV.quitOnlyAfterInstalled = quitAfterInstalled === 0 && quitFinal === 1;
-  ok('B-09 重试复用已下载包：同一包路径再装即 installed，期间服务端下载请求数零增长（不重新下载）', BEV.retryReusesPackageWithoutDownload,
-    { status: irRetry?.status, 安装前后下载请求: [roundsAtRetry, reqLog.length] });
+  okPair(ok,
+    'B-09 重试复用已下载包：同一包路径再装即 installed，期间服务端下载请求数零增长（行为腿：installed+请求零增长；字面腿：成功回执文案「安装完成」）',
+    () => BEV.retryReusesPackageWithoutDownload === true,
+    () => retryWordingInstalled,
+    () => ({ status: irRetry?.status, 安装前后下载请求: [roundsAtRetry, reqLog.length], message: (irRetry?.message ?? '').slice(0, 60) }));
   ok('B-11 installed 才 app.quit 且恰一次（失败路径 0 次、成功路径 1 次）', BEV.quitOnlyAfterInstalled,
     { 失败后: quitAfterFail, 刚返回时: quitAfterInstalled, '1.3s 后': quitFinal });
   // ⑤ 判定委托（依赖注入反证）：同一现场「本地有 .part + 服务端忽略 Range 回 200 全量」，
@@ -458,9 +474,15 @@ if (host) {
   catch (e) { spyRes = null; spyErr = e instanceof Error ? e.message : String(e); }
   spySizeB = sizeOf(path.join(DIRS_B.dl, 'pkg-ignore.exe'));
   BEV.kernelDelegationProven = BEV.ignoreRangeRewindsFromZero === true
-    && spySizeB === 0 && /下载不完整/.test(spyErr) && host.spyCalls.length > 0;
-  ok('B-06b 判定只有一套（内核结论即写流 flag）：同一现场把内核 append 强改为 true，主进程立刻按「追加」拼出 465536 字节的坏包并被体积兜底拦死（不产出 .exe），而真内核同一现场逐字节成功', BEV.kernelDelegationProven,
-    { 真内核落盘: ignoreSize, 换内核后落盘exe: spySizeB, 换内核后结局: spyErr.slice(0, 60), 原包: blob2.length, 内核被问了几次: host.spyCalls.length });
+    && spySizeB === 0 && host.spyCalls.length > 0;
+  // 批㉜（T02769）判据 3 拆配：拦截文案来自 electron/main.js:530（产品生成），从「委托成立」的
+  // 行为判据里摘出——委托是否成立只看「结局随内核结论翻转」（真内核逐字节成功 vs 换内核后不产出 exe）。
+  const spyWordingBlocked = /下载不完整/.test(spyErr);
+  okPair(ok,
+    'B-06b 判定只有一套（内核结论即写流 flag）：同一现场把内核 append 强改为 true，主进程按「追加」拼出的坏包被当场拦死、不产出 .exe，而真内核同一现场逐字节成功（行为腿：体积兜底拦下+内核被问到；字面腿：拦截文案「下载不完整」）',
+    () => BEV.kernelDelegationProven === true,
+    () => spyWordingBlocked,
+    () => ({ 真内核落盘: ignoreSize, 换内核后落盘exe: spySizeB, 换内核后结局: spyErr.slice(0, 60), 原包: blob2.length, 内核被问了几次: host.spyCalls.length }));
   // ⑥ T02644 修复后的安全不变量（原为「缺陷现状钉住」，产品修好后按规约改判为正向断言）：
   //    206 但 Content-Range 起点 ≠ 本地 .part 字节数 → 这条响应体既不是整包也不是「本地之后那段」，
   //    主进程必须丢弃它、发一次不带 Range 的请求重取，落盘体积 == 服务端声明总量且逐字节一致。
@@ -483,9 +505,11 @@ if (host) {
   clipRounds = reqLog.length - roundsClip;
   clipExe = sizeOf(path.join(DL_G, 'pkg-clip.exe'));
   clipPart = sizeOf(path.join(DL_G, 'pkg-clip.exe.part'));
-  ok('B-17 实收字节 < 声明总量时以「下载不完整」失败收口：不产出 .exe、且清掉 .part（界面回到重新下载而非安装）',
-    /下载不完整/.test(clipErr) && clipExe === 0 && clipPart === 0 && clipRounds === 1,
-    { 报错: clipErr.slice(0, 120), 落盘exe: clipExe, 残留part: clipPart, 请求数: clipRounds });
+  okPair(ok,
+    'B-17 实收字节 < 声明总量时失败收口：不产出 .exe、且清掉 .part（界面回到重新下载而非安装）（行为腿：无 exe+无 part+严格单次请求；字面腿：收口文案「下载不完整」）',
+    () => clipExe === 0 && clipPart === 0 && clipRounds === 1,
+    () => /下载不完整/.test(clipErr),
+    () => ({ 报错: clipErr.slice(0, 120), 落盘exe: clipExe, 残留part: clipPart, 请求数: clipRounds }));
   // ⑥c 首下（本地无 .part）却收到按段应答：同样不能当整包；单次不带 Range 重取后仍是 206 → 失败收口，绝不无限重试
   DIRS_A.dl = DL_H;
   const rounds206 = reqLog.length;
@@ -493,9 +517,11 @@ if (host) {
   a206Rounds = reqLog.length - rounds206;
   a206Exe = sizeOf(path.join(DL_H, 'pkg-always206.exe'));
   a206Part = sizeOf(path.join(DL_H, 'pkg-always206.exe.part'));
-  ok('B-18 无 .part 首下即收到 206：判为无法拼包并失败收口，重取严格单次（共 2 个请求，不循环），不产出 .exe',
-    /无法拼包/.test(a206Err) && a206Rounds === 2 && a206Exe === 0 && a206Part === 0,
-    { 报错: a206Err.slice(0, 120), 请求数: a206Rounds, 落盘exe: a206Exe, 残留part: a206Part });
+  okPair(ok,
+    'B-18 无 .part 首下即收到 206：失败收口且重取严格单次（共 2 个请求，不循环），不产出 .exe（行为腿：请求数=2+无 exe+无 part；字面腿：收口文案「无法拼包」）',
+    () => a206Rounds === 2 && a206Exe === 0 && a206Part === 0,
+    () => /无法拼包/.test(a206Err),
+    () => ({ 报错: a206Err.slice(0, 120), 请求数: a206Rounds, 落盘exe: a206Exe, 残留part: a206Part }));
   // ⑥d 预加载面：执行真 preload，把 invoke 路由到真主进程 handler
   try {
     preload = bootPreload(H);
@@ -746,14 +772,18 @@ const detailCtx = (spec) => ({ 锚点: spec.anchors.map((a) => a.token) });
     ['重试期间服务端下载请求零增长', retryReqDelta, (v) => v === 0],
     ['installed 后 app.quit 恰一次', host?.quitCalls.length, (v) => v === 1],
     ['真内核忽略 Range 现场从 0 重写（体积恰等于原包）', ignoreSize, (v) => v === blob2.length && ignoreRes?.resumedFrom === 0],
-    ['换内核（append 强改 true）后同一现场结局翻转：坏包被体积兜底拦下、不产出 exe', spySizeB, (v) => v === 0 && /下载不完整/.test(spyErr)],
+    ['换内核（append 强改 true）后同一现场结局翻转：坏包被体积兜底拦下、不产出 exe（文案无关：只看体积与内核被问次数）', spySizeB, (v) => v === 0 && host.spyCalls.length > 0],
+    ['字面锚点：换内核现场的收口文案（电子 main.js:530 生成；措辞漂移只红这一行，不冒充委托失守）', spyErr, (v) => /下载不完整/.test(v)],
     ['起点错位现场重取后落盘恰为整包（原缺陷口径已被替换）', badSize, (v) => v === blob2.length && badSha === blob2Sha],
     ['起点错位现场共两个请求（第二轮无 Range）', badRounds.length, (v) => v === 2 && badRounds[1]?.range === null],
-    ['分段提前结束现场既无 exe 也无 part 残留', clipExe, (v) => v === 0 && clipPart === 0 && /下载不完整/.test(clipErr)],
-    ['首下即 206 现场重取严格单次且不落包', a206Rounds, (v) => v === 2 && a206Exe === 0 && a206Part === 0],
+    ['分段提前结束现场既无 exe 也无 part 残留（文案无关）', clipExe, (v) => v === 0 && clipPart === 0 && clipRounds === 1],
+    ['字面锚点：提前收尾现场的收口文案', clipErr, (v) => /下载不完整/.test(v)],
+    ['首下即 206 现场重取严格单次且不落包（文案无关）', a206Rounds, (v) => v === 2 && a206Exe === 0 && a206Part === 0],
+    ['字面锚点：首下即 206 现场的收口文案', a206Err, (v) => /无法拼包/.test(v)],
+    ['字面锚点：重试成功回执文案（update-state.js:88 生成）', irRetry?.message ?? '', (v) => v.includes('安装完成')],
   ];
   const bad = expect.filter(([, v, p]) => !p(v)).map(([label]) => label);
-  ok('N-10 十一项关键实测数值逐条点名（取消量/续传起点/退出码/重试请求数/quit 次数/两种内核结论下的体积/T02644 三种现场）', bad.length === 0,
+  ok(`N-10 ${expect.length} 项关键实测数值逐条点名（取消量/续传起点/退出码/重试请求数/quit 次数/两种内核结论下的体积/T02644 三种现场；批㉜ 起行为项与字面锚点项分行，措辞漂移不再冒充功能失守）`, bad.length === 0,
     { 失配: bad, 实测: { diskAfter, resumedFrom: dl2?.resumedFrom, code: irFail?.code, retryReqDelta, quit: host?.quitCalls.length, ignoreSize, spySizeB, badSize, badRounds: badRounds.length, clipExe, clipPart, a206Rounds, a206Exe } });
 }
 // N-11 T02644 修复的变异负对照：把两处守卫分别改成恒假，缺陷必须当场复现（证明 B-16/B-17 不是摆设）
@@ -787,6 +817,82 @@ const detailCtx = (spec) => ({ 锚点: spec.anchors.map((a) => a.token) });
   ok('N-11 变异负对照：摘掉 206 起点守卫→半截包（367232 字节）复现被当整包；摘掉体积兜底→提前收尾的分段体复现落盘为 exe',
     notes.length === 2 && notes.every((n) => n.落地) && guardReproduced && backstopReproduced,
     { 变异现场: notes, 摘守卫落盘: mutBadSize, 应为半截: blob2.length - BAD_START, 摘兜底落盘: mutClipExe, 应为半截拼接: prefixBytes + CLIP });
+}
+
+// ---------- N-12 中文串条件三分登记表（T02769：豁免必须是「被证明的豁免」，不是注释里的口头豁免） ----------
+{
+  const CATALOG = [
+    { 串: '退出码', 类: '① 产品生成', 用处: 'U-16 字面腿（模板含插值 ${code}，原锚「退出码 5」对后缀改名不宽容⇒已拆）', 生成者: 'electron/update-state.js' },
+    { 串: '安装完成', 类: '① 产品生成', 用处: 'B-09 字面腿 / N-10 字面行', 生成者: 'electron/update-state.js' },
+    { 串: '下载不完整', 类: '① 产品生成', 用处: 'B-06b、B-17 字面腿 / N-10 字面行', 生成者: 'electron/main.js' },
+    { 串: '无法拼包', 类: '① 产品生成', 用处: 'B-18 字面腿 / N-10 字面行', 生成者: 'electron/main.js' },
+    { 串: '取消下载', 类: '① 产品生成', 用处: 'W-12 锚点（配对器内的字面腿）', 生成者: 'web/src/pages/SettingsPage.tsx' },
+    { 串: '继续下载', 类: '① 产品生成', 用处: 'W-12 锚点（配对器内的字面腿）', 生成者: 'web/src/pages/SettingsPage.tsx' },
+    { 串: '安装失败：', 类: '① 产品生成', 用处: 'W-13 锚点前缀（全锚含 JSX 插值 installError.message）', 生成者: 'web/src/pages/SettingsPage.tsx' },
+    { 串: 'MTask Setup', 类: '② 门自造夹具', 用处: 'U-12/B-14 回执包路径取证（本门 writePending 自己写入的假包名）', 生成者: 'scripts/verify-t02071-update-flow.mjs' },
+    { 串: '行为失守（功能未达成，与文案无关）', 类: '② 门禁库文案', 用处: 'N-04 红因判定', 生成者: 'scripts/lib/anchor-pair.mts' },
+    { 串: '字面锚点失配（行为在）', 类: '② 门禁库文案', 用处: 'N-07 契约腿', 生成者: 'scripts/lib/anchor-pair.mts' },
+    { 串: '行为断言抛错：', 类: '② 门禁库文案', 用处: 'N-07 契约腿', 生成者: 'scripts/lib/anchor-pair.mts' },
+    { 串: '字面锚点抛错：', 类: '② 门禁库文案', 用处: 'N-07 契约腿', 生成者: 'scripts/lib/anchor-pair.mts' },
+  ];
+  const miss = CATALOG.filter((c) => !headSrc(c.生成者).includes(c.串)).map((c) => `${c.类} | ${c.串} | 声称生成者 ${c.生成者}`);
+  ok(`N-12a ${CATALOG.length} 条中文串条件逐条命中其声称的生成者 HEAD 副本（「这串文案是谁生成的」逐条取证，不按计数猜；产品把整串搬走或删掉即点名失配）`,
+    miss.length === 0, { 未命中: miss, 登记: CATALOG.map((c) => `${c.类}:${c.串}`) });
+
+  const LIB_WORDS = CATALOG.filter((c) => c.类 === '② 门禁库文案').map((c) => c.串);
+  const gitGrep = (word, paths) => {
+    try {
+      return { ok: true, hits: cp.execFileSync('git', ['--no-pager', 'grep', '-l', '-F', '-e', word, 'HEAD', '--', ...paths],
+        { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().split('\n').filter(Boolean) };
+    } catch (e) {
+      if (e.status === 1) return { ok: true, hits: [] };
+      return { ok: false, hits: [], err: `${e.code ?? e.status}: ${e.message.slice(0, 60)}` };
+    }
+  };
+  const prodPaths = ['server', 'electron', 'web'];
+  const control = gitGrep('退出码', prodPaths);
+  const libInProd = LIB_WORDS.map((w) => ({ 串: w, ...gitGrep(w, prodPaths) }));
+  ok('N-12b 探测道自证 + 门内红因四串零命中产品三树（正对照「退出码」必须在 server/electron/web 命中，否则「零命中」只是探针坏了——反模式 48 的负对照空转形态）',
+    control.ok && control.hits.length > 0 && libInProd.every((x) => x.ok && x.hits.length === 0),
+    { 正对照: { 串: '退出码', 命中文件: control.hits.slice(0, 3), 取数失败: control.err ?? null }, 红因串产品面命中: libInProd.map((x) => ({ 串: x.串, 命中: x.hits.slice(0, 2), 取数失败: x.err ?? null })) });
+}
+
+// N-13 拆配自证（判据 4；T02769）：批㉜ 新拆的每条配对跑三个变异——双绿 / 只换措辞 / 只破功能，
+// 红因必须各归其位。光把「行为 && 文案」改写成 okPair 不算拆配：若行为腿其实也读了文案（同一条串），
+// 「只换措辞」会连行为腿一起红⇒假拆配。这里用与真实腿同一枚锚点串、同一份实测料做形状反证，
+// 并逐条确认锚点在实测料里真在场（批㉚ ST-05 教训：变异必须有真对象，否则是空转）。
+{
+  const mkCase = (label, anchor, realMsg) => ({
+    label, anchor,
+    realHas: () => String(realMsg ?? '').includes(anchor),
+    run: (okFlag, msg) => {
+      const out = [];
+      okPair((n, c, d) => out.push({ c, 红因: d?.红因 }), label, () => okFlag === true, () => String(msg).includes(anchor));
+      return out[0];
+    },
+  });
+  const cases = [
+    { c: mkCase('U-16', '退出码', irFail?.message), 双绿: [true, '安装器返回失败（退出码 5）：安装包可能损坏'], 换文案: [true, 'installer rejected (exit 5): package may be corrupt'], 破功能: [false, '安装器返回失败（退出码 5）：安装包可能损坏'] },
+    { c: mkCase('B-09', '安装完成', irRetry?.message), 双绿: [true, '安装完成，应用即将重启到新版本'], 换文案: [true, 'installed, app will restart'], 破功能: [false, '安装完成，应用即将重启到新版本'] },
+    { c: mkCase('B-06b', '下载不完整', spyErr), 双绿: [true, '下载不完整：已落盘 100000 字节，应为 400000 字节'], 换文案: [true, 'incomplete download: 100000 of 400000 bytes'], 破功能: [false, '下载不完整：已落盘 100000 字节，应为 400000 字节'] },
+    { c: mkCase('B-17', '下载不完整', clipErr), 双绿: [true, '下载不完整：已落盘 100000 字节，应为 400000 字节'], 换文案: [true, 'incomplete download: 100000 of 400000 bytes'], 破功能: [false, '下载不完整：已落盘 100000 字节，应为 400000 字节'] },
+    { c: mkCase('B-18', '无法拼包', a206Err), 双绿: [true, '下载失败：服务端按段应答且起点与本地文件不符，无法拼包'], 换文案: [true, 'cannot splice: remote segment does not match local file'], 破功能: [false, '下载失败：服务端按段应答且起点与本地文件不符，无法拼包'] },
+  ];
+  const bad = [];
+  const 读数 = [];
+  for (const { c, 双绿, 换文案, 破功能 } of cases) {
+    const g = c.run(...双绿);
+    const w = c.run(...换文案);
+    const f = c.run(...破功能);
+    const hasAnchor = c.realHas();
+    const shapeOk = g.c === true
+      && w.c === false && String(w.红因 ?? '').includes('字面锚点失配') && !String(w.红因 ?? '').includes('行为失守')
+      && f.c === false && String(f.红因 ?? '').includes('行为失守')
+      && hasAnchor === true;
+    if (!shapeOk) bad.push(c.label);
+    读数.push({ 条: c.label, 锚点: c.anchor, 实测料在场: hasAnchor, 双绿: g.c, 换文案红因: w.红因 ?? null, 破功能红因: f.红因 ?? null });
+  }
+  ok(`N-13 ${cases.length} 组新拆配对的形状反证（双绿／只换措辞→只该「字面锚点失配」／只破功能→只该「行为失守」，且锚点在实测料里真在场）`, bad.length === 0, { 不合格: bad, 读数 });
 }
 
 // ---------- 收口 ----------
