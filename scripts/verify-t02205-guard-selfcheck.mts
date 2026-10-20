@@ -5,13 +5,17 @@
  * 重构一改写法（T02202 实例：`disabled={…blocked…}` → `disabled={!canGenerate}`），正则恒假，
  * 而门里其余几十条照常 PASS、FAIL 行只给一句「实测：…」——读的人分不清是**功能坏了**还是**判据坏了**。
  *
- * 本门做三件事（全部对 **HEAD 已提交树** 求值，不启服务、不碰库，跑得快且与 ABI 无关）：
+ * 本门做四件事（全部对 **HEAD 已提交树** 求值，不启服务、不碰库，与 ABI 无关；
+ *  批㉝ 起第 4 件是全量加载面普查，本门由「秒级」变为**分钟级**，实测耗时写进 L-04 标签与 census 行）：
  *  1. 自证：把每个源码守卫门的锚点（正则/字面串）抽出来，对**HEAD 已提交树里的产品文件**求值命中数；
  *     命中 0 处的正向锚点＝判据本身失效，逐条点名（门号＋行号＋正则＋目标文件），不再让 `&&` 静默短路。
  *  2. 反向探针：把 HEAD 源码写法在内存里改坏（不碰磁盘），确认锚点命中数塌成 0、且点名逻辑确实咬住——
  *     证明「0 命中即点名」这条判据自己不是空转。
  *  3. 棘轮：恒假清单必须 ⊆ 已登记清单（W-04），且已登记项逐条给出裁定（已修／待修＋归属门），
  *     新增失配会在 CI 里直接 FAIL，而不是再读一遍。
+ *  4. 批㉝（T02770）加载面自检（L 组）：AST 级「用了但解析不到的标识符」——`node --check` 只查语法，
+ *     查不出这类错，而它正是「门跑到 `finally` 才抛 ReferenceError、PASS/FAIL 汇总整行丢失」的成因。
+ *     夹具双向 12 例（该抓 6／不该抓 6，含母单点名的三类 grep 假阳）+ 真实门体变异 + 语法层分离 + 全量普查。
  *
  * 判据口径（服从 T02293 · `docs/验收门判据规约.md` 本轮改判）：
  *  - **被测的是 HEAD 那份产品代码，不是工作树**（反模式 11）：本工作区常年有并发会话在改 `server/`、`web/`，
@@ -30,6 +34,7 @@ import { execFileSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeGateResults } from './lib/gate-results.mts';
+import { checkSource, listHeadGateFiles } from './lib/undefined-identifier-check.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -661,6 +666,136 @@ const uncovered = [...gatesWithAliveAnchor].filter((g) => !coveredGates.has(g));
 ok(`W-08 反向探针覆盖全部「有活锚点的门」并逐条点名：命中 0 处的锚点必然被恒假清单收录（与 W-04 复用同一判据，不是另写一遍）；覆盖按比例判——漏一门即红，不锁 HEAD 生态数量（实测有活锚点 ${gatesWithAliveAnchor.size} 门 / 已覆盖 ${coveredGates.size} 门 / 探针 ${probeTargets.length} 条）`,
   gatesWithAliveAnchor.size > 0 && uncovered.length === 0 && probeTargets.length >= coveredGates.size && mutatedMiss.length === 0,
   { 漏点名: mutatedMiss, 漏覆盖门: uncovered, 探针数: probeTargets.length, 覆盖门数: coveredGates.size, 有活锚点门数: gatesWithAliveAnchor.size });
+
+// =====================================================================
+// 批㉝（T02770）L 组：门体「用了但解析不到的标识符」自检接入审计器。
+//
+// 立项现场（批㉛ 实测）：给 `verify-t01875.mjs` 加 Z2 残留判据时写了 `existsSync(...)` 却漏加
+// `import { existsSync } from 'node:fs'`。`node --check` **只做语法解析**，查不出未定义标识符，
+// 于是门跑到 `finally` 才抛 `existsSync is not defined`——PASS/FAIL 汇总整行丢失、判据一条没落，
+// 红看起来像「门自身崩溃的既有噪声」（反模式 47 的近亲：崩溃不是功能失守，却会被读成功能失守）。
+//
+// 本组判据打在**加载面结构事实**上：AST 级「读位置的根标识符 ∉ 全篇绑定名 ∪ 全局表」，
+// 由 `./lib/undefined-identifier-check.mts` 实现。为什么不能是 grep（母单点名、本轮首轮全部复现）：
+//   ① `import fs from 'node:fs'` + `fs.existsSync()` —— 读用的根是 `fs`，不是 `existsSync`；
+//   ② `const { existsSync } = require('node:fs')` —— 解构绑定；
+//   ③ 门体内嵌的**夹具字符串**（``script: `const fs=require('fs');…` ``）里的标识符不属于门体作用域。
+//   我自己的第一版就中了 ①②（具名 import 未收绑定、重命名解构的**被导入名**当读用），
+//   106 支门体报 102 支——那正是本判据要消灭的「红因不可归因」噪声的 AST 版本，故夹具必须双向下证。
+//
+// 取数面 = HEAD（`headText`），与并发工作树无关；本组零服务、零落盘。
+type LoadCase = { id: string; name: string; fileName: string; code: string; expect: string[] };
+const LOAD_CASES: LoadCase[] = [
+  // —— 该抓的（正向有牙） ——
+  { id: 'a1', name: '用了却没 import（批㉛ 真实缺陷形）', fileName: 'g.mjs', code: `import { readFileSync } from 'node:fs';\nif (existsSync('/tmp/x')) console.log(readFileSync('/tmp/x', 'utf8'));\n`, expect: ['existsSync'] },
+  { id: 'a2', name: '重命名解构后误用被导入名', fileName: 'g.mts', code: `const { EstimateService: S } = await import('m');\nS.go();\nEstimateService.bad();\n`, expect: ['EstimateService'] },
+  { id: 'a3', name: '对象字面量简写是真读用', fileName: 'g.mjs', code: `const o = { existsSync };\n`, expect: ['existsSync'] },
+  { id: 'a4', name: '类继承的基类是运行时取值', fileName: 'g.mts', code: `class B extends BaseSvc { }\n`, expect: ['BaseSvc'] },
+  { id: 'a5', name: '模板插值属门体自己的作用域', fileName: 'g.mjs', code: 'const t = `x${missingVar}y`;\n', expect: ['missingVar'] },
+  { id: 'a6', name: '计算属性名与下标键', fileName: 'g.mjs', code: `const k = 'a';\nconst o = { [unknownKey]: 1 };\no[unknownIdx] = 2;\n`, expect: ['unknownKey', 'unknownIdx'] },
+  // —— 不该抓的（母单点名的三类假阳 + 另外四类常见写法） ——
+  { id: 'b1', name: '命名空间默认导入（fs.existsSync）', fileName: 'g.mjs', code: `import fs from 'node:fs';\nif (fs.existsSync('/tmp/x')) { }\n`, expect: [] },
+  { id: 'b2', name: 'CJS 解构 require', fileName: 'g.js', code: `const { existsSync, readFileSync: rf } = require('node:fs');\nif (existsSync('/a')) rf('/a');\n`, expect: [] },
+  { id: 'b3', name: '内嵌夹具字符串里的代码', fileName: 'g.mjs', code: 'const s = `const fs=require("fs"); fs.existsSync(p); undefinedInFixture()`;\nconsole.log(s);\n', expect: [] },
+  { id: 'b4', name: '具名 import 全项（本仓绝大多数门体的写法）', fileName: 'g.mjs', code: `import { existsSync, join } from 'node:fs';\nimport { join as j2 } from 'node:path';\nconsole.log(existsSync(join('/a')), j2);\n`, expect: [] },
+  { id: 'b5', name: '类型位不算读用', fileName: 'g.mts', code: `interface Foo { x: number }\nconst a: Foo = { x: 1 };\nfunction f(b: Array<string>): Map<string, number> { void b; return new Map(); }\nf([]);\nvoid a;\n`, expect: [] },
+  { id: 'b6', name: 'catch 形参 / label / 可选链 / for-of 解构', fileName: 'g.mjs', code: `const xs = [1];\nouter: for (const [a, b] of [xs]) {\n  try { a?.b?.c(); } catch (e) { console.log(e.message, b); }\n  continue outer;\n}\n`, expect: [] },
+];
+const loadCaseResults = LOAD_CASES.map((c) => {
+  const r = checkSource(c.code, c.fileName);
+  const got = r.hits.map((h) => h.name);
+  const miss = c.expect.filter((n) => !got.includes(n));
+  const extra = got.filter((n) => !c.expect.includes(n));
+  return { id: c.id, name: c.name, got, miss, extra, parseError: r.parseError };
+});
+const loadCaseBad = loadCaseResults.filter((x) => x.miss.length > 0 || x.extra.length > 0 || x.parseError);
+ok(`L-01 加载面自检器夹具双向自证：${LOAD_CASES.length} 例（${LOAD_CASES.filter((c) => c.expect.length).length} 例该抓、${LOAD_CASES.filter((c) => !c.expect.length).length} 例不该抓），逐例命中集必须与期望**完全相等**（多报即噪声、少报即无牙），实错 ${loadCaseBad.length} 例`,
+  LOAD_CASES.length === 12 && loadCaseResults.length === LOAD_CASES.length && loadCaseBad.length === 0,
+  { 失配例: loadCaseBad.map((x) => `${x.id} ${x.name} 命中=${JSON.stringify(x.got)} 漏=${JSON.stringify(x.miss)} 多报=${JSON.stringify(x.extra)}${x.parseError ? ` 语法层=${x.parseError}` : ''}`) });
+
+// L-02 真实门体变异：夹具绿不等于对**真门**有牙（批㉘ W-09 的教训沿用）。
+// 取 HEAD 的 `verify-t01875.mjs`（批㉛ 出事的那支）两态对照：
+//   a) 原样 ⇒ 必须 0 命中（否则本判据在真实语料上虚报，L-04 的红就没有意义）；
+//   b) 摘掉一个具名 import 项（就是批㉛ 的缺陷形态）⇒ 必须点名那个名字。
+const REAL_GATE_FILE = 'scripts/verify-t01875.mjs';
+const realGateSrc = headText(REAL_GATE_FILE) ?? '';
+const realBaseline = realGateSrc ? checkSource(realGateSrc, REAL_GATE_FILE) : { hits: [], parseError: 'HEAD 取数失败' };
+/** 从源码里按「首条具名 import 的花括号内容」取候选本地名（只认裸名，`a as b` 一律跳过，保证可精确回删） */
+function namedImportCandidates(src: string): string[] {
+  const out: string[] = [];
+  const re = /^import\s*\{([^}]*)\}\s*from\s*['"]/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src))) {
+    for (const p of m[1].split(',')) {
+      const t = p.trim();
+      if (/^[A-Za-z_$][\w$]*$/.test(t) && !out.includes(t)) out.push(t);
+    }
+  }
+  return out;
+}
+/** 把某个具名 import 项从**声明处**摘掉（其余逐字保留），复现「用了没 import」 */
+function spliceNamedImport(src: string, name: string): string | null {
+  const re = /^import\s*\{([^}]*)\}\s*from\s*['"]/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src))) {
+    const parts = m[1].split(',');
+    const idx = parts.findIndex((p) => p.trim() === name);
+    if (idx >= 0) {
+      parts.splice(idx, 1);
+      const innerStart = m.index + m[0].indexOf('{') + 1;
+      return src.slice(0, innerStart) + parts.join(',') + src.slice(innerStart + m[1].length);
+    }
+  }
+  return null;
+}
+const realCands = namedImportCandidates(realGateSrc);
+let realMut: { name: string; hits: string[]; tried: number } | null = null;
+for (let i = 0; i < realCands.length; i++) {
+  const name = realCands[i];
+  const mutated = spliceNamedImport(realGateSrc, name);
+  if (mutated === null) continue;
+  const hits = checkSource(mutated, REAL_GATE_FILE).hits.map((h) => h.name);
+  if (hits.includes(name)) { realMut = { name, hits, tried: i + 1 }; break; }
+}
+ok(`L-02 真实门体变异有牙：HEAD 的 ${REAL_GATE_FILE}（${realGateSrc.length} 字符）原样必须 0 命中（实得 ${JSON.stringify(realBaseline.hits.map((h) => h.name)).slice(0, 160)}），把某个具名 import 项从声明处摘掉（批㉛ 的真实缺陷形态）必须点名该名字（候选 ${realCands.length} 个，第 ${realMut?.tried ?? 0} 个即命中 ${realMut?.name ?? '（无）'}）`,
+  realBaseline.hits.length === 0 && !realBaseline.parseError && realMut !== null,
+  { 原样命中: realBaseline.hits.slice(0, 5), 语法层: realBaseline.parseError, 变异: realMut });
+
+// L-03 分层归因：语法层坏 ≠ 未定义标识符。本判据的红只该来自「加载即 ReferenceError」，
+// 语法坏由 `--check` 那一层负责；混在一起就又回到「红因不可归因」。
+const syntaxCase = checkSource(`const a = ;\nif () {}\n`, 'broken.mjs');
+ok('L-03 语法层失败单独回传 parseError 且**不产出**任何未定义标识符命中（AST 已不可信，行号不能报）',
+  !!syntaxCase.parseError && syntaxCase.hits.length === 0,
+  { parseError: syntaxCase.parseError, hits: syntaxCase.hits });
+
+// L-04 全量普查（本单第 1 条要求的「批量体检」，进成败判定）：HEAD 的 verify-* 与 lib/* 逐支扫，
+// 命中即点名。⚠ 不用「文件数下限」钉在位性（反模式 39：数量当在位下限会让自己为进度红），
+// 在位性由 L-01/L-02 两条变异道负责；这里只补一条**非空转**守卫：枚举面与取数面必须逐支对上，
+// 一支读不到源码就点名——否则「0 命中」可能只是「0 支被扫过」。
+const loadScanFiles = listHeadGateFiles(ROOT);
+const loadScanHits: Array<{ file: string; line: number; column: number; name: string }> = [];
+const loadScanReadFail: string[] = [];
+const loadScanSyntaxFail: string[] = [];
+const loadScanT0 = Date.now();
+let loadScanned = 0;
+for (const rel of loadScanFiles) {
+  const code = headText(rel);
+  if (code === null) { loadScanReadFail.push(rel); continue; }
+  loadScanned += 1;
+  const r = checkSource(code, rel);
+  if (r.parseError) { loadScanSyntaxFail.push(`${rel} :: ${r.parseError}`); continue; }
+  for (const h of r.hits) loadScanHits.push({ file: rel, line: h.line, column: h.column, name: h.name });
+}
+const loadScanMs = Date.now() - loadScanT0;
+ok(`L-04 全量普查 HEAD 门体族加载面：枚举 ${loadScanFiles.length} 支、实扫 ${loadScanned} 支（取数失败 ${loadScanReadFail.length}、语法层 ${loadScanSyntaxFail.length}），未定义标识符命中 ${loadScanHits.length} 处——本判据的红只会来自「真用了没解析到的名字」，并发工作树不参与（耗时 ${loadScanMs}ms，本门因此从秒级变为分钟级，读数写进标签供人看趋势）`,
+  loadScanFiles.length > 0 && loadScanned === loadScanFiles.length && loadScanHits.length === 0,
+  { 命中: loadScanHits.slice(0, 20), 取数失败: loadScanReadFail.slice(0, 10), 语法层: loadScanSyntaxFail.slice(0, 10) });
+
+lines.push('');
+lines.push(`[census] 加载面普查（批㉝/T02770）：扫 ${loadScanned} 支（verify-* + lib/*，取数面 HEAD），未定义标识符 ${loadScanHits.length} 处，耗时 ${loadScanMs}ms；夹具双向 ${LOAD_CASES.length - loadCaseBad.length}/${LOAD_CASES.length}，真实门体变异命中 ${realMut ? `${realMut.name}（第 ${realMut.tried}/${realCands.length} 个候选）` : '未命中'}`);
+lines.push(loadScanHits.length
+  ? loadScanHits.map((h) => `  - ${h.file}:${h.line}:${h.column} ${h.name}`).join('\n')
+  : '  （无——含批㉛ 那次事故在内的门体族，当前 HEAD 全量干净）');
 
 // —— census 留痕（不进成败判定，反模式 37 的留痕道）：批㉗ 的教训是「普查必须按 HEAD 实测定量报数，
 // 沿用上一批的定性条数会让残留清单虚高、下一批入口选错」。本门即定量口径的唯一出处。
