@@ -235,7 +235,7 @@ async function call(method: string, path: string, json?: unknown) {
  * 指纹是「慢开机轮必红、快开机轮不红」（实测 boot 18s 轮 49/0；boot 173s/382s 轮 46/3），
  * 同一进程内后续同路由请求全部正常，所以不是产品缺陷，是门这条连接姿势的问题。
  * **归因诚实标注**：原本推测是「undici 复用服务端 keepAliveTimeout(默认 5s) 之后悄悄关掉的连接」，
- * 但用最小夹具（/d/code/tmp/b28-keepalive-probe.mts：空闲远超 timeout 一次 + 卡关闭边界 12 次）实测**未复现**
+ * 但用最小夹具（`scripts/probe-keepalive-idle-race.mts`，本批已入库：空闲远超 timeout 一次 + 卡关闭边界 12 次）实测**未复现**
  * ——undici 对 FIN 会优雅重连，本机 12/12 没炸。故这里只把已证实的部分写下：
  * 已证实 = 两轮红在传输层 ECONNRESET 且只与空闲时长相关；未证实 = 具体是哪一侧先关的连接。
  * `Connection: close` 是让整族「复用连接上的时序红」无从发生的手段（消除而非证明），
