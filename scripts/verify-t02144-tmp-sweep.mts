@@ -221,7 +221,7 @@ async function killBoot(): Promise<void> {
 }
 async function call(method: string, path: string, json?: unknown) {
   const res = await fetch(BASE + path, {
-    method, headers: { 'Content-Type': 'application/json' },
+    method, headers: NO_KEEPALIVE,
     body: json === undefined ? undefined : JSON.stringify(json),
   });
   const text = await res.text();
@@ -229,16 +229,30 @@ async function call(method: string, path: string, json?: unknown) {
   try { body = JSON.parse(text); } catch { /* 二进制 */ }
   return { status: res.status, body };
 }
+/**
+ * 门→隔离实例的每个请求都带 `Connection: close`（T02293 批㉘ 第四轮实测根因）。
+ * A2-01 连着两轮红在「首条 SSE 零帧」，把 `e.cause` 打出来后才知道是 `ECONNRESET read ECONNRESET`：
+ * undici 会复用 keep-alive 连接，而 Node 服务端 `keepAliveTimeout` 默认 5s——门在 X-02 建工具之后
+ * 还要跑一整段 T 组（进程内直调 + 改 mtime + 清扫）与 A1 组，空闲远超 5s，服务端早已悄悄关掉这条连接，
+ * 客户端下一次 POST 却照旧把它捡起来，于是「一个字节都没发出去」就被重置。慢开机轮必红、快开机轮不红，
+ * 正是这条时序竞态的指纹（实测：boot 18s 轮 49/0；boot 173s/382s 轮 46/3）。
+ * 不是产品缺陷（同一进程内后续同路由请求全部正常），是门的客户端姿势问题；`Connection: close` 不复用连接即根治。
+ */
+const NO_KEEPALIVE = { 'Content-Type': 'application/json', connection: 'close' };
+/** 上一次「门→实例」请求的时刻，用来把「空闲多久」写进 A2-01 证据（keep-alive 竞态的直接读数） */
+let lastReqAt = Date.now();
+function stampReq() { const g = Date.now() - lastReqAt; lastReqAt = Date.now(); return g; }
+
 async function download(token: string, fileName: string) {
   const res = await fetch(BASE + '/report/ai-download', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: NO_KEEPALIVE,
     body: JSON.stringify({ token, filename: fileName }),
   });
   return { status: res.status, buf: Buffer.from(await res.arrayBuffer()) };
 }
 /** 走 SSE；abortWhen 命中即在客户端断开（服务端的 close 守卫由此被触发） */
 async function streamGen(path: string, body: unknown, opts: { abortWhen?: (ev: { event: string; data: any }) => boolean } = {}): Promise<{
-  events: Array<{ event: string; data: any }>; aborted: boolean; status: number; contentType: string; failure: string;
+  events: Array<{ event: string; data: any }>; aborted: boolean; status: number; contentType: string; failure: string; idleMs: number;
 }> {
   const ac = new AbortController();
   const events: Array<{ event: string; data: any }> = [];
@@ -248,15 +262,17 @@ async function streamGen(path: string, body: unknown, opts: { abortWhen?: (ev: {
   // 批㉘：原来 `catch {}` 把所有失败咽进同一口「events 空」的井——A2-01 红时既分不清「服务端在出第一帧
   // 之前就炸了（非 SSE 应答）」还是「流被中断/解析不出帧」，红因不可辨（本轮实测首轮生成即此形态）。
   let failure = '';
+  let idleMs = 0;
   try {
+    idleMs = stampReq();
     const res = await fetch(BASE + path, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: ac.signal,
+      method: 'POST', headers: NO_KEEPALIVE, body: JSON.stringify(body), signal: ac.signal,
     });
     status = res.status;
     contentType = res.headers.get('content-type') ?? '';
     if (!res.ok || !contentType.includes('event-stream')) {
       failure = `HTTP ${status} content-type=${contentType || '(空)'} 响应体: ${(await res.text().catch(() => '')).slice(0, 400)}`;
-      return { events, aborted, status, contentType, failure };
+      return { events, aborted, status, contentType, failure, idleMs };
     }
     let raw = '';
     const reader = res.body!.getReader();
@@ -274,7 +290,7 @@ async function streamGen(path: string, body: unknown, opts: { abortWhen?: (ev: {
           data: (() => { try { return JSON.parse(/^data: (.*)$/m.exec(chunk)?.[1] ?? '{}'); } catch { return {}; } })(),
         };
         events.push(ev);
-        if (opts.abortWhen?.(ev)) { aborted = true; ac.abort(); return { events, aborted, status, contentType, failure }; }
+        if (opts.abortWhen?.(ev)) { aborted = true; ac.abort(); return { events, aborted, status, contentType, failure, idleMs }; }
         i = raw.indexOf('\n\n');
       }
     }
@@ -288,7 +304,7 @@ async function streamGen(path: string, body: unknown, opts: { abortWhen?: (ev: {
       failure = `读流出错: ${s}｜cause=${c?.code ?? c?.name ?? ''} ${c?.message ?? ''}`.trim();
     }
   }
-  return { events, aborted, status, contentType, failure };
+  return { events, aborted, status, contentType, failure, idleMs };
 }
 
 /** 12 页标准稿（含风险页 + 沟通页，措辞段必然被调用） */
@@ -409,6 +425,7 @@ if (!boot1.up) {
       events: gen1.events.map((e) => e.event).join(','), pageCount: done1?.data?.pageCount, 大纲条数: outline.length,
       // 批㉘：红因可读性——零帧时把 HTTP 状态/content-type/失败面一起打出来，不再只留一个空 events 串
       应答: `HTTP ${gen1.status} ${gen1.contentType || '(无 content-type)'}`, 失败面: gen1.failure || '(无)',
+      距上次请求空闲: `${Math.round(gen1.idleMs / 1000)}s（服务端 keepAliveTimeout 默认 5s，超此值就不该再复用连接）`,
     });
   const tok1 = done1 ? String(done1.data?.token ?? '') : '';
   const dl1 = tok1 ? await download(tok1, String(done1?.data?.fileName ?? '')) : null;
