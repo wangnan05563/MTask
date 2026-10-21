@@ -16,7 +16,7 @@
  *   环境变量：T01674_PORT（默认 39913）、T01674_CDP（默认 9337）、T01674_CHROME（Chrome 可执行文件）
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -83,6 +83,28 @@ const cleanup = () => {
   }
 };
 process.on('exit', cleanup);
+
+// ---------------- 0) 前置件就位（批㉚ U-00e 同款口径；T02767 改判） ----------------
+// 本门浏览器腿考的是**已构建的前端产物**：`web/dist` 不在＝「考卷没发」，属前置件缺失而非判据失守，
+// 记 FAIL 会把「谁没跑 build」变成恒红门（T02293 要打的红因不可区分类）；`web/dist` 早于 HEAD 提交
+// ＝「考卷是旧的」，浏览器腿红绿都不可归因到当前源码。两支都按 SKIP 收口并 exit≠0——
+// 「本轮什么都没测」绝不能被读成绿。前置检查放在起服务**之前**：产物缺失时不必空烧一次隔离实例启动。
+const DIST_INDEX = join(ROOT, 'web', 'dist', 'index.html');
+const distReady = existsSync(DIST_INDEX);
+const distMtime = distReady ? statSync(DIST_INDEX).mtimeMs : 0;
+const headCommitMs = Number(execFileSync('git', ['log', '-1', '--format=%ct'], { cwd: ROOT, encoding: 'utf8' }).toString().trim() || 0) * 1000;
+if (!distReady) {
+  console.log(`  [SKIP] K-00 前端产物就位（web/dist/index.html 不在（${DIST_INDEX}）——前置件缺失，不是判据失守）`);
+  console.log('  [SKIP] K-01..K-04 浏览器腿（web/dist 未构建：产物缺失 ≠ 功能失守，先跑 `cd web && npm run build` 再复跑本门；本轮什么都没测，故 exit≠0）');
+  console.log('\n结果：PASS=0 FAIL=0 SKIP=2');
+  process.exit(1);
+}
+if (headCommitMs > 0 && distMtime < headCommitMs) {
+  console.log(`  [SKIP] K-00 前端产物不早于 HEAD 提交（dist 构建于 ${new Date(distMtime).toISOString()}，HEAD 提交于 ${new Date(headCommitMs).toISOString()}）——旧产物测新代码，红绿不可归因；跑「cd web && npm run build」后复跑本门`);
+  console.log('\n结果：PASS=0 FAIL=0 SKIP=1');
+  process.exit(1);
+}
+console.log(`前置件就位：${DIST_INDEX}（构建于 ${new Date(distMtime).toISOString()}，HEAD 提交于 ${new Date(headCommitMs).toISOString()}）`);
 
 // ---------------- 1) 隔离实例（临时库 + 临时端口，不动生产数据） ----------------
 const LAUNCHER = resolveServerLauncher(ROOT, join(ROOT, 'server', 'src', 'index.ts'));
