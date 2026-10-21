@@ -44,8 +44,13 @@ const BATS = ['构建打包.bat', 'build-pack-t.bat'];
 // 日常开发入口 启动服务.bat 与三枚 .bat 的生成器模板 _gen_bat.py 里（漏改一处，下次重生成就把修复抹掉）。
 const DEV_BAT = '启动服务.bat';
 const GEN_REL = '_gen_bat.py';
-const PINN_FILES = [...BATS, DEV_BAT, GEN_REL];
+// T02696：一键发布入口（.ps1）与 T02616 同根因的残留面——它把托管 Node 与托管 Python 的**版本目录名**
+// 都写死过（22.22.2-3 / 3.13.12，两个目录如今都不存在），且 Test-Path 判假后一声不响。
+// 它此前是未跟踪文件，本单连同修复一起入库；纳入矩阵后 P-07（不再写死）、P-05（跑门零污染）自动覆盖它。
+const ONECLICK_REL = 'publish-oneclick.ps1';
+const PINN_FILES = [...BATS, DEV_BAT, GEN_REL, ONECLICK_REL];
 const PS_REL = path.join('scripts', 'lib', 'resolve-managed-node.ps1');
+const PS_PY_REL = path.join('scripts', 'lib', 'resolve-managed-python.ps1');
 const HINT_REL = path.join('scripts', 'lib', 'abi-hint.mjs');
 const CUT_MARK = 'T02616-CUT-OK';
 const TMP = path.join(process.env.MTASK_GATE_TMP || tmpdir(), `t02616-${process.pid}`);
@@ -187,7 +192,8 @@ const pathWin = (pathWinRes.stdout ?? '').split(/\r?\n/)[0].trim();
 // ---------- P 组：前置与卫生（含改判前面配对取证） ----------
 const chanPs = spawnSync('powershell.exe', ['-NoProfile', '-Command', '1+1'], { encoding: 'utf8' });
 ok('P-01 前置：三枚入口 + 生成器模板 / 解析器 / ABI 提示都在位，powershell 与 cmd→node 两条通道起得来',
-  PINN_FILES.every((f) => existsSync(path.join(ROOT, 'scripts', f))) && existsSync(path.join(ROOT, PS_REL)) && existsSync(path.join(ROOT, HINT_REL))
+  PINN_FILES.every((f) => existsSync(path.join(ROOT, 'scripts', f))) && existsSync(path.join(ROOT, PS_REL))
+  && existsSync(path.join(ROOT, PS_PY_REL)) && existsSync(path.join(ROOT, HINT_REL))
   && chanPs.status === 0 && runs[BATS[0]].absent.code !== undefined && runs[BATS[0]].absent.err === '',
   `ps=${chanPs.status}｜cmd 通道首枚 exit=${runs[BATS[0]].absent.code} error=${runs[BATS[0]].absent.err || '(无)'}`);
 
@@ -218,11 +224,27 @@ okPair(ok, 'P-03 死路径换成按可用性解析：工作树两枚 .bat 都不
   () => prePinned.length === 2 && worktreePinned.length === 0 && (PRE_REF === 'HEAD' || pinnedIn('HEAD').length === 0),
   () => ({ 反证面: PRE_REF, 工作树仍写死: worktreePinned, 改判前写死: prePinned.map((b) => `${b}:${(PINNED_RE.exec(preBodies.get(b)) ?? [''])[0]}`) }));
 
-const matrixPinned = PINN_FILES.filter((f) => PINNED_RE.test(readFileSync(path.join(ROOT, 'scripts', f), 'latin1')));
-okPair(ok, 'P-07 改动点矩阵枚举完整：写死托管 Node 版本目录的不止两枚发布入口——三枚 .bat（含日常开发入口 启动服务.bat）与生成器 _gen_bat.py 的两处模板都不再写死，且都改走解析器（漏一处，下次重生成就把本单修复抹掉）——行为腿：三枚入口都被 cmd 真解析执行到切断点',
+// T02696：P-07 的行为腿要真跑一次 powershell，所以一键发布入口的中止证据必须先于 P-07 就位。
+// makePsFixture / runPublish / makePyRoot 都是函数声明（整体提升），提前的只是它们的入参常量；
+// B/N 组判定腿仍按原顺序出，跑的是同一份 psFx 与同一次 pubLive / pubAbsent（不重复起进程）。
+const PYPS = path.join(ROOT, PS_PY_REL);
+const PY_ABSENT = path.join(TMP, 'mgpy-absent');
+const PY_LIVE = makePyRoot('live', [{ name: '2.10.0' }, { name: '2.9.9' }], '2.10.0');
+const PY_LIVE_EXE = path.join(PY_LIVE, '2.10.0', 'python.exe');
+const oneclickSrc = readFileSync(path.join(ROOT, 'scripts', ONECLICK_REL), 'utf8');
+const ABORT_MARK = "no 'MTask Setup *.exe' found";
+const psFx = makePsFixture('oneclick', oneclickSrc);
+const pubLive = runPublish(psFx, { MTASK_MG_NODE_ROOT: MG_LIVE, MTASK_MG_PYTHON_ROOT: PY_LIVE });
+const pubAbsent = runPublish(psFx, { MTASK_MG_NODE_ROOT: ABSENT, MTASK_MG_PYTHON_ROOT: PY_ABSENT });
+
+const PINNED_PY_RE = /binaries\\python\\versions\\[^\s"']+/;
+const pinnedText = (f) => readFileSync(path.join(ROOT, 'scripts', f), 'latin1');
+const matrixPinned = PINN_FILES.filter((f) => PINNED_RE.test(pinnedText(f)) || PINNED_PY_RE.test(pinnedText(f)));
+okPair(ok, 'P-07 改动点矩阵枚举完整：写死托管 Node 版本目录的不止两枚发布入口——三枚 .bat（含日常开发入口 启动服务.bat）、生成器 _gen_bat.py 的两处模板，以及 T02696 补入的一键发布入口 publish-oneclick.ps1（Node 与 Python 两处都算）都不再写死，且都改走解析器（漏一处，下次重生成就把本单修复抹掉）——行为腿：三枚 .bat 被 cmd 真解析执行到切断点，且 .ps1 入口被 powershell 真执行到中止点',
   () => BATS.every((b) => runs[b].absent.code === 0 && hasLine(runs[b].absent.out, CUT_MARK))
-    && devRuns.absent.code === 0 && hasLine(devRuns.absent.out, CUT_MARK),
-  () => matrixPinned.length === 0 && PINN_FILES.every((f) => /resolve-managed-node\.ps1/.test(readFileSync(path.join(ROOT, 'scripts', f), 'latin1'))),
+    && devRuns.absent.code === 0 && hasLine(devRuns.absent.out, CUT_MARK)
+    && pubLive.code === 1 && hasLine(pubLive.out, ABORT_MARK),
+  () => matrixPinned.length === 0 && PINN_FILES.every((f) => /resolve-managed-node\.ps1/.test(pinnedText(f))),
   () => ({ 矩阵: PINN_FILES, 仍写死: matrixPinned }));
 
 /** 历史坑：0.1.0913.63 那次构建在解析期 abort，因为 ( ... ) 块内 echo 文本有未转义圆括号。 */
@@ -452,6 +474,129 @@ ok('N-07 空根反证 + 红因可区分：解析器对空根返回空输出而�
   && /行为失守/.test(redReasons[0]) && /字面锚点失配/.test(redReasons[1]),
   `红因0=${redReasons[0].slice(0, 60)}｜红因1=${redReasons[1].slice(0, 60)}`);
 
+// ---------- T02696 组：一键发布 .ps1 入口与托管 Python 解析器 ----------
+/**
+ * 托管 Python 夹具根（specs 每项 {name, hasPy}，pointer !== undefined 时写 current 指针文件）。
+ * 诚实性说明：夹具里的 python.exe 是 1 字节占位，本门**从不执行**它——B-10/B-11 让真入口走到 [2] 步
+ * 就因「release 目录里没有安装件」如实中止（绝不可能进到 [4] 生成说明或 [5] 发布 GitHub），
+ * 取的是「解析 + 出声」这段行为的真值；被执行的 node 侧仍是 junction 指到 MG_REAL 的真 node.exe。
+ */
+function makePyRoot(label, specs, pointer) {
+  const root = path.join(TMP, `mgpy-${label}`);
+  rmSync(root, { recursive: true, force: true });
+  mkdirSync(root, { recursive: true });
+  for (const s of specs) {
+    const dir = path.join(root, s.name);
+    mkdirSync(dir, { recursive: true });
+    if (s.hasPy !== false) writeFileSync(path.join(dir, 'python.exe'), Buffer.from('placeholder'), 'ascii');
+  }
+  if (pointer !== undefined) writeFileSync(path.join(root, 'current'), pointer, 'ascii');
+  return root;
+}
+function runPyResolver(psFile, pyRoot) {
+  const env = envFor();
+  if (pyRoot === undefined) delete env.MTASK_MG_PYTHON_ROOT; else env.MTASK_MG_PYTHON_ROOT = pyRoot;
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', psFile], { encoding: 'utf8', env });
+  return { code: r.status ?? -1, out: (r.stdout ?? '').replace(/\r/g, '').trim(), err: (r.stderr ?? '').trim() };
+}
+ok('R-09 Python 解析器：根不存在 → 不输出任何候选（宁可空，也不猜一个目录出来），exit 0',
+  (() => { const r = runPyResolver(PYPS, PY_ABSENT); return r.code === 0 && r.out === ''; })(), PY_ABSENT);
+ok('R-10 Python 解析器：current 指针可用时优先于版本号最大者（指针是权威，枚举只兜底）',
+  (() => {
+    const root = makePyRoot('ptr', [{ name: '2.10.0' }, { name: '2.9.9' }], '2.9.9');
+    return runPyResolver(PYPS, root).out === path.join(root, '2.9.9', 'python.exe');
+  })(), '指针 2.9.9 对枚举 2.10.0');
+ok('R-11 Python 解析器：current 指向的目录没有 python.exe → 不许选它，必须落枚举并返回可用者（陈旧指针不能当答案）',
+  (() => {
+    const root = makePyRoot('stale', [{ name: '2.10.0' }, { name: '2.9.9', hasPy: false }], '2.9.9');
+    return runPyResolver(PYPS, root).out === path.join(root, '2.10.0', 'python.exe');
+  })(), '指针指向空壳 2.9.9');
+ok('R-12 Python 解析器：无 current → 按版本序取最高可用目录（2.10.0 > 2.9.9；字典序会选 2.9.9，无 python.exe 的目录不进候选）',
+  (() => {
+    const root = makePyRoot('order', [{ name: '2.10.0' }, { name: '2.9.9' }, { name: 'zzz' }, { name: '3.0.0', hasPy: false }]);
+    return runPyResolver(PYPS, root).out === path.join(root, '2.10.0', 'python.exe');
+  })(), '字典序反例 2.9.9 / 3.0.0');
+ok('R-13 Python 解析器：根存在但无任何可用版本目录 → 空输出（不把根目录自己当答案）；未设环境变量同样空输出',
+  (() => {
+    const empty = makePyRoot('empty', []);
+    const a = runPyResolver(PYPS, empty);
+    const b = runPyResolver(PYPS, undefined);
+    return a.code === 0 && a.out === '' && b.code === 0 && b.out === '';
+  })(), '空根 + 未设 env 两条');
+
+
+/** 一键发布入口的**中止夹具**：逐字取仓库当前件 + 两枚解析器，配一个空的 release 目录。
+ *  $RepoRoot 由 $PSScriptRoot 推出，所以入口必然在 TMP 的副本里跑；主仓 release/ 与 GitHub 通道都不被触碰。 */
+function makePsFixture(label, psText) {
+  const fx = path.join(TMP, `psfx-${label}`);
+  rmSync(fx, { recursive: true, force: true });
+  mkdirSync(path.join(fx, 'scripts', 'lib'), { recursive: true });
+  mkdirSync(path.join(fx, 'release'), { recursive: true });
+  writeFileSync(path.join(fx, 'scripts', ONECLICK_REL), psText, 'utf8');
+  for (const rel of [PS_REL, PS_PY_REL]) writeFileSync(path.join(fx, rel), readFileSync(path.join(ROOT, rel)), 'utf8');
+  return path.join(fx, 'scripts', ONECLICK_REL);
+}
+function runPublish(absPs, extraEnv) {
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', absPs], {
+    encoding: 'utf8', env: envFor({ SKIP_BUILD: '1', ...extraEnv }),
+  });
+  return { code: r.status ?? -1, out: (r.stdout ?? '').replace(/\r/g, ''), err: (r.stderr ?? '').replace(/\r/g, '') };
+}
+
+ok('B-10 一键发布入口端到端实跑（SKIP_BUILD=1 + 空 release 目录 ⇒ 必然停在 [2] 步，进不到发布）：两枚托管根可用时点名 managed 的 node 目录与 python.exe，且零 WARN',
+  pubLive.code === 1 && hasLine(pubLive.out, ABORT_MARK)
+  && pubLive.out.includes(`node:   ${MG_LIVE_CHOSEN} (managed)`)
+  && pubLive.out.includes(`python: ${PY_LIVE_EXE} (managed)`)
+  && !pubLive.out.includes('[WARN]'),
+  `exit=${pubLive.code}｜${pubLive.out.split(/\r?\n/).filter((l) => /node:|python:|WARN/.test(l)).join(' / ') || '(无解析行)'}`);
+ok('B-11 同一枚入口在托管根缺失时必须**出声**回落：Node 与 Python 各两行 WARN 点名根目录，并把实际使用的 PATH 解释器打出来（静默落在别的解释器上就是 T02616 那条缺陷本身）',
+  pubAbsent.code === 1 && hasLine(pubAbsent.out, ABORT_MARK)
+  && hasLine(pubAbsent.out, 'no usable managed node') && hasLine(pubAbsent.out, 'no usable managed python')
+  && hasLine(pubAbsent.out, 'this publish runs on the node already on PATH')
+  && hasLine(pubAbsent.out, 'this publish runs on python from PATH'),
+  pubAbsent.out.split(/\r?\n/).filter((l) => /WARN|node:|python:/.test(l)).join(' / ') || '(无任何提示——静默)');
+ok('B-12 中止夹具诚实性：夹具里的 .ps1 与两枚解析器逐字节是仓库当前件（跑的就是产品那段文本，门没有另写平行版），且夹具确实停在 [2]（release 目录仍为空、没生成任何发布物）',
+  (() => {
+    const fxPs = path.join(TMP, 'psfx-oneclick', 'scripts', ONECLICK_REL);
+    return sha(fxPs) === sha(path.join(ROOT, 'scripts', ONECLICK_REL))
+      && sha(path.join(TMP, 'psfx-oneclick', PS_REL)) === sha(path.join(ROOT, PS_REL))
+      && sha(path.join(TMP, 'psfx-oneclick', PS_PY_REL)) === sha(path.join(ROOT, PS_PY_REL))
+      && existsSync(fxPs) && readFileSync(fxPs, 'utf8').length > 0;
+  })(), `入口 sha=${sha(path.join(ROOT, 'scripts', ONECLICK_REL))}`);
+
+/** 改判前形态（逐字取自 2026-10-18 那版未入库的 publish-oneclick.ps1，替换掉现在的解析段）：
+ *  写死版本目录 + Test-Path 判假后什么都不打印。留着它是为了**行为**反证，不是拿来当判据的字面抄本。 */
+const ONECLICK_PRE_BLOCK = [
+  '# Forward managed Node into PATH (matches better-sqlite3 ABI used by the build).',
+  "$MGNode = 'C:\\Users\\hspcadmin\\.workbuddy\\binaries\\node\\versions\\22.22.2-3'",
+  'if (Test-Path "$MGNode\\node.exe") { $env:PATH = "$MGNode;" + $env:PATH }',
+  '',
+  '# Resolve python: managed interpreter first, then PATH.',
+  "$PY = ''",
+  "$candidate = 'C:\\Users\\hspcadmin\\.workbuddy\\binaries\\python\\versions\\3.13.12\\python.exe'",
+  'if (Test-Path $candidate) { $PY = $candidate }',
+  'else {',
+  '  $p = Get-Command python -ErrorAction SilentlyContinue',
+  '  if ($p) { $PY = $p.Source }',
+  '}',
+  "if (-not $PY) { $PY = 'python' }",
+  ''].join('\r\n');
+const preFormSrc = oneclickSrc.replace(/# T02696[\s\S]*?\r?\n(?=\$BuildScript)/, ONECLICK_PRE_BLOCK);
+const preFormPs = makePsFixture('pre', preFormSrc === oneclickSrc ? oneclickSrc : preFormSrc);
+const pubPre = runPublish(preFormPs, { MTASK_MG_NODE_ROOT: MG_LIVE, MTASK_MG_PYTHON_ROOT: PY_LIVE });
+ok('N-10 改判前形态的行为反证（新判据不是恒红、缺陷确实在改判前）：把解析段换回那两行写死字面量的原形态后，同一场景一声不响（零 WARN、零 managed 点名）、两枚解释器静默落到 PATH，却仍照常走到 [2] 步 exit 1——这正是「静默退化」；同时 P-07 的矩阵判据必须当场点名它（Node 与 Python 两条正则都命中）',
+  preFormSrc !== oneclickSrc && pubPre.code === 1 && hasLine(pubPre.out, ABORT_MARK)
+  && !pubPre.out.includes('[WARN]') && !pubPre.out.includes('(managed)')
+  && PINNED_RE.test(preFormSrc) && PINNED_PY_RE.test(preFormSrc),
+  `exit=${pubPre.code}｜提示行=${pubPre.out.split(/\r?\n/).filter((l) => /WARN|node:|python:/.test(l)).join(' / ') || '(无——静默)'}`);
+const MUT_WARN_STMT_RE = /Write-Host ['"][^'"\r\n]*\[WARN\][^'"\r\n]*['"]/g;
+const mutWarnStripped = (oneclickSrc.match(MUT_WARN_STMT_RE) ?? []).length;
+const mutSilentSrc = oneclickSrc.replace(MUT_WARN_STMT_RE, "Write-Host ''");
+const pubMut = runPublish(makePsFixture('mut', mutSilentSrc), { MTASK_MG_NODE_ROOT: ABSENT, MTASK_MG_PYTHON_ROOT: PY_ABSENT });
+ok('N-09 变异：把一键发布回落分支的四行 WARN 换成合法空输出（分支还在、语法没错）→ 同一场景重新变回静默却仍在 [2] 步如实中止（B-11 的牙齿来自「不许静默」，不是文案碰巧在场）',
+  mutWarnStripped === 4 && pubMut.code === 1 && hasLine(pubMut.out, ABORT_MARK) && !pubMut.out.includes('[WARN]'),
+  `变异件 exit=${pubMut.code}｜替换语句=${mutWarnStripped} 条｜WARN 行数=${(pubMut.out.match(/\[WARN\]/g) ?? []).length}`);
+
 // ---------- 收口：真实仓库零污染 ----------
 const SQLITE_AFTER = sha(SQLITE_NODE);
 const drifted = PINN_FILES.filter((f) => sha(path.join(ROOT, 'scripts', f)) !== BAT_BEFORE.get(f));
@@ -469,7 +614,8 @@ ok('P-06 夹具没伤到本体：junction 目标目录仍可执行（node.exe �
 
 const summary = `PASS=${pass} FAIL=${fail}\n门：verify-t02616-managed-node · 基线 HEAD ${HEAD_SHA.slice(0, 7)} · 断言 ${pass + fail} 条\n`
   + `R 组 8 条（解析器，夹具版本目录 + 敌意指针 + 真实机器面）+ B 组 6 条（两枚 .bat 截断夹具 cmd 真跑 + 真入口停在第 [3/7] 步的端到端）\n`
-  + `+ A 组 5 条（ABI 读二进制注册符号）+ N 组 6 条（改判前面静默反证 + 四件变异 + 空根反证与 okPair 红因可区分）+ P 组 6 条（前置/卫生/零污染）\n`
+  + `+ A 组 5 条（ABI 读二进制注册符号）+ T02696 组 8 条（Python 解析器 R-09~R-13 · 一键发布入口 B-10~B-12 真跑到 [2] 步中止）\n`
+  + `+ N 组 8 条（改判前 .bat 面静默反证 + 一键发布改判前形态反证 N-10 + 六件变异 + 空根反证与 okPair 红因可区分）+ P 组 6 条（前置/卫生/零污染）\n`
   + `okPair 契约自证两条走 PROBE 通道（故意红，只落证据不进计数）；门自身计数只由真判据决定\n`
   + `字面锚点全部走 okPair 配行为腿；全程不调 native-switch、不跑 electron-builder、不读生产实例\n${LINES.join('\n')}\n`;
 origLog(`\nPASS=${pass} FAIL=${fail}`);
