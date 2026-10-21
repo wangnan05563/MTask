@@ -89,4 +89,45 @@ function installOutcome({ code, timedOut }) {
   return { status: 'failed', message: `安装器返回失败（退出码 ${code}）：安装包可能损坏、目标目录被占用或权限不足`, code };
 }
 
-module.exports = { parseVersion, cmpVersion, resumePlan, pendingFile, writePending, readPending, clearPending, reconcilePending, installOutcome };
+/**
+ * T02740：在线更新（内置仓库）的 latest-release 判定内核——同为纯函数，随本模块一起入
+ * build.files 白名单（新增独立文件会被 W-14「主进程本地 require 必须在白名单」拦红，
+ * 而 package.json 是并发会话的 MM 文件，不宜为白名单加行去裹挟他人 WIP）。
+ * 版本比较复用上方 cmpVersion；tag 提取与安装包 asset 优先规则与
+ * server/src/services/UpdateService.ts 同口径，两处如要改动必须同步。
+ */
+
+/** 从 tag/名称中提取版本号（v0.1.0 → 0.1.0）；无数字段返回 null */
+function extractVersion(tag) {
+  const m = /v?(\d+(?:\.\d+)+)/i.exec(String(tag ?? '').trim());
+  return m ? m[1] : null;
+}
+
+/** 解析 GitHub /releases/latest 响应体；tag 取不到版本号即抛中文错误（宁报错不误提示）。
+ *  下载地址优先级：Windows 安装包 asset > Release 页面链接（与服务端同规则）。 */
+function parseLatestRelease(data) {
+  const version = extractVersion(data?.tag_name);
+  if (!version) {
+    throw new Error(`Release 标签「${data?.tag_name ?? ''}」中未找到版本号（约定 vX.X.X），无法比较`);
+  }
+  const winAsset = (data?.assets ?? []).find((a) => /(?:setup|installer|\.exe$)/i.test(String(a?.name ?? '')));
+  const releaseUrl = data?.html_url ?? '';
+  return {
+    version,
+    releaseName: data?.name ?? data?.tag_name ?? '',
+    publishedAt: data?.published_at ?? '',
+    downloadUrl: winAsset?.browser_download_url ?? releaseUrl,
+    downloadIsInstaller: Boolean(winAsset),
+  };
+}
+
+/** HTTP 状态码 → 中文可读错误（与服务端 fetchLatestRelease 错误映射同口径）；200 返回 null */
+function mapReleaseHttpError(status) {
+  if (status === 404) return '内置仓库不存在，或尚未发布任何 Release（请先在 GitHub 创建 Release）';
+  if (status === 401) return 'GitHub 认证失败（401）';
+  if (status === 403) return 'GitHub 请求被限流（403）：未认证额度 60 次/小时，请稍后重试';
+  if (status !== 200) return `GitHub 返回异常状态 ${status}，请稍后重试`;
+  return null;
+}
+
+module.exports = { parseVersion, cmpVersion, resumePlan, pendingFile, writePending, readPending, clearPending, reconcilePending, installOutcome, extractVersion, parseLatestRelease, mapReleaseHttpError };

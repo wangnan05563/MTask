@@ -19,9 +19,8 @@ const http = require('node:http');
 const https = require('node:https');
 const fs = require('node:fs');
 // T02071：更新的取消/续传/安装回执决策内核（纯函数，可脱离 electron 单测）
-const { resumePlan, writePending, readPending, clearPending, reconcilePending, installOutcome } = require('./update-state');
-// T02740：在线更新（内置仓库）的 latest-release 解析与版本比较内核（同为纯函数模块）
-const { compareVersions, parseLatestRelease, mapReleaseHttpError } = require('./update-check');
+// T02740：在线更新 latest-release 判定并入同一内核（新文件需入 build.files 白名单，package.json 正被并发会话占用）
+const { resumePlan, writePending, readPending, clearPending, reconcilePending, installOutcome, cmpVersion, parseLatestRelease, mapReleaseHttpError } = require('./update-state');
 
 const DEV = process.env.MTask_DEV === '1';
 const VITE_PORT = 5175;
@@ -751,12 +750,12 @@ function httpsGetJson(url, hops = 5) {
 }
 
 /** 查内置仓库最新 Release 并与当前版本比较。
- *  判定口径收在 update-check.js 纯函数里（可离线夹具单测），本函数只管取数与组装结果。 */
+ *  判定口径收在 update-state.js 纯函数里（可离线夹具单测），本函数只管取数与组装结果。 */
 async function checkBuiltinUpdate() {
   const data = await httpsGetJson(`https://api.github.com/repos/${UPDATE_REPO}/releases/latest`);
   const rel = parseLatestRelease(data);
   const currentVersion = app.getVersion();
-  return { ...rel, currentVersion, hasUpdate: compareVersions(rel.version, currentVersion) > 0 };
+  return { ...rel, currentVersion, hasUpdate: cmpVersion(rel.version, currentVersion) > 0 };
 }
 
 function ownerWin() {
