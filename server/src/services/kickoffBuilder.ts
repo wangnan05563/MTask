@@ -981,6 +981,10 @@ export function layoutBody(
     if (bullets.length) out.push({ box: left, text: { content: bullets.join('\n'), pt: MIN_BODY_PT } });
     const boxes = fitStack(right.y, dataBlocks, right.y + right.h, right.w, right);
     pushStackedBlocks(out, dropped, dataBlocks, boxes, right.y + right.h);
+    // T02791：两栏早退分支同样到不了形状版（timelineShapePass 只在单栏堆叠段跑）。
+    // 判据取 dataKeys 面而非 layout 面——twoCol 页的 layout 字面不是 'timeline'，
+    // 但 carrying timeline 数据键的这一栏在形状版口径下同样被无声降级。
+    if (item.dataKeys.includes('timeline')) notes.push(`时间线回落列表版：${timelineDegradeReason(b) ?? '两栏版面不绘形状版时间线'}`);
     return { blocks: out, dropped, notes, violations: [], tlDrawn: 0 };
   }
 

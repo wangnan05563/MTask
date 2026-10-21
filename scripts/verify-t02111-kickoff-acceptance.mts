@@ -623,9 +623,10 @@ if (!(await waitUp())) {
   const numsIn = (xml: string) => aTexts(xml).flatMap((t) => t.match(/\d+(?:\.\d+)?/g) ?? []);
   const tlHasTable = /<a:tbl>/.test(tlXml);
   const tlHasAxisShapes = tlShapes.some((s) => s.prst === 'diamond') && tlShapes.some((s) => s.prst === 'line');
-  // 降级判据取结构面（回落列表版＝一张刚性表格且没有轴/菱形），不再取 done.warnings 的文案：
-  // 实测 done.warnings 里没有「时间线/回落列表」字样（kickoffBuilder 的 note 不进 warnings，见 kickoffBuilder.ts:877），
-  // 旧文案键是恒假的死通道——用它当豁免前置件等于「豁免永不生效却没人点名」（N-08 有正反照自证）。
+  // 降级判据取结构面（回落列表版＝一张刚性表格且没有轴/菱形）。批㉜ 曾实测 done.warnings 无降级字样、
+  // 判旧文案键为死通道；批㊳（T02791）复测修正定性：单栏堆叠段的 note→warnings 自 T02100 起就在
+  // （kickoffBuilder.ts `for (const n of notes)`），真正无声的是**两栏早退分支**——已补播报并以
+  // N-08d/e 合成三向做成行为判据。结构键仍是功能腿（不随措辞漂移），文案键升级为「与结构同真同假」的配对判据。
   const tlDegraded = tlHasTable && !tlHasAxisShapes;
   const tlWarnChannelHits = ((done?.warnings ?? []) as string[]).filter((w) => /时间线|回落列表/.test(w)).length;
   EV.tlDegradedStruct = tlDegraded;
@@ -881,6 +882,53 @@ console.log('\n=== N 组：负对照 ===');
   ok('N-08c 三把取数键今日落点：逐页装配=文案锚（分式兜底未启用）、mock 路由=JSON 字段契约（中文兜底未启用）、mock 计数=文案键（枚举行兜底未启用）；落到兜底面时本行点名「形态漂移」',
     String(EV.pageStageKey) === '文案锚「页 n/N 已装配」' && mockRouteBy === 'JSON 字段契约（文案无关）' && mockCountSrc === '文案键「条数分别为 N 与 M」',
     { 装配键: EV.pageStageKey, 路由键: mockRouteBy, 计数键: mockCountSrc, pageStages: EV.pageStages, stageCount: EV.stageCount, wordingCalls });
+
+  // N-08d/e（T02791 裁决「补播报」后的行为判据）：不依赖真实流，直接拿合成 bundle 驱动 builder——
+  // 结构降级的每一面都必须同步产出「时间线回落列表版」warning，正对照（形状版）必须不产。
+  // d 验 reason 型降级（单栏堆叠段 timelineShapePass 早退），e 验两栏版式早退分支（T02100 起此处曾无声降级，批㊳ 补丁闭合）。
+  const tlSynthBundle = (overrides: Record<string, unknown>) => ({
+    project: { id: 'synth', name: '合成', workspacePath: '.' },
+    prdDocs: [], prdDoc: null, prdExcerpt: 'x', prdTruncated: false,
+    requirements: [], plans: [], milestones: [],
+    coverage: { total: 0, covered: 0, uncovered: 0, rate: 0 },
+    assignees: [], risks: [],
+    workload: { source: 'duration', manDays: { expected: 1, optimistic: null, pessimistic: null }, manMonth: 0.1, quote: null, phases: [], complexity: [], counted: 0, footer: '' },
+    preflight: { projectId: 'synth', projectName: '合成', items: [], blocked: false, missingHard: [], workloadSource: 'duration' },
+    dataAsOf: '2026-10-21',
+    ...overrides,
+  } as any);
+  const tlSynthOutline = (layout: string): any[] => [
+    { section: 'S', title: '时间线', layout, bullets: [], dataKeys: ['timeline'] },
+  ];
+  const tlPlan = (k: string, s: string, e: string) => ({ id: k, task_no: k, title: `计划${k}`, kind: 'plan', status: 'in_progress', start_date: s, end_date: e, assignee: '张三', progress: 0, complexity: 'M', parent_id: null, deps: null } as any);
+  const tlMs = (k: string, d: string) => ({ ...tlPlan(k, d, d), kind: 'milestone' });
+  const synthRun = async (b: any, layout: string) => {
+    const Builder = await import('../server/src/services/kickoffBuilder.ts');
+    const res = await Builder.buildKickoffPpt(b, tlSynthOutline(layout), {});
+    const zip = await JSZip.loadAsync(res.buffer);
+    const xml = await (zip.file('ppt/slides/slide1.xml') as any).async('string');
+    const prsts = [...xml.matchAll(/prst="([a-zA-Z]+)"/g)].map((m) => m[1]);
+    return {
+      warns: res.warnings.filter((w) => /时间线|回落列表/.test(w)),
+      hasTable: /<a:tbl>/.test(xml),
+      hasAxis: prsts.includes('diamond') && prsts.includes('line'),
+    };
+  };
+  const tlHealthy = tlSynthBundle({ plans: [tlPlan('a', '2026-10-01', '2026-10-20'), tlPlan('b', '2026-10-05', '2026-10-25')], milestones: [tlMs('m1', '2026-10-10'), tlMs('m2', '2026-10-18')] });
+  const synthShape = await synthRun(tlHealthy, 'timeline');
+  const synthNoMs = await synthRun({ ...tlHealthy, milestones: [] }, 'timeline');
+  const synthNoDates = await synthRun({ ...tlHealthy, plans: [tlPlan('a', '', '')] }, 'timeline');
+  const synthTwoColDeg = await synthRun({ ...tlHealthy, milestones: [] }, 'twoCol');
+  const synthTwoColOk = await synthRun(tlHealthy, 'twoCol');
+  ok('N-08d 合成三向：形状版正对照不播报；「里程碑为 0」与「无起止日期」两种 reason 降级都出列表版结构（有表格无轴）且 done 通道必有同句式 warning（T02791 补播报的行为真值）',
+    synthShape.warns.length === 0 && synthShape.hasAxis === true &&
+    synthNoMs.warns.length === 1 && synthNoMs.hasTable && !synthNoMs.hasAxis &&
+    synthNoDates.warns.length === 1 && synthNoDates.hasTable && !synthNoDates.hasAxis,
+    { 形状版: synthShape, 无里程碑: synthNoMs, 无日期: synthNoDates });
+  ok('N-08e 两栏版式不再无声：reason 型降级配 twoCol 布局时列表版落地且 warning 与单栏同句式（批㊳ 补丁前该面是结构降级零播报——本行即双向夹具的「注入必被点名」腿）；健康数据带 twoCol+timeline 也点名「两栏版面不绘形状版」',
+    synthTwoColDeg.hasTable === true && synthTwoColDeg.hasAxis === false && synthTwoColDeg.warns.length === 1 &&
+    synthTwoColOk.warns.some((w) => /两栏版面不绘形状版时间线/.test(w)) === true,
+    { 两栏降级: synthTwoColDeg, 两栏正常: synthTwoColOk });
 
   // N-09 拆配形状反证（判据 4）：批㉜ 新拆的量词腿族跑三变异，红因必须各归其位——
   // 「只换措辞」若连行为腿一起红，说明两条腿读的是同一串文案（假拆配）。
