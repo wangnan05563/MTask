@@ -13,7 +13,8 @@
  *   W-01 枚举矩阵（有入口没走到守卫即 FAIL；guarded 只认调用形态，注释提到不算）、
  *   W-02 配对取证（字面腿＝HEAD 四面都以调用形态挂着守卫；行为腿＝微型夹具里
  *       `--check-only` 对「摘掉引用」真拦、对「引用在位」放行——T02663 改判，旧锚「HEAD 还没有守卫」会自腐）、
- *   W-03 订正工单前提（根目录 `打包.bat` 本仓不存在）、W-04…W-11 实跑两枚 `.bat`、
+ *   W-03 根级入口对账（T02841 改判：HEAD 里每一枚根级 .bat/.cmd 都要挂着守卫或委托到已挂守卫的目标；
+ *       旧腿「根目录 `打包.bat` 本仓不存在」是不关 quotepath 下恒假的缺席断言）、W-04…W-11 实跑两枚 `.bat`、
  *   W-12…W-15 实跑 `dist.js`、W-10 是 load-bearing 对照（把守卫那一行摘掉，红 HEAD 立刻放行）。
  *   V-xx 保持 T02321 原有的 `打包.mjs` 三组断言不变。
  *
@@ -412,11 +413,95 @@ ok('W-02b 字面腿有牙（纯内存变异，不落盘）：四条入口的 HEA
     return hasGuardCall(body, rel) && !hasGuardCall(withoutGuardCall(body, rel), rel);
   }),
   `摘后仍为真的=${W02_ENTRIES.filter((rel) => { try { return !hasGuardCall(withoutGuardCall(git('show', `HEAD:${rel}`), rel), rel); } catch { return false; } }).join('、') || '(无)'}｜摘前为假的=${W02_ENTRIES.filter((rel) => { try { return !hasGuardCall(git('show', `HEAD:${rel}`), rel); } catch { return true; } }).join('、') || '(无)'}`);
-ok('W-03 工单前提订正：单面点名的「根目录 打包.bat」在本仓不存在（工作树与 HEAD 都查无）——真实旁路是 scripts/ 下两枚 .bat 与 npm run dist',
-  !existsSync(join(ROOT, '打包.bat'))
-  && !(git('ls-tree', '--name-only', 'HEAD').split(/\r?\n/).includes('打包.bat'))
-  && BATS.every((b) => existsSync(join(ROOT, 'scripts', b))),
-  `根目录 打包.bat（工作树）=${existsSync(join(ROOT, '打包.bat'))}｜scripts 两枚 .bat 在位=${BATS.join('、')}`);
+/**
+ * T02841：W-03 改判。旧腿是「根目录 `打包.bat` 本仓不存在」的**缺席断言**，而它的「查无 HEAD」
+ * 那半根本测不出东西：`core.quotepath` 默认开着，`git ls-tree --name-only` 把中文名输出成
+ * `"\346\211\223\345\214\205.bat"`，于是 `.includes('打包.bat')` 恒假、`.bat` 结尾匹配也恒假
+ * ——文件明明在 HEAD 里，门却把「不存在」当成取证结论 PASS 了出去。
+ * 同一份事实，head-precheck 子门按 HEAD 检出做矩阵对账时是看得见它的（读数「矩阵 5 条旁路=打包.bat」，
+ * 因为那枚入口 `call npm run dist` 却不挂守卫），于是门绿、10 条行为腿红，红因被假绿彻底掩盖
+ * ——T02805 追的就是这 10 红。现按判据 3 拆成两半：
+ *  - 字面腿（当前 HEAD 事实，且与子门同题）：HEAD 根级每一枚 `.bat/.cmd` 都必须以调用形态挂着守卫，
+ *    或委托给 HEAD 中已挂守卫的目标。它不写死文件名、不预设这枚入口的处置方向（删除入库还是在
+ *    `guard-reference.mjs` 的 DELEGATE_TARGETS 里登记，属 T02792/负责人裁定），只要求门别装着看不见。
+ *  - 行为腿（一次性 `git init` 微型夹具，只落临时根）：三枚根级 .bat（中文名挂守卫 / 中文名旁路 / ASCII 名旁路）
+ *    喂进**同一份**审计——关 quotepath 必须看见三枚、点出两枚旁路且不动挂守卫那枚；
+ *    不关 quotepath 必须只剩 ASCII 那一枚（两枚中文名从清单上凭空消失）。
+ *    后半正是旧读数的缺陷本身：它让「清单为空 ⇒ 真」不再是恒绿摆设，也把「失明只在非 ASCII」钉死
+ *    （否则枚举整体坏掉也会红，读不出是哪一种）。
+ */
+const ROOT_EXEC_RE = /\.(bat|cmd)$/i;
+const DELEGATE_NAMES = ['构建打包.bat', 'build-pack-t.bat', '打包.mjs', 'dist.js', 'publish-oneclick.ps1'];
+const gitIn = (dir: string, ...args: string[]): string =>
+  execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+/** 委托目标在该面里是否真挂着守卫（`scripts/` 下与根级两种落点都查一次）。 */
+const headTargetGuarded = (dir: string, target: string): boolean => {
+  for (const rel of [`scripts/${target}`, target]) {
+    try { if (hasGuardCall(gitIn(dir, 'show', `HEAD:${rel}`), rel)) return true; } catch { /* 这一面没有该文件 */ }
+  }
+  return false;
+};
+/** 同一份审计，`naiveQuoting` 只决定枚举行尾（见上）。 */
+function auditHeadRootEntries(dir: string, naiveQuoting: boolean): { seen: string[]; unaccounted: string[]; raw: string } {
+  const raw = naiveQuoting
+    ? gitIn(dir, 'ls-tree', '--name-only', 'HEAD')
+    : gitIn(dir, '-c', 'core.quotepath=off', 'ls-tree', '--name-only', 'HEAD');
+  const seen = raw.split(/\r?\n/).map((s) => s.trim()).filter((n) => ROOT_EXEC_RE.test(n));
+  const unaccounted = seen.filter((name) => {
+    let body = '';
+    try { body = gitIn(dir, 'show', `HEAD:${name}`); } catch { return false; }
+    if (hasGuardCall(body, name)) return false;
+    const delegated = DELEGATE_NAMES.filter((t) => body.includes(t));
+    return !(delegated.length > 0 && delegated.every((t) => headTargetGuarded(dir, t)));
+  });
+  return { seen, unaccounted, raw };
+}
+const FX_CN_GUARDED = '打包-夹具挂守卫.bat';
+const FX_CN_BYPASS = '打包-夹具旁路.bat';
+const FX_ASCII_BYPASS = 'pkg-legacy.bat';
+function buildW03Fixture(): { dir: string; err: string } {
+  const dir = join(TMP_ROOT, 'w03-fx');
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    const guard = 'node "scripts\\lib\\head-precheck.mjs" %*\r\n';
+    const build = 'call npm run dist\r\n';
+    writeFileSync(join(dir, FX_CN_GUARDED), `@echo off\r\n${guard}${build}`);
+    writeFileSync(join(dir, FX_CN_BYPASS), `@echo off\r\n${build}`);
+    writeFileSync(join(dir, FX_ASCII_BYPASS), `@echo off\r\n${build}`);
+    if (!fxGit(dir, 'init', '-q')) throw new Error('git init 失败');
+    if (!fxGit(dir, 'add', '-A')) throw new Error('git add 失败');
+    if (!fxGit(dir, 'commit', '-q', '-m', 'T02841 W-03 行为腿微型夹具（仅存在于临时根）')) throw new Error('git commit 失败');
+  } catch (e) { return { dir: '', err: String(e).slice(0, 200) }; }
+  return { dir, err: '' };
+}
+const HEAD_STRICT = auditHeadRootEntries(ROOT, false);
+const HEAD_NAIVE = auditHeadRootEntries(ROOT, true);
+note(`[W-03 审计] HEAD 根级可执行入口（关 quotepath）=${HEAD_STRICT.seen.join('、') || '(无)'}｜未登记守卫=${HEAD_STRICT.unaccounted.join('、') || '(无)'}`
+  + `｜旧读数（不关 quotepath）看见=${HEAD_NAIVE.seen.join('、') || '(无)'}`);
+const w03EV: Record<string, unknown> = {};
+okPair(ok, 'W-03 根级入口对账（T02841 改判：旧腿是在 core.quotepath 下恒绿的「打包.bat 不存在」缺席断言）：HEAD 里每一枚根级 .bat/.cmd 都必须挂着守卫或委托到已挂守卫的目标，且门自己的枚举必须看得见中文名',
+  () => {
+    const fx = buildW03Fixture();
+    const strict = fx.dir ? auditHeadRootEntries(fx.dir, false) : { seen: [], unaccounted: [], raw: '夹具未建成' };
+    const naive = fx.dir ? auditHeadRootEntries(fx.dir, true) : { seen: [], unaccounted: [], raw: '夹具未建成' };
+    Object.assign(w03EV, {
+      夹具: fx.dir ? '建成' : `未建成：${fx.err}`,
+      关quotepath看见: strict.seen, 关quotepath未登记: strict.unaccounted,
+      不关quotepath看见: naive.seen, 不关quotepath原始输出: naive.raw.replace(/\r?\n/, ' ⏎ '),
+      真实HEAD看见: HEAD_STRICT.seen, 真实HEAD未登记: HEAD_STRICT.unaccounted,
+      收口口径: '红在字面侧＝HEAD 里确有未挂守卫的根级入口，不是判据自腐。两种收口任选：删除入库（并发会话已 staged 删除）'
+        + '，或在 guard-reference.mjs 的 DELEGATE_TARGETS 里登记它并让委托目标挂守卫（后者属 T02792）。本子门读数与之一致：旁路=同一份清单。',
+    });
+    if (fx.dir && !KEEP) rmSync(fx.dir, { recursive: true, force: true });
+    return strict.seen.length === 3
+      && strict.unaccounted.length === 2
+      && strict.unaccounted.includes(FX_CN_BYPASS) && strict.unaccounted.includes(FX_ASCII_BYPASS)
+      && !strict.unaccounted.includes(FX_CN_GUARDED)
+      && naive.seen.length === 1 && naive.seen[0] === FX_ASCII_BYPASS;
+  },
+  () => HEAD_STRICT.unaccounted.length === 0,
+  () => w03EV);
 // 兜底：夹具里的 native-switch.bat 一律换成「只报错不干活」——万一守卫和停车阀同时失效，
 // 也到不了 electron-builder，绝不会去覆写 junction 另一端的真实原生二进制。
 for (const copy of [WT_RED, WT_GREEN, WT_DIST]) {
