@@ -16,6 +16,9 @@
  *  4. 批㉝（T02770）加载面自检（L 组）：AST 级「用了但解析不到的标识符」——`node --check` 只查语法，
  *     查不出这类错，而它正是「门跑到 `finally` 才抛 ReferenceError、PASS/FAIL 汇总整行丢失」的成因。
  *     夹具双向 12 例（该抓 6／不该抓 6，含母单点名的三类 grep 假阳）+ 真实门体变异 + 语法层分离 + 全量普查。
+ *  5. 批㊳（T02795 裁决）把主判据点名的**三类留白**各立独立档（L-05..L-07）：块内声明块外读用、
+ *     同容器先读后声明（TDZ）、`.mjs/.mts` 与 `.cjs/.cts` 的模块体系错配。三档各自双向夹具、
+ *     各自普查、红因不与 L 组前四条并账；上 Program 全量作用域解析被否（本门定位是「随手可跑」的审计门）。
  *
  * 判据口径（服从 T02293 · `docs/验收门判据规约.md` 本轮改判）：
  *  - **被测的是 HEAD 那份产品代码，不是工作树**（反模式 11）：本工作区常年有并发会话在改 `server/`、`web/`，
@@ -34,7 +37,8 @@ import { execFileSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeGateResults } from './lib/gate-results.mts';
-import { checkSource, listHeadGateFiles } from './lib/undefined-identifier-check.mts';
+import { checkSource, checkBlockScope, checkTdz, checkModuleMix, listHeadGateFiles } from './lib/undefined-identifier-check.mts';
+import { TIER_CASES, runTierCases } from './t02795-tier-fixtures.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
@@ -790,6 +794,51 @@ const loadScanMs = Date.now() - loadScanT0;
 ok(`L-04 全量普查 HEAD 门体族加载面：枚举 ${loadScanFiles.length} 支、实扫 ${loadScanned} 支（取数失败 ${loadScanReadFail.length}、语法层 ${loadScanSyntaxFail.length}），未定义标识符命中 ${loadScanHits.length} 处——本判据的红只会来自「真用了没解析到的名字」，并发工作树不参与（耗时 ${loadScanMs}ms，本门因此从秒级变为分钟级，读数写进标签供人看趋势）`,
   loadScanFiles.length > 0 && loadScanned === loadScanFiles.length && loadScanHits.length === 0,
   { 命中: loadScanHits.slice(0, 20), 取数失败: loadScanReadFail.slice(0, 10), 语法层: loadScanSyntaxFail.slice(0, 10) });
+
+// —— 批㊳（T02795 裁决）：主判据点名的三类留白，各立独立档判据 + 双向夹具 ——
+// 口径：三档与 L-01..L-04 **不并账**（红因归因分开），产物源码面（server/src·web/src）不入普查，
+// TS 侧未定义标识符归 `npm run typecheck`；本批只把门体加载面的三类做成可机械判定。
+const tierResults = runTierCases();
+const tierBadCases = tierResults.filter((r) => !r.verdict);
+const tierByTier = (t: string) => TIER_CASES.filter((c) => c.tier === t);
+const tierPairOk = ['块作用域', 'TDZ', '模块体系'].every((t) =>
+  tierByTier(t).some((c) => c.expectHit) && tierByTier(t).some((c) => !c.expectHit));
+ok(`L-05 三档独立判据双向夹具（T02795）：${TIER_CASES.length} 例＝档一 ${tierByTier('块作用域').length}／档二 ${tierByTier('TDZ').length}／档三 ${tierByTier('模块体系').length}，每档必须**同时**有注入例与合法例（只有注入＝没有噪声控制，只有合法＝可以是空转），实错 ${tierBadCases.length} 例`,
+  TIER_CASES.length >= 24 && tierPairOk && tierBadCases.length === 0,
+  { 失配: tierBadCases.map((x) => `${x.id} ${x.name} 期望${x.expectHit ? '命中' : '零命中'} 实得${JSON.stringify(x.got)}`), 分档例数: { 块作用域: tierByTier('块作用域').length, TDZ: tierByTier('TDZ').length, 模块体系: tierByTier('模块体系').length } });
+
+// L-06 三档全量普查：与 L-04 同一枚举面（HEAD），命中即点名。
+// 在位性不靠这里的数量（反模式 58：0 命中可以与 0 空读同形），由 L-05 注入道负责。
+const tierScan: Record<string, Array<{ file: string; line: number; column: number; name: string; why: string }>> =
+  { 块作用域: [], TDZ: [], 模块体系: [] };
+let tierScanned = 0;
+const tierT0 = Date.now();
+for (const rel of loadScanFiles) {
+  const code = headText(rel);
+  if (code === null) continue;
+  tierScanned += 1;
+  const push = (tier: string, hs: Array<{ name: string; line: number; column: number; why: string }>) => {
+    for (const h of hs) tierScan[tier].push({ file: rel, line: h.line, column: h.column, name: h.name, why: h.why });
+  };
+  push('块作用域', checkBlockScope(code, rel));
+  push('TDZ', checkTdz(code, rel));
+  push('模块体系', checkModuleMix(code, rel));
+}
+const tierScanTotal = tierScan['块作用域'].length + tierScan['TDZ'].length + tierScan['模块体系'].length;
+const tierScanMs = Date.now() - tierT0;
+ok(`L-06 三档普查 HEAD 门体族：枚举 ${loadScanFiles.length} 支、实扫 ${tierScanned} 支（取数面逐支对上才认读数），判定点数＝块作用域 ${tierScan['块作用域'].length} · TDZ ${tierScan['TDZ'].length} · 模块体系 ${tierScan['模块体系'].length}（耗时 ${tierScanMs}ms）——批㊳ 首版这三档分别报 13/84/18，逐类取证后全部是过度敏感读数（重命名解构取键位、catch 体宿主、分组块同名逐段复用、createRequire 自建垫片），口径见 lib 文件头；此后必须维持 0`,
+  tierScanned === loadScanFiles.length && tierScanTotal === 0,
+  { 块作用域: tierScan['块作用域'].slice(0, 10), TDZ: tierScan['TDZ'].slice(0, 10), 模块体系: tierScan['模块体系'].slice(0, 10) });
+
+// L-07 分层归因对三档同样成立：AST 不可信时不得出行号读数（与 L-03 成对，防「语法坏」冒充「作用域坏」）
+const tierSyntaxCase = [checkBlockScope(`const a = ;\nif () {}\n`, 'broken.mts'), checkTdz(`const a = ;\nif () {}\n`, 'broken.mts'),
+  checkModuleMix(`const a = ;\nif () {}\n`, 'broken.mjs')];
+ok('L-07 语法层坏源码下三档一律 0 命中（parseTierSf 见 parseDiagnostics 即返 null，不拿不可信的 AST 报行号）',
+  tierSyntaxCase.every((r) => r.length === 0),
+  { 各档命中数: tierSyntaxCase.map((r) => r.length) });
+
+lines.push('');
+lines.push(`[census] 三档独立判据（批㊳/T02795）：夹具双向 ${TIER_CASES.length - tierBadCases.length}/${TIER_CASES.length}（块作用域 ${tierByTier('块作用域').length}·TDZ ${tierByTier('TDZ').length}·模块体系 ${tierByTier('模块体系').length}），普查扫 ${tierScanned} 支、判定点 ${tierScanTotal} 处，耗时 ${tierScanMs}ms`);
 
 lines.push('');
 lines.push(`[census] 加载面普查（批㉝/T02770）：扫 ${loadScanned} 支（verify-* + lib/*，取数面 HEAD），未定义标识符 ${loadScanHits.length} 处，耗时 ${loadScanMs}ms；夹具双向 ${LOAD_CASES.length - loadCaseBad.length}/${LOAD_CASES.length}，真实门体变异命中 ${realMut ? `${realMut.name}（第 ${realMut.tried}/${realCands.length} 个候选）` : '未命中'}`);
