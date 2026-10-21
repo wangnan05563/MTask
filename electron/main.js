@@ -20,6 +20,8 @@ const https = require('node:https');
 const fs = require('node:fs');
 // T02071：更新的取消/续传/安装回执决策内核（纯函数，可脱离 electron 单测）
 const { resumePlan, writePending, readPending, clearPending, reconcilePending, installOutcome } = require('./update-state');
+// T02740：在线更新（内置仓库）的 latest-release 解析与版本比较内核（同为纯函数模块）
+const { compareVersions, parseLatestRelease, mapReleaseHttpError } = require('./update-check');
 
 const DEV = process.env.MTask_DEV === '1';
 const VITE_PORT = 5175;
@@ -544,7 +546,8 @@ function pump(r, ctx, attempt) {
 }
 
 // 应用内下载更新安装包到系统下载目录（T02071：支持中途取消 + 取消后继续＝Range 断点续传）
-ipcMain.handle('update:download', async (_evt, url) => {
+// T02740：函数体抽出为 downloadUpdatePackage，IPC（设置页）与「在线更新」菜单（主进程自驱）共用同一条下载通道
+async function downloadUpdatePackage(url) {
   if (typeof url !== 'string' || !url) throw new Error('下载地址无效');
   if (activeDownload) throw new Error('已有下载进行中，请先取消或等待完成');
   const filePath = path.join(app.getPath('downloads'), downloadFilename(url));
@@ -618,7 +621,8 @@ ipcMain.handle('update:download', async (_evt, url) => {
     open(url);
     if (ctx.partBytes > 0) sendUpdateProgress({ status: 'resuming', received: ctx.partBytes, total: 0 });
   });
-});
+}
+ipcMain.handle('update:download', (_evt, url) => downloadUpdatePackage(url));
 
 // T02071 缺口 1：下载中途取消——终止连接但保留 .part，界面据此提供「继续下载」
 ipcMain.handle('update:cancel', async () => {
@@ -650,7 +654,8 @@ function reconcilePendingUpdateOnLaunch() {
 }
 
 // 静默安装已下载的安装包：等退出码给出回执（缺口 2），失败保持应用存活供重试，成功才退出
-ipcMain.handle('update:install', async (_evt, filePath, targetVersion) => {
+// T02740：同下载——抽出 installUpdatePackage 供 IPC 与菜单两路共用
+async function installUpdatePackage(filePath, targetVersion) {
   if (typeof filePath !== 'string' || !filePath || !fs.existsSync(filePath)) throw new Error('安装包不存在，或已失效');
   const target = typeof targetVersion === 'string' ? targetVersion : '';
   // 先落「待回执」标记再拉起安装器——安装器会 taskkill 本应用，那时我们已无法自己写回执
@@ -693,7 +698,8 @@ ipcMain.handle('update:install', async (_evt, filePath, targetVersion) => {
       settle({ ok: false, status: 'failed', message: o.message, code, filePath, targetVersion: target });
     });
   });
-});
+}
+ipcMain.handle('update:install', (_evt, filePath, targetVersion) => installUpdatePackage(filePath, targetVersion));
 
 // 渲染进程取回上一次安装的回执（installed / failed），一次消费即清
 ipcMain.handle('update:pending-result', async () => {
@@ -701,6 +707,150 @@ ipcMain.handle('update:pending-result', async () => {
   pendingUpdateResult = null;
   return r;
 });
+
+// ---------- T02740 在线更新（内置仓库，自动检测，无手动输入） ----------
+
+/** 内置仓库地址：硬编码、不对用户开放输入（需求明文约束）。
+ *  与设置页「自配仓库 + Token」通道并存：那条走服务端 /update/check（支持私有仓库），
+ *  本菜单通道只服务内置公开仓库，零配置即可用。 */
+const UPDATE_REPO = 'wangnan05563/MTask';
+const UPDATE_API_TIMEOUT_MS = 15_000;
+/** 菜单通道重入闸：下载/安装各自有独立 ctx，连点弹多层对话框会串台，一次只跑一条流程 */
+let onlineUpdateBusy = false;
+
+/** https GET JSON 接口并跟随重定向（≤5 次）；非 200 由 mapReleaseHttpError 统一转中文错误 */
+function httpsGetJson(url, hops = 5) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        // GitHub API 强制要求 User-Agent，缺失直接 403（与服务端 fetchLatestRelease 同约束）
+        'User-Agent': 'MTask-Updater',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      timeout: UPDATE_API_TIMEOUT_MS,
+    }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        if (hops <= 0) { reject(new Error('检查在线更新失败：GitHub 重定向次数超出上限')); return; }
+        httpsGetJson(new URL(res.headers.location, url).href, hops - 1).then(resolve, reject);
+        return;
+      }
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const errText = mapReleaseHttpError(res.statusCode);
+        if (errText) { reject(new Error(errText)); return; }
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+        catch { reject(new Error('检查在线更新失败：GitHub 返回不是合法 JSON')); }
+      });
+    });
+    req.on('error', (e) => reject(new Error(`无法连接 GitHub：${e instanceof Error ? e.message : String(e)}`)));
+    req.on('timeout', () => { req.destroy(new Error('连接 GitHub 超时，请检查网络或代理设置')); });
+  });
+}
+
+/** 查内置仓库最新 Release 并与当前版本比较。
+ *  判定口径收在 update-check.js 纯函数里（可离线夹具单测），本函数只管取数与组装结果。 */
+async function checkBuiltinUpdate() {
+  const data = await httpsGetJson(`https://api.github.com/repos/${UPDATE_REPO}/releases/latest`);
+  const rel = parseLatestRelease(data);
+  const currentVersion = app.getVersion();
+  return { ...rel, currentVersion, hasUpdate: compareVersions(rel.version, currentVersion) > 0 };
+}
+
+function ownerWin() {
+  return mainWin && !mainWin.isDestroyed() ? mainWin : undefined;
+}
+
+/** 在线更新完整链路：检查 →（有新版本）确认下载 → 主通道下载 → 确认安装 → 静默安装。
+ *  auto=true 为开机自动检测：无新版本/检查失败一律静默，只有真的新版本才弹框——自动检测不打扰。
+ *  失败提示全部走 dialog（Electron 无 window.prompt/confirm，原生弹框是唯一可靠通道）。 */
+async function runOnlineUpdateFlow({ auto = false } = {}) {
+  if (onlineUpdateBusy) return;
+  onlineUpdateBusy = true;
+  try {
+    let info;
+    try {
+      info = await checkBuiltinUpdate();
+    } catch (e) {
+      if (!auto) {
+        await dialog.showMessageBox(ownerWin(), { type: 'error', title: '检查更新失败', message: e instanceof Error ? e.message : String(e), buttons: ['知道了'] });
+      }
+      return;
+    }
+    if (!info.hasUpdate) {
+      if (!auto) {
+        await dialog.showMessageBox(ownerWin(), { type: 'info', title: '检查更新', message: `当前已是最新版本 v${info.currentVersion}`, buttons: ['好的'] });
+      }
+      return;
+    }
+    const want = await dialog.showMessageBox(ownerWin(), {
+      type: 'info',
+      title: '发现新版本',
+      message: `发现新版本 v${info.version}（当前 v${info.currentVersion}）`,
+      detail: `${info.releaseName ? `Release：${info.releaseName}\n` : ''}${info.publishedAt ? `发布时间：${info.publishedAt.slice(0, 10)}\n` : ''}下载来源：内置仓库 ${UPDATE_REPO}`,
+      buttons: ['立即下载', '稍后再说'],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (want.response !== 0) return;
+    let dl;
+    try {
+      // 与设置页同一条下载通道：进度照常推 update:progress，Range 续传/取消语义一致
+      dl = await downloadUpdatePackage(info.downloadUrl);
+    } catch (e) {
+      await dialog.showMessageBox(ownerWin(), {
+        type: 'error',
+        title: '下载失败',
+        message: `更新包下载失败：${e instanceof Error ? e.message : String(e)}`,
+        detail: '可稍后通过「帮助 → 检查在线更新」重试；已下载的半截包会保留，重试时断点续传',
+        buttons: ['知道了'],
+      });
+      return;
+    }
+    const wantInstall = await dialog.showMessageBox(ownerWin(), {
+      type: 'info',
+      title: '下载完成',
+      message: `v${info.version} 安装包已就绪`,
+      detail: `${dl.filePath}\n安装将执行静默安装器；安装成功本应用会自动退出，由新版本接管。`,
+      buttons: ['立即安装', '稍后安装'],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (wantInstall.response !== 0) {
+      await dialog.showMessageBox(ownerWin(), { type: 'info', title: '稍后安装', message: '安装包已存放在系统下载目录，随时双击安装，或稍后经本菜单再次走在线更新', buttons: ['好的'] });
+      return;
+    }
+    const res = await installUpdatePackage(dl.filePath, info.version);
+    if (res.status === 'installed') return; // 成功即退出应用，无需弹框
+    if (res.status === 'pending') {
+      await dialog.showMessageBox(ownerWin(), { type: 'warning', title: '安装结果待对账', message: res.message, detail: '下次启动将自动对账给出结果（失败会弹系统通知）', buttons: ['知道了'] });
+      return;
+    }
+    await dialog.showMessageBox(ownerWin(), { type: 'error', title: '安装失败', message: res.message, detail: '应用保持存活，可稍后通过「帮助 → 检查在线更新」重试', buttons: ['知道了'] });
+  } finally {
+    onlineUpdateBusy = false;
+  }
+}
+
+/** 应用菜单：显式构建（Electron 默认菜单不含更新入口，一旦 setApplicationMenu 即整体接管）。
+ *  标准 role 子菜单保留默认能力（关闭/编辑/视图含刷新与 DevTools/窗口），再补「帮助 → 检查在线更新」。 */
+function setupAppMenu() {
+  const template = [
+    { role: 'fileMenu' },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+    {
+      label: '帮助',
+      submenu: [
+        { label: '检查在线更新', click: () => { runOnlineUpdateFlow().catch(() => { /* 提示已在链路内 dialog 给出，不向外抛裸异常 */ }); } },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
 
 function setupWebProtocol() {
   const root = path.resolve(__dirname, '..', 'web', 'dist');
@@ -898,6 +1048,8 @@ function maybeFinishSplash() {
   }, 400);
   // T01057-FR1.1：后端启动流程挂载后开启任务通知轮询（函数幂等；server 未就绪的轮次自动跳过）
   startNotifyPolling();
+  // T02740：开机自动检测内置仓库版本（延迟 12s 让启动收尾先走完；auto 模式下无新版本/检查失败全静默）
+  setTimeout(() => { runOnlineUpdateFlow({ auto: true }).catch(() => { /* 自动模式失败本就静默 */ }); }, 12_000);
 }
 
 // 主进程为 CommonJS 入口（electron/package.json 未启用 "type":"module"），顶层 await 语法非法；
@@ -905,6 +1057,8 @@ function maybeFinishSplash() {
 app.whenReady().then(async () => { // NOSONAR - S7785 顶层 await 在 CommonJS 中不可用，原因见上
   setupApiProxy();
   setupWebProtocol();
+  // T02740：应用菜单带「帮助 → 检查在线更新」（内置仓库通道）
+  setupAppMenu();
   // T02071：先对账上一次静默安装的结果（安装器接管退出时我们没能自己写回执）
   reconcilePendingUpdateOnLaunch();
 
