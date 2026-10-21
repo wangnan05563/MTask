@@ -10,7 +10,9 @@
  *   `scripts/打包.mjs`、`scripts/dist.js`（`npm run dist` / `dist:dir`）、
  *   `scripts/构建打包.bat`（`scripts/一键发布.bat` → `publish-oneclick.ps1` 走的这条）、
  *   `scripts/build-pack-t.bat`（与上一条同源的孪生入口）。四条入口共用 `scripts/lib/head-precheck.mjs`：
- *   W-01 枚举矩阵（有入口没走到守卫即 FAIL）、W-02 用 `git show HEAD:` 配对证明守卫是本单新增、
+ *   W-01 枚举矩阵（有入口没走到守卫即 FAIL；guarded 只认调用形态，注释提到不算）、
+ *   W-02 配对取证（字面腿＝HEAD 四面都以调用形态挂着守卫；行为腿＝微型夹具里
+ *       `--check-only` 对「摘掉引用」真拦、对「引用在位」放行——T02663 改判，旧锚「HEAD 还没有守卫」会自腐）、
  *   W-03 订正工单前提（根目录 `打包.bat` 本仓不存在）、W-04…W-11 实跑两枚 `.bat`、
  *   W-12…W-15 实跑 `dist.js`、W-10 是 load-bearing 对照（把守卫那一行摘掉，红 HEAD 立刻放行）。
  *   V-xx 保持 T02321 原有的 `打包.mjs` 三组断言不变。
@@ -37,6 +39,8 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameS
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeGateResults } from './lib/gate-results.mts';
+import { okPair } from './lib/anchor-pair.mts';
+import { hasGuardCall, withoutGuardCall } from './lib/guard-reference.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const NODE = process.execPath;
@@ -52,8 +56,9 @@ const DEF = join('server', 'src', 'util', 't02321packprobe_def.ts');
 const LINES: string[] = [];
 let pass = 0;
 let fail = 0;
-const ok = (name: string, cond: boolean, detail = ''): void => {
-  LINES.push(`${cond ? 'PASS' : 'FAIL'} ${name}${!cond && detail ? ` — ${detail}` : ''}`);
+const ok = (name: string, cond: boolean, detail: unknown = ''): void => {
+  const d = typeof detail === 'string' ? detail : JSON.stringify(detail);
+  LINES.push(`${cond ? 'PASS' : 'FAIL'} ${name}${!cond && d ? ` — ${d}` : ''}`);
   console.log(LINES[LINES.length - 1]);
   if (cond) pass += 1; else fail += 1;
 };
@@ -327,7 +332,9 @@ for (const rel of scanned) {
   const acts = body.split(/\r?\n/).filter((l) => !stripComment(rel, l));
   if (!acts.some((l) => INVOKE_RE.some((re) => re.test(l)))) continue;
   const delegated = BATS.concat(['打包.mjs', 'dist.js', 'publish-oneclick.ps1']).filter((t) => body.includes(t)).join('/');
-  matrix.push({ rel: rel.replace(/\\/g, '/'), guarded: /head-precheck/.test(body), delegated });
+  // guarded 从「/head-precheck/ 全文匹配」收紧为**调用形态判定**（T02663 第 3 条：与 T02617 同一份
+  // 唯一实现 hasGuardCall，注释里提到不算——否则「摘掉调用行、留着注释」正是最像没事发生的退化）。
+  matrix.push({ rel: rel.replace(/\\/g, '/'), guarded: hasGuardCall(body, rel), delegated });
 }
 const npmEntries = Object.entries(JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).scripts as Record<string, string>)
   .filter(([, v]) => /dist\.js|打包\.mjs|electron-builder/.test(v));
@@ -341,12 +348,70 @@ ok('W-01 入口矩阵完整：每条会产出安装包的入口都走到同一�
   && BATS.every((b) => matrix.some((m) => m.rel.endsWith(b) && m.guarded))
   && npmEntries.length >= 1 && npmEntries.every(([, v]) => guardedTargets.has((v.match(/([\w.-]+\.(?:mjs|js))/)?.[1] ?? ''))),
   `入口=${matrix.map((m) => `${m.rel}:${m.guarded ? 'G' : `D(${m.delegated || '无'})`}`).join(' ') || '空'}｜npm=${npmEntries.map(([k]) => k).join(',')}`);
-const headHasGuard = (rel: string): boolean => {
-  try { return /head-precheck/.test(git('show', `HEAD:${rel}`)); } catch { return false; }
+/**
+ * W-02 改判（T02663）：旧断言「三条新入口在 HEAD 里都还没有守卫」取证的是「本单落地之前」的状态——
+ * T02355 把守卫合入 HEAD 后它必然为红，红因是判据自腐而非产品退化。现按判据 3 配成对：
+ *  - 字面腿（当前事实）：四条发布入口在 `git show HEAD:` 面上都以**调用形态**挂着守卫（hasGuardCall，
+ *    与 W-01 同一份判定，不各留一套「注释里提到也算」的宽口径）；
+ *  - 行为腿（现成通道、秒级）：门内自造两枚微型夹具仓库（HEAD blob 拼装，clean / strip），
+ *    各跑一次 `node scripts/lib/head-precheck.mjs --check-only`——clean 必须放行（exit 0，证明探针
+ *    不是恒红摆设），strip（每条入口的守卫调用行被 withoutGuardCall 摘掉）必须拦下
+ *    （exit 1 且回显 blocked=true，证明「引用缺失时 runHeadPrecheck 真拦」）。
+ * 只用 HEAD 已入库的判定 API 与入口 blob，不读并发工作树的未提交 lib 改动、不再新建 worktree。
+ */
+const W02_ENTRIES = OVERLAY.filter((rel) => rel !== 'scripts/lib/head-precheck.mjs');
+const headHasGuardCall = (rel: string): boolean => {
+  try { return hasGuardCall(git('show', `HEAD:${rel}`), rel); } catch { return false; }
 };
-ok('W-02 配对取证（反模式 11：锚点取 HEAD 而非工作树）：三条新入口在 HEAD 里都还没有守卫（守卫确为本单新增，不是既有事实的复读）',
-  ['scripts/构建打包.bat', 'scripts/build-pack-t.bat', 'scripts/dist.js'].every((rel) => !headHasGuard(rel)),
-  `HEAD 已含 head-precheck 的=${['scripts/构建打包.bat', 'scripts/build-pack-t.bat', 'scripts/dist.js'].filter(headHasGuard).join('、') || '(无)'}`);
+const fxGit = (dir: string, ...args: string[]): boolean =>
+  spawnSync('git', ['-c', 'user.name=gate', '-c', 'user.email=gate@local', ...args],
+    { cwd: dir, encoding: 'utf8', shell: false }).status === 0;
+function buildW02Fixture(mode: 'clean' | 'strip'): { dir: string; err: string } {
+  const dir = join(TMP_ROOT, `w02-fx-${mode}`);
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(join(dir, 'scripts', 'lib'), { recursive: true });
+    for (const rel of ['scripts/lib/head-precheck.mjs', 'scripts/lib/guard-reference.mjs']) {
+      writeFileSync(join(dir, ...rel.split('/')), git('show', `HEAD:${rel}`), 'utf8');
+    }
+    for (const rel of W02_ENTRIES) {
+      const body = git('show', `HEAD:${rel}`);
+      writeFileSync(join(dir, ...rel.split('/')), mode === 'strip' ? withoutGuardCall(body, rel) : body, 'utf8');
+    }
+    writeFileSync(join(dir, 'package.json'),
+      JSON.stringify({ name: 'w02-fx', scripts: { dist: 'node scripts/dist.js' } }, null, 2), 'utf8');
+    if (!fxGit(dir, 'init', '-q')) throw new Error('git init 失败');
+    if (!fxGit(dir, 'add', '-A')) throw new Error('git add 失败');
+    if (!fxGit(dir, 'commit', '-q', '-m', 'T02663 W-02 行为腿微型夹具（仅存在于临时根）')) throw new Error('git commit 失败');
+  } catch (e) { return { dir: '', err: String(e).slice(0, 200) }; }
+  return { dir, err: '' };
+}
+const runCheckOnly = (dir: string): { code: number; out: string } => {
+  const r = spawnSync(NODE, [join(dir, 'scripts', 'lib', 'head-precheck.mjs'), '--check-only'],
+    { cwd: dir, encoding: 'utf8', shell: false, timeout: 120_000 });
+  return { code: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+};
+const w02EV: Record<string, unknown> = {};
+okPair(ok, 'W-02 配对取证（T02663 改判：旧锚「HEAD 还没有守卫」属会自腐的取证面）：四条发布入口在 HEAD 都以调用形态挂着守卫，且引用缺失时接线自检真拦、引用在位时放行',
+  () => {
+    const clean = buildW02Fixture('clean');
+    const strip = buildW02Fixture('strip');
+    const c = clean.dir ? runCheckOnly(clean.dir) : { code: -1, out: `夹具未建成：${clean.err}` };
+    const s = strip.dir ? runCheckOnly(strip.dir) : { code: -1, out: `夹具未建成：${strip.err}` };
+    Object.assign(w02EV, { cleanExit: c.code, stripExit: s.code, strip点名blocked: /blocked=true/.test(s.out),
+      被拦回显: tail(s.out), 放行回显: tail(c.out) });
+    for (const d of [clean.dir, strip.dir]) if (d && !KEEP) rmSync(d, { recursive: true, force: true });
+    return c.code === 0 && s.code === 1 && /blocked=true/.test(s.out);
+  },
+  () => W02_ENTRIES.length === 4 && W02_ENTRIES.every(headHasGuardCall),
+  () => w02EV);
+ok('W-02b 字面腿有牙（纯内存变异，不落盘）：四条入口的 HEAD blob 逐条喂 withoutGuardCall 摘掉调用行后 hasGuardCall 必须转假——且摘前逐条为真（正向锚不是摆设）',
+  W02_ENTRIES.every((rel) => {
+    let body = '';
+    try { body = git('show', `HEAD:${rel}`); } catch { return false; }
+    return hasGuardCall(body, rel) && !hasGuardCall(withoutGuardCall(body, rel), rel);
+  }),
+  `摘后仍为真的=${W02_ENTRIES.filter((rel) => { try { return !hasGuardCall(withoutGuardCall(git('show', `HEAD:${rel}`), rel), rel); } catch { return false; } }).join('、') || '(无)'}｜摘前为假的=${W02_ENTRIES.filter((rel) => { try { return !hasGuardCall(git('show', `HEAD:${rel}`), rel); } catch { return true; } }).join('、') || '(无)'}`);
 ok('W-03 工单前提订正：单面点名的「根目录 打包.bat」在本仓不存在（工作树与 HEAD 都查无）——真实旁路是 scripts/ 下两枚 .bat 与 npm run dist',
   !existsSync(join(ROOT, '打包.bat'))
   && !(git('ls-tree', '--name-only', 'HEAD').split(/\r?\n/).includes('打包.bat'))
@@ -481,7 +546,8 @@ ok('W-17 兜底桩没被触发：整轮没有任何一路走到 native-switch（
   `假件记账 ${existsSync(FAKE_LOG) ? readFileSync(FAKE_LOG, 'utf8').split(/\r?\n/).filter(Boolean).length : 0} 条`);
 
 const summary = `PASS=${pass} FAIL=${fail}\n门：verify-t02321-pack-precheck · 基线 HEAD ${HEAD_SHA.slice(0, 7)} · 夹具红 ${RED.shaShort} / 绿 ${GREEN.shaShort} / 记账桩 ${DIST.shaShort}\n`
-  + `四条发布入口在夹具副本内共实跑 11 轮（打包.mjs 3 轮 + .bat 5 轮 + dist.js 3 轮），断言 ${pass + fail} 条；`
+  + `四条发布入口在夹具副本内共实跑 11 轮（打包.mjs 3 轮 + .bat 5 轮 + dist.js 3 轮），`
+  + `另有 W-02 接线自检 2 轮（微型夹具 clean/strip 各一，秒级）与 W-02b 纯内存变异 4 条，断言 ${pass + fail} 条；`
   + `桩边界 exit=${STUB_EXIT} 之前的步骤全部真跑，构建末段由 native-switch 兜底桩与假 electron-builder 挡在仓库之外\n${LINES.join('\n')}\n`;
 console.log(`\nPASS=${pass} FAIL=${fail}`);
 const resultsFile = writeGateResults(join(ROOT, '.workbuddy'), 't02321-pack-precheck-gate-results.txt', summary,
