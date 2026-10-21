@@ -23,10 +23,12 @@
  * 截图落每轮独立子目录（gate-results 的进程级 RUN_TAG），临时根优先 D:/code/tmp（反模式 1）。
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+// T02751：前置件三态判定单源（missing/stale/ok 与 HEAD 提交时间取法都在这一个文件里）
+import { frontendArtifactState } from './lib/artifact-preflight.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TMP_ROOT = existsSync('D:/code/tmp') ? 'D:/code/tmp' : tmpdir();
@@ -244,22 +246,22 @@ db.prepare(
 ).run('e-one', PID, 'p-one', 3, 5, 8, T, T);
 closeDb();
 
-// ---------------- 2.5) 前置件就位（批㉚ U-00e 同款口径；T02767 改判） ----------------
+// ---------------- 2.5) 前置件就位（批㉚ U-00e 同款口径；T02767 改判；T02751 收编到统一口径单源） ----------------
 // dist 缺失＝「考卷没发」、dist 早于 HEAD＝「考卷是旧的」：两支都记 SKIP 收口并 exit≠0，
 // 不再用 ok(existsSync(DIST)) 记 FAIL——那会把「谁没跑 build」变成恒红门（红因不可归因，T02293 要打的那一类）。
-// 检查放在起服务之前：产物缺失时不必空烧一次隔离实例启动。
+// 检查放在起服务之前：产物缺失时不必空烧一次隔离实例启动。三态判定/秒口径见 scripts/lib/artifact-preflight.mjs。
 const DIST = join(ROOT, 'web', 'dist', 'index.html');
-const distReady = existsSync(DIST);
-const distMtime = distReady ? statSync(DIST).mtimeMs : 0;
-const headCommitMs = Number(execFileSync('git', ['log', '-1', '--format=%ct'], { cwd: ROOT, encoding: 'utf8' }).toString().trim() || 0) * 1000;
-if (!distReady) {
-  skipped('E-01 前端产物就位', `web/dist/index.html 不在（${DIST}）——前置件缺失，不是判据失守`);
-  lines.push('[ABORT] 前置件未就位（dist 缺失）——运行期料不会有，S/N 组按 skipped 处理');
-  finishAndExit(1);
-}
-if (headCommitMs > 0 && distMtime < headCommitMs) {
-  skipped('E-01 前端产物不早于 HEAD 提交', `dist 构建于 ${new Date(distMtime).toISOString()}，HEAD 提交于 ${new Date(headCommitMs).toISOString()}——旧产物测新代码，红绿不可归因；跑「cd web && npm run build」后复跑本门`);
-  lines.push('[ABORT] web/dist 早于 HEAD 提交——前置件过期，浏览器腿不跑');
+const ART = frontendArtifactState(ROOT);
+const distMtime = ART.distMtimeMs;
+const headCommitMs = ART.headMs;
+if (!ART.ready) {
+  if (ART.missing) {
+    skipped('E-01 前端产物就位', `web/dist/index.html 不在（${DIST}）——前置件缺失，不是判据失守`);
+    lines.push('[ABORT] 前置件未就位（dist 缺失）——运行期料不会有，S/N 组按 skipped 处理');
+  } else {
+    skipped('E-01 前端产物不早于 HEAD 提交', `dist 构建于 ${ART.distIso}，HEAD 提交于 ${ART.headIso}——旧产物测新代码，红绿不可归因；跑「cd web && npm run build」后复跑本门`);
+    lines.push('[ABORT] web/dist 早于 HEAD 提交——前置件过期，浏览器腿不跑');
+  }
   finishAndExit(1);
 }
 

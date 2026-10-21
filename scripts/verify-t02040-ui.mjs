@@ -45,6 +45,22 @@ const CHROME = process.env.T02040_UI_CHROME ?? 'C:/Program Files/Google/Chrome/A
 const BASE = `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ---------------- 0) 前置件就位（T02751 统一口径：scripts/lib/artifact-preflight.mjs） ----------------
+// 本门浏览器腿经隔离实例伺服的是**已构建的 web/dist**：dist 不在＝考卷没发、dist 早于 HEAD＝旧卷考新题，
+// 两种都不是判据失守——按 SKIP 收口（exit≠0 且汇总照打），别把「谁没跑 build」记成「功能失守」。
+const { frontendArtifactState } = await import(pathToFileURL(join(ROOT, 'scripts', 'lib', 'artifact-preflight.mjs')).href);
+const ART = frontendArtifactState(ROOT);
+if (!ART.ready) {
+  const why = ART.missing
+    ? `web/dist/index.html 不在（${ART.distPath}）——前置件缺失，不是判据失守`
+    : `dist 构建于 ${ART.distIso}，HEAD 提交于 ${ART.headIso}——旧产物测新代码，红绿不可归因`;
+  console.log(`  [SKIP] A-00 前端产物就位且不早于 HEAD 提交（${why}）`);
+  console.log('  [SKIP] U-02..U-30 浏览器腿（前置件未就位等于什么都没测；先跑 `cd web && npm run build` 再复跑本门，故 exit≠0）');
+  console.log('结果：PASS=0 FAIL=0 SKIP=2');
+  try { rmSync(DATA_DIR, { recursive: true, force: true }); rmSync(CHROME_PROFILE, { recursive: true, force: true }); } catch { /* 尽力回收 */ }
+  process.exit(1);
+}
+
 let pass = 0; let fail = 0;
 const ok = (name, cond, extra) => {
   if (cond) { pass += 1; console.log(`  [PASS] ${name}`); } else {
@@ -52,6 +68,7 @@ const ok = (name, cond, extra) => {
     console.log(`  [FAIL] ${name}${extra !== undefined ? ` -> ${JSON.stringify(extra).toString().slice(0, 360)}` : ''}`);
   }
 };
+ok('A-00 前端产物就位且不早于 HEAD 提交', true, `${ART.distPath}(${ART.distIso}) · HEAD=${ART.headIso}`);
 
 /** 反模式 11：字面腿取已提交树（工作树可能躺着别的会话的过期产品文件） */
 const headSource = (rel) => {

@@ -90,6 +90,23 @@ const TODAY = shift(0);
 const FAR = shift(60);
 
 // ---------------- 1) 夹具：临时库直写（进程内，起服务前完成） ----------------
+// ---------------- 0) 前置件就位（T02751 统一口径：scripts/lib/artifact-preflight.mjs） ----------------
+// 原有 V-02 只比 dist 与 src 的 mtime，**拦不住 dist 整体缺失**（newestMtime 对不存在目录返 0，
+// V-02 记 FAIL＝把「考卷没发」判成「功能失守」）；缺失与「早于 HEAD 提交」两态在本前置件段收口。
+const { frontendArtifactState } = await import(pathToFileURL(join(ROOT, 'scripts', 'lib', 'artifact-preflight.mjs')).href);
+const ART = frontendArtifactState(ROOT);
+if (!ART.ready) {
+  const why = ART.missing
+    ? `web/dist/index.html 不在（${ART.distPath}）——前置件缺失，不是判据失守`
+    : `dist 构建于 ${ART.distIso}，HEAD 提交于 ${ART.headIso}——旧产物测新代码，红绿不可归因`;
+  skipped('V-00a 前端产物就位且不早于 HEAD 提交', why);
+  console.log('  [SKIP] V-01..V-30 浏览器腿（前置件未就位等于什么都没测；先跑 `cd web && npm run build` 再复跑本门，故 exit≠0）');
+  console.log(`\nPASS=${pass} FAIL=${fail} SKIP=${skip}\n前置件未就位，终止`);
+  for (const dir of [DATA_DIR, CHROME_PROFILE]) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* 尽力回收 */ } }
+  process.exit(1);
+}
+ok('V-00a 前端产物就位且不早于 HEAD 提交', true, `${ART.distPath}(${ART.distIso}) · HEAD=${ART.headIso}`);
+
 process.env.MTask_DATA_DIR = DATA_DIR;
 const { getDb, closeDb } = await import('../server/src/db/connection.ts');
 const { initSchema } = await import('../server/src/db/schema.ts');
