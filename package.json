@@ -17,6 +17,7 @@
     "typecheck": "npm run typecheck -w mtask-server",
     "test:api": "node scripts/run-api-tests.mjs",
     "verify:head-selfconsistency": "node node_modules/tsx/dist/cli.mjs scripts/verify-head-selfconsistency.mts",
+    "verify:t02617": "node scripts/tests/verify-t02617-guard-reference.mjs",
     "electron": "electron electron/main.js",
     "dist": "node scripts/dist.js",
     "dist:dir": "node scripts/dist.js --dir",
