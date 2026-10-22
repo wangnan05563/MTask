@@ -2090,6 +2090,51 @@ export const PlanService = {
         insertedPlans = created.inserted;
         created.ids.forEach((id, k) => { const i = newIdx[k]; if (i !== undefined) planIds[i] = id; });
       }
+      // T02881 RC3 第三刀（裁定 a）：reuse 命中里程碑时，其段内新行不得一律追加表尾——
+      // 列表侧 milestoneMeta 按 sort_order 位置切片（PlanPage.tsx），表尾追加会把新明细错挂给
+      // 下一个里程碑。把「批内归属里程碑为 reuse 命中行」的新行插到该里程碑现有分段末尾
+      // （该里程碑与下一里程碑之间非里程碑行的最大 sort_order），其余行整体后移让位。
+      // 只挪 sort_order 不碰 updated_at，T01869 保护的 status/progress 不受影响；
+      // rename/new 模式整批按批次序连排，位置切片天然正确，无需此通道。
+      if (reuseMode) {
+        const rows = db.prepare('SELECT id, kind, sort_order FROM plan_tasks WHERE project_id = ? AND archived = 0 ORDER BY sort_order, created_at')
+          .all(projectId) as Array<{ id: string; kind: string; sort_order: number }>;
+        // 批内归属：每个新建非里程碑行往前找最近的批内里程碑（与 intervalChildEdges 同一区间口径）
+        const ownerOf = new Map<number, number>();
+        let lastMs = -1;
+        planKinds.forEach((k, i) => {
+          if (k === 'milestone') { lastMs = i; return; }
+          if (planTargets[i] && !planTargets[i].reuseId) ownerOf.set(i, lastMs);
+        });
+        const groups = new Map<string, { anchor: number; rows: string[] }>();
+        for (const [i, owner] of ownerOf) {
+          if (owner < 0) continue;
+          const reuseId = planTargets[owner]?.reuseId;
+          const rid = planIds[i];
+          if (!reuseId || !rid) continue;
+          const mrow = rows.find((r) => r.id === reuseId);
+          if (!mrow) continue;
+          let anchor = mrow.sort_order;
+          for (const r of rows) {
+            if (r.sort_order <= mrow.sort_order) continue;
+            if (r.kind === 'milestone') break;
+            anchor = r.sort_order;
+          }
+          const g = groups.get(reuseId) ?? { anchor, rows: [] };
+          g.rows.push(rid);
+          groups.set(reuseId, g);
+        }
+        // 从最深的锚点往表头方向插：后面的插入只会整体后移更大 sort_order 的行，
+        // 不会打乱已插段的相对位置（多 reuse 里程碑场景两段互不越界）
+        const updShift = db.prepare('UPDATE plan_tasks SET sort_order = sort_order + ? WHERE project_id = ? AND archived = 0 AND sort_order > ?');
+        const updOrder = db.prepare('UPDATE plan_tasks SET sort_order = ? WHERE id = ?');
+        const ordered = [...groups.values()].sort((a, b) => b.anchor - a.anchor);
+        for (const g of ordered) {
+          if (g.rows.length === 0) continue;
+          updShift.run(g.rows.length, projectId, g.anchor);
+          g.rows.forEach((rid, j) => updOrder.run(g.anchor + 1 + j, rid));
+        }
+      }
       // T00709（D-1 修复）：按 createBatch 返回的 id（与 planItems 同一下标序，两侧 title 过滤口径一致）回写 req_ids，
       // 废弃按标题 find 匹配——同名计划会命中同一行导致关联互相覆盖丢失
       const updPlan = db.prepare('UPDATE plan_tasks SET req_ids = ?, updated_at = ? WHERE id = ?');
