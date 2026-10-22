@@ -1,0 +1,149 @@
+[
+  {
+    "pageKey": "ppt-1",
+    "title": "MTask 四期 · 五期",
+    "url": "/index.html?page=1",
+    "poster": "/assets/images/posters/pages/page-1.png",
+    "pageNum": 1
+  },
+  {
+    "pageKey": "ppt-2",
+    "title": "目录 · 培训导航",
+    "url": "/index.html?page=2",
+    "poster": "/assets/images/posters/pages/page-2.png",
+    "pageNum": 2
+  },
+  {
+    "pageKey": "ppt-3",
+    "title": "背景与总览",
+    "url": "/index.html?page=3",
+    "poster": "/assets/images/posters/pages/page-3.png",
+    "pageNum": 3
+  },
+  {
+    "pageKey": "ppt-4",
+    "title": "资料\"沉而不用\"的三个断点",
+    "url": "/index.html?page=4",
+    "poster": "/assets/images/posters/pages/page-4.png",
+    "pageNum": 4
+  },
+  {
+    "pageKey": "ppt-5",
+    "title": "四期 · 五期 三大能力模块地图",
+    "url": "/index.html?page=5",
+    "poster": "/assets/images/posters/pages/page-5.png",
+    "pageNum": 5
+  },
+  {
+    "pageKey": "ppt-6",
+    "title": "四期详解",
+    "url": "/index.html?page=6",
+    "poster": "/assets/images/posters/pages/page-6.png",
+    "pageNum": 6
+  },
+  {
+    "pageKey": "ppt-7",
+    "title": "估算面板与三点估算",
+    "url": "/index.html?page=7",
+    "poster": "/assets/images/posters/pages/page-7.png",
+    "pageNum": 7
+  },
+  {
+    "pageKey": "ppt-8",
+    "title": "PERT 计算与汇总引擎",
+    "url": "/index.html?page=8",
+    "poster": "/assets/images/posters/pages/page-8.png",
+    "pageNum": 8
+  },
+  {
+    "pageKey": "ppt-9",
+    "title": "Excel / PDF 导出 · 交付即用",
+    "url": "/index.html?page=9",
+    "poster": "/assets/images/posters/pages/page-9.png",
+    "pageNum": 9
+  },
+  {
+    "pageKey": "ppt-10",
+    "title": "测试用例管理模块",
+    "url": "/index.html?page=10",
+    "poster": "/assets/images/posters/pages/page-10.png",
+    "pageNum": 10
+  },
+  {
+    "pageKey": "ppt-11",
+    "title": "AI 生成链路与 MCP 工具",
+    "url": "/index.html?page=11",
+    "poster": "/assets/images/posters/pages/page-11.png",
+    "pageNum": 11
+  },
+  {
+    "pageKey": "ppt-12",
+    "title": "五期详解",
+    "url": "/index.html?page=12",
+    "poster": "/assets/images/posters/pages/page-12.png",
+    "pageNum": 12
+  },
+  {
+    "pageKey": "ppt-13",
+    "title": "能力卡片与前置校验",
+    "url": "/index.html?page=13",
+    "poster": "/assets/images/posters/pages/page-13.png",
+    "pageNum": 13
+  },
+  {
+    "pageKey": "ppt-14",
+    "title": "核心生成引擎 · 四组件",
+    "url": "/index.html?page=14",
+    "poster": "/assets/images/posters/pages/page-14.png",
+    "pageNum": 14
+  },
+  {
+    "pageKey": "ppt-15",
+    "title": "SSE 流式生成与交付链路",
+    "url": "/index.html?page=15",
+    "poster": "/assets/images/posters/pages/page-15.png",
+    "pageNum": 15
+  },
+  {
+    "pageKey": "ppt-16",
+    "title": "KickoffPptPanel 交互",
+    "url": "/index.html?page=16",
+    "poster": "/assets/images/posters/pages/page-16.png",
+    "pageNum": 16
+  },
+  {
+    "pageKey": "ppt-17",
+    "title": "实操与收尾",
+    "url": "/index.html?page=17",
+    "poster": "/assets/images/posters/pages/page-17.png",
+    "pageNum": 17
+  },
+  {
+    "pageKey": "ppt-18",
+    "title": "一次点击，资料 → 成稿",
+    "url": "/index.html?page=18",
+    "poster": "/assets/images/posters/pages/page-18.png",
+    "pageNum": 18
+  },
+  {
+    "pageKey": "ppt-19",
+    "title": "能力对照与关键成效",
+    "url": "/index.html?page=19",
+    "poster": "/assets/images/posters/pages/page-19.png",
+    "pageNum": 19
+  },
+  {
+    "pageKey": "ppt-20",
+    "title": "注意事项与边界",
+    "url": "/index.html?page=20",
+    "poster": "/assets/images/posters/pages/page-20.png",
+    "pageNum": 20
+  },
+  {
+    "pageKey": "ppt-21",
+    "title": "谢谢 · 培训结束",
+    "url": "/index.html?page=21",
+    "poster": "/assets/images/posters/pages/page-21.png",
+    "pageNum": 21
+  }
+]

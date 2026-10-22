@@ -23,7 +23,7 @@ import { resolvePrdContext } from '../util/prdContext'; // T00763：PRD 上下�
 import { TestCaseService, type CaseBatchPatch, type CasePatch } from '../services/TestCaseService'; // T01493：测试用例 MCP 工具（复用服务层单源枚举与幂等落库）
 import { CASE_PRIORITY, CASE_TYPE, CASE_METHOD, CASE_STATUS, CASE_RESULT } from '../util/testCaseEnums'; // T01493：zod 枚举从单源导入，杜绝第三次口径漂移
 import { ArchiveService } from '../services/ArchiveService';
-import { EstimateService, ESTIMATE_ERRORS, ESTIMATE_META, ESTIMATE_PHASES, ESTIMATE_SOURCES } from '../services/EstimateService'; // T02044：估算 MCP 工具（枚举与错误文案单源，zod 不许自造第二套词表）
+import { EstimateService, ESTIMATE_META, ESTIMATE_PHASES, ESTIMATE_SOURCES } from '../services/EstimateService'; // T02044：估算 MCP 工具（枚举单源，zod 不许自造第二套词表）
 import { expected, sigma } from '../services/estimate-engine'; // T02044：回写后回执里的 E/σ 由引擎给，MCP 层不重算三点
 import { ESTIMATE_ARTIFACT_FORMATS, buildEstimateArtifact, estimatesSnapshot, parseAudience, parsePhases, parseScope } from '../routes/estimates'; // T02044：与 REST 同一份取数与导出流水线
 import {
@@ -229,93 +229,9 @@ function patchSingleCase(caseId: string, patch: CasePatch): CallToolResult {
   return ok(JSON.stringify(row), { ...row });
 }
 
-/**
- * 估算三枚 MCP 工具的定位参数翻译（T02044 · E10）。
- *
- * 放在**模块级并导出**有两个理由：一是它们只依赖 `getDb()`，与 server 实例无关；
- * 二是验收门要在自己进程里改名模拟 `ESTIMATE_ERRORS` 的词干、看文案是否随单源表移动
- * （T02293 判据 4）——闭包内的私有函数做不到，那这一层的文案就只能靠跨进程抄字面量来断言，
- * 正是判据 1 要消灭的第二份抄本。
- */
-export function resolveEstimateProject(a: { projectId?: string; projectName?: string }): { id: string; name: string } {
-  const db = getDb();
-  const id = (a.projectId ?? '').trim();
-  const name = (a.projectName ?? '').trim();
-  if (id) {
-    const row = db.prepare('SELECT id, name FROM projects WHERE id = ?').get(id) as { id: string; name: string } | undefined;
-    if (!row) throw new Error(`${ESTIMATE_ERRORS.projectNotFound}：${id}`); // 外部调用方拼错 id 必须报错，不能出一份空报价件
-    return row;
-  }
-  if (!name) throw new Error(ESTIMATE_ERRORS.projectOrNameRequired);
-  const row = db.prepare('SELECT id, name FROM projects WHERE name = ?').get(name) as { id: string; name: string } | undefined;
-  if (!row) throw new Error(`${ESTIMATE_ERRORS.projectNotFound}：${name}`);
-  return row;
-}
-
-/**
- * taskNo → 计划行。权威 linkage 只有一处：`plan_tasks.linked_task_id`（`schema.ts:196`，
- * 与「共享 req_ids 的软关联」是两套机制，`PlanService.ts:499` 已注明——估算是按 planId 记账的，
- * 这里只认硬关联，多条命中时把消歧责任交回调用方，不猜。
- */
-export function planByTaskNo(taskNo: string): { planId: string; projectId: string; planTitle: string } {
-  const rows = getDb()
-    .prepare(
-      `SELECT pt.id AS planId, pt.project_id AS projectId, pt.title AS planTitle
-         FROM plan_tasks pt JOIN tasks t ON t.id = pt.linked_task_id
-        WHERE t.task_no = ? AND t.archived = 0 AND COALESCE(pt.archived, 0) = 0`,
-    )
-    .all(taskNo) as Array<{ planId: string; projectId: string; planTitle: string }>;
-  if (rows.length === 0) throw new Error(`待办 ${taskNo} ${ESTIMATE_ERRORS.taskNoNoPlanLink}（plan_tasks.linked_task_id 为空），请改传 planId`);
-  if (rows.length > 1) {
-    throw new Error(`待办 ${taskNo} 关联了 ${rows.length} 条计划（${rows.map((r) => r.planTitle).join(' / ')}），${ESTIMATE_ERRORS.taskNoAmbiguousTail}`);
-  }
-  return rows[0];
-}
-
-/** planId → 计划行（已归档视作不存在：估算面不许往归档行上记新账） */
-export function planRowById(planId: string): { planId: string; projectId: string; planTitle: string } {
-  const row = getDb()
-    .prepare('SELECT id, project_id AS projectId, title FROM plan_tasks WHERE id = ? AND COALESCE(archived, 0) = 0')
-    .get(planId) as { projectId: string; title: string } | undefined;
-  if (!row) throw new Error(`${ESTIMATE_ERRORS.planMissingOrArchived}：${planId}`);
-  return { planId, projectId: row.projectId, planTitle: row.title };
-}
-
-/**
- * 请求里给了项目定位（projectId/projectName）就必须与计划行所属项目一致。
- * 与 `planRowById` 一样提到模块级：这条拒绝是「不许把估算挂到别的项目上」的唯一实现处，
- * 门要能在自己进程里改名模拟它的文案（T02293 判据 1/4）。
- */
-export function assertPlanProject(
-  resolved: { planId: string; projectId: string },
-  a: { projectId?: string; projectName?: string },
-): void {
-  if (!(a.projectId?.trim() || a.projectName?.trim())) return;
-  const proj = resolveEstimateProject(a);
-  if (proj.id !== resolved.projectId) {
-    throw new Error(`${ESTIMATE_ERRORS.planProjectMismatch}：${ESTIMATE_ERRORS.planOwnerPrefix} ${resolved.projectId}，${ESTIMATE_ERRORS.requestProjectPrefix} ${proj.id}（${proj.name}）`);
-  }
-}
-
-/**
- * 回写定位（`mtask_update_estimates` 的唯一实现处）：planId 优先，其次 taskNo 反查，
- * 两者都不给则报错；给了项目定位再做一致性校验。
- * 三条拒绝文案（`planLocateRequired` / `planMissingOrArchived` / `planProjectMismatch`）
- * 都从这里出，门才能在本进程里对它们做改名模拟（T02293 判据 1/4）。
- */
-export function resolveEstimateTarget(a: {
-  planId?: string; taskNo?: string; projectId?: string; projectName?: string;
-}): { planId: string; projectId: string; planTitle: string } {
-  const planId = (a.planId ?? '').trim();
-  const taskNo = (a.taskNo ?? '').trim();
-  const located = planId ? planRowById(planId) : taskNo ? planByTaskNo(taskNo) : null;
-  if (!located) throw new Error(ESTIMATE_ERRORS.planLocateRequired);
-  assertPlanProject(located, a);
-  return located;
-}
-
 /** 创建 MCP server 并注册全部工具 */
-export async function createMCPServer(): Promise<McpServer> {  const server = new McpServer({ name: 'mtask', version: '1.0.0' });
+export async function createMCPServer(): Promise<McpServer> {
+  const server = new McpServer({ name: 'mtask', version: '1.0.0' });
 
   // ---------------- 任务管理 ----------------
   server.registerTool('mtask_list_projects', {
@@ -815,7 +731,7 @@ export async function createMCPServer(): Promise<McpServer> {  const server = ne
 
   server.registerTool('mtask_import_prd', {
     title: '从 PRD 导入项目计划',
-    description: '上传 PRD 文件（base64）：自动提取文本（.docx/.md/.txt/.xlsx/.csv/.pdf）→ AI 拆分 WBS 并**逐条提取可跟踪需求** → 事务创建需求项（需求跟踪矩阵行）+ 项目计划（自动关联需求）+ 可选同步生成待办任务。返回导入统计与清单摘要。**先带 dryRun:true 用同一份 payload 预演一次**（只读、不落库，返回将要新建/复用/改名的计数与明细），确认连带影响后再实导。',
+    description: '上传 PRD 文件（base64）：自动提取文本（.docx/.md/.txt/.xlsx/.csv/.pdf）→ AI 拆分 WBS 并**逐条提取可跟踪需求** → 事务创建需求项（需求跟踪矩阵行）+ 项目计划（自动关联需求）+ 可选同步生成待办任务。返回导入统计与清单摘要。',
     inputSchema: {
       projectId: z.string().optional().describe('目标项目 id（与 projectName 二选一）'),
       projectName: z.string().optional().describe('目标项目名称（与 projectId 二选一）'),
@@ -825,8 +741,6 @@ export async function createMCPServer(): Promise<McpServer> {  const server = ne
       createTasks: z.boolean().optional().describe('是否同时把 WBS 节点转为待办任务（默认 false，便于 AI 推进执行）'),
       // T01875：撞名计划处置（同一份 PRD 重复导入的幂等口径）
       onDuplicatePlan: z.enum(['new', 'reuse']).optional().describe("项目内已有同名计划时的处置：'new'（默认）= 仍新建，但新行标题自动加「（N）」后缀区分，原行不动；'reuse' = 命中同名原行做幂等补写（只补空描述/复杂度与需求关联，只增不减），不新建、绝不改原行状态与进度"),
-      // T02354：预演通道——与页面「导入预览」同源（PlanService.previewPrdImport 复用 importPrd 的判重函数），零写库
-      dryRun: z.boolean().optional().describe('true = 只预演不落库：用**完全相同的 payload**跑一遍判重，返回将要新建/复用/改名的计数与明细，业务表逐字节不变。Agent 在真导之前应先带 dryRun:true 跑一次（重复导入会把需求跟踪矩阵行数翻倍，T02303 实测 35→70），看过连带影响再去掉该参数实导'),
     },
   }, async (a) => {
     try {
@@ -836,14 +750,6 @@ export async function createMCPServer(): Promise<McpServer> {  const server = ne
       if (buf.length === 0) return err('fileBase64 解析为空');
       const text = await PlanService.extractPrdText(buf, a.filename);
       const parsed = await PlanService.aiParsePrd(a.toolId, text);
-      if (a.dryRun === true) {
-        const preview = PlanService.previewPrdImport(loc.id, {
-          requirements: parsed.requirements, plans: parsed.drafts,
-          createTasks: a.createTasks === true, prdMd: text, prdFilename: a.filename, onDuplicatePlan: a.onDuplicatePlan,
-        });
-        const dry = { projectId: loc.id, dryRun: true, readOnly: true, preview, coverageWarn: parsed.coverageWarn || undefined, uncoveredReqNos: parsed.uncoveredReqNos ?? [] };
-        return ok(JSON.stringify(dry), dry);
-      }
       // T00763：PRD 原文（提取后的 Markdown）随导入完整落库，需求行回填 prd_id
       const r = PlanService.importPrd(loc.id, { requirements: parsed.requirements, plans: parsed.drafts, createTasks: a.createTasks === true, prdMd: text, prdFilename: a.filename, onDuplicatePlan: a.onDuplicatePlan });
       const summary = {
@@ -1503,7 +1409,41 @@ ${a.result}`;
   // MCP 层只做**定位参数翻译**（projectName / taskNo → id）与**响应体量控制**（默认精简 + 显式 full）。
   // 体量口径沿用 T01490 的实测教训：给 LLM 的 `content[0].text` 恒为精简摘要，
   // 全量数据只进 `structuredContent`——两处都塞全文会让 SSE 帧翻倍、大项目直接被截断。
-  // 三枚工具的定位参数翻译（projectName / taskNo → id）见模块级 `resolveEstimateProject` / `planByTaskNo`。
+  const resolveEstimateProject = (a: { projectId?: string; projectName?: string }): { id: string; name: string } => {
+    const db = getDb();
+    const id = (a.projectId ?? '').trim();
+    const name = (a.projectName ?? '').trim();
+    if (id) {
+      const row = db.prepare('SELECT id, name FROM projects WHERE id = ?').get(id) as { id: string; name: string } | undefined;
+      if (!row) throw new Error(`项目不存在：${id}`); // 外部调用方拼错 id 必须报错，不能出一份空报价件
+      return row;
+    }
+    if (!name) throw new Error('projectId 或 projectName 必填');
+    const row = db.prepare('SELECT id, name FROM projects WHERE name = ?').get(name) as { id: string; name: string } | undefined;
+    if (!row) throw new Error(`项目不存在：${name}`);
+    return row;
+  };
+
+  /**
+   * taskNo → 计划行。权威 linkage 只有一处：`plan_tasks.linked_task_id`（`schema.ts:196`，
+   * 与「共享 req_ids 的软关联」是两套机制，`PlanService.ts:499` 已注明——估算是按 planId 记账的，
+   * 这里只认硬关联，多条命中时把消歧责任交回调用方，不猜。
+   */
+  const planByTaskNo = (taskNo: string): { planId: string; projectId: string; planTitle: string } => {
+    const rows = getDb()
+      .prepare(
+        `SELECT pt.id AS planId, pt.project_id AS projectId, pt.title AS planTitle
+           FROM plan_tasks pt JOIN tasks t ON t.id = pt.linked_task_id
+          WHERE t.task_no = ? AND t.archived = 0 AND COALESCE(pt.archived, 0) = 0`,
+      )
+      .all(taskNo) as Array<{ planId: string; projectId: string; planTitle: string }>;
+    if (rows.length === 0) throw new Error(`待办 ${taskNo} 没有关联计划行（plan_tasks.linked_task_id 为空），请改传 planId`);
+    if (rows.length > 1) {
+      throw new Error(`待办 ${taskNo} 关联了 ${rows.length} 条计划（${rows.map((r) => r.planTitle).join(' / ')}），请改传 planId 指明哪一条`);
+    }
+    return rows[0];
+  };
+
   const r3 = (v: number): number => Math.round(v * 1000) / 1000;
 
   /** 精简摘要（也是 full 模式给 LLM 的那段文本）：字段名与 REST `GET /api/estimates` 的 summary 同源 */
@@ -1596,8 +1536,32 @@ ${a.result}`;
     annotations: { destructiveHint: false },
   }, async (a) => {
     try {
-      const { planId, projectId, planTitle } = resolveEstimateTarget(a);
-      const item = EstimateService.upsert(projectId, planId, {
+      const planId = (a.planId ?? '').trim();
+      const taskNo = (a.taskNo ?? '').trim();
+      // 定位结果在下面两个分支各自赋值（第三分支直接 return），初值不会被读到，故只声明不赋死值
+      let resolved: { planId: string; projectId: string };
+      let planTitle = '';
+      if (planId) {
+        const row = getDb()
+          .prepare('SELECT id, project_id AS projectId, title FROM plan_tasks WHERE id = ? AND COALESCE(archived, 0) = 0')
+          .get(planId) as { projectId: string; title: string } | undefined;
+        if (!row) throw new Error(`计划不存在或已归档：${planId}`);
+        resolved = { planId, projectId: row.projectId };
+        planTitle = row.title;
+      } else if (taskNo) {
+        const p = planByTaskNo(taskNo);
+        resolved = { planId: p.planId, projectId: p.projectId };
+        planTitle = p.planTitle;
+      } else {
+        return err('planId 与 taskNo 至少提供一个');
+      }
+      if (a.projectId?.trim() || a.projectName?.trim()) {
+        const proj = resolveEstimateProject(a);
+        if (proj.id !== resolved.projectId) {
+          throw new Error(`项目与计划不匹配：计划属于 ${resolved.projectId}，请求里给的是 ${proj.id}（${proj.name}）`);
+        }
+      }
+      const item = EstimateService.upsert(resolved.projectId, resolved.planId, {
         optimistic: a.optimistic,
         likely: a.likely,
         pessimistic: a.pessimistic,
@@ -1606,7 +1570,7 @@ ${a.result}`;
         note: a.note,
       });
       return ok(json({ planId: item.plan_id, planTitle, expected: r3(expected({ optimistic: item.optimistic, likely: item.likely, pessimistic: item.pessimistic })), sigma: r3(sigma({ optimistic: item.optimistic, likely: item.likely, pessimistic: item.pessimistic })) }), {
-        projectId,
+        projectId: resolved.projectId,
         planId: item.plan_id,
         planTitle,
         item,

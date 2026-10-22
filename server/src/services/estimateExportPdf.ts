@@ -18,12 +18,10 @@
  */
 import { newPdfDoc, renderMdPdf, drawBarChart, drawParetoChart, drawTornadoChart } from './prdExport';
 import {
-  NAMED_RANGE_STD as NAMED_RANGE_STD_LABEL,
   TEMPLATE_COEF_LABELS,
   TEMPLATE_PHASE_LABELS,
   TEMPLATE_REMARKS,
   TEMPLATE_TEXTS,
-  UNREVIEWED_PHRASE,
   type EstimateLayout,
 } from './estimateExportXlsx';
 import type { EstimatePhase } from './EstimateService';
@@ -31,38 +29,8 @@ import type { EstimatePhase } from './EstimateService';
 /** 件名（PDF 首页大标题，与 Excel 主 sheet 标题同源，§6.1 逐格表） */
 const CN_NUM = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
 
-/**
- * PDF 交付件文案单源（T02293 规约判据 1）：正文在这里长出，门（`scripts/verify-t0204*`）也从这里取期望值。
- * 此前门在断言里抄第二份中文口径，改一次文案就打红一次与功能无关的红；
- * 现在文案变动只需改本表，门随同源移动，行为断言（位置/结构/数值）仍在门里独立成立。
- */
-export const PDF_TEXTS = {
-  audienceInternal: '内部版',
-  audienceClient: '客户版',
-  pendingReviewer: '（待填写）',
-  scopeEstimatedOnly: '仅已估算行',
-  scopeAll: '全部计划行',
-  allPhases: '全部六阶段',
-  secQuote: '报价结论',
-  secRange: '报价区间（内部依据）',
-  secPhases: '阶段构成',
-  secDev: '开发段明细（预览）',
-  secCoefs: '调节系数',
-  secSelfCheck: '自检与对账',
-  secRemarks: '备注/说明',
-  secDisclaimer: '免责声明',
-  unreviewedTail: UNREVIEWED_PHRASE,
-  quoteDirect: '直接投入人天',
-  quoteIdeal: '理想人月',
-  quoteActual: '实际预估人月',
-  exportScopeLead: '导出口径：范围',
-  unEstimatedCell: '未估算',
-  totalRow: '合计',
-  disclaimerDelivery: '正式交付以 Excel',
-} as const;
-
 export function estimatePdfTitle(layout: EstimateLayout): string {
-  return `${TEMPLATE_TEXTS.title}（${layout.input.audience === 'client' ? PDF_TEXTS.audienceClient : PDF_TEXTS.audienceInternal}）`;
+  return `${TEMPLATE_TEXTS.title}（${layout.input.audience === 'client' ? '客户版' : '内部版'}）`;
 }
 
 /** 两位小数、去掉尾零（100.50 → 100.5）：报价件上 `0.23000000001` 这种写法只会引出对账疑问 */
@@ -97,15 +65,15 @@ function appendBasicInfo(w: MdWriter, layout: EstimateLayout, client: boolean): 
   const { input } = layout;
   w.emit('| 项目 | 估算日期 | 估算人 | 生成时间 |');
   w.emit('| --- | --- | --- | --- |');
-  w.emit(`| ${input.projectName} | ${input.estimateDate} | ${input.reviewer || PDF_TEXTS.pendingReviewer} | ${input.generatedAt.slice(0, 19).replace('T', ' ')} |`);
+  w.emit(`| ${input.projectName} | ${input.estimateDate} | ${input.reviewer || '（待填写）'} | ${input.generatedAt.slice(0, 19).replace('T', ' ')} |`);
   w.emit();
-  w.emit(`${PDF_TEXTS.exportScopeLead} ${input.scope === 'estimated_only' ? PDF_TEXTS.scopeEstimatedOnly : PDF_TEXTS.scopeAll}；`
-    + `版本 ${client ? PDF_TEXTS.audienceClient : PDF_TEXTS.audienceInternal}；`
-    + `阶段 ${input.phases && input.phases.length > 0 ? input.phases.map(phaseLabel).join('、') : PDF_TEXTS.allPhases}。`);
+  w.emit(`导出口径：范围 ${input.scope === 'estimated_only' ? '仅已估算行' : '全部计划行'}；`
+    + `版本 ${client ? '客户版' : '内部版'}；`
+    + `阶段 ${input.phases && input.phases.length > 0 ? input.phases.map(phaseLabel).join('、') : '全部六阶段'}。`);
   // §6.3：待复核标注出现在首页，不放文末
   if (layout.unreviewed > 0) {
     w.emit();
-    w.emit(`> 注意：本次导出有 ${layout.unreviewed} ${PDF_TEXTS.unreviewedTail}。`);
+    w.emit(`> 注意：本次导出有 ${layout.unreviewed} 行为系统推导值，未人工复核。`);
   }
 }
 
@@ -114,16 +82,16 @@ function appendQuote(w: MdWriter, layout: EstimateLayout, client: boolean): void
   const { input, summary } = layout;
   const std = input.config.manDaysPerManMonth;
   w.emit();
-  w.sec(PDF_TEXTS.secQuote);
+  w.sec('报价结论');
   w.emit();
   w.emit('| 指标 | 数值 | 依据 |');
   w.emit('| --- | --- | --- |');
-  w.emit(`| ${PDF_TEXTS.quoteDirect} | ${num(summary.directManDays.expected)} | 三点加权 E=(O+4M+P)/6 求和 |`);
-  w.emit(`| ${PDF_TEXTS.quoteIdeal} | ${num(summary.idealManMonths.expected)} | ${PDF_TEXTS.quoteDirect} ÷ ${NAMED_RANGE_STD_LABEL} ${num(std)} |`);
-  w.emit(`| ${PDF_TEXTS.quoteActual} | ${num(summary.actualManMonths.expected)} | ${PDF_TEXTS.quoteIdeal} ×（1 + 综合调节系数 ${num(summary.coefSum)}） |`);
+  w.emit(`| 直接投入人天 | ${num(summary.directManDays.expected)} | 三点加权 E=(O+4M+P)/6 求和 |`);
+  w.emit(`| 理想人月 | ${num(summary.idealManMonths.expected)} | 直接投入人天 ÷ 每人月工天标准 ${num(std)} |`);
+  w.emit(`| 实际预估人月 | ${num(summary.actualManMonths.expected)} | 理想人月 ×（1 + 综合调节系数 ${num(summary.coefSum)}） |`);
   if (client) return;
   w.emit();
-  w.sec(PDF_TEXTS.secRange);
+  w.sec('报价区间（内部依据）');
   w.emit();
   w.emit('| 口径 | 人天（直接投入，未含系数） | 人月（实际预估，含 Σ系数） |');
   w.emit('| --- | --- | --- |');
@@ -137,7 +105,7 @@ function appendQuote(w: MdWriter, layout: EstimateLayout, client: boolean): void
 function appendPhases(w: MdWriter, layout: EstimateLayout): void {
   const { summary } = layout;
   w.emit();
-  w.sec(PDF_TEXTS.secPhases);
+  w.sec('阶段构成');
   w.emit();
   w.emit('| 阶段 | 最小 | 最可能 | 最大 | 最终估算值（人天） | 占比 | 条目数 |');
   w.emit('| --- | --- | --- | --- | --- | --- | --- |');
@@ -145,7 +113,7 @@ function appendPhases(w: MdWriter, layout: EstimateLayout): void {
     if (p.rowCount === 0) continue; // 本次筛选下该阶段无明细：空阶段不上件（写了 0 等于承诺「估过、结果是 0」）
     w.emit(`| ${phaseLabel(p.phase)} | ${num(p.optimistic)} | ${num(p.likely)} | ${num(p.pessimistic)} | ${num(p.expected)} | ${pct(p.ratio)} | ${p.rowCount} |`);
   }
-  w.emit(`| ${PDF_TEXTS.totalRow} | ${num(summary.directManDays.optimistic)} | ${num(summary.directManDays.likely)} | `
+  w.emit(`| 合计 | ${num(summary.directManDays.optimistic)} | ${num(summary.directManDays.likely)} | `
     + `${num(summary.directManDays.pessimistic)} | ${num(summary.directManDays.expected)} | — | ${summary.countedKeys.length} |`);
 }
 
@@ -155,7 +123,7 @@ function appendDevRows(w: MdWriter, layout: EstimateLayout, client: boolean): vo
   if (devRows.length === 0) return;
   const { summary } = layout;
   w.emit();
-  w.sec(PDF_TEXTS.secDev);
+  w.sec('开发段明细（预览）');
   w.emit();
   w.emit('| 中模块 | 小模块/功能单元 | 最可能 | 最终估算值 | 占比 |');
   w.emit('| --- | --- | --- | --- | --- |');
@@ -163,7 +131,7 @@ function appendDevRows(w: MdWriter, layout: EstimateLayout, client: boolean): vo
   for (const d of devRows) {
     const r = ratioByKey.get(d.planId);
     w.emit(`| ${previewDetail(d.milestone || '—', 20)} | ${previewDetail(d.detail)} | `
-      + `${d.points ? num(d.points.likely) : '—'} | ${d.points ? num(r?.expected ?? null) : PDF_TEXTS.unEstimatedCell} | ${r ? pct(r.ratio) : '—'} |`);
+      + `${d.points ? num(d.points.likely) : '—'} | ${d.points ? num(r?.expected ?? null) : '未估算'} | ${r ? pct(r.ratio) : '—'} |`);
   }
   w.emit();
   w.emit(`明细正文在本件中做预览截断；完整正文${client ? '见 Excel 交付件' : '见 Excel 交付件的「估算明细（MTask）」sheet'}。`);
@@ -174,7 +142,7 @@ function appendCoefs(w: MdWriter, layout: EstimateLayout): void {
   const coefs = layout.coefRows.filter((c) => c.label !== '');
   if (coefs.length === 0) return;
   w.emit();
-  w.sec(PDF_TEXTS.secCoefs);
+  w.sec('调节系数');
   w.emit();
   w.emit('| 系数 | 值 | 占比 |');
   w.emit('| --- | --- | --- |');
@@ -186,10 +154,10 @@ function appendSelfCheck(w: MdWriter, layout: EstimateLayout): void {
   const { summary } = layout;
   const rc = summary.ratioCheck;
   w.emit();
-  w.sec(PDF_TEXTS.secSelfCheck);
+  w.sec('自检与对账');
   w.emit();
   w.emit(`- 各阶段占比之和（I40）= ${pct(rc.sumRatio)}，偏差 ${num(rc.deviationPct)}%${rc.danger ? '（超过 1%，需复核阶段归集）' : ''}。`);
-  w.emit(`- 未计入合计的行：小计 ${rc.excluded.subtotal} 行、里程碑 ${rc.excluded.milestone} 行、未估算明细 ${rc.excluded.unEstimated} 行、未估阶段 ${rc.excluded.unEstimatedPhases} 个。`);
+  w.emit(`- 未计入合计的行：小计 ${rc.excluded.subtotal} 行、里程碑 ${rc.excluded.milestone} 行、未估算 ${rc.excluded.unEstimated} 行。`);
   w.emit(`- 本次排除的里程碑行数（只做分组，不重复计）：${layout.milestoneSkipped}。`);
   w.emit(`- 待人工复核行数（来源为规则/默认推导）：${layout.unreviewed}。`);
   if (rc.unassigned.length > 0) {
@@ -201,7 +169,7 @@ function appendSelfCheck(w: MdWriter, layout: EstimateLayout): void {
 /** 备注四条（T02084 起与原件逐字符一致）：§6.1 明写客户版不写（其第 2 条本身就是「别把内部依据给客户」的指令） */
 function appendRemarks(w: MdWriter): void {
   w.emit();
-  w.sec(PDF_TEXTS.secRemarks);
+  w.sec('备注/说明');
   w.emit();
   for (const r of TEMPLATE_REMARKS) w.emit(`- ${r}`);
   w.emit();
@@ -213,9 +181,9 @@ function appendRemarks(w: MdWriter): void {
 /** 免责声明（两版都给，§6.2 要求的四类内容之一） */
 function appendDisclaimer(w: MdWriter): void {
   w.emit();
-  w.sec(PDF_TEXTS.secDisclaimer);
+  w.sec('免责声明');
   w.emit();
-  w.emit(`- 本件为汇报/预览件，${PDF_TEXTS.disclaimerDelivery}《${TEMPLATE_TEXTS.title}》为准（PRD 裁决 D4）。`);
+  w.emit('- 本件为汇报/预览件，正式交付以 Excel《项目工作量估算表》为准（PRD 裁决 D4）。');
   w.emit('- 本估算仅适用项目型工作量评估，不含产品/研发分摊与财务成本核算。');
   w.emit('- 估算基于当前需求范围；范围或交付方式变更后需重新估算。');
 }

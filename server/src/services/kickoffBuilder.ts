@@ -50,7 +50,12 @@ import { KICKOFF_ABORT_MSG, KICKOFF_PLACEHOLDER, type KickoffBundle, type Kickof
 export interface Block {
   box: Box;
   text?: { content: string; pt: number; bold?: boolean; color?: string; align?: 'left' | 'center'; shrink?: boolean };
-  table?: { header: string[]; rows: string[][] };
+  table?: {
+    header: string[];
+    rows: string[][];
+    /** T02685：列宽**相对权重**（绘制/测高时按表宽归一为英寸）。缺省各列均分。 */
+    colW?: number[];
+  };
   chart?: { type: 'bar' | 'doughnut'; name: string; labels: string[]; values: number[] };
   /**
    * 原生形状（FR-4.5 时间线）：`addShape` 落 `<a:prstGeom>`，PowerPoint 里可拖拽改。
@@ -73,7 +78,6 @@ export interface KickoffBuildResult {
   degradedPages: number[];
 }
 
-const TABLE_ROW_H = 0.3;
 /** 表格外框留白（pptxgenjs 给表格的边距），行数换算时都要算上 */
 const TABLE_PAD = 0.12;
 const CHART_H = 2.4;
@@ -192,17 +196,18 @@ function reqStatsLines(b: KickoffBundle): string[] {
 
 function reqListTable(b: KickoffBundle): NonNullable<Block['table']> {
   const all = b.requirements.map((r) => [r.req_no ?? '', (r.title ?? '').slice(0, 26), r.priority ?? '', statusMark(r.status ?? 'todo'), String(r.linkedPlans.length)]);
-  return { header: ['编号', '需求', '优先级', '状态', '关联计划'], rows: clampRows(all, (n) => [`其余 ${n} 条`, '见需求跟踪矩阵'], 5) };
+  // T02685：需求列给最大权重（窄列里需求名 2~3 行换行是表格越界的重灾区）
+  return { header: ['编号', '需求', '优先级', '状态', '关联计划'], rows: clampRows(all, (n) => [`其余 ${n} 条`, '见需求跟踪矩阵'], 5), colW: [1, 2.4, 1, 1, 1.2] };
 }
 
 function planRowsTable(b: KickoffBundle): NonNullable<Block['table']> {
   const all = b.plans.map((p) => [p.title.slice(0, 20), `${cell(p.start_date)}~${cell(p.end_date)}`, cell(p.assignee), statusMark(p.status), `${p.progress}%`]);
-  return { header: ['任务', '起止', '负责人', '状态', '进度'], rows: clampRows(all, (n) => [`其余 ${n} 条`, '见项目计划页'], 5) };
+  return { header: ['任务', '起止', '负责人', '状态', '进度'], rows: clampRows(all, (n) => [`其余 ${n} 条`, '见项目计划页'], 5), colW: [2.2, 1.5, 1, 0.9, 0.9] };
 }
 
 function milestonesTable(b: KickoffBundle): NonNullable<Block['table']> {
   const all = b.milestones.map((m) => [m.title.slice(0, 22), cell(m.start_date), cell(m.end_date), statusMark(m.status), `${m.progress}%`]);
-  return { header: ['里程碑', '起', '止', '状态', '进度'], rows: clampRows(all, (n) => [`其余 ${n} 个`, '见项目计划页'], 5) };
+  return { header: ['里程碑', '起', '止', '状态', '进度'], rows: clampRows(all, (n) => [`其余 ${n} 个`, '见项目计划页'], 5), colW: [2.2, 1.1, 1.1, 1, 0.9] };
 }
 
 function coverageLines(b: KickoffBundle): string[] {
@@ -256,7 +261,7 @@ function isPlaceholderTable(d: Omit<Block, 'box'>): boolean {
 
 function risksTable(b: KickoffBundle): NonNullable<Block['table']> {
   const all = b.risks.map((r) => [r.item.slice(0, 22), r.impact.slice(0, 24), r.mitigation.slice(0, 24), r.source.slice(0, 12)]);
-  return { header: ['风险', '影响', '应对', '依据'], rows: clampRows(all, (n) => [`其余 ${n} 项`, '见风险登记'], 4) };
+  return { header: ['风险', '影响', '应对', '依据'], rows: clampRows(all, (n) => [`其余 ${n} 项`, '见风险登记'], 4), colW: [2, 1.4, 1.4, 0.9] };
 }
 
 function workloadLines(b: KickoffBundle): string[] {
@@ -318,9 +323,24 @@ function preflightTable(b: KickoffBundle): NonNullable<Block['table']> {
 
 function prdDocLines(b: KickoffBundle): string[] {
   if (!b.prdDoc) return ['未导入 PRD 原文，技术章节按计划口径撰写'];
+  // T02685：摘录行净化——剔除 Markdown 表格行（管道行/分隔行），剥行内加粗/代码/链接与行内残留管道，
+  // 否则「| 模块 | 规则编号 |…」这类原文格式符会原样印上封面（用户实测截图问题 1）。
   const head = b.prdExcerpt
     .split('\n')
-    .map((l) => l.replace(/^[#>*\-\s]+/, '').trim())
+    .filter((l) => !/^\s*\|/.test(l)) // 整行表格行（含表头与分隔行）
+    .filter((l) => !/^\s*[-=:|\s]*$/.test(l)) // 纯分隔/空行
+    .map((l) =>
+      l
+        // T02685 复测修正：行内剥离必须先于行首剥离——行首规则会先吃掉 ** 开头的加粗符，
+        // 导致后面的 ** 失去配对而残留（首测 QA 抓到的正是这个顺序缺陷）
+        .replace(/\*\*([^*]+)\*\*/g, '$1')
+        .replace(/`([^`]+)`/g, '$1')
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+        .replace(/\s*\|.*$/, '')
+        .replace(/^[#>*\-\s]+/, '')
+        .replace(/\*\*/g, '')
+        .trim(),
+    )
     .filter((l) => l.length > 4)
     .slice(0, 5)
     .map((l) => l.slice(0, 44));
@@ -617,9 +637,72 @@ function textHeight(content: string, width: number, pt: number): number {
   return Math.min(3.2, Math.max(0.45, lines * (pt / 72) * 1.55));
 }
 
+// ---------- T02685：表格行高的确定性测高 ----------
+// 旧口径 blockHeight(表格) = TABLE_ROW_H(0.3") × 行数：默认每格只占 1 行。
+// 但 addTable 未设 rowH 且单元格不截字，pptxgenjs 按内容自撑行——窄列里
+// 「交易主体风险校验」这类文本换 2~3 行，实际行高 0.45~0.66" ≫ 估算 0.3"，
+// 表格整体越出盒底 → 与同页文字/页脚叠加、越出页面（用户实测截图问题 3/4）。
+// 修法是让「测高 = 实测」成立：单元格截字封顶 TABLE_MAX_LINES 行 + 测高按同一
+// 换行模型计算 + addTable 显式下发 rowH/colW。三处共用同一套换行参数，不会漂移。
+
+const TABLE_FONT_PT = 10;
+const TABLE_MAX_LINES = 2;
+const TABLE_LINE_FACTOR = 1.35;
+const TABLE_CELL_PAD = 0.1;
+
+/** 显示宽度单位：全角（CJK/全角标点）记 1，半角记 0.55 */
+function cjkLen(s: string): number {
+  let n = 0;
+  for (const ch of s) n += ch.charCodeAt(0) > 0xff ? 1 : 0.55;
+  return n;
+}
+
+/** 列宽（英寸）：colW 为相对权重时按表宽归一；缺省各列均分 */
+function tableColWs(table: NonNullable<Block['table']>, width: number): number[] {
+  const n = table.header.length;
+  const raw = table.colW;
+  if (raw && raw.length === n && raw.every((x) => x > 0)) {
+    const sum = raw.reduce((s, x) => s + x, 0);
+    return raw.map((x) => (x / sum) * width);
+  }
+  return Array(n).fill(width / n);
+}
+
+/** 单元格截字：封顶 TABLE_MAX_LINES 行（每行 perLine 个全角位），超出以 … 收尾 */
+function fitCellText(text: string, colW: number, pt: number): string {
+  const perLine = Math.max(2, Math.floor((colW - 0.06) / (pt / 72)));
+  const maxUnits = perLine * TABLE_MAX_LINES;
+  if (cjkLen(text) <= maxUnits) return text;
+  let out = '';
+  let w = 0;
+  for (const ch of text) {
+    const cw = ch.charCodeAt(0) > 0xff ? 1 : 0.55;
+    if (w + cw > maxUnits - 1) break;
+    out += ch;
+    w += cw;
+  }
+  return out + '…';
+}
+
+/** 行高估算：与 fitCellText 同一换行模型（截字后每格 ≤ TABLE_MAX_LINES 行，估算即上界） */
+function estimateRowH(cells: string[], colWs: number[], pt: number): number {
+  const perLine = colWs.map((w) => Math.max(2, Math.floor((w - 0.06) / (pt / 72))));
+  const lines = Math.max(
+    1,
+    ...cells.map((t, i) => Math.min(TABLE_MAX_LINES, Math.max(1, Math.ceil(cjkLen(t) / perLine[i])))),
+  );
+  return lines * ((pt / 72) * TABLE_LINE_FACTOR) + TABLE_CELL_PAD;
+}
+
+/** 表格自然高：逐行估算之和 + 外框留白 */
+function tableNaturalHeight(table: NonNullable<Block['table']>, width: number, pt: number): number {
+  const colWs = tableColWs(table, width);
+  return [table.header, ...table.rows].reduce((s, cells) => s + estimateRowH(cells, colWs, pt), TABLE_PAD);
+}
+
 function blockHeight(src: Omit<Block, 'box'>, width: number): number {
   if (src.chart) return CHART_H;
-  if (src.table) return TABLE_ROW_H * (src.table.rows.length + 1) + TABLE_PAD;
+  if (src.table) return tableNaturalHeight(src.table, width, TABLE_FONT_PT);
   return textHeight(src.text?.content ?? '', width, src.text?.pt ?? MIN_BODY_PT);
 }
 
@@ -666,9 +749,6 @@ export function fitTableRows(table: NonNullable<Block['table']>, maxRows: number
 }
 
 /** 行数上限：给定可用高度能排下几行数据（含表头与留白） */
-function maxRowsFor(height: number): number {
-  return Math.max(1, Math.floor((height - TABLE_PAD) / TABLE_ROW_H) - 1);
-}
 
 /** 柔性块（文本/图表）的保底占位：裁到不能再裁也就这么多，预算与实排都按这个口径算 */
 function flexStrip(blocks: Array<Omit<Block, 'box'>>): number {
@@ -718,6 +798,8 @@ function fitStack(cursor: number, blocks: Array<Omit<Block, 'box'>>, bottom: num
 /**
  * 把刚性表格收到版面预算内（同页多表均分预算）。
  * `budget` 已经扣掉要点/其他块要占的高度；排得下就原样返回，不无端收行。
+ * T02685：改按 tableNaturalHeight（换行感知测高）逐行收缩，直到塞进均分预算；
+ * 旧口径用 TABLE_ROW_H 固定行高反推行数，低估换行行高 → 收行不足 → 表格越界叠加。
  */
 function fitRigidTables(blocks: Array<Omit<Block, 'box'>>, width: number, budget: number): Array<Omit<Block, 'box'>> {
   const rigid = blocks.filter((d) => d.table != null);
@@ -725,8 +807,14 @@ function fitRigidTables(blocks: Array<Omit<Block, 'box'>>, width: number, budget
   const natural = rigid.reduce((s, d) => s + blockHeight(d, width) + MIN_GAP, 0);
   if (natural <= budget + 1e-6) return blocks;
   const per = Math.max(0, (budget - MIN_GAP * (rigid.length - 1)) / rigid.length);
-  const maxRows = maxRowsFor(per);
-  return blocks.map((d) => (d.table ? { ...d, table: fitTableRows(d.table, maxRows) } : d));
+  return blocks.map((d) => {
+    if (d.table == null) return d;
+    let t = d.table;
+    while (t.rows.length > 1 && tableNaturalHeight(t, width, TABLE_FONT_PT) > per) {
+      t = fitTableRows(t, t.rows.length - 1);
+    }
+    return { ...d, table: t };
+  });
 }
 
 /**
@@ -946,6 +1034,15 @@ export function chipBlocks(b: KickoffBundle, frame: Box): DiagramResult {
  * 分页探针就按它前移下一页的 `offset`——用同一条排布链路问「这页画得下几条」，
  * 而不是在别处重算一遍几何（公式抄两份必漂移）。
  */
+/**
+ * T02685：目录/议程页要点格式化——编号 + 空行间距。
+ * 裸文本平铺（用户实测第 2 页「会议议程」）看起来像忘了排版；编号列表才是议程的常规形态。
+ */
+function bulletBodyText(item: KickoffRenderPage, bullets: string[]): string {
+  if (item.layout !== 'toc') return bullets.join('\n');
+  return bullets.map((s, i) => `${i + 1}. ${s}`).join('\n\n');
+}
+
 export function layoutBody(
   item: KickoffRenderPage,
   b: KickoffBundle,
@@ -978,13 +1075,9 @@ export function layoutBody(
   if (frames.cols) {
     const [left, right] = frames.cols;
     const dataBlocks = fitRigidTables(rawBlocks, right.w, right.h - flexStrip(rawBlocks));
-    if (bullets.length) out.push({ box: left, text: { content: bullets.join('\n'), pt: MIN_BODY_PT } });
+    if (bullets.length) out.push({ box: left, text: { content: bulletBodyText(item, bullets), pt: MIN_BODY_PT } });
     const boxes = fitStack(right.y, dataBlocks, right.y + right.h, right.w, right);
     pushStackedBlocks(out, dropped, dataBlocks, boxes, right.y + right.h);
-    // T02791：两栏早退分支同样到不了形状版（timelineShapePass 只在单栏堆叠段跑）。
-    // 判据取 dataKeys 面而非 layout 面——twoCol 页的 layout 字面不是 'timeline'，
-    // 但 carrying timeline 数据键的这一栏在形状版口径下同样被无声降级。
-    if (item.dataKeys.includes('timeline')) notes.push(`时间线回落列表版：${timelineDegradeReason(b) ?? '两栏版面不绘形状版时间线'}`);
     return { blocks: out, dropped, notes, violations: [], tlDrawn: 0 };
   }
 
@@ -1001,7 +1094,7 @@ export function layoutBody(
 
   let cursor = body.y;
   if (bullets.length) {
-    const content = bullets.join('\n');
+    const content = bulletBodyText(item, bullets);
     const naturalH = textHeight(content, body.w, MIN_BODY_PT);
     // T02166：同页带**刚性数据**（表格 / 时间线区）时先给它留位，否则要点吃光 body。
     // 表格已由 fitRigidTables 按剩余高度收过行，这里要点取表格排完后的真实余量；
@@ -1217,12 +1310,17 @@ export function drawBlock(slide: any, block: Block): void {
     return;
   }
   if (block.table) {
+    // T02685：列宽/行高显式下发 + 单元格截字——测高（tableNaturalHeight）与绘制共用同一套
+    // 换行模型，实测行高 ≤ 估算行高，表格不再越出盒底与文字/页脚叠加。
+    const colWs = tableColWs(block.table, geo.w);
+    const fit = (cells: string[]) => cells.map((t, c) => fitCellText(t, colWs[c], TABLE_FONT_PT));
     const rows = [
       // T02156：表头改品牌深底白字（恒生模板表格头样式），与浅蓝页面背景成「卡片」层次
-      block.table.header.map((t) => ({ text: t, options: { bold: true, color: PALETTE.onBrand, fill: { color: PALETTE.brandDeep } } })),
-      ...block.table.rows.map((r, i) => r.map((t) => ({ text: t, options: { color: PALETTE.ink, fill: { color: i % 2 === 1 ? PALETTE.zebraFill : PALETTE.paper } } }))),
+      block.table.header.map((t, c) => ({ text: fitCellText(t, colWs[c], TABLE_FONT_PT), options: { bold: true, color: PALETTE.onBrand, fill: { color: PALETTE.brandDeep } } })),
+      ...block.table.rows.map((r, i) => fit(r).map((t, c) => ({ text: t, options: { color: PALETTE.ink, fill: { color: i % 2 === 1 ? PALETTE.zebraFill : PALETTE.paper } } }))),
     ];
-    slide.addTable(rows, { ...geo, fontSize: 10, fontFace: FONT.face, border: { type: 'solid', pt: 0.5, color: PALETTE.border }, valign: 'middle' });
+    const rowHs = [block.table.header, ...block.table.rows].map((cells) => estimateRowH(cells, colWs, TABLE_FONT_PT));
+    slide.addTable(rows, { ...geo, fontSize: TABLE_FONT_PT, fontFace: FONT.face, border: { type: 'solid', pt: 0.5, color: PALETTE.border }, valign: 'middle', colW: colWs, rowH: rowHs });
     return;
   }
   if (block.chart) {

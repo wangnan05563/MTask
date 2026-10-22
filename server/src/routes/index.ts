@@ -283,14 +283,6 @@ api.get('/workspace/file', (req, res) => {
   wsWrap(res, () => WorkspaceService.readFile(projectId, path, Number(offset ?? 0), Number(limit ?? 200)));
 });
 
-/** T02389：任务正文文件超链接 → 右侧抽屉预览（工作空间相对路径 / 本机绝对路径 / file://） */
-api.get('/files/preview', (req, res) => {
-  const { projectId, path } = req.query as Record<string, string | undefined>;
-  if (!path) { res.status(400).json({ error: 'path 必填（文件路径或 file:// 链接）' }); return; }
-  // 绝对路径不依赖项目；相对路径才需要 workspace 解析，故 projectId 缺省时由服务层报出明确原因
-  wsWrap(res, () => WorkspaceService.previewFile(projectId ?? '', path));
-});
-
 // ---------- T00777：轻量符号索引 ----------
 api.post('/workspace/symbols/refresh', (req, res) => {
   const { projectId } = (req.body ?? {}) as Record<string, string | undefined>;

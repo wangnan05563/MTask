@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react';
 import MarkdownIt from 'markdown-it';
 import { Check, Code, Copy, Eye } from 'lucide-react';
-import { FILE_LINK_PREFIX, linkifyFilePaths } from './fileLinks';
 
 /**
  * Markdown 渲染组件。
@@ -11,19 +10,13 @@ import { FILE_LINK_PREFIX, linkifyFilePaths } from './fileLinks';
  */
 const md = new MarkdownIt({ html: false, linkify: true });
 
-// 外部链接新窗口打开并阻止 opener 泄露，兼顾可用性与安全；
-// T02389：mtask-file: 内部链接不设 target，交由 MarkdownContent 的点击拦截在抽屉中打开
+// 外部链接新窗口打开并阻止 opener 泄露，兼顾可用性与安全
 const defaultRender =
   md.renderer.rules.link_open ||
   ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
 md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
-  const href = String(tokens[idx].attrGet('href') ?? '');
-  if (href.startsWith(FILE_LINK_PREFIX)) {
-    tokens[idx].attrSet('data-mtask-file', '1');
-  } else {
-    tokens[idx].attrSet('target', '_blank');
-    tokens[idx].attrSet('rel', 'noopener noreferrer');
-  }
+  tokens[idx].attrSet('target', '_blank');
+  tokens[idx].attrSet('rel', 'noopener noreferrer');
   return defaultRender(tokens, idx, options, env, self);
 };
 
@@ -130,33 +123,15 @@ export function MarkdownContent({
   style,
   className,
   showCopy,
-  onFileClick,
 }: {
   readonly content: string;
   readonly style?: React.CSSProperties;
   readonly className?: string;
   /** 是否在预览视图右上角显示「复制」按钮（默认关闭，避免与源码视图自带复制重复） */
   readonly showCopy?: boolean;
-  /** T02389：点击正文中的文件链接时回调原始路径；不传则文件路径保持普通文本 */
-  readonly onFileClick?: (path: string) => void;
 }) {
   const [view, setView] = useState<'preview' | 'source'>('preview');
   const [copied, setCopied] = useState(false);
-  // 只改渲染视图；源码视图与复制始终用原始 Markdown，避免内部链接语法泄露到用户面前
-  const previewContent = useMemo(
-    () => (onFileClick ? linkifyFilePaths(content || '') : (content || '')),
-    [content, onFileClick],
-  );
-
-  const handleFileLinkClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!onFileClick) return;
-    const anchor = (e.target as HTMLElement).closest?.('a[data-mtask-file]') as HTMLAnchorElement | null;
-    if (!anchor) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const raw = (anchor.getAttribute('href') ?? '').slice(FILE_LINK_PREFIX.length);
-    try { onFileClick(decodeURIComponent(raw)); } catch { onFileClick(raw); }
-  };
 
   const copySource = async () => {
     const text = content;
@@ -176,7 +151,7 @@ export function MarkdownContent({
   };
 
   return (
-    <div style={{ position: 'relative', ...style }} onClick={handleFileLinkClick}>
+    <div style={{ position: 'relative', ...style }}>
       {/* 视图切换按钮常驻覆盖在右上角，始终可被找到，不随视图变化移位造成闪烁
           （.mdv 样式已由应用根 MarkdownStyles 统一注入，不在此重复） */}
       <div style={{ position: 'absolute', top: 0, right: 0, display: 'flex', gap: 6, zIndex: 1 }}>
@@ -211,7 +186,7 @@ export function MarkdownContent({
 
       {view === 'preview' ? (
         // paddingTop 让出右上角按钮，避免首行标题被遮挡
-        <Markdown content={previewContent} className={className} style={{ paddingTop: 30, minHeight: 32 }} />
+        <Markdown content={content} className={className} style={{ paddingTop: 30, minHeight: 32 }} />
       ) : (
         <div style={{ position: 'relative', marginTop: 30 }}>
           <pre style={sourcePreStyle}>{content || ''}</pre>

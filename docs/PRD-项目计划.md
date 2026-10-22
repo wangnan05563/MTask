@@ -95,3 +95,47 @@ MTask 现有任务管理以「单条待办」为核心，缺少**项目级时间
 3. 导出文件可用 Excel 打开、内容完整、文件名含时间戳
 4. 插入/删除/改工期后时间线自动重排且跳过周末与节假日
 5. 计划状态流转联动待办状态；关联/解除关联正常
+
+## 7. 里程碑父子口径与进度聚合（T02090 签字，2026-10-13）
+
+> 本节是 T02042 收口残项的签字结论，替代此前「deps child（T01704/skill）」与「排序区间
+> （milestoneDurations / 里程碑汇总）」并存的双口径局面。实现：`util/planDeps`（三型解析）、
+> `util/milestoneChild`（child 边纯函数）、`services/milestoneProgress`（聚合与对账）、
+> `PlanService.importPrd`（导入补边）、门脚本 `scripts/verify-t02042-milestone-deps.mts`。
+
+### 7.1 口径签字：A——`deps child` 是唯一父子口径
+
+- **父子关系只认 `plan_tasks.deps` 内 `{id:<里程碑id>, type:'child'}`**（子行指向父里程碑）。
+  采纳理由：与 T01704 包络重算、依赖图渲染、估算导出 C 列归属同一份结构化数据；
+  排序区间（位置切片）会把错位行归错里程碑（实测四期 K1~K8 位置在前、M-K 里程碑在后，
+  区间口径会把 K 系列挂到已关闭的「5 联调与验收」上）。
+- 排序区间口径**降级为展示汇总**（PlanPage.milestoneMeta，T01621 已注明）与**导入侧工期汇总**
+  （milestoneDurations：里程碑工期=其下明细之和），不再作为父子判据。
+- PRD 导入必须补 child 边（区间规则：里程碑之后、下一里程碑之前的 normal 行）；存量由
+  幂等补边脚本 `tmp/ai-scratch/t02090-backfill-child-edges.mts` 修复（只写 deps，护栏：done 里程碑
+  + 未 done 子行不补，避免把历史错位误 regression）。
+
+### 7.2 deps 三型契约
+
+`[{id, type}]`，type ∈ `serial`（严格先后，阻塞排水）｜`parallel`（并发，不阻塞）｜
+`child`（结构性归属，**不阻塞排水、不参与日期传播**）。解析单源 `util/planDeps.parsePlanDeps`
+（T02090 起保留 child——旧实现把它并成 serial，会造成「等里程碑完成⇄等子任务完成」倒挂卡死）。
+
+### 7.3 进度聚合作业口径
+
+子项 = 指向该里程碑的 child 边的未归档行；`progress = round(done/total×100)`（clamp 0~100）；
+全 done → `status=done`+100；部分 done → `doing`；全未 done → `todo`+0；**无子项不动**
+（保留人工状态）。聚合作主：人工 PATCH 里程碑 status/progress 后若仍有子项，以子项实况覆盖
+（红线：子项未动时里程碑不得 100%——先把里程碑标完成会让后续进度失去意义）。
+
+### 7.4 联动顺序（T00478 类误读面）
+
+里程碑**因聚合翻为 done** 时，关联待办置 `status=done` + `ai_state=unread`（待读）而非静默
+done——「已完成」永远有结论档支撑，面板先出未读圆点。仅在「非 done → done」翻转时触发一次。
+
+### 7.5 触发点与对账家族
+
+触发：PlanService.update（status/progress/deps 变更，含里程碑自身）、TaskService
+.syncPlanOnStatusChange（任务完成度是聚合输入）、archive/restore（子项进出分母）。
+启动对账（T00470 家族）：`reconcileLinkedPlanStatuses`（排除聚合作主的里程碑）→
+`reconcileReqStatuses`（T02087）→ `reconcileMilestoneProgresses`（T02090，按子项实况权威收敛）。

@@ -11,7 +11,6 @@ import { MarkdownContent } from '../ui/Markdown';
 import { ResultDiffPanel } from '../ui/ResultDiff'; // T01607：结果历史 diff/回滚——与行内共用同一组件
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { SlideOver } from './SlideOver';
-import { FilePreviewDrawer } from './FilePreviewDrawer'; // T02389：正文文件超链接在嵌套抽屉中预览
 import { ClipboardList, FileText, History, Link2, Loader2, Pencil, Save, Sparkles, X } from 'lucide-react';
 
 /** T01568：标签页键对外导出——外部跳转（focusTaskByNo）按名称指定落位标签页 */
@@ -69,8 +68,6 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
   const [plans, setPlans] = useState<Array<{ id: string; title: string; kind: string; start_date: string }>>([]);
   const [plansLoading, setPlansLoading] = useState(false);
   const [previewId, setPreviewId] = useState(''); // T01563：附件放大预览（点同图收起）
-  // T02389：正文文件链接 → 嵌套文件预览抽屉（同一时刻仅一个文件；再次点击替换）
-  const [filePreview, setFilePreview] = useState('');
 
   // T01568：同一任务被再次跳转（如重复点同一条通知）时组件不重挂载，initialTab 变化仍需把视图切回约定标签页；
   // 用户手动切页后 initialTab 未变，故不会被反复拽回——只在「外部指定的落位发生变化」时生效。
@@ -180,7 +177,7 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
           </div>
         ) : (
           <div>
-            {desc ? <MarkdownContent content={desc} onFileClick={setFilePreview} /> : <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>（无描述）</div>}
+            {desc ? <MarkdownContent content={desc} /> : <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>（无描述）</div>}
             <button onClick={() => { setDescDraft(desc); setEditing('desc'); }} className="tbtn-anim" style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>
               <Pencil size={12} /> 编辑描述
             </button>
@@ -247,7 +244,7 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
           </div>
         ) : (
           <div>
-            {result ? <MarkdownContent content={result} onFileClick={setFilePreview} /> : <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>（暂无处理结果，AI 分析结论将回写于此）</div>}
+            {result ? <MarkdownContent content={result} /> : <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>（暂无处理结果，AI 分析结论将回写于此）</div>}
             <button onClick={() => { setResultDraft(result); setEditing('result'); }} className="tbtn-anim" style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>
               <Pencil size={12} /> 编辑 / 回传结果
             </button>
@@ -332,13 +329,12 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
             生成失败：{summaryErr}
           </div>
         )}
-        {summary ? <MarkdownContent content={summary} onFileClick={setFilePreview} /> : <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>{emptyHint}</div>}
+        {summary ? <MarkdownContent content={summary} /> : <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>{emptyHint}</div>}
       </div>
     );
   }
 
   return (
-    <>
     <SlideOver open title={task.title} onClose={onClose} width={480}>
       {/* 头部徽标 */}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -387,12 +383,5 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
         </div>
       )}
     </SlideOver>
-    <FilePreviewDrawer
-      open={filePreview !== ''}
-      projectId={projectId}
-      path={filePreview}
-      onClose={() => setFilePreview('')}
-    />
-    </>
   );
 }

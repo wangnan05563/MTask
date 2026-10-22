@@ -1,10 +1,56 @@
 # PRD：AI 控制台「项目启动会 PPT 生成」（MTask）
 
-> 来源任务：T01844 ｜ 版本：**v1.0（待审批）** ｜ 日期：2026-10-11 ｜ 状态：**草案，等待立项审批**（本文件只定义需求与设计，不含实现）
+> 来源任务：T01844 ｜ 版本：**v1.1（已批准）** ｜ 日期：2026-10-12 ｜ 状态：**已批准，等待实施**（本文件只定义需求与设计，不含实现）
 > 影响项目：mtask四期（工作空间 `D:\code\otherProjects\26_MTask`）
-> 关联既有 PRD：`docs/PRD-估算视图与工作量评估导出.md`（T01839/T01842，v1.4，**尚未实现**）、`docs/PRD-项目计划.md`（T00431，已实现）、`docs/PRD-测试用例管理.md`（已实现）
+> 关联既有 PRD：`docs/PRD-估算视图与工作量评估导出.md`（T01839/T01842，v2.5，**已实现**）、`docs/PRD-项目计划.md`（T00431，已实现）、`docs/PRD-测试用例管理.md`（已实现）
 > 质量参照技能：`D:\code\Data_Trae\.trae-cn\skills\pptx-skill-for-trae`（本机已存在，见 §6.4 的可用性实测）
 > 取证方式：全文每条技术断言均锚到本仓 `路径:行号`；「不存在」的结论标注 grep 关键字与范围（§1.3）
+
+---
+
+## 0. 审批记录（v1.0 → v1.1）
+
+**审批人**：业主代表（通过 T02073 任务授权）  
+**审批日期**：2026-10-12  
+**审批结论**：批准立项，按建议值签署 A-1~A-4 裁决（其中 A-4 因估算引擎已落地而调整），修订后版本号 v1.1。
+
+### A-1.1 E-1 落地记录（T02156，2026-10-14）
+
+N1 的搁置根因是「读模板母版需要 Python 运行时」。T02156 用户硬要求遵循 `2023恒生PPT模板.pptx` 品牌规范后，E-1 以**不引 Python、不加依赖**的方式落地：pptxgenjs 原生 `defineSlideMaster({ background })` 把恒生三张版式背景（封面/目录/内容，提取为 1280×720 副本进 `server/src/services/assets/kickoff/`）登记为自定义版式，品牌四色（08409C/0059E9/C9DCF6/FFFFFF）进 `exportStyle.ts` 单源；图表字体/颜色、表头深蓝白字、时间线品牌色同步整改。**N1 裁决本身不变**（仍不做「读任意模板母版并填充」），落地的是「内置版式的品牌化」，判据与验收见 `docs/T02156-启动会PPT品牌优化策略.md` 与 `scripts/verify-t02156-kickoff-brand.mts`（26 断言全绿）。
+
+### A-1 非目标确认（N1~N4 维持不变）
+
+| 编号 | 原 PRD 建议 | 签字值 | 理由 |
+|---|---|---|---|
+| N1 | 不做 .pptx 母版/模板文件套用 | **同意** | 装机版不含 Python 运行时，无法调用 python-pptx/pptx-automizer；内置 3 套版式足够 Kickoff 场景 |
+| N2 | 不做 PPT 在线预览编辑器 | **同意** | 本仓无 canvas 幻灯片编辑器，产物交给 PowerPoint/WPS 编辑 |
+| N3 | 不做 AI 生成插图/文生图 | **同意** | AIService 仅支持文本 chat，无 vision/base64 输入能力 |
+| N4 | 不做依赖 E 系列的 PERT 三点估算取数 | **调整为部分同意** | 估算引擎已实现（v2.5 已上线），但 Kickoff PPT 仍不引入复杂 PERT 计算，保持"工作量页优先取 estimate_items 汇总，缺失时降级 duration_days"的混合口径（见 A-4） |
+
+### A-2 下载端点决策
+
+**建议值**：复用 `/api/report/ai-download` 白名单（已含 pptx，零改动）  
+**签字值**：**同意**  
+**理由**：文件名正则 `^[\w\-.()·\u4e00-\u9fa5 ]+\.(xlsx|docx|pdf|pptx)$` 已覆盖 pptx（routes/index.ts:1680），无需新增端点。
+
+### A-3 日志表决策
+
+**建议值**：本期不建 `kickoff_ppt_logs` 表，日志仅进控制台流  
+**签字值**：**同意**  
+**理由**：简化首期实现，后续如需追溯可通过 SSE 事件留痕或手动补建。
+
+### A-4 工作量页口径决策（关键变更）
+
+**原 PRD 建议**：E 系列未实现 → 工作量页只走 `Σ duration_days`（工作日）+ `complexity` 分布，页脚常驻"工期口径，非三点估算"  
+**修正后签字值**：**优先取 estimate_items 汇总，缺失时降级 duration_days**  
+**理由**：估算视图已于 v2.5 上线（grep `estimate_items|/api/estimates` 命中 9 文件，estimates.ts/EstimateService.ts/estimate-engine.ts 等均已落地），Kickoff PPT 应优先读取估算引擎的实际输出（人天/人月、PERT 三点、复杂度分布），仅在项目未配置估算数据时降级为 `plan_tasks.duration_days` 汇总。页脚标记改为"工作量来源：估算引擎 / 工期推导（降级）"动态显示。
+
+### v1.1 主要修订清单
+
+1. **§1.2 现状表第 28 行修正**："估算视图未实现" → "估算视图已实现（v2.5，9 文件命中）"，约束从"禁止依赖 estimate_items"改为"优先取 estimate_items，缺失时降级 duration_days"。
+2. **§1.4 非目标 N4 修正**：从"不做依赖 E 系列的 PERT 三点估算取数"改为"不做复杂 PERT 计算链路，但工作量页优先读取估算引擎汇总结果"。
+3. **FR-4.6 工作量评估章节修正**：数据来源增加 `estimate_items` 表及 `/api/estimates/summary` 端点，取数逻辑改为"有估算用估算，无估算用工期"。
+4. **关联 PRD 版本更新**：从"v1.4，尚未实现"改为"v2.5，已实现"。
 
 ---
 
@@ -25,7 +71,7 @@
 | 产物落盘与下载链路齐备 | 无 `/api/download`；范式=服务端 Buffer + `Content-Disposition`，前端 `web/src/utils/download.ts:18 saveBinary / :42 saveBlob`；AI 周报走**临时文件 + 令牌换文件**：`POST /api/report/ai-download`（`routes/index.ts:1669`，文件名白名单正则**已含 pptx** `:1673`），前端 `ReportPage.tsx:590 api.download` | 直接复用 ai-download 白名单（已含 pptx，零改动）或同构新增 `kickoff-ppt-download`；**不**使用 `shell.openPath`/`showSaveDialog`（全仓不存在，grep 见 §1.3） |
 | 项目管理侧数据源端点齐备 | PRD 文档表 `prd_docs`（`server/src/db/schema.ts:272`）+ `GET/POST /api/plans/prd-docs[/:id]`（`routes/plans.ts:205-260`）；RTM `GET /api/plans/prd-requirements`（`plans.ts:328`）；测试用例 `GET /api/plans/test-cases`、`/coverage`、`/stats`（`plans.ts:448-477`，表 `test_cases` `schema.ts:376`）；计划 `GET /api/plans`（`plans.ts:50-205`） | 前置校验（FR-2）按这些端点的**返回条数**判定，不新建聚合端点 |
 | 工作空间分析能力可用 | `projects.workspace_path`（`schema.ts:501`）读取方 `routes/index.ts:185-204`、`WorkspaceService.ts:185-191`、`AIService.ts:106/464/490`、`PrdGenService.ts:194`、`TestCaseGenService.ts:149`；端点 `GET /api/workspace/search`、`GET /api/workspace/file`、`POST /api/workspace/symbols/refresh`（`routes/index.ts:250-287`） | 技术章节（架构/规模）素材来自 symbols/search，**但无「代码度量统计」能力**（行数/模块数无现成端点）→ 附录页只写已得事实，不臆造指标 |
-| **估算视图未实现**（工作量评估章节的关键前提） | grep `estimate_items\|/api/estimates`（全仓排除 node_modules）仅命中 `docs/PRD-估算视图与工作量评估导出.md` 与任务记录 md，代码零命中 | 「工作量评估」页必须**降级取数**：`plan_tasks.duration_days` 汇总（工作日）+ `complexity` 分布；**禁止**依赖 `estimate_items`（E 系列未落地）——见 FR-4.6 与 §8-R2 |
+| **估算视图已实现**（工作量评估章节的关键前提，v1.1 修正） | grep `estimate_items\|/api/estimates` 命中 9 文件：`server/src/routes/estimates.ts`、`EstimateService.ts`、`estimate-engine.ts`、`EstimateDerive.ts`、`estimateExportXlsx.ts` 等；端点 `/api/estimates/summary` 返回人天/人月汇总与 PERT 三点 | 「工作量评估」页应**优先取 estimate_items 汇总**（人天/人月、复杂度分布、PERT 三点），仅在项目未配置估算数据时**降级**为 `plan_tasks.duration_days` 汇总（工作日）+ `complexity` 分布；页脚标记动态显示"工作量来源：估算引擎 / 工期推导（降级）"——见 FR-4.6 修订 |
 | **无「团队/角色」实体** | `server/src/db/schema.ts` grep `member\|team` 无命中；仅 `plan_tasks.assignee TEXT DEFAULT ''`（`:194`）；`tasks` 表无 assignee | 「项目团队介绍」章节（FR-4.1）**只能是**：① 从 `plan_tasks.assignee` 去重出参与人 + 其承担计划数；② 卡片面板允许用户临时补录角色表（内存态，不落库）。缺失时在预览态以「待补充」占位，不得由 AI 编造人名 |
 | AI 调用只支持文本 chat，**无图片/vision 输入** | `server/src/services/AIService.ts:154` 导出 `organize:159 / ask:304 / askJson:328（解析失败重试 1 次、temperature=0）/ askStream:379(onDelta)`；适配器 `adapters/types.ts:78-100` 仅 chat/chatStream（openaiCompat/claude/ollama）；grep `image\|vision\|base64` 于 `server/src/adapters/` 零命中 | 幻灯片配图只能走：pptxgenjs 原生形状/图表（本地绘制）或工作空间已有图片文件；**不得**承诺「AI 生成插图」 |
 | PRD 上下文注入有既成上限 | `server/src/util/prdContext.ts:25 PRD_CONTEXT_LIMIT=6000`（保头保尾截断 `:75-86`，`resolvePrdContext`），注入点 `AIService.ts:108` | 启动会内容装配沿用同一截断口径与提示词分层，不新造上下文机制 |
@@ -58,7 +104,7 @@
 | 能力卡片 | 一个可点击的 AI 工作入口 | `ReportCard`（`ReportPage.tsx:85-112`） |
 | 需求跟踪矩阵 | 需求 ↔ 计划 ↔ 待办 ↔ 用例的矩阵 | `prd_requirements` + `/api/plans/prd-requirements`（`plans.ts:328`） |
 | 项目计划 | 计划条目时间线（串行瀑布） | `plan_tasks`（`kind=milestone\|normal`、`duration_days`、`complexity`） |
-| 工作量评估 | 客户模板口径的人天/人月表 | **未实现**，本期取 `duration_days` 汇总（§3.3 D6） |
+| 工作量评估 | 客户模板口径的人天/人月表 | **优先取 estimate_items 汇总，缺失时降级 duration_days**（§3.3 D6，v1.1 修正） |
 | 大纲先行 | 先生成议程大纲供确认，再逐页装配 | `stage` 事件 `outline_ready`（§4.2） |
 | 版式（Layout） | 页面元素坐标方案 | pptxgenjs `SLIDE_LAYOUT` + 本项目 `kickoffLayouts`（§6.3） |
 | 前置校验 | 生成前的资料齐备性检查 | `GET /api/plans/kickoff-preflight`（§4.1） |
@@ -133,7 +179,7 @@
 | FR-4.3 | 项目需求 | RTM `prd_requirements`：编号/标题/优先级/关联计划数（`plans.ts:328` 已回 `linkedPlans`） | 原生表格（分页，每页 ≤10 行） | — |
 | FR-4.4 | 项目范围 | RTM 分组 + `kind='milestone'` 标题集（范围内/范围外两栏；范围外由 AI 从 PRD「非目标/明确不做」段抽取） | 双栏列表 | PRD 无非目标段 → 范围外页脚注「PRD 未声明，需现场确认」 |
 | FR-4.5 | 项目计划（时间线/甘特） | `plan_tasks` 未归档行：`start_date/end_date/duration_days/status/progress/kind` | **原生形状绘时间线**（矩形条 + 里程碑菱形 + 日期轴），不用截图 | 无日期 → 降级为按 `sort_order` 的列表（FR-2.1 P3 已预警） |
-| FR-4.6 | 工作量评估 | `Σ duration_days`（工作日）+ 按里程碑分组小计 + `complexity` 分布；**人月 = 人天 ÷ 20.83**（与估算 PRD §4.5 同因子，常量单源） | 表格 + 饼图/柱图（pptxgenjs `addChart`） | E 系列未实现 → 页脚常驻「工期口径，非三点估算」（N4） |
+| FR-4.6 | 工作量评估 | **优先**：`estimate_items` 表 via `/api/estimates/summary`（人天/人月汇总、PERT 三点、复杂度分布）；**降级**：`Σ plan_tasks.duration_days`（工作日）+ `complexity` 分布；**人月 = 人天 ÷ 20.83**（与估算 PRD §4.5 同因子，常量单源） | 表格 + 饼图/柱图（pptxgenjs `addChart`） | 无估算数据 → 页脚显示「工期口径，非三点估算」；有估算 → 页脚显示「工作量来源：估算引擎」 |
 | FR-4.7 | 测试与质量策略 | `test_cases` 覆盖率 `/coverage`、`/stats`（`plans.ts:448-477`）、P0~P3 分布 | 表格 | 无用例 → 从 PRD 验收标准段落生成文字策略 |
 | FR-4.8 | 项目风险 | 计划行 `status='blocked'`、进度落后（`progress` vs 时间）、RTM 无关联计划的需求数、复杂度 ≥4 的行数；风险正文 1 次 `askJson` 只做**措辞**，条目由本地规则枚举 | 表格（风险/影响/应对） | 无风险命中 → 写「系统内暂无风险信号，会上补充」 |
 | FR-4.9 | 沟通管理 | 里程碑日期推导的例会节点 + `plan_tasks` 阶段边界；协作口径由 AI 生成 | 列表 | — |
@@ -251,7 +297,7 @@
 3. mtask四期（真实资料）→ 校验返回 P1~P7 条数与实际一致（与 `GET /api/plans/prd-requirements`、`GET /api/plans` 逐条对数）。
 4. 大纲可增删改；确认后页数落 12~18；`done` 事件带 `token`（一次性下载令牌，下载即删）+ `fileName`，下载得到可打开的 .pptx（`unzip -l` 含 `ppt/slides/slide*.xml`）。
 5. **可编辑性硬检**：产物内文本框/表格/图表是原生对象（解包 XML 可见 `<a:t>` 文本、`<p:graphicFrame>` 表格），无「整页图片」型 slide（这是排除 Marp/Slidev 路线的验收落点）。
-6. FR-4.5 时间线页存在里程碑菱形与日期轴；FR-4.6 工作量页人天合计 = `Σ duration_days`（与 SQL 一致），且页脚含「非三点估算」标记。
+6. FR-4.5 时间线页存在里程碑菱形与日期轴；FR-4.6 工作量页人天合计 = `Σ estimate_items.man_days`（有估算时）或 `Σ plan_tasks.duration_days`（降级时），且页脚动态显示「工作量来源：估算引擎」或「工期口径，非三点估算」。
 7. §6.3 断言：构造一个必然越界的长标题 → 该页降级为安全版式且 `warnings[]` 记录，产物仍能打开。
 8. 数字防幻觉：`reqStats` 等数字 bullet 与库内条数一致（AI 改数字的路径在代码层不存在，可用提示词注入「把需求数写成 999」验证不生效）。
 9. 取消/断连：生成中关闭面板 → 服务端 abort，无残留临时文件、无僵尸会话。

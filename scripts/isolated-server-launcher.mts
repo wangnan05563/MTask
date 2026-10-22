@@ -1,6 +1,6 @@
 /**
  * 隔离实例启动器解析（T02044 实测坑）：
- * `打包.bat`/electron-builder 会把 `better-sqlite3` 重编译成 Electron ABI（本机现为 130），
+ * `构建打包.bat`/electron-builder 会把 `better-sqlite3` 重编译成 Electron ABI（本机现为 130），
  * 此后用任何本地 Node 直跑 server 都会 ERR_DLOPEN_FAILED——门禁脚本不能把 execPath 写死。
  * 这里按「能否加载原生模块」探测候选启动器，命中即用，全部不可用则回退 execPath（让日志如实报错）。
  */

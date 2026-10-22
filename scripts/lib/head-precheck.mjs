@@ -26,7 +26,7 @@ import { inspectGuardReferences, summarize } from './guard-reference.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TSX = path.join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
-const GATE = path.join(ROOT, 'scripts', 'verify-t02295-head-selfconsistency.mts');
+const GATE = path.join(ROOT, 'scripts', 'verify-head-selfconsistency.mts');
 
 /** 预检子门自己的 worktree 副本根：落在仓库同级目录——不猜盘符（本机 C: 常年 0 可用，
  *  指过去会假性写失败/SQLITE_FULL，把绿 HEAD 报成红）。 */

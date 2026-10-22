@@ -120,6 +120,21 @@ Headers: X-Access-Token: <访问令牌>   # 已配置令牌时必填，否则请
 
 - 已修复 `upsertRows` 对 `app_settings`（KV 表、主键为 `key`）统一用 `WHERE id` 预编译导致的 `no such column: id` 缺陷。
 
+### 3.5 计划与需求矩阵
+
+| 工具                    | 方法语义       | 关键入参                                                                                                                             | 返回要点                                                          | 注解          |
+| --------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | ----------- |
+| `mtask_list_plans`    | 列计划        | projectId 或 projectName, archived                                                                                               | plans(含 reqIds)                                                 | readOnly    |
+| `mtask_create_plans`  | 批量回写计划     | projectId/projectName, items\[{title, durationDays, status, kind, reqNos, ref, deps}\], requirements\[], createTasks, allowDuplicates | 关联通道：channel=`prd_import` + 矩阵/计划/待办计数 + warnings；纯计划通道：ids + warnings | <br />      |
+| `mtask_update_plan`   | 改单条计划      | id 或 title, 可选 startDate/durationDays/progress/status/assignee/kind/deps                                                        | plan                                                          | <br />      |
+| `mtask_delete_plan`   | 删单条计划（软删） | id                                                                                                                               | -                                                             | destructive |
+
+`mtask_create_plans` 有两条通道（T02131）：
+
+- **关联通道**（传 `requirements` 或任一 `items[].reqNos` 或 `createTasks:true`）→ 转发 `PlanService.importPrd`，与页面 PRD 导入同一条链路：一次建齐需求跟踪矩阵行 + 计划 + `[PRD]` 待办，并回填 `plan.req_ids`、`plan.linked_task_id`、`tasks.req_ids`（含里程碑 child 边与工期汇总）。需求编号项目内唯一，撞号自动顺延并在 `reqNoMap` 回传；`reqNos` 也可引用库内已存在的编号做增量补录。该通道前置 T01868 防重入：同名占比过高时拒绝，确认新增传 `allowDuplicates`。
+- **纯计划通道**（不带上述字段）→ `PlanService.createBatch` 只写 `plan_tasks`，供确无可挂需求的日常计划使用；本批 ≥3 条时返回「纯计划通道」孤儿告警。
+- PRD/需求拆解类回写应走关联通道，避免留下无矩阵、无待办的计划孤岛。
+
 ***
 
 ## 4. 权限控制方案

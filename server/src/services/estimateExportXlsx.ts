@@ -334,26 +334,10 @@ export function layoutEstimate(input: EstimateExportInput): EstimateLayout {
   // ---- 引擎出数（红线 2：缓存值只来自这里）----
   const engineRows: EstimateEngineRow[] = [];
   for (const p of phaseRows) {
-    // T02630 乙′：非 dev 阶段在模板里是**一条阶段聚合行**，标 `role: 'phase'` 而不是冒充明细行——
-    // 空阶段因此记进 `excluded.unEstimatedPhases`（阶段个数），不再混进 `unEstimated`（明细条数）。
-    // 有值时照样进 Σ，报价数不变。
-    engineRows.push({ key: `phase:${p.phase}`, phase: p.phase, points: p.points, role: 'phase' });
+    engineRows.push({ key: `phase:${p.phase}`, phase: p.phase, points: p.points, role: 'detail' });
   }
   for (const d of devRows) {
     engineRows.push({ key: d.planId, phase: 'dev', points: d.points, role: 'detail' });
-  }
-  // T02630 乙′：非 dev 阶段在件面上只有 1 条聚合行，但「哪几条明细还没估」是项目事实——
-  // 把这些明细以 `role: 'count'` 也喂进引擎（永不进 Σ，只进排除桶），否则一条没估的 design 明细
-  // 在面板算 1 行、在交付件被聚合成「阶段」而看不见，同名键又分叉。
-  for (const nd of kept) {
-    if (nd.phase === 'dev') continue;
-    engineRows.push({
-      key: nd.planId, phase: nd.phase,
-      points: isPoint(nd)
-        ? { optimistic: nd.optimistic as number, likely: nd.likely as number, pessimistic: nd.pessimistic as number }
-        : null,
-      role: 'count',
-    });
   }
   if (subtotalRow) engineRows.push({ key: `subtotal:dev`, phase: 'dev', points: null, role: 'subtotal' });
   // T02304 口径甲：里程碑行照样喂进引擎并带 `planKind`——buildSummary 先按 planKind 判为结构性

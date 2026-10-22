@@ -1,0 +1,14 @@
+{
+  "slideStyle": "tech",
+  "colorScheme": "Dark Tech Neon",
+  "primaryColor": "#38bdf8",
+  "accentColor1": "#a78bfa",
+  "accentColor2": "#fbbf24",
+  "neutralColor": "#94a3b8",
+  "background": {
+    "type": "color",
+    "value": "#0a0e1a"
+  },
+  "fontTitle": "'Montserrat', 'Noto Sans SC', sans-serif",
+  "fontBody": "'Inter', 'Noto Sans SC', sans-serif"
+}

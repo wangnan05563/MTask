@@ -44,3 +44,29 @@ export function restoreWorkspaceAbi(root, snapshot, { fail, log = (m) => console
     switchAbi(root, 'dev', { fail, log });
   }
 }
+
+/** T02079：输出目录兜底——release/win-unpacked 被占用时依次尝试 release2..9，全被占用才抛错。
+ * @returns {string} 选中的输出目录名（如 'release' 或 'release2'）
+ */
+export function resolveOutputDir(root, { fail, log = (m) => console.log(m) }) {
+  const candidates = ['release', 'release2', 'release3', 'release4', 'release5', 'release6', 'release7', 'release8', 'release9'];
+  let outDir = '';
+  for (const dir of candidates) {
+    const unpacked = path.join(root, dir, 'win-unpacked');
+    if (!fs.existsSync(unpacked)) { outDir = dir; break; }
+    try { fs.rmSync(unpacked, { recursive: true, force: true }); outDir = dir; break; } catch { /* 被占用，尝试下一目录 */ }
+  }
+  if (!outDir) fail('release 及 release2..9 的 win-unpacked 均被占用，无法打包。请关闭相关进程或删除目录后重试。');
+  if (outDir !== 'release') console.log(`[WARN] release 被占用，打包到 ${outDir}`);
+  return outDir;
+}
+
+/** T02079：构建子进程环境变量——安全删除开关 + Electron/electron-builder 镜像。 */
+export function buildChildEnv() {
+  return {
+    ...process.env,
+    CODEBUDDY_SAFE_DELETE_ENABLED: '0',
+    ELECTRON_MIRROR: process.env.ELECTRON_MIRROR ?? 'https://npmmirror.com/mirrors/electron/',
+    ELECTRON_BUILDER_BINARIES_MIRROR: process.env.ELECTRON_BUILDER_BINARIES_MIRROR ?? 'https://npmmirror.com/mirrors/electron-builder-binaries/',
+  };
+}

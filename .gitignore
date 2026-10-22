@@ -3,14 +3,15 @@ node_modules/
 dist/
 server/dist/
 web/dist/
+# 启动 PPT 幻灯片构建产物（npm run build:slides 生成，构建前先 rm -rf 全量重建）
+/frontend/dist-slides/
 release/
 build/pkg-out/
 
 # 运行时数据与数据库（用户数据）
 server/data/
 logs/
-perf/output/
-perf/sandbox/
+perf/
 
 # 日志 / 测试临时输出
 *.log
@@ -63,3 +64,59 @@ generated-images
 # T02312：验收门截图产物（历史固定名目录 + 现在的隔离根）一律不入库
 .t0*-shots/
 .gate-shots/
+
+# ---------- AI 待办任务生成过程文件（统一归纳至 tmp/ai-scratch/，不入库） ----------
+# 根目录过程产物：.t<编号>-* 文件与目录
+# （arch/queue/launcher/result/patch/diff/chrome 配置/data 副本/app 副本 等）
+.t[0-9]*/
+.t[0-9]*.json
+.t[0-9]*.md
+.t[0-9]*.txt
+.t[0-9]*.py
+.t[0-9]*.ps1
+.t[0-9]*.ts
+.t[0-9]*.mts
+.t[0-9]*.mjs
+.t[0-9]*.patch
+.t[0-9]*.diff
+.t[0-9]*.sh
+.t[0-9]*.u
+.t[0-9]*.log
+.t[0-9]*.pdf
+.t[0-9]*.png
+.t[0-9]*.sqlite-shm
+.t[0-9]*.sqlite-wal
+.t[0-9]*.node.bak
+# 其它零散过程件（无编号前缀）
+.t-ok.txt
+.t-queue*.txt
+.tp.json
+.tq.json
+.tunnel-mobile-result.md
+# scripts/ 下的过程脚本
+scripts/.t*/
+scripts/.t*.py
+scripts/.t*.ps1
+scripts/.t*.mts
+scripts/.t*.mjs
+# 测试套件归纳目录（已迁至本地工作区，不入库）
+scripts/tests/
+
+# 统一归纳的过程文件暂存区（本任务搬迁目标）
+tmp/
+
+# 其它命名的过程散件（与 .t* 同批发现，一并归纳至 tmp/ai-scratch/）
+tmp_*
+prd_p*.json
+prd_full_p*.txt
+prd_md_p*.md
+plans_p*.json
+proj_*.json
+.q4*
+.m2-*
+T0[0-9]*.desc.txt
+_*.py
+artifacts/
+nul
+.verify-shell-shots/
+build/social-preview.jpg

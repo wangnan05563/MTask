@@ -184,10 +184,12 @@ function OutlineToolbar({ extraNote, onExtraNoteChange, streaming, outlineBusy, 
       <input value={extraNote} onChange={(e) => onExtraNoteChange(e.target.value)} placeholder="补充说明（可选，会拼进大纲提示词）" aria-label="大纲补充说明"
         style={{ ...cellInput, flex: '1 1 220px', minWidth: 180 }} disabled={streaming} />
       {/* FR-2.4 硬阻塞时同时禁掉大纲发起：否则一次 AI 调用只换来一份空壳大纲，与「禁止生成空壳稿」同义 */}
-      <button onClick={onGenOutline} disabled={genDisabled} className="tbtn-anim"
+      {/* T02402：呼吸特效从 12px 小图标上提到整按钮（与 AiPolishButton 同款 task-breathe）——
+          否则 scale(1.06)+光晕落在 12px 图标上几乎不可见，长装配期间用户会误判卡死 */}
+      <button onClick={onGenOutline} disabled={genDisabled} className={`tbtn-anim${outlineBusy ? ' task-breathe' : ''}`}
         title={blocked ? '资料不足（PRD/需求矩阵/计划三项均缺），补齐后再生成大纲' : '调用 AI 生成分页大纲（1 次模型调用）'} aria-label="生成大纲"
         style={{ ...opBtn, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', padding: '5px 12px' }}>
-        {outlineBusy ? <Loader2 size={12} className="task-breathe" /> : <Sparkles size={12} />} {rowCount ? '重新生成大纲' : '生成大纲'}
+        {outlineBusy ? <Loader2 size={12} className="aispin" /> : <Sparkles size={12} />} {rowCount ? '重新生成大纲' : '生成大纲'}
       </button>
       {rowCount > 0 && <button onClick={onClear} disabled={streaming} className="tbtn-anim" title="清空大纲稿" aria-label="清空大纲" style={opBtn}><Trash2 size={11} /> 清空</button>}
       <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{rowCount ? `共 ${rowCount} 页（建议 12~18）` : '大纲 12~18 页，可改标题/要点/版式，可增删页与调序'}</span>
@@ -257,20 +259,21 @@ function GenerateBar({ streaming, canGenerate, blockReason, result, downloading,
 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-      <button onClick={onGenerate} disabled={!canGenerate} className="tbtn-anim"
+      {/* T02402：整按钮呼吸（同上）——逐页装配耗时长，运行态必须可感知 */}
+      <button onClick={onGenerate} disabled={!canGenerate} className={`tbtn-anim${streaming ? ' task-breathe' : ''}`}
         title={blockReason || '逐页装配 .pptx 并落盘换下载令牌'} aria-label="开始生成启动会 PPT"
         style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 12, border: 'none', borderRadius: 6,
           background: canGenerate ? 'var(--accent)' : 'var(--border-strong)', color: canGenerate ? 'var(--accent-text)' : 'var(--text-muted)',
           cursor: canGenerate ? 'pointer' : 'default', padding: '5px 12px' }}>
-        {streaming ? <Loader2 size={12} className="task-breathe" /> : <Sparkles size={12} />} 开始生成
+        {streaming ? <Loader2 size={12} className="aispin" /> : <Sparkles size={12} />} 开始生成
       </button>
       {!!blockReason && <span style={{ fontSize: 11, color: 'var(--danger)' }}>{blockReason}</span>}
       {streaming && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>点右侧控制台「停止」可中断（服务端不留半成品）</span>}
       {result && !streaming && (
-        <button onClick={onDownload} disabled={downloading} className="tbtn-anim"
+        <button onClick={onDownload} disabled={downloading} className={`tbtn-anim${downloading ? ' task-breathe' : ''}`}
           title={`下载 ${result.fileName}`} aria-label="下载启动会 PPT"
           style={{ ...opBtn, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', padding: '5px 12px' }}>
-          {downloading ? <Loader2 size={12} className="task-breathe" /> : <Download size={12} />} 下载 .pptx（{result.pageCount} 页）
+          {downloading ? <Loader2 size={12} className="aispin" /> : <Download size={12} />} 下载 .pptx（{result.pageCount} 页）
         </button>
       )}
     </div>

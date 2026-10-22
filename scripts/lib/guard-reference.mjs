@@ -15,7 +15,7 @@
  * `scripts/verify-t02617-guard-reference.mjs` 用它做三条面的断言与负对照。
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 /** 守卫实现（唯一一份）。入口文件引用它，不各自复制预检逻辑。 */
@@ -202,4 +202,33 @@ export function inspectGuardReferences(root, opts = {}) {
 export function summarize(res) {
   const e = res.entries.map((x) => `${x.rel}[${x.faces.map((f) => `${f.face}=${f.has ? 'G' : (f.read ? 'x' : '缺')}`).join(' ')}]`).join(' ');
   return `入口 ${res.entries.length}｜${e}｜矩阵 ${res.matrix.length} 条旁路=${res.bypass.map((b) => b.rel).join(',') || '无'}｜npm 未覆盖=${res.npmUnguarded.map(([k]) => k).join(',') || '无'}`;
+}
+
+/**
+ * 夹具微型 git 仓库：只含发布面（必查名单 + 守卫本体 + 引用判定 lib + 一份 package.json），
+ * 不复制 `node_modules`、不建 worktree——引用判定只需要这几份文件。`mode==='strip'` 时把每条入口
+ * 的守卫调用行摘掉（其余原样），用来证明「摘掉即拦」这条行为腿。
+ *
+ * 原为 `verify-t02617` 的门内私有夹具；`verify-t02321` 的 W-02 改判后要用同一条行为腿，
+ * 按规约 §9 单源收到这里——两处各写一遍，改了判定忘了改夹具就会造出两套「拦得住」的假证据。
+ * 落盘目录由调用方给（本项目 C: 常年 0 可用，调用方应指 D:/code/tmp）。
+ */
+export function buildGuardFixture(root, tmpDir, mode = 'clean') {
+  const GUARD_LIB_REL = 'scripts/lib/guard-reference.mjs';
+  const fx = path.join(tmpDir, `fx-${mode}`);
+  if (existsSync(path.join(fx, '.git'))) return fx;
+  mkdirSync(path.join(fx, 'scripts', 'lib'), { recursive: true });
+  for (const rel of [GUARD_REL, GUARD_LIB_REL]) {
+    writeFileSync(path.join(fx, ...rel.split('/')), readFileSync(path.join(root, rel), 'utf8'));
+  }
+  for (const rel of RELEASE_ENTRIES) {
+    const src = readFileSync(path.join(root, rel), 'utf8');
+    writeFileSync(path.join(fx, ...rel.split('/')), mode === 'strip' ? withoutGuardCall(src, rel) : src);
+  }
+  writeFileSync(path.join(fx, 'package.json'), JSON.stringify({ name: 'fx', scripts: { dist: 'node scripts/dist.js' } }, null, 2));
+  const g = (...a) => spawnSync('git', ['-c', 'user.name=gate', '-c', 'user.email=gate@local', ...a], { cwd: fx, encoding: 'utf8', shell: false });
+  if (!existsSync(path.join(fx, '.git')) && g('init', '-q').status !== 0) throw new Error('夹具仓库 git init 失败');
+  g('add', '-A');
+  if (g('commit', '-q', '-m', 'fixture').status !== 0) throw new Error('夹具仓库 commit 失败');
+  return fx;
 }
