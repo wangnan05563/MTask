@@ -878,33 +878,39 @@ function persistPrdDocForImport(
  */
 function resolveImportPlanTargets(
   db: ReturnType<typeof getDb>, projectId: string, planItems: PrdImportPlanItem[], reuseMode: boolean,
+  planKinds: PlanKind[],
 ): { planTargets: PrdImportPlanTarget[]; dupPlanTitles: PrdImportDupPlanTitle[] } {
   const planTargets: PrdImportPlanTarget[] = [];
   const dupPlanTitles: PrdImportDupPlanTitle[] = [];
-  const rows = db.prepare('SELECT id, title FROM plan_tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ id: string; title: string }>;
-  const firstIdByTitle = new Map<string, string>();
-  const countByTitle = new Map<string, number>();
+  // T02881：判重按 kind + '\u0000' + title 分键——里程碑标题不得命中 kind=normal 的存量行（反之亦然），
+  // 否则传入的里程碑整行不建（数据丢失）；taken 仍按 title 全量，保证让号后缀不造同名行。
+  const rows = db.prepare('SELECT id, title, kind FROM plan_tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ id: string; title: string; kind: string }>;
+  const firstIdByKindTitle = new Map<string, string>();
+  const countByKindTitle = new Map<string, number>();
+  const taken = new Set<string>();
   for (const r of rows) {
-    if (!firstIdByTitle.has(r.title)) firstIdByTitle.set(r.title, r.id);
-    countByTitle.set(r.title, (countByTitle.get(r.title) ?? 0) + 1);
+    const key = r.kind + '\u0000' + r.title;
+    if (!firstIdByKindTitle.has(key)) firstIdByKindTitle.set(key, r.id);
+    countByKindTitle.set(key, (countByKindTitle.get(key) ?? 0) + 1);
+    taken.add(r.title);
   }
-  const taken = new Set<string>(firstIdByTitle.keys());
   const reported = new Set<string>();
-  for (const p of planItems) {
-    const base = p.title.trim();
-    const existing = countByTitle.get(base) ?? 0;
+  for (let pi = 0; pi < planItems.length; pi++) {
+    const base = planItems[pi].title.trim();
+    const key = planKinds[pi] + '\u0000' + base;
+    const existing = countByKindTitle.get(key) ?? 0;
     if (existing > 0 && reuseMode) {
-      const reuseId = firstIdByTitle.get(base)!;
+      const reuseId = firstIdByKindTitle.get(key)!;
       planTargets.push({ title: base, reuseId });
-      if (!reported.has(base)) { reported.add(base); dupPlanTitles.push({ title: base, existing, reusedPlanId: reuseId }); }
+      if (!reported.has(key)) { reported.add(key); dupPlanTitles.push({ title: base, existing, reusedPlanId: reuseId }); }
       continue;
     }
     // 无撞名时 nextPlanTitle 原样返回；本批内部自己撞名（同一份拆解两条同标题）也一样让号
     const renamed = nextPlanTitle(base, taken);
     taken.add(renamed);
     planTargets.push({ title: renamed, reuseId: null });
-    if (renamed !== base && !reported.has(base)) {
-      reported.add(base);
+    if (renamed !== base && !reported.has(key)) {
+      reported.add(key);
       dupPlanTitles.push({ title: base, existing, renamedTo: renamed });
     }
   }
@@ -1071,8 +1077,9 @@ function applyImportMilestoneChildEdges(
   const newMs = new Set(planTargets.map((x, i) => (x.reuseId ? null : planIds[i])).filter((x): x is string => !!x));
   const touchedParents = new Set<string>();
   for (const { index, parentIndex } of edges) {
-    const childId = planIds[index];
-    const parentId = planIds[parentIndex];
+    // T02881：planIds 只覆盖新建行，reuse 命中行须回退到 planTargets 的 reuseId，否则整段补边被静默跳过
+    const childId = planTargets[index]?.reuseId ?? planIds[index];
+    const parentId = planTargets[parentIndex]?.reuseId ?? planIds[parentIndex];
     if (!childId || !parentId) continue;
     const cur = db.prepare('SELECT deps FROM plan_tasks WHERE id = ?').get(childId) as { deps: string | null } | undefined;
     if (!cur) continue;
@@ -2023,7 +2030,7 @@ export const PlanService = {
     const prdId = persistPrdDocForImport(db, projectId, input.prdMd, input.prdFilename, t);
     // T01869 / T01875：同名计划的处置口径与 planTargets/dupPlanTitles 生成见 resolveImportPlanTargets。
     const reuseMode = input.onDuplicatePlan === 'reuse';
-    const { planTargets, dupPlanTitles } = resolveImportPlanTargets(db, projectId, planItems, reuseMode);
+    const { planTargets, dupPlanTitles } = resolveImportPlanTargets(db, projectId, planItems, reuseMode, planKinds);
     const reusedPlans = planTargets.filter((x) => x.reuseId).length;
     let insertedPlans = 0; // 实际新建的计划行数（reuse 命中的行不计数，返回给调用方区分「新建/复用」）
     // T02131：与 planItems 下标对齐的计划行 id，事务内外都要用（返回值 planRowIds 给调用方回填依赖）
@@ -2188,7 +2195,8 @@ export const PlanService = {
     if (reqs.length === 0 && planItems.length === 0) throw new Error('没有可导入的需求或计划条目');
     const reuseMode = input.onDuplicatePlan === 'reuse';
     const reqNoMap: Array<{ from: string; to: string }> = [];
-    const { planTargets, dupPlanTitles } = resolveImportPlanTargets(db, projectId, planItems, reuseMode);
+    const planKinds = planItems.map((p) => (p.kind ?? resolvePrdKind(p.title, p.kind)));
+    const { planTargets, dupPlanTitles } = resolveImportPlanTargets(db, projectId, planItems, reuseMode, planKinds);
     const reqPlan = resolveImportReqPlan(db, projectId, reqs, reuseMode, reqNoMap);
     const { target: prdDoc } = resolvePrdDocTarget(db, projectId, input.prdMd, input.prdFilename);
     // 与 importPrd 的 findReqId 同三层口径：本次原编号空间 → 本次落库编号 → 存量按号定位（T02131 回落）

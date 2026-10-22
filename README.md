@@ -207,9 +207,6 @@ npm run typecheck
 
 # API 冒烟测试
 npm run test:api
-
-# 桌面壳构建/托管验证
-npm run verify:shell
 ```
 
 ### 适配器联调验证（本地 mock，无需外网 / API Key）
