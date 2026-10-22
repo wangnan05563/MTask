@@ -285,7 +285,7 @@ export function listHeadGateFiles(cwd: string): string[] {
   });
   return out
     .split(/\r?\n/)
-    .filter((p) => /^scripts\/(verify-[^/]+|lib\/[^/]+)\.(js|mjs|cjs|mts|ts)$/.test(p))
+    .filter((p) => /^scripts\/((tests\/)?verify-[^/]+|lib\/[^/]+)\.(js|mjs|cjs|mts|ts)$/.test(p))
     .sort();
 }
 
