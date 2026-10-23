@@ -385,8 +385,13 @@ function MigrationTab() {
     try { data = JSON.parse(text); } catch { flash('文件解析失败：不是有效的 JSON 备份文件'); return; }
     try {
       setBusy(true);
-      const r = await api.post<{ imported: number }>('/settings/import', { data, mode });
-      flash(`导入完成，共写入 ${r.imported} 条记录。可切换其他页面查看，或刷新以重载列表`);
+      const r = await api.post<{ imported: number; skippedDuplicateNames?: number; nameConflicts?: Array<{ name: string; owners: Array<{ id: string; name: string }> }> }>('/settings/import', { data, mode });
+      // T02945：keep/merge 撞项目重名的行按行跳过（导入是恢复性操作，不整单失败）——跳过了必须说，否则用户以为全量导入了
+      const skipped = r.skippedDuplicateNames ?? 0;
+      flash(`导入完成，共写入 ${r.imported} 条记录。`
+        + (skipped > 0 ? `其中 ${skipped} 行因项目名与库内重名被跳过（占用行 id 见导入响应/控制台）。` : '')
+        + '可切换其他页面查看，或刷新以重载列表');
+      if (skipped > 0) console.warn('[settings/import] 项目名冲突跳过的行：', r.nameConflicts);
       setFname('');
     } catch (err) {
       flash(err instanceof Error ? err.message : String(err));

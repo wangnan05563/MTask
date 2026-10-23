@@ -3,15 +3,42 @@
  * - 导出：把所有业务表读成行，`task_images.data`(BLOB) 转 base64；`ai_tools` 的密文 API Key
  *   解密为明文（见下），便于跨机迁移后重新加密。
  * - 导入：校验 bundle 结构后按冲突策略写入；全部在单个事务内完成，失败整体回滚保证完整性。
+ *   keep/merge 写 projects 前按 T02943 单源判据查重名（T02945）：撞重名的行按行跳过并点名，
+ *   不整单失败——导入是恢复性操作，硬失败会让用户拿不到任何数据。
  *
  * 为什么 API Key 要导出明文：主密钥默认由本机名派生，换机后密钥不同、旧密文无法解密。
  * 故导出时解为明文，导入时用目标机的密钥重新加密；解密失败的行仅置空并提示重录。
  */
 import { getDb } from '../db/connection';
 import { encrypt, decrypt } from '../util/crypto';
+import { findProjectNameOwners } from '../util/projectRouting'; // T02945：导入通道的重名查重复用 T02943 单源判据
+import { cacheClear } from '../util/ttl-cache'; // T02945：导入是全覆盖写路径，收口时清集合缓存
 import Database from 'better-sqlite3';
 
 export type ImportMode = 'overwrite' | 'keep' | 'merge';
+
+/**
+ * T02945：导入时因项目名撞重被跳过的行明细（bundle 行名 ↔ 库内占用行 id）。
+ * keep/merge 两条分支写 projects 前过 `findProjectNameOwners`（CI 口径，与新建/改名/恢复同判据），
+ * 命中行不落库——导入是恢复性操作，硬失败会让用户拿不到任何数据，故按行跳过并点名，不整单失败。
+ */
+export type ImportNameConflict = {
+  /** bundle 行里的项目名（原始写法，大小写与 bundle 一致） */
+  name: string;
+  /** bundle 行的 id（无 id 的行本就不会写，进不了冲突清单） */
+  bundleRowId: string | null;
+  /** 占用行（CI 判据命中，可能多行——含归档/历史快照行） */
+  owners: Array<{ id: string; name: string }>;
+};
+
+/** 导入结果：`imported` 为实际写入行数；T02945 起并列透出重名跳过计数与明细 */
+export type ImportResult = {
+  imported: number;
+  /** 因项目名撞重被跳过未导入的行数 */
+  skippedDuplicateNames: number;
+  /** 冲突明细（bundle 行名 ↔ 占用行 id），供事后核对 */
+  nameConflicts: ImportNameConflict[];
+};
 
 interface ExportBundle {
   app: 'mtask';
@@ -130,13 +157,56 @@ function upsertRows(db: Database.Database, table: string, rows: unknown[], mode:
   return touched;
 }
 
+/**
+ * T02945：keep/merge 分支写 `projects` 前的重名查重（T02943 单源判据的第四条通道——
+ * 新建/改名/快照恢复已收口，数据导入是最后一条绕过它的产生侧）。
+ *
+ * 判定用 `findProjectNameOwners`（CI + 两侧 TRIM，含归档区与历史快照行），
+ * **不在本文件再抄一份 SQL**（T02938 的教训就是 8 份抄本各自演化）。
+ * `excludeId=bundle 行 id`：merge 更新已有行时，改成自己的名字不算撞名。
+ * keep 模式下「id 已存在」的行本就会被 `upsertRows` 跳过（不写），无需查重——
+ * 否则会把没打算写的行也算进冲突计数，响应计数失真。
+ *
+ * 处置口径（任务裁定 A）：命中行**跳过并记冲突**，不整单失败——导入是恢复性操作，
+ * 硬失败会让用户拿不到任何数据；冲突明细在响应里点名「bundle 行名 ↔ 占用行 id」。
+ */
+function filterProjectRows(
+  db: Database.Database,
+  rows: unknown[],
+  mode: 'keep' | 'merge',
+): { accepted: unknown[]; conflicts: ImportNameConflict[] } {
+  const conflicts: ImportNameConflict[] = [];
+  const accepted: unknown[] = [];
+  const existsStmt = db.prepare('SELECT 1 FROM projects WHERE id = ?');
+  for (const raw of rows) {
+    const row = raw as Record<string, unknown>;
+    const rowId = typeof row.id === 'string' ? row.id : null;
+    const name = typeof row.name === 'string' ? row.name : '';
+    if (mode === 'keep' && rowId && existsStmt.get(rowId)) continue; // 本就不会写，无需查重
+    const owners = findProjectNameOwners(name, { excludeId: rowId ?? undefined }, db);
+    if (owners.length > 0) {
+      conflicts.push({
+        name,
+        bundleRowId: rowId,
+        owners: owners.map((o) => ({ id: o.id, name: o.name })),
+      });
+      continue;
+    }
+    accepted.push(raw);
+  }
+  return { accepted, conflicts };
+}
+
 /** 导入 */
-export function importBundle(b: unknown, mode: ImportMode): { imported: number } {
+export function importBundle(b: unknown, mode: ImportMode): ImportResult {
   if (!validateBundle(b)) throw new Error('导入文件无效或格式不受支持');
   const db = getDb();
+  const nameConflicts: ImportNameConflict[] = [];
   const imported = db.transaction(() => {
     if (mode === 'overwrite') {
-      // 先清空全部业务表（子表先删保证外键安全），再按父表顺序重插
+      // 先清空全部业务表（子表先删保证外键安全），再按父表顺序重插。
+      // overwrite 不查重：清表后库内没有任何占用行，bundle 内部重名是 bundle 自身的问题
+      // （T02945 任务明确该模式「只要自身内部不重名就不会新增重名行」，维持原语义）。
       for (const t of DELETE_ORDER) db.prepare(`DELETE FROM ${t}`).run();
       let n = 0;
       for (const t of INSERT_ORDER) {
@@ -150,11 +220,22 @@ export function importBundle(b: unknown, mode: ImportMode): { imported: number }
     for (const t of EXPORT_TABLES) {
       if (!Array.isArray(b.data[t])) continue; // 兼容旧备份缺少新增表
       const rows = normalize(db, t, b.data[t]);
+      if (t === 'projects') {
+        // T02945：导入通道的最后一条重名产生侧——写 projects 前过单源判据，冲突行跳过并点名
+        const { accepted, conflicts } = filterProjectRows(db, rows, mode);
+        nameConflicts.push(...conflicts);
+        n += upsertRows(db, t, accepted, mode);
+        continue;
+      }
       n += upsertRows(db, t, rows, mode);
     }
     return n;
   })();
-  return { imported };
+  // T02945 附带收口：导入（含 keep/merge 的部分写）此前不清集合缓存，而仓内约定是「写端点主动
+  // cacheClear」——projects 等列表有 5s TTL 兜底，但导入后立刻看列表会看到导入前的旧数据
+  // （T02945 门 R-05 实测）。清全部集合缓存：导入可能改任意业务表，保守全清（TTL 仅 5s，代价可忽略）。
+  cacheClear();
+  return { imported, skippedDuplicateNames: nameConflicts.length, nameConflicts };
 }
 
 /** 按目标表规范化导入行（base64 → Buffer 解码、明文 key → 密文），并插入 */

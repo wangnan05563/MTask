@@ -1455,7 +1455,7 @@ ${a.result}`;
 
   server.registerTool('mtask_import_data', {
     title: '导入全量数据',
-    description: '导入 export 产出的 bundle JSON；mode: overwrite=清空后全量覆盖 / keep=保留已有 id / merge=覆盖同名 id 合并。整个导入在单事务内完成，失败回滚。',
+    description: '导入 export 产出的 bundle JSON；mode: overwrite=清空后全量覆盖 / keep=保留已有 id / merge=覆盖同名 id 合并。整个导入在单事务内完成，失败回滚。keep/merge 写 projects 前按项目名查重（大小写不敏感，含归档/历史行）：撞重名的行按行跳过不落库，响应以 skippedDuplicateNames 计数、nameConflicts 点名 bundle 行名与占用行 id。',
     inputSchema: {
       data: z.unknown().describe('export 工具导出的 bundle 对象（结构含 app/version/data）'),
       mode: z.enum(['overwrite', 'keep', 'merge'] as const).describe('冲突策略'),
