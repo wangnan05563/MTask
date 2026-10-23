@@ -7,9 +7,18 @@ import { AIService } from './AIService';
 import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
 import { getSetting, INBOX_PROJECT_ID } from './AppSettings';
 import { logService } from './LogService';
+import { resolveCustomWindow, type CustomRange } from './summaryPptPeriod';
 
 /** 报表周期：day=日报 / week=周报 / month=月报 */
 export type ReportPeriod = 'day' | 'week' | 'month';
+/**
+ * T02852（六期 S1）：总结汇报卡片在既有三档之外多一档 custom（自定义区间）。
+ * 既有报表入口（`generateReport` / `aiGenerateReport` / 控制台队列）仍只收 `ReportPeriod`，
+ * custom 仅由 `periodRange` / `gatherReportData` 这层参数化通道流入。
+ */
+export type SummaryPeriod = ReportPeriod | 'custom';
+/** `periodRange` 的返回形状；`endInclusive` 只在 custom 档存在（见 `endDate` 口径注释） */
+export type PeriodRange = { start: Date; end: Date; endInclusive?: Date };
 /** 输出格式：xlsx / docx / pdf / pptx */
 export type ReportFormat = 'xlsx' | 'docx' | 'pdf' | 'pptx';
 
@@ -49,7 +58,7 @@ export interface ReportPlanRow {
 }
 
 export interface ReportData {
-  period: ReportPeriod;
+  period: SummaryPeriod;
   periodLabel: string;
   startDate: string;
   endDate: string;
@@ -220,9 +229,15 @@ export function startReportTmpSweeper(intervalMs = 3_600_000): ReturnType<typeof
   return timer;
 }
 
-/** 解析周期时间范围 [start, end)：按本地时区取当日 0 点，避免跨日误判 */
-function periodRange(period: ReportPeriod): { start: Date; end: Date } {
-  const now = new Date();
+/**
+ * 解析周期时间范围 [start, end)：按本地时区取当日 0 点，避免跨日误判。
+ * T02852（六期 S1）：`period === 'custom'` 时走 `resolveCustomWindow`（区间口径与校验文案
+ * 单源在 `summaryPptPeriod.ts`），**前三档的计算逐字不变**；`nowMs` 只为回归门提供可注入的
+ * 取样时刻，不传时与旧实现同为 `new Date()`。
+ */
+export function periodRange(period: SummaryPeriod, custom?: CustomRange, nowMs?: number): PeriodRange {
+  if (period === 'custom') return resolveCustomWindow(custom, { nowMs });
+  const now = new Date(nowMs ?? Date.now());
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   if (period === 'day') {
     return { start, end: new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1) };
@@ -242,6 +257,11 @@ function periodRange(period: ReportPeriod): { start: Date; end: Date } {
 }
 
 const PERIOD_LABEL: Record<ReportPeriod, string> = { day: '日报', week: '周报', month: '月报' };
+/**
+ * T02852：custom 档的周期名（供 `periodLabel` 与导出文件名）。既有三档文案逐字不变。
+ */
+export const SUMMARY_PERIOD_LABEL = '阶段汇报';
+export const periodLabelOf = (period: SummaryPeriod): string => (period === 'custom' ? SUMMARY_PERIOD_LABEL : PERIOD_LABEL[period]);
 /** 优先级文本（与界面一致）：报表内展示中文，raw 值兜底 */
 const PRIORITY_TEXT: Record<string, string> = { low: '低', normal: '中', high: '高' };
 const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -262,11 +282,13 @@ interface TaskRow {
  * 聚合指定周期内任务数据（按 updated_at 落在区间判定，即该周期内有活动的任务）。
  * T02165：第二参从单个 projectId 放宽为 string | string[]——数组用 `project_id IN (…)` 聚合多项目，
  * 单串与不传分别等价于旧的「单项目」「全部项目」口径，SQL 与返回结构不变。
+ * T02852（六期 S1）：第一参放宽为 `SummaryPeriod`，`'custom'` 时由第三参 `custom` 提供区间；
+ * 既有三档的 SQL、边界折算与返回结构与改动前逐字一致（回归由 verify-t02852 钉住）。
  */
-export function gatherReportData(period: ReportPeriod, projectScope?: ReportScope): ReportData {
+export function gatherReportData(period: SummaryPeriod, projectScope?: ReportScope, custom?: CustomRange): ReportData {
   const db = getDb();
   const ids = normalizeScope(projectScope);
-  const { start, end } = periodRange(period);
+  const { start, end, endInclusive } = periodRange(period, custom);
   // updated_at 以 UTC ISO 落库，边界转成同一坐标系（toISOString）做字典序比较，避免本地日期串与 ISO 不匹配
   const s = start.toISOString();
   const e = end.toISOString();
@@ -347,9 +369,11 @@ export function gatherReportData(period: ReportPeriod, projectScope?: ReportScop
 
   return {
     period,
-    periodLabel: PERIOD_LABEL[period],
+    periodLabel: periodLabelOf(period),
     startDate: ymd(start),
-    endDate: ymd(end),
+    // custom 档用「含」的那天做展示结束日：SQL 右开界仍是结束日次日 0 点。
+    // 既有三档保持旧的右开日口径（`endInclusive` 为 undefined，行为逐字不变）。
+    endDate: ymd(endInclusive ?? end),
     generatedAt: nowStr(),
     projects,
     tasks,

@@ -11,7 +11,8 @@
  *   ③ 页脚声明**实际覆盖窗口**（「事件仅覆盖最近 N 天，更早动态已被保留策略清理」）。
  *
  * 本模块只提供**判据与文案单源**，不做取数也不写库（FR-3.4 一致性：前置校验零写入零 AI 消耗）。
- * 接入点：S2 `summary-preflight` 的 S9 校验项（T02853）、S1 自定义档（T02852 调 `checkPeriodCap`）、
+ * 接入点：S2 `summary-preflight` 的 S9 校验项（T02853）、S1 自定义档（T02852 调
+ * `assertCustomRange` + `resolveCustomWindow`，其跨度判据即 `checkPeriodCap`）、
  * S4/S5 装配器渲染 `footnote`（T02855/T02856）——三处都用这里的同一串文案，不许各抄一份。
  */
 import { readEventRetentionDays } from './EventRetention';
@@ -45,6 +46,67 @@ export function checkPeriodCap(startMs: number, endMs: number, capDays = SUMMARY
     return { ok: false, days, error: `自定义汇报周期最长 ${capDays} 天（当前 ${days} 天）——超过事件保留期默认值会出静默丢数窗口` };
   }
   return { ok: true, days };
+}
+
+/** 自定义汇报区间的入参（PRD §5 约束：`custom` 时 `start`/`end` 必填，`YYYY-MM-DD`，**两端都含**） */
+export type CustomRange = { start?: string; end?: string };
+
+/** 解析后的自定义窗口：`start`=起始日 0 点，`end`=结束日次日 0 点（左闭右开，给 SQL 用），`endInclusive`=用户所选结束日（给展示用） */
+export type CustomWindow = { start: Date; end: Date; endInclusive: Date };
+
+/** `periodRange('custom')` 收到非法区间时抛出——端点应先调 `assertCustomRange` 转 400，抛出是兜底而非静默按今天算 */
+export class PeriodRangeError extends Error {}
+
+const YMD_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * 严格本地时区日期解析（PRD FR-2.1：自定义经 `ymd` 同口径的本地时区解析，避免跨日误判）。
+ * 只认 `YYYY-MM-DD`：`2026-1-2` 这类不补零的串、`2026-02-30` 这类溢出日（`new Date` 会回绕成 3-02）
+ * 一律返回 null——回绕一旦发生，用户以为选了 2 月末，实际汇总到 3 月初。
+ */
+export function parseYmdLocal(value: string | undefined): Date | null {
+  const m = YMD_RE.exec(value ?? '');
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1) return null;
+  const date = new Date(y, mo - 1, d);
+  if (date.getFullYear() !== y || date.getMonth() !== mo - 1 || date.getDate() !== d) return null;
+  return date;
+}
+
+/**
+ * 自定义区间校验（PRD §3.2 约束，评审修订 B1）：通过返回 null，否则返回可直接 400 的中文文案。
+ * 四条判据依 PRD 顺序短路：必填/格式 → 起始日不得晚于结束日 → 结束日不得晚于今天 → 跨度 ≤ 上限。
+ * 跨度按**含两端**折算（右开多一天），故「同一天」是 1 天区间而不是 0 天。
+ * 注意与 S9 的分工：这里管「上限」（不让用户选到注定被清理的超长区间），
+ * `assessEventCoverage` 管「实际覆盖」（用户把保留期调小后，区间虽合规仍要降级声明）。
+ */
+export function assertCustomRange(custom: CustomRange | undefined, opts: { nowMs?: number } = {}): string | null {
+  const startStr = custom?.start;
+  const endStr = custom?.end;
+  if (!startStr || !endStr) return '自定义区间必须同时提供 start 与 end（YYYY-MM-DD）';
+  const s = parseYmdLocal(startStr);
+  if (!s) return `起始日不是合法日期：「${startStr}」（需要 YYYY-MM-DD，且必须是真实存在的日期）`;
+  const e = parseYmdLocal(endStr);
+  if (!e) return `结束日不是合法日期：「${endStr}」（需要 YYYY-MM-DD，且必须是真实存在的日期）`;
+  if (e.getTime() < s.getTime()) return `起始日不得晚于结束日：${startStr} 晚于 ${endStr}`;
+  const now = new Date(opts.nowMs ?? Date.now());
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (e.getTime() > today.getTime()) return `结束日不得晚于今天：${endStr} 晚于 ${isoDay(today.getTime())}（不汇总尚未发生的日期）`;
+  const cap = checkPeriodCap(s.getTime(), e.getTime() + DAY_MS);
+  if (!cap.ok) return cap.error ?? '自定义区间超出上限';
+  return null;
+}
+
+/** 校验 + 折算窗口；`assertCustomRange` 的文案原样作为异常消息（两处口径恒等，端点与内部兜底不会各说一套） */
+export function resolveCustomWindow(custom: CustomRange | undefined, opts: { nowMs?: number } = {}): CustomWindow {
+  const error = assertCustomRange(custom, opts);
+  if (error) throw new PeriodRangeError(error);
+  const start = parseYmdLocal(custom!.start)!;
+  const endInclusive = parseYmdLocal(custom!.end)!;
+  return { start, end: new Date(endInclusive.getFullYear(), endInclusive.getMonth(), endInclusive.getDate() + 1), endInclusive };
 }
 
 /** 事件覆盖窗口判据（S9 校验项的返回值；文案单源见 `footnote`） */
