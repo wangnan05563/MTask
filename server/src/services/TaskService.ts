@@ -58,6 +58,12 @@ export interface TaskRow {
   ai_state_at: string;
   /** T00577：派生单溯源——原任务编号（如 T00422）；处理完成后结论自动整合回原任务 */
   derived_from: string | null;
+  /** T02949：派生单裁决状态（'' 无 | '待裁决' | '已裁决'）——独立列，不占用 status 的 todo/done 语义 */
+  ruling_state: string;
+  /** T02949：裁决内容（预设选项值或自定义文本） */
+  ruling_result: string;
+  /** T02949：裁决/标记时刻（ISO） */
+  ruling_at: string | null;
   /** T00719：搁置标记（1=已搁置）——搁置任务从待办/已完成列表与 MCP 查询隔离，仅出现在搁置列表 */
   shelved: number;
   /** T00490：记录字体颜色（Excel 风格颜色按钮），空串=默认色 */
@@ -69,6 +75,10 @@ export interface TaskRow {
   created_at: string;
   updated_at: string;
 }
+
+/** T02949：裁决预设选项——服务端单源（前端面板/MCP getRulingOptions 同读，不各抄一份）。
+ *  语义贴合「AI 派生待办结论如何处置」：采纳/部分采纳/暂不采纳/需补充信息。 */
+const RULING_OPTIONS = ['采纳合并', '部分采纳', '暂不采纳', '需补充信息'];
 
 /** 对外输出视图：archived 转为 boolean（API 返回）；images 为截图附件元信息 */
 export interface TaskView {
@@ -96,6 +106,12 @@ export interface TaskView {
   ai_state_at: string;
   /** T00577：派生单溯源——原任务编号 */
   derived_from: string | null;
+  /** T02949：派生单裁决状态（'' 无 | '待裁决' | '已裁决'） */
+  ruling_state: string;
+  /** T02949：裁决内容（预设选项值或自定义文本） */
+  ruling_result: string;
+  /** T02949：裁决/标记时刻（ISO） */
+  ruling_at: string | null;
   /** T00719：搁置标记 */
   shelved: boolean;
   pinned: boolean;
@@ -865,6 +881,45 @@ export const TaskService = {
     if (!this.getById(id)) throw new Error('任务不存在');
     getDb().prepare('UPDATE tasks SET ai_summary = ?, ai_summary_at = ? WHERE id = ?')
       .run(content, now(), id);
+    return this.getById(id)!;
+  },
+
+  /** T02949：裁决预设选项——服务端单源（前端面板与 MCP getRulingOptions 同读，不各抄一份） */
+  rulingOptions(): string[] {
+    return [...RULING_OPTIONS];
+  },
+
+  /** T02949：打「待裁决」标记。仅派生单可裁决——裁决对象就是 AI 派生待办的结论采纳与否。
+   *  幂等：已是待裁决则原样返回（不报错、不刷时间）；已裁决则拒绝（流程是单向的）。 */
+  markRuling(id: string): TaskView {
+    const task = this.getById(id);
+    if (!task) throw new Error('任务不存在');
+    if (!task.derived_from) throw new Error('仅派生单可裁决（本任务非派生单）');
+    if (task.ruling_state === '已裁决') throw new Error('本单已裁决，不能重复标记');
+    if (task.ruling_state === '待裁决') return task;
+    const t = now();
+    getDb().prepare('UPDATE tasks SET ruling_state = ?, ruling_at = ?, updated_at = ? WHERE id = ?')
+      .run('待裁决', t, t, id);
+    logEvent(getDb(), id, 'ruling', '标记待裁决');
+    return this.getById(id)!;
+  },
+
+  /** T02949：提交裁决——待裁决→已裁决。结果**追加**到任务详情末尾（T02949 约束：不得覆盖已有内容），
+   *  同时落 ruling_result/at 独立列（结构化可读）并写 task_events 留痕。
+   *  不校验必须先在「待裁决」：允许未经标记直接提交（标记只是提示手段，不是前置门槛）。 */
+  submitRuling(id: string, result: string): TaskView {
+    if (!result?.trim()) throw new Error('裁决结果不能为空');
+    const task = this.getById(id);
+    if (!task) throw new Error('任务不存在');
+    if (!task.derived_from) throw new Error('仅派生单可裁决（本任务非派生单）');
+    if (task.ruling_state === '已裁决') throw new Error('本单已裁决，不能重复提交');
+    const db = getDb();
+    const t = now();
+    const body = result.trim();
+    const nextDesc = task.description.trim() ? `${task.description}\n\n【裁决】${body}` : `【裁决】${body}`;
+    db.prepare('UPDATE tasks SET description = ?, ruling_state = ?, ruling_result = ?, ruling_at = ?, updated_at = ? WHERE id = ?')
+      .run(nextDesc, '已裁决', body, t, t, id);
+    logEvent(db, id, 'ruling', `裁决结果：${body.slice(0, 120)}`);
     return this.getById(id)!;
   },
 };

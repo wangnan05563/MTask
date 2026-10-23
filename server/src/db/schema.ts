@@ -517,6 +517,11 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_ai_state ON tasks(ai_state)");
   // T00577：派生待办溯源——记录原任务编号（如 T00422），AI 处理完成后自动把派生单结论整合回原任务
   ensureColumn('tasks', 'derived_from', 'derived_from TEXT');
+  // T02949：派生单裁决——ruling_state('' 无 | '待裁决' | '已裁决') / ruling_result(裁决内容：选项值或自定义文本)
+  // / ruling_at(ISO 时刻)。走独立列而非塞 status：status 是 todo/done 语义，被列表筛选/计数/看板依赖，塞了破坏既有业务逻辑
+  ensureColumn('tasks', 'ruling_state', "ruling_state TEXT DEFAULT ''");
+  ensureColumn('tasks', 'ruling_result', "ruling_result TEXT DEFAULT ''");
+  ensureColumn('tasks', 'ruling_at', 'ruling_at TEXT');
   // T00776：父子任务进度汇总（TaskService.syncPlanOnStatusChange 按子任务完成比例回写父任务 progress）——
   // T00450 引入父子层级时漏加该列，首个「有父任务的任务标 done」即触发 no such column: progress 500
   ensureColumn('tasks', 'progress', 'progress INTEGER NOT NULL DEFAULT 0');

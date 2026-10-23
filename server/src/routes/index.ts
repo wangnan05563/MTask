@@ -1227,6 +1227,34 @@ api.post('/tasks/:id/ai-summary', async (req, res) => {
   }
 });
 
+// ---------- T02949：派生单裁决（标记待裁决 / 提交裁决 / 预设选项） ----------
+// 裁决只针对派生单（derived_from 非空）——对象就是 AI 派生待办的结论采纳与否；
+// 状态走 ruling_* 独立列，不占用 status 的 todo/done 语义（筛选/计数依赖它）。
+// 标记「待裁决」（幂等：已标记原样返回；已裁决拒绝）
+api.post('/tasks/:id/ruling-mark', (req, res) => {
+  try {
+    res.json(TaskService.markRuling(req.params.id));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// 提交裁决：{ result }（预设选项值或自定义文本，非空）——待裁决→已裁决，结果**追加**到详情末尾（不覆盖）
+api.post('/tasks/:id/ruling', (req, res) => {
+  const { result } = req.body ?? {};
+  if (!result || typeof result !== 'string' || !result.trim()) return res.status(400).json({ error: 'result（裁决结果）必填' });
+  try {
+    res.json(TaskService.submitRuling(req.params.id, result));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// 裁决预设选项（服务端单源——前端面板与 MCP 同读）
+api.get('/tasks/:id/ruling-options', (req, res) => {
+  res.json({ options: TaskService.rulingOptions() });
+});
+
 // ---------- 任务截图/图片附件（FR1.3 图文混合描述） ----------
 // 上传：body { data: base64（不含 data: 前缀）, mimeType? }，支持 dataURL 自动去前缀
 api.post('/tasks/:id/images', (req, res) => {
@@ -1874,6 +1902,8 @@ api.post('/report/ai-download', (req, res) => {
     docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     pdf: 'application/pdf',
+    // T02856（六期 S5 / PRD 裁决 A-2）：分别独立版多项目 zip 交付；与 DOWNLOAD_NAME_RE 同步扩展
+    zip: 'application/zip',
   };
   const ext = (safe.split('.').pop() ?? '').toLowerCase();
   res.setHeader('Content-Type', MIME[ext] ?? 'application/octet-stream');

@@ -1058,6 +1058,48 @@ ${a.result}`;
     } catch (e) { return err((e as Error).message); }
   });
 
+  // T02949：派生单裁决——外部 Agent 侧三件套（预设选项单源 / 打待裁决标记 / 提交裁决）。
+  // 与前端面板、REST /tasks/:id/ruling* 复用同一条 TaskService 通道（取数、追加详情、留痕不另写一套）。
+  server.registerTool('mtask_get_ruling_options', {
+    title: '获取派生单裁决预设选项',
+    description: '返回派生单裁决的预设选项清单（服务端单源，与前端裁决面板同读）。裁决是把 AI 派生待办的结论标记为采纳/不采纳的流程；提交时可直接传选项值，也可传自定义文本。',
+    inputSchema: {},
+  }, async () => ok(`裁决预设选项：${TaskService.rulingOptions().join(' / ')}`, { options: TaskService.rulingOptions() }));
+
+  server.registerTool('mtask_mark_ruling', {
+    title: '标记派生单待裁决',
+    description: '给指定任务打「待裁决」标记（仅派生单可裁决——derived_from 有值）。幂等：已标记原样返回；已裁决则拒绝。适合在识别出需要人工裁决的派生单后先挂牌，等待裁决面板交互。',
+    inputSchema: {
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
+    },
+  }, async (a) => {
+    try {
+      const target = resolveTask(a);
+      if (!target) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
+      const task = TaskService.markRuling(target.id);
+      return ok(`已标记待裁决：${task.task_no ?? target.id}`, { task });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_submit_ruling', {
+    title: '提交派生单裁决',
+    description: '提交派生单裁决：result 为预设选项值（mtask_get_ruling_options 返回值之一）或自定义文本。提交后任务标记为「已裁决」，裁决结果**追加**到任务详情末尾（不覆盖已有内容），并写任务事件留痕。仅派生单可裁决；重复提交会被拒绝。',
+    inputSchema: {
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
+      result: z.string().describe('裁决结果：预设选项值或自定义文本（非空）'),
+    },
+  }, async (a) => {
+    try {
+      const target = resolveTask(a);
+      if (!target) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
+      if (!a.result?.trim()) return err('result（裁决结果）必填');
+      const task = TaskService.submitRuling(target.id, a.result);
+      return ok(`已提交裁决并标记「已裁决」：${task.task_no ?? target.id}`, { task });
+    } catch (e) { return err((e as Error).message); }
+  });
+
   // T02168：外部 Agent 侧触发「生成总结摘要」——与抽屉入口、REST POST /tasks/:id/ai-summary
   // 复用同一条 AIService.summarizeTask（取数与提示词不另写一套）。
   server.registerTool('mtask_summarize_task', {

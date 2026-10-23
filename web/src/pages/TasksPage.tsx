@@ -193,6 +193,12 @@ export function TasksPage() {
     setTodo(clear); setDone(clear);
   };
   const [search, setSearch] = useSessionState<string>('tasks.search', ''); // T00560：命令面板跳转写入搜索词
+  const searchInputRef = useRef<HTMLInputElement>(null); // T02952：清空按钮点击后把光标还回搜索框
+  // T02949：派生单裁决面板态（预设选项由服务端单源拉取；提交后结果由服务端追加到详情末尾）
+  const [rulingTask, setRulingTask] = useState<Task | null>(null);
+  const [rulingOptions, setRulingOptions] = useState<string[]>([]);
+  const [rulingDraft, setRulingDraft] = useState('');
+  const [rulingBusy, setRulingBusy] = useState(false);
   // T00836：命令面板点击任务后下发的「定位」意图——滚动到该行并高亮 + 展开记录，定位完成即消费清空
   const [focusTaskId, setFocusTaskId] = useSessionState<string>('tasks.focusId', '');
   const [focusTab, setFocusTab] = useSessionState<string>('tasks.focusTab', '');
@@ -1047,6 +1053,47 @@ export function TasksPage() {
     flash(task.shelved ? '任务已恢复到原列表' : '任务已搁置——AI 处理待办时将自动忽略');
     void loadTasks(activeProject);
     void loadProjects();
+  }
+
+  /** T02949：打开派生单裁决面板——预设选项走服务端单源（GET ruling-options），失败不阻断（可自定义） */
+  async function openRulingPanel(task: Task) {
+    setRulingTask(task);
+    setRulingDraft('');
+    try {
+      const r = await api.get<{ options: string[] }>(`/tasks/${task.id}/ruling-options`);
+      setRulingOptions(r.options ?? []);
+    } catch {
+      setRulingOptions([]);
+      flash('裁决预设选项拉取失败——可直接输入自定义裁决结果');
+    }
+  }
+
+  /** T02949：标记「待裁决」（幂等）——派生单结论需要人工裁决时先挂牌 */
+  async function markRuling(task: Task) {
+    try {
+      await api.post(`/tasks/${task.id}/ruling-mark`, {});
+      flash(`已标记「${task.task_no ?? task.id}」待裁决`);
+      void loadTasks(activeProject);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** T02949：提交裁决——服务端把 ruling_state 翻「已裁决」并把结果**追加**到任务详情末尾（不覆盖），成功后刷新列表 */
+  async function submitRuling() {
+    if (!rulingTask || !rulingDraft.trim() || rulingBusy) return;
+    setRulingBusy(true);
+    try {
+      await api.post(`/tasks/${rulingTask.id}/ruling`, { result: rulingDraft.trim() });
+      flash(`裁决已提交：「${rulingTask.task_no ?? rulingTask.id}」→ 已裁决`);
+      setRulingTask(null);
+      setRulingDraft('');
+      void loadTasks(activeProject);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRulingBusy(false);
+    }
   }
 
   /** 智能分类（静默）：按标题从候选分类匹配最贴切分类 id；未配工具/未填标题/失败均返回 undefined，不打断创建流程 */
@@ -1968,6 +2015,29 @@ export function TasksPage() {
             onClick={() => locateDerivedTask(t.derived_from)}
             style={{ fontSize: 10, color: 'var(--text-muted)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0, cursor: 'pointer', background: 'transparent', fontFamily: 'inherit' }}>
             派生自 {t.derived_from}
+          </button>
+        )}
+        {/* T02949：派生单裁决徽标——待裁决（ accent 实底，点击弹裁决面板）/ 已裁决（灰底点名结果） */}
+        {t.derived_from && t.ruling_state === '待裁决' && (
+          <button type="button" className="tbtn-anim" onClick={() => void openRulingPanel(t)}
+            title="待裁决 — 点击打开裁决面板（预设选项或自定义结果）"
+            aria-label="待裁决：点击打开裁决面板"
+            style={{ fontSize: 10, color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0, cursor: 'pointer', background: 'var(--accent-soft)', fontFamily: 'inherit' }}>
+            待裁决
+          </button>
+        )}
+        {t.derived_from && t.ruling_state === '已裁决' && (
+          <span title={`已裁决：${t.ruling_result ?? ''}${t.ruling_at ? `（${t.ruling_at.slice(0, 10)}）` : ''}`}
+            style={{ fontSize: 10, color: 'var(--text-muted)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0 }}>
+            已裁决
+          </span>
+        )}
+        {t.derived_from && !t.ruling_state && (
+          <button type="button" className="tbtn-anim op-hidden" onClick={() => void markRuling(t)}
+            title="标记待裁决 — 该派生单的结论需要人工裁决时先挂牌"
+            aria-label="标记待裁决"
+            style={{ fontSize: 10, color: 'var(--text-muted)', border: '1px dashed var(--border-strong)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0, cursor: 'pointer', background: 'transparent', fontFamily: 'inherit' }}>
+            + 待裁决
           </button>
         )}
         {renderTaskTitle(t, titleEditing)}
@@ -3158,13 +3228,29 @@ export function TasksPage() {
             <option value="low">低</option>
           </select>
         </span>
-        <input
-          className="op-hidden"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="搜索标题/描述/编号…"
-          style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, marginLeft: 'auto' }}
-        />
+        {/* T02952：搜索框 + 框内左侧清空按钮（有内容才显示；悬浮倾斜 5°~10° 由 .ws-clear-btn 提供；点击清空且光标留框内） */}
+        <span style={{ position: 'relative', display: 'inline-flex', marginLeft: 'auto' }}>
+          <input
+            ref={searchInputRef}
+            className="op-hidden"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="搜索标题/描述/编号…"
+            style={{ padding: '6px 8px 6px 26px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12 }}
+          />
+          {search && (
+            <button
+              type="button"
+              className="op-hidden tbtn-anim ws-clear-btn"
+              onClick={() => { setSearch(''); searchInputRef.current?.focus(); }}
+              title="清空搜索内容 — 点击清空搜索框，光标保留在框内"
+              aria-label="清空搜索内容"
+              style={{ position: 'absolute', left: 4, top: '50%', transform: 'translateY(-50%)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}
+            >
+              <X size={12} />
+            </button>
+          )}
+        </span>
         {notice && <output className="flash-toast">{notice}</output>}
       </div>
     );
@@ -3889,6 +3975,48 @@ export function TasksPage() {
           onClose={() => { setDrawerTask(null); setDrawerTab(null); }}
           onChanged={(patch) => applyTaskPatch(drawerTask.id, patch)}
         />
+      )}
+
+      {/* T02949：派生单裁决面板——Trae/WorkBuddy 气泡选项样式（预设胶囊按钮 + 自定义输入）；
+          提交由服务端把结果追加到任务详情末尾（不覆盖），本面板只负责收集与展示 */}
+      {rulingTask && (
+        <div role="dialog" aria-label="裁决派生单"
+          onMouseDown={(e) => { if (e.target === e.currentTarget) { setRulingTask(null); setRulingDraft(''); } }}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 10px 28px rgba(0,0,0,.22)', width: 380, maxWidth: '92vw', padding: 14, color: 'var(--text)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>裁决派生单 {rulingTask.task_no ?? rulingTask.id}</div>
+              <button type="button" className="tbtn-anim" onClick={() => { setRulingTask(null); setRulingDraft(''); }} aria-label="关闭裁决面板"
+                style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 2 }}>
+                <X size={14} />
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>{rulingTask.title}</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+              {rulingOptions.map((o) => (
+                <button key={o} type="button" className="tbtn-anim" disabled={rulingBusy}
+                  onClick={() => setRulingDraft(o)}
+                  style={{ fontSize: 12, padding: '5px 10px', borderRadius: 999, cursor: rulingBusy ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
+                    border: `1px solid ${rulingDraft === o ? 'var(--accent)' : 'var(--border-strong)'}`,
+                    background: rulingDraft === o ? 'var(--accent-soft)' : 'transparent',
+                    color: rulingDraft === o ? 'var(--accent)' : 'var(--text)' }}>
+                  {o}
+                </button>
+              ))}
+            </div>
+            <textarea value={rulingDraft} onChange={(e) => setRulingDraft(e.target.value)} rows={3}
+              placeholder="自定义裁决结果（或点选上方预设选项）" aria-label="裁决结果"
+              style={{ width: '100%', boxSizing: 'border-box', fontSize: 12, padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--input-bg, transparent)', color: 'var(--text)', resize: 'vertical' }} />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+              <button type="button" onClick={() => { setRulingTask(null); setRulingDraft(''); }}
+                style={{ fontSize: 12, padding: '6px 12px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer' }}>取消</button>
+              <button type="button" className="tbtn-anim" disabled={!rulingDraft.trim() || rulingBusy} onClick={() => void submitRuling()}
+                style={{ fontSize: 12, padding: '6px 14px', border: 'none', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: rulingDraft.trim() && !rulingBusy ? 'pointer' : 'not-allowed', opacity: rulingDraft.trim() && !rulingBusy ? 1 : 0.5 }}>
+                {rulingBusy ? '提交中…' : '提交裁决'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </section>
   );

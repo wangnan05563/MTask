@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, Folder, FolderOpen, Plus, Search } from 'lucide-react';
+import { ChevronDown, Folder, FolderOpen, Plus, Search, X } from 'lucide-react';
 import { api } from '../api/client';
 import { askInput } from './dialogs';
 import { desktopApi } from './desktop';
@@ -31,6 +31,9 @@ export function WorkspaceSelect({ project, onBind, flash, variant = 'trigger' }:
   const [history, setHistory] = useState<string[]>([]);
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState(false);
+  // T02952：触发按钮悬浮展开完整路径（Popover 替代原生 title——不挤压布局、可断行展示长路径）
+  const [hoverPop, setHoverPop] = useState(false);
+  const panelSearchRef = useRef<HTMLInputElement>(null); // T02952：面板内清空按钮点击后把光标还回搜索框
   const rootRef = useRef<HTMLDivElement>(null);
 
   const bound = project?.workspace_path ?? '';
@@ -108,7 +111,17 @@ export function WorkspaceSelect({ project, onBind, flash, variant = 'trigger' }:
       {/* 搜索工作空间 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 5, border: '1px solid var(--border)', borderRadius: 6, padding: '4px 8px', marginBottom: 4 }}>
         <Search size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索工作空间" aria-label="搜索工作空间"
+        {/* T02952：框内左侧清空按钮（有内容才显示；倾斜由 .ws-clear-btn 提供；点击清空且光标留框内） */}
+        {search && (
+          <button type="button" className="tbtn-anim ws-clear-btn"
+            onClick={() => { setSearch(''); panelSearchRef.current?.focus(); }}
+            title="清空搜索内容 — 点击清空工作空间搜索框，光标保留在框内"
+            aria-label="清空搜索内容"
+            style={{ display: 'inline-flex', alignItems: 'center', padding: 0, border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', flexShrink: 0 }}>
+            <X size={12} />
+          </button>
+        )}
+        <input ref={panelSearchRef} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索工作空间" aria-label="搜索工作空间"
           style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 12, minWidth: 0 }} />
       </div>
       {/* 最近使用（历史记录） */}
@@ -142,15 +155,25 @@ export function WorkspaceSelect({ project, onBind, flash, variant = 'trigger' }:
 
   return (
     <div ref={rootRef} style={{ position: 'relative', display: 'inline-flex' }}>
-      {/* 无框触发按钮：对齐任务菜单工具栏字号/图标尺寸，仅悬浮变色区分可点击 */}
+      {/* 无框触发按钮：对齐任务菜单工具栏字号/图标尺寸，仅悬浮变色区分可点击。
+          T02952：maxWidth 220 固定宽度 + 省略号截断（不挤压右侧控件）；完整路径改由悬浮 Popover 展开 */}
       <button onClick={() => { if (!open) { void loadHistory(); } setOpen((o) => !o); }} aria-haspopup="listbox" aria-expanded={open}
-        title={bound ? `工作空间：${bound} — 点击切换` : '选择工作空间 — 绑定项目上下文根路径，AI 功能以此路径加载上下文'}
+        onMouseEnter={() => bound && setHoverPop(true)} onMouseLeave={() => setHoverPop(false)}
+        onFocus={() => bound && setHoverPop(true)} onBlur={() => setHoverPop(false)}
+        title={bound ? '点击切换工作空间 — 悬浮展开完整路径' : '选择工作空间 — 绑定项目上下文根路径，AI 功能以此路径加载上下文'}
         aria-label="选择工作空间"
         style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 4px', border: 'none', background: 'transparent', color: bound ? 'var(--text)' : 'var(--text-muted)', fontSize: 12, cursor: 'pointer', maxWidth: 220 }}>
         <FolderOpen size={13} style={{ flexShrink: 0, color: bound ? 'var(--accent)' : 'var(--text-muted)' }} />
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bound ? wsBasename(bound) : '工作空间'}</span>
         <ChevronDown size={12} style={{ flexShrink: 0 }} />
       </button>
+      {/* T02952：悬浮/聚焦展开完整目录路径（绝对定位不占布局，不会挤压右侧搜索框） */}
+      {hoverPop && bound && (
+        <div role="tooltip" aria-label="工作空间完整路径"
+          style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 6px 18px rgba(0,0,0,.16)', zIndex: 46, maxWidth: 420, padding: '6px 8px', fontSize: 12, color: 'var(--text)', wordBreak: 'break-all', lineHeight: 1.5 }}>
+          {bound}
+        </div>
+      )}
       {open && panel}
     </div>
   );

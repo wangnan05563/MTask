@@ -236,6 +236,9 @@ function Shell() {
         /* T01674：键盘可达的文件选择入口——sr-only file input 聚焦时容器（label）显示焦点环，
            与相邻按钮焦点观感一致；不加此环则 Tab 命中后无可见指示 */
         .op-hidden:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 6px; }
+        /* T02952：搜索清空按钮——悬浮时图标倾斜 5°~10°（任务约束区间），过渡流畅；按钮自身 transform 若被占用（居中），倾斜落在子 svg 上 */
+        .ws-clear-btn svg { transition: transform .18s ease; }
+        .ws-clear-btn:hover svg { transform: rotate(-7deg); }
         /* T00477：菜单下拉/过滤条件悬浮展示（默认淡化，悬浮或聚焦完全显示） */
         .toolbar-reveal { opacity: .35; transition: opacity .18s ease; }
         .toolbar-reveal:hover, .toolbar-reveal:focus-within { opacity: 1; }

@@ -220,6 +220,12 @@ export interface Task {
   retry_count?: number;
   /** T00577：派生单溯源——原任务编号（如 T00422） */
   derived_from: string | null;
+  /** T02949：派生单裁决状态（'' 无 | '待裁决' | '已裁决'）——独立列，不占用 status 的 todo/done 语义 */
+  ruling_state?: string;
+  /** T02949：裁决内容（预设选项值或自定义文本） */
+  ruling_result?: string;
+  /** T02949：裁决/标记时刻（ISO） */
+  ruling_at?: string | null;
   /** T00589：历史资产时间（非空即已沉淀至历史资产，与归档独立） */
   history_at?: string | null;
   /** T00719：搁置标记——true 时任务从待办/已完成列表与 MCP 查询隔离，仅出现在搁置列表 */
