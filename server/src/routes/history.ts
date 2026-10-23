@@ -2,7 +2,7 @@ import express from 'express';
 import { getDb } from '../db/connection';
 import { notifyChange } from '../services/ChangeBus';
 import { cacheClear } from '../util/ttl-cache';
-import { ACTIVE_PROJECT_WHERE } from '../util/projectRouting'; // T02938：现行项目判据单源
+import { ACTIVE_PROJECT_WHERE, findProjectNameOwners } from '../util/projectRouting'; // T02938：现行项目判据单源；T02943：快照恢复前的同名现行项目检查
 
 function now(): string {
   return new Date().toISOString();
@@ -119,6 +119,19 @@ historyApi.post('/restore', (req, res) => {
   const { projectId } = (req.body ?? {}) as { projectId?: unknown };
   if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
   const db = getDb();
+  // T02943：恢复前必须确认没有别的**现行**同名项目——此前这里直接 `history_at = NULL`，
+  // 快照期间若该行原名被改名/新建通道造出同名现行项目，恢复成功即得到「两行同名现行项目」，
+  // 按名解析只能靠创建时间猜（T02938 的 U-05 告警分支是兜底，不该是常态）。
+  // 同名归档/历史行不拦：那是 T02481 允许的既有形态，解析侧已按现行优先。
+  const self = db.prepare('SELECT id, name FROM projects WHERE id = ?').get(projectId) as { id: string; name: string } | undefined;
+  if (!self) return res.status(400).json({ error: '项目不存在' });
+  const clash = findProjectNameOwners(self.name, { excludeId: projectId, activeOnly: true }, db);
+  if (clash.length > 0) {
+    return res.status(400).json({
+      error: `项目名「${self.name}」已有 ${clash.length} 行现行项目（id=${clash.map((c) => c.id).join('、')}），`
+        + '恢复该快照会造出同名多行现行项目——请先给现行项目改名，或把快照行改名后再恢复',
+    });
+  }
   const r = db.prepare('UPDATE projects SET history_at = NULL, updated_at = ? WHERE id = ?').run(now(), projectId);
   if (r.changes === 0) return res.status(400).json({ error: '项目不存在或未沉淀' });
   cacheClear('projects');

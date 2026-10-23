@@ -6,7 +6,7 @@ import { WorkspaceService } from '../services/WorkspaceService'; // T00776：工
 import { getDb } from '../db/connection';
 import { TaskService, nextTaskNo, TASK_STATUSES, type TaskInput, type TaskListOptions } from '../services/TaskService';
 import { resolveCreateOrigin } from '../services/derivedOrigin'; // T02320：建单溯源判据与 MCP 通道同一实现
-import { ACTIVE_PROJECT_WHERE } from '../util/projectRouting'; // T02938：「现行项目」判据单源（REST 列表与 MCP 按名解析共用）
+import { ACTIVE_PROJECT_WHERE, findProjectNameOwners, projectNameConflictError, censusDuplicateProjectNames } from '../util/projectRouting'; // T02938：「现行项目」判据单源（REST 列表与 MCP 按名解析共用）；T02943：重名产生侧（新建/改名）查重与存量清点同源
 import { RecurringService, TokenService } from '../services/RecurringService'; // T01073：循环任务 + API Token
 import { readEventRetentionDays, setEventRetentionDays, pruneTaskEvents, countEvents } from '../services/EventRetention'; // T01064 后续：事件表保留期清理
 import { readPoolStatus, setPoolLimit } from '../services/ConcurrencyPool'; // T01066 后续：并行任务池单源
@@ -139,13 +139,11 @@ api.post('/projects', (req, res) => {
   const { name, description = '' } = req.body ?? {};
   if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name 必填' });
   // T00589 二轮：项目名全局唯一——**含历史资产快照中的项目名**与已归档项目（避免与沉淀快照重名混淆）
-  const dup = getDb().prepare('SELECT name, history_at, archived FROM projects WHERE name = ?').get(name.trim()) as { name: string; history_at: string | null; archived: number } | undefined;
-  if (dup) {
-    // T02481：归档区的项目不在常规列表里，只说「已存在」用户会以为按钮没反应/列表没刷新——点名占用方在哪
-    if (dup.history_at) return res.status(400).json({ error: `项目名「${name.trim()}」已被历史资产中的项目使用，请换名` });
-    if (dup.archived) return res.status(400).json({ error: `项目名「${name.trim()}」已被归档区的项目占用（可在归档区恢复该项目或改名后再建）` });
-    return res.status(400).json({ error: `项目名「${name.trim()}」已存在` });
-  }
+  // T02943：查重判据收口到 findProjectNameOwners——本通道原来只查精确同名，于是 `wiki三期` 与
+  // `Wiki三期` 可以并存，而按名解析（精确→CI 回落）只会撞上其中一行；CI 口径与解析侧必须一致，
+  // 否则「解析侧认现行项目」的兜底会被产生侧继续造出的重名行反复触发告警。
+  const owners = findProjectNameOwners(name);
+  if (owners.length > 0) return res.status(400).json({ error: projectNameConflictError(name, owners) });
   const id = uuid();
   getDb().prepare('INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
     .run(id, name, description, now(), now());
@@ -153,10 +151,23 @@ api.post('/projects', (req, res) => {
   res.status(201).json(getDb().prepare('SELECT * FROM projects WHERE id = ?').get(id));
 });
 
-/** T00663：用户置顶权重（与前端 web/src/ui/projectOrder.ts 的 PROJ_PIN_WEIGHT 对齐） */
-const PROJ_PIN_WEIGHT = -9999;
+/**
+ * T02943 存量清点（只读，不动数据）：列出库里**大小写不敏感同名**的项目组，
+ * 每组给出各行状态（现行/归档/历史快照）与现行行数，供人工裁决「哪一行留现行、其余改名还是并入」。
+ * 解析侧（T02938）已能在同名多行时认现行项目，但那是兜底；本端点回答「重名行还有多少、分别在哪个区」。
+ */
+api.get('/projects/name-duplicates', (_req, res) => {
+  const groups = censusDuplicateProjectNames();
+  res.json({
+    groupCount: groups.length,
+    rowCount: groups.reduce((n, g) => n + g.rows.length, 0),
+    multiActiveGroupCount: groups.filter((g) => g.activeCount > 1).length,
+    groups,
+  });
+});
 
-// T00663：项目自定义排序（拖拽后按序保存）——仅重排传入 id 的顺序号，置顶项（负权重）保持不动
+/** T00663：用户置顶权重（与前端 web/src/ui/projectOrder.ts 的 PROJ_PIN_WEIGHT 对齐） */
+const PROJ_PIN_WEIGHT = -9999;// T00663：项目自定义排序（拖拽后按序保存）——仅重排传入 id 的顺序号，置顶项（负权重）保持不动
 api.post('/projects/reorder', (req, res) => {
   const { ids } = (req.body ?? {}) as { ids?: unknown };
   if (!Array.isArray(ids) || ids.some((x) => typeof x !== 'string')) return res.status(400).json({ error: 'ids 必须为项目 id 字符串数组' });
@@ -203,7 +214,15 @@ api.patch('/projects/:id', (req, res) => {
   const db = getDb();
   const sets: string[] = [];
   const values: unknown[] = [];
-  if (name !== undefined) { sets.push('name = ?'); values.push(name); }
+  if (name !== undefined) {
+    // T02943：改名是重名行的主要产生通道之一——此前这里完全不查重名，任何项目都能被改成
+    // 与别的项目（含归档行/历史快照行）同名，把 T02938「按名解析认现行项目」的兜底
+    // 反复触发成告警。判据与新建走同一个单源；改成自己的名字不算撞名（excludeId）。
+    if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name 不能为空' });
+    const owners = findProjectNameOwners(name, { excludeId: req.params.id });
+    if (owners.length > 0) return res.status(400).json({ error: projectNameConflictError(name, owners) });
+    sets.push('name = ?'); values.push(name);
+  }
   if (description !== undefined) { sets.push('description = ?'); values.push(description); }
   if (sortWeight !== undefined) { sets.push('sort_weight = ?'); values.push(sortWeight); }
   // T00771：工作空间绑定——路径必须存在且为文件夹（服务端本机校验），多项目可指向同一路径（仅存引用）
