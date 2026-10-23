@@ -2,6 +2,7 @@ import { Router, raw } from 'express';
 import { PlanService } from '../services/PlanService';
 import { TestCaseService } from '../services/TestCaseService'; // T01484：测试用例取数（PRD-测试用例管理 §6）
 import { assertOutlineShape, kickoffOutline, preflight, kickoffPptStream } from '../services/kickoffService'; // T02095/T02096/T02103：启动会 PPT 前置校验、大纲与 SSE 流式生成
+import { summaryPreflight } from '../services/summaryPptService'; // T02853（六期 S2）：总结汇报 PPT 前置校验聚合 S1~S9
 import { safeExportName } from '../util/export-name'; // T02104：导出文件名单源（与下载白名单同源）
 import { discardReport } from '../services/ReportService'; // T02144：中止且 done 未送达时当场回收落盘令牌
 import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput, DraftCaseImport, DraftReqImport } from '../services/TestCaseService';
@@ -39,6 +40,17 @@ function optStr(v: unknown): string | undefined {
   return v == null ? undefined : toStr(v);
 }
 
+/**
+ * 查询串里的多项目范围：`?projectIds=a,b`（CSV）或重复参数 `?projectIds=a&projectIds=b` 都接受，
+ * 空值出 undefined（= 全部未归档项目口径，由服务端解析，不在路由里造第二份语义）。
+ */
+function csvList(v: unknown): string[] | undefined {
+  if (v == null) return undefined;
+  const parts = (Array.isArray(v) ? v : [v]).flatMap((x) => toStr(x).split(','));
+  const ids = parts.map((s) => s.trim()).filter(Boolean);
+  return ids.length > 0 ? ids : undefined;
+}
+
 /** projectId 必填校验 */
 function pid(req: import('express').Request): string {
   const v = req.query.projectId;
@@ -59,6 +71,18 @@ planApi.get('/ready', (req, res) => {
 
 // T02095：启动会 PPT 前置校验（PRD-项目启动会PPT生成 §3.2 FR-2）——只读聚合、零 AI 调用（FR-2.3）
 planApi.get('/kickoff-preflight', (req, res) => wrap(res, () => preflight(pid(req))));
+
+// T02853（六期 S2）：阶段性总结汇报 PPT 前置校验（PRD-阶段性项目总结汇报PPT §3.3 FR-3）——
+// 一次聚合 S1~S9，只读、零 AI 调用（FR-3.4）；范围与周期入参可选性由服务层守卫并回 400 中文文案。
+// 范围入参沿用报表族既有口径（`routes/index.ts:1543` 的 parseScopeBody）：projectIds 优先，projectId 兼容单选。
+planApi.get('/summary-preflight', (req, res) =>
+  wrap(res, () =>
+    summaryPreflight(req.query.period, csvList(req.query.projectIds) ?? (optStr(req.query.projectId) ? [optStr(req.query.projectId)!] : undefined), {
+      start: optStr(req.query.start),
+      end: optStr(req.query.end),
+    }),
+  ),
+);
 
 // T02096 §2.2：启动会 PPT 大纲（1 次 askJson + schema 校验；不合规则触发自带重试后 400）
 planApi.post('/kickoff-ppt-outline', (req, res) => {
