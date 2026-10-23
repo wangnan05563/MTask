@@ -116,6 +116,19 @@ export function recalcMilestonesOfChild(db: ReturnType<typeof getDb>, childPlanI
   return out;
 }
 
+/**
+ * 子项计数（T02855：汇报稿「里程碑两态」只读展示用）。
+ * 与 `recalcMilestoneProgress` 共用 `childStatuses`——页面上的 done/total 与聚合 progress
+ * 出自同一判据，不会出现「进度 50% 但子项 1/3」这种两套口径各说各话的页。
+ * 只读、不重算、不写库；无子项时返回 `{total:0,done:0}`（调用方据此走「人工填报」态）。
+ */
+export function milestoneChildStats(db: ReturnType<typeof getDb>, milestoneId: string): { total: number; done: number } {
+  const m = loadMilestone(db, milestoneId);
+  if (!m) return { total: 0, done: 0 };
+  const statuses = childStatuses(db, m);
+  return { total: statuses.length, done: statuses.filter((s) => s === 'done').length };
+}
+
 /** 某里程碑是否有子项——`reconcileLinkedPlanStatuses` 的排除判据（聚合作主，不被任务→计划单向对齐抢先） */
 export function milestoneHasChildren(db: ReturnType<typeof getDb>, milestoneId: string): boolean {
   const m = loadMilestone(db, milestoneId);
