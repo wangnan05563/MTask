@@ -645,8 +645,8 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
 
   /**
    * §11-E13 改值历史（T02624）：失败只影响这一小块（与快照同一处置），不连带整面板进错误态。
-   * 参数是在面板外改的（`PUT /params`），所以重取走显式入口，不塞进 `load()`——
-   * 行内每次录入都会触发 `load()`，把两次额外请求挂在写路径上没有意义。
+   * 重取走显式入口，不塞进 `load()`——行内每次录入都会触发 `load()`，
+   * 把两次额外请求挂在写路径上没有意义（T02699 起八键编辑器就在面板内，重取仍保持显式）。
    */
   const loadParamLogs = useCallback(async (): Promise<void> => {
     try {
@@ -1730,6 +1730,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
           </div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
             <button type="button" className="tbtn-anim" style={toolBtn('accent', paramSaveBusy)}
+              aria-label="保存估算参数"
               disabled={paramSaveBusy} onClick={() => void saveParams()}>
               {paramSaveBusy ? '保存中…' : '保存参数'}
             </button>
@@ -1746,7 +1747,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             <span>改值历史（最近 {paramLogs.length} 条，新→旧）</span>
             <button type="button" className="tbtn-anim" style={toolBtn()} onClick={() => void loadParamLogs()}
               aria-label="刷新改值历史"
-              title="参数是在面板外改的（API / 参数页），这里给一枚显式重取的入口">
+              title="只重读留痕；改参数请用上方「估算参数」区的八键编辑器（T02699）">
               刷新
             </button>
           </div>
