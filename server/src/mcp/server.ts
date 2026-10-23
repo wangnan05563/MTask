@@ -17,6 +17,7 @@ import { AIService } from '../services/AIService'; // T02168：mtask_summarize_t
 import { TaskImageService } from '../services/TaskImageService'; // T00610：截图读取（供 AI 识别验证失败反馈截图）
 import { PlanService } from '../services/PlanService';
 import { parsePlanDeps } from '../util/planDeps'; // T01689：deps 解析单源复用（T01284 统一实现，MCP 层不再自造第二套口径）
+import { resolveProjectByName } from '../util/projectRouting'; // T02938：项目名→id 单源（同名「归档+现行」多行时必须认现行项目）
 import { ExecSessionService } from '../services/ExecSessionService'; // T01269：执行会话心跳上报（FR-1.2）
 import { SupervisorService } from '../services/SupervisorService'; // T01286：监督状态查询（FR-5.2）
 import { resolvePrdContext } from '../util/prdContext'; // T00763：PRD 上下文反查
@@ -64,14 +65,20 @@ function taskLocateError(): string {
   return 'id 与 taskNo 至少提供一个；id 为任务内部 id，taskNo 为任务编号（如 T00001）';
 }
 
-/** 按项目名解析 id（精确 → 大小写不敏感），供 MCP 工具复用；返回 {id} 或 {error} */
-function resolveProjectByName(name: string): { id?: string; error?: string } {
-  const all = getDb().prepare('SELECT id, name FROM projects').all() as Array<{ id: string; name: string }>;
-  const exact = all.find((p) => p.name === name);
-  const ci = all.find((p) => p.name.toLowerCase() === name.toLowerCase());
-  const hit = exact ?? ci;
-  if (!hit) return { error: `项目「${name}」不存在。候选：${all.slice(0, 10).map((p) => p.name).join('、')}（可先调 mtask_list_projects 查询）` };
-  return { id: hit.id };
+/**
+ * 按项目名解析（精确 → 大小写不敏感，同名多行时现行项目优先）已收口到
+ * `../util/projectRouting.ts` 单源（T02938）——本文件曾有 8 处 `SELECT id FROM projects WHERE name = ?`
+ * 抄本，全都取库序第一行，于是同名「归档 + 现行」两行时按名建单会静默落进归档项目。
+ * 新实现返回 `{ id, name, error, warning, active, via }`；`warning` 非空时必须回显到工具响应里。
+ */
+
+/**
+ * T02938 薄封装：只把「取库序首行」换成单源口径（现行项目优先），
+ * 各调用点保留自己原有的报错文案，避免顺手改掉与既有门文案锚相关的措辞。
+ * 返回空串=按名解析不到，调用方按旧语义回「项目不存在」。
+ */
+function projectIdByName(name: string, db = getDb()): string {
+  return resolveProjectByName(name, db).id ?? '';
 }
 
 /** 父任务校验（存在且同项目）；通过返回 null，否则返回错误文案 */
@@ -155,9 +162,9 @@ function locatePlanEntry(a: { projectId?: string; projectName?: string; id?: str
   const db = getDb();
   let pid = a.projectId?.trim() || '';
   if (!pid && a.projectName?.trim()) {
-    const p = db.prepare('SELECT id FROM projects WHERE name = ?').get(a.projectName.trim()) as { id: string } | undefined;
-    if (!p) return { pid, id: '', error: `项目不存在：${a.projectName}` };
-    pid = p.id;
+    // T02938：单源解析（同名多行时认现行项目）
+    pid = projectIdByName(a.projectName.trim(), db);
+    if (!pid) return { pid, id: '', error: `项目不存在：${a.projectName}` };
   }
   let id = a.id?.trim() || '';
   if (!id && a.title?.trim()) {
@@ -266,10 +273,15 @@ export async function createMCPServer(): Promise<McpServer> {
       // T00482：项目归属路由——projectId 优先；其次 projectName 按名解析（精确 → 大小写不敏感）；
       // 都未提供才缺省「默认记事项目」（用户设置优先，否则收件箱），并打日志警告便于排查误入收件箱
       let pid = a.projectId?.trim() || '';
+      // T02938：按名解析必须走单源——同名「归档 + 现行」多行时旧 SQL 取库序首行，
+      // 单子静默落进归档项目（建成功却在待办列表消失）。解析到非现行/歧义行时回警告，不再静默。
+      let projectWarning = '';
       if (!pid && a.projectName?.trim()) {
         const r = resolveProjectByName(a.projectName.trim());
         if (r.error) return err(r.error);
         pid = r.id ?? '';
+        projectWarning = r.warning ?? '';
+        if (projectWarning) console.warn(`[mtask-mcp] mtask_create_task 项目路由告警（${a.projectName.trim()}）：${projectWarning}`);
       }
       if (!pid) {
         pid = getDefaultNoteProjectId();
@@ -285,7 +297,13 @@ export async function createMCPServer(): Promise<McpServer> {
       if (dedupe) {
         const rows = getDb().prepare('SELECT * FROM tasks WHERE project_id = ?').all(pid) as Array<Record<string, unknown>>;
         const exist = rows.find((r) => (typeof r.title === 'string' ? r.title : '').replaceAll(/\s+/g, '') === normTitle);
-        if (exist) return ok(json({ reused: true, task: exist }), { reused: true, task: exist });
+        // T02938：查重命中同样要回显项目路由告警——「复用到归档项目里的既有单」与「新建落错项目」是同一种事故
+        if (exist) {
+          return ok(json({ reused: true, task: exist })
+            + (projectWarning ? `\n\n⚠ 项目路由告警：${projectWarning}` : ''), {
+            reused: true, task: exist, ...(projectWarning ? { project_warning: projectWarning } : {}),
+          });
+        }
       }
       // T00450：父子层级——父任务校验（存在且同项目）
       let parentId = a.parentId?.trim() || undefined;
@@ -310,8 +328,10 @@ export async function createMCPServer(): Promise<McpServer> {
       if ((task.status ?? 'todo') === 'todo') {
         fresh = TaskService.setAiState(task.id, 'unread') ?? task;
       }
-      return ok(json(fresh) + (origin.warning ? `\n\n⚠ 溯源告警：${origin.warning}` : ''), {
+      return ok(json(fresh) + (origin.warning ? `\n\n⚠ 溯源告警：${origin.warning}` : '')
+        + (projectWarning ? `\n\n⚠ 项目路由告警：${projectWarning}` : ''), {
         task: fresh, ...(origin.warning ? { create_warning: origin.warning } : {}),
+        ...(projectWarning ? { project_warning: projectWarning } : {}),
       });
     } catch (e) { return err((e as Error).message); }
   });
@@ -332,9 +352,9 @@ export async function createMCPServer(): Promise<McpServer> {
     try {
       let pid = a.projectId?.trim() || '';
       if (!pid && a.projectName?.trim()) {
-        const p = getDb().prepare('SELECT id FROM projects WHERE name = ?').get(a.projectName.trim()) as { id: string } | undefined;
-        if (!p) return err(`项目不存在：${a.projectName}`);
-        pid = p.id;
+        // T02938：走单源解析（同名多行时认现行项目），不再取库序首行
+        pid = projectIdByName(a.projectName.trim());
+        if (!pid) return err(`项目不存在：${a.projectName}`);
       }
       if (!pid) return err('projectId 或 projectName 必填');
       // T01689：req_ids JSON → string[]（与 PlanService 内部 parseLinkIds 同口径；私有函数不跨层引用）
@@ -442,9 +462,9 @@ export async function createMCPServer(): Promise<McpServer> {
     try {
       let pid = a.projectId?.trim() || '';
       if (!pid && a.projectName?.trim()) {
-        const p = getDb().prepare('SELECT id FROM projects WHERE name = ?').get(a.projectName.trim()) as { id: string } | undefined;
-        if (!p) return err(`项目不存在：${a.projectName}`);
-        pid = p.id;
+        // T02938：走单源解析（同名多行时认现行项目），不再取库序首行
+        pid = projectIdByName(a.projectName.trim());
+        if (!pid) return err(`项目不存在：${a.projectName}`);
       }
       if (!pid) return err('projectId 或 projectName 必填');
       const warnings: string[] = [];
@@ -558,9 +578,9 @@ export async function createMCPServer(): Promise<McpServer> {
       const db = getDb();
       let pid = a.projectId?.trim() || '';
       if (!pid && a.projectName?.trim()) {
-        const p = db.prepare('SELECT id FROM projects WHERE name = ?').get(a.projectName.trim()) as { id: string } | undefined;
-        if (!p) return err(`项目不存在：${a.projectName}`);
-        pid = p.id;
+        // T02938：单源解析（同名多行时认现行项目）
+        pid = projectIdByName(a.projectName.trim(), db);
+        if (!pid) return err(`项目不存在：${a.projectName}`);
       }
       let id = a.id?.trim() || '';
       if (!id && a.title?.trim()) {
@@ -633,9 +653,11 @@ export async function createMCPServer(): Promise<McpServer> {
       // AI Agent 更习惯直接给项目名称而非 UUID：projectName 存在时先解析成 project_id 再过滤
       let pid = a.projectId;
       if (!pid && a.projectName?.trim()) {
-        const p = getDb().prepare('SELECT id FROM projects WHERE name = ? ORDER BY sort_weight, created_at LIMIT 1').get(a.projectName.trim()) as { id: string } | undefined;
-        if (!p) return err(`项目不存在：${a.projectName}`);
-        pid = p.id;
+        // T02938：旧口径 `ORDER BY sort_weight, created_at LIMIT 1` 取的是**最早创建**的同名行——
+        // 归档后重建（T02481）场景下那正是归档项目，按名过滤永远列不到新项目的单。
+        // 现改单源：现行项目优先，其次创建时间最新。
+        pid = projectIdByName(a.projectName.trim());
+        if (!pid) return err(`项目不存在：${a.projectName}`);
       }
       // 范围解析：显式 status 按状态精确过滤；否则 scope=all 表示全量，scope=pending 或未说明时默认「待处理+未验证」分析范围
       let listOpts: Parameters<typeof TaskService.list>[0] = { projectId: pid, archived: a.archived ?? false };
@@ -724,9 +746,10 @@ export async function createMCPServer(): Promise<McpServer> {
     }
     const name = projectName?.trim();
     if (!name) return { error: 'projectId 或 projectName 必填' };
-    const all = getDb().prepare('SELECT id, name FROM projects').all() as Array<{ id: string; name: string }>;
-    const hit = all.find((p) => p.name === name) ?? all.find((p) => p.name.toLowerCase() === name.toLowerCase());
-    return hit ? { id: hit.id } : { error: `项目「${name}」不存在。候选：${all.slice(0, 10).map((p) => p.name).join('、')}` };
+    // T02938：单源解析（同名多行时认现行项目）；非现行/歧义时打日志，文案仍由调用方按旧格式回
+    const r = resolveProjectByName(name);
+    if (r.warning) console.warn(`[mtask-mcp] 项目路由告警（${name}）：${r.warning}`);
+    return r.id ? { id: r.id } : { error: r.error ?? `项目「${name}」不存在` };
   };
 
   server.registerTool('mtask_import_prd', {
@@ -1419,9 +1442,12 @@ ${a.result}`;
       return row;
     }
     if (!name) throw new Error('projectId 或 projectName 必填');
-    const row = db.prepare('SELECT id, name FROM projects WHERE name = ?').get(name) as { id: string; name: string } | undefined;
-    if (!row) throw new Error(`项目不存在：${name}`);
-    return row;
+    // T02938：单源解析（同名多行时认现行项目）。报错文案保留「项目不存在」词干——
+    // estimateCopy.ESTIMATE_PROJECT_NOT_FOUND 是估算族拒绝文案的单源锚（verify-t02044-mcp-e10 M-16 逐字比对）
+    const byName = resolveProjectByName(name, db);
+    if (byName.warning) console.warn(`[mtask-mcp] mtask_get_estimates 项目路由告警（${name}）：${byName.warning}`);
+    if (!byName.id) throw new Error(`项目不存在：${name}`);
+    return { id: byName.id, name: byName.name ?? name };
   };
 
   /**

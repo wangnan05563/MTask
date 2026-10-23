@@ -2,6 +2,7 @@ import express from 'express';
 import { getDb } from '../db/connection';
 import { notifyChange } from '../services/ChangeBus';
 import { cacheClear } from '../util/ttl-cache';
+import { ACTIVE_PROJECT_WHERE } from '../util/projectRouting'; // T02938：现行项目判据单源
 
 function now(): string {
   return new Date().toISOString();
@@ -22,7 +23,8 @@ export const historyApi = express.Router();
 /** 统计：可沉淀项目数 / 历史快照数 / 快照内任务与计划总量 */
 historyApi.get('/summary', (_req, res) => {
   const db = getDb();
-  const active = (db.prepare("SELECT COUNT(*) AS c FROM projects WHERE COALESCE(history_at,'') = '' AND COALESCE(archived,0) = 0").get() as { c: number }).c;
+  // T02938：「现行项目」判据取单源常量（与 GET /api/projects、MCP 按名解析同一串）
+  const active = (db.prepare(`SELECT COUNT(*) AS c FROM projects WHERE ${ACTIVE_PROJECT_WHERE}`).get() as { c: number }).c;
   const snaps = (db.prepare("SELECT COUNT(*) AS c FROM projects WHERE COALESCE(history_at,'') != ''").get() as { c: number }).c;
   const snapTasks = (db.prepare("SELECT COUNT(*) AS c FROM tasks WHERE project_id IN (SELECT id FROM projects WHERE COALESCE(history_at,'') != '')").get() as { c: number }).c;
   const snapPlans = (db.prepare("SELECT COUNT(*) AS c FROM plan_tasks WHERE project_id IN (SELECT id FROM projects WHERE COALESCE(history_at,'') != '')").get() as { c: number }).c;

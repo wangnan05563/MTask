@@ -6,6 +6,7 @@ import { WorkspaceService } from '../services/WorkspaceService'; // T00776：工
 import { getDb } from '../db/connection';
 import { TaskService, nextTaskNo, TASK_STATUSES, type TaskInput, type TaskListOptions } from '../services/TaskService';
 import { resolveCreateOrigin } from '../services/derivedOrigin'; // T02320：建单溯源判据与 MCP 通道同一实现
+import { ACTIVE_PROJECT_WHERE } from '../util/projectRouting'; // T02938：「现行项目」判据单源（REST 列表与 MCP 按名解析共用）
 import { RecurringService, TokenService } from '../services/RecurringService'; // T01073：循环任务 + API Token
 import { readEventRetentionDays, setEventRetentionDays, pruneTaskEvents, countEvents } from '../services/EventRetention'; // T01064 后续：事件表保留期清理
 import { readPoolStatus, setPoolLimit } from '../services/ConcurrencyPool'; // T01066 后续：并行任务池单源
@@ -104,7 +105,7 @@ api.get('/projects', (req, res) => {
   // 旧实现把计数一并塞进 5s 缓存，而任务写端点（PATCH/回传/归档）从不失效 `projects` 这一份，
   // 于是计数最长滞后 5 秒且前端不重拉；计数只是两条 GROUP BY，实时算的代价远低于旧值残留的误导。
   const cached = cacheGet<Array<Record<string, unknown>>>('projects');
-  const rows = cached ?? getDb().prepare("SELECT * FROM projects WHERE COALESCE(history_at,'') = '' AND COALESCE(archived,0) = 0 ORDER BY sort_weight, created_at").all() as Array<Record<string, unknown>>;
+  const rows = cached ?? getDb().prepare(`SELECT * FROM projects WHERE ${ACTIVE_PROJECT_WHERE} ORDER BY sort_weight, created_at`).all() as Array<Record<string, unknown>>;
   if (!cached) cacheSet('projects', rows, LIST_TTL_MS);
   // T00496：附每项目待办/未验证计数（供项目下拉徽标展示）
   // T01584：`unverified_count` 口径修正为「已完成且未验证」——旧写法 `verified = 0` 把待办任务一并计入
