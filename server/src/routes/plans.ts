@@ -3,6 +3,7 @@ import { PlanService } from '../services/PlanService';
 import { TestCaseService } from '../services/TestCaseService'; // T01484：测试用例取数（PRD-测试用例管理 §6）
 import { assertOutlineShape, kickoffOutline, preflight, kickoffPptStream } from '../services/kickoffService'; // T02095/T02096/T02103：启动会 PPT 前置校验、大纲与 SSE 流式生成
 import { summaryPreflight } from '../services/summaryPptService'; // T02853（六期 S2）：总结汇报 PPT 前置校验聚合 S1~S9
+import { summaryOutline } from '../services/summaryPptOutline'; // T02854（六期 S3）：总结汇报 PPT 大纲段（提示词 + schema 校验）
 import { safeExportName } from '../util/export-name'; // T02104：导出文件名单源（与下载白名单同源）
 import { discardReport } from '../services/ReportService'; // T02144：中止且 done 未送达时当场回收落盘令牌
 import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput, DraftCaseImport, DraftReqImport } from '../services/TestCaseService';
@@ -83,6 +84,28 @@ planApi.get('/summary-preflight', (req, res) =>
     }),
   ),
 );
+
+/**
+ * T02854（六期 S3）：阶段性总结汇报 PPT 大纲（1 次 askJson + schema 校验；不合规由 askJson 自带重试 1 次后 400）。
+ * 只产内存态大纲、不落库不生成文件（装配在 S4）；S1/S2 硬阻塞时服务层直接拒，不经 AI、不烧配额。
+ */
+planApi.post('/summary-ppt-outline', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const toolId = toStr(b.toolId);
+  if (!toolId) return res.status(400).json({ error: 'toolId 必填（大纲生成需要模型工具）' });
+  if (b.period == null) return res.status(400).json({ error: 'period 必填（day/week/month/custom）' });
+  const scope = csvList(b.projectIds) ?? (optStr(b.projectId) ? [optStr(b.projectId)!] : undefined);
+  summaryOutline({
+    period: b.period,
+    projectIds: scope,
+    custom: { start: optStr(b.start), end: optStr(b.end) },
+    toolId,
+    style: optStr(b.style),
+    extraNote: optStr(b.extraNote),
+  })
+    .then((r) => res.json(r))
+    .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
+});
 
 // T02096 §2.2：启动会 PPT 大纲（1 次 askJson + schema 校验；不合规则触发自带重试后 400）
 planApi.post('/kickoff-ppt-outline', (req, res) => {

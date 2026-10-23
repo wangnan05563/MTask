@@ -209,6 +209,83 @@ export function gatherSummaryBundle(period: SummaryPeriod, projectIds?: string[]
   };
 }
 
+// ---------- 按项目拆分的事实（S3 大纲段的提示词素材，采集口径仍归本文件） ----------
+
+export interface ProjectFacts {
+  id: string;
+  name: string;
+  /** 任务口径来自 `report.projects`（gatherReportData 已算好，不重开 SQL） */
+  tasks: { total: number; done: number; verified: number };
+  plans: { total: number; overdue: number; blocked: number; doing: number };
+  milestones: number;
+  requirements: number;
+  testCases: number;
+  estimates: number;
+  /** 计划标题样例（合并版大纲要能写「」指代，最多 3 条） */
+  samples: string[];
+}
+
+/**
+ * 逐项目事实：给 S3 大纲段拼「每项目摘要」用。
+ * 任务口径**只从传入的 report 里读**（同一份 `gatherReportData` 结果），不另开活动任务 SQL；
+ * 计划/里程碑逐字复用 S2 的 `archived=0` 且非 history 谓词；其余表按项目分组计数。
+ * `ids` 必须是 `gatherSummaryBundle` 已展开的范围（空=没有未归档项目，直接回空数组）。
+ */
+export function gatherProjectFacts(period: SummaryPeriod, projectIds: string[], custom?: CustomRange, report?: ReportData): ProjectFacts[] {
+  const db = getDb();
+  const ids = projectIds;
+  if (ids.length === 0) return [];
+  const rep = report ?? gatherReportData(period, ids, custom);
+  const where = `AND project_id ${inClause(ids)}`;
+  const planRows = db
+    .prepare(
+      `SELECT project_id, title, status, end_date FROM plan_tasks
+       WHERE archived = 0 AND COALESCE(history_at, '') = '' ${where}`,
+    )
+    .all(...ids) as Array<{ project_id: string; title: string; status: string; end_date: string | null }>;
+  const milestoneRows = db
+    .prepare(
+      `SELECT project_id, COUNT(*) AS n FROM plan_tasks
+       WHERE archived = 0 AND COALESCE(history_at, '') = '' AND kind = 'milestone' ${where}
+       GROUP BY project_id`,
+    )
+    .all(...ids) as Array<{ project_id: string; n: number }>;
+  const countBy = (sql: string) =>
+    db.prepare(sql).all(...ids) as Array<{ project_id: string; n: number }>;
+  const reqBy = countBy(`SELECT project_id, COUNT(*) AS n FROM prd_requirements WHERE 1 = 1 ${where} GROUP BY project_id`);
+  const caseBy = countBy(`SELECT project_id, COUNT(*) AS n FROM test_cases WHERE 1 = 1 ${where} GROUP BY project_id`);
+  const estBy = countBy(`SELECT project_id, COUNT(*) AS n FROM estimate_items WHERE 1 = 1 ${where} GROUP BY project_id`);
+  const msBy = new Map(milestoneRows.map((r) => [r.project_id, r.n]));
+  const toMap = (rows: Array<{ project_id: string; n: number }>) => new Map(rows.map((r) => [r.project_id, r.n]));
+  const reqMap = toMap(reqBy);
+  const caseMap = toMap(caseBy);
+  const estMap = toMap(estBy);
+  // report.projects 以「项目名」聚合（gatherReportData 的既有形态），这里按名字回填任务口径
+  const taskByName = new Map(rep.projects.map((p) => [p.name, p]));
+  const today = new Date().toISOString().slice(0, 10);
+  return ids.map((id) => {
+    const name = projectNamesInOrder(db, [id])[0] ?? '未命名项目';
+    const t = taskByName.get(name);
+    const mine = planRows.filter((r) => r.project_id === id);
+    return {
+      id,
+      name,
+      tasks: { total: t?.total ?? 0, done: t?.done ?? 0, verified: t?.verified ?? 0 },
+      plans: {
+        total: mine.length,
+        overdue: mine.filter((r) => (r.end_date ?? '') !== '' && (r.end_date as string) < today && r.status !== 'done').length,
+        blocked: mine.filter((r) => r.status === 'blocked').length,
+        doing: mine.filter((r) => r.status === 'doing').length,
+      },
+      milestones: msBy.get(id) ?? 0,
+      requirements: reqMap.get(id) ?? 0,
+      testCases: caseMap.get(id) ?? 0,
+      estimates: estMap.get(id) ?? 0,
+      samples: mine.filter((r) => r.title).slice(0, 3).map((r) => r.title),
+    };
+  });
+}
+
 // ---------- 校验项构建（FR-3.1 表逐行对应） ----------
 
 function itemS1(b: SummaryBundle): SummaryPreflightItem {
