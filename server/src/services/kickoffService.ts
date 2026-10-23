@@ -1181,11 +1181,16 @@ function wordingUserPrompt(local: KickoffWordingLocal, projectName: string): str
     ? local.risks.map((r, i) => `${i + 1}. 风险：${r.item}\n   影响：${r.impact}\n   应对：${r.mitigation}\n   出处：${r.source}`).join('\n')
     : '（本次未提供风险清单）';
   const commBlock = local.comms.length ? local.comms.map((c, i) => `${i + 1}. ${c}`).join('\n') : '（本次未提供沟通口径）';
+  // T02823：契约键（AP57 防护）。仅追加一行，不改上方任何中文指令——LLM 仍按「条数分别为 N 与 M」输出；
+  // 本行供自动化验收门(mock)稳定读取条数，不再依赖解析「风险：」/「【沟通口径」等易随措辞重构而漂移的中文形态。
+  // 版本号 v1 即契约标识：格式若变则升 v2 并同步四门正则，禁止静默改写既有门。
+  const contractKey = `【契约键·kickoff-wording·v1】risks=${local.risks.length} comms=${local.comms.length}`;
   return [
     `【项目】${projectName}`,
     `【风险条目（系统按本地规则枚举，事实与数字不可改）】\n${riskBlock}`,
     `【沟通口径（来自大纲的沟通管理页）】\n${commBlock}`,
     `请按约束输出 {"risks":[${local.risks.length ? '…' : ''}],"comms":[${local.comms.length ? '…' : ''}]}，条数分别为 ${local.risks.length} 与 ${local.comms.length}。`,
+    contractKey,
   ].join('\n\n');
 }
 

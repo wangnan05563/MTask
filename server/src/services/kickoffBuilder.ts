@@ -700,7 +700,8 @@ function tableNaturalHeight(table: NonNullable<Block['table']>, width: number, p
   return [table.header, ...table.rows].reduce((s, cells) => s + estimateRowH(cells, colWs, pt), TABLE_PAD);
 }
 
-function blockHeight(src: Omit<Block, 'box'>, width: number): number {
+/** 块自然高（T02685 测高模型）：导出供验收门做同源期望值（T02956——门不再硬编码 0.3×行数旧公式） */
+export function blockHeight(src: Omit<Block, 'box'>, width: number): number {
   if (src.chart) return CHART_H;
   if (src.table) return tableNaturalHeight(src.table, width, TABLE_FONT_PT);
   return textHeight(src.text?.content ?? '', width, src.text?.pt ?? MIN_BODY_PT);

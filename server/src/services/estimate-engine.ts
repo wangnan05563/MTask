@@ -92,6 +92,46 @@ export const ESTIMATE_SETTING_LABELS: Record<string, string> = {
   ),
 };
 
+/**
+ * §3.3 八键的 UI 类型（单源：与 `ESTIMATE_SETTING_LABELS` 同一条「前端不抄名单」红线）。
+ * 数字键走 number 输入、布尔键走勾选、`ruleDefaultRatio` 是「O:4:P」文本串走 text 输入。
+ * 面板只按这个表决定怎么渲染，不知道任何具体键名。
+ */
+export const ESTIMATE_SETTING_TYPES: Record<string, 'number' | 'boolean' | 'text'> = {
+  [ESTIMATE_SETTING_KEYS.manDaysPerManMonth]: 'number',
+  [ESTIMATE_SETTING_KEYS.hoursPerManDay]: 'number',
+  [ESTIMATE_SETTING_KEYS.ruleDefaultRatio]: 'text',
+  [ESTIMATE_SETTING_KEYS.hideCoefsForClient]: 'boolean',
+  ...Object.fromEntries(ESTIMATE_COEF_KEYS.map((k) => [ESTIMATE_COEF_SETTING_KEYS[k], 'number'])),
+};
+
+/**
+ * §3.3 八键的「当前可编辑字符串值」（单源：前端只渲染，不反推 `EstimateConfig`）。
+ * 数字/布尔键取自 `cfg`（已回落默认、恒非空）；规则比例串从 `cfg.ruleRatio` 重建「O:4:P」
+ * （中间段恒为 4，由 `parseRuleRatio` 强制；与原始存储等价，不会丢精度）。
+ * **按 dbKey 索引**（即 `ESTIMATE_SETTING_KEYS` 的值），与 `PUT /params` 的入参键一致——前端不用二次翻译。
+ */
+export function estimateSettingDisplayValues(
+  cfg: EstimateConfig,
+  kv: Record<string, string | null>,
+): Record<string, string> {
+  const k = ESTIMATE_SETTING_KEYS;
+  const v: Record<string, string> = {};
+  v[k.manDaysPerManMonth] = String(cfg.manDaysPerManMonth);
+  v[k.hoursPerManDay] = String(cfg.hoursPerManDay);
+  v[k.coefCollaboration] = String(cfg.coefs.collaboration);
+  v[k.coefQuality] = String(cfg.coefs.quality);
+  v[k.coefScope] = String(cfg.coefs.scope);
+  v[k.coefSchedule] = String(cfg.coefs.schedule);
+  const ratioRaw = kv[k.ruleDefaultRatio];
+  v[k.ruleDefaultRatio] =
+    ratioRaw !== null && ratioRaw !== undefined && String(ratioRaw).trim() !== ''
+      ? String(ratioRaw)
+      : `${cfg.ruleRatio.oMul}:4:${cfg.ruleRatio.pMul}`;
+  v[k.hideCoefsForClient] = cfg.hideCoefsForClient ? '1' : '0';
+  return v;
+}
+
 export interface EstimateConfig {
   manDaysPerManMonth: number;
   hoursPerManDay: number;

@@ -32,7 +32,7 @@ import { api } from '../api/client';
 import {
   estimatesApi, parseSnapshotPayload, toGrid,
   type DeriveItem, type DeriveRule, type EstimateExportAudience, type EstimateExportOptions, type EstimateExportScope, type EstimateInput,
-  type EstimateListItem, type EstimateParamLog, type EstimateParamLogEffective, type EstimateSnapshot, type EstimateSource, type EstimatesResponse,
+  type EstimateListItem, type EstimateParamLog, type EstimateParamLogEffective, type EstimateSnapshot, type EstimateSource, type EstimatesResponse, type EstimatesSettingMeta,
   type RowDrift, type SnapshotDiff, type WhatIfResponse,
 } from '../api/estimates';
 import { saveBlob } from '../utils/download';
@@ -581,6 +581,16 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
   const [paramLogs, setParamLogs] = useState<EstimateParamLog[]>([]);
   const [paramLogLabels, setParamLogLabels] = useState<Record<string, string>>({});
   const [paramLogsError, setParamLogsError] = useState('');
+  // ---------- T02699（§3.3 八键参数编辑器）----------
+  /** 八键标签/类型/键名单源（来自 `GET /meta`），前端不抄名单；`null` 表示 meta 还没回读 */
+  const [settingMeta, setSettingMeta] = useState<EstimatesSettingMeta | null>(null);
+  /** 八键当前可编辑值（dbKey→字符串），初始化自 `GET /params` 的 `values`；与 `paramValues` 同源但可编辑 */
+  const [paramDrafts, setParamDrafts] = useState<Record<string, string>>({});
+  /** `GET /params` 回读的「原始值」，保存时只 PUT 与草稿不同的键（避免空打 + 避免误留痕） */
+  const [paramValues, setParamValues] = useState<Record<string, string>>({});
+  const [paramSaveBusy, setParamSaveBusy] = useState(false);
+  const [paramSaveMsg, setParamSaveMsg] = useState('');
+  const [paramSaveErr, setParamSaveErr] = useState('');
   /** 同一格同一个被拒值不重复打接口（失焦是常态，否则一次错误输入会刷 N 次 400） */
   const rejectedSent = useRef<Set<string>>(new Set());
 
@@ -643,6 +653,10 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
       const [p, meta] = await Promise.all([estimatesApi.getParams(projectId), estimatesApi.getSettingMeta()]);
       setParamLogs(p.logs);
       setParamLogLabels(meta.settingLabels);
+      // T02699：八键编辑器需要的当前值与类型表，同样只从服务端取（前端不抄名单）
+      setSettingMeta(meta);
+      setParamValues(p.values ?? {});
+      setParamDrafts(p.values ?? {});
       setParamLogsError('');
     } catch (e) {
       setParamLogs([]);
@@ -651,6 +665,31 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
     }
   }, [projectId]);
   useEffect(() => { void loadParamLogs(); }, [loadParamLogs]);
+
+  /** §3.3 八键写入（T02699）：只 PUT 与原始值不同的键；写后重读参数与历史、并刷新主面板派生报价 */
+  const saveParams = useCallback(async (): Promise<void> => {
+    setParamSaveBusy(true);
+    setParamSaveMsg('');
+    setParamSaveErr('');
+    try {
+      const settings: Record<string, string> = {};
+      for (const [dbKey, draft] of Object.entries(paramDrafts)) {
+        if (paramValues[dbKey] !== draft) settings[dbKey] = draft;
+      }
+      if (Object.keys(settings).length === 0) {
+        setParamSaveMsg('没有改动');
+        return;
+      }
+      const r = await estimatesApi.putParams(projectId, settings);
+      // 写后重读：刷新草稿/原始值/历史，并刷新主面板派生报价（参数变了，Σ 与试算口径会变）
+      await Promise.all([loadParamLogs(), load()]);
+      setParamSaveMsg(`已保存 ${Object.keys(settings).length} 项（留痕 ${r.logged} 条）`);
+    } catch (e) {
+      setParamSaveErr(errMsg(e));
+    } finally {
+      setParamSaveBusy(false);
+    }
+  }, [projectId, paramDrafts, paramValues, loadParamLogs, load]);
 
   const rows = useMemo(
     () => buildPanelRows(plans, data?.items ?? [], derives, data?.summary.rowRatios ?? [], reqNosByPlan),
@@ -1511,7 +1550,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4, flexWrap: 'wrap' }}>
                 <button type="button" className="tbtn-anim" style={toolBtn('accent', whatIfBusy || !(coefTouched || rowTouched))}
                   disabled={whatIfBusy || !(coefTouched || rowTouched)} onClick={() => void runWhatIf()}
-                  title="改系数或改勾选行 P 后点它：只算不写（服务端 what-if），要真改参数请去导出区上方的参数入口">
+                  title="改系数或改勾选行 P 后点它：只算不写（服务端 what-if），要真改全局参数请用上方「估算参数」编辑区">
                   试算
                 </button>
                 {!(coefTouched || rowTouched) && <span style={{ color: 'var(--text-muted)' }}>先改一个系数或某行 P</span>}
@@ -1548,7 +1587,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '14px 0 2px' }}>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>明细（O / M / P / E / σ）</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-            已计入 Σ {s.countedKeys.length} 行 · 未录入 {rc.excluded.unEstimated} 行
+            已计入 Σ {s.countedKeys.length} 行 · 排除 {rc.excluded.subtotal + rc.excluded.milestone + rc.excluded.unEstimated} 行（小计 {rc.excluded.subtotal} · 里程碑 {rc.excluded.milestone} · 未录入 {rc.excluded.unEstimated}）
           </div>
         </div>
         {/* §5.4 区间条图例：没有它，那条短线就是一个没人能自证含义的图形。
@@ -1646,6 +1685,58 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             ))}
           </div>
         )}
+
+        {/* 6a) 估算参数编辑器（§3.3 · T02699）：八键走 `PUT /api/estimates/params`，
+            标签/类型/当前值均来自服务端（/meta + /params），前端不抄名单；保存即落库 + 留痕（§12-R1）。 */}
+        <section aria-label="估算参数编辑器" style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span>估算参数（§3.3）</span>
+            <button type="button" className="tbtn-anim" style={toolBtn()} onClick={() => void loadParamLogs()}
+              aria-label="刷新参数与改值历史" title="重读当前参数（不影响草稿）与改值历史">刷新</button>
+          </div>
+          <div role="note" style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6, lineHeight: 1.5 }}>
+            ⚠ 改这里的参数会写入审计日志（见下方「改值历史」），并影响所有派生报价——内部版/客户版导出都按这些数算，请确认后再保存。
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {(settingMeta ? Object.entries(settingMeta.settingKeys) : []).map(([logical, dbKey]) => {
+              const label = settingMeta!.settingLabels[dbKey] ?? logical;
+              const type = settingMeta!.settingTypes[dbKey] ?? 'number';
+              const value = paramDrafts[dbKey] ?? '';
+              if (type === 'boolean') {
+                return (
+                  <label key={dbKey} title={label}
+                    style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={value === '1'}
+                      onChange={(e) => setParamDrafts((p) => ({ ...p, [dbKey]: e.target.checked ? '1' : '0' }))} />
+                    <span>{label}</span>
+                  </label>
+                );
+              }
+              const isRatio = type === 'text';
+              return (
+                <label key={dbKey} title={label}
+                  style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)' }}>
+                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+                  <input
+                    type={isRatio ? 'text' : 'number'}
+                    {...(type === 'number' ? { step: 'any', min: 0 } : {})}
+                    value={value}
+                    onChange={(e) => setParamDrafts((p) => ({ ...p, [dbKey]: e.target.value }))}
+                    style={{ width: isRatio ? 96 : 72, textAlign: 'right', fontFamily: MONO, fontSize: 12, padding: '1px 2px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
+                  />
+                </label>
+              );
+            })}
+          </div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
+            <button type="button" className="tbtn-anim" style={toolBtn('accent', paramSaveBusy)}
+              disabled={paramSaveBusy} onClick={() => void saveParams()}>
+              {paramSaveBusy ? '保存中…' : '保存参数'}
+            </button>
+            {paramSaveMsg && <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{paramSaveMsg}</span>}
+            {paramSaveErr && <span role="alert" style={{ color: 'var(--danger)', fontSize: 11 }}>{paramSaveErr}</span>}
+          </div>
+        </section>
 
         {/* 6b) 改值历史（§11-E13 · §12-R1 后半，T02624）：留痕数据源只有 `GET /params` 的 `logs`
             这一面（T02120 的设计约束），键名标签走 `/meta` 的 `settingLabels` 单源，排序/条数

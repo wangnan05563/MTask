@@ -155,6 +155,8 @@ export interface EstimateParamsResponse {
   projectId: string;
   settings: Record<string, string | null>;
   config: EstimateConfigView;
+  /** §3.3 八键当前可编辑字符串值（dbKey→值，T02699）；无此字段的旧服务端返回时编辑器空态自保 */
+  values?: Record<string, string>;
   defaults: EstimateConfigView;
   caseWeightK: number;
   logs: EstimateParamLog[];
@@ -164,6 +166,8 @@ export interface EstimateParamsResponse {
 export interface EstimatesSettingMeta {
   settingKeys: Record<string, string>;
   settingLabels: Record<string, string>;
+  /** §3.3 八键 UI 类型（T02699）：number/boolean/text，前端据此渲染输入控件，不抄名单 */
+  settingTypes: Record<string, 'number' | 'boolean' | 'text'>;
   coefSettingKeys: Record<string, string>;
   coefLabels: Record<string, string>;
 }
@@ -405,6 +409,19 @@ export const estimatesApi = {
     api.get<EstimateParamsResponse>(`/estimates/params?projectId=${encodeURIComponent(projectId)}`),
   /** §9 标签单源：八键中文标签从这里出，改值历史显示键名时不硬编码 `estimate.xxx` */
   getSettingMeta: () => api.get<EstimatesSettingMeta>('/estimates/meta'),
+  /**
+   * §3.3 八键参数写入（T02699）：把编辑器里改动的键（dbKey→字符串值）整包 PUT，
+   * 服务端做校验 + 留痕（§12-R1）后落库；空串表示回落默认（由服务端解释）。
+   * 仅返回落库结果，改值历史与当前值需再 `getParams` 回读——与 `getParams` 同消费面。
+   */
+  putParams: (projectId: string, settings: Record<string, string>) =>
+    api.put<{
+      saved: Record<string, string>;
+      cleared: string[];
+      config: EstimateConfigView;
+      caseWeightK: number;
+      logged: number;
+    }>('/estimates/params', { projectId, settings }),
   /** 三档推导：默认 dryRun 预览（§4.6 红线「人工行不可被规则覆盖」由服务端判定，前端只转录） */
   derivePreview: (projectId: string, opts: BatchDeriveOptions = {}) =>
     api.post<DeriveResponse>('/estimates/derive', {

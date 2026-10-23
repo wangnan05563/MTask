@@ -1505,6 +1505,7 @@ ${a.result}`;
         sumRatio: r3(su.ratioCheck.sumRatio),
         deviationPct: r3(su.ratioCheck.deviationPct),
         danger: su.ratioCheck.danger,
+        excluded: su.ratioCheck.excluded,
         coverage: s.checks.coverage,
         estimated: s.checks.estimated,
         visiblePlans: s.checks.visiblePlans,
