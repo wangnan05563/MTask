@@ -19,7 +19,7 @@ import {
   type ReportData,
   type SummaryPeriod,
 } from './ReportService';
-import { assertCustomRange, assessEventCoverage, DAY_MS, type CustomRange, type EventCoverage } from './summaryPptPeriod';
+import { assertCustomRange, assertSummaryPeriod, assessEventCoverage, DAY_MS, type CustomRange, type EventCoverage } from './summaryPptPeriod';
 
 // ---------- 校验项形状 ----------
 
@@ -65,17 +65,6 @@ export const MIN_PLAN_DATE_RATE = 0.6;
 export const MIN_MILESTONES = 1;
 export const MIN_REQUIREMENTS = 3;
 export const MIN_PRD_DOCS = 1;
-
-const SUMMARY_PERIODS: SummaryPeriod[] = ['day', 'week', 'month', 'custom'];
-
-/** `period` 入参守卫：非枚举值点名，不静默回落日报 */
-function assertPeriod(period: unknown): SummaryPeriod {
-  const p = typeof period === 'string' ? period : '';
-  if (!SUMMARY_PERIODS.includes(p as SummaryPeriod)) {
-    throw new Error(`period 仅支持 ${SUMMARY_PERIODS.join('/')}，当前为「${p || '空'}」`);
-  }
-  return p as SummaryPeriod;
-}
 
 function rate(n: number, d: number): number {
   return d === 0 ? 0 : n / d;
@@ -462,9 +451,18 @@ export function buildSummaryPreflight(b: SummaryBundle): SummaryPreflightResult 
   };
 }
 
+/**
+ * 生成前硬阻塞守卫（S3 大纲与 S5 流式共用）：S1/S2 fail 时拒，绕过面板也拦得住。
+ * 文案单源——两处入口各抄一份会在改阈值时漂成两句话。
+ */
+export function assertSummaryNotBlocked(preflight: SummaryPreflightResult): void {
+  if (!preflight.blocked) return;
+  throw new Error(`资料不足，不能生成总结汇报稿：${preflight.missingHard.join('、')} 缺失——请先补齐周期内活动数据与项目计划`);
+}
+
 /** 前置校验入口（端点 `GET /api/plans/summary-preflight` 的唯一被调方） */
 export function summaryPreflight(period: unknown, projectIds?: string[], custom?: CustomRange): SummaryPreflightResult {
-  const p = assertPeriod(period);
+  const p = assertSummaryPeriod(period);
   const { ids, error } = validateProjectIds(projectIds);
   if (error) throw new Error(error);
   if (p === 'custom') {

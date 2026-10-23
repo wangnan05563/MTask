@@ -4,6 +4,7 @@ import { TestCaseService } from '../services/TestCaseService'; // T01484：测�
 import { assertOutlineShape, kickoffOutline, preflight, kickoffPptStream } from '../services/kickoffService'; // T02095/T02096/T02103：启动会 PPT 前置校验、大纲与 SSE 流式生成
 import { summaryPreflight } from '../services/summaryPptService'; // T02853（六期 S2）：总结汇报 PPT 前置校验聚合 S1~S9
 import { summaryOutline } from '../services/summaryPptOutline'; // T02854（六期 S3）：总结汇报 PPT 大纲段（提示词 + schema 校验）
+import { prepareSummaryPptStream, renderSummaryPptStream } from '../services/summaryPptStream'; // T02856（六期 S5）：总结汇报 PPT 流式装配 + 下载令牌
 import { safeExportName } from '../util/export-name'; // T02104：导出文件名单源（与下载白名单同源）
 import { discardReport } from '../services/ReportService'; // T02144：中止且 done 未送达时当场回收落盘令牌
 import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput, DraftCaseImport, DraftReqImport } from '../services/TestCaseService';
@@ -105,6 +106,74 @@ planApi.post('/summary-ppt-outline', (req, res) => {
   })
     .then((r) => res.json(r))
     .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
+});
+
+/**
+ * T02856（六期 S5）：阶段性总结汇报 PPT 流式生成（第 2 段）。事件形态与 `/kickoff-ppt-stream`
+ * 同构：`stage {msg}`（逐页）/ `done {token, fileName, pageCount, warnings[], projects[], degradedPages[]}` / `error {error}`。
+ * 与启动会的差别：备料（周期/范围/阻塞/大纲）全部在 SSE 头之前完成，参数错直接结构化 400，
+ * 不让前端在流里猜「是模型没用还是参数不对」。
+ */
+planApi.post('/summary-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: true }), async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const scope = csvList(b.projectIds) ?? (optStr(b.projectId) ? [optStr(b.projectId)!] : undefined);
+  let prepared: ReturnType<typeof prepareSummaryPptStream>;
+  try {
+    prepared = prepareSummaryPptStream({
+      period: b.period,
+      projectIds: scope,
+      custom: { start: optStr(b.start), end: optStr(b.end) },
+      outline: b.outline,
+      mode: b.mode,
+      workloadCaliber: b.workloadCaliber,
+    });
+  } catch (e) {
+    return res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+  let closed = false;
+  const send = (event: string, payload: unknown) => {
+    if (closed || res.writableEnded) return;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+  };
+  // 必须监听 res 的 close（同 T00838：req 的 close 会在请求体读完后提前触发，监听 req 会把 stage/done 全误丢）
+  const ac = new AbortController();
+  // T02144 同族：done 已发出后用户不下载是正常放弃（开流/清扫兜底）；
+  // 只有「已落盘但 done 没送出去」的断开才当场回收，既不留孤儿也不误删待下载文件
+  let issuedToken: string | undefined;
+  let doneSent = false;
+  res.on('close', () => {
+    closed = true;
+    ac.abort();
+    if (issuedToken && !doneSent) discardReport(issuedToken);
+  });
+
+  try {
+    const r = await renderSummaryPptStream(prepared, (msg) => send('stage', { msg }), ac.signal);
+    issuedToken = r.token;
+    // close 可能早于 promise 落地：此时不补删就成孤儿（close 那次已跑完）
+    if (closed || res.writableEnded) {
+      discardReport(r.token);
+      issuedToken = undefined;
+      return;
+    }
+    send('done', {
+      token: r.token,
+      fileName: r.fileName,
+      pageCount: r.pageCount,
+      warnings: r.warnings,
+      projects: r.projects,
+      degradedPages: r.degradedPages,
+    });
+    doneSent = true;
+  } catch (e) {
+    send('error', { error: e instanceof Error ? e.message : String(e) });
+  }
+  res.end();
 });
 
 // T02096 §2.2：启动会 PPT 大纲（1 次 askJson + schema 校验；不合规则触发自带重试后 400）

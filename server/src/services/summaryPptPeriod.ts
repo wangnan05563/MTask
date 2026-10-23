@@ -16,9 +16,22 @@
  * S4/S5 装配器渲染 `footnote`（T02855/T02856）——三处都用这里的同一串文案，不许各抄一份。
  */
 import { readEventRetentionDays } from './EventRetention';
+import type { SummaryPeriod } from './ReportService';
 
 /** 一天毫秒数（本模块内所有「天」换算的唯一口径） */
 export const DAY_MS = 24 * 60 * 60_000;
+
+/** 汇报周期枚举（PRD FR-2.1；四档口径单源——入口守卫不许悄悄回落到月报） */
+export const SUMMARY_PERIODS: readonly SummaryPeriod[] = ['day', 'week', 'month', 'custom'] as const;
+
+/** 周期入参守卫：非枚举值点名报错（`periodRange` 对未知值会按兜底走月报，不能拿它当校验） */
+export function assertSummaryPeriod(period: unknown): SummaryPeriod {
+  const p = typeof period === 'string' ? period : '';
+  if (!(SUMMARY_PERIODS as readonly string[]).includes(p)) {
+    throw new Error(`period 仅支持 ${SUMMARY_PERIODS.join('/')}，当前为「${p || '空'}」`);
+  }
+  return p as SummaryPeriod;
+}
 
 /**
  * 自定义汇报周期跨度上限（天）——PRD FR-2.1 修订 B1 从原稿 92 收到 90，

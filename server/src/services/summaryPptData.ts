@@ -21,6 +21,7 @@ import { milestoneChildStats } from './milestoneProgress';
 import {
   buildSummaryPreflight,
   gatherSummaryBundle,
+  type SummaryBundle,
   type SummaryPreflightResult,
 } from './summaryPptService';
 import type { CustomRange } from './summaryPptPeriod';
@@ -194,6 +195,8 @@ export interface GatherDeckOptions {
   workloadCaliber?: WorkloadCaliber;
   /** 注入「今天」（门禁夹具用）；缺省当前时间 */
   now?: Date;
+  /** 已采集的 bundle（S5 流式链路复用，避免为校验与装配各跑一遍全量取数）；缺省自行采集 */
+  bundle?: SummaryBundle;
 }
 
 // ---------- 小工具 ----------
@@ -420,7 +423,7 @@ export function gatherSummaryDeckData(
   custom?: CustomRange,
   opts: GatherDeckOptions = {},
 ): SummaryDeckData {
-  const bundle = gatherSummaryBundle(period, projectIds, custom);
+  const bundle = opts.bundle ?? gatherSummaryBundle(period, projectIds, custom);
   const db = getDb();
   const now = opts.now ?? new Date();
   const today = ymd(now);

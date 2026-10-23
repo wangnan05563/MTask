@@ -12,8 +12,9 @@
 import { AIService } from './AIService';
 import { parseAiJson } from './kickoffService';
 import { periodRange, periodLabelOf, validateProjectIds, type ReportData, type SummaryPeriod } from './ReportService';
-import { assertCustomRange, type CustomRange } from './summaryPptPeriod';
+import { assertCustomRange, assertSummaryPeriod, type CustomRange } from './summaryPptPeriod';
 import {
+  assertSummaryNotBlocked,
   buildSummaryPreflight,
   gatherProjectFacts,
   gatherSummaryBundle,
@@ -367,20 +368,6 @@ export interface SummaryOutlineResult {
   budget: { total: number; perProject: number; chars: Array<{ id: string; name: string; chars: number }> };
 }
 
-const PERIODS: SummaryPeriod[] = ['day', 'week', 'month', 'custom'];
-
-function assertPeriod(period: unknown): SummaryPeriod {
-  const p = typeof period === 'string' ? period : '';
-  if (!PERIODS.includes(p as SummaryPeriod)) throw new Error(`period 仅支持 ${PERIODS.join('/')}，当前为「${p || '空'}」`);
-  return p as SummaryPeriod;
-}
-
-/** 服务端二次拦截：S1/S2 硬阻塞时拒（与面板置灰同源，绕过面板也拦得住） */
-function guardBlocked(preflight: ReturnType<typeof buildSummaryPreflight>): void {
-  if (!preflight.blocked) return;
-  throw new Error(`资料不足，不能生成总结汇报稿：${preflight.missingHard.join('、')} 缺失——请先补齐周期内活动数据与项目计划`);
-}
-
 /**
  * S3 入口：采集 → 拦截 → 拼提示词 → askJson（temperature=0，自带 1 次重试）→ 校验 → 返回。
  * 任何一次失败都不落库、不生成文件（本单只产大纲，装配在 S4）。
@@ -388,7 +375,7 @@ function guardBlocked(preflight: ReturnType<typeof buildSummaryPreflight>): void
 export async function summaryOutline(params: SummaryOutlineParams): Promise<SummaryOutlineResult> {
   const toolId = asText(params.toolId);
   if (!toolId) throw new Error('toolId 必填（大纲生成需要模型工具）');
-  const period = assertPeriod(params.period);
+  const period = assertSummaryPeriod(params.period);
   const { ids, error } = validateProjectIds(params.projectIds);
   if (error) throw new Error(error);
   if (period === 'custom') {
@@ -400,7 +387,7 @@ export async function summaryOutline(params: SummaryOutlineParams): Promise<Summ
 
   const bundle: SummaryBundle = gatherSummaryBundle(period, ids, params.custom);
   const preflight = buildSummaryPreflight(bundle);
-  guardBlocked(preflight);
+  assertSummaryNotBlocked(preflight);
   const facts = gatherProjectFacts(period, bundle.projectIds, params.custom, bundle.report);
   const prompt = buildOutlinePrompt({
     period,
