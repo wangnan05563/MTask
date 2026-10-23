@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api, type Project, type AITool } from '../api/client';
 import { ProjectListHint, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
+import { ProjectScopePicker, scopeSummary } from '../ui/projectScopePicker'; // T02857：范围多选器提到 ui 层（总结汇表面板复用同一份）
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：开关状态取数改走可见失败态层
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import { reportStream, useReportStream } from '../reportStream';
@@ -11,14 +12,16 @@ import { PrdImportPanel } from './PrdImportPanel'; // T00662：从 PRD 导入项
 import { PrdGenPanel } from './PrdGenPanel'; // T00769：原始需求生成 PRD
 import { TestCaseGenPanel } from './TestCaseGenPanel'; // T01492：从 PRD 生成测试用例
 import { KickoffPptPanel } from './KickoffPptPanel'; // T02108：项目启动会 PPT 工作面板
+import { SummaryPptPanel } from './SummaryPptPanel'; // T02857：阶段性项目总结汇报 PPT 工作面板
 import { useSessionState } from '../ui/session';
 import { usePrdGen } from '../stores/prdGenStore'; // T01038：PRD 生成卡片统一运行状态
 import { useTestCaseGen } from '../stores/testCaseGenStore'; // T01492：测试用例生成卡片运行状态
 import { useKickoffPpt } from '../stores/kickoffPptStore'; // T02109：启动会 PPT 卡片运行状态
+import { useSummaryPpt } from '../stores/summaryPptStore'; // T02857：总结汇报 PPT 卡片运行状态
 import { aiImportStore } from '../stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 import { RunStatusBadge, type RunStatus } from '../ui/runStatus'; // T01038：统一运行状态徽标
 import { FlowButton } from '../ui/FlowButton'; // T01068-FR4.4：流光按钮（loading 态）
-import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation, ChevronDown } from 'lucide-react';
+import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation, FileChartColumn } from 'lucide-react';
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CARD } from '../ui/consoleReset'; // T01042：卡片侧重置入口（与控制台重置共用核心）
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
 import { focusTaskByNo } from '../ui/focusTask'; // T01057 建议：就绪任务跳转按编号定位（跨项目可命中）
@@ -44,11 +47,6 @@ const FORMATS = [
 ] as const;
 
 type ReportFormat = 'xlsx' | 'docx' | 'pdf' | 'pptx';
-/**
- * T02165：一次聚合的项目数上限——与 server `REPORT_PROJECT_MAX` 同值。
- * 前端用它把超限的复选项置灰，后端仍是最终裁决（直接打接口时返回可读 400）。
- */
-const REPORT_PROJECT_MAX = 8;
 /** 标准版式按输出格式对应的内置 skill 生成 */
 const SKILL_BY_FORMAT: Record<ReportFormat, string> = { xlsx: 'xlsx-trae', docx: 'docx-trae', pdf: 'pdf-trae', pptx: 'pptx-trae' };
 
@@ -248,116 +246,17 @@ function legacyProjectScope(): string[] {
   }
 }
 
-/**
- * 范围摘要文案：0 个=全部项目，1 个=项目名，多个=「A + B 等 N 个项目」。
- * T02165：多选器、生成按钮文案、AI 控制台回显共用一份，避免三处各写一种范围写法。
- */
-function scopeSummary(names: string[]): string {
-  if (names.length === 0) return '全部项目';
-  if (names.length === 1) return names[0];
-  return `${names[0]} + ${names[1]}${names.length > 2 ? ` 等 ${names.length} 个项目` : ''}`;
-}
-
-/** 勾选顺序即报表里的项目分块顺序，序号徽标让它可见（后端按同一顺序聚合） */
-const scopeRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '4px 6px', borderRadius: 6, cursor: 'pointer', fontSize: 13, minWidth: 0 };
-
-/**
- * T02165：项目范围多选器（替换原「项目范围」单选 select）。
- * 触发钮摘要：未勾选 = 全部项目（旧默认口径）；1 个 = 项目名；多个 = 「A + B 等 N 个项目」。
- * 面板是复选框列表 + 「全部项目（不限范围）」清除项；勾选顺序即后端分块顺序，用序号徽标显式回显。
- * 宽度收缩沿用 T02167 口径：宿主 minWidth:0、名称单行省略、徽标与箭头 flexShrink:0——
- * 否则窄窗口下中文项目名会把触发钮撑成竖排。
- */
-function ProjectScopePicker({ projects, value, onChange }: {
-  readonly projects: Project[];
-  readonly value: string[];
-  readonly onChange: (ids: string[]) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const hostRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (hostRef.current && !hostRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [open]);
-
-  const nameOf = (id: string) => projects.find((p) => p.id === id)?.name ?? id;
-  const summary = scopeSummary(value.map(nameOf));
-
-  function toggle(id: string) {
-    // 取消勾选直接移出；新增受 REPORT_PROJECT_MAX 约束（面板已满时该项置灰，见 disabled）
-    if (value.includes(id)) { onChange(value.filter((x) => x !== id)); return; }
-    if (value.length >= REPORT_PROJECT_MAX) return;
-    onChange([...value, id]);
-  }
-
-  return (
-    <div ref={hostRef} style={{ position: 'relative', minWidth: 0 }}>
-      <button
-        onClick={() => setOpen((v) => !v)}
-        title={`项目范围：${value.length ? summary : '全部项目（不限范围）'} — 可勾选 2~${REPORT_PROJECT_MAX} 个项目聚合生成`}
-        aria-label="项目范围：选择要聚合的项目（多选）"
-        aria-expanded={open}
-        style={{ ...fieldStyle, display: 'flex', alignItems: 'center', gap: 6, width: '100%', maxWidth: '100%', minWidth: 0, cursor: 'pointer', textAlign: 'left', boxSizing: 'border-box' }}
-      >
-        <span style={{ flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{summary}</span>
-        <span style={{ flex: '1 1 auto' }} />
-        <span style={{ flexShrink: 0, fontSize: 11, color: 'var(--text-muted)' }}>{value.length ? `${value.length}/${REPORT_PROJECT_MAX}` : '不限'}</span>
-        <ChevronDown size={12} style={{ flexShrink: 0 }} />
-      </button>
-      {open && (
-        <div style={{
-          position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 30, boxSizing: 'border-box',
-          minWidth: 240, maxWidth: 'min(360px, calc(100vw - 24px))', maxHeight: 280, overflowY: 'auto',
-          border: '1px solid var(--border-strong)', borderRadius: 8, background: 'var(--card-bg)',
-          color: 'var(--text)', boxShadow: '0 6px 18px rgba(0,0,0,.14)', padding: 6,
-        }}>
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={() => onChange([])}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onChange([]); } }}
-            style={{ ...scopeRowStyle, color: value.length === 0 ? 'var(--accent)' : 'var(--text-muted)', fontWeight: value.length === 0 ? 600 : 400 }}
-          >
-            <X size={12} style={{ flexShrink: 0 }} />
-            <span>全部项目（不限范围）</span>
-          </div>
-          {projects.map((p) => {
-            const idx = value.indexOf(p.id);
-            const checked = idx >= 0;
-            // 已达上限时未勾选项置灰而非静默失效（后端同上限会 400，前端提前拦住更直观）
-            const blocked = !checked && value.length >= REPORT_PROJECT_MAX;
-            return (
-              <label key={p.id} style={{ ...scopeRowStyle, opacity: blocked ? 0.45 : 1, cursor: blocked ? 'not-allowed' : 'pointer' }}>
-                <input type="checkbox" checked={checked} disabled={blocked} onChange={() => toggle(p.id)}
-                  aria-label={`纳入项目 ${p.name}`} style={{ flexShrink: 0, cursor: 'pointer' }} />
-                <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
-                {checked && (
-                  <span title="勾选顺序（报表按此顺序分块）" style={{ flexShrink: 0, fontSize: 11, color: 'var(--accent)' }}>{idx + 1}</span>
-                )}
-              </label>
-            );
-          })}
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 6px 0' }}>
-            {value.length === 0 ? '未勾选任何项目：按全部项目聚合（与单选「全部项目」一致）'
-              : `已选 ${value.length} 个，最多 ${REPORT_PROJECT_MAX} 个；报表头部与 AI 提示会标注该范围`}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 /** 三块 AI 工作面板的条件渲染（S3776：条件块下沉为独立组件） */
-function ReportWorkPanels({ aiToolId, projectId, scopeNote, showKickoffPpt, closeKickoffPpt, openCard, showPrdGen, closePrdGen, prdGenSaved, showTcGen, closeTcGen, tcImported, showPrdImport, closePrdImport, prdImportSaved, showAiImport, closeAiImport, aiImportSaved, prdImportKey }: {
+function ReportWorkPanels({ aiToolId, projectId, projectIds, projects, scopeNote, showKickoffPpt, closeKickoffPpt, showSummaryPpt, closeSummaryPpt, openCard, showPrdGen, closePrdGen, prdGenSaved, showTcGen, closeTcGen, tcImported, showPrdImport, closePrdImport, prdImportSaved, showAiImport, closeAiImport, aiImportSaved, prdImportKey }: {
   readonly aiToolId: string;
   readonly projectId: string;
+  /** T02857：总结汇表面板默认消费顶部多选范围（空=全部项目），与 kickoff 的单项目口径不同 */
+  readonly projectIds: string[];
+  readonly projects: Project[];
   /** T02190：多项目范围时单项目工件卡片的明示文案（见 ReportPage 的 singleScopeNote） */
   readonly scopeNote: string;
   readonly showKickoffPpt: boolean; readonly closeKickoffPpt: () => void;
+  readonly showSummaryPpt: boolean; readonly closeSummaryPpt: () => void;
   /** T02108：启动会校验清单的「去补充」深链落到本页对应能力卡片（report?card=prd-import / tc-gen） */
   readonly openCard: (key: 'prd-import' | 'tc-gen') => void;
   readonly showPrdGen: boolean; readonly closePrdGen: () => void; readonly prdGenSaved: (r: { issues: number }) => void;
@@ -372,6 +271,10 @@ function ReportWorkPanels({ aiToolId, projectId, scopeNote, showKickoffPpt, clos
       {/* T02108（PRD §5.2）：项目启动会 PPT 面板（第 7 张卡）——逐页装配日志走右侧控制台，停止/重置已接进控制台链 */}
       {showKickoffPpt && (
         <KickoffPptPanel projectId={projectId} toolId={aiToolId} onClose={closeKickoffPpt} openCard={openCard} scopeNote={scopeNote} />
+      )}
+      {/* T02857（PRD-阶段性项目总结汇报PPT §3.1 FR-1.3）：第 8 张卡——默认跟随顶部多选范围（A-6 例外仅限本卡片） */}
+      {showSummaryPpt && (
+        <SummaryPptPanel projectIds={projectIds} projects={projects} toolId={aiToolId} onClose={closeSummaryPpt} openCard={openCard} />
       )}
       {/* T01492：从 PRD 生成测试用例面板（日志/正文同走右侧控制台；停止已接进控制台 stopAll） */}
       {showTcGen && (
@@ -469,6 +372,8 @@ export function ReportPage() {
   // T02107（PRD FR-1.3）：项目启动会 PPT 面板展开态（第 7 张卡）——同样走会话级持久化，
   // 生成是分钟级长任务，切页返回必须回到展开态，否则用户看不到进行中的大纲与进度
   const [showKickoffPpt, setShowKickoffPpt] = useSessionState('report.showKickoffPpt', false);
+  // T02857：阶段性项目总结汇报 PPT 面板展开态（第 8 张卡，互斥）——分钟级长任务，切页返回要回到展开态
+  const [showSummaryPpt, setShowSummaryPpt] = useSessionState('report.showSummaryPpt', false);
   // T00908：「已上传 PRD 文档」弹层展开态 + 导入面板强制重挂载计数（选择文档后递增 key 触发面板重挂，
   //          使 useSessionState 重新读取 sessionStorage 中的目标项目与 docId，保证自动带入生效）
   const [prdDocsOpen, setPrdDocsOpen] = useState(false);
@@ -485,6 +390,7 @@ export function ReportPage() {
   const prdSnap = usePrdGen();
   const tcSnap = useTestCaseGen(); // T01492：测试用例生成卡片运行状态供徽标共用
   const kfSnap = useKickoffPpt(); // T02109：启动会 PPT 卡片运行状态供徽标共用
+  const sumSnap = useSummaryPpt(); // T02857：总结汇报 PPT 卡片运行状态供徽标共用
   const aiImp = useSyncExternalStore(aiImportStore.subscribe, aiImportStore.getSnapshot);
 
   const flash = (m: string) => {
@@ -532,11 +438,13 @@ export function ReportPage() {
     prdGen: setShowPrdGen,
     tcGen: setShowTcGen,
     kickoffPpt: setShowKickoffPpt,
+    summaryPpt: setShowSummaryPpt,
   } as const;
   type PanelKey = keyof typeof panelSetters;
   const panelOpen: Record<PanelKey, boolean> = {
     aiImport: showAiImport, offline: showOffline, aiLive: showAiLive, prdImport: showPrdImport, prdGen: showPrdGen, tcGen: showTcGen,
     kickoffPpt: showKickoffPpt,
+    summaryPpt: showSummaryPpt,
   };
   /** 点击卡片：已展开则收起，否则只展开它（其余全部收起） */
   function togglePanel(key: PanelKey) {
@@ -629,6 +537,15 @@ export function ReportPage() {
       open: showKickoffPpt,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('kickoffPpt') },
+    // T02857（PRD-阶段性项目总结汇报PPT §3.1 FR-1.1）：第 8 张卡——文案逐字取 PRD 口径；
+    // 与 kickoff 的单项目口径不同，本卡片的多项目合并产物是 T02190 的首个例外（A-6），范围默认跟随顶部选择器
+    { key: 'summary-ppt', icon: <FileChartColumn size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '阶段性项目总结汇报 PPT 生成',
+      desc: withScopeNote('按汇报周期与项目范围自动装配阶段总结汇报材料（原生可编辑 .pptx）',
+        projectIds.length > 1 ? `合并版：${projectIds.length} 个项目将在同一份 deck 内分区呈现` : ''),
+      hint: '周期内至少有 1 个项目有活动数据', aria: '阶段性项目总结汇报 PPT 生成',
+      open: showSummaryPpt,
+      onReset: resetArtifacts,
+      onToggle: () => togglePanel('summaryPpt') },
   ];
 
   // 工作面板开关回调（S3776：从 JSX 内联箭头下沉）
@@ -668,6 +585,8 @@ export function ReportPage() {
         return { status: deriveStatus(tcSnap.streaming, tcSnap.finalElapsed), startedAt: tcSnap.startedAt, finalElapsed: tcSnap.finalElapsed };
       case 'kickoff-ppt':
         return { status: deriveStatus(kfSnap.streaming, kfSnap.finalElapsed), startedAt: kfSnap.startedAt, finalElapsed: kfSnap.finalElapsed };
+      case 'summary-ppt':
+        return { status: deriveStatus(sumSnap.streaming, sumSnap.finalElapsed), startedAt: sumSnap.startedAt, finalElapsed: sumSnap.finalElapsed };
       case 'ai-import':
       case 'prd-import': {
         // 两面板共用同一 store——按运行类型 kind 分流，避免「从 PRD 导入」运行时「AI 项目计划导入」卡片也转圈（2026-09-26 用户反馈）。
@@ -912,8 +831,9 @@ export function ReportPage() {
         })}
       </div>
 
-      <ReportWorkPanels aiToolId={aiToolId} projectId={projectId} scopeNote={scopeNoteOf('本面板')}
+      <ReportWorkPanels aiToolId={aiToolId} projectId={projectId} projectIds={projectIds} projects={projects} scopeNote={scopeNoteOf('本面板')}
         showKickoffPpt={showKickoffPpt} closeKickoffPpt={closeKickoffPpt} openCard={openCard}
+        showSummaryPpt={showSummaryPpt} closeSummaryPpt={() => setShowSummaryPpt(false)}
         showPrdGen={showPrdGen} closePrdGen={closePrdGen} prdGenSaved={prdGenSaved}
         showTcGen={showTcGen} closeTcGen={closeTcGen} tcImported={tcImported}
         showPrdImport={showPrdImport} closePrdImport={closePrdImport} prdImportSaved={prdImportSaved}

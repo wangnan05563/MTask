@@ -5,11 +5,12 @@ import { api, type AITool, type ReqCategory } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
 import { useSessionState } from '../ui/session';
 import { RunStatusBadge } from '../ui/runStatus'; // T01038：统一运行状态徽标（动画图标 + 实时秒数 + 最终耗时）
-import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput, GitCompare, FileUp, FilePlus2, Maximize, PanelLeftOpen, OctagonX, ListChecks, Presentation } from 'lucide-react';
+import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput, GitCompare, FileUp, FilePlus2, Maximize, PanelLeftOpen, OctagonX, ListChecks, Presentation, FileChartColumn } from 'lucide-react';
 import { aiImportStore } from '../stores/aiImportStore';
 import { prdGenStore } from '../stores/prdGenStore'; // T00769 二轮：原始需求生成 PRD 的过程输出
 import { testCaseGenStore } from '../stores/testCaseGenStore'; // T01491：从 PRD 生成测试用例的过程输出
 import { kickoffPptStore } from '../stores/kickoffPptStore'; // T02109：项目启动会 PPT 的逐页装配过程输出
+import { summaryPptStore } from '../stores/summaryPptStore'; // T02857：阶段性总结汇报 PPT 的逐页装配过程输出
 import { reportStream, useReportStream } from '../reportStream'; // T00838：停止按钮需订阅周报流状态
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CONSOLE, CONSOLE_RESET_EVENT } from '../ui/consoleReset'; // T01042：控制台/卡片共用重置核心
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
@@ -91,6 +92,9 @@ const TEST_CASE_GEN_TAB = '__testcasegen__';
 
 /** T02109（PRD FR-1.4）：内置「项目启动会 PPT 生成」tab 固定 id——逐页装配 stage 事件在此实时滚动 */
 const KICKOFF_PPT_TAB = '__kickoffppt__';
+
+/** T02857（PRD-阶段性项目总结汇报PPT FR-1.4）：内置「阶段性项目总结汇报 PPT」tab 固定 id */
+const SUMMARY_PPT_TAB = '__summaryppt__';
 
 /**
  * 自定义 AI 工具选择器：收拢时仅显示已选工具的「模型名」（节省单行空间），
@@ -655,6 +659,9 @@ export function ReportConsole({
   // T02109：订阅启动会 PPT store（逐页装配 stage 在此滚动）
   const kfSnap = useSyncExternalStore(kickoffPptStore.subscribe, kickoffPptStore.get);
   const onKickoffPptTab = activeId === KICKOFF_PPT_TAB;
+  // T02857：订阅总结汇报 PPT store（逐页 stage 在此滚动）
+  const sumSnap = useSyncExternalStore(summaryPptStore.subscribe, summaryPptStore.get);
+  const onSummaryPptTab = activeId === SUMMARY_PPT_TAB;
   const activeTask = tasks.find((t) => t.id === activeId) ?? null;
   const onReportTab = activeId === REPORT_TAB;
   const runningCount = tasks.filter((t) => t.status === 'busy').length;
@@ -670,7 +677,7 @@ export function ReportConsole({
   // T02213：对比任务创建失败的登记簿。此前吞异常后只是「少一个结果 tab」，
   // 用户会以为是该模型没答上来；失败需点名到模型并给重试入口。
   const [compareFailed, setCompareFailed] = useState<CompareJob[]>([]);
-  const canStop = report.streaming || prdSnap.streaming || tcSnap.streaming || kfSnap.streaming || aiSnap.busy || runningCount > 0;
+  const canStop = report.streaming || prdSnap.streaming || tcSnap.streaming || kfSnap.streaming || sumSnap.streaming || aiSnap.busy || runningCount > 0;
 
   // T00839：1s 心跳触发重渲染，使运行中 tab 的「已运行 xx」实时增长（store 变更不会带动计时刷新）
   const [, bumpClock] = useReducer((c: number) => c + 1, 0);
@@ -694,6 +701,8 @@ export function ReportConsole({
       if (tcSnap.streaming) testCaseGenStore.abort();
       // 2c) T02109：启动会 PPT 逐页装配流：abort SSE（后端随 signal 结束装配）
       if (kfSnap.streaming) kickoffPptStore.abort();
+      // 2d) T02857：阶段性总结汇报 PPT 逐页装配流：abort SSE（后端随 signal 结束装配）
+      if (sumSnap.streaming) summaryPptStore.abort();
       // 3) PRD 导入单次请求：本请求未 job 化，前端清 store 结束等待，后端自然结束
       if (aiSnap.busy) aiImportStore.reset();
       // 4) 周报生成流：abort SSE + 清 store
@@ -704,7 +713,7 @@ export function ReportConsole({
     } finally {
       setStopping(false);
     }
-  }, [stopping, tasks, prdSnap.streaming, tcSnap.streaming, kfSnap.streaming, aiSnap.busy, report.streaming]);
+  }, [stopping, tasks, prdSnap.streaming, tcSnap.streaming, kfSnap.streaming, sumSnap.streaming, aiSnap.busy, report.streaming]);
 
   // 阶段日志没有天然 id，按「内容 + 同内容出现序号」派生稳定 key：
   // 追加式日志的前缀条目 key 不变，避免用数组索引作 key 在重排时错误复用 DOM
@@ -749,11 +758,19 @@ export function ReportConsole({
     prevKfLogCount.current = kfLogCount;
   }, [kfLogCount]);
 
+  // T02857：总结汇报 PPT 逐页装配一开始输出 stage 日志就自动切到该 tab（同款机制）
+  const sumLogCount = sumSnap.logs.length;
+  const prevSumLogCount = useRef(0);
+  useEffect(() => {
+    if (sumLogCount > 0 && prevSumLogCount.current === 0) setActiveId(SUMMARY_PPT_TAB);
+    prevSumLogCount.current = sumLogCount;
+  }, [sumLogCount]);
+
   // 正在生成（AI 周报流式或手动任务进行中）时随内容滚到底部，保证流式输出始终跟随最新内容
-  const live = isLive(onReportTab, streaming, streamText, activeTask) || onAiImportTab || onPrdGenTab || onTestCaseGenTab || onKickoffPptTab;
+  const live = isLive(onReportTab, streaming, streamText, activeTask) || onAiImportTab || onPrdGenTab || onTestCaseGenTab || onKickoffPptTab || onSummaryPptTab;
   useEffect(() => {
     if (live) bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
-  }, [live, streamText, streamsLen(activeTask), prdSnap.streamText, prdSnap.logs.length, tcSnap.streamText, tcSnap.logs.length, kfSnap.logs.length]);
+  }, [live, streamText, streamsLen(activeTask), prdSnap.streamText, prdSnap.logs.length, tcSnap.streamText, tcSnap.logs.length, kfSnap.logs.length, sumSnap.logs.length]);
 
   // 统一按 id 局部更新任务字段，避免在并发更新中因闭包持有旧 tasks 而互相覆盖
   const updateTask = useCallback((id: string, patch: Partial<AnalysisTask>) => {
@@ -1046,6 +1063,8 @@ export function ReportConsole({
     if (onTestCaseGenTab) return renderTestCaseGenBody();
     // T02109（PRD FR-1.4）：启动会 PPT tab——逐页装配 stage 日志 + 产物摘要（仿 TEST_CASE_GEN_TAB，无流式正文只有分页进度）
     if (onKickoffPptTab) return renderKickoffPptBody();
+    // T02857（PRD FR-1.4）：阶段性总结汇报 PPT tab——逐页装配 stage 日志 + 产物摘要（同款结构）
+    if (onSummaryPptTab) return renderSummaryPptBody();
     // T00569 三轮：AI 项目计划导入 tab——控制台式滚动输出执行日志（与导入面板深度整合）
     if (onAiImportTab) return renderAiImportBody();
     if (onReportTab) return renderReportBody();
@@ -1125,6 +1144,29 @@ export function ReportConsole({
         ))}
         {!kfSnap.streaming && kfSnap.result && (
           <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「项目启动会 PPT 生成」卡片点击下载（文件名为服务端校验值）。</div>
+        )}
+      </div>
+    );
+  }
+
+  function renderSummaryPptBody() {
+    return (
+      <div>
+        <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+          <FileChartColumn size={13} style={{ color: 'var(--accent)' }} /> 阶段性项目总结汇报 PPT 生成
+          {sumSnap.streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
+          {sumSnap.result && (
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>
+              {sumSnap.result.pageCount} 页 · {sumSnap.result.fileName}
+              {sumSnap.result.warnings.length > 0 ? ` · ⚠ 降级 ${sumSnap.result.warnings.length} 处` : ''}
+            </span>
+          )}
+        </div>
+        {sumSnap.logs.map((l, i) => (
+          <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|失败|错误/.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
+        ))}
+        {!sumSnap.streaming && sumSnap.result && (
+          <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「阶段性项目总结汇报 PPT 生成」卡片点击下载（文件名为服务端校验值）。</div>
         )}
       </div>
     );
@@ -1444,6 +1486,30 @@ export function ReportConsole({
             status={runStatus(kfSnap.streaming, kfSnap.finalElapsed)}
             startedAt={kfSnap.startedAt}
             finalElapsed={kfSnap.finalElapsed}
+            size={10}
+            showLabel={false}
+          />
+        </button>
+      )}
+      {/* T02857（PRD FR-1.4）：阶段性总结汇报 PPT tab——逐页装配 stage 与产物摘要在此实时滚动 */}
+      {(sumSnap.logs.length > 0 || sumSnap.streaming) && (
+        <button
+          onClick={() => setActiveId(SUMMARY_PPT_TAB)}
+          title={sumSnap.streaming
+            ? `总结汇报 PPT 生成中 · 已运行 ${startedElapsedText(sumSnap.startedAt)} · 大纲 ${sumSnap.outline.length} 页（切换卡片不中断，返回即恢复）`
+            : '阶段性项目总结汇报 PPT 生成 — 逐页装配过程与产物摘要在此实时滚动输出'}
+          aria-label="阶段性项目总结汇报 PPT 生成 tab"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+            border: '1px solid var(--border-strong)', ...(onSummaryPptTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
+          }}
+        >
+          <FileChartColumn size={11} />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>总结汇报 PPT</span>
+          <RunStatusBadge
+            status={runStatus(sumSnap.streaming, sumSnap.finalElapsed)}
+            startedAt={sumSnap.startedAt}
+            finalElapsed={sumSnap.finalElapsed}
             size={10}
             showLabel={false}
           />
