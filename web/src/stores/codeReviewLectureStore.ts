@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { clearRun, loadRun, persistRun, type RunStatus } from '../ui/runStatus';
 import type { LectureAnchorRef, LectureDiffProject } from '../utils/lectureDiff';
+import type { LectureMark } from '../utils/lectureMarkup';
 
 /**
  * T02872（六期 3.1，PRD §6.1 三区布局）：代码评审会议讲稿面板的模块级运行态 store。
@@ -11,7 +12,7 @@ import type { LectureAnchorRef, LectureDiffProject } from '../utils/lectureDiff'
  *
  * 字段口径以服务端为单源：`sections`/`anchors`/`stats` 镜像
  * `server/src/services/lectureStream.ts` 的 `LectureStreamResult`。
- * 标记态（采纳/会后跟进/忽略）本期不落库（E-4），属 T02873 范围，这里不预留字段。
+ * 标记态（采纳/会后跟进/忽略）本期不落库（E-4），随 `begin(keepMarks)` 决定是否跨续作保留。
  */
 
 /** 服务端 `LectureOutline` 的前端镜像（大纲段的 key 固定八项，标题/要点可被用户改写） */
@@ -91,9 +92,15 @@ export interface CodeReviewLectureState {
   logs: string[];
   /** 最近一次阶段事件（底部状态条消费：阶段文案 + 进度） */
   stage: { phase: string; msg: string; progress: number } | null;
+  /** 本次/上次生成的大纲（`outline_ready` 即写入：中止后「从第 n 节继续」要靠它补节标题） */
+  outline: LectureOutline | null;
   /** 逐段流式中的实时正文（key=section key；`done` 后以服务端 sections 为准） */
   live: Record<string, string>;
+  /** 各节完成态（`section_done` 事件；失败节是「从第 n 节继续 / 单节重试」的候选） */
+  sectionOk: Record<string, boolean>;
   result: LectureStreamResult | null;
+  /** 三态标记（E-4 不落库：只在本次会话内存里） */
+  marks: Record<string, LectureMark>;
   /** 左栏 diff 视图（POST /plans/code-review-lecture/diff） */
   diff: LectureDiffProject[];
   diffLoading: boolean;
@@ -106,8 +113,11 @@ const initialState = (): CodeReviewLectureState => ({
   streaming: false,
   logs: [],
   stage: null,
+  outline: null,
   live: {},
+  sectionOk: {},
   result: null,
+  marks: {},
   diff: [],
   diffLoading: false,
   diffError: '',
@@ -143,12 +153,24 @@ export const codeReviewLectureStore = {
     clearRun('reviewlecture');
     emit();
   },
+  /**
+   * 「停止」：只掐流，不清状态——已生成的节与大纲必须留着，才能「从第 n 节继续」（PRD §6.2）。
+   * 清空走 `abort()`（卡片重置用）。
+   */
+  stop() {
+    abortCtrl?.abort();
+    abortCtrl = null;
+    emit();
+  },
   reset() {
     codeReviewLectureStore.abort();
   },
-  begin() {
+  begin(keepMarks = false) {
     const startedAt = Date.now();
-    state = { ...state, streaming: true, logs: [], stage: null, live: {}, result: null, startedAt, finalElapsed: undefined };
+    state = {
+      ...state, streaming: true, logs: [], stage: null, live: {}, sectionOk: {}, result: null,
+      marks: keepMarks ? state.marks : {}, startedAt, finalElapsed: undefined,
+    };
     persistRun('reviewlecture', { status: 'running' as RunStatus, startedAt });
     emit();
   },
@@ -163,6 +185,25 @@ export const codeReviewLectureStore = {
   /** `chunk` 增量按节累积 */
   appendLive(section: string, text: string) {
     state = { ...state, live: { ...state.live, [section]: (state.live[section] ?? '') + text } };
+    emit();
+  },
+  setOutline(outline: LectureOutline | null) {
+    state = { ...state, outline };
+    emit();
+  },
+  setSectionOk(section: string, ok: boolean) {
+    state = { ...state, sectionOk: { ...state.sectionOk, [section]: ok } };
+    emit();
+  },
+  setMark(key: string, mark: LectureMark) {
+    const marks = { ...state.marks };
+    if (mark === 'adopt') delete marks[key];
+    else marks[key] = mark;
+    state = { ...state, marks };
+    emit();
+  },
+  resetMarks() {
+    state = { ...state, marks: {} };
     emit();
   },
   setResult(result: LectureStreamResult | null) {

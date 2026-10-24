@@ -12,6 +12,7 @@
  */
 import {
   LECTURE_SECTIONS,
+  LECTURE_SECTION_KEYS,
   assembleLectureMarkdown,
   attachLectureAnchorBlobs,
   generateLectureSection,
@@ -58,6 +59,10 @@ export interface LectureStreamRequest {
   outline?: LectureOutline;
   /** FR-4.1 两段式第一段：只要大纲、不生成正文（同一端点收口，避免第二套采集/上下文口径） */
   outlineOnly?: boolean;
+  /** PRD §6.2「从第 n 节继续」：从该节开始往后生成，之前的节由前端用已保留正文补齐 */
+  resumeFrom?: LectureSectionKey;
+  /** PRD §7.4 单节失败重试：只跑点名的节（与 resumeFrom 互斥时以点名为准） */
+  sectionKeys?: LectureSectionKey[];
   contextBudget?: number;
   maxTokens?: number;
 }
@@ -182,7 +187,25 @@ export function validateLectureStreamBody(body: unknown): LectureStreamRequest {
   const outlineOnly = b.outlineOnly === true;
   if (b.outlineOnly !== undefined && typeof b.outlineOnly !== 'boolean') throw new LectureStreamError('outlineOnly 必须是布尔值');
 
-  return { toolId, projects, excludes, ...(style ? { style } : {}), ...(extraNote ? { extraNote } : {}), ...(title ? { title } : {}), ...(outline ? { outline } : {}), ...(outlineOnly ? { outlineOnly } : {}), ...(contextBudget ? { contextBudget } : {}), ...(maxTokens ? { maxTokens } : {}) };
+  // 「从第 n 节继续」/「单节重试」只决定跑哪几节，不改采集与上下文口径
+  const rawResume = optionString(b.resumeFrom, 'resumeFrom');
+  if (rawResume && !(LECTURE_SECTION_KEYS as string[]).includes(rawResume)) {
+    throw new LectureStreamError(`resumeFrom 必须是八段 key 之一（${LECTURE_SECTION_KEYS.join('/')}）`);
+  }
+  let sectionKeys: LectureSectionKey[] | undefined;
+  if (b.sectionKeys !== undefined) {
+    if (!Array.isArray(b.sectionKeys) || b.sectionKeys.length === 0) throw new LectureStreamError('sectionKeys 必须是非空数组');
+    const keys = b.sectionKeys.map((v) => {
+      if (typeof v !== 'string' || !(LECTURE_SECTION_KEYS as string[]).includes(v)) {
+        throw new LectureStreamError(`sectionKeys 含非八段 key：${String(v)}`);
+      }
+      return v as LectureSectionKey;
+    });
+    sectionKeys = [...new Set(keys)];
+  }
+  if (rawResume && sectionKeys) throw new LectureStreamError('resumeFrom 与 sectionKeys 不能同时传');
+
+  return { toolId, projects, excludes, ...(style ? { style } : {}), ...(extraNote ? { extraNote } : {}), ...(title ? { title } : {}), ...(outline ? { outline } : {}), ...(outlineOnly ? { outlineOnly } : {}), ...(rawResume ? { resumeFrom: rawResume as LectureSectionKey } : {}), ...(sectionKeys ? { sectionKeys } : {}), ...(contextBudget ? { contextBudget } : {}), ...(maxTokens ? { maxTokens } : {}) };
 }
 
 /** raw(30mb) 的 Buffer 或全局 express.json 的 object 都接受（与 prd-generate-stream 同构） */
@@ -432,9 +455,23 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
     };
   }
 
+  const resumeIndex = request.resumeFrom ? LECTURE_SECTION_KEYS.indexOf(request.resumeFrom) : 0;
+  const only = request.sectionKeys ? new Set<LectureSectionKey>(request.sectionKeys) : null;
+  if (resumeIndex > 0 || only) {
+    hooks.onStage?.({
+      phase: 'resume',
+      progress: sectionStartProgress(resumeIndex),
+      msg: only
+        ? `单节重试：${[...only].map((k) => lectureSectionLabel(k)).join('、')}`
+        : `从第 ${resumeIndex + 1} 节「${lectureSectionLabel(LECTURE_SECTION_KEYS[resumeIndex])}」继续（前 ${resumeIndex} 节沿用已生成正文）`,
+      data: { type: 'resume', from: resumeIndex, total: LECTURE_SECTIONS.length, ...(only ? { sections: [...only] } : {}) },
+    });
+  }
   const sections: LectureSectionResult[] = [];
   let aborted = false;
   for (const [index, meta] of LECTURE_SECTIONS.entries()) {
+    if (index < resumeIndex) continue;
+    if (only && !only.has(meta.key)) continue;
     if (signal?.aborted) { aborted = true; break; }
     const section: LectureOutlineSection = outline.sections.find((s) => s.key === meta.key) ?? {
       key: meta.key, title: lectureSectionLabel(meta.key), bullets: [],
@@ -528,7 +565,8 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
     sections: sections.map((s) => ({ key: s.key, text: s.text })),
     generatedAt,
   });
-  const ok = !aborted && sections.length === LECTURE_SECTIONS.length && sections.every((s) => s.ok);
+  const fullRun = !request.resumeFrom && !request.sectionKeys;
+  const ok = !aborted && sections.every((s) => s.ok) && (!fullRun || sections.length === LECTURE_SECTIONS.length);
   return { ok, aborted, title, markdown, ...(outline ? { outline } : {}), sections, warnings, stats, anchors };
 }
 

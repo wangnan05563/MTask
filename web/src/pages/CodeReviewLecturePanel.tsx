@@ -28,6 +28,11 @@ import {
   type LectureDiffProject,
   type LectureDiffView,
 } from '../utils/lectureDiff';
+import {
+  lectureMarkKey,
+  splitLectureBlocks,
+  type LectureMark,
+} from '../utils/lectureMarkup';
 
 /**
  * 代码评审会议讲稿 · 工作面板（六期 3.1 / T02872，PRD §6.1 三区布局、§6.2 锚点交互）。
@@ -40,8 +45,9 @@ import {
  * 两段式（FR-4.1）：「只出大纲」走同一 SSE 端点的 `outlineOnly`，大纲出来后就地确认，
  * 再「按大纲生成正文」把大纲回传——服务端收到 outline 即跳过大纲 AI 调用（见 lectureStream.ts）。
  *
- * 同里程碑后续单接手：逐条三态标记（T02873）、导出链路（T02874，本单只留状态条槽位）、
- * 预检面板与超限两条路（T02875）。
+ * T02873：风险/建议条目行尾三态标记（采纳 / 会后跟进 / 忽略），忽略项折叠且不进导出稿；
+ * 「停止」保留已生成节，可「从第 n 节继续」或对失败节「重试本节」（服务端 resumeFrom / sectionKeys）。
+ * 同里程碑后续单接手：导出链路（T02874，本单只留状态条槽位）、预检面板与超限两条路（T02875）。
  */
 
 const RANGE_SHAPES = [
@@ -63,6 +69,41 @@ const FONT_MONO = 'Consolas, Menlo, monospace';
 
 /** 文件级展开态键 */
 const fileKey = (projectId: string, path: string) => `${projectId}|${path}`;
+
+/**
+ * 续作/重试结果拼接：服务端只回「从 resumeFrom 起（或点名的节）」的 sections，
+ * 之前已完成的节取上一轮结果（或流式实时正文），按大纲顺序重排并重算整体 ok。
+ * 全新一轮（replaceFromKey 为空）不拼接，避免把上一轮旧节混进新稿。
+ */
+function mergeLectureRun(
+  before: {
+    outline: LectureOutline | null;
+    result: LectureStreamResult | null;
+    live: Record<string, string>;
+    sectionOk: Record<string, boolean>;
+  },
+  next: LectureStreamResult | null,
+  replaceFromKey?: string,
+): LectureStreamResult | null {
+  if (!next || !replaceFromKey) return next;
+  const outline = next.outline ?? before.outline ?? undefined;
+  if (!outline) return next;
+  const prior = new Map<string, LectureSectionResult>();
+  if (before.result) {
+    before.result.sections.forEach((s) => prior.set(s.key, s));
+  } else {
+    for (const [key, text] of Object.entries(before.live)) {
+      const meta = outline.sections.find((s) => s.key === key);
+      if (meta && text.trim()) {
+        prior.set(key, { key, label: meta.title, ok: before.sectionOk[key] !== false, text: text.trim(), segments: [] });
+      }
+    }
+  }
+  next.sections.forEach((s) => prior.set(s.key, s));
+  const sections = outline.sections.map((s) => prior.get(s.key)).filter((s): s is LectureSectionResult => Boolean(s));
+  const ok = sections.length === outline.sections.length && sections.every((s) => s.ok);
+  return { ...next, outline, sections, ok };
+}
 
 export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }: {
   readonly projectIds: string[];
@@ -134,29 +175,45 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
     }
   }
 
-  // ---- 两段式生成 ----
+  // ---- 两段式生成（含中止续作 / 单节重试） ----
   async function runStream(extra: Record<string, unknown>, stageLabel: string) {
     if (scopeBody.error) return flash(scopeBody.error);
     if (!toolId) return flash('请先在右侧控制台选择 AI 工具');
+    const resumeFrom = typeof extra.resumeFrom === 'string' ? extra.resumeFrom : undefined;
+    const retryKeys = Array.isArray(extra.sectionKeys) ? (extra.sectionKeys as string[]) : undefined;
+    const before = codeReviewLectureStore.get();
     const ac = new AbortController();
     codeReviewLectureStore.setAbortCtrl(ac);
-    codeReviewLectureStore.begin();
+    // 续作/重试保留已有三态标记；全新一轮才清空
+    codeReviewLectureStore.begin(Boolean(resumeFrom || retryKeys));
     codeReviewLectureStore.pushLog(`${stageLabel}：开始采集与上下文装配`);
-    let outline: LectureOutline | undefined;
+    let outline: LectureOutline | undefined = before.outline ?? undefined;
     let errMsg = '';
     try {
       await streamEvents('/plans/code-review-lecture-stream', { ...scopeBody.body, toolId, ...extra }, (name, payload) => {
         if (name === 'stage') {
-          const s = payload as { phase: string; msg: string; progress: number; data?: { type?: string; outline?: LectureOutline } };
+          const s = payload as { phase: string; msg: string; progress: number; data?: { type?: string; outline?: LectureOutline; section?: string; ok?: boolean } };
           codeReviewLectureStore.setStage({ phase: s.phase, msg: s.msg, progress: s.progress });
-          if (s.data?.type === 'outline_ready' || s.data?.type === 'outline_only') outline = s.data.outline;
+          if (s.data?.type === 'outline_ready' || s.data?.type === 'outline_only') {
+            if (s.data.outline) { outline = s.data.outline; codeReviewLectureStore.setOutline(s.data.outline); }
+          } else if (s.data?.type === 'section_done' && s.data.section) {
+            codeReviewLectureStore.setSectionOk(s.data.section, s.data.ok === true);
+          }
         } else if (name === 'chunk') {
           const c = payload as { section: string; text: string };
           codeReviewLectureStore.appendLive(c.section, c.text);
         } else if (name === 'done') {
           const d = payload as LectureStreamResult;
-          if (d?.outline) outline = d.outline;
+          if (d?.outline) { outline = d.outline; codeReviewLectureStore.setOutline(d.outline); }
+          codeReviewLectureStore.setResult(mergeLectureRun(before, d ?? null, resumeFrom ?? (retryKeys ? retryKeys[0] : undefined)));
+        } else if (name === 'aborted') {
+          // 用户主动「停止」：服务端把已完成的节次交回，保留下来供「从第 n 节继续」
+          const d = payload as LectureStreamResult;
+          if (d?.outline) codeReviewLectureStore.setOutline(d.outline);
           codeReviewLectureStore.setResult(d ?? null);
+          codeReviewLectureStore.finish();
+          flash(`已停止——已生成 ${d?.sections?.length ?? 0} 节已保留，可「从第 n 节继续」`);
+          return;
         } else if (name === 'error') {
           errMsg = (payload as { error: string }).error ?? '生成失败';
         }
@@ -215,8 +272,21 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
     setHoverRows(new Set(hit ? anchorHitRowIds(hit).ids : []));
   }
 
-  const outline = snap.result?.outline;
+  const outline = snap.result?.outline ?? snap.outline ?? undefined;
   const sections = snap.result?.sections ?? [];
+
+  // 「从第 n 节继续」/「单节重试」的落点：第一节没正文或上一轮失败的位置
+  const outlineSections = outline?.sections ?? [];
+  const okBySection = new Map<string, boolean>();
+  snap.result?.sections.forEach((s) => okBySection.set(s.key, s.ok));
+  Object.entries(snap.sectionOk).forEach(([k, v]) => { if (!okBySection.has(k)) okBySection.set(k, v); });
+  const resumeKey = outlineSections.find((s) => !okBySection.has(s.key) || okBySection.get(s.key) === false)?.key;
+  const resumeIndex = resumeKey ? outlineSections.findIndex((s) => s.key === resumeKey) + 1 : 0;
+  const canResume = !snap.streaming && resumeIndex > 0
+    && (snap.result !== null || Object.keys(snap.live).length > 0);
+  const markValues = Object.values(snap.marks);
+  const followupCount = markValues.filter((m) => m === 'followup').length;
+  const ignoredCount = markValues.filter((m) => m === 'ignore').length;
 
   return (
     <div data-lck="panel" style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 12 }}>
@@ -287,7 +357,12 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
         <main data-lck="lecture-pane" aria-label="讲稿面板" onMouseOver={(e) => hoverFromEvent(e.target)} onMouseLeave={() => setHoverRows(new Set())}
           style={{ flex: '1 1 54%', minWidth: 0, maxHeight: 460, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: 8, background: 'var(--surface)' }}>
           <LectureSections outline={outline} sections={sections} live={snap.live} streaming={snap.streaming}
-            onAnchorClick={locateAnchorClick} />
+            marks={snap.marks}
+            onMark={(key, m) => codeReviewLectureStore.setMark(key, m)}
+            onAnchorClick={locateAnchorClick}
+            {...(!snap.streaming && outline && resumeKey
+              ? { onRetrySection: (key: string, label: string) => void runStream({ outline, sectionKeys: [key] }, `重试「${label}」`) }
+              : {})} />
         </main>
       </div>
 
@@ -299,10 +374,18 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
           <FlowProgress value={snap.stage?.progress ?? 0} aria-label="讲稿生成进度" />
         </div>
         <span data-lck="anchor-count" style={{ fontSize: 12, color: 'var(--text-muted)' }}>锚点 {snap.result?.stats.anchors ?? 0}</span>
-        <FlowButton onClick={() => { codeReviewLectureStore.abort(); flash('已停止——右栏已生成的章节保留'); }} disabled={!snap.streaming}
+        <span data-lck="mark-count" style={{ fontSize: 12, color: 'var(--text-muted)' }}>跟进 {followupCount} · 忽略 {ignoredCount}</span>
+        <FlowButton onClick={() => { codeReviewLectureStore.stop(); flash('已停止——右栏已生成的章节保留'); }} disabled={!snap.streaming}
           title="中止当前生成（已生成的节次保留）">
           <Ban size={13} style={{ marginRight: 4 }} />停止
         </FlowButton>
+        {canResume && (
+          <FlowButton data-lck="resume-btn" onClick={() => void runStream({ outline: outline ?? snap.outline, resumeFrom: resumeKey }, `从第 ${resumeIndex} 节继续`)}
+            disabled={snap.streaming}
+            title={`跳过已生成的前 ${resumeIndex - 1} 节，从第 ${resumeIndex} 节开始补生成`}>
+            <RefreshCw size={13} style={{ marginRight: 4 }} />从第 {resumeIndex} 节继续
+          </FlowButton>
+        )}
         {/* 本单只留槽位：导出链路（md/docx/pptx + 下载令牌）在 T02874 接入，此前恒禁用而不是「有正文就能点」 */}
         <FlowButton onClick={() => flash('导出链路（md/docx/pptx + 下载令牌）在 T02874 接入')} disabled
           title="导出链路在 T02874 接入">
@@ -410,7 +493,7 @@ function LectureDiffPane({ projects, openFiles, foldedHunks, flashRows, hoverRow
   );
 }
 
-// ---- 右栏渲染：八段手风琴（逐段流出 + 锚点交互） ----
+// ---- 右栏渲染：八段手风琴（逐段流出 + 锚点交互 + 风险/建议条目三态标记） ----
 interface SectionRow {
   key: string;
   title: string;
@@ -420,12 +503,18 @@ interface SectionRow {
   error?: string;
 }
 
-function LectureSections({ outline, sections, live, streaming, onAnchorClick }: {
+/** 三态标记只作用于「风险清单」「改进建议」两节里的列表条目（PRD §6.2） */
+const MARKABLE_SECTIONS = new Set(['risks', 'improvements']);
+
+function LectureSections({ outline, sections, live, streaming, marks, onMark, onAnchorClick, onRetrySection }: {
   readonly outline?: LectureOutline;
   readonly sections: readonly LectureSectionResult[];
   readonly live: Readonly<Record<string, string>>;
   readonly streaming: boolean;
+  readonly marks: Readonly<Record<string, LectureMark>>;
+  readonly onMark: (key: string, mark: LectureMark) => void;
   readonly onAnchorClick: (href: string) => void;
+  readonly onRetrySection?: (key: string, label: string) => void;
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set(['opening']));
   const rows: SectionRow[] = sections.length > 0
@@ -441,6 +530,7 @@ function LectureSections({ outline, sections, live, streaming, onAnchorClick }: 
     <>
       {rows.map((r) => {
         const expanded = open.has(r.key);
+        const markable = MARKABLE_SECTIONS.has(r.key) && r.text.trim().length > 0;
         return (
           <div key={r.key} data-lck={`section-${r.key}`} style={{ marginBottom: 6, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
             <button type="button" onClick={() => setOpen((prev) => { const n = new Set(prev); if (n.has(r.key)) n.delete(r.key); else n.add(r.key); return n; })}
@@ -450,11 +540,19 @@ function LectureSections({ outline, sections, live, streaming, onAnchorClick }: 
               <strong>{r.title}</strong>
               {r.pending && !r.text && <span style={{ color: 'var(--text-muted)' }}>等待生成…</span>}
               {r.failed && <span data-lck="section-failed" style={{ color: 'var(--danger)' }}>部分未生成{r.error ? `：${r.error}` : ''}</span>}
+              {r.failed && onRetrySection && !streaming && (
+                <span role="button" tabIndex={0} data-lck={`retry-${r.key}`}
+                  onClick={(e) => { e.stopPropagation(); onRetrySection(r.key, r.title); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onRetrySection(r.key, r.title); } }}
+                  style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--accent)', textDecoration: 'underline', cursor: 'pointer' }}>重试本节</span>
+              )}
             </button>
             {expanded && (
               <div style={{ padding: '6px 8px' }}>
                 {r.text
-                  ? <Markdown content={linkifyLectureAnchors(r.text)} onAnchorClick={onAnchorClick} />
+                  ? markable
+                    ? <MarkedLectureBody sectionKey={r.key} text={r.text} marks={marks} onMark={onMark} onAnchorClick={onAnchorClick} />
+                    : <Markdown content={linkifyLectureAnchors(r.text)} onAnchorClick={onAnchorClick} />
                   : <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>{r.pending ? '（本节尚未流出）' : '（本节无内容）'}</p>}
               </div>
             )}
@@ -462,5 +560,72 @@ function LectureSections({ outline, sections, live, streaming, onAnchorClick }: 
         );
       })}
     </>
+  );
+}
+
+/**
+ * 条目化渲染：列表项行尾三个标记按钮，「忽略」折叠该条（默认不显示，可展开恢复）。
+ * 条目序号由 `splitLectureBlocks` 与导出侧共用，忽略项在导出稿中被剔除（lectureMarkup.applyMarksToSection）。
+ */
+function MarkedLectureBody({ sectionKey, text, marks, onMark, onAnchorClick }: {
+  readonly sectionKey: string;
+  readonly text: string;
+  readonly marks: Readonly<Record<string, LectureMark>>;
+  readonly onMark: (key: string, mark: LectureMark) => void;
+  readonly onAnchorClick: (href: string) => void;
+}) {
+  const [showIgnored, setShowIgnored] = useState(false);
+  const blocks = splitLectureBlocks(text);
+  const ignoredCount = blocks.filter((b) => b.kind === 'item' && marks[lectureMarkKey(sectionKey, b.ordinal)] === 'ignore').length;
+  return (
+    <div data-lck={`marked-${sectionKey}`}>
+      {blocks.map((b) => {
+        if (b.kind === 'prose') {
+          return <Markdown key={`p${b.text.slice(0, 24)}`} content={linkifyLectureAnchors(b.text)} onAnchorClick={onAnchorClick} />;
+        }
+        const key = lectureMarkKey(sectionKey, b.ordinal);
+        const mark = marks[key] ?? 'adopt';
+        if (mark === 'ignore' && !showIgnored) return null;
+        return (
+          <div key={key} data-lck={`mark-item-${sectionKey}-${b.ordinal}`}
+            style={{ display: 'flex', gap: 6, alignItems: 'flex-start', borderRadius: 6, padding: '2px 4px', background: mark === 'ignore' ? 'var(--surface-2)' : undefined, opacity: mark === 'ignore' ? 0.7 : 1 }}>
+            <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+              <Markdown content={linkifyLectureAnchors(b.text)} onAnchorClick={onAnchorClick} />
+            </div>
+            <div style={{ display: 'flex', gap: 2, flexShrink: 0, paddingTop: 2 }}>
+              <MarkButton lck={`mark-${sectionKey}-${b.ordinal}-adopt`} active={mark === 'adopt'} label="采纳" onClick={() => onMark(key, 'adopt')} />
+              <MarkButton lck={`mark-${sectionKey}-${b.ordinal}-followup`} active={mark === 'followup'} label="会后跟进" onClick={() => onMark(key, 'followup')} />
+              <MarkButton lck={`mark-${sectionKey}-${b.ordinal}-ignore`} active={mark === 'ignore'} label="忽略" onClick={() => onMark(key, 'ignore')} />
+            </div>
+          </div>
+        );
+      })}
+      {ignoredCount > 0 && (
+        <div data-lck={`ignored-${sectionKey}`} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)', borderTop: '1px dashed var(--border)', marginTop: 4, paddingTop: 4 }}>
+          <span>已忽略 {ignoredCount} 条（不影响导出稿）</span>
+          <button type="button" data-lck={`ignored-toggle-${sectionKey}`} onClick={() => setShowIgnored((v) => !v)}
+            style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 11, padding: 0 }}>
+            {showIgnored ? '收起' : '展开查看'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MarkButton({ lck, active, label, onClick }: {
+  readonly lck: string;
+  readonly active: boolean;
+  readonly label: string;
+  readonly onClick: () => void;
+}) {
+  return (
+    <button type="button" data-lck={lck} aria-pressed={active} onClick={onClick}
+      style={{
+        fontSize: 10, padding: '1px 5px', borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap',
+        border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+        background: active ? 'var(--accent)' : 'var(--surface)',
+        color: active ? 'var(--accent-text)' : 'var(--text-secondary)',
+      }}>{label}</button>
   );
 }

@@ -158,7 +158,18 @@ planApi.post('/code-review-lecture-stream', raw({ type: () => true, limit: '30mb
     });
     if (closed || res.writableEnded) return;
     if (result.aborted) {
-      send('error', { error: '已停止（已生成的章节可由前端保留）' });
+      // PRD §6.2「已生成节保留」：中止也把已完成的节次交回前端，供「从第 n 节继续」拼接
+      send('aborted', {
+        ok: false,
+        aborted: true,
+        title: result.title,
+        markdown: result.markdown,
+        outline: result.outline,
+        sections: result.sections,
+        warnings: result.warnings,
+        stats: result.stats,
+        anchors: result.anchors,
+      });
     } else {
       send('done', {
         ok: result.ok,
