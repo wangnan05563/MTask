@@ -35,6 +35,9 @@ export const MERGED_STRUCTURE_KEYS: readonly string[] = ['compare', 'horizontal'
 export const MERGED_PROJECT_KEYS: readonly string[] = ['kpi', 'milestones', 'risks', 'nextSteps'];
 /** 合并版：每个项目的小结页数（服务端 `SUMMARY_MERGED_PER_PROJECT`） */
 export const MERGED_PER_PROJECT = 4;
+/** 单份完整稿页数（服务端 `SUMMARY_PAGE_MIN/MAX`）；分别独立版每项目一份 */
+export const SINGLE_PAGE_MIN = 12;
+export const SINGLE_PAGE_MAX = 16;
 /** 自定义周期上限（服务端 `SUMMARY_PPT_MAX_PERIOD_DAYS`，与 EventRetention 默认 90 天同源） */
 export const SUMMARY_CUSTOM_MAX_DAYS = 90;
 export const DAY_MS = 24 * 60 * 60_000;
@@ -76,9 +79,35 @@ export function rangeText(range: { start: string; end: string } | undefined): st
   return `${ymd(s)} ~ ${ymd(e)}`;
 }
 
-/** 大纲与当前周期/范围的缺项检查（客户端预检；服务端 `validateSummaryOutline` 是唯一裁决） */
-export function outlineGapOf(rows: readonly OutlineRow[], projectIds: readonly string[]): string {
+/**
+ * 大纲与当前周期/范围的缺项检查（客户端预检；服务端 `validateSummaryOutline` 是唯一裁决）。
+ * mode=separate（FR-6.2）：每项目一份完整稿——逐项目校验页数 12~16、封面/目录顺序与 9 个数据块。
+ */
+export function outlineGapOf(
+  rows: readonly OutlineRow[],
+  projectIds: readonly string[],
+  mode: 'merged' | 'separate' = 'merged',
+): string {
   if (rows.length === 0) return '请先生成并确认大纲';
+  if (mode === 'separate' && projectIds.length > 1) {
+    if (rows.some((r) => !r.projectId)) return '分别独立版每页都必须带 projectId（按项目分组）';
+    const total = { min: SINGLE_PAGE_MIN * projectIds.length, max: SINGLE_PAGE_MAX * projectIds.length };
+    if (rows.length < total.min || rows.length > total.max) {
+      return `分别独立版 ${projectIds.length} 个项目总页数应在 ${total.min}~${total.max} 之间，当前 ${rows.length} 页`;
+    }
+    for (const pid of projectIds) {
+      const mine = rows.filter((r) => r.projectId === pid);
+      if (mine.length < SINGLE_PAGE_MIN || mine.length > SINGLE_PAGE_MAX) {
+        return `项目 ${pid} 的独立稿页数应在 ${SINGLE_PAGE_MIN}~${SINGLE_PAGE_MAX} 之间，当前 ${mine.length} 页`;
+      }
+      if (mine[0]?.layout !== 'cover') return `项目 ${pid} 的第 1 页版式必须是 cover（封面）`;
+      if (mine[1]?.layout !== 'toc') return `项目 ${pid} 的第 2 页版式必须是 toc（目录）`;
+      const mineKeys = new Set(mine.flatMap((r) => r.dataKeys));
+      const missing = REQUIRED_SINGLE_KEYS.filter((k) => !mineKeys.has(k));
+      if (missing.length) return `项目 ${pid} 的独立稿缺少数据块页：${missing.join('、')}`;
+    }
+    return '';
+  }
   if (rows[0]?.layout !== 'cover') return '第 1 页版式必须是 cover（封面）';
   if (rows[1]?.layout !== 'toc') return '第 2 页版式必须是 toc（目录）';
   const union = new Set(rows.flatMap((r) => r.dataKeys));

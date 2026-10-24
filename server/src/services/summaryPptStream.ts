@@ -23,12 +23,18 @@ import {
   gatherSummaryBundle,
   type SummaryBundle,
 } from './summaryPptService';
-import { gatherSummaryDeckData, WORKLOAD_CALIBERS, type SummaryDeckData, type WorkloadCaliber } from './summaryPptData';
-import { validateSummaryOutline, type SummaryOutlineItem } from './summaryPptOutline';
+import { gatherSummaryDeckData, WORKLOAD_CALIBERS, type SummaryDeckData, type SummaryProjectData, type WorkloadCaliber } from './summaryPptData';
+import {
+  normalizeSummaryMode,
+  SUMMARY_MODES,
+  validateSummaryOutline,
+  type SummaryMode,
+  type SummaryOutlineItem,
+} from './summaryPptOutline';
 
-/** PRD §4：`mode` 只认两档；`separate`（分别独立版 zip）由 S7 交付，本单先显式拒绝而不是静默按合并版跑 */
-export const SUMMARY_STREAM_MODES = ['merged', 'separate'] as const;
-export type SummaryStreamMode = (typeof SUMMARY_STREAM_MODES)[number];
+/** PRD §4：`mode` 只认两档；separate（FR-6.2）在 S7 起交付 */
+export const SUMMARY_STREAM_MODES = SUMMARY_MODES;
+export type SummaryStreamMode = SummaryMode;
 
 export interface SummaryStreamParams {
   period: unknown;
@@ -59,25 +65,20 @@ export interface SummaryPreparedStream {
 
 export interface SummaryStreamResult {
   token: string;
+  /** separate：与 token 同值（PRD §4 的 zipToken 字段），下载端点不变 */
+  zipToken?: string;
   fileName: string;
   pageCount: number;
   warnings: string[];
   projects: SummaryProjectPages[];
-  /** 被降级为安全版式的页码（S6 面板可提示「第 N 页已降级」） */
+  /** 被降级为安全版式的页码（S6 面板可提示「第 N 页已降级」；separate 的降级按项目写进 warnings） */
   degradedPages: number[];
+  mode: SummaryStreamMode;
 }
 
+/** 缺省 merged；非法值 400 点名（separate 的 zip 签名在 S7 已放开，A-2 已批准白名单扩展） */
 function assertMode(raw: unknown): SummaryStreamMode {
-  const mode = typeof raw === 'string' && raw.trim() ? raw.trim() : 'merged';
-  if (!(SUMMARY_STREAM_MODES as readonly string[]).includes(mode)) {
-    throw new Error(`mode 仅支持 ${SUMMARY_STREAM_MODES.join('/')}，当前为「${mode}」`);
-  }
-  if (mode === 'separate') {
-    // PRD §4：A-2 已批准白名单扩展，但「分别独立版」的 zip 打包属 S7 范围；此单只交付合并版，
-    // 传 separate 时显式 400，避免用户以为拿到的是每项目独立稿
-    throw new Error('分别独立版（separate）尚未开放：当前请使用合并版（merged），逐项目独立稿与 zip 交付在后续版本提供');
-  }
-  return mode as SummaryStreamMode;
+  return normalizeSummaryMode(raw);
 }
 
 function assertCaliber(raw: unknown): WorkloadCaliber | undefined {
@@ -121,7 +122,7 @@ export function prepareSummaryPptStream(params: SummaryStreamParams): SummaryPre
   assertSummaryNotBlocked(buildSummaryPreflight(bundle));
 
   const deck = gatherSummaryDeckData(period, bundle.projectIds, params.custom, { workloadCaliber: caliber, bundle });
-  const { outline, warnings } = validateSummaryOutline(params.outline, { projectIds: bundle.projectIds });
+  const { outline, warnings } = validateSummaryOutline(params.outline, { projectIds: bundle.projectIds, mode });
   // S9 降级：页面页脚本层会带 footnote（FR-3.2），但合并版不保证有 highlights 页，
   // 所以 warnings 里也留一条——面板与产物至少有一处一定留痕
   if (bundle.coverage.degraded && bundle.coverage.footnote && !warnings.includes(bundle.coverage.footnote)) {
@@ -138,6 +139,21 @@ export function summaryPptFileName(deck: SummaryDeckData): string {
   return `${downloadSafeName(base, '阶段性总结')}.pptx`;
 }
 
+/** separate：单份稿的 zip 内条目名（仍走同一洗名函数，不新开校验口子） */
+function separateDeckName(projectName: string, dataAsOf: string, taken: Set<string>): string {
+  const base = downloadSafeName(`阶段性总结-${projectName || '项目'}-${dataAsOf.replaceAll('-', '')}`, '阶段性总结');
+  let name = `${base}.pptx`;
+  for (let i = 2; taken.has(name); i++) name = `${base}-${i}.pptx`;
+  taken.add(name);
+  return name;
+}
+
+/** separate：外层 zip 名（扩展名 zip 已过 A-2 白名单） */
+export function summaryPptZipFileName(deck: SummaryDeckData, count: number): string {
+  const base = `阶段性总结-分别独立版-${count}个项目-${deck.dataAsOf.replaceAll('-', '')}`;
+  return `${downloadSafeName(base, '阶段性总结-分别独立版')}.zip`;
+}
+
 /**
  * 装配并落盘（第 2 段）。`onStage` 的每条消息逐字进 SSE `stage`；中止语义见文件头。
  * 返回 `token` 后即由路由发送 `done`；「已落盘但 done 未送达」的断开由路由回收（T02144 同族）。
@@ -150,6 +166,7 @@ export async function renderSummaryPptStream(
   // 动态加载：builder 静态依赖 data 层，本模块又被 route 静态引用，静态 import 会加深依赖环
   const { buildSummaryPpt, SUMMARY_ABORT_MSG } = await import('./summaryPptBuilder');
   if (signal?.aborted) throw new Error(SUMMARY_ABORT_MSG);
+  if (prepared.mode === 'separate') return renderSeparate(prepared, buildSummaryPpt, SUMMARY_ABORT_MSG, onStage, signal);
   const total = prepared.outline.length;
   onStage(`开始逐页装配 ${total} 页…`);
   const built = await buildSummaryPpt(prepared.deck, prepared.outline, {
@@ -170,5 +187,69 @@ export async function renderSummaryPptStream(
     warnings: [...prepared.warnings, ...built.warnings],
     projects: prepared.projects,
     degradedPages: built.degradedPages,
+    mode: 'merged',
+  };
+}
+
+/**
+ * separate（FR-6.2）：每项目一份完整稿，用 pizzip 打包为单 zip。
+ * - 大纲已按项目分组（`projectId`），这里只做「按项目切分 + 单项目 deck 重渲染」；
+ * - 降级页码在 zip 里没有全局含义，故 degradedPages 置空、逐项目前缀写进 warnings；
+ * - 令牌仍是单落盘点：zip 未落盘前中止 / 落盘后未回报都当场回收，不留孤儿。
+ */
+async function renderSeparate(
+  prepared: SummaryPreparedStream,
+  build: typeof import('./summaryPptBuilder').buildSummaryPpt,
+  abortMsg: string,
+  onStage: (msg: string) => void,
+  signal?: AbortSignal,
+): Promise<SummaryStreamResult> {
+  const total = prepared.outline.length;
+  const multi = prepared.deck.projects.length > 1;
+  const groups: Array<{ project: SummaryProjectData; items: SummaryOutlineItem[] }> = prepared.deck.projects.map((project) => ({
+    project,
+    items: multi ? prepared.outline.filter((o) => o.projectId === project.id) : prepared.outline,
+  }));
+  onStage(`分别独立版：逐项目装配 ${groups.length} 份完整稿（共 ${total} 页）…`);
+
+  const warnings = [...prepared.warnings];
+  const taken = new Set<string>();
+  const entries: Array<{ name: string; buffer: Buffer }> = [];
+  let done = 0;
+  for (const g of groups) {
+    if (signal?.aborted) throw new Error(abortMsg);
+    // 单项目 deck：让大纲里未标 projectId 的页也能解析到本项目（projectOf 单项目短路）
+    const deck: SummaryDeckData = { ...prepared.deck, projects: [g.project] };
+    const built = await build(deck, g.items, {
+      onPage: () => {
+        done += 1;
+        onStage(`页 ${done}/${total} 已装配：${g.project.name}`);
+      },
+      signal,
+    });
+    if (signal?.aborted) throw new Error(abortMsg);
+    entries.push({ name: separateDeckName(g.project.name, prepared.deck.dataAsOf, taken), buffer: built.buffer });
+    warnings.push(...built.warnings.map((w) => `[${g.project.name}] ${w}`));
+  }
+
+  const PizZip = (await import('pizzip')).default;
+  const zip = new PizZip();
+  for (const e of entries) zip.file(e.name, e.buffer);
+  const buffer = zip.generate({ type: 'nodebuffer', compression: 'DEFLATE' }) as unknown as Buffer;
+  const token = saveReportBuffer(buffer);
+  if (signal?.aborted) {
+    discardReport(token);
+    throw new Error(abortMsg);
+  }
+  onStage(`文件已生成，可在左侧下载（zip 内含 ${entries.length} 份 .pptx）。`);
+  return {
+    token,
+    zipToken: token,
+    fileName: summaryPptZipFileName(prepared.deck, entries.length),
+    pageCount: total,
+    warnings,
+    projects: prepared.projects,
+    degradedPages: [],
+    mode: 'separate',
   };
 }

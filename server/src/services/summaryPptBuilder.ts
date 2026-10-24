@@ -312,22 +312,43 @@ function appendixBlocks(deck: SummaryDeckData): Array<Omit<Block, 'box'>> {
   return [{ table: { header: ['校验项', '条数', '状态'], colW: [2.6, 0.8, 0.6], rows } }];
 }
 
+/** FR-6.1 汇总对比页：各项目 KPI 横表（任务完成/计划进度/里程碑进度/逾期数/blocker 数），数字全部本地求和 */
 function compareBlocks(deck: SummaryDeckData): Array<Omit<Block, 'box'>> {
   const rows = deck.projects.map((p) => [
     p.name,
-    `${p.tasks.active}`,
-    `${p.plans.byStatus.done}/${p.plans.total}`,
+    `${p.tasks.done}`,
     pct(p.plans.avgProgress),
     `${p.milestones.filter((m) => m.status === 'done').length}/${p.milestones.length}`,
     `${p.plans.overdue}`,
+    `${p.plans.blocked}`,
   ]);
-  return [{ table: { header: ['项目', '活动任务', '完成计划', '计划均进度', '里程碑', '逾期'], colW: [1.4, 0.8, 0.9, 1.0, 0.8, 0.6], rows } }];
+  return [{
+    table: {
+      header: ['项目', '任务完成', '计划进度', '里程碑进度', '逾期数', 'blocker 数'],
+      colW: [1.8, 1.1, 1.1, 1.2, 0.9, 1.1],
+      rows,
+    },
+  }];
 }
 
+/**
+ * FR-6.1 横向对比页：进度柱图 + 工作量柱图。
+ * 工作量单位必须全 deck 一致（A-5）：全体都有三点估算才画「累计估算人天」，
+ * 否则统一画「完成工期（天）」（`duration_days` 口径），不与估算人天混轴。
+ */
 function horizontalBlocks(deck: SummaryDeckData): Array<Omit<Block, 'box'>> {
   const names = deck.projects.map((p) => p.name);
+  const cumulative = deck.projects.every((p) => p.workload.caliber === 'cumulative');
   return [
     { chart: { type: 'bar', name: '计划平均进度（%）', labels: names, values: deck.projects.map((p) => p.plans.avgProgress) } },
+    {
+      chart: {
+        type: 'bar',
+        name: cumulative ? '工作量（累计估算人天）' : '工作量（完成工期，天）',
+        labels: names,
+        values: deck.projects.map((p) => (cumulative ? p.workload.likelyDays : p.workload.doneDurationDays)),
+      },
+    },
     {
       text: {
         content: deck.projects.map((p) => `${p.name}：完成计划 ${p.plans.byStatus.done} 条 · 完成待办 ${p.tasks.done} 条 · 逾期 ${p.plans.overdue} 条`).join('\n'),
@@ -442,10 +463,35 @@ function layoutBody(
     const splittable = item.layout === 'chart'
       && data.length > 0 && data.every((d) => d.src.table || d.src.chart)
       && data.some((d) => d.src.table) && data.some((d) => d.src.chart);
+    // FR-6.1「横向对比」同页要两张柱图（进度 + 工作量）：纵排时两图最小可读高之和
+    // （1.2"×2 + 间距）已超正文区剩余高度，第二张图会被整块省略——改为左右并排。
+    const chartRow = data.filter((d) => d.src.chart);
+    const sideBySideCharts = item.layout === 'chart'
+      && chartRow.length >= 2 && !data.some((d) => d.src.table);
     if (splittable) {
       const leftW = Math.round(body.w * 0.52 * 100) / 100;
       stackInto({ ...body, w: leftW }, data.filter((d) => d.src.table));
       stackInto({ x: body.x + leftW + MIN_GAP, y: body.y, w: body.w - leftW - MIN_GAP, h: body.h }, data.filter((d) => d.src.chart));
+    } else if (sideBySideCharts) {
+      const others = data.filter((d) => !d.src.chart);
+      const othersH = others.reduce((a, d) => a + Math.min(naturalBlockHeight(d.src, body.w), 0.6), 0);
+      const colW = (body.w - MIN_GAP * (chartRow.length - 1)) / chartRow.length;
+      const room = body.h - (others.length ? othersH + MIN_GAP : 0);
+      const chartH = Math.max(CHART_MIN_H, Math.min(naturalBlockHeight(chartRow[0].src, colW), room));
+      chartRow.forEach((d, i) => {
+        placed.push({ box: { x: body.x + i * (colW + MIN_GAP), y: body.y, w: colW, h: chartH }, ...d.src });
+      });
+      // 图下的说明文字：放不下就省略并留痕（柱图是 FR-6.1 的硬要求，文字让位）
+      let cursorY = body.y + chartH + MIN_GAP;
+      for (const d of others) {
+        const h = Math.min(naturalBlockHeight(d.src, body.w), 0.6);
+        if (cursorY + h > body.y + body.h + 1e-6) {
+          dropped.push(d.key);
+          continue;
+        }
+        placed.push({ box: { x: body.x, y: cursorY, w: body.w, h }, ...d.src });
+        cursorY += h + MIN_GAP;
+      }
     } else {
       stackInto(body, data);
     }

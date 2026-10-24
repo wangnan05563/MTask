@@ -33,12 +33,16 @@ export interface SummaryProjectPages {
 /** SSE `done` 负载：token 即下载令牌（服务端 saveReportBuffer 落盘的单源产物标识） */
 export interface SummaryStreamResult {
   token: string;
+  /** separate：与 token 同值（PRD §4 的 zipToken），下载仍走同一 ai-download 端点 */
+  zipToken?: string;
   fileName: string;
   pageCount: number;
   warnings: string[];
   projects: SummaryProjectPages[];
-  /** 被版式断言降级为安全版式的页码（1 基；空=全页原生版式） */
+  /** 被版式断言降级为安全版式的页码（1 基；空=全页原生版式；separate 的降级按项目写进 warnings） */
   degradedPages: number[];
+  /** merged=单份稿；separate=分别独立版 zip */
+  mode?: 'merged' | 'separate';
 }
 
 export interface SummaryPptState {

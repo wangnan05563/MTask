@@ -101,6 +101,8 @@ planApi.post('/summary-ppt-outline', (req, res) => {
     projectIds: scope,
     custom: { start: optStr(b.start), end: optStr(b.end) },
     toolId,
+    // T02858（S7）：separate 时按「每项目完整稿」出大纲；缺省 merged，非法值由服务层 400 点名
+    mode: b.mode,
     style: optStr(b.style),
     extraNote: optStr(b.extraNote),
   })
@@ -163,11 +165,13 @@ planApi.post('/summary-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
     }
     send('done', {
       token: r.token,
+      ...(r.zipToken ? { zipToken: r.zipToken } : {}),
       fileName: r.fileName,
       pageCount: r.pageCount,
       warnings: r.warnings,
       projects: r.projects,
       degradedPages: r.degradedPages,
+      mode: r.mode,
     });
     doneSent = true;
   } catch (e) {

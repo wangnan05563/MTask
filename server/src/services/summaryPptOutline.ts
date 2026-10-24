@@ -86,6 +86,19 @@ export const SUMMARY_MERGED_FIXED = 6;
 export const SUMMARY_MERGED_PER_PROJECT = 4;
 /** PRD §3.4 第 2 步的页数上限 */
 export const SUMMARY_MERGED_CAP = 40;
+/** 生成模式（PRD FR-6.1/6.2）：merged=单份合并稿；separate=每项目一份完整稿并打包 zip */
+export const SUMMARY_MODES = ['merged', 'separate'] as const;
+export type SummaryMode = (typeof SUMMARY_MODES)[number];
+export const DEFAULT_SUMMARY_MODE: SummaryMode = 'merged';
+
+/** mode 归一（缺省 merged）；非法值 400 点名，不静默当合并版跑 */
+export function normalizeSummaryMode(raw: unknown): SummaryMode {
+  const mode = (raw == null ? '' : String(raw)).trim() || DEFAULT_SUMMARY_MODE;
+  if (!(SUMMARY_MODES as readonly string[]).includes(mode)) {
+    throw new Error(`mode 仅支持 ${SUMMARY_MODES.join('/')}，当前为「${mode}」`);
+  }
+  return mode as SummaryMode;
+}
 /** 多项目摘要总预算（PRD §6.2 B3 的 Σ≤6000，统计摘要另计） */
 export const SUMMARY_BUDGET = 6000;
 export const TITLE_MAX = 30;
@@ -100,6 +113,12 @@ export function expectedPageRange(projectCount: number): { min: number; max: num
   // 上下限同时夹到 CAP：N=8 恰为 38~40；即使调用方绕过 validateProjectIds 的 8 项目帽，也不会出现 min>max 的死区间
   const min = Math.min(SUMMARY_MERGED_CAP, SUMMARY_MERGED_FIXED + SUMMARY_MERGED_PER_PROJECT * projectCount);
   return { min, max: Math.min(SUMMARY_MERGED_CAP, min + 2) };
+}
+
+/** 分别独立版（FR-6.2）：每项目一份完整稿，总页数 = N×12 ~ N×16（单份上限仍是 16） */
+export function expectedSeparateTotalRange(projectCount: number): { min: number; max: number } {
+  const n = Math.max(1, projectCount);
+  return { min: SUMMARY_PAGE_MIN * n, max: SUMMARY_PAGE_MAX * n };
 }
 
 /** 合并版「项目小结页」的锚定数据键：带这些键的页必须标 projectId（结构页/对比页反而不该标） */
@@ -131,6 +150,8 @@ export interface OutlinePromptInput {
   range: { start: Date; end: Date };
   preflight: SummaryPreflightItem[];
   facts: ProjectFacts[];
+  /** merged=合并稿（缺省）；separate=每项目完整稿（FR-6.2） */
+  mode?: SummaryMode;
   /** 用户补的风格要求（`style` 入参，自由文本，最长 200 字） */
   style?: string;
   /** 用户附加要求（面板里手写的补充说明） */
@@ -175,14 +196,21 @@ export function buildOutlinePrompt(input: OutlinePromptInput): {
   user: string;
   truncated: boolean;
   perProject: Array<{ id: string; name: string; chars: number; truncated: boolean }>;
+  mode: SummaryMode;
+  /** 每份稿的页数区间（separate 下也是单份 12~16） */
   pageRange: { min: number; max: number };
+  /** 数组总页数区间：merged=pageRange；separate=N×12~N×16 */
+  totalPageRange: { min: number; max: number };
 } {
   const n = input.facts.length;
   const budget = projectBudget(n);
   const per = input.facts.map((f) => ({ id: f.id, name: f.name, ...projectFactsText(f, budget) }));
   const truncated = per.some((p) => p.truncated);
-  const pageRange = expectedPageRange(n);
-  const merged = n > 1;
+  const mode = input.mode ?? DEFAULT_SUMMARY_MODE;
+  const separate = mode === 'separate';
+  const pageRange = separate ? { min: SUMMARY_PAGE_MIN, max: SUMMARY_PAGE_MAX } : expectedPageRange(n);
+  const totalPageRange = separate ? expectedSeparateTotalRange(n) : pageRange;
+  const merged = n > 1 && !separate;
   const start = input.range.start.toISOString().slice(0, 10);
   const endDay = new Date(input.range.end.getTime() - 1).toISOString().slice(0, 10);
   const status = input.preflight.map((i) => `${i.key} ${i.label}=${i.count}（${i.status}）`).join('；');
@@ -190,23 +218,25 @@ export function buildOutlinePrompt(input: OutlinePromptInput): {
 
   const system = `你是「阶段性项目总结汇报 PPT」的大纲编排器。只输出一个 JSON 数组，不要任何解释文字、不要代码围栏之外的内容。
 数组每个元素是一页，形如 {"section":"","title":"","bullets":[""],"dataKeys":[""],"layout":"","projectId":""}，约束逐条遵守：
-1. 页数 ${pageRange.min}~${pageRange.max}；${merged ? `合并版结构固定：封面→目录→跨项目对比→每项目 4 页（总体进展/里程碑与阶段进展/问题与风险/下阶段计划）→横向对比→本期总结与展望→附录。` : '单项目完整稿：封面、目录 + 10 个内容章节（FR-5.3~FR-5.12），可按内容拆页但不得缺章。'}
+1. ${separate
+    ? `分别独立版：每个项目一份完整稿（封面、目录 + 10 个内容章节），每项目 ${pageRange.min}~${pageRange.max} 页（共 ${totalPageRange.min}~${totalPageRange.max} 页）；数组按项目分组输出，每页必须带 projectId（取【项目清单】里的 id）。`
+    : `页数 ${pageRange.min}~${pageRange.max}；${merged ? `合并版结构固定：封面→目录→跨项目对比→每项目 4 页（总体进展/里程碑与阶段进展/问题与风险/下阶段计划）→横向对比→本期总结与展望→附录。` : '单项目完整稿：封面、目录 + 10 个内容章节（FR-5.3~FR-5.12），可按内容拆页但不得缺章。'}`}
 2. section 只能取：${SUMMARY_SECTIONS.join(' / ')}；
 3. layout 只能取：${SUMMARY_LAYOUTS.join(' / ')}；
 4. dataKeys 只能取：${SUMMARY_DATA_KEYS.join(' / ')}；一页最多 ${DATA_KEYS_MAX} 个；
 5. 每页 bullets ≤${BULLET_MAX_LINES} 条，每条 ≤${BULLET_MAX_CHARS} 字；
 6. ${merged
     ? `合并版必须有一页 dataKeys 含 "compare"（汇总对比）与一页含 "horizontal"（横向对比）；每项目的 4 页必须带 projectId（取【项目清单】里的 id），且该 4 页的 dataKeys 分别含 "kpi"、"milestones"、"risks"、"nextSteps"；`
-    : `必须覆盖的数据块：${REQUIRED_DATA_KEYS.map((k) => `"${k}"`).join(' / ')}（各至少一页）；`}
+    : `每个项目都必须覆盖的数据块：${REQUIRED_DATA_KEYS.map((k) => `"${k}"`).join(' / ')}（各至少一页）；`}
 7. 铁律：凡条数、合计、覆盖率、日期、人天等数字，一律只写 dataKeys 引用，由系统按库内真实数据填充——严禁自行写数字或改写数字；
 8. 只依据【资料齐备性】里标注为 ok 的数据源安排内容页；资源缺失的章节可保留页但走降级表述（布局允许）；
-9. 第 1 页 layout=cover、第 2 页 layout=toc；章节分隔可用 layout=section（dataKeys 置空）；
+9. ${separate ? '每个项目的第 1 页 layout=cover、第 2 页 layout=toc' : '第 1 页 layout=cover、第 2 页 layout=toc'}；章节分隔可用 layout=section（dataKeys 置空）；
 10. bullets 必须引用【各项目摘要】里给过的具体名称（用「」包裹），不得写「相关工作有序推进」这类无指代套话；名称只能照抄，数字仍归 dataKeys；
 11. 「问题与风险」页左栏是需求待确认（PRD 问题）、右栏是执行风险（逾期/阻塞/高复杂度），两栏都不许自造条目。`;
 
   const user = [
     `【汇报周期】${input.periodLabel}（${start} ~ ${endDay}）`,
-    `【项目数】${n}${merged ? '（合并版：跨项目汇总 + 每项目小结）' : '（单项目完整稿）'}`,
+    `【项目数】${n}${separate ? '（分别独立版：每项目一份完整稿）' : merged ? '（合并版：跨项目汇总 + 每项目小结）' : '（单项目完整稿）'}`,
     `【项目清单】${input.facts.map((f) => `${f.name}（id=${f.id}）`).join('；')}`,
     `【资料齐备性】${status}`,
     `【可用数据源（ok）】${usable.join('、') || '无'}`,
@@ -214,12 +244,22 @@ export function buildOutlinePrompt(input: OutlinePromptInput): {
     ...per.map((p) => `— ${p.name} —\n${p.text}`),
     input.style ? `【汇报风格】${input.style}` : '',
     input.extraNote ? `【用户补充要求】${input.extraNote}` : '',
-    `请按上述约束输出 ${pageRange.min}~${pageRange.max} 页的大纲 JSON 数组。`,
+    separate
+      ? `请按上述约束输出 ${totalPageRange.min}~${totalPageRange.max} 页的大纲 JSON 数组（每项目 ${pageRange.min}~${pageRange.max} 页，逐页带 projectId）。`
+      : `请按上述约束输出 ${pageRange.min}~${pageRange.max} 页的大纲 JSON 数组。`,
   ]
     .filter(Boolean)
     .join('\n\n');
 
-  return { system, user, truncated, perProject: per.map((p) => ({ id: p.id, name: p.name, chars: [...p.text].length, truncated: p.truncated })), pageRange };
+  return {
+    system,
+    user,
+    truncated,
+    perProject: per.map((p) => ({ id: p.id, name: p.name, chars: [...p.text].length, truncated: p.truncated })),
+    mode,
+    pageRange,
+    totalPageRange,
+  };
 }
 
 // ---------- schema 校验 ----------
@@ -229,6 +269,7 @@ const OUTLINE_SYSTEM_RETRY = `只输出 JSON 数组，元素 {section,title,bull
 section∈[${SUMMARY_SECTIONS.join('|')}] layout∈[${SUMMARY_LAYOUTS.join('|')}] dataKeys⊆[${SUMMARY_DATA_KEYS.join('|')}]（每页≤${DATA_KEYS_MAX}）
 每页 bullets≤${BULLET_MAX_LINES} 条、每条≤${BULLET_MAX_CHARS} 字；单项目必须覆盖 kpi/highlights/milestones/planRows/risks/workload/deliverables/nextSteps/appendix；
 合并版必须有 compare 与 horizontal 各一页，且每项目 4 页（kpi/milestones/risks/nextSteps）带 projectId；
+分别独立版每项目 12~16 页、每页带 projectId，且每项目 cover/toc 与上述 9 个数据块齐全；
 第 1 页 cover、第 2 页 toc；数字一律用 dataKeys 表示，禁止编造数字；bullets 用「」照抄输入出现过的名称。`;
 
 function dedupeKeys(raw: unknown[], at: string): SummaryDataKey[] {
@@ -246,6 +287,8 @@ function dedupeKeys(raw: unknown[], at: string): SummaryDataKey[] {
 export interface ValidateContext {
   /** 请求范围（已展开）；合并版据此校验 projectId 绑定 */
   projectIds: string[];
+  /** 生成模式（缺省 merged）：separate 要求每页绑定项目且每项目 12~16 页完整稿 */
+  mode?: SummaryMode;
   /** 重试轮：bullet 超长转截断 + warning，不再整稿判废（同 kickoff 口径） */
   lenient?: boolean;
 }
@@ -285,9 +328,10 @@ function validatePage(v: unknown, index: number, ctx: ValidateContext, warnings:
   if (!(SUMMARY_SECTIONS as readonly string[]).includes(section)) warnings.push(`${at} 章节「${section}」不在标准清单，保留原值`);
   const pid = asText(o.projectId);
   if (ctx.projectIds.length > 1) {
-    // 只有「项目小结页」（带 kpi/milestones/risks/nextSteps）强制绑定 projectId；
-    // 封面/目录/跨项目对比/总结/附录是全项目共享页，标了反而会把结构页算进某项目 4 页配额
-    const needsPid = dataKeys.some((k) => PER_PROJECT_KEYS.includes(k));
+    // 合并版只有「项目小结页」（带 kpi/milestones/risks/nextSteps）强制绑定 projectId；
+    // 封面/目录/跨项目对比/总结/附录是全项目共享页，标了反而会把结构页算进某项目 4 页配额。
+    // 分别独立版每页都属于某一个项目的完整稿，故每页都必须带 projectId。
+    const needsPid = ctx.mode === 'separate' || dataKeys.some((k) => PER_PROJECT_KEYS.includes(k));
     if (needsPid && !pid) {
       throw new Error(`${at} 合并版的项目小结页（dataKeys 含 ${PER_PROJECT_KEYS.join('/')}）必须带 projectId（取值：${ctx.projectIds.join(' / ')}）`);
     }
@@ -307,12 +351,33 @@ function validatePage(v: unknown, index: number, ctx: ValidateContext, warnings:
 export function validateSummaryOutline(raw: unknown, ctx: ValidateContext): { outline: SummaryOutlineItem[]; warnings: string[] } {
   if (!Array.isArray(raw)) throw new Error('大纲必须是 JSON 数组');
   const n = Math.max(1, ctx.projectIds.length);
-  const range = expectedPageRange(n);
+  const mode = ctx.mode ?? DEFAULT_SUMMARY_MODE;
+  const range = mode === 'separate' ? expectedSeparateTotalRange(n) : expectedPageRange(n);
   if (raw.length < range.min || raw.length > range.max) {
-    throw new Error(`页数 ${raw.length} 不在 ${range.min}~${range.max} 区间（${n > 1 ? `合并版 ${n} 个项目` : '单项目'}）`);
+    const scope = mode === 'separate'
+      ? `分别独立版 ${n} 个项目，共 ${range.min}~${range.max} 页`
+      : (n > 1 ? `合并版 ${n} 个项目` : '单项目');
+    throw new Error(`页数 ${raw.length} 不在 ${range.min}~${range.max} 区间（${scope}）`);
   }
   const warnings: string[] = [];
   const outline = raw.map((v, i) => validatePage(v, i, ctx, warnings));
+  if (mode === 'separate') {
+    // FR-6.2：每项目一份完整稿——逐项目校验 cover/toc 与 9 个数据块，页数各 12~16
+    for (const pid of ctx.projectIds) {
+      const mine = n > 1 ? outline.filter((p) => p.projectId === pid) : outline;
+      if (mine.length < SUMMARY_PAGE_MIN || mine.length > SUMMARY_PAGE_MAX) {
+        throw new Error(`项目 ${pid} 的独立稿页数 ${mine.length} 不在 ${SUMMARY_PAGE_MIN}~${SUMMARY_PAGE_MAX} 区间`);
+      }
+      if (mine[0].layout !== 'cover') throw new Error(`项目 ${pid} 的第 1 页 layout 必须是 cover`);
+      if (mine[1]?.layout !== 'toc') throw new Error(`项目 ${pid} 的第 2 页 layout 必须是 toc`);
+      for (const key of REQUIRED_DATA_KEYS) {
+        if (!mine.some((p) => p.dataKeys.includes(key))) {
+          throw new Error(`项目 ${pid} 的独立稿缺少「${key}」页（须有一页 dataKeys 含 '${key}'）`);
+        }
+      }
+    }
+    return { outline, warnings };
+  }
   if (outline[0].layout !== 'cover') throw new Error('第 1 页 layout 必须是 cover');
   if (outline[1].layout !== 'toc') throw new Error('第 2 页 layout 必须是 toc');
   if (n > 1) {
@@ -349,6 +414,8 @@ export interface SummaryOutlineParams {
   projectIds?: string[];
   custom?: CustomRange;
   toolId: string;
+  /** merged（缺省）/separate：分别独立版按「每项目完整稿」出大纲（FR-6.2） */
+  mode?: unknown;
   style?: string;
   extraNote?: string;
   /** 测试注入用：默认 `AIService.askJson` */
@@ -362,7 +429,11 @@ export interface SummaryOutlineResult {
   truncated: boolean;
   period: SummaryPeriod;
   periodLabel: string;
+  mode: SummaryMode;
+  /** 每份稿的页数区间（separate 下为单份 12~16） */
   pageRange: { min: number; max: number };
+  /** 整稿页数区间（separate 下为 N 项合计 12N~16N） */
+  totalPageRange: { min: number; max: number };
   projects: Array<{ id: string; name: string }>;
   /** 逐项目摘要字数（预算核对用，面板可显示） */
   budget: { total: number; perProject: number; chars: Array<{ id: string; name: string; chars: number }> };
@@ -375,6 +446,7 @@ export interface SummaryOutlineResult {
 export async function summaryOutline(params: SummaryOutlineParams): Promise<SummaryOutlineResult> {
   const toolId = asText(params.toolId);
   if (!toolId) throw new Error('toolId 必填（大纲生成需要模型工具）');
+  const mode = normalizeSummaryMode(params.mode);
   const period = assertSummaryPeriod(params.period);
   const { ids, error } = validateProjectIds(params.projectIds);
   if (error) throw new Error(error);
@@ -395,6 +467,7 @@ export async function summaryOutline(params: SummaryOutlineParams): Promise<Summ
     range: bundle.range,
     preflight: preflight.items,
     facts,
+    mode,
     style: style || undefined,
     extraNote: asText(params.extraNote) || undefined,
   });
@@ -407,7 +480,7 @@ export async function summaryOutline(params: SummaryOutlineParams): Promise<Summ
     prompt.user,
     (content) => {
       round++;
-      return validateSummaryOutline(parseAiJson(content), { projectIds: bundle.projectIds, lenient: round > 1 });
+      return validateSummaryOutline(parseAiJson(content), { projectIds: bundle.projectIds, mode, lenient: round > 1 });
     },
     {
       temperature: 0,
@@ -429,7 +502,9 @@ export async function summaryOutline(params: SummaryOutlineParams): Promise<Summ
     truncated: prompt.truncated,
     period,
     periodLabel: bundle.periodLabel,
+    mode,
     pageRange: prompt.pageRange,
+    totalPageRange: prompt.totalPageRange,
     projects: facts.map((f) => ({ id: f.id, name: f.name })),
     budget: {
       total: SUMMARY_BUDGET,
