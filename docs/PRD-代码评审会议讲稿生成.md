@@ -1,6 +1,6 @@
 # PRD：AI 控制台「代码评审会议讲稿生成」（MTask）
 
-> 来源任务：T02169 ｜ 版本：**v1.3（锚点校正版，评审修订内容承自 v1.1/v1.2，仍待审批）** ｜ 日期：2026-10-16（v1.2 锚点校正 2026-10-18）｜ 作者：AI 工作台产品助手 ｜ 状态：**待审批**（本文件只定义需求与设计，不含实现；含 4 个开放决策点 E-1~E-4，§9）
+> 来源任务：T02169 ｜ 版本：**v1.4（已批准）** ｜ 日期：2026-10-16（v1.2 锚点校正 2026-10-18；v1.3 锚点校正 2026-10-23；v1.4 批准 2026-10-24）｜ 作者：AI 工作台产品助手 ｜ 状态：**已批准**（2026-10-24 需求方签字，E-1~E-4 全部按 §9 建议值通过，可进入实施；本文件只定义需求与设计）
 > 影响项目：**mtask六期**（MTask 项目 `bea1ce5b-67c1-4a0d-a08c-db0d5a3d9136`，2026-10-15 建；工作空间 `D:\code\otherProjects\26_MTask`——与四期同仓不同项目，T02169 归属六期）
 > 评审报告：`docs/PRD评审报告-代码评审会议讲稿生成.md`（v1.0 → v1.1 的 1 阻塞 / 4 重要 / 3 建议问题及处置）
 > 关联既有 PRD：`docs/PRD-项目启动会PPT生成.md`（T01844，v1.1 已批准，同属「AI 控制台能力卡片」家族，产物链路与下载令牌口径复用）、`docs/PRD-竞品调研与优化需求.md`
@@ -13,11 +13,11 @@
 | 项 | 内容 |
 |---|---|
 | 文档编号 | PRD-CRL-001 |
-| 版本 | v1.3（需求口径逐字同 v1.1/v1.2，仅锚点行号校正） |
-| 作者 | AI 起草（T02169），审批人待定 |
-| 状态 | 待审批——含 4 个开放决策点 E-1~E-4（§9），批准前不得进入实施 |
+| 版本 | v1.4（需求口径逐字同 v1.1~v1.3，v1.4 仅回填批准状态与 §9 签字结论） |
+| 作者 | AI 起草（T02169），2026-10-24 需求方批准 |
+| 状态 | **已批准**（2026-10-24 需求方签字；E-1~E-4 全部按 §9 建议值通过），可进入实施 |
 | 对应任务 | T02169「编写代码评审会议讲稿功能PRD文档」 |
-| 变更记录 | v1.0：首版，含竞品调研（§5）、UX 优化建议（§5.4）、交互设计规范（§6）、非功能需求（§7）、验收标准（§8）<br>v1.1（评审修订）：① 修正 `projects.color` 虚构字段（§6.3 改 exportStyle 色板）；② 影响项目四期→六期；③ 补「第 8 张卡」与 T02170 PRD 的冲突声明；④ FR-1.1 补 git 输出编码配置（UTF-8/quotepath）与 CRLF 口径；⑤ FR-4.3 补锚点时效与 blob 标识；⑥ FR-1.4 补截断优先级因子；⑦ §8 A-3 扩中文可读断言；详见评审报告<br>v1.2（2026-10-18 **锚点行号校正，需求零变化**）：验收门 `verify-t02169-lecture-prd` 改判为「逐条解析 `文件:行号` 并回仓定位」后抓出 12 处行号漂移，按 HEAD 实测校正——`server/src/routes/index.ts` 8 处（SSE 三点 `1568/1711/1764`→`1586/1729/1782`、`/report/ai-download` `1824`→`1842`、workspace 四端点 `257/274/282/290`→`259/276/284/292`）、`server/src/db/schema.ts` 2 处（`558`→`544`）、`AIService.askStream` `556`→`584`、§2.5 术语表 `reportCards` `580`→`584`；同批把 12 处裸行号锚点补成 `路径:行号 标识符` 形态（`prd-generate-stream`、`/workspace/search`、`ensureColumn`、`trimPrdContent`、`AdapterType` 等），让符号腿覆盖面从 6 条提到 20 条以上，行号漂移可逐条回仓核对<br>v1.3（2026-10-23 **锚点行号校正，需求零变化**）：验收门 `verify-t02169-lecture-prd` 复跑打红符号腿——`server/src/routes/index.ts` 八处锚点自 v1.2 校正后整体位移 **+23 行**（SSE 三点 `1586/1729/1782`→`1609/1752/1805`、workspace 四端点 `259/276/284/292`→`282/299/307/315`、下载端点 `1842`→`1865`），系该文件在其后新增路由/工具接入所致，与需求口径无关；另修一处**符号腿判不住的语义错位**——原锚点指向 schema 第 544 行，该行现落在 `prd_requirements.prd_id` 的注释上（±3 窗口内有泛用标识符，门不红），而文档说的是 `projects.workspace_path`，HEAD 实测在 561 行，已按「路径:行号 字段名」收口；同批把 FR-3.3/FR-5.1 两处裸行号锚补成 `路径:行号 标识符` 形态。**未改任何需求文字、未动 §9 决策点建议值、状态仍为待审批。** |
+| 变更记录 | v1.0：首版，含竞品调研（§5）、UX 优化建议（§5.4）、交互设计规范（§6）、非功能需求（§7）、验收标准（§8）<br>v1.1（评审修订）：① 修正 `projects.color` 虚构字段（§6.3 改 exportStyle 色板）；② 影响项目四期→六期；③ 补「第 8 张卡」与 T02170 PRD 的冲突声明；④ FR-1.1 补 git 输出编码配置（UTF-8/quotepath）与 CRLF 口径；⑤ FR-4.3 补锚点时效与 blob 标识；⑥ FR-1.4 补截断优先级因子；⑦ §8 A-3 扩中文可读断言；详见评审报告<br>v1.2（2026-10-18 **锚点行号校正，需求零变化**）：验收门 `verify-t02169-lecture-prd` 改判为「逐条解析 `文件:行号` 并回仓定位」后抓出 12 处行号漂移，按 HEAD 实测校正——`server/src/routes/index.ts` 8 处（SSE 三点 `1568/1711/1764`→`1586/1729/1782`、`/report/ai-download` `1824`→`1842`、workspace 四端点 `257/274/282/290`→`259/276/284/292`）、`server/src/db/schema.ts` 2 处（`558`→`544`）、`AIService.askStream` `556`→`584`、§2.5 术语表 `reportCards` `580`→`584`；同批把 12 处裸行号锚点补成 `路径:行号 标识符` 形态（`prd-generate-stream`、`/workspace/search`、`ensureColumn`、`trimPrdContent`、`AdapterType` 等），让符号腿覆盖面从 6 条提到 20 条以上，行号漂移可逐条回仓核对<br>v1.3（2026-10-23 **锚点行号校正，需求零变化**）：验收门 `verify-t02169-lecture-prd` 复跑打红符号腿——`server/src/routes/index.ts` 八处锚点自 v1.2 校正后整体位移 **+23 行**（SSE 三点 `1586/1729/1782`→`1609/1752/1805`、workspace 四端点 `259/276/284/292`→`282/299/307/315`、下载端点 `1842`→`1865`），系该文件在其后新增路由/工具接入所致，与需求口径无关；另修一处**符号腿判不住的语义错位**——原锚点指向 schema 第 544 行，该行现落在 `prd_requirements.prd_id` 的注释上（±3 窗口内有泛用标识符，门不红），而文档说的是 `projects.workspace_path`，HEAD 实测在 561 行，已按「路径:行号 字段名」收口；同批把 FR-3.3/FR-5.1 两处裸行号锚补成 `路径:行号 标识符` 形态。**未改任何需求文字、未动 §9 决策点建议值、状态仍为待审批。**<br>v1.4（2026-10-24 **批准，需求零变化**）：需求方对 §9 四个开放决策点 E-1~E-4 **全部按建议值签字**——E-1 同意依赖系统 git（配粘贴 patch 降级）、E-2 不做待办/计划关联（仅 commit message）、E-3 不解禁目录快照 diff、E-4 讲稿与标记状态本期不落库；同批把文档头与 §1 状态行由「待审批」改为「已批准」，§9 标题与结论段回填签字事实；并按 HEAD 复测锚点——`server/src/routes/index.ts` 自上版后新增路由再位移 **+28 行**（SSE 三点 `1609/1752/1805`→`1637/1780/1833`、下载端点 `1865`→`1893`），`server/src/db/schema.ts` 位移 +5 行（`workspace_path` `561`→`566`），`web/src/pages/ReportPage.tsx` 卡片数组前移（`reportCards` `584`→`492`、`kickoff-ppt` `626`→`534`），均只改行号。**未改任何需求文字、未动四条建议值与理由，验收矩阵 A-1~A-7 原样。** |
 
 ---
 
@@ -30,21 +30,21 @@
 ### 2.2 背景：为什么是「讲稿」而不是「又一款 AI 评审」
 
 1. **评审会议是人工环节，现有 AI 评审工具都不服务它**。调研结论（§5）：GitHub Copilot Code Review、CodeRabbit、Qodo Merge/PR-Agent、Sourcery 的产物形态清一色是「PR 行内评论 / 检查清单」，面向**异步评审流**；没有任何一款输出「会议主持人照着念的结构化讲稿」。团队开评审会前仍需人工把散落的评论与 diff 组织成讲解口径——这正是本功能要的缺口。
-2. **MTask 的差异化位置**：本系统是 AI 开发管理工具，掌握「项目 ↔ 工作空间 ↔ 任务/计划」的管理侧上下文（`projects.workspace_path`，`server/src/db/schema.ts:561`）。讲稿可以回答「这批变更对应哪些待办、为什么这么改」，这是挂在 Git 平台上的评审 Bot 拿不到的语境。
+2. **MTask 的差异化位置**：本系统是 AI 开发管理工具，掌握「项目 ↔ 工作空间 ↔ 任务/计划」的管理侧上下文（`projects.workspace_path`，`server/src/db/schema.ts:566`）。讲稿可以回答「这批变更对应哪些待办、为什么这么改」，这是挂在 Git 平台上的评审 Bot 拿不到的语境。
 3. **多项目汇总缺口**：负责人跨多个项目主持阶段性评审（如迭代结束）时，没有任何工具做跨仓汇总讲稿；竞品全部是单 PR/单仓粒度。
 
 ### 2.3 现状与证据（本仓实测，全部只读）
 
 | 事实 | 实测证据 | 对本功能的约束 |
 |---|---|---|
-| 「AI 控制台」卡片页是 `ReportPage.tsx`，现共 **7 张卡**（ai-import / offline / ai-live / prd-gen / prd-import / tc-gen / kickoff-ppt） | `web/src/pages/ReportPage.tsx:584 const reportCards`、`:626` kickoff-ppt | 新卡片按 `reportCards` **数组尾部追加**、复用 `ReportCard` 组件，**不得新造卡片组件**（一致性约束，与启动会 PPT 卡同规）。**卡位冲突声明（评审新增）**：T02170「阶段性项目总结汇报 PPT」PRD（已批准）同争该位——两张卡均按尾部追加，**先落地者为第 8 张、后落地者为第 9 张**，以实际追加时点定序，不得互相顶替或改标题（口径与 `docs/PRD-阶段性项目总结汇报PPT.md` §12 对齐） |
-| 长耗时 AI 生成的既有范式是 **SSE 流** | `POST /api/plans/prd-generate-stream`（`server/src/routes/index.ts:1609 prd-generate-stream`，raw 30mb 接收）、`/plans/testcase-generate-stream`（`server/src/routes/index.ts:1752 testcase-generate-stream`）、`/report/ai-generate-stream`（`server/src/routes/index.ts:1805 ai-generate-stream`）；客户端断开即 abort | 新端点必须走 `*-stream` 同构形态（§4.2 FR-5），复用 `web/src/api/sse.ts` 消费层 |
+| 「AI 控制台」卡片页是 `ReportPage.tsx`，现共 **7 张卡**（ai-import / offline / ai-live / prd-gen / prd-import / tc-gen / kickoff-ppt） | `web/src/pages/ReportPage.tsx:492 const reportCards`、`:534` kickoff-ppt | 新卡片按 `reportCards` **数组尾部追加**、复用 `ReportCard` 组件，**不得新造卡片组件**（一致性约束，与启动会 PPT 卡同规）。**卡位冲突声明（评审新增）**：T02170「阶段性项目总结汇报 PPT」PRD（已批准）同争该位——两张卡均按尾部追加，**先落地者为第 8 张、后落地者为第 9 张**，以实际追加时点定序，不得互相顶替或改标题（口径与 `docs/PRD-阶段性项目总结汇报PPT.md` §12 对齐） |
+| 长耗时 AI 生成的既有范式是 **SSE 流** | `POST /api/plans/prd-generate-stream`（`server/src/routes/index.ts:1637 prd-generate-stream`，raw 30mb 接收）、`/plans/testcase-generate-stream`（`server/src/routes/index.ts:1780 testcase-generate-stream`）、`/report/ai-generate-stream`（`server/src/routes/index.ts:1833 ai-generate-stream`）；客户端断开即 abort | 新端点必须走 `*-stream` 同构形态（§4.2 FR-5），复用 `web/src/api/sse.ts` 消费层 |
 | AI 通道只有文本 chat | `server/src/services/AIService.ts`：`organize:294 / ask:474 / askJson:499 / askStream:584`；适配器 `server/src/adapters/types.ts:93 AIAdapter`，`chatStream:101`，类型 `openai-compatible|claude|ollama|workbuddy`（`:110`） | 代码上下文只能以**文本 diff/文件内容**注入；无 embedding 检索、无全仓索引承诺（呼应任务约束「考虑大模型上下文限制，避免过度承诺」） |
 | 上下文截断有既成口径 | `server/src/util/prdContext.ts:25 PRD_CONTEXT_LIMIT=6000`，保头保尾截断（`:77-79`） | 讲稿场景预算远大于 6000，需新建独立预算常量与分段装配策略（§4.2 FR-3），但截断「保头保尾 + 显式告警」的纪律沿用 |
 | **本仓无任何 Git 操作能力** | grep `git diff|simple-git|rev-parse` 于 `server/src` 零命中；`server/package.json` 无 git 类依赖；`child_process` 仅 `tunnel/tunnel-service.ts:1,8 child_process`（spawn/execFile 先例）与打包脚本；`WorkspaceService` 反而**显式忽略 .git**（`server/src/services/WorkspaceService.ts:15 DEFAULT_IGNORE_DIRS`） | Git 数据采集是**全新能力**（FR-1），只能走子进程调用系统 git（spawn 先例在位）；必须严格只读（禁 checkout/commit/fetch 等写命令，§7 安全）；无 git 环境须有降级路（FR-1.3） |
 | 工作空间文件读取能力在位 | 端点 `GET /api/workspace/search`（`routes/index.ts:282 /workspace/search`）、`GET /api/workspace/file`（`routes/index.ts:299 /workspace/file`）、`POST /api/workspace/symbols/refresh`（`routes/index.ts:307 /workspace/symbols/refresh`）、`GET /api/workspace/symbols`（`routes/index.ts:315 /workspace/symbols`） | 讲稿的「变更文件上下文展开」（读被改函数的所在类/调用方）可用 symbols 能力，不新建检索机制 |
-| 产物落盘与下载链路齐备 | 临时文件 + 令牌换文件：`POST /report/ai-download`（`routes/index.ts:1865 /report/ai-download`）；pptx 生成在位：`server/src/services/report-builder.ts:247 buildPptx()`，依赖 `pptxgenjs ^4.0.1`（`server/package.json:23 pptxgenjs`） | 讲稿导出 md/docx/pptx 复用 ai-download 令牌口径与既有装配器，**不新增下载端点、不新增依赖** |
-| 数据源侧「项目」为多记录实体 | `projects` 表含 `workspace_path`（`schema.ts:561 workspace_path`） | 「单项目或多项目批处理」直接以 projects 多选实现（FR-2），无需新实体 |
+| 产物落盘与下载链路齐备 | 临时文件 + 令牌换文件：`POST /report/ai-download`（`routes/index.ts:1893 /report/ai-download`）；pptx 生成在位：`server/src/services/report-builder.ts:247 buildPptx()`，依赖 `pptxgenjs ^4.0.1`（`server/package.json:23 pptxgenjs`） | 讲稿导出 md/docx/pptx 复用 ai-download 令牌口径与既有装配器，**不新增下载端点、不新增依赖** |
+| 数据源侧「项目」为多记录实体 | `projects` 表含 `workspace_path`（`schema.ts:566 workspace_path`） | 「单项目或多项目批处理」直接以 projects 多选实现（FR-2），无需新实体 |
 
 **「不存在」的取证口径**：grep 范围 `server/src`、`web/src`、`electron/`，排除 `node_modules`/`docs`/`perf`/`dist`。结论：无 git 采集、无 diff 渲染组件（`web/src` grep `diff` 组件级零命中）、无代码托管平台对接（`UpdateService.ts:24` 仅调 GitHub Releases API 检查软件更新，与代码仓库无关）。
 
@@ -68,7 +68,7 @@
 
 | 术语 | 定义 | 系统对应 |
 |---|---|---|
-| AI 控制台 / 能力卡片 | 卡片式 AI 工作入口 | `ReportPage.tsx:584 reportCards` / `ReportCard` |
+| AI 控制台 / 能力卡片 | 卡片式 AI 工作入口 | `ReportPage.tsx:492 reportCards` / `ReportCard` |
 | 阶段性增量代码 | 一次评审会议所辖的代码变更集 | Git 区间 / 粘贴 patch（FR-1） |
 | 讲稿 | 会议主持人可照念的结构化文稿 | 本功能产物（FR-4） |
 | 大纲先行 | 先出大纲供确认再逐节展开 | `stage` 事件 `outline_ready`（§6.2） |
@@ -116,7 +116,7 @@ flowchart TD
 - **FR-1.1a 输出编码红线（评审新增，Windows 硬约束）**：所有采集命令统一注入两个配置项——`-c i18n.logOutputEncoding=utf-8`（否则中文 Windows 上 commit message 按 cp936/GBK 输出，Node 按 utf8 解码即**乱码**，而 commit message 正是 FR-4.3「为什么改」的第一证据源）与 `-c core.quotepath=false`（否则非 ASCII 路径被转义为 `\xxX`，锚点文件名不可读、A-4 定位失效）。注入走命令行 `-c` 参数，**不得修改用户全局/仓库 git 配置**。
 - **FR-1.1b 行尾口径（评审新增）**：diff 采集加 `--ignore-cr-at-eol`（或等价处理），规避 Windows `core.autocrlf=true`（git 安装默认项）导致未改行尾的文件整文件进 diff——否则预检统计虚高、上下文预算被行尾噪声吃掉。该处理是**静默降质**防护，与 G4 直接相关。
 - FR-1.2 区间三形态：① `base..head`（分支/标签/commit）；② commit 范围（首末 SHA）；③ 时间窗（`--since`，落地「近 14 天」类诉求）。输出统一为 `{ files[], hunks[], commits[], stats }`；统一按 UTF-8 解码（FR-1.1a 保证上游输出即 UTF-8）。
-- FR-1.3 降级：工作空间无 git（`rev-parse` 非 0）或系统无 git 命令 → 卡片内显式提示并切换「粘贴 patch」模式（接受 unified diff 全文，上限沿用 raw 30mb，`routes/index.ts:1609` 同构）。
+- FR-1.3 降级：工作空间无 git（`rev-parse` 非 0）或系统无 git 命令 → 卡片内显式提示并切换「粘贴 patch」模式（接受 unified diff 全文，上限沿用 raw 30mb，`routes/index.ts:1637` 同构）。
 - FR-1.4 硬边界：单仓采集 diff 文本上限（默认 2MB，超出按文件优先级截断并告警）、子进程超时 30s、`maxBuffer` 显式设置。不访问远程（禁 `fetch/pull/clone`），仓库状态零改动（只读命令集合本身保证）。**截断优先级因子（评审新增）**：变更行数多者优先 → 安全敏感路径（`auth`/`crypto`/`sql`/`exec` 等）优先 → 被 workspace symbols 引用多者优先；被丢弃文件在预检逐一点名（FR-7.1）。
 
 **FR-2 范围选择（单/多项目）**
@@ -136,12 +136,12 @@ flowchart TD
 - FR-4.5 讲稿语言为「可照念」口语句式（每段 ≤3 句），与评论体区分——提示词层约束，验收含人工抽测项（§8 A-7）。
 
 **FR-5 流式生成与中断**
-- FR-5.1 `POST /api/plans/code-review-lecture-stream`：raw 30mb、事件 `stage/chunk/done/error`、客户端断开即 abort（与 `routes/index.ts:1609 prd-generate-stream / :1752 testcase-generate-stream / :1805 ai-generate-stream` 三点同构，零新范式）。
+- FR-5.1 `POST /api/plans/code-review-lecture-stream`：raw 30mb、事件 `stage/chunk/done/error`、客户端断开即 abort（与 `routes/index.ts:1637 prd-generate-stream / :1780 testcase-generate-stream / :1833 ai-generate-stream` 三点同构，零新范式）。
 - FR-5.2 阶段可见：`collecting → preflight → outline → section:<n>` 进度条；「停止」即时生效。
 
 **FR-6 导出与留档**
 - FR-6.1 导出 md（直接）/ docx / pptx（投屏模式：每节一页要点+讲者备注全文）；pptx 装配复用 `buildPptx` 同栈（`report-builder.ts:247 buildPptx`，pptxgenjs 在位）。
-- FR-6.2 下载走临时文件+令牌口径（`/report/ai-download`，`routes/index.ts:1865 ai-download`，文件名白名单已含三格式，零改动复用）。
+- FR-6.2 下载走临时文件+令牌口径（`/report/ai-download`，`routes/index.ts:1893 ai-download`，文件名白名单已含三格式，零改动复用）。
 - FR-6.3 生成日志：本期仅控制台流留痕（对齐 kickoff A-3 决策），持久留档与否由 E-4 裁定。
 
 **FR-7 预检（不静默出劣稿）**
@@ -263,7 +263,7 @@ flowchart TD
 
 ---
 
-## 9. 开放决策点（审批前须签字）
+## 9. 开放决策点（已签字，2026-10-24）
 
 | 编号 | 问题 | 建议值 | 理由 |
 |---|---|---|---|
@@ -271,6 +271,8 @@ flowchart TD
 | E-2 | 「为什么改」是否本期关联 MTask 待办/计划（比 commit message 更强证据） | **不做，仅 commit message** | 待办↔commit 需提交规范约定，属独立课题；先验证讲稿本体 |
 | E-3 | 目录快照 diff（N4）是否解禁 | **不做** | 依赖引入+UI 成本高，粘贴 patch 覆盖无 git 场景 |
 | E-4 | 讲稿与标记状态是否落库留档 | **本期不落库** | 对齐 kickoff A-3「先控制台流」决策，用导出稿天然留痕 |
+
+> **签字结论（2026-10-24）**：需求方对 E-1~E-4 **全部按「建议值」通过**——E-1 同意依赖系统 git（配粘贴 patch 降级）、E-2 不做待办/计划关联（仅 commit message）、E-3 不解禁目录快照 diff（N4）、E-4 本期不落库。四条建议值与理由均未改动；本 PRD 遂由「待审批」转为「**已批准**」（v1.4），可进入实施。签字回填见 `docs/PRD冻结确认记录-代码评审会议讲稿-20261023.md` §4。
 
 ---
 
