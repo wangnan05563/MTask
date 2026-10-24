@@ -12,8 +12,8 @@ import { isWordFieldToken } from '../util/wordFields'; // T00814：关键词提�
  */
 
 /** 内置忽略（目录名/文件名精确匹配 + 常见敏感文件），与 .mtaskignore 叠加生效 */
-const DEFAULT_IGNORE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'out', 'release', 'release2', 'release3', 'release4', 'release5', 'release6', 'coverage', '__pycache__', '.venv', 'venv', '.idea', '.vscode', '.workbuddy', '.trae', 'dist_electron']);
-const DEFAULT_IGNORE_FILES = new Set(['.env', '.env.local', '.env.production', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', '.mtaskignore']);
+export const DEFAULT_IGNORE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'out', 'release', 'release2', 'release3', 'release4', 'release5', 'release6', 'coverage', '__pycache__', '.venv', 'venv', '.idea', '.vscode', '.workbuddy', '.trae', 'dist_electron']);
+export const DEFAULT_IGNORE_FILES = new Set(['.env', '.env.local', '.env.production', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', '.mtaskignore']);
 
 /** 全文检索的文件体积上限（超过只做文件名匹配）与单行/单文件截断 */
 const SEARCH_FILE_MAX_BYTES = 1024 * 1024;

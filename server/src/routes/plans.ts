@@ -3,6 +3,7 @@ import { PlanService } from '../services/PlanService';
 import { TestCaseService } from '../services/TestCaseService'; // T01484：测试用例取数（PRD-测试用例管理 §6）
 import { assertOutlineShape, kickoffOutline, preflight, kickoffPptStream } from '../services/kickoffService'; // T02095/T02096/T02103：启动会 PPT 前置校验、大纲与 SSE 流式生成
 import { summaryPreflight } from '../services/summaryPptService'; // T02853（六期 S2）：总结汇报 PPT 前置校验聚合 S1~S9
+import { listLectureProjects, previewLectureScope, LectureScopeError } from '../services/lectureScope'; // T02867（六期 2.3）：代码评审讲稿范围/排除过滤器
 import { summaryOutline } from '../services/summaryPptOutline'; // T02854（六期 S3）：总结汇报 PPT 大纲段（提示词 + schema 校验）
 import { prepareSummaryPptStream, renderSummaryPptStream } from '../services/summaryPptStream'; // T02856（六期 S5）：总结汇报 PPT 流式装配 + 下载令牌
 import { safeExportName } from '../util/export-name'; // T02104：导出文件名单源（与下载白名单同源）
@@ -85,6 +86,22 @@ planApi.get('/summary-preflight', (req, res) =>
     }),
   ),
 );
+
+// T02867（六期 2.3）：代码评审会议讲稿——范围候选项目（仅现行项目；未配置 workspace_path 的带 workspaceConfigured=false）
+planApi.get('/code-review-lecture/projects', (_req, res) => wrap(res, () => listLectureProjects()));
+
+/**
+ * T02867（六期 2.3）：范围预检（PRD FR-2.1/2.2、FR-7.1）——逐项目判定 git/patch、采集三形态区间、
+ * 按排除规则过滤并套 2MB 预算；零 AI 调用、只读。请求级非法入参 400，单项目采集失败落 blocked 不拖垮整单。
+ */
+planApi.post('/code-review-lecture/preflight', async (req, res) => {
+  try {
+    res.json(await previewLectureScope(req.body ?? {}));
+  } catch (e) {
+    if (e instanceof LectureScopeError) return res.status(400).json({ error: e.message });
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
 
 /**
  * T02854（六期 S3）：阶段性总结汇报 PPT 大纲（1 次 askJson + schema 校验；不合规由 askJson 自带重试 1 次后 400）。

@@ -100,7 +100,7 @@ export function assertSafeRevision(token: string): string {
 }
 
 /** 单版本号位置（base/head/首末 SHA）：不接受 `..`/`...` 区间写法 */
-function assertSingleRevision(token: string): string {
+export function assertSingleRevision(token: string): string {
   const rev = assertSafeRevision(token);
   if (rev.includes('..')) throw new GitCollectError('denied', `该区间形态要求单个版本号，不接受区间「${rev}」`);
   return rev;
