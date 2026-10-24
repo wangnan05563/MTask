@@ -313,7 +313,7 @@ function OutlineToolbar({ extraNote, onExtraNoteChange, streaming, outlineBusy, 
       {rowCount > 0 && <button onClick={onClear} disabled={streaming} className="tbtn-anim" title="清空大纲稿" aria-label="清空大纲" style={opBtn}><Trash2 size={11} /> 清空</button>}
       <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{rowCount
         ? `共 ${rowCount} 页${mode === 'separate' ? '（每项目 12~16 页）' : ''}`
-        : (mode === 'separate' ? '大纲：每项目 12~16 页完整稿，合计 12N~16N 页，可改标题/要点/版式' : '大纲 12~16 页（单项目）/ 合并版 8+4N 页，可改标题/要点/版式')}</span>
+        : (mode === 'separate' ? '大纲：每项目 12~16 页完整稿，合计 12N~16N 页，可改标题/要点/版式' : '大纲 12~16 页（单项目）/ 合并版 6+4N 页，可改标题/要点/版式')}</span>
     </div>
   );
 }

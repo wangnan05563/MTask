@@ -107,13 +107,18 @@ export const BULLET_MAX_LINES = 6;
 /** 一页可挂的数据块上限（同 kickoff：3 块必然挤爆版面） */
 export const DATA_KEYS_MAX = 2;
 
-/** PRD 页数约束：单项目 12~16；多项目下限=枚举结构 6+4N、上限=8+4N（PRD 原话）且 ≤40 */
+/**
+ * 页数约束：单项目 12~16；多项目合并版 = 枚举结构固定页 + 每项目 4 页 = **6+4N**（T02957 方案 A），且 ≤40。
+ * 合并版结构是确定的（封面/目录/汇总对比/横向对比/本期总结/附录 6 页 + 每项目 4 页），不存在余量。
+ */
 export function expectedPageRange(projectCount: number): { min: number; max: number } {
   if (projectCount <= 1) return { min: SUMMARY_PAGE_MIN, max: SUMMARY_PAGE_MAX };
-  // 上下限同时夹到 CAP：N=8 恰为 38~40；即使调用方绕过 validateProjectIds 的 8 项目帽，也不会出现 min>max 的死区间
-  const min = Math.min(SUMMARY_MERGED_CAP, SUMMARY_MERGED_FIXED + SUMMARY_MERGED_PER_PROJECT * projectCount);
-  return { min, max: Math.min(SUMMARY_MERGED_CAP, min + 2) };
+  // 夹到 CAP：调用方绕过 validateProjectIds 的 8 项目帽也不会出现越界
+  const pages = Math.min(SUMMARY_MERGED_CAP, SUMMARY_MERGED_FIXED + SUMMARY_MERGED_PER_PROJECT * projectCount);
+  return { min: pages, max: pages };
 }
+/** 区间文案：单点区间写成「18」而不是「18~18」 */
+const rangeText = (r: { min: number; max: number }) => (r.min === r.max ? String(r.min) : `${r.min}~${r.max}`);
 
 /** 分别独立版（FR-6.2）：每项目一份完整稿，总页数 = N×12 ~ N×16（单份上限仍是 16） */
 export function expectedSeparateTotalRange(projectCount: number): { min: number; max: number } {
@@ -220,7 +225,7 @@ export function buildOutlinePrompt(input: OutlinePromptInput): {
 数组每个元素是一页，形如 {"section":"","title":"","bullets":[""],"dataKeys":[""],"layout":"","projectId":""}，约束逐条遵守：
 1. ${separate
     ? `分别独立版：每个项目一份完整稿（封面、目录 + 10 个内容章节），每项目 ${pageRange.min}~${pageRange.max} 页（共 ${totalPageRange.min}~${totalPageRange.max} 页）；数组按项目分组输出，每页必须带 projectId（取【项目清单】里的 id）。`
-    : `页数 ${pageRange.min}~${pageRange.max}；${merged ? `合并版结构固定：封面→目录→跨项目对比→每项目 4 页（总体进展/里程碑与阶段进展/问题与风险/下阶段计划）→横向对比→本期总结与展望→附录。` : '单项目完整稿：封面、目录 + 10 个内容章节（FR-5.3~FR-5.12），可按内容拆页但不得缺章。'}`}
+    : `页数 ${rangeText(pageRange)}；${merged ? `合并版结构固定：封面→目录→跨项目对比→每项目 4 页（总体进展/里程碑与阶段进展/问题与风险/下阶段计划）→横向对比→本期总结与展望→附录。` : '单项目完整稿：封面、目录 + 10 个内容章节（FR-5.3~FR-5.12），可按内容拆页但不得缺章。'}`}
 2. section 只能取：${SUMMARY_SECTIONS.join(' / ')}；
 3. layout 只能取：${SUMMARY_LAYOUTS.join(' / ')}；
 4. dataKeys 只能取：${SUMMARY_DATA_KEYS.join(' / ')}；一页最多 ${DATA_KEYS_MAX} 个；
@@ -357,7 +362,7 @@ export function validateSummaryOutline(raw: unknown, ctx: ValidateContext): { ou
     const scope = mode === 'separate'
       ? `分别独立版 ${n} 个项目，共 ${range.min}~${range.max} 页`
       : (n > 1 ? `合并版 ${n} 个项目` : '单项目');
-    throw new Error(`页数 ${raw.length} 不在 ${range.min}~${range.max} 区间（${scope}）`);
+    throw new Error(`页数 ${raw.length} 不在 ${rangeText(range)} 页（${scope}）`);
   }
   const warnings: string[] = [];
   const outline = raw.map((v, i) => validatePage(v, i, ctx, warnings));
