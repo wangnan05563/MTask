@@ -1,6 +1,6 @@
 # PRD：AI 控制台「阶段性项目总结汇报 PPT 生成」（MTask）
 
-> 来源任务：T02170 ｜ 版本：**v1.1（已批准）** ｜ 日期：2026-10-16 ｜ 状态：**已批准（2026-10-16 业主签字），按 §9 回写项目计划并派生实施任务**
+> 来源任务：T02170 ｜ 版本：**v1.2（已批准）** ｜ 日期：2026-10-16 ｜ 状态：**已批准（2026-10-16 业主签字），按 §9 回写项目计划并派生实施任务；v1.2 为 2026-10-24 文档裁决修订（T02957/T02959）**
 > 评审报告：`docs/PRD评审报告-阶段性项目总结汇报PPT.md`（v1.0 → v1.1 的 3 阻塞 / 5 重要 / 4 建议问题及处置）
 > 影响项目：**mtask六期**（MTask 项目 `bea1ce5b-67c1-4a0d-a08c-db0d5a3d9136`，2026-10-15 建；工作空间 `D:\code\otherProjects\26_MTask`——与四期同仓不同项目，T02170 归属六期）
 > 关联既有 PRD：`docs/PRD-项目启动会PPT生成.md`（T02107，v1.1 已批准且**已实现**——`kickoffService.ts`/`kickoffBuilder.ts`/`kickoff-layout.ts`/`KickoffPptPanel.tsx` 全部在位，本 PRD 的最大复用基座）；`docs/PRD-估算视图与工作量评估导出.md`（v2.5 已实现）
@@ -14,6 +14,7 @@
 |---|---|---|---|
 | v1.0 | 2026-10-16 | 首版：基于 T02170 任务要求与代码库实测取证撰写 | — |
 | v1.1 | 2026-10-16 | **评审修订**：B1 周期上限对齐事件保留期并加覆盖率降级、B2 工作量口径无 actual 字段改为三选一裁决、B3 更正 `PRD_CONTEXT_LIMIT` 引用错误并解多项目提示词矛盾；I1 范围改复用页面级选择器、I2 问题页拆两栏、I3 叶子里程碑渲染分支、I4 更正复用度（kickoffService 单项目签名）、I5 补 `buildPptx` 路径对比与 `gatherReportData` 数源复用；S1~S4 详见评审报告 | **已批准** |
+| v1.2 | 2026-10-24 | **文档裁决修订（不改 S3/S4 行为）**：① T02957 方案 A——合并版页数四处口径统一为 `6 + 4N`，A.2 的 N=3 示例 20→18 页并删去实现中不存在的「共性风险」页；② T02959 方案 A——§6.1 与 §3.5 的 dataKey 词表对齐 `SUMMARY_DATA_KEYS` 12 键（`kpi/highlights/milestones/planRows/risks/workload/deliverables/nextSteps/summary/appendix/compare/horizontal`），补「代码为单源」说明，旧 7 键（`projectInfo/periodStats/issues/coverage/events/nextPlans/crossProject`）退役 | **已批准（用户 2026-10-24 裁定）** |
 
 ### 审批签字（2026-10-16）
 
@@ -182,20 +183,22 @@
 
 ### 3.5 FR-5 PPT 章节定义（单项目完整稿，顺序固定，可删页）
 
-| 编号 | 章节 | 数据来源（真实字段） | 版式 | 缺失降级 |
+| 编号 | 章节 | 数据键 → 数据来源（真实字段） | 版式 | 缺失降级 |
 |---|---|---|---|---|
-| FR-5.1 | 封面 | 项目名 + 周期标签 + 生成日期 | cover | — |
-| FR-5.2 | 目录 | 本地取章节标题（不由 AI 写） | toc | — |
-| FR-5.3 | 总体进展 | `tasks` 周期内完成/todo/verified 统计；`plan_tasks.progress` 均值；里程碑 progress 汇总 | KPI 卡（chip） | 无任务活动 → S1 硬阻塞已拦 |
-| FR-5.4 | 本期重点工作 | ①「本期**有活动**的任务」：`tasks.updated_at` 落区间（口径同 `gatherReportData`，即周期内被改动过，**不等于本期完成**，§6.1 S1 注）+ 本期 `status='done'` 的计划/任务（按 `end_date<=今天` 或人工核对，页脚标注口径）；②「本期关键动态」：`task_events` 区间过滤（`TaskService.ts:459`），**覆盖窗口受 S9 约束**，超出保留期部分按 S9 声明 | 列表（list） | 无事件 → 只列完成项并注明「事件无记录」 |
-| FR-5.5 | 里程碑与阶段进展 | `plan_tasks.kind='milestone'`：**按 `milestoneHasChildren`（`milestoneProgress.ts:121`）分两类渲染**——① 有子项：显示聚合 progress + `done/total`（读 `recalcMilestoneProgress:63` 结果，**不自行重算**）；② 无子项：progress 是人工填报值（无子项时聚合直接保留原值，`:66-67`），**不画进度条**，改按 `status` 显示「未开始/进行中/已完成」并标注「人工填报」 | 时间线（timeline，菱形+进度条；叶子里程碑用状态徽标替代进度条） | 无里程碑 → 按 `kind='normal'` 阶段分组 + 页脚注记 |
-| FR-5.6 | 计划执行情况 | `plan_tasks`：四态（`PlanService.ts:84`）分布 + 逾期清单（`end_date < 今天 && status != 'done'`）+ `blocked` 清单 | 表格 + 饼图 | 无逾期/blocked → 写「本周期无延期与阻塞」 |
-| FR-5.7 | 问题与风险（**两栏，评审修订 I2**） | **左栏「需求待确认」**：`prd_issues`（`question/level/status/answer`，`schema.ts:284-294`）——注意这是 **PRD 待确认问题**（需求澄清，`schema.ts:282-283` 注释），**不是执行风险**；**右栏「执行风险」**：本地规则枚举——逾期计划 + `blocked` 计划 + `complexity ≥ 4`（`schema.ts:506`）行数 + 里程碑未达成数；`prd_issues` 中 `level='blocker'` 的待确认项在左栏置顶 | 双栏表格 | 无命中 → 「系统内暂无风险信号，会上补充」。**能力声明（须写入页脚）**：本仓**无风险/问题登记实体**，风险全部由规则推导，不含人工登记的风险条目；客户问「你们登记了哪些风险」时需现场/文档补充——缺口列为 **E-6** |
-| FR-5.8 | 工作量与质量（**三口径，评审修订 B2**） | **`estimate_items` 无 actual/done_at 字段**（`schema.ts:427-440` 只有 optimistic/likely/pessimistic + plan_id），是**计划级**估算 → **「本期完成人天」不可从库内真实计算**。三口径择一（裁决 **A-5**）：① **累计口径**：展示截至当前的累计估算人天/完成计划人天，页脚「累计估算，非本期实测」；② **分摊口径（A-5 明令禁用，实现侧抛错）**：按本期 done 计划在总估算中的占比分摊，页脚须声明「分摊值非实测，仅供趋势参考」；③ **不报人天（A-5 签字默认）**：只报完成工作项数与工期消耗。`test_cases` 覆盖率与 P0~P3 分布独立取数不受影响 | 表格 + 柱图（口径①/③不画人天柱图，改画完成项数/工期） | 无估算 → 页脚「工期口径，非三点估算」；无用例 → 文字策略 |
-| FR-5.9 | 交付物清单 | `prd_docs`（文档交付）+ `estimate_snapshots`（估算交付，`schema.ts:447-454`）+ 本期完成的计划/任务（功能交付） | 表格 | — |
-| FR-5.10 | 下阶段计划 | 未完成计划按 `start_date` 排序（Top N）+ 下一里程碑 + `deps` 关键路径提示（`schema.ts:491`） | 列表 | 全部完成 → 「项目已收尾」页 |
-| FR-5.11 | 本期总结与展望 | **仅 AI 措辞**（`askJson` 第 2 段），允许引用 dataKeys 取到的原文片段，禁止引入库外事实 | 图文双栏 | — |
-| FR-5.12 | 附录 | S1~S8 条数 + 各资料 `updated_at` + 项目名 + `workspace_path` + 降级标记汇总 | 表格 | — |
+| FR-5.1 | 封面 | —（`layout=cover`，无 dataKey）项目名 + 周期标签 + 生成日期 | cover | — |
+| FR-5.2 | 目录 | —（`layout=toc`，无 dataKey）本地取章节标题（不由 AI 写） | toc | — |
+| FR-5.3 | 总体进展 | `kpi`：`tasks` 周期内完成/todo/verified 统计；`plan_tasks.progress` 均值；里程碑 progress 汇总 | KPI 卡（chip） | 无任务活动 → S1 硬阻塞已拦 |
+| FR-5.4 | 本期重点工作 | `highlights`：①「本期**有活动**的任务」：`tasks.updated_at` 落区间（口径同 `gatherReportData`，即周期内被改动过，**不等于本期完成**，§6.1 `kpi` 注）+ 本期 `status='done'` 的计划/任务（按 `end_date<=今天` 或人工核对，页脚标注口径）；②「本期关键动态」：`task_events` 区间过滤（`TaskService.ts:459`），**覆盖窗口受 S9 约束**，超出保留期部分按 S9 声明 | 列表（list） | 无事件 → 只列完成项并注明「事件无记录」 |
+| FR-5.5 | 里程碑与阶段进展 | `milestones`：`plan_tasks.kind='milestone'`：**按 `milestoneHasChildren`（`milestoneProgress.ts:121`）分两类渲染**——① 有子项：显示聚合 progress + `done/total`（读 `recalcMilestoneProgress:63` 结果，**不自行重算**）；② 无子项：progress 是人工填报值（无子项时聚合直接保留原值，`:66-67`），**不画进度条**，改按 `status` 显示「未开始/进行中/已完成」并标注「人工填报」 | 时间线（timeline，菱形+进度条；叶子里程碑用状态徽标替代进度条） | 无里程碑 → 按 `kind='normal'` 阶段分组 + 页脚注记 |
+| FR-5.6 | 计划执行情况 | `planRows`：`plan_tasks` 四态（`PlanService.ts:84`）分布 + 逾期清单（`end_date < 今天 && status != 'done'`）+ `blocked` 清单 | 表格 + 饼图 | 无逾期/blocked → 写「本周期无延期与阻塞」 |
+| FR-5.7 | 问题与风险（**两栏，评审修订 I2**） | `risks`：**左栏「需求待确认」**——`prd_issues`（`question/level/status/answer`，`schema.ts:284-294`）——注意这是 **PRD 待确认问题**（需求澄清，`schema.ts:282-283` 注释），**不是执行风险**；**右栏「执行风险」**——本地规则枚举：逾期计划 + `blocked` 计划 + `complexity ≥ 4`（`schema.ts:506`）行数 + 里程碑未达成数；`prd_issues` 中 `level='blocker'` 的待确认项在左栏置顶 | 双栏表格 | 无命中 → 「系统内暂无风险信号，会上补充」。**能力声明（须写入页脚）**：本仓**无风险/问题登记实体**，风险全部由规则推导，不含人工登记的风险条目；客户问「你们登记了哪些风险」时需现场/文档补充——缺口列为 **E-6** |
+| FR-5.8 | 工作量与质量（**三口径，评审修订 B2**） | `workload`：**`estimate_items` 无 actual/done_at 字段**（`schema.ts:427-440` 只有 optimistic/likely/pessimistic + plan_id），是**计划级**估算 → **「本期完成人天」不可从库内真实计算**。三口径择一（裁决 **A-5**）：① **累计口径**：展示截至当前的累计估算人天/完成计划人天，页脚「累计估算，非本期实测」；② **分摊口径（A-5 明令禁用，实现侧抛错）**：按本期 done 计划在总估算中的占比分摊，页脚须声明「分摊值非实测，仅供趋势参考」；③ **不报人天（A-5 签字默认）**：只报完成工作项数与工期消耗。`test_cases` 覆盖率与 P0~P3 分布**并入本页同一数据键**取数（`workload`，不再单列 `coverage`） | 表格 + 柱图（口径①/③不画人天柱图，改画完成项数/工期） | 无估算 → 页脚「工期口径，非三点估算」；无用例 → 文字策略 |
+| FR-5.9 | 交付物清单 | `deliverables`：`prd_docs`（文档交付）+ `estimate_snapshots`（估算交付，`schema.ts:447-454`）+ 本期完成的计划/任务（功能交付） | 表格 | — |
+| FR-5.10 | 下阶段计划 | `nextSteps`：未完成计划按 `start_date` 排序（Top N）+ 下一里程碑 + `deps` 关键路径提示（`schema.ts:491`） | 列表 | 全部完成 → 「项目已收尾」页 |
+| FR-5.11 | 本期总结与展望 | `summary`：**仅 AI 措辞**（`askJson` 第 2 段），允许引用本页其它 dataKey 取到的原文片段，禁止引入库外事实 | 图文双栏 | — |
+| FR-5.12 | 附录 | `appendix`：S1~S9 条数 + 各资料 `updated_at` + 项目名 + `workspace_path` + 降级标记汇总 | 表格 | — |
+
+> **数据键单源（T02959 方案 A）**：上表「数据键」列与 §6.1 同源，权威定义是 `SUMMARY_DATA_KEYS`；合并版的 `compare` / `horizontal` 两键见 FR-6.1。新增或改名必须三处同步（代码 / §3.5 / §6.1），否则 S3 会以「含未知项」硬失败、S4 取不到块。
 
 **FR-5.13 逐页脚注**：每页脚注固定「`<项目名> · <章节> · 数据截至 <ISO 日期>`」，来源可回溯系统内视图。
 
@@ -270,21 +273,22 @@
 
 ### 6.1 取数映射（字段级，便于实现核对）
 
-内容模型 `SummaryOutline.bullets[].dataKeys` 枚举 `projectInfo | periodStats | planRows | milestones | issues | workload | coverage | events | risks | nextPlans | deliverables | crossProject`，装配器按 key 从采集结果取值；**任何数字型 bullet 必须由 dataKey 解析，不接受 AI 自由文本**。
+`SummaryOutline.bullets[].dataKeys` 的**唯一权威**是 `server/src/services/summaryPptOutline.ts` 的 `SUMMARY_DATA_KEYS`（12 键；S3 校验、S4 装配器 `blocksForKey` 与本表同源，T02959 方案 A 对齐）：`kpi | highlights | milestones | planRows | risks | workload | deliverables | nextSteps | summary | appendix | compare | horizontal`。装配器按 key 从采集结果取值；**任何数字型 bullet 必须由 dataKey 解析，不接受 AI 自由文本**。新增/改名键必须同时改代码、本节与 §3.5 的 FR-5 数据键列，并由 `verify-t02855` 的「词表全键可渲染」门兜底；未知键在 S3 硬失败并点名（`含未知项`）。
 
 | dataKey | 表.字段（真实） | 计算口径 |
 |---|---|---|
-| periodStats | **直接消费 `gatherReportData(period, projectIds)`**（`ReportService.ts:266`）的 `projects[]`（per-project total/todo/done/verified/high/medium/low）与 `tasks[]` | 口径警示：该函数按 `t.updated_at` 落区间取「**周期内有活动**」的任务（`:271-283`），**不等于「本期完成」**——页面标题须写「本期有活动的任务」，不得写成完成清单。`projects[].done` 亦为「区间内统计到的 done」 |
-| planRows | `gatherReportData` 的 `plans[]`（已含 `overdue` 判定）+ 需要 `duration_days/assignee/kind` 时补一次查询 | 四态分桶（`PlanService.ts:84`）+ 逾期沿用其判据 |
-| milestones | `plan_tasks`（`kind='milestone'`） | 读 progress（`milestoneProgress.ts` 聚合口径），**不重算**；有子项/无子项分支见 FR-5.5 |
-| issues | `prd_issues.question/level/status/answer`（`schema.ts:284-294`） | `status='open'`，`level='blocker'` 置顶；**语义=需求待确认，非执行风险**（I2） |
-| workload | `estimate_items.optimistic/likely/pessimistic/phase`（`schema.ts:427-440`） | **无 actual/done_at → 无本期实测人天**；三口径见 FR-5.8 与裁决 A-5。缺失降级 `Σ duration_days`（工作日）+ `complexity` 分布；人月因子单源（同估算 PRD） |
-| coverage | `test_cases.priority/req_id/last_result`（`schema.ts:376-398`） | 覆盖率 + P0~P3 分布（口径同 `/api/plans/test-cases/coverage`） |
-| events | `task_events.kind/detail/created_at`（`schema.ts:219-227`） | 区间过滤，`listEvents({projectId, since})`（`TaskService.ts:459`）；**保留期约束见 S9**（`EventRetention.ts:23` 默认 90 天，可配 0=不清理） |
-| risks | 本地规则枚举 | 逾期计划 + `blocked` 计划 + `complexity ≥ 4` 行数 + 里程碑未达成数；**无人工登记风险实体**（I2） |
-| nextPlans | `plan_tasks`（`status != 'done'`） | 按 `start_date` 升序 Top N + 下一里程碑 |
-| deliverables | `prd_docs` / `estimate_snapshots` / 本期 done 计划 | 三类各列条数与 updated_at |
-| crossProject | **直接消费 `gatherReportData` 的 `projects[]` + `projectScope[]`**（`ReportService.ts:61-66`） | 各项目 KPI 横表（合并版），零新查询 |
+| kpi | **直接消费 `gatherReportData(period, projectIds)`**（`ReportService.ts:266`）的 `projects[]`（per-project total/todo/done/verified/high/medium/low）与 `tasks[]`；另含 `plan_tasks.progress` 均值与里程碑完成数 | FR-5.3 总体进展。口径警示：该函数按 `t.updated_at` 落区间取「**周期内有活动**」的任务（`:271-283`），**不等于「本期完成」**——页面标题须写「本期有活动的任务」，不得写成完成清单。`projects[].done` 亦为「区间内统计到的 done」 |
+| highlights | `gatherReportData` 的 `tasks[]`/`plans[]` + `task_events.kind/detail/created_at`（`schema.ts:219-227`）区间过滤，`listEvents({projectId, since})`（`TaskService.ts:459`） | FR-5.4 本期重点工作（活动任务 + 计划态 + 本期动态）；**保留期约束见 S9**（`EventRetention.ts:23` 默认 90 天，可配 0=不清理） |
+| milestones | `plan_tasks`（`kind='milestone'`） | FR-5.5。读 progress（`milestoneProgress.ts` 聚合口径），**不重算**；有子项/无子项分支见 FR-5.5 |
+| planRows | `gatherReportData` 的 `plans[]`（已含 `overdue` 判定）+ 需要 `duration_days/assignee/kind` 时补一次查询 | FR-5.6 计划执行。四态分桶（`PlanService.ts:84`）+ 逾期沿用其判据 |
+| risks | 左栏 `prd_issues.question/level/status/answer`（`schema.ts:284-294`）；右栏本地规则枚举 | FR-5.7 两栏。左栏 `status='open'`、`level='blocker'` 置顶（**语义=需求待确认，非执行风险**，I2）；右栏 = 逾期计划 + `blocked` 计划 + `complexity ≥ 4` 行数 + 里程碑未达成数；**无人工登记风险实体** |
+| workload | `estimate_items.optimistic/likely/pessimistic/phase`（`schema.ts:427-440`）+ `test_cases.priority/req_id/last_result`（`schema.ts:376-398`） | FR-5.8 工作量与质量（用例覆盖率与 P0~P3 分布并入本页）。**无 actual/done_at → 无本期实测人天**；三口径见 FR-5.8 与裁决 A-5。缺失降级 `Σ duration_days`（工作日）+ `complexity` 分布；人月因子单源（同估算 PRD） |
+| deliverables | `prd_docs` / `estimate_snapshots` / 本期 done 计划 | FR-5.9。三类各列条数与 updated_at |
+| nextSteps | `plan_tasks`（`status != 'done'`） | FR-5.10。按 `start_date` 升序 Top N + 下一里程碑 |
+| summary | 无库内查询 | FR-5.11 本期总结与展望：正文 = AI 措辞（`askJson` 第 2 段），只允许引用本页其它 dataKey 取到的原文片段 |
+| appendix | `preflight.items`（S1~S9）+ 项目名/`workspace_path`（页脚） | FR-5.12。校验项条数与降级标记汇总，fail/warn 优先 |
+| compare | **直接消费 `gatherReportData` 的 `projects[]` + `projectScope[]`**（`ReportService.ts:61-66`） | 合并版汇总对比页（FR-6.1），各项目 KPI 横表，零新查询 |
+| horizontal | `gatherReportData` 的 `projects[]` + 各项目 `workload` | 合并版横向对比页（FR-6.1），进度/工作量柱图；工作量单位全 deck 一致（A-5） |
 
 ### 6.2 AI 侧
 
