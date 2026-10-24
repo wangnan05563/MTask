@@ -866,6 +866,18 @@ export const WorkspaceService = {
   },
 
   /**
+   * T02868：按文件取现有符号索引里的定义（讲稿上下文「所在类」展开用）。
+   * 复用 workspace_symbols，不新建索引机制；文件已不在工作空间时返回空。
+   */
+  symbolsInFile(projectId: string, path: string, limit = 50): Array<{ symbol: string; line: number; kind: string }> {
+    const { workspace } = getProjectWorkspace(projectId);
+    try { statSync(resolve(workspace, path)); } catch { return []; }
+    return getDb().prepare(
+      'SELECT symbol, line, kind FROM workspace_symbols WHERE project_id = ? AND workspace = ? AND path = ? ORDER BY line LIMIT ?',
+    ).all(projectId, resolve(workspace), path.replaceAll('\\', '/'), Math.min(Math.trunc(limit), 200)) as Array<{ symbol: string; line: number; kind: string }>;
+  },
+
+  /**
    * 检索增强注入（T00777）：按关键词跑搜索，组装预算内的片段文本（供 AI prompt 注入）。
    * keywords：词组数组（英文 token / 标题短语）；返回空串表示无可注入内容。
    *

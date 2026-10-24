@@ -22,7 +22,7 @@ interface PrdHit {
 }
 
 /** PRD 上下文截断长度；超长时保头保尾，避免撑爆提示词 */
-const PRD_CONTEXT_LIMIT = 6000;
+export const PRD_CONTEXT_LIMIT = 6000;
 
 /** 解析 req_ids：脏数据/非数组一律视为无关联 */
 function parseReqIds(raw: string | null | undefined): string[] {

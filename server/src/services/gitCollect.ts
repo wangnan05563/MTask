@@ -355,6 +355,11 @@ export interface GitCollectionOptions extends GitCollectOptions {
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 /** 安全敏感路径（FR-1.4 第二优先级因子）：按路径段命中 auth/crypto/sql/exec */
 const SECURITY_PATH = /(^|[/_.-])(auth|authn|authz|crypto|sql|exec)([/_.-]|$)/i;
+
+/** 讲稿上下文装配（T02868）复用同一安全路径口径，避免优先级因子两处漂移 */
+export function isSecurityPath(path: string): boolean {
+  return SECURITY_PATH.test(path);
+}
 const FILE_TRIM_MARKER = '\n\n……（该文件 diff 超出剩余预算，已保头保尾截断）……\n\n';
 
 /** `--- a/x` / `+++ b/x` / `Binary files a/x and b/y differ` 里的路径还原 */
