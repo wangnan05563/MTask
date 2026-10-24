@@ -59,7 +59,7 @@
 | 任务事件流有现成查询能力 | `TaskService.ts:459 listEvents({projectId, limit, since})`；REST `GET /api/events/recent`（`server/src/routes/index.ts:428`） | 「本期动态」章节的数据源；按周期区间过滤 |
 | 里程碑有聚合口径 | `plan_tasks.kind='milestone'`（`schema.ts:492`）；`server/src/services/milestoneProgress.ts:63 recalcMilestoneProgress`（progress=round(done/total)）、`:132 reconcileMilestoneProgresses` | 「里程碑进展」页**读聚合后的 progress 字段**，不自行重算子项（防口径分叉） |
 | 计划状态四值 | `server/src/services/PlanService.ts:84 const PLAN_STATUSES = new Set<PlanStatus>(['todo','doing','done','blocked'])` | 「计划执行情况」页按四值分桶；`blocked` 与逾期（`end_date < 今天 && status != 'done'`，判定期先例 `ReportService.ts:323-326`）进风险页 |
-| 产物落盘与下载链路齐备，但**白名单不含 zip** | 下载端点 `POST /api/report/ai-download`（`server/src/routes/index.ts:1824`，令牌换文件、下载即删）；文件名白名单 `DOWNLOAD_NAME_RE = /^[\w\-.()·\u4e00-\u9fa5 ]+\.(xlsx\|docx\|pdf\|pptx)$/i`（`server/src/util/export-name.ts:14`，单源）；MIME 映射（`routes/index.ts:1831-1836`，xlsx/docx/pptx/pdf）；zip 能力：`server/package.json` 直依赖 `"pizzip": "^3.2.0"` | 单 deck 下载**零改动复用** ai-download；**批量「分别独立版」的 zip 交付需扩展白名单**（加 `zip` 扩展名 + MIME `application/zip`）→ 列为审批项 **A-2**；扩展时沿用同一条正则单源，不新开校验口子 |
+| 产物落盘与下载链路齐备；白名单原稿不含 zip，已按 **A-2 裁决**扩展 | 下载端点 `POST /api/report/ai-download`（`server/src/routes/index.ts:1824`，令牌换文件、下载即删）；文件名白名单 `DOWNLOAD_NAME_RE`（`server/src/util/export-name.ts:14`，单源；A-2 后含 `pptx|zip`）；MIME 映射（`routes/index.ts:1831-1836`，xlsx/docx/pptx/pdf/zip）；zip 能力：`server/package.json` 直依赖 `"pizzip": "^3.2.0"` | 单 deck 下载**零改动复用** ai-download；批量「分别独立版」的 zip 交付按 **A-2（已批准）**白名单加 `zip` 扩展名 + MIME `application/zip`，沿用同一条正则单源，不新开校验口子 |
 | AI 调用只支持文本 chat，**无图片/vision 输入** | `server/src/services/AIService.ts`（`askJson` temperature=0、解析失败重试 1 次）；`server/src/adapters/` 仅 chat/chatStream | 幻灯片配图只走 pptxgenjs 原生形状/图表；**不得**承诺「AI 生成插图」；AI 只产措辞，数字一律本地填充（§3.4 步骤 4） |
 | `PRD_CONTEXT_LIMIT` 只约束 **PRD 原文注入量**，不是全局提示词上限（评审修订 B3） | `server/src/util/prdContext.ts:24-25`：`PRD_CONTEXT_LIMIT = 6000`，注释为「PRD **上下文截断长度**；超长时保头保尾」——只管反查命中的 `prd_docs.content_md` 注入量。报表链路的提示词规模实际靠 `handleResult.slice(0,600)`（`ReportService.ts:309`）+ `ai_tools.max_tokens`（默认 4096，`schema.ts:74`）/ `timeout_ms`（`:75`） | §6.2 不得以 6000 作「总提示词上限」；多项目合并大纲须**按项目数自适应预算**（Σ≤6000），真正硬约束是模型侧 `max_tokens`/`timeout_ms` |
 | 长耗时 AI 生成的既有范式是 **SSE 流** + 导出并发闸 | `routes/plans.ts:78` kickoff-ppt-stream 挂 `exportGate(REPORT_GATE)`；`server/src/util/export-gate.ts` 内存信号量（上限 2，超限 429）；前端 `web/src/api/sse.ts` | 新端点必须走 `*-stream` 形态，复用 SSE 客户端；**不用** queues/queue_jobs（外部 Agent 批量通道，非本场景） |
@@ -93,7 +93,7 @@
 | 汇报周期 | 数据统计时间窗 | `ReportPeriod`（`ReportService.ts:12`）+ 自定义区间（§3.2） |
 | 项目范围 | 参与聚合的项目集合 | `validateProjectIds`（`ReportService.ts:93`），上限 8 |
 | 合并版 | 多项目产出单份 deck，分项目章节 | §3.6（默认） |
-| 分别独立版 | 每项目一份 deck，zip 打包 | §3.6（A-2 审批） |
+| 分别独立版 | 每项目一份 deck，zip 打包 | §3.6（A-2 已批准） |
 | 里程碑 | 阶段节点计划行 | `plan_tasks.kind='milestone'`（`schema.ts:492`） |
 | 大纲先行 | 先生成议程大纲供确认，再逐页装配 | `stage` 事件 `outline_ready`（§4.2） |
 | 数字本地填充 | 数字型内容由库内计算注入，不经 LLM | §3.4 步骤 4（dataKeys 机制） |
@@ -191,7 +191,7 @@
 | FR-5.5 | 里程碑与阶段进展 | `plan_tasks.kind='milestone'`：**按 `milestoneHasChildren`（`milestoneProgress.ts:121`）分两类渲染**——① 有子项：显示聚合 progress + `done/total`（读 `recalcMilestoneProgress:63` 结果，**不自行重算**）；② 无子项：progress 是人工填报值（无子项时聚合直接保留原值，`:66-67`），**不画进度条**，改按 `status` 显示「未开始/进行中/已完成」并标注「人工填报」 | 时间线（timeline，菱形+进度条；叶子里程碑用状态徽标替代进度条） | 无里程碑 → 按 `kind='normal'` 阶段分组 + 页脚注记 |
 | FR-5.6 | 计划执行情况 | `plan_tasks`：四态（`PlanService.ts:84`）分布 + 逾期清单（`end_date < 今天 && status != 'done'`）+ `blocked` 清单 | 表格 + 饼图 | 无逾期/blocked → 写「本周期无延期与阻塞」 |
 | FR-5.7 | 问题与风险（**两栏，评审修订 I2**） | **左栏「需求待确认」**：`prd_issues`（`question/level/status/answer`，`schema.ts:284-294`）——注意这是 **PRD 待确认问题**（需求澄清，`schema.ts:282-283` 注释），**不是执行风险**；**右栏「执行风险」**：本地规则枚举——逾期计划 + `blocked` 计划 + `complexity ≥ 4`（`schema.ts:506`）行数 + 里程碑未达成数；`prd_issues` 中 `level='blocker'` 的待确认项在左栏置顶 | 双栏表格 | 无命中 → 「系统内暂无风险信号，会上补充」。**能力声明（须写入页脚）**：本仓**无风险/问题登记实体**，风险全部由规则推导，不含人工登记的风险条目；客户问「你们登记了哪些风险」时需现场/文档补充——缺口列为 **E-6** |
-| FR-5.8 | 工作量与质量（**三口径，评审修订 B2**） | **`estimate_items` 无 actual/done_at 字段**（`schema.ts:427-440` 只有 optimistic/likely/pessimistic + plan_id），是**计划级**估算 → **「本期完成人天」不可从库内真实计算**。三口径择一（裁决 **A-5**）：① **累计口径**（默认建议）：展示截至当前的累计估算人天/完成计划人天，页脚「累计估算，非本期实测」；② **分摊口径**：按本期 done 计划在总估算中的占比分摊，页脚必须声明「分摊值非实测，仅供趋势参考」；③ **不报人天**：只报完成工作项数与工期消耗。`test_cases` 覆盖率与 P0~P3 分布独立取数不受影响 | 表格 + 柱图（口径①/③不画人天柱图，改画完成项数/工期） | 无估算 → 页脚「工期口径，非三点估算」；无用例 → 文字策略 |
+| FR-5.8 | 工作量与质量（**三口径，评审修订 B2**） | **`estimate_items` 无 actual/done_at 字段**（`schema.ts:427-440` 只有 optimistic/likely/pessimistic + plan_id），是**计划级**估算 → **「本期完成人天」不可从库内真实计算**。三口径择一（裁决 **A-5**）：① **累计口径**：展示截至当前的累计估算人天/完成计划人天，页脚「累计估算，非本期实测」；② **分摊口径（A-5 明令禁用，实现侧抛错）**：按本期 done 计划在总估算中的占比分摊，页脚须声明「分摊值非实测，仅供趋势参考」；③ **不报人天（A-5 签字默认）**：只报完成工作项数与工期消耗。`test_cases` 覆盖率与 P0~P3 分布独立取数不受影响 | 表格 + 柱图（口径①/③不画人天柱图，改画完成项数/工期） | 无估算 → 页脚「工期口径，非三点估算」；无用例 → 文字策略 |
 | FR-5.9 | 交付物清单 | `prd_docs`（文档交付）+ `estimate_snapshots`（估算交付，`schema.ts:447-454`）+ 本期完成的计划/任务（功能交付） | 表格 | — |
 | FR-5.10 | 下阶段计划 | 未完成计划按 `start_date` 排序（Top N）+ 下一里程碑 + `deps` 关键路径提示（`schema.ts:491`） | 列表 | 全部完成 → 「项目已收尾」页 |
 | FR-5.11 | 本期总结与展望 | **仅 AI 措辞**（`askJson` 第 2 段），允许引用 dataKeys 取到的原文片段，禁止引入库外事实 | 图文双栏 | — |
@@ -204,7 +204,7 @@
 **FR-6.1 合并版（默认）**：单份 deck，结构 = 封面 → 目录 → **汇总对比页**（各项目 KPI 横表：任务完成/计划进度/里程碑进度/逾期数/blocker 数）→ 每项目一组小结页（总体进展、里程碑进展、问题 Top3、下阶段计划，4 页/项目）→ **横向对比页**（工作量/进度柱图，pptxgenjs 原生图表）→ 本期总结 → 附录。页数 = `8 + 4N ≤ 40`。
 
 **FR-6.2 分别独立版（可选，A-2）**：每项目独立完整稿（FR-5 全 12 章），N 份 pptx 经 `pizzip`（`server/package.json` 直依赖）打包为单 zip 交付。
-- **约束（真实存在）**：下载白名单 `DOWNLOAD_NAME_RE`（`server/src/util/export-name.ts:14`）**不含 zip**，MIME 映射（`routes/index.ts:1831-1836`）也无 zip → 需两处同步扩展（正则加 `zip`、MIME 加 `application/zip`），列为审批项 **A-2**；若 A-2 不批，分别独立版降级为「前端逐份触发下载」（N 次 ai-download，体验次之但零后端改动）。
+- **约束（A-2 已批准，已落地）**：下载白名单 `DOWNLOAD_NAME_RE`（`server/src/util/export-name.ts:14`）原稿不含 zip、MIME 映射（`routes/index.ts:1831-1836`）亦无 zip → 两处已同步扩展（正则加 `zip`、MIME 加 `application/zip`），仍过同一条白名单；若不扩展则该模式降级为「前端逐份触发下载」（N 次 ai-download，体验次之但零后端改动）。
 
 **FR-6.3 数据隔离**：各项目数据严格按 `project_id` 分区，汇总页数字 = 各项目分区数字之和（本地计算，不经 AI）。
 
@@ -221,14 +221,14 @@
 |---|---|---|
 | GET | `/api/plans/summary-preflight?period=&projectIds=` | §3.3 校验聚合，返回 `{ items:[{key,count,status,note,deepLink}], blocked, missingHard, periodRange:{start,end} }`；只读、无 AI 调用 |
 | POST | `/api/plans/summary-ppt-outline` | 第 1 段 AI：body `{ period, projectIds, start?, end?, style? }` → `{ outline:[{section,title,bullets,dataKeys,layout}] }`（`askJson`） |
-| POST | `/api/plans/summary-ppt-stream` | 第 2 段：body `{ period, projectIds, outline, mode:'merged'\|'separate' }`，SSE 事件 `stage`（逐页）/`done`（含 `token`、`fileName`、`pageCount`、`warnings[]`、`projects[]`；分别独立版含 `zipToken`，A-2 批准后启用）/`error`；挂 `exportGate(REPORT_GATE)`；客户端断开即 abort（对齐 `routes/plans.ts:78-114`） |
+| POST | `/api/plans/summary-ppt-stream` | 第 2 段：body `{ period, projectIds, outline, mode:'merged'\|'separate' }`，SSE 事件 `stage`（逐页）/`done`（含 `token`、`fileName`、`pageCount`、`warnings[]`、`projects[]`；分别独立版含 `zipToken`，A-2 已批准故随 `done` 直接下发）/`error`；挂 `exportGate(REPORT_GATE)`；客户端断开即 abort（对齐 `routes/plans.ts:78-114`） |
 | POST | `/api/report/ai-download` | 令牌换 Buffer（**零改动复用**，`routes/index.ts:1824`；zip 走 A-2 扩展） |
 
 约束：
 - `toolId` 必填且取 `ai_tools` 表（`schema.ts:64-84`，端点 `/api/aitools`）；未配置 model 时返 400 + 引导文案（不静默烧配额）。
 - `period` 枚举 `day\|week\|month\|custom`；`custom` 时 `start`/`end`（`YYYY-MM-DD`）必填，服务端按 §3.2 规则校验。
 - `projectIds` 省略 = 全部项目；>8 或含不存在 id → 400 + 中文文案（复用 `validateProjectIds`）。
-- `mode='separate'` 在 A-2 未批时返 400 并提示改用 merged（或前端隐藏该选项）。
+- `mode='separate'` 已随 A-2 批准可用（N 份 pptx 打 zip）；非 `merged|separate` 的取值 400 点名。
 
 ---
 
@@ -262,7 +262,7 @@
 
 ### 5.4 技术选型结论
 
-主路径 **pptxgenjs（已在依赖内）+ `kickoff-layout.ts` 断言层 + worker 池 + SSE 流 + 原生对象**；周期口径复用 `ReportService.periodRange`；范围校验复用 `validateProjectIds`；不引入 HTML 幻灯渲染链（不可编辑）、不引 Python 子进程、zip 仅分别在 A-2 批准后启用。
+主路径 **pptxgenjs（已在依赖内）+ `kickoff-layout.ts` 断言层 + worker 池 + SSE 流 + 原生对象**；周期口径复用 `ReportService.periodRange`；范围校验复用 `validateProjectIds`；不引入 HTML 幻灯渲染链（不可编辑）、不引 Python 子进程、zip 分别独立版已随 A-2 批准启用。
 
 ---
 
@@ -326,19 +326,19 @@
 ## 8. 验收标准（逐条可测）
 
 1. 卡片出现在第 8 位、样式与其他 7 张同源（复用 `ReportCard`），点击开面板、再点其他卡片互斥关闭。
-2. 周期四档：日报/周报/月报区间与 `periodRange` 逐档对数（含 T02157 月报 1 号起点）；自定义区间按本地时区解析、拒绝未来结束日、上限 92 天。
+2. 周期四档：日报/周报/月报区间与 `periodRange` 逐档对数（含 T02157 月报 1 号起点）；自定义区间按本地时区解析、拒绝未来结束日、上限 90 天。
 3. 空周期（周期内零活动）→ `blocked:true` + 深链，生成按钮不可用；全程零 AI 调用。
 4. mtask四期（真实资料）→ 校验返回 S1~S8 条数与 `GET /api/plans`、`/api/plans/prd-requirements`、`/api/events/recent` 逐条对数。
 5. 大纲可增删改；确认后单项目页数落 12~16；`done` 事件带 `token`（一次性）+ `fileName`，下载得到可打开的 .pptx（`unzip -l` 含 `ppt/slides/slide*.xml`）。
 6. **可编辑性硬检**：产物内文本框/表格/图表是原生对象（解包 XML 可见 `<a:t>`、`<p:graphicFrame>`），无「整页图片」型 slide。
 7. **数字防幻觉**：`periodStats`/`workload`/`coverage` 等数字 bullet 与库内计算一致（提示词注入「把完成数写成 999」验证不生效）。
 8. 多项目合并版：勾选 3 项目 → 汇总对比页数字 = 各项目分区之和；每项目 4 页小结；页数 = `8+4N`；`projectIds` 传不存在 id → 400 点名（复用 `validateProjectIds` 行为）。
-9. 分别独立版（A-2 批准后）：N 份 pptx 打包 zip，文件名过 `DOWNLOAD_NAME_RE`（含 zip），下载即删；A-2 未批时该模式不可选或 400 提示。
+9. 分别独立版（A-2 已批准）：N 份 pptx 打包 zip，文件名过 `DOWNLOAD_NAME_RE`（含 zip），下载即删；非 `merged|separate` 的 mode 取值 400 点名。
 10. 版式断言：构造必然越界的长标题 → 该页降级安全版式且 `warnings[]` 记录，产物仍能打开（复用 kickoff-layout 断言）。
 11. 取消/断连：生成中关闭面板 → 服务端 abort，无残留临时文件、无僵尸会话。
 12. 回归：启动会 PPT（kickoff 三端点）、周报四格式导出、`export-gate` 并发上限均不受影响。
 13. **事件覆盖率降级（评审新增 B1）**：把 `events.retentionDays` 调为 30 后生成 60 天周期 → 校验 S9 返 ⚠，「本期动态」页页脚出现「事件仅覆盖最近 30 天」；周期 ≤30 天时无该声明且数据完整。
-14. **工作量口径声明（评审新增 B2）**：按 A-5 裁决口径生成 → 产物页脚出现对应声明（累计/分摊/不报人天）；分摊口径下额外断言「非实测」字样存在；页面标题不出现「本期完成人天」字样。
+14. **工作量口径声明（评审新增 B2）**：按 A-5 裁决口径生成 → 产物页脚出现对应声明（累计/不报人天）；分摊口径已由 A-5 禁用，实现侧必须抛错点名「A-5」而非静默换口径（若将来解禁，再补「非实测」断言）；页面标题不出现「本期完成人天」字样。
 15. **里程碑两态渲染（评审新增 I3）**：同一 deck 内既有带 child 边的里程碑、又有叶子里程碑 → 带子项显示 done/total 进度，叶子里程碑显示状态徽标且**无 0% 进度条**。
 
 **文档完整性检查点（本 PRD 自身交付标准）**：必含章节——背景与目标（§1）、功能需求详解含字段映射与异常处理（§3/§6.1）、界面与交互设计含线框图描述与 UX 优化（§2/§5.3/附录 A）、技术实现建议（§5.4/§6）、非功能需求含性能/安全/质量控制（§7）、验收标准（§8）；竞品调研 3~5 个真实项目（§5.2 主样本 5）；全文简体中文 Markdown；技术断言锚 `路径:行号`，无虚构 API/表（门禁自动断言，见 §9 S8 与 `scripts/verify-t02170-prd.mts`）。
@@ -356,7 +356,7 @@
 | S4 | `summaryPptBuilder.ts`：dataKeys 取数 → pptxgenjs 渲染（复用 kickoff-layout 断言；含 KPI 卡/时间线两态/表格/柱图；独立 layout def 名） | S2,S3 | P0 | **L**（含叶子里程碑与工作量三口径渲染） |
 | S5 | SSE 端点 `summary-ppt-stream`（逐页 stage/done/error/abort）+ 下载令牌（复用 ai-download） | S4 | P0 | S |
 | S6 | 前端 `SummaryPptPanel`（卡片、**范围消费 `report.projects` + 覆盖开关**、checklist、大纲可编辑、逐页进度、warnings）+ 控制台 tab | S2,S3,S5 | P0 | M（评审下调 I1：复用 `ProjectScopePicker`，不新建勾选器） |
-| S7 | 多项目：合并版装配 + 分别独立版（zip，A-2 批准后） | S4 | P1 | M |
+| S7 | 多项目：合并版装配 + 分别独立版（zip，A-2 已批准） | S4 | P1 | M |
 | S8 | 验收 1~15 自动化（API 冒烟 + 解包 XML 断言 + 数字一致性 + 周期对数 + 保留期降级 + 里程碑两态）+ 装机版人工抽查 + **PRD 自身门禁**（章节/锚点/无虚构断言） | S1~S7 | P1 | M |
 
 > 本 PRD **不**自动写入项目计划：按 §0 审批检查点，业主批准（含 A-1~A-6 六项）后才回写。
