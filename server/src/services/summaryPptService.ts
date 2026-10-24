@@ -79,7 +79,7 @@ function pctText(n: number, d: number): string {
 export interface SummaryBundle {
   period: SummaryPeriod;
   periodLabel: string;
-  /** [start, end) —— custom 档另带 endInclusive，见 `periodRange` */
+  /** 取数用左闭右开区间；展示用「含」的上界见 `range.endInclusive`（T02944） */
   range: ReturnType<typeof periodRange>;
   /** 项目范围（空范围已按「全部未归档项目」展开，后续所有取数只用这份 ids） */
   projectIds: string[];

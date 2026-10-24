@@ -17,8 +17,11 @@ export type ReportPeriod = 'day' | 'week' | 'month';
  * custom 仅由 `periodRange` / `gatherReportData` 这层参数化通道流入。
  */
 export type SummaryPeriod = ReportPeriod | 'custom';
-/** `periodRange` 的返回形状；`endInclusive` 只在 custom 档存在（见 `endDate` 口径注释） */
-export type PeriodRange = { start: Date; end: Date; endInclusive?: Date };
+/**
+ * `periodRange` 的返回形状：`end` 是取数用右开界（次日 0 点），`endInclusive` 是展示用「含」的上界。
+ * T02944（裁决甲）：三档与 custom 都给出 `endInclusive`，展示层与 AI prompt 统一用「含」的那天。
+ */
+export type PeriodRange = { start: Date; end: Date; endInclusive: Date };
 /** 输出格式：xlsx / docx / pdf / pptx */
 export type ReportFormat = 'xlsx' | 'docx' | 'pdf' | 'pptx';
 
@@ -61,6 +64,7 @@ export interface ReportData {
   period: SummaryPeriod;
   periodLabel: string;
   startDate: string;
+  /** 展示用结束日，**含**这一天**（T02944 裁决甲；SQL 取数仍是左闭右开，与此无关） */
   endDate: string;
   generatedAt: string;
   projects: ReportProject[];
@@ -234,13 +238,18 @@ export function startReportTmpSweeper(intervalMs = 3_600_000): ReturnType<typeof
  * T02852（六期 S1）：`period === 'custom'` 时走 `resolveCustomWindow`（区间口径与校验文案
  * 单源在 `summaryPptPeriod.ts`），**前三档的计算逐字不变**；`nowMs` 只为回归门提供可注入的
  * 取样时刻，不传时与旧实现同为 `new Date()`。
+ * T02944（裁决甲）：三档也返回 `endInclusive`（今天 / 本周日 / 本月末）供展示与 AI prompt；
+ * `start`/`end` 的 SQL 右开口径不变，取数结果逐字不变。
  */
 export function periodRange(period: SummaryPeriod, custom?: CustomRange, nowMs?: number): PeriodRange {
   if (period === 'custom') return resolveCustomWindow(custom, { nowMs });
   const now = new Date(nowMs ?? Date.now());
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  /** 右开界前一天 0 点：展示用「含」的上界（本地时区，跨月/跨年由构造器归一） */
+  const dayBefore = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
   if (period === 'day') {
-    return { start, end: new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1) };
+    const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
+    return { start, end, endInclusive: start };
   }
   if (period === 'week') {
     // 以周一为一周起点；getDay() 0=周日，退回前 6 天；周报上界为下周一 0 点
@@ -249,11 +258,13 @@ export function periodRange(period: SummaryPeriod, custom?: CustomRange, nowMs?:
     monday.setDate(start.getDate() - offset);
     const nextMonday = new Date(monday);
     nextMonday.setDate(monday.getDate() + 7);
-    return { start: monday, end: nextMonday };
+    return { start: monday, end: nextMonday, endInclusive: dayBefore(nextMonday) };
   }
   // T02157：月报起点必须是**本月 1 号 0 点**——此前误用「今日 0 点」，区间变成
   // [今天, 下月1日)，既丢掉本月已发生的绝大部分活动，又混进尚未发生的未来日期
-  return { start: new Date(start.getFullYear(), start.getMonth(), 1), end: new Date(start.getFullYear(), start.getMonth() + 1, 1) };
+  const monthStart = new Date(start.getFullYear(), start.getMonth(), 1);
+  const monthEnd = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+  return { start: monthStart, end: monthEnd, endInclusive: dayBefore(monthEnd) };
 }
 
 const PERIOD_LABEL: Record<ReportPeriod, string> = { day: '日报', week: '周报', month: '月报' };
@@ -371,9 +382,8 @@ export function gatherReportData(period: SummaryPeriod, projectScope?: ReportSco
     period,
     periodLabel: periodLabelOf(period),
     startDate: ymd(start),
-    // custom 档用「含」的那天做展示结束日：SQL 右开界仍是结束日次日 0 点。
-    // 既有三档保持旧的右开日口径（`endInclusive` 为 undefined，行为逐字不变）。
-    endDate: ymd(endInclusive ?? end),
+    // T02944（裁决甲）：展示结束日用「含」的那天；SQL 右开界 `end` 只用于取数，不进展示。
+    endDate: ymd(endInclusive),
     generatedAt: nowStr(),
     projects,
     tasks,
