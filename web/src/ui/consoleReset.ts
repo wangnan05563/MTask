@@ -16,6 +16,7 @@ import { prdGenStore } from '../stores/prdGenStore';
 import { testCaseGenStore } from '../stores/testCaseGenStore'; // T01491：从 PRD 生成测试用例运行态
 import { kickoffPptStore } from '../stores/kickoffPptStore'; // T02109：项目启动会 PPT 逐页装配运行态
 import { summaryPptStore } from '../stores/summaryPptStore'; // T02857：阶段性总结汇报 PPT 运行态
+import { codeReviewLectureStore } from '../stores/codeReviewLectureStore'; // T02872：代码评审讲稿运行态
 import { aiImportStore } from '../stores/aiImportStore';
 
 /** 重置广播事件名：AI 控制台挂载时监听，收到后重置本地 state */
@@ -60,6 +61,7 @@ export async function resetWorkbenchArtifacts(): Promise<{ ok: boolean; error?: 
   try { testCaseGenStore.abort(); } catch { /* 幂等 */ }
   try { kickoffPptStore.abort(); } catch { /* 幂等 */ }
   try { summaryPptStore.abort(); } catch { /* 幂等 */ }
+  try { codeReviewLectureStore.abort(); } catch { /* 幂等 */ }
   try { aiImportStore.reset('plan'); } catch { /* 幂等 */ }
   // 3. 草稿产物
   clearArtifactSession();

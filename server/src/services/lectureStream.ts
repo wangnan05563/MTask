@@ -56,6 +56,8 @@ export interface LectureStreamRequest {
   title?: string;
   /** 用户在「大纲确认」后回传的修订稿；提供时跳过大纲 AI 调用 */
   outline?: LectureOutline;
+  /** FR-4.1 两段式第一段：只要大纲、不生成正文（同一端点收口，避免第二套采集/上下文口径） */
+  outlineOnly?: boolean;
   contextBudget?: number;
   maxTokens?: number;
 }
@@ -152,7 +154,9 @@ export function validateLectureStreamBody(body: unknown): LectureStreamRequest {
   if (b.outline !== undefined) {
     if (!b.outline || typeof b.outline !== 'object' || Array.isArray(b.outline)) throw new LectureStreamError('outline 必须是 JSON 对象');
     try {
-      outline = parseLectureOutline(b.outline, projects.map((p) => p.projectId));
+      // 回传的大纲只覆盖「可讲解项目」，而这里的项目列表是用户选中的全量范围（含被阻塞/无变更的）：
+      // 覆盖度规则是给模型的，不能拿来判废服务端自己产出的大纲，否则「只出大纲 → 按大纲生成正文」必然 400
+      outline = parseLectureOutline(b.outline, projects.map((p) => p.projectId), { requireFullCoverage: false });
     } catch (e) {
       // 用户回传的修订稿不合规是入参问题，不能让一次编辑错误变成 500
       throw new LectureStreamError(`outline 校验失败：${e instanceof Error ? e.message : String(e)}`);
@@ -175,7 +179,10 @@ export function validateLectureStreamBody(body: unknown): LectureStreamRequest {
     maxTokens = n;
   }
 
-  return { toolId, projects, excludes, ...(style ? { style } : {}), ...(extraNote ? { extraNote } : {}), ...(title ? { title } : {}), ...(outline ? { outline } : {}), ...(contextBudget ? { contextBudget } : {}), ...(maxTokens ? { maxTokens } : {}) };
+  const outlineOnly = b.outlineOnly === true;
+  if (b.outlineOnly !== undefined && typeof b.outlineOnly !== 'boolean') throw new LectureStreamError('outlineOnly 必须是布尔值');
+
+  return { toolId, projects, excludes, ...(style ? { style } : {}), ...(extraNote ? { extraNote } : {}), ...(title ? { title } : {}), ...(outline ? { outline } : {}), ...(outlineOnly ? { outlineOnly } : {}), ...(contextBudget ? { contextBudget } : {}), ...(maxTokens ? { maxTokens } : {}) };
 }
 
 /** raw(30mb) 的 Buffer 或全局 express.json 的 object 都接受（与 prd-generate-stream 同构） */
@@ -405,6 +412,25 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
   }
   if (signal?.aborted) return emptyResult(request.title ?? '代码评审会议讲稿', outline, warnings, stats);
   if (!outline) throw new LectureStreamError('大纲生成失败：结果为空');
+
+  // FR-4.1 第一段收口：只交大纲，正文留给用户修订后二次提交（stats 保持在采集/上下文口径上）
+  if (request.outlineOnly) {
+    hooks.onStage?.({
+      phase: 'outline', msg: '仅大纲模式：正文未生成，修订后二次提交即可展开八段', progress: 20,
+      data: { type: 'outline_only', outline },
+    });
+    return {
+      ok: true,
+      aborted: false,
+      title: request.title ?? `代码评审会议讲稿 · ${usable.map((p) => p.projectName).join('、')}`,
+      markdown: '',
+      outline,
+      sections: [],
+      warnings,
+      stats,
+      anchors: [],
+    };
+  }
 
   const sections: LectureSectionResult[] = [];
   let aborted = false;

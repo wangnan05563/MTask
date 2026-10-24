@@ -10,13 +10,18 @@ import { Check, Code, Copy, Eye } from 'lucide-react';
  */
 const md = new MarkdownIt({ html: false, linkify: true });
 
-// 外部链接新窗口打开并阻止 opener 泄露，兼顾可用性与安全
+// 外部链接新窗口打开并阻止 opener 泄露，兼顾可用性与安全。
+// `#` 开头的应用内锚点（讲稿 `[file#Lx-Ly]` 跳转等）例外：新窗口打开等于把本页链接甩到空白页，
+// 交给调用方的 onAnchorClick 处理（T02872 三区布局的锚点定位）。
 const defaultRender =
   md.renderer.rules.link_open ||
   ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
 md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
-  tokens[idx].attrSet('target', '_blank');
-  tokens[idx].attrSet('rel', 'noopener noreferrer');
+  const href = tokens[idx].attrGet('href');
+  if (typeof href !== 'string' || !href.startsWith('#')) {
+    tokens[idx].attrSet('target', '_blank');
+    tokens[idx].attrSet('rel', 'noopener noreferrer');
+  }
   return defaultRender(tokens, idx, options, env, self);
 };
 
@@ -46,16 +51,29 @@ export function Markdown({
   content,
   style,
   className,
+  onAnchorClick,
 }: {
   readonly content: string;
   readonly style?: React.CSSProperties;
   readonly className?: string;
+  /** `#` 开头的链接点击回调（传入即接管应用内锚点，不再触发 URL hash 跳转） */
+  readonly onAnchorClick?: (href: string) => void;
 }) {
   const html = useMemo(() => md.render(content || ''), [content]);
   return (
     <div
       className={className ? `mdv ${className}` : 'mdv'}
       style={style}
+      onClick={onAnchorClick
+        ? (e) => {
+          const link = (e.target as HTMLElement).closest?.('a');
+          if (!link) return;
+          const href = link.getAttribute('href') ?? '';
+          if (!href.startsWith('#')) return;
+          e.preventDefault();
+          onAnchorClick(href);
+        }
+        : undefined}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

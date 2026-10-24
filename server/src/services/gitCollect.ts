@@ -247,6 +247,26 @@ export interface TruncatedText {
   originalLength: number;
 }
 
+/**
+ * 把区间终点解析成具体 commit SHA。
+ *
+ * 锚点的 blob 复核需要一个「不随新提交漂移」的坐标：`HEAD`/分支名在下一次提交后就指向别的树，
+ * 按符号名取到的文件内容不再等于生成讲稿时看到的内容，FR-4.3 的时效声明就此失效。
+ */
+export async function resolveRevisionSha(
+  cwd: string,
+  revision: string,
+  opts: GitCollectOptions = {},
+): Promise<string> {
+  const rev = assertSingleRevision(`${revision}^{commit}`);
+  const r = await runGitReadonly('rev-parse', [], [rev], cwd, opts);
+  const sha = r.stdout.trim();
+  if (!/^[0-9a-f]{40}$/.test(sha)) {
+    throw new GitCollectError('failed', `无法把「${revision}」解析成 commit SHA：${sha.slice(0, 80)}`);
+  }
+  return sha;
+}
+
 /** 保头保尾截断（纪律同 prdContext.trimPrdContent），用于 diff 文本的 2MB 上限 */
 export function truncateDiffText(text: string, limit = GIT_DIFF_TEXT_LIMIT): TruncatedText {
   if (text.length <= limit) return { text, truncated: false, originalLength: text.length };

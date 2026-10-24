@@ -3,7 +3,7 @@ import { PlanService } from '../services/PlanService';
 import { TestCaseService } from '../services/TestCaseService'; // T01484：测试用例取数（PRD-测试用例管理 §6）
 import { assertOutlineShape, kickoffOutline, preflight, kickoffPptStream } from '../services/kickoffService'; // T02095/T02096/T02103：启动会 PPT 前置校验、大纲与 SSE 流式生成
 import { summaryPreflight } from '../services/summaryPptService'; // T02853（六期 S2）：总结汇报 PPT 前置校验聚合 S1~S9
-import { listLectureProjects, previewLectureScope, LectureScopeError } from '../services/lectureScope'; // T02867（六期 2.3）：代码评审讲稿范围/排除过滤器
+import { buildLectureDiffView, listLectureProjects, previewLectureScope, LectureScopeError } from '../services/lectureScope'; // T02867（六期 2.3）：代码评审讲稿范围/排除过滤器
 import { lectureStreamErrorStatus, parseLectureStreamBody, runLectureStream, validateLectureStreamBody } from '../services/lectureStream'; // T02870（六期 2.6）：讲稿流式生成编排
 import { summaryOutline } from '../services/summaryPptOutline'; // T02854（六期 S3）：总结汇报 PPT 大纲段（提示词 + schema 校验）
 import { prepareSummaryPptStream, renderSummaryPptStream } from '../services/summaryPptStream'; // T02856（六期 S5）：总结汇报 PPT 流式装配 + 下载令牌
@@ -98,6 +98,20 @@ planApi.get('/code-review-lecture/projects', (_req, res) => wrap(res, () => list
 planApi.post('/code-review-lecture/preflight', async (req, res) => {
   try {
     res.json(await previewLectureScope(req.body ?? {}));
+  } catch (e) {
+    if (e instanceof LectureScopeError) return res.status(400).json({ error: e.message });
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+/**
+ * T02872（六期 3.1）：左栏 diff 视图（PRD §6.1 三区布局 / REQ-022 锚点定位）。
+ * 与预检同一采集通道（同份排除规则与 2MB 预算），差异只在于带 hunk 行正文——
+ * 锚点 `[file#Lx-Ly]` 要在左栏落到 new 侧具体行，光有统计面定位不了。
+ */
+planApi.post('/code-review-lecture/diff', async (req, res) => {
+  try {
+    res.json(await buildLectureDiffView(req.body ?? {}));
   } catch (e) {
     if (e instanceof LectureScopeError) return res.status(400).json({ error: e.message });
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });

@@ -13,15 +13,17 @@ import { PrdGenPanel } from './PrdGenPanel'; // T00769：原始需求生成 PRD
 import { TestCaseGenPanel } from './TestCaseGenPanel'; // T01492：从 PRD 生成测试用例
 import { KickoffPptPanel } from './KickoffPptPanel'; // T02108：项目启动会 PPT 工作面板
 import { SummaryPptPanel } from './SummaryPptPanel'; // T02857：阶段性项目总结汇报 PPT 工作面板
+import { CodeReviewLecturePanel } from './CodeReviewLecturePanel'; // T02872：代码评审会议讲稿工作面板（三区布局）
 import { useSessionState } from '../ui/session';
 import { usePrdGen } from '../stores/prdGenStore'; // T01038：PRD 生成卡片统一运行状态
 import { useTestCaseGen } from '../stores/testCaseGenStore'; // T01492：测试用例生成卡片运行状态
 import { useKickoffPpt } from '../stores/kickoffPptStore'; // T02109：启动会 PPT 卡片运行状态
 import { useSummaryPpt } from '../stores/summaryPptStore'; // T02857：总结汇报 PPT 卡片运行状态
+import { useCodeReviewLecture } from '../stores/codeReviewLectureStore'; // T02872：代码评审讲稿卡片运行状态
 import { aiImportStore } from '../stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 import { RunStatusBadge, type RunStatus } from '../ui/runStatus'; // T01038：统一运行状态徽标
 import { FlowButton } from '../ui/FlowButton'; // T01068-FR4.4：流光按钮（loading 态）
-import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation, FileChartColumn } from 'lucide-react';
+import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation, FileChartColumn, ScrollText } from 'lucide-react';
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CARD } from '../ui/consoleReset'; // T01042：卡片侧重置入口（与控制台重置共用核心）
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
 import { focusTaskByNo } from '../ui/focusTask'; // T01057 建议：就绪任务跳转按编号定位（跨项目可命中）
@@ -247,7 +249,7 @@ function legacyProjectScope(): string[] {
 }
 
 /** 三块 AI 工作面板的条件渲染（S3776：条件块下沉为独立组件） */
-function ReportWorkPanels({ aiToolId, projectId, projectIds, projects, scopeNote, showKickoffPpt, closeKickoffPpt, showSummaryPpt, closeSummaryPpt, openCard, showPrdGen, closePrdGen, prdGenSaved, showTcGen, closeTcGen, tcImported, showPrdImport, closePrdImport, prdImportSaved, showAiImport, closeAiImport, aiImportSaved, prdImportKey }: {
+function ReportWorkPanels({ aiToolId, projectId, projectIds, projects, scopeNote, showKickoffPpt, closeKickoffPpt, showSummaryPpt, closeSummaryPpt, showReviewLecture, closeReviewLecture, openCard, showPrdGen, closePrdGen, prdGenSaved, showTcGen, closeTcGen, tcImported, showPrdImport, closePrdImport, prdImportSaved, showAiImport, closeAiImport, aiImportSaved, prdImportKey }: {
   readonly aiToolId: string;
   readonly projectId: string;
   /** T02857：总结汇表面板默认消费顶部多选范围（空=全部项目），与 kickoff 的单项目口径不同 */
@@ -257,6 +259,8 @@ function ReportWorkPanels({ aiToolId, projectId, projectIds, projects, scopeNote
   readonly scopeNote: string;
   readonly showKickoffPpt: boolean; readonly closeKickoffPpt: () => void;
   readonly showSummaryPpt: boolean; readonly closeSummaryPpt: () => void;
+  /** T02872：代码评审讲稿面板（第 9 张卡，三区布局） */
+  readonly showReviewLecture: boolean; readonly closeReviewLecture: () => void;
   /** T02108：启动会校验清单的「去补充」深链落到本页对应能力卡片（report?card=prd-import / tc-gen） */
   readonly openCard: (key: 'prd-import' | 'tc-gen') => void;
   readonly showPrdGen: boolean; readonly closePrdGen: () => void; readonly prdGenSaved: (r: { issues: number }) => void;
@@ -275,6 +279,10 @@ function ReportWorkPanels({ aiToolId, projectId, projectIds, projects, scopeNote
       {/* T02857（PRD-阶段性项目总结汇报PPT §3.1 FR-1.3）：第 8 张卡——默认跟随顶部多选范围（A-6 例外仅限本卡片） */}
       {showSummaryPpt && (
         <SummaryPptPanel projectIds={projectIds} projects={projects} toolId={aiToolId} onClose={closeSummaryPpt} openCard={openCard} />
+      )}
+      {/* T02872（PRD §6.1）：第 9 张卡——三区布局自带左 diff / 右讲稿，阶段日志同时进右侧控制台 */}
+      {showReviewLecture && (
+        <CodeReviewLecturePanel projectIds={projectIds} projects={projects} toolId={aiToolId} onClose={closeReviewLecture} />
       )}
       {/* T01492：从 PRD 生成测试用例面板（日志/正文同走右侧控制台；停止已接进控制台 stopAll） */}
       {showTcGen && (
@@ -374,6 +382,8 @@ export function ReportPage() {
   const [showKickoffPpt, setShowKickoffPpt] = useSessionState('report.showKickoffPpt', false);
   // T02857：阶段性项目总结汇报 PPT 面板展开态（第 8 张卡，互斥）——分钟级长任务，切页返回要回到展开态
   const [showSummaryPpt, setShowSummaryPpt] = useSessionState('report.showSummaryPpt', false);
+  // T02872（PRD §6.1）：代码评审会议讲稿面板展开态（第 9 张卡，互斥）——生成分钟级长任务，切页返回要回到展开态
+  const [showReviewLecture, setShowReviewLecture] = useSessionState('report.showReviewLecture', false);
   // T00908：「已上传 PRD 文档」弹层展开态 + 导入面板强制重挂载计数（选择文档后递增 key 触发面板重挂，
   //          使 useSessionState 重新读取 sessionStorage 中的目标项目与 docId，保证自动带入生效）
   const [prdDocsOpen, setPrdDocsOpen] = useState(false);
@@ -391,6 +401,7 @@ export function ReportPage() {
   const tcSnap = useTestCaseGen(); // T01492：测试用例生成卡片运行状态供徽标共用
   const kfSnap = useKickoffPpt(); // T02109：启动会 PPT 卡片运行状态供徽标共用
   const sumSnap = useSummaryPpt(); // T02857：总结汇报 PPT 卡片运行状态供徽标共用
+  const lectureSnap = useCodeReviewLecture(); // T02872：代码评审讲稿卡片运行状态供徽标共用
   const aiImp = useSyncExternalStore(aiImportStore.subscribe, aiImportStore.getSnapshot);
 
   const flash = (m: string) => {
@@ -439,12 +450,14 @@ export function ReportPage() {
     tcGen: setShowTcGen,
     kickoffPpt: setShowKickoffPpt,
     summaryPpt: setShowSummaryPpt,
+    reviewLecture: setShowReviewLecture,
   } as const;
   type PanelKey = keyof typeof panelSetters;
   const panelOpen: Record<PanelKey, boolean> = {
     aiImport: showAiImport, offline: showOffline, aiLive: showAiLive, prdImport: showPrdImport, prdGen: showPrdGen, tcGen: showTcGen,
     kickoffPpt: showKickoffPpt,
     summaryPpt: showSummaryPpt,
+    reviewLecture: showReviewLecture,
   };
   /** 点击卡片：已展开则收起，否则只展开它（其余全部收起） */
   function togglePanel(key: PanelKey) {
@@ -546,6 +559,15 @@ export function ReportPage() {
       open: showSummaryPpt,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('summaryPpt') },
+    // T02872（PRD §1 术语表「卡位冲突声明」）：本卡与总结汇报卡同争尾部位，PRD 已按落地时点定序——
+    // 总结汇报先落地为第 8 张，本卡为第 9 张，标题逐字取 PRD §1 口径（「代码评审会议讲稿生成」），不改写、不顶替。
+    { key: 'review-lecture', icon: <ScrollText size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '代码评审会议讲稿生成',
+      desc: withScopeNote('按评审范围采集阶段性增量（Git Diff / Commit 日志），装配可直接照念的八段评审会议讲稿——左 diff、右讲稿、锚点可定位',
+        projectIds.length > 1 ? `多项目：按「总-分-总」装配，每项目独立成章（${projectIds.length} 个项目）` : ''),
+      hint: '项目已配置工作空间路径，或可粘贴 patch 走降级通道', aria: '代码评审会议讲稿生成',
+      open: showReviewLecture,
+      onReset: resetArtifacts,
+      onToggle: () => togglePanel('reviewLecture') },
   ];
 
   // 工作面板开关回调（S3776：从 JSX 内联箭头下沉）
@@ -587,6 +609,8 @@ export function ReportPage() {
         return { status: deriveStatus(kfSnap.streaming, kfSnap.finalElapsed), startedAt: kfSnap.startedAt, finalElapsed: kfSnap.finalElapsed };
       case 'summary-ppt':
         return { status: deriveStatus(sumSnap.streaming, sumSnap.finalElapsed), startedAt: sumSnap.startedAt, finalElapsed: sumSnap.finalElapsed };
+      case 'review-lecture':
+        return { status: deriveStatus(lectureSnap.streaming, lectureSnap.finalElapsed), startedAt: lectureSnap.startedAt, finalElapsed: lectureSnap.finalElapsed };
       case 'ai-import':
       case 'prd-import': {
         // 两面板共用同一 store——按运行类型 kind 分流，避免「从 PRD 导入」运行时「AI 项目计划导入」卡片也转圈（2026-09-26 用户反馈）。
@@ -834,6 +858,7 @@ export function ReportPage() {
       <ReportWorkPanels aiToolId={aiToolId} projectId={projectId} projectIds={projectIds} projects={projects} scopeNote={scopeNoteOf('本面板')}
         showKickoffPpt={showKickoffPpt} closeKickoffPpt={closeKickoffPpt} openCard={openCard}
         showSummaryPpt={showSummaryPpt} closeSummaryPpt={() => setShowSummaryPpt(false)}
+        showReviewLecture={showReviewLecture} closeReviewLecture={() => setShowReviewLecture(false)}
         showPrdGen={showPrdGen} closePrdGen={closePrdGen} prdGenSaved={prdGenSaved}
         showTcGen={showTcGen} closeTcGen={closeTcGen} tcImported={tcImported}
         showPrdImport={showPrdImport} closePrdImport={closePrdImport} prdImportSaved={prdImportSaved}

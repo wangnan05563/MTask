@@ -27,9 +27,11 @@ import {
   collectGitRange,
   collectPatchRange,
   resolveCollectionMode,
+  resolveRevisionSha,
   type GitCollection,
   type GitCommitEntry,
   type GitErrorKind,
+  type GitHunk,
   type GitFileChange,
   type GitRangeInput,
   type GitRangeShape,
@@ -420,7 +422,12 @@ async function scanProject(
     // 先拿全量变更再过滤：若先套 2MB 预算，低优先级文件会被提前丢弃，排除命中数就失真
     const collected = await collectGitRange(workspacePath, item.range!, { diffLimit: Number.MAX_SAFE_INTEGER });
     const { preview, files } = summarizeCollection(base, collected, rules);
-    return { ...preview, files, commits: collected.commits, revision: collected.range.head };
+    // revision 要给锚点 blob 复核当坐标，必须是解析后的 commit SHA；解析失败退回符号名而不是整项目 blocked
+    let revision = collected.range.head;
+    try {
+      revision = await resolveRevisionSha(workspacePath, collected.range.head);
+    } catch { /* 保留符号名，锚点复核按当前树尽力而为 */ }
+    return { ...preview, files, commits: collected.commits, revision };
   } catch (e) {
     if (e instanceof GitCollectError) return { ...base, files: [], commits: [], blocked: `${e.message}（${e.kind}）` };
     throw e;
@@ -484,4 +491,54 @@ export async function collectLectureScope(body: unknown): Promise<LectureCollect
 /** 范围预检：逐项目串行采集 + 过滤 + 预算，返回 FR-7.1 的采集统计面（零 diff 正文） */
 export async function previewLectureScope(body: unknown): Promise<LectureScopePreview> {
   return (await collectLectureScope(body)).preview;
+}
+
+/**
+ * 左面板 diff 视图（T02872 三区布局 / PRD §6.1）。
+ *
+ * 预检端点刻意只回统计面，正文留给这里：三区布局的左栏要渲染真实的 unified diff，
+ * 且锚点 `[file#Lx-Ly]` 的定位必须有 new 侧行号可对。采集与排除口径仍走 `collectLectureScope`
+ * 单一通道（同一份 2MB 预算、同一份排除规则），不另起一次 git 采集。
+ */
+export interface LectureDiffFile {
+  path: string;
+  oldPath?: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  /** 过滤并套预算后真正会进讲稿的 hunk（含行首 diff 前缀） */
+  hunks: GitHunk[];
+}
+
+export interface LectureDiffProject extends LectureProjectPreview {
+  revision?: string;
+  files: LectureDiffFile[];
+}
+
+export interface LectureDiffView {
+  projects: LectureDiffProject[];
+  totals: LectureScopePreview['totals'];
+  ok: boolean;
+  warnings: string[];
+}
+
+export async function buildLectureDiffView(body: unknown): Promise<LectureDiffView> {
+  const { projects, preview } = await collectLectureScope(body);
+  return {
+    projects: projects.map((p) => ({
+      ...toPreview(p),
+      ...(p.revision ? { revision: p.revision } : {}),
+      files: p.files.map((f) => ({
+        path: f.path,
+        ...(f.oldPath ? { oldPath: f.oldPath } : {}),
+        additions: f.additions,
+        deletions: f.deletions,
+        binary: f.binary,
+        hunks: f.hunks,
+      })),
+    })),
+    totals: preview.totals,
+    ok: preview.ok,
+    warnings: preview.warnings,
+  };
 }

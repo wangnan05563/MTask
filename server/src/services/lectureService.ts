@@ -131,6 +131,14 @@ export function buildLectureOutlinePrompt(input: OutlinePromptInput): OutlinePro
 export interface ParseOutlineOptions {
   /** 重试轮：可自愈的超限项截断并记 warning，不再整稿判废 */
   lenient?: boolean;
+  /**
+   * 「逐项目-逐模块讲解必须覆盖全部项目」这条约束是否生效（缺省生效）。
+   *
+   * 它是给模型立的规矩：一次大纲要把每个项目都讲到。二次提交的大纲不该按这条判废——
+   * 大纲是对「可讲解项目」（有变更、未被排除/阻塞）生成的，而回传请求带的是用户选中的全量范围，
+   * 拿全量范围去要求覆盖，等于让服务端自己产出的大纲回炉时必然 400。
+   */
+  requireFullCoverage?: boolean;
 }
 
 function normalizeBullets(raw: unknown, at: string, opts: ParseOutlineOptions, warnings: string[]): string[] {
@@ -200,7 +208,7 @@ export function parseLectureOutline(
     throw new Error(`sections 必须恰好 ${LECTURE_SECTION_KEYS.length} 段且按 ${LECTURE_SECTION_KEYS.join(' → ')} 排列（当前 ${sections.map((s) => s.key).join(' → ') || '空'}）`);
   }
 
-  if (projectIds.length > 1) {
+  if (projectIds.length > 1 && opts.requireFullCoverage !== false) {
     const walk = sections.find((s) => s.key === 'walkthrough')!;
     const covered = new Set(walk.projectIds ?? []);
     const missing = projectIds.filter((id) => !covered.has(id));
