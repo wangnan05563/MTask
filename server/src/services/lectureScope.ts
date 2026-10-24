@@ -20,11 +20,15 @@ import { DEFAULT_IGNORE_DIRS, DEFAULT_IGNORE_FILES } from './WorkspaceService';
 import {
   GIT_DIFF_TEXT_LIMIT,
   GitCollectError,
+  LECTURE_PATCH_TEXT_LIMIT,
   applyDiffBudget,
   assertSafeSince,
   assertSingleRevision,
   collectGitRange,
+  collectPatchRange,
   resolveCollectionMode,
+  type GitCollection,
+  type GitCommitEntry,
   type GitErrorKind,
   type GitFileChange,
   type GitRangeInput,
@@ -72,8 +76,10 @@ export const DEFAULT_LECTURE_EXCLUDES: readonly string[] = [
 
 export interface LectureProjectScopeInput {
   projectId: string;
-  /** 每项目独立选区间形态（FR-2.1） */
-  range: GitRangeInput;
+  /** 每项目独立选区间形态（FR-2.1）；与 patch 二选一 */
+  range?: GitRangeInput;
+  /** Git 不可用时的降级通道（FR-1.3）：粘贴 unified diff 全文；与 range 二选一 */
+  patch?: string;
 }
 
 export interface LectureScopeRequest {
@@ -235,7 +241,8 @@ function parseRange(raw: unknown, index: number): GitRangeInput {
   return range;
 }
 
-function parseRequest(body: unknown): { projects: LectureProjectScopeInput[]; excludes: string[] } {
+/** 讲稿请求体 → 规范化范围（预检与流式生成共用同一份校验，避免两处口径漂移） */
+export function parseLectureScopeRequest(body: unknown): { projects: LectureProjectScopeInput[]; excludes: string[] } {
   if (!body || typeof body !== 'object') throw new LectureScopeError('请求体必须是 JSON 对象');
   const b = body as Record<string, unknown>;
   if (!Array.isArray(b.projects) || b.projects.length === 0) throw new LectureScopeError('projects 必填（至少选一个项目）');
@@ -243,13 +250,21 @@ function parseRequest(body: unknown): { projects: LectureProjectScopeInput[]; ex
   const seen = new Set<string>();
   const projects = b.projects.map((raw, i) => {
     if (!raw || typeof raw !== 'object') throw new LectureScopeError(`projects[${i}] 必须是对象`);
-    const projectId = typeof (raw as Record<string, unknown>).projectId === 'string'
-      ? ((raw as Record<string, unknown>).projectId as string).trim()
-      : '';
+    const row = raw as Record<string, unknown>;
+    const projectId = typeof row.projectId === 'string' ? row.projectId.trim() : '';
     if (!projectId) throw new LectureScopeError(`projects[${i}].projectId 必填`);
     if (seen.has(projectId)) throw new LectureScopeError(`项目「${projectId}」被重复选择`);
     seen.add(projectId);
-    return { projectId, range: parseRange((raw as Record<string, unknown>).range, i) };
+    if (row.patch !== undefined) {
+      if (typeof row.patch !== 'string') throw new LectureScopeError(`projects[${i}].patch 必须是字符串`);
+      if (row.range !== undefined) throw new LectureScopeError(`projects[${i}] 只能选 git 区间或粘贴 patch 之一`);
+      if (!row.patch.trim()) throw new LectureScopeError(`projects[${i}].patch 为空：请粘贴 unified diff 全文`);
+      if (Buffer.byteLength(row.patch, 'utf8') > LECTURE_PATCH_TEXT_LIMIT) {
+        throw new LectureScopeError(`projects[${i}].patch 超过 ${LECTURE_PATCH_TEXT_LIMIT / (1024 * 1024)}MB 上限，请分次评审或收窄范围`);
+      }
+      return { projectId, patch: row.patch };
+    }
+    return { projectId, range: parseRange(row.range, i) };
   });
   const excludes = b.excludes === undefined ? [...DEFAULT_LECTURE_EXCLUDES] : normalizeExcludeRules(b.excludes);
   return { projects, excludes };
@@ -313,36 +328,38 @@ function blankPreview(projectId: string, projectName: string, workspacePath: str
   };
 }
 
-async function previewProject(
-  item: LectureProjectScopeInput,
-  project: ProjectRow | undefined,
+/** 采集 + 过滤 + 预算后的项目（带 diff 正文，供流式生成；预检只回不含正文的视图） */
+export interface LectureCollectedProject extends LectureProjectPreview {
+  files: GitFileChange[];
+  commits: GitCommitEntry[];
+  /** git 采集终点的解析后 commit SHA（patch 模式无） */
+  revision?: string;
+}
+
+export interface LectureCollection {
+  projects: LectureCollectedProject[];
+  preview: LectureScopePreview;
+}
+
+/** 过滤 + 2MB 预算收口：预检与生成共用，命中/丢弃明细只在这里算一次 */
+function summarizeCollection(
+  base: LectureProjectPreview,
+  collected: GitCollection,
   rules: readonly ExcludeRule[],
-): Promise<LectureProjectPreview> {
-  const workspacePath = (project?.workspace_path ?? '').trim();
-  const base = blankPreview(item.projectId, project?.name ?? item.projectId, workspacePath, rangeLabelOf(item.range));
-  if (!project) return { ...base, blocked: '项目不存在或已归档（请刷新项目列表）' };
-  if (!workspacePath) return { ...base, blocked: '未配置工作空间路径（请在项目管理中补配后重试）' };
-
-  const decision = await resolveCollectionMode(workspacePath);
-  base.git = { available: decision.probe.available, isRepo: decision.probe.isRepo, ...(decision.probe.kind ? { kind: decision.probe.kind } : {}), ...(decision.probe.detail ? { reason: decision.probe.detail } : {}) };
-  if (decision.mode === 'patch') {
-    return { ...base, mode: 'patch', warnings: [decision.reason ?? 'Git 不可用，请改用「粘贴 patch」模式'] };
+): { preview: LectureProjectPreview; files: GitFileChange[] } {
+  const filtered = filterChanges(collected.files, rules);
+  const budget = applyDiffBudget(filtered.kept, GIT_DIFF_TEXT_LIMIT);
+  const warnings = [...collected.warnings];
+  if (budget.truncated) {
+    warnings.push(`过滤后 diff 仍超过单仓 ${GIT_DIFF_TEXT_LIMIT / (1024 * 1024)}MB 预算：已丢弃 ${budget.dropped.length} 个文件`
+      + (budget.dropped.length ? `（${budget.dropped.slice(0, DROPPED_NAME_LIMIT).map((e) => e.path).join('、')}${budget.dropped.length > DROPPED_NAME_LIMIT ? ' 等' : ''}）` : ''));
+    if (budget.partial.length > 0) warnings.push(`单文件超出剩余预算，已保头保尾截断：${budget.partial.map((e) => e.path).join('、')}`);
   }
-
-  try {
-    // 预检先拿全量变更再过滤：若先套 2MB 预算，低优先级文件会被提前丢弃，排除命中数就失真
-    const collected = await collectGitRange(workspacePath, item.range, { diffLimit: Number.MAX_SAFE_INTEGER });
-    const filtered = filterChanges(collected.files, rules);
-    const budget = applyDiffBudget(filtered.kept, GIT_DIFF_TEXT_LIMIT);
-    const warnings = [...collected.warnings];
-    if (budget.truncated) {
-      warnings.push(`过滤后 diff 仍超过单仓 ${GIT_DIFF_TEXT_LIMIT / (1024 * 1024)}MB 预算：已丢弃 ${budget.dropped.length} 个文件`
-        + (budget.dropped.length ? `（${budget.dropped.slice(0, DROPPED_NAME_LIMIT).map((e) => e.path).join('、')}${budget.dropped.length > DROPPED_NAME_LIMIT ? ' 等' : ''}）` : ''));
-      if (budget.partial.length > 0) warnings.push(`单文件超出剩余预算，已保头保尾截断：${budget.partial.map((e) => e.path).join('、')}`);
-    }
-    if (filtered.kept.length === 0 && filtered.excluded.length > 0) warnings.push('区间内所有变更文件都被排除规则过滤，请检查排除规则');
-    const kept = budget.kept;
-    return {
+  if (filtered.kept.length === 0 && filtered.excluded.length > 0) warnings.push('区间内所有变更文件都被排除规则过滤，请检查排除规则');
+  const kept = budget.kept;
+  return {
+    files: kept,
+    preview: {
       ...base,
       stats: collected.stats,
       excluded: {
@@ -364,42 +381,107 @@ async function previewProject(
         truncated: budget.truncated,
       },
       warnings,
-    };
+    },
+  };
+}
+
+async function scanProject(
+  item: LectureProjectScopeInput,
+  project: ProjectRow | undefined,
+  rules: readonly ExcludeRule[],
+): Promise<LectureCollectedProject> {
+  const workspacePath = (project?.workspace_path ?? '').trim();
+  const base = blankPreview(item.projectId, project?.name ?? item.projectId, workspacePath, item.patch !== undefined ? '粘贴 patch' : rangeLabelOf(item.range!));
+  if (!project) return { ...base, files: [], commits: [], blocked: '项目不存在或已归档（请刷新项目列表）' };
+
+  // 粘贴 patch 不依赖工作空间与 git，先于 git 探测处理（FR-1.3 降级通道）
+  if (item.patch !== undefined) {
+    const patchBase: LectureProjectPreview = { ...base, mode: 'patch' };
+    try {
+      const collected = collectPatchRange(item.patch, { diffLimit: Number.MAX_SAFE_INTEGER });
+      const { preview, files } = summarizeCollection(patchBase, collected, rules);
+      return { ...preview, files, commits: [] };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const kind = e instanceof GitCollectError ? `（${e.kind}）` : '';
+      return { ...patchBase, files: [], commits: [], blocked: `粘贴 patch 无法解析${kind}：${msg}` };
+    }
+  }
+
+  if (!workspacePath) return { ...base, files: [], commits: [], blocked: '未配置工作空间路径（请在项目管理中补配后重试）' };
+
+  const decision = await resolveCollectionMode(workspacePath);
+  base.git = { available: decision.probe.available, isRepo: decision.probe.isRepo, ...(decision.probe.kind ? { kind: decision.probe.kind } : {}), ...(decision.probe.detail ? { reason: decision.probe.detail } : {}) };
+  if (decision.mode === 'patch') {
+    return { ...base, mode: 'patch', files: [], commits: [], warnings: [decision.reason ?? 'Git 不可用，请改用「粘贴 patch」模式'] };
+  }
+
+  try {
+    // 先拿全量变更再过滤：若先套 2MB 预算，低优先级文件会被提前丢弃，排除命中数就失真
+    const collected = await collectGitRange(workspacePath, item.range!, { diffLimit: Number.MAX_SAFE_INTEGER });
+    const { preview, files } = summarizeCollection(base, collected, rules);
+    return { ...preview, files, commits: collected.commits, revision: collected.range.head };
   } catch (e) {
-    if (e instanceof GitCollectError) return { ...base, blocked: `${e.message}（${e.kind}）` };
+    if (e instanceof GitCollectError) return { ...base, files: [], commits: [], blocked: `${e.message}（${e.kind}）` };
     throw e;
   }
 }
 
-/** 范围预检：逐项目串行采集 + 过滤 + 预算，返回 FR-7.1 的采集统计面 */
-export async function previewLectureScope(body: unknown): Promise<LectureScopePreview> {
-  const req = parseRequest(body);
+const toPreview = (p: LectureCollectedProject): LectureProjectPreview => ({
+  projectId: p.projectId,
+  projectName: p.projectName,
+  workspacePath: p.workspacePath,
+  mode: p.mode,
+  rangeLabel: p.rangeLabel,
+  git: p.git,
+  stats: p.stats,
+  excluded: p.excluded,
+  kept: p.kept,
+  budget: p.budget,
+  warnings: p.warnings,
+  ...(p.blocked ? { blocked: p.blocked } : {}),
+});
+
+/**
+ * 逐项目串行采集（含 patch 降级）：预检与流式生成共用。
+ * 返回带 diff 正文的项目 + 与预检 HTTP 同形的轻量视图。
+ */
+export async function collectLectureScope(body: unknown): Promise<LectureCollection> {
+  const req = parseLectureScopeRequest(body);
   const rules = compileExcludeRules(req.excludes);
   const db = getDb();
-  const previews: LectureProjectPreview[] = [];
+  const projects: LectureCollectedProject[] = [];
   for (const item of req.projects) {
     const project = db
       .prepare(`SELECT id, name, workspace_path FROM projects WHERE id = ? AND ${ACTIVE_PROJECT_WHERE}`)
       .get(item.projectId) as ProjectRow | undefined;
-    previews.push(await previewProject(item, project, rules));
+    projects.push(await scanProject(item, project, rules));
   }
-  const usable = previews.filter((p) => !p.blocked && p.mode === 'git');
+  const usable = projects.filter((p) => !p.blocked && p.stats.files > 0);
   const warnings: string[] = [];
   if (usable.length === 0) warnings.push('没有可采集的项目：请补配工作空间路径，或改用「粘贴 patch」');
   return {
-    projects: previews,
-    totals: {
-      projects: previews.length,
-      ready: usable.length,
-      commits: usable.reduce((s, p) => s + p.stats.commits, 0),
-      files: usable.reduce((s, p) => s + p.stats.files, 0),
-      additions: usable.reduce((s, p) => s + p.stats.additions, 0),
-      deletions: usable.reduce((s, p) => s + p.stats.deletions, 0),
-      excluded: usable.reduce((s, p) => s + p.excluded.count, 0),
-      keptFiles: usable.reduce((s, p) => s + p.kept.files, 0),
-      keptChars: usable.reduce((s, p) => s + p.kept.chars, 0),
+    projects,
+    preview: {
+      projects: projects.map(toPreview),
+      totals: {
+        projects: projects.length,
+        ready: usable.length,
+        commits: usable.reduce((s, p) => s + p.stats.commits, 0),
+        files: usable.reduce((s, p) => s + p.stats.files, 0),
+        additions: usable.reduce((s, p) => s + p.stats.additions, 0),
+        deletions: usable.reduce((s, p) => s + p.stats.deletions, 0),
+        excluded: usable.reduce((s, p) => s + p.excluded.count, 0),
+        keptFiles: usable.reduce((s, p) => s + p.kept.files, 0),
+        keptChars: usable.reduce((s, p) => s + p.kept.chars, 0),
+      },
+      ok: usable.length > 0,
+      warnings,
     },
-    ok: usable.length > 0,
-    warnings,
   };
+}
+
+/** 范围预检：逐项目串行采集 + 过滤 + 预算，返回 FR-7.1 的采集统计面（零 diff 正文） */
+export async function previewLectureScope(body: unknown): Promise<LectureScopePreview> {
+  return (await collectLectureScope(body)).preview;
 }

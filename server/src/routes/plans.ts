@@ -4,6 +4,7 @@ import { TestCaseService } from '../services/TestCaseService'; // T01484：测�
 import { assertOutlineShape, kickoffOutline, preflight, kickoffPptStream } from '../services/kickoffService'; // T02095/T02096/T02103：启动会 PPT 前置校验、大纲与 SSE 流式生成
 import { summaryPreflight } from '../services/summaryPptService'; // T02853（六期 S2）：总结汇报 PPT 前置校验聚合 S1~S9
 import { listLectureProjects, previewLectureScope, LectureScopeError } from '../services/lectureScope'; // T02867（六期 2.3）：代码评审讲稿范围/排除过滤器
+import { lectureStreamErrorStatus, parseLectureStreamBody, runLectureStream, validateLectureStreamBody } from '../services/lectureStream'; // T02870（六期 2.6）：讲稿流式生成编排
 import { summaryOutline } from '../services/summaryPptOutline'; // T02854（六期 S3）：总结汇报 PPT 大纲段（提示词 + schema 校验）
 import { prepareSummaryPptStream, renderSummaryPptStream } from '../services/summaryPptStream'; // T02856（六期 S5）：总结汇报 PPT 流式装配 + 下载令牌
 import { safeExportName } from '../util/export-name'; // T02104：导出文件名单源（与下载白名单同源）
@@ -101,6 +102,65 @@ planApi.post('/code-review-lecture/preflight', async (req, res) => {
     if (e instanceof LectureScopeError) return res.status(400).json({ error: e.message });
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
+});
+
+/**
+ * T02870（六期 2.6）：讲稿流式生成（PRD FR-5.1/5.2）。
+ * 事件与既有 AI 流式端点同构：`stage {phase,msg,progress,data}`（collecting→preflight→outline→section:<n>）、
+ * `chunk {section,projectId,projectName,module,text}`、`done {markdown,sections,outline,stats,anchors,warnings}`、`error {error}`。
+ * raw(30mb) 兼容「全局 express.json 已解析的对象」与「非 JSON Content-Type 的 Buffer」；
+ * 参数错在 SSE 头之前 400，采集失败/模型失败走 error 事件；客户端断开即 abort 并停止后续 AI 调用。
+ */
+planApi.post('/code-review-lecture-stream', raw({ type: () => true, limit: '30mb' }), async (req, res) => {
+  let body: unknown;
+  try {
+    body = parseLectureStreamBody(req.body);
+    validateLectureStreamBody(body);
+  } catch (e) {
+    return res.status(lectureStreamErrorStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+  let closed = false;
+  const send = (event: string, payload: unknown) => {
+    if (closed || res.writableEnded) return;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+  };
+  // 必须监听 res 的 close（req 的 close 会在请求体读完后提前触发，监听 req 会误丢 stage/done）
+  const ac = new AbortController();
+  res.on('close', () => {
+    closed = true;
+    ac.abort();
+  });
+
+  try {
+    const result = await runLectureStream(body, {
+      signal: ac.signal,
+      onStage: (stage) => send('stage', stage),
+      onChunk: (chunk) => send('chunk', chunk),
+    });
+    if (closed || res.writableEnded) return;
+    if (result.aborted) {
+      send('error', { error: '已停止（已生成的章节可由前端保留）' });
+    } else {
+      send('done', {
+        ok: result.ok,
+        title: result.title,
+        markdown: result.markdown,
+        outline: result.outline,
+        sections: result.sections,
+        warnings: result.warnings,
+        stats: result.stats,
+        anchors: result.anchors,
+      });
+    }
+  } catch (e) {
+    send('error', { error: e instanceof Error ? e.message : String(e) });
+  }
+  res.end();
 });
 
 /**
