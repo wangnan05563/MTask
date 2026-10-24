@@ -6,6 +6,7 @@ import { summaryPreflight } from '../services/summaryPptService'; // T02853（�
 import { buildLectureDiffView, listLectureProjects, previewLectureScope, LectureScopeError } from '../services/lectureScope'; // T02867（六期 2.3）：代码评审讲稿范围/排除过滤器
 import { lectureStreamErrorStatus, parseLectureStreamBody, runLectureStream, validateLectureStreamBody } from '../services/lectureStream'; // T02870（六期 2.6）：讲稿流式生成编排
 import { buildLectureExport, lectureExportFilename, LectureExportError, validateLectureExportBody } from '../services/lectureExport'; // T02874（六期 3.3）：讲稿 md/docx/pptx 导出装配
+import { estimateLectureRun } from '../services/lecturePreflight'; // T02875（六期 3.4）：预检预算估算段
 import { saveReportBuffer } from '../services/ReportService'; // T02874：导出物落盘走既有令牌链路
 import { summaryOutline } from '../services/summaryPptOutline'; // T02854（六期 S3）：总结汇报 PPT 大纲段（提示词 + schema 校验）
 import { prepareSummaryPptStream, renderSummaryPptStream } from '../services/summaryPptStream'; // T02856（六期 S5）：总结汇报 PPT 流式装配 + 下载令牌
@@ -99,7 +100,9 @@ planApi.get('/code-review-lecture/projects', (_req, res) => wrap(res, () => list
  */
 planApi.post('/code-review-lecture/preflight', async (req, res) => {
   try {
-    res.json(await previewLectureScope(req.body ?? {}));
+    const preview = await previewLectureScope(req.body ?? {});
+    // T02875：预检台同时给出预算估算（FR-7.1 调用次数/耗时/字数），供覆盖层「裁剪继续 / 收窄范围」决策
+    res.json({ ...preview, estimate: estimateLectureRun(preview) });
   } catch (e) {
     if (e instanceof LectureScopeError) return res.status(400).json({ error: e.message });
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });

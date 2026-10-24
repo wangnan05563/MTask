@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Ban, Download, Eye, RefreshCw, Sparkles, X } from 'lucide-react';
+import { Ban, Download, Eye, ListChecks, RefreshCw, Sparkles, X } from 'lucide-react';
 import { api } from '../api/client';
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import type { Project } from '../api/client';
@@ -73,6 +73,34 @@ const FONT_MONO = 'Consolas, Menlo, monospace';
 /** 文件级展开态键 */
 const fileKey = (projectId: string, path: string) => `${projectId}|${path}`;
 
+/** T02875：预检响应（统计面 + 预算估算，服务端 `lectureScope`/`lecturePreflight` 的镜像） */
+interface LecturePreflightProject {
+  projectId: string;
+  projectName: string;
+  workspacePath: string;
+  mode: 'git' | 'patch';
+  rangeLabel: string;
+  git: { available: boolean; isRepo: boolean };
+  stats: { commits: number; files: number; additions: number; deletions: number };
+  excluded: { count: number };
+  kept: { files: number; additions: number; deletions: number; chars: number };
+  budget: { dropped: number; droppedNames: string[]; limit: number; truncated: boolean };
+  warnings: string[];
+  blocked?: string;
+}
+interface LecturePreflight {
+  projects: LecturePreflightProject[];
+  totals: {
+    projects: number; ready: number; commits: number; files: number; additions: number; deletions: number;
+    excluded: number; keptFiles: number; keptChars: number;
+  };
+  ok: boolean;
+  warnings: string[];
+  estimate: { groups: number; calls: number; seconds: number; contextChars: number; contextBudget: number };
+}
+
+const fmtSeconds = (s: number): string => (s >= 60 ? `${Math.ceil(s / 60)} 分钟` : `${s} 秒`);
+
 /**
  * 续作/重试结果拼接：服务端只回「从 resumeFrom 起（或点名的节）」的 sections，
  * 之前已完成的节取上一轮结果（或流式实时正文），按大纲顺序重排并重算整体 ok。
@@ -123,6 +151,10 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
   const [patchText, setPatchText] = useState('');
   const [exportFormat, setExportFormat] = useSessionState<'md' | 'docx' | 'pptx'>('lecture.exportFormat', 'md');
   const [exporting, setExporting] = useState(false);
+  /** T02875：预检覆盖层 + 「裁剪继续」要接着跑的意图 */
+  const [preflight, setPreflight] = useState<LecturePreflight | null>(null);
+  const [preflightLoading, setPreflightLoading] = useState(false);
+  const pendingRun = useRef<{ extra: Record<string, unknown>; label: string } | null>(null);
   const [notice, setNotice] = useState('');
   const [openFiles, setOpenFiles] = useState<Set<string>>(new Set());
   const [foldedHunks, setFoldedHunks] = useState<Set<string>>(new Set());
@@ -237,6 +269,36 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
     } finally {
       codeReviewLectureStore.setAbortCtrl(null);
     }
+  }
+
+  // ---- T02875：预检覆盖层（FR-7.1 统计面 + FR-7.2 超限两条路） ----
+  async function openPreflight(extra: Record<string, unknown>, label: string) {
+    if (scopeBody.error) return flash(scopeBody.error);
+    if (!toolId) return flash('请先在右侧控制台选择 AI 工具');
+    setPreflightLoading(true);
+    try {
+      const p = await api.post<LecturePreflight>('/plans/code-review-lecture/preflight', scopeBody.body);
+      pendingRun.current = { extra, label };
+      setPreflight(p);
+    } catch (e) {
+      flash(`预检失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setPreflightLoading(false);
+    }
+  }
+
+  function continueFromPreflight() {
+    const pending = pendingRun.current;
+    setPreflight(null);
+    pendingRun.current = null;
+    if (!pending) return;
+    void runStream(pending.extra, pending.label);
+  }
+
+  function cancelPreflight() {
+    setPreflight(null);
+    pendingRun.current = null;
+    flash('已中止——请调整项目/区间/排除规则后重新预检');
   }
 
   // ---- 锚点交互：点击定位 + hover 底色 ----
@@ -375,11 +437,16 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
           title="按当前范围采集 diff 并渲染到左栏">
           <RefreshCw size={13} style={{ marginRight: 4 }} />加载 diff
         </FlowButton>
-        <FlowButton onClick={() => void runStream({ outlineOnly: true }, '只出大纲')} disabled={snap.streaming}
+        <FlowButton data-lck="preflight-btn" onClick={() => void openPreflight(outline ? { outline } : { outlineOnly: true }, '预检后继续')}
+          disabled={snap.streaming} loading={preflightLoading} loadingText="预检中"
+          title="先统计后放行：项目/commit/文件/+−行/排除命中/预算估算/git 可用性">
+          <ListChecks size={13} style={{ marginRight: 4 }} />预检
+        </FlowButton>
+        <FlowButton onClick={() => void openPreflight({ outlineOnly: true }, '只出大纲')} disabled={snap.streaming}
           title="只出八段骨架大纲（1 次模型调用），确认后再展开正文">
           <Eye size={13} style={{ marginRight: 4 }} />只出大纲
         </FlowButton>
-        <FlowButton onClick={() => void runStream(outline ? { outline } : {}, '生成讲稿正文')} disabled={snap.streaming}
+        <FlowButton onClick={() => void openPreflight(outline ? { outline } : {}, '生成讲稿正文')} disabled={snap.streaming}
           title={outline ? '按已确认大纲生成八段正文（跳过大纲调用）' : '直接生成八段正文（含一次大纲调用）'}>
           <Sparkles size={13} style={{ marginRight: 4 }} />{outline ? '按大纲生成正文' : '开始生成'}
         </FlowButton>
@@ -442,6 +509,80 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
           <Download size={13} style={{ marginRight: 4 }} />导出
         </FlowButton>
       </footer>
+
+      {preflight && (
+        <div data-lck="preflight" role="dialog" aria-modal="true" aria-label="生成前预检"
+          style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(15,23,42,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div style={{ width: 'min(920px, 96vw)', maxHeight: '84vh', overflow: 'auto', background: 'var(--card-bg)', border: '1px solid var(--accent)', borderRadius: 10, padding: 14 }}>
+            <header style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <ListChecks size={16} style={{ color: 'var(--accent)' }} />
+              <strong style={{ fontSize: 14 }}>生成前预检</strong>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>先统计后放行——超限可「裁剪继续」或「中止收窄范围」</span>
+              <button type="button" onClick={cancelPreflight} aria-label="关闭预检"
+                style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
+                <X size={15} />
+              </button>
+            </header>
+
+            <div data-lck="preflight-totals" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '10px 0' }}>
+              <span style={chipStyle}>项目 {preflight.totals.ready}/{preflight.totals.projects} 可采集</span>
+              <span style={chipStyle}>{preflight.totals.commits} commits</span>
+              <span style={chipStyle}>{preflight.totals.files} 文件</span>
+              <span style={chipStyle}><span style={{ color: 'var(--success)' }}>+{preflight.totals.additions}</span> / <span style={{ color: 'var(--danger)' }}>-{preflight.totals.deletions}</span></span>
+              <span style={chipStyle}>排除命中 {preflight.totals.excluded}</span>
+              <span style={chipStyle}>预算内 {preflight.totals.keptFiles} 文件 / {preflight.totals.keptChars} 字符（上限 {preflight.estimate.contextBudget}）</span>
+              <span style={chipStyle}>{preflight.estimate.groups} 个分段组 → 预估 {preflight.estimate.calls} 次调用 / {fmtSeconds(preflight.estimate.seconds)}</span>
+            </div>
+
+            {!preflight.ok && (
+              <p data-lck="preflight-blocked" style={{ fontSize: 12, color: 'var(--danger)', margin: '4px 0' }}>
+                没有可采集的项目：请补配工作空间路径、调整区间，或改用「粘贴 patch」后重新预检。
+              </p>
+            )}
+            {preflight.warnings.map((w, i) => <p key={`pw${i}`} style={{ fontSize: 12, color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
+
+            <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+              {preflight.projects.map((p) => (
+                <section key={p.projectId} data-lck={`preflight-project-${p.projectId}`}
+                  style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 8, background: 'var(--surface)' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                    <strong style={{ fontSize: 13 }}>{p.projectName}</strong>
+                    <span style={chipStyle}>{p.mode === 'patch' ? '粘贴 patch' : p.rangeLabel}</span>
+                    <span data-lck={`preflight-git-${p.projectId}`} style={{ ...chipStyle, color: p.git.available && p.git.isRepo ? 'var(--success)' : 'var(--danger)' }}>
+                      {p.mode === 'patch' ? '无需 git' : p.git.available ? (p.git.isRepo ? 'git 可用' : '非 git 仓库') : '未检测到 git'}
+                    </span>
+                    <span style={chipStyle}>{p.stats.commits} commits · {p.stats.files} 文件 · +{p.stats.additions}/-{p.stats.deletions}</span>
+                    <span style={chipStyle}>排除 {p.excluded.count}</span>
+                    <span style={chipStyle}>保留 {p.kept.files} 文件 / {p.kept.chars} 字符</span>
+                  </div>
+                  {p.blocked && <p style={{ fontSize: 12, color: 'var(--danger)', margin: '4px 0' }}>{p.blocked}</p>}
+                  {p.budget.dropped > 0 && (
+                    <p data-lck="preflight-dropped" style={{ fontSize: 12, color: 'var(--warn)', margin: '4px 0' }}>
+                      超预算已按优先级丢弃 {p.budget.dropped} 个文件：{p.budget.droppedNames.join('、')}
+                      {p.budget.truncated ? '（列表已截断）' : ''}
+                    </p>
+                  )}
+                  {p.warnings.map((w, i) => <p key={`w${i}`} style={{ fontSize: 12, color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
+                </section>
+              ))}
+            </div>
+
+            <footer style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: '1 1 auto' }}>
+                「裁剪继续」＝按预算内保留文件生成；被丢弃的文件已点名，不会静默缺稿。
+              </span>
+              <FlowButton data-lck="preflight-cancel" onClick={cancelPreflight}
+                style={{ backgroundColor: 'var(--surface-2)', color: 'var(--text)' }} title="不动代码：回面板调整项目/区间/排除规则">
+                中止收窄范围
+              </FlowButton>
+              <FlowButton data-lck="preflight-continue" onClick={continueFromPreflight} disabled={!preflight.ok}
+                title={preflight.ok ? '按当前统计面继续（超预算文件按优先级丢弃）' : '没有可采集的项目，无法继续'}>
+                裁剪继续 · {pendingRun.current?.label ?? '生成'}
+              </FlowButton>
+            </footer>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
