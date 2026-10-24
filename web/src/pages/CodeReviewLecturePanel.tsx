@@ -29,10 +29,13 @@ import {
   type LectureDiffView,
 } from '../utils/lectureDiff';
 import {
+  applyMarksToSection,
+  assembleLectureExport,
   lectureMarkKey,
   splitLectureBlocks,
   type LectureMark,
 } from '../utils/lectureMarkup';
+import { saveBlob } from '../utils/download';
 
 /**
  * 代码评审会议讲稿 · 工作面板（六期 3.1 / T02872，PRD §6.1 三区布局、§6.2 锚点交互）。
@@ -118,6 +121,8 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
   const [since, setSince] = useSessionState('lecture.since', '');
   const [patchMode, setPatchMode] = useSessionState('lecture.patchMode', false);
   const [patchText, setPatchText] = useState('');
+  const [exportFormat, setExportFormat] = useSessionState<'md' | 'docx' | 'pptx'>('lecture.exportFormat', 'md');
+  const [exporting, setExporting] = useState(false);
   const [notice, setNotice] = useState('');
   const [openFiles, setOpenFiles] = useState<Set<string>>(new Set());
   const [foldedHunks, setFoldedHunks] = useState<Set<string>>(new Set());
@@ -275,6 +280,46 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
   const outline = snap.result?.outline ?? snap.outline ?? undefined;
   const sections = snap.result?.sections ?? [];
 
+  // ---- T02874：导出 md/docx/pptx（标记过滤后送服务端装配，下载走 ai-download 令牌） ----
+  async function exportLecture() {
+    const result = snap.result;
+    if (!result || sections.length === 0) return flash('还没有可导出的讲稿正文——请先完成生成');
+    if (snap.streaming) return flash('生成中——请等当前流结束或先「停止」再导出');
+    const projectNames = snap.diff.length > 0
+      ? snap.diff.map((p) => p.projectName)
+      : (result.title.split('·')[1]?.split('、').map((s) => s.trim()).filter(Boolean) ?? []);
+    const generatedAt = new Date().toLocaleString('zh-CN');
+    const doc = assembleLectureExport({
+      title: result.title,
+      projectNames,
+      sections: result.sections.map((s) => ({ key: s.key, label: s.label, text: s.text })),
+      marks: snap.marks,
+      generatedAt,
+    });
+    setExporting(true);
+    try {
+      const created = await api.post<{ token: string; filename: string }>('/plans/code-review-lecture/export', {
+        format: exportFormat,
+        title: result.title,
+        generatedAt,
+        markdown: doc.markdown,
+        sections: result.sections.map((s) => ({
+          key: s.key, label: s.label, text: applyMarksToSection(s.key, s.text, snap.marks).text,
+        })),
+        followups: doc.followupList,
+        ignored: doc.ignored,
+      });
+      const { blob, filename } = await api.postDownload('/report/ai-download', { token: created.token, filename: created.filename });
+      saveBlob(blob, filename);
+      codeReviewLectureStore.pushLog(`已导出 ${exportFormat.toUpperCase()}：${filename}（忽略 ${doc.ignored} 条 / 会后跟进 ${doc.followups} 条）`);
+      flash(`已导出 ${filename}（忽略 ${doc.ignored} 条，跟进 ${doc.followups} 条）`);
+    } catch (e) {
+      flash(`导出失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   // 「从第 n 节继续」/「单节重试」的落点：第一节没正文或上一轮失败的位置
   const outlineSections = outline?.sections ?? [];
   const okBySection = new Map<string, boolean>();
@@ -386,9 +431,14 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
             <RefreshCw size={13} style={{ marginRight: 4 }} />从第 {resumeIndex} 节继续
           </FlowButton>
         )}
-        {/* 本单只留槽位：导出链路（md/docx/pptx + 下载令牌）在 T02874 接入，此前恒禁用而不是「有正文就能点」 */}
-        <FlowButton onClick={() => flash('导出链路（md/docx/pptx + 下载令牌）在 T02874 接入')} disabled
-          title="导出链路在 T02874 接入">
+        <select data-lck="export-format" value={exportFormat} onChange={(e) => setExportFormat(e.target.value as 'md' | 'docx' | 'pptx')}
+          style={fieldStyle} aria-label="导出格式" disabled={exporting}>
+          <option value="md">md 讲稿</option>
+          <option value="docx">docx 文稿</option>
+          <option value="pptx">pptx 投屏（一页一节 + 讲者备注）</option>
+        </select>
+        <FlowButton data-lck="export-btn" onClick={() => void exportLecture()} disabled={snap.streaming || !snap.result || sections.length === 0}
+          loading={exporting} loadingText="导出中" title="按当前标记过滤后导出（忽略项不出现在稿中，会后跟进另列清单）">
           <Download size={13} style={{ marginRight: 4 }} />导出
         </FlowButton>
       </footer>

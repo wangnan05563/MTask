@@ -13,9 +13,10 @@
 /**
  * 下载端点文件名白名单（T02103 起为启动会 PPT 复用周报链路，A-2 裁决：零改动复用）。
  * T02856（六期 S5 / PRD 裁决 A-2）：加 `zip`——分别独立版多项目打包的交付扩展名；
+ * T02874（六期 3.3）：加 `md`——代码评审讲稿的纯文本导出。
  * 正文可字符集不变，生成侧仍须经 {@link downloadSafeName} 洗到能过这里，不新开校验口子。
  */
-export const DOWNLOAD_NAME_RE = /^[\w\-.()·\u4e00-\u9fa5 ]+\.(xlsx|docx|pdf|pptx|zip)$/i;
+export const DOWNLOAD_NAME_RE = /^[\w\-.()·\u4e00-\u9fa5 ]+\.(xlsx|docx|pdf|pptx|zip|md)$/i;
 
 /** 白名单允许的正文字符（去掉扩展名后逐字判定）：ASCII 字母数字下划线、`- . ( ) ·`、空格、CJK 基本区 */
 const BODY_CHAR_RE = /[\w\-().·\u4e00-\u9fa5]/;

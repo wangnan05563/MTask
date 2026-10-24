@@ -1904,6 +1904,8 @@ api.post('/report/ai-download', (req, res) => {
     pdf: 'application/pdf',
     // T02856（六期 S5 / PRD 裁决 A-2）：分别独立版多项目 zip 交付；与 DOWNLOAD_NAME_RE 同步扩展
     zip: 'application/zip',
+    // T02874（六期 3.3）：代码评审讲稿纯文本导出
+    md: 'text/markdown;charset=utf-8',
   };
   const ext = (safe.split('.').pop() ?? '').toLowerCase();
   res.setHeader('Content-Type', MIME[ext] ?? 'application/octet-stream');

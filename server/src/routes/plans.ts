@@ -5,6 +5,8 @@ import { assertOutlineShape, kickoffOutline, preflight, kickoffPptStream } from 
 import { summaryPreflight } from '../services/summaryPptService'; // T02853（六期 S2）：总结汇报 PPT 前置校验聚合 S1~S9
 import { buildLectureDiffView, listLectureProjects, previewLectureScope, LectureScopeError } from '../services/lectureScope'; // T02867（六期 2.3）：代码评审讲稿范围/排除过滤器
 import { lectureStreamErrorStatus, parseLectureStreamBody, runLectureStream, validateLectureStreamBody } from '../services/lectureStream'; // T02870（六期 2.6）：讲稿流式生成编排
+import { buildLectureExport, lectureExportFilename, LectureExportError, validateLectureExportBody } from '../services/lectureExport'; // T02874（六期 3.3）：讲稿 md/docx/pptx 导出装配
+import { saveReportBuffer } from '../services/ReportService'; // T02874：导出物落盘走既有令牌链路
 import { summaryOutline } from '../services/summaryPptOutline'; // T02854（六期 S3）：总结汇报 PPT 大纲段（提示词 + schema 校验）
 import { prepareSummaryPptStream, renderSummaryPptStream } from '../services/summaryPptStream'; // T02856（六期 S5）：总结汇报 PPT 流式装配 + 下载令牌
 import { safeExportName } from '../util/export-name'; // T02104：导出文件名单源（与下载白名单同源）
@@ -115,6 +117,29 @@ planApi.post('/code-review-lecture/diff', async (req, res) => {
   } catch (e) {
     if (e instanceof LectureScopeError) return res.status(400).json({ error: e.message });
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+/**
+ * T02874（六期 3.3）：讲稿导出 md/docx/pptx（PRD FR-6.1/6.2）。
+ * 前端送**已按标记过滤的成稿**（忽略项已剔除、会后跟进清单已生成），服务端只做格式装配与令牌落盘；
+ * 下载复用 `/report/ai-download`（下载即删），不新增下载端点。
+ */
+planApi.post('/code-review-lecture/export', async (req, res) => {
+  try {
+    const request = validateLectureExportBody(req.body ?? {});
+    const buffer = await buildLectureExport(request);
+    const token = saveReportBuffer(buffer);
+    res.json({
+      ok: true,
+      token,
+      filename: lectureExportFilename(request.title, request.format),
+      bytes: buffer.length,
+      ignored: request.ignored,
+      followups: request.followups.length,
+    });
+  } catch (e) {
+    res.status(e instanceof LectureExportError ? 400 : 500).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
 
