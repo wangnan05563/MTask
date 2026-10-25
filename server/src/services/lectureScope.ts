@@ -391,6 +391,7 @@ async function scanProject(
   item: LectureProjectScopeInput,
   project: ProjectRow | undefined,
   rules: readonly ExcludeRule[],
+  resolveRevision: boolean,
 ): Promise<LectureCollectedProject> {
   const workspacePath = (project?.workspace_path ?? '').trim();
   const base = blankPreview(item.projectId, project?.name ?? item.projectId, workspacePath, item.patch !== undefined ? '粘贴 patch' : rangeLabelOf(item.range!));
@@ -422,12 +423,16 @@ async function scanProject(
     // 先拿全量变更再过滤：若先套 2MB 预算，低优先级文件会被提前丢弃，排除命中数就失真
     const collected = await collectGitRange(workspacePath, item.range!, { diffLimit: Number.MAX_SAFE_INTEGER });
     const { preview, files } = summarizeCollection(base, collected, rules);
-    // revision 要给锚点 blob 复核当坐标，必须是解析后的 commit SHA；解析失败退回符号名而不是整项目 blocked
-    let revision = collected.range.head;
-    try {
-      revision = await resolveRevisionSha(workspacePath, collected.range.head);
-    } catch { /* 保留符号名，锚点复核按当前树尽力而为 */ }
-    return { ...preview, files, commits: collected.commits, revision };
+    // revision 要给锚点 blob 复核当坐标，必须是解析后的 commit SHA；解析失败退回符号名而不是整项目 blocked。
+    // 预检只回统计面、不暴露 revision，故不解析——省掉每项目一次 git rev-parse（本机约 0.5s/次）
+    let revision: string | undefined;
+    if (resolveRevision) {
+      revision = collected.range.head;
+      try {
+        revision = await resolveRevisionSha(workspacePath, collected.range.head);
+      } catch { /* 保留符号名，锚点复核按当前树尽力而为 */ }
+    }
+    return { ...preview, files, commits: collected.commits, ...(revision ? { revision } : {}) };
   } catch (e) {
     if (e instanceof GitCollectError) return { ...base, files: [], commits: [], blocked: `${e.message}（${e.kind}）` };
     throw e;
@@ -453,7 +458,10 @@ const toPreview = (p: LectureCollectedProject): LectureProjectPreview => ({
  * 逐项目串行采集（含 patch 降级）：预检与流式生成共用。
  * 返回带 diff 正文的项目 + 与预检 HTTP 同形的轻量视图。
  */
-export async function collectLectureScope(body: unknown): Promise<LectureCollection> {
+export async function collectLectureScope(
+  body: unknown,
+  opts: { resolveRevision?: boolean } = {},
+): Promise<LectureCollection> {
   const req = parseLectureScopeRequest(body);
   const rules = compileExcludeRules(req.excludes);
   const db = getDb();
@@ -462,7 +470,7 @@ export async function collectLectureScope(body: unknown): Promise<LectureCollect
     const project = db
       .prepare(`SELECT id, name, workspace_path FROM projects WHERE id = ? AND ${ACTIVE_PROJECT_WHERE}`)
       .get(item.projectId) as ProjectRow | undefined;
-    projects.push(await scanProject(item, project, rules));
+    projects.push(await scanProject(item, project, rules, opts.resolveRevision !== false));
   }
   const usable = projects.filter((p) => !p.blocked && p.stats.files > 0);
   const warnings: string[] = [];
@@ -490,7 +498,7 @@ export async function collectLectureScope(body: unknown): Promise<LectureCollect
 
 /** 范围预检：逐项目串行采集 + 过滤 + 预算，返回 FR-7.1 的采集统计面（零 diff 正文） */
 export async function previewLectureScope(body: unknown): Promise<LectureScopePreview> {
-  return (await collectLectureScope(body)).preview;
+  return (await collectLectureScope(body, { resolveRevision: false })).preview;
 }
 
 /**
