@@ -112,3 +112,46 @@ export function countWorkdaysBetween(from: string, to: string, cal: WorkdayCal):
   n += countCalDates(cal.overtime, from, to, isWeekend);
   return n;
 }
+
+// ---------- T03168（PRD D-03/D-12）：时间与工作日**共享原语**（缺失值 + 业务日/边界日 + 展示口径） ----------
+// AI-204（计划行时间进度）与 PM-204（里程碑子项，P2）都从这里取数：计算模型各自维护，
+// 日期/工作日/缺失值/边界日口径单源。前端同语义镜像在 `web/src/utils/workday.ts`，
+// 由 `scripts/tests/verify-t03168-time-primitives.mts` 网格比对钉住（沿用 e1 镜像比对通道）。
+
+/**
+ * D-12：某时刻在指定 IANA 时区的**日历日**（YYYY-MM-DD）。
+ * `tz` 空/非法回落系统时区（「项目未配置时区则跟随系统时区」的产品口径由调用方与这里共同保证）。
+ */
+export function ymdInTimezone(now: Date, tz?: string | null): string {
+  try {
+    if (tz) return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+  } catch { /* 非法时区名：按未配置处理 */ }
+  return fmtDate(now);
+}
+
+/**
+ * D-12 边界日口径（**统一测试固定**）：纯日期 `end_date` 按项目/系统时区**当日结束**判到期——
+ * 该时区当前日历日 `>` end_date 才算逾期；`===` 当天不算。缺失/非法日期一律 false（由调用方按「无排期」处理，不静默判逾期）。
+ */
+export function isPastEndDate(endDate: string, now: Date, tz?: string | null): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate || '')) return false;
+  return ymdInTimezone(now, tz) > endDate;
+}
+
+/**
+ * 缺失值口径（PRD §487「缺失值不得静默按 0」）：区间工作日数，入参缺失/非法返回 **null**（≠0）。
+ * 与 `countWorkdaysBetween` 的分工：那边把非法入参折成 0 供「已过期/无剩余」语义直接使用；
+ * 这里保留「没有排期」与「排期为 0」的区分，供预测/清单类展示（「—」）使用。
+ */
+export function countWorkdaysOrMissing(from: string, to: string, cal: WorkdayCal): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from || '') || !/^\d{4}-\d{2}-\d{2}$/.test(to || '')) return null;
+  return countWorkdaysBetween(from, to, cal);
+}
+
+/** 缺失值统一展示符（消费侧「暂无可比计划」「数据积累中」等文案各自的裁决单负责；单源的是「缺失 ≠ 0」这一层） */
+export const MISSING_DISPLAY = '—';
+
+/** 数值或缺失的统一展示：null/undefined → 「—」，不把缺失渲染成 0 */
+export function displayWorkdays(v: number | null | undefined): string {
+  return v === null || v === undefined ? MISSING_DISPLAY : String(v);
+}
