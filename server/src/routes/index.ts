@@ -1094,31 +1094,43 @@ api.post('/tasks/import-json/confirm', (req, res) => {
 });
 
 
-/** 单个任务的批量操作分派（T00457）；未知 action 抛错，由路由统一映射 400 */
-function applyBatchAction(db: ReturnType<typeof getDb>, id: string, action: string | undefined, value: string | undefined): void {
+/** 单个任务的批量操作分派（T00457）；未知 action 抛错，由路由统一映射 400。
+ *  返回 false 表示该任务不适用本次动作（T02980：验收结果只对已完成任务有意义），由调用方计入 skipped。 */
+function applyBatchAction(db: ReturnType<typeof getDb>, id: string, action: string | undefined, value: string | undefined): boolean {
   if (action === 'status') {
     if (value !== 'todo' && value !== 'done') throw new Error('status 值非法');
     TaskService.setStatus(id, value);
-    return;
+    return true;
   }
   if (action === 'category') {
     if (value && !db.prepare('SELECT id FROM task_categories WHERE id = ?').get(value)) throw new Error('分类不存在');
     db.prepare('UPDATE tasks SET category_id = ?, updated_at = ? WHERE id = ?').run(value || null, now(), id);
-    return;
+    return true;
   }
   // T00588：批量优先级 / 字体颜色（与计划页批量能力对齐）
   if (action === 'priority') {
     if (!value || !['low', 'normal', 'high', 'urgent'].includes(value)) throw new Error('priority 值非法');
     db.prepare('UPDATE tasks SET priority = ?, updated_at = ? WHERE id = ?').run(value, now(), id);
-    return;
+    return true;
   }
   if (action === 'color') {
     db.prepare('UPDATE tasks SET color = ?, updated_at = ? WHERE id = ?').run(value ?? '', now(), id);
-    return;
+    return true;
+  }
+  // T02980：批量验收结果（与单条「验证结果」同口径，走 TaskService.update 保留 task_events 埋点）。
+  // 验收只针对已完成任务——待办任务即使被勾选也不改，交由前端按 skipped 如实提示。
+  // ai_state 同步沿用单条 PATCH 的推导（verified=false→failed），避免批量与单条口径分叉。
+  if (action === 'verified') {
+    if (value !== 'true' && value !== 'false') throw new Error('verified 值非法');
+    const row = db.prepare('SELECT status FROM tasks WHERE id = ?').get(id) as { status: string } | undefined;
+    if (row?.status !== 'done') return false;
+    const verified = value === 'true';
+    TaskService.update(id, { verified: verified ? 1 : 0, ai_state: computeAutoAiState({ verified }) });
+    return true;
   }
   if (action === 'archive') {
     ArchiveService.archive([id]);
-    return;
+    return true;
   }
   throw new Error(`不支持的批量操作：${action}`);
 }
@@ -1132,15 +1144,16 @@ api.post('/tasks/batch', (req, res) => {
   try {
     const db = getDb();
     const affected: string[] = [];
+    let skipped = 0;
     db.transaction(() => {
       for (const id of ids as string[]) {
         if (!db.prepare('SELECT id FROM tasks WHERE id = ?').get(id)) continue;
-        applyBatchAction(db, id, action, value);
+        if (!applyBatchAction(db, id, action, value)) { skipped += 1; continue; }
         affected.push(id);
       }
     })();
     notifyChange('tasks');
-    res.json({ ok: true, affected: affected.length });
+    res.json({ ok: true, affected: affected.length, skipped });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }

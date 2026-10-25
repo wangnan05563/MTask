@@ -15,7 +15,7 @@ import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { useBusy, setBusy } from '../ui/busy';
-import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, ChevronDown, ChevronUp, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, PanelRightOpen, Pin, Plus, Save, ScanSearch, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
+import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, PanelRightOpen, Pin, Plus, Save, ScanSearch, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00771：工作空间选择器（项目上下文根路径）
 import { WorkspaceSearchPanel } from '../ui/WorkspaceSearchPanel'; // T00786：工作空间全文检索面板（partial 提示）
@@ -71,16 +71,25 @@ interface ImageDraft {
  *  用于多选模式标题旁的「全选框」：全选=checked、部分选中=indeterminate、未选=空。 */
 /** T01064-FR1.5：任务事件时间线——状态流转/回传/验证历史（/api/events/by-task/:id，正序；无事件不渲染） */
 /** T01065-FR1.6：批量操作动作的中文名（撤销按钮提示用） */
-const ACTION_LABEL: Record<'status' | 'category' | 'priority' | 'color' | 'archive', string> = {
+const ACTION_LABEL: Record<'status' | 'category' | 'priority' | 'color' | 'archive' | 'verified', string> = {
   status: '批量改状态', category: '批量设分类', priority: '批量设优先级', color: '批量字体颜色', archive: '批量归档',
+  verified: '批量验收结果',
 };
 
 /**
  * T01065 后续：一级撤销快照（一次批量操作 = 一步）。
- * entries 为操作前旧值；还原时逐条 PATCH 回去。
+ * entries 为操作前旧值；还原时逐条 PATCH 回去。字段按动作取用——验收结果只回填 verified，
+ * 避免撤销时把期间被他人改过的状态/优先级一并覆盖。
  */
+interface BatchUndoPatch {
+  status?: string;
+  priority?: string;
+  category_id?: string | null;
+  color?: string;
+  verified?: boolean;
+}
 interface BatchSnapshot {
-  entries: Array<{ id: string; patch: { status: string; priority: string; category_id: string | null; color: string } }>;
+  entries: Array<{ id: string; patch: BatchUndoPatch }>;
   label: string;
   /** 操作时刻（ISO），步骤列表里按时间展示，便于辨认「要撤到哪一步」 */
   at: string;
@@ -1291,13 +1300,31 @@ export function TasksPage() {
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBatchOpBusy(false); }
   }
 
-  async function batchApply(action: 'status' | 'category' | 'priority' | 'color' | 'archive', value?: string) {
+  async function batchApply(action: 'status' | 'category' | 'priority' | 'color' | 'archive' | 'verified', value?: string) {
     const ids = [...selectedIds];
     if (ids.length === 0) return flash('请先勾选任务');
     setBatchOpBusy(true);
     try {
-      const r = await api.post<{ ok: boolean; affected: number }>('/tasks/batch', { ids, action, value });
-      flash(`批量操作完成：${r.affected} 条已更新`);
+      const r = await api.post<{ ok: boolean; affected: number; skipped?: number }>('/tasks/batch', { ids, action, value });
+      if (r.affected === 0) {
+        flash(action === 'verified' ? '选中任务中没有已完成任务，验收状态未变更' : '没有可更新的任务');
+        void loadTasks(activeProject);
+        return;
+      }
+      flash(`批量操作完成：${r.affected} 条已更新${r.skipped ? `，${r.skipped} 条未完成已跳过` : ''}`);
+      // T00623 同口径：批量验证通过后收起这些任务的「验证失败反馈」展开区（徽标与入口随 verified 隐藏）
+      if (action === 'verified' && value === 'true') {
+        setFailbackOpen((prev) => {
+          const next = { ...prev };
+          for (const id of ids) delete next[id];
+          return next;
+        });
+        setFbDrafts((prev) => {
+          const next = { ...prev };
+          for (const id of ids) delete next[id];
+          return next;
+        });
+      }
       // T01065-FR1.6：批量操作撤销快照——操作前抓旧值（status/priority/category/color），
       // 工具栏出现「撤销」按钮逐条还原；归档类不入栈（归档页可恢复）
       // T01065 后续：改为入栈（最多 MAX_UNDO_STEPS 级），连续多次批量操作可逐级回退
@@ -1307,10 +1334,14 @@ export function TasksPage() {
           .map((id) => {
             const t = all.find((x) => x.id === id);
             if (!t) return null;
+            // T02980：验收结果只回填 verified；待办任务服务端本就不改，不入栈
+            if (action === 'verified') return t.status === 'done' ? { id, patch: { verified: t.verified } } : null;
             return { id, patch: { status: t.status, priority: t.priority, category_id: t.category_id, color: t.color || '' } };
           })
           .filter((x): x is NonNullable<typeof x> => x !== null);
-        const valueSuffix = value ? `（${value}）` : '';
+        const valueSuffix = action === 'verified'
+          ? `（${value === 'true' ? '验证通过' : '未验证'}）`
+          : value ? `（${value}）` : '';
         if (entries.length > 0) {
           // 超出上限时丢最旧的一步：撤销栈是「最近操作的后悔药」，最旧的一步价值最低
           setBatchStack((prev) => [...prev, { entries, label: `${ACTION_LABEL[action]}${valueSuffix}`, at: new Date().toISOString() }].slice(-MAX_UNDO_STEPS));
@@ -1525,6 +1556,18 @@ export function TasksPage() {
           title="批量重开 — 选中任务退回待办" aria-label="批量重开"
           style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center' }}>
           <RotateCcw size={14} />
+        </button>
+        {/* T02980：批量验收结果——只作用于已完成任务（待办自动跳过并提示）；
+            「验证失败」需逐条录入反馈，仍走单条验证面板，不做批量。 */}
+        <button onClick={() => void batchApply('verified', 'true')} disabled={batchOpBusy} className="tbtn-anim"
+          title="批量验证通过 — 选中任务中已完成的标记为已验证（未完成任务自动跳过）" aria-label="批量验证通过"
+          style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', color: 'var(--success, var(--text))' }}>
+          <CheckCheck size={14} />
+        </button>
+        <button onClick={() => void batchApply('verified', 'false')} disabled={batchOpBusy} className="tbtn-anim"
+          title="批量置为未验证 — 选中任务中已完成的退回未验证（未完成任务自动跳过）" aria-label="批量置为未验证"
+          style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', color: 'var(--text-muted)' }}>
+          <Circle size={14} />
         </button>
         <select value="" disabled={batchOpBusy} aria-label="批量设置优先级" title="批量设置优先级"
           onChange={(e) => { const v = e.target.value; if (v) void batchApply('priority', v); }}
