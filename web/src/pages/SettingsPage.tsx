@@ -499,17 +499,26 @@ interface UpdateCheckInfo {
   publishedAt: string;
   downloadUrl: string;
   changelog: string;
+  /** T02977：本次检查实际使用的地址与来源 */
+  repo: string;
+  source: 'manual' | 'builtin';
 }
 
 interface UpdateConfigView {
+  /** 已保存的手动地址（空串＝未配置，回退内置地址） */
   repo: string;
+  /** T02977：内置兜底地址 */
+  builtinRepo: string;
+  /** T02977：当前实际生效的地址来源 */
+  source: 'manual' | 'builtin';
   tokenConfigured: boolean;
   tokenMasked: string;
 }
 
-/** 版本更新模块：仓库地址 + 可选 Token 配置（加密存储、不回显明文），一键检测 GitHub 最新 Release */
+/** 版本更新模块：仓库地址 + 可选 Token 配置（加密存储、不回显明文），一键检测 GitHub 最新 Release。
+ *  T02977：手动仓库地址会覆盖菜单内置下载地址；留空＝回退内置地址。 */
 function UpdateSection() {
-  const [cfg, setCfg] = useState<UpdateConfigView>({ repo: '', tokenConfigured: false, tokenMasked: '' });
+  const [cfg, setCfg] = useState<UpdateConfigView>({ repo: '', builtinRepo: '', source: 'builtin', tokenConfigured: false, tokenMasked: '' });
   const [repoDraft, setRepoDraft] = useState('');
   const [tokenDraft, setTokenDraft] = useState('');
   const [busy, setBusy] = useState<'save' | 'test' | 'check' | 'download' | 'install' | null>(null);
@@ -575,12 +584,16 @@ function UpdateSection() {
     }
   }
 
-  /** 连通性测试：用当前表单草稿验证仓库可达（不落库），保存前建议先测试 */
+  /** 连通性测试：用当前表单草稿验证仓库可达（不落库）；留空则测试内置地址 */
   async function doTest() {
+    const targetRepo = repoDraft.trim() || cfg.builtinRepo;
+    const isBuiltin = !repoDraft.trim();
     try {
       setBusy('test');
-      const r = await api.post<{ ok: boolean; latestVersion?: string; error?: string }>('/update/test', { repo: repoDraft, token: tokenDraft || undefined });
-      flash(r.ok ? `连接成功，最新 Release 版本：v${r.latestVersion}` : `连接失败：${r.error ?? '未知错误'}`);
+      const r = await api.post<{ ok: boolean; latestVersion?: string; error?: string }>('/update/test', { repo: targetRepo, token: tokenDraft || undefined });
+      flash(r.ok
+        ? `连接成功（${isBuiltin ? '内置地址' : '手动地址'} ${targetRepo}），最新 Release 版本：v${r.latestVersion}`
+        : `连接失败：${r.error ?? '未知错误'}`);
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
     } finally {
@@ -703,7 +716,8 @@ function UpdateSection() {
     <div style={{ marginTop: 14, padding: 16, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)' }}>
       <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}><RefreshCw size={14} /> 版本更新</div>
       <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginTop: 4 }}>
-        通过 GitHub Releases 自动检测新版本。公开仓库无需认证；私有仓库请配置具有读取权限的 Token（加密存储，不会回显明文）。
+        通过 GitHub Releases 自动检测新版本。菜单「帮助 → 检查在线更新」默认使用内置地址；下方手动填写的仓库地址会覆盖内置地址，留空则回退内置地址
+        {cfg.builtinRepo ? `（内置：${cfg.builtinRepo}）` : ''}。公开仓库无需认证；私有仓库请配置具有读取权限的 Token（加密存储，不会回显明文）。
       </div>
 
       {/* 仓库地址 */}
@@ -713,9 +727,12 @@ function UpdateSection() {
           id="update-repo"
           value={repoDraft}
           onChange={(e) => setRepoDraft(e.target.value)}
-          placeholder="owner/repo 或 https://github.com/owner/repo"
+          placeholder={cfg.builtinRepo ? `留空使用内置地址 ${cfg.builtinRepo}` : 'owner/repo 或 https://github.com/owner/repo'}
           style={inputStyle}
         />
+      </div>
+      <div style={{ marginTop: 4, marginLeft: 64, fontSize: 'var(--fs-s, 12px)', color: 'var(--text-secondary)' }}>
+        当前生效：{cfg.source === 'manual' ? `手动地址 ${cfg.repo}` : `内置地址 ${cfg.builtinRepo || '—'}`}
       </div>
       {/* 认证凭据（可选）：password 型避免旁观泄露；已配置时 placeholder 展示掩码 */}
       <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -732,13 +749,13 @@ function UpdateSection() {
       </div>
 
       <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <button onClick={() => void doSave()} disabled={busy !== null || !repoDraft.trim()} title="保存配置 — 保存仓库地址与访问令牌" aria-label="保存更新配置" style={btnStyle(true)}>
+        <button onClick={() => void doSave()} disabled={busy !== null} title="保存配置 — 仓库地址留空表示回退内置地址" aria-label="保存更新配置" style={btnStyle(true)}>
           <Save size={13} /> {busy === 'save' ? '保存中…' : '保存配置'}
         </button>
-        <button onClick={() => void doTest()} disabled={busy !== null || !repoDraft.trim()} title="测试连接 — 验证仓库可达并读取最新 Release 版本号" aria-label="测试 GitHub 连接" style={btnStyle(false)}>
+        <button onClick={() => void doTest()} disabled={busy !== null} title="测试连接 — 验证地址可达并读取最新 Release 版本号；留空测试内置地址" aria-label="测试 GitHub 连接" style={btnStyle(false)}>
           <ShieldCheck size={13} /> {busy === 'test' ? '测试中…' : '测试连接'}
         </button>
-        <button onClick={() => void doCheck()} disabled={busy !== null} title="检查更新 — 拉取 GitHub 最新 Release 并与当前版本比较" aria-label="检查更新" style={btnStyle(false)}>
+        <button onClick={() => void doCheck()} disabled={busy !== null} title="检查更新 — 拉取当前生效地址的最新 Release 并与当前版本比较" aria-label="检查更新" style={btnStyle(false)}>
           <RefreshCw size={13} /> {busy === 'check' ? '检查中…' : '检查更新'}
         </button>
       </div>
@@ -760,6 +777,9 @@ function UpdateSection() {
                   发布时间：{result.publishedAt.slice(0, 10)}
                 </div>
               )}
+              <div style={{ color: 'var(--text-secondary)', marginTop: 4 }}>
+                下载来源：{result.source === 'manual' ? '手动配置地址' : '内置地址'}{result.repo ? ` ${result.repo}` : ''}
+              </div>
               {result.changelog && (
                 <div style={{ marginTop: 8, whiteSpace: 'pre-wrap', color: 'var(--text-secondary)', maxHeight: 220, overflowY: 'auto', lineHeight: 1.6 }}>
                   {result.changelog}
@@ -794,7 +814,12 @@ function UpdateSection() {
               ) : null}
             </>
           ) : (
-            <div>当前已是最新版本：v{result.currentVersion}（远端最新 v{result.latestVersion}）</div>
+            <>
+              <div>当前已是最新版本：v{result.currentVersion}（远端最新 v{result.latestVersion}）</div>
+              <div style={{ color: 'var(--text-secondary)', marginTop: 4 }}>
+                下载来源：{result.source === 'manual' ? '手动配置地址' : '内置地址'}{result.repo ? ` ${result.repo}` : ''}
+              </div>
+            </>
           )}
         </div>
       )}

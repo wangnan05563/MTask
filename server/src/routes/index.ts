@@ -2677,11 +2677,12 @@ api.get('/update/config', (_req, res) => {
   res.json(getUpdateConfig());
 });
 
-// 配置保存：repo 必填且规范化为 owner/repo；token 可选（undefined=不改动，空串=清除）
+// 配置保存：repo 非空须为合法 owner/repo 或 GitHub URL，空串=清除手动地址（回退内置地址）；
+// token 可选（undefined=不改动，空串=清除）
 api.post('/update/config', (req, res) => {
   const { repo, token } = req.body ?? {};
-  if (repo !== undefined && (typeof repo !== 'string' || !repo.trim())) {
-    return res.status(400).json({ error: '仓库地址非法：请填「owner/repo」或 GitHub 仓库完整 URL' });
+  if (repo !== undefined && typeof repo !== 'string') {
+    return res.status(400).json({ error: '仓库地址非法：请填「owner/repo」或 GitHub 仓库完整 URL，留空使用内置地址' });
   }
   if (token !== undefined && typeof token !== 'string') return res.status(400).json({ error: 'token 非法' });
   try {
@@ -2698,13 +2699,19 @@ api.post('/update/test', async (req, res) => {
   res.json(await testUpdateConfig({ repo, token }));
 });
 
-// 检查更新：与当前版本比较，返回是否可更新 + 最新版本 + 更新日志 + 下载地址；带 5 分钟缓存
+// 检查更新：与当前版本比较，返回是否可更新 + 最新版本 + 更新日志 + 下载地址；带 5 分钟缓存。
+// T02977：失败时一并回传本次实际使用的地址来源，菜单据此在报错里点明是内置地址还是手动地址。
 api.post('/update/check', async (req, res) => {
   const force = Boolean(req.body?.force);
   try {
     res.json(await checkUpdate(force));
   } catch (e) {
-    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+    const cfg = getUpdateConfig();
+    res.status(400).json({
+      error: e instanceof Error ? e.message : String(e),
+      source: cfg.source,
+      repo: cfg.source === 'builtin' ? cfg.builtinRepo : cfg.repo,
+    });
   }
 });
 

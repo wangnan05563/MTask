@@ -20,7 +20,7 @@ const https = require('node:https');
 const fs = require('node:fs');
 // T02071：更新的取消/续传/安装回执决策内核（纯函数，可脱离 electron 单测）
 // T02740：在线更新 latest-release 判定并入同一内核（新文件需入 build.files 白名单，package.json 正被并发会话占用）
-const { resumePlan, writePending, readPending, clearPending, reconcilePending, installOutcome, cmpVersion, parseLatestRelease, mapReleaseHttpError } = require('./update-state');
+const { resumePlan, writePending, readPending, clearPending, reconcilePending, installOutcome } = require('./update-state');
 
 const DEV = process.env.MTask_DEV === '1';
 const VITE_PORT = 5175;
@@ -707,55 +707,67 @@ ipcMain.handle('update:pending-result', async () => {
   return r;
 });
 
-// ---------- T02740 在线更新（内置仓库，自动检测，无手动输入） ----------
+// ---------- 在线更新（内置地址兜底 + 手动地址覆盖，T02740/T02977） ----------
 
-/** 内置仓库地址：硬编码、不对用户开放输入（需求明文约束）。
- *  与设置页「自配仓库 + Token」通道并存：那条走服务端 /update/check（支持私有仓库），
- *  本菜单通道只服务内置公开仓库，零配置即可用。 */
-const UPDATE_REPO = 'wangnan05563/MTask';
 const UPDATE_API_TIMEOUT_MS = 15_000;
 /** 菜单通道重入闸：下载/安装各自有独立 ctx，连点弹多层对话框会串台，一次只跑一条流程 */
 let onlineUpdateBusy = false;
 
-/** https GET JSON 接口并跟随重定向（≤5 次）；非 200 由 mapReleaseHttpError 统一转中文错误 */
-function httpsGetJson(url, hops = 5) {
+/** 调本地后端 /api/*（带隧道令牌）。菜单通道不再直连 GitHub：
+ *  地址解析（手动覆盖/内置兜底）、Token 与 5 分钟缓存统一由 server UpdateService 负责，
+ *  与设置页「检查更新」得到同一份结果。非 2xx 时把响应体里的 source/repo 挂到异常上。 */
+function serverApi(method, apiPath, body) {
   return new Promise((resolve, reject) => {
-    const req = https.get(url, {
-      headers: {
-        Accept: 'application/vnd.github+json',
-        // GitHub API 强制要求 User-Agent，缺失直接 403（与服务端 fetchLatestRelease 同约束）
-        'User-Agent': 'MTask-Updater',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
+    const payload = body === undefined ? '' : JSON.stringify(body);
+    const token = readServerAccessToken();
+    const req = http.request({
+      host: SERVER_HOST,
+      port: SERVER_PORT,
+      path: `/api${apiPath}`,
+      method,
       timeout: UPDATE_API_TIMEOUT_MS,
+      headers: {
+        ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}),
+        ...(token ? { 'X-Access-Token': token } : {}),
+      },
     }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        res.resume();
-        if (hops <= 0) { reject(new Error('检查在线更新失败：GitHub 重定向次数超出上限')); return; }
-        httpsGetJson(new URL(res.headers.location, url).href, hops - 1).then(resolve, reject);
-        return;
-      }
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
       res.on('end', () => {
-        const errText = mapReleaseHttpError(res.statusCode);
-        if (errText) { reject(new Error(errText)); return; }
-        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
-        catch { reject(new Error('检查在线更新失败：GitHub 返回不是合法 JSON')); }
+        let data = null;
+        try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* 非 JSON 走状态码分支 */ }
+        if (res.statusCode >= 200 && res.statusCode < 300) { resolve(data ?? {}); return; }
+        const err = new Error(data?.error || `本地更新服务返回异常状态 ${res.statusCode}`);
+        if (data && typeof data === 'object') { err.source = data.source; err.repo = data.repo; }
+        reject(err);
       });
     });
-    req.on('error', (e) => reject(new Error(`无法连接 GitHub：${e instanceof Error ? e.message : String(e)}`)));
-    req.on('timeout', () => { req.destroy(new Error('连接 GitHub 超时，请检查网络或代理设置')); });
+    req.on('error', (e) => reject(new Error(`无法连接本地更新服务：${e instanceof Error ? e.message : String(e)}`)));
+    req.on('timeout', () => { req.destroy(new Error('本地更新服务响应超时')); });
+    if (payload) req.write(payload);
+    req.end();
   });
 }
 
-/** 查内置仓库最新 Release 并与当前版本比较。
- *  判定口径收在 update-state.js 纯函数里（可离线夹具单测），本函数只管取数与组装结果。 */
-async function checkBuiltinUpdate() {
-  const data = await httpsGetJson(`https://api.github.com/repos/${UPDATE_REPO}/releases/latest`);
-  const rel = parseLatestRelease(data);
-  const currentVersion = app.getVersion();
-  return { ...rel, currentVersion, hasUpdate: cmpVersion(rel.version, currentVersion) > 0 };
+/** 检查更新：后端口径＝手动地址合法则覆盖内置地址，留空/非法回退内置地址。 */
+async function checkOnlineUpdate() {
+  const info = await serverApi('POST', '/update/check', { force: false });
+  return {
+    version: info.latestVersion,
+    currentVersion: info.currentVersion,
+    hasUpdate: Boolean(info.hasUpdate),
+    releaseName: info.releaseName ?? '',
+    publishedAt: info.publishedAt ?? '',
+    downloadUrl: info.downloadUrl ?? '',
+    repo: info.repo ?? '',
+    source: info.source === 'manual' ? 'manual' : 'builtin',
+  };
+}
+
+/** 「下载来源」对话框文案：内置地址兜底，手动地址覆盖 */
+function updateSourceText(info) {
+  const label = info.source === 'manual' ? '手动配置地址' : '内置地址';
+  return info.repo ? `${label} ${info.repo}` : label;
 }
 
 function ownerWin() {
@@ -771,10 +783,21 @@ async function runOnlineUpdateFlow({ auto = false } = {}) {
   try {
     let info;
     try {
-      info = await checkBuiltinUpdate();
+      info = await checkOnlineUpdate();
     } catch (e) {
       if (!auto) {
-        await dialog.showMessageBox(ownerWin(), { type: 'error', title: '检查更新失败', message: e instanceof Error ? e.message : String(e), buttons: ['知道了'] });
+        const message = e instanceof Error ? e.message : String(e);
+        const src = e?.source === 'manual' ? `手动配置地址${e.repo ? ` ${e.repo}` : ''}` : e?.repo ? `内置地址 ${e.repo}` : '';
+        const hint = e?.source === 'manual'
+          ? '可在「设置 → 版本更新」修正手动仓库地址，或清空后回退内置地址'
+          : '可在「设置 → 版本更新」填写手动仓库地址覆盖内置地址';
+        await dialog.showMessageBox(ownerWin(), {
+          type: 'error',
+          title: '检查更新失败',
+          message,
+          detail: `${src ? `下载来源：${src}\n` : ''}${hint}`,
+          buttons: ['知道了'],
+        });
       }
       return;
     }
@@ -788,7 +811,7 @@ async function runOnlineUpdateFlow({ auto = false } = {}) {
       type: 'info',
       title: '发现新版本',
       message: `发现新版本 v${info.version}（当前 v${info.currentVersion}）`,
-      detail: `${info.releaseName ? `Release：${info.releaseName}\n` : ''}${info.publishedAt ? `发布时间：${info.publishedAt.slice(0, 10)}\n` : ''}下载来源：内置仓库 ${UPDATE_REPO}`,
+      detail: `${info.releaseName ? `Release：${info.releaseName}\n` : ''}${info.publishedAt ? `发布时间：${info.publishedAt.slice(0, 10)}\n` : ''}下载来源：${updateSourceText(info)}`,
       buttons: ['立即下载', '稍后再说'],
       defaultId: 0,
       cancelId: 1,
@@ -1047,7 +1070,8 @@ function maybeFinishSplash() {
   }, 400);
   // T01057-FR1.1：后端启动流程挂载后开启任务通知轮询（函数幂等；server 未就绪的轮次自动跳过）
   startNotifyPolling();
-  // T02740：开机自动检测内置仓库版本（延迟 12s 让启动收尾先走完；auto 模式下无新版本/检查失败全静默）
+  // T02740：开机自动检测更新源版本（延迟 12s 让启动收尾先走完；auto 模式下无新版本/检查失败全静默）
+  // T02977：检测地址＝手动覆盖地址（有效时）否则内置地址，与菜单入口同一份解析
   setTimeout(() => { runOnlineUpdateFlow({ auto: true }).catch(() => { /* 自动模式失败本就静默 */ }); }, 12_000);
 }
 
@@ -1056,7 +1080,7 @@ function maybeFinishSplash() {
 app.whenReady().then(async () => { // NOSONAR - S7785 顶层 await 在 CommonJS 中不可用，原因见上
   setupApiProxy();
   setupWebProtocol();
-  // T02740：应用菜单带「帮助 → 检查在线更新」（内置仓库通道）
+  // T02740：应用菜单带「帮助 → 检查在线更新」（T02977：内置地址兜底 + 手动地址覆盖）
   setupAppMenu();
   // T02071：先对账上一次静默安装的结果（安装器接管退出时我们没能自己写回执）
   reconcilePendingUpdateOnLaunch();

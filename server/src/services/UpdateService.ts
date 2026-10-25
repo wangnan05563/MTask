@@ -22,6 +22,9 @@ const TOKEN_KEY = 'update.token';
 /** 检查结果缓存时长：GitHub 未认证限流 60 次/小时，5 分钟缓存足够克制 */
 const CHECK_TTL_MS = 5 * 60 * 1000;
 const GITHUB_API = 'https://api.github.com';
+/** T02977：内置下载地址（更新源）——未配置手动地址、或手动地址非法时的兜底。
+ *  菜单「帮助 → 检查在线更新」与设置页共用这一份解析，不再各自硬编码。 */
+export const BUILTIN_UPDATE_REPO = 'wangnan05563/MTask';
 
 /** 当前应用版本：从 package.json 读取。dev 态 __dirname=server/src，打包态=resources/app/server/dist，
  *  两者回溯两级分别是项目根与 resources/app，package.json 均存在于该位置（electron-builder 打包根 package.json）。
@@ -50,6 +53,22 @@ function normalizeRepo(input: string): string | null {
   return `${m[1]}/${m[2]}`;
 }
 
+export interface UpdateSource {
+  /** 实际生效的 owner/repo */
+  repo: string;
+  /** manual=设置页手填且合法；builtin=未填/非法时的内置兜底 */
+  source: 'manual' | 'builtin';
+}
+
+/** T02977：地址优先级——手动地址合法则覆盖内置地址，否则（空/非法）回退内置地址。
+ *  保存入口已做规范化，这里再规范一次是给历史脏数据兜底，保证「非法即回退」始终成立。 */
+export function resolveRepoSource(configured: string | null | undefined): UpdateSource {
+  const manual = configured ? normalizeRepo(configured) : null;
+  return manual
+    ? { repo: manual, source: 'manual' }
+    : { repo: BUILTIN_UPDATE_REPO, source: 'builtin' };
+}
+
 /** 从 tag/名称中提取版本号（v0.1.0 → 0.1.0）；无数字段返回 null */
 function extractVersion(tag: string): string | null {
   const m = /v?(\d+(?:\.\d+)+)/i.exec(tag.trim());
@@ -70,7 +89,12 @@ function compareVersions(a: string, b: string): number {
 }
 
 export interface UpdateConfigView {
+  /** 用户保存的手动地址（空串＝未配置，回退内置地址） */
   repo: string;
+  /** T02977：内置兜底地址，供界面提示「留空时使用」 */
+  builtinRepo: string;
+  /** T02977：当前实际生效的地址来源 */
+  source: 'manual' | 'builtin';
   tokenConfigured: boolean;
   tokenMasked: string;
 }
@@ -87,6 +111,9 @@ export interface UpdateCheckResult {
   downloadUrl: string;
   /** Release 正文（更新日志），Markdown 原文，由前端按需渲染 */
   changelog: string;
+  /** T02977：本次检查实际使用的地址与来源 */
+  repo: string;
+  source: 'manual' | 'builtin';
 }
 
 /** 读取当前配置（token 只回掩码，绝不回明文） */
@@ -97,15 +124,17 @@ export function getConfig(): UpdateConfigView {
   if (tokenEnc) {
     try { tokenMasked = maskSecret(decrypt(tokenEnc)); } catch { tokenMasked = '****'; }
   }
-  return { repo, tokenConfigured: Boolean(tokenEnc), tokenMasked };
+  const resolved = resolveRepoSource(repo);
+  return { repo, builtinRepo: BUILTIN_UPDATE_REPO, source: resolved.source, tokenConfigured: Boolean(tokenEnc), tokenMasked };
 }
 
-/** 保存配置。token 传 undefined=不改动；传空串=清除；传非空=加密写入。 */
+/** 保存配置。token 传 undefined=不改动；传空串=清除；传非空=加密写入。
+ *  T02977：repo 传空串=清除手动地址（回退内置地址），非空仍须是合法 owner/repo 或 GitHub URL。 */
 export function saveConfig(input: { repo?: string; token?: string }): UpdateConfigView {
   if (input.repo !== undefined) {
     const repo = normalizeRepo(input.repo);
-    if (!repo) throw new Error('仓库地址非法：请填「owner/repo」或 GitHub 仓库完整 URL');
-    setSetting(REPO_KEY, repo);
+    if (!repo && input.repo.trim()) throw new Error('仓库地址非法：请填「owner/repo」或 GitHub 仓库完整 URL');
+    setSetting(REPO_KEY, repo ?? '');
     cacheClear('update-check');
   }
   if (input.token !== undefined) {
@@ -178,10 +207,10 @@ export async function testConfig(input: { repo: string; token?: string }): Promi
   }
 }
 
-/** 检查更新：带 5 分钟缓存；force=true 跳过缓存强制拉取 */
+/** 检查更新：带 5 分钟缓存；force=true 跳过缓存强制拉取。
+ *  T02977：手动地址合法则覆盖内置地址，留空/非法回退内置地址——不再因未配置而直接报错。 */
 export async function checkUpdate(force = false): Promise<UpdateCheckResult> {
-  const repo = getSetting(REPO_KEY);
-  if (!repo) throw new Error('尚未配置 GitHub 仓库，请先在下方填写仓库地址');
+  const { repo, source } = resolveRepoSource(getSetting(REPO_KEY));
 
   const cached = force ? undefined : cacheGet<UpdateCheckResult>('update-check');
   if (cached) return cached;
@@ -204,6 +233,8 @@ export async function checkUpdate(force = false): Promise<UpdateCheckResult> {
     publishedAt: rel.publishedAt,
     downloadUrl: rel.downloadUrl,
     changelog: rel.body,
+    repo,
+    source,
   };
   cacheSet('update-check', result, CHECK_TTL_MS);
   return result;
