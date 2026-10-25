@@ -8,7 +8,7 @@ import { TestCasePanel } from './TestCasePanel'; // T01485：测试用例视图
 import { PrdPanel } from './PrdPanel'; // T00770：PRD 管理视图（文档生命周期 + 待确认问题）
 import { EstimateGanttOverlay } from '../components/estimateGanttOverlay'; // T02082：E8 甘特估算区间叠加层（O~P 带 + E 标记，纯几何零二次计算）
 import { estimatesApi, type EstimatesResponse } from '../api/estimates'; // T02082：叠加层数据源——只读服务端三点值（§9 零计算红线）
-import { ProjectGuideDialog, hasSeenProjectGuide, markProjectGuideSeen } from './ProjectGuide'; // T00665：项目管理向导（T00706：已看状态改由调用方在关闭时记录）
+// T03161（U22）：页内向导通道下线（ProjectGuide.tsx 保留——全局向导复用其 PROJECT_GUIDE_STEPS/GUIDE_SEEN_KEY）
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin, reorderProjects, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { ProjectListHint, getProjectListSnapshot, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：节假日取数改走可见失败态层（工期换算依赖）
@@ -1337,9 +1337,9 @@ export function PlanPage() {
   const ganttDragRef = useRef<GanttDragState | null>(null);
   // 与服务端同口径的工作日历上下文（放假日/加班日）
   const workdayCtx = useMemo(() => buildWorkdayCtx(holidays), [holidays]);
-  // T00665：使用向导——首次进入模块自动弹出（依据 localStorage 标记），常驻按钮可随时重看
-  const [guideOpen, setGuideOpen] = useState(false);
-  useEffect(() => { if (!hasSeenProjectGuide()) setGuideOpen(true); }, []);
+  // T03161（U22）：删除页内同源向导的首访自动弹出——全局 PageGuide（App.tsx + guides.tsx plan 条目）
+  // 与本对话框共用同一 seenKey，此前首访会叠出两个「项目管理 · 使用向导」（实测 visibleDialogs=2）。
+  // 单源保留全局通道；重看走顶栏常驻「使用向导」按钮。
 
   // T00663：项目排序与置顶（复用共享模块）——排序方式会话级持久；拖拽排序仅在默认序下启用
   const [projSortMode, setProjSortMode] = usePersistentState<ProjectSortMode>('plan.projectSort', 'default'); // T01697：排序偏好持久化（重启保持）
@@ -2553,8 +2553,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       })()}
 
       {/* 计划表格：串行瀑布，起止由服务端按工作日推算 */}
-      {/* T00665：项目管理使用向导（首次自动弹出 / 右上角常驻按钮唤起） */}
-      <ProjectGuideDialog open={guideOpen} onClose={() => { markProjectGuideSeen(); setGuideOpen(false); }} />
+      {/* T03161（U22）：页内 ProjectGuideDialog 挂载点已移除（同源双弹），向导统一走全局 PageGuideDialog */}
 
       {/* T00770：PRD 管理视图（矩阵面板上方展开；衔接 PRD → 确认版 → 需求跟踪矩阵流程） */}
       {showPrd && projectId && <PrdPanel projectId={projectId} onClose={() => setShowPrd(false)} />}

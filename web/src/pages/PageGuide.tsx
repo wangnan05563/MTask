@@ -96,7 +96,7 @@ export function PageGuideDialog({ open, onClose, title, steps }: {
 
         {/* 底部操作 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderTop: '1px solid var(--border)', flexWrap: 'wrap' }}>
-          <button onClick={finish} title="跳过向导（记录已看状态，不再自动弹出）" aria-label="跳过向导"
+          <button onClick={finish} title="跳过（记录已看状态，不再自动弹出）" aria-label="跳过"
             style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text-muted)', fontSize: 12 }}>跳过</button>
           <span style={{ flex: 1 }} />
           <button onClick={() => setStep((s) => Math.max(0, s - 1))} disabled={step === 0} className="tbtn-anim"
