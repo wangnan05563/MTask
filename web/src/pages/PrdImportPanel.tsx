@@ -300,6 +300,9 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
         if (r.coverageWarn) aiImportStore.log(r.coverageWarn, 'error');
         // T01156：首轮输出被截断、走了精简重试——需求可能被静默压缩，必须提示用户核对数量
         if (r.truncatedNote) aiImportStore.log(`⚠ ${r.truncatedNote}`, 'error');
+        // T02270 复议：分片完整跑完是**无损**结果，按普通信息展示——不能混进上面的 ⚠，
+        // 否则用户看到分片提示会误判成「又被砍到 20 条」。
+        if (r.parseNote) aiImportStore.log(r.parseNote);
       } catch (e) {
         const msg = String((e as Error).message ?? e);
         firstError ||= msg;

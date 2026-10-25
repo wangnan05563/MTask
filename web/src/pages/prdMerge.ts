@@ -15,6 +15,8 @@ export interface PrdParseResult {
   textMd?: string;
   /** T01156：首轮输出被截断、已用精简模式重试（需求可能静默丢失） */
   truncatedNote?: string;
+  /** T02270 复议：长文档已分片解析并完整合并——信息性提示，不是有损警示（与 truncatedNote 互斥） */
+  parseNote?: string;
 }
 
 /**
