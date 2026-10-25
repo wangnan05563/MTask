@@ -461,11 +461,13 @@ planApi.post('/ai-parse', raw({ type: () => true, limit: '30mb' }), (req, res) =
 });
 
 // AI 导入确认保存：批量创建 + 统一重排（首条带 startDate 时作时间线锚点）
+// T03160（UX-07④⑤）：AI 计划导入通道默认 onDuplicate='reuse'——与 PRD 导入同一判重函数，
+// 同一内容重复导入命中同名行只补写差异、不再生成重复计划；回执 {inserted, reused, unlinked} 分列。
 planApi.post('/batch', (req, res) => {
   const { projectId, items } = (req.body ?? {}) as { projectId?: unknown; items?: unknown };
   if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
   if (!Array.isArray(items)) return res.status(400).json({ error: 'items 必填（计划条目数组）' });
-  wrap(res, () => PlanService.createBatch(projectId, items as Parameters<typeof PlanService.createBatch>[1]));
+  wrap(res, () => PlanService.createBatch(projectId, items as Parameters<typeof PlanService.createBatch>[1], { onDuplicate: 'reuse' }));
 });
 
 // ---------- 需求文档 AI 拆分（T00439）：Word/Markdown → WBS → 标准计划草稿 ----------

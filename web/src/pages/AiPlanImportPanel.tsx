@@ -62,7 +62,9 @@ export function AiPlanImportPanel({ toolId, onClose, onSaved }: {
     aiImportStore.patch({ busy: true, error: '' });
     aiImportStore.log(`保存中：向项目写入 ${items.length} 条计划…`);
     try {
-      const r = await api.post<{ inserted: number }>('/plans/batch', {
+      // T03160（UX-07④⑤）：后端默认走 PRD 导入同款判重（onDuplicate=reuse）——同名行不新建，
+      // 回执按「新增 N / 跳过重复 M / 未关联需求 K」分列；K=新建行中未挂到任何需求矩阵行的条数。
+      const r = await api.post<{ inserted: number; reused: number; unlinked: number; warnings?: string[] }>('/plans/batch', {
         projectId,
         // 提交体剔除前端草稿态字段（include/rowKey 不落库），其余字段原样提交
         items: items.map((row) => {
@@ -72,7 +74,9 @@ export function AiPlanImportPanel({ toolId, onClose, onSaved }: {
           return rest;
         }),
       });
-      aiImportStore.log(`保存完成：已创建 ${r.inserted} 条计划，时间线已重排`, 'ok');
+      const receipt = `保存完成：新增 ${r.inserted} / 跳过重复 ${r.reused ?? 0} / 未关联需求 ${r.unlinked ?? 0}（同名条目命中已有计划时仅补写描述、不改动其状态与进度）`;
+      aiImportStore.log(receipt, 'ok');
+      (r.warnings ?? []).forEach((w) => aiImportStore.log(`提示：${w}`));
       aiImportStore.patch({ rows: [], lastSaved: r.inserted });
       onSaved?.(r.inserted);
     } catch (e) {
