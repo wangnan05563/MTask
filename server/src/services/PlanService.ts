@@ -2515,8 +2515,9 @@ export const PlanService = {
   /** PRD 文档列表（按项目；不含正文，列表轻量） */
   listPrdDocs(projectId: string): Array<Record<string, unknown>> {
     const db = getDb();
+    // T03159（U20）：带出 origin_hash，供前端在「确认版覆盖录入」前识别同源既有文档并给字符数摘要确认
     return db.prepare(
-      `SELECT id, project_id, filename, status, LENGTH(content_md) AS content_chars, created_at, updated_at
+      `SELECT id, project_id, filename, status, origin_hash, LENGTH(content_md) AS content_chars, created_at, updated_at
        FROM prd_docs WHERE project_id = ? ORDER BY created_at DESC`,
     ).all(projectId) as Array<Record<string, unknown>>;
   },

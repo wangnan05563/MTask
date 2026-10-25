@@ -6,6 +6,7 @@ import { useSessionState } from '../ui/session';
 import { ProjectListHint, patchProject, projectListPlaceholder, useProjectList } from '../ui/projectList';
 import { MarkdownContent } from '../ui/Markdown';
 import { prdGenStore, usePrdGen, type PrdGenIssue } from '../stores/prdGenStore';
+import { askConfirm } from '../ui/dialogs'; // T03159（U20）：覆盖既有同源 PRD 前二次确认
 import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00769 二轮：未绑定工作空间时原位提供绑定入口
 import { CircleCheck, FileText, FolderOpen, Loader2, Plus, Save, Sparkles, Trash2, Upload, X } from 'lucide-react';
 
@@ -356,6 +357,18 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
         const taken = new Set((existing ?? []).map((d) => d.filename));
         let seq = 2;
         while (taken.has(docName)) { docName = `${base}(${seq}).md`; seq += 1; }
+      } else if (originHash) {
+        // T03159（U20）：确认版命中同源既有文档时覆盖前二次确认，展示将被替换的字符数摘要；
+        // 取消则整单零写入（不发 POST、不动原条目），原内容逐字不变。
+        const peers = await api.get<Array<{ id: string; filename: string; origin_hash?: string; content_chars?: number }>>(
+          `/plans/prd-docs?projectId=${projectId}`).catch(() => []);
+        const hit = (peers ?? []).find((d) => d.origin_hash === originHash);
+        if (hit) {
+          const okOverwrite = await askConfirm(
+            `检测到同源条目「${hit.filename}」（现有 ${hit.content_chars ?? 0} 字符）。\n\n` +
+            `本次确认版共 ${merged.length} 字符，将覆盖该条目并替换其待确认问题。\n\n确定覆盖？`);
+          if (!okOverwrite) { flash('已取消覆盖录入，既有 PRD 未改动'); return; }
+        }
       }
       const doc = await api.post<{ id: string }>('/plans/prd-docs', { projectId, filename: docName, contentMd: merged, status, originHash });
       // T00822：结转全部待确认问题（含未填结论的）——后端按 answer 是否非空自动定 status(已确认/待确认)。
