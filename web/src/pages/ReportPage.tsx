@@ -27,6 +27,7 @@ import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSprea
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CARD } from '../ui/consoleReset'; // T01042：卡片侧重置入口（与控制台重置共用核心）
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
 import { focusTaskByNo } from '../ui/focusTask'; // T01057 建议：就绪任务跳转按编号定位（跨项目可命中）
+import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用主入口可见但禁用 + 原因/修复动作
 
 interface ReportTemplate {
   id: string;
@@ -89,10 +90,12 @@ interface ReportCardCfg {
   readonly onReset?: () => Promise<void> | void;
   /** T01038：卡片底部可选的运行状态徽标（动画图标 + 实时秒数 + 最终耗时），统一各能力卡运行状态提示 */
   readonly statusNode?: React.ReactNode;
+  /** T03176（D-14）：该卡片的能力依赖 AI 工具——AI 不可用时仍可见，但点击只给原因、不展开 */
+  readonly needsAi?: boolean;
 }
 
 /** 能力入口卡片（T00621，S3776 抽取；T00908 支持可选右上角动作按钮；T01038 支持底部运行状态徽标） */
-function ReportCard({ icon, title, desc, hint, aria, open, onToggle, action, statusNode, onReset, glow }: {
+function ReportCard({ icon, title, desc, hint, aria, open, onToggle, action, statusNode, onReset, glow, blocked, onBlocked }: {
   readonly icon: React.ReactNode; readonly title: string; readonly desc: React.ReactNode;
   readonly hint: string; readonly aria: string; readonly open: boolean; readonly onToggle: () => void;
   readonly action?: React.ReactNode; readonly statusNode?: React.ReactNode;
@@ -100,6 +103,9 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, action, sta
   readonly onReset?: () => Promise<void> | void;
   /** T01068-FR4.4：运行态流光延展——AI 运行中时卡片外框光晕呼吸（ai-shimmer 文字流光的容器延展形态） */
   readonly glow?: boolean;
+  /** T03176（D-14）：AI 不可用——卡片保留可见与工具提示，点击只回显原因（不展开面板、不真隐藏） */
+  readonly blocked?: boolean;
+  readonly onBlocked?: () => void;
 }) {
   // T00908：容器用 div role=button（不用原生 button）——右上角动作/重置按钮是交互子元素，
   //         不能嵌套在按钮内（HTML 语法/可达性）；键盘激活能力由下方 onKeyDown 等价补齐。
@@ -113,27 +119,31 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, action, sta
     try { await onReset(); } finally { setResetting(false); }
   }
   const hasCorner = Boolean(action || onReset);
+  const act = () => { if (blocked) { onBlocked?.(); return; } onToggle(); };
   return (
     <div /* NOSONAR: S6819 豁免——T02143：卡片右上角动作/重置是原生 button 子元素，HTML 禁止按钮套按钮；键盘支持已在下方 onKeyDown 等价补齐，勿再改回原生 button */
       role="button"
       tabIndex={0}
-      onClick={onToggle}
+      aria-disabled={blocked || undefined}
+      onClick={act}
       onKeyDown={(e) => {
         // 只认卡片自身获得焦点时的按键：角标按钮的 Enter/Space 会冒泡到这里，
         // 不判 target 会让「键盘激活角标」顺带把卡片收起（T02143 实测踩到）
         if (e.target !== e.currentTarget) return;
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); }
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); act(); }
       }}
       title={hint}
       aria-label={aria}
-      className={`card-btn ln${glow ? ' flow-glow' : ''}`}
-      style={{ position: 'relative', textAlign: 'left', padding: 14, border: open ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', cursor: 'pointer', display: 'flex', gap: 10, alignItems: 'flex-start', width: '100%' }}
+      className={`card-btn ln${glow && !blocked ? ' flow-glow' : ''}`}
+      style={{ position: 'relative', textAlign: 'left', padding: 14, border: open && !blocked ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', cursor: blocked ? 'not-allowed' : 'pointer', opacity: blocked ? 0.65 : 1, display: 'flex', gap: 10, alignItems: 'flex-start', width: '100%' }}
     >
       {icon}
       <span style={{ flex: 1 }}>
         <span style={{ display: 'block', fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{title}</span>
         <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{desc}</span>
-        <span style={{ display: 'block', fontSize: 11, color: 'var(--accent)', marginTop: 8 }}>{open ? '收起工作面板 ↑' : '点击展开工作面板 ↓'}</span>
+        <span style={{ display: 'block', fontSize: 11, color: blocked ? 'var(--warn)' : 'var(--accent)', marginTop: 8 }}>
+          {blocked ? '暂不可用 — 原因与修复动作见上方提示' : (open ? '收起工作面板 ↑' : '点击展开工作面板 ↓')}
+        </span>
         {statusNode && <span style={{ display: 'block', marginTop: 6 }}>{statusNode}</span>}
       </span>
       {hasCorner && (
@@ -403,6 +413,13 @@ export function ReportPage() {
   const sumSnap = useSummaryPpt(); // T02857：总结汇报 PPT 卡片运行状态供徽标共用
   const lectureSnap = useCodeReviewLecture(); // T02872：代码评审讲稿卡片运行状态供徽标共用
   const aiImp = useSyncExternalStore(aiImportStore.subscribe, aiImportStore.getSnapshot);
+  // T03176（D-14）：AI 可用性走单源诊断（与后端 runtimeWithModel 同口径）——
+  // 不可用时本页 8 张 AI 卡仍可见但禁用，页面顶部给一次原因 + 「去模型管理」修复动作。
+  const readiness = useAiReadiness();
+  const aiDown = aiBlocked(readiness);
+  // 显式选中/持久化的工具优先（控制台选择器仍在），仅在为空时落到诊断给出的可用工具，
+  // 避免与用户选择打架；loadAiTools 已排除停用工具，故 aiToolId 不会指向停用项。
+  const activeToolId = aiToolId || readiness?.toolId || '';
 
   const flash = (m: string) => {
     setNotice(m);
@@ -503,7 +520,7 @@ export function ReportPage() {
     : d);
 
   const reportCards: ReportCardCfg[] = [
-    { key: 'ai-import', icon: <FileUp size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: 'AI 项目计划导入',
+    { key: 'ai-import', needsAi: true, icon: <FileUp size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: 'AI 项目计划导入',
       desc: '上传 Excel/需求文档，AI 解析为项目计划草稿（工期/依赖/负责人），确认后批量入库',
       hint: 'AI 项目计划导入 — 上传 Excel/需求文档，AI 解析为计划草稿并批量入库（本页直接执行）', aria: 'AI 项目计划导入',
       open: showAiImport,
@@ -514,19 +531,19 @@ export function ReportPage() {
       hint: `${offlineReportLabel} — 本地聚合数据按模板合成报表（工作面板内含模板管理）`, aria: offlineReportLabel,
       open: showOffline,
       onToggle: () => togglePanel('offline') },
-    { key: 'ai-live', icon: <Sparkles size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: aiReportLabel,
+    { key: 'ai-live', needsAi: true, icon: <Sparkles size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: aiReportLabel,
       desc: <>结合真实任务数据调用 AI 生成洞察，按内置 skill「{SKILL_BY_FORMAT[format]}」版式智能合成</>,
       hint: `${aiReportLabel} — 结合真实数据由 AI 撰写洞察并按内置 skill 版式合成`, aria: aiReportLabel,
       open: showAiLive,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('aiLive') },
-    { key: 'prd-gen', icon: <Sparkles size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '原始需求生成 PRD',
+    { key: 'prd-gen', needsAi: true, icon: <Sparkles size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '原始需求生成 PRD',
       desc: '上传原始需求（Word/Excel/Markdown/文本），内置技能结合源码上下文生成 PRD + 待确认问题，确认后录入 PRD 管理视图',
       hint: '原始需求生成 PRD — 上传原始需求文件，内置技能结合项目源码上下文生成标准化 PRD 与待确认问题，确认后录入 PRD 管理视图', aria: '原始需求生成 PRD',
       open: showPrdGen,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('prdGen') },
-    { key: 'prd-import', icon: <FileUp size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '从 PRD 导入项目计划',
+    { key: 'prd-import', needsAi: true, icon: <FileUp size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '从 PRD 导入项目计划',
       desc: withScopeNote('AI 拆分 WBS + 逐条提取需求 → 生成计划与需求跟踪矩阵（可选同步待办任务）',
         projectIds.length > 1
           ? `角标「已上传 PRD 文档」只列首个项目「${scopeName}」的文档；导入目标项目以面板内下拉为准`
@@ -536,7 +553,7 @@ export function ReportPage() {
       action: prdDocsAction,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('prdImport') },
-    { key: 'tc-gen', icon: <ListChecks size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '从 PRD 生成测试用例',
+    { key: 'tc-gen', needsAi: true, icon: <ListChecks size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '从 PRD 生成测试用例',
       desc: '选择内部 PRD 或上传需求文档，内置技能拆分需求 + 分块生成用例 + 覆盖校验，草稿确认后入库（同一 PRD 重跑幂等）',
       hint: '从 PRD 生成测试用例 — 内部 PRD 文档或外部上传，内置技能 testcase-generate 结合项目源码上下文生成用例草稿，勾选确认后入库', aria: '从 PRD 生成测试用例',
       open: showTcGen,
@@ -544,7 +561,7 @@ export function ReportPage() {
       onToggle: () => togglePanel('tcGen') },
     // T02107（PRD FR-1.1/1.2）：第 7 张卡——数组尾部追加，标题/描述/hint 逐字取 PRD 口径，
     // 复用 ReportCard 与既有图标风格（色值只走 CSS 变量，不新造卡片组件）
-    { key: 'kickoff-ppt', icon: <Presentation size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '项目启动会 PPT 生成',
+    { key: 'kickoff-ppt', needsAi: true, icon: <Presentation size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '项目启动会 PPT 生成',
       desc: withScopeNote('按项目资料自动装配 Kickoff 材料（原生可编辑 .pptx）', scopeNoteOf('本卡片')),
       hint: '需 PRD/需求矩阵/计划至少各 1 条', aria: '项目启动会 PPT 生成',
       open: showKickoffPpt,
@@ -552,7 +569,7 @@ export function ReportPage() {
       onToggle: () => togglePanel('kickoffPpt') },
     // T02857（PRD-阶段性项目总结汇报PPT §3.1 FR-1.1）：第 8 张卡——文案逐字取 PRD 口径；
     // 与 kickoff 的单项目口径不同，本卡片的多项目合并产物是 T02190 的首个例外（A-6），范围默认跟随顶部选择器
-    { key: 'summary-ppt', icon: <FileChartColumn size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '阶段性项目总结汇报 PPT 生成',
+    { key: 'summary-ppt', needsAi: true, icon: <FileChartColumn size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '阶段性项目总结汇报 PPT 生成',
       desc: withScopeNote('按汇报周期与项目范围自动装配阶段总结汇报材料（原生可编辑 .pptx）',
         projectIds.length > 1 ? `合并版：${projectIds.length} 个项目将在同一份 deck 内分区呈现` : ''),
       hint: '周期内至少有 1 个项目有活动数据', aria: '阶段性项目总结汇报 PPT 生成',
@@ -561,7 +578,7 @@ export function ReportPage() {
       onToggle: () => togglePanel('summaryPpt') },
     // T02872（PRD §1 术语表「卡位冲突声明」）：本卡与总结汇报卡同争尾部位，PRD 已按落地时点定序——
     // 总结汇报先落地为第 8 张，本卡为第 9 张，标题逐字取 PRD §1 口径（「代码评审会议讲稿生成」），不改写、不顶替。
-    { key: 'review-lecture', icon: <ScrollText size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '代码评审会议讲稿生成',
+    { key: 'review-lecture', needsAi: true, icon: <ScrollText size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '代码评审会议讲稿生成',
       desc: withScopeNote('按评审范围采集阶段性增量（Git Diff / Commit 日志），装配可直接照念的八段评审会议讲稿——左 diff、右讲稿、锚点可定位',
         projectIds.length > 1 ? `多项目：按「总-分-总」装配，每项目独立成章（${projectIds.length} 个项目）` : ''),
       hint: '项目已配置工作空间路径，或可粘贴 patch 走降级通道', aria: '代码评审会议讲稿生成',
@@ -638,7 +655,8 @@ export function ReportPage() {
   const loadAiTools = useCallback(async () => {
     try {
       const list = await api.get<AITool[]>('/aitools');
-      const valid = list.filter((t) => t.model);
+      // T03176：排除停用工具——此前只筛 model，停用但仍带 model 的工具会被选成默认，运行时直接报「未配置」
+      const valid = list.filter((t) => t.model && t.enabled !== false);
       setAiTools(valid);
       // T00534：统一以模型菜单配置为准——固定默认整理工具，不再由本页选择
       if (valid.length) setAiToolId(valid[0].id);
@@ -681,8 +699,9 @@ export function ReportPage() {
   /** AI 周报生成（流式）：SSE 实时推送阶段日志与洞察正文到右侧控制台，完成后获得下载令牌。
    * 状态直接写入模块级 store，切换页面期间生成照常推进，返回后恢复进度。 */
   async function aiGenerate() {
-    if (!aiToolId) {
-      flash('请先在「模型管理」配置并选择 AI 工具');
+    if (!activeToolId) {
+      // T03176：诊断已给出具体缺失项（未配置工具/全部停用/未填默认模型）时按诊断原文提示，不再泛化成一句「去配置」
+      flash(aiDown && readiness ? `AI 暂不可用：${readiness.reason}` : '请先在「模型管理」配置并选择 AI 工具');
       return;
     }
     reportStream.begin();
@@ -693,7 +712,7 @@ export function ReportPage() {
     try {
       await streamEvents(
         '/report/ai-generate-stream',
-        { period, format, projectIds, toolId: aiToolId },
+        { period, format, projectIds, toolId: activeToolId },
         (name, payload) => {
           switch (name) {
             case 'stage':
@@ -832,21 +851,27 @@ export function ReportPage() {
         </div>
       )}
 
+      {/* T03176（D-14）：AI 不可用只提示一次（而非每张卡重复一遍），卡片本身保留可见但禁用 */}
+      {aiDown && readiness && <AiUnavailableHint r={readiness} style={{ margin: '14px 0 0' }} />}
+
       {/* T00621：AI 能力入口五卡片同行（统一风格：图标 + 标题 + 描述 + 底部展开提示；S3776 数据驱动抽取） */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, margin: '14px 0 0' }}>
         {reportCards.map((c) => {
           const st = cardStatus(c.key);
+          const cardDown = Boolean(c.needsAi) && aiDown;
           return (
             <ReportCard
               key={c.key}
               icon={c.icon}
               title={c.title}
               desc={c.desc}
-              hint={c.hint}
+              hint={cardDown ? aiBlockedTitle(readiness, c.hint) : c.hint}
               aria={c.aria}
               open={c.open}
               action={c.action}
               onReset={c.onReset}
+              blocked={cardDown}
+              onBlocked={() => flash(`「${c.title}」暂不可用：${readiness?.reason ?? 'AI 未就绪'}——点击上方「去模型管理」配置后重试`)}
               glow={st.status === 'running'} /* T01068-FR4.4：运行中卡片光晕呼吸 */
               onToggle={c.onToggle}
               statusNode={<RunStatusBadge status={st.status} startedAt={st.startedAt} finalElapsed={st.finalElapsed} size={12} showLabel={false} />}
@@ -855,7 +880,7 @@ export function ReportPage() {
         })}
       </div>
 
-      <ReportWorkPanels aiToolId={aiToolId} projectId={projectId} projectIds={projectIds} projects={projects} scopeNote={scopeNoteOf('本面板')}
+      <ReportWorkPanels aiToolId={activeToolId} projectId={projectId} projectIds={projectIds} projects={projects} scopeNote={scopeNoteOf('本面板')}
         showKickoffPpt={showKickoffPpt} closeKickoffPpt={closeKickoffPpt} openCard={openCard}
         showSummaryPpt={showSummaryPpt} closeSummaryPpt={() => setShowSummaryPpt(false)}
         showReviewLecture={showReviewLecture} closeReviewLecture={() => setShowReviewLecture(false)}
@@ -1004,8 +1029,8 @@ export function ReportPage() {
           </div>
           <FlowButton
             onClick={() => void aiGenerate()}
-            disabled={aiStreaming}
-            title={`${aiReportLabel} — 结合任务数据调用 AI 生成${periodLabel}`}
+            disabled={aiStreaming || aiDown}
+            title={aiDown ? aiBlockedTitle(readiness, `${aiReportLabel} — 结合任务数据调用 AI 生成${periodLabel}`) : `${aiReportLabel} — 结合任务数据调用 AI 生成${periodLabel}`}
             aria-label={`${aiReportLabel}：结合任务数据调用 AI 生成${periodLabel}`}
             loading={aiStreaming}
             loadingText="AI 生成中…"
@@ -1041,6 +1066,7 @@ export function ReportPage() {
         </div>
         <aside style={{ boxSizing: 'border-box', alignSelf: 'stretch', display: consoleCollapsed ? 'none' : undefined, ...(splitCollapsed ? { width: '100%' } : { flex: '0 0 360px', maxWidth: '44vw' }) }}>
           <ReportConsole tools={aiTools} toolId={aiToolId} onToolIdChange={setAiToolId} period={period} projectIds={projectIds} scopeLabel={scopeLabel} streaming={aiStreaming} logs={aiLogs} streamText={aiStreamText}
+            unavailableReason={aiDown ? (readiness?.reason ?? '') : ''}
             onCollapse={() => setSplitCollapsed((v) => !v)} collapsed={splitCollapsed} />
         </aside>
       </div>

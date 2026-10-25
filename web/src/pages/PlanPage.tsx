@@ -12,6 +12,7 @@ import { estimatesApi, type EstimatesResponse } from '../api/estimates'; // T020
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin, reorderProjects, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { ProjectListHint, getProjectListSnapshot, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：节假日取数改走可见失败态层（工期换算依赖）
+import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用入口可见但禁用 + 原因/修复动作
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
@@ -327,12 +328,15 @@ function PlanCreateImportButtons({ busy, createPlan, importExcel, exportExcel, e
 }
 
 /** 工具栏：批量 AI 评估按钮（S3776 抽取） */
-function PlanEvalButton({ batchEvaluatePlans, evalBusy, busy, evalLabel, plans }: {
+function PlanEvalButton({ batchEvaluatePlans, evalBusy, busy, evalLabel, plans, blocked, blockedTitle }: {
   readonly batchEvaluatePlans: () => Promise<void> | void; readonly evalBusy: boolean; readonly busy: boolean;
   readonly evalLabel: string; readonly plans: PlanTask[];
+  /** T03176（D-14）：AI 不可用——按钮保留可见但禁用，悬浮提示给出原因与修复动作 */
+  readonly blocked?: boolean; readonly blockedTitle?: string;
 }) {
+  const baseTitle = 'AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）';
   return (
-    <button onClick={() => runAsync(batchEvaluatePlans())} disabled={evalBusy || busy} title="AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）" aria-label="批量 AI 评估" className={'op-hidden' + (evalBusy ? ' task-breathe' : '')} style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }}>
+    <button onClick={() => runAsync(batchEvaluatePlans())} disabled={evalBusy || busy || blocked} title={blocked ? (blockedTitle ?? baseTitle) : baseTitle} aria-label="批量 AI 评估" className={'op-hidden' + (evalBusy ? ' task-breathe' : '')} style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }}>
       {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}AI 评估{evalBusy
         ? (evalLabel && plans.length > 0 ? `（${evalLabel}）` : '') // T01618：评估中保持进度标签口径不变
         : (plans.length > 0 ? ` ${plans.length}` : '')} {/* T01618：待评估计划条数，对齐「AI 美化全部待办」数量范式 */}
@@ -1205,6 +1209,13 @@ export function PlanPage() {
   const [busy, setBusy] = useState(false);
   // T00438 AI 导入：模型列表与选中工具（持久化）、解析弹窗状态、可编辑草稿行
   const [aiToolId, setAiToolId] = usePersistentState('plan.aiToolId', '');
+  // T03176（D-14）：AI 可用性单源诊断——评估/导入入口不可用时保留可见但禁用，并在工具条给出原因与修复动作
+  const readiness = useAiReadiness();
+  const aiDown = aiBlocked(readiness);
+  /** 生效工具：显式/持久化选择优先，空时才落到诊断给出的可用工具 */
+  const aiToolActive = aiToolId || readiness?.toolId || '';
+  /** 前置提示统一口径：诊断有具体缺失项（未配置/全停用/未填模型/配置不符）时说原文 */
+  const aiBlockedFlash = (fallback: string) => (aiDown && readiness ? `AI 暂不可用：${readiness.reason}` : fallback);
   // T00472：AI 评估状态（批量进度动态计数，单条/批量共用）。
   // T01620：这两个状态**必须留在组件内**，不能再走 useSessionState——持久化靠 effect 落盘，
   // 而 PlanPage 是 `{tab==='plan' && <PlanPage/>}` 条件挂载，切页/刷新即卸载：
@@ -1220,7 +1231,7 @@ export function PlanPage() {
   const evaluateRow = (row: PlanTask) => {
     if (evalBusy || planAiBatchRunning) { flash('批量 AI 任务进行中，请等待其完成'); return; }
     // T02283：工具列表没加载出来是后端问题，不能报成用户的配置问题
-    if (!aiToolId) { flash(aiToolsView.phase === 'error' ? 'AI 工具列表加载失败，请点工具条的「重试」后再评估' : '请先在模型菜单配置默认 AI 工具'); return; }
+    if (!aiToolActive) { flash(aiToolsView.phase === 'error' ? 'AI 工具列表加载失败，请点工具条的「重试」后再评估' : aiBlockedFlash('请先在模型菜单配置默认 AI 工具')); return; }
     void evaluateOnePlan(row).then((okk) => { if (okk) flash('AI 评估已写入该行描述'); });
   };
 
@@ -1433,7 +1444,8 @@ export function PlanPage() {
   // 「请先在模型菜单配置默认 AI 工具」。
   const aiToolsView = useResource<AITool[]>(async () => {
     const list = await api.get<AITool[]>('/aitools');
-    const sorted = [...list].sort(compareOrganize);
+    // T03176：停用工具不得被选成默认（此前只排除无 model，停用项仍会被选中并在运行时直接报错）
+    const sorted = list.filter((t) => t.enabled !== false).sort(compareOrganize);
     setAiToolId(sorted[0]?.id ?? '');
     return list;
   });
@@ -1580,7 +1592,7 @@ export function PlanPage() {
     try {
       const r = await api.post<{ ok: boolean; results: Array<{ id: string; ok: boolean; evaluation?: string; error?: string }> }>(
         '/plans/ai-evaluate',
-        { toolId: aiToolId, items: [{ id: p.id, title: p.title, duration_days: p.duration_days, progress: p.progress, assignee: p.assignee }] },
+        { toolId: aiToolActive, items: [{ id: p.id, title: p.title, duration_days: p.duration_days, progress: p.progress, assignee: p.assignee }] },
       );
       const first = r.results?.[0];
       if (!first?.ok || !first.evaluation) {
@@ -1600,7 +1612,7 @@ export function PlanPage() {
   /** 批量评估：确认后逐条串行评估并自动录入描述，进度动态计数（k/N） */
   function batchEvaluatePlans(targetIds?: string[]) {
     if (evalBusy || planAiBatchRunning) { flash('已有批量 AI 任务在进行中，请等待其完成'); return; }
-    if (!aiToolId) { flash(aiToolsView.phase === 'error' ? 'AI 工具列表加载失败，请点工具条的「重试」后再试' : '请先选择 AI 模型（AI 导入旁的模型下拉）'); return; }
+    if (!aiToolActive) { flash(aiToolsView.phase === 'error' ? 'AI 工具列表加载失败，请点工具条的「重试」后再试' : aiBlockedFlash('请先选择 AI 模型（AI 导入旁的模型下拉）')); return; }
     const target = targetIds ? plans.filter((p) => targetIds.includes(p.id)) : plans;
     if (target.length === 0) { flash('当前项目暂无计划条目'); return; }
     const msg = `将对 ${target.length} 条计划逐条 AI 评估（工期合理性/风险/建议），结果自动录入各条描述（可后续手动编辑或删除），确认开始？`;
@@ -1636,7 +1648,7 @@ export function PlanPage() {
    */
   async function backfillComplexity(force: boolean) {
     if (evalBusy || planAiBatchRunning) { flash('已有批量 AI 任务在进行中，请等待其完成'); return; }
-    if (!aiToolId) { flash(aiToolsView.phase === 'error' ? 'AI 工具列表加载失败，请点工具条的「重试」后再试' : '请先选择 AI 模型（AI 导入旁的模型下拉）'); return; }
+    if (!aiToolActive) { flash(aiToolsView.phase === 'error' ? 'AI 工具列表加载失败，请点工具条的「重试」后再试' : aiBlockedFlash('请先选择 AI 模型（AI 导入旁的模型下拉）')); return; }
     if (!projectId) { flash('请先选择项目'); return; }
     planAiBatchRunning = true;
     setEvalBusy(true);
@@ -1644,7 +1656,7 @@ export function PlanPage() {
     try {
       const r = await api.post<{ scanned: number; updated: number; batches: Array<{ offset: number; size: number; updated: number; error?: string }> }>(
         '/plans/complexity/backfill',
-        { toolId: aiToolId, projectId, force },
+        { toolId: aiToolActive, projectId, force },
       );
       const failed = r.batches.filter((b) => b.error).length;
       if (r.scanned === 0) flash(force ? '本项目没有可补算的计划行' : '本项目计划行的复杂度均已评定（无需补算）');
@@ -2508,7 +2520,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         <ProjectListHint view={projectList} />
         {/* T00506 调整：任务类型选择移入「新建计划任务」弹窗（默认普通任务），工具栏不再展示 */}
         <PlanCreateImportButtons busy={busy} createPlan={createPlan} importExcel={importExcel} exportExcel={exportExcel} exportMarkdown={exportMarkdown} downloadTemplate={downloadTemplate} />
-        <PlanEvalButton batchEvaluatePlans={batchEvaluatePlans} evalBusy={evalBusy} busy={busy} evalLabel={evalLabel} plans={plans} />
+        <PlanEvalButton batchEvaluatePlans={batchEvaluatePlans} evalBusy={evalBusy} busy={busy} evalLabel={evalLabel} plans={plans}
+          blocked={aiDown} blockedTitle={aiBlockedTitle(readiness, 'AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）')} />
         <PlanComplexityButton backfill={backfillComplexity} evalBusy={evalBusy} busy={busy} />
         <PlanMultiToggle planMulti={planMulti} setPlanMulti={setPlanMulti} setPlanSelIds={setPlanSelIds} />
         {planMulti && planSelIds.length > 0 && (
@@ -2583,6 +2596,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       )}
         {/* T02283：AI 工具列表断供时给出原因与重试入口，与上面的评估误报文案改动配对 */}
         <ResourceHint view={aiToolsView} label="AI 工具列表" />
+        {/* T03176（D-14）：AI 不可用时给一次原因 + 「去模型管理」，评估入口保留可见但禁用 */}
+        {aiDown && readiness && <AiUnavailableHint r={readiness} compact />}
 
       {/* T01564：三模式分派——timeline / gantt 走视图函数，list 仍是下方表格（原为两层嵌套三元，S3358） */}
       {viewMode === 'list' ? (

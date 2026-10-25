@@ -20,6 +20,7 @@ import { FontColorButton } from '../ui/FontColorButton';
 import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00771：工作空间选择器（项目上下文根路径）
 import { WorkspaceSearchPanel } from '../ui/WorkspaceSearchPanel'; // T00786：工作空间全文检索面板（partial 提示）
 import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：正文 AI 美化（反馈/处理结果共用）
+import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用入口可见但禁用 + 原因/修复动作
 import { classifyResultMessage, createClassifyStore, runClassifyBatch, type ClassifyResponse, type ClassifyStoreState } from './tasksClassifyBatch'; // T02307：批量分类三态分流 + 账户级门禁/连续失败熔断
 
 /** 顶部 tab 三态：待办 / 已完成 / 搁置（S4323：具名类型别名替代内联联合类型） */
@@ -256,6 +257,13 @@ export function TasksPage() {
     () => [...(toolsRes.data ?? [])].sort((a, b) => Number(b.isDefaultOrganize) - Number(a.isDefaultOrganize)),
     [toolsRes.data],
   );
+  // T03176（D-14）：AI 可用性单源诊断（与后端 runtimeWithModel 同口径）——不可用时工具条 AI 按钮可见但禁用，
+  // 点击只回显具体原因；页面不隐藏入口，避免「先关掉再说」。
+  const readiness = useAiReadiness();
+  const aiDown = aiBlocked(readiness);
+  /** 前置提示统一口径：诊断有具体缺失项（未配置/全停用/未填模型/配置不符）时说原文，否则说调用方文案 */
+  const aiBlockedFlash = (fallback: string) => (aiDown && readiness ? `AI 暂不可用：${readiness.reason}` : fallback);
+
   // 任务分类：分类列表 + 顶部筛选（会话级）+ 新建任务所选分类（会话级）
   const [taskCats, setTaskCats] = useState<TaskCategory[]>([]);
   const [catFilter, setCatFilter] = useSessionState('tasks.catFilter', '');
@@ -1126,7 +1134,7 @@ export function TasksPage() {
   async function beautify(task: Task) {
     if (batchBusy) return flash('正在进行批量美化，请先在工具栏取消');
     if (beautifyBusy[task.id]) return flash('该任务正在美化，请稍候');
-    if (!organizeToolId) return flash('请先在「模型管理」页添加并选择美化工具');
+    if (!organizeToolId) return flash(aiBlockedFlash('请先在「模型管理」页添加并选择美化工具'));
     if (!task.title.trim()) return flash('该任务无标题可美化');
     const ac = new AbortController();
     beautifyStore.aborts[task.id] = ac;
@@ -1161,7 +1169,7 @@ export function TasksPage() {
   async function simplify(task: Task) {
     if (batchBusy) return flash('正在进行批量处理，请先在工具栏取消');
     if (beautifyBusy[task.id]) return flash('该任务正在处理，请稍候');
-    if (!organizeToolId) return flash('请先在「模型管理」页添加并选择工具');
+    if (!organizeToolId) return flash(aiBlockedFlash('请先在「模型管理」页添加并选择工具'));
     if (!task.title.trim()) return flash('该任务无标题可简化');
     if (!(task.description ?? '').trim()) {
       return flash('AI 简化需依据任务详情总结标题——请先补充该任务的详情内容，避免语义丢失');
@@ -1189,7 +1197,7 @@ export function TasksPage() {
    *  批量独占：进行期间禁止新单条/新批量，避免各实例写草稿相互覆盖；统一经工具栏取消。 */
   async function beautifyAll() {
     if (anyBeautify) return flash('正在进行 AI 美化，请先在工具栏取消');
-    if (!organizeToolId) return flash('请先在「模型管理」页添加并选择美化工具');
+    if (!organizeToolId) return flash(aiBlockedFlash('请先在「模型管理」页添加并选择美化工具'));
     if (todo.length === 0) return flash('当前项目没有待办任务');
     if (!(await askConfirm(`将对 ${todo.length} 个待办任务执行标题美化，确认？`))) return;
     const ac = new AbortController();
@@ -1624,7 +1632,7 @@ export function TasksPage() {
    *  逐个复用 matchCategory 得到最贴切分类，命中即写回 category_id；无工具/无未分类任务/全失败都给明确反馈。 */
   async function batchClassify() {
     if (classifyBusy) return flash('正在批量分类中，请稍候');
-    if (!organizeToolId) return flash('请先在「模型管理」页添加并选择整理工具');
+    if (!organizeToolId) return flash(aiBlockedFlash('请先在「模型管理」页添加并选择整理工具'));
     // T02365：无候选分类时逐条请求会全部回 categoryId=null，最终被笼统说成「未能匹配」——
     // 这里直接点名是分类没建/分类列表没加载成功，并顺手重拉一次
     if (taskCats.length === 0) {
@@ -1645,7 +1653,7 @@ export function TasksPage() {
    *  按任务隔离并支持并行；同一任务再次点击视为「取消」。 */
   async function optimizeDesc(task: Task) {
     if (optimizingMap[task.id]) return cancelOptimize(task.id);
-    if (!organizeToolId) return flash('请先在「模型管理」页添加并选择工具');
+    if (!organizeToolId) return flash(aiBlockedFlash('请先在「模型管理」页添加并选择工具'));
     // 描述输入框有草稿用草稿，否则用已保存的描述；原样透传，不增删内容
     let text = descDrafts[task.id] ?? task.description ?? '';
     // 仅当描述输入框为空时回退到标题，作为本次优化输入；否则标题只作辅助展示
@@ -2967,8 +2975,8 @@ export function TasksPage() {
       <>
         <button
           onClick={handleBeautifyToggle}
-          disabled={!anyBeautify && todo.length === 0}
-          title={anyBeautify ? '取消 — 停止当前批量美化' : 'AI 美化全部待办 — 批量润色所有待办任务标题'}
+          disabled={!anyBeautify && (todo.length === 0 || aiDown)}
+          title={aiDown && !anyBeautify ? aiBlockedTitle(readiness, 'AI 美化全部待办 — 批量润色所有待办任务标题') : (anyBeautify ? '取消 — 停止当前批量美化' : 'AI 美化全部待办 — 批量润色所有待办任务标题')}
           aria-label={anyBeautify ? '取消批量美化' : 'AI 美化全部待办'}
           className={anyBeautify ? 'task-breathe' : 'op-hidden'} // T00759：默认隐藏悬浮显示；批量进行中保持可见
           style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: anyBeautify ? 'var(--accent)' : 'transparent', color: anyBeautify ? 'var(--accent-text)' : 'var(--text)' }}
@@ -3025,9 +3033,9 @@ export function TasksPage() {
     return (
       <button
         onClick={() => void batchClassify()}
-        disabled={classifyBusy || (todo.length === 0 && done.length === 0)}
+        disabled={classifyBusy || aiDown || (todo.length === 0 && done.length === 0)}
         className={`tbtn-anim op-hidden${classifyBusy ? ' task-breathe' : ''}`} // T00759：默认隐藏悬浮显示；批量进行中保持可见
-        title={classifyBusy ? '批量分类进行中…' : 'AI 批量分类 — 对未分类任务（含已完成）智能识别自动分到已有分类'}
+        title={aiDown && !classifyBusy ? aiBlockedTitle(readiness, 'AI 批量分类 — 对未分类任务（含已完成）智能识别自动分到已有分类') : (classifyBusy ? '批量分类进行中…' : 'AI 批量分类 — 对未分类任务（含已完成）智能识别自动分到已有分类')}
         aria-label={classifyBusy ? '批量分类进行中' : 'AI 批量分类：对未分类任务（含已完成）自动分类'}
         style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: classifyBusy ? 'var(--accent)' : 'transparent', color: classifyBusy ? 'var(--accent-text)' : 'var(--text)' }}
       >
@@ -3208,6 +3216,8 @@ export function TasksPage() {
         {renderClassifyButton()}
         {/* T02257：AI 工具列表取数失败时在工具条给出可见失败态与重试入口（此前静默为空） */}
         <ResourceHint view={toolsRes} label="AI 工具列表" />
+        {/* T03176（D-14）：AI 不可用时工具条给一次原因 + 「去模型管理」，AI 按钮保留可见但禁用 */}
+        {aiDown && readiness && <AiUnavailableHint r={readiness} compact />}
         {renderViewToggle()}
         {renderMultiSelectButton()}
         {/* T00481/T00720/T00728：全部收起/展开——描述、AI 摘要、处理结果三组折叠状态联动，覆盖待办+已完成全部列表；

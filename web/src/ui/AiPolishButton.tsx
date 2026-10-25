@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Loader2, Sparkles } from 'lucide-react';
 import { api, type AITool } from '../api/client';
+import { aiBlocked, aiBlockedTitle, useAiReadiness } from './aiReadiness';
 
 /**
  * T00796 二轮：通用正文「AI 美化」按钮（复用 POST /api/ai/polish）。
@@ -47,6 +48,9 @@ export function AiPolishButton({ value, onPolished, toolId, disabled, flash, tit
 }) {
   const [busy, setBusy] = useState(false);
   const [autoToolId, setAutoToolId] = useState('');
+  // T03176（D-14）：可用性以服务端单源为准——不可用时按钮仍可见，置灰并给出原因
+  const readiness = useAiReadiness();
+  const blocked = aiBlocked(readiness);
 
   useEffect(() => {
     if (toolId) return;
@@ -54,7 +58,7 @@ export function AiPolishButton({ value, onPolished, toolId, disabled, flash, tit
   }, [toolId]);
 
   const text = value.trim();
-  const active = toolId || autoToolId;
+  const active = toolId || readiness?.toolId || autoToolId;
 
   async function run() {
     if (!text) { flash?.('请先填写内容，再点击 AI 美化'); return; }
@@ -77,7 +81,7 @@ export function AiPolishButton({ value, onPolished, toolId, disabled, flash, tit
   // 用户反馈「找不到 AI 美化按钮」：空文本时按钮几乎隐形（0.45 下 13px 描边图标在浅色背景上不可辨），
   // 按钮本身必须始终清晰可见，否则功能等于不存在。
   const noText = !text;
-  const idle = !busy && !disabled && !noText;
+  const idle = !busy && !disabled && !noText && !blocked;
   // S3358：嵌套三元展开为独立语句
   let label = title;
   if (noText) label = `${title}（请先填写内容）`;
@@ -88,8 +92,8 @@ export function AiPolishButton({ value, onPolished, toolId, disabled, flash, tit
   return (
     <button
       onClick={() => void run()}
-      disabled={busy || disabled || noText}
-      title={label}
+      disabled={busy || disabled || noText || blocked}
+      title={aiBlockedTitle(readiness, label)}
       aria-label={busy ? 'AI 美化进行中' : 'AI 美化：润色正文'}
       className={`task-op tbtn-anim${busy ? ' task-breathe' : ''}`}
       style={{

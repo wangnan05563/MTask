@@ -105,10 +105,13 @@ function ToolSelect({
   tools,
   toolId,
   onChange,
+  unavailableReason = '',
 }: {
   readonly tools: AITool[];
   readonly toolId: string;
   readonly onChange: (id: string) => void;
+  /** T03176（D-14）：空列表时区分「未配置」与「配了但不可用」 */
+  readonly unavailableReason?: string;
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -160,7 +163,7 @@ function ToolSelect({
             boxShadow: '0 6px 20px rgba(0,0,0,0.12)', minWidth: 230, maxHeight: 240, overflowY: 'auto',
           }}
         >
-          {tools.length === 0 && <div style={{ padding: 8, fontSize: 12, color: 'var(--text-muted)' }}>（未配置可用工具）</div>}
+          {tools.length === 0 && <div style={{ padding: 8, fontSize: 12, color: 'var(--text-muted)' }}>{unavailableReason ? `（不可用：${unavailableReason}）` : '（未配置可用工具）'}</div>}
           {tools.map((t) => (
             <button
               key={t.id}
@@ -593,6 +596,7 @@ export function ReportConsole({
   streamText = '',
   onCollapse,
   collapsed = false,
+  unavailableReason = '',
 }: {
   readonly tools: AITool[];
   readonly toolId: string;
@@ -603,6 +607,8 @@ export function ReportConsole({
   readonly projectIds?: string[];
   /** T02165：范围的可读摘要（如「项目A + 项目B」），仅用于控制台回显 */
   readonly scopeLabel?: string;
+  /** T03176（D-14）：AI 不可用的具体原因（未配置/全停用/未填模型/配置不符）——开始按钮与工具选择的禁用文案据此说清 */
+  readonly unavailableReason?: string;
   readonly streaming?: boolean;
   readonly logs?: string[];
   readonly streamText?: string;
@@ -1263,7 +1269,7 @@ export function ReportConsole({
   const hasAnswer = onReportTab ? !!streamText : !!activeTask?.answer;
   // 「开始分析」按钮文案：无工具 / 自定义问题为空 / 正常三种状态，顺序判断避免嵌套三元
   let startBtnTitle = '开始分析 — 发起一个并行分析任务（不会阻塞其它任务）';
-  if (noTool) startBtnTitle = '开始分析 — 请先选择 AI 工具';
+  if (noTool) startBtnTitle = unavailableReason ? `开始分析 — 暂不可用：${unavailableReason}（去「模型管理」修复后可继续）` : '开始分析 — 请先选择 AI 工具';
   else if (customInvalid) startBtnTitle = '开始分析 — 请先输入分析问题';
 
   /** 头部与操作栏：AI 工具 / 分析内容 / 开始分析 / 对比 / 重置；自定义提问时文本框另起一行 */
@@ -1294,7 +1300,7 @@ export function ReportConsole({
 
         {/* 操作栏：AI 工具 / 分析内容 / 开始分析 / 重置 合并为一行；自定义提问时文本框另起一行 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-          <ToolSelect tools={tools} toolId={toolId} onChange={onToolIdChange} />
+          <ToolSelect tools={tools} toolId={toolId} onChange={onToolIdChange} unavailableReason={unavailableReason} />
           <select
             value={category}
             onChange={(e) => setCategory(e.target.value as typeof category)}

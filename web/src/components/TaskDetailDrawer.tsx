@@ -12,6 +12,7 @@ import { ResultDiffPanel } from '../ui/ResultDiff'; // T01607：结果历史 dif
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { SlideOver } from './SlideOver';
 import { ClipboardList, FileText, History, Link2, Loader2, Pencil, Save, Sparkles, X } from 'lucide-react';
+import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用入口可见但禁用 + 原因/修复动作
 
 /** T01568：标签页键对外导出——外部跳转（focusTaskByNo）按名称指定落位标签页 */
 export type TaskDetailTab = 'desc' | 'result' | 'summary' | 'timeline' | 'plans';
@@ -65,6 +66,9 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
   const [summaryAt, setSummaryAt] = useState(task.ai_summary_at ?? '');
   const [summaryBusy, setSummaryBusy] = useState(false);
   const [summaryErr, setSummaryErr] = useState('');
+  // T03176（D-14）：AI 摘要依赖默认 AI 工具——不可用时按钮保留可见但禁用，并在正文区给出原因与修复动作
+  const readiness = useAiReadiness();
+  const aiDown = aiBlocked(readiness);
   const [plans, setPlans] = useState<Array<{ id: string; title: string; kind: string; start_date: string }>>([]);
   const [plansLoading, setPlansLoading] = useState(false);
   const [previewId, setPreviewId] = useState(''); // T01563：附件放大预览（点同图收起）
@@ -310,9 +314,9 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
           </span>
           <button
             onClick={() => { void generateSummary(); }}
-            disabled={summaryBusy}
+            disabled={summaryBusy || aiDown}
             aria-label={actionLabel}
-            title="调用 AI 汇总该任务的描述、处理结果、关联计划/需求与时间线，生成全面总结并标注更新时间"
+            title={aiBlockedTitle(readiness, '调用 AI 汇总该任务的描述、处理结果、关联计划/需求与时间线，生成全面总结并标注更新时间')}
             className="tbtn-anim"
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6,
@@ -324,6 +328,7 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
             {summaryBusy ? '生成中…' : <><Sparkles size={12} /> {actionLabel}</>}
           </button>
         </div>
+        {aiDown && readiness && <AiUnavailableHint r={readiness} compact style={{ marginBottom: 10 }} />}
         {summaryErr && (
           <div style={{ fontSize: 12, color: 'var(--danger)', border: '1px solid var(--danger)', borderRadius: 6, padding: '6px 8px', marginBottom: 10 }}>
             生成失败：{summaryErr}

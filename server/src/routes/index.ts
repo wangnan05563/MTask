@@ -19,6 +19,7 @@ import { ConsoleJobService } from '../services/ConsoleJobService';
 import { QueueService } from '../services/QueueService';
 import { AIService } from '../services/AIService';
 import { cardCoverage, currentMonthStr } from '../services/AiCardStats'; // T03172：G-2 卡片覆盖率出数（/ai/coverage）
+import { checkAiReadiness } from '../services/AiReadinessService'; // T03176（D-14）：AI 可用性单源诊断
 import { ArchiveService } from '../services/ArchiveService';
 import { TaskImageService } from '../services/TaskImageService';
 import { TaskCategoryService } from '../services/TaskCategoryService';
@@ -1317,6 +1318,11 @@ api.get('/aitools', (_req, res) => {
 
 api.get('/aitools/types', (_req, res) => {
   res.json(ConfigService.listAdapterTypes());
+});
+
+// T03176（PRD D-14）：AI 可用性单源诊断——主入口据此「可见但禁用 + 原因/修复动作」
+api.get('/ai/readiness', (_req, res) => {
+  res.json(checkAiReadiness());
 });
 
 // 草稿连接测试：用表单未保存的 type/endpoint/apiKey/model 提前验证连通性（不落库）

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Loader2, Wand2 } from 'lucide-react';
 import { api, type AITool } from '../api/client';
+import { aiBlocked, aiBlockedTitle, useAiReadiness } from './aiReadiness';
 
 /**
  * 「提示词优化」按钮（T00842 二轮）：把一段正文改写为结构化提示词。
@@ -54,13 +55,16 @@ export function PromptOptimizeButton({ title, content, onClick, onOptimized, dis
 }) {
   const [busy, setBusy] = useState(false);
   const [autoToolId, setAutoToolId] = useState('');
+  // T03176（D-14）：可用性以服务端单源为准——不可用时按钮仍可见，置灰并给出原因
+  const readiness = useAiReadiness();
+  const blocked = aiBlocked(readiness);
 
   useEffect(() => {
     void resolveToolId().then(setAutoToolId);
   }, []);
 
   const text = content.trim();
-  const active = autoToolId;
+  const active = readiness?.toolId || autoToolId;
 
   async function run() {
     if (onClick) { onClick(); return; }
@@ -82,7 +86,7 @@ export function PromptOptimizeButton({ title, content, onClick, onOptimized, dis
     }
   }
 
-  const idle = !busy && !disabled && !!text;
+  const idle = !busy && !disabled && !!text && !blocked;
   const label = busy ? '提示词优化进行中…' : '提示词优化 — 用选中工具把内容改写为结构化提示词';
   let color = 'var(--text-muted)';
   if (idle) color = 'var(--text)';
@@ -90,8 +94,8 @@ export function PromptOptimizeButton({ title, content, onClick, onOptimized, dis
   return (
     <button
       onClick={() => void run()}
-      disabled={busy || disabled || !text}
-      title={text ? label : `${label}（请先填写内容）`}
+      disabled={busy || disabled || !text || blocked}
+      title={aiBlockedTitle(readiness, text ? label : `${label}（请先填写内容）`)}
       aria-label={busy ? '提示词优化进行中' : '提示词优化：把内容改写为结构化提示词'}
       className={`task-op tbtn-anim${busy ? ' task-breathe' : ''}`}
       style={{
