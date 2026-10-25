@@ -11,6 +11,7 @@ import { WorkspaceService } from './WorkspaceService'; // T00777：工作空间�
 import type { StreamResult, SubmitResult, PollResult, TokenUsage } from '../adapters/types';
 import type { ToolConfig } from '../adapters';
 import { stripThinking } from '../util/thinking'; // T00814：思考块剥离上移共享
+import { KIND_TO_CARD } from '../util/aiCards'; // T03172：kind→card_key 一对一映射（通用通道不冒充卡维度）
 
 /** 模型未配置时的统一提示，保持与产品语境一致的表达 */
 const MODEL_UNCONFIGURED = '所选模型未配置，请先在「模型管理」为该工具填写默认模型';
@@ -30,7 +31,9 @@ function toolNameOf(toolId: string): string {
   } catch { return toolId; }
 }
 
-/** AI 用量记录（T00448 / PRD AI-1）：每次模型调用落一行，供「模型」页用量面板聚合展示 */
+/** AI 用量记录（T00448 / PRD AI-1）：每次模型调用落一行，供「模型」页用量面板聚合展示。
+ *  T03172（G-2/AI-301）：card_key 随行走——显式传卡优先，否则按 kind→卡一对一映射，
+ *  通用通道（ask/ask-json/stream）无卡可归时落 unknown（历史默认值同口径，不冒充卡片维度）。 */
 function recordUsage(
   kind: string,
   toolId: string,
@@ -39,12 +42,14 @@ function recordUsage(
   startedAt: number,
   contentChars = 0,
   error?: string,
+  cardKey?: string,
 ): void {
+  const resolvedCard = cardKey ?? KIND_TO_CARD[kind] ?? 'unknown';
   try {
     getDb().prepare(
-      `INSERT INTO ai_usage (id, tool_id, tool_name, model, kind, ok, duration_ms, content_chars, error, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(uuid(), toolId, toolNameOf(toolId), model ?? '', kind, ok ? 1 : 0, Date.now() - startedAt, contentChars, (error ?? '').slice(0, 300) || null, new Date().toISOString());
+      `INSERT INTO ai_usage (id, tool_id, tool_name, model, kind, ok, duration_ms, content_chars, error, created_at, card_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(uuid(), toolId, toolNameOf(toolId), model ?? '', kind, ok ? 1 : 0, Date.now() - startedAt, contentChars, (error ?? '').slice(0, 300) || null, new Date().toISOString(), resolvedCard);
   } catch { /* 用量记录失败不影响主流程 */ }
 }
 

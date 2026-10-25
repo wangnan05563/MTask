@@ -18,6 +18,7 @@ import { ConfigService } from '../services/ConfigService';
 import { ConsoleJobService } from '../services/ConsoleJobService';
 import { QueueService } from '../services/QueueService';
 import { AIService } from '../services/AIService';
+import { cardCoverage, currentMonthStr } from '../services/AiCardStats'; // T03172：G-2 卡片覆盖率出数（/ai/coverage）
 import { ArchiveService } from '../services/ArchiveService';
 import { TaskImageService } from '../services/TaskImageService';
 import { TaskCategoryService } from '../services/TaskCategoryService';
@@ -2346,6 +2347,14 @@ api.get('/ai/usage', (req, res) => {
      LIMIT ?`,
   ).all(since, perTool, limit);
   res.json({ days, limit, perTool, summary, byTool, recent });
+});
+
+/** T03172（G-2 / AI-301 验收⑤）：AI 可用卡片月采用覆盖率——card_key 精确统计直接出数（?month=YYYY-MM，默认当月） */
+api.get('/ai/coverage', (req, res) => {
+  try {
+    const month = String(req.query.month ?? '') || currentMonthStr();
+    res.json(cardCoverage(month));
+  } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 
 api.post('/prompts/:id/to-task', (req, res) => {
