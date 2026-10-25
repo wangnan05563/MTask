@@ -194,7 +194,7 @@ export function QueuePage() {
   return (
     <section>
       <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-        <select value={active?.id ?? ''} onChange={(e) => e.target.value && void open(e.target.value)} style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+        <select value={active?.id ?? ''} onChange={(e) => e.target.value && void open(e.target.value)} style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">选择队列…</option>
           {queues.map((q) => <option key={q.id} value={q.id}>{q.name}（{q.status}）</option>)}
         </select>
@@ -211,7 +211,7 @@ export function QueuePage() {
             disabled={busy}
             title={busy ? '发送中 — 正在发送队列到 AI 工具' : '发送队列 — 将队列交付 AI 处理并保存回执'}
             aria-label={busy ? '发送中：正在发送队列到 AI 工具' : '发送队列：将队列交付 AI 处理并保存回执'}
-            style={{ background: 'var(--success)', color: 'var(--accent-text)', border: 'none', padding: '6px 14px', borderRadius: 6, cursor: 'pointer' }}
+            style={{ background: 'var(--success)', color: 'var(--on-solid)', border: 'none', padding: '6px 14px', borderRadius: 6, cursor: 'pointer' }}
           >
             {busy ? '发送中…' : <><Send size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 发送队列</>}
           </button>
@@ -242,7 +242,7 @@ export function QueuePage() {
       {/* T01066-FR1.8：并行任务池——运行中槽位可视化（running/上限）+ 排队计数 + 单任务暂停（移出分发池=搁置） */}
       <div style={{ border: '1px solid var(--accent)', borderRadius: 10, padding: 12, margin: '12px 0', background: 'var(--accent-soft)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
             <Layers size={14} style={{ color: 'var(--accent)' }} /> 任务池
           </div>
           {/* 槽位格：实心=占用（running），空心=空闲 */}
@@ -250,12 +250,12 @@ export function QueuePage() {
             {Array.from({ length: pool?.limit ?? 3 }, (_, i) => (
               <span key={i} style={{ width: 12, height: 12, borderRadius: '50%', border: '1px solid var(--accent)', background: i < (pool?.running.length ?? 0) ? 'var(--accent)' : 'transparent', display: 'inline-block' }} />
             ))}
-            <span style={{ fontSize: 12, color: 'var(--text)', marginLeft: 4 }}>{pool?.running.length ?? 0}/{pool?.limit ?? 3} 运行中</span>
+            <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text)', marginLeft: 4 }}>{pool?.running.length ?? 0}/{pool?.limit ?? 3} 运行中</span>
           </span>
-          <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>排队就绪 {pool?.queued ?? 0} 条</span>
+          <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>排队就绪 {pool?.queued ?? 0} 条</span>
           <span style={{ flex: 1 }} />
           {/* 并发上限调整（1~10，存 app_settings） */}
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--text-secondary)' }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
             {'并行上限'}
             <button onClick={() => void changePoolLimit((pool?.limit ?? 3) - 1)} disabled={!pool || pool.limit <= 1}
               title="下调并行上限" aria-label="下调并行上限"
@@ -269,21 +269,21 @@ export function QueuePage() {
         {(pool?.running.length ?? 0) > 0 && (
           <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
             {(pool?.running ?? []).map((r) => (
-              <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12 }}>
+              <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 'var(--fs-s)' }}>
                 <Loader2 size={12} className="aispin" style={{ color: 'var(--accent)', flexShrink: 0 }} />
                 <span style={{ color: 'var(--accent)', flexShrink: 0 }}>{r.task_no ?? '—'}</span>
                 <span style={{ color: 'var(--text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${r.title}（${r.project_name}）`}>{r.title}</span>
                 <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{r.project_name} · 运行 {Math.max(1, Math.round((Date.now() - new Date(r.ai_state_at).getTime()) / 60000))} 分钟</span>
                 <button onClick={() => void pauseRunning(r.id)} title="暂停 — 将任务移出分发池（转为搁置）；已在 Agent 侧执行的动作无法强制中断"
                   aria-label={`暂停任务 ${r.task_no ?? ''}`}
-                  style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                  style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
                   ⏸ 暂停
                 </button>
               </div>
             ))}
           </div>
         )}
-        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+        <div style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           暂停 = 移出分发池（转搁置，恢复请在任务菜单搁置列表操作）；Agent 侧已开始执行的动作不受影响。
         </div>
       </div>
@@ -301,11 +301,11 @@ export function QueuePage() {
       {active && (
         <>
           <div style={{ display: 'flex', gap: 8, margin: '12px 0' }}>
-            <select value={selectedTask} onChange={(e) => setSelectedTask(e.target.value)} style={{ flex: 1, padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+            <select value={selectedTask} onChange={(e) => setSelectedTask(e.target.value)} style={{ flex: 1, padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
               <option value="">选择待办任务…</option>
               {tasks.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
             </select>
-            <select value={selectedTool} onChange={(e) => setSelectedTool(e.target.value)} style={{ flex: 1, padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+            <select value={selectedTool} onChange={(e) => setSelectedTool(e.target.value)} style={{ flex: 1, padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
               <option value="">选择 AI 工具…</option>
               {tools.map((t) => <option key={t.id} value={t.id}>{t.name}（{t.type}）</option>)}
             </select>
@@ -319,7 +319,7 @@ export function QueuePage() {
             </button>
           </div>
 
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-m)' }}>
             <thead>
               <tr style={{ textAlign: 'left', color: 'var(--text-secondary)' }}>
                 <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>#</th>
@@ -378,9 +378,9 @@ function JobRow(props: {
         <td style={{ padding: 8, borderBottom: '1px solid var(--surface-2)' }}>{toolName}</td>
         <td style={{ padding: 8, borderBottom: '1px solid var(--surface-2)' }}>
           <span style={{ color: statusColor }}>{job.status}</span>
-          {job.error && <div style={{ fontSize: 11, color: 'var(--danger)' }}>{job.error}</div>}
+          {job.error && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>{job.error}</div>}
         </td>
-        <td style={{ padding: 8, borderBottom: '1px solid var(--surface-2)', fontSize: 11, color: 'var(--text-secondary)' }}>
+        <td style={{ padding: 8, borderBottom: '1px solid var(--surface-2)', fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
           {job.response_payload ? job.response_payload.slice(0, 60) : '-'}
         </td>
         <td style={{ padding: 8, borderBottom: '1px solid var(--surface-2)' }} onClick={(e) => e.stopPropagation()}>
@@ -388,7 +388,7 @@ function JobRow(props: {
             onClick={onToggle}
             title={expanded ? '收起 — 收起该回执的展开详情' : '审阅 — 展开查看 AI 返回文本详情'}
             aria-label={expanded ? '收起：收起该回执的展开详情' : '审阅：展开查看 AI 返回文本详情'}
-            style={{ fontSize: 12, marginRight: 6 }}
+            style={{ fontSize: 'var(--fs-s)', marginRight: 6 }}
           >
             {expanded ? <ChevronUp size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> : <Eye size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
           </button>
@@ -397,7 +397,7 @@ function JobRow(props: {
               onClick={onAdopt}
               title="采纳 — 采纳该 AI 结果并应用到任务"
               aria-label="采纳：采纳该 AI 结果并应用到任务"
-              style={{ fontSize: 12, marginRight: 6, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+              style={{ fontSize: 'var(--fs-s)', marginRight: 6, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
             >
               <Check size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
             </button>
@@ -407,7 +407,7 @@ function JobRow(props: {
               onClick={onCopy}
               title="复制 — 复制任务内容到剪贴板"
               aria-label="复制：复制任务内容到剪贴板"
-              style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+              style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
             >
               <Copy size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
             </button>
@@ -417,7 +417,7 @@ function JobRow(props: {
               onClick={onDelete}
               title="移除 — 将该任务项从队列中移除（可重新加入）"
               aria-label="移除：将该任务项从队列中移除"
-              style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--danger)' }}
+              style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--danger)' }}
             >
               <Trash2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
             </button>
@@ -429,14 +429,14 @@ function JobRow(props: {
           <td colSpan={6} style={{ padding: '8px 12px', background: 'var(--surface)' }}>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
               <div style={{ flex: '1 1 40%', minWidth: 260 }}>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>发送内容快照（request_payload）</div>
-                <pre style={{ margin: 0, padding: 8, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto' }}>
+                <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 4 }}>发送内容快照（request_payload）</div>
+                <pre style={{ margin: 0, padding: 8, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 'var(--fs-s)', whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto' }}>
                   {job.request_payload ?? '-'}
                 </pre>
               </div>
               <div style={{ flex: '1 1 40%', minWidth: 260 }}>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>AI 返回文本（response_payload，待人工合并）</div>
-                <pre style={{ margin: 0, padding: 8, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 400, overflow: 'auto' }}>
+                <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 4 }}>AI 返回文本（response_payload，待人工合并）</div>
+                <pre style={{ margin: 0, padding: 8, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 'var(--fs-s)', whiteSpace: 'pre-wrap', maxHeight: 400, overflow: 'auto' }}>
                   {job.response_payload ?? '-'}
                 </pre>
               </div>

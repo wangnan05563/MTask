@@ -91,7 +91,7 @@ function StepDemo({ kind }: { readonly kind: Step['demo'] }) {
           .pg-anim-pin { animation: pg-pin 4s ease-in-out infinite; display:inline-flex; }
           .pg-anim-drag { animation: pg-drag 4s ease-in-out infinite; }
         `}</style>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           <ArrowUpDown size={12} /> 排序菜单
           <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             图钉置顶
@@ -99,12 +99,12 @@ function StepDemo({ kind }: { readonly kind: Step['demo'] }) {
             <span className="pg-anim-pin" aria-hidden>📌</span>
           </span>
         </div>
-        <div className="pg-anim-menu" style={{ marginTop: 6, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, padding: 4, fontSize: 11 }}>
+        <div className="pg-anim-menu" style={{ marginTop: 6, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, padding: 4, fontSize: 'var(--fs-xs)' }}>
           <div style={{ padding: '2px 6px' }}>默认（置顶优先）</div>
           <div style={{ padding: '2px 6px', background: 'var(--accent-soft)', borderRadius: 4 }}>名称 A → Z</div>
           <div style={{ padding: '2px 6px' }}>待办数量：多 → 少</div>
         </div>
-        <div className="pg-anim-drag" style={{ marginTop: 6, fontSize: 11, background: 'var(--card-bg)', border: '1px dashed var(--accent)', borderRadius: 6, padding: '3px 6px' }}>
+        <div className="pg-anim-drag" style={{ marginTop: 6, fontSize: 'var(--fs-xs)', background: 'var(--card-bg)', border: '1px dashed var(--accent)', borderRadius: 6, padding: '3px 6px' }}>
           ⠿ 拖拽项目行调整顺序（松开即保存）
         </div>
       </div>
@@ -114,19 +114,19 @@ function StepDemo({ kind }: { readonly kind: Step['demo'] }) {
     return (
       <div style={box} aria-label="甘特排期演示">
         <style>{`@keyframes pg-bar { 0%,10% { width:18% } 60%,100% { width:62% } } .pg-anim-bar { animation: pg-bar 4s ease-in-out infinite; }`}</style>
-        <div style={{ display: 'flex', gap: 4, fontSize: 10, color: 'var(--text-muted)' }}>
+        <div style={{ display: 'flex', gap: 4, fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
           {['一', '二', '三', '四', '五', '六', '日', '一', '二'].map((d, i) => (
             <span key={`${d}-${i}`} style={{ flex: 1, textAlign: 'center', background: (i === 5 || i === 6) ? 'var(--danger-soft, rgba(220,38,38,.10))' : 'transparent', borderRadius: 3 }}>{d}</span>
           ))}
         </div>
         <div style={{ marginTop: 8, height: 16, background: 'var(--accent-soft)', borderRadius: 4, width: '62%' }}>
-          <div className="pg-anim-bar" style={{ height: 16, background: 'var(--accent)', borderRadius: 4, display: 'flex', alignItems: 'center', paddingLeft: 6, fontSize: 10, color: 'var(--accent-text)' }}>任务 A 62%</div>
+          <div className="pg-anim-bar" style={{ height: 16, background: 'var(--accent)', borderRadius: 4, display: 'flex', alignItems: 'center', paddingLeft: 6, fontSize: 'var(--fs-2xs)', color: 'var(--accent-text)' }}>任务 A 62%</div>
         </div>
         <div style={{ marginTop: 6, height: 16, background: 'var(--surface-2, rgba(0,0,0,.05))', borderRadius: 4, width: '46%' }}>
           <div style={{ height: 16, background: 'var(--text-muted)', opacity: .5, borderRadius: 4, width: '30%' }} />
         </div>
         <div style={{ position: 'absolute', top: 26, bottom: 8, left: '58%', width: 1, background: 'var(--danger)' }} title="今日线" />
-        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>周末/节假日底纹 + 今日线；工期变更后自动重排</div>
+        <div style={{ marginTop: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>周末/节假日底纹 + 今日线；工期变更后自动重排</div>
       </div>
     );
   }
@@ -134,18 +134,18 @@ function StepDemo({ kind }: { readonly kind: Step['demo'] }) {
     return (
       <div style={box} aria-label="需求跟踪矩阵演示">
         <style>{`@keyframes pg-link { 0%,20% { opacity:.25; transform:scaleX(.6) } 45%,80% { opacity:1; transform:scaleX(1) } 100% { opacity:.25 } } .pg-anim-link { transform-origin:left center; animation: pg-link 4s ease-in-out infinite; }`}</style>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-xs)' }}>
           <span style={{ background: 'var(--accent-soft)', color: 'var(--accent)', borderRadius: 4, padding: '2px 6px' }}>REQ-001 对账规则配置</span>
           <span className="pg-anim-link" style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--accent)' }}><Link2 size={14} /></span>
           <span style={{ border: '1px solid var(--border-strong)', borderRadius: 4, padding: '2px 6px' }}>3 对账规则配置开发</span>
         </div>
-        <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
+        <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-xs)' }}>
           <span style={{ background: 'var(--accent-soft)', color: 'var(--accent)', borderRadius: 4, padding: '2px 6px' }}>REQ-002 差异明细查询</span>
           <span className="pg-anim-link" style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--accent)', animationDelay: '.4s' }}><Link2 size={14} /></span>
           <span style={{ border: '1px solid var(--border-strong)', borderRadius: 4, padding: '2px 6px' }}>T1042 差异明细查询</span>
-          <span style={{ color: 'var(--success)', fontSize: 10 }}>✓ 已验证</span>
+          <span style={{ color: 'var(--success)', fontSize: 'var(--fs-2xs)' }}>✓ 已验证</span>
         </div>
-        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-muted)' }}>勾选即建立关联 / 取消即解除；支持增删改需求</div>
+        <div style={{ marginTop: 10, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>勾选即建立关联 / 取消即解除；支持增删改需求</div>
       </div>
     );
   }
@@ -153,22 +153,22 @@ function StepDemo({ kind }: { readonly kind: Step['demo'] }) {
     return (
       <div style={box} aria-label="导入导出演示">
         <style>{`@keyframes pg-flow { 0% { opacity:0; transform:translateX(-8px) } 40%,80% { opacity:1; transform:none } 100% { opacity:0 } } .pg-anim-flow { animation: pg-flow 4s ease-in-out infinite; }`}</style>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-xs)' }}>
           <span style={{ border: '1px dashed var(--border-strong)', borderRadius: 6, padding: '6px 10px' }}>📄 计划模板.xlsx</span>
-          <span className="pg-anim-flow" style={{ color: 'var(--accent)', fontSize: 14 }}>➜</span>
+          <span className="pg-anim-flow" style={{ color: 'var(--accent)', fontSize: 'var(--fs-l)' }}>➜</span>
           <span style={{ border: '1px solid var(--accent)', borderRadius: 6, padding: '6px 10px', color: 'var(--accent)' }}>导入并自动排期</span>
         </div>
-        <div className="pg-anim-flow" style={{ marginTop: 10, fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 6, padding: '6px 10px', animationDelay: '.5s' }}>
+        <div className="pg-anim-flow" style={{ marginTop: 10, fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 6, padding: '6px 10px', animationDelay: '.5s' }}>
           ✨ AI 工作台：AI 项目计划导入 / 从 PRD 导入（拆分 WBS + 生成需求矩阵）
         </div>
-        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>节假日维护或导入后，所有项目计划时间线自动重排</div>
+        <div style={{ marginTop: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>节假日维护或导入后，所有项目计划时间线自动重排</div>
       </div>
     );
   }
   // overview
   return (
     <div style={box} aria-label="模块总览演示">
-      <div style={{ display: 'flex', gap: 8, fontSize: 11, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 8, fontSize: 'var(--fs-xs)', flexWrap: 'wrap' }}>
         {[
           { icon: <CalendarRange size={13} />, label: '列表 / 甘特视图' },
           { icon: <Table2 size={13} />, label: '需求跟踪矩阵' },
@@ -180,7 +180,7 @@ function StepDemo({ kind }: { readonly kind: Step['demo'] }) {
           </span>
         ))}
       </div>
-      <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-muted)' }}>
+      <div style={{ marginTop: 10, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
         项目管理 = 项目维度的时间线管理中枢：从需求（PRD 矩阵）→ 计划（甘特/列表）→ 待办（任务联动）全链路贯通。
       </div>
     </div>

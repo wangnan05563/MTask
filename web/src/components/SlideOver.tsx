@@ -95,7 +95,7 @@ export function SlideOver({ open, title, onClose, children, width = 480 }: {
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderBottom: '1px solid var(--border)', flex: '0 0 auto' }}>
-          <div id={titleId} style={{ fontWeight: 600, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 8 }}>{title}</div>
+          <div id={titleId} style={{ fontWeight: 600, fontSize: 'var(--fs-xl)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 8 }}>{title}</div>
           <button
             onClick={close}
             aria-label="关闭抽屉"

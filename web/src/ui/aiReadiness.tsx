@@ -97,7 +97,7 @@ export function AiUnavailableHint({ r, style, compact }: {
         display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
         padding: compact ? '4px 8px' : '6px 10px', borderRadius: 8,
         border: '1px solid var(--warn)', background: 'var(--surface-2)',
-        fontSize: 12, color: 'var(--text-secondary)', ...style,
+        fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', ...style,
       }}
     >
       <AlertTriangle size={13} style={{ color: 'var(--warn)', flexShrink: 0 }} />
@@ -110,7 +110,7 @@ export function AiUnavailableHint({ r, style, compact }: {
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 2, border: '1px solid var(--border)',
             background: 'var(--card-bg)', color: 'var(--text)', borderRadius: 6,
-            padding: '1px 6px', fontSize: 11.5, cursor: 'pointer',
+            padding: '1px 6px', fontSize: 'calc(var(--fs-xs) + 0.5px)', cursor: 'pointer',
           }}
         >
           {r.fix.label}<ArrowRight size={11} />

@@ -303,7 +303,7 @@ export function ArchivePage() {
     const offPage = ids.length - onPage;
     const offPageNote = offPage > 0 ? `（含其他页 ${offPage} 条）` : '';
     return (
-      <div style={{ position: 'sticky', top: 0, zIndex: 50, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '6px 10px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: '1px solid var(--accent)', boxShadow: '0 4px 12px rgba(0,0,0,.12)', fontSize: 12 }}>
+      <div style={{ position: 'sticky', top: 0, zIndex: 50, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '6px 10px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: '1px solid var(--accent)', boxShadow: '0 4px 12px rgba(0,0,0,.12)', fontSize: 'var(--fs-s)' }}>
         <strong style={{ color: 'var(--accent)' }}>已选 {ids.length} 条{offPageNote}</strong>
         <button onClick={kind === 'task' ? selectAllTasks : selectAllPlans} disabled={busy} className="tbtn-anim"
           title={selectAllTitle}
@@ -333,7 +333,7 @@ export function ArchivePage() {
   /** 分页控件（T00586；T02258：右侧附「每页条数」选择器——切换立即生效并回到第 1 页，窄屏随行换行不遮挡） */
   function renderPager(cur: number, total: number, set: (n: number) => void, listLabel: string) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0', fontSize: 12, color: 'var(--text-muted)', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0', fontSize: 'var(--fs-s)', color: 'var(--text-muted)', flexWrap: 'wrap' }}>
         <button onClick={() => set(Math.max(1, cur - 1))} disabled={cur <= 1} className="tbtn-anim"
           title="上一页" aria-label="上一页"
           style={{ cursor: cur <= 1 ? 'default' : 'pointer', padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', opacity: cur <= 1 ? 0.5 : 1 }}>上一页</button>
@@ -345,7 +345,7 @@ export function ArchivePage() {
           每页
           <select value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}
             title={`每页条数（${listLabel}）— 切换后立即生效并回到第 1 页`} aria-label={`每页条数（${listLabel}）`}
-            style={{ padding: '2px 4px', fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+            style={{ padding: '2px 4px', fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
             {PAGE_SIZE_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
           条
@@ -363,18 +363,18 @@ export function ArchivePage() {
         .arena-row:hover .abtn, .arena-row:focus-within .abtn { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
       `}</style>
 
-      {notice && <div style={{ position: 'fixed', top: 12, right: 16, zIndex: 200, padding: '6px 12px', borderRadius: 6, background: 'var(--card-bg)', border: '1px solid var(--accent)', fontSize: 12, color: 'var(--text)' }}>{notice}</div>}
+      {notice && <div style={{ position: 'fixed', top: 12, right: 16, zIndex: 200, padding: '6px 12px', borderRadius: 6, background: 'var(--card-bg)', border: '1px solid var(--accent)', fontSize: 'var(--fs-s)', color: 'var(--text)' }}>{notice}</div>}
 
       {/* T00586：顶部工具区——多选开关 + 搜索 + 分类/项目筛选（对齐计划页工具栏风格） */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-        <h3 style={{ fontSize: 15, margin: 0 }}>归档管理</h3>
+        <h3 style={{ fontSize: 'var(--fs-xl)', margin: 0 }}>归档管理</h3>
         <span style={{ flex: 1 }} />
         {/* 多选模式（参考计划页：ListChecks/Check 图标切换） */}
         <button onClick={() => { setMulti((m) => !m); setSelTaskIds([]); setSelPlanIds([]); }}
           className="tbtn-anim"
           title={multi ? '退出多选模式' : '多选模式 — 勾选归档条目后批量还原/删除'}
           aria-label={multi ? '退出多选模式' : '进入多选模式'}
-          style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', border: '1px solid var(--border-strong)', background: multi ? 'var(--accent)' : 'transparent', color: multi ? 'var(--accent-text)' : 'var(--text)' }}>
+          style={{ fontSize: 'var(--fs-s)', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', border: '1px solid var(--border-strong)', background: multi ? 'var(--accent)' : 'transparent', color: multi ? 'var(--accent-text)' : 'var(--text)' }}>
           {multi ? <Check size={13} /> : <ListChecks size={13} />}
         </button>
         {/* 搜索（标题/编号/项目名） */}
@@ -382,19 +382,19 @@ export function ArchivePage() {
           <Search size={13} style={{ color: 'var(--text-muted)' }} />
           <input value={kw} onChange={(e) => { setKw(e.target.value); setPage(1); setPlanPage(1); setPromptPage(1); }}
             placeholder="搜索归档标题…" aria-label="搜索归档内容" data-page-search
-            style={{ border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 12, width: 150 }} />
+            style={{ border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', width: 150 }} />
           {kw && <button onClick={() => setKw('')} title="清除搜索" aria-label="清除搜索" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}><X size={12} /></button>}
         </span>
       </div>
 
       {/* T02284：条数来自服务端 total（跨全部页），不再是本地过滤后的长度；500 条截断警告随服务端分页撤销 */}
-      <h4 style={{ fontSize: 14, margin: '0 0 8px' }}>归档任务（共 {taskTotal} 条）</h4>
+      <h4 style={{ fontSize: 'var(--fs-l)', margin: '0 0 8px' }}>归档任务（共 {taskTotal} 条）</h4>
       <ResourceHint view={tasksView} label="归档任务列表" />
       {/* 任务区筛选：分类 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <select value={catFilter} onChange={(e) => { setCatFilter(e.target.value); setPage(1); }}
           aria-label="按分类筛选归档任务" title="按分类筛选归档任务"
-          style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">全部分类</option>
           {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
@@ -415,21 +415,21 @@ export function ArchivePage() {
               {t.task_no ? `${t.task_no} ` : ''}{t.title}（{projectNames[t.project_id] ?? '未知项目'} · {t.status === 'done' ? '已完成' : '待办'}
               {t.category_id ? ` · ${cats.find((c) => c.id === t.category_id)?.name ?? ''}` : ''}）
             </span>
-            <span className="abtn" style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${t.archived_at ?? ''}`}>{relTime(t.archived_at)}</span>
-            <button className="abtn" onClick={() => void restore(t)} title="还原 — 将该归档任务还原到待办列表" aria-label="还原：将该归档任务还原到待办列表" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
-            <button className="abtn" onClick={() => void remove(t)} title="删除 — 永久删除该任务，此操作不可恢复" aria-label="删除：永久删除该任务，此操作不可恢复" style={{ fontSize: 12, color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
+            <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${t.archived_at ?? ''}`}>{relTime(t.archived_at)}</span>
+            <button className="abtn" onClick={() => void restore(t)} title="还原 — 将该归档任务还原到待办列表" aria-label="还原：将该归档任务还原到待办列表" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
+            <button className="abtn" onClick={() => void remove(t)} title="删除 — 永久删除该任务，此操作不可恢复" aria-label="删除：永久删除该任务，此操作不可恢复" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
           </li>
         ))}
       </ul>
       {renderPager(curTaskPage, taskPages, (n) => setPage(n), '归档任务')}
 
       {/* T00442 扩展：项目计划归档区——计划「删除」改归档后在此恢复或彻底删除 */}
-      <h4 style={{ fontSize: 14, margin: '20px 0 8px' }}>归档项目计划（共 {planTotal} 条）</h4>
+      <h4 style={{ fontSize: 'var(--fs-l)', margin: '20px 0 8px' }}>归档项目计划（共 {planTotal} 条）</h4>
       <ResourceHint view={plansView} label="归档计划列表" />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <select value={projFilter} onChange={(e) => { setProjFilter(e.target.value); setPlanPage(1); }}
           aria-label="按项目筛选归档计划" title="按项目筛选归档计划"
-          style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">全部项目</option>
           {Object.entries(projectNames).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
         </select>
@@ -448,16 +448,16 @@ export function ArchivePage() {
                 onChange={() => togglePlan(p.id)} style={{ cursor: 'pointer', flexShrink: 0 }} />
             )}
             <span style={{ flex: 1, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title}（{p.project_name}）</span>
-            <span className="abtn" style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${p.archived_at ?? ''}`}>{relTime(p.archived_at)}</span>
-            <button className="abtn" onClick={() => void restorePlan(p)} title="恢复 — 将该计划还原到「项目计划」时间线并自动衔接排期" aria-label="恢复：将该计划还原到项目计划时间线" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
-            <button className="abtn" onClick={() => void purgePlan(p)} title="删除 — 彻底删除该计划，此操作不可恢复" aria-label="删除：彻底删除该计划，此操作不可恢复" style={{ fontSize: 12, color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
+            <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${p.archived_at ?? ''}`}>{relTime(p.archived_at)}</span>
+            <button className="abtn" onClick={() => void restorePlan(p)} title="恢复 — 将该计划还原到「项目计划」时间线并自动衔接排期" aria-label="恢复：将该计划还原到项目计划时间线" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
+            <button className="abtn" onClick={() => void purgePlan(p)} title="删除 — 彻底删除该计划，此操作不可恢复" aria-label="删除：彻底删除该计划，此操作不可恢复" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
           </li>
         ))}
       </ul>
       {renderPager(curPlanPage, planPages, (n) => setPlanPage(n), '归档项目计划')}
 
       {/* T00872：归档提示词区——提示词「归档」（软删）后在此还原或彻底删除 */}
-      <h4 style={{ fontSize: 14, margin: '20px 0 8px' }}>归档提示词（共 {promptTotal} 条）</h4>
+      <h4 style={{ fontSize: 'var(--fs-l)', margin: '20px 0 8px' }}>归档提示词（共 {promptTotal} 条）</h4>
       <ResourceHint view={promptsView} label="归档提示词列表" />
       {promptsView.phase === 'ready' && pagePrompts.length === 0 && (
         <p style={{ color: 'var(--text-muted)' }}>暂无归档提示词（或当前筛选无结果）。提示词页归档后的条目会出现在这里。</p>
@@ -468,9 +468,9 @@ export function ArchivePage() {
             <span style={{ flex: 1, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {p.title}（{promptCatNames[p.category_id] ?? '未知分类'}）
             </span>
-            <span className="abtn" style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${p.archived_at ?? ''}`}>{relTime(p.archived_at)}</span>
-            <button className="abtn" onClick={() => void restorePrompt(p)} title="还原 — 将该提示词还原到提示词页原分类" aria-label="还原：将该提示词还原到提示词页原分类" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
-            <button className="abtn" onClick={() => void removePrompt(p)} title="删除 — 彻底删除该提示词，此操作不可恢复" aria-label="删除：彻底删除该提示词，此操作不可恢复" style={{ fontSize: 12, color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
+            <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${p.archived_at ?? ''}`}>{relTime(p.archived_at)}</span>
+            <button className="abtn" onClick={() => void restorePrompt(p)} title="还原 — 将该提示词还原到提示词页原分类" aria-label="还原：将该提示词还原到提示词页原分类" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
+            <button className="abtn" onClick={() => void removePrompt(p)} title="删除 — 彻底删除该提示词，此操作不可恢复" aria-label="删除：彻底删除该提示词，此操作不可恢复" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
           </li>
         ))}
       </ul>

@@ -55,7 +55,7 @@ const card: CSSProperties = {
 };
 
 const chip: CSSProperties = {
-  fontSize: 11.5,
+  fontSize: 'calc(var(--fs-xs) + 0.5px)',
   color: 'var(--text-secondary)',
   background: 'var(--surface-2)',
   borderRadius: 6,
@@ -106,7 +106,7 @@ export function ExecSessionsPage() {
   let content: ReactNode;
   if (loading) {
     content = (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-muted)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-m)', color: 'var(--text-muted)' }}>
         <Loader2 size={14} style={{ animation: 'exec-spin 1s linear infinite' }} /> 加载中…
       </div>
     );
@@ -133,8 +133,8 @@ export function ExecSessionsPage() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <Activity size={20} style={{ color: 'var(--accent)' }} />
         <div style={{ flex: 1 }}>
-          <h2 style={{ margin: 0, fontSize: 17, color: 'var(--text)' }}>执行会话</h2>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+          <h2 style={{ margin: 0, fontSize: 'var(--fs-2xl)', color: 'var(--text)' }}>执行会话</h2>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginTop: 2 }}>
             外部 AI 平台（qcoder / WorkBuddy / 中继）执行任务期间上报的会话存活与进度；页面可见时每 2 秒刷新，隐藏时降为 15 秒
           </div>
         </div>
@@ -144,7 +144,7 @@ export function ExecSessionsPage() {
           title="刷新列表"
           aria-label="刷新：重新拉取执行会话列表"
           style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, padding: '6px 12px',
+            display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'calc(var(--fs-s) + 0.5px)', padding: '6px 12px',
             background: 'var(--surface-2)', color: 'var(--text)', border: '1px solid var(--border)',
             borderRadius: 8, cursor: 'pointer',
           }}
@@ -159,7 +159,7 @@ export function ExecSessionsPage() {
         <Stat label="已完成" value={finished} color="var(--text-muted)" />
       </div>
 
-      {error && <div style={{ fontSize: 13, color: 'var(--danger)' }}>加载失败：{error}</div>}
+      {error && <div style={{ fontSize: 'var(--fs-m)', color: 'var(--danger)' }}>加载失败：{error}</div>}
 
       {content}
     </div>
@@ -169,8 +169,8 @@ export function ExecSessionsPage() {
 function Stat({ label, value, color }: { readonly label: string; readonly value: number; readonly color: string }) {
   return (
     <div style={{ ...card, flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
-      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{label}</span>
-      <span style={{ fontSize: 20, fontWeight: 600, color }}>{value}</span>
+      <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>{label}</span>
+      <span style={{ fontSize: 'var(--fs-title)', fontWeight: 600, color }}>{value}</span>
     </div>
   );
 }
@@ -207,13 +207,13 @@ function SessionCard({ s }: { readonly s: ExecSession }) {
   return (
     <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 11.5, color: meta.color, border: `1px solid ${meta.color}`, borderRadius: 999, padding: '1px 8px' }}>
+        <span style={{ fontSize: 'calc(var(--fs-xs) + 0.5px)', color: meta.color, border: `1px solid ${meta.color}`, borderRadius: 999, padding: '1px 8px' }}>
           {meta.label}
         </span>
-        <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text)' }}>{platformLabel(s.platform)}</span>
-        <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, color: 'var(--text-muted)' }}>{s.session_id ?? '-'}</span>
+        <span style={{ fontSize: 'calc(var(--fs-m) + 0.5px)', fontWeight: 600, color: 'var(--text)' }}>{platformLabel(s.platform)}</span>
+        <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>{s.session_id ?? '-'}</span>
         <span style={{ flex: 1 }} />
-        <span title={fullTime(s.last_heartbeat)} style={{ fontSize: 12, color: redispatchable ? 'var(--danger)' : 'var(--text-muted)' }}>
+        <span title={fullTime(s.last_heartbeat)} style={{ fontSize: 'var(--fs-s)', color: redispatchable ? 'var(--danger)' : 'var(--text-muted)' }}>
           心跳 {relTime(s.last_heartbeat)}
         </span>
         {redispatchable && (
@@ -225,7 +225,7 @@ function SessionCard({ s }: { readonly s: ExecSession }) {
             aria-label={`重派会话 ${s.session_id ?? s.id} 的停滞任务`}
             title="一键重派：经中继把该会话关联的待办任务重新派发（复用既有派发链路）"
             style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, padding: '3px 10px',
+              display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-s)', padding: '3px 10px',
               background: 'var(--surface-2)', color: 'var(--danger)', border: '1px solid var(--danger)',
               borderRadius: 8, cursor: 'pointer',
             }}
@@ -235,13 +235,13 @@ function SessionCard({ s }: { readonly s: ExecSession }) {
         )}
       </div>
 
-      {s.phase && <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>阶段：{s.phase}</div>}
+      {s.phase && <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>阶段：{s.phase}</div>}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <div style={{ flex: 1, height: 6, borderRadius: 999, background: 'var(--surface-2)', overflow: 'hidden' }}>
           <div style={{ width: `${pct}%`, height: '100%', background: meta.color, transition: 'width .3s ease' }} />
         </div>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)', minWidth: 34, textAlign: 'right' }}>{pct}%</span>
+        <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', minWidth: 34, textAlign: 'right' }}>{pct}%</span>
       </div>
 
       {s.tasks.length > 0 && (
@@ -260,7 +260,7 @@ function SessionCard({ s }: { readonly s: ExecSession }) {
         </div>
       )}
 
-      {notice && <div data-lck="redispatch-notice" style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{notice}</div>}
+      {notice && <div data-lck="redispatch-notice" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>{notice}</div>}
     </div>
   );
 }

@@ -149,7 +149,7 @@ export function LogsPage() {
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
           placeholder="搜索日志内容…" data-page-search
-          style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12 }}
+          style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)' }}
         />
         <button onClick={() => void fetchLogs()} style={controlStyle} title="刷新 — 立即拉取一次新日志" aria-label="立即刷新"><RefreshCw size={13} /></button>
         <button onClick={clear} style={{ ...controlStyle, color: 'var(--danger)' }} title="清空 — 清空当前日志显示与缓存" aria-label="清空日志"><Eraser size={13} /></button>

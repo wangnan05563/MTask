@@ -55,8 +55,8 @@ const OUTLINE_SESSION_KEY = 'kickoff.outline';
 
 /** 导出闸超限文案判定串见 `api/sse.ts` 的 GATE_BUSY_MSG（T02142 起与周报面板共用同一单源） */
 
-const opBtn = { display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', padding: '3px 7px' } as const;
-const cellInput = { fontSize: 12, padding: '3px 6px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' } as const;
+const opBtn = { display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', padding: '3px 7px' } as const;
+const cellInput = { fontSize: 'var(--fs-s)', padding: '3px 6px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' } as const;
 
 function statusIcon(status: PreflightStatus) {
   if (status === 'ok') return <CircleCheck size={13} style={{ color: 'var(--success, var(--accent))', flexShrink: 0 }} />;
@@ -104,7 +104,7 @@ function PreflightItemCard({ it, projectId, openCard }: {
   readonly openCard?: (key: 'prd-import' | 'tc-gen') => void;
 }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11, border: '1px solid var(--border)', borderRadius: 6, padding: '5px 7px' }}>
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 'var(--fs-xs)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 7px' }}>
       {statusIcon(it.status)}
       <span style={{ flex: 1 }}>
         <span style={{ fontWeight: 600 }}>{it.label}</span>
@@ -133,20 +133,20 @@ function PreflightChecklist({ pre, preLoading, preError, projectId, blocked, mis
 }) {
   return (
     <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+      <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 6 }}>
         资料齐备性校验（只读，不调用 AI）
         {preLoading && <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: 6 }}>校验中…</span>}
       </div>
-      {!projectId && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>先在页面顶部选择项目范围，校验与生成都以该项目为准。</div>}
-      {projectId && scopeNote && <div style={{ fontSize: 11, color: 'var(--warn)' }}>{scopeNote}</div>}
-      {projectId && preError && <div style={{ fontSize: 11, color: 'var(--danger)' }}>校验失败：{preError}</div>}
+      {!projectId && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>先在页面顶部选择项目范围，校验与生成都以该项目为准。</div>}
+      {projectId && scopeNote && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>{scopeNote}</div>}
+      {projectId && preError && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>校验失败：{preError}</div>}
       {pre && (
         <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 6 }}>
             {pre.items.map((it) => <PreflightItemCard key={it.key} it={it} projectId={projectId} openCard={openCard} />)}
           </div>
           {blocked && (
-            <div style={{ marginTop: 8, border: '1px solid var(--danger)', borderRadius: 6, padding: '6px 8px', fontSize: 11, color: 'var(--danger)' }}>
+            <div style={{ marginTop: 8, border: '1px solid var(--danger)', borderRadius: 6, padding: '6px 8px', fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>
               硬阻塞：{missingItems.map((i) => i.label).join('、')} 均无数据，生成只会得到空壳稿——已禁止发起。
               <span style={{ display: 'inline-flex', gap: 6, marginLeft: 6, flexWrap: 'wrap' }}>
                 {missingItems.map((i) => (
@@ -157,7 +157,7 @@ function PreflightChecklist({ pre, preLoading, preError, projectId, blocked, mis
             </div>
           )}
           {!blocked && pre.items.some((i) => i.status === 'warn') && (
-            <div style={{ marginTop: 6, fontSize: 11, color: 'var(--warn)' }}>
+            <div style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>
               ⚠ 级项可继续生成，但降级会在对应 PPT 页面页脚留痕（客户会上追问时页面上要有依据）。
             </div>
           )}
@@ -192,7 +192,7 @@ function OutlineToolbar({ extraNote, onExtraNoteChange, streaming, outlineBusy, 
         {outlineBusy ? <Loader2 size={12} className="aispin" /> : <Sparkles size={12} />} {rowCount ? '重新生成大纲' : '生成大纲'}
       </button>
       {rowCount > 0 && <button onClick={onClear} disabled={streaming} className="tbtn-anim" title="清空大纲稿" aria-label="清空大纲" style={opBtn}><Trash2 size={11} /> 清空</button>}
-      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{rowCount ? `共 ${rowCount} 页（建议 12~18）` : '大纲 12~18 页，可改标题/要点/版式，可增删页与调序'}</span>
+      <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{rowCount ? `共 ${rowCount} 页（建议 12~18）` : '大纲 12~18 页，可改标题/要点/版式，可增删页与调序'}</span>
     </div>
   );
 }
@@ -210,7 +210,7 @@ function OutlinePageList({ rows, streaming, onPatch, onRemove, onMove, onAdd }: 
     <div style={{ maxHeight: 340, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6, marginBottom: 10 }}>
       {rows.map((r, idx) => (
         <div key={`${r.section}-${idx}`} style={{ borderBottom: '1px solid var(--border)', padding: 8, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 22, textAlign: 'right', marginTop: 6 }}>{idx + 1}</span>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', width: 22, textAlign: 'right', marginTop: 6 }}>{idx + 1}</span>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 5 }}>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               <select value={r.section} onChange={(e) => onPatch(idx, { section: e.target.value })} disabled={streaming}
@@ -223,7 +223,7 @@ function OutlinePageList({ rows, streaming, onPatch, onRemove, onMove, onAdd }: 
                 title="版式" aria-label={`第${idx + 1}页版式`} style={cellInput}>
                 {LAYOUTS.map((l) => <option key={l} value={l}>{l}</option>)}
               </select>
-              <span style={{ fontSize: 10, color: 'var(--text-muted)', alignSelf: 'center' }}>
+              <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', alignSelf: 'center' }}>
                 取数：{r.dataKeys.length ? r.dataKeys.join('、') : '无'}
               </span>
             </div>
@@ -262,13 +262,13 @@ function GenerateBar({ streaming, canGenerate, blockReason, result, downloading,
       {/* T02402：整按钮呼吸（同上）——逐页装配耗时长，运行态必须可感知 */}
       <button onClick={onGenerate} disabled={!canGenerate} className={`tbtn-anim${streaming ? ' task-breathe' : ''}`}
         title={blockReason || '逐页装配 .pptx 并落盘换下载令牌'} aria-label="开始生成启动会 PPT"
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 12, border: 'none', borderRadius: 6,
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-s)', border: 'none', borderRadius: 6,
           background: canGenerate ? 'var(--accent)' : 'var(--border-strong)', color: canGenerate ? 'var(--accent-text)' : 'var(--text-muted)',
           cursor: canGenerate ? 'pointer' : 'default', padding: '5px 12px' }}>
         {streaming ? <Loader2 size={12} className="aispin" /> : <Sparkles size={12} />} 开始生成
       </button>
-      {!!blockReason && <span style={{ fontSize: 11, color: 'var(--danger)' }}>{blockReason}</span>}
-      {streaming && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>点右侧控制台「停止」可中断（服务端不留半成品）</span>}
+      {!!blockReason && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>{blockReason}</span>}
+      {streaming && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>点右侧控制台「停止」可中断（服务端不留半成品）</span>}
       {result && !streaming && (
         <button onClick={onDownload} disabled={downloading} className={`tbtn-anim${downloading ? ' task-breathe' : ''}`}
           title={`下载 ${result.fileName}`} aria-label="下载启动会 PPT"
@@ -291,14 +291,14 @@ function BuildProgressPanel({ streaming, pageDone, pageTotal, result }: {
     <>
       {(streaming || pageTotal > 0) && (
         <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 4 }}>
             {streaming ? `装配中 ${pageDone}/${pageTotal} 页` : `已装配 ${pageDone}/${pageTotal} 页`}
           </div>
           <FlowProgress value={pageTotal ? (pageDone / pageTotal) * 100 : 0} aria-label="逐页装配进度" />
         </div>
       )}
       {result && result.warnings.length > 0 && (
-        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--warn)' }}>
+        <div style={{ marginTop: 10, fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>
           版式/降级提示 {result.warnings.length} 条（已如实写进稿内，未静默改数）：
           {result.warnings.map((w, i) => <div key={`${w}-${i}`}>• {w}</div>)}
         </div>
@@ -515,12 +515,12 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
     <div style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
         <FileText size={15} style={{ color: 'var(--accent)' }} />
-        <strong style={{ fontSize: 14 }}>项目启动会 PPT 生成</strong>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        <strong style={{ fontSize: 'var(--fs-l)' }}>项目启动会 PPT 生成</strong>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           校验资料齐备性 → AI 出大纲（人工确认）→ 本地按真实条数逐页装配原生可编辑 .pptx，过程见右侧控制台
         </span>
         <span style={{ flex: 1 }} />
-        {pre && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>项目：{pre.projectName} · 工作量口径：{pre.workloadSource === 'estimate' ? '估算引擎' : '工期推导'}</span>}
+        {pre && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>项目：{pre.projectName} · 工作量口径：{pre.workloadSource === 'estimate' ? '估算引擎' : '工期推导'}</span>}
         {onClose && <button onClick={onClose} className="tbtn-anim" title="收起面板" aria-label="收起启动会 PPT 面板" style={opBtn}><X size={12} /></button>}
       </div>
 
@@ -534,7 +534,7 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
         onGenOutline={() => void genOutline()} onClear={() => void clearOutline()} />
 
       {outlineWarnings.length > 0 && (
-        <div style={{ fontSize: 11, color: 'var(--warn)', marginBottom: 8 }}>
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--warn)', marginBottom: 8 }}>
           {outlineWarnings.map((w, i) => <div key={`${w}-${i}`}>⚠ {w}</div>)}
         </div>
       )}

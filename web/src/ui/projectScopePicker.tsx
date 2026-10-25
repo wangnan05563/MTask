@@ -28,10 +28,10 @@ export function scopeSummary(names: string[]): string {
 }
 
 /** 勾选顺序即报表里的项目分块顺序，序号徽标让它可见（后端按同一顺序聚合） */
-const scopeRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '4px 6px', borderRadius: 6, cursor: 'pointer', fontSize: 13, minWidth: 0 };
+const scopeRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '4px 6px', borderRadius: 6, cursor: 'pointer', fontSize: 'var(--fs-m)', minWidth: 0 };
 
 /** 触发钮样式：与报表页其余字段控件同口径（原 ReportPage 的 fieldStyle） */
-const pickerFieldStyle: CSSProperties = { padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 13 };
+const pickerFieldStyle: CSSProperties = { padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-m)' };
 
 export function ProjectScopePicker({ projects, value, onChange }: {
   readonly projects: Project[];
@@ -70,7 +70,7 @@ export function ProjectScopePicker({ projects, value, onChange }: {
       >
         <span style={{ flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{summary}</span>
         <span style={{ flex: '1 1 auto' }} />
-        <span style={{ flexShrink: 0, fontSize: 11, color: 'var(--text-muted)' }}>{value.length ? `${value.length}/${REPORT_PROJECT_MAX}` : '不限'}</span>
+        <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{value.length ? `${value.length}/${REPORT_PROJECT_MAX}` : '不限'}</span>
         <ChevronDown size={12} style={{ flexShrink: 0 }} />
       </button>
       {open && (
@@ -101,12 +101,12 @@ export function ProjectScopePicker({ projects, value, onChange }: {
                   aria-label={`纳入项目 ${p.name}`} style={{ flexShrink: 0, cursor: 'pointer' }} />
                 <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
                 {checked && (
-                  <span title="勾选顺序（报表按此顺序分块）" style={{ flexShrink: 0, fontSize: 11, color: 'var(--accent)' }}>{idx + 1}</span>
+                  <span title="勾选顺序（报表按此顺序分块）" style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--accent)' }}>{idx + 1}</span>
                 )}
               </label>
             );
           })}
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 6px 0' }}>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', padding: '4px 6px 0' }}>
             {value.length === 0 ? '未勾选任何项目：按全部项目聚合（与单选「全部项目」一致）'
               : `已选 ${value.length} 个，最多 ${REPORT_PROJECT_MAX} 个；报表头部与 AI 提示会标注该范围`}
           </div>

@@ -45,8 +45,8 @@ export function MobileMore({ notify, openDesktop }: Props) {
             <button key={it.key} onClick={() => setSub(it.key)} style={row}>
               <Icon size={18} style={{ color: 'var(--accent)', flexShrink: 0 }} />
               <span style={{ flex: 1, textAlign: 'left', marginLeft: 10 }}>
-                <span style={{ display: 'block', fontSize: 15 }}>{it.label}</span>
-                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{it.desc}</span>
+                <span style={{ display: 'block', fontSize: 'var(--fs-xl)' }}>{it.label}</span>
+                <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>{it.desc}</span>
               </span>
               <ChevronRight size={16} style={{ color: 'var(--text-muted)' }} />
             </button>
@@ -81,7 +81,7 @@ function AitoolsView({ notify }: { readonly notify: (msg: string) => void }) {
       {tools.map((t) => (
         <div key={t.id} style={card}>
           <div style={{ fontWeight: 600 }}>{t.name}</div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t.type} · {t.model ?? '未配置模型'}</div>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>{t.type} · {t.model ?? '未配置模型'}</div>
         </div>
       ))}
       <div style={muted}>移动端仅查看；新增 / 编辑请在桌面端操作。</div>
@@ -139,23 +139,23 @@ function ArchiveView({ notify }: { readonly notify: (msg: string) => void }) {
     <>
       <input value={kw} onChange={(e) => setKw(e.target.value)} placeholder="搜索归档任务标题…"
         aria-label="搜索归档任务"
-        style={{ width: '100%', padding: 10, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 14, background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box', marginBottom: 10 }} />
+        style={{ width: '100%', padding: 10, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 'var(--fs-l)', background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box', marginBottom: 10 }} />
       {loading && <Skeleton rows={4} card />}
       {!loading && tasks.length === 0 && <EmptyState icon="🗄️" message="暂无归档任务" hint={kw ? '换个关键词试试' : undefined} />}
       {[...groups.entries()].sort((a, b) => b[0].localeCompare(a[0])).map(([month, list]) => (
         <div key={month}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', padding: '8px 2px 6px' }}>{month}（{list.length}）</div>
+          <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, color: 'var(--text-muted)', padding: '8px 2px 6px' }}>{month}（{list.length}）</div>
           {list.map((t) => (
             <div key={t.id} style={card}>
-              <div style={{ fontSize: 14 }}>{t.title}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t.archived_at?.slice(0, 10) ?? ''} 归档</div>
+              <div style={{ fontSize: 'var(--fs-l)' }}>{t.title}</div>
+              <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>{t.archived_at?.slice(0, 10) ?? ''} 归档</div>
             </div>
           ))}
         </div>
       ))}
       {hasMore && !loading && (
         <button onClick={loadMore} disabled={loadingMore}
-          style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid var(--border-strong)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 13, cursor: 'pointer' }}>
+          style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid var(--border-strong)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 'var(--fs-m)', cursor: 'pointer' }}>
           {loadingMore ? '加载中…' : '加载更多'}
         </button>
       )}
@@ -183,12 +183,12 @@ function ReportView({ openDesktop }: { readonly openDesktop: () => void }) {
   const max = Math.max(1, ...rows.map((r) => r.value));
   return (
     <div style={card}>
-      <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 10 }}>本周摘要</div>
+      <div style={{ fontWeight: 600, fontSize: 'var(--fs-l)', marginBottom: 10 }}>本周摘要</div>
       {stats ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {rows.map((r) => (
             <div key={r.label}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-s)', marginBottom: 3 }}>
                 <span style={{ color: 'var(--text-secondary)' }}>{r.label}</span>
                 <span style={{ fontWeight: 600, color: r.color }}>{r.value}</span>
               </div>
@@ -282,11 +282,11 @@ function SettingsView({ notify, openDesktop, theme, setTheme, accent, setAccent,
     <div>
       <div style={setRow}>
         <span style={setLabel}>隧道连接</span>
-        <span style={{ fontSize: 13, color: status.publicUrl ? 'var(--success)' : 'var(--text-muted)' }}>
+        <span style={{ fontSize: 'var(--fs-m)', color: status.publicUrl ? 'var(--success)' : 'var(--text-muted)' }}>
           {status.publicUrl ? '● 已连接' : '○ 未连接'}
         </span>
       </div>
-      {status.publicUrl && <div style={{ fontSize: 12, color: 'var(--accent)', wordBreak: 'break-all', padding: '0 0 8px' }}>{status.publicUrl}</div>}
+      {status.publicUrl && <div style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', wordBreak: 'break-all', padding: '0 0 8px' }}>{status.publicUrl}</div>}
 
       <div style={setRow}>
         <span style={setLabel}>默认记事项目</span>
@@ -326,7 +326,7 @@ function SettingsView({ notify, openDesktop, theme, setTheme, accent, setAccent,
           )}
         </span>
       </div>
-      {pushState === 'unsupported' && <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 0 8px' }}>当前浏览器不支持 Web Push</div>}
+      {pushState === 'unsupported' && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', padding: '0 0 8px' }}>当前浏览器不支持 Web Push</div>}
 
       {/* T01445：Zen 极简阅读——隐藏徽标/计数、放大字号 */}
       <div style={setRow}>
@@ -349,7 +349,7 @@ function SettingsView({ notify, openDesktop, theme, setTheme, accent, setAccent,
             title="自定义强调色（取色器）" aria-label="自定义强调色取色器"
             style={{ width: 30, height: 24, padding: 0, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', cursor: 'pointer' }} />
           <button onClick={() => setAccent('')} title="恢复默认强调色" aria-label="恢复默认强调色"
-            style={{ ...seg, fontSize: 12 }}>默认</button>
+            style={{ ...seg, fontSize: 'var(--fs-s)' }}>默认</button>
         </div>
       </div>
 
@@ -361,13 +361,13 @@ function SettingsView({ notify, openDesktop, theme, setTheme, accent, setAccent,
 }
 
 // ---------- 样式 ----------
-const hdr: React.CSSProperties = { fontSize: 16, fontWeight: 700, padding: 12, borderBottom: '1px solid var(--border)', background: 'var(--card-bg)', display: 'flex', alignItems: 'center', gap: 10 };
-const backBtn: React.CSSProperties = { background: 'transparent', border: 'none', color: 'var(--accent)', fontSize: 22, lineHeight: 1, cursor: 'pointer' };
+const hdr: React.CSSProperties = { fontSize: 'var(--fs-2xl)', fontWeight: 700, padding: 12, borderBottom: '1px solid var(--border)', background: 'var(--card-bg)', display: 'flex', alignItems: 'center', gap: 10 };
+const backBtn: React.CSSProperties = { background: 'transparent', border: 'none', color: 'var(--accent)', fontSize: 'var(--fs-title)', lineHeight: 1, cursor: 'pointer' };
 const body: React.CSSProperties = { flex: 1, overflowY: 'auto', padding: 12 };
-const deskBtn: React.CSSProperties = { marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '10px 16px', borderRadius: 8, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', cursor: 'pointer', fontSize: 14 };
-const logoutBtn: React.CSSProperties = { marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '10px 16px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--danger)', border: 'none', cursor: 'pointer', fontSize: 14 };
+const deskBtn: React.CSSProperties = { marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '10px 16px', borderRadius: 8, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', cursor: 'pointer', fontSize: 'var(--fs-l)' };
+const logoutBtn: React.CSSProperties = { marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '10px 16px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--danger)', border: 'none', cursor: 'pointer', fontSize: 'var(--fs-l)' };
 const setRow: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '12px 0', borderBottom: '1px solid var(--surface-2)' };
-const setLabel: React.CSSProperties = { fontSize: 14, color: 'var(--text)' };
-const sel: React.CSSProperties = { padding: 8, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 13, background: 'var(--card-bg)', color: 'var(--text)', maxWidth: 180 };
-const seg: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 8, fontSize: 13, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)' };
-const logPre: React.CSSProperties = { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11, color: 'var(--text-secondary)', background: 'var(--surface)', borderRadius: 8, padding: 10, maxHeight: '100%', overflowY: 'auto' };
+const setLabel: React.CSSProperties = { fontSize: 'var(--fs-l)', color: 'var(--text)' };
+const sel: React.CSSProperties = { padding: 8, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 'var(--fs-m)', background: 'var(--card-bg)', color: 'var(--text)', maxWidth: 180 };
+const seg: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 8, fontSize: 'var(--fs-m)', cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)' };
+const logPre: React.CSSProperties = { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', background: 'var(--surface)', borderRadius: 8, padding: 10, maxHeight: '100%', overflowY: 'auto' };

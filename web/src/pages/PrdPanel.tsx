@@ -94,7 +94,7 @@ function PrdDownloadButton({ doc, onError }: {
       <button onClick={() => setOpen((v) => !v)} disabled={!doc || !!busy} className="tbtn-anim prd-tilt-btn"
         title={doc ? 'PRD 文档下载\n选择格式导出需求文档' : 'PRD 文档下载\n请先在上方文档列表中选中一份 PRD'}
         aria-label="PRD 文档下载" aria-expanded={open}
-        style={{ display: 'inline-flex', alignItems: 'center', fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: doc ? 'pointer' : 'not-allowed', padding: '3px 7px', opacity: doc ? 1 : 0.45 }}>
+        style={{ display: 'inline-flex', alignItems: 'center', fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: doc ? 'pointer' : 'not-allowed', padding: '3px 7px', opacity: doc ? 1 : 0.45 }}>
         {busy ? <Loader2 size={12} className="aispin" /> : <FileDown size={12} />}
       </button>
       {open && doc && (
@@ -103,7 +103,7 @@ function PrdDownloadButton({ doc, onError }: {
           {PRD_DOWNLOAD_FORMATS.map((f) => (
             <button key={f.key} onClick={() => void download(f.key)} disabled={!!busy}
               title={`${f.label}\n${f.desc}`} aria-label={`导出 ${f.label}`}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left', padding: '6px 8px', fontSize: 12,
+              style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left', padding: '6px 8px', fontSize: 'var(--fs-s)',
                 border: 'none', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: busy ? 'default' : 'pointer' }}>
               <f.Icon size={13} style={{ color: 'var(--accent)', flexShrink: 0 }} />
               {f.label}
@@ -421,14 +421,14 @@ export function PrdPanel({ projectId, onClose }: {
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
   }
 
-  const opBtn = { display: 'inline-flex', alignItems: 'center', fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', padding: '3px 7px' } as const;
+  const opBtn = { display: 'inline-flex', alignItems: 'center', fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', padding: '3px 7px' } as const;
 
   return (
     <div style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
         <FilePenLine size={15} style={{ color: 'var(--accent)' }} />
-        <strong style={{ fontSize: 14 }}>PRD 管理</strong>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        <strong style={{ fontSize: 'var(--fs-l)' }}>PRD 管理</strong>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           共 {docs.length} 份文档（确认版 {confirmedCount} 份），待确认问题 {openIssues} 个；PRD → 确认版 → 需求跟踪矩阵
         </span>
         <span style={{ flex: 1 }} />
@@ -446,7 +446,7 @@ export function PrdPanel({ projectId, onClose }: {
       </div>
 
       {/* 文档列表 */}
-      {docs.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 0' }}>当前项目还没有 PRD 文档——新建一份或导入 Markdown 文件开始。</div>}
+      {docs.length === 0 && <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: '8px 0' }}>当前项目还没有 PRD 文档——新建一份或导入 Markdown 文件开始。</div>}
       {docs.map((d) => (
         <div key={d.id}
           style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', borderRadius: 6, flexWrap: 'wrap',
@@ -456,14 +456,14 @@ export function PrdPanel({ projectId, onClose }: {
             title="点击展开/收起文档内容"
             style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0, flexWrap: 'wrap', border: 'none', background: 'transparent', cursor: 'pointer', padding: 0, textAlign: 'left', color: 'inherit', font: 'inherit' }}>
             <FilePenLine size={13} style={{ color: d.status === 'confirmed' ? 'var(--success)' : 'var(--text-muted)', flex: 'none' }} />
-            <span style={{ fontSize: 12, color: 'var(--text)', fontWeight: 500, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename || '未命名'}</span>
+            <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text)', fontWeight: 500, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename || '未命名'}</span>
             <span title={d.status === 'confirmed' ? '确认版 PRD' : 'PRD（草稿/评审中）'}
-              style={{ fontSize: 10, padding: '1px 6px', borderRadius: 8, flex: 'none',
+              style={{ fontSize: 'var(--fs-2xs)', padding: '1px 6px', borderRadius: 8, flex: 'none',
                 border: `1px solid ${d.status === 'confirmed' ? 'var(--success)' : 'var(--border-strong)'}`,
                 color: d.status === 'confirmed' ? 'var(--success)' : 'var(--text-muted)' }}>
               {d.status === 'confirmed' ? '确认版' : 'PRD'}
             </span>
-            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{d.content_chars} 字 · {d.updated_at.slice(0, 10)}</span>
+            <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>{d.content_chars} 字 · {d.updated_at.slice(0, 10)}</span>
           </button>
           <span style={{ display: 'inline-flex', gap: 5 }}>
             {/* T00824：跳转 AI 工作台导入入口——位于文档标题后、状态流转按钮前；T00907：带入该行文档，跳转后自动填充确认栏 */}
@@ -485,7 +485,7 @@ export function PrdPanel({ projectId, onClose }: {
       {selectedId && (
         <div style={{ marginTop: 10, border: '1px solid var(--border-strong)', borderRadius: 8, padding: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-            <strong style={{ fontSize: 12 }}>{detail?.filename || selected?.filename}</strong>
+            <strong style={{ fontSize: 'var(--fs-s)' }}>{detail?.filename || selected?.filename}</strong>
             <span style={{ flex: 1 }} />
             {mode === 'view' && (
               <button onClick={startEdit} className="tbtn-anim" title="编辑 Markdown 原文" style={opBtn} disabled={!detail}><Pencil size={11} /> 编辑</button>
@@ -501,13 +501,13 @@ export function PrdPanel({ projectId, onClose }: {
           </div>
           {mode === 'view' && (
             detail
-              ? <MarkdownContent content={detail.content_md} style={{ fontSize: 12, maxHeight: 360, overflow: 'auto', padding: '2px 4px' }} />
-              : <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}><Loader2 size={12} className="task-breathe" /> 加载中…</div>
+              ? <MarkdownContent content={detail.content_md} style={{ fontSize: 'var(--fs-s)', maxHeight: 360, overflow: 'auto', padding: '2px 4px' }} />
+              : <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}><Loader2 size={12} className="task-breathe" /> 加载中…</div>
           )}
           {mode === 'edit' && (
             <textarea value={editMd} onChange={(e) => setEditMd(e.target.value)} spellCheck={false}
               placeholder="Markdown 原文（# 标题 / - 列表 / **加粗** …）"
-              style={{ width: '100%', minHeight: 260, fontSize: 12, lineHeight: 1.6, padding: 8, borderRadius: 6,
+              style={{ width: '100%', minHeight: 260, fontSize: 'var(--fs-s)', lineHeight: 1.6, padding: 8, borderRadius: 6,
                 border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', resize: 'vertical', boxSizing: 'border-box' }} />
           )}
         </div>
@@ -517,14 +517,14 @@ export function PrdPanel({ projectId, onClose }: {
       <div style={{ marginTop: 10, border: '1px solid var(--border-strong)', borderRadius: 8, padding: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           {/* T02218：全选框——勾选/取消当前列表全部条目；部分选中显示 indeterminate */}
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-muted)', cursor: issues.length ? 'pointer' : 'default' }}
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', cursor: issues.length ? 'pointer' : 'default' }}
             title="全选 / 取消全选（作用于当前列表全部条目）">
             <input ref={headCbRef} type="checkbox" checked={allSelected} disabled={issues.length === 0}
               onChange={toggleAll} aria-label="全选待确认问题" style={{ accentColor: 'var(--accent)', cursor: issues.length ? 'pointer' : 'default', margin: 0 }} />
             全选
           </label>
-          <strong style={{ fontSize: 12 }}>待确认问题</strong>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>确认后可把结论回写到对应 PRD</span>
+          <strong style={{ fontSize: 'var(--fs-s)' }}>待确认问题</strong>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>确认后可把结论回写到对应 PRD</span>
           <span style={{ flex: 1 }} />
           <button onClick={() => { void addIssue(); }} className="tbtn-anim" title={selected ? '新增问题（挂到当前选中文档）' : '新增项目级问题（先选中文档可自动挂靠）'} aria-label="新增待确认问题" style={opBtn}>
             <Plus size={11} />
@@ -533,8 +533,8 @@ export function PrdPanel({ projectId, onClose }: {
         {/* T02218：批量操作栏——有勾选才浮现；显示已选与可回写数量，按钮执行期间禁用并显示进度 */}
         {selIssues.length > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', marginBottom: 6, borderRadius: 6, border: '1px solid var(--accent)', background: 'var(--accent-weak, rgba(0,0,0,.04))', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 12 }}>已选 <strong>{selIssues.length}</strong> 条</span>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>其中可回写 {eligibleWriteback} 条（需已确认且关联 PRD）</span>
+            <span style={{ fontSize: 'var(--fs-s)' }}>已选 <strong>{selIssues.length}</strong> 条</span>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>其中可回写 {eligibleWriteback} 条（需已确认且关联 PRD）</span>
             <span style={{ flex: 1 }} />
             <button onClick={() => { void batchWriteback(); }} disabled={!!batchBusy} className="tbtn-anim"
               title="批量回写 PRD — 把所选已确认问题的结论写入各自 PRD 文档；未确认/未关联条目计入失败明细"
@@ -550,7 +550,7 @@ export function PrdPanel({ projectId, onClose }: {
               title="取消选择" aria-label="取消选择" style={opBtn}>取消选择</button>
           </div>
         )}
-        {issues.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 0' }}>暂无待确认问题。</div>}
+        {issues.length === 0 && <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: '4px 0' }}>暂无待确认问题。</div>}
         {issues.map((i) => {
           const docName = docs.find((d) => d.id === i.prd_id)?.filename ?? '';
           return (
@@ -560,29 +560,29 @@ export function PrdPanel({ projectId, onClose }: {
                 aria-label={`选择问题：${i.question.slice(0, 30)}`} title="勾选后可批量回写 / 批量删除"
                 style={{ marginTop: 3, flex: 'none', accentColor: 'var(--accent)', cursor: 'pointer' }} />
               <span title={i.status === 'resolved' ? '已确认' : '待确认'}
-                style={{ fontSize: 10, padding: '1px 6px', borderRadius: 8, flex: 'none', marginTop: 1,
+                style={{ fontSize: 'var(--fs-2xs)', padding: '1px 6px', borderRadius: 8, flex: 'none', marginTop: 1,
                   border: `1px solid ${i.status === 'resolved' ? 'var(--success)' : 'var(--warning, #c80)'}`,
                   color: i.status === 'resolved' ? 'var(--success)' : 'var(--warning, #c80)' }}>
                 {i.status === 'resolved' ? '已确认' : '待确认'}
               </span>
               {/* T00822：问题级别标签——对齐 AI 控制台生成面板的级别展示（🔴阻塞/🟡建议/🟢提示/自定义） */}
               {i.level && ISSUE_LEVEL_META[i.level] && (
-                <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 8, flex: 'none', marginTop: 1,
+                <span style={{ fontSize: 'var(--fs-2xs)', padding: '1px 6px', borderRadius: 8, flex: 'none', marginTop: 1,
                   color: ISSUE_LEVEL_META[i.level].color }}>
                   {ISSUE_LEVEL_META[i.level].label}
                 </span>
               )}
-              <span style={{ fontSize: 12, color: 'var(--text)', minWidth: 0, flex: '1 1 260px' }}>
+              <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text)', minWidth: 0, flex: '1 1 260px' }}>
                 {i.question}
                 {/* T00817：AI 建议字段——展示 AI 为该问题生成的建议选项，辅助决策 */}
                 {i.suggestion && (
-                  <span style={{ display: 'block', fontSize: 11, color: 'var(--accent)', marginTop: 2, whiteSpace: 'pre-line' }}>AI建议：{i.suggestion}</span>
+                  <span style={{ display: 'block', fontSize: 'var(--fs-xs)', color: 'var(--accent)', marginTop: 2, whiteSpace: 'pre-line' }}>AI建议：{i.suggestion}</span>
                 )}
                 {i.status === 'resolved' && i.answer && (
-                  <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>结论：{i.answer}</span>
+                  <span style={{ display: 'block', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>结论：{i.answer}</span>
                 )}
               </span>
-              {docName && <span style={{ fontSize: 10, color: 'var(--text-muted)', flex: 'none' }} title="问题挂靠的 PRD 文档">📄 {docName}</span>}
+              {docName && <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', flex: 'none' }} title="问题挂靠的 PRD 文档">📄 {docName}</span>}
               <span style={{ display: 'inline-flex', gap: 5, flex: 'none' }}>
                 <button onClick={() => { void editIssue(i); }} className="tbtn-anim" title="编辑问题" style={opBtn}><Pencil size={11} /></button>
                 {i.status === 'open'
@@ -598,21 +598,21 @@ export function PrdPanel({ projectId, onClose }: {
         })}
         {/* T02218：最近一次批量操作的结果反馈——成功/失败计数 + 可展开的失败明细 */}
         {batchResult && (
-          <div style={{ marginTop: 8, border: '1px solid var(--border-strong)', borderRadius: 6, padding: '6px 10px', fontSize: 12 }}
+          <div style={{ marginTop: 8, border: '1px solid var(--border-strong)', borderRadius: 6, padding: '6px 10px', fontSize: 'var(--fs-s)' }}
             data-t02218="batch-result">
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <span>{batchResult.kind === 'writeback' ? '批量回写' : '批量删除'}完成：成功
                 <strong style={{ color: 'var(--success)' }}> {batchResult.ok} </strong>条，失败
                 <strong style={{ color: batchResult.failed.length ? 'var(--danger)' : 'var(--text-muted)' }}> {batchResult.failed.length} </strong>条</span>
-              {batchResult.failed.length === 0 && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>全部处理成功</span>}
+              {batchResult.failed.length === 0 && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>全部处理成功</span>}
               <span style={{ flex: 1 }} />
               <button onClick={() => setBatchResult(null)} className="tbtn-anim" title="关闭结果" aria-label="关闭批量结果" style={{ ...opBtn, padding: '1px 5px' }}><X size={11} /></button>
             </div>
             {batchResult.failed.length > 0 && (
               <details style={{ marginTop: 4 }}>
-                <summary style={{ cursor: 'pointer', fontSize: 11, color: 'var(--danger)' }}>展开失败明细（{batchResult.failed.length} 条）</summary>
+                <summary style={{ cursor: 'pointer', fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>展开失败明细（{batchResult.failed.length} 条）</summary>
                 {batchResult.failed.map((f) => (
-                  <div key={f.id} style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                  <div key={f.id} style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>
                     「{f.question ? f.question.slice(0, 40) : f.id.slice(0, 8)}」— {f.reason}
                   </div>
                 ))}

@@ -31,11 +31,16 @@ const FONT_MAP: Record<FontKey, string> = {
   song: '"Songti SC", "NSimSun", "SimSun", serif',
 };
 
-/** 各字号档位对 `--fs-*` 变量组的取值：应用内统一字号都在用这些变量 */
+/**
+ * 各字号档位对 `--fs-*` 变量组的取值：应用内统一字号都在用这些变量。
+ * T03180（PM-301④ / UX-11）：三档（s/m/l）各自给全套令牌赋值，令牌名与像素刻度一一对应，
+ * 保证「数值字号 → 令牌」的改造在默认档（m）下像素不变；新增的 2xs/xs/2xl 只是把相邻刻度补齐，
+ * 不改变原有 s/m/l/xl/title 的档位语义。改这里的键必须同步 `:root` 默认值（门禁会比对）。
+ */
 const FONT_SIZE_MAP: Record<FontSizeKey, Record<string, string>> = {
-  s: { '--fs-s': '11px', '--fs-m': '12px', '--fs-l': '13px', '--fs-xl': '14px', '--fs-title': '18px' },
-  m: { '--fs-s': '12px', '--fs-m': '13px', '--fs-l': '14px', '--fs-xl': '15px', '--fs-title': '20px' },
-  l: { '--fs-s': '13px', '--fs-m': '14px', '--fs-l': '15px', '--fs-xl': '17px', '--fs-title': '22px' },
+  s: { '--fs-2xs': '9px', '--fs-xs': '10px', '--fs-s': '11px', '--fs-m': '12px', '--fs-l': '13px', '--fs-xl': '14px', '--fs-2xl': '16px', '--fs-title': '18px' },
+  m: { '--fs-2xs': '10px', '--fs-xs': '11px', '--fs-s': '12px', '--fs-m': '13px', '--fs-l': '14px', '--fs-xl': '15px', '--fs-2xl': '17px', '--fs-title': '20px' },
+  l: { '--fs-2xs': '11px', '--fs-xs': '12px', '--fs-s': '13px', '--fs-m': '14px', '--fs-l': '15px', '--fs-xl': '17px', '--fs-2xl': '19px', '--fs-title': '22px' },
 };
 
 export const FONT_OPTIONS: { key: FontKey; label: string }[] = [
@@ -69,16 +74,20 @@ const themeCss = `
   --surface: #f9fafb;
   --surface-2: #f3f4f6;
   --text: #1f2937;
-  --text-secondary: #6b7280;
-  --text-muted: #9ca3af;
+  --text-secondary: #4b5563;
+  --text-muted: #6b7280;
   --border: #e5e7eb;
   --border-strong: #d1d5db;
   --accent: #2563eb;
   --accent-text: #ffffff;
+  /* 饱和状态实底（danger/success）上的文字：浅色主题白字、深色主题深字（两点色本身在深色下更亮） */
+  --on-solid: #ffffff;
+  /* 深色浮层（toast/遮罩）上的文字：恒为白字，不随主题反转 */
+  --on-dark: #ffffff;
   --accent-soft: #eff6ff;
-  --success: #16a34a;
+  --success: #15803d;
   --danger: #dc2626;
-  --warn: #f59e0b;
+  --warn: #b45309;
   --overlay: rgba(0, 0, 0, 0.35);
   --code-bg: #f1f5f9;
   --code-border: #e2e8f0;
@@ -92,20 +101,56 @@ const themeCss = `
   --surface-2: #27272a;
   --text: #e5e7eb;
   --text-secondary: #a1a1aa;
-  --text-muted: #71717a;
+  --text-muted: #8b8b93;
   --border: #3f3f46;
   --border-strong: #52525b;
-  --accent: #3b82f6;
-  --accent-text: #ffffff;
+  --accent: #5b9bf8;
+  --accent-text: #0b1220;
+  /* 饱和实底（danger/success）在深色主题里是亮色，文字随之转深，保证 ≥4.5:1 */
+  --on-solid: #0b1220;
+  --on-dark: #ffffff;
   --accent-soft: #1e293b;
   --success: #22c55e;
-  --danger: #ef4444;
+  --danger: #f87171;
   --warn: #fbbf24;
   --overlay: rgba(0, 0, 0, 0.55);
   --code-bg: #27272a;
   --code-border: #3f3f46;
   --markdown-quote: #4b5563;
   color-scheme: dark;
+}
+
+/* T03180（PM-301④）：:root 自带三档默认值（默认档 m）。JS 未执行 / 被禁用时 var(--fs-*) 仍有解析值，
+   不会出现未定义变量导致字号回落；设置页切换档位时以 documentElement 内联变量覆盖这里。
+   门禁 scripts/tests/verify-t03180-font-tokens.mts 校验此处与 FONT_SIZE_MAP.m 逐项一致。 */
+:root {
+  --font-family: "system-ui", -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-s: 12px;
+  --fs-m: 13px;
+  --fs-l: 14px;
+  --fs-xl: 15px;
+  --fs-2xl: 17px;
+  --fs-title: 20px;
+  /* 展示级字号：由 title 派生，跟随档位等比缩放（KPI 数字/大图标），避免为一次性尺寸新增数字字号 */
+  --fs-display: calc(var(--fs-title) * 1.3);
+  --fs-hero: calc(var(--fs-title) * 2);
+}
+
+/* 底色跟随主题：React 注入的样式表未到达前由 index.html 的首帧内联规则兜住（T03179，两处保持同源） */
+html, body, #root {
+  background: var(--app-bg);
+}
+body {
+  color: var(--text);
+}
+
+/* T03181（PM-303⑤）：全站统一键盘焦点环。此前只有导航与时间线 chip 各写一条，
+   其余原生控件依赖 UA 默认轮廓，在浅/深主题下对比度不稳定；:focus-visible 只对键盘生效，不影响鼠标点击观感。 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* T01038+：运行态「流光文字」动画——对齐 WorkBuddy 会话运行动画样式（lib-chat-ui cb-shining-text）：

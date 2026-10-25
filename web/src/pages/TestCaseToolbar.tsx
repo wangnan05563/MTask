@@ -75,10 +75,10 @@ export function TestCaseToolbar({ meta, stats, multi, selIds, total, filterOpen,
     if (!multi || selIds.length === 0) return null;
     return (
       <span className="op-host" style={{ display: 'inline-flex', gap: 6, alignItems: 'center', border: '1px solid var(--accent)', borderRadius: 6, padding: '2px 8px', background: 'var(--card-bg)' }}>
-        <span style={{ fontSize: 11, color: 'var(--accent)' }}>已选 {selIds.length}</span>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)' }}>已选 {selIds.length}</span>
         <button onClick={onSelectAll} className="task-op"
           title={selIds.length >= total && total > 0 ? '取消全选' : `全选当前筛选结果（共 ${total} 条，跨分页）`}
-          style={{ fontSize: 11, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)' }}>
+          style={{ fontSize: 'var(--fs-xs)', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)' }}>
           {selIds.length >= total && total > 0 ? '取消全选' : '全选'}
         </button>
         {/* §9.1：次要控件用 op-host + op-hidden，默认收起、悬浮或键盘聚焦时展开，避免工具条被下拉堆淹没 */}
@@ -108,14 +108,14 @@ export function TestCaseToolbar({ meta, stats, multi, selIds, total, filterOpen,
             {reqs.map((r) => <option key={r.id} value={r.id}>{`${r.req_no} ${r.title}`.trim()}</option>)}
           </select>
           <button onClick={onDuplicate} className="task-op" title="复制选中用例（编号自动重排，执行结论重置）"
-            aria-label="复制选中用例" style={{ ...BTN, fontSize: 11, padding: '2px 6px' }}>复制</button>
+            aria-label="复制选中用例" style={{ ...BTN, fontSize: 'var(--fs-xs)', padding: '2px 6px' }}>复制</button>
           <button onClick={() => void exportSelected()} className="task-op" title="导出选中用例" aria-label="导出选中用例"
-            style={{ ...BTN, fontSize: 11, padding: '2px 6px' }} disabled={exporting}>
+            style={{ ...BTN, fontSize: 'var(--fs-xs)', padding: '2px 6px' }} disabled={exporting}>
             {exporting ? <Loader2 size={12} className="aispin" /> : <Download size={12} />}
           </button>
           <button onClick={() => onBatchDelete()} disabled={loading} className="task-op"
             title={`删除选中的 ${selIds.length} 条测试用例及其步骤？此操作不可撤销。`} aria-label="批量删除选中用例"
-            style={{ display: 'inline-flex', alignItems: 'center', fontSize: 11, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)', padding: 2 }}>
+            style={{ display: 'inline-flex', alignItems: 'center', fontSize: 'var(--fs-xs)', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)', padding: 2 }}>
             <Trash2 size={13} />
           </button>
         </span>
@@ -135,11 +135,11 @@ export function TestCaseToolbar({ meta, stats, multi, selIds, total, filterOpen,
         </button>
         {exportOpen && (
           <div style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, zIndex: 60, minWidth: 232, padding: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,.16)' }}>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 8px' }}>导出范围：{exportScope}</div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', padding: '4px 8px' }}>导出范围：{exportScope}</div>
             {CASE_EXPORT_FORMATS.map((f) => (
               <button key={f.key} onClick={() => { setExportOpen(false); onExport(f.key); }} disabled={exporting}
                 title={`${f.label}\n${f.desc}`} aria-label={`导出 ${f.label}`}
-                style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left', padding: '6px 8px', fontSize: 12, border: 'none', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: exporting ? 'default' : 'pointer' }}>
+                style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left', padding: '6px 8px', fontSize: 'var(--fs-s)', border: 'none', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: exporting ? 'default' : 'pointer' }}>
                 <f.Icon size={13} style={{ color: 'var(--accent)', flexShrink: 0 }} />
                 {f.label}
               </button>
@@ -153,8 +153,8 @@ export function TestCaseToolbar({ meta, stats, multi, selIds, total, filterOpen,
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
       <TestTubes size={15} style={{ color: 'var(--accent)' }} />
-      <strong style={{ fontSize: 14 }}>测试用例</strong>
-      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+      <strong style={{ fontSize: 'var(--fs-l)' }}>测试用例</strong>
+      <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
         共 {stats.total} 条 · 已关联需求 {stats.linked} 条
         {stats.orphan > 0 ? ` · 其中 ${stats.orphan} 条未关联需求` : ''}
       </span>

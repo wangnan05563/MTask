@@ -24,9 +24,9 @@ const RANGES = [
 function StatCard({ icon, label, value, sub, accent }: { readonly icon: React.ReactNode; readonly label: string; readonly value: string; readonly sub: string; readonly accent?: boolean }) {
   return (
     <div style={{ flex: '1 1 200px', padding: 14, border: `1px solid ${accent ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 10, background: 'var(--card-bg)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)' }}>{icon}{label}</div>
-      <div style={{ fontSize: 26, fontWeight: 700, color: accent ? 'var(--accent)' : 'var(--text)', marginTop: 6 }}>{value}</div>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{sub}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>{icon}{label}</div>
+      <div style={{ fontSize: 'var(--fs-display)', fontWeight: 700, color: accent ? 'var(--accent)' : 'var(--text)', marginTop: 6 }}>{value}</div>
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>{sub}</div>
     </div>
   );
 }
@@ -55,13 +55,13 @@ export function DashboardPage() {
     <div style={{ padding: 16, maxWidth: 1100, margin: '0 auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
         <BarChart3 size={18} style={{ color: 'var(--accent)' }} />
-        <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>统计仪表盘</span>
+        <span style={{ fontSize: 'var(--fs-2xl)', fontWeight: 700, color: 'var(--text)' }}>统计仪表盘</span>
         <span style={{ flex: 1 }} />
         <select
           value={projectId}
           onChange={(e) => setProjectId(e.target.value)}
           aria-label="统计项目筛选"
-          style={{ fontSize: 12, padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}
+          style={{ fontSize: 'var(--fs-s)', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}
         >
           <option value="">全部项目</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -71,14 +71,14 @@ export function DashboardPage() {
         <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }}>
           {RANGES.map((r) => (
             <button key={r.days} onClick={() => setDays(r.days)}
-              style={{ padding: '5px 12px', fontSize: 12, border: 'none', cursor: 'pointer', background: days === r.days ? 'var(--accent)' : 'var(--card-bg)', color: days === r.days ? 'var(--accent-text)' : 'var(--text)' }}>
+              style={{ padding: '5px 12px', fontSize: 'var(--fs-s)', border: 'none', cursor: 'pointer', background: days === r.days ? 'var(--accent)' : 'var(--card-bg)', color: days === r.days ? 'var(--accent-text)' : 'var(--text)' }}>
               {r.label}
             </button>
           ))}
         </div>
       </div>
 
-      {error && <div style={{ color: 'var(--danger)', fontSize: 13, padding: 12 }}>加载失败：{error}</div>}
+      {error && <div style={{ color: 'var(--danger)', fontSize: 'var(--fs-m)', padding: 12 }}>加载失败：{error}</div>}
       {/* T01067-FR3.3：加载骨架屏——四指标卡 + 趋势条占位微光 */}
       {!data && !error && (
         <>
@@ -117,7 +117,7 @@ export function DashboardPage() {
             const completion = total ? Math.round((data.totals.done / total) * 100) : 0;
             return (
               <div style={{ marginTop: 12, padding: 14, border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-m)', fontWeight: 600, marginBottom: 10 }}>
                   <CheckCircle2 size={14} style={{ color: 'var(--accent)' }} /> 总完成度 {completion}%
                 </div>
                 <FlowProgress value={completion} aria-label={`总完成度 ${completion}%`} />
@@ -126,18 +126,18 @@ export function DashboardPage() {
           })()}
 
           <div style={{ marginTop: 16, padding: 14, border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-m)', fontWeight: 600, marginBottom: 10 }}>
               <CheckCircle2 size={14} style={{ color: 'var(--accent)' }} /> 完成趋势（按完成日，近 {data.days} 天）
             </div>
             {(data.throughput.length === 0) ? (
-              <div style={{ color: 'var(--text-muted)', fontSize: 12, padding: '8px 0' }}>所选范围内暂无完成任务。</div>
+              <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-s)', padding: '8px 0' }}>所选范围内暂无完成任务。</div>
             ) : (
               <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 120, overflowX: 'auto' }}>
                 {data.throughput.map((t) => (
                   <div key={t.date} title={`${t.date}：完成 ${t.count} 条`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', minWidth: 22, flex: '0 0 auto', height: '100%' }}>
-                    <span style={{ fontSize: 10, color: 'var(--text-secondary)', marginBottom: 2 }}>{t.count}</span>
+                    <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-secondary)', marginBottom: 2 }}>{t.count}</span>
                     <div style={{ width: 16, height: `${Math.max(4, Math.round((t.count / maxCount) * 96))}px`, background: 'var(--accent)', borderRadius: '3px 3px 0 0', opacity: 0.85 }} />
-                    <span style={{ fontSize: 9, color: 'var(--text-muted)', marginTop: 2, whiteSpace: 'nowrap' }}>{t.date.slice(5)}</span>
+                    <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: 2, whiteSpace: 'nowrap' }}>{t.date.slice(5)}</span>
                   </div>
                 ))}
               </div>

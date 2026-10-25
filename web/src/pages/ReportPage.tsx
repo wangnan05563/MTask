@@ -71,8 +71,8 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
-const labelStyle: CSSProperties = { fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 };
-const fieldStyle: CSSProperties = { padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 13 };
+const labelStyle: CSSProperties = { fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 4 };
+const fieldStyle: CSSProperties = { padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-m)' };
 
 /** 能力卡片配置 */
 interface ReportCardCfg {
@@ -139,9 +139,9 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, action, sta
     >
       {icon}
       <span style={{ flex: 1 }}>
-        <span style={{ display: 'block', fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{title}</span>
-        <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{desc}</span>
-        <span style={{ display: 'block', fontSize: 11, color: blocked ? 'var(--warn)' : 'var(--accent)', marginTop: 8 }}>
+        <span style={{ display: 'block', fontSize: 'var(--fs-l)', fontWeight: 600, color: 'var(--text)' }}>{title}</span>
+        <span style={{ display: 'block', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>{desc}</span>
+        <span style={{ display: 'block', fontSize: 'var(--fs-xs)', color: blocked ? 'var(--warn)' : 'var(--accent)', marginTop: 8 }}>
           {blocked ? '暂不可用 — 原因与修复动作见上方提示' : (open ? '收起工作面板 ↑' : '点击展开工作面板 ↓')}
         </span>
         {statusNode && <span style={{ display: 'block', marginTop: 6 }}>{statusNode}</span>}
@@ -214,16 +214,16 @@ function PrdDocsPopup({ open, projectId, onAssociate, onClose }: {
         style={{ width: 480, maxWidth: '92vw', maxHeight: '72vh', overflow: 'auto', background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 12, padding: 16, boxShadow: '0 12px 32px rgba(0,0,0,.2)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
           <FileStack size={15} style={{ color: 'var(--accent)' }} />
-          <strong style={{ fontSize: 14 }}>已上传 PRD 文档</strong>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>点击文档即关联到当前计划导入流程</span>
+          <strong style={{ fontSize: 'var(--fs-l)' }}>已上传 PRD 文档</strong>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>点击文档即关联到当前计划导入流程</span>
           <span style={{ flex: 1 }} />
           <button onClick={onClose} className="ln" title="关闭" aria-label="关闭已上传 PRD 文档"
             style={{ border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', display: 'inline-flex', padding: '3px 6px' }}><X size={13} /></button>
         </div>
-        {loading && <div style={{ display: 'flex', alignItems: 'center', fontSize: 12 }}><span className="ai-shimmer" style={{ fontWeight: 600 }}>加载中…</span></div>}
-        {!loading && error && <div style={{ fontSize: 12, color: 'var(--danger)' }}>{error}</div>}
+        {loading && <div style={{ display: 'flex', alignItems: 'center', fontSize: 'var(--fs-s)' }}><span className="ai-shimmer" style={{ fontWeight: 600 }}>加载中…</span></div>}
+        {!loading && error && <div style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)' }}>{error}</div>}
         {!loading && !error && docs.length === 0 && (
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 0' }}>当前项目还没有 PRD 文档——请先在「项目管理 → PRD 管理」中导入或生成。</div>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: '8px 0' }}>当前项目还没有 PRD 文档——请先在「项目管理 → PRD 管理」中导入或生成。</div>
         )}
         {!loading && !error && docs.length > 0 && docs.map((d) => (
           <button key={d.id} type="button" disabled={assocDoc === d.id}
@@ -231,8 +231,8 @@ function PrdDocsPopup({ open, projectId, onAssociate, onClose }: {
             onClick={() => doAssociate(d)}
             style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', padding: '7px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', cursor: assocDoc === d.id ? 'default' : 'pointer', marginBottom: 6 }}>
             <FileStack size={13} style={{ color: 'var(--accent)', flexShrink: 0 }} />
-            <span style={{ flex: 1, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
-            <span style={{ fontSize: 11, color: d.status === 'confirmed' ? 'var(--success)' : 'var(--text-muted)', flexShrink: 0 }}>
+            <span style={{ flex: 1, fontSize: 'var(--fs-s)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
+            <span style={{ fontSize: 'var(--fs-xs)', color: d.status === 'confirmed' ? 'var(--success)' : 'var(--text-muted)', flexShrink: 0 }}>
               {d.status === 'confirmed' ? '确认版' : '草稿'}
             </span>
             {assocDoc === d.id ? <Loader2 size={13} className="aispin" style={{ color: 'var(--accent)' }} /> : null}
@@ -321,7 +321,7 @@ function AiResultDownload({ aiResult, onDownload, periodLabel }: {
 }) {
   return (
     <div style={{ marginTop: 12, borderTop: '1px solid var(--surface-2)', paddingTop: 10 }}>
-      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+      <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 8 }}>
         «{aiResult.filename}» 已生成，洞察过程见右侧控制台。
       </div>
       <button
@@ -516,7 +516,7 @@ export function ReportPage() {
     ? `${subject}按首个项目「${scopeName}」生成，多项目范围仅作用于周报/报表`
     : '');
   const withScopeNote = (d: React.ReactNode, note: string): React.ReactNode => (note
-    ? <>{d}<span style={{ display: 'block', marginTop: 4, fontSize: 11, color: 'var(--warn)' }}>{note}</span></>
+    ? <>{d}<span style={{ display: 'block', marginTop: 4, fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>{note}</span></>
     : d);
 
   const reportCards: ReportCardCfg[] = [
@@ -807,8 +807,8 @@ export function ReportPage() {
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
         <div style={{ flex: 1, minWidth: 0, display: splitCollapsed ? 'none' : 'block' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-        <h2 style={{ fontSize: 16, margin: 0 }}>AI 工作台</h2>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>AI 能力入口与报表生成（按周期聚合任务数据生成 Excel / Word 报表）</span>
+        <h2 style={{ fontSize: 'var(--fs-2xl)', margin: 0 }}>AI 工作台</h2>
+        <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>AI 能力入口与报表生成（按周期聚合任务数据生成 Excel / Word 报表）</span>
         <span style={{ flex: 1 }} />
         {/* T00816：去掉展开/收起两组开关按钮，改为「AI 工作台」窗格单一全屏按钮（无文字、带动画）——
             点击隐藏右侧控制台让本窗格全屏，再点还原；全屏中按钮仍在本窗格内可见，无需额外恢复入口 */}
@@ -827,7 +827,7 @@ export function ReportPage() {
       {projectId && readyPlans.length > 0 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', margin: '14px 0 0', padding: '10px 14px', border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--accent-soft)' }}>
           <Zap size={15} style={{ color: 'var(--accent)', flexShrink: 0 }} />
-          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', flexShrink: 0 }}>现在做：</span>
+          <span style={{ fontSize: 'var(--fs-s)', fontWeight: 600, color: 'var(--text)', flexShrink: 0 }}>现在做：</span>
           {readyPlans.map((rp) => {
             // S4624：内层模板抽出为局部常量，避免嵌套模板字符串
             const complexityPart = rp.complexity ? `，复杂度 ${rp.complexity}/5` : '';
@@ -841,13 +841,13 @@ export function ReportPage() {
               }}
               title={`就绪任务：前置依赖均已完成${complexityPart} — 点击打开任务详情${taskNoPart}`}
               aria-label={`前往就绪任务 ${rp.title}`}
-              style={{ fontSize: 12, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--accent)', background: 'var(--card-bg)', color: 'var(--accent)', cursor: 'pointer', whiteSpace: 'nowrap' }}
+              style={{ fontSize: 'var(--fs-s)', padding: '4px 10px', borderRadius: 6, border: '1px solid var(--accent)', background: 'var(--card-bg)', color: 'var(--accent)', cursor: 'pointer', whiteSpace: 'nowrap' }}
             >
               {rp.title}（{rp.duration_days} 天{rp.complexity ? ` · 复杂度${rp.complexity}` : ''}）→
             </button>
             );
           })}
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>前置依赖已完成的就绪任务（来自项目计划依赖图）</span>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>前置依赖已完成的就绪任务（来自项目计划依赖图）</span>
         </div>
       )}
 
@@ -904,7 +904,7 @@ export function ReportPage() {
                 onClick={() => setPeriod(p.key)}
                 title={`生成${p.label}`}
                 style={{
-                  padding: '5px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+                  padding: '5px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 'var(--fs-m)',
                   background: period === p.key ? 'var(--accent)' : 'var(--card-bg)',
                   color: period === p.key ? 'var(--accent-text)' : 'var(--text)',
                 }}
@@ -937,13 +937,13 @@ export function ReportPage() {
         {/* 离线周报生成工作面板：本地聚合 + 模板管理（模板列表/导入整合于此） */}
         {showOffline && (
         <div style={{ flex: '1 1 320px', border: '1px solid var(--accent)', borderRadius: 10, padding: 14, background: 'var(--card-bg)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 4 }}>
             <FileSpreadsheet size={15} style={{ color: 'var(--accent)' }} /> {offlineReportLabel} · 工作面板
             <span style={{ flex: 1 }} />
             <button onClick={() => setShowOffline(false)} className="tbtn-anim" title="收起工作面板" aria-label={`收起 ${offlineReportLabel}工作面板`}
-              style={{ border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 11, padding: '1px 6px' }}>收起 ↑</button>
+              style={{ border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-xs)', padding: '1px 6px' }}>收起 ↑</button>
           </div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>本地聚合本周期任务数据，按模板或标准版式直接合成文件，无需联网。</div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>本地聚合本周期任务数据，按模板或标准版式直接合成文件，无需联网。</div>
           <div style={{ marginBottom: 12 }}>
             <div style={labelStyle}>模板</div>
             <select value={templateId} onChange={(e) => setTemplateId(e.target.value)} style={{ ...fieldStyle, width: '100%' }}>
@@ -951,7 +951,7 @@ export function ReportPage() {
               {templates.map((t) => <option key={t.id} value={t.id}>{t.filename}</option>)}
             </select>
             {templateId === '' && (
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
                 使用内置 skill「{SKILL_BY_FORMAT[format]}」生成标准版式
               </div>
             )}
@@ -959,20 +959,20 @@ export function ReportPage() {
           {/* T00621：模板管理整合到离线周报工作面板（导入 / 列表 / 删除） */}
           <div style={{ marginBottom: 12, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-2, transparent)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)' }}>模板管理（{templates.length}）</span>
+              <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, color: 'var(--text-secondary)' }}>模板管理（{templates.length}）</span>
               <span style={{ flex: 1 }} />
               <button onClick={() => fileRef.current?.click()} className="tbtn-anim"
                 title="导入模板 — 选择 .xlsx / .docx 模板文件上传" aria-label="导入模板"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', cursor: 'pointer' }}>
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-xs)', padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', cursor: 'pointer' }}>
                 <Upload size={11} /> 导入模板
               </button>
             </div>
             {templates.length === 0
-              ? <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>暂无自定义模板，可导入 .xlsx/.docx 模板文件后在上方「模板」下拉中选择。</div>
+              ? <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>暂无自定义模板，可导入 .xlsx/.docx 模板文件后在上方「模板」下拉中选择。</div>
               : (
                 <ul style={{ listStyle: 'none', margin: 0, padding: 0, maxHeight: 120, overflowY: 'auto' }}>
                   {templates.map((t) => (
-                    <li key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '2px 0', borderBottom: '1px solid var(--border)' }}>
+                    <li key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-s)', padding: '2px 0', borderBottom: '1px solid var(--border)' }}>
                       <FileSpreadsheet size={11} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
                       <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.filename}</span>
                       <button onClick={() => void removeTemplate(t.id, t.filename)} className="tbtn-anim"
@@ -1001,30 +1001,30 @@ export function ReportPage() {
         {/* AI 报表生成工作面板：AI 洞察 + 内置技能说明（技能依据整合于此） */}
         {showAiLive && (
         <div style={{ flex: '1 1 320px', border: '1px solid var(--accent)', borderRadius: 10, padding: 14, background: 'var(--card-bg)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 4 }}>
             <Sparkles size={15} style={{ color: 'var(--accent)' }} /> {aiReportLabel} · 工作面板
             <span style={{ flex: 1 }} />
             <button onClick={() => setShowAiLive(false)} className="tbtn-anim" title="收起工作面板" aria-label={`收起 ${aiReportLabel}工作面板`}
-              style={{ border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 11, padding: '1px 6px' }}>收起 ↑</button>
+              style={{ border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-xs)', padding: '1px 6px' }}>收起 ↑</button>
           </div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
             结合真实任务数据调用 AI 生成洞察，按内置 skill 版式智能合成；洞察生成过程在右侧 AI 控制台实时滚动展示。
           </div>
           {/* T00621：内置技能整合到 AI 周报工作面板 */}
           <div style={{ marginBottom: 12, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-2, transparent)' }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6 }}>内置技能（标准版式依据）</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text)' }}>
+            <div style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6 }}>内置技能（标准版式依据）</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-s)', color: 'var(--text)' }}>
               <Sparkles size={12} style={{ color: 'var(--accent)', flexShrink: 0 }} />
-              <code style={{ fontSize: 12, color: 'var(--accent)' }}>{SKILL_BY_FORMAT[format]}</code>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              <code style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{SKILL_BY_FORMAT[format]}</code>
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
                 — 当前报表格式 {format.toUpperCase()} 对应的内置版式技能；AI 生成时按该 skill 的标准结构组织内容
               </span>
             </div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 6 }}>
               切换上方「报表格式」即自动匹配对应技能：xlsx-trae / docx-trae / pdf-trae / pptx-trae
             </div>
           </div>
-          <div style={{ marginBottom: 12, fontSize: 11, color: 'var(--text-muted)' }}>
+          <div style={{ marginBottom: 12, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
             AI 工具统一使用「模型菜单」的默认整理工具（无需在此重复选择）。
           </div>
           <FlowButton
@@ -1040,7 +1040,7 @@ export function ReportPage() {
           {/* T00558 / PRD AI-5：生成后把 AI 洞察摘要写入收件箱任务 */}
           {/* T02213：状态未经服务端确认（加载中/取数失败）时禁用开关并如实标注——
               此前 GET 失败被吞，界面按 false 渲染成「后端是关的」，而真实值可能是开的 */}
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 10, fontSize: 12, color: 'var(--text-secondary)', cursor: summaryInboxView.phase === 'ready' ? 'pointer' : 'not-allowed' }}
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 10, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', cursor: summaryInboxView.phase === 'ready' ? 'pointer' : 'not-allowed' }}
             title={`勾选后，${aiReportLabel}时会把洞察摘要写入「收件箱」项目的一条待办任务（便于后续跟进）`}>
             <input type="checkbox" checked={summaryToInbox} disabled={summaryInboxView.phase !== 'ready'}
               style={{ cursor: summaryInboxView.phase === 'ready' ? 'pointer' : 'not-allowed' }}
@@ -1060,7 +1060,7 @@ export function ReportPage() {
       {/* T00621：原「内置技能」「模板管理」独立区块已整合进各自工作面板（AI 周报面板=内置技能；离线周报面板=模板管理），此处仅保留隐藏的上传入口与占位符说明 */}
       <input ref={fileRef} type="file" accept=".xlsx,.docx" style={FILE_INPUT_SR_ONLY} onChange={(e) => void onUpload(e)} />
 
-      <div style={{ marginTop: 12, fontSize: 11, color: 'var(--text-muted)' }}>
+      <div style={{ marginTop: 12, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
         说明：报表按本周期内更新过的任务（未归档）聚合，包含各项目汇总与任务明细；选用 Word 模板时以 {`{period}`}、{`{periodLabel}`}、{`{startDate}`}、{`{endDate}`}、{`{projects}`}、{`{tasks}`} 占位符渲染。模板导入入口在「{offlineReportLabel}」工作面板内（仅支持 .xlsx / .docx，≤10MB）。
       </div>
         </div>

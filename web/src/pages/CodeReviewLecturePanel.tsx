@@ -61,11 +61,11 @@ const RANGE_SHAPES = [
 type RangeShape = (typeof RANGE_SHAPES)[number]['key'];
 
 const fieldStyle: React.CSSProperties = {
-  fontSize: 12, padding: '4px 6px', borderRadius: 6, border: '1px solid var(--border)',
+  fontSize: 'var(--fs-s)', padding: '4px 6px', borderRadius: 6, border: '1px solid var(--border)',
   background: 'var(--surface)', color: 'var(--text)',
 };
 const chipStyle: React.CSSProperties = {
-  fontSize: 11, padding: '1px 6px', borderRadius: 999, border: '1px solid var(--border)',
+  fontSize: 'var(--fs-xs)', padding: '1px 6px', borderRadius: 999, border: '1px solid var(--border)',
   background: 'var(--surface-2)', color: 'var(--text-secondary)',
 };
 const FONT_MONO = 'Consolas, Menlo, monospace';
@@ -404,8 +404,8 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
       {notice && <output className="flash-toast">{notice}</output>}
       <header style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <Sparkles size={16} style={{ color: 'var(--accent)' }} />
-        <strong style={{ fontSize: 14 }}>代码评审会议讲稿生成</strong>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>左 diff · 右讲稿 · 底状态条（锚点可点击定位）</span>
+        <strong style={{ fontSize: 'var(--fs-l)' }}>代码评审会议讲稿生成</strong>
+        <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>左 diff · 右讲稿 · 底状态条（锚点可点击定位）</span>
         <button type="button" onClick={onClose} title="收起面板" aria-label="收起代码评审讲稿面板"
           style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
           <X size={16} />
@@ -414,7 +414,7 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
 
       <section aria-label="采集范围" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
         <ProjectScopePicker projects={projects} value={selectedIds} onChange={() => flash('评审项目范围请在页面顶部「报表范围」中选择')} />
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>已选 {selectedIds.length} 个</span>
+        <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>已选 {selectedIds.length} 个</span>
         {!patchMode && (
           <>
             <select value={shape} onChange={(e) => setShape(e.target.value as RangeShape)} style={fieldStyle} aria-label="Git 区间形态">
@@ -433,7 +433,7 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
             )}
           </>
         )}
-        <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12 }}>
+        <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-s)' }}>
           <input type="checkbox" checked={patchMode} onChange={(e) => setPatchMode(e.target.checked)} />
           粘贴 patch（无 git 时的降级通道）
         </label>
@@ -464,7 +464,7 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
       <div style={{ display: 'flex', gap: 10, alignItems: 'stretch', minHeight: 320 }}>
         <aside data-lck="diff-pane" ref={leftRef} aria-label="变更 diff 面板"
           style={{ flex: '1 1 46%', minWidth: 0, maxHeight: 460, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: 8, background: 'var(--surface)' }}>
-          {snap.diffError && <p data-lck="diff-error" style={{ fontSize: 12, color: 'var(--danger)', margin: '4px 0' }}>diff 加载失败：{snap.diffError}</p>}
+          {snap.diffError && <p data-lck="diff-error" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '4px 0' }}>diff 加载失败：{snap.diffError}</p>}
           <LectureDiffPane projects={snap.diff} openFiles={openFiles} foldedHunks={foldedHunks}
             flashRows={flashRows} hoverRows={hoverRows}
             onToggleFile={(k) => setOpenFiles((prev) => { const n = new Set(prev); if (n.has(k)) n.delete(k); else n.add(k); return n; })}
@@ -483,16 +483,16 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
       </div>
 
       <footer data-lck="status-bar" style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
-        <span data-lck="stage" style={{ fontSize: 12, color: 'var(--text-secondary)', minWidth: 0, flex: '1 1 auto' }}>
+        <span data-lck="stage" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', minWidth: 0, flex: '1 1 auto' }}>
           {snap.stage?.msg ?? (snap.streaming ? '准备中…' : '未开始（可先「加载 diff」或「只出大纲」）')}
         </span>
         <div style={{ width: 150 }}>
           <FlowProgress value={snap.stage?.progress ?? 0} aria-label="讲稿生成进度" />
         </div>
-        <span data-lck="anchor-count" style={{ fontSize: 12, color: 'var(--text-muted)' }}>锚点 {snap.result?.stats.anchors ?? 0}</span>
+        <span data-lck="anchor-count" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>锚点 {snap.result?.stats.anchors ?? 0}</span>
         {snap.result?.deviation && (
           <span data-lck={snap.result.deviation.noticeRequired ? 'usage-deviation-notice' : 'usage-deviation-ok'}
-            style={{ fontSize: 12, color: snap.result.deviation.noticeRequired ? 'var(--warn)' : 'var(--text-muted)', fontWeight: snap.result.deviation.noticeRequired ? 600 : 400 }}
+            style={{ fontSize: 'var(--fs-s)', color: snap.result.deviation.noticeRequired ? 'var(--warn)' : 'var(--text-muted)', fontWeight: snap.result.deviation.noticeRequired ? 600 : 400 }}
             title="预估偏差仅明示、不阻断（AI-102③）；实际值可在 AI 用量记录回看（④）">
             {snap.result.deviation.noticeRequired ? '⚠ 实测与预估偏差>50%：' : '用量偏差在阈值内：'}
             {([['字符量', snap.result.deviation.chars], ['耗时', snap.result.deviation.seconds]] as const)
@@ -502,7 +502,7 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
             {' '}（实际 {snap.result.deviation.actualCalls} 次调用）
           </span>
         )}
-        <span data-lck="mark-count" style={{ fontSize: 12, color: 'var(--text-muted)' }}>跟进 {followupCount} · 忽略 {ignoredCount}</span>
+        <span data-lck="mark-count" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>跟进 {followupCount} · 忽略 {ignoredCount}</span>
         <FlowButton onClick={() => { codeReviewLectureStore.stop(); flash('已停止——右栏已生成的章节保留'); }} disabled={!snap.streaming}
           title="中止当前生成（已生成的节次保留）">
           <Ban size={13} style={{ marginRight: 4 }} />停止
@@ -532,8 +532,8 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
           <div style={{ width: 'min(920px, 96vw)', maxHeight: '84vh', overflow: 'auto', background: 'var(--card-bg)', border: '1px solid var(--accent)', borderRadius: 10, padding: 14 }}>
             <header style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <ListChecks size={16} style={{ color: 'var(--accent)' }} />
-              <strong style={{ fontSize: 14 }}>生成前预检</strong>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>先统计后放行——超限可「裁剪继续」或「中止收窄范围」</span>
+              <strong style={{ fontSize: 'var(--fs-l)' }}>生成前预检</strong>
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>先统计后放行——超限可「裁剪继续」或「中止收窄范围」</span>
               <button type="button" onClick={cancelPreflight} aria-label="关闭预检"
                 style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
                 <X size={15} />
@@ -559,18 +559,18 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
             </div>
 
             {!preflight.ok && (
-              <p data-lck="preflight-blocked" style={{ fontSize: 12, color: 'var(--danger)', margin: '4px 0' }}>
+              <p data-lck="preflight-blocked" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '4px 0' }}>
                 没有可采集的项目：请补配工作空间路径、调整区间，或改用「粘贴 patch」后重新预检。
               </p>
             )}
-            {preflight.warnings.map((w, i) => <p key={`pw${i}`} style={{ fontSize: 12, color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
+            {preflight.warnings.map((w, i) => <p key={`pw${i}`} style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
 
             <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
               {preflight.projects.map((p) => (
                 <section key={p.projectId} data-lck={`preflight-project-${p.projectId}`}
                   style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 8, background: 'var(--surface)' }}>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
-                    <strong style={{ fontSize: 13 }}>{p.projectName}</strong>
+                    <strong style={{ fontSize: 'var(--fs-m)' }}>{p.projectName}</strong>
                     <span style={chipStyle}>{p.mode === 'patch' ? '粘贴 patch' : p.rangeLabel}</span>
                     <span data-lck={`preflight-git-${p.projectId}`} style={{ ...chipStyle, color: p.git.available && p.git.isRepo ? 'var(--success)' : 'var(--danger)' }}>
                       {p.mode === 'patch' ? '无需 git' : p.git.available ? (p.git.isRepo ? 'git 可用' : '非 git 仓库') : '未检测到 git'}
@@ -579,20 +579,20 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
                     <span style={chipStyle}>排除 {p.excluded.count}</span>
                     <span style={chipStyle}>保留 {p.kept.files} 文件 / {p.kept.chars} 字符</span>
                   </div>
-                  {p.blocked && <p style={{ fontSize: 12, color: 'var(--danger)', margin: '4px 0' }}>{p.blocked}</p>}
+                  {p.blocked && <p style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '4px 0' }}>{p.blocked}</p>}
                   {p.budget.dropped > 0 && (
-                    <p data-lck="preflight-dropped" style={{ fontSize: 12, color: 'var(--warn)', margin: '4px 0' }}>
+                    <p data-lck="preflight-dropped" style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', margin: '4px 0' }}>
                       超预算已按优先级丢弃 {p.budget.dropped} 个文件：{p.budget.droppedNames.join('、')}
                       {p.budget.truncated ? '（列表已截断）' : ''}
                     </p>
                   )}
-                  {p.warnings.map((w, i) => <p key={`w${i}`} style={{ fontSize: 12, color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
+                  {p.warnings.map((w, i) => <p key={`w${i}`} style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
                 </section>
               ))}
             </div>
 
             <footer style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: '1 1 auto' }}>
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flex: '1 1 auto' }}>
                 「裁剪继续」＝按预算内保留文件生成；被丢弃的文件已点名，不会静默缺稿。
               </span>
               <FlowButton data-lck="preflight-cancel" onClick={cancelPreflight}
@@ -622,49 +622,49 @@ function LectureDiffPane({ projects, openFiles, foldedHunks, flashRows, hoverRow
   readonly onToggleHunk: (key: string) => void;
 }) {
   if (projects.length === 0) {
-    return <p data-lck="diff-empty" style={{ fontSize: 12, color: 'var(--text-muted)', margin: 6 }}>左栏为空：点「加载 diff」按当前范围采集。</p>;
+    return <p data-lck="diff-empty" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', margin: 6 }}>左栏为空：点「加载 diff」按当前范围采集。</p>;
   }
   return (
     <>
       {projects.map((p) => (
         <section key={p.projectId} data-lck={`diff-project-${p.projectId}`} style={{ marginBottom: 10 }}>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-            <strong style={{ fontSize: 13 }}>{p.projectName}</strong>
+            <strong style={{ fontSize: 'var(--fs-m)' }}>{p.projectName}</strong>
             <span style={chipStyle}>{p.mode === 'patch' ? '粘贴 patch' : p.rangeLabel}</span>
             <span style={chipStyle}>{p.files.length} 文件 +{p.kept.additions}/-{p.kept.deletions}</span>
             {p.excluded.count > 0 && <span style={chipStyle}>排除 {p.excluded.count}</span>}
             {p.budget.dropped > 0 && <span data-lck="budget-dropped" style={chipStyle}>预算丢弃 {p.budget.dropped}</span>}
           </div>
-          {p.blocked && <p data-lck="blocked" style={{ fontSize: 12, color: 'var(--danger)', margin: '4px 0' }}>{p.blocked}</p>}
-          {p.warnings.map((w, i) => <p key={`w${i}`} style={{ fontSize: 12, color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
+          {p.blocked && <p data-lck="blocked" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '4px 0' }}>{p.blocked}</p>}
+          {p.warnings.map((w, i) => <p key={`w${i}`} style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
           {p.budget.droppedNames.length > 0 && (
-            <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '2px 0' }}>超预算未进讲稿：{p.budget.droppedNames.join('、')}</p>
+            <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', margin: '2px 0' }}>超预算未进讲稿：{p.budget.droppedNames.join('、')}</p>
           )}
           {!p.blocked && p.files.length === 0 && (
-            <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0' }}>区间内没有可讲解的变更（或全部被排除规则命中）。</p>
+            <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', margin: '4px 0' }}>区间内没有可讲解的变更（或全部被排除规则命中）。</p>
           )}
           {groupFilesByModule(p.files).map((group) => (
             <div key={group.module} style={{ marginTop: 6 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: FONT_MONO }}>{group.module}/</div>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontFamily: FONT_MONO }}>{group.module}/</div>
               {group.files.map((f) => {
                 const fk = fileKey(p.projectId, f.path);
                 const open = openFiles.has(fk);
                 return (
                   <div key={f.path} style={{ marginTop: 4 }}>
                     <button type="button" data-lck={`file-${f.path}`} onClick={() => onToggleFile(fk)} aria-expanded={open}
-                      style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 12, padding: 0, textAlign: 'left', fontFamily: FONT_MONO }}>
+                      style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 'var(--fs-s)', padding: 0, textAlign: 'left', fontFamily: FONT_MONO }}>
                       {open ? '▾' : '▸'} {f.path} <span style={{ color: 'var(--success)' }}>+{f.additions}</span>{' '}
                       <span style={{ color: 'var(--danger)' }}>-{f.deletions}</span>
                     </button>
-                    {open && f.binary && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 14 }}>二进制文件，无文本 diff。</div>}
+                    {open && f.binary && <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginLeft: 14 }}>二进制文件，无文本 diff。</div>}
                     {open && !f.binary && f.hunks.map((h, hunkIndex) => {
                       const hk = `${fk}|${hunkIndex}`;
                       if (foldedHunks.has(hk)) {
                         return (
-                          <div key={hk} style={{ marginLeft: 14, fontSize: 11, color: 'var(--text-muted)' }}>
+                          <div key={hk} style={{ marginLeft: 14, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
                             hunk @{h.newStart} 已折叠{' '}
                             <button type="button" onClick={() => onToggleHunk(hk)}
-                              style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 11 }}>展开</button>
+                              style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 'var(--fs-xs)' }}>展开</button>
                           </div>
                         );
                       }
@@ -672,7 +672,7 @@ function LectureDiffPane({ projects, openFiles, foldedHunks, flashRows, hoverRow
                       return (
                         <div key={hk} style={{ marginLeft: 14, marginTop: 2 }}>
                           <button type="button" onClick={() => onToggleHunk(hk)} title="折叠该 hunk"
-                            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11, padding: 0, fontFamily: FONT_MONO }}>
+                            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 'var(--fs-xs)', padding: 0, fontFamily: FONT_MONO }}>
                             {rows[0].text}
                           </button>
                           {rows.slice(1).map((r, offset) => {
@@ -683,7 +683,7 @@ function LectureDiffPane({ projects, openFiles, foldedHunks, flashRows, hoverRow
                               <div key={flashed ? `${id}-${flashRows?.seq}` : id} data-lck-row={id}
                                 className={flashed ? 'locate-flash' : undefined}
                                 style={{
-                                  display: 'flex', gap: 6, fontSize: 12, lineHeight: 1.45, fontFamily: FONT_MONO,
+                                  display: 'flex', gap: 6, fontSize: 'var(--fs-s)', lineHeight: 1.45, fontFamily: FONT_MONO,
                                   background: hoverRows.has(id) ? 'var(--accent-soft)' : undefined,
                                   color: r.kind === 'del' ? 'var(--danger)' : r.kind === 'add' ? 'var(--success)' : 'var(--text)',
                                 }}>
@@ -739,7 +739,7 @@ function LectureSections({ outline, sections, live, streaming, marks, onMark, on
       : Object.entries(live).map(([key, text]) => ({ key, title: key, text, pending: streaming, failed: false }));
 
   if (rows.length === 0) {
-    return <p data-lck="lecture-empty" style={{ fontSize: 12, color: 'var(--text-muted)', margin: 6 }}>讲稿为空：先「只出大纲」确认结构，或直接「开始生成」。</p>;
+    return <p data-lck="lecture-empty" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', margin: 6 }}>讲稿为空：先「只出大纲」确认结构，或直接「开始生成」。</p>;
   }
   return (
     <>
@@ -750,7 +750,7 @@ function LectureSections({ outline, sections, live, streaming, marks, onMark, on
           <div key={r.key} data-lck={`section-${r.key}`} style={{ marginBottom: 6, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
             <button type="button" onClick={() => setOpen((prev) => { const n = new Set(prev); if (n.has(r.key)) n.delete(r.key); else n.add(r.key); return n; })}
               aria-expanded={expanded}
-              style={{ width: '100%', display: 'flex', gap: 6, alignItems: 'center', background: 'var(--surface-2)', border: 'none', color: 'var(--text)', cursor: 'pointer', fontSize: 12, padding: '6px 8px', textAlign: 'left' }}>
+              style={{ width: '100%', display: 'flex', gap: 6, alignItems: 'center', background: 'var(--surface-2)', border: 'none', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-s)', padding: '6px 8px', textAlign: 'left' }}>
               <span style={{ color: 'var(--text-muted)' }}>{expanded ? '▾' : '▸'}</span>
               <strong>{r.title}</strong>
               {r.pending && !r.text && <span style={{ color: 'var(--text-muted)' }}>等待生成…</span>}
@@ -759,7 +759,7 @@ function LectureSections({ outline, sections, live, streaming, marks, onMark, on
                 <span role="button" tabIndex={0} data-lck={`retry-${r.key}`}
                   onClick={(e) => { e.stopPropagation(); onRetrySection(r.key, r.title); }}
                   onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onRetrySection(r.key, r.title); } }}
-                  style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--accent)', textDecoration: 'underline', cursor: 'pointer' }}>重试本节</span>
+                  style={{ marginLeft: 'auto', fontSize: 'var(--fs-xs)', color: 'var(--accent)', textDecoration: 'underline', cursor: 'pointer' }}>重试本节</span>
               )}
             </button>
             {expanded && (
@@ -768,7 +768,7 @@ function LectureSections({ outline, sections, live, streaming, marks, onMark, on
                   ? markable
                     ? <MarkedLectureBody sectionKey={r.key} text={r.text} marks={marks} onMark={onMark} onAnchorClick={onAnchorClick} />
                     : <Markdown content={linkifyLectureAnchors(r.text)} onAnchorClick={onAnchorClick} />
-                  : <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>{r.pending ? '（本节尚未流出）' : '（本节无内容）'}</p>}
+                  : <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', margin: 0 }}>{r.pending ? '（本节尚未流出）' : '（本节无内容）'}</p>}
               </div>
             )}
           </div>
@@ -816,10 +816,10 @@ function MarkedLectureBody({ sectionKey, text, marks, onMark, onAnchorClick }: {
         );
       })}
       {ignoredCount > 0 && (
-        <div data-lck={`ignored-${sectionKey}`} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)', borderTop: '1px dashed var(--border)', marginTop: 4, paddingTop: 4 }}>
+        <div data-lck={`ignored-${sectionKey}`} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', borderTop: '1px dashed var(--border)', marginTop: 4, paddingTop: 4 }}>
           <span>已忽略 {ignoredCount} 条（不影响导出稿）</span>
           <button type="button" data-lck={`ignored-toggle-${sectionKey}`} onClick={() => setShowIgnored((v) => !v)}
-            style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 11, padding: 0 }}>
+            style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 'var(--fs-xs)', padding: 0 }}>
             {showIgnored ? '收起' : '展开查看'}
           </button>
         </div>
@@ -837,7 +837,7 @@ function MarkButton({ lck, active, label, onClick }: {
   return (
     <button type="button" data-lck={lck} aria-pressed={active} onClick={onClick}
       style={{
-        fontSize: 10, padding: '1px 5px', borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap',
+        fontSize: 'var(--fs-2xs)', padding: '1px 5px', borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap',
         border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
         background: active ? 'var(--accent)' : 'var(--surface)',
         color: active ? 'var(--accent-text)' : 'var(--text-secondary)',

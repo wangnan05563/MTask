@@ -28,7 +28,7 @@ const STATUS_LABEL: Record<string, string> = { todo: '待办', done: '已完成'
 
 function Badge({ children, color }: { readonly children: React.ReactNode; readonly color?: string }) {
   return (
-    <span style={{ fontSize: 11, padding: '1px 7px', borderRadius: 10, border: '1px solid var(--border-strong)', color: color ?? 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+    <span style={{ fontSize: 'var(--fs-xs)', padding: '1px 7px', borderRadius: 10, border: '1px solid var(--border-strong)', color: color ?? 'var(--text-muted)', whiteSpace: 'nowrap' }}>
       {children}
     </span>
   );
@@ -168,28 +168,28 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
               onChange={(e) => setDescDraft(e.target.value)}
               rows={10}
               aria-label="编辑任务描述"
-              style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 13, resize: 'vertical' }}
+              style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-m)', resize: 'vertical' }}
             />
             <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end' }}>
-              <button onClick={() => { setDescDraft(desc); setEditing(null); }} disabled={busy} className="tbtn-anim" style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>
+              <button onClick={() => { setDescDraft(desc); setEditing(null); }} disabled={busy} className="tbtn-anim" style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
                 <X size={12} style={{ verticalAlign: '-2px' }} /> 取消
               </button>
-              <button onClick={() => void save('desc')} disabled={busy} className="tbtn-anim" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: busy ? 'default' : 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12 }}>
+              <button onClick={() => void save('desc')} disabled={busy} className="tbtn-anim" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: busy ? 'default' : 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)' }}>
                 {busy ? '保存中…' : <><Save size={12} /> 保存</>}
               </button>
             </div>
           </div>
         ) : (
           <div>
-            {desc ? <MarkdownContent content={desc} /> : <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>（无描述）</div>}
-            <button onClick={() => { setDescDraft(desc); setEditing('desc'); }} className="tbtn-anim" style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>
+            {desc ? <MarkdownContent content={desc} /> : <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-m)' }}>（无描述）</div>}
+            <button onClick={() => { setDescDraft(desc); setEditing('desc'); }} className="tbtn-anim" style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
               <Pencil size={12} /> 编辑描述
             </button>
           </div>
         )}
         {task.images.length > 0 && (
           <div style={{ marginTop: 14 }}>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>附件（{task.images.length}）</div>
+            <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 4 }}>附件（{task.images.length}）</div>
             {/* T01563：缩略图点击放大——沿用列表内 previewId  toggle 范式（点同图收起），大图仍附复制无关的纯预览 */}
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               {task.images.map((img) => (
@@ -235,21 +235,21 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
               onChange={(e) => setResultDraft(e.target.value)}
               rows={10}
               aria-label="编辑处理结果"
-              style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 13, resize: 'vertical' }}
+              style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-m)', resize: 'vertical' }}
             />
             <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end' }}>
-              <button onClick={() => { setResultDraft(result); setEditing(null); }} disabled={busy} className="tbtn-anim" style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>
+              <button onClick={() => { setResultDraft(result); setEditing(null); }} disabled={busy} className="tbtn-anim" style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
                 <X size={12} style={{ verticalAlign: '-2px' }} /> 取消
               </button>
-              <button onClick={() => void save('result')} disabled={busy} className="tbtn-anim" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: busy ? 'default' : 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12 }}>
+              <button onClick={() => void save('result')} disabled={busy} className="tbtn-anim" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: busy ? 'default' : 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)' }}>
                 {busy ? '保存中…' : <><Save size={12} /> 保存</>}
               </button>
             </div>
           </div>
         ) : (
           <div>
-            {result ? <MarkdownContent content={result} /> : <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>（暂无处理结果，AI 分析结论将回写于此）</div>}
-            <button onClick={() => { setResultDraft(result); setEditing('result'); }} className="tbtn-anim" style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>
+            {result ? <MarkdownContent content={result} /> : <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-m)' }}>（暂无处理结果，AI 分析结论将回写于此）</div>}
+            <button onClick={() => { setResultDraft(result); setEditing('result'); }} className="tbtn-anim" style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
               <Pencil size={12} /> 编辑 / 回传结果
             </button>
             {/* T01607：结果历史 diff/回滚——与行内区块同一组件、同一数据源（task_result_history）。
@@ -279,17 +279,17 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
   // 关联计划正文：早返回代替 `加载 → 有数据 → 空态` 的嵌套三元（S3358），外层 `<div>` 保留在调用处以维持 DOM 结构。
   function renderPlansBody() {
     if (plansLoading) {
-      return <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>加载关联计划…</div>;
+      return <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-m)' }}>加载关联计划…</div>;
     }
     if (plans.length === 0) {
-      return <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>（该任务未关联任何计划）</div>;
+      return <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-m)' }}>（该任务未关联任何计划）</div>;
     }
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {plans.map((p) => (
-          <div key={p.id} style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, fontSize: 13 }}>
+          <div key={p.id} style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, fontSize: 'var(--fs-m)' }}>
             <div style={{ fontWeight: 600 }}>{p.title}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>
               {p.kind === 'milestone' ? '阶段里程碑' : '计划任务'} · {p.start_date || '未排期'}
             </div>
           </div>
@@ -308,7 +308,7 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
     return (
       <div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
             更新时间：{fmtSummaryTime(summaryAt)}
             {stale && <span style={{ color: 'var(--warn)', marginLeft: 6 }}>· 摘要生成后任务又有更新，建议重新生成</span>}
           </span>
@@ -321,7 +321,7 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6,
               cursor: summaryBusy ? 'default' : 'pointer', border: 'none',
-              background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12, opacity: summaryBusy ? 0.7 : 1,
+              background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)', opacity: summaryBusy ? 0.7 : 1,
             }}
           >
             {summaryBusy && <Loader2 size={12} className="aispin" />}
@@ -330,11 +330,11 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
         </div>
         {aiDown && readiness && <AiUnavailableHint r={readiness} compact style={{ marginBottom: 10 }} />}
         {summaryErr && (
-          <div style={{ fontSize: 12, color: 'var(--danger)', border: '1px solid var(--danger)', borderRadius: 6, padding: '6px 8px', marginBottom: 10 }}>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', border: '1px solid var(--danger)', borderRadius: 6, padding: '6px 8px', marginBottom: 10 }}>
             生成失败：{summaryErr}
           </div>
         )}
-        {summary ? <MarkdownContent content={summary} /> : <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>{emptyHint}</div>}
+        {summary ? <MarkdownContent content={summary} /> : <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-m)' }}>{emptyHint}</div>}
       </div>
     );
   }
@@ -359,7 +359,7 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
             aria-label={t.label}
             className="tbtn-anim"
             style={{
-              display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 9px', fontSize: 12, cursor: 'pointer',
+              display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 9px', fontSize: 'var(--fs-s)', cursor: 'pointer',
               border: 'none', borderBottom: tab === t.key ? '2px solid var(--accent)' : '2px solid transparent',
               background: 'transparent', color: tab === t.key ? 'var(--accent)' : 'var(--text)', fontWeight: tab === t.key ? 600 : 400,
             }}

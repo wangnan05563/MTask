@@ -105,7 +105,7 @@ export function NotifyBell() {
       >
         <Bell size={16} />
         {unreadCount > 0 && (
-          <span style={{ position: 'absolute', top: -4, right: -4, minWidth: 16, height: 16, borderRadius: 8, background: 'var(--danger)', color: '#fff', fontSize: 10, fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px' }}>
+          <span style={{ position: 'absolute', top: -4, right: -4, minWidth: 16, height: 16, borderRadius: 8, background: 'var(--danger)', color: 'var(--on-solid)', fontSize: 'var(--fs-2xs)', fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px' }}>
             {unreadCount > 99 ? '99+' : unreadCount}
           </span>
         )}
@@ -119,12 +119,12 @@ export function NotifyBell() {
             aria-hidden="true"
           />
           <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', width: 380, maxHeight: 480, overflowY: 'auto', background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,.15)', zIndex: 999 }}>
-            <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
               <Bell size={13} /> 通知中心
-              <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' }}>最近 30 条任务事件</span>
+              <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-xs)', fontWeight: 400, color: 'var(--text-muted)' }}>最近 30 条任务事件</span>
             </div>
             {items.length === 0 && (
-              <div style={{ padding: 20, fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>暂无任务事件——AI 任务分发/回传/验证后自动记录。</div>
+              <div style={{ padding: 20, fontSize: 'var(--fs-s)', color: 'var(--text-muted)', textAlign: 'center' }}>暂无任务事件——AI 任务分发/回传/验证后自动记录。</div>
             )}
             {items.map((it) => {
               const meta = EVENT_KINDS[it.kind] ?? { icon: <FileText size={13} />, label: it.kind };
@@ -144,15 +144,15 @@ export function NotifyBell() {
                     {it.detail.includes('失败') ? <AlertTriangle size={13} /> : meta.icon}
                   </span>
                   <span style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ display: 'block', fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <span style={{ display: 'block', fontSize: 'var(--fs-s)', color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {it.task_no ? <b style={{ color: 'var(--accent)' }}>{it.task_no}</b> : null} {isSystem ? '系统告警' : (it.title || it.detail)}
                     </span>
                     {/* T01616：项目归属标注——放在元信息行首，与 kind/detail/时间同排不增行高；
                         行点击本就跳往该任务（任务所属项目即此项目），徽标只作快速识别不做二次跳转 */}
-                    <span style={{ display: 'flex', fontSize: 11, color: 'var(--text-secondary)', marginTop: 2, alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                    <span style={{ display: 'flex', fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginTop: 2, alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
                       {it.project_name && (
                         <span title={`所属项目：${it.project_name}`}
-                          style={{ display: 'inline-flex', alignItems: 'center', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 10, padding: '0 5px', borderRadius: 8, border: '1px solid var(--border-strong)', color: 'var(--text-muted)' }}>
+                          style={{ display: 'inline-flex', alignItems: 'center', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--fs-2xs)', padding: '0 5px', borderRadius: 8, border: '1px solid var(--border-strong)', color: 'var(--text-muted)' }}>
                           {it.project_name}
                         </span>
                       )}

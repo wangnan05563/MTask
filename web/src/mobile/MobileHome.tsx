@@ -250,15 +250,15 @@ export function MobileHome({ onQuickNote, notify }: Props) {
     <div style={pageStyle}>
       <header style={headerStyle}>
         <div>
-          <div style={{ fontSize: 16, fontWeight: 700 }}>待办概览</div>
+          <div style={{ fontSize: 'var(--fs-2xl)', fontWeight: 700 }}>待办概览</div>
           {/* T01435：统计 chips 化——待办/需关注两级信息层级，需关注与告警条同一过滤语义 */}
           <div className="zen-hide" style={{ display: 'flex', gap: 6, marginTop: 4 }}>
             <button onClick={() => setAlertFilter(false)} aria-pressed={!alertFilter}
-              style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, cursor: 'pointer', border: '1px solid ' + (alertFilter ? 'var(--border-strong)' : 'var(--accent)'), background: alertFilter ? 'transparent' : 'var(--accent-soft)', color: 'var(--text)' }}>
+              style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', borderRadius: 10, cursor: 'pointer', border: '1px solid ' + (alertFilter ? 'var(--border-strong)' : 'var(--accent)'), background: alertFilter ? 'transparent' : 'var(--accent-soft)', color: 'var(--text)' }}>
               待办 {todoTotal}
             </button>
             <button onClick={() => setAlertFilter(true)} aria-pressed={alertFilter}
-              style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, cursor: 'pointer', border: '1px solid ' + (alertFilter ? 'var(--danger)' : 'var(--border-strong)'), background: alertFilter ? 'color-mix(in srgb, var(--danger) 12%, transparent)' : 'transparent', color: failedTasks.length + unreadTasks.length > 0 ? 'var(--danger)' : 'var(--text-muted)' }}>
+              style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', borderRadius: 10, cursor: 'pointer', border: '1px solid ' + (alertFilter ? 'var(--danger)' : 'var(--border-strong)'), background: alertFilter ? 'color-mix(in srgb, var(--danger) 12%, transparent)' : 'transparent', color: failedTasks.length + unreadTasks.length > 0 ? 'var(--danger)' : 'var(--text-muted)' }}>
               需关注 {failedTasks.length + unreadTasks.length}
             </button>
           </div>
@@ -285,12 +285,12 @@ export function MobileHome({ onQuickNote, notify }: Props) {
           onClick={() => setAlertFilter((v) => !v)}
           aria-pressed={alertFilter}
           title="点击查看/退出告警任务列表"
-          style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 12px 0', padding: '8px 12px', borderRadius: 10, border: '1px solid var(--danger)', background: 'var(--surface-2)', color: 'var(--text)', cursor: 'pointer', fontSize: 13, textAlign: 'left' }}
+          style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 12px 0', padding: '8px 12px', borderRadius: 10, border: '1px solid var(--danger)', background: 'var(--surface-2)', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-m)', textAlign: 'left' }}
         >
           <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--danger)', flexShrink: 0, animation: 'alert-dot-pulse 1.6s ease-in-out infinite' }} />
           <span style={{ color: 'var(--danger)', fontWeight: 600 }}>失败 {failedTasks.length}</span>
           <span style={{ color: 'var(--accent)', fontWeight: 600 }}>AI 待读 {unreadTasks.length}</span>
-          <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: 12 }}>{alertFilter ? '显示全部' : '点击过滤'}</span>
+          <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>{alertFilter ? '显示全部' : '点击过滤'}</span>
         </button>
       )}
 
@@ -298,7 +298,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
         <div style={{ padding: '0 12px' }}>
         {/* T01425：缓存数据截至角标——stale 视图时展示 */}
         {staleAsOf && (
-          <div style={{ margin: '6px 0 0', padding: '5px 10px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-muted)', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ margin: '6px 0 0', padding: '5px 10px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-muted)', fontSize: 'var(--fs-s)', display: 'flex', alignItems: 'center', gap: 6 }}>
             ⏱ 数据截至 {fmtAsOf(staleAsOf)}（离线缓存，联网后自动更新）
           </div>
         )}
@@ -332,9 +332,9 @@ export function MobileHome({ onQuickNote, notify }: Props) {
                 onClick={() => setDetailTask(t)}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {t.pinned && <span style={{ fontSize: 11 }}>📌</span>}
-                  <span className="zen-zoom" style={{ flex: 1, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</span>
-                  <span style={{ fontSize: 11, color: PRIO_COLOR[t.priority] || 'var(--text-muted)' }}>●{PRIO_LABEL[t.priority] || ''}</span>
+                  {t.pinned && <span style={{ fontSize: 'var(--fs-xs)' }}>📌</span>}
+                  <span className="zen-zoom" style={{ flex: 1, fontSize: 'var(--fs-xl)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</span>
+                  <span style={{ fontSize: 'var(--fs-xs)', color: PRIO_COLOR[t.priority] || 'var(--text-muted)' }}>●{PRIO_LABEL[t.priority] || ''}</span>
                 </div>
                 <div className="zen-hide" style={{ display: 'flex', gap: 6, marginTop: 2, alignItems: 'center' }}>
                   {t.category_id && <Badge>{catName(t.category_id)}</Badge>}
@@ -345,12 +345,12 @@ export function MobileHome({ onQuickNote, notify }: Props) {
             </li>
           ))}
         </ul>
-          <div style={{ padding: '10px 2px', fontSize: 11, color: 'var(--text-muted)', textAlign: 'center' }}>
+          <div style={{ padding: '10px 2px', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textAlign: 'center' }}>
             左滑任务 = 标记完成 · 右滑 = 查看详情
           </div>
           {hasMore && !loading && (
             <button onClick={() => void loadMore()} disabled={loadingMore}
-              style={{ width: '100%', padding: 10, marginBottom: 8, borderRadius: 8, border: '1px solid var(--border-strong)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 13, cursor: 'pointer' }}>
+              style={{ width: '100%', padding: 10, marginBottom: 8, borderRadius: 8, border: '1px solid var(--border-strong)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 'var(--fs-m)', cursor: 'pointer' }}>
               {loadingMore ? '加载中…' : `加载更多（已加载 ${tasks.length}/${todoTotal}）`}
             </button>
           )}
@@ -370,7 +370,7 @@ export function MobileHome({ onQuickNote, notify }: Props) {
 
 // ---------- 样式 ----------
 // T01422：页面骨架/卡片/列表行/徽标统一取自 mobile/ui 基础层，页面仅保留特有样式
-const projSelect: React.CSSProperties = { padding: 6, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 13, background: 'var(--card-bg)', color: 'var(--text)', maxWidth: 160 };
-const checkBtn: React.CSSProperties = { fontSize: 20, lineHeight: 1, background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text)', flexShrink: 0, paddingTop: 2, width: 44, height: 44 }; // T01432：热区 ≥44×44
+const projSelect: React.CSSProperties = { padding: 6, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 'var(--fs-m)', background: 'var(--card-bg)', color: 'var(--text)', maxWidth: 160 };
+const checkBtn: React.CSSProperties = { fontSize: 'var(--fs-title)', lineHeight: 1, background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text)', flexShrink: 0, paddingTop: 2, width: 44, height: 44 }; // T01432：热区 ≥44×44
 const empty: React.CSSProperties = { textAlign: 'center', padding: '48px 0', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 };
-const emptyBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '8px 16px', borderRadius: 20, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', cursor: 'pointer', fontSize: 14 };
+const emptyBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '8px 16px', borderRadius: 20, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', cursor: 'pointer', fontSize: 'var(--fs-l)' };

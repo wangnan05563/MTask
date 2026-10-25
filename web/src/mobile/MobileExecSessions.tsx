@@ -84,7 +84,7 @@ export function MobileExecSessions({ notify }: { readonly notify: (msg: string, 
   return (
     <div style={bodyStyle}>
       {staleAsOf && (
-        <div style={{ marginBottom: 8, padding: '5px 10px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-muted)', fontSize: 12 }}>
+        <div style={{ marginBottom: 8, padding: '5px 10px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>
           ⏱ 数据截至 {fmtAsOf(staleAsOf)}（离线缓存，联网后自动更新）
         </div>
       )}
@@ -95,15 +95,15 @@ export function MobileExecSessions({ notify }: { readonly notify: (msg: string, 
           <div key={s.id} style={cardStyle}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
               <Badge tone={STATUS_TONE[s.status] ?? 'neutral'}>{STATUS_LABEL[s.status] ?? s.status}</Badge>
-              <span style={{ fontSize: 13, fontWeight: 600 }}>{platformLabel(s.platform)}</span>
-              {s.session_id && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{s.session_id.slice(0, 8)}</span>}
-              <span style={{ marginLeft: 'auto', fontSize: 11, color: heartbeatStale ? 'var(--danger)' : 'var(--text-muted)' }}>
+              <span style={{ fontSize: 'var(--fs-m)', fontWeight: 600 }}>{platformLabel(s.platform)}</span>
+              {s.session_id && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{s.session_id.slice(0, 8)}</span>}
+              <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-xs)', color: heartbeatStale ? 'var(--danger)' : 'var(--text-muted)' }}>
                 心跳 {relTime(s.last_heartbeat)}{heartbeatStale ? '（停滞?）' : ''}
               </span>
             </div>
-            {s.phase && <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-secondary)', wordBreak: 'break-word' }}>phase：{s.phase}</div>}
+            {s.phase && <div style={{ marginTop: 6, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', wordBreak: 'break-word' }}>phase：{s.phase}</div>}
             {s.tasks.length > 0 && (
-              <div style={{ marginTop: 6, fontSize: 12 }}>
+              <div style={{ marginTop: 6, fontSize: 'var(--fs-s)' }}>
                 {s.tasks.slice(0, 3).map((t) => (
                   <div key={t.id} style={{ color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {t.task_no ? `${t.task_no} · ` : ''}{t.title}
@@ -116,13 +116,13 @@ export function MobileExecSessions({ notify }: { readonly notify: (msg: string, 
               <div style={{ width: `${s.progress}%`, height: '100%', background: 'var(--accent)', borderRadius: 3 }} />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', marginTop: 4, gap: 6 }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>进度 {s.progress}%</span>
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>进度 {s.progress}%</span>
               {s.status === 'failed' && (
                 <button
                   onClick={() => void redispatch(s)}
                   disabled={busyId === s.id}
                   title="重派 — 将该会话关联任务回待办，等待 AI 重新领取（历次结果保留）"
-                  style={{ marginLeft: 'auto', fontSize: 12, padding: '4px 12px', borderRadius: 6, border: '1px solid var(--danger)', color: 'var(--danger)', background: 'transparent', cursor: busyId === s.id ? 'wait' : 'pointer' }}
+                  style={{ marginLeft: 'auto', fontSize: 'var(--fs-s)', padding: '4px 12px', borderRadius: 6, border: '1px solid var(--danger)', color: 'var(--danger)', background: 'transparent', cursor: busyId === s.id ? 'wait' : 'pointer' }}
                 >
                   {busyId === s.id ? '重派中…' : '一键重派'}
                 </button>

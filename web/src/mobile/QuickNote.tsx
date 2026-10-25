@@ -211,7 +211,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
       {/* 顶部栏：取消 / 标题 / 完成 */}
       <header style={header}>
         <button onClick={onCancel} title="取消 — 放弃本次记录" aria-label="取消" style={hdrBtn}>取消</button>
-        <div style={{ fontWeight: 600, fontSize: 15 }}>随手记</div>
+        <div style={{ fontWeight: 600, fontSize: 'var(--fs-xl)' }}>随手记</div>
         <button
           onClick={() => void submit()}
           disabled={!canSubmit}
@@ -285,7 +285,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
 
         {/* T01431：短语法解析预览条——提交前展示命中结果，属性行可修正 */}
         {syntax && (syntax.priority || syntax.projectId || syntax.categoryId || syntax.dueNote) && (
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8, padding: '6px 10px', borderRadius: 8, background: 'var(--surface-2)', fontSize: 12, color: 'var(--text-secondary)' }}>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8, padding: '6px 10px', borderRadius: 8, background: 'var(--surface-2)', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
             <span style={{ color: 'var(--text-muted)' }}>短语法解析：</span>
             {syntax.priority && <Badge tone="accent">优先级 {{ urgent: '紧急', high: '高', normal: '普通', low: '低' }[syntax.priority]}</Badge>}
             {syntax.projectId && <Badge>项目 {projects.find((x) => x.id === syntax.projectId)?.name}</Badge>}
@@ -297,7 +297,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
         {/* 模板面板 */}
         {tplOpen && (
           <div style={sheet}>
-            <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>从提示词模板预填</div>
+            <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 8 }}>从提示词模板预填</div>
             {templates.length === 0 && <EmptyState icon="📄" message="暂无可用模板" />}
             <div style={{ maxHeight: 240, overflowY: 'auto' }}>
               {templates.map((p) => (
@@ -314,7 +314,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
               <div key={`${url.slice(-24)}-${i}`} style={{ position: 'relative' }}>
                 <img src={url} alt="待上传" style={{ height: 64, borderRadius: 6, border: '1px dashed var(--accent)' }} />
                 <button onClick={() => removeImageAt(i)} title="移除图片" aria-label="移除图片"
-                  style={{ position: 'absolute', top: -6, right: -6, fontSize: 10, lineHeight: '16px', padding: '0 4px', background: 'var(--danger)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' }}>✕</button>
+                  style={{ position: 'absolute', top: -6, right: -6, fontSize: 'var(--fs-2xs)', lineHeight: '16px', padding: '0 4px', background: 'var(--danger)', color: 'var(--on-solid)', border: 'none', borderRadius: 8, cursor: 'pointer' }}>✕</button>
               </div>
             ))}
           </div>
@@ -322,7 +322,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
 
         {/* 描述（可折叠） */}
         <div style={{ marginTop: 10 }}>
-          <button onClick={() => setDescOpen((o) => !o)} style={{ fontSize: 13, color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <button onClick={() => setDescOpen((o) => !o)} style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             <Paperclip size={14} /> 描述{!description && '（可选）'}{descOpen ? ' ▲' : ' ▼'}
           </button>
           {descOpen && (
@@ -331,18 +331,18 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
               onChange={(e) => setDescription(e.target.value)}
               rows={4}
               placeholder="补充说明（可选）"
-              style={{ width: '100%', marginTop: 8, padding: 10, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 14, boxSizing: 'border-box' }}
+              style={{ width: '100%', marginTop: 8, padding: 10, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 'var(--fs-l)', boxSizing: 'border-box' }}
             />
           )}
         </div>
 
         {/* 优先级 */}
         <div style={{ marginTop: 14 }}>
-          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 6 }}>优先级</div>
+          <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 6 }}>优先级</div>
           <div style={{ display: 'flex', gap: 6 }}>
             {PRIORITIES.map((p) => (
               <button key={p.value} onClick={() => setPriority(p.value)}
-                style={{ flex: 1, padding: '8px 0', borderRadius: 8, fontSize: 13, cursor: 'pointer',
+                style={{ flex: 1, padding: '8px 0', borderRadius: 8, fontSize: 'var(--fs-m)', cursor: 'pointer',
                   background: priority === p.value ? 'var(--accent)' : 'var(--surface-2)',
                   color: priority === p.value ? 'var(--accent-text)' : 'var(--text)', border: 'none' }}>
                 {p.label}
@@ -353,7 +353,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
 
         {/* 分类 */}
         <div style={{ marginTop: 14 }}>
-          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 6 }}>分类（可选）</div>
+          <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 6 }}>分类（可选）</div>
           <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} style={selectFull}>
             <option value="">未分类</option>
             {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -362,12 +362,12 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
 
         {/* 项目归属（默认记事项目，可展开改） */}
         <div style={{ marginTop: 14 }}>
-          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 6 }}>归属项目</div>
+          <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 6 }}>归属项目</div>
           <select value={projectId} onChange={(e) => { setProjectId(e.target.value); const p = projects.find((x) => x.id === e.target.value); setProjectName(p?.name ?? '收件箱'); }} style={selectFull}>
             {projects.length === 0 && !projectId && <option value="">{projectListPlaceholder(projectList)}</option>}
             {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>默认记事项目：{projectName}（随手记缺省落入，可在「更多→设置」更改）</div>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginTop: 4 }}>默认记事项目：{projectName}（随手记缺省落入，可在「更多→设置」更改）</div>
         </div>
       </div>
     </div>
@@ -375,11 +375,11 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
 }
 
 // ---------- 复用样式 ----------
-const hdrBtn: React.CSSProperties = { fontSize: 14, padding: '6px 8px', background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text)' };
-const titleInput: React.CSSProperties = { width: '100%', marginTop: 4, padding: 12, border: '1px solid var(--border-strong)', borderRadius: 10, fontSize: 16, boxSizing: 'border-box', resize: 'none', fontFamily: 'inherit' };
+const hdrBtn: React.CSSProperties = { fontSize: 'var(--fs-l)', padding: '6px 8px', background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text)' };
+const titleInput: React.CSSProperties = { width: '100%', marginTop: 4, padding: 12, border: '1px solid var(--border-strong)', borderRadius: 10, fontSize: 'var(--fs-2xl)', boxSizing: 'border-box', resize: 'none', fontFamily: 'inherit' };
 const quickBar: React.CSSProperties = { display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' };
-const quickChip: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '8px 12px', borderRadius: 20, fontSize: 13, cursor: 'pointer', border: 'none' };
+const quickChip: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '8px 12px', borderRadius: 20, fontSize: 'var(--fs-m)', cursor: 'pointer', border: 'none' };
 const sheet: React.CSSProperties = { marginTop: 10, padding: 12, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 10 };
-const tplItem: React.CSSProperties = { display: 'block', width: '100%', textAlign: 'left', padding: '10px 8px', fontSize: 14, border: 'none', borderBottom: '1px solid var(--surface-2)', background: 'transparent', color: 'var(--text)', cursor: 'pointer' };
-const attrSelect: React.CSSProperties = { width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 13, background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box' };
-const selectFull: React.CSSProperties = { width: '100%', padding: 10, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 14, background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box' };
+const tplItem: React.CSSProperties = { display: 'block', width: '100%', textAlign: 'left', padding: '10px 8px', fontSize: 'var(--fs-l)', border: 'none', borderBottom: '1px solid var(--surface-2)', background: 'transparent', color: 'var(--text)', cursor: 'pointer' };
+const attrSelect: React.CSSProperties = { width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 'var(--fs-m)', background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box' };
+const selectFull: React.CSSProperties = { width: '100%', padding: 10, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 'var(--fs-l)', background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box' };

@@ -8,7 +8,7 @@ import { Bot, Check, Download, FileSpreadsheet, FileText, ListTodo, Loader2, Moo
 
 const box: React.CSSProperties = {
   background: 'var(--surface-2, rgba(0,0,0,.03))', border: '1px solid var(--border)', borderRadius: 8,
-  padding: 10, minHeight: 108, position: 'relative', overflow: 'hidden', fontSize: 11,
+  padding: 10, minHeight: 108, position: 'relative', overflow: 'hidden', fontSize: 'var(--fs-xs)',
 };
 const line = (extra?: React.CSSProperties): React.CSSProperties => ({
   background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, padding: '3px 6px', ...extra,
@@ -141,7 +141,7 @@ export function ToTaskFlowDemo({ noun }: { readonly noun: '提示词' | '需求'
         .pgd-fly { animation: pgd-fly 3.6s ease-in-out infinite; }`} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <span style={{ ...line(), borderColor: 'var(--accent)' }}>{noun}条目</span>
-        <span className="pgd-fly" style={{ position: 'absolute', left: 56, top: 34, color: 'var(--accent)', fontSize: 14 }}>➜</span>
+        <span className="pgd-fly" style={{ position: 'absolute', left: 56, top: 34, color: 'var(--accent)', fontSize: 'var(--fs-l)' }}>➜</span>
         <span style={{ marginLeft: 46, ...line(), display: 'inline-flex', alignItems: 'center', gap: 4 }}><ListTodo size={11} /> 收件箱待办</span>
       </div>
       <div style={{ marginTop: 22, color: 'var(--text-muted)' }}>「复制到待办任务」→ 选目标项目 → 生成待办，衔接 AI 执行链路</div>
@@ -172,7 +172,7 @@ export function PrdFlowDemo() {
         .pgd-flow { animation: pgd-flow 3.6s infinite; }`} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ ...line(), display: 'inline-flex', alignItems: 'center', gap: 4 }}><Upload size={11} /> PRD.docx</span>
-        <span className="pgd-flow" style={{ color: 'var(--accent)', fontSize: 14 }}>➜</span>
+        <span className="pgd-flow" style={{ color: 'var(--accent)', fontSize: 'var(--fs-l)' }}>➜</span>
         <span style={{ ...line({ borderColor: 'var(--accent)', color: 'var(--accent)' }) }}>AI 拆 WBS + 提取需求</span>
       </div>
       <div className="pgd-flow" style={{ ...line({ marginTop: 8, animationDelay: '.5s', display: 'flex', gap: 8 }) }}>
@@ -190,7 +190,7 @@ export function ConsoleLogDemo() {
     <div style={box} aria-label="控制台日志演示">
       <DemoStyle css={`@keyframes pgd-log { 0% { opacity:0; transform:translateY(6px) } 20%,100% { opacity:1; transform:none } }
         .pgd-log { animation: pgd-log 4s infinite both; }`} />
-      <div style={{ ...line({ background: 'var(--surface-2, rgba(0,0,0,.05))', fontFamily: 'monospace', fontSize: 10 }) }}>
+      <div style={{ ...line({ background: 'var(--surface-2, rgba(0,0,0,.05))', fontFamily: 'monospace', fontSize: 'var(--fs-2xs)' }) }}>
         {rows.map((r, i) => (
           <div key={r} className="pgd-log" style={{ marginTop: i ? 3 : 0, animationDelay: `${i * 0.7}s`, color: i === 3 ? 'var(--success)' : 'var(--text)' }}>{r}</div>
         ))}

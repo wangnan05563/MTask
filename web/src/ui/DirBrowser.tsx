@@ -73,9 +73,9 @@ function DirBrowser({ onDone }: { readonly onDone: (path: string | null) => void
     <div style={overlay}>
       <dialog ref={panelRef} open aria-modal="true" aria-label="选择工作空间文件夹"
         style={{ ...panel, margin: 0, border: 'none', padding: 0, position: 'static' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
           <Folder size={14} style={{ color: 'var(--accent)' }} /> 选择工作空间文件夹
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>（服务端目录浏览 — 无桌面壳环境的降级通道）</span>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 400 }}>（服务端目录浏览 — 无桌面壳环境的降级通道）</span>
           <span style={{ flex: 1 }} />
           <button onClick={() => onDone(null)} title="关闭" aria-label="关闭目录浏览器" className={btn}
             style={{ display: 'inline-flex', alignItems: 'center', border: 'none', background: 'transparent', color: 'var(--text)', cursor: 'pointer' }}>
@@ -90,14 +90,14 @@ function DirBrowser({ onDone }: { readonly onDone: (path: string | null) => void
             <ArrowUp size={12} />
           </button>
           <button onClick={() => void load('')} title="回到磁盘/主目录列表" aria-label="回到根列表" className={btn}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 12 }}>
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-s)' }}>
             <HardDrive size={12} /> 根目录
           </button>
           <button onClick={() => void load(listing?.home ?? '')} title="跳到用户主目录" aria-label="跳到用户主目录" className={btn}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 12 }}>
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-s)' }}>
             <Home size={12} /> 主目录
           </button>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}
             title={listing?.path || '未选择（根列表）'}>
             当前位置：{listing?.path || '（根列表）'}
           </span>
@@ -106,39 +106,39 @@ function DirBrowser({ onDone }: { readonly onDone: (path: string | null) => void
         {/* 目录列表 */}
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 8 }}>
           {loading && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)', padding: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 8 }}>
               <Loader2 size={13} className="aispin" /> 读取目录…
             </div>
           )}
-          {!loading && error && <div style={{ fontSize: 12, color: 'var(--danger)', padding: 8 }}>{error}</div>}
+          {!loading && error && <div style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', padding: 8 }}>{error}</div>}
           {!loading && !error && listing?.entries.length === 0 && (
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: 8 }}>该目录下没有子文件夹 — 可直接选择当前目录，或返回上级。</div>
+            <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 8 }}>该目录下没有子文件夹 — 可直接选择当前目录，或返回上级。</div>
           )}
           {!loading && !error && listing?.entries.map((d) => (
             <button key={d.path} onClick={() => void load(d.path)} title={d.path} className={btn}
-              style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '5px 8px', fontSize: 12, border: 'none', borderRadius: 5, cursor: 'pointer', textAlign: 'left', background: 'transparent', color: 'var(--text)' }}>
+              style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '5px 8px', fontSize: 'var(--fs-s)', border: 'none', borderRadius: 5, cursor: 'pointer', textAlign: 'left', background: 'transparent', color: 'var(--text)' }}>
               <Folder size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>
             </button>
           ))}
           {!loading && listing?.truncated && (
-            <div style={{ fontSize: 11, color: 'var(--warning, #c80)', padding: '4px 8px' }}>子目录过多，仅显示前 500 项 — 可先进入下一层再继续查找。</div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--warning, #c80)', padding: '4px 8px' }}>子目录过多，仅显示前 500 项 — 可先进入下一层再继续查找。</div>
           )}
         </div>
 
         {/* 底部：确认当前目录 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {listing?.path ? `将绑定：${listing.path}` : '请先进入一个文件夹'}
           </span>
           <span style={{ flex: 1 }} />
           <button onClick={() => onDone(null)} className={btn} title="取消 — 关闭目录浏览器"
-            style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>
+            style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
             取消
           </button>
           <button onClick={() => listing?.path && onDone(listing.path)} disabled={!listing?.path} className={btn}
             title="选择此文件夹 — 绑定当前所在目录为工作空间" aria-label="选择当前文件夹"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 12px', borderRadius: 6, border: 'none', cursor: listing?.path ? 'pointer' : 'default', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12, opacity: listing?.path ? 1 : 0.5 }}>
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 12px', borderRadius: 6, border: 'none', cursor: listing?.path ? 'pointer' : 'default', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)', opacity: listing?.path ? 1 : 0.5 }}>
             <Check size={12} /> 选择此文件夹
           </button>
         </div>

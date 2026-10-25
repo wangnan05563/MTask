@@ -96,8 +96,8 @@ export function AiPlanImportPanel({ toolId, onClose, onSaved }: {
     <div style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
         <Sparkles size={15} style={{ color: 'var(--accent)' }} />
-        <strong style={{ fontSize: 14 }}>AI 项目计划导入</strong>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        <strong style={{ fontSize: 'var(--fs-l)' }}>AI 项目计划导入</strong>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           上传 Excel/需求文档 → AI 解析 → 预览确认 → 批量入库；执行输出见右侧 AI 控制台「AI 项目计划导入」tab，模型使用控制台当前选择
         </span>
         <span style={{ flex: 1 }} />
@@ -112,38 +112,38 @@ export function AiPlanImportPanel({ toolId, onClose, onSaved }: {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
         <select value={projectId} onChange={(e) => setProjectId(e.target.value)} disabled={busy || projectList.unusable}
           aria-label="目标项目" title="计划将导入到该项目"
-          style={{ padding: 4, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          style={{ padding: 4, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">{projectListPlaceholder(projectList, '选择目标项目…')}</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <ProjectListHint view={projectList} />
         <label className="tbtn-anim" title="选择计划 Excel（.xlsx/.csv）或需求文档（.md/.docx）"
-          style={{ cursor: busy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--accent)', color: 'var(--accent)', fontSize: 12 }}>
+          style={{ cursor: busy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--accent)', color: 'var(--accent)', fontSize: 'var(--fs-s)' }}>
           <Upload size={13} /> 选择文件
           <input type="file" accept=".xlsx,.csv,.md,.markdown,.docx" style={FILE_INPUT_SR_ONLY}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void parse(f); } e.target.value = ''; }} />
         </label>
-        {fileName && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{fileName}</span>}
-        {busy && <span className="ai-shimmer" style={{ fontSize: 11, fontWeight: 600, ['--ai-shimmer-color' as never]: 'var(--accent)' }}>处理中…</span>}
+        {fileName && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{fileName}</span>}
+        {busy && <span className="ai-shimmer" style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, ['--ai-shimmer-color' as never]: 'var(--accent)' }}>处理中…</span>}
         {/* 面板内仅保留一行状态提示：完整滚动输出统一在右侧控制台 tab */}
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           {snap.logs.length > 0 ? `控制台已输出 ${snap.logs.length} 条执行日志 →` : '执行过程将在右侧 AI 控制台逐行输出'}
         </span>
       </div>
 
-      {error && <div style={{ color: 'var(--danger)', fontSize: 12, marginBottom: 8 }}>{error}</div>}
+      {error && <div style={{ color: 'var(--danger)', fontSize: 'var(--fs-s)', marginBottom: 8 }}>{error}</div>}
 
       {rows.length > 0 && (
         <div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6 }}>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 6 }}>
             解析到 {rows.length} 条（已勾选 {rows.filter((r) => r.include).length} 条）——可编辑后保存：
             <button onClick={() => aiImportStore.setRows(rows.map((r) => ({ ...r, include: true })))} disabled={busy} title="全选" aria-label="全选草稿"
-              style={{ marginLeft: 8, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'transparent', color: 'var(--text)', fontSize: 11, padding: '1px 6px', cursor: 'pointer' }}>全选</button>
+              style={{ marginLeft: 8, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-xs)', padding: '1px 6px', cursor: 'pointer' }}>全选</button>
             <button onClick={() => aiImportStore.setRows(rows.map((r) => ({ ...r, include: false })))} disabled={busy} title="全不选" aria-label="全不选草稿"
-              style={{ marginLeft: 4, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'transparent', color: 'var(--text)', fontSize: 11, padding: '1px 6px', cursor: 'pointer' }}>全不选</button>
+              style={{ marginLeft: 4, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-xs)', padding: '1px 6px', cursor: 'pointer' }}>全不选</button>
           </div>
           <div style={{ maxHeight: 260, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-s)' }}>
               <thead>
                 <tr style={{ color: 'var(--text-muted)', textAlign: 'left' }}>
                   <th style={{ padding: 4 }}>选</th>
@@ -162,18 +162,18 @@ export function AiPlanImportPanel({ toolId, onClose, onSaved }: {
                     <td style={{ padding: 4 }}>
                       <input value={row.title} onChange={(e) => updateRow(i, { title: e.target.value })}
                         aria-label="草稿标题"
-                        style={{ width: '100%', border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 12 }} />
+                        style={{ width: '100%', border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }} />
                     </td>
                     <td style={{ padding: 4, width: 80 }}>
                       <input type="number" min={1} value={row.durationDays}
                         onChange={(e) => updateRow(i, { durationDays: Number(e.target.value) || 1 })}
                         aria-label="草稿工期"
-                        style={{ width: 56, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, padding: '1px 4px' }} />
+                        style={{ width: 56, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', padding: '1px 4px' }} />
                     </td>
                     <td style={{ padding: 4, width: 130 }}>
                       <input type="date" value={row.startDate} onChange={(e) => updateRow(i, { startDate: e.target.value })}
                         aria-label="草稿开始日期"
-                        style={{ border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, padding: '1px 4px' }} />
+                        style={{ border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', padding: '1px 4px' }} />
                     </td>
                   </tr>
                 ))}
@@ -182,7 +182,7 @@ export function AiPlanImportPanel({ toolId, onClose, onSaved }: {
           </div>
           <button onClick={() => void save()} disabled={busy} className="tbtn-anim"
             title="保存勾选的草稿——批量创建到目标项目并重排时间线" aria-label="保存 AI 导入草稿"
-            style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12, cursor: busy ? 'default' : 'pointer' }}>
+            style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)', cursor: busy ? 'default' : 'pointer' }}>
             <Save size={13} /> 保存（{rows.filter((r) => r.include && r.title.trim()).length} 条）
           </button>
         </div>

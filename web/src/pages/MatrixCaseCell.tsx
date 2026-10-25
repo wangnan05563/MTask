@@ -36,14 +36,14 @@ export function MatrixCaseCell({ reqId, reqNo, title, count, onDrill }: {
         <button onClick={() => onDrill(reqId)} className="tbtn-anim"
           title={caseCellTitle(reqNo, title, count)}
           aria-label={`下钻查看需求 ${reqNo || title} 的 ${count} 条测试用例`}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, border: '1px solid var(--accent)', borderRadius: 4, background: 'transparent', color: 'var(--accent)', cursor: 'pointer', padding: '0 5px', maxWidth: '100%' }}>
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-xs)', border: '1px solid var(--accent)', borderRadius: 4, background: 'transparent', color: 'var(--accent)', cursor: 'pointer', padding: '0 5px', maxWidth: '100%' }}>
           <FlaskConical size={10} style={{ flexShrink: 0 }} />
           用例 {count}
         </button>
       ) : (
         <span title="该需求暂无关联测试用例（未覆盖）——可在测试用例视图的「未覆盖的需求」中补写"
           aria-label={`需求 ${reqNo || title} 未覆盖用例`}
-          style={{ fontSize: 11, color: 'var(--text-muted)', border: '1px dashed var(--border-strong)', borderRadius: 4, padding: '0 5px' }}>
+          style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', border: '1px dashed var(--border-strong)', borderRadius: 4, padding: '0 5px' }}>
           未覆盖
         </span>
       )}

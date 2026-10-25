@@ -29,7 +29,7 @@ export interface GuideEntry {
 function Chips({ items }: { readonly items: readonly { icon: React.ReactNode; label: string }[] }) {
   return (
     <div style={{ background: 'var(--surface-2, rgba(0,0,0,.03))', border: '1px solid var(--border)', borderRadius: 8, padding: 10 }}>
-      <div style={{ display: 'flex', gap: 8, fontSize: 11, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 8, fontSize: 'var(--fs-xs)', flexWrap: 'wrap' }}>
         {items.map((x) => (
           <span key={x.label} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', borderRadius: 6, padding: '4px 8px', color: 'var(--text)' }}>
             {x.icon}{x.label}

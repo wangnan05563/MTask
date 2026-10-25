@@ -26,8 +26,8 @@ const KIND_COLOR: Record<string, string> = {
   probe: 'var(--warning, var(--accent))',
 };
 
-const cellStyle: React.CSSProperties = { padding: '5px 8px', borderBottom: '1px solid var(--surface-2)', fontSize: 12 };
-const thStyle: React.CSSProperties = { padding: '5px 8px', fontSize: 11, color: 'var(--text-muted)', textAlign: 'left', borderBottom: '1px solid var(--border-strong)' };
+const cellStyle: React.CSSProperties = { padding: '5px 8px', borderBottom: '1px solid var(--surface-2)', fontSize: 'var(--fs-s)' };
+const thStyle: React.CSSProperties = { padding: '5px 8px', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textAlign: 'left', borderBottom: '1px solid var(--border-strong)' };
 
 export function UsagePanel() {
   const [days, setDays] = useState(7);
@@ -57,16 +57,16 @@ export function UsagePanel() {
   return (
     <div style={{ marginTop: 24 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-        <h3 style={{ fontSize: 15, margin: 0 }}>AI 用量统计</h3>
+        <h3 style={{ fontSize: 'var(--fs-xl)', margin: 0 }}>AI 用量统计</h3>
         <select value={days} onChange={(e) => setDays(Number(e.target.value))} aria-label="统计周期"
-          style={{ padding: '4px 6px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12 }}>
+          style={{ padding: '4px 6px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
           <option value={7}>近 7 天</option>
           <option value={14}>近 14 天</option>
           <option value={30}>近 30 天</option>
           <option value={90}>近 90 天</option>
         </select>
         <button onClick={() => void load()} disabled={loading} title="刷新用量统计"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 8px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 8px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
           <RefreshCw size={12} className={loading ? 'aispin' : undefined} />刷新
         </button>
       </div>
@@ -81,8 +81,8 @@ export function UsagePanel() {
           { label: '输出字符', value: totalChars.toLocaleString() },
         ].map((c): React.ReactElement => (
           <div key={c.label} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '8px 14px', minWidth: 96 }}>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{c.label}</div>
-            <div style={{ fontSize: 18, fontWeight: 600, color: c.label === '失败' && Number(c.value) > 0 ? 'var(--danger)' : 'var(--text)' }}>{c.value}</div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{c.label}</div>
+            <div style={{ fontSize: 'var(--fs-title)', fontWeight: 600, color: c.label === '失败' && Number(c.value) > 0 ? 'var(--danger)' : 'var(--text)' }}>{c.value}</div>
           </div>
         ))}
       </div>
@@ -90,7 +90,7 @@ export function UsagePanel() {
       {/* 按天趋势 */}
       {summary.length > 0 && (
         <div style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>按天</div>
+          <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 4 }}>按天</div>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead><tr>{['日期', '调用', '成功', '失败', '平均耗时', '输出字符'].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
             <tbody>
@@ -110,7 +110,7 @@ export function UsagePanel() {
       {/* 按工具/类型分组 */}
       {byTool.length > 0 && (
         <div style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>按工具与调用类型</div>
+          <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 4 }}>按工具与调用类型</div>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead><tr>{['工具', '模型', '类型', '调用', '成功', '失败', '平均耗时', '输出字符'].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
             <tbody>
@@ -131,7 +131,7 @@ export function UsagePanel() {
       {/* 最近调用明细 */}
       {recent.length > 0 && (
         <div>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>最近调用（近 {recentMeta.days} 天，每厂商≤{recentMeta.perTool} 条，{recent.length}）</div>
+          <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 4 }}>最近调用（近 {recentMeta.days} 天，每厂商≤{recentMeta.perTool} 条，{recent.length}）</div>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead><tr>{['时间', '工具', '类型', '状态', '耗时', '输出', '错误'].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
             <tbody>
@@ -150,7 +150,7 @@ export function UsagePanel() {
           </table>
         </div>
       )}
-      {summary.length === 0 && !loading && <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>所选周期内暂无 AI 调用记录。</p>}
+      {summary.length === 0 && !loading && <p style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>所选周期内暂无 AI 调用记录。</p>}
     </div>
   );
 }

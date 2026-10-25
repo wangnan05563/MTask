@@ -49,7 +49,7 @@ export function MobilePrompts({ notify }: Props) {
         {prompts.map((p) => (
           <div key={p.id} style={card}>
             <button onClick={() => setExpanded((cur) => (cur === p.id ? null : p.id))} style={cardHead}>
-              <span style={{ flex: 1, textAlign: 'left', fontWeight: 600, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title}</span>
+              <span style={{ flex: 1, textAlign: 'left', fontWeight: 600, fontSize: 'var(--fs-xl)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title}</span>
               <span style={{ color: 'var(--accent)', display: 'inline-flex' }}>{expanded === p.id ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</span>
             </button>
             {expanded === p.id && (
@@ -65,8 +65,8 @@ export function MobilePrompts({ notify }: Props) {
   );
 }
 
-const hdr: React.CSSProperties = { fontSize: 16, fontWeight: 700, padding: 12, borderBottom: '1px solid var(--border)', background: 'var(--card-bg)' };
-const sel: React.CSSProperties = { width: '100%', padding: 10, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 14, background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box' };
+const hdr: React.CSSProperties = { fontSize: 'var(--fs-2xl)', fontWeight: 700, padding: 12, borderBottom: '1px solid var(--border)', background: 'var(--card-bg)' };
+const sel: React.CSSProperties = { width: '100%', padding: 10, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 'var(--fs-l)', background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box' };
 const cardHead: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, width: '100%', background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text)' };
-const pre: React.CSSProperties = { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 13, color: 'var(--text-secondary)', background: 'var(--surface)', borderRadius: 8, padding: 10, margin: 0, maxHeight: 280, overflowY: 'auto' };
-const copyBtn: React.CSSProperties = { marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '8px 14px', borderRadius: 8, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', cursor: 'pointer', fontSize: 14 };
+const pre: React.CSSProperties = { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', background: 'var(--surface)', borderRadius: 8, padding: 10, margin: 0, maxHeight: 280, overflowY: 'auto' };
+const copyBtn: React.CSSProperties = { marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '8px 14px', borderRadius: 8, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', cursor: 'pointer', fontSize: 'var(--fs-l)' };

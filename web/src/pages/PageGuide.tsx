@@ -64,8 +64,8 @@ export function PageGuideDialog({ open, onClose, title, steps }: {
         {/* 头部 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
           <Compass size={16} style={{ color: 'var(--accent)' }} />
-          <strong style={{ fontSize: 14 }}>{title}</strong>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{step + 1} / {steps.length}</span>
+          <strong style={{ fontSize: 'var(--fs-l)' }}>{title}</strong>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{step + 1} / {steps.length}</span>
           <span style={{ flex: 1 }} />
           <button onClick={finish} title="关闭向导（不再自动弹出）" aria-label="关闭向导"
             style={{ display: 'inline-flex', alignItems: 'center', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', padding: '2px 6px' }}>
@@ -85,10 +85,10 @@ export function PageGuideDialog({ open, onClose, title, steps }: {
         <div style={{ padding: 14, overflowY: 'auto' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <Icon size={16} style={{ color: 'var(--accent)' }} />
-            <strong style={{ fontSize: 14 }}>{cur.title}</strong>
+            <strong style={{ fontSize: 'var(--fs-l)' }}>{cur.title}</strong>
           </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10 }}>{cur.desc}</div>
-          <ul style={{ margin: '0 0 12px', paddingLeft: 18, fontSize: 12, color: 'var(--text)' }}>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 10 }}>{cur.desc}</div>
+          <ul style={{ margin: '0 0 12px', paddingLeft: 18, fontSize: 'var(--fs-s)', color: 'var(--text)' }}>
             {cur.points.map((p) => <li key={p} style={{ marginBottom: 4 }}>{p}</li>)}
           </ul>
           {cur.visual}
@@ -97,17 +97,17 @@ export function PageGuideDialog({ open, onClose, title, steps }: {
         {/* 底部操作 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderTop: '1px solid var(--border)', flexWrap: 'wrap' }}>
           <button onClick={finish} title="跳过（记录已看状态，不再自动弹出）" aria-label="跳过"
-            style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text-muted)', fontSize: 12 }}>跳过</button>
+            style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>跳过</button>
           <span style={{ flex: 1 }} />
           <button onClick={() => setStep((s) => Math.max(0, s - 1))} disabled={step === 0} className="tbtn-anim"
-            style={{ padding: '5px 12px', borderRadius: 6, cursor: step === 0 ? 'default' : 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12, opacity: step === 0 ? .5 : 1 }}>上一步</button>
+            style={{ padding: '5px 12px', borderRadius: 6, cursor: step === 0 ? 'default' : 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', opacity: step === 0 ? .5 : 1 }}>上一步</button>
           {last
             ? <button onClick={finish} className="tbtn-anim" title="开始体验 — 关闭向导并记住已看过" aria-label="开始体验"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12 }}>
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)' }}>
               <Check size={13} /> 开始体验
             </button>
             : <button onClick={() => setStep((s) => Math.min(steps.length - 1, s + 1))} className="tbtn-anim"
-              style={{ padding: '5px 14px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12 }}>下一步</button>}
+              style={{ padding: '5px 14px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)' }}>下一步</button>}
         </div>
       </dialog>
     </div>

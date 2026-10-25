@@ -296,7 +296,7 @@ export function PlanTimeline({ plans, granularity, spacing = 'uniform', onSelect
   }, [phases, granularity, spacing, collapsedMs]);
 
   if (plans.length === 0) {
-    return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: 16, textAlign: 'center' }}>（暂无计划任务，无法生成时间线）</div>;
+    return <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-m)', padding: 16, textAlign: 'center' }}>（暂无计划任务，无法生成时间线）</div>;
   }
 
   function nodeCard(p: TlPlan, isMs: boolean): ReactNode {
@@ -322,7 +322,7 @@ export function PlanTimeline({ plans, granularity, spacing = 'uniform', onSelect
         <div style={{ fontWeight: isMs ? 700 : 500, fontSize: isMs ? 14 : 13, color: p.color || 'var(--text)' }}>
           {isMs && <span aria-hidden="true" style={{ color: 'var(--accent)', marginRight: 4 }}>◆</span>}{p.title}
         </div>
-        <div style={{ display: 'flex', gap: 8, fontSize: 11, color: 'var(--text-muted)', marginTop: 3, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 3, flexWrap: 'wrap' }}>
           {toDateMs(p.start_date) === null
             // T01575：未排期节点两种模式下都沉底，并在卡内显式标注（旧版只在日期位显示「未排期」，容易被当成数据缺失）
             ? <span data-tl="unscheduled" style={{ color: 'var(--text-muted)', border: '1px dashed var(--border-strong)', borderRadius: 4, padding: '0 5px' }}>未排期</span>
@@ -336,7 +336,7 @@ export function PlanTimeline({ plans, granularity, spacing = 'uniform', onSelect
             <div style={{ flex: 1, height: 5, borderRadius: 3, background: 'var(--surface-2)', overflow: 'hidden' }}>
               <div style={{ width: `${Math.max(0, Math.min(100, p.progress || 0))}%`, height: '100%', background: st.color }} />
             </div>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{p.progress || 0}%</span>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{p.progress || 0}%</span>
           </div>
         )}
       </button>
@@ -348,7 +348,7 @@ export function PlanTimeline({ plans, granularity, spacing = 'uniform', onSelect
     return (
       <li key={r.key} data-tl="tick" aria-label={`时间刻度 ${r.label}`} style={{ position: 'relative', margin: '12px 0 6px' }}>
         <span aria-hidden="true" style={{ position: 'absolute', left: -31, top: 2, width: 12, height: 12, borderRadius: '50%', background: 'var(--surface-2)', border: '2px solid var(--accent)' }} />
-        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent)', letterSpacing: .3 }}>{r.label}</span>
+        <span style={{ fontSize: 'var(--fs-s)', fontWeight: 700, color: 'var(--accent)', letterSpacing: .3 }}>{r.label}</span>
       </li>
     );
   }
@@ -362,7 +362,7 @@ export function PlanTimeline({ plans, granularity, spacing = 'uniform', onSelect
         {r.days > 0 && (
           <span style={{
             position: 'absolute', left: 4, top: '50%', transform: 'translateY(-50%)',
-            fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap',
+            fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap',
             border: '1px dashed var(--border-strong)', borderRadius: 5, padding: '1px 7px', background: 'var(--card-bg)',
           }}>⋯ 空档 {r.days} 天（按自然日，比例尺已压缩；甘特为工作日口径）</span>
         )}
@@ -375,7 +375,7 @@ export function PlanTimeline({ plans, granularity, spacing = 'uniform', onSelect
     return (
       <li key={r.key} data-tl="sum" data-tl-collapsed={r.collapsed ? '1' : '0'}
         aria-label={`阶段汇总 ${r.text}`}
-        style={{ fontSize: 12, color: r.collapsed ? 'var(--accent)' : 'var(--text-muted)', margin: '4px 0 8px' }}>{r.text}</li>
+        style={{ fontSize: 'var(--fs-s)', color: r.collapsed ? 'var(--accent)' : 'var(--text-muted)', margin: '4px 0 8px' }}>{r.text}</li>
     );
   }
 
@@ -416,7 +416,7 @@ export function PlanTimeline({ plans, granularity, spacing = 'uniform', onSelect
             }}
           >
             {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-            <span style={{ fontSize: 10, marginLeft: 1 }}>{msRow.itemCount}</span>
+            <span style={{ fontSize: 'var(--fs-2xs)', marginLeft: 1 }}>{msRow.itemCount}</span>
           </button>
         )}
         {/* T01577：关联待办跳转角标——节点卡本身是 button（不能嵌套按钮），故与折叠控件同法，
@@ -431,7 +431,7 @@ export function PlanTimeline({ plans, granularity, spacing = 'uniform', onSelect
             title={jumpTitle}
             style={{
               position: 'absolute', right: isMs ? 38 : 6, top: 8, zIndex: 1,
-              padding: '2px 7px', fontSize: 11, whiteSpace: 'nowrap',
+              padding: '2px 7px', fontSize: 'var(--fs-xs)', whiteSpace: 'nowrap',
               border: '1px solid var(--success)', borderRadius: 5,
               background: 'var(--card-bg)', color: 'var(--success)', cursor: 'pointer',
             }}

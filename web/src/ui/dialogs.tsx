@@ -87,7 +87,7 @@ function InputDialog({ options, onSubmit }: InputDialogProps) {
   return (
     <div style={overlayStyle}>
       <div ref={panelRef} style={panelStyle}>
-        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>{options.title}</div>
+        <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 12 }}>{options.title}</div>
         <input
           ref={ref}
           value={value}
@@ -97,7 +97,7 @@ function InputDialog({ options, onSubmit }: InputDialogProps) {
             if (e.key === 'Escape') cancel();
           }}
           placeholder={options.placeholder}
-          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' }}
+          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)', boxSizing: 'border-box' }}
         />
         <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button className="ghost" onClick={cancel} title="取消 — 放弃本次输入" aria-label="取消：放弃本次输入" style={{ padding: '6px 14px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}><X size={14} style={{ verticalAlign: '-2px' }} />{options.cancelText ?? '取消'}</button>
@@ -144,7 +144,7 @@ function ConfirmDialog({ message, onSubmit }: ConfirmDialogProps) {
   return (
     <div style={overlayStyle}>
       <div ref={panelRef} style={panelStyle}>
-        <div style={{ fontSize: 14, marginBottom: 16, whiteSpace: 'pre-wrap' }}>{message}</div>
+        <div style={{ fontSize: 'var(--fs-l)', marginBottom: 16, whiteSpace: 'pre-wrap' }}>{message}</div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button className="ghost" onClick={() => onSubmit(false)} title="取消 — 取消并关闭确认" aria-label="取消：取消并关闭确认" style={{ padding: '6px 14px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}><X size={14} style={{ verticalAlign: '-2px' }} />取消</button>
           <button
@@ -245,29 +245,29 @@ function InputDialogEx({ options, onSubmit }: InputDialogExProps) {
   }, [onSubmit]);
 
   const ok = () => { if (text.trim() && numOk) onSubmit({ text: text.trim(), selectValue: sel, numberValue: showNum && num.trim() !== '' ? Number(num) : null }); };
-  const fieldLabel: CSSProperties = { display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 };
+  const fieldLabel: CSSProperties = { display: 'block', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 4 };
 
   return (
     <div style={overlayStyle}>
       <div ref={panelRef} style={panelStyle}>
-        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>{options.title}</div>
+        <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 12 }}>{options.title}</div>
         <label style={fieldLabel}>{options.select.label}</label>
         <select value={sel} onChange={(e) => setSel(e.target.value)}
-          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14, background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box', marginBottom: 12 }}>
+          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)', background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box', marginBottom: 12 }}>
           {options.select.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
         <label style={fieldLabel}>{options.select.label === '任务类型' ? '任务标题' : '标题'}</label>
         <input ref={ref} value={text} onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && numOk) ok(); }}
           placeholder={options.placeholder}
-          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' }}
+          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)', boxSizing: 'border-box' }}
         />
         {options.numberField && showNum && (
           <>
             <label style={{ ...fieldLabel, marginTop: 12 }}>{numLabel}{numRequired ? '（必填）' : ''}</label>
             <input type="number" value={num} min={options.numberField.min} onChange={(e) => setNum(e.target.value)}
               placeholder={options.numberField.placeholder}
-              style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' }}
+              style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)', boxSizing: 'border-box' }}
             />
           </>
         )}

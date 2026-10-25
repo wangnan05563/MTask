@@ -87,7 +87,7 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
             onChange={(e) => { const v = e.target.value; onPatch(row.id, { reqId: v === '__none' ? null : v }, v === '__none' ? '已解除关联' : '已改关联需求'); }}
             title={rid ? '换关联需求 — 改成别的需求，或解除关联' : '关联需求 — 把该用例挂到某条需求上'}
             aria-label={`设置用例 ${row.case_no} 的关联需求`}
-            style={{ ...CELL_INPUT, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text-muted)', fontSize: 11, padding: '1px 2px', maxWidth: 44 }}>
+            style={{ ...CELL_INPUT, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', padding: '1px 2px', maxWidth: 44 }}>
             <option value="">{rid ? '换' : '关联…'}</option>
             {rid && <option value="__none">（解除）</option>}
             {reqs.map((r) => <option key={r.id} value={r.id}>{chipText(`${r.req_no} ${r.title}`)}</option>)}
@@ -104,7 +104,7 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
         onChange={(e) => onPatch(row.id, { [field]: e.target.value } as CasePatchBody, `已改${enumLabel(meta, group, e.target.value)}`)}
         title={`${colName}：改动即保存`}
         aria-label={`用例 ${row.case_no} 的${colName}`}
-        style={{ ...CELL_INPUT, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: color ?? 'var(--text)', fontSize: 12, padding: '1px 2px', width: width - 12 }}>
+        style={{ ...CELL_INPUT, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: color ?? 'var(--text)', fontSize: 'var(--fs-s)', padding: '1px 2px', width: width - 12 }}>
         {values.map((v) => <option key={v} value={v}>{enumLabel(meta, group, v)}</option>)}
       </select>
     </td>
@@ -143,7 +143,7 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
             {opened ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
           </button>
         </div>
-        {row.module === '' && row.tags === '' && <div style={{ fontSize: 10, color: 'var(--text-muted)', paddingLeft: 4 }}>（未填模块与标签）</div>}
+        {row.module === '' && row.tags === '' && <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', paddingLeft: 4 }}>（未填模块与标签）</div>}
       </td>
     );
   };
@@ -238,19 +238,19 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
     };
     return (
       <tr>
-        <td colSpan={span} style={{ padding: '6px 8px', background: 'var(--surface-2)', fontSize: 11, borderTop: '1px solid var(--border)' }}>
+        <td colSpan={span} style={{ padding: '6px 8px', background: 'var(--surface-2)', fontSize: 'var(--fs-xs)', borderTop: '1px solid var(--border)' }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 6, marginBottom: 6 }}>
             {([['preconditions', '前置条件'], ['testData', '测试数据'], ['expected', '预期结果'], ['postconditions', '后置条件'], ['tags', '标签']] as const).map(([key, label]) => (
               <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 2, color: 'var(--text-muted)' }}>
                 {label}
                 <textarea defaultValue={row[key === 'testData' ? 'test_data' : key]} disabled={busy} rows={2} aria-label={label}
                   onBlur={(e) => { if (e.target.value.trim() !== row[key === 'testData' ? 'test_data' : key]) onPatch(row.id, { [key]: e.target.value } as CasePatchBody, `已改${label}`); }}
-                  style={{ ...CELL_INPUT, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 11, resize: 'vertical' }} />
+                  style={{ ...CELL_INPUT, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-xs)', resize: 'vertical' }} />
               </label>
             ))}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, color: 'var(--text-muted)' }}>
-            <strong style={{ fontSize: 11 }}>步骤</strong>
+            <strong style={{ fontSize: 'var(--fs-xs)' }}>步骤</strong>
             <span>操作 → 预期结果；改动即时保存，手柄可拖拽排序（键盘可用上下箭头）</span>
           </div>
           {steps.map((s, i) => (
@@ -258,7 +258,7 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
               style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 3 }}
               onDragOver={(e) => e.preventDefault()}
               onDrop={() => { if (dragFrom >= 0 && dragFrom !== i) { const next = moved(dragFrom, i); if (next) save(next, `已把步骤排到第 ${i + 1} 位`); } setDragFrom(-1); }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 16, textAlign: 'right' }}>{i + 1}.</span>
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', width: 16, textAlign: 'right' }}>{i + 1}.</span>
               {/* S6819/S6852：拖拽手柄由 role=button 的 span 改为原生 button（补 border/background/padding 重置，观感与原 span 一致） */}
               <button type="button" draggable aria-label={`拖拽排序步骤 ${i + 1}`} title="拖拽调整步骤顺序"
                 onDragStart={() => setDragFrom(i)} onDragEnd={() => setDragFrom(-1)}
@@ -267,10 +267,10 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
               </button>
               <input defaultValue={s.action} disabled={busy} placeholder="操作描述" aria-label={`步骤 ${i + 1} 操作`}
                 onBlur={(e) => { if (e.target.value !== s.action) patchStep(i, { action: e.target.value }, `已改步骤 ${i + 1} 操作`); }}
-                style={{ ...CELL_INPUT, flex: 1, minWidth: 120, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 11, padding: '2px 4px' }} />
+                style={{ ...CELL_INPUT, flex: 1, minWidth: 120, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-xs)', padding: '2px 4px' }} />
               <input defaultValue={s.expected} disabled={busy} placeholder="预期结果" aria-label={`步骤 ${i + 1} 预期`}
                 onBlur={(e) => { if (e.target.value !== s.expected) patchStep(i, { expected: e.target.value }, `已改步骤 ${i + 1} 预期`); }}
-                style={{ ...CELL_INPUT, flex: 1, minWidth: 120, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 11, padding: '2px 4px' }} />
+                style={{ ...CELL_INPUT, flex: 1, minWidth: 120, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-xs)', padding: '2px 4px' }} />
               <button onClick={() => { const up = moved(i, i - 1); if (up) save(up, `步骤 ${i + 1} 上移`); }} disabled={busy || i === 0} className="tbtn-anim"
                 title="上移该步骤" aria-label={`上移步骤 ${i + 1}`} style={{ ...ICON_BTN, padding: '1px 4px' }}><ChevronUp size={11} /></button>
               <button onClick={() => { const dn = moved(i, i + 1); if (dn) save(dn, `步骤 ${i + 1} 下移`); }} disabled={busy || i === steps.length - 1} className="tbtn-anim"
@@ -321,7 +321,7 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
   /** 「未覆盖的需求」视图：覆盖度里 caseCount=0 的行，出口是「为该需求补用例」（§7.2 [仅显示]） */
   const renderUncovered = () => (
     <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-s)' }}>
         <thead>
           <tr style={{ color: 'var(--text-muted)', textAlign: 'left', background: 'var(--surface-2, transparent)' }}>
             <th style={TH}>需求编号</th>
@@ -347,7 +347,7 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
         </tbody>
       </table>
       {uncovered.length === 0 && (
-        <div style={{ padding: '10px 8px', fontSize: 12, color: 'var(--text-muted)' }}>
+        <div style={{ padding: '10px 8px', fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
           所有需求都已有用例覆盖——覆盖度 100%。如需补充边界/异常场景，切回「全部用例」新增。
         </div>
       )}
@@ -355,7 +355,7 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
   );
 
   const renderEmpty = () => (
-    <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 4px' }}>
+    <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: '8px 4px' }}>
       {filtered ? (
         <>
           <span>无匹配结果。</span>
@@ -369,7 +369,7 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
   );
 
   const renderPager = () => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 11, color: 'var(--text-muted)', flexWrap: 'wrap' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexWrap: 'wrap' }}>
       <span>共 {total} 条{pageSize > 0 ? ` · 第 ${Math.min(page + 1, pageCount)}/${pageCount} 页` : ' · 全部模式'}</span>
       {pageSize > 0 && (
         <>
@@ -381,7 +381,7 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
       )}
       <select value={pageSize} onChange={(e) => onPageSize(Number(e.target.value))}
         title="每页条数\n「全部」一次性取完（>1000 条时建议保持分页）" aria-label="每页条数"
-        style={{ ...CELL_INPUT, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 11, padding: '2px 4px' }}>
+        style={{ ...CELL_INPUT, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-xs)', padding: '2px 4px' }}>
         {PAGE_SIZE_OPTIONS.map((s) => <option key={s} value={s}>{PAGE_SIZE_LABELS[s]}</option>)}
       </select>
     </div>
@@ -401,7 +401,7 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
       <div
         style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 6, ...(virtual ? { maxHeight: VIRTUAL_VIEWPORT_H, overflowY: 'auto' } : {}) }}
         onScroll={virtual ? (e) => setScrollTop(e.currentTarget.scrollTop) : undefined}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-s)' }}>
           {renderHead()}
           <tbody key={`body-${syncNonce}${virtual ? '-v' : ''}`}>
             {win && win.padTop > 0 && <tr data-spacer="1" style={{ height: win.padTop, visibility: 'hidden' }}><td colSpan={colSpan} style={{ padding: 0, border: 'none' }} /></tr>}
@@ -411,7 +411,7 @@ export function TestCaseTable({ meta, reqs, rows, total, page, pageSize, multi, 
         </table>
       </div>
       {virtual && (
-        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+        <div style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           全部模式已载入 {rows.length} 条，超过 {VIRTUAL_THRESHOLD} 条自动启用虚拟滚动（仅渲染视口附近 {bodyRows.length} 行）；行内编辑/步骤展开请切 200/500 分页或按需求筛选。
         </div>
       )}

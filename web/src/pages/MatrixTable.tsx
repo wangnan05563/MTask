@@ -48,7 +48,7 @@ const prioWithP = (p: string | undefined): string => {
 };
 const PLAIN_INPUT = {
   border: '1px solid transparent', borderRadius: 4, background: 'transparent',
-  fontSize: 12, padding: '1px 4px',
+  fontSize: 'var(--fs-s)', padding: '1px 4px',
 } as const;
 /** 标题栏里的「开发中」占位按钮（T00842 位置3：样式对齐任务菜单同名按钮） */
 const TODO_BTN_STYLE = {
@@ -88,7 +88,7 @@ export function MatrixTable({ p, flash }: { readonly p: MatrixTableProps; readon
   const { rows, multi, selIds, caseCounts, queryId, linkFor, allRef } = p;
 
   if (rows.length === 0) {
-    return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>该项目暂无需求记录——可用「从 PRD 导入项目计划」生成，或在上方手动新增。</div>;
+    return <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>该项目暂无需求记录——可用「从 PRD 导入项目计划」生成，或在上方手动新增。</div>;
   }
 
   /** 多选模式的行内勾选单元格（M6-6.4：提取以消除 S2004 深嵌套） */
@@ -116,14 +116,14 @@ export function MatrixTable({ p, flash }: { readonly p: MatrixTableProps; readon
         </button>
         {renderTitleTodoActions(flash)}
       </div>
-      {r.source_ref && <div style={{ fontSize: 10, color: 'var(--text-muted)', paddingLeft: 4 }}>{r.source_ref}</div>}
+      {r.source_ref && <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', paddingLeft: 4 }}>{r.source_ref}</div>}
       {queryId === r.id && renderDetail(r)}
     </td>
   );
 
   /** 详情展开区（T00765 内容/来源/优先级 + T00763 PRD 原文入口） */
   const renderDetail = (r: MatrixReq) => (
-    <div style={{ marginTop: 4, padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface-2)', fontSize: 11, color: 'var(--text)' }}>
+    <div style={{ marginTop: 4, padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface-2)', fontSize: 'var(--fs-xs)', color: 'var(--text)' }}>
       <div style={{ whiteSpace: 'pre-wrap' }}>{r.content ? r.content : '（无内容）'}</div>
       <div style={{ marginTop: 4, color: 'var(--text-muted)' }}>来源：{r.source_ref || '—'} · 优先级：{prioWithP(r.priority)} · 状态：{r.status || 'todo'}</div>
       {r.prdDoc && (
@@ -131,7 +131,7 @@ export function MatrixTable({ p, flash }: { readonly p: MatrixTableProps; readon
           <button onClick={() => p.onOpenPrd(r.prdDoc!)} className="tbtn-anim"
             title={`查看 PRD 原文：${r.prdDoc.filename || '未命名'}`}
             aria-label={`查看需求 ${r.title} 关联的 PRD 原文`}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, border: '1px solid var(--accent)', borderRadius: 5, background: 'transparent', color: 'var(--accent)', cursor: 'pointer', padding: '2px 8px' }}>
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', border: '1px solid var(--accent)', borderRadius: 5, background: 'transparent', color: 'var(--accent)', cursor: 'pointer', padding: '2px 8px' }}>
             <FileText size={11} /> 查看PRD
           </button>
         </div>
@@ -147,7 +147,7 @@ export function MatrixTable({ p, flash }: { readonly p: MatrixTableProps; readon
         <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 3 }}>
           {items.map((x) => (
             <span key={x.id} title={`计划：${x.title}（${x.status}）`}
-              style={{ fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: 'var(--text)' }}>
+              style={{ fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: 'var(--text)' }}>
               {x.title.length > 14 ? `${x.title.slice(0, 14)}…` : x.title}
             </span>
           ))}
@@ -163,7 +163,7 @@ export function MatrixTable({ p, flash }: { readonly p: MatrixTableProps; readon
         <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 3 }}>
           {items.map((x) => (
             <span key={x.id} title={`待办：${x.title}（${x.status === 'done' ? '已完成' : '待办'}${x.verified ? '·已验证' : ''}）`}
-              style={{ fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: x.status === 'done' ? 'var(--success)' : 'var(--text)' }}>
+              style={{ fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: x.status === 'done' ? 'var(--success)' : 'var(--text)' }}>
               {x.taskNo ?? '—'}
             </span>
           ))}
@@ -173,7 +173,7 @@ export function MatrixTable({ p, flash }: { readonly p: MatrixTableProps; readon
 
   return (
     <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-s)' }}>
         <thead>
           <tr style={{ color: 'var(--text-muted)', textAlign: 'left', background: 'var(--surface-2, transparent)' }}>
             {/* 多选模式勾选列——表头全选含半选态（T00773） */}
@@ -214,7 +214,7 @@ export function MatrixTable({ p, flash }: { readonly p: MatrixTableProps; readon
               <td style={{ padding: '4px 6px', width: 96 }}>
                 <select value={r.status} onChange={(e) => p.onUpdate(r.id, { status: e.target.value })}
                   aria-label="需求状态" title="需求状态"
-                  style={{ border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, padding: '1px 4px' }}>
+                  style={{ border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', padding: '1px 4px' }}>
                   {STATUS_OPTIONS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
                 </select>
               </td>
@@ -228,7 +228,7 @@ export function MatrixTable({ p, flash }: { readonly p: MatrixTableProps; readon
                   <button onClick={() => p.onOpenPrd(r.prdDoc!, { title: r.title, reqNo: r.req_no })} className="tbtn-anim"
                     title={`打开 PRD 原文：${r.prdDoc.filename}（定位到「${r.title}」章节）`}
                     aria-label={`打开关联 PRD ${r.prdDoc.filename}`}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, border: 'none', background: 'transparent', color: 'var(--accent)', cursor: 'pointer', padding: 0, maxWidth: '100%', textAlign: 'left' }}>
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', border: 'none', background: 'transparent', color: 'var(--accent)', cursor: 'pointer', padding: 0, maxWidth: '100%', textAlign: 'left' }}>
                     <FileText size={11} style={{ flexShrink: 0 }} />
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.prdDoc.filename}</span>
                   </button>
@@ -240,7 +240,7 @@ export function MatrixTable({ p, flash }: { readonly p: MatrixTableProps; readon
               <td style={{ padding: '4px 6px', whiteSpace: 'nowrap' }}>
                 <button onClick={() => p.onSetLinkFor(r.id)} className="tbtn-anim"
                   title="关联调整 — 勾选计划或待办建立/解除关联" aria-label={`调整 ${r.title} 的关联`}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, background: linkFor === r.id ? 'var(--accent)' : 'transparent', color: linkFor === r.id ? 'var(--accent-text)' : 'var(--text)', cursor: 'pointer', padding: '1px 6px', marginRight: 4 }}>
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4, background: linkFor === r.id ? 'var(--accent)' : 'transparent', color: linkFor === r.id ? 'var(--accent-text)' : 'var(--text)', cursor: 'pointer', padding: '1px 6px', marginRight: 4 }}>
                   <Link2 size={11} /> 关联
                 </button>
                 <button onClick={() => p.onRemove(r)} className="tbtn-anim" title="删除需求（清理关联）" aria-label={`删除需求 ${r.title}`}

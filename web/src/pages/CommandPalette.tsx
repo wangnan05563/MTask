@@ -122,22 +122,22 @@ export function CommandPalette({ open, onClose, onNavigate }: {
           <input ref={inputRef} value={kw} onChange={(e) => { setKw(e.target.value); setActive(0); }} onKeyDown={onKeyDown}
             placeholder="搜索任务编号/标题、提示词或页面…（↑↓ 选择，Enter 执行）"
             aria-label="命令面板搜索"
-            style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 14 }} />
+            style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-l)' }} />
         </div>
         <div style={{ maxHeight: '46vh', overflowY: 'auto' }}>
-          {items.length === 0 && <div style={{ padding: 16, fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>无匹配结果</div>}
+          {items.length === 0 && <div style={{ padding: 16, fontSize: 'var(--fs-s)', color: 'var(--text-muted)', textAlign: 'center' }}>无匹配结果</div>}
           {items.map((it, i) => (
             <div /* NOSONAR - 列表项点击/悬停属鼠标便捷操作，键盘导航由搜索框统一处理（↑↓ 选择、Enter 执行） */
               key={`${it.group}-${it.label}-${i}`} onClick={() => execute(i)}
               onMouseEnter={() => setActive(i)}
               style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', cursor: 'pointer', background: i === active ? 'var(--surface-2)' : 'transparent' }}>
-              <span style={{ fontSize: 10, color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 4, padding: '0 4px', flexShrink: 0 }}>{it.group}</span>
-              <span style={{ flex: 1, fontSize: 13, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</span>
-              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{i === active ? <CornerDownLeft size={11} /> : it.hint}</span>
+              <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 4, padding: '0 4px', flexShrink: 0 }}>{it.group}</span>
+              <span style={{ flex: 1, fontSize: 'var(--fs-m)', color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</span>
+              <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>{i === active ? <CornerDownLeft size={11} /> : it.hint}</span>
             </div>
           ))}
         </div>
-        <div style={{ padding: '6px 14px', borderTop: '1px solid var(--border)', fontSize: 10, color: 'var(--text-muted)', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+        <div style={{ padding: '6px 14px', borderTop: '1px solid var(--border)', fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
           ↑↓ 选择 · Enter 执行 · Esc 关闭 —— 选中任务/项目/提示词会跳转对应页面并自动定位
           {/* T02201：项目取数失败时显式给出原因与重试入口，不再只剩「无匹配结果」 */}
           <ProjectListHint view={projectList} />

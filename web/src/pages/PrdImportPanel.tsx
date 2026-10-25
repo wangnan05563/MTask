@@ -425,8 +425,8 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     <div style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
         <FileUp size={15} style={{ color: 'var(--accent)' }} />
-        <strong style={{ fontSize: 14 }}>从 PRD 导入项目计划</strong>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        <strong style={{ fontSize: 'var(--fs-l)' }}>从 PRD 导入项目计划</strong>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           上传 PRD（Word/Excel/Markdown/文本/PDF）→ AI 拆分 WBS 并逐条提取需求 → 预览确认 → 导入（需求进矩阵、计划进甘特，可同步生成待办）；执行输出见右侧控制台
         </span>
         <span style={{ flex: 1 }} />
@@ -441,13 +441,13 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
         <select value={projectId} onChange={(e) => setProjectId(e.target.value)} disabled={busy || projectList.unusable}
           aria-label="目标项目" title="PRD 将导入到该项目（计划 + 需求矩阵 + 可选待办）"
-          style={{ padding: 4, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          style={{ padding: 4, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">{projectListPlaceholder(projectList, '选择目标项目…')}</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <ProjectListHint view={projectList} />
         <label className="tbtn-anim" title="选择 PRD 文件（可多选 .docx/.md/.markdown/.txt/.xlsx/.csv/.pdf，将合并分析为单一需求矩阵与项目计划）"
-          style={{ cursor: busy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--accent)', color: 'var(--accent)', fontSize: 12 }}>
+          style={{ cursor: busy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--accent)', color: 'var(--accent)', fontSize: 'var(--fs-s)' }}>
           <Upload size={13} /> 选择 PRD 文件{pickedFiles.length > 0 ? `（已选 ${pickedFiles.length}）` : ''}
           <input type="file" multiple accept=".docx,.md,.markdown,.txt,.xlsx,.csv,.pdf" style={FILE_INPUT_SR_ONLY}
             onChange={(e) => {
@@ -458,38 +458,38 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
               setPickedFiles((prev) => [...prev, ...fs]);
             }} />
         </label>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', cursor: 'pointer' }}
           title="勾选后：WBS 节点同时生成待办任务（携带需求关联），便于 AI 推进执行">
           <input type="checkbox" checked={createTasks} onChange={(e) => setCreateTasks(e.target.checked)} style={{ cursor: 'pointer' }} />
           {' '}
           同步生成待办任务
         </label>
-        {fileName && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{fileName}</span>}
-        {busy && <span className="ai-shimmer" style={{ fontSize: 11, fontWeight: 600, ['--ai-shimmer-color' as never]: 'var(--accent)' }}>处理中…</span>}
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        {fileName && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{fileName}</span>}
+        {busy && <span className="ai-shimmer" style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, ['--ai-shimmer-color' as never]: 'var(--accent)' }}>处理中…</span>}
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           {snap.logs.length > 0 ? `控制台已输出 ${snap.logs.length} 条执行日志 →` : '执行过程将在右侧 AI 控制台逐行输出'}
         </span>
       </div>
 
-      {error && <div style={{ color: 'var(--danger)', fontSize: 12, marginBottom: 8 }}>{error}</div>}
+      {error && <div style={{ color: 'var(--danger)', fontSize: 'var(--fs-s)', marginBottom: 8 }}>{error}</div>}
 
       {/* T00841：已选文件列表——选择仅入列表不解析，用户点「确认」才触发 parseAll；确认前可增删 */}
       {pickedFiles.length > 0 && (
         <div style={{ marginBottom: 10, border: '1px solid var(--border-strong)', borderRadius: 8, padding: '8px 10px', background: 'var(--card-bg)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-            <strong style={{ fontSize: 12 }}>已选文件（{pickedFiles.length}）</strong>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>确认后合并解析，可同步生成待办</span>
+            <strong style={{ fontSize: 'var(--fs-s)' }}>已选文件（{pickedFiles.length}）</strong>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>确认后合并解析，可同步生成待办</span>
             <span style={{ flex: 1 }} />
             <button onClick={() => { const fs = pickedFiles; setPickedFiles([]); void parseAll(fs); }} disabled={busy} className="tbtn-anim"
               title="确认 — 用已选文件开始解析并导入项目计划" aria-label="确认：开始解析并导入"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, border: 'none', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: busy ? 'default' : 'pointer', padding: '4px 10px' }}>
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-xs)', border: 'none', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: busy ? 'default' : 'pointer', padding: '4px 10px' }}>
               <Sparkles size={12} /> 确认
             </button>
           </div>
           {pickedFiles.map((f, i) => (
             <div key={`${f.name}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
               <FileUp size={12} style={{ color: 'var(--accent)', flexShrink: 0 }} />
-              <span style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={f.name}>{f.name}</span>
+              <span style={{ fontSize: 'var(--fs-s)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={f.name}>{f.name}</span>
               <button onClick={() => removePickedFile(i)} className="tbtn-anim"
                 title="删除 — 从已选列表中移除该文件，不再参与解析" aria-label="删除：移除已选文件"
                 style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px' }}>
@@ -504,16 +504,16 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
           {/* 需求清单（矩阵行） */}
           <div>
-            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
               <Sparkles size={12} style={{ color: 'var(--accent)' }} />
               需求清单 {reqs.length} 条（勾选 {includedReqs}）
               <button onClick={() => setReqs((p) => p.map((x) => ({ ...x, include: true })))} disabled={busy} title="全选需求" aria-label="全选需求"
-                style={{ border: '1px solid var(--border-strong)', borderRadius: 4, background: 'transparent', color: 'var(--text)', fontSize: 11, padding: '1px 6px', cursor: 'pointer' }}>全选</button>
+                style={{ border: '1px solid var(--border-strong)', borderRadius: 4, background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-xs)', padding: '1px 6px', cursor: 'pointer' }}>全选</button>
               <button onClick={() => setReqs((p) => p.map((x) => ({ ...x, include: false })))} disabled={busy} title="全不选需求" aria-label="全不选需求"
-                style={{ border: '1px solid var(--border-strong)', borderRadius: 4, background: 'transparent', color: 'var(--text)', fontSize: 11, padding: '1px 6px', cursor: 'pointer' }}>全不选</button>
+                style={{ border: '1px solid var(--border-strong)', borderRadius: 4, background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-xs)', padding: '1px 6px', cursor: 'pointer' }}>全不选</button>
             </div>
             <div style={{ maxHeight: 260, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-s)' }}>
                 <thead>
                   <tr style={{ color: 'var(--text-muted)', textAlign: 'left' }}>
                     <th style={{ padding: 4 }}>选</th>
@@ -532,14 +532,14 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
                       <td style={{ padding: 4, width: 88 }}>
                         <input value={r.reqNo} aria-label="需求编号" title={r.content || '（无详细描述）'}
                           onChange={(e) => patchReq(i, { reqNo: e.target.value })}
-                          style={{ width: 80, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 11, padding: '1px 4px' }} />
+                          style={{ width: 80, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-xs)', padding: '1px 4px' }} />
                       </td>
                       <td style={{ padding: 4 }}>
                         <input value={r.title} aria-label="需求标题" title={r.content}
                           onChange={(e) => patchReq(i, { title: e.target.value })}
-                          style={{ width: '100%', border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 12 }} />
+                          style={{ width: '100%', border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }} />
                       </td>
-                      <td style={{ padding: 4, fontSize: 11, color: 'var(--text-muted)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.sourceRef}>{r.sourceRef || '—'}</td>
+                      <td style={{ padding: 4, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.sourceRef}>{r.sourceRef || '—'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -549,12 +549,12 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
 
           {/* WBS 计划草稿（含需求关联） */}
           <div>
-            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6 }}>
+            <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 6 }}>
               WBS 计划 {plans.length} 条（勾选 {includedPlans}，其中里程碑 {plans.filter((x) => isMilestoneRow(x)).length} 条）——
               关联需求编号显示在标题后；里程碑工期为其下任务工期汇总，改任务即联动，不可手工调整
             </div>
             <div style={{ maxHeight: 260, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-s)' }}>
                 <thead>
                   <tr style={{ color: 'var(--text-muted)', textAlign: 'left' }}>
                     <th style={{ padding: 4 }}>选</th>
@@ -576,14 +576,14 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
                       <td style={{ padding: 4 }}>
                         <input value={p.title} aria-label="WBS 标题" title={p.description}
                           onChange={(e) => patchPlan(i, { title: e.target.value })}
-                          style={{ width: '100%', border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 12, fontWeight: ms ? 700 : undefined }} />
+                          style={{ width: '100%', border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', fontWeight: ms ? 700 : undefined }} />
                       </td>
                       {/* T01001 二轮：草稿表单标注任务类型（里程碑/任务），可手动纠正 AI 判定 */}
                       <td style={{ padding: 4, width: 78 }}>
                         <select value={p.kind ?? 'normal'} aria-label={`计划类型 ${p.title}`}
                           title={ms ? '里程碑 — 工期由其下任务汇总，不可手工调整' : '普通任务 — 工期可手工调整'}
                           onChange={(e) => patchPlan(i, { kind: e.target.value as PrdPlan['kind'] })}
-                          style={{ width: 72, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: ms ? 'var(--accent)' : 'var(--text)', fontSize: 11, padding: '1px 2px' }}>
+                          style={{ width: 72, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: ms ? 'var(--accent)' : 'var(--text)', fontSize: 'var(--fs-xs)', padding: '1px 2px' }}>
                           <option value="normal">任务</option>
                           <option value="milestone">里程碑</option>
                         </select>
@@ -592,9 +592,9 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
                         <input type="number" min={1} value={p.durationDays} aria-label="工期" readOnly={ms}
                           title={ms ? '里程碑工期 = 其下任务工期汇总（不可手工调整，改子任务即联动）' : '工期（天）'}
                           onChange={(e) => patchPlan(i, { durationDays: Number(e.target.value) || 1 })}
-                          style={{ width: 50, border: '1px solid var(--border)', borderRadius: 4, background: ms ? 'transparent' : 'var(--card-bg)', color: ms ? 'var(--text-muted)' : 'var(--text)', fontSize: 12, padding: '1px 4px', fontWeight: ms ? 700 : undefined }} />
+                          style={{ width: 50, border: '1px solid var(--border)', borderRadius: 4, background: ms ? 'transparent' : 'var(--card-bg)', color: ms ? 'var(--text-muted)' : 'var(--text)', fontSize: 'var(--fs-s)', padding: '1px 4px', fontWeight: ms ? 700 : undefined }} />
                       </td>
-                      <td style={{ padding: 4, fontSize: 11, color: 'var(--accent)', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.reqNos.join('、')}>
+                      <td style={{ padding: 4, fontSize: 'var(--fs-xs)', color: 'var(--accent)', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.reqNos.join('、')}>
                         {p.reqNos.length > 0 ? p.reqNos.join('、') : '—'}
                       </td>
                     </tr>
@@ -610,11 +610,11 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       {(reqs.length > 0 || plans.length > 0) && (
         <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           {/* T02076：同名计划处置开关——缺省新建让号，显式选 reuse 走幂等补写 */}
-          <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <label style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             <span>同名计划处置：</span>
             <select value={onDuplicatePlan} onChange={(e) => setOnDuplicatePlan(e.target.value as 'rename' | 'reuse')} disabled={busy}
               title="新建让号 = 撞名时加「（N）」后缀并建为新行；幂等复用 = 撞名时补写到原计划行（不改 status/progress），并连带复用「同标题+同内容」的存量需求行（T02303 甲）"
-              style={{ padding: '2px 4px', fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+              style={{ padding: '2px 4px', fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
               <option value="rename">新建让号（默认）</option>
               <option value="reuse">幂等复用原行</option>
             </select>
@@ -624,13 +624,13 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
           <button onClick={() => void doPreview()} disabled={busy}
             title="只读预演：按当前勾选项与处置口径，算出本次导入将新建/复用/让号多少行，零写库（不改任何数据）"
             aria-label="预演本次 PRD 导入的连带影响"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12, cursor: busy ? 'default' : 'pointer' }}>
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', cursor: busy ? 'default' : 'pointer' }}>
             <Eye size={13} /> 预演（只读）
           </button>
           <button onClick={() => void doImport()} disabled={busy} className="tbtn-anim"
             title="导入勾选的条目——需求进矩阵、计划进甘特（含需求关联）、可选生成待办任务"
             aria-label="导入 PRD 解析结果"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12, cursor: busy ? 'default' : 'pointer' }}>
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)', cursor: busy ? 'default' : 'pointer' }}>
             <Save size={13} /> 导入（需求 {includedReqs} 条 / 计划 {includedPlans} 条{createTasks ? ' + 待办' : ''}）
           </button>
         </div>

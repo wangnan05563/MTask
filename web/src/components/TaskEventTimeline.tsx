@@ -17,9 +17,9 @@ export function TaskEventTimeline({ taskId }: { readonly taskId: string }) {
   if (!events || events.length === 0) return null;
   return (
     <div style={{ margin: '8px 0 0', padding: '8px 10px', border: '1px dashed var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>时间线 · 事件自动记录</div>
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 4 }}>时间线 · 事件自动记录</div>
       {events.map((ev) => (
-        <div key={`${ev.created_at}|${ev.kind}|${ev.detail}`} style={{ display: 'flex', gap: 8, fontSize: 11, alignItems: 'baseline' }}>
+        <div key={`${ev.created_at}|${ev.kind}|${ev.detail}`} style={{ display: 'flex', gap: 8, fontSize: 'var(--fs-xs)', alignItems: 'baseline' }}>
           <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>{ev.created_at.slice(5, 16).replace('T', ' ')}</span>
           <span style={{ color: ev.detail.includes('失败') ? 'var(--danger)' : 'var(--text-secondary)' }}>{ev.detail}</span>
         </div>

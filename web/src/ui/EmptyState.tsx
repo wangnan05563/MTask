@@ -17,14 +17,14 @@ export function EmptyState({ icon, title, hint, action }: {
           {icon}
         </div>
       )}
-      <div style={{ fontSize: 13, color: 'var(--text)', fontWeight: 600, marginBottom: 4 }}>{title}</div>
-      {hint && <div style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 420, margin: '0 auto' }}>{hint}</div>}
+      <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text)', fontWeight: 600, marginBottom: 4 }}>{title}</div>
+      {hint && <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', maxWidth: 420, margin: '0 auto' }}>{hint}</div>}
       {action && (
         <button
           onClick={action.onClick}
           title={action.label}
           aria-label={action.label}
-          style={{ marginTop: 12, fontSize: 12, padding: '6px 16px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+          style={{ marginTop: 12, fontSize: 'var(--fs-s)', padding: '6px 16px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer' }}
         >
           {action.label}
         </button>

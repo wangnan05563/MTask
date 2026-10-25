@@ -55,7 +55,7 @@ export function FontColorButton({ current, onApply, label = '字体颜色' }: Re
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onApply(current); } }}
         style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1, padding: '1px 4px', cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--text)', userSelect: 'none' }}
       >
-        <span style={{ fontSize: 12, fontWeight: 700, fontFamily: 'serif', textDecoration: 'none' }}>A</span>
+        <span style={{ fontSize: 'var(--fs-s)', fontWeight: 700, fontFamily: 'serif', textDecoration: 'none' }}>A</span>
         <span style={{ display: 'block', width: 14, height: 3, borderRadius: 1, background: barColor, marginTop: 1 }} />
       </button>
       <button
@@ -87,7 +87,7 @@ export function FontColorButton({ current, onApply, label = '字体颜色' }: Re
           <button
             onClick={() => { onApply(''); setOpen(false); }}
             title="默认色 — 恢复主题默认文字颜色"
-            style={{ width: 18, height: 18, borderRadius: 3, border: '1px solid var(--border)', background: 'var(--surface-2)', cursor: 'pointer', fontSize: 10, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+            style={{ width: 18, height: 18, borderRadius: 3, border: '1px solid var(--border)', background: 'var(--surface-2)', cursor: 'pointer', fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
           >
             ⌫
           </button>

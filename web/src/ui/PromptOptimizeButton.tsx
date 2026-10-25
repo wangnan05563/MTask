@@ -99,7 +99,7 @@ export function PromptOptimizeButton({ title, content, onClick, onOptimized, dis
       aria-label={busy ? '提示词优化进行中' : '提示词优化：把内容改写为结构化提示词'}
       className={`task-op tbtn-anim${busy ? ' task-breathe' : ''}`}
       style={{
-        fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', border: 'none',
+        fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', border: 'none',
         cursor: idle ? 'pointer' : 'default',
         background: busy ? 'var(--accent)' : 'transparent',
         color,

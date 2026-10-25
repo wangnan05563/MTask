@@ -84,8 +84,8 @@ function todayStr(): string {
 }
 
 /** 通用行内输入样式（与全站 task-op 风格一致） */
-const inputStyle: React.CSSProperties = { border: '1px solid var(--border-strong)', borderRadius: 6, padding: '3px 6px', background: 'var(--bg)', color: 'var(--text)', fontSize: 12 };
-const btnStyle: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 12, padding: '3px 8px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'transparent', color: 'var(--text)' };
+const inputStyle: React.CSSProperties = { border: '1px solid var(--border-strong)', borderRadius: 6, padding: '3px 6px', background: 'var(--bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' };
+const btnStyle: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 'var(--fs-s)', padding: '3px 8px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'transparent', color: 'var(--text)' };
 
 /** T00471：计划行「默认只读展示 + 悬浮编辑」交互——CSS 驱动不改数据流：
  *  默认 input 边框透明呈文本观感，行 hover/focus-within 时显示编辑框边框背景；
@@ -171,7 +171,7 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
       }} aria-haspopup="listbox" aria-expanded={projOpen}
         title="选择项目 — 项目名后徽标：绿=已完成、蓝=进行中、灰=待开始（悬浮查看详情）"
         aria-label="选择项目"
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 8px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, cursor: 'pointer', maxWidth: 220, minWidth: 0 }}>
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 8px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', cursor: 'pointer', maxWidth: 220, minWidth: 0 }}>
         {/* T02167：与任务页项目下拉条同修——名称让步（单行省略），徽标与箭头 flexShrink:0 不让步，
             否则窄窗口下裸文本节点被压到 1 字宽、统计徽标溢出按钮边框 */}
         <span style={{ flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -179,9 +179,9 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
         </span>
         {cur ? (
           <>
-            <span title={`已完成 ${cur.plan_done ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success)' }}>{cur.plan_done ?? 0}</span>
-            <span title={`进行中 ${cur.plan_doing ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{cur.plan_doing ?? 0}</span>
-            <span title={`待开始 ${cur.plan_open ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>{cur.plan_open ?? 0}</span>
+            <span title={`已完成 ${cur.plan_done ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success)' }}>{cur.plan_done ?? 0}</span>
+            <span title={`进行中 ${cur.plan_doing ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{cur.plan_doing ?? 0}</span>
+            <span title={`待开始 ${cur.plan_open ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>{cur.plan_open ?? 0}</span>
           </>
         ) : null}
         <ChevronDown size={12} style={{ flexShrink: 0 }} />
@@ -191,7 +191,7 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
         <button onClick={() => setProjSortOpen((v) => !v)} className="op-hidden tbtn-anim"
           title={`项目排序 — 当前：${PROJ_SORT_LABEL(projSortMode)}（拖拽排序需切到「默认（置顶优先）」）`}
           aria-label="项目排序" aria-haspopup="menu" aria-expanded={projSortOpen}
-          style={{ display: 'inline-flex', alignItems: 'center', padding: '5px 8px', fontSize: 12, background: projSortOpen ? 'var(--accent)' : 'transparent', color: projSortOpen ? 'var(--accent-text)' : 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 4, cursor: 'pointer' }}>
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '5px 8px', fontSize: 'var(--fs-s)', background: projSortOpen ? 'var(--accent)' : 'transparent', color: projSortOpen ? 'var(--accent-text)' : 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 4, cursor: 'pointer' }}>
           <ArrowUpDown size={13} />
         </button>
         {projSortOpen && (
@@ -200,7 +200,7 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
               <button key={o.key} onClick={() => { setProjSortMode(o.key); setProjSortOpen(false); }}
                 role="menuitemradio" aria-checked={projSortMode === o.key}
                 title={o.hint}
-                style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '5px 10px', fontSize: 12, border: 'none', background: projSortMode === o.key ? 'var(--accent-soft)' : 'transparent', color: projSortMode === o.key ? 'var(--accent)' : 'var(--text)', cursor: 'pointer' }}>
+                style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '5px 10px', fontSize: 'var(--fs-s)', border: 'none', background: projSortMode === o.key ? 'var(--accent-soft)' : 'transparent', color: projSortMode === o.key ? 'var(--accent)' : 'var(--text)', cursor: 'pointer' }}>
                 <span style={{ width: 14, display: 'inline-flex', flexShrink: 0 }}>{projSortMode === o.key ? <Check size={12} style={{ color: 'var(--accent)' }} /> : null}</span>
                 {o.label}
               </button>
@@ -231,7 +231,7 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
               title={projSortMode === 'default'
                 ? `${p.name}：已完成 ${p.plan_done ?? 0}，进行中 ${p.plan_doing ?? 0}，待开始 ${p.plan_open ?? 0}（可拖拽调整顺序）`
                 : `${p.name}：已完成 ${p.plan_done ?? 0}，进行中 ${p.plan_doing ?? 0}，待开始 ${p.plan_open ?? 0}（拖拽排序请切换到「默认（置顶优先）」）`}
-              style={{ display: 'flex', width: '100%', boxSizing: 'border-box', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, opacity: dragProjId === p.id ? 0.5 : 1, borderTop: overProjId === p.id ? '2px solid var(--accent)' : '2px solid transparent', background: p.id === projectId ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', cursor: projSortMode === 'default' ? 'grab' : 'pointer' }}>
+              style={{ display: 'flex', width: '100%', boxSizing: 'border-box', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 'var(--fs-s)', opacity: dragProjId === p.id ? 0.5 : 1, borderTop: overProjId === p.id ? '2px solid var(--accent)' : '2px solid transparent', background: p.id === projectId ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', cursor: projSortMode === 'default' ? 'grab' : 'pointer' }}>
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); runAsync(togglePin(p)); }}
@@ -243,9 +243,9 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
               </button>
               {/* T02167：同任务页——名称 flex:1 + minWidth:0 才能收缩省略，三枚计划徽标 flexShrink:0 不让步 */}
               <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
-              <span title={`已完成 ${p.plan_done ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success)' }}>{p.plan_done ?? 0}</span>
-              <span title={`进行中 ${p.plan_doing ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.plan_doing ?? 0}</span>
-              <span title={`待开始 ${p.plan_open ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>{p.plan_open ?? 0}</span>
+              <span title={`已完成 ${p.plan_done ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success)' }}>{p.plan_done ?? 0}</span>
+              <span title={`进行中 ${p.plan_doing ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.plan_doing ?? 0}</span>
+              <span title={`待开始 ${p.plan_open ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>{p.plan_open ?? 0}</span>
             </div>
           ))}
         </div>
@@ -266,9 +266,9 @@ function PlanBatchBar({ planSelIds, plans, selectAllPlans, planBatchStatus, plan
   const milestones = plans.filter((x) => x.kind === 'milestone');
   return (
     <span className="op-host" style={{ display: 'inline-flex', gap: 6, alignItems: 'center', border: '1px solid var(--accent)', borderRadius: 6, padding: '3px 8px', background: 'var(--card-bg)' }}>
-      <span style={{ fontSize: 12, color: 'var(--accent)' }}>已选 {planSelIds.length}</span>
-      <button onClick={selectAllPlans} className="task-op" title={planSelIds.length === plans.length ? '取消全选' : '全选本页计划'} style={{ fontSize: 12, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)' }}>{planSelIds.length === plans.length ? '取消全选' : '全选'}</button>
-      <select value={planBatchStatus} onChange={(e) => { const v = e.target.value; if (v) { runAsync(batchSetStatus(v as PlanTask['status'])); } }} title="批量设置状态" aria-label="批量设置状态" style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+      <span style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>已选 {planSelIds.length}</span>
+      <button onClick={selectAllPlans} className="task-op" title={planSelIds.length === plans.length ? '取消全选' : '全选本页计划'} style={{ fontSize: 'var(--fs-s)', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)' }}>{planSelIds.length === plans.length ? '取消全选' : '全选'}</button>
+      <select value={planBatchStatus} onChange={(e) => { const v = e.target.value; if (v) { runAsync(batchSetStatus(v as PlanTask['status'])); } }} title="批量设置状态" aria-label="批量设置状态" style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
         <option value="">批量状态…</option>
         <option value="todo">待开始</option>
         <option value="doing">进行中</option>
@@ -276,22 +276,22 @@ function PlanBatchBar({ planSelIds, plans, selectAllPlans, planBatchStatus, plan
         <option value="blocked">阻塞</option>
       </select>
       <button onClick={() => batchEvaluateSelected()} disabled={evalBusy || busy} title="AI 评估选中条目 — 结果自动录入各条描述" className="task-op"
-        style={{ display: 'inline-flex', alignItems: 'center', fontSize: 12, border: 'none', background: 'transparent', cursor: evalBusy ? 'not-allowed' : 'pointer', color: 'var(--accent)', padding: 2 }}>
+        style={{ display: 'inline-flex', alignItems: 'center', fontSize: 'var(--fs-s)', border: 'none', background: 'transparent', cursor: evalBusy ? 'not-allowed' : 'pointer', color: 'var(--accent)', padding: 2 }}>
         {evalBusy ? <Loader2 size={14} className="aispin" /> : <Zap size={14} />}
       </button>
       <button onClick={() => runAsync(batchArchivePlans())} disabled={busy} title="归档选中计划 — 可在「归档」菜单恢复" className="task-op"
-        style={{ display: 'inline-flex', alignItems: 'center', fontSize: 12, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)', padding: 2 }}>
+        style={{ display: 'inline-flex', alignItems: 'center', fontSize: 'var(--fs-s)', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)', padding: 2 }}>
         <Archive size={14} />
       </button>
       {milestones.length > 0 && (
         <select value={planBatchAttach} onChange={(e) => { const v = e.target.value; if (v) { runAsync(batchAttach(v)); } }} title="批量挂接到里程碑 — 选中计划统一挂到所选里程碑下"
-          aria-label="批量挂接到里程碑" style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          aria-label="批量挂接到里程碑" style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">批量挂接…</option>
           {milestones.map((m) => <option key={m.id} value={m.id}>{m.title}</option>)}
         </select>
       )}
       <button onClick={() => runAsync(batchCreateLinkedTodos())} disabled={busy} title="新建待办关联 — 为每条选中计划各创建一条新待办并关联" className="task-op"
-        style={{ display: 'inline-flex', alignItems: 'center', fontSize: 12, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)', padding: 2 }}>
+        style={{ display: 'inline-flex', alignItems: 'center', fontSize: 'var(--fs-s)', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)', padding: 2 }}>
         <CalendarPlus size={14} />
       </button>
       <span style={{ display: 'inline-flex', alignItems: 'center' }} title="批量字体颜色 — 选色后应用到全部选中计划">
@@ -370,7 +370,7 @@ function PlanMultiToggle({ planMulti, setPlanMulti, setPlanSelIds }: {
   return (
     <button onClick={() => { setPlanMulti((m) => !m); setPlanSelIds([]); }} title={planMulti ? '退出多选模式' : '多选模式 — 勾选计划后批量改状态/挂接/归档/评估'} aria-label={planMulti ? '退出多选模式' : '进入多选模式'}
       className="tbtn-anim op-hidden"
-      style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', border: '1px solid var(--border-strong)', background: planMulti ? 'var(--accent)' : 'transparent', color: planMulti ? 'var(--accent-text)' : 'var(--text)' }}>
+      style={{ fontSize: 'var(--fs-s)', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', border: '1px solid var(--border-strong)', background: planMulti ? 'var(--accent)' : 'transparent', color: planMulti ? 'var(--accent-text)' : 'var(--text)' }}>
       {planMulti ? <Check size={13} /> : <ListChecks size={13} />}
     </button>
   );
@@ -382,9 +382,9 @@ function PlanViewModeToggle({ viewMode, setViewMode }: {
 }) {
   return (
     <fieldset style={{ display: 'inline-flex', margin: 0, padding: 0, minWidth: 0, border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} aria-label="视图切换">
-      <button onClick={() => setViewMode('list')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', cursor: 'pointer', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图">列表</button>
-      <button onClick={() => setViewMode('gantt')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: viewMode === 'gantt' ? 'var(--accent)' : 'transparent', color: viewMode === 'gantt' ? 'var(--accent-text)' : 'var(--text)' }} title="甘特图视图 — 按串行瀑布时间线可视化">甘特</button>
-      <button onClick={() => setViewMode('timeline')} style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: viewMode === 'timeline' ? 'var(--accent)' : 'transparent', color: viewMode === 'timeline' ? 'var(--accent-text)' : 'var(--text)' }} title="时间线视图 — 纵向里程碑脉络，与甘特（横向排期+依赖线+关键路径）互补">时间线</button>
+      <button onClick={() => setViewMode('list')} style={{ padding: '4px 10px', fontSize: 'var(--fs-s)', border: 'none', cursor: 'pointer', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图">列表</button>
+      <button onClick={() => setViewMode('gantt')} style={{ padding: '4px 10px', fontSize: 'var(--fs-s)', border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: viewMode === 'gantt' ? 'var(--accent)' : 'transparent', color: viewMode === 'gantt' ? 'var(--accent-text)' : 'var(--text)' }} title="甘特图视图 — 按串行瀑布时间线可视化">甘特</button>
+      <button onClick={() => setViewMode('timeline')} style={{ padding: '4px 10px', fontSize: 'var(--fs-s)', border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: viewMode === 'timeline' ? 'var(--accent)' : 'transparent', color: viewMode === 'timeline' ? 'var(--accent-text)' : 'var(--text)' }} title="时间线视图 — 纵向里程碑脉络，与甘特（横向排期+依赖线+关键路径）互补">时间线</button>
     </fieldset>
   );
 }
@@ -409,7 +409,7 @@ function PlanTimelineGranularityToggle({ granularity, setGranularity }: {
           title={g.tip}
           aria-pressed={granularity === g.k}
           onClick={() => setGranularity(g.k)}
-          style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: i > 0 ? '1px solid var(--border-strong)' : 'none', cursor: 'pointer', background: granularity === g.k ? 'var(--accent)' : 'transparent', color: granularity === g.k ? 'var(--accent-text)' : 'var(--text)' }}
+          style={{ padding: '4px 10px', fontSize: 'var(--fs-s)', border: 'none', borderLeft: i > 0 ? '1px solid var(--border-strong)' : 'none', cursor: 'pointer', background: granularity === g.k ? 'var(--accent)' : 'transparent', color: granularity === g.k ? 'var(--accent-text)' : 'var(--text)' }}
         >{g.label}</button>
       ))}
     </div>
@@ -436,7 +436,7 @@ function PlanTimelineSpacingToggle({ spacing, setSpacing }: {
           title={m.tip}
           aria-pressed={spacing === m.k}
           onClick={() => setSpacing(m.k)}
-          style={{ padding: '4px 10px', fontSize: 12, border: 'none', borderLeft: i > 0 ? '1px solid var(--border-strong)' : 'none', cursor: 'pointer', background: spacing === m.k ? 'var(--accent)' : 'transparent', color: spacing === m.k ? 'var(--accent-text)' : 'var(--text)' }}
+          style={{ padding: '4px 10px', fontSize: 'var(--fs-s)', border: 'none', borderLeft: i > 0 ? '1px solid var(--border-strong)' : 'none', cursor: 'pointer', background: spacing === m.k ? 'var(--accent)' : 'transparent', color: spacing === m.k ? 'var(--accent-text)' : 'var(--text)' }}
         >{m.label}</button>
       ))}
     </div>
@@ -460,7 +460,7 @@ function PlanTimelineCollapseAll({ allCollapsed, phaseCount, onToggle }: {
         ? `展开全部 ${phaseCount} 个阶段的节点`
         : `全部收起 ${phaseCount} 个阶段的任务节点（里程碑脉络与阶段汇总仍保留）`}
       style={{
-        padding: '4px 10px', fontSize: 12, cursor: phaseCount === 0 ? 'not-allowed' : 'pointer',
+        padding: '4px 10px', fontSize: 'var(--fs-s)', cursor: phaseCount === 0 ? 'not-allowed' : 'pointer',
         border: '1px solid var(--border-strong)', borderRadius: 6, opacity: phaseCount === 0 ? .5 : 1,
         background: allCollapsed ? 'var(--accent)' : 'transparent',
         color: allCollapsed ? 'var(--accent-text)' : 'var(--text)',
@@ -477,12 +477,12 @@ function PlanTimelineDetail({ plan, onJump }: {
   readonly onJump?: (p: TlPlan) => void;
 }) {
   const badge = (children: React.ReactNode, color?: string) => (
-    <span style={{ fontSize: 11, padding: '1px 7px', borderRadius: 10, border: '1px solid var(--border-strong)', color: color ?? 'var(--text-muted)', whiteSpace: 'nowrap' }}>{children}</span>
+    <span style={{ fontSize: 'var(--fs-xs)', padding: '1px 7px', borderRadius: 10, border: '1px solid var(--border-strong)', color: color ?? 'var(--text-muted)', whiteSpace: 'nowrap' }}>{children}</span>
   );
   const isMs = plan.kind === 'milestone';
   const statusLabel: Record<string, string> = { todo: '待开始', doing: '进行中', done: '已完成', blocked: '受阻' };
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--fs-m)' }}>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {badge(isMs ? '阶段里程碑' : plan.kind === 'daily' ? '日常任务' : '计划任务', 'var(--accent)')}
         {plan.assignee && badge(`负责人：${plan.assignee}`)}
@@ -506,14 +506,14 @@ function PlanTimelineDetail({ plan, onJump }: {
           aria-label={`打开关联待办：${plan.linked_task_title || plan.title}`}
           title="跳转到该计划关联的待办 — 切到待办页并打开详情抽屉"
           style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 4,
-            padding: '3px 9px', fontSize: 12, border: '1px solid var(--success)', borderRadius: 6,
+            padding: '3px 9px', fontSize: 'var(--fs-s)', border: '1px solid var(--success)', borderRadius: 6,
             background: 'var(--card-bg)', color: 'var(--success)', cursor: 'pointer' }}>
           ✓ 已关联待办{plan.linked_task_title ? `：${plan.linked_task_title}` : ''} <span aria-hidden="true">↗</span>
         </button>
       ) : (
         <div style={{ color: 'var(--success)' }}>✓ 已关联待办{plan.linked_task_title ? `：${plan.linked_task_title}` : ''}</div>
       ))}
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', borderTop: '1px solid var(--border)', paddingTop: 8 }}>
         详情为只读快照；要改排期/进度请回列表或甘特视图编辑。
       </div>
     </div>
@@ -582,21 +582,21 @@ function PlanTitleFilterHeader({ planMulti, plans, planSelIds, setPlanSelIds, al
             onKeyDown={(e) => { if (e.key === 'Escape') { setTitleFilter(''); setTitleFilterOpen(false); } }}
             placeholder="过滤标题/描述…"
             aria-label="按标题或描述过滤计划"
-            style={{ width: 130, padding: '2px 6px', fontSize: 11, border: '1px solid var(--accent)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}
+            style={{ width: 130, padding: '2px 6px', fontSize: 'var(--fs-xs)', border: '1px solid var(--accent)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}
           />
           <button onClick={() => { setTitleFilter(''); setTitleFilterOpen(false); }}
             title="清除过滤并收起" aria-label="清除标题过滤"
-            style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11, padding: '0 2px' }}>×</button>
+            style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 'var(--fs-xs)', padding: '0 2px' }}>×</button>
         </span>
       ) : (
         <button onClick={() => setTitleFilterOpen(true)}
           className="tbtn-anim"
           title="点击输入搜索/过滤标题与描述（Esc 清除，× 收起）"
           aria-label="过滤标题或描述"
-          style={{ border: '1px solid transparent', borderRadius: 4, background: 'transparent', color: titleFilter ? 'var(--accent)' : 'var(--text)', fontSize: 13, padding: '1px 4px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+          style={{ border: '1px solid transparent', borderRadius: 4, background: 'transparent', color: titleFilter ? 'var(--accent)' : 'var(--text)', fontSize: 'var(--fs-m)', padding: '1px 4px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
           标题 / 描述
           <Search size={11} />
-          {titleFilter && <span style={{ fontSize: 10, color: 'var(--accent)' }}>已过滤</span>}
+          {titleFilter && <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--accent)' }}>已过滤</span>}
         </button>
       )}
     </th>
@@ -613,7 +613,7 @@ function PlanDurationHeader({ durationUnit, setDurationUnit }: {
       <button onClick={() => setDurationUnit((u) => (u === 'day' ? 'hour' : 'day'))}
         title="点击切换工期显示模式：工期/日（工作日）与 工期/时（按 8 小时/天换算持久化）"
         className="task-op"
-        style={{ border: '1px solid var(--border-strong)', borderRadius: 4, background: 'transparent', color: 'var(--text)', fontSize: 11, padding: '1px 6px', cursor: 'pointer' }}>
+        style={{ border: '1px solid var(--border-strong)', borderRadius: 4, background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-xs)', padding: '1px 6px', cursor: 'pointer' }}>
         {hour ? '工期/时' : '工期/日'}
       </button>
     </th>
@@ -638,7 +638,7 @@ function progressBucket(pg: number): 'done' | 'doing' | 'none' {
 /** 计划行「序号」单元格（原嵌套三元链等价改写，避免 S3358 / 深层嵌套） */
 function renderSeqCell(p: PlanTask, plans: PlanTask[], seq: string | undefined, i: number): React.ReactNode {
   if (p.kind === 'milestone') {
-    return <span title="阶段里程碑 — 汇总其下普通/日常任务，不可手动调整；点击标题旁箭头收起/展开子任务" style={{ color: 'var(--accent)', fontWeight: 700, fontSize: 13 }}>◆ {seq ?? i + 1}</span>;
+    return <span title="阶段里程碑 — 汇总其下普通/日常任务，不可手动调整；点击标题旁箭头收起/展开子任务" style={{ color: 'var(--accent)', fontWeight: 700, fontSize: 'var(--fs-m)' }}>◆ {seq ?? i + 1}</span>;
   }
   if (childMilestoneOf(p, plans)) {
     return <span style={{ marginLeft: 16 }}>{seq ?? ''}</span>;
@@ -657,7 +657,7 @@ function PlanDepCell({ p, plans, seqs, openDepEditor }: { readonly p: PlanTask; 
   if (deps.length === 0) {
     return (
       <button onClick={() => openDepEditor(p)} title="配置依赖 — 无前置依赖，点击添加前置任务"
-        className="task-op" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, display: 'inline-flex', fontSize: 11 }}>
+        className="task-op" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, display: 'inline-flex', fontSize: 'var(--fs-xs)' }}>
         <Plus size={12} />
       </button>
     );
@@ -671,7 +671,7 @@ function PlanDepCell({ p, plans, seqs, openDepEditor }: { readonly p: PlanTask; 
         return (
           <button key={d.id} onClick={() => openDepEditor(p)}
             title={`${d.type === 'serial' ? '串行' : '并行'}依赖：${pre?.title ?? '已删除'}${tail} — 点击调整`}
-            style={{ border: '1px solid var(--border-strong)', background: d.type === 'serial' ? 'var(--accent-soft)' : 'transparent', color: d.type === 'serial' ? 'var(--accent)' : 'var(--text-muted)', borderRadius: 4, fontSize: 10, padding: '0 4px', cursor: 'pointer' }}>
+            style={{ border: '1px solid var(--border-strong)', background: d.type === 'serial' ? 'var(--accent-soft)' : 'transparent', color: d.type === 'serial' ? 'var(--accent)' : 'var(--text-muted)', borderRadius: 4, fontSize: 'var(--fs-2xs)', padding: '0 4px', cursor: 'pointer' }}>
             {seqStr ? `#${seqStr}` : '?'}{d.type === 'serial' ? '串' : '并'}
           </button>
         );
@@ -726,7 +726,7 @@ function DepTypeToggles({ xId, selType, setDepSel }: { readonly xId: string; rea
       {(['serial', 'parallel'] as const).map((tp) => (
         <button key={tp} onClick={() => setDepSel((prev) => ({ ...prev, [xId]: tp }))}
           title={tp === 'serial' ? '串行：前置完成后自动接续' : '并行：仅标记关系'}
-          style={{ padding: '1px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid var(--border-strong)', background: selType === tp ? 'var(--accent)' : 'transparent', color: selType === tp ? 'var(--accent-text)' : 'var(--text)' }}>
+          style={{ padding: '1px 8px', borderRadius: 4, fontSize: 'var(--fs-xs)', cursor: 'pointer', border: '1px solid var(--border-strong)', background: selType === tp ? 'var(--accent)' : 'transparent', color: selType === tp ? 'var(--accent-text)' : 'var(--text)' }}>
           {tp === 'serial' ? '串行' : '并行'}
         </button>
       ))}
@@ -746,7 +746,7 @@ function PlanRowMenu({ p, setDepMenuId, depMenuPos, openDepEditor, insertAfter, 
       <button role="menuitem" onClick={() => { setDepMenuId(''); openDepEditor(p); }}
         title="维护依赖/挂接 — 选择前置任务并标记串行/并行（GitBranch 图标与关联待办 Link 图标区分）"
         className="task-op"
-        style={{ display: 'inline-flex', alignItems: 'center', padding: 4, fontSize: 12, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text)' }}>
+        style={{ display: 'inline-flex', alignItems: 'center', padding: 4, fontSize: 'var(--fs-s)', border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text)' }}>
         <GitBranch size={14} />
       </button>
       <button role="menuitem" onClick={() => { setDepMenuId(''); runAsync(insertAfter(p)); }}
@@ -835,7 +835,7 @@ function PlanTitleCell({ p, collapsedMs, toggleMsCollapsed, updatePlan }: {
       {/* T01058-FR2.1：高复杂度标红徽标——提示该行不确定性高/跨模块耦合，建议再拆分 */}
       {(p.complexity ?? 0) >= 4 && (
         <span title={`AI 评估复杂度 ${p.complexity}/5 — 不确定性高或跨模块耦合，建议拆分为更小的任务`} aria-label={`复杂度 ${p.complexity}，建议拆分`}
-          style={{ flexShrink: 0, fontSize: 10, padding: '0 5px', borderRadius: 4, color: 'var(--danger)', border: '1px solid var(--danger)', whiteSpace: 'nowrap' }}>
+          style={{ flexShrink: 0, fontSize: 'var(--fs-2xs)', padding: '0 5px', borderRadius: 4, color: 'var(--danger)', border: '1px solid var(--danger)', whiteSpace: 'nowrap' }}>
           复杂度 {p.complexity}
         </span>
       )}
@@ -960,7 +960,7 @@ function PlanGanttRow({ p, i, plans, seqs, isMilestone, inner, innerCount, inner
         <PlanTitleCell p={p} collapsedMs={collapsedMs} toggleMsCollapsed={toggleMsCollapsed} updatePlan={updatePlan} />
       </td>
       {/* T00545：依赖列——前置任务序号 + 串/并徽标，点击维护；空依赖显示快捷添加 */}
-      <td style={{ padding: 6, fontSize: 11 }}>
+      <td style={{ padding: 6, fontSize: 'var(--fs-xs)' }}>
         <PlanDepCell p={p} plans={plans} seqs={seqs} openDepEditor={openDepEditor} />
       </td>
       <td style={{ padding: 6 }}>
@@ -1007,9 +1007,9 @@ function HolidayCalendar({ calYear, setCalYear, holiBusy, renderMonthGrid }: {
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <button onClick={() => setCalYear((y) => y - 1)} disabled={holiBusy} style={btnStyle}>←</button>
-        <span style={{ fontSize: 14, fontWeight: 600 }}>{calYear} 年万年历</span>
+        <span style={{ fontSize: 'var(--fs-l)', fontWeight: 600 }}>{calYear} 年万年历</span>
         <button onClick={() => setCalYear((y) => y + 1)} disabled={holiBusy} style={btnStyle}>→</button>
-        <span style={{ color: 'var(--text-muted)', fontSize: 11 }}><span style={{ color: 'var(--danger)', fontWeight: 600 }}>■</span> 法定节假日　<span style={{ color: 'var(--text-muted)' }}>■</span> 周末</span>
+        <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}><span style={{ color: 'var(--danger)', fontWeight: 600 }}>■</span> 法定节假日　<span style={{ color: 'var(--text-muted)' }}>■</span> 周末</span>
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
         {Array.from({ length: 12 }, (_, m) => renderMonthGrid(calYear, m))}
@@ -1038,21 +1038,21 @@ function HolidayModal({ holiBusy, setHoliOpen, holiTab, setHoliTab, holiNewKind,
       style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
       onClick={(e) => { if (e.target === e.currentTarget && !holiBusy) setHoliOpen(false); }}>
       <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(760px, 94vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
           <span>节假日管理</span>
           <span style={{ flex: 1 }} />
           <button onClick={() => setHoliOpen(false)} disabled={holiBusy} title="关闭" aria-label="关闭节假日管理"
-            style={{ display: 'inline-flex', alignItems: 'center', cursor: holiBusy ? 'default' : 'pointer', background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 14 }}>×</button>
+            style={{ display: 'inline-flex', alignItems: 'center', cursor: holiBusy ? 'default' : 'pointer', background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 'var(--fs-l)' }}>×</button>
         </div>
         <div style={{ display: 'flex', gap: 4, padding: '8px 14px 0' }}>
           {([['manage', '手动维护'], ['national', '联网导入'], ['calendar', '万年历']] as const).map(([k, label]) => (
             <button key={k} onClick={() => setHoliTab(k)}
-              style={{ padding: '5px 12px', borderRadius: '6px 6px 0 0', cursor: 'pointer', border: '1px solid var(--border-strong)', borderBottom: holiTab === k ? 'none' : '1px solid var(--border-strong)', background: holiTab === k ? 'var(--surface)' : 'var(--card-bg)', color: holiTab === k ? 'var(--accent)' : 'var(--text)', fontSize: 12 }}>
+              style={{ padding: '5px 12px', borderRadius: '6px 6px 0 0', cursor: 'pointer', border: '1px solid var(--border-strong)', borderBottom: holiTab === k ? 'none' : '1px solid var(--border-strong)', background: holiTab === k ? 'var(--surface)' : 'var(--card-bg)', color: holiTab === k ? 'var(--accent)' : 'var(--text)', fontSize: 'var(--fs-s)' }}>
               {label}
             </button>
           ))}
         </div>
-        <div style={{ padding: 14, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
+        <div style={{ padding: 14, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, fontSize: 'var(--fs-s)' }}>
           {holiTab === 'manage' && (
             <>
               {/* T00764：类型下拉（节假日/加班日）——加班日按工作日参与排期 */}
@@ -1066,7 +1066,7 @@ function HolidayModal({ holiBusy, setHoliOpen, holiTab, setHoliTab, holiNewKind,
                 <input type="date" value={holiNewDate} onChange={(e) => setHoliNewDate(e.target.value)} style={inputStyle} aria-label="日期" />
                 <input value={holiNewName} placeholder={holiNewKind === 'overtime' ? '备注（如：项目冲刺加班）' : '名称（如：国庆节）'} onChange={(e) => setHoliNewName(e.target.value)} style={{ ...inputStyle, width: 140 }} aria-label="名称" />
                 <button onClick={() => runAsync(addHolidayInModal())} disabled={holiBusy} style={btnStyle}>添加</button>
-                <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>共 {holidays.length} 条（加班日 {holidays.filter((h) => h.kind === 'overtime').length}）</span>
+                <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>共 {holidays.length} 条（加班日 {holidays.filter((h) => h.kind === 'overtime').length}）</span>
                 {/* T02213：弹窗内同样给出取数失败原因与重试入口——遮罩盖住工具条，只放外面等于看不见 */}
                 {holidaysHint}
               </div>
@@ -1075,7 +1075,7 @@ function HolidayModal({ holiBusy, setHoliOpen, holiTab, setHoliTab, holiNewKind,
                 {holidays.map((h) => (
                   <div key={h.date} style={{ display: 'flex', alignItems: 'center', gap: 8, border: '1px solid var(--border)', borderRadius: 4, padding: '4px 8px' }}>
                     <span style={{ fontWeight: 600, minWidth: 90 }}>{h.date}</span>
-                    <span style={{ fontSize: 10, border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: h.kind === 'overtime' ? 'var(--success, #16a34a)' : 'var(--danger)', flexShrink: 0 }}>
+                    <span style={{ fontSize: 'var(--fs-2xs)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: h.kind === 'overtime' ? 'var(--success, #16a34a)' : 'var(--danger)', flexShrink: 0 }}>
                       {h.kind === 'overtime' ? '加班日' : '节假日'}
                     </span>
                     <span style={{ flex: 1, color: 'var(--text-secondary)' }}>{h.name || '—'}</span>
@@ -1093,7 +1093,7 @@ function HolidayModal({ holiBusy, setHoliOpen, holiTab, setHoliTab, holiNewKind,
                 <input id="plan-nat-year" type="number" min={2000} max={2100} value={natYear} onChange={(e) => setNatYear(Number(e.target.value) || new Date().getFullYear())} style={{ ...inputStyle, width: 90 }} aria-label="导入年份" />
                 <button onClick={() => runAsync(importNational())} disabled={holiBusy} style={btnStyle}>导入 {natYear} 年法定节假日</button>
               </div>
-              <div style={{ color: 'var(--text-muted)', fontSize: 11, lineHeight: 1.6 }}>
+              <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', lineHeight: 1.6 }}>
                 从国家法定节假日公开数据源拉取全年放假安排（元旦/春节/清明/劳动/端午/中秋/国庆等）。导入为 upsert 幂等——重复导入自动合并；仅导入法定放假日，调休补班日暂不处理。导入后所有项目计划时间线自动重排。
               </div>
               {natMsg && <div style={{ color: natMsg.startsWith('✓') ? 'var(--success)' : 'var(--danger)' }}>{natMsg}</div>}
@@ -1117,8 +1117,8 @@ function DepEditorModal({ depEditor, setDepEditor, plans, depSel, setDepSel, sav
 }) {
   return (
     <dialog open style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', zIndex: 80, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 10, padding: 16, width: 460, maxHeight: '72vh', display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12, boxShadow: '0 8px 28px rgba(0,0,0,.2)' }}>
-        <div style={{ fontWeight: 700, fontSize: 14 }}>配置前置依赖 —— #{depEditor.seq} {plans.find((x) => x.id === depEditor.id)?.title}</div>
+      <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 10, padding: 16, width: 460, maxHeight: '72vh', display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--fs-s)', boxShadow: '0 8px 28px rgba(0,0,0,.2)' }}>
+        <div style={{ fontWeight: 700, fontSize: 'var(--fs-l)' }}>配置前置依赖 —— #{depEditor.seq} {plans.find((x) => x.id === depEditor.id)?.title}</div>
         <div style={{ color: 'var(--text-muted)' }}>
           勾选前置任务并标记依赖类型：<span style={{ color: 'var(--accent)' }}>串行</span> = 前置完成后自动接续开始；<span style={{ color: 'var(--text)' }}>并行</span> = 仅标记关系，不自动调整开始日。
         </div>
@@ -1266,7 +1266,7 @@ export function PlanPage() {
               onKeyDown={(e) => { if (e.key === 'Escape') clear(); }}
               placeholder={`过滤${label}…`}
               aria-label={`按${label}过滤计划`}
-              style={{ width: 92, padding: '2px 6px', fontSize: 11, border: '1px solid var(--accent)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}
+              style={{ width: 92, padding: '2px 6px', fontSize: 'var(--fs-xs)', border: '1px solid var(--accent)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}
             />
           ) : (
             <select
@@ -1274,14 +1274,14 @@ export function PlanPage() {
               value={val}
               onChange={(e) => setVal(e.target.value)}
               aria-label={`按${label}过滤计划`}
-              style={{ padding: 2, fontSize: 11, border: '1px solid var(--accent)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}
+              style={{ padding: 2, fontSize: 'var(--fs-xs)', border: '1px solid var(--accent)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}
             >
               <option value="">全部</option>
               {(options ?? []).map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
             </select>
           )}
           <button onClick={clear} title="清除过滤并收起" aria-label={`清除${label}过滤`}
-            style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11, padding: '0 2px' }}>×</button>
+            style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 'var(--fs-xs)', padding: '0 2px' }}>×</button>
         </span>
       );
     }
@@ -1290,10 +1290,10 @@ export function PlanPage() {
         className="tbtn-anim"
         title={`点击输入过滤${label}`}
         aria-label={`过滤${label}`}
-        style={{ border: '1px solid transparent', borderRadius: 4, background: 'transparent', color: val ? 'var(--accent)' : 'var(--text)', fontSize: 13, padding: '1px 4px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+        style={{ border: '1px solid transparent', borderRadius: 4, background: 'transparent', color: val ? 'var(--accent)' : 'var(--text)', fontSize: 'var(--fs-m)', padding: '1px 4px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
         {label}
         <Search size={11} />
-        {val && <span style={{ fontSize: 10, color: 'var(--accent)' }}>已过滤</span>}
+        {val && <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--accent)' }}>已过滤</span>}
       </button>
     );
   }
@@ -2050,7 +2050,7 @@ export function PlanPage() {
     return (
       <div style={{ marginTop: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
             时间线 = 纵向里程碑脉络（阶段进展）；甘特 = 横向排期 + 依赖线 + 关键路径。两者同源同一条计划，视角互补。
           </div>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -2064,7 +2064,7 @@ export function PlanPage() {
               className="tbtn-anim"
               onClick={() => setEstimateOpen(!estimateOpen)}
               title={estimateOpen ? '收起估算面板' : '打开估算面板（右侧停靠；窄屏转为覆盖式抽屉）'}
-              style={{ fontSize: 12, padding: '3px 8px', border: `1px solid ${estimateOpen ? 'var(--accent)' : 'var(--border-strong)'}`, borderRadius: 6, background: estimateOpen ? 'var(--accent-soft)' : 'var(--card-bg)', color: estimateOpen ? 'var(--accent)' : 'var(--text)', cursor: 'pointer' }}
+              style={{ fontSize: 'var(--fs-s)', padding: '3px 8px', border: `1px solid ${estimateOpen ? 'var(--accent)' : 'var(--border-strong)'}`, borderRadius: 6, background: estimateOpen ? 'var(--accent-soft)' : 'var(--card-bg)', color: estimateOpen ? 'var(--accent)' : 'var(--text)', cursor: 'pointer' }}
             >
               估算面板 {estimateOpen ? '⤡' : '⤢'}
             </button>
@@ -2109,12 +2109,12 @@ export function PlanPage() {
 
   /** 甘特主视图：横向日轴 + 串行任务条 + 周末/节假日底纹 + 今日线 + 进度内嵌 */
   function renderGantt() {
-    if (plans.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 12, padding: 16 }}>暂无计划任务，先创建或导入。</div>;
+    if (plans.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-s)', padding: 16 }}>暂无计划任务，先创建或导入。</div>;
     const dates = plans.flatMap((p) => [p.start_date, p.end_date]).filter(Boolean).sort((a, b) => a.localeCompare(b));
     // 评审 P2-3：边界防护——全部计划无日期（如批量导入未带排期）时避免 NaN 渲染异常
     if (!dates[0]) {
       return (
-        <div style={{ padding: 16, color: 'var(--text-muted)', fontSize: 12, border: '1px dashed var(--border-strong)', borderRadius: 8 }}>
+        <div style={{ padding: 16, color: 'var(--text-muted)', fontSize: 'var(--fs-s)', border: '1px dashed var(--border-strong)', borderRadius: 8 }}>
           计划任务尚未生成排期——在列表视图编辑任意任务后自动生成，或导入含日期的 Excel。
         </div>
       );
@@ -2145,7 +2145,7 @@ export function PlanPage() {
         : null;
     // M6-6.1：状态色图例（T01059-FR2.3：周末/节假日/今日/四态说明）
     const renderStatusLegend = (): React.ReactNode => (
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '6px 10px', borderTop: '1px solid var(--border)', display: 'flex', gap: 14 }}>
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', padding: '6px 10px', borderTop: '1px solid var(--border)', display: 'flex', gap: 14 }}>
         {Object.entries(STATUS_BAR).map(([k, c]) => (
           <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             <span style={{ width: 10, height: 10, borderRadius: 2, background: c, display: 'inline-block' }} />
@@ -2162,7 +2162,7 @@ export function PlanPage() {
     // T01059 后续：拖动实时预览气泡——显示松手后将落库的开始/结束/工期
     const renderDragBadge = (d: GanttDragState): React.ReactNode => (
       <span style={{
-        position: 'absolute', left: 0, top: -14, zIndex: 6, whiteSpace: 'nowrap', fontSize: 10, lineHeight: '14px',
+        position: 'absolute', left: 0, top: -14, zIndex: 6, whiteSpace: 'nowrap', fontSize: 'var(--fs-2xs)', lineHeight: '14px',
         padding: '0 4px', borderRadius: 3, background: 'var(--surface)', color: 'var(--accent)',
         border: '1px solid var(--border-strong)', pointerEvents: 'none',
       }}>
@@ -2178,7 +2178,7 @@ export function PlanPage() {
     return (
       <div style={{ border: '1px solid var(--border-strong)', borderRadius: 8, overflow: 'hidden' }}>
         {/* T02082：甘特估算叠加开关——独立于估算面板开关（§5.2 口径）；懒加载失败时仍可看甘特本体 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px', borderBottom: '1px solid var(--border)', fontSize: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-s)' }}>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', color: 'var(--text)' }}>
             <input type="checkbox" checked={showGanttEstimate} onChange={toggleGanttEstimate} aria-label="甘特估算区间叠加开关" />
             估算区间叠加
@@ -2192,7 +2192,7 @@ export function PlanPage() {
         <div style={{ overflowX: 'auto' }}>
           <div style={{ width: 220 + totalDays * DAY_W, minWidth: '100%' }}>
             {/* 月份刻度 */}
-            <div style={{ display: 'flex', marginLeft: 220, height: 22, position: 'relative', borderBottom: '1px solid var(--border-strong)', fontSize: 11, color: 'var(--text-muted)' }}>
+            <div style={{ display: 'flex', marginLeft: 220, height: 22, position: 'relative', borderBottom: '1px solid var(--border-strong)', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
               {monthTicks.map((m) => (
                 <span key={`${m.label}-${m.left}`} style={{ position: 'absolute', left: m.left + 4 }}>{m.label}</span>
               ))}
@@ -2209,7 +2209,7 @@ export function PlanPage() {
               const left = toIdx(effStart) * DAY_W;
               const width = Math.max(DAY_W, (toIdx(effEnd) - toIdx(effStart) + 1) * DAY_W);
               return (
-                <div key={p.id} data-plan-id={p.id} style={{ display: 'flex', alignItems: 'center', height: 30, borderBottom: '1px solid var(--surface-2)', fontSize: 12 }}>
+                <div key={p.id} data-plan-id={p.id} style={{ display: 'flex', alignItems: 'center', height: 30, borderBottom: '1px solid var(--surface-2)', fontSize: 'var(--fs-s)' }}>
                   <div style={{ width: 220, flexShrink: 0, padding: '0 8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }} title={p.title}>
                     {i + 1}. {p.title}
                   </div>
@@ -2425,8 +2425,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
     }
     return (
       <div key={month} style={{ minWidth: 190, flex: '1 1 190px' }}>
-        <div style={{ fontSize: 12, fontWeight: 600, textAlign: 'center', marginBottom: 4 }}>{month + 1} 月</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 1, fontSize: 10, textAlign: 'center' }}>
+        <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, textAlign: 'center', marginBottom: 4 }}>{month + 1} 月</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 1, fontSize: 'var(--fs-2xs)', textAlign: 'center' }}>
           {['日', '一', '二', '三', '四', '五', '六'].map((w) => <span key={w} style={{ color: 'var(--text-muted)' }}>{w}</span>)}
           {cells.map((c, i) => {
             // T00764：加班日（kind=overtime）绿色标记——排期按工作日处理
@@ -2538,7 +2538,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         {/* T02213：节假日取数失败/过期时显式提示——它是工期换算的输入，静默为空会让天数按自然日口径算错 */}
         <ResourceHint view={holidaysView} label="节假日数据（工期换算依赖）" />
         {holidaysView.phase === 'error' && holidays.length === 0 && (
-          <span data-t02213="holidays-math-warning" style={{ fontSize: 11, color: 'var(--danger)' }}>当前工期按「无节假日」口径计算</span>
+          <span data-t02213="holidays-math-warning" style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>当前工期按「无节假日」口径计算</span>
         )}
         <button onClick={reload} style={btnStyle} title="刷新"><RefreshCw size={13} /></button>
         {/* T00735：移除本页原有的「向导」按钮——与全局导航右上角常驻按钮重复（两者打开同一份项目管理向导内容），
@@ -2555,7 +2555,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         const doingCount = plans.filter((p) => p.status === 'doing').length;
         const milestoneCount = plans.filter((p) => (p as PlanTask & { kind?: string }).kind === 'milestone').length;
         return (
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8, display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
             <span title={`起 ${starts[0] ?? '—'} · 止 ${ends.at(-1) ?? '—'}`}>项目周期：{starts[0] ?? '—'} ~ {ends.at(-1) ?? '—'}</span>
             <span title="全部任务工期（工作日）合计">工作量：{totalDays} 人天</span>
             <span title={`共 ${plans.length} 条计划任务`}>任务：{plans.length} 条</span>
@@ -2601,14 +2601,14 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
 
       {/* T01564：三模式分派——timeline / gantt 走视图函数，list 仍是下方表格（原为两层嵌套三元，S3358） */}
       {viewMode === 'list' ? (
-      <table className="plan-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+      <table className="plan-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-s)' }}>
         <thead>
           <tr style={{ textAlign: 'left', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-strong)' }}>
             <th style={{ padding: 6 }}>#</th>
             <PlanTitleFilterHeader planMulti={planMulti} plans={plans} planSelIds={planSelIds} setPlanSelIds={setPlanSelIds}
               allPlansRef={allPlansRef} titleFilter={titleFilter} setTitleFilter={setTitleFilter}
               titleFilterOpen={titleFilterOpen} setTitleFilterOpen={setTitleFilterOpen} />
-            <th style={{ padding: 6, fontSize: 11 }}>依赖</th>
+            <th style={{ padding: 6, fontSize: 'var(--fs-xs)' }}>依赖</th>
             <th style={{ padding: 6 }}>{renderColFilter('start', '开始', 'text')}</th>
             <th style={{ padding: 6 }}>{renderColFilter('end', '结束', 'text')}</th>
             <PlanDurationHeader durationUnit={durationUnit} setDurationUnit={setDurationUnit} />

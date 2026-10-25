@@ -91,7 +91,7 @@ export function MobileQueue({ notify, openDesktop }: Props) {
       <PullRefresh onRefresh={() => { void (async () => { try { const qs = await api.get<Queue[]>('/queues'); setQueues(qs); saveStaleCache('queues', qs); setStaleAsOf(null); } catch { /* 离线刷新失败保留缓存 */ } })(); }}>
       <div style={body}>
         {staleAsOf && (
-          <div style={{ marginBottom: 8, padding: '5px 10px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-muted)', fontSize: 12 }}>
+          <div style={{ marginBottom: 8, padding: '5px 10px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>
             ⏱ 数据截至 {fmtAsOf(staleAsOf)}（离线缓存，联网后自动更新）
           </div>
         )}
@@ -101,7 +101,7 @@ export function MobileQueue({ notify, openDesktop }: Props) {
             {queues.map((q) => (
               <button key={q.id} onClick={() => void open(q.id)} style={card}>
                 <div style={{ fontWeight: 600 }}>{q.name}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>状态：{STATUS_LABEL[q.status] || q.status}</div>
+                <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>状态：{STATUS_LABEL[q.status] || q.status}</div>
               </button>
             ))}
           </>
@@ -115,7 +115,7 @@ export function MobileQueue({ notify, openDesktop }: Props) {
                 {!!active.paused && <Badge tone="danger" style={{ marginLeft: 6 }}>已暂停</Badge>}
               </div>
               <button onClick={() => void togglePause()} title={active.paused ? '继续 — 恢复队列发送/提交' : '暂停 — 暂停后发送/提交将被拒绝'}
-                style={{ fontSize: 12, padding: '4px 12px', borderRadius: 6, border: '1px solid var(--border-strong)', background: active.paused ? 'var(--accent)' : 'var(--surface-2)', color: active.paused ? 'var(--accent-text)' : 'var(--text)', cursor: 'pointer' }}>
+                style={{ fontSize: 'var(--fs-s)', padding: '4px 12px', borderRadius: 6, border: '1px solid var(--border-strong)', background: active.paused ? 'var(--accent)' : 'var(--surface-2)', color: active.paused ? 'var(--accent-text)' : 'var(--text)', cursor: 'pointer' }}>
                 {active.paused ? '▶ 继续' : '⏸ 暂停'}
               </button>
             </div>
@@ -124,8 +124,8 @@ export function MobileQueue({ notify, openDesktop }: Props) {
             {jobs.map((j) => (
               <div key={j.id} style={jobCard}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                  <span style={{ fontSize: 14, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{taskTitle(j)}</span>
-                  <span style={{ fontSize: 12, color: STATUS_COLOR[j.status] || 'var(--text-muted)', flexShrink: 0 }}>● {STATUS_LABEL[j.status] || j.status}</span>
+                  <span style={{ fontSize: 'var(--fs-l)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{taskTitle(j)}</span>
+                  <span style={{ fontSize: 'var(--fs-s)', color: STATUS_COLOR[j.status] || 'var(--text-muted)', flexShrink: 0 }}>● {STATUS_LABEL[j.status] || j.status}</span>
                 </div>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                   {j.response_payload && (
@@ -147,8 +147,8 @@ export function MobileQueue({ notify, openDesktop }: Props) {
   );
 }
 
-const hdr: React.CSSProperties = { fontSize: 16, fontWeight: 700, padding: 12, borderBottom: '1px solid var(--border)', background: 'var(--card-bg)' };
+const hdr: React.CSSProperties = { fontSize: 'var(--fs-2xl)', fontWeight: 700, padding: 12, borderBottom: '1px solid var(--border)', background: 'var(--card-bg)' };
 const body: React.CSSProperties = { flex: 1, overflowY: 'auto', padding: 12 };
-const back: React.CSSProperties = { background: 'transparent', border: 'none', color: 'var(--accent)', fontSize: 13, cursor: 'pointer', padding: '4px 0', marginBottom: 8 };
-const copyRow: React.CSSProperties = { marginTop: 6, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--accent)', background: 'transparent', border: 'none', cursor: 'pointer' };
-const deskLink: React.CSSProperties = { marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 13, color: 'var(--accent)', background: 'transparent', border: 'none', cursor: 'pointer' };
+const back: React.CSSProperties = { background: 'transparent', border: 'none', color: 'var(--accent)', fontSize: 'var(--fs-m)', cursor: 'pointer', padding: '4px 0', marginBottom: 8 };
+const copyRow: React.CSSProperties = { marginTop: 6, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-s)', color: 'var(--accent)', background: 'transparent', border: 'none', cursor: 'pointer' };
+const deskLink: React.CSSProperties = { marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-m)', color: 'var(--accent)', background: 'transparent', border: 'none', cursor: 'pointer' };

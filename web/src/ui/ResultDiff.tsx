@@ -81,12 +81,12 @@ export function ResultDiffPanel({ taskNo, current, onRollback, indent = 32 }: {
   return (
     <div style={{ margin: `6px 0 0 ${indent}px`, border: '1px dashed var(--border-strong)', borderRadius: 8, padding: 8, background: 'var(--surface)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>结果历史（{history.length}）</span>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>结果历史（{history.length}）</span>
         <select
           value={diffWith?.id ?? ''}
           onChange={(e) => setDiffWith(history.find((h) => h.id === e.target.value) ?? null)}
           aria-label="选择历史版本对比"
-          style={{ fontSize: 11, padding: '2px 6px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text)', maxWidth: 220 }}
+          style={{ fontSize: 'var(--fs-xs)', padding: '2px 6px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text)', maxWidth: 220 }}
         >
           <option value="">对比上一版…</option>
           {history.map((h) => (
@@ -94,21 +94,21 @@ export function ResultDiffPanel({ taskNo, current, onRollback, indent = 32 }: {
           ))}
         </select>
         {diffWith && (
-          <span style={{ fontSize: 11 }}>
+          <span style={{ fontSize: 'var(--fs-xs)' }}>
             <span style={{ color: 'var(--danger)' }}>−{delCount}</span> <span style={{ color: 'var(--success)' }}>＋{addCount}</span>
           </span>
         )}
         {diffWith && (
           <button onClick={() => void rollback(diffWith)} disabled={busy}
             title="回滚到该版本 — 当前结果会先存入历史（可再滚回来）"
-            style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--accent)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--accent)', cursor: busy ? 'wait' : 'pointer' }}>
+            style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--accent)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--accent)', cursor: busy ? 'wait' : 'pointer' }}>
             {busy ? '回滚中…' : '⟲ 回滚到该版本'}
           </button>
         )}
-        {msg && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{msg}</span>}
+        {msg && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{msg}</span>}
       </div>
       {diffRows && (
-        <div style={{ fontFamily: FONT_MONO, fontSize: 11, maxHeight: 240, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card-bg)' }}>
+        <div style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', maxHeight: 240, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card-bg)' }}>
           {diffRows.map((r, i) => {
             let rowBg = 'transparent';
             let markerColor = 'transparent';

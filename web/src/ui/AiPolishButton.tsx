@@ -97,7 +97,7 @@ export function AiPolishButton({ value, onPolished, toolId, disabled, flash, tit
       aria-label={busy ? 'AI 美化进行中' : 'AI 美化：润色正文'}
       className={`task-op tbtn-anim${busy ? ' task-breathe' : ''}`}
       style={{
-        fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', border: 'none',
+        fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', border: 'none',
         cursor: idle ? 'pointer' : 'default',
         background: busy ? 'var(--accent)' : 'transparent',
         color,

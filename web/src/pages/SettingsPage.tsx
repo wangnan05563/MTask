@@ -171,8 +171,8 @@ function CategoriesTab() {
         <div key={c.id} style={rowStyle}>
           <FolderPlus size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
           <span style={{ flex: 1, fontWeight: 600 }}>{c.name}</span>
-          <button onClick={() => void rename(c)} title="编辑 — 修改该分类名称" aria-label="编辑：修改分类名称" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Pencil size={13} /></button>
-          <button onClick={() => void remove(c)} title="删除 — 删除该分类，其下任务回到未分类" aria-label="删除：删除该分类" style={{ fontSize: 12, color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
+          <button onClick={() => void rename(c)} title="编辑 — 修改该分类名称" aria-label="编辑：修改分类名称" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Pencil size={13} /></button>
+          <button onClick={() => void remove(c)} title="删除 — 删除该分类，其下任务回到未分类" aria-label="删除：删除该分类" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
         </div>
       ))}
 
@@ -330,6 +330,9 @@ function GeneralTab() {
         <div style={{ marginTop: 8, fontSize: 'var(--fs-l)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 12px', background: 'var(--card-bg)' }}>
           这是一段用于预览字号的正文——随着档位变化，它的字号也会随之缩放。
         </div>
+        <div style={{ marginTop: 6, fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>
+          生效范围：桌面与移动端的页面正文、控件、表格与弹层均已接入字号令牌；导出的 PDF/PPT/Excel 保持固定版式，不随档位缩放。
+        </div>
       </div>
     </div>
   );
@@ -468,7 +471,7 @@ function AboutTab() {
     <div style={{ maxWidth: 520 }}>
       <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}><Info size={14} /> 关于</div>
       <div style={{ marginTop: 12, padding: 16, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)' }}>
-        <div style={{ fontSize: 18, fontWeight: 600 }}>{APP_NAME}</div>
+        <div style={{ fontSize: 'var(--fs-title)', fontWeight: 600 }}>{APP_NAME}</div>
         <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginTop: 4 }}>{APP_DESC}</div>
         <div style={{ marginTop: 10, display: 'grid', gap: 4, fontSize: 'var(--fs-m)' }}>
           <div>版本：v{version}</div>

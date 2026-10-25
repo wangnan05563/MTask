@@ -93,7 +93,7 @@ export function ResourceHint({ view, label, showLoading = false, style }: {
       <span
         role="status"
         data-t02213="resource-error"
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--danger)', ...style }}
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-s)', color: 'var(--danger)', ...style }}
       >
         {label}加载失败 · {view.error}
         {view.stale && `（以下为上次成功的数据，可能过期）`}
@@ -101,7 +101,7 @@ export function ResourceHint({ view, label, showLoading = false, style }: {
           onClick={view.reload}
           title={`重新拉取${label}`}
           aria-label={`重试加载${label}`}
-          style={{ fontSize: 12, padding: '2px 10px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+          style={{ fontSize: 'var(--fs-s)', padding: '2px 10px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer' }}
         >
           重试
         </button>
@@ -110,7 +110,7 @@ export function ResourceHint({ view, label, showLoading = false, style }: {
   }
   if (view.phase === 'loading' && showLoading) {
     return (
-      <span role="status" data-t02213="resource-loading" style={{ fontSize: 12, color: 'var(--text-muted)', ...style }}>
+      <span role="status" data-t02213="resource-loading" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', ...style }}>
         {label}加载中…
       </span>
     );

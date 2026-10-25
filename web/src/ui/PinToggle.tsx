@@ -22,7 +22,7 @@ export function PinToggle({ pinned, onToggle }: PinToggleProps) {
         title={pinned ? '取消置顶 — 取消固定，恢复原有排序' : '置顶 — 将该记录固定到列表顶部'}
         aria-label={pinned ? '取消置顶：取消固定该记录' : '置顶：将该记录固定到列表顶部'}
         style={{
-          fontSize: 12,
+          fontSize: 'var(--fs-s)',
           display: 'inline-flex',
           alignItems: 'center',
           padding: '2px',

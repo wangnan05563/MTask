@@ -24,8 +24,8 @@ const PURPOSE_LABEL: Record<string, string> = { organize: '整理', develop: '�
 
 // 表格单元格与表单样式提到模块级：拆分出的行/弹窗子组件与主组件共用同一对象，避免重复定义
 const cellStyle: CSSProperties = { padding: 8, borderBottom: '1px solid var(--surface-2)', verticalAlign: 'top' };
-const fieldStyle: CSSProperties = { width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' };
-const labelStyle: CSSProperties = { fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4, display: 'block' };
+const fieldStyle: CSSProperties = { width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-m)', boxSizing: 'border-box' };
+const labelStyle: CSSProperties = { fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 4, display: 'block' };
 
 function emptyForm(defaultType: string): ToolForm {
   return {
@@ -64,14 +64,14 @@ function ToolActionsCell({ tool, testing, probing, fetchingModels, testResult, p
           target="_blank"
           rel="noreferrer"
           className="abtn"
-          style={{ fontSize: 12, marginRight: 6, color: 'var(--accent)' }}
+          style={{ fontSize: 'var(--fs-s)', marginRight: 6, color: 'var(--accent)' }}
         >控制台</a>
       ) : null}
       <button
         className="abtn" onClick={() => onOpenEdit(tool)}
         title="编辑 — 编辑该配置，保留原 API Key"
         aria-label="编辑：编辑该配置，保留原 API Key"
-        style={{ fontSize: 12, marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        style={{ fontSize: 'var(--fs-s)', marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
       >
         <Pencil size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
       </button>
@@ -80,7 +80,7 @@ function ToolActionsCell({ tool, testing, probing, fetchingModels, testResult, p
         disabled={testing}
         title={testing ? '测试中…' : '测试 — 测试该配置的连通性'}
         aria-label={testing ? '测试中：正在测试连通性' : '测试：测试该配置的连通性'}
-        style={{ fontSize: 12, marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        style={{ fontSize: 'var(--fs-s)', marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
       >
         {testing ? <Loader2 size={13} className="aispin" /> : <PlugZap size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
       </button>
@@ -89,7 +89,7 @@ function ToolActionsCell({ tool, testing, probing, fetchingModels, testResult, p
         disabled={probing}
         title={probing ? '实调探测中…' : '实调探测 — 发一条极小真实请求，验证该模型当前能否调用（会消耗少量额度，仅点击时发起）'}
         aria-label={probing ? '探测中：正在发起最小实调探测' : '实调探测：发一条极小真实请求验证模型可调用'}
-        style={{ fontSize: 12, marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        style={{ fontSize: 'var(--fs-s)', marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
       >
         {probing ? <Loader2 size={13} className="aispin" /> : <Zap size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
       </button>
@@ -98,7 +98,7 @@ function ToolActionsCell({ tool, testing, probing, fetchingModels, testResult, p
         disabled={fetchingModels}
         title={fetchingModels ? '获取模型列表中…' : '模型 — 拉取该配置可用的模型列表'}
         aria-label={fetchingModels ? '获取中：拉取可用模型列表' : '模型：拉取该配置可用的模型列表'}
-        style={{ fontSize: 12, marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        style={{ fontSize: 'var(--fs-s)', marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
       >
         {fetchingModels ? <Loader2 size={13} className="aispin" /> : <Cpu size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
       </button>
@@ -107,7 +107,7 @@ function ToolActionsCell({ tool, testing, probing, fetchingModels, testResult, p
           className="abtn" onClick={() => onSetDefault(tool, 'organize')}
           title="默认整理 — 将该配置设为默认整理工具"
           aria-label="默认整理：将该配置设为默认整理工具"
-          style={{ fontSize: 12, marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+          style={{ fontSize: 'var(--fs-s)', marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
         >
           <Star size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
         </button>
@@ -117,7 +117,7 @@ function ToolActionsCell({ tool, testing, probing, fetchingModels, testResult, p
           className="abtn" onClick={() => onSetDefault(tool, 'develop')}
           title="默认开发 — 将该配置设为默认开发工具"
           aria-label="默认开发：将该配置设为默认开发工具"
-          style={{ fontSize: 12, marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+          style={{ fontSize: 'var(--fs-s)', marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
         >
           <Code2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
         </button>
@@ -135,7 +135,7 @@ function ToolActionsCell({ tool, testing, probing, fetchingModels, testResult, p
         disabled={!tool.model}
         title={tool.model ? `复制模型 — 复制当前选择的模型名称（${tool.model}）` : '复制模型 — 当前未选择模型'}
         aria-label={copied ? '已复制模型名称' : '复制模型名称'}
-        style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', cursor: tool.model ? 'pointer' : 'not-allowed', opacity: tool.model ? 1 : 0.4, color: copied ? 'var(--success, var(--accent))' : undefined }}
+        style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', cursor: tool.model ? 'pointer' : 'not-allowed', opacity: tool.model ? 1 : 0.4, color: copied ? 'var(--success, var(--accent))' : undefined }}
       >
         {copied
           ? <Check size={13} className="copy-pop" style={{ display: 'inline-block', verticalAlign: '-2px' }} />
@@ -146,24 +146,24 @@ function ToolActionsCell({ tool, testing, probing, fetchingModels, testResult, p
         className="abtn" onClick={() => onRemove(tool)}
         title="归档 — 归档该配置记录（列表不再显示，记录保留在库中）"
         aria-label="归档：归档该配置记录"
-        style={{ fontSize: 12, color: 'var(--warning, var(--danger))', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        style={{ fontSize: 'var(--fs-s)', color: 'var(--warning, var(--danger))', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
       >
         <Archive size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
       </button>
       {testResult && (
-        <div style={{ fontSize: 11, color: testResult.ok ? 'var(--success)' : 'var(--danger)', marginTop: 4, whiteSpace: 'normal', maxWidth: 200 }}>
+        <div style={{ fontSize: 'var(--fs-xs)', color: testResult.ok ? 'var(--success)' : 'var(--danger)', marginTop: 4, whiteSpace: 'normal', maxWidth: 200 }}>
           {/* T02208：连接测试只做目录型探测，「成功」不再由前端断言——文案口径交给服务端给出 */}
           {testResult.ok ? '✓ ' : '✗ '}{testResult.msg}
         </div>
       )}
       {probeResult && (
-        <div style={{ fontSize: 11, color: probeResult.ok ? 'var(--success)' : 'var(--danger)', marginTop: 4, whiteSpace: 'normal', maxWidth: 200 }}>
+        <div style={{ fontSize: 'var(--fs-xs)', color: probeResult.ok ? 'var(--success)' : 'var(--danger)', marginTop: 4, whiteSpace: 'normal', maxWidth: 200 }}>
           {probeResult.ok ? '✓ ' : '✗ '}{probeResult.msg}
         </div>
       )}
       {modelsResult && (
         // T00532：可滚动查看全部模型，超出 160px 内部滚动不再截断
-        <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4, whiteSpace: 'normal', maxWidth: 220, maxHeight: 160, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 4, padding: 4 }}>
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginTop: 4, whiteSpace: 'normal', maxWidth: 220, maxHeight: 160, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 4, padding: 4 }}>
           可用模型（{modelsResult.length} 个）：{modelsResult.join('、')}
         </div>
       )}
@@ -190,7 +190,7 @@ function ToolKeyCell({ tool, revealed, onToggleReveal, flash }: ToolKeyCellProps
             onClick={() => onToggleReveal(tool)}
             title="查看原文 — 查看 API Key 明文"
             aria-label="查看原文：查看 API Key 明文"
-            style={{ fontSize: 11, marginTop: 2, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+            style={{ fontSize: 'var(--fs-xs)', marginTop: 2, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
           >
             <Eye size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
           </button>
@@ -213,7 +213,7 @@ function ToolKeyCell({ tool, revealed, onToggleReveal, flash }: ToolKeyCellProps
           onClick={() => onToggleReveal(tool)}
           title="隐藏 — 隐藏 API Key 明文"
           aria-label="隐藏：隐藏 API Key 明文"
-          style={{ fontSize: 11, marginTop: 2, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+          style={{ fontSize: 'var(--fs-xs)', marginTop: 2, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
         >
           <EyeOff size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
         </button>
@@ -241,7 +241,7 @@ function ToolModelCell(props: {
   const renderMenuBody = () => {
     if (fetchingModels[tool.id]) {
       return (
-        <div style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ padding: '8px 10px', fontSize: 'var(--fs-s)', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
           <Loader2 size={12} className="aispin" /> 获取模型列表中…
         </div>
       );
@@ -252,13 +252,13 @@ function ToolModelCell(props: {
         <button key={m} aria-pressed={m === tool.model}
           onClick={() => onSelectModel(tool, m)}
           title={m}
-          style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '5px 10px', fontSize: 12, border: 'none', cursor: 'pointer', background: m === tool.model ? 'var(--accent-soft)' : 'transparent', color: m === tool.model ? 'var(--accent)' : 'var(--text)' }}>
+          style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '5px 10px', fontSize: 'var(--fs-s)', border: 'none', cursor: 'pointer', background: m === tool.model ? 'var(--accent-soft)' : 'transparent', color: m === tool.model ? 'var(--accent)' : 'var(--text)' }}>
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m}</span>
-          {m === tool.model && <span style={{ fontSize: 10 }}>当前</span>}
+          {m === tool.model && <span style={{ fontSize: 'var(--fs-2xs)' }}>当前</span>}
         </button>
       ));
     }
-    return <div style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-muted)' }}>暂无模型列表，请先点击「拉取模型」获取</div>;
+    return <div style={{ padding: '8px 10px', fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>暂无模型列表，请先点击「拉取模型」获取</div>;
   };
 
   return (
@@ -268,7 +268,7 @@ function ToolModelCell(props: {
         title={tool.model ? `模型：${tool.model} — 点击选择可用模型` : '选择模型 — 点击拉取并选择可用模型'}
         aria-label="选择模型" aria-haspopup="listbox" aria-expanded={isOpen}
         className="task-op"
-        style={{ cursor: 'pointer', border: 'none', background: 'transparent', padding: 0, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 3, color: tool.model ? 'var(--text)' : 'var(--text-muted)', fontFamily: 'inherit' }}
+        style={{ cursor: 'pointer', border: 'none', background: 'transparent', padding: 0, fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 3, color: tool.model ? 'var(--text)' : 'var(--text-muted)', fontFamily: 'inherit' }}
       >
         {fetchingModels[tool.id] ? <Loader2 size={11} className="aispin" /> : null}
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 170 }}>{tool.model ?? '选择模型'}</span>
@@ -361,7 +361,7 @@ function ToolRow(props: ToolRowProps) {
           )}
         </div>
         {/* 备注默认收缩，仅展开时显示完整内容 */}
-        {tool.remark && props.remarkExpanded[tool.id] && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{tool.remark}</div>}
+        {tool.remark && props.remarkExpanded[tool.id] && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>{tool.remark}</div>}
       </td>
       <td data-noscale="1" style={{ ...cellStyle, cursor: 'copy', userSelect: 'text' }} draggable={false}
         onDoubleClick={() => { void navigator.clipboard.writeText(tool.type).then(() => props.flash?.(`已复制厂商类型：${tool.type}`)); }}
@@ -384,7 +384,7 @@ function ToolRow(props: ToolRowProps) {
           onToggleModelMenu={props.onToggleModelMenu}
           onSelectModel={props.onSelectModel}
         />
-        {tool.model_notes && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{tool.model_notes}</div>}
+        {tool.model_notes && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>{tool.model_notes}</div>}
       </td>
       {/* 默认仅展示掩码；点击「查看原文」按需拉取明文，再点隐藏即从内存移除（FR3.5） */}
       <ToolKeyCell tool={tool} revealed={props.revealed[tool.id]} onToggleReveal={props.onToggleReveal} flash={props.flash} />
@@ -393,15 +393,15 @@ function ToolRow(props: ToolRowProps) {
           onClick={() => props.onToggleEnabled(tool)}
           title={tool.enabled ? '停用 — 停用该配置文件' : '启用 — 启用该配置文件'}
           aria-label={tool.enabled ? '停用：停用该配置文件' : '启用：启用该配置文件'}
-          style={{ fontSize: 12, color: tool.enabled ? 'var(--success)' : 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+          style={{ fontSize: 'var(--fs-s)', color: tool.enabled ? 'var(--success)' : 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
         >
           <Power size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
         </button>
       </td>
       <td style={cellStyle}>
-        {tool.isDefaultOrganize && <span style={{ fontSize: 11, color: 'var(--accent)', marginRight: 4 }}>整理✓</span>}
-        {tool.isDefaultDevelop && <span style={{ fontSize: 11, color: 'var(--success)' }}>开发✓</span>}
-        {!tool.isDefaultOrganize && !tool.isDefaultDevelop && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>-</span>}
+        {tool.isDefaultOrganize && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', marginRight: 4 }}>整理✓</span>}
+        {tool.isDefaultDevelop && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--success)' }}>开发✓</span>}
+        {!tool.isDefaultOrganize && !tool.isDefaultDevelop && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>-</span>}
       </td>
       <ToolActionsCell
         tool={tool}
@@ -428,16 +428,16 @@ function ConfigWarnings({ warnings, onFix }: { readonly warnings: readonly Confi
   if (warnings.length === 0) return null;
   return (
     <div style={{ gridColumn: '1 / -1', border: '1px solid var(--warning, var(--danger))', borderRadius: 6, padding: 8, background: 'var(--surface-2)' }}>
-      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>配置体检（本地字符串判定，未发起外部请求）</div>
+      <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 4 }}>配置体检（本地字符串判定，未发起外部请求）</div>
       {warnings.map((w) => (
-        <div key={`${w.field}:${w.message}`} style={{ fontSize: 11, color: 'var(--danger)', marginTop: 2, whiteSpace: 'normal', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div key={`${w.field}:${w.message}`} style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)', marginTop: 2, whiteSpace: 'normal', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
           <span>· {w.message}</span>
           {w.fixed !== undefined && (
             <button
               onClick={() => onFix(w)}
               title="一键规范化 — 用 ASCII 等价字符替换该字段中的不可见字符"
               aria-label="一键规范化：以 ASCII 等价字符替换该字段中的不可见字符"
-              style={{ fontSize: 11, padding: '1px 8px', cursor: 'pointer' }}
+              style={{ fontSize: 'var(--fs-xs)', padding: '1px 8px', cursor: 'pointer' }}
             >一键规范化</button>
           )}
         </div>
@@ -484,7 +484,7 @@ function ToolFormDialog(props: ToolFormDialogProps) {
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
       <div ref={panelRef} style={{ background: 'var(--card-bg)', borderRadius: 8, padding: 20, width: 520, maxWidth: '92vw', maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
-        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 14 }}>{props.editingId ? '编辑配置记录' : '新增配置记录'}</div>
+        <div style={{ fontSize: 'var(--fs-xl)', fontWeight: 600, marginBottom: 14 }}>{props.editingId ? '编辑配置记录' : '新增配置记录'}</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           <div>
             <label htmlFor="aitool-name" style={labelStyle}>名称（厂商/工具名）*</label>
@@ -500,23 +500,23 @@ function ToolFormDialog(props: ToolFormDialogProps) {
             <label htmlFor="aitool-endpoint" style={labelStyle}>Endpoint / Base URL *</label>
             <input id="aitool-endpoint" style={fieldStyle} value={form.endpoint} onChange={(e) => props.onFieldChange({ endpoint: e.target.value })} placeholder="例如 https://api.deepseek.com/v1" />
             {/* T01346：说明版本段的补齐口径，避免自带 /v4 的厂商（智谱）被再补一段 /v1 而 404 */}
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>
               未带版本段时自动补 <code>/v1</code>；已带版本段（<code>/v1</code>、<code>/v4</code> 等）则原样使用，勿再补一段。例：DeepSeek 填 <code>https://api.deepseek.com</code>（或 <code>…/v1</code>），智谱填 <code>https://open.bigmodel.cn/api/paas/v4</code>。
             </div>
           </div>
           <div style={{ gridColumn: '1 / -1' }}>
             <label htmlFor="aitool-console-url" style={labelStyle}>厂商控制台 URL（可选）</label>
             <input id="aitool-console-url" style={fieldStyle} value={form.consoleUrl} onChange={(e) => props.onFieldChange({ consoleUrl: e.target.value })} placeholder="例如 https://platform.deepseek.com" />
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>填写后，列表「控制台」按钮可直接打开该厂商官方控制台页面</div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>填写后，列表「控制台」按钮可直接打开该厂商官方控制台页面</div>
           </div>
           {/* 草稿连接测试：未保存即可验证 Endpoint + Key 连通性 */}
           <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <button onClick={props.onTestDraft} disabled={props.formTesting} title={props.formTesting ? '测试中…' : '测试连接 — 用当前表单值验证连通性'} aria-label={props.formTesting ? '测试中：验证连通性' : '测试连接：用当前表单值验证连通性'} style={{ fontSize: 12, padding: '4px 12px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}>
+            <button onClick={props.onTestDraft} disabled={props.formTesting} title={props.formTesting ? '测试中…' : '测试连接 — 用当前表单值验证连通性'} aria-label={props.formTesting ? '测试中：验证连通性' : '测试连接：用当前表单值验证连通性'} style={{ fontSize: 'var(--fs-s)', padding: '4px 12px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}>
               {props.formTesting ? <Loader2 size={13} className="aispin" /> : <PlugZap size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
             </button>
-            {props.formTest && <span style={{ fontSize: 12, color: props.formTest.ok ? 'var(--success)' : 'var(--danger)' }}>{props.formTest.msg}</span>}
+            {props.formTest && <span style={{ fontSize: 'var(--fs-s)', color: props.formTest.ok ? 'var(--success)' : 'var(--danger)' }}>{props.formTest.msg}</span>}
             {/* T02208：口径说明——连接测试走的是模型目录探测，读不到余额与模型权限，别再把它当「能调用」 */}
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', gridColumn: '1 / -1' }}>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', gridColumn: '1 / -1' }}>
               连接测试只读服务商的模型目录，查不出账户余额与「该密钥能否调用该模型」；保存后用列表行的 <Zap size={11} style={{ display: 'inline-block', verticalAlign: '-1px' }} /> 实调探测 发一条极小真实请求确认（会消耗少量额度）。
             </div>
           </div>
@@ -536,7 +536,7 @@ function ToolFormDialog(props: ToolFormDialogProps) {
             <label htmlFor="aitool-model" style={labelStyle}>默认模型</label>
             <div style={{ display: 'flex', gap: 6 }}>
               <input id="aitool-model" list="aitool-model-options" style={fieldStyle} value={form.model} onChange={(e) => props.onFieldChange({ model: e.target.value })} placeholder="例如 deepseek-chat" />
-              <button onClick={props.onFetchModels} disabled={props.formFetching} title={props.formFetching ? '获取中…' : '获取模型 — 拉取服务商可用模型清单'} aria-label={props.formFetching ? '获取中：拉取可用模型清单' : '获取模型：拉取服务商可用模型清单'} style={{ fontSize: 12, padding: '4px 10px', cursor: 'pointer', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
+              <button onClick={props.onFetchModels} disabled={props.formFetching} title={props.formFetching ? '获取中…' : '获取模型 — 拉取服务商可用模型清单'} aria-label={props.formFetching ? '获取中：拉取可用模型清单' : '获取模型：拉取服务商可用模型清单'} style={{ fontSize: 'var(--fs-s)', padding: '4px 10px', cursor: 'pointer', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
                 {props.formFetching ? <Loader2 size={13} className="aispin" /> : <Cpu size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
               </button>
             </div>
@@ -557,7 +557,7 @@ function ToolFormDialog(props: ToolFormDialogProps) {
           </div>
           <div style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: 8 }}>
             {/* 「启用」文本包一层 span：label 内 input 与裸文本之间的换行空白属于歧义间距（S6772），间距交给 flex gap 控制 */}
-            <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+            <label style={{ fontSize: 'var(--fs-m)', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
               <input type="checkbox" checked={form.enabled} onChange={(e) => props.onFieldChange({ enabled: e.target.checked })} />
               <span>启用</span>
             </label>
@@ -950,7 +950,7 @@ export function AIToolsPage() {
           现将常驻「新增配置」按钮前置（图标旁保留文字标签）：Tab 到按钮即触发 :focus-within
           显形，后续 Tab 依 DOM 序自然抵达筛选下拉与搜索框。 */}
       <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <h3 style={{ fontSize: 15, margin: 0 }}>配置记录（{filtered.length}/{tools.length}）</h3>
+        <h3 style={{ fontSize: 'var(--fs-xl)', margin: 0 }}>配置记录（{filtered.length}/{tools.length}）</h3>
         <button
           onClick={openCreate}
           title="新增配置 — 新增一条 AI 厂商配置记录"
@@ -959,11 +959,11 @@ export function AIToolsPage() {
         >
           <Plus size={13} /> 新增配置
         </button>
-        <select className="op-hidden" value={filterType} onChange={(e) => setFilterType(e.target.value)} style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+        <select className="op-hidden" value={filterType} onChange={(e) => setFilterType(e.target.value)} style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">全部厂商类型</option>
           {types.map((tp) => <option key={tp} value={tp}>{tp}</option>)}
         </select>
-        <select className="op-hidden" value={filterPurpose} onChange={(e) => setFilterPurpose(e.target.value)} style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+        <select className="op-hidden" value={filterPurpose} onChange={(e) => setFilterPurpose(e.target.value)} style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">全部用途</option>
           <option value="organize">整理</option>
           <option value="develop">开发</option>
@@ -974,13 +974,13 @@ export function AIToolsPage() {
           onChange={(e) => setKeyword(e.target.value)}
           placeholder="搜索名称/厂商/Endpoint/备注…" data-page-search
           aria-label="搜索配置（名称/厂商/Endpoint/备注）"
-          style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, flex: 1, minWidth: 180 }}
+          style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', flex: 1, minWidth: 180 }}
         />
         {notice && <output className="flash-toast">{notice}</output>}
       </div>
 
       {/* 列表 */}
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-l)' }}>
         <thead>
           <tr style={{ textAlign: 'left', color: 'var(--text-secondary)' }}>
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>名称</th>

@@ -97,20 +97,20 @@ export function WorkspaceSearchPanel({
   function renderResults() {
     if (!searched) {
       return (
-        <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
+        <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>
           {bound ? '输入关键词开始在工作空间内全文检索' : '当前项目尚未绑定工作空间（项目管理 → 选择工作空间）'}
         </div>
       );
     }
     if (busy) {
       return (
-        <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
+        <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>
           <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', verticalAlign: '-2px' }} /> 检索中…
         </div>
       );
     }
     if (hits.length === 0) {
-      return <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>无匹配结果</div>;
+      return <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>无匹配结果</div>;
     }
     return hits.map((h, i) => {
       const key = `${h.line}:${h.path}` as const;
@@ -122,18 +122,18 @@ export function WorkspaceSearchPanel({
             title={`${h.path}:${h.line} — 点击${open ? '收起' : '查看文件内容'}`}
             aria-expanded={open}
             style={{ display: 'flex', width: '100%', alignItems: 'baseline', gap: 8, padding: '7px 16px', border: 'none', background: open ? 'var(--accent-soft)' : 'transparent', cursor: 'pointer', textAlign: 'left' }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0, color: 'var(--accent)', fontSize: 12, fontFamily: 'monospace', minWidth: 64 }}>{h.line > 0 ? h.line : null}{h.line === 0 && <FileText size={12} />}</span>
-            <span style={{ flex: 1, color: 'var(--text)', fontSize: 12, wordBreak: 'break-all' }}>{h.path}</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0, color: 'var(--accent)', fontSize: 'var(--fs-s)', fontFamily: 'monospace', minWidth: 64 }}>{h.line > 0 ? h.line : null}{h.line === 0 && <FileText size={12} />}</span>
+            <span style={{ flex: 1, color: 'var(--text)', fontSize: 'var(--fs-s)', wordBreak: 'break-all' }}>{h.path}</span>
             <ChevronDown size={12} style={{ flexShrink: 0, color: 'var(--text-muted)', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s ease' }} />
           </button>
-          <div style={{ padding: '0 16px 6px 16px', color: 'var(--text-secondary)', fontSize: 11, fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{h.snippet}</div>
+          <div style={{ padding: '0 16px 6px 16px', color: 'var(--text-secondary)', fontSize: 'var(--fs-xs)', fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{h.snippet}</div>
           {open && (
             <div style={{ padding: '0 16px 8px 22px', borderTop: '1px dashed var(--border)' }}>
-              <div style={{ fontSize: 10, color: 'var(--text-muted)', margin: '4px 0' }}>{h.path} · 共 {file?.totalLines ?? '…'} 行</div>
+              <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', margin: '4px 0' }}>{h.path} · 共 {file?.totalLines ?? '…'} 行</div>
               {file === null ? (
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 0' }}><Loader2 size={12} style={{ animation: 'spin 1s linear infinite', verticalAlign: '-2px' }} /> 读取中…</div>
+                <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', padding: '4px 0' }}><Loader2 size={12} style={{ animation: 'spin 1s linear infinite', verticalAlign: '-2px' }} /> 读取中…</div>
               ) : (
-                <pre style={{ margin: 0, fontSize: 11, lineHeight: 1.5, color: 'var(--text)', overflowX: 'auto', maxHeight: 260, fontFamily: 'monospace' }}>
+                <pre style={{ margin: 0, fontSize: 'var(--fs-xs)', lineHeight: 1.5, color: 'var(--text)', overflowX: 'auto', maxHeight: 260, fontFamily: 'monospace' }}>
                   {file.lines.map((l) => <div key={l.n} style={{ display: 'flex', gap: 10, background: l.n === h.line ? 'var(--accent-soft)' : 'transparent' }}><span style={{ color: 'var(--text-muted)', flexShrink: 0, userSelect: 'none' }}>{l.n}</span><span>{l.text}</span></div>)}
                 </pre>
               )}
@@ -151,8 +151,8 @@ export function WorkspaceSearchPanel({
         {/* 标题栏 + 关闭 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
           <FileSearch size={15} style={{ color: 'var(--accent)', flexShrink: 0 }} />
-          <span style={{ fontSize: 13, fontWeight: 600, flex: 1, color: 'var(--text)' }}>工作空间全文检索</span>
-          {bound && <span title={bound} style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 300 }}>{bound}</span>}
+          <span style={{ fontSize: 'var(--fs-m)', fontWeight: 600, flex: 1, color: 'var(--text)' }}>工作空间全文检索</span>
+          {bound && <span title={bound} style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 300 }}>{bound}</span>}
           <button onClick={onClose} title="关闭 — 放弃本次检索" aria-label="关闭：放弃本次检索"
             style={{ display: 'inline-flex', padding: 3, border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}>
             <X size={15} />
@@ -167,27 +167,27 @@ export function WorkspaceSearchPanel({
               <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') void doSearch(); }}
                 placeholder="输入关键词（≥2 字符，大小写不敏感）" aria-label="检索关键词"
-                style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 13, minWidth: 0 }} />
+                style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-m)', minWidth: 0 }} />
             </div>
             <button onClick={() => void doSearch()} disabled={busy}
               title="搜索 — 在工作空间内全文检索该关键词"
               aria-label="搜索：在工作空间内全文检索"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1, fontSize: 12 }}>
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1, fontSize: 'var(--fs-s)' }}>
               {busy ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Search size={13} />} 搜索
             </button>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>文件过滤</span>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0 }}>文件过滤</span>
             <input value={glob} onChange={(e) => setGlob(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') void doSearch(); }}
               placeholder="可选，如 *.ts 或 src/**（留空检索全部）" aria-label="文件过滤 glob"
-              style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 12, minWidth: 0 }} />
+              style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', minWidth: 0 }} />
           </div>
         </div>
 
         {/* partial 提示条（T00786 建议项核心：结果可能不完整） */}
         {searched && partial && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 16px', background: 'var(--warn-soft, rgba(245,158,11,.12))', color: 'var(--warn, #b45309)', fontSize: 12, borderBottom: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 16px', background: 'var(--warn-soft, rgba(245,158,11,.12))', color: 'var(--warn, #b45309)', fontSize: 'var(--fs-s)', borderBottom: '1px solid var(--border)' }}>
             <AlertTriangle size={13} style={{ flexShrink: 0 }} />
             <span>结果可能不完整：已扫描 {scannedFiles.toLocaleString()} 个文件后达到检索上限而提前停止，可用上方「文件过滤」glob 缩小范围以获得更精确结果。</span>
           </div>
@@ -200,7 +200,7 @@ export function WorkspaceSearchPanel({
 
         {/* 结果统计 */}
         {searched && !busy && (
-          <div style={{ padding: '6px 16px', borderTop: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: 11 }}>
+          <div style={{ padding: '6px 16px', borderTop: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>
             命中 {count} 处{partial ? `（已截断，扫描 ${scannedFiles.toLocaleString()} 个文件）` : ''}
           </div>
         )}

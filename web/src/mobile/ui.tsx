@@ -28,7 +28,7 @@ export const tapCardStyle: CSSProperties = { display: 'block', width: '100%', te
 export const rowStyle: CSSProperties = { display: 'flex', gap: 10, alignItems: 'flex-start', padding: '12px 2px', borderBottom: '1px solid var(--surface-2)' };
 
 /** 次要说明文本 */
-export const mutedStyle: CSSProperties = { color: 'var(--text-muted)', fontSize: 12, padding: '4px 2px' };
+export const mutedStyle: CSSProperties = { color: 'var(--text-muted)', fontSize: 'var(--fs-s)', padding: '4px 2px' };
 
 /**
  * 状态提示行的窄屏版（T02212）：占满整行并允许换行。
@@ -51,7 +51,7 @@ const badgeTones: Record<BadgeTone, CSSProperties> = {
 
 /** 徽标基元：小号圆角标签 */
 export function Badge({ tone = 'neutral', children, style }: Readonly<{ tone?: BadgeTone; children: ReactNode; style?: CSSProperties }>) {
-  return <span style={{ fontSize: 11, borderRadius: 6, padding: '2px 6px', border: '1px solid transparent', ...badgeTones[tone], ...style }}>{children}</span>;
+  return <span style={{ fontSize: 'var(--fs-xs)', borderRadius: 6, padding: '2px 6px', border: '1px solid transparent', ...badgeTones[tone], ...style }}>{children}</span>;
 }
 
 /** 半屏抽屉基元：底部滑入的半屏面板（后续队列半操作/详情抽屉复用）。
@@ -80,7 +80,7 @@ export function HalfSheet({ open, title, onClose, children }: Readonly<{ open: b
         aria-label={title}
         style={{ position: 'absolute', left: 0, right: 0, bottom: 0, maxHeight: '62%', overflowY: 'auto', background: 'var(--card-bg)', color: 'var(--text)', borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 14, boxSizing: 'border-box', animation: 'sheet-up 220ms ease-in-out', border: 'none', margin: 0 }}
       >
-        {title && <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 10 }}>{title}</div>}
+        {title && <div style={{ fontWeight: 600, fontSize: 'var(--fs-xl)', marginBottom: 10 }}>{title}</div>}
         {children}
       </dialog>
       <style>{'@keyframes sheet-up { from { transform: translateY(40%); opacity: .4 } to { transform: translateY(0); opacity: 1 } }'}</style>
@@ -120,7 +120,7 @@ export function PullRefresh({ onRefresh, children }: Readonly<{ onRefresh: () =>
       onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
     >
-      {pullY > 10 && <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12, padding: 6 }}>{pullY > 55 ? '释放刷新…' : '下拉刷新'}</div>}
+      {pullY > 10 && <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)', padding: 6 }}>{pullY > 55 ? '释放刷新…' : '下拉刷新'}</div>}
       {children}
     </div>
   );
@@ -165,11 +165,11 @@ export function EmptyState({ icon = '📝', message, hint, actionLabel, onAction
 }>) {
   return (
     <div style={{ textAlign: 'center', padding: '48px 12px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
-      <div style={{ fontSize: 40 }} aria-hidden="true">{icon}</div>
-      <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>{t(message, message)}</div>
-      {hint && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{hint}</div>}
+      <div style={{ fontSize: 'var(--fs-hero)' }} aria-hidden="true">{icon}</div>
+      <div style={{ fontSize: 'var(--fs-l)', color: 'var(--text-secondary)' }}>{t(message, message)}</div>
+      {hint && <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>{hint}</div>}
       {actionLabel && onAction && (
-        <button onClick={onAction} style={{ marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '8px 16px', borderRadius: 20, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', cursor: 'pointer', fontSize: 14 }}>
+        <button onClick={onAction} style={{ marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '8px 16px', borderRadius: 20, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', cursor: 'pointer', fontSize: 'var(--fs-l)' }}>
           {t(actionLabel, actionLabel)}
         </button>
       )}

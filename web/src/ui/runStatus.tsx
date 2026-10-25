@@ -109,7 +109,7 @@ export function RunStatusBadge({
     <span
       title={`运行状态：${meta.label}${elapsedSuffix}`}
       aria-label={`运行状态：${meta.label}${elapsedSuffixAria}`}
-      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: meta.color, whiteSpace: 'nowrap', ...style }}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: meta.color, whiteSpace: 'nowrap', ...style }}
     >
       <Icon size={size} style={{ flexShrink: 0 }} />
       {showLabel && <span>{meta.label}</span>}

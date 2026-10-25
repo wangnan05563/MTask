@@ -14,7 +14,7 @@ const SCOPE_OPTIONS: Array<{ key: CaseScope; label: string; hint: string }> = [
   { key: 'uncovered', label: '未覆盖的需求', hint: '列出还没有任何用例的需求\n（覆盖度视图，用于安排补测）' },
 ];
 
-const SELECT_STYLE = { ...CELL_INPUT, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, padding: '3px 4px' };
+const SELECT_STYLE = { ...CELL_INPUT, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', padding: '3px 4px' };
 
 export function TestCaseFilterBar({ meta, reqs, reqFilter, scope, newTitle, keyword, filters, filterOpen, busy, notice,
   onNewTitle, onAdd, onScope, onKeyword, onFilter, onClear }: {
@@ -42,14 +42,14 @@ export function TestCaseFilterBar({ meta, reqs, reqFilter, scope, newTitle, keyw
         onKeyDown={(e) => { if (e.key === 'Enter') onAdd(); }}
         placeholder="新增用例标题（回车提交）" aria-label="新增用例标题"
         title="新增测试用例\n只需标题，其余字段（编号/优先级/类型）自动取默认值，落库后行内补全"
-        style={{ flex: 1, maxWidth: 320, padding: '5px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12 }} />
+        style={{ flex: 1, maxWidth: 320, padding: '5px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }} />
       <button onClick={onAdd} disabled={busy || newTitle.trim() === ''} className="tbtn-anim"
         title="新增一条测试用例（编号按项目内 TC-xxx 自动递增）" aria-label="新增测试用例"
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)', fontSize: 12, cursor: busy ? 'wait' : 'pointer' }}>
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)', fontSize: 'var(--fs-s)', cursor: busy ? 'wait' : 'pointer' }}>
         <Plus size={13} />
       </button>
 
-      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
         {/* S6772：裸文本与 <select> 相邻的空格由 JSX 折叠规则决定——包 span 后作为独立 flex item，渲染不变且间距显式化 */}
         <span>仅显示</span>
         <select value={scope} onChange={(e) => onScope(e.target.value as CaseScope)}
@@ -94,7 +94,7 @@ export function TestCaseFilterBar({ meta, reqs, reqFilter, scope, newTitle, keyw
           {(() => {
             const hit = reqs.find((r) => r.id === reqFilter);
             return hit ? (
-              <span title="当前只看这条需求下的用例\n点 [清除筛选] 回到完整列表" style={{ fontSize: 11, color: 'var(--accent)' }}>需求：{`${hit.req_no} ${hit.title}`.trim()}</span>
+              <span title="当前只看这条需求下的用例\n点 [清除筛选] 回到完整列表" style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)' }}>需求：{`${hit.req_no} ${hit.title}`.trim()}</span>
             ) : null;
           })()}
           <button onClick={onClear} className="tbtn-anim" style={BTN}
@@ -106,7 +106,7 @@ export function TestCaseFilterBar({ meta, reqs, reqFilter, scope, newTitle, keyw
 
       <span style={{ flex: 1 }} />
       {/* <output>（隐式 role=status）让提示文本对辅助技术即时播报——与全站内联 notice 同位置，同时便于自动化断言取当前提示；S6819 要求用原生 output 替代 role=status */}
-      {notice && <output aria-live="polite" style={{ fontSize: 11, color: 'var(--accent)' }}>{notice}</output>}
+      {notice && <output aria-live="polite" style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)' }}>{notice}</output>}
     </div>
   );
 }

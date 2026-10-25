@@ -308,11 +308,11 @@ export const TH: CSSProperties = { padding: '5px 6px' };
 /** 行内编辑输入框：默认透明边框呈文本观感（§9.1 表格基线） */
 export const CELL_INPUT: CSSProperties = {
   border: '1px solid transparent', borderRadius: 4, background: 'transparent',
-  color: 'var(--text)', fontSize: 12, padding: '1px 4px',
+  color: 'var(--text)', fontSize: 'var(--fs-s)', padding: '1px 4px',
 };
 /** 关联 chip（§9.1「fs 11 / border-strong / radius 4 / padding 0 4px」） */
 export const CHIP: CSSProperties = {
-  fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: 'var(--text)',
+  fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: 'var(--text)',
 };
 /** 图标-only 按钮 */
 export const ICON_BTN: CSSProperties = {
@@ -321,12 +321,12 @@ export const ICON_BTN: CSSProperties = {
 };
 /** 带文字的次要按钮（§9.1 btnStyle 基线：fs 12 / padding 3px 8px / radius 4） */
 export const BTN: CSSProperties = {
-  display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 12,
+  display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 'var(--fs-s)',
   padding: '3px 8px', border: '1px solid var(--border-strong)', borderRadius: 4,
   background: 'transparent', color: 'var(--text)',
 };
 /** 批量条内下拉（§7.5：padding 2 / fs 11 / radius 4） */
 export const BATCH_SELECT: CSSProperties = {
-  padding: 2, fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4,
+  padding: 2, fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4,
   background: 'var(--card-bg)', color: 'var(--text)',
 };

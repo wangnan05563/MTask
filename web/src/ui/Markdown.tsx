@@ -62,6 +62,7 @@ export function Markdown({
   const html = useMemo(() => md.render(content || ''), [content]);
   return (
     <div
+      /* NOSONAR - 锚点事件委托：点击目标是正文里渲染出的原生 <a>（自带键盘可达），容器本身不是交互控件 */
       className={className ? `mdv ${className}` : 'mdv'}
       style={style}
       onClick={onAnchorClick
@@ -105,7 +106,7 @@ const switchBtnStyle = (active: boolean): React.CSSProperties => ({
   display: 'inline-flex',
   alignItems: 'center',
   gap: 4,
-  fontSize: 12,
+  fontSize: 'var(--fs-s)',
   padding: '2px 8px',
   borderRadius: 5,
   cursor: 'pointer',
@@ -121,7 +122,7 @@ const sourcePreStyle: React.CSSProperties = {
   border: '1px solid var(--border)',
   borderRadius: 6,
   fontFamily: 'Consolas, Menlo, monospace',
-  fontSize: 13,
+  fontSize: 'var(--fs-m)',
   lineHeight: 1.6,
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-word',
@@ -220,7 +221,7 @@ export function MarkdownContent({
               display: 'inline-flex',
               alignItems: 'center',
               gap: 4,
-              fontSize: 12,
+              fontSize: 'var(--fs-s)',
               padding: '2px 8px',
               borderRadius: 5,
               cursor: 'pointer',

@@ -91,7 +91,7 @@ export function LangSwitch() {
       onClick={() => setGlobalLang(next)}
       title={lang === 'zh' ? 'Switch to English (Beta)' : t('切换到中文', '切换到中文')}
       aria-label={t('切换界面语言', '切换界面语言')}
-      style={{ fontSize: 11, padding: '3px 10px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}
+      style={{ fontSize: 'var(--fs-xs)', padding: '3px 10px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}
     >
       {lang === 'zh' ? 'EN' : '中'}
     </button>
@@ -157,7 +157,7 @@ export function RecurringTab() {
     } catch (e) { flash(String((e as Error).message ?? e)); }
   }
 
-  const cell: { padding: number; borderBottom: string; fontSize: number } = { padding: 8, borderBottom: '1px solid var(--surface-2)', fontSize: 12 };
+  const cell: { padding: number; borderBottom: string; fontSize: string } = { padding: 8, borderBottom: '1px solid var(--surface-2)', fontSize: 'var(--fs-s)' };
 
   return (
     <div style={{ maxWidth: 760 }}>
@@ -170,7 +170,7 @@ export function RecurringTab() {
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
         <select value={projectId} onChange={(e) => setProjectId(e.target.value)} aria-label={t('循环任务项目', '循环任务项目')}
           disabled={projectList.unusable}
-          style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">{projectList.phase === 'error' ? t('项目列表加载失败', '项目列表加载失败')
             : projectList.phase === 'loading' ? t('项目列表加载中…', '项目列表加载中…')
             : t('选择项目…', '选择项目…')}</option>
@@ -178,28 +178,28 @@ export function RecurringTab() {
         </select>
         <ProjectListHint view={projectList} />
         <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('任务标题（如：写周报）', '任务标题（如：写周报）')} aria-label={t('循环任务标题', '循环任务标题')}
-          style={{ flex: 1, minWidth: 180, padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
+          style={{ flex: 1, minWidth: 180, padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
         <select value={freq} onChange={(e) => setFreq(e.target.value)} aria-label={t('循环频率', '循环频率')}
-          style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           {Object.entries(FREQ_LABELS).map(([k]) => <option key={k} value={k}>{freqLabel(k)}</option>)}
         </select>
         <input value={cron} onChange={(e) => setCron(e.target.value)} placeholder={`${t('cron 可选（如', 'cron 可选（如')} ${CRON_PLACEHOLDER}）`} aria-label={t('cron 表达式', 'cron 表达式')}
           title={t('cron 5 段式：分 时 日 月 周（按本地时区）。填写后忽略上面的频率下拉，可精确到时刻，如「0 9 * * 1」= 每周一 9:00', 'cron 5 段式：分 时 日 月 周（按本地时区）。填写后忽略上面的频率下拉，可精确到时刻，如「0 9 * * 1」= 每周一 9:00')}
           onKeyDown={(e) => { if (e.key === 'Enter') void createRule(); }}
-          style={{ width: 150, padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
+          style={{ width: 150, padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
         <button onClick={() => void createRule()} disabled={busy}
-          style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+          style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 'var(--fs-s)' }}>
           {t('添加规则', '添加规则')}
         </button>
       </div>
-      {notice && <div style={{ marginBottom: 10, fontSize: 12, color: 'var(--accent)' }}>{notice}</div>}
+      {notice && <div style={{ marginBottom: 10, fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{notice}</div>}
 
       {rules.length === 0 ? (
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: 12 }}>{t('暂无循环规则——上方添加一条即可。', '暂无循环规则——上方添加一条即可。')}</div>
+        <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 12 }}>{t('暂无循环规则——上方添加一条即可。', '暂无循环规则——上方添加一条即可。')}</div>
       ) : (
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
-            <tr style={{ textAlign: 'left', color: 'var(--text-secondary)', fontSize: 12 }}>
+            <tr style={{ textAlign: 'left', color: 'var(--text-secondary)', fontSize: 'var(--fs-s)' }}>
               <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{t('标题', '标题')}</th>
               <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{t('项目', '项目')}</th>
               <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{t('频率', '频率')}</th>
@@ -219,7 +219,7 @@ export function RecurringTab() {
                       title={t('cron 5 段式：分 时 日 月 周（本地时区）。回车/失焦保存；清空则回退为按频率生成', 'cron 5 段式：分 时 日 月 周（本地时区）。回车/失焦保存；清空则回退为按频率生成')}
                       onBlur={(e) => void updateCron(r, e.target.value.trim())}
                       onKeyDown={(e) => { if (e.key === 'Enter') void updateCron(r, e.currentTarget.value.trim()); }}
-                      style={{ width: 110, padding: 3, fontSize: 11, fontFamily: 'Consolas, Menlo, monospace', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text)' }} />
+                      style={{ width: 110, padding: 3, fontSize: 'var(--fs-xs)', fontFamily: 'Consolas, Menlo, monospace', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text)' }} />
                   ) : (freqLabel(r.freq))}
                 </td>
                 <td style={{ ...cell, color: 'var(--text-muted)' }}>{r.next_run_at.slice(0, r.freq === 'cron' ? 16 : 10)}</td>
@@ -227,12 +227,12 @@ export function RecurringTab() {
                 <td style={cell}>
                   <button onClick={async () => { await api.put(`/recurring/${r.id}`, { enabled: !r.enabled }); void load(); }}
                     title={r.enabled ? t('停用该规则', '停用该规则') : t('启用该规则', '启用该规则')}
-                    style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: r.enabled ? 'var(--text-secondary)' : 'var(--accent)', cursor: 'pointer', marginRight: 4 }}>
+                    style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: r.enabled ? 'var(--text-secondary)' : 'var(--accent)', cursor: 'pointer', marginRight: 4 }}>
                     {r.enabled ? t('停用', '停用') : t('启用', '启用')}
                   </button>
                   <button onClick={async () => { if (await askConfirm(`${t('删除循环规则', '删除循环规则')}「${r.title}」？${t('已生成的任务不受影响。', '已生成的任务不受影响。')}`)) { await api.del(`/recurring/${r.id}`); void load(); } }}
                     title={t('删除该规则', '删除该规则')}
-                    style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--danger)', cursor: 'pointer' }}>
+                    style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--danger)', cursor: 'pointer' }}>
                     {t('删除', '删除')}
                   </button>
                 </td>
@@ -286,7 +286,7 @@ export function ApiTokensTab() {
     } catch (e) { flash(String((e as Error).message ?? e)); }
   }
 
-  const cell: { padding: number; borderBottom: string; fontSize: number } = { padding: 8, borderBottom: '1px solid var(--surface-2)', fontSize: 12 };
+  const cell: { padding: number; borderBottom: string; fontSize: string } = { padding: 8, borderBottom: '1px solid var(--surface-2)', fontSize: 'var(--fs-s)' };
 
   return (
     <div style={{ maxWidth: 760 }}>
@@ -299,39 +299,39 @@ export function ApiTokensTab() {
       <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder={t('凭据名称（如：CI 脚本）', '凭据名称（如：CI 脚本）')} aria-label={t('API Token 名称', 'API Token 名称')}
           onKeyDown={(e) => { if (e.key === 'Enter') void createToken(); }}
-          style={{ flex: 1, padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
+          style={{ flex: 1, padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
         <select value={scope} onChange={(e) => setScope(e.target.value as TokenScope)} aria-label={t('API Token 权限范围', 'API Token 权限范围')}
           title={t('只读 = 仅放行 GET 请求（写操作返回 403）；读写 = 与当前行为一致', '只读 = 仅放行 GET 请求（写操作返回 403）；读写 = 与当前行为一致')}
-          style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           {(Object.keys(SCOPE_LABELS) as TokenScope[]).map((k) => <option key={k} value={k}>{scopeLabel(k)}</option>)}
         </select>
         <button onClick={() => void createToken()}
-          style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+          style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 'var(--fs-s)' }}>
           {t('生成 Token', '生成 Token')}
         </button>
       </div>
-      {notice && <div style={{ marginBottom: 10, fontSize: 12, color: 'var(--accent)' }}>{notice}</div>}
+      {notice && <div style={{ marginBottom: 10, fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{notice}</div>}
 
       {fresh && (
         <div style={{ border: '1px solid var(--accent)', borderRadius: 8, padding: 12, marginBottom: 14, background: 'var(--accent-soft)' }}>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>⚠ {t('请立即复制', '请立即复制')}「{fresh.name}」{t('的 Token（明文仅展示这一次）：', '的 Token（明文仅展示这一次）：')}</div>
-          <code style={{ display: 'block', padding: 8, background: 'var(--card-bg)', borderRadius: 6, fontSize: 12, wordBreak: 'break-all', userSelect: 'all' }}>{fresh.token}</code>
+          <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 6 }}>⚠ {t('请立即复制', '请立即复制')}「{fresh.name}」{t('的 Token（明文仅展示这一次）：', '的 Token（明文仅展示这一次）：')}</div>
+          <code style={{ display: 'block', padding: 8, background: 'var(--card-bg)', borderRadius: 6, fontSize: 'var(--fs-s)', wordBreak: 'break-all', userSelect: 'all' }}>{fresh.token}</code>
           <button onClick={() => { void navigator.clipboard.writeText(fresh.token); flash(t('已复制到剪贴板', '已复制到剪贴板')); }}
-            style={{ marginTop: 8, fontSize: 12, padding: '4px 12px', border: '1px solid var(--accent)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--accent)', cursor: 'pointer' }}>
+            style={{ marginTop: 8, fontSize: 'var(--fs-s)', padding: '4px 12px', border: '1px solid var(--accent)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--accent)', cursor: 'pointer' }}>
             {t('复制', '复制')}
           </button>
-          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+          <div style={{ marginTop: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
             {t('调用示例：', '调用示例：')}<code>curl -H &quot;X-Access-Token: &lt;token&gt;&quot; http://127.0.0.1:39876/api/tasks?archived=0</code>
           </div>
         </div>
       )}
 
       {tokens.length === 0 ? (
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: 12 }}>{t('暂无 Token——上方生成一个即可。', '暂无 Token——上方生成一个即可。')}</div>
+        <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 12 }}>{t('暂无 Token——上方生成一个即可。', '暂无 Token——上方生成一个即可。')}</div>
       ) : (
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
-            <tr style={{ textAlign: 'left', color: 'var(--text-secondary)', fontSize: 12 }}>
+            <tr style={{ textAlign: 'left', color: 'var(--text-secondary)', fontSize: 'var(--fs-s)' }}>
               <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{t('标题', '标题')}</th>
               <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>Token</th>
               <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{t('范围', '范围')}</th>
@@ -346,18 +346,18 @@ export function ApiTokensTab() {
                 <td style={{ ...cell, fontFamily: 'Consolas, Menlo, monospace', color: 'var(--text-muted)' }}>{tk.token_masked}</td>
                 <td style={cell}>
                   <button onClick={() => void toggleScope(tk)} title={t('切换权限范围 — 只读凭据只能发 GET 请求', '切换权限范围 — 只读凭据只能发 GET 请求')}
-                    style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: tk.scope === 'read' ? 'var(--accent)' : 'var(--text-secondary)', cursor: 'pointer' }}>
+                    style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: tk.scope === 'read' ? 'var(--accent)' : 'var(--text-secondary)', cursor: 'pointer' }}>
                     {scopeLabel(tk.scope ?? 'write')}
                   </button>
                 </td>
                 <td style={cell}>{tk.last_used_at ? tk.last_used_at.slice(0, 16) : t('从未使用', '从未使用')}</td>
                 <td style={cell}>
                   <button onClick={async () => { await api.put(`/tokens/${tk.id}`, { enabled: !tk.enabled }); void load(); }}
-                    style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: tk.enabled ? 'var(--text-secondary)' : 'var(--accent)', cursor: 'pointer', marginRight: 4 }}>
+                    style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: tk.enabled ? 'var(--text-secondary)' : 'var(--accent)', cursor: 'pointer', marginRight: 4 }}>
                     {tk.enabled ? t('停用', '停用') : t('启用', '启用')}
                   </button>
                   <button onClick={async () => { if (await askConfirm(`${t('撤销', '撤销')}「${tk.name}」？${t('的脚本将立即失去访问权限。', '的脚本将立即失去访问权限。')}`)) { await api.del(`/tokens/${tk.id}`); void load(); } }}
-                    style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--danger)', cursor: 'pointer' }}>
+                    style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--danger)', cursor: 'pointer' }}>
                     {t('撤销', '撤销')}
                   </button>
                 </td>

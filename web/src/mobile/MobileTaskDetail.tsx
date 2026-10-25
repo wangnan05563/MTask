@@ -66,15 +66,15 @@ export function MobileTaskDetail({ task, categories, onClose, onChanged, notify 
     } finally { setSaveBusy(false); }
   }
 
-  const labelStyle: React.CSSProperties = { fontSize: 12, color: 'var(--text-muted)' };
+  const labelStyle: React.CSSProperties = { fontSize: 'var(--fs-s)', color: 'var(--text-muted)' };
   // T01563：可折叠段头（summary 用 flex 布局后 Chromium 会隐藏原生 disclosure marker，故自绘 ▸ 并随 open 旋转）
   const summaryStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, cursor: 'pointer', listStyle: 'none', fontSize: labelStyle.fontSize, color: labelStyle.color, padding: '2px 0' };
-  const opBtn: React.CSSProperties = { flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '10px 0', borderRadius: 10, fontSize: 14, cursor: busy ? 'wait' : 'pointer', border: '1px solid var(--border-strong)' };
+  const opBtn: React.CSSProperties = { flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '10px 0', borderRadius: 10, fontSize: 'var(--fs-l)', cursor: busy ? 'wait' : 'pointer', border: '1px solid var(--border-strong)' };
 
   return (
     <HalfSheet open title="任务详情" onClose={onClose}>
       <style>{`.hs-caret{display:inline-block;margin-right:5px;color:var(--accent);transition:transform .18s ease}details[open]>summary .hs-caret{transform:rotate(90deg)}`}</style>
-      <div style={{ fontSize: 16, fontWeight: 600, lineHeight: 1.4, wordBreak: 'break-word' }}>{task.title}</div>
+      <div style={{ fontSize: 'var(--fs-2xl)', fontWeight: 600, lineHeight: 1.4, wordBreak: 'break-word' }}>{task.title}</div>
       <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <Badge tone={done ? 'success' : 'accent'}>{STATUS_LABEL[task.status] ?? task.status}</Badge>
         <Badge tone={PRIO_TONE[task.priority] ?? 'neutral'}>{PRIO_LABEL[task.priority] ?? task.priority}</Badge>
@@ -87,7 +87,7 @@ export function MobileTaskDetail({ task, categories, onClose, onChanged, notify 
           <span><span className="hs-caret">▸</span>描述</span>
           {editing !== 'desc' && (
             <button onClick={(e) => { e.preventDefault(); setDescDraft(task.description ?? ''); setEditing('desc'); }} disabled={busy || saveBusy}
-              style={{ fontSize: 12, color: 'var(--accent)', background: 'transparent', border: 'none', cursor: 'pointer' }}>编辑</button>
+              style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', background: 'transparent', border: 'none', cursor: 'pointer' }}>编辑</button>
           )}
         </summary>
         {editing === 'desc' ? (
@@ -97,17 +97,17 @@ export function MobileTaskDetail({ task, categories, onClose, onChanged, notify 
               onChange={(e) => setDescDraft(e.target.value)}
               rows={5}
               aria-label="编辑任务描述"
-              style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 13, resize: 'vertical' }}
+              style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-m)', resize: 'vertical' }}
             />
             <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
               <button onClick={() => setEditing(null)} disabled={saveBusy}
-                style={{ flex: 1, padding: '8px 0', borderRadius: 8, fontSize: 13, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', cursor: saveBusy ? 'default' : 'pointer' }}>取消</button>
+                style={{ flex: 1, padding: '8px 0', borderRadius: 8, fontSize: 'var(--fs-m)', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', cursor: saveBusy ? 'default' : 'pointer' }}>取消</button>
               <button onClick={() => void saveField('desc')} disabled={saveBusy}
-                style={{ flex: 1, padding: '8px 0', borderRadius: 8, fontSize: 13, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', cursor: saveBusy ? 'default' : 'pointer' }}>{saveBusy ? '保存中…' : '保存'}</button>
+                style={{ flex: 1, padding: '8px 0', borderRadius: 8, fontSize: 'var(--fs-m)', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', cursor: saveBusy ? 'default' : 'pointer' }}>{saveBusy ? '保存中…' : '保存'}</button>
             </div>
           </div>
         ) : (
-          task.description ? <MarkdownContent content={task.description} /> : <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 2 }}>（无描述）</div>
+          task.description ? <MarkdownContent content={task.description} /> : <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-m)', marginTop: 2 }}>（无描述）</div>
         )}
       </details>
       {/* 处理结果：可折叠段 + 就地回传（与桌面 TaskDetailDrawer 对齐；T01563 移动端增强） */}
@@ -116,7 +116,7 @@ export function MobileTaskDetail({ task, categories, onClose, onChanged, notify 
           <span><span className="hs-caret">▸</span>处理结果</span>
           {editing !== 'result' && (
             <button onClick={(e) => { e.preventDefault(); setResultDraft(task.handle_result ?? ''); setEditing('result'); }} disabled={busy || saveBusy}
-              style={{ fontSize: 12, color: 'var(--accent)', background: 'transparent', border: 'none', cursor: 'pointer' }}>{task.handle_result ? '编辑' : '回传'}</button>
+              style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', background: 'transparent', border: 'none', cursor: 'pointer' }}>{task.handle_result ? '编辑' : '回传'}</button>
           )}
         </summary>
         {editing === 'result' ? (
@@ -126,18 +126,18 @@ export function MobileTaskDetail({ task, categories, onClose, onChanged, notify 
               onChange={(e) => setResultDraft(e.target.value)}
               rows={5}
               aria-label="编辑/回传处理结果"
-              style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 13, resize: 'vertical' }}
+              style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-m)', resize: 'vertical' }}
             />
             <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
               <button onClick={() => setEditing(null)} disabled={saveBusy}
-                style={{ flex: 1, padding: '8px 0', borderRadius: 8, fontSize: 13, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', cursor: saveBusy ? 'default' : 'pointer' }}>取消</button>
+                style={{ flex: 1, padding: '8px 0', borderRadius: 8, fontSize: 'var(--fs-m)', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', cursor: saveBusy ? 'default' : 'pointer' }}>取消</button>
               <button onClick={() => void saveField('result')} disabled={saveBusy}
-                style={{ flex: 1, padding: '8px 0', borderRadius: 8, fontSize: 13, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', cursor: saveBusy ? 'default' : 'pointer' }}>{saveBusy ? '保存中…' : '保存'}</button>
+                style={{ flex: 1, padding: '8px 0', borderRadius: 8, fontSize: 'var(--fs-m)', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', cursor: saveBusy ? 'default' : 'pointer' }}>{saveBusy ? '保存中…' : '保存'}</button>
             </div>
           </div>
         ) : (
           <div>
-            {task.handle_result ? <MarkdownContent content={task.handle_result} /> : <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 2 }}>（暂无处理结果，AI 分析结论将回写于此）</div>}
+            {task.handle_result ? <MarkdownContent content={task.handle_result} /> : <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-m)', marginTop: 2 }}>（暂无处理结果，AI 分析结论将回写于此）</div>}
             {/* T01698：结果历史 diff/回滚——与桌面抽屉/行内同一组件（T01607）；渲染只看 task_no 不看正文
                 （回滚到「空正文」版本时面板仍在，否则失去再滚回来的入口）。半屏无缩进 indent=0。 */}
             {task.task_no && (

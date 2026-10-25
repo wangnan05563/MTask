@@ -95,8 +95,8 @@ export function MobileShell() {
     return (
       <div style={tokenScreen}>
         <div style={tokenCard}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 16, fontWeight: 700, marginBottom: 6 }}><KeyRound size={18} /> 访问口令</div>
-          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-2xl)', fontWeight: 700, marginBottom: 6 }}><KeyRound size={18} /> 访问口令</div>
+          <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 14 }}>
             通过公网访问需输入访问口令（在桌面端「设置 → 内网穿透 → 访问令牌」查看并复制）。
           </div>
           <input
@@ -104,7 +104,7 @@ export function MobileShell() {
             onChange={(e) => setTokenInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') void submitToken(); }}
             placeholder="粘贴访问口令"
-            style={{ width: '100%', padding: 12, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 15, boxSizing: 'border-box' }}
+            style={{ width: '100%', padding: 12, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 'var(--fs-xl)', boxSizing: 'border-box' }}
           />
           <button onClick={() => void submitToken()} style={tokenBtn}>进入</button>
         </div>
@@ -120,15 +120,15 @@ export function MobileShell() {
       {pwaGuide && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
           <dialog open aria-modal="true" aria-label="添加到主屏幕" style={{ position: 'static', margin: 0, border: 'none', background: 'var(--card-bg)', color: 'var(--text)', borderRadius: 14, padding: 16, maxWidth: 340, width: '100%' }}>
-            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 8 }}>📱 添加到主屏幕</div>
-            <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+            <div style={{ fontWeight: 700, fontSize: 'var(--fs-2xl)', marginBottom: 8 }}>📱 添加到主屏幕</div>
+            <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
               把 MTask 装到手机桌面，像 App 一样全屏使用：<br />
               <b>iPhone：</b>Safari 底部「分享」→「添加到主屏幕」<br />
               <b>Android：</b>浏览器菜单 →「添加到主屏幕 / 安装应用」
             </div>
             <button
               onClick={() => { try { localStorage.setItem('mtask.pwaGuide.seen', '1'); } catch { /* 忽略 */ } setPwaGuide(false); }}
-              style={{ marginTop: 12, width: '100%', padding: '10px 0', borderRadius: 10, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 14, cursor: 'pointer' }}
+              style={{ marginTop: 12, width: '100%', padding: '10px 0', borderRadius: 10, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-l)', cursor: 'pointer' }}
             >
               我知道了
             </button>
@@ -137,18 +137,18 @@ export function MobileShell() {
       )}
       {/* 顶部常驻：连接状态 + 待同步草稿角标 */}
       <div style={topbar}>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: online ? 'var(--success)' : 'var(--danger)' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-s)', color: online ? 'var(--success)' : 'var(--danger)' }}>
           {online ? <><Wifi size={13} /> 在线</> : <><WifiOff size={13} /> 离线</>}
         </span>
         {draftCount > 0 && (
-          <span style={{ fontSize: 12, color: 'var(--warn)', background: 'var(--accent-soft)', borderRadius: 10, padding: '2px 8px' }}>
+          <span style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', background: 'var(--accent-soft)', borderRadius: 10, padding: '2px 8px' }}>
             待同步 {draftCount}
           </span>
         )}
       </div>
       {/* T01425：离线横幅强化——醒目条替代仅顶栏小字，说明降级行为 */}
       {!online && (
-        <output style={{ margin: '0 12px', padding: '8px 12px', borderRadius: 10, background: 'var(--danger)', color: '#fff', fontSize: 13, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <output style={{ margin: '0 12px', padding: '8px 12px', borderRadius: 10, background: 'var(--danger)', color: 'var(--on-solid)', fontSize: 'var(--fs-m)', display: 'flex', gap: 8, alignItems: 'center' }}>
           <WifiOff size={14} style={{ flexShrink: 0 }} />
           <span>离线中——正在浏览缓存数据；新建内容将离线暂存，联网后自动补提</span>
         </output>
@@ -184,7 +184,7 @@ export function MobileShell() {
           return (
             <button key={t.key} onClick={() => setTab(t.key)} title={t.label} aria-label={t.label} style={navBtn(active)}>
               <Icon size={20} />
-              <span style={{ fontSize: 11, marginTop: 2 }}>{t.label}</span>
+              <span style={{ fontSize: 'var(--fs-xs)', marginTop: 2 }}>{t.label}</span>
             </button>
           );
         })}
@@ -198,20 +198,20 @@ export function MobileShell() {
 
 // ---------- 样式 ----------
 const shell: React.CSSProperties = { display: 'flex', flexDirection: 'column', height: '100vh', maxWidth: 480, margin: '0 auto', background: 'var(--app-bg)', color: 'var(--text)', position: 'relative' };
-const topbar: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 14px', background: 'var(--card-bg)', borderBottom: '1px solid var(--border)', fontSize: 12 };
+const topbar: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 14px', background: 'var(--card-bg)', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-s)' };
 const content: React.CSSProperties = { flex: 1, overflow: 'hidden', position: 'relative' };
 const nav: React.CSSProperties = { display: 'flex', alignItems: 'stretch', justifyContent: 'space-around', background: 'var(--card-bg)', borderTop: '1px solid var(--border)', paddingBottom: 'env(safe-area-inset-bottom, 0)' };
 const navBtn = (active: boolean): React.CSSProperties => ({
   flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2,
   padding: '8px 0', background: 'transparent', border: 'none', cursor: 'pointer',
-  color: active ? 'var(--accent)' : 'var(--text-secondary)', fontSize: 11,
+  color: active ? 'var(--accent)' : 'var(--text-secondary)', fontSize: 'var(--fs-xs)',
 });
 const centerBtn: React.CSSProperties = {
   flex: '0 0 auto', transform: 'translateY(-14px)', width: 54, height: 54, borderRadius: '50%',
   background: 'var(--accent)', color: 'var(--accent-text)', border: '3px solid var(--card-bg)', cursor: 'pointer',
   display: 'inline-flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 12px rgba(0,0,0,.2)',
 };
-const toastBox: React.CSSProperties = { position: 'absolute', left: '50%', bottom: 80, transform: 'translateX(-50%)', background: 'rgba(0,0,0,.8)', color: '#fff', fontSize: 13, padding: '8px 16px', borderRadius: 20, zIndex: 50, maxWidth: '80%', textAlign: 'center' };
+const toastBox: React.CSSProperties = { position: 'absolute', left: '50%', bottom: 80, transform: 'translateX(-50%)', background: 'rgba(0,0,0,.8)', color: 'var(--on-dark)', fontSize: 'var(--fs-m)', padding: '8px 16px', borderRadius: 20, zIndex: 50, maxWidth: '80%', textAlign: 'center' };
 const tokenScreen: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: 20, background: 'var(--app-bg)' };
 const tokenCard: React.CSSProperties = { width: '100%', maxWidth: 360, padding: 20, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 12, boxShadow: '0 8px 30px rgba(0,0,0,.12)' };
-const tokenBtn: React.CSSProperties = { marginTop: 14, width: '100%', padding: 12, borderRadius: 8, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 600 };
+const tokenBtn: React.CSSProperties = { marginTop: 14, width: '100%', padding: 12, borderRadius: 8, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', cursor: 'pointer', fontSize: 'var(--fs-xl)', fontWeight: 600 };

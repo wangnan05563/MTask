@@ -26,7 +26,7 @@ export function CopyButton(props: Readonly<{
       onClick={doCopy}
       title={copied ? '已复制' : (props.title ?? '复制到剪贴板')}
       aria-label={(props.ariaLabel ?? '复制') + (copied ? '（已复制）' : '')}
-      style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', ...props.style }}
+      style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', ...props.style }}
     >
       {copied ? <Check size={props.size ?? 13} style={{ color: 'var(--success)' }} /> : <Copy size={props.size ?? 13} />}
     </button>

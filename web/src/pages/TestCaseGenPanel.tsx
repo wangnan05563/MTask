@@ -46,7 +46,7 @@ function fileToBase64(f: File): Promise<string> {
   });
 }
 
-const opBtn = { display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', padding: '3px 8px' } as const;
+const opBtn = { display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', padding: '3px 8px' } as const;
 
 /** 生成前置校验（来源二选一 + 扩展名白名单）：返回需提示的文案，null 表示可开始生成 */
 function checkGenSource(args: { toolId: string; docId: string; pickedFile: File | null }): string | null {
@@ -270,8 +270,8 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
     <div style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
         <ListChecks size={15} style={{ color: 'var(--accent)' }} />
-        <strong style={{ fontSize: 14 }}>从 PRD 生成测试用例</strong>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        <strong style={{ fontSize: 'var(--fs-l)' }}>从 PRD 生成测试用例</strong>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           内置技能（testcase-generate）+ 项目源码上下文 → 拆分需求 + 生成用例 + 覆盖校验；确认后入库，过程见右侧控制台
         </span>
         <span style={{ flex: 1 }} />
@@ -282,7 +282,7 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
         <select value={projectId} onChange={(e) => { setProjectId(e.target.value); setDocId(''); }} disabled={streaming || projectList.unusable}
           title="目标项目 — 用例与需求将挂到该项目" aria-label="选择目标项目"
-          style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', minWidth: 160 }}>
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', minWidth: 160 }}>
           <option value="">{projectListPlaceholder(projectList)}</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
@@ -290,7 +290,7 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
 
         <select value={docId} onChange={(e) => { setDocId(e.target.value); if (e.target.value) setPickedFile(null); }} disabled={streaming || !projectId}
           title="① 内部选择：已录入的 PRD 文档" aria-label="选择内部 PRD 文档"
-          style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', minWidth: 160 }}>
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', minWidth: 160 }}>
           <option value="">内部 PRD 文档…{docs.length ? '' : '（无）'}</option>
           {docs.map((d) => <option key={d.id} value={d.id}>{d.filename}</option>)}
         </select>
@@ -301,35 +301,35 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
             onChange={(e) => { const f = e.target.files?.[0] ?? null; e.target.value = ''; if (f) { setPickedFile(f); setDocId(''); } }} />
         </label>
         {pickedFile && (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
             <FileText size={12} /> {pickedFile.name}
             <button onClick={() => setPickedFile(null)} className="tbtn-anim" title="移除已选文件" aria-label="移除已选文件" style={{ border: 'none', background: 'transparent', color: 'var(--danger)', cursor: 'pointer', display: 'inline-flex' }}><X size={12} /></button>
           </span>
         )}
-        {streaming && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--accent)' }}><Loader2 size={13} className="task-breathe" /> 生成中…（阶段日志滚动至右侧控制台）</span>}
+        {streaming && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-s)', color: 'var(--accent)' }}><Loader2 size={13} className="task-breathe" /> 生成中…（阶段日志滚动至右侧控制台）</span>}
       </div>
 
       {/* 生成偏好 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10, fontSize: 11, color: 'var(--text-muted)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span>每需求用例数</span>
-          <select value={perReq} onChange={(e) => setPerReq(e.target.value)} disabled={streaming} style={{ padding: '2px 4px', fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          <select value={perReq} onChange={(e) => setPerReq(e.target.value)} disabled={streaming} style={{ padding: '2px 4px', fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
             {['2', '3', '5', '8'].map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
         </label>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span>粒度</span>
-          <select value={granularity} onChange={(e) => setGranularity(e.target.value as 'steps' | 'points')} disabled={streaming} style={{ padding: '2px 4px', fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          <select value={granularity} onChange={(e) => setGranularity(e.target.value as 'steps' | 'points')} disabled={streaming} style={{ padding: '2px 4px', fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
             <option value="steps">包含步骤</option>
             <option value="points">仅要点</option>
           </select>
         </label>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span>负向用例</span>
-          <select value={includeNegative ? 'yes' : 'no'} onChange={(e) => setIncludeNegative(e.target.value === 'yes')} disabled={streaming} style={{ padding: '2px 4px', fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          <select value={includeNegative ? 'yes' : 'no'} onChange={(e) => setIncludeNegative(e.target.value === 'yes')} disabled={streaming} style={{ padding: '2px 4px', fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
             <option value="yes">包含</option>
             <option value="no">不含</option>
           </select>
         </label>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span>优先级策略</span>
-          <select value={priorityStrategy} onChange={(e) => setPriorityStrategy(e.target.value)} disabled={streaming} style={{ padding: '2px 4px', fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          <select value={priorityStrategy} onChange={(e) => setPriorityStrategy(e.target.value)} disabled={streaming} style={{ padding: '2px 4px', fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
             {['风险驱动', '均衡分布', '核心优先'].map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </label>
@@ -344,10 +344,10 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
         <button onClick={() => void generate()} disabled={streaming} className="tbtn-anim"
           title="开始生成测试用例（过程在右侧控制台，可随时停止）" aria-label="开始生成测试用例"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 12, border: 'none', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: streaming ? 'default' : 'pointer', padding: '5px 12px' }}>
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-s)', border: 'none', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: streaming ? 'default' : 'pointer', padding: '5px 12px' }}>
           {streaming ? <Loader2 size={12} className="task-breathe" /> : <Sparkles size={12} />} {hasDraft ? '重新生成' : '开始生成'}
         </button>
-        {streaming && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>点右侧控制台「停止」可中断</span>}
+        {streaming && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>点右侧控制台「停止」可中断</span>}
       </div>
 
       {/* 草稿视图 */}
@@ -356,16 +356,16 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
           {/* 覆盖率条 */}
           {coverage && (
             <div style={{ marginBottom: 10 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, marginBottom: 4 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-s)', marginBottom: 4 }}>
                 <strong>覆盖度 {coverage.rate}%</strong>
                 <span style={{ color: 'var(--text-muted)' }}>{coverage.covered}/{coverage.total} 需求已覆盖 · 共 {draftCases.length} 条用例</span>
-                {snap.result?.truncated && <span style={{ color: 'var(--warning, #c80)', fontSize: 11 }}>⚠ 部分输出被截断，已保留成功部分</span>}
+                {snap.result?.truncated && <span style={{ color: 'var(--warning, #c80)', fontSize: 'var(--fs-xs)' }}>⚠ 部分输出被截断，已保留成功部分</span>}
               </div>
               <div style={{ height: 8, borderRadius: 4, background: 'var(--surface-2, var(--border))', overflow: 'hidden' }}>
                 <div style={{ height: '100%', width: `${Math.max(0, Math.min(100, coverage.rate))}%`, background: 'var(--accent)' }} />
               </div>
               {uncovered.length > 0 && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 6, fontSize: 11, color: 'var(--warning, #c80)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--warning, #c80)' }}>
                   ⚠ {uncovered.length} 条需求未生成用例：{uncovered.slice(0, 6).map((u) => u.reqNo).join('、')}{uncovered.length > 6 ? '…' : ''}
                   <button onClick={regenerate} disabled={streaming} className="tbtn-anim" title="对未覆盖需求再补生成一轮" aria-label="补生成" style={opBtn}>
                     <RefreshCw size={11} /> 补生成
@@ -381,37 +381,37 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
               const reqTitle = g.req?.title ?? '';
               return (
                 <div key={g.reqNo} style={{ borderBottom: '1px solid var(--border)' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', background: 'var(--surface-2, var(--card-bg))', fontSize: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', background: 'var(--surface-2, var(--card-bg))', fontSize: 'var(--fs-s)' }}>
                     <span style={{ fontWeight: 600 }}>{g.reqNo}</span>
                     <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={reqTitle}>{reqTitle}</span>
                     {g.req?.isNew
-                      ? <span style={{ fontSize: 10, color: 'var(--accent)' }}>🆕 将新建</span>
-                      : <span style={{ fontSize: 10, color: 'var(--success)' }}><CircleCheck size={10} style={{ verticalAlign: 'middle' }} /> 已存在</span>}
-                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>用例 {g.idxs.length} 条</span>
+                      ? <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--accent)' }}>🆕 将新建</span>
+                      : <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--success)' }}><CircleCheck size={10} style={{ verticalAlign: 'middle' }} /> 已存在</span>}
+                    <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>用例 {g.idxs.length} 条</span>
                   </div>
                   {g.idxs.map((idx) => {
                     const c = draftCases[idx];
                     return (
-                      <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px 4px 18px', borderTop: '1px dashed var(--border)', fontSize: 12, opacity: c.alreadyImported ? 0.6 : 1 }}>
+                      <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px 4px 18px', borderTop: '1px dashed var(--border)', fontSize: 'var(--fs-s)', opacity: c.alreadyImported ? 0.6 : 1 }}>
                         <input type="checkbox" checked={c.include !== false} disabled={c.alreadyImported}
                           onChange={(e) => updateCase(idx, { include: e.target.checked })} aria-label={`是否导入用例 ${idx + 1}`} />
                         <input value={c.title} disabled={c.alreadyImported}
                           onChange={(e) => updateCase(idx, { title: e.target.value })}
-                          style={{ flex: 1, minWidth: 120, fontSize: 12, padding: '3px 6px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }} />
+                          style={{ flex: 1, minWidth: 120, fontSize: 'var(--fs-s)', padding: '3px 6px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }} />
                         <input value={c.module} disabled={c.alreadyImported} placeholder="模块"
                           onChange={(e) => updateCase(idx, { module: e.target.value })}
-                          style={{ width: 88, fontSize: 11, padding: '3px 6px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }} />
+                          style={{ width: 88, fontSize: 'var(--fs-xs)', padding: '3px 6px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }} />
                         <select value={c.priority} disabled={c.alreadyImported} onChange={(e) => updateCase(idx, { priority: e.target.value })}
-                          title="优先级" aria-label="用例优先级" style={{ fontSize: 11, padding: '2px 3px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+                          title="优先级" aria-label="用例优先级" style={{ fontSize: 'var(--fs-xs)', padding: '2px 3px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
                           {(meta?.priority ?? [c.priority]).map((p) => <option key={p} value={p}>{enumLabel(meta, 'priorityLabel', p)}</option>)}
                         </select>
                         <select value={c.type} disabled={c.alreadyImported} onChange={(e) => updateCase(idx, { type: e.target.value })}
-                          title="类型" aria-label="用例类型" style={{ fontSize: 11, padding: '2px 3px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+                          title="类型" aria-label="用例类型" style={{ fontSize: 'var(--fs-xs)', padding: '2px 3px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
                           {(meta?.type ?? [c.type]).map((tp) => <option key={tp} value={tp}>{enumLabel(meta, 'typeLabel', tp)}</option>)}
                         </select>
-                        <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 46, textAlign: 'right' }}>{c.steps.length} 步</span>
+                        <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', width: 46, textAlign: 'right' }}>{c.steps.length} 步</span>
                         {c.alreadyImported
-                          ? <span style={{ fontSize: 10, color: 'var(--success)' }}>已入库</span>
+                          ? <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--success)' }}>已入库</span>
                           : <button onClick={() => removeCase(idx)} className="tbtn-anim" title="从草稿删除该用例" aria-label="删除用例" style={{ border: 'none', background: 'transparent', color: 'var(--danger)', cursor: 'pointer', display: 'inline-flex' }}><Trash2 size={12} /></button>}
                       </div>
                     );
@@ -425,12 +425,12 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
             <button onClick={() => setAllInclude(true)} disabled={streaming} className="tbtn-anim" title="全选" style={opBtn}>全选</button>
             <button onClick={invertInclude} disabled={streaming} className="tbtn-anim" title="反选" style={opBtn}>反选</button>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>选中 {selectedCount} / {draftCases.length} 条{selectedCount === pendingCount ? '' : `（待入库 ${pendingCount}）`}</span>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>选中 {selectedCount} / {draftCases.length} 条{selectedCount === pendingCount ? '' : `（待入库 ${pendingCount}）`}</span>
             <span style={{ flex: 1 }} />
             <button onClick={clearDraft} disabled={streaming} className="tbtn-anim" title="清空草稿" style={opBtn}><X size={11} /> 清空</button>
             <button onClick={() => void doImport()} disabled={streaming || importing || pendingCount === 0} className="tbtn-anim"
               title="把勾选且未入库的用例导入项目（服务端单事务 + 幂等）" aria-label="确认导入"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 12, border: 'none', borderRadius: 6, background: pendingCount === 0 ? 'var(--border-strong)' : 'var(--accent)', color: pendingCount === 0 ? 'var(--text-muted)' : 'var(--accent-text)', cursor: streaming || importing || pendingCount === 0 ? 'default' : 'pointer', padding: '5px 12px' }}>
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-s)', border: 'none', borderRadius: 6, background: pendingCount === 0 ? 'var(--border-strong)' : 'var(--accent)', color: pendingCount === 0 ? 'var(--text-muted)' : 'var(--accent-text)', cursor: streaming || importing || pendingCount === 0 ? 'default' : 'pointer', padding: '5px 12px' }}>
               {importing ? <Loader2 size={12} className="task-breathe" /> : <ListChecks size={12} />} 确认导入 {pendingCount} 条
             </button>
           </div>
@@ -438,7 +438,7 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
       )}
 
       {!hasDraft && !streaming && (
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '6px 0' }}>
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', padding: '6px 0' }}>
           选择目标项目与 PRD 来源后点「开始生成」；生成结果会进入下方草稿视图，勾选确认后入库。
         </div>
       )}

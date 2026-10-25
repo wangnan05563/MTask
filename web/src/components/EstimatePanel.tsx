@@ -394,9 +394,9 @@ function previewUniform(form: { m: string; oMul: string; pMul: string }): string
 function card(title: string, main: string, sub?: string, danger = false): ReactElement {
   return (
     <div style={{ flex: 1, minWidth: 0, padding: 8, background: 'var(--card-bg)', border: `1px solid ${danger ? 'var(--danger)' : 'var(--border)'}`, borderRadius: 8 }}>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>{title}</div>
-      <div style={{ fontSize: 16, fontFamily: MONO, color: danger ? 'var(--danger)' : 'var(--text)' }}>{main}</div>
-      {sub && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>{sub}</div>}
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 4 }}>{title}</div>
+      <div style={{ fontSize: 'var(--fs-2xl)', fontFamily: MONO, color: danger ? 'var(--danger)' : 'var(--text)' }}>{main}</div>
+      {sub && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 3 }}>{sub}</div>}
     </div>
   );
 }
@@ -425,7 +425,7 @@ function toolBtn(tone: ToolBtnTone = 'default', disabled = false): CSSProperties
     background: 'var(--card-bg)',
     color: disabled ? 'var(--text-muted)' : toneText(tone),
     cursor: disabled ? 'default' : 'pointer',
-    fontSize: 11,
+    fontSize: 'var(--fs-xs)',
   };
 }
 
@@ -435,7 +435,7 @@ function pointInput(err: string | undefined): CSSProperties {
     width: 40,
     textAlign: 'right',
     fontFamily: MONO,
-    fontSize: 12,
+    fontSize: 'var(--fs-s)',
     padding: '1px 2px',
     borderRadius: 4,
     border: `1px solid ${err ? 'var(--danger)' : 'var(--border)'}`,
@@ -454,8 +454,8 @@ const LI_RESET: CSSProperties = { listStyle: 'none', margin: 0, padding: 0 };
 function chartBlock(title: string, hasData: boolean, chart: ReactElement, emptyText: string): ReactElement {
   return (
     <>
-      <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '12px 0 6px' }}>{title}</div>
-      {hasData ? chart : <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '6px 0' }}>{emptyText}</div>}
+      <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', margin: '12px 0 6px' }}>{title}</div>
+      {hasData ? chart : <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', padding: '6px 0' }}>{emptyText}</div>}
     </>
   );
 }
@@ -474,7 +474,7 @@ function audienceTagLabel(audience: EstimateExportAudience): string {
 
 function headingTitleStyle(hidden: boolean): CSSProperties {
   return {
-    fontSize: 13,
+    fontSize: 'var(--fs-m)',
     fontWeight: 600,
     visibility: hidden ? 'hidden' : 'visible',
   };
@@ -493,7 +493,7 @@ function deriveBtnStyle(busy: boolean): CSSProperties {
     background: 'var(--card-bg)',
     color: 'var(--accent)',
     cursor: busy ? 'default' : 'pointer',
-    fontSize: 12,
+    fontSize: 'var(--fs-s)',
   };
 }
 
@@ -1165,10 +1165,10 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
   if (error) {
     return (
       <div style={{ padding: 14 }}>
-        <div style={{ fontSize: 13, color: 'var(--danger)', marginBottom: 8 }}>估算数据加载失败</div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, wordBreak: 'break-all' }}>{error}</div>
+        <div style={{ fontSize: 'var(--fs-m)', color: 'var(--danger)', marginBottom: 8 }}>估算数据加载失败</div>
+        <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 10, wordBreak: 'break-all' }}>{error}</div>
         <button type="button" className="tbtn-anim" onClick={() => void load()}
-          style={{ border: '1px solid var(--border-strong)', borderRadius: 6, padding: '4px 10px', background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer', fontSize: 12 }}>
+          style={{ border: '1px solid var(--border-strong)', borderRadius: 6, padding: '4px 10px', background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-s)' }}>
           重试
         </button>
       </div>
@@ -1187,13 +1187,13 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
         type="button"
         key={ms.id}
         onClick={() => { onToggleMsCollapse(ms.id); }}
-        style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 2px', width: '100%', textAlign: 'left', font: 'inherit', color: 'inherit', background: 'transparent', border: 'none', borderTop: '1px solid var(--border-strong)', cursor: 'pointer', fontSize: 12, fontWeight: 600, height: EST_HEADER_H, boxSizing: 'border-box' }}
+        style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 2px', width: '100%', textAlign: 'left', font: 'inherit', color: 'inherit', background: 'transparent', border: 'none', borderTop: '1px solid var(--border-strong)', cursor: 'pointer', fontSize: 'var(--fs-s)', fontWeight: 600, height: EST_HEADER_H, boxSizing: 'border-box' }}
         title={collapsed ? '展开该阶段明细' : '收起该阶段明细（与列表/甘特共用折叠态）'}
       >
         <span style={{ color: 'var(--text-muted)' }}>{collapsed ? '▸' : '▾'}</span>
         <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ms.title}</span>
         {msRow && <span style={{ fontFamily: MONO, color: 'var(--text-muted)', fontWeight: 400 }}>E {num(msRow.expected)}</span>}
-        <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>不进 Σ</span>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 400 }}>不进 Σ</span>
       </button>
     );
   };
@@ -1220,14 +1220,14 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
       return `${POINT_LABEL[f]}（人天，0.5 步进）：Enter 或失焦即落库，Esc 还原${unlockNote}${errNote}`;
     };
     const badge = (
-      <span title={r.tip} style={{ fontSize: 10, padding: '0 4px', borderRadius: 3, border: `1px solid ${r.badge.color}`, color: r.badge.color, whiteSpace: 'nowrap' }}>
+      <span title={r.tip} style={{ fontSize: 'var(--fs-2xs)', padding: '0 4px', borderRadius: 3, border: `1px solid ${r.badge.color}`, color: r.badge.color, whiteSpace: 'nowrap' }}>
         {r.badge.label}
       </span>
     );
     const g = whisker.get(r.planId);
     const wColor = r.suggestion ? 'var(--text-muted)' : 'var(--accent)';
     return (
-      <div key={r.planId} style={{ borderBottom: '1px solid var(--border)', padding: '4px 0 4px 4px', fontSize: 12, display: 'flex', gap: 6, alignItems: 'center', height: EST_ITEM_H, boxSizing: 'border-box', overflow: 'hidden' }}>
+      <div key={r.planId} style={{ borderBottom: '1px solid var(--border)', padding: '4px 0 4px 4px', fontSize: 'var(--fs-s)', display: 'flex', gap: 6, alignItems: 'center', height: EST_ITEM_H, boxSizing: 'border-box', overflow: 'hidden' }}>
         <input
           type="checkbox"
           checked={selIds.includes(r.planId)}
@@ -1238,16 +1238,16 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
         />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: r.suggestion ? 'var(--text-muted)' : 'var(--text)' }} title={r.title}>
-            {r.reqNos.length > 0 && <span style={{ color: 'var(--text-muted)', marginRight: 4, fontFamily: MONO, fontSize: 11 }}>{r.reqNos.join('、')}</span>}
+            {r.reqNos.length > 0 && <span style={{ color: 'var(--text-muted)', marginRight: 4, fontFamily: MONO, fontSize: 'var(--fs-xs)' }}>{r.reqNos.join('、')}</span>}
             {r.title}
           </div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 2, flexWrap: 'nowrap', overflow: 'hidden' }}>
             {badge}
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>复杂度 {r.complexity ?? '—'}</span>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>复杂度 {r.complexity ?? '—'}</span>
             {r.drift?.flag && (
               <span
                 title={`偏差比值 = E ÷ 排期工作日 = ${num(r.drift.ratio)}\n服务端阈值：> ${data.checks.drift.thresholds.high} 或 < ${data.checks.drift.thresholds.low}（§7「计划工期改动」行，面板不重算比值）`}
-                style={{ fontSize: 10, padding: '0 4px', borderRadius: 3, border: '1px solid var(--warning, #c80)', color: 'var(--warning, #c80)', whiteSpace: 'nowrap' }}
+                style={{ fontSize: 'var(--fs-2xs)', padding: '0 4px', borderRadius: 3, border: '1px solid var(--warning, #c80)', color: 'var(--warning, #c80)', whiteSpace: 'nowrap' }}
               >
                 偏差 {num(r.drift.ratio)}
               </span>
@@ -1255,7 +1255,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             {r.drift?.pressure && (
               <span
                 title={`E ${num(r.expected)} 人天 > 剩余排期工作日 ${num(r.drift.remainingWorkdays)}（今日 ${data.checks.drift.today}，工作日已扣节假日/计加班日）`}
-                style={{ fontSize: 10, padding: '0 4px', borderRadius: 3, border: '1px solid var(--danger)', color: 'var(--danger)', whiteSpace: 'nowrap' }}
+                style={{ fontSize: 'var(--fs-2xs)', padding: '0 4px', borderRadius: 3, border: '1px solid var(--danger)', color: 'var(--danger)', whiteSpace: 'nowrap' }}
               >
                 超排期
               </span>
@@ -1265,7 +1265,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                 title={unlocked
                   ? '本会话已解锁：改写会带 unlock 入参，服务端放行这一行（不改任何全局开关）'
                   : '§7 已收口里程碑 → 估算行只读（已交付项不得追溯改写报价）；确需改写点右侧「解锁改写」'}
-                style={{ fontSize: 10, padding: '0 4px', borderRadius: 3, border: `1px solid ${unlocked ? 'var(--accent)' : 'var(--border-strong)'}`, color: unlocked ? 'var(--accent)' : 'var(--text-muted)', whiteSpace: 'nowrap' }}
+                style={{ fontSize: 'var(--fs-2xs)', padding: '0 4px', borderRadius: 3, border: `1px solid ${unlocked ? 'var(--accent)' : 'var(--border-strong)'}`, color: unlocked ? 'var(--accent)' : 'var(--text-muted)', whiteSpace: 'nowrap' }}
               >
                 {unlocked ? '已解锁' : '已收口·只读'}
               </span>
@@ -1276,7 +1276,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                 {unlocked ? '取消解锁' : '解锁改写'}
               </button>
             )}
-            {err && <span style={{ fontSize: 11, color: 'var(--danger)' }}>{err}</span>}
+            {err && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>{err}</span>}
           </div>
           {g && (
             <div /* NOSONAR: S6819 误报——区间条由多个子元素绘制的复合图形，无原生元素可承载，改<img>会毁掉渲染 */
@@ -1351,7 +1351,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
       <div style={{ position: 'sticky', top: 0, zIndex: 2, padding: 10, background: 'var(--surface)', borderBottom: '1px solid var(--border)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
           <div style={headingTitleStyle(hideHeading)}>估算面板</div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: MONO }}>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontFamily: MONO }}>
             {cfg.manDaysPerManMonth} 人天/人月 · 系数和 {num(s.coefSum)}
           </div>
         </div>
@@ -1362,7 +1362,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
         </div>
         {/* §7 变更影响提示条（sticky 区常驻）：计数与文案口径都在服务端 checks，面板不做第二次判定 */}
         {hasDriftNotices && (
-          <output aria-label="估算变更影响提示" style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+          <output aria-label="估算变更影响提示" style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3, fontSize: 'var(--fs-xs)' }}>
             {hasChangedSinceExport && (
               <div
                 style={{ color: 'var(--warning, #c80)', cursor: 'help' }}
@@ -1395,7 +1395,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
           if (!last) return null;
           const stepNote = undoStack.length > 1 ? `（剩 ${undoStack.length - 1} 步）` : '';
           return (
-            <output aria-label="批量填充撤销条" style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+            <output aria-label="批量填充撤销条" style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
               <span>已填充 {last.count} 行 · 撤销</span>
               <button type="button" className="tbtn-anim" style={toolBtn('accent', busy)} disabled={busy}
                 title={`${last.label}（本会话第 ${undoStack.length} 步，仅还原最近一次批量写入）`}
@@ -1409,8 +1409,8 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
 
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 10 }}>
         {/* 2) 阶段视图（§5.2-2）：固定 6 类阶段，无数据置灰且不删行 */}
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '2px 0 6px' }}>阶段（人天 / σ / 比例）</div>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', margin: '2px 0 6px' }}>阶段（人天 / σ / 比例）</div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-s)' }}>
           <tbody>
             {s.phases.map((ph) => {
               const empty = ph.rowCount === 0;
@@ -1439,7 +1439,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
         {/* §5.4 可视化图表（E11 阶段柱+误差线 / E11 帕累托 / E14 龙卷风）：数据只取服务端 summary，
             零计算、纯 SVG、CSS 变量色、里程碑行不进图、空态不画图例 */}
         <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '2px 0 6px' }}>阶段柱与 ±1σ 误差线（E11）</div>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', margin: '2px 0 6px' }}>阶段柱与 ±1σ 误差线（E11）</div>
           <PhaseBarChart phases={s.phases} phaseLabels={data.meta.phaseLabels} />
           {chartBlock('帕累托（E11 · 按行 E 降序累计占比）', pareto.length > 0, <ParetoChart geoms={pareto} />, '暂无有效估算行')}
           {chartBlock('龙卷风（E14 · 敏感性，σ 降序）', tornado.length > 0, <TornadoChart geoms={tornado} />, '暂无 σ 数据')}
@@ -1449,7 +1449,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
         <div role="toolbar" aria-label="估算批量填充工具条" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', margin: '14px 0 6px' }}>
           <label
             title="隐藏已复核（source=manual）的行——规则/默认/未录入都算待复核（§5.2 状态要求）"
-            style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}
+            style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', cursor: 'pointer' }}
           >
             <input type="checkbox" checked={onlyUnreviewed} onChange={(e) => setOnlyUnreviewed(e.target.checked)} />
             <span>只看未复核</span>
@@ -1477,12 +1477,12 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             title="§7 影响试算：改系数或改勾选行的 P 值，看实际预估人月 X → Y（Δ%）。零写入，试算值不落库">
             影响试算…
           </button>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>已选 {selRows.length} 行</span>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginLeft: 'auto' }}>已选 {selRows.length} 行</span>
         </div>
 
         {uniformOpen && (
           <fieldset aria-label="统一值批量填充表单"
-            style={{ margin: 0, minWidth: 0, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', border: '1px solid var(--border-strong)', borderRadius: 8, padding: 6, background: 'var(--card-bg)', fontSize: 11 }}>
+            style={{ margin: 0, minWidth: 0, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', border: '1px solid var(--border-strong)', borderRadius: 8, padding: 6, background: 'var(--card-bg)', fontSize: 'var(--fs-xs)' }}>
             <span style={{ color: 'var(--text-muted)' }}>统一值 + 相对幅度</span>
             {([['m', '最可能 M', '人天'], ['oMul', 'O 倍率', '如 0.8'], ['pMul', 'P 倍率', '如 1.4']] as const).map(([key, label, hint]) => {
               // S1121：三元中的解构赋值 `[[uval, ustep]] = …` 提为独立取值语句（previewUniform 同：JSX IIFE → 局部纯函数）
@@ -1492,7 +1492,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                 {label}
                 <input type="number" step={ustep} min={0} value={uval}
                   onChange={(e) => setUniform((p) => ({ ...p, [key]: e.target.value }))}
-                  style={{ width: 52, textAlign: 'right', fontFamily: MONO, fontSize: 12, padding: '1px 2px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
+                  style={{ width: 52, textAlign: 'right', fontFamily: MONO, fontSize: 'var(--fs-s)', padding: '1px 2px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
                 />
               </label>
               );
@@ -1515,7 +1515,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
           const setRowP = (planId: string, value: string): void => setWhatIfP((p) => ({ ...p, [planId]: value }));
           return (
             <fieldset aria-label="影响试算表单"
-              style={{ margin: 0, minWidth: 0, border: '1px solid var(--border-strong)', borderRadius: 8, padding: 6, background: 'var(--card-bg)', fontSize: 11, marginTop: 6 }}>
+              style={{ margin: 0, minWidth: 0, border: '1px solid var(--border-strong)', borderRadius: 8, padding: 6, background: 'var(--card-bg)', fontSize: 'var(--fs-xs)', marginTop: 6 }}>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 4 }}>
                 <span style={{ color: 'var(--text-muted)' }}>影响试算（零写入 · 不改配置）</span>
                 <button type="button" className="tbtn-anim" style={toolBtn()} onClick={() => { setWhatIfOpen(false); setWhatIf(null); }}>收起</button>
@@ -1527,7 +1527,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                   <span style={{ fontFamily: MONO }}>{num(c.points.likely)}</span>
                   <input type="number" step={0.01} min={0} max={1} value={whatIfCoefs[c.key] ?? ''} placeholder="改为"
                     onChange={(e) => setCoef(c.key, e.target.value)}
-                    style={{ width: 48, textAlign: 'right', fontFamily: MONO, fontSize: 12, padding: '1px 2px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
+                    style={{ width: 48, textAlign: 'right', fontFamily: MONO, fontSize: 'var(--fs-s)', padding: '1px 2px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
                   />
                 </label>
               ))}
@@ -1541,7 +1541,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                       <span style={{ fontFamily: MONO }}>{num(r.pessimistic)}</span>
                       <input type="number" step={0.5} min={r.likely ?? 0} value={whatIfP[r.planId] ?? ''} placeholder="P"
                         onChange={(e) => setRowP(r.planId, e.target.value)}
-                        style={{ width: 44, textAlign: 'right', fontFamily: MONO, fontSize: 12, padding: '1px 2px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
+                        style={{ width: 44, textAlign: 'right', fontFamily: MONO, fontSize: 'var(--fs-s)', padding: '1px 2px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
                       />
                     </label>
                   ))}
@@ -1585,15 +1585,15 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
 
         {/* 4) 明细行（§5.2-3）：分组与折叠与时间线同源 */}
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '14px 0 2px' }}>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>明细（O / M / P / E / σ）</div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>明细（O / M / P / E / σ）</div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
             已计入 Σ {s.countedKeys.length} 行 · 排除 {rc.excluded.subtotal + rc.excluded.milestone + rc.excluded.unEstimated} 行（小计 {rc.excluded.subtotal} · 里程碑 {rc.excluded.milestone} · 未录入 {rc.excluded.unEstimated}）
           </div>
         </div>
         {/* §5.4 区间条图例：没有它，那条短线就是一个没人能自证含义的图形。
             空态（一条区间都画不出来）时不渲染——图例解释的是一个当前并不存在的图形。 */}
         {whisker.size > 0 && (
-        <div aria-label="区间条图例" style={{ fontSize: 11, color: 'var(--text-muted)', margin: '0 0 6px', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div aria-label="区间条图例" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', margin: '0 0 6px', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
           <span aria-hidden style={{ display: 'inline-flex', alignItems: 'center', gap: 2, color: 'var(--accent)' }}>
             <span style={{ width: 1, height: 7, background: 'currentColor', display: 'inline-block' }} />
             <span style={{ width: 18, height: 1, background: 'currentColor', display: 'inline-block' }} />
@@ -1607,7 +1607,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
 
         {isEmpty && (
           <div style={{ border: '1px dashed var(--border-strong)', borderRadius: 8, padding: 10, marginBottom: 8, background: 'var(--card-bg)' }}>
-            <div style={{ fontSize: 12, color: 'var(--text)', marginBottom: 6 }}>尚未录入估算——点「按规则推导」用复杂度/用例/工期生成初始值。</div>
+            <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text)', marginBottom: 6 }}>尚未录入估算——点「按规则推导」用复杂度/用例/工期生成初始值。</div>
             <button type="button" className="tbtn-anim" disabled={deriveBusy} onClick={() => void fillByRules()}
               style={deriveBtnStyle(deriveBusy)}>
               {deriveBtnLabel(deriveBusy)}
@@ -1644,13 +1644,13 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
           })
         )}
         {estVirtual && (
-          <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+          <div style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
             明细已载入 {rows.length} 行（超过 {EST_VIRTUAL_THRESHOLD} 行自动启用虚拟滚动，仅渲染视口附近 {estVisible.length} 行）；折叠 / 筛选即时生效。
           </div>
         )}
         {/* 5) 告警条（§5.2 状态要求里「比例自检」那一档 + §7 脱离计划行） */}
         {(rc.danger || rc.unassigned.length > 0 || data.checks.detached > 0) && (
-          <div style={{ marginTop: 10, border: `1px solid ${rc.danger ? 'var(--danger)' : 'var(--border-strong)'}`, borderRadius: 8, padding: 8, background: 'var(--card-bg)', fontSize: 12 }}>
+          <div style={{ marginTop: 10, border: `1px solid ${rc.danger ? 'var(--danger)' : 'var(--border-strong)'}`, borderRadius: 8, padding: 8, background: 'var(--card-bg)', fontSize: 'var(--fs-s)' }}>
             <div style={{ color: rc.danger ? 'var(--danger)' : 'var(--text)', marginBottom: 4 }}>
               Σ估算比例 {pct(rc.sumRatio)} 偏离 100%（{devPct(rc.deviationPct)}）
               {rc.danger ? ' —— 导出前须核对未归阶段的行' : ''}
@@ -1676,7 +1676,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
         {/* 6) 行内录入错误条（§5.2 状态要求：被拒的行逐行点名 + 底部计数；判据全在服务端，面板只转录 400 文案） */}
         {rowErrorIds.length > 0 && (
           <div role="alert" aria-label="行内录入错误提示"
-            style={{ marginTop: 10, border: '1px solid var(--danger)', borderRadius: 8, padding: 8, background: 'var(--card-bg)', fontSize: 12, color: 'var(--danger)' }}>
+            style={{ marginTop: 10, border: '1px solid var(--danger)', borderRadius: 8, padding: 8, background: 'var(--card-bg)', fontSize: 'var(--fs-s)', color: 'var(--danger)' }}>
             <div>{rowErrorCount} 行不满足录入校验（O≤M≤P），导出前须修正</div>
             {Object.entries(rowErrors).map(([id, msg]) => (
               <div key={id} style={{ color: 'var(--text-muted)', marginTop: 2 }}>
@@ -1689,12 +1689,12 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
         {/* 6a) 估算参数编辑器（§3.3 · T02699）：八键走 `PUT /api/estimates/params`，
             标签/类型/当前值均来自服务端（/meta + /params），前端不抄名单；保存即落库 + 留痕（§12-R1）。 */}
         <section aria-label="估算参数编辑器" style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 4, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
             <span>估算参数（§3.3）</span>
             <button type="button" className="tbtn-anim" style={toolBtn()} onClick={() => void loadParamLogs()}
               aria-label="刷新参数与改值历史" title="重读当前参数（不影响草稿）与改值历史">刷新</button>
           </div>
-          <div role="note" style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6, lineHeight: 1.5 }}>
+          <div role="note" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 6, lineHeight: 1.5 }}>
             ⚠ 改这里的参数会写入审计日志（见下方「改值历史」），并影响所有派生报价——内部版/客户版导出都按这些数算，请确认后再保存。
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -1705,7 +1705,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
               if (type === 'boolean') {
                 return (
                   <label key={dbKey} title={label}
-                    style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}>
+                    style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', cursor: 'pointer' }}>
                     <input type="checkbox" checked={value === '1'}
                       onChange={(e) => setParamDrafts((p) => ({ ...p, [dbKey]: e.target.checked ? '1' : '0' }))} />
                     <span>{label}</span>
@@ -1715,14 +1715,14 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
               const isRatio = type === 'text';
               return (
                 <label key={dbKey} title={label}
-                  style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)' }}>
+                  style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
                   <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
                   <input
                     type={isRatio ? 'text' : 'number'}
                     {...(type === 'number' ? { step: 'any', min: 0 } : {})}
                     value={value}
                     onChange={(e) => setParamDrafts((p) => ({ ...p, [dbKey]: e.target.value }))}
-                    style={{ width: isRatio ? 96 : 72, textAlign: 'right', fontFamily: MONO, fontSize: 12, padding: '1px 2px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
+                    style={{ width: isRatio ? 96 : 72, textAlign: 'right', fontFamily: MONO, fontSize: 'var(--fs-s)', padding: '1px 2px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
                   />
                 </label>
               );
@@ -1734,8 +1734,8 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
               disabled={paramSaveBusy} onClick={() => void saveParams()}>
               {paramSaveBusy ? '保存中…' : '保存参数'}
             </button>
-            {paramSaveMsg && <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{paramSaveMsg}</span>}
-            {paramSaveErr && <span role="alert" style={{ color: 'var(--danger)', fontSize: 11 }}>{paramSaveErr}</span>}
+            {paramSaveMsg && <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>{paramSaveMsg}</span>}
+            {paramSaveErr && <span role="alert" style={{ color: 'var(--danger)', fontSize: 'var(--fs-xs)' }}>{paramSaveErr}</span>}
           </div>
         </section>
 
@@ -1743,7 +1743,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             这一面（T02120 的设计约束），键名标签走 `/meta` 的 `settingLabels` 单源，排序/条数
             一律服务端说了算——前端不排、不截、不自算第二套口径。 */}
         <section aria-label="估算参数改值历史" style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6, display: 'flex', gap: 6, alignItems: 'center' }}>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 6, display: 'flex', gap: 6, alignItems: 'center' }}>
             <span>改值历史（最近 {paramLogs.length} 条，新→旧）</span>
             <button type="button" className="tbtn-anim" style={toolBtn()} onClick={() => void loadParamLogs()}
               aria-label="刷新改值历史"
@@ -1752,15 +1752,15 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             </button>
           </div>
           {paramLogsError && (
-            <div role="alert" style={{ fontSize: 11, color: 'var(--danger)' }}>改值历史读取失败：{paramLogsError}</div>
+            <div role="alert" style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>改值历史读取失败：{paramLogsError}</div>
           )}
           {!paramLogsError && paramLogs.length === 0 && (
-            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
               本次版本起尚无改值记录（此前的参数变更没有留痕，因为留痕表是这一版才建的，不是查询失败）
             </div>
           )}
           {paramLogs.length > 0 && (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-s)' }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-muted)', textAlign: 'left' }}>
                   <th scope="col" style={{ padding: '3px 6px 3px 0', fontWeight: 400 }}>改值时间</th>
@@ -1798,20 +1798,20 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             件名、未复核行数、合并区数一律取自服务端响应头与快照 payload——面板不拼第二套口径。
             PDF 两枚按钮各自定受众（§5.2 原文形态），因为 §10-9 的验收是「一次出两版对照脱敏」。 */}
         <section aria-label="估算导出区" style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>导出（Excel 复刻客户模板）</div>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 6 }}>导出（Excel 复刻客户模板）</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
             <label title="客户版不含「估算明细/参数」两个附加 sheet，也不写备注三条；开折叠后系数分项并进一行合计（报价数不变）"
-              style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}>
+              style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', cursor: 'pointer' }}>
               <input type="radio" name="estimate-audience" checked={audience === 'client'} onChange={() => setAudience('client')} />
               <span>客户版</span>
             </label>
             <label title="内部版含全量明细 sheet（plan_id / 来源 / σ）与参数 sheet，供内部复核"
-              style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}>
+              style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', cursor: 'pointer' }}>
               <input type="radio" name="estimate-audience" checked={audience === 'internal'} onChange={() => setAudience('internal')} />
               <span>内部版</span>
             </label>
             <label title={`scope=estimated_only：只有落了估算的行进件；不勾=全部计划（未估算行成行但三点留空，不把「没估」写成 0）`}
-              style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}>
+              style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', cursor: 'pointer' }}>
               <input type="checkbox" checked={estimatedOnly} onChange={(e) => setEstimatedOnly(e.target.checked)} />
               <span>只导已估算行</span>
             </label>
@@ -1822,7 +1822,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
               {exportBtnLabel(exportingKind === 'xlsx', '导出 Excel')}
             </button>
             {audience === 'client' && cfg.hideCoefsForClient && (
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>系数分项将折叠（参数页开关）</span>
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>系数分项将折叠（参数页开关）</span>
             )}
           </div>
           {/* §5.2 第 4 段的 PDF 两枚（E7）。裁决 D4：PDF 仅预览、Excel 为正式交付——这句要印在按钮旁边，
@@ -1842,17 +1842,17 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
                 'PDF 客户版：服务端组装阶段就不写系数分项、σ/置信区间、备注三条与附加 sheet 名，报价数与内部版一致')}>
               导出 PDF（客户版）
             </button>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>PDF 为预览件，正式交付以 Excel 为准（裁决 D4）</span>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>PDF 为预览件，正式交付以 Excel 为准（裁决 D4）</span>
           </div>
           {lastExport && (
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 6 }}>
               本次件：{lastExport.filename}
               {exportUnreviewedNote(lastExport.unreviewed)}
             </div>
           )}
 
           {/* §5.2 第 4 段下半：最近 5 次快照 + 两条对比（§7「上次导出后计划已变化」的界面侧） */}
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', margin: '10px 0 4px' }}>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', margin: '10px 0 4px' }}>
             最近导出（{snapshots.length}）
             {cmpIds.length === 2 && (
               <button type="button" className="tbtn-anim" style={{ ...toolBtn(), marginLeft: 6 }} onClick={() => void runCompare()}>
@@ -1860,15 +1860,15 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
               </button>
             )}
           </div>
-          {snapshotError && <div style={{ fontSize: 11, color: 'var(--danger)' }}>快照记录读取失败：{snapshotError}</div>}
+          {snapshotError && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>快照记录读取失败：{snapshotError}</div>}
           {snapshots.length === 0 && !snapshotError && (
-            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>还没有导出记录（§6.3：每次导出写一条快照留痕）</div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>还没有导出记录（§6.3：每次导出写一条快照留痕）</div>
           )}
           {snapshots.map((sn) => {
             const pl = parseSnapshotPayload(sn.payload);
             const picked = cmpIds.includes(sn.id);
             return (
-              <div key={sn.id} style={{ display: 'flex', gap: 6, alignItems: 'baseline', fontSize: 11, borderBottom: '1px solid var(--border)', padding: '3px 0' }}>
+              <div key={sn.id} style={{ display: 'flex', gap: 6, alignItems: 'baseline', fontSize: 'var(--fs-xs)', borderBottom: '1px solid var(--border)', padding: '3px 0' }}>
                 <input type="checkbox" checked={picked} onChange={() => toggleCmp(sn.id)} title="勾选两条可对比（§7 版本差异）" />
                 <span style={{ fontFamily: MONO }}>{(sn.created_at ?? '').slice(0, 16).replace('T', ' ')}</span>
                 <span style={{ fontFamily: MONO, color: 'var(--text-muted)' }}>{sn.format.toUpperCase()}</span>
@@ -1882,7 +1882,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             );
           })}
           {cmpDiff && (
-            <fieldset aria-label="两次导出差异" style={{ margin: 0, marginTop: 6, minWidth: 0, border: '1px solid var(--border-strong)', borderRadius: 8, padding: 6, background: 'var(--card-bg)', fontSize: 11 }}>
+            <fieldset aria-label="两次导出差异" style={{ margin: 0, marginTop: 6, minWidth: 0, border: '1px solid var(--border-strong)', borderRadius: 8, padding: 6, background: 'var(--card-bg)', fontSize: 'var(--fs-xs)' }}>
               <div style={{ color: 'var(--text-muted)', marginBottom: 4 }}>
                 对比：{(cmpDiff.a.created_at ?? '').slice(0, 16).replace('T', ' ')} → {(cmpDiff.b.created_at ?? '').slice(0, 16).replace('T', ' ')}
               </div>

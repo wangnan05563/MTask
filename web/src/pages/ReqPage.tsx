@@ -348,24 +348,24 @@ export function ReqPage() {
       `}</style>
       {/* 工具栏：分类切换与管理 */}
       <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <select value={activeCat} onChange={(e) => setActiveCat(e.target.value)} style={{ padding: 6, fontSize: 12, minWidth: 180, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+        <select value={activeCat} onChange={(e) => setActiveCat(e.target.value)} style={{ padding: 6, fontSize: 'var(--fs-s)', minWidth: 180, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           {categories.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.reqCount ?? 0}）</option>)}
         </select>
         {/* T00510 调整：分类管理三按钮与任务菜单项目按钮组同款——纯图标+边框、同组紧跟下拉、悬浮显示 */}
         <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
         <button onClick={() => void addCategory()} title="新建分类 — 新增一个通用需求分类" aria-label="新建分类：新增一个通用需求分类"
-          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
           <FolderPlus size={13} />
         </button>
         {activeCat && (
           <>
           <button onClick={() => { const c = categories.find((c) => c.id === activeCat); if (c) void renameCategory(c); }}
-            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}
             title="重命名 — 修改当前分类名称" aria-label="重命名：修改当前分类名称">
             <SquarePen size={13} />
           </button>
           <button onClick={() => { const c = categories.find((c) => c.id === activeCat); if (c) void removeCategory(c); }}
-            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, color: 'var(--danger)', background: 'transparent', border: '1px solid var(--danger)', borderRadius: 6, cursor: 'pointer' }}
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', color: 'var(--danger)', background: 'transparent', border: '1px solid var(--danger)', borderRadius: 6, cursor: 'pointer' }}
             title="删除分类 — 删除当前分类及其下通用需求" aria-label="删除分类：删除当前分类及其下通用需求">
             <Trash2 size={13} />
           </button>
@@ -397,15 +397,15 @@ export function ReqPage() {
         {/* T00842 位置2「需求标题栏」：样式对齐任务菜单已有同名按钮（task-op 同款尺寸/间距/圆角，图标同源） */}
         <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
           <button onClick={() => flash('AI 美化功能开发中')} title="AI 美化 — 润色当前分类需求标题，使其语义更清晰表达更规范" aria-label="AI 美化：润色当前分类需求标题"
-            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
             <Sparkles size={13} />
           </button>
           <button onClick={() => flash('AI 简化功能开发中')} title="AI 简化 — 依据需求详情高度总结为简洁标题（限 40 字，细节会精简）" aria-label="AI 简化：依据需求详情总结为简洁标题"
-            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
             <Minimize2 size={13} />
           </button>
           <button onClick={() => flash('归档功能开发中')} title="归档 — 将当前分类全部需求移入归档" aria-label="归档：将当前分类全部需求移入归档"
-            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
             <Archive size={13} />
           </button>
         </span>
@@ -415,7 +415,7 @@ export function ReqPage() {
           value={sortKey}
           onChange={(e) => setSortKey(e.target.value as 'updated_at' | 'created_at' | 'title')}
           title="排序字段"
-          style={{ padding: 6, fontSize: 12 }}
+          style={{ padding: 6, fontSize: 'var(--fs-s)' }}
         >
           <option value="manual">手动排序</option>
           <option value="updated_at">更新时间</option>
@@ -430,7 +430,7 @@ export function ReqPage() {
           value={sortDir}
           onChange={(e) => setSortDir(e.target.value as 'asc' | 'desc')}
           title="排序方式"
-          style={{ padding: 6, fontSize: 12 }}
+          style={{ padding: 6, fontSize: 'var(--fs-s)' }}
         >
           <option value="desc">降序</option>
           <option value="asc">升序</option>
@@ -442,7 +442,7 @@ export function ReqPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="搜索标题/内容…" data-page-search
-          style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, marginLeft: 'auto' }}
+          style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', marginLeft: 'auto' }}
         />
         {notice && <output className="flash-toast">{notice}</output>}
       </div>
@@ -454,14 +454,14 @@ export function ReqPage() {
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
             placeholder="通用需求标题"
-            style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14, boxSizing: 'border-box', marginBottom: 8 }}
+            style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)', boxSizing: 'border-box', marginBottom: 8 }}
           />
           <textarea
             value={newContent}
             onChange={(e) => setNewContent(e.target.value)}
             rows={6}
             placeholder="通用需求内容（描述该优秀实现/解决方案，可用 {占位符} 标记使用时需替换的部分）"
-            style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit' }}
+            style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-m)', boxSizing: 'border-box', fontFamily: 'inherit' }}
           />
           <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
             {/* T00796 二轮：新建内容接入正文美化（工具缺省时自动取模型管理首个已配置工具） */}
@@ -476,7 +476,7 @@ export function ReqPage() {
               disabled={!newTitle.trim()}
               title="保存 — 创建这条通用需求"
               aria-label="保存：创建这条通用需求"
-              style={{ background: 'var(--success)', color: '#fff', border: 'none', padding: '6px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}
+              style={{ background: 'var(--success)', color: 'var(--on-solid)', border: 'none', padding: '6px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}
             >
               <Save size={13} />
             </button>
@@ -514,7 +514,7 @@ export function ReqPage() {
                     <input
                       value={draft.title}
                       onChange={(e) => setDrafts((prev) => ({ ...prev, [p.id]: { ...draft, title: e.target.value } }))}
-                      style={{ flex: 1, padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14 }}
+                      style={{ flex: 1, padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)' }}
                     />
                     <select
                       value={draft.categoryId}
@@ -528,7 +528,7 @@ export function ReqPage() {
                     value={draft.content}
                     onChange={(e) => setDrafts((prev) => ({ ...prev, [p.id]: { ...draft, content: e.target.value } }))}
                     rows={6}
-                    style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit' }}
+                    style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-m)', boxSizing: 'border-box', fontFamily: 'inherit' }}
                   />
                   <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
                     {/* T00796 二轮：编辑态同样接入正文美化，结果只回填草稿不直接落库 */}
@@ -545,7 +545,7 @@ export function ReqPage() {
                       onOptimized={(text) => setDrafts((prev) => ({ ...prev, [p.id]: { ...draft, content: text } }))}
                       flash={flash}
                     />
-                    <button onClick={() => void saveDraft(p)} disabled={!draft.title.trim()} style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                    <button onClick={() => void saveDraft(p)} disabled={!draft.title.trim()} style={{ fontSize: 'var(--fs-s)', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="保存 — 保存对这条通用需求的修改" aria-label="保存：保存对这条通用需求的修改">
                       <Save size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
@@ -553,7 +553,7 @@ export function ReqPage() {
                       const next = { ...prev };
                       delete next[p.id];
                       return next;
-                    })} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }} title="取消 — 放弃编辑修改"
+                    })} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }} title="取消 — 放弃编辑修改"
                       aria-label="取消：放弃编辑修改">
                       <X size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
@@ -576,29 +576,29 @@ export function ReqPage() {
                       className="row-title-btn"
                       style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6, border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', minWidth: 0 }}
                     >
-                      <span style={{ fontWeight: 600, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' , color: p.color || undefined }}>{p.title}</span>
+                      <span style={{ fontWeight: 600, fontSize: 'var(--fs-l)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' , color: p.color || undefined }}>{p.title}</span>
                       {/* 展开/收起箭头：与任务页统一使用 lucide 图标，蓝色 13px */}
                       <span style={{ color: 'var(--accent)', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>{expandedIds[p.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}</span>
                     </button>
-                    <span className="abtn" style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }} title={`更新于 ${p.updated_at}`}>{relTime(p.updated_at)}</span>
+                    <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0 }} title={`更新于 ${p.updated_at}`}>{relTime(p.updated_at)}</span>
                     <span className="abtn" style={{ display: 'inline-flex', alignItems: 'center' }}>
                       <FontColorButton current={p.color ?? ''} onApply={(c) => { void api.patch(`/req-entries/${p.id}`, { color: c }).then(() => { void loadEntries(activeCat, search); }); }} />
                     </span>
                     <CopyButton getText={() => p.title + (p.content ? '\n' + p.content : '')} title="复制 — 复制通用需求内容到剪贴板" ariaLabel="复制：复制通用需求内容" />
                     {/* T00436：复制到待办任务 — 转成收件箱项目的待办，悬浮提示按任务规格 */}
-                    <button className="abtn" onClick={() => void copyToTask(p)} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                    <button className="abtn" onClick={() => void copyToTask(p)} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="复制到待办任务 — 以该通用需求创建一条待办任务（收件箱项目）" aria-label="复制到待办任务">
                       <ListTodo size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
                     {/* T00456 / PRD INT-5：转计划 — 把通用需求转为目标项目的计划任务 */}
-                    <button className="abtn" onClick={() => void toPlan(p)} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                    <button className="abtn" onClick={() => void toPlan(p)} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="转计划 — 把该通用需求转为目标项目的计划任务（输入目标项目名）" aria-label="转计划：转为目标项目的计划任务">
                       <CalendarRange size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
                     <button
                       className="abtn"
                       onClick={() => setDrafts((prev) => ({ ...prev, [p.id]: { title: p.title, content: p.content, categoryId: p.category_id } }))}
-                      style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                      style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="编辑 — 编辑这条通用需求" aria-label="编辑：编辑这条通用需求"
                     >
                       <Pencil size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
@@ -607,14 +607,14 @@ export function ReqPage() {
                     <div ref={moveOpenId === p.id ? moveRef : undefined} style={{ position: 'relative', display: 'inline-flex' }}>
                       <button className="abtn move-btn" onClick={() => setMoveOpenId(moveOpenId === p.id ? '' : p.id)}
                         title="调整分组 — 移动该通用需求到其他分组" aria-label="调整分组：移动该通用需求到其他分组"
-                        style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
+                        style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
                         <FolderInput size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                       </button>
                       {moveOpenId === p.id && (
                         <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.12)', padding: 4, zIndex: 10, minWidth: 140 }}>
                           {categories.map((c) => (
                             <button key={c.id} onClick={() => void moveEntry(p, c.id)}
-                              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '4px 8px', fontSize: 12, borderRadius: 4, background: 'transparent', color: c.id === p.category_id ? 'var(--accent)' : 'var(--text)' }}>
+                              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '4px 8px', fontSize: 'var(--fs-s)', borderRadius: 4, background: 'transparent', color: c.id === p.category_id ? 'var(--accent)' : 'var(--text)' }}>
                               {c.name}{c.id === p.category_id ? '（当前）' : ''}
                             </button>
                           ))}
@@ -622,19 +622,19 @@ export function ReqPage() {
                       )}
                     </div>
                     {/* T00842 位置1「通用需求菜单」：样式对齐任务菜单已有同名按钮（task-op 同款尺寸/间距/圆角，图标同源） */}
-                    <button className="abtn" onClick={() => flash('AI 美化功能开发中')} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                    <button className="abtn" onClick={() => flash('AI 美化功能开发中')} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="AI 美化 — 润色该通用需求标题，使其语义更清晰表达更规范" aria-label="AI 美化：润色该通用需求标题">
                       <Sparkles size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
-                    <button className="abtn" onClick={() => flash('AI 简化功能开发中')} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                    <button className="abtn" onClick={() => flash('AI 简化功能开发中')} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="AI 简化 — 依据需求详情高度总结为简洁标题（限 40 字，细节会精简）" aria-label="AI 简化：依据需求详情总结为简洁标题">
                       <Minimize2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
-                    <button className="abtn" onClick={() => flash('归档功能开发中')} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                    <button className="abtn" onClick={() => flash('归档功能开发中')} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="归档 — 将该条通用需求移入归档" aria-label="归档：将该条通用需求移入归档">
                       <Archive size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
-                    <button className="abtn" onClick={() => void removeEntry(p)} style={{ fontSize: 12, color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                    <button className="abtn" onClick={() => void removeEntry(p)} style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="删除 — 删除这条通用需求" aria-label="删除：删除这条通用需求">
                       <Trash2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
@@ -650,7 +650,7 @@ export function ReqPage() {
                           setDrafts((prev) => (prev[p.id] ? prev : { ...prev, [p.id]: { title: p.title, content: p.content, categoryId: p.category_id } }));
                         }} className="abtn"
                           title="提示词优化 — 进入编辑并把需求内容改写为结构化提示词" aria-label="提示词优化：把需求内容改写为结构化提示词"
-                          style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
+                          style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
                           <Wand2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                         </button>
                       </div>
@@ -669,38 +669,38 @@ export function ReqPage() {
           style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
           onClick={(e) => { if (e.target === e.currentTarget && !taskCopyBusy) setTaskCopyEntry(null); }}>
           <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(420px, 92vw)', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
               <ListTodo size={14} style={{ color: 'var(--accent)' }} /> 复制到待办任务
               <span style={{ flex: 1 }} />
               <button onClick={() => setTaskCopyEntry(null)} disabled={taskCopyBusy} title="关闭" aria-label="关闭复制到待办弹窗"
-                style={{ background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 14, cursor: taskCopyBusy ? 'default' : 'pointer' }}>×</button>
+                style={{ background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 'var(--fs-l)', cursor: taskCopyBusy ? 'default' : 'pointer' }}>×</button>
             </div>
-            <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12 }}>
+            <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--fs-s)' }}>
               <div style={{ color: 'var(--text-muted)' }}>
                 将通用需求「<strong style={{ color: 'var(--text)' }}>{taskCopyEntry.title}</strong>」复制为一条**待办任务**（内容写入任务描述，不改动需求本身）。
               </div>
               <div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>目标项目</div>
+                <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 4 }}>目标项目</div>
                 <select value={taskCopyProjectId} onChange={(e) => setTaskCopyProjectId(e.target.value)} disabled={taskCopyBusy}
                   aria-label="目标项目" title="选择待办任务落到哪个项目"
-                  style={{ width: '100%', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12 }}>
+                  style={{ width: '100%', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
                   <option value="">默认记事项目（收件箱）</option>
                   {projects.map((pj) => <option key={pj.id} value={pj.id}>{pj.name}</option>)}
                 </select>
                 <div style={{ marginTop: 4 }}>
                   <ProjectListHint view={projectList} />
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
                   目标项目若已存在同标题待办，将自动复用（不重复创建）。
                 </div>
               </div>
             </div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
               <button onClick={() => setTaskCopyEntry(null)} disabled={taskCopyBusy} className="tbtn-anim"
-                style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>取消</button>
+                style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>取消</button>
               <button onClick={() => void confirmCopyToTask()} disabled={taskCopyBusy} className="tbtn-anim"
                 title="确认复制到所选项目的待办任务" aria-label="确认复制到待办"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: taskCopyBusy ? 'default' : 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12 }}>
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: taskCopyBusy ? 'default' : 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)' }}>
                 {taskCopyBusy ? <><Loader2 size={12} className="aispin" />复制中…</> : '复制到待办'}
               </button>
             </div>

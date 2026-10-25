@@ -390,7 +390,7 @@ export function DbAdminTab() {
                 <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{b.mtime.slice(0, 19).replace('T', ' ')}</span>
                 <button onClick={() => void restoreBackup(b.name)} disabled={bkBusy !== ''}
                   title="从该快照恢复整个数据库 — 恢复前会先自动备份当前状态"
-                  style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--danger)', cursor: bkBusy ? 'wait' : 'pointer', whiteSpace: 'nowrap' }}>
+                  style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--danger)', cursor: bkBusy ? 'wait' : 'pointer', whiteSpace: 'nowrap' }}>
                   {bkBusy === b.name ? '恢复中…' : '恢复'}
                 </button>
               </div>
@@ -441,7 +441,7 @@ export function DbAdminTab() {
               }}
             >
               <div style={{ fontSize: 'var(--fs-m)', fontWeight: active === t.name ? 600 : 400 }}>{t.label}</div>
-              <div style={{ fontSize: 11, opacity: 0.7 }}>{t.name} · {t.rows >= 0 ? `${t.rows} 行` : '?'}</div>
+              <div style={{ fontSize: 'var(--fs-xs)', opacity: 0.7 }}>{t.name} · {t.rows >= 0 ? `${t.rows} 行` : '?'}</div>
             </button>
           ))}
         </div>
@@ -491,7 +491,7 @@ export function DbAdminTab() {
                           title={`${c.type}${c.nullable ? '' : ' NOT NULL'}（点击排序）`}
                           style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', textAlign: 'left', cursor: 'pointer', whiteSpace: 'nowrap', userSelect: 'none' }}
                         >
-                          {c.name}{c.primary_key && <span style={{ marginLeft: 4, fontSize: 10, color: 'var(--accent)' }}>PK</span>}
+                          {c.name}{c.primary_key && <span style={{ marginLeft: 4, fontSize: 'var(--fs-2xs)', color: 'var(--accent)' }}>PK</span>}
                           {orderBy === c.name && ' ↑'}{orderBy === `-${c.name}` && ' ↓'}
                         </th>
                       ))}
@@ -572,7 +572,7 @@ export function DbAdminTab() {
             style={{ background: 'var(--card-bg)', borderRadius: 8, padding: 16, minWidth: 420, maxWidth: 640, maxHeight: '70vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
               <div style={{ fontWeight: 600 }}>表结构 - {active}</div>
-              <button style={{ ...btnStyle(false), padding: '2px 6px' }} onClick={() => setSchemaOpen(false)}><X size={13} /></button>
+              <button style={{ ...btnStyle(false), padding: '2px 6px' }} onClick={() => setSchemaOpen(false)} title="关闭表结构预览" aria-label="关闭表结构预览"><X size={13} /></button>
             </div>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-m)' }}>
               <thead>
@@ -697,8 +697,8 @@ function EditModal(props: {
             <div key={c.name} style={{ marginBottom: 10 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-m)', marginBottom: 3 }}>
                 <span style={{ fontWeight: 600 }}>{c.name}</span>
-                {c.primary_key && <span style={{ fontSize: 10, color: 'var(--accent)' }}>PK</span>}
-                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{c.type}</span>
+                {c.primary_key && <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--accent)' }}>PK</span>}
+                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{c.type}</span>
               </label>
               {control}
             </div>

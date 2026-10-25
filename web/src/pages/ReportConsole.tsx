@@ -146,7 +146,7 @@ function ToolSelect({
         aria-label={selected ? `AI 工具：${selected.name}（${selected.type}）· ${selected.model}` : 'AI 工具：选择用于分析的工具'}
         style={{
           display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 8px', width: '100%',
-          border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+          border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', cursor: 'pointer',
           background: 'var(--card-bg)', color: 'var(--text)',
         }}
       >
@@ -163,14 +163,14 @@ function ToolSelect({
             boxShadow: '0 6px 20px rgba(0,0,0,0.12)', minWidth: 230, maxHeight: 240, overflowY: 'auto',
           }}
         >
-          {tools.length === 0 && <div style={{ padding: 8, fontSize: 12, color: 'var(--text-muted)' }}>{unavailableReason ? `（不可用：${unavailableReason}）` : '（未配置可用工具）'}</div>}
+          {tools.length === 0 && <div style={{ padding: 8, fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>{unavailableReason ? `（不可用：${unavailableReason}）` : '（未配置可用工具）'}</div>}
           {tools.map((t) => (
             <button
               key={t.id}
               onClick={() => { onChange(t.id); setOpen(false); }}
               style={{
                 display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', border: 'none',
-                background: t.id === toolId ? 'var(--surface-2)' : 'transparent', color: 'var(--text)', fontSize: 12, cursor: 'pointer',
+                background: t.id === toolId ? 'var(--surface-2)' : 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', cursor: 'pointer',
               }}
               onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = t.id === toolId ? 'var(--surface-2)' : 'transparent'; }}
@@ -216,7 +216,7 @@ function CleanModal({
       <div /* NOSONAR - 阻断点击冒泡属事件传递逻辑而非独立交互控件，可访问关闭入口仍为原生按钮 */
         onClick={(e) => e.stopPropagation()}
         style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(680px, 92vw)', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
           <Sparkles size={14} style={{ color: 'var(--accent)' }} /> 数据清洗 — 合并重复任务
           <span style={{ flex: 1 }} />
           <button
@@ -229,7 +229,7 @@ function CleanModal({
             <X size={15} />
           </button>
         </div>
-        <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12, flex: 1, overflowY: 'auto', minHeight: 0 }}>
+        <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8, fontSize: 'var(--fs-s)', flex: 1, overflowY: 'auto', minHeight: 0 }}>
           {rows.length === 0 ? (
             <div style={{ color: 'var(--text-muted)' }}>
               未从 AI 结论中解析到可执行的合并分组（需要含 keep 与非空 merge 的 JSON 数组）。可重跑分析，或改用自定义提问让模型严格按格式输出。
@@ -254,7 +254,7 @@ function CleanModal({
           {cleanError && <div style={{ color: 'var(--danger)' }}>{cleanError}</div>}
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8, padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
-          <span style={{ flex: 1, fontSize: 11, color: 'var(--text-muted)' }}>
+          <span style={{ flex: 1, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
             共 {rows.length} 组，已选 {picked.length} 组（将归档 {archiveCount} 条重复任务，可在归档菜单还原）
           </span>
           <button
@@ -445,7 +445,7 @@ function CategoryPicker({
         id="rpt-save-category"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        style={{ flex: 1, padding: 6, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12 }}
+        style={{ flex: 1, padding: 6, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }}
       >
         {cats.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.reqCount ?? 0}）</option>)}
       </select>
@@ -497,7 +497,7 @@ function SaveReqModal({
       onClick={() => { if (!saving) onClose(); }}>
       <div /* NOSONAR - 阻断点击冒泡属事件传递逻辑而非独立交互控件，可访问关闭入口仍为原生按钮 */
         onClick={(e) => e.stopPropagation()} style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(640px, 92vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
           <FolderInput size={14} style={{ color: 'var(--accent)' }} /> 转存到通用需求
           <span style={{ flex: 1 }} />
           <button
@@ -510,7 +510,7 @@ function SaveReqModal({
             <X size={15} />
           </button>
         </div>
-        <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12, flex: 1, overflowY: 'auto', minHeight: 0 }}>
+        <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--fs-s)', flex: 1, overflowY: 'auto', minHeight: 0 }}>
           {/* 分组模式选择 */}
           <div style={{ display: 'flex', gap: 6 }}>
             <button
@@ -543,14 +543,14 @@ function SaveReqModal({
                       onChange={(e) => onPatchRow(i, { include: e.target.checked })} />
                     <input value={row.title} aria-label={`第 ${i + 1} 条标题`}
                       onChange={(e) => onPatchRow(i, { title: e.target.value })}
-                      style={{ flex: 1, padding: '3px 6px', borderRadius: 4, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, fontWeight: 600 }} />
+                      style={{ flex: 1, padding: '3px 6px', borderRadius: 4, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', fontWeight: 600 }} />
                   </div>
                   <textarea value={row.content} rows={3} aria-label={`第 ${i + 1} 条内容`}
                     onChange={(e) => onPatchRow(i, { content: e.target.value })}
-                    style={{ width: '100%', boxSizing: 'border-box', padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text-secondary)', fontSize: 11, resize: 'vertical' }} />
+                    style={{ width: '100%', boxSizing: 'border-box', padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text-secondary)', fontSize: 'var(--fs-xs)', resize: 'vertical' }} />
                 </div>
               ))}
-              <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+              <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>
                 勾选要转存的条目（共 {saveRows.filter((r) => r.include).length}/{saveRows.length} 条）；内容重复的条目转存时会被自动跳过。
               </div>
             </div>
@@ -1081,24 +1081,24 @@ export function ReportConsole({
   function renderPrdGenBody() {
     return (
       <div>
-        <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+        <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
           <FilePlus2 size={13} style={{ color: 'var(--accent)' }} /> 原始需求生成 PRD
-          {prdSnap.streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
-          {prdSnap.result && <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>PRD {prdSnap.result.prdMd.length} 字符 / 待确认问题 {prdSnap.result.issues.length} 条</span>}
+          {prdSnap.streaming && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
+          {prdSnap.result && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 400 }}>PRD {prdSnap.result.prdMd.length} 字符 / 待确认问题 {prdSnap.result.issues.length} 条</span>}
         </div>
         {prdSnap.logs.map((l, i) => (
-          <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|失败|错误/.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
+          <div key={`${l}-${i}`} style={{ fontSize: 'var(--fs-xs)', color: /⚠|失败|错误/.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
         ))}
         {!!prdSnap.streamText && (
           <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>PRD 正文（实时）</div>
-            <div style={{ fontSize: 12, color: 'var(--text)' }}>
+            <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 4 }}>PRD 正文（实时）</div>
+            <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text)' }}>
               <MarkdownContent content={cleanPrdStreamText(prdSnap.streamText)} />
             </div>
           </div>
         )}
         {!prdSnap.streaming && prdSnap.result && (
-          <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧交互表格填写问题结论后录入 PRD 管理视图。</div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧交互表格填写问题结论后录入 PRD 管理视图。</div>
         )}
       </div>
     );
@@ -1107,26 +1107,26 @@ export function ReportConsole({
   function renderTestCaseGenBody() {
     return (
       <div>
-        <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+        <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
           <ListChecks size={13} style={{ color: 'var(--accent)' }} /> 从 PRD 生成测试用例
-          {tcSnap.streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
+          {tcSnap.streaming && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
           {tcSnap.result && (
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 400 }}>
               需求 {tcSnap.result.requirements.length} 条 / 用例 {tcSnap.result.cases.length} 条 / 覆盖 {tcSnap.result.coverage.rate}%{tcSnap.result.truncated ? ' · ⚠ 本轮可能被截断' : ''}
             </span>
           )}
         </div>
         {tcSnap.logs.map((l, i) => (
-          <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|warn|失败|错误/i.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
+          <div key={`${l}-${i}`} style={{ fontSize: 'var(--fs-xs)', color: /⚠|warn|失败|错误/i.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
         ))}
         {!!tcSnap.streamText && (
           <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>生成输出（实时·协议原文）</div>
-            <div style={{ fontSize: 11, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'monospace', maxHeight: 260, overflowY: 'auto' }}>{tcSnap.streamText}</div>
+            <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 4 }}>生成输出（实时·协议原文）</div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'monospace', maxHeight: 260, overflowY: 'auto' }}>{tcSnap.streamText}</div>
           </div>
         )}
         {!tcSnap.streaming && tcSnap.result && (
-          <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「从 PRD 生成测试用例」卡片草稿视图勾选确认后导入。</div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「从 PRD 生成测试用例」卡片草稿视图勾选确认后导入。</div>
         )}
       </div>
     );
@@ -1135,21 +1135,21 @@ export function ReportConsole({
   function renderKickoffPptBody() {
     return (
       <div>
-        <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+        <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
           <Presentation size={13} style={{ color: 'var(--accent)' }} /> 项目启动会 PPT 生成
-          {kfSnap.streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
+          {kfSnap.streaming && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
           {kfSnap.result && (
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 400 }}>
               {kfSnap.result.pageCount} 页 · {kfSnap.result.fileName}
               {kfSnap.result.warnings.length > 0 ? ` · ⚠ 降级 ${kfSnap.result.warnings.length} 处` : ''}
             </span>
           )}
         </div>
         {kfSnap.logs.map((l, i) => (
-          <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|失败|错误/.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
+          <div key={`${l}-${i}`} style={{ fontSize: 'var(--fs-xs)', color: /⚠|失败|错误/.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
         ))}
         {!kfSnap.streaming && kfSnap.result && (
-          <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「项目启动会 PPT 生成」卡片点击下载（文件名为服务端校验值）。</div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「项目启动会 PPT 生成」卡片点击下载（文件名为服务端校验值）。</div>
         )}
       </div>
     );
@@ -1158,21 +1158,21 @@ export function ReportConsole({
   function renderSummaryPptBody() {
     return (
       <div>
-        <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+        <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
           <FileChartColumn size={13} style={{ color: 'var(--accent)' }} /> 阶段性项目总结汇报 PPT 生成
-          {sumSnap.streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
+          {sumSnap.streaming && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
           {sumSnap.result && (
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 400 }}>
               {sumSnap.result.pageCount} 页 · {sumSnap.result.fileName}
               {sumSnap.result.warnings.length > 0 ? ` · ⚠ 降级 ${sumSnap.result.warnings.length} 处` : ''}
             </span>
           )}
         </div>
         {sumSnap.logs.map((l, i) => (
-          <div key={`${l}-${i}`} style={{ fontSize: 11, color: /⚠|失败|错误/.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
+          <div key={`${l}-${i}`} style={{ fontSize: 'var(--fs-xs)', color: /⚠|失败|错误/.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
         ))}
         {!sumSnap.streaming && sumSnap.result && (
-          <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「阶段性项目总结汇报 PPT 生成」卡片点击下载（文件名为服务端校验值）。</div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「阶段性项目总结汇报 PPT 生成」卡片点击下载（文件名为服务端校验值）。</div>
         )}
       </div>
     );
@@ -1182,17 +1182,17 @@ export function ReportConsole({
     const lv = logLevelColor;
     return (
       <div>
-        <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+        <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
           <FileUp size={13} style={{ color: 'var(--accent)' }} /> {aiImportStore.label()}
-          {aiSnap.busy && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>执行中…</span>}
-          {aiSnap.fileName && <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>{aiSnap.fileName}</span>}
-          {aiSnap.rows.length > 0 && <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>草稿 {aiSnap.rows.length} 条</span>}
-          {aiSnap.lastSaved > 0 && <span style={{ fontSize: 11, color: 'var(--success, var(--accent))', fontWeight: 400 }}>最近保存 {aiSnap.lastSaved} 条</span>}
+          {aiSnap.busy && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', fontWeight: 400 }}>执行中…</span>}
+          {aiSnap.fileName && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 400 }}>{aiSnap.fileName}</span>}
+          {aiSnap.rows.length > 0 && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 400 }}>草稿 {aiSnap.rows.length} 条</span>}
+          {aiSnap.lastSaved > 0 && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--success, var(--accent))', fontWeight: 400 }}>最近保存 {aiSnap.lastSaved} 条</span>}
         </div>
         {aiSnap.logs.length === 0
-          ? <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>在「AI 工作台」展开「AI 项目计划导入」卡片并选择文件后，解析与入库过程将在此逐行滚动输出。</span>
+          ? <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>在「AI 工作台」展开「AI 项目计划导入」卡片并选择文件后，解析与入库过程将在此逐行滚动输出。</span>
           : aiSnap.logs.map((l, i) => (
-            <div key={`${l.t}-${i}`} style={{ fontSize: 11, color: lv(l.level), padding: '2px 0', fontFamily: 'monospace' }}>
+            <div key={`${l.t}-${i}`} style={{ fontSize: 'var(--fs-xs)', color: lv(l.level), padding: '2px 0', fontFamily: 'monospace' }}>
               [{l.t}] {l.msg}
             </div>
           ))}
@@ -1203,29 +1203,29 @@ export function ReportConsole({
   function renderReportBody() {
     const hasStream = streaming || logs.length > 0 || !!streamText;
     if (!hasStream) {
-      return <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>选择分析内容后点击「开始分析」，AI 结果会在下方以 Markdown 展示；点击左侧「{aiReportLabel}生成」此处会实时滚动生成全过程。</span>;
+      return <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>选择分析内容后点击「开始分析」，AI 结果会在下方以 Markdown 展示；点击左侧「{aiReportLabel}生成」此处会实时滚动生成全过程。</span>;
     }
     return (
       <div>
         {/* 生成中提示 + 阶段进度日志 */}
-        <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+        <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
           <Sparkles size={13} style={{ color: 'var(--accent)' }} /> {aiReportLabel}生成
-          {streaming && <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
+          {streaming && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
         </div>
         {logItems.map(({ id, log }) => (
-          <div key={id} style={{ fontSize: 11, color: 'var(--text-secondary)', padding: '2px 0' }}>• {log}</div>
+          <div key={id} style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', padding: '2px 0' }}>• {log}</div>
         ))}
         {/* AI 洞察正文：流式增量实时渲染 */}
         {!!streamText && (
           <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>AI 洞察（实时）</div>
-            <div style={{ fontSize: 12, color: 'var(--text)' }}>
+            <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 4 }}>AI 洞察（实时）</div>
+            <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text)' }}>
               <MarkdownContent content={streamText} />
             </div>
           </div>
         )}
         {!streaming && !!streamText && (
-          <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>✓ 洞察生成完成，可在左侧下载文件。</div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', marginTop: 6 }}>✓ 洞察生成完成，可在左侧下载文件。</div>
         )}
       </div>
     );
@@ -1235,13 +1235,13 @@ export function ReportConsole({
     return (
       <div>
         {focused.status === 'busy' && (
-          <div style={{ fontSize: 12, color: focused.answer ? 'var(--text)' : 'var(--text-muted)' }}>
+          <div style={{ fontSize: 'var(--fs-s)', color: focused.answer ? 'var(--text)' : 'var(--text-muted)' }}>
             {focused.answer ? <MarkdownContent content={focused.answer} /> : 'AI 正在分析…'}
           </div>
         )}
         {focused.status === 'done' && <MarkdownContent content={focused.answer} />}
         {focused.status === 'error' && (
-          <div style={{ fontSize: 12, color: 'var(--danger)' }}>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)' }}>
             {focused.error || '分析失败'}
           </div>
         )}
@@ -1252,12 +1252,12 @@ export function ReportConsole({
   /** 底部状态文案 */
   function statusText() {
     if (onReportTab) {
-      if (streaming) return <span className="ai-shimmer" style={{ fontWeight: 600, fontSize: 12 }}>{aiReportLabel}生成中…</span>;
+      if (streaming) return <span className="ai-shimmer" style={{ fontWeight: 600, fontSize: 'var(--fs-s)' }}>{aiReportLabel}生成中…</span>;
       if (logs.length > 0 || (streamText?.length ?? 0) > 0) return <span style={{ color: 'var(--accent)' }}>✓ 生成完成</span>;
       return <span>就绪</span>;
     }
     switch (activeTask?.status) {
-      case 'busy': return <span className="ai-shimmer" style={{ fontWeight: 600, fontSize: 12 }}>分析中…</span>;
+      case 'busy': return <span className="ai-shimmer" style={{ fontWeight: 600, fontSize: 'var(--fs-s)' }}>分析中…</span>;
       case 'done': return <span style={{ color: 'var(--accent)' }}>✓ 分析完成</span>;
       case 'error': return <span style={{ color: 'var(--danger)' }}>失败</span>;
       default: return <span>就绪</span>;
@@ -1277,10 +1277,10 @@ export function ReportConsole({
     return (
       <>
         {/* 头部 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-m)', fontWeight: 600 }}>
           <Terminal size={14} /> AI 控制台
           {runningCount > 0 && (
-            <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 400 }}>{runningCount} 进行中</span>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', fontWeight: 400 }}>{runningCount} 进行中</span>
           )}
           <span style={{ flex: 1 }} />
           {/* T00816：去掉收起按钮，改为「AI 控制台」窗格单一全屏切换按钮（无文字、带动画）——
@@ -1306,7 +1306,7 @@ export function ReportConsole({
             onChange={(e) => setCategory(e.target.value as typeof category)}
             title="分析内容 — 选择本次分析的问题类型"
             aria-label="分析内容：选择本次分析的问题类型"
-            style={{ flex: '0 1 auto', padding: '5px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, background: 'var(--card-bg)', color: 'var(--text)', maxWidth: 150 }}
+            style={{ flex: '0 1 auto', padding: '5px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', background: 'var(--card-bg)', color: 'var(--text)', maxWidth: 150 }}
           >
             {CATEGORIES.map((c) => (
               <option key={c.key} value={c.key}>
@@ -1319,7 +1319,7 @@ export function ReportConsole({
           {projectIds.length > 0 && (
             <span
               title={`分析范围：${scopeLabel || projectIds.join('、')}`}
-              style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 10, padding: '2px 8px', flex: '0 1 auto' }}
+              style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 10, padding: '2px 8px', flex: '0 1 auto' }}
             >
               范围：{scopeLabel || `${projectIds.length} 个项目`}
             </span>
@@ -1335,19 +1335,19 @@ export function ReportConsole({
           </button>
           {compareMode && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', flex: '1 1 auto' }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>对比模型：</span>
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>对比模型：</span>
               {tools.filter((t) => t.id !== toolId).map((t) => {
                 const on = compareIds.includes(t.id);
                 return (
                   <button key={t.id}
                     onClick={() => toggleCompareModel(t.id)}
                     title={on ? `取消对比：${t.name}` : `加入对比：${t.name}`}
-                    style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, cursor: 'pointer', border: `1px solid ${on ? 'var(--accent)' : 'var(--border-strong)'}`, background: on ? 'var(--accent)' : 'transparent', color: on ? 'var(--accent-text)' : 'var(--text)' }}>
+                    style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', borderRadius: 10, cursor: 'pointer', border: `1px solid ${on ? 'var(--accent)' : 'var(--border-strong)'}`, background: on ? 'var(--accent)' : 'transparent', color: on ? 'var(--accent-text)' : 'var(--text)' }}>
                     {t.name}
                   </button>
                 );
               })}
-              {compareIds.length === 0 && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>点击模型名加入对比</span>}
+              {compareIds.length === 0 && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>点击模型名加入对比</span>}
             </div>
           )}
           <button
@@ -1375,7 +1375,7 @@ export function ReportConsole({
             onChange={(e) => setCustom(e.target.value)}
             rows={2}
             placeholder="输入你的分析问题…"
-            style={{ width: '100%', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, boxSizing: 'border-box', background: 'var(--card-bg)', color: 'var(--text)' }}
+            style={{ width: '100%', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', boxSizing: 'border-box', background: 'var(--card-bg)', color: 'var(--text)' }}
           />
         )}
       </>
@@ -1390,7 +1390,7 @@ export function ReportConsole({
         title={report.streaming ? `${aiReportLabel}生成中 · 已运行 ${startedElapsedText(report.startedAt)} · 已输出 ${streamText.length} 字符（切换卡片不中断，返回即恢复）` : `${aiReportLabel} — 左侧生成触发的流式过程在此展示`}
         aria-label={`${aiReportLabel} tab`}
         style={{
-          display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+          display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
           border: '1px solid var(--border-strong)', ...(onReportTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 120,
         }}
       >
@@ -1412,7 +1412,7 @@ export function ReportConsole({
           title={aiSnap.busy ? `AI 项目计划导入执行中 · 已运行 ${startedElapsedText(aiSnap.startedAt)}（切换卡片不中断，返回即恢复）` : 'AI 项目计划导入 — 导入执行日志在此滚动输出'}
           aria-label="AI 项目计划导入 tab"
           style={{
-            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
             border: '1px solid var(--border-strong)', ...(onAiImportTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
           }}
         >
@@ -1435,7 +1435,7 @@ export function ReportConsole({
           title={prdSnap.streaming ? `生成 PRD 中 · 已运行 ${startedElapsedText(prdSnap.startedAt)} · 已输出 ${prdSnap.streamText.length} 字符（切换卡片不中断，返回即恢复）` : '原始需求生成 PRD — 生成过程与正文增量在此实时滚动输出'}
           aria-label="原始需求生成 PRD tab"
           style={{
-            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
             border: '1px solid var(--border-strong)', ...(onPrdGenTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
           }}
         >
@@ -1458,7 +1458,7 @@ export function ReportConsole({
           title={tcSnap.streaming ? `生成测试用例中 · 已运行 ${startedElapsedText(tcSnap.startedAt)} · 已输出 ${tcSnap.streamText.length} 字符（切换卡片不中断，返回即恢复）` : '从 PRD 生成测试用例 — 生成过程与协议正文增量在此实时滚动输出'}
           aria-label="从 PRD 生成测试用例 tab"
           style={{
-            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
             border: '1px solid var(--border-strong)', ...(onTestCaseGenTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
           }}
         >
@@ -1482,7 +1482,7 @@ export function ReportConsole({
             : '项目启动会 PPT 生成 — 逐页装配过程与产物摘要在此实时滚动输出'}
           aria-label="项目启动会 PPT 生成 tab"
           style={{
-            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
             border: '1px solid var(--border-strong)', ...(onKickoffPptTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
           }}
         >
@@ -1506,7 +1506,7 @@ export function ReportConsole({
             : '阶段性项目总结汇报 PPT 生成 — 逐页装配过程与产物摘要在此实时滚动输出'}
           aria-label="阶段性项目总结汇报 PPT 生成 tab"
           style={{
-            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
             border: '1px solid var(--border-strong)', ...(onSummaryPptTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
           }}
         >
@@ -1526,7 +1526,7 @@ export function ReportConsole({
           key={t.id}
           title={taskTabTitle(t)}
           style={{
-            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 4px', borderRadius: 6,
+            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '3px 4px', borderRadius: 6,
             border: '1px solid var(--border-strong)', ...(activeId === t.id ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
           }}
         >
@@ -1535,18 +1535,18 @@ export function ReportConsole({
             type="button"
             onClick={() => setActiveId(t.id)}
             aria-label={`${t.title} tab`}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'transparent', border: 'none', color: 'inherit', fontSize: 11, cursor: 'pointer', padding: 0, maxWidth: 110 }}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'transparent', border: 'none', color: 'inherit', fontSize: 'var(--fs-xs)', cursor: 'pointer', padding: 0, maxWidth: 110 }}
           >
             {statusIcon(t.status)}
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</span>
           </button>
-          {t.status === 'busy' && t.startAt != null && <span style={{ fontSize: 9, opacity: 0.85 }}>{fmtElapsed(Date.now() - t.startAt)}</span>}
+          {t.status === 'busy' && t.startAt != null && <span style={{ fontSize: 'var(--fs-2xs)', opacity: 0.85 }}>{fmtElapsed(Date.now() - t.startAt)}</span>}
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); closeTask(t.id); }}
             title="关闭此分析"
             aria-label={`关闭${t.title}`}
-            style={{ fontSize: 12, opacity: 0.7, cursor: 'pointer', marginLeft: 2, background: 'transparent', border: 'none', color: 'inherit', padding: 0, display: 'inline-flex' }}
+            style={{ fontSize: 'var(--fs-s)', opacity: 0.7, cursor: 'pointer', marginLeft: 2, background: 'transparent', border: 'none', color: 'inherit', padding: 0, display: 'inline-flex' }}
           >
             <X size={11} />
           </button>
@@ -1556,7 +1556,7 @@ export function ReportConsole({
   );
 
   const renderBottomBar = () => (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, fontSize: 11 }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, fontSize: 'var(--fs-xs)' }}>
       <span style={{ color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center' }}>{statusText()}</span>
       <span style={{ color: 'var(--accent)', opacity: notice ? 1 : 0, transition: 'opacity .2s', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 180 }}>{notice}</span>
       {/* T02213：对比任务创建失败点名到模型并给重试入口，不再只剩「tab 少一个」 */}
@@ -1567,7 +1567,7 @@ export function ReportConsole({
             onClick={retryFailedCompares}
             title="重新创建失败的对比任务"
             aria-label="重试创建对比任务"
-            style={{ fontSize: 11, padding: '2px 8px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+            style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer' }}
           >
             重试
           </button>
@@ -1649,7 +1649,7 @@ export function ReportConsole({
             onClick={(e) => e.stopPropagation()}
             style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(800px, 90vw)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
               <FileText size={14} /> AI 分析预览
               <span style={{ flex: 1 }} />
               <button

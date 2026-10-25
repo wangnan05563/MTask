@@ -350,8 +350,8 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
   const renderToolbar = () => (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
       <Table2 size={15} style={{ color: 'var(--accent)' }} />
-      <strong style={{ fontSize: 14 }}>需求跟踪矩阵</strong>
-      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+      <strong style={{ fontSize: 'var(--fs-l)' }}>需求跟踪矩阵</strong>
+      <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
         共 {rows.length} 条需求，已关联计划/待办 {covered} 条；可增删改与调整关联
       </span>
       {/* T01867：重复编号会让「按编号定位需求」（矩阵导出、用例导入复用）命中不确定行——只提示历史脏数据，不阻断操作
@@ -361,7 +361,7 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
         <button onClick={locateDuplicateGroup} className="tbtn-anim"
           title={`点击定位到重复编号的行（连点切换下一组）。以下编号在本项目出现多行，按编号定位需求会命中不确定行，建议手动改为唯一编号：${dupGroupsDesc}`}
           aria-label="定位重复需求编号的行"
-          style={{ fontSize: 11, color: 'var(--danger)', border: '1px solid var(--danger)', borderRadius: 6, padding: '1px 6px', background: 'transparent', cursor: 'pointer' }}>
+          style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)', border: '1px solid var(--danger)', borderRadius: 6, padding: '1px 6px', background: 'transparent', cursor: 'pointer' }}>
           ⚠ 重复需求编号 {dupGroups.length} 组：{dupGroups.slice(0, 3).map((g) => `${g.variants.join('/')}×${g.count}`).join('、')}{dupGroups.length > 3 ? ` 等 ${dupGroups.length} 组` : ''}
         </button>
       )}
@@ -369,25 +369,25 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
       {/* T00773：多选模式开关（参考项目计划 T00564）——勾选需求后批量改状态/删除 */}
       <button onClick={() => { setMulti((m) => !m); setSelIds([]); }} className="tbtn-anim"
         title={multi ? '退出多选模式' : '多选模式 — 勾选需求后批量更改状态/删除'} aria-label={multi ? '退出多选模式' : '进入多选模式'}
-        style={{ display: 'inline-flex', alignItems: 'center', fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 6, background: multi ? 'var(--accent)' : 'transparent', color: multi ? 'var(--accent-text)' : 'var(--text)', cursor: 'pointer', padding: '3px 7px' }}>
+        style={{ display: 'inline-flex', alignItems: 'center', fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 6, background: multi ? 'var(--accent)' : 'transparent', color: multi ? 'var(--accent-text)' : 'var(--text)', cursor: 'pointer', padding: '3px 7px' }}>
         {multi ? <Check size={12} /> : <ListChecks size={12} />}
       </button>
       {multi && selIds.length > 0 && (
         <span className="op-host" style={{ display: 'inline-flex', gap: 6, alignItems: 'center', border: '1px solid var(--accent)', borderRadius: 6, padding: '2px 8px', background: 'var(--card-bg)' }}>
-          <span style={{ fontSize: 11, color: 'var(--accent)' }}>已选 {selIds.length}</span>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)' }}>已选 {selIds.length}</span>
           <button onClick={() => setSelIds(selIds.length === rows.length ? [] : rows.map((r) => r.id))} className="task-op"
-            title={selIds.length === rows.length ? '取消全选' : '全选当前需求'} style={{ fontSize: 11, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)' }}>
+            title={selIds.length === rows.length ? '取消全选' : '全选当前需求'} style={{ fontSize: 'var(--fs-xs)', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)' }}>
             {selIds.length === rows.length ? '取消全选' : '全选'}
           </button>
           <select value="" onChange={(e) => { const v = e.target.value; if (v) void batchSetStatus(v); }}
             title="批量设置状态" aria-label="批量设置需求状态"
-            style={{ padding: 2, fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+            style={{ padding: 2, fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
             <option value="">批量状态…</option>
             {STATUS_OPTIONS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
           </select>
           <button onClick={() => void batchDeleteReqs()} disabled={busy} className="task-op"
             title="删除选中需求 — 一并清理其与计划/待办的关联" aria-label="批量删除选中需求"
-            style={{ display: 'inline-flex', alignItems: 'center', fontSize: 11, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)', padding: 2 }}>
+            style={{ display: 'inline-flex', alignItems: 'center', fontSize: 'var(--fs-xs)', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)', padding: 2 }}>
             <Trash2 size={13} />
           </button>
         </span>
@@ -396,7 +396,7 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
       <button onClick={goImportPrd} className="tbtn-anim"
         title="选择PRD导入 — 跳转 AI 工作台，从 PRD 批量导入需求矩阵与项目计划"
         aria-label="选择PRD导入"
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 3, border: '1px solid var(--accent)', borderRadius: 6, background: 'transparent', color: 'var(--accent)', cursor: 'pointer', fontSize: 11, padding: '2px 8px' }}>
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 3, border: '1px solid var(--accent)', borderRadius: 6, background: 'transparent', color: 'var(--accent)', cursor: 'pointer', fontSize: 'var(--fs-xs)', padding: '2px 8px' }}>
         <Upload size={12} />
       </button>
       {/* T00959：导出 Excel——无文字图标按钮 + 悬浮倾斜 + 两行中文浮层；导出当前项目矩阵（与界面同源数据） */}
@@ -407,7 +407,7 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
         {exporting ? <Loader2 size={13} className="aispin" /> : <FileSpreadsheet size={13} />}
       </button>
       <button onClick={() => void load()} className="tbtn-anim" title="刷新矩阵" aria-label="刷新矩阵"
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 3, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 11, padding: '2px 8px' }}>
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 3, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-xs)', padding: '2px 8px' }}>
         <RefreshCw size={12} />
       </button>
       <button onClick={onClose} className="tbtn-anim" title="收起矩阵面板" aria-label="收起需求跟踪矩阵"
@@ -422,13 +422,13 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
       <input value={newTitle} onChange={(e) => setNewTitle(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter') void addReq(); }}
         placeholder="新增需求标题（回车提交）" aria-label="新增需求标题"
-        style={{ flex: 1, maxWidth: 320, padding: '5px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12 }} />
+        style={{ flex: 1, maxWidth: 320, padding: '5px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }} />
       <button onClick={() => void addReq()} disabled={busy} className="tbtn-anim"
         title="新增一条需求（编号自动生成）" aria-label="新增需求"
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)', fontSize: 12, cursor: 'pointer' }}>
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)', fontSize: 'var(--fs-s)', cursor: 'pointer' }}>
         <Plus size={13} />
       </button>
-      {notice && <span style={{ fontSize: 11, color: 'var(--accent)' }}>{notice}</span>}
+      {notice && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)' }}>{notice}</span>}
     </div>
   );
 
@@ -459,7 +459,7 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
       <button key={x.id} onClick={() => void setPrdLink(cur.id, x.id, !on)} className="tbtn-anim"
         title={on ? `解除与「${x.filename}」的关联` : `关联到「${x.filename}」`}
         aria-label={on ? `解除关联 PRD ${x.filename}` : `关联 PRD ${x.filename}`}
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer', border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 6, padding: '2px 8px', background: on ? 'var(--accent-soft, transparent)' : 'transparent', color: on ? 'var(--accent)' : 'var(--text)', maxWidth: 260 }}>
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-s)', cursor: 'pointer', border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 6, padding: '2px 8px', background: on ? 'var(--accent-soft, transparent)' : 'transparent', color: on ? 'var(--accent)' : 'var(--text)', maxWidth: 260 }}>
         {on && <Check size={11} />}
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{x.filename || '未命名 PRD'}</span>
       </button>
@@ -471,7 +471,7 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
     const linkedIds = kind === 'plan' ? cur.linkedPlans.map((y) => y.id) : cur.linkedTasks.map((y) => y.id);
     const on = linkedIds.includes(x.id);
     return (
-      <label key={x.id} title={x.label} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--text)', cursor: 'pointer', border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 6, padding: '2px 8px', maxWidth: 260 }}>
+      <label key={x.id} title={x.label} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-s)', color: 'var(--text)', cursor: 'pointer', border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 6, padding: '2px 8px', maxWidth: 260 }}>
         <input type="checkbox" checked={on} onChange={(e) => void toggleLink(cur.id, kind, x.id, e.target.checked)} style={{ cursor: 'pointer' }} />
         {on && <Check size={11} style={{ color: 'var(--accent)' }} />}
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{x.label}</span>
@@ -483,28 +483,28 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
     linkFor && (
       <div style={{ marginTop: 10, border: '1px solid var(--border-strong)', borderRadius: 8, padding: 10, background: 'var(--surface-2, transparent)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          <span style={{ fontSize: 12, fontWeight: 600 }}>关联调整</span>
+          <span style={{ fontSize: 'var(--fs-s)', fontWeight: 600 }}>关联调整</span>
           <fieldset style={{ display: 'inline-flex', margin: 0, padding: 0, minWidth: 0, border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }}>
             <button onClick={() => setLinkKind('plan')} title="关联到项目计划" aria-label="关联到计划"
-              style={{ padding: '2px 10px', fontSize: 11, border: 'none', cursor: 'pointer', background: linkKind === 'plan' ? 'var(--accent)' : 'transparent', color: linkKind === 'plan' ? 'var(--accent-text)' : 'var(--text)' }}>计划</button>
+              style={{ padding: '2px 10px', fontSize: 'var(--fs-xs)', border: 'none', cursor: 'pointer', background: linkKind === 'plan' ? 'var(--accent)' : 'transparent', color: linkKind === 'plan' ? 'var(--accent-text)' : 'var(--text)' }}>计划</button>
             <button onClick={() => setLinkKind('task')} title="关联到待办任务" aria-label="关联到待办"
-              style={{ padding: '2px 10px', fontSize: 11, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: linkKind === 'task' ? 'var(--accent)' : 'transparent', color: linkKind === 'task' ? 'var(--accent-text)' : 'var(--text)' }}>待办</button>
+              style={{ padding: '2px 10px', fontSize: 'var(--fs-xs)', border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: linkKind === 'task' ? 'var(--accent)' : 'transparent', color: linkKind === 'task' ? 'var(--accent-text)' : 'var(--text)' }}>待办</button>
             {/* T00825：PRD 选项卡——单选关联一份 PRD 文档（取消=解除） */}
             <button onClick={() => setLinkKind('prd')} title="关联到 PRD 文档" aria-label="关联到 PRD"
-              style={{ padding: '2px 10px', fontSize: 11, border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: linkKind === 'prd' ? 'var(--accent)' : 'transparent', color: linkKind === 'prd' ? 'var(--accent-text)' : 'var(--text)' }}>PRD</button>
+              style={{ padding: '2px 10px', fontSize: 'var(--fs-xs)', border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: linkKind === 'prd' ? 'var(--accent)' : 'transparent', color: linkKind === 'prd' ? 'var(--accent-text)' : 'var(--text)' }}>PRD</button>
           </fieldset>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>勾选即建立关联，取消勾选解除</span>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>勾选即建立关联，取消勾选解除</span>
           <span style={{ flex: 1 }} />
           <button onClick={() => setLinkFor('')} title="收起关联调整" aria-label="收起关联调整"
-            style={{ border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 11, padding: '2px 8px' }}>收起</button>
+            style={{ border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-xs)', padding: '2px 8px' }}>收起</button>
         </div>
         {(() => {
           const cur = rows.find((x) => x.id === linkFor);
-          if (!cur) return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{busy ? <Loader2 size={12} className="aispin" /> : '需求已变更，请刷新'}</div>;
+          if (!cur) return <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>{busy ? <Loader2 size={12} className="aispin" /> : '需求已变更，请刷新'}</div>;
           // T00825：PRD 为单值关联（radio 风格），计划/待办保持多选勾选
           // 用 if/else 而非 early-return：让 TS 在 else 分支自然收窄 linkKind 为 'plan' | 'task'（免类型断言 S4325）
           if (linkKind === 'prd') {
-            if (prdDocs.length === 0) return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>该项目暂无 PRD 文档可选。</div>;
+            if (prdDocs.length === 0) return <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>该项目暂无 PRD 文档可选。</div>;
             return (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxHeight: 180, overflowY: 'auto' }}>
                 {prdDocs.map((x) => renderPrdDocOption(cur, x))}
@@ -514,7 +514,7 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
             const list = linkKind === 'plan'
               ? plans.map((p) => ({ id: p.id, label: p.title }))
               : tasks.map((t) => ({ id: t.id, label: `${t.taskNo ?? '—'} ${t.title}` }));
-            if (list.length === 0) return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>该项目暂无{linkKind === 'plan' ? '计划' : '待办任务'}可选。</div>;
+            if (list.length === 0) return <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>该项目暂无{linkKind === 'plan' ? '计划' : '待办任务'}可选。</div>;
             return (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxHeight: 180, overflowY: 'auto' }}>
                 {list.map((x) => renderLinkOption(cur, linkKind, x))}
@@ -537,7 +537,7 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
           style={{ width: 'min(860px, 100%)', maxHeight: '82vh', display: 'flex', flexDirection: 'column', background: 'var(--card-bg)', color: 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 12px 40px rgba(0,0,0,0.25)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
             <FileText size={15} style={{ color: 'var(--accent)' }} />
-            <strong style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <strong style={{ fontSize: 'var(--fs-m)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               PRD 原文：{prdModal === null ? '加载中…' : prdModal.filename}
             </strong>
             <span style={{ flex: 1 }} />
@@ -546,7 +546,7 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
               <X size={13} />
             </button>
           </div>
-          <div ref={prdBodyRef} style={{ padding: '12px 16px', overflowY: 'auto', fontSize: 13 }}>
+          <div ref={prdBodyRef} style={{ padding: '12px 16px', overflowY: 'auto', fontSize: 'var(--fs-m)' }}>
             {prdModal === null
               ? <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)' }}><Loader2 size={14} className="aispin" /> 加载 PRD 原文…</div>
               : <MarkdownContent content={prdModal.content} />}

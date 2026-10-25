@@ -170,7 +170,7 @@ export function TunnelPanel() {
 
   const running = status.status === 'running';
   const field = { fontSize: 'var(--fs-m)', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', width: '100%', boxSizing: 'border-box' } as const;
-  const label = { display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 3 } as const;
+  const label = { display: 'block', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 3 } as const;
   const card = { border: '1px solid var(--border)', borderRadius: 8, padding: 14, background: 'var(--card-bg)', marginBottom: 12 } as const;
   const ctrl = { fontSize: 'var(--fs-m)', padding: '6px 10px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' } as const;
 
@@ -209,7 +209,7 @@ export function TunnelPanel() {
             ) : (
               <button onClick={() => void start()} disabled={busy} title="启动 — 启动内网穿透隧道" aria-label="启动内网穿透" style={{ fontSize: 'var(--fs-m)', padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Play size={13} />{busy ? '启动中…' : '启动'}</button>
             )}
-            <button onClick={() => void loadStatus()} title="刷新 — 重新查询隧道状态" aria-label="刷新状态" style={{ fontSize: 12, padding: '6px', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}><RefreshCw size={13} /></button>
+            <button onClick={() => void loadStatus()} title="刷新 — 重新查询隧道状态" aria-label="刷新状态" style={{ fontSize: 'var(--fs-s)', padding: '6px', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}><RefreshCw size={13} /></button>
           </div>
         </div>
         {authUrl && (
@@ -272,15 +272,15 @@ export function TunnelPanel() {
                 <label htmlFor="tunnel-cf-name" style={label}>隧道名称</label>
                 <div style={{ display: 'flex', gap: 6 }}>
                   <input id="tunnel-cf-name" value={cfName} onChange={(e) => setCfName(e.target.value)} style={field} placeholder="如 my-tunnel" />
-                  <button onClick={() => void cfLogin()} title="授权 — 登录 Cloudflare 获取 cert.pem" aria-label="Cloudflare 授权登录" style={{ fontSize: 12, padding: '4px 10px', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}><KeyRound size={13} />登录</button>
-                  <button onClick={() => void cfCreate()} title="创建 — 创建命名隧道" aria-label="创建命名隧道" style={{ fontSize: 12, padding: '4px 10px', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}><PlugZap size={13} />创建</button>
+                  <button onClick={() => void cfLogin()} title="授权 — 登录 Cloudflare 获取 cert.pem" aria-label="Cloudflare 授权登录" style={{ fontSize: 'var(--fs-s)', padding: '4px 10px', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}><KeyRound size={13} />登录</button>
+                  <button onClick={() => void cfCreate()} title="创建 — 创建命名隧道" aria-label="创建命名隧道" style={{ fontSize: 'var(--fs-s)', padding: '4px 10px', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}><PlugZap size={13} />创建</button>
                 </div>
               </div>
               <div>
                 <label htmlFor="tunnel-cf-hostname" style={label}>固定域名</label>
                 <div style={{ display: 'flex', gap: 6 }}>
                   <input id="tunnel-cf-hostname" value={cfHostname} onChange={(e) => setCfHostname(e.target.value)} style={field} placeholder="如 tunnel.example.com" />
-                  <button onClick={() => void cfRouteDns()} title="路由 — 配置 DNS CNAME 指向该域名" aria-label="配置DNS路由" style={{ fontSize: 12, padding: '4px 10px', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}><Network size={13} />路由</button>
+                  <button onClick={() => void cfRouteDns()} title="路由 — 配置 DNS CNAME 指向该域名" aria-label="配置DNS路由" style={{ fontSize: 'var(--fs-s)', padding: '4px 10px', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}><Network size={13} />路由</button>
                 </div>
               </div>
               <button onClick={() => void saveConfig()} style={{ justifySelf: 'start', fontSize: 'var(--fs-m)', padding: '4px 12px', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Save size={13} />保存配置</button>
@@ -309,7 +309,7 @@ export function TunnelPanel() {
 
       <div style={{ display: 'flex', gap: 8 }}>
         <button onClick={() => void saveConfig()} disabled={busy} title="保存配置 — 保存当前隧道设置" aria-label="保存隧道配置" style={{ fontSize: 'var(--fs-m)', padding: '6px 16px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Save size={13} />保存配置</button>
-        {notice && <span style={{ fontSize: 13, color: fieldError ? 'var(--danger)' : 'var(--accent)', alignSelf: 'center' }}>{notice}</span>}
+        {notice && <span style={{ fontSize: 'var(--fs-m)', color: fieldError ? 'var(--danger)' : 'var(--accent)', alignSelf: 'center' }}>{notice}</span>}
       </div>
     </div>
   );

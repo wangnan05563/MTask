@@ -122,16 +122,16 @@ export function WorkspaceSelect({ project, onBind, flash, variant = 'trigger' }:
           </button>
         )}
         <input ref={panelSearchRef} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索工作空间" aria-label="搜索工作空间"
-          style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 12, minWidth: 0 }} />
+          style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', minWidth: 0 }} />
       </div>
       {/* 最近使用（历史记录） */}
       <div style={{ maxHeight: 200, overflowY: 'auto' }}>
         {filtered.length === 0
-          ? <div style={{ padding: '8px 6px', fontSize: 11, color: 'var(--text-muted)' }}>{history.length === 0 ? '暂无使用记录 — 选择或新建一个文件夹' : '无匹配的历史工作空间'}</div>
+          ? <div style={{ padding: '8px 6px', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{history.length === 0 ? '暂无使用记录 — 选择或新建一个文件夹' : '无匹配的历史工作空间'}</div>
           : filtered.map((h) => (
             <button key={h} aria-pressed={h === bound} onClick={() => void bind(h)} disabled={busy}
               title={h}
-              style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '5px 6px', fontSize: 12, border: 'none', borderRadius: 5, cursor: 'pointer', textAlign: 'left', background: h === bound ? 'var(--accent-soft)' : 'transparent', color: h === bound ? 'var(--accent)' : 'var(--text)' }}>
+              style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '5px 6px', fontSize: 'var(--fs-s)', border: 'none', borderRadius: 5, cursor: 'pointer', textAlign: 'left', background: h === bound ? 'var(--accent-soft)' : 'transparent', color: h === bound ? 'var(--accent)' : 'var(--text)' }}>
               <Folder size={13} style={{ flexShrink: 0, color: h === bound ? 'var(--accent)' : 'var(--text-muted)' }} />
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{wsBasename(h)}</span>
             </button>
@@ -140,11 +140,11 @@ export function WorkspaceSelect({ project, onBind, flash, variant = 'trigger' }:
       <div style={{ borderTop: '1px solid var(--border)', margin: '4px 0' }} />
       {/* 新建工作空间 / 打开本地文件夹 */}
       <button onClick={() => void createWorkspace()} disabled={busy}
-        style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px', fontSize: 12, border: 'none', borderRadius: 5, cursor: 'pointer', textAlign: 'left', background: 'transparent', color: 'var(--text)' }}>
+        style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px', fontSize: 'var(--fs-s)', border: 'none', borderRadius: 5, cursor: 'pointer', textAlign: 'left', background: 'transparent', color: 'var(--text)' }}>
         <Plus size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} /> 新建工作空间
       </button>
       <button onClick={pickLocalFolder} disabled={busy}
-        style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px', fontSize: 12, border: 'none', borderRadius: 5, cursor: 'pointer', textAlign: 'left', background: 'transparent', color: 'var(--text)' }}>
+        style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px', fontSize: 'var(--fs-s)', border: 'none', borderRadius: 5, cursor: 'pointer', textAlign: 'left', background: 'transparent', color: 'var(--text)' }}>
         <FolderOpen size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} /> 打开本地文件夹
       </button>
       {/* 无桌面壳时的降级通道：webkitdirectory 让 Chromium 弹出目录选择（React 无该属性声明，故用展开传入） */}
@@ -162,7 +162,7 @@ export function WorkspaceSelect({ project, onBind, flash, variant = 'trigger' }:
         onFocus={() => bound && setHoverPop(true)} onBlur={() => setHoverPop(false)}
         title={bound ? '点击切换工作空间 — 悬浮展开完整路径' : '选择工作空间 — 绑定项目上下文根路径，AI 功能以此路径加载上下文'}
         aria-label="选择工作空间"
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 4px', border: 'none', background: 'transparent', color: bound ? 'var(--text)' : 'var(--text-muted)', fontSize: 12, cursor: 'pointer', maxWidth: 220 }}>
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 4px', border: 'none', background: 'transparent', color: bound ? 'var(--text)' : 'var(--text-muted)', fontSize: 'var(--fs-s)', cursor: 'pointer', maxWidth: 220 }}>
         <FolderOpen size={13} style={{ flexShrink: 0, color: bound ? 'var(--accent)' : 'var(--text-muted)' }} />
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bound ? wsBasename(bound) : '工作空间'}</span>
         <ChevronDown size={12} style={{ flexShrink: 0 }} />
@@ -170,7 +170,7 @@ export function WorkspaceSelect({ project, onBind, flash, variant = 'trigger' }:
       {/* T02952：悬浮/聚焦展开完整目录路径（绝对定位不占布局，不会挤压右侧搜索框） */}
       {hoverPop && bound && (
         <div role="tooltip" aria-label="工作空间完整路径"
-          style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 6px 18px rgba(0,0,0,.16)', zIndex: 46, maxWidth: 420, padding: '6px 8px', fontSize: 12, color: 'var(--text)', wordBreak: 'break-all', lineHeight: 1.5 }}>
+          style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 6px 18px rgba(0,0,0,.16)', zIndex: 46, maxWidth: 420, padding: '6px 8px', fontSize: 'var(--fs-s)', color: 'var(--text)', wordBreak: 'break-all', lineHeight: 1.5 }}>
           {bound}
         </div>
       )}
