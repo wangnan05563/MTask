@@ -40,6 +40,8 @@ import {
   type LectureContextResult,
 } from './lectureContext';
 import type { GitCommitEntry, GitFileChange } from './gitCollect';
+import { estimateLectureRun, type LecturePreflightEstimate } from './lecturePreflight';
+import { assessAiRunDeviation, type RunUsageDeviation } from './preflightEstimate';
 
 export class LectureStreamError extends Error {
   constructor(message: string) {
@@ -135,6 +137,10 @@ export interface LectureStreamResult {
   warnings: string[];
   stats: LectureStreamStats;
   anchors: Array<LectureAnchor & { section: LectureSectionKey; projectId: string }>;
+  /** T03174（AI-102①）：本次运行所依据的三项预估（含模型版本） */
+  estimate?: LecturePreflightEstimate;
+  /** T03174（AI-102②）：整轮（非续作/单节重试）完成后的用量偏差复算；中止轮不附 */
+  deviation?: RunUsageDeviation;
 }
 
 const optionString = (v: unknown, name: string): string | undefined => {
@@ -359,6 +365,7 @@ function emptyResult(title: string, outline: LectureOutline | undefined, warning
  */
 export async function runLectureStream(body: unknown, hooks: LectureStreamHooks = {}): Promise<LectureStreamResult> {
   const request = validateLectureStreamBody(body);
+  const startedAtMs = Date.now();
   const warnings: string[] = [];
   const signal = hooks.signal;
   const stats: LectureStreamStats = {
@@ -399,6 +406,8 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
   stats.groups = context.totals.groups;
   stats.chars = context.totals.chars;
   stats.contextBudget = context.totals.budget;
+  // T03174（AI-102①）：结果随附本次运行所依据的三项预估——与预检面板同源，避免「面板一个数、结果另一个数」
+  const estimate = estimateLectureRun(collection.preview);
 
   const projectRefs = usable.map((p) => ({ id: p.projectId, name: p.projectName }));
   const allCommits = usable.flatMap(commitsWithProject);
@@ -452,6 +461,7 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
       warnings,
       stats,
       anchors: [],
+      estimate,
     };
   }
 
@@ -567,7 +577,15 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
   });
   const fullRun = !request.resumeFrom && !request.sectionKeys;
   const ok = !aborted && sections.every((s) => s.ok) && (!fullRun || sections.length === LECTURE_SECTIONS.length);
-  return { ok, aborted, title, markdown, ...(outline ? { outline } : {}), sections, warnings, stats, anchors };
+  // T03174（AI-102②③④）：整轮完成（非续作/单节重试、非中止）后复算偏差——续作轮调用数天然少于整轮预估，硬比会假红
+  const deviation = fullRun && !aborted
+    ? assessAiRunDeviation(estimate, {
+      calls: stats.calls,
+      chars: sections.reduce((n, s) => n + s.text.length, 0),
+      seconds: (Date.now() - startedAtMs) / 1000,
+    })
+    : undefined;
+  return { ok, aborted, title, markdown, ...(outline ? { outline } : {}), sections, warnings, stats, anchors, estimate, ...(deviation ? { deviation } : {}) };
 }
 
 /** 路由层统一的 400 文案：范围/流式参数校验错误都走这里 */

@@ -96,10 +96,14 @@ interface LecturePreflight {
   };
   ok: boolean;
   warnings: string[];
-  estimate: { groups: number; calls: number; seconds: number; contextChars: number; contextBudget: number };
+  /** T03174 新增字段为可选：旧服务端响应（打包实例滞后 dist）缺省时回退点值展示 */
+  estimate: { groups: number; calls: number; seconds: number; secondsLow?: number; secondsHigh?: number; contextChars: number; contextBudget: number; modelVersion?: string };
 }
 
 const fmtSeconds = (s: number): string => (s >= 60 ? `${Math.ceil(s / 60)} 分钟` : `${s} 秒`);
+
+/** T03174（AI-102⑤，D-04）：与服务端 `preflightEstimate.PROXY_METRIC_NOTICE` 同字面量（门比对一致，前端不能 import 服务端模块） */
+const PROXY_METRIC_NOTICE = '用量为代理指标（调用次数/字符量/耗时），非金额';
 
 /**
  * 续作/重试结果拼接：服务端只回「从 resumeFrom 起（或点名的节）」的 sections，
@@ -486,6 +490,18 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
           <FlowProgress value={snap.stage?.progress ?? 0} aria-label="讲稿生成进度" />
         </div>
         <span data-lck="anchor-count" style={{ fontSize: 12, color: 'var(--text-muted)' }}>锚点 {snap.result?.stats.anchors ?? 0}</span>
+        {snap.result?.deviation && (
+          <span data-lck={snap.result.deviation.noticeRequired ? 'usage-deviation-notice' : 'usage-deviation-ok'}
+            style={{ fontSize: 12, color: snap.result.deviation.noticeRequired ? 'var(--warn)' : 'var(--text-muted)', fontWeight: snap.result.deviation.noticeRequired ? 600 : 400 }}
+            title="预估偏差仅明示、不阻断（AI-102③）；实际值可在 AI 用量记录回看（④）">
+            {snap.result.deviation.noticeRequired ? '⚠ 实测与预估偏差>50%：' : '用量偏差在阈值内：'}
+            {([['字符量', snap.result.deviation.chars], ['耗时', snap.result.deviation.seconds]] as const)
+              .filter(([, d]) => d.expected > 0)
+              .map(([n, d]) => `${n} ${d.overThreshold ? '偏' : '≈'}${d.deviation === null ? '—' : `${Math.round(d.deviation * 100)}%`}`)
+              .join(' / ')}
+            {' '}（实际 {snap.result.deviation.actualCalls} 次调用）
+          </span>
+        )}
         <span data-lck="mark-count" style={{ fontSize: 12, color: 'var(--text-muted)' }}>跟进 {followupCount} · 忽略 {ignoredCount}</span>
         <FlowButton onClick={() => { codeReviewLectureStore.stop(); flash('已停止——右栏已生成的章节保留'); }} disabled={!snap.streaming}
           title="中止当前生成（已生成的节次保留）">
@@ -531,7 +547,15 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
               <span style={chipStyle}><span style={{ color: 'var(--success)' }}>+{preflight.totals.additions}</span> / <span style={{ color: 'var(--danger)' }}>-{preflight.totals.deletions}</span></span>
               <span style={chipStyle}>排除命中 {preflight.totals.excluded}</span>
               <span style={chipStyle}>预算内 {preflight.totals.keptFiles} 文件 / {preflight.totals.keptChars} 字符（上限 {preflight.estimate.contextBudget}）</span>
-              <span style={chipStyle}>{preflight.estimate.groups} 个分段组 → 预估 {preflight.estimate.calls} 次调用 / {fmtSeconds(preflight.estimate.seconds)}</span>
+              <span data-lck="preflight-estimate" style={chipStyle}>
+                {preflight.estimate.groups} 个分段组 → 预估 {preflight.estimate.calls} 次调用 /{' '}
+                {preflight.estimate.secondsLow !== undefined && preflight.estimate.secondsHigh !== undefined
+                  ? `${fmtSeconds(preflight.estimate.secondsLow)}~${fmtSeconds(preflight.estimate.secondsHigh)}`
+                  : fmtSeconds(preflight.estimate.seconds)}
+                {' '}/ {preflight.estimate.contextChars} 字符
+                {preflight.estimate.modelVersion ? ` · 模型 ${preflight.estimate.modelVersion}` : ''}
+              </span>
+              <span data-lck="preflight-notice" style={{ ...chipStyle, color: 'var(--text-muted)' }}>{PROXY_METRIC_NOTICE}</span>
             </div>
 
             {!preflight.ok && (

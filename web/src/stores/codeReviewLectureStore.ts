@@ -74,6 +74,36 @@ export interface LectureStats {
   anchorIssues: number;
 }
 
+/** T03174（AI-102①）：预检三项预估（服务端 `lecturePreflight.LecturePreflightEstimate` 镜像） */
+export interface LectureRunEstimate {
+  groups: number;
+  calls: number;
+  chars: number;
+  seconds: number;
+  secondsLow: number;
+  secondsHigh: number;
+  contextChars: number;
+  contextBudget: number;
+  modelVersion: string;
+}
+
+/** T03174（AI-102②）：单维偏差（服务端 `preflightEstimate.DeviationDimension` 镜像） */
+export interface LectureDeviationDimension {
+  expected: number;
+  actual: number;
+  deviation: number | null;
+  overThreshold: boolean;
+}
+
+export interface LectureRunUsageDeviation {
+  chars: LectureDeviationDimension;
+  seconds: LectureDeviationDimension;
+  actualCalls: number;
+  noticeRequired: boolean;
+  blocking: false;
+  modelVersion: string;
+}
+
 /** SSE `done` 负载（导出令牌在 T02874 接入，这里不含 token） */
 export interface LectureStreamResult {
   ok: boolean;
@@ -85,6 +115,8 @@ export interface LectureStreamResult {
   warnings: string[];
   stats: LectureStats;
   anchors: LectureAnchorEntry[];
+  estimate?: LectureRunEstimate;
+  deviation?: LectureRunUsageDeviation;
 }
 
 export interface CodeReviewLectureState {

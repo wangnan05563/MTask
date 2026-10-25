@@ -7,33 +7,32 @@
  */
 
 import { LECTURE_CONTEXT_BUDGET } from './lectureContext';
+import { PREFLIGHT_ESTIMATE_MODEL, estimateAiRun } from './preflightEstimate';
+import type { PreflightEstimate } from './preflightEstimate';
 import type { LectureScopePreview } from './lectureScope';
 
-export interface LecturePreflightEstimate {
+export interface LecturePreflightEstimate extends PreflightEstimate {
   /** 项目内分段组数（每 6 个保留文件一组） */
   groups: number;
-  /** 预估模型调用次数：1 次大纲 + 八段 × 组数 */
-  calls: number;
-  /** 预估墙钟秒数（单次 10s 基线） */
-  seconds: number;
-  /** 实际进上下文的字符数（预算内） */
+  /** 实际进上下文的字符数（预算内）——与 `chars` 同值的历史别名（t02875 门/面板镜像在用） */
   contextChars: number;
   /** 单次调用上下文预算（60k，与 PRD 同源） */
   contextBudget: number;
 }
 
 export const LECTURE_FILES_PER_GROUP = 6;
-export const LECTURE_SECONDS_PER_CALL = 10;
+/** 点值基线收口到预估模型单源（T03174 ⑥：改系数=升模型版本） */
+export const LECTURE_SECONDS_PER_CALL = PREFLIGHT_ESTIMATE_MODEL.secondsPerCall;
 
 export function estimateLectureRun(preview: LectureScopePreview): LecturePreflightEstimate {
   const ready = preview.projects.filter((p) => !p.blocked);
   const groups = ready.reduce((sum, p) => sum + Math.max(1, Math.ceil(p.kept.files / LECTURE_FILES_PER_GROUP)), 0);
   const calls = ready.length === 0 ? 0 : 1 + 8 * groups;
+  const base = estimateAiRun(calls, preview.totals.keptChars);
   return {
     groups,
-    calls,
-    seconds: calls * LECTURE_SECONDS_PER_CALL,
-    contextChars: preview.totals.keptChars,
+    ...base,
+    contextChars: base.chars,
     contextBudget: LECTURE_CONTEXT_BUDGET,
   };
 }
