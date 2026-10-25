@@ -552,6 +552,12 @@ api.delete('/recurring/:id', (req, res) => {
 // 读取路径内部惰性判定停滞，面板打开即见正确状态（不依赖 60s 定时器恰好跑到）。
 api.get('/exec-sessions', (_req, res) => res.json(ExecSessionService.listSessions()));
 
+// T03175（AI-402②③）：停滞/失败会话一键重派——派发经既有 RelayDispatch，校验与归位在 service 单源。
+api.post('/exec-sessions/:id/redispatch', async (req, res) => {
+  try { res.json(await ExecSessionService.redispatchSession(req.params.id)); }
+  catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+
 // T01480：任务导出（单条/批量，md/xlsx/docx 三格式共用同一数据装配）
 api.post('/tasks/export', async (req, res) => {
   try {

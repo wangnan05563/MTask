@@ -12,6 +12,7 @@ import { getDb } from '../db/connection';
 import { getSetting } from './AppSettings'; // T01270：停滞阈值读 app_settings（supervisor.sessionStaleMs）
 import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化（会话按平台唯一，防大小写分裂）
 import { TaskService } from './TaskService';
+import { armReady, dispatchTask } from './RelayDispatchService'; // T03175（AI-402③）：重派复用既有 RelayDispatch 派发与归位口径
 
 /** T01270（FR-1.3）：会话停滞默认阈值 10 分钟——超过无心跳即视为停滞（PRD FR-1.3） */
 const DEFAULT_SESSION_STALE_MS = 10 * 60 * 1000;
@@ -79,6 +80,27 @@ export interface SessionTaskBrief {
 /** T01271（FR-1.4）：面板视图 = 会话行 + 关联任务摘要 */
 export interface ExecSessionView extends ExecSessionRow {
   tasks: SessionTaskBrief[];
+}
+
+/** T03175（AI-402②）：单任务重派明细——skipped=派发前置校验挡下；dispatched=已走 RelayDispatch */
+export interface RedispatchEntry {
+  taskId: string;
+  taskNo: string | null;
+  dispatched: boolean;
+  /** 未派发原因：not_found=任务行已删 | archived=已归档 | not_todo=非待办状态 */
+  skipped?: 'not_found' | 'archived' | 'not_todo';
+  /** 已派发时回显 RelayDispatch 结果（成功/失败与 detail 都算「已尝试派发」） */
+  state?: string;
+  ok?: boolean;
+  detail?: string;
+}
+
+export interface RedispatchSessionResult {
+  ok: boolean;
+  /** 整单拒绝原因：session_not_found | status_not_redispatchable（仅 stalled/failed 可重派） */
+  reason?: string;
+  platform?: string;
+  entries: RedispatchEntry[];
 }
 
 const clampPct = (n: number): number => Math.max(0, Math.min(100, n));
@@ -367,5 +389,37 @@ export const ExecSessionService = {
         .map((id) => taskMap.get(id))
         .filter((t): t is SessionTaskBrief => !!t),
     }));
+  },
+
+  /**
+   * T03175（AI-402②③）：停滞/失败会话一键重派——逐任务经既有 `RelayDispatchService.dispatchTask`
+   * 推送派发（不新建第二套派发引擎），前置校验（存在/未归档/待办）在这里做完，派发侧只做归位。
+   *
+   * 口径：
+   * - 仅 `stalled`/`failed` 可重派（PRD §8：failed ──REDISPATCH──▶ active；心跳超时判停滞是重派的主场景）；
+   * - 派发失败且未进入队列（如未配置中继工具）时 `armReady` 把任务归位就绪池——否则任务会带着
+   *   已停滞会话的 running 态永不再被拉取（正是「停滞」要一键救活的东西）；
+   * - 会话行不动：平台侧新执行按同 session_id 上报即经 reportProgress 复活为 active（§8 状态机）。
+   */
+  async redispatchSession(sessionRowId: string): Promise<RedispatchSessionResult> {
+    const db = getDb();
+    const row = db.prepare('SELECT * FROM exec_sessions WHERE id = ?').get(sessionRowId) as ExecSessionRow | undefined;
+    if (!row) return { ok: false, reason: 'session_not_found', entries: [] };
+    if (row.status !== 'stalled' && row.status !== 'failed') {
+      return { ok: false, reason: 'status_not_redispatchable', platform: row.platform, entries: [] };
+    }
+    const entries: RedispatchEntry[] = [];
+    for (const taskId of parseTaskIds(row.task_ids)) {
+      const task = db.prepare('SELECT id, task_no, status, archived FROM tasks WHERE id = ?').get(taskId) as
+        | { id: string; task_no: string | null; status: string; archived: number }
+        | undefined;
+      if (!task) { entries.push({ taskId, taskNo: null, dispatched: false, skipped: 'not_found' }); continue; }
+      if (task.archived) { entries.push({ taskId, taskNo: task.task_no, dispatched: false, skipped: 'archived' }); continue; }
+      if (task.status !== 'todo') { entries.push({ taskId, taskNo: task.task_no, dispatched: false, skipped: 'not_todo' }); continue; }
+      const r = await dispatchTask(taskId, row.platform);
+      if (!r.ok && r.state === 'ready' && !r.queueId) armReady(taskId, row.platform);
+      entries.push({ taskId, taskNo: task.task_no, dispatched: true, state: r.state, ok: r.ok, detail: r.detail });
+    }
+    return { ok: entries.some((e) => e.dispatched && e.ok), platform: row.platform, entries };
   },
 };

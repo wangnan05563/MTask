@@ -54,6 +54,14 @@ export function isRelayPlatform(platform: string | undefined): boolean {
   return readList(RELAY_PLATFORMS_KEY).includes(p);
 }
 
+/**
+ * T03175（AI-402②③）：就绪池「重新武装」的公开出口——停滞会话重派失败（如未配中继工具）时，
+ * 调用方用它把任务归位回就绪池。复用内部 armTask 的 ready 分支，避免第二套状态归位口径。
+ */
+export function armReady(taskId: string, platform: string): void {
+  armTask(taskId, platform, 'ready');
+}
+
 /** 任务归位：把派发结果写回任务行（monitor_ready 出/入池 + 重试计数自增，语义同 SupervisorExecutor） */
 function armTask(taskId: string, platform: string, state: RelayDispatchResult['state']): void {
   const db = getDb();

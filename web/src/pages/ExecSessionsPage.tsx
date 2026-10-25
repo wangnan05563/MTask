@@ -1,17 +1,42 @@
 import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
-import { Activity, Loader2, RefreshCw } from 'lucide-react';
+import { Activity, Loader2, RefreshCw, RotateCcw } from 'lucide-react';
 import { api, type ExecSession } from '../api/client';
 import { EmptyState } from '../ui/EmptyState';
+import { focusTaskByNo } from '../ui/focusTask';
 import { fullTime, relTime } from '../ui/format';
 import { platformLabel } from '../ui/platformLabel';
 
 /**
  * T01271-FR1.4：「执行会话」面板——展示外部平台会话的存活 / 进度 / 阶段 / 停滞标记。
  *
- * M1 阶段仅观测（P0）：面板只读，不提供任何会触发外部平台动作的操作；
- * 停滞标记完全由服务端写入（FR-1.3 定时判定 + 读取路径惰性判定），前端不做二次推断，
- * 避免「前端自己算超时」与服务端口径不一致导致的状态打架。
+ * T03175（AI-402）升级：活跃且可见时刷新 ≤2 秒（隐藏页降频 15 秒）、停滞/失败会话一键重派
+ * （经服务端复用既有 RelayDispatch 链路）、任务 chip 点击直达任务详情（focusTaskByNo 定位高亮）。
+ * 停滞标记仍完全由服务端写入，前端不做二次推断；重派动作也只在服务端校验后执行（单一口径）。
  */
+
+/** AI-402④：可见时 ≤2 秒刷新；隐藏页降频（与队列页 15 秒轮询同档） */
+const ACTIVE_POLL_MS = 2000;
+const HIDDEN_POLL_MS = 15000;
+
+/** 可重派状态（PRD §8：心跳超时→stalled、平台报错→failed 才有一键重派；其余状态服务端整单拒绝） */
+const REDISPATCHABLE = new Set(['stalled', 'failed']);
+
+/** `POST /exec-sessions/:id/redispatch` 响应（服务端 RedispatchSessionResult 镜像） */
+interface RedispatchEntry {
+  taskId: string;
+  taskNo: string | null;
+  dispatched: boolean;
+  skipped?: 'not_found' | 'archived' | 'not_todo';
+  state?: string;
+  ok?: boolean;
+  detail?: string;
+}
+interface RedispatchResponse {
+  ok: boolean;
+  reason?: string;
+  platform?: string;
+  entries: RedispatchEntry[];
+}
 
 /** 会话状态展示口径（PRD §8 状态机） */
 const STATUS_META: Record<string, { label: string; color: string }> = {
@@ -57,11 +82,20 @@ export function ExecSessionsPage() {
     }
   }, []);
 
-  // 15s 轮询（与队列页任务池同频）：无人操作时也能看到心跳推进与停滞标记出现
+  // AI-402④：可见时 2 秒心跳级刷新，切到后台降频 15 秒；回到前台立即拉一次并恢复快档
   useEffect(() => {
     void load();
-    const t = setInterval(() => void load(), 15000);
-    return () => clearInterval(t);
+    let timer = setInterval(() => void load(), document.hidden ? HIDDEN_POLL_MS : ACTIVE_POLL_MS);
+    const reschedule = () => {
+      clearInterval(timer);
+      timer = setInterval(() => void load(), document.hidden ? HIDDEN_POLL_MS : ACTIVE_POLL_MS);
+      if (!document.hidden) void load();
+    };
+    document.addEventListener('visibilitychange', reschedule);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', reschedule);
+    };
   }, [load]);
 
   const alive = rows.filter((r) => r.status === 'active').length;
@@ -101,7 +135,7 @@ export function ExecSessionsPage() {
         <div style={{ flex: 1 }}>
           <h2 style={{ margin: 0, fontSize: 17, color: 'var(--text)' }}>执行会话</h2>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-            外部 AI 平台（qcoder / WorkBuddy / 中继）执行任务期间上报的会话存活与进度，每 15 秒自动刷新
+            外部 AI 平台（qcoder / WorkBuddy / 中继）执行任务期间上报的会话存活与进度；页面可见时每 2 秒刷新，隐藏时降为 15 秒
           </div>
         </div>
         <button
@@ -144,6 +178,32 @@ function Stat({ label, value, color }: { readonly label: string; readonly value:
 function SessionCard({ s }: { readonly s: ExecSession }) {
   const meta = STATUS_META[s.status] ?? { label: s.status || '未知', color: 'var(--text-muted)' };
   const pct = Math.max(0, Math.min(100, Math.round(s.progress ?? 0)));
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
+  const redispatchable = REDISPATCHABLE.has(s.status);
+
+  const redispatch = async () => {
+    setBusy(true);
+    setNotice('');
+    try {
+      const r = await api.post<RedispatchResponse>(`/exec-sessions/${s.id}/redispatch`);
+      if (r.reason) { setNotice(`不可重派：${r.reason === 'status_not_redispatchable' ? '会话当前状态不允许（仅停滞/失败可重派）' : '会话不存在'}`); } else {
+        const done = r.entries.filter((e) => e.dispatched && e.ok).map((e) => e.taskNo ?? e.taskId.slice(0, 8));
+        const failed = r.entries.filter((e) => e.dispatched && !e.ok);
+        const skipped = r.entries.filter((e) => !e.dispatched);
+        setNotice([
+          done.length ? `已重派 ${done.length} 条（${done.join('、')}）` : '',
+          failed.length ? `${failed.length} 条派发未成：${failed.map((e) => e.detail ?? e.state ?? '').join('；')}` : '',
+          skipped.length ? `${skipped.length} 条跳过（${skipped.map((e) => e.skipped === 'archived' ? '已归档' : e.skipped === 'not_todo' ? '非待办' : '已删除').join('、')}）` : '',
+        ].filter(Boolean).join('｜') || '该会话没有可重派的任务');
+      }
+    } catch (e) {
+      setNotice(`重派请求失败：${(e as Error).message ?? String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -153,9 +213,26 @@ function SessionCard({ s }: { readonly s: ExecSession }) {
         <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text)' }}>{platformLabel(s.platform)}</span>
         <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, color: 'var(--text-muted)' }}>{s.session_id ?? '-'}</span>
         <span style={{ flex: 1 }} />
-        <span title={fullTime(s.last_heartbeat)} style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+        <span title={fullTime(s.last_heartbeat)} style={{ fontSize: 12, color: redispatchable ? 'var(--danger)' : 'var(--text-muted)' }}>
           心跳 {relTime(s.last_heartbeat)}
         </span>
+        {redispatchable && (
+          <button
+            data-lck="redispatch-btn"
+            className="tbtn-anim"
+            onClick={() => void redispatch()}
+            disabled={busy}
+            aria-label={`重派会话 ${s.session_id ?? s.id} 的停滞任务`}
+            title="一键重派：经中继把该会话关联的待办任务重新派发（复用既有派发链路）"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, padding: '3px 10px',
+              background: 'var(--surface-2)', color: 'var(--danger)', border: '1px solid var(--danger)',
+              borderRadius: 8, cursor: 'pointer',
+            }}
+          >
+            <RotateCcw size={12} style={{ animation: busy ? 'exec-spin 1s linear infinite' : undefined }} /> {busy ? '重派中' : '重派'}
+          </button>
+        )}
       </div>
 
       {s.phase && <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>阶段：{s.phase}</div>}
@@ -170,12 +247,20 @@ function SessionCard({ s }: { readonly s: ExecSession }) {
       {s.tasks.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {s.tasks.map((t) => (
-            <span key={t.id} style={chip} title={`${t.task_no ?? ''} ${t.title}`}>
+            <button
+              key={t.id}
+              data-lck="task-chip"
+              onClick={() => void focusTaskByNo(t.task_no, 'notice')}
+              title={`${t.task_no ?? ''} ${t.title}——点击直达任务`}
+              style={{ ...chip, border: '1px solid var(--border)', cursor: 'pointer', background: 'var(--surface-2)', textAlign: 'left', font: 'inherit' }}
+            >
               {t.task_no ? `${t.task_no} · ` : ''}{t.title}
-            </span>
+            </button>
           ))}
         </div>
       )}
+
+      {notice && <div data-lck="redispatch-notice" style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{notice}</div>}
     </div>
   );
 }
