@@ -148,7 +148,7 @@ export function LogsPage() {
         <input
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
-          placeholder="搜索日志内容…"
+          placeholder="搜索日志内容…" data-page-search
           style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12 }}
         />
         <button onClick={() => void fetchLogs()} style={controlStyle} title="刷新 — 立即拉取一次新日志" aria-label="立即刷新"><RefreshCw size={13} /></button>

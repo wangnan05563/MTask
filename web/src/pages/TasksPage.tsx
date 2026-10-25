@@ -3278,7 +3278,7 @@ export function TasksPage() {
             className="op-hidden"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索标题/描述/编号…"
+            placeholder="搜索标题/描述/编号…" data-page-search
             style={{ padding: '6px 8px 6px 26px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12 }}
           />
           {search && (

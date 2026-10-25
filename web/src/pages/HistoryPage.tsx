@@ -194,7 +194,7 @@ export function HistoryPage() {
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', borderRadius: 6, padding: '3px 8px' }}>
           <Search size={13} style={{ color: 'var(--text-muted)' }} />
           <input value={kw} onChange={(e) => { setKw(e.target.value); setPage(1); }}
-            placeholder="搜索快照项目…" aria-label="搜索历史快照"
+            placeholder="搜索快照项目…" aria-label="搜索历史快照" data-page-search
             style={{ border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 12, width: 160 }} />
           {kw && <button onClick={() => setKw('')} title="清除搜索" aria-label="清除搜索" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}><X size={12} /></button>}
         </span>

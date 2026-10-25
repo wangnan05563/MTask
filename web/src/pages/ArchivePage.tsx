@@ -381,7 +381,7 @@ export function ArchivePage() {
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', borderRadius: 6, padding: '3px 8px', background: 'var(--card-bg)' }}>
           <Search size={13} style={{ color: 'var(--text-muted)' }} />
           <input value={kw} onChange={(e) => { setKw(e.target.value); setPage(1); setPlanPage(1); setPromptPage(1); }}
-            placeholder="搜索归档标题…" aria-label="搜索归档内容"
+            placeholder="搜索归档标题…" aria-label="搜索归档内容" data-page-search
             style={{ border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 12, width: 150 }} />
           {kw && <button onClick={() => setKw('')} title="清除搜索" aria-label="清除搜索" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}><X size={12} /></button>}
         </span>

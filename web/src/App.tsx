@@ -45,7 +45,7 @@ function Shell() {
   const [serverOk, setServerOk] = useState<boolean | null>(null);
   // T01836：启动自动检测到的新版本（仅提示，一键下载安装仍在「设置 → 版本更新」卡片内）
   const [updateHint, setUpdateHint] = useState<{ latestVersion: string; currentVersion: string } | null>(null);
-  // T00443 / PRD UX-4：全局命令面板（T00560：快捷键 Ctrl+F）
+  // T00443 / PRD UX-4：全局命令面板（T03170 / D-07：Ctrl+K 打开；Ctrl+F 优先页内搜索）
   const [paletteOpen, setPaletteOpen] = useState(false);
   // T00706：全菜单使用向导——当前菜单首次进入自动弹出，导航右侧常驻「向导」按钮随时唤起
   const guide = GUIDES[tab];
@@ -72,12 +72,39 @@ function Shell() {
     const off = desktop.onNavigateTask((taskNo) => { void focusTaskByNo(taskNo, 'notice'); });
     return off;
   }, []);
-  // T00443 / PRD UX-4：Ctrl+F 唤起/关闭命令面板（T00560：由 Ctrl+K 调整为更符合操作习惯的 Ctrl+F）
+  // T03170（PRD D-07）：Ctrl+K 固定打开命令面板；Ctrl+F 优先聚焦当前页搜索框
+  // （带 data-page-search 标记、可见且未禁用），无页内搜索时才打开命令面板。
+  // 旧实现（T00560）把 Ctrl+F 整个让给面板并 preventDefault——按 D-07 统一裁决回退。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const k = e.key.toLowerCase();
+      if (k === 'k') {
         e.preventDefault();
-        setPaletteOpen((v) => !v);
+        setPaletteOpen(true);
+      } else if (k === 'f') {
+        const cands = Array.from(document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input[data-page-search], textarea[data-page-search]'));
+        const tryFocus = (el: HTMLInputElement | HTMLTextAreaElement): boolean => {
+          // op-hidden 控件默认 visibility:hidden，程序 focus() 无效——先经宿主 op-force 显形再聚焦，失焦撤销
+          const host = el.closest('.op-host');
+          if (host) host.classList.add('op-force');
+          el.focus();
+          el.select();
+          if (document.activeElement !== el) {
+            if (host) host.classList.remove('op-force');
+            return false;
+          }
+          const undo = () => { if (host) host.classList.remove('op-force'); };
+          el.addEventListener('blur', undo, { once: true });
+          return true;
+        };
+        const target = cands.find((el) => el.offsetParent !== null && !el.disabled);
+        e.preventDefault();
+        if (target && tryFocus(target)) {
+          setPaletteOpen(false);
+        } else {
+          setPaletteOpen(true);
+        }
       }
     };
     globalThis.addEventListener('keydown', onKey);
@@ -232,7 +259,7 @@ function Shell() {
         }
         /* T00491：菜单操作控件/搜索框统一「默认隐藏、悬浮宿主区显示」（后代选择器支持嵌套组） */
         .op-host .op-hidden { opacity: 0; visibility: hidden; transition: opacity .2s ease, visibility 0s linear .2s; }
-        .op-host:hover .op-hidden, .op-host:focus-within .op-hidden { opacity: 1; visibility: visible; transition: opacity .2s ease, visibility 0s; }
+        .op-host:hover .op-hidden, .op-host:focus-within .op-hidden, .op-host.op-force .op-hidden { opacity: 1; visibility: visible; transition: opacity .2s ease, visibility 0s; }
         /* T01674：键盘可达的文件选择入口——sr-only file input 聚焦时容器（label）显示焦点环，
            与相邻按钮焦点观感一致；不加此环则 Tab 命中后无可见指示 */
         .op-hidden:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 6px; }

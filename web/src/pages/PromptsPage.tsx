@@ -793,7 +793,7 @@ export function PromptsPage() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="搜索标题/内容…"
+          placeholder="搜索标题/内容…" data-page-search
           className="op-hidden" // T00760：默认隐藏悬浮显示
           style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, marginLeft: 'auto' }}
         />

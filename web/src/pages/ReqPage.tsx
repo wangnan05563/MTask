@@ -441,7 +441,7 @@ export function ReqPage() {
           className="op-hidden" // T00893：搜索框对齐其它工具栏控件的「默认隐藏、悬浮宿主区显示」约定
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="搜索标题/内容…"
+          placeholder="搜索标题/内容…" data-page-search
           style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, marginLeft: 'auto' }}
         />
         {notice && <output className="flash-toast">{notice}</output>}

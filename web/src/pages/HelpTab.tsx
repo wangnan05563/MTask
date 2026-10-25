@@ -184,10 +184,10 @@ const FEATURES: FeatureModule[] = [
     tips: ['已配置令牌时，所有 /api 数据接口需携带 X-Access-Token', '打包版使用独立端口 39877，开发版 39876'],
   },
   {
-    name: '命令面板（Ctrl+F）',
-    overview: '全局命令面板：跨实体搜索任务/项目/提示词，并支持全部主菜单页面直达。按 Ctrl/Cmd+F 唤起。',
+    name: '命令面板（Ctrl+K）',
+    overview: '全局命令面板：跨实体搜索任务/项目/提示词，并支持全部主菜单页面直达。按 Ctrl/Cmd+K 唤起（页内无搜索框时 Ctrl/Cmd+F 亦可）。',
     steps: [
-      '按 Ctrl/Cmd+F 打开面板（Esc 关闭）',
+      '按 Ctrl/Cmd+K 打开面板（Esc 关闭）；Ctrl/Cmd+F 优先聚焦当前页搜索',
       '输入关键字：模糊匹配任务（标题/编号）、项目名、提示词，或直接匹配页面名',
       '↑↓ 选择、Enter 执行（跳转页面并自动定位）、Esc 关闭',
     ],

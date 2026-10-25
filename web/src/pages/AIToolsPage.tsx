@@ -972,7 +972,7 @@ export function AIToolsPage() {
           className="op-hidden"
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
-          placeholder="搜索名称/厂商/Endpoint/备注…"
+          placeholder="搜索名称/厂商/Endpoint/备注…" data-page-search
           aria-label="搜索配置（名称/厂商/Endpoint/备注）"
           style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, flex: 1, minWidth: 180 }}
         />
