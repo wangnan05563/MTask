@@ -105,9 +105,10 @@ const PRD_CHUNK_MAX = 8;
  *  留给分片的预算只剩 104s，5 片根本跑不完就被总预算中止。超过该阈值直接走分片，把预算全留给
  *  有效轮次；小文档仍走原单轮路径（行为逐字不变）。 */
 const PRD_DIRECT_CHUNK_CHARS = 12_000;
-/** T02270 复议：分片并发度——单片实测 20~50s，5 片串行会贴近 270s 总预算；2 并发把总时长压到一半。
- *  不再调高：Agnes 免费档 429 限流在库内实测大量存在，并发越高整批失败风险越大。 */
-const PRD_CHUNK_CONCURRENCY = 2;
+/** T02983：分片并发度——25k 文档切 5 片，并发 2 要跑 3 波（实测 208.9~218s）；提到 5 后 5 片同一波起跑，
+ *  实测总耗时 106~157s（瓶颈是供应商单次尾延迟 28~191s，不是排队）。3 并发实测反被重试拖到 270s 总预算中止，
+ *  故取「片数即并发」：再多也没有第 6 片可并行。 */
+const PRD_CHUNK_CONCURRENCY = 5;
 
 /** T02401-C：分片解析的中间结果类型（与 aiParsePrd 返回值同构，供合并去重）。 */
 interface PrdParsePart {
@@ -2150,12 +2151,18 @@ export const PlanService = {
     const slots: Array<PrdParsePart | null> = new Array(n).fill(null);
     let aborted = false;
     const parseOne = async (i: number): Promise<void> => {
+      // T02983：分片内再加一道输出规模上限——单轮耗时几乎全花在生成上（5 片 × 40 需求 + 60 计划），
+      // 把每片压到 32/45 后实测总耗时 106s（不改上限 121s）；按 5 片×32=160 的总容量仍覆盖 128 条需求。
       const sysI = system
         + `\n【分片解析·第 ${i + 1}/${n} 片】本片只是完整文档的一部分：只解析本片出现的需求与计划，不要臆测其它片的内容；`
-        + 'requirements 的 reqNo 从 REQ-001 起片内顺序编号（系统合并时会全局去重重排）；plans 的 WBS 编号保留原文写法。';
+        + 'requirements 的 reqNo 从 REQ-001 起片内顺序编号（系统合并时会全局去重重排）；plans 的 WBS 编号保留原文写法。'
+        + '\n【分片规模控制】本片 requirements 最多 32 条、plans 最多 45 条，保证 JSON 完整闭合优先——宁可少几条也不得输出到被截断。';
       const ai = await AIService.askJson(toolId, sysI, `【PRD 文档·第 ${i + 1}/${n} 片】\n${chunks[i]}`, (content) =>
         parseJsonObjectWithRecovery(content, 'AI 未返回有效的 PRD 分片解析结果（需 JSON 对象）'),
-        { timeoutMs: PRD_PARSE_TIMEOUT_MS, minMaxTokens: PRD_PARSE_MIN_OUTPUT_TOKENS, signal },
+        // T02983：分片较重试一次时改用**更小规模**的提示词——实测单片 JSON 两次不闭合占 130s+101s 后整单失败，
+        // 同规模重试只是白等；压缩到 20/25 条能显著提高闭合率（缺的条目由合并后的覆盖告警暴露，不静默）。
+        { timeoutMs: PRD_PARSE_TIMEOUT_MS, minMaxTokens: PRD_PARSE_MIN_OUTPUT_TOKENS, signal, retrySystem: sysI
+          + '\n【压缩重试·必须闭合】上次输出无法解析为 JSON：本次 requirements ≤20 条、plans ≤25 条，title ≤20 字、content/description ≤30 字；只输出一个 JSON 对象，禁止解释与代码围栏。' },
       );
       if (!ai.ok) {
         // 总预算到点导致的停止不该作废已完成的片：标记后由外层收尾，把已解析部分交付给调用方。
