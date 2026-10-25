@@ -944,9 +944,21 @@ export function AIToolsPage() {
         .arena-row.flush td { animation: rowflush 1.4s ease; }
         .tool-dragging { opacity: .5; transform: scale(1.01); box-shadow: 0 6px 18px rgba(0,0,0,.22); background: var(--surface-2); }
         .tool-over { box-shadow: inset 0 3px 0 var(--accent); background: var(--accent-soft, rgba(9,105,218,.08)); }`}</style>
-      {/* 工具栏（T00522 修正：op-host 宿主 + 筛选下拉/搜索框默认隐藏悬浮显示） */}
+      {/* 工具栏（T00522 修正：op-host 宿主 + 筛选下拉/搜索框默认隐藏悬浮显示）
+          T03162（U39/U06 回归用例）：op-host 首个可聚焦元素必须常驻可见且排在 op-hidden 之前——
+          原实现 h3 后直接是三个 op-hidden 控件，纯键盘 Tab 掠过工具栏后整段筛选/搜索不可达。
+          现将常驻「新增配置」按钮前置（图标旁保留文字标签）：Tab 到按钮即触发 :focus-within
+          显形，后续 Tab 依 DOM 序自然抵达筛选下拉与搜索框。 */}
       <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <h3 style={{ fontSize: 15, margin: 0 }}>配置记录（{filtered.length}/{tools.length}）</h3>
+        <button
+          onClick={openCreate}
+          title="新增配置 — 新增一条 AI 厂商配置记录"
+          aria-label="新增配置：新增一条 AI 厂商配置记录"
+          style={{ background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+        >
+          <Plus size={13} /> 新增配置
+        </button>
         <select className="op-hidden" value={filterType} onChange={(e) => setFilterType(e.target.value)} style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">全部厂商类型</option>
           {types.map((tp) => <option key={tp} value={tp}>{tp}</option>)}
@@ -961,17 +973,10 @@ export function AIToolsPage() {
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
           placeholder="搜索名称/厂商/Endpoint/备注…"
+          aria-label="搜索配置（名称/厂商/Endpoint/备注）"
           style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, flex: 1, minWidth: 180 }}
         />
         {notice && <output className="flash-toast">{notice}</output>}
-        <button
-          onClick={openCreate}
-          title="新增配置 — 新增一条 AI 厂商配置记录"
-          aria-label="新增配置：新增一条 AI 厂商配置记录"
-          style={{ background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', padding: '6px 14px', borderRadius: 6, cursor: 'pointer' }}
-        >
-          <Plus size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-        </button>
       </div>
 
       {/* 列表 */}

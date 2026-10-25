@@ -236,6 +236,11 @@ function Shell() {
         /* T01674：键盘可达的文件选择入口——sr-only file input 聚焦时容器（label）显示焦点环，
            与相邻按钮焦点观感一致；不加此环则 Tab 命中后无可见指示 */
         .op-hidden:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 6px; }
+        /* T03162（U39）硬规范（全库单源，新增 op-host 必须遵守；U06 模型页为该规范回归用例）：
+           ① 每个 .op-host 至少含一个「常驻可见 + 可聚焦」元素，且排在所有 .op-hidden 兄弟之前
+              ——否则纯键盘 Tab 掠过宿主区时整段悬浮控件不可达（visibility:hidden 即移出 Tab 序）；
+           ② 新建/删除等主操作按钮常驻显示时图标旁保留文字标签，可发现性不得只依赖鼠标扫过；
+           ③ 悬浮显形仅由 :hover/:focus-within 驱动，禁止对宿主内全部控件默认隐身。 */
         /* T02952：搜索清空按钮——悬浮时图标倾斜 5°~10°（任务约束区间），过渡流畅；按钮自身 transform 若被占用（居中），倾斜落在子 svg 上 */
         .ws-clear-btn svg { transition: transform .18s ease; }
         .ws-clear-btn:hover svg { transform: rotate(-7deg); }
