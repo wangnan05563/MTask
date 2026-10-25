@@ -125,6 +125,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       title       TEXT NOT NULL,
       content     TEXT NOT NULL DEFAULT '',
       pinned      INTEGER NOT NULL DEFAULT 0,
+      -- T03165（PRD AI-104 / D-06）：模板使用次数，成功发起幂累加；计数逻辑与排序属 AI-104 主体（T03248）
+      usage_count INTEGER NOT NULL DEFAULT 0,
       created_at  TEXT NOT NULL,
       updated_at  TEXT NOT NULL
     );
@@ -491,6 +493,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('prompts', 'archived', 'archived INTEGER NOT NULL DEFAULT 0'); // T00525：删除改归档
   // T00872：归档时间——归档页据此展示「归档于」时间（还原时置空），与任务/计划归档一致
   ensureColumn('prompts', 'archived_at', 'archived_at TEXT');
+  // T03165（PRD AI-104 / D-06）：老库幂等补 prompts.usage_count，历史行默认 0（可归零口径一致）
+  ensureColumn('prompts', 'usage_count', 'usage_count INTEGER NOT NULL DEFAULT 0');
   ensureColumn('req_entries', 'color', "color TEXT DEFAULT ''");
   ensureColumn('plan_tasks', 'color', "color TEXT DEFAULT ''");
   ensureColumn('plan_tasks', 'deps', "deps TEXT DEFAULT ''"); // T00499：前置依赖 JSON [{id,type:'serial'|'parallel'}]
