@@ -329,10 +329,13 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       duration_ms   INTEGER NOT NULL DEFAULT 0,
       content_chars INTEGER NOT NULL DEFAULT 0,
       error         TEXT,
+      -- T03164（PRD AI-301 / D-05）：卡片维度标识，供 G-2 精确统计；历史未知值标 unknown，不回填伪造数据
+      card_key      TEXT NOT NULL DEFAULT 'unknown',
       created_at    TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage(created_at);
     CREATE INDEX IF NOT EXISTS idx_ai_usage_tool ON ai_usage(tool_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_ai_usage_card ON ai_usage(card_key, created_at);
 
     -- T01268（PRD §5.1）：外部平台执行会话——AI 编排大脑的观测底座。
     -- 每次外部平台（WorkBuddy/Trae/中继）执行会话一行，记录平台/会话标识/关联任务/
@@ -478,6 +481,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('ai_tools', 'model_notes', "model_notes TEXT DEFAULT ''");
   ensureColumn('ai_tools', 'remark', "remark TEXT DEFAULT ''");
   ensureColumn('ai_tools', 'console_url', "console_url TEXT DEFAULT ''");
+  // T03164（PRD AI-301 / D-05）：老库幂等补 ai_usage.card_key，历史行随默认值标 unknown
+  ensureColumn('ai_usage', 'card_key', "card_key TEXT NOT NULL DEFAULT 'unknown'");
   ensureColumn('tasks', 'verified', 'verified INTEGER NOT NULL DEFAULT 0');
   ensureColumn('queues', 'paused', 'paused INTEGER NOT NULL DEFAULT 0'); // T01434：队列级暂停/继续
   // T00490：记录字体颜色（Excel 风格颜色按钮）——空串=默认色
