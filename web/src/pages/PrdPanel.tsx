@@ -306,9 +306,22 @@ export function PrdPanel({ projectId, onClose }: {
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
   }
 
+  // T03158（U16）：未保存编辑实时落 sessionStorage 草稿——切换面板/菜单/文档时不再静默丢弃 Markdown
+  const prdDraftKey = (id: string) => `prd-edit-draft.${projectId}.${id}`;
+  useEffect(() => {
+    if (mode !== 'edit' || !selectedId) return;
+    try { sessionStorage.setItem(prdDraftKey(selectedId), editMd); } catch { /* 会话存储不可用：不阻断编辑 */ }
+  }, [mode, selectedId, editMd, projectId]);
+
   function startEdit() {
     if (!detail) return;
-    setEditMd(detail.content_md);
+    const draft = selectedId ? sessionStorage.getItem(prdDraftKey(selectedId)) : null;
+    if (draft !== null && draft !== detail.content_md) {
+      setEditMd(draft);
+      flash('已恢复上次未保存的草稿');
+    } else {
+      setEditMd(detail.content_md);
+    }
     setMode('edit');
   }
 
@@ -319,6 +332,8 @@ export function PrdPanel({ projectId, onClose }: {
       await api.put(`/plans/prd-docs/${selectedId}`, { contentMd: editMd });
       const d = await api.get<{ filename: string; content_md: string }>(`/plans/prd-docs/${selectedId}`);
       setDetail({ filename: d.filename, content_md: d.content_md });
+      // T03158（U16）：保存成功后清除草稿，避免陈旧草稿覆盖下次编辑
+      try { sessionStorage.removeItem(prdDraftKey(selectedId)); } catch { /* 忽略 */ }
       setMode('view');
       flash('PRD 内容已保存');
       await load();
