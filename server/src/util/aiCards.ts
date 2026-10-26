@@ -36,10 +36,10 @@ export const AI_CARDS: readonly AiCard[] = [
   { key: 'ai.prd_import', title: 'PRD 导入解析', group: 'plan', available: true, metered: false },
   { key: 'ai.plan_import', title: 'AI 项目计划导入', group: 'plan', available: true, metered: false },
   { key: 'ai.weekly_report', title: '周报/月报生成', group: 'report', available: true, metered: false },
-  { key: 'ai.summary_ppt', title: '阶段性总结汇报 PPT', group: 'report', available: true, metered: false },
-  { key: 'ai.kickoff_ppt', title: '项目启动汇报 PPT', group: 'report', available: true, metered: false },
+  { key: 'ai.summary_ppt', title: '阶段总结 PPT', group: 'report', available: true, metered: false },
+  { key: 'ai.kickoff_ppt', title: '启动会 PPT', group: 'report', available: true, metered: false },
   { key: 'ai.test_case_gen', title: '测试用例生成', group: 'quality', available: true, metered: false },
-  { key: 'ai.code_review_lecture', title: '代码审查讲解', group: 'dev', available: true, metered: false },
+  { key: 'ai.code_review_lecture', title: '代码评审讲稿', group: 'dev', available: true, metered: false },
 ];
 
 /** kind → card_key 显式映射：仅收录与卡片**一对一**的通道；通用通道（ask/ask-json/stream）不在表内，防 kind 冒充卡维度 */

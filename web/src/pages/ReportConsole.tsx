@@ -90,7 +90,7 @@ const PRD_GEN_TAB = '__prdgen__';
 /** T01491：内置「从 PRD 生成测试用例」tab 固定 id（仿 PRD_GEN_TAB）——生成阶段日志 + 流式正文在此实时滚动 */
 const TEST_CASE_GEN_TAB = '__testcasegen__';
 
-/** T02109（PRD FR-1.4）：内置「项目启动会 PPT 生成」tab 固定 id——逐页装配 stage 事件在此实时滚动 */
+/** T02109（PRD FR-1.4）：内置「启动会 PPT 生成」tab 固定 id——逐页装配 stage 事件在此实时滚动 */
 const KICKOFF_PPT_TAB = '__kickoffppt__';
 
 /** T02857（PRD-阶段性项目总结汇报PPT FR-1.4）：内置「阶段性项目总结汇报 PPT」tab 固定 id */
@@ -1138,7 +1138,7 @@ export function ReportConsole({
     return (
       <div>
         <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-          <Presentation size={13} style={{ color: 'var(--accent)' }} /> 项目启动会 PPT 生成
+          <Presentation size={13} style={{ color: 'var(--accent)' }} /> 启动会 PPT 生成
           {kfSnap.streaming && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
           {kfSnap.result && (
             <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 400 }}>
@@ -1151,7 +1151,7 @@ export function ReportConsole({
           <div key={`${l}-${i}`} style={{ fontSize: 'var(--fs-xs)', color: /⚠|失败|错误/.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
         ))}
         {!kfSnap.streaming && kfSnap.result && (
-          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「项目启动会 PPT 生成」卡片点击下载（文件名为服务端校验值）。</div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「启动会 PPT 生成」卡片点击下载（文件名为服务端校验值）。</div>
         )}
       </div>
     );
@@ -1161,7 +1161,7 @@ export function ReportConsole({
     return (
       <div>
         <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-          <FileChartColumn size={13} style={{ color: 'var(--accent)' }} /> 阶段性项目总结汇报 PPT 生成
+          <FileChartColumn size={13} style={{ color: 'var(--accent)' }} /> 阶段总结 PPT 生成
           {sumSnap.streaming && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
           {sumSnap.result && (
             <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 400 }}>
@@ -1174,7 +1174,7 @@ export function ReportConsole({
           <div key={`${l}-${i}`} style={{ fontSize: 'var(--fs-xs)', color: /⚠|失败|错误/.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
         ))}
         {!sumSnap.streaming && sumSnap.result && (
-          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「阶段性项目总结汇报 PPT 生成」卡片点击下载（文件名为服务端校验值）。</div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「阶段总结 PPT 生成」卡片点击下载（文件名为服务端校验值）。</div>
         )}
       </div>
     );
@@ -1481,8 +1481,8 @@ export function ReportConsole({
           onClick={() => setActiveId(KICKOFF_PPT_TAB)}
           title={kfSnap.streaming
             ? `启动会 PPT 生成中 · 已运行 ${startedElapsedText(kfSnap.startedAt)} · 大纲 ${kfSnap.outline.length} 页（切换卡片不中断，返回即恢复）`
-            : '项目启动会 PPT 生成 — 逐页装配过程与产物摘要在此实时滚动输出'}
-          aria-label="项目启动会 PPT 生成 tab"
+            : '启动会 PPT 生成 — 逐页装配过程与产物摘要在此实时滚动输出'}
+          aria-label="启动会 PPT 生成 tab"
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
             border: '1px solid var(--border-strong)', ...(onKickoffPptTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
@@ -1505,8 +1505,8 @@ export function ReportConsole({
           onClick={() => setActiveId(SUMMARY_PPT_TAB)}
           title={sumSnap.streaming
             ? `总结汇报 PPT 生成中 · 已运行 ${startedElapsedText(sumSnap.startedAt)} · 大纲 ${sumSnap.outline.length} 页（切换卡片不中断，返回即恢复）`
-            : '阶段性项目总结汇报 PPT 生成 — 逐页装配过程与产物摘要在此实时滚动输出'}
-          aria-label="阶段性项目总结汇报 PPT 生成 tab"
+            : '阶段总结 PPT 生成 — 逐页装配过程与产物摘要在此实时滚动输出'}
+          aria-label="阶段总结 PPT 生成 tab"
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
             border: '1px solid var(--border-strong)', ...(onSummaryPptTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,

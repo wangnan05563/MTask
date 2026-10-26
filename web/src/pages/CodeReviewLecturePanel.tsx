@@ -404,7 +404,7 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
       {notice && <output className="flash-toast">{notice}</output>}
       <header style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <Sparkles size={16} style={{ color: 'var(--accent)' }} />
-        <strong style={{ fontSize: 'var(--fs-l)' }}>代码评审会议讲稿生成</strong>
+        <strong style={{ fontSize: 'var(--fs-l)' }}>代码评审讲稿生成</strong>
         <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>左 diff · 右讲稿 · 底状态条（锚点可点击定位）</span>
         <button type="button" onClick={onClose} title="收起面板" aria-label="收起代码评审讲稿面板"
           style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
