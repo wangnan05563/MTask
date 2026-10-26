@@ -5,12 +5,13 @@ import { api, type AITool, type ReqCategory } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
 import { useSessionState } from '../ui/session';
 import { RunStatusBadge } from '../ui/runStatus'; // T01038：统一运行状态徽标（动画图标 + 实时秒数 + 最终耗时）
-import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput, GitCompare, FileUp, FilePlus2, Maximize, PanelLeftOpen, OctagonX, ListChecks, Presentation, FileChartColumn } from 'lucide-react';
+import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput, GitCompare, FileUp, FilePlus2, Maximize, PanelLeftOpen, OctagonX, ListChecks, Presentation, FileChartColumn, ScrollText } from 'lucide-react';
 import { aiImportStore } from '../stores/aiImportStore';
 import { prdGenStore } from '../stores/prdGenStore'; // T00769 二轮：原始需求生成 PRD 的过程输出
 import { testCaseGenStore } from '../stores/testCaseGenStore'; // T01491：从 PRD 生成测试用例的过程输出
 import { kickoffPptStore } from '../stores/kickoffPptStore'; // T02109：项目启动会 PPT 的逐页装配过程输出
 import { summaryPptStore } from '../stores/summaryPptStore'; // T02857：阶段性总结汇报 PPT 的逐页装配过程输出
+import { codeReviewLectureStore } from '../stores/codeReviewLectureStore'; // T03301：代码评审讲稿的采集/大纲/逐节流式过程输出
 import { reportStream, useReportStream } from '../reportStream'; // T00838：停止按钮需订阅周报流状态
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CONSOLE, CONSOLE_RESET_EVENT } from '../ui/consoleReset'; // T01042：控制台/卡片共用重置核心
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
@@ -95,6 +96,9 @@ const KICKOFF_PPT_TAB = '__kickoffppt__';
 
 /** T02857（PRD-阶段性项目总结汇报PPT FR-1.4）：内置「阶段性项目总结汇报 PPT」tab 固定 id */
 const SUMMARY_PPT_TAB = '__summaryppt__';
+
+/** T03301：内置「代码评审讲稿生成」tab 固定 id——该卡片只写模块级 store、控制台未订阅，表现即「运行中控制台无日志」 */
+const REVIEW_LECTURE_TAB = '__reviewlecture__';
 
 /**
  * 自定义 AI 工具选择器：收拢时仅显示已选工具的「模型名」（节省单行空间），
@@ -668,6 +672,9 @@ export function ReportConsole({
   // T02857：订阅总结汇报 PPT store（逐页 stage 在此滚动）
   const sumSnap = useSyncExternalStore(summaryPptStore.subscribe, summaryPptStore.get);
   const onSummaryPptTab = activeId === SUMMARY_PPT_TAB;
+  // T03301：订阅代码评审讲稿 store（采集 / 大纲 / 逐节流式的 stage 在此滚动）
+  const lecSnap = useSyncExternalStore(codeReviewLectureStore.subscribe, codeReviewLectureStore.get);
+  const onReviewLectureTab = activeId === REVIEW_LECTURE_TAB;
   const activeTask = tasks.find((t) => t.id === activeId) ?? null;
   const onReportTab = activeId === REPORT_TAB;
   const runningCount = tasks.filter((t) => t.status === 'busy').length;
@@ -683,7 +690,7 @@ export function ReportConsole({
   // T02213：对比任务创建失败的登记簿。此前吞异常后只是「少一个结果 tab」，
   // 用户会以为是该模型没答上来；失败需点名到模型并给重试入口。
   const [compareFailed, setCompareFailed] = useState<CompareJob[]>([]);
-  const canStop = report.streaming || prdSnap.streaming || tcSnap.streaming || kfSnap.streaming || sumSnap.streaming || aiSnap.busy || runningCount > 0;
+  const canStop = report.streaming || prdSnap.streaming || tcSnap.streaming || kfSnap.streaming || sumSnap.streaming || lecSnap.streaming || aiSnap.busy || runningCount > 0;
 
   // T00839：1s 心跳触发重渲染，使运行中 tab 的「已运行 xx」实时增长（store 变更不会带动计时刷新）
   const [, bumpClock] = useReducer((c: number) => c + 1, 0);
@@ -709,6 +716,8 @@ export function ReportConsole({
       if (kfSnap.streaming) kickoffPptStore.abort();
       // 2d) T02857：阶段性总结汇报 PPT 逐页装配流：abort SSE（后端随 signal 结束装配）
       if (sumSnap.streaming) summaryPptStore.abort();
+      // 2e) T03301：讲稿流优先「只掐流不清产物」——已生成的节要留着才能「从第 n 节继续」，与卡片内停止同口径
+      if (lecSnap.streaming) codeReviewLectureStore.stop();
       // 3) T03185（UX-07②）：PRD 解析请求已挂 AbortSignal——先真中断（取消句柄在模块级 store，
       //    面板切页卸载后照样掐得掉），不再只是清 store 让后端白跑一轮。
       //    中断成功时保留 store 状态：解析侧会自己写「已取消」日志并退出忙态，清掉反而把原因抹平。
@@ -721,7 +730,7 @@ export function ReportConsole({
     } finally {
       setStopping(false);
     }
-  }, [stopping, tasks, prdSnap.streaming, tcSnap.streaming, kfSnap.streaming, sumSnap.streaming, aiSnap.busy, report.streaming]);
+  }, [stopping, tasks, prdSnap.streaming, tcSnap.streaming, kfSnap.streaming, sumSnap.streaming, lecSnap.streaming, aiSnap.busy, report.streaming]);
 
   // 阶段日志没有天然 id，按「内容 + 同内容出现序号」派生稳定 key：
   // 追加式日志的前缀条目 key 不变，避免用数组索引作 key 在重排时错误复用 DOM
@@ -774,11 +783,19 @@ export function ReportConsole({
     prevSumLogCount.current = sumLogCount;
   }, [sumLogCount]);
 
+  // T03301：讲稿一开始输出阶段日志就自动切到该 tab（同款机制）——此前卡片会写 store 但控制台无 tab，用户看到的是「无任何输出」
+  const lecLogCount = lecSnap.logs.length;
+  const prevLecLogCount = useRef(0);
+  useEffect(() => {
+    if (lecLogCount > 0 && prevLecLogCount.current === 0) setActiveId(REVIEW_LECTURE_TAB);
+    prevLecLogCount.current = lecLogCount;
+  }, [lecLogCount]);
+
   // 正在生成（AI 周报流式或手动任务进行中）时随内容滚到底部，保证流式输出始终跟随最新内容
-  const live = isLive(onReportTab, streaming, streamText, activeTask) || onAiImportTab || onPrdGenTab || onTestCaseGenTab || onKickoffPptTab || onSummaryPptTab;
+  const live = isLive(onReportTab, streaming, streamText, activeTask) || onAiImportTab || onPrdGenTab || onTestCaseGenTab || onKickoffPptTab || onSummaryPptTab || onReviewLectureTab;
   useEffect(() => {
     if (live) bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
-  }, [live, streamText, streamsLen(activeTask), prdSnap.streamText, prdSnap.logs.length, tcSnap.streamText, tcSnap.logs.length, kfSnap.logs.length, sumSnap.logs.length]);
+  }, [live, streamText, streamsLen(activeTask), prdSnap.streamText, prdSnap.logs.length, tcSnap.streamText, tcSnap.logs.length, kfSnap.logs.length, sumSnap.logs.length, lecSnap.logs.length]);
 
   // 统一按 id 局部更新任务字段，避免在并发更新中因闭包持有旧 tasks 而互相覆盖
   const updateTask = useCallback((id: string, patch: Partial<AnalysisTask>) => {
@@ -1073,6 +1090,8 @@ export function ReportConsole({
     if (onKickoffPptTab) return renderKickoffPptBody();
     // T02857（PRD FR-1.4）：阶段性总结汇报 PPT tab——逐页装配 stage 日志 + 产物摘要（同款结构）
     if (onSummaryPptTab) return renderSummaryPptBody();
+    // T03301：代码评审讲稿 tab——采集/大纲/逐节流式 stage 日志 + 产物摘要
+    if (onReviewLectureTab) return renderReviewLectureBody();
     // T00569 三轮：AI 项目计划导入 tab——控制台式滚动输出执行日志（与导入面板深度整合）
     if (onAiImportTab) return renderAiImportBody();
     if (onReportTab) return renderReportBody();
@@ -1175,6 +1194,36 @@ export function ReportConsole({
         ))}
         {!sumSnap.streaming && sumSnap.result && (
           <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「阶段总结 PPT 生成」卡片点击下载（文件名为服务端校验值）。</div>
+        )}
+      </div>
+    );
+  }
+
+  function renderReviewLectureBody() {
+    const r = lecSnap.result;
+    const okCount = r ? r.sections.filter((s) => s.ok).length : 0;
+    return (
+      <div>
+        <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+          <ScrollText size={13} style={{ color: 'var(--accent)' }} /> 代码评审讲稿生成
+          {lecSnap.streaming && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', fontWeight: 400 }}>生成中…</span>}
+          {lecSnap.streaming && lecSnap.stage && (
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 400 }}>当前阶段：{lecSnap.stage.phase} · {lecSnap.stage.progress}%</span>
+          )}
+          {r && (
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 400 }}>
+              {okCount}/{r.sections.length} 节 · 锚点 {r.stats.anchors} 个{r.stats.anchorIssues > 0 ? ` · ⚠ 落点存疑 ${r.stats.anchorIssues} 处` : ''}
+              {r.warnings.length > 0 ? ` · 降级 ${r.warnings.length} 处` : ''}
+            </span>
+          )}
+        </div>
+        {lecSnap.logs.length === 0
+          ? <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>在「代码评审讲稿生成」卡片点「采集变更 / 生成讲稿」后，采集、大纲与逐节流式过程将在此逐行输出。</span>
+          : lecSnap.logs.map((l, i) => (
+            <div key={`${l}-${i}`} style={{ fontSize: 'var(--fs-xs)', color: /⚠|失败|错误|降级/.test(l) ? 'var(--warn)' : 'var(--text-secondary)', padding: '2px 0', fontFamily: 'monospace' }}>• {l}</div>
+          ))}
+        {!lecSnap.streaming && r && (
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', marginTop: 6 }}>✓ 生成完成 —— 请在左侧「代码评审讲稿生成」卡片查看逐节正文/标记，或直接导出。</div>
         )}
       </div>
     );
@@ -1384,6 +1433,34 @@ export function ReportConsole({
     );
   }
 
+  /** T03301：讲稿 tab 按钮单独成函数——控制台 tab 栏已很长，内联再加一层条件会让 S3776 认知复杂度顶到阈值 */
+  const renderReviewLectureTabButton = () => {
+    if (!(lecSnap.logs.length > 0 || lecSnap.streaming)) return null;
+    return (
+      <button
+        onClick={() => setActiveId(REVIEW_LECTURE_TAB)}
+        title={lecSnap.streaming
+          ? `代码评审讲稿生成中 · 已运行 ${startedElapsedText(lecSnap.startedAt ?? Date.now())} · 当前阶段：${lecSnap.stage?.msg ?? '准备中'}（切换卡片不中断，返回即恢复）`
+          : '代码评审讲稿生成 — 采集/大纲/逐节流式过程在此实时滚动输出'}
+        aria-label="代码评审讲稿生成 tab"
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+          border: '1px solid var(--border-strong)', ...(onReviewLectureTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
+        }}
+      >
+        <ScrollText size={11} />
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>代码评审讲稿</span>
+        <RunStatusBadge
+          status={runStatus(lecSnap.streaming, lecSnap.finalElapsed)}
+          startedAt={lecSnap.startedAt}
+          finalElapsed={lecSnap.finalElapsed}
+          size={10}
+          showLabel={false}
+        />
+      </button>
+    );
+  };
+
   // 渲染辅助：将整组件 return 内的密集 JSX 拆成独立函数，各自单独计认知复杂度，避免单一函数超 S3776 阈值
   const renderTabBar = () => (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
@@ -1523,6 +1600,7 @@ export function ReportConsole({
           />
         </button>
       )}
+      {renderReviewLectureTabButton()}
       {tasks.map((t) => (
         <div
           key={t.id}
@@ -1713,9 +1791,10 @@ export function ReportConsole({
       {renderToolbar()}
       {renderTabBar()}
 
-      {/* 结果区：当前聚焦任务/流式滚动展示 */}
+      {/* 结果区：当前聚焦任务/流式滚动展示（data-console-body 供门做「控制台确有日志输出」的真实 DOM 断言） */}
       <div
         ref={bodyRef}
+        data-console-body
         style={{ flex: 1, minHeight: 0, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: 8, background: 'var(--surface)' }}
       >
         {renderBody()}

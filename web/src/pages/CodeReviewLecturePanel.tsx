@@ -210,11 +210,14 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
     try {
       const view = await api.post<LectureDiffView>('/plans/code-review-lecture/diff', scopeBody.body);
       codeReviewLectureStore.setDiff(view.projects);
+      // T03301：采集结果也进 AI 控制台日志——只有「开始采集」一行、没有产出条数时，用户无法判断采集是否真的拿到东西
+      codeReviewLectureStore.pushLog(`采集完成：可用项目 ${view.totals.ready}/${view.totals.projects}、文件 ${view.totals.files}（排除 ${view.totals.excluded}）`);
       // 默认只展开每个项目的第一个文件：多项目全展开会把左栏变成滚动长墙，锚点点击时再按需展开
       setOpenFiles(new Set(view.projects.flatMap((p) => p.files.slice(0, 1).map((f) => fileKey(p.projectId, f.path)))));
       flash(`diff 已就绪：可用项目 ${view.totals.ready}/${view.totals.projects}、文件 ${view.totals.files}（排除 ${view.totals.excluded}）`);
     } catch (e) {
       codeReviewLectureStore.setDiff([], e instanceof Error ? e.message : String(e));
+      codeReviewLectureStore.pushLog(`采集失败：${e instanceof Error ? e.message : String(e)}`);
       flash(`diff 加载失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }
@@ -255,6 +258,8 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
           const d = payload as LectureStreamResult;
           if (d?.outline) codeReviewLectureStore.setOutline(d.outline);
           codeReviewLectureStore.setResult(d ?? null);
+          // T03301：停止是关键节点，控制台要有一行收口日志（此前只在面板 toast 里提示，控制台看不出发生过什么）
+          codeReviewLectureStore.pushLog(`已停止——已生成 ${d?.sections?.length ?? 0} 节已保留，可「从第 n 节继续」`);
           codeReviewLectureStore.finish();
           flash(`已停止——已生成 ${d?.sections?.length ?? 0} 节已保留，可「从第 n 节继续」`);
           return;
@@ -267,6 +272,12 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
         return flash(errMsg);
       }
       if (extra.outlineOnly && outline) codeReviewLectureStore.pushLog('大纲已就绪——右栏确认结构后点「按大纲生成正文」');
+      // T03301：完成是关键节点——写一行带产出量的收口日志（节数/锚点/降级），控制台据此判断这轮到底产出了什么
+      const done = codeReviewLectureStore.get().result;
+      if (done) {
+        const okCount = done.sections.filter((s) => s.ok).length;
+        codeReviewLectureStore.pushLog(`生成完成：${okCount}/${done.sections.length} 节 · 锚点 ${done.stats.anchors} 个${done.warnings.length > 0 ? ` · 降级 ${done.warnings.length} 处` : ''}`);
+      }
       codeReviewLectureStore.finish();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
