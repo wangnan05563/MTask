@@ -672,8 +672,14 @@ async function installUpdatePackage(filePath, targetVersion) {
     };
     let child;
     try {
-      // /S=静默安装；不再 detached+unref（T02071 缺口 2）——留在本进程以拿到安装器退出码
-      child = spawn(filePath, ['/S'], { detached: false, stdio: 'ignore' });
+      // /S=静默安装；--force-run（T03298）= 装完由安装器拉起新版本：辅助安装器在静默模式下没有
+      // 「运行完成后启动」这一步，只有带该开关才 doStartApp，不带就是「装完了也没人开新版本」。
+      // detached:true（T03298 关键）：安装器是本应用用 node 的 child_process.spawn 拉起来的，
+      // 会被放进本进程的 Job 里；本应用被安装器自己的 taskkill 打死时，Job 连带把安装器一起带走
+      // ——实测矩阵：同 job 时「/T」和「不带 /T」两种杀法安装器都死，只有 detached 起来且不再用
+      // /T 才活得下来。detached 只影响进程组/归属，不 unref 就照常收退出码（实测 code=7 能收到），
+      // 所以 T02071 的「等退出码给回执」这条链不受影响。
+      child = spawn(filePath, ['/S', '--force-run'], { detached: true, stdio: 'ignore' });
     } catch (e) {
       settle({ ok: false, status: 'failed', message: `启动安装程序失败：${e instanceof Error ? e.message : String(e)}`, filePath, targetVersion: target });
       return;
@@ -689,7 +695,10 @@ async function installUpdatePackage(filePath, targetVersion) {
     child.on('exit', (code) => {
       const o = installOutcome({ code, timedOut: false });
       if (o.status === 'installed') {
-        settle({ ok: true, status: 'installed', message: o.message });
+        // 标记保留（T03298）：辅助安装器在静默按机器升级时只是「UAC 提权交接」，外层进程交接完
+        // 就 Quit(0)，这个 0 并不证明文件真被替换了。留在下次启动由对账按真实版本给结论——
+        // 装成功则静默清掉，没成功（授权被拒等）当场弹「更新未生效」。
+        settle({ ok: true, status: 'installed', message: o.message }, { keepMarker: true });
         // 给渲染进程留出闪现提示的时间，随即退出本应用让新版本接管
         setTimeout(() => app.quit(), 800);
         return;
@@ -835,7 +844,7 @@ async function runOnlineUpdateFlow({ auto = false } = {}) {
       type: 'info',
       title: '下载完成',
       message: `v${info.version} 安装包已就绪`,
-      detail: `${dl.filePath}\n安装将执行静默安装器；安装成功本应用会自动退出，由新版本接管。`,
+      detail: `${dl.filePath}\n安装将执行静默安装器；安装器会先结束本应用，按机器安装（如 Program Files）时 Windows 会弹一次授权确认，装完自动以新版本启动。`,
       buttons: ['立即安装', '稍后安装'],
       defaultId: 0,
       cancelId: 1,

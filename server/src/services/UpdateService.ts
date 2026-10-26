@@ -26,11 +26,17 @@ const GITHUB_API = 'https://api.github.com';
  *  菜单「帮助 → 检查在线更新」与设置页共用这一份解析，不再各自硬编码。 */
 export const BUILTIN_UPDATE_REPO = 'wangnan05563/MTask';
 
-/** 当前应用版本：从 package.json 读取。dev 态 __dirname=server/src，打包态=resources/app/server/dist，
- *  两者回溯两级分别是项目根与 resources/app，package.json 均存在于该位置（electron-builder 打包根 package.json）。
+/** 当前应用版本：读应用根 package.json（与 Electron `app.getVersion()` 同源）。
+ *  T03298：原来先从 `__dirname/../..` 取——打包后 __dirname 是 `<app.asar>/server/dist/services`，
+ *  回溯两级落到 `<app.asar>/server`，而 server/package.json 并不随包（build.files 只收 server/dist），
+ *  候选二 `process.cwd()/package.json` 在安装版里也不是包根，于是恒回 '0.0.0'：
+ *  任何 Release 都「比当前新」，已是最新照样提示更新，也会把旧版本当新版本发给用户。
+ *  三级回溯在三种形态下都正好命中根 package.json：dev(tsx)=<repo>/server/src/services、
+ *  后端构建直跑=<repo>/server/dist/services、打包态=<app.asar>/server/dist/services。
  *  同时供 /api/update/version 端点回显关于页真实版本。 */
 export function currentVersion(): string {
   const candidates = [
+    path.resolve(__dirname, '..', '..', '..', 'package.json'),
     path.resolve(__dirname, '..', '..', 'package.json'),
     path.resolve(process.cwd(), 'package.json'),
   ];
