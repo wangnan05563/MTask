@@ -140,8 +140,10 @@ function mergeLectureRun(
   return { ...next, outline, sections, ok };
 }
 
-export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }: {
+export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, projects, toolId, onClose }: {
   readonly projectIds: string[];
+  /** T03311：与顶部「报表范围」同一份 state——卡片内改选即写回，顶部改选本卡片自动回填 */
+  readonly onProjectIdsChange: (ids: string[]) => void;
   readonly projects: Project[];
   readonly toolId: string;
   readonly onClose: () => void;
@@ -427,8 +429,13 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
       </header>
 
       <section aria-label="采集范围" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
-        <ProjectScopePicker projects={projects} value={selectedIds} onChange={() => flash('评审项目范围请在页面顶部「报表范围」中选择')} />
-        <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>已选 {selectedIds.length} 个</span>
+        {/* T03311：不再只读——改选直接写回顶部「报表范围」（空数组=全部项目），两处始终同一份数据 */}
+        <div data-lck="scope-picker" style={{ width: 240, maxWidth: '100%' }}>
+          <ProjectScopePicker projects={projects} value={projectIds} onChange={onProjectIdsChange} />
+        </div>
+        <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
+          已选 {selectedIds.length} 个{projectIds.length === 0 ? '（全部项目）' : ''}，与顶部「报表范围」联动
+        </span>
         {!patchMode && (
           <>
             <select value={shape} onChange={(e) => setShape(e.target.value as RangeShape)} style={fieldStyle} aria-label="Git 区间形态">

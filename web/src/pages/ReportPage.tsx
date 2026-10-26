@@ -268,11 +268,13 @@ function legacyProjectScope(): string[] {
 }
 
 /** 三块 AI 工作面板的条件渲染（S3776：条件块下沉为独立组件） */
-function ReportWorkPanels({ aiToolId, projectId, projectIds, projects, scopeNote, showKickoffPpt, closeKickoffPpt, showSummaryPpt, closeSummaryPpt, showReviewLecture, closeReviewLecture, openCard, showPrdGen, closePrdGen, prdGenSaved, showTcGen, closeTcGen, tcImported, showPrdImport, closePrdImport, prdImportSaved, showAiImport, closeAiImport, aiImportSaved, prdImportKey }: {
+function ReportWorkPanels({ aiToolId, projectId, projectIds, onProjectIdsChange, projects, scopeNote, showKickoffPpt, closeKickoffPpt, showSummaryPpt, closeSummaryPpt, showReviewLecture, closeReviewLecture, openCard, showPrdGen, closePrdGen, prdGenSaved, showTcGen, closeTcGen, tcImported, showPrdImport, closePrdImport, prdImportSaved, showAiImport, closeAiImport, aiImportSaved, prdImportKey }: {
   readonly aiToolId: string;
   readonly projectId: string;
   /** T02857：总结汇表面板默认消费顶部多选范围（空=全部项目），与 kickoff 的单项目口径不同 */
   readonly projectIds: string[];
+  /** T03311：讲稿卡内改范围要写回顶部「报表范围」——同一份 state，双向联动不另存副本 */
+  readonly onProjectIdsChange: (ids: string[]) => void;
   readonly projects: Project[];
   /** T02190：多项目范围时单项目工件卡片的明示文案（见 ReportPage 的 singleScopeNote） */
   readonly scopeNote: string;
@@ -301,7 +303,7 @@ function ReportWorkPanels({ aiToolId, projectId, projectIds, projects, scopeNote
       )}
       {/* T02872（PRD §6.1）：第 9 张卡——三区布局自带左 diff / 右讲稿，阶段日志同时进右侧控制台 */}
       {showReviewLecture && (
-        <CodeReviewLecturePanel projectIds={projectIds} projects={projects} toolId={aiToolId} onClose={closeReviewLecture} />
+        <CodeReviewLecturePanel projectIds={projectIds} onProjectIdsChange={onProjectIdsChange} projects={projects} toolId={aiToolId} onClose={closeReviewLecture} />
       )}
       {/* T01492：从 PRD 生成测试用例面板（日志/正文同走右侧控制台；停止已接进控制台 stopAll） */}
       {showTcGen && (
@@ -903,7 +905,7 @@ export function ReportPage() {
         })}
       </div>
 
-      <ReportWorkPanels aiToolId={activeToolId} projectId={projectId} projectIds={projectIds} projects={projects} scopeNote={scopeNoteOf('本面板')}
+      <ReportWorkPanels aiToolId={activeToolId} projectId={projectId} projectIds={projectIds} onProjectIdsChange={setProjectIds} projects={projects} scopeNote={scopeNoteOf('本面板')}
         showKickoffPpt={showKickoffPpt} closeKickoffPpt={closeKickoffPpt} openCard={openCard}
         showSummaryPpt={showSummaryPpt} closeSummaryPpt={() => setShowSummaryPpt(false)}
         showReviewLecture={showReviewLecture} closeReviewLecture={() => setShowReviewLecture(false)}
