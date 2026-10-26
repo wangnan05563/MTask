@@ -145,9 +145,13 @@ type PDFDoc = PDFKit.PDFDocument;
  * 创建 A4 PDF 文档并写入大标题与导出时间；返回 doc、结束事件与取字节回调。
  * 抽成公共入口，让 PRD 与估算 PDF 走同一条「建文档 → 渲染块 → 追加图表 → 收尾」链路。
  */
-async function newPdfDocImpl(title: string): Promise<{ doc: PDFDoc; done: Promise<void>; finish: () => Buffer }> {
+async function newPdfDocImpl(
+  title: string,
+  opts: { bufferPages?: boolean } = {},
+): Promise<{ doc: PDFDoc; done: Promise<void>; finish: () => Buffer }> {
   const PDFDocument = (await import('pdfkit')).default;
-  const doc: PDFDoc = new PDFDocument({ size: 'A4', margin: 50 });
+  // bufferPages：需要逐页写页脚（如分享快照）时开启，其余导出保持旧行为不额外占内存
+  const doc: PDFDoc = new PDFDocument({ size: 'A4', margin: 50, bufferPages: opts.bufferPages ?? false });
   if (process.platform === 'win32' && existsSync(PDF_FONT)) doc.font(PDF_FONT);
   const chunks: Buffer[] = [];
   doc.on('data', (c: Buffer) => chunks.push(c));
@@ -392,8 +396,11 @@ export function drawBarChart(doc: PDFDoc, title: string, items: Array<{ label: s
 }
 
 /** 创建空白 PDF 文档（标题 + 导出时间），供估算 PDF 在 MD 渲染后追加图表 */
-export async function newPdfDoc(title: string): Promise<{ doc: PDFDoc; done: Promise<void>; finish: () => Buffer }> {
-  return await newPdfDocImpl(title);
+export async function newPdfDoc(
+  title: string,
+  opts: { bufferPages?: boolean } = {},
+): Promise<{ doc: PDFDoc; done: Promise<void>; finish: () => Buffer }> {
+  return await newPdfDocImpl(title, opts);
 }
 
 export async function buildPrdPdf(md: string, title: string): Promise<Buffer> {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { childParentIdOf } from '../util/planDeps'; // T01621：里程碑显式挂接判定单源（与时间线分组共用）
-import { Archive, ArrowUpDown, CalendarPlus, Check, Download, Gauge, Layers, LineChart, Webhook, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, FileText, FilePenLine, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Table2, TestTubes, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search, X } from 'lucide-react';
+import { Archive, ArrowUpDown, CalendarPlus, Check, Download, Gauge, Layers, LineChart, Webhook, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, FileText, FilePenLine, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Share2, Table2, TestTubes, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search, X } from 'lucide-react';
 import { EmptyState } from '../ui/EmptyState'; // T01072-FR1.10：统一空态组件
 import { ReqMatrixPanel } from './ReqMatrixPanel'; // T00662：需求跟踪矩阵
 import { TestCasePanel } from './TestCasePanel'; // T01485：测试用例视图
@@ -19,6 +19,7 @@ import { ProjectListHint, getProjectListSnapshot, refreshProjectList, useProject
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：节假日取数改走可见失败态层（工期换算依赖）
 import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用入口可见但禁用 + 原因/修复动作
 import { FontColorButton } from '../ui/FontColorButton';
+import { saveBlob } from '../utils/download'; // T03197：分享快照下载（文件名取自服务端 Content-Disposition）
 import { api, type AITool } from '../api/client';
 import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
@@ -393,8 +394,90 @@ function PlanCreateImportButtons({ busy, createPlan, importExcel, exportExcel, e
   );
 }
 
-/** 工具栏：批量 AI 评估按钮（S3776 抽取） */
-function PlanEvalButton({ batchEvaluatePlans, evalBusy, busy, evalLabel, plans, blocked, blockedTitle }: {
+/**
+ * T03197（PRD PM-404）：脱敏分享快照入口。
+ * 默认「不包含计划标题」；勾选后必须在当前对话框看到明确提示才允许下载，
+ * 避免标题在用户不知情的情况下随 PDF 外发。快照本身不含描述、处理结果与密钥（服务端白名单取数）。
+ */
+function ShareSnapshotButton({ projectId, projectName }: {
+  readonly projectId: string; readonly projectName: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [includeTitles, setIncludeTitles] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  function close() {
+    if (busy) return;
+    setOpen(false);
+    setError('');
+  }
+
+  async function download() {
+    setBusy(true);
+    setError('');
+    try {
+      const { blob, filename } = await api.getDownload(
+        `/plans/share-snapshot?projectId=${encodeURIComponent(projectId)}&includeTitles=${includeTitles ? 1 : 0}`,
+      );
+      saveBlob(blob, filename);
+      setOpen(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <button className="tbtn-anim op-hidden" onClick={() => { setIncludeTitles(false); setError(''); setOpen(true); }} disabled={!projectId}
+        title="分享快照 — 导出脱敏 PDF（项目统计 + 里程碑 + 逾期计划摘要），默认不含计划标题"
+        aria-label="分享快照" aria-haspopup="dialog" aria-expanded={open} data-t03197="toggle"
+        style={{ ...btnStyle, padding: '6px 8px', opacity: projectId ? 1 : 0.45, cursor: projectId ? 'pointer' : 'not-allowed' }}>
+        <Share2 size={13} />
+      </button>
+      {open && (
+        <div role="dialog" aria-modal="true" aria-label="脱敏分享快照" data-t03197="dialog"
+          onClick={(e) => { if (e.target === e.currentTarget) close(); }}
+          style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,.32)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: 'min(460px, calc(100vw - 32px))', padding: 18, borderRadius: 10, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', boxShadow: '0 16px 48px rgba(0,0,0,.24)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <Share2 size={15} style={{ color: 'var(--accent)' }} />
+              <strong style={{ fontSize: 'var(--fs-m)' }}>脱敏分享快照</strong>
+            </div>
+            <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 10 }}>
+              将生成「{projectName || '当前项目'}」的 PDF：项目统计、里程碑与逾期计划摘要。
+              快照不含任务描述、处理结果与任何密钥。
+            </div>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 'var(--fs-s)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={includeTitles} onChange={(e) => setIncludeTitles(e.target.checked)} data-t03197="include-titles" />
+              <span>包含计划标题（默认关闭）</span>
+            </label>
+            {includeTitles && (
+              <div data-t03197="warning" role="alert"
+                style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, fontSize: 'var(--fs-xs)',
+                  background: 'color-mix(in srgb, var(--danger) 10%, transparent)', color: 'var(--danger)', lineHeight: 1.55 }}>
+                ⚠ 已选择包含计划标题：标题会以明文随 PDF 外发，请先确认接收方与披露范围。
+              </div>
+            )}
+            {error && <div data-t03197="error" style={{ marginTop: 10, fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>{error}</div>}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+              <button onClick={close} disabled={busy} style={{ ...btnStyle, padding: '5px 12px' }} data-t03197="cancel">取消</button>
+              <button onClick={() => void download()} disabled={busy} data-t03197="download"
+                style={{ ...btnStyle, padding: '5px 12px', background: 'var(--accent)', color: 'var(--accent-text)', borderColor: 'var(--accent)' }}>
+                {busy ? <Loader2 size={13} className="aispin" /> : <Download size={13} />}
+                {busy ? '生成中…' : includeTitles ? '包含标题并下载' : '下载 PDF'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** 工具栏：批量 AI 评估按钮（S3776 抽取） */function PlanEvalButton({ batchEvaluatePlans, evalBusy, busy, evalLabel, plans, blocked, blockedTitle }: {
   readonly batchEvaluatePlans: () => Promise<void> | void; readonly evalBusy: boolean; readonly busy: boolean;
   readonly evalLabel: string; readonly plans: PlanTask[];
   /** T03176（D-14）：AI 不可用——按钮保留可见但禁用，悬浮提示给出原因与修复动作 */
@@ -2758,6 +2841,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         <ProjectListHint view={projectList} />
         {/* T00506 调整：任务类型选择移入「新建计划任务」弹窗（默认普通任务），工具栏不再展示 */}
         <PlanCreateImportButtons busy={busy} createPlan={createPlan} importExcel={importExcel} exportExcel={exportExcel} exportMarkdown={exportMarkdown} downloadTemplate={downloadTemplate} />
+        {/* T03197（PRD PM-404）：脱敏分享快照——紧跟导出族（同一动线：导出/外发） */}
+        <ShareSnapshotButton projectId={projectId} projectName={projects.find((p) => p.id === projectId)?.name ?? ''} />
         <PlanEvalButton batchEvaluatePlans={batchEvaluatePlans} evalBusy={evalBusy} busy={busy} evalLabel={evalLabel} plans={plans}
           blocked={aiDown} blockedTitle={aiBlockedTitle(readiness, 'AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）')} />
         <PlanComplexityButton backfill={backfillComplexity} evalBusy={evalBusy} busy={busy} />

@@ -17,6 +17,7 @@ import { discardReport } from '../services/ReportService'; // T02144：中止且
 import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput, DraftCaseImport, DraftReqImport } from '../services/TestCaseService';
 import { AIService } from '../services/AIService';
 import { MilestoneForecastService } from '../services/MilestoneForecastService'; // T03194（PM-204）：里程碑达成预测
+import { buildShareSnapshotPdf } from '../services/ShareSnapshotService'; // T03197（PM-404）：脱敏分享快照（pdfkit 由服务内部按需加载）
 import { backfillComplexity, listInvalid as listInvalidComplexity, listMissing as listMissingComplexity } from '../services/PlanComplexity'; // T01058 后续 / T02122：计划行复杂度批量补算 + 值域断言
 import { resolvePrdContext } from '../util/prdContext'; // T00763：计划关联 PRD → 评估上下文
 import { parseLimit, parseOffset, wantsTotal } from '../util/list-page'; // T02284：列表分页参数统一口径（limit/offset/total=1）
@@ -78,6 +79,23 @@ planApi.get('/milestone-forecast', (req, res) => {
     projectId: typeof req.query.projectId === 'string' && req.query.projectId ? req.query.projectId : undefined,
     at: typeof req.query.at === 'string' && req.query.at ? req.query.at : undefined,
   }));
+});
+
+/**
+ * T03197（PRD PM-404）：脱敏分享快照 PDF——项目统计 + 里程碑 + 逾期计划摘要。
+ * 默认不含计划标题；`includeTitles=1` 由前端先给出「标题将随文件外发」提示后再发起。
+ * 须先于 /:id 注册。
+ */
+planApi.get('/share-snapshot', async (req, res) => {
+  try {
+    const includeTitles = /^(1|true)$/i.test(toStr(req.query.includeTitles));
+    const { buffer, filename } = await buildShareSnapshotPdf({ projectId: pid(req), includeTitles });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.send(buffer);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 // T01058-FR1.3：就绪任务推荐——deps 前置均完成的执行行（供 AI 工作台「现在做这个」卡片）
