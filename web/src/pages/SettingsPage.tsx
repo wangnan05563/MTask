@@ -535,6 +535,9 @@ function UpdateSection() {
   const [installError, setInstallError] = useState<{ message: string; filePath: string; targetVersion: string } | null>(null);
   // 订阅下载进度的事件源引用：组件卸载时清理，避免泄漏
   const unsubRef = useRef<(() => void) | null | undefined>(null);
+  // T02976 补：不是本次 doDownload 发起的下载（菜单「帮助 → 检查在线更新」自驱，或本页发起的下载
+  // 在切页后恢复）。归到这里显示，用户才不会在下载中点「立即更新」时只撞上报错，也才有取消入口。
+  const [externalDl, setExternalDl] = useState<{ received: number; total: number } | null>(null);
 
   const flash = (msg: string) => {
     setNotice(msg);
@@ -543,6 +546,36 @@ function UpdateSection() {
 
   // 卸载时取消进度订阅
   useEffect(() => () => { unsubRef.current?.(); }, []);
+
+  // T02976 补：页面切换状态保持 + 菜单下载可见。
+  // 组件切走即卸载、state 丢失，回来后靠 update:active 从主进程恢复现场；常驻订阅收所有 origin 的
+  // 进度——自己发起的下载优先展示 dlProgress（shownProgress 的顺序保证），其余落到 externalDl。
+  useEffect(() => {
+    const desk = desktopApi();
+    if (!desk?.onUpdateProgress) return;
+    let alive = true;
+    const apply = (d: { status: string; received?: number; total?: number; origin?: string; message?: string }) => {
+      if (!alive) return;
+      // 更新下载续传：retrying 是「下载仍在进行、只是刚断线自愈」——必须继续显示进度与取消入口，
+      // 若落到 else 会把进度条收掉，用户回来看到的是「没有下载在跑」
+      if (d.status === 'downloading' || d.status === 'resuming' || d.status === 'retrying') {
+        setExternalDl({ received: d.received ?? 0, total: d.total ?? 0 });
+      } else {
+        setExternalDl(null); // downloaded / failed / cancelled：各自入口有自己的收口
+      }
+    };
+    const off = desk.onUpdateProgress(apply);
+    const pending = desk.getActiveUpdate?.();
+    if (pending) {
+      void pending.then((st) => {
+        if (!alive || !st?.active) return;
+        // 不管是菜单还是本页发起，重新挂载都恢复进度与取消入口；origin='settings' 时原来那次
+        // doDownload 的 Promise 已随卸载丢失，安装需要在取消后重新触发（取消保留 .part 可续传）。
+        apply({ status: 'downloading', received: st.received, total: st.total, origin: st.origin });
+      }).catch(() => { /* 主进程未就绪：忽略，事件到达时会自动补上 */ });
+    }
+    return () => { alive = false; off(); };
+  }, []);
 
   // T02071：安装成功时应用被安装器接管退出，当场收不到回执——下次启动向主进程对账取回，
   // 成功给一条提示，失败直接进入可重试的回执条（浏览器环境无该 API，自然跳过）
@@ -653,7 +686,18 @@ function UpdateSection() {
     } catch (e) {
       unsubRef.current?.();
       unsubRef.current = null;
-      flash(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      // T02976 补：菜单通道已在下载时，这条报错原本是死胡同（看不到进度也没有取消入口）。
+      // 改为切到那条下载的现场：拉一次 update:active 拿到已下载字节，按钮随即变「取消下载」。
+      if (/已有下载进行中/.test(msg)) {
+        setBusy(null);
+        setDlProgress(null);
+        const st = await desk.getActiveUpdate?.();
+        if (st?.active) setExternalDl({ received: st.received ?? 0, total: st.total ?? 0 });
+        flash('已切换到正在进行的下载，可在此查看进度或取消');
+        return;
+      }
+      flash(msg);
       setBusy(null);
       setDlProgress(null);
     }
@@ -711,9 +755,12 @@ function UpdateSection() {
   });
 
   // T00878：按当前阶段给更新按钮友好文案（T02071 增加「继续下载」与取消入口）
+  // T02976 补：菜单发起的下载也走同一套按钮/进度呈现，文案上标明来源
+  const shownProgress = busy === 'download' ? dlProgress : externalDl;
   let updateBtnLabel = cancelledPart !== null ? '继续下载' : '立即更新';
-  if (busy === 'download') updateBtnLabel = dlProgress?.total ? `下载中 ${Math.round(dlProgress.received / dlProgress.total * 100)}%` : '下载中…';
+  if (busy === 'download') updateBtnLabel = shownProgress?.total ? `下载中 ${Math.round(shownProgress.received / shownProgress.total * 100)}%` : '下载中…';
   else if (busy === 'install') updateBtnLabel = '正在安装…';
+  else if (externalDl) updateBtnLabel = externalDl.total ? `下载中 ${Math.round(externalDl.received / externalDl.total * 100)}%` : '下载中…';
 
   return (
     <div style={{ marginTop: 14, padding: 16, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)' }}>
@@ -789,13 +836,14 @@ function UpdateSection() {
                 </div>
               )}
               <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                <button onClick={() => void doDownload()} disabled={busy === 'download' || busy === 'install'} title={cancelledPart !== null ? '继续下载 — 从上次取消的断点续传' : '下载新版本 — 应用内下载安装包并静默安装重启'} aria-label="下载并静默安装新版本" style={btnStyle(true)}>
+                <button onClick={() => void doDownload()} disabled={busy === 'download' || busy === 'install' || externalDl !== null} title={cancelledPart !== null ? '继续下载 — 从上次取消的断点续传' : '下载新版本 — 应用内下载安装包并静默安装重启'} aria-label="下载并静默安装新版本" style={btnStyle(true)}>
                   <Download size={13} />
                   {/* T00878：按当前阶段给按钮友好文案 */}
                   {updateBtnLabel}
                 </button>
-                {/* T02071 缺口 1：下载中给出取消入口（取消保留 .part，可继续） */}
-                {busy === 'download' && (
+                {/* T02071 缺口 1：下载中给出取消入口（取消保留 .part，可继续）；
+                    T02976 补：菜单发起的下载同样可在这里取消，不必回去找菜单 */}
+                {(busy === 'download' || externalDl !== null) && (
                   <button onClick={() => void doCancelDownload()} title="取消下载 — 中断本次下载并保留已下载部分，稍后可从断点继续" aria-label="取消当前下载" style={btnStyle(false)}>
                     <Ban size={13} /> 取消下载
                   </button>
@@ -804,14 +852,15 @@ function UpdateSection() {
                   <ExternalLink size={13} /> 查看发布页
                 </button>
               </div>
-              {/* T00878：下载进度条——Electron 壳内下载时展示 received/total */}
-              {busy === 'download' && dlProgress?.total ? (
+              {/* T00878：下载进度条——Electron 壳内下载时展示 received/total；
+                  T02976 补：菜单通道的下载同样在此显示（shownProgress 已按来源选好） */}
+              {shownProgress?.total ? (
                 <div style={{ marginTop: 10 }}>
                   <div style={{ height: 6, borderRadius: 3, background: 'var(--border-strong)', overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${Math.min(100, Math.round(dlProgress.received / dlProgress.total * 100))}%`, background: 'var(--accent)', transition: 'width .2s' }} />
+                    <div style={{ height: '100%', width: `${Math.min(100, Math.round(shownProgress.received / shownProgress.total * 100))}%`, background: 'var(--accent)', transition: 'width .2s' }} />
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
-                    已下载 {Math.round(dlProgress.received / 1024 / 1024)} MB / {Math.round(dlProgress.total / 1024 / 1024)} MB
+                    已下载 {Math.round(shownProgress.received / 1024 / 1024)} MB / {Math.round(shownProgress.total / 1024 / 1024)} MB
                   </div>
                 </div>
               ) : null}

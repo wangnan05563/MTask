@@ -44,18 +44,21 @@ export async function waitIsolatedServer(opts: {
   envName?: string;
   intervalMs?: number;
   perProbeTimeoutMs?: number;
+  /** 门内换过 `globalThis.fetch`（如 SSR 渲染 mock）时必须传换前的真 fetch，否则探测会打到桩上 */
+  fetchImpl?: typeof fetch;
 }): Promise<BootReading> {
   const envVal = opts.envName ? process.env[opts.envName] : undefined;
   const budgetMs = Number(envVal ?? opts.budgetMs ?? 180_000);
   const intervalMs = opts.intervalMs ?? 1000;
   const perProbe = opts.perProbeTimeoutMs ?? 2000;
+  const doFetch = opts.fetchImpl ?? globalThis.fetch;
   const t0 = Date.now();
   let attempts = 0;
   let last = '(一次都没探到——检查端口是否被占用 / 子进程是否启动即退)';
   while (Date.now() - t0 < budgetMs) {
     attempts += 1;
     try {
-      const res = await fetch(`${opts.base}/api/health`, { signal: AbortSignal.timeout(perProbe) });
+      const res = await doFetch(`${opts.base}/api/health`, { signal: AbortSignal.timeout(perProbe) });
       let json: Record<string, unknown> | null = null;
       try { json = (await res.json()) as Record<string, unknown>; } catch { json = null; }
       if (res.ok && json?.service === SERVICE_ID) {

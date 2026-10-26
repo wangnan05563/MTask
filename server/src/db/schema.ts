@@ -337,7 +337,6 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     );
     CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage(created_at);
     CREATE INDEX IF NOT EXISTS idx_ai_usage_tool ON ai_usage(tool_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_ai_usage_card ON ai_usage(card_key, created_at);
 
     -- T01268（PRD §5.1）：外部平台执行会话——AI 编排大脑的观测底座。
     -- 每次外部平台（WorkBuddy/Trae/中继）执行会话一行，记录平台/会话标识/关联任务/
@@ -485,6 +484,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('ai_tools', 'console_url', "console_url TEXT DEFAULT ''");
   // T03164（PRD AI-301 / D-05）：老库幂等补 ai_usage.card_key，历史行随默认值标 unknown
   ensureColumn('ai_usage', 'card_key', "card_key TEXT NOT NULL DEFAULT 'unknown'");
+  // 该索引依赖上面补的列：必须放在 ensureColumn 之后。放进上方 DDL 块会在老库上先于补列执行，
+  // 整个 db.exec 抛 "no such column: card_key"，后端启动即崩（安装版 0.1.102-5.210 实测）。
+  db.exec("CREATE INDEX IF NOT EXISTS idx_ai_usage_card ON ai_usage(card_key, created_at)");
   ensureColumn('tasks', 'verified', 'verified INTEGER NOT NULL DEFAULT 0');
   ensureColumn('queues', 'paused', 'paused INTEGER NOT NULL DEFAULT 0'); // T01434：队列级暂停/继续
   // T00490：记录字体颜色（Excel 风格颜色按钮）——空串=默认色

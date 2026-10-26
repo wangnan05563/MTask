@@ -3,7 +3,9 @@ rem MTask better-sqlite3 native ABI switcher.
 rem Usage: native-switch.bat dev|electron
 rem Copies the cached <ABI>.node into node_modules so the loaded module matches
 rem the current Node / Electron runtime WITHOUT needing a C++ toolchain.
-rem Cache lives under build\native\: dev = Node ABI(127), electron = Electron ABI(130).
+rem Cache lives under build\native\: dev = local Node ABI (137, matches the node on PATH),
+rem electron = Electron ABI(130). T02692: dev was 127 under the old managed Node 22; that
+rem Node is gone, so keeping 127 made every dev run fail with ERR_DLOPEN_FAILED.
 setlocal
 set "MODE=%~1"
 if /i "%MODE%"=="dev" goto valid

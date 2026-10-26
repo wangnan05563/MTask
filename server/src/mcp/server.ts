@@ -754,7 +754,7 @@ export async function createMCPServer(): Promise<McpServer> {
 
   server.registerTool('mtask_import_prd', {
     title: '从 PRD 导入项目计划',
-    description: '上传 PRD 文件（base64）：自动提取文本（.docx/.md/.txt/.xlsx/.csv/.pdf）→ AI 拆分 WBS 并**逐条提取可跟踪需求** → 事务创建需求项（需求跟踪矩阵行）+ 项目计划（自动关联需求）+ 可选同步生成待办任务。返回导入统计与清单摘要。',
+    description: '上传 PRD 文件（base64）：自动提取文本（.docx/.md/.txt/.xlsx/.csv/.pdf）→ AI 拆分 WBS 并**逐条提取可跟踪需求** → 事务创建需求项（需求跟踪矩阵行）+ 项目计划（自动关联需求）+ 可选同步生成待办任务。返回导入统计与清单摘要。**先带 dryRun:true 用同一份 payload 预演一次**（只读、不落库，返回将要新建/复用/改名的计数与明细），确认连带影响后再实导。',
     inputSchema: {
       projectId: z.string().optional().describe('目标项目 id（与 projectName 二选一）'),
       projectName: z.string().optional().describe('目标项目名称（与 projectId 二选一）'),
@@ -764,6 +764,8 @@ export async function createMCPServer(): Promise<McpServer> {
       createTasks: z.boolean().optional().describe('是否同时把 WBS 节点转为待办任务（默认 false，便于 AI 推进执行）'),
       // T01875：撞名计划处置（同一份 PRD 重复导入的幂等口径）
       onDuplicatePlan: z.enum(['new', 'reuse']).optional().describe("项目内已有同名计划时的处置：'new'（默认）= 仍新建，但新行标题自动加「（N）」后缀区分，原行不动；'reuse' = 命中同名原行做幂等补写（只补空描述/复杂度与需求关联，只增不减），不新建、绝不改原行状态与进度"),
+      // T02967 回补（原 T02354 能力被 5eee8de 的过期副本覆盖掉）：预演与页面「导入预览」同源
+      dryRun: z.boolean().optional().describe('true = 只预演不落库：用**完全相同的 payload**跑一遍判重，返回将要新建/复用/改名的计数与明细，业务表逐字节不变。Agent 在真导之前应先带 dryRun:true 跑一次（重复导入会把需求跟踪矩阵行数翻倍，T02303 实测 35→70），看过连带影响再去掉该参数实导'),
     },
   }, async (a) => {
     try {
@@ -773,6 +775,16 @@ export async function createMCPServer(): Promise<McpServer> {
       if (buf.length === 0) return err('fileBase64 解析为空');
       const text = await PlanService.extractPrdText(buf, a.filename);
       const parsed = await PlanService.aiParsePrd(a.toolId, text);
+      // T02967 回补（T02354）：预演走与页面「导入预览」同源的纯读通道，落库路径一行不动。
+      // 预演也必须跑同一份解析结果，否则「预告的计数」与「实导的计数」不同源（M-02 对账必红）。
+      if (a.dryRun === true) {
+        const preview = PlanService.previewPrdImport(loc.id, {
+          requirements: parsed.requirements, plans: parsed.drafts,
+          createTasks: a.createTasks === true, prdMd: text, prdFilename: a.filename, onDuplicatePlan: a.onDuplicatePlan,
+        });
+        const dry = { projectId: loc.id, dryRun: true, readOnly: true, preview, coverageWarn: parsed.coverageWarn || undefined, uncoveredReqNos: parsed.uncoveredReqNos ?? [] };
+        return ok(JSON.stringify(dry), dry);
+      }
       // T00763：PRD 原文（提取后的 Markdown）随导入完整落库，需求行回填 prd_id
       const r = PlanService.importPrd(loc.id, { requirements: parsed.requirements, plans: parsed.drafts, createTasks: a.createTasks === true, prdMd: text, prdFilename: a.filename, onDuplicatePlan: a.onDuplicatePlan });
       const summary = {
@@ -891,7 +903,7 @@ export async function createMCPServer(): Promise<McpServer> {
       const cov = TestCaseService.coverage(loc.id);
       const summary = {
         projectId: loc.id, total: res.total, returned: res.items.length,
-        coverage: { total: cov.total, covered: cov.covered, uncovered: cov.uncovered, rate: cov.rate },
+        coverage: { total: cov.total, caseTotal: cov.caseTotal, covered: cov.covered, uncovered: cov.uncovered, rate: cov.rate },
       };
       return ok(JSON.stringify({ ...summary, cases: res.items }), { ...summary, cases: res.items });
     } catch (e) { return err((e as Error).message); }
@@ -1061,14 +1073,34 @@ ${a.result}`;
   // T02949：派生单裁决——外部 Agent 侧三件套（预设选项单源 / 打待裁决标记 / 提交裁决）。
   // 与前端面板、REST /tasks/:id/ruling* 复用同一条 TaskService 通道（取数、追加详情、留痕不另写一套）。
   server.registerTool('mtask_get_ruling_options', {
-    title: '获取派生单裁决预设选项',
-    description: '返回派生单裁决的预设选项清单（服务端单源，与前端裁决面板同读）。裁决是把 AI 派生待办的结论标记为采纳/不采纳的流程；提交时可直接传选项值，也可传自定义文本。',
-    inputSchema: {},
-  }, async () => ok(`裁决预设选项：${TaskService.rulingOptions().join(' / ')}`, { options: TaskService.rulingOptions() }));
+    title: '获取派生单裁决选项',
+    description: '返回派生单裁决的候选选项（服务端单源，与前端裁决面板同读）。'
+      + '【动态口径】传 id/taskNo 时按该单「处理结果」抽取候选（如结论里写「方案 A / 方案 B」就返回这两项）；'
+      + '抽不到 2 条以上才回落通用四枚（采纳合并/部分采纳/暂不采纳/需补充信息）。不传任务则直接返回通用四枚。'
+      + '裁决是把 AI 派生待办的结论标记为采纳/不采纳的流程；提交时可直接传选项值，也可传自定义文本。'
+      + '【自动识别】结论回传时已自动判定是否打「待裁决」（见 mtask_update_task_result），无需先调本工具。',
+    inputSchema: {
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
+    },
+  }, async (a) => {
+    try {
+      const target = a.id || a.taskNo ? resolveTask(a) : undefined;
+      if (a.id || a.taskNo) {
+        if (!target) return err(`任务不存在：${a.id || a.taskNo}`);
+        const options = TaskService.rulingOptions(target.id);
+        return ok(`裁决候选（${target.task_no ?? target.id}）：${options.join(' / ')}`, { options });
+      }
+      const options = TaskService.rulingOptions();
+      return ok(`裁决通用选项：${options.join(' / ')}`, { options });
+    } catch (e) { return err((e as Error).message); }
+  });
 
   server.registerTool('mtask_mark_ruling', {
     title: '标记派生单待裁决',
-    description: '给指定任务打「待裁决」标记（仅派生单可裁决——derived_from 有值）。幂等：已标记原样返回；已裁决则拒绝。适合在识别出需要人工裁决的派生单后先挂牌，等待裁决面板交互。',
+    description: '给指定派生单打「待裁决」标记（仅 derived_from 有值可标）。幂等：已标记原样返回；已裁决则拒绝。'
+      + '【通常不需要手动调】结论经 mtask_update_task_result 回传时，服务端已按结论里的裁决请求短语自动识别并打标/撤标；'
+      + '本工具仅用于结论措辞不在识别规则内、但确需人工裁决时显式补标。',
     inputSchema: {
       id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
       taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
@@ -1084,7 +1116,7 @@ ${a.result}`;
 
   server.registerTool('mtask_submit_ruling', {
     title: '提交派生单裁决',
-    description: '提交派生单裁决：result 为预设选项值（mtask_get_ruling_options 返回值之一）或自定义文本。提交后任务标记为「已裁决」，裁决结果**追加**到任务详情末尾（不覆盖已有内容），并写任务事件留痕。仅派生单可裁决；重复提交会被拒绝。',
+    description: '提交派生单裁决：result 为候选选项值（见 mtask_get_ruling_options，按该单结论动态生成，抽不到回落通用四枚）或自定义文本。提交后任务标记为「已裁决」，裁决结果**追加**到任务详情末尾（不覆盖已有内容），并写任务事件留痕。仅派生单可裁决；重复提交会被拒绝。',
     inputSchema: {
       id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
       taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),

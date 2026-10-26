@@ -353,7 +353,8 @@ function gatherProject(
   const counts = {
     requirements,
     prdDocs: docs.length,
-    testCases: coverage.total,
+    // 用例数只能取 caseTotal：`coverage.total` 是需求数，直接当用例数会虚报（T02969）
+    testCases: coverage.caseTotal,
     estimates: workload.estimateItems,
     snapshots: snapshots.length,
   };

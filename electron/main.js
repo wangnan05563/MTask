@@ -481,6 +481,37 @@ function sendUpdateProgress(payload) {
 /** 进行中的下载句柄（T02071 缺口 1）：update:cancel 需要拿到 request/响应流才能中途终止 */
 let activeDownload = null;
 
+/**
+ * 更新下载续传：可续传的瞬时网络错误——这类失败**保留 .part** 并带 Range 自动重试。
+ * 原实现把所有错误一视同仁地走 abort（删半成品），与界面「重试时断点续传」的承诺正好相反：
+ * 长连接被中间设备 RST（ECONNRESET）在大安装包上属常态，用户每点一次重试都得从 0 重下 100+MB。
+ * 只有「服务端明确异常」「拼包不符」「写盘失败」才该删半成品——那类失败继续重试也拼不出正确包。
+ */
+const NET_RETRY_MAX = 4;
+const NET_RETRY_DELAY_MS = [1_000, 2_000, 4_000, 8_000];
+const TRANSIENT_NET_CODES = new Set([
+  'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNABORTED',
+  'ENETUNREACH', 'EHOSTUNREACH', 'EAI_AGAIN', 'ERR_STREAM_PREMATURE_CLOSE',
+]);
+
+function isTransientNetError(e) {
+  if (!e) return false;
+  if (TRANSIENT_NET_CODES.has(e.code)) return true;
+  // 流层中断不带 code（'aborted'、socket hang up），按文案兜住
+  return /socket hang up|aborted|connection reset|连接超时/i.test(String(e.message ?? ''));
+}
+
+/** 原生网络错误 → 用户可读中文：裸 `read ECONNRESET` 对用户没有任何行动指引 */
+function netErrorText(e) {
+  const code = e?.code ?? '';
+  if (code === 'ECONNRESET') return '网络连接被中断（ECONNRESET）';
+  if (code === 'ETIMEDOUT' || /连接超时/.test(String(e?.message ?? ''))) return '网络连接超时';
+  if (code === 'EAI_AGAIN') return '域名解析暂时失败（EAI_AGAIN）';
+  if (code === 'ENETUNREACH' || code === 'EHOSTUNREACH') return '网络不可达';
+  if (code === 'EPIPE' || code === 'ECONNABORTED') return '网络连接被中断';
+  return e instanceof Error ? e.message : String(e ?? '下载失败');
+}
+
 /** 续传请求头：本地已有 .part 时带 Range，由服务端决定是否按段响应 */
 function downloadHeaders(partBytes) {
   const headers = { 'User-Agent': 'MTask-Updater' };
@@ -512,14 +543,20 @@ function pump(r, ctx, attempt) {
   }
   const total = plan.totalBytes || Number(r.headers['content-length'] || 0);
   let received = ctx.partBytes;
+  ctx.received = received;
+  ctx.total = total;
   const out = fs.createWriteStream(ctx.tmpPath, { flags: plan.append ? 'a' : 'w' });
   ctx.out = out;
   r.on('data', (chunk) => {
     received += chunk.length;
+    ctx.received = received;
     out.write(chunk);
-    // 节流推送进度（每块都 send 会太频繁，这里按字节步进）——进度是给"若非流式会卡界面"的场景兜底的低频更新
-    if (received % (1 << 20) === 0) {
-      sendUpdateProgress({ status: 'downloading', received, total, resumedFrom: plan.append ? ctx.partBytes : 0 });
+    // T02976：改为按时间节流（≥200ms）而非按字节步进——1MB 步进在慢网下数秒才推一次，
+    // 满足不了「进度延迟不超过 1 秒」；200ms 既够实时又不会把 IPC 打爆。
+    const now = Date.now();
+    if (now - ctx.lastProgressAt >= 200) {
+      ctx.lastProgressAt = now;
+      sendUpdateProgress({ status: 'downloading', received, total, resumedFrom: plan.append ? ctx.partBytes : 0, origin: ctx.origin });
     }
   });
   r.on('end', () => {
@@ -535,44 +572,56 @@ function pump(r, ctx, attempt) {
         ctx.abort(new Error(`写入安装包失败：${e.message}`));
         return;
       }
-      sendUpdateProgress({ status: 'downloaded', received, total, filePath: ctx.filePath });
+      sendUpdateProgress({ status: 'downloaded', received, total, filePath: ctx.filePath, origin: ctx.origin });
       ctx.finish({ status: 'downloaded', filePath: ctx.filePath, resumedFrom: plan.append ? ctx.partBytes : 0, totalBytes: total });
     });
   });
-  r.on('error', (e) => { if (!attempt.discarded) { ctx.abort(e); } });
-  r.on('aborted', () => { if (!attempt.discarded) { ctx.abort(new Error('下载连接中断')); } });
-  out.on('error', (e) => { if (!attempt.discarded) { ctx.abort(e); } });
+  r.on('error', (e) => { if (!attempt.discarded) { ctx.softFail(e); } });
+  r.on('aborted', () => {
+    // 响应流被对端掐断：Node 只发 'aborted' 不带 code，补一个 ECONNRESET 供重试判定
+    if (!attempt.discarded) ctx.softFail(Object.assign(new Error('下载连接中断'), { code: 'ECONNRESET' }));
+  });
+  // 写盘错误（磁盘满/权限）不是网络问题：softFail 会判非瞬时并走 abort 删除半成品
+  out.on('error', (e) => { if (!attempt.discarded) { ctx.softFail(e); } });
 }
 
 // 应用内下载更新安装包到系统下载目录（T02071：支持中途取消 + 取消后继续＝Range 断点续传）
 // T02740：函数体抽出为 downloadUpdatePackage，IPC（设置页）与「在线更新」菜单（主进程自驱）共用同一条下载通道
-async function downloadUpdatePackage(url) {
+// T02976：origin 区分两条入口——菜单自驱的下载要在全局进度条上提示（设置页自己有卡片内进度，不重复显示）。
+async function downloadUpdatePackage(url, origin = 'settings') {
   if (typeof url !== 'string' || !url) throw new Error('下载地址无效');
   if (activeDownload) throw new Error('已有下载进行中，请先取消或等待完成');
   const filePath = path.join(app.getPath('downloads'), downloadFilename(url));
   // 流式下载到临时文件，写完再改名，避免下载中断残留半截"安装包"被误执行
   const tmpPath = filePath + '.part';
   const ctx = {
-    filePath, tmpPath, partBytes: fileSizeOf(tmpPath),
+    filePath, tmpPath, partBytes: fileSizeOf(tmpPath), origin, lastProgressAt: 0,
+    // T02976 补：把最新进度挂在 ctx 上，settings 页重新挂载时靠 update:active 恢复现场
+    received: 0, total: 0,
     cancelled: false, done: false, req: null, res: null, out: null, resolve: null, reject: null,
     retriedWithoutRange: false, restartWithoutRange: null,
+    // 更新下载续传：瞬时网络失败的续传重试计数与退避定时器（收口时必须清掉，否则已结束后还会再起请求）
+    netRetries: 0, retryTimer: null, retryScheduled: false, softFail: null,
     // 正常完成/取消收口：保留 .part，只销毁流
     finish: (value) => {
       if (ctx.done) { return; }
       ctx.done = true;
+      if (ctx.retryTimer) { clearTimeout(ctx.retryTimer); ctx.retryTimer = null; }
       try { ctx.res?.destroy(); } catch { /* 忽略 */ }
       try { ctx.out?.destroy(); } catch { /* 忽略 */ }
       try { ctx.req?.destroy(); } catch { /* 忽略 */ }
       if (activeDownload === ctx) activeDownload = null;
       ctx.resolve?.(value);
     },
-    // 真实失败收口：删半成品，避免下次误判断已下载完（原行为）
-    abort: (err) => {
+    // 真实失败收口：默认删半成品，避免下次误判断已下载完（原行为）
+    // 更新下载续传：keepPartial=true 时保留 .part——网络类失败是「同一份包的续传起点」，删了就兑现不了续传承诺
+    abort: (err, keepPartial = false) => {
       if (ctx.done) { return; }
       ctx.done = true;
+      if (ctx.retryTimer) { clearTimeout(ctx.retryTimer); ctx.retryTimer = null; }
       try { ctx.out?.destroy(); } catch { /* 忽略 */ }
       try { ctx.req?.destroy(); } catch { /* 忽略 */ }
-      if (!ctx.cancelled) { try { fs.rmSync(tmpPath, { force: true }); } catch { /* 忽略 */ } }
+      if (!ctx.cancelled && !keepPartial) { try { fs.rmSync(tmpPath, { force: true }); } catch { /* 忽略 */ } }
       if (activeDownload === ctx) activeDownload = null;
       ctx.reject?.(err);
     },
@@ -601,13 +650,19 @@ async function downloadUpdatePackage(url) {
         pump(res, ctx, attempt);
       });
       ctx.req = req;
+      // 更新下载续传：https.get 没有默认超时——连接假死（NAT 表项被清、中间设备丢包）时会一直挂着，
+      // 用户既看不到进度也不会收到失败提示。socket 空闲 60s 即按超时处理，交给续传重试；
+      // 有数据流动时 socket 不空闲，因此不会误伤慢速大包。
+      req.setTimeout(60_000, () => {
+        req.destroy(Object.assign(new Error('连接超时'), { code: 'ETIMEDOUT' }));
+      });
       req.on('error', (e) => {
         if (attempt.discarded) return;
         if (ctx.cancelled) {
           ctx.finish({ status: 'cancelled', partialBytes: fileSizeOf(tmpPath), partPath: tmpPath, filePath });
           return;
         }
-        ctx.abort(e);
+        ctx.softFail(e);
       });
     };
     // T02644：分段响应对不上本地文件时，丢掉这条响应改发一次「不带 Range」的全量请求（单次，靠
@@ -617,8 +672,48 @@ async function downloadUpdatePackage(url) {
       ctx.partBytes = 0;
       open(url, false);
     };
+    // 更新下载续传：瞬时网络失败 → 保留 .part，带 Range 自动续传重试（退避 1/2/4/8s）。
+    // 重试起点一律取磁盘实际字节数：写流 destroy 会丢未落盘缓冲，用内存 received 算 Range 会错位。
+    // retryScheduled 防重入——req/res 的 error 与 aborted 可能在同一轮里连触发多次，重复计数会提前耗尽次数。
+    ctx.softFail = (err) => {
+      if (ctx.done || ctx.retryScheduled) return;
+      if (!isTransientNetError(err) || ctx.netRetries >= NET_RETRY_MAX) {
+        const label = netErrorText(err);
+        ctx.abort(
+          new Error(ctx.netRetries > 0 ? `${label}（已自动续传重试 ${ctx.netRetries} 次仍未恢复）` : label),
+          // 网络类失败保留半截包，兑现「重试时断点续传」；非网络错误（4xx/拼包不符/写盘失败）仍清掉
+          isTransientNetError(err),
+        );
+        return;
+      }
+      ctx.retryScheduled = true;
+      ctx.netRetries += 1;
+      // 此处只用于提示显示：destroy 写流会丢未落盘缓冲，此刻读到的字节数可能偏大，
+      // 真正的 Range 起点在退避结束、写流确定关闭后再以磁盘为准重算（见下方定时器）
+      ctx.partBytes = fileSizeOf(tmpPath);
+      try { ctx.out?.destroy(); } catch { /* 忽略 */ }
+      try { ctx.res?.destroy(); } catch { /* 忽略 */ }
+      try { ctx.req?.destroy(); } catch { /* 忽略 */ }
+      ctx.out = null;
+      ctx.res = null;
+      ctx.req = null;
+      const delay = NET_RETRY_DELAY_MS[Math.min(ctx.netRetries - 1, NET_RETRY_DELAY_MS.length - 1)];
+      sendUpdateProgress({
+        status: 'retrying', received: ctx.partBytes, total: ctx.total || 0, origin: ctx.origin,
+        message: `${netErrorText(err)}，正在自动续传重试（${ctx.netRetries}/${NET_RETRY_MAX}）`,
+      });
+      ctx.retryTimer = setTimeout(() => {
+        ctx.retryTimer = null;
+        ctx.retryScheduled = false;
+        if (ctx.done) return;
+        // 退避期已过、写流已关闭：这时的磁盘字节数才是可信的续传起点，
+        // 起点与文件不符会被服务端按 206 拒拼（T02644 的守护）而白跑一轮
+        ctx.partBytes = fileSizeOf(tmpPath);
+        open(url);
+      }, delay);
+    };
     open(url);
-    if (ctx.partBytes > 0) sendUpdateProgress({ status: 'resuming', received: ctx.partBytes, total: 0 });
+    if (ctx.partBytes > 0) sendUpdateProgress({ status: 'resuming', received: ctx.partBytes, total: 0, origin });
   });
 }
 ipcMain.handle('update:download', (_evt, url) => downloadUpdatePackage(url));
@@ -629,10 +724,22 @@ ipcMain.handle('update:cancel', async () => {
   if (!ctx) return { status: 'idle' };
   ctx.cancelled = true;
   const partialBytes = fileSizeOf(ctx.tmpPath);
-  sendUpdateProgress({ status: 'cancelled', received: partialBytes, total: 0 });
+  sendUpdateProgress({ status: 'cancelled', received: partialBytes, total: 0, origin: ctx.origin });
   ctx.finish({ status: 'cancelled', partialBytes, partPath: ctx.tmpPath, filePath: ctx.filePath });
   return { status: 'cancelled', partialBytes };
 });
+
+// T02976 补：设置页切走再回来（或菜单发起下载时）用它恢复「正在下载」现场。
+// 没有这条查询，用户只能看到「已有下载进行中」的报错，既看不到进度也没有取消入口。
+ipcMain.handle('update:active', () => {
+  const ctx = activeDownload;
+  if (!ctx) return { active: false };
+  return { active: true, received: ctx.received || 0, total: ctx.total || 0, origin: ctx.origin };
+});
+
+// T02976：菜单通道下载失败/中断后，全局进度条上的「重试」重走整条在线更新流程
+// （检查 → 确认 → 下载），与菜单入口共用 onlineUpdateBusy 重入闸，连点不会起两条流程。
+ipcMain.handle('update:retry', () => runOnlineUpdateFlow());
 
 // T02071 启动对账：上次静默安装被安装器接管退出时收不到退出码，靠「当前版本是否已达目标版本」回执
 let pendingUpdateResult = null;
@@ -829,13 +936,20 @@ async function runOnlineUpdateFlow({ auto = false } = {}) {
     let dl;
     try {
       // 与设置页同一条下载通道：进度照常推 update:progress，Range 续传/取消语义一致
-      dl = await downloadUpdatePackage(info.downloadUrl);
+      // T02976：带 origin='menu'，渲染进程据此在主界面显示全局进度条（菜单通道没有自己的进度卡片）
+      dl = await downloadUpdatePackage(info.downloadUrl, 'menu');
+      // 用户可能在全局进度条上点了「取消」：下载会以 cancelled 正常收口（不抛错），
+      // 这里必须静默返回——否则会继续往下弹「下载完成」并拿 undefined 当安装包去安装。
+      if (dl.status === 'cancelled') return;
     } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      // 失败也必须推一条：否则全局进度条会停在最后一个百分比上，看起来像卡死
+      sendUpdateProgress({ status: 'failed', received: 0, total: 0, origin: 'menu', message });
       await dialog.showMessageBox(ownerWin(), {
         type: 'error',
         title: '下载失败',
-        message: `更新包下载失败：${e instanceof Error ? e.message : String(e)}`,
-        detail: '可稍后通过「帮助 → 检查在线更新」重试；已下载的半截包会保留，重试时断点续传',
+        message: `更新包下载失败：${message}`,
+        detail: '网络类失败已自动续传重试；仍失败时可稍后通过「帮助 → 检查在线更新」重试——已下载的半截包会保留，下次从断点继续，不必重下整包',
         buttons: ['知道了'],
       });
       return;

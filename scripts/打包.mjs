@@ -51,6 +51,12 @@ const runCapture = (cmd, args) => {
 };
 const log = (msg) => console.log(`[${++step}/7] ${msg}`);
 
+// T02692：本入口此前没接 abi-hint，日志里缺「build interpreter / ABI 现场」两行，
+// 出现「装了包却不知道用哪个解释器打的」时就无从追溯（三枚 .bat 入口在第 53 行同一位置都打了）。
+// 不占 [n/7] 编号：它是开跑前的现场快照，不是构建步骤；abi-hint 自带「永不非零退出」纪律。
+console.log(`  [INFO] build interpreter: ${process.version} ABI ${process.versions.modules}   exe=${process.execPath}`);
+run(NODE, [path.join(ROOT, 'scripts', 'lib', 'abi-hint.mjs')]);
+
 // [1] 依赖检查
 log('依赖检查…');
 if (!fs.existsSync(path.join(ROOT, 'node_modules'))) {

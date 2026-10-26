@@ -87,6 +87,17 @@ const MODE_OPTIONS = [
 ] as const;
 type ModeKey = (typeof MODE_OPTIONS)[number]['key'];
 
+/**
+ * T02960（方案 A）：版式预设三档，键与服务端 `exportStyle.ts` 的 `DECK_STYLE_KEYS` 同值。
+ * 与「补充说明」的自由文本分开——后者只拼大纲提示词，本组只影响装配期主色。
+ */
+const STYLE_OPTIONS = [
+  { key: 'standard', label: '商务蓝', hint: '默认档：恒生品牌蓝，与既有稿件逐字节一致' },
+  { key: 'ink', label: '墨灰', hint: '标题/章节号/页脚转中性墨灰，适合偏正式的客户汇报' },
+  { key: 'evergreen', label: '常青', hint: '标题/章节号/页脚转深绿，适合经营/述职类汇报' },
+] as const;
+type StyleKey = (typeof STYLE_OPTIONS)[number]['key'];
+
 /** 大纲编辑态会话键（重置入口在 consoleReset 的产物键清单里，与控制台重置等效） */
 const OUTLINE_SESSION_KEY = 'summaryPpt.outline';
 /** 大纲生成时的周期/范围签名：刷新/切页回来仍能判断草稿是否对应当前选区 */
@@ -189,8 +200,8 @@ function PreflightChecklist({ pre, loading, error, projectId, missingItems, open
   );
 }
 
-/** ① 周期与范围段（四档周期 + 自定义区间 + 顶部范围/卡片覆盖） */
-function PeriodScopeSection({ period, onPeriod, start, end, onStart, onEnd, customError, overrideOn, onOverrideOn, overrideIds, onOverrideIds, topIds, projects, scopeText, mode, onMode, multi }: {
+/** ① 周期与范围段（四档周期 + 自定义区间 + 顶部范围/卡片覆盖 + 版式预设） */
+function PeriodScopeSection({ period, onPeriod, start, end, onStart, onEnd, customError, overrideOn, onOverrideOn, overrideIds, onOverrideIds, topIds, projects, scopeText, mode, onMode, style, onStyle, multi }: {
   readonly period: PeriodKey;
   readonly onPeriod: (p: PeriodKey) => void;
   readonly start: string;
@@ -207,6 +218,9 @@ function PeriodScopeSection({ period, onPeriod, start, end, onStart, onEnd, cust
   readonly scopeText: string;
   readonly mode: ModeKey;
   readonly onMode: (m: ModeKey) => void;
+  /** T02960：版式预设（附属于装配，不影响大纲） */
+  readonly style: StyleKey;
+  readonly onStyle: (s: StyleKey) => void;
   /** 解析后的范围项目数 ≥2 时才允许分别独立版 */
   readonly multi: boolean;
 }) {
@@ -280,6 +294,23 @@ function PeriodScopeSection({ period, onPeriod, start, end, onStart, onEnd, cust
           {mode === 'separate'
             ? '每项目一份完整稿（12~16 页），打包为单 zip（下载名 .zip）'
             : '单份 deck：汇总对比 + 每项目 4 页小结 + 横向对比'}
+        </span>
+      </div>
+
+      {/* T02960：版式预设——只影响装配期主色，改动不需重生成大纲 */}
+      <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>版式预设</span>
+        <div style={{ display: 'flex', gap: 4 }}>
+          {STYLE_OPTIONS.map((s) => (
+            <button key={s.key} onClick={() => onStyle(s.key)} title={s.hint} aria-label={`版式预设 ${s.label}`}
+              style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 13, border: '1px solid var(--border-strong)',
+                background: style === s.key ? 'var(--accent)' : 'var(--card-bg)', color: style === s.key ? 'var(--accent-text)' : 'var(--text)' }}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          {STYLE_OPTIONS.find((s) => s.key === style)?.hint}
         </span>
       </div>
 
@@ -477,6 +508,7 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
   const [overrideOn, setOverrideOn] = useSessionState('report.summaryPpt.override', false);
   const [overrideIds, setOverrideIds] = useSessionState<string[]>('report.summaryPpt.projects', []);
   const [mode, setMode] = useSessionState<ModeKey>('report.summaryPpt.mode', 'merged');
+  const [style, setStyle] = useSessionState<StyleKey>('report.summaryPpt.style', 'standard');
 
   const [pre, setPre] = useState<PreflightResult | null>(null);
   /** 当前 pre 对应的周期/范围签名：异步返回时若用户已改档，这份 pre 不能拿来发起调用 */
@@ -659,6 +691,7 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
           ...(period === 'custom' ? { start, end } : {}),
           outline: rows,
           mode: effectiveMode,
+          style,
         },
         (name, payload) => {
           if (name === 'stage') {
@@ -764,7 +797,7 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
       <PeriodScopeSection period={period} onPeriod={setPeriod} start={start} end={end} onStart={setStart} onEnd={setEnd}
         customError={customError} overrideOn={overrideOn} onOverrideOn={setOverrideOn}
         overrideIds={overrideIds} onOverrideIds={setOverrideIds} topIds={topIds} projects={projects} scopeText={scopeText}
-        mode={effectiveMode} onMode={setMode} multi={multiProject} />
+        mode={effectiveMode} onMode={setMode} style={style} onStyle={setStyle} multi={multiProject} />
 
       {/* ② 前置校验 checklist */}
       <PreflightChecklist pre={pre} loading={preLoading} error={preError} projectId={resolvedIds[0] ?? ''}

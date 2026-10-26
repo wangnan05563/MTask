@@ -258,6 +258,7 @@ planApi.post('/summary-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
       outline: b.outline,
       mode: b.mode,
       workloadCaliber: b.workloadCaliber,
+      style: b.style, // T02960：版式预设（standard/ink/evergreen），非法值由备料阶段 400 点名
     });
   } catch (e) {
     return res.status(400).json({ error: e instanceof Error ? e.message : String(e) });

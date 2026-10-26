@@ -333,7 +333,7 @@ export interface KickoffBundle {
   requirements: RequirementRow[];
   plans: PlanTaskRow[];
   milestones: PlanTaskRow[];
-  coverage: { total: number; covered: number; uncovered: number; rate: number };
+  coverage: { total: number; caseTotal: number; covered: number; uncovered: number; rate: number };
   assignees: Array<{ name: string; planCount: number }>;
   risks: KickoffRisk[];
   workload: WorkloadStat;
@@ -518,7 +518,7 @@ export function collectBundle(projectId: string): KickoffBundle {
     requirements: g.reqs,
     plans: g.plans,
     milestones: g.milestones,
-    coverage: { total: g.cov.total, covered: g.cov.covered, uncovered: g.cov.uncovered, rate: g.cov.rate },
+    coverage: { total: g.cov.total, caseTotal: g.cov.caseTotal, covered: g.cov.covered, uncovered: g.cov.uncovered, rate: g.cov.rate },
     assignees: assigneesOf(g.plans),
     risks: risksOf(g),
     workload: workloadOf(g.summary, g.plans, pf),
@@ -867,7 +867,9 @@ function assertDataKeyBudget(
   page.dataKeys.push(...kept);
 }
 
-const OUTLINE_SYSTEM = `你是项目启动会 PPT 的大纲编排器。只输出一个 JSON 数组，不要任何解释文字、不要代码围栏之外的内容。
+// T02293：导出给验收门做**运行时取值**——门要判「样例事实段是否真被拼进提示词」，
+// 只能拿到产品实际送出的那份文本；用正则读源码等于把拼接写法也锁死（判据 1）。
+export const OUTLINE_SYSTEM = `你是项目启动会 PPT 的大纲编排器。只输出一个 JSON 数组，不要任何解释文字、不要代码围栏之外的内容。
 数组每个元素是一页，形如 {"section":"","title":"","bullets":["",""],"dataKeys":[""],"layout":""}，约束逐条遵守：
 1. 页数 ${PAGE_MIN}~${PAGE_MAX}；
 2. section 只能取：${KICKOFF_SECTIONS.join(' / ')}；
@@ -909,7 +911,7 @@ bullets 每条≤${BULLET_MAX_CHARS}字；必须至少一页 dataKeys 含 "timel
 空源写「待补充」，不写「0 人」这类像结论的数。`;
 
 /** 齐备性摘要 + 真实计数：喂给模型的是口径与可用源，数字仍由装配层覆盖（FR-3.4） */
-function outlineFacts(b: KickoffBundle): string {
+export function outlineFacts(b: KickoffBundle): string {
   const status = b.preflight.items.map((i) => `${i.key} ${i.label}=${i.count}（${i.status}）`).join('；');
   const byStatus = new Map<string, number>();
   for (const p of b.plans) byStatus.set(p.status, (byStatus.get(p.status) ?? 0) + 1);
@@ -923,8 +925,8 @@ function outlineFacts(b: KickoffBundle): string {
   const usable = b.preflight.items.filter((i) => i.status === 'ok').map((i) => i.key);
   const priorityFacts = [...priority.entries()].map(([k, v]) => `${k} ${v}`).join('、') || '无';
   const statusFacts = [...byStatus.entries()].map(([k, v]) => `${k} ${v}`).join('、') || '无';
-  const coverageFacts = b.coverage.total
-    ? `${b.coverage.rate}%（已覆盖 ${b.coverage.covered}/${b.coverage.total}）`
+  const coverageFacts = b.coverage.caseTotal
+    ? `${b.coverage.caseTotal} 条用例；需求覆盖率 ${b.coverage.rate}%（已覆盖 ${b.coverage.covered}/${b.coverage.total}）`
     : '本期未建用例——覆盖率页改写测试策略口径，不出百分比结论';
   const complexityFacts = b.workload.complexity.map((c) => `${c.level}:${c.count}`).join(' ');
   const workloadTrace = b.workload.noData ? '（无估算行且计划未填工期，工作量页出占位，不要写成 0 人天）' : '';

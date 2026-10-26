@@ -1072,7 +1072,8 @@ export function TasksPage() {
     void loadProjects();
   }
 
-  /** T02949：打开派生单裁决面板——预设选项走服务端单源（GET ruling-options），失败不阻断（可自定义） */
+  /** T02949 方案 A：打开派生单裁决面板——候选按该单结论动态抽取（GET ruling-options 带任务 id），
+   *  拉取失败不阻断（仍可输入自定义结果） */
   async function openRulingPanel(task: Task) {
     setRulingTask(task);
     setRulingDraft('');
@@ -1081,18 +1082,7 @@ export function TasksPage() {
       setRulingOptions(r.options ?? []);
     } catch {
       setRulingOptions([]);
-      flash('裁决预设选项拉取失败——可直接输入自定义裁决结果');
-    }
-  }
-
-  /** T02949：标记「待裁决」（幂等）——派生单结论需要人工裁决时先挂牌 */
-  async function markRuling(task: Task) {
-    try {
-      await api.post(`/tasks/${task.id}/ruling-mark`, {});
-      flash(`已标记「${task.task_no ?? task.id}」待裁决`);
-      void loadTasks(activeProject);
-    } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash('裁决候选拉取失败——可直接输入自定义裁决结果');
     }
   }
 
@@ -2083,14 +2073,8 @@ export function TasksPage() {
             已裁决
           </span>
         )}
-        {t.derived_from && !t.ruling_state && (
-          <button type="button" className="tbtn-anim op-hidden" onClick={() => void markRuling(t)}
-            title="标记待裁决 — 该派生单的结论需要人工裁决时先挂牌"
-            aria-label="标记待裁决"
-            style={{ fontSize: 10, color: 'var(--text-muted)', border: '1px dashed var(--border-strong)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0, cursor: 'pointer', background: 'transparent', fontFamily: 'inherit' }}>
-            + 待裁决
-          </button>
-        )}
+        {/* T02949 方案 A：不再给所有派生单挂手动挂牌入口——
+            是否待裁决由服务端按结论自动识别（TaskService.autoRuling），前端只负责展示与交互 */}
         {renderTaskTitle(t, titleEditing)}
       </div>
     );
@@ -4030,7 +4014,8 @@ export function TasksPage() {
         />
       )}
 
-      {/* T02949：派生单裁决面板——Trae/WorkBuddy 气泡选项样式（预设胶囊按钮 + 自定义输入）；
+      {/* T02949：派生单裁决面板——Trae/WorkBuddy 气泡选项样式（候选胶囊按钮 + 自定义输入）；
+          候选由服务端按该单结论动态抽取（T02949 方案 A），不是固定四枚；
           提交由服务端把结果追加到任务详情末尾（不覆盖），本面板只负责收集与展示 */}
       {rulingTask && (
         <div role="dialog" aria-label="裁决派生单"
@@ -4057,8 +4042,11 @@ export function TasksPage() {
                 </button>
               ))}
             </div>
+            {rulingOptions.length === 0 && (
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>本条结论未抽到候选选项，可直接输入裁决结果</div>
+            )}
             <textarea value={rulingDraft} onChange={(e) => setRulingDraft(e.target.value)} rows={3}
-              placeholder="自定义裁决结果（或点选上方预设选项）" aria-label="裁决结果"
+              placeholder="自定义裁决结果（或点选上方候选选项）" aria-label="裁决结果"
               style={{ width: '100%', boxSizing: 'border-box', fontSize: 12, padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--input-bg, transparent)', color: 'var(--text)', resize: 'vertical' }} />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
               <button type="button" onClick={() => { setRulingTask(null); setRulingDraft(''); }}

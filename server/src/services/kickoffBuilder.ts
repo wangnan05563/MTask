@@ -211,15 +211,18 @@ function milestonesTable(b: KickoffBundle): NonNullable<Block['table']> {
 }
 
 function coverageLines(b: KickoffBundle): string[] {
-  // P5 warn 承诺过的改写：零用例时不出「0 条 / 覆盖率 0%」这种把空缺冒充结论的数字
-  if (b.coverage.total === 0) {
+  // P5 warn 承诺过的改写：零用例时不出「0 条 / 覆盖率 0%」这种把空缺冒充结论的数字。
+  // 判据必须看 caseTotal（test_cases 计数）：旧写法看 total（需求数），有需求无用例时
+  // 占位分支永不触发，页面把需求数写成「测试用例 N 条」（T02969）。
+  if (b.coverage.caseTotal === 0) {
     return [
       `测试用例：本期未建（${KICKOFF_PLACEHOLDER}）——测试策略按 PRD 验收标准描述，覆盖统计待用例生成后补`,
       `需求 ${b.requirements.length} 条，尚无用例可比对覆盖`,
     ];
   }
   return [
-    `测试用例 ${b.coverage.total} 条：覆盖 ${b.coverage.covered} / 未覆盖 ${b.coverage.uncovered}`,
+    // 用例数与需求数各归各：覆盖/未覆盖是**需求**口径，不能挂在「测试用例 N 条」后面冒充用例数
+    `测试用例 ${b.coverage.caseTotal} 条；需求 ${b.coverage.total} 条：已覆盖 ${b.coverage.covered} / 未覆盖 ${b.coverage.uncovered}`,
     `需求覆盖率 ${b.coverage.rate}%`,
   ];
 }
@@ -363,7 +366,7 @@ export function blocksForKey(key: KickoffDataKey, b: KickoffBundle): Array<Omit<
     case 'coverage':
       return [
         { text: { content: coverageLines(b).join('\n'), pt: MIN_BODY_PT } },
-        ...(b.coverage.total > 0 ? [{ chart: { type: 'doughnut' as const, name: '用例覆盖', labels: ['已覆盖', '未覆盖'], values: [b.coverage.covered, b.coverage.uncovered] } }] : []),
+        ...(b.coverage.caseTotal > 0 ? [{ chart: { type: 'doughnut' as const, name: '用例覆盖', labels: ['已覆盖', '未覆盖'], values: [b.coverage.covered, b.coverage.uncovered] } }] : []),
       ];
     case 'assignees':
       return assigneesBlocks(b);
@@ -591,14 +594,14 @@ const METRICS: Metric[] = [
   {
     re: /用例\s*(\d+(?:\.\d+)?)\s*条/,
     format: (v) => `用例 ${v} 条`,
-    truth: (b) => String(b.coverage.total),
-    missing: { when: (b) => b.coverage.total === 0, format: () => `用例${KICKOFF_PLACEHOLDER}` },
+    truth: (b) => String(b.coverage.caseTotal),
+    missing: { when: (b) => b.coverage.caseTotal === 0, format: () => `用例${KICKOFF_PLACEHOLDER}` },
   },
   {
     re: /覆盖率\s*(\d+(?:\.\d+)?)\s*%/,
     format: (v) => `覆盖率 ${v}%`,
     truth: (b) => String(b.coverage.rate),
-    missing: { when: (b) => b.coverage.total === 0, format: () => `覆盖率${KICKOFF_PLACEHOLDER}` },
+    missing: { when: (b) => b.coverage.caseTotal === 0, format: () => `覆盖率${KICKOFF_PLACEHOLDER}` },
   },
   {
     re: /(\d+(?:\.\d+)?)\s*人天/,
@@ -698,6 +701,15 @@ function estimateRowH(cells: string[], colWs: number[], pt: number): number {
 function tableNaturalHeight(table: NonNullable<Block['table']>, width: number, pt: number): number {
   const colWs = tableColWs(table, width);
   return [table.header, ...table.rows].reduce((s, cells) => s + estimateRowH(cells, colWs, pt), TABLE_PAD);
+}
+
+/**
+ * 表格的最小可排高度：收到 1 行（剩表头 + 折行提示）后的自然高——再收就只剩表头。
+ * 预算层用它给刚性表格兜底：收行是丢数据，只能是「装不下」时的最后一步，
+ * 不能让同页要点先把表格的预算吃成 0（那会走整块 drop，比少画几行更糟）。
+ */
+function tableMinHeight(table: NonNullable<Block['table']>, width: number): number {
+  return tableNaturalHeight(fitTableRows(table, 1), width, TABLE_FONT_PT);
 }
 
 /** 块自然高（T02685 测高模型）：导出供验收门做同源期望值（T02956——门不再硬编码 0.3×行数旧公式） */
@@ -1082,39 +1094,40 @@ export function layoutBody(
     return { blocks: out, dropped, notes, violations: [], tlDrawn: 0 };
   }
 
-  const flexReserve = flexStrip(rawBlocks);
+  // T02970：要点封顶按**数据块下限合计**算，不再只给要点留 MIN_BLOCK_H(0.45")。
+  // 旧口径下要点自然高 0.90" 比预留多出的高度会从同页柔性文本块的 0.45" 地板里抠，
+  // 表格+文本+要点同页时 dropped=["文本块"]——与「留数据不留套话」正好相反。
+  const flexFloorH = rawBlocks.filter((d) => d.table == null).reduce((s, d) => s + minReadableH(d), 0);
+  // 刚性表格的下限按「收到 1 行」的最小形态算，避免要点把表格预算吃成 0 后整块 drop。
+  const rigidFloorH = rawBlocks.reduce((s, d) => s + (d.table ? tableMinHeight(d.table, body.w) : 0), 0);
+  const dataGaps = MIN_GAP * Math.max(0, rawBlocks.length - 1);
+  const extraRigid = (tlShape ? TL_MIN_H + MIN_GAP : 0) + (diagramOn ? diagramMinH + MIN_GAP : 0);
+  // 要点与首块之间也有一个间隔；要不了位时不计入，否则会被这 0.3" 无端判成「排不下」。
+  const bulletsGap = bullets.length ? MIN_GAP : 0;
+  const bulletsContent = bullets.length ? bulletBodyText(item, bullets) : '';
+  const bulletsNaturalH = bulletsContent ? textHeight(bulletsContent, body.w, MIN_BODY_PT) : 0;
+  // 要点同样是柔性块：挤不进一个最小块就整块让位（留数据不留套话）；
+  // 挤得进则按实排高度预留，表格再按剩下的预算收行。
+  const bulletsH = bullets.length
+    ? Math.min(bulletsNaturalH, Math.max(0, bodyAvail - flexFloorH - rigidFloorH - dataGaps - extraRigid - bulletsGap))
+    : 0;
+  const bulletsReserve = bulletsH >= MIN_BLOCK_H ? bulletsH + bulletsGap : 0;
   const dataBlocks = fitRigidTables(
     rawBlocks,
     body.w,
-    bodyAvail -
-      flexReserve -
-      (bullets.length ? MIN_BLOCK_H + MIN_GAP : 0) -
-      (tlShape ? TL_MIN_H + MIN_GAP : 0) -
-      (diagramOn ? diagramMinH + MIN_GAP : 0)
+    bodyAvail - flexFloorH - dataGaps - extraRigid - bulletsReserve
   );
 
   let cursor = body.y;
   if (bullets.length) {
-    const content = bulletBodyText(item, bullets);
-    const naturalH = textHeight(content, body.w, MIN_BODY_PT);
-    // T02166：同页带**刚性数据**（表格 / 时间线区）时先给它留位，否则要点吃光 body。
-    // 表格已由 fitRigidTables 按剩余高度收过行，这里要点取表格排完后的真实余量；
-    // 余量不足一个最小块时要点整块让位并如实留痕——留数据、不留套话。
-    const rigidUsed =
-      dataBlocks.filter((d) => d.table != null).reduce((s, d) => s + blockHeight(d, body.w) + MIN_GAP, 0) +
-      flexStrip(dataBlocks) +
-      (tlShape ? TL_MIN_H + MIN_GAP : 0) +
-      (diagramOn ? diagramMinH + MIN_GAP : 0);
-    const capH = bodyAvail - rigidUsed;
-    if (capH >= MIN_BLOCK_H) {
-      const h = Math.min(naturalH, capH);
-      out.push({ box: { x: body.x, y: cursor, w: body.w, h }, text: { content, pt: MIN_BODY_PT } });
-      if (h < naturalH - 1e-6) {
-        notes.push(`要点为表格让位压缩排版（自然高 ${naturalH.toFixed(2)}" → 实排 ${h.toFixed(2)}"，多余部分按 pptxgenjs 截字）`);
+    if (bulletsH >= MIN_BLOCK_H) {
+      out.push({ box: { x: body.x, y: cursor, w: body.w, h: bulletsH }, text: { content: bulletsContent, pt: MIN_BODY_PT } });
+      if (bulletsH < bulletsNaturalH - 1e-6) {
+        notes.push(`要点为表格让位压缩排版（自然高 ${bulletsNaturalH.toFixed(2)}" → 实排 ${bulletsH.toFixed(2)}"，多余部分按 pptxgenjs 截字）`);
       }
-      cursor += h + MIN_GAP;
+      cursor += bulletsH + MIN_GAP;
     } else {
-      notes.push(`要点为本页表格让位，未排入版面（剩余 ${capH.toFixed(2)}"，可拆分该页）`);
+      notes.push(`要点为本页表格让位，未排入版面（剩余 ${Math.max(0, bulletsH).toFixed(2)}"，可拆分该页）`);
     }
   }
 

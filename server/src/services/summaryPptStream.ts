@@ -16,6 +16,7 @@
  */
 import { discardReport, saveReportBuffer, validateProjectIds } from './ReportService';
 import { downloadSafeName } from '../util/export-name';
+import { deckStylePreset, type DeckStyleKey } from '../util/exportStyle';
 import { assertCustomRange, assertSummaryPeriod, type CustomRange } from './summaryPptPeriod';
 import {
   assertSummaryNotBlocked,
@@ -45,6 +46,8 @@ export interface SummaryStreamParams {
   mode?: unknown;
   /** FR-5.8 工作量口径；缺省 none（裁决 A-5 默认），allocated 由取数层抛错 */
   workloadCaliber?: unknown;
+  /** T02960：版式预设（standard/ink/evergreen）；缺省 standard，非法值 400 点名可选值 */
+  style?: unknown;
 }
 
 export interface SummaryProjectPages {
@@ -56,6 +59,8 @@ export interface SummaryProjectPages {
 
 export interface SummaryPreparedStream {
   mode: SummaryStreamMode;
+  /** T02960：本次装配的版式预设（已解析，缺省 standard） */
+  style: DeckStyleKey;
   deck: SummaryDeckData;
   outline: SummaryOutlineItem[];
   /** 大纲校验的 warnings（进入 done 事件的 warnings[]，与装配期 warnings 合并） */
@@ -90,6 +95,11 @@ function assertCaliber(raw: unknown): WorkloadCaliber | undefined {
   return v as WorkloadCaliber;
 }
 
+/** T02960：版式预设解析。缺省/空串回落 standard；非法值抛错由路由转 400（点名可选值） */
+function assertStyle(raw: unknown): DeckStyleKey {
+  return deckStylePreset(raw).key;
+}
+
 /** 逐项目页数：单项目全稿都算它的；合并版只数带该项目 projectId 的小结页 */
 function projectPages(deck: SummaryDeckData, outline: SummaryOutlineItem[]): SummaryProjectPages[] {
   if (deck.projects.length <= 1) {
@@ -116,6 +126,7 @@ export function prepareSummaryPptStream(params: SummaryStreamParams): SummaryPre
     if (rangeError) throw new Error(rangeError);
   }
   const caliber = assertCaliber(params.workloadCaliber);
+  const style = assertStyle(params.style);
 
   const bundle: SummaryBundle = gatherSummaryBundle(period, ids, params.custom);
   // S1/S2 硬阻塞：绕过大纲面板直接打生成端点也拦得住（文案与 S3 同一句）
@@ -129,7 +140,7 @@ export function prepareSummaryPptStream(params: SummaryStreamParams): SummaryPre
     warnings.push(bundle.coverage.footnote);
   }
 
-  return { mode, deck, outline, warnings, projects: projectPages(deck, outline) };
+  return { mode, style, deck, outline, warnings, projects: projectPages(deck, outline) };
 }
 
 /** 下载名（FR-7 / A-2）：项目名过多时会被 `downloadSafeName` 截到 80 字，仍必然过白名单 */
@@ -172,6 +183,7 @@ export async function renderSummaryPptStream(
   const built = await buildSummaryPpt(prepared.deck, prepared.outline, {
     onPage: (pageNo, item) => onStage(`页 ${pageNo}/${total} 已装配：${item.section}`),
     signal,
+    style: prepared.style,
   });
   const token = saveReportBuffer(built.buffer);
   // 中止恰好落在「已落盘、尚未回报」窗口：done 不会再有人接收，当场回收不留孤儿
@@ -226,6 +238,7 @@ async function renderSeparate(
         onStage(`页 ${done}/${total} 已装配：${g.project.name}`);
       },
       signal,
+      style: prepared.style,
     });
     if (signal?.aborted) throw new Error(abortMsg);
     entries.push({ name: separateDeckName(g.project.name, prepared.deck.dataAsOf, taken), buffer: built.buffer });

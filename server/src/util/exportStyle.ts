@@ -105,3 +105,46 @@ export const BRAND_PALE = 'C9DCF6';
 
 /** 品牌深底上的正文色（表格表头白字，对 08409C 对比度 ≈9.5） */
 export const ON_BRAND = 'FFFFFF';
+
+// ---------- T02960（方案 A）：阶段性总结汇报 PPT 的版式预设三档 ----------
+
+/** 版式预设键。英文键名是对外契约（SSE 入参持久化后不随中文改版漂移），中文名放 `label` 给面板展示。 */
+export type DeckStyleKey = 'standard' | 'ink' | 'evergreen';
+
+export interface DeckStylePreset {
+  key: DeckStyleKey;
+  /** 面板与 400 提示展示的中文名（不参与产物渲染） */
+  label: string;
+  /**
+   * 装配器唯一消费的色值（页标题/章节编号/页脚）。
+   * 只定义被消费的色值：三档差异必须落在真实渲染的属性上，
+   * 否则「配了色但产物一样」会成为又一处置空的单源。
+   */
+  brandDeep: string;
+}
+
+/** 合法键清单：SSE 校验、前端选择器、错误提示共用，避免三处各列一遍 */
+export const DECK_STYLE_KEYS = ['standard', 'ink', 'evergreen'] as const;
+
+/**
+ * 三档预设。`standard` 与既有品牌常量**逐字相同**——T02960 验收要求
+ * 「未传 style 与显式传 standard 的产物逐字节等价」，故本档只做别名，不引入新色值/背景元素。
+ */
+export const DECK_STYLES: Record<DeckStyleKey, DeckStylePreset> = {
+  standard: { key: 'standard', label: '商务蓝', brandDeep: BRAND_DEEP },
+  /** 墨灰：中性灰档，适合偏正式的客户汇报；对白底对比度 ≈10.3（过 WCAG 4.5） */
+  ink: { key: 'ink', label: '墨灰', brandDeep: '374151' },
+  /** 常青：深绿档，适合经营/述职类汇报；对白底对比度 ≈7.7（过 WCAG 4.5） */
+  evergreen: { key: 'evergreen', label: '常青', brandDeep: '0B5F4A' },
+};
+
+/** 解析版式预设：空值回落 standard（与未传字段等价），非法值抛错并点名可选值 */
+export function deckStylePreset(raw: unknown): DeckStylePreset {
+  const key = String(raw ?? '').trim();
+  if (!key) return DECK_STYLES.standard;
+  if (!(DECK_STYLE_KEYS as readonly string[]).includes(key)) {
+    const options = DECK_STYLE_KEYS.map((k) => `${k}(${DECK_STYLES[k].label})`).join(' / ');
+    throw new Error(`版式预设仅支持 ${options}，当前为「${key}」`);
+  }
+  return DECK_STYLES[key as DeckStyleKey];
+}

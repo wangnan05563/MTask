@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('mtaskDesktop', {
   downloadUpdate: (url) => ipcRenderer.invoke('update:download', url),
   /** T02071：下载中途取消——主进程断连但保留 .part，再次 downloadUpdate 走 Range 续传 */
   cancelUpdateDownload: () => ipcRenderer.invoke('update:cancel'),
+  /** T02976 补：查询是否有下载正在进行（设置页切走再回来、或菜单发起下载时恢复进度与取消入口） */
+  getActiveUpdate: () => ipcRenderer.invoke('update:active'),
   /** 对已下载的安装包执行静默安装（T00878）；T02071 起回收退出码并返回安装回执，失败不再盲退出 */
   installUpdate: (filePath, targetVersion) => ipcRenderer.invoke('update:install', filePath, targetVersion),
   /** T02071：取回上一次静默安装的回执（installed/failed，一次消费即清；无待回执时为 null） */
@@ -25,6 +27,8 @@ contextBridge.exposeInMainWorld('mtaskDesktop', {
     ipcRenderer.on('update:progress', listener);
     return () => ipcRenderer.removeListener('update:progress', listener);
   },
+  /** T02976：菜单通道下载失败后的「重试」——重走整条在线更新流程（检查→确认→下载） */
+  retryOnlineUpdate: () => ipcRenderer.invoke('update:retry'),
   /** T01057-FR1.1：任务通知开关（持久化在主进程 userData/notify-prefs.json） */
   getNotifyEnabled: () => ipcRenderer.invoke('notify:get-enabled'),
   setNotifyEnabled: (enabled) => ipcRenderer.invoke('notify:set-enabled', enabled),

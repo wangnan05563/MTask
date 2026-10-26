@@ -20,10 +20,10 @@ import {
   FONT,
   MIN_BODY_PT,
   MIN_GAP,
-  PALETTE,
   TEXT_SPLIT,
   assertInBounds,
   auditPalette,
+  assertContrast,
   checkPageText,
   framesFor,
   layoutFamilyOf,
@@ -36,6 +36,7 @@ import {
 import { blockHeight as naturalBlockHeight, drawBlock, fitTableRows, pageViolations, type Block } from './kickoffBuilder';
 import { SUMMARY_FOOTER_H, SUMMARY_FOOTER_Y, SUMMARY_LAYOUT_DEF } from './summaryPptLayout';
 import type { SummaryDataKey, SummaryOutlineItem } from './summaryPptOutline';
+import { DECK_STYLES, PAPER_BG, type DeckStyleKey } from '../util/exportStyle';
 import {
   ISSUE_LEVEL_LABEL,
   PLAN_STATUS_LABEL,
@@ -62,6 +63,11 @@ export interface SummaryBuildOptions {
   onPage?: (pageNo: number, item: SummaryOutlineItem) => void;
   /** 客户端断开：每页开头检查，命中即抛错，绝不落半成品 */
   signal?: AbortSignal;
+  /**
+   * T02960：版式预设（缺省 standard，与未传逐字节等价）。
+   * 只影响主色那几处属性——不新增背景/元素，否则默认稿的 XML 会变。
+   */
+  style?: DeckStyleKey;
 }
 
 export const SUMMARY_ABORT_MSG = '总结汇报稿生成已取消';
@@ -263,7 +269,9 @@ function workloadBlocks(p?: SummaryProjectData): Array<Omit<Block, 'box'>> {
     rows.push(['累计估算', `${p.workload.likelyDays} 人天 / ${p.workload.estimateItems} 行三点估算`]);
   }
   rows.push(['复杂度≥4', `${p.workload.complexRows} 条`]);
-  rows.push(['用例覆盖', `${p.coverage.covered}/${p.coverage.total}（${pct(p.coverage.rate)}）`]);
+  // covered/total 都是**需求**口径（total 是覆盖率分母），标签照实写「需求覆盖」，
+  // 写成「用例覆盖」会被读成用例数已完成比例（T02969 同源错位）
+  rows.push(['需求覆盖', `${p.coverage.covered}/${p.coverage.total}（${pct(p.coverage.rate)}）`]);
   rows.push(['P0~P3 分布', p.coverage.byPriority.length ? p.coverage.byPriority.map((x) => `${x.priority} ${x.count}`).join(' · ') : '—']);
   const chart: NonNullable<Block['chart']> = p.workload.caliber === 'cumulative' && p.workload.byPhase.length > 0
     // 口径①：按阶段画人天柱图（标题已限定「累计」）
@@ -551,6 +559,8 @@ function appendPage(
   sectionNo: number,
   warnings: string[],
   degradedPages: number[],
+  /** T02960：本档主色（标题/章节号/页脚）——三档唯一进入产物的差异点 */
+  brandDeep: string,
 ): void {
   const isCover = item.layout === 'cover';
   const isToc = item.layout === 'toc';
@@ -573,7 +583,7 @@ function appendPage(
     if (sections.length > shown.length) lines.push(`…另有 ${sections.length - shown.length} 个章节`);
     blocks = [{ box: frames.body, text: { content: lines.join('\n'), pt: 14 } }];
   } else if (isSection) {
-    blocks = [{ box: frames.number!, text: { content: String(sectionNo).padStart(2, '0'), pt: 32, bold: true, align: 'center', color: PALETTE.brandDeep } }];
+    blocks = [{ box: frames.number!, text: { content: String(sectionNo).padStart(2, '0'), pt: 32, bold: true, align: 'center', color: brandDeep } }];
   } else if (isThanks) {
     blocks = [{ box: frames.body, text: { content: `${pageLabel(deck, item)} · ${deck.periodLabel} · 数据截至 ${deck.dataAsOf}`, pt: MIN_BODY_PT, align: 'center' } }];
   } else {
@@ -599,7 +609,7 @@ function appendPage(
   }
 
   const slide = pptx.addSlide();
-  for (const block of [{ box: titleBox, text: { content: item.title, pt: titlePt, bold: true, align: centered ? ('center' as const) : ('left' as const), color: PALETTE.brandDeep } }, ...bodyBlocks]) {
+  for (const block of [{ box: titleBox, text: { content: item.title, pt: titlePt, bold: true, align: centered ? ('center' as const) : ('left' as const), color: brandDeep } }, ...bodyBlocks]) {
     try {
       drawBlock(slide, block);
     } catch (e) {
@@ -612,7 +622,7 @@ function appendPage(
     w: 9,
     h: SUMMARY_FOOTER_H,
     fontSize: 9,
-    color: PALETTE.brandDeep,
+    color: brandDeep,
     align: 'right',
     wrap: false,
     fontFace: FONT.face,
@@ -631,7 +641,13 @@ export async function buildSummaryPpt(
   opts: SummaryBuildOptions = {},
 ): Promise<SummaryBuildResult> {
   const warnings: string[] = [];
+  // T02960：三档预设的主色同样要过对比度门禁——新色值不能靠「非标准档」绕过既有质量线
+  const preset = DECK_STYLES[opts.style ?? 'standard'];
   const paletteIssues = auditPalette();
+  if (preset.key !== 'standard') {
+    const contrastIssue = assertContrast(preset.brandDeep, PAPER_BG);
+    if (contrastIssue) paletteIssues.push(`${preset.label}档：${contrastIssue}`);
+  }
   if (paletteIssues.length) warnings.push(`配色对比度不达标：${paletteIssues.join('；')}`);
 
   const PptxGenJS = (await import('pptxgenjs')).default;
@@ -649,7 +665,7 @@ export async function buildSummaryPpt(
     const item = outline[i];
     const pageNo = i + 1;
     if (item.layout === 'section') sectionNo += 1;
-    appendPage(pptx, deck, item, outline, pageNo, outline.length, sectionNo, warnings, degradedPages);
+    appendPage(pptx, deck, item, outline, pageNo, outline.length, sectionNo, warnings, degradedPages, preset.brandDeep);
     opts.onPage?.(pageNo, item);
     await yieldToLoop();
   }

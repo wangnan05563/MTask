@@ -48,12 +48,18 @@ export interface DesktopApi {
   downloadUpdate?: (url: string) => Promise<UpdateDownloadResult>;
   /** T02071：终止进行中的下载但保留 .part（断点续传用） */
   cancelUpdateDownload?: () => Promise<{ status: string; partialBytes?: number }>;
+  /** T02976 补：查询进行中的下载（无则 active=false），用于设置页重挂载与菜单通道的状态恢复 */
+  getActiveUpdate?: () => Promise<{ active: boolean; received?: number; total?: number; origin?: string }>;
   /** 静默安装已下载的安装包（T00878）；T02071 起回收退出码返回回执，targetVersion 用于下次启动对账 */
   installUpdate?: (filePath: string, targetVersion?: string) => Promise<UpdateInstallResult>;
   /** T02071：取回上一次静默安装的对账回执（无待回执时 null，一次消费即清） */
   getUpdatePendingResult?: () => Promise<UpdatePendingResult | null>;
-  /** 订阅下载进度（T00878）；返回取消订阅函数 */
-  onUpdateProgress?: (cb: (data: { status: string; received?: number; total?: number; filePath?: string }) => void) => () => void;
+  /** 订阅下载进度（T00878）；返回取消订阅函数。
+   *  T02976：origin 区分下载入口（menu=「帮助→检查在线更新」自驱，settings=设置页卡片），
+   *  主界面全局进度条只消费 menu 通道，避免与设置页卡片内进度重复显示。 */
+  onUpdateProgress?: (cb: (data: { status: string; received?: number; total?: number; filePath?: string; origin?: string; message?: string }) => void) => () => void;
+  /** T02976：菜单通道下载失败后的「重试」——重走整条在线更新流程（检查→确认→下载） */
+  retryOnlineUpdate?: () => Promise<void>;
 }
 
 /** 取桌面壳 API；非 Electron 环境返回 null（调用方需自行降级） */

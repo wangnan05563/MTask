@@ -3,13 +3,13 @@
  *
  * 动因：两枚发布 `.bat` 的托管 Node 目录写死成 `22.22.2-3` / `22.22.2`，两个目录都早已不存在，
  * `if exist` 判假 → PATH 不改 → 全程用 PATH 上的 Node（本机 v24 / NODE_MODULE_VERSION 137），
- * 而 `scripts/lib/abi-switch.mjs` 的 dev 缓存是 ABI 127（Node 22）。这条设计意图失效时**一声不响**，
+ * 而 `scripts/lib/abi-switch.mjs` 的 dev 缓存历史上是 ABI 127（Node 22）。这条设计意图失效时**一声不响**，
  * 直到装机/直跑报 `ERR_DLOPEN_FAILED` 才暴露。本模块只做一件事：把三处 ABI 读出来对齐比对，不匹配就点名。
  *
  * ABI 从二进制本身读，不写常量：gyp 编译的 Node 原生模块会把注册符号名 `node_register_module_v<N>`
- * 留在导出表里，实测 `build/native/dev` = 127、`build/native/electron` = 130、工作区那份 = 137，
- * 与 `process.versions.modules` 一一对上。N-API 构件（`napi_register_module_v1`）与解释器 ABI 无关，
- * 单独标注不误报。
+ * 留在导出表里，实测 `build/native/electron` = 130、工作区那份 = 137，
+ * 与 `process.versions.modules` 一一对上；`build/native/dev` 按 T02692 裁决已并入 137（原 127 是旧托管 Node 22 口径）。
+ * N-API 构件（`napi_register_module_v1`）与解释器 ABI 无关，单独标注不误报。
  *
  * 用法：`node scripts/lib/abi-hint.mjs [root]`（root 默认当前目录；门内夹具传副本根）。
  * 纪律：本模块**永不非零退出**——它是提示，不能变成构建的新拦路点；读不到就说读不到。

@@ -9,6 +9,7 @@ import { parseReqIds, syncReqStatuses } from './reqStatusSync'; // T02087：需�
 import { recalcMilestonesOfChild } from './milestoneProgress'; // T02090：里程碑进度聚合（任务完成度是聚合输入）
 import { parsePlanDeps, depsSatisfied, topoOrder, type PlanDep } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7）
 import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化（拉取侧平台偏好匹配）
+import { detectRuling, RULING_DEFAULT_OPTIONS } from '../util/ruling'; // T02949：裁决自动识别（纯函数单源）
 
 /** 批量 IN 查询的每批 id 数：SQLite 变量上限 999，留足余量并与图片批量查询（≤200）同量级 */
 const PLAN_LOOKUP_BATCH = 200;
@@ -76,9 +77,8 @@ export interface TaskRow {
   updated_at: string;
 }
 
-/** T02949：裁决预设选项——服务端单源（前端面板/MCP getRulingOptions 同读，不各抄一份）。
- *  语义贴合「AI 派生待办结论如何处置」：采纳/部分采纳/暂不采纳/需补充信息。 */
-const RULING_OPTIONS = ['采纳合并', '部分采纳', '暂不采纳', '需补充信息'];
+/** T02949：裁决预设选项的服务端单源已迁到 `util/ruling.ts`（`RULING_DEFAULT_OPTIONS`）——
+ *  那里同时承载「从结论抽候选」的规则，选项与判定同文件才不会各说一套。 */
 
 /** 对外输出视图：archived 转为 boolean（API 返回）；images 为截图附件元信息 */
 export interface TaskView {
@@ -745,6 +745,9 @@ export const TaskService = {
     if (before) {
       for (const [kind, detail] of collectUpdateEvents(patch as UpdateEventPatch, before, db, id)) logEvent(db, id, kind, detail);
     }
+    // T02949 方案 A：结论一变更就重判「是否需要裁决」。挂在这里而不是各写入口各做一次——
+    // REST PATCH、MCP update_task_result、派生单归并母单全都经过 update()，一处挂即全链覆盖。
+    if (patch.handle_result !== undefined) this.autoRuling(id);
     // 反向计划联动（T00436）：待办被项目计划关联时，状态变更同步回计划任务（已完成↔已完成，待办→进行中）
     if (patch.status !== undefined) syncPlanOnStatusChange(id, patch.status);
     // T01876：归档态变更同样要重算父进度（REST/MCP 单条归档走本方法，批量归档见 ArchiveService）
@@ -892,9 +895,17 @@ export const TaskService = {
     return this.getById(id)!;
   },
 
-  /** T02949：裁决预设选项——服务端单源（前端面板与 MCP getRulingOptions 同读，不各抄一份） */
-  rulingOptions(): string[] {
-    return [...RULING_OPTIONS];
+  /**
+   * T02949 方案 A：选项按**任务结论动态抽取**（如「方案 A / 方案 B」），抽不到才回落通用四枚。
+   * 传 id 才动态——无 id 的调用方（旧 MCP / 老前端）仍拿到通用清单，行为不变。
+   * 抽到 1 条也回落：单候选不构成「二选一」，多半是叙述而非待选。
+   */
+  rulingOptions(id?: string): string[] {
+    if (!id) return [...RULING_DEFAULT_OPTIONS];
+    const task = this.getById(id);
+    if (!task) throw new Error('任务不存在');
+    const picked = detectRuling(task.handle_result ?? '').options;
+    return picked.length >= 2 ? picked : [...RULING_DEFAULT_OPTIONS];
   },
 
   /** T02949：打「待裁决」标记。仅派生单可裁决——裁决对象就是 AI 派生待办的结论采纳与否。
@@ -929,6 +940,53 @@ export const TaskService = {
       .run(nextDesc, '已裁决', body, t, t, id);
     logEvent(db, id, 'ruling', `裁决结果：${body.slice(0, 120)}`);
     return this.getById(id)!;
+  },
+
+  /**
+   * T02949 方案 A：结论变更后**自动**判定是否需要人工裁决，并自动打标 / 撤标。
+   * - 只作用于派生单：裁决对象是「AI 派生待办的结论是否采纳」，非派生单没有可裁决对象；
+   * - 已裁决的单是终态，无论结论怎么改都不回退（否则归并母单写回会把它翻回待裁决）；
+   * - 不刷 updated_at：标记是流程标注，不代表任务正文又被人动过，否则列表时效与「最新编辑」全乱；
+   * - 待裁决可以撤销：它只是提示态，结论被改写成不再要求裁决时就该撤回，避免挂着过期徽标。
+   */
+  autoRuling(id: string): void {
+    const task = this.getById(id);
+    if (!task?.derived_from) return;
+    if (task.ruling_state === '已裁决') return;
+    const detected = detectRuling(task.handle_result ?? '');
+    const db = getDb();
+    if (detected.needed && task.ruling_state !== '待裁决') {
+      db.prepare('UPDATE tasks SET ruling_state = ?, ruling_at = ? WHERE id = ?').run('待裁决', now(), id);
+      logEvent(db, id, 'ruling', `自动识别：${detected.reason}`);
+      return;
+    }
+    if (!detected.needed && task.ruling_state === '待裁决') {
+      db.prepare("UPDATE tasks SET ruling_state = '', ruling_at = NULL WHERE id = ?").run(id);
+      logEvent(db, id, 'ruling', '自动撤销：结论已不含裁决请求');
+    }
+  },
+
+  /**
+   * T02949 方案 A：历史派生单补标——旧版本没有自动识别，已回传且结论明确要求裁决的单仍是空态。
+   * strict 模式避开「结论里叙述方案 A/B 但已收口」的历史单：补标不是重判历史业务，
+   * 只把明确请求过裁决的漏标项补上。返回补标条数供启动日志使用。
+   */
+  backfillRuling(): number {
+    const db = getDb();
+    const rows = db
+      .prepare("SELECT id, handle_result FROM tasks WHERE derived_from IS NOT NULL AND derived_from <> '' AND (ruling_state IS NULL OR ruling_state = '')")
+      .all() as Array<{ id: string; handle_result: string | null }>;
+    const t = now();
+    let marked = 0;
+    for (const row of rows) {
+      const detected = detectRuling(row.handle_result ?? '', { strict: true });
+      if (!detected.needed) continue;
+      db.prepare('UPDATE tasks SET ruling_state = ?, ruling_at = ? WHERE id = ?').run('待裁决', t, row.id);
+      logEvent(db, row.id, 'ruling', `历史补标：${detected.reason}`);
+      marked += 1;
+    }
+    if (marked) notifyChange('tasks');
+    return marked;
   },
 };
 

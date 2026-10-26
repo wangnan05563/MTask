@@ -11,6 +11,7 @@ import { PlanPage } from './pages/PlanPage';
 import { NotifyBell } from './ui/NotifyBell'; // T01064-FR1.4：全局通知中心
 import { focusTaskByNo } from './ui/focusTask'; // T01057 建议：通知点击跨项目定位（写齐 focusId/项目/tab）
 import { api, setAccessToken } from './api/client';
+import { desktopApi } from './ui/desktop'; // T02976：菜单通道下载进度的桌面桥（浏览器环境无此桥）
 import { MarkdownStyles } from './ui/Markdown';
 import { CommandPalette } from './pages/CommandPalette';
 import { SettingsProvider } from './settings';
@@ -27,12 +28,24 @@ import { TABS, type Tab } from './ui/tabs'; // T03184（PM-102）：一级导航
 
 // T00441：日志/归档入口从顶部菜单移入「设置」（内网穿透下方），顶部菜单收敛为高频功能
 
+// T02976：下载量的可读呈现（进度条文案用；字节数本身对用户没有意义）
+function fmtBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+  return `${(n / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
 /** 应用外壳：导航 + 主题变量容器。颜色取自 CSS 变量，主题切换即时全局生效 */
 function Shell() {
   const [tab, setTab] = useState<Tab>('tasks');
   const [serverOk, setServerOk] = useState<boolean | null>(null);
   // T01836：启动自动检测到的新版本（仅提示，一键下载安装仍在「设置 → 版本更新」卡片内）
   const [updateHint, setUpdateHint] = useState<{ latestVersion: string; currentVersion: string } | null>(null);
+  // T02976：菜单「帮助 → 检查在线更新」的下载由主进程自驱，此时用户可能不在设置页——
+  // 这条状态承载全局进度条，只接 origin='menu' 的事件（设置页卡片自己有进度，不重复显示）。
+  // 更新下载续传：retrying = 网络中断后的自动续传重试中——进度保持不变，但要让用户知道「没卡死、在自愈」
+  const [dlToast, setDlToast] = useState<{ status: 'downloading' | 'resuming' | 'retrying' | 'downloaded' | 'failed'; received: number; total: number; message?: string } | null>(null);
   // T00443 / PRD UX-4：全局命令面板（T03170 / D-07：Ctrl+K 打开；Ctrl+F 优先页内搜索）
   const [paletteOpen, setPaletteOpen] = useState(false);
   // T00706：全菜单使用向导——当前菜单首次进入自动弹出，导航右侧常驻「向导」按钮随时唤起
@@ -135,6 +148,37 @@ function Shell() {
       .catch(() => { /* 未配置 / 离线：静默 */ });
   }, [serverOk]);
 
+  // T02976：订阅主进程下载进度，只消费菜单通道（origin='menu'）。
+  // 浏览器环境没有桌面桥——下载走浏览器自带下载管理器，这里自然不渲染任何东西。
+  useEffect(() => {
+    const desk = desktopApi();
+    if (!desk?.onUpdateProgress) return;
+    let hideTimer = 0;
+    const off = desk.onUpdateProgress((d) => {
+      if (d.origin !== 'menu') return;
+      const received = d.received ?? 0;
+      const total = d.total ?? 0;
+      if (d.status === 'downloading' || d.status === 'resuming') {
+        window.clearTimeout(hideTimer);
+        setDlToast({ status: d.status, received, total });
+      } else if (d.status === 'retrying') {
+        // 更新下载续传：主进程正在自动续传重试——保留进度条与取消入口，只把文案换成可读原因，
+        // 否则用户看到进度归零/停滞会误判成下载失败
+        window.clearTimeout(hideTimer);
+        setDlToast({ status: 'retrying', received, total, message: d.message });
+      } else if (d.status === 'downloaded') {
+        setDlToast({ status: 'downloaded', received, total });
+        // 主进程随后弹「立即安装 / 稍后安装」对话框；进度条只留 3 秒做完成回执即收起
+        hideTimer = window.setTimeout(() => setDlToast((cur) => (cur?.status === 'downloaded' ? null : cur)), 3000);
+      } else if (d.status === 'failed') {
+        setDlToast({ status: 'failed', received: 0, total: 0, message: d.message ?? '下载失败' });
+      } else {
+        setDlToast(null); // cancelled 等终态：菜单通道没有「继续下载」入口，直接收起
+      }
+    });
+    return () => { window.clearTimeout(hideTimer); off(); };
+  }, []);
+
   // 启动时同步访问令牌：若后端已配置（或重置过）令牌，更新本地，避免带旧令牌触发 401
   useEffect(() => {
     api.get<{ accessToken?: string }>('/tunnel/config')
@@ -158,6 +202,9 @@ function Shell() {
     statusColor = 'var(--danger)';
     statusText = '● 后端未连接（请先启动 server）';
   }
+
+  // T02976：百分比只在拿到总量时才有意义；服务端没给 content-length 时退化为「已下载 x MB」
+  const dlPct = dlToast && dlToast.total > 0 ? Math.min(100, Math.round((dlToast.received / dlToast.total) * 100)) : 0;
 
   return (
     <div
@@ -362,6 +409,68 @@ function Shell() {
             style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 12 }}
           >
             忽略本次
+          </button>
+        </output>
+      )}
+
+      {/* T02976：菜单通道下载进度条——顶部一条（不遮挡内容），完成/失败各有明确下一步。
+          数据源只来自主进程的菜单自驱下载；设置页下载有自己的卡片内进度，不走这条。 */}
+      {dlToast && (
+        <output
+          style={{
+            display: 'flex', alignItems: 'center', gap: 10, padding: '6px 14px', fontSize: 12,
+            background: dlToast.status === 'failed' ? 'rgba(220, 38, 38, .08)' : 'var(--accent-soft)',
+            color: dlToast.status === 'failed' ? 'var(--danger)' : 'var(--accent)',
+            borderBottom: '1px solid var(--border)',
+          }}
+        >
+          <span style={{ whiteSpace: 'nowrap' }}>
+            {dlToast.status === 'retrying'
+              ? (dlToast.message ?? '网络中断，正在自动续传重试')
+              : dlToast.status === 'resuming'
+              ? `续传中：已确认 ${fmtBytes(dlToast.received)}`
+              : dlToast.status === 'downloaded'
+                ? `下载完成（${fmtBytes(dlToast.received)}），等待安装确认`
+                : dlToast.status === 'failed'
+                  ? `下载失败：${dlToast.message}`
+                  : dlToast.total > 0
+                    ? `正在下载新版本 ${dlPct}%（${fmtBytes(dlToast.received)} / ${fmtBytes(dlToast.total)}）`
+                    : `正在下载新版本：已下载 ${fmtBytes(dlToast.received)}`}
+          </span>
+          {(dlToast.status === 'downloading' || dlToast.status === 'resuming' || dlToast.status === 'retrying') && dlToast.total > 0 && (
+            <span style={{ flex: 1, minWidth: 80, height: 6, borderRadius: 3, background: 'var(--border)', overflow: 'hidden' }}>
+              {/* transition 把 200ms 一次的事件跳动抹平，观感上是连续推进 */}
+              <span style={{ display: 'block', height: '100%', width: `${dlPct}%`, background: 'var(--accent)', transition: 'width .2s ease' }} />
+            </span>
+          )}
+          {(dlToast.status === 'downloading' || dlToast.status === 'resuming' || dlToast.status === 'retrying') && (
+            /* T02976 补：下载中必须有取消入口——否则用户只能干等 110MB 走完；重试等待期同样可取消 */
+            <button
+              onClick={() => { void desktopApi()?.cancelUpdateDownload?.(); }}
+              title="取消下载 — 中断本次下载并保留已下载部分，稍后可从断点继续"
+              aria-label="取消下载：中断本次下载并保留已下载部分"
+              style={{ cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', borderRadius: 6, padding: '2px 10px', fontSize: 12 }}
+            >
+              取消
+            </button>
+          )}
+          {dlToast.status === 'failed' && (
+            <button
+              onClick={() => { setDlToast(null); void desktopApi()?.retryOnlineUpdate?.(); }}
+              title="重试 — 重新检查并下载新版本安装包"
+              aria-label="重试：重新检查并下载新版本安装包"
+              style={{ cursor: 'pointer', border: '1px solid var(--danger)', background: 'var(--card-bg)', color: 'var(--danger)', borderRadius: 6, padding: '2px 10px', fontSize: 12 }}
+            >
+              重试
+            </button>
+          )}
+          <button
+            onClick={() => setDlToast(null)}
+            title="关闭 — 收起下载进度提示（下载仍在后台继续）"
+            aria-label="关闭：收起下载进度提示"
+            style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 12, marginLeft: dlToast.status === 'failed' ? 0 : 'auto' }}
+          >
+            关闭
           </button>
         </output>
       )}

@@ -440,8 +440,14 @@ function coverageRows(db: ReturnType<typeof getDb>, projectId: string) {
   }));
   const total = byReq.length;
   const covered = byReq.filter((r) => r.caseCount > 0).length;
+  // 用例数单独取：`total` 是需求数（覆盖率分母），被 `covered/total` 这类「x/N 需求已覆盖」
+  // 的既有口径共用；把它当「测试用例 N 条」用会让零用例项目的占位分支永不触发（T02969）。
+  const caseTotal = (db
+    .prepare('SELECT COUNT(*) AS c FROM test_cases WHERE project_id = ?')
+    .get(projectId) as { c: number }).c;
   return {
     total,
+    caseTotal,
     covered,
     uncovered: total - covered,
     rate: total === 0 ? 0 : Math.round((covered / total) * 1000) / 10,

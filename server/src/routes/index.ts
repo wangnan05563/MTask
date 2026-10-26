@@ -1325,9 +1325,14 @@ api.post('/tasks/:id/ruling', (req, res) => {
   }
 });
 
-// 裁决预设选项（服务端单源——前端面板与 MCP 同读）
+// 裁决预设选项（服务端单源——前端面板与 MCP 同读）。T02949 方案 A：带任务 id 时按该单结论动态抽取，
+// 抽不到才回落通用四枚——面板因此能显示「方案 A / 方案 B」而不是固定四枚。
 api.get('/tasks/:id/ruling-options', (req, res) => {
-  res.json({ options: TaskService.rulingOptions() });
+  try {
+    res.json({ options: TaskService.rulingOptions(req.params.id) });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 // ---------- 任务截图/图片附件（FR1.3 图文混合描述） ----------

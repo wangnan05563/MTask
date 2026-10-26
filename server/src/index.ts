@@ -18,7 +18,7 @@ import { reconcileLinkedPlanStatuses } from './services/PlanService';
 import { reconcileReqStatuses } from './services/reqStatusSync'; // T02087：需求状态启动对账
 import { reconcileDerivedFrom } from './services/derivedOrigin'; // T02320：派生单溯源（正文首行「来源：Txxxx」）启动回填
 import { reconcileMilestoneProgresses } from './services/milestoneProgress'; // T02090：里程碑进度启动对账
-import { startStaleRunningGuard } from './services/TaskService'; // T01368 后续（P1）：running 超时兜底定时收敛（移出读路径）
+import { TaskService, startStaleRunningGuard } from './services/TaskService'; // T01368 后续（P1）：running 超时兜底定时收敛（移出读路径）
 import { startEventRetentionTimer } from './services/EventRetention'; // T01064 后续：事件表 90 天保留期清理
 import { startReportTmpSweeper } from './services/ReportService'; // T02144：导出令牌临时文件回收
 
@@ -158,7 +158,12 @@ app.use('/api/tunnel', tunnelRouter);
 
 // 静态伺服前端构建产物：让隧道 URL / 浏览器访问时能打开可操作的 Web 界面。
 // dev 态 __dirname=server/src，打包态=resources/app/server/dist，均回溯到根/web/dist
-const webDist = path.resolve(__dirname, '..', '..', 'web', 'dist');
+// T02967 回补（原 T02289 能力被 5eee8de 的过期副本覆盖掉）：MTASK_STATIC_DIR 与 MTask_DATA_DIR 同族，
+// 是验收门的隔离通道——门要把缺陷版 sw.js 放进临时目录再由真实实例伺服，
+// 缺少这条覆盖时实例永远伺服主仓 web/dist，两阶段对照没有判别力。
+const webDist = process.env.MTASK_STATIC_DIR
+  ? path.resolve(process.env.MTASK_STATIC_DIR)
+  : path.resolve(__dirname, '..', '..', 'web', 'dist');
 if (existsSync(path.join(webDist, 'index.html'))) {
   app.use(express.static(webDist));
   // SPA 兜底：非 /api、未命中静态文件的 GET 一律回显 index.html
@@ -231,6 +236,12 @@ app.listen(PORT, HOST, () => {
   SupervisorService.startScheduler();
   // T01368 后续（P1）：running 超时兜底改为定时收敛，移出列表/详情读路径（去掉只读接口的写锁竞争）
   startStaleRunningGuard(60000);
+  // T02949 方案 A：历史派生单补标一轮——旧版本只能手动点「+ 待裁决」，已回传且结论明确请求裁决的单
+  // 仍是空态；启动时按严格规则补，命中才写（不重判已收口单，详见 TaskService.backfillRuling）。
+  try {
+    const marked = TaskService.backfillRuling();
+    if (marked) console.log(`[ruling] 历史派生单补标 ${marked} 条为待裁决`);
+  } catch (e) { console.error('[ruling] 历史补标失败:', e); }
   // T01064 后续：task_events 保留期清理（默认 90 天，events.retentionDays 可配，0 = 不清理）
   startEventRetentionTimer();
   // T02144：导出令牌临时文件回收（启动清一轮 + 每小时兜底）——未下载即放弃的 PPTX/XLSX 不再永久残留
