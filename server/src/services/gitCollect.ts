@@ -29,7 +29,7 @@ export const GIT_OUTPUT_CONFIG = [
 
 /** 每个只读子命令允许的选项（白名单，防止调用方借选项写盘或改配置） */
 const ALLOWED_FLAGS: Record<GitReadonlySubcommand, RegExp[]> = {
-  'rev-parse': [/^--is-inside-work-tree$/],
+  'rev-parse': [/^--is-inside-work-tree$/, /^--verify$/, /^--quiet$/],
   log: [/^--oneline$/, /^--no-merges$/, /^--format=[%\w.:{}+\-/ ]+$/, /^-n\d{1,4}$/, /^--since=[\w:+\-. ]{1,64}$/, /^--reverse$/],
   diff: [/^--ignore-cr-at-eol$/, /^--stat$/, /^--numstat$/, /^-U\d{1,3}$/],
   show: [],
@@ -74,6 +74,8 @@ function assertFlag(subcommand: GitReadonlySubcommand, flag: string): string {
 }
 
 function assertPositional(value: string): string {
+  // T03310：`--` 是 git 的选项/路径分隔符，尾随它可避免「形似版本号的分支名」被当成路径
+  if (value === '--') return value;
   if (!value) throw new GitCollectError('denied', 'Git 位置参数不得为空');
   if (value.startsWith('-')) throw new GitCollectError('denied', `拒绝以「-」开头的 Git 位置参数「${value}」（防选项注入）`);
   if (/[\0\r\n]/.test(value)) throw new GitCollectError('denied', 'Git 位置参数含控制字符');
@@ -207,14 +209,14 @@ export async function collectCommitLog(
   extraFlags: string[] = [],
 ): Promise<GitCommitEntry[]> {
   const revs = range.map(assertSafeRevision);
-  const r = await runGitReadonly('log', ['--no-merges', LOG_FORMAT, ...extraFlags], revs, cwd, opts);
+  const r = await runGitReadonly('log', ['--no-merges', LOG_FORMAT, ...extraFlags], [...revs, '--'], cwd, opts);
   return parseCommitLog(r.stdout);
 }
 
 /** 增量统计原文（`diff --stat`，带行尾口径）；超 2MB 由调用方按 FR-1.4 截断并点名 */
 export async function collectDiffStat(cwd: string, range: string[], opts: GitCollectOptions = {}): Promise<string> {
   const revs = range.map(assertSafeRevision);
-  const r = await runGitReadonly('diff', ['--stat', '--ignore-cr-at-eol'], revs, cwd, opts);
+  const r = await runGitReadonly('diff', ['--stat', '--ignore-cr-at-eol'], [...revs, '--'], cwd, opts);
   return r.stdout;
 }
 
@@ -224,7 +226,7 @@ export async function collectDiff(cwd: string, range: string[], contextLines = 3
     throw new GitCollectError('denied', `非法上下文行数「${contextLines}」`);
   }
   const revs = range.map(assertSafeRevision);
-  const r = await runGitReadonly('diff', [`-U${contextLines}`, '--ignore-cr-at-eol'], revs, cwd, opts);
+  const r = await runGitReadonly('diff', [`-U${contextLines}`, '--ignore-cr-at-eol'], [...revs, '--'], cwd, opts);
   return r.stdout;
 }
 
@@ -239,6 +241,34 @@ export async function collectFileAtRevision(
   const rel = assertSafeRepoPath(relPath);
   const r = await runGitReadonly('show', [], [`${rev}:${rel}`], cwd, opts);
   return r.stdout;
+}
+
+/**
+ * T03310：把「这个引用到底存不存在」提前到拼 argv 前判。
+ * 不做这步时，写错的基线只会换来 git 的原生报错
+ * `fatal: ambiguous argument 'X..HEAD': unknown revision or path not in the working tree`，
+ * 用户分不清是分支名拼错、没 fetch、还是把标签名当成了分支。
+ */
+export async function assertResolvableCommitish(
+  cwd: string,
+  token: string,
+  role: string,
+  opts: GitCollectOptions = {},
+): Promise<string> {
+  const rev = assertSingleRevision(token);
+  try {
+    await runGitReadonly('rev-parse', ['--verify', '--quiet'], [`${rev}^{commit}`], cwd, opts);
+  } catch (e) {
+    if (!(e instanceof GitCollectError)) throw e;
+    if (e.kind === 'no-git' || e.kind === 'not-a-repo' || e.kind === 'timeout' || e.kind === 'too-large') throw e;
+    throw new GitCollectError(
+      'failed',
+      `${role}「${rev}」无法解析为提交：仓库里没有这个分支/标签/SHA。`
+      + '请核对分支大小写、远端分支是否要写成 origin/ 前缀、标签是否已 fetch（git branch -a / git tag -l 可查）。'
+      + `原始报错：${e.message.slice(0, 200)}`,
+    );
+  }
+  return rev;
 }
 
 export interface TruncatedText {
@@ -655,8 +685,8 @@ export async function resolveGitRange(
   switch (input.shape) {
     case 'base-head': {
       if (!input.base) throw new GitCollectError('denied', 'base-head 形态需要 base（分支/标签/SHA）');
-      const base = assertSingleRevision(input.base);
-      const head = assertSingleRevision(input.head ?? 'HEAD');
+      const base = await assertResolvableCommitish(cwd, input.base, '基线版本', opts);
+      const head = await assertResolvableCommitish(cwd, input.head ?? 'HEAD', '目标版本', opts);
       return {
         shape: input.shape,
         label: `${base}..${head}`,
@@ -670,8 +700,8 @@ export async function resolveGitRange(
     }
     case 'first-last': {
       if (!input.base || !input.head) throw new GitCollectError('denied', '首末 SHA 形态需要两个版本号');
-      const first = assertSingleRevision(input.base);
-      const last = assertSingleRevision(input.head);
+      const first = await assertResolvableCommitish(cwd, input.base, '首个提交', opts);
+      const last = await assertResolvableCommitish(cwd, input.head, '末个提交', opts);
       const parent = await resolveFirstParent(cwd, first, opts);
       const base = parent ?? GIT_EMPTY_TREE_SHA1;
       return {
@@ -689,7 +719,7 @@ export async function resolveGitRange(
     case 'since': {
       if (!input.since) throw new GitCollectError('denied', '时间窗形态需要 since 起点');
       const since = assertSafeSince(input.since);
-      const head = assertSingleRevision(input.head ?? 'HEAD');
+      const head = await assertResolvableCommitish(cwd, input.head ?? 'HEAD', '目标版本', opts);
       const oldest = await resolveOldestSince(cwd, since, head, opts);
       if (!oldest) {
         return { shape: input.shape, label: `自 ${since}`, base: '', head, diffPositional: [], logPositional: [], logFlags: [], empty: true };
