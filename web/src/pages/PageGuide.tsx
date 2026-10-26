@@ -23,20 +23,27 @@ export const hasSeenGuide = (seenKey: string): boolean => {
   try { return localStorage.getItem(seenKey) === '1'; } catch { return true; }
 };
 
+/** T03183（PM-103）：向导已读事件——页面内联向导（如零资料项目三步引导）据此让路，保证同页可见 dialog ≤1 */
+export const GUIDE_SEEN_EVENT = 'mtaskGuideSeen';
+
 export const markGuideSeen = (seenKey: string): void => {
   try { localStorage.setItem(seenKey, '1'); } catch { /* 忽略存储失败（隐私模式） */ }
+  // 存储不可用（隐私模式）时仍广播：本次会话内的让路语义不依赖持久化是否成功
+  try { globalThis.dispatchEvent(new CustomEvent(GUIDE_SEEN_EVENT, { detail: { seenKey } })); } catch { /* 忽略 */ }
 };
 
 /**
  * 通用向导弹窗：视觉与交互对齐 ProjectGuideDialog（T00665 基准）——
  * 遮罩点击 / Escape / 关闭按钮均视为「跳过并记住」；移动端宽度 min(560px, 92vw)。
  */
-export function PageGuideDialog({ open, onClose, title, steps }: {
+export function PageGuideDialog({ open, onClose, title, steps, skipLabel = '跳过' }: {
   readonly open: boolean;
   readonly onClose: () => void;
   /** 弹窗标题（如「任务 · 使用向导」） */
   readonly title: string;
   readonly steps: readonly GuideStep[];
+  /** T03183：可见文案 / aria-label / title 同源（PM-103 验收⑥要求跳过按钮三者一致） */
+  readonly skipLabel?: string;
 }) {
   const [step, setStep] = useState(0);
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -96,8 +103,8 @@ export function PageGuideDialog({ open, onClose, title, steps }: {
 
         {/* 底部操作 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderTop: '1px solid var(--border)', flexWrap: 'wrap' }}>
-          <button onClick={finish} title="跳过（记录已看状态，不再自动弹出）" aria-label="跳过"
-            style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>跳过</button>
+          <button onClick={finish} title={`${skipLabel} — 记录已看状态，不再自动弹出`} aria-label={skipLabel}
+            style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>{skipLabel}</button>
           <span style={{ flex: 1 }} />
           <button onClick={() => setStep((s) => Math.max(0, s - 1))} disabled={step === 0} className="tbtn-anim"
             style={{ padding: '5px 12px', borderRadius: 6, cursor: step === 0 ? 'default' : 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', opacity: step === 0 ? .5 : 1 }}>上一步</button>

@@ -9,6 +9,8 @@ import { PrdPanel } from './PrdPanel'; // T00770：PRD 管理视图（文档生�
 import { EstimateGanttOverlay } from '../components/estimateGanttOverlay'; // T02082：E8 甘特估算区间叠加层（O~P 带 + E 标记，纯几何零二次计算）
 import { estimatesApi, type EstimatesResponse } from '../api/estimates'; // T02082：叠加层数据源——只读服务端三点值（§9 零计算红线）
 // T03161（U22）：页内向导通道下线（ProjectGuide.tsx 保留——全局向导复用其 PROJECT_GUIDE_STEPS/GUIDE_SEEN_KEY）
+import { GUIDE_SEEN_EVENT, hasSeenGuide } from './PageGuide'; // T03183（PM-103）：向导已读事件——同页同源 dialog 只留一个
+import { GUIDE_SEEN_KEY, EmptyProjectGuide, dismissEmptyGuide, isEmptyGuideDismissed, type ProjectEmptiness } from './ProjectGuide'; // T03183（PM-103）：零资料项目三步引导
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin, reorderProjects, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { ProjectListHint, getProjectListSnapshot, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：节假日取数改走可见失败态层（工期换算依赖）
@@ -1352,6 +1354,37 @@ export function PlanPage() {
   // 与本对话框共用同一 seenKey，此前首访会叠出两个「项目管理 · 使用向导」（实测 visibleDialogs=2）。
   // 单源保留全局通道；重看走顶栏常驻「使用向导」按钮。
 
+  // T03183（PM-103）：零资料项目三步引导——四项全 0 且该项目未点「不再显示」时展示。
+  // 全局「项目管理 · 使用向导」未读时先让它走完再评估：三个 CTA 都落在本页面板上，
+  // 两个 dialog 同屏会叠遮罩（与 T03161/U22 同类），故等全局向导的已读事件。
+  const [emptiness, setEmptiness] = useState<ProjectEmptiness | null>(null);
+  const [planTourSeen, setPlanTourSeen] = useState(() => hasSeenGuide(GUIDE_SEEN_KEY));
+  const [emptyGuideClosed, setEmptyGuideClosed] = useState(false);
+  useEffect(() => {
+    const onGuideSeen = (e: Event) => {
+      const key = (e as CustomEvent<{ seenKey?: string }>).detail?.seenKey;
+      if (key === GUIDE_SEEN_KEY) setPlanTourSeen(true);
+    };
+    globalThis.addEventListener(GUIDE_SEEN_EVENT, onGuideSeen);
+    return () => globalThis.removeEventListener(GUIDE_SEEN_EVENT, onGuideSeen);
+  }, []);
+  useEffect(() => { setEmptyGuideClosed(false); }, [projectId]); // 换项目重新评估（「不再显示」按项目记忆）
+  useEffect(() => {
+    if (!projectId) { setEmptiness(null); return; }
+    let alive = true;
+    // plans.length 是同一页内最常变的「有资料」信号（新建/导入/删除计划后立刻复判，验收②）
+    api.get<ProjectEmptiness>(`/projects/${projectId}/emptiness`)
+      .then((r) => { if (alive) setEmptiness(r); })
+      .catch(() => { if (alive) setEmptiness(null); }); // 判定失败不弹引导（宁缺不打扰）
+    return () => { alive = false; };
+  }, [projectId, plans.length]);
+  const closeEmptyGuide = () => {
+    if (projectId) dismissEmptyGuide(projectId);
+    setEmptyGuideClosed(true);
+  };
+  const emptyGuideOpen = Boolean(projectId) && planTourSeen && !emptyGuideClosed
+    && emptiness?.empty === true && !isEmptyGuideDismissed(projectId);
+
   // T00663：项目排序与置顶（复用共享模块）——排序方式会话级持久；拖拽排序仅在默认序下启用
   const [projSortMode, setProjSortMode] = usePersistentState<ProjectSortMode>('plan.projectSort', 'default'); // T01697：排序偏好持久化（重启保持）
   const [projSortOpen, setProjSortOpen] = useState(false);
@@ -2567,6 +2600,13 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
 
       {/* 计划表格：串行瀑布，起止由服务端按工作日推算 */}
       {/* T03161（U22）：页内 ProjectGuideDialog 挂载点已移除（同源双弹），向导统一走全局 PageGuideDialog */}
+      {/* T03183（PM-103）：零资料项目三步引导——导入 PRD / 需求矩阵 / 建计划三条深链直达现有入口 */}
+      {emptyGuideOpen && (
+        <EmptyProjectGuide open counts={emptiness} onClose={closeEmptyGuide}
+          onImportPrd={() => { setShowPrd(true); closeEmptyGuide(); }}
+          onOpenMatrix={() => { setShowMatrix(true); closeEmptyGuide(); }}
+          onCreatePlan={() => { closeEmptyGuide(); void createPlan(); }} />
+      )}
 
       {/* T00770：PRD 管理视图（矩阵面板上方展开；衔接 PRD → 确认版 → 需求跟踪矩阵流程） */}
       {showPrd && projectId && <PrdPanel projectId={projectId} onClose={() => setShowPrd(false)} />}

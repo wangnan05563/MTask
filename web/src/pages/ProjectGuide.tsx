@@ -1,4 +1,4 @@
-import { ArrowUpDown, CalendarRange, Compass, FileSpreadsheet, Link2, Table2 } from 'lucide-react';
+import { ArrowUpDown, CalendarPlus, CalendarRange, Compass, FileSpreadsheet, FileText, Link2, Table2 } from 'lucide-react';
 import { PageGuideDialog, type GuideStep } from './PageGuide'; // T00706：向导弹窗壳抽取为通用组件，本文件只保留项目管理内容
 
 /** T00665：项目管理向导已读状态（localStorage——清除浏览器缓存后自动恢复初始引导） */
@@ -208,4 +208,97 @@ export function ProjectGuideDialog({ open, onClose }: {
   readonly onClose: () => void;
 }) {
   return <PageGuideDialog open={open} onClose={onClose} title="项目管理 · 使用向导" steps={PROJECT_GUIDE_STEPS} />;
+}
+
+// ---------- T03183（PM-103）：零资料项目三步引导 ----------
+
+/** 「不再显示」按项目记忆；清浏览器缓存后恢复首次引导（与其他向导同一持久化口径） */
+export const EMPTY_GUIDE_DISMISS_PREFIX = 'guide.dismiss.';
+
+export const isEmptyGuideDismissed = (projectId: string): boolean => {
+  try { return localStorage.getItem(EMPTY_GUIDE_DISMISS_PREFIX + projectId) === '1'; } catch { return true; /* 隐私模式下不可读：不打扰用户 */ }
+};
+
+export const dismissEmptyGuide = (projectId: string): void => {
+  try { localStorage.setItem(EMPTY_GUIDE_DISMISS_PREFIX + projectId, '1'); } catch { /* 忽略存储失败（隐私模式） */ }
+};
+
+/** 服务端 GET /projects/:id/emptiness 的口径回执（四项全 0 才 empty=true） */
+export interface ProjectEmptiness {
+  readonly tasks: number;
+  readonly plans: number;
+  readonly requirements: number;
+  readonly testCases: number;
+  readonly empty: boolean;
+}
+
+/** 步骤内的行动按钮：点击即落位到对应面板（真实动作由 PlanPage 注入，向导本身不持有导航权） */
+function EmptyStepAction({ label, hint, onClick }: {
+  readonly label: string;
+  readonly hint?: string;
+  readonly onClick: () => void;
+}) {
+  return (
+    <div style={{ background: 'var(--surface-2, rgba(0,0,0,.03))', border: '1px solid var(--border)', borderRadius: 8, padding: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+      <button onClick={onClick} className="tbtn-anim"
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 14px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)' }}>{label}</button>
+      {hint ? <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{hint}</span> : null}
+    </div>
+  );
+}
+
+/**
+ * T03183（PM-103）：零资料项目的「导入 PRD → 生成需求矩阵 → 建计划」三步引导。
+ * 三步都落位到**现有入口**（PRD 管理面板 / 需求跟踪矩阵 / 新建计划），不新造页面；
+ * 锚点即 `plan.showPrd` / `plan.showMatrix` / 计划新建动作——T03187（D-13）定义稳定路由契约时直接复用，
+ * 面板重构（UX-08）不得另写一套跳转。
+ * 关闭、跳过与完成任何一个 CTA 都按 `guide.dismiss.<projectId>` 记住，此后该项目不再自动弹出。
+ */
+export function EmptyProjectGuide({ open, counts, onClose, onImportPrd, onOpenMatrix, onCreatePlan }: {
+  readonly open: boolean;
+  readonly counts: ProjectEmptiness | null;
+  readonly onClose: () => void;
+  readonly onImportPrd: () => void;
+  readonly onOpenMatrix: () => void;
+  readonly onCreatePlan: () => void;
+}) {
+  const stats = counts
+    ? `当前：任务 ${counts.tasks} · 计划 ${counts.plans} · 需求 ${counts.requirements} · 用例 ${counts.testCases}`
+    : '';
+  const steps: GuideStep[] = [
+    {
+      title: '① 导入 PRD',
+      icon: FileText,
+      desc: '先把需求来源放进项目——PRD 原文是需求矩阵与 AI 拆解计划的输入。',
+      points: [
+        '支持粘贴或导入 PRD / 需求文档，原文保留可回溯',
+        '导入后可在 PRD 管理面板继续编辑与确认',
+        '暂时没有 PRD：可直接跳到第 ③ 步手写计划，之后再补',
+      ],
+      visual: <EmptyStepAction label="打开 PRD 管理" hint={stats} onClick={onImportPrd} />,
+    },
+    {
+      title: '② 生成需求矩阵',
+      icon: Table2,
+      desc: '把 PRD 里的需求逐条落成矩阵行，后续计划与用例都挂在这条需求线上。',
+      points: [
+        '需求矩阵 = 需求 × 计划/待办关联的追踪视图',
+        '从 PRD 导入或 AI 计划导入会自动生成需求行',
+        '行内可关联计划任务与待办，也可手工新增/编辑',
+      ],
+      visual: <EmptyStepAction label="打开需求跟踪矩阵" hint={stats} onClick={onOpenMatrix} />,
+    },
+    {
+      title: '③ 建计划',
+      icon: CalendarPlus,
+      desc: '有了需求就可以排期：计划行按工作日串行推算，周末与节假日自动跳过。',
+      points: [
+        '新建普通任务 / 阶段里程碑 / 日常任务',
+        '也可导入 Excel 批量建计划，或在 AI 工作台从 PRD 自动拆解',
+        '时间线随工期与节假日变更自动重排',
+      ],
+      visual: <EmptyStepAction label="新建第一条计划" hint={stats} onClick={onCreatePlan} />,
+    },
+  ];
+  return <PageGuideDialog open={open} onClose={onClose} title="新项目 · 三步开始" steps={steps} skipLabel="不再显示" />;
 }

@@ -168,6 +168,25 @@ api.get('/projects/name-duplicates', (_req, res) => {
   });
 });
 
+/**
+ * T03183（PM-103）：零资料项目判定——任务/计划/需求（需求矩阵行）/用例四项全为 0 才展示首访三步引导。
+ * 口径只放在服务端一处：前端不再逐表取数再拼「算不算有数据」，避免同一判据出现第二套。
+ * 任务与计划按未归档计（归档行不再出现在任何列表里，按「有资料」展示引导反而误导）；需求/用例表无归档列。
+ */
+api.get('/projects/:id/emptiness', (req, res) => {
+  const db = getDb();
+  const id = req.params.id;
+  if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(id)) return res.status(404).json({ error: '项目不存在' });
+  const count = (sql: string) => Number((db.prepare(sql).get(id) as { c: number }).c ?? 0);
+  const counts = {
+    tasks: count('SELECT COUNT(*) AS c FROM tasks WHERE project_id = ? AND archived = 0'),
+    plans: count('SELECT COUNT(*) AS c FROM plan_tasks WHERE project_id = ? AND archived = 0'),
+    requirements: count('SELECT COUNT(*) AS c FROM prd_requirements WHERE project_id = ?'),
+    testCases: count('SELECT COUNT(*) AS c FROM test_cases WHERE project_id = ?'),
+  };
+  res.json({ ...counts, empty: counts.tasks + counts.plans + counts.requirements + counts.testCases === 0 });
+});
+
 /** T00663：用户置顶权重（与前端 web/src/ui/projectOrder.ts 的 PROJ_PIN_WEIGHT 对齐） */
 const PROJ_PIN_WEIGHT = -9999;// T00663：项目自定义排序（拖拽后按序保存）——仅重排传入 id 的顺序号，置顶项（负权重）保持不动
 api.post('/projects/reorder', (req, res) => {
