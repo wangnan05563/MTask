@@ -534,6 +534,24 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     );
     CREATE INDEX IF NOT EXISTS idx_material_timing_card ON material_timing_samples(card_key, created_at);
   `);
+  // T03192（PRD G-3）：AI 生成 job 级终态样本——成功率基线积累。
+  // 与 ai_usage（单次模型调用）不同，这里一行＝一个 job 的终态：done/aborted/error + 节次齐全度；
+  // 口径（取消不进分母、partial 不计成功）由 lectureMetrics.summarizeJobSuccess 单源复算。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_job_runs (
+      id             TEXT PRIMARY KEY,
+      card_key       TEXT NOT NULL,
+      mode           TEXT NOT NULL DEFAULT 'unknown',
+      status         TEXT NOT NULL,
+      sections_total INTEGER NOT NULL DEFAULT 0,
+      sections_ok    INTEGER NOT NULL DEFAULT 0,
+      started_at     TEXT NOT NULL,
+      finished_at    TEXT NOT NULL,
+      created_at     TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_job_runs_finished ON ai_job_runs(finished_at);
+    CREATE INDEX IF NOT EXISTS idx_ai_job_runs_card ON ai_job_runs(card_key, finished_at);
+  `);
   ensureColumn('tasks', 'verified', 'verified INTEGER NOT NULL DEFAULT 0');
   ensureColumn('queues', 'paused', 'paused INTEGER NOT NULL DEFAULT 0'); // T01434：队列级暂停/继续
   // T00490：记录字体颜色（Excel 风格颜色按钮）——空串=默认色

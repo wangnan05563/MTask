@@ -103,8 +103,12 @@ export function lectureSessionModeOf(record: LectureSessionRecord): LectureSessi
 }
 
 /** done 且产物齐全（至少一节且全部 ok）才算成功；只有部分产物不得计 done */
+function isFullSuccessCounts(status: LectureSessionRecord['status'], sectionsTotal: number, sectionsOk: number): boolean {
+  return status === 'done' && sectionsTotal > 0 && sectionsOk >= sectionsTotal;
+}
+
 function isFullSuccess(record: LectureSessionRecord): boolean {
-  return record.status === 'done' && record.sections.length > 0 && record.sections.every((s) => s.ok);
+  return isFullSuccessCounts(record.status, record.sections.length, record.sections.filter((s) => s.ok).length);
 }
 
 /** 单组记录的口径计算（不含 byMode，避免分组递归） */
@@ -165,4 +169,60 @@ export function summarizeLectureMetrics(
     if (group.length > 0) byMode[mode] = { ...summarizeGroup(group, targets), byMode: {} };
   }
   return { ...base, byMode };
+}
+
+// ——————————————————————————————————————————————————————————————
+// T03192（七期 §7.4，PRD 整合版 G-3）：job 级成功率基线。
+// ai_job_runs 只存终态计数（节次总数/ok 数），不存节正文；这里与上面同口径复算，
+// 复用 isFullSuccessCounts，避免「接口显示一个数、验收脚本算另一个数」。
+// ——————————————————————————————————————————————————————————————
+
+export interface JobSuccessRecord {
+  status: LectureSessionRecord['status'];
+  /** 该 job 应产出的节次总数（0＝没有任何产物） */
+  sectionsTotal: number;
+  /** 其中 ok 的节次数 */
+  sectionsOk: number;
+  mode?: Exclude<LectureSessionMode, 'unknown'>;
+}
+
+export interface JobSuccessGroup {
+  samples: number;
+  /** 分母：samples − aborted */
+  attempted: number;
+  success: number;
+  /** done 但节次不全——只进分母不进分子 */
+  partial: number;
+  aborted: number;
+  /** attempted=0 时为 null（缺失≠0%），否则 0..1 保留 4 位小数 */
+  successRate: number | null;
+}
+
+export interface JobSuccessSummary extends JobSuccessGroup {
+  byMode: Partial<Record<LectureSessionMode, JobSuccessGroup>>;
+}
+
+function summarizeJobGroup(records: readonly JobSuccessRecord[]): JobSuccessGroup {
+  const aborted = records.filter((r) => r.status === 'aborted').length;
+  const attempted = records.length - aborted;
+  const success = records.filter((r) => isFullSuccessCounts(r.status, r.sectionsTotal, r.sectionsOk)).length;
+  const partial = records.filter((r) => r.status === 'done').length - success;
+  return {
+    samples: records.length,
+    attempted,
+    success,
+    partial,
+    aborted,
+    successRate: attempted === 0 ? null : Math.round((success / attempted) * 10000) / 10000,
+  };
+}
+
+/** G-3 job 级成功率：取消不进分母、partial 不计成功、AI/离线按 mode 分列 */
+export function summarizeJobSuccess(records: readonly JobSuccessRecord[]): JobSuccessSummary {
+  const byMode: Partial<Record<LectureSessionMode, JobSuccessGroup>> = {};
+  for (const mode of ['ai', 'offline', 'unknown'] as const) {
+    const group = records.filter((r) => (r.mode ?? 'unknown') === mode);
+    if (group.length > 0) byMode[mode] = summarizeJobGroup(group);
+  }
+  return { ...summarizeJobGroup(records), byMode };
 }

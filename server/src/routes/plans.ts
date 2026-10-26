@@ -1,5 +1,7 @@
 import { Router, raw } from 'express';
+import { randomUUID } from 'node:crypto'; // T03192（G-3）：job 级样本标识
 import { PlanService } from '../services/PlanService';
+import { AiJobStats } from '../services/AiJobStats'; // T03192（G-3）：AI 生成成功率基线样本落库
 import { TestCaseService } from '../services/TestCaseService'; // T01484：测试用例取数（PRD-测试用例管理 §6）
 import { assertOutlineShape, kickoffOutline, preflight, kickoffPptStream } from '../services/kickoffService'; // T02095/T02096/T02103：启动会 PPT 前置校验、大纲与 SSE 流式生成
 import { summaryPreflight } from '../services/summaryPptService'; // T02853（六期 S2）：总结汇报 PPT 前置校验聚合 S1~S9
@@ -155,12 +157,33 @@ planApi.post('/code-review-lecture/export', async (req, res) => {
  */
 planApi.post('/code-review-lecture-stream', raw({ type: () => true, limit: '30mb' }), async (req, res) => {
   let body: unknown;
+  let request: ReturnType<typeof validateLectureStreamBody>;
   try {
     body = parseLectureStreamBody(req.body);
-    validateLectureStreamBody(body);
+    request = validateLectureStreamBody(body);
   } catch (e) {
     return res.status(lectureStreamErrorStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });
   }
+
+  // T03192（G-3）：job 级成功率样本。只上报「完整一轮」的终态——
+  // 仅大纲是中间交付、续作/单节重试是同一 job 的片段，单独记进来会把 partial 当失败污染基线
+  // （跨请求合并节次需前端持稳定 jobId，属后续增强）。
+  const startedAt = new Date().toISOString();
+  const recordJob = (status: 'done' | 'aborted' | 'error', sections: ReadonlyArray<{ ok: boolean }>) => {
+    if (request.outlineOnly || request.resumeFrom || request.sectionKeys) return;
+    try {
+      AiJobStats.record({
+        jobId: randomUUID(),
+        cardKey: 'ai.code_review_lecture',
+        status,
+        mode: 'ai',
+        sectionsTotal: sections.length,
+        sectionsOk: sections.filter((s) => s.ok).length,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+      });
+    } catch { /* 指标落库失败不得影响生成主流程 */ }
+  };
 
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache');
@@ -184,6 +207,8 @@ planApi.post('/code-review-lecture-stream', raw({ type: () => true, limit: '30mb
       onStage: (stage) => send('stage', stage),
       onChunk: (chunk) => send('chunk', chunk),
     });
+    // 先记样本再回事件：客户端断开时上面的 early return 会跳过后续发送，但取消仍要进基线口径
+    recordJob(result.aborted ? 'aborted' : 'done', result.sections);
     if (closed || res.writableEnded) return;
     if (result.aborted) {
       // PRD §6.2「已生成节保留」：中止也把已完成的节次交回前端，供「从第 n 节继续」拼接
@@ -211,6 +236,8 @@ planApi.post('/code-review-lecture-stream', raw({ type: () => true, limit: '30mb
       });
     }
   } catch (e) {
+    // 走到这里是采集/模型层面的真失败（用户中止由 runLectureStream 返回 aborted，不抛）
+    recordJob('error', []);
     send('error', { error: e instanceof Error ? e.message : String(e) });
   }
   res.end();
