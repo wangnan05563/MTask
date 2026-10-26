@@ -3226,12 +3226,13 @@ export function TasksPage() {
           style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}>
           {/* 图标指示下一步动作：有展开内容 → 将收起（折叠图标）；全部收起 → 将展开（展开图标） */}
           {anyFoldOpen() ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />}
-        {/* T02283：主列表断供时给出原因与重试入口；失败态下不再渲染「暂无待办任务」空态 */}
+        </button>
+        {/* T02283：主列表断供时给出原因与重试入口；失败态下不再渲染「暂无待办任务」空态。
+            T03203（U01 回归）：资源提示含「重试」按钮，必须与折叠按钮同级——放进按钮内会形成 button 嵌套（validateDOMNesting）。 */}
         <ResourceHint
           view={{ phase: tasksPhase, error: tasksError, stale: tasksPhase === 'error' && (todo.length > 0 || done.length > 0), reload: () => void loadTasks(activeProject) }}
           label="任务列表"
         />
-        </button>
         <label className="task-op" title="导入数据 — CSV/JSON（JSON 支持 Trello 导出与 JSON 数组），预览确认后入库"
           style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', display: 'inline-block' }}>
           <span>导入数据</span>
