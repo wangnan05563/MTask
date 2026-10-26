@@ -1074,10 +1074,11 @@ ${a.result}`;
   // 与前端面板、REST /tasks/:id/ruling* 复用同一条 TaskService 通道（取数、追加详情、留痕不另写一套）。
   server.registerTool('mtask_get_ruling_options', {
     title: '获取派生单裁决选项',
-    description: '返回派生单裁决的候选选项（服务端单源，与前端裁决面板同读）。'
-      + '【动态口径】传 id/taskNo 时按该单「处理结果」抽取候选（如结论里写「方案 A / 方案 B」就返回这两项）；'
-      + '抽不到 2 条以上才回落通用四枚（采纳合并/部分采纳/暂不采纳/需补充信息）。不传任务则直接返回通用四枚。'
-      + '裁决是把 AI 派生待办的结论标记为采纳/不采纳的流程；提交时可直接传选项值，也可传自定义文本。'
+    description: '返回裁决的候选选项（服务端单源，与前端裁决面板同读）。'
+      + '【动态口径】传 id/taskNo 时按该单「处理结果」抽取候选（如结论里写「方案 A / 方案 B」就返回这两项），'
+      + '结论抽不到时改用标题里的裁决徽标（如「【等你一句话裁决：A/B/C】」拆出 A全量纳管/B…/C…）；'
+      + '两条都抽不到 2 条以上才回落通用四枚（采纳合并/部分采纳/暂不采纳/需补充信息）。不传任务则直接返回通用四枚。'
+      + '裁决是把待裁决单的结论标记为采纳/不采纳的流程；提交时可直接传选项值，也可传自定义文本。'
       + '【自动识别】结论回传时已自动判定是否打「待裁决」（见 mtask_update_task_result），无需先调本工具。',
     inputSchema: {
       id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
@@ -1098,9 +1099,9 @@ ${a.result}`;
 
   server.registerTool('mtask_mark_ruling', {
     title: '标记派生单待裁决',
-    description: '给指定派生单打「待裁决」标记（仅 derived_from 有值可标）。幂等：已标记原样返回；已裁决则拒绝。'
-      + '【通常不需要手动调】结论经 mtask_update_task_result 回传时，服务端已按结论里的裁决请求短语自动识别并打标/撤标；'
-      + '本工具仅用于结论措辞不在识别规则内、但确需人工裁决时显式补标。',
+    description: '给指定单打「待裁决」标记。可标对象（裁决主体）：派生单（derived_from 有值 / 描述首行「来源：Txxxx」/ 标题带「【AI回写待审核】」），或标题本身在请求裁决（含「裁决/裁定/定夺/拍板」徽标）的单——非主体的普通单会被拒绝，不凭空挂徽标。幂等：已标记原样返回；已裁决则拒绝。'
+      + '【通常不需要手动调】结论经 mtask_update_task_result 回传时，服务端已按标题徽标与结论里的裁决请求短语自动识别并打标/撤标；'
+      + '本工具仅用于措辞不在识别规则内、但确需人工裁决时显式补标。',
     inputSchema: {
       id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
       taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
@@ -1116,7 +1117,7 @@ ${a.result}`;
 
   server.registerTool('mtask_submit_ruling', {
     title: '提交派生单裁决',
-    description: '提交派生单裁决：result 为候选选项值（见 mtask_get_ruling_options，按该单结论动态生成，抽不到回落通用四枚）或自定义文本。提交后任务标记为「已裁决」，裁决结果**追加**到任务详情末尾（不覆盖已有内容），并写任务事件留痕。仅派生单可裁决；重复提交会被拒绝。',
+    description: '提交裁决：result 为候选选项值（见 mtask_get_ruling_options，按该单结论/标题徽标动态生成，抽不到回落通用四枚）或自定义文本。提交后任务标记为「已裁决」，裁决结果**追加**到任务详情末尾（不覆盖已有内容），并写任务事件留痕。仅裁决主体（派生单或标题请求裁决的单）可裁决；重复提交会被拒绝。',
     inputSchema: {
       id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
       taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),

@@ -9,7 +9,7 @@ import { parseReqIds, syncReqStatuses } from './reqStatusSync'; // T02087：需�
 import { recalcMilestonesOfChild } from './milestoneProgress'; // T02090：里程碑进度聚合（任务完成度是聚合输入）
 import { parsePlanDeps, depsSatisfied, topoOrder, type PlanDep } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7）
 import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化（拉取侧平台偏好匹配）
-import { detectRuling, RULING_DEFAULT_OPTIONS } from '../util/ruling'; // T02949：裁决自动识别（纯函数单源）
+import { detectRuling, isRulingSubject, RULING_DEFAULT_OPTIONS } from '../util/ruling'; // T02949：裁决自动识别（纯函数单源）
 
 /** 批量 IN 查询的每批 id 数：SQLite 变量上限 999，留足余量并与图片批量查询（≤200）同量级 */
 const PLAN_LOOKUP_BATCH = 200;
@@ -453,6 +453,19 @@ function collectUpdateEvents(patch: UpdateEventPatch, before: UpdateEventBefore,
   return ev;
 }
 
+  /**
+ * T02949 复验：判定输入统一从这里组装——标题/描述/结论三个面一起交给纯函数，
+ * 避免每个调用方各挑一个字段（旧口径只喂 handle_result，标题徽标请求裁决的单全部漏标）。
+ */
+function rulingInputOf(task: { title?: string | null; description?: string | null; handle_result?: string | null; derived_from?: string | null }) {
+  return {
+    title: task.title ?? '',
+    description: task.description ?? '',
+    handleResult: task.handle_result ?? '',
+    derivedFrom: task.derived_from ?? '',
+  };
+}
+
 export const TaskService = {
   create(input: TaskInput): TaskView {
     const db = getDb();
@@ -747,7 +760,8 @@ export const TaskService = {
     }
     // T02949 方案 A：结论一变更就重判「是否需要裁决」。挂在这里而不是各写入口各做一次——
     // REST PATCH、MCP update_task_result、派生单归并母单全都经过 update()，一处挂即全链覆盖。
-    if (patch.handle_result !== undefined) this.autoRuling(id);
+    if (patch.handle_result !== undefined || patch.title !== undefined
+      || patch.description !== undefined || patch.derived_from !== undefined) this.autoRuling(id);
     // 反向计划联动（T00436）：待办被项目计划关联时，状态变更同步回计划任务（已完成↔已完成，待办→进行中）
     if (patch.status !== undefined) syncPlanOnStatusChange(id, patch.status);
     // T01876：归档态变更同样要重算父进度（REST/MCP 单条归档走本方法，批量归档见 ArchiveService）
@@ -904,16 +918,16 @@ export const TaskService = {
     if (!id) return [...RULING_DEFAULT_OPTIONS];
     const task = this.getById(id);
     if (!task) throw new Error('任务不存在');
-    const picked = detectRuling(task.handle_result ?? '').options;
+    const picked = detectRuling(rulingInputOf(task)).options;
     return picked.length >= 2 ? picked : [...RULING_DEFAULT_OPTIONS];
   },
 
-  /** T02949：打「待裁决」标记。仅派生单可裁决——裁决对象就是 AI 派生待办的结论采纳与否。
+  /** T02949：打「待裁决」标记。裁决主体 = 派生单（字段/描述来源行/【AI回写待审核】）或标题自带裁决徽标的单。
    *  幂等：已是待裁决则原样返回（不报错、不刷时间）；已裁决则拒绝（流程是单向的）。 */
   markRuling(id: string): TaskView {
     const task = this.getById(id);
     if (!task) throw new Error('任务不存在');
-    if (!task.derived_from) throw new Error('仅派生单可裁决（本任务非派生单）');
+    if (!isRulingSubject(rulingInputOf(task))) throw new Error('本单不是裁决对象（非派生单且标题未请求裁决）');
     if (task.ruling_state === '已裁决') throw new Error('本单已裁决，不能重复标记');
     if (task.ruling_state === '待裁决') return task;
     const t = now();
@@ -930,7 +944,7 @@ export const TaskService = {
     if (!result?.trim()) throw new Error('裁决结果不能为空');
     const task = this.getById(id);
     if (!task) throw new Error('任务不存在');
-    if (!task.derived_from) throw new Error('仅派生单可裁决（本任务非派生单）');
+    if (!isRulingSubject(rulingInputOf(task))) throw new Error('本单不是裁决对象（非派生单且标题未请求裁决）');
     if (task.ruling_state === '已裁决') throw new Error('本单已裁决，不能重复提交');
     const db = getDb();
     const t = now();
@@ -943,17 +957,18 @@ export const TaskService = {
   },
 
   /**
-   * T02949 方案 A：结论变更后**自动**判定是否需要人工裁决，并自动打标 / 撤标。
-   * - 只作用于派生单：裁决对象是「AI 派生待办的结论是否采纳」，非派生单没有可裁决对象；
+   * T02949 方案 A：结论/标题变更后**自动**判定是否需要人工裁决，并自动打标 / 撤标。
+   * - 只作用于裁决主体（见 `isRulingSubject`）：非主体的普通单没有可裁决对象，不挂徽标；
    * - 已裁决的单是终态，无论结论怎么改都不回退（否则归并母单写回会把它翻回待裁决）；
    * - 不刷 updated_at：标记是流程标注，不代表任务正文又被人动过，否则列表时效与「最新编辑」全乱；
    * - 待裁决可以撤销：它只是提示态，结论被改写成不再要求裁决时就该撤回，避免挂着过期徽标。
    */
   autoRuling(id: string): void {
     const task = this.getById(id);
-    if (!task?.derived_from) return;
+    if (!task) return;
+    if (!isRulingSubject(rulingInputOf(task))) return;
     if (task.ruling_state === '已裁决') return;
-    const detected = detectRuling(task.handle_result ?? '');
+    const detected = detectRuling(rulingInputOf(task));
     const db = getDb();
     if (detected.needed && task.ruling_state !== '待裁决') {
       db.prepare('UPDATE tasks SET ruling_state = ?, ruling_at = ? WHERE id = ?').run('待裁决', now(), id);
@@ -967,19 +982,25 @@ export const TaskService = {
   },
 
   /**
-   * T02949 方案 A：历史派生单补标——旧版本没有自动识别，已回传且结论明确要求裁决的单仍是空态。
-   * strict 模式避开「结论里叙述方案 A/B 但已收口」的历史单：补标不是重判历史业务，
-   * 只把明确请求过裁决的漏标项补上。返回补标条数供启动日志使用。
+   * T02949 方案 A：历史单补标——旧版本没有自动识别，已回传且明确要求裁决的单仍是空态。
+   * 两道闸都和实时路径同口径，缺一不可：
+   *  - `isRulingSubject`：只有裁决主体（派生单 / 标题请求裁决）才补。生产副本实测少了这道闸，
+   *    会把 30+ 支普通单（含 [PRD] 拆解单）挂上徽标，而它们提交裁决时又被 `submitRuling` 拒绝——
+   *    「挂着徽标却点不动」比漏标更难解释；
+   *  - `strict`：避开「结论里叙述方案 A/B 但已收口」的历史单。补标不是重判历史业务，
+   *    只把明确请求过裁决的漏标项补上。返回补标条数供启动日志使用。
    */
   backfillRuling(): number {
     const db = getDb();
     const rows = db
-      .prepare("SELECT id, handle_result FROM tasks WHERE derived_from IS NOT NULL AND derived_from <> '' AND (ruling_state IS NULL OR ruling_state = '')")
-      .all() as Array<{ id: string; handle_result: string | null }>;
+      .prepare("SELECT id, title, description, handle_result, derived_from FROM tasks WHERE ruling_state IS NULL OR ruling_state = ''")
+      .all() as Array<{ id: string; title: string; description: string; handle_result: string | null; derived_from: string | null }>;
     const t = now();
     let marked = 0;
     for (const row of rows) {
-      const detected = detectRuling(row.handle_result ?? '', { strict: true });
+      const input = rulingInputOf(row);
+      if (!isRulingSubject(input)) continue;
+      const detected = detectRuling(input, { strict: true });
       if (!detected.needed) continue;
       db.prepare('UPDATE tasks SET ruling_state = ?, ruling_at = ? WHERE id = ?').run('待裁决', t, row.id);
       logEvent(db, row.id, 'ruling', `历史补标：${detected.reason}`);
