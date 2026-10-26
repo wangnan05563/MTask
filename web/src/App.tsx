@@ -15,7 +15,7 @@ import { MarkdownStyles } from './ui/Markdown';
 import { CommandPalette } from './pages/CommandPalette';
 import { SettingsProvider } from './settings';
 import { MobileShell } from './mobile/MobileShell';
-import { Activity, Boxes, CalendarRange, Compass, Lightbulb, ListOrdered, ListTodo, ScrollText, Settings, Sparkles, type LucideIcon } from 'lucide-react';
+import { Compass } from 'lucide-react'; // T03184（PM-102）：菜单图标随 TABS 一并迁入 ui/tabs.ts，此处只留命令面板入口图标
 import { PageGuideDialog, hasSeenGuide, markGuideSeen } from './pages/PageGuide'; // T00706：通用使用向导
 import { GUIDES } from './pages/guides'; // T00706：各菜单向导内容配置
 import { useReportStream } from './reportStream'; // T01038：AI 工作台运行态（周报生成）
@@ -23,21 +23,9 @@ import { usePrdGen } from './stores/prdGenStore'; // T01038：原始需求生成
 import { aiImportStore } from './stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 import { Loader2 } from 'lucide-react'; // T01038：Tab 运行指示旋转图标
 
-// T00441：日志/归档入口从顶部菜单移入「设置」（内网穿透下方），顶部菜单收敛为高频功能
-type Tab = 'tasks' | 'aitools' | 'prompts' | 'req' | 'plan' | 'queue' | 'report' | 'exec-sessions' | 'settings';
+import { TABS, type Tab } from './ui/tabs'; // T03184（PM-102）：一级导航单源——命令面板页面列表同源生成
 
-const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
-  { key: 'tasks', label: '任务', icon: ListTodo },
-  { key: 'aitools', label: '模型', icon: Boxes },
-  { key: 'prompts', label: '提示词', icon: ScrollText },
-  { key: 'req', label: '通用需求', icon: Lightbulb },
-  { key: 'plan', label: '项目管理', icon: CalendarRange }, // T00664：更名——后续定位为项目管理模块
-  // T01154：仪表盘入口迁至「设置 → 仪表盘」（通用设置之后），顶部菜单不再占位
-  { key: 'report', label: 'AI 工作台', icon: Sparkles }, // T00569：周报改名 AI 工作台（卡片化入口）
-  { key: 'queue', label: '队列', icon: ListOrdered },
-  { key: 'exec-sessions', label: '执行会话', icon: Activity }, // T01271-FR1.4：外部平台执行会话观测面板
-  { key: 'settings', label: '设置', icon: Settings },
-];
+// T00441：日志/归档入口从顶部菜单移入「设置」（内网穿透下方），顶部菜单收敛为高频功能
 
 /** 应用外壳：导航 + 主题变量容器。颜色取自 CSS 变量，主题切换即时全局生效 */
 function Shell() {
@@ -109,6 +97,25 @@ function Shell() {
     };
     globalThis.addEventListener('keydown', onKey);
     return () => globalThis.removeEventListener('keydown', onKey);
+  }, []);
+
+  // T03184（PM-102 / D-07）：数字键 1～9 直达对应一级菜单——仅在「非输入、无弹窗、非输入法组合」时生效。
+  // 输入框里的 1～9 是内容；弹窗打开时用户在做局部操作，切页会把上下文弄丢；IME 组合中的按键不能当快捷键。
+  useEffect(() => {
+    const onDigit = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.isComposing || e.keyCode === 229) return;
+      if (!/^[1-9]$/.test(e.key)) return;
+      const anchor = e.target instanceof Element ? e.target : null;
+      if (anchor?.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]')) return;
+      if (document.querySelector('dialog[open], [role="dialog"], [aria-modal="true"]')) return;
+      const target = TABS[Number(e.key) - 1];
+      if (!target) return;
+      e.preventDefault();
+      setTab(target.key);
+    };
+    globalThis.addEventListener('keydown', onDigit);
+    return () => globalThis.removeEventListener('keydown', onDigit);
   }, []);
 
   useEffect(() => {
@@ -285,7 +292,7 @@ function Shell() {
           nowrap 会把末元素顶出 nav 边框（456px 实测越界 142px）——改 wrap + rowGap 折行兜底，
           与 TasksPage.renderToolbar 同口径；宽窗口仍是单行，布局不变。 */}
       <nav style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4, rowGap: 6, margin: '0', padding: '12px 0', borderBottom: '1px solid var(--border)' }}>
-        {TABS.map((t) => {
+        {TABS.map((t, i) => {
           // 菜单图标置于文字前：使用开源 lucide 图标库，与全局视觉一致
           const Icon = t.icon;
           return (
@@ -293,8 +300,9 @@ function Shell() {
               key={t.key}
               className="nav-btn"
               onClick={() => setTab(t.key)}
-              title={t.label}
+              title={`${t.label}（快捷键 ${i + 1}）`}
               aria-label={t.label}
+              aria-keyshortcuts={String(i + 1)} // T03184：数字键 1～9 直达（输入框/弹窗内不生效）
               style={{
                 padding: '7px 10px',
                 borderRadius: 6,

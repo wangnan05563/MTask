@@ -175,6 +175,9 @@ export interface TaskListOptions {
   pending?: boolean;
   /** 排序键；默认 pinned（置顶优先+创建时间倒序），与旧行为一致 */
   sort?: 'pinned' | 'created_desc' | 'created_asc' | 'priority_desc' | 'priority_asc' | 'manual';
+  /** T03184（PM-102）：命令面板结构化查询的 WHERE 片段（由 util/taskQuery 编译，参数化）。
+   *  与 keyword 二选一：结构化走语法树，模糊走原关键词匹配。 */
+  queryFilter?: { where: string; values: readonly unknown[] };
 }
 
 function now(): string {
@@ -272,6 +275,11 @@ function buildTaskFilter(opts: TaskListOptions): { where: string[]; values: unkn
     // 只搜标题/描述时「按编号搜索」会把目标行整条筛掉（列表 0 行 → 定位与抽屉直达都落空）。
     where.push(String.raw`(title LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\' OR task_no LIKE ? ESCAPE '\')`);
     values.push(kw, kw, kw);
+  }
+  // T03184：结构化查询整体作为一个条件并入，内部 AND/OR 语义由编译产物自带括号保证
+  if (opts.queryFilter) {
+    where.push(`(${opts.queryFilter.where})`);
+    values.push(...opts.queryFilter.values);
   }
   if (opts.categoryId === 'none') where.push('category_id IS NULL');
   else if (opts.categoryId) { where.push('category_id = ?'); values.push(opts.categoryId); }

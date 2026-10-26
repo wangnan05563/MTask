@@ -5,6 +5,7 @@ import { PlanService } from '../services/PlanService'; // T01491：读取内部 
 import { WorkspaceService } from '../services/WorkspaceService'; // T00776：工作空间搜索/读文件
 import { getDb } from '../db/connection';
 import { TaskService, nextTaskNo, TASK_STATUSES, type TaskInput, type TaskListOptions } from '../services/TaskService';
+import { compileTaskQuery, parseTaskQuery } from '../util/taskQuery'; // T03184（PM-102）：命令面板结构化搜索语法
 import { resolveCreateOrigin } from '../services/derivedOrigin'; // T02320：建单溯源判据与 MCP 通道同一实现
 import { ACTIVE_PROJECT_WHERE, findProjectNameOwners, projectNameConflictError, censusDuplicateProjectNames } from '../util/projectRouting'; // T02938：「现行项目」判据单源（REST 列表与 MCP 按名解析共用）；T02943：重名产生侧（新建/改名）查重与存量清点同源
 import { RecurringService, TokenService } from '../services/RecurringService'; // T01073：循环任务 + API Token
@@ -688,6 +689,40 @@ api.get('/tasks', (req, res) => {
   // scripts/verify-*.mjs 与 perf jmx 直取数组）不受任何影响，故本端点不改参数、不把裸数组变成对象。
   if (wantsTotal(total)) return res.json({ items, total: TaskService.count(listOpts) });
   res.json(items);
+});
+
+/**
+ * T03184（PM-102）：命令面板搜索——结构化语法在**后端全表**过滤后再分页（不得先截 500 条再内存筛）。
+ * 返回信封带 total/truncated/degraded/hint：面板据此显示「仅显示前 500 条」或语法降级原因。
+ * 独立端点而不动 /tasks 的裸数组契约：目前只有面板需要计数与截断提示。
+ * 非法语法不报错——降级为对原文的全文搜索，并把原因回传（PRD ②）。
+ */
+api.get('/tasks/search', (req, res) => {
+  const q = String(req.query.q ?? '').trim();
+  const limit = Math.min(500, Math.max(1, Math.floor(Number(req.query.limit) || 100)));
+  const offset = Math.max(0, Math.floor(Number(req.query.offset) || 0));
+  const listOpts: TaskListOptions = { limit, offset };
+  let mode: 'fuzzy' | 'structured' = 'fuzzy';
+  let degraded = false;
+  let degradeReason = '';
+  try {
+    const parsed = parseTaskQuery(q);
+    if (parsed.mode === 'structured' && parsed.node) {
+      listOpts.queryFilter = compileTaskQuery(parsed.node);
+      mode = 'structured';
+    }
+  } catch (e) {
+    degraded = true;
+    degradeReason = e instanceof Error ? e.message : String(e);
+  }
+  if (mode === 'fuzzy' && q) listOpts.keyword = q;
+  const total = TaskService.count(listOpts);
+  const items = TaskService.list(listOpts);
+  const truncated = total > offset + items.length;
+  let hint = '';
+  if (degraded) hint = `查询语法有误（${degradeReason}），已按全文搜索「${q}」处理`;
+  else if (truncated) hint = `仅显示前 ${limit} 条，请细化关键词`;
+  res.json({ items, total, limit, offset, mode, degraded, truncated, hint });
 });
 
 // 按任务编号查询单个任务：AI Agent / 前端凭 task_no 定位（编号全局唯一）

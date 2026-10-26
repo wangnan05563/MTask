@@ -396,6 +396,37 @@ export function PromptsPage() {
   useEffect(() => { promptsView.reload(); }, [activeCat, search]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { void loadReqCats(); }, [loadReqCats]);
 
+  // T03184（PM-102）：命令面板点选提示词后「定位 + 高亮」，不再只把用户丢到提示词页。
+  // 两条通道缺一不可：页面已挂载时事件即时生效；未挂载（从别的菜单点选）时事件会丢，
+  // 故面板同时写 prompts.focusId 会话键，本页挂载时读一次并清除，避免再次进页重复高亮。
+  useEffect(() => {
+    const locate = (detail: { promptId?: string; categoryId?: string }) => {
+      const promptId = detail.promptId;
+      if (!promptId) return;
+      if (detail.categoryId) setActiveCat(detail.categoryId); // 目标可能在别的分组：先切过去，否则行根本不在列表里
+      setSearch('');
+      setExpandedIds((prev) => ({ ...prev, [promptId]: true }));
+      setFlashAt((prev) => ({ ...prev, [promptId]: Date.now() }));
+      let tries = 0;
+      const scroll = () => {
+        const el = document.getElementById(`prompt-row-${promptId}`);
+        if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); return; }
+        if (++tries < 20) setTimeout(scroll, 100); // 等列表取数/切分组后行才存在
+      };
+      setTimeout(scroll, 80);
+    };
+    const onFocus = (e: Event) => locate(((e as CustomEvent).detail ?? {}) as { promptId?: string; categoryId?: string });
+    globalThis.addEventListener('mtaskPromptFocus', onFocus);
+    try {
+      const raw = sessionStorage.getItem('prompts.focusId');
+      if (raw) {
+        sessionStorage.removeItem('prompts.focusId');
+        locate(JSON.parse(raw) as { promptId?: string; categoryId?: string });
+      }
+    } catch { /* 键损坏/存储不可用：忽略 */ }
+    return () => globalThis.removeEventListener('mtaskPromptFocus', onFocus);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ---------- 分类管理 ----------
   async function addCategory() {
     const name = await askInput({ title: '新建提示词分类', placeholder: '请输入分类名称' });
@@ -826,6 +857,7 @@ export function PromptsPage() {
           const editing = draft !== undefined;
           return (
             <li key={`${flashAt[p.id] ?? ''}|${p.id}`}
+              id={`prompt-row-${p.id}`} // T03184：命令面板命中后的滚动定位锚点
               onPointerDown={startPressFor(p.id)}
               onPointerUp={endPressFor(p.id)}
               onPointerLeave={endPressRowFor(p.id)}
