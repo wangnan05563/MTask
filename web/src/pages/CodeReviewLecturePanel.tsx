@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Ban, Download, Eye, ListChecks, RefreshCw, Sparkles, X } from 'lucide-react';
+import { Ban, Download, Eye, GitBranch, ListChecks, RefreshCw, Sparkles, X } from 'lucide-react';
 import { api } from '../api/client';
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import type { Project } from '../api/client';
 import { ProjectScopePicker } from '../ui/projectScopePicker';
+import { GitTreePickerModal } from '../ui/GitTreePickerModal';
 import { FlowButton } from '../ui/FlowButton';
 import { FlowProgress } from '../ui/FlowProgress';
 import { Markdown } from '../ui/Markdown';
@@ -155,6 +156,9 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   const [since, setSince] = useSessionState('lecture.since', '');
   // T03303：提交人过滤（甲 / 甲, 乙（且）/ 甲 | 乙（或）），与区间一起提交，服务端按 author+committer 精确比对
   const [authorFilter, setAuthorFilter] = useSessionState('lecture.authorFilter', '');
+  /** T03302：Git 树点选的提交（按项目分别存）——非空即该项目走 `shape='commits'`，优先于手填区间 */
+  const [selectedCommits, setSelectedCommits] = useSessionState<Record<string, string[]>>('lecture.selectedCommits', {});
+  const [gitTreeOpen, setGitTreeOpen] = useState(false);
   const [patchMode, setPatchMode] = useSessionState('lecture.patchMode', false);
   const [patchText, setPatchText] = useState('');
   const [exportFormat, setExportFormat] = useSessionState<'md' | 'docx' | 'pptx'>('lecture.exportFormat', 'md');
@@ -179,6 +183,17 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
 
   const selectedIds = projectIds.length > 0 ? projectIds : projects.map((p) => p.id);
 
+  /** T03302：Git 树点选摘要——只报当前报表范围里确实点过的项目，范围外残留不显示也不参与采集 */
+  const pickedProjects = useMemo(() => selectedIds
+    .map((projectId) => ({ projectId, projectName: projects.find((p) => p.id === projectId)?.name ?? projectId, shas: selectedCommits[projectId] ?? [] }))
+    .filter((p) => p.shas.length > 0), [selectedIds, selectedCommits, projects]);
+
+  const clearPicked = (projectId: string) => setSelectedCommits((prev) => {
+    const next = { ...prev };
+    delete next[projectId];
+    return next;
+  });
+
   /** 采集入参：一次评审共用一份区间；patch 模式单项目（E-1 降级通道） */
   const scopeBody = useMemo((): { body?: Record<string, unknown>; error?: string } => {
     if (patchMode) {
@@ -186,19 +201,30 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
       if (!patchText.trim()) return { error: '请粘贴 unified diff 全文（git diff / git format-patch 输出均可）' };
       return { body: { projects: [{ projectId: selectedIds[0], patch: patchText }] } };
     }
+    // T03302：Git 树点过提交的项目按 `shape='commits'` 采集（点选本身就是清单，不再叠作者过滤）；
+    // 没点过的项目继续用下面的手填区间——两者可以在同一次评审里按项目混用。
+    const pickedOf = (projectId: string) => selectedCommits[projectId] ?? [];
+    // 区间校验只对「仍要走区间」的项目有意义：全部项目都点过提交时，不该再逼用户填 base
+    const needsRange = selectedIds.some((projectId) => pickedOf(projectId).length === 0);
     const range: Record<string, string> = { shape };
-    if (shape === 'since') {
-      if (!since.trim()) return { error: '时间窗形态需要起始时间（如 2026-10-01 或 "14 days ago"）' };
-      range.since = since.trim();
-    } else {
-      if (!base.trim()) return { error: '需要填写 base（分支/标签/SHA）' };
-      range.base = base.trim();
-      if (shape === 'first-last' && !head.trim()) return { error: '首末 SHA 形态需要同时填写两个 SHA' };
-      if (head.trim()) range.head = head.trim();
+    if (needsRange) {
+      if (shape === 'since') {
+        if (!since.trim()) return { error: '时间窗形态需要起始时间（如 2026-10-01 或 "14 days ago"）' };
+        range.since = since.trim();
+      } else {
+        if (!base.trim()) return { error: '需要填写 base（分支/标签/SHA），或在 Git 树里点选提交' };
+        range.base = base.trim();
+        if (shape === 'first-last' && !head.trim()) return { error: '首末 SHA 形态需要同时填写两个 SHA' };
+        if (head.trim()) range.head = head.trim();
+      }
+      if (authorFilter.trim()) range.authorFilter = authorFilter.trim();
     }
-    if (authorFilter.trim()) range.authorFilter = authorFilter.trim();
-    return { body: { projects: selectedIds.map((projectId) => ({ projectId, range })) } };
-  }, [patchMode, patchText, selectedIds, shape, since, base, head, authorFilter]);
+    const projects = selectedIds.map((projectId) => {
+      const picked = pickedOf(projectId);
+      return picked.length > 0 ? { projectId, range: { shape: 'commits', commits: picked } } : { projectId, range };
+    });
+    return { body: { projects } };
+  }, [patchMode, patchText, selectedIds, shape, since, base, head, authorFilter, selectedCommits]);
 
   useEffect(() => () => {
     if (flashTimer.current) window.clearTimeout(flashTimer.current);
@@ -456,6 +482,24 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
               placeholder="提交人过滤：甲 / 甲, 乙（且）/ 甲 | 乙（或）"
               title="按 author 或 committer 精确匹配；逗号表示同一提交要同时命中多个词，竖线表示任一命中即可。留空不筛"
               style={{ ...fieldStyle, width: 230 }} aria-label="提交人过滤" />
+            {/* T03302：IDEA 风格 Git 树选范围——区间是「一对版本号」，点选是「一组提交」，两者互补 */}
+            <FlowButton data-lck="git-tree-btn" onClick={() => setGitTreeOpen(true)} disabled={snap.streaming}
+              title="打开 Git 树挑提交：单击=只选这条、Ctrl/Cmd+单击=加减选、Shift+单击=框选一段；确认后按选中提交采集">
+              <GitBranch size={13} style={{ marginRight: 4 }} />从 Git 树选范围
+            </FlowButton>
+            {pickedProjects.length > 0 && (
+              <span data-lck="git-tree-picked" style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', width: '100%' }}>
+                {pickedProjects.map((p) => (
+                  <span key={p.projectId} style={chipStyle}>
+                    {p.projectName}：Git 树已选 {p.shas.length} 个提交
+                    <button type="button" onClick={() => clearPicked(p.projectId)} aria-label={`清除 ${p.projectName} 的 Git 树选择`}
+                      title="清除后该项目回到上面的手填区间"
+                      style={{ marginLeft: 4, background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, fontSize: 'var(--fs-xs)' }}>×</button>
+                  </span>
+                ))}
+                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>点选优先于手填区间；未点选的项目仍按区间采集</span>
+              </span>
+            )}
           </>
         )}
         <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-s)' }}>
@@ -550,6 +594,17 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
           <Download size={13} style={{ marginRight: 4 }} />导出
         </FlowButton>
       </footer>
+
+      {gitTreeOpen && (
+        <GitTreePickerModal projects={projects.filter((p) => selectedIds.includes(p.id))} activeProjectId={selectedIds[0] ?? ''}
+          selectedByProject={selectedCommits}
+          onConfirm={(projectId, shas) => {
+            setSelectedCommits((prev) => ({ ...prev, [projectId]: shas }));
+            setGitTreeOpen(false);
+            flash(`Git 树已选 ${shas.length} 个提交（${projects.find((p) => p.id === projectId)?.name ?? projectId}）`);
+          }}
+          onClose={() => setGitTreeOpen(false)} />
+      )}
 
       {preflight && (
         <div data-lck="preflight" role="dialog" aria-modal="true" aria-label="生成前预检"

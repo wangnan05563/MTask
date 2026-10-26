@@ -6,6 +6,7 @@ import { TestCaseService } from '../services/TestCaseService'; // T01484：测�
 import { assertOutlineShape, kickoffOutline, preflight, kickoffPptStream } from '../services/kickoffService'; // T02095/T02096/T02103：启动会 PPT 前置校验、大纲与 SSE 流式生成
 import { summaryPreflight } from '../services/summaryPptService'; // T02853（六期 S2）：总结汇报 PPT 前置校验聚合 S1~S9
 import { buildLectureDiffView, listLectureProjects, previewLectureScope, LectureScopeError } from '../services/lectureScope'; // T02867（六期 2.3）：代码评审讲稿范围/排除过滤器
+import { queryGitLog } from '../services/lectureGitLog'; // T03302（六期 2.1 补强）：Git 树选范围弹窗取数
 import { lectureStreamErrorStatus, parseLectureStreamBody, runLectureStream, validateLectureStreamBody } from '../services/lectureStream'; // T02870（六期 2.6）：讲稿流式生成编排
 import { buildLectureExport, lectureExportFilename, LectureExportError, validateLectureExportBody } from '../services/lectureExport'; // T02874（六期 3.3）：讲稿 md/docx/pptx 导出装配
 import { estimateLectureRun } from '../services/lecturePreflight'; // T02875（六期 3.4）：预检预算估算段
@@ -135,6 +136,20 @@ planApi.post('/code-review-lecture/preflight', async (req, res) => {
   } catch (e) {
     if (e instanceof LectureScopeError) return res.status(400).json({ error: e.message });
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+/**
+ * T03302（PRD 六期 2.1 补强）：Git 树取数——评审范围选择弹窗的数据源。
+ * 懒加载分页（skip/limit）、可选 `--all` 全分支、关键词在 JS 侧过滤（不向 git 传 --grep）。
+ * 只读采集，不可用/非法入参回 `ok=false + error`，让弹窗分开显示「没配工作空间 / 不是仓库 / 没装 git」，
+ * 而不是给一张空表让用户以为「这个仓没提交」。
+ */
+planApi.post('/code-review-lecture/git-log', async (req, res) => {
+  try {
+    res.json(await queryGitLog((req.body ?? {}) as import('../services/lectureGitLog').GitLogRequest));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
 

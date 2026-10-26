@@ -26,6 +26,7 @@ import {
   assertSingleRevision,
   collectGitRange,
   collectPatchRange,
+  normalizeSelectedCommits,
   parseAuthorFilter,
   resolveCollectionMode,
   resolveRevisionSha,
@@ -218,11 +219,21 @@ function parseRange(raw: unknown, index: number): GitRangeInput {
   if (!raw || typeof raw !== 'object') throw new LectureScopeError(`projects[${index}].range 必填`);
   const r = raw as Record<string, unknown>;
   const shape = r.shape;
-  if (shape !== 'base-head' && shape !== 'first-last' && shape !== 'since') {
-    throw new LectureScopeError(`projects[${index}].range.shape 只支持 base-head/first-last/since`);
+  if (shape !== 'base-head' && shape !== 'first-last' && shape !== 'since' && shape !== 'commits') {
+    throw new LectureScopeError(`projects[${index}].range.shape 只支持 base-head/first-last/since/commits`);
   }
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
   const range: GitRangeInput = { shape: shape as GitRangeShape };
+  // T03302：Git 树点选形态——选择本身就是一份提交清单，不接受 base/head/since，也不再叠提交人过滤
+  if (shape === 'commits') {
+    try {
+      range.commits = normalizeSelectedCommits(r.commits);
+    } catch (e) {
+      throw new LectureScopeError(`projects[${index}].range.commits 非法：${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (str(r.authorFilter)) throw new LectureScopeError(`projects[${index}].range：Git 树点选已按提交为准，不要再叠加提交人过滤（请清空后重试）`);
+    return range;
+  }
   try {
     if (shape === 'base-head') {
       if (!str(r.base)) throw new LectureScopeError(`projects[${index}].range.base 必填（分支/标签/SHA）`);
@@ -283,6 +294,7 @@ export function parseLectureScopeRequest(body: unknown): { projects: LectureProj
 }
 
 function rangeLabelOf(range: GitRangeInput): string {
+  if (range.shape === 'commits') return `已选 ${range.commits?.length ?? 0} 个提交（Git 树点选）`;
   if (range.shape === 'since') return `自 ${range.since ?? ''}`;
   if (range.shape === 'first-last') return `${range.base ?? ''}..${range.head ?? ''}`;
   return `${range.base ?? ''}..${range.head ?? 'HEAD'}`;

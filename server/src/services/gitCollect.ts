@@ -30,7 +30,8 @@ export const GIT_OUTPUT_CONFIG = [
 /** 每个只读子命令允许的选项（白名单，防止调用方借选项写盘或改配置） */
 const ALLOWED_FLAGS: Record<GitReadonlySubcommand, RegExp[]> = {
   'rev-parse': [/^--is-inside-work-tree$/, /^--verify$/, /^--quiet$/],
-  log: [/^--oneline$/, /^--no-merges$/, /^--format=[%\w.:{}+\-/ ]+$/, /^-n\d{1,4}$/, /^--since=[\w:+\-. ]{1,64}$/, /^--reverse$/],
+  // T03302：Git 树取数需要 --all（全分支）、--skip/-n（懒加载分页）、--no-walk（只取点名提交）
+  log: [/^--oneline$/, /^--no-merges$/, /^--format=[%\w.:{}+\-/ ]+$/, /^-n\d{1,4}$/, /^--since=[\w:+\-. ]{1,64}$/, /^--reverse$/, /^--all$/, /^--skip=\d{1,4}$/, /^--no-walk$/],
   diff: [/^--ignore-cr-at-eol$/, /^--stat$/, /^--numstat$/, /^-U\d{1,3}$/],
   show: [],
 };
@@ -366,7 +367,7 @@ export function truncateDiffText(text: string, limit = GIT_DIFF_TEXT_LIMIT): Tru
 // FR-1.2 区间三形态 / FR-1.3 粘贴 patch 降级 / FR-1.4 硬边界与优先级截断
 // ---------------------------------------------------------------------------
 
-export type GitRangeShape = 'base-head' | 'first-last' | 'since';
+export type GitRangeShape = 'base-head' | 'first-last' | 'since' | 'commits';
 export type GitCollectionShape = GitRangeShape | 'patch';
 
 /** 调用方传入的区间描述；三形态各用其中两个字段 */
@@ -380,6 +381,8 @@ export interface GitRangeInput {
   since?: string;
   /** T03303：提交人过滤（`甲`｜`甲, 乙` 且｜`甲 | 乙` 或），只筛提交清单，不改 diff 范围 */
   authorFilter?: string;
+  /** T03302：`commits` 形态——Git 树里点选的提交 SHA（连续段自动并成区间，非连续按提交并集） */
+  commits?: string[];
 }
 
 export interface ResolvedGitRange {
@@ -682,7 +685,17 @@ function buildCollection(
   source: GitCollection['source'],
   opts: GitCollectionOptions,
 ): GitCollection {
-  const files = parseUnifiedDiff(raw);
+  return finalizeCollection(parseUnifiedDiff(raw), commits, range, source, opts);
+}
+
+/** 预算 + 统计 + 告警收口（区间采集与「多选提交并集」共用，避免两套口径） */
+function finalizeCollection(
+  files: GitFileChange[],
+  commits: GitCommitEntry[],
+  range: GitCollection['range'],
+  source: GitCollection['source'],
+  opts: GitCollectionOptions,
+): GitCollection {
   const budget = applyDiffBudget(files, opts.diffLimit ?? GIT_DIFF_TEXT_LIMIT, opts.symbolRefs);
   const warnings: string[] = [];
   const totalLength = files.reduce((sum, f) => sum + f.textLength, 0);
@@ -792,6 +805,10 @@ export async function resolveGitRange(
         empty: false,
       };
     }
+    case 'commits': {
+      // T03302：多选提交没有「一对版本号」的区间可言，走 collectCommitsUnion 的并集采集
+      throw new GitCollectError('denied', 'commits 形态不按版本号区间解析，请走 collectCommitsUnion');
+    }
     default: {
       const shape: never = input.shape;
       throw new GitCollectError('denied', `未知区间形态「${String(shape)}」`);
@@ -805,6 +822,7 @@ export async function collectGitRange(
   input: GitRangeInput,
   opts: GitCollectionOptions = {},
 ): Promise<GitCollection> {
+  if (input.shape === 'commits') return collectCommitsUnion(cwd, input.commits ?? [], opts);
   const resolved = await resolveGitRange(cwd, input, opts);
   const range: GitCollection['range'] = { shape: resolved.shape, label: resolved.label, base: resolved.base, head: resolved.head };
   if (resolved.empty) {
@@ -855,4 +873,282 @@ export function collectPatchRange(
     throw new GitCollectError('invalid-patch', '未识别到 unified diff：请粘贴 git diff 输出（应以 diff --git 开头）');
   }
   return buildCollection(text, [], { shape: 'patch', label: '粘贴 patch', base: '', head: '' }, 'patch', opts);
+}
+
+// ---------------------------------------------------------------------------
+// T03302：Git 树取数（IDEA 风格日志视图）+「多选提交」并集采集
+//
+// 弹窗要的是一条能懒加载、带分支/标签装饰、带 parents（画车道用）的提交清单，
+// 以及「用户点的不一定是连续段」时怎么把它变成 diff。口径统一成
+// **每个选中提交相对其第一父提交的增量之并集**（与 `git log -p`、IDEA 的显示一致），
+// 连续段自动并成一次区间 diff，省掉逐条 spawn。
+// ---------------------------------------------------------------------------
+
+/** Git 树一页最多多少条（再大 DOM 与 git 输出都不划算） */
+export const GIT_GRAPH_MAX_PAGE = 500;
+export const GIT_GRAPH_DEFAULT_PAGE = 100;
+/** 搜索态一次扫描的提交窗口上限：过滤在 JS 侧做，超窗要如实提示「只在最近 N 条里搜」 */
+export const GIT_GRAPH_SEARCH_SCAN = 1000;
+/** 一次评审最多点选多少个提交 */
+export const MAX_SELECTED_COMMITS = 200;
+
+export interface GitRefName {
+  type: 'branch' | 'remote' | 'tag';
+  name: string;
+}
+
+export interface GitGraphEntry {
+  sha: string;
+  /** 父提交 SHA（车道布局与并集基线都靠它；空数组 = 根提交） */
+  parents: string[];
+  refs: GitRefName[];
+  /** 该提交是否 HEAD 所指 */
+  head: boolean;
+  author: string;
+  committer: string;
+  date: string;
+  subject: string;
+}
+
+/** `%D` 只有装饰名；这里额外带 %cn，让并集采集能直接产出 GitCommitEntry */
+const GRAPH_FORMAT = '--format=%H%x09%P%x09%D%x09%an%x09%cn%x09%aI%x09%s';
+
+function parseRefDecorate(raw: string): { refs: GitRefName[]; head: boolean } {
+  const refs: GitRefName[] = [];
+  let head = false;
+  for (const token of raw.split(',').map((s) => s.trim()).filter(Boolean)) {
+    const tag = /^tag:\s*(.+)$/.exec(token);
+    if (tag) { refs.push({ type: 'tag', name: tag[1] }); continue; }
+    if (token.startsWith('HEAD')) {
+      head = true;
+      const arrow = token.split('->')[1]?.trim();
+      if (arrow) refs.push({ type: 'branch', name: arrow });
+      continue;
+    }
+    refs.push({ type: token.includes('/') ? 'remote' : 'branch', name: token });
+  }
+  return { refs, head };
+}
+
+function parseGraphLog(stdout: string): GitGraphEntry[] {
+  const out: GitGraphEntry[] = [];
+  for (const line of stdout.split('\n')) {
+    if (!line) continue;
+    const [sha, parents = '', decorate = '', author = '', committer = '', date = '', ...rest] = line.split('\t');
+    if (!/^[0-9a-f]{40}$/.test(sha) || !date) continue;
+    const { refs, head } = parseRefDecorate(decorate);
+    out.push({ sha, parents: parents.trim().split(' ').filter(Boolean), refs, head, author, committer, date, subject: rest.join('\t') });
+  }
+  return out;
+}
+
+export interface GitGraphQuery {
+  /** 起点版本（分支/标签/SHA），缺省 HEAD；`all=true` 时忽略 */
+  head?: string;
+  /** true = 全部分支（`--all`），此时 head 无意义 */
+  all?: boolean;
+  /** 懒加载偏移（0–9999） */
+  skip?: number;
+  /** 本页条数（1–500） */
+  limit?: number;
+  /** 关键词：在 JS 侧对小标题/SHA/作者做子串过滤，不向 git 传 --grep */
+  search?: string;
+}
+
+export interface GitGraphPage {
+  commits: GitGraphEntry[];
+  hasMore: boolean;
+  skip: number;
+  limit: number;
+  /** 本次实际扫描的提交数；搜索态下命中只来自这个窗口 */
+  scanned: number;
+  scanTruncated: boolean;
+}
+
+function clampInt(value: unknown, fallback: number, min: number, max: number): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
+}
+
+function matchesSearch(e: GitGraphEntry, needle: string): boolean {
+  return e.subject.toLowerCase().includes(needle) || e.sha.startsWith(needle)
+    || e.author.toLowerCase().includes(needle) || e.committer.toLowerCase().includes(needle);
+}
+
+/** Git 树取数一页：`git log --format=<graph> [--all | <head>] [--skip=n] -n<limit+1>`（多取一条判 hasMore） */
+export async function collectGitGraph(cwd: string, q: GitGraphQuery = {}, opts: GitCollectOptions = {}): Promise<GitGraphPage> {
+  const limit = clampInt(q.limit, GIT_GRAPH_DEFAULT_PAGE, 1, GIT_GRAPH_MAX_PAGE);
+  const skip = clampInt(q.skip, 0, 0, 9999);
+  const needle = (q.search ?? '').trim().toLowerCase();
+  const all = q.all === true;
+  const fetchCount = needle ? Math.min(GIT_GRAPH_SEARCH_SCAN, 9999) : Math.min(GIT_GRAPH_MAX_PAGE + 1, limit + 1);
+  const flags = [
+    GRAPH_FORMAT,
+    ...(all ? ['--all'] : []),
+    ...(needle ? [] : [`--skip=${skip}`]),
+    `-n${fetchCount}`,
+  ];
+  const positional = all ? ['--'] : [assertSafeRevision((q.head ?? '').trim() || 'HEAD'), '--'];
+  const r = await runGitReadonly('log', flags, positional, cwd, opts);
+  const allCommits = parseGraphLog(r.stdout);
+  if (needle) {
+    const hits = allCommits.filter((e) => matchesSearch(e, needle));
+    return {
+      commits: hits.slice(0, limit),
+      hasMore: hits.length > limit || allCommits.length >= fetchCount,
+      skip: 0,
+      limit,
+      scanned: allCommits.length,
+      scanTruncated: allCommits.length >= fetchCount,
+    };
+  }
+  return { commits: allCommits.slice(0, limit), hasMore: allCommits.length > limit, skip, limit, scanned: allCommits.length, scanTruncated: false };
+}
+
+/** 点选提交的合法性：只收 hex SHA（弹窗给的就是 40 位），拒绝分支名、`..`、以 `-` 开头的选项形状 */
+export function normalizeSelectedCommits(input: unknown): string[] {
+  if (!Array.isArray(input)) throw new GitCollectError('denied', '选中提交必须是 SHA 数组');
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of input) {
+    if (typeof raw !== 'string') throw new GitCollectError('denied', '选中提交必须是字符串 SHA');
+    const sha = raw.trim().toLowerCase();
+    if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new GitCollectError('denied', `非法提交 SHA「${raw.slice(0, 40)}」（Git 树点选的应是十六进制 SHA）`);
+    if (seen.has(sha)) continue;
+    seen.add(sha);
+    out.push(sha);
+  }
+  if (out.length === 0) throw new GitCollectError('denied', '至少要在 Git 树里点选 1 个提交');
+  if (out.length > MAX_SELECTED_COMMITS) throw new GitCollectError('denied', `一次最多点选 ${MAX_SELECTED_COMMITS} 个提交（当前 ${out.length} 个），请收窄范围`);
+  return out;
+}
+
+/** 一次 `--no-walk` 拿齐选中提交的 parents 与元信息（逐条 spawn 按 200 选在 Windows 上就是几十秒） */
+export async function resolveCommitsInfo(cwd: string, shas: readonly string[], opts: GitCollectOptions = {}): Promise<Map<string, GitGraphEntry>> {
+  const bySha = new Map<string, GitGraphEntry>();
+  if (shas.length === 0) return bySha;
+  try {
+    const r = await runGitReadonly('log', ['--no-walk', GRAPH_FORMAT], [...shas, '--'], cwd, opts);
+    for (const e of parseGraphLog(r.stdout)) bySha.set(e.sha, e);
+    return bySha;
+  } catch (e) {
+    const kind = e instanceof GitCollectError ? e.kind : 'failed';
+    if (kind !== 'failed') throw e;
+    // 整条 --no-walk 失败多半是「某个 SHA 已不在仓库里」；逐条复跑只为了点名，不参与正常路径
+    const missing: string[] = [];
+    for (const sha of shas) {
+      try {
+        const one = await runGitReadonly('log', ['--no-walk', GRAPH_FORMAT, '-n1'], [sha, '--'], cwd, opts);
+        const [entry] = parseGraphLog(one.stdout);
+        if (entry) bySha.set(entry.sha, entry); else missing.push(sha);
+      } catch { missing.push(sha); }
+    }
+    if (missing.length === 0) throw e;
+    throw new GitCollectError('failed',
+      `选中的提交在仓库里不存在（分支被 rebase/force-push 丢弃？）：${missing.slice(0, 5).map((s) => s.slice(0, 7)).join('、')}`
+      + `${missing.length > 5 ? ` 等 ${missing.length} 个` : ''}，请在 Git 树里重新选择`);
+  }
+}
+
+export interface CommitRun {
+  base: string;
+  head: string;
+  commits: GitGraphEntry[];
+}
+
+/**
+ * 把点选集合压成尽量少的连续段：仅当「段内每个提交只有单个父、且该父也被选中」时才并段。
+ * 合并提交永远只当段头——`第一父..merge` 才是它自己引入的增量，继续向上并就把旁支也算进来了。
+ */
+export function planCommitRuns(entries: readonly GitGraphEntry[]): CommitRun[] {
+  const sorted = [...entries].sort((a, b) => b.date.localeCompare(a.date) || b.sha.localeCompare(a.sha));
+  const bySha = new Map(sorted.map((e) => [e.sha, e]));
+  const used = new Set<string>();
+  const runs: CommitRun[] = [];
+  for (const start of sorted) {
+    if (used.has(start.sha)) continue;
+    used.add(start.sha);
+    const chain = [start];
+    let oldest = start;
+    while (oldest.parents.length === 1) {
+      const next = bySha.get(oldest.parents[0]);
+      if (!next || used.has(next.sha)) break;
+      used.add(next.sha);
+      chain.push(next);
+      oldest = next;
+    }
+    runs.push({ base: oldest.parents[0] ?? GIT_EMPTY_TREE_SHA1, head: start.sha, commits: chain });
+  }
+  return runs;
+}
+
+/** 两段 diff 里同一文件各出现一次时合成一块：hunk 顺排、增删行相加、raw 拼接 */
+function mergeChangesByPath(chunks: readonly GitFileChange[]): GitFileChange[] {
+  const order: string[] = [];
+  const byPath = new Map<string, GitFileChange>();
+  for (const c of chunks) {
+    const prev = byPath.get(c.path);
+    if (!prev) {
+      byPath.set(c.path, { ...c, hunks: [...c.hunks] });
+      order.push(c.path);
+      continue;
+    }
+    prev.hunks.push(...c.hunks);
+    prev.additions += c.additions;
+    prev.deletions += c.deletions;
+    prev.binary = prev.binary || c.binary;
+    if (c.oldPath && !prev.oldPath) prev.oldPath = c.oldPath;
+    prev.raw = `${prev.raw}\n${c.raw}`;
+    prev.textLength = prev.raw.length;
+  }
+  return order.map((p) => byPath.get(p)!);
+}
+
+/** 「多选提交」形态的采集：逐段 diff → 按路径合并 → 与区间采集共用同一份预算与统计口径 */
+export async function collectCommitsUnion(
+  cwd: string,
+  selected: readonly string[],
+  opts: GitCollectionOptions = {},
+): Promise<GitCollection> {
+  const shas = normalizeSelectedCommits(selected);
+  const info = await resolveCommitsInfo(cwd, shas);
+  const entries: GitGraphEntry[] = [];
+  for (const s of shas) {
+    const full = info.has(s) ? s : [...info.keys()].find((k) => k.startsWith(s));
+    const entry = full ? info.get(full) : undefined;
+    if (entry) entries.push(entry);
+  }
+  if (entries.length !== shas.length) {
+    const matched = new Set(entries.map((e) => e.sha));
+    const missing = shas.filter((s) => !matched.has(s) && ![...matched].some((full) => full.startsWith(s)));
+    throw new GitCollectError('failed', `选中的提交在仓库里不存在：${missing.slice(0, 5).map((s) => s.slice(0, 7)).join('、')}，请在 Git 树里重新选择`);
+  }
+  const runs = planCommitRuns(entries);
+  const chunks: GitFileChange[] = [];
+  for (const run of runs) {
+    const raw = await collectDiff(cwd, [run.base, run.head], opts.contextLines ?? 3, opts);
+    chunks.push(...parseUnifiedDiff(raw));
+  }
+  const commits = [...entries].sort((a, b) => a.date.localeCompare(b.date)).map((e): GitCommitEntry => ({
+    sha: e.sha, author: e.author, committer: e.committer, date: e.date, subject: e.subject,
+  }));
+  const newest = [...entries].sort((a, b) => b.date.localeCompare(a.date))[0];
+  const oldest = [...entries].sort((a, b) => a.date.localeCompare(b.date))[0];
+  const range: GitCollection['range'] = {
+    shape: 'commits',
+    label: `已选 ${shas.length} 个提交（${runs.length} 段）`,
+    base: oldest.parents[0] ?? GIT_EMPTY_TREE_SHA1,
+    head: newest.sha,
+  };
+  const collection = finalizeCollection(mergeChangesByPath(chunks), commits, range, 'git', opts);
+  const merges = entries.filter((e) => e.parents.length > 1);
+  if (merges.length > 0) {
+    collection.warnings.unshift(`选中 ${merges.length} 个合并提交（${merges.slice(0, 3).map((e) => e.sha.slice(0, 7)).join('、')}${merges.length > 3 ? ' 等' : ''}）：`
+      + '按第一父提交计增量，旁支自带但未点选的提交不计入');
+  }
+  if (runs.length > 1) {
+    collection.warnings.unshift(`非连续选择：${shas.length} 个提交合成 ${runs.length} 段，未点选的中间提交不计入增量`);
+  }
+  return collection;
 }
