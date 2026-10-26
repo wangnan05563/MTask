@@ -106,6 +106,8 @@ export const BULLET_MAX_CHARS = 42;
 export const BULLET_MAX_LINES = 6;
 /** 一页可挂的数据块上限（同 kickoff：3 块必然挤爆版面） */
 export const DATA_KEYS_MAX = 2;
+/** 结构页（纯版式，不承载数据块）：挂 dataKeys 一律清空（同 kickoff T02156） */
+const STRUCTURAL_LAYOUTS: readonly string[] = ['cover', 'toc', 'section', 'thanks'];
 
 /**
  * 页数约束：单项目 12~16；多项目合并版 = 枚举结构固定页 + 每项目 4 页 = **6+4N**（T02957 方案 A），且 ≤40。
@@ -228,14 +230,14 @@ export function buildOutlinePrompt(input: OutlinePromptInput): {
     : `页数 ${rangeText(pageRange)}；${merged ? `合并版结构固定：封面→目录→跨项目对比→每项目 4 页（总体进展/里程碑与阶段进展/问题与风险/下阶段计划）→横向对比→本期总结与展望→附录。` : '单项目完整稿：封面、目录 + 10 个内容章节（FR-5.3~FR-5.12），可按内容拆页但不得缺章。'}`}
 2. section 只能取：${SUMMARY_SECTIONS.join(' / ')}；
 3. layout 只能取：${SUMMARY_LAYOUTS.join(' / ')}；
-4. dataKeys 只能取：${SUMMARY_DATA_KEYS.join(' / ')}；一页最多 ${DATA_KEYS_MAX} 个；
+4. dataKeys 只能取：${SUMMARY_DATA_KEYS.join(' / ')}；一页最多 ${DATA_KEYS_MAX} 个（建议每个数据块独占一页，严禁把多个数据块堆到同一页）；封面/目录/章节/致谢（cover/toc/section/thanks）为结构页，dataKeys 必须为空（不填任何数据块）；
 5. 每页 bullets ≤${BULLET_MAX_LINES} 条，每条 ≤${BULLET_MAX_CHARS} 字；
 6. ${merged
     ? `合并版必须有一页 dataKeys 含 "compare"（汇总对比）与一页含 "horizontal"（横向对比）；每项目的 4 页必须带 projectId（取【项目清单】里的 id），且该 4 页的 dataKeys 分别含 "kpi"、"milestones"、"risks"、"nextSteps"；`
     : `每个项目都必须覆盖的数据块：${REQUIRED_DATA_KEYS.map((k) => `"${k}"`).join(' / ')}（各至少一页）；`}
 7. 铁律：凡条数、合计、覆盖率、日期、人天等数字，一律只写 dataKeys 引用，由系统按库内真实数据填充——严禁自行写数字或改写数字；
 8. 只依据【资料齐备性】里标注为 ok 的数据源安排内容页；资源缺失的章节可保留页但走降级表述（布局允许）；
-9. ${separate ? '每个项目的第 1 页 layout=cover、第 2 页 layout=toc' : '第 1 页 layout=cover、第 2 页 layout=toc'}；章节分隔可用 layout=section（dataKeys 置空）；
+9. ${separate ? '每个项目的第 1 页 layout=cover、第 2 页 layout=toc' : '第 1 页 layout=cover、第 2 页 layout=toc'}（封面与目录都是结构页，dataKeys 必须为空）；章节分隔可用 layout=section（dataKeys 置空）；
 10. bullets 必须引用【各项目摘要】里给过的具体名称（用「」包裹），不得写「相关工作有序推进」这类无指代套话；名称只能照抄，数字仍归 dataKeys；
 11. 「问题与风险」页左栏是需求待确认（PRD 问题）、右栏是执行风险（逾期/阻塞/高复杂度），两栏都不许自造条目。`;
 
@@ -271,7 +273,7 @@ export function buildOutlinePrompt(input: OutlinePromptInput): {
 
 /** 重试轮的精简提示词（把首轮违规原因原样回喂，比静态提示更有效——同 kickoff T02314） */
 const OUTLINE_SYSTEM_RETRY = `只输出 JSON 数组，元素 {section,title,bullets,dataKeys,layout,projectId}。
-section∈[${SUMMARY_SECTIONS.join('|')}] layout∈[${SUMMARY_LAYOUTS.join('|')}] dataKeys⊆[${SUMMARY_DATA_KEYS.join('|')}]（每页≤${DATA_KEYS_MAX}）
+section∈[${SUMMARY_SECTIONS.join('|')}] layout∈[${SUMMARY_LAYOUTS.join('|')}] dataKeys⊆[${SUMMARY_DATA_KEYS.join('|')}]（每页≤${DATA_KEYS_MAX}；封面/目录/章节/致谢 cover/toc/section/thanks 为结构页，dataKeys 必须为空）
 每页 bullets≤${BULLET_MAX_LINES} 条、每条≤${BULLET_MAX_CHARS} 字；单项目必须覆盖 kpi/highlights/milestones/planRows/risks/workload/deliverables/nextSteps/appendix；
 合并版必须有 compare 与 horizontal 各一页，且每项目 4 页（kpi/milestones/risks/nextSteps）带 projectId；
 分别独立版每项目 12~16 页、每页带 projectId，且每项目 cover/toc 与上述 9 个数据块齐全；
@@ -308,8 +310,22 @@ function validatePage(v: unknown, index: number, ctx: ValidateContext, warnings:
     throw new Error(`${at} layout「${layout || '空'}」不在枚举（可用 ${SUMMARY_LAYOUTS.join(' / ')}）`);
   }
   const dataKeys = dedupeKeys(Array.isArray(o.dataKeys) ? o.dataKeys : [], at);
-  if (dataKeys.length > DATA_KEYS_MAX) {
-    throw new Error(`${at} dataKeys ${dataKeys.length} 个超出 ${DATA_KEYS_MAX} 个上限（${dataKeys.join('/')}）`);
+  // 结构页（cover/toc/section/thanks）是纯版式页，不承载数据块：直接清空并告警，
+  // 不让「AI 在 toc 上堆 9 个数据块」这类输出把整稿打死（同 kickoff T02156）。
+  if (STRUCTURAL_LAYOUTS.includes(layout) && dataKeys.length > 0) {
+    warnings.push(`${at} layout=${layout} 为结构页，不应挂 dataKeys，已清空（原 ${dataKeys.length} 个：${dataKeys.join('/')}）`);
+    dataKeys.length = 0;
+  } else if (dataKeys.length > DATA_KEYS_MAX) {
+    // 严格轮（首轮）抛错走自带重试；重试轮（lenient）截断为前 DATA_KEYS_MAX 个并告警，软着陆
+    // （同 kickoff lenientDataKeys）。否则 temperature=0 下模型确定性复现同一结构，retry 永远过不了 → 整稿判废。
+    if (!ctx.lenient) {
+      throw new Error(`${at} dataKeys ${dataKeys.length} 个超出 ${DATA_KEYS_MAX} 个上限（${dataKeys.join('/')}）`);
+    }
+    const kept = dataKeys.slice(0, DATA_KEYS_MAX);
+    const dropped = dataKeys.slice(DATA_KEYS_MAX);
+    warnings.push(`${at} dataKeys ${dataKeys.length} 个超出 ${DATA_KEYS_MAX} 个上限，重试后仍超限，已截断为 ${kept.join('/')}（去掉：${dropped.join('/')}）`);
+    dataKeys.length = 0;
+    dataKeys.push(...kept);
   }
   const bullets = (Array.isArray(o.bullets) ? o.bullets : [])
     .map((b) => String(b ?? '').trim())
