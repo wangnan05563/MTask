@@ -1,10 +1,12 @@
-import { useEffect, useReducer, useRef, useState } from 'react';
+import { useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api, type TaskCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { FONT_OPTIONS, FONT_SIZE_OPTIONS, useSettings, type ImportMode } from '../settings';
 import { Ban, Download, ExternalLink, FileUp, FolderPlus, Info, MonitorCog, Moon, Pencil, RefreshCw, RotateCcw, Save, Settings, ShieldCheck, Sun, Trash2 } from 'lucide-react';
 import { getLang, setLang, onLangChange, type Lang } from '../i18n'; // T01071-FR5.4：i18n 底座
+import { usePersistentState } from '../ui/session'; // T02977 复验补：设置页子 tab 跨页面/跨会话保持
+import { updateCardStore, shownProgressOf, type UpdateCheckInfo } from '../stores/updateCardStore';
 
 /** T01060-FR4.1：强调色预设色板（与主题内置 accent 同源的六色系） */
 const ACCENT_PRESETS = ['#2563eb', '#0891b2', '#16a34a', '#7c3aed', '#ea580c', '#dc2626'];
@@ -18,7 +20,8 @@ const THEME_PRESETS: Array<{ label: string; theme: 'light' | 'dark' | 'auto'; ac
   { label: '日暮', theme: 'light', accent: '#ea580c' },
   { label: '玫瑰', theme: 'light', accent: '#e11d48' },
 ];
-import { desktopApi, type UpdateDownloadResult } from '../ui/desktop'; // T00878：Electron 壳内一键下载并静默安装更新包
+import { desktopApi } from '../ui/desktop'; // T00878：Electron 壳内一键下载并静默安装更新包
+import { isInFlightStatus, updateProgressView } from '../ui/updateProgress'; // T02977 复验补：下载进度文案单源
 import { TunnelPanel } from './TunnelPanel';
 import { HistoryPage } from './HistoryPage'; // T00756：历史资产嵌入设置
 import { HelpTab } from './HelpTab';
@@ -58,7 +61,10 @@ const SUB_TABS: { key: STab; label: string }[] = [
 
 /** 设置页面：多 Tab 布局（通用设置 / 数据迁移 / 关于）。所有颜色用 CSS 变量，自动适配当前主题。 */
 export function SettingsPage() {
-  const [st, setSt] = useState<STab>('general');
+  // T02977 复验补：子 tab 用持久化 state——切去别的页面再回设置，仍停在原来那一页（原来是恒回「通用设置」）
+  const [st, setSt] = usePersistentState<STab>('settings.tab', 'general');
+  // 脏值兜底：老版本遗留的 key（已被删除的 tab）不能让页面渲染成空白
+  const active = SUB_TABS.some((t) => t.key === st) ? st : 'general';
   return (
     <section>
       <nav style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 12 }}>
@@ -70,8 +76,8 @@ export function SettingsPage() {
               fontSize: 'var(--fs-m)',
               padding: '6px 14px',
               borderRadius: 6,
-              background: st === t.key ? 'var(--accent)' : 'var(--card-bg)',
-              color: st === t.key ? 'var(--accent-text)' : 'var(--text)',
+              background: active === t.key ? 'var(--accent)' : 'var(--card-bg)',
+              color: active === t.key ? 'var(--accent-text)' : 'var(--text)',
               cursor: 'pointer',
             }}
           >
@@ -80,21 +86,21 @@ export function SettingsPage() {
         ))}
       </nav>
 
-      {st === 'general' && <GeneralTab />}
-      {st === 'dashboard' && <DashboardPage />} {/* T01154：仪表盘迁入设置页 */}
-      {st === 'supervisor' && <SupervisorPanel />} {/* T01286：监督状态与审计（FR-5.2~5.4） */}
-      {st === 'migration' && <MigrationTab />}
-      {st === 'dbadmin' && <DbAdminTab />}
-      {st === 'categories' && <CategoriesTab />}
-      {st === 'recurring' && <RecurringTab />}
-      {st === 'apitokens' && <ApiTokensTab />}
-      {st === 'tunnel' && <TunnelPanel />}
+      {active === 'general' && <GeneralTab />}
+      {active === 'dashboard' && <DashboardPage />} {/* T01154：仪表盘迁入设置页 */}
+      {active === 'supervisor' && <SupervisorPanel />} {/* T01286：监督状态与审计（FR-5.2~5.4） */}
+      {active === 'migration' && <MigrationTab />}
+      {active === 'dbadmin' && <DbAdminTab />}
+      {active === 'categories' && <CategoriesTab />}
+      {active === 'recurring' && <RecurringTab />}
+      {active === 'apitokens' && <ApiTokensTab />}
+      {active === 'tunnel' && <TunnelPanel />}
       {/* T00441：日志/归档入口从顶部菜单迁入设置页（内网穿透下方） */}
-      {st === 'logs' && <LogsPage />}
-      {st === 'archive' && <ArchivePage />}
-      {st === 'history' && <HistoryPage />} {/* T00756：历史资产（项目快照）嵌入设置页 */}
-      {st === 'help' && <HelpTab />}
-      {st === 'about' && <AboutTab />}
+      {active === 'logs' && <LogsPage />}
+      {active === 'archive' && <ArchivePage />}
+      {active === 'history' && <HistoryPage />} {/* T00756：历史资产（项目快照）嵌入设置页 */}
+      {active === 'help' && <HelpTab />}
+      {active === 'about' && <AboutTab />}
     </section>
   );
 }
@@ -492,21 +498,7 @@ function AboutTab() {
   );
 }
 
-/** 版本更新接口返回结构（与后端 UpdateService.checkUpdate 对齐） */
-interface UpdateCheckInfo {
-  currentVersion: string;
-  latestVersion: string;
-  hasUpdate: boolean;
-  releaseName: string;
-  releaseUrl: string;
-  publishedAt: string;
-  downloadUrl: string;
-  changelog: string;
-  /** T02977：本次检查实际使用的地址与来源 */
-  repo: string;
-  source: 'manual' | 'builtin';
-}
-
+/** 版本更新接口的展示配置（检查结果结构见 stores/updateCardStore） */
 interface UpdateConfigView {
   /** 已保存的手动地址（空串＝未配置，回退内置地址） */
   repo: string;
@@ -519,63 +511,31 @@ interface UpdateConfigView {
 }
 
 /** 版本更新模块：仓库地址 + 可选 Token 配置（加密存储、不回显明文），一键检测 GitHub 最新 Release。
- *  T02977：手动仓库地址会覆盖菜单内置下载地址；留空＝回退内置地址。 */
+ *  T02977：手动仓库地址会覆盖菜单内置下载地址；留空＝回退内置地址。
+ *  T02977 复验补：在途下载/检查结果/失败回执一律取自 updateCardStore——切页回来现场还在，
+ *  进度也不会因为组件卸载而看不见。 */
 function UpdateSection() {
   const [cfg, setCfg] = useState<UpdateConfigView>({ repo: '', builtinRepo: '', source: 'builtin', tokenConfigured: false, tokenMasked: '' });
   const [repoDraft, setRepoDraft] = useState('');
   const [tokenDraft, setTokenDraft] = useState('');
-  const [busy, setBusy] = useState<'save' | 'test' | 'check' | 'download' | 'install' | null>(null);
-  const [notice, setNotice] = useState('');
-  const [result, setResult] = useState<UpdateCheckInfo | null>(null);
-  // T00878：应用内下载进度（received/total，字节）；未在下载时为 null
-  const [dlProgress, setDlProgress] = useState<{ received: number; total: number } | null>(null);
-  // T02071 缺口 1：用户中途取消后保留的半截下载（bytes>0 时按钮变「继续下载」，再点走 Range 续传）
-  const [cancelledPart, setCancelledPart] = useState<number | null>(null);
-  // T02071 缺口 2：安装失败回执（带安装包路径与目标版本，「重试」直接复用不必重新下载）
-  const [installError, setInstallError] = useState<{ message: string; filePath: string; targetVersion: string } | null>(null);
-  // 订阅下载进度的事件源引用：组件卸载时清理，避免泄漏
-  const unsubRef = useRef<(() => void) | null | undefined>(null);
-  // T02976 补：不是本次 doDownload 发起的下载（菜单「帮助 → 检查在线更新」自驱，或本页发起的下载
-  // 在切页后恢复）。归到这里显示，用户才不会在下载中点「立即更新」时只撞上报错，也才有取消入口。
-  const [externalDl, setExternalDl] = useState<{ received: number; total: number } | null>(null);
+  const card = useSyncExternalStore(updateCardStore.subscribe, updateCardStore.getSnapshot);
+  const { busy, result, cancelledPart, installError, notice } = card;
 
-  const flash = (msg: string) => {
-    setNotice(msg);
-    setTimeout(() => setNotice(''), 5000);
-  };
+  const flash = (msg: string) => updateCardStore.flash(msg);
+  // busy/result 也归 store：切页回来仍知道「正在下载」还是「空闲」
+  const setBusy = updateCardStore.setBusy;
+  const setResult = updateCardStore.setResult;
 
-  // 卸载时取消进度订阅
-  useEffect(() => () => { unsubRef.current?.(); }, []);
+  // T02976 补 → T02977 复验补：现场改由 store 持有。挂载时只保证「进度订阅在位 + 恢复正在进行的那条下载」，
+  // 组件卸载不再拆订阅、也不再丢进度（菜单自驱、切页、刷新回来都仍是同一份现场）。
+  useEffect(() => { updateCardStore.attach(); }, []);
 
-  // T02976 补：页面切换状态保持 + 菜单下载可见。
-  // 组件切走即卸载、state 丢失，回来后靠 update:active 从主进程恢复现场；常驻订阅收所有 origin 的
-  // 进度——自己发起的下载优先展示 dlProgress（shownProgress 的顺序保证），其余落到 externalDl。
+  // 提示条仍保持「5 秒自动消失」的旧观感：文案存在 store 里（切页不丢），消失计时归界面
   useEffect(() => {
-    const desk = desktopApi();
-    if (!desk?.onUpdateProgress) return;
-    let alive = true;
-    const apply = (d: { status: string; received?: number; total?: number; origin?: string; message?: string }) => {
-      if (!alive) return;
-      // 更新下载续传：retrying 是「下载仍在进行、只是刚断线自愈」——必须继续显示进度与取消入口，
-      // 若落到 else 会把进度条收掉，用户回来看到的是「没有下载在跑」
-      if (d.status === 'downloading' || d.status === 'resuming' || d.status === 'retrying') {
-        setExternalDl({ received: d.received ?? 0, total: d.total ?? 0 });
-      } else {
-        setExternalDl(null); // downloaded / failed / cancelled：各自入口有自己的收口
-      }
-    };
-    const off = desk.onUpdateProgress(apply);
-    const pending = desk.getActiveUpdate?.();
-    if (pending) {
-      void pending.then((st) => {
-        if (!alive || !st?.active) return;
-        // 不管是菜单还是本页发起，重新挂载都恢复进度与取消入口；origin='settings' 时原来那次
-        // doDownload 的 Promise 已随卸载丢失，安装需要在取消后重新触发（取消保留 .part 可续传）。
-        apply({ status: 'downloading', received: st.received, total: st.total, origin: st.origin });
-      }).catch(() => { /* 主进程未就绪：忽略，事件到达时会自动补上 */ });
-    }
-    return () => { alive = false; off(); };
-  }, []);
+    if (!notice) return;
+    const timer = setTimeout(() => updateCardStore.clearNotice(), 5000);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   // T02071：安装成功时应用被安装器接管退出，当场收不到回执——下次启动向主进程对账取回，
   // 成功给一条提示，失败直接进入可重试的回执条（浏览器环境无该 API，自然跳过）
@@ -587,7 +547,7 @@ function UpdateSection() {
         const r = await desk.getUpdatePendingResult();
         if (!r) return;
         if (r.status === 'installed') flash(`上次更新已安装完成${r.targetVersion ? `（v${r.targetVersion}）` : ''}，重启后即为新版本`);
-        else setInstallError({ message: r.reason ?? '上次安装未生效', filePath: r.filePath ?? '', targetVersion: r.targetVersion ?? '' });
+        else updateCardStore.patch({ installError: { message: r.reason ?? '上次安装未生效', filePath: r.filePath ?? '', targetVersion: r.targetVersion ?? '' } });
       } catch { /* 无待回执时静默，不影响页面 */ }
     })();
   }, []);
@@ -653,92 +613,22 @@ function UpdateSection() {
 
   // T00878：应用内一键下载更新包并静默安装（仅 Electron 壳；浏览器环境仍回退 window.open）
   // T02071：下载阶段可中途取消（保留 .part，再点续传）；安装阶段回收退出码，失败给回执条 + 重试
+  // T02977 复验补：链路本体搬进 updateCardStore——组件卸载不再打断下载，回来仍看得见进度与取消入口
   async function doDownload() {
     if (!result?.hasUpdate) return;
     const desk = desktopApi();
     if (!desk?.downloadUpdate || !desk.installUpdate) { window.open(result.downloadUrl, '_blank'); return; }
-    setBusy('download');
-    setDlProgress(null);
-    setInstallError(null);
-    unsubRef.current?.(); // 防止上一次订阅残留重复触发
-    try {
-      const r = await new Promise<UpdateDownloadResult>((resolve, reject) => {
-        unsubRef.current = desk.onUpdateProgress?.((data) => {
-          // 进度事件里带 filePath 表示下载完成；途中只更新 received/total
-          if (data.status === 'downloaded') { resolve({ status: 'downloaded', filePath: data.filePath }); return; }
-          setDlProgress({ received: data.received ?? 0, total: data.total ?? 0 });
-        });
-        desk.downloadUpdate?.(result.downloadUrl).then(resolve).catch(reject);
-      });
-      unsubRef.current?.();
-      unsubRef.current = null;
-      if (r.status === 'cancelled') {
-        // 取消：保留状态与已下载字节，按钮转「继续下载」（主进程按 .part 实际大小带 Range 续传）
-        setBusy(null);
-        setDlProgress(null);
-        setCancelledPart(r.partialBytes ?? 0);
-        flash(`已取消下载（保留 ${Math.round((r.partialBytes ?? 0) / 1024 / 1024)} MB），可点「继续下载」从断点续传`);
-        return;
-      }
-      setCancelledPart(null);
-      setDlProgress(null);
-      await runInstall(r.filePath ?? '', result.latestVersion);
-    } catch (e) {
-      unsubRef.current?.();
-      unsubRef.current = null;
-      const msg = e instanceof Error ? e.message : String(e);
-      // T02976 补：菜单通道已在下载时，这条报错原本是死胡同（看不到进度也没有取消入口）。
-      // 改为切到那条下载的现场：拉一次 update:active 拿到已下载字节，按钮随即变「取消下载」。
-      if (/已有下载进行中/.test(msg)) {
-        setBusy(null);
-        setDlProgress(null);
-        const st = await desk.getActiveUpdate?.();
-        if (st?.active) setExternalDl({ received: st.received ?? 0, total: st.total ?? 0 });
-        flash('已切换到正在进行的下载，可在此查看进度或取消');
-        return;
-      }
-      flash(msg);
-      setBusy(null);
-      setDlProgress(null);
-    }
+    await updateCardStore.downloadAndInstall(result);
   }
 
-  /** T02071：下载中途取消——断连但保留 .part；结果经 doDownload 的 await 收口为「继续下载」态 */
+  /** T02071：下载中途取消——断连但保留 .part；结果经 store 的 await 收口为「继续下载」态 */
   async function doCancelDownload() {
-    const desk = desktopApi();
-    if (!desk?.cancelUpdateDownload) return;
-    try {
-      await desk.cancelUpdateDownload();
-    } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
-    }
+    await updateCardStore.cancelDownload();
   }
 
-  /** T02071：安装独立成函数——首次安装与「重试」共用，重试直接复用已下载的安装包，不必重新下载 */
+  /** T02071：安装独立成入口——「重试安装」复用已下载的安装包，不重新下载 */
   async function runInstall(filePath: string, targetVersion: string) {
-    const desk = desktopApi();
-    if (!desk?.installUpdate || !filePath) return;
-    setBusy('install');
-    setInstallError(null);
-    flash('正在静默安装，安装完成后自动退出并重启到新版本…');
-    try {
-      const r = await desk.installUpdate(filePath, targetVersion);
-      setBusy(null);
-      if (r.status === 'pending') {
-        // 等待超时不判失败（安装器可能在等授权确认）：下次启动对账会给出真实结果
-        flash(r.message ?? '安装仍在进行，结果将在下次启动时确认');
-        return;
-      }
-      if (r.status === 'installed') {
-        setDlProgress(null);
-        setCancelledPart(null);
-        return; // 主进程随即退出，界面关闭即为回执
-      }
-      setInstallError({ message: r.message ?? '安装失败', filePath: r.filePath ?? filePath, targetVersion: r.targetVersion ?? targetVersion });
-    } catch (e) {
-      setBusy(null);
-      setInstallError({ message: e instanceof Error ? e.message : String(e), filePath, targetVersion });
-    }
+    await updateCardStore.install(filePath, targetVersion);
   }
 
   const inputStyle: React.CSSProperties = {
@@ -756,11 +646,15 @@ function UpdateSection() {
 
   // T00878：按当前阶段给更新按钮友好文案（T02071 增加「继续下载」与取消入口）
   // T02976 补：菜单发起的下载也走同一套按钮/进度呈现，文案上标明来源
-  const shownProgress = busy === 'download' ? dlProgress : externalDl;
+  const shownProgress = shownProgressOf(card);
+  // T02977 复验补：进度视图走单源纯函数——起步（还没收到首帧）与无总量也都有话可说
+  const progressView = shownProgress ? updateProgressView(shownProgress) : null;
+  // 下载在途（含刚点下去、主进程还没回第一帧）——这一段此前界面只有按钮文案，容易被当成「没反应」
+  const downloadInFlight = busy === 'download' || (card.externalDl !== null && isInFlightStatus(card.externalDl.status));
   let updateBtnLabel = cancelledPart !== null ? '继续下载' : '立即更新';
-  if (busy === 'download') updateBtnLabel = shownProgress?.total ? `下载中 ${Math.round(shownProgress.received / shownProgress.total * 100)}%` : '下载中…';
+  if (busy === 'download') updateBtnLabel = progressView?.pct != null ? `下载中 ${progressView.pct}%` : '下载中…';
   else if (busy === 'install') updateBtnLabel = '正在安装…';
-  else if (externalDl) updateBtnLabel = externalDl.total ? `下载中 ${Math.round(externalDl.received / externalDl.total * 100)}%` : '下载中…';
+  else if (card.externalDl && isInFlightStatus(card.externalDl.status)) updateBtnLabel = progressView?.pct != null ? `下载中 ${progressView.pct}%` : '下载中…';
 
   return (
     <div style={{ marginTop: 14, padding: 16, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)' }}>
@@ -836,14 +730,14 @@ function UpdateSection() {
                 </div>
               )}
               <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                <button onClick={() => void doDownload()} disabled={busy === 'download' || busy === 'install' || externalDl !== null} title={cancelledPart !== null ? '继续下载 — 从上次取消的断点续传' : '下载新版本 — 应用内下载安装包并静默安装重启'} aria-label="下载并静默安装新版本" style={btnStyle(true)}>
+                <button onClick={() => void doDownload()} disabled={downloadInFlight || busy === 'install'} title={cancelledPart !== null ? '继续下载 — 从上次取消的断点续传' : '下载新版本 — 应用内下载安装包并静默安装重启'} aria-label="下载并静默安装新版本" style={btnStyle(true)}>
                   <Download size={13} />
                   {/* T00878：按当前阶段给按钮友好文案 */}
                   {updateBtnLabel}
                 </button>
                 {/* T02071 缺口 1：下载中给出取消入口（取消保留 .part，可继续）；
                     T02976 补：菜单发起的下载同样可在这里取消，不必回去找菜单 */}
-                {(busy === 'download' || externalDl !== null) && (
+                {downloadInFlight && (
                   <button onClick={() => void doCancelDownload()} title="取消下载 — 中断本次下载并保留已下载部分，稍后可从断点继续" aria-label="取消当前下载" style={btnStyle(false)}>
                     <Ban size={13} /> 取消下载
                   </button>
@@ -852,18 +746,25 @@ function UpdateSection() {
                   <ExternalLink size={13} /> 查看发布页
                 </button>
               </div>
-              {/* T00878：下载进度条——Electron 壳内下载时展示 received/total；
-                  T02976 补：菜单通道的下载同样在此显示（shownProgress 已按来源选好） */}
-              {shownProgress?.total ? (
-                <div style={{ marginTop: 10 }}>
+              {/* T00878：下载进度——Electron 壳内下载时展示 received/total；
+                  T02976 补：菜单通道的下载同样在此显示（shownProgress 已按来源选好）；
+                  T02977 复验补：只要有下载在途就必有可见进度行（起步/无总量也不例外），
+                  否则「点了下载却什么都没提示」又回来了 */}
+              {progressView && (
+                <div style={{ marginTop: 10 }} data-update-progress>
                   <div style={{ height: 6, borderRadius: 3, background: 'var(--border-strong)', overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${Math.min(100, Math.round(shownProgress.received / shownProgress.total * 100))}%`, background: 'var(--accent)', transition: 'width .2s' }} />
+                    {progressView.showBar ? (
+                      <div style={{ height: '100%', width: `${progressView.pct}%`, background: 'var(--accent)', transition: 'width .2s' }} />
+                    ) : (
+                      // 总量未知：不画假百分比，用整条弱色表示「确实在跑」
+                      <div style={{ height: '100%', width: '100%', background: 'var(--accent-soft, var(--border))', opacity: .45 }} />
+                    )}
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
-                    已下载 {Math.round(shownProgress.received / 1024 / 1024)} MB / {Math.round(shownProgress.total / 1024 / 1024)} MB
+                    {progressView.text}
                   </div>
                 </div>
-              ) : null}
+              )}
             </>
           ) : (
             <>
@@ -891,7 +792,7 @@ function UpdateSection() {
             <button onClick={() => void runInstall(installError.filePath, installError.targetVersion)} disabled={busy !== null || !installError.filePath} title="重试安装 — 用已下载的安装包重新静默安装" aria-label="重试安装新版本" style={btnStyle(true)}>
               <RotateCcw size={13} /> 重试安装
             </button>
-            <button onClick={() => setInstallError(null)} title="关闭提示" aria-label="关闭安装失败提示" style={btnStyle(false)}>关闭</button>
+            <button onClick={() => updateCardStore.patch({ installError: null })} title="关闭提示" aria-label="关闭安装失败提示" style={btnStyle(false)}>关闭</button>
           </div>
         </div>
       )}

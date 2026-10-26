@@ -29,13 +29,9 @@ import { applyDeepLink, buildDeepLink, readDeepLinkFromLocation } from './ui/dee
 
 // T00441：日志/归档入口从顶部菜单移入「设置」（内网穿透下方），顶部菜单收敛为高频功能
 
-// T02976：下载量的可读呈现（进度条文案用；字节数本身对用户没有意义）
-function fmtBytes(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
-  return `${(n / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-}
+// T02977 复验补：下载进度文案/字节格式化单源在 ui/updateProgress（设置页卡片与这条全局条共用，
+// 免得两处各自漏态——此前「无总量」「刚点击」两态在卡片侧就是纯空白）
+import { isInFlightStatus, updateProgressView } from './ui/updateProgress';
 
 /** 应用外壳：导航 + 主题变量容器。颜色取自 CSS 变量，主题切换即时全局生效 */
 function Shell() {
@@ -46,7 +42,9 @@ function Shell() {
   // T02976：菜单「帮助 → 检查在线更新」的下载由主进程自驱，此时用户可能不在设置页——
   // 这条状态承载全局进度条，只接 origin='menu' 的事件（设置页卡片自己有进度，不重复显示）。
   // 更新下载续传：retrying = 网络中断后的自动续传重试中——进度保持不变，但要让用户知道「没卡死、在自愈」
-  const [dlToast, setDlToast] = useState<{ status: 'downloading' | 'resuming' | 'retrying' | 'downloaded' | 'failed'; received: number; total: number; message?: string } | null>(null);
+  // T02977 复验补：starting = 主进程已发起请求但还没收到任何字节（连 DNS/TLS 都算在内）；
+  // 没有这一帧，点击后那段空窗在界面上等于「什么都没发生」。
+  const [dlToast, setDlToast] = useState<{ status: 'starting' | 'downloading' | 'resuming' | 'retrying' | 'downloaded' | 'failed'; received: number; total: number; message?: string } | null>(null);
   // T00443 / PRD UX-4：全局命令面板（T03170 / D-07：Ctrl+K 打开；Ctrl+F 优先页内搜索）
   const [paletteOpen, setPaletteOpen] = useState(false);
   // T00706：全菜单使用向导——当前菜单首次进入自动弹出，导航右侧常驻「向导」按钮随时唤起
@@ -185,7 +183,7 @@ function Shell() {
       if (d.origin !== 'menu') return;
       const received = d.received ?? 0;
       const total = d.total ?? 0;
-      if (d.status === 'downloading' || d.status === 'resuming') {
+      if (d.status === 'downloading' || d.status === 'resuming' || d.status === 'starting') {
         window.clearTimeout(hideTimer);
         setDlToast({ status: d.status, received, total });
       } else if (d.status === 'retrying') {
@@ -230,8 +228,10 @@ function Shell() {
     statusText = '● 后端未连接（请先启动 server）';
   }
 
-  // T02976：百分比只在拿到总量时才有意义；服务端没给 content-length 时退化为「已下载 x MB」
-  const dlPct = dlToast && dlToast.total > 0 ? Math.min(100, Math.round((dlToast.received / dlToast.total) * 100)) : 0;
+  // T02977 复验补：文案/百分比收进 updateProgressView（与设置页卡片同一单源），这里只管布局与按钮
+  const dlView = dlToast ? updateProgressView(dlToast) : null;
+  const dlPct = dlView?.pct ?? 0;
+  const dlInFlight = dlToast !== null && isInFlightStatus(dlToast.status);
 
   return (
     <div
@@ -452,25 +452,15 @@ function Shell() {
           }}
         >
           <span style={{ whiteSpace: 'nowrap' }}>
-            {dlToast.status === 'retrying'
-              ? (dlToast.message ?? '网络中断，正在自动续传重试')
-              : dlToast.status === 'resuming'
-              ? `续传中：已确认 ${fmtBytes(dlToast.received)}`
-              : dlToast.status === 'downloaded'
-                ? `下载完成（${fmtBytes(dlToast.received)}），等待安装确认`
-                : dlToast.status === 'failed'
-                  ? `下载失败：${dlToast.message}`
-                  : dlToast.total > 0
-                    ? `正在下载新版本 ${dlPct}%（${fmtBytes(dlToast.received)} / ${fmtBytes(dlToast.total)}）`
-                    : `正在下载新版本：已下载 ${fmtBytes(dlToast.received)}`}
+            {dlView?.text}
           </span>
-          {(dlToast.status === 'downloading' || dlToast.status === 'resuming' || dlToast.status === 'retrying') && dlToast.total > 0 && (
+          {dlInFlight && dlView?.showBar && (
             <span style={{ flex: 1, minWidth: 80, height: 6, borderRadius: 3, background: 'var(--border)', overflow: 'hidden' }}>
               {/* transition 把 200ms 一次的事件跳动抹平，观感上是连续推进 */}
               <span style={{ display: 'block', height: '100%', width: `${dlPct}%`, background: 'var(--accent)', transition: 'width .2s ease' }} />
             </span>
           )}
-          {(dlToast.status === 'downloading' || dlToast.status === 'resuming' || dlToast.status === 'retrying') && (
+          {dlInFlight && (
             /* T02976 补：下载中必须有取消入口——否则用户只能干等 110MB 走完；重试等待期同样可取消 */
             <button
               onClick={() => { void desktopApi()?.cancelUpdateDownload?.(); }}

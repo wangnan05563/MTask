@@ -712,6 +712,10 @@ async function downloadUpdatePackage(url, origin = 'settings') {
         open(url);
       }, delay);
     };
+    // T02977 复验补：点击即给回执。此前从「点下载」到「收到第一帧字节」之间界面全空白
+    // （DNS/TLS/慢源/GitHub 限流都可能占满这段），用户读作「下载按钮没反应」。
+    // 起步帧带本地已有的 .part 字节数，让界面能说清「将从 X MB 处续传」。
+    sendUpdateProgress({ status: 'starting', received: ctx.partBytes, total: 0, origin });
     open(url);
     if (ctx.partBytes > 0) sendUpdateProgress({ status: 'resuming', received: ctx.partBytes, total: 0, origin });
   });
