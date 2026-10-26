@@ -16,6 +16,7 @@ import { safeExportName } from '../util/export-name'; // T02104：导出文件�
 import { discardReport } from '../services/ReportService'; // T02144：中止且 done 未送达时当场回收落盘令牌
 import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput, DraftCaseImport, DraftReqImport } from '../services/TestCaseService';
 import { AIService } from '../services/AIService';
+import { MilestoneForecastService } from '../services/MilestoneForecastService'; // T03194（PM-204）：里程碑达成预测
 import { backfillComplexity, listInvalid as listInvalidComplexity, listMissing as listMissingComplexity } from '../services/PlanComplexity'; // T01058 后续 / T02122：计划行复杂度批量补算 + 值域断言
 import { resolvePrdContext } from '../util/prdContext'; // T00763：计划关联 PRD → 评估上下文
 import { parseLimit, parseOffset, wantsTotal } from '../util/list-page'; // T02284：列表分页参数统一口径（limit/offset/total=1）
@@ -70,6 +71,14 @@ function pid(req: import('express').Request): string {
 
 // ---------- 节假日（须先于 /:id 注册） ----------
 planApi.get('/holidays', (_req, res) => wrap(res, () => PlanService.listHolidays()));
+
+/** T03194（PRD PM-204）：里程碑达成预测——子项完成率 + 剩余工作日串行排期；须先于 /:id 注册 */
+planApi.get('/milestone-forecast', (req, res) => {
+  wrap(res, () => MilestoneForecastService.report({
+    projectId: typeof req.query.projectId === 'string' && req.query.projectId ? req.query.projectId : undefined,
+    at: typeof req.query.at === 'string' && req.query.at ? req.query.at : undefined,
+  }));
+});
 
 // T01058-FR1.3：就绪任务推荐——deps 前置均完成的执行行（供 AI 工作台「现在做这个」卡片）
 planApi.get('/ready', (req, res) => {

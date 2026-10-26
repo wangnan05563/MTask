@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { childParentIdOf } from '../util/planDeps'; // T01621：里程碑显式挂接判定单源（与时间线分组共用）
-import { Archive, ArrowUpDown, CalendarPlus, Check, Download, Gauge, Layers, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, FileText, FilePenLine, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Table2, TestTubes, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search } from 'lucide-react';
+import { Archive, ArrowUpDown, CalendarPlus, Check, Download, Gauge, Layers, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, FileText, FilePenLine, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Table2, TestTubes, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search, X } from 'lucide-react';
 import { EmptyState } from '../ui/EmptyState'; // T01072-FR1.10：统一空态组件
 import { ReqMatrixPanel } from './ReqMatrixPanel'; // T00662：需求跟踪矩阵
 import { TestCasePanel } from './TestCasePanel'; // T01485：测试用例视图
@@ -53,6 +53,48 @@ interface PlanTask {
   /** T01058-FR2.1：AI 复杂度评级（1~5，≥4 标红提示建议拆分）；PRD 导入时 AI 输出 */
   complexity?: number | null;
 }
+
+/** T03194（PM-204）：里程碑达成预测——服务端 `GET /plans/milestone-forecast` 的出数结构 */
+interface ForecastChild {
+  id: string;
+  title: string;
+  status: string;
+  progress: number;
+  totalWorkdays: number | null;
+  remainingWorkdays: number | null;
+  missing: string[];
+}
+
+interface MilestoneForecast {
+  milestoneId: string;
+  title: string;
+  status: string;
+  childrenTotal: number;
+  childrenDone: number;
+  completionRate: number | null;
+  remainingWorkdays: number | null;
+  forecastDate: string | null;
+  plannedEnd: string | null;
+  varianceWorkdays: number | null;
+  verdict: 'done' | 'not-predictable' | 'on-track' | 'ahead' | 'behind' | 'no-planned-end';
+  basis: string;
+  children: ForecastChild[];
+}
+
+interface MilestoneForecastReport {
+  at: string;
+  disclaimer: string;
+  milestones: MilestoneForecast[];
+}
+
+const FORECAST_VERDICT: Record<MilestoneForecast['verdict'], { label: string; color: string }> = {
+  done: { label: '已完成', color: 'var(--success)' },
+  'not-predictable': { label: '不预测', color: 'var(--text-muted)' },
+  'on-track': { label: '按期', color: 'var(--success)' },
+  ahead: { label: '提前', color: 'var(--success)' },
+  behind: { label: '延后', color: 'var(--danger, #dc2626)' },
+  'no-planned-end': { label: '未排期', color: 'var(--text-muted)' },
+};
 
 interface ProjectRow {
   id: string;
@@ -828,10 +870,61 @@ function PlanActionsCell({ p, depMenuId, depMenuRef, depMenuPos, evalBusy, busy,
   );
 }
 
+/** T03194（PM-204）：里程碑预测明细——参与计算的子项、剩余天数与口径；只读。 */
+function MilestoneForecastPanel({ forecast, onClose }: { readonly forecast: MilestoneForecast; readonly onClose: () => void }) {
+  const v = FORECAST_VERDICT[forecast.verdict];
+  return (
+    <div role="dialog" aria-label="里程碑预测明细"
+      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 8, padding: 16, width: 560, maxWidth: '92vw', maxHeight: '80vh', overflow: 'auto', fontSize: 'var(--fs-m)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <b style={{ flex: 1 }}>{forecast.title} — 达成预测</b>
+          <button onClick={onClose} aria-label="关闭" className="task-op" style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)' }}><X size={14} /></button>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+          <span style={{ fontSize: 'var(--fs-xs)', padding: '1px 7px', borderRadius: 10, border: `1px solid ${v.color}`, color: v.color }}>{v.label}</span>
+          <span style={{ color: 'var(--text-muted)' }}>子项完成 {forecast.childrenDone}/{forecast.childrenTotal}</span>
+          <span style={{ color: 'var(--text-muted)' }}>计划结束 {forecast.plannedEnd ?? '未排期'}</span>
+          <span style={{ color: 'var(--text-muted)' }}>
+            预测 {forecast.forecastDate ?? '—'}（剩余 {forecast.remainingWorkdays === null ? '—' : `${forecast.remainingWorkdays} 个工作日`}）
+          </span>
+        </div>
+        <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', marginBottom: 10 }}>{forecast.basis}</div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-xs)' }}>
+          <thead>
+            <tr style={{ color: 'var(--text-muted)', textAlign: 'left' }}>
+              <th style={{ padding: 4 }}>子项</th><th style={{ padding: 4 }}>状态</th>
+              <th style={{ padding: 4 }}>进度</th><th style={{ padding: 4 }}>总工作日</th><th style={{ padding: 4 }}>剩余</th>
+            </tr>
+          </thead>
+          <tbody>
+            {forecast.children.map((c) => (
+              <tr key={c.id} style={{ borderTop: '1px solid var(--border)' }}>
+                <td style={{ padding: 4 }}>{c.title}</td>
+                <td style={{ padding: 4 }}>{STATUS_META[c.status as PlanTask['status']]?.label ?? c.status}</td>
+                <td style={{ padding: 4 }}>{c.progress}%</td>
+                <td style={{ padding: 4 }}>{c.missing.length ? <span style={{ color: 'var(--danger, #dc2626)' }}>缺排期</span> : c.totalWorkdays}</td>
+                <td style={{ padding: 4 }}>{c.status === 'done' ? '—' : (c.remainingWorkdays ?? '—')}</td>
+              </tr>
+            ))}
+            {forecast.children.length === 0 && (
+              <tr><td colSpan={5} style={{ padding: 6, color: 'var(--text-muted)' }}>无子项：里程碑不预测</td></tr>
+            )}
+          </tbody>
+        </table>
+        <div style={{ marginTop: 10, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>预测值，非承诺：按子项剩余工作日串行排期推算，不替代人工判断。</div>
+      </div>
+    </div>
+  );
+}
+
 /** 甘特行标题列：里程碑收起按钮 + 标题/描述行内编辑 */
-function PlanTitleCell({ p, collapsedMs, toggleMsCollapsed, updatePlan }: {
+function PlanTitleCell({ p, collapsedMs, toggleMsCollapsed, updatePlan, forecast, openForecast }: {
   readonly p: PlanTask; readonly collapsedMs: Record<string, boolean>;
   readonly toggleMsCollapsed: (id: string) => void; readonly updatePlan: (p: PlanTask, patch: PlanPatch) => Promise<void>;
+  /** T03194：里程碑预测（未取到/不可预测时为空/不预测态） */
+  readonly forecast?: MilestoneForecast; readonly openForecast: (id: string) => void;
 }) {
   return (
     <>
@@ -843,6 +936,16 @@ function PlanTitleCell({ p, collapsedMs, toggleMsCollapsed, updatePlan }: {
             {collapsedMs[p.id] ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
           </button>
         </span>
+      )}
+      {/* T03194（PM-204）：里程碑预测徽标——点击查看参与计算的子项与剩余天数；「预测值，非承诺」常驻 */}
+      {p.kind === 'milestone' && forecast && forecast.verdict !== 'done' && (
+        <button onClick={() => openForecast(p.id)}
+          title={`${forecast.basis}\n（预测值，非承诺）—— 点击查看参与计算的子项与剩余天数`}
+          aria-label={`里程碑预测：${FORECAST_VERDICT[forecast.verdict].label}${forecast.forecastDate ? `，预测 ${forecast.forecastDate}` : ''}`}
+          style={{ flexShrink: 0, marginRight: 4, fontSize: 'var(--fs-2xs)', padding: '0 5px', borderRadius: 4, cursor: 'pointer',
+            border: `1px solid ${FORECAST_VERDICT[forecast.verdict].color}`, background: 'transparent', color: FORECAST_VERDICT[forecast.verdict].color, whiteSpace: 'nowrap' }}>
+          {forecast.forecastDate ? `预测 ${forecast.forecastDate.slice(5)}` : FORECAST_VERDICT[forecast.verdict].label}
+        </button>
       )}
       {/* T01058-FR2.1：高复杂度标红徽标——提示该行不确定性高/跨模块耦合，建议再拆分 */}
       {(p.complexity ?? 0) >= 4 && (
@@ -934,7 +1037,7 @@ function PlanAssigneeCell({ p, isMilestone, updatePlan }: {
 }
 
 /** 甘特行（T00590 过滤后单行渲染）：拖拽 + 各列单元格组件化（S2004/S3776 拆分） */
-function PlanGanttRow({ p, i, plans, seqs, isMilestone, inner, innerCount, innerDays, innerAvg, dragId, overId, newRowId, planMulti, planSelIds, collapsedMs, durationUnit, depMenuId, depMenuRef, depMenuPos, evalBusy, busy, setDragId, setOverId, togglePlanSel, toggleMsCollapsed, updatePlan, flash, openDepEditor, makeRowDrop, setDepMenuId, setDepMenuPos, evaluateRow, insertAfter, linkTodo, createLinkedTodo, archivePlan, unlinkTodo }: {
+function PlanGanttRow({ p, i, plans, seqs, isMilestone, inner, innerCount, innerDays, innerAvg, dragId, overId, newRowId, planMulti, planSelIds, collapsedMs, durationUnit, depMenuId, depMenuRef, depMenuPos, evalBusy, busy, setDragId, setOverId, togglePlanSel, toggleMsCollapsed, updatePlan, flash, openDepEditor, makeRowDrop, setDepMenuId, setDepMenuPos, evaluateRow, insertAfter, linkTodo, createLinkedTodo, archivePlan, unlinkTodo, forecast, openForecast }: {
   readonly p: PlanTask; readonly i: number; readonly plans: PlanTask[]; readonly seqs: Map<string, string>;
   readonly isMilestone: boolean; readonly inner: PlanTask[]; readonly innerCount: number; readonly innerDays: number; readonly innerAvg: number;
   readonly dragId: string; readonly overId: string; readonly newRowId: string; readonly planMulti: boolean; readonly planSelIds: string[];
@@ -949,6 +1052,8 @@ function PlanGanttRow({ p, i, plans, seqs, isMilestone, inner, innerCount, inner
   readonly evaluateRow: (p: PlanTask) => void; readonly insertAfter: (p: PlanTask) => Promise<void> | void;
   readonly linkTodo: (p: PlanTask) => Promise<void> | void; readonly createLinkedTodo: (p: PlanTask) => Promise<void> | void;
   readonly archivePlan: (p: PlanTask) => Promise<void> | void; readonly unlinkTodo: (p: PlanTask) => Promise<void> | void;
+  /** T03194：本行里程碑的达成预测（非里程碑行恒 undefined） */
+  readonly forecast?: MilestoneForecast; readonly openForecast: (id: string) => void;
 }) {
   return (
     <tr
@@ -969,7 +1074,7 @@ function PlanGanttRow({ p, i, plans, seqs, isMilestone, inner, innerCount, inner
         {renderSeqCell(p, plans, seqs.get(p.id), i)}
       </td>
       <td style={{ padding: 6, minWidth: 220, paddingLeft: childMilestoneOf(p, plans) ? 24 : 6 }}>
-        <PlanTitleCell p={p} collapsedMs={collapsedMs} toggleMsCollapsed={toggleMsCollapsed} updatePlan={updatePlan} />
+        <PlanTitleCell p={p} collapsedMs={collapsedMs} toggleMsCollapsed={toggleMsCollapsed} updatePlan={updatePlan} forecast={forecast} openForecast={openForecast} />
       </td>
       {/* T00545：依赖列——前置任务序号 + 串/并徽标，点击维护；空依赖显示快捷添加 */}
       <td style={{ padding: 6, fontSize: 'var(--fs-xs)' }}>
@@ -1211,6 +1316,11 @@ export function PlanPage() {
   // T00460：切页保状态——项目选择会话级持久化，切回不重置
   const [projectId, setProjectId] = useSessionState('plan.projectId', '');
   const [plans, setPlans] = useState<PlanTask[]>([]);
+  // T03194（PM-204）：里程碑达成预测（按 milestoneId 索引）+ 取数失败态 + 明细面板开关
+  const [forecasts, setForecasts] = useState<Record<string, MilestoneForecast>>({});
+  const [forecastAt, setForecastAt] = useState('');
+  const [forecastErr, setForecastErr] = useState('');
+  const [fcOpenId, setFcOpenId] = useState('');
   // T00764：kind= holiday 放假日 | overtime 加班日
   // T02213：节假日是**工期换算的输入**（buildWorkdayCtx / 甘特着色 / 汇总天数都吃它），
   // 此前取数失败被 `.catch(() => undefined)` 吞成空数组，工期就按「无节假日」口径静默算错。
@@ -1532,6 +1642,14 @@ export function PlanPage() {
   const reload = useCallback(() => {
     if (!projectId) return;
     void api.get<PlanTask[]>(`/plans?projectId=${projectId}`).then(setPlans).catch((e) => flash(String(e.message ?? e)));
+    // T03194：预测是叠加信息——失败不能清掉计划表，但要在工具条留痕（不静默当"无预测"）
+    void api.get<MilestoneForecastReport>(`/plans/milestone-forecast?projectId=${projectId}`)
+      .then((r) => {
+        setForecasts(Object.fromEntries(r.milestones.map((m) => [m.milestoneId, m])));
+        setForecastAt(r.at);
+        setForecastErr('');
+      })
+      .catch((e) => { setForecasts({}); setForecastErr(String((e as Error).message ?? e)); });
   }, [projectId]);
   useEffect(() => { reload(); }, [reload]);
 
@@ -2632,6 +2750,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             <span title={`共 ${plans.length} 条计划任务`}>任务：{plans.length} 条</span>
             <span title={`已完成 ${doneCount} · 进行中 ${doingCount}`} style={{ color: doneCount === plans.length ? 'var(--success)' : undefined }}>完成 {doneCount}/{plans.length}</span>
             {milestoneCount > 0 && <span title={`里程碑 ${milestoneCount} 个`}>里程碑：{milestoneCount}</span>}
+            {forecastAt && <span title={`预测业务日 ${forecastAt}（按项目/系统时区）；预测值，非承诺`}>预测基准日：{forecastAt}</span>}
+            {forecastErr && <span title={`里程碑预测取数失败：${forecastErr}`} style={{ color: 'var(--danger, #dc2626)' }}>预测暂不可用</span>}
           </div>
         );
       })()}
@@ -2736,7 +2856,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                 setDragId={setDragId} setOverId={setOverId} togglePlanSel={togglePlanSel} toggleMsCollapsed={toggleMsCollapsed}
                 updatePlan={updatePlan} flash={flash} openDepEditor={openDepEditor} makeRowDrop={makeRowDrop}
                 setDepMenuId={setDepMenuId} setDepMenuPos={setDepMenuPos} evaluateRow={evaluateRow}
-                insertAfter={insertAfter} linkTodo={linkTodo} createLinkedTodo={createLinkedTodo} archivePlan={archivePlan} unlinkTodo={unlinkTodo} />
+                insertAfter={insertAfter} linkTodo={linkTodo} createLinkedTodo={createLinkedTodo} archivePlan={archivePlan} unlinkTodo={unlinkTodo}
+                forecast={forecasts[p.id]} openForecast={setFcOpenId} />
             );
           });
           })()}
@@ -2771,6 +2892,11 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       {depEditor && (
         <DepEditorModal depEditor={depEditor} setDepEditor={setDepEditor} plans={plans}
           depSel={depSel} setDepSel={setDepSel} saveDeps={saveDeps} />
+      )}
+
+      {/* T03194（PM-204）：里程碑预测明细——参与计算的子项与剩余天数（只读） */}
+      {fcOpenId && forecasts[fcOpenId] && (
+        <MilestoneForecastPanel forecast={forecasts[fcOpenId]} onClose={() => setFcOpenId('')} />
       )}
     </div>
   );
