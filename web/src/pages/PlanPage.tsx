@@ -2554,13 +2554,13 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                         outline: criticalNodes.has(p.id) ? '2px solid var(--danger)' : undefined, outlineOffset: -1,
                       }}>
                       <div style={{ position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', borderRadius: 4, overflow: 'hidden' }}>
-                        <div style={{ width: `${p.progress}%`, height: '100%', background: 'rgba(255,255,255,.35)' }} />
+                        <div style={{ width: `${p.progress}%`, height: '100%', background: 'var(--bar-sheen)' }} />
                       </div>
                       {/* 左/右 resize 手柄：6px 命中区，stopPropagation 避免触发条体平移 */}
                       <span onMouseDown={(e) => startGanttDrag(e, p, 'resize-l')} title="拖动改开始日（工期随之变化）"
-                        style={{ position: 'absolute', left: 0, top: 0, width: 6, height: '100%', cursor: 'ew-resize', background: 'rgba(255,255,255,.55)', borderRadius: '4px 0 0 4px' }} />
+                        style={{ position: 'absolute', left: 0, top: 0, width: 6, height: '100%', cursor: 'ew-resize', background: 'var(--bar-grip)', borderRadius: '4px 0 0 4px' }} />
                       <span onMouseDown={(e) => startGanttDrag(e, p, 'resize-r')} title="拖动改结束日（工期随之变化）"
-                        style={{ position: 'absolute', right: 0, top: 0, width: 6, height: '100%', cursor: 'ew-resize', background: 'rgba(255,255,255,.55)', borderRadius: '0 4px 4px 0' }} />
+                        style={{ position: 'absolute', right: 0, top: 0, width: 6, height: '100%', cursor: 'ew-resize', background: 'var(--bar-grip)', borderRadius: '0 4px 4px 0' }} />
                       {drag ? renderDragBadge(drag) : null}
                     </div>
                   </div>

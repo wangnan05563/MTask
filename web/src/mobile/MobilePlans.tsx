@@ -248,7 +248,7 @@ function PlanGantt({ plans }: Readonly<{ plans: PlanRow[] }>) {
                     background: colorOf(p.status), borderRadius: 4, opacity: 0.9, overflow: 'hidden',
                   }}
                 >
-                  {!milestone && <div style={{ width: `${Math.max(0, Math.min(100, p.progress))}%`, height: '100%', background: 'rgba(255,255,255,.45)' }} />}
+                  {!milestone && <div style={{ width: `${Math.max(0, Math.min(100, p.progress))}%`, height: '100%', background: 'var(--bar-sheen)' }} />}
                 </div>
               </div>
             </div>

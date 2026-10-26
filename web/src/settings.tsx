@@ -89,6 +89,9 @@ const themeCss = `
   --danger: #dc2626;
   --warn: #b45309;
   --overlay: rgba(0, 0, 0, 0.35);
+  /* T03204（G-5）：甘特条高光/拖拽手柄——半透明白叠加在状态实底上，属图形装饰；走令牌避免页面内硬编码亮色底 */
+  --bar-sheen: rgba(255, 255, 255, 0.45);
+  --bar-grip: rgba(255, 255, 255, 0.55);
   --code-bg: #f1f5f9;
   --code-border: #e2e8f0;
   --markdown-quote: #cbd5e1;
@@ -114,6 +117,8 @@ const themeCss = `
   --danger: #f87171;
   --warn: #fbbf24;
   --overlay: rgba(0, 0, 0, 0.55);
+  --bar-sheen: rgba(255, 255, 255, 0.32);
+  --bar-grip: rgba(255, 255, 255, 0.42);
   --code-bg: #27272a;
   --code-border: #3f3f46;
   --markdown-quote: #4b5563;
