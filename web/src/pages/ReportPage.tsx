@@ -28,6 +28,7 @@ import { resetWorkbenchArtifacts, RESET_CONFIRM_CARD } from '../ui/consoleReset'
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
 import { focusTaskByNo } from '../ui/focusTask'; // T01057 建议：就绪任务跳转按编号定位（跨项目可命中）
 import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用主入口可见但禁用 + 原因/修复动作
+import { startMaterialTiming, finishMaterialTiming } from '../ui/materialTiming'; // T03189（G-1）：汇报材料准备耗时采样
 
 interface ReportTemplate {
   id: string;
@@ -84,6 +85,8 @@ interface ReportCardCfg {
   readonly aria: string;
   readonly open: boolean;
   readonly onToggle: () => void;
+  /** T03189（G-1）：卡片被展开时触发（收起不触发）——汇报材料耗时的起点就锚在这里 */
+  readonly onOpen?: () => void;
   /** T00908：卡片右上角可选的动作按钮（如「已上传 PRD 文档」），点击不触发卡片展开 */
   readonly action?: React.ReactNode;
   /** T01042：卡片侧重置入口——效果与控制台重置按钮一致（共用 resetWorkbenchArtifacts） */
@@ -95,9 +98,11 @@ interface ReportCardCfg {
 }
 
 /** 能力入口卡片（T00621，S3776 抽取；T00908 支持可选右上角动作按钮；T01038 支持底部运行状态徽标） */
-function ReportCard({ icon, title, desc, hint, aria, open, onToggle, action, statusNode, onReset, glow, blocked, onBlocked }: {
+function ReportCard({ icon, title, desc, hint, aria, open, onToggle, onOpen, action, statusNode, onReset, glow, blocked, onBlocked }: {
   readonly icon: React.ReactNode; readonly title: string; readonly desc: React.ReactNode;
   readonly hint: string; readonly aria: string; readonly open: boolean; readonly onToggle: () => void;
+  /** T03189（G-1）：只在「展开」这一半触发，收起不算一轮材料准备的开始 */
+  readonly onOpen?: () => void;
   readonly action?: React.ReactNode; readonly statusNode?: React.ReactNode;
   /** T01042：卡片侧重置入口——点击效果与控制台重置按钮一致（共用 resetWorkbenchArtifacts 核心，DRY） */
   readonly onReset?: () => Promise<void> | void;
@@ -119,7 +124,11 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, action, sta
     try { await onReset(); } finally { setResetting(false); }
   }
   const hasCorner = Boolean(action || onReset);
-  const act = () => { if (blocked) { onBlocked?.(); return; } onToggle(); };
+  const act = () => {
+    if (blocked) { onBlocked?.(); return; }
+    if (!open) onOpen?.();
+    onToggle();
+  };
   return (
     <div /* NOSONAR: S6819 豁免——T02143：卡片右上角动作/重置是原生 button 子元素，HTML 禁止按钮套按钮；键盘支持已在下方 onKeyDown 等价补齐，勿再改回原生 button */
       role="button"
@@ -519,6 +528,13 @@ export function ReportPage() {
     ? <>{d}<span style={{ display: 'block', marginTop: 4, fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>{note}</span></>
     : d);
 
+  // T03189（G-1）：材料准备耗时从「卡片展开」起算——只埋四类有成品下载的卡种；
+  // projectId 是范围首项（总结汇报可多项目合并），仅作样本归属，不参与指标口径。
+  const openOfflineTiming = () => { void startMaterialTiming('offline-report', projectId); };
+  const openAiReportTiming = () => { void startMaterialTiming('ai-report', projectId); };
+  const openKickoffTiming = () => { void startMaterialTiming('kickoff-ppt', projectId); };
+  const openSummaryTiming = () => { void startMaterialTiming('summary-ppt', projectId); };
+
   const reportCards: ReportCardCfg[] = [
     { key: 'ai-import', needsAi: true, icon: <FileUp size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: 'AI 项目计划导入',
       desc: '上传 Excel/需求文档，AI 解析为项目计划草稿（工期/依赖/负责人），确认后批量入库',
@@ -530,11 +546,13 @@ export function ReportPage() {
       desc: '本地聚合本周期任务数据，按模板或标准版式直接合成文件（无需联网）；含模板管理与导入',
       hint: `${offlineReportLabel} — 本地聚合数据按模板合成报表（工作面板内含模板管理）`, aria: offlineReportLabel,
       open: showOffline,
+      onOpen: openOfflineTiming,
       onToggle: () => togglePanel('offline') },
     { key: 'ai-live', needsAi: true, icon: <Sparkles size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: aiReportLabel,
       desc: <>结合真实任务数据调用 AI 生成洞察，按内置 skill「{SKILL_BY_FORMAT[format]}」版式智能合成</>,
       hint: `${aiReportLabel} — 结合真实数据由 AI 撰写洞察并按内置 skill 版式合成`, aria: aiReportLabel,
       open: showAiLive,
+      onOpen: openAiReportTiming,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('aiLive') },
     { key: 'prd-gen', needsAi: true, icon: <Sparkles size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '原始需求生成 PRD',
@@ -561,27 +579,29 @@ export function ReportPage() {
       onToggle: () => togglePanel('tcGen') },
     // T02107（PRD FR-1.1/1.2）：第 7 张卡——数组尾部追加，标题/描述/hint 逐字取 PRD 口径，
     // 复用 ReportCard 与既有图标风格（色值只走 CSS 变量，不新造卡片组件）
-    { key: 'kickoff-ppt', needsAi: true, icon: <Presentation size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '项目启动会 PPT 生成',
+    { key: 'kickoff-ppt', needsAi: true, icon: <Presentation size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '启动会 PPT 生成',
       desc: withScopeNote('按项目资料自动装配 Kickoff 材料（原生可编辑 .pptx）', scopeNoteOf('本卡片')),
-      hint: '需 PRD/需求矩阵/计划至少各 1 条', aria: '项目启动会 PPT 生成',
+      hint: '需 PRD/需求矩阵/计划至少各 1 条', aria: '启动会 PPT 生成',
       open: showKickoffPpt,
+      onOpen: openKickoffTiming,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('kickoffPpt') },
     // T02857（PRD-阶段性项目总结汇报PPT §3.1 FR-1.1）：第 8 张卡——文案逐字取 PRD 口径；
     // 与 kickoff 的单项目口径不同，本卡片的多项目合并产物是 T02190 的首个例外（A-6），范围默认跟随顶部选择器
-    { key: 'summary-ppt', needsAi: true, icon: <FileChartColumn size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '阶段性项目总结汇报 PPT 生成',
+    { key: 'summary-ppt', needsAi: true, icon: <FileChartColumn size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '阶段总结 PPT 生成',
       desc: withScopeNote('按汇报周期与项目范围自动装配阶段总结汇报材料（原生可编辑 .pptx）',
         projectIds.length > 1 ? `合并版：${projectIds.length} 个项目将在同一份 deck 内分区呈现` : ''),
-      hint: '周期内至少有 1 个项目有活动数据', aria: '阶段性项目总结汇报 PPT 生成',
+      hint: '周期内至少有 1 个项目有活动数据', aria: '阶段总结 PPT 生成',
       open: showSummaryPpt,
+      onOpen: openSummaryTiming,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('summaryPpt') },
     // T02872（PRD §1 术语表「卡位冲突声明」）：本卡与总结汇报卡同争尾部位，PRD 已按落地时点定序——
-    // 总结汇报先落地为第 8 张，本卡为第 9 张，标题逐字取 PRD §1 口径（「代码评审会议讲稿生成」），不改写、不顶替。
-    { key: 'review-lecture', needsAi: true, icon: <ScrollText size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '代码评审会议讲稿生成',
+    // 总结汇报先落地为第 8 张，本卡为第 9 张，标题逐字取 PRD §1 口径（T03300 起精简为「代码评审讲稿生成」），不改写、不顶替。
+    { key: 'review-lecture', needsAi: true, icon: <ScrollText size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '代码评审讲稿生成',
       desc: withScopeNote('按评审范围采集阶段性增量（Git Diff / Commit 日志），装配可直接照念的八段评审会议讲稿——左 diff、右讲稿、锚点可定位',
         projectIds.length > 1 ? `多项目：按「总-分-总」装配，每项目独立成章（${projectIds.length} 个项目）` : ''),
-      hint: '项目已配置工作空间路径，或可粘贴 patch 走降级通道', aria: '代码评审会议讲稿生成',
+      hint: '项目已配置工作空间路径，或可粘贴 patch 走降级通道', aria: '代码评审讲稿生成',
       open: showReviewLecture,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('reviewLecture') },
@@ -688,6 +708,7 @@ export function ReportPage() {
       a.click();
       URL.revokeObjectURL(url);
       flash(`已生成 ${filename} 并开始下载`);
+      await finishMaterialTiming('offline-report'); // T03189：成品已交付，本轮材料准备结束
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
     } finally {
@@ -761,6 +782,7 @@ export function ReportPage() {
       URL.revokeObjectURL(url);
       reportStream.setResult(null);
       flash(`已下载 AI ${periodLabel} ${filename}`);
+      await finishMaterialTiming('ai-report'); // T03189：成品已交付，本轮材料准备结束
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
     }
@@ -873,6 +895,7 @@ export function ReportPage() {
               blocked={cardDown}
               onBlocked={() => flash(`「${c.title}」暂不可用：${readiness?.reason ?? 'AI 未就绪'}——点击上方「去模型管理」配置后重试`)}
               glow={st.status === 'running'} /* T01068-FR4.4：运行中卡片光晕呼吸 */
+              onOpen={c.onOpen}
               onToggle={c.onToggle}
               statusNode={<RunStatusBadge status={st.status} startedAt={st.startedAt} finalElapsed={st.finalElapsed} size={12} showLabel={false} />}
             />

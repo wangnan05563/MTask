@@ -20,6 +20,7 @@ import { kickoffPptStore, useKickoffPpt, type KickoffOutlineItem, type KickoffSt
 import { FlowProgress } from '../ui/FlowProgress';
 import { askConfirm } from '../ui/dialogs';
 import { CONSOLE_RESET_EVENT } from '../ui/consoleReset'; // T02109：工作台重置广播——面板本地大纲稿随重置归零
+import { finishMaterialTiming } from '../ui/materialTiming'; // T03189（G-1）：成品下载即收口本轮材料准备耗时
 import { ChevronDown, ChevronUp, CircleAlert, CircleCheck, CircleX, Download, FileText, Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react';
 
 /** 服务端 `PreflightItem` 的前端镜像（单源：`server/src/services/kickoffService.ts`） */
@@ -492,6 +493,7 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
       a.click();
       URL.revokeObjectURL(url);
       flash(`已下载 ${filename}`);
+      await finishMaterialTiming('kickoff-ppt');
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
     } finally {
@@ -515,7 +517,7 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
     <div style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
         <FileText size={15} style={{ color: 'var(--accent)' }} />
-        <strong style={{ fontSize: 'var(--fs-l)' }}>项目启动会 PPT 生成</strong>
+        <strong style={{ fontSize: 'var(--fs-l)' }}>启动会 PPT 生成</strong>
         <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           校验资料齐备性 → AI 出大纲（人工确认）→ 本地按真实条数逐页装配原生可编辑 .pptx，过程见右侧控制台
         </span>

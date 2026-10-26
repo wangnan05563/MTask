@@ -519,6 +519,21 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // 该索引依赖上面补的列：必须放在 ensureColumn 之后。放进上方 DDL 块会在老库上先于补列执行，
   // 整个 db.exec 抛 "no such column: card_key"，后端启动即崩（安装版 0.1.102-5.210 实测）。
   db.exec("CREATE INDEX IF NOT EXISTS idx_ai_usage_card ON ai_usage(card_key, created_at)");
+  // T03189（PRD G-1）：汇报材料准备时长样本——「打开卡片 → 成品下载」一次一条。
+  // 不挂 FK：卡片/项目删了，历史样本仍要参与 P50/P90 基线（同 iteration_events 的口径）。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS material_timing_samples (
+      id          TEXT PRIMARY KEY,
+      card_key    TEXT NOT NULL,
+      project_id  TEXT,
+      started_at  TEXT NOT NULL,
+      finished_at TEXT,
+      duration_ms INTEGER,
+      ok          INTEGER,
+      created_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_material_timing_card ON material_timing_samples(card_key, created_at);
+  `);
   ensureColumn('tasks', 'verified', 'verified INTEGER NOT NULL DEFAULT 0');
   ensureColumn('queues', 'paused', 'paused INTEGER NOT NULL DEFAULT 0'); // T01434：队列级暂停/继续
   // T00490：记录字体颜色（Excel 风格颜色按钮）——空串=默认色

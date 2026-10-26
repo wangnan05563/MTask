@@ -28,6 +28,7 @@ import { FlowProgress } from '../ui/FlowProgress';
 import { askConfirm } from '../ui/dialogs';
 import { useSessionState } from '../ui/session';
 import { CONSOLE_RESET_EVENT } from '../ui/consoleReset';
+import { finishMaterialTiming } from '../ui/materialTiming'; // T03189（G-1）：成品下载即收口本轮材料准备耗时
 import { ChevronDown, ChevronUp, CircleAlert, CircleCheck, CircleX, Download, FileChartColumn, Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react';
 
 /** 服务端 `SummaryPreflightItem` 的前端镜像（单源：`server/src/services/summaryPptService.ts`） */
@@ -743,6 +744,7 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
       a.click();
       URL.revokeObjectURL(url);
       flash(`已下载 ${filename}`);
+      await finishMaterialTiming('summary-ppt');
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
     } finally {
@@ -785,7 +787,7 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
     <div style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
         <FileChartColumn size={15} style={{ color: 'var(--accent)' }} />
-        <strong style={{ fontSize: 14 }}>阶段性项目总结汇报 PPT 生成</strong>
+        <strong style={{ fontSize: 14 }}>阶段总结 PPT 生成</strong>
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
           周期与范围 → 校验 S1~S9（只读）→ AI 出大纲（人工确认）→ 本地逐页装配原生可编辑 .pptx，过程见右侧控制台
         </span>

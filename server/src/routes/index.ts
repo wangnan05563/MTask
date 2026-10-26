@@ -32,6 +32,7 @@ import { logService } from '../services/LogService';
 import { dbAdminApi } from './dbadmin';
 import { planApi } from './plans';
 import { iterationApi } from './iterations'; // T03186（PM-201）：迭代与燃尽，路径自带 /projects|/iterations 前缀故整体挂载
+import { materialTimingApi } from './materialTiming'; // T03189（G-1）：汇报材料耗时采样，路径自带 /report 前缀
 import { estimateApi } from './estimates'; // T02037（估算视图 E3）：/api/estimates*，PRD §8
 import { historyApi } from './history'; // T00589：历史资产（转移/统计）
 import { supervisorApi } from './supervisor'; // T01286：监督状态/审计/配置（FR-5.2~5.4）
@@ -2815,6 +2816,7 @@ api.use('/dbadmin', dbAdminApi);
 // ---------- 项目计划（T00431，菜单位于周报前） ----------
 api.use('/plans', planApi);
 api.use(iterationApi); // T03186（PM-201 迭代与燃尽）：完整路径声明，不挂前缀（详见 routes/iterations.ts 头注）
+api.use(materialTimingApi); // T03189（G-1 汇报材料耗时）：同上，/report/material-timing/* 完整路径
 api.use('/estimates', estimateApi); // T02037（估算视图 E3）：PRD-估算视图与工作量评估导出 §8
 api.use('/history', historyApi); // T00589：历史资产页面后端（转移 + 统计）
 
