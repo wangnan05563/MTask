@@ -201,6 +201,38 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     );
     CREATE INDEX IF NOT EXISTS idx_plan_tasks_project ON plan_tasks(project_id, sort_order);
 
+    -- T03186（PRD PM-201 / 整合版 D-02）：迭代=项目下带起止日期、目标与完成定义的**计划行集合**。
+    -- 走「新表 + plan_tasks.iteration_id」而非零新表路径，理由见 IterationService 头注（PM-201⑦ 的技术裁决）。
+    CREATE TABLE IF NOT EXISTS project_iterations (
+      id          TEXT PRIMARY KEY,
+      project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name        TEXT NOT NULL,
+      goal        TEXT DEFAULT '',
+      dod         TEXT DEFAULT '',
+      start_date  TEXT NOT NULL,
+      end_date    TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'todo',
+      archived    INTEGER NOT NULL DEFAULT 0,
+      archived_at TEXT,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_iterations_project ON project_iterations(project_id, start_date);
+
+    -- T03186（PM-201⑤）：成员变更事件流——加入/移出逐条留痕，燃尽重建按事件回溯，不重写历史快照。
+    -- 不建外键：迭代删除（仅解绑）后事件仍要可回溯，且沿用 task_events 的「文本 id + 项目维度索引」形态。
+    CREATE TABLE IF NOT EXISTS iteration_events (
+      id           TEXT PRIMARY KEY,
+      iteration_id TEXT NOT NULL,
+      project_id   TEXT NOT NULL,
+      plan_task_id TEXT NOT NULL,
+      kind         TEXT NOT NULL,
+      detail       TEXT DEFAULT '',
+      created_at   TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_iteration_events_iter ON iteration_events(iteration_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_iteration_events_task ON iteration_events(plan_task_id, created_at);
+
     -- T00662：PRD 需求跟踪矩阵——需求项（矩阵行），与计划/待办经 req_ids 多对多关联
     CREATE TABLE IF NOT EXISTS prd_requirements (
       id          TEXT PRIMARY KEY,
@@ -592,6 +624,13 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // 项目计划归档（删除改归档）：archived=1 的计划从时间线移除但在归档菜单可恢复/彻底删除
   ensureColumn('plan_tasks', 'archived', 'archived INTEGER NOT NULL DEFAULT 0');
   ensureColumn('plan_tasks', 'archived_at', 'archived_at TEXT');
+  // T03186（PRD PM-201③）：计划行的迭代归属——单列而非关联表，天然保证「同一时间只属于一个迭代」；
+  // NULL=未规划。归属历史不靠这列（改绑会覆盖），由 iteration_events 回溯。
+  ensureColumn('plan_tasks', 'iteration_id', 'iteration_id TEXT');
+  // T03186（PM-201④ 燃尽实际线）：计划行的完成时刻——updated_at 会被任意编辑刷新，
+  // 拿它当完成时间会让燃尽线随无关改动跳变，故独立成列、仅随状态迁入/迁出 done 写清。
+  ensureColumn('plan_tasks', 'completed_at', 'completed_at TEXT');
+  db.exec("CREATE INDEX IF NOT EXISTS idx_plan_tasks_iteration ON plan_tasks(iteration_id)");
   // 任务父子层级（T00450 / PRD UX-3）：parent_id 指向父任务（epic→task 两级）；子任务紧随父任务展示
   ensureColumn('tasks', 'parent_id', 'parent_id TEXT');
   // 手动排序权重（T00446）：拖拽排序结果；REAL 支持插入中间位置无需整体重编；pinned 组内生效

@@ -21,6 +21,7 @@ import { recalcMilestoneProgress, recalcMilestonesOfChild, milestoneHasChildren 
 import { resolveReqNo, groupDuplicateReqNos, isReqNoTaken } from '../util/reqNo'; // T01867：需求编号项目内唯一顺延
 import { syncReqStatuses } from './reqStatusSync'; // T02087：需求状态随计划/待办完成度派生
 import { nextPlanTitle } from '../util/planTitle'; // T01875：计划标题撞名让号（与需求编号顺延同构）
+import { touchCompletedAt } from './IterationService'; // T03186（PM-201④）：完成时刻单点维护（燃尽回溯依赖它）
 
 /** T01361：需求跟踪矩阵行（prd_requirements 全列 + 联表摘要）——具体化类型替代 Record<string, unknown>（Sonar S6551） */
 export interface RequirementRow {
@@ -68,6 +69,10 @@ export interface PlanTaskRow {
   /** 归档标记（T00442 扩展）：1=已归档（时间线移除，归档菜单可恢复/彻底删除） */
   archived: number;
   archived_at: string | null;
+  /** T03186（PRD PM-201③）：所属迭代 id（project_iterations.id）；NULL=未规划。单列即单归属约束。 */
+  iteration_id?: string | null;
+  /** T03186（PRD PM-201④）：迁入 done 的时刻；燃尽实际线按它回溯，不能用 updated_at 顶替 */
+  completed_at?: string | null;
   created_at: string;
   updated_at: string;
   /** 查询附带：关联待办标题（不存在则为 null） */
@@ -524,10 +529,15 @@ export function reconcileLinkedPlanStatuses(): number {
   ).all() as Array<{ id: string }>;
   const own = cands.map((c) => c.id).filter((id) => !milestoneHasChildren(db, id));
   if (own.length === 0) return 0;
-  const upd = db.prepare("UPDATE plan_tasks SET status = 'done', progress = 100, updated_at = ? WHERE id = ?");
+  // T03186：对账也是一条「置 done」的写入路径，须同步记完成时刻——否则燃尽图会把它们
+  // 归入 unknownCompleted（既非缺失也不画下降点），完成日口径失真。
+  const upd = db.prepare("UPDATE plan_tasks SET status = 'done', progress = 100, completed_at = COALESCE(completed_at, ?), updated_at = ? WHERE id = ?");
   let fixed = 0;
   db.transaction(() => {
-    for (const id of own) fixed += upd.run(now(), id).changes;
+    for (const id of own) {
+      const ts = now();
+      fixed += upd.run(ts, ts, id).changes;
+    }
   })();
   return fixed;
 }
@@ -1373,6 +1383,8 @@ export const PlanService = {
       ).run(id, input.projectId, title, input.description ?? '', start, start, duration, status, input.assignee ?? '', maxOrder + 1, (input as { kind?: string }).kind ?? 'normal', t, t);
       // T00561：去掉默认串行依赖——新任务保持自身日期，不重排他人；显式依赖者（若引用新任务）传播
       refreshTaskEnd(db, id, start, duration);
+      // T03186：以 done 状态新建的行同样要有完成时刻，否则燃尽把它算成「未开始就已完成」以外的值
+      touchCompletedAt(db, id, status);
     })();
     return this.get(id)!;
   },
@@ -1407,6 +1419,9 @@ export const PlanService = {
         now(),
         id,
       );
+      // T03186（PRD PM-201④ 燃尽实际线）：完成时刻只在迁入 done 时落、迁出 done 时清。
+      // 不复用 updated_at——任意编辑（改标题/工期）都会刷新它，拿它当完成时间会让燃尽线随无关改动跳变。
+      touchCompletedAt(db, id, status);
       // T00561：去掉默认串行链——变更只影响本任务（end 重算），仅显式配置依赖的任务联动传播
       const cur = this.get(id)!;
       db.prepare('UPDATE plan_tasks SET end_date = ? WHERE id = ?')
