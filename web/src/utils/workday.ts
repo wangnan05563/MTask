@@ -127,12 +127,19 @@ export function ymdInTimezone(now: Date, tz?: string | null): string {
   return fmtDate(now);
 }
 
+/** 真实日历日：形状对且能原样回写（拒绝 2026-02-30 / 2026-13-01 这类「形状合法但不存在」的日期） */
+function isRealYmd(s: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = parseYmd(s);
+  return !Number.isNaN(d.getTime()) && fmtDate(d) === s;
+}
+
 /**
  * D-12 边界日口径（**统一测试固定**）：纯日期 `end_date` 按项目/系统时区**当日结束**判到期——
  * 该时区当前日历日 `>` end_date 才算逾期；`===` 当天不算。缺失/非法日期一律 false（由调用方按「无排期」处理，不静默判逾期）。
  */
 export function isPastEndDate(endDate: string, now: Date, tz?: string | null): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate || '')) return false;
+  if (!isRealYmd(endDate || '')) return false;
   return ymdInTimezone(now, tz) > endDate;
 }
 
