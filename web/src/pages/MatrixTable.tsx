@@ -10,6 +10,7 @@ import type { Dispatch, ReactNode, RefObject, SetStateAction } from 'react';
 import { Archive, ChevronDown, ChevronUp, FileText, Link2, Minimize2, Sparkles, Trash2 } from 'lucide-react';
 import type { MatrixReq } from './ReqMatrixPanel';
 import { MatrixCaseCell } from './MatrixCaseCell';
+import { NotOpenButton } from '../ui/notOpen'; // T03185（UX-05⑤）：未开放入口=可见但禁用+范围说明
 import { STATUS_OPTIONS } from './ReqMatrixPanel';
 
 /** 表格渲染所需的全部状态与动作（由父组件持有，本组件不碰任何数据源） */
@@ -63,28 +64,22 @@ const TODO_BTN_STYLE = {
 const LOCATE_BG = 'var(--accent-soft, rgba(128,128,128,.16))';
 
 /**
- * T00842 位置3：标题栏的三个「开发中」占位按钮。
- * 提取为局部常量以压住 renderMatrixTable 的认知复杂度（S3776），点击行为仍由父级 flash 提示。
+ * T00842 位置3 → T03185（UX-05⑤）：标题栏的三个未开放入口。
+ * 此前是「点了只弹一句开发中」的可用态按钮；PRD 要求主界面不存在这类入口，
+ * 统一改成「可见但禁用 + 范围说明」（`NotOpenButton`，沿用 D-14 的口径）。
+ * 仍提取为局部常量以压住 renderMatrixTable 的认知复杂度（S3776）。
  */
-const renderTitleTodoActions = (flash: (m: string) => void): ReactNode => (
+const renderTitleTodoActions = (): ReactNode => (
   <>
-    <button onClick={() => flash('AI 美化功能开发中')} className="tbtn-anim"
-      title="AI 美化 — 润色该需求标题，使其语义更清晰表达更规范" aria-label="AI 美化：润色该需求标题" style={TODO_BTN_STYLE}>
-      <Sparkles size={12} />
-    </button>
-    <button onClick={() => flash('AI 简化功能开发中')} className="tbtn-anim"
-      title="AI 简化 — 依据需求详情高度总结为简洁标题（限 40 字，细节会精简）" aria-label="AI 简化：依据需求详情总结为简洁标题" style={TODO_BTN_STYLE}>
-      <Minimize2 size={12} />
-    </button>
-    <button onClick={() => flash('归档功能开发中')} className="tbtn-anim"
-      title="归档 — 将该需求移入归档" aria-label="归档：将该需求移入归档" style={TODO_BTN_STYLE}>
-      <Archive size={12} />
-    </button>
+    <NotOpenButton className="tbtn-anim" label="AI 美化" scope="polishTitle" icon={<Sparkles size={12} />} style={TODO_BTN_STYLE} />
+    <NotOpenButton className="tbtn-anim" label="AI 简化" scope="summarizeTitle" icon={<Minimize2 size={12} />} style={TODO_BTN_STYLE} />
+    <NotOpenButton className="tbtn-anim" label="归档" scope="archiveReq" icon={<Archive size={12} />} style={TODO_BTN_STYLE} />
   </>
 );
 
 /** 需求跟踪矩阵主表（含空态）；`x` 形参为 TS 收窄后的惯用命名，勿误读为闭包 x */
-export function MatrixTable({ p, flash }: { readonly p: MatrixTableProps; readonly flash: (m: string) => void }) {
+// T03185（UX-05⑤）：占位按钮改禁用后不再需要 `flash`，形参一并摘掉（父级调用点同步）
+export function MatrixTable({ p }: { readonly p: MatrixTableProps }) {
   const { rows, multi, selIds, caseCounts, queryId, linkFor, allRef } = p;
 
   if (rows.length === 0) {
@@ -114,7 +109,7 @@ export function MatrixTable({ p, flash }: { readonly p: MatrixTableProps; readon
           style={{ ...TODO_BTN_STYLE, color: queryId === r.id ? 'var(--accent)' : 'var(--text-muted)' }}>
           {queryId === r.id ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
         </button>
-        {renderTitleTodoActions(flash)}
+        {renderTitleTodoActions()}
       </div>
       {r.source_ref && <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', paddingLeft: 4 }}>{r.source_ref}</div>}
       {queryId === r.id && renderDetail(r)}

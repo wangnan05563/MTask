@@ -101,12 +101,17 @@ export const api = {
     if (!filename) filename = `export.${extFromContentType(res.headers.get('Content-Type') ?? '')}`;
     return { blob: await res.blob(), filename };
   },
-  /** POST 二进制上传（xlsx 导入等），Content-Type 固定 octet-stream 以跳过全局 JSON 解析 */
-  async postBinary<T>(path: string, data: ArrayBuffer): Promise<T> {
+  /**
+   * POST 二进制上传（xlsx 导入等），Content-Type 固定 octet-stream 以跳过全局 JSON 解析。
+   * `signal`（T03185 / UX-07②）：PRD 解析这类长耗时逐文件调用需要真正可中断——不接 signal 时
+   * 「停止」只能清前端状态，请求仍会跑完并落结果，等于取消无效。
+   */
+  async postBinary<T>(path: string, data: ArrayBuffer, opts?: { signal?: AbortSignal }): Promise<T> {
     const res = await fetch(`${apiBase}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream', ...(accessToken ? { 'X-Access-Token': accessToken } : {}) },
       body: data,
+      signal: opts?.signal,
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);

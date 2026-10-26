@@ -4,8 +4,9 @@ import { CopyButton } from '../ui/CopyButton';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type ReqCategory, type ReqEntry } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
-import { clearSessionState, useSessionState } from '../ui/session';
-import { ProjectListHint, loadProjectList, useProjectList } from '../ui/projectList'; // T02201
+import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
+import { ProjectListHint, loadProjectList, projectListPlaceholder, useProjectList } from '../ui/projectList'; // T02201
+import { NotOpenButton } from '../ui/notOpen'; // T03185（UX-05⑤）：未开放入口=可见但禁用+范围说明
 import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：通用需求正文 AI 美化
@@ -25,6 +26,13 @@ export function ReqPage() {
   const [taskCopyEntry, setTaskCopyEntry] = useState<ReqEntry | null>(null);
   const [taskCopyProjectId, setTaskCopyProjectId] = useState('');
   const [taskCopyBusy, setTaskCopyBusy] = useState(false);
+  // T03185（UX-05①②③④）：转计划的目标项目——同样只走「下拉 + 携带 ID」，不再让用户手输项目名。
+  // 手输项目名会把名称送进 projectId 槽位，后端按 ID 校验直接报「目标项目不存在」（U13）。
+  const [planEntry, setPlanEntry] = useState<ReqEntry | null>(null);
+  const [planProjectId, setPlanProjectId] = useState('');
+  const [planBusy, setPlanBusy] = useState(false);
+  const [noteProject, setNoteProject] = useState<{ projectId: string; inboxId: string } | null>(null);
+  const [currentProject] = usePersistentState('tasks.activeProject', ''); // 当前正在看的项目，作转计划的默认预选
   const projectList = useProjectList(); // T02201：项目列表统一走容错层
   const { projects } = projectList;
   // 排序条件：sortKey 排序字段，sortDir 升降序（默认时间降序，与后端默认一致）
@@ -174,14 +182,44 @@ export function ReqPage() {
     }
   }
 
-  /** 转计划草稿（T00456 / PRD INT-5）：把通用需求转为目标项目的计划任务（追加尾部自动排期） */
-  async function toPlan(p: ReqEntry) {
-    const pid = await askInput({ title: '转计划 — 输入目标项目名称', placeholder: '如：MTask' });
-    if (!pid?.trim()) return;
+  /**
+   * T03185（UX-05①②④）：转计划——打开目标项目选择弹窗。
+   * 此前是「输入项目名称」的文本框，名称被直接塞进 projectId 字段，后端 `WHERE id = ?` 必然落空，
+   * 用户看到「目标项目不存在」却不知道为什么；同名项目更无从区分。改为下拉携带 ID 后由构造消除。
+   */
+  function toPlan(p: ReqEntry) {
+    setPlanEntry(p);
+    setPlanProjectId('');
+    setNoteProject(null);
+    void loadProjectList(true);
+    void api.get<{ projectId: string; inboxId: string }>('/settings/note-project')
+      .then(setNoteProject)
+      .catch(() => setNoteProject(null)); // 读不到默认项目不影响：仍可手选
+  }
+
+  /**
+   * 默认项目预选（UX-05①）：弹窗打开且项目列表就绪后，按「当前正在看的项目 → 默认记事项目 → 收件箱」
+   * 依次取第一个仍然有效的 ID。合法性以列表为准，持久化的项目指针可能已随项目删除而失效。
+   */
+  useEffect(() => {
+    if (!planEntry || planProjectId || projects.length === 0) return;
+    const valid = (id: string) => (id && projects.some((x) => x.id === id) ? id : '');
+    const fallback = valid(currentProject) || valid(noteProject?.projectId ?? '') || valid(noteProject?.inboxId ?? '');
+    if (fallback) setPlanProjectId(fallback);
+  }, [planEntry, planProjectId, projects, currentProject, noteProject]);
+
+  /** T03185：确认转计划（项目必选——计划必须挂在具体项目下，无项目时按钮禁用并给出出口） */
+  async function confirmToPlan() {
+    if (!planEntry || !planProjectId) return;
+    const p = planEntry;
+    const targetName = projects.find((x) => x.id === planProjectId)?.name ?? '所选项目';
+    setPlanBusy(true);
     try {
-      await api.post('/plans/from-req', { reqEntryId: p.id, projectId: pid.trim() });
-      flash(`已将「${p.title}」转存到「${pid.trim()}」的项目计划`);
+      await api.post('/plans/from-req', { reqEntryId: p.id, projectId: planProjectId });
+      flash(`已将「${p.title}」转存到「${targetName}」的项目计划`);
+      setPlanEntry(null);
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
+    finally { setPlanBusy(false); }
   }
 
   /** T00629：复制到待办任务——支持**指定目标项目**（弹窗选择；不选则落默认记事项目/收件箱） */
@@ -394,20 +432,15 @@ export function ReqPage() {
         >
           <Plus size={13} />
         </button>
-        {/* T00842 位置2「需求标题栏」：样式对齐任务菜单已有同名按钮（task-op 同款尺寸/间距/圆角，图标同源） */}
+        {/* T00842 位置2「需求标题栏」→ T03185（UX-05⑤）：三个未开放入口改为「可见但禁用 + 范围说明」，
+            不再点击后只弹一句「开发中」 */}
         <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
-          <button onClick={() => flash('AI 美化功能开发中')} title="AI 美化 — 润色当前分类需求标题，使其语义更清晰表达更规范" aria-label="AI 美化：润色当前分类需求标题"
-            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
-            <Sparkles size={13} />
-          </button>
-          <button onClick={() => flash('AI 简化功能开发中')} title="AI 简化 — 依据需求详情高度总结为简洁标题（限 40 字，细节会精简）" aria-label="AI 简化：依据需求详情总结为简洁标题"
-            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
-            <Minimize2 size={13} />
-          </button>
-          <button onClick={() => flash('归档功能开发中')} title="归档 — 将当前分类全部需求移入归档" aria-label="归档：将当前分类全部需求移入归档"
-            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
-            <Archive size={13} />
-          </button>
+          <NotOpenButton label="AI 美化" scope="polishTitle" icon={<Sparkles size={13} />}
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6 }} />
+          <NotOpenButton label="AI 简化" scope="summarizeTitle" icon={<Minimize2 size={13} />}
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6 }} />
+          <NotOpenButton label="归档" scope="archiveReq" icon={<Archive size={13} />}
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6 }} />
         </span>
         <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
@@ -590,9 +623,9 @@ export function ReqPage() {
                       title="复制到待办任务 — 以该通用需求创建一条待办任务（收件箱项目）" aria-label="复制到待办任务">
                       <ListTodo size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
-                    {/* T00456 / PRD INT-5：转计划 — 把通用需求转为目标项目的计划任务 */}
-                    <button className="abtn" onClick={() => void toPlan(p)} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-                      title="转计划 — 把该通用需求转为目标项目的计划任务（输入目标项目名）" aria-label="转计划：转为目标项目的计划任务">
+                    {/* T00456 / PRD INT-5：转计划 — 把通用需求转为目标项目的计划任务（T03185 改为项目下拉选择） */}
+                    <button className="abtn" onClick={() => toPlan(p)} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                      title="转计划 — 把该通用需求转为目标项目的计划任务（下拉选择项目）" aria-label="转计划：转为目标项目的计划任务">
                       <CalendarRange size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
                     <button
@@ -621,19 +654,13 @@ export function ReqPage() {
                         </div>
                       )}
                     </div>
-                    {/* T00842 位置1「通用需求菜单」：样式对齐任务菜单已有同名按钮（task-op 同款尺寸/间距/圆角，图标同源） */}
-                    <button className="abtn" onClick={() => flash('AI 美化功能开发中')} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-                      title="AI 美化 — 润色该通用需求标题，使其语义更清晰表达更规范" aria-label="AI 美化：润色该通用需求标题">
-                      <Sparkles size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-                    </button>
-                    <button className="abtn" onClick={() => flash('AI 简化功能开发中')} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-                      title="AI 简化 — 依据需求详情高度总结为简洁标题（限 40 字，细节会精简）" aria-label="AI 简化：依据需求详情总结为简洁标题">
-                      <Minimize2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-                    </button>
-                    <button className="abtn" onClick={() => flash('归档功能开发中')} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-                      title="归档 — 将该条通用需求移入归档" aria-label="归档：将该条通用需求移入归档">
-                      <Archive size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-                    </button>
+                    {/* T00842 位置1「通用需求菜单」→ T03185（UX-05⑤）：同上，未开放入口不再做成能点的占位按钮 */}
+                    <NotOpenButton className="abtn" label="AI 美化" scope="polishTitle" icon={<Sparkles size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
+                      style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }} />
+                    <NotOpenButton className="abtn" label="AI 简化" scope="summarizeTitle" icon={<Minimize2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
+                      style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }} />
+                    <NotOpenButton className="abtn" label="归档" scope="archiveReq" icon={<Archive size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
+                      style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }} />
                     <button className="abtn" onClick={() => void removeEntry(p)} style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="删除 — 删除这条通用需求" aria-label="删除：删除这条通用需求">
                       <Trash2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
@@ -702,6 +729,57 @@ export function ReqPage() {
                 title="确认复制到所选项目的待办任务" aria-label="确认复制到待办"
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: taskCopyBusy ? 'default' : 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)' }}>
                 {taskCopyBusy ? <><Loader2 size={12} className="aispin" />复制中…</> : '复制到待办'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* T03185（UX-05①②③④）：转计划的目标项目选择弹窗——下拉携带 ID，默认项目合法即可直接提交 */}
+      {planEntry && (
+        <div /* NOSONAR - 遮罩点击为鼠标便捷关闭，取消按钮提供键盘可达通路 */
+          style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={(e) => { if (e.target === e.currentTarget && !planBusy) setPlanEntry(null); }}>
+          <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(420px, 92vw)', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
+              <CalendarRange size={14} style={{ color: 'var(--accent)' }} /> 转计划 — 选择目标项目
+              <span style={{ flex: 1 }} />
+              <button onClick={() => setPlanEntry(null)} disabled={planBusy} title="关闭" aria-label="关闭转计划弹窗"
+                style={{ background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 'var(--fs-l)', cursor: planBusy ? 'default' : 'pointer' }}>×</button>
+            </div>
+            <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--fs-s)' }}>
+              <div style={{ color: 'var(--text-muted)' }}>
+                将通用需求「<strong style={{ color: 'var(--text)' }}>{planEntry.title}</strong>」转为所选项目的计划任务（追加到计划尾部自动排期，不改动需求本身）。
+              </div>
+              <div>
+                <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 4 }}>目标项目</div>
+                <select value={planProjectId} onChange={(e) => setPlanProjectId(e.target.value)} disabled={planBusy}
+                  aria-label="目标项目" title="选择计划任务落到哪个项目"
+                  style={{ width: '100%', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
+                  <option value="">{projectListPlaceholder(projectList, '请选择所属项目')}</option>
+                  {projects.map((pj) => <option key={pj.id} value={pj.id}>{pj.name}</option>)}
+                </select>
+                <div style={{ marginTop: 4 }}>
+                  <ProjectListHint view={projectList} />
+                </div>
+                {/* UX-05③：没有可选项目时给出口，而不是让提交按钮静默失败 */}
+                {projectList.phase === 'ready' && projects.length === 0 && (
+                  <div role="status" data-t03185="no-project" style={{ marginTop: 6, color: 'var(--danger)' }}>
+                    请选择/创建所属项目 —— 当前没有可用项目，请先到「项目管理」或「任务」菜单新建项目，再回来转计划。
+                  </div>
+                )}
+                <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
+                  同名项目按 ID 区分，不会串单；若该需求已转过，会提示重复而不是再生成一条。
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
+              <button onClick={() => setPlanEntry(null)} disabled={planBusy} className="tbtn-anim"
+                style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>取消</button>
+              <button onClick={() => void confirmToPlan()} disabled={planBusy || !planProjectId} className="tbtn-anim"
+                title={planProjectId ? '确认转为所选项目的计划任务' : '请先选择所属项目'}
+                aria-label={planProjectId ? '确认转计划' : '确认转计划（需先选择项目）'}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: (planBusy || !planProjectId) ? 'default' : 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)' }}>
+                {planBusy ? <><Loader2 size={12} className="aispin" />转计划中…</> : '转为计划'}
               </button>
             </div>
           </div>

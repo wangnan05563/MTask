@@ -42,6 +42,12 @@ interface AiImportState {
   /** T01038：结束后保留的最终耗时（ms） */
   finalElapsed?: number;
   /**
+   * T03185（UX-07②）：本轮执行是否可被用户取消。
+   * 必须进状态而不是只读模块变量——useSyncExternalStore 在快照引用未变时不会重渲染，
+   * 面板的「取消」按钮会停在旧可见性上。
+   */
+  canCancel?: boolean;
+  /**
    * T00982：解析结果完成戳（ms）——解析结果写入会话存储后递增。
    * 解析期间切换页面会让面板组件卸载，若解析在卸载之后才完成，已挂载的实例看不到那次 setState；
    * 面板据此戳重新从会话存储载入结果，避免"控制台显示解析完成、结果却一条都没有"。
@@ -68,6 +74,13 @@ let state: AiImportState = (() => {
   return base;
 })();
 const listeners = new Set<() => void>();
+
+/**
+ * T03185（UX-07②）：正在执行的解析/导入的**取消句柄**。
+ * 放在模块级与状态同生命周期：面板可能因切页卸载，但请求仍在跑——句柄不随组件消失，
+ * 控制台与面板任一入口都能真正中断（AbortSignal），而不是只把前端日志清干净、请求照跑照落库。
+ */
+let abortFn: (() => void) | null = null;
 
 function emit(): void {
   for (const l of listeners) l();
@@ -112,9 +125,34 @@ export const aiImportStore = {
   /** 重置执行区（保留面板选择态，如项目由会话级状态承载）。T00662：可指定导入类型。 */
   reset(kind: AiImportState['kind'] = 'plan'): void {
     state = { ...initial, kind };
+    abortFn = null; // 重置即「本轮没有在跑」，避免留下指向上一轮的取消句柄
     persistKind(kind);
     clearRun('aiimport');
     emit();
+  },
+  /**
+   * T03185（UX-07②）：登记/清除取消句柄。传 null 表示本轮已结束（发起方在 finally 里清）。
+   * 同一时刻只允许一轮执行，后登记者覆盖前者——覆盖即说明上一轮已被更替，不是并发。
+   */
+  setAbort(fn: (() => void) | null): void {
+    abortFn = fn;
+    state = { ...state, canCancel: fn !== null };
+    emit();
+  },
+  /** 是否存在可取消的执行中轮次（面板据此决定「取消解析」按钮是否可见/可用） */
+  hasAbort(): boolean {
+    return abortFn !== null;
+  },
+  /**
+   * 用户发起的中断：调用句柄并清除，返回是否真的中断了一轮。
+   * 没有句柄时返回 false，调用方（控制台「停止」）据此回落到原来的清态逻辑，不假装已取消。
+   */
+  cancelByUser(): boolean {
+    if (!abortFn) return false;
+    const fn = abortFn;
+    this.setAbort(null);
+    fn();
+    return true;
   },
   /** T00662：控制台 tab 标题（随导入类型变化） */
   label(): string {

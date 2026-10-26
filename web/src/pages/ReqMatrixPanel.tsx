@@ -563,7 +563,7 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
       style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 14 }}>
       {renderToolbar()}
       {renderNewReqRow()}
-      <MatrixTable p={tableProps} flash={flash} />
+      <MatrixTable p={tableProps} />
       {renderLinkPanel()}
       {renderPrdModal()}
     </section>

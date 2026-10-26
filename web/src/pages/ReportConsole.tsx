@@ -709,8 +709,10 @@ export function ReportConsole({
       if (kfSnap.streaming) kickoffPptStore.abort();
       // 2d) T02857：阶段性总结汇报 PPT 逐页装配流：abort SSE（后端随 signal 结束装配）
       if (sumSnap.streaming) summaryPptStore.abort();
-      // 3) PRD 导入单次请求：本请求未 job 化，前端清 store 结束等待，后端自然结束
-      if (aiSnap.busy) aiImportStore.reset();
+      // 3) T03185（UX-07②）：PRD 解析请求已挂 AbortSignal——先真中断（取消句柄在模块级 store，
+      //    面板切页卸载后照样掐得掉），不再只是清 store 让后端白跑一轮。
+      //    中断成功时保留 store 状态：解析侧会自己写「已取消」日志并退出忙态，清掉反而把原因抹平。
+      if (aiSnap.busy && !aiImportStore.cancelByUser()) aiImportStore.reset();
       // 4) 周报生成流：abort SSE + 清 store
       if (report.streaming) reportStream.abort();
       flash('已停止并清理相关产物');

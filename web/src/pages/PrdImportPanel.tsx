@@ -205,6 +205,8 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   const [plans, setPlans] = useSessionState<PrdPlan[]>('prd-import.plans', []);
   // T00841：待解析的已选 PRD 文件——选择仅追加到列表，用户点「确认」才触发 parseAll；确认前可增删
   const [pickedFiles, setPickedFiles] = useState<File[]>([]);
+  /** T03185（UX-07②）：解析进度（已完成文件数/总数）——只在面板内显示"跑到第几个文件"，取消入口据此可见 */
+  const [parseProgress, setParseProgress] = useState<{ done: number; total: number } | null>(null);
 
   // T00907：跳转自动带入标记——一次消费（读取即清），避免每次展开面板都重复触发
   const autoPullDone = useRef<boolean>(false);
@@ -279,12 +281,20 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     aiImportStore.reset('prd');
     setPrdSources([]); // T00908：重新解析即作废上一批暂存的 PRD 全文
     const total = files.length;
+    // T03185（UX-07②）：本轮解析的取消闸门。句柄登记在模块级 store，切页卸载后仍能中断；
+    // 控制台「停止」与本面板「取消解析」共用这一句柄，保证中断的是真实请求而不是只清前端日志。
+    const ctrl = new AbortController();
+    const release = () => { aiImportStore.setAbort(null); setParseProgress(null); };
+    aiImportStore.setAbort(() => ctrl.abort());
     aiImportStore.patch({ fileName: total > 1 ? `${total} 个文件` : files[0].name, busy: true });
     aiImportStore.log(`已选择 ${total} 个 PRD 文件：${files.map((f) => f.name).join('、')}`);
+    setParseProgress({ done: 0, total });
     const results: PrdParseResult[] = [];
     const sources: { name: string; text: string }[] = [];
     let firstError = '';
+    let stopName = '';
     for (let i = 0; i < total; i++) {
+      if (ctrl.signal.aborted) break; // 取消后剩余文件不再发起，避免"已取消却还在跑"
       const file = files[i];
       aiImportStore.log(`提取并解析（${i + 1}/${total}）：${file.name}…`);
       try {
@@ -292,6 +302,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
         const r = await api.postBinary<{ ok: boolean } & PrdParseResult>(
           `/plans/ai-parse-prd?projectId=${projectId}&toolId=${toolId}&filename=${encodeURIComponent(file.name)}`,
           buf,
+          { signal: ctrl.signal },
         );
         results.push({ requirements: r.requirements ?? [], drafts: r.drafts ?? [], coverageWarn: r.coverageWarn, truncatedNote: r.truncatedNote });
         // T00908：暂存每份文件的 PRD 全文（供确认导入时落库 PRD 管理视图）
@@ -304,14 +315,31 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
         // 否则用户看到分片提示会误判成「又被砍到 20 条」。
         if (r.parseNote) aiImportStore.log(r.parseNote);
       } catch (e) {
+        if (ctrl.signal.aborted) {
+          // 用户中断不是解析失败，不能记进 firstError 让末尾报「全部文件解析失败」
+          stopName = file.name;
+          break;
+        }
         const msg = String((e as Error).message ?? e);
         firstError ||= msg;
         aiImportStore.log(`✗ ${file.name} 解析失败（已跳过，其余文件继续）：${msg}`, 'error');
       }
+      setParseProgress({ done: i + 1, total });
+    }
+    if (ctrl.signal.aborted) {
+      // T03185（UX-07②）：取消即整轮作废——已完成的分片结果只活在局部变量里，这里直接返回，
+      // 不 setReqs/setPlans、不 persistParseResult、不递增 parseStamp，因此界面与会话存储都不留半成品，
+      // 也不会生成"需求 ↔ 计划"的关联（关联只在确认导入时建立）。
+      aiImportStore.log(`已取消解析${stopName ? `（停在 ${stopName}）` : ''}：本次共 0 条需求 / 0 条计划进入面板，未产生任何半成品关联`, 'error');
+      aiImportStore.patch({ error: '解析已取消，未生成任何条目' });
+      release();
+      aiImportStore.patch({ busy: false });
+      return;
     }
     if (results.length === 0) {
       aiImportStore.patch({ error: firstError || '全部文件解析失败' });
       aiImportStore.log(`解析失败：${firstError || '全部文件解析失败'}`, 'error');
+      release();
       aiImportStore.patch({ busy: false });
       return;
     }
@@ -326,6 +354,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     // T00982：同步落盘 + 递增完成戳（解析期间切页导致组件卸载时，这两处是结果不丢的关键）
     persistParseResult(reqRows, planRows, sources);
     aiImportStore.log(`解析完成（${results.length}/${total} 个文件）：合并需求 ${requirements.length} 条、WBS 计划 ${drafts.length} 条，编号已全局重排（REQ-001…），可编辑后导入`, 'ok');
+    release();
     aiImportStore.patch({ busy: false, parseStamp: stamp });
   }, [projectId, toolId, setReqs, setPlans, setPrdSources]);
 
@@ -340,7 +369,9 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   function composeImportPayload(): { payload: Record<string, unknown>; droppedReqNos: string[] } | null {
     const rq = reqs.filter((x) => x.include && x.title.trim());
     const pl = plans.filter((x) => x.include && x.title.trim());
-    if (rq.length === 0 && pl.length === 0) return null;
+    // T03185（UX-07③）：提交门槛由「需求或计划任一非空」收紧为「至少一条需求」——
+    // 计划的需求关联以矩阵里的需求行为锚点，只勾计划会让关联悬空（事后无从回溯来源），故不放行。
+    if (rq.length === 0) return null;
     // 勾选过滤：仅提交勾选项；reqNos 需与提交的需求编号保持一致（未勾选需求的引用自动丢弃）
     const keptNos = new Set(rq.map((x) => x.reqNo));
     const droppedReqNos = [...new Set(pl.flatMap((p) => p.reqNos.filter((n) => !keptNos.has(n))))];
@@ -375,7 +406,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   /** T02300：导入前预演——打只读端点 `/plans/import-prd/preview`，同一份 payload 先问清「这次会动什么」 */
   async function doPreview() {
     const composed = composeImportPayload();
-    if (!composed) { aiImportStore.log('未勾选任何需求或计划，无法预演', 'error'); return; }
+    if (!composed) { aiImportStore.log('未勾选任何需求，无法预演（计划的需求关联需要需求行作锚点）', 'error'); return; }
     const { payload } = composed;
     aiImportStore.patch({ busy: true, error: '' });
     aiImportStore.log('预演中：只读统计本次导入的连带影响，不改动任何数据…');
@@ -395,7 +426,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   /** 确认导入：事务创建需求项（矩阵）+ 计划（关联需求）+ 可选待办任务 */
   async function doImport() {
     const composed = composeImportPayload();
-    if (!composed) { aiImportStore.patch({ error: '请至少勾选一条需求或计划' }); aiImportStore.log('未勾选任何条目，已中止导入', 'error'); return; }
+    if (!composed) { aiImportStore.patch({ error: '请至少勾选一条需求（计划的需求关联需要需求行作锚点）' }); aiImportStore.log('未勾选任何需求，已中止导入', 'error'); return; }
     const payload = composed.payload;
     const rqCount = ((payload.requirements as unknown[]) ?? []).length;
     const plCount = ((payload.plans as unknown[]) ?? []).length;
@@ -420,6 +451,9 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
 
   const includedPlans = useMemo(() => plans.filter((x) => x.include).length, [plans]);
   const includedReqs = useMemo(() => reqs.filter((x) => x.include).length, [reqs]);
+  // T03185（UX-07③）：与 composeImportPayload 同口径的可提交需求数（勾选且标题非空）——
+  // 按钮门槛若只看 include，会把「勾了但标题为空」的行算成可提交，点了仍被拦，等于禁用项不给真原因。
+  const submittableReqs = useMemo(() => reqs.filter((x) => x.include && x.title.trim()).length, [reqs]);
 
   return (
     <div style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 14 }}>
@@ -466,6 +500,21 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
         </label>
         {fileName && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{fileName}</span>}
         {busy && <span className="ai-shimmer" style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, ['--ai-shimmer-color' as never]: 'var(--accent)' }}>处理中…</span>}
+        {/* T03185（UX-07②）：解析进度就地可见——此前只有一行「处理中…」，多文件时看不出跑到第几个、还要等多久 */}
+        {parseProgress && (
+          <span role="status" data-t03185="parse-progress" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
+            解析进度 {parseProgress.done}/{parseProgress.total}
+          </span>
+        )}
+        {busy && snap.canCancel && (
+          <button onClick={() => { if (aiImportStore.cancelByUser()) aiImportStore.log('已请求取消解析：正在中断当前 AI 请求，剩余文件不再发起…'); }}
+            className="tbtn-anim" data-t03185="cancel-parse"
+            title="取消解析 — 中断本轮 AI 解析请求；本轮结果整轮作废，不会留下半成的需求/计划行"
+            aria-label="取消本轮 PRD 解析"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-xs)', border: '1px solid var(--danger)', borderRadius: 6, background: 'transparent', color: 'var(--danger)', cursor: 'pointer', padding: '3px 8px' }}>
+            <X size={12} /> 取消解析
+          </button>
+        )}
         <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           {snap.logs.length > 0 ? `控制台已输出 ${snap.logs.length} 条执行日志 →` : '执行过程将在右侧 AI 控制台逐行输出'}
         </span>
@@ -621,18 +670,24 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
           </label>
           {/* T02300：导入前预演（只读端点）——把「这次会新建/复用/让号多少行」摊在点导入之前，
               T01869 那类「重导后两行同名被读成回档」的误判就没了生长空间 */}
-          <button onClick={() => void doPreview()} disabled={busy}
-            title="只读预演：按当前勾选项与处置口径，算出本次导入将新建/复用/让号多少行，零写库（不改任何数据）"
+          <button onClick={() => void doPreview()} disabled={busy || submittableReqs === 0}
+            title={submittableReqs === 0 ? '需先勾选至少一条需求 — 计划的需求关联以需求行为锚点，未勾选需求时预演/导入都不放行' : '只读预演：按当前勾选项与处置口径，算出本次导入将新建/复用/让号多少行，零写库（不改任何数据）'}
             aria-label="预演本次 PRD 导入的连带影响"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', cursor: busy ? 'default' : 'pointer' }}>
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', cursor: (busy || submittableReqs === 0) ? 'default' : 'pointer' }}>
             <Eye size={13} /> 预演（只读）
           </button>
-          <button onClick={() => void doImport()} disabled={busy} className="tbtn-anim"
-            title="导入勾选的条目——需求进矩阵、计划进甘特（含需求关联）、可选生成待办任务"
+          <button onClick={() => void doImport()} disabled={busy || submittableReqs === 0} className="tbtn-anim"
+            title={submittableReqs === 0 ? '需先勾选至少一条需求 — 计划的需求关联以需求行为锚点，只勾计划会留下悬空关联' : '导入勾选的条目——需求进矩阵、计划进甘特（含需求关联）、可选生成待办任务'}
             aria-label="导入 PRD 解析结果"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)', cursor: busy ? 'default' : 'pointer' }}>
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)', cursor: (busy || submittableReqs === 0) ? 'default' : 'pointer' }}>
             <Save size={13} /> 导入（需求 {includedReqs} 条 / 计划 {includedPlans} 条{createTasks ? ' + 待办' : ''}）
           </button>
+          {/* T03185（UX-07③）：门槛原因就地说明，不靠点击后弹提示（禁用项须说明原因） */}
+          {submittableReqs === 0 && (
+            <span role="alert" data-t03185="need-req" style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>
+              至少勾选一条需求才能预演或导入：计划的需求关联需要需求行作锚点，只勾计划会产生悬空关联。
+            </span>
+          )}
         </div>
       )}
     </div>
