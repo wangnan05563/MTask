@@ -151,6 +151,8 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
   const [base, setBase] = useSessionState('lecture.base', '');
   const [head, setHead] = useSessionState('lecture.head', '');
   const [since, setSince] = useSessionState('lecture.since', '');
+  // T03303：提交人过滤（甲 / 甲, 乙（且）/ 甲 | 乙（或）），与区间一起提交，服务端按 author+committer 精确比对
+  const [authorFilter, setAuthorFilter] = useSessionState('lecture.authorFilter', '');
   const [patchMode, setPatchMode] = useSessionState('lecture.patchMode', false);
   const [patchText, setPatchText] = useState('');
   const [exportFormat, setExportFormat] = useSessionState<'md' | 'docx' | 'pptx'>('lecture.exportFormat', 'md');
@@ -192,8 +194,9 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
       if (shape === 'first-last' && !head.trim()) return { error: '首末 SHA 形态需要同时填写两个 SHA' };
       if (head.trim()) range.head = head.trim();
     }
+    if (authorFilter.trim()) range.authorFilter = authorFilter.trim();
     return { body: { projects: selectedIds.map((projectId) => ({ projectId, range })) } };
-  }, [patchMode, patchText, selectedIds, shape, since, base, head]);
+  }, [patchMode, patchText, selectedIds, shape, since, base, head, authorFilter]);
 
   useEffect(() => () => {
     if (flashTimer.current) window.clearTimeout(flashTimer.current);
@@ -431,6 +434,10 @@ export function CodeReviewLecturePanel({ projectIds, projects, toolId, onClose }
               <input value={head} onChange={(e) => setHead(e.target.value)} placeholder={shape === 'first-last' ? '末个 SHA' : 'head（留空=HEAD）'}
                 style={{ ...fieldStyle, width: 150 }} aria-label="区间终点" />
             )}
+            <input value={authorFilter} onChange={(e) => setAuthorFilter(e.target.value)}
+              placeholder="提交人过滤：甲 / 甲, 乙（且）/ 甲 | 乙（或）"
+              title="按 author 或 committer 精确匹配；逗号表示同一提交要同时命中多个词，竖线表示任一命中即可。留空不筛"
+              style={{ ...fieldStyle, width: 230 }} aria-label="提交人过滤" />
           </>
         )}
         <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-s)' }}>

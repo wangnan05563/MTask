@@ -26,6 +26,7 @@ import {
   assertSingleRevision,
   collectGitRange,
   collectPatchRange,
+  parseAuthorFilter,
   resolveCollectionMode,
   resolveRevisionSha,
   type GitCollection,
@@ -239,6 +240,15 @@ function parseRange(raw: unknown, index: number): GitRangeInput {
   } catch (e) {
     if (e instanceof LectureScopeError) throw e;
     throw new LectureScopeError(`projects[${index}].range 非法：${e instanceof Error ? e.message : String(e)}`);
+  }
+  // T03303：提交人过滤与区间同属一张单的采集口径，校验放在这里——预检与流式生成共用，不会两处漂移
+  if (str(r.authorFilter)) {
+    try {
+      const parsed = parseAuthorFilter(str(r.authorFilter));
+      if (parsed) range.authorFilter = parsed.normalized;
+    } catch (e) {
+      throw new LectureScopeError(`projects[${index}].range.authorFilter 非法：${e instanceof Error ? e.message : String(e)}`);
+    }
   }
   return range;
 }

@@ -187,19 +187,70 @@ export async function probeRepository(cwd: string, opts: GitCollectOptions = {})
 export interface GitCommitEntry {
   sha: string;
   author: string;
+  /** 提交者（T03303：与 author 一起参与提交人过滤——一个过滤词命中任一字段即算命中） */
+  committer: string;
   date: string;
   subject: string;
 }
 
-const LOG_FORMAT = '--format=%H%x09%an%x09%aI%x09%s';
+const LOG_FORMAT = '--format=%H%x09%an%x09%cn%x09%aI%x09%s';
 
 function parseCommitLog(stdout: string): GitCommitEntry[] {
   return stdout.split('\n').filter(Boolean).flatMap((line) => {
-    const [sha, author, date, ...rest] = line.split('\t');
-    if (!sha || !author || !date) return [];
-    return [{ sha, author, date, subject: rest.join('\t') }];
+    const [sha, author, committer, date, ...rest] = line.split('\t');
+    if (!sha || !author || !committer || !date) return [];
+    return [{ sha, author, committer, date, subject: rest.join('\t') }];
   });
 }
+
+/**
+ * T03303：提交人过滤文本。
+ * 写法：`张三`（单值）｜`张三, 李四`（且：两个词都要命中，靠 author+committer 两字段互补）｜`张三 | 李四`（或）。
+ * 一个「词」命中 = 该提交的 author **或** committer 与它完全相同（去空白、忽略大小写）。
+ */
+export interface AuthorFilter {
+  /** 或关系的分组；组内每个词都必须命中（且关系） */
+  groups: string[][];
+  /** 归一后的回显文本（预检/日志用） */
+  normalized: string;
+}
+const MAX_AUTHOR_TERMS = 8;
+const MAX_AUTHOR_TERM_LEN = 64;
+
+export function parseAuthorFilter(raw: unknown): AuthorFilter | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'string') throw new GitCollectError('denied', '提交人过滤必须是字符串');
+  const text = raw.trim();
+  if (!text) return null;
+  const rawGroups = text.split(/[|｜]/).map((g) => g.split(/[,，＋+]/).map((t) => t.trim()));
+  if (rawGroups.some((g) => g.length === 0 || g.some((t) => t === ''))) {
+    throw new GitCollectError('denied', `提交人过滤「${text}」含空段：请写成「张三」「张三, 李四」（且）或「张三 | 李四」（或）`);
+  }
+  const groups = rawGroups;
+  const terms = groups.flat();
+  if (terms.length > MAX_AUTHOR_TERMS) throw new GitCollectError('denied', `提交人过滤最多 ${MAX_AUTHOR_TERMS} 个词（当前 ${terms.length} 个）`);
+  for (const t of terms) {
+    if (t.length > MAX_AUTHOR_TERM_LEN) throw new GitCollectError('denied', `提交人「${t.slice(0, 12)}…」超过 ${MAX_AUTHOR_TERM_LEN} 字`);
+    if (/[\0\r\n]/.test(t)) throw new GitCollectError('denied', '提交人过滤含控制字符');
+  }
+  return { groups, normalized: groups.map((g) => g.join(', ')).join(' | ') };
+}
+
+const sameWho = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** 任一「或组」内全部词命中即保留（组内是且，组间是或） */
+export function commitMatchesAuthorFilter(
+  entry: Pick<GitCommitEntry, 'author' | 'committer'>,
+  filter: AuthorFilter,
+): boolean {
+  return filter.groups.some((group) => group.every((term) => sameWho(entry.author, term) || sameWho(entry.committer, term)));
+}
+
+/**
+ * 过滤只在 JS 侧做，不向 git 传 `--author/--committer`：git 对这两类选项是**且**关系
+ * （author 命中任一 --author，且 committer 命中任一 --committer），而本口径要的是「词命中 author 或 committer」，
+ * 预筛会把「author 不匹配但 committer 匹配」的提交提前丢掉（见 verify-t03303 I-04）。
+ */
 
 /** 提交清单（`git log --no-merges`）；解析失败的行原样丢弃，不阻断采集 */
 export async function collectCommitLog(
@@ -207,10 +258,13 @@ export async function collectCommitLog(
   range: string[],
   opts: GitCollectOptions = {},
   extraFlags: string[] = [],
+  authorFilter?: string | null,
 ): Promise<GitCommitEntry[]> {
   const revs = range.map(assertSafeRevision);
+  const filter = parseAuthorFilter(authorFilter);
   const r = await runGitReadonly('log', ['--no-merges', LOG_FORMAT, ...extraFlags], [...revs, '--'], cwd, opts);
-  return parseCommitLog(r.stdout);
+  const entries = parseCommitLog(r.stdout);
+  return filter ? entries.filter((e) => commitMatchesAuthorFilter(e, filter)) : entries;
 }
 
 /** 增量统计原文（`diff --stat`，带行尾口径）；超 2MB 由调用方按 FR-1.4 截断并点名 */
@@ -324,6 +378,8 @@ export interface GitRangeInput {
   head?: string;
   /** since 形态的时间窗起点（ISO 日期或「14 days ago」） */
   since?: string;
+  /** T03303：提交人过滤（`甲`｜`甲, 乙` 且｜`甲 | 乙` 或），只筛提交清单，不改 diff 范围 */
+  authorFilter?: string;
 }
 
 export interface ResolvedGitRange {
@@ -763,7 +819,7 @@ export async function collectGitRange(
       warnings: [`时间窗「${resolved.label}」内无提交：请放宽区间或改用其他形态`],
     };
   }
-  const commits = await collectCommitLog(cwd, resolved.logPositional, opts, resolved.logFlags);
+  const commits = await collectCommitLog(cwd, resolved.logPositional, opts, resolved.logFlags, input.authorFilter);
   const raw = await collectDiff(cwd, resolved.diffPositional, opts.contextLines ?? 3, opts);
   return buildCollection(raw, commits, range, 'git', opts);
 }
