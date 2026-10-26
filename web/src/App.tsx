@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { TasksPage } from './pages/TasksPage';
 import { AIToolsPage } from './pages/AIToolsPage';
 import { QueuePage } from './pages/QueuePage';
@@ -25,6 +25,7 @@ import { aiImportStore } from './stores/aiImportStore'; // T01038：项目计划
 import { Loader2 } from 'lucide-react'; // T01038：Tab 运行指示旋转图标
 
 import { TABS, type Tab } from './ui/tabs'; // T03184（PM-102）：一级导航单源——命令面板页面列表同源生成
+import { applyDeepLink, buildDeepLink, readDeepLinkFromLocation } from './ui/deepLink'; // T03187（D-13）：深链契约单源
 
 // T00441：日志/归档入口从顶部菜单移入「设置」（内网穿透下方），顶部菜单收敛为高频功能
 
@@ -62,6 +63,32 @@ function Shell() {
     globalThis.addEventListener('mtaskNavigate', onNavigate);
     return () => globalThis.removeEventListener('mtaskNavigate', onNavigate);
   }, []);
+  // T03187（D-13）：深链入口——首次进入读 URL、之后跟随 hashchange（手改地址/外部链接/浏览器后退）。
+  // 解析与交付都在契约模块内完成，这里只负责「链接变了就重放一遍」，不再各自拼跳转。
+  useEffect(() => {
+    const applyFromLocation = () => {
+      const link = readDeepLinkFromLocation();
+      if (link) applyDeepLink(link);
+    };
+    applyFromLocation();
+    globalThis.addEventListener('hashchange', applyFromLocation);
+    return () => globalThis.removeEventListener('hashchange', applyFromLocation);
+  }, []);
+  // T03187（D-13）：地址栏跟随实际页签——顶栏点击 / 命令面板直达都只改 tab 状态，
+  // 若不同步，刷新或复制链接会落到上一个页签，「稳定路由」就是假的。
+  // 保留当前链接里的 projectId；锚点仅在页签未变时保留（换页后旧锚点已无意义）。
+  // 首帧跳过：进入时 URL 才是权威（可能正是带锚点的深链），此时 tab 仍是默认值，
+  // 若照常同步会把 `.../plan/matrix` 改写成 `.../tasks`，锚点当场丢失。
+  const urlSyncedRef = useRef(false);
+  useEffect(() => {
+    if (!urlSyncedRef.current) { urlSyncedRef.current = true; return; }
+    const cur = readDeepLinkFromLocation();
+    if (!cur?.projectId) return;
+    const target = buildDeepLink({ projectId: cur.projectId, tab, anchor: cur.tab === tab ? cur.anchor : undefined });
+    if (location.hash !== target) {
+      try { history.replaceState(null, '', target); } catch { /* 忽略 */ }
+    }
+  }, [tab]);
   // T01057-FR1.1：OS 通知点击 → 聚焦窗口后定位到对应任务。
   // T01057 建议：改用 focusTaskByNo——按编号解析 id/项目/状态写齐定位键（含切 activeProject），
   // 修复此前「只写 focusId=task_no、跨项目任务定位不到」的问题（编号≠行 uuid）。

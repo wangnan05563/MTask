@@ -1,5 +1,6 @@
 import { api, type Task } from '../api/client';
 import type { TaskDetailTab } from '../components/TaskDetailDrawer';
+import { PLAN_ANCHORS, applyDeepLink } from './deepLink';
 
 /**
  * T01057「下一步建议」：统一「按任务编号定位到任务页」的入口。
@@ -17,9 +18,13 @@ function setSessionState(key: string, value: unknown): void {
   try { sessionStorage.setItem(key, JSON.stringify(value)); } catch { /* 配额异常静默忽略 */ }
 }
 
-/** 派发全局导航事件：App.tsx 的 mtaskNavigate 监听据此切到任务页（浏览器/桌面壳通用） */
-function navigateToTasks(): void {
-  globalThis.dispatchEvent(new CustomEvent('mtaskNavigate', { detail: { tab: 'tasks' } }));
+/**
+ * 派发全局导航事件：App.tsx 的 mtaskNavigate 监听据此切到任务页（浏览器/桌面壳通用）。
+ * T03187（D-13）：改走深链契约——地址栏同步成 `#/project/<id>/tasks`，刷新/复制链接可复现落位，
+ * 也让 UX-08 后面板重构时只需复用同一契约，不必再改本函数的跳转。
+ */
+function navigateToTasks(projectId?: string | null): void {
+  applyDeepLink({ projectId: projectId ?? '', tab: 'tasks' });
 }
 
 /**
@@ -34,7 +39,9 @@ export function focusPlanNode(planId: string | null | undefined, projectId: stri
   if (!planId) return false;
   setSessionState('plan.locateNodeId', planId);
   if (projectId) setSessionState('plan.projectId', projectId);
-  globalThis.dispatchEvent(new CustomEvent('mtaskNavigate', { detail: { tab: 'plan' } }));
+  // T03187（D-13）：行级定位意图仍走会话键（页面按挂载时机取用），但「切到计划页 + 项目」走深链契约，
+  // 锚点固定 wbs——行定位发生在主表上，不能被上一次留下的面板展开态挡住。
+  applyDeepLink({ projectId: projectId ?? '', tab: 'plan', anchor: PLAN_ANCHORS.wbs });
   return true;
 }
 
@@ -107,7 +114,7 @@ function applyFocus(t: Task, searchKey: string, open?: boolean | FocusOpenMode):
     setSessionState('tasks.focusDrawerTab', drawerTab);
   }
   dispatchFocus({ id: t.id, taskNo: searchKey, tab, projectId: t.project_id ?? '', drawerTab, task: t });
-  navigateToTasks();
+  navigateToTasks(t.project_id);
 }
 
 /**

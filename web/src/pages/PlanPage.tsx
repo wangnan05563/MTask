@@ -25,6 +25,7 @@ import { deltaDaysFromPx, ganttDragResult, newGanttDrag, type GanttDragMode, typ
 import { PlanTimeline, type TlGranularity, type TlPlan, type TlSpacing } from '../components/PlanTimeline'; // T01564：纵向时间轴
 import { SlideOver } from '../components/SlideOver'; // T01565：时间线节点详情复用 FR-3.2 抽屉基元
 import { focusTaskById } from '../ui/focusTask'; // T01577：时间线节点跳转关联待办，复用跨视图定位公共 helper
+import { DEEP_LINK_EVENT, PLAN_ANCHORS, consumeDeepLink, type DeepLink } from '../ui/deepLink'; // T03187（D-13）：深链锚点落位
 import { EstimatePanel, ESTIMATE_PANEL_WIDTH, useEstimatePanelMode } from '../components/EstimatePanel'; // T02039（估算视图 E4）：时间线右侧停靠面板，<1200px 转覆盖式
 
 /** 项目计划页（T00431，菜单位于周报前）：串行瀑布时间线 + Excel 导入导出 + 待办联动。 */
@@ -1423,6 +1424,31 @@ export function PlanPage() {
   const [locateNodeId, setLocateNodeId] = useSessionState<string>('plan.locateNodeId', '');
   // T01486 A4：下钻序号（不入会话：它只是「刚刚点了一下」这种瞬时信号，跨刷新保持它反而会让面板重复应用筛选）
   const [tcDrillSeq, setTcDrillSeq] = useState(0);
+
+  // T03187（D-13）：深链落位——项目 + 面板锚点。两条交付路径互斥：
+  //  · 挂载时取暂存（链接在别的页/首次进入时产生，本页尚未挂载）；
+  //  · 已挂载时收事件（命令面板、通知、手改地址发生在当前页）。
+  // 事件路径会顺手清掉暂存，避免下次进入本页重复展开上一次链接指定的面板。
+  useEffect(() => {
+    const applyLink = (link: DeepLink) => {
+      if (link.projectId) setProjectId(link.projectId);
+      if (!link.anchor) return; // 只指到项目：保留用户当前的面板组合，不擅自收起
+      // 锚点是「面板身份」：wbs 表示主表，其余各开对应面板（单开，不叠加）
+      setShowPrd(link.anchor === PLAN_ANCHORS.prd);
+      setShowMatrix(link.anchor === PLAN_ANCHORS.matrix);
+      setShowTestCases(link.anchor === PLAN_ANCHORS.testcases);
+      setShowSprint(link.anchor === PLAN_ANCHORS.sprint);
+    };
+    const onLink = (e: Event) => {
+      consumeDeepLink('plan');
+      const link = (e as CustomEvent).detail as DeepLink | undefined;
+      if (link) applyLink(link);
+    };
+    const pending = consumeDeepLink('plan');
+    if (pending) applyLink(pending);
+    globalThis.addEventListener(DEEP_LINK_EVENT, onLink);
+    return () => globalThis.removeEventListener(DEEP_LINK_EVENT, onLink);
+  }, [setProjectId, setShowPrd, setShowMatrix, setShowTestCases, setShowSprint]);
 
   const flash = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(''), 3000); };
 
