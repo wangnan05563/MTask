@@ -21,6 +21,7 @@ import { reconcileMilestoneProgresses } from './services/milestoneProgress'; // 
 import { TaskService, startStaleRunningGuard } from './services/TaskService'; // T01368 后续（P1）：running 超时兜底定时收敛（移出读路径）
 import { startEventRetentionTimer } from './services/EventRetention'; // T01064 后续：事件表 90 天保留期清理
 import { startReportTmpSweeper } from './services/ReportService'; // T02144：导出令牌临时文件回收
+import { MetricSnapshotService } from './services/MetricSnapshotService'; // T03237：PM-205 日快照（长历史唯一来源）
 
 const PORT = Number(process.env.MTask_PORT ?? 39876);
 const HOST = '127.0.0.1';
@@ -246,6 +247,8 @@ app.listen(PORT, HOST, () => {
   startEventRetentionTimer();
   // T02144：导出令牌临时文件回收（启动清一轮 + 每小时兜底）——未下载即放弃的 PPTX/XLSX 不再永久残留
   startReportTmpSweeper();
+  // T03237（PM-205）：日快照启动即采一轮，之后每 30 分钟刷新当天读数（过去日期冻结、不回填）
+  MetricSnapshotService.startSnapshotTimer();
 });
 
 // 异步队列轮询器：周期性地将已受理（sending+有 ticket）的 Job 收口。

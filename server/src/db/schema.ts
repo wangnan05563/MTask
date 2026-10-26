@@ -552,6 +552,37 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     CREATE INDEX IF NOT EXISTS idx_ai_job_runs_finished ON ai_job_runs(finished_at);
     CREATE INDEX IF NOT EXISTS idx_ai_job_runs_card ON ai_job_runs(card_key, finished_at);
   `);
+  // T03237（PRD PM-205）：项目洞察的**日快照**——长历史的唯一来源，独立于仅保留 90 天的 task_events。
+  // 一行＝某项目某业务日（D-12 系统时区）的冻结读数：累计待办/完成（CFD）、当日新增/完成（吞吐）、
+  // 当日 G-4 逾期读数（分子/分母同口径）。缺失日期不补造，由读取方标注「数据积累中」。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS metric_day_snapshots (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      stat_date       TEXT NOT NULL,
+      tz              TEXT NOT NULL,
+      todo_count      INTEGER NOT NULL DEFAULT 0,
+      done_count      INTEGER NOT NULL DEFAULT 0,
+      created_count   INTEGER NOT NULL DEFAULT 0,
+      completed_count INTEGER NOT NULL DEFAULT 0,
+      due_total       INTEGER NOT NULL DEFAULT 0,
+      overdue_count   INTEGER NOT NULL DEFAULT 0,
+      captured_at     TEXT NOT NULL,
+      created_at      TEXT NOT NULL,
+      UNIQUE(project_id, stat_date)
+    );
+    CREATE INDEX IF NOT EXISTS idx_metric_day_snapshots_project ON metric_day_snapshots(project_id, stat_date);
+    -- 周期时间原始样本：按「完成日」落盘，区间 P50/P90 用池化样本计算；
+    -- 单独成表是因为百分位不可跨日合并，只存日级 P50/P90 会让任意时间范围无法重算。
+    CREATE TABLE IF NOT EXISTS metric_day_cycle_samples (
+      project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      stat_date   TEXT NOT NULL,
+      task_id     TEXT NOT NULL,
+      cycle_hours REAL NOT NULL,
+      PRIMARY KEY (project_id, stat_date, task_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_metric_cycle_samples_project ON metric_day_cycle_samples(project_id, stat_date);
+  `);
   ensureColumn('tasks', 'verified', 'verified INTEGER NOT NULL DEFAULT 0');
   ensureColumn('queues', 'paused', 'paused INTEGER NOT NULL DEFAULT 0'); // T01434：队列级暂停/继续
   // T00490：记录字体颜色（Excel 风格颜色按钮）——空串=默认色

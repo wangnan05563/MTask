@@ -87,6 +87,24 @@ interface MilestoneForecastReport {
   milestones: MilestoneForecast[];
 }
 
+/** T03237（PM-205）：日快照覆盖——「可回溯起点」与缺失日期的数据源 */
+interface SnapshotCoverageProject {
+  projectId: string;
+  projectName: string;
+  traceableFrom: string | null;
+  lastSnapshot: string | null;
+  snapshotDays: number;
+  missingDates: string[];
+}
+
+interface SnapshotCoverageReport {
+  tz: string;
+  today: string;
+  window: { from: string; to: string };
+  projects: SnapshotCoverageProject[];
+  note: string;
+}
+
 const FORECAST_VERDICT: Record<MilestoneForecast['verdict'], { label: string; color: string }> = {
   done: { label: '已完成', color: 'var(--success)' },
   'not-predictable': { label: '不预测', color: 'var(--text-muted)' },
@@ -1321,6 +1339,9 @@ export function PlanPage() {
   const [forecastAt, setForecastAt] = useState('');
   const [forecastErr, setForecastErr] = useState('');
   const [fcOpenId, setFcOpenId] = useState('');
+  // T03237（PM-205）：洞察日快照覆盖（可回溯起点 + 缺失日期）；取数失败只留痕，不冒充「无数据」
+  const [snapCoverage, setSnapCoverage] = useState<SnapshotCoverageReport | null>(null);
+  const [snapErr, setSnapErr] = useState('');
   // T00764：kind= holiday 放假日 | overtime 加班日
   // T02213：节假日是**工期换算的输入**（buildWorkdayCtx / 甘特着色 / 汇总天数都吃它），
   // 此前取数失败被 `.catch(() => undefined)` 吞成空数组，工期就按「无节假日」口径静默算错。
@@ -1650,6 +1671,10 @@ export function PlanPage() {
         setForecastErr('');
       })
       .catch((e) => { setForecasts({}); setForecastErr(String((e as Error).message ?? e)); });
+    // T03237（PM-205）：洞察快照覆盖——只展示真实积累起点与缺失日，缺失不读成 0
+    void api.get<SnapshotCoverageReport>(`/metrics/day-snapshots/coverage?projectId=${projectId}`)
+      .then((r) => { setSnapCoverage(r); setSnapErr(''); })
+      .catch((e) => { setSnapCoverage(null); setSnapErr(String((e as Error).message ?? e)); });
   }, [projectId]);
   useEffect(() => { reload(); }, [reload]);
 
@@ -2752,6 +2777,21 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             {milestoneCount > 0 && <span title={`里程碑 ${milestoneCount} 个`}>里程碑：{milestoneCount}</span>}
             {forecastAt && <span title={`预测业务日 ${forecastAt}（按项目/系统时区）；预测值，非承诺`}>预测基准日：{forecastAt}</span>}
             {forecastErr && <span title={`里程碑预测取数失败：${forecastErr}`} style={{ color: 'var(--danger, #dc2626)' }}>预测暂不可用</span>}
+            {/* T03237（PM-205）：日快照可回溯起点；缺失日期不补零，显式标「数据积累中」 */}
+            {snapErr && <span title={`洞察快照取数失败：${snapErr}`} style={{ color: 'var(--danger, #dc2626)' }}>洞察快照暂不可用</span>}
+            {snapCoverage && (() => {
+              const row = snapCoverage.projects.find((p) => p.projectId === projectId);
+              if (!row) return null;
+              const miss = row.missingDates;
+              const base = row.traceableFrom
+                ? `洞察快照：自 ${row.traceableFrom} 起`
+                : '洞察快照：数据积累中';
+              const label = `${base}${miss.length > 0 ? ` · 缺失 ${miss.length} 天（数据积累中）` : ''}`;
+              const detail = row.traceableFrom
+                ? `可回溯起点 ${row.traceableFrom}（${snapCoverage.tz}）；近 30 天缺失 ${miss.length} 天：${miss.join('、') || '无'}；${snapCoverage.note}`
+                : snapCoverage.note;
+              return <span title={detail} aria-label={label} data-testid="snapshot-coverage">{label}</span>;
+            })()}
           </div>
         );
       })()}

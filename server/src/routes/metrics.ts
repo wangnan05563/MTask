@@ -1,11 +1,12 @@
 /**
- * 指标基线路由（T03190 / PRD G-4；T03192 / PRD G-3）。
+ * 指标基线路由（T03190 / PRD G-4；T03192 / PRD G-3；T03237 / PRD PM-205）。
  * G-2 覆盖率在 `/ai/coverage`（T03172），G-1 材料耗时在 `/report/material-timing/*`（T03189）；
- * 这里放按统计日出数的 G-4 逾期率，以及 G-3 job 级成功率的写入/出数，路径自带完整前缀并整体挂载。
+ * 这里放按统计日出数的 G-4 逾期率、G-3 job 级成功率的写入/出数，以及 PM-205 日快照的采集与读取。
  */
 import { Router } from 'express';
 import { OverdueRateService } from '../services/OverdueRateService';
 import { AiJobStats } from '../services/AiJobStats';
+import { MetricSnapshotService } from '../services/MetricSnapshotService';
 
 export const metricsApi = Router();
 
@@ -50,4 +51,28 @@ metricsApi.get('/ai-jobs/success-rate', (req, res) => {
     mode: req.query.mode,
     cardKey: typeof req.query.cardKey === 'string' && req.query.cardKey ? req.query.cardKey : undefined,
   }));
+});
+
+/** T03237（PM-205）：各项目快照覆盖与近 30 天缺失日（页面「可回溯起点 / 数据积累中」） */
+metricsApi.get('/day-snapshots/coverage', (req, res) => {
+  wrap(res, () => MetricSnapshotService.coverage({
+    projectId: typeof req.query.projectId === 'string' && req.query.projectId ? req.query.projectId : undefined,
+  }));
+});
+
+/** T03237（PM-205）：按项目 + 时间范围取日快照序列（CFD/吞吐/逾期趋势共用同一份读数） */
+metricsApi.get('/day-snapshots', (req, res) => {
+  wrap(res, () => MetricSnapshotService.range({
+    projectId: typeof req.query.projectId === 'string' ? req.query.projectId : undefined,
+    from: typeof req.query.from === 'string' && req.query.from ? req.query.from : undefined,
+    to: typeof req.query.to === 'string' && req.query.to ? req.query.to : undefined,
+  }));
+});
+
+/** T03237（PM-205）：手动采当天快照（启动自动采一轮；过去日期拒绝，避免从事件表伪造成历史） */
+metricsApi.post('/day-snapshots/capture', (req, res) => {
+  wrap(res, () => {
+    const at = (req.body ?? {}) as { at?: unknown };
+    return MetricSnapshotService.capture(at.at == null || at.at === '' ? undefined : String(at.at));
+  });
 });
