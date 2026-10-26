@@ -12,6 +12,8 @@ import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
 interface Props {
   readonly onQuickNote: () => void;
   readonly notify: (msg: string) => void;
+  /** PM-104 ③：通知点按后的定位意图（按 task_no 拉任务，切到所属项目并展开详情） */
+  readonly focus?: { taskNo: string; nonce: number } | null;
 }
 
 const PRIO_COLOR: Record<string, string> = {
@@ -53,7 +55,7 @@ function readLastProjectName(): string {
   try { return localStorage.getItem('mtask.mobile.lastProjectName') ?? ''; } catch { return ''; }
 }
 
-export function MobileHome({ onQuickNote, notify }: Props) {
+export function MobileHome({ onQuickNote, notify, focus }: Props) {
   // T02212：项目列表改由统一容错层供给（加载中/失败可见 + 重试，失败时仍有上次成功数据）
   const projectList = useProjectList();
   const projects = projectList.projects;
@@ -166,20 +168,46 @@ export function MobileHome({ onQuickNote, notify }: Props) {
     }
   }, [hasMore, loadingMore, projectId, offset, notify]);
 
+  const focusNonce = focus?.nonce ?? 0;
+  const focusTaskNo = focus?.taskNo ?? '';
+  const focusConsumedRef = useRef(0); // 已消费的定位意图（同一 nonce 不重复展开）
+
   useEffect(() => {
+    // 已开机后：focus 被清除（nonce→0）或同一意图重跑时不再重走启动链
+    if (bootedRef.current && (focusNonce === 0 || focusNonce === focusConsumedRef.current)) return;
     void (async () => {
       setLastProjectName(readLastProjectName());
       try { setCategories(await api.get<TaskCategory[]>('/task-categories')); } catch { /* 离线时分类缺失可接受 */ }
       await loadProjectList(); // T02212：取数交统一容错层（与 useProjectList 单飞合流，失败不再静默）
       const list = getProjectListSnapshot();
-      const pid = await resolveStartupProject(list);
+      let pid = '';
+      let focused: Task | null = null;
+      // PM-104 ③：通知定位优先于「上次项目」——先解析目标任务，落到它所属项目
+      if (focusTaskNo && focusNonce !== focusConsumedRef.current) {
+        try {
+          focused = await api.get<Task>(`/tasks/by-no/${encodeURIComponent(focusTaskNo)}`);
+          pid = focused.project_id;
+        } catch {
+          notify(`通知对应的任务 ${focusTaskNo} 已不存在或已归档`);
+        }
+        focusConsumedRef.current = focusNonce;
+      }
+      if (!pid) pid = await resolveStartupProject(list);
       if (!pid) return;
       bootedRef.current = true;
-      setLastProjectName(readLastProjectName()); // 定位过程可能刚写入新名字，回读一次
+      if (focused) {
+        // 通知落位也要更新「上次项目」，避免下次冷启动又跳回旧项目
+        try { localStorage.setItem('mtask.mobile.lastProject', pid); } catch { /* 忽略 */ }
+        const name = list.find((p) => p.id === pid)?.name ?? '';
+        if (name) setLastProjectName(name);
+      } else {
+        setLastProjectName(readLastProjectName()); // 定位过程可能刚写入新名字，回读一次
+      }
       setProjectId(pid);
       await load(pid);
+      if (focused) setDetailTask(focused);
     })();
-  }, [load]);
+  }, [load, focusNonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * T02212：首轮取数失败（list 空、也没上次项目偏好）时上面会直接 return，

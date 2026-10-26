@@ -8,14 +8,16 @@ import { useEffect, useRef, useState } from 'react';
 import { api, setAccessToken, type AITool, type Task } from '../api/client';
 import { ProjectListHint, loadProjectList, projectListPlaceholder, useProjectList } from '../ui/projectList'; // T02212：项目取数接入 T02201 统一容错层
 import { useSettings } from '../settings';
-import { Boxes, Archive, BarChart3, Terminal, Activity, Settings, ExternalLink, LogOut, Moon, Sun, Monitor, ChevronRight } from 'lucide-react';
+import { Boxes, Archive, BarChart3, Terminal, Activity, Settings, ExternalLink, LogOut, Moon, Sun, Monitor, ChevronRight, Bell } from 'lucide-react';
 import { MobileExecSessions } from './MobileExecSessions';
+import { MobileNotifications } from './MobileNotifications';
 
-interface Props { readonly notify: (msg: string, isErr?: boolean) => void; readonly openDesktop: () => void; }
+interface Props { readonly notify: (msg: string, isErr?: boolean) => void; readonly openDesktop: () => void; readonly onOpenTask: (taskNo: string) => void; }
 
-type Sub = 'root' | 'aitools' | 'archive' | 'report' | 'logs' | 'execsessions' | 'settings';
+type Sub = 'root' | 'notifications' | 'aitools' | 'archive' | 'report' | 'logs' | 'execsessions' | 'settings';
 
 const ITEMS: { key: Sub; label: string; icon: typeof Boxes; desc: string }[] = [
+  { key: 'notifications', label: '通知', icon: Bell, desc: '任务事件 / 回传 / 失败提醒' },
   { key: 'aitools', label: '配置记录管理', icon: Boxes, desc: 'AI 工具（查看）' },
   { key: 'archive', label: '归档', icon: Archive, desc: '已归档任务（查询）' },
   { key: 'report', label: '周报', icon: BarChart3, desc: '在桌面端生成' },
@@ -31,7 +33,7 @@ function b64ToUint8(b64: string): Uint8Array {
   return Uint8Array.from(raw, (c) => c.codePointAt(0) ?? 0);
 }
 
-export function MobileMore({ notify, openDesktop }: Props) {
+export function MobileMore({ notify, openDesktop, onOpenTask }: Props) {
   const [sub, setSub] = useState<Sub>('root');
   const { prefs, update } = useSettings();
 
@@ -52,6 +54,7 @@ export function MobileMore({ notify, openDesktop }: Props) {
             </button>
           );
         })}
+        {sub === 'notifications' && <MobileNotifications notify={notify} onOpenTask={onOpenTask} />}
         {sub === 'aitools' && <AitoolsView notify={notify} />}
         {sub === 'archive' && <ArchiveView notify={notify} />}
         {sub === 'report' && <ReportView openDesktop={openDesktop} />}
@@ -63,7 +66,7 @@ export function MobileMore({ notify, openDesktop }: Props) {
   );
 }
 
-const SUB_TITLE: Record<Sub, string> = { root: '更多', aitools: '配置记录管理', archive: '归档', report: '周报', logs: '日志', execsessions: '执行会话', settings: '设置' };
+const SUB_TITLE: Record<Sub, string> = { root: '更多', notifications: '通知', aitools: '配置记录管理', archive: '归档', report: '周报', logs: '日志', execsessions: '执行会话', settings: '设置' };
 
 // 退出仅清本机令牌并刷新页面，不依赖任何组件状态，置于模块顶层避免每次渲染重建函数
 function logout() {

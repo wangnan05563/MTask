@@ -26,6 +26,8 @@ const TABS: { key: Tab; label: string; icon: typeof ListTodo; center?: boolean }
 
 export function MobileShell() {
   const [tab, setTab] = useState<Tab>('home');
+  // PM-104 ③：通知点按 → 任务页按编号定位（由 MobileHome 挂载时消费，离开任务页即清除）
+  const [focus, setFocus] = useState<{ taskNo: string; nonce: number } | null>(null);
   const [needToken, setNeedToken] = useState(false);
   const [tokenInput, setTokenInput] = useState('');
   const [toast, setToast] = useState('');
@@ -156,7 +158,7 @@ export function MobileShell() {
 
       {/* 页面区 */}
       <div style={content}>
-        {tab === 'home' && <MobileHome onQuickNote={() => setTab('note')} notify={notify} />}
+        {tab === 'home' && <MobileHome onQuickNote={() => setTab('note')} notify={notify} focus={focus} />}
         {tab === 'note' && (
           <QuickNote
             onDone={(t: Task | null) => { setTab('home'); if (t) setDraftCount(loadDrafts().length); }}
@@ -166,7 +168,13 @@ export function MobileShell() {
         )}
         {tab === 'queue' && <MobileQueue notify={notify} openDesktop={openDesktop} />}
         {tab === 'prompts' && <MobilePrompts notify={notify} />}
-        {tab === 'more' && <MobileMore notify={notify} openDesktop={openDesktop} />}
+        {tab === 'more' && (
+          <MobileMore
+            notify={notify}
+            openDesktop={openDesktop}
+            onOpenTask={(taskNo) => { setFocus({ taskNo, nonce: Date.now() }); setTab('home'); }}
+          />
+        )}
       </div>
 
       {/* 底部导航 */}
@@ -182,7 +190,7 @@ export function MobileShell() {
           }
           const active = tab === t.key;
           return (
-            <button key={t.key} onClick={() => setTab(t.key)} title={t.label} aria-label={t.label} style={navBtn(active)}>
+            <button key={t.key} onClick={() => { setFocus(null); setTab(t.key); }} title={t.label} aria-label={t.label} style={navBtn(active)}>
               <Icon size={20} />
               <span style={{ fontSize: 'var(--fs-xs)', marginTop: 2 }}>{t.label}</span>
             </button>
