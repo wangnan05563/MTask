@@ -22,6 +22,7 @@ import { TaskService, startStaleRunningGuard } from './services/TaskService'; //
 import { startEventRetentionTimer } from './services/EventRetention'; // T01064 后续：事件表 90 天保留期清理
 import { startReportTmpSweeper } from './services/ReportService'; // T02144：导出令牌临时文件回收
 import { MetricSnapshotService } from './services/MetricSnapshotService'; // T03237：PM-205 日快照（长历史唯一来源）
+import { WebhookService } from './services/WebhookService'; // T03196：PM-401 Webhook 投递/重试定时器
 
 const PORT = Number(process.env.MTask_PORT ?? 39876);
 const HOST = '127.0.0.1';
@@ -249,6 +250,8 @@ app.listen(PORT, HOST, () => {
   startReportTmpSweeper();
   // T03237（PM-205）：日快照启动即采一轮，之后每 30 分钟刷新当天读数（过去日期冻结、不回填）
   MetricSnapshotService.startSnapshotTimer();
+  // T03196（PM-401）：Webhook 待重试投递续跑 + 每日逾期事件扫描（重启后 pending 记录可继续重试）
+  WebhookService.startDeliveryTimer();
 });
 
 // 异步队列轮询器：周期性地将已受理（sending+有 ticket）的 Job 收口。

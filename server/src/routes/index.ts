@@ -37,6 +37,7 @@ import { metricsApi } from './metrics'; // T03190（G-4）：指标基线出数�
 import { estimateApi } from './estimates'; // T02037（估算视图 E3）：/api/estimates*，PRD §8
 import { historyApi } from './history'; // T00589：历史资产（转移/统计）
 import { supervisorApi } from './supervisor'; // T01286：监督状态/审计/配置（FR-5.2~5.4）
+import { webhooksApi } from './webhooks'; // T03196（PM-401）：项目级 outbound Webhook（配置/测试/投递日志）
 import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, discardReport, gatherReportData, validateProjectIds, type ReportPeriod } from '../services/ReportService';
 import { DOWNLOAD_NAME_RE } from '../util/export-name'; // T02104：下载文件名白名单单源（与生成侧清洗同源）
 import { Buffer } from 'node:buffer';
@@ -2821,6 +2822,7 @@ api.use(materialTimingApi); // T03189（G-1 汇报材料耗时）：同上，/re
 api.use('/metrics', metricsApi); // T03190（G-4 逾期率基线）：/metrics/overdue-rate
 api.use('/estimates', estimateApi); // T02037（估算视图 E3）：PRD-估算视图与工作量评估导出 §8
 api.use('/history', historyApi); // T00589：历史资产页面后端（转移 + 统计）
+api.use('/webhooks', webhooksApi); // T03196（PM-401）：/webhooks?projectId=… /webhooks/:id/deliveries /test
 
 // ---------- 监督器（T01286）：状态看板 / 审计视图 / 熔断与中继配置 ----------
 api.use('/supervisor', supervisorApi);

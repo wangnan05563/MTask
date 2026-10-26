@@ -10,6 +10,7 @@ import { recalcMilestonesOfChild } from './milestoneProgress'; // T02090：里�
 import { parsePlanDeps, depsSatisfied, topoOrder, type PlanDep } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7）
 import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化（拉取侧平台偏好匹配）
 import { detectRuling, isRulingSubject, RULING_DEFAULT_OPTIONS } from '../util/ruling'; // T02949：裁决自动识别（纯函数单源）
+import { WebhookService } from './WebhookService'; // T03196（PM-401）：任务事件外发
 
 /** 批量 IN 查询的每批 id 数：SQLite 变量上限 999，留足余量并与图片批量查询（≤200）同量级 */
 const PLAN_LOOKUP_BATCH = 200;
@@ -203,6 +204,8 @@ function logEvent(db: ReturnType<typeof getDb>, taskId: string, kind: string, de
   const row = db.prepare('SELECT task_no, project_id FROM tasks WHERE id = ?').get(taskId) as { task_no: string | null; project_id: string } | undefined;
   db.prepare('INSERT INTO task_events (id, task_id, task_no, project_id, kind, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .run(uuid(), taskId, row?.task_no ?? null, row?.project_id ?? '', kind, detail, now());
+  // T03196：webhook 外发不得影响主链路（配置异常/投递失败一律吞掉，事件已落 task_events 可追溯）
+  try { WebhookService.onTaskEvent(db, taskId, kind, detail); } catch { /* noop */ }
 }
 
 function rowToTask(r: TaskRow, images: TaskImageMeta[] = []): TaskView {
@@ -480,6 +483,8 @@ export const TaskService = {
     ).run(id, nextTaskNo(), input.projectId, input.title, input.description ?? '', input.priority ?? 'normal', input.status ?? 'todo', input.categoryId ?? null, input.parentId ?? null, input.derived_from ?? null, t, t);
     if (r.changes !== 1) throw new Error('创建任务失败');
     if (input.parentId) recalcParentProgress(input.parentId); // M-5：新增子任务后父进度同步重算（done/100% 下再添子任务不再失真）
+    // T03196：创建事件单独埋点（create 路径不写 task_events）
+    try { WebhookService.onTaskCreated(id); } catch { /* noop */ }
     return this.getById(id)!;
   },
 

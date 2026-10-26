@@ -22,6 +22,7 @@ import { resolveReqNo, groupDuplicateReqNos, isReqNoTaken } from '../util/reqNo'
 import { syncReqStatuses } from './reqStatusSync'; // T02087：需求状态随计划/待办完成度派生
 import { nextPlanTitle } from '../util/planTitle'; // T01875：计划标题撞名让号（与需求编号顺延同构）
 import { touchCompletedAt } from './IterationService'; // T03186（PM-201④）：完成时刻单点维护（燃尽回溯依赖它）
+import { WebhookService } from './WebhookService'; // T03196（PM-401）：计划事件外发
 
 /** T01361：需求跟踪矩阵行（prd_requirements 全列 + 联表摘要）——具体化类型替代 Record<string, unknown>（Sonar S6551） */
 export interface RequirementRow {
@@ -1386,7 +1387,9 @@ export const PlanService = {
       // T03186：以 done 状态新建的行同样要有完成时刻，否则燃尽把它算成「未开始就已完成」以外的值
       touchCompletedAt(db, id, status);
     })();
-    return this.get(id)!;
+    const created = this.get(id)!;
+    try { WebhookService.onPlanEvent(created.status === 'done' ? 'plan.done' : 'plan.created', created); } catch { /* noop */ }
+    return created;
   },
 
   /** 更新：标题/描述/工期/进度/状态/负责人；开始日与工期变化会触发从该任务起的时间线重排 */
@@ -1451,7 +1454,13 @@ export const PlanService = {
         syncReqStatuses(db, row.project_id, planReqIds);
       }
     })();
-    return this.get(id);
+    const updated = this.get(id);
+    // T03196：迁入 done 发 plan.done，其余变更发 plan.updated
+    if (updated) {
+      const type = updated.status === 'done' && row.status !== 'done' ? 'plan.done' : 'plan.updated';
+      try { WebhookService.onPlanEvent(type, updated); } catch { /* noop */ }
+    }
+    return updated;
   },
 
   /** 归档（原「删除」语义，T00442 扩展）：软删——从时间线移除并衔接重排，可在归档菜单恢复。
@@ -1465,6 +1474,8 @@ export const PlanService = {
       recalcMilestonesOfChild(db, id);
     })();
     notifyChange('plans');
+    const afterArchive = this.get(id);
+    if (afterArchive) { try { WebhookService.onPlanEvent('plan.updated', afterArchive); } catch { /* noop */ } }
     return true;
   },
 
@@ -1479,6 +1490,8 @@ export const PlanService = {
       recalcMilestonesOfChild(db, id);
     })();
     notifyChange('plans');
+    const afterRestore = this.get(id);
+    if (afterRestore) { try { WebhookService.onPlanEvent('plan.updated', afterRestore); } catch { /* noop */ } }
     return true;
   },
 

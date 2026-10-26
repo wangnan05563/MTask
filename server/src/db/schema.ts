@@ -583,6 +583,40 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     );
     CREATE INDEX IF NOT EXISTS idx_metric_cycle_samples_project ON metric_day_cycle_samples(project_id, stat_date);
   `);
+  // T03196（PRD PM-401）：项目级 outbound Webhook——配置与投递日志。
+  // 密钥只存密文（util/crypto AES-GCM），列表接口仅回掩码；投递记录持久化是为了应用重启后仍能续跑重试。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS webhooks (
+      id             TEXT PRIMARY KEY,
+      project_id     TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      url            TEXT NOT NULL,
+      secret_enc     TEXT NOT NULL,
+      events         TEXT NOT NULL,
+      enabled        INTEGER NOT NULL DEFAULT 1,
+      allow_intranet INTEGER NOT NULL DEFAULT 0,
+      created_at     TEXT NOT NULL,
+      updated_at     TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_webhooks_project ON webhooks(project_id);
+    CREATE TABLE IF NOT EXISTS webhook_deliveries (
+      id              TEXT PRIMARY KEY,
+      webhook_id      TEXT NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+      project_id      TEXT NOT NULL,
+      event_id        TEXT NOT NULL,
+      event_type      TEXT NOT NULL,
+      payload         TEXT NOT NULL,
+      status          TEXT NOT NULL,
+      attempts        INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at TEXT,
+      last_attempt_at TEXT,
+      response_status INTEGER,
+      error           TEXT,
+      created_at      TEXT NOT NULL,
+      UNIQUE(webhook_id, event_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook ON webhook_deliveries(webhook_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_due ON webhook_deliveries(status, next_attempt_at);
+  `);
   ensureColumn('tasks', 'verified', 'verified INTEGER NOT NULL DEFAULT 0');
   ensureColumn('queues', 'paused', 'paused INTEGER NOT NULL DEFAULT 0'); // T01434：队列级暂停/继续
   // T00490：记录字体颜色（Excel 风格颜色按钮）——空串=默认色
