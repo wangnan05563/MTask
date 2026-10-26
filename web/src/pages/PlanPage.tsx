@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { childParentIdOf } from '../util/planDeps'; // T01621：里程碑显式挂接判定单源（与时间线分组共用）
-import { Archive, ArrowUpDown, CalendarPlus, Check, Download, Gauge, Layers, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, FileText, FilePenLine, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Table2, TestTubes, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search, X } from 'lucide-react';
+import { Archive, ArrowUpDown, CalendarPlus, Check, Download, Gauge, Layers, LineChart, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, FileText, FilePenLine, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Table2, TestTubes, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search, X } from 'lucide-react';
 import { EmptyState } from '../ui/EmptyState'; // T01072-FR1.10：统一空态组件
 import { ReqMatrixPanel } from './ReqMatrixPanel'; // T00662：需求跟踪矩阵
 import { TestCasePanel } from './TestCasePanel'; // T01485：测试用例视图
 import { SprintPanel } from './SprintPanel'; // T03186（PM-201）：迭代与燃尽
+import { InsightPanel } from './InsightPanel'; // T03236（PM-205）：项目洞察四图
 import { PrdPanel } from './PrdPanel'; // T00770：PRD 管理视图（文档生命周期 + 待确认问题）
 import { EstimateGanttOverlay } from '../components/estimateGanttOverlay'; // T02082：E8 甘特估算区间叠加层（O~P 带 + E 标记，纯几何零二次计算）
 import { estimatesApi, type EstimatesResponse } from '../api/estimates'; // T02082：叠加层数据源——只读服务端三点值（§9 零计算红线）
@@ -585,11 +586,12 @@ function PlanTimelineDetail({ plan, onJump }: {
 }
 
 /** 工具栏：PRD 管理 / 需求跟踪矩阵 / 测试用例 / 迭代与燃尽 入口（S3776 抽取） */
-function PlanPanelToggles({ showPrd, setShowPrd, showMatrix, setShowMatrix, showTestCases, setShowTestCases, showSprint, setShowSprint }: {
+function PlanPanelToggles({ showPrd, setShowPrd, showMatrix, setShowMatrix, showTestCases, setShowTestCases, showSprint, setShowSprint, showInsight, setShowInsight }: {
   readonly showPrd: boolean; readonly setShowPrd: React.Dispatch<React.SetStateAction<boolean>>;
   readonly showMatrix: boolean; readonly setShowMatrix: React.Dispatch<React.SetStateAction<boolean>>;
   readonly showTestCases: boolean; readonly setShowTestCases: React.Dispatch<React.SetStateAction<boolean>>;
   readonly showSprint: boolean; readonly setShowSprint: React.Dispatch<React.SetStateAction<boolean>>;
+  readonly showInsight: boolean; readonly setShowInsight: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
   return (
     <>
@@ -620,6 +622,13 @@ function PlanPanelToggles({ showPrd, setShowPrd, showMatrix, setShowMatrix, show
         aria-label="迭代与燃尽" aria-expanded={showSprint}
         style={{ ...btnStyle, background: showSprint ? 'var(--accent)' : 'transparent', color: showSprint ? 'var(--accent-text)' : 'var(--text)', borderColor: showSprint ? 'var(--accent)' : 'var(--border-strong)' }}>
         <Layers size={13} />
+      </button>
+      {/* T03236（PRD PM-205）：项目洞察入口——迭代之后（动线收尾：看迭代燃尽 → 看项目趋势）；图标-only，样式与相邻入口一致 */}
+      <button onClick={() => setShowInsight((v) => !v)} className="tbtn-anim" data-t03236="toggle"
+        title="项目洞察 — 累计流/周期时间/逾期趋势/吞吐四图，按项目与时间范围渲染并支持 PNG 导出"
+        aria-label="项目洞察" aria-expanded={showInsight}
+        style={{ ...btnStyle, background: showInsight ? 'var(--accent)' : 'transparent', color: showInsight ? 'var(--accent-text)' : 'var(--text)', borderColor: showInsight ? 'var(--accent)' : 'var(--border-strong)' }}>
+        <LineChart size={13} />
       </button>
     </>
   );
@@ -1544,6 +1553,9 @@ export function PlanPage() {
 
   // T03186（PRD PM-201）：迭代与燃尽视图展开态
   const [showSprint, setShowSprint] = useSessionState<boolean>('plan.showSprint', false);
+
+  // T03236（PRD PM-205）：项目洞察四图视图展开态
+  const [showInsight, setShowInsight] = useSessionState<boolean>('plan.showInsight', false);
 
   // T01486 §4.3：矩阵 ⇄ 用例 双向跳转的两个瞬时意图，与会话态同机制落 sessionStorage
   // （刷新/切页返回后不丢）：下钻带来的是“筛哪个需求”，回跳带来的是“定位哪一行”。
@@ -2747,7 +2759,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         {evalBusy && <output className="flash-toast"><span className="task-breathe" style={{ color: 'var(--accent)' }}>AI 评估中{evalLabel ? `（${evalLabel}）` : ''}…</span></output>}
         <PlanViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
         <PlanPanelToggles showPrd={showPrd} setShowPrd={setShowPrd} showMatrix={showMatrix} setShowMatrix={setShowMatrix}
-          showTestCases={showTestCases} setShowTestCases={setShowTestCases} showSprint={showSprint} setShowSprint={setShowSprint} />
+          showTestCases={showTestCases} setShowTestCases={setShowTestCases} showSprint={showSprint} setShowSprint={setShowSprint}
+          showInsight={showInsight} setShowInsight={setShowInsight} />
         <button onClick={openHolidayManager} style={btnStyle} title="节假日管理 — 手动维护 / 联网导入法定节假日 / 万年历视图">节假日（{holidays.length}）</button>
         {/* T02213：节假日取数失败/过期时显式提示——它是工期换算的输入，静默为空会让天数按自然日口径算错 */}
         <ResourceHint view={holidaysView} label="节假日数据（工期换算依赖）" />
@@ -2835,6 +2848,10 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       {/* T03186（PRD PM-201）：迭代与燃尽面板（用例面板之后——动线的需求→计划→迭代→燃尽收尾） */}
       {showSprint && projectId && (
         <SprintPanel projectId={projectId} onClose={() => setShowSprint(false)} onPlansChanged={reload} />
+      )}
+      {/* T03236（PRD PM-205）：项目洞察四图面板（迭代之后——项目级趋势是动线最后一屏） */}
+      {showInsight && projectId && (
+        <InsightPanel projectId={projectId} onClose={() => setShowInsight(false)} />
       )}
         {/* T02283：AI 工具列表断供时给出原因与重试入口，与上面的评估误报文案改动配对 */}
         <ResourceHint view={aiToolsView} label="AI 工具列表" />
