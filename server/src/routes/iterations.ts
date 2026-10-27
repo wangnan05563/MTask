@@ -107,3 +107,15 @@ iterationApi.post('/iterations/:id/detach', (req, res) => {
 iterationApi.get('/iterations/:id/burndown', (req, res) => wrap(res, () => IterationService.burndown(req.params.id)));
 iterationApi.get('/iterations/:id/summary', (req, res) => wrap(res, () => IterationService.summary(req.params.id)));
 iterationApi.get('/iterations/:id/events', (req, res) => wrap(res, () => IterationService.events(req.params.id)));
+
+// T03227（PM-201⑥）：周报卡。GET 只读当前卡（无则 { card: null }），POST 幂等发布，
+// 重复 POST 返回既有卡 + created=false——前端据此可原样把回执显示给用户，不制造第二张卡。
+iterationApi.get('/iterations/:id/weekly-card', (req, res) => wrap(res, () => ({ card: IterationService.weeklyCard(req.params.id) })));
+iterationApi.post('/iterations/:id/weekly-card', (req, res) => wrap(res, () => IterationService.publishWeeklyCard(req.params.id)));
+
+/**
+ * T03227：跨结束日补生成的显式入口。生产路径由 `index.ts` 启动时自动调用一次；
+ * 本路由存在只为让验收门/联调能对同一套代码断言「重复调用不产生第二张卡」——
+ * 若只有内部定时器可触发，验收就只能读启动日志，那是把「仅一份」写进日志而不是写进断言。
+ */
+iterationApi.post('/iterations/backfill-weekly-cards', (_req, res) => wrap(res, () => IterationService.backfillWeeklyCards()));

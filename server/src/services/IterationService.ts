@@ -178,6 +178,79 @@ function remainingItemsOn(day: string, items: SeriesItem[]): SeriesItem[] {
   return items.filter((i) => i.fromDay <= day && !isDoneBy(i, day));
 }
 
+/* ---------------- 周报卡（PM-201⑥ 的「可发周报卡 + 补生成且仅一份」腿，T03227） ---------------- */
+
+/** 卡的存储位：仍写 `iteration_events`（零新表延续），以 kind='weekly_card' 与成员变更事件同表分流 */
+const CARD_KIND = 'weekly_card';
+
+/** 卡片里的一条计划行快照：固化当时读到的字段，后续改名/改状态都不回溯改写这张卡 */
+export interface WeeklyCardItem {
+  id: string;
+  title: string;
+  start_date: string;
+  end_date: string;
+  status: string;
+  progress: number;
+  duration_days: number;
+}
+
+export interface WeeklyCardBody {
+  cardId: string;
+  iterationId: string;
+  projectId: string;
+  name: string;
+  period: { start: string; end: string };
+  goal: string;
+  dod: string;
+  generatedAt: string;
+  /** 谁生成了这张卡：手点「发周报卡」/ 启动补生成。同迭代只有首份留痕，重放不再覆盖 */
+  trigger: 'manual' | 'backfill';
+  totals: { plans: number; done: number; undone: number; overdue: number };
+  lists: { done: WeeklyCardItem[]; undone: WeeklyCardItem[]; overdue: WeeklyCardItem[] };
+  notes: string[];
+}
+
+export interface WeeklyCard extends WeeklyCardBody {
+  /** 可复制/可粘贴到周报正文的纯文本版面；不依赖前端渲染，验收也按这一列断言 */
+  markdown: string;
+}
+
+/**
+ * 卡片正文版面。刻意用纯文本拼接（不是模板字符串里塞中文再渲染），因为这张卡要能被
+ * 复制出去当周报正文用：读屏播报、粘贴到 IM、验收断言都读这一份，前端再排一遍只会造出第二个口径。
+ */
+function renderCardMarkdown(b: WeeklyCardBody): string {
+  const d = (v: string) => (v || '—');
+  const row = (i: WeeklyCardItem): string => `  - ${i.title}（${d(i.start_date)}~${d(i.end_date)}，进度 ${i.progress}%，${i.status === 'done' ? '已完成' : '未完成'}）`;
+  const col = (label: string, list: WeeklyCardItem[]): string =>
+    list.length === 0 ? `${label}：无` : `${label}（${list.length}）：\n${list.map(row).join('\n')}`;
+  return [
+    `【迭代周报卡】${b.name}`,
+    `范围：${d(b.period.start)} ~ ${d(b.period.end)}　生成：${b.generatedAt.slice(0, 19).replace('T', ' ')}（${b.trigger === 'backfill' ? '启动补生成' : '手动发布'}）`,
+    b.goal ? `目标：${b.goal}` : '',
+    b.dod ? `完成定义：${b.dod}` : '',
+    `小结：在册 ${b.totals.plans} · 完成 ${b.totals.done} · 未完成 ${b.totals.undone} · 逾期 ${b.totals.overdue}`,
+    col('已完成', b.lists.done),
+    col('未完成', b.lists.undone),
+    col('逾期', b.lists.overdue),
+    ...b.notes.map((n) => `备注：${n}`),
+  ].filter(Boolean).join('\n');
+}
+
+/** 读卡：无卡或 detail JSON 损坏都按 null（损坏走日志，不让一张坏卡把整个面板拖红） */
+function readWeeklyCard(id: string): WeeklyCard | null {
+  const row = getDb().prepare(
+    'SELECT detail FROM iteration_events WHERE iteration_id = ? AND kind = ? ORDER BY created_at LIMIT 1',
+  ).get(id, CARD_KIND) as { detail: string } | undefined;
+  if (!row) return null;
+  try { return JSON.parse(row.detail) as WeeklyCard; } catch { return null; }
+}
+
+/** 结束日是否已跨过 `at` 所在业务日；与 summary 的逾期口径共用 isPastEndDate，避免两套判据 */
+function isIterationPastEnd(it: IterationRow, at: Date): boolean {
+  return isPastEndDate(it.end_date, at);
+}
+
 export const IterationService = {
   /** 项目下的迭代列表（默认只给未归档；includeArchived 一并返回并在 archived 位标注） */
   list(projectId: string, opts: { includeArchived?: boolean } = {}): IterationRow[] {
@@ -351,7 +424,7 @@ export const IterationService = {
     const rows = getDb().prepare(
       `SELECT e.id, e.plan_task_id, e.kind, e.detail, e.created_at, p.title
          FROM iteration_events e LEFT JOIN plan_tasks p ON p.id = e.plan_task_id
-        WHERE e.iteration_id = ? ORDER BY e.created_at DESC LIMIT ?`,
+        WHERE e.iteration_id = ? AND e.kind IN ('attach', 'detach') ORDER BY e.created_at DESC LIMIT ?`,
     ).all(id, limit) as Array<{ id: string; plan_task_id: string; title: string | null; kind: string; detail: string; created_at: string }>;
     return rows;
   },
@@ -359,7 +432,7 @@ export const IterationService = {
   /**
    * 迭代结束小结（PM-201⑥ 的取数段）：完成 / 未完成 / 逾期三份清单。
    * 逾期口径复用 D-12 的 `isPastEndDate`（项目未配置时区→系统时区，边界日当天不算逾期）。
-   * 「一键发周报卡」与「跨结束日补生成」属周报卡链路，另单落地，本服务只保证清单可稳定复现。
+   * 「发周报卡」与「跨结束日补生成」复用本方法的返回（见下方 publishWeeklyCard），清单口径只有一处定义。
    */
   summary(id: string, at: Date = new Date()): {
     iteration: IterationRow;
@@ -381,6 +454,70 @@ export const IterationService = {
     if (rows.length === 0) notes.push('本迭代暂无在册计划行');
     if (it.archived) notes.push('迭代已归档：小结为只读快照，统计分母不再随成员变更移动');
     return { iteration: it, totals: { plans: rows.length, done: done.length, undone: undone.length, overdue: overdue.length }, done, undone, overdue, notes };
+  },
+
+  /** 已发布的周报卡（PM-201⑥）：一迭代一份，无卡返回 null */
+  weeklyCard(id: string): WeeklyCard | null {
+    mustGetActiveIteration(id);
+    return readWeeklyCard(id);
+  },
+
+  /**
+   * 发周报卡（PM-201⑥）：把当下的结束小结固化成一张可复制的卡片，写入 `iteration_events`（kind='weekly_card'），零新表。
+   * 「仅一份」由 schema 的偏唯一索引 uniq_iteration_weekly_card 在库层兜底，本方法先查后写只是把重复路径变成可读回执：
+   *  已存在（含并发/重放撞索引）→ `{ created:false, card: 既有卡 }`，绝不生成第二张，也不改写首张的触发方与时间。
+   * 归档迭代同样可发：卡片是小结的只读快照，不是成员变更，不受「归档只读」约束（那条约束只管 update/attach/detach）。
+   */
+  publishWeeklyCard(id: string, at: Date = new Date(), trigger: 'manual' | 'backfill' = 'manual'): { card: WeeklyCard; created: boolean } {
+    const it = mustGetActiveIteration(id);
+    const existing = readWeeklyCard(id);
+    if (existing) return { card: existing, created: false };
+    const s = IterationService.summary(id, at);
+    const lite = (rows: unknown[]): WeeklyCardItem[] => rows.map((r) => {
+      const x = r as { id: string; title: string; start_date: string; end_date: string; status: string; progress: number; duration_days: number };
+      return { id: x.id, title: x.title, start_date: x.start_date, end_date: x.end_date, status: x.status, progress: x.progress, duration_days: x.duration_days };
+    });
+    const base: WeeklyCardBody = {
+      cardId: uuid(), iterationId: it.id, projectId: it.project_id, name: it.name,
+      period: { start: it.start_date, end: it.end_date }, goal: it.goal, dod: it.dod,
+      generatedAt: nowIso(), trigger, totals: s.totals,
+      lists: { done: lite(s.done), undone: lite(s.undone), overdue: lite(s.overdue) }, notes: s.notes,
+    };
+    const card: WeeklyCard = { ...base, markdown: renderCardMarkdown(base) };
+    try {
+      getDb().prepare(
+        `INSERT INTO iteration_events (id, iteration_id, project_id, plan_task_id, kind, detail, created_at)
+         VALUES (?, ?, ?, '', ?, ?, ?)`,
+      ).run(card.cardId, it.id, it.project_id, CARD_KIND, JSON.stringify(card), card.generatedAt);
+    } catch (e) {
+      const raced = readWeeklyCard(id);
+      if (raced) return { card: raced, created: false }; // 撞 uniq_iteration_weekly_card：回读首份，不抛给调用方
+      throw e;
+    }
+    notifyChange('plans');
+    return { card, created: true };
+  },
+
+  /**
+   * 启动补生成（PM-201⑥ 后半句「应用关闭期间跨过结束日时在下次启动补生成且仅一份」）。
+   * 口径单源：判据就是「结束日已跨过 + 尚无 weekly_card 事件」，所以重复调用/多轮定时都只会扫到空集——
+   * 已生成的迭代不再进候选，候选内每条由 publishWeeklyCard 的库层唯一索引保证一份。
+   * 归档迭代不进补生成：归档=从有效分母排除（PM-201①），补一张卡等于把已退出统计的对象重新拉回视野。
+   */
+  backfillWeeklyCards(at: Date = new Date()): { generated: Array<{ iterationId: string; name: string }>; scanned: number } {
+    const rows = getDb().prepare(
+      `SELECT i.* FROM project_iterations i
+        WHERE i.archived = 0
+          AND NOT EXISTS (SELECT 1 FROM iteration_events e WHERE e.iteration_id = i.id AND e.kind = ?)
+        ORDER BY i.end_date`,
+    ).all(CARD_KIND) as IterationRow[];
+    const generated: Array<{ iterationId: string; name: string }> = [];
+    for (const it of rows) {
+      if (!isIterationPastEnd(it, at)) continue;
+      const out = IterationService.publishWeeklyCard(it.id, at, 'backfill');
+      if (out.created) generated.push({ iterationId: it.id, name: it.name });
+    }
+    return { generated, scanned: rows.length };
   },
 
   /** 迭代燃尽（PM-201④ 双口径）：按业务日回溯剩余计划数与剩余工期 */

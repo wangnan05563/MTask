@@ -15,6 +15,7 @@ import { api } from '../api/client';
 import { BurndownChart, BurndownLegend } from '../components/burndownChart';
 import type { BurnPointView } from '../components/burndownChart';
 import { askConfirm } from '../ui/dialogs';
+import { CopyButton } from '../ui/CopyButton';
 
 interface Iteration {
   id: string;
@@ -60,6 +61,23 @@ interface Summary {
 
 interface MemberEvent { id: string; plan_task_id: string; title: string | null; kind: string; detail: string; created_at: string }
 
+/** 周报卡（PM-201⑥ / T03227）：服务端固化的结束小结快照，一迭代一份 */
+interface WeeklyCardItem { id: string; title: string; start_date: string; end_date: string; status: string; progress: number; duration_days: number }
+interface WeeklyCard {
+  cardId: string;
+  iterationId: string;
+  name: string;
+  period: { start: string; end: string };
+  goal: string;
+  dod: string;
+  generatedAt: string;
+  trigger: 'manual' | 'backfill';
+  totals: { plans: number; done: number; undone: number; overdue: number };
+  lists: { done: WeeklyCardItem[]; undone: WeeklyCardItem[]; overdue: WeeklyCardItem[] };
+  notes: string[];
+  markdown: string;
+}
+
 interface AttachResult {
   attached: string[];
   moved: Array<{ planTaskId: string; fromIteration: string; fromName: string }>;
@@ -94,6 +112,7 @@ export function SprintPanel({ projectId, onClose, onPlansChanged }: {
   const [burn, setBurn] = useState<Burndown | null>(null);
   const [projectBurn, setProjectBurn] = useState<Burndown | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [card, setCard] = useState<WeeklyCard | null>(null);
   const [events, setEvents] = useState<MemberEvent[]>([]);
   const [draft, setDraft] = useState<Draft>(emptyDraft());
   const [formOpen, setFormOpen] = useState(false);
@@ -120,16 +139,18 @@ export function SprintPanel({ projectId, onClose, onPlansChanged }: {
   }, [projectId]);
 
   const loadDetail = useCallback(async (id: string) => {
-    if (!id) { setMembers([]); setBurn(null); setSummary(null); setEvents([]); return; }
-    const [detail, b, s, e] = await Promise.all([
+    if (!id) { setMembers([]); setBurn(null); setSummary(null); setCard(null); setEvents([]); return; }
+    const [detail, b, s, c, e] = await Promise.all([
       api.get<{ planTasks: MemberRow[] }>(`/iterations/${id}`),
       api.get<Burndown>(`/iterations/${id}/burndown`),
       api.get<Summary>(`/iterations/${id}/summary`),
+      api.get<{ card: WeeklyCard | null }>(`/iterations/${id}/weekly-card`),
       api.get<MemberEvent[]>(`/iterations/${id}/events`),
     ]);
     setMembers(detail.planTasks ?? []);
     setBurn(b);
     setSummary(s);
+    setCard(c.card);
     setEvents(e);
     setSelMemberIds([]);
   }, []);
@@ -177,6 +198,23 @@ export function SprintPanel({ projectId, onClose, onPlansChanged }: {
       flash(`已移出 ${r.detached.length} 条${r.skipped.length ? `；${r.skipped.length} 条未动：${r.skipped[0].reason}` : ''}`);
       await Promise.all([loadIterations(), loadPlans(), loadDetail(selectedId)]);
       onPlansChanged?.();
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  }
+
+  /**
+   * 发周报卡（PM-201⑥ / T03227）：把当下的结束小结固化成一份可复制的卡片。
+   * 「仅一份」是服务端裁决，前端只做回执呈现：已存在时原样返回既有卡，不伪造「已发布」，也不改写触发方。
+   */
+  async function publishCard(): Promise<void> {
+    if (!selectedId) { flash('请先选择迭代'); return; }
+    setBusy(true);
+    try {
+      const r = await api.post<{ card: WeeklyCard; created: boolean }>(`/iterations/${selectedId}/weekly-card`, {});
+      setCard(r.card);
+      flash(r.created
+        ? `已发布周报卡：完成 ${r.card.totals.done} · 未完成 ${r.card.totals.undone} · 逾期 ${r.card.totals.overdue}`
+        : '该迭代已有周报卡，展示的是首份（重复发布不生成第二张）');
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   }
@@ -331,7 +369,7 @@ export function SprintPanel({ projectId, onClose, onPlansChanged }: {
 
               <BurndownView burn={burn} />
 
-              {summary && <SummaryView summary={summary} />}
+              {summary && <SummaryView summary={summary} card={card} busy={busy} onPublish={() => void publishCard()} />}
 
               <EventsView events={events} />
             </>
@@ -513,8 +551,13 @@ function ProjectBurnView({ burn }: { readonly burn: Burndown | null }): ReactEle
   );
 }
 
-/** 结束小结（PM-201⑥ 取数段）：完成 / 未完成 / 逾期三份清单 */
-function SummaryView({ summary }: { readonly summary: Summary }): ReactElement {
+/** 结束小结（PM-201⑥ 取数段）：完成 / 未完成 / 逾期三份清单 + 周报卡发布入口 */
+function SummaryView({ summary, card, busy, onPublish }: {
+  readonly summary: Summary;
+  readonly card: WeeklyCard | null;
+  readonly busy: boolean;
+  readonly onPublish: () => void;
+}): ReactElement {
   return (
     <div style={CARD} data-t03186="summary">
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-s)' }}>
@@ -522,6 +565,10 @@ function SummaryView({ summary }: { readonly summary: Summary }): ReactElement {
         <span style={{ color: 'var(--text-muted)' }}>
           完成 {summary.totals.done} · 未完成 {summary.totals.undone} · 逾期 {summary.totals.overdue}
         </span>
+        <button type="button" onClick={onPublish} disabled={busy} style={{ ...BTN, marginLeft: 'auto' }}
+          title={card ? '该迭代已有周报卡，再点只会展示首份，不会生成第二张' : '把当前小结固化为一份可复制的周报卡（一迭代仅一份）'}>
+          发周报卡
+        </button>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginTop: 8, fontSize: 'var(--fs-xs)' }}>
         <SummaryCol title="已完成" rows={summary.done} color="var(--success)" />
@@ -529,6 +576,32 @@ function SummaryView({ summary }: { readonly summary: Summary }): ReactElement {
         <SummaryCol title="逾期（结束日已过仍未完成）" rows={summary.overdue} color="var(--danger)" />
       </div>
       {summary.notes.map((n) => <div key={n} style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{n}</div>)}
+      {card ? <WeeklyCardView card={card} /> : (
+        <div style={{ marginTop: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+          还没有周报卡。点「发周报卡」生成，或由启动补生成在本迭代结束日跨过后自动产出（一迭代仅一份）。
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 周报卡呈现（T03227）：服务端生成的纯文本快照原样展示，展示层不重算、不补字段 */
+function WeeklyCardView({ card }: { readonly card: WeeklyCard }): ReactElement {
+  return (
+    <div data-t03227="weekly-card" style={{ marginTop: 10, borderTop: '1px dashed var(--border)', paddingTop: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-xs)' }}>
+        <strong>周报卡</strong>
+        <span style={{ color: 'var(--text-muted)' }}>
+          {card.trigger === 'backfill' ? '启动补生成' : '手动发布'} · {card.generatedAt.slice(0, 19).replace('T', ' ')} ·
+          完成 {card.totals.done} / 未完成 {card.totals.undone} / 逾期 {card.totals.overdue}
+        </span>
+        <span style={{ marginLeft: 'auto' }}>
+          <CopyButton getText={() => card.markdown} title="复制周报卡全文" ariaLabel="复制周报卡全文" />
+        </span>
+      </div>
+      <pre style={{ ...FIELD, marginTop: 6, whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: 'var(--fs-xs)' }}>
+        {card.markdown}
+      </pre>
     </div>
   );
 }

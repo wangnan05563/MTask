@@ -234,6 +234,11 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     );
     CREATE INDEX IF NOT EXISTS idx_iteration_events_iter ON iteration_events(iteration_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_iteration_events_task ON iteration_events(plan_task_id, created_at);
+    -- T03227（PM-201⑥）：周报卡也写在本表（kind='weekly_card'，plan_task_id 置空串），
+    -- 「补生成且仅一份」不靠应用层自觉，由这条偏唯一索引在库层封顶——只约束卡片这一 kind，
+    -- 成员变更事件（attach/detach）按迭代+时间排序的多条留痕不受影响。
+    -- 回滚=DROP INDEX（索引不含数据，删掉即恢复原形态），故满足 NFR-10 的恢复策略要求。
+    CREATE UNIQUE INDEX IF NOT EXISTS uniq_iteration_weekly_card ON iteration_events(iteration_id) WHERE kind = 'weekly_card';
 
     -- T00662：PRD 需求跟踪矩阵——需求项（矩阵行），与计划/待办经 req_ids 多对多关联
     CREATE TABLE IF NOT EXISTS prd_requirements (

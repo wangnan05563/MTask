@@ -19,6 +19,7 @@ import { reconcileReqStatuses } from './services/reqStatusSync'; // T02087：需
 import { reconcileDerivedFrom } from './services/derivedOrigin'; // T02320：派生单溯源（正文首行「来源：Txxxx」）启动回填
 import { reconcileMilestoneProgresses } from './services/milestoneProgress'; // T02090：里程碑进度启动对账
 import { TaskService, startStaleRunningGuard } from './services/TaskService'; // T01368 后续（P1）：running 超时兜底定时收敛（移出读路径）
+import { IterationService } from './services/IterationService'; // T03227（PM-201⑥）：迭代周报卡跨结束日补生成
 import { startEventRetentionTimer } from './services/EventRetention'; // T01064 后续：事件表 90 天保留期清理
 import { startReportTmpSweeper } from './services/ReportService'; // T02144：导出令牌临时文件回收
 import { MetricSnapshotService } from './services/MetricSnapshotService'; // T03237：PM-205 日快照（长历史唯一来源）
@@ -231,6 +232,13 @@ app.listen(PORT, HOST, () => {
   // T01073-FR5.5：循环任务到期生成（启动即跑一轮 + 每小时检查）
   try { RecurringService.tick(); } catch (e) { console.error('[recurring] 启动 tick 失败:', e); }
   setInterval(() => { try { RecurringService.tick(); } catch { /* 单轮失败不中断定时 */ } }, 3600000);
+  // T03227（PM-201⑥）：迭代结束日在本次运行之前被跨过、且还没有周报卡的迭代，启动时各补一张。
+  //  判据自带幂等（候选=「无 weekly_card 事件」），故只在此跑一轮、不挂小时定时器：
+  //  挂着跑会让「今天才结束」的迭代提前拿到卡，与本条要求的「关闭期间跨过」不是同一件事。
+  try {
+    const bf = IterationService.backfillWeeklyCards();
+    if (bf.generated.length > 0) console.log(`[iterations] 周报卡补生成 ${bf.generated.length} 张（扫描 ${bf.scanned} 个无卡迭代）`);
+  } catch (e) { console.error('[iterations] 周报卡补生成失败:', e); }
   // T01273-FR2.1：监督器 tick（启动即跑一轮 + 按 supervisor.intervalMs 周期，默认 30s）。
   // T01270 的会话停滞兜底已并入该 tick（观测层不受熔断开关影响），故移除其独立定时器；
   // 决策层受 supervisor.enabled 熔断开关控制（默认关闭），无监督对象时空转返回（NFR-1）。
