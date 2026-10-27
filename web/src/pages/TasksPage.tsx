@@ -95,8 +95,25 @@ interface BatchSnapshot {
   /** 操作时刻（ISO），步骤列表里按时间展示，便于辨认「要撤到哪一步」 */
   at: string;
 }
+/** T03211（PM-105）：批量操作逐条回执——成功/失败计数与每条失败原因，常驻到手动关闭 */
+interface BatchReceipt {
+  label: string;
+  okCount: number;
+  failed: Array<{ id: string; title: string; reason: string }>;
+  at: string;
+}
 /** 撤销栈上限：再深的历史用户基本不会翻，且每条快照都占内存（含逐条旧值） */
 const MAX_UNDO_STEPS = 10;
+
+/** T03211（PM-105）：全部项目视图的哨兵值——任务查询不带 projectId，选中集合可跨项目 */
+const ALL_PROJECTS = '__all__';
+
+/** 视图作用域 → 请求参数：全部项目不带 projectId（后端缺省即全量），其余照常传 */
+function scopeParams(projectId: string): URLSearchParams {
+  const p = new URLSearchParams();
+  if (projectId !== ALL_PROJECTS) p.set('projectId', projectId);
+  return p;
+}
 
 function TriCheckbox({ checked, indeterminate, onChange, title, label, style }: {
   readonly checked: boolean;
@@ -393,6 +410,8 @@ export function TasksPage() {
     await refreshProjectList();
     const list = getProjectListSnapshot();
     if (list.length === 0) return;
+    // T03211（PM-105）：全部项目是显式视图，不参与「回退到首个项目」的失效纠正
+    if (activeProject === ALL_PROJECTS) return;
     // 持久化的 activeProject 可能已失效（项目被删）：不在列表内则回退到首个有效项目并纠正持久化，避免反复踩空
     if (!activeProject || !list.some((p) => p.id === activeProject)) {
       setActiveProject(list[0].id);
@@ -416,7 +435,9 @@ export function TasksPage() {
    */
   const fetchTasks = useCallback(async (projectId: string, offset: number, replace: boolean) => {
     if (!projectId) return;
-    const p = new URLSearchParams({ projectId, limit: String(PAGE_SIZE) });
+    // T03211：全部项目视图不带 projectId，拿跨项目任务集
+    const p = scopeParams(projectId);
+    p.set('limit', String(PAGE_SIZE));
     if (offset > 0) p.set('offset', String(offset));
     const kw = search.trim();
     if (kw) p.set('keyword', kw);
@@ -556,7 +577,11 @@ export function TasksPage() {
   const [pruneError, setPruneError] = useState('');
   const validateSelected = useCallback(() => {
     if (!activeProject) return;
-    void api.get<Task[]>(`/tasks?projectId=${activeProject}&archived=false`)
+    // T03211：全部项目视图校验跨项目选中集；limit 取上限，避免把第 200 条之后的选中项误判为已删除
+    const q = scopeParams(activeProject);
+    q.set('archived', 'false');
+    q.set('limit', '500');
+    void api.get<Task[]>(`/tasks?${q.toString()}`)
       .then((list) => { setPruneError(''); pruneSelectedIds(list); })
       .catch((e) => setPruneError(e instanceof Error ? e.message : String(e)));
   }, [activeProject, pruneSelectedIds]);
@@ -797,6 +822,7 @@ export function TasksPage() {
   // T01065 后续：由「只留最近一次」改为最多 MAX_UNDO_STEPS 级的栈——连续多次批量操作可逐级回退，
   // 也可以从步骤列表直接回到中间某一步（撤销该步及其之后的所有步）。
   const [batchStack, setBatchStack] = useState<BatchSnapshot[]>([]);
+  const [batchReceipt, setBatchReceipt] = useState<BatchReceipt | null>(null);
   const [batchOpBusy, setBatchOpBusy] = useState(false);
   // T00446：任务列表拖拽排序（manual 排序模式下启用）
   const [dragTaskId, setDragTaskId] = useState('');
@@ -811,7 +837,11 @@ export function TasksPage() {
         || anyBeautify || classifyBusy || Object.keys(optimizingMap).some(Boolean);
       if (editing) return;
       try {
-        const list = await api.get<Task[]>(`/tasks?projectId=${activeProject}&archived=false`);
+        // T03211：外部变更签名轮询同样支持全部项目视图
+        const sigQ = scopeParams(activeProject);
+        sigQ.set('archived', 'false');
+        sigQ.set('limit', '500');
+        const list = await api.get<Task[]>(`/tasks?${sigQ.toString()}`);
         const sig = list.map((t) => `${t.id}:${t.status}:${t.verified ? 1 : 0}:${t.updated_at}:${t.category_id ?? ''}:${t.priority}`).join('|');
         if (sig === externalSigRef.current) return;
         externalSigRef.current = sig;
@@ -947,6 +977,8 @@ export function TasksPage() {
 
   async function createTask() {
     if (!newTitle.trim() || !activeProject) return;
+    // T03211：新建任务必须落到具体项目——全部项目视图没有默认归属，先要求选项目
+    if (activeProject === ALL_PROJECTS) return flash('全部项目视图下请先选择具体项目再新建任务');
     // 全程置 creating，按钮转圈禁用，避免智能分类等耗时步骤看起来"卡住"
     setBusy('tasks.create', true);
     try {
@@ -1286,6 +1318,8 @@ export function TasksPage() {
 
   async function onCsvFile(file: File) {
     if (!activeProject) return flash('请先选择项目');
+    // T03211：导入需要落到具体项目
+    if (activeProject === ALL_PROJECTS) return flash('全部项目视图下请先选择具体项目再导入');
     setBatchOpBusy(true);
     try {
       // T00556 / PRD INT-6：按扩展名分流——.json 走 JSON 导入（Trello 导出/JSON 数组），其余走 CSV
@@ -1325,13 +1359,24 @@ export function TasksPage() {
     if (ids.length === 0) return flash('请先勾选任务');
     setBatchOpBusy(true);
     try {
-      const r = await api.post<{ ok: boolean; affected: number; skipped?: number }>('/tasks/batch', { ids, action, value });
+      // T03211（PM-105）：服务端逐条回执——失败项带原因，前端常驻展示且保留其选中便于重试
+      const r = await api.post<{
+        ok: boolean; affected: number; failed?: number; skipped?: number;
+        results?: Array<{ id: string; title?: string; ok: boolean; reason?: string }>;
+      }>('/tasks/batch', { ids, action, value });
+      const results: Array<{ id: string; title?: string; ok: boolean; reason?: string }> =
+        r.results ?? ids.map((id) => ({ id, ok: true }));
+      const failedItems = results
+        .filter((x) => !x.ok)
+        .map((x) => ({ id: x.id, title: x.title ?? '', reason: x.reason ?? '未说明原因' }));
+      setBatchReceipt({ label: ACTION_LABEL[action], okCount: r.affected, failed: failedItems, at: new Date().toISOString() });
       if (r.affected === 0) {
-        flash(action === 'verified' ? '选中任务中没有已完成任务，验收状态未变更' : '没有可更新的任务');
+        flash(action === 'verified' ? '选中任务中没有已完成任务，验收状态未变更（原因见回执）' : '没有可更新的任务（原因见回执）');
+        setSelectedIds(new Set(failedItems.map((f) => f.id)));
         void loadTasks(activeProject);
         return;
       }
-      flash(`批量操作完成：${r.affected} 条已更新${r.skipped ? `，${r.skipped} 条未完成已跳过` : ''}`);
+      flash(`批量操作完成：成功 ${r.affected} 条${failedItems.length > 0 ? `，失败 ${failedItems.length} 条（原因见回执）` : ''}`);
       // T00623 同口径：批量验证通过后收起这些任务的「验证失败反馈」展开区（徽标与入口随 verified 隐藏）
       if (action === 'verified' && value === 'true') {
         setFailbackOpen((prev) => {
@@ -1350,7 +1395,10 @@ export function TasksPage() {
       // T01065 后续：改为入栈（最多 MAX_UNDO_STEPS 级），连续多次批量操作可逐级回退
       if (action !== 'archive') {
         const all = [...todo, ...done, ...shelvedTasks];
+        // T03211：只有真正成功的条目入撤销栈——失败项没有改动，回填会制造无意义的「还原」
+        const okIds = new Set(results.filter((x) => x.ok).map((x) => x.id));
         const entries = ids
+          .filter((id) => okIds.has(id))
           .map((id) => {
             const t = all.find((x) => x.id === id);
             if (!t) return null;
@@ -1367,7 +1415,8 @@ export function TasksPage() {
           setBatchStack((prev) => [...prev, { entries, label: `${ACTION_LABEL[action]}${valueSuffix}`, at: new Date().toISOString() }].slice(-MAX_UNDO_STEPS));
         }
       }
-      setSelectedIds(new Set());
+      // T03211：失败项保留选中，用户可修正/重试；全部成功则同既有行为清空选中
+      setSelectedIds(new Set(failedItems.map((f) => f.id)));
       void loadTasks(activeProject);
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
@@ -1482,8 +1531,11 @@ export function TasksPage() {
     // T00922：看板标题统计改取项目级全量计数（项目对象上的待办/已完成计数字段），首屏即显示该项目全部待办/已完成，
     // 不再受分页已加载条目数影响（原 done.length 仅覆盖当前已加载页，需「加载更多」后才趋近真实值）
     const curProj = projects.find((p) => p.id === activeProject);
-    const todoTotal = curProj?.todo_count ?? todo.length;
-    const doneTotal = curProj?.done_count ?? done.length;
+    // T03211：全部项目视图按各项目计数之和展示，口径与列表页页签一致
+    const aggTodoBoard = projects.reduce((s, p) => s + (p.todo_count ?? 0), 0);
+    const aggDoneBoard = projects.reduce((s, p) => s + (p.done_count ?? 0), 0);
+    const todoTotal = curProj?.todo_count ?? (activeProject === ALL_PROJECTS ? aggTodoBoard : todo.length);
+    const doneTotal = curProj?.done_count ?? (activeProject === ALL_PROJECTS ? aggDoneBoard : done.length);
     // T03209（PM-101）：WIP 软上限只对具体项目生效——全部项目混合视图无单一项目口径，仅显示数量
     const wipLimit = curProj?.wip_limit ?? 10;
     const wipOver = curProj ? todoTotal - wipLimit : 0;
@@ -1571,6 +1623,37 @@ export function TasksPage() {
     { fmt: 'md', label: 'Markdown', desc: '导出为 .md' },
     { fmt: 'xlsx', label: 'Excel 表格', desc: '导出为 .xlsx' },
   ];
+
+  /**
+   * T03211（PM-105）：批量操作回执——成功 n / 失败 m + 逐条失败原因。
+   * 与撤销条同级常驻（不挂在批量条上）：批量完成会清空/缩减选中，回执仍要可回看。
+   */
+  function renderBatchReceipt() {
+    if (!batchReceipt) return null;
+    const { label, okCount, failed } = batchReceipt;
+    return (
+      <div role="status" aria-label="批量操作回执"
+        style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: `1px solid ${failed.length > 0 ? 'var(--warn)' : 'var(--border-strong)'}`, fontSize: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <strong style={{ color: 'var(--text)' }}>{label}回执：成功 {okCount} 条</strong>
+          <span style={{ color: failed.length > 0 ? 'var(--warn)' : 'var(--text-muted)' }}>失败 {failed.length} 条</span>
+          <button onClick={() => setBatchReceipt(null)} aria-label="关闭批量操作回执" title="关闭回执"
+            style={{ marginLeft: 'auto', cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', border: 'none', background: 'transparent', color: 'var(--text-secondary)' }}>
+            <X size={13} />
+          </button>
+        </div>
+        {failed.length > 0 && (
+          <ul aria-label="批量操作失败明细" style={{ margin: 0, paddingLeft: 18, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {failed.map((f) => (
+              <li key={f.id} style={{ wordBreak: 'break-all' }}>
+                <span style={{ color: 'var(--text)' }}>{f.title || f.id}</span> — {f.reason}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  }
 
   /**
    * T01065 后续：多级撤销条（快照栈非空时常驻，与选中态无关）。
@@ -2155,6 +2238,16 @@ export function TasksPage() {
         )}
         {/* T02949 方案 A：不再给所有派生单挂手动挂牌入口——
             是否待裁决由服务端按结论自动识别（TaskService.autoRuling），前端只负责展示与交互 */}
+        {/* T03211（PM-105）：全部项目视图下标注任务所属项目——跨项目多选时能辨认每条任务归属 */}
+        {activeProject === ALL_PROJECTS && (() => {
+          const pname = projects.find((p) => p.id === t.project_id)?.name;
+          return pname ? (
+            <span title={`所属项目：${pname}`} aria-label={`所属项目 ${pname}`}
+              style={{ flexShrink: 0, maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 10, color: 'var(--text-muted)', background: 'var(--surface-2)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 5px', lineHeight: '16px' }}>
+              {pname}
+            </span>
+          ) : null;
+        })()}
         {renderTaskTitle(t, titleEditing)}
       </div>
     );
@@ -3156,6 +3249,9 @@ export function TasksPage() {
 
   /** 顶部工具条：项目切换、工具选择、批量美化、分类筛选、搜索（T00522 修正：顶层补 op-host 宿主，筛选/搜索默认隐藏悬浮显示才生效） */
   function renderToolbar() {
+    // T03211：全部项目视图的合计徽标（各项目计数之和）；具体项目视图仍用单项目计数
+    const allTodo = projects.reduce((s, p) => s + (p.todo_count ?? 0), 0);
+    const allUnv = projects.reduce((s, p) => s + (p.unverified_count ?? 0), 0);
     return (
       <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         {/* T02167 二轮：宿主组改可换行——窄窗（≤430px）时行内容纳不下整组（项目条+工作空间+图标钮），
@@ -3173,9 +3269,14 @@ export function TasksPage() {
                 二轮：按钮/容器不再 minWidth:0——它会让弹性压缩把按钮压到低于「徽标+箭头」的
                 min-content（约 88px），徽标照样越出边框；去掉后 min-width:auto 以 min-content 兜底。 */}
             <span style={{ flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {projects.find((p) => p.id === activeProject)?.name ?? '选择项目'}
+              {activeProject === ALL_PROJECTS ? '全部项目' : projects.find((p) => p.id === activeProject)?.name ?? '选择项目'}
             </span>
-            {(() => { const cur = projects.find((p) => p.id === activeProject); return cur ? (
+            {activeProject === ALL_PROJECTS ? (
+              <>
+                <span title={`全部项目待办合计 ${allTodo} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{allTodo}</span>
+                <span title={`全部项目未验证合计 ${allUnv} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{allUnv}</span>
+              </>
+            ) : (() => { const cur = projects.find((p) => p.id === activeProject); return cur ? (
               <>
                 <span title={`待办 ${cur.todo_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{cur.todo_count ?? 0}</span>
                 <span title={`未验证 ${cur.unverified_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{cur.unverified_count ?? 0}</span>
@@ -3191,6 +3292,16 @@ export function TasksPage() {
               {projectList.phase !== 'ready' && (
                 <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border)' }}><ProjectListHint view={projectList} /></div>
               )}
+              {/* T03211（PM-105）：全部项目混合视图——跨项目任务集，可在同一多选集内跨项目勾选后批量操作 */}
+              <div role="button" tabIndex={0} className="card-btn" aria-pressed={activeProject === ALL_PROJECTS} aria-label="全部项目" /* NOSONAR: S6819 豁免——与项目行同构，键盘支持在 onKeyDown 保留 */
+                onClick={() => { setActiveProject(ALL_PROJECTS); setProjOpen(false); }}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActiveProject(ALL_PROJECTS); setProjOpen(false); } }}
+                title={`全部项目 — 跨项目混合视图（待办合计 ${allTodo} 条，未验证合计 ${allUnv} 条）；可跨项目多选后批量操作`}
+                style={{ display: 'flex', width: '100%', boxSizing: 'border-box', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, background: activeProject === ALL_PROJECTS ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer', borderBottom: '1px solid var(--border)' }}>
+                <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>全部项目</span>
+                <span title={`待办合计 ${allTodo} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{allTodo}</span>
+                <span title={`未验证合计 ${allUnv} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{allUnv}</span>
+              </div>
               {sortedProjects.map((p) => (
                 // T02146：行容器由原生 button 改 div role=button——行内的置顶图标本身是 button，
                 // HTML 不允许按钮套按钮（fdc6090 的 a11y 批修把「div→button」规则套到了含交互子元素的
@@ -3231,13 +3342,17 @@ export function TasksPage() {
           project={projects.find((p) => p.id === activeProject) ?? null}
           onBind={(path) => {
             if (!activeProject) { flash('请先选择要绑定工作空间的项目'); return Promise.resolve(); }
+            if (activeProject === ALL_PROJECTS) { flash('全部项目视图下请先选择具体项目再绑定工作空间'); return Promise.resolve(); }
             return bindWorkspace(activeProject, path);
           }}
           flash={flash}
         />
         {/* T00786：工作空间全文检索入口——语义紧跟工作空间，键入关键词全文检索并展示 partial 提示 */}
         <button
-          onClick={() => setWsSearchOpen(true)}
+          onClick={() => {
+            if (activeProject === ALL_PROJECTS) { flash('全部项目视图下请先选择具体项目再检索工作空间'); return; }
+            setWsSearchOpen(true);
+          }}
           className="tbtn-anim"
           disabled={!activeProject}
           title={activeProject ? '工作空间全文检索 — 在绑定工作空间内检索关键词，结果可能不完整的 partial 状态会提示' : '请先选择项目再检索工作空间'}
@@ -3521,13 +3636,19 @@ export function TasksPage() {
     // T00922：tab 标题已完成/待办统计改取项目级全量计数——原列表长度仅覆盖当前已加载页，
     // 首屏需「加载更多」后才趋近真实总量；改用项目级全量计数字段后首屏即显示全量。未验证数保持原语义（已完成中未验证）
     const curProj = projects.find((p) => p.id === activeProject);
-    const todoTotal = curProj?.todo_count ?? todo.length;
-    const doneTotal = curProj?.done_count ?? done.length;
+    // T03211：全部项目视图没有单项目对象——用各项目计数之和，仍保持「首屏即全量」口径
+    const aggTodo = projects.reduce((s, p) => s + (p.todo_count ?? 0), 0);
+    const aggDone = projects.reduce((s, p) => s + (p.done_count ?? 0), 0);
+    const aggregate = activeProject === ALL_PROJECTS;
+    const todoTotal = curProj?.todo_count ?? (aggregate ? aggTodo : todo.length);
+    const doneTotal = curProj?.done_count ?? (aggregate ? aggDone : done.length);
     return (
       <>
         {batchBar}
         {/* T01065 后续：多级撤销条——独立于批量条常驻（批量操作后选中被清空，批量条会收起） */}
         {renderUndoBar()}
+        {/* T03211：批量回执——成功/失败计数与逐条原因，常驻到手动关闭 */}
+        {renderBatchReceipt()}
         {/* T01480：导出格式选择菜单（fixed 覆盖层，点外关闭） */}
         {exportMenu && (
           <div style={{ position: 'fixed', inset: 0, zIndex: 1300 }}>
