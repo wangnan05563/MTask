@@ -3,6 +3,7 @@ import { Check, GitBranch, Loader2, RefreshCw, Search, Tag, X } from 'lucide-rea
 import { api } from '../api/client';
 import type { Project } from '../api/client';
 import { fullTime, relTime } from '../ui/format';
+import { PILL } from './primitives'; // PM-302 ① 单源（与 CodeReviewLecturePanel 原为逐字节相同的两份定义）
 import {
   GIT_TREE_PAGE_SIZE,
   MAX_SELECTED_COMMITS,
@@ -54,10 +55,7 @@ const boxStyle: React.CSSProperties = {
   fontSize: 'var(--fs-s)', padding: '4px 6px', borderRadius: 6, border: '1px solid var(--border)',
   background: 'var(--surface)', color: 'var(--text)',
 };
-const chipStyle: React.CSSProperties = {
-  fontSize: 'var(--fs-xs)', padding: '1px 6px', borderRadius: 999, border: '1px solid var(--border)',
-  background: 'var(--surface-2)', color: 'var(--text-secondary)',
-};
+const chipStyle: React.CSSProperties = PILL; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 const FONT_MONO = 'Consolas, Menlo, monospace';
 
 export function GitTreePickerModal({ projects, activeProjectId, selectedByProject, onConfirm, onClose }: {

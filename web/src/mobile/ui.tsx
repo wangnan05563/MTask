@@ -8,6 +8,7 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { t, registerDict } from '../i18n';
+import { DRAWER_Z, OVERLAY_MASK } from '../ui/primitives';
 
 /** 页面容器：占满视口、纵向布局、应用底色 */
 export const pageStyle: CSSProperties = { display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--app-bg)', color: 'var(--text)' };
@@ -39,20 +40,12 @@ export const mutedStyle: CSSProperties = { color: 'var(--text-muted)', fontSize:
  */
 export const wideHintStyle: CSSProperties = { width: '100%', flexWrap: 'wrap', boxSizing: 'border-box' };
 
-export type BadgeTone = 'neutral' | 'accent' | 'success' | 'danger';
-
-/** 徽标配色（全部走 CSS 变量，暗色自动跟随） */
-const badgeTones: Record<BadgeTone, CSSProperties> = {
-  neutral: { color: 'var(--text-secondary)', background: 'var(--surface-2)' },
-  accent: { color: 'var(--accent)', background: 'var(--surface-2)', borderColor: 'var(--accent)' },
-  success: { color: 'var(--success)', background: 'var(--surface-2)', borderColor: 'var(--success)' },
-  danger: { color: 'var(--danger)', background: 'var(--surface-2)', borderColor: 'var(--danger)' },
-};
-
-/** 徽标基元：小号圆角标签 */
-export function Badge({ tone = 'neutral', children, style }: Readonly<{ tone?: BadgeTone; children: ReactNode; style?: CSSProperties }>) {
-  return <span style={{ fontSize: 'var(--fs-xs)', borderRadius: 6, padding: '2px 6px', border: '1px solid transparent', ...badgeTones[tone], ...style }}>{children}</span>;
-}
+/**
+ * PM-302 ①：徽标单源在 `ui/Badge.tsx`（样式常量在 `ui/primitives.ts`）。
+ * 移动端保留同名导出只是为了不动十来个调用点；实现已改为转发，不再自带一份配色。
+ */
+export type { BadgeTone } from '../ui/primitives';
+export { Badge } from '../ui/Badge';
 
 /** 半屏抽屉基元：底部滑入的半屏面板（后续队列半操作/详情抽屉复用）。
  *  遮罩点击 / Esc 关闭；挂载于普通文档流外（fixed），打开时才渲染。
@@ -67,12 +60,12 @@ export function HalfSheet({ open, title, onClose, children }: Readonly<{ open: b
   }, [open, onClose]);
   if (!open) return null;
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 1000 }}>
+    <div style={{ position: 'fixed', inset: 0, zIndex: DRAWER_Z.halfSheet }}>
       {/* 遮罩：纯装饰层（aria-hidden），点击关闭为鼠标便捷通路 */}
       <div
         aria-hidden="true"
         onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-        style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.4)' }}
+        style={OVERLAY_MASK}
       />
       <dialog
         open

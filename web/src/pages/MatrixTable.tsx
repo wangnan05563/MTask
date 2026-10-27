@@ -7,10 +7,12 @@
  * 只新增第 5 列「用例」；父组件通过 `data-req-id` 定位行做跳转高亮。
  */
 import type { Dispatch, ReactNode, RefObject, SetStateAction } from 'react';
+import { FIELD_INLINE } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 import { Archive, ChevronDown, ChevronUp, FileText, Link2, Minimize2, Sparkles, Trash2 } from 'lucide-react';
 import type { MatrixReq } from './ReqMatrixPanel';
 import { MatrixCaseCell } from './MatrixCaseCell';
 import { NotOpenButton } from '../ui/notOpen'; // T03185（UX-05⑤）：未开放入口=可见但禁用+范围说明
+import { priorityColor, priorityWithP } from '../ui/priority'; // PM-302 ③：优先级 P 档换算与配色单源
 import { STATUS_OPTIONS } from './ReqMatrixPanel';
 
 /** 表格渲染所需的全部状态与动作（由父组件持有，本组件不碰任何数据源） */
@@ -39,18 +41,9 @@ export interface MatrixTableProps {
 const TD_STYLE = { padding: '4px 6px' } as const;
 
 /** T01703：矩阵优先级 ↔ 用例 P 档同屏换算标注（urgent↔P0 / high↔P1 / normal↔P2 / low↔P3），
- *  与测试用例列表（P0~P3 词表）同屏时无需人工换算；存量矩阵值即存储枚举，标注为只读换算。 */
-const PRIO_P_LABEL: Record<string, string> = { urgent: 'P0', high: 'P1', normal: 'P2', low: 'P3' };
-const prioWithP = (p: string | undefined): string => {
-  // S7760：不改成默认参数——默认参数只在 undefined 时兜底，而 priority 是必选 string，
-  // 存量数据可能为空串；保持「'' 与 undefined 都归一 normal」的原语义，故显式判空。
-  const v = p === undefined || p === '' ? 'normal' : p;
-  return PRIO_P_LABEL[v] ? `${v}（${PRIO_P_LABEL[v]}）` : v;
-};
-const PLAIN_INPUT = {
-  border: '1px solid transparent', borderRadius: 4, background: 'transparent',
-  fontSize: 'var(--fs-s)', padding: '1px 4px',
-} as const;
+ *  与测试用例列表（P0~P3 词表）同屏时无需人工换算；存量矩阵值即存储枚举，标注为只读换算。
+ *  PM-302 ③：换算表与配色一并收进 ui/priority.ts，矩阵与列表/看板/移动端共用同一映射。 */
+const PLAIN_INPUT = FIELD_INLINE; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 /** 标题栏里的「开发中」占位按钮（T00842 位置3：样式对齐任务菜单同名按钮） */
 const TODO_BTN_STYLE = {
   border: 'none', background: 'transparent', cursor: 'pointer',
@@ -120,7 +113,7 @@ export function MatrixTable({ p }: { readonly p: MatrixTableProps }) {
   const renderDetail = (r: MatrixReq) => (
     <div style={{ marginTop: 4, padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface-2)', fontSize: 'var(--fs-xs)', color: 'var(--text)' }}>
       <div style={{ whiteSpace: 'pre-wrap' }}>{r.content ? r.content : '（无内容）'}</div>
-      <div style={{ marginTop: 4, color: 'var(--text-muted)' }}>来源：{r.source_ref || '—'} · 优先级：{prioWithP(r.priority)} · 状态：{r.status || 'todo'}</div>
+      <div style={{ marginTop: 4, color: 'var(--text-muted)' }}>来源：{r.source_ref || '—'} · 优先级：<span style={{ color: priorityColor(r.priority) }}>{priorityWithP(r.priority)}</span> · 状态：{r.status || 'todo'}</div>
       {r.prdDoc && (
         <div style={{ marginTop: 6 }}>
           <button onClick={() => p.onOpenPrd(r.prdDoc!)} className="tbtn-anim"

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { FIELD_BLOCK } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 import { Archive, ChevronDown, ChevronUp, Code2, Cpu, Copy, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, Save, Star, X, Check, Zap } from 'lucide-react';
 import { api, type AITool, type ConfigIssue } from '../api/client';
 import { UsagePanel } from './UsagePanel';
@@ -24,7 +25,7 @@ const PURPOSE_LABEL: Record<string, string> = { organize: '整理', develop: '�
 
 // 表格单元格与表单样式提到模块级：拆分出的行/弹窗子组件与主组件共用同一对象，避免重复定义
 const cellStyle: CSSProperties = { padding: 8, borderBottom: '1px solid var(--surface-2)', verticalAlign: 'top' };
-const fieldStyle: CSSProperties = { width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-m)', boxSizing: 'border-box' };
+const fieldStyle: CSSProperties = FIELD_BLOCK; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 const labelStyle: CSSProperties = { fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 4, display: 'block' };
 
 function emptyForm(defaultType: string): ToolForm {

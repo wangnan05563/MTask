@@ -9,12 +9,12 @@ import { useState } from 'react';
 import { api, imageUrl, type Task, type TaskCategory } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
 import { ResultDiffPanel } from '../ui/ResultDiff'; // T01698：结果历史 diff/回滚——与桌面抽屉/行内同一组件
-import { Badge, HalfSheet, type BadgeTone } from './ui';
+import { Badge, HalfSheet } from './ui';
+import { priorityBadgeLabel, priorityTone } from '../ui/priority';
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
 
-const PRIO_LABEL: Record<string, string> = { urgent: '紧急', high: '高', normal: '普通', low: '低' };
-const PRIO_TONE: Record<string, BadgeTone> = { urgent: 'danger', high: 'accent', normal: 'neutral', low: 'neutral' };
 const STATUS_LABEL: Record<string, string> = { todo: '待办', done: '已完成' };
+/* PM-302 ③：优先级色/文案/色调改用 ui/priority.ts 单源 */
 
 export function MobileTaskDetail({ task, categories, onClose, onChanged, notify }: {
   readonly task: Task | null;
@@ -77,7 +77,7 @@ export function MobileTaskDetail({ task, categories, onClose, onChanged, notify 
       <div style={{ fontSize: 'var(--fs-2xl)', fontWeight: 600, lineHeight: 1.4, wordBreak: 'break-word' }}>{task.title}</div>
       <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <Badge tone={done ? 'success' : 'accent'}>{STATUS_LABEL[task.status] ?? task.status}</Badge>
-        <Badge tone={PRIO_TONE[task.priority] ?? 'neutral'}>{PRIO_LABEL[task.priority] ?? task.priority}</Badge>
+        <Badge tone={priorityTone(task.priority)}>{priorityBadgeLabel(task.priority)}</Badge>
         {catName && <Badge>{catName}</Badge>}
         {task.pinned && <Badge tone="accent">📌 置顶</Badge>}
       </div>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type CSSProperties } from 'react';
+import { FIELD_XS } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api, type Project, type AITool } from '../api/client';
 import { ProjectListHint, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
@@ -73,7 +74,7 @@ function bytesToBase64(bytes: Uint8Array): string {
 }
 
 const labelStyle: CSSProperties = { fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 4 };
-const fieldStyle: CSSProperties = { padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-m)' };
+const fieldStyle: CSSProperties = FIELD_XS; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 
 /** 能力卡片配置 */
 interface ReportCardCfg {

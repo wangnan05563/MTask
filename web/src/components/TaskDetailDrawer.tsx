@@ -11,6 +11,8 @@ import { MarkdownContent } from '../ui/Markdown';
 import { ResultDiffPanel } from '../ui/ResultDiff'; // T01607：结果历史 diff/回滚——与行内共用同一组件
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { SlideOver } from './SlideOver';
+import { Badge } from '../ui/Badge'; // PM-302 ①：徽标单源（原为抽屉私有 Badge，borderRadius/padding 与她处各异）
+import { priorityBadgeLabel, priorityTone } from '../ui/priority'; // PM-302 ③：优先级文案/色调单源
 import { ClipboardList, FileText, History, Link2, Loader2, Pencil, Save, Sparkles, X } from 'lucide-react';
 import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用入口可见但禁用 + 原因/修复动作
 
@@ -23,16 +25,7 @@ export type TaskDetailTab = 'desc' | 'result' | 'summary' | 'timeline' | 'plans'
  */
 export type TaskPatch = Partial<Pick<Task, 'description' | 'handle_result'>>;
 
-const PRIO_LABEL: Record<string, string> = { urgent: '紧急', high: '高', normal: '普通', low: '低' };
 const STATUS_LABEL: Record<string, string> = { todo: '待办', done: '已完成' };
-
-function Badge({ children, color }: { readonly children: React.ReactNode; readonly color?: string }) {
-  return (
-    <span style={{ fontSize: 'var(--fs-xs)', padding: '1px 7px', borderRadius: 10, border: '1px solid var(--border-strong)', color: color ?? 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-      {children}
-    </span>
-  );
-}
 
 /** T02164：摘要生成时刻按本地时区渲染成 `YYYY-MM-DD HH:mm`（库内为 ISO/UTC）。
  *  早期采纳（FR5.1）写入的摘要没有时间标注，如实显示「未标注」而不是拿 updated_at 冒充。 */
@@ -343,10 +336,10 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
     <SlideOver open title={task.title} onClose={onClose} width={480}>
       {/* 头部徽标 */}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-        <Badge color={task.status === 'done' ? 'var(--success)' : 'var(--accent)'}>{STATUS_LABEL[task.status] ?? task.status}</Badge>
-        <Badge>{PRIO_LABEL[task.priority] ?? task.priority}</Badge>
-        {task.verified && <Badge color="var(--success)">已验证</Badge>}
-        {task.pinned && <Badge color="var(--accent)">📌 置顶</Badge>}
+        <Badge tone={task.status === 'done' ? 'success' : 'accent'}>{STATUS_LABEL[task.status] ?? task.status}</Badge>
+        <Badge tone={priorityTone(task.priority)}>{priorityBadgeLabel(task.priority)}</Badge>
+        {task.verified && <Badge tone="success">已验证</Badge>}
+        {task.pinned && <Badge tone="accent">📌 置顶</Badge>}
         {task.task_no && <Badge>{task.task_no}</Badge>}
       </div>
 

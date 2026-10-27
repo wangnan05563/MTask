@@ -16,10 +16,8 @@ interface Props {
   readonly focus?: { taskNo: string; nonce: number } | null;
 }
 
-const PRIO_COLOR: Record<string, string> = {
-  low: 'var(--text-muted)', normal: 'var(--border-strong)', high: 'var(--warn)', urgent: 'var(--danger)',
-};
-const PRIO_LABEL: Record<string, string> = { low: '低', normal: '中', high: '高', urgent: '紧急' };
+/* PM-302 ③：优先级色/文案改用 ui/priority.ts 单源（与看板边框、矩阵、详情徽标同一映射） */
+import { priorityColor, priorityShort } from '../ui/priority';
 
 /**
  * 启动项目定位（从首页 useEffect 抽出，S3776 降复杂度；调用顺序与副作用完全不变）。
@@ -362,7 +360,7 @@ export function MobileHome({ onQuickNote, notify, focus }: Props) {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   {t.pinned && <span style={{ fontSize: 'var(--fs-xs)' }}>📌</span>}
                   <span className="zen-zoom" style={{ flex: 1, fontSize: 'var(--fs-xl)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</span>
-                  <span style={{ fontSize: 'var(--fs-xs)', color: PRIO_COLOR[t.priority] || 'var(--text-muted)' }}>●{PRIO_LABEL[t.priority] || ''}</span>
+                  <span style={{ fontSize: 'var(--fs-xs)', color: priorityColor(t.priority) }}>●{priorityShort(t.priority)}</span>
                 </div>
                 <div className="zen-hide" style={{ display: 'flex', gap: 6, marginTop: 2, alignItems: 'center' }}>
                   {t.category_id && <Badge>{catName(t.category_id)}</Badge>}

@@ -12,6 +12,7 @@ import { focusPlanNode, focusTaskByNo, type FocusTaskIntent } from '../ui/focusT
 import { ProjectListHint, getProjectListSnapshot, patchProject, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：选中项有效性校验失败态提示；T02257：AI 工具列表同层接入
 import { PinToggle } from '../ui/PinToggle';
+import { priorityAriaLabel, priorityColor } from '../ui/priority'; // PM-302 ③：优先级 → 颜色/文案单源（列表/看板/矩阵/移动端共用）
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { NoticeToast, useNotice } from '../ui/notice'; // T03214（UX-02 ③）：提示分级——成功短驻、错误长驻且可关闭/复制
 import { paginationStatus, type PaginationView } from '../utils/taskPagination'; // T03214（UX-02 ①）：剩余条数与「已加载全部」判据
@@ -169,21 +170,10 @@ function readClipboardImages(e: ClipboardEvent<HTMLTextAreaElement>, onImages: (
   return true;
 }
 
-/** 优先级 → 看板卡片左边框颜色（与列表视图配色保持一致） */
-function priorityBorderColor(priority: string): string {
-  if (priority === 'urgent') return 'var(--danger)';
-  if (priority === 'high') return 'var(--warning, #d97706)';
-  if (priority === 'low') return 'var(--border-strong)';
-  return 'var(--accent)';
-}
-
-/** 优先级 → 中文标签（看板卡片悬浮提示用） */
-function priorityLabel(priority: string): string {
-  if (priority === 'urgent') return '极高优先级';
-  if (priority === 'high') return '高优先级';
-  if (priority === 'low') return '低优先级';
-  return '普通优先级';
-}
+/* PM-302 ③：优先级 → 颜色/文案的定义已收进 ui/priority.ts（看板、列表、矩阵、移动端共用同一映射）。
+   本地包装保留只为不动调用点；实现在单源文件里。 */
+const priorityBorderColor = priorityColor;
+const priorityLabel = priorityAriaLabel;
 
 export function TasksPage() {
   // 新建任务表单字段：跨切换会话持久化，录入一半切页后可续写
@@ -2364,7 +2354,7 @@ export function TasksPage() {
           onChange={(e) => void setPriority(t, e.target.value)}
           className="task-op"
           aria-label="切换任务优先级"
-          style={{ fontSize: 'var(--fs-s)', padding: 2, border: '1px solid var(--border-strong)', borderRadius: 4 }}
+          style={{ fontSize: 'var(--fs-s)', padding: 2, border: '1px solid var(--border-strong)', borderRadius: 4, color: priorityColor(t.priority) }}
         >
           <option value="low">低</option>
           <option value="normal">中</option>

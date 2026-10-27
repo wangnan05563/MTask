@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { BTN_SECONDARY, FIELD_ROW } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { childParentIdOf } from '../util/planDeps'; // T01621：里程碑显式挂接判定单源（与时间线分组共用）
 import { Archive, ArrowUpDown, CalendarPlus, Check, Download, Gauge, Layers, LineChart, Webhook, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, FileText, FilePenLine, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Share2, Table2, TestTubes, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search, X } from 'lucide-react';
@@ -151,15 +152,15 @@ function todayStr(): string {
 }
 
 /** 通用行内输入样式（与全站 task-op 风格一致） */
-const inputStyle: React.CSSProperties = { border: '1px solid var(--border-strong)', borderRadius: 6, padding: '3px 6px', background: 'var(--bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' };
-const btnStyle: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 'var(--fs-s)', padding: '3px 8px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'transparent', color: 'var(--text)' };
+const inputStyle: React.CSSProperties = FIELD_ROW; // PM-302 ① 单源 ui/primitives.ts（原引用的 --bg 是未定义令牌，收编为 --card-bg）
+const btnStyle: React.CSSProperties = BTN_SECONDARY; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 
 /** T00471：计划行「默认只读展示 + 悬浮编辑」交互——CSS 驱动不改数据流：
  *  默认 input 边框透明呈文本观感，行 hover/focus-within 时显示编辑框边框背景；
  *  行操作按钮（关联/插入/归档等 task-op）默认隐藏，悬浮或键盘聚焦时显示（保键盘可访问）。 */
 const planTableCss = `
   .plan-table input { border-color: transparent; background: transparent; }
-  .plan-table tr:hover input, .plan-table tr:focus-within input { border-color: var(--border-strong); background: var(--bg); }
+  .plan-table tr:hover input, .plan-table tr:focus-within input { border-color: var(--border-strong); background: var(--card-bg); }
   .plan-table .task-op { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
   .plan-table tr:hover .task-op, .plan-table tr:focus-within .task-op { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
 `;

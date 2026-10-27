@@ -162,7 +162,7 @@ export function WorkspaceSearchPanel({
         {/* 搜索区 */}
         <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 7 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 5, flex: 1, border: '1px solid var(--border-strong)', borderRadius: 6, padding: '5px 8px', background: 'var(--bg)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, flex: 1, border: '1px solid var(--border-strong)', borderRadius: 6, padding: '5px 8px', background: 'var(--card-bg)' }}>
               <Search size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
               <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') void doSearch(); }}

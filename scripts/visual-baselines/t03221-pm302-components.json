@@ -1,0 +1,94 @@
+{
+  "meta": {
+    "chrome": "Chrome/156.0.8078.48",
+    "generatedAt": "2026-10-27",
+    "scale": 1,
+    "note": "PM-302 ②：单源件渲染基线。改设计口径后用 `node scripts/visual-components.mjs --update` 重取；比对全红多半是 Chrome 主版本变了。"
+  },
+  "cells": {
+    "button.light": {
+      "sha": "170a5a97f7ae06643cf58fabdd253568d0d5cb7a32b22e734ef6734d06686d4d",
+      "w": 320,
+      "h": 49,
+      "bytes": 3928
+    },
+    "button.dark": {
+      "sha": "34168f83654cfe2f519a35adb426e63cd436a7bdcf2d5460651a94cadcf4a49a",
+      "w": 320,
+      "h": 49,
+      "bytes": 3980
+    },
+    "input.light": {
+      "sha": "2b1ae9321ad7340fc6088431ae3a57f294409df877721b096deadb8f78655ab4",
+      "w": 320,
+      "h": 117,
+      "bytes": 3362
+    },
+    "input.dark": {
+      "sha": "0a9f13c06adb5bde571ee0b2c281afa42cb887b211c0ac946e5a1f12a92a425e",
+      "w": 320,
+      "h": 117,
+      "bytes": 3471
+    },
+    "select.light": {
+      "sha": "c17e822e9deda29356251c30194168281b1d3474f921b64d5d725165d9abe682",
+      "w": 320,
+      "h": 48,
+      "bytes": 2619
+    },
+    "select.dark": {
+      "sha": "8efa3011413bfbad62d4d457daf2addb70f1a71852343589616535fbd95e9ab3",
+      "w": 320,
+      "h": 48,
+      "bytes": 2659
+    },
+    "badge.light": {
+      "sha": "e48f07418aaff7918bff6e9aba23d267647aa2c94d8bfc1e0859db6e772ba2c8",
+      "w": 320,
+      "h": 66,
+      "bytes": 4455
+    },
+    "badge.dark": {
+      "sha": "b30da09e6b2f03be3c4423e9d361cf7c621aa7ac8ec7f0caac1a3a5847f2cd39",
+      "w": 320,
+      "h": 66,
+      "bytes": 4441
+    },
+    "empty.light": {
+      "sha": "7dc2cc6abd422e3bda5d66313541d2bcd48160f3270d84a69c46db47853e4d71",
+      "w": 320,
+      "h": 206,
+      "bytes": 5757
+    },
+    "empty.dark": {
+      "sha": "0a8bd23ee26452eb1af9def372cd387194a73551c6261d6a29f0b28dbe7c8203",
+      "w": 320,
+      "h": 206,
+      "bytes": 6051
+    },
+    "drawer.light": {
+      "sha": "01f19ae23f81c0809c34e65265edaef164f4bf572c2a8be210c81c1d7e2f0090",
+      "w": 320,
+      "h": 200,
+      "bytes": 3957
+    },
+    "drawer.dark": {
+      "sha": "b0c63bf0c15b677934ed84adcfaf9d6bab7e5ae51c6ae25c53bfa487c21e2f62",
+      "w": 320,
+      "h": 200,
+      "bytes": 3894
+    },
+    "priority.light": {
+      "sha": "1796e031be02bd980366469e6f6bfaa43bbb605a2e2340f1bf07908add68cbf9",
+      "w": 320,
+      "h": 177,
+      "bytes": 11103
+    },
+    "priority.dark": {
+      "sha": "b55536860736e9beeafc1d7079b604d0f37433db8c624e9d1eb1989475d51c55",
+      "w": 320,
+      "h": 177,
+      "bytes": 11257
+    }
+  }
+}

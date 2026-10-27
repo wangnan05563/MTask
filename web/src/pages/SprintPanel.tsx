@@ -8,6 +8,7 @@
  *  - 剩余工期/剩余计划数与理想线全部由服务端给出；未来日不预判、缺失日不插值，只以文字说明呈现。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { BTN_SECONDARY_MD, FIELD_SM_BLOCK } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 import type { ReactElement } from 'react';
 import { Archive, CalendarRange, Layers, RefreshCw, RotateCcw, Sparkles, Trash2, Unlink } from 'lucide-react';
 import { api } from '../api/client';
@@ -69,8 +70,8 @@ interface AttachResult {
 const STATUS_LABEL: Record<string, string> = { todo: '未开始', doing: '进行中', done: '已结束' };
 
 const CARD = { border: '1px solid var(--border)', borderRadius: 8, padding: 10 } as const;
-const BTN = { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 9px', fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer' } as const;
-const FIELD = { width: '100%', padding: 5, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' } as const;
+const BTN = BTN_SECONDARY_MD; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
+const FIELD = FIELD_SM_BLOCK; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 const today = (): string => new Date().toISOString().slice(0, 10);
 
 /** 新建/编辑迭代的表单态（空串=新建） */

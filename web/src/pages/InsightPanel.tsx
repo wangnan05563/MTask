@@ -6,6 +6,7 @@
  * 逾期率的分子/分母与 G-4 一致（分母 0 当天服务端给 null，这里显示「暂无可比计划」），前端不重算。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { BTN_SECONDARY_MD, FIELD_SM } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 import type { ReactElement } from 'react';
 import { Download, LineChart, RefreshCw } from 'lucide-react';
 import { api } from '../api/client';
@@ -27,8 +28,8 @@ interface SnapshotRangeReport {
   note: string;
 }
 
-const BTN = { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 9px', fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer' } as const;
-const FIELD = { padding: 5, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' } as const;
+const BTN = BTN_SECONDARY_MD; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
+const FIELD = FIELD_SM; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 const CARD = { border: '1px solid var(--border)', borderRadius: 8, padding: 10, display: 'flex', flexDirection: 'column', gap: 6 } as const;
 
 const PRESETS = [7, 30, 90] as const;

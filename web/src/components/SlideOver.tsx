@@ -7,6 +7,7 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
+import { DRAWER_Z } from '../ui/primitives'; // PM-302 ①：抽屉层叠/遮罩单源
 
 export function SlideOver({ open, title, onClose, children, width = 480 }: {
   readonly open: boolean;
@@ -59,13 +60,13 @@ export function SlideOver({ open, title, onClose, children, width = 480 }: {
   return createPortal(
     <div
       style={{
-        position: 'fixed', inset: 0, zIndex: 1100,
+        position: 'fixed', inset: 0, zIndex: DRAWER_Z.slideOver,
         pointerEvents: open ? 'auto' : 'none',
         visibility: open ? 'visible' : 'hidden',
       }}
       aria-hidden={!open}
     >
-      {/* 遮罩：rgba(0,0,0,.32) 点按关闭，淡入 200ms。
+      {/* 遮罩：走 `--overlay` 令牌（PM-302 ① 抽屉单源）点按关闭，淡入 200ms。
           键盘可达由组件自身的全局 Escape 监听（见上方 onKey）与面板右上角原生关闭按钮负责；
           此处另补 Enter/Space 激活，使鼠标便捷路径与键盘路径同效。 */}
       <div /* NOSONAR: S6848 豁免——同项目遮罩统一口径（PlanPage:1029/TasksPage:3598 等）：点空白关闭是便捷辅助，正式关闭入口为 Esc 与原生关闭按钮；改原生 button 会被 App.tsx:207 全局 `button:hover…{transform:rotate(-1.5deg)}` 命中，整屏遮罩悬停即倾斜；补 role="button" 则复现 S6819 */
@@ -73,7 +74,7 @@ export function SlideOver({ open, title, onClose, children, width = 480 }: {
         onClick={close}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') close(); }}
         style={{
-          position: 'absolute', inset: 0, background: 'rgba(0,0,0,.32)',
+          position: 'absolute', inset: 0, background: 'var(--overlay)', // PM-302 ①：遮罩单源走 --overlay 令牌（原硬编码 .32，暗色下压不住亮底）
           opacity: open ? 1 : 0, transition: 'opacity 200ms ease',
         }}
       />

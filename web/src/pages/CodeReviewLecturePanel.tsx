@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { FIELD_QUIET, PILL } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 import { Ban, Download, Eye, GitBranch, ListChecks, RefreshCw, Sparkles, X } from 'lucide-react';
 import { api } from '../api/client';
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
@@ -61,14 +62,8 @@ const RANGE_SHAPES = [
 ] as const;
 type RangeShape = (typeof RANGE_SHAPES)[number]['key'];
 
-const fieldStyle: React.CSSProperties = {
-  fontSize: 'var(--fs-s)', padding: '4px 6px', borderRadius: 6, border: '1px solid var(--border)',
-  background: 'var(--surface)', color: 'var(--text)',
-};
-const chipStyle: React.CSSProperties = {
-  fontSize: 'var(--fs-xs)', padding: '1px 6px', borderRadius: 999, border: '1px solid var(--border)',
-  background: 'var(--surface-2)', color: 'var(--text-secondary)',
-};
+const fieldStyle: React.CSSProperties = FIELD_QUIET; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
+const chipStyle: React.CSSProperties = PILL; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 const FONT_MONO = 'Consolas, Menlo, monospace';
 
 /** 文件级展开态键 */

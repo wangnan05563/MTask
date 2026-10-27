@@ -16,8 +16,11 @@
  * 用法：
  *   node scripts/safe-commit.mjs --check-only
  *      只跑守卫（提交前自检；健康索引静默给两行 PASS，D/S 命中给提示）+ 字号 lint 全量扫描
+ *      + 组件单源 lint 全量扫描 + 视觉回归全量比对（T03221 ④）
  *   node scripts/safe-commit.mjs -m "提交信息" -- <路径...>
  *      隔离索引提交；`--` 之后的路径才会被 add
+ *      提交前按路径范围拦三道：数字字号、组件单源（U-1~U-4）、视觉回归（改动触及
+ *      web/src/ui|mobile、抽屉/SlideOver、主题表或视觉件时才对像素，其余不浪费一轮 Chrome）
  *   node scripts/safe-commit.mjs -m "提交信息" --dry-run -- <路径...>
  *      走到 commit-tree 但不 update-ref（可核对将要提交的树）
  *
@@ -33,6 +36,8 @@ import { tmpdir } from 'node:os';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const GUARD = join(ROOT, 'scripts', 'tests', 'verify-index-staleness.mjs');
 const FONT_LINT = join(ROOT, 'scripts', 'lint-font-tokens.mjs');
+const UI_LINT = join(ROOT, 'scripts', 'lint-ui-single-source.mjs');
+const VISUAL = join(ROOT, 'scripts', 'visual-components.mjs');
 
 function git(args, env = {}) {
   return execFileSync('git', ['-C', ROOT, ...args], {
@@ -94,6 +99,69 @@ function runFontLint(paths, checkOnly) {
   return true;
 }
 
+/**
+ * T03221（PM-302 ①③）组件单源 lint：拦「同一组件多处各写一份样式/优先级映射」重新长回来。
+ * 与字号 lint 同一纪律——只扫本次显式列出的路径；同样**会拦住提交**（超出挂账限额即红）。
+ */
+function runUiSingleSourceLint(paths, checkOnly) {
+  if (!existsSync(UI_LINT)) {
+    console.log('[WARN] 组件单源 lint 不在盘上（scripts/lint-ui-single-source.mjs 缺失）——本次提交无单源检查');
+    return true;
+  }
+  const scoped = paths.filter((p) => /\.(tsx?|mts)$/.test(p) && relOf(p).startsWith('web/src/'));
+  const args = [UI_LINT];
+  if (checkOnly && scoped.length === 0) {
+    console.log('— 组件单源 lint（全量 web/src）—');
+  } else {
+    if (scoped.length === 0) return true;
+    console.log(`— 组件单源 lint（本次提交 ${scoped.length} 个 web 源码文件）—`);
+    args.push('--paths', ...scoped);
+  }
+  const r = spawnSync(process.execPath, args, { cwd: ROOT, encoding: 'utf8' });
+  for (const l of `${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split('\n')) console.log(`  ${l.trim()}`);
+  if (r.status !== 0) {
+    console.log('  ✗ 点名文件里新写了一份本该单源的东西（U-1 样式常量 / U-2 优先级映射 / U-3 不存在的令牌 / U-4 自写遮罩）。');
+    console.log('    改为消费 ui/primitives.ts、ui/priority.ts、ui/Badge.tsx；确属新债务请在 lint 的 DEBT 表挂账并另立单。');
+    return false;
+  }
+  return true;
+}
+
+/** 视觉面：改动碰到这些路径就得跟基线对一次像素（PM-302 ④ 的执行点） */
+const VISUAL_TRIGGERS = ['web/src/ui/', 'web/src/mobile/', 'web/src/settings.tsx',
+  'web/src/components/SlideOver.tsx', 'web/src/components/TaskDetailDrawer.tsx',
+  'scripts/visual-fixtures/', 'scripts/visual-baselines/', 'scripts/visual-components.mjs'];
+const VISUAL_BASELINE = join(ROOT, 'scripts', 'visual-baselines', 't03221-pm302-components.json');
+
+/**
+ * 视觉回归：14 格与基线逐字节比对，不一致就拦（④）。
+ * 退出码分档：1 = 真差异 → 拦；2 = 环境/主题表面问题（没 Chrome、themeCss 变了形）→ 出声但不拦——
+ * 「本机缺件」冒充「这次改坏了观感」会把门禁训成噪声（反模式 47）。
+ */
+function runVisual(paths, checkOnly) {
+  const touched = paths.some((p) => VISUAL_TRIGGERS.some((t) => relOf(p).startsWith(t)));
+  if (!touched && !checkOnly) return true;
+  if (!existsSync(VISUAL) || !existsSync(VISUAL_BASELINE)) {
+    console.log('[WARN] 视觉回归件不在盘上（scripts/visual-components.mjs 或基线缺失）——本次提交无像素比对');
+    return true;
+  }
+  console.log(touched
+    ? '— 视觉回归（本次改动触及视觉面，全量 14 格逐字节比对）—'
+    : '— 视觉回归（提交前自检，全量 14 格逐字节比对）—');
+  const r = spawnSync(process.execPath, [VISUAL, '--out', `D:/tmp/mtask-visual-${process.pid}`],
+    { cwd: ROOT, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
+  for (const l of `${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split('\n')) console.log(`  ${l.trim()}`);
+  if (r.status === 1) {
+    console.log('  ✗ 与基线不一致。要么观感被改坏了，要么这次是有意的——');
+    console.log('    有意的请重取基线（node scripts/visual-components.mjs --update）并在提交信息里写明改了哪一格。');
+    return false;
+  }
+  if (r.status !== 0) console.log(`  ⚠ 视觉回归未跑成（退出码 ${r.status}，多为缺 Chrome/主题表面变动），本配方不因此拦提交。`);
+  return true;
+}
+
+const relOf = (p) => relative(ROOT, resolve(ROOT, p)).replaceAll('\\', '/');
+
 const argv = process.argv.slice(2);const checkOnly = argv.includes('--check-only');
 const dryRun = argv.includes('--dry-run');
 const sep = argv.indexOf('--');
@@ -106,6 +174,16 @@ runGuard();
 
 if (!runFontLint(paths, checkOnly)) {
   console.error('\n[FAIL] 字号令牌 lint 拦住本次提交（见上面点名的 file:line）');
+  process.exit(1);
+}
+
+if (!runUiSingleSourceLint(paths, checkOnly)) {
+  console.error('\n[FAIL] 组件单源 lint 拦住本次提交（见上面点名的 file:line [U-x]）');
+  process.exit(1);
+}
+
+if (!runVisual(paths, checkOnly)) {
+  console.error('\n[FAIL] 视觉回归与基线不一致，拦住本次提交（PM-302 ④）');
   process.exit(1);
 }
 

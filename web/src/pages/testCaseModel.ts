@@ -7,6 +7,7 @@
  * 本文件只描述"它的形状"，绝不重复列出取值——否则就是 PRD §5.4 明令杜绝的口径漂移。
  */
 import type { CSSProperties } from 'react';
+import { BTN_ICON, BTN_SECONDARY, FIELD_INLINE, SELECT_MINI } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 
 /** 步骤行（服务端 `case_steps` 原样字段名，snake_case 与全站一致） */
 export interface CaseStep {
@@ -306,27 +307,12 @@ export function enumLabel(meta: CaseMeta | null, group: CaseLabelGroup, value: s
 export const TH_TD: CSSProperties = { padding: '4px 6px' };
 export const TH: CSSProperties = { padding: '5px 6px' };
 /** 行内编辑输入框：默认透明边框呈文本观感（§9.1 表格基线） */
-export const CELL_INPUT: CSSProperties = {
-  border: '1px solid transparent', borderRadius: 4, background: 'transparent',
-  color: 'var(--text)', fontSize: 'var(--fs-s)', padding: '1px 4px',
-};
+export const CELL_INPUT: CSSProperties = FIELD_INLINE; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 /** 关联 chip（§9.1「fs 11 / border-strong / radius 4 / padding 0 4px」） */
-export const CHIP: CSSProperties = {
-  fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: 'var(--text)',
-};
+export { CHIP } from '../ui/primitives'; // PM-302 ① 单源转发（原本地常量与单源取值逐字段相同）
 /** 图标-only 按钮 */
-export const ICON_BTN: CSSProperties = {
-  display: 'inline-flex', alignItems: 'center', border: '1px solid var(--border-strong)',
-  borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', padding: '3px 6px',
-};
+export const ICON_BTN: CSSProperties = BTN_ICON; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 /** 带文字的次要按钮（§9.1 btnStyle 基线：fs 12 / padding 3px 8px / radius 4） */
-export const BTN: CSSProperties = {
-  display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 'var(--fs-s)',
-  padding: '3px 8px', border: '1px solid var(--border-strong)', borderRadius: 4,
-  background: 'transparent', color: 'var(--text)',
-};
+export const BTN: CSSProperties = BTN_SECONDARY; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 /** 批量条内下拉（§7.5：padding 2 / fs 11 / radius 4） */
-export const BATCH_SELECT: CSSProperties = {
-  padding: 2, fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4,
-  background: 'var(--card-bg)', color: 'var(--text)',
-};
+export const BATCH_SELECT: CSSProperties = SELECT_MINI; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）

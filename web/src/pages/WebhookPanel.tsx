@@ -5,6 +5,7 @@
  * 密钥只回掩码（明文仅在录入时经过前端一次），投递日志不含响应正文（服务端已脱敏）。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { BTN_SECONDARY_MD, FIELD_SM_BLOCK } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 import type { ReactElement } from 'react';
 import { RefreshCw, Send, Trash2, Webhook } from 'lucide-react';
 import { api } from '../api/client';
@@ -47,8 +48,8 @@ export const WEBHOOK_EVENT_LABEL: Record<string, string> = {
 };
 
 const CARD = { border: '1px solid var(--border)', borderRadius: 8, padding: 10, display: 'flex', flexDirection: 'column', gap: 6 } as const;
-const BTN = { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 9px', fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer' } as const;
-const FIELD = { width: '100%', padding: 5, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' } as const;
+const BTN = BTN_SECONDARY_MD; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
+const FIELD = FIELD_SM_BLOCK; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 
 interface Draft {
   editingId: string;
