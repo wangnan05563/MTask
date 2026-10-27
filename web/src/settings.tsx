@@ -75,7 +75,7 @@ const themeCss = `
   --surface-2: #f3f4f6;
   --text: #1f2937;
   --text-secondary: #4b5563;
-  --text-muted: #6b7280;
+  --text-muted: #646a75;
   --border: #e5e7eb;
   --border-strong: #d1d5db;
   --accent: #2563eb;
@@ -103,8 +103,11 @@ const themeCss = `
   --surface: #2a2a2e;
   --surface-2: #27272a;
   --text: #e5e7eb;
-  --text-secondary: #a1a1aa;
-  --text-muted: #8b8b93;
+  /* T03219（PM-301②）：暗色下次级/弱提示两档原本 4.23～4.41:1，够不上 4.5:1——
+     原 --text-muted 在 --surface(#2a2a2e) / --accent-soft(#1e293b) 这类较亮表面上首当其冲。
+     抬到 #94949c（最差表面 4.75:1）后，secondary 同步抬到 #b8b8c0，保持三档可见落差（1.53/1.59）。 */
+  --text-secondary: #b8b8c0;
+  --text-muted: #94949c;
   --border: #3f3f46;
   --border-strong: #52525b;
   --accent: #5b9bf8;
