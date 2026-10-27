@@ -1568,9 +1568,9 @@ export function TasksPage() {
           borderLeft: `3px solid ${priorityBorderColor(t.priority)}`,
         }}
         title={`${t.title}（${priorityLabel(t.priority)}）——拖到另一列流转状态`}>
-        <div style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</div>
+        <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</div>
         {cat && (
-          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>{cat.name}</div>
+          <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: 2 }}>{cat.name}</div>
         )}
       </div>
     );
@@ -1628,7 +1628,7 @@ export function TasksPage() {
     const wipDraftVal = wipDrafts[curProj?.id ?? ''] ?? String(wipLimit);
     return (
       <div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap', fontSize: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap', fontSize: 'var(--fs-s)' }}>
           <button type="button" aria-pressed={boardHideEmpty} aria-label="隐藏空列"
             title={boardHideEmpty ? '隐藏空列（已开启）— 点击显示全部列；会话内保持' : '隐藏空列（已关闭）— 点击隐藏任务数为 0 的列；会话内保持'}
             onClick={() => setBoardHideEmpty((v) => !v)} className="tbtn-anim"
@@ -1657,15 +1657,15 @@ export function TasksPage() {
               onDragOver={(e) => e.preventDefault()}
               onDrop={() => onDropTo(col.key)}
               style={{ flex: 1, minWidth: 280, background: 'var(--surface)', borderRadius: 8, padding: 10, minHeight: 200, border: overTaskId === col.key ? '2px dashed var(--accent)' : '1px solid var(--border-strong)', transition: 'border .15s ease' }}>
-              <h4 style={{ fontSize: 13, margin: '0 0 8px', color: col.key === 'todo' && wipOver > 0 ? 'var(--warn)' : 'var(--text-secondary)' }}>
+              <h4 style={{ fontSize: 'var(--fs-m)', margin: '0 0 8px', color: col.key === 'todo' && wipOver > 0 ? 'var(--warn)' : 'var(--text-secondary)' }}>
                 {col.label}
                 {col.key === 'todo' && curProj && (
-                  <span style={{ marginLeft: 6, fontWeight: 400, fontSize: 11, color: 'var(--text-muted)' }}>WIP 建议 ≤ {wipLimit}</span>
+                  <span style={{ marginLeft: 6, fontWeight: 400, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>WIP 建议 ≤ {wipLimit}</span>
                 )}
               </h4>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {col.items.map((t) => renderBoardCard(t))}
-                {col.items.length === 0 && <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', padding: 12 }}>拖任务卡片到此列</div>}
+                {col.items.length === 0 && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textAlign: 'center', padding: 12 }}>拖任务卡片到此列</div>}
               </div>
             </div>
           ))}
@@ -1707,7 +1707,7 @@ export function TasksPage() {
     const skipped = batchReceipt.skipped ?? [];
     return (
       <div role="status" aria-label="批量操作回执"
-        style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: `1px solid ${failed.length > 0 || skipped.length > 0 ? 'var(--warn)' : 'var(--border-strong)'}`, fontSize: 12 }}>
+        style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: `1px solid ${failed.length > 0 || skipped.length > 0 ? 'var(--warn)' : 'var(--border-strong)'}`, fontSize: 'var(--fs-s)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <strong style={{ color: 'var(--text)' }}>{label}回执：成功 {okCount} 条</strong>
           <span data-t03214="receipt-skipped" style={{ color: skipped.length > 0 ? 'var(--text-secondary)' : 'var(--text-muted)' }}>跳过 {skipped.length} 条</span>
@@ -1749,18 +1749,18 @@ export function TasksPage() {
     const undoTop: BatchSnapshot | undefined = batchStack[batchStack.length - 1];
     if (!undoTop) return null;
     return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '6px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--accent-soft)', border: '1px solid var(--accent)', fontSize: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '6px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--accent-soft)', border: '1px solid var(--accent)', fontSize: 'var(--fs-s)' }}>
         <button onClick={() => void undoLastBatch(1)} disabled={batchOpBusy} className="tbtn-anim"
           title={`撤销最近一次批量操作 — ${undoTop.label}，${undoTop.entries.length} 条将还原为操作前的状态${batchStack.length > 1 ? `（共 ${batchStack.length} 步可逐级回退）` : ''}`}
           aria-label={`撤销最近一次批量操作（${undoTop.entries.length} 条）`}
-          style={{ cursor: 'pointer', padding: '2px 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, border: '1px solid var(--accent)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--accent)' }}>
+          style={{ cursor: 'pointer', padding: '2px 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-s)', border: '1px solid var(--accent)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--accent)' }}>
           <RotateCcw size={13} /> 撤销批量（{undoTop.entries.length}）{batchStack.length > 1 ? ` · 共 ${batchStack.length} 步` : ''}
         </button>
         {batchStack.length > 1 && (
           <select value="" disabled={batchOpBusy} aria-label="撤销多步批量操作"
             title="撤销多步 — 选择要回退到的那一步，该步及其之后的全部批量操作都会被撤销"
             onChange={(e) => { const n = Number(e.target.value); if (n > 0) void undoLastBatch(n); }}
-            style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+            style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
             <option value="">撤销多步…</option>
             {batchStack.map((s, i) => {
               const steps = batchStack.length - i; // 撤销第 i 步及其之后 → 共 steps 步
@@ -1780,13 +1780,13 @@ export function TasksPage() {
   function renderBatchBar() {
     if (!multiSelect || selectedIds.size === 0) return null;
     return (
-      <div style={{ position: 'sticky', top: 0, zIndex: 50, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: '1px solid var(--accent)', boxShadow: '0 4px 12px rgba(0,0,0,.12)', fontSize: 12 }}>
+      <div style={{ position: 'sticky', top: 0, zIndex: 50, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: '1px solid var(--accent)', boxShadow: '0 4px 12px rgba(0,0,0,.12)', fontSize: 'var(--fs-s)' }}>
         <strong style={{ color: 'var(--accent)' }}>已选 {selectedIds.size} 条</strong>
         {/* T02213：选中项有效性校验取数失败时如实提示——此刻选中集里可能留着已删除/归档的任务 */}
         {pruneError && (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
             <ResourceHint view={{ phase: 'error', error: pruneError, stale: false, reload: validateSelected }} label="选中项有效性" />
-            <span style={{ fontSize: 11, color: 'var(--danger)' }}>选中列表可能含已删除/归档的任务，执行批量操作前请先重试</span>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>选中列表可能含已删除/归档的任务，执行批量操作前请先重试</span>
           </span>
         )}
         {/* T00588：批量操作对齐计划页风格——纯图标 + 下拉相邻 + 悬浮提示。
@@ -1816,7 +1816,7 @@ export function TasksPage() {
         </button>
         <select value="" disabled={batchOpBusy} aria-label="批量设置优先级" title="批量设置优先级"
           onChange={(e) => { const v = e.target.value; if (v) void batchApply('priority', v); }}
-          style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">批量优先级…</option>
           <option value="urgent">紧急</option>
           <option value="high">高</option>
@@ -1825,7 +1825,7 @@ export function TasksPage() {
         </select>
         <select value="" disabled={batchOpBusy} aria-label="批量设置分类" title="批量设置分类"
           onChange={(e) => { const v = e.target.value; if (v !== '') void batchApply('category', v === '__none__' ? '' : v); }}
-          style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">批量分类…</option>
           {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           <option value="__none__">（清除分类）</option>
@@ -1836,7 +1836,7 @@ export function TasksPage() {
         {/* T01480：批量导出——md/xlsx/docx 三格式 */}
         <select value="" disabled={exportBusy} aria-label="批量导出任务" title="批量导出 — 选中任务导出为 Word / Markdown / Excel"
           onChange={(e) => { const v = e.target.value as 'md' | 'xlsx' | 'docx' | ''; if (v) void exportTasks([...selectedIds], v); }}
-          style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">批量导出…</option>
           {EXPORT_ITEMS.map((it) => <option key={it.fmt} value={it.fmt}>{it.label}</option>)}
         </select>
@@ -1849,7 +1849,7 @@ export function TasksPage() {
         {/* T01065-FR1.6：批量移动到项目（moveProject 批量入口） */}
         <select value="" disabled={batchOpBusy || projects.length === 0} aria-label="批量移动到项目" title="批量移动到项目 — 选中任务整体迁移到目标项目"
           onChange={(e) => { const v = e.target.value; if (v) void batchMoveTo(v); }}
-          style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">移动到项目…</option>
           {projects.filter((p) => p.id !== 'sys-inbox' && p.id !== activeProject).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
@@ -2214,7 +2214,7 @@ export function TasksPage() {
             title="AI 回写待审核 — 点击展开该任务的描述与处理结果；审核通过后编辑标题移除前缀即可恢复正常展示"
             aria-label="AI 回写待审核：展开描述与处理结果供人工审核"
             className="verify-icon"
-            style={{ cursor: 'pointer', fontSize: 16, lineHeight: 1, border: 'none', background: 'transparent', color: 'var(--accent)' }}
+            style={{ cursor: 'pointer', fontSize: 'var(--fs-2xl)', lineHeight: 1, border: 'none', background: 'transparent', color: 'var(--accent)' }}
           >
             <ScanSearch size={13} style={{ verticalAlign: '-2px' }} />
           </button>
@@ -2241,13 +2241,13 @@ export function TasksPage() {
             disabled={retryingNo === t.task_no}
             title={retryingNo === t.task_no ? '重试中…' : '重试 — 回到待办，等待 AI 重新领取执行（历次结果保留）'}
             aria-label={`重试任务 ${t.task_no ?? ''}`}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, padding: '1px 6px', borderRadius: 5, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: retryingNo === t.task_no ? 'wait' : 'pointer' }}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-xs)', padding: '1px 6px', borderRadius: 5, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: retryingNo === t.task_no ? 'wait' : 'pointer' }}
           >
             {retryingNo === t.task_no ? <Loader2 size={11} className="aispin" /> : <RotateCcw size={11} />} 重试
           </button>
         )}
         {(t.retry_count ?? 0) > 0 && (
-          <span title={`该任务已手动重试 ${t.retry_count} 次（历次结果见处理结果）`} aria-label={`已重试 ${t.retry_count} 次`} style={{ display: 'inline-flex', alignItems: 'center', fontSize: 10, padding: '0 5px', borderRadius: 4, background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
+          <span title={`该任务已手动重试 ${t.retry_count} 次（历次结果见处理结果）`} aria-label={`已重试 ${t.retry_count} 次`} style={{ display: 'inline-flex', alignItems: 'center', fontSize: 'var(--fs-2xs)', padding: '0 5px', borderRadius: 4, background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
             重试×{t.retry_count}
           </span>
         )}
@@ -2262,7 +2262,7 @@ export function TasksPage() {
             title={`任务编号 ${t.task_no} — 供 MCP 按编号定位任务；双击复制`}
             aria-label={`任务编号 ${t.task_no}`}
             onDoubleClick={() => void navigator.clipboard.writeText(t.task_no!).then(() => flash(`已复制任务编号 ${t.task_no}`))}
-            style={{ fontSize: 11, color: 'var(--accent)', background: 'var(--accent-soft)', padding: '0 5px', borderRadius: 4, lineHeight: '18px', whiteSpace: 'nowrap', cursor: 'default', userSelect: 'text' }}
+            style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', background: 'var(--accent-soft)', padding: '0 5px', borderRadius: 4, lineHeight: '18px', whiteSpace: 'nowrap', cursor: 'default', userSelect: 'text' }}
           >
             {t.task_no}
           </span>
@@ -2272,7 +2272,7 @@ export function TasksPage() {
         {t.handle_result?.includes('【验证失败') && !t.verified && (
           <button type="button" title="验证失败 — 点击查看/修改失败反馈" aria-label="验证失败"
             onClick={() => setFailbackOpen((p) => ({ ...p, [t.id]: true }))}
-            style={{ fontSize: 10, color: 'var(--danger)', border: '1px solid var(--danger)', padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'pointer', background: 'transparent', fontFamily: 'inherit' }}>
+            style={{ fontSize: 'var(--fs-2xs)', color: 'var(--danger)', border: '1px solid var(--danger)', padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'pointer', background: 'transparent', fontFamily: 'inherit' }}>
             验证失败
           </button>
         )}
@@ -2290,7 +2290,7 @@ export function TasksPage() {
               onClick={() => {
                 if (!focusPlanNode(t.fromPlanId, t.project_id ?? '')) flash(`未取到${noun}节点标识，无法定位（来源${noun}：${t.fromPlanTitle}）`);
               }}
-              style={{ fontSize: 10, color: isMs ? 'var(--accent)' : 'var(--text-muted)', border: `1px solid ${isMs ? 'var(--accent)' : 'var(--border-strong)'}`, padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'pointer', background: 'transparent', fontFamily: 'inherit', fontWeight: isMs ? 600 : undefined }}>
+              style={{ fontSize: 'var(--fs-2xs)', color: isMs ? 'var(--accent)' : 'var(--text-muted)', border: `1px solid ${isMs ? 'var(--accent)' : 'var(--border-strong)'}`, padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'pointer', background: 'transparent', fontFamily: 'inherit', fontWeight: isMs ? 600 : undefined }}>
               {noun}
             </button>
           );
@@ -2301,7 +2301,7 @@ export function TasksPage() {
           <button type="button" title={`派生自原任务 ${t.derived_from} — 处理完成后结论自动整合回原任务；点击定位并高亮该原任务`}
             aria-label={`派生自 ${t.derived_from}：点击定位原任务`}
             onClick={() => locateDerivedTask(t.derived_from)}
-            style={{ fontSize: 10, color: 'var(--text-muted)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0, cursor: 'pointer', background: 'transparent', fontFamily: 'inherit' }}>
+            style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0, cursor: 'pointer', background: 'transparent', fontFamily: 'inherit' }}>
             派生自 {t.derived_from}
           </button>
         )}
@@ -2310,13 +2310,13 @@ export function TasksPage() {
           <button type="button" className="tbtn-anim" onClick={() => void openRulingPanel(t)}
             title="待裁决 — 点击打开裁决面板（预设选项或自定义结果）"
             aria-label="待裁决：点击打开裁决面板"
-            style={{ fontSize: 10, color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0, cursor: 'pointer', background: 'var(--accent-soft)', fontFamily: 'inherit' }}>
+            style={{ fontSize: 'var(--fs-2xs)', color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0, cursor: 'pointer', background: 'var(--accent-soft)', fontFamily: 'inherit' }}>
             待裁决
           </button>
         )}
         {t.derived_from && t.ruling_state === '已裁决' && (
           <span title={`已裁决：${t.ruling_result ?? ''}${t.ruling_at ? `（${t.ruling_at.slice(0, 10)}）` : ''}`}
-            style={{ fontSize: 10, color: 'var(--text-muted)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0 }}>
+            style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0 }}>
             已裁决
           </span>
         )}
@@ -2327,7 +2327,7 @@ export function TasksPage() {
           const pname = projects.find((p) => p.id === t.project_id)?.name;
           return pname ? (
             <span title={`所属项目：${pname}`} aria-label={`所属项目 ${pname}`}
-              style={{ flexShrink: 0, maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 10, color: 'var(--text-muted)', background: 'var(--surface-2)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 5px', lineHeight: '16px' }}>
+              style={{ flexShrink: 0, maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', background: 'var(--surface-2)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 5px', lineHeight: '16px' }}>
               {pname}
             </span>
           ) : null;
@@ -2350,10 +2350,10 @@ export function TasksPage() {
       return { title: '取消编辑处理结果 — 放弃未保存的修改', aria: '取消编辑处理结果：放弃未保存的修改' };
     })();
     return (
-      <div className="task-op task-toolbar" style={{ marginLeft: 32, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, fontSize: 11, color: 'var(--text-muted)' }}>
+      <div className="task-op task-toolbar" style={{ marginLeft: 32, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
         {/* T00547：完成状态/验证结果控件——与工具栏同行、靠左显示（marginRight auto 分隔左右两组） */}
         <span style={{ marginRight: 'auto', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-          <button className="title-op" title="切换任务完成状态" aria-label="切换任务完成状态" onClick={() => void setStatus(t, t.status === 'todo' ? 'done' : 'todo')} style={{ cursor: 'pointer', fontSize: 14, lineHeight: 1 }}>
+          <button className="title-op" title="切换任务完成状态" aria-label="切换任务完成状态" onClick={() => void setStatus(t, t.status === 'todo' ? 'done' : 'todo')} style={{ cursor: 'pointer', fontSize: 'var(--fs-l)', lineHeight: 1 }}>
             {t.status === 'todo' ? '☐' : '☑'}
           </button>
           {t.status === 'done' && renderVerifyButton(t)}
@@ -2364,7 +2364,7 @@ export function TasksPage() {
           onChange={(e) => void setPriority(t, e.target.value)}
           className="task-op"
           aria-label="切换任务优先级"
-          style={{ fontSize: 12, padding: 2, border: '1px solid var(--border-strong)', borderRadius: 4 }}
+          style={{ fontSize: 'var(--fs-s)', padding: 2, border: '1px solid var(--border-strong)', borderRadius: 4 }}
         >
           <option value="low">低</option>
           <option value="normal">中</option>
@@ -2378,14 +2378,14 @@ export function TasksPage() {
           title="分类 — 切换该任务所属分类"
           aria-label="切换任务分类"
           className="task-op"
-          style={{ fontSize: 12, padding: 2, border: '1px solid var(--border-strong)', borderRadius: 4 }}
+          style={{ fontSize: 'var(--fs-s)', padding: 2, border: '1px solid var(--border-strong)', borderRadius: 4 }}
         >
           <option value="">未分类</option>
           {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         {/* T00450/T00512：创建子任务——移到分类下拉条之后 */}
         <button onClick={() => void createSubTask(t)} title="创建子任务 — 在该任务下创建子任务（层级展示）" aria-label="创建子任务"
-          className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--text-muted)' }}>
+          className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--text-muted)' }}>
           <ListTodo size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
         </button>
         {/* 待办/已完成任务：AI 美化 + 重命名（编辑中保留保存/取消收尾） */}
@@ -2395,11 +2395,11 @@ export function TasksPage() {
           title="复制 — 复制该任务标题、描述与 AI 摘要到剪贴板"
           aria-label="复制：复制该任务内容到剪贴板"
           className="task-op"
-          style={{ fontSize: 12, color: copiedId === t.id ? 'var(--success)' : undefined, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+          style={{ fontSize: 'var(--fs-s)', color: copiedId === t.id ? 'var(--success)' : undefined, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
         >
           {copiedId === t.id ? <Check size={13} /> : <Copy size={13} />}
         </button>
-        <button onClick={() => toggleDescEdit(t)} title={descEditing ? '收起描述 — 收起描述编辑区' : '描述 — 编辑该任务描述'} aria-label={descEditing ? '收起描述' : '编辑该任务描述'} className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{descEditing ? <ChevronUp size={13} /> : <AlignLeft size={13} />}</button>
+        <button onClick={() => toggleDescEdit(t)} title={descEditing ? '收起描述 — 收起描述编辑区' : '描述 — 编辑该任务描述'} aria-label={descEditing ? '收起描述' : '编辑该任务描述'} className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{descEditing ? <ChevronUp size={13} /> : <AlignLeft size={13} />}</button>
         {/* 处理结果编辑入口：与描述按钮保持一致的交互样式（点按展开编辑器，再点取消）。
         已录入（有 handle_result）→ 剪贴板编辑「修改」，未录入 → 剪贴板「添加」。
         仅做录入/修改；纯查看用标题区「处理结果展开图标」，此处不做收起，避免与查看态冲突 */}
@@ -2421,7 +2421,7 @@ export function TasksPage() {
           title={resultBtnLbl.title}
           aria-label={resultBtnLbl.aria}
           className="task-op"
-          style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+          style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
         >
           {t.handle_result ? <ClipboardEdit size={13} /> : <ClipboardList size={13} />}
         </button>
@@ -2432,7 +2432,7 @@ export function TasksPage() {
           title="文件导出 — 将该任务导出为 Word / Markdown / Excel"
           aria-label={`文件导出：${t.title}`}
           className="task-op export-anim"
-          style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+          style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
         >
           <Download size={13} />
         </button>
@@ -2441,7 +2441,7 @@ export function TasksPage() {
           title="复用此任务 — 将该任务复制到其他项目，或打包为资产复制到提示词/通用需求页"
           aria-label="复用此任务：将该任务复制到其他项目或资产页"
           className="task-op"
-          style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+          style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
         >
           <CopyPlus size={13} />
         </button>
@@ -2454,10 +2454,10 @@ export function TasksPage() {
         <button onClick={() => void toggleShelve(t)}
           title={t.shelved ? '恢复 — 将该任务恢复到待办/已完成列表' : '搁置 — 将该任务移入搁置列表（AI 处理待办时自动忽略）'}
           aria-label={t.shelved ? '恢复任务' : '搁置任务'}
-          className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
+          className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
           {t.shelved ? <RotateCcw size={13} /> : <CirclePause size={13} />}
         </button>
-        <button onClick={() => void archive(t)} title="归档 — 将该任务移入归档" aria-label="归档：将该任务移入归档" className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Archive size={13} /></button>
+        <button onClick={() => void archive(t)} title="归档 — 将该任务移入归档" aria-label="归档：将该任务移入归档" className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Archive size={13} /></button>
         {/* 记录时间：与操作按钮同行的最右侧，紧凑格式，创建/编辑并排 */}
         <span style={{ display: 'inline-flex', gap: 10 }}>
           <span>{fmtShort(t.created_at)} 创建</span>
@@ -2489,7 +2489,7 @@ export function TasksPage() {
           key={t.verified ? 'v-ok' : 'v-no'}
           className="verify-icon title-op" /* T00487：悬浮显示替代常显 */
 
-          style={{ cursor: 'pointer', fontSize: 14, lineHeight: 1, border: 'none', background: 'transparent', color: t.verified ? 'var(--success)' : 'var(--border-strong)', display: 'inline-flex', alignItems: 'center', gap: 2 }}
+          style={{ cursor: 'pointer', fontSize: 'var(--fs-l)', lineHeight: 1, border: 'none', background: 'transparent', color: t.verified ? 'var(--success)' : 'var(--border-strong)', display: 'inline-flex', alignItems: 'center', gap: 2 }}
         >
           {t.verified ? '✓' : '○'}<ChevronDown size={10} />
         </button>
@@ -2499,19 +2499,19 @@ export function TasksPage() {
             <button role="menuitem"
               onClick={() => { setVerifyMenuId(''); void toggleVerified(t); }}
               title="标记验证通过"
-              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--success)' }}>
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 'var(--fs-s)', border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--success)' }}>
               <Check size={14} /> 验证通过
             </button>
             <button role="menuitem"
               onClick={() => { setVerifyMenuId(''); void api.patch(`/tasks/${t.id}`, { verified: false }).then(() => { flash('已置为未验证'); void loadTasks(activeProject); }); }}
               title="置为未验证 — 保持在已完成列表，等待再次核对"
-              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)' }}>
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 'var(--fs-s)', border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)' }}>
               ○ 未验证
             </button>
             <button role="menuitem"
               onClick={() => { setVerifyMenuId(''); markVerifyFailed(t); }}
               title="标记验证失败 — 录入失败反馈，任务将回退到待办列表"
-              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--danger)' }}>
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 'var(--fs-s)', border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--danger)' }}>
               <X size={14} /> 验证失败
             </button>
           </div>,
@@ -2529,7 +2529,7 @@ export function TasksPage() {
         title={descExpanded[t.id] ? '收起 — 收起任务描述' : '展开 — 展开查看完整任务描述'}
         aria-label={descExpanded[t.id] ? '收起：收起任务描述' : '展开：展开查看完整任务描述'}
         className="task-op"
-        style={{ fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
       >
         {descExpanded[t.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
       </button>
@@ -2544,7 +2544,7 @@ export function TasksPage() {
         title={resultOpen[t.id] ? '收起处理结果 — 收起该任务的处理结果' : '展开处理结果 — 展开查看该任务的处理结果'}
         aria-label={resultOpen[t.id] ? '收起处理结果：收起该任务的处理结果' : '展开处理结果：展开查看该任务的处理结果'}
         className="task-op"
-        style={{ fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
       >
         {resultOpen[t.id] ? <ChevronUp size={13} /> : <ClipboardList size={13} />}
       </button>
@@ -2559,7 +2559,7 @@ export function TasksPage() {
         title="验证失败反馈 — 展开查看/修改该任务的验证失败反馈"
         aria-label="验证失败反馈：展开查看或修改"
         className="task-op"
-        style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--danger)' }}
+        style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--danger)' }}
       >
         {failbackOpen[t.id] ? <ChevronUp size={13} /> : <AlertTriangle size={13} />}
       </button>
@@ -2621,7 +2621,7 @@ export function TasksPage() {
             onKeyDown={(e) => e.key === 'Enter' && void saveTitle(t)}
             placeholder="任务标题"
             autoFocus
-            style={{ flex: 1, padding: '4px 6px', border: '1px solid var(--accent)', borderRadius: 4, fontSize: 13, boxSizing: 'border-box' }}
+            style={{ flex: 1, padding: '4px 6px', border: '1px solid var(--accent)', borderRadius: 4, fontSize: 'var(--fs-m)', boxSizing: 'border-box' }}
           />
         ) : (
           renderTitleDisplayButton(t, descToggleable, toggleDesc, markTitleRead)
@@ -2645,7 +2645,7 @@ export function TasksPage() {
     return (
       <>
         {titleEditing ? (
-          <button onClick={() => void saveTitle(t)} disabled={!titleDrafts[t.id]?.trim()} title="保存 — 保存修改后的任务标题" aria-label="保存：保存修改后的任务标题" className="task-op" style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Save size={13} /></button>
+          <button onClick={() => void saveTitle(t)} disabled={!titleDrafts[t.id]?.trim()} title="保存 — 保存修改后的任务标题" aria-label="保存：保存修改后的任务标题" className="task-op" style={{ fontSize: 'var(--fs-s)', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Save size={13} /></button>
         ) : (
           <>
             {renderBeautifyButton(t)}
@@ -2653,9 +2653,9 @@ export function TasksPage() {
             {renderSimplifyButton(t)}
           </>
         )}
-        {includeRename && <button onClick={() => toggleTitleEdit(t)} title={titleEditing ? '取消 — 取消重命名' : '改名 — 重命名该任务标题'} aria-label={titleEditing ? '取消重命名' : '重命名该任务标题'} className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{titleEditing ? <X size={13} /> : <SquarePen size={13} />}</button>}
+        {includeRename && <button onClick={() => toggleTitleEdit(t)} title={titleEditing ? '取消 — 取消重命名' : '改名 — 重命名该任务标题'} aria-label={titleEditing ? '取消重命名' : '重命名该任务标题'} className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{titleEditing ? <X size={13} /> : <SquarePen size={13} />}</button>}
         {/* T01562：真抽屉——右侧滑入完整操作台（描述/结果/摘要/时间线/关联计划），与行内展开互补 */}
-        <button onClick={() => openDetailDrawer(t)} title="展开详情抽屉 — 在右侧抽屉中查看并编辑任务完整详情" aria-label="展开详情抽屉 — 在右侧抽屉中查看并编辑任务完整详情" className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><PanelRightOpen size={13} /></button>
+        <button onClick={() => openDetailDrawer(t)} title="展开详情抽屉 — 在右侧抽屉中查看并编辑任务完整详情" aria-label="展开详情抽屉 — 在右侧抽屉中查看并编辑任务完整详情" className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><PanelRightOpen size={13} /></button>
       </>
     );
   }
@@ -2670,7 +2670,7 @@ export function TasksPage() {
         title={busy ? 'AI 美化进行中，请在工具栏点击「取消」' : 'AI 美化 — 润色该任务标题，使其语义更清晰表达更规范'}
         aria-label={busy ? 'AI 美化进行中' : 'AI 美化：润色该任务标题'}
         className={`task-op${busy ? ' task-breathe' : ''}`}
-        style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', background: busy ? 'var(--accent)' : 'transparent', color: busy ? 'var(--accent-text)' : 'var(--text)', opacity: batchBusy && !busy ? 0.4 : 1 }}
+        style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', background: busy ? 'var(--accent)' : 'transparent', color: busy ? 'var(--accent-text)' : 'var(--text)', opacity: batchBusy && !busy ? 0.4 : 1 }}
       >
         <Sparkles size={13} />
       </button>
@@ -2693,7 +2693,7 @@ export function TasksPage() {
         title={simplifyTitle}
         aria-label={busy ? 'AI 处理进行中' : 'AI 简化：依据任务详情总结为简洁标题'}
         className={`task-op${busy ? ' task-breathe' : ''}`}
-        style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', background: busy ? 'var(--accent)' : 'transparent', color: busy ? 'var(--accent-text)' : 'var(--text)', opacity: (!hasDesc || (batchBusy && !busy)) ? 0.45 : 1 }}
+        style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', background: busy ? 'var(--accent)' : 'transparent', color: busy ? 'var(--accent-text)' : 'var(--text)', opacity: (!hasDesc || (batchBusy && !busy)) ? 0.45 : 1 }}
       >
         <Minimize2 size={13} />
       </button>
@@ -2742,7 +2742,7 @@ export function TasksPage() {
                   title="复制图片 — 复制该截图到剪贴板"
                   aria-label="复制图片：复制该截图到剪贴板"
                   className="task-op"
-                  style={{ position: 'absolute', right: -6, bottom: -6, fontSize: 12, lineHeight: '16px', padding: '0 4px', display: 'inline-flex', alignItems: 'center', background: 'var(--surface-2)' }}
+                  style={{ position: 'absolute', right: -6, bottom: -6, fontSize: 'var(--fs-s)', lineHeight: '16px', padding: '0 4px', display: 'inline-flex', alignItems: 'center', background: 'var(--surface-2)' }}
                 >
                   <Copy size={12} />
                 </button>
@@ -2764,7 +2764,7 @@ export function TasksPage() {
           style={{ maxWidth: '100%', maxHeight: 480, border: '1px solid var(--border-strong)', borderRadius: 6 }}
         />
         <div style={{ marginTop: 4 }}>
-          <button onClick={() => void copyImage(t.images.find((i) => i.id === previewId)!)} title="复制图片 — 复制该截图到剪贴板" aria-label="复制图片：复制该截图到剪贴板" className="task-op" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px' }}><Copy size={13} />复制图片</button>
+          <button onClick={() => void copyImage(t.images.find((i) => i.id === previewId)!)} title="复制图片 — 复制该截图到剪贴板" aria-label="复制图片：复制该截图到剪贴板" className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px' }}><Copy size={13} />复制图片</button>
         </div>
       </div>
     );
@@ -2784,7 +2784,7 @@ export function TasksPage() {
                 <button
                   onClick={() => markImageRemoved(t.id, img.id)}
                   title="删除截图"
-                  style={{ position: 'absolute', top: -6, right: -6, fontSize: 10, lineHeight: '16px', padding: '0 4px', cursor: 'pointer' }}
+                  style={{ position: 'absolute', top: -6, right: -6, fontSize: 'var(--fs-2xs)', lineHeight: '16px', padding: '0 4px', cursor: 'pointer' }}
                 >✕</button>
               </div>
             ))}
@@ -2794,7 +2794,7 @@ export function TasksPage() {
                 <button
                   onClick={() => removeAddedImage(t.id, p.id)}
                   title="移除截图"
-                  style={{ position: 'absolute', top: -6, right: -6, fontSize: 10, lineHeight: '16px', padding: '0 4px', cursor: 'pointer' }}
+                  style={{ position: 'absolute', top: -6, right: -6, fontSize: 'var(--fs-2xs)', lineHeight: '16px', padding: '0 4px', cursor: 'pointer' }}
                 >✕</button>
               </div>
             ))}
@@ -2806,13 +2806,13 @@ export function TasksPage() {
           onPaste={(e) => readClipboardImages(e, (url) => addPastedImage(t.id, url))}
           rows={3}
           placeholder="任务描述（支持 Markdown 风格纯文本，可在框内 Ctrl+V 粘贴截图）"
-          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, boxSizing: 'border-box' }}
+          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', boxSizing: 'border-box' }}
         />
         <div style={{ marginTop: 4, display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button onClick={() => void saveDesc(t)} title="保存描述 — 保存修改后的任务描述" aria-label="保存描述：保存修改后的任务描述" style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Save size={13} /></button>
-          <button onClick={() => void optimizeDesc(t)} title={optimizingMap[t.id] ? '取消 — 停止当前提示词优化' : '提示词优化 — 用选中工具把描述改写为结构化提示词'} aria-label={optimizingMap[t.id] ? '取消提示词优化' : '提示词优化：用选中工具优化描述草稿'} className={optimizingMap[t.id] ? 'task-breathe' : undefined} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', background: optimizingMap[t.id] ? 'var(--accent)' : 'transparent', color: optimizingMap[t.id] ? 'var(--accent-text)' : 'var(--text)' }}><Wand2 size={13} /></button>
-          <button onClick={() => toggleDescEdit(t)} title="取消 — 收起描述编辑区，放弃未保存的修改" aria-label="取消：收起描述编辑区" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><X size={13} /></button>
-          {optimizingMap[t.id] && <span className="task-breathe" style={{ fontSize: 12, color: 'var(--accent)' }}>正在生成优化文案…</span>}
+          <button onClick={() => void saveDesc(t)} title="保存描述 — 保存修改后的任务描述" aria-label="保存描述：保存修改后的任务描述" style={{ fontSize: 'var(--fs-s)', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Save size={13} /></button>
+          <button onClick={() => void optimizeDesc(t)} title={optimizingMap[t.id] ? '取消 — 停止当前提示词优化' : '提示词优化 — 用选中工具把描述改写为结构化提示词'} aria-label={optimizingMap[t.id] ? '取消提示词优化' : '提示词优化：用选中工具优化描述草稿'} className={optimizingMap[t.id] ? 'task-breathe' : undefined} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', background: optimizingMap[t.id] ? 'var(--accent)' : 'transparent', color: optimizingMap[t.id] ? 'var(--accent-text)' : 'var(--text)' }}><Wand2 size={13} /></button>
+          <button onClick={() => toggleDescEdit(t)} title="取消 — 收起描述编辑区，放弃未保存的修改" aria-label="取消：收起描述编辑区" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><X size={13} /></button>
+          {optimizingMap[t.id] && <span className="task-breathe" style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>正在生成优化文案…</span>}
         </div>
       </div>
     );
@@ -2826,13 +2826,13 @@ export function TasksPage() {
           onClick={() => setSummaryExpanded((p) => ({ ...p, [t.id]: !p[t.id] }))}
           title={summaryExpanded[t.id] ? '收起摘要 — 收起 AI 梳理摘要' : '展开摘要 — 展开查看 AI 梳理摘要'}
           aria-label={summaryExpanded[t.id] ? '收起：收起 AI 梳理摘要' : '展开：展开查看 AI 梳理摘要'}
-          style={{ fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 0', cursor: 'pointer' }}
+          style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 0', cursor: 'pointer' }}
         >
           {summaryExpanded[t.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
           AI 梳理摘要
         </button>
         {summaryExpanded[t.id] && (
-          <pre style={{ margin: '4px 0 0', padding: 8, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, whiteSpace: 'pre-wrap' }}>
+          <pre style={{ margin: '4px 0 0', padding: 8, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 'var(--fs-s)', whiteSpace: 'pre-wrap' }}>
             {t.ai_summary}
           </pre>
         )}
@@ -2851,7 +2851,7 @@ export function TasksPage() {
       <div style={{ marginLeft: 32, marginTop: 4, border: '1px solid var(--border)', borderRadius: 6 }}>
         {/* 标题栏：左「处理结果」，右编辑/关闭图标（纯图标 + 悬浮提示） */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 6px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', borderTopLeftRadius: 6, borderTopRightRadius: 6 }}>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>处理结果</span>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>处理结果</span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             {!editing && (
               <button
@@ -2859,7 +2859,7 @@ export function TasksPage() {
                 title="编辑处理结果 — 修改该任务的处理结果"
                 aria-label="编辑处理结果：修改该任务的处理结果"
                 className="task-op"
-                style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
               >
                 <ClipboardEdit size={12} />
               </button>
@@ -2877,7 +2877,7 @@ export function TasksPage() {
               title="收起处理结果 — 收起该任务的处理结果（未保存修改将丢弃并恢复已保存录入）"
               aria-label="收起处理结果：收起该任务的处理结果"
               className="task-op"
-              style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+              style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
             >
               <ChevronUp size={12} />
             </button>
@@ -2890,7 +2890,7 @@ export function TasksPage() {
               onChange={(e) => setResultDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
               rows={6}
               placeholder="处理结果：记录根因分析、解决方案或结论（支持 Markdown）"
-              style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, boxSizing: 'border-box' }}
+              style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', boxSizing: 'border-box' }}
             />
             <div style={{ marginTop: 4, display: 'flex', gap: 4, alignItems: 'center' }}>
               {/* T00796 二轮：处理结果正文同样接入 AI 美化（AI 回写的根因/方案常口语化），
@@ -2907,7 +2907,7 @@ export function TasksPage() {
                 title="保存处理结果 — 保存修改后的处理结果"
                 aria-label="保存处理结果：保存修改后的处理结果"
                 className="task-op"
-                style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                style={{ fontSize: 'var(--fs-s)', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
               >
                 <Save size={13} />
               </button>
@@ -2924,7 +2924,7 @@ export function TasksPage() {
                 title="放弃修改 — 放弃未保存的修改并恢复之前已保存的处理结果"
                 aria-label="放弃修改：放弃未保存的修改并恢复之前已保存的处理结果"
                 className="task-op"
-                style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
               >
                 <X size={13} />
               </button>
@@ -2939,7 +2939,7 @@ export function TasksPage() {
                 showCopy
               />
             ) : (
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>暂无处理结果</span>
+              <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>暂无处理结果</span>
             )}
           </div>
         )}
@@ -2998,7 +2998,7 @@ export function TasksPage() {
       // 内容区 overflowX:auto + overflowWrap:anywhere，长代码块/长 URL 横向滚动而非溢出截断
       <div style={{ marginLeft: 32, marginRight: 8, marginTop: 4, border: '1px solid var(--danger)', borderRadius: 6, minWidth: 0, overflow: 'hidden', boxSizing: 'border-box' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 6px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', borderTopLeftRadius: 6, borderTopRightRadius: 6 }}>
-          <span style={{ fontSize: 11, color: 'var(--danger)' }}>验证失败反馈</span>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>验证失败反馈</span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             {!editing && (
               <button
@@ -3006,7 +3006,7 @@ export function TasksPage() {
                 title="编辑反馈 — 修改该任务的处理结果全文（含验证失败反馈）"
                 aria-label="编辑验证失败反馈：修改处理结果全文"
                 className="task-op"
-                style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
               >
                 <ClipboardEdit size={12} />
               </button>
@@ -3023,7 +3023,7 @@ export function TasksPage() {
               title="收起验证失败反馈 — 未保存修改将丢弃"
               aria-label="收起验证失败反馈"
               className="task-op"
-              style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+              style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
             >
               <ChevronUp size={12} />
             </button>
@@ -3036,7 +3036,7 @@ export function TasksPage() {
               onChange={(e) => setFbDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
               rows={6}
               placeholder="处理结果全文（含【验证失败】反馈段，支持 Markdown）"
-              style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, boxSizing: 'border-box' }}
+              style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', boxSizing: 'border-box' }}
             />
             <div style={{ marginTop: 4, display: 'flex', gap: 4, alignItems: 'center' }}>
               {/* T00796 二轮补：反馈「修改」入口同样要有 AI 美化（与录入弹窗/处理结果/通用需求同一组件），
@@ -3053,7 +3053,7 @@ export function TasksPage() {
                 title="保存 — 保存修改后的处理结果（含验证失败反馈）"
                 aria-label="保存验证失败反馈"
                 className="task-op"
-                style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                style={{ fontSize: 'var(--fs-s)', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
               >
                 <Save size={13} />
               </button>
@@ -3066,7 +3066,7 @@ export function TasksPage() {
                 title="放弃修改 — 恢复已保存内容"
                 aria-label="放弃修改：恢复已保存内容"
                 className="task-op"
-                style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
               >
                 <X size={13} />
               </button>
@@ -3077,12 +3077,12 @@ export function TasksPage() {
             {fbText ? (
               <MarkdownContent content={fbText} showCopy />
             ) : (
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>未找到验证失败反馈段</span>
+              <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>未找到验证失败反馈段</span>
             )}
             {/* T00610：反馈窗口内直接查看随反馈提交的截图（点击放大） */}
             {t.images.length > 0 && (
               <div style={{ marginTop: 8, borderTop: '1px solid var(--border)', paddingTop: 6 }}>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>反馈截图（{t.images.length}）— 点击放大；AI 可经 MCP 读取识别</div>
+                <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 4 }}>反馈截图（{t.images.length}）— 点击放大；AI 可经 MCP 读取识别</div>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {t.images.map((img) => (
                     <button key={img.id} type="button" onClick={() => setPreviewId(img.id)}
@@ -3106,15 +3106,15 @@ export function TasksPage() {
           value={draft}
           onChange={(e) => setDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
           rows={8}
-          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, fontFamily: 'monospace', boxSizing: 'border-box' }}
+          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', fontFamily: 'monospace', boxSizing: 'border-box' }}
         />
         <div style={{ marginTop: 4, display: 'flex', gap: 8 }}>
-          <button onClick={() => void saveDraft(t)} title="保存到任务 — 将梳理结果回填为任务摘要" aria-label="保存到任务" style={{ fontSize: 12, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', gap: 4 }}><Check size={13} />保存到任务</button>
+          <button onClick={() => void saveDraft(t)} title="保存到任务 — 将梳理结果回填为任务摘要" aria-label="保存到任务" style={{ fontSize: 'var(--fs-s)', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', gap: 4 }}><Check size={13} />保存到任务</button>
           <button onClick={() => setDrafts((prev) => {
             const next = { ...prev };
             delete next[t.id];
             return next;
-          })} title="放弃 — 丢弃本次梳理草稿" aria-label="放弃梳理草稿" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><X size={13} /></button>
+          })} title="放弃 — 丢弃本次梳理草稿" aria-label="放弃梳理草稿" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><X size={13} /></button>
         </div>
       </div>
     );
@@ -3220,7 +3220,7 @@ export function TasksPage() {
           title={aiDown && !anyBeautify ? aiBlockedTitle(readiness, 'AI 美化全部待办 — 批量润色所有待办任务标题') : (anyBeautify ? '取消 — 停止当前批量美化' : 'AI 美化全部待办 — 批量润色所有待办任务标题')}
           aria-label={anyBeautify ? '取消批量美化' : 'AI 美化全部待办'}
           className={anyBeautify ? 'task-breathe' : 'op-hidden'} // T00759：默认隐藏悬浮显示；批量进行中保持可见
-          style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: anyBeautify ? 'var(--accent)' : 'transparent', color: anyBeautify ? 'var(--accent-text)' : 'var(--text)' }}
+          style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: anyBeautify ? 'var(--accent)' : 'transparent', color: anyBeautify ? 'var(--accent-text)' : 'var(--text)' }}
         >
           <Wand2 size={13} />
           {anyBeautify ? '取消' : todo.length}
@@ -3239,7 +3239,7 @@ export function TasksPage() {
           onClick={() => void createProject()}
           title="新项目 — 新建一个任务项目"
           aria-label="新项目：新建一个任务项目"
-          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}
         >
           <FolderPlus size={13} />
         </button>
@@ -3249,7 +3249,7 @@ export function TasksPage() {
           disabled={!activeProject}
           title="修改项目名称 — 重命名当前选中项目"
           aria-label="修改项目名称：重命名当前选中项目"
-          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed', opacity: activeProject ? 1 : 0.5 }}
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed', opacity: activeProject ? 1 : 0.5 }}
         >
           <SquarePen size={13} />
         </button>
@@ -3259,7 +3259,7 @@ export function TasksPage() {
           disabled={!activeProject}
           title="删除项目 — 删除当前选中项目及其全部任务（不可恢复，需二次确认）"
           aria-label="删除项目：删除当前选中项目及其全部任务"
-          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, color: 'var(--danger)', background: 'transparent', border: '1px solid var(--danger)', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed', opacity: activeProject ? 1 : 0.5 }}
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', color: 'var(--danger)', background: 'transparent', border: '1px solid var(--danger)', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed', opacity: activeProject ? 1 : 0.5 }}
         >
           <Trash2 size={13} />
         </button>
@@ -3278,7 +3278,7 @@ export function TasksPage() {
         className={`tbtn-anim op-hidden${classifyBusy ? ' task-breathe' : ''}`} // T00759：默认隐藏悬浮显示；批量进行中保持可见
         title={aiDown && !classifyBusy ? aiBlockedTitle(readiness, 'AI 批量分类 — 对未分类任务（含已完成）智能识别自动分到已有分类') : (classifyBusy ? '批量分类进行中…' : 'AI 批量分类 — 对未分类任务（含已完成）智能识别自动分到已有分类')}
         aria-label={classifyBusy ? '批量分类进行中' : 'AI 批量分类：对未分类任务（含已完成）自动分类'}
-        style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: classifyBusy ? 'var(--accent)' : 'transparent', color: classifyBusy ? 'var(--accent-text)' : 'var(--text)' }}
+        style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: classifyBusy ? 'var(--accent)' : 'transparent', color: classifyBusy ? 'var(--accent-text)' : 'var(--text)' }}
       >
         {classifyBusy ? <Loader2 size={13} className="aispin" /> : <Tags size={13} />}
         {!classifyBusy && unclassified > 0 ? unclassified : ''}
@@ -3303,7 +3303,7 @@ export function TasksPage() {
       <button
         onClick={() => { setMultiSelect((v) => !v); setSelectedIds(new Set()); }}
         className={`tbtn-anim${multiSelect ? '' : ' op-hidden'}`} // T00759：默认隐藏悬浮显示；多选模式下保持可见（退出入口）
-        style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', border: '1px solid var(--border-strong)', background: multiSelect ? 'var(--accent)' : 'transparent', color: multiSelect ? 'var(--accent-text)' : 'var(--text)' }}
+        style={{ fontSize: 'var(--fs-s)', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', border: '1px solid var(--border-strong)', background: multiSelect ? 'var(--accent)' : 'transparent', color: multiSelect ? 'var(--accent-text)' : 'var(--text)' }}
         title={multiSelect ? '退出多选模式' : '多选模式 — 勾选任务后批量改状态/分类/归档'}
         aria-label={multiSelect ? '退出多选模式' : '进入多选模式'}
       >
@@ -3346,7 +3346,7 @@ export function TasksPage() {
           <button onClick={() => { setProjOpen((o) => { if (!o) { refreshProjCounts(); } return !o; }); }} aria-haspopup="listbox" aria-expanded={projOpen}
             title="切换项目 — 项目名后徽标：红=待办数、黄=未验证数（悬浮查看详情）"
             aria-label="切换项目"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, cursor: 'pointer', maxWidth: 220 }}>
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', cursor: 'pointer', maxWidth: 220 }}>
             {/* T02167：项目名改为可收缩的单行省略项（与 WorkspaceSelect 同口径）。
                 原来是裸文本节点——CJK 无空格可断，min-content 只有 1 字宽，工具条变窄时按钮被压到
                 比内容还小，右侧统计徽标溢出边框。徽标与箭头一律 flexShrink:0，只让名称让步。
@@ -3357,13 +3357,13 @@ export function TasksPage() {
             </span>
             {activeProject === ALL_PROJECTS ? (
               <>
-                <span title={`全部项目待办合计 ${allTodo} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{allTodo}</span>
-                <span title={`全部项目未验证合计 ${allUnv} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{allUnv}</span>
+                <span title={`全部项目待办合计 ${allTodo} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{allTodo}</span>
+                <span title={`全部项目未验证合计 ${allUnv} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{allUnv}</span>
               </>
             ) : (() => { const cur = projects.find((p) => p.id === activeProject); return cur ? (
               <>
-                <span title={`待办 ${cur.todo_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{cur.todo_count ?? 0}</span>
-                <span title={`未验证 ${cur.unverified_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{cur.unverified_count ?? 0}</span>
+                <span title={`待办 ${cur.todo_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{cur.todo_count ?? 0}</span>
+                <span title={`未验证 ${cur.unverified_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{cur.unverified_count ?? 0}</span>
               </>
             ) : null; })()}
             <ChevronDown size={12} style={{ flexShrink: 0 }} />
@@ -3381,10 +3381,10 @@ export function TasksPage() {
                 onClick={() => { setActiveProject(ALL_PROJECTS); setProjOpen(false); }}
                 onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActiveProject(ALL_PROJECTS); setProjOpen(false); } }}
                 title={`全部项目 — 跨项目混合视图（待办合计 ${allTodo} 条，未验证合计 ${allUnv} 条）；可跨项目多选后批量操作`}
-                style={{ display: 'flex', width: '100%', boxSizing: 'border-box', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, background: activeProject === ALL_PROJECTS ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer', borderBottom: '1px solid var(--border)' }}>
+                style={{ display: 'flex', width: '100%', boxSizing: 'border-box', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 'var(--fs-s)', background: activeProject === ALL_PROJECTS ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer', borderBottom: '1px solid var(--border)' }}>
                 <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>全部项目</span>
-                <span title={`待办合计 ${allTodo} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{allTodo}</span>
-                <span title={`未验证合计 ${allUnv} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{allUnv}</span>
+                <span title={`待办合计 ${allTodo} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{allTodo}</span>
+                <span title={`未验证合计 ${allUnv} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{allUnv}</span>
               </div>
               {sortedProjects.map((p) => (
                 // T02146：行容器由原生 button 改 div role=button——行内的置顶图标本身是 button，
@@ -3399,7 +3399,7 @@ export function TasksPage() {
                     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActiveProject(p.id); setProjOpen(false); }
                   }}
                   title={`${p.name}：待办 ${p.todo_count ?? 0} 条，未验证 ${p.unverified_count ?? 0} 条`}
-                  style={{ display: 'flex', width: '100%', boxSizing: 'border-box', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 12, background: p.id === activeProject ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer' }}>
+                  style={{ display: 'flex', width: '100%', boxSizing: 'border-box', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 'var(--fs-s)', background: p.id === activeProject ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer' }}>
                   {/* T00655：置顶图标——位于项目名称之前，点击切换置顶（已置顶=实心 accent + 弹入动画） */}
                   <button
                     type="button"
@@ -3414,8 +3414,8 @@ export function TasksPage() {
                   {/* T02167：flex:1 不足以收缩——裸 flex 项 min-width:auto 会卡在 nowrap 文本的
                       min-content（整行名称宽）上，长名把右侧徽标顶出面板边框；minWidth:0 才真正让名称省略 */}
                   <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
-                  <span title={`待办 ${p.todo_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{p.todo_count ?? 0}</span>
-                  <span title={`未验证 ${p.unverified_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 10, borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.unverified_count ?? 0}</span>
+                  <span title={`待办 ${p.todo_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{p.todo_count ?? 0}</span>
+                  <span title={`未验证 ${p.unverified_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.unverified_count ?? 0}</span>
                 </div>
               ))}
             </div>
@@ -3441,7 +3441,7 @@ export function TasksPage() {
           disabled={!activeProject}
           title={activeProject ? '工作空间全文检索 — 在绑定工作空间内检索关键词，结果可能不完整的 partial 状态会提示' : '请先选择项目再检索工作空间'}
           aria-label="工作空间全文检索"
-          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed', opacity: activeProject ? 1 : 0.4 }}
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed', opacity: activeProject ? 1 : 0.4 }}
         >
           <ScanSearch size={13} style={{ flexShrink: 0 }} />
         </button>
@@ -3452,7 +3452,7 @@ export function TasksPage() {
             className="op-hidden tbtn-anim"
             title={`项目排序 — 当前：${PROJ_SORT_LABEL(projSortMode)}（默认隐藏，悬浮工具栏显示）`}
             aria-label="项目排序" aria-haspopup="menu" aria-expanded={projSortOpen}
-            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 12, background: projSortOpen ? 'var(--accent)' : 'transparent', color: projSortOpen ? 'var(--accent-text)' : 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: projSortOpen ? 'var(--accent)' : 'transparent', color: projSortOpen ? 'var(--accent-text)' : 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}
           >
             <ArrowUpDown size={13} />
           </button>
@@ -3463,7 +3463,7 @@ export function TasksPage() {
                 <button key={o.key} role="menuitemradio" aria-checked={projSortMode === o.key}
                   onClick={() => { setProjSortMode(o.key); setProjSortOpen(false); }}
                   title={o.hint}
-                  style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px 8px', fontSize: 12, textAlign: 'left', border: 'none', borderRadius: 4, cursor: 'pointer', background: projSortMode === o.key ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)' }}>
+                  style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px 8px', fontSize: 'var(--fs-s)', textAlign: 'left', border: 'none', borderRadius: 4, cursor: 'pointer', background: projSortMode === o.key ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)' }}>
                   <span style={{ width: 14, display: 'inline-flex', flexShrink: 0 }}>{projSortMode === o.key ? <Check size={12} style={{ color: 'var(--accent)' }} /> : null}</span>
                   {o.label}
                 </button>
@@ -3502,7 +3502,7 @@ export function TasksPage() {
             setFailbackOpen(Object.fromEntries(failbackIds.map((id) => [id, true])));
           }
         }} title="一键收起或展开全部任务的描述、AI 摘要、处理结果与验证失败反馈（收起为高频操作优先）" aria-label="一键收起或展开全部任务详情"
-          style={{ fontSize: 12, padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}>
+          style={{ fontSize: 'var(--fs-s)', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}>
           {/* 图标指示下一步动作：有展开内容 → 将收起（折叠图标）；全部收起 → 将展开（展开图标） */}
           {anyFoldOpen() ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />}
         </button>
@@ -3514,7 +3514,7 @@ export function TasksPage() {
         />
         <label className="task-op" title={batchOpBusy ? '导入数据 — 上一批操作进行中，完成后恢复可选' : '导入数据 — CSV/JSON（JSON 支持 Trello 导出与 JSON 数组），预览确认后入库'}
           aria-disabled={batchOpBusy || undefined}
-          style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: batchOpBusy ? 'not-allowed' : 'pointer', border: '1px solid var(--border-strong)', display: 'inline-block', opacity: batchOpBusy ? 0.55 : 1 }}>
+          style={{ fontSize: 'var(--fs-s)', padding: '5px 8px', borderRadius: 6, cursor: batchOpBusy ? 'not-allowed' : 'pointer', border: '1px solid var(--border-strong)', display: 'inline-block', opacity: batchOpBusy ? 0.55 : 1 }}>
           <span>导入数据</span>
           {/* T00556：扩展为 CSV/JSON 双格式导入（Trello 导出 / JSON 数组） */}
           {/* T03214（UX-02 ⑤）：预览/写库在途时禁用文件框——键盘 Tab + Enter 也走不到重复选文件 */}
@@ -3527,7 +3527,7 @@ export function TasksPage() {
             onChange={(e) => setCatFilter(e.target.value)}
             title="分类筛选 — 按任务分类筛选列表"
             aria-label="分类筛选：按任务分类筛选列表"
-            style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6 }}
+            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
           >
             <option value="">全部分类</option>
             <option value="none">未分类</option>
@@ -3538,7 +3538,7 @@ export function TasksPage() {
             onChange={(e) => setPriorityFilter(e.target.value)}
             title="优先级筛选 — 按任务优先级筛选列表"
             aria-label="优先级筛选：按任务优先级筛选列表"
-            style={{ padding: 6, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 6 }}
+            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
           >
             <option value="">全部优先级</option>
             <option value="urgent">极高</option>
@@ -3555,7 +3555,7 @@ export function TasksPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="搜索标题/描述/编号…" data-page-search
-            style={{ padding: '6px 8px 6px 26px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12 }}
+            style={{ padding: '6px 8px 6px 26px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)' }}
           />
           {search && (
             <button
@@ -3607,13 +3607,13 @@ export function TasksPage() {
             aria-pressed={smartCat}
             title={smartCat ? '智能分类（已开启）— 新建任务按标题智能匹配分类，点击关闭' : '智能分类（已关闭）— 点击开启新建任务的标题智能分类'}
             aria-label={smartCat ? '智能分类：已开启，点击关闭' : '智能分类：已关闭，点击开启'}
-            style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px', border: 'none', background: 'transparent', cursor: 'pointer', color: smartCat ? 'var(--accent)' : 'var(--text-muted)' }}
+            style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', border: 'none', background: 'transparent', cursor: 'pointer', color: smartCat ? 'var(--accent)' : 'var(--text-muted)' }}
           >
             {smartCat ? <Sparkles size={13} className="task-breathe" /> : <Sparkle size={13} />}
           </button>
-          <button onClick={() => setNewDescOpen(!newDescOpen)} title="描述/截图 — 展开或收起描述与截图上传区" aria-label={newDescOpen ? '收起描述与截图编辑区' : '展开描述与截图编辑区'} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{newDescOpen ? <ChevronUp size={13} /> : <ImagePlus size={13} />}</button>
+          <button onClick={() => setNewDescOpen(!newDescOpen)} title="描述/截图 — 展开或收起描述与截图上传区" aria-label={newDescOpen ? '收起描述与截图编辑区' : '展开描述与截图编辑区'} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{newDescOpen ? <ChevronUp size={13} /> : <ImagePlus size={13} />}</button>
           </span>
-          <button className="tbtn-anim" onClick={() => void createTask()} disabled={creating} title={creating ? '添加中 — 正在智能分类并保存任务' : '添加任务 — 创建新任务并保存到当前项目'} aria-label={creating ? '添加中：正在智能分类并保存任务' : '添加任务：创建新任务并保存到当前项目'} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 4px', color: creating ? 'var(--text-muted)' : 'var(--text)' }}>
+          <button className="tbtn-anim" onClick={() => void createTask()} disabled={creating} title={creating ? '添加中 — 正在智能分类并保存任务' : '添加任务 — 创建新任务并保存到当前项目'} aria-label={creating ? '添加中：正在智能分类并保存任务' : '添加任务：创建新任务并保存到当前项目'} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 4px', color: creating ? 'var(--text-muted)' : 'var(--text)' }}>
             {creating ? <Loader2 size={13} className="aispin" /> : <Plus size={13} />}
           </button>
         </div>
@@ -3629,7 +3629,7 @@ export function TasksPage() {
                       onClick={() => removeNewImage(img.id)}
                       title="移除截图 — 移除本次粘贴的待上传截图"
                       aria-label="移除截图"
-                      style={{ position: 'absolute', top: -6, right: -6, fontSize: 10, lineHeight: '16px', padding: '0 4px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}
+                      style={{ position: 'absolute', top: -6, right: -6, fontSize: 'var(--fs-2xs)', lineHeight: '16px', padding: '0 4px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}
                     ><X size={11} /></button>
                   </div>
                 ))}
@@ -3641,7 +3641,7 @@ export function TasksPage() {
               onPaste={(e) => readClipboardImages(e, addNewImage)}
               rows={2}
               placeholder="任务描述（可在框内 Ctrl+V 粘贴截图）"
-              style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 12, boxSizing: 'border-box' }}
+              style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', boxSizing: 'border-box' }}
             />
           </div>
         )}
@@ -3656,23 +3656,23 @@ export function TasksPage() {
     const csvBlock = csvPreview && (
       <div style={{ border: '1px solid var(--accent)', borderRadius: 8, padding: 12, margin: '8px 0', background: 'var(--card-bg)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          <strong style={{ fontSize: 13 }}>CSV 导入预览</strong>
-          <span style={{ fontSize: 12, color: 'var(--success)' }}>可导入 {csvPreview.items.length} 条</span>
-          {csvPreview.errors.length > 0 && <span style={{ fontSize: 12, color: 'var(--danger)' }}>问题 {csvPreview.errors.length} 行</span>}
+          <strong style={{ fontSize: 'var(--fs-m)' }}>CSV 导入预览</strong>
+          <span style={{ fontSize: 'var(--fs-s)', color: 'var(--success)' }}>可导入 {csvPreview.items.length} 条</span>
+          {csvPreview.errors.length > 0 && <span style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)' }}>问题 {csvPreview.errors.length} 行</span>}
           <span style={{ flex: 1 }} />
           <button onClick={() => setCsvPreview(null)} className="task-op" style={{ cursor: 'pointer', padding: '3px 8px' }}>取消</button>
           <button onClick={() => void confirmCsvImport()} disabled={batchOpBusy || csvPreview.items.length === 0}
-            style={{ padding: '4px 12px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 12 }}>
+            style={{ padding: '4px 12px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)' }}>
             确认导入
           </button>
         </div>
         {csvPreview.errors.length > 0 && (
-          <div style={{ marginBottom: 8, fontSize: 11, color: 'var(--danger)', maxHeight: 80, overflowY: 'auto' }}>
+          <div style={{ marginBottom: 8, fontSize: 'var(--fs-xs)', color: 'var(--danger)', maxHeight: 80, overflowY: 'auto' }}>
             {csvPreview.errors.map((e) => <div key={`${e.row}-${e.message}`}>第 {e.row} 行：{e.message}</div>)}
           </div>
         )}
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-          <thead><tr>{['标题', '描述', '优先级', '状态', '分类'].map((h) => <th key={h} style={{ padding: '4px 6px', fontSize: 11, color: 'var(--text-muted)', textAlign: 'left', borderBottom: '1px solid var(--border-strong)' }}>{h}</th>)}</tr></thead>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-s)' }}>
+          <thead><tr>{['标题', '描述', '优先级', '状态', '分类'].map((h) => <th key={h} style={{ padding: '4px 6px', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textAlign: 'left', borderBottom: '1px solid var(--border-strong)' }}>{h}</th>)}</tr></thead>
           <tbody>
             {csvPreview.items.map((it) => (
               <tr key={`${it.title}|${it.description}|${it.priority}|${it.status}|${it.categoryId ?? ''}`}>
@@ -3713,12 +3713,12 @@ export function TasksPage() {
             <button type="button" aria-label="关闭导出菜单" onClick={() => setExportMenu(null)}
               style={{ position: 'absolute', inset: 0, background: 'transparent', border: 'none', cursor: 'default' }} />
             <div style={{ position: 'absolute', left: Math.min(exportMenu.x, window.innerWidth - 190), top: Math.min(exportMenu.y, window.innerHeight - 150), background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 8, boxShadow: '0 6px 18px rgba(0,0,0,.18)', padding: 4, minWidth: 170 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 8px' }}>导出为…</div>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', padding: '4px 8px' }}>导出为…</div>
               {EXPORT_ITEMS.map((it) => (
                 <button key={it.fmt} onClick={() => void exportTasks([exportMenu.taskId], it.fmt)} disabled={exportBusy}
                   className="export-anim"
                   title={`文件导出 - ${it.desc}`}
-                  style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 8, padding: '7px 10px', fontSize: 13, border: 'none', background: 'transparent', color: 'var(--text)', cursor: exportBusy ? 'wait' : 'pointer', textAlign: 'left', borderRadius: 6 }}>
+                  style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 8, padding: '7px 10px', fontSize: 'var(--fs-m)', border: 'none', background: 'transparent', color: 'var(--text)', cursor: exportBusy ? 'wait' : 'pointer', textAlign: 'left', borderRadius: 6 }}>
                   <Download size={14} style={{ color: 'var(--accent)' }} /> {it.label}
                 </button>
               ))}
@@ -3736,7 +3736,7 @@ export function TasksPage() {
              ['shelved', `搁置（${visibleShelved.length}）`]] as const).map(([key, label]) => (
             <button key={key} onClick={() => setActiveTab(key)} aria-pressed={activeTab === key}
               title={`${label} — 点击切换到该列表`}
-              style={{ fontSize: 14, padding: '6px 12px', border: 'none', background: 'transparent', cursor: 'pointer',
+              style={{ fontSize: 'var(--fs-l)', padding: '6px 12px', border: 'none', background: 'transparent', cursor: 'pointer',
                 fontWeight: activeTab === key ? 700 : 400,
                 color: activeTab === key ? 'var(--text)' : 'var(--text-muted)',
                 borderBottom: activeTab === key ? '2px solid var(--accent)' : '2px solid transparent' }}>
@@ -3761,7 +3761,7 @@ export function TasksPage() {
             onChange={(e) => setTodoSort(e.target.value as SortKey)}
             title="待办排序 — 按修改时间或优先级排序"
             aria-label="待办排序：按修改时间或优先级排序"
-            style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4 }}
+            style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4 }}
           >
             {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
@@ -3771,7 +3771,7 @@ export function TasksPage() {
         {/* T02283：取数失败时不渲染空态——「暂无待办任务」会把后端故障说成没活干（项目列表失败导致
             连 activeProject 都拿不到时同理） */}
         {visibleTodo.length === 0 && !multiSelect && tasksPhase !== 'error' && projectList.phase !== 'error' && (
-          <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12, border: '1px dashed var(--border-strong)', borderRadius: 8, margin: '8px 0', lineHeight: 1.8 }}>
+          <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)', border: '1px dashed var(--border-strong)', borderRadius: 8, margin: '8px 0', lineHeight: 1.8 }}>
             当前项目暂无待办任务——在上方输入框输入标题回车即可创建；
             {tools.length === 0
               ? <>先到「模型」页添加 AI 模型，即可使用 AI 梳理 / 美化 / 分类等能力。</>
@@ -3797,7 +3797,7 @@ export function TasksPage() {
             onChange={(e) => setDoneSort(e.target.value as SortKey)}
             title="已完成排序 — 按修改时间或优先级排序"
             aria-label="已完成排序：按修改时间或优先级排序"
-            style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4 }}
+            style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4 }}
           >
             {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
@@ -3807,7 +3807,7 @@ export function TasksPage() {
             onChange={(e) => setDoneFilter(e.target.value as 'all' | 'unverified' | 'verified')}
             title="验证状态过滤 — 筛选已完成任务的验证状态显示范围"
             aria-label="验证状态过滤：筛选已完成任务的验证状态显示范围"
-            style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4 }}
+            style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4 }}
           >
             <option value="unverified">仅未验证</option>
             <option value="verified">仅已验证</option>
@@ -3816,7 +3816,7 @@ export function TasksPage() {
         </div>
         <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom }}>{visibleDone.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'done', doneIds)}</Fragment>)}</ul>
         {visibleDone.length === 0 && tasksPhase !== 'error' && (
-          <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>暂无已完成任务——完成任务后在此集中查看与验证。</div>
+          <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>暂无已完成任务——完成任务后在此集中查看与验证。</div>
         )}
         </>)}
 
@@ -3838,7 +3838,7 @@ export function TasksPage() {
             onChange={(e) => setShelvedSort(e.target.value as SortKey)}
             title="搁置排序 — 按修改时间或优先级排序"
             aria-label="搁置排序：按修改时间或优先级排序"
-            style={{ padding: 3, fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4 }}
+            style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4 }}
           >
             {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
@@ -3852,7 +3852,7 @@ export function TasksPage() {
         </div>
         <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom }}>{visibleShelved.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'shelved', shelvedIds)}</Fragment>)}</ul>
         {visibleShelved.length === 0 && shelvedPhase !== 'error' && (
-          <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>暂无搁置任务——点击任务行的「搁置」按钮（归档按钮前）可把任务移到这里，AI 处理待办时自动忽略。</div>
+          <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>暂无搁置任务——点击任务行的「搁置」按钮（归档按钮前）可把任务移到这里，AI 处理待办时自动忽略。</div>
         )}
         </>)}
         </>)}
@@ -3865,7 +3865,7 @@ export function TasksPage() {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 10, margin: '12px 0' }}>
         {serverTotal != null && (
-          <span data-t02291="task-total" style={{ fontSize: 12, color: 'var(--text-muted)' }}>共 {serverTotal} 条</span>
+          <span data-t02291="task-total" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>共 {serverTotal} 条</span>
         )}
         {hasMore && (
         <button
@@ -3873,17 +3873,17 @@ export function TasksPage() {
           disabled={loadingMore}
           title={loadingMore ? '加载中 — 正在拉取更多任务' : '加载更多 — 拉取下一页任务'}
           aria-label={loadingMore ? '加载更多：正在拉取更多任务' : '加载更多：拉取下一页任务'}
-          style={{ padding: '6px 16px', fontSize: 12, borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--surface-2)' }}
+          style={{ padding: '6px 16px', fontSize: 'var(--fs-s)', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--surface-2)' }}
         >
           {loadingMore ? '加载中…' : '加载更多'}
         </button>
         )}
         {/* T03214（UX-02 ①）：剩余条数常驻告知；取完即消失并换成「已加载全部」，与「共 N 条」区分本页/全量 */}
         {pageStatus?.remaining != null && pageStatus.remaining > 0 && (
-          <span data-t03214="task-remaining" style={{ fontSize: 12, color: 'var(--text-muted)' }}>剩余 {pageStatus.remaining} 条</span>
+          <span data-t03214="task-remaining" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>剩余 {pageStatus.remaining} 条</span>
         )}
         {pageStatus?.allLoaded && (
-          <span data-t03214="all-loaded" role="status" style={{ fontSize: 12, color: 'var(--success)' }}>已加载全部</span>
+          <span data-t03214="all-loaded" role="status" style={{ fontSize: 'var(--fs-s)', color: 'var(--success)' }}>已加载全部</span>
         )}
       </div>
     );
@@ -3897,19 +3897,19 @@ export function TasksPage() {
           onClick={() => setReuseTarget('project')}
           title="复制到项目 — 将任务原样复制到其他项目"
           aria-label="复制到项目：将任务原样复制到其他项目"
-          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'project' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'project' ? 'var(--accent-text)' : 'var(--text)' }}
+          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 'var(--fs-s)', cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'project' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'project' ? 'var(--accent-text)' : 'var(--text)' }}
         >复制到项目</button>
         <button
           onClick={() => setReuseTarget('prompt')}
           title="复制到提示词 — 将任务打包为 JSON 资产存入提示词页分类"
           aria-label="复制到提示词：将任务打包为 JSON 资产存入提示词页分类"
-          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'prompt' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'prompt' ? 'var(--accent-text)' : 'var(--text)' }}
+          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 'var(--fs-s)', cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'prompt' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'prompt' ? 'var(--accent-text)' : 'var(--text)' }}
         >复制到提示词</button>
         <button
           onClick={() => setReuseTarget('req')}
           title="复制到通用需求 — 将任务打包为通用需求条目存入需求页分类"
           aria-label="复制到通用需求：将任务打包为通用需求条目存入需求页分类"
-          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'req' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'req' ? 'var(--accent-text)' : 'var(--text)' }}
+          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 'var(--fs-s)', cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'req' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'req' ? 'var(--accent-text)' : 'var(--text)' }}
         >复制到通用需求</button>
       </div>
     );
@@ -3926,7 +3926,7 @@ export function TasksPage() {
           onChange={(e) => setReuseSearch(e.target.value)}
           placeholder="搜索项目…"
           aria-label="搜索项目"
-          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' }}
+          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)', boxSizing: 'border-box' }}
         />
         <div style={{ marginTop: 8, maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
           {matched.map((p) => (
@@ -3936,7 +3936,7 @@ export function TasksPage() {
             </button>
           ))}
           {matched.length === 0 && (
-            <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>无匹配项目</div>
+            <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>无匹配项目</div>
           )}
         </div>
       </>
@@ -3947,18 +3947,18 @@ export function TasksPage() {
   function renderReuseReqPicker() {
     return (
       <>
-        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+        <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 8 }}>
           将任务打包为通用需求条目，存入所选需求分类（标题沿用任务名，内容含描述与 AI 摘要）。
         </div>
         {reqCats.length === 0 ? (
-          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>暂无可用的通用需求分类，请先新建。</p>
+          <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 8 }}>暂无可用的通用需求分类，请先新建。</p>
         ) : (
           <select
             autoFocus
             value={reuseCategoryId}
             onChange={(e) => setReuseCategoryId(e.target.value)}
             aria-label="选择通用需求分类"
-            style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14 }}
+            style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)' }}
           >
             <option value="">请选择分类</option>
             {reqCats.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.reqCount ?? 0}）</option>)}
@@ -3966,7 +3966,7 @@ export function TasksPage() {
         )}
         <button onClick={() => void addReqCat()} title="新建分类 — 在通用需求页新建一个分类用于存放任务资产"
           aria-label="新建分类：在通用需求页新建一个分类用于存放任务资产"
-          style={{ marginTop: 8, fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
+          style={{ marginTop: 8, fontSize: 'var(--fs-s)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
           <Plus size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 新建分类
         </button>
       </>
@@ -3977,18 +3977,18 @@ export function TasksPage() {
   function renderReusePromptPicker() {
     return (
       <>
-        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+        <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 8 }}>
           将任务打包为 JSON 资产，存入所选提示词分类（标题沿用任务名，内容含描述与 AI 摘要）。
         </div>
         {promptCats.length === 0 ? (
-          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>暂无可用的提示词分类，请先新建。</p>
+          <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 8 }}>暂无可用的提示词分类，请先新建。</p>
         ) : (
           <select
             autoFocus
             value={reuseCategoryId}
             onChange={(e) => setReuseCategoryId(e.target.value)}
             aria-label="选择提示词分类"
-            style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 14 }}
+            style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)' }}
           >
             <option value="">请选择分类</option>
             {promptCats.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.promptCount ?? 0}）</option>)}
@@ -3996,7 +3996,7 @@ export function TasksPage() {
         )}
         <button onClick={() => void addPromptCat()} title="新建分类 — 在提示词页新建一个分类用于存放任务资产"
           aria-label="新建分类：在提示词页新建一个分类用于存放任务资产"
-          style={{ marginTop: 8, fontSize: 12, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
+          style={{ marginTop: 8, fontSize: 'var(--fs-s)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
           <Plus size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 新建分类
         </button>
       </>
@@ -4030,7 +4030,7 @@ export function TasksPage() {
         style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
       >
         <div ref={reusePanelRef} style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 8, padding: 16, width: 380, maxWidth: '90vw', boxShadow: '0 10px 30px rgba(0,0,0,.2)' }}>
-          <div style={{ fontSize: 14, marginBottom: 10 }}>复用任务</div>
+          <div style={{ fontSize: 'var(--fs-l)', marginBottom: 10 }}>复用任务</div>
           {renderReuseTargetButtons()}
           {reuseTarget === 'project' && renderReuseProjectPicker()}
           {reuseTarget === 'req' && renderReuseReqPicker()}
@@ -4119,8 +4119,8 @@ export function TasksPage() {
           style={{ position: 'fixed', inset: 0, zIndex: 900, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '18vh' }}>
           <div
             style={{ width: 300, background: 'var(--card-bg)', color: 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 12px 40px rgba(0,0,0,.25)', padding: 12 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>为「{wsPickForNew.name}」选择工作空间</div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>工作空间是项目的上下文根路径，AI 功能将以此路径加载上下文；可跳过稍后在任务菜单绑定。</div>
+            <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, marginBottom: 2 }}>为「{wsPickForNew.name}」选择工作空间</div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>工作空间是项目的上下文根路径，AI 功能将以此路径加载上下文；可跳过稍后在任务菜单绑定。</div>
             <div style={{ position: 'relative' }}>
               <WorkspaceSelect
                 variant="bare"
@@ -4130,7 +4130,7 @@ export function TasksPage() {
               />
             </div>
             <button onClick={() => setWsPickForNew(null)}
-              style={{ marginTop: 8, width: '100%', fontSize: 12, padding: '5px 0', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}>
+              style={{ marginTop: 8, width: '100%', fontSize: 'var(--fs-s)', padding: '5px 0', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}>
               跳过，稍后绑定
             </button>
           </div>
@@ -4146,14 +4146,14 @@ export function TasksPage() {
           style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
           onClick={(e) => { if (e.target === e.currentTarget && !failBusy) setFailDialog(null); }}>
           <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(560px, 94vw)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
               <AlertTriangle size={14} style={{ color: 'var(--danger)' }} /> 验证失败反馈
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 300 }}>{failDialog.title}</span>
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 300 }}>{failDialog.title}</span>
               <span style={{ flex: 1 }} />
               <button onClick={() => setFailDialog(null)} disabled={failBusy} title="关闭" aria-label="关闭验证失败反馈弹窗"
-                style={{ display: 'inline-flex', alignItems: 'center', cursor: failBusy ? 'default' : 'pointer', background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 14 }}>×</button>
+                style={{ display: 'inline-flex', alignItems: 'center', cursor: failBusy ? 'default' : 'pointer', background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 'var(--fs-l)' }}>×</button>
             </div>
-            <div style={{ padding: 14, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12 }}>
+            <div style={{ padding: 14, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--fs-s)' }}>
               <div style={{ color: 'var(--text-muted)' }}>
                 请描述验证失败的原因（可粘贴或选择截图辅助说明）；提交后任务将回退待办，截图可由 AI 通过 MCP 读取识别。
               </div>
@@ -4165,11 +4165,11 @@ export function TasksPage() {
                 placeholder="请描述验证失败的原因…（可直接 Ctrl+V 粘贴截图）"
                 aria-label="验证失败反馈内容"
                 rows={5}
-                style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 12, resize: 'vertical' }}
+                style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', resize: 'vertical' }}
               />
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <label className="tbtn-anim" title="选择截图文件（可多选）"
-                  style={{ cursor: failBusy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border-strong)', fontSize: 12, color: 'var(--text)' }}>
+                  style={{ cursor: failBusy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', color: 'var(--text)' }}>
                   <ImagePlus size={13} /> 选择截图
                   <input type="file" accept="image/*" multiple style={FILE_INPUT_SR_ONLY}
                     onChange={(e) => {
@@ -4186,7 +4186,7 @@ export function TasksPage() {
                       e.target.value = '';
                     }} />
                 </label>
-                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>已附 {failDialog.images.length} 张截图</span>
+                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>已附 {failDialog.images.length} 张截图</span>
                 <span style={{ flex: 1 }} />
                 {/* T00796 二轮：改用公共 AiPolishButton（与处理结果/通用需求同一组件），
                     仅作用于反馈正文，回填输入框后仍需用户确认提交 */}
@@ -4206,7 +4206,7 @@ export function TasksPage() {
                       <img src={img.url} alt="待上传截图预览" style={{ height: 64, borderRadius: 4, border: '1px solid var(--border)' }} />
                       <button onClick={() => removeFailImage(img.id)}
                         title="移除该截图" aria-label="移除该截图"
-                        style={{ position: 'absolute', top: -6, right: -6, width: 16, height: 16, borderRadius: '50%', border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 11, lineHeight: '16px', cursor: 'pointer', padding: 0 }}>×</button>
+                        style={{ position: 'absolute', top: -6, right: -6, width: 16, height: 16, borderRadius: '50%', border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 'var(--fs-xs)', lineHeight: '16px', cursor: 'pointer', padding: 0 }}>×</button>
                     </span>
                   ))}
                 </div>
@@ -4214,10 +4214,10 @@ export function TasksPage() {
             </div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
               <button onClick={() => setFailDialog(null)} disabled={failBusy} className="tbtn-anim"
-                style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 12 }}>取消</button>
+                style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>取消</button>
               <button onClick={() => void submitVerifyFailed()} disabled={failBusy} className="tbtn-anim"
                 title="提交反馈并回退待办" aria-label="提交验证失败反馈"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: failBusy ? 'default' : 'pointer', border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 12 }}>
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: failBusy ? 'default' : 'pointer', border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 'var(--fs-s)' }}>
                 {failBusy ? <><Loader2 size={12} className="aispin" />提交中…</> : '提交并回退待办'}
               </button>
             </div>
@@ -4258,18 +4258,18 @@ export function TasksPage() {
           style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 10px 28px rgba(0,0,0,.22)', width: 380, maxWidth: '92vw', padding: 14, color: 'var(--text)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>裁决派生单 {rulingTask.task_no ?? rulingTask.id}</div>
+              <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600 }}>裁决派生单 {rulingTask.task_no ?? rulingTask.id}</div>
               <button type="button" className="tbtn-anim" onClick={() => { setRulingTask(null); setRulingDraft(''); }} aria-label="关闭裁决面板"
                 style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 2 }}>
                 <X size={14} />
               </button>
             </div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>{rulingTask.title}</div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>{rulingTask.title}</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
               {rulingOptions.map((o) => (
                 <button key={o} type="button" className="tbtn-anim" disabled={rulingBusy}
                   onClick={() => setRulingDraft(o)}
-                  style={{ fontSize: 12, padding: '5px 10px', borderRadius: 999, cursor: rulingBusy ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
+                  style={{ fontSize: 'var(--fs-s)', padding: '5px 10px', borderRadius: 999, cursor: rulingBusy ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
                     border: `1px solid ${rulingDraft === o ? 'var(--accent)' : 'var(--border-strong)'}`,
                     background: rulingDraft === o ? 'var(--accent-soft)' : 'transparent',
                     color: rulingDraft === o ? 'var(--accent)' : 'var(--text)' }}>
@@ -4278,16 +4278,16 @@ export function TasksPage() {
               ))}
             </div>
             {rulingOptions.length === 0 && (
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>本条结论未抽到候选选项，可直接输入裁决结果</div>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>本条结论未抽到候选选项，可直接输入裁决结果</div>
             )}
             <textarea value={rulingDraft} onChange={(e) => setRulingDraft(e.target.value)} rows={3}
               placeholder="自定义裁决结果（或点选上方候选选项）" aria-label="裁决结果"
-              style={{ width: '100%', boxSizing: 'border-box', fontSize: 12, padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--input-bg, transparent)', color: 'var(--text)', resize: 'vertical' }} />
+              style={{ width: '100%', boxSizing: 'border-box', fontSize: 'var(--fs-s)', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--input-bg, transparent)', color: 'var(--text)', resize: 'vertical' }} />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
               <button type="button" onClick={() => { setRulingTask(null); setRulingDraft(''); }}
-                style={{ fontSize: 12, padding: '6px 12px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer' }}>取消</button>
+                style={{ fontSize: 'var(--fs-s)', padding: '6px 12px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer' }}>取消</button>
               <button type="button" className="tbtn-anim" disabled={!rulingDraft.trim() || rulingBusy} onClick={() => void submitRuling()}
-                style={{ fontSize: 12, padding: '6px 14px', border: 'none', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: rulingDraft.trim() && !rulingBusy ? 'pointer' : 'not-allowed', opacity: rulingDraft.trim() && !rulingBusy ? 1 : 0.5 }}>
+                style={{ fontSize: 'var(--fs-s)', padding: '6px 14px', border: 'none', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: rulingDraft.trim() && !rulingBusy ? 'pointer' : 'not-allowed', opacity: rulingDraft.trim() && !rulingBusy ? 1 : 0.5 }}>
                 {rulingBusy ? '提交中…' : '提交裁决'}
               </button>
             </div>

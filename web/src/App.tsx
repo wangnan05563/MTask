@@ -266,7 +266,7 @@ function Shell() {
         .nav-btn:hover .nav-label, .nav-btn:focus-visible .nav-label { max-width: 120px; opacity: 1; }
         /* T00486：全系统控件交互动画统一（参照任务菜单多选按钮 tbtn-anim 基准） */
         /* T00497：动态提示浮层化——固定右上与菜单栏同行空白区，不占文档流，杜绝控件串行/记录错位 */
-        .flash-toast { position: fixed; top: 14px; right: 16px; z-index: 90; max-width: 42vw; padding: 5px 12px; border-radius: 8px; background: var(--card-bg); border: 1px solid var(--accent); color: var(--accent); font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.12); animation: toast-in .2s ease; }
+        .flash-toast { position: fixed; top: 14px; right: 16px; z-index: 90; max-width: 42vw; padding: 5px 12px; border-radius: 8px; background: var(--card-bg); border: 1px solid var(--accent); color: var(--accent); font-size: var(--fs-s); box-shadow: 0 4px 14px rgba(0,0,0,.12); animation: toast-in .2s ease; }
         @keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
         /* T01480：导出图标动效——悬浮倾斜、按下缩放（≤300ms） */
         .export-anim { transition: transform .18s ease; }
@@ -400,7 +400,7 @@ function Shell() {
         {/* 后端连接状态：随 serverOk 动态更新，常驻菜单行最右侧。
             色值与文案按三态（未知/正常/异常）显式计算，避免 JSX 中嵌套三元 */}
         <span
-          style={{ fontSize: 12, marginLeft: 'auto', color: statusColor }}
+          style={{ fontSize: 'var(--fs-s)', marginLeft: 'auto', color: statusColor }}
         >
           {statusText}
         </span>
@@ -422,18 +422,18 @@ function Shell() {
       {/* T01836：启动自动检测新版本的一次性提示条——点击去「设置 → 版本更新」走一键下载/静默安装，
           关掉后本次会话不再弹（sessionStorage），不影响已是最新版本的静默场景 */}
       {updateHint && (
-        <output style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 14px', fontSize: 12, background: 'var(--accent-soft)', color: 'var(--accent)', borderBottom: '1px solid var(--border)' }}>
+        <output style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 14px', fontSize: 'var(--fs-s)', background: 'var(--accent-soft)', color: 'var(--accent)', borderBottom: '1px solid var(--border)' }}>
           <span>发现新版本 v{updateHint.latestVersion}（当前 v{updateHint.currentVersion}）</span>
           <button
             onClick={() => setTab('settings')}
-            style={{ cursor: 'pointer', border: '1px solid var(--accent)', background: 'var(--card-bg)', color: 'var(--accent)', borderRadius: 6, padding: '2px 10px', fontSize: 12 }}
+            style={{ cursor: 'pointer', border: '1px solid var(--accent)', background: 'var(--card-bg)', color: 'var(--accent)', borderRadius: 6, padding: '2px 10px', fontSize: 'var(--fs-s)' }}
           >
             立即更新
           </button>
           <button
             onClick={() => { sessionStorage.setItem('mtask.updateHintClosed', '1'); setUpdateHint(null); }}
             aria-label="关闭新版本提示"
-            style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 12 }}
+            style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}
           >
             忽略本次
           </button>
@@ -445,7 +445,7 @@ function Shell() {
       {dlToast && (
         <output
           style={{
-            display: 'flex', alignItems: 'center', gap: 10, padding: '6px 14px', fontSize: 12,
+            display: 'flex', alignItems: 'center', gap: 10, padding: '6px 14px', fontSize: 'var(--fs-s)',
             background: dlToast.status === 'failed' ? 'rgba(220, 38, 38, .08)' : 'var(--accent-soft)',
             color: dlToast.status === 'failed' ? 'var(--danger)' : 'var(--accent)',
             borderBottom: '1px solid var(--border)',
@@ -466,7 +466,7 @@ function Shell() {
               onClick={() => { void desktopApi()?.cancelUpdateDownload?.(); }}
               title="取消下载 — 中断本次下载并保留已下载部分，稍后可从断点继续"
               aria-label="取消下载：中断本次下载并保留已下载部分"
-              style={{ cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', borderRadius: 6, padding: '2px 10px', fontSize: 12 }}
+              style={{ cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', borderRadius: 6, padding: '2px 10px', fontSize: 'var(--fs-s)' }}
             >
               取消
             </button>
@@ -476,7 +476,7 @@ function Shell() {
               onClick={() => { setDlToast(null); void desktopApi()?.retryOnlineUpdate?.(); }}
               title="重试 — 重新检查并下载新版本安装包"
               aria-label="重试：重新检查并下载新版本安装包"
-              style={{ cursor: 'pointer', border: '1px solid var(--danger)', background: 'var(--card-bg)', color: 'var(--danger)', borderRadius: 6, padding: '2px 10px', fontSize: 12 }}
+              style={{ cursor: 'pointer', border: '1px solid var(--danger)', background: 'var(--card-bg)', color: 'var(--danger)', borderRadius: 6, padding: '2px 10px', fontSize: 'var(--fs-s)' }}
             >
               重试
             </button>
@@ -485,7 +485,7 @@ function Shell() {
             onClick={() => setDlToast(null)}
             title="关闭 — 收起下载进度提示（下载仍在后台继续）"
             aria-label="关闭：收起下载进度提示"
-            style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 12, marginLeft: dlToast.status === 'failed' ? 0 : 'auto' }}
+            style={{ cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 'var(--fs-s)', marginLeft: dlToast.status === 'failed' ? 0 : 'auto' }}
           >
             关闭
           </button>

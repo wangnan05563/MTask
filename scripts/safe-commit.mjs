@@ -15,7 +15,7 @@
  *
  * 用法：
  *   node scripts/safe-commit.mjs --check-only
- *      只跑守卫（提交前自检；健康索引静默给两行 PASS，D/S 命中给提示）
+ *      只跑守卫（提交前自检；健康索引静默给两行 PASS，D/S 命中给提示）+ 字号 lint 全量扫描
  *   node scripts/safe-commit.mjs -m "提交信息" -- <路径...>
  *      隔离索引提交；`--` 之后的路径才会被 add
  *   node scripts/safe-commit.mjs -m "提交信息" --dry-run -- <路径...>
@@ -26,12 +26,13 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const GUARD = join(ROOT, 'scripts', 'tests', 'verify-index-staleness.mjs');
+const FONT_LINT = join(ROOT, 'scripts', 'lint-font-tokens.mjs');
 
 function git(args, env = {}) {
   return execFileSync('git', ['-C', ROOT, ...args], {
@@ -63,8 +64,37 @@ function runGuard() {
   return picked;
 }
 
-const argv = process.argv.slice(2);
-const checkOnly = argv.includes('--check-only');
+/**
+ * T03220（UX-11）字号令牌 lint：本次要提交的 web 源码里不得有数字字号。
+ * 只扫显式列出的路径（同反模式 47：别人未提交的 WIP 不得冒充本次提交的失败）；
+ * `--check-only` 且没给路径时退化为全量扫描，供提交前自检。
+ * 与索引守卫不同，这条**会拦住提交**——它是「禁止新增」的执行点。
+ */
+function runFontLint(paths, checkOnly) {
+  if (!existsSync(FONT_LINT)) {
+    console.log('[WARN] 字号 lint 不在盘上（scripts/lint-font-tokens.mjs 缺失）——本次提交无数字字号检查');
+    return true;
+  }
+  const scoped = paths.filter((p) => /\.(tsx?|mts)$/.test(p) && relative(ROOT, resolve(ROOT, p)).startsWith(join('web', 'src')));
+  const args = [FONT_LINT];
+  if (checkOnly && scoped.length === 0) {
+    console.log('— 字号令牌 lint（全量 web/src）—');
+  } else {
+    if (scoped.length === 0) return true;
+    console.log(`— 字号令牌 lint（本次提交 ${scoped.length} 个 web 源码文件）—`);
+    args.push('--paths', ...scoped);
+  }
+  const r = spawnSync(process.execPath, args, { cwd: ROOT, encoding: 'utf8' });
+  for (const l of `${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split('\n')) console.log(`  ${l.trim()}`);
+  if (r.status !== 0) {
+    console.log('  ✗ 数字字号会把该元素钉死在默认档，用户切字号档时它不跟随。');
+    console.log('    请改成档位令牌 fontSize: \'var(--fs-2xs|xs|s|m|l|xl|2xl|title)\'（默认档下像素不变）。');
+    return false;
+  }
+  return true;
+}
+
+const argv = process.argv.slice(2);const checkOnly = argv.includes('--check-only');
 const dryRun = argv.includes('--dry-run');
 const sep = argv.indexOf('--');
 const headArgs = sep >= 0 ? argv.slice(0, sep) : argv;
@@ -73,6 +103,11 @@ const mi = headArgs.indexOf('-m');
 const message = mi >= 0 ? headArgs[mi + 1] : '';
 
 runGuard();
+
+if (!runFontLint(paths, checkOnly)) {
+  console.error('\n[FAIL] 字号令牌 lint 拦住本次提交（见上面点名的 file:line）');
+  process.exit(1);
+}
 
 if (checkOnly) {
   console.log('\n（--check-only：未提交任何内容）');

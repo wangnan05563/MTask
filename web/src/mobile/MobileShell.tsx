@@ -117,7 +117,7 @@ export function MobileShell() {
   return (
     <div style={shell}>
       {/* T01445：Zen 极简阅读全局样式——data-zen=1 时隐藏徽标/计数、放大正文字号 */}
-      <style>{"[data-zen='1'] .zen-hide { display: none !important; } [data-zen='1'] .zen-zoom { font-size: 17px !important; }"}</style>
+      <style>{"[data-zen='1'] .zen-hide { display: none !important; } [data-zen='1'] .zen-zoom { font-size: var(--fs-2xl) !important; }"}</style>
       {/* T01441：PWA 添加到主屏一次性引导卡（fixed 覆盖层） */}
       {pwaGuide && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>

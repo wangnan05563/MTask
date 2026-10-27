@@ -104,8 +104,8 @@ const OUTLINE_SESSION_KEY = 'summaryPpt.outline';
 /** 大纲生成时的周期/范围签名：刷新/切页回来仍能判断草稿是否对应当前选区 */
 const OUTLINE_SCOPE_SESSION_KEY = 'summaryPpt.outlineScope';
 
-const opBtn = { display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', padding: '3px 7px' } as const;
-const cellInput = { fontSize: 12, padding: '3px 6px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' } as const;
+const opBtn = { display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', padding: '3px 7px' } as const;
+const cellInput = { fontSize: 'var(--fs-s)', padding: '3px 6px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' } as const;
 
 function statusIcon(status: PreflightStatus) {
   if (status === 'ok') return <CircleCheck size={13} style={{ color: 'var(--success, var(--accent))', flexShrink: 0 }} />;
@@ -143,7 +143,7 @@ function PreflightItemCard({ it, projectId, openCard }: {
   readonly openCard?: (key: 'prd-import' | 'tc-gen') => void;
 }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11, border: '1px solid var(--border)', borderRadius: 6, padding: '5px 7px' }}>
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 'var(--fs-xs)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 7px' }}>
       {statusIcon(it.status)}
       <span style={{ flex: 1 }}>
         <span style={{ fontWeight: 600 }}>{it.key} {it.label}</span>
@@ -169,18 +169,18 @@ function PreflightChecklist({ pre, loading, error, projectId, missingItems, open
 }) {
   return (
     <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+      <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 6 }}>
         资料齐备性校验 S1~S9（只读，不调用 AI）
         {loading && <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: 6 }}>校验中…</span>}
       </div>
-      {error && <div style={{ fontSize: 11, color: 'var(--danger)' }}>校验失败：{error}</div>}
+      {error && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>校验失败：{error}</div>}
       {pre && (
         <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 6 }}>
             {pre.items.map((it) => <PreflightItemCard key={it.key} it={it} projectId={projectId} openCard={openCard} />)}
           </div>
           {pre.blocked && (
-            <div style={{ marginTop: 8, border: '1px solid var(--danger)', borderRadius: 6, padding: '6px 8px', fontSize: 11, color: 'var(--danger)' }}>
+            <div style={{ marginTop: 8, border: '1px solid var(--danger)', borderRadius: 6, padding: '6px 8px', fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>
               硬阻塞：{missingItems.map((i) => `${i.key} ${i.label}`).join('、')} 未达标，生成只会得到空壳稿——已禁止发起。
               <span style={{ display: 'inline-flex', gap: 6, marginLeft: 6, flexWrap: 'wrap' }}>
                 {missingItems.filter((i) => i.deepLink).map((i) => (
@@ -191,7 +191,7 @@ function PreflightChecklist({ pre, loading, error, projectId, missingItems, open
             </div>
           )}
           {!pre.blocked && pre.items.some((i) => i.status === 'warn') && (
-            <div style={{ marginTop: 6, fontSize: 11, color: 'var(--warn)' }}>
+            <div style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>
               ⚠ 级项可继续生成，但降级会在对应 PPT 页面页脚留痕（客户会上追问时页面上要有依据）。
             </div>
           )}
@@ -229,11 +229,11 @@ function PeriodScopeSection({ period, onPeriod, start, end, onStart, onEnd, cust
     <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>汇报周期（默认周报）</div>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 4 }}>汇报周期（默认周报）</div>
           <div style={{ display: 'flex', gap: 4 }}>
             {PERIOD_OPTIONS.map((p) => (
               <button key={p.key} onClick={() => onPeriod(p.key)} title={`生成${p.label}`} aria-label={`汇报周期 ${p.label}`}
-                style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 13, border: '1px solid var(--border-strong)', background: period === p.key ? 'var(--accent)' : 'var(--card-bg)', color: period === p.key ? 'var(--accent-text)' : 'var(--text)' }}>
+                style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 'var(--fs-m)', border: '1px solid var(--border-strong)', background: period === p.key ? 'var(--accent)' : 'var(--card-bg)', color: period === p.key ? 'var(--accent-text)' : 'var(--text)' }}>
                 {p.label}
               </button>
             ))}
@@ -241,17 +241,17 @@ function PeriodScopeSection({ period, onPeriod, start, end, onStart, onEnd, cust
         </div>
         {period === 'custom' && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-            <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            <label style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
               起始日
               <input type="date" value={start} max={end || todayYmd()} onChange={(e) => onStart(e.target.value)}
                 aria-label="自定义周期起始日" style={{ ...cellInput, display: 'block', marginTop: 3 }} />
             </label>
-            <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            <label style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
               结束日（含）
               <input type="date" value={end} min={start || undefined} max={todayYmd()} onChange={(e) => onEnd(e.target.value)}
                 aria-label="自定义周期结束日" style={{ ...cellInput, display: 'block', marginTop: 3 }} />
             </label>
-            <span style={{ fontSize: 11, color: customError ? 'var(--danger)' : 'var(--text-muted)', maxWidth: 320 }}>
+            <span style={{ fontSize: 'var(--fs-xs)', color: customError ? 'var(--danger)' : 'var(--text-muted)', maxWidth: 320 }}>
               {customError || `最长 ${SUMMARY_CUSTOM_MAX_DAYS} 天；结束日不得晚于今天`}
             </span>
           </div>
@@ -259,7 +259,7 @@ function PeriodScopeSection({ period, onPeriod, start, end, onStart, onEnd, cust
       </div>
 
       <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, cursor: 'pointer' }}>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-s)', cursor: 'pointer' }}>
           <input type="checkbox" checked={overrideOn} onChange={(e) => onOverrideOn(e.target.checked)}
             aria-label="本卡片另选项目（仅本次生成生效，不改顶部选区）" style={{ cursor: 'pointer' }} />
           本卡片另选项目
@@ -269,13 +269,13 @@ function PeriodScopeSection({ period, onPeriod, start, end, onStart, onEnd, cust
             <ProjectScopePicker projects={projects} value={overrideIds} onChange={onOverrideIds} />
           </div>
         ) : (
-          <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>跟随顶部范围：<strong>{scopeSummary(topIds.map((id) => projects.find((p) => p.id === id)?.name ?? id))}</strong></span>
+          <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>跟随顶部范围：<strong>{scopeSummary(topIds.map((id) => projects.find((p) => p.id === id)?.name ?? id))}</strong></span>
         )}
-        {overrideOn && <span style={{ fontSize: 11, color: 'var(--warn)' }}>本次不跟随顶部范围（顶部选区不受影响）</span>}
+        {overrideOn && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>本次不跟随顶部范围（顶部选区不受影响）</span>}
       </div>
 
       <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>生成形态</span>
+        <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>生成形态</span>
         <div style={{ display: 'flex', gap: 4 }}>
           {MODE_OPTIONS.map((m) => {
             const disabled = m.key === 'separate' && !multi;
@@ -284,14 +284,14 @@ function PeriodScopeSection({ period, onPeriod, start, end, onStart, onEnd, cust
               <button key={m.key} onClick={() => onMode(m.key)} disabled={disabled}
                 title={disabled ? '单项目无需分别独立版：直接用合并版出完整稿' : m.hint}
                 aria-label={`生成形态 ${m.label}`}
-                style={{ padding: '5px 12px', borderRadius: 6, cursor: disabled ? 'not-allowed' : 'pointer', fontSize: 13, opacity: disabled ? 0.45 : 1,
+                style={{ padding: '5px 12px', borderRadius: 6, cursor: disabled ? 'not-allowed' : 'pointer', fontSize: 'var(--fs-m)', opacity: disabled ? 0.45 : 1,
                   border: '1px solid var(--border-strong)', background: active ? 'var(--accent)' : 'var(--card-bg)', color: active ? 'var(--accent-text)' : 'var(--text)' }}>
                 {m.label}
               </button>
             );
           })}
         </div>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           {mode === 'separate'
             ? '每项目一份完整稿（12~16 页），打包为单 zip（下载名 .zip）'
             : '单份 deck：汇总对比 + 每项目 4 页小结 + 横向对比'}
@@ -300,22 +300,22 @@ function PeriodScopeSection({ period, onPeriod, start, end, onStart, onEnd, cust
 
       {/* T02960：版式预设——只影响装配期主色，改动不需重生成大纲 */}
       <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>版式预设</span>
+        <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>版式预设</span>
         <div style={{ display: 'flex', gap: 4 }}>
           {STYLE_OPTIONS.map((s) => (
             <button key={s.key} onClick={() => onStyle(s.key)} title={s.hint} aria-label={`版式预设 ${s.label}`}
-              style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 13, border: '1px solid var(--border-strong)',
+              style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 'var(--fs-m)', border: '1px solid var(--border-strong)',
                 background: style === s.key ? 'var(--accent)' : 'var(--card-bg)', color: style === s.key ? 'var(--accent-text)' : 'var(--text)' }}>
               {s.label}
             </button>
           ))}
         </div>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           {STYLE_OPTIONS.find((s) => s.key === style)?.hint}
         </span>
       </div>
 
-      {scopeText && <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>{scopeText}</div>}
+      {scopeText && <div style={{ marginTop: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{scopeText}</div>}
     </div>
   );
 }
@@ -343,7 +343,7 @@ function OutlineToolbar({ extraNote, onExtraNoteChange, streaming, outlineBusy, 
         {outlineBusy ? <Loader2 size={12} className="aispin" /> : <Sparkles size={12} />} {rowCount ? '重新生成大纲' : '生成大纲'}
       </button>
       {rowCount > 0 && <button onClick={onClear} disabled={streaming} className="tbtn-anim" title="清空大纲稿" aria-label="清空大纲" style={opBtn}><Trash2 size={11} /> 清空</button>}
-      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{rowCount
+      <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{rowCount
         ? `共 ${rowCount} 页${mode === 'separate' ? '（每项目 12~16 页）' : ''}`
         : (mode === 'separate' ? '大纲：每项目 12~16 页完整稿，合计 12N~16N 页，可改标题/要点/版式' : '大纲 12~16 页（单项目）/ 合并版 6+4N 页，可改标题/要点/版式')}</span>
     </div>
@@ -367,7 +367,7 @@ function OutlinePageList({ rows, streaming, merged, separate, onPatch, onRemove,
     <div style={{ maxHeight: 380, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6, marginBottom: 10 }}>
       {rows.map((r, idx) => (
         <div key={`${r.section}-${idx}`} style={{ borderBottom: '1px solid var(--border)', padding: 8, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 22, textAlign: 'right', marginTop: 6 }}>{idx + 1}</span>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', width: 22, textAlign: 'right', marginTop: 6 }}>{idx + 1}</span>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 5 }}>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               <select value={r.section} onChange={(e) => onPatch(idx, { section: e.target.value })} disabled={streaming}
@@ -382,11 +382,11 @@ function OutlinePageList({ rows, streaming, merged, separate, onPatch, onRemove,
                 title="版式" aria-label={`第${idx + 1}页版式`} style={cellInput}>
                 {SUMMARY_LAYOUTS.map((l) => <option key={l} value={l}>{l}</option>)}
               </select>
-              <span style={{ fontSize: 10, color: 'var(--text-muted)', alignSelf: 'center' }}>
+              <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', alignSelf: 'center' }}>
                 取数：{r.dataKeys.length ? r.dataKeys.join('、') : '无'}
               </span>
               {(merged || separate) && r.projectId && (
-                <span title="该页归属的项目（服务端按 projectId 分组校验）" style={{ fontSize: 10, color: 'var(--accent)', alignSelf: 'center' }}>项目页</span>
+                <span title="该页归属的项目（服务端按 projectId 分组校验）" style={{ fontSize: 'var(--fs-2xs)', color: 'var(--accent)', alignSelf: 'center' }}>项目页</span>
               )}
             </div>
             <textarea value={r.bullets.join('\n')} onChange={(e) => onPatch(idx, { bullets: e.target.value.split('\n') })}
@@ -407,8 +407,8 @@ function OutlinePageList({ rows, streaming, merged, separate, onPatch, onRemove,
         <button onClick={onAdd} disabled={streaming || locked} className="tbtn-anim"
           title={separate ? '分别独立版每项目 12~16 页，不支持加页' : merged ? '合并版每项目固定 4 页，不支持加页' : '追加一页'} aria-label="追加一页"
           style={{ ...opBtn, opacity: locked ? 0.4 : 1 }}><Plus size={11} /> 加一页</button>
-        {separate && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>分别独立版：每项目一份完整稿（12~16 页），可改文字与顺序，不支持增删页</span>}
-        {merged && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>合并版：每项目恰好 {MERGED_PER_PROJECT} 页小结，可改文字与顺序，不支持增删页</span>}
+        {separate && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>分别独立版：每项目一份完整稿（12~16 页），可改文字与顺序，不支持增删页</span>}
+        {merged && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>合并版：每项目恰好 {MERGED_PER_PROJECT} 页小结，可改文字与顺序，不支持增删页</span>}
       </div>
     </div>
   );
@@ -428,13 +428,13 @@ function GenerateBar({ streaming, canGenerate, blockReason, result, downloading,
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
       <button onClick={onGenerate} disabled={!canGenerate} className={`tbtn-anim${streaming ? ' task-breathe' : ''}`}
         title={blockReason || '逐页装配 .pptx 并落盘换下载令牌'} aria-label="开始生成阶段性总结汇报 PPT"
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 12, border: 'none', borderRadius: 6,
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-s)', border: 'none', borderRadius: 6,
           background: canGenerate ? 'var(--accent)' : 'var(--border-strong)', color: canGenerate ? 'var(--accent-text)' : 'var(--text-muted)',
           cursor: canGenerate ? 'pointer' : 'default', padding: '5px 12px' }}>
         {streaming ? <Loader2 size={12} className="aispin" /> : <Sparkles size={12} />} 开始生成
       </button>
-      {!!blockReason && <span style={{ fontSize: 11, color: 'var(--danger)' }}>{blockReason}</span>}
-      {streaming && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>点右侧控制台「停止」可中断（服务端不留半成品）</span>}
+      {!!blockReason && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>{blockReason}</span>}
+      {streaming && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>点右侧控制台「停止」可中断（服务端不留半成品）</span>}
       {result && !streaming && (() => {
         const zipped = result.fileName.endsWith('.zip');
         return (
@@ -463,26 +463,26 @@ function BuildProgressPanel({ streaming, pageDone, pageTotal, result }: {
     <>
       {(streaming || pageTotal > 0) && (
         <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 4 }}>
             {streaming ? `装配中 ${pageDone}/${pageTotal} 页` : `已装配 ${pageDone}/${pageTotal} 页`}
           </div>
           <FlowProgress value={pageTotal ? (pageDone / pageTotal) * 100 : 0} aria-label="逐页装配进度" />
         </div>
       )}
       {result && result.projects.length > 1 && (
-        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-secondary)' }}>
+        <div style={{ marginTop: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
           {result.mode === 'separate' ? '分别独立版：' : '合并版分区：'}
           {result.projects.map((p) => `${p.name}（${p.pages} 页）`).join(' · ')}
         </div>
       )}
       {result && result.warnings.length > 0 && (
-        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--warn)' }}>
+        <div style={{ marginTop: 10, fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>
           版式/降级提示 {result.warnings.length} 条（已如实写进稿内，未静默改数）：
           {result.warnings.map((w, i) => <div key={`${w}-${i}`}>• {w}</div>)}
         </div>
       )}
       {result && result.degradedPages.length > 0 && (
-        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--warn)' }}>
+        <div style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>
           降级安全版式的页码：{result.degradedPages.join('、')}（其余页为原生版式）
         </div>
       )}
@@ -787,8 +787,8 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
     <div style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
         <FileChartColumn size={15} style={{ color: 'var(--accent)' }} />
-        <strong style={{ fontSize: 14 }}>阶段总结 PPT 生成</strong>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        <strong style={{ fontSize: 'var(--fs-l)' }}>阶段总结 PPT 生成</strong>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           周期与范围 → 校验 S1~S9（只读）→ AI 出大纲（人工确认）→ 本地逐页装配原生可编辑 .pptx，过程见右侧控制台
         </span>
         <span style={{ flex: 1 }} />
@@ -811,17 +811,17 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
         onGenOutline={() => void genOutline()} onClear={() => void clearOutline()} />
 
       {outlineStale && (
-        <div style={{ fontSize: 11, color: 'var(--warn)', marginBottom: 8 }}>
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--warn)', marginBottom: 8 }}>
           ⚠ 周期或项目范围已变更——当前大纲是按旧范围生成的，请重新生成大纲后再装配。
         </div>
       )}
       {outlineWarnings.length > 0 && (
-        <div style={{ fontSize: 11, color: 'var(--warn)', marginBottom: 8 }}>
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--warn)', marginBottom: 8 }}>
           {outlineWarnings.map((w, i) => <div key={`${w}-${i}`}>⚠ {w}</div>)}
         </div>
       )}
       {!!outlineGap && rows.length > 0 && !outlineStale && (
-        <div style={{ fontSize: 11, color: 'var(--warn)', marginBottom: 8 }}>⚠ {outlineGap}</div>
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--warn)', marginBottom: 8 }}>⚠ {outlineGap}</div>
       )}
 
       {rows.length > 0 && (

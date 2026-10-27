@@ -760,7 +760,7 @@ function UpdateSection() {
                       <div style={{ height: '100%', width: '100%', background: 'var(--accent-soft, var(--border))', opacity: .45 }} />
                     )}
                   </div>
-                  <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
+                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginTop: 4 }}>
                     {progressView.text}
                   </div>
                 </div>
