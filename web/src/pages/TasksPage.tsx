@@ -13,6 +13,9 @@ import { ProjectListHint, getProjectListSnapshot, patchProject, refreshProjectLi
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：选中项有效性校验失败态提示；T02257：AI 工具列表同层接入
 import { PinToggle } from '../ui/PinToggle';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
+import { NoticeToast, useNotice } from '../ui/notice'; // T03214（UX-02 ③）：提示分级——成功短驻、错误长驻且可关闭/复制
+import { paginationStatus, type PaginationView } from '../utils/taskPagination'; // T03214（UX-02 ①）：剩余条数与「已加载全部」判据
+import { buildImportFailureReceipt, buildImportReceipt } from '../utils/importReceipt'; // T03214（UX-02 ④）：导入结果分列成功/跳过/失败
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { useBusy, setBusy } from '../ui/busy';
 import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, PanelRightOpen, Pin, Plus, Save, ScanSearch, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
@@ -100,6 +103,8 @@ interface BatchReceipt {
   label: string;
   okCount: number;
   failed: Array<{ id: string; title: string; reason: string }>;
+  /** T03214（UX-02 ④）：跳过项与原因（导入预览的问题行、服务端未创建的条目） */
+  skipped?: Array<{ ref: string; reason: string }>;
   at: string;
 }
 /** 撤销栈上限：再深的历史用户基本不会翻，且每条快照都占内存（含逐条旧值） */
@@ -254,6 +259,8 @@ export function TasksPage() {
   // 主列表分页：后端按页拉取 + 加载更多；hasMore=true 表示当前页刚好满页、可能还有更多
   const PAGE_SIZE = 200;
   const [hasMore, setHasMore] = useState(false);
+  // T03214（UX-02 ①）：页脚状态（剩余条数 / 已加载全部）——随每轮取数更新，拿不到服务端总数时保持 null 不猜数
+  const [pageStatus, setPageStatus] = useState<PaginationView | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [organizeToolId, setOrganizeToolId] = usePersistentState('tasks.organizeToolId', '');
   // T02257：/aitools 接入 T02213 共享失败态层——此前首个 await 在 try 之外，
@@ -338,7 +345,8 @@ export function TasksPage() {
   const titleDrafts = beautifySnap.drafts; // taskId -> 标题编辑草稿（美化结果/手动编辑共用，切页保留）
   const [imgDrafts, setImgDrafts] = useState<Record<string, ImageDraft>>({}); // taskId -> 图片增删草稿
   const [previewId, setPreviewId] = useState(''); // 当前放大预览的图片 id
-  const [notice, setNotice] = useState('');
+  // T03214（UX-02 ③）：提示改走分级通道——info 2.5 秒、error ≥6 秒且可关闭/复制
+  const { notice, flash, dismiss: dismissNotice } = useNotice();
   // 刚完成"复制"的任务 id，用于按钮短暂显示"已复制✓"反馈
   const [copiedId, setCopiedId] = useState('');
   // 描述 展开/收起 状态：descExpanded 记录已展开的 taskId，默认收起不展示摘要，点标题行箭头展开看完整描述
@@ -362,7 +370,9 @@ export function TasksPage() {
   // 验证失败反馈编辑草稿：存在即编辑态，保存写回 handle_result 全文
   const [fbDrafts, setFbDrafts] = useState<Record<string, string>>({});
   // 「已完成」栏验证状态过滤：默认仅展示未验证，便于优先处理待核对的完成项；all=全部
-  const [doneFilter, setDoneFilter] = useState<'all' | 'unverified' | 'verified'>('unverified');
+  // T03214（UX-02 ②）：此前是裸 useState——切到别的页再回来就回到默认值，与搜索/分类/优先级筛选不一致。
+  // 升级为会话级：切页返回保持，重开应用清空。
+  const [doneFilter, setDoneFilter] = useSessionState<'all' | 'unverified' | 'verified'>('tasks.doneFilter', 'unverified');
   // 待办/已完成区块排序：会话级偏好，默认保持后端顺序
   const [todoSort, setTodoSort] = usePersistentState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.todoSort', 'default'); // T01697：排序偏好持久化（重启保持）
   const [doneSort, setDoneSort] = usePersistentState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.doneSort', 'default'); // T01697
@@ -394,17 +404,13 @@ export function TasksPage() {
       flash(nowPinned ? `已置顶「${pj.name}」（默认排序下排最前）` : `已取消置顶「${pj.name}」`);
       void loadProjects();
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
     }
   }
   const projDropRef = useRef<HTMLDivElement | null>(null);
   // T01584：上次「点击刷新项目计数」的时间戳——连点只按节流窗口拉一次，不打爆后端
   const projCountsAtRef = useRef(0);
   const pressTimer = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-    const flash = (msg: string) => {
-    setNotice(msg);
-    setTimeout(() => setNotice(''), 2500);
-  };
 
   const loadProjects = useCallback(async () => {
     await refreshProjectList();
@@ -448,6 +454,8 @@ export function TasksPage() {
     // 断供时既刷出 unhandled rejection，界面又停在「暂无待办任务」空态冒充正常。
     // 改为就地收下：失败只置 error 态，绝不覆盖上次成功数据（与 T02213 同口径）。
     let list: Task[];
+    // T03214（UX-02 ①）：本轮信封里的服务端总数——hasMore 判据要用它，不能等 setState 后再读（异步）
+    let fetchedTotal: number | null = null;
     try {
       const pTotal = new URLSearchParams(p);
       pTotal.set('total', '1');
@@ -456,6 +464,7 @@ export function TasksPage() {
       const res = await api.get<Paged<Task> | Task[]>(`/tasks?${pTotal.toString()}`);
       const page = Array.isArray(res) ? { items: res, total: null as number | null } : { items: res.items, total: res.total };
       list = page.items;
+      fetchedTotal = page.total;
       setServerTotal(page.total);
       setTasksPhase('ready'); setTasksError('');
     } catch (e) {
@@ -467,7 +476,10 @@ export function TasksPage() {
     const nextDone = list.filter((t) => t.status === 'done');
     setTodo((prev) => (replace ? nextTodo : [...prev, ...nextTodo]));
     setDone((prev) => (replace ? nextDone : [...prev, ...nextDone]));
-    setHasMore(list.length === PAGE_SIZE);
+    // T03214（UX-02 ①）：满页只是「可能有下一页」；拿到服务端总数时以「已取回数 < 总数」为准，正好一页不再多点一次空页
+    const pageView = paginationStatus(fetchedTotal, offset + list.length, list.length === PAGE_SIZE);
+    setHasMore(pageView.canLoadMore);
+    setPageStatus(pageView);
     // T01570：两套查看态共用同一份数据快照——整表刷新后把抽屉持有的任务对象换成新快照，
     // 否则行内编辑保存 / MCP 回传后，已开着的抽屉仍是打开那一刻的旧对象（要关开才更新），
     // 用户在旧文本上再保存就会覆盖掉刚写入的新内容（丢更新）。
@@ -881,7 +893,7 @@ export function TasksPage() {
     } catch (e) {
       // T02481：重名（含历史资产/归档区占用）后端会回 400，以前这里没有 catch，
       // 点击后既不建项目也不提示，看起来像按钮没反应。与改名/删除保持一致，把原文提示出来。
-      return flash(e instanceof Error ? e.message : String(e));
+      return flash(e instanceof Error ? e.message : String(e), 'error');
     }
     setActiveProject('');
     void loadProjects();
@@ -909,7 +921,7 @@ export function TasksPage() {
       void loadProjects();
       flash(`已修改项目名称为「${name.trim()}」`);
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
     }
   }
 
@@ -928,7 +940,7 @@ export function TasksPage() {
     try {
       await api.del(`/projects/${proj.id}`);
     } catch (e) {
-      return flash(e instanceof Error ? e.message : String(e));
+      return flash(e instanceof Error ? e.message : String(e), 'error');
     }
     setActiveProject('');
     void loadProjects();
@@ -958,7 +970,7 @@ export function TasksPage() {
       await loadPromptCats();
       setReuseCategoryId(created.id);
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
     }
   }
 
@@ -971,7 +983,7 @@ export function TasksPage() {
       await loadReqCats();
       setReuseCategoryId(created.id);
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
     }
   }
 
@@ -979,6 +991,7 @@ export function TasksPage() {
     if (!newTitle.trim() || !activeProject) return;
     // T03211：新建任务必须落到具体项目——全部项目视图没有默认归属，先要求选项目
     if (activeProject === ALL_PROJECTS) return flash('全部项目视图下请先选择具体项目再新建任务');
+    const creatingTitle = newTitle.trim();
     // 全程置 creating，按钮转圈禁用，避免智能分类等耗时步骤看起来"卡住"
     setBusy('tasks.create', true);
     try {
@@ -1011,7 +1024,11 @@ export function TasksPage() {
       clearSessionState('tasks.new.images');
       clearSessionState('tasks.new.descOpen');
       clearSessionState('tasks.new.category');
+      flash(`已创建：${creatingTitle}`, 'info'); // T03214（UX-02③）：成功走短提示，行本身由列表重载呈现
       void loadTasks(activeProject);
+    } catch (e) {
+      // T03214（UX-02③）：原先只有 finally，创建失败冒泡成未捕获 rejection——用户看不到任何反馈，输入框内容也留着像没反应
+      flash(`新建任务失败：${e instanceof Error ? e.message : String(e)}`, 'error');
     } finally {
       setBusy('tasks.create', false);
     }
@@ -1023,7 +1040,7 @@ export function TasksPage() {
       await api.patch(`/tasks/${task.id}`, { categoryId: categoryId || null });
       void loadTasks(activeProject);
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
     }
   }
 
@@ -1033,7 +1050,7 @@ export function TasksPage() {
       await api.patch(`/tasks/${task.id}`, { pinned: !task.pinned });
       void loadTasks(activeProject);
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
     }
   }
 
@@ -1101,7 +1118,7 @@ export function TasksPage() {
       setFailDialog(null);
       void loadTasks(activeProject);
     } catch (e) {
-      flash(String((e as Error).message ?? e));
+      flash(String((e as Error).message ?? e), 'error');
     } finally {
       setFailBusy(false);
     }
@@ -1151,7 +1168,7 @@ export function TasksPage() {
       setRulingDraft('');
       void loadTasks(activeProject);
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
     } finally {
       setRulingBusy(false);
     }
@@ -1194,7 +1211,7 @@ export function TasksPage() {
       flash('美化完成，可编辑后保存');
     } catch (e) {
       // 用户主动取消时静默，不弹错误
-      if ((e as Error).name !== 'AbortError') flash(e instanceof Error ? e.message : String(e));
+      if ((e as Error).name !== 'AbortError') flash(e instanceof Error ? e.message : String(e), 'error');
     } finally {
       beautifyStore.clearBusy(task.id);
       delete beautifyStore.aborts[task.id];
@@ -1230,7 +1247,7 @@ export function TasksPage() {
       beautifyStore.setDraft(task.id, result.content.trim());
       flash('已简化（限 40 字），可编辑后保存');
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') flash(e instanceof Error ? e.message : String(e));
+      if ((e as Error).name !== 'AbortError') flash(e instanceof Error ? e.message : String(e), 'error');
     } finally {
       beautifyStore.clearBusy(task.id);
       delete beautifyStore.aborts[task.id];
@@ -1262,7 +1279,7 @@ export function TasksPage() {
       beautifyStore.mergeDrafts(next);
       flash(`美化完成 ${ok.length}/${tasks.length} 条，请逐条确认保存`);
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') flash(e instanceof Error ? e.message : String(e));
+      if ((e as Error).name !== 'AbortError') flash(e instanceof Error ? e.message : String(e), 'error');
     } finally {
       beautifyStore.setBatchBusy(false);
       delete beautifyStore.aborts['__batch__'];
@@ -1286,7 +1303,7 @@ export function TasksPage() {
       await api.post('/tasks', { projectId: parent.project_id, title: title.trim(), parentId: parent.id });
       void loadTasks(activeProject);
       flash('子任务已创建');
-    } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
+    } catch (e) { flash(e instanceof Error ? e.message : String(e), 'error'); }
   }
 
   /** T00658：分区全选/全不选（半选态由 checked/indeterminate 双属性表达） */
@@ -1311,7 +1328,7 @@ export function TasksPage() {
     void api.post('/tasks/reorder', { orderedIds: ids }).then(() => {
       flash('顺序已保存（手动排序模式下持久生效）');
       void loadTasks(activeProject);
-    }).catch((e) => flash(String((e as Error).message ?? e)));
+    }).catch((e) => flash(String((e as Error).message ?? e), 'error'));
   }
 
   // ---------- T00446 / INT-6：CSV 任务导入（预览 → 确认） ----------
@@ -1320,6 +1337,8 @@ export function TasksPage() {
     if (!activeProject) return flash('请先选择项目');
     // T03211：导入需要落到具体项目
     if (activeProject === ALL_PROJECTS) return flash('全部项目视图下请先选择具体项目再导入');
+    // T03214（UX-02 ⑤）：预览请求在途时挡掉再次选文件，避免两轮预览相互覆盖
+    if (batchOpBusy) return flash('上一批操作仍在进行中，请稍候');
     setBatchOpBusy(true);
     try {
       // T00556 / PRD INT-6：按扩展名分流——.json 走 JSON 导入（Trello 导出/JSON 数组），其余走 CSV
@@ -1332,26 +1351,36 @@ export function TasksPage() {
         if (r.errors.length > 0) flash(`JSON 解析：${r.items.length} 条可导入，${r.errors.length} 条有问题——修正后重新上传`);
         else flash(`JSON 解析完成：${r.items.length} 条待确认导入`);
       } else {
-        const text = await file.text();
-        const r = await api.post<{ items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>; errors: Array<{ row: number; message: string }> }>(`/tasks/import-csv/preview?projectId=${activeProject}`, { csvText: text });
+        // T03214 真机实测发现：该路由用 raw() 收体，JSON 上传会被全局 express.json 先解析成对象而恒 400——与 JSON 导入一致改发原始字节
+        const buf = await file.arrayBuffer();
+        const r = await api.postBinary<{ items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>; errors: Array<{ row: number; message: string }> }>(`/tasks/import-csv/preview?projectId=${activeProject}`, buf);
         setCsvPreview(r);
         setCsvImportKind('csv');
         if (r.errors.length > 0) flash(`CSV 解析：${r.items.length} 条可导入，${r.errors.length} 行有问题——修正后重新上传`);
         else flash(`CSV 解析完成：${r.items.length} 条待确认导入`);
       }
-    } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBatchOpBusy(false); }
+    } catch (e) { flash(String((e as Error).message ?? e), 'error'); } finally { setBatchOpBusy(false); }
   }
 
   async function confirmCsvImport() {
     if (!csvPreview || !activeProject) return;
+    // T03214（UX-02 ⑤）：确认导入是异步写库，忙时再点会把同一批预览重复入库
+    if (batchOpBusy) return flash('导入仍在进行中，请稍候');
+    const preview = csvPreview;
     setBatchOpBusy(true);
     try {
       const path = csvImportKind === 'json' ? '/tasks/import-json/confirm' : '/tasks/import-csv/confirm';
-      const r = await api.post<{ ok: boolean; count: number }>(path, { projectId: activeProject, items: csvPreview.items });
+      const r = await api.post<{ ok: boolean; count: number }>(path, { projectId: activeProject, items: preview.items });
       setCsvPreview(null);
       void loadTasks(activeProject);
-      flash(`${csvImportKind === 'json' ? 'JSON' : 'CSV'} 导入完成：${r.count} 条任务已创建`);
-    } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBatchOpBusy(false); }
+      // T03214（UX-02 ④）：导入结果落常驻回执——成功/跳过/失败分列带原因，短提示消失后仍可回看
+      setBatchReceipt({ ...buildImportReceipt({ kind: csvImportKind, items: preview.items, errors: preview.errors, created: r.count }), at: new Date().toISOString() });
+      flash(`${csvImportKind === 'json' ? 'JSON' : 'CSV'} 导入完成：${r.count} 条任务已创建`, 'info');
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      setBatchReceipt({ ...buildImportFailureReceipt(csvImportKind, reason), at: new Date().toISOString() });
+      flash(reason, 'error');
+    } finally { setBatchOpBusy(false); }
   }
 
   async function batchApply(action: 'status' | 'category' | 'priority' | 'color' | 'archive' | 'verified', value?: string) {
@@ -1419,7 +1448,7 @@ export function TasksPage() {
       setSelectedIds(new Set(failedItems.map((f) => f.id)));
       void loadTasks(activeProject);
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
     } finally { setBatchOpBusy(false); }
   }
 
@@ -1436,7 +1465,7 @@ export function TasksPage() {
       setSelectedIds(new Set());
       void loadTasks(activeProject);
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
     } finally { setBatchOpBusy(false); }
   }
 
@@ -1521,7 +1550,7 @@ export function TasksPage() {
       setWipDrafts((prev) => { const next = { ...prev }; delete next[projectId]; return next; });
       flash(`WIP 上限已设为 ${n}`);
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
     } finally { setWipBusy(false); }
   }
 
@@ -1615,7 +1644,7 @@ export function TasksPage() {
       URL.revokeObjectURL(url);
       flash(`已导出 ${filename}`);
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
     } finally { setExportBusy(false); setExportMenu(null); }
   }
   const EXPORT_ITEMS: { fmt: 'docx' | 'md' | 'xlsx'; label: string; desc: string }[] = [
@@ -1631,17 +1660,29 @@ export function TasksPage() {
   function renderBatchReceipt() {
     if (!batchReceipt) return null;
     const { label, okCount, failed } = batchReceipt;
+    // T03214（UX-02 ④）：跳过列（导入预览的问题行等）与失败列分列，各自带原因
+    const skipped = batchReceipt.skipped ?? [];
     return (
       <div role="status" aria-label="批量操作回执"
-        style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: `1px solid ${failed.length > 0 ? 'var(--warn)' : 'var(--border-strong)'}`, fontSize: 12 }}>
+        style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: `1px solid ${failed.length > 0 || skipped.length > 0 ? 'var(--warn)' : 'var(--border-strong)'}`, fontSize: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <strong style={{ color: 'var(--text)' }}>{label}回执：成功 {okCount} 条</strong>
+          <span data-t03214="receipt-skipped" style={{ color: skipped.length > 0 ? 'var(--text-secondary)' : 'var(--text-muted)' }}>跳过 {skipped.length} 条</span>
           <span style={{ color: failed.length > 0 ? 'var(--warn)' : 'var(--text-muted)' }}>失败 {failed.length} 条</span>
           <button onClick={() => setBatchReceipt(null)} aria-label="关闭批量操作回执" title="关闭回执"
             style={{ marginLeft: 'auto', cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', border: 'none', background: 'transparent', color: 'var(--text-secondary)' }}>
             <X size={13} />
           </button>
         </div>
+        {skipped.length > 0 && (
+          <ul aria-label="操作跳过明细" data-t03214="skipped-list" style={{ margin: 0, paddingLeft: 18, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {skipped.map((s, i) => (
+              <li key={`${s.ref}|${s.reason}|${i}`} style={{ wordBreak: 'break-all' }}>
+                <span style={{ color: 'var(--text)' }}>{s.ref}</span> — {s.reason}
+              </li>
+            ))}
+          </ul>
+        )}
         {failed.length > 0 && (
           <ul aria-label="批量操作失败明细" style={{ margin: 0, paddingLeft: 18, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 2 }}>
             {failed.map((f) => (
@@ -1826,7 +1867,7 @@ export function TasksPage() {
       setDescDrafts((prev) => ({ ...prev, [task.id]: content }));
       flash(`提示词优化完成（输入来源：${source}），可编辑后保存`);
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') flash(e instanceof Error ? e.message : String(e));
+      if ((e as Error).name !== 'AbortError') flash(e instanceof Error ? e.message : String(e), 'error');
     } finally {
       setOptimizingMap((p) => { const n = { ...p }; delete n[task.id]; return n; });
       delete optimizeAborts.current[task.id];
@@ -1870,7 +1911,7 @@ export function TasksPage() {
     try {
       await api.patch(`/tasks/${task.id}`, { title: content.trim() });
     } catch (e) {
-      return flash(e instanceof Error ? e.message : String(e));
+      return flash(e instanceof Error ? e.message : String(e), 'error');
     }
     beautifyStore.setDraft(task.id, undefined); // 保存成功即退出编辑态（清草稿）
     void loadTasks(activeProject);
@@ -1901,7 +1942,7 @@ export function TasksPage() {
       setReuseSearch('');
       setReuseCategoryId('');
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
     } finally {
       setBusy('tasks.reuse', false);
     }
@@ -2015,7 +2056,7 @@ export function TasksPage() {
         for (const id of imgDraft.removed) await api.del(`/images/${id}`);
       }
     } catch (e) {
-      return flash(e instanceof Error ? e.message : String(e));
+      return flash(e instanceof Error ? e.message : String(e), 'error');
     }
     setDescDrafts((prev) => {
       const next = { ...prev };
@@ -2039,7 +2080,7 @@ export function TasksPage() {
     try {
       await api.patch(`/tasks/${task.id}`, { handleResult: content });
     } catch (e) {
-      return flash(e instanceof Error ? e.message : String(e));
+      return flash(e instanceof Error ? e.message : String(e), 'error');
     }
     setResultDrafts((prev) => {
       const next = { ...prev };
@@ -2893,7 +2934,7 @@ export function TasksPage() {
     try {
       await api.patch(`/tasks/${task.id}`, { handleResult: content });
     } catch (e) {
-      return flash(e instanceof Error ? e.message : String(e));
+      return flash(e instanceof Error ? e.message : String(e), 'error');
     }
     setFbDrafts((prev) => {
       const next = { ...prev };
@@ -3428,11 +3469,13 @@ export function TasksPage() {
           view={{ phase: tasksPhase, error: tasksError, stale: tasksPhase === 'error' && (todo.length > 0 || done.length > 0), reload: () => void loadTasks(activeProject) }}
           label="任务列表"
         />
-        <label className="task-op" title="导入数据 — CSV/JSON（JSON 支持 Trello 导出与 JSON 数组），预览确认后入库"
-          style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', display: 'inline-block' }}>
+        <label className="task-op" title={batchOpBusy ? '导入数据 — 上一批操作进行中，完成后恢复可选' : '导入数据 — CSV/JSON（JSON 支持 Trello 导出与 JSON 数组），预览确认后入库'}
+          aria-disabled={batchOpBusy || undefined}
+          style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: batchOpBusy ? 'not-allowed' : 'pointer', border: '1px solid var(--border-strong)', display: 'inline-block', opacity: batchOpBusy ? 0.55 : 1 }}>
           <span>导入数据</span>
           {/* T00556：扩展为 CSV/JSON 双格式导入（Trello 导出 / JSON 数组） */}
-          <input type="file" accept=".csv,.json" style={FILE_INPUT_SR_ONLY}
+          {/* T03214（UX-02 ⑤）：预览/写库在途时禁用文件框——键盘 Tab + Enter 也走不到重复选文件 */}
+          <input type="file" accept=".csv,.json" style={FILE_INPUT_SR_ONLY} data-t03214="import-file-input" disabled={batchOpBusy}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void onCsvFile(f); } e.target.value = ''; }} />
         </label>
         <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
@@ -3484,7 +3527,7 @@ export function TasksPage() {
             </button>
           )}
         </span>
-        {notice && <output className="flash-toast">{notice}</output>}
+        <NoticeToast notice={notice} onDismiss={dismissNotice} />
       </div>
     );
   }
@@ -3819,6 +3862,13 @@ export function TasksPage() {
         >
           {loadingMore ? '加载中…' : '加载更多'}
         </button>
+        )}
+        {/* T03214（UX-02 ①）：剩余条数常驻告知；取完即消失并换成「已加载全部」，与「共 N 条」区分本页/全量 */}
+        {pageStatus?.remaining != null && pageStatus.remaining > 0 && (
+          <span data-t03214="task-remaining" style={{ fontSize: 12, color: 'var(--text-muted)' }}>剩余 {pageStatus.remaining} 条</span>
+        )}
+        {pageStatus?.allLoaded && (
+          <span data-t03214="all-loaded" role="status" style={{ fontSize: 12, color: 'var(--success)' }}>已加载全部</span>
         )}
       </div>
     );
