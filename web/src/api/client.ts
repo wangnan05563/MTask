@@ -243,6 +243,9 @@ export interface Task {
   fromPlanKind?: string;
   /** T02196：来源计划行 id——点击「计划/里程碑」徽标时据此在计划 WBS 视图定位该节点 */
   fromPlanId?: string;
+  /** T03229（PM-202②）：在途阻塞方摘要——列表/看板「阻塞 N」徽标据此显示，tooltip 点名是谁挡的。
+   *  仅列表类读法带出（单条详情改读 `/tasks/:id/blocked-by`），故为可选。 */
+  blocked_by?: Array<{ id: string; task_no: string | null; title: string }>;
   /** T00446：手动排序权重（拖拽排序结果；manual 排序模式生效） */
   user_sort: number | null;
   /** 置顶：true=固定到列表顶部 */

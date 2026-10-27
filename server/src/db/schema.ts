@@ -624,6 +624,26 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook ON webhook_deliveries(webhook_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_due ON webhook_deliveries(status, next_attempt_at);
   `);
+  // T03229（PRD PM-202①）：任务级阻塞关系——多对多 blocked-by。
+  // 与 plan_tasks.deps（计划侧 JSON）分开建模：待办状态恒为 todo|done 二元（T02070 裁决），
+  // 阻塞只能是一条条可增删、可留痕的关系，不能塞进 tasks 的某个 JSON 列（那样既无法索引也无法写事件）。
+  // released_at 空=在途：解除/自动解除只封口不删行（PM-202④ 要求历史仍可查），
+  // 因此「同一对任务最多一条在途关系」用部分唯一索引而非表级 UNIQUE 表达（同 iteration_events 的周报卡做法）。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_blockers (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      blocked_id      TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      blocker_id      TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      created_at      TEXT NOT NULL,
+      released_at     TEXT,
+      released_reason TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS uniq_task_blockers_open ON task_blockers(blocked_id, blocker_id) WHERE released_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_task_blockers_blocked ON task_blockers(blocked_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_task_blockers_blocker ON task_blockers(blocker_id, released_at, created_at);
+    CREATE INDEX IF NOT EXISTS idx_task_blockers_project ON task_blockers(project_id, released_at);
+  `);
   ensureColumn('tasks', 'verified', 'verified INTEGER NOT NULL DEFAULT 0');
   ensureColumn('queues', 'paused', 'paused INTEGER NOT NULL DEFAULT 0'); // T01434：队列级暂停/继续
   // T00490：记录字体颜色（Excel 风格颜色按钮）——空串=默认色

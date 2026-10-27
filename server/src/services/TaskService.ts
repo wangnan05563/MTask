@@ -132,6 +132,9 @@ export interface TaskView {
   /** T02196：来源计划行（plan_tasks）自身的 id——前端「计划/里程碑」徽标据此在 WBS 视图中定位该节点。
    *  此前只有标题与类型，跳转方无从知道要落到哪一行。 */
   fromPlanId?: string;
+  /** T03229（PM-202②）：在途阻塞方摘要——列表/看板徽标据此显示「阻塞 N」，tooltip 直接点名是谁挡的。
+   *  仅列表类读法（`list` / 经 `decorateRows` 的路径）带出；单条 `getById` 由前端改读 `/tasks/:id/blocked-by`。 */
+  blocked_by?: Array<{ id: string; task_no: string | null; title: string }>;
 }
 
 export interface TaskInput {
@@ -411,6 +414,7 @@ function readyAndOrder<T extends { id: string }>(db: ReturnType<typeof getDb>, r
 function decorateRows(db: ReturnType<typeof getDb>, rows: TaskRow[]): TaskView[] {
   const imageMap = TaskImageService.mapByTasks(rows.map((r) => r.id));
   const planLinked = loadPlanLinked(db, rows);
+  const blockers = loadOpenBlockers(db, rows.map((r) => r.id));
   return rows.map((r) => {
     const view = rowToTask(r, imageMap.get(r.id) ?? []);
     const link = planLinked.get(r.id);
@@ -419,6 +423,7 @@ function decorateRows(db: ReturnType<typeof getDb>, rows: TaskRow[]): TaskView[]
       view.fromPlanKind = link.kind; // T01037：里程碑联动任务要显示「里程碑」而非「计划」
       view.fromPlanId = link.planId; // T02196：徽标点击定位来源 WBS 节点
     }
+    view.blocked_by = blockers.get(r.id) ?? [];
     return view;
   });
 }
@@ -469,9 +474,58 @@ function rulingInputOf(task: { title?: string | null; description?: string | nul
   };
 }
 
+/* ---------------- T03229（PRD PM-202①②）：任务级阻塞关系 ---------------- */
+
+/** 一行 = 「`blocked_id` 被 `blocker_id` 阻塞」；`released_at` 空即在途。
+ *  解除只封口不删行——PM-202④ 要求「历史事件仍可查」，删行会把关系变化变成不可追溯的改写。 */
+export interface TaskBlockerView {
+  /** 关系行 id */
+  id: string;
+  blocked_id: string;
+  blocker_id: string;
+  /** 阻塞方编号与标题（随行带出，前端徽标 tooltip 与抽屉列表直接用，无需二次查询） */
+  blocker_no: string | null;
+  blocker_title: string;
+  blocker_status: string;
+  created_at: string;
+  released_at: string | null;
+  released_reason: string | null;
+}
+
+/** 列表/看板徽标的在途阻塞摘要（分批 IN 与 `loadPlanLinked` 同口径，规避 SQLite 999 变量上限）。
+ *  带出阻塞方的编号与标题而不是只给计数：徽标 tooltip 要能回答「被谁挡住」，
+ *  否则用户看到「阻塞 2」还得逐条开抽屉才知道是什么。 */
+function loadOpenBlockers(db: ReturnType<typeof getDb>, taskIds: string[]): Map<string, Array<{ id: string; task_no: string | null; title: string }>> {
+  const byTask = new Map<string, Array<{ id: string; task_no: string | null; title: string }>>();
+  for (let i = 0; i < taskIds.length; i += PLAN_LOOKUP_BATCH) {
+    const chunk = taskIds.slice(i, i + PLAN_LOOKUP_BATCH);
+    if (chunk.length === 0) continue;
+    const rows = db.prepare(
+      `SELECT b.blocked_id, b.blocker_id, t.task_no, t.title FROM task_blockers b
+         JOIN tasks t ON t.id = b.blocker_id
+        WHERE b.released_at IS NULL AND b.blocked_id IN (${chunk.map(() => '?').join(',')})
+        ORDER BY b.created_at`,
+    ).all(...chunk) as Array<{ blocked_id: string; blocker_id: string; task_no: string | null; title: string }>;
+    for (const r of rows) {
+      const list = byTask.get(r.blocked_id) ?? [];
+      list.push({ id: r.blocker_id, task_no: r.task_no, title: r.title });
+      byTask.set(r.blocked_id, list);
+    }
+  }
+  return byTask;
+}
+
+/** 关系行的事件文案：两侧各记一条，使「谁被谁挡住」与「谁挡住了谁」都能在各自时间线读到 */
+function blockerEventDetail(t: BlockerLabel): string {
+  return `${t.task_no ? `${t.task_no} ` : ''}「${t.title}」`;
+}
+
+/** 建立关系时的两侧最小投影（`SELECT id, task_no, title, project_id, status, archived`） */
+type BlockerLabel = { task_no: string | null; title: string };
+type BlockerParty = BlockerLabel & { id: string; project_id: string; status: string; archived: number };
+
 export const TaskService = {
-  create(input: TaskInput): TaskView {
-    const db = getDb();
+  create(input: TaskInput): TaskView {    const db = getDb();
     const id = uuid();
     const t = now();
     if (input.parentId && !db.prepare('SELECT id FROM tasks WHERE id = ?').get(input.parentId)) {
@@ -785,6 +839,79 @@ export const TaskService = {
     if (!this.getById(id)) throw new Error('任务不存在');
     // update 的 patch 类型按 TaskRow（number），这里先归一 0/1（update 内 boolean 归一为冗余兜底）
     return this.update(id, { shelved: shelved ? 1 : 0 });
+  },
+
+  /**
+   * T03229（PM-202①）：某任务的阻塞关系，默认只回在途（`released_at IS NULL`）；
+   * `includeReleased` 时连同已解除的历史一并带出——④ 的「历史仍可查」靠这条与 task_events 双轨。
+   */
+  listBlockers(id: string, opts: { includeReleased?: boolean } = {}): TaskBlockerView[] {
+    const db = getDb();
+    if (!db.prepare('SELECT 1 FROM tasks WHERE id = ?').get(id)) throw new Error('任务不存在');
+    return db.prepare(
+      `SELECT b.id, b.blocked_id, b.blocker_id, t.task_no AS blocker_no, t.title AS blocker_title,
+              t.status AS blocker_status, b.created_at, b.released_at, b.released_reason
+         FROM task_blockers b JOIN tasks t ON t.id = b.blocker_id
+        WHERE b.blocked_id = ?${opts.includeReleased ? '' : ' AND b.released_at IS NULL'}
+        ORDER BY b.created_at DESC`,
+    ).all(id) as TaskBlockerView[];
+  },
+
+  /**
+   * T03229（PM-202①）：建立「`blockedId` 被 `blockerId` 阻塞」。
+   *
+   * 三条边界在写入口钉死，而不是留给前端约束：
+   * - 已完成/已归档的任务不能充当阻塞方。③ 的自动解除只盯「迁入 done」这一次跃迁，
+   *   若建关系时对方就已 done，这条在途阻塞永远不会被解除——徽标会钉在任务上摘不掉。
+   * - 同项目（与 parentId 挂接同口径）：跨项目的阻塞没有共同的列表/看板可读，只会造成困惑。
+   * - 在途关系唯一（部分唯一索引兜底，服务层先给出人话错误）。
+   */
+  addBlocker(blockedId: string, blockerId: string): TaskBlockerView {
+    const db = getDb();
+    const sel = db.prepare('SELECT id, task_no, title, project_id, status, archived FROM tasks WHERE id = ?');
+    const blocked = sel.get(blockedId) as BlockerParty | undefined;
+    if (!blocked) throw new Error('任务不存在');
+    if (blockedId === blockerId) throw new Error('任务不能阻塞自身');
+    const blocker = sel.get(blockerId) as BlockerParty | undefined;
+    if (!blocker) throw new Error('阻塞方任务不存在');
+    if (blocked.project_id !== blocker.project_id) throw new Error('阻塞关系只能在同一项目内建立');
+    if (blocker.archived) throw new Error('阻塞方已归档，不能作为阻塞方');
+    if (blocker.status === 'done') throw new Error('阻塞方已完成，不构成阻塞');
+    if (db.prepare('SELECT 1 FROM task_blockers WHERE blocked_id = ? AND blocker_id = ? AND released_at IS NULL').get(blockedId, blockerId)) {
+      throw new Error('该阻塞关系已存在');
+    }
+    const id = uuid();
+    db.transaction(() => {
+      db.prepare('INSERT INTO task_blockers (id, project_id, blocked_id, blocker_id, created_at) VALUES (?, ?, ?, ?, ?)')
+        .run(id, blocked.project_id, blockedId, blockerId, now());
+      // 两侧各写一条：被挡的一方要知道谁挡的，挡人的一方要知道自己钉住了谁（③ 解除时同一对文案对称）
+      logEvent(db, blockedId, 'blocked', `被${blockerEventDetail(blocker)}阻塞`);
+      logEvent(db, blockerId, 'blocked', `阻塞了${blockerEventDetail(blocked)}`);
+    })();
+    notifyChange('tasks');
+    return this.listBlockers(blockedId).find((b) => b.id === id)!;
+  },
+
+  /**
+   * T03229（PM-202①）：解除阻塞——封口不删行（`released_at` + `released_reason`），两侧补写 `unblock` 事件。
+   * `reason` 由调用方给出：手动解除用默认值，③ 的自动解除（T03230）传「阻塞方已完成」。
+   */
+  removeBlocker(blockedId: string, blockerId: string, reason = '手动解除'): { blocked_id: string; blocker_id: string; released_at: string } {
+    const db = getDb();
+    const rel = db.prepare('SELECT id FROM task_blockers WHERE blocked_id = ? AND blocker_id = ? AND released_at IS NULL')
+      .get(blockedId, blockerId) as { id: string } | undefined;
+    if (!rel) throw new Error('阻塞关系不存在或已解除');
+    const sel = db.prepare('SELECT task_no, title FROM tasks WHERE id = ?');
+    const blocked = (sel.get(blockedId) as BlockerLabel | undefined) ?? { task_no: null, title: '' };
+    const blocker = (sel.get(blockerId) as BlockerLabel | undefined) ?? { task_no: null, title: '' };
+    const releasedAt = now();
+    db.transaction(() => {
+      db.prepare('UPDATE task_blockers SET released_at = ?, released_reason = ? WHERE id = ?').run(releasedAt, reason, rel.id);
+      logEvent(db, blockedId, 'unblock', `解除阻塞：${blockerEventDetail(blocker)}（${reason}）`);
+      logEvent(db, blockerId, 'unblock', `不再阻塞${blockerEventDetail(blocked)}（${reason}）`);
+    })();
+    notifyChange('tasks');
+    return { blocked_id: blockedId, blocker_id: blockerId, released_at: releasedAt };
   },
 
   /**

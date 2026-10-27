@@ -13,6 +13,7 @@ import { ProjectListHint, getProjectListSnapshot, patchProject, refreshProjectLi
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：选中项有效性校验失败态提示；T02257：AI 工具列表同层接入
 import { PinToggle } from '../ui/PinToggle';
 import { priorityAriaLabel, priorityColor } from '../ui/priority'; // PM-302 ③：优先级 → 颜色/文案单源（列表/看板/矩阵/移动端共用）
+import { blockBadgeNames, blockBadgeNode } from '../ui/blockBadge'; // T03229（PM-202②）：阻塞徽标单源（列表行与看板卡共用）
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { NoticeToast, useNotice } from '../ui/notice'; // T03214（UX-02 ③）：提示分级——成功短驻、错误长驻且可关闭/复制
 import { paginationStatus, type PaginationView } from '../utils/taskPagination'; // T03214（UX-02 ①）：剩余条数与「已加载全部」判据
@@ -39,7 +40,7 @@ interface Paged<T> {
 }
 
 /** T01568：详情抽屉合法标签页（会话键 focusDrawerTab 的白名单校验口径，与 TaskDetailDrawer 标签页一致） */
-const DRAWER_TABS: readonly TaskDetailTab[] = ['desc', 'result', 'summary', 'timeline', 'plans'];
+const DRAWER_TABS: readonly TaskDetailTab[] = ['desc', 'result', 'summary', 'timeline', 'plans', 'blocks'];
 
 // ---------- T00552：批量分类运行态模块级化——切页后循环继续、返回不卡死 ----------
 // T02365：补「没命中」的原因分桶——AI 判定无匹配、调用失败、分类候选为空要分得开，
@@ -1550,6 +1551,9 @@ export function TasksPage() {
   function renderBoardCard(t: Task) {
     const cat = taskCats.find((c) => c.id === t.category_id);
     const target: 'todo' | 'done' = t.status === 'done' ? 'todo' : 'done';
+    // T03229（PM-202②）：卡面徽标之外的可访问名补充——卡片本身是 role=button，
+    // 内层 span 的 aria-label 不参与按钮命名，故把阻塞读数并进卡片自身的 aria-label。
+    const blockedN = (t.blocked_by ?? []).length;
     return (
       <div key={t.id} /* NOSONAR - HTML5 draggable 卡片：拖拽流转状态无原生等价元素，改 button 会破坏原生拖拽 */
         draggable
@@ -1558,7 +1562,7 @@ export function TasksPage() {
         className={dragTaskId === t.id ? 'plan-dragging' : undefined}
         role="button"
         tabIndex={0}
-        aria-label={`${t.title}（${priorityLabel(t.priority)}）— 回车或空格${t.status === 'done' ? '转回待办' : '标记为已完成'}`}
+        aria-label={`${t.title}（${priorityLabel(t.priority)}）${blockedN > 0 ? `，被 ${blockedN} 条任务阻塞：${blockBadgeNames(t)}` : ''}— 回车或空格${t.status === 'done' ? '转回待办' : '标记为已完成'}`}
         onKeyDown={(e) => {
           if (e.key !== 'Enter' && e.key !== ' ') return;
           e.preventDefault();
@@ -1570,6 +1574,9 @@ export function TasksPage() {
         }}
         title={`${t.title}（${priorityLabel(t.priority)}）——拖到另一列，或聚焦后按回车流转状态`}>
         <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</div>
+        {blockedN > 0 && (
+          <div style={{ marginTop: 4 }}>{blockBadgeNode(t)}</div>
+        )}
         {cat && (
           <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: 2 }}>{cat.name}</div>
         )}
@@ -2277,6 +2284,8 @@ export function TasksPage() {
             验证失败
           </button>
         )}
+        {/* T03229（PM-202②）：阻塞徽标——在途阻塞数与阻塞方点名见 blockBadgeNode */}
+        {blockBadgeNode(t)}
         {/* T00462/T00451：计划联动任务区分徽标——悬浮显示来源计划标题（反向引用）
             T01037：来源计划是里程碑时徽标显示「里程碑」，不再一律显示「计划」（里程碑≠普通计划条目）
             T02196：徽标改为可点击——跳「项目管理」并在计划 WBS 视图中定位/高亮来源节点（滚动到位由计划页完成） */}

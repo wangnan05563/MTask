@@ -858,6 +858,25 @@ api.post('/tasks/:id/shelve', (req, res) => {
   res.json(TaskService.setShelved(req.params.id, shelved));
 });
 
+// ---------- T03229（PRD PM-202①②）：任务级阻塞关系 ----------
+// 路径挂在「被阻塞方」之下：一对关系 = (被阻塞任务, 阻塞方任务)，增删都以此为主语。
+// 业务校验（自阻塞 / 跨项目 / 阻塞方已完成或已归档 / 重复）全在 TaskService 写入口抛中文错，
+// 这里按 wsWrap 的既有语义统一映射 400 + { error }，不另造状态码分支。
+api.get('/tasks/:id/blocked-by', (req, res) => {
+  const includeReleased = req.query.includeReleased === '1' || req.query.includeReleased === 'true';
+  wsWrap(res, () => TaskService.listBlockers(req.params.id, { includeReleased }));
+});
+
+api.post('/tasks/:id/blocked-by', (req, res) => {
+  const blockerId = String((req.body ?? {}).blockerId ?? '').trim();
+  if (!blockerId) return res.status(400).json({ error: 'blockerId 必填' });
+  wsWrap(res, () => TaskService.addBlocker(req.params.id, blockerId));
+});
+
+api.delete('/tasks/:id/blocked-by/:blockerId', (req, res) => {
+  wsWrap(res, () => TaskService.removeBlocker(req.params.id, req.params.blockerId));
+});
+
 // 任务手动排序（T00446）：拖拽后的完整 id 顺序 → user_sort 1..n；列表 sort=manual 时生效
 // 通用需求条目拖拽排序（T00463）：同 /tasks/reorder 模式，写 sort_weight
 api.post('/req-entries/reorder', (req, res) => {

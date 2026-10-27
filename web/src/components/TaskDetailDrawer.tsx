@@ -3,9 +3,9 @@
  * 与现有「行内展开」并存——行内=列表内快速预览，本抽屉=完整查看 + 编辑。
  * 自包含：用底层原语（MarkdownContent / TaskEventTimeline / api.patch）与自身编辑态，
  * 不耦合 TasksPage 的逐行展开状态，降低回归风险（R2/R3）。
- * 标签页：描述 / 处理结果 / AI 摘要 / 时间线 / 关联计划。
+ * 标签页：描述 / 处理结果 / AI 摘要 / 时间线 / 关联计划 / 阻塞关系。
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api, imageUrl, type Task } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
 import { ResultDiffPanel } from '../ui/ResultDiff'; // T01607：结果历史 diff/回滚——与行内共用同一组件
@@ -13,11 +13,24 @@ import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { SlideOver } from './SlideOver';
 import { Badge } from '../ui/Badge'; // PM-302 ①：徽标单源（原为抽屉私有 Badge，borderRadius/padding 与她处各异）
 import { priorityBadgeLabel, priorityTone } from '../ui/priority'; // PM-302 ③：优先级文案/色调单源
-import { ClipboardList, FileText, History, Link2, Loader2, Pencil, Save, Sparkles, X } from 'lucide-react';
+import { Ban, ClipboardList, FileText, History, Link2, Loader2, Pencil, Save, Sparkles, X } from 'lucide-react';
 import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用入口可见但禁用 + 原因/修复动作
 
 /** T01568：标签页键对外导出——外部跳转（focusTaskByNo）按名称指定落位标签页 */
-export type TaskDetailTab = 'desc' | 'result' | 'summary' | 'timeline' | 'plans';
+export type TaskDetailTab = 'desc' | 'result' | 'summary' | 'timeline' | 'plans' | 'blocks';
+
+/** T03229（PM-202①）：阻塞关系行（服务端 `TaskBlockerView` 的同形投影，字段名保持 snake_case 与接口一致） */
+type BlockerRow = {
+  id: string;
+  blocked_id: string;
+  blocker_id: string;
+  blocker_no: string | null;
+  blocker_title: string;
+  blocker_status: string;
+  created_at: string;
+  released_at: string | null;
+  released_reason: string | null;
+};
 
 /**
  * T01570：抽屉保存后向父级回报的「定点补丁」——只带本次真正改写的字段。
@@ -64,6 +77,15 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
   const aiDown = aiBlocked(readiness);
   const [plans, setPlans] = useState<Array<{ id: string; title: string; kind: string; start_date: string }>>([]);
   const [plansLoading, setPlansLoading] = useState(false);
+  // T03229（PM-202①）：阻塞关系编辑态。列表/历史两档取数共用一条通道（includeReleased 决定），
+  // 失败原因就地回显（抽屉没有全局 toast 通道，与摘要的 summaryErr 同一做法）。
+  const [blockers, setBlockers] = useState<BlockerRow[]>([]);
+  const [blockersLoading, setBlockersLoading] = useState(false);
+  const [showReleased, setShowReleased] = useState(false);
+  const [blockPickId, setBlockPickId] = useState('');
+  const [blockBusy, setBlockBusy] = useState(false);
+  const [blockErr, setBlockErr] = useState('');
+  const [pickCandidates, setPickCandidates] = useState<Task[]>([]);
   const [previewId, setPreviewId] = useState(''); // T01563：附件放大预览（点同图收起）
 
   // T01568：同一任务被再次跳转（如重复点同一条通知）时组件不重挂载，initialTab 变化仍需把视图切回约定标签页；
@@ -102,6 +124,58 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
       .catch(() => setPlans([]))
       .finally(() => setPlansLoading(false));
   }, [tab, projectId, task.id]);
+
+  // T03229（PM-202①）：阻塞关系取数——只在进入该标签页时拉，切「含历史」档重拉一次
+  const reloadBlockers = useCallback(() => {
+    setBlockersLoading(true);
+    return api.get<BlockerRow[]>(`/tasks/${task.id}/blocked-by${showReleased ? '?includeReleased=1' : ''}`)
+      .then((rows) => { setBlockers(rows); setBlockErr(''); })
+      .catch((e: unknown) => { setBlockers([]); setBlockErr(e instanceof Error ? e.message : String(e)); })
+      .finally(() => setBlockersLoading(false));
+  }, [task.id, showReleased]);
+
+  useEffect(() => {
+    if (tab !== 'blocks') return;
+    void reloadBlockers();
+  }, [tab, reloadBlockers]);
+
+  // 候选池：同项目的待办任务（已完成/已归档/搁置的不进候选——服务端在写入口也会拒，
+  // 但把选择器与拒收口径对齐，用户不会先选后碰壁）。自身排除在外。
+  useEffect(() => {
+    if (tab !== 'blocks') return;
+    api.get<Task[]>(`/tasks?projectId=${projectId}&status=todo&limit=500`)
+      .then((ts) => setPickCandidates(ts.filter((x) => x.id !== task.id)))
+      .catch(() => setPickCandidates([]));
+  }, [tab, projectId, task.id]);
+
+  /** T03229①：添加阻塞——成功后原地重拉（徽标数与列表由 SSE 刷新，本抽屉只需关系表本身） */
+  async function addBlocker() {
+    if (!blockPickId || blockBusy) return;
+    setBlockBusy(true);
+    try {
+      await api.post(`/tasks/${task.id}/blocked-by`, { blockerId: blockPickId });
+      setBlockPickId('');
+      await reloadBlockers();
+    } catch (e) {
+      setBlockErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBlockBusy(false);
+    }
+  }
+
+  /** T03229①：解除阻塞——服务端封口不删行，故「含历史」档下这条记录仍在，只是带上解除时间与原因 */
+  async function removeBlocker(blockerId: string) {
+    if (blockBusy) return;
+    setBlockBusy(true);
+    try {
+      await api.del(`/tasks/${task.id}/blocked-by/${blockerId}`);
+      await reloadBlockers();
+    } catch (e) {
+      setBlockErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBlockBusy(false);
+    }
+  }
 
   async function save(kind: 'desc' | 'result') {
     setBusy(true);
@@ -147,6 +221,7 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
     { key: 'summary', label: 'AI 摘要', icon: <Sparkles size={13} /> },
     { key: 'timeline', label: '时间线', icon: <History size={13} /> },
     { key: 'plans', label: '关联计划', icon: <Link2 size={13} /> },
+    { key: 'blocks', label: '阻塞关系', icon: <Ban size={13} /> },
   ];
 
   // 各标签页正文抽成局部函数，render 体仅留 `{tab === 'x' && renderX()}` 一层判断：
@@ -291,6 +366,85 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
     );
   }
 
+  /**
+   * T03229（PM-202①②）：阻塞关系正文——在途列表 + 添加/解除 + 「含已解除」历史档。
+   * 添加与解除都走服务端写入口校验（同项目 / 非自身 / 阻塞方未完成未归档 / 在途唯一），
+   * 这里只负责把被拒的原因原样回显，不在前端重复一套判定。
+   */
+  function renderBlocksTab() {
+    const open = blockers.filter((b) => !b.released_at);
+    const released = blockers.filter((b) => b.released_at);
+    const taken = new Set(open.map((b) => b.blocker_id));
+    const options = pickCandidates.filter((c) => !taken.has(c.id));
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div data-t03229="block-add" style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <select
+            aria-label="选择阻塞方任务"
+            value={blockPickId}
+            onChange={(e) => setBlockPickId(e.target.value)}
+            disabled={blockBusy || options.length === 0}
+            style={{ flex: '1 1 180px', minWidth: 0, padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--surface)', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
+            <option value="">{options.length === 0 ? '（本项目的待办都不可选）' : '（选择阻塞方任务）'}</option>
+            {options.map((c) => (
+              <option key={c.id} value={c.id}>{c.task_no ? `${c.task_no} · ` : ''}{c.title}</option>
+            ))}
+          </select>
+          <button type="button" onClick={() => { void addBlocker(); }} disabled={!blockPickId || blockBusy}
+            aria-label="添加阻塞" title="把选中的待办设为本任务的阻塞方"
+            style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--accent)', background: 'var(--accent-soft)', color: 'var(--accent)', fontSize: 'var(--fs-s)', cursor: blockBusy || !blockPickId ? 'default' : 'pointer', opacity: !blockPickId || blockBusy ? 0.55 : 1 }}>
+            添加阻塞
+          </button>
+          <label style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+            <input type="checkbox" checked={showReleased} onChange={(e) => setShowReleased(e.target.checked)} />
+            含已解除
+          </label>
+        </div>
+        {blockErr && (
+          <div data-t03229="block-err" style={{ color: 'var(--danger)', fontSize: 'var(--fs-xs)' }}>{blockErr}</div>
+        )}
+        {blockersLoading ? (
+          <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-m)' }}>加载阻塞关系…</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div data-t03229="block-count" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>在途阻塞：{open.length} 条</div>
+            {open.length === 0 && (
+              <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-m)' }}>（该任务当前未被任何任务阻塞）</div>
+            )}
+            {open.map((b) => (
+              <div key={b.id} data-t03229="block-row" style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, fontSize: 'var(--fs-m)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {b.blocker_no ? `${b.blocker_no} · ` : ''}{b.blocker_title}
+                  </div>
+                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>
+                    建立于 {b.created_at.slice(0, 16).replace('T', ' ')} · 阻塞方状态：{STATUS_LABEL[b.blocker_status] ?? b.blocker_status}
+                  </div>
+                </div>
+                <button type="button" onClick={() => { void removeBlocker(b.blocker_id); }} disabled={blockBusy}
+                  aria-label={`解除阻塞：${b.blocker_no ?? b.blocker_title}`} title="解除这条阻塞关系（历史记录保留）"
+                  style={{ flexShrink: 0, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-xs)', cursor: blockBusy ? 'default' : 'pointer', fontFamily: 'inherit' }}>
+                  解除
+                </button>
+              </div>
+            ))}
+            {showReleased && released.map((b) => (
+              <div key={b.id} data-t03229="block-released" style={{ padding: '8px 10px', border: '1px dashed var(--border)', borderRadius: 8, fontSize: 'var(--fs-m)', opacity: 0.75 }}>
+                <div style={{ fontWeight: 600 }}>
+                  {b.blocker_no ? `${b.blocker_no} · ` : ''}{b.blocker_title}
+                  <span style={{ marginLeft: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>已解除</span>
+                </div>
+                <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>
+                  解除于 {b.released_at ? b.released_at.slice(0, 16).replace('T', ' ') : ''} · 原因：{b.released_reason || '未标注'}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   // T02164：AI 摘要视图正文——顶部操作栏固定「更新时间 + 生成总结摘要」（约束 1 要求的入口位置），
   // 下面是摘要正文或空态引导。时间取服务端记录的真实生成时刻，而非模型输出：模型无从知道此刻几点。
   function renderSummaryTab() {
@@ -380,6 +534,9 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
           {renderPlansBody()}
         </div>
       )}
+
+      {/* T03229（PM-202①）：阻塞关系 */}
+      {tab === 'blocks' && renderBlocksTab()}
     </SlideOver>
   );
 }
