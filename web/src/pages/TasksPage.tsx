@@ -16,6 +16,8 @@ import { clearSessionState, usePersistentState, useSessionState } from '../ui/se
 import { NoticeToast, useNotice } from '../ui/notice'; // T03214（UX-02 ③）：提示分级——成功短驻、错误长驻且可关闭/复制
 import { paginationStatus, type PaginationView } from '../utils/taskPagination'; // T03214（UX-02 ①）：剩余条数与「已加载全部」判据
 import { buildImportFailureReceipt, buildImportReceipt } from '../utils/importReceipt'; // T03214（UX-02 ④）：导入结果分列成功/跳过/失败
+import { arrangeTaskTree, makeTaskMatcher, matchVerified, sortOptions, sortTasks, type SortKey } from '../utils/taskListQuery'; // T03215（PM-304）：列表派生计算提为模块级纯函数，供 useMemo 稳定缓存
+import { useTaskListWindow } from '../utils/taskListWindow'; // T03215（PM-304）：文档滚动 + 变高行的窗口化
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { useBusy, setBusy } from '../ui/busy';
 import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, PanelRightOpen, Pin, Plus, Save, ScanSearch, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
@@ -536,6 +538,43 @@ export function TasksPage() {
     }
   }, [activeProject, loadingMore, hasMore, todo.length, done.length, fetchTasks]);
 
+  // ===== T03215（PM-304）：可见列表派生上提 + 窗口化 =====
+  // 窗口化后滚动会驱动本组件重渲染；派生计算（过滤/排序/父子装配）必须留在组件级 useMemo 里，
+  // 否则每帧重跑一遍 5000 条的 filter+sort+O(n²) 装配，等于把省下来的渲染成本又还回去。
+  const kw = search.trim().toLowerCase();
+  const matches = useMemo(() => makeTaskMatcher(kw, catFilter), [kw, catFilter]);
+  const visibleTodo = useMemo(() => arrangeTaskTree(sortTasks(todo.filter(matches), todoSort)), [todo, matches, todoSort]);
+  const visibleDone = useMemo(() => arrangeTaskTree(sortTasks(done.filter(matches).filter((t) => matchVerified(t, doneFilter)), doneSort)), [done, matches, doneSort, doneFilter]);
+  const visibleShelved = useMemo(() => arrangeTaskTree(sortTasks(shelvedTasks.filter(matches), shelvedSort)), [shelvedTasks, matches, shelvedSort]);
+  // 行内拖拽重排需要整表 id 顺序：原实现让每个渲染行都重算一次整表 id（O(n²)），这里一次算好传下去
+  const todoIds = useMemo(() => visibleTodo.map((t) => t.id), [visibleTodo]);
+  const doneIds = useMemo(() => visibleDone.map((t) => t.id), [visibleDone]);
+  const shelvedIds = useMemo(() => visibleShelved.map((t) => t.id), [visibleShelved]);
+  // 一次只挂载一个 tab 的列表，故整块共用一个窗口实例（看板视图不参与窗口化）
+  const activeVisible = activeTab === 'done' ? visibleDone : activeTab === 'shelved' ? visibleShelved : visibleTodo;
+  const activeVisibleIds = activeTab === 'done' ? doneIds : activeTab === 'shelved' ? shelvedIds : todoIds;
+  // 搁置列表是全量拉取（不分页），触底续取只对带分页的待办/已完成生效，否则会在看不见的列表上白取一页
+  const listWin = useTaskListWindow(
+    viewMode === 'list' ? activeVisible.length : 0,
+    hasMore && viewMode === 'list' && activeTab !== 'shelved',
+    loadMore,
+    !loadingMore,
+  );
+  const revealedForRef = useRef('');
+  /** 目标行没渲染在 DOM 里（被窗口切掉）时按索引把它滚进窗口；同一目标只强制一次，避免定位与窗口互相打转 */
+  const revealTaskRow = useMemo(() => (id: string, taskNo = ''): boolean => {
+    const idx = id ? activeVisibleIds.indexOf(id) : activeVisible.findIndex((t) => t.task_no === taskNo);
+    const key = id || `no:${taskNo}`;
+    if (idx < 0 || revealedForRef.current === key) return false;
+    revealedForRef.current = key;
+    listWin.revealIndex(idx);
+    return true;
+  }, [activeVisibleIds, activeVisible, listWin.revealIndex]);
+  useEffect(() => {
+    // 换目标即解除「已强制入窗过一次」的锁，否则回到同一任务时不再滚动定位
+    if (!focusTaskId && revealedForRef.current) revealedForRef.current = '';
+  }, [focusTaskId]);
+
   // T00496：项目下拉点击外部关闭
   useEffect(() => {
     if (!projOpen) return;
@@ -636,7 +675,9 @@ export function TasksPage() {
   // 交由调用方按截止时间重试收口（跨项目跳转必然经历「换项目→重载列表→再渲染」，首轮检查基本都落空）。
   const locateTaskRow = (focusTaskId: string): boolean => {
     const el = document.querySelector(`[data-ttask-id="${focusTaskId}"]`);
-    if (!(el instanceof HTMLElement)) return false;
+    // T03215（PM-304）：窗口化后「该行确实在结果集里但没渲染」成了常态——按索引把它强制入窗，
+    // nonce 变化会重跑本定位流程，下一轮即可命中；仍未命中才交给 8s 收口定时器明示失败。
+    if (!(el instanceof HTMLElement)) { revealTaskRow(focusTaskId); return false; }
     try { el.scrollIntoView({ block: 'center' }); } catch { /* 忽略滚动异常 */ }
     const prevOutline = el.style.outline;
     const prevBg = el.style.background;
@@ -659,7 +700,7 @@ export function TasksPage() {
     if (locateTaskRow(focusTaskId)) return;
     // 目标行尚未渲染：保留定位意图（focusTaskId 不清），列表每次变化都会重跑本 effect 再认一次
     if (!focusDeadline) setFocusDeadline(Date.now() + 8000);
-  }, [focusTaskId, todo, done, activeTab, activeProject, focusProjectId, catFilter, priorityFilter, focusDeadline]);
+  }, [focusTaskId, todo, done, activeTab, activeProject, focusProjectId, catFilter, priorityFilter, focusDeadline, listWin.nonce, revealTaskRow]);
 
   // T02206：到点收口。列表若一直不再变化，重试等不到下一次触发，故用定时器兜底放弃并**明示**一次
   //（原实现在此处静默清键，用户只看到视图变了却不知定位到哪）。
@@ -708,10 +749,12 @@ export function TasksPage() {
       if (Date.now() > badgeLocate.until) setBadgeLocate(null); // 检索也没带来该行（编号不可达/被筛掉）即放弃，不让意图滞留
       return;
     }
+    // T03215（PM-304）：该行可能已在列表里但被窗口切掉——先按索引强制入窗，nonce 重跑后再认一次
+    if (revealTaskRow(badgeLocate.id, badgeLocate.taskNo)) return;
     flash(`原任务 ${badgeLocate.taskNo} 不在当前列表（视图未呈现该行），已按编号检索定位`);
     setBadgeLocate({ ...badgeLocate, id: '', retrieved: true, until: Date.now() + 8000 });
     void focusTaskByNo(badgeLocate.taskNo);
-  }, [badgeLocate, activeTab, todo, done, shelvedTasks]);
+  }, [badgeLocate, activeTab, todo, done, shelvedTasks, listWin.nonce, revealTaskRow]);
 
   /** T02196：「派生自 xxx」徽标点击——按编号在当前已加载列表里找父任务，命中即原地定位（零视图状态变更）。
    *  派生单与原任务同项目是常态，故绝大多数点击走的是这条通道；只有列表里确实没有该行
@@ -3608,7 +3651,6 @@ export function TasksPage() {
 
   /** 任务列表区块（FR1.4 检索 + 排序 + 验证状态过滤） */
   function renderTaskLists() {
-    const kw = search.trim().toLowerCase();
     const batchBar = renderBatchBar();
     // T00446 / INT-6：CSV 导入预览确认块
     const csvBlock = csvPreview && (
@@ -3645,37 +3687,9 @@ export function TasksPage() {
         </table>
       </div>
     );
-    const matches = (t: Task) => {
-      // 分类筛选：'none' 表示未分类；指定分类则精确匹配；空串为全部
-      if (catFilter === 'none') { if (t.category_id) return false; }
-      else if (catFilter && t.category_id !== catFilter) return false;
-      // T01568：编号同样参与本地检索——外部跳转以 task_no 作搜索词，只比标题/描述会把目标行筛没
-      return !kw || t.title.toLowerCase().includes(kw) || (t.description ?? '').toLowerCase().includes(kw) || (t.task_no ?? '').toLowerCase().includes(kw);
-    };
-    // 已完成栏验证状态过滤：all=全部，verified=仅已验证，unverified=仅未验证（拆出避免嵌套三元）
-    const matchDoneFilter = (t: Task) => {
-      if (doneFilter === 'all') return true;
-      if (doneFilter === 'verified') return t.verified;
-      return !t.verified;
-    };
-    // T00450：父子层级——子任务紧随父任务之后（缩进渲染），其余排序规则不变
-    const arrange = (list: Task[]): Task[] => {
-      const kids = new Map<string, Task[]>();
-      const roots: Task[] = [];
-      for (const t of list) {
-        if (t.parent_id && list.some((x) => x.id === t.parent_id)) {
-          const arr = kids.get(t.parent_id) ?? [];
-          arr.push(t); kids.set(t.parent_id, arr);
-        } else roots.push(t);
-      }
-      const out: Task[] = [];
-      for (const t of roots) { out.push(t); const k = kids.get(t.id); if (k) out.push(...k); }
-      return out;
-    };
-    const visibleTodo = arrange(sortTasks(todo.filter(matches), todoSort));
-    const visibleDone = arrange(sortTasks(done.filter(matches).filter(matchDoneFilter), doneSort));
-    // T00719：搁置列表沿用同一套搜索/分类/优先级过滤（fetchTasks 已按同参拉取），本地再按排序键排序
-    const visibleShelved = arrange(sortTasks(shelvedTasks.filter(matches), shelvedSort));
+    // T03215（PM-304）：过滤/排序/父子装配（matches、sortTasks、arrangeTaskTree）与三份可见列表
+    // 已上移到组件级 useMemo（见 listWin 所在块）——窗口化后滚动会重渲染本组件，
+    // 这些派生计算若仍留在渲染体内，每帧都要重跑 filter+sort+O(n²) 装配，虚拟滚动就白做了。
     // T00922：tab 标题已完成/待办统计改取项目级全量计数——原列表长度仅覆盖当前已加载页，
     // 首屏需「加载更多」后才趋近真实总量；改用项目级全量计数字段后首屏即显示全量。未验证数保持原语义（已完成中未验证）
     const curProj = projects.find((p) => p.id === activeProject);
@@ -3752,7 +3766,8 @@ export function TasksPage() {
             {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </div>
-        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleTodo.map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'todo', visibleTodo.map((x) => x.id))}</Fragment>)}</ul>
+        {/* T03215（PM-304）：窗口化渲染——只渲染视口±overscan 行，其余用 ul 上下内边距占位撑出等总高的滚动区间 */}
+        <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom }}>{visibleTodo.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'todo', todoIds)}</Fragment>)}</ul>
         {/* T02283：取数失败时不渲染空态——「暂无待办任务」会把后端故障说成没活干（项目列表失败导致
             连 activeProject 都拿不到时同理） */}
         {visibleTodo.length === 0 && !multiSelect && tasksPhase !== 'error' && projectList.phase !== 'error' && (
@@ -3799,7 +3814,7 @@ export function TasksPage() {
             <option value="all">全部</option>
           </select>
         </div>
-        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleDone.map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'done', visibleDone.map((x) => x.id))}</Fragment>)}</ul>
+        <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom }}>{visibleDone.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'done', doneIds)}</Fragment>)}</ul>
         {visibleDone.length === 0 && tasksPhase !== 'error' && (
           <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>暂无已完成任务——完成任务后在此集中查看与验证。</div>
         )}
@@ -3835,7 +3850,7 @@ export function TasksPage() {
             label="搁置列表"
           />
         </div>
-        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>{visibleShelved.map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'shelved', visibleShelved.map((x) => x.id))}</Fragment>)}</ul>
+        <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom }}>{visibleShelved.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'shelved', shelvedIds)}</Fragment>)}</ul>
         {visibleShelved.length === 0 && shelvedPhase !== 'error' && (
           <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>暂无搁置任务——点击任务行的「搁置」按钮（归档按钮前）可把任务移到这里，AI 处理待办时自动忽略。</div>
         )}
@@ -4026,40 +4041,8 @@ export function TasksPage() {
     );
   }
 
-  /** 待办/已完成区块排序选择项：default 保持后端顺序，time* 按修改时间，p* 按优先级 */
-  const sortOptions = [
-    { value: 'default', label: '默认' },
-    { value: 'timedesc', label: '修改时间（新→旧）' },
-    { value: 'timeasc', label: '修改时间（旧→新）' },
-    { value: 'pdesc', label: '优先级（高→低）' },
-    { value: 'pasc', label: '优先级（低→高）' },
-    { value: 'manual', label: '手动排序' },
-  ] as const;
-  type SortKey = (typeof sortOptions)[number]['value'] | 'manual';
-
-  /** 对待办/已完成列表应用排序（返回新数组，不改动原数组） */
-  const sortTasks = (list: Task[], sort: SortKey): Task[] => {
-    if (sort === 'default' || list.length < 2) return list;
-    const arr = [...list];
-    // 优先级数值化：缺省/未知值按最低档对待，保证比较不产生 NaN
-    const pr = (k: string) => ({ low: 0, normal: 1, high: 2 })[k] ?? 0;
-    const ts = (t: Task) => new Date(t.updated_at).getTime() || 0;
-    if (sort === 'timedesc') return arr.sort((a, b) => ts(b) - ts(a));
-    if (sort === 'timeasc') return arr.sort((a, b) => ts(a) - ts(b));
-    if (sort === 'pdesc') return arr.sort((a, b) => pr(b.priority) - pr(a.priority));
-    if (sort === 'pasc') return arr.sort((a, b) => pr(a.priority) - pr(b.priority));
-    // T00446：手动排序——pinned 优先，user_sort 空值排最后（与后端 sort=manual 一致）
-    if (sort === 'manual') {
-      return arr.sort((a, b) => {
-        const pd = (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
-        if (pd !== 0) return pd;
-        const ua = a.user_sort ?? Number.MAX_SAFE_INTEGER;
-        const ub = b.user_sort ?? Number.MAX_SAFE_INTEGER;
-        return ua - ub || new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-      });
-    }
-    return arr.sort((a, b) => pr(a.priority) - pr(b.priority)); // pasc 低→高
-  };
+  // T03215（PM-304）：sortOptions / SortKey / sortTasks 上提为 ../utils/taskListQuery 的模块级导出——
+  // 可见列表要用 useMemo 缓存，缓存依赖的函数标识必须稳定，留在渲染体里每帧都是新函数。
 
   return (
     <section>
