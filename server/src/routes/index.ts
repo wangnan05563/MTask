@@ -236,7 +236,7 @@ function applyWorkspacePath(workspacePath: unknown, sets: string[], values: unkn
 }
 
 api.patch('/projects/:id', (req, res) => {
-  const { name, description, sortWeight, workspacePath } = req.body ?? {};
+  const { name, description, sortWeight, workspacePath, wipLimit } = req.body ?? {};
   const db = getDb();
   const sets: string[] = [];
   const values: unknown[] = [];
@@ -251,6 +251,12 @@ api.patch('/projects/:id', (req, res) => {
   }
   if (description !== undefined) { sets.push('description = ?'); values.push(description); }
   if (sortWeight !== undefined) { sets.push('sort_weight = ?'); values.push(sortWeight); }
+  // T03209（PM-101）：项目级 WIP 软上限——只接受 1~50 的整数，默认 10；超限仅提示、不阻断拖拽
+  if (wipLimit !== undefined) {
+    const n = typeof wipLimit === 'number' ? wipLimit : Number(wipLimit);
+    if (!Number.isInteger(n) || n < 1 || n > 50) return res.status(400).json({ error: 'WIP 上限须为 1~50 的整数' });
+    sets.push('wip_limit = ?'); values.push(n);
+  }
   // T00771：工作空间绑定——路径必须存在且为文件夹（服务端本机校验），多项目可指向同一路径（仅存引用）
   // 走查修复（H-1）：换绑判定需与旧值比较，旧值必须在 UPDATE 之前读取——
   // 同值重存（如在下拉条重选同一路径）不再清空符号索引，避免查询空窗且无自动重建

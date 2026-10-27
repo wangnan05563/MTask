@@ -351,6 +351,11 @@ export function TasksPage() {
   const [doneSort, setDoneSort] = usePersistentState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.doneSort', 'default'); // T01697
   // T00456 / PRD UX-1：视图模式（列表/看板）会话级保持
   const [viewMode, setViewMode] = useSessionState<'list' | 'board'>('tasks.viewMode', 'list');
+  // T03209（PM-101）：看板隐藏空列——会话级保持，切换页签/窗口期间保持
+  const [boardHideEmpty, setBoardHideEmpty] = useSessionState<boolean>('tasks.board.hideEmpty', false);
+  // T03209（PM-101）：WIP 上限输入草稿（按项目存放，提交成功后清理）
+  const [wipDrafts, setWipDrafts] = useState<Record<string, string>>({});
+  const [wipBusy, setWipBusy] = useState(false);
 
   // T00466：数据刷新时间戳——刷新后 updated_at 晚于该值的行闪烁一次（与提示词页 flush 动效统一）
   const [refreshFlash, setRefreshFlash] = useState(0);
@@ -961,6 +966,8 @@ export function TasksPage() {
       for (const img of newImages) {
         await api.post(`/tasks/${created.id}/images`, { data: img.url });
       }
+      // T03209（PM-101）：新建即计入待办列头数
+      bumpProjectCounts(activeProject, 1, 0);
       setNewTitle('');
       setNewDesc('');
       setNewImages([]);
@@ -998,8 +1005,23 @@ export function TasksPage() {
     }
   }
 
+  /** T03209（PM-101）：项目待办/已完成计数乐观增减——项目列表缓存 60s，状态流转/新建后看板列头需即时反映 */
+  function bumpProjectCounts(projectId: string, deltaTodo: number, deltaDone: number) {
+    if (!projectId) return;
+    const cur = getProjectListSnapshot().find((p) => p.id === projectId);
+    if (!cur) return;
+    patchProject(projectId, {
+      todo_count: Math.max(0, (cur.todo_count ?? 0) + deltaTodo),
+      done_count: Math.max(0, (cur.done_count ?? 0) + deltaDone),
+    });
+  }
+
   async function setStatus(task: Task, status: 'todo' | 'done') {
     await api.patch(`/tasks/${task.id}`, { status });
+    // T03209：列头实时任务数——状态实际变化时才推进项目计数（重复点同一状态不计数）
+    if (task.status !== status) {
+      bumpProjectCounts(task.project_id, status === 'todo' ? 1 : -1, status === 'done' ? 1 : -1);
+    }
     // 切换完成后自动收起展开区（描述+AI 摘要）：仅当处于展开态才触发更新，避免无关任务行无谓重渲染
     setDescExpanded((prev) => (prev[task.id] ? { ...prev, [task.id]: false } : prev));
     setSummaryExpanded((prev) => (prev[task.id] ? { ...prev, [task.id]: false } : prev));
@@ -1433,6 +1455,27 @@ export function TasksPage() {
     );
   }
 
+  /** T03209（PM-101）：保存项目级 WIP 软上限——1~50 整数，即时生效；同值不重复提交 */
+  async function saveWipLimit(projectId: string, raw: string) {
+    if (!projectId) return;
+    const n = Number(raw.trim());
+    if (!Number.isInteger(n) || n < 1 || n > 50) { flash('WIP 上限须为 1~50 的整数'); return; }
+    const cur = getProjectListSnapshot().find((p) => p.id === projectId);
+    if ((cur?.wip_limit ?? 10) === n) {
+      setWipDrafts((prev) => { const next = { ...prev }; delete next[projectId]; return next; });
+      return;
+    }
+    setWipBusy(true);
+    try {
+      await api.patch(`/projects/${projectId}`, { wipLimit: n });
+      patchProject(projectId, { wip_limit: n });
+      setWipDrafts((prev) => { const next = { ...prev }; delete next[projectId]; return next; });
+      flash(`WIP 上限已设为 ${n}`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally { setWipBusy(false); }
+  }
+
   /** T00456 / PRD UX-1：看板视图——按状态分列（待办/已完成），卡片拖拽流转状态。
    *  卡片为简化渲染（标题/优先级/分类/进度），编辑回列表视图；drop 到目标列即变更状态。 */
   function renderBoard() {
@@ -1441,10 +1484,16 @@ export function TasksPage() {
     const curProj = projects.find((p) => p.id === activeProject);
     const todoTotal = curProj?.todo_count ?? todo.length;
     const doneTotal = curProj?.done_count ?? done.length;
-    const boardCols: Array<{ key: 'todo' | 'done'; label: string; items: Task[] }> = [
+    // T03209（PM-101）：WIP 软上限只对具体项目生效——全部项目混合视图无单一项目口径，仅显示数量
+    const wipLimit = curProj?.wip_limit ?? 10;
+    const wipOver = curProj ? todoTotal - wipLimit : 0;
+    const totals: Record<'todo' | 'done', number> = { todo: todoTotal, done: doneTotal };
+    const allCols: Array<{ key: 'todo' | 'done'; label: string; items: Task[] }> = [
       { key: 'todo', label: `待办（${todoTotal}）`, items: todo },
       { key: 'done', label: `已完成（${doneTotal}）`, items: done },
     ];
+    // 隐藏空列：拖拽进行中临时全显，避免空列被隐藏后无处落下（不阻断拖入）
+    const boardCols = boardHideEmpty && !dragTaskId ? allCols.filter((c) => totals[c.key] > 0) : allCols;
     const onDropTo = (target: 'todo' | 'done') => {
       if (!dragTaskId) return;
       const t = [...todo, ...done].find((x) => x.id === dragTaskId);
@@ -1452,20 +1501,51 @@ export function TasksPage() {
       if (t.status !== target) void setStatus(t, target);
       setDragTaskId(''); setOverTaskId('');
     };
+    const wipDraftVal = wipDrafts[curProj?.id ?? ''] ?? String(wipLimit);
     return (
-      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-        {boardCols.map((col) => (
-          <div key={col.key} /* NOSONAR - 看板列作为 HTML5 拖拽放置区：无原生等价元素，button 不接收 drop */
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={() => onDropTo(col.key)}
-            style={{ flex: 1, minWidth: 280, background: 'var(--surface)', borderRadius: 8, padding: 10, minHeight: 200, border: overTaskId === col.key ? '2px dashed var(--accent)' : '1px solid var(--border-strong)', transition: 'border .15s ease' }}>
-            <h4 style={{ fontSize: 13, margin: '0 0 8px', color: 'var(--text-secondary)' }}>{col.label}</h4>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {col.items.map((t) => renderBoardCard(t))}
-              {col.items.length === 0 && <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', padding: 12 }}>拖任务卡片到此列</div>}
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap', fontSize: 12 }}>
+          <button type="button" aria-pressed={boardHideEmpty} aria-label="隐藏空列"
+            title={boardHideEmpty ? '隐藏空列（已开启）— 点击显示全部列；会话内保持' : '隐藏空列（已关闭）— 点击隐藏任务数为 0 的列；会话内保持'}
+            onClick={() => setBoardHideEmpty((v) => !v)} className="tbtn-anim"
+            style={{ cursor: 'pointer', padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: boardHideEmpty ? 'var(--accent-soft)' : 'var(--card-bg)', color: boardHideEmpty ? 'var(--accent)' : 'var(--text-secondary)' }}>
+            隐藏空列
+          </button>
+          {curProj && (
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--text-secondary)' }}>
+              WIP 上限
+              <input type="number" min={1} max={50} step={1} value={wipDraftVal} disabled={wipBusy}
+                aria-label="项目 WIP 上限"
+                title="项目级 WIP 软上限（1~50，默认 10）——仅统计未完成卡片，超限只做橙色提示、不阻断拖入"
+                onChange={(e) => setWipDrafts((prev) => ({ ...prev, [curProj.id]: e.target.value }))}
+                onBlur={() => void saveWipLimit(curProj.id, wipDraftVal)}
+                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                style={{ width: 64, padding: '2px 6px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
+            </label>
+          )}
+          {wipOver > 0 && (
+            <span role="status" style={{ color: 'var(--warn)', fontWeight: 600 }}>超出建议上限 {wipOver}</span>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+          {boardCols.map((col) => (
+            <div key={col.key} /* NOSONAR - 看板列作为 HTML5 拖拽放置区：无原生等价元素，button 不接收 drop */
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => onDropTo(col.key)}
+              style={{ flex: 1, minWidth: 280, background: 'var(--surface)', borderRadius: 8, padding: 10, minHeight: 200, border: overTaskId === col.key ? '2px dashed var(--accent)' : '1px solid var(--border-strong)', transition: 'border .15s ease' }}>
+              <h4 style={{ fontSize: 13, margin: '0 0 8px', color: col.key === 'todo' && wipOver > 0 ? 'var(--warn)' : 'var(--text-secondary)' }}>
+                {col.label}
+                {col.key === 'todo' && curProj && (
+                  <span style={{ marginLeft: 6, fontWeight: 400, fontSize: 11, color: 'var(--text-muted)' }}>WIP 建议 ≤ {wipLimit}</span>
+                )}
+              </h4>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {col.items.map((t) => renderBoardCard(t))}
+                {col.items.length === 0 && <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', padding: 12 }}>拖任务卡片到此列</div>}
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     );
   }

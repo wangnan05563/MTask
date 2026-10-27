@@ -9,6 +9,8 @@ export function initSchema(): void {
       name        TEXT NOT NULL,
       description TEXT DEFAULT '',
       sort_weight INTEGER DEFAULT 0,
+      -- T03209（PM-101）：项目级 WIP 软上限，仅统计未完成 todo 卡片；1~50，超限只做橙色提示
+      wip_limit   INTEGER NOT NULL DEFAULT 10,
       created_at  TEXT NOT NULL,
       updated_at  TEXT NOT NULL
     );
@@ -709,6 +711,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // （该项目在任务/计划菜单的项目列表中不再出现，内容随项目快照整体恢复或归档）
   ensureColumn('projects', 'history_at', 'history_at TEXT');
   ensureColumn('projects', 'archived', 'archived INTEGER NOT NULL DEFAULT 0');
+  // T03209（PM-101）：看板 WIP 软上限——项目级配置，默认 10、可配 1~50；仅用于橙色提示，不阻断拖拽
+  ensureColumn('projects', 'wip_limit', 'wip_limit INTEGER NOT NULL DEFAULT 10');
   backfillTaskNo();
   ensureColumn('ai_tools', 'pinned', 'pinned INTEGER NOT NULL DEFAULT 0');
   // T00446：模型拖拽排序权重（小值在前）

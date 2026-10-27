@@ -167,6 +167,8 @@ export interface Project {
   plan_open?: number;
   /** T00771：项目工作空间根路径（空=未绑定；任务菜单工作空间下拉条 / AI 上下文消费） */
   workspace_path?: string;
+  /** T03209（PM-101）：项目级 WIP 软上限（默认 10，1~50），仅提示不阻断 */
+  wip_limit?: number;
 }
 
 export interface TaskImage {
