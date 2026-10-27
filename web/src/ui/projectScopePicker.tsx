@@ -83,6 +83,7 @@ export function ProjectScopePicker({ projects, value, onChange }: {
           <div
             role="button"
             tabIndex={0}
+            aria-label="清除项目范围筛选（不限范围）— 回车生效"
             onClick={() => onChange([])}
             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onChange([]); } }}
             style={{ ...scopeRowStyle, color: value.length === 0 ? 'var(--accent)' : 'var(--text-muted)', fontWeight: value.length === 0 ? 600 : 400 }}

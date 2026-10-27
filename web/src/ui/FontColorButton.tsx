@@ -79,6 +79,7 @@ export function FontColorButton({ current, onApply, label = '字体颜色' }: Re
               aria-pressed={current === c}
               onClick={() => { onApply(c); setOpen(false); }}
               title={c}
+              aria-label={`${label}：应用颜色 ${c}`}
               style={{ width: 18, height: 18, borderRadius: 3, background: c, border: current === c ? '2px solid var(--accent)' : '1px solid var(--border)', cursor: 'pointer', transition: 'transform .12s ease' }}
               onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.transform = 'scale(1.2)'; }}
               onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.transform = 'none'; }}
@@ -87,6 +88,7 @@ export function FontColorButton({ current, onApply, label = '字体颜色' }: Re
           <button
             onClick={() => { onApply(''); setOpen(false); }}
             title="默认色 — 恢复主题默认文字颜色"
+            aria-label={`${label}：恢复主题默认颜色`}
             style={{ width: 18, height: 18, borderRadius: 3, border: '1px solid var(--border)', background: 'var(--surface-2)', cursor: 'pointer', fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
           >
             ⌫

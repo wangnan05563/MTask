@@ -167,7 +167,7 @@ export function WorkspaceSearchPanel({
               <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') void doSearch(); }}
                 placeholder="输入关键词（≥2 字符，大小写不敏感）" aria-label="检索关键词"
-                style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-m)', minWidth: 0 }} />
+                style={{ flex: 1, border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-m)', minWidth: 0 }} />
             </div>
             <button onClick={() => void doSearch()} disabled={busy}
               title="搜索 — 在工作空间内全文检索该关键词"
@@ -181,7 +181,7 @@ export function WorkspaceSearchPanel({
             <input value={glob} onChange={(e) => setGlob(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') void doSearch(); }}
               placeholder="可选，如 *.ts 或 src/**（留空检索全部）" aria-label="文件过滤 glob"
-              style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', minWidth: 0 }} />
+              style={{ flex: 1, border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', minWidth: 0 }} />
           </div>
         </div>
 

@@ -470,7 +470,7 @@ export function DbAdminTab() {
                   style={{ ...inputStyle, width: 180 }}
                 />
                 <button style={btnStyle(false)} onClick={() => { setPage(1); void loadRows(); }} title="按关键词查询"><Search size={13} /> 查询</button>
-                <button style={{ ...btnStyle(false), marginLeft: 'auto' }} onClick={() => { void loadRows(); void loadTables(); }} title="刷新数据与表清单"><RefreshCw size={13} /></button>
+                <button style={{ ...btnStyle(false), marginLeft: 'auto' }} onClick={() => { void loadRows(); void loadTables(); }} title="刷新数据与表清单" aria-label="刷新数据与表清单"><RefreshCw size={13} /></button>
               </div>
 
               <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflowX: 'auto', background: 'var(--card-bg)' }}>
@@ -524,8 +524,8 @@ export function DbAdminTab() {
                             );
                           })}
                           <td style={{ padding: '5px 8px', whiteSpace: 'nowrap' }}>
-                            <button style={{ ...btnStyle(false), padding: '2px 6px', marginRight: 4 }} onClick={() => setEditing({ mode: 'update', row: r })} title="编辑该行"><Pencil size={12} /></button>
-                            <button style={{ ...btnStyle(false, true), padding: '2px 6px' }} onClick={() => void handleDelete(pk)} title="删除该行（需确认码）"><Trash2 size={12} /></button>
+                            <button style={{ ...btnStyle(false), padding: '2px 6px', marginRight: 4 }} onClick={() => setEditing({ mode: 'update', row: r })} title="编辑该行" aria-label="编辑该行"><Pencil size={12} /></button>
+                            <button style={{ ...btnStyle(false, true), padding: '2px 6px' }} onClick={() => void handleDelete(pk)} title="删除该行（需确认码）" aria-label="删除该行（需确认码）"><Trash2 size={12} /></button>
                           </td>
                         </tr>
                       );

@@ -122,7 +122,7 @@ export function WorkspaceSelect({ project, onBind, flash, variant = 'trigger' }:
           </button>
         )}
         <input ref={panelSearchRef} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索工作空间" aria-label="搜索工作空间"
-          style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', minWidth: 0 }} />
+          style={{ flex: 1, border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', minWidth: 0 }} />
       </div>
       {/* 最近使用（历史记录） */}
       <div style={{ maxHeight: 200, overflowY: 'auto' }}>

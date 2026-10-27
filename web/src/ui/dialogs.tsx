@@ -91,6 +91,7 @@ function InputDialog({ options, onSubmit }: InputDialogProps) {
         <input
           ref={ref}
           value={value}
+          aria-label={options.title}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') ok();
@@ -252,12 +253,13 @@ function InputDialogEx({ options, onSubmit }: InputDialogExProps) {
       <div ref={panelRef} style={panelStyle}>
         <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 12 }}>{options.title}</div>
         <label style={fieldLabel}>{options.select.label}</label>
-        <select value={sel} onChange={(e) => setSel(e.target.value)}
+        <select value={sel} onChange={(e) => setSel(e.target.value)} aria-label={options.select.label}
           style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)', background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box', marginBottom: 12 }}>
           {options.select.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
         <label style={fieldLabel}>{options.select.label === '任务类型' ? '任务标题' : '标题'}</label>
         <input ref={ref} value={text} onChange={(e) => setText(e.target.value)}
+          aria-label={options.select.label === '任务类型' ? '任务标题' : '标题'}
           onKeyDown={(e) => { if (e.key === 'Enter' && numOk) ok(); }}
           placeholder={options.placeholder}
           style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)', boxSizing: 'border-box' }}
@@ -266,6 +268,7 @@ function InputDialogEx({ options, onSubmit }: InputDialogExProps) {
           <>
             <label style={{ ...fieldLabel, marginTop: 12 }}>{numLabel}{numRequired ? '（必填）' : ''}</label>
             <input type="number" value={num} min={options.numberField.min} onChange={(e) => setNum(e.target.value)}
+              aria-label={numLabel}
               placeholder={options.numberField.placeholder}
               style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)', boxSizing: 'border-box' }}
             />

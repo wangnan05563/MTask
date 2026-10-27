@@ -441,7 +441,7 @@ export function PrdPanel({ projectId, onClose }: {
           <input type="file" accept=".md,.markdown,.txt" style={FILE_INPUT_SR_ONLY}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void importFile(f); } e.target.value = ''; }} />
         </label>
-        <button onClick={() => { void load(); }} className="tbtn-anim" title="刷新" style={opBtn}><RefreshCw size={12} /></button>
+        <button onClick={() => { void load(); }} className="tbtn-anim" title="刷新" aria-label="刷新 PRD 列表" style={opBtn}><RefreshCw size={12} /></button>
         <button onClick={onClose} className="tbtn-anim" title="关闭" aria-label="关闭 PRD 管理" style={opBtn}><X size={12} /></button>
       </div>
 
@@ -473,10 +473,10 @@ export function PrdPanel({ projectId, onClose }: {
               style={{ ...opBtn, gap: 3 }}>
               <FileUp size={11} /> 从PRD导入项目计划
             </button>
-            <button onClick={() => { void toggleStatus(d); }} className="tbtn-anim" title={d.status === 'confirmed' ? '转回草稿（PRD）' : '确认为确认版 PRD'} style={opBtn}>
+            <button onClick={() => { void toggleStatus(d); }} className="tbtn-anim" title={d.status === 'confirmed' ? '转回草稿（PRD）' : '确认为确认版 PRD'} aria-label={d.status === 'confirmed' ? '把该文档转回草稿' : '把该文档确认为正式版'} style={opBtn}>
               {d.status === 'confirmed' ? <Undo2 size={11} /> : <Check size={11} />}
             </button>
-            <button onClick={() => { void removeDoc(d); }} className="tbtn-anim" title="删除文档" style={{ ...opBtn, color: 'var(--danger)' }}><Trash2 size={11} /></button>
+            <button onClick={() => { void removeDoc(d); }} className="tbtn-anim" title="删除文档" aria-label="删除该 PRD 文档" style={{ ...opBtn, color: 'var(--danger)' }}><Trash2 size={11} /></button>
           </span>
         </div>
       ))}
@@ -584,14 +584,14 @@ export function PrdPanel({ projectId, onClose }: {
               </span>
               {docName && <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', flex: 'none' }} title="问题挂靠的 PRD 文档">📄 {docName}</span>}
               <span style={{ display: 'inline-flex', gap: 5, flex: 'none' }}>
-                <button onClick={() => { void editIssue(i); }} className="tbtn-anim" title="编辑问题" style={opBtn}><Pencil size={11} /></button>
+                <button onClick={() => { void editIssue(i); }} className="tbtn-anim" title="编辑问题" aria-label="编辑该问题" style={opBtn}><Pencil size={11} /></button>
                 {i.status === 'open'
-                  ? <button onClick={() => { void resolveIssue(i); }} className="tbtn-anim" title="填写结论并确认" style={opBtn}><Check size={11} /></button>
+                  ? <button onClick={() => { void resolveIssue(i); }} className="tbtn-anim" title="填写结论并确认" aria-label="填写结论并确认该问题" style={opBtn}><Check size={11} /></button>
                   : <>
-                      {i.prd_id && <button onClick={() => { void writeback(i); }} className="tbtn-anim" title="把结论回写 PRD" style={opBtn}><SendToBack size={11} /></button>}
-                      <button onClick={() => { void reopenIssue(i); }} className="tbtn-anim" title="重开（转回待确认）" style={opBtn}><Undo2 size={11} /></button>
+                      {i.prd_id && <button onClick={() => { void writeback(i); }} className="tbtn-anim" title="把结论回写 PRD" aria-label="把结论回写 PRD" style={opBtn}><SendToBack size={11} /></button>}
+                      <button onClick={() => { void reopenIssue(i); }} className="tbtn-anim" title="重开（转回待确认）" aria-label="重开该问题（转回待确认）" style={opBtn}><Undo2 size={11} /></button>
                     </>}
-                <button onClick={() => { void removeIssue(i); }} className="tbtn-anim" title="删除问题" style={{ ...opBtn, color: 'var(--danger)' }}><Trash2 size={11} /></button>
+                <button onClick={() => { void removeIssue(i); }} className="tbtn-anim" title="删除问题" aria-label="删除该问题" style={{ ...opBtn, color: 'var(--danger)' }}><Trash2 size={11} /></button>
               </span>
             </div>
           );

@@ -1544,20 +1544,31 @@ export function TasksPage() {
     await batchApply('category', target?.id ?? '');
   }
 
-  /** 看板卡片：可拖拽流转状态（提取为具名函数，降低 JSX 内函数嵌套层级，渲染结果不变） */
+  /** 看板卡片：可拖拽流转状态（提取为具名函数，降低 JSX 内函数嵌套层级，渲染结果不变）。
+   *  T03222（PM-303④）：拖拽是 HTML5 专属交互、键盘无法触发，故同一动作补一份 Enter/Space 键盘等价——
+   *  卡片本身即状态切换控件（在待办列按回车=标记完成，在已完成列按回车=转回待办），不改观感。 */
   function renderBoardCard(t: Task) {
     const cat = taskCats.find((c) => c.id === t.category_id);
+    const target: 'todo' | 'done' = t.status === 'done' ? 'todo' : 'done';
     return (
       <div key={t.id} /* NOSONAR - HTML5 draggable 卡片：拖拽流转状态无原生等价元素，改 button 会破坏原生拖拽 */
         draggable
         onDragStart={() => setDragTaskId(t.id)}
         onDragEnd={() => { setDragTaskId(''); setOverTaskId(''); }}
         className={dragTaskId === t.id ? 'plan-dragging' : undefined}
+        role="button"
+        tabIndex={0}
+        aria-label={`${t.title}（${priorityLabel(t.priority)}）— 回车或空格${t.status === 'done' ? '转回待办' : '标记为已完成'}`}
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault();
+          void setStatus(t, target);
+        }}
         style={{
           border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', background: 'var(--card-bg)', cursor: 'grab',
           borderLeft: `3px solid ${priorityBorderColor(t.priority)}`,
         }}
-        title={`${t.title}（${priorityLabel(t.priority)}）——拖到另一列流转状态`}>
+        title={`${t.title}（${priorityLabel(t.priority)}）——拖到另一列，或聚焦后按回车流转状态`}>
         <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</div>
         {cat && (
           <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: 2 }}>{cat.name}</div>
@@ -2774,6 +2785,7 @@ export function TasksPage() {
                 <button
                   onClick={() => markImageRemoved(t.id, img.id)}
                   title="删除截图"
+                  aria-label="删除该截图"
                   style={{ position: 'absolute', top: -6, right: -6, fontSize: 'var(--fs-2xs)', lineHeight: '16px', padding: '0 4px', cursor: 'pointer' }}
                 >✕</button>
               </div>
@@ -2784,6 +2796,7 @@ export function TasksPage() {
                 <button
                   onClick={() => removeAddedImage(t.id, p.id)}
                   title="移除截图"
+                  aria-label="移除该待上传截图"
                   style={{ position: 'absolute', top: -6, right: -6, fontSize: 'var(--fs-2xs)', lineHeight: '16px', padding: '0 4px', cursor: 'pointer' }}
                 >✕</button>
               </div>
@@ -3380,7 +3393,7 @@ export function TasksPage() {
                 // T02146：行容器由原生 button 改 div role=button——行内的置顶图标本身是 button，
                 // HTML 不允许按钮套按钮（fdc6090 的 a11y 批修把「div→button」规则套到了含交互子元素的
                 // 容器上，同 T02143 根因）。手感靠 .card-btn 补回（T02143 已在 App.tsx 落该类）。
-                <div key={p.id} role="button" tabIndex={0} className="card-btn" aria-pressed={p.id === activeProject} /* NOSONAR: S6819 豁免——T02146：行内含原生置顶button，HTML禁止按钮套按钮；键盘支持已在onKeyDown保留 */
+                <div key={p.id} role="button" tabIndex={0} className="card-btn" aria-pressed={p.id === activeProject} aria-label={`切换到项目 ${p.name}`} /* NOSONAR: S6819 豁免——T02146：行内含原生置顶button，HTML禁止按钮套按钮；键盘支持已在onKeyDown保留 */
                   onClick={() => { setActiveProject(p.id); setProjOpen(false); }}
                   onKeyDown={(e) => {
                     // 只认行容器自身的按键：角标按钮的 Enter/Space 会冒泡到这里，不判 target 会
@@ -3575,6 +3588,7 @@ export function TasksPage() {
             onChange={(e) => setNewTitle(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && !creating) void createTask(); }}
             placeholder="输入任务标题，回车创建"
+            aria-label="新建任务标题"
             // T02277：min-width 给到 80 而非 0——0 时本项可缩到零，行内永不触发换行，
             // 容器 flexWrap 兜底形同虚设（极窄窗口下输入框塌成一条）；80 让 ≤340px 时按钮换行回视口
             style={{ flex: 1, minWidth: 80, padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}
@@ -3631,6 +3645,7 @@ export function TasksPage() {
               onPaste={(e) => readClipboardImages(e, addNewImage)}
               rows={2}
               placeholder="任务描述（可在框内 Ctrl+V 粘贴截图）"
+              aria-label="新建任务描述"
               style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', boxSizing: 'border-box' }}
             />
           </div>

@@ -41,7 +41,7 @@ export function MobileMore({ notify, openDesktop, onOpenTask }: Props) {
 
   return (
     <div style={page}>
-      <header style={hdr}>{sub === 'root' ? '更多' : SUB_TITLE[sub]}<button onClick={() => setSub('root')} style={backBtn}>‹</button></header>
+      <header style={hdr}>{sub === 'root' ? '更多' : SUB_TITLE[sub]}<button onClick={() => setSub('root')} aria-label="返回更多页" style={backBtn}>‹</button></header>
       <div style={body}>
         {sub === 'root' && ITEMS.map((it) => {
           const Icon = it.icon;

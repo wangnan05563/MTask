@@ -154,7 +154,7 @@ export function CommandPalette({ open, onClose, onNavigate }: {
           <input ref={inputRef} value={kw} onChange={(e) => { setKw(e.target.value); setActive(0); }} onKeyDown={onKeyDown}
             placeholder="搜索任务（支持 status:/priority:/project: 与 AND/OR）、提示词或页面…"
             aria-label="命令面板搜索"
-            style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-l)' }} />
+            style={{ flex: 1, border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-l)' }} />
         </div>
         <div style={{ maxHeight: '46vh', overflowY: 'auto' }}>
           {showNoMatch && <div style={{ padding: 16, fontSize: 'var(--fs-s)', color: 'var(--text-muted)', textAlign: 'center' }}>无匹配结果</div>}

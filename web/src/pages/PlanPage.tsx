@@ -283,7 +283,7 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
             // T02146：行容器由原生 button 改 div role=button——行内的置顶图标本身是 button，
             // HTML 不允许按钮套按钮（同 T02143 根因：a11y 批修把规则套到了含交互子元素的容器上）。
             // 拖拽属性在 div 上等价可用；手感靠 .card-btn 补回（App.tsx 已落该类）。
-            <div key={p.id} role="button" tabIndex={0} className="card-btn" aria-pressed={p.id === projectId} /* NOSONAR: S6819 豁免——T02146：行内含原生置顶button，HTML禁止按钮套按钮；键盘支持已在onKeyDown保留 */
+            <div key={p.id} role="button" tabIndex={0} className="card-btn" aria-pressed={p.id === projectId} aria-label={`切换到项目 ${p.name}`} /* NOSONAR: S6819 豁免——T02146：行内含原生置顶button，HTML禁止按钮套按钮；键盘支持已在onKeyDown保留 */
               draggable={projSortMode === 'default'}
               onDragStart={() => setDragProjId(p.id)}
               onDragOver={(e) => { if (projSortMode === 'default' && dragProjId) { e.preventDefault(); setOverProjId(p.id); } }}
@@ -343,11 +343,11 @@ function PlanBatchBar({ planSelIds, plans, selectAllPlans, planBatchStatus, plan
         <option value="done">已完成</option>
         <option value="blocked">阻塞</option>
       </select>
-      <button onClick={() => batchEvaluateSelected()} disabled={evalBusy || busy} title="AI 评估选中条目 — 结果自动录入各条描述" className="task-op"
+      <button onClick={() => batchEvaluateSelected()} disabled={evalBusy || busy} title="AI 评估选中条目 — 结果自动录入各条描述" aria-label="AI 评估选中条目" className="task-op"
         style={{ display: 'inline-flex', alignItems: 'center', fontSize: 'var(--fs-s)', border: 'none', background: 'transparent', cursor: evalBusy ? 'not-allowed' : 'pointer', color: 'var(--accent)', padding: 2 }}>
         {evalBusy ? <Loader2 size={14} className="aispin" /> : <Zap size={14} />}
       </button>
-      <button onClick={() => runAsync(batchArchivePlans())} disabled={busy} title="归档选中计划 — 可在「归档」菜单恢复" className="task-op"
+      <button onClick={() => runAsync(batchArchivePlans())} disabled={busy} title="归档选中计划 — 可在「归档」菜单恢复" aria-label="归档选中计划" className="task-op"
         style={{ display: 'inline-flex', alignItems: 'center', fontSize: 'var(--fs-s)', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)', padding: 2 }}>
         <Archive size={14} />
       </button>
@@ -358,7 +358,7 @@ function PlanBatchBar({ planSelIds, plans, selectAllPlans, planBatchStatus, plan
           {milestones.map((m) => <option key={m.id} value={m.id}>{m.title}</option>)}
         </select>
       )}
-      <button onClick={() => runAsync(batchCreateLinkedTodos())} disabled={busy} title="新建待办关联 — 为每条选中计划各创建一条新待办并关联" className="task-op"
+      <button onClick={() => runAsync(batchCreateLinkedTodos())} disabled={busy} title="新建待办关联 — 为每条选中计划各创建一条新待办并关联" aria-label="为选中计划批量新建待办并关联" className="task-op"
         style={{ display: 'inline-flex', alignItems: 'center', fontSize: 'var(--fs-s)', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)', padding: 2 }}>
         <CalendarPlus size={14} />
       </button>
@@ -830,7 +830,7 @@ function PlanDepCell({ p, plans, seqs, openDepEditor }: { readonly p: PlanTask; 
   const deps = depList.filter((d) => d.type !== 'child');
   if (deps.length === 0) {
     return (
-      <button onClick={() => openDepEditor(p)} title="配置依赖 — 无前置依赖，点击添加前置任务"
+      <button onClick={() => openDepEditor(p)} title="配置依赖 — 无前置依赖，点击添加前置任务" aria-label="添加前置依赖"
         className="task-op" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, display: 'inline-flex', fontSize: 'var(--fs-xs)' }}>
         <Plus size={12} />
       </button>
@@ -919,24 +919,28 @@ function PlanRowMenu({ p, setDepMenuId, depMenuPos, openDepEditor, insertAfter, 
     <div role="menu" style={{ position: 'fixed', top: depMenuPos!.top, right: depMenuPos!.right, zIndex: 70, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 6px 16px rgba(0,0,0,.16)', padding: 4, display: 'flex', flexDirection: 'row', gap: 2, alignItems: 'center' }}>
       <button role="menuitem" onClick={() => { setDepMenuId(''); openDepEditor(p); }}
         title="维护依赖/挂接 — 选择前置任务并标记串行/并行（GitBranch 图标与关联待办 Link 图标区分）"
+        aria-label="维护依赖与挂接"
         className="task-op"
         style={{ display: 'inline-flex', alignItems: 'center', padding: 4, fontSize: 'var(--fs-s)', border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text)' }}>
         <GitBranch size={14} />
       </button>
       <button role="menuitem" onClick={() => { setDepMenuId(''); runAsync(insertAfter(p)); }}
         title="在此行后插入新任务 — 插入行从今天起 1 天，不影响其他任务日期"
+        aria-label="在此行后插入新任务"
         className="task-op"
         style={{ display: 'inline-flex', alignItems: 'center', padding: 4, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)' }}>
         <Plus size={14} />
       </button>
       {!p.linked_task_id && <button role="menuitem" onClick={() => { setDepMenuId(''); runAsync(linkTodo(p)); }}
         title="关联既有待办 — 选择本项目的待办与该计划互相关联"
+        aria-label="关联既有待办"
         className="task-op"
         style={{ display: 'inline-flex', alignItems: 'center', padding: 4, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text)' }}>
         <Link2 size={14} />
       </button>}
       {!p.linked_task_id && <button role="menuitem" onClick={() => { setDepMenuId(''); runAsync(createLinkedTodo(p)); }}
         title="新建待办关联 — 由本计划创建新待办并关联"
+        aria-label="新建待办并关联"
         className="task-op"
         style={{ display: 'inline-flex', alignItems: 'center', padding: 4, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text)' }}>
         <CalendarPlus size={14} />
@@ -946,6 +950,7 @@ function PlanRowMenu({ p, setDepMenuId, depMenuPos, openDepEditor, insertAfter, 
       </span>
       <button role="menuitem" onClick={() => { setDepMenuId(''); runAsync(archivePlan(p)); }}
         title="归档计划任务 — 从时间线移除，可在「归档」菜单恢复"
+        aria-label="归档该计划任务"
         className="task-op"
         style={{ display: 'inline-flex', alignItems: 'center', padding: 4, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--danger)' }}>
         <Archive size={14} />
@@ -1225,7 +1230,7 @@ function PlanGanttRow({ p, i, plans, seqs, isMilestone, inner, innerCount, inner
         {!p.linked_task_id && <span style={{ color: 'var(--text-muted)' }}>未关联</span>}
       </td>
       <td style={{ padding: 6, whiteSpace: 'nowrap' }}>
-        {p.linked_task_id && <button onClick={() => runAsync(unlinkTodo(p))} title="解除关联" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', padding: 2 }}><Link2Off size={13} /></button>}
+        {p.linked_task_id && <button onClick={() => runAsync(unlinkTodo(p))} title="解除关联" aria-label="解除与待办的关联" className="task-op" style={{ cursor: 'pointer', border: 'none', background: 'transparent', padding: 2 }}><Link2Off size={13} /></button>}
         <PlanActionsCell p={p} depMenuId={depMenuId} depMenuRef={depMenuRef} depMenuPos={depMenuPos} evalBusy={evalBusy} busy={busy}
           setDepMenuId={setDepMenuId} setDepMenuPos={setDepMenuPos} evaluateRow={evaluateRow} openDepEditor={openDepEditor}
           insertAfter={insertAfter} linkTodo={linkTodo} createLinkedTodo={createLinkedTodo} archivePlan={archivePlan} updatePlan={updatePlan} />
@@ -1243,9 +1248,9 @@ function HolidayCalendar({ calYear, setCalYear, holiBusy, renderMonthGrid }: {
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <button onClick={() => setCalYear((y) => y - 1)} disabled={holiBusy} style={btnStyle}>←</button>
+        <button onClick={() => setCalYear((y) => y - 1)} disabled={holiBusy} aria-label="万年历上一年" style={btnStyle}>←</button>
         <span style={{ fontSize: 'var(--fs-l)', fontWeight: 600 }}>{calYear} 年万年历</span>
-        <button onClick={() => setCalYear((y) => y + 1)} disabled={holiBusy} style={btnStyle}>→</button>
+        <button onClick={() => setCalYear((y) => y + 1)} disabled={holiBusy} aria-label="万年历下一年" style={btnStyle}>→</button>
         <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}><span style={{ color: 'var(--danger)', fontWeight: 600 }}>■</span> 法定节假日　<span style={{ color: 'var(--text-muted)' }}>■</span> 周末</span>
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
@@ -1317,6 +1322,7 @@ function HolidayModal({ holiBusy, setHoliOpen, holiTab, setHoliTab, holiNewKind,
                     </span>
                     <span style={{ flex: 1, color: 'var(--text-secondary)' }}>{h.name || '—'}</span>
                     <button onClick={() => runAsync(removeHoliday(h.date))} disabled={holiBusy} title={h.kind === 'overtime' ? '移除该加班日' : '移除该节假日'}
+                      aria-label={h.kind === 'overtime' ? `移除加班日 ${h.name || h.date}` : `移除节假日 ${h.name || h.date}`}
                       style={{ border: 'none', background: 'transparent', color: 'var(--danger)', cursor: 'pointer', display: 'inline-flex' }}><Trash2 size={13} /></button>
                   </div>
                 ))}
@@ -2865,7 +2871,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         {holidaysView.phase === 'error' && holidays.length === 0 && (
           <span data-t02213="holidays-math-warning" style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>当前工期按「无节假日」口径计算</span>
         )}
-        <button onClick={reload} style={btnStyle} title="刷新"><RefreshCw size={13} /></button>
+        <button onClick={reload} style={btnStyle} title="刷新" aria-label="刷新计划数据"><RefreshCw size={13} /></button>
         {/* T00735：移除本页原有的「向导」按钮——与全局导航右上角常驻按钮重复（两者打开同一份项目管理向导内容），
             统一保留全局那个（已改为静态图标、无呼吸动画） */}
         {notice && <output className="flash-toast">{notice}</output>}
