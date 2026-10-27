@@ -149,12 +149,22 @@ interface SeriesItem {
   start_date: string;
   end_date: string;
   status: string;
-  /** 入场日（迭代=挂载日；项目=窗口起点/创建日取晚者） */
+  /** 最早一次入场日（迭代=挂载事件日；项目=窗口起点）——决定可回溯窗口起点 */
   fromDay: string;
+  /**
+   * 在册区间（PM-201⑤）：迭代口径按事件流回放成 [进, 出) 的若干段，移出/改绑只封段不删史；
+   * 项目口径恒为整窗一段。采样日落在任一段内才计入剩余，否则等于「把当前状态倒灌回历史」。
+   */
+  spans: Array<{ from: string; to: string | null }>;
   /** 完成日；status!=='done' 时为 null */
   completedDay: string | null;
   /** 已完成但缺完成时刻（本功能上线前标的 done）：不计入剩余，只进 unknownCompleted 说明 */
   unknownCompleted: boolean;
+}
+
+/** 采样日是否落在该行的在册区间内 */
+function isOnScope(i: SeriesItem, day: string): boolean {
+  return i.spans.some((s) => s.from <= day && (s.to === null || day < s.to));
 }
 
 function remainingWorkdaysOn(day: string, items: SeriesItem[], cal: WorkdayCal): number {
@@ -175,7 +185,7 @@ function isDoneBy(i: SeriesItem, day: string): boolean {
 }
 
 function remainingItemsOn(day: string, items: SeriesItem[]): SeriesItem[] {
-  return items.filter((i) => i.fromDay <= day && !isDoneBy(i, day));
+  return items.filter((i) => isOnScope(i, day) && !isDoneBy(i, day));
 }
 
 /* ---------------- 周报卡（PM-201⑥ 的「可发周报卡 + 补生成且仅一份」腿，T03227） ---------------- */
@@ -383,7 +393,12 @@ export const IterationService = {
         if (r.iteration_id === it.id) continue; // 幂等：已在册不重复留痕
         if (r.iteration_id) {
           const other = fetchIteration(r.iteration_id);
-          if (other && !other.archived) out.moved.push({ planTaskId: r.id, fromIteration: other.id, fromName: other.name });
+          if (other && !other.archived) {
+            out.moved.push({ planTaskId: r.id, fromIteration: other.id, fromName: other.name });
+            // 离开也要在**原迭代**留痕（PM-201⑤）：不记这一条，原迭代的燃尽就只能靠「当前还在册的行」倒推，
+            // 该行被改绑走之后它在原迭代每一天的贡献会凭空消失——等于替原迭代改写了过去。
+            logMembership(other.id, other.project_id, r.id, 'detach', `改绑至迭代「${it.name}」`);
+          }
         }
         db.prepare('UPDATE plan_tasks SET iteration_id = ?, updated_at = ? WHERE id = ?').run(it.id, nowIso(), r.id);
         logMembership(it.id, it.project_id, r.id, 'attach', out.moved.some((m) => m.planTaskId === r.id) ? '改绑加入' : '加入迭代');
@@ -577,16 +592,58 @@ function buildBurndown(
   });
 }
 
-/** 迭代口径的入场项：入场日=首次挂载事件日；当前在册但没有挂载事件的行按区间起点补齐并说明 */
+/**
+ * 迭代口径的入场项：在册区间由 `iteration_events` 回放而成（PM-201⑤「不重写历史」的取数面）。
+ * 不能只按 `iteration_id = 本迭代` 取行——那样一条计划行被移出或改绑之后，
+ * 它在本迭代**历史每一天**的贡献会一起消失，图上等于替本迭代改写了过去。
+ * 当前在册但没有挂载事件的行（本功能上线前挂上的）按区间起点补齐并说明。
+ */
 function iterationItems(iterationId: string, startDate: string, db: ReturnType<typeof getDb>): SeriesItem[] {
   const rows = db.prepare(
-    `SELECT p.id, p.title, p.start_date, p.end_date, p.status, p.completed_at,
-            (SELECT MIN(e.created_at) FROM iteration_events e WHERE e.iteration_id = p.iteration_id AND e.plan_task_id = p.id AND e.kind = 'attach') AS attached_at
+    `SELECT p.id, p.title, p.start_date, p.end_date, p.status, p.completed_at, p.iteration_id
        FROM plan_tasks p
-      WHERE p.iteration_id = ? AND p.archived = 0
+      WHERE p.archived = 0
+        AND (p.iteration_id = ? OR EXISTS (
+              SELECT 1 FROM iteration_events e
+               WHERE e.iteration_id = ? AND e.plan_task_id = p.id AND e.kind IN ('attach', 'detach')))
       ORDER BY p.sort_order`,
-  ).all(iterationId) as Array<{ id: string; title: string; start_date: string; end_date: string; status: string; completed_at: string | null; attached_at: string | null }>;
-  return rows.map((r) => toSeriesItem(r, r.attached_at ? dayOf(r.attached_at) ?? startDate : startDate));
+  ).all(iterationId, iterationId) as Array<{
+    id: string; title: string; start_date: string; end_date: string; status: string; completed_at: string | null; iteration_id: string | null;
+  }>;
+  const evs = db.prepare(
+    `SELECT plan_task_id, kind, created_at FROM iteration_events
+      WHERE iteration_id = ? AND kind IN ('attach', 'detach') ORDER BY plan_task_id, created_at`,
+  ).all(iterationId) as Array<{ plan_task_id: string; kind: string; created_at: string }>;
+  const byPlan = new Map<string, Array<{ kind: string; day: string }>>();
+  for (const e of evs) {
+    const day = dayOf(e.created_at);
+    if (!day) continue;
+    const list = byPlan.get(e.plan_task_id) ?? [];
+    list.push({ kind: e.kind, day });
+    byPlan.set(e.plan_task_id, list);
+  }
+  return rows.map((r) => {
+    const timeline = byPlan.get(r.id) ?? [];
+    const spans: Array<{ from: string; to: string | null }> = [];
+    let open: { from: string } | null = null;
+    for (const t of timeline) {
+      if (t.kind === 'attach') {
+        if (!open) open = { from: t.day };
+      } else if (open) {
+        spans.push({ from: open.from, to: t.day });
+        open = null;
+      }
+    }
+    // 仍在本迭代里的行必须留一段开区间：事件缺失（本功能上线前挂的）或只有 detach 的异常库态都补一段，
+    // 补的起点取「已有事件的最晚一天」，否则当前看板有成员而燃尽只剩历史段，两处口径会打架。
+    const stillMember = r.iteration_id === iterationId;
+    if (open) spans.push({ from: open.from, to: null });
+    if (stillMember && !spans.some((s) => s.to === null)) spans.push({ from: timeline.length ? timeline[timeline.length - 1].day : startDate, to: null });
+    // 只剩「移出」而没有「加入」的记录（异常库态）：不给它编造一段贡献，画成零宽度即不入任何采样日
+    if (!spans.length) spans.push({ from: startDate, to: startDate });
+    spans.sort((a, b) => (a.from < b.from ? -1 : 1));
+    return toSeriesItem(r, spans[0].from, spans);
+  });
 }
 
 /**
@@ -605,6 +662,7 @@ function projectItems(projectId: string, startDate: string, db: ReturnType<typeo
 function toSeriesItem(
   r: { id: string; title: string; start_date: string; end_date: string; status: string; completed_at: string | null },
   fromDay: string,
+  spans?: Array<{ from: string; to: string | null }>,
 ): SeriesItem {
   const completedDay = r.status === 'done' ? dayOf(r.completed_at) : null;
   return {
@@ -614,6 +672,7 @@ function toSeriesItem(
     end_date: r.end_date,
     status: r.status,
     fromDay,
+    spans: spans ?? [{ from: fromDay, to: null }],
     completedDay,
     // 上线前就标完的历史 done 行：完成时刻不可知，视为「入场时即已完成」，只计数不伪造下降点
     unknownCompleted: r.status === 'done' && !r.completed_at,
@@ -648,7 +707,9 @@ function finish(args: {
     return {
       day,
       remainingCount: remaining.length,
-      remainingWorkdays: remainingWorkdaysOn(day, items, cal),
+      // 剩余工期只累计「当日确实剩余」的那些行：把 items 整片喂进去会把尚未入场的排期提前算进历史，
+      // 于是剩余数在降、剩余工期却不降——两条线讲的是同一天的事，取数集合必须是同一个。
+      remainingWorkdays: remainingWorkdaysOn(day, remaining, cal),
       idealCount: round1(idealTotal * ratio),
       idealWorkdays: round1(idealWorkdayTotal * ratio),
     };
