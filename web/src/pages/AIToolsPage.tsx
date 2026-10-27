@@ -938,8 +938,11 @@ export function AIToolsPage() {
         .arena-row { transition: transform .12s ease; }
         .arena-row.item-pressing { transform: scale(.985); } /* T00489：仅按住行触发 */
         .arena-row:hover td { background: var(--surface-2); }
-        .abtn { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
-        .arena-row:hover .abtn, .arena-row:focus-within .abtn { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
+        /* UX-03①：行内操作默认淡出但不能 visibility:hidden——那会把按钮移出 Tab 序，键盘用户没有任何入口
+           编辑/归档记录（焦点进不去，:focus-within 也就永远不会亮）。改用 opacity + pointer-events：
+           键盘仍能 Tab 进来，进入即由 :focus-within 显形；鼠标未悬浮时也不会误点到隐身按钮。 */
+        .abtn { opacity: 0; pointer-events: none; transition: opacity .15s ease; }
+        .arena-row:hover .abtn, .arena-row:focus-within .abtn { opacity: 1; pointer-events: auto; }
         @keyframes rowflush { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
         .arena-row.flush td { animation: rowflush 1.4s ease; }
         .tool-dragging { opacity: .5; transform: scale(1.01); box-shadow: 0 6px 18px rgba(0,0,0,.22); background: var(--surface-2); }
@@ -959,11 +962,16 @@ export function AIToolsPage() {
         >
           <Plus size={13} /> 新增配置
         </button>
-        <select className="op-hidden" value={filterType} onChange={(e) => setFilterType(e.target.value)} style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+        {/* UX-03②：原生 select 的可访问名不来自当前 option，必须显式 aria-label；title 同步给出操作说明 */}
+        <select className="op-hidden" value={filterType} onChange={(e) => setFilterType(e.target.value)}
+          aria-label="筛选厂商类型" title="厂商类型筛选 — 按厂商类型过滤配置记录"
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">全部厂商类型</option>
           {types.map((tp) => <option key={tp} value={tp}>{tp}</option>)}
         </select>
-        <select className="op-hidden" value={filterPurpose} onChange={(e) => setFilterPurpose(e.target.value)} style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+        <select className="op-hidden" value={filterPurpose} onChange={(e) => setFilterPurpose(e.target.value)}
+          aria-label="筛选用途" title="用途筛选 — 按整理/开发用途过滤配置记录"
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">全部用途</option>
           <option value="organize">整理</option>
           <option value="develop">开发</option>
@@ -974,13 +982,16 @@ export function AIToolsPage() {
           onChange={(e) => setKeyword(e.target.value)}
           placeholder="搜索名称/厂商/Endpoint/备注…" data-page-search
           aria-label="搜索配置（名称/厂商/Endpoint/备注）"
+          title="搜索配置 — 按名称/厂商类型/Endpoint/备注检索"
           style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', flex: 1, minWidth: 180 }}
         />
         {notice && <output className="flash-toast">{notice}</output>}
       </div>
 
-      {/* 列表 */}
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-l)' }}>
+      {/* 列表：九列在窄窗口靠横向滚动保读，不靠压缩列宽把 Endpoint/备注挤成竖排（UX-03③）。
+          滚动容器自身可聚焦（tabIndex=0 + role/可访问名），纯键盘也能用方向键滚看被挡住的列。 */}
+      <div role="region" aria-label="配置记录表格（可横向滚动）" tabIndex={0} style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', minWidth: 1000, borderCollapse: 'collapse', fontSize: 'var(--fs-l)' }}>
         <thead>
           <tr style={{ textAlign: 'left', color: 'var(--text-secondary)' }}>
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>名称</th>
@@ -1043,10 +1054,11 @@ export function AIToolsPage() {
             />
           ))}
           {filtered.length === 0 && (
-            <tr><td colSpan={9} style={{ padding: 16, color: 'var(--text-muted)', textAlign: 'center' }}>{tools.length === 0 ? '暂无配置记录，点击「+ 新增配置」接入你的 AI 厂商' : '没有符合筛选条件的配置记录'}</td></tr>
+            <tr><td colSpan={9} style={{ padding: 16, color: 'var(--text-muted)', textAlign: 'center' }}>{tools.length === 0 ? '暂无配置记录，点击「新增配置」接入你的 AI 厂商' : '没有符合筛选条件的配置记录'}</td></tr>
           )}
         </tbody>
       </table>
+      </div>
 
       {/* 新增/编辑弹窗：渲染与遮罩关闭逻辑封装在 ToolFormDialog 内 */}
       {form && (
