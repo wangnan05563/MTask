@@ -376,8 +376,8 @@ export function PromptsPage() {
     try { setReqCats(await api.get<ReqCategory[]>('/req-categories')); } catch { /* 忽略 */ }
   }, []);
 
-  // enabled:false 关掉 hook 的挂载自跑，取数统一由下方 [activeCat, search] effect 触发（与原 L386
-  // 语义一致，避免挂载时重复请求）
+  // enabled:false 关掉 hook 的挂载自跑，取数统一由下方 [activeCat, debouncedSearch] effect 触发（与原 L386
+  // 语义一致，避免挂载时重复请求）；关键词取实时 search，防抖只推迟触发时机
   const promptsView = useResource<Prompt[]>(async () => {
     if (!activeCat) return [];
     const qs = new URLSearchParams({ categoryId: activeCat });
@@ -386,6 +386,15 @@ export function PromptsPage() {
   }, { enabled: false });
   const prompts = promptsView.data ?? [];
 
+  /* UX-04②：搜索防抖 250ms。取数触发键换成稳定下来的 debouncedSearch，而 loader 闭包仍读实时
+     search——防抖只推迟「何时发请求」，不改变「发出去的是哪个词」，因此不会出现用旧关键词取数、
+     或输入被截断成半截词去查的二次问题。 */
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 250);
+    return () => clearTimeout(t);
+  }, [search]);
+
   // 同名 shim：保留既有 ~18 处 `void/await loadCategories()`、`loadPrompts(activeCat, search)` 调用点。
   // loader 闭包由 useResource 每轮渲染刷新（loadRef），传入的参数就是当前 state，无需再参与取数。
   const loadCategories = useCallback(async () => { categoriesView.reload(); }, [categoriesView.reload]);
@@ -393,7 +402,7 @@ export function PromptsPage() {
     promptsView.reload();
   }, [promptsView.reload]);
 
-  useEffect(() => { promptsView.reload(); }, [activeCat, search]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { promptsView.reload(); }, [activeCat, debouncedSearch]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { void loadReqCats(); }, [loadReqCats]);
 
   // T03184（PM-102）：命令面板点选提示词后「定位 + 高亮」，不再只把用户丢到提示词页。
@@ -693,7 +702,12 @@ export function PromptsPage() {
   const listFailed = categoriesView.phase === 'error' || promptsView.phase === 'error';
   let emptyListHint: string;
   if (categories.length === 0) {
-    emptyListHint = '暂无分类，请先新建分类。';
+    emptyListHint = '暂无分类，请先用上方常驻的「新建分类」建一个分类。';
+  } else if (search.trim() && reqFilter === '') {
+    // UX-04⑤：搜索无结果 ≠ 分类里没东西——两者文案必须能分辨，否则用户会以为数据丢了
+    emptyListHint = `没有匹配「${search.trim()}」的提示词 —— 换个关键词或清空搜索框。`;
+  } else if (search.trim()) {
+    emptyListHint = `没有匹配「${search.trim()}」的提示词 —— 当前还叠加了「通用需求分类」筛选，可一并清掉。`;
   } else if (reqFilter === '') {
     emptyListHint = '该分类下暂无提示词。';
   } else {
@@ -724,16 +738,19 @@ export function PromptsPage() {
       `}</style>
       {/* 工具栏：分类切换与管理 */}
       <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <select value={activeCat} onChange={(e) => setActiveCat(e.target.value)} style={{ padding: 6, fontSize: 'var(--fs-s)', minWidth: 180, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+        <select value={activeCat} onChange={(e) => setActiveCat(e.target.value)}
+          aria-label="提示词分类：切换要查看的分类" title="分类切换 — 切换要查看的提示词分类"
+          style={{ padding: 6, fontSize: 'var(--fs-s)', minWidth: 180, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           {categories.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.promptCount ?? 0}）</option>)}
         </select>
         {/* T02283：断供时给出原因与重试入口，而不是让下拉静默变空 */}
         <ResourceHint view={categoriesView} label="提示词分类" />
-        {/* T00510 调整：分类管理三按钮与任务菜单项目按钮组同款——纯图标+边框、同组紧跟下拉、悬浮显示 */}
-        <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+        {/* T00510 调整：分类管理三按钮与任务菜单项目按钮组同款——纯图标+边框、同组紧跟下拉、悬浮显示。
+            UX-04①：一个分类都没有时，「新建分类」是唯一出路，不能藏在悬浮之后——常驻可见。 */}
+        <span className={categories.length === 0 ? '' : 'op-hidden'} style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
         <button onClick={() => void addCategory()} title="新建分类 — 新增一个提示词分类" aria-label="新建分类：新增一个提示词分类"
-          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
-          <FolderPlus size={13} />
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
+          <FolderPlus size={13} />{categories.length === 0 ? <span>新建分类</span> : null}
         </button>
         {activeCatObj && (
           <>
@@ -798,7 +815,8 @@ export function PromptsPage() {
           <select
           value={sortKey}
           onChange={(e) => setSortKey(e.target.value as 'updated_at' | 'created_at' | 'title')}
-          title="排序字段"
+          title="排序字段 — 选择列表按哪个字段排序"
+          aria-label="排序字段：选择提示词列表的排序依据"
           style={{ padding: 6, fontSize: 'var(--fs-s)' }}
         >
           <option value="manual">手动排序</option>
@@ -813,7 +831,8 @@ export function PromptsPage() {
           <select
           value={sortDir}
           onChange={(e) => setSortDir(e.target.value as 'asc' | 'desc')}
-          title="排序方式"
+          title="排序方式 — 升序或降序"
+          aria-label="排序方式：选择升序或降序"
           style={{ padding: 6, fontSize: 'var(--fs-s)' }}
         >
           <option value="desc">降序</option>
@@ -825,6 +844,7 @@ export function PromptsPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="搜索标题/内容…" data-page-search
+          aria-label="搜索提示词（标题/内容）" title="搜索提示词 — 按标题与内容关键词检索当前分类"
           className="op-hidden" // T00760：默认隐藏悬浮显示
           style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', marginLeft: 'auto' }}
         />
@@ -879,6 +899,7 @@ export function PromptsPage() {
                     <select
                       value={draft.categoryId}
                       onChange={(e) => patchDraft(p.id, draft, 'categoryId', e.target.value)}
+                      aria-label="所属分类：改这条提示词归属的分类" title="所属分类 — 改这条提示词归属的分类"
                       style={{ padding: 6 }}
                     >
                       {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
