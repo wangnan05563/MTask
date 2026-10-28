@@ -894,7 +894,9 @@ export function ReportPage() {
       case 'prd-gen':
         return { status: deriveStatus(prdSnap.streaming, prdSnap.finalElapsed), startedAt: prdSnap.startedAt, finalElapsed: prdSnap.finalElapsed };
       case 'tc-gen':
-        return { status: deriveStatus(tcSnap.streaming, tcSnap.finalElapsed), startedAt: tcSnap.startedAt, finalElapsed: tcSnap.finalElapsed };
+        // T03592：失败必须显示失败——原来只看 finalElapsed，生成报错/零产出后卡片照样挂「完成」绿标，
+        // 用户以为成了、草稿区却空着
+        return { status: tcSnap.error ? 'error' : deriveStatus(tcSnap.streaming, tcSnap.finalElapsed), startedAt: tcSnap.startedAt, finalElapsed: tcSnap.finalElapsed };
       case 'kickoff-ppt':
         return { status: deriveStatus(kfSnap.streaming, kfSnap.finalElapsed), startedAt: kfSnap.startedAt, finalElapsed: kfSnap.finalElapsed };
       case 'summary-ppt':

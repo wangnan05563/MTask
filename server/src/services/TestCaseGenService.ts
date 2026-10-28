@@ -200,7 +200,10 @@ export async function generateTestCasesStream(input: {
       isNew: false,
     })).filter((r) => r.reqNo);
     input.onStage(`步骤 1/3｜拆分需求跟踪矩阵…（检测到项目已有 ${requirements.length} 条需求，默认复用；如需重新拆分请勾选「重新拆分」）`);
-    input.onStage(`步骤 1/3 完成：复用已有需求 ${requirements.length} 条`);
+    // 复用不是「照着这份 PRD 拆」而是「直接拿矩阵里现成的行」：所选 PRD 只是用例上下文，不进需求清单。
+    // 不说破的话，换一份 PRD 重跑会得到上一份 PRD 的需求与用例，看起来像「没生成 / 延续了上次的上下文」。
+    input.onStage(`步骤 1/3 完成：复用已有需求 ${requirements.length} 条（未按本次 PRD 拆分需求；要按本 PRD 拆分并补充缺口，请勾选「重新拆分需求」后重跑）`);
+    notes.push(`本轮复用项目已有需求 ${requirements.length} 条，未按所选 PRD 拆分需求——如需按本 PRD 拆分，请勾选「重新拆分需求」后重跑`);
   } else {
     input.onStage(`步骤 1/3｜拆分需求跟踪矩阵…${existingReqs.length > 0 ? `（已勾选重新拆分，将复用已有 ${existingReqs.length} 条 reqNo 并补充缺口）` : '（项目暂无需求，按 PRD 拆分）'}`);
     const existingLine = existingReqs.length > 0
@@ -346,6 +349,11 @@ export async function generateTestCasesStream(input: {
   // 整轮零产出且确有块失败：抛原始错误（给空草稿不如给明确故障），与 A11「部分覆盖带告警」不冲突
   if (allCases.length === 0 && failedReqNos.size > 0) {
     throw new Error(`所有需求块生成失败：${lastChunkErr}——请在「模型管理」检查该工具的端点/网络后重试`);
+  }
+  // 零产出但没有任何块抛错（模型正常返回、却没按协议给 <<<CASES>>> 数组：写成散文 / 标记写歪 / 全被截断）。
+  // 此前这里照发 done + 空用例：前端 hasDraft=false 会把草稿区整个收掉，表现就是「点了生成什么都没发生」。
+  if (allCases.length === 0) {
+    throw new Error(`AI 未返回任何可解析的用例（${reqSetNos.length} 条需求全部零产出）——请确认该模型按 <<<CASES>>> 协议输出 JSON，或更换模型后重试`);
   }
   // 失败块点名（排除补生成已成功挽回的）：让用户知道哪些需求是故障跳过而非模型没写
   const failedStillUncovered = [...failedReqNos].filter((no) => !countByReq.has(no));

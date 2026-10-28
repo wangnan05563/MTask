@@ -87,6 +87,8 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
   const { projects } = projectList;
   const [projectId, setProjectId] = useSessionState<string>('tcgen.project', '');
   const [docs, setDocs] = useState<Array<{ id: string; filename: string }>>([]);
+  /** 项目已有需求条数：生成前把「默认复用、不按所选 PRD 拆分」说在前面（T03592） */
+  const [reqCount, setReqCount] = useState(0);
   const [docId, setDocId] = useSessionState<string>('tcgen.docId', '');
   const [pickedFile, setPickedFile] = useState<File | null>(null);
   // 生成偏好（GenPrefs §8.1）
@@ -113,10 +115,12 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
 
   // 项目变更 → 拉该项目的 PRD 文档列表与用例枚举 meta（meta 供草稿视图 priority/type 下拉）
   useEffect(() => {
-    if (!projectId) { setDocs([]); return; }
+    if (!projectId) { setDocs([]); setReqCount(0); return; }
     void api.get<Array<{ id: string; filename: string }>>(`/plans/prd-docs?projectId=${encodeURIComponent(projectId)}`)
       .then((v) => setDocs(Array.isArray(v) ? v.map((d) => ({ id: d.id, filename: d.filename })) : [])).catch(() => setDocs([]));
     void api.get<CaseMeta>(`/plans/test-cases/meta?projectId=${encodeURIComponent(projectId)}`).then(setMeta).catch(() => setMeta(null));
+    void api.get<unknown[]>(`/plans/prd-requirements?projectId=${encodeURIComponent(projectId)}`)
+      .then((v) => setReqCount(Array.isArray(v) ? v.length : 0)).catch(() => setReqCount(0));
   }, [projectId]);
 
   // 生成完成 → store.result 落到本地可编辑草稿（仅当 result 变化时同步一次，保留用户已做的编辑）
@@ -161,6 +165,8 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
   const selectedCount = useMemo(() => draftCases.filter((c) => c.include !== false && c.title.trim()).length, [draftCases]);
   const pendingCount = useMemo(() => draftCases.filter((c) => c.include !== false && c.title.trim() && !c.alreadyImported).length, [draftCases]);
   const uncovered = useMemo(() => (coverage?.byReq ?? []).filter((r) => r.caseCount === 0), [coverage]);
+  /** 服务端如实标注的缺口（未覆盖需求 / 失败跳过的块 / 复用来源）——此前只写进 sessionStorage，界面从未展示 */
+  const resultNotes = snap.result?.notes ?? [];
 
   /** 发起流式生成：来源二选一（内部文档优先，否则上传文件），过程写右侧控制台 */
   async function generate(): Promise<void> {
@@ -200,7 +206,9 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
       testCaseGenStore.pushLog('生成完成：请在草稿视图勾选 / 编辑后确认导入');
     } catch (e) {
       if (ac.signal.aborted) return; // 用户主动「停止」：store 已清空，不再补失败日志
-      testCaseGenStore.finish(`生成失败：${e instanceof Error ? e.message : String(e)}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      testCaseGenStore.finish(`生成失败：${msg}`);
+      flash(`生成失败：${msg}`); // 面板内也要可见：此前只落右侧控制台，卡片区一片空白、像「点了没反应」
     } finally {
       testCaseGenStore.setAbortCtrl(null);
     }
@@ -339,6 +347,15 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }} title="忽略项目已有需求，按 PRD 重新拆分">
           <input type="checkbox" checked={resplit} onChange={(e) => setResplit(e.target.checked)} disabled={streaming} />重新拆分需求
         </label>
+        {/* T03592：两种口径的差别必须生成前就说清——默认复用是拿矩阵里现成的行，所选 PRD 只当上下文，
+            换一份 PRD 重跑并不会得到这份 PRD 的需求（用户报障的「延续上次上下文」即此） */}
+        {reqCount > 0 && (
+          <span data-lck="tcgen-reuse-hint" style={{ fontSize: 'var(--fs-2xs)', color: 'var(--warning, #c80)' }}>
+            {resplit
+              ? `项目已有 ${reqCount} 条需求：本轮按 PRD 重新拆分，旧需求不计入本轮覆盖率`
+              : `项目已有 ${reqCount} 条需求：默认全部复用，不按所选 PRD 拆分需求`}
+          </span>
+        )}
       </div>
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
@@ -373,6 +390,16 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
                 </div>
               )}
             </div>
+          )}
+
+          {/* T03592：服务端 notes（复用来源 / 失败块 / 未覆盖需求）在此可见，默认收起避免挤占草稿列表 */}
+          {resultNotes.length > 0 && (
+            <details data-lck="tcgen-notes" style={{ marginBottom: 10, fontSize: 'var(--fs-xs)', color: 'var(--warning, #c80)' }}>
+              <summary style={{ cursor: 'pointer' }}>提示 {resultNotes.length} 条（复用来源 / 未覆盖需求 / 失败块）</summary>
+              <ul style={{ margin: '4px 0 0', paddingLeft: 18, display: 'grid', gap: 2 }}>
+                {resultNotes.map((n, i) => <li key={`${i}-${n.slice(0, 12)}`}>{n}</li>)}
+              </ul>
+            </details>
           )}
 
           {/* 分组用例 */}

@@ -69,6 +69,8 @@ export interface TestCaseGenState {
   logs: string[];
   streamText: string;
   result: TestCaseGenResult | null;
+  /** 本轮失败文案（成功/进行中为空）——卡片徽标据此标「失败」，不再拿 finalElapsed 一律算成功 */
+  error?: string;
   /** 本次生成开始时间戳（ms），供控制台 tab 展示实时耗时 */
   startedAt?: number;
   /** 结束后保留的最终耗时（ms） */
@@ -85,6 +87,8 @@ let state: TestCaseGenState = (() => {
   const h = loadRun('tcgen');
   const fe = h?.finalElapsed;
   if (fe != null) base.finalElapsed = fe;
+  // 失败态也要跨刷新保住：否则重载后徽标会按「有最终耗时=成功」显示成「完成」
+  if (h?.status === 'error') base.error = '上一轮生成失败';
   return base;
 })();
 const listeners = new Set<() => void>();
@@ -119,7 +123,7 @@ export const testCaseGenStore = {
   },
   begin() {
     const startedAt = Date.now();
-    state = { streaming: true, logs: [], streamText: '', result: null, startedAt, finalElapsed: undefined };
+    state = { streaming: true, logs: [], streamText: '', result: null, error: undefined, startedAt, finalElapsed: undefined };
     persistRun('tcgen', { status: 'running' as RunStatus, startedAt });
     emit();
   },
@@ -139,8 +143,8 @@ export const testCaseGenStore = {
     // 结束运行态同时由 startedAt 算最终耗时并保留
     const finalElapsed = state.startedAt ? Date.now() - state.startedAt : state.finalElapsed;
     state = errorMsg
-      ? { ...state, streaming: false, startedAt: undefined, finalElapsed, logs: [...state.logs, errorMsg] }
-      : { ...state, streaming: false, startedAt: undefined, finalElapsed };
+      ? { ...state, streaming: false, startedAt: undefined, finalElapsed, error: errorMsg, logs: [...state.logs, errorMsg] }
+      : { ...state, streaming: false, startedAt: undefined, finalElapsed, error: undefined };
     persistRun('tcgen', { status: (errorMsg ? 'error' : 'success') as RunStatus, finalElapsed });
     emit();
   },
