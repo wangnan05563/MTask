@@ -1252,8 +1252,10 @@ app.whenReady().then(async () => { // NOSONAR - S7785 顶层 await 在 CommonJS 
     },
   });
 
+  // 主进程侧外链白名单（八期 §3.1.3 / T03358）：渲染层的 href 虽由服务端拼好并去凭据，
+  // 但 window.open 是不可信入口——file:// 与自定义协议交给 shell.openExternal 等于让页面拉起本机程序。
   mainWin.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
 
