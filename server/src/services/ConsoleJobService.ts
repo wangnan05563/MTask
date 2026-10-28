@@ -42,6 +42,9 @@ export interface ConsoleJobInput {
   period: ReportPeriod | null;
   /** T02165：本次分析的项目范围 id 数组；空/不传 = 全部项目（旧口径） */
   projectIds?: string[];
+  /** T03248（AI-104③）：来自提示词模板时带上模板 id——与任务落库同事务把 prompts.usage_count 加一，
+   *  保证「受理成功才计数、失败预检不计数」，也不会出现「任务建了但次数没加」的半截状态 */
+  promptId?: string;
 }
 
 /** T02165：范围列反序列化——脏值（非数组/非字符串项）一律回落「全部项目」，不让旧任务因列内容报错 */
@@ -143,13 +146,26 @@ export const ConsoleJobService = {
     const db = getDb();
     const id = uuid();
     const t = now();
-    db.prepare(
-      `INSERT INTO console_jobs (id, title, prompt, category, period, project_ids, status, answer, error, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'busy', NULL, NULL, ?, ?)`,
-    ).run(id, input.title, input.prompt, input.category, input.period,
-      input.projectIds?.length ? JSON.stringify(input.projectIds) : '', t, t);
+    // T03248（AI-104③）：模板使用次数与任务落库同事务——任一失败（如提示词刚被删除）整笔回滚，
+    // 不会留下「任务建了但次数没加」或「次数加了但没有任务」的不一致
+    db.transaction(() => {
+      db.prepare(
+        `INSERT INTO console_jobs (id, title, prompt, category, period, project_ids, status, answer, error, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'busy', NULL, NULL, ?, ?)`,
+      ).run(id, input.title, input.prompt, input.category, input.period,
+        input.projectIds?.length ? JSON.stringify(input.projectIds) : '', t, t);
+      if (input.promptId) {
+        const info = db.prepare('UPDATE prompts SET usage_count = usage_count + 1 WHERE id = ?').run(input.promptId);
+        if (info.changes === 0) throw new Error('提示词不存在或已删除');
+      }
+    })();
     cacheClear(LIST_CACHE_KEY); // 新建任务后列表立刻可见（不等 5s TTL）
     return this.get(id)!;
+  },
+
+  /** T03248（AI-104⑤）：模板使用次数归零（管理动作）；返回 false=提示词不存在 */
+  resetUsage(promptId: string): boolean {
+    return getDb().prepare('UPDATE prompts SET usage_count = 0 WHERE id = ?').run(promptId).changes > 0;
   },
 
   get(id: string): ConsoleJobRow | null {

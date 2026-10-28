@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, FolderPlus, ListTodo, Loader2, Move, Pencil, Plus, Save, SquarePen, Trash2, UnfoldVertical, FoldVertical, Wand2, X, Archive, Layers } from 'lucide-react';
+import { ChevronDown, ChevronUp, FolderPlus, ListTodo, Loader2, Move, Pencil, Plus, RotateCcw, Rocket, Save, SquarePen, Trash2, UnfoldVertical, FoldVertical, Wand2, X, Archive, Layers } from 'lucide-react';
 import { CopyButton } from '../ui/CopyButton';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool, type Project, type Prompt, type PromptCategory, type ReqCategory } from '../api/client';
@@ -10,6 +10,8 @@ import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：AI 
 import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { relTime } from '../ui/format';
+import { comparePrompts, type PromptSortKey } from '../ui/promptSort'; // T03248（AI-104④）：排序单源（含使用次数）
+import { missingPromptVars, parsePromptVars } from '../ui/promptTemplate'; // T03247（AI-104①②）：{{变量}} 解析（与服务端同口径）
 
 /** T00636：剥离大模型常见 ``` 代码围栏（仅整段包裹时），供提示词优化结果回写前清洗 */
 function stripFence(text: string): string {
@@ -119,7 +121,7 @@ function NewPromptForm({ newTitle, setNewTitle, newContent, setNewContent, creat
         value={newContent}
         onChange={(e) => setNewContent(e.target.value)}
         rows={6}
-        placeholder="提示词内容（可用 {占位符} 标记使用时需替换的部分）"
+        placeholder="提示词内容（可用 {{变量}} 标记发起时需填写的部分）"
         style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-m)', boxSizing: 'border-box', fontFamily: 'inherit' }}
       />
       <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
@@ -152,36 +154,83 @@ function NewPromptForm({ newTitle, setNewTitle, newContent, setNewContent, creat
   );
 }
 
-/** T00494：手动排序权重比较（0/空=默认序排最后）——抽出避免嵌套三元 */
-function cmpSortWeight(wa: number, wb: number): number {
-  if (wa === wb) return 0;
-  if (wa === 0) return 1;
-  if (wb === 0) return -1;
-  return wa - wb;
-}
-
-/** 依据当前排序条件对两条提示词比较；置顶项始终排在最前（供 sort 回调使用） */
-function comparePrompts(
-  a: Prompt,
-  b: Prompt,
-  sortKey: 'updated_at' | 'created_at' | 'title' | 'manual',
-  sortDir: 'asc' | 'desc',
-): number {
-  // 置顶优先：置顶项固定在最前，组内再按用户字段/方向排序
-  const pa = Boolean(a.pinned);
-  const pb = Boolean(b.pinned);
-  if (pa !== pb) return pa ? -1 : 1;
-  // T00494：手动排序——按拖拽保存的 sort_weight（0/空=默认序，排最后按更新时间）
-  if (sortKey === 'manual') {
-    const w = cmpSortWeight(a.sort_weight || 0, b.sort_weight || 0);
-    if (w !== 0) return w;
-    return (b.updated_at || '').localeCompare(a.updated_at || '');
-  }
-  // 时间字段为 ISO 字符串可直接比较；名称按中文语言规则比较（数字感知）
-  const cmp = sortKey === 'title'
-    ? a.title.localeCompare(b.title, 'zh-Hans-CN', { numeric: true })
-    : a[sortKey].localeCompare(b[sortKey]);
-  return sortDir === 'asc' ? cmp : -cmp;
+/** T03247（AI-104①②）：发起提示词——按 `{{变量}}` 逐个填写，未填齐不可发起。
+ *  变量清单由前端解析只为生成输入框，最终正文由服务端渲染兜底（绕过弹窗直接调接口也拦得住）。
+ *  T03248（AI-104③）：发起成功由服务端把该提示词的 usage_count +1，回来由页面刷新列表。 */
+function PromptLaunchModal({ p, title, onTitle, values, onValue, tools, toolId, onToolId, busy, onCancel, onConfirm }: {
+  readonly p: Prompt; readonly title: string; readonly onTitle: (v: string) => void;
+  readonly values: Record<string, string>; readonly onValue: (name: string, v: string) => void;
+  readonly tools: AITool[]; readonly toolId: string; readonly onToolId: (v: string) => void;
+  readonly busy: boolean; readonly onCancel: () => void; readonly onConfirm: () => void;
+}) {
+  const vars = parsePromptVars(p.content);
+  const missing = missingPromptVars(p.content, values);
+  const blocked = missing.length > 0 || !toolId || !title.trim() || busy;
+  return (
+    <div data-t03247="launch-modal" /* NOSONAR - 遮罩点击为鼠标便捷关闭，取消按钮提供键盘可达通路 */
+      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100 }}
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) onCancel(); }}>
+      <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(520px, 94vw)', maxHeight: '86vh', overflow: 'auto', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
+          <Rocket size={14} style={{ color: 'var(--accent)' }} /> 发起提示词
+          <span style={{ flex: 1 }} />
+          <button onClick={onCancel} disabled={busy} title="关闭" aria-label="关闭发起提示词弹窗"
+            style={{ background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 'var(--fs-l)', cursor: busy ? 'default' : 'pointer' }}>×</button>
+        </div>
+        <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--fs-s)' }}>
+          <div style={{ color: 'var(--text-muted)' }}>
+            <strong style={{ color: 'var(--text)' }}>{p.title}</strong> 将带着填好的内容新建一个 AI 控制台任务，可在「AI 工作台」查看进度与结果。
+          </div>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>任务标题</span>
+            <input value={title} onChange={(e) => onTitle(e.target.value)} placeholder="任务标题"
+              data-t03247="task-title" aria-label="任务标题：在 AI 控制台里显示的名称"
+              style={{ padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }} />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>模型</span>
+            <select value={toolId} onChange={(e) => onToolId(e.target.value)}
+              data-t03247="tool-select" aria-label="模型：执行该提示词的 AI 工具" title="模型 — 选择执行该提示词的 AI 工具"
+              style={{ padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
+              {tools.length === 0 && <option value="">（暂无可用模型，请先在「模型」菜单添加）</option>}
+              {tools.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </label>
+          {vars.length === 0 ? (
+            <div data-t03247="no-vars" style={{ color: 'var(--text-muted)' }}>
+              {'该模板没有 {{变量}}，可直接发起。'}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>模板变量（全部必填，未填齐不可发起）</div>
+              {vars.map((name) => (
+                <label key={name} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{name}</span>
+                  <input value={values[name] ?? ''} onChange={(e) => onValue(name, e.target.value)}
+                    data-t03247="var-input" data-var-name={name} aria-label={`模板变量 ${name}`} placeholder={`填写 ${name}`}
+                    style={{ padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }} />
+                </label>
+              ))}
+              {missing.length > 0 && (
+                <div data-t03247="missing-vars" style={{ color: 'var(--danger)' }}>还差：{missing.join('、')}</div>
+              )}
+            </div>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
+          <button onClick={onCancel} disabled={busy} className="tbtn-anim"
+            title="取消 — 关闭弹窗，不发起任务" aria-label="取消：关闭弹窗不发起任务"
+            style={{ padding: '5px 12px', borderRadius: 6, cursor: busy ? 'default' : 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>取消</button>
+          <button onClick={onConfirm} disabled={blocked} data-t03247="launch-confirm" className="tbtn-anim"
+            title={blocked ? '请先填齐模板变量、标题并选择模型' : '发起 — 新建 AI 控制台任务并开始执行'}
+            aria-label="发起：新建 AI 控制台任务并开始执行"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: blocked ? 'default' : 'pointer', border: 'none', background: blocked ? 'var(--border-strong)' : 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)', opacity: blocked ? 0.7 : 1 }}>
+            {busy ? <Loader2 size={13} className="aispin" /> : <Rocket size={13} />} 发起
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /** T00629：复制到待办任务——目标项目选择弹窗（不选则落默认记事项目/收件箱） */
@@ -270,7 +319,8 @@ export function PromptsPage() {
   const [search, setSearch] = useSessionState<string>('prompts.search', ''); // T00560：命令面板跳转写入搜索词
   const [notice, setNotice] = useState('');
   // 排序条件：sortKey 排序字段，sortDir 升降序（默认时间降序，与后端默认一致）
-  const [sortKey, setSortKey] = useState<'updated_at' | 'created_at' | 'title' | 'manual'>('updated_at');
+  // T03248（AI-104④）：可选字段含 usage（按累计使用次数），比较逻辑统一在 ui/promptSort
+  const [sortKey, setSortKey] = useState<PromptSortKey>('updated_at');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   // 新建提示词表单：录入状态跨会话持久化，切页后可续写
   const [creating, setCreating] = useSessionState('prompts.new.creating', false);
@@ -287,6 +337,12 @@ export function PromptsPage() {
   const [taskCopyPrompt, setTaskCopyPrompt] = useState<Prompt | null>(null);
   const [taskCopyProjectId, setTaskCopyProjectId] = useState('');
   const [taskCopyBusy, setTaskCopyBusy] = useState(false);
+  // T03247（AI-104①②）：发起提示词弹窗——待发起条目、任务标题、变量取值、模型与提交中状态
+  const [launchTarget, setLaunchTarget] = useState<Prompt | null>(null);
+  const [launchTitle, setLaunchTitle] = useState('');
+  const [launchVars, setLaunchVars] = useState<Record<string, string>>({});
+  const [launchToolId, setLaunchToolId] = useState('');
+  const [launchBusy, setLaunchBusy] = useState(false);
   // T02201：目标项目列表走统一容错层（弹窗打开时强刷一次的口径不变）
   const projectList = useProjectList();
   const { projects } = projectList;
@@ -332,6 +388,52 @@ export function PromptsPage() {
     const def = ts.find((t) => t.isDefaultOrganize) ?? ts[0];
     if (def) setOrganizeToolId(def.id);
   }, [toolsView.data]);
+
+  /** T03247：打开发起弹窗——解析模板变量并给空值初值；模型默认沿用整理工具或首个可用工具 */
+  function openLaunch(p: Prompt) {
+    setLaunchTarget(p);
+    setLaunchTitle(p.title);
+    setLaunchVars(Object.fromEntries(parsePromptVars(p.content).map((name) => [name, ''])));
+    setLaunchToolId((cur) => cur || organizeToolId || toolsView.data?.[0]?.id || '');
+  }
+
+  /** T03247/T03248：发起——服务端渲染模板并建任务；成功即 usage_count+1（失败预检不计数、不建任务） */
+  async function confirmLaunch() {
+    const p = launchTarget;
+    if (!p || launchBusy) return;
+    const missing = missingPromptVars(p.content, launchVars);
+    if (missing.length > 0) return flash(`请填写模板变量：${missing.join('、')}`);
+    if (!launchTitle.trim()) return flash('请先填写任务标题');
+    if (!launchToolId) return flash('请先在「模型」菜单添加并选择工具');
+    setLaunchBusy(true);
+    try {
+      const r = await api.post<{ id: string; usageCount?: number }>('/console-jobs', {
+        title: launchTitle.trim(), promptId: p.id, variables: launchVars, category: 'custom', toolId: launchToolId,
+      });
+      const sentTitle = launchTitle.trim();
+      setLaunchTarget(null);
+      flash(typeof r.usageCount === 'number'
+        ? `已发起「${sentTitle}」，该提示词累计使用 ${r.usageCount} 次（可在「AI 工作台」查看进度）`
+        : `已发起「${sentTitle}」（可在「AI 工作台」查看进度）`);
+      void loadPrompts(activeCat, search);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLaunchBusy(false);
+    }
+  }
+
+  /** T03248：使用次数归零（只重置计数，不动历史任务与提示词内容） */
+  async function resetUsage(p: Prompt) {
+    if (!(await askConfirm(`将「${p.title}」的使用次数归零？（只重置计数，不影响历史任务）`))) return;
+    try {
+      await api.post(`/prompts/${p.id}/usage/reset`, {});
+      flash('使用次数已归零');
+      void loadPrompts(activeCat, search);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   /** T00636：提示词优化——把标题/内容交给 AI 改写为结构化提示词，结果回写草稿供确认后保存。
    *  与任务页「提示词优化」同款：内容为空时回退用标题作输入；结果剥离代码围栏。 */
@@ -814,7 +916,7 @@ export function PromptsPage() {
           <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <select
           value={sortKey}
-          onChange={(e) => setSortKey(e.target.value as 'updated_at' | 'created_at' | 'title')}
+          onChange={(e) => setSortKey(e.target.value as PromptSortKey)}
           title="排序字段 — 选择列表按哪个字段排序"
           aria-label="排序字段：选择提示词列表的排序依据"
           style={{ padding: 6, fontSize: 'var(--fs-s)' }}
@@ -823,6 +925,8 @@ export function PromptsPage() {
           <option value="updated_at">更新时间</option>
           <option value="created_at">创建时间</option>
           <option value="title">名称</option>
+          {/* T03248（AI-104④）：按累计成功发起次数排序（次数相同回落更新时间降序） */}
+          <option value="usage">使用次数</option>
         </select>
         </span>
         </span>
@@ -946,6 +1050,11 @@ export function PromptsPage() {
                       <span style={{ color: 'var(--accent)', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>{expandedIds[p.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}</span>
                     </button>
                     <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0 }} title={`更新于 ${p.updated_at}`}>{relTime(p.updated_at)}</span>
+                    {/* T03248（AI-104③）：累计使用次数常驻可见——「用了几次」不该藏在悬浮里 */}
+                    <span data-t03248="usage-chip" title="累计成功发起次数（发起失败/预检拦截不计；可用右侧「归零」重置）"
+                      style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0, padding: '1px 6px', borderRadius: 10, border: '1px solid var(--border-strong)' }}>
+                      使用 {p.usage_count ?? 0} 次
+                    </span>
                     {/* T00873 四轮：通用需求归属徽标——此前归属只存在于弹窗下拉里，卡片上完全看不到，
                         用户"归入后无任何变化"、也看不出是否已归入（误判为被拦截的直接诱因） */}
                     {p.req_category_id && (
@@ -962,6 +1071,12 @@ export function PromptsPage() {
                     <button className="abtn" onClick={() => void copyToTask(p)} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="复制到待办任务 — 以该提示词创建一条待办任务（收件箱项目）" aria-label="复制到待办任务">
                       <ListTodo size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                    </button>
+                    {/* T03247（AI-104①②）：发起提示词——填齐 {{变量}} 后新建 AI 控制台任务 */}
+                    <button className="abtn" onClick={() => openLaunch(p)} data-t03247="launch"
+                      style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                      title="发起 — 填齐模板变量后在 AI 控制台新建任务执行" aria-label="发起：填齐模板变量后在 AI 控制台执行">
+                      <Rocket size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
                     <button
                       className="abtn"
@@ -980,6 +1095,14 @@ export function PromptsPage() {
                       title="归档 — 归档这条提示词（数据保留，列表不再显示）" aria-label="归档：归档这条提示词">
                       <Archive size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
+                    {/* T03248（AI-104③）：使用次数归零——仅在有计数时出现，二次确认后只清计数 */}
+                    {(p.usage_count ?? 0) > 0 && (
+                      <button className="abtn" onClick={() => void resetUsage(p)} data-t03248="usage-reset"
+                        style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                        title="归零 — 把该提示词的累计使用次数重置为 0（不影响历史任务）" aria-label="归零：重置该提示词的使用次数">
+                        <RotateCcw size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                      </button>
+                    )}
                   </div>
                   {expandedIds[p.id] && (
                     // MarkdownContent 默认渲染富文本、可切源码视图，右上角切换/复制按钮悬浮于内容之上
@@ -1007,6 +1130,14 @@ export function PromptsPage() {
           setCatId={(v) => setMoveTarget((t) => (t ? { ...t, catId: v } : t))}
           setReqId={(v) => setMoveTarget((t) => (t ? { ...t, reqId: v } : t))}
           onCancel={() => setMoveTarget(null)} onConfirm={() => void confirmMove()} />
+      )}
+
+      {/* T03247：发起提示词弹窗（模板变量 + 任务标题 + 模型；发起走既有 AI 控制台任务链路） */}
+      {launchTarget && (
+        <PromptLaunchModal p={launchTarget} title={launchTitle} onTitle={setLaunchTitle}
+          values={launchVars} onValue={(name, v) => setLaunchVars((prev) => ({ ...prev, [name]: v }))}
+          tools={toolsView.data ?? []} toolId={launchToolId} onToolId={setLaunchToolId}
+          busy={launchBusy} onCancel={() => { if (!launchBusy) setLaunchTarget(null); }} onConfirm={() => void confirmLaunch()} />
       )}
     </section>
   );

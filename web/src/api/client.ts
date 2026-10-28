@@ -420,6 +420,8 @@ export interface Prompt {
   /** T00872：归档标记与归档时间——归档页按 archived=true + archived_at 展示可还原 */
   archived?: boolean;
   archived_at?: string | null;
+  /** T03248（AI-104③）：模板累计成功发起次数（老库补列前为 0；失败预检不计数，可归零） */
+  usage_count?: number;
 }
 
 export interface ReqCategory {

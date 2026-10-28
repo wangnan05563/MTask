@@ -17,6 +17,7 @@ import { TaskExportService, type ExportFormat } from '../services/TaskExportServ
 import { listBackups, runBackup, restoreBackup, backupStatus } from '../services/BackupService'; // T01061-FR5.1
 import { ConfigService } from '../services/ConfigService';
 import { ConsoleJobService } from '../services/ConsoleJobService';
+import { renderPromptTemplate } from '../services/PromptTemplate'; // T03247（AI-104①）：模板变量渲染（服务端单源）
 import { QueueService } from '../services/QueueService';
 import { AIService } from '../services/AIService';
 import { cardCoverage, currentMonthStr } from '../services/AiCardStats'; // T03172：G-2 卡片覆盖率出数（/ai/coverage）
@@ -2175,25 +2176,59 @@ api.post('/ai/chat', async (req, res) => {
 // 任务运行不依赖前端会话（页面切换/刷新仍继续），前端靠 GET 轮询收敛为完成态。
 const CONSOLE_PERIODS = new Set(['day', 'week', 'month']);
 api.post('/console-jobs', (req, res) => {
-  const { title, prompt, category, period, toolId } = req.body ?? {};
+  const { title, prompt, category, period, toolId, promptId } = req.body ?? {};
   if (!title || typeof title !== 'string' || !title.trim()) return res.status(400).json({ error: 'title 必填' });
-  if (!prompt || typeof prompt !== 'string' || !prompt.trim()) return res.status(400).json({ error: 'prompt 必填' });
   if (!toolId || typeof toolId !== 'string') return res.status(400).json({ error: 'toolId 必填' });
   // T02165：受理即校验并固化范围——任务在后台异步运行，等到 buildConsoleChat 取数时才发现
   // 非法 id 只会得到一条 error 任务，用户已看不到失败原因
   const scope = reportScope(req.body);
   if (scope.error) return res.status(400).json({ error: scope.error });
+
+  // T03247（AI-104①②）：模板模式——正文由服务端按 promptId 取模板 + 变量渲染，客户端传的 prompt 不采信；
+  // 必填变量未填在此拒绝（400，点名缺哪几个），既不建任务也不计数
+  let finalPrompt = '';
+  let templateId = '';
+  if (typeof promptId === 'string' && promptId) {
+    const row = getDb().prepare('SELECT id, content FROM prompts WHERE id = ?').get(promptId) as { id: string; content: string } | undefined;
+    if (!row) return res.status(400).json({ error: '提示词不存在或已删除' });
+    const vars = (req.body?.variables && typeof req.body.variables === 'object' && !Array.isArray(req.body.variables))
+      ? req.body.variables as Record<string, unknown>
+      : {};
+    const rendered = renderPromptTemplate(row.content, vars);
+    if (rendered.missing.length) {
+      return res.status(400).json({ error: `请填写模板变量：${rendered.missing.join('、')}`, missing: rendered.missing });
+    }
+    if (!rendered.text.trim()) return res.status(400).json({ error: '提示词内容为空，无法发起' });
+    finalPrompt = rendered.text.trim();
+    templateId = row.id;
+  } else {
+    if (!prompt || typeof prompt !== 'string' || !prompt.trim()) return res.status(400).json({ error: 'prompt 必填' });
+    finalPrompt = prompt.trim();
+  }
+
   const p = typeof period === 'string' && CONSOLE_PERIODS.has(period) ? (period as 'day' | 'week' | 'month') : null;
-  const job = ConsoleJobService.create({
-    title: title.trim(),
-    prompt: prompt.trim(),
-    category: typeof category === 'string' && category ? category : 'custom',
-    period: p,
-    projectIds: scope.ids,
-  });
+  let job: ReturnType<typeof ConsoleJobService.create>;
+  try {
+    job = ConsoleJobService.create({
+      title: title.trim(),
+      prompt: finalPrompt,
+      category: typeof category === 'string' && category ? category : 'custom',
+      period: p,
+      projectIds: scope.ids,
+      ...(templateId ? { promptId: templateId } : {}),
+    });
+  } catch (e) {
+    // 模板在渲染与落库之间被删除：同事务回滚，按 400 回（不产生半截任务）
+    if (templateId) return res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+    throw e;
+  }
   // 不 await：受理即返回，后台 promise 完成后 markDone/markError 回写库
   void ConsoleJobService.runJob(job.id, toolId);
-  res.status(201).json({ id: job.id });
+  // T03248（AI-104③）：回带累计次数，前端无需再读一次列表即可刷新「使用 N 次」
+  const usageCount = templateId
+    ? (getDb().prepare('SELECT usage_count FROM prompts WHERE id = ?').get(templateId) as { usage_count: number } | undefined)?.usage_count
+    : undefined;
+  res.status(201).json({ id: job.id, ...(usageCount === undefined ? {} : { usageCount }) });
 });
 
 api.get('/console-jobs', (_req, res) => {
@@ -2752,6 +2787,13 @@ api.delete('/prompts/:id', (req, res) => {
   getDb().prepare('DELETE FROM prompts WHERE id = ?').run(req.params.id);
   cacheClear('prompt-categories'); // 分类计数变化
   res.status(204).end();
+});
+
+// T03248（AI-104⑤）：模板使用次数归零（管理动作）。单独成路由而不是复用 PATCH，
+// 避免「编辑正文」误把计数清零，也让归零动作在日志/门里可独立点名。
+api.post('/prompts/:id/usage/reset', (req, res) => {
+  if (!ConsoleJobService.resetUsage(req.params.id)) return res.status(404).json({ error: '提示词不存在' });
+  res.json(getDb().prepare('SELECT * FROM prompts WHERE id = ?').get(req.params.id));
 });
 
 // ---------- 通用需求仓库 ----------
