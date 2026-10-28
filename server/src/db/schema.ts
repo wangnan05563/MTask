@@ -730,6 +730,30 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     CREATE UNIQUE INDEX IF NOT EXISTS uniq_task_field_values ON task_field_values(task_id, field_id);
     CREATE INDEX IF NOT EXISTS idx_task_field_values_field ON task_field_values(field_id);
   `);
+  // 八期 §4.3（T03401/T03402）：任务↔提交关联 + Sonar 问题指纹。
+  // 纯新增表 + CREATE TABLE IF NOT EXISTS，老库向后兼容（NFR-4）；不做提交信息解析，关联只由显式写入产生。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_git_links (
+      id             TEXT PRIMARY KEY,
+      task_id        TEXT NOT NULL,
+      sha            TEXT NOT NULL,
+      workspace_path TEXT NOT NULL,
+      source         TEXT NOT NULL DEFAULT 'agent',
+      created_at     TEXT NOT NULL,
+      FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_task_git_links ON task_git_links(task_id, sha);
+    CREATE INDEX IF NOT EXISTS ix_task_git_links_sha ON task_git_links(sha);
+
+    CREATE TABLE IF NOT EXISTS sonar_issue_fps (
+      fp         TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      task_id    TEXT NOT NULL,
+      severity   TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ix_sonar_fps_created ON sonar_issue_fps(created_at);
+  `);
   ensureColumn('tasks', 'verified', 'verified INTEGER NOT NULL DEFAULT 0');
   ensureColumn('queues', 'paused', 'paused INTEGER NOT NULL DEFAULT 0'); // T01434：队列级暂停/继续
   // T00490：记录字体颜色（Excel 风格颜色按钮）——空串=默认色

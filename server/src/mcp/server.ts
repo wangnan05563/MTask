@@ -37,6 +37,7 @@ import {
   type ReportFormat,
 } from '../services/ReportService';
 import { exportBundle, importBundle, type ImportMode } from '../services/SettingsService';
+import * as TaskGit from '../services/taskGitLinks'; // 八期 T03349：AI 回写提交 ID 主通道（与 REST 手动绑定同一实现，仅 source 不同）
 
 /** MCP 工具统一返回结构：文本供 LLM 阅读，structuredContent 供程序消费 */
 function ok(text: string, data?: Record<string, unknown>): CallToolResult {
@@ -1158,6 +1159,34 @@ ${a.result}`;
 
   // T00566：AI 处理状态回写——AIAgent 生命周期专用（running 处理中 / failed 中断失败 / unread 完成待查看）
   // 状态机：running → failed | unread；failed → running（重试）；unread →（用户查看）→ ''（已读隐藏）
+  // T03349 / T03396 / T03419（八期 §4.2，Q7' 裁定：独立工具而非扩展 update_task.gitCommit）
+  server.registerTool('mtask_link_git_commit', {
+    title: '回写任务关联的 Git 提交',
+    description:
+      '外部 AI Agent 提交代码后回写 commit ID（任务↔提交关联的**主通道**，落库 source=agent）。'
+      + '入参 commits 支持 1 个或多个（7–40 位十六进制，短 SHA 由服务端在当前工作空间解析为 40 位）。'
+      + '幂等：同任务同 SHA 重复回写只记 skipped，不产生重复行；解析不出或仓库不存在时逐条点名进 errors（不静默失败）。'
+      + '不做任何提交信息解析——关联只由显式写入产生。',
+    inputSchema: {
+      taskNo: z.string().optional().describe('任务编号（如 T03325，与 id 二选一）'),
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      commits: z.union([z.string(), z.array(z.string())]).describe('commit ID：单个字符串或数组，支持多个'),
+    },
+  }, async (a) => {
+    try {
+      if (!a.taskNo && !a.id) return err(taskLocateError());
+      const res = await TaskGit.linkCommits({ taskNo: a.taskNo, id: a.id }, a.commits, 'agent');
+      const lines = [
+        `linked=${res.linked} skipped=${res.skipped} resolved=${res.resolved.length}`,
+        ...res.resolved.map((r) => `  ${r.input} -> ${r.sha}`),
+        ...res.errors.map((e) => `  错误：${e}`),
+      ];
+      return ok(lines.join('\n'), { ...res });
+    } catch (e) {
+      return err((e as Error).message);
+    }
+  });
+
   server.registerTool('mtask_write_task_status', {
     title: '回写任务 AI 处理状态',
     description: '按 id 或任务编号 taskNo 回写任务的 AI 处理状态动画（任务编号前显示）。state=running 表示 Agent 开始处理（旋转动画）；state=failed 表示处理中断/异常（红色警示）；state=unread 表示处理完成等待用户查看（未读圆点）；用户查看后前端自动清空（已读隐藏）。',

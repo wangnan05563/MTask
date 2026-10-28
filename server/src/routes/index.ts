@@ -43,7 +43,9 @@ import { ProjectExportService } from '../services/ProjectExportService'; // T032
 import { estimateApi } from './estimates'; // T02037（估算视图 E3）：/api/estimates*，PRD §8
 import { historyApi } from './history'; // T00589：历史资产（转移/统计）
 import { supervisorApi } from './supervisor'; // T01286：监督状态/审计/配置（FR-5.2~5.4）
-import { webhooksApi } from './webhooks'; // T03196（PM-401）：项目级 outbound Webhook（配置/测试/投递日志）
+import { webhooksApi } from './webhooks';
+import { gitLinksApi } from './gitLinks'; // 八期 §4.2：任务↔提交关联端点（摘要批量/抽屉首屏/清单懒加载/绑定解绑/git-log 上提）
+import { attachGitLinks } from '../services/taskGitLinks'; // T03361：GET /tasks 行内加性字段 gitLinks/gitLinkCount // T03196（PM-401）：项目级 outbound Webhook（配置/测试/投递日志）
 import { listArtifacts } from '../services/aiArtifactService';
 import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, discardReport, gatherReportData, validateProjectIds, aiReportPreflight, normalizeConfirmedEstimate, AI_REPORT_CARD, type ReportPeriod, type ReportFormat } from '../services/ReportService';
 import { DOWNLOAD_NAME_RE } from '../util/export-name'; // T02104：下载文件名白名单单源（与生成侧清洗同源）
@@ -768,11 +770,14 @@ api.get('/tasks', (req, res) => {
     ),
   };
   const items = TaskService.list(listOpts);
+  // T03361（八期 §3.1.6）：行内加性字段 gitLinks（各任务最新一条）+ gitLinkCount（「+N」角标的数据源）。
+  // 一次查询覆盖本页，零逐行 SQL；裸数组契约与分页信封不变。
+  const withLinks = attachGitLinks(items);
   // T02284：`total=1` 加性通道——带该参数时响应体换成 `{items,total}` 信封（归档页服务端分页要「共 N 条」）。
   // 不带时逐字返回裸数组：/tasks 的既有契约（桌面任务页、移动端、CommandPalette、QueuePage、
   // scripts/verify-*.mjs 与 perf jmx 直取数组）不受任何影响，故本端点不改参数、不把裸数组变成对象。
-  if (wantsTotal(total)) return res.json({ items, total: TaskService.count(listOpts) });
-  res.json(items);
+  if (wantsTotal(total)) return res.json({ items: withLinks, total: TaskService.count(listOpts) });
+  res.json(withLinks);
 });
 
 /**
@@ -3107,7 +3112,8 @@ api.use(materialTimingApi); // T03189（G-1 汇报材料耗时）：同上，/re
 api.use('/metrics', metricsApi); // T03190（G-4 逾期率基线）：/metrics/overdue-rate
 api.use('/estimates', estimateApi); // T02037（估算视图 E3）：PRD-估算视图与工作量评估导出 §8
 api.use('/history', historyApi); // T00589：历史资产页面后端（转移 + 统计）
-api.use('/webhooks', webhooksApi); // T03196（PM-401）：/webhooks?projectId=… /webhooks/:id/deliveries /test
+api.use('/webhooks', webhooksApi);
+api.use(gitLinksApi); // 八期：/git/*、/tasks/:id/git*（完整路径声明，不挂前缀） // T03196（PM-401）：/webhooks?projectId=… /webhooks/:id/deliveries /test
 
 // ---------- 监督器（T01286）：状态看板 / 审计视图 / 熔断与中继配置 ----------
 api.use('/supervisor', supervisorApi);

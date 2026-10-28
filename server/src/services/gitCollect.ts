@@ -8,9 +8,9 @@
  *     `-c core.quotepath=false`（中文路径不被转成 \xxX），只改本次调用，不碰用户 git 配置。
  *  3. **行尾**：diff 固定带 `--ignore-cr-at-eol`，避免 Windows autocrlf 把未改行尾的文件整文件算进增量。
  */
-import { execFile, type ExecFileException } from 'node:child_process';
+import { execFile, spawn, type ExecFileException } from 'node:child_process';
 
-export const GIT_READONLY_SUBCOMMANDS = ['rev-parse', 'log', 'diff', 'show'] as const;
+export const GIT_READONLY_SUBCOMMANDS = ['rev-parse', 'log', 'diff', 'show', 'remote', 'cat-file'] as const;
 export type GitReadonlySubcommand = (typeof GIT_READONLY_SUBCOMMANDS)[number];
 
 export const GIT_TIMEOUT_MS = 30_000;
@@ -32,12 +32,34 @@ const ALLOWED_FLAGS: Record<GitReadonlySubcommand, RegExp[]> = {
   'rev-parse': [/^--is-inside-work-tree$/, /^--verify$/, /^--quiet$/],
   // T03302：Git 树取数需要 --all（全分支）、--skip/-n（懒加载分页）、--no-walk（只取点名提交）
   // T03590：`--until` 与 `--since` 同形（日期窗口右端），字面量范围与左端一致
-  log: [/^--oneline$/, /^--no-merges$/, /^--format=[%\w.:{}+\-/ ]+$/, /^-n\d{1,4}$/, /^--since=[\w:+\-. ]{1,64}$/, /^--until=[\w:+\-. ]{1,64}$/, /^--reverse$/, /^--all$/, /^--skip=\d{1,4}$/, /^--no-walk$/],
-  diff: [/^--ignore-cr-at-eol$/, /^--stat$/, /^--numstat$/, /^-U\d{1,3}$/],
+  // T03345：批量摘要用 \x1f/\x1e 作字段/记录分隔符（主题里可能含空格与冒号，用 %x1f 拼串才不歧义），
+  // 故 `--format=` 的值域放行这两个控制字符——它们只来自本文件常量，调用方无从注入别的字符
+  log: [/^--oneline$/, /^--no-merges$/, /^--format=[%\w.:{}+\-/ \x1f\x1e]+$/, /^-n\d{1,4}$/, /^--since=[\w:+\-. ]{1,64}$/, /^--until=[\w:+\-. ]{1,64}$/, /^--reverse$/, /^--all$/, /^--skip=\d{1,4}$/, /^--no-walk$/],
+  diff: [/^--ignore-cr-at-eol$/, /^--stat$/, /^--numstat$/, /^--name-status$/, /^-U\d{1,3}$/],
   show: [],
+  // T03390（八期 §4.1 白名单扩容，均为只读）：remote 只允许 get-url，写类子命令由位置参数首段拦下；
+  // cat-file 只允许 --batch（对象名走 stdin，不接受 --batch-command/--batch-all-objects/-e/-t 等形态）
+  remote: [],
+  'cat-file': [/^--batch$/],
 };
 
-export type GitErrorKind = 'no-git' | 'not-a-repo' | 'timeout' | 'too-large' | 'denied' | 'invalid-patch' | 'failed';
+/**
+ * 位置参数首段白名单：只约束「子命令的子动作」形态（如 `git remote <get-url>`）。
+ * 未列出的子命令不受此表限制（原有 log/diff/show 的位置参数是版本号/路径）。
+ */
+const POSITIONAL_HEAD: Partial<Record<GitReadonlySubcommand, RegExp[]>> = {
+  remote: [/^get-url$/],
+  // cat-file 的对象名一律走 stdin，位置参数必须为空（空表 = 任何首段都拒绝）
+  'cat-file': [],
+};
+
+/**
+ * T03391（八期 §4.1）：`remote get-url` 在无 origin 远端时非零退出，
+ * 落到通用 `failed` 会让用户看到一行 git 原生报错而无从处置，单独归为 `no-remote`。
+ */
+const NO_REMOTE_RE = /no such remote|does not have a url configured|no remote (?:named|configured)/i;
+
+export type GitErrorKind = 'no-git' | 'not-a-repo' | 'no-remote' | 'timeout' | 'too-large' | 'denied' | 'invalid-patch' | 'failed';
 
 export class GitCollectError extends Error {
   readonly kind: GitErrorKind;
@@ -87,6 +109,13 @@ function assertPositional(value: string): string {
 /** 组装并校验 argv：`git <输出配置> <子命令> <白名单选项> <位置参数…>` */
 export function buildGitArgv(subcommand: string, flags: string[], positional: string[]): string[] {
   const cmd = assertSubcommand(subcommand);
+  const headRule = POSITIONAL_HEAD[cmd];
+  if (headRule && positional.length > 0 && !headRule.some((re) => re.test(positional[0]))) {
+    throw new GitCollectError(
+      'denied',
+      `拒绝「git ${cmd} ${positional[0]}」：${cmd} 的只读首段仅限 ${headRule.length ? headRule.map((r) => r.source).join('/') : '无位置参数'}`,
+    );
+  }
   const safeFlags = flags.map((f) => assertFlag(cmd, f));
   const safePos = positional.map(assertPositional);
   return [...GIT_OUTPUT_CONFIG, cmd, ...safeFlags, ...safePos];
@@ -138,6 +167,10 @@ function classifyExecError(e: ExecFileException): GitCollectError {
   if (e.code === 'ENOENT') return new GitCollectError('no-git', '未找到 git 命令：请安装 Git，或改用「粘贴 patch」模式');
   if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return new GitCollectError('too-large', 'Git 输出超过 maxBuffer，请收窄采集范围');
   if (/not a git repository/i.test(hay)) return new GitCollectError('not-a-repo', `工作空间不是 Git 仓库：${(stderr || e.message).trim().slice(0, 200)}`);
+  // T03391：无 origin 远端时 `remote get-url` 非零退出，必须与通用 failed 区分（否则降级文案只剩 git 原生报错）
+  if (NO_REMOTE_RE.test(hay)) {
+    return new GitCollectError('no-remote', `该仓库未配置 origin 远端：${(stderr || e.message).trim().slice(0, 200)}`);
+  }
   if (e.killed || e.signal === 'SIGTERM' || e.code === 'ETIMEDOUT') return new GitCollectError('timeout', 'Git 采集超时（30s），请收窄范围后重试');
   return new GitCollectError('failed', `Git 采集失败：${(stderr || e.message).trim().slice(0, 300)}`);
 }
@@ -187,6 +220,312 @@ export async function probeRepository(cwd: string, opts: GitCollectOptions = {})
     if (e.kind === 'not-a-repo') return { available: true, isRepo: false, kind: e.kind, detail: e.message };
     return { available: true, isRepo: false, kind: e.kind, detail: e.message };
   }
+}
+
+// ---------------------------------------------------------------------------
+// 八期 §4.1–§4.2 扩展取数（全部只读，走同一 argv 校验通道）
+//   T03358 origin 远端 URL｜T03345 本页提交摘要批量解析｜T03346 提交文件清单
+//   T03367/T03378 cat-file --batch 批量取内容（单进程、stdin 驱动）
+// ---------------------------------------------------------------------------
+
+/**
+ * origin 远端原始 URL。返回原文（可能含 `user:token@`），
+ * 剥离凭据由消费方经 `util/gitRemote.stripUrlCredentials` 处理后再展示/打开（§3.1.3）。
+ */
+export async function collectRemoteUrl(cwd: string, opts: GitCollectOptions = {}): Promise<string> {
+  const r = await runGitReadonly('remote', [], ['get-url', 'origin'], cwd, opts);
+  const url = r.stdout.trim();
+  if (!url) throw new GitCollectError('no-remote', '该仓库未配置 origin 远端');
+  return url;
+}
+
+export interface CommitSummaryRow {
+  sha: string;
+  shortSha: string;
+  author: string;
+  /** 作者时间（ISO 严格格式，`%aI`） */
+  date: string;
+  subject: string;
+  /** 指向该提交的分支/标签（`%D` 括号内拆分） */
+  refs: string[];
+  parents: string[];
+}
+
+const SUM_F = '\x1f';
+const SUM_R = '\x1e';
+const SUMMARY_FORMAT_FLAG = `--format=%H${SUM_F}%an${SUM_F}%aI${SUM_F}%s${SUM_F}%D${SUM_F}%P${SUM_R}`;
+
+function parseRefs(raw: string): string[] {
+  const inner = raw.trim().replace(/^\((.*)\)$/, '$1');
+  if (!inner) return [];
+  return inner.split(', ').map((s) => s.replace(/^HEAD -> /, '').trim()).filter(Boolean);
+}
+
+/** 解析 `collectCommitSummaries` 的 `--format` 原文（供单测直接断言，不依赖 git） */
+export function parseCommitSummaries(raw: string): CommitSummaryRow[] {
+  const out: CommitSummaryRow[] = [];
+  for (const chunk of raw.split(SUM_R)) {
+    const body = chunk.replace(/^\n/, '');
+    if (!body.trim()) continue;
+    const f = body.split(SUM_F);
+    if (f.length < 6) continue;
+    const sha = f[0].trim();
+    if (!/^[0-9a-f]{40}$/.test(sha)) continue;
+    out.push({
+      sha,
+      shortSha: sha.slice(0, 7),
+      author: f[1],
+      date: f[2].trim(),
+      subject: f[3],
+      refs: parseRefs(f[4]),
+      parents: f[5].trim().split(/\s+/).filter(Boolean),
+    });
+  }
+  return out;
+}
+
+export interface CommitSummariesResult {
+  commits: CommitSummaryRow[];
+  /** 不在当前仓库中的 SHA（换绑工作空间后的旧链接即落此处，§2「不静默失败」） */
+  missing: string[];
+}
+
+/**
+ * 一组 SHA 的摘要——每个 workspace 一次 `git log --no-walk`（§3.1.6，页内零逐行请求）。
+ *
+ * 任一 SHA 解析不了会让整条命令非零退出，因此失败时退化为逐个点名：
+ * 这样「工作空间换绑后旧 SHA 已不存在」能在 `missing` 里可见，而不是整页摘要消失。
+ */
+export async function collectCommitSummaries(
+  cwd: string,
+  shas: string[],
+  opts: GitCollectOptions = {},
+): Promise<CommitSummariesResult> {
+  const uniq = [...new Set(shas)].map((s) => assertSingleRevision(s));
+  if (!uniq.length) return { commits: [], missing: [] };
+  try {
+    const r = await runGitReadonly('log', ['--no-walk', SUMMARY_FORMAT_FLAG], uniq, cwd, opts);
+    return { commits: parseCommitSummaries(r.stdout), missing: [] };
+  } catch (e) {
+    if (!(e instanceof GitCollectError)) throw e;
+    if (['no-git', 'not-a-repo', 'timeout', 'too-large'].includes(e.kind)) throw e;
+    const commits: CommitSummaryRow[] = [];
+    const missing: string[] = [];
+    for (const sha of uniq) {
+      try {
+        const one = await runGitReadonly('log', ['--no-walk', SUMMARY_FORMAT_FLAG], [sha], cwd, opts);
+        commits.push(...parseCommitSummaries(one.stdout));
+      } catch {
+        missing.push(sha);
+      }
+    }
+    return { commits, missing };
+  }
+}
+
+export type CommitFileStatus = 'A' | 'M' | 'D' | 'R' | 'T';
+
+export interface CommitFileEntry {
+  path: string;
+  /** 重命名前的路径（仅 status='R'） */
+  oldPath?: string;
+  status: CommitFileStatus;
+  /** 二进制文件为 null（git numstat 以「-」表示） */
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+}
+
+/** 解析 `diff --numstat` 行：`<add>\t<del>\t<path>`，二进制为 `-`/`-` */
+export function parseNumstat(raw: string): Map<string, { additions: number | null; deletions: number | null; binary: boolean }> {
+  const map = new Map<string, { additions: number | null; deletions: number | null; binary: boolean }>();
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    const parts = line.split('\t');
+    if (parts.length < 3) continue;
+    const [a, d, ...rest] = parts;
+    const path = rest.join('\t').trim();
+    if (!path) continue;
+    map.set(path, {
+      additions: a === '-' ? null : Number(a) || 0,
+      deletions: d === '-' ? null : Number(d) || 0,
+      binary: a === '-' || d === '-',
+    });
+  }
+  return map;
+}
+
+/** 解析 `diff --name-status` 行：`M<TAB>path` / `R100<TAB>old<TAB>new` */
+export function parseNameStatus(raw: string): { status: CommitFileStatus; path: string; oldPath?: string }[] {
+  const out: { status: CommitFileStatus; path: string; oldPath?: string }[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    const parts = line.split('\t');
+    if (parts.length < 2) continue;
+    const code = (parts[0] ?? '').replace(/\d+$/, '').toUpperCase();
+    const status: CommitFileStatus = code === 'A' || code === 'D' || code === 'R' || code === 'T' ? code as CommitFileStatus : 'M';
+    if (status === 'R') out.push({ status, oldPath: parts[1]?.trim(), path: parts[2]?.trim() ?? '' });
+    else out.push({ status, path: parts[1]?.trim() ?? '' });
+  }
+  return out.filter((e) => e.path);
+}
+
+/**
+ * 单个提交的变更文件清单（状态 + 增删行 + 二进制）。
+ *
+ * 首提交无父提交时以空树作基线（§3.2.1「初始提交」口径与讲稿侧一致）。
+ */
+export async function collectCommitFiles(
+  cwd: string,
+  sha: string,
+  parents: string[],
+  opts: GitCollectOptions = {},
+): Promise<CommitFileEntry[]> {
+  const head = assertSingleRevision(sha);
+  const base = parents.length ? assertSingleRevision(parents[0]) : GIT_EMPTY_TREE_SHA1;
+  const numArgs = [base, head, '--'];
+  const [numRaw, nameRaw] = await Promise.all([
+    runGitReadonly('diff', ['--numstat', '--ignore-cr-at-eol'], numArgs, cwd, opts).then((r) => r.stdout),
+    runGitReadonly('diff', ['--name-status', '--ignore-cr-at-eol'], numArgs, cwd, opts).then((r) => r.stdout),
+  ]);
+  const stats = parseNumstat(numRaw);
+  const entries = parseNameStatus(nameRaw);
+  const seen = new Set<string>();
+  const files: CommitFileEntry[] = [];
+  for (const e of entries) {
+    if (seen.has(e.path)) continue;
+    seen.add(e.path);
+    const s = stats.get(e.path) ?? stats.get(e.oldPath ?? '') ?? { additions: null, deletions: null, binary: false };
+    files.push({
+      path: e.path,
+      ...(e.oldPath ? { oldPath: e.oldPath } : {}),
+      status: e.status,
+      additions: s.additions,
+      deletions: s.deletions,
+      binary: s.binary,
+    });
+  }
+  return files;
+}
+
+export interface BatchObject {
+  /** 请求的对象规格（`<sha>` 或 `<sha>:<仓库相对路径>`） */
+  spec: string;
+  sha: string;
+  type: string;
+  size: number;
+  /** missing 时为 null */
+  content: Buffer | null;
+  missing: boolean;
+}
+
+/** cat-file --batch 的对象规格：纯 SHA 或 `SHA:仓库相对路径`（路径不得含 `..`/绝对路径/控制字符） */
+export function assertBatchObjectSpec(spec: string): string {
+  if (/[\0\r\n]/.test(spec)) throw new GitCollectError('denied', 'cat-file 对象规格含控制字符');
+  const m = /^([0-9a-f]{7,40}):(.+)$/.exec(spec);
+  if (m) {
+    assertSafeRepoPath(m[2]);
+    return spec;
+  }
+  if (!/^[0-9a-f]{7,40}$/.test(spec)) throw new GitCollectError('denied', `非法 cat-file 对象规格「${spec.slice(0, 80)}」`);
+  return spec;
+}
+
+/**
+ * 单进程批量取对象内容（§3.3.2 取数口径：不逐文件 spawn `git show`）。
+ * stdin 驱动、只读；`onObject` 逐个回调，便于边取边落盘而不把全量内容压在内存里。
+ */
+export function catFileBatch(
+  cwd: string,
+  specs: string[],
+  onObject: (o: BatchObject) => void,
+  opts: GitCollectOptions = {},
+): Promise<void> {
+  if (!specs.length) return Promise.resolve();
+  const safe = specs.map(assertBatchObjectSpec);
+  const argv = buildGitArgv('cat-file', ['--batch'], []);
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn('git', argv, { cwd, windowsHide: true });
+    let buf = Buffer.alloc(0);
+    let stderr = '';
+    let settled = false;
+    // git 按 stdin 的写入顺序逐条输出，因此「第 n 条记录 ↔ 第 n 个请求规格」
+    let seq = 0;
+    const fail = (e: GitCollectError) => {
+      if (settled) return;
+      settled = true;
+      child.kill();
+      reject(e);
+    };
+    const timer = setTimeout(() => fail(new GitCollectError('timeout', 'Git 批量取内容超时（30s），请收窄导出范围')), opts.timeoutMs ?? GIT_TIMEOUT_MS);
+    if (opts.signal) {
+      if (opts.signal.aborted) { clearTimeout(timer); fail(new GitCollectError('timeout', '已中止')); }
+      else opts.signal.addEventListener('abort', () => { clearTimeout(timer); fail(new GitCollectError('timeout', '已中止')); }, { once: true });
+    }
+    const drain = () => {
+      for (;;) {
+        const nl = buf.indexOf(0x0a);
+        if (nl < 0) return;
+        const header = buf.subarray(0, nl).toString('utf8').trim();
+        if (!header) { buf = buf.subarray(nl + 1); continue; }
+        const parts = header.split(' ');
+        if (parts.length === 2 && parts[1] === 'missing') {
+          onObject({ spec: safe[seq++] ?? parts[0], sha: parts[0], type: 'missing', size: 0, content: null, missing: true });
+          buf = buf.subarray(nl + 1);
+          continue;
+        }
+        if (parts.length < 3 || !/^\d+$/.test(parts[2])) {
+          // 表头不合协议（例如非 blob 对象的报错行）：丢弃这一行继续，避免整批卡死
+          onObject({ spec: safe[seq++] ?? parts[0], sha: parts[0] ?? '', type: parts[1] ?? '', size: 0, content: null, missing: true });
+          buf = buf.subarray(nl + 1);
+          continue;
+        }
+        const size = Number(parts[2]);
+        const need = nl + 1 + size + 1;
+        if (buf.length < need) return; // 内容还没收全，等下一块
+        const content = buf.subarray(nl + 1, nl + 1 + size);
+        buf = buf.subarray(need);
+        onObject({ spec: safe[seq++] ?? parts[0], sha: parts[0], type: parts[1], size, content: Buffer.from(content), missing: false });
+      }
+    };
+    child.stdout.on('data', (c: Buffer) => {
+      buf = Buffer.concat([buf, c]);
+      if (buf.length > GIT_MAX_BUFFER * 64) { fail(new GitCollectError('too-large', 'Git 批量取内容超出缓冲上限，请分批导出')); return; }
+      drain();
+    });
+    child.stderr.on('data', (c: Buffer) => { stderr += c.toString('utf8'); });
+    child.on('error', (e: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      if (e.code === 'ENOENT') fail(new GitCollectError('no-git', '未找到 git 命令'));
+      else fail(new GitCollectError('failed', `Git 批量取内容失败：${e.message.slice(0, 200)}`));
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      if (code !== 0) {
+        if (/not a git repository/i.test(stderr)) fail(new GitCollectError('not-a-repo', '工作空间不是 Git 仓库'));
+        else fail(new GitCollectError('failed', `Git 批量取内容失败：${stderr.trim().slice(0, 200)}`));
+        return;
+      }
+      settled = true;
+      resolve();
+    });
+    child.stdin.on('error', () => { /* EPIPE：git 提前退出由 close/error 收口 */ });
+    child.stdin.write(`${safe.join('\n')}\n`);
+    child.stdin.end();
+  });
+}
+
+/** 把 cat-file 结果按请求规格对齐（missing 与非 blob 统一成 content:null） */
+export async function catFileBatchMap(cwd: string, specs: string[], opts: GitCollectOptions = {}): Promise<Map<string, BatchObject>> {
+  const ordered: BatchObject[] = [];
+  await catFileBatch(cwd, specs, (o) => ordered.push(o), opts);
+  const out = new Map<string, BatchObject>();
+  specs.forEach((spec, i) => {
+    const o = ordered[i];
+    out.set(spec, o && !o.missing ? { ...o, spec } : { spec, sha: /^([0-9a-f]{7,40})/.exec(spec)?.[1] ?? spec, type: 'missing', size: 0, content: null, missing: true });
+  });
+  return out;
 }
 
 export interface GitCommitEntry {
