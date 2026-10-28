@@ -11,7 +11,7 @@ import { parsePlanDeps, depsSatisfied, topoOrder, type PlanDep } from '../util/p
 import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化（拉取侧平台偏好匹配）
 import { detectRuling, isRulingSubject, RULING_DEFAULT_OPTIONS } from '../util/ruling'; // T02949：裁决自动识别（纯函数单源）
 import { WebhookService } from './WebhookService'; // T03196（PM-401）：任务事件外发
-import { FieldService, type TaskFieldValueView } from './FieldService'; // T03231（PM-203②）：列表行带出项目自定义字段值
+import { FieldService, type ProjectFieldView, type TaskFieldValueView } from './FieldService'; // T03231（PM-203②）：列表行带出项目自定义字段值；T03232 起筛选/排序共用字段定义
 
 /** 批量 IN 查询的每批 id 数：SQLite 变量上限 999，留足余量并与图片批量查询（≤200）同量级 */
 const PLAN_LOOKUP_BATCH = 200;
@@ -186,7 +186,22 @@ export interface TaskListOptions {
   /** T03184（PM-102）：命令面板结构化查询的 WHERE 片段（由 util/taskQuery 编译，参数化）。
    *  与 keyword 二选一：结构化走语法树，模糊走原关键词匹配。 */
   queryFilter?: { where: string; values: readonly unknown[] };
+  /** T03232（PM-203③）：自定义字段筛选——在服务端 WHERE 里展开成 EXISTS 子查询，分页前后一致。
+   *  字段必须属于 opts.projectId（字段挂项目）；未知字段/类型不支持的算子/非法值一律忽略该条，
+   *  与 priority 的「非法值不筛」同一口径，避免前端拼错参数就把列表筛成 0 行。 */
+  fieldFilters?: Array<{ fieldId?: string; op?: string; value?: string }>;
+  /** T03232（PM-203③）：按自定义字段排序——未填值的任务固定排最后（与「空值不参与比较」的直觉一致）。
+   *  只替换排序主键，创建时间仍作同值时的次序；pinned 不再前置（用户显式选了排序键）。 */
+  fieldSort?: { fieldId?: string; dir?: 'asc' | 'desc' };
 }
+
+/** T03232：各字段类型支持的筛选算子。text 用包含/等于；number/date 可比较；select 只能按选项等于。 */
+const FIELD_OPS: Record<string, ReadonlySet<string>> = {
+  text: new Set(['eq', 'contains', 'empty', 'notEmpty']),
+  number: new Set(['eq', 'gt', 'gte', 'lt', 'lte', 'empty', 'notEmpty']),
+  date: new Set(['eq', 'gt', 'gte', 'lt', 'lte', 'empty', 'notEmpty']),
+  select: new Set(['eq', 'empty', 'notEmpty']),
+};
 
 function now(): string {
   return new Date().toISOString();
@@ -266,6 +281,85 @@ function recalcParentProgress(parentId: string): void {
 
 /** FR1.2 / FR1.3 / FR1.4 / FR5 */
 /** 动态 WHERE 构建：分页/搜索/分类需精确拼条件，全部走参数绑定防注入 */
+/** T03232：任务是否填写过该字段（EXISTS 用 tasks.id 与外层表名对齐；list/count 都是 SELECT FROM tasks） */
+function fieldValueExists(fieldId: string): string {
+  return 'EXISTS (SELECT 1 FROM task_field_values v WHERE v.task_id = tasks.id AND v.field_id = ?)';
+}
+
+/** T03232：按项目取未归档字段定义——归档字段不参与筛选/排序（与列表徽标、抽屉编辑口径一致） */
+function liveFieldsOf(projectId: string | undefined): Map<string, ProjectFieldView> {
+  if (!projectId) return new Map();
+  return new Map(FieldService.list(projectId).map((f) => [f.id, f]));
+}
+
+/**
+ * T03232：把一条字段筛选展开成 WHERE 片段，不合法返回 null 表示忽略该条。
+ * 值的绑定顺序必须与 SQL 文本中占位符出现顺序一致（field_id 在前、比较值在后）。
+ */
+function fieldFilterClause(
+  filter: { fieldId?: string; op?: string; value?: string },
+  fields: Map<string, ProjectFieldView>,
+  values: unknown[],
+): string | null {
+  const field = filter.fieldId ? fields.get(filter.fieldId) : undefined;
+  const op = typeof filter.op === 'string' ? filter.op : '';
+  if (!field || !FIELD_OPS[field.type]?.has(op)) return null;
+  if (op === 'empty') { values.push(field.id); return `NOT ${fieldValueExists(field.id)}`; }
+  if (op === 'notEmpty') { values.push(field.id); return fieldValueExists(field.id); }
+
+  const raw = typeof filter.value === 'string' ? filter.value.trim() : '';
+  if (!raw) return null;
+  const exists = (inner: string) =>
+    `EXISTS (SELECT 1 FROM task_field_values v WHERE v.task_id = tasks.id AND v.field_id = ? AND ${inner})`;
+
+  if (field.type === 'text') {
+    values.push(field.id);
+    if (op === 'contains') {
+      values.push(`%${raw.replaceAll(/[%_]/g, (m) => '\\' + m)}%`);
+      return exists(String.raw`v.value LIKE ? ESCAPE '\'`);
+    }
+    values.push(raw);
+    return exists('v.value = ?');
+  }
+  if (field.type === 'select') {
+    // 值存选项 id；已停用选项的存量值仍可筛（停用只挡新填写，不抹历史）
+    if (!field.options.some((o) => o.id === raw)) return null;
+    values.push(field.id, raw);
+    return exists('v.value = ?');
+  }
+  // number 比较走数值、date 走 ISO 字符串（YYYY-MM-DD 的字典序即时间序）
+  const cmp = { eq: '=', gt: '>', gte: '>=', lt: '<', lte: '<=' }[op];
+  if (!cmp) return null;
+  if (field.type === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  const num = Number(raw);
+  if (field.type === 'number' && !Number.isFinite(num)) return null;
+  values.push(field.id, field.type === 'number' ? num : raw);
+  return exists(`${field.type === 'number' ? 'CAST(v.value AS REAL)' : 'v.value'} ${cmp} ?`);
+}
+
+/**
+ * T03232：字段排序片段。未填值的任务恒排最后（两个方向都不把空值顶到前面），
+ * 单选项按选项**定义顺序**而非 id 排序——用户看到的顺序就是字段设置里那一列。
+ */
+function fieldSortClause(
+  sort: { fieldId?: string; dir?: 'asc' | 'desc' },
+  fields: Map<string, ProjectFieldView>,
+): { sql: string; values: unknown[] } | null {
+  const field = sort.fieldId ? fields.get(sort.fieldId) : undefined;
+  if (!field) return null;
+  const dir = sort.dir === 'desc' ? 'DESC' : 'ASC';
+  const nullLast = `CASE WHEN ${fieldValueExists(field.id)} THEN 0 ELSE 1 END`;
+  if (field.type === 'select') {
+    const optIds = field.options.map((o) => o.id);
+    const rankExpr = `(SELECT CASE v.value ${field.options.map((_, i) => `WHEN ? THEN ${i}`).join(' ')}
+      ELSE ${optIds.length} END FROM task_field_values v WHERE v.task_id = tasks.id AND v.field_id = ?)`;
+    return { sql: `${nullLast}, ${rankExpr} ${dir}, created_at DESC`, values: [field.id, ...optIds, field.id] };
+  }
+  const valExpr = '(SELECT v.value FROM task_field_values v WHERE v.task_id = tasks.id AND v.field_id = ?)';
+  const lhs = field.type === 'number' ? `CAST(${valExpr} AS REAL)` : valExpr;
+  return { sql: `${nullLast}, ${lhs} ${dir}, created_at DESC`, values: [field.id, field.id] };
+}
+
 function buildTaskFilter(opts: TaskListOptions): { where: string[]; values: unknown[] } {
   const where: string[] = [];
   const values: unknown[] = [];
@@ -306,6 +400,14 @@ function buildTaskFilter(opts: TaskListOptions): { where: string[]; values: unkn
     where.push(String.raw`(ai_state = 'failed' OR (handle_result LIKE '%【验证失败%' AND COALESCE(verified,0) = 0))`);
   } else if (opts.attention === 'unread') {
     where.push("ai_state = 'unread'");
+  }
+  // T03232：字段筛选——字段挂项目，未指定项目时既不校验也不生效（全部项目视图由前端禁用该控件）
+  if (opts.fieldFilters?.length && opts.projectId) {
+    const fields = liveFieldsOf(opts.projectId);
+    for (const f of opts.fieldFilters) {
+      const clause = fieldFilterClause(f, fields, values);
+      if (clause) where.push(clause);
+    }
   }
   return { where, values };
 }
@@ -762,7 +864,13 @@ export const TaskService = {
       // T00446：手动排序（拖拽结果）——pinned 优先，user_sort 空值排最后
       manual: "pinned DESC, CASE WHEN user_sort IS NULL THEN 1 ELSE 0 END, user_sort, created_at DESC",
     };
-    let sql = `SELECT * FROM tasks WHERE ${where.join(' AND ')} ORDER BY ${orderBy[opts.sort ?? 'pinned']}`;
+    let orderSql = orderBy[opts.sort ?? 'pinned'];
+    // T03232：字段排序接管排序主键（显式选择的排序意图优先于 pinned），参数追加在 WHERE 之后
+    if (opts.fieldSort?.fieldId && opts.projectId) {
+      const byField = fieldSortClause(opts.fieldSort, liveFieldsOf(opts.projectId));
+      if (byField) { orderSql = byField.sql; values.push(...byField.values); }
+    }
+    let sql = `SELECT * FROM tasks WHERE ${where.join(' AND ')} ORDER BY ${orderSql}`;
     if (opts.limit) {
       sql += ' LIMIT ?';
       values.push(opts.limit);

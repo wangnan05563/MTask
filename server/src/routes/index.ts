@@ -660,8 +660,20 @@ api.delete('/tokens/:id', (req, res) => {
   res.status(204).end();
 });
 
+/**
+ * T03232：`fieldFilters`/`fieldSort` 是结构化参数，用 JSON 编码进 query（平铺表达不了对象数组）。
+ * 解析失败或形状不对按「未传」处理——列表仍有结果，只是没筛/没按字段排，与非法 priority 的宽容口径一致。
+ */
+function parseJsonQuery<T>(raw: unknown, ok: (v: unknown) => boolean): T | undefined {
+  if (typeof raw !== 'string' || !raw) return undefined;
+  try {
+    const v: unknown = JSON.parse(raw);
+    return ok(v) ? (v as T) : undefined;
+  } catch { return undefined; }
+}
+
 api.get('/tasks', (req, res) => {
-  const { projectId, archived, limit, offset, keyword, categoryId, priority, sort, shelved, status, attention, total } = req.query;
+  const { projectId, archived, limit, offset, keyword, categoryId, priority, sort, shelved, status, attention, total, fieldFilters, fieldSort } = req.query;
   // M7-7.2：默认分页上限——未带 limit 或非法 limit 一律按 DEFAULT 截断（原「非法忽略=全量」语义废止）。
   // 全量语义保留给 MCP（mtask_list_tasks 走 TaskService.list，不经本路由）；已盘点 HTTP 消费方：
   // 桌面 TasksPage 200/页、移动端 100/页（7.1 改造）、CommandPalette/QueuePage/ArchivePage 显式 500。
@@ -693,6 +705,13 @@ api.get('/tasks', (req, res) => {
     status: status as TaskListOptions['status'],
     // M7-7.1：移动端「需关注」服务端过滤（failed/unread），省去全量下发后本地筛
     attention: attention === 'failed' || attention === 'unread' ? attention : undefined,
+    // T03232（PM-203③）：自定义字段筛选/排序（字段挂项目，服务端按字段定义校验后展开）
+    fieldFilters: parseJsonQuery<TaskListOptions['fieldFilters']>(
+      fieldFilters, (v) => Array.isArray(v) && v.every((x) => !!x && typeof x === 'object' && !Array.isArray(x)),
+    ),
+    fieldSort: parseJsonQuery<TaskListOptions['fieldSort']>(
+      fieldSort, (v) => !!v && typeof v === 'object' && !Array.isArray(v),
+    ),
   };
   const items = TaskService.list(listOpts);
   // T02284：`total=1` 加性通道——带该参数时响应体换成 `{items,total}` 信封（归档页服务端分页要「共 N 条」）。

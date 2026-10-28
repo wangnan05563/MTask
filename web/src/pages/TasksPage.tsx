@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { createPortal } from 'react-dom';
-import { api, imageUrl, fetchImage, imageDataURL, type AITool, type Project, type PromptCategory, type ReqCategory, type Task, type TaskCategory, type TaskImage } from '../api/client';
+import { api, imageUrl, fetchImage, imageDataURL, type AITool, type CustomField, type CustomFieldType, type Project, type PromptCategory, type ReqCategory, type Task, type TaskCategory, type TaskImage } from '../api/client';
 import { ResultDiffPanel } from '../ui/ResultDiff'; // T01072-FR1.9：结果历史 diff 与回滚
 import { beautifyStore } from '../stores/beautifyStore';
 import { askConfirm, askInput } from '../ui/dialogs';
@@ -123,6 +123,30 @@ function scopeParams(projectId: string): URLSearchParams {
   const p = new URLSearchParams();
   if (projectId !== ALL_PROJECTS) p.set('projectId', projectId);
   return p;
+}
+
+/**
+ * T03232（PM-203③）：字段类型 → 可选筛选算子。
+ * 与服务端 TaskService.FIELD_OPS 对齐——前端只负责不给用户端出无效算子，服务端仍按字段定义再校验一次。
+ */
+const FIELD_FILTER_OPS: Record<CustomFieldType, Array<{ value: string; label: string }>> = {
+  text: [{ value: 'contains', label: '包含' }, { value: 'eq', label: '等于' }, { value: 'empty', label: '未填' }, { value: 'notEmpty', label: '已填' }],
+  number: [
+    { value: 'eq', label: '等于' }, { value: 'gt', label: '大于' }, { value: 'gte', label: '大于等于' },
+    { value: 'lt', label: '小于' }, { value: 'lte', label: '小于等于' }, { value: 'empty', label: '未填' }, { value: 'notEmpty', label: '已填' },
+  ],
+  date: [
+    { value: 'eq', label: '等于' }, { value: 'gt', label: '晚于' }, { value: 'gte', label: '不早于' },
+    { value: 'lt', label: '早于' }, { value: 'lte', label: '不晚于' }, { value: 'empty', label: '未填' }, { value: 'notEmpty', label: '已填' },
+  ],
+  select: [{ value: 'eq', label: '选择' }, { value: 'empty', label: '未填' }, { value: 'notEmpty', label: '已填' }],
+};
+
+/** 需要填值的算子（empty/notEmpty 只看有没有值） */
+const FIELD_OP_NEEDS_VALUE = new Set(['eq', 'contains', 'gt', 'gte', 'lt', 'lte']);
+
+function defaultFieldOp(type: CustomFieldType): string {
+  return type === 'text' ? 'contains' : 'eq';
 }
 
 function TriCheckbox({ checked, indeterminate, onChange, title, label, style }: {
@@ -297,6 +321,25 @@ export function TasksPage() {
   const [shelvedError, setShelvedError] = useState('');
   // T00474：优先级筛选（urgent/high/normal/low，会话级保持；空=全部）
   const [priorityFilter, setPriorityFilter] = useSessionState('tasks.priorityFilter', '');
+  // T03232（PM-203③）：自定义字段筛选/排序。字段定义挂项目，取值随项目切换重新拉取；
+  // 筛选走服务端（WHERE EXISTS），排序也走服务端（ORDER BY 字段值），分页前后口径一致。
+  const [projectFields, setProjectFields] = useState<CustomField[]>([]);
+  const [fieldFilterField, setFieldFilterField] = useSessionState('tasks.fieldFilterField', '');
+  const [fieldFilterOp, setFieldFilterOp] = useSessionState('tasks.fieldFilterOp', '');
+  const [fieldFilterValue, setFieldFilterValue] = useSessionState('tasks.fieldFilterValue', '');
+  // 形如 `<fieldId>|asc`；默认空=不按字段排序（保持后端既有排序）
+  const [fieldSort, setFieldSort] = usePersistentState('tasks.fieldSort', '');
+  const activeField = projectFields.find((f) => f.id === fieldFilterField);
+  const fieldsDisabled = !activeProject || activeProject === ALL_PROJECTS || projectFields.length === 0;
+  const fieldFilterNeedsValue = !!fieldFilterOp && FIELD_OP_NEEDS_VALUE.has(fieldFilterOp);
+  const onFieldFilterField = (id: string) => {
+    // 换字段时把算子重置成该类型的默认值（文本→包含、其余→等于），旧值清空——跨类型沿用旧算子会立刻变成无效参数
+    setFieldFilterField(id);
+    const f = projectFields.find((x) => x.id === id);
+    setFieldFilterOp(f ? defaultFieldOp(f.type) : '');
+    setFieldFilterValue('');
+  };
+  const clearFieldFilter = () => { setFieldFilterField(''); setFieldFilterOp(''); setFieldFilterValue(''); };
   const [newCategory, setNewCategory] = useSessionState<string>('tasks.new.category', '');
   // 智能分类：默认启用，根据标题智能匹配任务类型（应用于新建任务的自动分类）
   const [smartCat, setSmartCat] = usePersistentState('tasks.smartCat', true);
@@ -444,6 +487,16 @@ export function TasksPage() {
     if (catFilter === 'none') p.set('categoryId', 'none');
     else if (catFilter) p.set('categoryId', catFilter);
     if (priorityFilter) p.set('priority', priorityFilter);
+    // T03232（PM-203③）：自定义字段筛选/排序——服务端执行，翻页后仍是同一套谓词与序。
+    // 「需要填值」的算子没填值时不下发（等同于未启用），避免用户刚选中字段就把列表筛空。
+    if (projectId !== ALL_PROJECTS && fieldFilterField && fieldFilterOp
+      && (!FIELD_OP_NEEDS_VALUE.has(fieldFilterOp) || fieldFilterValue.trim())) {
+      p.set('fieldFilters', JSON.stringify([{ fieldId: fieldFilterField, op: fieldFilterOp, value: fieldFilterValue }]));
+    }
+    if (projectId !== ALL_PROJECTS && fieldSort) {
+      const [fid, dir] = fieldSort.split('|');
+      if (fid) p.set('fieldSort', JSON.stringify({ fieldId: fid, dir: dir === 'desc' ? 'desc' : 'asc' }));
+    }
     // T02283：主列表拉取失败此前一路冒泡——`void loadTasks(activeProject)`（约 30 处调用点）不接拒绝，
     // 断供时既刷出 unhandled rejection，界面又停在「暂无待办任务」空态冒充正常。
     // 改为就地收下：失败只置 error 态，绝不覆盖上次成功数据（与 T02213 同口径）。
@@ -510,7 +563,7 @@ export function TasksPage() {
       setShelvedPhase('error');
       setShelvedError(e instanceof Error ? e.message : String(e));
     }
-  }, [search, catFilter, priorityFilter]);
+  }, [search, catFilter, priorityFilter, fieldFilterField, fieldFilterOp, fieldFilterValue, fieldSort]);
 
   const loadTasks = useCallback(async (projectId: string) => {
     if (!projectId) return;
@@ -639,6 +692,23 @@ export function TasksPage() {
   }, [activeProject, loadTasks]);
   useEffect(() => { void loadCategories(); }, [loadCategories]);
 
+  // T03232（PM-203③）：项目字段随 activeProject 重取；失败不阻塞任务页——控件退化为「无字段」，列表照常
+  useEffect(() => {
+    if (!activeProject || activeProject === ALL_PROJECTS) { setProjectFields([]); return; }
+    let alive = true;
+    api.get<CustomField[]>(`/projects/${activeProject}/fields`)
+      .then((list) => { if (alive) setProjectFields(list); })
+      .catch(() => { if (alive) setProjectFields([]); });
+    return () => { alive = false; };
+  }, [activeProject]);
+
+  // T03232：切项目/字段被归档后持久化的字段 id 可能已失效——清掉，否则列表被筛成 0 行而控件看着「没筛」
+  useEffect(() => {
+    const ids = new Set(projectFields.map((f) => f.id));
+    if (fieldFilterField && !ids.has(fieldFilterField)) { setFieldFilterField(''); setFieldFilterOp(''); setFieldFilterValue(''); }
+    if (fieldSort && !ids.has(fieldSort.split('|')[0])) setFieldSort('');
+  }, [projectFields, fieldFilterField, fieldSort, setFieldFilterField, setFieldFilterOp, setFieldFilterValue, setFieldSort]);
+
   // T00836：命令面板定位意图处理——若目标 tab 与当前不一致先切 tab（等该列表渲染后再定位）；
   // 命中行则滚动居中 + 高亮 + 展开描述与处理结果（“显示当前记录信息”），定位完成即消费清空，避免重复触发
   // M6-6.1：聚焦任务前的预处理（切项目 / 清过滤 / 切 tab）；返回 true 表示已执行动作、本轮定位中断
@@ -649,10 +719,11 @@ export function TasksPage() {
       setFocusProjectId('');
       return true;
     }
-    // T00836 二轮：分类/优先级过滤会把目标任务过滤出列表——定位前先清空，保证目标行在全量结果里可见
-    if (catFilter || priorityFilter) {
+    // T00836 二轮：分类/优先级/自定义字段过滤会把目标任务过滤出列表——定位前先清空，保证目标行在全量结果里可见
+    if (catFilter || priorityFilter || fieldFilterField) {
       if (catFilter) setCatFilter('');
       if (priorityFilter) setPriorityFilter('');
+      if (fieldFilterField) { setFieldFilterField(''); setFieldFilterOp(''); setFieldFilterValue(''); }
       setFocusProjectId('__fetch_filter__');
       return true;
     }
@@ -692,7 +763,7 @@ export function TasksPage() {
     if (locateTaskRow(focusTaskId)) return;
     // 目标行尚未渲染：保留定位意图（focusTaskId 不清），列表每次变化都会重跑本 effect 再认一次
     if (!focusDeadline) setFocusDeadline(Date.now() + 8000);
-  }, [focusTaskId, todo, done, activeTab, activeProject, focusProjectId, catFilter, priorityFilter, focusDeadline, listWin.nonce, revealTaskRow]);
+  }, [focusTaskId, todo, done, activeTab, activeProject, focusProjectId, catFilter, priorityFilter, fieldFilterField, focusDeadline, listWin.nonce, revealTaskRow]);
 
   // T02206：到点收口。列表若一直不再变化，重试等不到下一次触发，故用定时器兜底放弃并**明示**一次
   //（原实现在此处静默清键，用户只看到视图变了却不知定位到哪）。
@@ -3536,7 +3607,7 @@ export function TasksPage() {
           <input type="file" accept=".csv,.json" style={FILE_INPUT_SR_ONLY} data-t03214="import-file-input" disabled={batchOpBusy}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void onCsvFile(f); } e.target.value = ''; }} />
         </label>
-        <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+        <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
           <select
             value={catFilter}
             onChange={(e) => setCatFilter(e.target.value)}
@@ -3560,6 +3631,89 @@ export function TasksPage() {
             <option value="high">高</option>
             <option value="normal">普通</option>
             <option value="low">低</option>
+          </select>
+          {/* T03232（PM-203③）：自定义字段筛选/排序——由服务端在整表上执行（EXISTS / ORDER BY），
+              不是「先取一页再本地筛」，所以翻页后的结果集与顺序都与第一页一致。
+              字段挂项目：全部项目视图或项目尚无字段时禁用，并把原因写进 title。 */}
+          <select
+            value={fieldFilterField}
+            onChange={(e) => onFieldFilterField(e.target.value)}
+            disabled={fieldsDisabled}
+            data-t03232="field-filter"
+            title={fieldsDisabled
+              ? (projectFields.length === 0 && activeProject !== ALL_PROJECTS ? '当前项目还没有自定义字段——可到「设置 → 自定义字段」创建' : '自定义字段按项目定义，请先在项目下拉里选择具体项目')
+              : '自定义字段筛选 — 在服务端按字段值筛选（翻页后条件仍生效）'}
+            aria-label="自定义字段筛选：选择要筛选的自定义字段"
+            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, opacity: fieldsDisabled ? 0.55 : 1, cursor: fieldsDisabled ? 'not-allowed' : 'pointer' }}
+          >
+            <option value="">自定义字段筛选</option>
+            {projectFields.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+          </select>
+          {activeField && (
+            <>
+              <select
+                value={fieldFilterOp}
+                onChange={(e) => setFieldFilterOp(e.target.value)}
+                data-t03232="field-op"
+                title="筛选条件 — 按字段类型可选的比较方式"
+                aria-label="自定义字段筛选条件：选择比较方式"
+                style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
+              >
+                {FIELD_FILTER_OPS[activeField.type].map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              {fieldFilterNeedsValue && (activeField.type === 'select' ? (
+                <select
+                  value={fieldFilterValue}
+                  onChange={(e) => setFieldFilterValue(e.target.value)}
+                  data-t03232="field-value"
+                  title="筛选值 — 选择要匹配的选项"
+                  aria-label="自定义字段筛选值：选择要匹配的选项"
+                  style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
+                >
+                  <option value="">选择选项…</option>
+                  {activeField.options.map((o) => <option key={o.id} value={o.id}>{o.archived ? `${o.label}（已停用）` : o.label}</option>)}
+                </select>
+              ) : (
+                <input
+                  value={fieldFilterValue}
+                  onChange={(e) => setFieldFilterValue(e.target.value)}
+                  data-t03232="field-value"
+                  placeholder={activeField.type === 'number' ? '输入数字' : activeField.type === 'date' ? 'YYYY-MM-DD' : '输入筛选文本'}
+                  title="筛选值 — 文本按包含/等于匹配，数字与日期按大小比较；留空表示暂不筛选"
+                  aria-label="自定义字段筛选值：填写筛选值"
+                  style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, width: 120 }}
+                />
+              ))}
+              <button
+                type="button"
+                onClick={clearFieldFilter}
+                data-t03232="field-clear"
+                title="清除自定义字段筛选 — 回到未按字段筛选的列表"
+                aria-label="清除自定义字段筛选"
+                style={{ fontSize: 'var(--fs-s)', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}
+              >
+                <X size={12} /><span>清除字段筛选</span>
+              </button>
+            </>
+          )}
+          <select
+            value={fieldSort}
+            onChange={(e) => setFieldSort(e.target.value)}
+            disabled={fieldsDisabled}
+            data-t03232="field-sort"
+            title={fieldsDisabled
+              ? (projectFields.length === 0 && activeProject !== ALL_PROJECTS ? '当前项目还没有自定义字段——可到「设置 → 自定义字段」创建' : '自定义字段按项目定义，请先在项目下拉里选择具体项目')
+              : '自定义字段排序 — 未填值的任务排在最后'}
+            aria-label="自定义字段排序：按自定义字段排序列表"
+            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, opacity: fieldsDisabled ? 0.55 : 1, cursor: fieldsDisabled ? 'not-allowed' : 'pointer' }}
+          >
+            <option value="">自定义字段排序</option>
+            {projectFields.map((f) => (
+              <Fragment key={f.id}>
+                <option value={`${f.id}|asc`}>{`按「${f.name}」升序`}</option>
+                <option value={`${f.id}|desc`}>{`按「${f.name}」降序`}</option>
+              </Fragment>
+            ))}
           </select>
         </span>
         {/* T02952：搜索框 + 框内左侧清空按钮（有内容才显示；悬浮倾斜 5°~10° 由 .ws-clear-btn 提供；点击清空且光标留框内） */}
