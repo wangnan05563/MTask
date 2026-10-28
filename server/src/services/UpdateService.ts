@@ -14,6 +14,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { getSetting, setSetting } from './AppSettings';
+import { logService } from './LogService';
 import { encrypt, decrypt, maskSecret } from '../util/crypto';
 import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
 
@@ -122,6 +123,20 @@ export interface UpdateCheckResult {
   source: 'manual' | 'builtin';
 }
 
+/** T03273（UX-13）：自动检查失败时的成功态空结果——冷启动静默路径不得回 4xx（控制台无红色噪声）。
+ *  手动检查仍抛中文错误，保证失败可诊断、可操作。 */
+export interface UpdateCheckSkipped {
+  ok: true;
+  skipped: true;
+  reason: 'check-failed';
+  /** 诊断用：真实失败原因（只进服务日志与接口，不弹给用户） */
+  error: string;
+  currentVersion: string;
+  hasUpdate: false;
+  repo: string;
+  source: 'manual' | 'builtin';
+}
+
 /** 读取当前配置（token 只回掩码，绝不回明文） */
 export function getConfig(): UpdateConfigView {
   const repo = getSetting(REPO_KEY) ?? '';
@@ -214,8 +229,13 @@ export async function testConfig(input: { repo: string; token?: string }): Promi
 }
 
 /** 检查更新：带 5 分钟缓存；force=true 跳过缓存强制拉取。
- *  T02977：手动地址合法则覆盖内置地址，留空/非法回退内置地址——不再因未配置而直接报错。 */
-export async function checkUpdate(force = false): Promise<UpdateCheckResult> {
+ *  T02977：手动地址合法则覆盖内置地址，留空/非法回退内置地址——不再因未配置而直接报错。
+ *  T03273：`silent=true` 供应用冷启动的自动检查使用——失败不抛错，返回 `skipped` 成功态并把
+ *  真实原因写服务日志（③ 可诊断、④ 控制台无红色噪声）；手动检查仍抛错，路径保持一致。 */
+export async function checkUpdate(
+  force = false,
+  opts: { silent?: boolean } = {},
+): Promise<UpdateCheckResult | UpdateCheckSkipped> {
   const { repo, source } = resolveRepoSource(getSetting(REPO_KEY));
 
   const cached = force ? undefined : cacheGet<UpdateCheckResult>('update-check');
@@ -228,7 +248,15 @@ export async function checkUpdate(force = false): Promise<UpdateCheckResult> {
   }
 
   const cur = currentVersion();
-  const rel = await fetchLatestRelease(repo, token);
+  let rel: Awaited<ReturnType<typeof fetchLatestRelease>>;
+  try {
+    rel = await fetchLatestRelease(repo, token);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logService.log('WARN', 'update', `[更新检查] ${opts.silent ? '自动' : '手动'}检查失败（${source}:${repo}）：${msg}`);
+    if (!opts.silent) throw e;
+    return { ok: true, skipped: true, reason: 'check-failed', error: msg, currentVersion: cur, hasUpdate: false, repo, source };
+  }
   const result: UpdateCheckResult = {
     ok: true,
     currentVersion: cur,

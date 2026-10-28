@@ -164,13 +164,13 @@ function Shell() {
 
   // T01836 需求 1「应用启动时自动检测是否有新版本」：等后端就绪后静默查一次
   //（force=false 走服务端 15min 缓存，不会每次启动都打 GitHub API）。
-  // 未配置仓库时 checkUpdate 会抛错、离线时 fetch 失败——两种情况都按「无提示」处理，不打扰用户。
+  // T03273（UX-13）：auto=true 让后端把网络失败/无配置收成 200 skipped——冷启动不再出 4xx 红色噪声。
   useEffect(() => {
     if (!serverOk) return;
     if (sessionStorage.getItem('mtask.updateHintClosed')) return; // 本次会话已手动关掉就不再弹
-    api.post<{ hasUpdate?: boolean; latestVersion?: string; currentVersion?: string }>('/update/check', { force: false })
-      .then((r) => { if (r?.hasUpdate && r.latestVersion) setUpdateHint({ latestVersion: r.latestVersion, currentVersion: r.currentVersion ?? '' }); })
-      .catch(() => { /* 未配置 / 离线：静默 */ });
+    api.post<{ hasUpdate?: boolean; latestVersion?: string; currentVersion?: string; skipped?: boolean }>('/update/check', { force: false, auto: true })
+      .then((r) => { if (!r?.skipped && r?.hasUpdate && r.latestVersion) setUpdateHint({ latestVersion: r.latestVersion, currentVersion: r.currentVersion ?? '' }); })
+      .catch(() => { /* 静默路径已不应抛错；保留兜底，极端情况下同样不打扰用户 */ });
   }, [serverOk]);
 
   // T02976：订阅主进程下载进度，只消费菜单通道（origin='menu'）。

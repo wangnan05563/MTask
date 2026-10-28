@@ -2960,8 +2960,10 @@ api.post('/update/test', async (req, res) => {
 // T02977：失败时一并回传本次实际使用的地址来源，菜单据此在报错里点明是内置地址还是手动地址。
 api.post('/update/check', async (req, res) => {
   const force = Boolean(req.body?.force);
+  // T03273（UX-13）：auto=true 是应用冷启动的静默检查——失败回 200 skipped，不制造 4xx 红色噪声
+  const auto = Boolean(req.body?.auto);
   try {
-    res.json(await checkUpdate(force));
+    res.json(await checkUpdate(force, { silent: auto }));
   } catch (e) {
     const cfg = getUpdateConfig();
     res.status(400).json({
