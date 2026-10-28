@@ -116,6 +116,21 @@ interface BatchReceipt {
 /** 撤销栈上限：再深的历史用户基本不会翻，且每条快照都占内存（含逐条旧值） */
 const MAX_UNDO_STEPS = 10;
 
+/** T03267（PM-402①）：CSV 来源识别结果的中文名——只影响提示，解析口径由服务端单源决定 */
+const CSV_SOURCE_LABEL: Record<'github' | 'jira' | 'generic', string> = {
+  github: 'GitHub Issues CSV（自动识别）',
+  jira: 'Jira CSV（自动识别）',
+  generic: '通用 CSV（自动识别）',
+};
+/** T03267（PM-402②）：预览里可人工调整的字段；标题必选，其余留空即不导入该字段 */
+const CSV_MAP_FIELDS: Array<{ field: 'title' | 'description' | 'priority' | 'status' | 'category'; label: string; required?: boolean }> = [
+  { field: 'title', label: '标题', required: true },
+  { field: 'description', label: '描述' },
+  { field: 'priority', label: '优先级' },
+  { field: 'status', label: '状态' },
+  { field: 'category', label: '分类' },
+];
+
 /** T03211（PM-105）：全部项目视图的哨兵值——任务查询不带 projectId，选中集合可跨项目 */
 const ALL_PROJECTS = '__all__';
 
@@ -937,6 +952,9 @@ export function TasksPage() {
   // T00446 / INT-6：CSV 导入预览状态
   const [csvPreview, setCsvPreview] = useState<{ items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>; errors: Array<{ row: number; message: string }> } | null>(null);
   const [csvImportKind, setCsvImportKind] = useState<'csv' | 'json'>('csv'); // T00556：导入类型分流
+  // T03267（PM-402②）：CSV 来源识别与字段映射——改映射要按原文件重解析，故保留原始字节
+  const [csvMeta, setCsvMeta] = useState<{ source: 'github' | 'jira' | 'generic'; headers: string[]; mapping: Record<string, string> } | null>(null);
+  const [csvRaw, setCsvRaw] = useState<ArrayBuffer | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   // T02213：选中集清空后撤掉校验失败提示——否则下次勾选会把上一次的失败原因原样带出来
   useEffect(() => { if (selectedIds.size === 0) setPruneError(''); }, [selectedIds]);
@@ -1443,6 +1461,38 @@ export function TasksPage() {
 
   // ---------- T00446 / INT-6：CSV 任务导入（预览 → 确认） ----------
 
+  type CsvPreviewPayload = {
+    source?: 'github' | 'jira' | 'generic';
+    headers?: string[];
+    mapping?: Record<string, string>;
+    items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>;
+    errors: Array<{ row: number; message: string }>;
+  };
+
+  /** 同一份 CSV 的预览可重复发起：人工改映射后按原字节重解析（不入库，预览本身幂等） */
+  async function previewCsv(buf: ArrayBuffer, mapping?: Record<string, string>) {
+    if (!activeProject || activeProject === ALL_PROJECTS) return;
+    const q = new URLSearchParams({ projectId: activeProject });
+    // 空串要保留：它表示「这一列不导入」，滤掉会让取消映射失效
+    if (mapping && Object.keys(mapping).length > 0) q.set('mapping', JSON.stringify(mapping));
+    const r = await api.postBinary<CsvPreviewPayload>(`/tasks/import-csv/preview?${q.toString()}`, buf);
+    setCsvPreview(r);
+    setCsvImportKind('csv');
+    setCsvMeta({ source: r.source ?? 'generic', headers: r.headers ?? [], mapping: r.mapping ?? {} });
+    if (r.errors.length > 0) flash(`CSV 解析：${r.items.length} 条可导入，${r.errors.length} 行有问题——修正后重新上传`);
+    else flash(`CSV 解析完成：${r.items.length} 条待确认导入`);
+  }
+
+  async function changeCsvMapping(field: string, header: string) {
+    if (!csvRaw || !csvMeta || !csvPreview) return;
+    if (batchOpBusy) return flash('上一批操作仍在进行中，请稍候');
+    if (field === 'title' && !header) return flash('标题列不能留空', 'error');
+    setBatchOpBusy(true);
+    try {
+      await previewCsv(csvRaw, { ...csvMeta.mapping, [field]: header });
+    } catch (e) { flash(String((e as Error).message ?? e), 'error'); } finally { setBatchOpBusy(false); }
+  }
+
   async function onCsvFile(file: File) {
     if (!activeProject) return flash('请先选择项目');
     // T03211：导入需要落到具体项目
@@ -1455,19 +1505,18 @@ export function TasksPage() {
       const isJson = /\.json$/i.test(file.name);
       if (isJson) {
         const buf = await file.arrayBuffer();
-        const r = await api.postBinary<{ items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>; errors: Array<{ row: number; message: string }> }>(`/tasks/import-json/preview?projectId=${activeProject}`, buf);
+        const r = await api.postBinary<CsvPreviewPayload>(`/tasks/import-json/preview?projectId=${activeProject}`, buf);
         setCsvPreview(r);
         setCsvImportKind('json');
+        setCsvMeta(null);
+        setCsvRaw(null);
         if (r.errors.length > 0) flash(`JSON 解析：${r.items.length} 条可导入，${r.errors.length} 条有问题——修正后重新上传`);
         else flash(`JSON 解析完成：${r.items.length} 条待确认导入`);
       } else {
         // T03214 真机实测发现：该路由用 raw() 收体，JSON 上传会被全局 express.json 先解析成对象而恒 400——与 JSON 导入一致改发原始字节
         const buf = await file.arrayBuffer();
-        const r = await api.postBinary<{ items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>; errors: Array<{ row: number; message: string }> }>(`/tasks/import-csv/preview?projectId=${activeProject}`, buf);
-        setCsvPreview(r);
-        setCsvImportKind('csv');
-        if (r.errors.length > 0) flash(`CSV 解析：${r.items.length} 条可导入，${r.errors.length} 行有问题——修正后重新上传`);
-        else flash(`CSV 解析完成：${r.items.length} 条待确认导入`);
+        setCsvRaw(buf);
+        await previewCsv(buf);
       }
     } catch (e) { flash(String((e as Error).message ?? e), 'error'); } finally { setBatchOpBusy(false); }
   }
@@ -1816,6 +1865,23 @@ export function TasksPage() {
     { fmt: 'md', label: 'Markdown', desc: '导出为 .md' },
     { fmt: 'xlsx', label: 'Excel 表格', desc: '导出为 .xlsx' },
   ];
+
+  /** T03267（PM-402④）：项目级导出——任务/计划 × Markdown/JSON，任务树与计划树由服务端单源装配 */
+  async function exportProject(scope: 'tasks' | 'plans', format: 'md' | 'json') {
+    if (!activeProject) return flash('请先选择项目');
+    if (activeProject === ALL_PROJECTS) return flash('全部项目视图下请先选择具体项目再导出');
+    setExportBusy(true);
+    try {
+      const { blob, filename } = await api.getDownload(`/projects/${encodeURIComponent(activeProject)}/export?scope=${scope}&format=${format}`);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+      flash(`已导出 ${filename}`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally { setExportBusy(false); }
+  }
 
   /**
    * T03211（PM-105）：批量操作回执——成功 n / 失败 m + 逐条失败原因。
@@ -3648,6 +3714,25 @@ export function TasksPage() {
           <input type="file" accept=".csv,.json" style={FILE_INPUT_SR_ONLY} data-t03214="import-file-input" disabled={batchOpBusy}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void onCsvFile(f); } e.target.value = ''; }} />
         </label>
+        {/* T03267（PM-402）：项目级导出——任务/计划 × Markdown/JSON；全部项目视图下不可用（导出必须落到具体项目） */}
+        <select value="" disabled={exportBusy || !activeProject || activeProject === ALL_PROJECTS}
+          data-t03267="project-export" aria-label="导出项目任务或计划"
+          title={activeProject === ALL_PROJECTS ? '导出项目 — 请先选择具体项目' : '导出项目 — 任务/计划导出为 Markdown 或 JSON（含层级/状态/优先级）'}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (v === 'tasks:md') void exportProject('tasks', 'md');
+            else if (v === 'tasks:json') void exportProject('tasks', 'json');
+            else if (v === 'plans:md') void exportProject('plans', 'md');
+            else if (v === 'plans:json') void exportProject('plans', 'json');
+            e.target.value = '';
+          }}
+          style={{ fontSize: 'var(--fs-s)', padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', opacity: exportBusy || !activeProject || activeProject === ALL_PROJECTS ? 0.55 : 1 }}>
+          <option value="">{exportBusy ? '导出中…' : '导出项目…'}</option>
+          <option value="tasks:md">任务 Markdown</option>
+          <option value="tasks:json">任务 JSON</option>
+          <option value="plans:md">计划 Markdown</option>
+          <option value="plans:json">计划 JSON</option>
+        </select>
         <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
           <select
             value={catFilter}
@@ -3868,16 +3953,39 @@ export function TasksPage() {
     const csvBlock = csvPreview && (
       <div style={{ border: '1px solid var(--accent)', borderRadius: 8, padding: 12, margin: '8px 0', background: 'var(--card-bg)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          <strong style={{ fontSize: 'var(--fs-m)' }}>CSV 导入预览</strong>
+          <strong style={{ fontSize: 'var(--fs-m)' }}>{csvImportKind === 'json' ? 'JSON' : 'CSV'} 导入预览</strong>
+          {csvMeta && (
+            <span data-t03267="source" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+              来源：{CSV_SOURCE_LABEL[csvMeta.source]}
+            </span>
+          )}
           <span style={{ fontSize: 'var(--fs-s)', color: 'var(--success)' }}>可导入 {csvPreview.items.length} 条</span>
           {csvPreview.errors.length > 0 && <span style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)' }}>问题 {csvPreview.errors.length} 行</span>}
           <span style={{ flex: 1 }} />
-          <button onClick={() => setCsvPreview(null)} className="task-op" style={{ cursor: 'pointer', padding: '3px 8px' }}>取消</button>
+          <button onClick={() => { setCsvPreview(null); setCsvMeta(null); setCsvRaw(null); }} className="task-op" style={{ cursor: 'pointer', padding: '3px 8px' }}>取消</button>
           <button onClick={() => void confirmCsvImport()} disabled={batchOpBusy || csvPreview.items.length === 0}
             style={{ padding: '4px 12px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)' }}>
             确认导入
           </button>
         </div>
+        {/* T03267（PM-402②）：字段映射可人工调整——改一项即按原文件重解析，标题列必选 */}
+        {csvMeta && (
+          <div data-t03267="mapping" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+            <span>字段映射：</span>
+            {CSV_MAP_FIELDS.map((f) => (
+              <label key={f.field} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                {f.label}{f.required ? ' *' : ''}
+                <select value={csvMeta.mapping[f.field] ?? ''} disabled={batchOpBusy}
+                  data-t03267={`map-${f.field}`} aria-label={`映射${f.label}列`}
+                  onChange={(e) => void changeCsvMapping(f.field, e.target.value)}
+                  style={{ padding: '2px 4px', fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4 }}>
+                  <option value="">{f.required ? '（必选）' : '未映射'}</option>
+                  {csvMeta.headers.map((h, i) => <option key={`${h}-${i}`} value={h}>{h}</option>)}
+                </select>
+              </label>
+            ))}
+          </div>
+        )}
         {csvPreview.errors.length > 0 && (
           <div style={{ marginBottom: 8, fontSize: 'var(--fs-xs)', color: 'var(--danger)', maxHeight: 80, overflowY: 'auto' }}>
             {csvPreview.errors.map((e) => <div key={`${e.row}-${e.message}`}>第 {e.row} 行：{e.message}</div>)}

@@ -39,6 +39,7 @@ import { iterationApi } from './iterations'; // T03186（PM-201）：迭代与�
 import { materialTimingApi } from './materialTiming'; // T03189（G-1）：汇报材料耗时采样，路径自带 /report 前缀
 import { metricsApi } from './metrics'; // T03190（G-4）：指标基线出数，路径自带 /overdue-rate
 import { MetricSnapshotService } from '../services/MetricSnapshotService'; // T03261（PM-205）：项目洞察聚合摘要
+import { ProjectExportService } from '../services/ProjectExportService'; // T03267（PM-402）：项目任务/计划导出 md/json
 import { estimateApi } from './estimates'; // T02037（估算视图 E3）：/api/estimates*，PRD §8
 import { historyApi } from './history'; // T00589：历史资产（转移/统计）
 import { supervisorApi } from './supervisor'; // T01286：监督状态/审计/配置（FR-5.2~5.4）
@@ -214,6 +215,26 @@ api.get('/projects/:id/insights', (req, res) => {
       from: typeof req.query.from === 'string' && req.query.from ? req.query.from : undefined,
       to: typeof req.query.to === 'string' && req.query.to ? req.query.to : undefined,
     }));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(msg === '项目不存在' ? 404 : 400).json({ error: msg });
+  }
+});
+
+/**
+ * T03267（PRD PM-402）：项目级导出——任务/计划 × Markdown/JSON。
+ * 任务树按 parent_id、计划树按 deps(child)；归档行不导出。格式与范围非法一律 400，项目不存在 404。
+ */
+api.get('/projects/:id/export', (req, res) => {
+  const scope = String(req.query.scope ?? 'tasks');
+  const format = String(req.query.format ?? 'md');
+  if (scope !== 'tasks' && scope !== 'plans') return res.status(400).json({ error: 'scope 仅支持 tasks/plans' });
+  if (format !== 'md' && format !== 'json') return res.status(400).json({ error: 'format 仅支持 md/json' });
+  try {
+    const file = ProjectExportService.export(req.params.id, scope, format);
+    res.setHeader('Content-Type', file.mime);
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
+    res.send(file.buffer);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     res.status(msg === '项目不存在' ? 404 : 400).json({ error: msg });
@@ -1073,23 +1094,78 @@ function parseCsv(text: string): string[][] {
   return rows;
 }
 
-/** 表头映射：宽松匹配常见列名 */
+/** T03267（PM-402①）：各字段可接受的列名——中文通用 + GitHub Issues / Jira CSV 的约定列 */
+const CSV_FIELD_ALIAS: Record<string, string[]> = {
+  title: ['标题', '名称', '任务', '任务名称', '任务标题', 'title', 'summary', 'name'],
+  description: ['描述', '内容', '说明', '详情', '备注', 'description', 'body'],
+  priority: ['优先级', 'priority', 'severity'],
+  status: ['状态', 'status', 'state'],
+  category: ['分类', '类别', 'category', 'component'],
+};
+/** 不映射 Labels：标签是自由文本，当分类用会把整类外部 CSV 判成「分类不存在」 */
+const CSV_FIELDS = ['title', 'description', 'priority', 'status', 'category'] as const;
+
+/** 表头映射：先精确匹配（含大小写不敏感），再按字段顺序各取首个命中列 */
 function mapCsvColumns(headers: string[]): Record<string, number> {
-  const alias: Record<string, string> = {
-    标题: 'title', 名称: 'title', 任务: 'title', 任务名称: 'title', 任务标题: 'title',
-    描述: 'description', 内容: 'description', 说明: 'description', 详情: 'description',
-    优先级: 'priority', 状态: 'status', 分类: 'category', 备注: 'description',
-  };
   const map: Record<string, number> = {};
-  headers.forEach((h, i) => {
-    const key = alias[h.trim()] ?? alias[h.trim().toLowerCase()];
-    if (key !== undefined && !(key in map)) map[key] = i;
-  });
+  const norm = headers.map((h) => h.trim().toLowerCase());
+  for (const field of CSV_FIELDS) {
+    const alias = CSV_FIELD_ALIAS[field];
+    const idx = norm.findIndex((h) => alias.includes(h));
+    if (idx >= 0) map[field] = idx;
+  }
   return map;
 }
 
-const PRIORITY_ALIAS: Record<string, string> = { 高: 'high', 中: 'normal', 普通: 'normal', 低: 'low', high: 'high', normal: 'normal', low: 'low', urgent: 'urgent' };
-const STATUS_ALIAS: Record<string, string> = { 完成: 'done', 已完成: 'done', 待办: 'todo', 未开始: 'todo', done: 'done', todo: 'todo' };
+/** T03267①：约定字段自动识别来源——只影响提示文案，不改变解析口径 */
+function detectCsvSource(headers: string[]): 'github' | 'jira' | 'generic' {
+  const norm = new Set(headers.map((h) => h.trim().toLowerCase()));
+  const has = (n: string) => norm.has(n);
+  if (has('body') && (has('state') || has('labels') || has('milestone'))) return 'github';
+  if (has('summary') && (has('issue key') || has('issue type') || (has('priority') && has('status')))) return 'jira';
+  return 'generic';
+}
+
+/**
+ * T03267②：人工调整映射。override 是 `{该字段: 表头名|''}`，只覆盖给出的字段
+ * （`''` 表示显式取消该列的映射，回到「不导入」）；
+ * 表头名必须真实存在（防止前端旧缓存把映射指到不存在的列而静默少导入）。
+ */
+function applyMappingOverride(headers: string[], raw: unknown): { map?: Record<string, number>; error?: string } {
+  if (raw === undefined || raw === '') return {};
+  if (typeof raw !== 'string') return { error: 'mapping 必须是 JSON 字符串' };
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw);
+  } catch {
+    return { error: 'mapping 不是合法 JSON' };
+  }
+  if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return { error: 'mapping 必须是对象' };
+  const norm = headers.map((h) => h.trim().toLowerCase());
+  const map: Record<string, number> = { ...mapCsvColumns(headers) };
+  for (const field of CSV_FIELDS) {
+    const val = (obj as Record<string, unknown>)[field];
+    if (val === undefined || val === null) continue;
+    if (typeof val !== 'string') return { error: `mapping.${field} 必须是表头名` };
+    if (!val.trim()) { delete map[field]; continue; }
+    const idx = norm.indexOf(val.trim().toLowerCase());
+    if (idx < 0) return { error: `mapping.${field} 指向不存在的表头：${val}` };
+    map[field] = idx;
+  }
+  if (map.title === undefined) return { error: 'mapping 必须指定标题列' };
+  return { map };
+}
+
+const PRIORITY_ALIAS: Record<string, string> = {
+  高: 'high', 中: 'normal', 普通: 'normal', 低: 'low', high: 'high', normal: 'normal', low: 'low', urgent: 'urgent',
+  // T03267①：Jira/GitHub 常见优先级词
+  highest: 'urgent', critical: 'urgent', blocker: 'urgent', major: 'high', medium: 'normal', minor: 'low', lowest: 'low', trivial: 'low',
+};
+const STATUS_ALIAS: Record<string, string> = {
+  完成: 'done', 已完成: 'done', 待办: 'todo', 未开始: 'todo', done: 'done', todo: 'todo',
+  // GitHub（open/closed）与 Jira（To Do/In Progress/Done…）：任务只有 todo|done 二元（T02070 裁决），进行中归待办
+  open: 'todo', closed: 'done', reopened: 'todo', resolved: 'done', 'to do': 'todo', 'in progress': 'todo', 'in review': 'todo', backlog: 'todo',
+};
 
 /** CSV 单行导入结果：skip=整行空跳过 */
 type CsvImportResult =
@@ -1135,10 +1211,14 @@ api.post('/tasks/import-csv/preview', raw({ type: () => true, limit: '20mb' }), 
   try {
     const text = req.body.toString('utf-8').replace(/^\ufeff/, '');
     const rows = parseCsv(text);
-    if (rows.length < 2) return res.json({ headers: [], items: [], errors: [{ row: 1, message: 'CSV 至少需要表头与一行数据' }] });
+    if (rows.length < 2) return res.json({ source: 'generic', headers: [], mapping: {}, items: [], errors: [{ row: 1, message: 'CSV 至少需要表头与一行数据' }] });
     const headers = rows[0].map((h) => h.trim());
-    const map = mapCsvColumns(headers);
-    if (map.title === undefined) return res.status(400).json({ error: '未找到标题列（支持列名：标题/名称/任务/任务名称/任务标题）' });
+    const source = detectCsvSource(headers);
+    // 人工映射优先；未给映射则按约定字段自动识别
+    const override = applyMappingOverride(headers, req.query.mapping);
+    if (override.error) return res.status(400).json({ error: override.error });
+    const map = override.map ?? mapCsvColumns(headers);
+    if (map.title === undefined) return res.status(400).json({ error: '未找到标题列（可在字段映射里手动指定；支持列名：标题/名称/任务/Title/Summary 等）' });
     const catRows = getDb().prepare('SELECT id, name FROM task_categories').all() as Array<{ id: string; name: string }>;
     const catByName = new Map(catRows.map((c) => [c.name.trim(), c.id]));
     const items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null }> = [];
@@ -1152,7 +1232,10 @@ api.post('/tasks/import-csv/preview', raw({ type: () => true, limit: '20mb' }), 
       if (res.kind === 'error') { errors.push({ row: i + 1, message: res.message }); continue; }
       if (res.kind === 'item') items.push(res.item);
     }
-    res.json({ headers, items, errors });
+    // mapping 以「字段 → 表头名」返回给前端做映射控件；index 映射只在本请求内使用。
+    // 未映射的字段回空串——前端据此把「取消映射」带到下一次重解析，否则会被自动识别悄悄加回来。
+    const mapping = Object.fromEntries(CSV_FIELDS.map((f) => [f, map[f] === undefined ? '' : headers[map[f]] ?? '']));
+    res.json({ source, headers, mapping, items, errors });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
