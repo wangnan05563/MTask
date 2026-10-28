@@ -1,0 +1,20 @@
+{
+  "$comment": "外部 PRD 登记表（T03254 / AI-202 双源防护）：卡片的功能定义唯一源在外部已批准 PRD，本版整合 PRD 只登记范围/排期/依赖，不复制、不改写。requirementFingerprint 是外部文档 §8.2 验收条目正文（去首尾空白、按行拼接）的 SHA-256——正文任一字符变动即指纹失配，门 verify-t03254-ai202-single-source 打红，要求先重新评审登记，而不是在本版另写一套定义。",
+  "version": 1,
+  "sources": [
+    {
+      "card": "AI-202",
+      "title": "智能代码审查卡",
+      "registrationTaskNo": "T03254",
+      "originTaskNo": "T02169",
+      "file": "docs/PRD-代码评审会议讲稿生成.md",
+      "docVersion": "v1.4",
+      "approvedAt": "2026-10-24",
+      "approvalRecord": "docs/PRD冻结确认记录-代码评审会议讲稿-20261023.md",
+      "scopeRef": "§8.2 A-1～A-7",
+      "requirementFingerprint": "c00bc2e252bc47b2bea3e3084d77db439ebe658dab8c555b7fd28bbd893f061e",
+      "activationGate": "T02219 前置签字",
+      "registeredIn": "docs/PRD-MTask-项目管理与AI工作台优化-整合版.md#AI-202"
+    }
+  ]
+}
