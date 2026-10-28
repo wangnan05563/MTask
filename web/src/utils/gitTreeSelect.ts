@@ -5,11 +5,14 @@
  * 逻辑写在组件里就只能靠真浏览器断言；抽出来后台阶边界（跨页保持、去重、上限截断、
  * Shift 锚点失效、分叉车道不重叠）能先在 node 门里钉住，浏览器门只验「装配对不对」。
  *
- * 点选语义对齐 JetBrains Git 树：
- *  - 单击 = 只选这一条；
- *  - Ctrl/Cmd + 单击 = 在已选集合里加/去这一条；
+ * 点选语义（T03326 起按「勾选式多选」）：
+ *  - 单击 = 在已选集合里加/去这一条（行首有复选框，用户不会预期「点第二条就把第一条顶掉」）；
+ *  - Ctrl/Cmd + 单击 = 同单击（保留 IDEA 习惯，不影响结果）；
  *  - Shift + 单击 = 从锚点到这一条的**可视连续段**（锚点为上一条单击/加选的条目）；
  *  - Shift + Ctrl = 在已选集合上再并上这段。
+ *
+ * T03326 前的语义是 IDEA 的「单击=只选这条」，缺陷单报告「不能多选」即由此而来：
+ * 带复选框的列表里，无修饰键单击就替换整份选择，多选只能靠知道要按 Ctrl 的用户才能完成。
  */
 /** 引用类型（与服务端 `gitCollect.GitRefName` 同形状；web 侧不 import server 模块，各自声明） */
 export interface GitRefName {
@@ -103,7 +106,7 @@ function capSelected(selected: string[]): { list: string[]; limited: number } {
     : { list: selected, limited: 0 };
 }
 
-/** 单击/Ctrl 加选/Shift 框选的统一入口 */
+/** 单击/加选/Shift 框选的统一入口 */
 export function selectAt(args: {
   commits: readonly GitTreeCommit[];
   selected: readonly string[];
@@ -121,10 +124,9 @@ export function selectAt(args: {
     const to = Math.max(anchor, index);
     const span = commits.slice(from, to + 1).map((c) => c.sha);
     next = mods.ctrl ? [...selected, ...span.filter((s) => !current.has(s))] : span;
-  } else if (mods.ctrl) {
-    next = current.has(target.sha) ? selected.filter((s) => s !== target.sha) : [...selected, target.sha];
   } else {
-    next = [target.sha];
+    // T03326：无修饰键单击 = 勾选/取消这一条（不再替换整份选择）——多选不该要求用户先知道按 Ctrl
+    next = current.has(target.sha) ? selected.filter((s) => s !== target.sha) : [...selected, target.sha];
   }
   const capped = capSelected(next);
   return { selected: orderSelected(commits, capped.list), anchor: index, limited: capped.limited };

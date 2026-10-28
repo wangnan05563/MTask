@@ -603,7 +603,7 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
               style={{ ...fieldStyle, width: 230 }} aria-label="提交人过滤" />
             {/* T03302：IDEA 风格 Git 树选范围——区间是「一对版本号」，点选是「一组提交」，两者互补 */}
             <FlowButton data-lck="git-tree-btn" onClick={() => setGitTreeOpen(true)} disabled={snap.streaming}
-              title="打开 Git 树挑提交：单击=只选这条、Ctrl/Cmd+单击=加减选、Shift+单击=框选一段；确认后按选中提交采集">
+              title="打开 Git 树挑提交：单击=勾选/取消（可连点多条）、Shift+单击=框选一段；确认后按选中提交采集">
               <GitBranch size={13} style={{ marginRight: 4 }} />从 Git 树选范围
             </FlowButton>
             {pickedProjects.length > 0 && (

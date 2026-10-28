@@ -18,9 +18,9 @@ import {
 } from '../utils/gitTreeSelect';
 
 /**
- * T03302：代码评审讲稿卡 · Git 树选范围弹窗（布局与点选语义参照 JetBrains 的 Git Log）。
+ * T03302：代码评审讲稿卡 · Git 树选范围弹窗（布局参照 JetBrains Git Log，点选按勾选式多选—T03326）。
  *
- * 为什么是弹窗：范围选择是一次「多步、可反悔」的动作（翻页、搜索、Shift 框选、跨页保持），
+ * 为什么是弹窗：范围选择是一次「多步、可反悔」的动作（勾选、翻页、搜索、Shift 框选、跨页保持），
  * 铺在卡片里会把三区布局挤没；确认后才把 SHA 集合回传给卡片，卡片再按项目组装 `shape='commits'` 的范围。
  *
  * 三条不可让的边界：
@@ -174,7 +174,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
           <GitBranch size={16} style={{ color: 'var(--accent)' }} />
           <strong style={{ fontSize: 'var(--fs-l)' }}>Git 树选范围</strong>
           <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
-            单击=只选这条 · Ctrl/Cmd+单击=加/减选 · Shift+单击=框选到上一条锚点；确认后按「每个选中提交相对第一父的增量」采集
+            单击=勾选/取消多个提交 · Shift+单击=框选到上一条锚点；确认后按「每个选中提交相对第一父的增量」采集
           </span>
           <button type="button" onClick={onClose} aria-label="关闭 Git 树选择"
             style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
