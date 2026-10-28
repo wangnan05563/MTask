@@ -304,6 +304,8 @@ export interface RetrieveContext {
   unmatchedKeywords?: string[];
   /** T03442：目录级定向检索实际深扫的目录（相对路径） */
   scopedDirs?: string[];
+  /** T03443：命中文件的去重路径（供上层做「按文件提交归属」，最多 12 个） */
+  hitPaths?: string[];
 }
 
 
@@ -317,6 +319,10 @@ export const ContextBudget = {
   gitContextChars: 1500,
   /** T03441：单次 PRD 生成投入的原始需求字符上限（超出走保头保尾，避免挤掉源码上下文） */
   requirementChars: 24000,
+  /** T03443：符号词典反查注入（workspace_symbols 直接给出的 path:line，密度高、体量小） */
+  symbolContextChars: 800,
+  /** T03443：命中文件的最近改动（每文件至多 3 次提交，整体保头保尾） */
+  gitFileContextChars: 1200,
   /** 保头保尾截断：超限时中间替换为省略说明 */
   headTail(text: string, limit: number, label: string): string {
     if (text.length <= limit) return text;
@@ -783,9 +789,13 @@ function buildRetrieveContext(
     skippedOversized: meta.skippedOversized,
     matchedKeywords: acc.matched,
     unmatchedKeywords: acc.unmatched,
+    hitPaths: [...new Set(acc.collected.map((h) => h.path))].slice(0, HIT_PATHS_LIMIT),
     ...(meta.scopedDirs ? { scopedDirs: meta.scopedDirs } : {}),
   };
 }
+
+/** T03443：交给上层做「按文件提交归属」的路径上限（每个文件一次 git log，成本随个数线性上升） */
+const HIT_PATHS_LIMIT = 12;
 
 /** T03442：目录级定向检索的独立预算——只深扫「命中路径所在的目录」，与 memo 的 3000 文件预算互不挤占 */
 const SCOPED_MAX_DIRS = 5;
@@ -873,6 +883,32 @@ function scanScopedDirs(
     }
   }
   return { scannedFiles, truncated };
+}
+
+/**
+ * T03443：标识符 → 词元（驼峰 / 下划线 / 连字符切分后小写，丢弃 <3 字符的碎片）。
+ * `AcceptanceStatus` → ['acceptance','status']；`acceptance_status` → 同上。
+ */
+export function splitIdentifier(symbol: string): string[] {
+  return symbol
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_$.-]/g, ' ')
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length >= 3);
+}
+
+/** T03443：符号反查候选行的打分（词元全等 3 / 词元前缀 2 / 整名包含 1，累加） */
+function scoreSymbol(symbol: string, needles: readonly string[]): number {
+  const tokens = splitIdentifier(symbol);
+  const lower = symbol.toLowerCase();
+  let score = 0;
+  for (const w of needles) {
+    if (tokens.includes(w)) score += 3;
+    else if (tokens.some((t) => t.length >= 4 && (t.startsWith(w) || w.startsWith(t)))) score += 2;
+    else if (lower.includes(w)) score += 1;
+  }
+  return score;
 }
 
 export const WorkspaceService = {
@@ -1044,6 +1080,39 @@ export const WorkspaceService = {
     return getDb().prepare(
       'SELECT symbol, line, kind FROM workspace_symbols WHERE project_id = ? AND workspace = ? AND path = ? ORDER BY line LIMIT ?',
     ).all(projectId, resolve(workspace), path.replaceAll('\\', '/'), Math.min(Math.trunc(limit), 200)) as Array<{ symbol: string; line: number; kind: string }>;
+  },
+
+  /**
+   * T03443：符号词典反向匹配。需求侧给出的英文词（含中文经词表映射出的标识符）在全文检索里
+   * 命中率天然低——代码里的 `AcceptanceService` / `acceptance_status` 未必与需求用词字面一致。
+   * 这里复用 workspace_symbols 现成索引：把符号切成词元后按打分反查，直接返回 `path:line`。
+   * 倒排只在本次调用现场构建（数千行量级、用完即弃），不做常驻缓存（约束：不引入大内存结构）。
+   */
+  symbolMatches(projectId: string, needles: readonly string[], limit = 8): Array<{ path: string; symbol: string; line: number; kind: string }> {
+    const words = [...new Set(needles.map((n) => n.trim().toLowerCase()).filter((n) => n.length >= 3))];
+    if (words.length === 0) return [];
+    const { workspace } = getProjectWorkspace(projectId);
+    const rows = getDb().prepare(
+      'SELECT path, symbol, line, kind FROM workspace_symbols WHERE project_id = ? AND workspace = ? LIMIT 20000',
+    ).all(projectId, resolve(workspace)) as Array<{ path: string; symbol: string; line: number; kind: string }>;
+    const scored: Array<{ row: (typeof rows)[number]; score: number }> = [];
+    for (const row of rows) {
+      const score = scoreSymbol(row.symbol, words);
+      if (score > 0) scored.push({ row, score });
+    }
+    scored.sort((a, b) => b.score - a.score || a.row.path.localeCompare(b.row.path) || a.row.line - b.row.line);
+    const out: Array<{ path: string; symbol: string; line: number; kind: string }> = [];
+    const seen = new Set<string>();
+    for (const { row } of scored) {
+      const key = `${row.path}:${row.line}`;
+      if (seen.has(key)) continue;
+      // 孤儿防护（与 querySymbols 同口径）：索引行存在但文件已不在当前工作空间时丢弃
+      try { statSync(resolve(workspace, row.path)); } catch { continue; }
+      seen.add(key);
+      out.push(row);
+      if (out.length >= Math.min(Math.trunc(limit), 50)) break;
+    }
+    return out;
   },
 
   /**

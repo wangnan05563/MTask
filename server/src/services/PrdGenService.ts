@@ -133,15 +133,18 @@ export type { PrdGenIssue } from './prdIssues'; // T00814：类型定义随解�
  *  T03441：连覆盖度一起回传（扫描文件数 / 是否触顶 / 跳过超大文件），
  *  使 stage 能区分「仓库里确实没有」与「预算内没扫到」。
  *  T03442：检索词改由 `extractNeedles` 产出（词表 → 拉丁 → 中文短语），并走目录级定向检索；
- *  stage 回显「未命中词」，便于判断是词表缺词还是代码里确实没有。 */
+ *  stage 回显「未命中词」，便于判断是词表缺词还是代码里确实没有。
+ *  T03443：再叠一层「符号词典反查」——用 workspace_symbols 把需求词反查成完整标识符（含 path:line），
+ *  既直接进 prompt，也作为补充检索词喂回检索，弥补中英跨语言的字面缺口。 */
 async function buildRetrieveBlock(
   project: { workspace_path: string | null },
   input: { projectId: string; needles: string[]; dropped?: string[]; onStage: (msg: string) => void },
-): Promise<{ block: string; coverage: string }> {
-  if (!project.workspace_path) return { block: '', coverage: '' };
+): Promise<{ block: string; coverage: string; hitPaths: string[] }> {
+  const empty = { block: '', coverage: '', hitPaths: [] };
+  if (!project.workspace_path) return empty;
   if (input.needles.length === 0) {
     input.onStage('检索增强：需求里没有可用的检索词（拉丁标识符/业务短语/词表均未命中），跳过代码检索');
-    return { block: '', coverage: '' };
+    return empty;
   }
   try {
     const stat = await WorkspaceService.refreshSymbols(input.projectId);
@@ -149,19 +152,41 @@ async function buildRetrieveBlock(
     const dropped = input.dropped ?? [];
     input.onStage(`检索词 ${input.needles.length} 个：[${input.needles.slice(0, 8).join(', ')}${input.needles.length > 8 ? ' …' : ''}]`
       + `${dropped.length > 0 ? `；未纳入 ${dropped.length} 个：${dropped.slice(0, 6).join('、')}` : ''}`);
-    const r = await WorkspaceService.autoContextScoped(input.projectId, input.needles);
+    // T03443：符号反查（索引即查，失败降级为无反查，不影响主检索）
+    let symbols: Array<{ path: string; symbol: string; line: number; kind: string }> = [];
+    try { symbols = WorkspaceService.symbolMatches(input.projectId, input.needles); } catch { symbols = []; }
+    const symbolBlock = buildSymbolBlock(symbols);
+    input.onStage(symbols.length > 0
+      ? `符号词典反查：命中 ${symbols.length} 个标识符（${symbols.slice(0, 3).map((s) => s.symbol).join(', ')}${symbols.length > 3 ? ' …' : ''}）`
+      : '符号词典反查：无匹配标识符（符号索引未覆盖，或该领域无对应英文命名）');
+    // 补充检索词：符号全名往往比需求用词更贴近代码字面（上限沿用 NEEDLE 口径，避免稀释）
+    const extra = symbols.map((s) => s.symbol).filter((s) => !input.needles.includes(s)).slice(0, 6);
+    const needles = [...input.needles, ...extra];
+    const r = await WorkspaceService.autoContextScoped(input.projectId, needles);
     const coverage = coverageNote(r);
     const scope = `${r.scannedFiles} 个文件${scopeSuffix(r)}`;
     const dirs = r.scopedDirs && r.scopedDirs.length > 0 ? `；目录定向深扫 ${r.scopedDirs.length} 个目录（${r.scopedDirs.slice(0, 3).join('、')}${r.scopedDirs.length > 3 ? ' …' : ''}）` : '';
-    if (r.hits === 0) {
+    const block = [symbolBlock, r.block].filter(Boolean).join('\n\n');
+    if (r.hits === 0 && !symbolBlock) {
       input.onStage(`检索增强：预算内无命中（扫描 ${scope}${dirs}）——仓库里可能确实没有相关代码`);
-      return { block: '', coverage };
+      return { block: '', coverage, hitPaths: [] };
     }
     const unmatched = r.unmatchedKeywords ?? [];
     input.onStage(`检索增强：命中 ${r.hits} 条片段（扫描 ${scope}${dirs}）`
       + `${unmatched.length > 0 ? `；未命中词：${unmatched.slice(0, 6).join('、')}` : ''}`);
-    return { block: r.block, coverage };
-  } catch { return { block: '', coverage: '' }; /* 检索增强失败不阻塞主流程 */ }
+    return { block, coverage, hitPaths: r.hitPaths ?? [] };
+  } catch { return empty; /* 检索增强失败不阻塞主流程 */ }
+}
+
+/** T03443：符号反查段的渲染（纯函数：便于门断言顺序与预算；空输入返回空串） */
+export function buildSymbolBlock(rows: ReadonlyArray<{ path: string; symbol: string; line: number; kind: string }>): string {
+  if (rows.length === 0) return '';
+  const lines = rows.map((r) => `${r.symbol}  ${r.path}:${r.line}${r.kind ? `  (${r.kind})` : ''}`);
+  return ContextBudget.headTail(
+    `【符号词典反查（workspace_symbols，需求词 → 代码标识符）】\n${lines.join('\n')}`,
+    ContextBudget.symbolContextChars,
+    '符号反查 ',
+  );
 }
 
 /** T03441：扫描范围后缀——「是否触顶」与「跳过的超大文件」是用户判断命中可信度的关键 */
@@ -214,6 +239,52 @@ export async function buildGitContext(workspacePath: string | null | undefined):
       : kind === 'timeout' ? 'git 读取超时' : 'git 读取失败';
     return { block: '', stage: `跳过 Git 上下文（${label}）` };
   }
+}
+
+/** T03443：按文件做提交归属的输入上限与每文件提交条数 */
+export const GIT_FILE_CONTEXT_FILES = 3;
+export const GIT_FILE_CONTEXT_COMMITS = 3;
+
+/**
+ * T03443：命中文件的提交归属——「这些文件最近谁在改、改了什么」是影响面/兼容性章节的直接依据。
+ * 每个文件一次只读 `git log`（`-n3 --no-merges --format=… -- <path>`，选项与 `--` 均在白名单内，
+ * 无需扩 gitCollect 的只读集合）。任一路径失败只跳过该文件，整体失败返回空串——绝不阻塞生成。
+ */
+export async function buildHitFileGitContext(
+  workspacePath: string | null | undefined,
+  paths: readonly string[],
+): Promise<{ block: string; stage: string }> {
+  const files = [...new Set(paths)].slice(0, GIT_FILE_CONTEXT_FILES);
+  if (!workspacePath || files.length === 0) return { block: '', stage: '' };
+  let failed = 0;
+  const perFile = await Promise.all(files.map(async (rel) => {
+    try {
+      const r = await runGitReadonly(
+        'log',
+        [`-n${GIT_FILE_CONTEXT_COMMITS}`, '--no-merges', '--format=%h%x09%an%x09%aI%x09%s'],
+        ['--', rel],
+        workspacePath,
+      );
+      const rows = r.stdout.split('\n').filter(Boolean).flatMap((line) => {
+        const [sha, author, date, ...rest] = line.split('\t');
+        if (!sha || !date) return [];
+        return [`  ${sha}  ${author}  ${date.slice(0, 10)}  ${rest.join('\t')}`];
+      });
+      return rows.length > 0 ? `${rel}\n${rows.join('\n')}` : '';
+    } catch { failed++; return ''; /* 单文件失败只跳过该文件 */ }
+  }));
+  const sections = perFile.filter(Boolean);
+  if (sections.length === 0) {
+    return {
+      block: '',
+      stage: failed > 0
+        ? `命中文件提交归属：Git 读取失败（${failed}/${files.length} 个文件），跳过该段`
+        : `命中文件提交归属：这 ${files.length} 个文件在 Git 历史里无提交记录，跳过`,
+    };
+  }
+  const text = `【命中文件最近改动（只读 git log，按文件；每文件至多 ${GIT_FILE_CONTEXT_COMMITS} 次）】\n${sections.join('\n')}`;
+  const block = ContextBudget.headTail(text, ContextBudget.gitFileContextChars, '文件改动 ');
+  return { block, stage: `命中文件提交归属：${sections.length}/${files.length} 个文件已注入（${block.length} 字符，预算 ${ContextBudget.gitFileContextChars}）` };
 }
 
 /** T03441：上下文占比行（只输出字符数与段名，不含任何正文——需求与提交作者不进 stage 日志） */
@@ -379,6 +450,9 @@ export async function generatePrdStream(input: {
 
   const git = await buildGitContext(project.workspace_path);
   input.onStage(git.stage);
+  // T03443：命中文件的提交归属（依赖上一步检索给出的路径；无命中则整段跳过，零额外子进程）
+  const fileGit = await buildHitFileGitContext(project.workspace_path, retrieve.hitPaths);
+  if (fileGit.stage) input.onStage(fileGit.stage);
 
   // T03441：需求全文此前原样进 prompt，几十页 docx 会挤掉源码上下文且成本线性上升
   const requirement = ContextBudget.headTail(input.content, ContextBudget.requirementChars, '原始需求 ');
@@ -405,14 +479,15 @@ export async function generatePrdStream(input: {
 
   const system = `${skill}\n\n# 三角色审查规则库（审查时逐条对照）\n${rules}`;
   // T03442：总量闸——此前只有需求侧单段上限，各段相加仍可能把上下文撑到几十万字符
-  const parts = clipContextParts({ rules: system, source: ws, git: git.block, retrieve: retrieve.block, requirement });
+  const gitParts = [git.block, fileGit.block].filter(Boolean).join('\n\n');
+  const parts = clipContextParts({ rules: system, source: ws, git: gitParts, retrieve: retrieve.block, requirement });
   if (parts.clipped.length > 0) {
     input.onStage(`上下文超出总量预算（${CONTEXT_TOTAL_LIMIT} 字符），已按优先级裁剪：${parts.clipped.join(' → ')}`);
   }
   const user = [
     `【目标项目】${project.name}`,
     parts.source ? `【项目源码上下文】\n${parts.source}` : '【项目源码上下文】未提供（未配置工作空间）',
-    parts.git ? `【近期提交脉络（T03441 只读 git log）】\n${parts.git}` : '',
+    parts.git ? `【Git 脉络与命中文件改动（只读 git log）】\n${parts.git}` : '',
     parts.retrieve ? `【工作空间检索片段（T00777 自动检索）】\n${parts.retrieve}` : '',
     retrieve.coverage ? `【检索覆盖度】${retrieve.coverage}` : '',
     `【原始需求文件】${input.filename}`,
