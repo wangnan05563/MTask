@@ -29,6 +29,7 @@ import { TaskCategoryService } from '../services/TaskCategoryService';
 import { FieldService } from '../services/FieldService'; // T03231（PM-203）：项目级自定义字段
 import { ReqCategoryService, ReqEntryService } from '../services/ReqService';
 import { exportBundle, importBundle, isExportTable } from '../services/SettingsService';
+import { createMigrationSnapshot } from '../services/MigrationSnapshot'; // T03274（UX-14③④）：覆盖导入前的可恢复快照
 import { getDefaultNoteProjectId, getSetting, INBOX_PROJECT_ID, setSetting } from '../services/AppSettings';
 import { getConfig as getUpdateConfig, saveConfig as saveUpdateConfig, testConfig as testUpdateConfig, checkUpdate, currentVersion as currentAppVersion } from '../services/UpdateService';
 import { logService } from '../services/LogService';
@@ -2921,13 +2922,22 @@ api.get('/settings/export', exportGate('settings-export', undefined, { defer: tr
   }
 });
 
-api.post('/settings/import', (req, res) => {
+api.post('/settings/import', async (req, res) => {
   const { data, mode } = req.body ?? {};
   if (mode !== 'overwrite' && mode !== 'keep' && mode !== 'merge') {
     return res.status(400).json({ error: 'mode 必填（overwrite|keep|merge）' });
   }
+  // T03274（UX-14③④）：覆盖会清空全部业务表——先把现场做成可恢复快照；快照失败则中止，不改任何数据
+  let snapshot: { name: string; size: number } | null = null;
+  if (mode === 'overwrite') {
+    try {
+      snapshot = await createMigrationSnapshot();
+    } catch (e) {
+      return res.status(409).json({ error: e instanceof Error ? e.message : String(e), code: 'MIGRATION_SNAPSHOT_FAILED' });
+    }
+  }
   try {
-    res.json(importBundle(data, mode));
+    res.json({ ...importBundle(data, mode), snapshot });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }

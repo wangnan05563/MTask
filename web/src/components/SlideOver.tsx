@@ -4,10 +4,39 @@
  * 与现有「行内展开」并存（行内=列表内快速预览，抽屉=完整操作台）。
  * 采用「始终挂载 + transform 过渡」实现滑入/滑出动画，关闭时不阻断主列表（pointer-events 切换）。
  */
-import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { DRAWER_Z } from '../ui/primitives'; // PM-302 ①：抽屉层叠/遮罩单源
+
+/** T03274（UX-14①）：拖拽调宽的取值范围与落盘键（导出供门禁直测边界） */
+export const DRAWER_MIN_W = 320;
+export const DRAWER_MAX_RATIO = 0.92;
+export const DRAWER_WIDTH_STORAGE_KEY = 'mtask.drawer.width';
+/** 视口窄于此值时抽屉铺满整屏（移动端独立），拖拽手柄隐藏 */
+export const DRAWER_FULLSCREEN_BELOW = 640;
+
+/** 宽度夹取：下限 320，上限视口的 92%（窄视口时上限不低于下限，避免 min>max 翻转） */
+export function clampDrawerWidth(px: number, viewportW: number): number {
+  const max = Math.max(DRAWER_MIN_W, Math.floor(viewportW * DRAWER_MAX_RATIO));
+  const n = Number.isFinite(px) ? Math.round(px) : DRAWER_MIN_W;
+  return Math.min(Math.max(n, DRAWER_MIN_W), max);
+}
+
+/** 读上次拖拽的宽度（损坏/超范围的值交给 clampDrawerWidth 兜底） */
+export function readStoredDrawerWidth(fallback: number): number {
+  try {
+    const raw = localStorage.getItem(DRAWER_WIDTH_STORAGE_KEY);
+    const n = raw == null ? Number.NaN : Number(JSON.parse(raw));
+    return Number.isFinite(n) ? n : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function storeDrawerWidth(px: number): void {
+  try { localStorage.setItem(DRAWER_WIDTH_STORAGE_KEY, JSON.stringify(px)); } catch { /* 配额异常静默 */ }
+}
 
 export function SlideOver({ open, title, onClose, children, width = 480 }: {
   readonly open: boolean;
@@ -18,6 +47,16 @@ export function SlideOver({ open, title, onClose, children, width = 480 }: {
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const prevFocus = useRef<HTMLElement | null>(null);
+  // T03274（UX-14①）：自适应 + 拖拽调宽——宽度按上次拖拽结果恢复，超出当前视口时夹回 92%
+  const [vw, setVw] = useState(() => (typeof window === 'undefined' ? 1280 : window.innerWidth));
+  const [w, setW] = useState(() => readStoredDrawerWidth(width));
+  const dragRef = useRef<{ startX: number; startW: number } | null>(null);
+  useEffect(() => {
+    const onResize = () => setVw(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  const fullscreen = vw < DRAWER_FULLSCREEN_BELOW;
   // T01562 验收口径：无障碍用 aria-labelledby 指向标题节点（而非把标题塞进 aria-label）
   const titleId = useId();
   // onClose 多为父级内联箭头（每次渲染新身份）：放进 ref，避免 effect 因身份变化反复
@@ -88,13 +127,53 @@ export function SlideOver({ open, title, onClose, children, width = 480 }: {
         tabIndex={-1}
         style={{
           position: 'absolute', top: 0, right: 0, height: '100%',
-          width: `min(${width}px, 92vw)`, background: 'var(--card-bg)',
+          width: fullscreen ? '100vw' : `${clampDrawerWidth(w, vw)}px`, background: 'var(--card-bg)',
           boxShadow: '-8px 0 24px rgba(0,0,0,.18)', borderLeft: '1px solid var(--border)',
           display: 'flex', flexDirection: 'column',
           transform: open ? 'translateX(0)' : 'translateX(100%)',
           transition: 'transform 300ms cubic-bezier(.22,1,.36,1)',
         }}
       >
+        {/* T03274（UX-14①）：左缘拖拽调宽；键盘 ←/→ 以 16px 步进（Shift 64px），宽度记在本地 */}
+        {!fullscreen && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整抽屉宽度（←/→ 键，Shift 加大步长）"
+            aria-valuemin={DRAWER_MIN_W}
+            aria-valuemax={Math.max(DRAWER_MIN_W, Math.floor(vw * DRAWER_MAX_RATIO))}
+            aria-valuenow={clampDrawerWidth(w, vw)}
+            tabIndex={0}
+            data-drawer-resize="1"
+            onPointerDown={(e) => {
+              dragRef.current = { startX: e.clientX, startW: clampDrawerWidth(w, vw) };
+              e.currentTarget.setPointerCapture(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              const d = dragRef.current;
+              if (!d) return;
+              setW(clampDrawerWidth(d.startW + (d.startX - e.clientX), vw));
+            }}
+            onPointerUp={() => {
+              if (!dragRef.current) return;
+              dragRef.current = null;
+              storeDrawerWidth(clampDrawerWidth(w, vw));
+            }}
+            onPointerCancel={() => { dragRef.current = null; }}
+            onKeyDown={(e) => {
+              const step = e.shiftKey ? 64 : 16;
+              if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+              e.preventDefault();
+              const next = clampDrawerWidth(clampDrawerWidth(w, vw) + (e.key === 'ArrowLeft' ? step : -step), vw);
+              setW(next);
+              storeDrawerWidth(next);
+            }}
+            style={{
+              position: 'absolute', left: 0, top: 0, bottom: 0, width: 6, cursor: 'col-resize',
+              background: 'transparent', touchAction: 'none', zIndex: 1,
+            }}
+          />
+        )}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderBottom: '1px solid var(--border)', flex: '0 0 auto' }}>
           <div id={titleId} style={{ fontWeight: 600, fontSize: 'var(--fs-xl)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 8 }}>{title}</div>
           <button

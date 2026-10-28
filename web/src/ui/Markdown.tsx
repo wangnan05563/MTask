@@ -39,7 +39,7 @@ const scopedCss = `
 .mdv code { font-family: Consolas, Menlo, monospace; font-size: 0.9em;
   background: var(--code-bg); padding: 0.1em 0.3em; border-radius: 3px; color: var(--text); }
 .mdv pre { margin: 0.4em 0; padding: 0.5em 0.7em; background: var(--code-bg);
-  border: 1px solid var(--border); border-radius: 6px; overflow-x: auto; color: var(--text); }
+  border: 1px solid var(--border); border-radius: 6px; overflow: auto; max-height: 360px; color: var(--text); }
 .mdv pre code { background: transparent; padding: 0; }
 .mdv blockquote { margin: 0.4em 0; padding-left: 0.6em; border-left: 3px solid var(--border-strong);
   color: var(--text-muted); }

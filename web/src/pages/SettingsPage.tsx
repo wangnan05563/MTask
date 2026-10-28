@@ -407,7 +407,9 @@ function MigrationTab() {
     setFname(file.name);
     const ok = await askConfirm(
       `将从「${file.name}」导入备份数据（策略：${IMPORT_MODE_LABELS[mode]}）。\n` +
-      (mode === 'overwrite' ? '覆盖会清空并替换当前应用内的全部数据，此操作不可恢复，确认继续？' : '确认继续？'),
+      (mode === 'overwrite'
+        ? '覆盖会清空并替换当前应用内的全部数据。导入前会自动创建数据库快照，可在「设置 → 数据维护」恢复；快照创建失败则中止导入、数据保持不变。确认继续？'
+        : '确认继续？'),
     );
     if (!ok) return;
     const text = await file.text();
@@ -415,10 +417,11 @@ function MigrationTab() {
     try { data = JSON.parse(text); } catch { flash('文件解析失败：不是有效的 JSON 备份文件'); return; }
     try {
       setBusy(true);
-      const r = await api.post<{ imported: number; skippedDuplicateNames?: number; nameConflicts?: Array<{ name: string; owners: Array<{ id: string; name: string }> }> }>('/settings/import', { data, mode });
+      const r = await api.post<{ imported: number; skippedDuplicateNames?: number; snapshot?: { name: string; size: number } | null; nameConflicts?: Array<{ name: string; owners: Array<{ id: string; name: string }> }> }>('/settings/import', { data, mode });
       // T02945：keep/merge 撞项目重名的行按行跳过（导入是恢复性操作，不整单失败）——跳过了必须说，否则用户以为全量导入了
       const skipped = r.skippedDuplicateNames ?? 0;
       flash(`导入完成，共写入 ${r.imported} 条记录。`
+        + (r.snapshot ? `覆盖前快照已保存为 ${r.snapshot.name}，可在「设置 → 数据维护」恢复。` : '')
         + (skipped > 0 ? `其中 ${skipped} 行因项目名与库内重名被跳过（占用行 id 见导入响应/控制台）。` : '')
         + '可切换其他页面查看，或刷新以重载列表');
       if (skipped > 0) console.warn('[settings/import] 项目名冲突跳过的行：', r.nameConflicts);
@@ -430,10 +433,10 @@ function MigrationTab() {
     }
   }
 
-  const subOpts = (active: (m: ImportMode) => boolean, label: string, desc: string, m: ImportMode) => (
+  const subOpts = (label: string, desc: string, m: ImportMode) => (
     // aria-label 显式提供可访问名称：label 文本嵌在 span 内，部分辅助技术难以聚合
     <label key={m} aria-label={`${label}：${desc}`} style={{ display: 'flex', gap: 8, padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card-bg)', cursor: 'pointer', alignItems: 'flex-start' }}>
-      <input type="radio" name="mode" checked={active(m)} onChange={() => setMode(m)} />
+      <input type="radio" name="mode" checked={mode === m} onChange={() => setMode(m)} />
       <span>
         <span style={{ fontWeight: 600 }}>{label}</span>
         <span style={{ display: 'block', fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>{desc}</span>
@@ -464,9 +467,9 @@ function MigrationTab() {
           选择之前导出的备份文件导入。请先选择冲突处理策略。
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
-          {subOpts((m) => m === 'merge', '合并（推荐）', '导入记录与现有记录合并：ID 相同则用导入值覆盖，新记录追加。', 'merge')}
-          {subOpts((m) => m === 'keep', '保留现有', '仅导入当前不存在的记录，不覆盖已有数据。', 'keep')}
-          {subOpts((m) => m === 'overwrite', '覆盖全部', '清空并完全替换当前全部数据，以备份文件为准。', 'overwrite')}
+          {subOpts('合并（推荐）', '导入记录与现有记录合并：ID 相同则用导入值覆盖，新记录追加。', 'merge')}
+          {subOpts('保留现有', '仅导入当前不存在的记录，不覆盖已有数据。', 'keep')}
+          {subOpts('覆盖全部', '清空并完全替换当前全部数据，以备份文件为准。', 'overwrite')}
         </div>
         {fname && <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 8 }}>已选择：{fname}</div>}
         <button onClick={() => fileRef.current?.click()} disabled={busy} title="选择备份文件 — 打开文件选择器选取 JSON 备份并导入" aria-label="选择备份文件：选取 JSON 备份并导入" style={{ fontSize: 'var(--fs-m)', padding: '6px 14px', background: 'var(--card-bg)', color: 'var(--text)', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
