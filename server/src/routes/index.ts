@@ -38,6 +38,7 @@ import { planApi } from './plans';
 import { iterationApi } from './iterations'; // T03186（PM-201）：迭代与燃尽，路径自带 /projects|/iterations 前缀故整体挂载
 import { materialTimingApi } from './materialTiming'; // T03189（G-1）：汇报材料耗时采样，路径自带 /report 前缀
 import { metricsApi } from './metrics'; // T03190（G-4）：指标基线出数，路径自带 /overdue-rate
+import { MetricSnapshotService } from '../services/MetricSnapshotService'; // T03261（PM-205）：项目洞察聚合摘要
 import { estimateApi } from './estimates'; // T02037（估算视图 E3）：/api/estimates*，PRD §8
 import { historyApi } from './history'; // T00589：历史资产（转移/统计）
 import { supervisorApi } from './supervisor'; // T01286：监督状态/审计/配置（FR-5.2~5.4）
@@ -198,6 +199,25 @@ api.get('/projects/:id/emptiness', (req, res) => {
     testCases: count('SELECT COUNT(*) AS c FROM test_cases WHERE project_id = ?'),
   };
   res.json({ ...counts, empty: counts.tasks + counts.plans + counts.requirements + counts.testCases === 0 });
+});
+
+/**
+ * T03261（PRD PM-205 / 设计 §3.5）：项目洞察聚合摘要。
+ * 与四图共用日快照与 G-4 逾期口径（不另算一套）；`?period=30d` 或 `?from=&to=`（后者优先）。
+ * 错误分级：项目不存在 → 404，参数非法 → 400；缺失样本不读成 0（样本量/率/周吞吐均为 null）。
+ */
+api.get('/projects/:id/insights', (req, res) => {
+  try {
+    res.json(MetricSnapshotService.insights({
+      projectId: req.params.id,
+      period: typeof req.query.period === 'string' ? req.query.period : undefined,
+      from: typeof req.query.from === 'string' && req.query.from ? req.query.from : undefined,
+      to: typeof req.query.to === 'string' && req.query.to ? req.query.to : undefined,
+    }));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(msg === '项目不存在' ? 404 : 400).json({ error: msg });
+  }
 });
 
 /** T00663：用户置顶权重（与前端 web/src/ui/projectOrder.ts 的 PROJ_PIN_WEIGHT 对齐） */

@@ -28,6 +28,22 @@ interface SnapshotRangeReport {
   note: string;
 }
 
+interface InsightSummary {
+  projectId: string;
+  projectName: string;
+  tz: string;
+  today: string;
+  from: string;
+  to: string;
+  sampleSize: number;
+  traceableFrom: string | null;
+  lastSnapshot: string | null;
+  overdue: { at: string | null; count: number | null; valid: number | null; rate: number | null; label: string };
+  throughput: { completed: number; perWeek: number | null };
+  aiUsage: { calls: number; cards: number; scope: 'global' };
+  notes: string[];
+}
+
 const BTN = BTN_SECONDARY_MD; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 const FIELD = FIELD_SM; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 const CARD = { border: '1px solid var(--border)', borderRadius: 8, padding: 10, display: 'flex', flexDirection: 'column', gap: 6 } as const;
@@ -81,8 +97,10 @@ export function InsightPanel({ projectId, onClose }: {
   const [from, setFrom] = useState(() => shiftYmd(today, -29));
   const [to, setTo] = useState(today);
   const [report, setReport] = useState<SnapshotRangeReport | null>(null);
+  const [summary, setSummary] = useState<InsightSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
+  const [summaryErr, setSummaryErr] = useState('');
   const [msg, setMsg] = useState('');
   const [exporting, setExporting] = useState('');
 
@@ -105,16 +123,27 @@ export function InsightPanel({ projectId, onClose }: {
 
   const load = useCallback(async () => {
     setLoading(true);
-    try {
-      const r = await api.get<SnapshotRangeReport>(`/metrics/day-snapshots?projectId=${projectId}&from=${from}&to=${to}`);
-      setReport(r);
+    const qs = `projectId=${encodeURIComponent(projectId)}&from=${from}&to=${to}`;
+    // 摘要与四图并行取数：任一侧失败只影响自己（摘要失败不得清空图表，反之亦然）
+    const [rangeRes, summaryRes] = await Promise.allSettled([
+      api.get<SnapshotRangeReport>(`/metrics/day-snapshots?${qs}`),
+      api.get<InsightSummary>(`/projects/${encodeURIComponent(projectId)}/insights?from=${from}&to=${to}`),
+    ]);
+    if (rangeRes.status === 'fulfilled') {
+      setReport(rangeRes.value);
       setErr('');
-    } catch (e) {
+    } else {
       setReport(null);
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
+      setErr(rangeRes.reason instanceof Error ? rangeRes.reason.message : String(rangeRes.reason));
     }
+    if (summaryRes.status === 'fulfilled') {
+      setSummary(summaryRes.value);
+      setSummaryErr('');
+    } else {
+      setSummary(null);
+      setSummaryErr(summaryRes.reason instanceof Error ? summaryRes.reason.message : String(summaryRes.reason));
+    }
+    setLoading(false);
   }, [projectId, from, to]);
   useEffect(() => { void load(); }, [load]);
 
@@ -187,6 +216,31 @@ export function InsightPanel({ projectId, onClose }: {
           {cycle ? `（样本 ${cycle.sampleCount}）` : ''}
         </span>
       </div>
+
+      {summaryErr && (
+        <div role="alert" data-t03261="summary-error" style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>
+          洞察摘要取数失败：{summaryErr}（四图仍按日快照展示）
+        </div>
+      )}
+      {summary && (
+        <div data-t03261="summary" style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', fontSize: 'var(--fs-xs)', color: 'var(--text)' }}>
+          <span data-t03261="sample">样本日：{summary.sampleSize} 天</span>
+          <span data-t03261="overdue">
+            逾期：{summary.overdue.valid === null ? '—' : `${summary.overdue.count ?? 0} / ${summary.overdue.valid}`}
+            {' · '}{summary.overdue.label}
+            {summary.overdue.at ? `（${summary.overdue.at}）` : ''}
+          </span>
+          <span data-t03261="throughput">周吞吐：{summary.throughput.perWeek === null ? '—' : summary.throughput.perWeek}</span>
+          <span data-t03261="ai-usage" title="ai_usage 无项目字段，只能给全局口径">
+            AI 用量（全局）：调用 {summary.aiUsage.calls} · 卡片 {summary.aiUsage.cards}
+          </span>
+        </div>
+      )}
+      {summary && summary.notes.length > 0 && (
+        <ul data-t03261="notes" style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 'var(--fs-2xs, var(--fs-xs))', color: 'var(--text-muted)' }}>
+          {summary.notes.map((n) => <li key={n}>{n}</li>)}
+        </ul>
+      )}
 
       {missing.length > 0 && (
         <div data-t03236="missing" style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--warn, var(--text-muted))' }}>

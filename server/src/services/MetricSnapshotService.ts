@@ -59,6 +59,27 @@ export interface SnapshotRangeReport {
   note: string;
 }
 
+/** T03261（设计 §3.5）：项目洞察聚合摘要——四图之外的一行读数，与图表同源同窗口 */
+export interface InsightSummary {
+  projectId: string;
+  projectName: string;
+  tz: string;
+  today: string;
+  from: string;
+  to: string;
+  /** 窗口内实际有快照的统计日数；缺失日不计入（缺失 ≠ 0 样本） */
+  sampleSize: number;
+  traceableFrom: string | null;
+  lastSnapshot: string | null;
+  /** 取窗口内最后一个统计日的 G-4 读数；分母 0 时 rate=null 且 label 为「暂无可比计划」 */
+  overdue: { at: string | null; count: number | null; valid: number | null; rate: number | null; label: string };
+  /** 窗口内完成数按 7 天折算；无样本时 perWeek=null（不把缺失读成 0） */
+  throughput: { completed: number; perWeek: number | null };
+  /** ai_usage 无项目字段，只能给全局口径；不与项目内四图混算 */
+  aiUsage: { calls: number; cards: number; scope: 'global' };
+  notes: string[];
+}
+
 export interface SnapshotCoverageProject {
   projectId: string;
   projectName: string;
@@ -115,9 +136,18 @@ function eachDay(from: string, to: string): string[] {
   return out;
 }
 
+/** `period=30d` 形式的窗口长度（设计 §3.5）；非法值直接报错，不静默回落默认窗口 */
+function parsePeriod(period?: string): number {
+  if (period == null || period === '') return DEFAULT_RANGE_DAYS;
+  const m = /^(\d{1,3})d$/.exec(String(period).trim());
+  if (!m) throw new Error(`period 需为 Nd 形式（如 30d），收到：${period}`);
+  const n = Number(m[1]);
+  if (n < 1 || n > MAX_RANGE_DAYS) throw new Error(`period 需在 1d～${MAX_RANGE_DAYS}d 之间，收到：${period}`);
+  return n;
+}
+
 /** 统计日的本地零点边界（ISO 串）——任务 created_at/updated_at 均按 ISO UTC 存储 */
-function dayBounds(statDate: string): [string, string] {
-  const start = parseYmd(statDate);
+function dayBounds(statDate: string): [string, string] {  const start = parseYmd(statDate);
   const end = new Date(start);
   end.setDate(end.getDate() + 1);
   return [start.toISOString(), end.toISOString()];
@@ -335,6 +365,86 @@ export class MetricSnapshotService {
       note: traceableFrom
         ? `可回溯起点 ${traceableFrom}；早于该日期或没有快照的日期显示「${ACCUMULATING_NOTE}」（日快照不从事件表回填）`
         : `尚未积累日快照：洞察数据从首次采集日开始，缺失区间显示「${ACCUMULATING_NOTE}」`,
+    };
+  }
+
+  /**
+   * T03261（设计 §3.5）：项目洞察聚合摘要。
+   * 与四图**同源同窗口**：日快照序列出样本日与吞吐，逾期取窗口最后一个统计日的 G-4 读数
+   * （不再按另一套口径重算）；`period=Nd` 与 `from/to` 二选一，后者优先（面板按自定义区间取数）。
+   */
+  static insights(args: { projectId?: string; period?: string; from?: string; to?: string }): InsightSummary {
+    const projectId = String(args.projectId ?? '').trim();
+    if (!projectId) throw new Error('projectId 必填');
+    const db = getDb();
+    const tz = systemTz();
+    const today = ymdInTimezone(new Date(), tz);
+    const to = args.to ? String(args.to) : today;
+    // from 显式给出时以区间为准，不再解析 period（面板自定义区间不携带 period）
+    const from = args.from ? String(args.from) : addDays(to, -(parsePeriod(args.period) - 1));    if (!isRealYmd(from) || !isRealYmd(to)) throw new Error(`from/to 需为有效的 YYYY-MM-DD，收到：${from} ~ ${to}`);
+    const base = MetricSnapshotService.range({ projectId, from, to });
+
+    const present = base.days.filter((d) => !d.missing);
+    const latest = present.length > 0 ? present[present.length - 1] : null;
+
+    let overdue: InsightSummary['overdue'];
+    if (!latest) {
+      overdue = { at: null, count: null, valid: null, rate: null, label: ACCUMULATING_NOTE };
+    } else {
+      const valid = latest.dueTotal;
+      const count = latest.overdue;
+      const rate = valid !== null && valid > 0 && count !== null
+        ? Math.round((count / valid) * 10000) / 10000
+        : null;
+      overdue = {
+        at: latest.date,
+        count,
+        valid,
+        rate,
+        label: valid === null ? ACCUMULATING_NOTE : valid === 0 ? '暂无可比计划' : `${Math.round((rate as number) * 1000) / 10}%`,
+      };
+    }
+
+    const completed = present.reduce((s, d) => s + (d.completed ?? 0), 0);
+    const perWeek = present.length === 0 ? null : Math.round((completed / (base.days.length / 7)) * 10) / 10;
+
+    const [startIso, endIso] = [dayBounds(from)[0], dayBounds(to)[1]];
+    const usage = db.prepare(
+      `SELECT COUNT(*) AS calls,
+              COUNT(DISTINCT CASE WHEN ok = 1 AND card_key NOT IN ('', 'unknown') THEN card_key END) AS cards
+         FROM ai_usage WHERE created_at >= ? AND created_at < ?`,
+    ).get(startIso, endIso) as { calls: number; cards: number };
+
+    const notes: string[] = [];
+    if (!base.traceableFrom) {
+      notes.push(`尚未积累日快照：洞察数据从首次采集日开始，缺失区间显示「${ACCUMULATING_NOTE}」`);
+    } else if (base.missingDates.length > 0) {
+      notes.push(`窗口内有 ${base.missingDates.length} 天没有快照，图上以空档呈现（不插值、不补零），即「${ACCUMULATING_NOTE}」`);
+    }
+    if (latest && latest.dueTotal === 0) {
+      notes.push(`${latest.date} 已到期有效计划数为 0：暂无可比计划，逾期率不给值`);
+    }
+    if (present.length === 0) {
+      notes.push('窗口内没有可回溯的统计日：样本量与周吞吐均不给值');
+    } else if (present.length < 30) {
+      notes.push(`窗口内仅 ${present.length} 个统计日（<30），趋势与比率仅供参考`);
+    }
+    notes.push('AI 用量为全局口径（ai_usage 无项目字段），与项目内四图不同源');
+
+    return {
+      projectId,
+      projectName: base.projectName,
+      tz,
+      today,
+      from,
+      to,
+      sampleSize: present.length,
+      traceableFrom: base.traceableFrom,
+      lastSnapshot: base.lastSnapshot,
+      overdue,
+      throughput: { completed, perWeek },
+      aiUsage: { calls: usage.calls ?? 0, cards: usage.cards ?? 0, scope: 'global' },
+      notes,
     };
   }
 
