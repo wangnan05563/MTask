@@ -5,7 +5,8 @@ import { getAdapter, type AIAdapter, type ToolConfig } from '../adapters';
 import { ConfigService } from './ConfigService';
 import { PlanService } from './PlanService';
 import { logService } from './LogService';
-import { ContextBudget, WorkspaceService, loadIgnoreRules, isIgnored, yieldToEventLoop } from './WorkspaceService';
+import { ContextBudget, WorkspaceService, loadIgnoreRules, isIgnored, yieldToEventLoop, type RetrieveContext } from './WorkspaceService';
+import { runGitReadonly, GitCollectError } from './gitCollect';
 import { parseIssuesJson, parsePrdIssues, splitPrdBody, inlineIssuesSection, type PrdGenIssue } from './prdIssues'; // T00814：问题清单解析抽为可测模块；T00818：清单内联正文章节
 
 /**
@@ -127,20 +128,85 @@ export type { PrdGenIssue } from './prdIssues'; // T00814：类型定义随解�
  * onStage 推阶段日志、onDelta 推正文增量；完成后按 <<<PRD>>>/<<<ISSUES>>> 协议解析。
  */
 /** 检索增强：按需求关键词搜索代码，注入 top 片段；失败不阻塞主流程（返回空串）。
- *  T02200：改异步——符号索引刷新与 memo 预扫描都在片间让出事件循环，不再饿死只读接口。 */
+ *  T02200：改异步——符号索引刷新与 memo 预扫描都在片间让出事件循环，不再饿死只读接口。
+ *  T03441：连覆盖度一起回传（扫描文件数 / 是否触顶 / 跳过超大文件），
+ *  使 stage 能区分「仓库里确实没有」与「预算内没扫到」。 */
 async function buildRetrieveBlock(
   project: { workspace_path: string | null },
   input: { projectId: string; content: string; onStage: (msg: string) => void },
-): Promise<string> {
-  if (!project.workspace_path) return '';
+): Promise<{ block: string; coverage: string }> {
+  if (!project.workspace_path) return { block: '', coverage: '' };
   try {
     const stat = await WorkspaceService.refreshSymbols(input.projectId);
     input.onStage(`符号索引刷新：文件 ${stat.files} 个、符号 ${stat.symbols} 个（未变跳过 ${stat.skipped}）${stat.deferred ? '，超预算余量已交后台续跑（T02200 让路，下次刷新补齐）' : ''}`);
     const kws = WorkspaceService.extractKeywords(input.content);
-    const block = await WorkspaceService.autoContext(input.projectId, kws);
-    input.onStage(block ? `检索增强：按关键词 [${kws.slice(0, 6).join(', ')}] 命中代码片段已注入上下文` : '检索增强：无命中片段，跳过注入');
-    return block;
-  } catch { return ''; /* 检索增强失败不阻塞主流程 */ }
+    const r = await WorkspaceService.autoContextDetailed(input.projectId, kws);
+    const coverage = coverageNote(r);
+    if (r.hits === 0) {
+      input.onStage(`检索增强：预算内无命中（扫描 ${r.scannedFiles} 个文件${scopeSuffix(r)}）——仓库里可能确实没有相关代码`);
+      return { block: '', coverage };
+    }
+    input.onStage(`检索增强：命中 ${r.hits} 条片段（扫描 ${r.scannedFiles} 个文件${scopeSuffix(r)}），关键词 [${kws.slice(0, 6).join(', ')}]`);
+    return { block: r.block, coverage };
+  } catch { return { block: '', coverage: '' }; /* 检索增强失败不阻塞主流程 */ }
+}
+
+/** T03441：扫描范围后缀——「是否触顶」与「跳过的超大文件」是用户判断命中可信度的关键 */
+export function scopeSuffix(r: RetrieveContext): string {
+  const truncated = r.truncated ? '，已到预算上限，未覆盖全部代码' : '，未触顶';
+  const skipped = r.skippedOversized > 0 ? `，跳过超大文件 ${r.skippedOversized} 个` : '';
+  return `${truncated}${skipped}`;
+}
+
+/** T03441：给模型的覆盖度说明——上下文不全时必须让模型知道，避免它自信补全 */
+export function coverageNote(r: RetrieveContext): string {
+  if (r.hits === 0) {
+    return `未命中任何片段（扫描 ${r.scannedFiles} 个文件${scopeSuffix(r)}）。` +
+      '若需求涉及代码改动，请把「该模块在代码中的现状」列为待确认问题，不要凭空假设。';
+  }
+  return `命中 ${r.hits} 条；扫描 ${r.scannedFiles} 个文件${scopeSuffix(r)}。`.concat(
+    r.truncated ? '上下文不完整，涉及影响面/兼容性的判断请在待确认问题中标注依据不足。' : '',
+  );
+}
+
+/** T03441：注入的近期提交条数（一次 git log，输出再按 ContextBudget.gitContextChars 截断） */
+const GIT_CONTEXT_COMMITS = 50;
+
+/**
+ * T03441：近期提交脉络——此前 PRD 生成只看到「当前文件快照」，不知道「最近在动什么」，
+ * 影响面/兼容性章节因此缺少事实依据。本函数复用只读引擎 `runGitReadonly`（选项均已在 log 白名单内），
+ * 任何失败（未装 git / 非仓库 / 超时）一律降级为跳过并在 stage 说明原因，绝不阻塞生成。
+ */
+export async function buildGitContext(workspacePath: string | null | undefined): Promise<{ block: string; stage: string }> {
+  if (!workspacePath) return { block: '', stage: '跳过 Git 上下文（未绑定工作空间）' };
+  try {
+    const r = await runGitReadonly(
+      'log',
+      [`-n${GIT_CONTEXT_COMMITS}`, '--no-merges', '--format=%h%x09%an%x09%aI%x09%s'],
+      ['--'],
+      workspacePath,
+    );
+    const rows = r.stdout.split('\n').filter(Boolean).flatMap((line) => {
+      const [sha, author, date, ...rest] = line.split('\t');
+      if (!sha || !date) return [];
+      return [`${sha}  ${author}  ${date.slice(0, 10)}  ${rest.join('\t')}`];
+    });
+    if (rows.length === 0) return { block: '', stage: '跳过 Git 上下文（仓库还没有提交）' };
+    const text = `【近期提交脉络（最近 ${rows.length} 次，仅摘要）】\n${rows.join('\n')}`;
+    const block = ContextBudget.headTail(text, ContextBudget.gitContextChars, '提交脉络 ');
+    return { block, stage: `Git 上下文：最近 ${rows.length} 次提交已注入（${block.length} 字符，预算 ${ContextBudget.gitContextChars}）` };
+  } catch (e) {
+    const kind = e instanceof GitCollectError ? e.kind : 'failed';
+    const label = kind === 'no-git' ? '未安装 git' : kind === 'not-a-repo' ? '不是 Git 仓库'
+      : kind === 'timeout' ? 'git 读取超时' : 'git 读取失败';
+    return { block: '', stage: `跳过 Git 上下文（${label}）` };
+  }
+}
+
+/** T03441：上下文占比行（只输出字符数与段名，不含任何正文——需求与提交作者不进 stage 日志） */
+export function formatContextOverview(segments: ReadonlyArray<readonly [string, number]>): string {
+  const total = segments.reduce((sum, [, n]) => sum + n, 0);
+  return `上下文总览：${(total / 1000).toFixed(1)}K 字符（${segments.map(([k, n]) => `${k} ${(n / 1000).toFixed(1)}K`).join(' / ')}）`;
 }
 
 /**
@@ -244,7 +310,16 @@ export async function generatePrdStream(input: {
   const ws = await loadWorkspaceContext(project.workspace_path ?? '');
   input.onStage(ws ? '项目源码上下文已加载（目录树 + 说明文件片段）' : '跳过源码上下文（工作空间未绑定或不可读）');
 
-  const retrieveBlock = await buildRetrieveBlock(project, input);
+  const retrieve = await buildRetrieveBlock(project, input);
+
+  const git = await buildGitContext(project.workspace_path);
+  input.onStage(git.stage);
+
+  // T03441：需求全文此前原样进 prompt，几十页 docx 会挤掉源码上下文且成本线性上升
+  const requirement = ContextBudget.headTail(input.content, ContextBudget.requirementChars, '原始需求 ');
+  if (requirement.length !== input.content.length) {
+    input.onStage(`原始需求超长，已保头保尾压缩：${input.content.length} → ${requirement.length} 字符（中段略去 ${input.content.length - requirement.length}）`);
+  }
 
   input.onStage(`原始需求文本提取完成：${input.filename}（${input.content.length} 字符），开始 AI 生成…`);
 
@@ -267,11 +342,22 @@ export async function generatePrdStream(input: {
   const user = [
     `【目标项目】${project.name}`,
     ws ? `【项目源码上下文】\n${ws}` : '【项目源码上下文】未提供（未配置工作空间）',
-    retrieveBlock ? `【工作空间检索片段（T00777 自动检索）】\n${retrieveBlock}` : '',
+    git.block ? `【近期提交脉络（T03441 只读 git log）】\n${git.block}` : '',
+    retrieve.block ? `【工作空间检索片段（T00777 自动检索）】\n${retrieve.block}` : '',
+    retrieve.coverage ? `【检索覆盖度】${retrieve.coverage}` : '',
     `【原始需求文件】${input.filename}`,
-    `【原始需求全文】\n${input.content}`,
+    `【原始需求全文】\n${requirement}`,
     ISSUE_RULE,
   ].filter(Boolean).join('\n\n');
+
+  // T03441：此前只打需求字符数，看不到各段占比——预算被谁吃掉无从判断
+  input.onStage(formatContextOverview([
+    ['规则', system.length],
+    ['源码', ws.length],
+    ['Git', git.block.length],
+    ['检索', retrieve.block.length],
+    ['需求', requirement.length],
+  ]));
 
   let result = await adapter.chatStream(system, user, genConfig, input.onDelta, input.signal);
   // T00814：个别提供商不接受 16K 输出上限（请求直接 400）——此时回退到 8K 重试一次，

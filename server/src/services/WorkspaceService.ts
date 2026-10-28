@@ -234,6 +234,8 @@ interface SearchMemo {
   files: string[];
   truncated: boolean;
   scannedFiles: number;
+  /** T03441：因超过单文件上限（SEARCH_FILE_MAX_BYTES）被跳过的文件数——此前该信息被丢弃，用户无法区分「没有」与「没扫到」 */
+  skippedOversized: number;
 }
 const searchMemo = new Map<string, SearchMemo>();
 
@@ -284,6 +286,20 @@ export type SearchHits = Array<{ path: string; line: number; snippet: string }> 
   scannedFiles?: number;
 };
 
+/** T03441：检索增强结果 + 覆盖度元信息（PRD 生成侧据此区分「没有相关代码」与「预算内没扫到」） */
+export interface RetrieveContext {
+  /** 可直接注入 prompt 的片段文本；空串 = 无可注入内容 */
+  block: string;
+  /** 命中条数 */
+  hits: number;
+  /** memo 预扫描实际读取正文的文件数 */
+  scannedFiles: number;
+  /** true = 因文件数/字节数预算提前终止，结果可能不完整 */
+  truncated: boolean;
+  /** 因超过单文件大小上限被跳过的文件数 */
+  skippedOversized: number;
+}
+
 
 /** 上下文预算（T00776-4：统一截断策略，替换各处硬编码） */
 export const ContextBudget = {
@@ -291,6 +307,10 @@ export const ContextBudget = {
   fileSnippetChars: 2500,   // 单文件片段
   searchHitsChars: 3000,    // 检索增强注入（T00777）
   prdContextChars: 6000,    // PRD 原文（与 util/prdContext 一致）
+  /** T03441：PRD 生成注入的近期提交脉络（一次 git log，保头保尾） */
+  gitContextChars: 1500,
+  /** T03441：单次 PRD 生成投入的原始需求字符上限（超出走保头保尾，避免挤掉源码上下文） */
+  requirementChars: 24000,
   /** 保头保尾截断：超限时中间替换为省略说明 */
   headTail(text: string, limit: number, label: string): string {
     if (text.length <= limit) return text;
@@ -612,13 +632,14 @@ type MemoScanState = {
   scannedFiles: number;
   scannedBytes: number;
   truncated: boolean;
+  skippedOversized: number;
 };
 
 /** 单文件读取并摊平为可检索行；返回消耗字节数，跳过（二进制/过大/读取失败）返回 -1 */
 function memoScanFile(state: MemoScanState, abs: string, relChild: string): number {
   let buf: Buffer;
   try { buf = readFileSync(abs); } catch { return -1; }
-  if (buf.length > SEARCH_FILE_MAX_BYTES) return -1;
+  if (buf.length > SEARCH_FILE_MAX_BYTES) { state.skippedOversized++; return -1; }
   const text = buf.toString('utf8');
   if (text.includes('\0')) return -1;
   state.scannedFiles++;
@@ -693,7 +714,7 @@ async function getSearchMemoAsync(projectId: string): Promise<SearchMemo> {
 
 async function buildSearchMemo(projectId: string): Promise<SearchMemo> {
   const { workspace, rules } = getProjectWorkspace(projectId);
-  const state: MemoScanState = { lines: [], files: [], scannedFiles: 0, scannedBytes: 0, truncated: false };
+  const state: MemoScanState = { lines: [], files: [], scannedFiles: 0, scannedBytes: 0, truncated: false, skippedOversized: 0 };
   const ms: MemoWalkState = { state, rules, stack: [], done: false };
   memoPushDir(ms, workspace, '');
   while (!ms.done) {
@@ -887,7 +908,18 @@ export const WorkspaceService = {
    * 后续任意关键词（含跨任务）都在内存里零 IO 匹配，扫描次数从 O(任务数×关键词数) 收敛为 O(1)/5min。
    */
   async autoContext(projectId: string, keywords: string[], budgetChars = ContextBudget.searchHitsChars): Promise<string> {
-    if (!keywords || keywords.length === 0) return '';
+    return (await WorkspaceService.autoContextDetailed(projectId, keywords, budgetChars)).block;
+  },
+
+  /**
+   * T03441：带覆盖度元信息的检索增强（PRD 生成侧使用；`autoContext` 保留原字符串契约供其他调用方）。
+   * 此前 memo 的 truncated / 超大文件跳过被丢弃，上层只能一律打「无命中」，用户无法区分
+   * 「仓库里确实没有」与「预算内没扫到」——本方法把这两类信息一并交给调用方。
+   */
+  async autoContextDetailed(projectId: string, keywords: string[], budgetChars = ContextBudget.searchHitsChars): Promise<RetrieveContext> {
+    if (!keywords || keywords.length === 0) {
+      return { block: '', hits: 0, scannedFiles: 0, truncated: false, skippedOversized: 0 };
+    }
     const memo = await getSearchMemoAsync(projectId);
     const collected: SearchHit[] = [];
     const seen = new Set<string>();
@@ -899,9 +931,15 @@ export const WorkspaceService = {
       if (collectFileNameHits(memo, needle, collected, seen)) break;
       if (collectLineHits(memo, needle, collected, seen)) break;
     }
-    if (collected.length === 0) return '';
+    const meta = {
+      hits: collected.length,
+      scannedFiles: memo.scannedFiles,
+      truncated: memo.truncated,
+      skippedOversized: memo.skippedOversized,
+    };
+    if (collected.length === 0) return { block: '', ...meta };
     const body = collected.map((h) => `${h.path}:${h.line} — ${h.snippet}`).join('\n');
-    return ContextBudget.headTail(`相关代码片段（关键词检索 Top ${collected.length}）：\n${body}`, budgetChars, '检索片段 ');
+    return { block: ContextBudget.headTail(`相关代码片段（关键词检索 Top ${collected.length}）：\n${body}`, budgetChars, '检索片段 '), ...meta };
   },
 
   /** T00782：主动失效检索 memo（供换绑/索引刷新后调用；外部集成测试亦可用） */
