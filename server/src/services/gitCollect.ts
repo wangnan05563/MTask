@@ -336,6 +336,19 @@ export interface CommitFileEntry {
   binary: boolean;
 }
 
+/**
+ * numstat 的重命名行路径是新形态 `old => new`（同目录）或 `pre{old => new}post`（有公共前后缀），
+ * 与 name-status 给的干净新路径对不上键。不接这一层的后果不是报错，而是重命名行的增删行数静默变 0
+ * ——清单看起来正常，数字却与 `git show --stat` 不一致（AC-9 对账项）。
+ */
+function renameTargets(rawPath: string): string[] {
+  if (!rawPath.includes(' => ')) return [rawPath];
+  const brace = /^(.*)\{([^}]*) => ([^}]*)\}(.*)$/.exec(rawPath);
+  if (brace) return [`${brace[1]}${brace[3]}${brace[4]}`];
+  const idx = rawPath.lastIndexOf(' => ');
+  return [rawPath.slice(idx + 4).trim()];
+}
+
 /** 解析 `diff --numstat` 行：`<add>\t<del>\t<path>`，二进制为 `-`/`-` */
 export function parseNumstat(raw: string): Map<string, { additions: number | null; deletions: number | null; binary: boolean }> {
   const map = new Map<string, { additions: number | null; deletions: number | null; binary: boolean }>();
@@ -346,11 +359,12 @@ export function parseNumstat(raw: string): Map<string, { additions: number | nul
     const [a, d, ...rest] = parts;
     const path = rest.join('\t').trim();
     if (!path) continue;
-    map.set(path, {
+    const val = {
       additions: a === '-' ? null : Number(a) || 0,
       deletions: d === '-' ? null : Number(d) || 0,
       binary: a === '-' || d === '-',
-    });
+    };
+    for (const key of renameTargets(path)) map.set(key, val);
   }
   return map;
 }
