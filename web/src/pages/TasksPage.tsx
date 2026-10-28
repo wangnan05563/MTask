@@ -18,6 +18,7 @@ import { fieldBadgesNode } from '../ui/fieldBadges'; // T03231（PM-203②）：
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { NoticeToast, useNotice } from '../ui/notice'; // T03214（UX-02 ③）：提示分级——成功短驻、错误长驻且可关闭/复制
 import { paginationStatus, type PaginationView } from '../utils/taskPagination'; // T03214（UX-02 ①）：剩余条数与「已加载全部」判据
+import { isValidIanaTz, tzOptions } from '../utils/timezone'; // T03268（PRD 4.2）：项目时区候选与本地校验
 import { buildImportFailureReceipt, buildImportReceipt } from '../utils/importReceipt'; // T03214（UX-02 ④）：导入结果分列成功/跳过/失败
 import { arrangeTaskTree, makeTaskMatcher, matchVerified, sortOptions, sortTasks, type SortKey } from '../utils/taskListQuery'; // T03215（PM-304）：列表派生计算提为模块级纯函数，供 useMemo 稳定缓存
 import { useTaskListWindow } from '../utils/taskListWindow'; // T03215（PM-304）：文档滚动 + 变高行的窗口化
@@ -420,6 +421,9 @@ export function TasksPage() {
   // T03209（PM-101）：WIP 上限输入草稿（按项目存放，提交成功后清理）
   const [wipDrafts, setWipDrafts] = useState<Record<string, string>>({});
   const [wipBusy, setWipBusy] = useState(false);
+  // T03268（PRD 4.2）：项目时区输入草稿（按项目存放，提交成功后清理）
+  const [tzDrafts, setTzDrafts] = useState<Record<string, string>>({});
+  const [tzBusy, setTzBusy] = useState(false);
 
   // T00466：数据刷新时间戳——刷新后 updated_at 晚于该值的行闪烁一次（与提示词页 flush 动效统一）
   const [refreshFlash, setRefreshFlash] = useState(0);
@@ -1677,6 +1681,27 @@ export function TasksPage() {
     } finally { setWipBusy(false); }
   }
 
+  /** T03268（PRD 4.2）：保存项目时区——空串＝跟随系统；非法 IANA 名本地先拦（服务端同法校验） */
+  async function saveProjectTz(projectId: string, raw: string) {
+    if (!projectId) return;
+    const tz = raw.trim();
+    const cur = getProjectListSnapshot().find((p) => p.id === projectId);
+    if ((cur?.timezone ?? '') === tz) {
+      setTzDrafts((prev) => { const next = { ...prev }; delete next[projectId]; return next; });
+      return;
+    }
+    if (tz && !isValidIanaTz(tz)) { flash(`时区非法：${tz}（需 IANA 时区名，如 Asia/Shanghai）`, 'error'); return; }
+    setTzBusy(true);
+    try {
+      await api.patch(`/projects/${projectId}`, { timezone: tz });
+      patchProject(projectId, { timezone: tz });
+      setTzDrafts((prev) => { const next = { ...prev }; delete next[projectId]; return next; });
+      flash(tz ? `项目时区已设为 ${tz}` : '项目时区已恢复为跟随系统');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally { setTzBusy(false); }
+  }
+
   /** T00456 / PRD UX-1：看板视图——按状态分列（待办/已完成），卡片拖拽流转状态。
    *  卡片为简化渲染（标题/优先级/分类/进度），编辑回列表视图；drop 到目标列即变更状态。 */
   function renderBoard() {
@@ -1706,6 +1731,7 @@ export function TasksPage() {
       setDragTaskId(''); setOverTaskId('');
     };
     const wipDraftVal = wipDrafts[curProj?.id ?? ''] ?? String(wipLimit);
+    const tzDraftVal = tzDrafts[curProj?.id ?? ''] ?? (curProj?.timezone ?? '');
     return (
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap', fontSize: 'var(--fs-s)' }}>
@@ -1725,6 +1751,21 @@ export function TasksPage() {
                 onBlur={() => void saveWipLimit(curProj.id, wipDraftVal)}
                 onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
                 style={{ width: 64, padding: '2px 6px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
+            </label>
+          )}
+          {curProj && (
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--text-secondary)' }}>
+              时区
+              <input list="mtask-tz-options" value={tzDraftVal} disabled={tzBusy}
+                aria-label="项目时区"
+                placeholder="跟随系统"
+                title="项目时区（IANA 名，如 Asia/Shanghai；留空＝跟随系统时区）——报告与计划预测的业务日按此时区计算"
+                onChange={(e) => setTzDrafts((prev) => ({ ...prev, [curProj.id]: e.target.value }))}
+                onBlur={() => void saveProjectTz(curProj.id, tzDraftVal)}
+                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                style={{ width: 150, padding: '2px 6px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
+              <datalist id="mtask-tz-options">{tzOptions().map((z) => <option key={z} value={z} />)}</datalist>
+              {!(curProj.timezone ?? '') && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>系统</span>}
             </label>
           )}
           {wipOver > 0 && (

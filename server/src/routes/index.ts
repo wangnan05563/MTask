@@ -3,6 +3,7 @@ import * as PrdGenService from '../services/PrdGenService'; // T00769：原始�
 import { generateTestCasesStream, type GenPrefs } from '../services/TestCaseGenService'; // T01491：从 PRD 生成测试用例（SSE）
 import { PlanService } from '../services/PlanService'; // T01491：读取内部 PRD 文档原文（prdDocId 来源）
 import { WorkspaceService } from '../services/WorkspaceService'; // T00776：工作空间搜索/读文件
+import { isValidTimeZone } from '../services/ProjectTimeZone'; // T03268：项目级时区校验（IANA，运行时 ICU）
 import { getDb } from '../db/connection';
 import { TaskService, nextTaskNo, TASK_STATUSES, type TaskInput, type TaskListOptions } from '../services/TaskService';
 import { compileTaskQuery, parseTaskQuery } from '../util/taskQuery'; // T03184（PM-102）：命令面板结构化搜索语法
@@ -146,8 +147,11 @@ api.get('/projects', (req, res) => {
 });
 
 api.post('/projects', (req, res) => {
-  const { name, description = '' } = req.body ?? {};
+  const { name, description = '', timezone = '' } = req.body ?? {};
   if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name 必填' });
+  // T03268（PRD 4.2）：项目级时区可配——空串＝跟随系统
+  const tz = typeof timezone === 'string' ? timezone.trim() : '';
+  if (tz && !isValidTimeZone(tz)) return res.status(400).json({ error: `时区非法：${tz}（需 IANA 时区名，如 Asia/Shanghai）` });
   // T00589 二轮：项目名全局唯一——**含历史资产快照中的项目名**与已归档项目（避免与沉淀快照重名混淆）
   // T02943：查重判据收口到 findProjectNameOwners——本通道原来只查精确同名，于是 `wiki三期` 与
   // `Wiki三期` 可以并存，而按名解析（精确→CI 回落）只会撞上其中一行；CI 口径与解析侧必须一致，
@@ -155,8 +159,8 @@ api.post('/projects', (req, res) => {
   const owners = findProjectNameOwners(name);
   if (owners.length > 0) return res.status(400).json({ error: projectNameConflictError(name, owners) });
   const id = uuid();
-  getDb().prepare('INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-    .run(id, name, description, now(), now());
+  getDb().prepare('INSERT INTO projects (id, name, description, timezone, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, name, description, tz, now(), now());
   cacheClear('projects'); // 新建项目后列表缓存失效，立即可见
   res.status(201).json(getDb().prepare('SELECT * FROM projects WHERE id = ?').get(id));
 });
@@ -239,7 +243,7 @@ function applyWorkspacePath(workspacePath: unknown, sets: string[], values: unkn
 }
 
 api.patch('/projects/:id', (req, res) => {
-  const { name, description, sortWeight, workspacePath, wipLimit } = req.body ?? {};
+  const { name, description, sortWeight, workspacePath, wipLimit, timezone } = req.body ?? {};
   const db = getDb();
   const sets: string[] = [];
   const values: unknown[] = [];
@@ -259,6 +263,12 @@ api.patch('/projects/:id', (req, res) => {
     const n = typeof wipLimit === 'number' ? wipLimit : Number(wipLimit);
     if (!Number.isInteger(n) || n < 1 || n > 50) return res.status(400).json({ error: 'WIP 上限须为 1~50 的整数' });
     sets.push('wip_limit = ?'); values.push(n);
+  }
+  // T03268（PRD 4.2）：项目级时区——空串＝跟随系统；非空必须是运行时 ICU 能识别的 IANA 名
+  if (timezone !== undefined) {
+    const tz = typeof timezone === 'string' ? timezone.trim() : '';
+    if (tz && !isValidTimeZone(tz)) return res.status(400).json({ error: `时区非法：${tz}（需 IANA 时区名，如 Asia/Shanghai）` });
+    sets.push('timezone = ?'); values.push(tz);
   }
   // T00771：工作空间绑定——路径必须存在且为文件夹（服务端本机校验），多项目可指向同一路径（仅存引用）
   // 走查修复（H-1）：换绑判定需与旧值比较，旧值必须在 UPDATE 之前读取——

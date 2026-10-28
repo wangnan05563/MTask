@@ -18,7 +18,8 @@
  */
 import { getDb } from '../db/connection';
 import { childParentIds } from '../util/milestoneChild';
-import { advanceWorkdaysInclusive, buildCalendar, countWorkdaysBetween, countWorkdaysOrMissing, isRealYmd, systemTz, ymdInTimezone, type WorkdayCal } from '../util/workdays';
+import { advanceWorkdaysInclusive, buildCalendar, countWorkdaysBetween, countWorkdaysOrMissing, isRealYmd, ymdInTimezone, type WorkdayCal } from '../util/workdays';
+import { resolveProjectTz } from './ProjectTimeZone'; // T03268：单项目口径按项目时区取业务日
 
 export type ForecastVerdict = 'done' | 'not-predictable' | 'on-track' | 'ahead' | 'behind' | 'no-planned-end';
 
@@ -187,7 +188,8 @@ function forecastOne(ms: PlanRow & { project_name: string }, children: PlanRow[]
 export class MilestoneForecastService {
   static report(args: { projectId?: string; at?: string } = {}): MilestoneForecastReport {
     const db = getDb();
-    const tz = systemTz();
+    // T03268：项目视图按其时区取业务日；跨项目总览（无 projectId）按系统时区
+    const { tz } = resolveProjectTz(args.projectId);
     if (args.at && !isRealYmd(args.at)) throw new Error(`at 需为 YYYY-MM-DD，收到：${args.at}`);
     // 业务日只看「时区下的日历日」（D-12）；入参 at 已是日历日，不再二次换算
     const at = args.at ?? ymdInTimezone(new Date(), tz);

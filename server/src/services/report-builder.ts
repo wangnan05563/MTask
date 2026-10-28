@@ -26,6 +26,11 @@ function scopeSuffix(data: ReportData): string {
   return scope && scope.length > 1 ? `：${scope.join(' + ')}` : '';
 }
 
+/** T03268（PRD 4.2）：导出物的时区元信息——读者据此判断业务日口径 */
+function tzLine(data: ReportData): string {
+  return `时区：${data.tz}（${data.tzSource === 'project' ? '项目时区' : '系统时区'}）`;
+}
+
 /**
  * 头部「项目范围」行（PRD 约束 5 / 执行步骤 4）：列出被选中的项目名称，
  * 并点明「按项目分块」的读法，避免多项目汇总表被当成单项目数据误读。
@@ -71,6 +76,8 @@ export async function buildXlsx(data: ReportData, templateBuf?: Buffer, aiInsigh
   const xlsxScope = scopeLine(data);
   if (xlsxScope) ws.addRow([xlsxScope]);
   ws.addRow([`生成时间：${data.generatedAt}`]);
+  // T03268（PRD 4.2）：导出带时区元信息
+  ws.addRow([tzLine(data)]);
   // T03240（AI-101 ③）：溯源段与界面面板同源（reportProvenance 单源），放在表头层级而非隐藏页
   if (provenance) {
     const pb = ws.addRow(['溯源']);
@@ -219,6 +226,7 @@ export async function buildDocx(data: ReportData, templateBuf?: Buffer, aiInsigh
     new Paragraph({ text: titleLine(data), heading: HeadingLevel.TITLE }),
     ...(docScope ? [new Paragraph({ children: [new TextRun({ text: docScope, color: '4B5563' })] })] : []),
     new Paragraph({ text: `生成时间：${data.generatedAt}` }),
+    new Paragraph({ text: tzLine(data) }),
     ...(provenance
       ? [
           new Paragraph({ text: '溯源', heading: HeadingLevel.HEADING_2 }),
@@ -320,7 +328,7 @@ export async function buildPptx(data: ReportData, aiInsight?: string, provenance
   // T02165：多项目范围进标题与副标题；无范围时两处串与版式与原来逐字一致
   const pptScope = scopeLine(data, true);
   s.addText(`MTask ${data.periodLabel}${scopeSuffix(data)}`, { x: 0.5, y: 0.35, w: 9, h: 0.7, fontSize: 24, bold: true, color: '1F2937' });
-  s.addText(`周期：${data.startDate} ~ ${data.endDate}    生成：${data.generatedAt}${pptScope ? `\n${pptScope}` : ''}`, {
+  s.addText(`周期：${data.startDate} ~ ${data.endDate}    生成：${data.generatedAt}    时区：${data.tz}${pptScope ? `\n${pptScope}` : ''}`, {
     x: 0.5, y: 1.1, w: 9, h: pptScope ? 0.55 : 0.4, fontSize: 10, color: '6B7280',
   });
 
@@ -395,7 +403,7 @@ export async function buildPdf(data: ReportData, aiInsight?: string, provenance?
   doc.fontSize(18).text(`MTask ${data.periodLabel}${scopeSuffix(data)}（${data.startDate} ~ ${data.endDate}）`);
   const pdfScope = scopeLine(data);
   if (pdfScope) doc.fontSize(10).text(pdfScope);
-  doc.fontSize(10).text(`生成时间：${data.generatedAt}\n`);
+  doc.fontSize(10).text(`生成时间：${data.generatedAt}\n${tzLine(data)}\n`);
   doc.fontSize(13).text('项目汇总', { underline: true }).moveDown(0.3);
   if (data.projects.length) {
     data.projects.forEach((p) => {

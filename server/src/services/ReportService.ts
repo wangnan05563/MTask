@@ -14,6 +14,7 @@ import { PREFLIGHT_ESTIMATE_MODEL, PROXY_METRIC_NOTICE, assessAiRunDeviation, es
 import { buildCalendar, ymdInTimezone } from '../util/workdays';
 import { buildPlanForecastSection, type PlanForecastSection } from './PlanForecastService';
 import { systemTz } from './OverdueRateService';
+import { resolveProjectTz } from './ProjectTimeZone'; // T03268：单项目报表按项目时区
 
 /** T03243（AI-102④）：报表这张 AI 卡片的稳定 key——ai_usage 归属与历史回看同源 */
 export const AI_REPORT_CARD = 'ai.weekly_report';
@@ -83,6 +84,9 @@ export interface ReportData {
   /** 展示用结束日，**含**这一天**（T02944 裁决甲；SQL 取数仍是左闭右开，与此无关） */
   endDate: string;
   generatedAt: string;
+  /** T03268（PRD 4.2）：本期业务日/计划预测所用时区（单项目取项目时区，范围/全部取系统时区） */
+  tz: string;
+  tzSource: 'project' | 'system';
   projects: ReportProject[];
   tasks: ReportTaskRow[];
   /** T00452 / PRD INT-3：项目计划执行情况（本期有活动或已过期未完成），供周报联动展示 */
@@ -402,7 +406,8 @@ export function gatherReportData(period: SummaryPeriod, projectScope?: ReportSco
   }
 
   // T03258（AI-204）：预测清单按**全部在架计划行**计算——本期无更新但正在滑期的计划同样要预警
-  const tz = systemTz();
+  // T03268（PRD 4.2）：单项目报表的业务日按项目时区；多项目/全部无法共用单一 at，按系统时区
+  const { tz, source: tzSource } = ids.length === 1 ? resolveProjectTz(ids[0]) : { tz: systemTz(), source: 'system' as const };
   const at = ymdInTimezone(new Date(), tz);
   const cal = buildCalendar(db.prepare('SELECT date, kind FROM holidays').all() as Array<{ date: string; kind: string | null }>);
   const planForecast = buildPlanForecastSection(
@@ -423,6 +428,8 @@ export function gatherReportData(period: SummaryPeriod, projectScope?: ReportSco
     // T02944（裁决甲）：展示结束日用「含」的那天；SQL 右开界 `end` 只用于取数，不进展示。
     endDate: ymd(endInclusive),
     generatedAt: nowStr(),
+    tz,
+    tzSource,
     projects,
     tasks,
     plans,
@@ -583,6 +590,8 @@ export function buildReportPrompt(period: ReportPeriod, data: ReportData, skill:
   const user = [
     `【内置 SKILL】${skill.name}：${skill.desc}`,
     `【周期】${data.periodLabel} ${data.startDate} ~ ${data.endDate}`,
+    // T03268（PRD 4.2）：时区元信息随报告交付，避免读者按自己时区误读业务日
+    `【时区】${data.tz}（${data.tzSource === 'project' ? '项目时区' : '系统时区'}）——业务日与计划预测均按此时区计算`,
     // T02165：多项目聚合必须把范围显式喂给模型——否则它只能从数据里猜有几个项目，
     // 常把无活动项目漏掉、或把汇总指标写成单项目口吻
     ...(data.projectScope && data.projectScope.length > 1

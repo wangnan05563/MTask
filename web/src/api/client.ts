@@ -169,6 +169,8 @@ export interface Project {
   workspace_path?: string;
   /** T03209（PM-101）：项目级 WIP 软上限（默认 10，1~50），仅提示不阻断 */
   wip_limit?: number;
+  /** T03268（PRD 4.2 时区）：项目时区（IANA 名，空串＝跟随系统时区） */
+  timezone?: string;
 }
 
 export interface TaskImage {

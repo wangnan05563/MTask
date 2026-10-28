@@ -10,6 +10,7 @@
  */
 import { getDb } from '../db/connection';
 import { isPastEndDate, isRealYmd, systemTz, ymdInTimezone } from '../util/workdays';
+import { resolveProjectTz } from './ProjectTimeZone'; // T03268：单项目口径取项目时区，全局口径取系统时区
 
 // T03265：时区取数与其他出数面共用一个实现；保留本模块的导出路径，旧调用方无需改动
 export { systemTz };
@@ -27,7 +28,7 @@ export interface OverdueProjectRow extends OverdueRateBucket {
 }
 
 export interface OverdueRateReport {
-  /** 统计日（YYYY-MM-DD，入参 or 今天，按系统时区） */
+  /** 统计日（YYYY-MM-DD，入参 or 今天，按项目/系统时区） */
   at: string;
   tz: string;
   overall: OverdueRateBucket;
@@ -44,11 +45,17 @@ function ratio(numerator: number, denominator: number): number | null {
 export class OverdueRateService {
   static report(args: { at?: string; projectId?: string } = {}): OverdueRateReport {
     const db = getDb();
-    const tz = systemTz();
+    // T03268：projectId 口径用项目时区；未指定项目（全局视图）沿用系统时区
+    const { tz } = resolveProjectTz(args.projectId);
     if (args.at && !isRealYmd(args.at)) throw new Error(`at 需为 YYYY-MM-DD，收到：${args.at}`);
-    // 用当天正午构造参考时刻：D-12 只比较「项目时区下的日期」，正午避开任何跨时区跨日歧义
-    const ref = args.at ? new Date(`${args.at}T12:00:00`) : new Date();
-    const at = ymdInTimezone(ref, tz);
+    // D-12：显式 at 就是业务日本身，直接按日期比较到期；未给 at 才把「此刻」按项目时区折成日历日。
+    // 旧写法 `new Date(`${at}T12:00:00`)` 走系统本地正午再换算到项目时区：系统 Asia/Shanghai、项目
+    // America/New_York 时本地正午折过去是前一天 23:00，统计日会整体退一天（T03268 修）
+    const now = new Date();
+    const at = args.at ?? ymdInTimezone(now, tz);
+    const isPast = (endDate: string) => (args.at
+      ? isRealYmd(endDate || '') && endDate < at
+      : isPastEndDate(endDate, now, tz));
 
     if (args.projectId && !db.prepare('SELECT id FROM projects WHERE id = ?').get(args.projectId)) {
       throw new Error('项目不存在');
@@ -63,8 +70,8 @@ export class OverdueRateService {
 
     const byProject = new Map<string, { name: string; dueTotal: number; overdue: number }>();
     for (const r of rows) {
-      // 未到期 / 无日期 / 归档（SQL 已排）→ 不进分母；边界日当天 isPastEndDate 为 false，同样不进
-      if (!isPastEndDate(r.end_date, ref, tz)) continue;
+      // 未到期 / 无日期 / 归档（SQL 已排）→ 不进分母；边界日当天 isPast 为 false，同样不进
+      if (!isPast(r.end_date)) continue;
       const agg = byProject.get(r.project_id) ?? { name: r.project_name, dueTotal: 0, overdue: 0 };
       agg.dueTotal += 1;
       if (r.status !== 'done') agg.overdue += 1;
