@@ -117,6 +117,8 @@ export interface LectureStreamResult {
   anchors: LectureAnchorEntry[];
   estimate?: LectureRunEstimate;
   deviation?: LectureRunUsageDeviation;
+  /** T03246（AI-103④）：本轮任务 id——续作/单节重试带上它才有「已完成段复用」，不再重复调用模型 */
+  jobId?: string;
 }
 
 export interface CodeReviewLectureState {

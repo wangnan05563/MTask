@@ -208,6 +208,11 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   const [hoverRows, setHoverRows] = useState<Set<string>>(new Set());
   /** T03245（AI-103③）：上次未完成任务的台账——刷新/重进后从服务端回读，不依赖前端记忆 */
   const [journal, setJournal] = useState<LectureJournalView | null>(null);
+  /**
+   * T03246（AI-103④）：本轮任务的 jobId——stage `job` 事件一落地就记住（停止时前端收不到 aborted 帧，
+   * 不能只指望 done/aborted 带回）；续作/单节重试带上它，服务端才会复用已完成段、不再重复调用模型。
+   */
+  const jobIdRef = useRef<string | null>(null);
   const leftRef = useRef<HTMLDivElement>(null);
   const flashTimer = useRef<number | null>(null);
 
@@ -269,13 +274,24 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   /**
    * T03245（AI-103③）：回读最近一次任务台账。只有「未完成」的任务值得提示——
    * 已完成任务的成稿已在右栏/历史里，再弹一条恢复横幅只会打扰。
+   * T03246（AI-103④）：停止是「客户端先断开、服务端随后才把在跑段标失败并落终态」，
+   * 立刻回读会拿到 running 旧快照（横幅写「上次运行中断 / 继续生成未完成段」）——
+   * 读到 running 就短暂轮询，等终态落地再展示。
    */
   async function refreshJournal() {
-    try {
-      const view = await api.get<LectureJournalView | null>('/plans/code-review-lecture/jobs/latest');
-      setJournal(view && view.status !== 'done' && view.progress.segmentsTotal > 0 ? view : null);
-    } catch {
-      // 台账只服务于恢复提示；读失败不阻塞生成主流程
+    for (let i = 0; i < 12; i += 1) {
+      try {
+        const view = await api.get<LectureJournalView | null>('/plans/code-review-lecture/jobs/latest');
+        if (view?.status === 'running' && i < 11) {
+          await new Promise((r) => { window.setTimeout(r, 300); });
+          continue;
+        }
+        setJournal(view && view.status !== 'done' && view.progress.segmentsTotal > 0 ? view : null);
+        return;
+      } catch {
+        // 台账只服务于恢复提示；读失败不阻塞生成主流程
+        return;
+      }
     }
   }
 
@@ -309,6 +325,10 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
     if (!toolId && !retryJob) return flash('请先在右侧控制台选择 AI 工具');
     const resumeFrom = typeof extra.resumeFrom === 'string' ? extra.resumeFrom : undefined;
     const retryKeys = Array.isArray(extra.sectionKeys) ? (extra.sectionKeys as string[]) : undefined;
+    // T03246（AI-103④）：续作沿用同一任务；全新一轮先清空，等 stage job 事件写回新 id
+    // ——采集阶段就被停止时不能错挂上一轮任务（会把旧段当成本轮已完成段复用）
+    if (retryJob) jobIdRef.current = String(extra.jobId);
+    else if (!resumeFrom && !retryKeys) jobIdRef.current = null;
     const before = codeReviewLectureStore.get();
     const ac = new AbortController();
     codeReviewLectureStore.setAbortCtrl(ac);
@@ -323,8 +343,10 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
     try {
       await streamEvents('/plans/code-review-lecture-stream', body, (name, payload) => {
         if (name === 'stage') {
-          const s = payload as { phase: string; msg: string; progress: number; data?: { type?: string; outline?: LectureOutline; section?: string; ok?: boolean } };
+          const s = payload as { phase: string; msg: string; progress: number; data?: { type?: string; outline?: LectureOutline; section?: string; ok?: boolean; jobId?: string } };
           codeReviewLectureStore.setStage({ phase: s.phase, msg: s.msg, progress: s.progress });
+          // T03246：任务一落库就记住 id——停止时收不到 aborted 帧，续作只能靠这里留下的 id 复用已完成段
+          if (s.data?.type === 'job' && typeof s.data.jobId === 'string') jobIdRef.current = s.data.jobId;
           if (s.data?.type === 'outline_ready' || s.data?.type === 'outline_only') {
             if (s.data.outline) { outline = s.data.outline; codeReviewLectureStore.setOutline(s.data.outline); }
           } else if (s.data?.type === 'section_done' && s.data.section) {
@@ -336,11 +358,13 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
         } else if (name === 'done') {
           const d = payload as LectureStreamResult;
           if (d?.outline) { outline = d.outline; codeReviewLectureStore.setOutline(d.outline); }
+          if (d?.jobId) jobIdRef.current = d.jobId;
           codeReviewLectureStore.setResult(mergeLectureRun(before, d ?? null, resumeFrom ?? (retryKeys ? retryKeys[0] : undefined)));
         } else if (name === 'aborted') {
           // 用户主动「停止」：服务端把已完成的节次交回，保留下来供「从第 n 节继续」
           const d = payload as LectureStreamResult;
           if (d?.outline) codeReviewLectureStore.setOutline(d.outline);
+          if (d?.jobId) jobIdRef.current = d.jobId;
           codeReviewLectureStore.setResult(d ?? null);
           // T03301：停止是关键节点，控制台要有一行收口日志（此前只在面板 toast 里提示，控制台看不出发生过什么）
           codeReviewLectureStore.pushLog(`已停止——已生成 ${d?.sections?.length ?? 0} 节已保留，可「从第 n 节继续」`);
@@ -641,7 +665,13 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
             onMark={(key, m) => codeReviewLectureStore.setMark(key, m)}
             onAnchorClick={locateAnchorClick}
             {...(!snap.streaming && outline && resumeKey
-              ? { onRetrySection: (key: string, label: string) => void runStream({ outline, sectionKeys: [key] }, `重试「${label}」`) }
+              ? {
+                onRetrySection: (key: string, label: string) => void runStream(
+                  // T03246（AI-103④）：带 jobId 的单节重试只补该节未完成段，已完成段照旧复用
+                  { outline, sectionKeys: [key], ...(jobIdRef.current ? { jobId: jobIdRef.current } : {}) },
+                  `重试「${label}」`,
+                ),
+              }
               : {})} />
         </main>
       </div>
@@ -672,7 +702,10 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
           <Ban size={13} style={{ marginRight: 4 }} />停止
         </FlowButton>
         {canResume && (
-          <FlowButton data-lck="resume-btn" onClick={() => void runStream({ outline: outline ?? snap.outline, resumeFrom: resumeKey }, `从第 ${resumeIndex} 节继续`)}
+          <FlowButton data-lck="resume-btn" onClick={() => void runStream(
+            { outline: outline ?? snap.outline, resumeFrom: resumeKey, ...(jobIdRef.current ? { jobId: jobIdRef.current } : {}) },
+            `从第 ${resumeIndex} 节继续`,
+          )}
             disabled={snap.streaming}
             title={`跳过已生成的前 ${resumeIndex - 1} 节，从第 ${resumeIndex} 节开始补生成`}>
             <RefreshCw size={13} style={{ marginRight: 4 }} />从第 {resumeIndex} 节继续

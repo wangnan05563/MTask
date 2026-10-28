@@ -226,7 +226,9 @@ export function validateLectureStreamBody(body: unknown): LectureStreamRequest {
   const retryFailed = b.retryFailed === true;
   if (b.retryFailed !== undefined && typeof b.retryFailed !== 'boolean') throw new LectureStreamError('retryFailed 必须是布尔值');
   if (retryFailed && !jobId) throw new LectureStreamError('重试失败段需要 jobId（按任务台账补齐未完成段）');
-  if (jobId && (rawResume || sectionKeys)) throw new LectureStreamError('jobId 与 resumeFrom/sectionKeys 不能同时传');
+  // T03246（AI-103④）：jobId 可与 resumeFrom/sectionKeys 组合——只借用「已完成段复用」，跑哪几节仍由续作/点名单决定。
+  // retryFailed 已是「只补未完成段」的完整语义，再叠选节会让「补哪些段」出现两套口径。
+  if (retryFailed && (rawResume || sectionKeys)) throw new LectureStreamError('retryFailed 与 resumeFrom/sectionKeys 不能同时传');
   if (retryFailed && outlineOnly) throw new LectureStreamError('仅大纲模式没有可重试的段落');
 
   return { toolId, projects, excludes, ...(style ? { style } : {}), ...(extraNote ? { extraNote } : {}), ...(title ? { title } : {}), ...(outline ? { outline } : {}), ...(outlineOnly ? { outlineOnly } : {}), ...(rawResume ? { resumeFrom: rawResume as LectureSectionKey } : {}), ...(sectionKeys ? { sectionKeys } : {}), ...(jobId ? { jobId } : {}), ...(retryFailed ? { retryFailed } : {}), ...(contextBudget ? { contextBudget } : {}), ...(maxTokens ? { maxTokens } : {}) };
@@ -418,14 +420,19 @@ function sectionsFromJournal(view: GenJobView): LectureSectionResult[] {
  * T03245（AI-103②③）：把「只带 jobId + retryFailed」的请求按台账留档还原成完整入参。
  * 路由必须在 SSE 之前的同步校验里就用它——否则 validates 先看到没有 projects 的半截请求。
  * 已带 projects 的请求原样返回：新值优先，恢复不锁死旧范围。
+ * T03246：任何带 jobId 的请求都在这里先验任务存在（不存在就别进 SSE 流），retryFailed 才做入参还原。
  */
 export function hydrateLectureRetryBody(body: unknown): unknown {
   const raw = body && typeof body === 'object' ? body as Record<string, unknown> : null;
-  if (raw?.retryFailed !== true) return body;
-  const jobId = typeof raw.jobId === 'string' ? raw.jobId.trim() : '';
-  if (!jobId) throw new LectureStreamError('重试失败段需要 jobId（按任务台账补齐未完成段）');
+  const jobId = typeof raw?.jobId === 'string' ? raw.jobId.trim() : '';
+  if (!raw || !jobId) {
+    if (raw?.retryFailed === true) throw new LectureStreamError('重试失败段需要 jobId（按任务台账补齐未完成段）');
+    return body;
+  }
   const saved = jobRequest(jobId);
   if (!saved) throw new LectureStreamError('生成任务不存在或已过期，请重新发起一轮生成');
+  // T03246（AI-103④）：续作/单节重试也挂 jobId（只做已完成段复用），入参按请求里的范围照跑
+  if (raw.retryFailed !== true) return body;
   return { ...saved.request, ...raw, jobId, retryFailed: true };
 }
 
@@ -728,9 +735,10 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
   }
   stats.sections = sections.length;
 
-  // T03245（AI-103③）：重试轮交回整份成稿——刷新后前端没有上一轮结果可拼，
-  // 只能按台账（已完成段正文 + 本轮补齐段）重建八节。
-  if (jobId && request.retryFailed) {
+  // T03245（AI-103③）/T03246（AI-103⑤）：挂台账的续作轮一律交回整份成稿——
+  // 刷新后前端没有上一轮结果可拼；续作轮本身也只跑了其中几节，八节顺序与结构只能按台账重建。
+  // 中止轮除外：前端要拿本轮局部结果接着跑。
+  if (jobId && !aborted && (request.retryFailed || request.resumeFrom || request.sectionKeys)) {
     const saved = jobRequest(jobId);
     if (saved) {
       const rebuilt = sectionsFromJournal(saved.view);
