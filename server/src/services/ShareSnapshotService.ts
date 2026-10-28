@@ -13,9 +13,10 @@
 import { createRequire } from 'node:module';
 import { getDb } from '../db/connection';
 import { childParentIds } from '../util/milestoneChild';
-import { isPastEndDate, ymdInTimezone } from '../util/workdays';
+import { isRealYmd, ymdInTimezone } from '../util/workdays';
 import { safeExportName } from '../util/export-name';
-import { OverdueRateService, systemTz } from './OverdueRateService';
+import { OverdueRateService } from './OverdueRateService';
+import { resolveProjectTz } from './ProjectTimeZone';
 
 /**
  * 按需加载 prdExport（pdfkit/docx 较重）。
@@ -52,6 +53,8 @@ export interface ShareSnapshotData {
   /** 统计日（YYYY-MM-DD，与逾期口径同一业务日） */
   at: string;
   tz: string;
+  /** T03269（NFR-06）：时区来源——project＝项目已配置；system＝未配置，跟随系统 */
+  tzSource: 'project' | 'system';
   generatedAt: string;
   stats: {
     tasks: { total: number; done: number; open: number };
@@ -111,9 +114,12 @@ export function buildShareSnapshot(args: { projectId: string; includeTitles?: bo
 
   const includeTitles = args.includeTitles === true;
   const now = args.now ?? new Date();
-  const tz = systemTz();
+  // T03269（PM-403③④ / NFR-06）：统计日与时区按项目时区取；未配置时跟随系统并在页脚提示
+  const { tz, source: tzSource } = resolveProjectTz(project.id);
   const at = ymdInTimezone(now, tz);
-  const ref = new Date(`${at}T12:00:00`); // 与 OverdueRateService 的统计日参考时刻同口径
+  // D-12：统计日已折成项目时区下的日历日，直接按日期比较——边界日当天不算到期。
+  // 不再构造「系统本地正午」再换算（系统与项目时区不同时会整体退一天，且与逾期计数口径分叉）。
+  const isPast = (endDate: string) => isRealYmd(endDate || '') && endDate < at;
 
   const taskAgg = db
     .prepare(
@@ -157,7 +163,8 @@ export function buildShareSnapshot(args: { projectId: string; includeTitles?: bo
       };
     });
 
-  const overdueRows = plans.filter((r) => r.status !== 'done' && isPastEndDate(r.end_date, ref, tz));
+  // 摘要行与逾期计数共用同一 at 判定（OverdueRateService 收到显式 at 时也按日期比较），避免两处口径分叉
+  const overdueRows = plans.filter((r) => r.status !== 'done' && isPast(r.end_date));
   const overdueReport = OverdueRateService.report({ projectId: project.id, at });
   const bucket = overdueReport.projects.find((p) => p.projectId === project.id);
 
@@ -167,6 +174,7 @@ export function buildShareSnapshot(args: { projectId: string; includeTitles?: bo
     includeTitles,
     at,
     tz,
+    tzSource,
     generatedAt: formatGeneratedAt(now, tz),
     stats: {
       tasks: { total: taskTotal, done: taskDone, open: Math.max(0, taskTotal - taskDone) },
@@ -198,6 +206,16 @@ function rateText(rate: number | null): string {
   return rate === null ? '暂无可比计划' : `${(rate * 100).toFixed(1)}%`;
 }
 
+/** 时区展示：未配置项目时区时明示「跟随系统」（NFR-06），不静默冒充项目配置 */
+function tzLabel(data: ShareSnapshotData): string {
+  return `${data.tz}（${data.tzSource === 'project' ? '项目时区' : '未配置，跟随系统时区'}）`;
+}
+
+/** 页脚：项目名 · 统计日 · 生成时间 · 时区（PM-404④；导出供门禁与路由共用同一文案） */
+export function snapshotFooter(data: ShareSnapshotData): string {
+  return `项目：${data.projectName} · 统计日：${data.at} · 生成时间：${data.generatedAt} · 时区：${tzLabel(data)}`;
+}
+
 type PDFDoc = PDFKit.PDFDocument;
 
 function renderShareSnapshot(doc: PDFDoc, data: ShareSnapshotData): void {
@@ -211,7 +229,7 @@ function renderShareSnapshot(doc: PDFDoc, data: ShareSnapshotData): void {
     `计划：共 ${stats.plans.total} 项，已完成 ${stats.plans.done} 项，进行中 ${stats.plans.doing} 项，里程碑 ${stats.plans.milestones} 个`,
   );
   doc.text(
-    `逾期：统计日 ${data.at}，已到期 ${data.overdue.dueTotal} 项，逾期 ${data.overdue.overdue} 项，逾期率 ${rateText(data.overdue.rate)}`,
+    `逾期：统计日 ${data.at}（时区 ${tzLabel(data)}），已到期 ${data.overdue.dueTotal} 项，逾期 ${data.overdue.overdue} 项，逾期率 ${rateText(data.overdue.rate)}`,
   );
 
   doc.moveDown(0.8);
@@ -270,7 +288,7 @@ export async function buildShareSnapshotPdf(args: {
   const { doc, done, finish } = await newPdfDoc(`${data.projectName} · 项目分享快照`, { bufferPages: true });
   renderShareSnapshot(doc, data);
 
-  const footer = `项目：${data.projectName} · 生成时间：${data.generatedAt} · 时区：${data.tz}`;
+  const footer = snapshotFooter(data);
   const range = doc.bufferedPageRange();
   for (let i = range.start; i < range.start + range.count; i++) {
     doc.switchToPage(i);
