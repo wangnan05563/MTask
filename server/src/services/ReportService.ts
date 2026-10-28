@@ -10,7 +10,7 @@ import { logService } from './LogService';
 import { resolveCustomWindow, type CustomRange } from './summaryPptPeriod';
 import { buildReportProvenance, HANDLE_RESULT_LIMIT, type ReportProvenance } from './reportProvenance';
 import { recordArtifact, type AiArtifact } from './aiArtifactService';
-import { PREFLIGHT_ESTIMATE_MODEL, PROXY_METRIC_NOTICE, assessAiRunDeviation, estimateOutputRun, type PreflightEstimate, type RunUsageDeviation } from './preflightEstimate';
+import { PREFLIGHT_ESTIMATE_MODEL, PROXY_METRIC_NOTICE, assessAiRunDeviation, estimateOutputRun, preflightModelRevisions, type PreflightEstimate, type PreflightModelRevision, type RunUsageDeviation } from './preflightEstimate';
 
 /** T03243（AI-102④）：报表这张 AI 卡片的稳定 key——ai_usage 归属与历史回看同源 */
 export const AI_REPORT_CARD = 'ai.weekly_report';
@@ -588,6 +588,8 @@ export interface ReportAiPreflightView {
     secondsLowPerCall: number;
     secondsHighPerCall: number;
     outputCharsPerCall: number;
+    /** T03244（AI-102⑥）：版本沿革（最新在前），带系数差异与读数前后对比 */
+    history: PreflightModelRevision[];
   };
   range: { periodLabel: string; startDate: string; endDate: string; projects: number; tasks: number; plans: number; scope: string[] };
 }
@@ -610,6 +612,7 @@ export function aiReportPreflight(
       secondsLowPerCall: PREFLIGHT_ESTIMATE_MODEL.secondsLowPerCall,
       secondsHighPerCall: PREFLIGHT_ESTIMATE_MODEL.secondsHighPerCall,
       outputCharsPerCall: PREFLIGHT_ESTIMATE_MODEL.outputCharsPerCall,
+      history: preflightModelRevisions(),
     },
     range: {
       periodLabel: data.periodLabel,

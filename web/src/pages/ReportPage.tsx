@@ -41,12 +41,21 @@ interface ReportTemplate {
   size: number;
 }
 
+/** T03244（AI-102⑥）：预估模型沿革——系数差异与读数前后对比由服务端单源给出 */
+interface ModelRevisionView {
+  version: string;
+  previousVersion: string | null;
+  changes: string[];
+  coefficients: Array<{ key: string; label: string; from: number; to: number }>;
+  sample: { calls: number; prevChars: number; nextChars: number; prevSeconds: number; nextSeconds: number } | null;
+}
+
 /** T03242（AI-102）：`GET /report/ai-preflight` 的回读形状（与 ReportService.ReportAiPreflightView 对齐） */
 interface ReportAiPreflight {
   estimate: { calls: number; chars: number; charsBasis: 'context' | 'output'; seconds: number; secondsLow: number; secondsHigh: number; modelVersion: string };
   contextChars: number;
   notice: string;
-  model: { version: string; secondsPerCall: number; secondsLowPerCall: number; secondsHighPerCall: number; outputCharsPerCall: number };
+  model: { version: string; secondsPerCall: number; secondsLowPerCall: number; secondsHighPerCall: number; outputCharsPerCall: number; history: ModelRevisionView[] };
   range: { periodLabel: string; startDate: string; endDate: string; projects: number; tasks: number; plans: number; scope: string[] };
 }
 
@@ -532,6 +541,34 @@ function AiEstimateConfirm({ view, label, busy, onConfirm, onCancel }: {
       <div data-t03242="model-version" style={{ marginTop: 3, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
         预估模型 {model.version}（单次产出基线 {fmt(model.outputCharsPerCall)} 字 · {model.secondsLowPerCall}~{model.secondsHighPerCall} 秒/次）
       </div>
+      {/* T03244（AI-102⑥）：系数变过之后，读数为什么和上次不一样——版本沿革与前后读数对比 */}
+      {model.history.length > 1 && (
+        <details data-t03244="model-history" style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+          <summary style={{ cursor: 'pointer' }}>预估模型版本沿革（{model.history.length} 个版本，当前 {model.version}）</summary>
+          <ul style={{ listStyle: 'none', padding: 0, margin: '6px 0 0', display: 'grid', gap: 6 }}>
+            {model.history.map((rev) => (
+              <li key={rev.version} data-t03244="model-revision" data-current={rev.version === model.version ? '1' : '0'}>
+                <div style={{ color: 'var(--text-secondary)', fontWeight: rev.version === model.version ? 600 : 400 }}>
+                  {rev.version}
+                  {rev.previousVersion ? `（上一版 ${rev.previousVersion}）` : '（首版）'}
+                  {rev.version === model.version ? ' · 当前生效' : ''}
+                </div>
+                {rev.changes.map((c, i) => (
+                  <div key={`${rev.version}-change-${i}`} data-t03244="model-change" style={{ marginTop: 2 }}>· {c}</div>
+                ))}
+                {rev.coefficients.map((d) => (
+                  <div key={`${rev.version}-${d.key}`} data-t03244="coeff-delta">{d.label}：{d.from} → {d.to}</div>
+                ))}
+                {rev.sample && (
+                  <div data-t03244="model-sample">
+                    同样 {rev.sample.calls} 次调用的预估读数：字符量 {fmt(rev.sample.prevChars)} → {fmt(rev.sample.nextChars)} 字，耗时 {rev.sample.prevSeconds} → {rev.sample.nextSeconds} 秒
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
       <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
         <FlowButton onClick={onConfirm} disabled={busy} loading={busy} loadingText="生成中…" aria-label={`确认生成${label}`} data-t03242="confirm">
           <><Sparkles size={14} /> 开始生成</>
