@@ -239,7 +239,8 @@ export function buildOutlinePrompt(input: OutlinePromptInput): {
 8. 只依据【资料齐备性】里标注为 ok 的数据源安排内容页；资源缺失的章节可保留页但走降级表述（布局允许）；
 9. ${separate ? '每个项目的第 1 页 layout=cover、第 2 页 layout=toc' : '第 1 页 layout=cover、第 2 页 layout=toc'}（封面与目录都是结构页，dataKeys 必须为空）；章节分隔可用 layout=section（dataKeys 置空）；
 10. bullets 必须引用【各项目摘要】里给过的具体名称（用「」包裹），不得写「相关工作有序推进」这类无指代套话；名称只能照抄，数字仍归 dataKeys；
-11. 「问题与风险」页左栏是需求待确认（PRD 问题）、右栏是执行风险（逾期/阻塞/高复杂度），两栏都不许自造条目。`;
+11. 「问题与风险」页左栏是需求待确认（PRD 问题）、右栏是执行风险（逾期/阻塞/高复杂度），两栏都不许自造条目；
+12. JSON 语法铁律：键名与字符串分隔符只能用英文双引号 "，「」只出现在 bullet 正文内部用于包裹名称，不得顶替双引号；数组/对象元素之间必须有逗号，不得写成 ["总 11""已完成"] 这种连写。`;
 
   const user = [
     `【汇报周期】${input.periodLabel}（${start} ~ ${endDay}）`,
@@ -277,7 +278,8 @@ section∈[${SUMMARY_SECTIONS.join('|')}] layout∈[${SUMMARY_LAYOUTS.join('|')}
 每页 bullets≤${BULLET_MAX_LINES} 条、每条≤${BULLET_MAX_CHARS} 字；单项目必须覆盖 kpi/highlights/milestones/planRows/risks/workload/deliverables/nextSteps/appendix；
 合并版必须有 compare 与 horizontal 各一页，且每项目 4 页（kpi/milestones/risks/nextSteps）带 projectId；
 分别独立版每项目 12~16 页、每页带 projectId，且每项目 cover/toc 与上述 9 个数据块齐全；
-第 1 页 cover、第 2 页 toc；数字一律用 dataKeys 表示，禁止编造数字；bullets 用「」照抄输入出现过的名称。`;
+第 1 页 cover、第 2 页 toc；数字一律用 dataKeys 表示，禁止编造数字；bullets 用「」照抄输入出现过的名称。
+JSON 语法：字符串只用英文双引号 "，「」只能出现在正文内部；元素之间必须有逗号。`;
 
 function dedupeKeys(raw: unknown[], at: string): SummaryDataKey[] {
   const out: SummaryDataKey[] = [];

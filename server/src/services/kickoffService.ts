@@ -627,9 +627,67 @@ export function stripJsonTrailingCommas(raw: string): string {
   return out;
 }
 
-/** 剥围栏 + 修尾逗号后的安全解析；两处 askJson parse 回调共用 */
+/**
+ * T03589：模型把中文引号当 JSON 字符串分隔符（`[「总 11」「已完成 8 项」]`）。
+ * 中文模型在「bullet 里用「」包裹名称」的提示词下，会把这条排版习惯外溢到结构位——
+ * 结构位的 `「` 在合法 JSON 里不可能出现，故只在此处改写，字符串内部的「」原样保留。
+ *
+ * 顺带补「相邻值之间漏逗号」：模型连写两个引号串时（`["a""b"]`）同样非法，
+ * 而合法 JSON 的字符串收尾后只可能跟 `,` `]` `}` `:`，其余一律补分隔符。
+ */
+export function repairChineseJsonQuotes(raw: string): { text: string; fixed: number } {
+  const CLOSER: Record<string, string> = { '「': '」', '『': '』', '“': '”' };
+  let out = '';
+  let fixed = 0;
+  let mode: 'out' | 'ascii' | 'corner' = 'out';
+  let closer = '';
+  // 收尾后看下一个非空白字符：只有 `,` `]` `}` `:` 是合法后继，其余补逗号
+  const needComma = (at: number): boolean => {
+    for (let j = at + 1; j < raw.length; j++) {
+      if (/\s/.test(raw[j])) continue;
+      return !',]}:'.includes(raw[j]);
+    }
+    return false;
+  };
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (mode === 'out') {
+      if (c === '"') { mode = 'ascii'; out += c; continue; }
+      const cl = CLOSER[c];
+      if (cl) { mode = 'corner'; closer = cl; out += '"'; fixed += 1; continue; }
+      out += c;
+      continue;
+    }
+    if (mode === 'ascii') {
+      // 合法 JSON 的字符串内部可能真有「」（如 bullet 正文引用名称），此时只认 ASCII 双引号收尾；
+      // 反斜杠成对消费，避免把 `\"` 的引号误判成收尾
+      if (c === '\\' && i + 1 < raw.length) { out += c + raw[i + 1]; i += 1; continue; }
+      out += c;
+      if (c === '"') {
+        mode = 'out';
+        if (needComma(i)) { out += ','; fixed += 1; }
+      }
+      continue;
+    }
+    if (c === closer) {
+      out += '"';
+      mode = 'out';
+      fixed += 1;
+      if (needComma(i)) { out += ','; fixed += 1; }
+      continue;
+    }
+    // 中文引号串内部的 ASCII 双引号是内容，必须转义；反斜杠交给 relaxIllegalEscapes 统一处置
+    if (c === '"') { out += '\\"'; fixed += 1; continue; }
+    out += c;
+  }
+  return { text: out, fixed };
+}
+
+/** 剥围栏 + 修中文引号 + 修尾逗号后的安全解析；三处 askJson parse 回调共用 */
 export function parseAiJson(content: string, hits?: string[]): unknown {
-  const relaxed = relaxIllegalEscapes(stripFence(content));
+  const quotes = repairChineseJsonQuotes(stripFence(content));
+  noteEscapeHits(hits, quotes.fixed, 'JSON 非 ASCII 引号/漏分隔符');
+  const relaxed = relaxIllegalEscapes(quotes.text);
   noteEscapeHits(hits, relaxed.fixed, 'JSON');
   return JSON.parse(stripJsonTrailingCommas(relaxed.text));
 }
