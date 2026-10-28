@@ -298,6 +298,12 @@ export interface RetrieveContext {
   truncated: boolean;
   /** 因超过单文件大小上限被跳过的文件数 */
   skippedOversized: number;
+  /** T03442：本次真正命中的检索词（按喂入顺序） */
+  matchedKeywords?: string[];
+  /** T03442：本次一个片段都没命中的检索词——stage 回显「哪些词白检索了」 */
+  unmatchedKeywords?: string[];
+  /** T03442：目录级定向检索实际深扫的目录（相对路径） */
+  scopedDirs?: string[];
 }
 
 
@@ -727,6 +733,148 @@ async function buildSearchMemo(projectId: string): Promise<SearchMemo> {
   return memo;
 }
 
+/* ---------------- T03442：检索命中累计与目录级定向深扫 ---------------- */
+
+/** 一次检索的累计状态：memo 命中与目录级深扫共用，按 path:line 去重并记录每个词是否有产出 */
+interface HitAccumulator {
+  collected: SearchHit[];
+  seen: Set<string>;
+  matched: string[];
+  unmatched: string[];
+}
+
+function newAccumulator(): HitAccumulator {
+  return { collected: [], seen: new Set<string>(), matched: [], unmatched: [] };
+}
+
+/** 在 memo（已摊平的全文索引）里跑一遍关键词；命中归属按「这个词有没有新增片段」判定 */
+function collectMemoHits(memo: SearchMemo, keywords: readonly string[], acc: HitAccumulator): void {
+  for (const kw of keywords) {
+    if (acc.collected.length >= SEARCH_HIT_LIMIT) break;
+    const needle = kw.toLowerCase();
+    if (needle.length < 2) continue;
+    const before = acc.collected.length;
+    const reached = collectFileNameHits(memo, needle, acc.collected, acc.seen)
+      || collectLineHits(memo, needle, acc.collected, acc.seen);
+    if (acc.collected.length > before) acc.matched.push(kw);
+    else acc.unmatched.push(kw);
+    if (reached) break;
+  }
+}
+
+/** 组装 RetrieveContext（含 T03441 覆盖度与 T03442 词/目录归属） */
+function buildRetrieveContext(
+  acc: HitAccumulator,
+  meta: { scannedFiles: number; truncated: boolean; skippedOversized: number; scopedDirs?: string[] },
+  budgetChars: number,
+): RetrieveContext {
+  const block = acc.collected.length === 0
+    ? ''
+    : ContextBudget.headTail(
+      `相关代码片段（关键词检索 Top ${acc.collected.length}）：\n${acc.collected.map((h) => `${h.path}:${h.line} — ${h.snippet}`).join('\n')}`,
+      budgetChars,
+      '检索片段 ',
+    );
+  return {
+    block,
+    hits: acc.collected.length,
+    scannedFiles: meta.scannedFiles,
+    truncated: meta.truncated,
+    skippedOversized: meta.skippedOversized,
+    matchedKeywords: acc.matched,
+    unmatchedKeywords: acc.unmatched,
+    ...(meta.scopedDirs ? { scopedDirs: meta.scopedDirs } : {}),
+  };
+}
+
+/** T03442：目录级定向检索的独立预算——只深扫「命中路径所在的目录」，与 memo 的 3000 文件预算互不挤占 */
+const SCOPED_MAX_DIRS = 5;
+const SCOPED_MAX_FILES = 200;
+const SCOPED_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
+ * 由 memo 的文件清单挑出与关键词相关的目录（零 IO）：文件路径命中记分，目录名本身命中也算；
+ * 已命中的片段所在目录同样入选——memo 截断点若落在相关目录中间，重扫该目录能把同目录的其余文件补齐。
+ */
+function pickScopedDirs(memo: SearchMemo, needles: readonly string[], hitPaths: readonly string[] = []): string[] {
+  const score = new Map<string, number>();
+  const bump = (dir: string): void => { score.set(dir, (score.get(dir) ?? 0) + 1); };
+  for (const f of memo.files) {
+    const lower = f.toLowerCase();
+    if (needles.some((n) => lower.includes(n))) {
+      bump(f.includes('/') ? f.slice(0, f.lastIndexOf('/')) : '.');
+    }
+    // 目录名本身命中（如 src/acceptance/）：让整个目录成为候选
+    const parts = f.split('/');
+    for (let i = 1; i < parts.length; i++) {
+      const dir = parts.slice(0, i).join('/');
+      if (needles.some((n) => dir.toLowerCase().includes(n))) bump(dir);
+    }
+  }
+  for (const p of hitPaths) bump(p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '.');
+  return [...score.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, SCOPED_MAX_DIRS)
+    .map(([dir]) => dir);
+}
+
+/**
+ * 在指定目录内做行级匹配（递归但受 SCOPED_MAX_FILES / SCOPED_MAX_BYTES 约束）。
+ * 返回是否因预算提前结束。
+ */
+function scanScopedDirs(
+  workspace: string,
+  dirs: readonly string[],
+  rules: IgnoreRule[],
+  needles: readonly string[],
+  acc: HitAccumulator,
+): { scannedFiles: number; truncated: boolean } {
+  let scannedFiles = 0;
+  let scannedBytes = 0;
+  let truncated = false;
+  const lower = needles.map((n) => n.toLowerCase()).filter((n) => n.length >= 2);
+  for (const dir of dirs) {
+    if (acc.collected.length >= SEARCH_HIT_LIMIT) break;
+    const stack: string[] = [dir];
+    while (stack.length > 0) {
+      if (scannedFiles >= SCOPED_MAX_FILES || scannedBytes >= SCOPED_MAX_BYTES || acc.collected.length >= SEARCH_HIT_LIMIT) {
+        truncated = true;
+        break;
+      }
+      const relDir = stack.pop() as string;
+      let entries: Array<{ name: string; isDir: boolean }>;
+      try {
+        entries = readdirSync(join(workspace, relDir), { withFileTypes: true }).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
+      } catch { continue; }
+      for (const e of entries) {
+        const rel = relDir === '.' ? e.name : `${relDir}/${e.name}`;
+        if (isIgnored(rel, e.isDir, rules)) continue;
+        if (e.isDir) { stack.push(rel); continue; }
+        if (BINARY_EXTS.has(extname(e.name).toLowerCase())) continue;
+        let buf: Buffer;
+        try { buf = readFileSync(join(workspace, rel)); } catch { continue; }
+        if (buf.length > SEARCH_FILE_MAX_BYTES) continue;
+        scannedFiles++;
+        scannedBytes += buf.length;
+        const lines = buf.toString('utf8').split(/\r?\n/);
+        for (let i = 0; i < lines.length && acc.collected.length < SEARCH_HIT_LIMIT; i++) {
+          const text = lines[i];
+          if (!text) continue;
+          const lowerLine = text.toLowerCase();
+          const needle = lower.find((n) => lowerLine.includes(n));
+          if (!needle) continue;
+          const key = `${rel}:${i + 1}`;
+          if (acc.seen.has(key)) continue;
+          acc.seen.add(key);
+          const start = Math.max(0, lowerLine.indexOf(needle) - 60);
+          acc.collected.push({ path: rel, line: i + 1, snippet: text.slice(start, start + SEARCH_SNIPPET_MAX).trim() });
+        }
+      }
+    }
+  }
+  return { scannedFiles, truncated };
+}
+
 export const WorkspaceService = {
   /**
    * 文件搜索：文件名匹配 + 全文关键词（大小写不敏感），返回 {path, line, snippet}（限 50 条）。
@@ -921,25 +1069,46 @@ export const WorkspaceService = {
       return { block: '', hits: 0, scannedFiles: 0, truncated: false, skippedOversized: 0 };
     }
     const memo = await getSearchMemoAsync(projectId);
-    const collected: SearchHit[] = [];
-    const seen = new Set<string>();
-    for (const kw of keywords) {
-      if (collected.length >= SEARCH_HIT_LIMIT) break;
-      const needle = kw.toLowerCase();
-      if (needle.length < 2) continue;
-      // M6-6.1：文件名命中/正文行命中两段收集循环提取为模块级助手，本函数仅保留遍历与上限控制
-      if (collectFileNameHits(memo, needle, collected, seen)) break;
-      if (collectLineHits(memo, needle, collected, seen)) break;
+    // M6-6.1：文件名命中/正文行命中两段收集循环提取为模块级助手，本函数仅保留遍历与上限控制
+    const acc = newAccumulator();
+    collectMemoHits(memo, keywords, acc);
+    return buildRetrieveContext(
+      acc,
+      { scannedFiles: memo.scannedFiles, truncated: memo.truncated, skippedOversized: memo.skippedOversized },
+      budgetChars,
+    );
+  },
+
+  /**
+   * T03442：目录级定向检索——memo 只覆盖前 3000 个文件（monorepo 上常全是 infra/工具），
+   * 全局行匹配因此可能「预算内无命中」。这里先用 memo 的文件清单零 IO 挑出相关目录，
+   * 再在这些目录内做**独立预算**（200 文件 / 8MB）的行级深扫，命中并入同一次结果。
+   * memo 前缀 + 目录深扫两段互补：前者覆盖率广，后者命中率深。
+   */
+  async autoContextScoped(projectId: string, keywords: string[], budgetChars = ContextBudget.searchHitsChars): Promise<RetrieveContext> {
+    if (!keywords || keywords.length === 0) {
+      return { block: '', hits: 0, scannedFiles: 0, truncated: false, skippedOversized: 0 };
     }
-    const meta = {
-      hits: collected.length,
-      scannedFiles: memo.scannedFiles,
-      truncated: memo.truncated,
-      skippedOversized: memo.skippedOversized,
-    };
-    if (collected.length === 0) return { block: '', ...meta };
-    const body = collected.map((h) => `${h.path}:${h.line} — ${h.snippet}`).join('\n');
-    return { block: ContextBudget.headTail(`相关代码片段（关键词检索 Top ${collected.length}）：\n${body}`, budgetChars, '检索片段 '), ...meta };
+    const memo = await getSearchMemoAsync(projectId);
+    const acc = newAccumulator();
+    collectMemoHits(memo, keywords, acc);
+    const { workspace, rules } = getProjectWorkspace(projectId);
+    const dirs = pickScopedDirs(memo, keywords, acc.collected.map((h) => h.path));
+    let scoped = { scannedFiles: 0, truncated: false };
+    if (dirs.length > 0) {
+      await yieldToEventLoop(); // 与 T02200 同族：深扫前先给只读接口让路
+      scoped = scanScopedDirs(workspace, dirs, rules, keywords, acc);
+    }
+    return buildRetrieveContext(
+      acc,
+      {
+        scannedFiles: memo.scannedFiles + scoped.scannedFiles,
+        truncated: memo.truncated || scoped.truncated,
+        skippedOversized: memo.skippedOversized,
+        scopedDirs: dirs,
+      },
+      budgetChars,
+    );
   },
 
   /** T00782：主动失效检索 memo（供换绑/索引刷新后调用；外部集成测试亦可用） */
