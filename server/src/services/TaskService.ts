@@ -520,6 +520,59 @@ function blockerEventDetail(t: BlockerLabel): string {
   return `${t.task_no ? `${t.task_no} ` : ''}「${t.title}」`;
 }
 
+/**
+ * T03230（PM-202⑤）：沿「X 阻塞 Y」的**在途**边找 from→to 的通路（BFS + 前驱回溯）。
+ * 新增「B 阻塞 A」之前，若 A 已能沿这条路走到 B，这条边正好把环闭上。
+ * 返回值是从 A 到 B 的节点序列，调用方拼上 B 就是完整环路——拒收时要原样报出这条路，
+ * 只说一句「存在循环」用户仍然不知道是哪几条在打转。
+ */
+function findBlockingPath(db: ReturnType<typeof getDb>, projectId: string, from: string, to: string): string[] | null {
+  const rows = db.prepare(
+    'SELECT blocked_id, blocker_id FROM task_blockers WHERE released_at IS NULL AND project_id = ?',
+  ).all(projectId) as Array<{ blocked_id: string; blocker_id: string }>;
+  const out = new Map<string, string[]>();
+  for (const r of rows) {
+    const next = out.get(r.blocker_id) ?? [];
+    next.push(r.blocked_id);
+    out.set(r.blocker_id, next);
+  }
+  const prev = new Map<string, string>();
+  const seen = new Set<string>([from]);
+  const queue: string[] = [from];
+  let hit = false;
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    if (cur === to) { hit = true; break; }
+    for (const next of out.get(cur) ?? []) {
+      if (seen.has(next)) continue;
+      seen.add(next);
+      prev.set(next, cur);
+      queue.push(next);
+    }
+  }
+  if (!hit) return null;
+  const path: string[] = [to];
+  for (let cur = to; cur !== from; ) {
+    const p = prev.get(cur);
+    if (p === undefined) return null; // 前驱链断裂只可能是图被并发改写，宁可判「无环」也不误拒
+    path.unshift(p);
+    cur = p;
+  }
+  return path;
+}
+
+/** 环路文案：把节点 id 换成「编号 + 标题」，与徽标 tooltip 同一读法 */
+function blockerChainText(db: ReturnType<typeof getDb>, ids: string[]): string {
+  const labels = new Map<string, BlockerLabel>();
+  for (let i = 0; i < ids.length; i += PLAN_LOOKUP_BATCH) {
+    const chunk = ids.slice(i, i + PLAN_LOOKUP_BATCH);
+    const rows = db.prepare(`SELECT id, task_no, title FROM tasks WHERE id IN (${chunk.map(() => '?').join(',')})`)
+      .all(...chunk) as Array<{ id: string; task_no: string | null; title: string }>;
+    for (const r of rows) labels.set(r.id, r);
+  }
+  return ids.map((id) => blockerEventDetail(labels.get(id) ?? { task_no: null, title: id })).join(' → ');
+}
+
 /** 建立关系时的两侧最小投影（`SELECT id, task_no, title, project_id, status, archived`） */
 type BlockerLabel = { task_no: string | null; title: string };
 type BlockerParty = BlockerLabel & { id: string; project_id: string; status: string; archived: number };
@@ -823,6 +876,10 @@ export const TaskService = {
       || patch.description !== undefined || patch.derived_from !== undefined) this.autoRuling(id);
     // 反向计划联动（T00436）：待办被项目计划关联时，状态变更同步回计划任务（已完成↔已完成，待办→进行中）
     if (patch.status !== undefined) syncPlanOnStatusChange(id, patch.status);
+    // T03230（PM-202③）：阻塞方「迁入 done 的那一次跃迁」触发自动解除。
+    // 挂在 update() 而不是各写入口——REST 单条 PATCH、批量 status、MCP write_task_status、看板键盘标记完成全都经过这里。
+    // 只认跃迁（before.status !== 'done'）：重复 PATCH done 不该把同一批解除历史再刷一遍。
+    if (patch.status === 'done' && before && before.status !== 'done') this.releaseBlockersByCompletion(id);
     // T01876：归档态变更同样要重算父进度（REST/MCP 单条归档走本方法，批量归档见 ArchiveService）
     if (patch.archived !== undefined) this.recalcParentsOfChildren([id]);
     notifyChange('tasks');
@@ -880,6 +937,9 @@ export const TaskService = {
     if (db.prepare('SELECT 1 FROM task_blockers WHERE blocked_id = ? AND blocker_id = ? AND released_at IS NULL').get(blockedId, blockerId)) {
       throw new Error('该阻塞关系已存在');
     }
+    // T03230（PM-202⑤）：成环拒收。只查在途边——已解除的历史行不参与连通，否则「解除后再建」会被误判成环。
+    const loop = findBlockingPath(db, blocked.project_id, blockedId, blockerId);
+    if (loop) throw new Error(`将形成循环阻塞：${blockerChainText(db, [blockerId, ...loop])}（箭头读作「阻塞」）`);
     const id = uuid();
     db.transaction(() => {
       db.prepare('INSERT INTO task_blockers (id, project_id, blocked_id, blocker_id, created_at) VALUES (?, ?, ?, ?, ?)')
@@ -912,6 +972,23 @@ export const TaskService = {
     })();
     notifyChange('tasks');
     return { blocked_id: blockedId, blocker_id: blockerId, released_at: releasedAt };
+  },
+
+  /**
+   * T03230（PM-202③）：任务迁入 done 的那一刻，它作为**阻塞方**的全部在途关系自动解除。
+   * 走 removeBlocker 同一条封口通道（写 released_at/released_reason + 双向 unblock 事件），
+   * 不另写第二套解除逻辑——否则「手动解除」与「自动解除」会留下两种形状的历史。
+   *
+   * 反向不成立：阻塞方从 done 退回 todo 时**不自动恢复**这些关系。
+   * 「已完成 ⇒ 挡住的东西已让路」是用户当时据以标记完成的语义，重新打开后把阻塞悄悄钉回去，
+   * 会让徽标在用户没做任何操作的情况下自己变红；要恢复就回到阻塞面板重新建立一次（历史行带着原因可对照）。
+   */
+  releaseBlockersByCompletion(doneTaskId: string): number {
+    const db = getDb();
+    const open = db.prepare('SELECT blocked_id FROM task_blockers WHERE blocker_id = ? AND released_at IS NULL')
+      .all(doneTaskId) as Array<{ blocked_id: string }>;
+    for (const r of open) this.removeBlocker(r.blocked_id, doneTaskId, '阻塞方已完成，自动解除');
+    return open.length;
   },
 
   /**
