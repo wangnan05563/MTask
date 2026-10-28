@@ -16,6 +16,8 @@ import { TestCaseGenPanel } from './TestCaseGenPanel'; // T01492：从 PRD 生�
 import { KickoffPptPanel } from './KickoffPptPanel'; // T02108：项目启动会 PPT 工作面板
 import { SummaryPptPanel } from './SummaryPptPanel'; // T02857：阶段性项目总结汇报 PPT 工作面板
 import { CodeReviewLecturePanel } from './CodeReviewLecturePanel'; // T02872：代码评审会议讲稿工作面板（三区布局）
+import { GitExtractPanel } from './GitExtractPanel'; // T03366（八期 §3.3.1）：Git 增量资产提取工作面板（范围/方式/执行三段式）
+import { scopeWorkspace, useGitScope, type GitScope } from '../ui/gitScopePicker'; // T03366：范围与 Sonar 卡共享同一份会话级 state
 import { useSessionState, usePersistentState } from '../ui/session';
 import { usePrdGen } from '../stores/prdGenStore'; // T01038：PRD 生成卡片统一运行状态
 import { useTestCaseGen } from '../stores/testCaseGenStore'; // T01492：测试用例生成卡片运行状态
@@ -25,7 +27,7 @@ import { useCodeReviewLecture } from '../stores/codeReviewLectureStore'; // T028
 import { aiImportStore } from '../stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 import { RunStatusBadge, type RunStatus } from '../ui/runStatus'; // T01038：统一运行状态徽标
 import { FlowButton } from '../ui/FlowButton'; // T01068-FR4.4：流光按钮（loading 态）
-import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation, FileChartColumn, ScrollText, FolderOpen } from 'lucide-react';
+import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation, FileChartColumn, ScrollText, FolderOpen, FolderGit2 } from 'lucide-react';
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CARD } from '../ui/consoleReset'; // T01042：卡片侧重置入口（与控制台重置共用核心）
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
 import { focusTaskByNo } from '../ui/focusTask'; // T01057 建议：就绪任务跳转按编号定位（跨项目可命中）
@@ -117,10 +119,15 @@ interface ReportCardCfg {
   readonly statusNode?: React.ReactNode;
   /** T03176（D-14）：该卡片的能力依赖 AI 工具——AI 不可用时仍可见，但点击只给原因、不展开 */
   readonly needsAi?: boolean;
+  /** T03366（八期 §3.3.1）：仅借用 blocked 视觉（灰化 + 警示文案），点击**照常展开**面板——
+   *  与 needsAi 的 blocked 语义不同：那种情况展开也没有入口，这种情况的修复入口就在面板里。 */
+  readonly blockedVisual?: boolean;
+  /** T03366：blockedVisual 时的底部文案（自有口径，不复用 AI 不可用提示语） */
+  readonly toneText?: string;
 }
 
 /** 能力入口卡片（T00621，S3776 抽取；T00908 支持可选右上角动作按钮；T01038 支持底部运行状态徽标） */
-function ReportCard({ icon, title, desc, hint, aria, open, onToggle, onOpen, action, statusNode, onReset, glow, blocked, onBlocked }: {
+function ReportCard({ icon, title, desc, hint, aria, open, onToggle, onOpen, action, statusNode, onReset, glow, blocked, onBlocked, blockedVisual, toneText }: {
   readonly icon: React.ReactNode; readonly title: string; readonly desc: React.ReactNode;
   readonly hint: string; readonly aria: string; readonly open: boolean; readonly onToggle: () => void;
   /** T03189（G-1）：只在「展开」这一半触发，收起不算一轮材料准备的开始 */
@@ -133,6 +140,10 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, onOpen, act
   /** T03176（D-14）：AI 不可用——卡片保留可见与工具提示，点击只回显原因（不展开面板、不真隐藏） */
   readonly blocked?: boolean;
   readonly onBlocked?: () => void;
+  /** T03366：blocked 视觉但点击照常展开（环境未就绪，修复入口在面板内） */
+  readonly blockedVisual?: boolean;
+  /** T03366：blockedVisual 时替换底部提示语（不套 AI 不可用文案） */
+  readonly toneText?: string;
 }) {
   // T00908：容器用 div role=button（不用原生 button）——右上角动作/重置按钮是交互子元素，
   //         不能嵌套在按钮内（HTML 语法/可达性）；键盘激活能力由下方 onKeyDown 等价补齐。
@@ -146,6 +157,8 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, onOpen, act
     try { await onReset(); } finally { setResetting(false); }
   }
   const hasCorner = Boolean(action || onReset);
+  /** T03366：灰化与警示色可由 blockedVisual 触发，但光标/aria-disabled 仍只属于「点了没用」的真 blocked */
+  const dimmed = Boolean(blocked) || Boolean(blockedVisual);
   const act = () => {
     if (blocked) { onBlocked?.(); return; }
     if (!open) onOpen?.();
@@ -166,14 +179,18 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, onOpen, act
       title={hint}
       aria-label={aria}
       className={`card-btn ln${glow && !blocked ? ' flow-glow' : ''}`}
-      style={{ position: 'relative', textAlign: 'left', padding: 14, border: open && !blocked ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', cursor: blocked ? 'not-allowed' : 'pointer', opacity: blocked ? 0.65 : 1, display: 'flex', gap: 10, alignItems: 'flex-start', width: '100%' }}
+      style={{ position: 'relative', textAlign: 'left', padding: 14, border: open && !blocked ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', cursor: blocked ? 'not-allowed' : 'pointer', opacity: dimmed ? 0.65 : 1, display: 'flex', gap: 10, alignItems: 'flex-start', width: '100%' }}
     >
       {icon}
       <span style={{ flex: 1 }}>
         <span style={{ display: 'block', fontSize: 'var(--fs-l)', fontWeight: 600, color: 'var(--text)' }}>{title}</span>
         <span style={{ display: 'block', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>{desc}</span>
-        <span style={{ display: 'block', fontSize: 'var(--fs-xs)', color: blocked ? 'var(--warn)' : 'var(--accent)', marginTop: 8 }}>
-          {blocked ? '暂不可用 — 原因与修复动作见上方提示' : (open ? '收起工作面板 ↑' : '点击展开工作面板 ↓')}
+        <span style={{ display: 'block', fontSize: 'var(--fs-xs)', color: dimmed ? 'var(--warn)' : 'var(--accent)', marginTop: 8 }}>
+          {blocked
+            ? '暂不可用 — 原因与修复动作见上方提示'
+            : blockedVisual
+              ? (toneText ?? '环境未就绪 — 展开面板查看原因与修复入口')
+              : (open ? '收起工作面板 ↑' : '点击展开工作面板 ↓')}
         </span>
         {statusNode && <span style={{ display: 'block', marginTop: 6 }}>{statusNode}</span>}
       </span>
@@ -290,7 +307,7 @@ function legacyProjectScope(): string[] {
 }
 
 /** 三块 AI 工作面板的条件渲染（S3776：条件块下沉为独立组件） */
-function ReportWorkPanels({ aiToolId, projectId, projectIds, onProjectIdsChange, projects, scopeNote, showKickoffPpt, closeKickoffPpt, showSummaryPpt, closeSummaryPpt, showReviewLecture, closeReviewLecture, openCard, showPrdGen, closePrdGen, prdGenSaved, showTcGen, closeTcGen, tcImported, showPrdImport, closePrdImport, prdImportSaved, showAiImport, closeAiImport, aiImportSaved, prdImportKey }: {
+function ReportWorkPanels({ aiToolId, projectId, projectIds, onProjectIdsChange, projects, scopeNote, showKickoffPpt, closeKickoffPpt, showSummaryPpt, closeSummaryPpt, showReviewLecture, closeReviewLecture, showGitExtract, closeGitExtract, gitScope, onGitScopeChange, onGitEnvDown, onFlash, openCard, showPrdGen, closePrdGen, prdGenSaved, showTcGen, closeTcGen, tcImported, showPrdImport, closePrdImport, prdImportSaved, showAiImport, closeAiImport, aiImportSaved, prdImportKey }: {
   readonly aiToolId: string;
   readonly projectId: string;
   /** T02857：总结汇表面板默认消费顶部多选范围（空=全部项目），与 kickoff 的单项目口径不同 */
@@ -304,6 +321,13 @@ function ReportWorkPanels({ aiToolId, projectId, projectIds, onProjectIdsChange,
   readonly showSummaryPpt: boolean; readonly closeSummaryPpt: () => void;
   /** T02872：代码评审讲稿面板（第 9 张卡，三区布局） */
   readonly showReviewLecture: boolean; readonly closeReviewLecture: () => void;
+  /** T03366（八期 §3.3.1）：第 10 张卡——Git 增量资产提取；范围与 Sonar 卡共享同一份会话级 state，由本页单存 */
+  readonly showGitExtract: boolean; readonly closeGitExtract: () => void;
+  readonly gitScope: GitScope; readonly onGitScopeChange: (next: GitScope) => void;
+  /** T03366：面板取数发现的「非仓库 / 无 git」上抛给卡片（页面层算不出这两种 kind） */
+  readonly onGitEnvDown: (down: boolean) => void;
+  /** T03366：面板内的短提示（绑定成功/下载失败等）沿用本页统一的 flash */
+  readonly onFlash: (m: string) => void;
   /** T02108：启动会校验清单的「去补充」深链落到本页对应能力卡片（report?card=prd-import / tc-gen） */
   readonly openCard: (key: 'prd-import' | 'tc-gen') => void;
   readonly showPrdGen: boolean; readonly closePrdGen: () => void; readonly prdGenSaved: (r: { issues: number }) => void;
@@ -326,6 +350,10 @@ function ReportWorkPanels({ aiToolId, projectId, projectIds, onProjectIdsChange,
       {/* T02872（PRD §6.1）：第 9 张卡——三区布局自带左 diff / 右讲稿，阶段日志同时进右侧控制台 */}
       {showReviewLecture && (
         <CodeReviewLecturePanel projectIds={projectIds} onProjectIdsChange={onProjectIdsChange} projects={projects} toolId={aiToolId} onClose={closeReviewLecture} />
+      )}
+      {/* T03366（八期 §3.3.1）：第 10 张卡——范围/方式/执行三段式；不消耗 AI 额度，日志不进右侧控制台（面板内自带阶段进度） */}
+      {showGitExtract && (
+        <GitExtractPanel projects={projects} scope={gitScope} onScopeChange={onGitScopeChange} onClose={closeGitExtract} onEnvState={onGitEnvDown} flash={onFlash} />
       )}
       {/* T01492：从 PRD 生成测试用例面板（日志/正文同走右侧控制台；停止已接进控制台 stopAll） */}
       {showTcGen && (
@@ -646,6 +674,13 @@ export function ReportPage() {
   const [showSummaryPpt, setShowSummaryPpt] = useSessionState('report.showSummaryPpt', false);
   // T02872（PRD §6.1）：代码评审会议讲稿面板展开态（第 9 张卡，互斥）——生成分钟级长任务，切页返回要回到展开态
   const [showReviewLecture, setShowReviewLecture] = useSessionState('report.showReviewLecture', false);
+  // T03366（八期 §3.3.1）：Git 增量资产提取面板展开态（第 10 张卡，插在讲稿卡之后，互斥）。
+  // 范围由页面层持有（useGitScope → 会话键 git.scope）：卡片要按「环境是否就绪」出 blocked 视觉，
+  // 面板要出同一份范围——两处各存一份必然漂移，故由本页单存单向下传。
+  const [showGitExtract, setShowGitExtract] = useSessionState('report.showGitExtract', false);
+  const [gitScope, setGitScope] = useGitScope();
+  /** T03366：面板取数后上抛的「环境不可用」（非仓库 / 无 git）——这类只有服务端知道，页面层无从算 */
+  const [gitEnvDown, setGitEnvDown] = useState(false);
   // T00908：「已上传 PRD 文档」弹层展开态 + 导入面板强制重挂载计数（选择文档后递增 key 触发面板重挂，
   //          使 useSessionState 重新读取 sessionStorage 中的目标项目与 docId，保证自动带入生效）
   const [prdDocsOpen, setPrdDocsOpen] = useState(false);
@@ -730,6 +765,7 @@ export function ReportPage() {
     kickoffPpt: setShowKickoffPpt,
     summaryPpt: setShowSummaryPpt,
     reviewLecture: setShowReviewLecture,
+    gitExtract: setShowGitExtract,
   } as const;
   type PanelKey = keyof typeof panelSetters;
   const panelOpen: Record<PanelKey, boolean> = {
@@ -737,7 +773,17 @@ export function ReportPage() {
     kickoffPpt: showKickoffPpt,
     summaryPpt: showSummaryPpt,
     reviewLecture: showReviewLecture,
+    gitExtract: showGitExtract,
   };
+  /** T03366：卡片 blocked 视觉的判据——勾了项目但没有共同工作空间（未绑定 / 跨空间）。
+   *  注意与 needsAi 的 AI 不可用是两套语义：这里点击**仍展开**面板（要的就是面板里的绑定入口）。 */
+  const gitWs = scopeWorkspace(projects, gitScope.projectIds);
+  const gitEnvBlocked = gitWs.blocked;
+  /** 环境未就绪 = 页面层能算的（未绑定 / 跨空间）+ 只有面板取数才知道的（非仓库 / 无 git） */
+  const gitEnvUnready = gitEnvBlocked || gitEnvDown;
+  const gitEnvText = gitEnvBlocked
+    ? '未就绪：所选项目没有共同的工作空间'
+    : gitEnvDown ? '未就绪：工作空间不是 Git 仓库或未找到 git 命令' : '';
   /** 点击卡片：已展开则收起，否则只展开它（其余全部收起） */
   function togglePanel(key: PanelKey) {
     const keys = Object.keys(panelSetters) as PanelKey[];
@@ -858,6 +904,18 @@ export function ReportPage() {
       open: showReviewLecture,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('reviewLecture') },
+    // T03366（八期 §3.3.1）：第 10 张卡——位置逐字按 PRD「插在代码评审会议讲稿之后」；
+    // needsAi=false（纯 Git 只读取数与打包，不消耗模型额度），故不进 aiBlocked 那条链路。
+    // 环境未就绪时卡片呈 blocked 视觉但**仍可展开**（用户要的就是面板里的绑定入口），
+    // 文案用自有口径，不套 AiUnavailableHint（语义不同：那是额度/配置问题，这是工作空间问题）。
+    { key: 'git-extract', needsAi: false, icon: <FolderGit2 size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: 'Git 增量资产提取',
+      desc: withScopeNote('按勾选任务提取增量资产：源文件包（zip，保留目录结构）/ Excel 清单 / Markdown 清单——只读采集，不动被采集仓库',
+        gitEnvText),
+      hint: '任务需已回写 commit id；多项目必须同一工作空间；单次上限 2000 文件 / 50MB', aria: 'Git 增量资产提取',
+      open: showGitExtract,
+      blockedVisual: gitEnvUnready,
+      toneText: gitEnvBlocked ? '环境未就绪 — 展开面板绑定工作空间后即可提取' : '环境未就绪 — 展开面板查看原因与修复入口',
+      onToggle: () => togglePanel('gitExtract') },
   ];
 
   // 工作面板开关回调（S3776：从 JSX 内联箭头下沉）
@@ -1176,6 +1234,8 @@ export function ReportPage() {
               action={c.action}
               onReset={c.onReset}
               blocked={cardDown}
+              blockedVisual={c.blockedVisual}
+              toneText={c.toneText}
               onBlocked={() => flash(`「${c.title}」暂不可用：${readiness?.reason ?? 'AI 未就绪'}——点击上方「去模型管理」配置后重试`)}
               glow={st.status === 'running'} /* T01068-FR4.4：运行中卡片光晕呼吸 */
               onOpen={c.onOpen}
@@ -1190,6 +1250,8 @@ export function ReportPage() {
         showKickoffPpt={showKickoffPpt} closeKickoffPpt={closeKickoffPpt} openCard={openCard}
         showSummaryPpt={showSummaryPpt} closeSummaryPpt={() => setShowSummaryPpt(false)}
         showReviewLecture={showReviewLecture} closeReviewLecture={() => setShowReviewLecture(false)}
+        showGitExtract={showGitExtract} closeGitExtract={() => setShowGitExtract(false)}
+        gitScope={gitScope} onGitScopeChange={setGitScope} onGitEnvDown={setGitEnvDown} onFlash={flash}
         showPrdGen={showPrdGen} closePrdGen={closePrdGen} prdGenSaved={prdGenSaved}
         showTcGen={showTcGen} closeTcGen={closeTcGen} tcImported={tcImported}
         showPrdImport={showPrdImport} closePrdImport={closePrdImport} prdImportSaved={prdImportSaved}
