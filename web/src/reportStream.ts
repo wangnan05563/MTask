@@ -26,11 +26,31 @@ export interface ReportArtifactView {
   provenanceView?: ReportProvenanceView | null;
 }
 
+/** T03243（AI-102②）：一次生成的实际用量——调用次数单列，字符量/耗时为模型产出的实测值 */
+export interface AiRunUsageView { calls: number; chars: number; seconds: number }
+/** 单维偏差：偏差为相对绝对值，expected=0 时为 null（无可比基数） */
+export interface DeviationDimView { expected: number; actual: number; deviation: number | null; overThreshold: boolean }
+/** T03243（AI-102②③）：与服务端 RunUsageDeviation 逐字段对齐；blocking 恒 false（偏差不阻断） */
+export interface AiRunDeviationView {
+  chars: DeviationDimView;
+  seconds: DeviationDimView;
+  actualCalls: number;
+  noticeRequired: boolean;
+  blocking: false;
+  modelVersion: string;
+}
+
 export interface ReportStreamState {
   streaming: boolean;
   logs: string[];
   streamText: string;
-  result: { token: string; filename: string; provenance?: ReportProvenanceView; artifact?: ReportArtifactView } | null;
+  result: {
+    token: string; filename: string;
+    provenance?: ReportProvenanceView;
+    artifact?: ReportArtifactView;
+    usage?: AiRunUsageView;
+    deviation?: AiRunDeviationView;
+  } | null;
   /** T00839：本次生成开始时间戳（ms），供控制台 tab 展示实时耗时与悬停进度 */
   startedAt?: number;
   /** T01038：结束后保留的最终耗时（ms）——任务结束后停止计时，但保留最终耗时供展示 */

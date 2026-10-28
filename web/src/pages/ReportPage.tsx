@@ -7,7 +7,7 @@ import { ProjectScopePicker, scopeSummary } from '../ui/projectScopePicker'; // 
 import { NoticeToast, useNotice } from '../ui/notice';
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：开关状态取数改走可见失败态层
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
-import { reportStream, useReportStream, type ReportProvenanceView, type ReportArtifactView } from '../reportStream';
+import { reportStream, useReportStream, type ReportProvenanceView, type ReportArtifactView, type AiRunUsageView, type AiRunDeviationView } from '../reportStream';
 import { ReportConsole } from './ReportConsole';
 import { AiPlanImportPanel } from './AiPlanImportPanel';
 import { PrdImportPanel } from './PrdImportPanel'; // T00662：从 PRD 导入项目计划
@@ -404,9 +404,16 @@ function ArtifactStrip({ artifact }: { readonly artifact: ReportArtifactView }) 
 
 /** AI 报表生成成功后的下载入口（S3776：条件块下沉为独立组件）
  *  T02157：按钮文案随所选周期联动——选月报时不再显示「下载 AI 周报」。
- *  T03240：结果区追加产物路径（④）与溯源面板（①）。 */
+ *  T03240：结果区追加产物路径（④）与溯源面板（①）。
+ *  T03243：再追加实际用量与偏差（AI-102②③）。 */
 function AiResultDownload({ aiResult, onDownload, periodLabel }: {
-  readonly aiResult: { filename: string; provenance?: ReportProvenanceView; artifact?: ReportArtifactView };
+  readonly aiResult: {
+    filename: string;
+    provenance?: ReportProvenanceView;
+    artifact?: ReportArtifactView;
+    usage?: AiRunUsageView;
+    deviation?: AiRunDeviationView;
+  };
   readonly onDownload: () => Promise<void>; readonly periodLabel: string;
 }) {
   return (
@@ -422,9 +429,77 @@ function AiResultDownload({ aiResult, onDownload, periodLabel }: {
       >
         <Download size={14} /> 下载 AI {periodLabel}
       </button>
+      {aiResult.usage && <AiRunActuals usage={aiResult.usage} deviation={aiResult.deviation} />}
       {aiResult.artifact && <ArtifactStrip artifact={aiResult.artifact} />}
       {aiResult.provenance && <ProvenancePanel provenance={aiResult.provenance} />}
     </div>
+  );
+}
+
+/**
+ * T03243（AI-102②③）：实际用量 + 与「生成前确认的预估」的偏差。
+ * 字符量与耗时各自独立计算相对偏差，任一绝对偏差 >50% 明示但不阻断；调用次数只列实际值。
+ */
+function AiRunActuals({ usage, deviation }: { readonly usage: AiRunUsageView; readonly deviation?: AiRunDeviationView }) {
+  const fmt = (n: number) => n.toLocaleString('zh-CN');
+  const pct = (d: { expected: number; actual: number; deviation: number | null }) =>
+    (d.deviation == null ? '无可比基数' : `${d.actual >= d.expected ? '+' : '−'}${(d.deviation * 100).toFixed(1)}%`);
+  return (
+    <div data-t03243="actuals" style={{ marginTop: 10, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface-1)', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+      <div data-t03243="usage">
+        实际用量：调用 <b style={{ color: 'var(--text)' }}>{usage.calls} 次</b>
+        {' · '}字符量 <b style={{ color: 'var(--text)' }}>{fmt(usage.chars)} 字</b>
+        {' · '}耗时 <b style={{ color: 'var(--text)' }}>{usage.seconds.toFixed(1)} 秒</b>
+      </div>
+      {deviation && (
+        <div data-t03243="deviation" data-notice={deviation.noticeRequired ? '1' : '0'} style={{ marginTop: 4, lineHeight: 1.6 }}>
+          <div style={{ color: deviation.chars.overThreshold ? 'var(--warn)' : undefined }}>
+            字符量偏差：{pct(deviation.chars)}（预估 {fmt(deviation.chars.expected)} 字 → 实际 {fmt(deviation.chars.actual)} 字）
+          </div>
+          <div style={{ color: deviation.seconds.overThreshold ? 'var(--warn)' : undefined }}>
+            耗时偏差：{pct(deviation.seconds)}（点值预估 {deviation.seconds.expected.toFixed(1)} 秒 → 实际 {deviation.seconds.actual.toFixed(1)} 秒）
+          </div>
+          {deviation.noticeRequired && (
+            <div data-t03243="deviation-notice" style={{ marginTop: 4, color: 'var(--warn)', fontWeight: 600 }}>
+              实际与预估偏差超过 50%（预估模型 {deviation.modelVersion}）：偏差仅供核对，不影响本次已生成的结果。
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** T03243（AI-102④）：ai_usage 回看——报表这张卡近 30 天的实测调用（调用次数/字符量/耗时） */
+interface UsageRowView {
+  created_at: string; model: string; tool_name: string;
+  ok: number; duration_ms: number; content_chars: number; card_key?: string | null;
+}
+
+function ReportUsageLookback({ revision }: { readonly revision: number }) {
+  const [rows, setRows] = useState<UsageRowView[]>([]);
+  useEffect(() => {
+    let alive = true;
+    void api.get<{ recent: UsageRowView[] }>(`/ai/usage?days=30&limit=5&cardKey=${encodeURIComponent('ai.weekly_report')}`)
+      .then((r) => { if (alive) setRows(r.recent ?? []); })
+      .catch(() => { if (alive) setRows([]); });
+    return () => { alive = false; };
+  }, [revision]);
+  if (rows.length === 0) return null;
+  return (
+    <details data-t03243="usage-lookback" style={{ marginTop: 10, borderTop: '1px solid var(--surface-2)', paddingTop: 8 }}>
+      <summary style={{ cursor: 'pointer', fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
+        历史实测（ai_usage 近 30 天 {rows.length} 次）
+      </summary>
+      <ul style={{ listStyle: 'none', padding: 0, margin: '6px 0 0', display: 'grid', gap: 3, fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
+        {rows.map((r) => (
+          <li key={`${r.created_at}-${r.model}-${r.duration_ms}`} data-t03243="usage-row" data-ok={r.ok ? '1' : '0'}>
+            {r.created_at.slice(0, 16).replace('T', ' ')} · {r.model || '—'} · {r.ok ? '成功' : '失败'}
+            {' · '}{r.content_chars.toLocaleString('zh-CN')} 字 · {(r.duration_ms / 1000).toFixed(1)} 秒
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 
@@ -504,6 +579,8 @@ export function ReportPage() {
   // T03242（AI-102）：生成前预检结果——用户确认后才发起；周期/格式/范围一变就作废，避免拿旧预估去生成
   const [aiEstimate, setAiEstimate] = useState<ReportAiPreflight | null>(null);
   const [aiPreflighting, setAiPreflighting] = useState(false);
+  // T03243（AI-102④）：每次生成完成后递增，驱动 ai_usage 回看刷新
+  const [usageRevision, setUsageRevision] = useState(0);
   // 文档区收起态：为让 AI 控制台全屏浏览，提供收起/展开动态按钮切换左侧文档区显隐
   const [splitCollapsed, setSplitCollapsed] = useState(false);
   // T00816：AI 控制台收起态——与文档区互为反操作（收起控制台让左侧文档区全屏），二者互斥避免两侧同隐的空屏
@@ -883,8 +960,8 @@ export function ReportPage() {
       flash(aiDown && readiness ? `AI 暂不可用：${readiness.reason}` : '请先在「模型管理」配置并选择 AI 工具');
       return;
     }
-    // T03242：把用户确认过的预估带给服务端——完成后要与「他看到的那份预估」比偏差，不能临时重算
-    const confirmed = aiEstimate ? { calls: aiEstimate.estimate.calls, chars: aiEstimate.estimate.chars, modelVersion: aiEstimate.estimate.modelVersion } : undefined;
+    // T03242/T03243：把用户确认过的那份预估整体带给服务端——偏差要与「他看到的数字」比，不能临时重算
+    const confirmed = aiEstimate?.estimate;
     setAiAttemptFailed(false);
     reportStream.begin();
     // T00838：登记本次生成的 AbortController，供控制台「停止」按钮跨组件中止
@@ -904,11 +981,13 @@ export function ReportPage() {
               reportStream.appendText((payload as { text: string }).text);
               break;
             case 'done': {
-              const { token, filename, provenance, artifact } = payload as {
+              const { token, filename, provenance, artifact, usage, deviation } = payload as {
                 token: string; filename: string; provenance?: ReportProvenanceView; artifact?: ReportArtifactView;
+                usage?: AiRunUsageView; deviation?: AiRunDeviationView;
               };
-              reportStream.setResult({ token, filename, provenance, artifact });
+              reportStream.setResult({ token, filename, provenance, artifact, usage, deviation });
               setAiEstimate(null);
+              setUsageRevision((v) => v + 1);
               break;
             }
             case 'error':
@@ -1259,6 +1338,8 @@ export function ReportPage() {
               {lastArtifact.provenanceView && <ProvenancePanel provenance={lastArtifact.provenanceView} />}
             </div>
           )}
+          {/* T03243（AI-102④）：ai_usage 按卡回看实际值（刷新/重进后仍可查） */}
+          <ReportUsageLookback revision={usageRevision} />
         </div>
         )}
       </div>

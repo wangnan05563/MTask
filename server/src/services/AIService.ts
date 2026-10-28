@@ -482,6 +482,7 @@ export const AIService = {
     user: string,
     timeoutMs?: number,
     signal?: AbortSignal, // T00838：可选中止信号——控制台任务可被「停止」按钮中断
+    cardKey?: string, // T03243（AI-102④）：调用方显式归属卡片（通用 ask 通道无一对一 kind 映射）
   ): Promise<{ ok: boolean; content?: string; error?: string }> {
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
@@ -489,7 +490,7 @@ export const AIService = {
     const effective = timeoutMs == null ? config : { ...config, timeoutMs };
     const startedAt = Date.now();
     const res = await adapter.chat(system, user, effective, signal);
-    recordUsage('ask', toolId, config.model, res.ok, startedAt, res.content?.length ?? 0, res.error);
+    recordUsage('ask', toolId, config.model, res.ok, startedAt, res.content?.length ?? 0, res.error, cardKey);
     return res;
   },
 
@@ -593,7 +594,8 @@ export const AIService = {
     onDelta: (text: string) => void,
     timeoutMs?: number,
     signal?: AbortSignal, // T00838：可选中止信号——周报生成可被「停止」按钮中断
-  ): Promise<StreamResult> {
+    cardKey?: string, // T03243（AI-102④）：通用 stream 通道显式归属卡片，回看时可按卡取实际值
+  ): Promise<StreamResult & { chars: number; durationMs: number }> {
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     // 长耗时流式调用同样由调用方传入更大的超时，避免中途被掐断
@@ -602,8 +604,10 @@ export const AIService = {
     let chars = 0;
     const wrapped = (text: string) => { chars += text.length; onDelta(text); };
     const res = await adapter.chatStream(system, user, effective, wrapped, signal);
-    recordUsage('stream', toolId, config.model, res.ok, startedAt, chars, res.error);
-    return res;
+    const durationMs = Date.now() - startedAt;
+    recordUsage('stream', toolId, config.model, res.ok, startedAt, chars, res.error, cardKey);
+    // 与 ai_usage 同一份实际值（流式增量子符数 / 墙钟耗时），供 AI-102② 偏差复算直接取用
+    return { ...res, chars, durationMs };
   },
 
   /**

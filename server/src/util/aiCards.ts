@@ -35,7 +35,7 @@ export const AI_CARDS: readonly AiCard[] = [
   { key: 'ai.prd_gen', title: 'PRD 生成', group: 'plan', available: true, metered: false },
   { key: 'ai.prd_import', title: 'PRD 导入解析', group: 'plan', available: true, metered: false },
   { key: 'ai.plan_import', title: 'AI 项目计划导入', group: 'plan', available: true, metered: false },
-  { key: 'ai.weekly_report', title: '周报/月报生成', group: 'report', available: true, metered: false },
+  { key: 'ai.weekly_report', title: '周报/月报生成', group: 'report', available: true, metered: true },
   { key: 'ai.summary_ppt', title: '阶段总结 PPT', group: 'report', available: true, metered: false },
   { key: 'ai.kickoff_ppt', title: '启动会 PPT', group: 'report', available: true, metered: false },
   { key: 'ai.test_case_gen', title: '测试用例生成', group: 'quality', available: true, metered: false },

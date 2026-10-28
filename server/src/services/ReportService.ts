@@ -10,7 +10,17 @@ import { logService } from './LogService';
 import { resolveCustomWindow, type CustomRange } from './summaryPptPeriod';
 import { buildReportProvenance, HANDLE_RESULT_LIMIT, type ReportProvenance } from './reportProvenance';
 import { recordArtifact, type AiArtifact } from './aiArtifactService';
-import { PREFLIGHT_ESTIMATE_MODEL, PROXY_METRIC_NOTICE, estimateOutputRun, type PreflightEstimate } from './preflightEstimate';
+import { PREFLIGHT_ESTIMATE_MODEL, PROXY_METRIC_NOTICE, assessAiRunDeviation, estimateOutputRun, type PreflightEstimate, type RunUsageDeviation } from './preflightEstimate';
+
+/** T03243（AI-102④）：报表这张 AI 卡片的稳定 key——ai_usage 归属与历史回看同源 */
+export const AI_REPORT_CARD = 'ai.weekly_report';
+
+/** T03243（AI-102②）：一次生成的实际用量（字符量/耗时来自 AIService 同一份计数，调用次数单列） */
+export interface AiRunUsage {
+  calls: number;
+  chars: number;
+  seconds: number;
+}
 
 /** 报表周期：day=日报 / week=周报 / month=月报 */
 export type ReportPeriod = 'day' | 'week' | 'month';
@@ -613,6 +623,32 @@ export function aiReportPreflight(
   };
 }
 
+/**
+ * T03243（AI-102②）：校验前端回传的「用户确认过的那份预估」。
+ * 偏差必须与用户当时看到的数字比，不能事后重算——但回传值来自客户端，数值合理性要卡住
+ * （非数/负数/超量级一律视为未提供，宁可不出偏差也不展示离谱读数）。
+ */
+export function normalizeConfirmedEstimate(raw: unknown): PreflightEstimate | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  const num = (v: unknown, max: number): number | undefined =>
+    (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= max ? v : undefined);
+  const calls = num(o.calls, 100);
+  const chars = num(o.chars, 5_000_000);
+  const seconds = num(o.seconds, 86_400);
+  const modelVersion = typeof o.modelVersion === 'string' ? o.modelVersion.trim().slice(0, 64) : '';
+  if (calls === undefined || chars === undefined || seconds === undefined || !modelVersion) return undefined;
+  return {
+    calls: Math.floor(calls),
+    chars: Math.floor(chars),
+    charsBasis: o.charsBasis === 'context' ? 'context' : 'output',
+    seconds,
+    secondsLow: num(o.secondsLow, 86_400) ?? seconds,
+    secondsHigh: num(o.secondsHigh, 86_400) ?? seconds,
+    modelVersion,
+  };
+}
+
 /** 生成报表，返回文件 buffer 与建议文件名（T02165：opts.projectIds 多项目聚合，与 projectId 兼容共存） */
 export async function generateReport(
   period: ReportPeriod,
@@ -639,16 +675,23 @@ export async function generateReport(
 export async function aiGenerateReport(
   period: ReportPeriod,
   format: ReportFormat,
-  opts: { projectId?: string; projectIds?: string[]; toolId: string },
-): Promise<{ token: string; filename: string; insight: string; provenance: ReportProvenance; artifact: AiArtifact }> {
+  opts: { projectId?: string; projectIds?: string[]; toolId: string; estimate?: PreflightEstimate },
+): Promise<{ token: string; filename: string; insight: string; provenance: ReportProvenance; artifact: AiArtifact; usage: AiRunUsage; deviation?: RunUsageDeviation }> {
   const data = gatherReportData(period, opts.projectIds ?? opts.projectId);
   const skill = SKILL_BY_FORMAT[format];
   const { system, user } = buildReportPrompt(period, data, skill);
-  const res = await AIService.ask(opts.toolId, system, user, AI_REPORT_TIMEOUT);
+  const startedAt = Date.now();
+  // T03243（AI-102④）：显式归属 ai.weekly_report，回看时按卡取实际值
+  const res = await AIService.ask(opts.toolId, system, user, AI_REPORT_TIMEOUT, undefined, AI_REPORT_CARD);
   if (!res.ok || !res.content?.trim()) throw new Error(res.error ?? 'AI 生成失败');
   const insight = res.content.trim();
+  const usage: AiRunUsage = {
+    calls: 1,
+    chars: res.content.length,
+    seconds: Math.round((Date.now() - startedAt) / 100) / 10,
+  };
   const filename = `MTask-AI-${data.periodLabel}-${data.startDate}.${format}`;
-  const provenance = buildReportProvenance(data, { cardKey: 'ai.weekly_report', model: aiToolName(opts.toolId) });
+  const provenance = buildReportProvenance(data, { cardKey: AI_REPORT_CARD, model: aiToolName(opts.toolId) });
   const buffer = await buildInWorker({ format, data, aiInsight: insight, provenance });
   const token = saveReportBuffer(buffer);
   // T03240（④）：临时令牌文件下载即删，另存持久副本供刷新/重进找回
@@ -668,7 +711,7 @@ export async function aiGenerateReport(
       logService.log('ERROR', 'ai', `[周报摘要推送] 失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  return { token, filename, insight, provenance, artifact };
+  return { token, filename, insight, provenance, artifact, usage, deviation: opts.estimate ? assessAiRunDeviation(opts.estimate, usage) : undefined };
 }
 
 /**
@@ -687,11 +730,11 @@ function inboxSummaryTitle(data: ReportData): string {
 export async function aiGenerateReportStream(
   period: ReportPeriod,
   format: ReportFormat,
-  opts: { projectId?: string; projectIds?: string[]; toolId: string },
+  opts: { projectId?: string; projectIds?: string[]; toolId: string; estimate?: PreflightEstimate },
   onStage: (msg: string) => void,
   onChunk: (text: string) => void,
   signal?: AbortSignal, // T00838：可选中止信号——周报生成可被「停止」按钮中断
-): Promise<{ token: string; filename: string; insight: string; provenance: ReportProvenance; artifact: AiArtifact }> {
+): Promise<{ token: string; filename: string; insight: string; provenance: ReportProvenance; artifact: AiArtifact; usage: AiRunUsage; deviation?: RunUsageDeviation }> {
   onStage(`正在聚合${PERIOD_LABEL[period]}任务数据…`);
   const data = gatherReportData(period, opts.projectIds ?? opts.projectId);
   const skill = SKILL_BY_FORMAT[format];
@@ -700,13 +743,15 @@ export async function aiGenerateReportStream(
   const scopeLabel = data.projectScope ? `（范围：${data.projectScope.join(' + ')}）` : '';
   onStage(`已聚合 ${data.projects.length} 个项目${scopeLabel} / ${data.tasks.length} 条任务，正在调用模型生成洞察…`);
   const { system, user } = buildReportPrompt(period, data, skill);
-  const res = await AIService.askStream(opts.toolId, system, user, onChunk, AI_REPORT_TIMEOUT, signal);
+  const res = await AIService.askStream(opts.toolId, system, user, onChunk, AI_REPORT_TIMEOUT, signal, AI_REPORT_CARD);
   if (!res.ok || !res.content?.trim()) throw new Error(res.error ?? 'AI 生成失败');
   const insight = res.content.trim();
+  // T03243（AI-102②）：实际值与 ai_usage 同一份计数（流式增量字符数 / 墙钟耗时），调用次数单列
+  const usage: AiRunUsage = { calls: 1, chars: res.chars, seconds: Math.round(res.durationMs / 100) / 10 };
   onStage('洞察生成完成，正在按内置 skill 版式合成文件…');
   // worker 异步合成：主事件循环不被阻塞，SSE 仍可推送/响应其它请求
   const filename = `MTask-AI-${data.periodLabel}-${data.startDate}.${format}`;
-  const provenance = buildReportProvenance(data, { cardKey: 'ai.weekly_report', model: aiToolName(opts.toolId) });
+  const provenance = buildReportProvenance(data, { cardKey: AI_REPORT_CARD, model: aiToolName(opts.toolId) });
   const buffer = await buildInWorker({ format, data, aiInsight: insight, provenance });
   const token = saveReportBuffer(buffer);
   const artifact = recordArtifact({ cardKey: provenance.cardKey, filename, buffer, provenance });
@@ -732,7 +777,7 @@ export async function aiGenerateReportStream(
       logService.log('ERROR', 'ai', `[周报摘要推送] 失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  return { token, filename, insight, provenance, artifact };
+  return { token, filename, insight, provenance, artifact, usage, deviation: opts.estimate ? assessAiRunDeviation(opts.estimate, usage) : undefined };
 }
 
 function readFileOrUndefined(path: string): Buffer | undefined {

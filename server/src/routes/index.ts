@@ -40,7 +40,7 @@ import { historyApi } from './history'; // T00589：历史资产（转移/统计
 import { supervisorApi } from './supervisor'; // T01286：监督状态/审计/配置（FR-5.2~5.4）
 import { webhooksApi } from './webhooks'; // T03196（PM-401）：项目级 outbound Webhook（配置/测试/投递日志）
 import { listArtifacts } from '../services/aiArtifactService';
-import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, discardReport, gatherReportData, validateProjectIds, aiReportPreflight, type ReportPeriod, type ReportFormat } from '../services/ReportService';
+import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, discardReport, gatherReportData, validateProjectIds, aiReportPreflight, normalizeConfirmedEstimate, AI_REPORT_CARD, type ReportPeriod, type ReportFormat } from '../services/ReportService';
 import { DOWNLOAD_NAME_RE } from '../util/export-name'; // T02104：下载文件名白名单单源（与生成侧清洗同源）
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
@@ -1822,9 +1822,12 @@ api.post('/report/ai-generate', exportGate(REPORT_GATE), async (req, res) => {
     const r = await aiGenerateReport(period, format, {
       projectIds: scope.ids,
       toolId,
+      // T03243（AI-102②③）：按用户确认过的那份预估复算偏差（回传值经量级校验）
+      estimate: normalizeConfirmedEstimate(req.body?.estimate),
     });
     // T03240（AI-101 ①④）：溯源段随结果返回；artifact 为持久副本，供刷新/重进后找回
-    res.json({ ok: true, token: r.token, filename: r.filename, insight: r.insight, provenance: r.provenance, artifact: r.artifact });
+    // T03243（AI-102②③④）：usage=实际值（调用次数单列），deviation=与确认预估的偏差（不阻断）
+    res.json({ ok: true, token: r.token, filename: r.filename, insight: r.insight, provenance: r.provenance, artifact: r.artifact, usage: r.usage, deviation: r.deviation });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -2067,7 +2070,7 @@ api.post('/report/ai-generate-stream', exportGate(REPORT_GATE), async (req, res)
     const r = await aiGenerateReportStream(
       period,
       format,
-      { projectIds: scope.ids, toolId },
+      { projectIds: scope.ids, toolId, estimate: normalizeConfirmedEstimate(req.body?.estimate) },
       (msg) => send('stage', { msg }),
       (text) => send('chunk', { text }),
       ac.signal,
@@ -2079,7 +2082,8 @@ api.post('/report/ai-generate-stream', exportGate(REPORT_GATE), async (req, res)
       issuedToken = undefined;
       return;
     }
-    send('done', { token: r.token, filename: r.filename, provenance: r.provenance, artifact: r.artifact });
+    // T03243（AI-102②③④）：done 带实际用量与偏差（超 50% 由前端明示，本身不阻断）
+    send('done', { token: r.token, filename: r.filename, provenance: r.provenance, artifact: r.artifact, usage: r.usage, deviation: r.deviation });
     doneSent = true;
     res.end();
   } catch (e) {
@@ -2493,10 +2497,15 @@ function createTaskFromSource(table: 'prompts' | 'req_entries', sourceId: string
   return { taskId: id, projectId, reused: false };
 }
 
-/** AI 用量聚合（T00448 / PRD AI-1）：近 N 天概览（按天/按工具）+ 最近明细 */
+/** AI 用量聚合（T00448 / PRD AI-1）：近 N 天概览（按天/按工具）+ 最近明细
+ *  T03243（AI-102④）：`?cardKey=` 按卡过滤——生成后的实际值（调用次数/字符量/耗时）可从 ai_usage 回看。 */
 api.get('/ai/usage', (req, res) => {
   const days = Math.min(90, Math.max(1, Number(req.query.days) || 7));
   const since = new Date(Date.now() - days * 86400000).toISOString();
+  const cardKey = typeof req.query.cardKey === 'string' ? req.query.cardKey.trim() : '';
+  // 只做等值过滤、参数化占位，不拼用户串
+  const cardWhere = cardKey ? ' AND card_key = ?' : '';
+  const cardArgs = cardKey ? [cardKey] : [];
   const db = getDb();
   const summary = db.prepare(
     `SELECT substr(created_at, 1, 10) AS day,
@@ -2505,15 +2514,15 @@ api.get('/ai/usage', (req, res) => {
             SUM(1 - ok) AS failCalls,
             CAST(AVG(duration_ms) AS INTEGER) AS avgMs,
             SUM(content_chars) AS contentChars
-     FROM ai_usage WHERE created_at >= ? GROUP BY day ORDER BY day`,
-  ).all(since);
+     FROM ai_usage WHERE created_at >= ?${cardWhere} GROUP BY day ORDER BY day`,
+  ).all(since, ...cardArgs);
   const byTool = db.prepare(
     `SELECT tool_name, model, kind, COUNT(*) AS calls,
             SUM(ok) AS okCalls, SUM(1 - ok) AS failCalls,
             CAST(AVG(duration_ms) AS INTEGER) AS avgMs,
             SUM(content_chars) AS contentChars
-     FROM ai_usage WHERE created_at >= ? GROUP BY tool_name, model, kind ORDER BY calls DESC`,
-  ).all(since);
+     FROM ai_usage WHERE created_at >= ?${cardWhere} GROUP BY tool_name, model, kind ORDER BY calls DESC`,
+  ).all(since, ...cardArgs);
   // T02308：`recent` 原为无窗口 `LIMIT 30`——厂商快速失败风暴（~340ms/次）会独占 30 行，
   // 其它厂商错误原文一行都取不到。现与 summary/byTool 同窗，并按厂商采样：
   // 每厂商最多取 perTool 条，且每厂商最近一条**优先入选**（rn=1 组排在前），保证逐厂商复核通道。
@@ -2521,16 +2530,16 @@ api.get('/ai/usage', (req, res) => {
   const perTool = Math.min(20, Math.max(1, Number(req.query.perTool) || 5));
   const recent = db.prepare(
     `WITH ranked AS (
-       SELECT tool_name, model, kind, ok, duration_ms, content_chars, error, created_at,
+       SELECT tool_name, model, kind, card_key, ok, duration_ms, content_chars, error, created_at,
               ROW_NUMBER() OVER (PARTITION BY tool_name ORDER BY created_at DESC) AS rn
-       FROM ai_usage WHERE created_at >= ?
+       FROM ai_usage WHERE created_at >= ?${cardWhere}
      )
-     SELECT tool_name, model, kind, ok, duration_ms, content_chars, error, created_at
+     SELECT tool_name, model, kind, card_key, ok, duration_ms, content_chars, error, created_at
      FROM ranked WHERE rn <= ?
      ORDER BY CASE WHEN rn = 1 THEN 0 ELSE 1 END, created_at DESC
      LIMIT ?`,
-  ).all(since, perTool, limit);
-  res.json({ days, limit, perTool, summary, byTool, recent });
+  ).all(since, ...cardArgs, perTool, limit);
+  res.json({ days, limit, perTool, cardKey: cardKey || null, summary, byTool, recent });
 });
 
 /** T03172（G-2 / AI-301 验收⑤）：AI 可用卡片月采用覆盖率——card_key 精确统计直接出数（?month=YYYY-MM，默认当月） */
