@@ -644,6 +644,36 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     CREATE INDEX IF NOT EXISTS idx_task_blockers_blocker ON task_blockers(blocker_id, released_at, created_at);
     CREATE INDEX IF NOT EXISTS idx_task_blockers_project ON task_blockers(project_id, released_at);
   `);
+  // T03231（PRD PM-203）：项目级自定义字段。字段定义挂项目，值挂任务（对齐「值挂在条目上」的口径），
+  // 因此同一字段定义对所有任务可见、删项目级联清值。四类型固定 text/number/date/select（Q-1 裁决：不改任务状态机）。
+  // options 用 JSON 列而不是子表：选项只在字段编辑时整体读写，没有按选项反查的路径；
+  // 但「已被引用的选项不能硬删」需要反查，故单选项的值直存 option id，校验时比对 options 里的 id。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS project_fields (
+      id          TEXT PRIMARY KEY,
+      project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name        TEXT NOT NULL,
+      type        TEXT NOT NULL,
+      options     TEXT NOT NULL DEFAULT '[]',
+      sort_weight INTEGER NOT NULL DEFAULT 0,
+      archived    INTEGER NOT NULL DEFAULT 0,
+      archived_at TEXT,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_project_fields_project ON project_fields(project_id, archived, sort_weight);
+    CREATE UNIQUE INDEX IF NOT EXISTS uniq_project_fields_name ON project_fields(project_id, name) WHERE archived = 0;
+
+    CREATE TABLE IF NOT EXISTS task_field_values (
+      id          TEXT PRIMARY KEY,
+      task_id     TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      field_id    TEXT NOT NULL REFERENCES project_fields(id) ON DELETE CASCADE,
+      value       TEXT NOT NULL DEFAULT '',
+      updated_at  TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS uniq_task_field_values ON task_field_values(task_id, field_id);
+    CREATE INDEX IF NOT EXISTS idx_task_field_values_field ON task_field_values(field_id);
+  `);
   ensureColumn('tasks', 'verified', 'verified INTEGER NOT NULL DEFAULT 0');
   ensureColumn('queues', 'paused', 'paused INTEGER NOT NULL DEFAULT 0'); // T01434：队列级暂停/继续
   // T00490：记录字体颜色（Excel 风格颜色按钮）——空串=默认色

@@ -24,6 +24,7 @@ import { checkAiReadiness } from '../services/AiReadinessService'; // T03176（D
 import { ArchiveService } from '../services/ArchiveService';
 import { TaskImageService } from '../services/TaskImageService';
 import { TaskCategoryService } from '../services/TaskCategoryService';
+import { FieldService } from '../services/FieldService'; // T03231（PM-203）：项目级自定义字段
 import { ReqCategoryService, ReqEntryService } from '../services/ReqService';
 import { exportBundle, importBundle, isExportTable } from '../services/SettingsService';
 import { getDefaultNoteProjectId, getSetting, INBOX_PROJECT_ID, setSetting } from '../services/AppSettings';
@@ -875,6 +876,34 @@ api.post('/tasks/:id/blocked-by', (req, res) => {
 
 api.delete('/tasks/:id/blocked-by/:blockerId', (req, res) => {
   wsWrap(res, () => TaskService.removeBlocker(req.params.id, req.params.blockerId));
+});
+
+// ---------- T03231（PRD PM-203）：项目级自定义字段 ----------
+// 定义挂项目、值挂任务：字段的增改归档走 /projects/:id/fields 与 /fields/:id，
+// 任务上的填写/读取走 /tasks/:id/field-values。口径与分类/阻塞关系一致——服务层抛中文错，这里统一 400。
+api.get('/projects/:id/fields', (req, res) => {
+  const includeArchived = req.query.includeArchived === '1' || req.query.includeArchived === 'true';
+  wsWrap(res, () => FieldService.list(req.params.id, { includeArchived }));
+});
+
+api.post('/projects/:id/fields', (req, res) => {
+  wsWrap(res, () => FieldService.create(req.params.id, req.body ?? {}));
+});
+
+api.patch('/fields/:id', (req, res) => {
+  wsWrap(res, () => FieldService.update(req.params.id, req.body ?? {}));
+});
+
+api.post('/fields/:id/archive', (req, res) => {
+  wsWrap(res, () => FieldService.archive(req.params.id));
+});
+
+api.get('/tasks/:id/field-values', (req, res) => {
+  wsWrap(res, () => FieldService.valuesFor(req.params.id));
+});
+
+api.put('/tasks/:id/field-values', (req, res) => {
+  wsWrap(res, () => FieldService.setValues(req.params.id, (req.body ?? {}).values));
 });
 
 // 任务手动排序（T00446）：拖拽后的完整 id 顺序 → user_sort 1..n；列表 sort=manual 时生效

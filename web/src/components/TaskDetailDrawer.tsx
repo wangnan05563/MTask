@@ -3,21 +3,22 @@
  * 与现有「行内展开」并存——行内=列表内快速预览，本抽屉=完整查看 + 编辑。
  * 自包含：用底层原语（MarkdownContent / TaskEventTimeline / api.patch）与自身编辑态，
  * 不耦合 TasksPage 的逐行展开状态，降低回归风险（R2/R3）。
- * 标签页：描述 / 处理结果 / AI 摘要 / 时间线 / 关联计划 / 阻塞关系。
+ * 标签页：描述 / 处理结果 / AI 摘要 / 时间线 / 关联计划 / 阻塞关系 / 自定义字段。
  */
 import { useCallback, useEffect, useState } from 'react';
-import { api, imageUrl, type Task } from '../api/client';
+import { api, imageUrl, type CustomField, type Task, type TaskFieldValuesPayload } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
 import { ResultDiffPanel } from '../ui/ResultDiff'; // T01607：结果历史 diff/回滚——与行内共用同一组件
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { SlideOver } from './SlideOver';
 import { Badge } from '../ui/Badge'; // PM-302 ①：徽标单源（原为抽屉私有 Badge，borderRadius/padding 与她处各异）
 import { priorityBadgeLabel, priorityTone } from '../ui/priority'; // PM-302 ③：优先级文案/色调单源
-import { Ban, ClipboardList, FileText, History, Link2, Loader2, Pencil, Save, Sparkles, X } from 'lucide-react';
+import { Ban, ClipboardList, FileText, History, Link2, Loader2, Pencil, Save, Sparkles, Tag, X } from 'lucide-react';
 import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用入口可见但禁用 + 原因/修复动作
+import { FIELD_SM_BLOCK, SELECT_BLOCK } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（T03231 字段表单复用同一形态）
 
 /** T01568：标签页键对外导出——外部跳转（focusTaskByNo）按名称指定落位标签页 */
-export type TaskDetailTab = 'desc' | 'result' | 'summary' | 'timeline' | 'plans' | 'blocks';
+export type TaskDetailTab = 'desc' | 'result' | 'summary' | 'timeline' | 'plans' | 'blocks' | 'fields';
 
 /** T03229（PM-202①）：阻塞关系行（服务端 `TaskBlockerView` 的同形投影，字段名保持 snake_case 与接口一致） */
 type BlockerRow = {
@@ -39,6 +40,9 @@ type BlockerRow = {
 export type TaskPatch = Partial<Pick<Task, 'description' | 'handle_result'>>;
 
 const STATUS_LABEL: Record<string, string> = { todo: '待办', done: '已完成' };
+
+/** T03231（PM-203）：字段类型的中文名——抽屉里与编辑态的控件形态一一对应，不做隐式猜测 */
+const FIELD_TYPE_LABEL: Record<string, string> = { text: '文本', number: '数字', date: '日期', select: '单选' };
 
 /** T02164：摘要生成时刻按本地时区渲染成 `YYYY-MM-DD HH:mm`（库内为 ISO/UTC）。
  *  早期采纳（FR5.1）写入的摘要没有时间标注，如实显示「未标注」而不是拿 updated_at 冒充。 */
@@ -86,6 +90,14 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
   const [blockBusy, setBlockBusy] = useState(false);
   const [blockErr, setBlockErr] = useState('');
   const [pickCandidates, setPickCandidates] = useState<Task[]>([]);
+  // T03231（PM-203①②）：自定义字段——进入标签页才取数（字段定义 + 当前值一次给全），
+  // 保存走 PUT 整体提交；错误就地回显，与阻塞关系的 blockErr 同一做法。
+  const [fields, setFields] = useState<CustomField[]>([]);
+  const [fieldVals, setFieldVals] = useState<Record<string, string>>({});
+  const [fieldsLoading, setFieldsLoading] = useState(false);
+  const [fieldBusy, setFieldBusy] = useState(false);
+  const [fieldErr, setFieldErr] = useState('');
+  const [fieldSaved, setFieldSaved] = useState(false);
   const [previewId, setPreviewId] = useState(''); // T01563：附件放大预览（点同图收起）
 
   // T01568：同一任务被再次跳转（如重复点同一条通知）时组件不重挂载，initialTab 变化仍需把视图切回约定标签页；
@@ -138,6 +150,34 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
     if (tab !== 'blocks') return;
     void reloadBlockers();
   }, [tab, reloadBlockers]);
+
+  // T03231：自定义字段取数——与阻塞关系同一节奏（只在进入该标签页时拉），避免每开一次抽屉都多两个请求
+  useEffect(() => {
+    if (tab !== 'fields') return;
+    setFieldsLoading(true);
+    setFieldSaved(false);
+    api.get<TaskFieldValuesPayload>(`/tasks/${task.id}/field-values`)
+      .then((p) => { setFields(p.fields); setFieldVals(p.values); setFieldErr(''); })
+      .catch((e: unknown) => { setFields([]); setFieldVals({}); setFieldErr(e instanceof Error ? e.message : String(e)); })
+      .finally(() => setFieldsLoading(false));
+  }, [tab, task.id]);
+
+  /** T03231：保存字段值——服务端整批校验（类型/选项归属/字段仍属本项目），前端只回显被拒原因 */
+  async function saveFieldValues() {
+    if (fieldBusy) return;
+    setFieldBusy(true);
+    setFieldErr('');
+    try {
+      const p = await api.put<TaskFieldValuesPayload>(`/tasks/${task.id}/field-values`, { values: fieldVals });
+      setFields(p.fields);
+      setFieldVals(p.values);
+      setFieldSaved(true);
+    } catch (e) {
+      setFieldErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFieldBusy(false);
+    }
+  }
 
   // 候选池：同项目的待办任务（已完成/已归档/搁置的不进候选——服务端在写入口也会拒，
   // 但把选择器与拒收口径对齐，用户不会先选后碰壁）。自身排除在外。
@@ -222,6 +262,7 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
     { key: 'timeline', label: '时间线', icon: <History size={13} /> },
     { key: 'plans', label: '关联计划', icon: <Link2 size={13} /> },
     { key: 'blocks', label: '阻塞关系', icon: <Ban size={13} /> },
+    { key: 'fields', label: '自定义字段', icon: <Tag size={13} /> },
   ];
 
   // 各标签页正文抽成局部函数，render 体仅留 `{tab === 'x' && renderX()}` 一层判断：
@@ -445,6 +486,66 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
     );
   }
 
+  /**
+   * T03231（PM-203①②）：自定义字段正文——每个字段一个原生控件（文本/数字/日期/单选），
+   * 控件外面包 <label> 让读屏拿到字段名（与看板复选框同一套可访问名口径）；
+   * 已归档的选项不出现在候选里，但当前值若指向它仍按原 label 显示（不静默清空用户数据）。
+   */
+  function renderFieldsTab() {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {fieldErr && <div data-t03231="fields-err" style={{ color: 'var(--danger)', fontSize: 'var(--fs-xs)' }}>{fieldErr}</div>}
+        {fieldsLoading ? (
+          <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-m)' }}>加载自定义字段…</div>
+        ) : fields.length === 0 ? (
+          <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-m)' }}>（该项目还没有自定义字段——可在「设置 → 自定义字段」创建）</div>
+        ) : (
+          <>
+            {fields.map((f) => {
+              const v = fieldVals[f.id] ?? '';
+              const staleOption = f.type === 'select' && v && !f.options.some((o) => o.id === v && !o.archived)
+                ? f.options.find((o) => o.id === v) : undefined;
+              return (
+                <label key={f.id} data-t03231="field-row" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+                    {f.name}<span style={{ color: 'var(--text-muted)' }}>（{FIELD_TYPE_LABEL[f.type] ?? f.type}）</span>
+                  </span>
+                  {f.type === 'select' ? (
+                    <select aria-label={`字段 ${f.name}`} value={v} disabled={fieldBusy}
+                      onChange={(e) => { setFieldVals((prev) => ({ ...prev, [f.id]: e.target.value })); setFieldSaved(false); }}
+                      style={SELECT_BLOCK}>
+                      <option value="">（未填）</option>
+                      {f.options.filter((o) => !o.archived).map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                      {staleOption && <option value={staleOption.id} disabled>{staleOption.label}（已停用）</option>}
+                    </select>
+                  ) : (
+                    <input
+                      aria-label={`字段 ${f.name}`}
+                      type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}
+                      step={f.type === 'number' ? 'any' : undefined}
+                      value={v}
+                      disabled={fieldBusy}
+                      onChange={(e) => { setFieldVals((prev) => ({ ...prev, [f.id]: e.target.value })); setFieldSaved(false); }}
+                      style={FIELD_SM_BLOCK}
+                    />
+                  )}
+                </label>
+              );
+            })}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <button type="button" data-t03231="field-save" onClick={() => { void saveFieldValues(); }} disabled={fieldBusy}
+                aria-label="保存自定义字段值" title="保存本任务的自定义字段值（留空=清除该项）"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 12px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)', cursor: fieldBusy ? 'default' : 'pointer' }}>
+                {fieldBusy ? <Loader2 size={12} className="aispin" /> : <Save size={12} />} 保存字段值
+              </button>
+              {fieldSaved && <span role="status" style={{ fontSize: 'var(--fs-xs)', color: 'var(--success)' }}>已保存</span>}
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
   // T02164：AI 摘要视图正文——顶部操作栏固定「更新时间 + 生成总结摘要」（约束 1 要求的入口位置），
   // 下面是摘要正文或空态引导。时间取服务端记录的真实生成时刻，而非模型输出：模型无从知道此刻几点。
   function renderSummaryTab() {
@@ -527,6 +628,9 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
 
       {/* 时间线 */}
       {tab === 'timeline' && <TaskEventTimeline taskId={task.id} />}
+
+      {/* 自定义字段（T03231 / PM-203） */}
+      {tab === 'fields' && renderFieldsTab()}
 
       {/* 关联计划 */}
       {tab === 'plans' && (

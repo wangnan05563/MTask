@@ -246,6 +246,8 @@ export interface Task {
   /** T03229（PM-202②）：在途阻塞方摘要——列表/看板「阻塞 N」徽标据此显示，tooltip 点名是谁挡的。
    *  仅列表类读法带出（单条详情改读 `/tasks/:id/blocked-by`），故为可选。 */
   blocked_by?: Array<{ id: string; task_no: string | null; title: string }>;
+  /** T03231（PM-203②）：项目自定义字段的值——仅非空项；`display` 已是给人看的文本（单选项回 label） */
+  field_values?: TaskFieldValue[];
   /** T00446：手动排序权重（拖拽排序结果；manual 排序模式生效） */
   user_sort: number | null;
   /** 置顶：true=固定到列表顶部 */
@@ -267,6 +269,43 @@ export interface TaskCategory {
   sort_weight: number;
   created_at: string;
   updated_at: string;
+}
+
+/** T03231（PM-203）：项目级自定义字段——与服务端 `ProjectFieldView` 同形（snake_case 直通） */
+export type CustomFieldType = 'text' | 'number' | 'date' | 'select';
+
+export interface CustomFieldOption {
+  id: string;
+  label: string;
+  /** 已被引用的选项只能停用（仍按 label 展示历史值），不进填写候选 */
+  archived: boolean;
+}
+
+export interface CustomField {
+  id: string;
+  project_id: string;
+  name: string;
+  type: CustomFieldType;
+  options: CustomFieldOption[];
+  sort_weight: number;
+  archived: boolean;
+  archived_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskFieldValue {
+  field_id: string;
+  name: string;
+  type: CustomFieldType;
+  value: string;
+  display: string;
+}
+
+/** 抽屉「自定义字段」页的取数形状：可编辑字段 + 当前值（值只含未归档字段） */
+export interface TaskFieldValuesPayload {
+  fields: CustomField[];
+  values: Record<string, string>;
 }
 
 /**

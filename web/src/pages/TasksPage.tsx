@@ -14,6 +14,7 @@ import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：选
 import { PinToggle } from '../ui/PinToggle';
 import { priorityAriaLabel, priorityColor } from '../ui/priority'; // PM-302 ③：优先级 → 颜色/文案单源（列表/看板/矩阵/移动端共用）
 import { blockBadgeNames, blockBadgeNode } from '../ui/blockBadge'; // T03229（PM-202②）：阻塞徽标单源（列表行与看板卡共用）
+import { fieldBadgesNode } from '../ui/fieldBadges'; // T03231（PM-203②）：自定义字段值徽标（列表行展示）
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { NoticeToast, useNotice } from '../ui/notice'; // T03214（UX-02 ③）：提示分级——成功短驻、错误长驻且可关闭/复制
 import { paginationStatus, type PaginationView } from '../utils/taskPagination'; // T03214（UX-02 ①）：剩余条数与「已加载全部」判据
@@ -2286,6 +2287,8 @@ export function TasksPage() {
         )}
         {/* T03229（PM-202②）：阻塞徽标——在途阻塞数与阻塞方点名见 blockBadgeNode */}
         {blockBadgeNode(t)}
+        {/* T03231（PM-203②）：自定义字段值——前 3 个上徽标，完整清单在 aria-label/title */}
+        {fieldBadgesNode(t)}
         {/* T00462/T00451：计划联动任务区分徽标——悬浮显示来源计划标题（反向引用）
             T01037：来源计划是里程碑时徽标显示「里程碑」，不再一律显示「计划」（里程碑≠普通计划条目）
             T02196：徽标改为可点击——跳「项目管理」并在计划 WBS 视图中定位/高亮来源节点（滚动到位由计划页完成） */}

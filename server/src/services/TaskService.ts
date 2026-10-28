@@ -11,6 +11,7 @@ import { parsePlanDeps, depsSatisfied, topoOrder, type PlanDep } from '../util/p
 import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化（拉取侧平台偏好匹配）
 import { detectRuling, isRulingSubject, RULING_DEFAULT_OPTIONS } from '../util/ruling'; // T02949：裁决自动识别（纯函数单源）
 import { WebhookService } from './WebhookService'; // T03196（PM-401）：任务事件外发
+import { FieldService, type TaskFieldValueView } from './FieldService'; // T03231（PM-203②）：列表行带出项目自定义字段值
 
 /** 批量 IN 查询的每批 id 数：SQLite 变量上限 999，留足余量并与图片批量查询（≤200）同量级 */
 const PLAN_LOOKUP_BATCH = 200;
@@ -135,6 +136,9 @@ export interface TaskView {
   /** T03229（PM-202②）：在途阻塞方摘要——列表/看板徽标据此显示「阻塞 N」，tooltip 直接点名是谁挡的。
    *  仅列表类读法（`list` / 经 `decorateRows` 的路径）带出；单条 `getById` 由前端改读 `/tasks/:id/blocked-by`。 */
   blocked_by?: Array<{ id: string; task_no: string | null; title: string }>;
+  /** T03231（PM-203②）：项目自定义字段的值（仅非空项，按字段排序）。
+   *  列表徽标与详情展示直接消费 `display`（单选项已回 label），不必前端再查字段定义。 */
+  field_values?: TaskFieldValueView[];
 }
 
 export interface TaskInput {
@@ -415,6 +419,8 @@ function decorateRows(db: ReturnType<typeof getDb>, rows: TaskRow[]): TaskView[]
   const imageMap = TaskImageService.mapByTasks(rows.map((r) => r.id));
   const planLinked = loadPlanLinked(db, rows);
   const blockers = loadOpenBlockers(db, rows.map((r) => r.id));
+  // T03231：自定义字段值随行带出（一次分批 IN，不按行回查）；无值的任务不挂空数组
+  const fields = FieldService.mapByTasks(rows.map((r) => r.id));
   return rows.map((r) => {
     const view = rowToTask(r, imageMap.get(r.id) ?? []);
     const link = planLinked.get(r.id);
@@ -424,6 +430,8 @@ function decorateRows(db: ReturnType<typeof getDb>, rows: TaskRow[]): TaskView[]
       view.fromPlanId = link.planId; // T02196：徽标点击定位来源 WBS 节点
     }
     view.blocked_by = blockers.get(r.id) ?? [];
+    const fv = fields.get(r.id);
+    if (fv) view.field_values = fv;
     return view;
   });
 }
