@@ -39,11 +39,15 @@ function httpError(res: import('express').Response, e: unknown): void {
  * 服务端按 workspace 分组，每组一次 `git log --no-walk`；60s 内同键复用。
  */
 gitLinksApi.post('/git/commit-summaries', async (req, res) => {
-  const links = Array.isArray(req.body?.links) ? (req.body.links as { taskId?: string; sha?: string }[]) : [];
+  // 「不静默失败」：缺 links 字段/传错形状是调用方写错了，点名比回一个空 groups 更有用
+  // （空数组是合法的「本页没有关联」，仍回 groups: []）
+  if (req.body?.links === undefined) return res.status(400).json({ error: 'links 必填（数组 [{taskId, sha}]）' });
+  if (!Array.isArray(req.body.links)) return res.status(400).json({ error: 'links 需为数组：[{taskId, sha}]' });
+  const links = req.body.links as { taskId?: string; sha?: string }[];
   const clean = links
     .map((l) => ({ taskId: typeof l.taskId === 'string' ? l.taskId : undefined, sha: normalizeShaInput(l.sha ?? '') ?? '' }))
     .filter((l) => l.sha);
-  if (!clean.length) return res.json({ groups: [] });
+  if (!clean.length) return res.json({ groups: [], echoed: links.length });
   const key = createHash('sha1').update(clean.map((l) => `${l.taskId ?? ''}:${l.sha}`).sort().join('|')).digest('hex');
   const hit = cacheGet(`git-summaries:${key}`) as { groups: unknown[] } | undefined;
   if (hit) return res.json(hit);
