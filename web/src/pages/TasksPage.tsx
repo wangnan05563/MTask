@@ -2269,7 +2269,7 @@ export function TasksPage() {
       await api.post(`/tasks/by-no/${taskNo}/retry`, {});
       await loadTasks(activeProject);
     } catch (e) {
-      globalThis.alert(`重试失败：${e instanceof Error ? e.message : String(e)}`);
+      flash(`重试失败：${e instanceof Error ? e.message : String(e)}`, 'error');
     } finally {
       setRetryingNo('');
     }

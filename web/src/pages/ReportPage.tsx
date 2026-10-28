@@ -4,6 +4,7 @@ import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视
 import { api, type Project, type AITool } from '../api/client';
 import { ProjectListHint, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 import { ProjectScopePicker, scopeSummary } from '../ui/projectScopePicker'; // T02857：范围多选器提到 ui 层（总结汇表面板复用同一份）
+import { NoticeToast, useNotice } from '../ui/notice';
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：开关状态取数改走可见失败态层
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import { reportStream, useReportStream, type ReportProvenanceView, type ReportArtifactView } from '../reportStream';
@@ -447,7 +448,8 @@ export function ReportPage() {
   // T01038：离线生成卡片的本地计时（短时任务，页面卸载即清空；长任务见下方模块级 store）
   const [offlineStartedAt, setOfflineStartedAt] = useState<number | undefined>(undefined);
   const [offlineFinal, setOfflineFinal] = useState<number | undefined>(undefined);
-  const [notice, setNotice] = useState('');
+  // T03241（AI-101⑥）：本次生成失败后隐藏「上一次产物」找回块——避免把旧路径读成本次失败的产物
+  const [aiAttemptFailed, setAiAttemptFailed] = useState(false);
   // 文档区收起态：为让 AI 控制台全屏浏览，提供收起/展开动态按钮切换左侧文档区显隐
   const [splitCollapsed, setSplitCollapsed] = useState(false);
   // T00816：AI 控制台收起态——与文档区互为反操作（收起控制台让左侧文档区全屏），二者互斥避免两侧同隐的空屏
@@ -513,10 +515,8 @@ export function ReportPage() {
   // 避免与用户选择打架；loadAiTools 已排除停用工具，故 aiToolId 不会指向停用项。
   const activeToolId = aiToolId || readiness?.toolId || '';
 
-  const flash = (m: string) => {
-    setNotice(m);
-    setTimeout(() => setNotice(''), 3200);
-  };
+  // T03241（AI-101⑤）：提示走主题内分级组件（错误常驻且可复制/关闭），不再调用原生 alert
+  const { notice, flash, dismiss: dismissNotice } = useNotice();
 
   // T00558：摘要写入收件箱开关（S3776：回调下沉）
   const changeSummaryInbox = (v: boolean) => {
@@ -591,7 +591,7 @@ export function ReportPage() {
   // T01042：有产物/草稿的四张卡提供卡片侧重置入口（共用 resetWorkbenchArtifacts 核心，效果与控制台重置一致）
   const resetArtifacts = async () => {
     const r = await resetWorkbenchArtifacts();
-    if (!r.ok) globalThis.alert(`重置失败：${r.error ?? '未知错误'}（本地状态已清理，可再次重置兜底）`);
+    if (!r.ok) flash(`重置失败：${r.error ?? '未知错误'}（本地状态已清理，可再次重置兜底）`, 'error');
   };
   // T02157：AI 报表侧文案随所选周期联动——选「月报」时不再写死显示「AI 周报生成」
   const periodLabel = PERIODS.find((p) => p.key === period)?.label ?? '周报';
@@ -808,6 +808,7 @@ export function ReportPage() {
       flash(aiDown && readiness ? `AI 暂不可用：${readiness.reason}` : '请先在「模型管理」配置并选择 AI 工具');
       return;
     }
+    setAiAttemptFailed(false);
     reportStream.begin();
     // T00838：登记本次生成的 AbortController，供控制台「停止」按钮跨组件中止
     const ac = new AbortController();
@@ -847,7 +848,8 @@ export function ReportPage() {
       const msg = e instanceof Error ? e.message : String(e);
       // T02142 §5：被并发闸拒不是「生成失败」——与启动会面板同口径走排队态文案（PRD §5 R6）
       const queued = msg.includes(GATE_BUSY_MSG);
-      flash(queued ? `${msg}——前面有周报/启动会稿在装配，稍后重试即可（不是失败）` : msg);
+      flash(queued ? `${msg}——前面有周报/启动会稿在装配，稍后重试即可（不是失败）` : msg, queued ? 'info' : 'error');
+      if (!queued) setAiAttemptFailed(true);
       reportStream.finish(queued ? `并发闸排队：${msg}` : `生成失败：${msg}`);
     } finally {
       reportStream.setAbortCtrl(null);
@@ -1160,7 +1162,7 @@ export function ReportPage() {
           {/* AI 洞察已移至右侧控制台流式展示，左侧仅在生成成功后保留下载入口 */}
           {aiResult && <AiResultDownload aiResult={aiResult} onDownload={aiDownload} periodLabel={PERIODS.find((p) => p.key === period)?.label ?? '周报'} />}
           {/* T03240（AI-101 ④）：无当次结果时给出上一次产物的找回入口（刷新/重进后仍在） */}
-          {!aiResult && lastArtifact && (
+          {!aiResult && lastArtifact && !aiAttemptFailed && (
             <div data-t03240="artifact-restore" style={{ marginTop: 12, borderTop: '1px solid var(--surface-2)', paddingTop: 10 }}>
               <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
                 上一次生成的{PERIODS.find((p) => p.key === period)?.label ?? '周报'}产物«{lastArtifact.filename}»（从任务记录恢复）
@@ -1173,7 +1175,7 @@ export function ReportPage() {
         )}
       </div>
 
-      {notice && <output className="flash-toast">{notice}</output>}
+      <NoticeToast notice={notice} onDismiss={dismissNotice} />
 
       {/* T00621：原「内置技能」「模板管理」独立区块已整合进各自工作面板（AI 周报面板=内置技能；离线周报面板=模板管理），此处仅保留隐藏的上传入口与占位符说明 */}
       <input ref={fileRef} type="file" accept=".xlsx,.docx" style={FILE_INPUT_SR_ONLY} onChange={(e) => void onUpload(e)} />

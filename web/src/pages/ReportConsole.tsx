@@ -913,7 +913,7 @@ export function ReportConsole({
     setResetting(true);
     const r = await resetWorkbenchArtifacts();
     setResetting(false);
-    if (!r.ok) globalThis.alert(`重置失败：${r.error ?? '未知错误'}（本地状态已清理，可再次重置兜底）`);
+    if (!r.ok) flash(`重置失败：${r.error ?? '未知错误'}（本地状态已清理，可再次重置兜底）`);
   }
 
   // T01042：监听重置广播（控制台自身按钮与工作台卡片侧入口共用）——同步重置本地 state
