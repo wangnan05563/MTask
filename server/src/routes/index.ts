@@ -43,10 +43,10 @@ import { ProjectExportService } from '../services/ProjectExportService'; // T032
 import { estimateApi } from './estimates'; // T02037（估算视图 E3）：/api/estimates*，PRD §8
 import { historyApi } from './history'; // T00589：历史资产（转移/统计）
 import { supervisorApi } from './supervisor'; // T01286：监督状态/审计/配置（FR-5.2~5.4）
-import { webhooksApi } from './webhooks';
+import { webhooksApi } from './webhooks'; // T03196（PM-401）：项目级 outbound Webhook（配置/测试/投递日志）
 import { gitLinksApi } from './gitLinks'; // 八期 §4.2：任务↔提交关联端点（摘要批量/抽屉首屏/清单懒加载/绑定解绑/git-log 上提）
 import { gitExtractApi } from './gitExtract'; // 八期 §3.3：Git 增量资产提取（范围摘要/SSE 执行/一次性令牌下载）
-import { attachGitLinks } from '../services/taskGitLinks'; // T03361：GET /tasks 行内加性字段 gitLinks/gitLinkCount // T03196（PM-401）：项目级 outbound Webhook（配置/测试/投递日志）
+import { attachGitLinks } from '../services/taskGitLinks'; // T03361：GET /tasks 行内加性字段 gitLinks/gitLinkCount
 import { listArtifacts } from '../services/aiArtifactService';
 import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, discardReport, gatherReportData, validateProjectIds, aiReportPreflight, normalizeConfirmedEstimate, AI_REPORT_CARD, type ReportPeriod, type ReportFormat } from '../services/ReportService';
 import { DOWNLOAD_NAME_RE } from '../util/export-name'; // T02104：下载文件名白名单单源（与生成侧清洗同源）

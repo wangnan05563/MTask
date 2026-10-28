@@ -139,9 +139,11 @@ export async function planExtract(taskIds: string[]): Promise<ExtractPlan> {
   if (!shas.length) throw new ExtractError('no-links', '所选任务均未回写提交 ID，无可提取内容');
 
   const summaries = await collectCommitSummaries(workspacePath, shas);
-  // 提交按时间升序：清单按「旧→新」展开，且「最终内容」必须由最后一次真实改动决定——
-  // `git log --no-walk` 的返回顺序不保证先后，直接按它覆盖会得到最早版本的内容。
-  const commitsAsc = [...summaries.commits].sort((a, b) => Date.parse(a.date) - Date.parse(b.date));
+  // 提交顺序就是「最终内容」的判定依据：清单按旧→新展开，同一文件后写覆盖前写。
+  // 不能只按提交日期排——`git log --no-walk` 返回的是新→旧，而同一秒内的相邻提交日期完全相同
+  // （脚本建仓 / rebase / 批量导入极常见），平局会原样保留这个反序：前一个提交把后一个提交
+  // 删掉的文件重新写回包里、把改动过的文件导出成最早版本。故按已采集的父提交边做拓扑排序。
+  const commitsAsc = topoOrderCommits(summaries.commits);
   const filesByCommit: ExtractPlan['filesByCommit'] = [];
   for (const c of commitsAsc) {
     filesByCommit.push({ sha: c.sha, shortSha: c.shortSha, entries: await collectCommitFiles(workspacePath, c.sha, c.parents) });
@@ -163,10 +165,40 @@ export async function planExtract(taskIds: string[]): Promise<ExtractPlan> {
   };
 }
 
+/**
+ * 提交集合排序：父提交必须排在子提交之前（Kahn 拓扑排序，边只取集合内的父子关系）。
+ * 无父子边的提交按日期升序、再按 sha 兜底，保证同样输入恒得同样输出（回执可对账）。
+ * git 的提交图无环，故拓扑排序必定能吐出全部提交。
+ */
+function topoOrderCommits(commits: CommitSummaryRow[]): CommitSummaryRow[] {
+  const rowBySha = new Map(commits.map((c) => [c.sha, c]));
+  const childShas = new Map<string, string[]>();
+  const pendingParents = new Map<string, number>();
+  for (const c of commits) {
+    const inside = c.parents.filter((p) => rowBySha.has(p));
+    pendingParents.set(c.sha, inside.length);
+    for (const p of inside) childShas.set(p, [...(childShas.get(p) ?? []), c.sha]);
+  }
+  const byDateThenSha = (a: string, b: string) =>
+    Date.parse(rowBySha.get(a)!.date) - Date.parse(rowBySha.get(b)!.date) || (a < b ? -1 : a > b ? 1 : 0);
+  const ready = [...pendingParents.keys()].filter((sha) => pendingParents.get(sha) === 0).sort(byDateThenSha);
+  const out: CommitSummaryRow[] = [];
+  while (ready.length) {
+    const sha = ready.shift()!;
+    out.push(rowBySha.get(sha)!);
+    for (const child of childShas.get(sha) ?? []) {
+      const left = (pendingParents.get(child) ?? 1) - 1;
+      pendingParents.set(child, left);
+      if (left === 0) { ready.push(child); ready.sort(byDateThenSha); }
+    }
+  }
+  return out;
+}
+
 /** 文件 → 最后一次改动它的提交（决定导出内容；D 结尾的不导出） */
 function finalPathMap(filesByCommit: ExtractPlan['filesByCommit']): Map<string, { sha: string; path: string }> {
   const out = new Map<string, { sha: string; path: string }>();
-  // 入参按提交时间升序，所以「后写覆盖前写」= 「取最终内容」。乱序会让包里装的是最早版本。
+  // 入参按「父在子前」排序，所以「后写覆盖前写」= 「取最终内容」。乱序会让包里装的是最早版本。
   for (const f of filesByCommit) {
     for (const e of f.entries) {
       // 重命名：旧路径在这一步已不存在，前面提交落进映射的旧名必须撤掉，否则包里同时出现新旧两份
