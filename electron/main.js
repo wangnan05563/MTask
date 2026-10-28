@@ -456,6 +456,17 @@ ipcMain.handle('dialog:open-directory', async () => {
   return r.filePaths[0];
 });
 
+/**
+ * T03240（AI-101 ④）：「打开目录」——在系统文件管理器中定位到产物文件。
+ * 只接受绝对路径字符串；文件已被清理时 shell 会静默失败，界面另有 exists 判定，
+ * 这里不回传真假，避免把「打开失败」误报成「文件不存在」。
+ */
+ipcMain.handle('dialog:reveal-path', (_e, p) => {
+  if (typeof p !== 'string' || !p.trim()) return false;
+  shell.showItemInFolder(p);
+  return true;
+});
+
 // ---------- T00878：一键下载并静默安装更新包 ----------
 
 /** T02071：等安装器退出码的上限；超时不判失败（可能正弹授权确认），留待下次启动对账 */

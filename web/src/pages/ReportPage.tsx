@@ -6,7 +6,7 @@ import { ProjectListHint, useProjectList } from '../ui/projectList'; // T02201�
 import { ProjectScopePicker, scopeSummary } from '../ui/projectScopePicker'; // T02857：范围多选器提到 ui 层（总结汇表面板复用同一份）
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：开关状态取数改走可见失败态层
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
-import { reportStream, useReportStream } from '../reportStream';
+import { reportStream, useReportStream, type ReportProvenanceView, type ReportArtifactView } from '../reportStream';
 import { ReportConsole } from './ReportConsole';
 import { AiPlanImportPanel } from './AiPlanImportPanel';
 import { PrdImportPanel } from './PrdImportPanel'; // T00662：从 PRD 导入项目计划
@@ -15,7 +15,7 @@ import { TestCaseGenPanel } from './TestCaseGenPanel'; // T01492：从 PRD 生�
 import { KickoffPptPanel } from './KickoffPptPanel'; // T02108：项目启动会 PPT 工作面板
 import { SummaryPptPanel } from './SummaryPptPanel'; // T02857：阶段性项目总结汇报 PPT 工作面板
 import { CodeReviewLecturePanel } from './CodeReviewLecturePanel'; // T02872：代码评审会议讲稿工作面板（三区布局）
-import { useSessionState } from '../ui/session';
+import { useSessionState, usePersistentState } from '../ui/session';
 import { usePrdGen } from '../stores/prdGenStore'; // T01038：PRD 生成卡片统一运行状态
 import { useTestCaseGen } from '../stores/testCaseGenStore'; // T01492：测试用例生成卡片运行状态
 import { useKickoffPpt } from '../stores/kickoffPptStore'; // T02109：启动会 PPT 卡片运行状态
@@ -24,12 +24,14 @@ import { useCodeReviewLecture } from '../stores/codeReviewLectureStore'; // T028
 import { aiImportStore } from '../stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 import { RunStatusBadge, type RunStatus } from '../ui/runStatus'; // T01038：统一运行状态徽标
 import { FlowButton } from '../ui/FlowButton'; // T01068-FR4.4：流光按钮（loading 态）
-import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation, FileChartColumn, ScrollText } from 'lucide-react';
+import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation, FileChartColumn, ScrollText, FolderOpen } from 'lucide-react';
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CARD } from '../ui/consoleReset'; // T01042：卡片侧重置入口（与控制台重置共用核心）
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
 import { focusTaskByNo } from '../ui/focusTask'; // T01057 建议：就绪任务跳转按编号定位（跨项目可命中）
 import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用主入口可见但禁用 + 原因/修复动作
 import { startMaterialTiming, finishMaterialTiming } from '../ui/materialTiming'; // T03189（G-1）：汇报材料准备耗时采样
+import { desktopApi } from '../ui/desktop'; // T03240（AI-101 ④）：产物「打开目录」桌面能力
+import { CopyButton } from '../ui/CopyButton'; // T03240（AI-101 ④）：复制产物路径
 
 interface ReportTemplate {
   id: string;
@@ -326,10 +328,76 @@ function ReportWorkPanels({ aiToolId, projectId, projectIds, onProjectIdsChange,
   );
 }
 
+/** T03240（AI-101 ①）：窄屏判定——桌面默认展开溯源，窄屏默认折叠（按卡片记忆优先） */
+function useNarrowViewport(): boolean {
+  const [narrow, setNarrow] = useState(() => globalThis.matchMedia?.('(max-width: 820px)').matches ?? false);
+  useEffect(() => {
+    const mq = globalThis.matchMedia?.('(max-width: 820px)');
+    if (!mq) return undefined;
+    const on = (e: MediaQueryListEvent) => setNarrow(e.matches);
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, []);
+  return narrow;
+}
+
+/**
+ * T03240（AI-101 ①③）：溯源面板。行文案来自服务端 reportProvenance 单源（与导出稿逐字一致）；
+ * 展开态按卡片记忆（localStorage `report.prov.<cardKey>`）——用户折叠后再进不回到默认值。
+ */
+function ProvenancePanel({ provenance }: { readonly provenance: ReportProvenanceView }) {
+  const narrow = useNarrowViewport();
+  const [remembered, setRemembered] = usePersistentState<boolean | null>(`report.prov.${provenance.cardKey}`, null);
+  const expanded = remembered ?? !narrow;
+  return (
+    <details open={expanded} data-t03240="provenance" data-card={provenance.cardKey}
+      onToggle={(e) => setRemembered((e.currentTarget as HTMLDetailsElement).open)}
+      style={{ marginTop: 10, border: '1px solid var(--border)', borderRadius: 6, padding: '6px 10px', background: 'var(--surface-1)' }}>
+      <summary style={{ cursor: 'pointer', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', fontWeight: 600 }}>
+        溯源（数据来源 / 时间窗 / 截断 / 模型）
+      </summary>
+      <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, fontSize: 'var(--fs-s)', lineHeight: 1.5 }}>
+        {provenance.rows.map((r) => (
+          <div key={r.label}>
+            <span style={{ color: 'var(--text-muted)' }}>{r.label}：</span>
+            <span style={{ color: r.label === '截断' && provenance.truncation ? 'var(--warn)' : 'var(--text-secondary)' }}>{r.value}</span>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+/** T03240（AI-101 ④）：产物路径常驻 + 复制路径 + 打开目录；文件被清理时照实提示，不给死链 */
+function ArtifactStrip({ artifact }: { readonly artifact: ReportArtifactView }) {
+  const revealPath = desktopApi()?.revealPath;
+  const gone = artifact.exists === false;
+  return (
+    <div data-t03240="artifact" style={{ marginTop: 8, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+      <div style={{ wordBreak: 'break-all' }}>产物路径：<code style={{ fontSize: 'var(--fs-xs)' }}>{artifact.path}</code></div>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4 }}>
+        <CopyButton getText={() => artifact.path} title="复制产物路径" ariaLabel="复制产物路径" />
+        <button
+          onClick={() => void revealPath?.(artifact.path)}
+          disabled={!revealPath || gone}
+          title={gone ? '文件已不在（可能已被清理）' : revealPath ? '在文件管理器中定位该产物' : '仅桌面端可用'}
+          aria-label="打开目录"
+          style={{ padding: '2px 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-s)', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', cursor: revealPath && !gone ? 'pointer' : 'not-allowed', color: revealPath && !gone ? 'var(--text-secondary)' : 'var(--text-muted)' }}
+        >
+          <FolderOpen size={12} /> 打开目录
+        </button>
+        {gone && <span style={{ color: 'var(--danger)' }}>文件已不在</span>}
+      </div>
+    </div>
+  );
+}
+
 /** AI 报表生成成功后的下载入口（S3776：条件块下沉为独立组件）
- *  T02157：按钮文案随所选周期联动——选月报时不再显示「下载 AI 周报」。 */
+ *  T02157：按钮文案随所选周期联动——选月报时不再显示「下载 AI 周报」。
+ *  T03240：结果区追加产物路径（④）与溯源面板（①）。 */
 function AiResultDownload({ aiResult, onDownload, periodLabel }: {
-  readonly aiResult: { filename: string }; readonly onDownload: () => Promise<void>; readonly periodLabel: string;
+  readonly aiResult: { filename: string; provenance?: ReportProvenanceView; artifact?: ReportArtifactView };
+  readonly onDownload: () => Promise<void>; readonly periodLabel: string;
 }) {
   return (
     <div style={{ marginTop: 12, borderTop: '1px solid var(--surface-2)', paddingTop: 10 }}>
@@ -344,6 +412,8 @@ function AiResultDownload({ aiResult, onDownload, periodLabel }: {
       >
         <Download size={14} /> 下载 AI {periodLabel}
       </button>
+      {aiResult.artifact && <ArtifactStrip artifact={aiResult.artifact} />}
+      {aiResult.provenance && <ProvenancePanel provenance={aiResult.provenance} />}
     </div>
   );
 }
@@ -419,6 +489,16 @@ export function ReportPage() {
   const summaryToInbox = summaryInboxView.data?.enabled ?? false;
   // T01038：订阅各模块级 store 的运行态，供卡片统一状态徽标 + 导航 Tab 旋转指示共用（跨 Tab 切换天然保持）
   const { streaming: aiStreaming, logs: aiLogs, streamText: aiStreamText, result: aiResult, startedAt: reportStartedAt, finalElapsed: reportFinal } = useReportStream();
+  // T03240（AI-101 ④）：刷新/重进后从任务记录找回上一次产物——读 ai_artifacts 最近一份持久副本；
+  // 取数失败不打断页面（找回是辅助入口，不该把主流程拖成错误态）
+  const [lastArtifact, setLastArtifact] = useState<ReportArtifactView | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api.get<{ ok: boolean; artifacts: ReportArtifactView[] }>('/report/artifacts?cardKey=ai.weekly_report&limit=1')
+      .then((r) => { if (alive) setLastArtifact(r.artifacts?.[0] ?? null); })
+      .catch(() => { /* 忽略：无历史产物或接口异常时保持空 */ });
+    return () => { alive = false; };
+  }, []);
   const prdSnap = usePrdGen();
   const tcSnap = useTestCaseGen(); // T01492：测试用例生成卡片运行状态供徽标共用
   const kfSnap = useKickoffPpt(); // T02109：启动会 PPT 卡片运行状态供徽标共用
@@ -746,8 +826,10 @@ export function ReportPage() {
               reportStream.appendText((payload as { text: string }).text);
               break;
             case 'done': {
-              const { token, filename } = payload as { token: string; filename: string };
-              reportStream.setResult({ token, filename });
+              const { token, filename, provenance, artifact } = payload as {
+                token: string; filename: string; provenance?: ReportProvenanceView; artifact?: ReportArtifactView;
+              };
+              reportStream.setResult({ token, filename, provenance, artifact });
               break;
             }
             case 'error':
@@ -1077,6 +1159,16 @@ export function ReportPage() {
           <ResourceHint view={summaryInboxView} label="摘要写入收件箱开关状态" showLoading style={{ marginLeft: 6 }} />
           {/* AI 洞察已移至右侧控制台流式展示，左侧仅在生成成功后保留下载入口 */}
           {aiResult && <AiResultDownload aiResult={aiResult} onDownload={aiDownload} periodLabel={PERIODS.find((p) => p.key === period)?.label ?? '周报'} />}
+          {/* T03240（AI-101 ④）：无当次结果时给出上一次产物的找回入口（刷新/重进后仍在） */}
+          {!aiResult && lastArtifact && (
+            <div data-t03240="artifact-restore" style={{ marginTop: 12, borderTop: '1px solid var(--surface-2)', paddingTop: 10 }}>
+              <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+                上一次生成的{PERIODS.find((p) => p.key === period)?.label ?? '周报'}产物«{lastArtifact.filename}»（从任务记录恢复）
+              </div>
+              <ArtifactStrip artifact={lastArtifact} />
+              {lastArtifact.provenanceView && <ProvenancePanel provenance={lastArtifact.provenanceView} />}
+            </div>
+          )}
         </div>
         )}
       </div>

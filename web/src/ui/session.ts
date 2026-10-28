@@ -57,8 +57,10 @@ export function clearSessionState(key: string) {
 
 /** 递归校验缓存结构与类型是否可用，避免脏数据回填进表单 */
 function isCompatible(parsed: unknown, initial: unknown): boolean {
+  // 初始值为 null 表示「没有默认值」：任何已存值都按原样恢复（否则 false/0/'' 这类合法值会被判不兼容而丢失记忆）
+  if (initial === null) return true;
   if (typeof parsed !== typeof initial) return false;
-  if (parsed === null || initial === null) return parsed === initial;
+  if (parsed === null) return false;
   if (Array.isArray(parsed)) {
     return Array.isArray(initial) ? initial.length === 0 || isCompatible(parsed[0], initial[0]) : false;
   }

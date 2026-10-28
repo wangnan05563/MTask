@@ -8,6 +8,8 @@ import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
 import { getSetting, INBOX_PROJECT_ID } from './AppSettings';
 import { logService } from './LogService';
 import { resolveCustomWindow, type CustomRange } from './summaryPptPeriod';
+import { buildReportProvenance, HANDLE_RESULT_LIMIT, type ReportProvenance } from './reportProvenance';
+import { recordArtifact, type AiArtifact } from './aiArtifactService';
 
 /** 报表周期：day=日报 / week=周报 / month=月报 */
 export type ReportPeriod = 'day' | 'week' | 'month';
@@ -77,6 +79,8 @@ export interface ReportData {
    * （既有 PDF/表格门禁断言依赖单项目标题串，范围行只在多项目下才出现）。
    */
   projectScope?: string[];
+  /** T03240（AI-101 ①）：因 600 字上限被截断「处理结果」的任务条数——溯源段据此说明「不完整」 */
+  truncatedTasks?: number;
 }
 
 /** T02165：一次聚合的项目数上限——报表与 AI prompt 随项目数线性膨胀，超限直接拒绝而非静默截断 */
@@ -378,6 +382,9 @@ export function gatherReportData(period: SummaryPeriod, projectScope?: ReportSco
     tasks.sort((a, b) => byRank(a.project, b.project));
   }
 
+  // T03240：溯源要说明「报告并不完整」——这里按注入 prompt 的同一阈值数出被截断条数
+  const truncatedTasks = rows.filter((r) => (r.handle_result ?? '').length > HANDLE_RESULT_LIMIT).length;
+
   return {
     period,
     periodLabel: periodLabelOf(period),
@@ -389,7 +396,16 @@ export function gatherReportData(period: SummaryPeriod, projectScope?: ReportSco
     tasks,
     plans,
     projectScope: selectedNames,
+    truncatedTasks,
   };
+}
+
+/** AI 工具可读名（溯源段「模型」行）；查不到时回 null，不拿 toolId 冒充模型名 */
+function aiToolName(toolId: string): string | null {
+  try {
+    const r = getDb().prepare('SELECT name FROM ai_tools WHERE id = ?').get(toolId) as { name: string } | undefined;
+    return r?.name ?? null;
+  } catch { return null; }
 }
 
 function nowStr(): string {
@@ -408,6 +424,8 @@ interface BuildRequest {
   data: ReportData;
   templateBuf?: Buffer;
   aiInsight?: string;
+  /** T03240（AI-101 ③）：导出稿溯源段——与界面面板同源（reportProvenance 单源） */
+  provenance?: ReportProvenance;
 }
 
 let buildWorker: Worker | null = null;
@@ -494,6 +512,7 @@ function pump(): void {
     data: task.req.data,
     templateBuf: task.req.templateBuf,
     aiInsight: task.req.aiInsight,
+    provenance: task.req.provenance,
   });
 }
 
@@ -549,16 +568,17 @@ export async function generateReport(
   period: ReportPeriod,
   format: ReportFormat,
   opts: { projectId?: string; projectIds?: string[]; templateId?: string } = {},
-): Promise<{ buffer: Buffer; filename: string }> {
+): Promise<{ buffer: Buffer; filename: string; provenance: ReportProvenance }> {
   const data = gatherReportData(period, opts.projectIds ?? opts.projectId);
   let templateBuf: Buffer | undefined;
   if (opts.templateId) {
     const tpl = join(templatesDir(), opts.templateId);
     templateBuf = readFileOrUndefined(tpl);
   }
-  const buffer = await buildInWorker({ format, data, templateBuf });
+  const provenance = buildReportProvenance(data, { cardKey: `report.export.${format}` });
+  const buffer = await buildInWorker({ format, data, templateBuf, provenance });
   const ext = format;
-  return { buffer, filename: `MTask-${data.periodLabel}-${data.startDate}.${ext}` };
+  return { buffer, filename: `MTask-${data.periodLabel}-${data.startDate}.${ext}`, provenance };
 }
 
 /**
@@ -570,15 +590,19 @@ export async function aiGenerateReport(
   period: ReportPeriod,
   format: ReportFormat,
   opts: { projectId?: string; projectIds?: string[]; toolId: string },
-): Promise<{ token: string; filename: string; insight: string }> {
+): Promise<{ token: string; filename: string; insight: string; provenance: ReportProvenance; artifact: AiArtifact }> {
   const data = gatherReportData(period, opts.projectIds ?? opts.projectId);
   const skill = SKILL_BY_FORMAT[format];
   const { system, user } = buildReportPrompt(period, data, skill);
   const res = await AIService.ask(opts.toolId, system, user, AI_REPORT_TIMEOUT);
   if (!res.ok || !res.content?.trim()) throw new Error(res.error ?? 'AI 生成失败');
   const insight = res.content.trim();
-  const buffer = await buildInWorker({ format, data, aiInsight: insight });
+  const filename = `MTask-AI-${data.periodLabel}-${data.startDate}.${format}`;
+  const provenance = buildReportProvenance(data, { cardKey: 'ai.weekly_report', model: aiToolName(opts.toolId) });
+  const buffer = await buildInWorker({ format, data, aiInsight: insight, provenance });
   const token = saveReportBuffer(buffer);
+  // T03240（④）：临时令牌文件下载即删，另存持久副本供刷新/重进找回
+  const artifact = recordArtifact({ cardKey: provenance.cardKey, filename, buffer, provenance });
   // T00443 / PRD AI-5：摘要推送（可配置，默认关）——AI 周报生成后把摘要写入收件箱项目任务
   if (getSetting('report.aiSummaryToInbox') === '1') {
     try {
@@ -594,7 +618,7 @@ export async function aiGenerateReport(
       logService.log('ERROR', 'ai', `[周报摘要推送] 失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  return { token, filename: `MTask-AI-${data.periodLabel}-${data.startDate}.${format}`, insight };
+  return { token, filename, insight, provenance, artifact };
 }
 
 /**
@@ -617,7 +641,7 @@ export async function aiGenerateReportStream(
   onStage: (msg: string) => void,
   onChunk: (text: string) => void,
   signal?: AbortSignal, // T00838：可选中止信号——周报生成可被「停止」按钮中断
-): Promise<{ token: string; filename: string; insight: string }> {
+): Promise<{ token: string; filename: string; insight: string; provenance: ReportProvenance; artifact: AiArtifact }> {
   onStage(`正在聚合${PERIOD_LABEL[period]}任务数据…`);
   const data = gatherReportData(period, opts.projectIds ?? opts.projectId);
   const skill = SKILL_BY_FORMAT[format];
@@ -631,8 +655,11 @@ export async function aiGenerateReportStream(
   const insight = res.content.trim();
   onStage('洞察生成完成，正在按内置 skill 版式合成文件…');
   // worker 异步合成：主事件循环不被阻塞，SSE 仍可推送/响应其它请求
-  const buffer = await buildInWorker({ format, data, aiInsight: insight });
+  const filename = `MTask-AI-${data.periodLabel}-${data.startDate}.${format}`;
+  const provenance = buildReportProvenance(data, { cardKey: 'ai.weekly_report', model: aiToolName(opts.toolId) });
+  const buffer = await buildInWorker({ format, data, aiInsight: insight, provenance });
   const token = saveReportBuffer(buffer);
+  const artifact = recordArtifact({ cardKey: provenance.cardKey, filename, buffer, provenance });
   // T02144：与启动会侧同一收口点——中止若落在「已落盘、尚未回报」，done/stage 不会再有人接收，
   // 令牌随前端状态归零丢失，文件即成孤儿；这里当场回收（定时清扫是兜底）
   if (signal?.aborted) {
@@ -655,7 +682,7 @@ export async function aiGenerateReportStream(
       logService.log('ERROR', 'ai', `[周报摘要推送] 失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  return { token, filename: `MTask-AI-${data.periodLabel}-${data.startDate}.${format}`, insight };
+  return { token, filename, insight, provenance, artifact };
 }
 
 function readFileOrUndefined(path: string): Buffer | undefined {

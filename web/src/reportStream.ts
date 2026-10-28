@@ -8,11 +8,29 @@ import { loadRun, persistRun, clearRun, type RunStatus } from './ui/runStatus';
  * 导致"切页即中断、返回无进度"。故把运行状态提升到模块作用域并用 useSyncExternalStore 订阅，
  * 让 store 生命周期独立于组件：切页期间生成照常写入 store，返回后本页与右侧控制台立即恢复最新进度。
  */
+/** T03240（AI-101 ①）：溯源行——服务端 reportProvenance 单源生成，前端只渲染不重算 */
+export interface ProvenanceRowView { label: string; value: string }
+export interface ReportProvenanceView {
+  cardKey: string;
+  rows: ProvenanceRowView[];
+  truncation: { count: number; note: string } | null;
+}
+/** T03240（AI-101 ④）：产物持久副本（下载走令牌，找回走这份记录） */
+export interface ReportArtifactView {
+  id?: string;
+  filename: string;
+  path: string;
+  createdAt: string;
+  exists?: boolean;
+  /** 找回时随产物恢复的溯源（服务端 ai_artifacts.provenance 解析结果） */
+  provenanceView?: ReportProvenanceView | null;
+}
+
 export interface ReportStreamState {
   streaming: boolean;
   logs: string[];
   streamText: string;
-  result: { token: string; filename: string } | null;
+  result: { token: string; filename: string; provenance?: ReportProvenanceView; artifact?: ReportArtifactView } | null;
   /** T00839：本次生成开始时间戳（ms），供控制台 tab 展示实时耗时与悬停进度 */
   startedAt?: number;
   /** T01038：结束后保留的最终耗时（ms）——任务结束后停止计时，但保留最终耗时供展示 */
@@ -76,7 +94,7 @@ export const reportStream = {
     state = { ...state, streamText: state.streamText + text };
     emit();
   },
-  setResult(result: { token: string; filename: string } | null) {
+  setResult(result: ReportStreamState['result']) {
     state = { ...state, result };
     emit();
   },

@@ -9,6 +9,7 @@ import {
   Table, TableRow, TableCell, WidthType, AlignmentType,
 } from 'docx';
 import type { ReportData } from './ReportService';
+import { provenanceTextLines, type ReportProvenance } from './reportProvenance';
 
 /**
  * 报表标题行。
@@ -38,7 +39,7 @@ function scopeLine(data: ReportData, brief = false): string | undefined {
 }
 
 // ---------- Excel 生成（exceljs） ----------
-export async function buildXlsx(data: ReportData, templateBuf?: Buffer, aiInsight?: string): Promise<Buffer> {
+export async function buildXlsx(data: ReportData, templateBuf?: Buffer, aiInsight?: string, provenance?: ReportProvenance): Promise<Buffer> {
   // 模板文件开头包含一个占位表头行结构；生产级实现会精确渲染，这里统一标准版式
   const ExcelJS = await import('exceljs');
   const wb = new ExcelJS.default.Workbook();
@@ -70,6 +71,12 @@ export async function buildXlsx(data: ReportData, templateBuf?: Buffer, aiInsigh
   const xlsxScope = scopeLine(data);
   if (xlsxScope) ws.addRow([xlsxScope]);
   ws.addRow([`生成时间：${data.generatedAt}`]);
+  // T03240（AI-101 ③）：溯源段与界面面板同源（reportProvenance 单源），放在表头层级而非隐藏页
+  if (provenance) {
+    const pb = ws.addRow(['溯源']);
+    pb.font = { bold: true };
+    for (const line of provenanceTextLines(provenance)) ws.addRow([line]);
+  }
   ws.addRow([]);
   headerRow(ws.addRow(['项目', '任务数', '待办', '已完成', '已验证', '高', '中', '低']));
   for (const p of data.projects) {
@@ -167,7 +174,7 @@ function addInsightSheet(ai: any, insight: string): void {
 }
 
 // ---------- Word 生成（docx 库；用户模板用 docxtemplater 占位符渲染） ----------
-export async function buildDocx(data: ReportData, templateBuf?: Buffer, aiInsight?: string): Promise<Buffer> {
+export async function buildDocx(data: ReportData, templateBuf?: Buffer, aiInsight?: string, provenance?: ReportProvenance): Promise<Buffer> {
   if (templateBuf) {
     // 用户 Word 模板：docxtemplater 渲染 {占位符}，模板未含占位符时原样保留
     const PizZip = (await import('pizzip')).default;
@@ -185,6 +192,12 @@ export async function buildDocx(data: ReportData, templateBuf?: Buffer, aiInsigh
     new Paragraph({ text: titleLine(data), heading: HeadingLevel.TITLE }),
     ...(docScope ? [new Paragraph({ children: [new TextRun({ text: docScope, color: '4B5563' })] })] : []),
     new Paragraph({ text: `生成时间：${data.generatedAt}` }),
+    ...(provenance
+      ? [
+          new Paragraph({ text: '溯源', heading: HeadingLevel.HEADING_2 }),
+          ...provenanceTextLines(provenance).map((line) => new Paragraph({ children: [new TextRun({ text: line, color: '4B5563' })] })),
+        ]
+      : []),
     new Paragraph(''),
     new Paragraph({ text: '项目汇总', heading: HeadingLevel.HEADING_2 }),
   ];
@@ -244,7 +257,7 @@ export async function buildDocx(data: ReportData, templateBuf?: Buffer, aiInsigh
 }
 
 // ---------- PPT 生成（pptxgenjs）：遵循内置 skill pptx-trae（该 skill 即以 pptxgenjs 构建演示文稿） ----------
-export async function buildPptx(data: ReportData, aiInsight?: string): Promise<Buffer> {
+export async function buildPptx(data: ReportData, aiInsight?: string, provenance?: ReportProvenance): Promise<Buffer> {
   const PptxGenJS = (await import('pptxgenjs')).default;
   const pptx = new PptxGenJS();
   pptx.defineLayout({ name: 'WIDE', width: 10, height: 5.63 });
@@ -285,12 +298,18 @@ export async function buildPptx(data: ReportData, aiInsight?: string): Promise<B
     s3.addText('AI 洞察', { x: 0.5, y: 0.35, w: 9, h: 0.6, fontSize: 20, bold: true });
     s3.addText(aiInsight.split('\n').slice(0, 14).join('\n'), { x: 0.5, y: 1.1, w: 9, h: 4, fontSize: 11 });
   }
+  // T03240（AI-101 ③）：溯源单独一页收尾——首页空间被汇总表占满，挤进页脚会读不清
+  if (provenance) {
+    const s4 = pptx.addSlide();
+    s4.addText('溯源', { x: 0.5, y: 0.35, w: 9, h: 0.6, fontSize: 20, bold: true });
+    s4.addText(provenanceTextLines(provenance).map((l) => `• ${l}`).join('\n'), { x: 0.5, y: 1.1, w: 9, h: 3.5, fontSize: 11, color: '374151' });
+  }
   const out = await pptx.write({ outputType: 'nodebuffer' });
   return Buffer.from(out as unknown as ArrayBuffer);
 }
 
 // ---------- PDF 生成（pdfkit）：代理内置 skill pdf-trae（其脚本依赖外部 Python，Node 端以 pdfkit 实现等价输出） ----------
-export async function buildPdf(data: ReportData, aiInsight?: string): Promise<Buffer> {
+export async function buildPdf(data: ReportData, aiInsight?: string, provenance?: ReportProvenance): Promise<Buffer> {
   const PDFDocument = (await import('pdfkit')).default;
   const doc = new PDFDocument({ size: 'A4', margin: 50 });
   const FONT = 'C:/Windows/Fonts/simhei.ttf';
@@ -325,6 +344,10 @@ export async function buildPdf(data: ReportData, aiInsight?: string): Promise<Bu
   if (aiInsight) {
     doc.moveDown(0.6).fontSize(13).text('AI 洞察', { underline: true }).moveDown(0.3);
     doc.fontSize(11).text(aiInsight);
+  }
+  if (provenance) {
+    doc.moveDown(0.6).fontSize(13).text('溯源', { underline: true }).moveDown(0.3);
+    doc.fontSize(10).text(provenanceTextLines(provenance).map((l) => `• ${l}`).join('\n'));
   }
   doc.end();
   await done;

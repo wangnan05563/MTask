@@ -44,6 +44,8 @@ export interface UpdatePendingResult {
 export interface DesktopApi {
   /** 唤起系统「选择文件夹」对话框，返回绝对路径；用户取消返回 null */
   openDirectory: () => Promise<string | null>;
+  /** T03240（AI-101 ④）：在系统文件管理器中定位产物文件；浏览器降级为无此能力 */
+  revealPath?: (path: string) => Promise<boolean>;
   /** 应用内下载更新安装包（T00878）；T02071 起返回结果对象并支持取消后续传 */
   downloadUpdate?: (url: string) => Promise<UpdateDownloadResult>;
   /** T02071：终止进行中的下载但保留 .part（断点续传用） */

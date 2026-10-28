@@ -11,6 +11,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('mtaskDesktop', {
   /** 唤起系统「选择文件夹」对话框；取消返回 null */
   openDirectory: () => ipcRenderer.invoke('dialog:open-directory'),
+  /** T03240（AI-101 ④）：在系统文件管理器中定位产物文件（不存在时主进程静默处理） */
+  revealPath: (p) => ipcRenderer.invoke('dialog:reveal-path', p),
   /** 应用内一键下载更新安装包（T00878）：主进程下载到系统下载目录，返回结果对象（T02071 起含取消/续传态） */
   downloadUpdate: (url) => ipcRenderer.invoke('update:download', url),
   /** T02071：下载中途取消——主进程断连但保留 .part，再次 downloadUpdate 走 Range 续传 */

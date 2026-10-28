@@ -39,6 +39,7 @@ import { estimateApi } from './estimates'; // T02037（估算视图 E3）：/api
 import { historyApi } from './history'; // T00589：历史资产（转移/统计）
 import { supervisorApi } from './supervisor'; // T01286：监督状态/审计/配置（FR-5.2~5.4）
 import { webhooksApi } from './webhooks'; // T03196（PM-401）：项目级 outbound Webhook（配置/测试/投递日志）
+import { listArtifacts } from '../services/aiArtifactService';
 import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, discardReport, gatherReportData, validateProjectIds, type ReportPeriod } from '../services/ReportService';
 import { DOWNLOAD_NAME_RE } from '../util/export-name'; // T02104：下载文件名白名单单源（与生成侧清洗同源）
 import { Buffer } from 'node:buffer';
@@ -1770,6 +1771,16 @@ api.post('/report/generate', exportGate(REPORT_GATE), async (req, res) => {
   }
 });
 
+// T03240（AI-101 ④）：成功产物的找回入口——刷新/重进后按卡片键取最近 N 份持久副本，
+// `exists=false` 表示文件已被清理/手工删除，由界面照实提示「文件已不在」，不给死链。
+api.get('/report/artifacts', (req, res) => {
+  const cardKey = typeof req.query.cardKey === 'string' ? req.query.cardKey : '';
+  if (!cardKey) return res.status(400).json({ error: 'cardKey 必填' });
+  const limit = Number(req.query.limit ?? 5);
+  if (!Number.isFinite(limit) || limit < 1 || limit > 50) return res.status(400).json({ error: 'limit 须在 1~50 之间' });
+  res.json({ ok: true, artifacts: listArtifacts(cardKey, Math.floor(limit)) });
+});
+
 api.get('/report/templates', (_req, res) => {
   res.json(listTemplates());
 });
@@ -1791,7 +1802,8 @@ api.post('/report/ai-generate', exportGate(REPORT_GATE), async (req, res) => {
       projectIds: scope.ids,
       toolId,
     });
-    res.json({ ok: true, token: r.token, filename: r.filename, insight: r.insight });
+    // T03240（AI-101 ①④）：溯源段随结果返回；artifact 为持久副本，供刷新/重进后找回
+    res.json({ ok: true, token: r.token, filename: r.filename, insight: r.insight, provenance: r.provenance, artifact: r.artifact });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -2046,7 +2058,7 @@ api.post('/report/ai-generate-stream', exportGate(REPORT_GATE), async (req, res)
       issuedToken = undefined;
       return;
     }
-    send('done', { token: r.token, filename: r.filename });
+    send('done', { token: r.token, filename: r.filename, provenance: r.provenance, artifact: r.artifact });
     doneSent = true;
     res.end();
   } catch (e) {

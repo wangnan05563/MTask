@@ -183,6 +183,19 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     -- 列表按创建时间排序（GET /console-jobs 返回顺序即 tab 展示顺序）
     CREATE INDEX IF NOT EXISTS idx_console_jobs_created ON console_jobs(created_at);
 
+    -- T03240（PRD AI-101 ④）：AI 成功产物的持久副本登记。
+    -- 下载仍走临时令牌（下载即删），本表只为「刷新/重进后从任务记录找回产物」留档；
+    -- 每卡按 created_at 保留最近 N 份（aiArtifactService.ARTIFACT_KEEP_PER_CARD）。
+    CREATE TABLE IF NOT EXISTS ai_artifacts (
+      id         TEXT PRIMARY KEY,
+      card_key   TEXT NOT NULL,
+      filename   TEXT NOT NULL,
+      path       TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      provenance TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_artifacts_card ON ai_artifacts(card_key, created_at);
+
     -- 项目计划任务（T00431）：按项目隔离的计划条目，串行瀑布时间线（见 docs/PRD-项目计划.md）。
     -- end_date 冗余存储重排结果（= start_date 起 duration_days 个工作日的含尾日），由服务层保证一致。
     CREATE TABLE IF NOT EXISTS plan_tasks (
