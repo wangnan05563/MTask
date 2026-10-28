@@ -46,8 +46,12 @@ function reportStartError(
   flash(msg, true);
 }
 
+/** T03312：后端就绪时自动启动隧道的结果（null=本次后端尚未尝试，例如尚未重启） */
+type TunnelAutoStartResult = { at: string; started: boolean; reason: string };
+type TunnelStatus = { status: string; publicUrl: string | null; provider: string; autoStartResult?: TunnelAutoStartResult | null };
+
 export function TunnelPanel() {
-  const [status, setStatus] = useState<{ status: string; publicUrl: string | null; provider: string }>({ status: 'stopped', publicUrl: null, provider: '' });
+  const [status, setStatus] = useState<TunnelStatus>({ status: 'stopped', publicUrl: null, provider: '', autoStartResult: null });
   const [provider, setProvider] = useState<'cloudflare' | 'cpolar' | 'tailscale'>('cloudflare');
   const [localPort, setLocalPort] = useState('0');
   const [binaryPath, setBinaryPath] = useState('');
@@ -115,7 +119,7 @@ export function TunnelPanel() {
     setBusy(true); setAuthUrl('');
     try {
       await api.post('/tunnel/config', cfgPayload()); // 以界面当前选择为准
-      const r = await api.post<{ status: string; publicUrl: string | null; provider: string }>('/tunnel/start');
+      const r = await api.post<TunnelStatus>('/tunnel/start');
       setStatus(r);
       flash('隧道已启动');
     } catch (e) {
@@ -196,6 +200,15 @@ export function TunnelPanel() {
               </div>
             )}
             {!status.publicUrl && <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-muted)', marginTop: 2 }}>启动后可获得公网地址</div>}
+            {/* T03312：勾了「后端启动时自动开启」却没起来时，这里给出本次启动的实际结果与原因 */}
+            {status.autoStartResult && (
+              <div
+                title={`自动启动尝试时间：${new Date(status.autoStartResult.at).toLocaleString()}`}
+                style={{ fontSize: 'var(--fs-m)', color: status.autoStartResult.started ? 'var(--success)' : 'var(--text-muted)', marginTop: 2 }}
+              >
+                本次启动自动开启：{status.autoStartResult.started ? '成功' : `跳过（${status.autoStartResult.reason}）`}
+              </div>
+            )}
             {/* T01341：未配令牌时提前告知启动会被拒，避免用户点了才撞 400 */}
             {!running && !tokenVal && (
               <div style={{ fontSize: 'var(--fs-m)', color: 'var(--danger)', marginTop: 2 }}>
@@ -253,9 +266,15 @@ export function TunnelPanel() {
             <input id="tunnel-binary-path" value={binaryPath} onChange={(e) => setBinaryPath(e.target.value)} style={field} placeholder="如 D:\tools\cloudflared.exe" />
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10 }}>
-          <input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} />
-          <span style={{ fontSize: 'var(--fs-m)' }}>后端启动时自动开启隧道</span>
+        <div style={{ marginTop: 10 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+            <input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} />
+            <span style={{ fontSize: 'var(--fs-m)' }}>后端启动时自动开启隧道</span>
+          </label>
+          {/* T03312：把「保存 ≠ 立即生效」说清楚，否则用户勾完等不到隧道会以为是开关坏了 */}
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginTop: 4, marginLeft: 22 }}>
+            保存后下次后端启动时生效；本次启动的结果显示在上方状态卡。
+          </div>
         </div>
       </div>
 

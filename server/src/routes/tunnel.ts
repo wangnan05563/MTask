@@ -57,8 +57,56 @@ function getLoginService(): CloudflareLoginService {
   return loginService;
 }
 
+/**
+ * T03312：最近一次「自动启动」尝试的结果。null = 本次进程尚未尝试（手动启动不影响此字段）。
+ * 存在的意义是让「勾了却没起来」有迹可查：此前失败只剩一条无人看的 console，界面无一字。
+ */
+export interface TunnelAutoStartResult {
+  at: string;
+  started: boolean;
+  reason: string;
+}
+let autoStartResult: TunnelAutoStartResult | null = null;
+
+/**
+ * T03312：后端就绪后的自动启动入口——与 `POST /start` 共用同一套门禁与同一个服务单例，
+ * 只把「拒绝」从 400 降级为「跳过并留痕」。**绝不抛出**：隧道起不来不能拖垮后端。
+ *
+ * 门禁顺序即优先级：逃生舱 → 开关 → 幂等 → T01341 令牌闸 → 启动。
+ * 幂等判在启动前：`TunnelService.start` 在配置变更时会重建 provider 并重启子进程，
+ * 手动启动后再跑一次自动路径会变成隧道闪烁重启。
+ */
+export async function tryAutoStartTunnel(): Promise<TunnelAutoStartResult> {
+  const at = new Date().toISOString();
+  const record = (started: boolean, reason: string): TunnelAutoStartResult => {
+    autoStartResult = { at, started, reason };
+    return autoStartResult;
+  };
+  try {
+    // 逃生舱：验收门/CI/并发会话不该被「上次勾过」的开关静默拉出真实公网隧道
+    if (process.env.MTASK_TUNNEL_AUTO_START === '0' || process.env.MTASK_TUNNEL_AUTO_START === 'false') {
+      return record(false, '已由环境变量 MTASK_TUNNEL_AUTO_START 关闭');
+    }
+    const config = loadTunnelConfig();
+    if (!config.autoStart) return record(false, '未勾选「后端启动时自动开启隧道」');
+    if (tunnel.status !== 'stopped') return record(false, `隧道已在运行（${tunnel.status}），无需重复启动`);
+    // T01341 同一条硬门禁：自动路径同样拒绝无令牌启动，否则等于把 /api 无鉴权裸奔到公网
+    if (!config.accessToken) return record(false, '未配置访问令牌，拒绝无鉴权公网暴露');
+    await tunnel.start(config, backendPort());
+    return record(true, `已自动开启（${tunnel.providerName || config.provider}）`);
+  } catch (err) {
+    // TailscaleNotReadyError 等前置失败只记一次、保持 stopped——不重试，用户下次点「启动」仍能拿到可操作文案
+    return record(false, err instanceof Error ? err.message : String(err));
+  }
+}
+
 function statusBody() {
-  return { status: tunnel.status, publicUrl: tunnel.publicUrl, provider: tunnel.providerName };
+  return {
+    status: tunnel.status,
+    publicUrl: tunnel.publicUrl,
+    provider: tunnel.providerName,
+    autoStartResult,
+  };
 }
 
 router.get('/status', (_req, res) => {

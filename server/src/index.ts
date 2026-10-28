@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { initSchema } from './db/schema';
 import { api } from './routes';
-import tunnelRouter from './routes/tunnel';
+import tunnelRouter, { tryAutoStartTunnel } from './routes/tunnel'; // T03312：autoStart 的消费方（此前只有存与显示）
 import { mcpRouter } from './mcp/http';
 import { csrfGuard } from './services/CsrfGuard';
 import { logService } from './services/LogService';
@@ -260,6 +260,12 @@ app.listen(PORT, HOST, () => {
   MetricSnapshotService.startSnapshotTimer();
   // T03196（PM-401）：Webhook 待重试投递续跑 + 每日逾期事件扫描（重启后 pending 记录可继续重试）
   WebhookService.startDeliveryTimer();
+  // T03312：勾选「后端启动时自动开启隧道」时按 POST /start 同一套门禁自动拉起。
+  // 不阻塞就绪、不抛错；结果既写日志，也经 /api/tunnel/status 的 autoStartResult 回显到面板。
+  void tryAutoStartTunnel().then(
+    (r) => console.log(`[mtask] tunnel auto-start: ${r.started ? r.reason : `skipped (${r.reason})`}`),
+    (e) => console.error('[mtask] tunnel auto-start failed:', e),
+  );
 });
 
 // 异步队列轮询器：周期性地将已受理（sending+有 ticket）的 Job 收口。
