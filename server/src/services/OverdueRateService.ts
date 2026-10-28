@@ -9,7 +9,10 @@
  *   本服务只负责「此刻可观测」的同一口径读数（快照写入口上线后可直接复用本函数）。
  */
 import { getDb } from '../db/connection';
-import { isPastEndDate, ymdInTimezone } from '../util/workdays';
+import { isPastEndDate, isRealYmd, systemTz, ymdInTimezone } from '../util/workdays';
+
+// T03265：时区取数与其他出数面共用一个实现；保留本模块的导出路径，旧调用方无需改动
+export { systemTz };
 
 export interface OverdueRateBucket {
   dueTotal: number;   // 分母：统计日已到期的有效计划数
@@ -32,16 +35,6 @@ export interface OverdueRateReport {
   note: string;
 }
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-export function systemTz(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'system';
-  } catch {
-    return 'system';
-  }
-}
-
 /** 比率保留 4 位小数（0..1 口径，与 G-2 卡片覆盖率的 ratio 一致） */
 function ratio(numerator: number, denominator: number): number | null {
   if (denominator <= 0) return null;
@@ -52,7 +45,7 @@ export class OverdueRateService {
   static report(args: { at?: string; projectId?: string } = {}): OverdueRateReport {
     const db = getDb();
     const tz = systemTz();
-    if (args.at && !DATE_RE.test(args.at)) throw new Error(`at 需为 YYYY-MM-DD，收到：${args.at}`);
+    if (args.at && !isRealYmd(args.at)) throw new Error(`at 需为 YYYY-MM-DD，收到：${args.at}`);
     // 用当天正午构造参考时刻：D-12 只比较「项目时区下的日期」，正午避开任何跨时区跨日歧义
     const ref = args.at ? new Date(`${args.at}T12:00:00`) : new Date();
     const at = ymdInTimezone(ref, tz);

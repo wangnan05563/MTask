@@ -18,7 +18,7 @@
  */
 import { getDb } from '../db/connection';
 import { childParentIds } from '../util/milestoneChild';
-import { advanceWorkdaysInclusive, addWorkdays, buildCalendar, countWorkdaysBetween, countWorkdaysOrMissing, fmtDate, isWorkday, parseYmd, ymdInTimezone, type WorkdayCal } from '../util/workdays';
+import { advanceWorkdaysInclusive, buildCalendar, countWorkdaysBetween, countWorkdaysOrMissing, isRealYmd, systemTz, ymdInTimezone, type WorkdayCal } from '../util/workdays';
 
 export type ForecastVerdict = 'done' | 'not-predictable' | 'on-track' | 'ahead' | 'behind' | 'no-planned-end';
 
@@ -71,28 +71,13 @@ export interface MilestoneForecastReport {
   summary: { total: number; predicted: number; done: number; notPredictable: number };
 }
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-/** 真实存在的日期（2026-13-01 / 2026-02-30 这类「格式对、日期不存在」不放行——否则静默按回滚日推算） */
-function isRealDate(s: string): boolean {
-  return DATE_RE.test(s) && !Number.isNaN(parseYmd(s).getTime()) && fmtDate(parseYmd(s)) === s;
-}
 const DISCLAIMER = '预测值，非承诺';
-
-function systemTz(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'system';
-  } catch {
-    return 'system';
-  }
-}
 
 function loadCalendar(): WorkdayCal {
   const rows = getDb().prepare('SELECT date, kind FROM holidays').all() as Array<{ date: string; kind: string | null }>;
   return buildCalendar(rows);
 }
 
-/** 从业务日 `today` 起含当天连排 `workdays` 个工作日，返回第 workdays 个工作日的日期 */
 const clampProgress = (v: number): number => (Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0);
 
 /** 单子项总工作日：duration_days 优先，其次排期区间；两者都缺 → null */
@@ -168,7 +153,7 @@ function forecastOne(ms: PlanRow & { project_name: string }, children: PlanRow[]
   const predictable = !done && children.length > 0 && missing.length === 0;
   const remainingWorkdays = predictable ? knownRemaining : null;
   const forecastDate = predictable ? advanceWorkdaysInclusive(at, remainingWorkdays ?? 0, cal) : null;
-  const plannedEnd = DATE_RE.test(ms.end_date || '') ? ms.end_date : null;
+  const plannedEnd = isRealYmd(ms.end_date || '') ? ms.end_date : null;
   let variance: number | null = null;
   if (forecastDate && plannedEnd) {
     if (forecastDate > plannedEnd) variance = countWorkdaysBetween(plannedEnd, forecastDate, cal);
@@ -203,7 +188,7 @@ export class MilestoneForecastService {
   static report(args: { projectId?: string; at?: string } = {}): MilestoneForecastReport {
     const db = getDb();
     const tz = systemTz();
-    if (args.at && !isRealDate(args.at)) throw new Error(`at 需为 YYYY-MM-DD，收到：${args.at}`);
+    if (args.at && !isRealYmd(args.at)) throw new Error(`at 需为 YYYY-MM-DD，收到：${args.at}`);
     // 业务日只看「时区下的日历日」（D-12）；入参 at 已是日历日，不再二次换算
     const at = args.at ?? ymdInTimezone(new Date(), tz);
     if (args.projectId && !db.prepare('SELECT id FROM projects WHERE id = ?').get(args.projectId)) {

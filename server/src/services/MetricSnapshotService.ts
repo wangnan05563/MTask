@@ -18,10 +18,9 @@
  */
 import { randomUUID } from 'crypto';
 import { getDb } from '../db/connection';
-import { fmtDate, parseYmd, ymdInTimezone } from '../util/workdays';
+import { fmtDate, isRealYmd, parseYmd, systemTz, ymdInTimezone } from '../util/workdays';
 import { OverdueRateService } from './OverdueRateService';
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 /** 单次查询的时间范围上限（含端点）：再长请分段，避免图表一次拉几百天拖慢响应 */
 const MAX_RANGE_DAYS = 366;
 /** 默认窗口：近 30 天（PM-205 图表默认口径） */
@@ -99,20 +98,7 @@ interface SnapshotRow {
   captured_at: string;
 }
 
-function systemTz(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'system';
-  } catch {
-    return 'system';
-  }
-}
-
 /** 形状 + 可解析 + 往返一致：挡住 2026-02-30 / 2026-13-01 这类「形状合法但不存在的日期」 */
-function isRealYmd(s: string): boolean {
-  if (!DATE_RE.test(s)) return false;
-  const d = parseYmd(s);
-  return !Number.isNaN(d.getTime()) && fmtDate(d) === s;
-}
 
 function addDays(ymd: string, n: number): string {
   const d = parseYmd(ymd);

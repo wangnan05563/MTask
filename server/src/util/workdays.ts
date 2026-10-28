@@ -129,8 +129,17 @@ export function ymdInTimezone(now: Date, tz?: string | null): string {
   return fmtDate(now);
 }
 
+/** 系统时区（D-12「项目未配置时区则跟随系统时区」的单源）：取不到时回落 `system` 占位 */
+export function systemTz(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'system';
+  } catch {
+    return 'system';
+  }
+}
+
 /** 真实日历日：形状对且能原样回写（拒绝 2026-02-30 / 2026-13-01 这类「形状合法但不存在」的日期） */
-function isRealYmd(s: string): boolean {
+export function isRealYmd(s: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
   const d = parseYmd(s);
   return !Number.isNaN(d.getTime()) && fmtDate(d) === s;

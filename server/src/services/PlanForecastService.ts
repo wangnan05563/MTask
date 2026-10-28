@@ -16,7 +16,7 @@
  * 口径只到**计划行**：PRD 明确本期不引入任务级截止日，文案不得表述为任务级到期。
  */
 import {
-  advanceWorkdaysInclusive, countWorkdaysBetween, isWorkday, parseYmd, type WorkdayCal,
+  advanceWorkdaysInclusive, countWorkdaysBetween, isRealYmd, type WorkdayCal,
 } from '../util/workdays';
 
 export type PlanForecastVerdict = 'predicted-late' | 'on-track' | 'not-started' | 'done' | 'missing-schedule';
@@ -63,7 +63,6 @@ export interface PlanForecastSection {
   note: string;
 }
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const clampProgress = (v: number): number => (Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0);
 const pct = (v: number): number => Math.round(v * 1000) / 10;
 
@@ -84,10 +83,10 @@ function basisOf(f: {
  * `at` 为业务日（D-12：项目未配置时区则系统时区），调用方负责换算。
  */
 export function forecastPlanRow(row: PlanForecastInput, at: string, cal: WorkdayCal): PlanForecastItem | null {
-  if (!DATE_RE.test(at)) return null;
+  if (!isRealYmd(at)) return null;
   const progress = clampProgress(Number(row.progress));
   if (row.status === 'done' || progress >= 100) return null;
-  if (!DATE_RE.test(row.startDate || '') || !DATE_RE.test(row.endDate || '')) return null;
+  if (!isRealYmd(row.startDate || '') || !isRealYmd(row.endDate || '')) return null;
   if (row.startDate > row.endDate) return null;
   // 未开始：没有已过时间，宁可不预测也不凭空造数
   if (at < row.startDate) return null;
