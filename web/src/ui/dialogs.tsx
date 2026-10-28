@@ -120,9 +120,12 @@ function InputDialog({ options, onSubmit }: InputDialogProps) {
 interface ConfirmDialogProps {
   readonly message: string;
   readonly onSubmit: (ok: boolean) => void;
+  /** 在抽屉（SlideOver，z-index 1100）内调用时必须抬高，否则确认面板被抽屉盖住：
+   *  按钮看不见也点不着，而「面板外 mousedown 即取消」的文档级委托会把手指落在遮罩上的动作判成取消。 */
+  readonly zIndex?: number;
 }
 
-function ConfirmDialog({ message, onSubmit }: ConfirmDialogProps) {
+function ConfirmDialog({ message, onSubmit, zIndex = 1000 }: ConfirmDialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
 
   // Escape 关闭用 globalThis 监听（S7764，环境无关的全局对象）；
@@ -143,7 +146,7 @@ function ConfirmDialog({ message, onSubmit }: ConfirmDialogProps) {
   }, [onSubmit]);
 
   return (
-    <div style={overlayStyle}>
+    <div style={{ ...overlayStyle, zIndex }}>
       <div ref={panelRef} style={panelStyle}>
         <div style={{ fontSize: 'var(--fs-l)', marginBottom: 16, whiteSpace: 'pre-wrap' }}>{message}</div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
@@ -174,12 +177,13 @@ export function askInput(options: AskInputOptions): Promise<string | null> {
   });
 }
 
-/** 确认对话框 */
-export function askConfirm(message: string): Promise<boolean> {
+/** 确认对话框；options.zIndex 供抽屉等高层浮层内调用时抬层级（默认 1000） */
+export function askConfirm(message: string, options?: { zIndex?: number }): Promise<boolean> {
   return new Promise((resolve) => {
     mountDialog((close) => (
       <ConfirmDialog
         message={message}
+        zIndex={options?.zIndex}
         onSubmit={(ok) => { close(); resolve(ok); }}
       />
     ));

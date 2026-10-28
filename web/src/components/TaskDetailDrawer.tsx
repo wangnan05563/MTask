@@ -6,19 +6,20 @@
  * 标签页：描述 / 处理结果 / AI 摘要 / 时间线 / 关联计划 / 阻塞关系 / 自定义字段。
  */
 import { useCallback, useEffect, useState } from 'react';
-import { api, imageUrl, type CustomField, type Task, type TaskFieldValuesPayload } from '../api/client';
+import { api, imageUrl, type CustomField, type Project, type Task, type TaskFieldValuesPayload } from '../api/client';
+import { GitCommitTab } from '../components/GitCommitTab'; // 八期 §3.2：任务详情抽屉「Git」页
 import { MarkdownContent } from '../ui/Markdown';
 import { ResultDiffPanel } from '../ui/ResultDiff'; // T01607：结果历史 diff/回滚——与行内共用同一组件
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { SlideOver } from './SlideOver';
 import { Badge } from '../ui/Badge'; // PM-302 ①：徽标单源（原为抽屉私有 Badge，borderRadius/padding 与她处各异）
 import { priorityBadgeLabel, priorityTone } from '../ui/priority'; // PM-302 ③：优先级文案/色调单源
-import { Ban, ClipboardList, FileText, History, Link2, Loader2, Pencil, Save, Sparkles, Tag, X } from 'lucide-react';
+import { Ban, ClipboardList, FileText, GitBranch, History, Link2, Loader2, Pencil, Save, Sparkles, Tag, X } from 'lucide-react';
 import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用入口可见但禁用 + 原因/修复动作
 import { FIELD_SM_BLOCK, SELECT_BLOCK } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（T03231 字段表单复用同一形态）
 
 /** T01568：标签页键对外导出——外部跳转（focusTaskByNo）按名称指定落位标签页 */
-export type TaskDetailTab = 'desc' | 'result' | 'summary' | 'timeline' | 'plans' | 'blocks' | 'fields';
+export type TaskDetailTab = 'desc' | 'result' | 'summary' | 'timeline' | 'plans' | 'git' | 'blocks' | 'fields';
 
 /** T03229（PM-202①）：阻塞关系行（服务端 `TaskBlockerView` 的同形投影，字段名保持 snake_case 与接口一致） */
 type BlockerRow = {
@@ -54,13 +55,21 @@ function fmtSummaryTime(iso: string): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChanged }: {
+export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChanged, projects, onBindWorkspace, onGitLinksChanged, flash }: {
   readonly task: Task;
   readonly projectId: string;
   /** T01568：外部跳转指定的默认落位标签页（缺省 desc）——抽屉按 task.id 重挂载，故仅取初始值 */
   readonly initialTab?: TaskDetailTab;
   readonly onClose: () => void;
   readonly onChanged: (patch: TaskPatch) => void;
+  /** 八期 §3.2：Git 页未绑定工作空间时要给出项目上下文（WorkspaceSelect 需要项目列表） */
+  readonly projects?: Project[];
+  /** 绑定工作空间走父级既有通道（含服务端绝对路径校验），抽屉不另起写接口 */
+  readonly onBindWorkspace?: (projectId: string, path: string) => Promise<void>;
+  /** 绑定/解绑后回报父级：列表行的 gitLinks/gitLinkCount 需要跟着刷新 */
+  readonly onGitLinksChanged?: () => void;
+  /** 操作反馈沿用父页提示通道（抽屉无独立 toast） */
+  readonly flash?: (m: string) => void;
 }) {
   const [tab, setTab] = useState<TaskDetailTab>(initialTab ?? 'desc');
   const [editing, setEditing] = useState<null | 'desc' | 'result'>(null);
@@ -261,6 +270,7 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
     { key: 'summary', label: 'AI 摘要', icon: <Sparkles size={13} /> },
     { key: 'timeline', label: '时间线', icon: <History size={13} /> },
     { key: 'plans', label: '关联计划', icon: <Link2 size={13} /> },
+    { key: 'git', label: 'Git', icon: <GitBranch size={13} /> },
     { key: 'blocks', label: '阻塞关系', icon: <Ban size={13} /> },
     { key: 'fields', label: '自定义字段', icon: <Tag size={13} /> },
   ];
@@ -637,6 +647,18 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
         <div>
           {renderPlansBody()}
         </div>
+      )}
+
+      {/* 八期 §3.2：Git 提交信息（实时查询 + 懒加载文件清单 + 手动绑定/解绑 + 子任务区） */}
+      {tab === 'git' && (
+        <GitCommitTab
+          task={task}
+          projectId={projectId}
+          projects={projects ?? []}
+          onBindChange={() => onGitLinksChanged?.()}
+          onBindWorkspace={onBindWorkspace ? (path) => onBindWorkspace(projectId, path) : undefined}
+          flash={(m) => flash?.(m)}
+        />
       )}
 
       {/* T03229（PM-202①）：阻塞关系 */}

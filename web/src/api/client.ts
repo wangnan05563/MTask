@@ -260,9 +260,109 @@ export interface Task {
   parent_id: string | null;
   /** T00490：记录字体颜色（Excel 风格颜色按钮），空串=默认色 */
   color?: string;
+  /** 八期 §3.1.6：`GET /tasks` 内联的本任务**最新一条**关联提交（无关联为空数组；裸数组契约不变） */
+  gitLinks?: GitInlineLink[];
+  /** 八期 §3.1.1：关联总数——列表「+N」角标据此显示（N = gitLinkCount − 1） */
+  gitLinkCount?: number;
   created_at: string;
   updated_at: string;
   images: TaskImage[];
+}
+
+/* ---------- 八期（§3.1/§3.2）任务 ↔ Git 提交：客户端类型，字段名与服务端下发一致 ---------- */
+
+/** 关联来源（开放枚举，`ci` 预留给未来 CI 回写） */
+export type GitLinkSource = 'agent' | 'manual' | 'ci';
+
+export interface GitInlineLink {
+  sha: string;
+  shortSha: string;
+  source: GitLinkSource;
+  createdAt: string;
+}
+
+/** 外链信息：`commitBase` 由服务端算好（凭据已剥离），前端只拼 SHA */
+export interface GitRemoteInfo {
+  url: string;
+  display: string;
+  platform: string | null;
+  commitBase: string | null;
+  noRemote: boolean;
+}
+
+export interface GitDegraded {
+  kind: string;
+  message: string;
+}
+
+/** 提交摘要（列表批量解析 + 抽屉首屏共用） */
+export interface GitCommitSummary {
+  sha: string;
+  shortSha: string;
+  author: string;
+  date: string;
+  subject: string;
+  refs: string[];
+  parents: string[];
+}
+
+/** 抽屉提交卡（§3.2.1 五层结构的原料） */
+export interface GitCommitCard extends GitCommitSummary {
+  source: GitLinkSource;
+  linkedAt: string;
+  stats: { files: number; additions: number | null; deletions: number | null };
+  isInitial: boolean;
+  /** 提交时刻晚于任务 updated_at（§3.2.2，仅提示不改状态） */
+  laterThanTask: boolean;
+  workspaceDrift: boolean;
+  commitUrl?: string;
+}
+
+export interface GitTaskView {
+  commits: GitCommitCard[];
+  missing: string[];
+  degraded?: GitDegraded;
+  remote?: GitRemoteInfo;
+}
+
+/** 变更文件清单行：`status` 为 `A|M|D|R` 等 git name-status 字母 */
+export interface GitCommitFile {
+  path: string;
+  oldPath?: string;
+  status: string;
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+}
+
+export interface GitFilesResult {
+  files: GitCommitFile[];
+  truncated?: boolean;
+  missing?: string[];
+  degraded?: GitDegraded;
+  diffs?: Record<string, { hunks: GitDiffHunk[]; truncated: boolean }>;
+}
+
+/** unified diff 的一个 hunk（行首保留 diff 前缀）；与 `utils/lectureDiff.LectureDiffHunk` 同形，
+ *  在此重述是为了让 api/client 保持零依赖的叶子模块（结构化类型可直接传给 hunkToRows） */
+export interface GitDiffHunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: string[];
+}
+
+/** `POST /git/commit-summaries` 的分组回执（同 workspace 一组，页内零逐行请求） */
+export interface GitSummaryGroup {
+  workspacePath: string;
+  available: boolean;
+  kind?: string;
+  message?: string;
+  commits: GitCommitSummary[];
+  missing: string[];
+  truncated: boolean;
+  remote?: GitRemoteInfo;
 }
 
 export interface TaskCategory {

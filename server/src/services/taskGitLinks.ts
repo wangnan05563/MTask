@@ -29,8 +29,34 @@ import {
   type CommitSummaryRow,
   type GitCollectOptions,
   type GitErrorKind,
+  type GitHunk,
 } from './gitCollect';
-import { shortShaOf } from '../util/gitRemote';
+import { shortShaOf, stripUrlCredentials, commitBaseOf, buildCommitLink, type GitPlatform } from '../util/gitRemote';
+
+/** §3.1.3 外链信息：服务端算好前缀再下发，凭据剥离不交给渲染层（token 进了 DOM 就等于泄露） */
+export interface GitRemoteInfo {
+  /** 已剥离 userinfo 的 remote 地址；无远端为空串 */
+  url: string;
+  /** 展示用 `host/owner/repo` */
+  display: string;
+  platform: GitPlatform | null;
+  /** 提交外链前缀（`…/commit` 或 GitLab `…/-/commit`）；平台不可识别为 null → 站内兜底 */
+  commitBase: string | null;
+  noRemote: boolean;
+}
+
+/** 由 origin 远端推导外链信息；无远端/解析失败都不抛错（外链只是页面动作，不该拖垮首屏） */
+export function remoteInfoOf(rawUrl: string | null): GitRemoteInfo {
+  const url = rawUrl ? stripUrlCredentials(rawUrl) : '';
+  const base = url ? commitBaseOf(url) : null;
+  return {
+    url,
+    display: base?.display ?? '',
+    platform: base?.platform ?? null,
+    commitBase: base?.commitBase ?? null,
+    noRemote: !rawUrl,
+  };
+}
 
 export type GitLinkSource = 'agent' | 'manual' | 'ci';
 export const GIT_LINK_SOURCES: GitLinkSource[] = ['agent', 'manual', 'ci'];
@@ -244,6 +270,8 @@ export interface GitCommitCard extends CommitSummaryRow {
   laterThanTask: boolean;
   /** 审计快照与项目当前工作空间不一致（换绑），摘要仍能解析时给出提示 */
   workspaceDrift: boolean;
+  /** 提交外链（平台可识别时才有；已剥离凭据） */
+  commitUrl?: string;
 }
 
 export interface GitTaskView {
@@ -251,7 +279,7 @@ export interface GitTaskView {
   degraded?: { kind: GitErrorKind | 'no-workspace'; message: string };
   /** 请求的 SHA 里在当前仓库解析不出来的（换绑后的旧链接） */
   missing: string[];
-  remote?: { url: string; noRemote?: boolean };
+  remote?: GitRemoteInfo;
 }
 
 /** 抽屉首屏：提交卡（摘要 + 统计），文件清单不在此处（懒加载端点） */
@@ -265,6 +293,9 @@ export async function buildTaskGitView(taskRef: { taskNo?: string; id?: string }
   try {
     const { commits, missing } = await collectCommitSummaries(task.workspacePath, links.map((l) => l.sha), opts);
     const bySha = new Map(commits.map((c) => [c.sha, c]));
+    // 外链前缀按 workspace 取一次 remote（§3.1.3：凭据在服务端剥离，前端只拼 SHA）
+    const remoteUrl = await safeRemoteUrl(task.workspacePath, opts);
+    const remote = remoteInfoOf(remoteUrl);
     const cards: GitCommitCard[] = [];
     for (const l of links) {
       const c = bySha.get(l.sha);
@@ -287,10 +318,10 @@ export async function buildTaskGitView(taskRef: { taskNo?: string; id?: string }
         isInitial: c.parents.length === 0,
         laterThanTask: !!c.date && !!task.updatedAt && new Date(c.date).getTime() > new Date(task.updatedAt).getTime(),
         workspaceDrift: !!l.workspacePath && l.workspacePath !== task.workspacePath,
+        commitUrl: remoteUrl ? buildCommitLink(remoteUrl, l.sha)?.url : undefined,
       });
     }
-    const remoteUrl = await safeRemoteUrl(task.workspacePath, opts);
-    return { commits: cards, missing, remote: { url: remoteUrl ?? '', noRemote: !remoteUrl } };
+    return { commits: cards, missing, remote };
   } catch (e) {
     if (e instanceof GitCollectError) {
       return { commits: [], missing: links.map((l) => l.sha), degraded: { kind: e.kind, message: e.message } };
@@ -312,8 +343,8 @@ export async function safeRemoteUrl(cwd: string, opts: GitCollectOptions = {}): 
 export interface GitFilesResult {
   files: CommitFileEntry[];
   truncated?: boolean;
-  /** `?diff=1` 时逐文件附 hunks */
-  diffs?: Record<string, { hunks: unknown[]; truncated: boolean }>;
+  /** `?diff=1` 时逐文件附结构化 hunk（与讲稿面板同一 `LectureDiffHunk` 形态，共享 DiffView 渲染） */
+  diffs?: Record<string, { hunks: GitHunk[]; truncated: boolean }>;
   /** 请求的 SHA 在当前仓库解析不出来（工作空间换绑后的旧链接） */
   missing?: string[];
   degraded?: { kind: GitErrorKind | 'no-workspace'; message: string };
@@ -348,7 +379,9 @@ export async function buildTaskGitFiles(
         const base = head?.parents?.length ? head.parents[0] : GIT_EMPTY_TREE_SHA1;
         try {
           const raw = await collectDiffTracked(task.workspacePath, [base, full], f.path, opts);
-          out.diffs[f.path] = { hunks: parseUnifiedDiff(raw.text), truncated: raw.truncated };
+          // 结构化 hunk 下发（行首保留 diff 前缀），渲染口径与讲稿面板一致
+          const hunks = parseUnifiedDiff(raw.text).flatMap((c) => c.hunks);
+          out.diffs[f.path] = { hunks, truncated: raw.truncated };
         } catch {
           out.diffs[f.path] = { hunks: [], truncated: false };
         }
@@ -384,6 +417,8 @@ export interface SummaryGroup {
   commits: CommitSummaryRow[];
   missing: string[];
   truncated: boolean;
+  /** 该 workspace 的外链信息（每 workspace 只取一次 remote，页内零逐行请求） */
+  remote?: GitRemoteInfo;
 }
 
 /**
@@ -420,6 +455,7 @@ export async function buildSummaryGroups(
         // 被截断掉的 SHA 不发起解析，直接计入 missing（前端页脚据此提示「本页部分提交摘要未解析」）
         missing: [...missing, ...shas.slice(capped.length)],
         truncated: capped.length < shas.length,
+        remote: remoteInfoOf(await safeRemoteUrl(ws, opts)),
       });
     } catch (e) {
       const kind = e instanceof GitCollectError ? e.kind : 'failed';

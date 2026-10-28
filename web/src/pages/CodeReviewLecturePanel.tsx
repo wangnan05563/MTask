@@ -24,7 +24,6 @@ import {
   anchorLocateMessage,
   diffRowDomId,
   groupFilesByModule,
-  hunkToRows,
   linkifyLectureAnchors,
   locateAnchor,
   parseAnchorHref,
@@ -32,6 +31,7 @@ import {
   type LectureDiffProject,
   type LectureDiffView,
 } from '../utils/lectureDiff';
+import { DiffFileView } from '../ui/DiffView';
 import {
   applyMarksToSection,
   assembleLectureExport,
@@ -916,56 +916,15 @@ function LectureDiffPane({ projects, openFiles, foldedHunks, flashRows, hoverRow
               <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontFamily: FONT_MONO }}>{group.module}/</div>
               {group.files.map((f) => {
                 const fk = fileKey(p.projectId, f.path);
-                const open = openFiles.has(fk);
+                // 八期 评审 #8：diff 行渲染抽成共享 DiffFileView（与任务抽屉 Git 页同一口径），锚点/高亮入参逐字保留
                 return (
-                  <div key={f.path} style={{ marginTop: 4 }}>
-                    <button type="button" data-lck={`file-${f.path}`} onClick={() => onToggleFile(fk)} aria-expanded={open}
-                      style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 'var(--fs-s)', padding: 0, textAlign: 'left', fontFamily: FONT_MONO }}>
-                      {open ? '▾' : '▸'} {f.path} <span style={{ color: 'var(--success)' }}>+{f.additions}</span>{' '}
-                      <span style={{ color: 'var(--danger)' }}>-{f.deletions}</span>
-                    </button>
-                    {open && f.binary && <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginLeft: 14 }}>二进制文件，无文本 diff。</div>}
-                    {open && !f.binary && f.hunks.map((h, hunkIndex) => {
-                      const hk = `${fk}|${hunkIndex}`;
-                      if (foldedHunks.has(hk)) {
-                        return (
-                          <div key={hk} style={{ marginLeft: 14, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
-                            hunk @{h.newStart} 已折叠{' '}
-                            <button type="button" onClick={() => onToggleHunk(hk)}
-                              style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 'var(--fs-xs)' }}>展开</button>
-                          </div>
-                        );
-                      }
-                      const rows = hunkToRows(h);
-                      return (
-                        <div key={hk} style={{ marginLeft: 14, marginTop: 2 }}>
-                          <button type="button" onClick={() => onToggleHunk(hk)} title="折叠该 hunk"
-                            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 'var(--fs-xs)', padding: 0, fontFamily: FONT_MONO }}>
-                            {rows[0].text}
-                          </button>
-                          {rows.slice(1).map((r, offset) => {
-                            const rowIndex = offset + 1; // rows[0] 是 hunk 头，行号口径与 utils 的展开结果一致
-                            const id = diffRowDomId(p.projectId, f.path, hunkIndex, rowIndex);
-                            const flashed = flashRows?.ids.has(id);
-                            return (
-                              <div key={flashed ? `${id}-${flashRows?.seq}` : id} data-lck-row={id}
-                                className={flashed ? 'locate-flash' : undefined}
-                                style={{
-                                  display: 'flex', gap: 6, fontSize: 'var(--fs-s)', lineHeight: 1.45, fontFamily: FONT_MONO,
-                                  background: hoverRows.has(id) ? 'var(--accent-soft)' : undefined,
-                                  color: r.kind === 'del' ? 'var(--danger)' : r.kind === 'add' ? 'var(--success)' : 'var(--text)',
-                                }}>
-                                <span style={{ width: 34, textAlign: 'right', color: 'var(--text-muted)', flexShrink: 0 }}>{r.oldLine ?? ''}</span>
-                                <span style={{ width: 34, textAlign: 'right', color: 'var(--text-muted)', flexShrink: 0 }}>{r.newLine ?? ''}</span>
-                                <span style={{ width: 10, flexShrink: 0 }}>{r.kind === 'add' ? '＋' : r.kind === 'del' ? '−' : ' '}</span>
-                                <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{r.text}</span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    })}
-                  </div>
+                  <DiffFileView key={f.path} path={f.path} oldPath={f.oldPath} binary={f.binary}
+                    additions={f.additions} deletions={f.deletions} hunks={f.hunks}
+                    open={openFiles.has(fk)} onToggleFile={() => onToggleFile(fk)}
+                    foldedHunks={foldedHunks} onToggleHunk={onToggleHunk} hunkKeyPrefix={fk}
+                    rowDomId={(hunkIndex, rowIndex) => diffRowDomId(p.projectId, f.path, hunkIndex, rowIndex)}
+                    fileAttrValue={`file-${f.path}`}
+                    flashRowIds={flashRows?.ids} flashSeq={flashRows?.seq} hoverRowIds={hoverRows} />
                 );
               })}
             </div>

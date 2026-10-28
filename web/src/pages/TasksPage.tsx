@@ -14,6 +14,9 @@ import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：选
 import { PinToggle } from '../ui/PinToggle';
 import { priorityAriaLabel, priorityColor } from '../ui/priority'; // PM-302 ③：优先级 → 颜色/文案单源（列表/看板/矩阵/移动端共用）
 import { blockBadgeNames, blockBadgeNode } from '../ui/blockBadge'; // T03229（PM-202②）：阻塞徽标单源（列表行与看板卡共用）
+import { GitBadge, GitBoardBadge, gitTruncatedNote } from '../ui/gitBadge'; // 八期 §3.1：任务↔提交关联徽标（列表行 + 看板卡）
+import { GitTreePickerModal } from '../ui/GitTreePickerModal'; // 八期 §3.1.5：未回写「手动关联」批量补录走同一取数弹窗
+import { useGitSummaries } from '../utils/gitSummaries'; // 八期 §3.1.6：本页提交摘要一次批量解析 + 60s 缓存
 import { fieldBadgesNode } from '../ui/fieldBadges'; // T03231（PM-203②）：自定义字段值徽标（列表行展示）
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { NoticeToast, useNotice } from '../ui/notice'; // T03214（UX-02 ③）：提示分级——成功短驻、错误长驻且可关闭/复制
@@ -24,7 +27,7 @@ import { arrangeTaskTree, makeTaskMatcher, matchVerified, sortOptions, sortTasks
 import { useTaskListWindow } from '../utils/taskListWindow'; // T03215（PM-304）：文档滚动 + 变高行的窗口化
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { useBusy, setBusy } from '../ui/busy';
-import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, PanelRightOpen, Pin, Plus, Save, ScanSearch, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
+import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, GitBranch, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, PanelRightOpen, Pin, Plus, Save, ScanSearch, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00771：工作空间选择器（项目上下文根路径）
 import { WorkspaceSearchPanel } from '../ui/WorkspaceSearchPanel'; // T00786：工作空间全文检索面板（partial 提示）
@@ -42,7 +45,7 @@ interface Paged<T> {
 }
 
 /** T01568：详情抽屉合法标签页（会话键 focusDrawerTab 的白名单校验口径，与 TaskDetailDrawer 标签页一致） */
-const DRAWER_TABS: readonly TaskDetailTab[] = ['desc', 'result', 'summary', 'timeline', 'plans', 'blocks'];
+const DRAWER_TABS: readonly TaskDetailTab[] = ['desc', 'result', 'summary', 'timeline', 'plans', 'git', 'blocks'];
 
 // ---------- T00552：批量分类运行态模块级化——切页后循环继续、返回不卡死 ----------
 // T02365：补「没命中」的原因分桶——AI 判定无匹配、调用失败、分类候选为空要分得开，
@@ -426,6 +429,8 @@ export function TasksPage() {
   // T03214（UX-02 ②）：此前是裸 useState——切到别的页再回来就回到默认值，与搜索/分类/优先级筛选不一致。
   // 升级为会话级：切页返回保持，重开应用清空。
   const [doneFilter, setDoneFilter] = useSessionState<'all' | 'unverified' | 'verified'>('tasks.doneFilter', 'unverified');
+  /** 八期 §3.1.1：Git 徽标显隐开关（列表工具条，会话级保持；现状全站无表头右键菜单，不另造该机制） */
+  const [gitOn, setGitOn] = useSessionState('tasks.git.badge', true);
   // 待办/已完成区块排序：会话级偏好，默认保持后端顺序
   const [todoSort, setTodoSort] = usePersistentState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.todoSort', 'default'); // T01697：排序偏好持久化（重启保持）
   const [doneSort, setDoneSort] = usePersistentState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.doneSort', 'default'); // T01697
@@ -617,6 +622,84 @@ export function TasksPage() {
   // 一次只挂载一个 tab 的列表，故整块共用一个窗口实例（看板视图不参与窗口化）
   const activeVisible = activeTab === 'done' ? visibleDone : activeTab === 'shelved' ? visibleShelved : visibleTodo;
   const activeVisibleIds = activeTab === 'done' ? doneIds : activeTab === 'shelved' ? shelvedIds : todoIds;
+  // ===== 八期 §3.1：任务 ↔ Git 提交徽标 =====
+  // 摘要取数必须在组件级一次算好（本页唯一 SHA 集合 → 一次批量请求）：逐行请求等于让 200 行页面
+  // 触发 200 次 git 子进程，且窗口化滚动会反复回收行、造成同一提交被反复解析（§3.1.6 红线）。
+  const gitBadgeTasks = useMemo(
+    () => (viewMode === 'board' ? [...todo, ...done] : activeVisible),
+    [viewMode, todo, done, activeVisible],
+  );
+  const workspaceOfTask = useCallback(
+    (t: Task) => projects.find((p) => p.id === (t.project_id || activeProject))?.workspace_path ?? '',
+    [projects, activeProject],
+  );
+  const gitSummaries = useGitSummaries(gitBadgeTasks, gitOn, workspaceOfTask);
+  /** §3.1.5：未回写提示条只统计「本页已加载」范围（不新增全表扫描接口），与「仅未验证」过滤无关——
+   *  回写缺口是数据完整性问题，被筛选藏起来不等于不存在 */
+  const unlinkedDone = useMemo(
+    () => (gitOn ? done.filter((t) => (t.gitLinks?.length ?? 0) === 0) : []),
+    [gitOn, done],
+  );
+  const singleProjectForGit = Boolean(activeProject) && activeProject !== ALL_PROJECTS;
+  // 「手动关联」是逐条补录队列：一次只弹一个任务的取数窗，补完一条推进下一条
+  const [gitLinkQueue, setGitLinkQueue] = useState<Task[]>([]);
+  const [gitLinkBusy, setGitLinkBusy] = useState(false);
+
+  /** 把本页未回写任务转成可直接交给外部 Agent 的回写指令（含 mtask_link_git_commit 调用样例） */
+  async function copyWriteBackInstruction() {
+    if (unlinkedDone.length === 0) { flash('本页没有未回写的已完成任务'); return; }
+    const sample = unlinkedDone.find((t) => t.task_no) ?? unlinkedDone[0];
+    const text = [
+      '请把以下已完成任务关联的 Git 提交 ID 回写到 MTask（MCP 工具 mtask_link_git_commit）：',
+      ...unlinkedDone.map((t) => `- ${t.task_no ?? '(无编号)'} | taskId=${t.id} | ${t.title}`),
+      '',
+      '调用样例：',
+      `mtask_link_git_commit { "taskNo": "${sample.task_no ?? ''}", "id": "${sample.id}", "commits": ["<40 位或 7~40 位 hex 提交 ID>"] }`,
+      '',
+      '说明：回写幂等（同任务同提交不重复建单）；提交需存在于该任务所属项目当前绑定的工作空间仓库中。',
+      '注意：已完成任务归档后会被物理删除，届时无法再补齐关联。',
+    ].join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      flash(`已复制 ${unlinkedDone.length} 条未回写任务的回写指令`);
+    } catch {
+      flash('复制失败，请手动选择复制', 'error');
+    }
+  }
+
+  /** §3.1.5「手动关联」：跨项目时不批量（工作空间各不相同），提示逐行操作 */
+  function startManualGitLink() {
+    if (!singleProjectForGit) { flash('跨项目视图请逐行操作：点击任务行的提交徽标进抽屉「Git」页手动关联'); return; }
+    const proj = projects.find((p) => p.id === activeProject);
+    if (!proj?.workspace_path) { flash('该项目未绑定工作空间，请先绑定仓库目录'); return; }
+    if (unlinkedDone.length === 0) { flash('本页没有未回写的已完成任务'); return; }
+    setGitLinkQueue(unlinkedDone);
+  }
+
+  async function confirmManualGitLink(projectId: string, shas: string[]) {
+    const head = gitLinkQueue[0];
+    if (!head) return;
+    setGitLinkBusy(true);
+    const failed: string[] = [];
+    for (const sha of shas) {
+      try {
+        await api.post(`/tasks/${head.id}/git/links`, { sha });
+      } catch (e) {
+        failed.push(`${head.task_no ?? head.id} ← ${sha.slice(0, 7)}：${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    setGitLinkBusy(false);
+    if (failed.length) flash(`部分关联失败：${failed.join('；')}`, 'error');
+    else flash(`已为 ${head.task_no ?? head.id} 手动关联 ${shas.length} 个提交`);
+    const last = gitLinkQueue.length <= 1;
+    setGitLinkQueue(last ? [] : gitLinkQueue.slice(1));
+    if (last) {
+      // 整条补录队列收尾才重载列表：逐条重载会把同一页拉 N 次
+      gitSummaries.refresh();
+      void loadTasks(projectId);
+    }
+  }
+
   // 搁置列表是全量拉取（不分页），触底续取只对带分页的待办/已完成生效，否则会在看不见的列表上白取一页
   const listWin = useTaskListWindow(
     viewMode === 'list' ? activeVisible.length : 0,
@@ -1693,12 +1776,17 @@ export function TasksPage() {
           e.preventDefault();
           void setStatus(t, target);
         }}
+        /* 八期 §3.1.1 / 评审 #3：卡内只放纯文本徽标（不做链接与按钮），查看提交详情走「点击卡片 → 抽屉 Git 页」 */
+        onClick={() => { if (!dragTaskId) openDetailDrawer(t, 'git'); }}
         style={{
           border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', background: 'var(--card-bg)', cursor: 'grab',
           borderLeft: `3px solid ${priorityBorderColor(t.priority)}`,
         }}
         title={`${t.title}（${priorityLabel(t.priority)}）——拖到另一列，或聚焦后按回车流转状态`}>
-        <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{t.title}</span>
+          <GitBoardBadge task={t} summaries={gitSummaries} gitOn={gitOn} />
+        </div>
         {blockedN > 0 && (
           <div style={{ marginTop: 4 }}>{blockBadgeNode(t)}</div>
         )}
@@ -2548,6 +2636,8 @@ export function TasksPage() {
             {t.status === 'todo' ? '☐' : '☑'}
           </button>
           {t.status === 'done' && renderVerifyButton(t)}
+          {/* 八期 §3.1：提交关联徽标（状态开关之后）——简写/复制/外链/降级/未回写五行状态 */}
+          <GitBadge task={t} summaries={gitSummaries} gitOn={gitOn} onOpenGit={(task) => openDetailDrawer(task, 'git')} flash={flash} />
         </span>
         {/* 优先级四级（T00495：与筛选/录入对齐）：置于 AI 梳理按钮之前，便于优先调整重要度 */}
         <select
@@ -3842,6 +3932,13 @@ export function TasksPage() {
             ))}
           </select>
         </span>
+        {/* 八期 §3.1.1：Git 徽标显隐开关（会话级）——关闭时列表/看板行内徽标整体不渲染，也不再发起摘要批量请求 */}
+        <button type="button" data-t03343="git-toggle" aria-pressed={gitOn} aria-label="显示 Git 提交徽标"
+          title={gitOn ? 'Git 徽标（已显示）— 点击隐藏任务行的提交关联徽标；会话内保持' : 'Git 徽标（已隐藏）— 点击显示任务行的提交关联徽标；会话内保持'}
+          onClick={() => setGitOn((v) => !v)} className="tbtn-anim"
+          style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: gitOn ? 'var(--accent-soft)' : 'var(--card-bg)', color: gitOn ? 'var(--accent-text)' : 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>
+          <GitBranch size={13} />Git
+        </button>
         {/* T02952：搜索框 + 框内左侧清空按钮（有内容才显示；悬浮倾斜 5°~10° 由 .ws-clear-btn 提供；点击清空且光标留框内） */}
         <span style={{ position: 'relative', display: 'inline-flex', marginLeft: 'auto' }}>
           <input
@@ -4101,6 +4198,26 @@ export function TasksPage() {
         </>)}
 
         {activeTab === 'done' && (<>
+        {/* 八期 §3.1.5（Q8'）：未回写补齐提示条——只统计本页已加载范围，翻页后计数随之更新 */}
+        {gitOn && unlinkedDone.length > 0 && (
+          <div data-t03360="unlinked-bar" role="status" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', margin: '8px 0', padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--surface)', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+            <span>本页已加载 {done.length} 条已完成任务中，{unlinkedDone.length} 条未回写提交 ID</span>
+            <button type="button" data-t03360="copy-instruction" className="tbtn-anim"
+              onClick={() => void copyWriteBackInstruction()}
+              title="复制回写指令 — 生成可直接交给外部 AI Agent 的 mtask_link_git_commit 指令文本" aria-label="复制回写指令：生成外部 Agent 可用的回写文本"
+              style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
+              <Copy size={12} />复制回写指令
+            </button>
+            <button type="button" data-t03360="manual-link" className="tbtn-anim" disabled={gitLinkBusy}
+              onClick={startManualGitLink}
+              title={singleProjectForGit ? '手动关联 — 逐条打开提交选取弹窗补录（跨项目视图请逐行操作）' : '跨项目视图请逐行手动关联（点击任务行提交徽标进抽屉）'}
+              aria-label="手动关联：逐条打开提交选取弹窗补录关联"
+              style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', opacity: gitLinkBusy ? 0.6 : 1 }}>
+              <GitBranch size={12} />手动关联
+            </button>
+            <span style={{ color: 'var(--text-muted)' }}>已完成任务归档删除后无法补齐</span>
+          </div>
+        )}
         <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
           {/* 提示未验证数量：默认过滤「仅未验证」时，让用户意识到已验证项只是被过滤而非丢失 */}
           {multiSelect && (
@@ -4204,6 +4321,10 @@ export function TasksPage() {
         )}
         {pageStatus?.allLoaded && (
           <span data-t03214="all-loaded" role="status" style={{ fontSize: 'var(--fs-s)', color: 'var(--success)' }}>已加载全部</span>
+        )}
+        {/* 八期 §3.1.6：单页唯一提交超过上限时服务端截断，此处与「剩余条数」同语言如实告知（不静默少展） */}
+        {gitTruncatedNote(gitSummaries) && (
+          <span data-t03343="git-truncated" role="status" style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)' }}>{gitTruncatedNote(gitSummaries)}</span>
         )}
       </div>
     );
@@ -4566,6 +4687,27 @@ export function TasksPage() {
           initialTab={drawerTab ?? undefined}
           onClose={() => { setDrawerTask(null); setDrawerTab(null); }}
           onChanged={(patch) => applyTaskPatch(drawerTask.id, patch)}
+          projects={projects}
+          onBindWorkspace={bindWorkspace}
+          onGitLinksChanged={() => { gitSummaries.refresh(); void loadTasks(activeProject); }}
+          flash={flash}
+        />
+      )}
+
+      {/* 八期 §3.1.5：未回写「手动关联」逐条补录队列——一次只弹一个任务的取数窗，确认即写入 task_git_links(source='manual') */}
+      {gitLinkQueue.length > 0 && (
+        <GitTreePickerModal
+          projects={projects.filter((p) => p.id === activeProject)}
+          activeProjectId={activeProject}
+          selectedByProject={{}}
+          onConfirm={(projectId, shas) => void confirmManualGitLink(projectId, shas)}
+          onClose={() => {
+            const left = gitLinkQueue.length - 1;
+            setGitLinkQueue([]);
+            if (left > 0) flash(`已中止批量补录（剩余 ${left} 条未处理），可在提示条重新开始`);
+            gitSummaries.refresh();
+            void loadTasks(activeProject);
+          }}
         />
       )}
 

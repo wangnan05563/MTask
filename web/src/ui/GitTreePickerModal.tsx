@@ -59,13 +59,15 @@ const boxStyle: React.CSSProperties = {
 const chipStyle: React.CSSProperties = PILL; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 const FONT_MONO = 'Consolas, Menlo, monospace';
 
-export function GitTreePickerModal({ projects, activeProjectId, selectedByProject, onConfirm, onClose }: {
+export function GitTreePickerModal({ projects, activeProjectId, selectedByProject, onConfirm, onClose, zIndex = 1000 }: {
   readonly projects: Project[];
   readonly activeProjectId: string;
   /** 各项目已选 SHA（确认后由卡片写回；弹窗内改的是当前项目的这一份） */
   readonly selectedByProject: Record<string, string[]>;
   readonly onConfirm: (projectId: string, shas: string[]) => void;
   readonly onClose: () => void;
+  /** 抽屉内打开时须高于 SlideOver（1100），否则弹窗被抽屉遮住（八期 §3.2.3） */
+  readonly zIndex?: number;
 }) {
   const [projectId, setProjectId] = useState(activeProjectId || projects[0]?.id || '');
   const [head, setHead] = useState('');
@@ -111,14 +113,13 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
     setError('');
     const nextSkip = append ? commits.length : 0;
     try {
-      const r = await api.post<GitLogResponse>('/plans/code-review-lecture/git-log', {
-        projectId,
-        head: allBranches ? undefined : head.trim(),
-        all: allBranches,
-        skip: nextSkip,
-        limit: GIT_TREE_PAGE_SIZE,
-        search: search.trim(),
-      });
+      // Q11 裁定：Git 树取数端点上提为 `GET /git/log`——任务侧与讲稿侧共用同一取数逻辑，
+      // 不再让任务抽屉依赖讲稿命名空间（旧 POST 路径仍在服务端保留转发）。
+      const qs = new URLSearchParams({ projectId, skip: String(nextSkip), limit: String(GIT_TREE_PAGE_SIZE) });
+      if (!allBranches && head.trim()) qs.set('head', head.trim());
+      if (allBranches) qs.set('all', '1');
+      if (search.trim()) qs.set('search', search.trim());
+      const r = await api.get<GitLogResponse>(`/git/log?${qs.toString()}`);
       if (!r.ok) {
         setError(r.error?.message ?? 'Git 取数失败');
         setCommits(append ? commits : []);

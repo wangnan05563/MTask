@@ -23,7 +23,7 @@ import { createHash } from 'node:crypto';
 
 export const gitLinksApi = Router();
 
-/** 摘要缓存 TTL（§3.1.6：60s 内复用，翻页/筛选变化即失效——键里含 SHA 集合，天然失效） */
+/** 摘要缓存 TTL（§3.1.6：60s 内复用，翻页/筛选变化即失效——键里含 SHA 集合与任务当前工作空间，换绑即失效） */
 const SUMMARIES_TTL_MS = 60_000;
 
 function httpError(res: import('express').Response, e: unknown): void {
@@ -48,7 +48,20 @@ gitLinksApi.post('/git/commit-summaries', async (req, res) => {
     .map((l) => ({ taskId: typeof l.taskId === 'string' ? l.taskId : undefined, sha: normalizeShaInput(l.sha ?? '') ?? '' }))
     .filter((l) => l.sha);
   if (!clean.length) return res.json({ groups: [], echoed: links.length });
-  const key = createHash('sha1').update(clean.map((l) => `${l.taskId ?? ''}:${l.sha}`).sort().join('|')).digest('hex');
+  // 缓存键里带上「任务当前工作空间」：只按 taskId:sha 组键时，项目换绑后 60s 内仍会命中旧仓库的摘要组，
+  // 列表徽标于是继续显示已经解绑仓库的提交——§3.1.1 的「不可用」态被 stale 缓存压掉。翻页/筛选照常复用。
+  const wsOf = new Map<string, string>();
+  const workspaceOf = (taskId?: string): string => {
+    if (!taskId) return '';
+    const hit = wsOf.get(taskId);
+    if (hit !== undefined) return hit;
+    const ws = resolveTask({ id: taskId })?.workspacePath ?? '';
+    wsOf.set(taskId, ws);
+    return ws;
+  };
+  const key = createHash('sha1')
+    .update(clean.map((l) => `${l.taskId ?? ''}:${workspaceOf(l.taskId)}:${l.sha}`).sort().join('|'))
+    .digest('hex');
   const hit = cacheGet(`git-summaries:${key}`) as { groups: unknown[] } | undefined;
   if (hit) return res.json(hit);
   try {

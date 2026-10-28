@@ -77,16 +77,37 @@ export interface CommitLink {
   display: string;
 }
 
-/** 构造提交外链；平台不可识别时返回 null（调用方走「站内查看」） */
-export function buildCommitLink(rawUrl: string, sha: string): CommitLink | null {
+/**
+ * 提交外链的**前缀**（不含 SHA）。列表页按 workspace 只取一次 remote，
+ * 前端用 `commitBase + '/' + sha` 拼接即可，凭据剥离因此始终发生在服务端。
+ */
+export interface RemoteLinkBase {
+  /** GitLab 为 `https://host/owner/repo/-/commit`，其余为 `https://host/owner/repo/commit` */
+  commitBase: string;
+  platform: GitPlatform;
+  /** 展示用「host/owner/repo」（已剥离凭据） */
+  display: string;
+}
+
+/** 由 remote URL 推导外链前缀；平台不可识别（Q6 四类之外）返回 null，调用方走「站内查看」 */
+export function commitBaseOf(rawUrl: string): RemoteLinkBase | null {
   const repo = parseRemoteRepo(rawUrl);
   if (!repo) return null;
   const platform = detectPlatform(repo.host);
   if (platform === 'unknown') return null;
-  if (!/^[0-9a-f]{7,40}$/.test(sha)) return null;
   const base = `https://${repo.host}/${repo.owner}/${repo.repo}`;
-  const url = platform === 'gitlab' ? `${base}/-/commit/${sha}` : `${base}/commit/${sha}`;
-  return { url, platform, display: `${repo.host}/${repo.owner}/${repo.repo}` };
+  return {
+    commitBase: platform === 'gitlab' ? `${base}/-/commit` : `${base}/commit`,
+    platform,
+    display: `${repo.host}/${repo.owner}/${repo.repo}`,
+  };
+}
+
+/** 构造提交外链；平台不可识别时返回 null（调用方走「站内查看」） */
+export function buildCommitLink(rawUrl: string, sha: string): CommitLink | null {
+  const b = commitBaseOf(rawUrl);
+  if (!b || !/^[0-9a-f]{7,40}$/.test(sha)) return null;
+  return { url: `${b.commitBase}/${sha}`, platform: b.platform, display: b.display };
 }
 
 /** 外链仅允许 http/https（渲染层与主进程二次校验同一口径） */
