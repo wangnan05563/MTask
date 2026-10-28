@@ -5,7 +5,8 @@ import { askConfirm, askInput } from '../ui/dialogs';
 import { FONT_OPTIONS, FONT_SIZE_OPTIONS, useSettings, type ImportMode } from '../settings';
 import { Ban, Download, ExternalLink, FileUp, FolderPlus, Info, MonitorCog, Moon, Pencil, RefreshCw, RotateCcw, Save, Settings, ShieldCheck, Sun, Trash2 } from 'lucide-react';
 import { getLang, setLang, onLangChange, type Lang } from '../i18n'; // T01071-FR5.4：i18n 底座
-import { usePersistentState } from '../ui/session'; // T02977 复验补：设置页子 tab 跨页面/跨会话保持
+import { usePersistentState } from '../ui/session'; // T03271（UX-09③）：Tab 选中态跨页面/跨会话保持（沿用 T02977 口径）
+import { SETTINGS_TAB_LABELS, filterSettingsGroups, normalizeSettingsTab, type SettingsTabKey } from '../ui/settingsTabs'; // T03271（UX-09①②）：页签与分组单源
 import { updateCardStore, shownProgressOf, type UpdateCheckInfo } from '../stores/updateCardStore';
 
 /** T01060-FR4.1：强调色预设色板（与主题内置 accent 同源的六色系） */
@@ -38,54 +39,71 @@ const APP_NAME = 'MTask';
 const APP_VERSION = '0.1.0';
 const APP_DESC = 'AI 任务开发管理工具：项目维度任务管理 + AI 梳理 + 队列分发。';
 
-type STab = 'general' | 'dashboard' | 'supervisor' | 'migration' | 'dbadmin' | 'categories' | 'fields' | 'recurring' | 'apitokens' | 'tunnel' | 'logs' | 'history' | 'archive' | 'help' | 'about';
-
 /** 导入策略文案映射：显式枚举映射替代嵌套三元，新增策略时只需补一行 */
 const IMPORT_MODE_LABELS: Record<ImportMode, string> = { merge: '合并', keep: '保留', overwrite: '覆盖' };
 
-const SUB_TABS: { key: STab; label: string }[] = [
-  { key: 'general', label: '通用设置' },
-  { key: 'dashboard', label: '仪表盘' }, // T01154：自顶部菜单迁入（通用设置之后）
-  { key: 'supervisor', label: '监督审计' }, // T01286-FR5.2~5.4：状态看板 + 审计列表 + 熔断开关
-  { key: 'migration', label: '数据迁移' },
-  { key: 'dbadmin', label: '数据维护' },
-  { key: 'categories', label: '任务分类' },
-  { key: 'fields', label: '自定义字段' }, // T03231（PM-203）：项目级字段建/改/归档
-  { key: 'recurring', label: '循环任务' }, // T01073-FR5.5：周期性任务自动生成
-  { key: 'apitokens', label: 'API Token' }, // T01073-FR5.6：外部脚本访问凭据
-  { key: 'tunnel', label: '内网穿透' },
-  { key: 'logs', label: '日志' },
-  { key: 'history', label: '历史资产' }, // T00756：自顶部菜单移入设置（归档 tab 前）
-  { key: 'archive', label: '归档' },
-  { key: 'help', label: '帮助文档' },
-  { key: 'about', label: '关于' },
-];
-
-/** 设置页面：多 Tab 布局（通用设置 / 数据迁移 / 关于）。所有颜色用 CSS 变量，自动适配当前主题。 */
+/** 设置页面：三组页签（偏好 / 数据 / 运维与诊断）+ 组内搜索（T03271 / UX-09）。 */
 export function SettingsPage() {
-  // T02977 复验补：子 tab 用持久化 state——切去别的页面再回设置，仍停在原来那一页（原来是恒回「通用设置」）
-  const [st, setSt] = usePersistentState<STab>('settings.tab', 'general');
-  // 脏值兜底：老版本遗留的 key（已被删除的 tab）不能让页面渲染成空白
-  const active = SUB_TABS.some((t) => t.key === st) ? st : 'general';
+  // T03271（UX-09③）：沿用 T02977 口径——切走返回、整页刷新后仍停原页签；脏值由单源兜底回「通用设置」
+  const [st, setSt] = usePersistentState<string>('settings.tab', 'general');
+  const active = normalizeSettingsTab(st);
+  // T03271（UX-09②）：命令面板直达时设置页可能已挂载——只写存储不会重渲染，故另派事件即时切页签
+  useEffect(() => {
+    const onFocus = (e: Event) => setSt(normalizeSettingsTab((e as CustomEvent<{ key?: string }>).detail?.key));
+    globalThis.addEventListener('mtaskSettingsTab', onFocus);
+    return () => globalThis.removeEventListener('mtaskSettingsTab', onFocus);
+  }, [setSt]);
+  const [q, setQ] = useState('');
+  const groups = filterSettingsGroups(q);
   return (
     <section>
-      <nav style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 12 }}>
-        {SUB_TABS.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setSt(t.key)}
-            style={{
-              fontSize: 'var(--fs-m)',
-              padding: '6px 14px',
-              borderRadius: 6,
-              background: active === t.key ? 'var(--accent)' : 'var(--card-bg)',
-              color: active === t.key ? 'var(--accent-text)' : 'var(--text)',
-              cursor: 'pointer',
-            }}
-          >
-            {t.label}
-          </button>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          aria-label="搜索设置项"
+          placeholder="搜索设置项（如：主题 / 备份 / 日志）…"
+          style={{ width: 260, maxWidth: '100%', padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-m)' }}
+        />
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+          {groups.reduce((n, g) => n + g.tabs.length, 0)} 项
+        </span>
+      </div>
+      <nav aria-label="设置分组" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+        {groups.map((g) => (
+          <div key={g.key} role="group" aria-label={g.label} data-t03271="group" data-group={g.key}
+            style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4 }}>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 72 }}>{g.label}</span>
+            {g.tabs.map((t) => {
+              const on = active === t.key;
+              return (
+                <button
+                  key={t.key}
+                  onClick={() => setSt(t.key)}
+                  aria-current={on ? 'page' : undefined}
+                  data-t03271="tab"
+                  data-tab={t.key}
+                  title={SETTINGS_TAB_LABELS[t.key]}
+                  style={{
+                    fontSize: 'var(--fs-m)',
+                    padding: '6px 14px',
+                    borderRadius: 6,
+                    background: on ? 'var(--accent)' : 'var(--card-bg)',
+                    color: on ? 'var(--accent-text)' : 'var(--text)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {t.label}
+                </button>
+              );
+            })}
+          </div>
         ))}
+        {groups.length === 0 && (
+          <div role="status" data-t03271="empty" style={{ padding: '8px 0', fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
+            无匹配设置项
+          </div>
+        )}
       </nav>
 
       {active === 'general' && <GeneralTab />}

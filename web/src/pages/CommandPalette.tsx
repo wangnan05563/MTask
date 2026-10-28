@@ -6,6 +6,7 @@ import { focusTaskByNo } from '../ui/focusTask'; // T02162：对齐通知中心�
 import { loadProjectList, ProjectListHint, useProjectList } from '../ui/projectList'; // T02201：项目取数走统一容错层
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：任务/提示词取数改走可见失败态层
 import { TABS, type Tab } from '../ui/tabs'; // T03184（PM-102）：页面列表从导航单源生成
+import { SETTINGS_TABS, focusSettingsTab, matchesSettingsTab } from '../ui/settingsTabs'; // T03271（UX-09②）：设置页签单源 + 直达写入 // T03271（UX-09②）：设置页签与导航同名，可直达具体页签
 
 
 /** T03184：后端 `/tasks/search` 信封——total/truncated/degraded 是面板提示语的唯一依据 */
@@ -93,6 +94,18 @@ export function CommandPalette({ open, onClose, onNavigate }: {
     for (const t of TABS) {
       if (!kwLower || t.label.toLowerCase().includes(kwLower)) {
         out.push({ group: '页面', label: t.label, hint: `跳转到「${t.label}」`, action: () => onNavigate(t.key) });
+      }
+    }
+    // T03271（UX-09②）：设置页签直达——名称取自同一份 settingsTabs 单源，与导航逐字一致；
+    // 仅在输入关键词时出现，避免空查询时把 15 个设置项堆在默认列表里。
+    if (kwLower) {
+      for (const t of SETTINGS_TABS) {
+        if (matchesSettingsTab(t, kwLower)) {
+          out.push({
+            group: '设置', label: t.label, hint: `跳转到「设置 → ${t.label}」`,
+            action: () => { focusSettingsTab(t.key); onNavigate('settings'); },
+          });
+        }
       }
     }
     // T00560：项目搜索——跳任务页并写入搜索词（任务页按名称过滤展示）
