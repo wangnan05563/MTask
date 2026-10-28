@@ -21,23 +21,47 @@ export interface PreflightEstimateModel {
   secondsPerCall: number;
   secondsLowPerCall: number;
   secondsHighPerCall: number;
+  /**
+   * 单次调用的产出字符量基线（产出型通道用，见 `estimateOutputRun`）。
+   * 上下文型通道（讲稿）不走这个系数，仍按实际进上下文字符量预估。
+   */
+  outputCharsPerCall: number;
   /** ② 绝对偏差阈值（0.5 = 50%，严格大于才提示） */
   deviationThreshold: number;
 }
 
-export const PREFLIGHT_ESTIMATE_MODEL: PreflightEstimateModel = {
-  version: 'ai-preflight-v1',
-  secondsPerCall: 10,
-  secondsLowPerCall: 6,
-  secondsHighPerCall: 18,
-  deviationThreshold: 0.5,
-};
+/** 版本登记：系数任何变化都追加一条（⑥ 前后差异可解释，见 T03244） */
+export const PREFLIGHT_MODEL_HISTORY: readonly (PreflightEstimateModel & { changes: string[] })[] = [
+  {
+    version: 'ai-preflight-v1',
+    secondsPerCall: 10,
+    secondsLowPerCall: 6,
+    secondsHighPerCall: 18,
+    outputCharsPerCall: 0,
+    deviationThreshold: 0.5,
+    changes: [],
+  },
+  {
+    version: 'ai-preflight-v2',
+    secondsPerCall: 10,
+    secondsLowPerCall: 6,
+    secondsHighPerCall: 18,
+    outputCharsPerCall: 2500,
+    deviationThreshold: 0.5,
+    // 只新增系数、不动耗时口径——讲稿通道读数不变，周报改为按产出字符量预估
+    changes: ['新增产出字符量基线 2500 字/次（周报等产出型通道按此预估字符量）；耗时系数不变'],
+  },
+];
+
+export const PREFLIGHT_ESTIMATE_MODEL: PreflightEstimateModel = PREFLIGHT_MODEL_HISTORY[PREFLIGHT_MODEL_HISTORY.length - 1];
 
 export interface PreflightEstimate {
   /** 预估模型调用次数 */
   calls: number;
-  /** 预估进上下文的字符量 */
+  /** 预估字符量：口径见 `charsBasis` */
   chars: number;
+  /** 字符量口径：context=进上下文字符量（讲稿）；output=预计产出字符量（周报） */
+  charsBasis: 'context' | 'output';
   /** 点值（calls × secondsPerCall），保留给旧消费者 */
   seconds: number;
   /** 耗时区间下界 */
@@ -48,12 +72,31 @@ export interface PreflightEstimate {
   modelVersion: string;
 }
 
-/** 三项预估（①）：纯乘法，可解释优先于精确 */
+/** 三项预估（①）：纯乘法，可解释优先于精确；chars 为「进上下文」口径 */
 export function estimateAiRun(calls: number, chars: number, model: PreflightEstimateModel = PREFLIGHT_ESTIMATE_MODEL): PreflightEstimate {
   const c = Math.max(0, Math.floor(calls));
   return {
     calls: c,
     chars: Math.max(0, Math.floor(chars)),
+    charsBasis: 'context',
+    seconds: c * model.secondsPerCall,
+    secondsLow: c * model.secondsLowPerCall,
+    secondsHigh: c * model.secondsHighPerCall,
+    modelVersion: model.version,
+  };
+}
+
+/**
+ * 产出型通道（周报/汇报稿）的字符量预估：`calls × outputCharsPerCall`。
+ * 与 `estimateAiRun` 同一模型版本与耗时口径，只有字符量基准从「输入上下文」换成「预计产出」——
+ * 周报的上下文是数据 JSON（随数据量剧烈变化），不是用户关心的「这份报告大概多少字」。
+ */
+export function estimateOutputRun(calls: number, model: PreflightEstimateModel = PREFLIGHT_ESTIMATE_MODEL): PreflightEstimate {
+  const c = Math.max(0, Math.floor(calls));
+  return {
+    calls: c,
+    chars: c * model.outputCharsPerCall,
+    charsBasis: 'output',
     seconds: c * model.secondsPerCall,
     secondsLow: c * model.secondsLowPerCall,
     secondsHigh: c * model.secondsHighPerCall,

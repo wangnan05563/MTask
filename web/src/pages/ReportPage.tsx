@@ -41,6 +41,15 @@ interface ReportTemplate {
   size: number;
 }
 
+/** T03242（AI-102）：`GET /report/ai-preflight` 的回读形状（与 ReportService.ReportAiPreflightView 对齐） */
+interface ReportAiPreflight {
+  estimate: { calls: number; chars: number; charsBasis: 'context' | 'output'; seconds: number; secondsLow: number; secondsHigh: number; modelVersion: string };
+  contextChars: number;
+  notice: string;
+  model: { version: string; secondsPerCall: number; secondsLowPerCall: number; secondsHighPerCall: number; outputCharsPerCall: number };
+  range: { periodLabel: string; startDate: string; endDate: string; projects: number; tasks: number; plans: number; scope: string[] };
+}
+
 const PERIODS = [
   { key: 'day', label: '日报' },
   { key: 'week', label: '周报' },
@@ -419,6 +428,48 @@ function AiResultDownload({ aiResult, onDownload, periodLabel }: {
   );
 }
 
+/** T03242（AI-102①⑤⑥）：生成前预估确认块——三项预估齐全、代理指标注记常驻、模型版本可见。
+ *  预检只读（零 AI 调用），用户确认「开始生成」后才真正发起流式生成。 */
+function AiEstimateConfirm({ view, label, busy, onConfirm, onCancel }: {
+  readonly view: ReportAiPreflight;
+  readonly label: string;
+  readonly busy: boolean;
+  readonly onConfirm: () => void;
+  readonly onCancel: () => void;
+}) {
+  const { estimate, model, range } = view;
+  const fmt = (n: number) => n.toLocaleString('zh-CN');
+  const span = (s: number) => (s >= 60 ? `${(s / 60).toFixed(1)} 分钟` : `${s} 秒`);
+  return (
+    <div data-t03242="estimate" style={{ marginTop: 10, padding: '10px 12px', border: '1px solid var(--accent)', borderRadius: 8, background: 'var(--surface-2, transparent)' }}>
+      <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, color: 'var(--text)', marginBottom: 6 }}>
+        生成前预估 · {range.periodLabel} {range.startDate} ~ {range.endDate}
+        <span style={{ marginLeft: 6, fontWeight: 400, color: 'var(--text-muted)' }}>
+          （{range.projects} 个项目 / {range.tasks} 条任务 / {range.plans} 条计划）
+        </span>
+      </div>
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 3, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+        <li data-t03242="calls">调用次数：<b style={{ color: 'var(--text)' }}>{estimate.calls} 次</b></li>
+        <li data-t03242="chars">字符量：<b style={{ color: 'var(--text)' }}>≈ {fmt(estimate.chars)} 字</b>（预计产出；进上下文 {fmt(view.contextChars)} 字）</li>
+        <li data-t03242="seconds">耗时：<b style={{ color: 'var(--text)' }}>{span(estimate.secondsLow)} ~ {span(estimate.secondsHigh)}</b></li>
+      </ul>
+      <div data-t03242="proxy-notice" style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{view.notice}</div>
+      <div data-t03242="model-version" style={{ marginTop: 3, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+        预估模型 {model.version}（单次产出基线 {fmt(model.outputCharsPerCall)} 字 · {model.secondsLowPerCall}~{model.secondsHighPerCall} 秒/次）
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
+        <FlowButton onClick={onConfirm} disabled={busy} loading={busy} loadingText="生成中…" aria-label={`确认生成${label}`} data-t03242="confirm">
+          <><Sparkles size={14} /> 开始生成</>
+        </FlowButton>
+        <button type="button" onClick={onCancel} disabled={busy} data-t03242="cancel" aria-label={`取消本次预估（${label}）`}
+          style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', cursor: busy ? 'not-allowed' : 'pointer', fontSize: 'var(--fs-s)' }}>
+          取消
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** 周报/报表页面：按周期与格式生成报表，支持模板导入与管理 */
 export function ReportPage() {
   // 用户选项与已产生结果改为会话级持久化（useSessionState）：切换页面返回后仍保留选择与上次分析结果
@@ -450,6 +501,9 @@ export function ReportPage() {
   const [offlineFinal, setOfflineFinal] = useState<number | undefined>(undefined);
   // T03241（AI-101⑥）：本次生成失败后隐藏「上一次产物」找回块——避免把旧路径读成本次失败的产物
   const [aiAttemptFailed, setAiAttemptFailed] = useState(false);
+  // T03242（AI-102）：生成前预检结果——用户确认后才发起；周期/格式/范围一变就作废，避免拿旧预估去生成
+  const [aiEstimate, setAiEstimate] = useState<ReportAiPreflight | null>(null);
+  const [aiPreflighting, setAiPreflighting] = useState(false);
   // 文档区收起态：为让 AI 控制台全屏浏览，提供收起/展开动态按钮切换左侧文档区显隐
   const [splitCollapsed, setSplitCollapsed] = useState(false);
   // T00816：AI 控制台收起态——与文档区互为反操作（收起控制台让左侧文档区全屏），二者互斥避免两侧同隐的空屏
@@ -501,6 +555,8 @@ export function ReportPage() {
       .catch(() => { /* 忽略：无历史产物或接口异常时保持空 */ });
     return () => { alive = false; };
   }, []);
+  // T03242（AI-102①）：周期/格式/范围一变就作废旧预估——预估与生成必须同一口径，不拿旧数字确认新范围
+  useEffect(() => { setAiEstimate(null); }, [period, format, projectIds]);
   const prdSnap = usePrdGen();
   const tcSnap = useTestCaseGen(); // T01492：测试用例生成卡片运行状态供徽标共用
   const kfSnap = useKickoffPpt(); // T02109：启动会 PPT 卡片运行状态供徽标共用
@@ -802,12 +858,33 @@ export function ReportPage() {
 
   /** AI 周报生成（流式）：SSE 实时推送阶段日志与洞察正文到右侧控制台，完成后获得下载令牌。
    * 状态直接写入模块级 store，切换页面期间生成照常推进，返回后恢复进度。 */
+  async function aiPreflight() {
+    if (!activeToolId) {
+      flash(aiDown && readiness ? `AI 暂不可用：${readiness.reason}` : '请先在「模型管理」配置并选择 AI 工具');
+      return;
+    }
+    setAiPreflighting(true);
+    setAiAttemptFailed(false);
+    try {
+      const qs = new URLSearchParams({ period, format });
+      if (projectIds.length > 0) qs.set('projectIds', projectIds.join(','));
+      setAiEstimate(await api.get<ReportAiPreflight>(`/report/ai-preflight?${qs.toString()}`));
+    } catch (e) {
+      setAiEstimate(null);
+      flash(`预估失败：${e instanceof Error ? e.message : String(e)}`, 'error');
+    } finally {
+      setAiPreflighting(false);
+    }
+  }
+
   async function aiGenerate() {
     if (!activeToolId) {
       // T03176：诊断已给出具体缺失项（未配置工具/全部停用/未填默认模型）时按诊断原文提示，不再泛化成一句「去配置」
       flash(aiDown && readiness ? `AI 暂不可用：${readiness.reason}` : '请先在「模型管理」配置并选择 AI 工具');
       return;
     }
+    // T03242：把用户确认过的预估带给服务端——完成后要与「他看到的那份预估」比偏差，不能临时重算
+    const confirmed = aiEstimate ? { calls: aiEstimate.estimate.calls, chars: aiEstimate.estimate.chars, modelVersion: aiEstimate.estimate.modelVersion } : undefined;
     setAiAttemptFailed(false);
     reportStream.begin();
     // T00838：登记本次生成的 AbortController，供控制台「停止」按钮跨组件中止
@@ -817,7 +894,7 @@ export function ReportPage() {
     try {
       await streamEvents(
         '/report/ai-generate-stream',
-        { period, format, projectIds, toolId: activeToolId },
+        { period, format, projectIds, toolId: activeToolId, estimate: confirmed },
         (name, payload) => {
           switch (name) {
             case 'stage':
@@ -831,6 +908,7 @@ export function ReportPage() {
                 token: string; filename: string; provenance?: ReportProvenanceView; artifact?: ReportArtifactView;
               };
               reportStream.setResult({ token, filename, provenance, artifact });
+              setAiEstimate(null);
               break;
             }
             case 'error':
@@ -1138,15 +1216,25 @@ export function ReportPage() {
             AI 工具统一使用「模型菜单」的默认整理工具（无需在此重复选择）。
           </div>
           <FlowButton
-            onClick={() => void aiGenerate()}
-            disabled={aiStreaming || aiDown}
-            title={aiDown ? aiBlockedTitle(readiness, `${aiReportLabel} — 结合任务数据调用 AI 生成${periodLabel}`) : `${aiReportLabel} — 结合任务数据调用 AI 生成${periodLabel}`}
-            aria-label={`${aiReportLabel}：结合任务数据调用 AI 生成${periodLabel}`}
-            loading={aiStreaming}
-            loadingText="AI 生成中…"
+            onClick={() => void aiPreflight()}
+            disabled={aiStreaming || aiDown || aiPreflighting}
+            title={aiDown ? aiBlockedTitle(readiness, `${aiReportLabel} — 结合任务数据调用 AI 生成${periodLabel}`) : `${aiReportLabel} — 先预估用量与耗时，确认后再生成${periodLabel}`}
+            aria-label={`${aiReportLabel}：先预估用量与耗时再生成${periodLabel}`}
+            loading={aiPreflighting}
+            loadingText="正在预估…"
           >
             <><Sparkles size={14} /> {aiReportLabel}</>
           </FlowButton>
+          {/* T03242（AI-102①⑤⑥）：预检结果 + 确认门——不点「开始生成」不会发起调用 */}
+          {aiEstimate && !aiStreaming && !aiResult && (
+            <AiEstimateConfirm
+              view={aiEstimate}
+              label={aiReportLabel}
+              busy={aiPreflighting}
+              onConfirm={() => void aiGenerate()}
+              onCancel={() => setAiEstimate(null)}
+            />
+          )}
           {/* T00558 / PRD AI-5：生成后把 AI 洞察摘要写入收件箱任务 */}
           {/* T02213：状态未经服务端确认（加载中/取数失败）时禁用开关并如实标注——
               此前 GET 失败被吞，界面按 false 渲染成「后端是关的」，而真实值可能是开的 */}

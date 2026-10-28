@@ -10,6 +10,7 @@ import { logService } from './LogService';
 import { resolveCustomWindow, type CustomRange } from './summaryPptPeriod';
 import { buildReportProvenance, HANDLE_RESULT_LIMIT, type ReportProvenance } from './reportProvenance';
 import { recordArtifact, type AiArtifact } from './aiArtifactService';
+import { PREFLIGHT_ESTIMATE_MODEL, PROXY_METRIC_NOTICE, estimateOutputRun, type PreflightEstimate } from './preflightEstimate';
 
 /** 报表周期：day=日报 / week=周报 / month=月报 */
 export type ReportPeriod = 'day' | 'week' | 'month';
@@ -561,6 +562,55 @@ export function buildReportPrompt(period: ReportPeriod, data: ReportData, skill:
     ...(data.plans.length > 0 ? [`【项目计划执行情况】${JSON.stringify(data.plans)}（含延期标记 overdue，请纳入进展要点与风险分析）`] : []),
   ].join('\n\n');
   return { system, user };
+}
+
+/** T03242（AI-102①⑤⑥）：周报生成前的用量与耗时预估——只读聚合 + 构造 prompt 计长，零 AI 调用。 */
+export interface ReportAiPreflightView {
+  estimate: PreflightEstimate;
+  /** 实际进上下文的字符量（周报按产出预估字符量，上下文体量单独如实给出） */
+  contextChars: number;
+  /** ⑤ 用量代理指标注记（服务端单源，前端原样展示） */
+  notice: string;
+  /** ⑥ 预估模型版本与系数（前端据此解释前后差异，不再自己写死数字） */
+  model: {
+    version: string;
+    secondsPerCall: number;
+    secondsLowPerCall: number;
+    secondsHighPerCall: number;
+    outputCharsPerCall: number;
+  };
+  range: { periodLabel: string; startDate: string; endDate: string; projects: number; tasks: number; plans: number; scope: string[] };
+}
+
+export function aiReportPreflight(
+  period: ReportPeriod,
+  format: ReportFormat,
+  opts: { projectId?: string; projectIds?: string[] } = {},
+): ReportAiPreflightView {
+  const data = gatherReportData(period, opts.projectIds ?? opts.projectId);
+  const { system, user } = buildReportPrompt(period, data, SKILL_BY_FORMAT[format]);
+  return {
+    // 周报链路当前就是一次流式调用；分段生成（AI-103）落地后这里随段数增长
+    estimate: estimateOutputRun(1),
+    contextChars: system.length + user.length,
+    notice: PROXY_METRIC_NOTICE,
+    model: {
+      version: PREFLIGHT_ESTIMATE_MODEL.version,
+      secondsPerCall: PREFLIGHT_ESTIMATE_MODEL.secondsPerCall,
+      secondsLowPerCall: PREFLIGHT_ESTIMATE_MODEL.secondsLowPerCall,
+      secondsHighPerCall: PREFLIGHT_ESTIMATE_MODEL.secondsHighPerCall,
+      outputCharsPerCall: PREFLIGHT_ESTIMATE_MODEL.outputCharsPerCall,
+    },
+    range: {
+      periodLabel: data.periodLabel,
+      startDate: data.startDate,
+      endDate: data.endDate,
+      projects: data.projects.length,
+      tasks: data.tasks.length,
+      plans: data.plans.length,
+      scope: data.projectScope ?? [],
+    },
+  };
 }
 
 /** 生成报表，返回文件 buffer 与建议文件名（T02165：opts.projectIds 多项目聚合，与 projectId 兼容共存） */

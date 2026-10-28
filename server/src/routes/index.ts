@@ -40,7 +40,7 @@ import { historyApi } from './history'; // T00589：历史资产（转移/统计
 import { supervisorApi } from './supervisor'; // T01286：监督状态/审计/配置（FR-5.2~5.4）
 import { webhooksApi } from './webhooks'; // T03196（PM-401）：项目级 outbound Webhook（配置/测试/投递日志）
 import { listArtifacts } from '../services/aiArtifactService';
-import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, discardReport, gatherReportData, validateProjectIds, type ReportPeriod } from '../services/ReportService';
+import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, discardReport, gatherReportData, validateProjectIds, aiReportPreflight, type ReportPeriod, type ReportFormat } from '../services/ReportService';
 import { DOWNLOAD_NAME_RE } from '../util/export-name'; // T02104：下载文件名白名单单源（与生成侧清洗同源）
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
@@ -1783,6 +1783,27 @@ api.get('/report/artifacts', (req, res) => {
 
 api.get('/report/templates', (_req, res) => {
   res.json(listTemplates());
+});
+
+/**
+ * T03242（AI-102①⑤⑥）：周报生成前预检——三项预估 + 代理指标注记 + 模型版本。
+ * 只读聚合 + prompt 计长，零 AI 调用，故不挂 REPORT_GATE（与离线 generate 不同，不占并发位）。
+ */
+api.get('/report/ai-preflight', (req, res) => {
+  const period = String(req.query.period ?? '');
+  const format = String(req.query.format ?? '');
+  if (!['day', 'week', 'month'].includes(period)) return res.status(400).json({ error: 'period 非法' });
+  if (!['xlsx', 'docx', 'pdf', 'pptx'].includes(format)) return res.status(400).json({ error: 'format 非法' });
+  const rawIds = typeof req.query.projectIds === 'string'
+    ? req.query.projectIds.split(',').map((s) => s.trim()).filter(Boolean)
+    : undefined;
+  const scope = reportScope({ projectIds: rawIds, projectId: typeof req.query.projectId === 'string' ? req.query.projectId : undefined });
+  if (scope.error) return res.status(400).json({ error: scope.error });
+  try {
+    res.json(aiReportPreflight(period as ReportPeriod, format as ReportFormat, { projectIds: scope.ids }));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 // T02142：AI 周报两条生成端点补挂同一只 REPORT_GATE——FR-5 立论是「AI 大稿共用一个闸」，
