@@ -196,6 +196,47 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     );
     CREATE INDEX IF NOT EXISTS idx_ai_artifacts_card ON ai_artifacts(card_key, created_at);
 
+    -- T03245（PRD AI-103）：长文分段生成任务台账——讲稿/总结等长文按段落库，
+    -- 单段失败只标记该段、已生成段保留；刷新/重进后按 job 回读进度并只补缺失段。
+    -- 与 console_jobs（T00417）同族：任务态与正文都在库里，进程重启不丢。
+    CREATE TABLE IF NOT EXISTS ai_gen_jobs (
+      id            TEXT PRIMARY KEY,
+      card_key      TEXT NOT NULL,
+      tool_id       TEXT NOT NULL DEFAULT '',
+      title         TEXT NOT NULL DEFAULT '',
+      -- running | done | partial | aborted | error
+      status        TEXT NOT NULL DEFAULT 'running',
+      -- 生成入参（projects/区间/排除/风格/大纲…）原样留档，重试时据此重建请求，
+      -- 用户刷新后无需重新选范围；旧任务按卡保留最近 N 份（AiGenJournal.JOB_KEEP_PER_CARD）
+      request_json  TEXT NOT NULL DEFAULT '{}',
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL,
+      finished_at   TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_gen_jobs_card ON ai_gen_jobs(card_key, created_at);
+    CREATE TABLE IF NOT EXISTS ai_gen_segments (
+      job_id          TEXT NOT NULL,
+      section_key     TEXT NOT NULL,
+      -- 段内稳定标识：projectId|module（跨请求一致，重试据此复用）
+      segment_key     TEXT NOT NULL,
+      label           TEXT NOT NULL DEFAULT '',
+      project_id      TEXT NOT NULL DEFAULT '',
+      project_name    TEXT NOT NULL DEFAULT '',
+      module          TEXT NOT NULL DEFAULT '',
+      heading         TEXT NOT NULL DEFAULT '',
+      order_index     INTEGER NOT NULL DEFAULT 0,
+      -- pending | running | done | failed | stale
+      status          TEXT NOT NULL DEFAULT 'pending',
+      text            TEXT NOT NULL DEFAULT '',
+      error           TEXT,
+      attempts        INTEGER NOT NULL DEFAULT 0,
+      anchors_json    TEXT NOT NULL DEFAULT '[]',
+      anchor_issues_json TEXT NOT NULL DEFAULT '[]',
+      updated_at      TEXT NOT NULL,
+      PRIMARY KEY (job_id, section_key, segment_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_gen_segments_status ON ai_gen_segments(job_id, status);
+
     -- 项目计划任务（T00431）：按项目隔离的计划条目，串行瀑布时间线（见 docs/PRD-项目计划.md）。
     -- end_date 冗余存储重排结果（= start_date 起 duration_days 个工作日的含尾日），由服务层保证一致。
     CREATE TABLE IF NOT EXISTS plan_tasks (

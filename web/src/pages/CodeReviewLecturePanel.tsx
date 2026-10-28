@@ -98,6 +98,44 @@ interface LecturePreflight {
 
 const fmtSeconds = (s: number): string => (s >= 60 ? `${Math.ceil(s / 60)} 分钟` : `${s} 秒`);
 
+/**
+ * T03245（AI-103③）：`GET /plans/code-review-lecture/jobs/latest` 的台账视图
+ * （服务端 `AiGenJournal.GenJobView` + 节中文名）。刷新/重进后面板据此显示上次进度。
+ */
+interface LectureJournalSegment {
+  sectionKey: string;
+  segmentKey: string;
+  label: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  text: string;
+  error: string | null;
+  attempts: number;
+}
+interface LectureJournalSection {
+  key: string;
+  label: string;
+  total: number;
+  done: number;
+  failed: number;
+  segments: LectureJournalSegment[];
+}
+interface LectureJournalView {
+  id: string;
+  status: 'running' | 'done' | 'partial' | 'aborted' | 'error';
+  createdAt: string;
+  updatedAt: string;
+  progress: { sectionsTotal: number; sectionsDone: number; segmentsTotal: number; segmentsDone: number; segmentsFailed: number };
+  sections: LectureJournalSection[];
+}
+
+const JOURNAL_STATUS_LABEL: Record<LectureJournalView['status'], string> = {
+  running: '上次运行中断',
+  done: '已完成',
+  partial: '部分段失败',
+  aborted: '已中止',
+  error: '上次运行失败',
+};
+
 /** T03174（AI-102⑤，D-04）：与服务端 `preflightEstimate.PROXY_METRIC_NOTICE` 同字面量（门比对一致，前端不能 import 服务端模块） */
 const PROXY_METRIC_NOTICE = '用量为代理指标（调用次数/字符量/耗时），非金额';
 
@@ -168,6 +206,8 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   /** 锚点闪烁的行标识；seq 每次点击自增，让同一行的 CSS 动画重放（PRD 要求 1.5s 闪烁） */
   const [flashRows, setFlashRows] = useState<{ ids: Set<string>; seq: number } | null>(null);
   const [hoverRows, setHoverRows] = useState<Set<string>>(new Set());
+  /** T03245（AI-103③）：上次未完成任务的台账——刷新/重进后从服务端回读，不依赖前端记忆 */
+  const [journal, setJournal] = useState<LectureJournalView | null>(null);
   const leftRef = useRef<HTMLDivElement>(null);
   const flashTimer = useRef<number | null>(null);
 
@@ -226,6 +266,21 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
     codeReviewLectureStore.setAbortCtrl(null);
   }, []);
 
+  /**
+   * T03245（AI-103③）：回读最近一次任务台账。只有「未完成」的任务值得提示——
+   * 已完成任务的成稿已在右栏/历史里，再弹一条恢复横幅只会打扰。
+   */
+  async function refreshJournal() {
+    try {
+      const view = await api.get<LectureJournalView | null>('/plans/code-review-lecture/jobs/latest');
+      setJournal(view && view.status !== 'done' && view.progress.segmentsTotal > 0 ? view : null);
+    } catch {
+      // 台账只服务于恢复提示；读失败不阻塞生成主流程
+    }
+  }
+
+  useEffect(() => { void refreshJournal(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ---- 左栏：diff 视图 ----
   async function loadDiff() {
     if (scopeBody.error) return flash(scopeBody.error);
@@ -245,10 +300,13 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
     }
   }
 
-  // ---- 两段式生成（含中止续作 / 单节重试） ----
+  // ---- 两段式生成（含中止续作 / 单节重试 / 台账重试失败段） ----
   async function runStream(extra: Record<string, unknown>, stageLabel: string) {
-    if (scopeBody.error) return flash(scopeBody.error);
-    if (!toolId) return flash('请先在右侧控制台选择 AI 工具');
+    const retryJob = typeof extra.jobId === 'string' && extra.retryFailed === true;
+    // T03245（AI-103②③）：台账重试按服务端留档入参重建，不看当前面板范围（刷新后范围 UI 可能已变）
+    if (!retryJob && scopeBody.error) return flash(scopeBody.error);
+    // 台账重试用服务端留档的 toolId，刷新后新会话没选工具也能恢复
+    if (!toolId && !retryJob) return flash('请先在右侧控制台选择 AI 工具');
     const resumeFrom = typeof extra.resumeFrom === 'string' ? extra.resumeFrom : undefined;
     const retryKeys = Array.isArray(extra.sectionKeys) ? (extra.sectionKeys as string[]) : undefined;
     const before = codeReviewLectureStore.get();
@@ -257,10 +315,13 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
     // 续作/重试保留已有三态标记；全新一轮才清空
     codeReviewLectureStore.begin(Boolean(resumeFrom || retryKeys));
     codeReviewLectureStore.pushLog(`${stageLabel}：开始采集与上下文装配`);
+    const body = retryJob
+      ? { jobId: extra.jobId, retryFailed: true, ...(toolId ? { toolId } : {}) }
+      : { ...scopeBody.body, toolId, ...extra };
     let outline: LectureOutline | undefined = before.outline ?? undefined;
     let errMsg = '';
     try {
-      await streamEvents('/plans/code-review-lecture-stream', { ...scopeBody.body, toolId, ...extra }, (name, payload) => {
+      await streamEvents('/plans/code-review-lecture-stream', body, (name, payload) => {
         if (name === 'stage') {
           const s = payload as { phase: string; msg: string; progress: number; data?: { type?: string; outline?: LectureOutline; section?: string; ok?: boolean } };
           codeReviewLectureStore.setStage({ phase: s.phase, msg: s.msg, progress: s.progress });
@@ -285,6 +346,7 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
           codeReviewLectureStore.pushLog(`已停止——已生成 ${d?.sections?.length ?? 0} 节已保留，可「从第 n 节继续」`);
           codeReviewLectureStore.finish();
           flash(`已停止——已生成 ${d?.sections?.length ?? 0} 节已保留，可「从第 n 节继续」`);
+          void refreshJournal();
           return;
         } else if (name === 'error') {
           errMsg = (payload as { error: string }).error ?? '生成失败';
@@ -292,6 +354,7 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
       }, ac.signal);
       if (errMsg) {
         codeReviewLectureStore.finish(errMsg);
+        void refreshJournal();
         return flash(errMsg);
       }
       if (extra.outlineOnly && outline) codeReviewLectureStore.pushLog('大纲已就绪——右栏确认结构后点「按大纲生成正文」');
@@ -302,11 +365,13 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
         codeReviewLectureStore.pushLog(`生成完成：${okCount}/${done.sections.length} 节 · 锚点 ${done.stats.anchors} 个${done.warnings.length > 0 ? ` · 降级 ${done.warnings.length} 处` : ''}`);
       }
       codeReviewLectureStore.finish();
+      void refreshJournal();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       // 用户主动「停止」不是故障：保留已生成章节，不写错误态
       codeReviewLectureStore.finish(ac.signal.aborted ? undefined : msg);
       if (!ac.signal.aborted) flash(msg.includes(GATE_BUSY_MSG) ? `${msg}——请稍后重试` : msg);
+      void refreshJournal();
     } finally {
       codeReviewLectureStore.setAbortCtrl(null);
     }
@@ -448,6 +513,41 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
           <X size={16} />
         </button>
       </header>
+
+      {/* T03245（AI-103③）：刷新/重进后按服务端台账恢复——进度照实显示，只补未完成段 */}
+      {journal && (
+        <section data-t03245="journal-restore" aria-label="未完成的生成任务"
+          style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', border: '1px solid var(--warn)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
+          <RefreshCw size={14} style={{ color: 'var(--warn)' }} aria-hidden="true" />
+          <strong style={{ fontSize: 'var(--fs-s)' }}>上次生成未完成</strong>
+          <span data-t03245="journal-progress" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+            {JOURNAL_STATUS_LABEL[journal.status]}：已生成 {journal.progress.segmentsDone}/{journal.progress.segmentsTotal} 段
+            {journal.progress.segmentsFailed > 0 ? `，${journal.progress.segmentsFailed} 段失败` : ''}
+            （{journal.progress.sectionsDone}/{journal.progress.sectionsTotal} 节完成）
+          </span>
+          <span style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {journal.sections.map((s) => (
+              <span key={s.key} data-t03245="journal-section"
+                title={`${s.label}：${s.done}/${s.total} 段已完成${s.failed ? `，${s.failed} 段失败` : ''}`}
+                style={{ ...PILL, color: s.failed > 0 ? 'var(--warn)' : 'var(--text-muted)' }}>
+                {s.label} {s.done}/{s.total}{s.failed > 0 ? `（失败 ${s.failed}）` : ''}
+              </span>
+            ))}
+          </span>
+          <FlowButton data-t03245="retry-failed"
+            onClick={() => void runStream({ jobId: journal.id, retryFailed: true },
+              journal.progress.segmentsFailed > 0 ? `重试失败段（${journal.progress.segmentsFailed}）` : '继续生成未完成段')}
+            disabled={snap.streaming}
+            title="只为未完成/失败的段发 AI 调用：已完成段直接复用正文，不重复生成">
+            <RefreshCw size={13} style={{ marginRight: 4 }} />
+            {journal.progress.segmentsFailed > 0 ? `重试失败段（${journal.progress.segmentsFailed}）` : '继续生成未完成段'}
+          </FlowButton>
+          <button type="button" data-t03245="journal-dismiss" onClick={() => setJournal(null)}
+            style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 'var(--fs-xs)' }}>
+            忽略
+          </button>
+        </section>
+      )}
 
       <section aria-label="采集范围" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
         {/* T03311：不再只读——改选直接写回顶部「报表范围」（空数组=全部项目），两处始终同一份数据 */}

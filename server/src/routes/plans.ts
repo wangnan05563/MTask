@@ -7,7 +7,10 @@ import { assertOutlineShape, kickoffOutline, preflight, kickoffPptStream } from 
 import { summaryPreflight } from '../services/summaryPptService'; // T02853（六期 S2）：总结汇报 PPT 前置校验聚合 S1~S9
 import { buildLectureDiffView, listLectureProjects, previewLectureScope, LectureScopeError } from '../services/lectureScope'; // T02867（六期 2.3）：代码评审讲稿范围/排除过滤器
 import { queryGitLog } from '../services/lectureGitLog'; // T03302（六期 2.1 补强）：Git 树选范围弹窗取数
-import { lectureStreamErrorStatus, parseLectureStreamBody, runLectureStream, validateLectureStreamBody } from '../services/lectureStream'; // T02870（六期 2.6）：讲稿流式生成编排
+import { lectureStreamErrorStatus, parseLectureStreamBody, runLectureStream, validateLectureStreamBody, hydrateLectureRetryBody, LECTURE_CARD_KEY } from '../services/lectureStream'; // T02870（六期 2.6）：讲稿流式生成编排
+import { jobRequest, latestJob } from '../services/AiGenJournal'; // T03245（AI-103）：分段台账恢复入口
+import { lectureSectionLabel, type LectureSectionKey } from '../services/lectureService'; // T03245：台账视图回带节中文名
+import type { GenJobView } from '../services/AiGenJournal';
 import { buildLectureExport, lectureExportFilename, LectureExportError, validateLectureExportBody } from '../services/lectureExport'; // T02874（六期 3.3）：讲稿 md/docx/pptx 导出装配
 import { estimateLectureRun } from '../services/lecturePreflight'; // T02875（六期 3.4）：预检预算估算段
 import { saveReportBuffer } from '../services/ReportService'; // T02874：导出物落盘走既有令牌链路
@@ -191,6 +194,24 @@ planApi.post('/code-review-lecture/export', async (req, res) => {
 });
 
 /**
+ * T03245（AI-103③）：最近一次讲稿生成任务的台账视图——刷新/重进后据此恢复进度。
+ * 只回台账（段落正文与状态），collecting/outline 等运行态不入库；重试走流式端点的 `jobId + retryFailed`。
+ */
+function lectureJournalView(view: GenJobView | null): unknown {
+  if (!view) return null;
+  return { ...view, sections: view.sections.map((s) => ({ ...s, label: lectureSectionLabel(s.key as LectureSectionKey) })) };
+}
+
+planApi.get('/code-review-lecture/jobs/latest', (_req, res) => wrap(res, () => lectureJournalView(latestJob(LECTURE_CARD_KEY))));
+
+/** T03245：按 id 取台账（重试时前端可先精确回读，再决定补哪些段） */
+planApi.get('/code-review-lecture/jobs/:id', (req, res) => {
+  const found = jobRequest(toStr(req.params.id));
+  if (!found) return res.status(404).json({ error: '任务不存在或已过期' });
+  res.json(lectureJournalView(found.view));
+});
+
+/**
  * T02870（六期 2.6）：讲稿流式生成（PRD FR-5.1/5.2）。
  * 事件与既有 AI 流式端点同构：`stage {phase,msg,progress,data}`（collecting→preflight→outline→section:<n>）、
  * `chunk {section,projectId,projectName,module,text}`、`done {markdown,sections,outline,stats,anchors,warnings}`、`error {error}`。
@@ -201,7 +222,8 @@ planApi.post('/code-review-lecture-stream', raw({ type: () => true, limit: '30mb
   let body: unknown;
   let request: ReturnType<typeof validateLectureStreamBody>;
   try {
-    body = parseLectureStreamBody(req.body);
+    // T03245：台账重试只带 jobId+retryFailed，先按留档入参还原再校验，否则会误报「projects 必填」
+    body = hydrateLectureRetryBody(parseLectureStreamBody(req.body));
     request = validateLectureStreamBody(body);
   } catch (e) {
     return res.status(lectureStreamErrorStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });
@@ -264,6 +286,7 @@ planApi.post('/code-review-lecture-stream', raw({ type: () => true, limit: '30mb
         warnings: result.warnings,
         stats: result.stats,
         anchors: result.anchors,
+        ...(result.jobId ? { jobId: result.jobId } : {}),
       });
     } else {
       send('done', {
@@ -275,6 +298,7 @@ planApi.post('/code-review-lecture-stream', raw({ type: () => true, limit: '30mb
         warnings: result.warnings,
         stats: result.stats,
         anchors: result.anchors,
+        ...(result.jobId ? { jobId: result.jobId } : {}),
       });
     }
   } catch (e) {

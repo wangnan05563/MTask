@@ -42,6 +42,10 @@ import {
 import type { GitCommitEntry, GitFileChange } from './gitCollect';
 import { estimateLectureRun, type LecturePreflightEstimate } from './lecturePreflight';
 import { assessAiRunDeviation, type RunUsageDeviation } from './preflightEstimate';
+import { beginSegment, declareSegments, finalizeJob, finishSegment, jobRequest, openJob, reusableSegments, type GenJobView, type GenSegmentPlan, type GenSegmentView } from './AiGenJournal'; // T03245（AI-103）：分段台账
+
+/** 讲稿卡键（与 plans.ts 的 AiJobStats 口径同一串；T03245 台账按卡取最近任务） */
+export const LECTURE_CARD_KEY = 'ai.code_review_lecture';
 
 export class LectureStreamError extends Error {
   constructor(message: string) {
@@ -65,6 +69,10 @@ export interface LectureStreamRequest {
   resumeFrom?: LectureSectionKey;
   /** PRD §7.4 单节失败重试：只跑点名的节（与 resumeFrom 互斥时以点名为准） */
   sectionKeys?: LectureSectionKey[];
+  /** T03245（AI-103②③）：挂到既有任务上——已成功段直接复用正文，不再调用模型 */
+  jobId?: string;
+  /** T03245（AI-103②）：只补本任务里未完成的段（要求 jobId；可省略 projects/outline，按留档入参重建） */
+  retryFailed?: boolean;
   contextBudget?: number;
   maxTokens?: number;
 }
@@ -141,6 +149,8 @@ export interface LectureStreamResult {
   estimate?: LecturePreflightEstimate;
   /** T03174（AI-102②）：整轮（非续作/单节重试）完成后的用量偏差复算；中止轮不附 */
   deviation?: RunUsageDeviation;
+  /** T03245（AI-103）：本轮落库的任务 id——换页/刷新后按它回读进度或重试失败段 */
+  jobId?: string;
 }
 
 const optionString = (v: unknown, name: string): string | undefined => {
@@ -211,7 +221,15 @@ export function validateLectureStreamBody(body: unknown): LectureStreamRequest {
   }
   if (rawResume && sectionKeys) throw new LectureStreamError('resumeFrom 与 sectionKeys 不能同时传');
 
-  return { toolId, projects, excludes, ...(style ? { style } : {}), ...(extraNote ? { extraNote } : {}), ...(title ? { title } : {}), ...(outline ? { outline } : {}), ...(outlineOnly ? { outlineOnly } : {}), ...(rawResume ? { resumeFrom: rawResume as LectureSectionKey } : {}), ...(sectionKeys ? { sectionKeys } : {}), ...(contextBudget ? { contextBudget } : {}), ...(maxTokens ? { maxTokens } : {}) };
+  // T03245（AI-103②③）：台账重试只认 jobId——按留档入参重建，不再叠选节/续作语义
+  const jobId = optionString(b.jobId, 'jobId');
+  const retryFailed = b.retryFailed === true;
+  if (b.retryFailed !== undefined && typeof b.retryFailed !== 'boolean') throw new LectureStreamError('retryFailed 必须是布尔值');
+  if (retryFailed && !jobId) throw new LectureStreamError('重试失败段需要 jobId（按任务台账补齐未完成段）');
+  if (jobId && (rawResume || sectionKeys)) throw new LectureStreamError('jobId 与 resumeFrom/sectionKeys 不能同时传');
+  if (retryFailed && outlineOnly) throw new LectureStreamError('仅大纲模式没有可重试的段落');
+
+  return { toolId, projects, excludes, ...(style ? { style } : {}), ...(extraNote ? { extraNote } : {}), ...(title ? { title } : {}), ...(outline ? { outline } : {}), ...(outlineOnly ? { outlineOnly } : {}), ...(rawResume ? { resumeFrom: rawResume as LectureSectionKey } : {}), ...(sectionKeys ? { sectionKeys } : {}), ...(jobId ? { jobId } : {}), ...(retryFailed ? { retryFailed } : {}), ...(contextBudget ? { contextBudget } : {}), ...(maxTokens ? { maxTokens } : {}) };
 }
 
 /** raw(30mb) 的 Buffer 或全局 express.json 的 object 都接受（与 prd-generate-stream 同构） */
@@ -359,12 +377,62 @@ function emptyResult(title: string, outline: LectureOutline | undefined, warning
   return { ok: false, aborted: true, title, markdown: '', ...(outline ? { outline } : {}), sections: [], warnings, stats, anchors: [] };
 }
 
+/** T03245（AI-103③）：按台账重建八节——已完成段正文来自库，失败/未生成段如实保留缺口标记 */
+function sectionsFromJournal(view: GenJobView): LectureSectionResult[] {
+  const byKey = new Map(view.sections.map((s) => [s.key, s]));
+  const out: LectureSectionResult[] = [];
+  for (const meta of LECTURE_SECTIONS) {
+    const saved = byKey.get(meta.key);
+    if (!saved) continue;
+    const segments: LectureSegmentResult[] = saved.segments.map((s) => ({
+      projectId: s.projectId, projectName: s.projectName, module: s.module, heading: s.heading,
+      ok: s.status === 'done', text: s.text,
+      ...(s.status === 'done' ? {} : { error: s.error ?? '未生成' }),
+      anchors: s.anchors as LectureAnchor[], anchorIssues: s.anchorIssues as AnchorIssue[],
+    }));
+    const failed = segments.filter((s) => !s.ok);
+    const kept = segments.filter((s) => s.ok && s.text.trim());
+    const text = kept
+      .map((s) => `${s.heading ? `${s.heading}\n\n` : ''}${s.text.trim()}`)
+      .join('\n\n')
+      + (failed.length && kept.length
+        ? `\n\n> ⚠️ 本节部分内容未生成：${failed.map((s) => `${s.projectName}/${s.module}（${s.error ?? '生成失败'}）`).join('、')}`
+        : '');
+    out.push({
+      key: meta.key,
+      label: meta.label,
+      ok: failed.length === 0 && text.length > 0,
+      text,
+      ...(failed.length ? { error: failed.map((s) => `${s.projectName}/${s.module}：${s.error ?? '生成失败'}`).join('；') } : {}),
+      segments,
+    });
+  }
+  return out;
+}
+
 /**
  * 跑完整条流。调用方负责把 hooks 映射为 SSE；本函数不写响应、不落盘（E-4 不落库）。
  * 致命错误抛 LectureStreamError/其他 Error（路由出 error 事件）；用户中止返回 aborted=true。
  */
+/**
+ * T03245（AI-103②③）：把「只带 jobId + retryFailed」的请求按台账留档还原成完整入参。
+ * 路由必须在 SSE 之前的同步校验里就用它——否则 validates 先看到没有 projects 的半截请求。
+ * 已带 projects 的请求原样返回：新值优先，恢复不锁死旧范围。
+ */
+export function hydrateLectureRetryBody(body: unknown): unknown {
+  const raw = body && typeof body === 'object' ? body as Record<string, unknown> : null;
+  if (raw?.retryFailed !== true) return body;
+  const jobId = typeof raw.jobId === 'string' ? raw.jobId.trim() : '';
+  if (!jobId) throw new LectureStreamError('重试失败段需要 jobId（按任务台账补齐未完成段）');
+  const saved = jobRequest(jobId);
+  if (!saved) throw new LectureStreamError('生成任务不存在或已过期，请重新发起一轮生成');
+  return { ...saved.request, ...raw, jobId, retryFailed: true };
+}
+
 export async function runLectureStream(body: unknown, hooks: LectureStreamHooks = {}): Promise<LectureStreamResult> {
-  const request = validateLectureStreamBody(body);
+  // T03245（AI-103②③）：台账重试只带 jobId——按留档入参重建整份请求（项目/区间/排除/大纲），
+  // 用户刷新后不必重新选范围；入参里有新值则以新值为准。
+  const request = validateLectureStreamBody(hydrateLectureRetryBody(body));
   const startedAtMs = Date.now();
   const warnings: string[] = [];
   const signal = hooks.signal;
@@ -465,6 +533,61 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
     };
   }
 
+  const fullRun = !request.resumeFrom && !request.sectionKeys && !request.retryFailed;
+  const title = request.title ?? `代码评审会议讲稿 · ${usable.map((p) => p.projectName).join('、')}`;
+  // 分段单位只装配一次：台账计划与正文执行共用同一份（截断告警也只会出现一次）
+  const unitCache = new Map<LectureSectionKey, SectionUnit[]>();
+  const unitsFor = (key: LectureSectionKey): SectionUnit[] => {
+    let units = unitCache.get(key);
+    if (!units) {
+      units = buildUnits(key, context, usable, warnings);
+      unitCache.set(key, units);
+    }
+    return units;
+  };
+
+  // T03245（AI-103①②③）：全量轮新建台账任务并声明八节完整计划；重试轮挂既有任务。
+  // 已成功段（done 且有正文）直接复用，不再为它们发 AI 调用。
+  let jobId = request.jobId;
+  if (!jobId && fullRun) {
+    jobId = openJob({ cardKey: LECTURE_CARD_KEY, toolId: request.toolId, title, request });
+  }
+  const reused = jobId ? reusableSegments(jobId) : new Map<string, GenSegmentView>();
+  let retryOnly: Set<LectureSectionKey> | null = null;
+  if (jobId) {
+    const plan: GenSegmentPlan[] = [];
+    let order = 0;
+    for (const meta of LECTURE_SECTIONS) {
+      for (const unit of unitsFor(meta.key)) {
+        plan.push({
+          sectionKey: meta.key,
+          // 段内稳定标识：同一项目同一模块跨请求一致，重试才能对上已生成正文
+          segmentKey: `${unit.projectId}|${unit.module}`,
+          label: `${unit.projectName} / ${unit.module}`,
+          projectId: unit.projectId,
+          projectName: unit.projectName,
+          module: unit.module,
+          heading: unit.heading,
+          orderIndex: order,
+        });
+        order += 1;
+      }
+    }
+    declareSegments(jobId, plan, { markStale: request.retryFailed === true });
+    const reuseInPlan = plan.filter((p) => reused.has(`${p.sectionKey}\u0000${p.segmentKey}`)).length;
+    if (request.retryFailed) {
+      retryOnly = new Set(LECTURE_SECTION_KEYS.filter((key) => plan.some((p) => p.sectionKey === key && !reused.has(`${key}\u0000${p.segmentKey}`))));
+    }
+    hooks.onStage?.({
+      phase: 'journal',
+      msg: request.retryFailed
+        ? `按台账补齐未完成段：${plan.length - reuseInPlan} 段待生成（已完成 ${reuseInPlan} 段直接复用，不再调用模型）`
+        : `任务已落库（${plan.length} 段）：单段失败只重试该段，刷新后可继续`,
+      progress: sectionStartProgress(0),
+      data: { type: 'job', jobId, segmentsTotal: plan.length, segmentsDone: reuseInPlan, retry: request.retryFailed === true },
+    });
+  }
+
   const resumeIndex = request.resumeFrom ? LECTURE_SECTION_KEYS.indexOf(request.resumeFrom) : 0;
   const only = request.sectionKeys ? new Set<LectureSectionKey>(request.sectionKeys) : null;
   if (resumeIndex > 0 || only) {
@@ -479,14 +602,17 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
   }
   const sections: LectureSectionResult[] = [];
   let aborted = false;
+  try {
   for (const [index, meta] of LECTURE_SECTIONS.entries()) {
     if (index < resumeIndex) continue;
     if (only && !only.has(meta.key)) continue;
+    // T03245（AI-103②）：台账重试只跑「还有未完成段」的节，整节已完成的直接跳过
+    if (retryOnly && !retryOnly.has(meta.key)) continue;
     if (signal?.aborted) { aborted = true; break; }
     const section: LectureOutlineSection = outline.sections.find((s) => s.key === meta.key) ?? {
       key: meta.key, title: lectureSectionLabel(meta.key), bullets: [],
     };
-    const units = buildUnits(meta.key, context, usable, warnings);
+    const units = unitsFor(meta.key);
     hooks.onStage?.({
       phase: sectionPhase(index),
       msg: `装配第 ${index + 1}/${LECTURE_SECTIONS.length} 节「${meta.label}」（${units.length} 段）`,
@@ -496,6 +622,30 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
     const segments: LectureSegmentResult[] = [];
     for (const unit of units) {
       if (signal?.aborted) { aborted = true; break; }
+      const segKey = `${unit.projectId}|${unit.module}`;
+      const prior = reused.get(`${meta.key}\u0000${segKey}`);
+      if (prior) {
+        // T03245（AI-103②）：已完成段直接复用正文——刷新/重试不再为它调用模型
+        const segment: LectureSegmentResult = {
+          projectId: unit.projectId, projectName: unit.projectName, module: unit.module, heading: unit.heading,
+          ok: true, text: prior.text, anchors: prior.anchors as LectureAnchor[], anchorIssues: prior.anchorIssues as AnchorIssue[],
+        };
+        segments.push(segment);
+        stats.segments += 1;
+        stats.anchors += segment.anchors.length;
+        stats.anchorIssues += segment.anchorIssues.length;
+        hooks.onStage?.({
+          phase: sectionPhase(index),
+          msg: `复用已完成：${unit.projectName} / ${unit.module}`,
+          progress: sectionStartProgress(index),
+          data: {
+            type: 'segment_done', section: meta.key, projectId: unit.projectId, projectName: unit.projectName,
+            module: unit.module, ok: true, reused: true, anchors: segment.anchors.length, anchorIssues: segment.anchorIssues.length,
+          },
+        });
+        continue;
+      }
+      if (jobId) beginSegment(jobId, meta.key, segKey);
       stats.calls += 1;
       const run = await generateLectureSection({
         toolId: request.toolId,
@@ -520,8 +670,16 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
         }
         : {
           projectId: unit.projectId, projectName: unit.projectName, module: unit.module, heading: unit.heading,
-          ok: false, text: '', error: '已中止', anchors: [], anchorIssues: [],
+          ok: false, text: '', error: run.aborted ? '已中止' : '未返回结果', anchors: [], anchorIssues: [],
         };
+      // 台账按段收口：失败段只记错误，其他段正文不受影响
+      if (jobId) {
+        finishSegment(jobId, {
+          sectionKey: meta.key, segmentKey: segKey, ok: segment.ok, text: segment.text,
+          ...(segment.error ? { error: segment.error } : {}),
+          anchors: segment.anchors, anchorIssues: segment.anchorIssues,
+        });
+      }
       segments.push(segment);
       stats.segments += 1;
       stats.anchors += segment.anchors.length;
@@ -563,10 +721,30 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
     });
     if (aborted) break;
   }
+  } catch (e) {
+    // 致命失败也要给台账留终态，否则恢复入口会永远显示「进行中」
+    if (jobId) finalizeJob(jobId, 'error');
+    throw e;
+  }
   stats.sections = sections.length;
 
+  // T03245（AI-103③）：重试轮交回整份成稿——刷新后前端没有上一轮结果可拼，
+  // 只能按台账（已完成段正文 + 本轮补齐段）重建八节。
+  if (jobId && request.retryFailed) {
+    const saved = jobRequest(jobId);
+    if (saved) {
+      const rebuilt = sectionsFromJournal(saved.view);
+      if (rebuilt.length > 0) {
+        sections.splice(0, sections.length, ...rebuilt);
+        stats.sections = sections.length;
+        stats.segments = sections.reduce((n, s) => n + s.segments.length, 0);
+        stats.anchors = sections.reduce((n, s) => n + s.segments.reduce((m, g) => m + g.anchors.length, 0), 0);
+        stats.anchorIssues = sections.reduce((n, s) => n + s.segments.reduce((m, g) => m + g.anchorIssues.length, 0), 0);
+      }
+    }
+  }
+
   const projectNames = usable.map((p) => p.projectName);
-  const title = request.title ?? `代码评审会议讲稿 · ${projectNames.join('、')}`;
   const anchors = await attachAnchors(sections, usable, warnings);
   const generatedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
   const markdown = assembleLectureMarkdown({
@@ -575,17 +753,24 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
     sections: sections.map((s) => ({ key: s.key, text: s.text })),
     generatedAt,
   });
-  const fullRun = !request.resumeFrom && !request.sectionKeys;
   const ok = !aborted && sections.every((s) => s.ok) && (!fullRun || sections.length === LECTURE_SECTIONS.length);
-  // T03174（AI-102②③④）：整轮完成（非续作/单节重试、非中止）后复算偏差——续作轮调用数天然少于整轮预估，硬比会假红
-  const deviation = fullRun && !aborted
+  // T03245（AI-103）：任务终态落库——done/partial/aborted，刷新恢复入口据此判断还要不要补段
+  if (jobId) {
+    const saved = jobRequest(jobId);
+    const failedSegments = saved ? saved.view.progress.segmentsFailed : 0;
+    const missingSegments = saved ? saved.view.progress.segmentsTotal - saved.view.progress.segmentsDone : 0;
+    finalizeJob(jobId, aborted ? 'aborted' : (failedSegments > 0 || missingSegments > 0 ? 'partial' : 'done'));
+  }
+  // T03174（AI-102②③④）：整轮完成（非续作/单节重试、非中止）后复算偏差——续作轮调用数天然少于整轮预估，硬比会假红；
+  // T03245：复用已完成段的轮次同理不算整轮（实际调用数被有意压低）
+  const deviation = fullRun && reused.size === 0 && !aborted
     ? assessAiRunDeviation(estimate, {
       calls: stats.calls,
       chars: sections.reduce((n, s) => n + s.text.length, 0),
       seconds: (Date.now() - startedAtMs) / 1000,
     })
     : undefined;
-  return { ok, aborted, title, markdown, ...(outline ? { outline } : {}), sections, warnings, stats, anchors, estimate, ...(deviation ? { deviation } : {}) };
+  return { ok, aborted, title, markdown, ...(outline ? { outline } : {}), sections, warnings, stats, anchors, estimate, ...(deviation ? { deviation } : {}), ...(jobId ? { jobId } : {}) };
 }
 
 /** 路由层统一的 400 文案：范围/流式参数校验错误都走这里 */
