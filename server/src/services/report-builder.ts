@@ -93,6 +93,33 @@ export async function buildXlsx(data: ReportData, templateBuf?: Buffer, aiInsigh
     if (zebra) r.eachCell((c: any) => fillCell(c, ZEBRA_FILL));
     zebra = !zebra;
   }
+  // T03258（AI-204）：计划预测逾期单列一页；无预测项不建空表
+  if (data.planForecast && data.planForecast.items.length > 0) {
+    const pf = data.planForecast;
+    const ps = wb.addWorksheet('计划预测逾期');
+    ps.columns = [
+      { header: '项目', key: 'project', width: 18 },
+      { header: '计划标题', key: 'title', width: 36 },
+      { header: '计划结束', key: 'endDate', width: 12 },
+      { header: '预测完成', key: 'forecastDate', width: 12 },
+      { header: '时间已过 / 完成', key: 'ratio', width: 16 },
+      { header: '依据', key: 'basis', width: 60 },
+    ];
+    ps.addRow([titleLine(data)]);
+    ps.addRow([`${pf.note}；${pf.disclaimer}`]);
+    ps.addRow([]);
+    headerRow(ps.addRow(['项目', '计划标题', '计划结束', '预测完成', '时间已过 / 完成', '依据']));
+    let pz = false;
+    for (const it of pf.items) {
+      const r = ps.addRow([
+        it.project, it.title, it.endDate, it.forecastDate,
+        `${Math.round(it.timeElapsedRatio * 1000) / 10}% / ${it.progress}%`, it.basis,
+      ]);
+      borderRow(r);
+      if (pz) r.eachCell((c: any) => fillCell(c, ZEBRA_FILL));
+      pz = !pz;
+    }
+  }
   // AI 周报：追加「AI 周报洞察」工作表，按内置 skill xlsx-trae 版式将洞察 Markdown 渲染为结构化表格
   if (aiInsight) {
     const ai = wb.addWorksheet('AI 周报洞察');
@@ -225,6 +252,33 @@ export async function buildDocx(data: ReportData, templateBuf?: Buffer, aiInsigh
       }),
     );
   }
+  // T03258（AI-204）：计划行预测逾期清单——无预测项时整节不渲染（不留空标题）
+  const pf = data.planForecast;
+  if (pf && pf.items.length > 0) {
+    children.push(
+      new Paragraph(''),
+      new Paragraph({ text: '计划预测逾期', heading: HeadingLevel.HEADING_2 }),
+      new Paragraph({ children: [new TextRun({ text: `${pf.note}；${pf.disclaimer}`, color: '4B5563' })] }),
+      new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [
+          new TableRow({
+            children: ['项目', '计划标题', '计划结束', '预测完成', '时间已过 / 完成', '依据'].map(
+              (h) => new TableCell({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: h, bold: true })] })] }),
+            ),
+          }),
+          ...pf.items.map(
+            (it) => new TableRow({
+              children: [
+                it.project, it.title, it.endDate, it.forecastDate,
+                `${Math.round(it.timeElapsedRatio * 1000) / 10}% / ${it.progress}%`, it.basis,
+              ].map((v) => new TableCell({ children: [new Paragraph(v)] })),
+            }),
+          ),
+        ],
+      }),
+    );
+  }
   children.push(
     new Paragraph(''),
     new Paragraph({ text: '任务明细', heading: HeadingLevel.HEADING_2 }),
@@ -279,6 +333,25 @@ export async function buildPptx(data: ReportData, aiInsight?: string, provenance
     fill: { color: 'F7F9FC' },
   });
 
+  // T03258（AI-204）：计划预测逾期单独一页；无预测项不建空页
+  if (data.planForecast && data.planForecast.items.length > 0) {
+    const pf = data.planForecast;
+    const sp = pptx.addSlide();
+    sp.addText('计划预测逾期', { x: 0.5, y: 0.35, w: 9, h: 0.6, fontSize: 20, bold: true });
+    sp.addText(`${pf.note}；${pf.disclaimer}`, { x: 0.5, y: 0.95, w: 9, h: 0.35, fontSize: 9, color: '6B7280' });
+    const pfRows = [
+      ['项目', '计划标题', '计划结束', '预测完成', '时间已过 / 完成', '依据'],
+      ...pf.items.map((it) => [
+        it.project, it.title, it.endDate, it.forecastDate,
+        `${Math.round(it.timeElapsedRatio * 1000) / 10}% / ${it.progress}%`, it.basis,
+      ]),
+    ];
+    sp.addTable(pfRows as any, {
+      x: 0.35, y: 1.35, w: 9.3, fontSize: 8,
+      border: { type: 'solid', pt: 1, color: 'D9DEE7' },
+      fill: { color: 'FFFFFF' },
+    });
+  }
   if (data.tasks.length) {
     const s2 = pptx.addSlide();
     s2.addText('任务明细', { x: 0.5, y: 0.35, w: 9, h: 0.6, fontSize: 20, bold: true });
@@ -330,6 +403,19 @@ export async function buildPdf(data: ReportData, aiInsight?: string, provenance?
     });
   } else {
     doc.fontSize(11).text('本周期无任务活动。');
+  }
+  // T03258（AI-204）：计划行预测逾期；无预测项时整节不渲染
+  if (data.planForecast && data.planForecast.items.length > 0) {
+    const pf = data.planForecast;
+    doc.moveDown(0.5).fontSize(13).text('计划预测逾期', { underline: true }).moveDown(0.3);
+    doc.fontSize(10).text(`${pf.note}；${pf.disclaimer}`);
+    pf.items.forEach((it) => {
+      doc.fontSize(10).text(
+        `• ${it.project} / ${it.title}：计划 ${it.endDate} → 预测 ${it.forecastDate}`
+        + `（时间已过 ${Math.round(it.timeElapsedRatio * 1000) / 10}% vs 完成 ${it.progress}%）`,
+      );
+      doc.fontSize(9).text(`  依据：${it.basis}`);
+    });
   }
   doc.moveDown(0.5).fontSize(13).text('任务明细', { underline: true }).moveDown(0.3);
   if (data.tasks.length) {

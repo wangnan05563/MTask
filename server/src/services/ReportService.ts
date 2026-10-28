@@ -11,6 +11,9 @@ import { resolveCustomWindow, type CustomRange } from './summaryPptPeriod';
 import { buildReportProvenance, HANDLE_RESULT_LIMIT, type ReportProvenance } from './reportProvenance';
 import { recordArtifact, type AiArtifact } from './aiArtifactService';
 import { PREFLIGHT_ESTIMATE_MODEL, PROXY_METRIC_NOTICE, assessAiRunDeviation, estimateOutputRun, preflightModelRevisions, type PreflightEstimate, type PreflightModelRevision, type RunUsageDeviation } from './preflightEstimate';
+import { buildCalendar, ymdInTimezone } from '../util/workdays';
+import { buildPlanForecastSection, type PlanForecastSection } from './PlanForecastService';
+import { systemTz } from './OverdueRateService';
 
 /** T03243（AI-102④）：报表这张 AI 卡片的稳定 key——ai_usage 归属与历史回看同源 */
 export const AI_REPORT_CARD = 'ai.weekly_report';
@@ -84,6 +87,11 @@ export interface ReportData {
   tasks: ReportTaskRow[];
   /** T00452 / PRD INT-3：项目计划执行情况（本期有活动或已过期未完成），供周报联动展示 */
   plans: ReportPlanRow[];
+  /**
+   * T03258（AI-204）：计划行预测逾期清单。按全部在架计划行走时间进度模型，与本期是否有活动无关；
+   * `items` 为空时消费侧不得渲染空节。
+   */
+  planForecast?: PlanForecastSection;
   /**
    * T02165：多项目聚合范围（按用户勾选顺序的项目名）。
    * 仅在勾选 >1 个项目时写入——单选/全部保持 undefined，标题与既有报表版式逐字不变
@@ -393,6 +401,18 @@ export function gatherReportData(period: SummaryPeriod, projectScope?: ReportSco
     tasks.sort((a, b) => byRank(a.project, b.project));
   }
 
+  // T03258（AI-204）：预测清单按**全部在架计划行**计算——本期无更新但正在滑期的计划同样要预警
+  const tz = systemTz();
+  const at = ymdInTimezone(new Date(), tz);
+  const cal = buildCalendar(db.prepare('SELECT date, kind FROM holidays').all() as Array<{ date: string; kind: string | null }>);
+  const planForecast = buildPlanForecastSection(
+    planRows.map((r) => ({
+      title: r.title, project: r.project, status: r.status,
+      startDate: r.start_date, endDate: r.end_date, progress: Number(r.progress),
+    })),
+    { at, tz, cal },
+  );
+
   // T03240：溯源要说明「报告并不完整」——这里按注入 prompt 的同一阈值数出被截断条数
   const truncatedTasks = rows.filter((r) => (r.handle_result ?? '').length > HANDLE_RESULT_LIMIT).length;
 
@@ -406,6 +426,7 @@ export function gatherReportData(period: SummaryPeriod, projectScope?: ReportSco
     projects,
     tasks,
     plans,
+    planForecast,
     projectScope: selectedNames,
     truncatedTasks,
   };
@@ -570,6 +591,9 @@ export function buildReportPrompt(period: ReportPeriod, data: ReportData, skill:
     `【项目汇总】${JSON.stringify(data.projects)}`,
     `【任务明细】${JSON.stringify(data.tasks)}`,
     ...(data.plans.length > 0 ? [`【项目计划执行情况】${JSON.stringify(data.plans)}（含延期标记 overdue，请纳入进展要点与风险分析）`] : []),
+    ...(data.planForecast && data.planForecast.items.length > 0
+      ? [`【计划预测逾期】${JSON.stringify(data.planForecast.items)}（口径只到计划行：逐条写清计划标题、预测完成日期与依据，并说明「时间已过比例 vs 完成进度」；不得表述为任务级到期）`]
+      : []),
   ].join('\n\n');
   return { system, user };
 }

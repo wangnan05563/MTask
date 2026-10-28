@@ -146,6 +146,16 @@ export function isPastEndDate(endDate: string, now: Date, tz?: string | null): b
 }
 
 /**
+ * 从锚点日起**含当天**推进 n 个工作日（n<=0 返回锚点；锚点非工作日先顺延到其后第一个工作日）。
+ * PM-204 里程碑预测与 AI-204 计划行预测共用这条「含当天」口径，避免两处各写一份。
+ */
+export function advanceWorkdaysInclusive(anchor: string, workdays: number, cal: WorkdayCal): string {
+  if (workdays <= 0) return anchor;
+  const start = isWorkday(parseYmd(anchor), cal) ? anchor : addWorkdays(anchor, 0, cal);
+  return addWorkdays(start, workdays - 1, cal);
+}
+
+/**
  * 缺失值口径（PRD §487「缺失值不得静默按 0」）：区间工作日数，入参缺失/非法返回 **null**（≠0）。
  * 与 `countWorkdaysBetween` 的分工：那边把非法入参折成 0 供「已过期/无剩余」语义直接使用；
  * 这里保留「没有排期」与「排期为 0」的区分，供预测/清单类展示（「—」）使用。

@@ -18,7 +18,7 @@
  */
 import { getDb } from '../db/connection';
 import { childParentIds } from '../util/milestoneChild';
-import { addWorkdays, buildCalendar, countWorkdaysBetween, countWorkdaysOrMissing, fmtDate, isWorkday, parseYmd, ymdInTimezone, type WorkdayCal } from '../util/workdays';
+import { advanceWorkdaysInclusive, addWorkdays, buildCalendar, countWorkdaysBetween, countWorkdaysOrMissing, fmtDate, isWorkday, parseYmd, ymdInTimezone, type WorkdayCal } from '../util/workdays';
 
 export type ForecastVerdict = 'done' | 'not-predictable' | 'on-track' | 'ahead' | 'behind' | 'no-planned-end';
 
@@ -93,12 +93,6 @@ function loadCalendar(): WorkdayCal {
 }
 
 /** 从业务日 `today` 起含当天连排 `workdays` 个工作日，返回第 workdays 个工作日的日期 */
-function advanceInclusive(today: string, workdays: number, cal: WorkdayCal): string {
-  if (workdays <= 0) return today;
-  const start = isWorkday(parseYmd(today), cal) ? today : addWorkdays(today, 0, cal);
-  return addWorkdays(start, workdays - 1, cal);
-}
-
 const clampProgress = (v: number): number => (Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0);
 
 /** 单子项总工作日：duration_days 优先，其次排期区间；两者都缺 → null */
@@ -173,7 +167,7 @@ function forecastOne(ms: PlanRow & { project_name: string }, children: PlanRow[]
     .reduce((s, c) => s + (c.remainingWorkdays ?? 0), 0);
   const predictable = !done && children.length > 0 && missing.length === 0;
   const remainingWorkdays = predictable ? knownRemaining : null;
-  const forecastDate = predictable ? advanceInclusive(at, remainingWorkdays ?? 0, cal) : null;
+  const forecastDate = predictable ? advanceWorkdaysInclusive(at, remainingWorkdays ?? 0, cal) : null;
   const plannedEnd = DATE_RE.test(ms.end_date || '') ? ms.end_date : null;
   let variance: number | null = null;
   if (forecastDate && plannedEnd) {
