@@ -31,7 +31,8 @@ export const GIT_OUTPUT_CONFIG = [
 const ALLOWED_FLAGS: Record<GitReadonlySubcommand, RegExp[]> = {
   'rev-parse': [/^--is-inside-work-tree$/, /^--verify$/, /^--quiet$/],
   // T03302：Git 树取数需要 --all（全分支）、--skip/-n（懒加载分页）、--no-walk（只取点名提交）
-  log: [/^--oneline$/, /^--no-merges$/, /^--format=[%\w.:{}+\-/ ]+$/, /^-n\d{1,4}$/, /^--since=[\w:+\-. ]{1,64}$/, /^--reverse$/, /^--all$/, /^--skip=\d{1,4}$/, /^--no-walk$/],
+  // T03590：`--until` 与 `--since` 同形（日期窗口右端），字面量范围与左端一致
+  log: [/^--oneline$/, /^--no-merges$/, /^--format=[%\w.:{}+\-/ ]+$/, /^-n\d{1,4}$/, /^--since=[\w:+\-. ]{1,64}$/, /^--until=[\w:+\-. ]{1,64}$/, /^--reverse$/, /^--all$/, /^--skip=\d{1,4}$/, /^--no-walk$/],
   diff: [/^--ignore-cr-at-eol$/, /^--stat$/, /^--numstat$/, /^-U\d{1,3}$/],
   show: [],
 };
@@ -109,11 +110,14 @@ export function assertSingleRevision(token: string): string {
   return rev;
 }
 
+/** 纯日期形态（`--since`/`--until` 里需要补齐到当天零点/末刻，否则 git 按当天 12:00 解释） */
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 /** 时间窗起点：允许 ISO 日期与「14 days ago」类相对写法，但不含引号/分号等元字符 */
-export function assertSafeSince(value: string): string {
+export function assertSafeSince(value: string, what = '时间窗起点'): string {
   const since = value.trim();
-  if (!since || since.length > 64) throw new GitCollectError('denied', `非法时间窗起点「${value}」`);
-  if (!/^[\w:+\-. ]+$/.test(since)) throw new GitCollectError('denied', `非法时间窗起点字符「${value}」`);
+  if (!since || since.length > 64) throw new GitCollectError('denied', `非法${what}「${value}」`);
+  if (!/^[\w:+\-. ]+$/.test(since)) throw new GitCollectError('denied', `非法${what}字符「${value}」`);
   return since;
 }
 
@@ -268,6 +272,35 @@ export async function collectCommitLog(
   return filter ? entries.filter((e) => commitMatchesAuthorFilter(e, filter)) : entries;
 }
 
+/**
+ * T03590：提交人候选——作者多选控件的选项源。
+ * 取最近 N 个提交的 author/committer 名去重，按出现次数降序（同名不同大小写按首次出现归一）；
+ * 与 `parseAuthorFilter` 的「精确匹配 author 或 committer」同口径，下拉里出现的名字一定能命中。
+ */
+export async function collectAuthorNames(
+  cwd: string,
+  opts: GitCollectOptions & { limit?: number } = {},
+): Promise<{ authors: string[]; scanned: number }> {
+  const limit = clampInt(opts.limit, 500, 1, 2000);
+  const r = await runGitReadonly('log', ['--format=%an%x09%cn', `-n${limit}`], ['--'], cwd, opts);
+  const counts = new Map<string, { name: string; count: number }>();
+  const lines = r.stdout.split('\n').filter(Boolean);
+  for (const line of lines) {
+    for (const raw of line.split('\t')) {
+      const name = raw.trim();
+      if (!name) continue;
+      const key = name.toLowerCase();
+      const hit = counts.get(key);
+      if (hit) hit.count += 1;
+      else counts.set(key, { name, count: 1 });
+    }
+  }
+  const authors = [...counts.values()]
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    .map((e) => e.name);
+  return { authors, scanned: lines.length };
+}
+
 /** 增量统计原文（`diff --stat`，带行尾口径）；超 2MB 由调用方按 FR-1.4 截断并点名 */
 export async function collectDiffStat(cwd: string, range: string[], opts: GitCollectOptions = {}): Promise<string> {
   const revs = range.map(assertSafeRevision);
@@ -379,6 +412,8 @@ export interface GitRangeInput {
   head?: string;
   /** since 形态的时间窗起点（ISO 日期或「14 days ago」） */
   since?: string;
+  /** T03590：since 形态的可选时间窗右端（含）；缺省不设右界，行为与单 since 逐字节一致 */
+  until?: string;
   /** T03303：提交人过滤（`甲`｜`甲, 乙` 且｜`甲 | 乙` 或），只筛提交清单，不改 diff 范围 */
   authorFilter?: string;
   /** T03302：`commits` 形态——Git 树里点选的提交 SHA（连续段自动并成区间，非连续按提交并集） */
@@ -730,19 +765,31 @@ async function resolveFirstParent(cwd: string, revision: string, opts: GitCollec
   return parents.trim().split(' ').filter(Boolean)[0] ?? null;
 }
 
-/** 时间窗内最早的提交及其父提交；窗口为空返回 null */
-async function resolveOldestSince(
+/**
+ * T03590：时间窗归一成「窗口内最新/最旧提交」——有 until 时 diff 必须止于窗口最新提交，
+ * 否则会把右端之后的改动也算进来。窗口为空返回 null。
+ */
+async function resolveSinceWindow(
   cwd: string,
-  since: string,
+  flags: string[],
   head: string,
   opts: GitCollectOptions,
-): Promise<{ sha: string; parent: string | null } | null> {
-  const r = await runGitReadonly('log', [`--since=${since}`, '--format=%H%x09%P', '--reverse'], [head], cwd, opts);
-  const line = r.stdout.split('\n').find(Boolean);
-  if (!line) return null;
-  const [sha, parents = ''] = line.split('\t');
-  if (!sha) return null;
-  return { sha, parent: parents.trim().split(' ').filter(Boolean)[0] ?? null };
+): Promise<{ newest: SinceCommit; oldest: SinceCommit } | null> {
+  const r = await runGitReadonly('log', [...flags, '--format=%H%x09%P'], [head], cwd, opts);
+  const lines = r.stdout.split('\n').filter(Boolean);
+  const parse = (line: string): SinceCommit => {
+    const [sha, parents = ''] = line.split('\t');
+    return { sha, parent: parents.trim().split(' ').filter(Boolean)[0] ?? null };
+  };
+  const newest = lines[0];
+  const oldest = lines[lines.length - 1];
+  if (!newest || !oldest) return null;
+  return { newest: parse(newest), oldest: parse(oldest) };
+}
+
+interface SinceCommit {
+  sha: string;
+  parent: string | null;
 }
 
 /** 三形态归一：产出 diff 与 log 各自的位置参数，并把「时间窗/首末 SHA」换算成可 diff 的基线 */
@@ -787,21 +834,32 @@ export async function resolveGitRange(
     }
     case 'since': {
       if (!input.since) throw new GitCollectError('denied', '时间窗形态需要 since 起点');
-      const since = assertSafeSince(input.since);
+      const sinceRaw = assertSafeSince(input.since);
+      const untilRaw = input.until ? assertSafeSince(input.until, '时间窗截止') : '';
+      // T03590：有右端时是「日期范围」语义——git 把纯日期当成当天 12:00（approxidate 默认），
+      // 不补齐会漏掉起始日上午 / 截止日下午的提交。单 since 保持原样，与改造前逐字节一致。
+      const since = untilRaw && DATE_ONLY_RE.test(sinceRaw) ? `${sinceRaw} 00:00:00` : sinceRaw;
+      const until = untilRaw && DATE_ONLY_RE.test(untilRaw) ? `${untilRaw} 23:59:59` : untilRaw;
       const head = await assertResolvableCommitish(cwd, input.head ?? 'HEAD', '目标版本', opts);
-      const oldest = await resolveOldestSince(cwd, since, head, opts);
-      if (!oldest) {
-        return { shape: input.shape, label: `自 ${since}`, base: '', head, diffPositional: [], logPositional: [], logFlags: [], empty: true };
+      const label = until ? `${since} ~ ${until}` : `自 ${since}`;
+      const logFlags = until ? [`--since=${since}`, `--until=${until}`] : [`--since=${since}`];
+      const win = await resolveSinceWindow(cwd, logFlags, head, opts);
+      if (!win) {
+        return { shape: input.shape, label, base: '', head, diffPositional: [], logPositional: [], logFlags: [], empty: true };
       }
-      const base = oldest.parent ?? GIT_EMPTY_TREE_SHA1;
+      const base = win.oldest.parent ?? GIT_EMPTY_TREE_SHA1;
+      // 无右端时终点仍是原来的 head 写法（分支名/HEAD），保证与 T03590 之前逐字节一致；
+      // 有右端才钉成窗口最新提交，避免 diff 越过 until
+      const end = until ? win.newest.sha : head;
       return {
         shape: input.shape,
-        label: `自 ${since}`,
+        label,
         base,
-        head,
-        diffPositional: [base, head],
+        head: end,
+        diffPositional: [base, end],
+        // 位置参数留给原 head（分支/标签名），窗口筛选交给 logFlags
         logPositional: [head],
-        logFlags: [`--since=${since}`],
+        logFlags,
         empty: false,
       };
     }

@@ -6,6 +6,8 @@ import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import type { Project } from '../api/client';
 import { ProjectScopePicker } from '../ui/projectScopePicker';
 import { GitTreePickerModal } from '../ui/GitTreePickerModal';
+import { AuthorMultiSelect, BranchPicker, DateRangeField } from '../ui/GitScopeControls';
+import { buildSinceWindow, type BranchOption } from '../utils/scopeControls';
 import { FlowButton } from '../ui/FlowButton';
 import { FlowProgress } from '../ui/FlowProgress';
 import { Markdown } from '../ui/Markdown';
@@ -187,8 +189,15 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   const [base, setBase] = useSessionState('lecture.base', '');
   const [head, setHead] = useSessionState('lecture.head', '');
   const [since, setSince] = useSessionState('lecture.since', '');
+  // T03590：时间窗右端（日期范围控件的结束日）；空 = 与改造前的单 since 完全一致
+  const [until, setUntil] = useSessionState('lecture.until', '');
   // T03303：提交人过滤（甲 / 甲, 乙（且）/ 甲 | 乙（或）），与区间一起提交，服务端按 author+committer 精确比对
   const [authorFilter, setAuthorFilter] = useSessionState('lecture.authorFilter', '');
+  // T03590：分支/标签候选（所选项目的引用并集）与提交人候选（仓库最近提交的 author/committer）
+  const [branchOptions, setBranchOptions] = useState<BranchOption[]>([]);
+  const [authorOptions, setAuthorOptions] = useState<string[]>([]);
+  const branchRequested = useRef(false);
+  const authorsRequested = useRef(false);
   /** T03302：Git 树点选的提交（按项目分别存）——非空即该项目走 `shape='commits'`，优先于手填区间 */
   const [selectedCommits, setSelectedCommits] = useSessionState<Record<string, string[]>>('lecture.selectedCommits', {});
   const [gitTreeOpen, setGitTreeOpen] = useState(false);
@@ -222,6 +231,52 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   };
 
   const selectedIds = projectIds.length > 0 ? projectIds : projects.map((p) => p.id);
+  const projectKey = selectedIds.join('|');
+
+  // 项目集合变了：上一批候选可能来自别的仓库，作废缓存（真正取数推迟到展开下拉时）
+  useEffect(() => {
+    branchRequested.current = false;
+    authorsRequested.current = false;
+    setBranchOptions([]);
+    setAuthorOptions([]);
+  }, [projectKey]);
+
+  /**
+   * T03590：分支下拉的选项来自所选项目的引用装饰（`git log --all` 已有口径）——只做并集，不引入新 git 语义。
+   * 按需触发（展开下拉才取）：默认范围是「全部项目」，进面板就逐仓取数会把打开卡片变成一次批量扫描。
+   * 取不到就留空：输入框始终可以手输，下拉只是少了一份候选，不阻塞任何采集路径。
+   * 窗口取 200 条而非首页默认 100：refs 是「当前页提交上的装饰」，窗口太窄会只剩 HEAD 那一条的分支名。
+   */
+  async function loadBranchOptions() {
+    if (branchRequested.current) return;
+    branchRequested.current = true;
+    const merged = new Map<string, BranchOption>();
+    for (const projectId of selectedIds) {
+      try {
+        const r = await api.post<{ ok: boolean; refs?: BranchOption[] }>('/plans/code-review-lecture/git-log', { projectId, all: true, limit: 200 });
+        (r.refs ?? []).forEach((ref) => merged.set(`${ref.type}:${ref.name}`, ref));
+      } catch {
+        // 单项目取不到不影响其他项目，也不影响手输
+      }
+    }
+    setBranchOptions([...merged.values()]);
+  }
+
+  /** T03590：提交人候选按需拉取（展开下拉才请求），多项目取并集，失败保持空列表 */
+  async function loadAuthorOptions() {
+    if (authorsRequested.current) return;
+    authorsRequested.current = true;
+    const names = new Set<string>();
+    for (const projectId of selectedIds) {
+      try {
+        const r = await api.post<{ ok: boolean; authors?: string[] }>('/plans/code-review-lecture/git-authors', { projectId });
+        (r.authors ?? []).forEach((n) => names.add(n));
+      } catch {
+        // 候选名单只提升输入效率，取不到就让用户手输
+      }
+    }
+    setAuthorOptions([...names]);
+  }
 
   /** T03302：Git 树点选摘要——只报当前报表范围里确实点过的项目，范围外残留不显示也不参与采集 */
   const pickedProjects = useMemo(() => selectedIds
@@ -249,8 +304,12 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
     const range: Record<string, string> = { shape };
     if (needsRange) {
       if (shape === 'since') {
-        if (!since.trim()) return { error: '时间窗形态需要起始时间（如 2026-10-01 或 "14 days ago"）' };
-        range.since = since.trim();
+        // T03590：日期范围控件产出起止两个原始值；单起始时与原 `since` 取值逐字一致
+        const win = buildSinceWindow(since, until);
+        if (win.error) return { error: win.error };
+        if (!win.since) return { error: '时间窗形态需要起始时间（如 2026-10-01 或 "14 days ago"）' };
+        range.since = win.since;
+        if (win.until) range.until = win.until;
       } else {
         if (!base.trim()) return { error: '需要填写 base（分支/标签/SHA），或在 Git 树里点选提交' };
         range.base = base.trim();
@@ -264,7 +323,7 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
       return picked.length > 0 ? { projectId, range: { shape: 'commits', commits: picked } } : { projectId, range };
     });
     return { body: { projects } };
-  }, [patchMode, patchText, selectedIds, shape, since, base, head, authorFilter, selectedCommits]);
+  }, [patchMode, patchText, selectedIds, shape, since, until, base, head, authorFilter, selectedCommits]);
 
   useEffect(() => () => {
     if (flashTimer.current) window.clearTimeout(flashTimer.current);
@@ -586,21 +645,22 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
             <select value={shape} onChange={(e) => setShape(e.target.value as RangeShape)} style={fieldStyle} aria-label="Git 区间形态">
               {RANGE_SHAPES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
             </select>
+            {/* T03590：文本框升级为可展开下拉（模糊过滤 + 选中回填 + 清除）；仍可直接手输，SHA/标签不受限 */}
             {shape !== 'since' && (
-              <input value={base} onChange={(e) => setBase(e.target.value)} placeholder={shape === 'base-head' ? 'base（如 main）' : '首个 SHA'}
-                style={{ ...fieldStyle, width: 150 }} aria-label="区间起点" />
+              <BranchPicker value={base} onChange={setBase} options={branchOptions} testId="lecture-base"
+                onOpen={() => void loadBranchOptions()}
+                placeholder={shape === 'base-head' ? 'base（如 main）' : '首个 SHA'} ariaLabel="区间起点" />
             )}
             {shape === 'since' ? (
-              <input value={since} onChange={(e) => setSince(e.target.value)} placeholder="起始时间（2026-10-01 / 14 days ago）"
-                style={{ ...fieldStyle, width: 210 }} aria-label="时间窗起点" />
+              <DateRangeField start={since} end={until} onChange={(s, e) => { setSince(s); setUntil(e); }}
+                testId="lecture-since" />
             ) : (
-              <input value={head} onChange={(e) => setHead(e.target.value)} placeholder={shape === 'first-last' ? '末个 SHA' : 'head（留空=HEAD）'}
-                style={{ ...fieldStyle, width: 150 }} aria-label="区间终点" />
+              <BranchPicker value={head} onChange={setHead} options={branchOptions} testId="lecture-head"
+                onOpen={() => void loadBranchOptions()}
+                placeholder={shape === 'first-last' ? '末个 SHA' : 'head（留空=HEAD）'} ariaLabel="区间终点" />
             )}
-            <input value={authorFilter} onChange={(e) => setAuthorFilter(e.target.value)}
-              placeholder="提交人过滤：甲 / 甲, 乙（且）/ 甲 | 乙（或）"
-              title="按 author 或 committer 精确匹配；逗号表示同一提交要同时命中多个词，竖线表示任一命中即可。留空不筛"
-              style={{ ...fieldStyle, width: 230 }} aria-label="提交人过滤" />
+            <AuthorMultiSelect value={authorFilter} onChange={setAuthorFilter} authors={authorOptions}
+              onRequestAuthors={() => void loadAuthorOptions()} testId="lecture-author-filter" />
             {/* T03302：IDEA 风格 Git 树选范围——区间是「一对版本号」，点选是「一组提交」，两者互补 */}
             <FlowButton data-lck="git-tree-btn" onClick={() => setGitTreeOpen(true)} disabled={snap.streaming}
               title="打开 Git 树挑提交：单击=勾选/取消（可连点多条）、Shift+单击=框选一段；确认后按选中提交采集">

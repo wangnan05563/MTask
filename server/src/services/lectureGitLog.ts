@@ -13,6 +13,7 @@ import { ACTIVE_PROJECT_WHERE } from '../util/projectRouting';
 import {
   GIT_GRAPH_DEFAULT_PAGE,
   GIT_GRAPH_MAX_PAGE,
+  collectAuthorNames,
   collectGitGraph,
   probeRepository,
   type GitGraphEntry,
@@ -103,6 +104,47 @@ function fail(project: ProjectRow | undefined, req: GitLogRequest, kind: string,
     scanTruncated: false,
     error: { kind, message },
   };
+}
+
+/** T03590：提交人候选请求/响应——作者多选下拉的数据源，只读 */
+export interface GitAuthorsRequest {
+  projectId: string;
+  limit?: number;
+}
+
+export interface GitAuthorsResult {
+  ok: boolean;
+  projectId: string;
+  projectName: string;
+  authors: string[];
+  scanned: number;
+  error?: { kind: string; message: string };
+}
+
+/**
+ * T03590：作者多选控件的选项源。复用 git-log 同一套项目/仓库判定（未配工作空间、非仓库、没装 git 分别给文案），
+ * 只取最近 N 个提交的 author/committer 去重；取不到不抛 500，回 `ok=false` 让控件退化成「手输 + 回车添加」。
+ */
+export async function queryGitAuthors(req: GitAuthorsRequest): Promise<GitAuthorsResult> {
+  const projectId = typeof req.projectId === 'string' ? req.projectId.trim() : '';
+  const base = { projectId, projectName: projectId, authors: [] as string[], scanned: 0 };
+  if (!projectId) return { ok: false, ...base, error: { kind: 'denied', message: 'projectId 必填' } };
+  const project = getDb()
+    .prepare(`SELECT id, name, workspace_path FROM projects WHERE id = ? AND ${ACTIVE_PROJECT_WHERE}`)
+    .get(projectId) as ProjectRow | undefined;
+  if (!project) return { ok: false, ...base, error: { kind: 'denied', message: '项目不存在或已归档（请刷新项目列表）' } };
+  const name = { ...base, projectName: project.name };
+  const workspacePath = (project.workspace_path ?? '').trim();
+  if (!workspacePath) return { ok: false, ...name, error: { kind: 'no-workspace', message: '未配置工作空间路径（请在项目管理中补配）' } };
+  const probe = await probeRepository(workspacePath);
+  if (!probe.available) return { ok: false, ...name, error: { kind: 'no-git', message: probe.detail ?? '未找到 git 命令：请安装 Git' } };
+  if (!probe.isRepo) return { ok: false, ...name, error: { kind: 'not-a-repo', message: probe.detail ?? '工作空间不是 Git 仓库' } };
+  try {
+    const { authors, scanned } = await collectAuthorNames(workspacePath, { limit: req.limit });
+    return { ok: true, ...name, authors, scanned };
+  } catch (e) {
+    return { ok: false, ...name, error: { kind: 'failed', message: e instanceof Error ? e.message : String(e) } };
+  }
 }
 
 export async function queryGitLog(req: GitLogRequest): Promise<GitLogResult> {

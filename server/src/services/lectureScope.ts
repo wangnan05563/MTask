@@ -246,6 +246,8 @@ function parseRange(raw: unknown, index: number): GitRangeInput {
     } else {
       if (!str(r.since)) throw new LectureScopeError(`projects[${index}].range.since 必填`);
       range.since = assertSafeSince(str(r.since)!);
+      // T03590：时间窗可选右端（前端日期范围控件的结束日）；不填时行为与单 since 完全一致
+      if (str(r.until)) range.until = assertSafeSince(str(r.until)!, '时间窗截止');
       if (str(r.head)) range.head = assertSingleRevision(str(r.head)!);
     }
   } catch (e) {
@@ -295,7 +297,7 @@ export function parseLectureScopeRequest(body: unknown): { projects: LectureProj
 
 function rangeLabelOf(range: GitRangeInput): string {
   if (range.shape === 'commits') return `已选 ${range.commits?.length ?? 0} 个提交（Git 树点选）`;
-  if (range.shape === 'since') return `自 ${range.since ?? ''}`;
+  if (range.shape === 'since') return range.until ? `${range.since ?? ''} ~ ${range.until}` : `自 ${range.since ?? ''}`;
   if (range.shape === 'first-last') return `${range.base ?? ''}..${range.head ?? ''}`;
   return `${range.base ?? ''}..${range.head ?? 'HEAD'}`;
 }

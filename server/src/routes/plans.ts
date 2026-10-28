@@ -6,7 +6,7 @@ import { TestCaseService } from '../services/TestCaseService'; // T01484：测�
 import { assertOutlineShape, kickoffOutline, preflight, kickoffPptStream } from '../services/kickoffService'; // T02095/T02096/T02103：启动会 PPT 前置校验、大纲与 SSE 流式生成
 import { summaryPreflight } from '../services/summaryPptService'; // T02853（六期 S2）：总结汇报 PPT 前置校验聚合 S1~S9
 import { buildLectureDiffView, listLectureProjects, previewLectureScope, LectureScopeError } from '../services/lectureScope'; // T02867（六期 2.3）：代码评审讲稿范围/排除过滤器
-import { queryGitLog } from '../services/lectureGitLog'; // T03302（六期 2.1 补强）：Git 树选范围弹窗取数
+import { queryGitAuthors, queryGitLog } from '../services/lectureGitLog'; // T03302（六期 2.1 补强）：Git 树选范围弹窗取数；T03590：提交人候选
 import { lectureStreamErrorStatus, parseLectureStreamBody, runLectureStream, validateLectureStreamBody, hydrateLectureRetryBody, LECTURE_CARD_KEY } from '../services/lectureStream'; // T02870（六期 2.6）：讲稿流式生成编排
 import { jobRequest, latestJob } from '../services/AiGenJournal'; // T03245（AI-103）：分段台账恢复入口
 import { lectureSectionLabel, type LectureSectionKey } from '../services/lectureService'; // T03245：台账视图回带节中文名
@@ -151,6 +151,18 @@ planApi.post('/code-review-lecture/preflight', async (req, res) => {
 planApi.post('/code-review-lecture/git-log', async (req, res) => {
   try {
     res.json(await queryGitLog((req.body ?? {}) as import('../services/lectureGitLog').GitLogRequest));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+/**
+ * T03590：提交人候选——作者多选下拉的数据源（只读）。
+ * 与 git-log 同一套项目/仓库判定，失败回 `ok=false` 让控件退化为手输，而不是拖垮整个范围面板。
+ */
+planApi.post('/code-review-lecture/git-authors', async (req, res) => {
+  try {
+    res.json(await queryGitAuthors((req.body ?? {}) as import('../services/lectureGitLog').GitAuthorsRequest));
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }

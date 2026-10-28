@@ -4,6 +4,7 @@ import { api } from '../api/client';
 import type { Project } from '../api/client';
 import { fullTime, relTime } from '../ui/format';
 import { PILL } from './primitives'; // PM-302 ① 单源（与 CodeReviewLecturePanel 原为逐字节相同的两份定义）
+import { BranchPicker } from './GitScopeControls'; // T03590：head 输入框 → 可展开分支选择器
 import {
   GIT_TREE_PAGE_SIZE,
   MAX_SELECTED_COMMITS,
@@ -188,9 +189,12 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
               {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           )}
-          <input data-lck="git-tree-head" value={head} onChange={(e) => setHead(e.target.value)}
-            placeholder="起点分支/标签/SHA（留空=HEAD）" disabled={allBranches}
-            style={{ ...boxStyle, width: 200 }} aria-label="起点版本" />
+          {/* T03590：head 文本框升级为可展开的分支选择器（模糊过滤 + 选中即按该分支重新取数 + 清除）；
+              输入框本体保留 data-lck="git-tree-head"，手输 SHA/标签与改造前一致 */}
+          <BranchPicker value={head}
+            onChange={(next) => { setAllBranches(false); setHead(next); }}
+            options={refs} testId="git-tree-head" width={200}
+            placeholder="起点分支/标签/SHA（留空=HEAD）" ariaLabel="起点版本" disabled={allBranches} />
           <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-s)' }}>
             <input data-lck="git-tree-all" type="checkbox" checked={allBranches} onChange={(e) => setAllBranches(e.target.checked)} />
             全部分支
