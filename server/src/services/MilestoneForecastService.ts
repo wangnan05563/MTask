@@ -117,13 +117,13 @@ function forecastChild(row: PlanRow, cal: WorkdayCal): ForecastChild {
   const progress = clampProgress(Number(row.progress));
   const total = childTotalWorkdays(row, cal);
   const missing: string[] = [];
+  if (total === null) missing.push('排期');
   let remaining: number | null = null;
-  if (total === null) {
-    missing.push('排期');
-  } else {
+  if (row.status !== 'done' && total !== null) {
     remaining = Math.ceil((total * (100 - progress)) / 100);
     if (remaining < 0) remaining = 0;
   }
+  // 已完成子项不参与剩余量：进度列可能停在 96% 之类的残值，带进合计会把预测日推后
   return {
     id: row.id,
     title: row.title,

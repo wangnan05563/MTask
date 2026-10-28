@@ -999,7 +999,7 @@ function PlanActionsCell({ p, depMenuId, depMenuRef, depMenuPos, evalBusy, busy,
 function MilestoneForecastPanel({ forecast, onClose }: { readonly forecast: MilestoneForecast; readonly onClose: () => void }) {
   const v = FORECAST_VERDICT[forecast.verdict];
   return (
-    <div role="dialog" aria-label="里程碑预测明细"
+    <div role="dialog" aria-label="里程碑预测明细" data-t03234="forecast-panel"
       style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 8, padding: 16, width: 560, maxWidth: '92vw', maxHeight: '80vh', overflow: 'auto', fontSize: 'var(--fs-m)' }}>
@@ -1016,6 +1016,9 @@ function MilestoneForecastPanel({ forecast, onClose }: { readonly forecast: Mile
           </span>
         </div>
         <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', marginBottom: 10 }}>{forecast.basis}</div>
+        <div data-t03234="forecast-counter" style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', marginBottom: 6 }}>
+          参与剩余计算：{forecast.childrenTotal - forecast.childrenDone} 个未完成子项（已完成子项不计；缺排期不按 0 计）
+        </div>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-xs)' }}>
           <thead>
             <tr style={{ color: 'var(--text-muted)', textAlign: 'left' }}>
@@ -1064,7 +1067,7 @@ function PlanTitleCell({ p, collapsedMs, toggleMsCollapsed, updatePlan, forecast
       )}
       {/* T03194（PM-204）：里程碑预测徽标——点击查看参与计算的子项与剩余天数；「预测值，非承诺」常驻 */}
       {p.kind === 'milestone' && forecast && forecast.verdict !== 'done' && (
-        <button onClick={() => openForecast(p.id)}
+        <button onClick={() => openForecast(p.id)} data-t03234="forecast-badge"
           title={`${forecast.basis}\n（预测值，非承诺）—— 点击查看参与计算的子项与剩余天数`}
           aria-label={`里程碑预测：${FORECAST_VERDICT[forecast.verdict].label}${forecast.forecastDate ? `，预测 ${forecast.forecastDate}` : ''}`}
           style={{ flexShrink: 0, marginRight: 4, fontSize: 'var(--fs-2xs)', padding: '0 5px', borderRadius: 4, cursor: 'pointer',
@@ -2892,7 +2895,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             <span title={`共 ${plans.length} 条计划任务`}>任务：{plans.length} 条</span>
             <span title={`已完成 ${doneCount} · 进行中 ${doingCount}`} style={{ color: doneCount === plans.length ? 'var(--success)' : undefined }}>完成 {doneCount}/{plans.length}</span>
             {milestoneCount > 0 && <span title={`里程碑 ${milestoneCount} 个`}>里程碑：{milestoneCount}</span>}
-            {forecastAt && <span title={`预测业务日 ${forecastAt}（按项目/系统时区）；预测值，非承诺`}>预测基准日：{forecastAt}</span>}
+            {forecastAt && <span data-t03234="forecast-basis" title={`预测业务日 ${forecastAt}（按项目/系统时区）；按未完成子项剩余工作日串行排期推算，不替代人工判断`}>预测基准日：{forecastAt} · 预测值，非承诺</span>}
             {forecastErr && <span title={`里程碑预测取数失败：${forecastErr}`} style={{ color: 'var(--danger, #dc2626)' }}>预测暂不可用</span>}
             {/* T03237（PM-205）：日快照可回溯起点；缺失日期不补零，显式标「数据积累中」 */}
             {snapErr && <span title={`洞察快照取数失败：${snapErr}`} style={{ color: 'var(--danger, #dc2626)' }}>洞察快照暂不可用</span>}
