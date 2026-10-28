@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, type Queue, type QueueJob, type Task, type AITool } from '../api/client';
-import { Plus, ListPlus, RotateCcw, Send, Eye, ChevronUp, Check, Copy, Layers, Loader2, Trash2 } from 'lucide-react';
+import { Plus, ListPlus, RotateCcw, Send, Eye, ChevronUp, Check, Copy, Layers, Loader2, Trash2, RefreshCw } from 'lucide-react';
 import { EmptyState } from '../ui/EmptyState'; // T01072-FR1.10：统一空态组件
 import { askConfirm } from '../ui/dialogs'; // T01298：删除队列/移除任务前确认
 
@@ -10,6 +10,10 @@ interface PoolStatus {
   queued: number;
   running: Array<{ id: string; task_no: string | null; title: string; ai_state_at: string; project_name: string }>;
 }
+
+/** T03272（UX-12/D-10）：任务池 15s 自动刷新；队列任务项执行中 2s 刷新——两个口径分别验收 */
+const POOL_POLL_MS = 15000;
+const JOB_POLL_MS = 2000;
 
 export function QueuePage() {
   const [queues, setQueues] = useState<Queue[]>([]);
@@ -27,14 +31,30 @@ export function QueuePage() {
     setTimeout(() => setNotice(''), 2500);
   };
 
-  // T01066-FR1.8：任务池状态轮询（15s）+ 上限调整 + 单任务暂停（移出分发池 = 搁置）
+  // T01066-FR1.8：任务池状态轮询 + 上限调整 + 单任务暂停（移出分发池 = 搁置）
+  // T03272（UX-12）：任务池 15s 轮询口径与执行会话 ≤2s 口径分开定义，不混用同一常量
   const [pool, setPool] = useState<PoolStatus | null>(null);
-  const loadPool = useCallback(async () => {
-    try { setPool(await api.get<PoolStatus>('/pool/status')); } catch { /* 服务未就绪等：保留上次 */ }
+  const [poolUpdatedAt, setPoolUpdatedAt] = useState<number | null>(null);
+  const [poolRefreshing, setPoolRefreshing] = useState(false);
+  const [poolError, setPoolError] = useState('');
+  const loadPool = useCallback(async (opts: { manual?: boolean } = {}) => {
+    const manual = Boolean(opts.manual);
+    if (manual) setPoolRefreshing(true);
+    try {
+      const next = await api.get<PoolStatus>('/pool/status');
+      setPool(next);
+      setPoolUpdatedAt(Date.now());
+      setPoolError('');
+    } catch (e) {
+      // T03272③：失败保留上次成功数据（不 setPool(null)、不清 updatedAt），只明确报失败
+      setPoolError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (manual) setPoolRefreshing(false);
+    }
   }, []);
   useEffect(() => {
     void loadPool();
-    const t = setInterval(() => void loadPool(), 15000);
+    const t = setInterval(() => void loadPool(), POOL_POLL_MS);
     return () => clearInterval(t);
   }, [loadPool]);
   async function changePoolLimit(n: number) {
@@ -81,7 +101,7 @@ export function QueuePage() {
       } catch {
         stopPolling();
       }
-    }, 2000);
+    }, JOB_POLL_MS);
   }
   function stopPolling() {
     if (refreshTimer.current != null) {
@@ -246,21 +266,35 @@ export function QueuePage() {
             <Layers size={14} style={{ color: 'var(--accent)' }} /> 任务池
           </div>
           {/* 槽位格：实心=占用（running），空心=空闲 */}
-          <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }} title={`并行槽位：${pool?.running.length ?? 0}/${pool?.limit ?? 3}`}>
-            {Array.from({ length: pool?.limit ?? 3 }, (_, i) => (
-              <span key={i} style={{ width: 12, height: 12, borderRadius: '50%', border: '1px solid var(--accent)', background: i < (pool?.running.length ?? 0) ? 'var(--accent)' : 'transparent', display: 'inline-block' }} />
+          <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }} title={pool ? `并行槽位：${pool.running.length}/${pool.limit}` : '并行槽位：尚未获取'}>
+            {pool && Array.from({ length: pool.limit }, (_, i) => (
+              <span key={i} style={{ width: 12, height: 12, borderRadius: '50%', border: '1px solid var(--accent)', background: i < pool.running.length ? 'var(--accent)' : 'transparent', display: 'inline-block' }} />
             ))}
-            <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text)', marginLeft: 4 }}>{pool?.running.length ?? 0}/{pool?.limit ?? 3} 运行中</span>
+            <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text)', marginLeft: 4 }}>{pool ? `${pool.running.length}/${pool.limit} 运行中` : '— 运行中'}</span>
           </span>
-          <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>排队就绪 {pool?.queued ?? 0} 条</span>
+          <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>排队就绪 {pool ? `${pool.queued} 条` : '—'}</span>
           <span style={{ flex: 1 }} />
+          {/* T03272（UX-12）：最后成功更新时间 + 手动刷新（立即发起、带加载态） */}
+          <span aria-live="polite" title="任务池最后一次成功刷新的时间（自动刷新 15 秒）" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+            {poolUpdatedAt ? `最后更新 ${new Date(poolUpdatedAt).toLocaleTimeString('zh-CN', { hour12: false })}` : '尚未获取'}
+          </span>
+          <button
+            onClick={() => void loadPool({ manual: true })}
+            disabled={poolRefreshing}
+            title="刷新任务池 — 立即重新获取（自动刷新 15 秒）"
+            aria-label={poolRefreshing ? '刷新中：正在重新获取任务池数据' : '刷新任务池：立即重新获取任务池数据'}
+            style={{ fontSize: 'var(--fs-xs)', padding: '3px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: poolRefreshing ? 'wait' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          >
+            <RefreshCw size={12} className={poolRefreshing ? 'aispin' : undefined} />
+            {poolRefreshing ? '刷新中…' : '刷新'}
+          </button>
           {/* 并发上限调整（1~10，存 app_settings） */}
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
             {'并行上限'}
             <button onClick={() => void changePoolLimit((pool?.limit ?? 3) - 1)} disabled={!pool || pool.limit <= 1}
               title="下调并行上限" aria-label="下调并行上限"
               style={{ width: 22, height: 22, borderRadius: 5, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}>−</button>
-            <b style={{ color: 'var(--accent)' }}>{pool?.limit ?? 3}</b>
+            <b style={{ color: 'var(--accent)' }}>{pool?.limit ?? '—'}</b>
             <button onClick={() => void changePoolLimit((pool?.limit ?? 3) + 1)} disabled={!pool || pool.limit >= 10}
               title="上调并行上限" aria-label="上调并行上限"
               style={{ width: 22, height: 22, borderRadius: 5, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}>＋</button>
@@ -281,6 +315,11 @@ export function QueuePage() {
                 </button>
               </div>
             ))}
+          </div>
+        )}
+        {poolError && (
+          <div role="status" style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>
+            任务池刷新失败：{poolError}（保留{poolUpdatedAt ? '上次成功数据' : '上次获取结果'}，未清空）
           </div>
         )}
         <div style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
