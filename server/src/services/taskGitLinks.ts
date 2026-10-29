@@ -282,6 +282,13 @@ export interface GitTaskView {
   remote?: GitRemoteInfo;
 }
 
+/**
+ * 抽屉首屏逐提交取文件统计的并发上限（T03642）：每条关联 2 个 git 进程。
+ * 本机实测 10 条关联：串行 12 波等待 ≈ 数十秒；并发 4 → 11.2s；并发 8 → 5.0s。
+ * 再往上收益被单进程启动（0.3–2s）吃掉，且同时拉太多进程会互相拖慢，故定 8。
+ */
+const GIT_FILES_CONCURRENCY = 8;
+
 /** 抽屉首屏：提交卡（摘要 + 统计），文件清单不在此处（懒加载端点） */
 export async function buildTaskGitView(taskRef: { taskNo?: string; id?: string }, opts: GitCollectOptions = {}): Promise<GitTaskView> {
   const task = resolveTask(taskRef);
@@ -291,21 +298,30 @@ export async function buildTaskGitView(taskRef: { taskNo?: string; id?: string }
     return { commits: [], missing: [], degraded: { kind: 'no-workspace', message: '项目未绑定工作空间，请先绑定仓库目录' } };
   }
   try {
-    const { commits, missing } = await collectCommitSummaries(task.workspacePath, links.map((l) => l.sha), opts);
+    // T03642：摘要与 origin 远端互不依赖，必须并发——单次 git 调用要付 0.3–1.5s 进程启动成本，
+    // 串行 await 会让抽屉首屏白等两轮。文件统计按上限并发（git 进程数同样有代价，不无限铺开）。
+    const [{ commits, missing }, remoteUrl] = await Promise.all([
+      collectCommitSummaries(task.workspacePath, links.map((l) => l.sha), opts),
+      safeRemoteUrl(task.workspacePath, opts),
+    ]);
     const bySha = new Map(commits.map((c) => [c.sha, c]));
     // 外链前缀按 workspace 取一次 remote（§3.1.3：凭据在服务端剥离，前端只拼 SHA）
-    const remoteUrl = await safeRemoteUrl(task.workspacePath, opts);
     const remote = remoteInfoOf(remoteUrl);
     const cards: GitCommitCard[] = [];
-    for (const l of links) {
+    const filesBySha = await mapLimit(links, GIT_FILES_CONCURRENCY, async (l) => {
       const c = bySha.get(l.sha);
-      if (!c) continue;
-      let files: CommitFileEntry[] = [];
+      if (!c) return [];
       try {
-        files = await collectCommitFiles(task.workspacePath, l.sha, c.parents, opts);
+        return await collectCommitFilesCached(task.workspacePath, l.sha, c.parents, opts);
       } catch (e) {
         if (e instanceof GitCollectError && ['no-git', 'not-a-repo', 'timeout', 'too-large'].includes(e.kind)) throw e;
+        return [];
       }
+    });
+    links.forEach((l, i) => {
+      const c = bySha.get(l.sha);
+      if (!c) return;
+      const files = filesBySha[i] ?? [];
       cards.push({
         ...c,
         source: l.source,
@@ -320,7 +336,7 @@ export async function buildTaskGitView(taskRef: { taskNo?: string; id?: string }
         workspaceDrift: !!l.workspacePath && l.workspacePath !== task.workspacePath,
         commitUrl: remoteUrl ? buildCommitLink(remoteUrl, l.sha)?.url : undefined,
       });
-    }
+    });
     return { commits: cards, missing, remote };
   } catch (e) {
     if (e instanceof GitCollectError) {
@@ -330,14 +346,71 @@ export async function buildTaskGitView(taskRef: { taskNo?: string; id?: string }
   }
 }
 
+/**
+ * T03642：origin 远端的进程级缓存。每次 git 调用都要付一次进程启动成本（本机实测 0.3–1.5s），
+ * 而 origin 是人工配置、一年也改不了几次——抽屉首屏与列表摘要却每轮都要 spawn 一次 `remote get-url`。
+ * 键=工作空间路径（换绑即换键），5 分钟过期兜底；null 也缓存（无远端仓库同样不该反复探测），
+ * 代价是用户「刚补上 origin」后最多 5 分钟内仍显示未配置，可在抽屉刷新里重试。
+ */
+const REMOTE_URL_TTL_MS = 5 * 60_000;
+const remoteUrlCache = new Map<string, { at: number; url: string | null }>();
+const remoteUrlInflight = new Map<string, Promise<string | null>>();
+
 /** origin 远端；无远端不抛错（外链只是抽屉里的一个动作，不该拖垮首屏） */
 export async function safeRemoteUrl(cwd: string, opts: GitCollectOptions = {}): Promise<string | null> {
-  try {
-    return await collectRemoteUrl(cwd, opts);
-  } catch (e) {
-    if (e instanceof GitCollectError) return null;
-    throw e;
-  }
+  const hit = remoteUrlCache.get(cwd);
+  if (hit && Date.now() - hit.at < REMOTE_URL_TTL_MS) return hit.url;
+  const pending = remoteUrlInflight.get(cwd);
+  if (pending) return pending;
+  const p = (async () => {
+    try {
+      return await collectRemoteUrl(cwd, opts);
+    } catch (e) {
+      if (e instanceof GitCollectError) return null;
+      throw e;
+    }
+  })().then(
+    (url) => { remoteUrlCache.set(cwd, { at: Date.now(), url }); remoteUrlInflight.delete(cwd); return url; },
+    (e) => { remoteUrlInflight.delete(cwd); throw e; },
+  );
+  remoteUrlInflight.set(cwd, p);
+  return p;
+}
+
+/**
+ * T03642：提交文件清单缓存。同一提交的 numstat/name-status 是**不可变**数据（SHA 决定内容），
+ * 而抽屉首屏与文件页会对同一 SHA 各取一次、每次两条 git 进程。键含 base（首提交用空树），
+ * 5 分钟过期只是防止内存无界增长，不影响正确性。
+ */
+const COMMIT_FILES_TTL_MS = 5 * 60_000;
+const commitFilesCache = new Map<string, { at: number; files: CommitFileEntry[] }>();
+
+async function collectCommitFilesCached(cwd: string, sha: string, parents: string[], opts: GitCollectOptions): Promise<CommitFileEntry[]> {
+  const base = parents.length ? parents[0] : GIT_EMPTY_TREE_SHA1;
+  const key = `${cwd}|${base}|${sha}`;
+  const hit = commitFilesCache.get(key);
+  if (hit && Date.now() - hit.at < COMMIT_FILES_TTL_MS) return hit.files;
+  const files = await collectCommitFiles(cwd, sha, parents, opts);
+  commitFilesCache.set(key, { at: Date.now(), files });
+  return files;
+}
+
+/**
+ * 有上限的并发映射（T03642）：结果按下标对齐，任一任务抛错即整体失败（与原串行语义一致）。
+ * 用途是把「每条关联一次 git spawn」的串行等待压成常数轮，同时避免 N 条关联同时拉起 N 个进程。
+ */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return out;
 }
 
 export interface GitFilesResult {
@@ -369,7 +442,7 @@ export async function buildTaskGitFiles(
   try {
     const { commits } = await collectCommitSummaries(task.workspacePath, [full], opts);
     const head = commits[0];
-    const files = await collectCommitFiles(task.workspacePath, full, head?.parents ?? [], opts);
+    const files = await collectCommitFilesCached(task.workspacePath, full, head?.parents ?? [], opts);
     const out: GitFilesResult = { files };
     if (withDiff) {
       out.diffs = {};

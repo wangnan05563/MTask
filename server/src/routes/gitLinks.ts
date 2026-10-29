@@ -74,10 +74,30 @@ gitLinksApi.post('/git/commit-summaries', async (req, res) => {
   }
 });
 
+/**
+ * T03642：抽屉首屏结果缓存。首屏的每次 git 取数都要付进程启动成本（本机实测 0.3–1.5s/次），
+ * 而「同一任务的同一组关联」在 60s 内重复打开是很常见的（开关抽屉、来回切标签）。
+ * 键里包含 workspace 与关联集合（sha + linkedAt）以及任务 updatedAt——换绑、加解绑、任务编辑
+ * 都会换键，不存在看到旧状态的可能；降级态不缓存，用户修好绑定/装好 git 后应立刻恢复。
+ */
+const TASK_GIT_VIEW_TTL_MS = 60_000;
+
+function taskGitViewCacheKey(taskId: string): string {
+  const task = resolveTask({ id: taskId });
+  if (!task || !task.workspacePath) return '';
+  const links = listLinks(task.id).map((l) => `${l.sha}:${l.createdAt}`).sort().join(',');
+  return `git-view:${createHash('sha1').update(`${task.id}|${task.workspacePath}|${task.updatedAt}|${links}`).digest('hex')}`;
+}
+
 /** 抽屉首屏：该任务全部关联提交的摘要 + 统计（时间倒序） */
 gitLinksApi.get('/tasks/:id/git', async (req, res) => {
   try {
-    res.json(await buildTaskGitView({ id: req.params.id }));
+    const key = taskGitViewCacheKey(req.params.id);
+    const hit = key ? cacheGet(key) : undefined;
+    if (hit) return res.json(hit);
+    const out = await buildTaskGitView({ id: req.params.id });
+    if (key && !out.degraded) cacheSet(key, out, TASK_GIT_VIEW_TTL_MS);
+    res.json(out);
   } catch (e) {
     httpError(res, e);
   }
