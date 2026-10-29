@@ -3,6 +3,10 @@ import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { getDb } from '../db/connection';
 import { getAdapter, type AIAdapter, type ToolConfig } from '../adapters';
+import { recordUsage } from '../util/aiUsageRecord'; // T03296（G-2）：直连适配器的卡由本服务补记 card_key 用量
+
+/** T03296（G-2 覆盖率）：测试用例生成卡的稳定 key（注册表 server/src/util/aiCards.ts） */
+const TESTCASE_CARD = 'ai.test_case_gen';
 import { ConfigService } from './ConfigService';
 import { PlanService } from './PlanService';
 import { logService } from './LogService';
@@ -128,13 +132,21 @@ async function callOnce(
   genConfig: ToolConfig,
   onDelta: (t: string) => void,
   onStage: (m: string) => void,
+  toolId: string,
   signal?: AbortSignal,
 ): Promise<{ text: string; truncated: boolean }> {
-  let res = await chat(system, user, genConfig, onDelta, signal);
+  // T03296（G-2 覆盖率）：本服务直连适配器，每次真实调用显式记一笔 card_key 用量
+  const attempt = async (cfg: ToolConfig) => {
+    const startedAt = Date.now();
+    const r = await chat(system, user, cfg, onDelta, signal);
+    recordUsage('stream', toolId, cfg.model, r.ok, startedAt, (r.ok ? r.content?.length : r.partial?.length) ?? 0, r.error, TESTCASE_CARD);
+    return r;
+  };
+  let res = await attempt(genConfig);
   // 提供商拒绝抬高的输出上限（直接 400）→ 回退到用户原值重试一次（与 PrdGenService 的 16K→8K 回退同款思路）
   if (!res.ok && !res.partial && /max_tokens|max_completion_tokens|too large|invalid/i.test(res.error ?? '')) {
     onStage(`模型未接受 ${genConfig.maxTokens} tokens 输出上限，回退重试…`);
-    res = await chat(system, user, { ...genConfig, maxTokens: TESTCASE_FALLBACK_OUTPUT_TOKENS }, onDelta, signal);
+    res = await attempt({ ...genConfig, maxTokens: TESTCASE_FALLBACK_OUTPUT_TOKENS });
   }
   if (res.ok) return { text: res.content ?? '', truncated: false };
   // finish_reason=length：adapter 给出 partial + 「超长被截断」；选择性采纳已成功部分并显式告警（其余失败原样抛出）
@@ -259,7 +271,7 @@ export async function generateTestCasesStream(input: {
       '【本轮任务】仅拆分/补充需求，用例段输出空数组。',
       '按输出协议，只填充 <<<REQUIREMENTS>>> 段（<<<CASES>>> 输出 []）；每条需求原子、可独立验证、带 sourceRef 指向原文定位。',
     ].join('\n\n');
-    const splitRes = await callOnce(chat, system, splitUser, genConfig, input.onDelta, input.onStage, input.signal);
+    const splitRes = await callOnce(chat, system, splitUser, genConfig, input.onDelta, input.onStage, input.toolId, input.signal);
     const reqObjs = extractArray(splitRes.text, REQ_MARKER, CASE_MARKER, isRequirementObj);
     const seen = new Set<string>();
     const splitReqs: DraftRequirement[] = [];
@@ -333,7 +345,7 @@ export async function generateTestCasesStream(input: {
       '严格独占一行输出标记：<<<REQUIREMENTS>>> 与 <<<CASES>>>（可选 <<<NOTES>>>）。',
     ].join('\n\n');
 
-    const res = await callOnce(chat, system, caseUser, genConfig, input.onDelta, input.onStage, input.signal);
+    const res = await callOnce(chat, system, caseUser, genConfig, input.onDelta, input.onStage, input.toolId, input.signal);
     const objs = extractArray(res.text, CASE_MARKER, NOTE_MARKER, isCaseObj);
     const cases = objs
       .map((o) => normCase(o, existingKeys))

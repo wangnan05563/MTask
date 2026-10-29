@@ -272,6 +272,7 @@ export async function outlineLecture(
       signal: opts.signal,
       maxTokens: opts.maxTokens,
       retrySystemFromError: (lastError) => `${prompt.system}\n\n【上次输出不合格原因】${lastError}\n请只输出修正后的 JSON 对象。`,
+      cardKey: 'ai.code_review_lecture', // T03296（G-2）：显式归属卡片
     },
   );
   if (!res.ok || !res.data) return { ok: false, prompt, error: res.error ?? '大纲生成失败' };
@@ -555,6 +556,7 @@ export async function generateLectureSection(input: SectionRunInput, opts: Secti
       (delta) => opts.onDelta?.(delta, meta),
       opts.timeoutMs,
       opts.signal,
+      'ai.code_review_lecture', // T03296（G-2）：讲稿分段流同属该卡
     );
     const text = res.ok ? (res.content ?? '') : '';
     const { anchors, issues } = res.ok ? validateLectureAnchors(text, group.files) : { anchors: [], issues: [] };

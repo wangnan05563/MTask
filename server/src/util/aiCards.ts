@@ -31,15 +31,15 @@ export const AI_CARDS: readonly AiCard[] = [
   { key: 'ai.title_simplify', title: '标题精简', group: 'plan', available: true, metered: true },
   { key: 'ai.category_classify', title: '分类建议', group: 'plan', available: true, metered: true },
   { key: 'ai.plan_evaluate', title: '计划 AI 评估', group: 'plan', available: true, metered: true },
-  // —— 已上线但未接写入点的卡（进分母；接入见派生单，接入后翻 metered:true）——
-  { key: 'ai.prd_gen', title: 'PRD 生成', group: 'plan', available: true, metered: false },
-  { key: 'ai.prd_import', title: 'PRD 导入解析', group: 'plan', available: true, metered: false },
-  { key: 'ai.plan_import', title: 'AI 项目计划导入', group: 'plan', available: true, metered: false },
+  // —— T03296：原「已上线未接埋点」的 7 张卡已完成显式 card_key 接入（metered:true）——
+  { key: 'ai.prd_gen', title: 'PRD 生成', group: 'plan', available: true, metered: true },
+  { key: 'ai.prd_import', title: 'PRD 导入解析', group: 'plan', available: true, metered: true },
+  { key: 'ai.plan_import', title: 'AI 项目计划导入', group: 'plan', available: true, metered: true },
   { key: 'ai.weekly_report', title: '周报/月报生成', group: 'report', available: true, metered: true },
-  { key: 'ai.summary_ppt', title: '阶段总结 PPT', group: 'report', available: true, metered: false },
-  { key: 'ai.kickoff_ppt', title: '启动会 PPT', group: 'report', available: true, metered: false },
-  { key: 'ai.test_case_gen', title: '测试用例生成', group: 'quality', available: true, metered: false },
-  { key: 'ai.code_review_lecture', title: '代码评审讲稿', group: 'dev', available: true, metered: false },
+  { key: 'ai.summary_ppt', title: '阶段总结 PPT', group: 'report', available: true, metered: true },
+  { key: 'ai.kickoff_ppt', title: '启动会 PPT', group: 'report', available: true, metered: true },
+  { key: 'ai.test_case_gen', title: '测试用例生成', group: 'quality', available: true, metered: true },
+  { key: 'ai.code_review_lecture', title: '代码评审讲稿', group: 'dev', available: true, metered: true },
 ];
 
 /** kind → card_key 显式映射：仅收录与卡片**一对一**的通道；通用通道（ask/ask-json/stream）不在表内，防 kind 冒充卡维度 */

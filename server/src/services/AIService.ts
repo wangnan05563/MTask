@@ -11,7 +11,7 @@ import { WorkspaceService } from './WorkspaceService'; // T00777：工作空间�
 import type { StreamResult, SubmitResult, PollResult, TokenUsage } from '../adapters/types';
 import type { ToolConfig } from '../adapters';
 import { stripThinking } from '../util/thinking'; // T00814：思考块剥离上移共享
-import { KIND_TO_CARD } from '../util/aiCards'; // T03172：kind→card_key 一对一映射（通用通道不冒充卡维度）
+import { recordUsage } from '../util/aiUsageRecord'; // T03296：写入单源下沉 util，直连适配器的卡可复用同一口径
 
 /** 模型未配置时的统一提示，保持与产品语境一致的表达 */
 const MODEL_UNCONFIGURED = '所选模型未配置，请先在「模型管理」为该工具填写默认模型';
@@ -21,36 +21,6 @@ function runtimeWithModel(toolId: string) {
   const { type, config } = ConfigService.getRuntimeConfig(toolId);
   if (!config.model) throw new Error(MODEL_UNCONFIGURED);
   return { type, config };
-}
-
-/** AI 工具名缓存查询（用量记录用） */
-function toolNameOf(toolId: string): string {
-  try {
-    const r = getDb().prepare('SELECT name FROM ai_tools WHERE id = ?').get(toolId) as { name: string } | undefined;
-    return r?.name ?? toolId;
-  } catch { return toolId; }
-}
-
-/** AI 用量记录（T00448 / PRD AI-1）：每次模型调用落一行，供「模型」页用量面板聚合展示。
- *  T03172（G-2/AI-301）：card_key 随行走——显式传卡优先，否则按 kind→卡一对一映射，
- *  通用通道（ask/ask-json/stream）无卡可归时落 unknown（历史默认值同口径，不冒充卡片维度）。 */
-function recordUsage(
-  kind: string,
-  toolId: string,
-  model: string | undefined,
-  ok: boolean,
-  startedAt: number,
-  contentChars = 0,
-  error?: string,
-  cardKey?: string,
-): void {
-  const resolvedCard = cardKey ?? KIND_TO_CARD[kind] ?? 'unknown';
-  try {
-    getDb().prepare(
-      `INSERT INTO ai_usage (id, tool_id, tool_name, model, kind, ok, duration_ms, content_chars, error, created_at, card_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(uuid(), toolId, toolNameOf(toolId), model ?? '', kind, ok ? 1 : 0, Date.now() - startedAt, contentChars, (error ?? '').slice(0, 300) || null, new Date().toISOString(), resolvedCard);
-  } catch { /* 用量记录失败不影响主流程 */ }
 }
 
 /**
@@ -533,9 +503,11 @@ export const AIService = {
        * 与 T01289「超时不重试」同口径：abort 时**不触发重试**，否则「停止」会变成再等一轮、白烧一次配额。
        */
       signal?: AbortSignal;
+      /** T03296（G-2 覆盖率）：调用方显式归属卡片——通用 ask-json 通道无一对一 kind 映射 */
+      cardKey?: string;
     },
   ): Promise<{ ok: boolean; data?: T; error?: string; retried?: boolean; usage?: TokenUsage }> {
-    const { timeoutMs, retrySystem, retrySystemFromError, maxTokens, minMaxTokens, temperature, signal } = opts ?? {};
+    const { timeoutMs, retrySystem, retrySystemFromError, maxTokens, minMaxTokens, temperature, signal, cardKey } = opts ?? {};
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     const effective = timeoutMs == null ? config : { ...config, timeoutMs };
@@ -557,14 +529,14 @@ export const AIService = {
       // 不占用「截断精简重试」轮次（先例 PrdGenService.ts:278-281：只在错误确指预算时回退，其余照旧）。
       if (!res.ok && minMaxTokens != null && budgetMax != null && budgetMax > minMaxTokens
         && /max_tokens|max_completion_tokens|too large|invalid/i.test(res.error ?? '')) {
-        recordUsage('ask-json', toolId, config.model, false, startedAt, 0, `预算 ${budgetMax} 被拒，回退 ${minMaxTokens} 重试：${res.error ?? ''}`);
+        recordUsage('ask-json', toolId, config.model, false, startedAt, 0, `预算 ${budgetMax} 被拒，回退 ${minMaxTokens} 重试：${res.error ?? ''}`, cardKey);
         budgetMax = minMaxTokens;
         res = await adapter.chat(sys, user, attemptConfig(base, attempt, budgetMax), signal);
       }
       acc.usage = mergeUsage(acc.usage, res.usage);
       if (!res.ok || !res.content) {
         acc.lastError = res.error ?? 'AI 返回内容为空';
-        recordUsage('ask-json', toolId, config.model, false, startedAt, 0, acc.lastError);
+        recordUsage('ask-json', toolId, config.model, false, startedAt, 0, acc.lastError, cardKey);
         // T01289：超时不重试——本轮已耗尽整个超时窗口，再试一次只会把等待时间翻倍；
         // 监督决策据此在 10s 内降级 ESCALATE（NFR-1），而不是 20s 后才降级。
         // T02141：外部中止同理不重试——调用方已表示不要这一轮结果，重试等于白烧一次配额。
@@ -573,11 +545,11 @@ export const AIService = {
       }
       try {
         const data = parse(res.content);
-        recordUsage('ask-json', toolId, config.model, true, startedAt, res.content.length);
+        recordUsage('ask-json', toolId, config.model, true, startedAt, res.content.length, undefined, cardKey);
         return { ok: true, data, retried: attempt > 1, usage: acc.usage };
       } catch (e) {
         acc.lastError = e instanceof Error ? e.message : String(e);
-        recordUsage('ask-json', toolId, config.model, false, startedAt, res.content.length, `JSON 解析失败：${acc.lastError.slice(0, 200)}`);
+        recordUsage('ask-json', toolId, config.model, false, startedAt, res.content.length, `JSON 解析失败：${acc.lastError.slice(0, 200)}`, cardKey);
       }
     }
     return { ok: false, error: `${acc.lastError}${acc.attempts > 1 ? '（已自动重试 1 次）' : ''}`, usage: acc.usage };

@@ -1086,6 +1086,7 @@ export async function kickoffOutline(projectId: string, toolId: string, extraNot
       // 「用了 timeline 版式但没放 timeline 数据键」，静态重试提示词已声明过该要求仍不遵守）。
       retrySystemFromError: (lastError) => `${OUTLINE_SYSTEM_RETRY}\n\n【上一轮输出被拒的原因，必须逐条修正后重新输出】\n${lastError}`,
       temperature: 0,
+      cardKey: 'ai.kickoff_ppt', // T03296（G-2）：显式归属卡片
     },
   );
   if (!ai.ok || ai.data === undefined) throw new Error(`AI 未返回合规大纲：${ai.error ?? '未知原因'}`);
@@ -1284,7 +1285,7 @@ async function polishWording(
       // 「AI 语义合规但输出尾逗号」判成解析失败，风险页永远走本地条目（本地条目措辞偏生硬）
       (content) => wordingFromAi(local, parseAiJson(content)),
       // T02141：带上 signal——客户端断开时本轮不再等完整响应、也不重试（此前只在下一次 await 后收手，配额已烧）
-      { temperature: 0, signal },
+      { temperature: 0, signal, cardKey: 'ai.kickoff_ppt' }, // T03296（G-2）：风险/沟通措辞同属启动会 PPT 卡
     );
     if (!ai.ok || ai.data === undefined) {
       warnings.push(`${KICKOFF_WORDING_FALLBACK_MSG}（原因：${ai.error ?? '未知'}）`);

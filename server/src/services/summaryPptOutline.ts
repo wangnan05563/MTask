@@ -509,6 +509,7 @@ export async function summaryOutline(params: SummaryOutlineParams): Promise<Summ
       temperature: 0,
       retrySystem: OUTLINE_SYSTEM_RETRY,
       retrySystemFromError: (lastError) => `${OUTLINE_SYSTEM_RETRY}\n\n【上一轮输出被拒的原因，必须逐条修正后重新输出】\n${lastError}`,
+      cardKey: 'ai.summary_ppt', // T03296（G-2）：显式归属卡片，不靠 kind 推断
     },
   );
   if (!ai.ok || ai.data === undefined) throw new Error(`AI 未返回合规大纲：${ai.error ?? '未知原因'}`);

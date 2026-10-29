@@ -10,6 +10,10 @@ import { runGitReadonly, GitCollectError } from './gitCollect';
 import { extractNeedles, parseDomainVocab, FALLBACK_VOCAB, type VocabEntry } from './prdKeywords'; // T03442：中文需求 → 代码标识符的词桥
 import { parseIssuesJson, parsePrdIssues, splitPrdBody, inlineIssuesSection, type PrdGenIssue } from './prdIssues'; // T00814：问题清单解析抽为可测模块；T00818：清单内联正文章节
 import { buildCardProvenance, chars, recordCardProvenance, type CardProvenance } from './aiCardProvenance'; // T03262（AI-101①）：溯源行与面板/导出稿逐字同源
+import { recordUsage } from '../util/aiUsageRecord'; // T03296（G-2）：本服务直连适配器，用量需显式落 card_key
+
+/** T03296（G-2 覆盖率）：PRD 生成卡的稳定 key（注册表 server/src/util/aiCards.ts） */
+const PRD_GEN_CARD = 'ai.prd_gen';
 
 /**
  * T00769：原始需求生成 PRD（AI 控制台卡片「原始需求生成PRD」后端）。
@@ -364,6 +368,7 @@ async function fallbackIssues(
   source: string,
   adapter: AIAdapter,
   config: ToolConfig,
+  toolId: string,
   onStage: (msg: string) => void,
   signal?: AbortSignal, // T00838：补问同样可被外部中止
 ): Promise<PrdGenIssue[]> {
@@ -380,7 +385,9 @@ async function fallbackIssues(
     'suggestion 语义：针对该问题的 2~4 个可落地建议选项，用「选项A：… / 选项B：… / 选项C：…」分隔。',
   ].join('\n\n');
   try {
+    const startedAt = Date.now();
     const r = await adapter.chat(system, user, config, signal);
+    recordUsage('ask', toolId, config.model, r.ok, startedAt, r.content?.length ?? 0, r.error, PRD_GEN_CARD); // T03296：补问同属 PRD 生成卡
     if (!r.ok || !r.content) { onStage('补充提问失败，本次未产出待确认问题（可手动新增自定义问题）'); return []; }
     const issues = parseIssuesJson(r.content);
     onStage(issues.length > 0 ? `补充提问完成：新增 ${issues.length} 条待确认问题` : '补充提问未产出问题清单（可手动新增自定义问题）');
@@ -505,12 +512,17 @@ export async function generatePrdStream(input: {
     ['需求', parts.requirement.length],
   ]));
 
+  const genStartedAt = Date.now();
+  const genChars = (res: { ok: boolean; content?: string; partial?: string }): number => (res.ok ? res.content?.length : res.partial?.length) ?? 0;
   let result = await adapter.chatStream(system, user, genConfig, input.onDelta, input.signal);
+  recordUsage('stream', input.toolId, genConfig.model, result.ok, genStartedAt, genChars(result), result.error, PRD_GEN_CARD);
   // T00814：个别提供商不接受 16K 输出上限（请求直接 400）——此时回退到 8K 重试一次，
   // 避免"提高了预算反而整个功能不可用"。仅在错误文本确指 max_tokens 时回退，其余错误照旧抛出。
   if (!result.ok && /max_tokens|max_completion_tokens|too large|invalid/i.test(result.error ?? '')) {
     input.onStage(`模型未接受 ${genConfig.maxTokens} tokens 输出上限，回退 ${PRD_FALLBACK_OUTPUT_TOKENS} 重试…`);
+    const retryStartedAt = Date.now();
     result = await adapter.chatStream(system, user, { ...genConfig, maxTokens: PRD_FALLBACK_OUTPUT_TOKENS }, input.onDelta, input.signal);
+    recordUsage('stream', input.toolId, genConfig.model, result.ok, retryStartedAt, genChars(result), result.error, PRD_GEN_CARD);
   }
   // T00814：长文档实测即使预算给到 16K/32K，部分思考型模型仍会在自身上限处截断
   // （流出的正文 9~10K 字符即 finish_reason=length）。此时整份作废太浪费 ——
@@ -534,7 +546,7 @@ export async function generatePrdStream(input: {
   let issues = parsePrdIssues(text, prdMd, input.onStage);
   // 兜底补问：主流程未产出任何问题时，基于已生成 PRD 反推一份问题清单（失败不影响主流程）
   if (issues.length === 0) {
-    issues = await fallbackIssues(project, prdMd, input.content, adapter, genConfig, input.onStage, input.signal);
+    issues = await fallbackIssues(project, prdMd, input.content, adapter, genConfig, input.toolId, input.onStage, input.signal);
   }
   // T00818：把拆分出的问题清单内联回 PRD 正文「待确认问题汇总」章——分区 JSON 已被 splitPrdBody 剥离，
   // 正文该章原只有标题+审查说明占位，若不下沉，前端预览末章即「提示后内容为空」。仅在有清单时改写。

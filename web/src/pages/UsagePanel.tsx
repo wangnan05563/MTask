@@ -8,6 +8,10 @@ import { relTime } from '../ui/format';
 interface UsageSummaryRow { day: string; calls: number; okCalls: number; failCalls: number; avgMs: number; contentChars: number }
 interface UsageToolRow { tool_name: string; model: string; kind: string; calls: number; okCalls: number; failCalls: number; avgMs: number; contentChars: number }
 interface UsageRecent { tool_name: string; model: string; kind: string; ok: number; duration_ms: number; content_chars: number; error: string | null; created_at: string }
+/** T03296（G-2）：卡片覆盖率——与服务端 AiCardStats.cardCoverage 同构 */
+interface CoverageCard { key: string; title: string; group: string; available: boolean; metered: boolean; okCount: number; failCount: number }
+interface CoverageBaseline { instrumentedFrom: string | null; firstCompleteMonth: string | null; established: boolean; note: string }
+interface Coverage { month: string; totalAvailable: number; coveredCount: number; ratio: number; unmeteredKeys: string[]; cards: CoverageCard[]; baseline: CoverageBaseline }
 
 const KIND_LABELS: Record<string, string> = {
   optimize: '提示词优化', beautify: '标题美化', ask: '通用对话', stream: '流式生成',
@@ -23,7 +27,7 @@ const KIND_COLOR: Record<string, string> = {
   optimize: 'var(--accent)', beautify: 'var(--accent)', ask: 'var(--text)', stream: 'var(--accent)',
   organize: 'var(--text)', classify: 'var(--text)', send: 'var(--text)', wbs: 'var(--accent)',
   'parse-doc': 'var(--accent)', report: 'var(--accent)', polish: 'var(--accent)',
-  probe: 'var(--warning, var(--accent))',
+  probe: 'var(--warn)',
 };
 
 const cellStyle: React.CSSProperties = { padding: '5px 8px', borderBottom: '1px solid var(--surface-2)', fontSize: 'var(--fs-s)' };
@@ -37,6 +41,8 @@ export function UsagePanel() {
   // T02308：取数口径随窗口与采样参数回传，面板标题如实标注，消除「汇总近 N 天 + 明细不受 N 天约束」两口径同屏
   const [recentMeta, setRecentMeta] = useState<{ days: number; perTool: number }>({ days: 7, perTool: 5 });
   const [loading, setLoading] = useState(false);
+  const [coverage, setCoverage] = useState<Coverage | null>(null);
+  const [coverageError, setCoverageError] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -45,6 +51,11 @@ export function UsagePanel() {
       setSummary(r.summary); setByTool(r.byTool); setRecent(r.recent);
       setRecentMeta({ days: r.days ?? days, perTool: r.perTool ?? 5 });
     } catch { /* 后端不可用静默 */ } finally { setLoading(false); }
+    // T03296（G-2）：覆盖率按月出数，与「近 N 天」窗口是两个口径，单独取、单独标注
+    try {
+      setCoverage(await api.get<Coverage>('/ai/coverage'));
+      setCoverageError('');
+    } catch (e) { setCoverageError(e instanceof Error ? e.message : String(e)); }
   }, [days]);
 
   useEffect(() => { void load(); }, [load]);
@@ -127,6 +138,44 @@ export function UsagePanel() {
           </table>
         </div>
       )}
+
+      {/* T03296（G-2）：可用卡片覆盖情况——分母=注册表可用卡，分子=当月 ok=1 去重的卡 */}
+      <div data-t03296="coverage" style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 4 }}>
+          可用卡片覆盖（{coverage?.month ?? '本月'}{coverage ? `，${coverage.coveredCount}/${coverage.totalAvailable} 张有成功生成` : ''}
+          {coverage ? `，覆盖率 ${(coverage.ratio * 100).toFixed(0)}%` : ''}）
+        </div>
+        {coverageError && <p style={{ color: 'var(--danger)', fontSize: 'var(--fs-s)', margin: 0 }}>覆盖率取数失败：{coverageError}</p>}
+        {!coverage && !coverageError && <p style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-s)', margin: 0 }}>加载中…</p>}
+        {coverage && (
+          <>
+            <p style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', margin: '0 0 6px' }} data-t03296="baseline">{coverage.baseline.note}</p>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 6, fontSize: 'var(--fs-xs)' }}>
+              <span data-t03296="legend" style={{ color: 'var(--success)' }}>已采用 = 当月有成功生成</span>
+              <span data-t03296="legend" style={{ color: 'var(--warn)' }}>没人用 = 埋点已接、当月零调用</span>
+              <span data-t03296="legend" style={{ color: 'var(--danger)' }}>没接埋点 = 写入点尚未写 card_key（{coverage.unmeteredKeys.length} 张）</span>
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>{['卡片', '分组', '状态', '成功', '失败'].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
+              <tbody>
+                {coverage.cards.filter((c) => c.available).map((c) => {
+                  const state = !c.metered ? '没接埋点' : c.okCount > 0 ? '已采用' : '没人用';
+                  const color = !c.metered ? 'var(--danger)' : c.okCount > 0 ? 'var(--success)' : 'var(--warn)';
+                  return (
+                    <tr key={c.key} data-t03296="card">
+                      <td style={cellStyle}>{c.title}<span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>{c.key}</span></td>
+                      <td style={{ ...cellStyle, color: 'var(--text-muted)' }}>{c.group}</td>
+                      <td style={{ ...cellStyle, color }} data-t03296="state">{state}</td>
+                      <td style={cellStyle}>{c.okCount}</td>
+                      <td style={{ ...cellStyle, color: c.failCount > 0 ? 'var(--danger)' : 'var(--text-muted)' }}>{c.failCount}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </>
+        )}
+      </div>
 
       {/* 最近调用明细 */}
       {recent.length > 0 && (

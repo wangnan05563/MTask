@@ -95,6 +95,9 @@ const MAX_PARSE_ROWS = 300;
  *  PRD 拆 WBS + 逐条需求可能产出较长 JSON，工具默认 max_tokens(4096) 常被触顶截断 → 触发精简重试硬砍 requirements≤20，静默丢需求。
  *  但预算也绝非越大越好：本轮实测把 16384 顶上去后，上游网关对单次输出上限/响应体大小有硬限制，或生成过久导致网关自身超时 → 直接报 HTTP 502（Bad Gateway）。
  *  实测该 PRD 实际输出约 4000 token，8192 给 2 倍余量既不截断、又远离网关上限，是最稳取值。 */
+// T03296（G-2 覆盖率）：本文件通用通道的显式卡归属（按导入来源区分，避免落 unknown）
+const PRD_IMPORT_CARD = 'ai.prd_import';
+const PLAN_IMPORT_CARD = 'ai.plan_import';
 const PRD_PARSE_MIN_OUTPUT_TOKENS = 8_192;
 /** T01156-4：PRD 解析超时下限。maxTokens 抬到 16K 后生成更耗时，工具默认 timeoutMs(60000) 必触顶 →
  *  「连接超时（超过 60000ms）」报错（与上一轮抬高预算是同一连锁反应）。显式给 300s 兜底。 */
@@ -2001,6 +2004,7 @@ export const PlanService = {
     // T00723：JSON 解析失败/输出截断自动重试 1 次，且解析成败计入 ai_usage（ask-json）
     const ai = await AIService.askJson(toolId, system, `【需求文档】\n${docText}`, (content) =>
       parseJsonArrayWithRecovery(content, 'AI 未返回有效的 WBS 数组，请检查文档内容或更换模型'),
+      { cardKey: PLAN_IMPORT_CARD },
     );
     if (!ai.ok) throw new Error(`AI 拆分失败：${ai.error}`);
     const drafts = ai.data as unknown[];
@@ -2123,7 +2127,7 @@ export const PlanService = {
       }
       const ai = await AIService.askJson(toolId, system, `【PRD 文档】\n${docText}`, (content) =>
         parseJsonObjectWithRecovery(content, 'AI 未返回有效的 PRD 解析结果（需 JSON 对象），请检查文档内容或更换模型'),
-        { timeoutMs: PRD_PARSE_TIMEOUT_MS, retrySystem: systemCompact, minMaxTokens: PRD_PARSE_MIN_OUTPUT_TOKENS, signal: totalAc.signal },
+        { timeoutMs: PRD_PARSE_TIMEOUT_MS, retrySystem: systemCompact, minMaxTokens: PRD_PARSE_MIN_OUTPUT_TOKENS, signal: totalAc.signal, cardKey: PRD_IMPORT_CARD },
       );
       // T02401-G：首轮被截断（askJson 已自动精简重试）或整体失败时，降级为「分片多轮解析」：
       // 按标题边界把文档切成 ≤PRD_CHUNK_MAX 片、逐片提取后合并去重，用多轮小输出换完整明细。
@@ -2189,7 +2193,7 @@ export const PlanService = {
         parseJsonObjectWithRecovery(content, 'AI 未返回有效的 PRD 分片解析结果（需 JSON 对象）'),
         // T02983：分片较重试一次时改用**更小规模**的提示词——实测单片 JSON 两次不闭合占 130s+101s 后整单失败，
         // 同规模重试只是白等；压缩到 20/25 条能显著提高闭合率（缺的条目由合并后的覆盖告警暴露，不静默）。
-        { timeoutMs: PRD_PARSE_TIMEOUT_MS, minMaxTokens: PRD_PARSE_MIN_OUTPUT_TOKENS, signal, retrySystem: sysI
+        { timeoutMs: PRD_PARSE_TIMEOUT_MS, minMaxTokens: PRD_PARSE_MIN_OUTPUT_TOKENS, signal, cardKey: PRD_IMPORT_CARD, retrySystem: sysI
           + '\n【压缩重试·必须闭合】上次输出无法解析为 JSON：本次 requirements ≤20 条、plans ≤25 条，title ≤20 字、content/description ≤30 字；只输出一个 JSON 对象，禁止解释与代码围栏。' },
       );
       if (!ai.ok) {
@@ -3005,7 +3009,7 @@ export const PlanService = {
     // （标题+开始日期+描述+负责人），仅消除跨块重复的同一条记录，保留同工作项的不同行。
     const seen = new Set<string>();
     const parseChunk = async (chunk: string, toolId: string, system: string, dedup: Set<string>): Promise<PlanDraft[]> => {
-      const ai = await AIService.ask(toolId, system, `【Excel 表格文本】\n${chunk}`);
+      const ai = await AIService.ask(toolId, system, `【Excel 表格文本】\n${chunk}`, undefined, undefined, PLAN_IMPORT_CARD);
       if (!ai.ok || !ai.content) return []; // 单块失败跳过，不拖垮整体
       const arr = parseJsonArrayWithRecovery(ai.content, '');
       const out: PlanDraft[] = [];
