@@ -133,6 +133,29 @@ function sign(secret: string, body: string): string {
   return `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;
 }
 
+/**
+ * 出站 payload 最小化：只放行事件契约里的字段。此前 emit 直接展开调用方数据，
+ * 调用方多传的 description/secret 一类字段会原样外发（T03281 门 B-08 抓到）。
+ */
+const DATA_SHAPES: Record<string, readonly string[]> = {
+  task: ['id', 'taskNo', 'status', 'priority', 'title'],
+  plan: ['id', 'title', 'status', 'progress'],
+  overdue: ['date', 'dueTotal', 'overdue', 'rate'],
+};
+
+function pickPayload(data: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, allowed] of Object.entries(DATA_SHAPES)) {
+    const value = data[key];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const src = value as Record<string, unknown>;
+    const picked: Record<string, unknown> = {};
+    for (const f of allowed) if (src[f] !== undefined) picked[f] = src[f];
+    out[key] = picked;
+  }
+  return out;
+}
+
 function eventIdOf(projectId: string, date: string): string {
   return `overdue-${projectId}-${date}`;
 }
@@ -290,7 +313,7 @@ export const WebhookService = {
       eventType,
       occurredAt: now(),
       project: { id: projectId, name: project?.name ?? '' },
-      ...data,
+      ...pickPayload(data),
     };
     for (const hook of hooks) {
       const subscribed = (JSON.parse(hook.events) as string[]).includes(eventType);
