@@ -11,6 +11,7 @@ import { parsePlanDeps, depsSatisfied, topoOrder, type PlanDep } from '../util/p
 import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化（拉取侧平台偏好匹配）
 import { detectRuling, isRulingSubject, RULING_DEFAULT_OPTIONS } from '../util/ruling'; // T02949：裁决自动识别（纯函数单源）
 import { WebhookService } from './WebhookService'; // T03196（PM-401）：任务事件外发
+import { alreadyMerged } from './derivedOrigin'; // T03637：派生单闭环判据（与 MCP/脚本归并共用一份标记口径）
 import { FieldService, type ProjectFieldView, type TaskFieldValueView } from './FieldService'; // T03231（PM-203②）：列表行带出项目自定义字段值；T03232 起筛选/排序共用字段定义
 
 /** 批量 IN 查询的每批 id 数：SQLite 变量上限 999，留足余量并与图片批量查询（≤200）同量级 */
@@ -996,6 +997,8 @@ export const TaskService = {
     // 挂在 update() 而不是各写入口——REST 单条 PATCH、批量 status、MCP write_task_status、看板键盘标记完成全都经过这里。
     // 只认跃迁（before.status !== 'done'）：重复 PATCH done 不该把同一批解除历史再刷一遍。
     if (patch.status === 'done' && before && before.status !== 'done') this.releaseBlockersByCompletion(id);
+    // T03637：派生单完成即补归档（归并早于 done 由结果通道完成；只认 done 这一次跃迁，重复 PATCH 不重复触发）
+    if (patch.status === 'done' && before && before.status !== 'done') this.archiveDerivedIfClosed(id);
     // T01876：归档态变更同样要重算父进度（REST/MCP 单条归档走本方法，批量归档见 ArchiveService）
     if (patch.archived !== undefined) this.recalcParentsOfChildren([id]);
     notifyChange('tasks');
@@ -1005,6 +1008,29 @@ export const TaskService = {
   /** FR5.1 / FR5.3：完成或退回待办 */
   setStatus(id: string, status: 'todo' | 'done'): TaskView {
     return this.update(id, { status });
+  },
+
+  /**
+   * T03637：派生单闭环的最后一步——「结论已归并 + 本单已完成」时自动归档。
+   *
+   * 缺陷形态（2026-10-29 实测）：结论归并由 `mtask_update_task_result` 自动完成，但**归档没有任何
+   * 自动路径**——技能把「回传→归并→done→归档」四步写成一句话，Agent 看到回执「已整合回原任务」
+   * 便认为闭环结束，归档步骤被跳过。存量 71 张 done 未归档的派生单里 67 张结论早已归并
+   * （T03314 即此形态），它们在待办/完成列表里永远滞留。
+   *
+   * 挂点选在 `update()` 而不是 MCP 工具内：REST PATCH、MCP update_task、看板标记完成都经过这里，
+   * 一处挂即全链覆盖。守卫三条（不归档）：待裁决（等用户拍板）、【缺环境】（规则 3 要求保持可见）、
+   * 结论未归并（信息还在子单里，归档即失联）。幂等：已归档/未完成/非派生单直接返回 false。
+   */
+  archiveDerivedIfClosed(id: string): boolean {
+    const t = this.getById(id);
+    if (!t || t.archived || t.status !== 'done' || !t.derived_from) return false;
+    if (t.ruling_state === '待裁决') return false;
+    if ((t.title ?? '').startsWith('【缺环境')) return false;
+    const origin = this.findByNo(t.derived_from.trim());
+    if (!origin || !alreadyMerged(origin.handle_result, t.task_no)) return false;
+    this.update(id, { archived: 1 });
+    return true;
   },
 
   /** T00719：搁置 / 恢复——搁置任务从待办/已完成列表与 MCP 查询隔离（shelved=1），恢复即回到原列表 */

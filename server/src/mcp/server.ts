@@ -1071,6 +1071,9 @@ ${a.result}`;
           merged = `；并已整合回原任务 ${originNo}`;
         }
       }
+      // T03637：若该派生单早已完成（先 done 后补结论的顺序），归并完成的这一刻就是闭环终点，补归档。
+      // 正常顺序（回传→done）由 TaskService.update 的 done 跃迁钩子负责，两条入口互为兜底、均幂等。
+      if (originNo) TaskService.archiveDerivedIfClosed(target.id);
       return ok(`已同步处理结果到任务 ${task.task_no ?? target.id}${merged}`, { task, mergedTo: originNo || undefined });
     } catch (e) { return err((e as Error).message); }
   });
