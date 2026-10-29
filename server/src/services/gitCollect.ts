@@ -34,7 +34,10 @@ const ALLOWED_FLAGS: Record<GitReadonlySubcommand, RegExp[]> = {
   // T03590：`--until` 与 `--since` 同形（日期窗口右端），字面量范围与左端一致
   // T03345：批量摘要用 \x1f/\x1e 作字段/记录分隔符（主题里可能含空格与冒号，用 %x1f 拼串才不歧义），
   // 故 `--format=` 的值域放行这两个控制字符——它们只来自本文件常量，调用方无从注入别的字符
-  log: [/^--oneline$/, /^--no-merges$/, /^--format=[%\w.:{}+\-/ \x1f\x1e]+$/, /^-n\d{1,4}$/, /^--since=[\w:+\-. ]{1,64}$/, /^--until=[\w:+\-. ]{1,64}$/, /^--reverse$/, /^--all$/, /^--skip=\d{1,4}$/, /^--no-walk$/],
+  // T03436 批次：`--raw`/`--numstat`/`-m`/`--first-parent`/`--ignore-cr-at-eol` 供 T03650 的
+  // 「N 个提交一次 git log 取文件统计」使用。全部是只读输出格式开关，不触碰工作树与索引；
+  // 与 diff 侧同名选项同形同义（diff 白名单里本来就有 --numstat/--ignore-cr-at-eol）。
+  log: [/^--oneline$/, /^--no-merges$/, /^--format=[%\w.:{}+\-/ \x1f\x1e]+$/, /^-n\d{1,4}$/, /^--since=[\w:+\-. ]{1,64}$/, /^--until=[\w:+\-. ]{1,64}$/, /^--reverse$/, /^--all$/, /^--skip=\d{1,4}$/, /^--no-walk$/, /^--raw$/, /^--numstat$/, /^-m$/, /^--first-parent$/, /^--ignore-cr-at-eol$/],
   diff: [/^--ignore-cr-at-eol$/, /^--stat$/, /^--numstat$/, /^--name-status$/, /^-U\d{1,3}$/],
   show: [],
   // T03390（八期 §4.1 白名单扩容，均为只读）：remote 只允许 get-url，写类子命令由位置参数首段拦下；
@@ -261,25 +264,29 @@ function parseRefs(raw: string): string[] {
   return inner.split(', ').map((s) => s.replace(/^HEAD -> /, '').trim()).filter(Boolean);
 }
 
+/** 解析单条摘要记录：`--format` 用 \x1f 分隔的六个字段；字段不足或 SHA 非 40 位十六进制时返回 null */
+function parseSummaryFields(line: string): CommitSummaryRow | null {
+  const f = line.split(SUM_F);
+  if (f.length < 6) return null;
+  const sha = f[0].trim();
+  if (!/^[0-9a-f]{40}$/.test(sha)) return null;
+  return {
+    sha,
+    shortSha: sha.slice(0, 7),
+    author: f[1],
+    date: f[2].trim(),
+    subject: f[3],
+    refs: parseRefs(f[4]),
+    parents: f[5].trim().split(/\s+/).filter(Boolean),
+  };
+}
+
 /** 解析 `collectCommitSummaries` 的 `--format` 原文（供单测直接断言，不依赖 git） */
 export function parseCommitSummaries(raw: string): CommitSummaryRow[] {
   const out: CommitSummaryRow[] = [];
   for (const chunk of raw.split(SUM_R)) {
-    const body = chunk.replace(/^\n/, '');
-    if (!body.trim()) continue;
-    const f = body.split(SUM_F);
-    if (f.length < 6) continue;
-    const sha = f[0].trim();
-    if (!/^[0-9a-f]{40}$/.test(sha)) continue;
-    out.push({
-      sha,
-      shortSha: sha.slice(0, 7),
-      author: f[1],
-      date: f[2].trim(),
-      subject: f[3],
-      refs: parseRefs(f[4]),
-      parents: f[5].trim().split(/\s+/).filter(Boolean),
-    });
+    const rec = parseSummaryFields(chunk.replace(/^\n/, '').split('\n', 1)[0]);
+    if (rec) out.push(rec);
   }
   return out;
 }
@@ -385,6 +392,32 @@ export function parseNameStatus(raw: string): { status: CommitFileStatus; path: 
 }
 
 /**
+ * 把「状态清单 + 行数表」拼成提交文件条目（单提交 `diff` 路径与 T03650 的批量 `log` 路径共用，
+ * 保证两条通道对重命名/二进制/同名去重的口径逐字节一致）。
+ */
+function assembleEntries(
+  entries: { status: CommitFileStatus; path: string; oldPath?: string }[],
+  stats: Map<string, { additions: number | null; deletions: number | null; binary: boolean }>,
+): CommitFileEntry[] {
+  const seen = new Set<string>();
+  const files: CommitFileEntry[] = [];
+  for (const e of entries) {
+    if (seen.has(e.path)) continue;
+    seen.add(e.path);
+    const s = stats.get(e.path) ?? stats.get(e.oldPath ?? '') ?? { additions: null, deletions: null, binary: false };
+    files.push({
+      path: e.path,
+      ...(e.oldPath ? { oldPath: e.oldPath } : {}),
+      status: e.status,
+      additions: s.additions,
+      deletions: s.deletions,
+      binary: s.binary,
+    });
+  }
+  return files;
+}
+
+/**
  * 单个提交的变更文件清单（状态 + 增删行 + 二进制）。
  *
  * 首提交无父提交时以空树作基线（§3.2.1「初始提交」口径与讲稿侧一致）。
@@ -402,24 +435,93 @@ export async function collectCommitFiles(
     runGitReadonly('diff', ['--numstat', '--ignore-cr-at-eol'], numArgs, cwd, opts).then((r) => r.stdout),
     runGitReadonly('diff', ['--name-status', '--ignore-cr-at-eol'], numArgs, cwd, opts).then((r) => r.stdout),
   ]);
-  const stats = parseNumstat(numRaw);
-  const entries = parseNameStatus(nameRaw);
-  const seen = new Set<string>();
-  const files: CommitFileEntry[] = [];
-  for (const e of entries) {
-    if (seen.has(e.path)) continue;
-    seen.add(e.path);
-    const s = stats.get(e.path) ?? stats.get(e.oldPath ?? '') ?? { additions: null, deletions: null, binary: false };
-    files.push({
-      path: e.path,
-      ...(e.oldPath ? { oldPath: e.oldPath } : {}),
-      status: e.status,
-      additions: s.additions,
-      deletions: s.deletions,
-      binary: s.binary,
-    });
+  return assembleEntries(parseNameStatus(nameRaw), parseNumstat(numRaw));
+}
+
+/** `--raw` 行形态：`:mode1 mode2 oldSha newSha STATUS<TAB>path[<TAB>newPath]`（重命名/复制有两个路径段） */
+const RAW_LINE_RE = /^:(\S+) (\S+) (\S+) (\S+) ([A-Z]\d*)\t(.*)$/;
+
+/**
+ * 把一行 `--raw` 折成与 `--name-status` 同形的条目。
+ * 状态归类沿用 parseNameStatus 的映射（A/D/R/T 原样，其余含 C 记为 M），两条通道才不会对口径分叉。
+ */
+function rawEntryOf(line: string): { status: CommitFileStatus; path: string; oldPath?: string } | null {
+  const m = RAW_LINE_RE.exec(line);
+  if (!m) return null;
+  const tail = m[6].split('\t').map((s) => s.trim());
+  const code = (m[5] ?? '').replace(/\d+$/, '').toUpperCase();
+  const status: CommitFileStatus = code === 'A' || code === 'D' || code === 'R' || code === 'T' ? code as CommitFileStatus : 'M';
+  if (status === 'R') return { status, oldPath: tail[0] ?? '', path: tail[1] ?? '' };
+  return { status, path: tail[0] ?? '' };
+}
+
+/**
+ * 解析一个提交在 `git log --raw --numstat` 下的 diff 正文。
+ *
+ * 两段同流输出，靠行首区分：`--raw` 行以 `:` 开头（状态与路径），其余非空行按 numstat 解析（增删行数）。
+ * 之所以用 raw 而不是 name-status：`--name-status` 与 `--numstat` 互斥（实测后者会被前者的输出格式覆盖，
+ * 只剩 `A<TAB>path`），而 `--raw` 与 `--numstat` 可以共存——这样一次进程就同时拿到状态与行数。
+ */
+export function parseCommitDiffBody(body: string): CommitFileEntry[] {
+  const entries: { status: CommitFileStatus; path: string; oldPath?: string }[] = [];
+  const numLines: string[] = [];
+  for (const line of body.split('\n')) {
+    if (!line.trim()) continue;
+    if (line.startsWith(':')) {
+      const e = rawEntryOf(line);
+      if (e) entries.push(e);
+    } else {
+      numLines.push(line);
+    }
   }
-  return files;
+  return assembleEntries(entries, parseNumstat(numLines.join('\n')));
+}
+
+/**
+ * T03650：批量取多个提交的文件条目时用的 `--format`。
+ * 与 SUMMARY_FORMAT_FLAG 同一组字段，只把记录分隔符 \x1e 从**行尾挪到行首**——
+ * diff 正文总是跟在格式行之后，分隔符在行首才能把「字段行 + 正文」切成一整块，
+ * 否则父提交字段会和正文黏在一起。
+ */
+const BATCH_FILES_FORMAT_FLAG = `--format=${SUM_R}%H${SUM_F}%an${SUM_F}%aI${SUM_F}%s${SUM_F}%D${SUM_F}%P`;
+
+/** 批量取数的固定选项（供门断言 argv，也防止调用方漏掉某一个而静默改口径） */
+export const COMMIT_FILES_BATCH_FLAGS = ['--no-walk', '-m', '--first-parent', '--raw', '--numstat', '--ignore-cr-at-eol'];
+
+/** 解析一次批量 `git log` 的输出：`Map<sha, CommitFileEntry[]>`（正文为空 = 该提交确实没改动文件） */
+export function parseCommitFilesBatch(raw: string): Map<string, CommitFileEntry[]> {
+  const out = new Map<string, CommitFileEntry[]>();
+  for (const chunk of raw.split(SUM_R)) {
+    const nl = chunk.indexOf('\n');
+    if (nl < 0) continue;
+    const rec = parseSummaryFields(chunk.slice(0, nl));
+    if (!rec) continue;
+    out.set(rec.sha, parseCommitDiffBody(chunk.slice(nl + 1)));
+  }
+  return out;
+}
+
+/**
+ * N 个提交的文件清单收成**一次** `git log --no-walk -m --first-parent --raw --numstat`（T03650）。
+ *
+ * 三个开关各挡一个真实的口径坑（均在本机 git 上实测过）：
+ *  - 默认 `git log` 对**合并提交不输出任何 diff**，卡片统计会静默变 0；`-m` 才会按父提交出 diff。
+ *  - `-m` 对每个父提交各出一段（增删行数翻倍），`--first-parent` 把它压回「与第一父提交比」——
+ *    这正是单提交路径 `diff parents[0] sha` 与 `git show --stat` 的口径。
+ *  - 首提交（无父）由 git 自己按空树出全量 A 条目，与既有 `GIT_EMPTY_TREE_SHA1` 基线等价，无需特判。
+ *
+ * 命令整体失败时抛 GitCollectError 由调用方决定回退（不在此吞错），
+ * 因为「某个 SHA 不存在」与「缓冲区爆了/超时」的处置完全不同。
+ */
+export async function collectCommitFilesBatch(
+  cwd: string,
+  shas: string[],
+  opts: GitCollectOptions = {},
+): Promise<Map<string, CommitFileEntry[]>> {
+  const uniq = [...new Set(shas)].map((s) => assertSingleRevision(s));
+  if (!uniq.length) return new Map();
+  const r = await runGitReadonly('log', [...COMMIT_FILES_BATCH_FLAGS, BATCH_FILES_FORMAT_FLAG], uniq, cwd, opts);
+  return parseCommitFilesBatch(r.stdout);
 }
 
 export interface BatchObject {

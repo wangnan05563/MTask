@@ -16,6 +16,7 @@ import { notifyChange } from './ChangeBus';
 import {
   GitCollectError,
   collectCommitFiles,
+  collectCommitFilesBatch,
   collectCommitSummaries,
   collectDiff,
   collectRemoteUrl,
@@ -308,20 +309,11 @@ export async function buildTaskGitView(taskRef: { taskNo?: string; id?: string }
     // 外链前缀按 workspace 取一次 remote（§3.1.3：凭据在服务端剥离，前端只拼 SHA）
     const remote = remoteInfoOf(remoteUrl);
     const cards: GitCommitCard[] = [];
-    const filesBySha = await mapLimit(links, GIT_FILES_CONCURRENCY, async (l) => {
-      const c = bySha.get(l.sha);
-      if (!c) return [];
-      try {
-        return await collectCommitFilesCached(task.workspacePath, l.sha, c.parents, opts);
-      } catch (e) {
-        if (e instanceof GitCollectError && ['no-git', 'not-a-repo', 'timeout', 'too-large'].includes(e.kind)) throw e;
-        return [];
-      }
-    });
+    const filesByIdx = await collectLinkedCommitFiles(task.workspacePath, links, bySha, opts);
     links.forEach((l, i) => {
       const c = bySha.get(l.sha);
       if (!c) return;
-      const files = filesBySha[i] ?? [];
+      const files = filesByIdx[i] ?? [];
       cards.push({
         ...c,
         source: l.source,
@@ -344,6 +336,60 @@ export async function buildTaskGitView(taskRef: { taskNo?: string; id?: string }
     }
     throw e;
   }
+}
+
+/** 首屏整体失败的三种归因：仓库根本取不了数，逐条重试也一样，直接向上转 degraded */
+const FATAL_BATCH_KINDS: GitErrorKind[] = ['no-git', 'not-a-repo', 'timeout'];
+const isFatalKind = (e: unknown) => e instanceof GitCollectError && FATAL_BATCH_KINDS.includes(e.kind);
+
+/**
+ * 抽屉首屏的文件统计取数（T03650）：**一次** `git log --no-walk -m --first-parent --raw --numstat`
+ * 取回 N 个提交的状态与增删行数，替掉 T03642 之前「每提交两条 `git diff`」（N 条关联 = 2N 次 spawn）。
+ *
+ * - 只点名「摘要里解析得出来」的 SHA：换绑后已不在仓库的旧 SHA 会让整条 log 非零退出，
+ *   而它们本来就该是空统计 + 进 `missing`，不该把首屏拖进回退路径。
+ * - 已在 `commitFilesCache` 里的提交不进批量（T03642 的缓存收益要保住：热路径上文件统计的
+ *   spawn 数是 0，而不是每轮补一发 log）；批量结果同样写回该缓存，文件页复用同一份数据。
+ * - 失败回退到逐提交并发路径（T03642 的实现原样保留）：`too-large` 也回退——
+ *   批量一次要吐 N 个提交的全部条目，缓冲区上限先撞在它上面不代表单提交也放不下；
+ *   `no-git` / `not-a-repo` / `timeout` 三种整体失败则照旧向上抛，转成 degraded。
+ *   逐提交路径内部沿用改造前的分流语义（致命上抛、其它错误该格留空）。
+ *
+ * 返回按 `links` 下标对齐的数组，卡片组装按下标取，不做二次 SHA 查找。
+ */
+async function collectLinkedCommitFiles(
+  cwd: string,
+  links: GitLinkRow[],
+  bySha: Map<string, CommitSummaryRow>,
+  opts: GitCollectOptions,
+): Promise<CommitFileEntry[][]> {
+  const cachedByIdx = new Map<number, CommitFileEntry[]>();
+  const pending: string[] = [];
+  links.forEach((l, i) => {
+    const c = bySha.get(l.sha);
+    if (!c) return;
+    const cached = readCommitFilesCache(cwd, l.sha, c.parents);
+    if (cached) cachedByIdx.set(i, cached);
+    else pending.push(l.sha);
+  });
+  if (!pending.length) return links.map((_, i) => cachedByIdx.get(i) ?? []);
+  try {
+    const batch = await collectCommitFilesBatch(cwd, pending, opts);
+    seedCommitFilesCache(cwd, bySha, batch);
+    return links.map((l, i) => cachedByIdx.get(i) ?? batch.get(l.sha) ?? []);
+  } catch (e) {
+    if (isFatalKind(e)) throw e;
+  }
+  return mapLimit(links, GIT_FILES_CONCURRENCY, async (l) => {
+    const c = bySha.get(l.sha);
+    if (!c) return [];
+    try {
+      return await collectCommitFilesCached(cwd, l.sha, c.parents, opts);
+    } catch (e) {
+      if (e instanceof GitCollectError && ['no-git', 'not-a-repo', 'timeout', 'too-large'].includes(e.kind)) throw e;
+      return [];
+    }
+  });
 }
 
 /**
@@ -385,14 +431,38 @@ export async function safeRemoteUrl(cwd: string, opts: GitCollectOptions = {}): 
 const COMMIT_FILES_TTL_MS = 5 * 60_000;
 const commitFilesCache = new Map<string, { at: number; files: CommitFileEntry[] }>();
 
+/** 缓存键含 base（首提交用空树），与单提交取数用的基线一致 */
+const commitFilesKey = (cwd: string, sha: string, parents: string[]) =>
+  `${cwd}|${parents.length ? parents[0] : GIT_EMPTY_TREE_SHA1}|${sha}`;
+
+/** 读缓存：未命中或已过期返回 null（单提交路径与批量路径共用同一份时效口径） */
+function readCommitFilesCache(cwd: string, sha: string, parents: string[]): CommitFileEntry[] | null {
+  const hit = commitFilesCache.get(commitFilesKey(cwd, sha, parents));
+  return hit && Date.now() - hit.at < COMMIT_FILES_TTL_MS ? hit.files : null;
+}
+
 async function collectCommitFilesCached(cwd: string, sha: string, parents: string[], opts: GitCollectOptions): Promise<CommitFileEntry[]> {
-  const base = parents.length ? parents[0] : GIT_EMPTY_TREE_SHA1;
-  const key = `${cwd}|${base}|${sha}`;
-  const hit = commitFilesCache.get(key);
-  if (hit && Date.now() - hit.at < COMMIT_FILES_TTL_MS) return hit.files;
+  const cached = readCommitFilesCache(cwd, sha, parents);
+  if (cached) return cached;
+  const key = commitFilesKey(cwd, sha, parents);
   const files = await collectCommitFiles(cwd, sha, parents, opts);
   commitFilesCache.set(key, { at: Date.now(), files });
   return files;
+}
+
+/**
+ * T03650：批量取数结果写回单提交缓存，让「文件页」复用首屏那一次 `git log` 的成果——
+ * 抽屉里点开某个提交时命中原键，不再补发 `git diff`。
+ * 只写批量真正返回到的 SHA：批量缺失（如某提交不在仓库）时保留「未缓存」状态，
+ * 由单提交路径去判定并如实报错，不能在这里塞一个空清单把缺失误诊为「无改动」。
+ */
+function seedCommitFilesCache(cwd: string, bySha: Map<string, CommitSummaryRow>, batch: Map<string, CommitFileEntry[]>) {
+  const at = Date.now();
+  for (const [sha, files] of batch) {
+    const c = bySha.get(sha);
+    if (!c) continue;
+    commitFilesCache.set(commitFilesKey(cwd, sha, c.parents), { at, files });
+  }
 }
 
 /**
