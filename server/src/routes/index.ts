@@ -3,7 +3,8 @@ import * as PrdGenService from '../services/PrdGenService'; // T00769：原始�
 import { generateTestCasesStream, type GenPrefs } from '../services/TestCaseGenService'; // T01491：从 PRD 生成测试用例（SSE）
 import { PlanService } from '../services/PlanService'; // T01491：读取内部 PRD 文档原文（prdDocId 来源）
 import { WorkspaceService } from '../services/WorkspaceService'; // T00776：工作空间搜索/读文件
-import { askWorkspace } from '../services/workspaceQa'; // T03250（PRD 5.1）：工作空间只读问答（带 file:line 引用）
+import { askWorkspace } from '../services/workspaceQa';
+import { qaStats, recordCitationClick, recordFeedback } from '../services/workspaceQaTelemetry'; // T03250（PRD 5.1）：工作空间只读问答（带 file:line 引用）
 import { isValidTimeZone } from '../services/ProjectTimeZone'; // T03268：项目级时区校验（IANA，运行时 ICU）
 import { getDb } from '../db/connection';
 import { TaskService, nextTaskNo, TASK_STATUSES, type TaskInput, type TaskListOptions } from '../services/TaskService';
@@ -418,6 +419,30 @@ api.post('/workspace/ask', (req, res) => {
   if (!String(question ?? '').trim()) { res.status(400).json({ error: 'question 必填' }); return; }
   if (!toolId) { res.status(400).json({ error: 'toolId 必填（请先在「模型」页添加并选择一个 AI 模型）' }); return; }
   void wsWrapAsync(res, () => askWorkspace({ projectId, question: String(question), toolId }));
+});
+
+/** T03252（PRD 5.3）：引用点击埋点。body `{ projectId, eventId, path, line }`（eventId 来自 /workspace/ask 响应） */
+api.post('/workspace/ask/citation-click', (req, res) => {
+  const { projectId, eventId, path, line } = (req.body ?? {}) as Record<string, unknown>;
+  if (!projectId || !eventId || !path) { res.status(400).json({ error: 'projectId / eventId / path 必填' }); return; }
+  recordCitationClick({ projectId: String(projectId), eventId: String(eventId), path: String(path), line: Number(line) || 0 });
+  res.json({ ok: true });
+});
+
+/** T03252：有用/无用反馈。body `{ projectId, eventId, useful }`；eventId 不存在回 404（不写孤儿反馈） */
+api.post('/workspace/ask/feedback', (req, res) => {
+  const { projectId, eventId, useful } = (req.body ?? {}) as Record<string, unknown>;
+  if (!projectId || !eventId || typeof useful !== 'boolean') { res.status(400).json({ error: 'projectId / eventId / useful(boolean) 必填' }); return; }
+  const ok = recordFeedback({ projectId: String(projectId), eventId: String(eventId), useful });
+  if (!ok) { res.status(404).json({ error: '提问事件不存在（可能已被清理或跨项目）' }); return; }
+  res.json({ ok: true });
+});
+
+/** T03252：问答统计（提问数 / 回答成功率 / 引用点击率 / 有用无用） */
+api.get('/workspace/ask/stats', (req, res) => {
+  const { projectId } = req.query as Record<string, string | undefined>;
+  if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
+  res.json(qaStats(projectId));
 });
 
 /** 新建工作空间：递归创建目录（已存在视为成功——幂等，便于「新建」与「选择已有」合一） */

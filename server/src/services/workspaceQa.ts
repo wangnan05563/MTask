@@ -13,6 +13,7 @@ import { getDb } from '../db/connection';
 import { ACTIVE_PROJECT_WHERE } from '../util/projectRouting';
 import { AIService } from './AIService';
 import { WorkspaceService } from './WorkspaceService';
+import { recordAsk } from './workspaceQaTelemetry';
 
 export interface QaEvidence {
   path: string;
@@ -40,6 +41,8 @@ export interface WorkspaceAskResult {
   kind?: string;
   message?: string;
   error?: string;
+  /** T03252：本次提问的埋点事件 id，前端引用点击/有用无用反馈带上它 */
+  eventId?: string;
 }
 
 /** 单次问答的上下文预算（字符）：够放十几个片段，又不会把长回答顶出模型窗口 */
@@ -181,14 +184,18 @@ export async function askWorkspace(
   const { evidence, keywords, truncated, contextChars } = collectEvidence(projectId, question);
   const shell = { keywords, truncated, contextChars, evidenceCount: evidence.length };
   if (evidence.length === 0) {
-    return { ok: true, ...shell, citations: [], message: '工作空间里没有检索到与该问题相关的代码片段（可换用更具体的标识符/文件名再问）', answer: '工作空间里没有找到相关依据。' };
+    const eventId = recordAsk({ projectId, ok: true, cited: false, truncated, contextChars, questionLen: question.length });
+    return { ok: true, ...shell, citations: [], eventId, message: '工作空间里没有检索到与该问题相关的代码片段（可换用更具体的标识符/文件名再问）', answer: '工作空间里没有找到相关依据。' };
   }
 
   const ask = deps.ask ?? AIService.ask;
   const system = buildSystemPrompt();
   const user = buildUserPrompt(question, evidence);
   const first = await ask(input.toolId, system, user, 120_000);
-  if (!first.ok) return { ok: false, ...shell, citations: [], kind: 'ai', error: first.error ?? 'AI 调用失败' };
+  if (!first.ok) {
+    const eventId = recordAsk({ projectId, ok: false, cited: false, truncated, contextChars, questionLen: question.length });
+    return { ok: false, ...shell, citations: [], kind: 'ai', eventId, error: first.error ?? 'AI 调用失败' };
+  }
 
   let answer = (first.content ?? '').trim();
   let citations = parseCitations(answer, evidence);
@@ -204,11 +211,14 @@ export async function askWorkspace(
       citations = parseCitations(answer, evidence);
     }
   }
+  const cited = citations.length > 0;
+  const eventId = recordAsk({ projectId, ok: true, cited, truncated, contextChars, questionLen: question.length });
   return {
     ok: true,
     ...shell,
     answer,
     citations,
+    eventId,
     ...(citations.length === 0 ? { message: '回答未给出可核验的 file:line 引用——不展示为结论，建议换更具体的问法' } : {}),
   };
 }

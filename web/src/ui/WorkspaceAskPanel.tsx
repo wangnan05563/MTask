@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { MessageSquareText, X, Send, Loader2, AlertTriangle, FileCode2, ShieldCheck } from 'lucide-react';
+import { MessageSquareText, X, Send, Loader2, AlertTriangle, FileCode2, ShieldCheck, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { api, type Project } from '../api/client';
 import { OVERLAY_MASK } from './primitives';
 
@@ -25,7 +25,9 @@ interface AskResp {
   kind?: string;
   message?: string;
   error?: string;
+  eventId?: string;
 }
+interface QaStats { asks: number; answered: number; successRate: number; citationClicks: number; citationRate: number; useful: number; useless: number }
 interface FileResp { totalLines: number; lines: Array<{ n: number; text: string }> }
 
 const CITE_CONTEXT_LINES = 12;
@@ -47,11 +49,15 @@ export function WorkspaceAskPanel({
   const [asked, setAsked] = useState('');
   const [opened, setOpened] = useState<string | null>(null);
   const [file, setFile] = useState<FileResp | null>(null);
+  const [stats, setStats] = useState<QaStats | null>(null);
+  const [fbSent, setFbSent] = useState<'' | 'useful' | 'useless'>('');
   const panelRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const bound = project?.workspace_path ?? '';
   const canAsk = !!project && !!bound && !!toolId && !busy;
+
+  useEffect(() => { void refreshStats(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [project?.id]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -67,6 +73,20 @@ export function WorkspaceAskPanel({
     };
   }, [onClose]);
 
+  const pct = (v: number) => `${Math.round(v * 100)}%`;
+  async function refreshStats() {
+    if (!project) return;
+    try { setStats(await api.get<QaStats>(`/workspace/ask/stats?projectId=${encodeURIComponent(project.id)}`)); } catch { /* 统计不影响问答 */ }
+  }
+  async function feedback(useful: boolean) {
+    if (!project || !resp?.eventId) return;
+    try {
+      await api.post('/workspace/ask/feedback', { projectId: project.id, eventId: resp.eventId, useful });
+      setFbSent(useful ? 'useful' : 'useless');
+      void refreshStats();
+    } catch (e) { flash?.(e instanceof Error ? e.message : String(e)); }
+  }
+
   async function ask() {
     const question = q.trim();
     if (!project) { flash?.('请先选择要提问的项目'); return; }
@@ -77,6 +97,8 @@ export function WorkspaceAskPanel({
     try {
       const r = await api.post<AskResp>('/workspace/ask', { projectId: project.id, question, toolId });
       setResp(r);
+      setFbSent('');
+      void refreshStats();
     } catch (e) {
       setResp(null);
       flash?.(e instanceof Error ? e.message : String(e));
@@ -88,6 +110,10 @@ export function WorkspaceAskPanel({
     const key = `${c.path}:${c.line}`;
     if (opened === key) { setOpened(null); setFile(null); return; }
     setOpened(key); setFile(null);
+    if (resp?.eventId) {
+      void api.post('/workspace/ask/citation-click', { projectId: project.id, eventId: resp.eventId, path: c.path, line: c.line })
+        .then(() => refreshStats()).catch(() => { /* 埋点失败不挡看原文 */ });
+    }
     try {
       const offset = Math.max(0, c.line - 3);
       const r = await api.get<FileResp>(
@@ -215,9 +241,27 @@ export function WorkspaceAskPanel({
         <div style={{ flex: 1, overflowY: 'auto' }}>{renderBody()}</div>
 
         {resp?.ok && !busy && (
-          <div style={{ padding: '6px 16px', borderTop: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>
-            问题「{asked}」· 证据 {resp.evidenceCount} 条 / 引用 {resp.citations.length} 处
-            {resp.keywords.length > 0 ? ` · 关键词：${resp.keywords.join('、')}` : ''}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 16px', borderTop: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>
+            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              问题「{asked}」· 证据 {resp.evidenceCount} 条 / 引用 {resp.citations.length} 处
+              {resp.keywords.length > 0 ? ` · 关键词：${resp.keywords.join('、')}` : ''}
+              {stats ? ` · 本项目提问 ${stats.asks} 次、成功率 ${pct(stats.successRate)}、引用点击率 ${pct(stats.citationRate)}` : ''}
+            </span>
+            {resp.eventId && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+                <span>{fbSent ? '已反馈' : '回答有用吗'}</span>
+                <button type="button" onClick={() => void feedback(true)} disabled={!!fbSent}
+                  data-t03252="useful" title="有用 — 记一条正反馈（只统计，不改变回答）" aria-label="回答有用"
+                  style={{ display: 'inline-flex', padding: 2, border: 'none', background: fbSent === 'useful' ? 'var(--accent-soft)' : 'transparent', color: fbSent === 'useful' ? 'var(--accent)' : 'var(--text-muted)', cursor: fbSent ? 'default' : 'pointer', borderRadius: 4 }}>
+                  <ThumbsUp size={12} />
+                </button>
+                <button type="button" onClick={() => void feedback(false)} disabled={!!fbSent}
+                  data-t03252="useless" title="没用 — 记一条负反馈（只统计，不改变回答）" aria-label="回答没用"
+                  style={{ display: 'inline-flex', padding: 2, border: 'none', background: fbSent === 'useless' ? 'var(--accent-soft)' : 'transparent', color: fbSent === 'useless' ? 'var(--accent)' : 'var(--text-muted)', cursor: fbSent ? 'default' : 'pointer', borderRadius: 4 }}>
+                  <ThumbsDown size={12} />
+                </button>
+              </span>
+            )}
           </div>
         )}
       </div>

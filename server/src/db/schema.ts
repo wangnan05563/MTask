@@ -416,6 +416,26 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     );
     CREATE INDEX IF NOT EXISTS idx_ws_sym ON workspace_symbols(project_id, symbol);
     CREATE INDEX IF NOT EXISTS idx_ws_sym_path ON workspace_symbols(project_id, path);
+
+    -- T03252（PRD 5.3）：工作空间问答埋点——提问/引用点击/有用无用反馈三类事件同表，
+    -- 成功率与引用点击率都由这张表聚合，不另设计数器（避免计数器与明细双写不一致）。
+    CREATE TABLE IF NOT EXISTS workspace_qa_events (
+      id            TEXT PRIMARY KEY,
+      project_id    TEXT NOT NULL,
+      kind          TEXT NOT NULL,
+      event_id      TEXT,
+      ok            INTEGER NOT NULL DEFAULT 0,
+      cited         INTEGER NOT NULL DEFAULT 0,
+      useful        INTEGER,
+      truncated     INTEGER NOT NULL DEFAULT 0,
+      context_chars INTEGER NOT NULL DEFAULT 0,
+      question_len  INTEGER NOT NULL DEFAULT 0,
+      path          TEXT,
+      line          INTEGER,
+      created_at    TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ws_qa_events_project ON workspace_qa_events(project_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_ws_qa_events_kind ON workspace_qa_events(project_id, kind);
     -- 任务列表批量反查「计划联动」来源（plan_tasks.linked_task_id IN (...)：无索引时全表扫描）
     CREATE INDEX IF NOT EXISTS idx_plan_tasks_linked ON plan_tasks(linked_task_id);
 
