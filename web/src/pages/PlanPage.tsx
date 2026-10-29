@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BTN_SECONDARY, FIELD_ROW } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { childParentIdOf } from '../util/planDeps'; // T01621：里程碑显式挂接判定单源（与时间线分组共用）
-import { Archive, ArrowUpDown, CalendarPlus, Check, Download, Gauge, Layers, LineChart, Webhook, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, FileText, FilePenLine, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Share2, Table2, TestTubes, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search, X } from 'lucide-react';
+import { Archive, ArrowUpDown, CalendarDays, CalendarPlus, Check, Download, Gauge, Layers, LineChart, Webhook, ListChecks, GitBranch, MoreHorizontal, FileSpreadsheet, FileText, FilePenLine, Link2, Link2Off, Loader2, Pin, Plus, RefreshCw, Share2, Table2, TestTubes, Trash2, Upload, Zap, ChevronDown, ChevronRight, Search, X } from 'lucide-react';
 import { EmptyState } from '../ui/EmptyState'; // T01072-FR1.10：统一空态组件
 import { ReqMatrixPanel } from './ReqMatrixPanel'; // T00662：需求跟踪矩阵
 import { TestCasePanel } from './TestCasePanel'; // T01485：测试用例视图
@@ -485,11 +485,18 @@ function ShareSnapshotButton({ projectId, projectName }: {
   readonly blocked?: boolean; readonly blockedTitle?: string;
 }) {
   const baseTitle = 'AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）';
+  // T03622：去文字改「图标 + 动态数字」——语义交给 title/aria，数字实时跟随待评估条数（评估中改显进度标签）
+  const countText = evalBusy ? (evalLabel || '') : String(plans.length);
   return (
-    <button onClick={() => runAsync(batchEvaluatePlans())} disabled={evalBusy || busy || blocked} title={blocked ? (blockedTitle ?? baseTitle) : baseTitle} aria-label="批量 AI 评估" className={'op-hidden' + (evalBusy ? ' task-breathe' : '')} style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }}>
-      {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}AI 评估{evalBusy
-        ? (evalLabel && plans.length > 0 ? `（${evalLabel}）` : '') // T01618：评估中保持进度标签口径不变
-        : (plans.length > 0 ? ` ${plans.length}` : '')} {/* T01618：待评估计划条数，对齐「AI 美化全部待办」数量范式 */}
+    <button onClick={() => runAsync(batchEvaluatePlans())} disabled={evalBusy || busy || blocked}
+      title={blocked ? (blockedTitle ?? baseTitle) : `AI 评估（${plans.length} 条待评估）— 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）`}
+      aria-label={`批量 AI 评估：${plans.length} 条待评估`} data-t03622="eval"
+      className={'op-hidden' + (evalBusy ? ' task-breathe' : '')}
+      style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)', padding: '6px 8px' }}>
+      {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}
+      {(plans.length > 0 || evalBusy) && countText !== '' && (
+        <span data-t03622="eval-count" style={{ fontSize: 'var(--fs-xs)', fontVariantNumeric: 'tabular-nums' }}>{countText}</span>
+      )}
     </button>
   );
 }
@@ -503,11 +510,11 @@ function PlanComplexityButton({ backfill, evalBusy, busy }: {
       onClick={(e) => runAsync(backfill(e.shiftKey))}
       disabled={evalBusy || busy}
       title="补算复杂度 — 为尚无复杂度评级（1~5）的计划行批量补算，AI 按批评定；按住 Shift 点击 = 连同已评级的行一起重算"
-      aria-label="批量补算复杂度"
+      aria-label="批量补算复杂度" data-t03622="complexity"
       className={evalBusy ? 'task-breathe' : undefined}
-      style={{ ...btnStyle, color: 'var(--text-secondary)' }}
+      style={{ ...btnStyle, color: 'var(--text-secondary)', padding: '6px 8px' }}
     >
-      {evalBusy ? <Loader2 size={13} className="aispin" /> : <Gauge size={13} />}补算复杂度
+      {evalBusy ? <Loader2 size={13} className="aispin" /> : <Gauge size={13} />}
     </button>
   );
 }
@@ -2868,7 +2875,14 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         <PlanPanelToggles showPrd={showPrd} setShowPrd={setShowPrd} showMatrix={showMatrix} setShowMatrix={setShowMatrix}
           showTestCases={showTestCases} setShowTestCases={setShowTestCases} showSprint={showSprint} setShowSprint={setShowSprint}
           showInsight={showInsight} setShowInsight={setShowInsight} showWebhook={showWebhook} setShowWebhook={setShowWebhook} />
-        <button onClick={openHolidayManager} style={btnStyle} title="节假日管理 — 手动维护 / 联网导入法定节假日 / 万年历视图">节假日（{holidays.length}）</button>
+        {/* T03622：去文字改「开源图标（lucide CalendarDays）+ 动态数字」，条数实时跟随节假日/加班日行数 */}
+        <button onClick={openHolidayManager} data-t03622="holiday"
+          style={{ ...btnStyle, padding: '6px 8px' }}
+          aria-label={`节假日管理：已维护 ${holidays.length} 条`}
+          title={`节假日管理（已维护 ${holidays.length} 条）— 手动维护 / 联网导入法定节假日 / 万年历视图`}>
+          <CalendarDays size={13} />
+          <span data-t03622="holiday-count" style={{ fontSize: 'var(--fs-xs)', fontVariantNumeric: 'tabular-nums' }}>{holidays.length}</span>
+        </button>
         {/* T02213：节假日取数失败/过期时显式提示——它是工期换算的输入，静默为空会让天数按自然日口径算错 */}
         <ResourceHint view={holidaysView} label="节假日数据（工期换算依赖）" />
         {holidaysView.phase === 'error' && holidays.length === 0 && (
