@@ -25,6 +25,18 @@ export interface ClassifyResponse {
   error?: string;
 }
 
+/** T03297：批量接口的单条结果（与输入 id 对齐，数组与 items 等长同序） */
+export interface ClassifyBatchItemResult extends ClassifyResponse {
+  id: string;
+}
+
+export interface ClassifyBatchResponse extends ClassifyResponse {
+  results?: ClassifyBatchItemResult[];
+  /** 账户级门禁命中，服务端已停止后续批次 */
+  gated?: boolean;
+  calls?: number;
+}
+
 export interface ClassifyStoreState {
   busy: boolean;
   hit: number;
@@ -59,7 +71,12 @@ export interface RunClassifyBatchOptions {
   isActive: () => boolean;
   /** 负对照通道：false 时模拟「熔断被移除」，仅供门使用 */
   enableBreaker?: boolean;
+  /** T03297：true 时走批量接口（服务端分批多次调用），默认沿用逐条通道 */
+  batch?: boolean;
 }
+
+/** T03297：前端每次批量请求携带的条数上限（服务端再按批切分，二者互不耦合） */
+export const BATCH_REQUEST_CHUNK = 200;
 
 export async function runClassifyBatch(opts: RunClassifyBatchOptions): Promise<void> {
   const { target, toolId, categories, store, post, patch, isActive } = opts;
@@ -69,6 +86,65 @@ export async function runClassifyBatch(opts: RunClassifyBatchOptions): Promise<v
   store.aborted = false; store.abortReason = '';
   let consecutiveFailures = 0;
   try {
+    if (opts.batch) {
+      // T03297：大批量走批量接口——一批一次往返，服务端内部再分批调用模型
+      for (let start = 0; start < target.length; start += BATCH_REQUEST_CHUNK) {
+        if (!isActive()) break;
+        const slice = target.slice(start, start + BATCH_REQUEST_CHUNK);
+        let resp: ClassifyBatchResponse | null = null;
+        let batchFailure = '';
+        try {
+          resp = await post('/tasks/classify-batch', {
+            toolId, categories, items: slice.map((t) => ({ id: t.id, title: t.title.trim() })),
+          }) as ClassifyBatchResponse;
+        } catch (e) {
+          batchFailure = e instanceof Error ? e.message : String(e);
+        }
+        if (!resp || !resp.ok) {
+          const failure = batchFailure || resp?.error || 'AI 调用失败';
+          // 整批失败：逐条计失败（收尾口径不变），熔断只看本批一次
+          store.fail += slice.length;
+          if (!store.lastError) store.lastError = failure;
+          consecutiveFailures += 1;
+          if (enableBreaker && (isAccountGateError(failure) || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES)) {
+            store.aborted = true;
+            store.abortReason = failure;
+            break;
+          }
+          continue;
+        }
+        const byId = new Map((resp.results ?? []).map((r) => [r.id, r]));
+        for (const t of slice) {
+          if (!isActive()) break;
+          const r = byId.get(t.id);
+          if (!r || !r.ok) {
+            const failure = r?.error || (r ? 'AI 调用失败' : '批量结果缺少该条');
+            store.fail += 1;
+            if (!store.lastError) store.lastError = failure;
+            consecutiveFailures += 1;
+            if (enableBreaker && (isAccountGateError(failure) || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES)) {
+              store.aborted = true;
+              store.abortReason = failure;
+              break;
+            }
+            continue;
+          }
+          consecutiveFailures = 0;
+          if (!r.categoryId) { store.none += 1; continue; }
+          const patchBody: { categoryId: string; priority?: string } = { categoryId: r.categoryId };
+          if (t.priority === 'normal' && r.priority) patchBody.priority = r.priority;
+          await patch(`/tasks/${t.id}`, patchBody);
+          store.hit += 1;
+        }
+        if (resp.gated) {
+          store.aborted = true;
+          store.abortReason = resp.error || store.lastError || '厂商额度/限流';
+          break;
+        }
+        if (store.aborted) break;
+      }
+      return;
+    }
     for (const t of target) {
       if (!isActive()) break;
       let failure = '';

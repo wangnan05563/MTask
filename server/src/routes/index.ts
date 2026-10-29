@@ -2481,6 +2481,30 @@ api.post('/tasks/classify', async (req, res) => {
   }
 });
 
+/**
+ * T03297：批量分类——一次请求处理大批量任务，服务端按批多次调用模型后按输入顺序合并。
+ * 入参 items ≤500（防误传全表）；分类口径与单条接口一致，结果数组与 items 等长同序。
+ */
+api.post('/tasks/classify-batch', async (req, res) => {
+  const { toolId, items, categories, batchSize, concurrency } = req.body ?? {};
+  if (!toolId) return res.status(400).json({ error: 'toolId 必填' });
+  if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'items 必填（非空数组）' });
+  if (items.length > 500) return res.status(400).json({ error: 'items 单次最多 500 条，请分批提交' });
+  if (!Array.isArray(categories)) return res.status(400).json({ error: 'categories 必填' });
+  const parsedItems = (items as Array<{ id?: unknown; title?: unknown }>)
+    .filter((it) => it && typeof it.id === 'string' && typeof it.title === 'string' && it.title.trim())
+    .map((it) => ({ id: it.id as string, title: (it.title as string).trim() }));
+  if (parsedItems.length !== items.length) return res.status(400).json({ error: 'items 每项需含 id 与非空 title' });
+  const cats = (categories as Array<{ id?: unknown; name?: unknown }>)
+    .filter((c) => c && typeof c.id === 'string' && typeof c.name === 'string')
+    .map((c) => ({ id: c.id as string, name: c.name as string }));
+  try {
+    res.json(await AIService.classifyCategoryBatch({ items: parsedItems, categories: cats, batchSize, concurrency }, toolId));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 // ---------- 提示词优化 ----------
 api.post('/ai/optimize', async (req, res) => {
   const { toolId, title, description } = req.body ?? {};

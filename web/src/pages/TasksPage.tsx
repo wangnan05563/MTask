@@ -92,6 +92,7 @@ async function runBatchClassifyModule(target: Array<{ id: string; title: string;
       post: (path, body) => api.post<ClassifyResponse>(path, body),
       patch: (path, body) => api.patch(path, body),
       isActive: () => classifyStore.busy, // 防御：外部复位即中止
+      batch: true, // T03297：大批量走服务端分批调用，不再逐条打厂商
     });
   } finally {
     classifyStore.busy = false;

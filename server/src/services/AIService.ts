@@ -12,6 +12,7 @@ import type { StreamResult, SubmitResult, PollResult, TokenUsage } from '../adap
 import type { ToolConfig } from '../adapters';
 import { stripThinking } from '../util/thinking'; // T00814：思考块剥离上移共享
 import { recordUsage } from '../util/aiUsageRecord'; // T03296：写入单源下沉 util，直连适配器的卡可复用同一口径
+import { classifyItems, type BatchCategory, type BatchItem, type ClassifyItemsResult } from './classifyBatch'; // T03297：批量分类分批调用与结果合并
 
 /** 模型未配置时的统一提示，保持与产品语境一致的表达 */
 const MODEL_UNCONFIGURED = '所选模型未配置，请先在「模型管理」为该工具填写默认模型';
@@ -613,6 +614,34 @@ export const AIService = {
       [...categories].sort((a, b) => b.name.length - a.name.length).find((c) => out.includes(c.name));
     recordUsage('classify', toolId, config.model, true, startedAt, res.content?.length ?? 0);
     return { ok: true, content: res.content, categoryId: hit ? hit.id : null, priority };
+  },
+
+  /**
+   * T03297：批量分类——按批切分、每批一次模型调用，结果按输入顺序合并。
+   * 分类口径与 `classifyCategory` 同一匹配函数；每次真实调用都记 ai_usage（kind=classify）。
+   */
+  async classifyCategoryBatch(
+    input: { items: BatchItem[]; categories: BatchCategory[]; batchSize?: unknown; concurrency?: unknown },
+    toolId: string,
+  ): Promise<ClassifyItemsResult> {
+    if (!input.categories.length) {
+      return {
+        ok: true,
+        results: input.items.map((it) => ({ id: String(it.id), ok: true, categoryId: null, priority: null })),
+        calls: 0, batches: 0, gated: false,
+      };
+    }
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    return classifyItems({
+      ...input,
+      chat: async (system, user) => {
+        const startedAt = Date.now();
+        const res = await adapter.chat(system, user, config);
+        recordUsage('classify', toolId, config.model, res.ok, startedAt, res.content?.length ?? 0, res.error);
+        return res;
+      },
+    });
   },
 
   /**
