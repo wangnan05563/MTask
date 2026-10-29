@@ -3993,11 +3993,11 @@ export function TasksPage() {
             if (activeProject === ALL_PROJECTS) { flash('全部项目视图下请先选择具体项目再检索工作空间'); return; }
             setWsSearchOpen(true);
           }}
-          className="tbtn-anim"
+          className="op-hidden tbtn-anim"
           disabled={!activeProject}
-          title={activeProject ? '工作空间全文检索 — 在绑定工作空间内检索关键词，结果可能不完整的 partial 状态会提示' : '请先选择项目再检索工作空间'}
+          title={`${activeProject ? '工作空间全文检索 — 在绑定工作空间内检索关键词，结果可能不完整的 partial 状态会提示' : '请先选择项目再检索工作空间'}（默认隐藏，悬浮工具栏显示）`}
           aria-label="工作空间全文检索"
-          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed', opacity: activeProject ? 1 : 0.4 }}
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed' }}
         >
           <ScanSearch size={13} style={{ flexShrink: 0 }} />
         </button>
@@ -4012,17 +4012,17 @@ export function TasksPage() {
                 if (activeProject === ALL_PROJECTS) { flash('全部项目视图下请先选择具体项目再提问'); return; }
                 setWsAskOpen(true);
               }}
-              className="tbtn-anim"
+              className="op-hidden tbtn-anim"
               disabled={off}
               data-t03250="ask-entry"
-              title={
+              title={`${
                 noWs ? '该项目尚未绑定工作空间 — 先在工作空间下拉条里绑定仓库目录再提问'
-                  : !activeProject ? '请先选择项目再就工作空间提问'
-                    : aiDown ? aiBlockedTitle(readiness, '工作空间只读问答 — 依据代码片段作答并给出 file:line 引用（只读）')
-                      : '工作空间只读问答 — 依据代码片段作答并给出可跳转的 file:line 引用（只读，不改任何文件）'
-              }
+                    : !activeProject ? '请先选择项目再就工作空间提问'
+                      : aiDown ? aiBlockedTitle(readiness, '工作空间只读问答 — 依据代码片段作答并给出 file:line 引用（只读）')
+                        : '工作空间只读问答 — 依据代码片段作答并给出可跳转的 file:line 引用（只读，不改任何文件）'
+              }（默认隐藏，悬浮工具栏显示）`}
               aria-label="工作空间只读问答"
-              style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: off ? 'not-allowed' : 'pointer', opacity: off ? 0.4 : 1 }}
+              style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: off ? 'not-allowed' : 'pointer' }}
             >
               <MessageSquareText size={13} style={{ flexShrink: 0 }} />
             </button>
@@ -4104,8 +4104,46 @@ export function TasksPage() {
           <input type="file" accept=".csv,.json" style={FILE_INPUT_SR_ONLY} data-t03214="import-file-input" disabled={batchOpBusy}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void onCsvFile(f); } e.target.value = ''; }} />
         </label>
+        {/* 八期 §3.1.1：Git 徽标显隐开关（会话级）——关闭时列表/看板行内徽标整体不渲染，也不再发起摘要批量请求；
+            T03645：与其它低频入口同级改为「默认隐藏、悬浮工具栏显示」 */}
+        <button type="button" data-t03343="git-toggle" aria-pressed={gitOn} aria-label="显示 Git 提交徽标"
+          title={`${gitOn ? 'Git 徽标（已显示）— 点击隐藏任务行的提交关联徽标；会话内保持' : 'Git 徽标（已隐藏）— 点击显示任务行的提交关联徽标；会话内保持'}（默认隐藏，悬浮工具栏显示）`}
+          onClick={() => setGitOn((v) => !v)} className="op-hidden tbtn-anim"
+          style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: gitOn ? 'var(--accent-soft)' : 'var(--card-bg)', color: gitOn ? 'var(--accent-ink)' : 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>
+          <GitBranch size={13} />Git
+        </button>
+        {/* T02952：搜索框 + 框内左侧清空按钮（有内容才显示；悬浮倾斜 5°~10° 由 .ws-clear-btn 提供；点击清空且光标留框内）
+            T03645 试过两条让位方案，都被逐档实测否掉，故搜索框尺寸保持原样：
+            ① 把 [搜索框][更多] 包成一个尾组——组是原子的，行宽不足时整组一起下沉，「更多」反而脱离首排
+               （T03623 UI-06 实测组宽 224 换行到第二排）；
+            ② 给搜索框加 width:150/minWidth:96/flexShrink:1 让它先让位——逐档实测（t03645 门 UI-13c/13d）
+               出厂尺寸下 1440→1180 全程「更多」都留在首排，把搜索框再撑宽 76px（258px、禁止压缩）到 1240px 档仍留在首排，
+               说明首排本有富余，这套让位样式不承重，属于多余的复杂度。 */}
+        <span style={{ position: 'relative', display: 'inline-flex', marginLeft: 'auto' }}>
+          <input
+            ref={searchInputRef}
+            className="op-hidden"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="搜索标题/描述/编号…" data-page-search
+            style={{ padding: '6px 8px 6px 26px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)' }}
+          />
+          {search && (
+            <button
+              type="button"
+              className="op-hidden tbtn-anim ws-clear-btn"
+              onClick={() => { setSearch(''); searchInputRef.current?.focus(); }}
+              title="清空搜索内容 — 点击清空搜索框，光标保留在框内"
+              aria-label="清空搜索内容"
+              style={{ position: 'absolute', left: 4, top: '50%', transform: 'translateY(-50%)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}
+            >
+              <X size={12} />
+            </button>
+          )}
+        </span>
         {/* T03623：不常用功能收进「更多」——导出项目/分类筛选/优先级筛选/自定义字段筛选与排序移到第二排，
-            按钮常驻可见（折叠入口不能只靠悬浮发现），展开态高亮，生效筛选数以徽标提示 */}
+            按钮常驻可见（折叠入口不能只靠悬浮发现），展开态高亮，生效筛选数以徽标提示。
+            T03645：整组移到搜索框右侧（DOM 与视觉同序），工具条尾部固定为 [搜索框] [更多]。 */}
         <button type="button" ref={moreBtnRef} onClick={() => setMoreOpen((v) => !v)}
           className="tbtn-anim" data-t03623="more-trigger"
           aria-haspopup="true" aria-expanded={moreOpen} aria-label="更多：导出与筛选"
@@ -4251,36 +4289,6 @@ export function TasksPage() {
           </select>
         </div>
         )}
-        {/* 八期 §3.1.1：Git 徽标显隐开关（会话级）——关闭时列表/看板行内徽标整体不渲染，也不再发起摘要批量请求 */}
-        <button type="button" data-t03343="git-toggle" aria-pressed={gitOn} aria-label="显示 Git 提交徽标"
-          title={gitOn ? 'Git 徽标（已显示）— 点击隐藏任务行的提交关联徽标；会话内保持' : 'Git 徽标（已隐藏）— 点击显示任务行的提交关联徽标；会话内保持'}
-          onClick={() => setGitOn((v) => !v)} className="tbtn-anim"
-          style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: gitOn ? 'var(--accent-soft)' : 'var(--card-bg)', color: gitOn ? 'var(--accent-ink)' : 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>
-          <GitBranch size={13} />Git
-        </button>
-        {/* T02952：搜索框 + 框内左侧清空按钮（有内容才显示；悬浮倾斜 5°~10° 由 .ws-clear-btn 提供；点击清空且光标留框内） */}
-        <span style={{ position: 'relative', display: 'inline-flex', marginLeft: 'auto' }}>
-          <input
-            ref={searchInputRef}
-            className="op-hidden"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索标题/描述/编号…" data-page-search
-            style={{ padding: '6px 8px 6px 26px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)' }}
-          />
-          {search && (
-            <button
-              type="button"
-              className="op-hidden tbtn-anim ws-clear-btn"
-              onClick={() => { setSearch(''); searchInputRef.current?.focus(); }}
-              title="清空搜索内容 — 点击清空搜索框，光标保留在框内"
-              aria-label="清空搜索内容"
-              style={{ position: 'absolute', left: 4, top: '50%', transform: 'translateY(-50%)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}
-            >
-              <X size={12} />
-            </button>
-          )}
-        </span>
         <NoticeToast notice={notice} onDismiss={dismissNotice} />
       </div>
     );
