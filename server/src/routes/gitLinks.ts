@@ -18,6 +18,7 @@ import {
   unlinkCommit,
 } from '../services/taskGitLinks';
 import { queryGitLog, type GitLogRequest } from '../services/lectureGitLog';
+import { suggestGitLinks } from '../services/gitAiLink';
 import { cacheGet, cacheSet } from '../util/ttl-cache';
 import { createHash } from 'node:crypto';
 
@@ -137,5 +138,23 @@ gitLinksApi.get('/git/log', async (req, res) => {
     res.json(await queryGitLog(body));
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+/**
+ * T03621：「AI 智能关联」——把已完成未回写任务与仓库近期提交做语义匹配，**只出建议**。
+ * body `{ projectId, toolId, maxTasks?, maxCommits? }`；写库仍走 `POST /tasks/:id/git/links`（用户确认后）。
+ * 降级口径同 §4.2：未绑定/非仓库回 200 + kind，让前端给指引；缺参才是 4xx。
+ */
+gitLinksApi.post('/git/ai-link-suggest', async (req, res) => {
+  const body = req.body ?? {};
+  const projectId = typeof body.projectId === 'string' ? body.projectId.trim() : '';
+  const toolId = typeof body.toolId === 'string' ? body.toolId.trim() : '';
+  if (!projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (!toolId) return res.status(400).json({ error: 'toolId 必填（请先在「模型」页添加并选择一个 AI 模型）' });
+  try {
+    res.json(await suggestGitLinks({ projectId, toolId, maxTasks: body.maxTasks, maxCommits: body.maxCommits }));
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });

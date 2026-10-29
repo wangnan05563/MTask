@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type CSSProperties } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { createPortal } from 'react-dom';
 import { api, imageUrl, fetchImage, imageDataURL, type AITool, type CustomField, type CustomFieldType, type Project, type PromptCategory, type ReqCategory, type Task, type TaskCategory, type TaskImage } from '../api/client';
@@ -16,6 +16,7 @@ import { priorityAriaLabel, priorityBadgeLabel, priorityColor } from '../ui/prio
 import { blockBadgeNames, blockBadgeNode } from '../ui/blockBadge'; // T03229（PM-202②）：阻塞徽标单源（列表行与看板卡共用）
 import { GitBadge, GitBoardBadge, gitTruncatedNote } from '../ui/gitBadge'; // 八期 §3.1：任务↔提交关联徽标（列表行 + 看板卡）
 import { GitTreePickerModal } from '../ui/GitTreePickerModal'; // 八期 §3.1.5：未回写「手动关联」批量补录走同一取数弹窗
+import { OVERLAY_MASK } from '../ui/primitives'; // T03621：遮罩底走单源 --overlay 令牌（不自写 rgba）
 import { useGitSummaries } from '../utils/gitSummaries'; // 八期 §3.1.6：本页提交摘要一次批量解析 + 60s 缓存
 import { fieldBadgesNode } from '../ui/fieldBadges'; // T03231（PM-203②）：自定义字段值徽标（列表行展示）
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
@@ -38,6 +39,33 @@ import { classifyResultMessage, createClassifyStore, runClassifyBatch, type Clas
 
 /** 顶部 tab 三态：待办 / 已完成 / 搁置（S4323：具名类型别名替代内联联合类型） */
 type ActiveTab = 'todo' | 'done' | 'shelved';
+
+/** T03621：AI 智能关联建议（服务端二次校验后的形状；sha 为仓库内校验通过的完整 ID） */
+interface AiLinkSuggestion {
+  taskId: string;
+  taskNo: string | null;
+  taskTitle: string;
+  confidence: number;
+  reason: string;
+  commits: { sha: string; short: string; subject: string; date: string; author: string }[];
+}
+interface AiLinkResult {
+  ok: boolean;
+  suggestions: AiLinkSuggestion[];
+  message?: string;
+  error?: string;
+  kind?: string;
+  candidates?: { tasks: number; commits: number };
+  dropped?: number;
+}
+
+/** T03621：三枚图标按钮的共用外观（尺寸/圆角/边框与系统小图标按钮一致，不带动画类） */
+const iconOnlyBtn: CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+  padding: '4px 6px', borderRadius: 6,
+  border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)',
+  cursor: 'pointer',
+};
 
 /** T02291：`total=1` 加性通道的分页信封（与 server/src/util/list-page.ts 的 Paged、ArchivePage 同形状） */
 interface Paged<T> {
@@ -726,6 +754,56 @@ export function TasksPage() {
       gitSummaries.refresh();
       void loadTasks(projectId);
     }
+  }
+
+  // T03621：「AI 智能关联」建议——服务端已二次校验（sha 真在该仓库、confidence 阈值、一提交只归一单），
+  // 前端只负责勾选确认；任何情况下都不自动写 task_git_links。
+  const [aiLinkBusy, setAiLinkBusy] = useState(false);
+  const [aiLinkResult, setAiLinkResult] = useState<AiLinkResult | null>(null);
+  const [aiLinkSel, setAiLinkSel] = useState<Set<string>>(new Set());
+  const [aiLinkApplying, setAiLinkApplying] = useState(false);
+
+  async function startAiGitLink() {
+    if (!singleProjectForGit) { flash('跨项目视图请逐行操作：点击任务行的提交徽标进抽屉「Git」页手动关联'); return; }
+    const proj = projects.find((p) => p.id === activeProject);
+    if (!proj?.workspace_path) { flash('该项目未绑定工作空间，请先绑定仓库目录'); return; }
+    if (!organizeToolId) { flash(aiBlockedFlash('请先在「模型管理」页添加并选择整理工具')); return; }
+    if (unlinkedDone.length === 0) { flash('本页没有未回写的已完成任务'); return; }
+    setAiLinkBusy(true);
+    try {
+      const r = await api.post<AiLinkResult>('/git/ai-link-suggest', { projectId: activeProject, toolId: organizeToolId });
+      setAiLinkResult(r);
+      // 默认全选：模型只给有把握的配对，且结果还要过一次人工确认才落库
+      setAiLinkSel(new Set(r.suggestions.flatMap((s) => s.commits.map((c) => `${s.taskId}|${c.sha}`))));
+      if (!r.ok) flash(r.error ?? r.message ?? 'AI 智能关联失败', 'error');
+      else if (r.suggestions.length === 0) flash(r.message ?? 'AI 未能找到有把握的匹配');
+      else flash(`AI 给出 ${r.suggestions.length} 条建议（${r.suggestions.reduce((n, s) => n + s.commits.length, 0)} 个提交），勾选确认后才会写入`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally {
+      setAiLinkBusy(false);
+    }
+  }
+
+  async function applyAiGitLink() {
+    const r = aiLinkResult;
+    if (!r) return;
+    const picks = r.suggestions.flatMap((s) =>
+      s.commits.filter((c) => aiLinkSel.has(`${s.taskId}|${c.sha}`)).map((c) => ({ taskId: s.taskId, taskNo: s.taskNo, sha: c.sha })));
+    if (picks.length === 0) { flash('请至少勾选一个提交'); return; }
+    setAiLinkApplying(true);
+    const failed: string[] = [];
+    for (const p of picks) {
+      try { await api.post(`/tasks/${p.taskId}/git/links`, { sha: p.sha }); }
+      catch (e) { failed.push(`${p.taskNo ?? p.taskId} ← ${p.sha.slice(0, 7)}：${e instanceof Error ? e.message : String(e)}`); }
+    }
+    setAiLinkApplying(false);
+    if (failed.length) flash(`部分关联失败：${failed.join('；')}`, 'error');
+    else flash(`已关联 ${picks.length} 个提交（${new Set(picks.map((p) => p.taskId)).size} 条任务）`);
+    setAiLinkResult(null);
+    setAiLinkSel(new Set());
+    gitSummaries.refresh();
+    void loadTasks(activeProject);
   }
 
   // 搁置列表是全量拉取（不分页），触底续取只对带分页的待办/已完成生效，否则会在看不见的列表上白取一页
@@ -4489,18 +4567,30 @@ export function TasksPage() {
         {gitOn && unlinkedDone.length > 0 && (
           <div data-t03360="unlinked-bar" role="status" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', margin: '8px 0', padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--surface)', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
             <span>本页已加载 {done.length} 条已完成任务中，{unlinkedDone.length} 条未回写提交 ID</span>
-            <button type="button" data-t03360="copy-instruction" className="tbtn-anim"
+            {/* T03621：三按钮统一为「无文字、无过渡动画」的图标按钮——语义交给 title/aria-label（悬浮可见） */}
+            <button type="button" data-t03360="copy-instruction" data-t03621="copy"
               onClick={() => void copyWriteBackInstruction()}
               title="复制回写指令 — 生成可直接交给外部 AI Agent 的 mtask_link_git_commit 指令文本" aria-label="复制回写指令：生成外部 Agent 可用的回写文本"
-              style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
-              <Copy size={12} />复制回写指令
+              style={iconOnlyBtn}>
+              <Copy size={13} />
             </button>
-            <button type="button" data-t03360="manual-link" className="tbtn-anim" disabled={gitLinkBusy}
+            <button type="button" data-t03360="manual-link" data-t03621="manual" disabled={gitLinkBusy}
               onClick={startManualGitLink}
               title={singleProjectForGit ? '手动关联 — 逐条打开提交选取弹窗补录（跨项目视图请逐行操作）' : '跨项目视图请逐行手动关联（点击任务行提交徽标进抽屉）'}
               aria-label="手动关联：逐条打开提交选取弹窗补录关联"
-              style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', opacity: gitLinkBusy ? 0.6 : 1 }}>
-              <GitBranch size={12} />手动关联
+              style={{ ...iconOnlyBtn, cursor: gitLinkBusy ? 'not-allowed' : 'pointer', opacity: gitLinkBusy ? 0.6 : 1 }}>
+              <GitBranch size={13} />
+            </button>
+            <button type="button" data-t03621="ai" disabled={aiLinkBusy || gitLinkBusy}
+              onClick={() => void startAiGitLink()}
+              title={aiDown
+                ? aiBlockedTitle(readiness, 'AI 智能关联 — 比对已完成未回写任务与仓库近期提交，给出候选后由你勾选确认（不自动落库）')
+                : singleProjectForGit
+                  ? 'AI 智能关联 — 让 AI 比对已完成未回写任务与仓库近期提交，给出候选后由你勾选确认（不自动落库）'
+                  : '跨项目视图请逐行手动关联（点击任务行提交徽标进抽屉）'}
+              aria-label="AI 智能关联：比对已完成未回写任务与仓库提交，给出候选供确认"
+              style={{ ...iconOnlyBtn, color: 'var(--accent)', borderColor: 'var(--accent)', cursor: aiLinkBusy || gitLinkBusy ? 'not-allowed' : 'pointer', opacity: aiLinkBusy || gitLinkBusy ? 0.6 : 1 }}>
+              {aiLinkBusy ? <Loader2 size={13} className="aispin" /> : <Sparkles size={13} />}
             </button>
             <span style={{ color: 'var(--text-muted)' }}>已完成任务归档删除后无法补齐</span>
           </div>
@@ -4965,6 +5055,65 @@ export function TasksPage() {
             void loadTasks(activeProject);
           }}
         />
+      )}
+
+      {/* T03621：AI 智能关联建议——逐提交勾选，确认后才写 task_git_links（source=manual）；取消不产生任何写入 */}
+      {aiLinkResult && (
+        <div role="dialog" aria-label="AI 智能关联建议"
+          onMouseDown={(e) => { if (e.target === e.currentTarget && !aiLinkApplying) { setAiLinkResult(null); setAiLinkSel(new Set()); } }}
+          style={{ ...OVERLAY_MASK, position: 'fixed', zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div data-t03621="ai-panel" style={{ background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 10px 28px rgba(0,0,0,.22)', width: 620, maxWidth: '94vw', maxHeight: '84vh', display: 'flex', flexDirection: 'column', padding: 14, color: 'var(--text)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+              <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600 }}>AI 智能关联建议</div>
+              <button type="button" onClick={() => { setAiLinkResult(null); setAiLinkSel(new Set()); }} disabled={aiLinkApplying}
+                title="关闭" aria-label="关闭 AI 智能关联建议"
+                style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: aiLinkApplying ? 'not-allowed' : 'pointer', padding: 2 }}>
+                <X size={14} />
+              </button>
+            </div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
+              {aiLinkResult.ok
+                ? `比对范围：${aiLinkResult.candidates?.tasks ?? 0} 条未回写任务 × ${aiLinkResult.candidates?.commits ?? 0} 个近期提交${aiLinkResult.dropped ? ` · 已排除 ${aiLinkResult.dropped} 条不合格配对` : ''}`
+                : (aiLinkResult.error ?? aiLinkResult.message ?? 'AI 智能关联暂不可用')}
+            </div>
+            <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
+              {aiLinkResult.suggestions.length === 0 && (
+                <div data-t03621="ai-empty" style={{ padding: '16px 8px', fontSize: 'var(--fs-s)', color: 'var(--text-muted)', textAlign: 'center' }}>
+                  {aiLinkResult.message ?? '没有可确认的建议——可改用「手动关联」逐条补录'}
+                </div>
+              )}
+              {aiLinkResult.suggestions.map((s) => (
+                <div key={s.taskId} data-t03621="ai-suggestion" style={{ border: '1px solid var(--border-strong)', borderRadius: 8, padding: 8, marginBottom: 8 }}>
+                  <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600 }}>
+                    {s.taskNo ?? '(无编号)'} · {s.taskTitle}
+                    <span style={{ marginLeft: 8, fontWeight: 400, fontSize: 'var(--fs-xs)', color: 'var(--accent)' }}>置信度 {Math.round(s.confidence * 100)}%</span>
+                  </div>
+                  {s.reason && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', margin: '2px 0 6px' }}>{s.reason}</div>}
+                  {s.commits.map((c) => {
+                    const key = `${s.taskId}|${c.sha}`;
+                    return (
+                      <label key={c.sha} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, padding: '3px 0', fontSize: 'var(--fs-xs)', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={aiLinkSel.has(key)} data-t03621="ai-pick"
+                          onChange={(e) => setAiLinkSel((prev) => { const next = new Set(prev); if (e.target.checked) next.add(key); else next.delete(key); return next; })} />
+                        <span style={{ fontFamily: 'var(--font-mono, monospace)' }}>{c.short}</span>
+                        <span style={{ color: 'var(--text-secondary)', flex: 1 }}>{c.subject}</span>
+                        <span style={{ color: 'var(--text-muted)' }}>{c.date.slice(0, 10)}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+              <button type="button" onClick={() => { setAiLinkResult(null); setAiLinkSel(new Set()); }} disabled={aiLinkApplying}
+                style={{ fontSize: 'var(--fs-s)', padding: '6px 12px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: aiLinkApplying ? 'not-allowed' : 'pointer' }}>取消</button>
+              <button type="button" data-t03621="ai-confirm" disabled={aiLinkApplying || aiLinkSel.size === 0} onClick={() => void applyAiGitLink()}
+                style={{ fontSize: 'var(--fs-s)', padding: '6px 14px', border: 'none', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: aiLinkApplying || aiLinkSel.size === 0 ? 'not-allowed' : 'pointer', opacity: aiLinkApplying || aiLinkSel.size === 0 ? 0.5 : 1 }}>
+                {aiLinkApplying ? '关联中…' : `确认关联 ${aiLinkSel.size} 个提交`}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* T02949：派生单裁决面板——Trae/WorkBuddy 气泡选项样式（候选胶囊按钮 + 自定义输入）；
