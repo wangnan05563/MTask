@@ -28,7 +28,7 @@ import { arrangeTaskTree, makeTaskMatcher, matchVerified, sortOptions, sortTasks
 import { useTaskListWindow } from '../utils/taskListWindow'; // T03215（PM-304）：文档滚动 + 变高行的窗口化
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { useBusy, setBusy } from '../ui/busy';
-import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, GitBranch, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, PanelRightOpen, Pin, Plus, Save, ScanSearch, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
+import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, GitBranch, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, MoreHorizontal, PanelRightOpen, Pin, Plus, Save, ScanSearch, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00771：工作空间选择器（项目上下文根路径）
 import { WorkspaceSearchPanel } from '../ui/WorkspaceSearchPanel'; // T00786：工作空间全文检索面板（partial 提示）
@@ -480,6 +480,10 @@ export function TasksPage() {
   const [projSortMode, setProjSortMode] = usePersistentState<ProjectSortMode>('tasks.projectSort', 'default'); // T01697
   const [projSortOpen, setProjSortOpen] = useState(false);
   const projSortRef = useRef<HTMLSpanElement | null>(null); // T00655：排序菜单外部点击收起
+  // T03623：工具栏「更多」折叠——导出项目 / 分类筛选 / 优先级筛选 / 自定义字段筛选与排序默认收起，点开为第二排
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreBtnRef = useRef<HTMLButtonElement | null>(null);
+  const morePanelRef = useRef<HTMLDivElement | null>(null);
   const sortedProjects = useMemo(() => sortProjects(projects, projSortMode), [projects, projSortMode]); // T00663：排序逻辑复用共享模块
 
   /** T00655：置顶/取消置顶——置顶写入较大 sort_weight（默认序下排最前），取消归零 */
@@ -757,6 +761,20 @@ export function TasksPage() {
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
   }, [projOpen]);
+
+  // T03623：「更多」第二排——点击外部或按 Esc 收起；触发按钮与面板本身不算外部
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (moreBtnRef.current?.contains(t) || morePanelRef.current?.contains(t)) return;
+      setMoreOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMoreOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
+  }, [moreOpen]);
 
   // T00521 调整：验证结果选择面板（通过/失败合一入口）点击外部关闭
   const [verifyMenuId, setVerifyMenuId] = useState('');
@@ -3790,6 +3808,8 @@ export function TasksPage() {
     // T03211：全部项目视图的合计徽标（各项目计数之和）；具体项目视图仍用单项目计数
     const allTodo = projects.reduce((s, p) => s + (p.todo_count ?? 0), 0);
     const allUnv = projects.reduce((s, p) => s + (p.unverified_count ?? 0), 0);
+    // T03623：第二排收起后筛选态不可见——按钮上用计数徽标提示「当前有几项筛选在生效」
+    const moreActiveCount = [catFilter !== '', priorityFilter !== '', fieldFilterField !== '', fieldSort !== ''].filter(Boolean).length;
     return (
       <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         {/* T02167 二轮：宿主组改可换行——窄窗（≤430px）时行内容纳不下整组（项目条+工作空间+图标钮），
@@ -3975,26 +3995,44 @@ export function TasksPage() {
           <input type="file" accept=".csv,.json" style={FILE_INPUT_SR_ONLY} data-t03214="import-file-input" disabled={batchOpBusy}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void onCsvFile(f); } e.target.value = ''; }} />
         </label>
-        {/* T03267（PM-402）：项目级导出——任务/计划 × Markdown/JSON；全部项目视图下不可用（导出必须落到具体项目） */}
-        <select value="" disabled={exportBusy || !activeProject || activeProject === ALL_PROJECTS}
-          data-t03267="project-export" aria-label="导出项目任务或计划"
-          title={activeProject === ALL_PROJECTS ? '导出项目 — 请先选择具体项目' : '导出项目 — 任务/计划导出为 Markdown 或 JSON（含层级/状态/优先级）'}
-          onChange={(e) => {
-            const v = e.target.value;
-            if (v === 'tasks:md') void exportProject('tasks', 'md');
-            else if (v === 'tasks:json') void exportProject('tasks', 'json');
-            else if (v === 'plans:md') void exportProject('plans', 'md');
-            else if (v === 'plans:json') void exportProject('plans', 'json');
-            e.target.value = '';
-          }}
-          style={{ fontSize: 'var(--fs-s)', padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', opacity: exportBusy || !activeProject || activeProject === ALL_PROJECTS ? 0.55 : 1 }}>
-          <option value="">{exportBusy ? '导出中…' : '导出项目…'}</option>
-          <option value="tasks:md">任务 Markdown</option>
-          <option value="tasks:json">任务 JSON</option>
-          <option value="plans:md">计划 Markdown</option>
-          <option value="plans:json">计划 JSON</option>
-        </select>
-        <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        {/* T03623：不常用功能收进「更多」——导出项目/分类筛选/优先级筛选/自定义字段筛选与排序移到第二排，
+            按钮常驻可见（折叠入口不能只靠悬浮发现），展开态高亮，生效筛选数以徽标提示 */}
+        <button type="button" ref={moreBtnRef} onClick={() => setMoreOpen((v) => !v)}
+          className="tbtn-anim" data-t03623="more-trigger"
+          aria-haspopup="true" aria-expanded={moreOpen} aria-label="更多：导出与筛选"
+          title={moreOpen
+            ? '更多（已展开）— 再次点击或点击空白处收起第二排功能'
+            : `更多 — 展开导出项目 / 分类筛选 / 优先级筛选 / 自定义字段筛选与排序${moreActiveCount > 0 ? `（当前 ${moreActiveCount} 项筛选生效）` : ''}`}
+          style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: moreOpen ? 'var(--accent-soft)' : 'transparent', color: moreOpen ? 'var(--accent-ink)' : 'var(--text)', fontSize: 'var(--fs-s)' }}>
+          <MoreHorizontal size={14} />
+          {moreActiveCount > 0 && (
+            <span data-t03623="more-badge" title={`${moreActiveCount} 项筛选生效`}
+              style={{ position: 'absolute', top: -2, right: -2, minWidth: 12, height: 12, padding: '0 2px', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-2xs)', lineHeight: '12px', textAlign: 'center' }}>{moreActiveCount}</span>
+          )}
+        </button>
+        {moreOpen && (
+        <div ref={morePanelRef} data-t03623="more-panel" role="group" aria-label="更多功能：导出与筛选"
+          /* order:9 + flexBasis:100%：仍排在 DOM 中「更多」按钮之后（键盘顺序不变），视觉上独占工具条最后一行 */
+          style={{ order: 9, flexBasis: '100%', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '8px 10px', border: '1px solid var(--border-strong)', borderRadius: 8, background: 'var(--surface)' }}>
+          {/* T03267（PM-402）：项目级导出——任务/计划 × Markdown/JSON；全部项目视图下不可用（导出必须落到具体项目） */}
+          <select value="" disabled={exportBusy || !activeProject || activeProject === ALL_PROJECTS}
+            data-t03267="project-export" aria-label="导出项目任务或计划"
+            title={activeProject === ALL_PROJECTS ? '导出项目 — 请先选择具体项目' : '导出项目 — 任务/计划导出为 Markdown 或 JSON（含层级/状态/优先级）'}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === 'tasks:md') void exportProject('tasks', 'md');
+              else if (v === 'tasks:json') void exportProject('tasks', 'json');
+              else if (v === 'plans:md') void exportProject('plans', 'md');
+              else if (v === 'plans:json') void exportProject('plans', 'json');
+              e.target.value = '';
+            }}
+            style={{ fontSize: 'var(--fs-s)', padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', opacity: exportBusy || !activeProject || activeProject === ALL_PROJECTS ? 0.55 : 1 }}>
+            <option value="">{exportBusy ? '导出中…' : '导出项目…'}</option>
+            <option value="tasks:md">任务 Markdown</option>
+            <option value="tasks:json">任务 JSON</option>
+            <option value="plans:md">计划 Markdown</option>
+            <option value="plans:json">计划 JSON</option>
+          </select>
           <select
             value={catFilter}
             onChange={(e) => setCatFilter(e.target.value)}
@@ -4102,7 +4140,8 @@ export function TasksPage() {
               </Fragment>
             ))}
           </select>
-        </span>
+        </div>
+        )}
         {/* 八期 §3.1.1：Git 徽标显隐开关（会话级）——关闭时列表/看板行内徽标整体不渲染，也不再发起摘要批量请求 */}
         <button type="button" data-t03343="git-toggle" aria-pressed={gitOn} aria-label="显示 Git 提交徽标"
           title={gitOn ? 'Git 徽标（已显示）— 点击隐藏任务行的提交关联徽标；会话内保持' : 'Git 徽标（已隐藏）— 点击显示任务行的提交关联徽标；会话内保持'}
