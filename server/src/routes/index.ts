@@ -3,6 +3,7 @@ import * as PrdGenService from '../services/PrdGenService'; // T00769：原始�
 import { generateTestCasesStream, type GenPrefs } from '../services/TestCaseGenService'; // T01491：从 PRD 生成测试用例（SSE）
 import { PlanService } from '../services/PlanService'; // T01491：读取内部 PRD 文档原文（prdDocId 来源）
 import { WorkspaceService } from '../services/WorkspaceService'; // T00776：工作空间搜索/读文件
+import { askWorkspace } from '../services/workspaceQa'; // T03250（PRD 5.1）：工作空间只读问答（带 file:line 引用）
 import { isValidTimeZone } from '../services/ProjectTimeZone'; // T03268：项目级时区校验（IANA，运行时 ICU）
 import { getDb } from '../db/connection';
 import { TaskService, nextTaskNo, TASK_STATUSES, type TaskInput, type TaskListOptions } from '../services/TaskService';
@@ -408,6 +409,15 @@ api.get('/workspace/symbols', (req, res) => {
   const { projectId, q, limit } = req.query as Record<string, string | undefined>;
   if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
   wsWrap(res, () => WorkspaceService.querySymbols(projectId, q ?? '', Number(limit ?? 30)));
+});
+
+/** T03250（PRD 5.1）：工作空间只读问答。body `{ projectId, question, toolId }`；回答带可核验的 file:line 引用。 */
+api.post('/workspace/ask', (req, res) => {
+  const { projectId, question, toolId } = (req.body ?? {}) as Record<string, string | undefined>;
+  if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
+  if (!String(question ?? '').trim()) { res.status(400).json({ error: 'question 必填' }); return; }
+  if (!toolId) { res.status(400).json({ error: 'toolId 必填（请先在「模型」页添加并选择一个 AI 模型）' }); return; }
+  void wsWrapAsync(res, () => askWorkspace({ projectId, question: String(question), toolId }));
 });
 
 /** 新建工作空间：递归创建目录（已存在视为成功——幂等，便于「新建」与「选择已有」合一） */

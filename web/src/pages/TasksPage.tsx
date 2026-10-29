@@ -29,10 +29,11 @@ import { arrangeTaskTree, makeTaskMatcher, matchVerified, sortOptions, sortTasks
 import { useTaskListWindow } from '../utils/taskListWindow'; // T03215（PM-304）：文档滚动 + 变高行的窗口化
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { useBusy, setBusy } from '../ui/busy';
-import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, GitBranch, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, MoreHorizontal, PanelRightOpen, Pin, Plus, Save, ScanSearch, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
+import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, GitBranch, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, MoreHorizontal, PanelRightOpen, Pin, Plus, Save, ScanSearch, MessageSquareText, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00771：工作空间选择器（项目上下文根路径）
 import { WorkspaceSearchPanel } from '../ui/WorkspaceSearchPanel'; // T00786：工作空间全文检索面板（partial 提示）
+import { WorkspaceAskPanel } from '../ui/WorkspaceAskPanel'; // T03250：工作空间只读问答（引用可跳转）
 import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：正文 AI 美化（反馈/处理结果共用）
 import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用入口可见但禁用 + 原因/修复动作
 import { classifyResultMessage, createClassifyStore, runClassifyBatch, type ClassifyResponse, type ClassifyStoreState } from './tasksClassifyBatch'; // T02307：批量分类三态分流 + 账户级门禁/连续失败熔断
@@ -290,6 +291,8 @@ export function TasksPage() {
   const [activeProject, setActiveProject] = usePersistentState('tasks.activeProject', '');
   // T00786：工作空间全文检索面板显隐（建议相对工作空间选择器就近放置）
   const [wsSearchOpen, setWsSearchOpen] = useState(false);
+  // T03250：工作空间只读问答面板显隐（紧跟全文检索入口）
+  const [wsAskOpen, setWsAskOpen] = useState(false);
   const [todo, setTodo] = useState<Task[]>([]);
   const [done, setDone] = useState<Task[]>([]);
   // T00719：搁置任务列表（页面最下方独立区块，与待办/已完成隔离；MCP 处理待办时自动忽略）
@@ -3997,6 +4000,25 @@ export function TasksPage() {
         >
           <ScanSearch size={13} style={{ flexShrink: 0 }} />
         </button>
+        {/* T03250：工作空间只读问答入口——紧跟全文检索；未选项目/未绑定工作空间/无模型均可见但禁用并说明原因 */}
+        <button
+          onClick={() => {
+            if (activeProject === ALL_PROJECTS) { flash('全部项目视图下请先选择具体项目再提问'); return; }
+            setWsAskOpen(true);
+          }}
+          className="tbtn-anim"
+          disabled={!activeProject || aiDown}
+          data-t03250="ask-entry"
+          title={
+            !activeProject ? '请先选择项目再就工作空间提问'
+              : aiDown ? aiBlockedTitle(readiness, '工作空间只读问答 — 依据代码片段作答并给出 file:line 引用（只读）')
+                : '工作空间只读问答 — 依据代码片段作答并给出可跳转的 file:line 引用（只读，不改任何文件）'
+          }
+          aria-label="工作空间只读问答"
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: activeProject && !aiDown ? 'pointer' : 'not-allowed', opacity: activeProject && !aiDown ? 1 : 0.4 }}
+        >
+          <MessageSquareText size={13} style={{ flexShrink: 0 }} />
+        </button>
         {/* T00655：项目排序图标——位于项目选择框之后、新建项目图标之前（悬浮/点击交互动画由 tbtn-anim 提供） */}
         <span ref={projSortRef} style={{ position: 'relative', display: 'inline-flex' }}>
           <button
@@ -5018,6 +5040,16 @@ export function TasksPage() {
           project={projects.find((p) => p.id === activeProject) ?? null}
           flash={flash}
           onClose={() => setWsSearchOpen(false)}
+        />
+      )}
+
+      {/* T03250：工作空间只读问答面板（同一项目上下文；未绑定工作空间时面板内明示不可用） */}
+      {wsAskOpen && (
+        <WorkspaceAskPanel
+          project={projects.find((p) => p.id === activeProject) ?? null}
+          toolId={organizeToolId}
+          flash={flash}
+          onClose={() => setWsAskOpen(false)}
         />
       )}
 
