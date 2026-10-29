@@ -643,6 +643,64 @@ export const AIService = {
     return { ok: true, content: res.content, categoryId: hit ? hit.id : null, priority };
   },
 
+  /**
+   * T03255（AI-203①⑤）：分类与优先级建议——标题 + 描述 + 同项目历史，输出分类、优先级与一句理由。
+   * 只读：不写 tasks 表；是否采纳由用户在前端确认（PRD「不得自动落库」）。
+   */
+  async suggestTaskClassification(
+    input: { title: string; description?: string; projectId?: string | null; taskId?: string | null; categories: { id: string; name: string }[] },
+    toolId: string,
+  ): Promise<{
+    ok: boolean;
+    suggestion?: { categoryId: string | null; categoryName: string | null; priority: 'urgent' | 'high' | 'normal' | 'low'; reason: string; historyCount: number };
+    error?: string;
+  }> {
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    const startedAt = Date.now();
+    // 历史只作参考上下文：同项目最近 20 条（排除当前任务本身），用于贴合该项目既有的分类/优先级习惯
+    const history = input.projectId
+      ? (getDb().prepare(
+          `SELECT t.title, t.priority, c.name AS category_name
+             FROM tasks t LEFT JOIN task_categories c ON c.id = t.category_id
+            WHERE t.project_id = ? AND t.archived = 0 AND (? IS NULL OR t.id <> ?)
+            ORDER BY t.updated_at DESC LIMIT 20`,
+        ).all(input.projectId, input.taskId ?? null, input.taskId ?? null) as Array<{ title: string; priority: string; category_name: string | null }>)
+      : [];
+    const historyLines = history.map((h) => `- ${h.title}（${h.category_name ?? '未分类'}｜${h.priority}）`).join('\n');
+    const system =
+      '你是任务分类与优先级建议助手。根据任务标题、描述和同项目历史任务，选出最贴切的候选分类，按紧急重要程度给出优先级（U=极高、H=高、N=普通、L=低），并给一句不超过40字的中文理由。只输出一行：分类名|优先级字母|理由，不加任何解释；分类都不合适时分类名写 NONE。';
+    const user = [
+      input.categories.length ? `候选分类：${input.categories.map((c) => c.name).join('、')}` : '候选分类：（无，分类写 NONE）',
+      `任务标题：${input.title}`,
+      input.description?.trim() ? `任务描述：${input.description.trim().slice(0, 800)}` : '',
+      historyLines ? `同项目近期任务（参考其分类与优先级习惯）：\n${historyLines}` : '',
+    ].filter(Boolean).join('\n');
+    const res = await adapter.chat(system, user, config);
+    if (!res.ok) {
+      recordUsage('classify', toolId, config.model, false, startedAt, 0, res.error);
+      return { ok: false, error: res.error };
+    }
+    const raw = (res.content ?? '').trim();
+    recordUsage('classify', toolId, config.model, true, startedAt, raw.length);
+    // 理由里可能出现「|」，从第三个字段起整体归为理由
+    const parts = raw.split('|');
+    const nameOut = (parts[0] ?? '').trim();
+    const PRIORITY_MAP: Record<string, 'urgent' | 'high' | 'normal' | 'low'> = { U: 'urgent', H: 'high', N: 'normal', L: 'low' };
+    const priority = PRIORITY_MAP[(parts[1] ?? '').trim().toUpperCase()] ?? 'normal';
+    const reason = parts.slice(2).join('|').trim() || '模型未给出理由';
+    // 与 classifyCategory 同一匹配口径：精确优先，其次最长名称包含，避免分类名互为子串误配
+    const hit =
+      nameOut && nameOut.toUpperCase() !== 'NONE'
+        ? (input.categories.find((c) => c.name.trim() === nameOut) ??
+          [...input.categories].sort((a, b) => b.name.length - a.name.length).find((c) => nameOut.includes(c.name)))
+        : undefined;
+    return {
+      ok: true,
+      suggestion: { categoryId: hit?.id ?? null, categoryName: hit?.name ?? null, priority, reason, historyCount: history.length },
+    };
+  },
+
   /** T00472：计划条目 AI 评估——输出简短评估（可行性/工期合理性/风险与建议），≤60 字 */
   /** T00763：可选 prdContext——计划关联 PRD 时自动注入，评估依据可追溯至 PRD 条目 */
   async evaluatePlan(

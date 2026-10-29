@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { initSchema } from './db/schema';
 import { api } from './routes';
+import { taskSuggestApi } from './routes/taskSuggest'; // T03255（AI-203）：分类/优先级建议（只读）
 import tunnelRouter, { tryAutoStartTunnel } from './routes/tunnel'; // T03312：autoStart 的消费方（此前只有存与显示）
 import { mcpRouter } from './mcp/http';
 import { csrfGuard } from './services/CsrfGuard';
@@ -129,6 +130,8 @@ app.use((req, _res, next) => {
 
 // M8/8.2：CSRF 防护（自定义头强制 + Origin 白名单；MTASK_CSRF_MODE=off 可紧急止血）
 app.use('/api', accessTokenGuard, csrfGuard, api);
+// T03255（AI-203）：分类/优先级建议接口——只读建议，不落库；独立路由以免与任务写入面混在同一文件
+app.use('/api', accessTokenGuard, csrfGuard, taskSuggestApi);
 // MCP streamable HTTP 端点：与 REST 一致受 accessTokenGuard（X-Access-Token）保护。
 // 不叠加 csrfGuard——MCP 是机器对机器调用（自带令牌鉴权），不属于浏览器跨站面。
 app.use('/api/mcp', accessTokenGuard, mcpRouter());
