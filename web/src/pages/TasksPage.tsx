@@ -4000,25 +4000,33 @@ export function TasksPage() {
         >
           <ScanSearch size={13} style={{ flexShrink: 0 }} />
         </button>
-        {/* T03250：工作空间只读问答入口——紧跟全文检索；未选项目/未绑定工作空间/无模型均可见但禁用并说明原因 */}
-        <button
-          onClick={() => {
-            if (activeProject === ALL_PROJECTS) { flash('全部项目视图下请先选择具体项目再提问'); return; }
-            setWsAskOpen(true);
-          }}
-          className="tbtn-anim"
-          disabled={!activeProject || aiDown}
-          data-t03250="ask-entry"
-          title={
-            !activeProject ? '请先选择项目再就工作空间提问'
-              : aiDown ? aiBlockedTitle(readiness, '工作空间只读问答 — 依据代码片段作答并给出 file:line 引用（只读）')
-                : '工作空间只读问答 — 依据代码片段作答并给出可跳转的 file:line 引用（只读，不改任何文件）'
-          }
-          aria-label="工作空间只读问答"
-          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: activeProject && !aiDown ? 'pointer' : 'not-allowed', opacity: activeProject && !aiDown ? 1 : 0.4 }}
-        >
-          <MessageSquareText size={13} style={{ flexShrink: 0 }} />
-        </button>
+        {/* T03250：工作空间只读问答入口——紧跟全文检索；T03251 起「未绑定工作空间」也置灰并给原因 */}
+        {(() => {
+          const proj = activeProject && activeProject !== ALL_PROJECTS ? projects.find((p) => p.id === activeProject) : undefined;
+          const noWs = !!proj && !proj.workspace_path;
+          const off = !activeProject || aiDown || noWs;
+          return (
+            <button
+              onClick={() => {
+                if (activeProject === ALL_PROJECTS) { flash('全部项目视图下请先选择具体项目再提问'); return; }
+                setWsAskOpen(true);
+              }}
+              className="tbtn-anim"
+              disabled={off}
+              data-t03250="ask-entry"
+              title={
+                noWs ? '该项目尚未绑定工作空间 — 先在工作空间下拉条里绑定仓库目录再提问'
+                  : !activeProject ? '请先选择项目再就工作空间提问'
+                    : aiDown ? aiBlockedTitle(readiness, '工作空间只读问答 — 依据代码片段作答并给出 file:line 引用（只读）')
+                      : '工作空间只读问答 — 依据代码片段作答并给出可跳转的 file:line 引用（只读，不改任何文件）'
+              }
+              aria-label="工作空间只读问答"
+              style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: off ? 'not-allowed' : 'pointer', opacity: off ? 0.4 : 1 }}
+            >
+              <MessageSquareText size={13} style={{ flexShrink: 0 }} />
+            </button>
+          );
+        })()}
         {/* T00655：项目排序图标——位于项目选择框之后、新建项目图标之前（悬浮/点击交互动画由 tbtn-anim 提供） */}
         <span ref={projSortRef} style={{ position: 'relative', display: 'inline-flex' }}>
           <button
