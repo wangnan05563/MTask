@@ -24,6 +24,8 @@ import { renderPromptTemplate } from '../services/PromptTemplate'; // T03247（A
 import { QueueService } from '../services/QueueService';
 import { AIService } from '../services/AIService';
 import { cardCoverage, currentMonthStr } from '../services/AiCardStats'; // T03172：G-2 卡片覆盖率出数（/ai/coverage）
+import { reportAiJob } from '../services/aiJobReport'; // T03316（G-3）：job 终态上报统一入口
+import { latestJob } from '../services/AiGenJournal'; // T03316：测试用例分块台账（累计块数取真实值）
 import { checkAiReadiness } from '../services/AiReadinessService'; // T03176（D-14）：AI 可用性单源诊断
 import { ArchiveService } from '../services/ArchiveService';
 import { TaskImageService } from '../services/TaskImageService';
@@ -2031,6 +2033,9 @@ api.post('/plans/prd-generate-stream', raw({ type: () => true, limit: '30mb' }),
   const ac = new AbortController();
   res.on('close', () => { closed = true; ac.abort(); });
 
+  // T03316（G-3）：PRD 生成是完整一轮 → 记终态；jobId 可取 query/前端会话稳定值
+  const jobStartedAt = new Date().toISOString();
+  const jobId = req.query.jobId;
   try {
     const text = await PrdGenService.extractSourceText(fname, fileBuf);
     const r = await PrdGenService.generatePrdStream({
@@ -2042,8 +2047,10 @@ api.post('/plans/prd-generate-stream', raw({ type: () => true, limit: '30mb' }),
       onDelta: (t) => send('chunk', { text: t }),
       signal: ac.signal, // T00838：客户端断开 → 中止底层生成
     });
+    reportAiJob({ jobId, cardKey: 'ai.prd_gen', status: 'done', mode: 'ai', sectionsTotal: 1, sectionsOk: 1, startedAt: jobStartedAt });
     send('done', { prdMd: r.prdMd, issues: r.issues });
   } catch (e) {
+    reportAiJob({ jobId, cardKey: 'ai.prd_gen', status: ac.signal.aborted ? 'aborted' : 'error', mode: 'ai', startedAt: jobStartedAt });
     send('error', { error: e instanceof Error ? e.message : String(e) });
   }
   res.end();
@@ -2169,6 +2176,9 @@ api.post('/plans/testcase-generate-stream', raw({ type: () => true, limit: '30mb
   const ac = new AbortController();
   res.on('close', () => { closed = true; ac.abort(); });
 
+  // T03316（G-3）：用例生成是完整一轮 → 记终态；块数取台账真实累计值（失败块进分母不进分子）
+  const jobStartedAt = new Date().toISOString();
+  const jobId = pickField(payload, 'jobId', req.query.jobId as string | undefined);
   try {
     const draft = await generateTestCasesStream({
       projectId,
@@ -2181,9 +2191,18 @@ api.post('/plans/testcase-generate-stream', raw({ type: () => true, limit: '30mb
       onDelta: (t) => send('chunk', { text: t }),
       signal: ac.signal,
     });
+    const view = latestJob('ai.test_case_gen');
+    reportAiJob({
+      jobId: view?.id ?? jobId,
+      cardKey: 'ai.test_case_gen', status: 'done', mode: 'ai',
+      sectionsTotal: view?.progress.segmentsTotal ?? 1,
+      sectionsOk: view?.progress.segmentsDone ?? 1,
+      startedAt: jobStartedAt,
+    });
     // done 负载即 TcGenDraft：草稿视图（T01492）据此渲染并勾选后调 import-draft
     send('done', { requirements: draft.requirements, cases: draft.cases, coverage: draft.coverage, notes: draft.notes, truncated: draft.truncated });
   } catch (e) {
+    reportAiJob({ jobId, cardKey: 'ai.test_case_gen', status: ac.signal.aborted ? 'aborted' : 'error', mode: 'ai', startedAt: jobStartedAt });
     send('error', { error: e instanceof Error ? e.message : String(e) });
   }
   res.end();

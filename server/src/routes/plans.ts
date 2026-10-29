@@ -1,7 +1,6 @@
 import { Router, raw } from 'express';
-import { randomUUID } from 'node:crypto'; // T03192（G-3）：job 级样本标识
 import { PlanService } from '../services/PlanService';
-import { AiJobStats } from '../services/AiJobStats'; // T03192（G-3）：AI 生成成功率基线样本落库
+import { reportAiJob } from '../services/aiJobReport'; // T03316（G-3）：job 终态上报统一入口
 import { TestCaseService } from '../services/TestCaseService'; // T01484：测试用例取数（PRD-测试用例管理 §6）
 import { assertOutlineShape, kickoffOutline, preflight, kickoffPptStream } from '../services/kickoffService'; // T02095/T02096/T02103：启动会 PPT 前置校验、大纲与 SSE 流式生成
 import { summaryPreflight } from '../services/summaryPptService'; // T02853（六期 S2）：总结汇报 PPT 前置校验聚合 S1~S9
@@ -304,24 +303,25 @@ planApi.post('/code-review-lecture-stream', raw({ type: () => true, limit: '30mb
     return res.status(lectureStreamErrorStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });
   }
 
-  // T03192（G-3）：job 级成功率样本。只上报「完整一轮」的终态——
-  // 仅大纲是中间交付、续作/单节重试是同一 job 的片段，单独记进来会把 partial 当失败污染基线
-  // （跨请求合并节次需前端持稳定 jobId，属后续增强）。
+  // T03192（G-3）/T03316：job 级成功率样本。只上报「完整一轮」的终态——仅大纲是中间交付，不进分母。
+  // 续作/片段重试不是独立 job：成功收口时用同一 jobId 终态覆盖为累计节次（T03246 续作轮的
+  // result.sections 已按台账重建为整份），失败/中止不覆盖既有终态，避免把已成功的 job 回写成失败。
   const startedAt = new Date().toISOString();
-  const recordJob = (status: 'done' | 'aborted' | 'error', sections: ReadonlyArray<{ ok: boolean }>) => {
-    if (request.outlineOnly || request.resumeFrom || request.sectionKeys) return;
-    try {
-      AiJobStats.record({
-        jobId: randomUUID(),
-        cardKey: 'ai.code_review_lecture',
-        status,
-        mode: 'ai',
-        sectionsTotal: sections.length,
-        sectionsOk: sections.filter((s) => s.ok).length,
-        startedAt,
-        finishedAt: new Date().toISOString(),
-      });
-    } catch { /* 指标落库失败不得影响生成主流程 */ }
+  const isContinuation = Boolean(request.jobId || request.resumeFrom || request.sectionKeys || request.retryFailed);
+  const recordJob = (status: 'done' | 'aborted' | 'error', sections: ReadonlyArray<{ ok: boolean }>, jobId?: string) => {
+    if (request.outlineOnly) return;
+    if (isContinuation && status !== 'done') return;
+    // 续作轮沿用台账首轮创建时间，job 起点不随最后一轮漂移
+    const jobStart = isContinuation && request.jobId ? jobRequest(request.jobId)?.view.createdAt : startedAt;
+    reportAiJob({
+      jobId: request.jobId ?? jobId,
+      cardKey: 'ai.code_review_lecture',
+      status,
+      mode: 'ai',
+      sectionsTotal: sections.length,
+      sectionsOk: sections.filter((s) => s.ok).length,
+      startedAt: jobStart,
+    });
   };
 
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -347,7 +347,7 @@ planApi.post('/code-review-lecture-stream', raw({ type: () => true, limit: '30mb
       onChunk: (chunk) => send('chunk', chunk),
     });
     // 先记样本再回事件：客户端断开时上面的 early return 会跳过后续发送，但取消仍要进基线口径
-    recordJob(result.aborted ? 'aborted' : 'done', result.sections);
+    recordJob(result.aborted ? 'aborted' : 'done', result.sections, result.jobId);
     // T03262（AI-101①）：溯源行随 done/aborted 一起下发——面板与后续导出稿（原样回传）同源
     const provenance = buildCardProvenance({
       cardKey: LECTURE_CARD_KEY,
@@ -456,6 +456,11 @@ planApi.post('/summary-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
     return res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
 
+  // T03316（G-3）：第 2 段只装配不调模型（大纲在前一段已产出）→ 显式 mode=offline，与 AI 通道分列；
+  // jobId 优先用前端会话稳定值，同一次生成的重试合到同一个 job，不各记一行
+  const jobStartedAt = new Date().toISOString();
+  const jobId = b.jobId;
+
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -484,8 +489,13 @@ planApi.post('/summary-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
     if (closed || res.writableEnded) {
       discardReport(r.token);
       issuedToken = undefined;
+      reportAiJob({ jobId, cardKey: 'ai.summary_ppt', status: 'aborted', mode: 'offline', startedAt: jobStartedAt });
       return;
     }
+    reportAiJob({
+      jobId, cardKey: 'ai.summary_ppt', status: 'done', mode: 'offline',
+      sectionsTotal: r.pageCount, sectionsOk: r.pageCount, startedAt: jobStartedAt,
+    });
     send('done', {
       token: r.token,
       ...(r.zipToken ? { zipToken: r.zipToken } : {}),
@@ -499,6 +509,7 @@ planApi.post('/summary-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
     });
     doneSent = true;
   } catch (e) {
+    reportAiJob({ jobId, cardKey: 'ai.summary_ppt', status: ac.signal.aborted ? 'aborted' : 'error', mode: 'offline', startedAt: jobStartedAt });
     send('error', { error: e instanceof Error ? e.message : String(e) });
   }
   res.end();
@@ -533,6 +544,12 @@ planApi.post('/kickoff-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
     return res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
 
+  // T03316（G-3）：整轮生成收口才记样本（大纲接口是中间交付，不在此上报）；
+  // jobId 优先用前端会话稳定值，同一次生成的重试合到同一 job
+  const jobStartedAt = new Date().toISOString();
+  const jobId = b.jobId;
+  const outlinePages = Array.isArray(b.outline) ? b.outline.length : 0;
+
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -562,11 +579,17 @@ planApi.post('/kickoff-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
     if (closed || res.writableEnded) {
       discardReport(r.token);
       issuedToken = undefined;
+      reportAiJob({ jobId, cardKey: 'ai.kickoff_ppt', status: 'aborted', mode: 'ai', startedAt: jobStartedAt });
       return;
     }
+    reportAiJob({
+      jobId, cardKey: 'ai.kickoff_ppt', status: 'done', mode: 'ai',
+      sectionsTotal: outlinePages, sectionsOk: outlinePages, startedAt: jobStartedAt,
+    });
     send('done', { token: r.token, fileName: r.fileName, pageCount: r.pageCount, warnings: r.warnings, provenance: r.provenance });
     doneSent = true;
   } catch (e) {
+    reportAiJob({ jobId, cardKey: 'ai.kickoff_ppt', status: ac.signal.aborted ? 'aborted' : 'error', mode: 'ai', startedAt: jobStartedAt });
     send('error', { error: e instanceof Error ? e.message : String(e) });
   }
   res.end();
@@ -648,10 +671,19 @@ planApi.post('/ai-parse', raw({ type: () => true, limit: '30mb' }), (req, res) =
   if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
   if (typeof toolId !== 'string' || !toolId) return res.status(400).json({ error: 'toolId 必填（AI 解析需要模型工具）' });
   if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: '请求体应为文件二进制' });
+  // T03316（G-3）：AI 计划拆解是完整一轮（预览不落库也算产出）→ 记 ai.plan_import 终态
+  const jobStartedAt = new Date().toISOString();
+  const jobId = req.query.jobId;
   PlanService.tableToTextAsync(req.body, filename)
     .then((text) => PlanService.aiParseDrafts(toolId, text))
-    .then((r) => res.json({ ok: true, ...r }))
-    .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
+    .then((r) => {
+      reportAiJob({ jobId, cardKey: 'ai.plan_import', status: 'done', mode: 'ai', sectionsTotal: 1, sectionsOk: 1, startedAt: jobStartedAt });
+      res.json({ ok: true, ...r });
+    })
+    .catch((e: unknown) => {
+      reportAiJob({ jobId, cardKey: 'ai.plan_import', status: 'error', mode: 'ai', startedAt: jobStartedAt });
+      res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+    });
 });
 
 // AI 导入确认保存：批量创建 + 统一重排（首条带 startDate 时作时间线锚点）
@@ -682,10 +714,19 @@ planApi.post('/ai-parse-doc', raw({ type: () => true, limit: '30mb' }), (req, re
   } else {
     textP = Promise.reject(new Error('仅支持 .md / .markdown / .docx；老式 .doc 请先用 Word 另存为 .docx'));
   }
+  // T03316（G-3）：需求文档 → WBS 拆解是完整一轮 → 记 ai.plan_import 终态
+  const jobStartedAt = new Date().toISOString();
+  const jobId = req.query.jobId;
   textP
     .then((text) => PlanService.aiParseWbs(toolId, text))
-    .then((r) => res.json({ ok: true, ...r }))
-    .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
+    .then((r) => {
+      reportAiJob({ jobId, cardKey: 'ai.plan_import', status: 'done', mode: 'ai', sectionsTotal: 1, sectionsOk: 1, startedAt: jobStartedAt });
+      res.json({ ok: true, ...r });
+    })
+    .catch((e: unknown) => {
+      reportAiJob({ jobId, cardKey: 'ai.plan_import', status: 'error', mode: 'ai', startedAt: jobStartedAt });
+      res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+    });
 });
 
 // ---------- T00662：从 PRD 导入（AI 拆 WBS + 需求跟踪矩阵） ----------
@@ -698,14 +739,23 @@ planApi.post('/ai-parse-prd', raw({ type: () => true, limit: '30mb' }), (req, re
   if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
   if (typeof toolId !== 'string' || !toolId) return res.status(400).json({ error: 'toolId 必填（PRD 解析需要模型工具）' });
   if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: '请求体应为文件二进制' });
+  // T03316（G-3）：PRD 需求梳理（单轮或分片）是完整一轮 → 记 ai.prd_import 终态
+  const jobStartedAt = new Date().toISOString();
+  const jobId = req.query.jobId;
   PlanService.extractPrdText(req.body, filename)
     .then(async (text) => {
       // T00908：随解析一并返回提取后的 PRD 全文 textMd——供前端确认导入时作 prdMd 落库到 PRD 管理视图
       const r = await PlanService.aiParsePrd(toolId, text);
       return { ok: true, ...r, textMd: text };
     })
-    .then((r) => res.json(r))
-    .catch((e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) }));
+    .then((r) => {
+      reportAiJob({ jobId, cardKey: 'ai.prd_import', status: 'done', mode: 'ai', sectionsTotal: 1, sectionsOk: 1, startedAt: jobStartedAt });
+      res.json(r);
+    })
+    .catch((e: unknown) => {
+      reportAiJob({ jobId, cardKey: 'ai.prd_import', status: 'error', mode: 'ai', startedAt: jobStartedAt });
+      res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+    });
 });
 
 /**

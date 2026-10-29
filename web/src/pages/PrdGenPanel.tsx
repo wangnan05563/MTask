@@ -6,6 +6,7 @@ import { useSessionState } from '../ui/session';
 import { ProjectListHint, patchProject, projectListPlaceholder, useProjectList } from '../ui/projectList';
 import { MarkdownContent } from '../ui/Markdown';
 import { prdGenStore, usePrdGen, type PrdGenIssue } from '../stores/prdGenStore';
+import { sessionJobId } from '../util/jobId'; // T03316（G-3）：会话稳定 jobId，重试合到同一 job
 import { askConfirm } from '../ui/dialogs'; // T03159（U20）：覆盖既有同源 PRD 前二次确认
 import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00769 二轮：未绑定工作空间时原位提供绑定入口
 import { AiProvenanceSection } from '../components/AiProvenance'; // T03262（AI-101①④）：溯源面板 + 产物找回
@@ -239,7 +240,7 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
     try {
       const contentBase64 = await fileToBase64(file);
       await streamEvents(
-        `/plans/prd-generate-stream?projectId=${projectId}&toolId=${toolId}&filename=${encodeURIComponent(file.name)}`,
+        `/plans/prd-generate-stream?projectId=${projectId}&toolId=${toolId}&filename=${encodeURIComponent(file.name)}&jobId=${sessionJobId}`,
         { contentBase64 },
         (name, payload) => {
           if (name === 'stage') prdGenStore.pushLog((payload as { msg: string }).msg);

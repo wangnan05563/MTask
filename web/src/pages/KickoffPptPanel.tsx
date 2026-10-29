@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import { kickoffPptStore, useKickoffPpt, type KickoffOutlineItem, type KickoffStreamResult } from '../stores/kickoffPptStore';
+import { sessionJobId } from '../util/jobId'; // T03316（G-3）：会话稳定 jobId，重试合到同一 job
 import { FlowProgress } from '../ui/FlowProgress';
 import { askConfirm } from '../ui/dialogs';
 import { CONSOLE_RESET_EVENT } from '../ui/consoleReset'; // T02109：工作台重置广播——面板本地大纲稿随重置归零
@@ -444,7 +445,7 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
     try {
       await streamEvents(
         '/plans/kickoff-ppt-stream',
-        { projectId, toolId, outline: rows },
+        { projectId, toolId, outline: rows, jobId: sessionJobId },
         (name, payload) => {
           if (name === 'stage') {
             const msg = (payload as { msg: string }).msg;

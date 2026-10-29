@@ -22,6 +22,7 @@ import {
 import { askConfirm } from '../ui/dialogs';
 import { enumLabel, type CaseMeta } from './testCaseModel';
 import { AiProvenanceSection } from '../components/AiProvenance'; // T03262（AI-101①④）：溯源面板 + 产物找回
+import { sessionJobId } from '../util/jobId'; // T03316（G-3）：会话稳定 jobId，重试合到同一 job
 import { CircleCheck, FileText, ListChecks, Loader2, RefreshCw, Sparkles, Trash2, Upload, X } from 'lucide-react';
 
 /** 目标项目 + 来源 + 偏好之外的草稿快照（§8.7 sessionStorage 结构） */
@@ -181,6 +182,7 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
     testCaseGenStore.begin();
     testCaseGenStore.pushLog(`来源：${sourceLabel}（${useDoc ? '内部文档' : '外部上传'}）；开始生成…`);
     const body: Record<string, unknown> = {
+      jobId: sessionJobId,
       source: sourceLabel, resplit,
       prefs: { perReq: Number(perReq) || undefined, granularity, includeNegative, priorityStrategy },
     };

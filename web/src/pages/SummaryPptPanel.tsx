@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type Project } from '../api/client';
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import { summaryPptStore, useSummaryPpt, type SummaryOutlineItem, type SummaryStreamResult } from '../stores/summaryPptStore';
+import { sessionJobId } from '../util/jobId'; // T03316（G-3）：会话稳定 jobId，重试合到同一 job
 import { ProjectScopePicker, scopeSummary } from '../ui/projectScopePicker';
 // T02857：纯规则（值域镜像 / 日期口径 / 大纲缺项）放 ui 层，门可直接 import 与服务端真常量对账
 import {
@@ -694,6 +695,7 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
           outline: rows,
           mode: effectiveMode,
           style,
+          jobId: sessionJobId,
         },
         (name, payload) => {
           if (name === 'stage') {
