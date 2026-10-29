@@ -16,7 +16,7 @@
 </div>
 
 **MTask** 是面向开发者的 AI 任务开发管理工具，用「项目维度 + AI 梳理 + 队列分发」替代基于 txt 的粗糙任务管理方式：
-按项目组织开发任务，由 AI 自动梳理任务内容，可配置多种 AI 开发工具，把每日任务队列分发给 AI 工具开发，完成归可档可删。
+按项目组织开发任务，由 AI 自动梳理任务内容，可配置多种 AI 开发工具，把每日任务队列分发给 AI 工具开发，完成后可归档、可删除。
 
 > **一句话**：面向开发者的 AI 任务开发管理工具——项目维度任务管理 + AI 梳理 + 队列分发。
 > 技术选型：Electron（桌面壳）+ React 18 / Vite / TypeScript（前端）+ Express / TypeScript（后端）+ SQLite（better-sqlite3）。
@@ -36,6 +36,7 @@
 - [数据与安全](#数据与安全)
 - [MCP / API 接口](#mcp--api-接口)
 - [开发者指南](#开发者指南)
+- [品牌与社交预览](#品牌与社交预览)
 - [功能与需求对照](#功能与需求对照)
 - [相关文档](#相关文档)
 - [许可证](#许可证)
@@ -45,29 +46,35 @@
 ## 功能特性
 
 **任务管理**
-- 按项目维度建任务，支持分类、优先级、状态、验证标记、置顶与截图附件
-- 父子两级层级（epic → task）、拖拽排序、CSV 批量导入
-- 待办 / 已完成双列表，搜索检索，一键归档（仅归档任务可删除，可还原）
+- 按项目维度建任务，支持分类、优先级、状态、验证标记、置顶、自定义字段与截图附件
+- 父子两级层级（epic → task）、拖拽排序、CSV 批量导入、任务导出
+- 待办 / 已完成双列表，结构化搜索（命令面板 `Ctrl+K`、数字键 1–9 切页、深链直达），一键归档与还原（仅归档任务可删除）
+- 任务 ↔ Git 提交关联：绑定 / 解绑提交、抽屉内查看 diff 与文件统计，并支持 AI 智能关联推荐
 
 **AI 能力**
-- AI 梳理：单条 / 批量梳理任务内容，草稿确认后回填，支持标题美化、描述优化、智能分类
+- AI 梳理：单条 / 批量梳理任务内容，草稿确认后回填，支持标题美化、描述优化、智能分类（批量走服务端分批与失败拆分）
 - 队列分发：将待办任务与指定 AI 工具组队发送，支持同步即时与异步提交 + 轮询收口两种模式，回执落库、行展开审阅、采纳 / 复制
+- AI 工作台：周报 / 月报、PRD 生成与导入、测试用例生成、项目启动会与汇报 PPT、代码评审讲稿（分段生成）
+- 工作空间只读问答：基于本地符号索引回答并给出 `file:line` 引用，统计提问数、回答成功率、引用点击与有用 / 无用反馈
 - AI 控制台并行分析：多任务并行分析并汇总
 
-**需求与计划**
+**项目与计划**
 - 需求仓库与需求跟踪矩阵（WBS 拆解、依赖编排）
-- 项目计划：甘特 / 串行瀑布时间线
+- 项目计划：甘特 / 串行瀑布时间线、里程碑与阻塞依赖
+- 迭代与燃尽图；估算视图（工作量 / 工期 / 成本，可导出）
 - PRD 生成与导入，测试用例管理
 
 **知识沉淀与报表**
 - 提示词仓库、通用需求仓库
-- 周报 / 月报导出（Excel / Word / PDF / PPT），并附 AI 洞察
+- 报表导出（Excel / Word / PDF / PPT），并附 AI 洞察
+- AI 用量统计、指标基线与项目洞察
 
 **工程化与运维**
-- 数据迁移：换机 bundle 导入 / 导出；数据维护：DB 在线 CRUD
+- 数据迁移：换机 bundle 导入 / 导出，覆盖导入前自动快照；数据维护：DB 在线 CRUD；本地备份 / 恢复
 - 内网穿透：Cloudflare / Cpolar / Tailscale + 访问令牌
-- 应用自更新：基于 GitHub Releases 的版本检查
-- 执行会话监督审计、后台日志、用量统计
+- 应用自更新：基于 GitHub Releases 的版本检查与断点续传
+- 执行会话监督审计、后台日志、项目级 Webhook、SonarQube 质量扫描
+- 发布门禁：`scripts/tests/` 下的 `verify-*` 脚本覆盖 HEAD 自洽性、原生模块 ABI、打包壳与各特性回归
 
 **多端接入**
 - 桌面（Electron）+ 移动 Web（随手记 / 离线草稿）
@@ -80,8 +87,8 @@
 | 层 | 选型 | 说明 |
 |----|------|------|
 | 桌面壳 | Electron 33 | 主进程内嵌本地 HTTP 服务并加载前端产物 |
-| 前端 | React 18 + Vite + TypeScript | SPA，以 `tab` 状态路由（无 react-router） |
-| 后端 | Express 4 + TypeScript | 本地 API 服务，UI 与数据层解耦 |
+| 前端 | React 18 + Vite 6 + TypeScript | SPA，以 `tab` 状态路由（无 react-router），含移动端外壳 |
+| 后端 | Express 4 + TypeScript | 本地 API 服务，UI 与数据层解耦，开发期用 tsx 直跑 |
 | 数据库 | SQLite（better-sqlite3） | 同步 API、零配置、单文件可移植，WAL 模式 |
 | AI 接入 | `@modelcontextprotocol/sdk` + 自研适配器 | OpenAI 兼容 / Claude / Ollama / WorkBuddy 四类协议 |
 | 报表 | exceljs / docx / pptxgenjs / pdfkit | Worker 线程内合成报表文件，不阻塞主循环 |
@@ -93,13 +100,20 @@
 ## 目录结构
 
 ```
-server/   # 后端：Express + SQLite + AIAdapter（OpenAI 兼容 / Claude / Ollama / WorkBuddy）
-          #   └─ src/mcp/   MCP 服务（向外部 AI Agent 暴露 mtask_* 工具）
-web/      # 前端：React + Vite
-electron/ # 桌面壳主进程（内嵌启动后端、加载前端产物）
-scripts/  # Windows 一键脚本（构建打包 / 启动服务 / 停止服务）与联调脚本
-docs/     # 概要设计 / 详细设计 / MCP 接口文档 / PRD / 测试报告
-build/    # 品牌资源（社交预览图等）
+server/            # 后端：Express + SQLite + AIAdapter（OpenAI 兼容 / Claude / Ollama / WorkBuddy）
+  src/routes/      #   REST 路由（任务、计划、估算、迭代、Git 关联、Webhook、Sonar 等）
+  src/services/    #   业务服务（TaskService / QueueService / ArchiveService / taskGitLinks …）
+  src/mcp/         #   MCP 服务（向外部 AI Agent 暴露 mtask_* 工具）
+  src/db/          #   建表与连接（better-sqlite3，WAL）
+web/               # 前端：React + Vite
+  src/pages/       #   一级页面（任务 / 模型 / 提示词 / 通用需求 / 项目管理 / AI 工作台 / 队列 …）
+  src/components/  #   抽屉、估算、Git 提交、甘特、图表等组件
+  src/mobile/      #   移动端外壳（随手记 / 离线草稿）
+electron/          # 桌面壳主进程（内嵌启动后端、api:// 协议代理、加载前端产物）
+scripts/           # 构建打包 / 启动停止 / 发布 / 联调脚本
+  tests/           #   发布与特性门禁（verify-*）
+docs/              # 概要设计 / 详细设计 / MCP 接口 / PRD / 测试报告
+build/             # 品牌资源（图标、社交预览图）
 ```
 
 ---
@@ -129,9 +143,9 @@ npm run dev:server
 
 # 2. 另开终端启动前端（Vite dev server，/api 代理到后端）
 npm run dev:web
-# 浏览器打开 http://localhost:5173
+# 浏览器打开 http://localhost:5175
 
-# 3. 类型检查
+# 3. 后端类型检查（前端类型检查在 npm run build:web 内）
 npm run typecheck
 ```
 
@@ -139,8 +153,8 @@ npm run typecheck
 
 | 脚本 | 作用 |
 |------|------|
-| `scripts\构建打包.bat` | 依赖检查 / 自动安装 + 类型检查 + 后端编译 + 前端构建 |
-| `scripts\启动服务.bat` | 清理旧进程 → 启动后端(39876) + 前端(5173) → 等待就绪 → 健康检查 → 打开浏览器 |
+| `scripts\构建打包.bat` | 依赖检查 / 自动安装 + HEAD 自洽预检 + 类型检查 + 后端编译 + 前端构建 |
+| `scripts\启动服务.bat` | 清理旧进程 → 启动后端(39876) + 前端(5175) → 等待就绪 → 健康检查 → 打开浏览器 |
 | `scripts\停止服务.bat` | PID 文件优先停止，端口扫描兜底，验证端口释放 |
 
 > PID 文件存于 `logs\`（`server.pid` / `web.pid`）。若修改端口，请同步修改三个脚本中的 `SERVER_PORT` / `WEB_PORT`。
@@ -150,25 +164,33 @@ npm run typecheck
 ## 构建与打包
 
 ```bash
-# 分别构建后端与前端
-npm run build:server
-npm run build:web
+# 完整发布链路（推荐）：依赖检查 → HEAD 自洽预检 → 后端 typecheck/build → 前端构建
+# → 版本号递增 → 切 Electron ABI → electron-builder → 还原工作区 ABI
+node scripts/打包.mjs
 
-# 生产模式运行桌面壳（加载 web/dist，内嵌启动后端）
+# 仅出包（不会重新构建前后端，需先跑上面的构建步骤）
+npm run dist        # NSIS 安装包
+npm run dist:dir    # 输出目录版（免安装）
+
+# 应用图标 / 社交预览图
+npm run make:icon
+npx electron scripts/make-social-preview.js
+```
+
+桌面壳运行：
+
+```bash
+# 生产模式（加载 web/dist，内嵌启动后端）
 npm run electron
 
 # 开发模式（前端走 Vite 热更新，需另开 npm run dev:server）
 MTask_DEV=1 npm run electron
-
-# 打 Windows 安装包 / 免安装目录
-npm run dist        # electron-builder（NSIS）
-npm run dist:dir    # 输出目录版（免安装）
-npm run make:icon   # 生成应用图标
 ```
 
 接入要点：
-- 主进程内嵌启动后端（tsx 直跑 TS 源）；`file://` 页面的 `/api/*` 请求由 `session.webRequest` 重定向到 `http://127.0.0.1:39876`，前端零改动；
-- 后端已启用 CORS（本地服务放行），供桌面壳跨协议 `fetch`。
+- 主进程内嵌启动后端（开发期 tsx 直跑 TS 源）；前端在 Electron 壳内以 `api://` 前缀请求，由主进程代理转发到本地 HTTP 服务；
+- 打包态默认使用独立端口 **39877**（开发态 39876），避免与仍在运行的开发服务抢占端口；
+- `npm run dist` 与 `scripts/打包.mjs` 共用 HEAD 自洽预检与 ABI 守卫；原生模块 ABI 不匹配的包装机即废，不要绕过。
 
 ---
 
@@ -176,8 +198,8 @@ npm run make:icon   # 生成应用图标
 
 | 变量 | 说明 | 默认 |
 |------|------|------|
-| `MTask_PORT` | 后端端口 | `39876` |
-| `MTask_DATA_DIR` | SQLite 数据目录 | `server/data` |
+| `MTask_PORT` | 后端端口 | 开发 `39876`，打包态 `39877` |
+| `MTask_DATA_DIR` | SQLite 数据目录 | `server/data`（打包态为用户数据目录） |
 | `MTask_MASTER_KEY` | API Key 加密主密钥（生产必配） | 本机指纹派生（仅开发兜底） |
 | `MTask_DEV` | Electron 加载 Vite dev server | 关闭 |
 
@@ -188,13 +210,14 @@ npm run make:icon   # 生成应用图标
 - 数据存储于本地 **SQLite 单文件**（WAL 模式），桌面版位于用户数据目录，开发版位于 `server/data/mtask.db`。
 - 敏感字段（AI 工具 API Key、更新 Token）使用 **AES-256-GCM** 加密落库，界面脱敏显示；生产环境务必配置 `MTask_MASTER_KEY`。
 - AI 分发结果仅以文本形式留存，人工确认后合并入库，不自动入库。
+- 开启内网穿透时可配置访问令牌，所有 `/api` 数据接口需携带 `X-Access-Token`。
 
 ---
 
 ## MCP / API 接口
 
-- 后端暴露 REST API（`/api/*`），供前端与桌面壳调用。
-- 同时提供 **MCP（Model Context Protocol）** 服务，向外部 AI Agent 暴露 `mtask_*` 工具（任务读写、进度上报、计划 / 需求 / 测试用例管理等），使 Agent 可读写同一套数据。
+- 后端暴露 REST API（`/api/*`），供前端与桌面壳调用；开发态 `http://127.0.0.1:39876`，打包态 `http://127.0.0.1:39877`。
+- 同时提供 **MCP（Model Context Protocol）** 服务（`/api/mcp`），向外部 AI Agent 暴露 `mtask_*` 工具（任务读写、进度上报、计划 / 需求 / 测试用例管理等），使 Agent 可读写同一套数据。
 - 接口清单详见 [`docs/MCP接口文档.md`](docs/MCP接口文档.md)。
 
 ---
@@ -202,11 +225,27 @@ npm run make:icon   # 生成应用图标
 ## 开发者指南
 
 ```bash
-# 类型检查（前后端）
+# 后端类型检查（tsc --noEmit）
 npm run typecheck
 
-# API 冒烟测试
+# 前端类型检查 + 构建（tsc --noEmit && vite build）
+npm run build:web
+
+# API 断言套件（默认打打包态 39877，可传入实例地址与套件名）
 npm run test:api
+npm run test:api http://127.0.0.1:39906 t00776 t00777
+```
+
+### 发布门禁
+
+```bash
+# 示例：HEAD 自洽性 / ABI / 打包壳
+npm run verify:head-selfconsistency
+npm run verify:abi-switch
+npm run verify:packaged-shell
+
+# 其余门禁脚本使用 tsx 直跑
+node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t03637-derived-archive.mts
 ```
 
 ### 适配器联调验证（本地 mock，无需外网 / API Key）
@@ -224,21 +263,40 @@ node ../../node_modules/tsx/dist/cli.mjs adapter-e2e.mjs  # 终端 2：真实跑
 
 ---
 
+## 品牌与社交预览
+
+- 社交预览图：[`build/social-preview.png`](build/social-preview.png)（1280×640，GitHub 推荐尺寸），矢量源文件为 [`build/social-preview.svg`](build/social-preview.svg)。
+- README 顶部已引用该图；GitHub 仓库页的社交预览需在 **Settings → Social preview** 上传同一张 PNG。
+- 修改文案或配色后重新渲染：
+
+```bash
+npx electron scripts/make-social-preview.js
+```
+
+> 脚本用 Electron 无头渲染 SVG 并导出 PNG，保证矢量清晰度。若终端存在 `ELECTRON_RUN_AS_NODE=1`，先取消该变量再执行。
+
+---
+
 ## 功能与需求对照
 
 | 需求（SRS） | 实现位置 |
 |-------------|----------|
-| FR1.1 项目管理 | `server/routes` /projects；`web/pages/TasksPage` |
-| FR1.2/1.3 任务创建/编辑 | `TaskService.create/update`；TasksPage 标题/描述/优先级 |
-| FR1.4 列表视图 + 检索 | `GET /tasks?projectId&archived`；TasksPage 搜索框 |
-| FR1.5 非归档禁删 | `ArchiveService.remove` 仅 `archived=1` |
+| FR1.1 项目管理 | `server/src/routes/index.ts`（`/projects`）；`web/src/pages/TasksPage.tsx` |
+| FR1.2/1.3 任务创建/编辑 | `server/src/services/TaskService.ts`（`create/update`）；TasksPage 标题/描述/优先级 |
+| FR1.4 列表视图 + 检索 | `GET /tasks?projectId&archived`；TasksPage 搜索框与命令面板 |
+| FR1.5 非归档禁删 | `server/src/services/ArchiveService.ts`（仅 `archived=1`） |
 | FR2  AI 梳理（单条/批量 + 确认回填） | `POST /api/ai/organize`；TasksPage 草稿→保存 |
-| FR3.1–3.3 AI 工具配置 | `ConfigService`（加密/脱敏/连接测试） |
-| FR3.4 默认工具绑定 | `POST /aitools/:id/set-default`；AIToolsPage |
-| FR4.1–4.5 队列构建/发送/回执/重试 | `QueueService`（Job 状态机）；QueuePage |
+| FR3.1–3.3 AI 工具配置 | `server/src/services/ConfigService.ts`（加密/脱敏/连接测试） |
+| FR3.4 默认工具绑定 | `POST /aitools/:id/set-default`；`web/src/pages/AIToolsPage.tsx` |
+| FR4.1–4.5 队列构建/发送/回执/重试 | `server/src/services/QueueService.ts`（Job 状态机）；`web/src/pages/QueuePage.tsx` |
 | FR4.4 采纳 = 仅保存文本 | `POST /tasks/:id/adopt`（`ai_summary` + done） |
 | FR5.1/5.3 完成/退回 | `TaskService.setStatus` |
-| FR6.1–6.5 归档/还原/删除 | `ArchiveService`；ArchivePage |
+| FR6.1–6.5 归档/还原/删除 | `ArchiveService.ts`；`web/src/pages/ArchivePage.tsx` |
+| 估算视图 | `server/src/routes/estimates.ts`；`web/src/components/EstimatePanel.tsx` |
+| 迭代与燃尽 | `server/src/routes/iterations.ts`；`web/src/pages/SprintPanel.tsx` |
+| 任务 ↔ Git 提交关联 | `server/src/services/taskGitLinks.ts`；`server/src/routes/gitLinks.ts`；`web/src/components/GitCommitTab.tsx` |
+| 项目级 Webhook | `server/src/routes/webhooks.ts`；`web/src/pages/WebhookPanel.tsx` |
+| MCP 工具 | `server/src/mcp/server.ts` |
 
 ---
 
@@ -246,9 +304,12 @@ node ../../node_modules/tsx/dist/cli.mjs adapter-e2e.mjs  # 终端 2：真实跑
 
 - [`docs/概要设计.md`](docs/概要设计.md) — 系统概要设计
 - [`docs/详细设计/`](docs/详细设计) — 各模块详细设计
-- [`docs/MCP接口文档.md`](docs/MCP接口文档.md) — MCP 工具与 REST 接口说明
 - [`docs/技术设计.md`](docs/技术设计.md) — 技术设计
-- `需求规格说明书.md`、`同类产品分析报告.md` — 需求与竞品分析
+- [`docs/MCP接口文档.md`](docs/MCP接口文档.md) — MCP 工具与 REST 接口说明
+- [`docs/需求规格说明书.md`](docs/需求规格说明书.md) — 需求规格说明书
+- [`docs/同类产品分析报告.md`](docs/同类产品分析报告.md) — 竞品分析
+- [`docs/验收门判据规约.md`](docs/验收门判据规约.md) — 发布门禁判据
+- [`docs/GitHub版本更新配置手册.md`](docs/GitHub版本更新配置手册.md) — 应用自更新配置
 
 ---
 

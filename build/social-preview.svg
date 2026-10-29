@@ -24,10 +24,10 @@
   <!-- 右侧：产品名 + 标语 + 技术栈 -->
   <g transform="translate(560 210)">
     <text x="0" y="0" font-family="'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif" font-size="100" font-weight="700" fill="#ffffff">MTask</text>
-    <text x="4" y="92" font-family="'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif" font-size="34" font-weight="500" fill="#dbeafe">AI 任务开发管理工具</text>
-    <text x="4" y="140" font-family="'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif" font-size="30" font-weight="400" fill="#bfdbfe" opacity="0.95">项目化 · AI 梳理 · 队列分发</text>
+    <text x="4" y="92" font-family="'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif" font-size="34" font-weight="500" fill="#dbeafe">AI 驱动的任务开发管理平台</text>
+    <text x="4" y="140" font-family="'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif" font-size="30" font-weight="400" fill="#bfdbfe" opacity="0.95">项目任务 · AI 梳理 · 队列分发 · Git 追溯</text>
     <text x="4" y="192" font-family="'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif" font-size="24" fill="#bfdbfe" opacity="0.85">Electron · React · TypeScript · Express · SQLite</text>
   </g>
 
-  <text x="24" y="612" font-family="Consolas,Menlo,monospace" font-size="20" fill="#ffffff" opacity="0.55">github.com/mtask</text>
+  <text x="24" y="612" font-family="Consolas,Menlo,monospace" font-size="20" fill="#ffffff" opacity="0.55">github.com/wangnan05563/MTask</text>
 </svg>
