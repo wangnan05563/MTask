@@ -194,6 +194,25 @@ export function reusableSegments(jobId: string): Map<string, GenSegmentView> {
   return map;
 }
 
+/**
+ * T03263（REQ-020）：跨任务复用——同卡、同 sectionKey 下历史上已完成的段，最新任务优先。
+ * 请求指纹相同的重跑（失败重试 / 刷新重来）直接拿回已完成段，不再重复调用模型；
+ * `reusableSegments` 只在单个任务内复用，本函数把复用面扩到同卡的历史任务。
+ */
+export function doneSegmentsFor(cardKey: string, sectionKey: string): Map<string, GenSegmentView> {
+  const rows = getDb().prepare(
+    `SELECT s.* FROM ai_gen_segments s JOIN ai_gen_jobs j ON j.id = s.job_id
+      WHERE j.card_key = ? AND s.section_key = ? AND s.status = 'done' AND s.text <> ''
+      ORDER BY j.created_at DESC, s.updated_at DESC`,
+  ).all(cardKey, sectionKey) as SegmentRow[];
+  const map = new Map<string, GenSegmentView>();
+  for (const r of rows) {
+    const k = `${r.section_key}\u0000${r.segment_key}`;
+    if (!map.has(k)) map.set(k, toSegmentView(r));
+  }
+  return map;
+}
+
 /** 段开始：置 running、attempts+1（刷新时 running 视为未完成，下一轮会重跑） */
 export function beginSegment(jobId: string, sectionKey: string, segmentKey: string): void {
   const db = getDb();

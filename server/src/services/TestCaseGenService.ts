@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { getDb } from '../db/connection';
@@ -5,6 +6,7 @@ import { getAdapter, type AIAdapter, type ToolConfig } from '../adapters';
 import { ConfigService } from './ConfigService';
 import { PlanService } from './PlanService';
 import { logService } from './LogService';
+import { beginSegment, declareSegments, doneSegmentsFor, finalizeJob, finishSegment, openJob } from './AiGenJournal';
 import { ContextBudget, WorkspaceService } from './WorkspaceService';
 import { loadWorkspaceContext } from './PrdGenService';
 import {
@@ -106,9 +108,18 @@ async function buildRetrieveBlock(project: { workspace_path: string | null }, in
   }
 }
 
+/** 流式调用函数形态：生产走适配器，门测试可注入替身（T03263） */
+type ChatFn = (
+  system: string,
+  user: string,
+  config: ToolConfig,
+  onDelta: (text: string) => void,
+  signal?: AbortSignal,
+) => Promise<{ ok: boolean; content?: string; partial?: string; error?: string }>;
+
 /** 单次流式调用：抬预算 → max_tokens 被拒则回退重试 → 触顶返回 partial（truncated=true）。 */
 async function callOnce(
-  adapter: AIAdapter,
+  chat: ChatFn,
   system: string,
   user: string,
   genConfig: ToolConfig,
@@ -116,11 +127,11 @@ async function callOnce(
   onStage: (m: string) => void,
   signal?: AbortSignal,
 ): Promise<{ text: string; truncated: boolean }> {
-  let res = await adapter.chatStream(system, user, genConfig, onDelta, signal);
+  let res = await chat(system, user, genConfig, onDelta, signal);
   // 提供商拒绝抬高的输出上限（直接 400）→ 回退到用户原值重试一次（与 PrdGenService 的 16K→8K 回退同款思路）
   if (!res.ok && !res.partial && /max_tokens|max_completion_tokens|too large|invalid/i.test(res.error ?? '')) {
     onStage(`模型未接受 ${genConfig.maxTokens} tokens 输出上限，回退重试…`);
-    res = await adapter.chatStream(system, user, { ...genConfig, maxTokens: TESTCASE_FALLBACK_OUTPUT_TOKENS }, onDelta, signal);
+    res = await chat(system, user, { ...genConfig, maxTokens: TESTCASE_FALLBACK_OUTPUT_TOKENS }, onDelta, signal);
   }
   if (res.ok) return { text: res.content ?? '', truncated: false };
   // finish_reason=length：adapter 给出 partial + 「超长被截断」；选择性采纳已成功部分并显式告警（其余失败原样抛出）
@@ -143,6 +154,8 @@ export async function generateTestCasesStream(input: {
   onStage: (msg: string) => void;
   onDelta: (text: string) => void;
   signal?: AbortSignal;
+  /** T03263：门测试注入点——生产不传，走真实适配器 */
+  chatStream?: ChatFn;
 }): Promise<TcGenDraft> {
   const db = getDb();
   const project = db.prepare('SELECT name, workspace_path FROM projects WHERE id = ?').get(input.projectId) as
@@ -151,13 +164,28 @@ export async function generateTestCasesStream(input: {
   if (!str(input.content)) throw new Error('PRD 原文为空，无法生成用例');
 
   const { type, config } = runtimeWithModel(input.toolId);
-  const adapter = getAdapter(type);
+  const adapter: AIAdapter = getAdapter(type);
+  const chat: ChatFn = input.chatStream ?? ((s, u, c, d, sig) => adapter.chatStream(s, u, c, d, sig));
   const startedAt = Date.now();
   const genConfig: ToolConfig = {
     ...config,
     maxTokens: Math.max(config.maxTokens ?? 4096, TESTCASE_MIN_OUTPUT_TOKENS),
     timeoutMs: Math.max(config.timeoutMs ?? 60_000, TESTCASE_MIN_TIMEOUT_MS),
   };
+
+  // T03263（REQ-020 / AI-103）：分段台账。请求指纹（项目+模型+PRD+偏好+是否重拆）决定 sectionKey，
+  // 同指纹的历史完成段跨任务复用——失败重试 / 刷新重来只重跑未完成的段，不再整轮重烧配额。
+  const CARD_KEY = 'ai.testcase_gen';
+  const sectionKey = createHash('sha256')
+    .update(JSON.stringify({ p: input.projectId, t: input.toolId, c: input.content, prefs: input.prefs ?? null, resplit: Boolean(input.resplitRequirements) }))
+    .digest('hex')
+    .slice(0, 16);
+  const jobId = openJob({ cardKey: CARD_KEY, toolId: input.toolId, title: '测试用例生成', request: { projectId: input.projectId, sectionKey } });
+  const reused = doneSegmentsFor(CARD_KEY, sectionKey);
+  const segOf = (key: string) => reused.get(`${sectionKey}\u0000${key}`);
+  if (reused.size > 0) {
+    input.onStage(`发现同一请求上一次的 ${reused.size} 个已完成段：本轮只补未完成的段，已完成段不重复调用模型`);
+  }
 
   // ---- 加载内置技能（SKILL.md + 三份 references）----
   input.onStage('加载内置技能「testcase-generate」…');
@@ -190,7 +218,20 @@ export async function generateTestCasesStream(input: {
   const notes: string[] = [];
   let requirements: DraftRequirement[];
 
-  if (existingReqs.length > 0 && !input.resplitRequirements) {
+  // T03263：需求拆分段——同指纹已拆过就直接复用清单，不再调用模型
+  const SPLIT_SEG = 'split';
+  declareSegments(jobId, [{ sectionKey, segmentKey: SPLIT_SEG, label: '需求拆分', orderIndex: 0 }]);
+  // 显式勾选「重新拆分」时不复用拆分段——用户要的就是重新拆一遍，缓存会把它变成「没反应」
+  const splitCached = input.resplitRequirements ? undefined : segOf(SPLIT_SEG);
+  if (splitCached) {
+    const cached = JSON.parse(splitCached.text) as { requirements: DraftRequirement[]; notes?: string[] };
+    requirements = cached.requirements;
+    notes.push(...(cached.notes ?? []), '本轮复用上一次已完成的需求拆分（未重复调用模型）');
+    // 复用也要在本任务里落 done——否则新任务台账显示「未完成」，刷新恢复会误判进度
+    beginSegment(jobId, sectionKey, SPLIT_SEG);
+    finishSegment(jobId, { sectionKey, segmentKey: SPLIT_SEG, ok: true, text: splitCached.text });
+    input.onStage(`步骤 1/3 复用：上一次已完成的需求拆分（${requirements.length} 条），本次未调用模型`);
+  } else if (existingReqs.length > 0 && !input.resplitRequirements) {
     requirements = existingReqs.map((r) => ({
       reqNo: str(r.req_no),
       title: str(r.title),
@@ -215,7 +256,7 @@ export async function generateTestCasesStream(input: {
       '【本轮任务】仅拆分/补充需求，用例段输出空数组。',
       '按输出协议，只填充 <<<REQUIREMENTS>>> 段（<<<CASES>>> 输出 []）；每条需求原子、可独立验证、带 sourceRef 指向原文定位。',
     ].join('\n\n');
-    const splitRes = await callOnce(adapter, system, splitUser, genConfig, input.onDelta, input.onStage, input.signal);
+    const splitRes = await callOnce(chat, system, splitUser, genConfig, input.onDelta, input.onStage, input.signal);
     const reqObjs = extractArray(splitRes.text, REQ_MARKER, CASE_MARKER, isRequirementObj);
     const seen = new Set<string>();
     const splitReqs: DraftRequirement[] = [];
@@ -235,6 +276,10 @@ export async function generateTestCasesStream(input: {
     }
     const news = requirements.filter((r) => r.isNew).length;
     input.onStage(`步骤 1/3 完成：需求 ${requirements.length} 条（复用 ${requirements.length - news}，新增 ${news}）`);
+  }
+
+  if (!splitCached) {
+    finishSegment(jobId, { sectionKey, segmentKey: SPLIT_SEG, ok: true, text: JSON.stringify({ requirements, notes }) });
   }
 
   if (input.signal?.aborted) throw new Error('生成已中止');
@@ -258,6 +303,12 @@ export async function generateTestCasesStream(input: {
   const allCases: DraftCase[] = [];
   const chunks: string[][] = [];
   for (let i = 0; i < reqSetNos.length; i += CHUNK_SIZE) chunks.push(reqSetNos.slice(i, i + CHUNK_SIZE));
+  // T03263：块键按「需求号 + 标题 + 正文」指纹——需求内容改过自然 miss 缓存，不拿旧用例冒充新结果
+  const chunkKey = (nos: string[]): string => 'cases:' + createHash('sha256')
+    .update(nos.map((n) => `${n}:${reqByNo.get(n)?.title ?? ''}:${reqByNo.get(n)?.content ?? ''}`).join('|'))
+    .digest('hex')
+    .slice(0, 16);
+  declareSegments(jobId, chunks.map((nos, i) => ({ sectionKey, segmentKey: chunkKey(nos), label: `用例块 ${i + 1}/${chunks.length}`, orderIndex: i + 1 })));
   input.onStage(`步骤 2/3｜生成测试用例…（${reqSetNos.length} 条需求分 ${chunks.length} 块处理，每块≤${CHUNK_SIZE}）`);
 
   let truncatedAny = false;
@@ -279,7 +330,7 @@ export async function generateTestCasesStream(input: {
       '严格独占一行输出标记：<<<REQUIREMENTS>>> 与 <<<CASES>>>（可选 <<<NOTES>>>）。',
     ].join('\n\n');
 
-    const res = await callOnce(adapter, system, caseUser, genConfig, input.onDelta, input.onStage, input.signal);
+    const res = await callOnce(chat, system, caseUser, genConfig, input.onDelta, input.onStage, input.signal);
     const objs = extractArray(res.text, CASE_MARKER, NOTE_MARKER, isCaseObj);
     const cases = objs
       .map((o) => normCase(o, existingKeys))
@@ -315,10 +366,26 @@ export async function generateTestCasesStream(input: {
   const failedReqNos = new Set<string>();
   let lastChunkErr = '';
   const runChunk = async (nos: string[]): Promise<void> => {
+    const key = chunkKey(nos);
+    // T03263：上一次同一请求已完成的块直接取回用例，不重复调用模型
+    const cached = segOf(key);
+    if (cached) {
+      const cachedCases = JSON.parse(cached.text) as DraftCase[];
+      allCases.push(...cachedCases);
+      // 复用也要在本任务里落 done——否则新任务台账显示「未完成」，刷新恢复会误判进度
+      beginSegment(jobId, sectionKey, key);
+      finishSegment(jobId, { sectionKey, segmentKey: key, ok: true, text: cached.text });
+      input.onStage(`  ▸ 复用上一次已完成的用例块（${nos.length} 需求 / ${cachedCases.length} 条），未调用模型`);
+      return;
+    }
+    beginSegment(jobId, sectionKey, key);
+    const before = allCases.length;
     try {
       await genChunk(nos, MAX_SHRINK_RETRY);
+      finishSegment(jobId, { sectionKey, segmentKey: key, ok: true, text: JSON.stringify(allCases.slice(before)) });
     } catch (e) {
       if (input.signal?.aborted) throw e;
+      finishSegment(jobId, { sectionKey, segmentKey: key, ok: false, text: '', error: e instanceof Error ? e.message : String(e) });
       lastChunkErr = e instanceof Error ? e.message : String(e);
       nos.forEach((n) => failedReqNos.add(n));
       input.onStage(`⚠ 本块（${nos.length} 需求）生成失败：${lastChunkErr}——跳过该块，其余块继续`);
@@ -380,6 +447,9 @@ export async function generateTestCasesStream(input: {
   const secs = Math.round((Date.now() - startedAt) / 1000);
   input.onStage(`生成完成：需求 ${total} 条、用例 ${cases.length} 条（耗时 ${Math.floor(secs / 60)} 分 ${secs % 60} 秒）——请在草稿视图确认后导入`);
   logService.log('INFO', 'ai', `[用例生成] project=${input.projectId} reqs=${total} cases=${cases.length} 覆盖=${coverage.rate}% truncated=${truncatedAny} 耗时=${Date.now() - startedAt}ms`);
+
+  // T03263：终态落台账——只有「失败且补生成也没挽回」的块才算 partial，补偿成功的整轮仍是 done
+  finalizeJob(jobId, failedStillUncovered.length > 0 ? 'partial' : 'done');
 
   return { requirements, cases, coverage, notes, truncated: truncatedAny };
 }
