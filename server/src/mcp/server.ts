@@ -640,6 +640,7 @@ export async function createMCPServer(): Promise<McpServer> {
   server.registerTool('mtask_list_tasks', {
     title: '列出任务',
     description: '按项目/状态/归档态列出任务；projectId 或 projectName 二者可选其一过滤项目，都不传则列出全部项目。默认只返回「待处理 或 未验证」的任务（利于 AI 分析决策）；需查其他需显式传 status。'
+      + '每项附带 gitLinks（最新一条关联提交）与 gitLinkCount（关联总数），可用于自查已完工但未回写 git ID 的任务（T03350）。'
       + '【并发池提示】T01066 后续：并发池已满（运行中任务数 ≥ 上限，默认 3）时，返回文本开头会带一段 ⚠ 软引导，'
       + '提示先收口已领取任务；structuredContent.pool 给出 limit/running/queued/full。此为提示不是拦截——是否继续领取由 Agent 自行判断。',
     inputSchema: {
@@ -665,11 +666,14 @@ export async function createMCPServer(): Promise<McpServer> {
       if (a.status) listOpts.status = a.status;
       else if (a.scope !== 'all') listOpts.pending = true;
       const tasks = TaskService.list(listOpts);
+      // T03350：列表内联关联提交（与 REST 列表同一实现）——Agent 不必逐条查详情即可发现
+      // 「done 但 gitLinkCount=0」的任务，把漏回写暴露在查询入口而不是等人工发现。
+      const withLinks = TaskGit.attachGitLinks(tasks);
       // T01066 后续：领取路径的池满提示——说明"上限"是软引导而非硬拦截，
       // 让 Agent 自己决定是先收口旧任务还是继续领取（硬拦会破坏多 Agent 自主并发）。
       const pool = readPoolStatus();
       const hint = poolFullHint(pool);
-      return ok(hint ? `${hint}\n\n${json(tasks)}` : json(tasks), { tasks, pool });
+      return ok(hint ? `${hint}\n\n${json(withLinks)}` : json(withLinks), { tasks: withLinks, pool });
     } catch (e) { return err((e as Error).message); }
   });
 
@@ -1181,6 +1185,9 @@ ${a.result}`;
         ...res.resolved.map((r) => `  ${r.input} -> ${r.sha}`),
         ...res.errors.map((e) => `  错误：${e}`),
       ];
+      // T03350：一条都没写进去时必须置 isError——否则 Agent 看到的是「成功态」结果，
+      // 关联 0 行也不会有人回头查（存量 2030 条 done 任务零关联的放大因素之一）。
+      if (res.linked + res.skipped === 0 && res.errors.length) return err(lines.join('\n'));
       return ok(lines.join('\n'), { ...res });
     } catch (e) {
       return err((e as Error).message);
