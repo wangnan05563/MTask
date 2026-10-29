@@ -21,6 +21,7 @@ import {
 } from '../stores/testCaseGenStore';
 import { askConfirm } from '../ui/dialogs';
 import { enumLabel, type CaseMeta } from './testCaseModel';
+import { AiProvenanceSection } from '../components/AiProvenance'; // T03262（AI-101①④）：溯源面板 + 产物找回
 import { CircleCheck, FileText, ListChecks, Loader2, RefreshCw, Sparkles, Trash2, Upload, X } from 'lucide-react';
 
 /** 目标项目 + 来源 + 偏好之外的草稿快照（§8.7 sessionStorage 结构） */
@@ -350,7 +351,7 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
         {/* T03592：两种口径的差别必须生成前就说清——默认复用是拿矩阵里现成的行，所选 PRD 只当上下文，
             换一份 PRD 重跑并不会得到这份 PRD 的需求（用户报障的「延续上次上下文」即此） */}
         {reqCount > 0 && (
-          <span data-lck="tcgen-reuse-hint" style={{ fontSize: 'var(--fs-2xs)', color: 'var(--warning, #c80)' }}>
+          <span data-lck="tcgen-reuse-hint" style={{ fontSize: 'var(--fs-2xs)', color: 'var(--warn)' }}>
             {resplit
               ? `项目已有 ${reqCount} 条需求：本轮按 PRD 重新拆分，旧需求不计入本轮覆盖率`
               : `项目已有 ${reqCount} 条需求：默认全部复用，不按所选 PRD 拆分需求`}
@@ -367,6 +368,10 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
         {streaming && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>点右侧控制台「停止」可中断</span>}
       </div>
 
+      {/* T03262（AI-101①④）：溯源与产物找回——不挂草稿条件，刷新后草稿清空也要能找回上一次的 */}
+      <AiProvenanceSection cardKey="ai.test_case_gen" projectId={projectId}
+        refreshKey={`${draftCases.length}:${coverage?.covered ?? 0}/${coverage?.total ?? 0}`} />
+
       {/* 草稿视图 */}
       {hasDraft && (
         <div style={{ border: '1px solid var(--border-strong)', borderRadius: 8, padding: 10 }}>
@@ -376,13 +381,13 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-s)', marginBottom: 4 }}>
                 <strong>覆盖度 {coverage.rate}%</strong>
                 <span style={{ color: 'var(--text-muted)' }}>{coverage.covered}/{coverage.total} 需求已覆盖 · 共 {draftCases.length} 条用例</span>
-                {snap.result?.truncated && <span style={{ color: 'var(--warning, #c80)', fontSize: 'var(--fs-xs)' }}>⚠ 部分输出被截断，已保留成功部分</span>}
+                {snap.result?.truncated && <span style={{ color: 'var(--warn)', fontSize: 'var(--fs-xs)' }}>⚠ 部分输出被截断，已保留成功部分</span>}
               </div>
               <div style={{ height: 8, borderRadius: 4, background: 'var(--surface-2, var(--border))', overflow: 'hidden' }}>
                 <div style={{ height: '100%', width: `${Math.max(0, Math.min(100, coverage.rate))}%`, background: 'var(--accent)' }} />
               </div>
               {uncovered.length > 0 && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--warning, #c80)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>
                   ⚠ {uncovered.length} 条需求未生成用例：{uncovered.slice(0, 6).map((u) => u.reqNo).join('、')}{uncovered.length > 6 ? '…' : ''}
                   <button onClick={regenerate} disabled={streaming} className="tbtn-anim" title="对未覆盖需求再补生成一轮" aria-label="补生成" style={opBtn}>
                     <RefreshCw size={11} /> 补生成
@@ -394,7 +399,7 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
 
           {/* T03592：服务端 notes（复用来源 / 失败块 / 未覆盖需求）在此可见，默认收起避免挤占草稿列表 */}
           {resultNotes.length > 0 && (
-            <details data-lck="tcgen-notes" style={{ marginBottom: 10, fontSize: 'var(--fs-xs)', color: 'var(--warning, #c80)' }}>
+            <details data-lck="tcgen-notes" style={{ marginBottom: 10, fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>
               <summary style={{ cursor: 'pointer' }}>提示 {resultNotes.length} 条（复用来源 / 未覆盖需求 / 失败块）</summary>
               <ul style={{ margin: '4px 0 0', paddingLeft: 18, display: 'grid', gap: 2 }}>
                 {resultNotes.map((n, i) => <li key={`${i}-${n.slice(0, 12)}`}>{n}</li>)}

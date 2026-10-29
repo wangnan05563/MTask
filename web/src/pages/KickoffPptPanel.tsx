@@ -21,6 +21,7 @@ import { FlowProgress } from '../ui/FlowProgress';
 import { askConfirm } from '../ui/dialogs';
 import { CONSOLE_RESET_EVENT } from '../ui/consoleReset'; // T02109：工作台重置广播——面板本地大纲稿随重置归零
 import { finishMaterialTiming } from '../ui/materialTiming'; // T03189（G-1）：成品下载即收口本轮材料准备耗时
+import { AiProvenanceSection } from '../components/AiProvenance'; // T03262（AI-101①④）：溯源面板 + 产物找回
 import { ChevronDown, ChevronUp, CircleAlert, CircleCheck, CircleX, Download, FileText, Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react';
 
 /** 服务端 `PreflightItem` 的前端镜像（单源：`server/src/services/kickoffService.ts`） */
@@ -550,6 +551,8 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
         downloading={downloading} onGenerate={() => void generate()} onDownload={() => void download()} />
 
       <BuildProgressPanel streaming={streaming} pageDone={pageDone} pageTotal={pageTotal} result={result} />
+
+      {!streaming && <AiProvenanceSection cardKey="ai.kickoff_ppt" projectId={projectId} refreshKey={result?.fileName ?? ''} />}
 
       {notice && <output className="flash-toast">{notice}</output>}
     </div>

@@ -15,6 +15,8 @@
  * - 下载文件名走 `downloadSafeName`（与 `DOWNLOAD_NAME_RE` 同源），不手拼扩展名以外的任何字符。
  */
 import { discardReport, saveReportBuffer, validateProjectIds } from './ReportService';
+import { recordArtifact } from './aiArtifactService';
+import { buildCardProvenance, recordCardProvenance, type CardProvenance } from './aiCardProvenance';
 import { downloadSafeName } from '../util/export-name';
 import { deckStylePreset, type DeckStyleKey } from '../util/exportStyle';
 import { assertCustomRange, assertSummaryPeriod, type CustomRange } from './summaryPptPeriod';
@@ -79,6 +81,32 @@ export interface SummaryStreamResult {
   /** 被降级为安全版式的页码（S6 面板可提示「第 N 页已降级」；separate 的降级按项目写进 warnings） */
   degradedPages: number[];
   mode: SummaryStreamMode;
+  /** T03262（AI-101①）：溯源行（面板与产物登记同源） */
+  provenance: CardProvenance;
+}
+
+/** T03262（AI-101①）：总结 PPT 的溯源行——备料口径（项目/页数/数据截止）+ 降级与告警 */
+function summaryProvenance(
+  prepared: SummaryPreparedStream,
+  pageCount: number,
+  warnings: readonly string[],
+  degradedPages: readonly number[],
+): CardProvenance {
+  return buildCardProvenance({
+    cardKey: 'ai.summary_ppt',
+    sources: [
+      { label: '项目', value: `${prepared.deck.projects.length} 个（${prepared.mode === 'separate' ? '分别独立版' : '合并版'}）` },
+      { label: '页数', value: `${pageCount} 页` },
+      { label: '数据截止', value: prepared.deck.dataAsOf },
+      { label: '版式', value: prepared.style },
+    ],
+    truncations: [
+      ...(degradedPages.length > 0 ? [`${degradedPages.length} 页降级为安全版式`] : []),
+      ...warnings,
+    ],
+    // 装配段只读已确认大纲、不调模型——写「未记录」会被读成「溯源缺失」，照实说明调用发生在第 1 段
+    model: '装配阶段未调用模型（大纲在第 1 段生成并已确认）',
+  });
 }
 
 /** 缺省 merged；非法值 400 点名（separate 的 zip 签名在 S7 已放开，A-2 已批准白名单扩展） */
@@ -192,14 +220,21 @@ export async function renderSummaryPptStream(
     throw new Error(SUMMARY_ABORT_MSG);
   }
   onStage('文件已生成，可在左侧下载。');
+  const fileName = summaryPptFileName(prepared.deck);
+  const warnings = [...prepared.warnings, ...built.warnings];
+  const provenance = summaryProvenance(prepared, built.pageCount, warnings, built.degradedPages);
+  // T03262（AI-101④）：持久副本——令牌下载即删，刷新后靠它找回这一份
+  try { recordArtifact({ cardKey: 'ai.summary_ppt', filename: fileName, buffer: built.buffer, provenance }); } catch { /* 登记失败不影响下载 */ }
+  recordCardProvenance(provenance, prepared.deck.projects.length === 1 ? prepared.deck.projects[0].id : null);
   return {
     token,
-    fileName: summaryPptFileName(prepared.deck),
+    fileName,
     pageCount: built.pageCount,
-    warnings: [...prepared.warnings, ...built.warnings],
+    warnings,
     projects: prepared.projects,
     degradedPages: built.degradedPages,
     mode: 'merged',
+    provenance,
   };
 }
 
@@ -255,14 +290,19 @@ async function renderSeparate(
     throw new Error(abortMsg);
   }
   onStage(`文件已生成，可在左侧下载（zip 内含 ${entries.length} 份 .pptx）。`);
+  const fileName = summaryPptZipFileName(prepared.deck, entries.length);
+  const provenance = summaryProvenance(prepared, total, warnings, []);
+  try { recordArtifact({ cardKey: 'ai.summary_ppt', filename: fileName, buffer, provenance }); } catch { /* 登记失败不影响下载 */ }
+  recordCardProvenance(provenance, prepared.deck.projects.length === 1 ? prepared.deck.projects[0].id : null);
   return {
     token,
     zipToken: token,
-    fileName: summaryPptZipFileName(prepared.deck, entries.length),
+    fileName,
     pageCount: total,
     warnings,
     projects: prepared.projects,
     degradedPages: [],
     mode: 'separate',
+    provenance,
   };
 }

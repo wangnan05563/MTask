@@ -8,6 +8,7 @@ import { MarkdownContent } from '../ui/Markdown';
 import { prdGenStore, usePrdGen, type PrdGenIssue } from '../stores/prdGenStore';
 import { askConfirm } from '../ui/dialogs'; // T03159（U20）：覆盖既有同源 PRD 前二次确认
 import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00769 二轮：未绑定工作空间时原位提供绑定入口
+import { AiProvenanceSection } from '../components/AiProvenance'; // T03262（AI-101①④）：溯源面板 + 产物找回
 import { CircleCheck, FileText, FolderOpen, Loader2, Plus, Save, Sparkles, Trash2, Upload, X } from 'lucide-react';
 
 /** T00769：交互确认表格行（AI 生成问题 + 用户自定义），answer 非空视为已确认 */
@@ -519,6 +520,10 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
           })}
         </div>
       )}
+
+      {/* T03262（AI-101①④）：生成结果的溯源与产物找回（重进卡片也可见） */}
+      {/* 不挂 result 条件：刷新/重进后没有当前结果，也要能找回上一次的溯源与产物（AI-101 ④） */}
+      <AiProvenanceSection cardKey="ai.prd_gen" projectId={projectId} refreshKey={result?.prdMd.length ?? 0} />
 
       {/* 交互确认表格：AI 生成的待确认问题 + 用户自定义 */}
       {result && (

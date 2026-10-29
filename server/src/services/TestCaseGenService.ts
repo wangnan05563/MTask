@@ -7,6 +7,7 @@ import { ConfigService } from './ConfigService';
 import { PlanService } from './PlanService';
 import { logService } from './LogService';
 import { beginSegment, declareSegments, doneSegmentsFor, finalizeJob, finishSegment, openJob } from './AiGenJournal';
+import { buildCardProvenance, chars, recordCardProvenance, type CardProvenance } from './aiCardProvenance';
 import { ContextBudget, WorkspaceService } from './WorkspaceService';
 import { loadWorkspaceContext } from './PrdGenService';
 import {
@@ -76,6 +77,8 @@ export interface TcGenDraft {
   notes: string[];
   /** 分块重试耗尽仍有块被截断 → true，草稿页据此标注「本轮可能被截断，建议调大 max_tokens 后重跑」 */
   truncated: boolean;
+  /** T03262（AI-101①）：溯源行——来源/截断/模型与面板、导出稿逐字同源 */
+  provenance: CardProvenance;
 }
 
 export interface GenPrefs {
@@ -451,5 +454,24 @@ export async function generateTestCasesStream(input: {
   // T03263：终态落台账——只有「失败且补生成也没挽回」的块才算 partial，补偿成功的整轮仍是 done
   finalizeJob(jobId, failedStillUncovered.length > 0 ? 'partial' : 'done');
 
-  return { requirements, cases, coverage, notes, truncated: truncatedAny };
+  // T03262（AI-101①）：溯源行。分块数与实际失败块都进来——「覆盖 100%」不等于「没被截断」，
+  // 只写需求/用例条数会让用户看不出这一轮是靠补生成凑齐的。
+  const provenance = buildCardProvenance({
+    cardKey: CARD_KEY,
+    sources: [
+      { label: 'PRD 原文', value: `${chars(input.content.length)}${input.source ? `（${input.source}）` : ''}` },
+      { label: '需求', value: `${total} 条` },
+      { label: '用例', value: `${cases.length} 条（分 ${chunks.length} 块生成）` },
+      ...(reused.size > 0 ? [{ label: '复用', value: `${reused.size} 段来自上次同一请求（未调用模型）` }] : []),
+    ],
+    truncations: [
+      ...(truncatedAny ? ['有分块输出触及 max_tokens 上限，已保留已生成部分'] : []),
+      ...(failedStillUncovered.length > 0 ? [`${failedStillUncovered.length} 条需求的用例块调用失败被跳过`] : []),
+    ],
+    model: genConfig.model ?? null,
+  });
+  // T03262（AI-101①）：落一份快照——重进卡片页按 projectId 取回，不必重跑生成才知道这一轮的来源
+  recordCardProvenance(provenance, input.projectId);
+
+  return { requirements, cases, coverage, notes, truncated: truncatedAny, provenance };
 }

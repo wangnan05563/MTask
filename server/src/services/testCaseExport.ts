@@ -37,6 +37,8 @@ export interface CaseExportInput {
   projectName: string;
   cases: readonly TestCaseWithSteps[];
   coverage: CaseCoverageSummary;
+  /** T03262（AI-101③）：面板同款溯源行——导出稿末段与面板逐字一致；不传则整段省略 */
+  provenance?: ReadonlyArray<{ label: string; value: string }>;
 }
 
 /**
@@ -195,6 +197,13 @@ export async function buildCaseXlsx(input: CaseExportInput): Promise<Buffer> {
     if (r.caseCount === 0) markWarnCell(row.getCell('covered'));
   });
   ws2.views = [{ state: 'frozen', ySplit: 1 }];
+  if (input.provenance?.length) {
+    const ws3 = wb.addWorksheet('溯源');
+    ws3.columns = [{ header: '项', key: 'label', width: 16 }, { header: '值', key: 'value', width: 60 }];
+    paintHeaderRow(ws3.getRow(1));
+    input.provenance.forEach((r, i) => paintDataRow(ws3.addRow({ label: r.label, value: r.value }), i % 2 === 1));
+    ws3.views = [{ state: 'frozen', ySplit: 1 }];
+  }
   return Buffer.from(await wb.xlsx.writeBuffer() as ArrayBuffer);
 }
 
@@ -245,6 +254,12 @@ export async function buildCaseDocx(input: CaseExportInput): Promise<Buffer> {
       coverageRows(input.coverage).map((r) => [r.reqNo, r.title, String(r.caseCount), r.covered]),
     ),
   );
+  if (input.provenance?.length) {
+    children.push(
+      new Paragraph({ text: '溯源', heading: HeadingLevel.HEADING_1, spacing: { before: 240 } }),
+      ...input.provenance.map((r) => new Paragraph({ children: [new TextRun({ text: `${r.label}：${r.value}` })] })),
+    );
+  }
   const doc = new Document({ sections: [{ children }] });
   return await Packer.toBuffer(doc);
 }
@@ -271,5 +286,10 @@ export function buildCaseMd(input: CaseExportInput): Buffer {
     out.push(`| ${mdCell(r.reqNo)} | ${mdCell(r.title)} | ${r.caseCount} | ${r.covered} |`);
   }
   out.push('');
+  if (input.provenance?.length) {
+    out.push('## 溯源', '');
+    for (const r of input.provenance) out.push(`- ${r.label}：${r.value}`);
+    out.push('');
+  }
   return Buffer.from(out.join('\n'), 'utf8');
 }

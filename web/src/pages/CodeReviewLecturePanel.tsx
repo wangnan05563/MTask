@@ -40,6 +40,7 @@ import {
   type LectureMark,
 } from '../utils/lectureMarkup';
 import { saveBlob } from '../utils/download';
+import { AiProvenanceSection } from '../components/AiProvenance'; // T03262（AI-101①④）：溯源面板 + 产物找回
 
 /**
  * 代码评审会议讲稿 · 工作面板（六期 3.1 / T02872，PRD §6.1 三区布局、§6.2 锚点交互）。
@@ -770,6 +771,10 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
             title={`跳过已生成的前 ${resumeIndex - 1} 节，从第 ${resumeIndex} 节开始补生成`}>
             <RefreshCw size={13} style={{ marginRight: 4 }} />从第 {resumeIndex} 节继续
           </FlowButton>
+        )}
+        {!snap.streaming && (
+          <AiProvenanceSection cardKey="ai.code_review_lecture"
+            projectId={selectedIds.length === 1 ? selectedIds[0] : null} refreshKey={snap.result?.title ?? ''} />
         )}
         <select data-lck="export-format" value={exportFormat} onChange={(e) => setExportFormat(e.target.value as 'md' | 'docx' | 'pptx')}
           style={fieldStyle} aria-label="导出格式" disabled={exporting}>

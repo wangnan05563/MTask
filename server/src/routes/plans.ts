@@ -14,6 +14,8 @@ import type { GenJobView } from '../services/AiGenJournal';
 import { buildLectureExport, lectureExportFilename, LectureExportError, validateLectureExportBody } from '../services/lectureExport'; // T02874（六期 3.3）：讲稿 md/docx/pptx 导出装配
 import { estimateLectureRun } from '../services/lecturePreflight'; // T02875（六期 3.4）：预检预算估算段
 import { saveReportBuffer } from '../services/ReportService'; // T02874：导出物落盘走既有令牌链路
+import { recordArtifact } from '../services/aiArtifactService'; // T03262（AI-101④）：产物持久副本 → 刷新后找回
+import { buildCardProvenance, chars, latestCardProvenance, provenanceMarkdown, provenanceTextLines, recordCardProvenance, type CardProvenance } from '../services/aiCardProvenance'; // T03262（AI-101①③）：溯源行与导出稿逐字同源
 import { summaryOutline } from '../services/summaryPptOutline'; // T02854（六期 S3）：总结汇报 PPT 大纲段（提示词 + schema 校验）
 import { prepareSummaryPptStream, renderSummaryPptStream } from '../services/summaryPptStream'; // T02856（六期 S5）：总结汇报 PPT 流式装配 + 下载令牌
 import { safeExportName } from '../util/export-name'; // T02104：导出文件名单源（与下载白名单同源）
@@ -41,6 +43,51 @@ function wrap(res: import('express').Response, fn: () => unknown): void {
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
+}
+
+/**
+ * T03262（AI-101①）：卡片最近一次生成的溯源行。
+ * 生成端只负责落快照，前端重进卡片页按 cardKey(+projectId) 取回——
+ * 不把溯源塞进每张卡的 SSE done（那些端点有的在 routes/index.ts，与本次改动面无关）。
+ */
+planApi.get('/ai-card-provenance', (req, res) => {
+  const cardKey = typeof req.query.cardKey === 'string' ? req.query.cardKey : '';
+  if (!cardKey) return res.status(400).json({ error: 'cardKey 必填' });
+  const projectId = typeof req.query.projectId === 'string' && req.query.projectId ? req.query.projectId : null;
+  res.json({ ok: true, provenance: latestCardProvenance(cardKey, projectId) });
+});
+
+/**
+ * T03262（AI-101③④）：导出稿溯源段 + 产物登记。
+ * 前端把生成时面板上那几行原样回传（`provenance`），服务端不再重算——重算就会和面板对不上；
+ * 未回传时才按导出时的取数结果兜底（直接调 API 的路径），模型写「未记录」而不是猜。
+ */
+function exportProvenance(raw: unknown, cardKey: string, fallbackSources: { label: string; value: string }[], projectId?: string | null): CardProvenance {
+  const rows = Array.isArray(raw)
+    ? raw.filter((r): r is { label: string; value: string } => {
+      const o = r as { label?: unknown; value?: unknown };
+      return typeof o?.label === 'string' && typeof o?.value === 'string';
+    }).slice(0, 20)
+    : [];
+  if (rows.length > 0) {
+    return {
+      cardKey,
+      generatedAt: new Date().toISOString(),
+      truncated: rows.some((r) => r.label === '截断' && r.value.trim() !== '无'),
+      rows,
+    };
+  }
+  // 没回传行时优先取该卡最近一次生成落库的快照——与面板上看到的是同一份，重算就会对不上
+  const stored = latestCardProvenance(cardKey, projectId ?? null);
+  if (stored) return stored;
+  return buildCardProvenance({ cardKey, sources: fallbackSources, model: null });
+}
+
+/** 登记导出产物（持久副本，刷新/重进后按 cardKey 找回）——失败不影响导出本身 */
+function recordExportArtifact(cardKey: string, filename: string, buffer: Buffer, provenance: CardProvenance): void {
+  try {
+    recordArtifact({ cardKey, filename, buffer, provenance: { ...provenance, rows: provenance.rows, exportedAt: new Date().toISOString() } });
+  } catch { /* 找回登记失败不得让用户拿不到文件 */ }
 }
 
 /** 未知值显式字符串化：object 走 JSON，避免默认的 "[object Object]"（S6551） */
@@ -190,15 +237,31 @@ planApi.post('/code-review-lecture/diff', async (req, res) => {
 planApi.post('/code-review-lecture/export', async (req, res) => {
   try {
     const request = validateLectureExportBody(req.body ?? {});
-    const buffer = await buildLectureExport(request);
+    const provenance = exportProvenance((req.body as { provenance?: unknown })?.provenance, LECTURE_CARD_KEY, [
+      { label: '讲稿', value: request.title },
+      { label: '节数', value: `${request.sections.length} 节` },
+      { label: '正文', value: chars(request.markdown.length) },
+    ]);
+    // T03262（AI-101③）：成稿末节就是面板里那几行——md 追加文末、docx/pptx 追加末节（sections 上限 24，满了就不再塞）
+    const withProv = {
+      ...request,
+      markdown: `${request.markdown.replace(/\s+$/, '')}${provenanceMarkdown(provenance)}`,
+      sections: request.sections.length < 24
+        ? [...request.sections, { key: 'provenance', label: '溯源', text: provenanceTextLines(provenance).join('\n') }]
+        : request.sections,
+    };
+    const buffer = await buildLectureExport(withProv);
     const token = saveReportBuffer(buffer);
+    const filename = lectureExportFilename(request.title, request.format);
+    recordExportArtifact(LECTURE_CARD_KEY, filename, buffer, provenance);
     res.json({
       ok: true,
       token,
-      filename: lectureExportFilename(request.title, request.format),
+      filename,
       bytes: buffer.length,
       ignored: request.ignored,
       followups: request.followups.length,
+      provenance,
     });
   } catch (e) {
     res.status(e instanceof LectureExportError ? 400 : 500).json({ error: e instanceof Error ? e.message : String(e) });
@@ -285,6 +348,28 @@ planApi.post('/code-review-lecture-stream', raw({ type: () => true, limit: '30mb
     });
     // 先记样本再回事件：客户端断开时上面的 early return 会跳过后续发送，但取消仍要进基线口径
     recordJob(result.aborted ? 'aborted' : 'done', result.sections);
+    // T03262（AI-101①）：溯源行随 done/aborted 一起下发——面板与后续导出稿（原样回传）同源
+    const provenance = buildCardProvenance({
+      cardKey: LECTURE_CARD_KEY,
+      sources: [
+        { label: '项目', value: `${result.stats.projects} 个（有改动 ${result.stats.readyProjects}）` },
+        { label: '改动文件', value: `${result.stats.files} 个 / ${result.stats.groups} 组` },
+        { label: '上下文', value: `${chars(result.stats.chars)}${result.stats.contextBudget > 0 ? `（预算 ${chars(result.stats.contextBudget)}）` : ''}` },
+        { label: '模型调用', value: `${result.stats.calls} 次（${result.sections.length} 节 / ${result.stats.segments} 段）` },
+        { label: '引用', value: `${result.stats.anchors} 条` },
+        { label: '告警', value: `${result.warnings.length} 条` },
+      ],
+      truncations: [
+        ...(result.stats.contextBudget > 0 && result.stats.chars > result.stats.contextBudget
+          ? [`上下文 ${chars(result.stats.chars)} 超出预算 ${chars(result.stats.contextBudget)}`]
+          : []),
+        ...result.warnings.filter((w) => /截断|跳过|降级|上限/.test(w)),
+      ],
+      // 讲稿结果对象不携带模型名（预估值里的是预估模型版本，不是 LLM），照实写「未记录」
+      model: null,
+    });
+    // 讲稿可跨项目，项目维度留 null；面板按 cardKey 取最近一次
+    recordCardProvenance(provenance, null);
     if (closed || res.writableEnded) return;
     if (result.aborted) {
       // PRD §6.2「已生成节保留」：中止也把已完成的节次交回前端，供「从第 n 节继续」拼接
@@ -298,6 +383,7 @@ planApi.post('/code-review-lecture-stream', raw({ type: () => true, limit: '30mb
         warnings: result.warnings,
         stats: result.stats,
         anchors: result.anchors,
+        provenance,
         ...(result.jobId ? { jobId: result.jobId } : {}),
       });
     } else {
@@ -310,6 +396,7 @@ planApi.post('/code-review-lecture-stream', raw({ type: () => true, limit: '30mb
         warnings: result.warnings,
         stats: result.stats,
         anchors: result.anchors,
+        provenance,
         ...(result.jobId ? { jobId: result.jobId } : {}),
       });
     }
@@ -408,6 +495,7 @@ planApi.post('/summary-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
       projects: r.projects,
       degradedPages: r.degradedPages,
       mode: r.mode,
+      provenance: r.provenance,
     });
     doneSent = true;
   } catch (e) {
@@ -476,7 +564,7 @@ planApi.post('/kickoff-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
       issuedToken = undefined;
       return;
     }
-    send('done', { token: r.token, fileName: r.fileName, pageCount: r.pageCount, warnings: r.warnings });
+    send('done', { token: r.token, fileName: r.fileName, pageCount: r.pageCount, warnings: r.warnings, provenance: r.provenance });
     doneSent = true;
   } catch (e) {
     send('error', { error: e instanceof Error ? e.message : String(e) });
@@ -711,12 +799,25 @@ planApi.get('/prd-docs/:id/export', exportGate('prd-doc-export', undefined, { de
     const doc = PlanService.getPrdDoc(req.params.id) as { filename?: string; content_md?: string } | undefined;
     if (!doc) return res.status(404).json({ error: 'PRD 文档不存在' });
     const base = safeExportName((doc.filename ?? '').replace(/\.[^.]+$/, ''), 'PRD');
-    const md = doc.content_md ?? '';
+    const md0 = doc.content_md ?? '';
+    // T03262（AI-101③）：导出稿末附溯源段。优先用生成时落下的那一份（行文案与面板一致），
+    // 没有（例如 PRD 是导入而非 AI 生成）就按导出时的取数兜底，模型写「未记录」。
+    const provenance = latestCardProvenance('ai.prd_gen', null) ?? buildCardProvenance({
+      cardKey: 'ai.prd_gen',
+      sources: [
+        { label: 'PRD 文档', value: doc.filename ?? base },
+        { label: '正文', value: chars(md0.length) },
+      ],
+      model: null,
+    });
+    const md = `${md0.replace(/\s+$/, '')}${provenanceMarkdown(provenance)}`;
     if (format === 'md') {
       res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
       const fileName = `${base}.md`;
       res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
-      res.send(Buffer.from(md, 'utf8'));
+      const buf = Buffer.from(md, 'utf8');
+      recordExportArtifact('ai.prd_gen', fileName, buf, provenance);
+      res.send(buf);
       return;
     }
     const { buildPrdDocx, buildPrdPdf } = await import('../services/prdExport'); // 按需加载：docx/pdfkit 较重，仅导出时引入
@@ -727,6 +828,7 @@ planApi.get('/prd-docs/:id/export', exportGate('prd-doc-export', undefined, { de
       : 'application/pdf');
     const exportName = `${base}.${format}`;
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(exportName)}`);
+    recordExportArtifact('ai.prd_gen', exportName, buf, provenance);
     res.send(buf);
   } catch (e: unknown) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
@@ -1083,10 +1185,18 @@ planApi.post('/test-cases/export', exportGate('testcase-export', undefined, { de
       }).items;
     const project = PlanService.getProjectBrief(projectId);
     const { buildCaseDocx, buildCaseMd, buildCaseXlsx } = await import('../services/testCaseExport'); // 按需加载 exceljs/docx
-    const payload = { projectName: project.name, cases, coverage: TestCaseService.coverage(projectId) };
+    // T03262（AI-101③④）：溯源行随导出附末段，并登记持久副本
+    const coverage = TestCaseService.coverage(projectId);
+    const provenance = exportProvenance((b as { provenance?: unknown }).provenance, 'ai.testcase_gen', [
+      { label: '项目', value: project.name },
+      { label: '范围', value: ids.length > 0 ? `选中 ${cases.length} 条` : `当前筛选（${cases.length} 条）` },
+      { label: '覆盖', value: `已覆盖 ${coverage.covered}/${coverage.total} 条需求` },
+    ], projectId);
+    const payload = { projectName: project.name, cases, coverage, provenance: provenance.rows };
     const buf = await renderCaseExport(format, payload, { xlsx: buildCaseXlsx, docx: buildCaseDocx, md: buildCaseMd });
     const ymd = new Date().toISOString().slice(0, 10).replaceAll('-', '');
     const fname = safeExportName(`测试用例-${project.name}-${ymd}`, '测试用例') + `.${format}`;
+    recordExportArtifact('ai.testcase_gen', fname, buf, provenance);
     res.setHeader('Content-Type', CASE_EXPORT_MIME[format]);
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fname)}`);
     res.send(buf);

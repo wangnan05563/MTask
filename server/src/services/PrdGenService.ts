@@ -9,6 +9,7 @@ import { ContextBudget, WorkspaceService, loadIgnoreRules, isIgnored, yieldToEve
 import { runGitReadonly, GitCollectError } from './gitCollect';
 import { extractNeedles, parseDomainVocab, FALLBACK_VOCAB, type VocabEntry } from './prdKeywords'; // T03442：中文需求 → 代码标识符的词桥
 import { parseIssuesJson, parsePrdIssues, splitPrdBody, inlineIssuesSection, type PrdGenIssue } from './prdIssues'; // T00814：问题清单解析抽为可测模块；T00818：清单内联正文章节
+import { buildCardProvenance, chars, recordCardProvenance, type CardProvenance } from './aiCardProvenance'; // T03262（AI-101①）：溯源行与面板/导出稿逐字同源
 
 /**
  * T00769：原始需求生成 PRD（AI 控制台卡片「原始需求生成PRD」后端）。
@@ -399,7 +400,7 @@ export async function generatePrdStream(input: {
   onDelta: (text: string) => void;
   /** T00838：可选中止信号——上游（SSE 路由/停止按钮）可主动中断底层 AI 请求 */
   signal?: AbortSignal;
-}): Promise<{ prdMd: string; issues: PrdGenIssue[] }> {
+}): Promise<{ prdMd: string; issues: PrdGenIssue[]; provenance: CardProvenance }> {
   const db = getDb();
   const project = db.prepare('SELECT name, workspace_path FROM projects WHERE id = ?').get(input.projectId) as
     { name: string; workspace_path: string | null } | undefined;
@@ -515,10 +516,12 @@ export async function generatePrdStream(input: {
   // （流出的正文 9~10K 字符即 finish_reason=length）。此时整份作废太浪费 ——
   // 改为「保留已生成部分 + 显式告警」，问题清单随后由补问兜底；其它失败仍原样抛出。
   let text = '';
+  let outputTruncated = false;
   if (result.ok) {
     text = result.content ?? '';
   } else if (result.partial && /超长被截断/.test(result.error ?? '')) {
     text = result.partial;
+    outputTruncated = true;
     input.onStage(`⚠ AI 输出触及上限，已保留当前 ${text.length} 字符继续 —— PRD 末尾可能不完整，请在交互表格中核对内容；待确认问题将由补充提问补齐`);
   } else {
     throw new Error(result.error ?? 'AI 生成失败');
@@ -540,5 +543,24 @@ export async function generatePrdStream(input: {
   input.onStage(`解析完成：PRD ${finalPrdMd.length} 字符、待确认问题 ${issues.length} 条（🔴 阻塞 ${issues.filter((i) => i.level === 'blocker').length} / 🟡 建议 ${issues.filter((i) => i.level === 'suggested').length} / 🟢 提示 ${issues.filter((i) => i.level === 'info').length}）`);
   // T00783-L3：startedAt 此前只 void 掉（死代码）——真实记录耗时，便于排查长耗时生成
   logService.log('INFO', 'ai', `[PRD生成] project=${input.projectId} file=${input.filename} prd=${finalPrdMd.length}ch issues=${issues.length} 耗时=${Date.now() - startedAt}ms`);
-  return { prdMd: finalPrdMd, issues };
+  // T03262（AI-101①）：溯源行。上下文预算被裁过、需求被保头保尾压过、输出被截断过——
+  // 三件事都会让「PRD 看起来完整但少了一段」，必须进面板而不是只留在 stage 日志里。
+  const provenance = buildCardProvenance({
+    cardKey: 'ai.prd_gen',
+    sources: [
+      { label: '原始需求', value: `${chars(input.content.length)}（${input.filename}）` },
+      { label: '项目源码上下文', value: ws ? chars(ws.length) : '未配置工作空间（未使用）' },
+      { label: 'Git 脉络', value: gitParts.length > 0 ? chars(gitParts.length) : '未使用' },
+      { label: '检索片段', value: retrieve.block.length > 0 ? `${chars(retrieve.block.length)}${retrieve.coverage ? `（${retrieve.coverage}）` : ''}` : '未命中' },
+      { label: '产出', value: `${chars(finalPrdMd.length)}PRD、${issues.length} 条待确认问题` },
+    ],
+    truncations: [
+      ...(requirement.length !== input.content.length ? [`原始需求超长，已保头保尾压缩为 ${chars(requirement.length)}`] : []),
+      ...(parts.clipped.length > 0 ? [`上下文超总量预算，按优先级裁剪：${parts.clipped.join(' → ')}`] : []),
+      ...(outputTruncated ? ['AI 输出触及上限，PRD 末尾可能不完整'] : []),
+    ],
+    model: genConfig.model ?? null,
+  });
+  recordCardProvenance(provenance, input.projectId);
+  return { prdMd: finalPrdMd, issues, provenance };
 }

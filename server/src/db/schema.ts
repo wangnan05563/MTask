@@ -196,6 +196,18 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     );
     CREATE INDEX IF NOT EXISTS idx_ai_artifacts_card ON ai_artifacts(card_key, created_at);
 
+    -- T03262（PRD AI-101①）：AI 卡最近一次生成的数据来源/截断/模型口径。
+    -- 为什么要落库：溯源行来自生成时的上下文计数，事后按库里现有数据重算必然对不上
+    -- （PRD 被裁过、分块失败过这些只存在于那一轮），前端重进页面只能靠这一行还原。
+    CREATE TABLE IF NOT EXISTS ai_card_provenance (
+      id           TEXT PRIMARY KEY,
+      card_key     TEXT NOT NULL,
+      project_id   TEXT,
+      payload_json TEXT NOT NULL,
+      created_at   TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_card_provenance_card ON ai_card_provenance(card_key, created_at);
+
     -- T03245（PRD AI-103）：长文分段生成任务台账——讲稿/总结等长文按段落库，
     -- 单段失败只标记该段、已生成段保留；刷新/重进后按 job 回读进度并只补缺失段。
     -- 与 console_jobs（T00417）同族：任务态与正文都在库里，进程重启不丢。

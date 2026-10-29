@@ -19,6 +19,8 @@ import { TestCaseService } from './TestCaseService';
 import { AIService } from './AIService';
 import { estimatesSnapshot } from '../routes/estimates';
 import { saveReportBuffer, discardReport } from './ReportService'; // T02103：生成物落盘/下载令牌单源（纠偏 C3）；T02144：放弃即回收
+import { recordArtifact } from './aiArtifactService'; // T03262（AI-101④）：产物持久副本
+import { buildCardProvenance, recordCardProvenance, type CardProvenance } from './aiCardProvenance'; // T03262（AI-101①）：溯源行
 import { downloadSafeName } from '../util/export-name'; // T02104：下载名洗到必然过白名单
 import { toManMonth, type EstimateSummary } from './estimate-engine';
 
@@ -1302,6 +1304,8 @@ export interface KickoffStreamResult {
   fileName: string;
   pageCount: number;
   warnings: string[];
+  /** T03262（AI-101①）：溯源行（面板与产物登记同源） */
+  provenance: CardProvenance;
 }
 
 /**
@@ -1365,10 +1369,27 @@ export async function kickoffPptStream(
     throw new Error(KICKOFF_ABORT_MSG);
   }
   onStage('文件已生成，可在左侧下载。');
+  const fileName = kickoffFileName(bundle.project.name, bundle.dataAsOf);
+  const allWarnings = [...warnings, ...assembled.warnings];
+  // T03262（AI-101①）：来源=采集口径；降级/截断走 warnings（排不下的页、缺料降级都在里面）
+  const provenance = buildCardProvenance({
+    cardKey: 'ai.kickoff_ppt',
+    sources: [
+      { label: '项目', value: bundle.project.name },
+      { label: '页数', value: `${assembled.pageCount} 页（大纲 ${built.outline.length} 节）` },
+      { label: '数据截止', value: bundle.dataAsOf },
+      { label: '风险条目', value: `${built.risks.length} 条` },
+    ],
+    truncations: allWarnings,
+    model: '装配阶段未调用模型（大纲与措辞润色在前序段落完成）',
+  });
+  try { recordArtifact({ cardKey: 'ai.kickoff_ppt', filename: fileName, buffer: assembled.buffer, provenance }); } catch { /* 登记失败不影响下载 */ }
+  recordCardProvenance(provenance, bundle.project.id);
   return {
     token,
-    fileName: kickoffFileName(bundle.project.name, bundle.dataAsOf),
+    fileName,
     pageCount: assembled.pageCount,
-    warnings: [...warnings, ...assembled.warnings],
+    warnings: allWarnings,
+    provenance,
   };
 }
