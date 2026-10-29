@@ -103,12 +103,17 @@ interface BatchUndoPatch {
 }
 /** T03255（AI-203①）：分类/优先级建议——服务端只读给出，采纳前不改任何任务数据 */
 interface TaskSuggestion {
+  /** T03256（AI-203②）：台账 id，采纳/不用/超时/被覆盖时回传，服务端据此记终态 */
+  suggestionId?: string;
   categoryId: string | null;
   categoryName: string | null;
   priority: 'urgent' | 'high' | 'normal' | 'low';
   reason: string;
   historyCount: number;
 }
+
+/** T03256：建议未处理自动记超时的时长——与建议条清理同时发生，避免「看过但没点」永远停在 shown */
+const SUGGESTION_TIMEOUT_MS = 120_000;
 interface BatchSnapshot {
   entries: Array<{ id: string; patch: BatchUndoPatch }>;
   label: string;
@@ -375,6 +380,8 @@ export function TasksPage() {
   const [newSuggestBusy, setNewSuggestBusy] = useState(false);
   const [rowSuggest, setRowSuggest] = useState<{ taskId: string; data: TaskSuggestion } | null>(null);
   const [rowSuggestBusy, setRowSuggestBusy] = useState<string | null>(null);
+  // T03256（AI-203③）：总开关——关闭时建议入口整体隐藏（服务端同时拒绝生成，双端一致）
+  const [suggestEnabled, setSuggestEnabled] = useState(true);
   // 新建任务进行中：全局 busy store，切页不丢失，防止请求进行中切页后再点重复插入
   const creating = useBusy('tasks.create');
   // 「AI 美化」按任务隔离的进行中集合：不同任务并行互不干扰，动画只作用于触发任务
@@ -1414,12 +1421,52 @@ export function TasksPage() {
     }
   }
 
+  /** T03256（AI-203②）：建议终态回传——失败静默（台账是统计旁路，不能挡住主流程） */
+  function reportSuggestion(s: TaskSuggestion | null | undefined, event: 'accepted' | 'dismissed' | 'timeout') {
+    if (!s?.suggestionId) return;
+    void api.post('/tasks/classify-suggest/feedback', { suggestionId: s.suggestionId, event }).catch(() => {});
+  }
+
+  // T03256（AI-203③）：读取开关状态，关闭时不渲染建议入口
+  useEffect(() => {
+    let alive = true;
+    api.get<{ enabled?: boolean }>('/ai/suggestions/stats')
+      .then((r) => { if (alive && typeof r.enabled === 'boolean') setSuggestEnabled(r.enabled); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [activeProject]);
+
+  // T03256：建议条超时自动收起并记 timeout——停留过久视为未采纳，避免 shown 永久悬挂
+  useEffect(() => {
+    if (!newSuggest?.suggestionId) return;
+    const timer = setTimeout(() => {
+      reportSuggestion(newSuggest, 'timeout');
+      setNewSuggest(null);
+    }, SUGGESTION_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [newSuggest]);
+  useEffect(() => {
+    if (!rowSuggest?.data.suggestionId) return;
+    const timer = setTimeout(() => {
+      reportSuggestion(rowSuggest.data, 'timeout');
+      setRowSuggest(null);
+    }, SUGGESTION_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [rowSuggest]);
+
+  /** 新建建议被新一次请求/编辑覆盖时，先按「不用」记账，避免旧 shown 悬挂 */
+  function dismissNewSuggestion(event: 'dismissed' | 'timeout' = 'dismissed') {
+    if (!newSuggest) return;
+    reportSuggestion(newSuggest, event);
+    setNewSuggest(null);
+  }
+
   /** T03255（AI-203①）：获取「分类 + 优先级 + 一句理由」建议——只读，采纳前不写任务数据 */
   async function requestSuggestion(input: { title: string; description?: string; projectId: string; taskId?: string }): Promise<TaskSuggestion | null> {
     if (!organizeToolId) { flash(aiBlockedFlash('请先在「模型管理」页添加并选择整理工具')); return null; }
     if (!input.title.trim()) { flash('先填写标题再获取建议'); return null; }
     try {
-      const r = await api.post<{ ok: boolean; suggestion?: TaskSuggestion; error?: string }>('/tasks/classify-suggest', {
+      const r = await api.post<{ ok: boolean; suggestion?: TaskSuggestion; suggestionId?: string; disabled?: boolean; error?: string }>('/tasks/classify-suggest', {
         title: input.title.trim(),
         description: input.description ?? '',
         projectId: input.projectId,
@@ -1427,8 +1474,9 @@ export function TasksPage() {
         toolId: organizeToolId,
         categories: taskCats.map((c) => ({ id: c.id, name: c.name })),
       });
+      if (r.disabled) setSuggestEnabled(false);
       if (!r.ok || !r.suggestion) { flash(r.error ?? '未能生成建议', 'error'); return null; }
-      return r.suggestion;
+      return { ...r.suggestion, suggestionId: r.suggestionId };
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e), 'error');
       return null;
@@ -1438,6 +1486,8 @@ export function TasksPage() {
   async function suggestForNew() {
     if (newSuggestBusy) return;
     setNewSuggestBusy(true);
+    // 覆盖前先把上一条结算为「不用」，对账时不会出现两条并行 shown
+    if (newSuggest) dismissNewSuggestion('dismissed');
     try {
       const s = await requestSuggestion({ title: newTitle, description: newDesc, projectId: activeProject });
       if (s) setNewSuggest(s);
@@ -1449,6 +1499,7 @@ export function TasksPage() {
   /** 采纳新建建议：只填表单，创建仍由用户点「添加任务」触发 */
   function adoptNewSuggestion() {
     if (!newSuggest) return;
+    reportSuggestion(newSuggest, 'accepted');
     setNewCategory(newSuggest.categoryId ?? '');
     setNewPriority(newSuggest.priority);
     setNewSuggest(null);
@@ -1457,6 +1508,11 @@ export function TasksPage() {
 
   async function suggestForTask(t: Task) {
     if (rowSuggestBusy) return;
+    // 同时只开一条：切到别的任务时，旧的按「不用」结算
+    if (rowSuggest && rowSuggest.taskId !== t.id) {
+      reportSuggestion(rowSuggest.data, 'dismissed');
+      setRowSuggest(null);
+    }
     setRowSuggestBusy(t.id);
     try {
       const s = await requestSuggestion({ title: t.title, description: t.description, projectId: t.project_id, taskId: t.id });
@@ -1473,11 +1529,19 @@ export function TasksPage() {
     try {
       if ((t.priority ?? 'normal') !== s.priority) await setPriority(t, s.priority);
       if ((t.category_id ?? '') !== (s.categoryId ?? '')) await setTaskCategory(t, s.categoryId ?? '');
+      reportSuggestion(s, 'accepted');
       setRowSuggest(null);
       flash('已采纳建议');
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e), 'error');
     }
+  }
+
+  /** 行内建议「不用」：仅关闭建议条，任务数据不变 */
+  function dismissRowSuggestion() {
+    if (!rowSuggest) return;
+    reportSuggestion(rowSuggest.data, 'dismissed');
+    setRowSuggest(null);
   }
 
   /** 单条标题美化：调 AI 润色该任务标题，结果写入标题编辑草稿，用户确认后保存。
@@ -2743,18 +2807,20 @@ export function TasksPage() {
           <option value="">未分类</option>
           {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
-        {/* T03255（AI-203①）：该任务的分类/优先级建议——只读获取，采纳才写回 */}
-        <button
-          onClick={() => void suggestForTask(t)}
-          disabled={rowSuggestBusy === t.id}
-          className="task-op"
-          data-t03255="row-trigger"
-          title="分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）"
-          aria-label="获取该任务的分类与优先级建议"
-          style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--text-muted)' }}
-        >
-          {rowSuggestBusy === t.id ? <Loader2 size={13} className="aispin" /> : <Sparkles size={13} />}
-        </button>
+        {/* T03255（AI-203①）：该任务的分类/优先级建议——只读获取，采纳才写回；T03256 关闭时整体隐藏 */}
+        {suggestEnabled && (
+          <button
+            onClick={() => void suggestForTask(t)}
+            disabled={rowSuggestBusy === t.id}
+            className="task-op"
+            data-t03255="row-trigger"
+            title="分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）"
+            aria-label="获取该任务的分类与优先级建议"
+            style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--text-muted)' }}
+          >
+            {rowSuggestBusy === t.id ? <Loader2 size={13} className="aispin" /> : <Sparkles size={13} />}
+          </button>
+        )}
         {/* T00450/T00512：创建子任务——移到分类下拉条之后 */}
         <button onClick={() => void createSubTask(t)} title="创建子任务 — 在该任务下创建子任务（层级展示）" aria-label="创建子任务"
           className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--text-muted)' }}>
@@ -3574,7 +3640,7 @@ export function TasksPage() {
         {/* 元信息/操作行：优先级/分类/功能按钮 + 记录时间，全部靠右同行 */}
         {renderTaskMetaRow(t, titleEditing, descEditing)}
         {/* T03255：该行建议条——仅当前请求的任务显示，采纳/不采纳后消失 */}
-        {rowSuggest?.taskId === t.id && renderSuggestionStrip(rowSuggest.data, 'row', () => void adoptRowSuggestion(t), () => setRowSuggest(null))}
+        {rowSuggest?.taskId === t.id && renderSuggestionStrip(rowSuggest.data, 'row', () => void adoptRowSuggestion(t), dismissRowSuggestion)}
         {/* 描述板块：T01384 grid-rows 0fr→1fr 过渡；重内容仅展开态渲染 */}
         {!descEditing && (t.description || t.images.length > 0) && (descExpanded[t.id] || descVis[t.id]) && renderDescSection(t)}
         {descEditing && renderTaskDescEditor(t, descDraft)}
@@ -4084,7 +4150,7 @@ export function TasksPage() {
         <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap', rowGap: 8 }}>
           <input
             value={newTitle}
-            onChange={(e) => { setNewTitle(e.target.value); if (newSuggest) setNewSuggest(null); }}
+            onChange={(e) => { setNewTitle(e.target.value); dismissNewSuggestion(); }}
             onKeyDown={(e) => { if (e.key === 'Enter' && !creating) void createTask(); }}
             placeholder="输入任务标题，回车创建"
             aria-label="新建任务标题"
@@ -4114,24 +4180,26 @@ export function TasksPage() {
           >
             {smartCat ? <Sparkles size={13} className="task-breathe" /> : <Sparkle size={13} />}
           </button>
-          {/* T03255（AI-203①）：主动获取分类/优先级建议与理由——只展示，采纳才填表单 */}
-          <button
-            onClick={() => void suggestForNew()}
-            disabled={newSuggestBusy}
-            data-t03255="create-trigger"
-            title="分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）"
-            aria-label="获取分类与优先级建议"
-            style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: newSuggestBusy ? 'var(--text-muted)' : 'var(--text)' }}
-          >
-            {newSuggestBusy ? <Loader2 size={13} className="aispin" /> : <Sparkles size={13} />}
-          </button>
+          {/* T03255（AI-203①）：主动获取分类/优先级建议与理由——只展示，采纳才填表单；T03256 关闭时整体隐藏 */}
+          {suggestEnabled && (
+            <button
+              onClick={() => void suggestForNew()}
+              disabled={newSuggestBusy}
+              data-t03255="create-trigger"
+              title="分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）"
+              aria-label="获取分类与优先级建议"
+              style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: newSuggestBusy ? 'var(--text-muted)' : 'var(--text)' }}
+            >
+              {newSuggestBusy ? <Loader2 size={13} className="aispin" /> : <Sparkles size={13} />}
+            </button>
+          )}
           <button onClick={() => setNewDescOpen(!newDescOpen)} title="描述/截图 — 展开或收起描述与截图上传区" aria-label={newDescOpen ? '收起描述与截图编辑区' : '展开描述与截图编辑区'} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{newDescOpen ? <ChevronUp size={13} /> : <ImagePlus size={13} />}</button>
           </span>
           <button className="tbtn-anim" onClick={() => void createTask()} disabled={creating} title={creating ? '添加中 — 正在智能分类并保存任务' : '添加任务 — 创建新任务并保存到当前项目'} aria-label={creating ? '添加中：正在智能分类并保存任务' : '添加任务：创建新任务并保存到当前项目'} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 4px', color: creating ? 'var(--text-muted)' : 'var(--text)' }}>
             {creating ? <Loader2 size={13} className="aispin" /> : <Plus size={13} />}
           </button>
         </div>
-        {newSuggest && renderSuggestionStrip(newSuggest, 'create', adoptNewSuggestion, () => setNewSuggest(null))}
+        {newSuggest && renderSuggestionStrip(newSuggest, 'create', adoptNewSuggestion, () => dismissNewSuggestion())}
         {/* 创建时可选的描述 + 截图粘贴区 */}
         {newDescOpen && (
           <div style={{ marginBottom: 16, marginLeft: 8 }}>
@@ -4152,7 +4220,7 @@ export function TasksPage() {
             )}
             <textarea
               value={newDesc}
-              onChange={(e) => { setNewDesc(e.target.value); if (newSuggest) setNewSuggest(null); }}
+              onChange={(e) => { setNewDesc(e.target.value); dismissNewSuggestion(); }}
               onPaste={(e) => readClipboardImages(e, addNewImage)}
               rows={2}
               placeholder="任务描述（可在框内 Ctrl+V 粘贴截图）"

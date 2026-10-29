@@ -217,6 +217,21 @@ function GeneralTab() {
   const desktop = (globalThis as unknown as { mtaskDesktop?: { getNotifyEnabled?: () => Promise<boolean>; setNotifyEnabled?: (v: boolean) => Promise<boolean> } }).mtaskDesktop;
   const [notifyOn, setNotifyOn] = useState<boolean | null>(null);
   useEffect(() => { desktop?.getNotifyEnabled?.().then(setNotifyOn); }, [desktop]);
+  // T03256（AI-203③）：任务分类建议总开关 + 采纳率（分母为已展示数；无展示时显示「暂无数据」而非 0%）
+  const [suggestState, setSuggestState] = useState<{ enabled: boolean; shown: number; accepted: number; adoptionRate: number | null } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api.get<{ enabled: boolean; shown: number; accepted: number; adoptionRate: number | null }>('/ai/suggestions/stats')
+      .then((r) => { if (alive) setSuggestState(r); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  const toggleSuggest = async (enabled: boolean) => {
+    try {
+      const r = await api.put<{ ok: boolean; enabled: boolean }>('/ai/suggestions/enabled', { enabled });
+      setSuggestState((cur) => (cur ? { ...cur, enabled: r.enabled } : cur));
+    } catch { /* 保存失败保持原态，避免界面显示与服务端不一致 */ }
+  };
   // T01071-FR5.4：界面语言（i18n 底座，渐进式接入）
   const [langState, setLangState] = useState<Lang>(getLang());
   const forceRender = useReducer((x: number) => x + 1, 0)[1];
@@ -330,6 +345,27 @@ function GeneralTab() {
           >
             {notifyOn ? '已开启（点击关闭）' : '已关闭（点击开启）'}
           </button>
+        </div>
+      )}
+
+      {suggestState && (
+        <div style={{ marginBottom: 18 }} data-t03256="suggest-settings">
+          {field('任务分类建议', '在新建/编辑任务时按标题与同项目历史给出分类、优先级和理由；关闭后入口隐藏且不再生成建议')}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <button
+              onClick={() => void toggleSuggest(!suggestState.enabled)}
+              title={suggestState.enabled ? '任务分类建议：已开启（点击关闭）' : '任务分类建议：已关闭（点击开启）'}
+              aria-label="任务分类建议开关"
+              style={{ ...segButton(suggestState.enabled), minWidth: 150 }}
+            >
+              {suggestState.enabled ? '已开启（点击关闭）' : '已关闭（点击开启）'}
+            </button>
+            <span style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }} data-t03256="suggest-stats">
+              {suggestState.shown > 0
+                ? `采纳率 ${((suggestState.adoptionRate ?? 0) * 100).toFixed(1)}%（${suggestState.accepted}/${suggestState.shown} 条已展示）`
+                : '采纳率：暂无数据（尚未展示过建议）'}
+            </span>
+          </div>
         </div>
       )}
 

@@ -441,6 +441,21 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       created_at    TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage(created_at);
+
+    -- T03256（AI-203②）：建议生命周期台账——每条建议一个 suggestion_id，状态只允许 shown→accepted/dismissed/timeout 单向一次
+    CREATE TABLE IF NOT EXISTS ai_suggestions (
+      suggestion_id TEXT PRIMARY KEY,
+      card_key      TEXT NOT NULL,
+      project_id    TEXT,
+      task_id       TEXT,
+      category_id   TEXT,
+      priority      TEXT,
+      reason        TEXT,
+      status        TEXT NOT NULL DEFAULT 'shown',
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_suggestions_card_status ON ai_suggestions(card_key, status, created_at);
     CREATE INDEX IF NOT EXISTS idx_ai_usage_tool ON ai_usage(tool_id, created_at);
 
     -- T01268（PRD §5.1）：外部平台执行会话——AI 编排大脑的观测底座。
