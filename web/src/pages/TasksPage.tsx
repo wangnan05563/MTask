@@ -21,6 +21,7 @@ import { fieldBadgesNode } from '../ui/fieldBadges'; // T03231（PM-203②）：
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { NoticeToast, useNotice } from '../ui/notice'; // T03214（UX-02 ③）：提示分级——成功短驻、错误长驻且可关闭/复制
 import { paginationStatus, type PaginationView } from '../utils/taskPagination'; // T03214（UX-02 ①）：剩余条数与「已加载全部」判据
+import { suggestEntryState } from '../utils/suggestVisibility'; // T03257（AI-203④）：建议入口显隐口径（未启用隐藏 / 失效禁用）
 import { isValidIanaTz, tzOptions } from '../utils/timezone'; // T03268（PRD 4.2）：项目时区候选与本地校验
 import { buildImportFailureReceipt, buildImportReceipt } from '../utils/importReceipt'; // T03214（UX-02 ④）：导入结果分列成功/跳过/失败
 import { arrangeTaskTree, makeTaskMatcher, matchVerified, sortOptions, sortTasks, type SortKey } from '../utils/taskListQuery'; // T03215（PM-304）：列表派生计算提为模块级纯函数，供 useMemo 稳定缓存
@@ -382,6 +383,9 @@ export function TasksPage() {
   const [rowSuggestBusy, setRowSuggestBusy] = useState<string | null>(null);
   // T03256（AI-203③）：总开关——关闭时建议入口整体隐藏（服务端同时拒绝生成，双端一致）
   const [suggestEnabled, setSuggestEnabled] = useState(true);
+  // T03257（AI-203④）：台账里是否展示过建议——展示过就说明「启用过」，此后 AI 失效只禁用不隐藏
+  const [suggestEverShown, setSuggestEverShown] = useState(false);
+  const suggestEntry = suggestEntryState({ featureEnabled: suggestEnabled, everShown: suggestEverShown, readiness });
   // 新建任务进行中：全局 busy store，切页不丢失，防止请求进行中切页后再点重复插入
   const creating = useBusy('tasks.create');
   // 「AI 美化」按任务隔离的进行中集合：不同任务并行互不干扰，动画只作用于触发任务
@@ -1427,11 +1431,15 @@ export function TasksPage() {
     void api.post('/tasks/classify-suggest/feedback', { suggestionId: s.suggestionId, event }).catch(() => {});
   }
 
-  // T03256（AI-203③）：读取开关状态，关闭时不渲染建议入口
+  // T03256/T03257：读取开关与已展示数——关闭时隐藏入口；展示过则 AI 失效时改为禁用展示
   useEffect(() => {
     let alive = true;
-    api.get<{ enabled?: boolean }>('/ai/suggestions/stats')
-      .then((r) => { if (alive && typeof r.enabled === 'boolean') setSuggestEnabled(r.enabled); })
+    api.get<{ enabled?: boolean; shown?: number }>('/ai/suggestions/stats')
+      .then((r) => {
+        if (!alive) return;
+        if (typeof r.enabled === 'boolean') setSuggestEnabled(r.enabled);
+        if (typeof r.shown === 'number') setSuggestEverShown(r.shown > 0);
+      })
       .catch(() => {});
     return () => { alive = false; };
   }, [activeProject]);
@@ -2807,14 +2815,18 @@ export function TasksPage() {
           <option value="">未分类</option>
           {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
-        {/* T03255（AI-203①）：该任务的分类/优先级建议——只读获取，采纳才写回；T03256 关闭时整体隐藏 */}
-        {suggestEnabled && (
+        {/* T03255（AI-203①）：该任务的分类/优先级建议——只读获取，采纳才写回；
+            T03256 关闭时隐藏；T03257 未启用隐藏、配置失效禁用并给原因（D-14） */}
+        {suggestEntry !== 'hidden' && (
           <button
             onClick={() => void suggestForTask(t)}
-            disabled={rowSuggestBusy === t.id}
+            disabled={rowSuggestBusy === t.id || suggestEntry === 'disabled'}
             className="task-op"
             data-t03255="row-trigger"
-            title="分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）"
+            data-t03257={suggestEntry}
+            title={suggestEntry === 'disabled'
+              ? aiBlockedTitle(readiness, '分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）')
+              : '分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）'}
             aria-label="获取该任务的分类与优先级建议"
             style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--text-muted)' }}
           >
@@ -4180,15 +4192,19 @@ export function TasksPage() {
           >
             {smartCat ? <Sparkles size={13} className="task-breathe" /> : <Sparkle size={13} />}
           </button>
-          {/* T03255（AI-203①）：主动获取分类/优先级建议与理由——只展示，采纳才填表单；T03256 关闭时整体隐藏 */}
-          {suggestEnabled && (
+          {/* T03255（AI-203①）：主动获取分类/优先级建议与理由——只展示，采纳才填表单；
+              T03256 关闭时隐藏；T03257 未启用隐藏、配置失效禁用并给原因（D-14） */}
+          {suggestEntry !== 'hidden' && (
             <button
               onClick={() => void suggestForNew()}
-              disabled={newSuggestBusy}
+              disabled={newSuggestBusy || suggestEntry === 'disabled'}
               data-t03255="create-trigger"
-              title="分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）"
+              data-t03257={suggestEntry}
+              title={suggestEntry === 'disabled'
+                ? aiBlockedTitle(readiness, '分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）')
+                : '分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）'}
               aria-label="获取分类与优先级建议"
-              style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: newSuggestBusy ? 'var(--text-muted)' : 'var(--text)' }}
+              style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: newSuggestBusy || suggestEntry === 'disabled' ? 'var(--text-muted)' : 'var(--text)' }}
             >
               {newSuggestBusy ? <Loader2 size={13} className="aispin" /> : <Sparkles size={13} />}
             </button>
