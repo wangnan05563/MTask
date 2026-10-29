@@ -4353,7 +4353,9 @@ export function TasksPage() {
         {viewMode === 'board' && <div style={{ height: 8 }} />}
         {viewMode === 'list' && (<>
         {/* T00757：待办/已完成/搁置 三个标题并排为 tab——激活项加粗+下方横线，未激活常规字重；仅渲染激活 tab 的列表 */}
-        <div className="op-host" style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--border-strong)', marginBottom: 8 }}>
+        {/* T03620：排序/筛选控件迁到 tab 行右侧同行展示——只渲染当前 tab 自己的控件，默认隐藏、悬浮 tab 行淡入
+            （沿用 .op-hidden 口径；tab 按钮常驻可见且排在控件之前，满足 T03162 键盘可达规范） */}
+        <div className="op-host" data-t03620="tabbar" style={{ display: 'flex', gap: 4, alignItems: 'center', borderBottom: '1px solid var(--border-strong)', marginBottom: 8 }}>
           {([['todo', `待办（${visibleTodo.length}/${todoTotal}）`],
              ['done', `已完成（${visibleDone.length}/${doneTotal}，未验证 ${done.filter((t) => !t.verified).length}）`],
              ['shelved', `搁置（${visibleShelved.length}）`]] as const).map(([key, label]) => (
@@ -4366,29 +4368,69 @@ export function TasksPage() {
               {label}
             </button>
           ))}
+          <span className="op-hidden" data-t03620="tab-controls" style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            {activeTab === 'todo' && (
+              <select
+                data-t03620="todo-sort"
+                value={todoSort}
+                onChange={(e) => setTodoSort(e.target.value as SortKey)}
+                title="待办排序 — 按修改时间或优先级排序"
+                aria-label="待办排序：按修改时间或优先级排序"
+                style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4 }}
+              >
+                {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            )}
+            {activeTab === 'done' && (<>
+              <select
+                data-t03620="done-sort"
+                value={doneSort}
+                onChange={(e) => setDoneSort(e.target.value as SortKey)}
+                title="已完成排序 — 按修改时间或优先级排序"
+                aria-label="已完成排序：按修改时间或优先级排序"
+                style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4 }}
+              >
+                {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              <select
+                data-t03620="done-filter"
+                value={doneFilter}
+                onChange={(e) => setDoneFilter(e.target.value as 'all' | 'unverified' | 'verified')}
+                title="验证状态过滤 — 筛选已完成任务的验证状态显示范围"
+                aria-label="验证状态过滤：筛选已完成任务的验证状态显示范围"
+                style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4 }}
+              >
+                <option value="unverified">仅未验证</option>
+                <option value="verified">仅已验证</option>
+                <option value="all">全部</option>
+              </select>
+            </>)}
+            {activeTab === 'shelved' && (
+              <select
+                data-t03620="shelved-sort"
+                value={shelvedSort}
+                onChange={(e) => setShelvedSort(e.target.value as SortKey)}
+                title="搁置排序 — 按修改时间或优先级排序"
+                aria-label="搁置排序：按修改时间或优先级排序"
+                style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4 }}
+              >
+                {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            )}
+          </span>
         </div>
         {activeTab === 'todo' && (<>
-        <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
-          {multiSelect && (
+        {/* T03620：排序已上移到 tab 行，此处只保留多选全选 */}
+        {multiSelect && (
+          <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
             <TriCheckbox
               checked={visibleTodo.length > 0 && visibleTodo.every((t) => selectedIds.has(t.id))}
               indeterminate={visibleTodo.some((t) => selectedIds.has(t.id))}
               onChange={(e) => toggleSelectAll(visibleTodo, e.target.checked)}
               title="全选/全不选待办列表" label="全选待办任务"
               style={{ cursor: 'pointer' }} />
-          )}
-          {/* 按修改时间/优先级排序：会话级偏好，选项见 sortOptions */}
-          <select
-            className="op-hidden"
-            value={todoSort}
-            onChange={(e) => setTodoSort(e.target.value as SortKey)}
-            title="待办排序 — 按修改时间或优先级排序"
-            aria-label="待办排序：按修改时间或优先级排序"
-            style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4 }}
-          >
-            {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
+          </div>
+        )}
         {/* T03215（PM-304）：窗口化渲染——只渲染视口±overscan 行，其余用 ul 上下内边距占位撑出等总高的滚动区间 */}
         <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom }}>{visibleTodo.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'todo', todoIds)}</Fragment>)}</ul>
         {/* T02283：取数失败时不渲染空态——「暂无待办任务」会把后端故障说成没活干（项目列表失败导致
@@ -4424,39 +4466,17 @@ export function TasksPage() {
             <span style={{ color: 'var(--text-muted)' }}>已完成任务归档删除后无法补齐</span>
           </div>
         )}
-        <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
-          {/* 提示未验证数量：默认过滤「仅未验证」时，让用户意识到已验证项只是被过滤而非丢失 */}
-          {multiSelect && (
+        {/* T03620：已完成排序 + 验证状态过滤已上移到 tab 行，此处只保留多选全选 */}
+        {multiSelect && (
+          <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
             <TriCheckbox
               checked={visibleDone.length > 0 && visibleDone.every((t) => selectedIds.has(t.id))}
               indeterminate={visibleDone.some((t) => selectedIds.has(t.id))}
               onChange={(e) => toggleSelectAll(visibleDone, e.target.checked)}
               title="全选/全不选已完成列表" label="全选已完成任务"
               style={{ cursor: 'pointer' }} />
-          )}
-          <select
-            className="op-hidden"
-            value={doneSort}
-            onChange={(e) => setDoneSort(e.target.value as SortKey)}
-            title="已完成排序 — 按修改时间或优先级排序"
-            aria-label="已完成排序：按修改时间或优先级排序"
-            style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4 }}
-          >
-            {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-          <select
-            className="op-hidden"
-            value={doneFilter}
-            onChange={(e) => setDoneFilter(e.target.value as 'all' | 'unverified' | 'verified')}
-            title="验证状态过滤 — 筛选已完成任务的验证状态显示范围"
-            aria-label="验证状态过滤：筛选已完成任务的验证状态显示范围"
-            style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4 }}
-          >
-            <option value="unverified">仅未验证</option>
-            <option value="verified">仅已验证</option>
-            <option value="all">全部</option>
-          </select>
-        </div>
+          </div>
+        )}
         <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom }}>{visibleDone.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'done', doneIds)}</Fragment>)}</ul>
         {visibleDone.length === 0 && tasksPhase !== 'error' && (
           <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>暂无已完成任务——完成任务后在此集中查看与验证。</div>
@@ -4466,26 +4486,17 @@ export function TasksPage() {
         {/* T00719：搁置任务列表——页面最下方独立区块，与待办/已完成隔离（MCP 处理待办时自动忽略搁置任务）；
             工具条与查询条件对齐待办/已完成（多选全选 + 排序 + 同一套关键词/分类/优先级过滤） */}
         {activeTab === 'shelved' && (<>
-        <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
-          {multiSelect && (
+        {/* T03620：搁置排序已上移到 tab 行，此处只保留多选全选 */}
+        {multiSelect && (
+          <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
             <TriCheckbox
               checked={visibleShelved.length > 0 && visibleShelved.every((t) => selectedIds.has(t.id))}
               indeterminate={visibleShelved.some((t) => selectedIds.has(t.id))}
               onChange={(e) => toggleSelectAll(visibleShelved, e.target.checked)}
               title="全选/全不选搁置列表" label="全选搁置任务"
               style={{ cursor: 'pointer' }} />
-          )}
-          <select
-            className="op-hidden"
-            value={shelvedSort}
-            onChange={(e) => setShelvedSort(e.target.value as SortKey)}
-            title="搁置排序 — 按修改时间或优先级排序"
-            aria-label="搁置排序：按修改时间或优先级排序"
-            style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4 }}
-          >
-            {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
+          </div>
+        )}
         {/* T02290：搁置列表取数失败此前无任何出口——挂共享失败态层，给出原因/重试，并在旧数据在位时标「可能过期」 */}
         <div style={{ margin: '4px 0' }}>
           <ResourceHint
