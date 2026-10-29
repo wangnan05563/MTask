@@ -47,6 +47,7 @@ import { webhooksApi } from './webhooks'; // T03196（PM-401）：项目级 outb
 import { gitLinksApi } from './gitLinks'; // 八期 §4.2：任务↔提交关联端点（摘要批量/抽屉首屏/清单懒加载/绑定解绑/git-log 上提）
 import { gitExtractApi } from './gitExtract'; // 八期 §3.3：Git 增量资产提取（范围摘要/SSE 执行/一次性令牌下载）
 import { sonarSettingsApi } from './sonarSettings'; // 八期 §3.4.1：设置页 SonarQube 子页（配置/Token 审计/连接测试）
+import { sonarScanApi } from './sonarScan'; // 八期 §3.4.2：Sonar 质量扫描七阶段引擎（SSE/中止/环境预检）
 import { attachGitLinks } from '../services/taskGitLinks'; // T03361：GET /tasks 行内加性字段 gitLinks/gitLinkCount
 import { listArtifacts } from '../services/aiArtifactService';
 import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, discardReport, gatherReportData, validateProjectIds, aiReportPreflight, normalizeConfirmedEstimate, AI_REPORT_CARD, type ReportPeriod, type ReportFormat } from '../services/ReportService';
@@ -3118,6 +3119,7 @@ api.use('/webhooks', webhooksApi); // T03196（PM-401）：/webhooks?projectId=�
 api.use(gitLinksApi); // 八期：/git/*、/tasks/:id/git*（完整路径声明，不挂前缀）
 api.use(gitExtractApi); // 八期：/git-extract*（完整路径声明，不挂前缀）
 api.use(sonarSettingsApi); // 八期 §3.4.1：/settings/sonar*（配置读写/查看审计/连接测试）
+api.use(sonarScanApi); // 八期 §3.4.2：/sonar/scan*（完整路径声明，不挂前缀）
 
 // ---------- 监督器（T01286）：状态看板 / 审计视图 / 熔断与中继配置 ----------
 api.use('/supervisor', supervisorApi);

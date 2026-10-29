@@ -156,6 +156,33 @@ function tokenPlain(): string | null {
   }
 }
 
+/**
+ * 扫描侧要用的连接参数（§3.4.2）。
+ *
+ * Token 明文只在这个返回值里出现，且只允许用于 HTTP 头与子进程环境变量：
+ * 安全条款要求「日志/命令行/properties 全链路脱敏」，所以 `sonar-project.properties`
+ * 里绝不出现它（PRD 阶段表把 token 列进 properties 是早期写法，以安全条款为准）。
+ */
+export function readScanSettings(): { serverUrl: string; token: string; scannerPath: string; scanLimit: number } {
+  return {
+    serverUrl: getSetting(SERVER_URL_KEY) ?? '',
+    token: tokenPlain() ?? '',
+    scannerPath: getSetting(SCANNER_PATH_KEY) ?? '',
+    scanLimit: readScanLimit(),
+  };
+}
+
+/** spawn 形态决策（扫描与探测共用一套，否则「探测能跑、扫描跑不起来」） */
+export function planScannerSpawn(bin: string, args: string[]): { command: string; args: string[]; shell: boolean; unsafe?: boolean } {
+  const useShell = process.platform === 'win32' && /\.(bat|cmd)$/i.test(bin);
+  // 走 cmd.exe 时路径里的 shell 元字符等于把命令行控制权交出去，直接判定不可用
+  if (useShell && CMD_UNSAFE_CHARS.test(bin)) return { command: bin, args: [], shell: true, unsafe: true };
+  // Windows 官方 SonarScanner 发布包只有 `sonar-scanner.bat`，而 Node ≥18.20 禁止无 shell 启动 .bat/.cmd
+  // （实测：裸 execFile 同步抛 spawn EINVAL）。唯一实测可用的写法是「整条命令自带引号 + shell:true + args 传空」
+  if (useShell) return { command: `"${bin}" ${args.join(' ')}`, args: [], shell: true };
+  return { command: bin, args: [...args], shell: false };
+}
+
 const probeCache = new Map<string, { at: number; value: SonarProbe }>();
 
 export function clearSonarProbeCache(): void {
@@ -175,11 +202,14 @@ interface ExecResult {
  */
 const CMD_UNSAFE_CHARS = /[&|^%<>"'`;]|\r|\n/;
 
+/** Java 缺失的统一文案：探测失败与「根本没探测到」共用一句，避免两处各写一遍后指引不同 */
+const JAVA_MISSING_HINT = '未探测到 Java（PATH 与 JAVA_HOME/bin 里都没有 java）。SonarScanner CLI 依赖 JDK 11+，请安装后点「重新探测」；本工具不提供安装。';
+
 const firstLine = (s: string) => s.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)[0] ?? '';
 
 function execVersion(bin: string, args: string[]): Promise<ExecResult> {
-  const useShell = process.platform === 'win32' && /\.(bat|cmd)$/i.test(bin);
-  if (useShell && CMD_UNSAFE_CHARS.test(bin)) return Promise.resolve({ ok: false, out: '', error: 'unsafe-path' });
+  const spec = planScannerSpawn(bin, args);
+  if (spec.unsafe) return Promise.resolve({ ok: false, out: '', error: 'unsafe-path' });
   return new Promise((resolve) => {
     const opts = { timeout: EXEC_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, windowsHide: true } as const;
     const cb = (err: unknown, stdout: string, stderr: string) => {
@@ -187,11 +217,7 @@ function execVersion(bin: string, args: string[]): Promise<ExecResult> {
       resolve({ ok: !err, out: firstLine(`${stdout ?? ''}${stderr ?? ''}`) });
     };
     try {
-      // Windows 官方 SonarScanner 发布包只有 `sonar-scanner.bat`，而 Node ≥18.20 禁止无 shell 启动 .bat/.cmd
-      // （实测：裸 execFile 同步抛 spawn EINVAL，会把设置页整页打崩）。唯一实测可用的写法是
-      // 「整条命令自带引号 + shell:true + args 传空」——不把 args 交给 shell 二次拼接。
-      if (useShell) execFile(`"${bin}" ${args.join(' ')}`, [], { ...opts, shell: true }, cb);
-      else execFile(bin, args, opts, cb);
+      execFile(spec.command, spec.args, { ...opts, shell: spec.shell }, cb);
     } catch {
       resolve({ ok: false, out: '', error: 'spawn-failed' });
     }
@@ -211,6 +237,26 @@ export function findScannerOnPath(env: NodeJS.ProcessEnv = process.env): string 
   const names = process.platform === 'win32'
     ? ['sonar-scanner.bat', 'sonar-scanner.exe', 'sonar-scanner.cmd', 'sonar-scanner']
     : ['sonar-scanner'];
+  for (const dir of dirs) {
+    for (const name of names) {
+      const candidate = path.join(dir, name);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return '';
+}
+
+/**
+ * 探测 java 可执行文件：先看 `JAVA_HOME/bin`，再按 PATH 目录逐项 stat。
+ * 只认 `java` 裸名会让「装了 JDK 但没把 bin 加进 PATH」这一常见 Windows 形态被误判成「没有 Java」——
+ * 而扫描引擎把 Java 当作硬前提，误判等于整条功能链在用户侧凭空消失。
+ */
+export function findJavaExecutable(env: NodeJS.ProcessEnv = process.env): string {
+  const names = process.platform === 'win32' ? ['java.exe', 'java.bat', 'java.cmd', 'java'] : ['java'];
+  const dirs: string[] = [];
+  const home = (env.JAVA_HOME ?? '').trim();
+  if (home) dirs.push(path.join(home, 'bin'));
+  for (const d of (env.PATH ?? env.Path ?? '').split(path.delimiter).filter(Boolean)) dirs.push(d);
   for (const dir of dirs) {
     for (const name of names) {
       const candidate = path.join(dir, name);
@@ -256,16 +302,20 @@ export async function probeScanner(scannerPathConfig?: string): Promise<SonarPro
   });
 }
 
-export async function probeJava(javaBin = 'java'): Promise<SonarProbe> {
-  return probeWithCache(`java:${javaBin}`, async () => {
-    const res = await execVersion(javaBin, ['-version']);
+export async function probeJava(javaBin?: string): Promise<SonarProbe> {
+  const configured = (javaBin ?? '').trim();
+  // 不传参数=按环境探测（JAVA_HOME 优先，其次 PATH）；显式传入保留「指定命令名探测」的老用法
+  const resolved = configured || findJavaExecutable();
+  if (!resolved) {
+    return { available: false, resolved: '', version: '', hint: JAVA_MISSING_HINT };
+  }
+  return probeWithCache(`java:${resolved}`, async () => {
+    const res = await execVersion(resolved, ['-version']);
     return {
       available: res.ok,
-      resolved: res.ok ? javaBin : '',
+      resolved: res.ok ? resolved : '',
       version: res.ok ? res.out : '',
-      hint: res.ok
-        ? ''
-        : `未探测到 Java（执行 ${javaBin} -version 失败）。SonarScanner CLI 依赖 JDK 11+，请安装后重启 MTask；本工具不提供安装。`,
+      hint: res.ok ? '' : probeHint('Java', res) || JAVA_MISSING_HINT,
     };
   });
 }

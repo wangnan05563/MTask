@@ -196,7 +196,9 @@ function topoOrderCommits(commits: CommitSummaryRow[]): CommitSummaryRow[] {
 }
 
 /** 文件 → 最后一次改动它的提交（决定导出内容；D 结尾的不导出） */
-function finalPathMap(filesByCommit: ExtractPlan['filesByCommit']): Map<string, { sha: string; path: string }> {
+// 导出给 Sonar 快照（§3.4.2 stage 2）复用：删除/重命名的「最终内容」判定是同一套口径，
+// 两处各写一遍迟早漂移（八期 T03424 修的就是这套语义）。
+export function finalPathMap(filesByCommit: ExtractPlan['filesByCommit']): Map<string, { sha: string; path: string }> {
   const out = new Map<string, { sha: string; path: string }>();
   // 入参按「父在子前」排序，所以「后写覆盖前写」= 「取最终内容」。乱序会让包里装的是最早版本。
   for (const f of filesByCommit) {

@@ -17,6 +17,7 @@ import { KickoffPptPanel } from './KickoffPptPanel'; // T02108：项目启动会
 import { SummaryPptPanel } from './SummaryPptPanel'; // T02857：阶段性项目总结汇报 PPT 工作面板
 import { CodeReviewLecturePanel } from './CodeReviewLecturePanel'; // T02872：代码评审会议讲稿工作面板（三区布局）
 import { GitExtractPanel } from './GitExtractPanel'; // T03366（八期 §3.3.1）：Git 增量资产提取工作面板（范围/方式/执行三段式）
+import { SonarScanPanel } from './SonarScanPanel'; // T03377（八期 §3.4.2）：Sonar 质量扫描工作面板（范围/回写方式/执行三段式）
 import { scopeWorkspace, useGitScope, type GitScope } from '../ui/gitScopePicker'; // T03366：范围与 Sonar 卡共享同一份会话级 state
 import { useSessionState, usePersistentState } from '../ui/session';
 import { usePrdGen } from '../stores/prdGenStore'; // T01038：PRD 生成卡片统一运行状态
@@ -27,7 +28,7 @@ import { useCodeReviewLecture } from '../stores/codeReviewLectureStore'; // T028
 import { aiImportStore } from '../stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 import { RunStatusBadge, type RunStatus } from '../ui/runStatus'; // T01038：统一运行状态徽标
 import { FlowButton } from '../ui/FlowButton'; // T01068-FR4.4：流光按钮（loading 态）
-import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation, FileChartColumn, ScrollText, FolderOpen, FolderGit2 } from 'lucide-react';
+import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation, FileChartColumn, ScrollText, FolderOpen, FolderGit2, ScanLine } from 'lucide-react';
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CARD } from '../ui/consoleReset'; // T01042：卡片侧重置入口（与控制台重置共用核心）
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
 import { focusTaskByNo } from '../ui/focusTask'; // T01057 建议：就绪任务跳转按编号定位（跨项目可命中）
@@ -307,7 +308,7 @@ function legacyProjectScope(): string[] {
 }
 
 /** 三块 AI 工作面板的条件渲染（S3776：条件块下沉为独立组件） */
-function ReportWorkPanels({ aiToolId, projectId, projectIds, onProjectIdsChange, projects, scopeNote, showKickoffPpt, closeKickoffPpt, showSummaryPpt, closeSummaryPpt, showReviewLecture, closeReviewLecture, showGitExtract, closeGitExtract, gitScope, onGitScopeChange, onGitEnvDown, onFlash, openCard, showPrdGen, closePrdGen, prdGenSaved, showTcGen, closeTcGen, tcImported, showPrdImport, closePrdImport, prdImportSaved, showAiImport, closeAiImport, aiImportSaved, prdImportKey }: {
+function ReportWorkPanels({ aiToolId, projectId, projectIds, onProjectIdsChange, projects, scopeNote, showKickoffPpt, closeKickoffPpt, showSummaryPpt, closeSummaryPpt, showReviewLecture, closeReviewLecture, showGitExtract, closeGitExtract, gitScope, onGitScopeChange, onGitEnvDown, showSonarScan, closeSonarScan, onSonarEnvDown, onFlash, openCard, showPrdGen, closePrdGen, prdGenSaved, showTcGen, closeTcGen, tcImported, showPrdImport, closePrdImport, prdImportSaved, showAiImport, closeAiImport, aiImportSaved, prdImportKey }: {
   readonly aiToolId: string;
   readonly projectId: string;
   /** T02857：总结汇表面板默认消费顶部多选范围（空=全部项目），与 kickoff 的单项目口径不同 */
@@ -326,6 +327,9 @@ function ReportWorkPanels({ aiToolId, projectId, projectIds, onProjectIdsChange,
   readonly gitScope: GitScope; readonly onGitScopeChange: (next: GitScope) => void;
   /** T03366：面板取数发现的「非仓库 / 无 git」上抛给卡片（页面层算不出这两种 kind） */
   readonly onGitEnvDown: (down: boolean) => void;
+  /** T03377（八期 §3.4.2）：第 11 张卡——Sonar 质量扫描；范围与 Git 卡共享同一份 `git.scope` */
+  readonly showSonarScan: boolean; readonly closeSonarScan: () => void;
+  readonly onSonarEnvDown: (down: boolean) => void;
   /** T03366：面板内的短提示（绑定成功/下载失败等）沿用本页统一的 flash */
   readonly onFlash: (m: string) => void;
   /** T02108：启动会校验清单的「去补充」深链落到本页对应能力卡片（report?card=prd-import / tc-gen） */
@@ -354,6 +358,11 @@ function ReportWorkPanels({ aiToolId, projectId, projectIds, onProjectIdsChange,
       {/* T03366（八期 §3.3.1）：第 10 张卡——范围/方式/执行三段式；不消耗 AI 额度，日志不进右侧控制台（面板内自带阶段进度） */}
       {showGitExtract && (
         <GitExtractPanel projects={projects} scope={gitScope} onScopeChange={onGitScopeChange} onClose={closeGitExtract} onEnvState={onGitEnvDown} flash={onFlash} />
+      )}
+      {/* T03377（八期 §3.4.2）：第 11 张卡——范围沿用 Git 卡那份（PRD「与 Sonar 卡互相沿用上次范围」），
+          环境未就绪时面板给指引与去设置页入口，不弹错误框（AC-16） */}
+      {showSonarScan && (
+        <SonarScanPanel projects={projects} scope={gitScope} onScopeChange={onGitScopeChange} onClose={closeSonarScan} onEnvState={onSonarEnvDown} flash={onFlash} />
       )}
       {/* T01492：从 PRD 生成测试用例面板（日志/正文同走右侧控制台；停止已接进控制台 stopAll） */}
       {showTcGen && (
@@ -681,6 +690,11 @@ export function ReportPage() {
   const [gitScope, setGitScope] = useGitScope();
   /** T03366：面板取数后上抛的「环境不可用」（非仓库 / 无 git）——这类只有服务端知道，页面层无从算 */
   const [gitEnvDown, setGitEnvDown] = useState(false);
+  // T03377（八期 §3.4.2）：Sonar 质量扫描面板展开态（第 11 张卡，插在提取卡之后，互斥）。
+  // 范围不另存一份——PRD 要求与提取卡互相沿用，故复用上面那份 git.scope。
+  const [showSonarScan, setShowSonarScan] = useSessionState('report.showSonarScan', false);
+  /** T03377：缺 scanner / Java / 服务器地址 / projectKey 由面板探测后上抛（页面层不重复探测，两处探测会打两次子进程） */
+  const [sonarEnvDown, setSonarEnvDown] = useState(false);
   // T00908：「已上传 PRD 文档」弹层展开态 + 导入面板强制重挂载计数（选择文档后递增 key 触发面板重挂，
   //          使 useSessionState 重新读取 sessionStorage 中的目标项目与 docId，保证自动带入生效）
   const [prdDocsOpen, setPrdDocsOpen] = useState(false);
@@ -766,6 +780,7 @@ export function ReportPage() {
     summaryPpt: setShowSummaryPpt,
     reviewLecture: setShowReviewLecture,
     gitExtract: setShowGitExtract,
+    sonarScan: setShowSonarScan,
   } as const;
   type PanelKey = keyof typeof panelSetters;
   const panelOpen: Record<PanelKey, boolean> = {
@@ -774,6 +789,7 @@ export function ReportPage() {
     summaryPpt: showSummaryPpt,
     reviewLecture: showReviewLecture,
     gitExtract: showGitExtract,
+    sonarScan: showSonarScan,
   };
   /** T03366：卡片 blocked 视觉的判据——勾了项目但没有共同工作空间（未绑定 / 跨空间）。
    *  注意与 needsAi 的 AI 不可用是两套语义：这里点击**仍展开**面板（要的就是面板里的绑定入口）。 */
@@ -784,6 +800,11 @@ export function ReportPage() {
   const gitEnvText = gitEnvBlocked
     ? '未就绪：所选项目没有共同的工作空间'
     : gitEnvDown ? '未就绪：工作空间不是 Git 仓库或未找到 git 命令' : '';
+  /** T03377：Sonar 卡的 blocked 判据 = 范围侧（同一份 git.scope 的工作空间约束）+ 环境侧（面板探测的 scanner/Java/地址） */
+  const sonarEnvUnready = gitEnvBlocked || sonarEnvDown;
+  const sonarEnvText = gitEnvBlocked
+    ? '未就绪：所选项目没有共同的工作空间'
+    : sonarEnvDown ? '未就绪：缺扫描器 / Java / 服务器地址 / projectKey，展开面板查看指引' : '';
   /** 点击卡片：已展开则收起，否则只展开它（其余全部收起） */
   function togglePanel(key: PanelKey) {
     const keys = Object.keys(panelSetters) as PanelKey[];
@@ -916,6 +937,17 @@ export function ReportPage() {
       blockedVisual: gitEnvUnready,
       toneText: gitEnvBlocked ? '环境未就绪 — 展开面板绑定工作空间后即可提取' : '环境未就绪 — 展开面板查看原因与修复入口',
       onToggle: () => togglePanel('gitExtract') },
+    // T03377（八期 §3.4.2）：第 11 张卡——位置逐字按 PRD「插在 Git 增量资产提取之后」；
+    // needsAi=false（扫描走本地 scanner 子进程，不消耗模型额度）；blocked 视觉与提取卡同语义：
+    // 点击照常展开，因为修复入口（去设置页配 projectKey / 扫描器路径）就在面板里。
+    { key: 'sonar-scan', needsAi: false, icon: <ScanLine size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: 'Sonar 质量扫描',
+      desc: withScopeNote('对任务关联提交的内容快照发起 SonarQube 扫描：七阶段进度 + 按严重度分组结果 + 高危问题自动回写为待办子任务——只扫快照，不动工作树',
+        sonarEnvText),
+      hint: '需已配置服务器地址 / 扫描器 / Java 与项目 projectKey；单次并发上限默认 1（可调 2），超限不排队', aria: 'Sonar 质量扫描',
+      open: showSonarScan,
+      blockedVisual: sonarEnvUnready,
+      toneText: gitEnvBlocked ? '环境未就绪 — 展开面板绑定工作空间后即可扫描' : '环境未就绪 — 展开面板查看原因与设置入口',
+      onToggle: () => togglePanel('sonarScan') },
   ];
 
   // 工作面板开关回调（S3776：从 JSX 内联箭头下沉）
@@ -1252,6 +1284,7 @@ export function ReportPage() {
         showReviewLecture={showReviewLecture} closeReviewLecture={() => setShowReviewLecture(false)}
         showGitExtract={showGitExtract} closeGitExtract={() => setShowGitExtract(false)}
         gitScope={gitScope} onGitScopeChange={setGitScope} onGitEnvDown={setGitEnvDown} onFlash={flash}
+        showSonarScan={showSonarScan} closeSonarScan={() => setShowSonarScan(false)} onSonarEnvDown={setSonarEnvDown}
         showPrdGen={showPrdGen} closePrdGen={closePrdGen} prdGenSaved={prdGenSaved}
         showTcGen={showTcGen} closeTcGen={closeTcGen} tcImported={tcImported}
         showPrdImport={showPrdImport} closePrdImport={closePrdImport} prdImportSaved={prdImportSaved}
