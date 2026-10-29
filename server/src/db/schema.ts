@@ -753,6 +753,21 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS ix_sonar_fps_created ON sonar_issue_fps(created_at);
+
+    /* T03373（八期 §3.4.1）：Sonar Token「查看原文」审计。
+       PRD 明确这是新增审计点——现有 API Key 查看通道不写审计，不能拿它当复用。
+       只记「何时看了哪台服务器的 Token」，绝不记 Token 本身；失败的尝试也记，
+       否则「反复试探直到解出」在审计里看起来一片空白。 */
+    CREATE TABLE IF NOT EXISTS sonar_reveal_audit (
+      id           TEXT PRIMARY KEY,
+      revealed_at  TEXT NOT NULL,
+      actor        TEXT NOT NULL DEFAULT 'local',
+      target       TEXT NOT NULL,
+      server_url   TEXT NOT NULL,
+      ok           INTEGER NOT NULL DEFAULT 1,
+      note         TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS ix_sonar_reveal_at ON sonar_reveal_audit(revealed_at);
   `);
   ensureColumn('tasks', 'verified', 'verified INTEGER NOT NULL DEFAULT 0');
   ensureColumn('queues', 'paused', 'paused INTEGER NOT NULL DEFAULT 0'); // T01434：队列级暂停/继续

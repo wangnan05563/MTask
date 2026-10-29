@@ -8,7 +8,7 @@
  */
 export type SettingsTabKey =
   | 'general' | 'help' | 'about'
-  | 'dashboard' | 'categories' | 'fields' | 'recurring' | 'history' | 'archive' | 'migration' | 'dbadmin' | 'apitokens'
+  | 'dashboard' | 'categories' | 'fields' | 'recurring' | 'history' | 'archive' | 'migration' | 'dbadmin' | 'apitokens' | 'sonar'
   | 'supervisor' | 'tunnel' | 'logs';
 
 export interface SettingsTab {
@@ -45,6 +45,8 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
       { key: 'migration', label: '数据迁移', keywords: ['导入', '导出', '迁移', '备份'] },
       { key: 'dbadmin', label: '数据维护', keywords: ['数据库', '清理', '维护', '备份'] },
       { key: 'apitokens', label: 'API Token', keywords: ['令牌', '凭据', '接口', 'token'] },
+      // T03371（八期 §3.4.1）：SonarQube 环境配置页，PRD 要求紧接「API Token」之后
+      { key: 'sonar', label: 'SonarQube', keywords: ['sonar', '质量扫描', '扫描器', '服务器地址', 'projectKey', 'java', 'token'] },
     ],
   },
   {

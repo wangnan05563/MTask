@@ -46,6 +46,7 @@ import { supervisorApi } from './supervisor'; // T01286：监督状态/审计/�
 import { webhooksApi } from './webhooks'; // T03196（PM-401）：项目级 outbound Webhook（配置/测试/投递日志）
 import { gitLinksApi } from './gitLinks'; // 八期 §4.2：任务↔提交关联端点（摘要批量/抽屉首屏/清单懒加载/绑定解绑/git-log 上提）
 import { gitExtractApi } from './gitExtract'; // 八期 §3.3：Git 增量资产提取（范围摘要/SSE 执行/一次性令牌下载）
+import { sonarSettingsApi } from './sonarSettings'; // 八期 §3.4.1：设置页 SonarQube 子页（配置/Token 审计/连接测试）
 import { attachGitLinks } from '../services/taskGitLinks'; // T03361：GET /tasks 行内加性字段 gitLinks/gitLinkCount
 import { listArtifacts } from '../services/aiArtifactService';
 import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, discardReport, gatherReportData, validateProjectIds, aiReportPreflight, normalizeConfirmedEstimate, AI_REPORT_CARD, type ReportPeriod, type ReportFormat } from '../services/ReportService';
@@ -3113,9 +3114,10 @@ api.use(materialTimingApi); // T03189（G-1 汇报材料耗时）：同上，/re
 api.use('/metrics', metricsApi); // T03190（G-4 逾期率基线）：/metrics/overdue-rate
 api.use('/estimates', estimateApi); // T02037（估算视图 E3）：PRD-估算视图与工作量评估导出 §8
 api.use('/history', historyApi); // T00589：历史资产页面后端（转移 + 统计）
-api.use('/webhooks', webhooksApi);
-api.use(gitLinksApi); // 八期：/git/*、/tasks/:id/git*（完整路径声明，不挂前缀） // T03196（PM-401）：/webhooks?projectId=… /webhooks/:id/deliveries /test
+api.use('/webhooks', webhooksApi); // T03196（PM-401）：/webhooks?projectId=… /webhooks/:id/deliveries /test
+api.use(gitLinksApi); // 八期：/git/*、/tasks/:id/git*（完整路径声明，不挂前缀）
 api.use(gitExtractApi); // 八期：/git-extract*（完整路径声明，不挂前缀）
+api.use(sonarSettingsApi); // 八期 §3.4.1：/settings/sonar*（配置读写/查看审计/连接测试）
 
 // ---------- 监督器（T01286）：状态看板 / 审计视图 / 熔断与中继配置 ----------
 api.use('/supervisor', supervisorApi);

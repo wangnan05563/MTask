@@ -33,6 +33,7 @@ import { RecurringTab, ApiTokensTab } from './RecurringTokensTabs'; // T01073：
 import { SupervisorPanel } from './SupervisorPanel'; // T01286：监督状态与审计（FR-5.2~5.4）
 import { DashboardPage } from './DashboardPage'; // T01154：仪表盘迁入设置页
 import { CustomFieldsTab } from './CustomFieldsTab'; // T03231（PM-203）：项目级自定义字段
+import { SonarSettingsTab } from './SonarSettingsTab'; // T03371（八期 §3.4.1）：SonarQube 环境配置子页
 
 /** 应用信息（与根 package.json 保持一致） */
 const APP_NAME = 'MTask';
@@ -115,6 +116,7 @@ export function SettingsPage() {
       {active === 'fields' && <CustomFieldsTab />}
       {active === 'recurring' && <RecurringTab />}
       {active === 'apitokens' && <ApiTokensTab />}
+      {active === 'sonar' && <SonarSettingsTab />} {/* T03371（八期 §3.4.1）：SonarQube 环境配置，位于 API Token 之后 */}
       {active === 'tunnel' && <TunnelPanel />}
       {/* T00441：日志/归档入口从顶部菜单迁入设置页（内网穿透下方） */}
       {active === 'logs' && <LogsPage />}
