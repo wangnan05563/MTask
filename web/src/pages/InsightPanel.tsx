@@ -113,13 +113,13 @@ export function InsightPanel({ projectId, onClose }: {
   const setOverdue = useCallback((el: SVGSVGElement | null) => { overdueRef.current = el; }, []);
   const setThroughput = useCallback((el: SVGSVGElement | null) => { throughputRef.current = el; }, []);
 
-  const msgTimer = useRef<number | null>(null);
+  const msgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flash = useCallback((m: string) => {
     setMsg(m);
-    if (msgTimer.current) window.clearTimeout(msgTimer.current);
-    msgTimer.current = window.setTimeout(() => { setMsg(''); msgTimer.current = null; }, 4000);
+    if (msgTimer.current) globalThis.clearTimeout(msgTimer.current);
+    msgTimer.current = globalThis.setTimeout(() => { setMsg(''); msgTimer.current = null; }, 4000);
   }, []);
-  useEffect(() => () => { if (msgTimer.current) window.clearTimeout(msgTimer.current); }, []);
+  useEffect(() => () => { if (msgTimer.current) globalThis.clearTimeout(msgTimer.current); }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -230,7 +230,7 @@ export function InsightPanel({ projectId, onClose }: {
             {' · '}{summary.overdue.label}
             {summary.overdue.at ? `（${summary.overdue.at}）` : ''}
           </span>
-          <span data-t03261="throughput">周吞吐：{summary.throughput.perWeek === null ? '—' : summary.throughput.perWeek}</span>
+          <span data-t03261="throughput">周吞吐：{summary.throughput.perWeek ?? '—'}</span>
           <span data-t03261="ai-usage" title="ai_usage 无项目字段，只能给全局口径">
             AI 用量（全局）：调用 {summary.aiUsage.calls} · 卡片 {summary.aiUsage.cards}
           </span>

@@ -10,17 +10,30 @@ import { sessionJobId } from '../util/jobId'; // T03316（G-3）：会话稳定 
 import { askConfirm } from '../ui/dialogs'; // T03159（U20）：覆盖既有同源 PRD 前二次确认
 import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00769 二轮：未绑定工作空间时原位提供绑定入口
 import { AiProvenanceSection } from '../components/AiProvenance'; // T03262（AI-101①④）：溯源面板 + 产物找回
-import { CircleCheck, FileText, FolderOpen, Loader2, Plus, Save, Sparkles, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, CircleAlert, CircleCheck, FileText, FolderOpen, Info, Loader2, Plus, Save, Sparkles, Trash2, Upload, X, type LucideIcon } from 'lucide-react'; // T03655：问题级别三档图标
 
 /** T00769：交互确认表格行（AI 生成问题 + 用户自定义），answer 非空视为已确认 */
 interface IssueRow extends PrdGenIssue { answer: string; key: string; }
 
-const LEVEL_META: Record<string, { label: string; color: string }> = {
-  blocker: { label: '🔴 阻塞', color: 'var(--danger, #c22)' },
-  suggested: { label: '🟡 建议', color: 'var(--warning, #c80)' },
-  info: { label: '🟢 提示', color: 'var(--success)' },
+/** 问题级别展示映射；T03655：三档色点从 emoji 换成 lucide（与 PrdPanel 同一口径） */
+const LEVEL_META: Record<string, { label: string; color: string; Icon?: LucideIcon }> = {
+  blocker: { label: '阻塞', color: 'var(--danger, #c22)', Icon: CircleAlert },
+  suggested: { label: '建议', color: 'var(--warning, #c80)', Icon: AlertTriangle },
+  info: { label: '提示', color: 'var(--success)', Icon: Info },
   custom: { label: '自定义', color: 'var(--accent)' },
 };
+
+/** 级别标签（表格单元格用）：未知级别回落到原始取值，不留空白 */
+function LevelTag({ level }: Readonly<{ level: string }>) {
+  const meta = LEVEL_META[level];
+  const Icon = meta?.Icon;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-2xs)', color: meta?.color }}>
+      {Icon && <Icon size={10} aria-hidden />}
+      {meta?.label ?? level}
+    </span>
+  );
+}
 
 /** T00819：从 PRD 正文提取第一条一级标题作为文件名来源；无 `# ` 标题时返回空（走日期兜底） */
 function extractPrdTitle(prdMd: string): string {
@@ -551,7 +564,7 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
               {rows.map((r) => (
                 <tr key={r.key}>
                   <td style={{ padding: '4px 6px', borderBottom: '1px dashed var(--border-strong)' }}>
-                    <span style={{ fontSize: 'var(--fs-2xs)', color: LEVEL_META[r.level]?.color }}>{LEVEL_META[r.level]?.label ?? r.level}</span>
+                    <LevelTag level={r.level} />
                   </td>
                   <td style={{ padding: '4px 6px', borderBottom: '1px dashed var(--border-strong)' }}>
                     {r.level === 'custom'

@@ -259,7 +259,7 @@ function assigneesBlocks(b: KickoffBundle): Array<Omit<Block, 'box'>> {
  * （C-03「非时间线页零丢块」）。同页即降级去掉，信息不丢（文本还在）。
  */
 function isPlaceholderTable(d: Omit<Block, 'box'>): boolean {
-  return d.table != null && d.table.rows.length === 1 && d.table.rows[0]?.[0] === KICKOFF_PLACEHOLDER;
+  return d.table?.rows.length === 1 && d.table.rows[0]?.[0] === KICKOFF_PLACEHOLDER;
 }
 
 function risksTable(b: KickoffBundle): NonNullable<Block['table']> {
@@ -336,12 +336,12 @@ function prdDocLines(b: KickoffBundle): string[] {
       l
         // T02685 复测修正：行内剥离必须先于行首剥离——行首规则会先吃掉 ** 开头的加粗符，
         // 导致后面的 ** 失去配对而残留（首测 QA 抓到的正是这个顺序缺陷）
-        .replace(/\*\*([^*]+)\*\*/g, '$1')
-        .replace(/`([^`]+)`/g, '$1')
-        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+        .replaceAll(/\*\*([^*]+)\*\*/g, '$1')
+        .replaceAll(/`([^`]+)`/g, '$1')
+        .replaceAll(/\[([^\]]+)\]\([^)]*\)/g, '$1')
         .replace(/\s*\|.*$/, '')
         .replace(/^[#>*\-\s]+/, '')
-        .replace(/\*\*/g, '')
+        .replaceAll('**', '')
         .trim(),
     )
     .filter((l) => l.length > 4)
@@ -656,7 +656,7 @@ const TABLE_CELL_PAD = 0.1;
 /** 显示宽度单位：全角（CJK/全角标点）记 1，半角记 0.55 */
 function cjkLen(s: string): number {
   let n = 0;
-  for (const ch of s) n += ch.charCodeAt(0) > 0xff ? 1 : 0.55;
+  for (const ch of s) n += ch.codePointAt(0)! > 0xff ? 1 : 0.55;
   return n;
 }
 
@@ -664,11 +664,11 @@ function cjkLen(s: string): number {
 function tableColWs(table: NonNullable<Block['table']>, width: number): number[] {
   const n = table.header.length;
   const raw = table.colW;
-  if (raw && raw.length === n && raw.every((x) => x > 0)) {
+  if (raw?.length === n && raw.every((x) => x > 0)) {
     const sum = raw.reduce((s, x) => s + x, 0);
     return raw.map((x) => (x / sum) * width);
   }
-  return Array(n).fill(width / n);
+  return new Array<number>(n).fill(width / n);
 }
 
 /** 单元格截字：封顶 TABLE_MAX_LINES 行（每行 perLine 个全角位），超出以 … 收尾 */
@@ -679,7 +679,7 @@ function fitCellText(text: string, colW: number, pt: number): string {
   let out = '';
   let w = 0;
   for (const ch of text) {
-    const cw = ch.charCodeAt(0) > 0xff ? 1 : 0.55;
+    const cw = ch.codePointAt(0)! > 0xff ? 1 : 0.55;
     if (w + cw > maxUnits - 1) break;
     out += ch;
     w += cw;
@@ -734,7 +734,7 @@ function minReadableH(src: Omit<Block, 'box'>): number {
 }
 
 /** `clampRows` 折行提示行的形态：`其余 n 条/个/人/项` */
-const REST_ROW_RE = /^其余\s*(\d+)\s*(条|个|人|项)/;
+const REST_ROW_RE = /^其余\s*(\d+)\s*([条个人项])/;
 
 /**
  * 版面收行（T02166）：`clampRows` 的上限是**信息密度**上限，不是**版面**上限。
@@ -1072,8 +1072,9 @@ export function layoutBody(
   const tlPage = item.layout === 'timeline' && item.dataKeys.includes('timeline');
   const tlShape = tlPage && timelineDegradeReason(b) === null;
   // T02198：flow/chip 页由组件自己绘制，其数据块（里程碑链 / 人员标签）不进堆叠预算
+  const chipDiagramKey: KickoffDataKey | null = item.layout === 'chip' ? 'assignees' : null;
   const diagramKey: KickoffDataKey | null =
-    item.layout === 'flow' ? 'milestones' : item.layout === 'chip' ? 'assignees' : null;
+    item.layout === 'flow' ? 'milestones' : chipDiagramKey;
   const diagramOn =
     diagramKey !== null && (item.layout === 'flow' ? flowDegradeReason(b) === null : b.assignees.length > 0);
   const diagramMinH = item.layout === 'flow' ? FLOW_MIN_H : CHIP_MIN_H;
@@ -1159,7 +1160,8 @@ export function layoutBody(
   }
 
   // 走到这里 = 时间线只能用列表版：把形状版排除掉的表格块补回来，并按剩余高度再收一次行
-  const reAddKey: KickoffDataKey | null = tlShape ? 'timeline' : diagramOn ? diagramKey : null;
+  const diagramReAddKey: KickoffDataKey | null = diagramOn ? diagramKey : null;
+  const reAddKey: KickoffDataKey | null = tlShape ? 'timeline' : diagramReAddKey;
   const stackBlocks = reAddKey
     ? fitRigidTables([...dataBlocks, ...blocksForKey(reAddKey, b)], body.w, bottom - cursor)
     : dataBlocks;
@@ -1463,10 +1465,12 @@ function resolvePageBoxes({
   let bodyBlocks = blocks;
   if (issues.length) {
     degradedPages.push(pageNo);
-    warnings.push(`第 ${pageNo} 页版式越界（${issues[0]}），已降级为「标题 + 正文」安全版式`);
     // 口径同步：降级页走 fit:shrink，正文页那句「多余部分按 pptxgenjs 截字」对它不成立——
     // 字是被缩小的，不是被截掉的，留痕要说清是哪一种。
-    warnings.push(`第 ${pageNo} 页正文改用 fit:shrink 渲染期收缩兜底（不截字，整段仍在本页内）`);
+    warnings.push(
+      `第 ${pageNo} 页版式越界（${issues[0]}），已降级为「标题 + 正文」安全版式`,
+      `第 ${pageNo} 页正文改用 fit:shrink 渲染期收缩兜底（不截字，整段仍在本页内）`,
+    );
     const safe = safeFrames();
     titleBox = safe.title;
     bodyBlocks = degradeToSafe(item, blocks, frames.body);

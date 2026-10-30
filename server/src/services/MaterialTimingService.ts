@@ -65,7 +65,7 @@ function toStats(cardKey: string, rows: Array<{ duration_ms: number; ok: number 
     p50Ms: percentile(done, 50),
     p90Ms: percentile(done, 90),
     avgMs: done.length ? Math.round(sum / done.length) : null,
-    maxMs: done.length ? done[done.length - 1] : null,
+    maxMs: done.at(-1) ?? null,
   };
 }
 

@@ -414,6 +414,14 @@ function ShareSnapshotButton({ projectId, projectName }: {
     setError('');
   }
 
+  // 键盘可达：Esc 与「取消」同效，遮罩点击只是鼠标侧的冗余入口
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) { setOpen(false); setError(''); } };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, busy]);
+
   async function download() {
     setBusy(true);
     setError('');
@@ -429,6 +437,9 @@ function ShareSnapshotButton({ projectId, projectName }: {
       setBusy(false);
     }
   }
+
+  const idleLabel = includeTitles ? '包含标题并下载' : '下载 PDF';
+  const downloadLabel = busy ? '生成中…' : idleLabel;
 
   return (
     <>
@@ -468,7 +479,7 @@ function ShareSnapshotButton({ projectId, projectName }: {
               <button onClick={() => void download()} disabled={busy} data-t03197="download"
                 style={{ ...btnStyle, padding: '5px 12px', background: 'var(--accent)', color: 'var(--accent-text)', borderColor: 'var(--accent)' }}>
                 {busy ? <Loader2 size={13} className="aispin" /> : <Download size={13} />}
-                {busy ? '生成中…' : includeTitles ? '包含标题并下载' : '下载 PDF'}
+                {downloadLabel}
               </button>
             </div>
           </div>
@@ -533,9 +544,12 @@ function PlanMultiToggle({ planMulti, setPlanMulti, setPlanSelIds }: {
   );
 }
 
+/** 视图模式：列表 / 甘特 / 时间线 */
+export type PlanViewMode = 'list' | 'gantt' | 'timeline';
+
 /** 工具栏：列表/甘特视图切换（S3776 抽取） */
 function PlanViewModeToggle({ viewMode, setViewMode }: {
-  readonly viewMode: 'list' | 'gantt' | 'timeline'; readonly setViewMode: React.Dispatch<React.SetStateAction<'list' | 'gantt' | 'timeline'>>;
+  readonly viewMode: PlanViewMode; readonly setViewMode: React.Dispatch<React.SetStateAction<PlanViewMode>>;
 }) {
   return (
     <fieldset style={{ display: 'inline-flex', margin: 0, padding: 0, minWidth: 0, border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} aria-label="视图切换">
@@ -637,11 +651,13 @@ function PlanTimelineDetail({ plan, onJump }: {
     <span style={{ fontSize: 'var(--fs-xs)', padding: '1px 7px', borderRadius: 10, border: '1px solid var(--border-strong)', color: color ?? 'var(--text-muted)', whiteSpace: 'nowrap' }}>{children}</span>
   );
   const isMs = plan.kind === 'milestone';
+  const dailyOrPlanBadge = plan.kind === 'daily' ? '日常任务' : '计划任务';
+  const kindBadge = isMs ? '阶段里程碑' : dailyOrPlanBadge;
   const statusLabel: Record<string, string> = { todo: '待开始', doing: '进行中', done: '已完成', blocked: '受阻' };
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--fs-m)' }}>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        {badge(isMs ? '阶段里程碑' : plan.kind === 'daily' ? '日常任务' : '计划任务', 'var(--accent)')}
+        {badge(kindBadge, 'var(--accent)')}
         {plan.assignee && badge(`负责人：${plan.assignee}`)}
         <span>{statusLabel[plan.status] ?? plan.status}</span>
         {!isMs && badge(`进度 ${plan.progress || 0}%`)}
@@ -978,7 +994,7 @@ function PlanActionsCell({ p, depMenuId, depMenuRef, depMenuPos, evalBusy, busy,
 }) {
   const openRowMenu = (e: React.MouseEvent<HTMLElement>) => {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setDepMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right }); // T00549：右缘与 ⋯ 对齐靠左展开
+    setDepMenuPos({ top: rect.bottom + 4, right: globalThis.innerWidth - rect.right }); // T00549：右缘与 ⋯ 对齐靠左展开
     setDepMenuId(depMenuId === p.id ? '' : p.id);
   };
   return (
@@ -1061,6 +1077,7 @@ function PlanTitleCell({ p, collapsedMs, toggleMsCollapsed, updatePlan, forecast
   /** T03194：里程碑预测（未取到/不可预测时为空/不预测态） */
   readonly forecast?: MilestoneForecast; readonly openForecast: (id: string) => void;
 }) {
+  const forecastDateSuffix = forecast?.forecastDate ? `，预测 ${forecast.forecastDate}` : '';
   return (
     <>
       {p.kind === 'milestone' && (
@@ -1076,7 +1093,7 @@ function PlanTitleCell({ p, collapsedMs, toggleMsCollapsed, updatePlan, forecast
       {p.kind === 'milestone' && forecast && forecast.verdict !== 'done' && (
         <button onClick={() => openForecast(p.id)} data-t03234="forecast-badge"
           title={`${forecast.basis}\n（预测值，非承诺）—— 点击查看参与计算的子项与剩余天数`}
-          aria-label={`里程碑预测：${FORECAST_VERDICT[forecast.verdict].label}${forecast.forecastDate ? `，预测 ${forecast.forecastDate}` : ''}`}
+          aria-label={`里程碑预测：${FORECAST_VERDICT[forecast.verdict].label}${forecastDateSuffix}`}
           style={{ flexShrink: 0, marginRight: 4, fontSize: 'var(--fs-2xs)', padding: '0 5px', borderRadius: 4, cursor: 'pointer',
             border: `1px solid ${FORECAST_VERDICT[forecast.verdict].color}`, background: 'transparent', color: FORECAST_VERDICT[forecast.verdict].color, whiteSpace: 'nowrap' }}>
           {forecast.forecastDate ? `预测 ${forecast.forecastDate.slice(5)}` : FORECAST_VERDICT[forecast.verdict].label}
@@ -1575,7 +1592,7 @@ export function PlanPage() {
   const [collapsedMs, setCollapsedMs] = useSessionState<Record<string, boolean>>('plan.collapsedMs', {}); // T00570：里程碑收起态切页保持
   const [depSel, setDepSel] = useState<Record<string, 'serial' | 'parallel'>>({});
   // T00449：视图模式（列表/甘特）会话级保持
-  const [viewMode, setViewMode] = useSessionState<'list' | 'gantt' | 'timeline'>('plan.viewMode', 'list');
+  const [viewMode, setViewMode] = useSessionState<PlanViewMode>('plan.viewMode', 'list');
   // T01565：时间线粒度（日/周/月/季）——独立于甘特的 durationUnit（day/hour），会话级保持
   const [tlGranularity, setTlGranularity] = useSessionState<TlGranularity>('plan.tlGranularity', 'month');
   // T01575：时间线间距模式（等距/按比例）——与粒度同属视图呈现偏好，会话级保持，不改排期数据
@@ -1999,7 +2016,10 @@ export function PlanPage() {
       const failed = r.batches.filter((b) => b.error).length;
       if (r.scanned === 0) flash(force ? '本项目没有可补算的计划行' : '本项目计划行的复杂度均已评定（无需补算）');
       else if (r.updated === 0 && failed > 0) flash(`复杂度补算失败：${r.batches.find((b) => b.error)?.error ?? 'AI 调用失败'}`);
-      else flash(`复杂度补算完成：扫描 ${r.scanned} 行，写入 ${r.updated} 行${failed > 0 ? `（${failed} 批失败，可重跑）` : ''}`);
+      else {
+        const failedBatchNote = failed > 0 ? `（${failed} 批失败，可重跑）` : '';
+        flash(`复杂度补算完成：扫描 ${r.scanned} 行，写入 ${r.updated} 行${failedBatchNote}`);
+      }
       reload();
     } catch (e) {
       flash(String((e as Error).message ?? e));
@@ -2328,7 +2348,7 @@ export function PlanPage() {
     const cur = ganttDragRef.current;
     ganttDragRef.current = null;
     setGanttDrag(null);
-    if (!cur || !cur.moved) return;
+    if (!cur?.moved) return;
     const p = plans.find((x) => x.id === cur.id);
     if (!p) return;
     if (cur.nextStart === p.start_date && cur.nextDur === p.duration_days) return;
@@ -2351,11 +2371,11 @@ export function PlanPage() {
       setGanttDrag(st);
     };
     const onUp = (): void => { commitGanttDrag(); };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
+    globalThis.addEventListener('mousemove', onMove);
+    globalThis.addEventListener('mouseup', onUp);
     return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
+      globalThis.removeEventListener('mousemove', onMove);
+      globalThis.removeEventListener('mouseup', onUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 拖动的原点数据都在 ref 里，回调无需随预览态重建
   }, [ganttDragKey]);
@@ -2512,6 +2532,12 @@ export function PlanPage() {
     const ganttPlans = ganttDrag
       ? plans.map((x) => (x.id === ganttDrag.id ? { ...x, start_date: ganttDrag.nextStart, end_date: ganttDrag.nextEnd } : x))
       : plans;
+    const overlayLegend = ganttEst
+      ? '半透明带 = 服务端 O~P 三点区间，竖线 = 服务端期望值 E（里程碑行无估算不叠加）'
+      : '估算数据加载中…';
+    const ganttEstimateHint = showGanttEstimate
+      ? overlayLegend
+      : '勾选后在甘特条上叠加服务端估算区间（不影响面板）';
 
     return (
       <div style={{ border: '1px solid var(--border-strong)', borderRadius: 8, overflow: 'hidden' }}>
@@ -2522,9 +2548,7 @@ export function PlanPage() {
             估算区间叠加
           </label>
           <span style={{ color: 'var(--text-muted)' }}>
-            {showGanttEstimate
-              ? (ganttEst ? '半透明带 = 服务端 O~P 三点区间，竖线 = 服务端期望值 E（里程碑行无估算不叠加）' : '估算数据加载中…')
-              : '勾选后在甘特条上叠加服务端估算区间（不影响面板）'}
+            {ganttEstimateHint}
           </span>
         </div>
         <div style={{ overflowX: 'auto' }}>
@@ -2920,7 +2944,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               const base = row.traceableFrom
                 ? `洞察快照：自 ${row.traceableFrom} 起`
                 : '洞察快照：数据积累中';
-              const label = `${base}${miss.length > 0 ? ` · 缺失 ${miss.length} 天（数据积累中）` : ''}`;
+              const missNote = miss.length > 0 ? ` · 缺失 ${miss.length} 天（数据积累中）` : '';
+              const label = `${base}${missNote}`;
               const detail = row.traceableFrom
                 ? `可回溯起点 ${row.traceableFrom}（${snapCoverage.tz}）；近 30 天缺失 ${miss.length} 天：${miss.join('、') || '无'}；${snapCoverage.note}`
                 : snapCoverage.note;

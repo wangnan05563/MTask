@@ -17,7 +17,7 @@ import { EstimateParamLogService } from '../services/EstimateParamLog'; // T0212
 import { PlanService } from '../services/PlanService';
 import type { PlanTaskRow } from '../services/PlanService';
 import { exportGate } from '../util/export-gate';
-import { EstimateService, ESTIMATE_ERRORS, ESTIMATE_META, pointsError, unlockFlag, workdayCalendar, type EstimateInput, type EstimateView } from '../services/EstimateService';
+import { EstimateService, ESTIMATE_ERRORS, ESTIMATE_META, pointsError, unlockFlag, workdayCalendar, type EstimateInput, type EstimatePhase, type EstimateView } from '../services/EstimateService';
 import {
   DEFAULT_ESTIMATE_CONFIG,
   DURATION_RATIO_HIGH,
@@ -40,6 +40,7 @@ import {
   type ThreePoints,
 } from '../services/estimate-engine';
 import { fmtDate, type WorkdayCal } from '../util/workdays';
+import { scalarText } from '../util/scalarText';
 import {
   CASE_PRIORITY_WEIGHTS,
   CASE_WEIGHT_K_DEFAULT,
@@ -58,7 +59,6 @@ import {
   writeDerives,
   type DeriveRule,
 } from '../services/EstimateDerive';
-import type { EstimatePhase } from '../services/EstimateService';
 import { safeExportName } from '../util/export-name'; // T02104：导出文件名单源
 import { ESTIMATE_FILE_BASE, ESTIMATE_FILE_CLIENT_MARK } from '../services/estimateCopy'; // §6.3 件名口径单源
 import {
@@ -92,7 +92,7 @@ function pid(req: import('express').Request): string {
 }
 
 function str(v: unknown): string {
-  return v == null ? '' : String(v).trim();
+  return v == null ? '' : scalarText(v).trim();
 }
 
 function truthy(v: unknown): boolean {
@@ -208,8 +208,8 @@ estimateApi.put('/params', (req, res) =>
     const entries: Array<[string, string]> = [];
     for (const [k, v] of Object.entries(incoming)) {
       if (!allowed.has(k)) throw new Error(`${ESTIMATE_ERRORS.unknownParamKey}：${k}`);
-      if (v === null || v === undefined || String(v).trim() === '') continue; // 显式清空=回落默认
-      entries.push([k, String(v).trim()]);
+      if (v === null || v === undefined || scalarText(v).trim() === '') continue; // 显式清空=回落默认
+      entries.push([k, scalarText(v).trim()]);
     }
     // 先全量试算再落库：一位小数写歪就是钱（与 EstimateService 批量通道同口径）
     const kvBefore = readKv(projectId); // T02120：留痕的「旧值」取自这一份原件（未合并本次写入）
@@ -224,7 +224,7 @@ estimateApi.put('/params', (req, res) =>
     // （单机无账号体系，与 LogService 覆盖留痕「操作人可空」同口径）。
     const actorBefore = (getSetting(ESTIMATE_REVIEWER_KEY) ?? '').trim();
     const actorIncoming = ESTIMATE_REVIEWER_KEY in incoming
-      ? String(incoming[ESTIMATE_REVIEWER_KEY] ?? '').trim() : '';
+      ? scalarText(incoming[ESTIMATE_REVIEWER_KEY] ?? '').trim() : '';
     const actor = actorBefore || actorIncoming;
     const cleared = Object.keys(incoming).filter((k) => !entries.some(([e]) => e === k));
     // 写入与留痕同一事务：要么连值带审计一起落，要么都不落（不存在「改了却没留痕」的中间态）
@@ -277,10 +277,10 @@ function parsePayload(raw: string): Record<string, unknown> {
   try {
     const v = JSON.parse(raw) as unknown;
     if (v && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, unknown>;
-    throw new Error('');
   } catch {
-    throw new Error('快照 payload 不是可解析的 JSON 对象（历史快照可能由旧版本写入）');
+    // 解析抛错与「解析成功但不是对象」同一条路：统一落到下面那句可读文案
   }
+  throw new Error('快照 payload 不是可解析的 JSON 对象（历史快照可能由旧版本写入）');
 }
 
 /** 两版汇总差异：按 phase 的 E/人月逐项做差，另出合计（§7「上次导出后计划已变化」的数据底） */
@@ -436,8 +436,8 @@ estimateApi.post('/what-if', (req, res) =>
       }
       merged[ESTIMATE_COEF_SETTING_KEYS[k as EstimateCoefKey]] = String(v);
     }
-    if (b.manDaysPerManMonth !== undefined && b.manDaysPerManMonth !== null && String(b.manDaysPerManMonth).trim() !== '') {
-      merged[ESTIMATE_SETTING_KEYS.manDaysPerManMonth] = String(b.manDaysPerManMonth);
+    if (b.manDaysPerManMonth !== undefined && b.manDaysPerManMonth !== null && scalarText(b.manDaysPerManMonth).trim() !== '') {
+      merged[ESTIMATE_SETTING_KEYS.manDaysPerManMonth] = scalarText(b.manDaysPerManMonth);
     }
     const configAfter = resolveEstimateConfig(merged);
 
@@ -693,7 +693,7 @@ function milestoneTitleByChild(rows: PlanTaskRow[]): Map<string, string> {
     for (const d of deps as Array<{ id?: unknown; type?: unknown }>) {
       if (!d || typeof d.id !== 'string' || d.type !== 'child') continue;
       const ms = byId.get(d.id);
-      if (ms && ms.kind === 'milestone') {
+      if (ms?.kind === 'milestone') {
         out.set(r.id, ms.title);
         break; // 多个里程碑归属只认第一个（模板 C 列是一行一个模块，不表达多重归属）
       }

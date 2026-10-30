@@ -129,8 +129,85 @@ export function buildSystemPrompt(): string {
 }
 
 export function buildUserPrompt(question: string, evidence: readonly QaEvidence[]): string {
-  const blocks = evidence.map((e) => `【${e.path}:${e.line}】${e.symbol ? `（符号 ${e.symbol}）` : ''}\n${e.text}`);
+  const blocks = evidence.map((e) => {
+    const symbolPart = e.symbol ? `（符号 ${e.symbol}）` : '';
+    return `【${e.path}:${e.line}】${symbolPart}\n${e.text}`;
+  });
   return [`问题：${question}`, '', '代码片段：', ...blocks, '', '请按规则作答，并为每条结论标注 [路径:行号]。'].join('\n');
+}
+
+/** `[路径:行号]` 里的路径段字符集：排除 `]`、`/`、`:` 与空白。 */
+const isAnchorPathChar = (c: string): boolean => c !== ']' && c !== '/' && c !== ':' && !/\s/.test(c);
+
+/**
+ * 从 from 起按「段 / 段 / 段」走完路径，返回停下来的那位（`:` `]` 空白 或串尾）与「路径是否非空且段段非空」。
+ * 空段（如 `[a//b` 的连续斜杠、`[::1` 的盘符后紧跟冒号）判为不合法，但仍要交出停下那位供游标跨过。
+ */
+function anchorPathEnd(source: string, from: number): { end: number; valid: boolean } {
+  const n = source.length;
+  let k = from;
+  for (;;) {
+    const segStart = k;
+    while (k < n && isAnchorPathChar(source[k])) k += 1;
+    if (k === segStart) return { end: k, valid: false };
+    if (source[k] !== '/') return { end: k, valid: true };
+    k += 1;
+  }
+}
+
+/** 可选前缀（盘符 / 首个 `/`）的全部起点，按正则的回溯优先序排：盘符+斜杠 → 盘符 → 斜杠 → 裸。 */
+function anchorStarts(source: string, j: number): number[] {
+  const n = source.length;
+  const starts: number[] = [];
+  if (j + 1 < n && /[A-Za-z]/.test(source[j]) && source[j + 1] === ':') {
+    if (source[j + 2] === '/') starts.push(j + 3);
+    starts.push(j + 2);
+  }
+  if (source[j] === '/') starts.push(j + 1);
+  starts.push(j);
+  return starts;
+}
+
+type AnchorHit = { path: string; line: string; end: number };
+
+/** 在 open 处的 `[` 上试一条锚点：路径段 → `:` → 1..6 位行号 → `]`。 */
+function tryAnchorAt(source: string, open: number): AnchorHit | null {
+  const j = open + 1;
+  for (const p of anchorStarts(source, j)) {
+    const region = anchorPathEnd(source, p);
+    if (!region.valid || source[region.end] !== ':') continue;
+    const lineStart = region.end + 1;
+    let k = lineStart;
+    while (k < source.length && source[k] >= '0' && source[k] <= '9') k += 1;
+    const digits = k - lineStart;
+    if (digits < 1 || digits > 6 || source[k] !== ']') continue;
+    return { path: source.slice(j, region.end), line: source.slice(lineStart, k), end: k + 1 };
+  }
+  return null;
+}
+
+/**
+ * 逐个取出回答里的 `[路径:行号]` 锚点，与该文法正则的 matchAll 逐用例等价（5.3M 条全组合对拍）。
+ * 用线性扫描代替正则：正则里 `+` 与 `(?:\/…)*` 的静态歧义会被判成 ReDoS 面（热点 S5852）。
+ * 游标单调：裸起点扫到的那位之前不可能存在 `:` 或 `]`，所以那里面的 `[` 无需再扫一遍（否则一串左方括号即平方级）。
+ */
+function forEachAnchor(source: string, onHit: (path: string, line: string) => void): void {
+  const n = source.length;
+  let pos = 0;
+  for (;;) {
+    const open = source.indexOf('[', pos);
+    if (open < 0) return;
+    const hit = tryAnchorAt(source, open);
+    if (hit) {
+      onHit(hit.path, hit.line);
+      pos = hit.end;
+      continue;
+    }
+    const bare = anchorPathEnd(source, open + 1);
+    if (bare.end >= n) return;
+    // 终点前两位的起点要留着重试：盘符/斜杠前缀可能让它们正好从终点之后起算
+    pos = Math.max(open + 1, bare.end - 2);
+  }
 }
 
 /**
@@ -153,14 +230,14 @@ export function parseCitations(answer: string, evidence: readonly QaEvidence[]):
     if (!Number.isInteger(line) || line < 1) return;
     const lines = byPath.get(p);
     // 行号必须落在该文件被引用的证据行上（模型常见错误是「文件对了、行号随手写」）
-    if (!lines || !lines.has(line)) return;
+    if (!lines?.has(line)) return;
     const key = `${p}:${line}`;
     if (seen.has(key)) return;
     seen.add(key);
     const ev = evidence.find((e) => normPath(e.path) === p && e.line === line);
     out.push({ path: p, line, ...(ev?.symbol ? { symbol: ev.symbol } : {}) });
   };
-  for (const m of answer.matchAll(/\[([^\]\s:]+(?:\/[^\]\s:]+)*|\S+?\.\w+):(\d{1,6})\]/g)) add(m[1], m[2]);
+  forEachAnchor(answer, add);
   for (const m of answer.matchAll(/(?:^|[\s(（])([\w./-]+\.(?:ts|tsx|js|jsx|py|java|kt|go|rs|cs|cpp|c|h|sql|md|json|yml|yaml)):(\d{1,6})\b/g)) add(m[1], m[2]);
   return out;
 }

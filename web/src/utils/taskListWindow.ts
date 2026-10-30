@@ -5,7 +5,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
  * 窗口数学与 testCaseModel 的 computeWindow 同契约（start/end + padTop/padBottom 占位），
  * 但有两处是本列表特有的：
  * ① 滚动宿主是 document（App 主区不设滚动容器），故窗口位置 = window.scrollY 减掉列表在文档中的顶偏移；
- * ② 行高不固定（实测 34~78px），故用「已渲染行中位数」替代写死行高，行高变了窗口跟着重算。
+ * ② 行高不固定（实测 34~78px），故按「已观测行的累计平均」实测替代写死行高，行高变了窗口跟着重算
+ *    （口径与理由见 refreshGeometry：不用窗口中位数，否则占位总高随窗口位置跳变）。
  */
 
 /** 低于该条数不窗口化：小列表窗口化只带来定位与滚动的不确定性，收益为零（与既有「勿过度设计」口径一致） */

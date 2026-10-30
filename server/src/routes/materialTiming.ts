@@ -8,6 +8,7 @@
  */
 import { Router } from 'express';
 import { MaterialTimingService } from '../services/MaterialTimingService';
+import { scalarText } from '../util/scalarText';
 
 export const materialTimingApi = Router();
 
@@ -23,7 +24,7 @@ materialTimingApi.post('/report/material-timing/start', (req, res) => {
   wrap(res, () => {
     const b = (req.body ?? {}) as Record<string, unknown>;
     const cardKey = b.cardKey ?? b.card_key;
-    return MaterialTimingService.start({ cardKey: String(cardKey ?? ''), projectId: b.projectId ? String(b.projectId) : undefined });
+    return MaterialTimingService.start({ cardKey: scalarText(cardKey ?? ''), projectId: b.projectId ? scalarText(b.projectId) : undefined });
   });
 });
 
@@ -31,8 +32,8 @@ materialTimingApi.post('/report/material-timing/finish', (req, res) => {
   wrap(res, () => {
     const b = (req.body ?? {}) as Record<string, unknown>;
     return MaterialTimingService.finish({
-      id: b.id ? String(b.id) : undefined,
-      cardKey: b.cardKey ? String(b.cardKey) : undefined,
+      id: b.id ? scalarText(b.id) : undefined,
+      cardKey: b.cardKey ? scalarText(b.cardKey) : undefined,
       ok: b.ok === undefined ? undefined : Boolean(b.ok),
     });
   });

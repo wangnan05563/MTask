@@ -4,14 +4,18 @@
  * 三条实现纪律（PRD 评审 #1/#3/#4 裁定，不要“顺手”改回去）：
  *  1. 列表是卡片行、没有表格列 → 徽标进**元信息行**（状态开关之后），看板卡是拖拽宿主，
  *     卡内**不得出现 `<a>` 或按钮**（T03213 判据），只放纯文本并由点击卡片进抽屉 Git 页；
- *  2. 悬浮摘要首版用多行 `title` + `aria-label`（富 HoverCard 是 P1，另单独立项）；
+ *  2. 列表行的悬浮摘要已由多行 `title` 升级为 HoverCard（Q14/REQ-071，批次 4）；**看板卡仍用 `title`**——
+ *     卡内不得出现链接/按钮（判据 #1），富卡片的两个下钻入口在卡内是违规的；
  *  3. 外链只在平台可识别（GitHub/GitLab/Gitee/自建 GitLab）时渲染，前缀由服务端给出
  *     （凭据已剥离）；识别不出只显示「站内查看」，避免点了才发现是坏链。
  */
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { X } from 'lucide-react'; // T03393（§3.5 UI）：图标统一 lucide，不用字符图标与第三方品牌色
 import { CopyButton } from './CopyButton';
+import { HoverCard } from './HoverCard';
 import { relTime, fullTime } from './format';
-import type { GitLinkSource, GitSummaryGroup, Task } from '../api/client';
+import type { GitCommitSummary, GitLinkSource, GitSummaryGroup, Task } from '../api/client';
 import { api } from '../api/client';
 import type { GitSummaries } from '../utils/gitSummaries';
 
@@ -55,7 +59,7 @@ interface GitInlineSubject {
   noRemote?: boolean;
 }
 
-/** 「+N」浮层：一条任务的**全部**关联提交（列表内联只带最新一条，故此处按需拉取） */
+/** 「+N」浮层：一条任务的**全部**关联提交（列表内联只带最新一条，故此处按需拉取）。经 Portal 挂 body，见下方注释 */
 function GitLinksPopover({ task, anchor, onClose }: {
   readonly task: Task;
   /** 触发元素的位置（浮层贴着它显示） */
@@ -88,7 +92,7 @@ function GitLinksPopover({ task, anchor, onClose }: {
     return () => globalThis.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  return (
+  return createPortal(
     <div ref={ref} role="dialog" aria-label={`任务 ${task.task_no ?? ''} 的全部关联提交`}
       style={{ position: 'fixed', zIndex: 1200, inset: 0, background: 'transparent' }}
       onClick={(e) => { e.stopPropagation(); if (e.target === ref.current) onClose(); }}>
@@ -101,13 +105,13 @@ function GitLinksPopover({ task, anchor, onClose }: {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
           <strong style={{ fontSize: 'var(--fs-s)' }}>关联提交 {rows.length} 条</strong>
           <button type="button" onClick={onClose} aria-label="关闭关联提交列表" title="关闭（Esc）"
-            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 'var(--fs-s)' }}>✕</button>
+            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center' }}><X size={14} aria-hidden /></button>
         </div>
         {err && <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)', margin: '4px 0' }}>{err}</p>}
         {!err && !rows.length && <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', margin: '4px 0' }}>暂无关联提交。</p>}
         {rows.map((r) => (
           <div key={r.sha} data-t03343="git-popover-row" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0', fontSize: 'var(--fs-xs)' }}>
-            <span style={{ fontFamily: 'Consolas, Menlo, monospace', color: 'var(--accent)' }}>{r.shortSha}</span>
+            <span style={{ fontFamily: 'Consolas, Menlo, monospace', color: 'var(--accent-ink)' }}>{r.shortSha}</span>
             <span style={{ color: 'var(--text-muted)' }}>{SOURCE_LABEL[r.source] ?? r.source}</span>
             <span style={{ color: 'var(--text-muted)' }}>{relTime(r.createdAt)}</span>
             <span onClick={(e) => e.stopPropagation()}>
@@ -116,7 +120,83 @@ function GitLinksPopover({ task, anchor, onClose }: {
           </div>
         ))}
       </div>
-    </div>
+    </div>,
+    // 与 HoverCard 同一理由：任务行 `.cv-auto` 会把 fixed 后代按行裁掉（T01299 踩过），浮层必须挂 body
+    globalThis.document.body,
+  );
+}
+
+/**
+ * 分支/标签装饰的展示归一：`%D` 原文里标签带 `tag:` 前缀（`tag: v2.5`），分支就是引用名（`main` / `origin/main`）。
+ * `HEAD -> main` 已由服务端 `parseRefs()` 剥成 `main`，这里不再重复处理；空串直接丢弃（不渲染空徽标）。
+ */
+export function refLabel(ref: string): string {
+  const t = ref.trim();
+  return t.startsWith('tag: ') ? `tag ${t.slice(5)}` : t;
+}
+
+/**
+ * Q14 富悬浮卡内容：§3.1.2 悬浮四要素 + 两个下钻动作。
+ * 与多行 `title` 的差别不只是好看——这里能放下**整 40 位 SHA**（可选中）和「在远端查看 / 打开任务 Git 页」
+ * 两个入口，而原生提示既不能承载交互，也会在长主题处被系统截断。
+ */
+function GitSummaryCard({ summary, sha, source, commitUrl, noRemote, onOpenGit }: {
+  readonly summary: Pick<GitCommitSummary, 'author' | 'date' | 'subject' | 'refs'>;
+  readonly sha: string;
+  readonly source: GitLinkSource;
+  readonly commitUrl?: string;
+  readonly noRemote?: boolean;
+  readonly onOpenGit: () => void;
+}) {
+  const when = summary.date ? `${fullTime(summary.date)}（${relTime(summary.date)}）` : '时间未知';
+  const decor = (summary.refs ?? []).map(refLabel).filter(Boolean);
+  return (
+    <span data-t03394="git-summary-card" style={{ display: 'block' }}>
+      <span style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+        <strong style={{ color: 'var(--text)' }}>{summary.author || '作者未知'}</strong>
+        <span style={{ color: 'var(--text-muted)' }}>{when}</span>
+      </span>
+      <span style={{ display: 'block', marginTop: 4, color: 'var(--text)', whiteSpace: 'normal' }}>
+        {summary.subject || '（无提交主题）'}
+      </span>
+      {decor.length > 0 && (
+        /* Q14 P1「分支标签装饰」：只在 %D 真有装饰时渲染，游离提交不造空壳 */
+        <span data-t03394="card-refs" style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap' }}>
+          {decor.map((d) => (
+            <span key={d} style={{
+              fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', border: '1px solid var(--border-strong)',
+              borderRadius: 4, padding: '0 4px', lineHeight: '16px', whiteSpace: 'nowrap',
+            }}>{d}</span>
+          ))}
+        </span>
+      )}
+      <span style={{ display: 'block', marginTop: 6, color: 'var(--text-muted)' }}>
+        来源：{SOURCE_LABEL[source] ?? source}
+      </span>
+      <span data-t03394="card-sha" style={{
+        display: 'block', marginTop: 2, fontFamily: 'Consolas, Menlo, monospace',
+        color: 'var(--accent-ink)', wordBreak: 'break-all', userSelect: 'text',
+      }}>
+        {sha}
+      </span>
+      <span style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+        {commitUrl && (
+          <a href={commitUrl} target="_blank" rel="noopener noreferrer"
+            style={{ color: 'var(--accent-ink)', textDecoration: 'none' }} aria-label={`在远端查看提交 ${sha}`}>
+            在远端查看
+          </a>
+        )}
+        <button type="button" onClick={onOpenGit}
+          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--accent-ink)', fontSize: 'var(--fs-xs)', fontFamily: 'inherit' }}>
+          打开任务 Git 页
+        </button>
+        {!commitUrl && (
+          <span style={{ color: 'var(--text-muted)' }}>
+            {noRemote ? GIT_DEGRADED_HINT['no-remote'] : '未识别平台 — 仅站内查看'}
+          </span>
+        )}
+      </span>
+    </span>
   );
 }
 
@@ -184,38 +264,44 @@ export function GitBadge({ task, summaries, gitOn, onOpenGit }: GitBadgeProps) {
 
   const remote = summaries.remoteOfTask(task.id);
   const commitUrl = remote?.commitBase ? `${remote.commitBase}/${link.sha}` : undefined;
-  const title = gitSummaryTitle(
-    { author: summary.author, date: summary.date, subject: summary.subject, source: link.source, commitUrl, noRemote: remote?.noRemote },
-    link.sha,
-  );
   const aria = `${summary.author} ${relTime(summary.date)}：${summary.subject}；来源${SOURCE_LABEL[link.source] ?? link.source}；提交 ${link.sha}`;
 
   return (
     <span data-t03343="git-badge" data-ttask-git-sha={link.sha} style={{ display: 'inline-flex', alignItems: 'center', gap: 2, flexShrink: 0 }}
       onClick={(e) => e.stopPropagation()}>
-      {commitUrl ? (
-        <a href={commitUrl} target="_blank" rel="noopener noreferrer" title={title} aria-label={`${aria} — 在远端查看`}
-          style={{ fontFamily: 'Consolas, Menlo, monospace', fontSize: 'var(--fs-2xs)', color: 'var(--accent)', textDecoration: 'none', whiteSpace: 'nowrap' }}>
-          {link.shortSha}
-        </a>
-      ) : (
-        <button type="button" onClick={() => onOpenGit(task)} title={title} aria-label={aria}
-          style={{ fontFamily: 'Consolas, Menlo, monospace', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: 'var(--fs-2xs)', color: 'var(--accent)', whiteSpace: 'nowrap' }}>
-          {link.shortSha}
-        </button>
-      )}
+      {/* Q14（REQ-071）：列表内的悬浮详情从多行 title 升级成 HoverCard——原生提示放不下外链与整 SHA。
+          title 因此摘掉（同一元素上两套提示会互相打架），读屏通道仍走 aria-label。 */}
+      <HoverCard ariaLabel={`提交 ${link.sha} 摘要`} cardW={360} cardH={176}
+        card={<GitSummaryCard summary={summary} sha={link.sha} source={link.source}
+          commitUrl={commitUrl} noRemote={remote?.noRemote} onOpenGit={() => onOpenGit(task)} />}>
+        {commitUrl ? (
+          <a href={commitUrl} target="_blank" rel="noopener noreferrer" aria-label={`${aria} — 在远端查看`}
+            style={{ fontFamily: 'Consolas, Menlo, monospace', fontSize: 'var(--fs-2xs)', color: 'var(--accent-ink)', textDecoration: 'none', whiteSpace: 'nowrap' }}>
+            {link.shortSha}
+          </a>
+        ) : (
+          <button type="button" onClick={() => onOpenGit(task)} aria-label={aria}
+            style={{ fontFamily: 'Consolas, Menlo, monospace', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: 'var(--fs-2xs)', color: 'var(--accent-ink)', whiteSpace: 'nowrap' }}>
+            {link.shortSha}
+          </button>
+        )}
+      </HoverCard>
       <CopyButton getText={() => link.sha} size={12} title="复制完整提交 ID（40 位）" ariaLabel={`复制提交 ${link.sha} 完整 ID`} />
       {extraCount > 0 && (
-        <button type="button" data-t03343="git-more"
-          onClick={(e) => {
-            const r = e.currentTarget.getBoundingClientRect();
-            setAnchor(anchor ? null : { top: r.bottom, left: r.left });
-          }}
-          aria-expanded={Boolean(anchor)}
-          title={`该任务另有 ${extraCount} 条关联提交 — 点击查看清单`} aria-label={`另有 ${extraCount} 条关联提交：点击查看清单`}
-          style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', cursor: 'pointer', background: 'transparent', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
-          +{extraCount}
-        </button>
+        /* 与短 SHA 同一通道：悬停给样式化说明（原生 title 慢且不可控），点击仍开清单浮层 */
+        <HoverCard ariaLabel={`另有 ${extraCount} 条关联提交`} cardW={260} cardH={64}
+          card={<span style={{ color: 'var(--text)' }}>该任务另有 {extraCount} 条关联提交 — 点击查看清单</span>}>
+          <button type="button" data-t03343="git-more"
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              setAnchor(anchor ? null : { top: r.bottom, left: r.left });
+            }}
+            aria-expanded={Boolean(anchor)}
+            aria-label={`另有 ${extraCount} 条关联提交：点击查看清单`}
+            style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', cursor: 'pointer', background: 'transparent', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+            +{extraCount}
+          </button>
+        </HoverCard>
       )}
       {anchor && <GitLinksPopover task={task} anchor={anchor} onClose={() => setAnchor(null)} />}
     </span>

@@ -162,8 +162,8 @@ export async function backfillComplexity(
 /** 从可能带代码围栏/前后废话的输出里抠出 JSON（askJson 的 parse 抛错即视为无效，故必须稳健） */
 function extractJson(content: string): string {
   const s = content.trim();
-  const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(s);
-  const body = fence ? fence[1] : s;
+  const fence = /^```(?:json)?([\s\S]*?)```$/i.exec(s);
+  const body = fence ? fence[1].trim() : s;
   const start = body.indexOf('[');
   const end = body.lastIndexOf(']');
   if (start < 0 || end <= start) throw new Error('未找到 JSON 数组');

@@ -44,8 +44,10 @@ const ROW: CSSProperties = {
   color: 'var(--text)', cursor: 'pointer', textAlign: 'left', fontSize: 'var(--fs-s)', padding: '4px 6px', borderRadius: 4,
 };
 const INNER_INPUT: CSSProperties = {
+  // T03411：这里不再写 outline:none——内联样式优先级高于 themeCss 的全局 :focus-visible 环，
+  // 一写就等于把键盘焦点指示抹掉（Tab 进组合框看不出停在哪）。
   flex: '1 1 auto', minWidth: 0, border: 'none', background: 'transparent', color: 'inherit',
-  fontSize: 'inherit', padding: '2px 0', outline: 'none',
+  fontSize: 'inherit', padding: '2px 0',
 };
 
 /** 点击外部关闭（面板里三个弹层共用；挂在文档 mousedown 上，避免冒泡到按钮自身的 onClick） */
@@ -126,6 +128,7 @@ export function BranchPicker({ value, onChange, options, placeholder, disabled, 
           </button>
         )}
         <button type="button" data-lck={testId ? `${testId}-toggle` : undefined} aria-label={`展开${ariaLabel}候选`}
+          title={`展开${ariaLabel}候选（↑↓ 选择，回车确认）`}
           onClick={() => setOpen(!open)} disabled={disabled}
           style={{ border: 'none', background: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, display: 'flex' }}>
           <ChevronDown size={12} />
@@ -235,7 +238,7 @@ export function DateRangeField({ start, end, onChange, testId = 'lecture-since',
             <X size={12} />
           </button>
         )}
-        <button type="button" aria-label="展开日期点选" onClick={() => setOpen((v) => !v)}
+        <button type="button" aria-label="展开日期点选" title="展开日期点选" onClick={() => setOpen((v) => !v)}
           style={{ border: 'none', background: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, display: 'flex' }}>
           <ChevronDown size={12} />
         </button>
@@ -255,12 +258,12 @@ export function DateRangeField({ start, end, onChange, testId = 'lecture-since',
             })}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }}>
-            <button type="button" aria-label="上一月" onClick={() => setView((v) => { const n = new Date(v.year, v.month - 2, 1); return { year: n.getFullYear(), month: n.getMonth() + 1 }; })}
+            <button type="button" aria-label="上一月" title="上一月" onClick={() => setView((v) => { const n = new Date(v.year, v.month - 2, 1); return { year: n.getFullYear(), month: n.getMonth() + 1 }; })}
               style={{ border: 'none', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex' }}>
               <ChevronLeft size={13} />
             </button>
             <span style={{ flex: '1 1 auto', textAlign: 'center', fontSize: 'var(--fs-s)' }}>{view.year} 年 {view.month} 月</span>
-            <button type="button" aria-label="下一月" onClick={() => setView((v) => { const n = new Date(v.year, v.month, 1); return { year: n.getFullYear(), month: n.getMonth() + 1 }; })}
+            <button type="button" aria-label="下一月" title="下一月" onClick={() => setView((v) => { const n = new Date(v.year, v.month, 1); return { year: n.getFullYear(), month: n.getMonth() + 1 }; })}
               style={{ border: 'none', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex' }}>
               <ChevronRight size={13} />
             </button>
@@ -367,7 +370,7 @@ export function AuthorMultiSelect({ value, onChange, authors, onRequestAuthors, 
         {groups.map((g, i) => (
           <span key={`${g}-${i}`} style={{ ...PILL, display: 'inline-flex', alignItems: 'center', gap: 2, maxWidth: 150 }}>
             <span title={g} style={{ maxWidth: 118, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g}</span>
-            <button type="button" data-lck={`${testId}-remove`} data-author={g} aria-label={`移除提交人 ${g}`}
+            <button type="button" data-lck={`${testId}-remove`} data-author={g} aria-label={`移除提交人 ${g}`} title={`移除 ${g}`}
               onClick={(e) => { e.stopPropagation(); remove(i); }}
               style={{ border: 'none', background: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, display: 'flex' }}>
               <X size={10} />

@@ -191,10 +191,15 @@ function SessionCard({ s }: { readonly s: ExecSession }) {
         const done = r.entries.filter((e) => e.dispatched && e.ok).map((e) => e.taskNo ?? e.taskId.slice(0, 8));
         const failed = r.entries.filter((e) => e.dispatched && !e.ok);
         const skipped = r.entries.filter((e) => !e.dispatched);
+        const skippedLabels = skipped.map((e) => {
+          if (e.skipped === 'archived') return '已归档';
+          if (e.skipped === 'not_todo') return '非待办';
+          return '已删除';
+        });
         setNotice([
           done.length ? `已重派 ${done.length} 条（${done.join('、')}）` : '',
           failed.length ? `${failed.length} 条派发未成：${failed.map((e) => e.detail ?? e.state ?? '').join('；')}` : '',
-          skipped.length ? `${skipped.length} 条跳过（${skipped.map((e) => e.skipped === 'archived' ? '已归档' : e.skipped === 'not_todo' ? '非待办' : '已删除').join('、')}）` : '',
+          skipped.length ? `${skipped.length} 条跳过（${skippedLabels.join('、')}）` : '',
         ].filter(Boolean).join('｜') || '该会话没有可重派的任务');
       }
     } catch (e) {

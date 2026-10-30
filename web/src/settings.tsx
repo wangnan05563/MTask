@@ -5,6 +5,7 @@
  * - 字号档位通过覆盖 `--fs-*` 变量实现，凡使用这些变量的字号都会随之变化。
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { accentSoftHex, contrastSafeText, onSolidText } from './ui/contrast';
 
 export type Theme = 'light' | 'dark' | 'auto'; // T01060-FR4.2：auto=跟随系统（matchMedia 动态解析）
 export type FontKey = 'default' | 'mono' | 'kai' | 'song';
@@ -58,13 +59,10 @@ export const FONT_SIZE_OPTIONS: { key: FontSizeKey; label: string }[] = [
 
 const DEFAULTS: SettingsPrefs = { theme: 'light', font: 'default', fontSize: 'm', accent: '', zen: false };
 
-/** T01060-FR4.1：hex 亮度（0~1）——用于强调色上按钮文字自动取深/白，保证对比度 */
-function luminance(hex: string): number {
-  const r = Number.parseInt(hex.slice(1, 3), 16) / 255;
-  const g = Number.parseInt(hex.slice(3, 5), 16) / 255;
-  const b = Number.parseInt(hex.slice(5, 7), 16) / 255;
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
+/** 两套主题的 app-bg 字面量：自定义强调色在 JS 侧算对比度时要用到（与 themeCss 同步，门禁校验） */
+const APP_BG: Record<'light' | 'dark', string> = { light: '#ffffff', dark: '#18181b' };
+/** 实底上深字的取值：浅色主题用 --text，深色主题用 --accent-text 的深字 */
+const SOLID_DARK_TEXT: Record<'light' | 'dark', string> = { light: '#1f2937', dark: '#0b1220' };
 
 /** 全局 CSS 变量：浅/深两套主题 + 语义色板。所有页面改用这些变量即自动适配主题与字号 */
 const themeCss = `
@@ -79,6 +77,9 @@ const themeCss = `
   --border: #e5e7eb;
   --border-strong: #d1d5db;
   --accent: #2563eb;
+  /* T03431：强调色「作为文字」时的安全色（默认与 --accent 同值；自定义强调色时由 JS 压到 ≥4.5:1）。
+     实底按钮上的文字用 --accent-text，浅强调底（--accent-soft）上的文字用 --accent-ink。 */
+  --accent-ink: #2563eb;
   --accent-text: #ffffff;
   /* 饱和状态实底（danger/success）上的文字：浅色主题白字、深色主题深字（两点色本身在深色下更亮） */
   --on-solid: #ffffff;
@@ -86,7 +87,9 @@ const themeCss = `
   --on-dark: #ffffff;
   --accent-soft: #eff6ff;
   --success: #15803d;
-  --danger: #dc2626;
+  /* T03431：原 #dc2626 在 --surface-2(#f3f4f6) 上仅 4.39:1、在 --accent-soft(#eff6ff) 上 4.44:1
+     （diff 行的悬停底正是 accent-soft，删除行文字压线不达标）——压到 #c81e1e：上述两底 5.21/5.27，白字实底 5.74 */
+  --danger: #c81e1e;
   --warn: #b45309;
   --overlay: rgba(0, 0, 0, 0.35);
   /* T03204（G-5）：甘特条高光/拖拽手柄——半透明白叠加在状态实底上，属图形装饰；走令牌避免页面内硬编码亮色底 */
@@ -95,6 +98,17 @@ const themeCss = `
   --code-bg: #f1f5f9;
   --code-border: #e2e8f0;
   --markdown-quote: #cbd5e1;
+  /* T03393（§3.5 主题风格）：diff 三态各一套（新增/删除/上下文），底与字成对定义，
+     避免组件里用 color-mix 现调底色——那样门禁无法算出实际底色。取值由
+     scripts/tests/verify-t03393-diff-theme.mts 逐对校验：文字对自身底 ≥4.5:1，
+     且次级文字（行号 --text-muted）对自身底、文字对悬停底 --accent-soft 同样达标。
+     底色取「语义色 8% 叠 --card-bg」：再深就会把行号压到 4.5 以下（浅色 12% 时行号仅 4.46）。 */
+  --diff-add-bg: #ecf5ef;
+  --diff-add-text: #137638;
+  --diff-del-bg: #fbeded;
+  --diff-del-text: #c81e1e;
+  --diff-ctx-bg: #edeeef;
+  --diff-ctx-text: #1f2937;
   color-scheme: light;
 }
 [data-theme='dark'] {
@@ -111,6 +125,7 @@ const themeCss = `
   --border: #3f3f46;
   --border-strong: #52525b;
   --accent: #5b9bf8;
+  --accent-ink: #5b9bf8;
   --accent-text: #0b1220;
   /* 饱和实底（danger/success）在深色主题里是亮色，文字随之转深，保证 ≥4.5:1 */
   --on-solid: #0b1220;
@@ -125,6 +140,14 @@ const themeCss = `
   --code-bg: #27272a;
   --code-border: #3f3f46;
   --markdown-quote: #4b5563;
+  /* T03393：深色侧同一套成对令牌；深色底叠的是更亮的语义色，6~8% 已足够起区分作用，
+     再深会把行号（--text-muted #94949c）压到 4.5 以下。 */
+  --diff-add-bg: #1e2b26;
+  --diff-add-text: #22c55e;
+  --diff-del-bg: #2f2527;
+  --diff-del-text: #f87171;
+  --diff-ctx-bg: #2a2a2d;
+  --diff-ctx-text: #e5e7eb;
   color-scheme: dark;
 }
 
@@ -326,13 +349,17 @@ export function SettingsProvider({ children }: { readonly children: ReactNode })
     const accent = prefs.accent.trim();
     if (/^#[0-9a-fA-F]{6}$/.test(accent)) {
       rootStyle.setProperty('--accent', accent);
-      // 浅底/深底通用的浅强调底：以 app-bg 调和 10%；按钮文字按亮度自动取深/白
+      // 浅底/深底通用的浅强调底：以 app-bg 调和 10%
       rootStyle.setProperty('--accent-soft', `color-mix(in srgb, ${accent} 10%, var(--app-bg))`);
-      const lum = luminance(accent);
-      rootStyle.setProperty('--accent-text', lum > 0.72 ? '#1f2937' : '#ffffff');
+      // T03431：自定义色可能浅到 1.07:1——文字色按「浅强调底」压到 ≥4.5:1，
+      // 实底按钮文字在白/深之间取对比度更高者（原先按亮度阈值 0.72 二分，中亮度色会取反）
+      const appBg = APP_BG[effTheme === 'dark' ? 'dark' : 'light'];
+      rootStyle.setProperty('--accent-ink', contrastSafeText(accent, accentSoftHex(accent, appBg)));
+      rootStyle.setProperty('--accent-text', onSolidText(accent, SOLID_DARK_TEXT[effTheme === 'dark' ? 'dark' : 'light']));
     } else {
       rootStyle.removeProperty('--accent');
       rootStyle.removeProperty('--accent-soft');
+      rootStyle.removeProperty('--accent-ink');
       rootStyle.removeProperty('--accent-text');
     }
   }, [prefs, systemDark]);

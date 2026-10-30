@@ -121,7 +121,7 @@ export const updateCardStore = {
     if (!desk?.onUpdateProgress) return;
     attached = true;
     desk.onUpdateProgress((d) => updateCardStore.applyProgress(d));
-    void desk.getActiveUpdate?.().then((st) => {
+    desk.getActiveUpdate?.().then((st) => {
       if (!st?.active) return;
       updateCardStore.applyProgress({ status: 'downloading', received: st.received, total: st.total, origin: st.origin });
     }).catch(() => { /* 主进程未就绪：事件到达时自然补上 */ });

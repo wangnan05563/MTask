@@ -199,7 +199,7 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
     controllerRef.current = controller;
     const onEvent = (name: string, payload: unknown) => {
       const p = (payload ?? {}) as Record<string, unknown>;
-      if (name === 'job') setJobId(String(p.jobId ?? ''));
+      if (name === 'job') setJobId(typeof p.jobId === 'string' ? p.jobId : '');
       else if (name === 'stage') {
         const idx = STAGES.findIndex((s) => s.key === p.stage);
         if (idx >= 0) setStageIdx(idx);
@@ -245,6 +245,17 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
 
   const okReceipts = result?.receipts.filter((r) => r.ok).length ?? 0;
   const badReceipts = (result?.receipts.length ?? 0) - okReceipts;
+
+  let envBlockedText: string;
+  if (ws.conflict) {
+    envBlockedText = `已选项目跨了 ${ws.paths.length} 个工作空间（${ws.paths.map(wsBasename).join(' / ')}）——多项目必须同工作空间，请取消其一`;
+  } else if (degraded) {
+    envBlockedText = `Git 无法从当前工作空间取数：${GIT_DEGRADED_HINT[degraded] ?? degraded}。改绑正确的仓库目录后自动重算：`;
+  } else {
+    envBlockedText = `项目「${bindTarget?.name ?? ''}」未绑定工作空间，Git 无法取数。绑定仓库目录后即可提取：`;
+  }
+  const startRangeTitle = taskIds.length ? '按当前范围开始提取' : '请先勾选已回写 commit id 的任务';
+  const startTitle = envDown ? '环境未就绪：请先绑定正确的仓库目录' : startRangeTitle;
 
   return (
     <div data-t03366="git-extract-panel" style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 12 }}>
@@ -313,11 +324,7 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
           <div data-t03366="env-blocked" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', border: '1px solid var(--warn)', borderRadius: 8, padding: 8, marginBottom: 8, fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>
             <AlertTriangle size={13} style={{ flexShrink: 0 }} aria-hidden="true" />
             <span>
-              {ws.conflict
-                ? `已选项目跨了 ${ws.paths.length} 个工作空间（${ws.paths.map(wsBasename).join(' / ')}）——多项目必须同工作空间，请取消其一`
-                : degraded
-                  ? `Git 无法从当前工作空间取数：${GIT_DEGRADED_HINT[degraded] ?? degraded}。改绑正确的仓库目录后自动重算：`
-                  : `项目「${bindTarget?.name ?? ''}」未绑定工作空间，Git 无法取数。绑定仓库目录后即可提取：`}
+              {envBlockedText}
             </span>
             {!ws.conflict && bindTarget && (
               <WorkspaceSelect project={bindTarget} onBind={(path) => bindWorkspaceFor(bindTarget, path)} flash={flash} />
@@ -340,7 +347,7 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
             loading={running}
             loadingText="提取中…"
             disabled={envDown || taskIds.length === 0}
-            title={envDown ? '环境未就绪：请先绑定正确的仓库目录' : (taskIds.length ? '按当前范围开始提取' : '请先勾选已回写 commit id 的任务')}
+            title={startTitle}
             aria-label="开始提取"
             data-t03366="start"
             onClick={() => void start()}
@@ -360,12 +367,26 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
           <div style={{ marginTop: 8 }}>
             <FlowProgress value={Math.round(((stageIdx + 1) / STAGES.length) * 100)} aria-label="提取进度" />
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 6, fontSize: 'var(--fs-xs)' }}>
-              {STAGES.map((s, i) => (
-                <span key={s.key} data-t03366={`stage-${s.key}`} aria-label={`阶段 ${s.label}`}
-                  style={{ color: i < stageIdx ? 'var(--text-muted)' : i === stageIdx ? 'var(--accent)' : 'var(--border-strong)', fontWeight: i === stageIdx ? 600 : 400 }}>
-                  {i < stageIdx ? '✓' : i === stageIdx ? '…' : '·'} {s.label}
-                </span>
-              ))}
+              {STAGES.map((s, i) => {
+                let stageColor: string;
+                let stageMark: string;
+                if (i < stageIdx) {
+                  stageColor = 'var(--text-muted)';
+                  stageMark = '✓';
+                } else if (i === stageIdx) {
+                  stageColor = 'var(--accent)';
+                  stageMark = '…';
+                } else {
+                  stageColor = 'var(--border-strong)';
+                  stageMark = '·';
+                }
+                return (
+                  <span key={s.key} data-t03366={`stage-${s.key}`} aria-label={`阶段 ${s.label}`}
+                    style={{ color: stageColor, fontWeight: i === stageIdx ? 600 : 400 }}>
+                    {stageMark} {s.label}
+                  </span>
+                );
+              })}
             </div>
           </div>
         )}

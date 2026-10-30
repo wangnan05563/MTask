@@ -69,10 +69,10 @@ function coverageBaseline(db: ReturnType<typeof getDb>, month: string, now: Date
     note = '尚无带 card_key 的用量样本，覆盖率暂不可比（历史 card_key=unknown 不回填）；首个完整月待接入后自然产生';
   } else if (!fullyInstrumented) {
     note = `card_key 自 ${instrumentedFrom} 起记录，${month} 不是完整月（首个完整月为 ${firstCompleteMonth}）；当月读数只作过程观察，不作基线`;
-  } else if (!ended) {
-    note = `${month} 尚未结束，月结束后才可作为基线（首个完整月 ${firstCompleteMonth}）`;
-  } else {
+  } else if (ended) {
     note = `${month} 可作为基线：分母按当前注册表可用卡计（卡片上下线历史未入库）`;
+  } else {
+    note = `${month} 尚未结束，月结束后才可作为基线（首个完整月 ${firstCompleteMonth}）`;
   }
   return { instrumentedFrom, firstCompleteMonth, fullyInstrumented, ended, established, denominatorBasis, note };
 }

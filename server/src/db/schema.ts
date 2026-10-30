@@ -938,6 +938,17 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('prompts', 'sort_weight', 'sort_weight INTEGER NOT NULL DEFAULT 0');
   // T00837：可选的「通用需求分类」归属——指向 req_categories（独立于自身提示词分类；空=未归属）
   ensureColumn('prompts', 'req_category_id', "req_category_id TEXT DEFAULT ''");
+  // T03683：收藏位——与 pinned 语义正交（置顶管排序、收藏管筛选），两页共用同一列名口径。
+  // 默认 0，存量数据不因为上线新功能被凭空标成收藏
+  ensureColumn('prompts', 'is_favorited', 'is_favorited INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('req_entries', 'is_favorited', 'is_favorited INTEGER NOT NULL DEFAULT 0');
+  // T03685：通用需求条目归档——补齐与 prompts / plan_tasks 同构的归档模型（删除改归档），
+  // 使此前「需求侧无归档列」而置灰的归档入口可以真正落地；archived_at 供归档页展示「归档于」
+  ensureColumn('req_entries', 'archived', 'archived INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('req_entries', 'archived_at', 'archived_at TEXT');
+  // 收藏筛选是「分类内只看收藏」的组合查询（GET /prompts?favorited=1），与既有 order 索引并列补一条
+  db.exec("CREATE INDEX IF NOT EXISTS idx_prompts_favorited ON prompts(category_id, is_favorited)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_req_entries_favorited ON req_entries(category_id, is_favorited)");
   // T02165：控制台周期类任务的多项目范围（JSON id 数组串，空=全部项目）——
   // 任务落库后异步运行，切页/重启都要能按原范围复现取数，故范围必须持久化而非只随请求传
   ensureColumn('console_jobs', 'project_ids', "project_ids TEXT DEFAULT ''");

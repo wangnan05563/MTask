@@ -4,7 +4,7 @@ import { api } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown';
 import { EXPORT_MIME, safeExportName, saveBinary } from '../utils/download'; // T00959：导出下载
-import { Check, FileDown, FilePenLine, FilePlus2, FileText, FileType, FileUp, Loader2, Pencil, Plus, RefreshCw, SendToBack, Trash2, Undo2, Upload, X } from 'lucide-react'; // T00770：PRD 管理视图；T00824：跳转导入入口；T00959：下载格式菜单
+import { AlertTriangle, Check, CircleAlert, FileDown, FilePenLine, FilePlus2, FileText, FileType, FileUp, Info, Loader2, Pencil, Plus, RefreshCw, SendToBack, Trash2, Undo2, Upload, X, type LucideIcon } from 'lucide-react'; // T00770：PRD 管理视图；T00824：跳转导入入口；T00959：下载格式菜单；T03655：问题级别图标
 
 /** PRD 文档行（列表轻量；T00770 增加 status 流转） */
 interface PrdDoc {
@@ -30,13 +30,29 @@ interface PrdIssue {
   level?: string;
 }
 
-/** T00822：问题级别展示映射（对齐 AI 控制台「原始需求生成 PRD」的待确认问题标签） */
-const ISSUE_LEVEL_META: Record<string, { label: string; color: string }> = {
-  blocker: { label: '🔴 阻塞', color: 'var(--danger, #c22)' },
-  suggested: { label: '🟡 建议', color: 'var(--warning, #c80)' },
-  info: { label: '🟢 提示', color: 'var(--success)' },
+/**
+ * T00822：问题级别展示映射（对齐 AI 控制台「原始需求生成 PRD」的待确认问题标签）。
+ * T03655：三档色点从 emoji 换成 lucide——emoji 随系统字体变样、不可着色，与「图标统一 lucide」相悖。
+ */
+const ISSUE_LEVEL_META: Record<string, { label: string; color: string; Icon?: LucideIcon }> = {
+  blocker: { label: '阻塞', color: 'var(--danger, #c22)', Icon: CircleAlert },
+  suggested: { label: '建议', color: 'var(--warning, #c80)', Icon: AlertTriangle },
+  info: { label: '提示', color: 'var(--success)', Icon: Info },
   custom: { label: '自定义', color: 'var(--accent)' },
 };
+
+/** 级别标签：颜色 + 图标 + 文案（图标 aria-hidden，语义由文案承担） */
+function IssueLevelTag({ level }: Readonly<{ level: string }>) {
+  const meta = ISSUE_LEVEL_META[level];
+  if (!meta) return null;
+  const Icon = meta.Icon;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-2xs)', padding: '1px 6px', borderRadius: 8, flex: 'none', marginTop: 1, color: meta.color }}>
+      {Icon && <Icon size={10} aria-hidden />}
+      {meta.label}
+    </span>
+  );
+}
 
 /** T02218：批量操作响应（成功/失败逐项明细；失败项供结果面板展开原因） */
 interface BatchReport {
@@ -565,13 +581,8 @@ export function PrdPanel({ projectId, onClose }: {
                   color: i.status === 'resolved' ? 'var(--success)' : 'var(--warning, #c80)' }}>
                 {i.status === 'resolved' ? '已确认' : '待确认'}
               </span>
-              {/* T00822：问题级别标签——对齐 AI 控制台生成面板的级别展示（🔴阻塞/🟡建议/🟢提示/自定义） */}
-              {i.level && ISSUE_LEVEL_META[i.level] && (
-                <span style={{ fontSize: 'var(--fs-2xs)', padding: '1px 6px', borderRadius: 8, flex: 'none', marginTop: 1,
-                  color: ISSUE_LEVEL_META[i.level].color }}>
-                  {ISSUE_LEVEL_META[i.level].label}
-                </span>
-              )}
+              {/* T00822：问题级别标签——对齐 AI 控制台生成面板的级别展示（阻塞/建议/提示/自定义） */}
+              {i.level && <IssueLevelTag level={i.level} />}
               <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text)', minWidth: 0, flex: '1 1 260px' }}>
                 {i.question}
                 {/* T00817：AI 建议字段——展示 AI 为该问题生成的建议选项，辅助决策 */}
@@ -582,7 +593,7 @@ export function PrdPanel({ projectId, onClose }: {
                   <span style={{ display: 'block', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>结论：{i.answer}</span>
                 )}
               </span>
-              {docName && <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', flex: 'none' }} title="问题挂靠的 PRD 文档">📄 {docName}</span>}
+              {docName && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', flex: 'none' }} title="问题挂靠的 PRD 文档"><FileText size={10} aria-hidden /> {docName}</span>}
               <span style={{ display: 'inline-flex', gap: 5, flex: 'none' }}>
                 <button onClick={() => { void editIssue(i); }} className="tbtn-anim" title="编辑问题" aria-label="编辑该问题" style={opBtn}><Pencil size={11} /></button>
                 {i.status === 'open'

@@ -67,7 +67,7 @@ export function MobileNotifications({ notify, onOpenTask }: Readonly<{
   }, [notify]);
 
   if (items === null) return <Skeleton rows={5} card />;
-  if (items.length === 0) return <EmptyState icon="🔔" message="暂无任务事件" hint="AI 分发 / 回传 / 状态变更后会自动记录。" />;
+  if (items.length === 0) return <EmptyState icon={<Bell size={32} />} message="暂无任务事件" hint="AI 分发 / 回传 / 状态变更后会自动记录。" />;
 
   return (
     <>

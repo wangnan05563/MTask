@@ -75,7 +75,11 @@ export function resolveProjectByName(name: string, db: Database.Database = getDb
   // T02938：归档/历史行只能作最后回落——旧实现没有这一步，同名「归档 + 现行」两行时靠库序撞运气
   const pool = (actives.length > 0 ? actives : cands)
     .slice()
-    .sort((a, b) => (a.created_at === b.created_at ? (a.id < b.id ? -1 : 1) : a.created_at < b.created_at ? 1 : -1));
+    .sort((a, b) => {
+      const sameDayOrder = a.id < b.id ? -1 : 1;
+      const createdOrder = a.created_at < b.created_at ? 1 : -1;
+      return a.created_at === b.created_at ? sameDayOrder : createdOrder;
+    });
   const hit = pool[0];
   const isActive = hit.is_active === 1;
   let warning: string | undefined;

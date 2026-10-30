@@ -82,8 +82,9 @@ export function suggestionStats(filter: { cardKey?: string | null; projectId?: s
   const values: string[] = [];
   if (filter.cardKey) { where.push('card_key = ?'); values.push(filter.cardKey); }
   if (filter.projectId) { where.push('project_id = ?'); values.push(filter.projectId); }
+  const whereClause = where.length ? ` WHERE ${where.join(' AND ')}` : '';
   const rows = getDb().prepare(
-    `SELECT status, COUNT(*) AS n FROM ai_suggestions${where.length ? ` WHERE ${where.join(' AND ')}` : ''} GROUP BY status`,
+    `SELECT status, COUNT(*) AS n FROM ai_suggestions${whereClause} GROUP BY status`,
   ).all(...values) as Array<{ status: string; n: number }>;
   const count = (s: string) => rows.find((r) => r.status === s)?.n ?? 0;
   const shown = count('shown') + count('accepted') + count('dismissed') + count('timeout');

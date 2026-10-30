@@ -55,7 +55,7 @@ function projectName(projectId: string): string {
 
 /** 文件名里的时间戳与项目名都要能落盘：去掉 Windows 非法字符 */
 function safeName(s: string): string {
-  return s.replace(/[\\/:*?"<>|]/g, '_').trim() || '项目';
+  return s.replaceAll(/[\\/:*?"<>|]/g, '_').trim() || '项目';
 }
 
 function ymd(): string {
@@ -105,7 +105,7 @@ function planParentId(row: PlanRow, planIds: Set<string>): string | null {
     deps = [];
   }
   // type='child' 是归属边（子行 → 里程碑）；serial 只是排期顺序，不建树
-  const edge = deps.find((d) => d && d.type === 'child' && typeof d.id === 'string' && planIds.has(d.id));
+  const edge = deps.find((d) => d?.type === 'child' && typeof d.id === 'string' && planIds.has(d.id));
   return edge ? String(edge.id) : null;
 }
 
@@ -126,7 +126,8 @@ function markTaskLine(r: TaskRow, depth: number): string {
   const no = r.task_no ? `${r.task_no} · ` : '';
   const prio = PRIORITY_LABEL[r.priority] ?? r.priority;
   const status = STATUS_LABEL[r.status] ?? r.status;
-  return `${'  '.repeat(depth)}- [${box}] ${no}${r.title}（状态：${status} · 优先级：${prio}${r.category ? ` · 分类：${r.category}` : ''}）`;
+  const categoryPart = r.category ? ` · 分类：${r.category}` : '';
+  return `${'  '.repeat(depth)}- [${box}] ${no}${r.title}（状态：${status} · 优先级：${prio}${categoryPart}）`;
 }
 
 function markPlanLine(r: PlanRow, depth: number): string {

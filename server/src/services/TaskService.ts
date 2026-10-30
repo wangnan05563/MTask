@@ -352,7 +352,8 @@ function fieldSortClause(
   const nullLast = `CASE WHEN ${fieldValueExists(field.id)} THEN 0 ELSE 1 END`;
   if (field.type === 'select') {
     const optIds = field.options.map((o) => o.id);
-    const rankExpr = `(SELECT CASE v.value ${field.options.map((_, i) => `WHEN ? THEN ${i}`).join(' ')}
+    const caseRanks = field.options.map((_, i) => `WHEN ? THEN ${i}`).join(' ');
+    const rankExpr = `(SELECT CASE v.value ${caseRanks}
       ELSE ${optIds.length} END FROM task_field_values v WHERE v.task_id = tasks.id AND v.field_id = ?)`;
     return { sql: `${nullLast}, ${rankExpr} ${dir}, created_at DESC`, values: [field.id, ...optIds, field.id] };
   }
@@ -628,7 +629,8 @@ function loadOpenBlockers(db: ReturnType<typeof getDb>, taskIds: string[]): Map<
 
 /** 关系行的事件文案：两侧各记一条，使「谁被谁挡住」与「谁挡住了谁」都能在各自时间线读到 */
 function blockerEventDetail(t: BlockerLabel): string {
-  return `${t.task_no ? `${t.task_no} ` : ''}「${t.title}」`;
+  const noPrefix = t.task_no ? `${t.task_no} ` : '';
+  return `${noPrefix}「${t.title}」`;
 }
 
 /**

@@ -313,7 +313,7 @@ export function TunnelPanel() {
           <div style={{ fontWeight: 600, marginBottom: 4 }}>cpolar</div>
           <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 8 }}>需到 <a href="https://dashboard.cpolar.com/signup" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>cpolar 官网</a> 注册获取 authtoken。</div>
           <label style={label}>authtoken {tokenConfigured ? '（当前已配置，留空保留原值）' : ''}</label>
-          <input type="password" value={tokenNew} onChange={(e) => setTokenNew(e.target.value)} style={field} placeholder={tokenConfigured ? '••••（已配置）' : '请输入 authtoken'} autoComplete="new-password" />
+          <input type="password" aria-label="cpolar authtoken" value={tokenNew} onChange={(e) => setTokenNew(e.target.value)} style={field} placeholder={tokenConfigured ? '••••（已配置）' : '请输入 authtoken'} autoComplete="new-password" />
         </div>
       )}
 

@@ -24,7 +24,8 @@ export const REPORT_PROJECT_MAX = 8;
 export function scopeSummary(names: string[]): string {
   if (names.length === 0) return '全部项目';
   if (names.length === 1) return names[0];
-  return `${names[0]} + ${names[1]}${names.length > 2 ? ` 等 ${names.length} 个项目` : ''}`;
+  const more = names.length > 2 ? ` 等 ${names.length} 个项目` : '';
+  return `${names[0]} + ${names[1]}${more}`;
 }
 
 /** 勾选顺序即报表里的项目分块顺序，序号徽标让它可见（后端按同一顺序聚合） */

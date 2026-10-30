@@ -289,7 +289,8 @@ export function rowDriftCheck(input: RowDriftInput, cal: WorkdayCal, today: stri
   let flag: 'high' | 'low' | null = null;
   if (e !== null && d !== null && d > 0) {
     ratio = Math.round((e / d) * 100) / 100;
-    flag = ratio > DURATION_RATIO_HIGH ? 'high' : ratio < DURATION_RATIO_LOW ? 'low' : null;
+    if (ratio > DURATION_RATIO_HIGH) flag = 'high';
+    else if (ratio < DURATION_RATIO_LOW) flag = 'low';
   }
   const hasEnd = /^\d{4}-\d{2}-\d{2}$/.test(input.endDate || '');
   const remaining = hasEnd ? countWorkdaysBetween(today, input.endDate, cal) : null;

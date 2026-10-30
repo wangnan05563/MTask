@@ -60,7 +60,8 @@ export function provenanceTextLines(p: CardProvenance): string[] {
 /** Markdown 导出稿的「溯源」段；有截断时在标题后加 ⚠（AI-101②：导出稿也要看得出被截过） */
 export function provenanceMarkdown(p: CardProvenance): string {
   const head = p.truncated ? '## 溯源（⚠ 含截断/降级）' : '## 溯源';
-  return `\n\n---\n\n${head}\n\n${provenanceTextLines(p).map((l) => `- ${l}`).join('\n')}\n`;
+  const bulletLines = provenanceTextLines(p).map((l) => `- ${l}`).join('\n');
+  return `\n\n---\n\n${head}\n\n${bulletLines}\n`;
 }
 
 /** 每卡保留的溯源快照份数：只服务「重进页面看最近一次」，留多了是历史噪声 */

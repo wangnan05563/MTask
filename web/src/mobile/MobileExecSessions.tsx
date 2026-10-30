@@ -8,6 +8,7 @@ import { api } from '../api/client';
 import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
 import { Badge, bodyStyle, cardStyle, EmptyState, type BadgeTone } from './ui';
 import { platformLabel } from '../ui/platformLabel';
+import { Activity, Clock } from 'lucide-react'; // T03655：空态与陈旧提示改 lucide，不再用 emoji
 
 interface ExecSessionView {
   id: string;
@@ -84,11 +85,11 @@ export function MobileExecSessions({ notify }: { readonly notify: (msg: string, 
   return (
     <div style={bodyStyle}>
       {staleAsOf && (
-        <div style={{ marginBottom: 8, padding: '5px 10px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>
-          ⏱ 数据截至 {fmtAsOf(staleAsOf)}（离线缓存，联网后自动更新）
+        <div style={{ marginBottom: 8, padding: '5px 10px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-muted)', fontSize: 'var(--fs-s)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Clock size={12} aria-hidden /> 数据截至 {fmtAsOf(staleAsOf)}（离线缓存，联网后自动更新）
         </div>
       )}
-      {sessions.length === 0 && <EmptyState icon="🛰️" message="暂无执行会话" hint="AI 开始执行任务后会话会出现在这里" />}
+      {sessions.length === 0 && <EmptyState icon={<Activity size={32} />} message="暂无执行会话" hint="AI 开始执行任务后会话会出现在这里" />}
       {sessions.map((s) => {
         const heartbeatStale = s.status === 'active' && Date.now() - new Date(s.last_heartbeat).getTime() > 10 * 60 * 1000;
         return (

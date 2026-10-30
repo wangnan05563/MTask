@@ -119,13 +119,13 @@ export function SprintPanel({ projectId, onClose, onPlansChanged }: {
   const [busy, setBusy] = useState(false);
 
   // 单一定时器：连续两次操作（如「创建」紧接「删除」）时，上一条的 4s 定时器会把下一条提前清掉（真机实测 1.2s 消失）
-  const msgTimer = useRef<number | null>(null);
+  const msgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flash = useCallback((m: string) => {
     setMsg(m);
-    if (msgTimer.current) window.clearTimeout(msgTimer.current);
-    msgTimer.current = window.setTimeout(() => { setMsg(''); msgTimer.current = null; }, 4000);
+    if (msgTimer.current) globalThis.clearTimeout(msgTimer.current);
+    msgTimer.current = globalThis.setTimeout(() => { setMsg(''); msgTimer.current = null; }, 4000);
   }, []);
-  useEffect(() => () => { if (msgTimer.current) window.clearTimeout(msgTimer.current); }, []);
+  useEffect(() => () => { if (msgTimer.current) globalThis.clearTimeout(msgTimer.current); }, []);
 
   const loadIterations = useCallback(async () => {
     const rows = await api.get<Iteration[]>(`/projects/${projectId}/iterations?includeArchived=${showArchived ? 1 : 0}`);
@@ -195,7 +195,8 @@ export function SprintPanel({ projectId, onClose, onPlansChanged }: {
     setBusy(true);
     try {
       const r = await api.post<{ detached: string[]; skipped: Array<{ reason: string }> }>(`/iterations/${selectedId}/detach`, { planTaskIds: selMemberIds });
-      flash(`已移出 ${r.detached.length} 条${r.skipped.length ? `；${r.skipped.length} 条未动：${r.skipped[0].reason}` : ''}`);
+      const skippedNote = r.skipped.length ? `；${r.skipped.length} 条未动：${r.skipped[0].reason}` : '';
+      flash(`已移出 ${r.detached.length} 条${skippedNote}`);
       await Promise.all([loadIterations(), loadPlans(), loadDetail(selectedId)]);
       onPlansChanged?.();
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
@@ -378,8 +379,6 @@ export function SprintPanel({ projectId, onClose, onPlansChanged }: {
       </div>
     </div>
   );
-
-  function add(): void { /* 占位由 onAttach 承接，保留函数名供上面 JSX 的可读调用 */ }
 }
 
 /** 迭代新建/编辑表单（S3776：从主组件里拆出） */
@@ -392,6 +391,7 @@ function IterationForm({ draft, setDraft, busy, onSubmit, onCancel }: {
 }): ReactElement {
   const set = (k: keyof Draft, v: string): void => setDraft({ ...draft, [k]: v });
   const bad = !!draft.startDate && !!draft.endDate && draft.endDate < draft.startDate;
+  const saveOrCreateLabel = draft.editingId ? '保存迭代' : '创建迭代';
   return (
     <div data-t03186="iter-form" style={{ ...CARD, marginTop: 10, borderColor: 'var(--accent)', display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: 'var(--fs-s)' }}>
@@ -409,7 +409,7 @@ function IterationForm({ draft, setDraft, busy, onSubmit, onCancel }: {
         <button onClick={onCancel} disabled={busy} style={BTN} aria-label="取消编辑迭代">取消</button>
         <button onClick={onSubmit} disabled={busy || bad || !draft.name.trim()} className="tbtn-anim"
           style={{ ...BTN, background: 'var(--accent)', color: 'var(--accent-text)', borderColor: 'var(--accent)', opacity: busy || bad || !draft.name.trim() ? 0.6 : 1 }}
-          title={bad ? '请先修正起止日期' : draft.editingId ? '保存迭代' : '创建迭代'} aria-label={draft.editingId ? '保存迭代' : '创建迭代'}>
+          title={bad ? '请先修正起止日期' : saveOrCreateLabel} aria-label={saveOrCreateLabel}>
           {draft.editingId ? '保存' : '创建'}
         </button>
       </div>

@@ -1422,6 +1422,7 @@ export function ReportConsole({
         </div>
         {category === 'custom' && (
           <textarea
+            aria-label="自定义分析问题"
             value={custom}
             onChange={(e) => setCustom(e.target.value)}
             rows={2}

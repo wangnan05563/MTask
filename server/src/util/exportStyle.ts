@@ -13,6 +13,7 @@
  *   docx 的 `shading.fill` 只要 6 位，两边共用同一个字面量才不会漂移。
  */
 import type { Cell, Row } from 'exceljs';
+import { scalarText } from './scalarText';
 
 /** 表头填充色（浅靛蓝，与 xlsx-trae 报表、需求跟踪矩阵同口径） */
 export const HEAD_FILL = 'EAF2FF';
@@ -140,7 +141,7 @@ export const DECK_STYLES: Record<DeckStyleKey, DeckStylePreset> = {
 
 /** 解析版式预设：空值回落 standard（与未传字段等价），非法值抛错并点名可选值 */
 export function deckStylePreset(raw: unknown): DeckStylePreset {
-  const key = String(raw ?? '').trim();
+  const key = scalarText(raw ?? '').trim();
   if (!key) return DECK_STYLES.standard;
   if (!(DECK_STYLE_KEYS as readonly string[]).includes(key)) {
     const options = DECK_STYLE_KEYS.map((k) => `${k}(${DECK_STYLES[k].label})`).join(' / ');

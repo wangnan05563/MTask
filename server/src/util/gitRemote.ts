@@ -47,7 +47,7 @@ export function parseRemoteRepo(rawUrl: string): RemoteRepo | null {
       return null;
     }
   } else {
-    if (!scp || !scp[2] || !scp[3]) return null;
+    if (!scp?.[2] || !scp[3]) return null;
     host = scp[2];
     path = `/${scp[3]}`;
   }
@@ -55,8 +55,8 @@ export function parseRemoteRepo(rawUrl: string): RemoteRepo | null {
   const segs = clean.split('/').filter(Boolean);
   // GitLab 允许子群组（a/b/repo），取最后两段作 owner/repo
   if (segs.length < 2) return null;
-  const repo = segs[segs.length - 1];
-  const owner = segs[segs.length - 2];
+  const repo = segs.at(-1);
+  const owner = segs.at(-2);
   if (!repo || !owner) return null;
   return { host, owner, repo };
 }

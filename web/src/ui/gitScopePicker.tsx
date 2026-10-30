@@ -114,7 +114,6 @@ export function GitScopePicker({ projects, value, onChange }: {
 }) {
   const [groups, setGroups] = useState<TaskGroup[]>([]);
   const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState('');
   const [truncated, setTruncated] = useState(false);
   const [cats, setCats] = useState<TaskCategory[]>([]);
 
@@ -130,12 +129,11 @@ export function GitScopePicker({ projects, value, onChange }: {
   useEffect(() => {
     const ids = idsKey ? idsKey.split(',').filter(Boolean) : [];
     if (!ids.length) {
-      setGroups([]); setLoadError(''); setTruncated(false); setLoading(false);
+      setGroups([]); setTruncated(false); setLoading(false);
       return undefined;
     }
     const controller = new AbortController();
     setLoading(true);
-    setLoadError('');
     void (async () => {
       try {
         const next = await Promise.all(ids.map(async (projectId) => {
@@ -148,10 +146,9 @@ export function GitScopePicker({ projects, value, onChange }: {
         if (controller.signal.aborted) return;
         setGroups(next);
         setTruncated(next.some((g) => g.tasks.length >= TASK_PAGE_LIMIT));
-      } catch (e) {
+      } catch {
         if (controller.signal.aborted) return;
         setGroups([]);
-        setLoadError(e instanceof Error ? e.message : String(e));
       } finally {
         if (!controller.signal.aborted) setLoading(false);
       }

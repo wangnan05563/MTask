@@ -305,9 +305,10 @@ export async function buildShareSnapshotPdf(args: {
 
   doc.end();
   await done;
+  const snapshotName = `${data.projectName}-分享快照`;
   return {
     buffer: finish(),
-    filename: `${safeExportName(`${data.projectName}-分享快照`, '分享快照')}.pdf`,
+    filename: `${safeExportName(snapshotName, '分享快照')}.pdf`,
     data,
   };
 }

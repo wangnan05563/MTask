@@ -335,6 +335,11 @@ function OutlineToolbar({ extraNote, onExtraNoteChange, streaming, outlineBusy, 
   readonly onClear: () => void;
 }) {
   const disabled = streaming || outlineBusy || !!blockedReason;
+  const separateNote = mode === 'separate' ? '（每项目 12~16 页）' : '';
+  const pageCountText = `共 ${rowCount} 页${separateNote}`;
+  const outlineGuideText = mode === 'separate'
+    ? '大纲：每项目 12~16 页完整稿，合计 12N~16N 页，可改标题/要点/版式'
+    : '大纲 12~16 页（单项目）/ 合并版 6+4N 页，可改标题/要点/版式';
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
       <input value={extraNote} onChange={(e) => onExtraNoteChange(e.target.value)} placeholder="补充说明（可选，会拼进大纲提示词）" aria-label="大纲补充说明"
@@ -345,9 +350,7 @@ function OutlineToolbar({ extraNote, onExtraNoteChange, streaming, outlineBusy, 
         {outlineBusy ? <Loader2 size={12} className="aispin" /> : <Sparkles size={12} />} {rowCount ? '重新生成大纲' : '生成大纲'}
       </button>
       {rowCount > 0 && <button onClick={onClear} disabled={streaming} className="tbtn-anim" title="清空大纲稿" aria-label="清空大纲" style={opBtn}><Trash2 size={11} /> 清空</button>}
-      <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{rowCount
-        ? `共 ${rowCount} 页${mode === 'separate' ? '（每项目 12~16 页）' : ''}`
-        : (mode === 'separate' ? '大纲：每项目 12~16 页完整稿，合计 12N~16N 页，可改标题/要点/版式' : '大纲 12~16 页（单项目）/ 合并版 6+4N 页，可改标题/要点/版式')}</span>
+      <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{rowCount ? pageCountText : outlineGuideText}</span>
     </div>
   );
 }
@@ -365,6 +368,12 @@ function OutlinePageList({ rows, streaming, merged, separate, onPatch, onRemove,
 }) {
   // 合并版每项目固定 4 页、分别独立版每项目 12~16 页——两者都由服务端校验，增删页会直接 400
   const locked = merged || separate;
+  let removeTitle = '删除该页';
+  if (separate) removeTitle = '分别独立版每项目 12~16 页，不支持删页';
+  else if (merged) removeTitle = '合并版每项目固定 4 页，不支持删页';
+  let addTitle = '追加一页';
+  if (separate) addTitle = '分别独立版每项目 12~16 页，不支持加页';
+  else if (merged) addTitle = '合并版每项目固定 4 页，不支持加页';
   return (
     <div style={{ maxHeight: 380, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6, marginBottom: 10 }}>
       {rows.map((r, idx) => (
@@ -400,14 +409,14 @@ function OutlinePageList({ rows, streaming, merged, separate, onPatch, onRemove,
             <button onClick={() => onMove(idx, -1)} disabled={streaming || idx === 0} className="tbtn-anim" title="上移" aria-label="上移" style={{ ...opBtn, padding: '1px 5px' }}><ChevronUp size={11} /></button>
             <button onClick={() => onMove(idx, 1)} disabled={streaming || idx === rows.length - 1} className="tbtn-anim" title="下移" aria-label="下移" style={{ ...opBtn, padding: '1px 5px' }}><ChevronDown size={11} /></button>
             <button onClick={() => onRemove(idx)} disabled={streaming || locked} className="tbtn-anim"
-              title={separate ? '分别独立版每项目 12~16 页，不支持删页' : merged ? '合并版每项目固定 4 页，不支持删页' : '删除该页'} aria-label="删除该页"
+              title={removeTitle} aria-label="删除该页"
               style={{ ...opBtn, padding: '1px 5px', color: 'var(--danger)', border: 'none', background: 'transparent', opacity: locked ? 0.4 : 1 }}><Trash2 size={11} /></button>
           </div>
         </div>
       ))}
       <div style={{ padding: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
         <button onClick={onAdd} disabled={streaming || locked} className="tbtn-anim"
-          title={separate ? '分别独立版每项目 12~16 页，不支持加页' : merged ? '合并版每项目固定 4 页，不支持加页' : '追加一页'} aria-label="追加一页"
+          title={addTitle} aria-label="追加一页"
           style={{ ...opBtn, opacity: locked ? 0.4 : 1 }}><Plus size={11} /> 加一页</button>
         {separate && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>分别独立版：每项目一份完整稿（12~16 页），可改文字与顺序，不支持增删页</span>}
         {merged && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>合并版：每项目恰好 {MERGED_PER_PROJECT} 页小结，可改文字与顺序，不支持增删页</span>}
@@ -537,7 +546,8 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
   /** 只有多项目才谈生成形态；单项目一律归一为合并版（服务端同样口径） */
   const multiProject = scopeCount > 1;
   const effectiveMode: ModeKey = multiProject ? mode : 'merged';
-  const scopeSignature = `${period}|${period === 'custom' ? `${start}|${end}` : ''}|${effectiveIds.join(',')}|${effectiveMode}`;
+  const customScopePart = period === 'custom' ? `${start}|${end}` : '';
+  const scopeSignature = `${period}|${customScopePart}|${effectiveIds.join(',')}|${effectiveMode}`;
   const customError = period === 'custom' ? customRangeErrorOf(start, end) : '';
 
   // ① 校验：周期/范围/自定义区间变更即重拉（只读、零配额——切来切去不烧模型）
@@ -637,7 +647,8 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
     if (rows.length > 0 && !(await askConfirm('已有大纲稿，重新生成会覆盖当前编辑内容。继续？'))) return;
     setOutlineBusy(true);
     const scope = activePre.projectIds.length ? activePre.projectIds : undefined;
-    const modeText = effectiveMode === 'separate' ? `分别独立版（${activePre.projectIds.length} 个项目各一份完整稿）` : (isMerged ? `合并版（${activePre.projectIds.length} 个项目）` : '单项目');
+    const mergedModeText = isMerged ? `合并版（${activePre.projectIds.length} 个项目）` : '单项目';
+    const modeText = effectiveMode === 'separate' ? `分别独立版（${activePre.projectIds.length} 个项目各一份完整稿）` : mergedModeText;
     summaryPptStore.pushLog(`大纲段：${activePre.periodLabel} · ${activePre.projectNames.join('、') || '全部项目'} · ${modeText}，补充说明 ${extraNote ? '已附加' : '无'}…`);
     try {
       const r = await api.post<OutlineResult>('/plans/summary-ppt-outline', {
@@ -656,8 +667,10 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
       const truncatedMark = r.truncated ? '（已按预算裁剪）' : '';
       const warnCount = (r.warnings ?? []).length;
       const warnMark = warnCount ? `，降级提示 ${warnCount} 条` : '';
+      const totalRangeText = r.totalPageRange ? `${r.totalPageRange.min}~${r.totalPageRange.max}` : '';
+      const separateRangeText = `每项目 ${r.pageRange.min}~${r.pageRange.max} 页，合计 ${totalRangeText} 页`;
       const rangeMark = effectiveMode === 'separate'
-        ? `每项目 ${r.pageRange.min}~${r.pageRange.max} 页，合计 ${r.totalPageRange ? `${r.totalPageRange.min}~${r.totalPageRange.max}` : ''} 页`
+        ? separateRangeText
         : `${r.pageRange.min}~${r.pageRange.max} 页`;
       summaryPptStore.pushLog(`大纲就绪：${r.outline.length} 页（目标 ${rangeMark}）${truncatedMark}${warnMark}`);
       flash(`大纲已生成 ${r.outline.length} 页——请确认后开始生成`);
@@ -680,9 +693,10 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
     summaryPptStore.setResult(null);
     setPageDone(0);
     setPageTotal(rows.length);
+    const mergedModeText = isMerged ? `合并版 ${activePre.projectIds.length} 个项目` : '单项目';
     const modeText = effectiveMode === 'separate'
       ? `分别独立版 ${activePre.projectIds.length} 个项目（各一份完整稿，打 zip）`
-      : (isMerged ? `合并版 ${activePre.projectIds.length} 个项目` : '单项目');
+      : mergedModeText;
     summaryPptStore.pushLog(`总结汇报稿：${activePre.periodLabel}（${rangeText(activePre.periodRange)}）· ${modeText} · ${rows.length} 页大纲，开始装配…`);
     let errMsg = '';
     try {
@@ -768,7 +782,10 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
   const outlineBlockReason = ((): string => {
     if (!toolId) return '请先在右侧控制台选择 AI 模型工具';
     if (customError) return customError;
-    if (!activePre) return preLoading ? '前置校验进行中…' : (preError ? '前置校验失败，无法发起大纲' : '前置校验尚未完成');
+    if (!activePre) {
+      const preFailOrPendingText = preError ? '前置校验失败，无法发起大纲' : '前置校验尚未完成';
+      return preLoading ? '前置校验进行中…' : preFailOrPendingText;
+    }
     if (blocked) return '资料不足（S1/S2 硬阻塞），请先补齐后重开校验';
     return '';
   })();

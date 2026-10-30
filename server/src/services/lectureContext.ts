@@ -16,6 +16,7 @@
 import { extname } from 'node:path';
 import { WorkspaceService } from './WorkspaceService';
 import { isSecurityPath, type GitFileChange } from './gitCollect';
+import { scalarText } from '../util/scalarText';
 
 export class LectureContextError extends Error {
   constructor(message: string) {
@@ -158,9 +159,9 @@ export function resolveLectureContextBudget(raw?: unknown): number {
     ? process.env.MTASK_LECTURE_CONTEXT_BUDGET
     : raw;
   if (value === undefined || value === null || value === '') return LECTURE_CONTEXT_BUDGET;
-  const n = typeof value === 'number' ? value : Number(String(value).trim());
+  const n = typeof value === 'number' ? value : Number(scalarText(value).trim());
   if (!Number.isInteger(n) || n < LECTURE_BUDGET_MIN || n > LECTURE_BUDGET_MAX) {
-    throw new LectureContextError(`讲稿上下文预算必须是 ${LECTURE_BUDGET_MIN}~${LECTURE_BUDGET_MAX} 的整数（收到：${String(value)}）`);
+    throw new LectureContextError(`讲稿上下文预算必须是 ${LECTURE_BUDGET_MIN}~${LECTURE_BUDGET_MAX} 的整数（收到：${scalarText(value)}）`);
   }
   return n;
 }
@@ -198,10 +199,12 @@ function hunkBody(hunk: GitFileChange['hunks'][number]): string {
 export function formatSymbolHints(hints: readonly LectureSymbolHint[], maxChars = LECTURE_SYMBOL_SECTION_CHARS): string {
   if (hints.length === 0) return '';
   const lines: string[] = ['#### 符号线索（深度 1）'];
-  lines.push(`- 定义：${hints.map((h) => `\`${h.symbol}\`(${h.kind},L${h.line})`).join('、')}`);
+  const defList = hints.map((h) => `\`${h.symbol}\`(${h.kind},L${h.line})`).join('、');
+  lines.push(`- 定义：${defList}`);
   for (const h of hints) {
+    const refList = h.refs.map((r) => `${r.path}:${r.line}`).join('、');
     lines.push(h.refs.length
-      ? `- 引用：\`${h.symbol}\` → ${h.refs.map((r) => `${r.path}:${r.line}`).join('、')}`
+      ? `- 引用：\`${h.symbol}\` → ${refList}`
       : `- 引用：\`${h.symbol}\` 未在同名索引中命中`);
   }
   const text = lines.join('\n');
@@ -415,7 +418,10 @@ export function buildLectureContext(
   if (summaries.length === 0) warnings.push('没有可装配的变更文件');
   if (truncatedFiles > 0) {
     const names = summaries.filter((s) => s.truncated).slice(0, 10).map((s) => s.path);
-    warnings.push(`${truncatedFiles} 个文件超出单文件/组预算，已保头保尾截断${names.length ? `（${names.join('、')}${truncatedFiles > names.length ? ' 等' : ''}）` : ''}`);
+    const tail = truncatedFiles > names.length ? ' 等' : '';
+    const bracket = `（${names.join('、')}${tail}）`;
+    const note = names.length ? bracket : '';
+    warnings.push(`${truncatedFiles} 个文件超出单文件/组预算，已保头保尾截断${note}`);
   }
   if (splitModules > 0) warnings.push(`${splitModules} 个模块超出 ${budget} 字符预算，已拆分为多组逐组生成`);
 

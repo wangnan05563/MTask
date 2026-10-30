@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { loadProjectList, ProjectListHint, useProjectList } from '../ui/projectList';
 import { Badge, cardStyle, EmptyState, mutedStyle, Skeleton, wideHintStyle, type BadgeTone } from './ui';
+import { CalendarDays, ClipboardList } from 'lucide-react'; // T03655：空态改 lucide，不再用 emoji
 
 interface Props {
   readonly notify: (msg: string, isErr?: boolean) => void;
@@ -151,13 +152,13 @@ export function MobilePlans({ notify }: Props) {
       {loading && <Skeleton rows={4} card />}
 
       {!loading && tab === 'plans' && plans.length === 0 && (
-        <EmptyState icon="🗓️" message="该项目暂无计划" hint="可在桌面端「项目计划」中导入或新建。" />
+        <EmptyState icon={<CalendarDays size={32} />} message="该项目暂无计划" hint="可在桌面端「项目计划」中导入或新建。" />
       )}
       {!loading && tab === 'plans' && plans.length > 0 && view === 'list' && <PlanList plans={plans} />}
       {!loading && tab === 'plans' && plans.length > 0 && view === 'gantt' && <PlanGantt plans={plans} />}
 
       {!loading && tab === 'reqs' && reqs.length === 0 && (
-        <EmptyState icon="📋" message="该项目暂无需求" hint="需求来自 PRD 导入或需求跟踪矩阵。" />
+        <EmptyState icon={<ClipboardList size={32} />} message="该项目暂无需求" hint="需求来自 PRD 导入或需求跟踪矩阵。" />
       )}
       {!loading && tab === 'reqs' && reqs.length > 0 && reqs.map((r) => {
         const meta = REQ_STATUS[r.status ?? ''] ?? { label: r.status || '未定', tone: 'neutral' as BadgeTone };

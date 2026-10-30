@@ -86,7 +86,7 @@ function readPending(): DeepLink | null {
 /** 挂载时取走属于本页（或无 tab）的待交付链接；不属于本页的原样保留，避免互相吃掉 */
 export function consumeDeepLink(tab: Tab): DeepLink | null {
   const link = readPending();
-  if (!link || !link.tab || link.tab !== tab) return null;
+  if (!link?.tab || link.tab !== tab) return null;
   try { sessionStorage.removeItem(PENDING_KEY); } catch { /* 配额异常忽略 */ }
   return link;
 }

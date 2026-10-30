@@ -511,6 +511,8 @@ export interface Prompt {
   content: string;
   /** 置顶：true=固定到列表顶部（后端返回 0/1，前端按布尔使用） */
   pinned: boolean;
+  /** T03683：收藏标记——与置顶正交（置顶管排序、收藏管筛选；后端返回 0/1，前端按布尔使用） */
+  is_favorited?: boolean;
   /** T00494：手动排序权重（拖拽保存；0=默认序） */
   sort_weight: number;
   /** T00490：记录字体颜色，空串=默认色 */
@@ -543,6 +545,11 @@ export interface ReqEntry {
   content: string;
   /** 置顶：true=固定到列表顶部（后端返回 0/1，前端按布尔使用） */
   pinned: boolean;
+  /** T03683：收藏标记——与 Prompt.is_favorited 同语义同口径（后端返回 0/1） */
+  is_favorited?: boolean;
+  /** T03685：归档标记与归档时间——与 prompts 同构（删除改归档，归档视图可还原） */
+  archived?: boolean;
+  archived_at?: string | null;
   /** T00494：手动排序权重（拖拽保存；0=默认序） */
   sort_weight: number;
   /** T00490：记录字体颜色，空串=默认色 */

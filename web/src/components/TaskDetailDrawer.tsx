@@ -14,7 +14,7 @@ import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { SlideOver } from './SlideOver';
 import { Badge } from '../ui/Badge'; // PM-302 ①：徽标单源（原为抽屉私有 Badge，borderRadius/padding 与她处各异）
 import { priorityBadgeLabel, priorityTone } from '../ui/priority'; // PM-302 ③：优先级文案/色调单源
-import { Ban, ClipboardList, FileText, GitBranch, History, Link2, Loader2, Pencil, Save, Sparkles, Tag, X } from 'lucide-react';
+import { Ban, ClipboardList, FileText, GitBranch, History, Link2, Loader2, Pencil, Pin, Save, Sparkles, Tag, X } from 'lucide-react'; // T03654：置顶徽标由字符改 lucide Pin 图标
 import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用入口可见但禁用 + 原因/修复动作
 import { FIELD_SM_BLOCK, SELECT_BLOCK } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（T03231 字段表单复用同一形态）
 
@@ -604,7 +604,7 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
         <Badge tone={task.status === 'done' ? 'success' : 'accent'}>{STATUS_LABEL[task.status] ?? task.status}</Badge>
         <Badge tone={priorityTone(task.priority)}>{priorityBadgeLabel(task.priority)}</Badge>
         {task.verified && <Badge tone="success">已验证</Badge>}
-        {task.pinned && <Badge tone="accent">📌 置顶</Badge>}
+        {task.pinned && <Badge tone="accent"><Pin size={12} aria-hidden /> 置顶</Badge>}
         {task.task_no && <Badge>{task.task_no}</Badge>}
       </div>
 

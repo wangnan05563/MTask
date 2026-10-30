@@ -48,13 +48,13 @@ export function SlideOver({ open, title, onClose, children, width = 480 }: {
   const panelRef = useRef<HTMLDivElement>(null);
   const prevFocus = useRef<HTMLElement | null>(null);
   // T03274（UX-14①）：自适应 + 拖拽调宽——宽度按上次拖拽结果恢复，超出当前视口时夹回 92%
-  const [vw, setVw] = useState(() => (typeof window === 'undefined' ? 1280 : window.innerWidth));
+  const [vw, setVw] = useState(() => globalThis.innerWidth || 1280);
   const [w, setW] = useState(() => readStoredDrawerWidth(width));
   const dragRef = useRef<{ startX: number; startW: number } | null>(null);
   useEffect(() => {
-    const onResize = () => setVw(window.innerWidth);
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    const onResize = () => setVw(globalThis.innerWidth);
+    globalThis.addEventListener('resize', onResize);
+    return () => globalThis.removeEventListener('resize', onResize);
   }, []);
   const fullscreen = vw < DRAWER_FULLSCREEN_BELOW;
   // T01562 验收口径：无障碍用 aria-labelledby 指向标题节点（而非把标题塞进 aria-label）

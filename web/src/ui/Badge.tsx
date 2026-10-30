@@ -10,7 +10,7 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { BADGE, BADGE_TONE, type BadgeTone } from './primitives';
 
-export type { BadgeTone };
+export type { BadgeTone } from './primitives';
 
 export function Badge({ tone = 'neutral', children, style }: Readonly<{
   tone?: BadgeTone;

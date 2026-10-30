@@ -27,6 +27,7 @@ import {
   parseNotes,
 } from './testCaseGenParse';
 import type { DraftCase, DraftCoverage, DraftRequirement } from './testCaseGenParse';
+import { scalarText } from '../util/scalarText';
 
 // 幂等去重键与草稿类型单源于 testCaseGenParse；此处原样转出，供 SSE 路由（T01491）与草稿导入（T01492）就近引用
 export { caseSourceKey, caseContentHash } from './testCaseGenParse';
@@ -71,7 +72,7 @@ const MAX_SHRINK_RETRY = 2;
 
 /** 文本列取值（与 testCaseGenParse 同语义）：null/undefined → 空串，去首尾空白 */
 function str(v: unknown): string {
-  return v == null ? '' : String(v).trim();
+  return v == null ? '' : scalarText(v).trim();
 }
 
 export interface TcGenDraft {
@@ -207,7 +208,10 @@ export async function generateTestCasesStream(input: {
   const DIR = skillDir();
   const skill = readFileSync(join(DIR, 'SKILL.md'), 'utf8');
   const rules = REFERENCES
-    .map((n) => `\n<!-- references/${n}.md -->\n${readFileSync(join(DIR, 'references', `${n}.md`), 'utf8')}`)
+    .map((n) => {
+      const refMd = `${n}.md`;
+      return `\n<!-- references/${refMd} -->\n${readFileSync(join(DIR, 'references', refMd), 'utf8')}`;
+    })
     .join('\n');
   const system = `${skill}\n\n# 测试设计规范库（生成时逐条对照）\n${rules}`;
 
@@ -261,9 +265,13 @@ export async function generateTestCasesStream(input: {
     input.onStage(`步骤 1/3 完成：复用已有需求 ${requirements.length} 条（未按本次 PRD 拆分需求；要按本 PRD 拆分并补充缺口，请勾选「重新拆分需求」后重跑）`);
     notes.push(`本轮复用项目已有需求 ${requirements.length} 条，未按所选 PRD 拆分需求——如需按本 PRD 拆分，请勾选「重新拆分需求」后重跑`);
   } else {
-    input.onStage(`步骤 1/3｜拆分需求跟踪矩阵…${existingReqs.length > 0 ? `（已勾选重新拆分，将复用已有 ${existingReqs.length} 条 reqNo 并补充缺口）` : '（项目暂无需求，按 PRD 拆分）'}`);
+    const resplitHint = existingReqs.length > 0
+      ? `（已勾选重新拆分，将复用已有 ${existingReqs.length} 条 reqNo 并补充缺口）`
+      : '（项目暂无需求，按 PRD 拆分）';
+    input.onStage(`步骤 1/3｜拆分需求跟踪矩阵…${resplitHint}`);
+    const existingReqBlock = existingReqs.map((r) => `- ${str(r.req_no)}：${str(r.title)}`).join('\n');
     const existingLine = existingReqs.length > 0
-      ? `【已有需求（复用其 reqNo，勿重复拆分）】\n${existingReqs.map((r) => `- ${str(r.req_no)}：${str(r.title)}`).join('\n')}`
+      ? `【已有需求（复用其 reqNo，勿重复拆分）】\n${existingReqBlock}`
       : '【已有需求】无（请从 REQ-001 顺序拆分）';
     const splitUser = [
       contextBlock,
@@ -334,7 +342,10 @@ export async function generateTestCasesStream(input: {
     const scopeList = reqNos
       .map((no) => reqByNo.get(no))
       .filter((r): r is DraftRequirement => !!r)
-      .map((r) => `- ${r.reqNo}：${r.title}${r.content ? `（${ContextBudget.headTail(r.content, 200, '内容 ')}）` : ''}`)
+      .map((r) => {
+        const contentPart = r.content ? `（${ContextBudget.headTail(r.content, 200, '内容 ')}）` : '';
+        return `- ${r.reqNo}：${r.title}${contentPart}`;
+      })
       .join('\n');
     const caseUser = [
       contextBlock,
@@ -466,12 +477,13 @@ export async function generateTestCasesStream(input: {
   // T03263：终态落台账——只有「失败且补生成也没挽回」的块才算 partial，补偿成功的整轮仍是 done
   finalizeJob(jobId, failedStillUncovered.length > 0 ? 'partial' : 'done');
 
+  const prdSourceSuffix = input.source ? `（${input.source}）` : '';
   // T03262（AI-101①）：溯源行。分块数与实际失败块都进来——「覆盖 100%」不等于「没被截断」，
   // 只写需求/用例条数会让用户看不出这一轮是靠补生成凑齐的。
   const provenance = buildCardProvenance({
     cardKey: CARD_KEY,
     sources: [
-      { label: 'PRD 原文', value: `${chars(input.content.length)}${input.source ? `（${input.source}）` : ''}` },
+      { label: 'PRD 原文', value: `${chars(input.content.length)}${prdSourceSuffix}` },
       { label: '需求', value: `${total} 条` },
       { label: '用例', value: `${cases.length} 条（分 ${chunks.length} 块生成）` },
       ...(reused.size > 0 ? [{ label: '复用', value: `${reused.size} 段来自上次同一请求（未调用模型）` }] : []),

@@ -68,7 +68,7 @@ export function useGitSummaries(tasks: Task[], enabled: boolean, workspaceOf: (t
       }
     }
     wsByTask.current = ws;
-    return { shas: [...shas].sort(), links, empty: shas.size === 0 };
+    return { shas: [...shas].sort((a, b) => a.localeCompare(b)), links, empty: shas.size === 0 };
     // workspaceOf 每次渲染都是新闭包，但它只读 projects 数组——以 tasks 与 enabled 作依赖即可
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks, enabled]);

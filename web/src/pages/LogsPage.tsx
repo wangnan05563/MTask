@@ -146,6 +146,7 @@ export function LogsPage() {
           {POLL_OPTIONS.map((o) => <option key={o.ms} value={o.ms}>刷新 {o.label}</option>)}
         </select>
         <input
+          aria-label="搜索日志内容"
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
           placeholder="搜索日志内容…" data-page-search

@@ -3,6 +3,7 @@ import { CASE_DEFAULTS, CASE_METHOD, CASE_PRIORITY, CASE_TYPE, pickEnum } from '
 import type { CaseMethod, CasePriority, CaseType } from '../util/testCaseEnums';
 import { scanJsonArrays } from './prdIssues';
 import { stripThinking } from '../util/thinking';
+import { scalarText } from '../util/scalarText';
 
 /**
  * T01490：测试用例生成「协议解析 + 草稿规整」的纯函数模块（仿 `prdIssues.ts` 抽出便于单测与复用）。
@@ -71,7 +72,7 @@ export interface DraftCoverage {
 }
 
 function str(v: unknown): string {
-  return v == null ? '' : String(v).trim();
+  return v == null ? '' : scalarText(v).trim();
 }
 
 /**
@@ -79,7 +80,7 @@ function str(v: unknown): string {
  * key = `gen:<reqNo>:<规范化标题>`——reqNo 项目内唯一 + 标题措辞稳定（SKILL/coverage-rules 已要求幂等章）→ 二次生成命中同键。
  */
 export function caseSourceKey(reqNo: string, title: string): string {
-  const norm = title.trim().toLowerCase().replace(/\s+/g, ' ');
+  const norm = title.trim().toLowerCase().replaceAll(/\s+/g, ' ');
   return `gen:${reqNo.trim()}:${norm}`;
 }
 

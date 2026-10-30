@@ -16,6 +16,7 @@ import { AIService } from './AIService';
 import { parseAiJson } from './kickoffService';
 import { collectFileAtRevision, type GitCommitEntry, type GitFileChange } from './gitCollect';
 import { trimMiddle } from './lectureContext';
+import { scalarText } from '../util/scalarText';
 
 export const LECTURE_SECTIONS = [
   { key: 'opening', label: '开场白' },
@@ -29,7 +30,7 @@ export const LECTURE_SECTIONS = [
 ] as const;
 
 export type LectureSectionKey = (typeof LECTURE_SECTIONS)[number]['key'];
-export const LECTURE_SECTION_KEYS = LECTURE_SECTIONS.map((s) => s.key) as LectureSectionKey[];
+export const LECTURE_SECTION_KEYS: LectureSectionKey[] = LECTURE_SECTIONS.map((s) => s.key);
 
 export function lectureSectionLabel(key: LectureSectionKey): string {
   return LECTURE_SECTIONS.find((s) => s.key === key)?.label ?? key;
@@ -82,7 +83,7 @@ export interface OutlinePrompt {
   truncated: boolean;
 }
 
-const asText = (v: unknown): string => (v == null ? '' : String(v)).trim();
+const asText = (v: unknown): string => (v == null ? '' : scalarText(v)).trim();
 const clipText = (text: string, limit: number): { text: string; truncated: boolean } => {
   const r = trimMiddle(text, limit, '大纲输入');
   return { text: r.text, truncated: r.truncated };
@@ -114,9 +115,10 @@ export function buildLectureOutlinePrompt(input: OutlinePromptInput): OutlinePro
 7. 「风险清单」按 高/中/低 组织，「规范检查」只列可从本仓配置/代码事实判断的项目，「改进建议」必须可执行；
 8. 讲稿是「可照念」的口语句式，大纲 bullets 也写成短句，不要术语堆叠。`;
 
+  const projectList = input.projects.map((p) => `${p.name}（id=${p.id}）`).join('；');
   const user = [
     `【项目数】${input.projects.length}${multi ? '（多项目：总-分-总）' : '（单项目）'}`,
-    `【项目清单】${input.projects.map((p) => `${p.name}（id=${p.id}）`).join('；')}`,
+    `【项目清单】${projectList}`,
     `【文件清单】\n${manifest.text}`,
     groupText.text ? `【分组】\n${groupText.text}` : '',
     commitText.text ? `【commit 主题】（「为什么改」的证据源）\n${commitText.text}` : '',
@@ -318,7 +320,11 @@ export function changedLineRanges(files: readonly GitFileChange[], limit = 200):
 
 function rangesText(files: readonly GitFileChange[]): string {
   return changedLineRanges(files)
-    .map((f) => `- ${f.path}：${f.ranges.length ? f.ranges.map(([a, b]) => (a === b ? `L${a}` : `L${a}-L${b}`)).join('、') : '仅删除/二进制，无新增行'}`)
+    .map((f) => {
+      const rangeList = f.ranges.map(([a, b]) => (a === b ? `L${a}` : `L${a}-L${b}`)).join('、');
+      const detail = f.ranges.length ? rangeList : '仅删除/二进制，无新增行';
+      return `- ${f.path}：${detail}`;
+    })
     .join('\n');
 }
 
@@ -329,6 +335,13 @@ export function buildSectionPrompt(input: SectionPromptInput): { system: string;
     .map((c) => `- ${c.sha.slice(0, 8)} ${c.subject}`.trim())
     .join('\n'), LECTURE_COMMIT_BUDGET).text;
   const outlineText = (input.outline?.sections ?? []).map((s) => `- ${lectureSectionLabel(s.key)}：${s.title}`).join('\n');
+  const rule5Tail = outlineText ? `：\n${outlineText}` : '';
+  const rule6 = fourPart
+    ? '6. 逐文件讲解固定四段式：**要点**（改了什么+为什么）/ **潜在风险** / **规范检查** / **改进建议**；每个变更文件都要有这四段。'
+    : '6. 风险按「高/中/低」标注并带锚点；规范检查只写能从本仓配置或代码事实确认的项；改进建议必须具体可执行。';
+  const rule7 = input.section.key === 'opening' || input.section.key === 'closing'
+    ? '7. 多项目时按总-分-总：开场归并跨项目变更主题，结语点出「跨项目关联与不一致点」；单项目就聚焦本项目的整体脉络。'
+    : '7. 本节只覆盖给定的项目/模块范围，不要越界讲其他模块。';
 
   const system = `你是代码评审会议的讲稿撰写人。只输出「${lectureSectionLabel(input.section.key)}」这一节的 Markdown 正文，不要其他章节、不要代码围栏、不要解释你的做法。
 硬性要求：
@@ -336,17 +349,14 @@ export function buildSectionPrompt(input: SectionPromptInput): { system: string;
 2. 每条结论、风险、建议都必须带锚点，格式 \`[相对路径#L起始-L结束]\`；行号必须落在【可用锚点行】列出的该文件新增行区间内，不得指向未变更行。
 3. 「为什么改」只以【commit 主题】与给定上下文为证据；证据不足时原样写「意图不明，需会上确认」，禁止编造动机、需求、数字或规范条文。
 4. 只使用给定上下文；不要引入外部知识，不要虚构文件、函数或调用关系。
-5. 不重复其他章节的内容（八段结构已由大纲锁定）${outlineText ? `：\n${outlineText}` : ''}。
-${fourPart
-    ? `6. 逐文件讲解固定四段式：**要点**（改了什么+为什么）/ **潜在风险** / **规范检查** / **改进建议**；每个变更文件都要有这四段。`
-    : `6. 风险按「高/中/低」标注并带锚点；规范检查只写能从本仓配置或代码事实确认的项；改进建议必须具体可执行。`}
-${input.section.key === 'opening' || input.section.key === 'closing'
-    ? '7. 多项目时按总-分-总：开场归并跨项目变更主题，结语点出「跨项目关联与不一致点」；单项目就聚焦本项目的整体脉络。'
-    : '7. 本节只覆盖给定的项目/模块范围，不要越界讲其他模块。'}`;
+5. 不重复其他章节的内容（八段结构已由大纲锁定）${rule5Tail}。
+${rule6}
+${rule7}`;
 
+  const outlineBullets = input.section.bullets.map((b) => `- ${b}`).join('\n');
   const user = [
     `【本节】${lectureSectionLabel(input.section.key)} — ${input.section.title}`,
-    input.section.bullets.length ? `【大纲要点】\n${input.section.bullets.map((b) => `- ${b}`).join('\n')}` : '',
+    input.section.bullets.length ? `【大纲要点】\n${outlineBullets}` : '',
     `【项目】${input.project.name}（id=${input.project.id}）`,
     `【模块】${input.group.module}`,
     commitText ? `【commit 主题】\n${commitText}` : '【commit 主题】（无）',
@@ -375,7 +385,7 @@ export interface AnchorIssue {
   reason: string;
 }
 
-const ANCHOR_RE = /\[([^\[\]#\s]+)#L(\d+)(?:-L(\d+))?\]/g;
+const ANCHOR_RE = /\[([^[\]#\s]+)#L(\d+)(?:-L(\d+))?\]/g;
 
 export function extractLectureAnchors(text: string): LectureAnchor[] {
   const out: LectureAnchor[] = [];
@@ -612,7 +622,7 @@ export function assembleLectureMarkdown(input: AssembleLectureInput): string {
   const body: string[] = [];
   for (const meta of LECTURE_SECTIONS) {
     const found = input.sections.find((s) => s.key === meta.key);
-    body.push(`## ${meta.label}`, '', found && found.text.trim() ? found.text.trim() : '（本节未生成）', '');
+    body.push(`## ${meta.label}`, '', found?.text.trim() || '（本节未生成）', '');
   }
   return `${head.join('\n')}\n${body.join('\n')}`.trimEnd() + '\n';
 }

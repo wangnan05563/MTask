@@ -182,9 +182,14 @@ function kpiBlocks(deck: SummaryDeckData, p?: SummaryProjectData): Array<Omit<Bl
 function highlightsBlocks(deck: SummaryDeckData, p?: SummaryProjectData): Array<Omit<Block, 'box'>> {
   const lines: string[] = [];
   if (p) {
-    lines.push(`本期有活动的任务 ${p.tasks.active} 条（活动≠完成，仅表示本期被改动过）`);
-    lines.push(`当前计划：完成 ${p.plans.byStatus.done} · 进行中 ${p.plans.byStatus.doing} · 阻塞 ${p.plans.byStatus.blocked}`);
-    const evs = p.events.slice(0, 5).map((e) => `${eventDay(e.at)} ${e.kind}：${e.title}${e.detail ? `（${e.detail}）` : ''}`);
+    lines.push(
+      `本期有活动的任务 ${p.tasks.active} 条（活动≠完成，仅表示本期被改动过）`,
+      `当前计划：完成 ${p.plans.byStatus.done} · 进行中 ${p.plans.byStatus.doing} · 阻塞 ${p.plans.byStatus.blocked}`,
+    );
+    const evs = p.events.slice(0, 5).map((e) => {
+      const detailPart = e.detail ? `（${e.detail}）` : '';
+      return `${eventDay(e.at)} ${e.kind}：${e.title}${detailPart}`;
+    });
     lines.push(...(evs.length ? evs : ['本期事件无记录（或早于事件保留期，见页脚覆盖声明）']));
   } else {
     for (const x of deck.projects) lines.push(`${x.name}：本期活动任务 ${x.tasks.active} 条 · 完成计划 ${x.plans.byStatus.done} 条`);
@@ -232,9 +237,11 @@ function planRowsBlocks(p?: SummaryProjectData): Array<Omit<Block, 'box'>> {
   const table: NonNullable<Block['table']> = { header: ['计划', '状态', '起止', '进度'], colW: [2.4, 0.8, 1.6, 0.6], rows: p.plans.rows.map(planRowCells) };
   const overdueNames = p.plans.rows.filter((r) => r.overdue).slice(0, 4).map((r) => r.title);
   const blockedNames = p.plans.rows.filter((r) => r.status === 'blocked').slice(0, 4).map((r) => r.title);
+  const overdueText = overdueNames.length ? overdueNames.join('、') : '无';
+  const blockedText = blockedNames.length ? blockedNames.join('、') : '无';
   const note = overdueNames.length === 0 && blockedNames.length === 0
     ? '本周期无延期与阻塞。'
-    : `逾期：${overdueNames.length ? overdueNames.join('、') : '无'}；阻塞：${blockedNames.length ? blockedNames.join('、') : '无'}`;
+    : `逾期：${overdueText}；阻塞：${blockedText}`;
   return [
     { table },
     { text: { content: note, pt: MIN_BODY_PT } },
@@ -246,7 +253,8 @@ function risksBlocks(p?: SummaryProjectData): Array<Omit<Block, 'box'>> {
   const rows: string[][] = [];
   for (const i of p.issues.slice(0, 4)) {
     const lv = ISSUE_LEVEL_LABEL[i.level] ?? (i.level || '待确认');
-    rows.push([`需求待确认（${lv}）`, `${i.question}${i.answer ? ` → ${i.answer}` : ''}`]);
+    const answerPart = i.answer ? ` → ${i.answer}` : '';
+    rows.push([`需求待确认（${lv}）`, `${i.question}${answerPart}`]);
   }
   rows.push(
     ['执行风险', `逾期计划 ${p.risks.overdue} 条`],
@@ -268,11 +276,13 @@ function workloadBlocks(p?: SummaryProjectData): Array<Omit<Block, 'box'>> {
   if (p.workload.caliber === 'cumulative') {
     rows.push(['累计估算', `${p.workload.likelyDays} 人天 / ${p.workload.estimateItems} 行三点估算`]);
   }
-  rows.push(['复杂度≥4', `${p.workload.complexRows} 条`]);
   // covered/total 都是**需求**口径（total 是覆盖率分母），标签照实写「需求覆盖」，
   // 写成「用例覆盖」会被读成用例数已完成比例（T02969 同源错位）
-  rows.push(['需求覆盖', `${p.coverage.covered}/${p.coverage.total}（${pct(p.coverage.rate)}）`]);
-  rows.push(['P0~P3 分布', p.coverage.byPriority.length ? p.coverage.byPriority.map((x) => `${x.priority} ${x.count}`).join(' · ') : '—']);
+  rows.push(
+    ['复杂度≥4', `${p.workload.complexRows} 条`],
+    ['需求覆盖', `${p.coverage.covered}/${p.coverage.total}（${pct(p.coverage.rate)}）`],
+    ['P0~P3 分布', p.coverage.byPriority.length ? p.coverage.byPriority.map((x) => `${x.priority} ${x.count}`).join(' · ') : '—'],
+  );
   const chart: NonNullable<Block['chart']> = p.workload.caliber === 'cumulative' && p.workload.byPhase.length > 0
     // 口径①：按阶段画人天柱图（标题已限定「累计」）
     ? { type: 'bar', name: '累计估算人天', labels: p.workload.byPhase.map((x) => x.phase), values: p.workload.byPhase.map((x) => x.likely) }
@@ -424,13 +434,19 @@ function layoutBody(
     if (subset.length === 0) return;
     const heights = subset.map((d) => naturalBlockHeight(d.src, frame.w));
     const gaps = MIN_GAP * Math.max(0, subset.length - 1);
-    const fixed = subset.reduce((a, d, i) => a + (d.src.table ? 0 : d.src.chart ? CHART_MIN_H : Math.min(heights[i], 0.5)), 0);
+    const fixed = subset.reduce((a, d, i) => {
+      let h: number;
+      if (d.src.table) h = 0;
+      else if (d.src.chart) h = CHART_MIN_H;
+      else h = Math.min(heights[i], 0.5);
+      return a + h;
+    }, 0);
     const tables = subset.filter((d) => d.src.table).length;
     if (tables > 0) {
       const per = (frame.h - gaps - fixed) / tables;
       subset.forEach((d, i) => {
         if (!d.src.table) return;
-        d.src = { ...d.src, table: fitTableToHeight(d.src.table!, per, frame.w) };
+        d.src = { ...d.src, table: fitTableToHeight(d.src.table, per, frame.w) };
         heights[i] = naturalBlockHeight(d.src, frame.w);
       });
     }
@@ -568,7 +584,11 @@ function appendPage(
   const isThanks = item.layout === 'thanks';
   const family = layoutFamilyOf(item.layout);
   const frames = framesFor(family, item.layout, item.layout === 'twoCol' ? TEXT_SPLIT : undefined);
-  const titlePt = isCover ? 32 : isToc ? 22 : isSection ? 28 : 22;
+  let titlePt: number;
+  if (isCover) titlePt = 32;
+  else if (isToc) titlePt = 22;
+  else if (isSection) titlePt = 28;
+  else titlePt = 22;
   const centered = isCover || isToc || isSection || isThanks;
 
   let blocks: Block[] = [];

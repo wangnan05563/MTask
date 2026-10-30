@@ -159,6 +159,8 @@ export function RecurringTab() {
 
   const cell: { padding: number; borderBottom: string; fontSize: string } = { padding: 8, borderBottom: '1px solid var(--surface-2)', fontSize: 'var(--fs-s)' };
 
+  const projectSelectIdleText = projectList.phase === 'loading' ? t('项目列表加载中…', '项目列表加载中…') : t('选择项目…', '选择项目…');
+
   return (
     <div style={{ maxWidth: 760 }}>
       <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 4 }}>{t('循环任务', '循环任务')}</div>
@@ -171,9 +173,7 @@ export function RecurringTab() {
         <select value={projectId} onChange={(e) => setProjectId(e.target.value)} aria-label={t('循环任务项目', '循环任务项目')}
           disabled={projectList.unusable}
           style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
-          <option value="">{projectList.phase === 'error' ? t('项目列表加载失败', '项目列表加载失败')
-            : projectList.phase === 'loading' ? t('项目列表加载中…', '项目列表加载中…')
-            : t('选择项目…', '选择项目…')}</option>
+          <option value="">{projectList.phase === 'error' ? t('项目列表加载失败', '项目列表加载失败') : projectSelectIdleText}</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <ProjectListHint view={projectList} />

@@ -54,10 +54,11 @@ import { sonarSettingsApi } from './sonarSettings'; // 八期 §3.4.1：设置�
 import { sonarScanApi } from './sonarScan'; // 八期 §3.4.2：Sonar 质量扫描七阶段引擎（SSE/中止/环境预检）
 import { attachGitLinks } from '../services/taskGitLinks'; // T03361：GET /tasks 行内加性字段 gitLinks/gitLinkCount
 import { listArtifacts } from '../services/aiArtifactService';
-import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, discardReport, gatherReportData, validateProjectIds, aiReportPreflight, normalizeConfirmedEstimate, AI_REPORT_CARD, type ReportPeriod, type ReportFormat } from '../services/ReportService';
+import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, discardReport, gatherReportData, validateProjectIds, aiReportPreflight, normalizeConfirmedEstimate, type ReportPeriod, type ReportFormat } from '../services/ReportService';
 import { DOWNLOAD_NAME_RE } from '../util/export-name'; // T02104：下载文件名白名单单源（与生成侧清洗同源）
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
+import { scalarText } from '../util/scalarText';
 import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { notifyChange } from '../services/ChangeBus';
 import { v4 as uuid } from 'uuid';
@@ -235,8 +236,8 @@ api.get('/projects/:id/insights', (req, res) => {
  * 任务树按 parent_id、计划树按 deps(child)；归档行不导出。格式与范围非法一律 400，项目不存在 404。
  */
 api.get('/projects/:id/export', (req, res) => {
-  const scope = String(req.query.scope ?? 'tasks');
-  const format = String(req.query.format ?? 'md');
+  const scope = scalarText(req.query.scope ?? 'tasks');
+  const format = scalarText(req.query.format ?? 'md');
   if (scope !== 'tasks' && scope !== 'plans') return res.status(400).json({ error: 'scope 仅支持 tasks/plans' });
   if (format !== 'md' && format !== 'json') return res.status(400).json({ error: 'format 仅支持 md/json' });
   try {
@@ -427,7 +428,7 @@ api.post('/workspace/ask', (req, res) => {
 api.post('/workspace/ask/citation-click', (req, res) => {
   const { projectId, eventId, path, line } = (req.body ?? {}) as Record<string, unknown>;
   if (!projectId || !eventId || !path) { res.status(400).json({ error: 'projectId / eventId / path 必填' }); return; }
-  recordCitationClick({ projectId: String(projectId), eventId: String(eventId), path: String(path), line: Number(line) || 0 });
+  recordCitationClick({ projectId: scalarText(projectId), eventId: scalarText(eventId), path: scalarText(path), line: Number(line) || 0 });
   res.json({ ok: true });
 });
 
@@ -435,7 +436,7 @@ api.post('/workspace/ask/citation-click', (req, res) => {
 api.post('/workspace/ask/feedback', (req, res) => {
   const { projectId, eventId, useful } = (req.body ?? {}) as Record<string, unknown>;
   if (!projectId || !eventId || typeof useful !== 'boolean') { res.status(400).json({ error: 'projectId / eventId / useful(boolean) 必填' }); return; }
-  const ok = recordFeedback({ projectId: String(projectId), eventId: String(eventId), useful });
+  const ok = recordFeedback({ projectId: scalarText(projectId), eventId: scalarText(eventId), useful });
   if (!ok) { res.status(404).json({ error: '提问事件不存在（可能已被清理或跨项目）' }); return; }
   res.json({ ok: true });
 });
@@ -827,7 +828,7 @@ api.get('/tasks', (req, res) => {
  * 非法语法不报错——降级为对原文的全文搜索，并把原因回传（PRD ②）。
  */
 api.get('/tasks/search', (req, res) => {
-  const q = String(req.query.q ?? '').trim();
+  const q = scalarText(req.query.q ?? '').trim();
   const limit = Math.min(500, Math.max(1, Math.floor(Number(req.query.limit) || 100)));
   const offset = Math.max(0, Math.floor(Number(req.query.offset) || 0));
   const listOpts: TaskListOptions = { limit, offset };
@@ -987,7 +988,7 @@ api.get('/tasks/:id/blocked-by', (req, res) => {
 });
 
 api.post('/tasks/:id/blocked-by', (req, res) => {
-  const blockerId = String((req.body ?? {}).blockerId ?? '').trim();
+  const blockerId = String(req.body?.blockerId ?? '').trim();
   if (!blockerId) return res.status(400).json({ error: 'blockerId 必填' });
   wsWrap(res, () => TaskService.addBlocker(req.params.id, blockerId));
 });
@@ -1021,7 +1022,7 @@ api.get('/tasks/:id/field-values', (req, res) => {
 });
 
 api.put('/tasks/:id/field-values', (req, res) => {
-  wsWrap(res, () => FieldService.setValues(req.params.id, (req.body ?? {}).values));
+  wsWrap(res, () => FieldService.setValues(req.params.id, req.body?.values));
 });
 
 // 任务手动排序（T00446）：拖拽后的完整 id 顺序 → user_sort 1..n；列表 sort=manual 时生效
@@ -1899,7 +1900,8 @@ api.post('/ai/polish', async (req, res) => {
  */
 function reportScope(body: unknown): { ids: string[]; error?: string } {
   const b = (body ?? {}) as Record<string, unknown>;
-  const raw = Array.isArray(b.projectIds) ? (b.projectIds as unknown[]) : (typeof b.projectId === 'string' && b.projectId ? b.projectId : undefined);
+  const singleId = typeof b.projectId === 'string' && b.projectId ? b.projectId : undefined;
+  const raw = Array.isArray(b.projectIds) ? (b.projectIds as unknown[]) : singleId;
   return validateProjectIds(raw as string | string[] | undefined);
 }
 
@@ -1950,8 +1952,8 @@ api.get('/report/templates', (_req, res) => {
  * 只读聚合 + prompt 计长，零 AI 调用，故不挂 REPORT_GATE（与离线 generate 不同，不占并发位）。
  */
 api.get('/report/ai-preflight', (req, res) => {
-  const period = String(req.query.period ?? '');
-  const format = String(req.query.format ?? '');
+  const period = scalarText(req.query.period ?? '');
+  const format = scalarText(req.query.format ?? '');
   if (!['day', 'week', 'month'].includes(period)) return res.status(400).json({ error: 'period 非法' });
   if (!['xlsx', 'docx', 'pdf', 'pptx'].includes(format)) return res.status(400).json({ error: 'format 非法' });
   const rawIds = typeof req.query.projectIds === 'string'
@@ -2780,7 +2782,7 @@ api.get('/ai/usage', (req, res) => {
 /** T03172（G-2 / AI-301 验收⑤）：AI 可用卡片月采用覆盖率——card_key 精确统计直接出数（?month=YYYY-MM，默认当月） */
 api.get('/ai/coverage', (req, res) => {
   try {
-    const month = String(req.query.month ?? '') || currentMonthStr();
+    const month = scalarText(req.query.month ?? '') || currentMonthStr();
     res.json(cardCoverage(month));
   } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
@@ -2862,7 +2864,7 @@ api.delete('/prompt-categories/:id', (req, res) => {
 });
 
 api.get('/prompts', (req, res) => {
-  const { categoryId, keyword, archived, limit, offset, total } = req.query;
+  const { categoryId, keyword, archived, favorited, limit, offset, total } = req.query;
   const where: string[] = [];
   const values: unknown[] = [];
   // T00525 默认只列未归档；T00872：归档页传 archived=1 应**只返回归档提示词**（软删查询）。
@@ -2870,6 +2872,9 @@ api.get('/prompts', (req, res) => {
   const inArchive = archived === '1' || archived === 'true';
   where.push(inArchive ? 'archived = 1' : 'archived = 0');
   if (categoryId) { where.push('category_id = ?'); values.push(categoryId); }
+  // T03683：收藏筛选是「显式才收窄」的可选轴——传 favorited=1 只看已收藏，不传保持全量，
+  // 使 CommandPalette / 移动端等既有无分页消费方行为逐字不变。
+  if (favorited === '1' || favorited === 'true') where.push('is_favorited = 1');
   // keyword 显式收窄为 string：query 值可能是数组/对象，隐式字符串化会得到 "[object Object]" 污染 LIKE 条件
   if (typeof keyword === 'string' && keyword) {
     const kw = keyword;
@@ -2910,6 +2915,8 @@ interface PromptPatchBody {
   content?: unknown;
   categoryId?: unknown;
   pinned?: unknown;
+  /** T03683：收藏位（与 pinned 正交——置顶管排序，收藏管筛选） */
+  isFavorited?: unknown;
   color?: unknown;
   archived?: unknown;
   reqCategoryId?: unknown;
@@ -2946,6 +2953,8 @@ function buildPromptPatch(body: PromptPatchBody, ts: string): { sets: string[]; 
   if (body.content !== undefined) { sets.push('content = ?'); values.push(body.content); }
   if (body.categoryId !== undefined) { sets.push('category_id = ?'); values.push(body.categoryId); }
   if (body.pinned !== undefined) { sets.push('pinned = ?'); values.push(body.pinned ? 1 : 0); }
+  // T03683：收藏与置顶同为布尔位，落库口径一致（?1:0），切换走同一个 PATCH 通道
+  if (body.isFavorited !== undefined) { sets.push('is_favorited = ?'); values.push(body.isFavorited ? 1 : 0); }
   // M6-6.4：先归一取值再单层判断（避免双层嵌套把认知复杂度推高，S3776）
   const colorStr = primitiveToStr(body.color);
   if (colorStr !== undefined) { sets.push('color = ?'); values.push(colorStr); }
@@ -3030,8 +3039,15 @@ api.delete('/req-categories/:id', (req, res) => {
 });
 
 api.get('/req-entries', (req, res) => {
-  const { categoryId, keyword } = req.query;
-  res.json(ReqEntryService.listByCategory(categoryId as string | undefined, keyword as string | undefined));
+  const { categoryId, keyword, favorited, archived } = req.query;
+  // T03683 / T03685：查询条件收成对象——布尔轴用与 GET /prompts 相同的显式字符串判定
+  // （query 值可能是数组/对象，=== '1' 天然把它们当作未提供）
+  res.json(ReqEntryService.listByCategory({
+    categoryId: categoryId as string | undefined,
+    keyword,
+    favorited: favorited === '1' || favorited === 'true',
+    archived: archived === '1' || archived === 'true',
+  }));
 });
 
 api.post('/req-entries', (req, res) => {
@@ -3046,14 +3062,15 @@ api.post('/req-entries', (req, res) => {
 });
 
 api.patch('/req-entries/:id', (req, res) => {
-  const { title, content, categoryId, pinned, color } = req.body ?? {}; // T00490：color
+  // T03683：isFavorited 收藏位；T03685：archived 归档（删除改归档，服务层同步写 archived_at）
+  const { title, content, categoryId, pinned, color, isFavorited, archived } = req.body ?? {}; // T00490：color
   // 移动分组时校验目标分类存在，避免写入悬空外键
   if (categoryId !== undefined && !getDb().prepare('SELECT 1 FROM req_categories WHERE id = ?').get(categoryId)) {
     return res.status(400).json({ error: '归属分类不存在' });
   }
-  const entry = ReqEntryService.update(req.params.id, { title, content, categoryId, pinned, color });
+  const entry = ReqEntryService.update(req.params.id, { title, content, categoryId, pinned, color, isFavorited, archived });
   if (!entry) return res.status(404).json({ error: '条目不存在' });
-  cacheClear('req-categories'); // 改分类/置顶影响分类计数与顺序
+  cacheClear('req-categories'); // 改分类/置顶/归档影响分类计数与顺序
   res.json(entry);
 });
 

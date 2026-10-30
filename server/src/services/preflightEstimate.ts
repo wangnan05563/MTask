@@ -53,7 +53,7 @@ export const PREFLIGHT_MODEL_HISTORY: readonly (PreflightEstimateModel & { chang
   },
 ];
 
-export const PREFLIGHT_ESTIMATE_MODEL: PreflightEstimateModel = PREFLIGHT_MODEL_HISTORY[PREFLIGHT_MODEL_HISTORY.length - 1];
+export const PREFLIGHT_ESTIMATE_MODEL: PreflightEstimateModel = PREFLIGHT_MODEL_HISTORY.at(-1)!;
 
 /**
  * T03244（AI-102⑥）：系数中文名单源——版本差异由服务端生成可读文案，

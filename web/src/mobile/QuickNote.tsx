@@ -9,7 +9,8 @@ import { useEffect, useRef, useState } from 'react';
 import { api, type Task, type TaskCategory, type Prompt } from '../api/client';
 import { ProjectListHint, getProjectListSnapshot, loadProjectList, projectListPlaceholder, useProjectList } from '../ui/projectList'; // T02212
 import { addDraft, submitQuickNote } from './offline';
-import { Mic, FileText, ImagePlus, Paperclip, Check } from 'lucide-react';
+import { Mic, FileText, ImagePlus, Paperclip, Check, X, ChevronUp, ChevronDown, Clock } from 'lucide-react';
+import { PRIORITY_COLOR, normalizePriority } from '../ui/priority'; // T03655：优先级色点的唯一色源（下拉框不再嵌 emoji）
 
 // Web Speech API 最小类型（浏览器原生，TS 未内置）
 interface SpeechRecognitionLike {
@@ -263,11 +264,13 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
 
         {/* T01426：可选属性行——优先级/分类/项目，默认记忆上次；全部可选，不增必填 */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 10 }}>
-          <select value={priority} onChange={(e) => setPriority(e.target.value)} aria-label="优先级" style={attrSelect}>
-            <option value="urgent">🔴 紧急</option>
-            <option value="high">🟠 高</option>
-            <option value="normal">⚪ 普通</option>
-            <option value="low">🔵 低</option>
+          <select value={priority} onChange={(e) => setPriority(e.target.value)} aria-label="优先级"
+            style={{ ...attrSelect, color: PRIORITY_COLOR[normalizePriority(priority) || 'normal'] }}>
+            {/* T03655：原生 <option> 无法承载 svg，故优先级只留文字，紧迫度改由选中值本身的颜色表达 */}
+            <option value="urgent">紧急</option>
+            <option value="high">高</option>
+            <option value="normal">普通</option>
+            <option value="low">低</option>
           </select>
           <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} aria-label="分类" style={attrSelect}>
             <option value="">分类：未设</option>
@@ -290,7 +293,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
             {syntax.priority && <Badge tone="accent">优先级 {{ urgent: '紧急', high: '高', normal: '普通', low: '低' }[syntax.priority]}</Badge>}
             {syntax.projectId && <Badge>项目 {projects.find((x) => x.id === syntax.projectId)?.name}</Badge>}
             {syntax.categoryId && <Badge>分类 {categories.find((x) => x.id === syntax.categoryId)?.name}</Badge>}
-            {syntax.dueNote && <Badge tone="success">⏰ {syntax.dueNote}</Badge>}
+            {syntax.dueNote && <Badge tone="success"><Clock size={10} aria-hidden /> {syntax.dueNote}</Badge>}
           </div>
         )}
 
@@ -298,7 +301,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
         {tplOpen && (
           <div style={sheet}>
             <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 8 }}>从提示词模板预填</div>
-            {templates.length === 0 && <EmptyState icon="📄" message="暂无可用模板" />}
+            {templates.length === 0 && <EmptyState icon={<FileText size={32} />} message="暂无可用模板" />}
             <div style={{ maxHeight: 240, overflowY: 'auto' }}>
               {templates.map((p) => (
                 <button key={p.id} onClick={() => applyTemplate(p)} style={tplItem}>{p.title}</button>
@@ -314,7 +317,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
               <div key={`${url.slice(-24)}-${i}`} style={{ position: 'relative' }}>
                 <img src={url} alt="待上传" style={{ height: 64, borderRadius: 6, border: '1px dashed var(--accent)' }} />
                 <button onClick={() => removeImageAt(i)} title="移除图片" aria-label="移除图片"
-                  style={{ position: 'absolute', top: -6, right: -6, fontSize: 'var(--fs-2xs)', lineHeight: '16px', padding: '0 4px', background: 'var(--danger)', color: 'var(--on-solid)', border: 'none', borderRadius: 8, cursor: 'pointer' }}>✕</button>
+                  style={{ position: 'absolute', top: -6, right: -6, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 'var(--fs-2xs)', lineHeight: '16px', padding: '0 4px', background: 'var(--danger)', color: 'var(--on-solid)', border: 'none', borderRadius: 8, cursor: 'pointer' }}><X size={10} aria-hidden /></button>
               </div>
             ))}
           </div>
@@ -323,7 +326,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
         {/* 描述（可折叠） */}
         <div style={{ marginTop: 10 }}>
           <button onClick={() => setDescOpen((o) => !o)} style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            <Paperclip size={14} /> 描述{!description && '（可选）'}{descOpen ? ' ▲' : ' ▼'}
+            <Paperclip size={14} /> 描述{!description && '（可选）'}{descOpen ? <ChevronUp size={12} aria-hidden /> : <ChevronDown size={12} aria-hidden />}
           </button>
           {descOpen && (
             <textarea

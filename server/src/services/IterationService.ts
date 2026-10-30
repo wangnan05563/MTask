@@ -172,7 +172,7 @@ function remainingWorkdaysOn(day: string, items: SeriesItem[], cal: WorkdayCal):
   let sum = 0;
   for (const i of items) {
     if (isDoneBy(i, day)) continue;
-    const from = i.start_date > next ? i.start_date : next;
+    const from = i.start_date > next ? i.start_date : next; // NOSONAR - 按字典序取较晚者；操作数是 ISO 日期串，Math.max 会转成 NaN，该规则不适用
     sum += countWorkdaysBetween(from, i.end_date, cal);
   }
   return sum;
@@ -318,7 +318,7 @@ export const IterationService = {
     const start = patch.startDate ?? cur.start_date;
     const end = patch.endDate ?? cur.end_date;
     assertRange(start, end);
-    const status = patch.status !== undefined && ITER_STATUSES.has(String(patch.status)) ? (patch.status as IterationStatus) : cur.status;
+    const status = patch.status !== undefined && ITER_STATUSES.has(String(patch.status)) ? patch.status : cur.status;
     db.prepare(
       'UPDATE project_iterations SET name = ?, goal = ?, dod = ?, start_date = ?, end_date = ?, status = ?, updated_at = ? WHERE id = ?',
     ).run(name, patch.goal ?? cur.goal, patch.dod ?? cur.dod, start, end, status, nowIso(), id);
@@ -367,7 +367,7 @@ export const IterationService = {
     const it = mustGetActiveIteration(id);
     if (it.archived) throw new Error('迭代已归档，只读不可变更成员');
     const out: AttachResult = { attached: [], moved: [], skipped: [], outsideWindow: [] };
-    const wanted = [...new Set((planTaskIds ?? []).map((s) => String(s)).filter(Boolean))];
+    const wanted = [...new Set((planTaskIds ?? []).map(String).filter(Boolean))];
     const rows = wanted.length
       ? (db.prepare(`SELECT id, project_id, title, start_date, end_date, archived, iteration_id FROM plan_tasks WHERE id IN (${wanted.map(() => '?').join(',')})`).all(...wanted) as Array<{
           id: string; project_id: string; title: string; start_date: string; end_date: string; archived: number; iteration_id: string | null;
@@ -419,7 +419,7 @@ export const IterationService = {
     if (it.archived) throw new Error('迭代已归档，只读不可变更成员');
     const detached: string[] = [];
     const skipped: Array<{ planTaskId: string; reason: string }> = [];
-    const wanted = [...new Set((planTaskIds ?? []).map((s) => String(s)).filter(Boolean))];
+    const wanted = [...new Set((planTaskIds ?? []).map(String).filter(Boolean))];
     db.transaction(() => {
       for (const planId of wanted) {
         const row = db.prepare('SELECT id, iteration_id FROM plan_tasks WHERE id = ?').get(planId) as { id: string; iteration_id: string | null } | undefined;
@@ -578,7 +578,7 @@ function buildBurndown(
   const items = scope.kind === 'iteration' ? iterationItems(scope.id, scope.startDate, db) : projectItems(projectId, scope.startDate, db);
 
   // 采样到「今天」为止：未来日没有实况，画出去就是伪造
-  const sampledTo = scope.endDate > today ? today : scope.endDate;
+  const sampledTo = scope.endDate > today ? today : scope.endDate; // NOSONAR - 按字典序取较早者；操作数是 ISO 日期串，Math.min 会转成 NaN，该规则不适用
   const fullSeries = workdaySeries(scope.startDate, scope.endDate, cal);
   const sampled = workdaySeries(scope.startDate, sampledTo, cal);
   if (scope.startDate > today) {
@@ -628,7 +628,7 @@ function iterationItems(iterationId: string, startDate: string, db: ReturnType<t
     let open: { from: string } | null = null;
     for (const t of timeline) {
       if (t.kind === 'attach') {
-        if (!open) open = { from: t.day };
+        open ??= { from: t.day };
       } else if (open) {
         spans.push({ from: open.from, to: t.day });
         open = null;
@@ -638,7 +638,7 @@ function iterationItems(iterationId: string, startDate: string, db: ReturnType<t
     // 补的起点取「已有事件的最晚一天」，否则当前看板有成员而燃尽只剩历史段，两处口径会打架。
     const stillMember = r.iteration_id === iterationId;
     if (open) spans.push({ from: open.from, to: null });
-    if (stillMember && !spans.some((s) => s.to === null)) spans.push({ from: timeline.length ? timeline[timeline.length - 1].day : startDate, to: null });
+    if (stillMember && !spans.some((s) => s.to === null)) spans.push({ from: timeline.at(-1)?.day ?? startDate, to: null });
     // 只剩「移出」而没有「加入」的记录（异常库态）：不给它编造一段贡献，画成零宽度即不入任何采样日
     if (!spans.length) spans.push({ from: startDate, to: startDate });
     spans.sort((a, b) => (a.from < b.from ? -1 : 1));
@@ -695,7 +695,7 @@ function finish(args: {
   const idealTotal = items.length;
   const idealWorkdayTotal = remainingWorkdaysOn(fullSeries[0] ?? scope.startDate, items.map((i) => ({ ...i, status: 'todo', completedDay: null })), cal);
   const span = Math.max(1, fullSeries.length - 1);
-  const dataFrom = items.length ? items.map((i) => i.fromDay).sort()[0] : null;
+  const dataFrom = items.length ? items.map((i) => i.fromDay).sort((a, b) => a.localeCompare(b))[0] : null;
   // 回溯窗口起点之前的采样日没有实况（那几天范围里还没有成员），画出来是「0 → 上升」的假下降线：
   // 按 D-12 缺失不插值，整段移入 missingDays，实际线从 dataFrom 起画；理想线仍按全区间比例定位。
   const burnable = sampled.filter((d) => !dataFrom || d >= dataFrom);
@@ -703,7 +703,7 @@ function finish(args: {
   const points: BurndownPoint[] = burnable.map((day) => {
     const remaining = remainingItemsOn(day, items);
     const idx = fullSeries.indexOf(day);
-    const ratio = (fullSeries.length - 1 - (idx < 0 ? 0 : idx)) / span;
+    const ratio = (fullSeries.length - 1 - Math.max(0, idx)) / span;
     return {
       day,
       remainingCount: remaining.length,

@@ -9,11 +9,11 @@
  *   本服务只负责「此刻可观测」的同一口径读数（快照写入口上线后可直接复用本函数）。
  */
 import { getDb } from '../db/connection';
-import { isPastEndDate, isRealYmd, systemTz, ymdInTimezone } from '../util/workdays';
+import { isPastEndDate, isRealYmd, ymdInTimezone } from '../util/workdays';
 import { resolveProjectTz } from './ProjectTimeZone'; // T03268：单项目口径取项目时区，全局口径取系统时区
 
 // T03265：时区取数与其他出数面共用一个实现；保留本模块的导出路径，旧调用方无需改动
-export { systemTz };
+export { systemTz } from '../util/workdays';
 
 export interface OverdueRateBucket {
   dueTotal: number;   // 分母：统计日已到期的有效计划数

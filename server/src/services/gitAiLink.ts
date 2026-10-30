@@ -12,6 +12,7 @@ import { getDb } from '../db/connection';
 import { ACTIVE_PROJECT_WHERE } from '../util/projectRouting';
 import { AIService } from './AIService';
 import { queryGitLog } from './lectureGitLog';
+import { scalarText } from '../util/scalarText';
 
 export interface AiLinkCommitRef {
   sha: string;
@@ -113,8 +114,9 @@ function buildSystemPrompt(): string {
 
 function buildUserPrompt(tasks: TaskRow[], commits: AiLinkCommitRef[]): string {
   const taskLines = tasks.map((t, i) => {
-    const desc = (t.description ?? '').replace(/\s+/g, ' ').trim().slice(0, 240);
-    return `${i + 1}. [${t.task_no ?? '无编号'}] ${t.title}${desc ? `｜${desc}` : ''}`;
+    const desc = (t.description ?? '').replaceAll(/\s+/g, ' ').trim().slice(0, 240);
+    const descPart = desc ? `｜${desc}` : '';
+    return `${i + 1}. [${t.task_no ?? '无编号'}] ${t.title}${descPart}`;
   });
   const commitLines = commits.map((c) => `- ${c.short}｜${c.date.slice(0, 10)}｜${c.subject}`);
   return [
@@ -151,7 +153,7 @@ export function materializeSuggestions(
   const bySha = new Map<string, AiLinkCommitRef>();
   for (const c of commits) bySha.set(c.sha, c);
   const resolveSha = (v: unknown): AiLinkCommitRef | null => {
-    const p = String(v ?? '').trim().toLowerCase();
+    const p = scalarText(v ?? '').trim().toLowerCase();
     if (!/^[0-9a-f]{7,40}$/.test(p)) return null;
     const exact = bySha.get(p);
     if (exact) return exact;
@@ -164,7 +166,7 @@ export function materializeSuggestions(
   const perTask = new Map<number, { confidence: number; reason: string; commits: AiLinkCommitRef[] }>();
   for (const item of raw) {
     const rec = (item ?? {}) as { task?: unknown; commits?: unknown; confidence?: unknown; reason?: unknown };
-    const idx = typeof rec.task === 'number' ? Math.trunc(rec.task) : NaN;
+    const idx = typeof rec.task === 'number' ? Math.trunc(rec.task) : Number.NaN;
     if (!Number.isInteger(idx) || idx < 1 || idx > tasks.length) { dropped++; continue; }
     const confidence = typeof rec.confidence === 'number' && Number.isFinite(rec.confidence) ? Math.max(0, Math.min(1, rec.confidence)) : 0;
     if (confidence < MIN_CONFIDENCE) { dropped++; continue; }
@@ -187,7 +189,7 @@ export function materializeSuggestions(
     if (!resolved.length) continue;
     const entry = perTask.get(idx) ?? { confidence, reason: '', commits: [] };
     entry.confidence = Math.max(entry.confidence, confidence);
-    const reason = String(rec.reason ?? '').trim().slice(0, 60);
+    const reason = scalarText(rec.reason ?? '').trim().slice(0, 60);
     if (reason) entry.reason = reason;
     entry.commits = [...entry.commits, ...resolved.filter((r) => !entry.commits.some((x) => x.sha === r.sha))];
     perTask.set(idx, entry);

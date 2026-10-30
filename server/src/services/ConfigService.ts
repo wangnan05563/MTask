@@ -167,7 +167,12 @@ export const ConfigService = {
     }
     cacheClear('aitools'); // 编辑/置顶影响列表展示，失效缓存
     // T02208：编辑同样体检，且按「生效值」判：密钥留空 = 沿用原密文，须解密后参与厂商匹配
-    const effectiveKey = patch.apiKey ? patch.apiKey : row.api_key_enc ? decrypt(row.api_key_enc) : undefined;
+    let effectiveKey: string | undefined;
+    if (patch.apiKey) {
+      effectiveKey = patch.apiKey;
+    } else if (row.api_key_enc) {
+      effectiveKey = decrypt(row.api_key_enc);
+    }
     const issues = checkToolConfig({ endpoint: next.endpoint, apiKey: effectiveKey, model: next.model });
     const updated = this.getById(id);
     return issues.length ? { ...updated, warnings: issues } : updated;

@@ -10,6 +10,7 @@
  */
 import { getDb } from '../db/connection';
 import { v4 as uuid } from 'uuid';
+import { scalarText } from '../util/scalarText';
 import { notifyChange } from './ChangeBus'; // 字段/值变化会改变任务列表的徽标渲染，复用既有 tasks 通道让前端刷新
 
 export const FIELD_TYPES = new Set(['text', 'number', 'date', 'select']);
@@ -160,7 +161,10 @@ function valueCount(fieldId: string): number {
  * 返回空串表示「清空」，由调用方删行；抛错即整批回滚（setValues 用事务包裹）。
  */
 function normalizeValue(field: ProjectFieldView, raw: unknown): string {
-  const s = typeof raw === 'string' ? raw.trim() : (raw === null || raw === undefined ? '' : String(raw).trim());
+  let s: string;
+  if (typeof raw === 'string') s = raw.trim();
+  else if (raw === null || raw === undefined) s = '';
+  else s = scalarText(raw).trim();
   if (!s) return '';
   if (field.type === 'text') {
     if (s.length > TEXT_MAX) throw new Error(`字段「${field.name}」的值不能超过 ${TEXT_MAX} 个字符`);
@@ -207,7 +211,7 @@ export const FieldService = {
     const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId);
     if (!project) throw new Error('项目不存在');
     const name = normName(input.name);
-    const type = String(input.type ?? '');
+    const type = scalarText(input.type ?? '');
     if (!FIELD_TYPES.has(type)) throw new Error('字段类型必须是 text / number / date / select');
     ensureNameFree(projectId, name);
     const options = type === 'select' ? normOptions(input.options, []) : [];
@@ -234,7 +238,7 @@ export const FieldService = {
     const name = patch.name === undefined ? before.name : normName(patch.name);
     if (name !== before.name) ensureNameFree(before.project_id, name, fieldId);
 
-    const type = patch.type === undefined ? view.type : String(patch.type);
+    const type = patch.type === undefined ? view.type : scalarText(patch.type);
     if (!FIELD_TYPES.has(type)) throw new Error('字段类型必须是 text / number / date / select');
     if (type !== view.type && valueCount(fieldId) > 0) throw new Error('该字段已有任务填写值，不能改类型（请先清空或另建字段）');
 

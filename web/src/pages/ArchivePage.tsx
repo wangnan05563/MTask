@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { api, type Prompt, type PromptCategory, type Task, type TaskCategory } from '../api/client';
+import { api, type Prompt, type PromptCategory, type ReqCategory, type ReqEntry, type Task, type TaskCategory } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { Check, ListChecks, Search, Trash2, Undo2, X } from 'lucide-react';
 import { relTime } from '../ui/format';
@@ -80,6 +80,7 @@ export function ArchivePage() {
   // 引用数据（下拉/名称映射，非分页列表）：任务分类、提示词分类名
   const [cats, setCats] = useState<TaskCategory[]>([]);
   const [promptCatNames, setPromptCatNames] = useState<Record<string, string>>({});
+  const [reqCatNames, setReqCatNames] = useState<Record<string, string>>({}); // T03685：归档通用需求的分类名标注
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
 
@@ -129,6 +130,9 @@ export function ArchivePage() {
     if (kwQuery) q.set('keyword', kwQuery);
     return api.get<Paged<Prompt>>(`/prompts?${q.toString()}`);
   }, { enabled: false });
+  // T03685：归档通用需求区——/req-entries?archived=1 暂无服务端分页通道（该端点未实现 limit/offset），
+  // 归档条目量级小，先整表取回 + 本地关键词过滤；分页与提示词区一致留待端点补齐后统一接入
+  const reqsView = useResource<ReqEntry[]>(async () => api.get<ReqEntry[]>('/req-entries?archived=1'), { enabled: false });
 
   // 引用数据只在挂载时取一次（失败沿用旧口径静默降级：仅影响名称显示，不影响列表数据）
   useEffect(() => {
@@ -138,12 +142,18 @@ export function ArchivePage() {
     void api.get<PromptCategory[]>('/prompt-categories')
       .then((pcs) => setPromptCatNames(Object.fromEntries(pcs.map((c) => [c.id, c.name]))))
       .catch(() => { /* 旧版后端忽略 */ });
+    // T03685：归档通用需求的分类名映射（同口径：只影响标注，不影响列表取数）
+    void api.get<ReqCategory[]>('/req-categories')
+      .then((rcs) => setReqCatNames(Object.fromEntries(rcs.map((c) => [c.id, c.name]))))
+      .catch(() => { /* 旧版后端忽略 */ });
   }, []);
 
   // 首屏与「页码 / 每页条数 / 关键词 / 筛选」变化时重取**当前页**（enabled:false 关掉挂载自跑，统一由这里触发）
   useEffect(() => { tasksView.reload(); }, [page, pageSize, kwQuery, catFilter]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { plansView.reload(); }, [planPage, pageSize, kwQuery, projFilter]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { promptsView.reload(); }, [promptPage, pageSize, kwQuery]); // eslint-disable-line react-hooks/exhaustive-deps
+  // T03685：归档通用需求区随关键词重取（整表取回，本地过滤见 pageReqs）
+  useEffect(() => { reqsView.reload(); }, [kwQuery]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // T02258：切换条数后各列表重置到第 1 页
   useEffect(() => { setPage(1); setPlanPage(1); setPromptPage(1); }, [pageSize]);
@@ -158,6 +168,10 @@ export function ArchivePage() {
   const pageTasks = tasksView.data?.items ?? [];
   const pagePlans = plansView.data?.items ?? [];
   const pagePrompts = promptsView.data?.items ?? [];
+  // T03685：归档通用需求——整表取回后本地按关键词过滤（标题/正文），与其余区的服务端过滤口径不同已在上方注明
+  const archivedReqs = (reqsView.data ?? []).filter((e) => !kwQuery
+    || e.title.toLowerCase().includes(kwQuery.toLowerCase())
+    || (e.content ?? '').toLowerCase().includes(kwQuery.toLowerCase()));
   const taskTotal = tasksView.data?.total ?? 0;
   const planTotal = plansView.data?.total ?? 0;
   const promptTotal = promptsView.data?.total ?? 0;
@@ -210,6 +224,21 @@ export function ArchivePage() {
     if (!ok) return;
     await api.del(`/prompts/${p.id}`);
     promptsView.reload();
+  }
+
+  // T03685：归档通用需求还原（PATCH archived=false）与彻底删除（DELETE /req-entries/:id）——
+  // 与提示词区同一套动作，还原后条目回到原分类的通用需求页
+  async function restoreReq(e: ReqEntry) {
+    await api.patch(`/req-entries/${e.id}`, { archived: false });
+    flash(`已还原通用需求「${e.title}」到原分类`);
+    reqsView.reload();
+  }
+
+  async function removeReq(e: ReqEntry) {
+    const ok = await askConfirm(`确认彻底删除通用需求「${e.title}」？此操作不可恢复。`);
+    if (!ok) return;
+    await api.del(`/req-entries/${e.id}`);
+    reqsView.reload();
   }
 
   // ---------- T00586：批量操作（参考计划页批量工具条） ----------
@@ -475,6 +504,26 @@ export function ArchivePage() {
         ))}
       </ul>
       {renderPager(curPromptPage, promptPages, (n) => setPromptPage(n), '归档提示词')}
+
+      {/* T03685：归档通用需求区——通用需求条目「归档」（软删）后在此还原或彻底删除，
+          与提示词区同构；入口来自通用需求菜单的行内归档按钮 */}
+      <h4 style={{ fontSize: 'var(--fs-l)', margin: '20px 0 8px' }}>归档通用需求（共 {archivedReqs.length} 条）</h4>
+      <ResourceHint view={reqsView} label="归档通用需求列表" />
+      {reqsView.phase === 'ready' && archivedReqs.length === 0 && (
+        <p style={{ color: 'var(--text-muted)' }}>暂无归档通用需求（或当前搜索无结果）。通用需求页归档后的条目会出现在这里。</p>
+      )}
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {archivedReqs.map((e) => (
+          <li key={e.id} data-t03685="archived-req-row" className="arena-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
+            <span style={{ flex: 1, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {e.title}（{reqCatNames[e.category_id] ?? '未知分类'}）
+            </span>
+            <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${e.archived_at ?? ''}`}>{relTime(e.archived_at)}</span>
+            <button className="abtn" onClick={() => void restoreReq(e)} title="还原 — 将该通用需求还原到通用需求页原分类" aria-label="还原：将该通用需求还原到原分类" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
+            <button className="abtn" onClick={() => void removeReq(e)} title="删除 — 彻底删除该通用需求，此操作不可恢复" aria-label="删除：彻底删除该通用需求，此操作不可恢复" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

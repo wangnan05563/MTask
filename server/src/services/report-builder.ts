@@ -328,7 +328,8 @@ export async function buildPptx(data: ReportData, aiInsight?: string, provenance
   // T02165：多项目范围进标题与副标题；无范围时两处串与版式与原来逐字一致
   const pptScope = scopeLine(data, true);
   s.addText(`MTask ${data.periodLabel}${scopeSuffix(data)}`, { x: 0.5, y: 0.35, w: 9, h: 0.7, fontSize: 24, bold: true, color: '1F2937' });
-  s.addText(`周期：${data.startDate} ~ ${data.endDate}    生成：${data.generatedAt}    时区：${data.tz}${pptScope ? `\n${pptScope}` : ''}`, {
+  const scopeLineText = pptScope ? `\n${pptScope}` : '';
+  s.addText(`周期：${data.startDate} ~ ${data.endDate}    生成：${data.generatedAt}    时区：${data.tz}${scopeLineText}`, {
     x: 0.5, y: 1.1, w: 9, h: pptScope ? 0.55 : 0.4, fontSize: 10, color: '6B7280',
   });
 

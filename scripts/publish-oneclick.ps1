@@ -13,7 +13,7 @@ $RepoRoot = [System.IO.Path]::GetFullPath((Split-Path $PSScriptRoot -Parent))
 # this script owns the user-facing warning - and always prints which interpreter it used, so a
 # published artifact stays traceable to the interpreter that produced it.
 if (-not $env:MTASK_MG_NODE_ROOT) {
-  $env:MTASK_MG_NODE_ROOT = 'C:\Users\hspcadmin\.workbuddy\binaries\node\versions'
+  $env:MTASK_MG_NODE_ROOT = [System.Environment]::ExpandEnvironmentVariables('%USERPROFILE%\.workbuddy\binaries\node\versions')
 }
 $MGNode = @(powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'lib\resolve-managed-node.ps1') |
   Where-Object { $_ -and (Test-Path -LiteralPath $_) }) | Select-Object -Last 1
@@ -27,7 +27,7 @@ if ($MGNode) {
 }
 
 if (-not $env:MTASK_MG_PYTHON_ROOT) {
-  $env:MTASK_MG_PYTHON_ROOT = 'C:\Users\hspcadmin\.workbuddy\binaries\python\versions'
+  $env:MTASK_MG_PYTHON_ROOT = [System.Environment]::ExpandEnvironmentVariables('%USERPROFILE%\.workbuddy\binaries\python\versions')
 }
 $PY = @(powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'lib\resolve-managed-python.ps1') |
   Where-Object { $_ -and (Test-Path -LiteralPath $_) }) | Select-Object -Last 1

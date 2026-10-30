@@ -22,6 +22,7 @@ import { GitCollectError } from '../services/gitCollect';
 import { isReportToken, readAndDeleteReport } from '../services/ReportService';
 import { DOWNLOAD_NAME_RE } from '../util/export-name';
 import { exportGate } from '../util/export-gate';
+import { scalarText } from '../util/scalarText';
 
 export const gitExtractApi = Router();
 
@@ -30,10 +31,12 @@ const controllers = new Map<string, AbortController>();
 
 function errorShape(e: unknown): { status: number; body: { error: string; kind: string; counts?: { files: number; bytes: number } } } {
   if (e instanceof ExtractError) {
-    const status = e.kind === 'no-tasks' || e.kind === 'no-links' || e.kind === 'empty' ? 400
-      : e.kind === 'task-not-found' ? 404
-        : e.kind === 'cross-workspace' || e.kind === 'no-workspace' ? 400
-          : e.kind === 'too-many-files' || e.kind === 'too-large' ? 413 : 400;
+    let status: number;
+    if (e.kind === 'no-tasks' || e.kind === 'no-links' || e.kind === 'empty') status = 400;
+    else if (e.kind === 'task-not-found') status = 404;
+    else if (e.kind === 'cross-workspace' || e.kind === 'no-workspace') status = 400;
+    else if (e.kind === 'too-many-files' || e.kind === 'too-large') status = 413;
+    else status = 400;
     return { status, body: { error: e.message, kind: e.kind, ...(e.counts ? { counts: e.counts } : {}) } };
   }
   if (e instanceof GitCollectError) {
@@ -43,7 +46,7 @@ function errorShape(e: unknown): { status: number; body: { error: string; kind: 
 }
 
 function modeOf(raw: unknown): GitExtractMode {
-  const m = String(raw ?? '');
+  const m = scalarText(raw ?? '');
   if (!(GIT_EXTRACT_MODES as readonly string[]).includes(m)) {
     throw new ExtractError('bad-mode', `未知提取方式「${m.slice(0, 16)}」，可选：${GIT_EXTRACT_MODES.join(' / ')}`);
   }

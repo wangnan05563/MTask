@@ -70,15 +70,16 @@ export function CardProvenancePanel({ provenance }: { readonly provenance: CardP
 export function CardArtifactStrip({ artifact }: { readonly artifact: ReportArtifactView }) {
   const revealPath = desktopApi()?.revealPath;
   const gone = artifact.exists === false;
+  const revealTitle = revealPath ? '在文件管理器中定位该产物' : '仅桌面端可用';
   return (
     <div data-t03262="artifact" style={{ marginTop: 8, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
       <div style={{ wordBreak: 'break-all' }}>产物路径：<code style={{ fontSize: 'var(--fs-xs)' }}>{artifact.path}</code></div>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4 }}>
         <CopyButton getText={() => artifact.path} title="复制产物路径" ariaLabel="复制产物路径" />
         <button
-          onClick={() => void revealPath?.(artifact.path)}
+          onClick={() => { revealPath?.(artifact.path); }}
           disabled={!revealPath || gone}
-          title={gone ? '文件已不在（可能已被清理）' : revealPath ? '在文件管理器中定位该产物' : '仅桌面端可用'}
+          title={gone ? '文件已不在（可能已被清理）' : revealTitle}
           aria-label="打开目录"
           style={{ padding: '2px 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-s)', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', cursor: revealPath && !gone ? 'pointer' : 'not-allowed', color: revealPath && !gone ? 'var(--text-secondary)' : 'var(--text-muted)' }}
         >

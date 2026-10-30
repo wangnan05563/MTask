@@ -1,14 +1,22 @@
 /**
  * 八期 评审 #8（批次 0 前置重构）：把原先内联在「代码评审讲稿」面板里的 unified diff 渲染
  * 抽成共享组件，供讲稿面板与任务抽屉 Git 页（§3.2.1 文件清单点行展开）共用同一套口径：
- *  hunk 头可折叠、行号双列、增删主题色（`--success` / `--danger`）、等宽字体、锚点行可高亮。
+ *  hunk 头可折叠、行号双列、增删/上下文三态各一套 `--diff-*` 主题令牌（T03393）、等宽字体、锚点行可高亮。
  *
  * 折叠状态由调用方持有（讲稿面板需要按 projectId+path 门控并支持锚点程序展开），
  * 本组件只负责渲染与回抛展开/折叠事件——这样两端各自的键空间互不干扰。
  */
 import { hunkToRows, type LectureDiffHunk } from '../utils/lectureDiff';
+import { ChevronDown, ChevronRight } from 'lucide-react'; // T03393（§3.5 UI）：图标统一 lucide
 
 const FONT_MONO = 'Consolas, Menlo, monospace';
+
+/** T03393：diff 行三态各一套主题令牌（新增/删除/上下文），四主题下由 --diff-* 单源定义 */
+const ROW_STYLE: Record<'add' | 'del' | 'ctx', { bg: string; text: string; marker: string }> = {
+  add: { bg: 'var(--diff-add-bg)', text: 'var(--diff-add-text)', marker: '+' },
+  del: { bg: 'var(--diff-del-bg)', text: 'var(--diff-del-text)', marker: '-' },
+  ctx: { bg: 'var(--diff-ctx-bg)', text: 'var(--diff-ctx-text)', marker: ' ' },
+};
 
 export interface DiffFileViewProps {
   readonly path: string;
@@ -16,7 +24,7 @@ export interface DiffFileViewProps {
   readonly additions: number;
   readonly deletions: number;
   readonly hunks: readonly LectureDiffHunk[];
-  /** 该文件是否展开（`▾`/`▸`） */
+  /** 该文件是否展开（lucide ChevronDown / ChevronRight） */
   readonly open: boolean;
   readonly onToggleFile: () => void;
   /** 已折叠的 hunk 键集合；键由 `hunkKeyPrefix|hunkIndex` 组成 */
@@ -47,8 +55,9 @@ export function DiffFileView(props: DiffFileViewProps) {
   return (
     <div style={{ marginTop: 4 }}>
       <button type="button" data-lck={fileAttrValue} onClick={onToggleFile} aria-expanded={open}
-        style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 'var(--fs-s)', padding: 0, textAlign: 'left', fontFamily: FONT_MONO }}>
-        {open ? '▾' : '▸'} {oldPath ? `${oldPath} → ${path}` : path}{' '}
+        style={{ background: 'none', border: 'none', color: 'var(--accent-ink)', cursor: 'pointer', fontSize: 'var(--fs-s)', padding: 0, textAlign: 'left', fontFamily: FONT_MONO }}>
+        {open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}{' '}
+        {oldPath ? `${oldPath} → ${path}` : path}{' '}
         <span style={{ color: 'var(--success)' }}>+{additions}</span>{' '}
         <span style={{ color: 'var(--danger)' }}>-{deletions}</span>
       </button>
@@ -66,7 +75,7 @@ export function DiffFileView(props: DiffFileViewProps) {
               <div key={hk} style={{ marginLeft: 14, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
                 hunk @{h.newStart} 已折叠{' '}
                 <button type="button" onClick={() => onToggleHunk(hk)}
-                  style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 'var(--fs-xs)' }}>展开</button>
+                  style={{ background: 'none', border: 'none', color: 'var(--accent-ink)', cursor: 'pointer', fontSize: 'var(--fs-xs)' }}>展开</button>
               </div>
             );
           }
@@ -81,17 +90,18 @@ export function DiffFileView(props: DiffFileViewProps) {
                 const rowIndex = offset + 1; // rows[0] 是 hunk 头，行号口径与 utils 的展开结果一致
                 const id = rowDomId(hunkIndex, rowIndex);
                 const flashed = flashRowIds?.has(id);
+                const st = ROW_STYLE[r.kind === 'add' ? 'add' : r.kind === 'del' ? 'del' : 'ctx'];
                 return (
                   <div key={flashed ? `${id}-${flashSeq}` : id} {...{ [rowAttr]: id }}
                     className={flashed ? 'locate-flash' : undefined}
                     style={{
                       display: 'flex', gap: 6, fontSize: 'var(--fs-s)', lineHeight: 1.45, fontFamily: FONT_MONO,
-                      background: hoverRowIds?.has(id) ? 'var(--accent-soft)' : undefined,
-                      color: r.kind === 'del' ? 'var(--danger)' : r.kind === 'add' ? 'var(--success)' : 'var(--text)',
+                      background: hoverRowIds?.has(id) ? 'var(--accent-soft)' : st.bg,
+                      color: st.text,
                     }}>
                     <span style={{ width: 34, textAlign: 'right', color: 'var(--text-muted)', flexShrink: 0 }}>{r.oldLine ?? ''}</span>
                     <span style={{ width: 34, textAlign: 'right', color: 'var(--text-muted)', flexShrink: 0 }}>{r.newLine ?? ''}</span>
-                    <span style={{ width: 10, flexShrink: 0 }}>{r.kind === 'add' ? '＋' : r.kind === 'del' ? '−' : ' '}</span>
+                    <span style={{ width: 10, flexShrink: 0 }}>{st.marker}</span>
                     <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{r.text}</span>
                   </div>
                 );

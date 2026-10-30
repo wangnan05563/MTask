@@ -103,7 +103,9 @@ export function addDays(day: string, delta: number): string {
 }
 
 export function compareDay(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
 }
 
 /** 结束边界：`--until=2026-10-28` 会漏掉当天提交，必须补到 23:59:59 */
@@ -266,7 +268,7 @@ export const AUTHOR_GROUP_MAX = 8;
 
 /** 输入清洗：去控制字符、截断到上限；返回 null 表示没有可用内容 */
 export function sanitizeAuthorTerm(raw: string): string | null {
-  const term = raw.replace(/[\0\r\n\t]/g, ' ').trim().replace(/\s+/g, ' ');
+  const term = raw.replaceAll(/[\0\r\n\t]/g, ' ').trim().replaceAll(/\s+/g, ' ');
   if (!term) return null;
   return term.slice(0, AUTHOR_TERM_MAX);
 }

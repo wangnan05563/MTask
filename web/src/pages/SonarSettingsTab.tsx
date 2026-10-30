@@ -272,6 +272,7 @@ export function SonarSettingsTab() {
             <div key={`${k.projectId || 'new'}-${i}`} data-t03375="key-row" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
               <select
                 data-t03375="key-project"
+                aria-label={`映射项目 ${i + 1}`}
                 style={{ ...fieldStyle, flex: '1 1 180px' }}
                 value={k.projectId}
                 onChange={(e) => setKeys(keys.map((x, j) => (j === i ? { ...x, projectId: e.target.value } : x)))}
@@ -281,6 +282,7 @@ export function SonarSettingsTab() {
               </select>
               <input
                 data-t03375="key-value"
+                aria-label={`Sonar project key ${i + 1}`}
                 style={{ ...fieldStyle, flex: '1 1 200px' }}
                 value={k.projectKey}
                 placeholder="Sonar project key"

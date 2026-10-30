@@ -307,6 +307,7 @@ function GeneralTab() {
       <div style={{ marginBottom: 18 }}>
         {field('界面语言 / Language', '切换界面语言；语言包为渐进式接入，未覆盖的页面仍显示中文')}
         <select
+          aria-label="界面语言 / Language"
           value={langState}
           onChange={(e) => changeLang(e.target.value === 'en' ? 'en' : 'zh')}
           style={{ padding: 6, fontSize: 'var(--fs-m)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}
@@ -372,6 +373,7 @@ function GeneralTab() {
       <div style={{ marginBottom: 18 }}>
         {field('字体', '选择界面显示字体')}
         <select
+          aria-label="字体"
           value={prefs.font}
           onChange={(e) => update('font', e.target.value as typeof prefs.font)}
           style={{ fontSize: 'var(--fs-m)', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}
@@ -513,7 +515,7 @@ function MigrationTab() {
         <button onClick={() => fileRef.current?.click()} disabled={busy} title="选择备份文件 — 打开文件选择器选取 JSON 备份并导入" aria-label="选择备份文件：选取 JSON 备份并导入" style={{ fontSize: 'var(--fs-m)', padding: '6px 14px', background: 'var(--card-bg)', color: 'var(--text)', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           <FileUp size={13} /> 选择文件导入
         </button>
-        <input ref={fileRef} type="file" accept=".json,application/json" style={FILE_INPUT_SR_ONLY} onChange={(e) => void onFile(e)} />
+        <input ref={fileRef} type="file" accept=".json,application/json" aria-label="选择备份文件（.json）导入" style={FILE_INPUT_SR_ONLY} onChange={(e) => void onFile(e)} />
       </div>
 
       {notice && <div style={{ marginTop: 10, fontSize: 'var(--fs-m)', color: 'var(--accent)' }}>{notice}</div>}

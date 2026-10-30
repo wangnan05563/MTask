@@ -381,6 +381,9 @@ export async function saveSonarConfig(input: {
  */
 export function revealSonarToken(confirm: unknown, serverUrlAtCall = getSetting(SERVER_URL_KEY) ?? ''): { token: string; revealedAt: string } {
   if (confirm !== true) {
+    // T03352：被拒的查看尝试同样落审计——表注释承诺「失败尝试也记」，
+    // 否则反复试探该端点在审计里一片空白；此行**不含 Token**（此时也取不到）。
+    recordRevealAudit({ revealedAt: new Date().toISOString(), serverUrl: serverUrlAtCall, ok: false, note: 'confirm-required' });
     throw new SonarConfigError('confirm-required', '查看原文需要二次确认：请勾选确认后再试（此动作会写入审计记录）');
   }
   const revealedAt = new Date().toISOString();

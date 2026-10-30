@@ -16,7 +16,7 @@
  *   无事件时仅对「当天创建且当天完成」的任务回落到 `updated_at`，避免把老任务今天的编辑当成完成；
  * - 逾期列直接复用 `OverdueRateService`（G-4 同一口径：边界日当天不算到期、无日期/已归档不进分母）。
  */
-import { randomUUID } from 'crypto';
+import { randomUUID } from 'node:crypto';
 import { getDb } from '../db/connection';
 import { fmtDate, isRealYmd, parseYmd, systemTz, ymdInTimezone } from '../util/workdays';
 import { OverdueRateService } from './OverdueRateService';
@@ -309,7 +309,7 @@ export class MetricSnapshotService {
     if (!isRealYmd(from) || !isRealYmd(to)) throw new Error(`from/to 需为有效的 YYYY-MM-DD，收到：${from} ~ ${to}`);
     if (from > to) throw new Error('起始日期不能晚于结束日期');
     const dates = eachDay(from, to);
-    if (dates[dates.length - 1] !== to) throw new Error(`时间范围过大（≤${MAX_RANGE_DAYS} 天）`);
+    if (dates.at(-1) !== to) throw new Error(`时间范围过大（≤${MAX_RANGE_DAYS} 天）`);
 
     const rows = db.prepare(
       'SELECT * FROM metric_day_snapshots WHERE project_id = ? AND stat_date >= ? AND stat_date <= ? ORDER BY stat_date',
@@ -385,24 +385,25 @@ export class MetricSnapshotService {
     const base = MetricSnapshotService.range({ projectId, from, to });
 
     const present = base.days.filter((d) => !d.missing);
-    const latest = present.length > 0 ? present[present.length - 1] : null;
+    const latest = present.at(-1) ?? null;
 
     let overdue: InsightSummary['overdue'];
-    if (!latest) {
-      overdue = { at: null, count: null, valid: null, rate: null, label: ACCUMULATING_NOTE };
-    } else {
+    if (latest) {
       const valid = latest.dueTotal;
       const count = latest.overdue;
       const rate = valid !== null && valid > 0 && count !== null
         ? Math.round((count / valid) * 10000) / 10000
         : null;
+      const rateLabel = valid === 0 ? '暂无可比计划' : `${Math.round((rate as number) * 1000) / 10}%`;
       overdue = {
         at: latest.date,
         count,
         valid,
         rate,
-        label: valid === null ? ACCUMULATING_NOTE : valid === 0 ? '暂无可比计划' : `${Math.round((rate as number) * 1000) / 10}%`,
+        label: valid === null ? ACCUMULATING_NOTE : rateLabel,
       };
+    } else {
+      overdue = { at: null, count: null, valid: null, rate: null, label: ACCUMULATING_NOTE };
     }
 
     const completed = present.reduce((s, d) => s + (d.completed ?? 0), 0);
@@ -421,7 +422,7 @@ export class MetricSnapshotService {
     } else if (base.missingDates.length > 0) {
       notes.push(`窗口内有 ${base.missingDates.length} 天没有快照，图上以空档呈现（不插值、不补零），即「${ACCUMULATING_NOTE}」`);
     }
-    if (latest && latest.dueTotal === 0) {
+    if (latest?.dueTotal === 0) {
       notes.push(`${latest.date} 已到期有效计划数为 0：暂无可比计划，逾期率不给值`);
     }
     if (present.length === 0) {
@@ -466,7 +467,7 @@ export class MetricSnapshotService {
       const traceableFrom = stat.first_date;
       let missingDates: string[] = [];
       if (traceableFrom) {
-        const from = traceableFrom > windowFrom ? traceableFrom : windowFrom;
+        const from = traceableFrom > windowFrom ? traceableFrom : windowFrom; // NOSONAR - 按字典序取较晚者；操作数是 ISO 日期串，Math.max 会转成 NaN，该规则不适用
         const present = new Set(
           (db.prepare(
             'SELECT stat_date FROM metric_day_snapshots WHERE project_id = ? AND stat_date >= ? AND stat_date <= ?',

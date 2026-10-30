@@ -32,10 +32,11 @@ import type { ExtractPlan } from './gitExtract';
 import { ConsoleJobService } from './ConsoleJobService';
 import { TaskService } from './TaskService';
 import {
-  SONAR_SCAN_GATE, normalizeSonarUrl, planScannerSpawn, probeJava, probeScanner,
+  normalizeSonarUrl, planScannerSpawn, probeJava, probeScanner,
   projectKeyFor, readScanSettings,
 } from './sonarSettings';
 import type { SonarProbe } from './sonarSettings';
+import { scalarText } from '../util/scalarText';
 
 /** 严重度内部口径（新旧两套 API 归一到这五档，PRD §3.4.2） */
 export type ScanSeverity = 'blocker' | 'critical' | 'major' | 'minor' | 'info';
@@ -145,7 +146,7 @@ export interface ScanDeps {
 export function normalizeSeverity(issue: any): ScanSeverity {
   const impacts = issue?.impacts;
   if (impacts && typeof impacts === 'object') {
-    const raw = String((impacts as any).SEVERITY ?? '').trim().toUpperCase();
+    const raw = String(impacts.SEVERITY ?? '').trim().toUpperCase();
     if (raw === 'BLOCKER') return 'blocker';
     if (raw === 'HIGH') return 'critical';
     if (raw === 'MEDIUM') return 'major';
@@ -177,7 +178,7 @@ export function fingerprintOf(rule: string, path: string, line: number, message:
 
 /** Sonar 的 component 是 `projectKey:相对路径`，取不到就原样返回（不猜路径） */
 export function pathOfComponent(component: unknown, projectKey: string): string {
-  const c = String(component ?? '');
+  const c = scalarText(component ?? '');
   if (!c) return '';
   const prefix = `${projectKey}:`;
   return c.startsWith(prefix) ? c.slice(prefix.length) : c;
@@ -261,13 +262,14 @@ export function sweepSonarFps(days = FP_TTL_DAYS, now = Date.now()): number {
 async function sonarGet(url: string, token: string): Promise<{ status: number; json: any }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+  const credentials = `${token}:`;
   try {
     const res = await fetch(url, {
       method: 'GET',
       signal: controller.signal,
       headers: {
         Accept: 'application/json',
-        ...(token ? { Authorization: `Basic ${Buffer.from(`${token}:`).toString('base64')}` } : {}),
+        ...(token ? { Authorization: `Basic ${Buffer.from(credentials).toString('base64')}` } : {}),
       },
     });
     const text = await res.text();
@@ -381,8 +383,8 @@ async function exportSnapshot(
   let abortHit: ScanError | null = signal?.aborted ? new ScanError('aborted', '已中止') : null;
   const pendingWrites: Promise<void>[] = [];
   if (signal) {
-    if (!signal.aborted) signal.addEventListener('abort', () => { abortHit ??= new ScanError('aborted', '已中止'); inner.abort(); }, { once: true });
-    else inner.abort();
+    if (signal.aborted) inner.abort();
+    else signal.addEventListener('abort', () => { abortHit ??= new ScanError('aborted', '已中止'); inner.abort(); }, { once: true });
   }
   try {
     await catFileBatch(plan.workspacePath, specs, (o: BatchObject) => {
@@ -412,7 +414,7 @@ async function exportSnapshot(
   if (abortHit) throw abortHit;
   await Promise.all(pendingWrites);
   // 拓扑序（父在子前）的最后一个提交 = 这批快照里最新的 SHA
-  const snapshotHeadSha = plan.commits[plan.commits.length - 1]?.sha ?? '';
+  const snapshotHeadSha = plan.commits.at(-1)?.sha ?? '';
   onStage('snapshot', { files: finalPath.size, bytes, snapshotHeadSha });
   return { files: finalPath.size, bytes, snapshotHeadSha };
 }
@@ -636,7 +638,10 @@ async function fetchAllIssues(
     if (signal?.aborted) throw new ScanError('aborted', '已中止');
     const { status, json } = await deps.fetchJson(`${base}&p=${p}`, token);
     if (status === 401 || status === 403) throw new ScanError('auth-failed', `拉取问题清单被拒绝（HTTP ${status}）`);
-    if (status >= 400) throw new ScanError('unreachable', `拉取问题清单失败（HTTP ${status}）${json?.errors?.[0]?.msg ? `：${json.errors[0].msg}` : ''}`);
+    if (status >= 400) {
+      const serverMsg = json?.errors?.[0]?.msg ? `：${json.errors[0].msg}` : '';
+      throw new ScanError('unreachable', `拉取问题清单失败（HTTP ${status}）${serverMsg}`);
+    }
     const page: any[] = Array.isArray(json?.issues) ? json.issues : [];
     // 分页期间服务端可能插入新问题，用 key 去重防止同一问题被计两次
     for (const i of page) {
@@ -695,7 +700,7 @@ function readProjectKeyCount(): Record<string, string> {
     const parsed = JSON.parse(raw.value) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
     const entries = Object.entries(parsed as Record<string, unknown>)
-      .filter(([, v]) => typeof v === 'string' && (v as string).trim())
+      .filter(([, v]) => typeof v === 'string' && v.trim())
       .map(([k, v]) => [k, String(v)] as [string, string]);
     return Object.fromEntries(entries);
   } catch {
@@ -852,14 +857,19 @@ export async function runSonarScan(
       stage('writeback', receipts as unknown as Record<string, unknown>);
     }
 
+    const headLabel = currentHeadSha ? currentHeadSha.slice(0, 12) : '未知';
+    const lagText = headLag ? `，相差 ${headLag} 个提交` : '';
+    const severityBreakdown = SEVERITY_ORDER.map((s) => `${SEVERITY_LABEL[s]} ${grouped[s].length}`).join(' / ');
+    const summaryTaskText = receipts?.summaryTaskNo ? ` / 汇总单 ${receipts.summaryTaskNo}` : '';
+    const writeBackLine = receipts
+      ? `回写：新建 ${receipts.created} / 已存在跳过 ${receipts.skippedDuplicate} / 低于阈值 ${receipts.belowThreshold} / 无法归属 ${receipts.unattributed} / 失败 ${receipts.failed}${summaryTaskText}`
+      : '回写：已关闭（面板上的自动回写开关）';
     const answer = [
       `projectKey：${projectKey}`,
       `快照：${snap.files} 个文件 / ${snap.bytes} 字节，SHA ${snap.snapshotHeadSha.slice(0, 12)}`,
-      `时效：当前 HEAD ${currentHeadSha ? currentHeadSha.slice(0, 12) : '未知'}${headLag ? `，相差 ${headLag} 个提交` : ''}`,
-      `问题：共 ${issues.length} 条（${SEVERITY_ORDER.map((s) => `${SEVERITY_LABEL[s]} ${grouped[s].length}`).join(' / ')}）`,
-      receipts
-        ? `回写：新建 ${receipts.created} / 已存在跳过 ${receipts.skippedDuplicate} / 低于阈值 ${receipts.belowThreshold} / 无法归属 ${receipts.unattributed} / 失败 ${receipts.failed}${receipts.summaryTaskNo ? ` / 汇总单 ${receipts.summaryTaskNo}` : ''}`
-        : '回写：已关闭（面板上的自动回写开关）',
+      `时效：当前 HEAD ${headLabel}${lagText}`,
+      `问题：共 ${issues.length} 条（${severityBreakdown}）`,
+      writeBackLine,
       `报告：${reportUrlFor(settings.serverUrl, projectKey)}`,
       '',
       '--- 扫描器输出 ---',

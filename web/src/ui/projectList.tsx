@@ -49,7 +49,7 @@ let revisibleBound = false;
 
 function commit(patch: Partial<Snapshot>): void {
   snap = { ...snap, ...patch };
-  for (const l of [...listeners]) l();
+  for (const l of listeners) l();
 }
 
 function sleep(ms: number): Promise<void> {
@@ -74,9 +74,11 @@ async function runRound(): Promise<void> {
       return;
     } catch (e) {
       clearTimeout(timer);
-      lastError = ctrl.signal.aborted
-        ? `请求超时（${Math.round(FETCH_TIMEOUT_MS / 1000)} 秒未响应）`
-        : e instanceof Error ? e.message : String(e);
+      if (ctrl.signal.aborted) {
+        lastError = `请求超时（${Math.round(FETCH_TIMEOUT_MS / 1000)} 秒未响应）`;
+      } else {
+        lastError = e instanceof Error ? e.message : String(e);
+      }
     }
   }
   // 失败：projects 保持上次成功值（不冒充正常数据，phase 已落 error 供 UI 显式呈现）
@@ -116,9 +118,9 @@ function refetchIfEmpty(): void {
 
 /** 只绑一次：窗口聚焦 / 标签页重新可见时兜底 */
 function bindRevisible(): void {
-  if (revisibleBound || typeof window === 'undefined') return;
+  if (revisibleBound || !('window' in globalThis)) return;
   revisibleBound = true;
-  window.addEventListener('focus', refetchIfEmpty);
+  globalThis.addEventListener('focus', refetchIfEmpty);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') refetchIfEmpty();
   });

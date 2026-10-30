@@ -279,6 +279,12 @@ export function gatherProjectFacts(period: SummaryPeriod, projectIds: string[], 
 
 function itemS1(b: SummaryBundle): SummaryPreflightItem {
   const n = b.scopeEmpty ? 0 : b.report.tasks.length;
+  const noActivityNote = b.scopeEmpty
+    ? '当前没有未归档项目（范围=全部未归档项目）——先去项目管理新建或恢复项目'
+    : `${b.periodLabel}区间内没有任何任务改动记录——换更长周期，或先去「任务管理」录入并回写进展`;
+  const note = n >= MIN_ACTIVE_TASKS
+    ? `本期 ${n} 条任务有活动（口径同周报：updated_at 落在 ${b.periodLabel} 区间）`
+    : noActivityNote;
   return {
     key: 'S1',
     label: '周期内活动数据',
@@ -286,12 +292,7 @@ function itemS1(b: SummaryBundle): SummaryPreflightItem {
     hard: true,
     deepLink: 'tasks',
     status: n >= MIN_ACTIVE_TASKS ? 'ok' : 'fail',
-    note:
-      n >= MIN_ACTIVE_TASKS
-        ? `本期 ${n} 条任务有活动（口径同周报：updated_at 落在 ${b.periodLabel} 区间）`
-        : b.scopeEmpty
-          ? '当前没有未归档项目（范围=全部未归档项目）——先去项目管理新建或恢复项目'
-          : `${b.periodLabel}区间内没有任何任务改动记录——换更长周期，或先去「任务管理」录入并回写进展`,
+    note,
   };
 }
 
@@ -299,6 +300,12 @@ function itemS2(b: SummaryBundle): SummaryPreflightItem {
   const { total, dated, missingDateTitles } = b.plans;
   const dateOk = total >= MIN_PLAN_TASKS && rate(dated, total) >= MIN_PLAN_DATE_RATE;
   const titles = missingDateTitles.join('、');
+  const planGapNote = total < MIN_PLAN_TASKS
+    ? `计划仅 ${total} 条（<${MIN_PLAN_TASKS} 条无法成页）——走「从 PRD 导入项目计划」卡片批量生成`
+    : `${total} 条计划中仅 ${dated} 条填了起始日期（${pctText(dated, total)}% < ${pctText(MIN_PLAN_DATE_RATE, 1)}%）——补齐这些计划的日期：${titles || '（无缺日期行）'}`;
+  const note = dateOk
+    ? `${total} 条计划，${dated} 条有起始日期（${pctText(dated, total)}%）`
+    : planGapNote;
   return {
     key: 'S2',
     label: '项目计划',
@@ -306,11 +313,7 @@ function itemS2(b: SummaryBundle): SummaryPreflightItem {
     hard: true,
     deepLink: 'report?card=prd-import',
     status: dateOk ? 'ok' : 'fail',
-    note: dateOk
-      ? `${total} 条计划，${dated} 条有起始日期（${pctText(dated, total)}%）`
-      : total < MIN_PLAN_TASKS
-        ? `计划仅 ${total} 条（<${MIN_PLAN_TASKS} 条无法成页）——走「从 PRD 导入项目计划」卡片批量生成`
-        : `${total} 条计划中仅 ${dated} 条填了起始日期（${pctText(dated, total)}% < ${pctText(MIN_PLAN_DATE_RATE, 1)}%）——补齐这些计划的日期：${titles || '（无缺日期行）'}`,
+    note,
   };
 }
 
@@ -346,6 +349,10 @@ function itemS4(b: SummaryBundle): SummaryPreflightItem {
 
 function itemS5(b: SummaryBundle): SummaryPreflightItem {
   const { total, confirmed } = b.prdDocs;
+  const unconfirmedHint = confirmed === 0 ? '（背景页将引用评审中文稿，建议先置为确认版）' : '';
+  const note = total >= MIN_PRD_DOCS
+    ? `${total} 份原文，其中确认版 ${confirmed} 份${unconfirmedHint}`
+    : '没有 PRD 原文——背景页降级为只写项目描述';
   return {
     key: 'S5',
     label: 'PRD 文档',
@@ -353,10 +360,7 @@ function itemS5(b: SummaryBundle): SummaryPreflightItem {
     hard: false,
     deepLink: 'plan?menu=prd',
     status: total >= MIN_PRD_DOCS ? 'ok' : 'warn',
-    note:
-      total >= MIN_PRD_DOCS
-        ? `${total} 份原文，其中确认版 ${confirmed} 份${confirmed === 0 ? '（背景页将引用评审中文稿，建议先置为确认版）' : ''}`
-        : '没有 PRD 原文——背景页降级为只写项目描述',
+    note,
   };
 }
 
@@ -408,6 +412,12 @@ function itemS8(b: SummaryBundle): SummaryPreflightItem {
 function itemS9(b: SummaryBundle): SummaryPreflightItem {
   const c = b.coverage;
   const coveredDays = Math.max(0, Math.ceil((b.range.end.getTime() - c.coveredFromMs) / DAY_MS));
+  const retentionNote = c.retentionDays <= 0
+    ? '事件保留期已关闭清理，动态全量可覆盖'
+    : `保留期 ${c.retentionDays} 天 ≥ 周期起点，本期动态完整`;
+  const note = c.ok
+    ? retentionNote
+    : `${c.footnote}；「本期动态」页将按此窗口降级并在页脚留痕`;
   return {
     key: 'S9',
     label: '事件覆盖率',
@@ -416,11 +426,7 @@ function itemS9(b: SummaryBundle): SummaryPreflightItem {
     // 保留期是设置项，无对应面板深链（生成面板 T02857 若需要可加「去设置」按钮）
     deepLink: '',
     status: c.ok ? 'ok' : 'warn',
-    note: c.ok
-      ? c.retentionDays <= 0
-        ? '事件保留期已关闭清理，动态全量可覆盖'
-        : `保留期 ${c.retentionDays} 天 ≥ 周期起点，本期动态完整`
-      : `${c.footnote}；「本期动态」页将按此窗口降级并在页脚留痕`,
+    note,
   };
 }
 

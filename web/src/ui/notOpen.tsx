@@ -16,8 +16,9 @@ export const NOT_OPEN_SCOPE = {
   polishTitle: '标题级 AI 改写未排期；正文润色已在条目编辑态提供',
   /** 摘要起标题依赖整条正文归纳，与标题编辑是两套链路 */
   summarizeTitle: '按正文摘要起标题未排期；可先编辑正文再手工精简标题',
-  /** 需求侧（通用需求条目与项目需求矩阵行）无归档列，硬造状态会污染列表与统计 */
-  archiveReq: '需求侧无归档模型（任务/计划有，通用需求条目与矩阵需求行都没有归档列），本期不引入新状态位',
+  /** T03685 之后需求侧只补了「通用需求条目」的归档列；矩阵需求行（prd_requirements）仍无归档模型，
+   *  硬造状态会污染矩阵统计与需求编号口径，故矩阵入口维持禁用 */
+  archiveMatrixRow: '项目需求矩阵行（prd_requirements）无归档列，本期不引入新状态位；通用需求条目的归档已随 T03685 上线',
 } as const;
 
 export type NotOpenScope = keyof typeof NOT_OPEN_SCOPE;

@@ -68,7 +68,8 @@ export function recalcMilestoneProgress(db: ReturnType<typeof getDb>, milestoneI
   if (total === 0) return { ...NOOP(milestoneId), progress: m.progress, status: m.status }; // 无子项：保留人工状态
   const doneCount = statuses.filter((s) => s === 'done').length;
   const progress = Math.min(100, Math.max(0, Math.round((doneCount / total) * 100)));
-  const status = doneCount === total ? 'done' : progress > 0 ? 'doing' : 'todo';
+  const workingStatus = progress > 0 ? 'doing' : 'todo';
+  const status = doneCount === total ? 'done' : workingStatus;
   if (m.status === status && m.progress === progress) {
     return { milestoneId, changed: false, progress, status, doneCount, total, autoDone: false };
   }

@@ -1,0 +1,7 @@
+T03402 status="done" verified=true ai_state="unread" archived=false derived_from=null mentions(T03601/T03602)=(True, True)
+T03434 status="done" verified=true ai_state="unread" archived=false derived_from=null mentions(T03601/T03602)=(True, False)
+T03407 status="done" verified=true ai_state="unread" archived=false derived_from=null mentions(T03601/T03602)=(False, True)
+T03349 status="done" verified=true ai_state="unread" archived=false derived_from=null mentions(T03601/T03602)=(True, True)
+T03601 status="todo" verified=false ai_state="unread" archived=false derived_from="T03407" mentions(T03601/T03602)=(False, True)
+T03602 status="todo" verified=false ai_state="unread" archived=false derived_from="T03402" mentions(T03601/T03602)=(True, False)
+T03390 status="done" verified=true ai_state="unread" archived=false derived_from=null mentions(T03601/T03602)=(False, False)

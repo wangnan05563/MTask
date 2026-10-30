@@ -57,9 +57,9 @@ const ASK_PATTERNS: RegExp[] = [
   /按你(?:的)?(?:裁决|裁定|决定|拍板)/,
   /(?:交由|交给|留给|返给)(?:你|用户|需求方|产品)(?:的)?(?:裁决|裁定|决定|拍板|选择)/,
   /选择权留给(?:你|用户|需求方|产品)/,
-  /(?:待|需|请|由|等)(?:你|用户|需求方|产品|人工)(?:来)?(?:裁决|裁定|定夺|拍板|决定|选择|确认)/,
-  /需(?:先)?(?:给|等|请)(?:产品|需求方|用户|人工)(?:的)?(?:裁决|裁定|决策|拍板)/,
-  /(?:还|尚)需[^，。；;]{0,12}(?:决策|裁决|拍板|定夺|确认)/,
+  /[待需请由等](?:你|用户|需求方|产品|人工)(?:来)?(?:裁决|裁定|定夺|拍板|决定|选择|确认)/,
+  /需(?:先)?[给等请](?:产品|需求方|用户|人工)(?:的)?(?:裁决|裁定|决策|拍板)/,
+  /[还尚]需[^，。；;]{0,12}(?:决策|裁决|拍板|定夺|确认)/,
   /供(?:你|用户|需求方)(?:裁决|选择|决策|定夺)/,
   /请(?:你)?明确(?:一句)?/,
 ];
@@ -74,15 +74,15 @@ const NEG_BEFORE = /(无需|不需|不用|不必|毋需|未|不|无|已|经|按|
  *  「T02661 的口径仍需产品裁决，本单未改…」——转述**另一张单**在等人裁决，本单已自行取舍。
  * 只判「紧邻」：`覆盖风险仍在，提交由用户决定` 中间有逗号隔断，仍是本单在等人定，不能被挡。
  */
-const NARR_BEFORE = /(若|如|或|仍|凡)$/;
+const NARR_BEFORE = /([若如或仍凡])$/;
 /** 命中点后的完成态：短语之后 8 字内出现这些词，说明裁决已经下过 */
-const DONE_AFTER = /^\s{0,8}(?:已|即|将)?(?:落地|落实|定案|执行|确定|完成|采纳|通过|回复|拍板|决定)/;
+const DONE_AFTER = /^\s{0,8}[已即将]?(?:落地|落实|定案|执行|确定|完成|采纳|通过|回复|拍板|决定)/;
 /**
  * 括注/小标题/引号式陈述：「（需求方裁决）：上述三页面统一为法人全辖」「裁决：保留 X」是已下结论；
  * 「冲突行标「需人工确认」并给原因」是被引用的界面文案标签；
  * 「陈旧暂存态「需人工裁决」——裁决对象已自然消失」是回传标题里对被撤销口径的引述。
  */
-const PAREN_AFTER = /^\s*(?:）|】|：|:|」|』|”|’)/;
+const PAREN_AFTER = /^\s*[）】：:」』”’]/;
 const PAREN_BEFORE = /（$|【$/;
 
 /**
@@ -149,7 +149,7 @@ function candidatesFromResult(src: string): string[] {
   for (const re of CANDIDATE_RES) {
     for (const m of src.matchAll(re)) {
       // 归一空白与全/半角括号：同一候选在「方案 A」「方案A」两种写法下只留一条
-      const label = m[0].replace(/\s+/g, '').replace(/\(/g, '（').replace(/\)/g, '）');
+      const label = m[0].replaceAll(/\s+/g, '').replaceAll('(', '（').replaceAll(')', '）');
       if (!out.includes(label)) out.push(label);
       if (out.length >= 4) return out;
     }
@@ -164,7 +164,7 @@ function candidatesFromResult(src: string): string[] {
  */
 export function candidatesFromBadge(badge: string): string[] {
   const inner = badge.replace(/^(?:待裁决|需裁决|请裁决|裁决|裁定|定夺|拍板)[\s:：]*/i, '');
-  const parts = inner.split(/[/、]/).map((p) => p.replace(/\s+/g, '')).filter(Boolean);
+  const parts = inner.split(/[/、]/).map((p) => p.replaceAll(/\s+/g, '')).filter(Boolean);
   const labels = parts.filter((p) => BADGE_LABEL_RE.test(p));
   if (labels.length < 2 || labels.length !== parts.length) return [];
   if (!labels.some((l) => l.length > 2)) return [];
@@ -206,8 +206,15 @@ export function detectRuling(input: string | RulingInput, opts: { strict?: boole
   const picked = options.length ? options : resultOptions;
   const byCandidates = !opts.strict && picked.length >= 2 && /裁决|选择|确认|决定|裁定|拍板|定夺/.test(s.handleResult);
   const needed = Boolean(badge) || Boolean(hit) || byCandidates;
-  const reason = badge
-    ? `标题徽标请求裁决「${badge}」`
-    : hit ? `命中请求短语「${hit}」` : byCandidates ? `含多候选（${picked.join(' / ')}）且出现裁决动作词` : '';
+  let reason: string;
+  if (badge) {
+    reason = `标题徽标请求裁决「${badge}」`;
+  } else if (hit) {
+    reason = `命中请求短语「${hit}」`;
+  } else if (byCandidates) {
+    reason = `含多候选（${picked.join(' / ')}）且出现裁决动作词`;
+  } else {
+    reason = '';
+  }
   return { needed, reason, options: picked };
 }

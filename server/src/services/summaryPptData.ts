@@ -25,7 +25,8 @@ import {
   type SummaryPreflightResult,
 } from './summaryPptService';
 import type { CustomRange } from './summaryPptPeriod';
-import type { ReportTaskRow, SummaryPeriod } from './ReportService';
+import type { SummaryPeriod } from './ReportService';
+import { scalarText } from '../util/scalarText';
 
 // ---------- 工作量口径（PRD FR-5.8 / 裁决 A-5） ----------
 
@@ -310,10 +311,10 @@ function gatherProject(
   const rawIssues = PlanService.listIssues(id);
   const issues: SummaryIssue[] = rawIssues
     .map((r) => ({
-      question: String(r.question ?? ''),
-      level: String(r.level ?? ''),
-      status: String(r.status ?? ''),
-      answer: String(r.answer ?? ''),
+      question: scalarText(r.question ?? ''),
+      level: scalarText(r.level ?? ''),
+      status: scalarText(r.status ?? ''),
+      answer: scalarText(r.answer ?? ''),
     }))
     .filter((r) => r.question !== '')
     // blocker 置顶（FR-5.7），其余保持 listIssues 的 sort_order 序
@@ -339,9 +340,9 @@ function gatherProject(
   }));
 
   const docs = PlanService.listPrdDocs(id).map((d) => ({
-    filename: String(d.filename ?? ''),
-    status: String(d.status ?? ''),
-    updatedAt: String(d.updated_at ?? ''),
+    filename: scalarText(d.filename ?? ''),
+    status: scalarText(d.status ?? ''),
+    updatedAt: scalarText(d.updated_at ?? ''),
   }));
   const snapshots = db
     .prepare('SELECT filename, created_at FROM estimate_snapshots WHERE project_id = ? ORDER BY created_at DESC LIMIT 5')

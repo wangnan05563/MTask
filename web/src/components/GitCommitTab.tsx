@@ -18,7 +18,7 @@ import { askConfirm } from '../ui/dialogs';
 import { gitDegradedText } from '../ui/gitBadge';
 import { fullTime, relTime } from '../ui/format';
 import { PILL } from '../ui/primitives';
-import { ExternalLink, GitBranch, Loader2, RefreshCw, Unlink, User } from 'lucide-react';
+import { ChevronDown, ChevronRight, ExternalLink, GitBranch, Loader2, RefreshCw, Unlink, User } from 'lucide-react';
 
 const FONT_MONO = 'Consolas, Menlo, monospace';
 
@@ -27,8 +27,8 @@ const FILE_STATUS: Record<string, { color: string; label: string }> = {
   A: { color: 'var(--success)', label: '新增' },
   M: { color: 'var(--warn)', label: '修改' },
   D: { color: 'var(--danger)', label: '删除' },
-  R: { color: 'var(--accent)', label: '重命名' },
-  C: { color: 'var(--accent)', label: '复制' },
+  R: { color: 'var(--accent-ink)', label: '重命名' },
+  C: { color: 'var(--accent-ink)', label: '复制' },
   T: { color: 'var(--warn)', label: '类型变更' },
 };
 
@@ -249,8 +249,8 @@ export function GitCommitTab({ task, projectId, projects, onBindChange, onBindWo
       {subtasks.length > 0 && (
         <div data-t03362="subtasks" style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
           <button type="button" onClick={() => setSubtasksOpen((v) => !v)} aria-expanded={subtasksOpen}
-            style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 'var(--fs-s)', padding: 0 }}>
-            {subtasksOpen ? '▾' : '▸'} 子任务 {subtasks.length}
+            style={{ background: 'none', border: 'none', color: 'var(--accent-ink)', cursor: 'pointer', fontSize: 'var(--fs-s)', padding: 0 }}>
+            {subtasksOpen ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />} 子任务 {subtasks.length}
           </button>
           {subtasksOpen && subtasks.map((s) => (
             <div key={s.id} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
@@ -342,7 +342,7 @@ function CommitCard({ card, primary, platformLabel, selected, onSelect, onUnlink
       }}>
       {/* 角标行：主提交 / 来源 / 初始提交 / 新鲜度提示 */}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 4 }}>
-        {primary && <span data-t03362="primary" style={{ ...PILL, background: 'var(--accent-soft)', color: 'var(--accent-text)' }}>主提交</span>}
+        {primary && <span data-t03362="primary" style={{ ...PILL, background: 'var(--accent-soft)', color: 'var(--accent-ink)' }}>主提交</span>}
         <span data-t03362={`source-${card.source}`} style={PILL}>{sourceLabel}</span>
         {card.isInitial && <span data-t03362="initial" style={PILL}>初始提交</span>}
         {card.laterThanTask && <span data-t03362="later" style={{ ...PILL, color: 'var(--warn)' }} title="提交时间晚于任务更新时间——任务可能尚未记录本次改动">提交晚于任务更新时间</span>}
@@ -365,12 +365,12 @@ function CommitCard({ card, primary, platformLabel, selected, onSelect, onUnlink
       {/* 4 分支/标签胶囊（未知则省略） */}
       {card.refs.length > 0 && (
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
-          {card.refs.map((r) => <span key={r} data-t03362="ref" style={{ ...PILL, background: 'var(--accent-soft)', color: 'var(--accent-text)' }}>{r}</span>)}
+          {card.refs.map((r) => <span key={r} data-t03362="ref" style={{ ...PILL, background: 'var(--accent-soft)', color: 'var(--accent-ink)' }}>{r}</span>)}
         </div>
       )}
       {/* 5 等宽简写 + 复制 + 外链（Gitee 无官方图标 → GitBranch + 文字） */}
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6 }} onClick={(e) => e.stopPropagation()}>
-        <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', color: 'var(--accent)' }}>{card.shortSha}</span>
+        <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', color: 'var(--accent-ink)' }}>{card.shortSha}</span>
         <CopyButton getText={() => card.sha} size={13} title="复制完整提交 ID（40 位）" ariaLabel={`复制提交 ${card.sha} 完整 ID`} />
         {href ? (
           <a href={href} target="_blank" rel="noopener noreferrer" data-t03362="extlink"

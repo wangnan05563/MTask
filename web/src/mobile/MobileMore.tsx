@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, setAccessToken, type AITool, type Task } from '../api/client';
 import { ProjectListHint, loadProjectList, projectListPlaceholder, useProjectList } from '../ui/projectList'; // T02212：项目取数接入 T02201 统一容错层
 import { useSettings } from '../settings';
-import { Boxes, Archive, BarChart3, Terminal, Activity, Settings, ExternalLink, LogOut, Moon, Sun, Monitor, ChevronRight, Bell, ListChecks } from 'lucide-react';
+import { Boxes, Archive, BarChart3, Terminal, Activity, Settings, ExternalLink, LogOut, Moon, Sun, Monitor, ChevronRight, Bell, ListChecks, Wrench } from 'lucide-react'; // T03655：空态改 lucide（Archive 已用于归档入口）
 import { MobileExecSessions } from './MobileExecSessions';
 import { MobileNotifications } from './MobileNotifications';
 import { MobilePlans } from './MobilePlans';
@@ -83,7 +83,7 @@ function AitoolsView({ notify }: { readonly notify: (msg: string) => void }) {
   useEffect(() => { api.get<AITool[]>('/aitools').then(setTools).catch((e) => notify(e instanceof Error ? e.message : String(e))); }, [notify]);
   return (
     <>
-      {tools.length === 0 && <EmptyState icon="🧰" message="暂无 AI 工具" />}
+      {tools.length === 0 && <EmptyState icon={<Wrench size={32} />} message="暂无 AI 工具" />}
       {tools.map((t) => (
         <div key={t.id} style={card}>
           <div style={{ fontWeight: 600 }}>{t.name}</div>
@@ -147,7 +147,7 @@ function ArchiveView({ notify }: { readonly notify: (msg: string) => void }) {
         aria-label="搜索归档任务"
         style={{ width: '100%', padding: 10, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 'var(--fs-l)', background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box', marginBottom: 10 }} />
       {loading && <Skeleton rows={4} card />}
-      {!loading && tasks.length === 0 && <EmptyState icon="🗄️" message="暂无归档任务" hint={kw ? '换个关键词试试' : undefined} />}
+      {!loading && tasks.length === 0 && <EmptyState icon={<Archive size={32} />} message="暂无归档任务" hint={kw ? '换个关键词试试' : undefined} />}
       {[...groups.entries()].sort((a, b) => b[0].localeCompare(a[0])).map(([month, list]) => (
         <div key={month}>
           <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, color: 'var(--text-muted)', padding: '8px 2px 6px' }}>{month}（{list.length}）</div>

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, GitBranch, Loader2, RefreshCw, Search, Tag, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, GitBranch, Loader2, RefreshCw, Search, Tag, X } from 'lucide-react'; // T03654：折叠箭头统一 lucide
 import { api } from '../api/client';
 import type { Project } from '../api/client';
 import { fullTime, relTime } from '../ui/format';
@@ -259,8 +259,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
                 <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 64 }} title={c.author}>{c.author}</span>
                 <button type="button" onClick={(e) => { e.stopPropagation(); toggleRowExpand(c.sha); }} aria-label={open ? '收起提交详情' : '展开提交详情'}
                   aria-expanded={open} data-lck="git-tree-expand"
-                  style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}>
-                  {open ? '▾' : '▸'}
+                  style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', height: 16 }}>
+                  {open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
                 </button>
               </div>
             );

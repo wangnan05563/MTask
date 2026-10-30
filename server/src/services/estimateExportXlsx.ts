@@ -26,7 +26,6 @@
 import { ESTIMATE_PHASES, type EstimatePhase } from './EstimateService';
 import {
   ESTIMATE_COEF_KEYS,
-  ESTIMATE_COEF_LABELS,
   buildSummary,
   expected,
   sigma,
@@ -118,10 +117,13 @@ export const TEMPLATE_REMARKS: readonly string[] = [
 ];
 
 /** 列宽（附录 A 实测；D 列 63.125 是关键——长描述不折行成糊墙） */
-export const TEMPLATE_COLUMN_WIDTHS: readonly number[] = [2.0, 6.5, 15.625, 63.125, 8.25, 8.375, 8.125, 6.5, 5.5];
+export const TEMPLATE_COLUMN_WIDTHS: readonly number[] = [2, 6.5, 15.625, 63.125, 8.25, 8.375, 8.125, 6.5, 5.5];
 
 /** 表头占 R1~R5，数据区从 R6 起（模板形态） */
 export const FIRST_DATA_ROW = 6;
+
+/** 汇总/实际/理想列（模板 D 列右侧的四段数值列） */
+export type XlsxSumCol = 'E' | 'F' | 'G' | 'H';
 
 export type EstimateAudience = 'internal' | 'client';
 /** 三点（人天）。null 表示「该行还没有估算」——主 sheet 里留空而非写 0 */
@@ -237,7 +239,7 @@ const isPoint = (r: EstimateExportRow): boolean =>
 
 /** D 列清洗（§6.1 列映射表）：换行压平、>500 字截断并标注出处 */
 export function cleanDetail(description: string, title: string, reqNos: readonly string[] = []): string {
-  const src = (description || title || '').replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+  const src = (description || title || '').replaceAll(/\r?\n/g, ' ').replaceAll(/\s+/g, ' ').trim();
   if (src.length <= 500) return src;
   const hint = reqNos.length > 0 ? `…（见需求 ${reqNos.join('、')}）` : '…（见需求原文）';
   return `${src.slice(0, 500)}${hint}`;
@@ -261,7 +263,7 @@ function sumPoints(rows: EstimateExportRow[]): Points | null {
  * 渲染层与断言层共用同一个 `EstimateLayout`，不存在「渲染时再数一遍行」的第二套口径。
  */
 export function layoutEstimate(input: EstimateExportInput): EstimateLayout {
-  const wanted = (input.phases && input.phases.length > 0 ? input.phases : ESTIMATE_PHASES) as readonly EstimatePhase[];
+  const wanted = input.phases && input.phases.length > 0 ? input.phases : ESTIMATE_PHASES;
   const phases = ESTIMATE_PHASES.filter((p) => wanted.includes(p));
   const devEnabled = phases.includes('dev');
 
@@ -396,7 +398,7 @@ export function layoutMerges(m: MergeInput): string[] {
   for (const p of m.phaseRows) out.push(`B${p.rowNo}:D${p.rowNo}`);
   if (m.devRows.length > 0) {
     const first = m.devRows[0].rowNo;
-    const bottom = (m.subtotalRow ?? m.devRows[m.devRows.length - 1]).rowNo;
+    const bottom = (m.subtotalRow ?? m.devRows.at(-1)!).rowNo;
     out.push(`B${first}:B${bottom}`, `I${first}:I${bottom}`);
     // C 列同模块连续行合并（模板 C8:C11 式）；无里程碑归属的行不合并
     let i = 0;
@@ -432,10 +434,10 @@ export function templateIRowFormula(rowNo: number, actualRow: number): string {
 export function templateICoefFormula(coefRowNo: number, totalRow: number, actualRow: number): string {
   return `IFERROR($H$${totalRow}*H${coefRowNo}/$H$${actualRow},"")`;
 }
-export function templateTotalFormula(col: 'E' | 'F' | 'G' | 'H', firstDataRow: number, lastDataRow: number): string {
+export function templateTotalFormula(col: XlsxSumCol, firstDataRow: number, lastDataRow: number): string {
   return `SUBTOTAL(9,${col}${firstDataRow}:${col}${lastDataRow})/${NAMED_RANGE_STD}`;
 }
-export function templateActualFormula(col: 'E' | 'F' | 'G' | 'H', totalRow: number, coefFirst: number, coefLast: number): string {
+export function templateActualFormula(col: XlsxSumCol, totalRow: number, coefFirst: number, coefLast: number): string {
   return `${col}${totalRow}*(1+SUM(${col}${coefFirst}:${col}${coefLast}))`;
 }
 
@@ -542,10 +544,10 @@ export async function buildEstimateXlsx(layout: EstimateLayout): Promise<Buffer>
   if (layout.subtotalRow) {
     const s = layout.subtotalRow.rowNo;
     const first = layout.devRows[0].rowNo;
-    const last = layout.devRows[layout.devRows.length - 1].rowNo;
+    const last = layout.devRows.at(-1)!.rowNo;
     ws.getCell(`D${s}`).value = TEMPLATE_TEXTS.subtotal;
     const dev = layout.summary.phases.find((p) => p.phase === 'dev');
-    const cols: Array<['E' | 'F' | 'G' | 'H', number]> = [
+    const cols: Array<[XlsxSumCol, number]> = [
       ['E', dev ? dev.likely : 0],
       ['F', dev ? dev.optimistic : 0],
       ['G', dev ? dev.pessimistic : 0],
@@ -566,7 +568,7 @@ export async function buildEstimateXlsx(layout: EstimateLayout): Promise<Buffer>
   ws.getCell(`B${layout.totalRow}`).value = TEMPLATE_TEXTS.ideal;
   ws.getCell(`B${layout.totalRow}`).font = { bold: true };
   ws.getCell(`B${layout.totalRow}`).alignment = { wrapText: true, vertical: 'middle' };
-  const ideal: Array<['E' | 'F' | 'G' | 'H', number]> = [
+  const ideal: Array<[XlsxSumCol, number]> = [
     ['E', layout.summary.idealManMonths.likely],
     ['F', layout.summary.idealManMonths.optimistic],
     ['G', layout.summary.idealManMonths.pessimistic],
@@ -604,8 +606,8 @@ export async function buildEstimateXlsx(layout: EstimateLayout): Promise<Buffer>
   ws.getCell(`B${layout.actualRow}`).font = { bold: true };
   ws.getCell(`B${layout.actualRow}`).alignment = { wrapText: true, vertical: 'middle' };
   const coefFirst = layout.coefRows[0].rowNo;
-  const coefLast = layout.coefRows[layout.coefRows.length - 1].rowNo;
-  const actualCols: Array<['E' | 'F' | 'G' | 'H', number]> = [
+  const coefLast = layout.coefRows.at(-1)!.rowNo;
+  const actualCols: Array<[XlsxSumCol, number]> = [
     ['E', layout.summary.actualManMonths.likely],
     ['F', layout.summary.actualManMonths.optimistic],
     ['G', layout.summary.actualManMonths.pessimistic],
@@ -681,7 +683,7 @@ export function injectComment(xml: string, name: string, comment: string): strin
 }
 
 function escapeAttr(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 }
 
 /** 附加 sheet ①：全量明细（内部复核用，客户版不产出） */

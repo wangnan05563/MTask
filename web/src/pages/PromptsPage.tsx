@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, FolderPlus, ListTodo, Loader2, Move, Pencil, Plus, RotateCcw, Rocket, Save, SquarePen, Trash2, UnfoldVertical, FoldVertical, Wand2, X, Archive, Layers } from 'lucide-react';
 import { CopyButton } from '../ui/CopyButton';
 import { FontColorButton } from '../ui/FontColorButton';
@@ -9,6 +9,8 @@ import { ProjectListHint, loadProjectList, useProjectList, type ProjectListView 
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：AI 整理工具取数改走可见失败态层
 import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
+import { FavoriteToggle } from '../ui/FavoriteToggle'; // T03683：收藏切换（与置顶正交，两页共用同一组件）
+import { OPTIMIZE_SCOPE_PROMPTS, busyScope, runOptimize, useOptimizeStore } from '../stores/optimizeStore'; // T03684：提示词优化运行态切页保持
 import { relTime } from '../ui/format';
 import { comparePrompts, type PromptSortKey } from '../ui/promptSort'; // T03248（AI-104④）：排序单源（含使用次数）
 import { missingPromptVars, parsePromptVars } from '../ui/promptTemplate'; // T03247（AI-104①②）：{{变量}} 解析（与服务端同口径）
@@ -105,7 +107,7 @@ function NewPromptForm({ newTitle, setNewTitle, newContent, setNewContent, creat
   readonly newContent: string; readonly setNewContent: React.Dispatch<React.SetStateAction<string>>;
   readonly createPrompt: () => Promise<void>;
   readonly optimizing: Record<string, boolean>;
-  readonly optimizeContent: (key: string, title: string, content: string, apply: (v: string) => void) => Promise<void>;
+  readonly optimizeContent: (key: string, title: string, content: string) => Promise<void>;
   readonly setCreating: (v: boolean) => void;
 }) {
   const busy = optimizing['new'];
@@ -113,12 +115,14 @@ function NewPromptForm({ newTitle, setNewTitle, newContent, setNewContent, creat
     <div style={{ border: '1px solid var(--border-strong)', borderRadius: 8, padding: 12, marginBottom: 12 }}>
       <input
         value={newTitle}
+        aria-label="新提示词的标题"
         onChange={(e) => setNewTitle(e.target.value)}
         placeholder="提示词标题"
         style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)', boxSizing: 'border-box', marginBottom: 8 }}
       />
       <textarea
         value={newContent}
+        aria-label="新提示词的内容"
         onChange={(e) => setNewContent(e.target.value)}
         rows={6}
         placeholder="提示词内容（可用 {{变量}} 标记发起时需填写的部分）"
@@ -136,7 +140,7 @@ function NewPromptForm({ newTitle, setNewTitle, newContent, setNewContent, creat
         </button>
         {/* T00636：提示词优化（与任务页同款）——置于保存按钮旁 */}
         <button
-          onClick={() => void optimizeContent('new', newTitle, newContent, setNewContent)}
+          onClick={() => void optimizeContent('new', newTitle, newContent)}
           disabled={busy}
           className={busy ? 'task-breathe' : undefined}
           title={busy ? '提示词优化进行中…' : '提示词优化 — 用默认模型把当前内容改写为结构化提示词（结果回填，可编辑后保存）'}
@@ -311,7 +315,11 @@ export function PromptsPage() {
   const [reqCats, setReqCats] = useState<ReqCategory[]>([]);
   // T00873 四轮：按「通用需求分类」过滤列表——归入某分类后要能在该维度检索到（T00837「组织与检索效率」）；
   // '' = 全部，'__none__' = 未归属，其余为具体分类 id
-  const [reqFilter, setReqFilter] = useState('');
+  // T03684：列表视图轴（筛选/排序/展开）改会话级持久化——切一级菜单再回来不再被重置
+  const [reqFilter, setReqFilter] = useSessionState<string>('prompts.reqFilter', '');
+  // T03683：显示范围（'all' 全部显示 | 'fav' 只看收藏）。与 reqFilter 同属「列表视图轴」，
+  // 但走会话持久化——切菜单再回来不该被重置成全部（T03684 通查里同类失守点之一）
+  const [viewScope, setViewScope] = useSessionState<'all' | 'fav'>('prompts.viewScope', 'all');
   // T00837：撤销快照——最近一次分组/通用需求分类调整前的归属，用于一键还原
   const [lastMove, setLastMove] = useState<{ id: string; prevCategoryId: string; prevReqCategoryId: string } | null>(null);
   // 当前分类：跨切换会话记忆用户选择，便于切回后继续操作
@@ -320,18 +328,34 @@ export function PromptsPage() {
   const [notice, setNotice] = useState('');
   // 排序条件：sortKey 排序字段，sortDir 升降序（默认时间降序，与后端默认一致）
   // T03248（AI-104④）：可选字段含 usage（按累计使用次数），比较逻辑统一在 ui/promptSort
-  const [sortKey, setSortKey] = useState<PromptSortKey>('updated_at');
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [sortKey, setSortKey] = useSessionState<PromptSortKey>('prompts.sortKey', 'updated_at');
+  const [sortDir, setSortDir] = useSessionState<'asc' | 'desc'>('prompts.sortDir', 'desc');
   // 新建提示词表单：录入状态跨会话持久化，切页后可续写
   const [creating, setCreating] = useSessionState('prompts.new.creating', false);
   const [newTitle, setNewTitle] = useSessionState('prompts.new.title', '');
   const [newContent, setNewContent] = useSessionState('prompts.new.content', '');
   // 编辑草稿：promptId -> 草稿
-  const [drafts, setDrafts] = useState<Record<string, { title: string; content: string; categoryId: string }>>({});
+  // T03684：草稿是用户正在敲的内容 → 会话级持久化（此前是裸 useState，切一级菜单即整页卸载清空；
+  // 且「提示词优化」的结果回填也依赖它存在，否则回切后无处可落）
+  const [drafts, setDrafts] = useSessionState<Record<string, { title: string; content: string; categoryId: string }>>('prompts.drafts', {});
 
   // T00636：提示词优化——与任务页「提示词优化」同款能力（复用 AI 整理工具把内容改写为结构化提示词）
   const [organizeToolId, setOrganizeToolId] = useState('');
-  const [optimizing, setOptimizing] = useState<Record<string, boolean>>({}); // key: 'new' 或 提示词 id
+  // T03684：优化的进行中标志与结果提升到模块级 store（键域 `prompts:`，'new' = 新建表单）。
+  // 此前二者挂在页面组件里，切页卸载后「正在优化…」呼吸态消失、AI 回来的结果打在已卸载组件上被丢弃。
+  const optimizeSnap = useOptimizeStore(OPTIMIZE_SCOPE_PROMPTS, (key, result) => {
+    if (key === 'new') {
+      setNewContent(result.text);
+      flash(`提示词优化完成（输入来源：${result.source}），可编辑后保存`);
+      return;
+    }
+    const draft = drafts[key];
+    // 编辑态已关闭（草稿不在）时不凭空造一条空标题草稿——那会把行渲染成「标题空着」的编辑态
+    if (!draft) { flash('提示词优化已完成，但该条的编辑态已关闭，请重新进入编辑后再优化'); return; }
+    setDrafts((prev) => ({ ...prev, [key]: { ...(prev[key] ?? draft), content: result.text } }));
+    flash(`提示词优化完成（输入来源：${result.source}），可编辑后保存`);
+  });
+  const optimizing = useMemo(() => busyScope(optimizeSnap, OPTIMIZE_SCOPE_PROMPTS), [optimizeSnap]); // key: 'new' 或 提示词 id
 
   // T00629：复制到待办任务——目标项目选择弹窗（不选则落默认记事项目/收件箱）
   const [taskCopyPrompt, setTaskCopyPrompt] = useState<Prompt | null>(null);
@@ -347,7 +371,8 @@ export function PromptsPage() {
   const projectList = useProjectList();
   const { projects } = projectList;
   // 内容 展开/收起：expandedIds 记录已展开的提示词 id，默认全部收起（点击标题切换，降低信息密度）
-  const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
+  // T03684：展开集合属于「用户看到的视图」，切页回来应保持（此前裸 useState 会被重置成全收起）
+  const [expandedIds, setExpandedIds] = useSessionState<Record<string, boolean>>('prompts.expandedIds', {});
   // 记录高亮：保存/新增成功后对目标行打标记，flashAt 值变化触发行动画重放
   const [flashAt, setFlashAt] = useState<Record<string, number>>({});
   function dropReorder(targetId: string) {
@@ -436,8 +461,9 @@ export function PromptsPage() {
   }
 
   /** T00636：提示词优化——把标题/内容交给 AI 改写为结构化提示词，结果回写草稿供确认后保存。
-   *  与任务页「提示词优化」同款：内容为空时回退用标题作输入；结果剥离代码围栏。 */
-  async function optimizeContent(key: string, title: string, content: string, apply: (v: string) => void) {
+   *  与任务页「提示词优化」同款：内容为空时回退用标题作输入；结果剥离代码围栏。
+   *  T03684：运行态与结果交给 optimizeStore，回填由本页挂载时的 drain 完成（切页也能落地）。 */
+  async function optimizeContent(key: string, title: string, content: string) {
     if (optimizing[key]) return;
     // T02213：取数失败时不再把它报成「请先添加并选择工具」——那是配置问题，此刻是后端问题
     if (!organizeToolId) {
@@ -447,19 +473,20 @@ export function PromptsPage() {
     const source = text ? '内容' : '标题';
     if (!text) text = title.trim();
     if (!text) return flash('请先填写标题或内容再优化');
-    setOptimizing((p) => ({ ...p, [key]: true }));
-    try {
-      const r = await api.post<{ ok: boolean; content?: string; error?: string }>('/ai/optimize', {
+    // 后端以 ok:false + error 返回业务失败（不抛异常），原文案优先于 store 的兜底文案
+    let serverError = '';
+    const r = await runOptimize(
+      `${OPTIMIZE_SCOPE_PROMPTS}${key}`,
+      (signal) => api.post<{ ok: boolean; content?: string; error?: string }>('/ai/optimize', {
         toolId: organizeToolId, title, description: text,
-      });
-      if (!r.ok) return flash(r.error ?? '优化失败');
-      apply(stripFence(r.content ?? ''));
-      flash(`提示词优化完成（输入来源：${source}），可编辑后保存`);
-    } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
-    } finally {
-      setOptimizing((p) => { const n = { ...p }; delete n[key]; return n; });
-    }
+      }, signal),
+      (result) => {
+        if (!result.ok) { serverError = result.error ?? '优化失败'; return null; }
+        return { text: stripFence(result.content ?? ''), source };
+      },
+    );
+    if (r.ok) return; // 成功文案由 drain 回填草稿时给出
+    flash(serverError || r.error || '优化失败');
   }
 
   // T02283：分类与提示词列表接入共享可见失败态层（T02213 口径）。此前两处 `api.get` 抛错后要么被
@@ -689,6 +716,25 @@ export function PromptsPage() {
     }
   }
 
+  /** T03683：收藏/取消收藏——乐观更新本地行，失败回滚并提示。
+   *  与 togglePin 的「写库后整表 reload」不同：收藏只决定行是否出现在「收藏」视图，
+   *  不影响排序，本地改一行就能即时反映，省一次 GET，也避免在收藏视图下点收藏后整表闪烁。
+   *  回滚写回点击前快照（PATCH 是单字段通道，同毫秒内别处改同一行的概率极低；
+   *  真发生时下一次 reload 即以库为准纠偏，不会长期错位）。 */
+  async function toggleFavorite(p: Prompt) {
+    const snapshot = promptsView.data ?? [];
+    const withFlag = (favorited: boolean) => snapshot.map((x) => (x.id === p.id ? { ...x, is_favorited: favorited } : x));
+    const next = !Boolean(p.is_favorited);
+    promptsView.setData(withFlag(next));
+    try {
+      await api.patch(`/prompts/${p.id}`, { isFavorited: next });
+      flash(next ? `已收藏「${p.title}」` : `已取消收藏「${p.title}」`);
+    } catch (e) {
+      promptsView.setData(withFlag(!next));
+      flash(`收藏失败，已还原：${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
   /** T00873：打开「移动提示词」弹窗——预填当前目标分组与通用需求分类归属 */
   const openMove = (p: Prompt) => setMoveTarget({ p, catId: p.category_id, reqId: p.req_category_id ?? '' });
 
@@ -779,9 +825,10 @@ export function PromptsPage() {
   const dragStartRow = (id: string, e: React.DragEvent) => { setDragId(id); e.dataTransfer.effectAllowed = 'move'; };
   const dragEndRow = () => { setDragId(''); setOverId(''); };
   const dragOverRow = (id: string, e: React.DragEvent) => { e.preventDefault(); if (id !== dragId) setOverId(id); };
-  /** 提示词优化：结果回填当前编辑草稿（S2004：抽出避免 JSX 深层嵌套箭头） */
+  /** 提示词优化：结果回填当前编辑草稿（S2004：抽出避免 JSX 深层嵌套箭头）
+   *  T03684：不再传回填闭包——回填由 store 的 drain 按 key 落到 drafts，切页回来同样生效 */
   const optimizeRow = (id: string, draft: { title: string; content: string; categoryId: string }) => {
-    void optimizeContent(id, draft.title, draft.content, (v) => setDrafts((prev) => ({ ...prev, [id]: { ...(prev[id] ?? draft), content: v } })));
+    void optimizeContent(id, draft.title, draft.content);
   };
   const applyColor = (id: string, c: string) => {
     void api.patch(`/prompts/${id}`, { color: c }).then(() => { void loadPrompts(activeCat, search); });
@@ -799,7 +846,9 @@ export function PromptsPage() {
   } else {
     reqScopedPrompts = prompts.filter((p) => p.req_category_id === reqFilter);
   }
-  const sortedPrompts = [...reqScopedPrompts].sort((a, b) => comparePrompts(a, b, sortKey, sortDir));
+  // T03683：「显示范围=收藏」在通用需求分类筛选之后叠加——两轴是 AND 关系（归属 × 收藏）
+  const scopePrompts = viewScope === 'fav' ? reqScopedPrompts.filter((p) => Boolean(p.is_favorited)) : reqScopedPrompts;
+  const sortedPrompts = [...scopePrompts].sort((a, b) => comparePrompts(a, b, sortKey, sortDir));
   // T02283：取数失败时绝不把「加载失败」降格成「暂无分类/暂无提示词」空态（那是用户还没用过的口吻）
   const listFailed = categoriesView.phase === 'error' || promptsView.phase === 'error';
   let emptyListHint: string;
@@ -810,6 +859,11 @@ export function PromptsPage() {
     emptyListHint = `没有匹配「${search.trim()}」的提示词 —— 换个关键词或清空搜索框。`;
   } else if (search.trim()) {
     emptyListHint = `没有匹配「${search.trim()}」的提示词 —— 当前还叠加了「通用需求分类」筛选，可一并清掉。`;
+  } else if (viewScope === 'fav') {
+    // T03683：收藏视图空态要说清「不是没数据，是没收藏」，否则用户会以为提示词丢了
+    emptyListHint = reqFilter === ''
+      ? '该分类下暂无收藏 —— 点标题左侧的星标把提示词加入收藏，或把「显示范围」切回「全部显示」。'
+      : '当前筛选条件下没有已收藏的提示词 —— 可清掉「通用需求分类」筛选，或把「显示范围」切回「全部显示」。';
   } else if (reqFilter === '') {
     emptyListHint = '该分类下暂无提示词。';
   } else {
@@ -912,6 +966,21 @@ export function PromptsPage() {
             </select>
           </span>
         )}
+        {/* T03683：显示范围（全部显示 / 收藏）——与「通用需求分类筛选」「排序」同为列表视图轴，
+            但刻意不加 op-hidden：票面要求它出现在筛选栏，藏进悬浮态等于没有入口 */}
+        <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <select
+            data-t03683="view-scope"
+            value={viewScope}
+            onChange={(e) => setViewScope(e.target.value as 'all' | 'fav')}
+            title="显示范围 — 全部提示词或只看已收藏"
+            aria-label="显示范围：选择显示全部提示词还是只看已收藏"
+            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}
+          >
+            <option value="all">全部显示</option>
+            <option value="fav">收藏</option>
+          </select>
+        </span>
         <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <select
@@ -997,6 +1066,7 @@ export function PromptsPage() {
                   <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                     <input
                       value={draft.title}
+                      aria-label="编辑提示词标题"
                       onChange={(e) => patchDraft(p.id, draft, 'title', e.target.value)}
                       style={{ flex: 1, padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)' }}
                     />
@@ -1011,6 +1081,7 @@ export function PromptsPage() {
                   </div>
                   <textarea
                     value={draft.content}
+                    aria-label="编辑提示词内容"
                     onChange={(e) => patchDraft(p.id, draft, 'content', e.target.value)}
                     rows={6}
                     style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-m)', boxSizing: 'border-box', fontFamily: 'inherit' }}
@@ -1036,7 +1107,10 @@ export function PromptsPage() {
                     {/* T02146：置顶图标提到标题按钮的**兄弟位**——HTML 不允许 button 套 button
                         （dev React 报 validateDOMNesting，生产构建只是剥掉告警，DOM 依旧非法）。
                         PinToggle 自带 stopPropagation，提到外面后「置顶」与「展开」互不干扰的行为不变，
-                        视觉位置仍是标题左侧。 */}
+                        视觉位置仍是标题左侧。
+                        T03683：收藏星标与置顶图标并列在标题左侧（同一 T02146 约束，button 不能套 button），
+                        星标在前、置顶在后；FavoriteToggle 同样自带 stopPropagation。 */}
+                    <FavoriteToggle favorited={Boolean(p.is_favorited)} onToggle={() => void toggleFavorite(p)} />
                     <PinToggle pinned={Boolean(p.pinned)} onToggle={() => void togglePin(p)} />
                     <button
                       onClick={() => setExpandedIds((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}

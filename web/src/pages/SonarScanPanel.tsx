@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ExternalLink, Loader2, RefreshCw, RotateCcw, ScanLine, StopCircle, X } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, ExternalLink, Loader2, RefreshCw, RotateCcw, ScanLine, StopCircle, X } from 'lucide-react'; // T03654：折叠箭头统一 lucide
 import { api, type Project } from '../api/client';
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import { FIELD_QUIET, PILL } from '../ui/primitives';
@@ -483,7 +483,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
                       <button type="button" onClick={() => setOpenGroups((prev) => (prev.includes(s.key) ? prev.filter((x) => x !== s.key) : [...prev, s.key]))}
                         aria-expanded={open} data-t03381={`toggle-${s.key}`}
                         style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', cursor: 'pointer', fontSize: 'var(--fs-s)', color: 'var(--text)' }}>
-                        <span aria-hidden="true">{open ? '▾' : '▸'}</span>
+                        <span aria-hidden="true" style={{ display: 'inline-flex' }}>{open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}</span>
                         <span style={{ fontWeight: 600 }}>{s.label}</span>
                         <span style={{ ...PILL }}>{list.length} 条</span>
                       </button>

@@ -21,6 +21,7 @@ import { queryGitLog, type GitLogRequest } from '../services/lectureGitLog';
 import { suggestGitLinks } from '../services/gitAiLink';
 import { cacheGet, cacheSet } from '../util/ttl-cache';
 import { createHash } from 'node:crypto';
+import { scalarText } from '../util/scalarText';
 
 export const gitLinksApi = Router();
 
@@ -61,9 +62,9 @@ gitLinksApi.post('/git/commit-summaries', async (req, res) => {
     return ws;
   };
   const key = createHash('sha1')
-    .update(clean.map((l) => `${l.taskId ?? ''}:${workspaceOf(l.taskId)}:${l.sha}`).sort().join('|'))
+    .update(clean.map((l) => `${l.taskId ?? ''}:${workspaceOf(l.taskId)}:${l.sha}`).sort((a, b) => a.localeCompare(b)).join('|'))
     .digest('hex');
-  const hit = cacheGet(`git-summaries:${key}`) as { groups: unknown[] } | undefined;
+  const hit = cacheGet<{ groups: unknown[] }>(`git-summaries:${key}`);
   if (hit) return res.json(hit);
   try {
     const out = await buildSummaryGroups(clean);
@@ -84,9 +85,10 @@ const TASK_GIT_VIEW_TTL_MS = 60_000;
 
 function taskGitViewCacheKey(taskId: string): string {
   const task = resolveTask({ id: taskId });
-  if (!task || !task.workspacePath) return '';
-  const links = listLinks(task.id).map((l) => `${l.sha}:${l.createdAt}`).sort().join(',');
-  return `git-view:${createHash('sha1').update(`${task.id}|${task.workspacePath}|${task.updatedAt}|${links}`).digest('hex')}`;
+  if (!task?.workspacePath) return '';
+  const links = listLinks(task.id).map((l) => `${l.sha}:${l.createdAt}`).sort((a, b) => a.localeCompare(b)).join(',');
+  const fingerprint = `${task.id}|${task.workspacePath}|${task.updatedAt}|${links}`;
+  return `git-view:${createHash('sha1').update(fingerprint).digest('hex')}`;
 }
 
 /** 抽屉首屏：该任务全部关联提交的摘要 + 统计（时间倒序） */
@@ -146,12 +148,12 @@ gitLinksApi.delete('/tasks/:id/git/links/:sha', (req, res) => {
 gitLinksApi.get('/git/log', async (req, res) => {
   const q = req.query;
   const body: GitLogRequest = {
-    projectId: String(q.projectId ?? ''),
-    head: q.head ? String(q.head) : undefined,
+    projectId: scalarText(q.projectId ?? ''),
+    head: q.head ? scalarText(q.head) : undefined,
     all: q.all === '1' || q.all === 'true',
     skip: q.skip === undefined ? undefined : Math.max(0, Math.floor(Number(q.skip) || 0)),
     limit: q.limit === undefined ? undefined : Math.min(500, Math.max(1, Math.floor(Number(q.limit) || 50))),
-    search: q.search ? String(q.search) : undefined,
+    search: q.search ? scalarText(q.search) : undefined,
   };
   if (!body.projectId) return res.status(400).json({ error: '缺少 projectId' });
   try {

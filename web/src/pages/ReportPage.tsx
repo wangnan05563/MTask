@@ -1317,7 +1317,7 @@ export function ReportPage() {
         </div>
         <div>
           <div style={labelStyle}>输出格式</div>
-          <select value={format} onChange={(e) => setFormat(e.target.value as ReportFormat)} style={fieldStyle}>
+          <select aria-label="报表输出格式" value={format} onChange={(e) => setFormat(e.target.value as ReportFormat)} style={fieldStyle}>
             {FORMATS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
           </select>
         </div>
@@ -1347,7 +1347,7 @@ export function ReportPage() {
           <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>本地聚合本周期任务数据，按模板或标准版式直接合成文件，无需联网。</div>
           <div style={{ marginBottom: 12 }}>
             <div style={labelStyle}>模板</div>
-            <select value={templateId} onChange={(e) => setTemplateId(e.target.value)} style={{ ...fieldStyle, width: '100%' }}>
+            <select aria-label="报表模板" value={templateId} onChange={(e) => setTemplateId(e.target.value)} style={{ ...fieldStyle, width: '100%' }}>
               <option value="">标准模板（内置 skill）</option>
               {templates.map((t) => <option key={t.id} value={t.id}>{t.filename}</option>)}
             </select>
@@ -1481,7 +1481,7 @@ export function ReportPage() {
       <NoticeToast notice={notice} onDismiss={dismissNotice} />
 
       {/* T00621：原「内置技能」「模板管理」独立区块已整合进各自工作面板（AI 周报面板=内置技能；离线周报面板=模板管理），此处仅保留隐藏的上传入口与占位符说明 */}
-      <input ref={fileRef} type="file" accept=".xlsx,.docx" style={FILE_INPUT_SR_ONLY} onChange={(e) => void onUpload(e)} />
+      <input ref={fileRef} type="file" accept=".xlsx,.docx" aria-label="上传 Word 模板文件（.xlsx / .docx）" style={FILE_INPUT_SR_ONLY} onChange={(e) => void onUpload(e)} />
 
       <div style={{ marginTop: 12, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
         说明：报表按本周期内更新过的任务（未归档）聚合，包含各项目汇总与任务明细；选用 Word 模板时以 {`{period}`}、{`{periodLabel}`}、{`{startDate}`}、{`{endDate}`}、{`{projects}`}、{`{tasks}`} 占位符渲染。模板导入入口在「{offlineReportLabel}」工作面板内（仅支持 .xlsx / .docx，≤10MB）。

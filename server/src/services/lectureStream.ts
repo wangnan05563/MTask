@@ -394,11 +394,18 @@ function sectionsFromJournal(view: GenJobView): LectureSectionResult[] {
     }));
     const failed = segments.filter((s) => !s.ok);
     const kept = segments.filter((s) => s.ok && s.text.trim());
+    const gapDetail = failed.map((s) => {
+      const segError = s.error ?? '生成失败';
+      return `${s.projectName}/${s.module}（${segError}）`;
+    }).join('、');
     const text = kept
-      .map((s) => `${s.heading ? `${s.heading}\n\n` : ''}${s.text.trim()}`)
+      .map((s) => {
+        const headingBlock = s.heading ? `${s.heading}\n\n` : '';
+        return `${headingBlock}${s.text.trim()}`;
+      })
       .join('\n\n')
       + (failed.length && kept.length
-        ? `\n\n> ⚠️ 本节部分内容未生成：${failed.map((s) => `${s.projectName}/${s.module}（${s.error ?? '生成失败'}）`).join('、')}`
+        ? `\n\n> ⚠️ 本节部分内容未生成：${gapDetail}`
         : '');
     out.push({
       key: meta.key,
@@ -705,12 +712,19 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
     }
     const failed = segments.filter((s) => !s.ok);
     const kept = segments.filter((s) => s.ok && s.text.trim());
+    const gapDetail = failed.map((s) => {
+      const segError = s.error ?? '生成失败';
+      return `${s.projectName}/${s.module}（${segError}）`;
+    }).join('、');
     const text = kept
-      .map((s) => `${s.heading ? `${s.heading}\n\n` : ''}${s.text.trim()}`)
+      .map((s) => {
+        const headingBlock = s.heading ? `${s.heading}\n\n` : '';
+        return `${headingBlock}${s.text.trim()}`;
+      })
       .join('\n\n')
       // 部分失败要在成稿里留痕：只把成功段拼进去的话，读者无法分辨「这段没变更」与「这段生成失败了」
       + (failed.length && kept.length
-        ? `\n\n> ⚠️ 本节部分内容未生成：${failed.map((s) => `${s.projectName}/${s.module}（${s.error ?? '生成失败'}）`).join('、')}`
+        ? `\n\n> ⚠️ 本节部分内容未生成：${gapDetail}`
         : '');
     sections.push({
       key: meta.key,
@@ -720,9 +734,10 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
       ...(failed.length ? { error: failed.map((s) => `${s.projectName}/${s.module}：${s.error ?? '生成失败'}`).join('；') } : {}),
       segments,
     });
+    const sectionStatus = failed.length ? `部分失败（${failed.length}/${segments.length}）` : '完成';
     hooks.onStage?.({
       phase: sectionPhase(index),
-      msg: `第 ${index + 1}/${LECTURE_SECTIONS.length} 节「${meta.label}」${failed.length ? `部分失败（${failed.length}/${segments.length}）` : '完成'}`,
+      msg: `第 ${index + 1}/${LECTURE_SECTIONS.length} 节「${meta.label}」${sectionStatus}`,
       progress: sectionDoneProgress(index),
       data: { type: 'section_done', section: meta.key, ok: failed.length === 0 && text.length > 0, segments: segments.length, failed: failed.length },
     });
@@ -767,7 +782,8 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
     const saved = jobRequest(jobId);
     const failedSegments = saved ? saved.view.progress.segmentsFailed : 0;
     const missingSegments = saved ? saved.view.progress.segmentsTotal - saved.view.progress.segmentsDone : 0;
-    finalizeJob(jobId, aborted ? 'aborted' : (failedSegments > 0 || missingSegments > 0 ? 'partial' : 'done'));
+    const journalStatus = failedSegments > 0 || missingSegments > 0 ? 'partial' : 'done';
+    finalizeJob(jobId, aborted ? 'aborted' : journalStatus);
   }
   // T03174（AI-102②③④）：整轮完成（非续作/单节重试、非中止）后复算偏差——续作轮调用数天然少于整轮预估，硬比会假红；
   // T03245：复用已完成段的轮次同理不算整轮（实际调用数被有意压低）

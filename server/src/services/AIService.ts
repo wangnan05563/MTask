@@ -4,7 +4,6 @@ import { QueueService, type QueueJobRow } from './QueueService';
 import { TaskService, type TaskView } from './TaskService';
 import { parseReqIds } from './reqStatusSync'; // T02164：摘要上下文需要任务/计划两侧的需求挂接，复用同一 req_ids 解析口径
 import { logService } from './LogService';
-import { v4 as uuid } from 'uuid';
 import { getAdapter } from '../adapters';
 import { resolvePrdContext, type PrdContext } from '../util/prdContext'; // T00763：任务关联 PRD → AI 上下文自动注入（util 独立避免循环依赖）
 import { WorkspaceService } from './WorkspaceService'; // T00777：工作空间检索增强
@@ -12,7 +11,7 @@ import type { StreamResult, SubmitResult, PollResult, TokenUsage } from '../adap
 import type { ToolConfig } from '../adapters';
 import { stripThinking } from '../util/thinking'; // T00814：思考块剥离上移共享
 import { recordUsage } from '../util/aiUsageRecord'; // T03296：写入单源下沉 util，直连适配器的卡可复用同一口径
-import { classifyItems, type BatchCategory, type BatchItem, type ClassifyItemsResult } from './classifyBatch'; // T03297：批量分类分批调用与结果合并
+import { classifyItems, type BatchCategory, type BatchItem, type BatchPriority, type ClassifyItemsResult } from './classifyBatch'; // T03297：批量分类分批调用与结果合并
 
 /** 模型未配置时的统一提示，保持与产品语境一致的表达 */
 const MODEL_UNCONFIGURED = '所选模型未配置，请先在「模型管理」为该工具填写默认模型';
@@ -186,8 +185,8 @@ function summaryHistoryBlock(db: ReturnType<typeof getDb>, taskId: string): stri
   const events = db.prepare(
     'SELECT kind, detail, created_at FROM task_events WHERE task_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?',
   ).all(taskId, SUMMARY_EVENT_LIMIT) as Array<{ kind: string; detail: string | null; created_at: string }>;
+  events.reverse();
   return events
-    .reverse()
     .map((e) => {
       const kind = SUMMARY_EVENT_KIND_LABEL[e.kind] ?? e.kind;
       return `- ${briefTime(e.created_at)} ${kind}：${(e.detail ?? '').slice(0, 120)}`;
@@ -591,7 +590,7 @@ export const AIService = {
     title: string,
     categories: { id: string; name: string }[],
     toolId: string,
-  ): Promise<{ ok: boolean; content?: string; categoryId?: string | null; priority?: 'urgent' | 'high' | 'normal' | 'low' | null; error?: string }> {
+  ): Promise<{ ok: boolean; content?: string; categoryId?: string | null; priority?: BatchPriority | null; error?: string }> {
     if (!categories.length) return { ok: true, categoryId: null };
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
@@ -605,7 +604,7 @@ export const AIService = {
     // T00473：解析「分类名|优先级」；无 | 时兼容旧格式（仅分类名，优先级为 null 不写回）
     const sep = raw.lastIndexOf('|');
     const out = sep >= 0 ? raw.slice(0, sep).trim() : raw;
-    const PRIORITY_MAP: Record<string, 'urgent' | 'high' | 'normal' | 'low'> = { U: 'urgent', H: 'high', N: 'normal', L: 'low' };
+    const PRIORITY_MAP: Record<string, BatchPriority> = { U: 'urgent', H: 'high', N: 'normal', L: 'low' };
     const pLetter = sep >= 0 ? raw.slice(sep + 1).trim().toUpperCase() : '';
     const priority = PRIORITY_MAP[pLetter] ?? null;
     // 精确匹配优先；无精确命中时按「最长名称包含」兜底，避免分类名互为子串（如“开发/开发优化”）误配到较短分类
@@ -653,7 +652,7 @@ export const AIService = {
     toolId: string,
   ): Promise<{
     ok: boolean;
-    suggestion?: { categoryId: string | null; categoryName: string | null; priority: 'urgent' | 'high' | 'normal' | 'low'; reason: string; historyCount: number };
+    suggestion?: { categoryId: string | null; categoryName: string | null; priority: BatchPriority; reason: string; historyCount: number };
     error?: string;
   }> {
     const { type, config } = runtimeWithModel(toolId);
@@ -687,7 +686,7 @@ export const AIService = {
     // 理由里可能出现「|」，从第三个字段起整体归为理由
     const parts = raw.split('|');
     const nameOut = (parts[0] ?? '').trim();
-    const PRIORITY_MAP: Record<string, 'urgent' | 'high' | 'normal' | 'low'> = { U: 'urgent', H: 'high', N: 'normal', L: 'low' };
+    const PRIORITY_MAP: Record<string, BatchPriority> = { U: 'urgent', H: 'high', N: 'normal', L: 'low' };
     const priority = PRIORITY_MAP[(parts[1] ?? '').trim().toUpperCase()] ?? 'normal';
     const reason = parts.slice(2).join('|').trim() || '模型未给出理由';
     // 与 classifyCategory 同一匹配口径：精确优先，其次最长名称包含，避免分类名互为子串误配

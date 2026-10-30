@@ -14,6 +14,7 @@
 import { getDb } from '../db/connection';
 import { isRegisteredCardKey } from '../util/aiCards';
 import { summarizeJobSuccess, type JobSuccessSummary, type LectureSessionMode } from './lectureMetrics';
+import { scalarText } from '../util/scalarText';
 
 const STATUSES = new Set(['done', 'aborted', 'error']);
 const MODES = new Set(['ai', 'offline', 'unknown']);
@@ -55,13 +56,13 @@ const TARGET = 0.9;
 function nonNegativeInt(value: unknown, name: string): number {
   if (value === undefined || value === null || value === '') return 0;
   const n = Number(value);
-  if (!Number.isInteger(n) || n < 0) throw new Error(`${name} 需为非负整数，收到：${String(value)}`);
+  if (!Number.isInteger(n) || n < 0) throw new Error(`${name} 需为非负整数，收到：${scalarText(value)}`);
   return n;
 }
 
 function isoOr(value: unknown, name: string, fallback: string): string {
   if (value === undefined || value === null || value === '') return fallback;
-  const text = String(value);
+  const text = scalarText(value);
   const ms = Date.parse(text);
   if (Number.isNaN(ms)) throw new Error(`${name} 需为可解析的时间，收到：${text}`);
   return new Date(ms).toISOString();
@@ -112,14 +113,14 @@ export class AiJobStats {
     const where = ['finished_at >= ?'];
     const params: string[] = [since];
     if (args.mode !== undefined && args.mode !== null && args.mode !== '') {
-      const mode = String(args.mode);
+      const mode = scalarText(args.mode);
       if (!MODES.has(mode)) throw new Error(`mode 需为 ai|offline|unknown，收到：${mode}`);
       where.push('mode = ?');
       params.push(mode);
     }
     if (args.cardKey !== undefined && args.cardKey !== null && args.cardKey !== '') {
       where.push('card_key = ?');
-      params.push(String(args.cardKey));
+      params.push(scalarText(args.cardKey));
     }
 
     const rows = getDb().prepare(

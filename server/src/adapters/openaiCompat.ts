@@ -38,9 +38,12 @@ function readUsage(u: ChatCompletionResp['usage']): TokenUsage | undefined {
  */
 function httpFailure(status: number, errText: string): JobResult {
   const detail = extractVendorError(errText);
-  const base = detail
-    ? status === 200 ? detail : `${detail}（HTTP ${status}）`
-    : `HTTP ${status}`;
+  let base: string;
+  if (detail) {
+    base = status === 200 ? detail : `${detail}（HTTP ${status}）`;
+  } else {
+    base = `HTTP ${status}`;
+  }
   const hint = status === 404
     ? '404 多为 Base URL 路径不对：请检查是否重复/缺失版本段（自带版本者如智谱应填 https://open.bigmodel.cn/api/paas/v4，不要再补 /v1）'
     : statusHint(status);
@@ -147,7 +150,9 @@ export class OpenAICompatAdapter implements AIAdapter {
       // T02208：不再报「连接成功」。这里把目录体读出来，一是给出「目录确实可读」的证据（模型条数），
       // 二是如实标明本次请求是否真带了密钥——不带密钥也能通过，正说明该接口不校验鉴权。
       const models = normalizeModels(await res.json().catch(() => null));
-      const extra = `（${models.length > 0 ? `${models.length} 个模型` : '目录为空'}${config.apiKey ? '' : '，且本次未带密钥'}）`;
+      const modelCount = models.length > 0 ? `${models.length} 个模型` : '目录为空';
+      const keyNote = config.apiKey ? '' : '，且本次未带密钥';
+      const extra = `（${modelCount}${keyNote}）`;
       return { ok: true, message: probeOkMessage('网关可达，模型目录可读', extra) };
     } catch (e) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) };

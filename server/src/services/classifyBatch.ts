@@ -98,7 +98,7 @@ export function parseBatchReply(
   const fill = (index: number, payload: string) => {
     const parts = payload.split(/[|｜]/).map((p) => p.trim());
     const nameOut = parts[0] ?? '';
-    const letter = (parts[1] ?? '').replace(/[^A-Za-z]/g, '').toUpperCase();
+    const letter = (parts[1] ?? '').replaceAll(/[^A-Za-z]/g, '').toUpperCase();
     const priority = PRIORITY_MAP[letter] ?? null;
     const hit = matchCategory(nameOut, categories);
     // 模型明确写 NONE → 无匹配（priority 照单保留）；名字对不上任何候选也按无匹配，绝不猜

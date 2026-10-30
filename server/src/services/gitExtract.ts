@@ -149,6 +149,16 @@ export async function planExtract(taskIds: string[]): Promise<ExtractPlan> {
     filesByCommit.push({ sha: c.sha, shortSha: c.shortSha, entries: await collectCommitFiles(workspacePath, c.sha, c.parents) });
   }
   // 源文件包口径：同一文件被多个提交改动只保留「最终内容」一份；删除的既不留在包里也不该留在目录树里
+  // T03609 裁定：同秒且集合内无父子边、又改了同一文件的提交之间，git 没有先后语义（并发 authored），
+  // 「最终内容」只能靠 sha 兜底——可复现但反直觉。在 plan 阶段显式拒绝比默默产出一个说不清来源的包更负责。
+  const ambiguous = findOrderAmbiguities(commitsAsc, filesByCommit);
+  if (ambiguous.length) {
+    const head = ambiguous.slice(0, 3).map((x) =>
+      `${x.a} 与 ${x.b}（${x.paths.slice(0, 3).join('、')}${x.paths.length > 3 ? ` 等 ${x.paths.length} 个文件` : ''}）`);
+    throw new ExtractError('ambiguous-order',
+      `提交顺序不确定，无法判定最终内容：${head.join('；')}${ambiguous.length > 3 ? `；共 ${ambiguous.length} 对` : ''}。` +
+      '这些提交同一秒且没有父子关系，请拆分勾选后分两次导出');
+  }
   const finalPath = finalPathMap(filesByCommit);
   assertWithinLimits(finalPath.size, 0);
   return {
@@ -163,6 +173,51 @@ export async function planExtract(taskIds: string[]): Promise<ExtractPlan> {
     missingShas: summaries.missing,
     filesByCommit,
   };
+}
+
+/**
+ * T03609：找出「同一秒 + 集合内无父子边 + 改动路径相交」的提交对。
+ * 拓扑序只能定父子边的先后；同一秒、集合内又没有父子边的两个提交（merge 分支、跨分支批量导入极常见）
+ * 之间 git 本身没有先后语义，谁后写谁赢纯靠 sha 兜底——产物可复现但未必符合直觉，故在 plan 阶段点名。
+ * 只用已采集的数据（`%aI` 与集合内父边、文件清单），不额外起 git 进程。
+ */
+export function findOrderAmbiguities(
+  commits: CommitSummaryRow[],
+  filesByCommit: ExtractPlan['filesByCommit'],
+): { a: string; b: string; paths: string[] }[] {
+  const secOf = new Map(commits.map((c) => [c.sha, Math.floor(Date.parse(c.date) / 1000)]));
+  const pathsOf = new Map(filesByCommit.map((f) => [
+    f.sha,
+    new Set(f.entries.flatMap((e) => (e.oldPath ? [e.path, e.oldPath] : [e.path]))),
+  ]));
+  const parentOf = new Map(commits.map((c) => [c.sha, c.parents]));
+  const known = new Set(commits.map((c) => c.sha));
+  const memo = new Map<string, Set<string>>();
+  const ancestorsOf = (sha: string): Set<string> => {
+    const hit = memo.get(sha);
+    if (hit) return hit;
+    const out = new Set<string>();
+    for (const p of parentOf.get(sha) ?? []) {
+      if (!known.has(p) || out.has(p)) continue;
+      out.add(p);
+      for (const q of ancestorsOf(p)) out.add(q);
+    }
+    memo.set(sha, out);
+    return out;
+  };
+  const out: { a: string; b: string; paths: string[] }[] = [];
+  for (let i = 0; i < commits.length; i += 1) {
+    for (let j = i + 1; j < commits.length; j += 1) {
+      const A = commits[i];
+      const B = commits[j];
+      if (secOf.get(A.sha) !== secOf.get(B.sha)) continue;
+      if (ancestorsOf(A.sha).has(B.sha) || ancestorsOf(B.sha).has(A.sha)) continue;
+      const pb = pathsOf.get(B.sha);
+      const common = [...(pathsOf.get(A.sha) ?? [])].filter((p) => pb?.has(p)).sort();
+      if (common.length) out.push({ a: A.shortSha, b: B.shortSha, paths: common });
+    }
+  }
+  return out;
 }
 
 /**

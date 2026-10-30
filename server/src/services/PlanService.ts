@@ -13,6 +13,7 @@ import { ArchiveService } from './ArchiveService'; // T01874：计划彻底删�
 import { notifyChange } from './ChangeBus';
 // pizzip：docxtemplater 既有依赖，用于解压 .docx 提取 word/document.xml（T00439）
 import PizZip from 'pizzip';
+import { scalarText } from '../util/scalarText';
 import { stripWordFieldCodes } from '../util/wordFields'; // T00814：清洗 Word 域代码（目录/页码/交叉引用）
 import { logService } from './LogService'; // T00821：覆盖录入行为留痕（覆盖时间/文件名/项目，单机无账号故操作人留空）
 import { parsePlanDeps, depsSatisfied } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7）
@@ -851,7 +852,7 @@ function splitPrdChunks(docText: string, targetChars: number, maxChunks: number)
  *  需求：按规范化标题去重，重复条目保留信息量最大者，然后按文档顺序全局重排 REQ-001..N；
  *  计划：按标题精确去重（首见优先，reqNos 并集），reqNos 经片内映射改写为全局编号。 */
 function mergeChunkedPrdParts(parts: PrdParsePart[]): PrdParsePart {
-  const key = (t: string): string => t.replace(/\s+/g, '').toLowerCase();
+  const key = (t: string): string => t.replaceAll(/\s+/g, '').toLowerCase();
   const requirements: PrdParsePart['requirements'] = [];
   const reqNoByKey = new Map<string, string>();
   const drafts: PrdParsePart['drafts'] = [];
@@ -1081,7 +1082,7 @@ function resolveImportReqPlan(
       .map((r) => String(r.req_no ?? '').trim()).filter(Boolean),
   );
   // T02303 甲的复用查找表：按项目隔离，键 = trim(标题)+trim(内容)；值为 null 表示该键在存量里歧义命中多行
-  const reqKey = (title: unknown, content: unknown) => `${String(title ?? '').trim()}\u0000${String(content ?? '').trim()}`;
+  const reqKey = (title: unknown, content: unknown) => `${scalarText(title ?? '').trim()}\u0000${scalarText(content ?? '').trim()}`;
   const reusable = new Map<string, { id: string; reqNo: string } | null>();
   if (reuseMode) {
     const existRows = db.prepare('SELECT id, req_no, title, content FROM prd_requirements WHERE project_id = ?')
@@ -1921,7 +1922,8 @@ export const PlanService = {
       if (lines.length >= MAX_PARSE_ROWS) return;
       const cells: string[] = [];
       row.eachCell({ includeEmpty: false }, (cell) => {
-        cells.push(cellValueText(cell.value).trim().replaceAll(/\s*\n\s*/g, ' '));
+        // 多行单元格折成一行：去掉正则，改用 split/trim/join（等价于「换行及其两侧空白 → 单个空格」）
+        cells.push(cellValueText(cell.value).trim().split('\n').map((seg) => seg.trim()).filter(Boolean).join(' '));
       });
       const line = cells.join(' | ').replace(/[\s|]+$/, '').trim();
       if (line) lines.push(line);
@@ -2514,7 +2516,7 @@ export const PlanService = {
     for (const p of planItems) {
       for (const n of p.reqNos ?? []) {
         const ref = findReqId(n);
-        if (!ref) unlinkedReqNos.add(n); else linkedRefs.add(ref);
+        if (ref) linkedRefs.add(ref); else unlinkedReqNos.add(n);
       }
     }
     // T01995 ②：本次要新建却零计划引用的需求行（import 侧只对 newReqs 清点，这里同口径）
@@ -2724,7 +2726,7 @@ export const PlanService = {
       const question = row?.question ?? '';
       try {
         const r = this.writebackIssue(id);
-        succeeded.push({ id, question, prdId: String(r.doc.id ?? ''), filename: String(r.doc.filename ?? '') });
+        succeeded.push({ id, question, prdId: scalarText(r.doc.id ?? ''), filename: scalarText(r.doc.filename ?? '') });
       } catch (e) {
         failed.push({ id, question, reason: e instanceof Error ? e.message : String(e) });
       }

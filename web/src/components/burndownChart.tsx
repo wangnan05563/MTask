@@ -37,7 +37,11 @@ export function burndownLine(values: readonly number[], max: number): string {
 /** 纵轴刻度：取 0 与最大值的整洁上界，避免 7、13 这种读不出来的标尺 */
 export function burndownAxisMax(values: readonly number[]): number {
   const raw = Math.max(1, ...values);
-  const step = raw <= 5 ? 1 : raw <= 20 ? 5 : raw <= 100 ? 10 : 50;
+  let step: number;
+  if (raw <= 5) step = 1;
+  else if (raw <= 20) step = 5;
+  else if (raw <= 100) step = 10;
+  else step = 50;
   return Math.ceil(raw / step) * step;
 }
 
@@ -61,7 +65,7 @@ export function BurndownChart({ points, field, idealField, unit, label }: {
   const max = burndownAxisMax([...actual, ...ideal]);
   const span = Math.max(1, points.length - 1);
   const first = points[0].day;
-  const last = points[points.length - 1].day;
+  const last = points.at(-1)!.day;
   return (
     <svg viewBox={`0 0 480 ${BASE + 30}`} width="100%" role="img" aria-label={`${label}：${points.length} 个业务日，剩余 ${actual[actual.length - 1]} ${unit}，理想 ${ideal[ideal.length - 1]} ${unit}`} /* NOSONAR: 内联 SVG 复合图形，role=img 为 W3C 推荐无障碍写法，无等价原生元素 */
       style={{ display: 'block', maxWidth: 520 }} data-t03186={`burn-${field}`}>

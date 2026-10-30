@@ -48,7 +48,16 @@ export function niceMax(values: ReadonlyArray<number | null | undefined>): numbe
   if (raw <= 0) return 1;
   const pow = 10 ** Math.floor(Math.log10(raw));
   const norm = raw / pow;
-  const step = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+  let step: number;
+  if (norm <= 1) {
+    step = 1;
+  } else if (norm <= 2) {
+    step = 2;
+  } else if (norm <= 5) {
+    step = 5;
+  } else {
+    step = 10;
+  }
   return step * pow;
 }
 
@@ -196,11 +205,11 @@ export function CfdChart({ days, svgRef }: { readonly days: readonly InsightDay[
   const doneVals = days.map((d) => d.done);
   const totalVals = totals;
   return (
-    <SvgShell days={days} label={`累计流图：${days.length} 天，最新待办 ${days[days.length - 1].todo ?? '缺失'}，已完成 ${days[days.length - 1].done ?? '缺失'}`} svgRef={svgRef} testId="cfd">
+    <SvgShell days={days} label={`累计流图：${days.length} 天，最新待办 ${days.at(-1)?.todo ?? '缺失'}，已完成 ${days.at(-1)?.done ?? '缺失'}`} svgRef={svgRef} testId="cfd">
       <Axes days={days} max={max} format={(v) => String(Math.round(v))} />
       <GapBands days={days} />
-      {areaBetweenSegments(doneVals, days.map(() => 0), max).map((p, i) => <path key={`d${i}`} d={p} fill={C_DONE} opacity={0.75} />)}
-      {areaBetweenSegments(totalVals, doneVals, max).map((p, i) => <path key={`t${i}`} d={p} fill={C_TODO} opacity={0.6} />)}
+      {areaBetweenSegments(doneVals, days.map(() => 0), max).map((p, i) => <path key={`d${i}`} /* NOSONAR - 面积段由连续可采样区间切分而来，位置即身份，无稳定业务 id */ d={p} fill={C_DONE} opacity={0.75} />)}
+      {areaBetweenSegments(totalVals, doneVals, max).map((p, i) => <path key={`t${i}`} /* NOSONAR - 面积段由连续可采样区间切分而来，位置即身份，无稳定业务 id */ d={p} fill={C_TODO} opacity={0.6} />)}
       {days.map((d, i) => (d.missing ? null : (
         <circle key={d.date} cx={xAt(i, days.length)} cy={yAt((d.todo ?? 0) + (d.done ?? 0), max)} r={2.2} fill={C_TODO}>
           <title>{`${d.date} · 待办 ${d.todo ?? '—'} · 已完成 ${d.done ?? '—'}`}</title>
@@ -222,10 +231,10 @@ export function CycleChart({ days, svgRef }: { readonly days: readonly InsightDa
       <Axes days={days} max={max} format={fmt} />
       <GapBands days={days} />
       {lineSegments(days.map((d) => d.cycleP90Hours), max).map((p, i) => (
-        <path key={`p90-${i}`} d={p} fill="none" stroke={C_P90} strokeWidth={1.6} strokeDasharray="5 4" />
+        <path key={`p90-${i}`} /* NOSONAR - 折线段按缺失日切分，位置即身份，无稳定业务 id */ d={p} fill="none" stroke={C_P90} strokeWidth={1.6} strokeDasharray="5 4" />
       ))}
       {lineSegments(days.map((d) => d.cycleP50Hours), max).map((p, i) => (
-        <path key={`p50-${i}`} d={p} fill="none" stroke={C_P50} strokeWidth={2} />
+        <path key={`p50-${i}`} /* NOSONAR - 折线段按缺失日切分，位置即身份，无稳定业务 id */ d={p} fill="none" stroke={C_P50} strokeWidth={2} />
       ))}
       {days.map((d, i) => (d.cycleP50Hours === null || d.missing ? null : (
         <circle key={d.date} cx={xAt(i, days.length)} cy={yAt(d.cycleP50Hours, max)} r={2.2} fill={C_P50}>
@@ -255,14 +264,15 @@ export function OverdueTrendChart({ days, svgRef }: { readonly days: readonly In
         if (d.missing || d.overdue === null) return null;
         const x = xAt(i, n) - bw / 2;
         const y = yAt(d.overdue, countMax);
+        const rateLabel = d.dueTotal ? `${Math.round((d.overdue / d.dueTotal) * 1000) / 10}%` : '暂无可比计划';
         return (
           <rect key={d.date} x={x} y={y} width={bw} height={BASE - y} fill={C_BAD} opacity={0.75}>
-            <title>{`${d.date} · 逾期 ${d.overdue}/${d.dueTotal ?? '—'}（${d.dueTotal ? `${Math.round((d.overdue / d.dueTotal) * 1000) / 10}%` : '暂无可比计划'}）`}</title>
+            <title>{`${d.date} · 逾期 ${d.overdue}/${d.dueTotal ?? '—'}（${rateLabel}）`}</title>
           </rect>
         );
       })}
       {lineSegments(rates, 1).map((p, i) => (
-        <path key={`r${i}`} d={p} fill="none" stroke={C_TODO} strokeWidth={2} />
+        <path key={`r${i}`} /* NOSONAR - 折线段按缺失日切分，位置即身份，无稳定业务 id */ d={p} fill="none" stroke={C_TODO} strokeWidth={2} />
       ))}
       {rates.map((v, i) => (v === null || days[i].missing ? null : (
         <circle key={days[i].date} cx={xAt(i, n)} cy={yAt(v, 1)} r={2.2} fill={C_TODO}>
@@ -297,7 +307,7 @@ export function ThroughputChart({ days, svgRef }: { readonly days: readonly Insi
         );
       })}
       {lineSegments(days.map((d) => d.created), max).map((p, i) => (
-        <path key={`c${i}`} d={p} fill="none" stroke={C_CREATED} strokeWidth={1.8} strokeDasharray="4 3" />
+        <path key={`c${i}`} /* NOSONAR - 折线段按缺失日切分，位置即身份，无稳定业务 id */ d={p} fill="none" stroke={C_CREATED} strokeWidth={1.8} strokeDasharray="4 3" />
       ))}
       <text x={L} y={10} fontSize={9} fill="var(--text)">吞吐（柱=完成，虚线=新增）</text>
     </SvgShell>
@@ -345,7 +355,7 @@ export async function exportSvgAsPng(svg: SVGSVGElement, filename: string): Prom
     link.href = pngUrl;
     link.download = filename.endsWith('.png') ? filename : `${filename}.png`;
     link.click();
-    window.setTimeout(() => URL.revokeObjectURL(pngUrl), 1000);
+    globalThis.setTimeout(() => URL.revokeObjectURL(pngUrl), 1000);
   } finally {
     URL.revokeObjectURL(url);
   }

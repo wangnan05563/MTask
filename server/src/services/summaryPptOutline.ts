@@ -11,8 +11,9 @@
  */
 import { AIService } from './AIService';
 import { parseAiJson } from './kickoffService';
-import { periodRange, periodLabelOf, validateProjectIds, type ReportData, type SummaryPeriod } from './ReportService';
+import { periodRange, periodLabelOf, validateProjectIds, type SummaryPeriod } from './ReportService';
 import { assertCustomRange, assertSummaryPeriod, type CustomRange } from './summaryPptPeriod';
+import { scalarText } from '../util/scalarText';
 import {
   assertSummaryNotBlocked,
   buildSummaryPreflight,
@@ -93,7 +94,7 @@ export const DEFAULT_SUMMARY_MODE: SummaryMode = 'merged';
 
 /** mode 归一（缺省 merged）；非法值 400 点名，不静默当合并版跑 */
 export function normalizeSummaryMode(raw: unknown): SummaryMode {
-  const mode = (raw == null ? '' : String(raw)).trim() || DEFAULT_SUMMARY_MODE;
+  const mode = (raw == null ? '' : scalarText(raw)).trim() || DEFAULT_SUMMARY_MODE;
   if (!(SUMMARY_MODES as readonly string[]).includes(mode)) {
     throw new Error(`mode 仅支持 ${SUMMARY_MODES.join('/')}，当前为「${mode}」`);
   }
@@ -107,7 +108,7 @@ export const BULLET_MAX_LINES = 6;
 /** 一页可挂的数据块上限（同 kickoff：3 块必然挤爆版面） */
 export const DATA_KEYS_MAX = 2;
 /** 结构页（纯版式，不承载数据块）：挂 dataKeys 一律清空（同 kickoff T02156） */
-const STRUCTURAL_LAYOUTS: readonly string[] = ['cover', 'toc', 'section', 'thanks'];
+const STRUCTURAL_LAYOUTS = new Set<string>(['cover', 'toc', 'section', 'thanks']);
 
 /**
  * 页数约束：单项目 12~16；多项目合并版 = 枚举结构固定页 + 每项目 4 页 = **6+4N**（T02957 方案 A），且 ≤40。
@@ -165,7 +166,7 @@ export interface OutlinePromptInput {
   extraNote?: string;
 }
 
-const asText = (v: unknown): string => (v == null ? '' : String(v)).trim();
+const asText = (v: unknown): string => (v == null ? '' : scalarText(v)).trim();
 
 /** 一条事实块压到预算内：优先整行裁，最后硬裁；返回是否发生截断 */
 export function clipFacts(lines: string[], budget: number): { text: string; truncated: boolean } {
@@ -184,12 +185,14 @@ export function clipFacts(lines: string[], budget: number): { text: string; trun
 
 /** 每项目摘要（预算内）；返回文本与截断标记 */
 function projectFactsText(f: ProjectFacts, budget: number): { text: string; truncated: boolean } {
+  const samplesText = f.samples.map((t) => `「${t}」`).join('、');
+  const samplesLine = f.samples.length ? `计划样例（bullets 可引用名称）：${samplesText}` : '计划样例：无';
   const lines = [
     `项目：${f.name}`,
     `任务：总 ${f.tasks.total} / 已完成 ${f.tasks.done} / 已验证 ${f.tasks.verified}`,
     `计划：总 ${f.plans.total}（进行中 ${f.plans.doing}、阻塞 ${f.plans.blocked}、逾期 ${f.plans.overdue}）`,
     `里程碑：${f.milestones} 个；需求：${f.requirements} 条；用例：${f.testCases} 条；估算：${f.estimates} 行`,
-    f.samples.length ? `计划样例（bullets 可引用名称）：${f.samples.map((t) => `「${t}」`).join('、')}` : '计划样例：无',
+    samplesLine,
   ];
   return clipFacts(lines, budget);
 }
@@ -223,18 +226,23 @@ export function buildOutlinePrompt(input: OutlinePromptInput): {
   const status = input.preflight.map((i) => `${i.key} ${i.label}=${i.count}（${i.status}）`).join('；');
   const usable = input.preflight.filter((i) => i.status === 'ok').map((i) => i.key);
 
+  const separateStructure = `分别独立版：每个项目一份完整稿（封面、目录 + 10 个内容章节），每项目 ${pageRange.min}~${pageRange.max} 页（共 ${totalPageRange.min}~${totalPageRange.max} 页）；数组按项目分组输出，每页必须带 projectId（取【项目清单】里的 id）。`;
+  const mergedOrSingleStructure = merged
+    ? `合并版结构固定：封面→目录→跨项目对比→每项目 4 页（总体进展/里程碑与阶段进展/问题与风险/下阶段计划）→横向对比→本期总结与展望→附录。`
+    : '单项目完整稿：封面、目录 + 10 个内容章节（FR-5.3~FR-5.12），可按内容拆页但不得缺章。';
+  const pageStructure = `页数 ${rangeText(pageRange)}；${mergedOrSingleStructure}`;
+  const mergedDataRule = `合并版必须有一页 dataKeys 含 "compare"（汇总对比）与一页含 "horizontal"（横向对比）；每项目的 4 页必须带 projectId（取【项目清单】里的 id），且该 4 页的 dataKeys 分别含 "kpi"、"milestones"、"risks"、"nextSteps"；`;
+  const requiredKeysText = REQUIRED_DATA_KEYS.map((k) => `"${k}"`).join(' / ');
+  const singleDataRule = `每个项目都必须覆盖的数据块：${requiredKeysText}（各至少一页）；`;
+
   const system = `你是「阶段性项目总结汇报 PPT」的大纲编排器。只输出一个 JSON 数组，不要任何解释文字、不要代码围栏之外的内容。
 数组每个元素是一页，形如 {"section":"","title":"","bullets":[""],"dataKeys":[""],"layout":"","projectId":""}，约束逐条遵守：
-1. ${separate
-    ? `分别独立版：每个项目一份完整稿（封面、目录 + 10 个内容章节），每项目 ${pageRange.min}~${pageRange.max} 页（共 ${totalPageRange.min}~${totalPageRange.max} 页）；数组按项目分组输出，每页必须带 projectId（取【项目清单】里的 id）。`
-    : `页数 ${rangeText(pageRange)}；${merged ? `合并版结构固定：封面→目录→跨项目对比→每项目 4 页（总体进展/里程碑与阶段进展/问题与风险/下阶段计划）→横向对比→本期总结与展望→附录。` : '单项目完整稿：封面、目录 + 10 个内容章节（FR-5.3~FR-5.12），可按内容拆页但不得缺章。'}`}
+1. ${separate ? separateStructure : pageStructure}
 2. section 只能取：${SUMMARY_SECTIONS.join(' / ')}；
 3. layout 只能取：${SUMMARY_LAYOUTS.join(' / ')}；
 4. dataKeys 只能取：${SUMMARY_DATA_KEYS.join(' / ')}；一页最多 ${DATA_KEYS_MAX} 个（建议每个数据块独占一页，严禁把多个数据块堆到同一页）；封面/目录/章节/致谢（cover/toc/section/thanks）为结构页，dataKeys 必须为空（不填任何数据块）；
 5. 每页 bullets ≤${BULLET_MAX_LINES} 条，每条 ≤${BULLET_MAX_CHARS} 字；
-6. ${merged
-    ? `合并版必须有一页 dataKeys 含 "compare"（汇总对比）与一页含 "horizontal"（横向对比）；每项目的 4 页必须带 projectId（取【项目清单】里的 id），且该 4 页的 dataKeys 分别含 "kpi"、"milestones"、"risks"、"nextSteps"；`
-    : `每个项目都必须覆盖的数据块：${REQUIRED_DATA_KEYS.map((k) => `"${k}"`).join(' / ')}（各至少一页）；`}
+6. ${merged ? mergedDataRule : singleDataRule}
 7. 铁律：凡条数、合计、覆盖率、日期、人天等数字，一律只写 dataKeys 引用，由系统按库内真实数据填充——严禁自行写数字或改写数字；
 8. 只依据【资料齐备性】里标注为 ok 的数据源安排内容页；资源缺失的章节可保留页但走降级表述（布局允许）；
 9. ${separate ? '每个项目的第 1 页 layout=cover、第 2 页 layout=toc' : '第 1 页 layout=cover、第 2 页 layout=toc'}（封面与目录都是结构页，dataKeys 必须为空）；章节分隔可用 layout=section（dataKeys 置空）；
@@ -242,10 +250,20 @@ export function buildOutlinePrompt(input: OutlinePromptInput): {
 11. 「问题与风险」页左栏是需求待确认（PRD 问题）、右栏是执行风险（逾期/阻塞/高复杂度），两栏都不许自造条目；
 12. JSON 语法铁律：键名与字符串分隔符只能用英文双引号 "，「」只出现在 bullet 正文内部用于包裹名称，不得顶替双引号；数组/对象元素之间必须有逗号，不得写成 ["总 11""已完成"] 这种连写。`;
 
+  let scopeTag: string;
+  if (separate) {
+    scopeTag = '（分别独立版：每项目一份完整稿）';
+  } else if (merged) {
+    scopeTag = '（合并版：跨项目汇总 + 每项目小结）';
+  } else {
+    scopeTag = '（单项目完整稿）';
+  }
+  const projectListText = input.facts.map((f) => `${f.name}（id=${f.id}）`).join('；');
+
   const user = [
     `【汇报周期】${input.periodLabel}（${start} ~ ${endDay}）`,
-    `【项目数】${n}${separate ? '（分别独立版：每项目一份完整稿）' : merged ? '（合并版：跨项目汇总 + 每项目小结）' : '（单项目完整稿）'}`,
-    `【项目清单】${input.facts.map((f) => `${f.name}（id=${f.id}）`).join('；')}`,
+    `【项目数】${n}${scopeTag}`,
+    `【项目清单】${projectListText}`,
     `【资料齐备性】${status}`,
     `【可用数据源（ok）】${usable.join('、') || '无'}`,
     `【各项目摘要】（每项目预算 ${budget} 字${truncated ? '，超限者已截断' : ''}）`,
@@ -314,7 +332,7 @@ function validatePage(v: unknown, index: number, ctx: ValidateContext, warnings:
   const dataKeys = dedupeKeys(Array.isArray(o.dataKeys) ? o.dataKeys : [], at);
   // 结构页（cover/toc/section/thanks）是纯版式页，不承载数据块：直接清空并告警，
   // 不让「AI 在 toc 上堆 9 个数据块」这类输出把整稿打死（同 kickoff T02156）。
-  if (STRUCTURAL_LAYOUTS.includes(layout) && dataKeys.length > 0) {
+  if (STRUCTURAL_LAYOUTS.has(layout) && dataKeys.length > 0) {
     warnings.push(`${at} layout=${layout} 为结构页，不应挂 dataKeys，已清空（原 ${dataKeys.length} 个：${dataKeys.join('/')}）`);
     dataKeys.length = 0;
   } else if (dataKeys.length > DATA_KEYS_MAX) {
@@ -377,9 +395,10 @@ export function validateSummaryOutline(raw: unknown, ctx: ValidateContext): { ou
   const mode = ctx.mode ?? DEFAULT_SUMMARY_MODE;
   const range = mode === 'separate' ? expectedSeparateTotalRange(n) : expectedPageRange(n);
   if (raw.length < range.min || raw.length > range.max) {
+    const mergedScope = n > 1 ? `合并版 ${n} 个项目` : '单项目';
     const scope = mode === 'separate'
       ? `分别独立版 ${n} 个项目，共 ${range.min}~${range.max} 页`
-      : (n > 1 ? `合并版 ${n} 个项目` : '单项目');
+      : mergedScope;
     throw new Error(`页数 ${raw.length} 不在 ${rangeText(range)} 页（${scope}）`);
   }
   const warnings: string[] = [];
@@ -544,4 +563,4 @@ export function outlineWindow(period: SummaryPeriod, custom?: CustomRange) {
   return { label: periodLabelOf(period), start: r.start.toISOString(), end: r.end.toISOString() };
 }
 
-export type { ReportData };
+export type { ReportData } from './ReportService';

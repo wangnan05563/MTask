@@ -6,7 +6,7 @@
  */
 import { useCallback,  useEffect, useRef, useState } from 'react';
 import { api, setAccessToken, type Task } from '../api/client';
-import { ListTodo, Plus, ListOrdered, ScrollText, MoreHorizontal, KeyRound, Wifi, WifiOff } from 'lucide-react';
+import { ListTodo, Plus, ListOrdered, ScrollText, MoreHorizontal, KeyRound, Wifi, WifiOff, Smartphone } from 'lucide-react'; // T03655：PWA 引导标题改 lucide，不再用 emoji
 import { MobileHome } from './MobileHome';
 import { QuickNote } from './QuickNote';
 import { MobileQueue } from './MobileQueue';
@@ -122,7 +122,7 @@ export function MobileShell() {
       {pwaGuide && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
           <dialog open aria-modal="true" aria-label="添加到主屏幕" style={{ position: 'static', margin: 0, border: 'none', background: 'var(--card-bg)', color: 'var(--text)', borderRadius: 14, padding: 16, maxWidth: 340, width: '100%' }}>
-            <div style={{ fontWeight: 700, fontSize: 'var(--fs-2xl)', marginBottom: 8 }}>📱 添加到主屏幕</div>
+            <div style={{ fontWeight: 700, fontSize: 'var(--fs-2xl)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}><Smartphone size={18} aria-hidden /> 添加到主屏幕</div>
             <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
               把 MTask 装到手机桌面，像 App 一样全屏使用：<br />
               <b>iPhone：</b>Safari 底部「分享」→「添加到主屏幕」<br />

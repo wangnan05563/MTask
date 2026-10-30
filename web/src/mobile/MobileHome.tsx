@@ -8,6 +8,7 @@ import { Badge, EmptyState, headerStyle, pageStyle, PullRefresh, rowStyle, Skele
 import { ProjectListHint, getProjectListSnapshot, loadProjectList, projectListPlaceholder, useProjectList } from '../ui/projectList'; // T02212：项目取数接入 T02201 统一容错层
 import { MobileTaskDetail } from './MobileTaskDetail';
 import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
+import { CircleCheck, Clock, Image, Pin, SquarePen } from 'lucide-react'; // T03655：空态/置顶/附图/陈旧提示改 lucide，不再用 emoji
 
 interface Props {
   readonly onQuickNote: () => void;
@@ -325,16 +326,16 @@ export function MobileHome({ onQuickNote, notify, focus }: Props) {
         {/* T01425：缓存数据截至角标——stale 视图时展示 */}
         {staleAsOf && (
           <div style={{ margin: '6px 0 0', padding: '5px 10px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-muted)', fontSize: 'var(--fs-s)', display: 'flex', alignItems: 'center', gap: 6 }}>
-            ⏱ 数据截至 {fmtAsOf(staleAsOf)}（离线缓存，联网后自动更新）
+            <Clock size={12} aria-hidden /> 数据截至 {fmtAsOf(staleAsOf)}（离线缓存，联网后自动更新）
           </div>
         )}
         {loading && !staleAsOf && <div style={{ padding: '8px 0' }}><Skeleton rows={4} /></div>}
 
         {shownTasks.length === 0 && !loading && alertFilter && (
-          <EmptyState icon="✅" message="没有需要关注的任务了" />
+          <EmptyState icon={<CircleCheck size={32} />} message="没有需要关注的任务了" />
         )}
         {tasks.length === 0 && !loading && !alertFilter && (
-          <EmptyState icon="📝" message="还没有待办" actionLabel="开始随手记" onAction={onQuickNote} />
+          <EmptyState icon={<SquarePen size={32} />} message="还没有待办" actionLabel="开始随手记" onAction={onQuickNote} />
         )}
 
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
@@ -358,13 +359,13 @@ export function MobileHome({ onQuickNote, notify, focus }: Props) {
                 onClick={() => setDetailTask(t)}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {t.pinned && <span style={{ fontSize: 'var(--fs-xs)' }}>📌</span>}
+                  {t.pinned && <span style={{ display: 'inline-flex', color: 'var(--accent)' }} title="已置顶"><Pin size={12} aria-hidden /></span>}
                   <span className="zen-zoom" style={{ flex: 1, fontSize: 'var(--fs-xl)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</span>
                   <span style={{ fontSize: 'var(--fs-xs)', color: priorityColor(t.priority) }}>●{priorityShort(t.priority)}</span>
                 </div>
                 <div className="zen-hide" style={{ display: 'flex', gap: 6, marginTop: 2, alignItems: 'center' }}>
                   {t.category_id && <Badge>{catName(t.category_id)}</Badge>}
-                  {t.images.length > 0 && <Badge>🖼 {t.images.length}</Badge>}
+                  {t.images.length > 0 && <Badge><Image size={10} aria-hidden /> {t.images.length}</Badge>}
                 </div>
                 {/* T01423：详情/附件展示移入 MobileTaskDetail 半屏抽屉 */}
               </button>

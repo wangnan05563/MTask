@@ -80,7 +80,7 @@ export function parseIssuesJson(text: string): PrdGenIssue[] {
 }
 
 /** 标题行里含「待确认问题」即视为问题节（容忍「## 八、待确认问题汇总」「### 待确认问题清单」等写法） */
-const ISSUE_HEADING_RE = /^\s*#{1,6}[^\n]*待确认问题[^\n]*$/m;
+const ISSUE_HEADING_RE = /^[ \t]*#{1,6}[^\n]*待确认问题[^\n]*$/m;
 
 /** 问题清单分隔标记：`<<<ISSUES>>>` 为约定写法，同时容忍 `<ISSUES>` / `<<ISSUES>>` 等变体 */
 const ISSUES_MARKER_RE = /<{1,4}\s*ISSUES\s*>{1,4}/i;
@@ -99,7 +99,7 @@ export function issuesFromSection(prdMd: string): PrdGenIssue[] {
   if (!m) return [];
   const rest = prdMd.slice(m.index + m[0].length);
   // 截到下一个标题为止（原实现一路取到文末，会把后续章节也当成问题列表）
-  const stop = /^\s*#{1,6}\s/m.exec(rest.slice(1));
+  const stop = /^[ \t]*#{1,6}(?:[ \t\r]|$)/m.exec(rest.slice(1));
   const body = stop ? rest.slice(0, stop.index + 1) : rest;
   const out: PrdGenIssue[] = [];
   for (const line of body.split('\n')) {
@@ -205,7 +205,9 @@ export function inlineIssuesSection(prdMd: string, issues: PrdGenIssue[]): strin
   }
   // 定位该章标题后、下一个标题前的节内末尾，在节尾追加表格（保留标题与原有提示文字）
   const rest = prdMd.slice(m.index + m[0].length);
-  const stop = /^\s*#{1,6}\s/m.exec(rest.slice(1));
+  const stop = /^[ \t]*#{1,6}(?:[ \t\r]|$)/m.exec(rest.slice(1));
+  // stop 现在落在「下一个标题行的行首」（旧实现的 \s* 会越过多空行、甚至切进 CRLF 中间）；
+  // 表尾再补一个换行，保证与后续标题之间仍留一个空行。
   const insertAt = stop ? m.index + m[0].length + stop.index + 1 : prdMd.length;
-  return `${prdMd.slice(0, insertAt)}\n${table}${prdMd.slice(insertAt)}`;
+  return `${prdMd.slice(0, insertAt)}\n${table}\n${prdMd.slice(insertAt)}`;
 }

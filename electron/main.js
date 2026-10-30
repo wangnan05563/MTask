@@ -918,7 +918,16 @@ async function runOnlineUpdateFlow({ auto = false } = {}) {
     } catch (e) {
       if (!auto) {
         const message = e instanceof Error ? e.message : String(e);
-        const src = e?.source === 'manual' ? `手动配置地址${e.repo ? ` ${e.repo}` : ''}` : e?.repo ? `内置地址 ${e.repo}` : '';
+        let src;
+        if (e?.source === 'manual') {
+          const manualRepo = e.repo ? ` ${e.repo}` : '';
+          src = `手动配置地址${manualRepo}`;
+        } else if (e?.repo) {
+          src = `内置地址 ${e.repo}`;
+        } else {
+          src = '';
+        }
+        const srcLine = src ? `下载来源：${src}\n` : '';
         const hint = e?.source === 'manual'
           ? '可在「设置 → 版本更新」修正手动仓库地址，或清空后回退内置地址'
           : '可在「设置 → 版本更新」填写手动仓库地址覆盖内置地址';
@@ -926,7 +935,7 @@ async function runOnlineUpdateFlow({ auto = false } = {}) {
           type: 'error',
           title: '检查更新失败',
           message,
-          detail: `${src ? `下载来源：${src}\n` : ''}${hint}`,
+          detail: `${srcLine}${hint}`,
           buttons: ['知道了'],
         });
       }
@@ -938,11 +947,13 @@ async function runOnlineUpdateFlow({ auto = false } = {}) {
       }
       return;
     }
+    const releaseNameLine = info.releaseName ? `Release：${info.releaseName}\n` : '';
+    const publishedAtLine = info.publishedAt ? `发布时间：${info.publishedAt.slice(0, 10)}\n` : '';
     const want = await dialog.showMessageBox(ownerWin(), {
       type: 'info',
       title: '发现新版本',
       message: `发现新版本 v${info.version}（当前 v${info.currentVersion}）`,
-      detail: `${info.releaseName ? `Release：${info.releaseName}\n` : ''}${info.publishedAt ? `发布时间：${info.publishedAt.slice(0, 10)}\n` : ''}下载来源：${updateSourceText(info)}`,
+      detail: `${releaseNameLine}${publishedAtLine}下载来源：${updateSourceText(info)}`,
       buttons: ['立即下载', '稍后再说'],
       defaultId: 0,
       cancelId: 1,

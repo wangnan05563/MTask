@@ -17,12 +17,37 @@ const TITLE_H = 18;
 
 /** 去除 Markdown 行内标记（加粗/行内代码/链接），保留可读文字 */
 function plainInline(text: string): string {
-  return text
+  const s = text
     .replaceAll(/`([^`]+)`/g, '$1')
     .replaceAll(/\*\*([^*]+)\*\*/g, '$1')
-    .replaceAll(/(^|[^*])\*([^*]+)\*/g, '$1$2')
-    .replaceAll(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .trim();
+    .replaceAll(/(^|[^*])\*([^*]+)\*/g, '$1$2');
+  return stripLinks(s).trim();
+}
+
+/**
+ * `[文字](地址)` → `文字`，与正则 `\[([^\]]+)\]\([^)]*\)` 等价。
+ * 用线性扫描代替正则：`[^\]]+` 可跨过未闭合的 `[`，遇到一串不平衡的左方括号时回溯平方级放大（热点 S5852）。
+ */
+function stripLinks(text: string): string {
+  const parts: string[] = [];
+  let i = 0;
+  let close = -1;
+  for (let open = text.indexOf('['); open >= 0; open = text.indexOf('[', i)) {
+    // close 是单调游标：每轮的 indexOf 都从上一轮位置之后起算，整体只扫一遍
+    if (close < open) close = text.indexOf(']', open + 1);
+    if (close < 0) break; // 其后没有 `]`，剩余部分不可能再构成链接
+    const rp = close > open + 1 ? text.indexOf(')', close + 2) : -1;
+    if (rp < 0 || text[close + 1] !== '(') {
+      // 该处不是链接：把 `[` 原样带过，从它的下一位继续找
+      parts.push(text.slice(i, open + 1));
+      i = open + 1;
+      continue;
+    }
+    parts.push(text.slice(i, open), text.slice(open + 1, close));
+    i = rp + 1;
+  }
+  parts.push(text.slice(i));
+  return parts.join('');
 }
 
 /** 判断是否为 Markdown 表格分隔行（| --- | --- |） */
@@ -170,7 +195,7 @@ export function minUnbreakableWidth(doc: PDFDoc, cells: string[]): number {
   doc.fontSize(9);
   let w = doc.widthOfString('一'); // 至少容得下一个汉字（纯 ASCII 列时这也是下限）
   for (const cell of cells) {
-    const spaced = String(cell ?? '').replace(/[\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/g, ' ');
+    const spaced = String(cell ?? '').replaceAll(/[\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/g, ' ');
     for (const tok of spaced.split(/\s+/)) {
       if (tok) w = Math.max(w, doc.widthOfString(tok));
     }

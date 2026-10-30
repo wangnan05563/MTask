@@ -159,8 +159,14 @@ export function UsagePanel() {
               <thead><tr>{['卡片', '分组', '状态', '成功', '失败'].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
               <tbody>
                 {coverage.cards.filter((c) => c.available).map((c) => {
-                  const state = !c.metered ? '没接埋点' : c.okCount > 0 ? '已采用' : '没人用';
-                  const color = !c.metered ? 'var(--danger)' : c.okCount > 0 ? 'var(--success)' : 'var(--warn)';
+                  let state: string;
+                  let color: string;
+                  if (c.metered) {
+                    if (c.okCount > 0) { state = '已采用'; color = 'var(--success)'; }
+                    else { state = '没人用'; color = 'var(--warn)'; }
+                  } else {
+                    state = '没接埋点'; color = 'var(--danger)';
+                  }
                   return (
                     <tr key={c.key} data-t03296="card">
                       <td style={cellStyle}>{c.title}<span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>{c.key}</span></td>

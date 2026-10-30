@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, type Queue, type QueueJob, type Task, type AITool } from '../api/client';
-import { Plus, ListPlus, RotateCcw, Send, Eye, ChevronUp, Check, Copy, Layers, Loader2, Trash2, RefreshCw } from 'lucide-react';
+import { Plus, Minus, Pause, ListPlus, RotateCcw, Send, Eye, ChevronUp, Check, Copy, Layers, Loader2, Trash2, RefreshCw } from 'lucide-react';
 import { EmptyState } from '../ui/EmptyState'; // T01072-FR1.10：统一空态组件
 import { askConfirm } from '../ui/dialogs'; // T01298：删除队列/移除任务前确认
 
@@ -293,11 +293,11 @@ export function QueuePage() {
             {'并行上限'}
             <button onClick={() => void changePoolLimit((pool?.limit ?? 3) - 1)} disabled={!pool || pool.limit <= 1}
               title="下调并行上限" aria-label="下调并行上限"
-              style={{ width: 22, height: 22, borderRadius: 5, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}>−</button>
+              style={{ width: 22, height: 22, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 5, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}><Minus size={12} aria-hidden /></button>
             <b style={{ color: 'var(--accent)' }}>{pool?.limit ?? '—'}</b>
             <button onClick={() => void changePoolLimit((pool?.limit ?? 3) + 1)} disabled={!pool || pool.limit >= 10}
               title="上调并行上限" aria-label="上调并行上限"
-              style={{ width: 22, height: 22, borderRadius: 5, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}>＋</button>
+              style={{ width: 22, height: 22, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 5, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}><Plus size={12} aria-hidden /></button>
           </span>
         </div>
         {(pool?.running.length ?? 0) > 0 && (
@@ -310,8 +310,8 @@ export function QueuePage() {
                 <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{r.project_name} · 运行 {Math.max(1, Math.round((Date.now() - new Date(r.ai_state_at).getTime()) / 60000))} 分钟</span>
                 <button onClick={() => void pauseRunning(r.id)} title="暂停 — 将任务移出分发池（转为搁置）；已在 Agent 侧执行的动作无法强制中断"
                   aria-label={`暂停任务 ${r.task_no ?? ''}`}
-                  style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                  ⏸ 暂停
+                  style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <Pause size={12} aria-hidden /> 暂停
                 </button>
               </div>
             ))}

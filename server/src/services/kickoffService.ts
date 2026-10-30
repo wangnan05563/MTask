@@ -644,15 +644,17 @@ export function repairChineseJsonQuotes(raw: string): { text: string; fixed: num
   let mode: 'out' | 'ascii' | 'corner' = 'out';
   let closer = '';
   // 收尾后看下一个非空白字符：只有 `,` `]` `}` `:` 是合法后继，其余补逗号
-  const needComma = (at: number): boolean => {
-    for (let j = at + 1; j < raw.length; j++) {
+  const needComma = (from: number): boolean => {
+    for (let j = from; j < raw.length; j++) {
       if (/\s/.test(raw[j])) continue;
       return !',]}:'.includes(raw[j]);
     }
     return false;
   };
-  for (let i = 0; i < raw.length; i++) {
+  let i = 0;
+  while (i < raw.length) {
     const c = raw[i];
+    i += 1;
     if (mode === 'out') {
       if (c === '"') { mode = 'ascii'; out += c; continue; }
       const cl = CLOSER[c];
@@ -663,7 +665,7 @@ export function repairChineseJsonQuotes(raw: string): { text: string; fixed: num
     if (mode === 'ascii') {
       // 合法 JSON 的字符串内部可能真有「」（如 bullet 正文引用名称），此时只认 ASCII 双引号收尾；
       // 反斜杠成对消费，避免把 `\"` 的引号误判成收尾
-      if (c === '\\' && i + 1 < raw.length) { out += c + raw[i + 1]; i += 1; continue; }
+      if (c === '\\' && i < raw.length) { out += c + raw[i]; i += 1; continue; }
       out += c;
       if (c === '"') {
         mode = 'out';
@@ -679,7 +681,7 @@ export function repairChineseJsonQuotes(raw: string): { text: string; fixed: num
       continue;
     }
     // 中文引号串内部的 ASCII 双引号是内容，必须转义；反斜杠交给 relaxIllegalEscapes 统一处置
-    if (c === '"') { out += '\\"'; fixed += 1; continue; }
+    if (c === '"') { out += String.raw`\"`; fixed += 1; continue; }
     out += c;
   }
   return { text: out, fixed };
@@ -710,16 +712,18 @@ export function parseAiJson(content: string, hits?: string[]): unknown {
 export function relaxIllegalEscapes(raw: string): { text: string; fixed: number } {
   let out = '';
   let fixed = 0;
-  for (let i = 0; i < raw.length; i++) {
+  let i = 0;
+  while (i < raw.length) {
     const c = raw[i];
+    i += 1;
     if (c !== '\\') {
       out += c;
       continue;
     }
-    const next = raw[i + 1];
-    if (next !== undefined && '"\\/bfnrtu'.includes(next)) {
+    const next = raw[i];
+    if (next !== undefined && String.raw`"\/bfnrtu`.includes(next)) {
       out += c + next; // 合法转义：成对消费，不判定
-      i++;
+      i += 1;
       continue;
     }
     out += '\\\\'; // 非法转义：只双写这一个反斜杠，其后字符下一轮照常判定
@@ -730,7 +734,7 @@ export function relaxIllegalEscapes(raw: string): { text: string; fixed: number 
 
 /** 清洗命中即追一条 warning（调用方传入收集数组；无数组则静默修正，供无 warning 通道的路径用） */
 function noteEscapeHits(hits: string[] | undefined, fixed: number, what: string): void {
-  if (fixed > 0 && hits) hits.push(`${what} 含 ${fixed} 处白名单外非法转义（如 \\d），已双写修正`);
+  if (fixed > 0 && hits) hits.push(String.raw`${what} 含 ${fixed} 处白名单外非法转义（如 \d），已双写修正`);
 }
 
 /**
@@ -1019,6 +1023,11 @@ export function outlineFacts(b: KickoffBundle): string {
     .slice(0, 4)
     .map((p) => clip(p.title));
   const milestoneSamples = b.milestones.slice(0, 5).map((m) => `${clip(m.title)}（${m.end_date || KICKOFF_PLACEHOLDER}）`);
+  const reqSampleText = reqSamples.length ? reqSamples.map((s) => `「${s}」`).join('、') : '无';
+  const doingSampleText = doingSamples.length ? doingSamples.map((s) => `「${s}」`).join('、') : '无';
+  const blockedSampleText = blockedSamples.length ? blockedSamples.map((s) => `「${s}」`).join('、') : '无';
+  const doneSampleText = doneSamples.length ? doneSamples.map((s) => `「${s}」`).join('、') : '无';
+  const milestoneSampleText = milestoneSamples.length ? milestoneSamples.map((s) => `「${s}」`).join('、') : '无';
   return [
     `项目：${b.project.name}（数据截至 ${b.dataAsOf}）`,
     `资料齐备性：${status}`,
@@ -1031,11 +1040,11 @@ export function outlineFacts(b: KickoffBundle): string {
     assigneeFacts,
     `本地风险信号：${b.risks.length} 条（${b.risks.map((r) => r.item).join('；')}）`,
     `样例事实（bullets 只能引用下列名称，不得杜撰；数字仍由 dataKeys 覆盖）：` +
-      `需求样例 ${reqSamples.length ? reqSamples.map((s) => `「${s}」`).join('、') : '无'}` +
-      `；进行中计划 ${doingSamples.length ? doingSamples.map((s) => `「${s}」`).join('、') : '无'}` +
-      `；阻塞计划 ${blockedSamples.length ? blockedSamples.map((s) => `「${s}」`).join('、') : '无'}` +
-      `；已完成计划 ${doneSamples.length ? doneSamples.map((s) => `「${s}」`).join('、') : '无'}` +
-      `；里程碑 ${milestoneSamples.length ? milestoneSamples.map((s) => `「${s}」`).join('、') : '无'}`,
+      `需求样例 ${reqSampleText}` +
+      `；进行中计划 ${doingSampleText}` +
+      `；阻塞计划 ${blockedSampleText}` +
+      `；已完成计划 ${doneSampleText}` +
+      `；里程碑 ${milestoneSampleText}`,
     b.workspaceNote ?? '',
   ]
     .filter(Boolean)
@@ -1054,9 +1063,8 @@ function guardKickoffBlocked(bundle: KickoffBundle): void {
 export async function kickoffOutline(projectId: string, toolId: string, extraNote?: string): Promise<KickoffOutlineResult> {
   const bundle = collectBundle(projectId);
   guardKickoffBlocked(bundle);
-  const user = `【资料齐备性与真实计数】\n${outlineFacts(bundle)}\n\n【PRD 摘要】\n${bundle.prdExcerpt || '（无 PRD 原文）'}${
-    extraNote ? `\n\n【用户补充要求】\n${extraNote}` : ''
-  }\n\n请按上述约束输出 ${PAGE_MIN}~${PAGE_MAX} 页的大纲 JSON 数组。`;
+  const extraNoteBlock = extraNote ? `\n\n【用户补充要求】\n${extraNote}` : '';
+  const user = `【资料齐备性与真实计数】\n${outlineFacts(bundle)}\n\n【PRD 摘要】\n${bundle.prdExcerpt || '（无 PRD 原文）'}${extraNoteBlock}\n\n请按上述约束输出 ${PAGE_MIN}~${PAGE_MAX} 页的大纲 JSON 数组。`;
   // T02172：dataKeys 上限的执行时机——第 1 次解析严格（超限抛错，让 askJson 用 RETRY 提示再问一轮），
   // 第 2 次解析起转软（截断 + warning 点名）。用解析回调的调用次数当轮次，不去改 askJson 的通用重试协议。
   let parseRound = 0;
@@ -1157,9 +1165,9 @@ function pinField(v: unknown, pool: string, maxLen: number, label: string): stri
   // T02204：名称白名单按去空白比对。系统自己的本地文案里也带「」术语（如「≥4 建议拆分」），
   // 模型照抄时吞掉那个空格是排版抖动，不是编造——按字面比对时它每次都判「出现系统数据里没有的
   // 名称」并整段回退本地条目，风险页的措辞润色等于没做。名称本体不同照样咬（幽灵模块）。
-  const poolFlat = pool.replace(/\s+/g, '');
+  const poolFlat = pool.replaceAll(/\s+/g, '');
   for (const q of quotedOf(s)) {
-    if (!poolFlat.includes(q.replace(/\s+/g, ''))) throw new Error(`${label} 出现系统数据里没有的名称 ${q}`);
+    if (!poolFlat.includes(q.replaceAll(/\s+/g, ''))) throw new Error(`${label} 出现系统数据里没有的名称 ${q}`);
   }
   return s;
 }

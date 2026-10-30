@@ -1,0 +1,50 @@
+=== T03343 [todo] [PRD] 3.1 Git 徽标组件开发
+元信息行徽标、看板卡徽标、降级态、显隐开关、悬浮 title/aria-label
+
+=== T03358 [todo] [PRD] 1.1 超链接行为实现
+平台识别git remote get-url推导四类；凭据剥离userinfo；window.open→shell.openExternal主进程http校验；no-remote站内兜底；rel/aria-label
+
+=== T03359 [todo] [PRD] 1.2 复制按钮组件
+复用CopyButton.tsx；lucide Copy→Check 1500ms；复制全量40位SHA；失败notice提示；stopPropagation
+
+=== T03360 [todo] [PRD] 1.3 未回写补齐提示条
+已完成tab顶部提示本页未回写数；复制回写指令生成agent可用文本；手动关联批量打开Git树弹窗；只统计本页；归档删除提示
+
+=== T03362 [todo] [PRD] 2.1 详情抽屉Git标签与提交卡
+新增第6个Git标签（lucide GitBranch）；深链focusDrawerTab白名单；提交卡五层结构；子任务区常显折叠；变更文件清单状态徽标；首提交diff基线
+
+=== T03363 [todo] [PRD] 2.2 Git数据新鲜度与错误处理
+打开实时查询；刷新保留旧内容；提交晚于任务更新时间提示；错误分类no-git/not-a-repo/no-remote/timeout/too-large；未绑定给WorkspaceSelect；空态提示
+
+=== T03364 [todo] [PRD] 2.3 手动绑定/解绑Git提交
+GitTreePickerModal搜索分支标签过滤多选区间选MAX_SELECTED=200；端点提至GET /git/log旧端点转发；解绑仅manual二次确认写task_events kind=git_link
+
+=== T03392 [todo] [PRD] 4.3 复用组件集成
+复用 GitTreePickerModal/DiffView/streamEvents/console_jobs/export-gate/ReportService/crypto.ts/exceljs/PizZip
+
+=== T03394 [todo] [PRD] REQ-032 富悬浮 HoverCard
+富悬浮 HoverCard（P1）单独立项，批次 4 内实现，不阻塞批次 1 验收
+
+=== T03413 [todo] [PRD] M5.1 列表与看板
+实现…状态|T03325✦a1b2c3d[⧉]|…行展示，title悬浮四要素；看板卡点击→抽屉
+
+=== T03414 [todo] [PRD] M5.2 抽屉Git页
+顶部提交卡列表左时间轴，选中卡下方懒加载文件清单，底部子任务折叠区
+
+=== T03415 [todo] [PRD] M5.3 Git树弹窗
+复用原有组件，左侧分支标签树，右侧提交列表，顶部搜索，底部确认关联
+
+=== T03420 [todo] [PRD] M1.2 列表提交简写与复制
+实现7位简写展示、复制按钮、未回写灰标、Git开关切页保持
+
+=== T03421 [todo] [PRD] M1.3 提交降级处理
+未绑定/非仓库/无git/无remote四场景显示不可用及指引
+
+=== T03422 [todo] [PRD] M1.4 Git抽屉提交卡
+五层提交卡实时显示，文件清单与git show --stat一致，首提交标记
+
+=== T03423 [todo] [PRD] M1.5 绑定与解绑逻辑
+绑定即时反映抽屉与列表；解绑二次确认、仅manual、写git_link事件
+
+=== T03435 [todo] [PRD] M1.17 未回写批量提示
+提示条统计本页未回写数量，附复制回写指令一键动作

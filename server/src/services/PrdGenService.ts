@@ -91,7 +91,7 @@ export async function loadWorkspaceContext(workspacePath: string): Promise<strin
     while (!done && Date.now() < until) {
       // 采样上限命中：注明截断并整体终止（原实现在每层递归各补一次说明，内容等价，此处只留一条）
       if (tree.length >= TREE_LIMIT) { tree.push('…（超出采样上限，已截断）'); stack.length = 0; done = true; break; }
-      const frame = stack[stack.length - 1];
+      const frame = stack.at(-1);
       if (!frame) { done = true; break; }
       if (frame.i >= frame.entries.length) { stack.pop(); continue; }
       const e = frame.entries[frame.i++];
@@ -155,14 +155,17 @@ async function buildRetrieveBlock(
     const stat = await WorkspaceService.refreshSymbols(input.projectId);
     input.onStage(`符号索引刷新：文件 ${stat.files} 个、符号 ${stat.symbols} 个（未变跳过 ${stat.skipped}）${stat.deferred ? '，超预算余量已交后台续跑（T02200 让路，下次刷新补齐）' : ''}`);
     const dropped = input.dropped ?? [];
+    const droppedNote = dropped.length > 0 ? `；未纳入 ${dropped.length} 个：${dropped.slice(0, 6).join('、')}` : '';
     input.onStage(`检索词 ${input.needles.length} 个：[${input.needles.slice(0, 8).join(', ')}${input.needles.length > 8 ? ' …' : ''}]`
-      + `${dropped.length > 0 ? `；未纳入 ${dropped.length} 个：${dropped.slice(0, 6).join('、')}` : ''}`);
+      + droppedNote);
     // T03443：符号反查（索引即查，失败降级为无反查，不影响主检索）
     let symbols: Array<{ path: string; symbol: string; line: number; kind: string }> = [];
     try { symbols = WorkspaceService.symbolMatches(input.projectId, input.needles); } catch { symbols = []; }
     const symbolBlock = buildSymbolBlock(symbols);
+    const symbolNames = symbols.slice(0, 3).map((s) => s.symbol).join(', ');
+    const symbolMore = symbols.length > 3 ? ' …' : '';
     input.onStage(symbols.length > 0
-      ? `符号词典反查：命中 ${symbols.length} 个标识符（${symbols.slice(0, 3).map((s) => s.symbol).join(', ')}${symbols.length > 3 ? ' …' : ''}）`
+      ? `符号词典反查：命中 ${symbols.length} 个标识符（${symbolNames}${symbolMore}）`
       : '符号词典反查：无匹配标识符（符号索引未覆盖，或该领域无对应英文命名）');
     // 补充检索词：符号全名往往比需求用词更贴近代码字面（上限沿用 NEEDLE 口径，避免稀释）
     const extra = symbols.map((s) => s.symbol).filter((s) => !input.needles.includes(s)).slice(0, 6);
@@ -170,15 +173,17 @@ async function buildRetrieveBlock(
     const r = await WorkspaceService.autoContextScoped(input.projectId, needles);
     const coverage = coverageNote(r);
     const scope = `${r.scannedFiles} 个文件${scopeSuffix(r)}`;
-    const dirs = r.scopedDirs && r.scopedDirs.length > 0 ? `；目录定向深扫 ${r.scopedDirs.length} 个目录（${r.scopedDirs.slice(0, 3).join('、')}${r.scopedDirs.length > 3 ? ' …' : ''}）` : '';
+    const dirsMore = (r.scopedDirs?.length ?? 0) > 3 ? ' …' : '';
+    const dirs = r.scopedDirs && r.scopedDirs.length > 0 ? `；目录定向深扫 ${r.scopedDirs.length} 个目录（${r.scopedDirs.slice(0, 3).join('、')}${dirsMore}）` : '';
     const block = [symbolBlock, r.block].filter(Boolean).join('\n\n');
     if (r.hits === 0 && !symbolBlock) {
       input.onStage(`检索增强：预算内无命中（扫描 ${scope}${dirs}）——仓库里可能确实没有相关代码`);
       return { block: '', coverage, hitPaths: [] };
     }
     const unmatched = r.unmatchedKeywords ?? [];
+    const unmatchedNote = unmatched.length > 0 ? `；未命中词：${unmatched.slice(0, 6).join('、')}` : '';
     input.onStage(`检索增强：命中 ${r.hits} 条片段（扫描 ${scope}${dirs}）`
-      + `${unmatched.length > 0 ? `；未命中词：${unmatched.slice(0, 6).join('、')}` : ''}`);
+      + unmatchedNote);
     return { block, coverage, hitPaths: r.hitPaths ?? [] };
   } catch { return empty; /* 检索增强失败不阻塞主流程 */ }
 }
@@ -186,7 +191,10 @@ async function buildRetrieveBlock(
 /** T03443：符号反查段的渲染（纯函数：便于门断言顺序与预算；空输入返回空串） */
 export function buildSymbolBlock(rows: ReadonlyArray<{ path: string; symbol: string; line: number; kind: string }>): string {
   if (rows.length === 0) return '';
-  const lines = rows.map((r) => `${r.symbol}  ${r.path}:${r.line}${r.kind ? `  (${r.kind})` : ''}`);
+  const lines = rows.map((r) => {
+    const kindNote = r.kind ? `  (${r.kind})` : '';
+    return `${r.symbol}  ${r.path}:${r.line}${kindNote}`;
+  });
   return ContextBudget.headTail(
     `【符号词典反查（workspace_symbols，需求词 → 代码标识符）】\n${lines.join('\n')}`,
     ContextBudget.symbolContextChars,
@@ -240,8 +248,11 @@ export async function buildGitContext(workspacePath: string | null | undefined):
     return { block, stage: `Git 上下文：最近 ${rows.length} 次提交已注入（${block.length} 字符，预算 ${ContextBudget.gitContextChars}）` };
   } catch (e) {
     const kind = e instanceof GitCollectError ? e.kind : 'failed';
-    const label = kind === 'no-git' ? '未安装 git' : kind === 'not-a-repo' ? '不是 Git 仓库'
-      : kind === 'timeout' ? 'git 读取超时' : 'git 读取失败';
+    let label: string;
+    if (kind === 'no-git') label = '未安装 git';
+    else if (kind === 'not-a-repo') label = '不是 Git 仓库';
+    else if (kind === 'timeout') label = 'git 读取超时';
+    else label = 'git 读取失败';
     return { block: '', stage: `跳过 Git 上下文（${label}）` };
   }
 }
@@ -295,7 +306,8 @@ export async function buildHitFileGitContext(
 /** T03441：上下文占比行（只输出字符数与段名，不含任何正文——需求与提交作者不进 stage 日志） */
 export function formatContextOverview(segments: ReadonlyArray<readonly [string, number]>): string {
   const total = segments.reduce((sum, [, n]) => sum + n, 0);
-  return `上下文总览：${(total / 1000).toFixed(1)}K 字符（${segments.map(([k, n]) => `${k} ${(n / 1000).toFixed(1)}K`).join(' / ')}）`;
+  const segmentOverview = segments.map(([k, n]) => `${k} ${(n / 1000).toFixed(1)}K`).join(' / ');
+  return `上下文总览：${(total / 1000).toFixed(1)}K 字符（${segmentOverview}）`;
 }
 
 /** T03442：整份 PRD 上下文的总量闸（各段字符合计；技能规则段不参与裁剪） */
@@ -555,6 +567,8 @@ export async function generatePrdStream(input: {
   input.onStage(`解析完成：PRD ${finalPrdMd.length} 字符、待确认问题 ${issues.length} 条（🔴 阻塞 ${issues.filter((i) => i.level === 'blocker').length} / 🟡 建议 ${issues.filter((i) => i.level === 'suggested').length} / 🟢 提示 ${issues.filter((i) => i.level === 'info').length}）`);
   // T00783-L3：startedAt 此前只 void 掉（死代码）——真实记录耗时，便于排查长耗时生成
   logService.log('INFO', 'ai', `[PRD生成] project=${input.projectId} file=${input.filename} prd=${finalPrdMd.length}ch issues=${issues.length} 耗时=${Date.now() - startedAt}ms`);
+  const retrieveCoverageNote = retrieve.coverage ? `（${retrieve.coverage}）` : '';
+  const retrieveValue = retrieve.block.length > 0 ? `${chars(retrieve.block.length)}${retrieveCoverageNote}` : '未命中';
   // T03262（AI-101①）：溯源行。上下文预算被裁过、需求被保头保尾压过、输出被截断过——
   // 三件事都会让「PRD 看起来完整但少了一段」，必须进面板而不是只留在 stage 日志里。
   const provenance = buildCardProvenance({
@@ -563,11 +577,11 @@ export async function generatePrdStream(input: {
       { label: '原始需求', value: `${chars(input.content.length)}（${input.filename}）` },
       { label: '项目源码上下文', value: ws ? chars(ws.length) : '未配置工作空间（未使用）' },
       { label: 'Git 脉络', value: gitParts.length > 0 ? chars(gitParts.length) : '未使用' },
-      { label: '检索片段', value: retrieve.block.length > 0 ? `${chars(retrieve.block.length)}${retrieve.coverage ? `（${retrieve.coverage}）` : ''}` : '未命中' },
+      { label: '检索片段', value: retrieveValue },
       { label: '产出', value: `${chars(finalPrdMd.length)}PRD、${issues.length} 条待确认问题` },
     ],
     truncations: [
-      ...(requirement.length !== input.content.length ? [`原始需求超长，已保头保尾压缩为 ${chars(requirement.length)}`] : []),
+      ...(requirement.length === input.content.length ? [] : [`原始需求超长，已保头保尾压缩为 ${chars(requirement.length)}`]),
       ...(parts.clipped.length > 0 ? [`上下文超总量预算，按优先级裁剪：${parts.clipped.join(' → ')}`] : []),
       ...(outputTruncated ? ['AI 输出触及上限，PRD 末尾可能不完整'] : []),
     ],

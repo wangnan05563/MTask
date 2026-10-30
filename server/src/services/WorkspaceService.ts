@@ -190,7 +190,7 @@ function watchEventIgnored(relPath: string, rules: IgnoreRule[], workspaceAbs: s
  */
 function ensureWorkspaceWatch(projectId: string, workspaceAbs: string, rules: IgnoreRule[]): WorkspaceWatch {
   const cur = workspaceWatches.get(projectId);
-  if (cur && cur.workspaceAbs === workspaceAbs) return cur;
+  if (cur?.workspaceAbs === workspaceAbs) return cur;
   if (cur?.watcher) { try { cur.watcher.close(); } catch { /* 已关闭 */ } }
   const state: WorkspaceWatch = { workspaceAbs: workspaceAbs, events: 0, unsupported: false };
   try {
@@ -237,7 +237,7 @@ function buildDirSnapshot(workspace: string, rules: IgnoreRule[]): DirSnapshot |
       sig.push(e.isDir ? `${e.name}/` : e.name);
       if (e.isDir) stack.push({ dir: join(frame.dir, e.name), rel: relChild });
     }
-    sig.sort();
+    sig.sort((a, b) => a.localeCompare(b));
     dirs.set(frame.rel, sig.join('\u0000'));
   }
   return dirs;
@@ -607,7 +607,7 @@ function symbolWalkStep(state: SymbolWalkState): void {
   const { ctx } = state;
   while (state.stack.length > 0) {
     if (ctx.symbols >= ctx.limit) { state.done = true; state.truncated = true; state.stack.length = 0; return; } // N-8：达上限整体终止
-    const frame = state.stack[state.stack.length - 1];
+    const frame = state.stack.at(-1)!;
     if (frame.i >= frame.entries.length) { state.stack.pop(); continue; }
     const e = frame.entries[frame.i++];
     const relChild = frame.rel ? `${frame.rel}/${e.name}` : e.name;
@@ -721,7 +721,7 @@ function memoPushDir(ms: MemoWalkState, dir: string, rel: string): void {
 function memoWalkStep(ms: MemoWalkState): void {
   while (ms.stack.length > 0) {
     if (memoOverBudget(ms.state)) { ms.state.truncated = true; ms.done = true; ms.stack.length = 0; return; }
-    const frame = ms.stack[ms.stack.length - 1];
+    const frame = ms.stack.at(-1)!;
     if (frame.i >= frame.entries.length) { ms.stack.pop(); continue; }
     const e = frame.entries[frame.i++];
     const relChild = frame.rel ? `${frame.rel}/${e.name}` : e.name;
@@ -805,10 +805,12 @@ function buildRetrieveContext(
   meta: { scannedFiles: number; truncated: boolean; skippedOversized: number; scopedDirs?: string[] },
   budgetChars: number,
 ): RetrieveContext {
+  const hitLines = acc.collected.map((h) => `${h.path}:${h.line} — ${h.snippet}`).join('\n');
+  const snippetBlock = `相关代码片段（关键词检索 Top ${acc.collected.length}）：\n${hitLines}`;
   const block = acc.collected.length === 0
     ? ''
     : ContextBudget.headTail(
-      `相关代码片段（关键词检索 Top ${acc.collected.length}）：\n${acc.collected.map((h) => `${h.path}:${h.line} — ${h.snippet}`).join('\n')}`,
+      snippetBlock,
       budgetChars,
       '检索片段 ',
     );
@@ -922,8 +924,8 @@ function scanScopedDirs(
  */
 export function splitIdentifier(symbol: string): string[] {
   return symbol
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/[_$.-]/g, ' ')
+    .replaceAll(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replaceAll(/[_$.-]/g, ' ')
     .toLowerCase()
     .split(/\s+/)
     .filter((t) => t.length >= 3);

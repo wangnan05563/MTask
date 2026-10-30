@@ -266,7 +266,10 @@ app.listen(PORT, HOST, () => {
   // T03312：勾选「后端启动时自动开启隧道」时按 POST /start 同一套门禁自动拉起。
   // 不阻塞就绪、不抛错；结果既写日志，也经 /api/tunnel/status 的 autoStartResult 回显到面板。
   void tryAutoStartTunnel().then(
-    (r) => console.log(`[mtask] tunnel auto-start: ${r.started ? r.reason : `skipped (${r.reason})`}`),
+    (r) => {
+      const outcome = r.started ? r.reason : `skipped (${r.reason})`;
+      console.log(`[mtask] tunnel auto-start: ${outcome}`);
+    },
     (e) => console.error('[mtask] tunnel auto-start failed:', e),
   );
 });

@@ -16,13 +16,12 @@ import { MarkdownStyles } from './ui/Markdown';
 import { CommandPalette } from './pages/CommandPalette';
 import { SettingsProvider } from './settings';
 import { MobileShell } from './mobile/MobileShell';
-import { Compass } from 'lucide-react'; // T03184（PM-102）：菜单图标随 TABS 一并迁入 ui/tabs.ts，此处只留命令面板入口图标
+import { Compass, Loader2 } from 'lucide-react'; // T03184（PM-102）：菜单图标随 TABS 一并迁入 ui/tabs.ts，此处只留命令面板入口图标
 import { PageGuideDialog, hasSeenGuide, markGuideSeen } from './pages/PageGuide'; // T00706：通用使用向导
 import { GUIDES } from './pages/guides'; // T00706：各菜单向导内容配置
 import { useReportStream } from './reportStream'; // T01038：AI 工作台运行态（周报生成）
 import { usePrdGen } from './stores/prdGenStore'; // T01038：原始需求生成 PRD 运行态
 import { aiImportStore } from './stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
-import { Loader2 } from 'lucide-react'; // T01038：Tab 运行指示旋转图标
 
 import { TABS, type Tab } from './ui/tabs'; // T03184（PM-102）：一级导航单源——命令面板页面列表同源生成
 import { applyDeepLink, buildDeepLink, readDeepLinkFromLocation } from './ui/deepLink'; // T03187（D-13）：深链契约单源
@@ -142,7 +141,7 @@ function Shell() {
   useEffect(() => {
     const onDigit = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
-      if (e.isComposing || e.keyCode === 229) return;
+      if (e.isComposing) return;
       if (!/^[1-9]$/.test(e.key)) return;
       const anchor = e.target instanceof Element ? e.target : null;
       if (anchor?.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]')) return;
@@ -178,30 +177,30 @@ function Shell() {
   useEffect(() => {
     const desk = desktopApi();
     if (!desk?.onUpdateProgress) return;
-    let hideTimer = 0;
+    let hideTimer: ReturnType<typeof setTimeout> | undefined;
     const off = desk.onUpdateProgress((d) => {
       if (d.origin !== 'menu') return;
       const received = d.received ?? 0;
       const total = d.total ?? 0;
       if (d.status === 'downloading' || d.status === 'resuming' || d.status === 'starting') {
-        window.clearTimeout(hideTimer);
+        globalThis.clearTimeout(hideTimer);
         setDlToast({ status: d.status, received, total });
       } else if (d.status === 'retrying') {
         // 更新下载续传：主进程正在自动续传重试——保留进度条与取消入口，只把文案换成可读原因，
         // 否则用户看到进度归零/停滞会误判成下载失败
-        window.clearTimeout(hideTimer);
+        globalThis.clearTimeout(hideTimer);
         setDlToast({ status: 'retrying', received, total, message: d.message });
       } else if (d.status === 'downloaded') {
         setDlToast({ status: 'downloaded', received, total });
         // 主进程随后弹「立即安装 / 稍后安装」对话框；进度条只留 3 秒做完成回执即收起
-        hideTimer = window.setTimeout(() => setDlToast((cur) => (cur?.status === 'downloaded' ? null : cur)), 3000);
+        hideTimer = globalThis.setTimeout(() => setDlToast((cur) => (cur?.status === 'downloaded' ? null : cur)), 3000);
       } else if (d.status === 'failed') {
         setDlToast({ status: 'failed', received: 0, total: 0, message: d.message ?? '下载失败' });
       } else {
         setDlToast(null); // cancelled 等终态：菜单通道没有「继续下载」入口，直接收起
       }
     });
-    return () => { window.clearTimeout(hideTimer); off(); };
+    return () => { globalThis.clearTimeout(hideTimer); off(); };
   }, []);
 
   // 启动时同步访问令牌：若后端已配置（或重置过）令牌，更新本地，避免带旧令牌触发 401
@@ -463,7 +462,7 @@ function Shell() {
           {dlInFlight && (
             /* T02976 补：下载中必须有取消入口——否则用户只能干等 110MB 走完；重试等待期同样可取消 */
             <button
-              onClick={() => { void desktopApi()?.cancelUpdateDownload?.(); }}
+              onClick={() => { desktopApi()?.cancelUpdateDownload?.(); }}
               title="取消下载 — 中断本次下载并保留已下载部分，稍后可从断点继续"
               aria-label="取消下载：中断本次下载并保留已下载部分"
               style={{ cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', borderRadius: 6, padding: '2px 10px', fontSize: 'var(--fs-s)' }}
@@ -473,7 +472,7 @@ function Shell() {
           )}
           {dlToast.status === 'failed' && (
             <button
-              onClick={() => { setDlToast(null); void desktopApi()?.retryOnlineUpdate?.(); }}
+              onClick={() => { setDlToast(null); desktopApi()?.retryOnlineUpdate?.(); }}
               title="重试 — 重新检查并下载新版本安装包"
               aria-label="重试：重新检查并下载新版本安装包"
               style={{ cursor: 'pointer', border: '1px solid var(--danger)', background: 'var(--card-bg)', color: 'var(--danger)', borderRadius: 6, padding: '2px 10px', fontSize: 'var(--fs-s)' }}

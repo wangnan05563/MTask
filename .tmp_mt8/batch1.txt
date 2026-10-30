@@ -1,0 +1,34 @@
+=== T03390 [todo] [PRD] 4.1 Git 白名单扩容
+在白名单中新增 remote get-url 和 cat-file --batch 两项（均为只读），编写负例单测
+=== T03391 [todo] [PRD] 4.2 GitCollectError no-remote
+新增 GitCollectError.kind = 'no-remote'，处理 remote get-url 无远端时非零退出的场景
+=== T03401 [todo] [PRD] M2.1 task_git_links表
+CREATE TABLE+唯一索引(task_id,sha)+普通索引sha，FOREIGN KEY CASCADE
+=== T03402 [todo] [PRD] M2.2 sonar_issue_fps表
+CREATE TABLE+fp主键+索引created_at，7天窗口清扫job
+=== T03344 [todo] [PRD] 3.2 关联写入与幂等实现
+AI 回写 source='agent'、手动绑定 source='manual'、幂等去重、workspace 失效回执
+=== T03345 [todo] [PRD] 3.3 批量提交摘要接口实现
+POST /git/commit-summaries、按 workspace 分组、git log --no-walk、SHA 去重、truncated 回退
+=== T03346 [todo] [PRD] 3.4 文件清单/diff 懒加载实现
+首屏摘要+统计、懒加载 GET /tasks/:id/git/:sha/files、空树基线「初始提交」
+=== T03349 [todo] [PRD] 3.7 MCP 工具 mtask_link_git_commit 实现
+独立 MCP 工具、mtask 技能步骤接入
+=== T03396 [todo] [PRD] M1.1 MCP工具开发
+实现mtask_link_git_commit工具，幂等落task_git_links+task_events
+=== T03419 [todo] [PRD] M1.1 MCP回写工具实现
+实现独立工具mtask_link_git_commit，支持1/3个SHA回写，幂等去重，返回linked/skipped
+=== T03361 [todo] [PRD] 1.4 链接数据与摘要解析接口
+GET /tasks内联gitLinks字段；POST /git/commit-summaries按唯一SHA集合请求；60s缓存键控翻页失效；>200 SHA截断提示
+=== T03397 [todo] [PRD] M1.2 Git链接CRUD接口
+实现GET /tasks/gitLinks、POST/DELETE /tasks/:id/git/links、GET /git/log
+=== T03398 [todo] [PRD] M1.3 提交摘要与文件懒加载
+实现POST /git/commit-summaries、GET /tasks/:id/git、GET /tasks/:id/git/:sha/files
+=== T03436 [todo] [PRD] M1.18 git-log端点上提
+GET /git/log新端点，旧路径转发兼容
+=== T03407 [todo] [PRD] M3.3 安全实现
+Git只读、remote URL凭据剥离、外链http/https校验、properties脱敏清理
+=== T03434 [todo] [PRD] M1.16 数据完整性清理
+删除/归档后task_git_links无孤儿行；sonar_issue_fps超7天记录清扫
+=== T03363 [todo] [PRD] 2.2 Git数据新鲜度与错误处理
+打开实时查询；刷新保留旧内容；提交晚于任务更新时间提示；错误分类no-git/not-a-repo/no-remote/timeout/too-large；未绑定给WorkspaceSelect；空态提示

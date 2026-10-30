@@ -1,0 +1,23 @@
+[PASS] P-01 建项目 HTTP 201 :: id=3177a8ba-c771-40a0-8402-985ac6ed8c0f
+[PASS] P-02 绑定工作空间 HTTP 200 :: D:/code/tmp/mt8srv/repo
+[PASS] P-03 建任务 HTTP 201 :: T00005 be60bd2f-0b08-4ed5-ac15-be708c24dd32
+[PASS] M-01 短 SHA 回写 linked=1 :: {"content": [{"type": "text", "text": "linked=1 skipped=0 resolved=1\n  177559d -> 177559d1ad344ff82dd0d9cc29f1df864adb82d3"}], "structuredContent": {"linked": 1, "skipped": 0, "resolved": [{"input": 
+[PASS] M-02 重复(大写短写)+2 新 SHA → linked=2 skipped=1 :: {"content": [{"type": "text", "text": "linked=2 skipped=1 resolved=3\n  177559D1AD344FF82DD0D9CC29F1DF864ADB82D3 -> 177559d1ad344ff82dd0d9cc29f1df864adb82d3\n  0a8ebb8cf6a7717186904a6d623f3a459847eda0
+[PASS] M-03 解析不出的 SHA 逐条点名（不静默） :: {"content": [{"type": "text", "text": "linked=0 skipped=0 resolved=0\n  错误：提交 ffffffffffffffffffffffffffffffffffffffff 不在当前仓库（工作空间 D:/code/tmp/mt8srv/repo）：项目换绑或未 fetch 时请在正确仓库中重新回写"}], "structuredCon
+[PASS] M-04 缺定位参数被拒（不落到任意任务） :: {"content": [{"type": "text", "text": "错误：id 与 taskNo 至少提供一个；id 为任务内部 id，taskNo 为任务编号（如 T00001）"}], "isError": true}
+[PASS] R-01 GET /tasks 内联 gitLinks(最新 1 条=c3)+gitLinkCount(3) HTTP 200 :: {"gitLinkCount": 3, "gitLinks": [{"sha": "4fc6282f659feb19b6480fbcdbfe213c6d5dc86e", "shortSha": "4fc6282", "source": "agent", "createdAt": "2026-10-28T19:18:02.730Z"}]}
+[PASS] R-02 抽屉首屏：3 卡时间倒序 + 首提交 isInitial + 四要素齐 HTTP 200 :: [{"shortSha": "4fc6282", "subject": "八期冒烟：重命名并新增", "isInitial": false, "source": "agent"}, {"shortSha": "0a8ebb8", "subject": "八期冒烟：改动与新文件", "isInitial": false, "source": "agent"}, {"shortSha": "177559d", "subject": "八期冒烟：初始提交", "isInitial": true, "source": "a
+[PASS] R-03 首提交清单以空树为基线（全 A，无父提交不报错）HTTP 200 :: {"files": [{"path": "a.txt", "status": "A", "additions": 3, "deletions": 0, "binary": false}]}
+[PASS] R-04 重命名给 oldPath，?diff=1 附 hunks HTTP 200 :: {"files": [{"path": "b2.txt", "oldPath": "b.txt", "status": "R", "additions": null, "deletions": null, "binary": false}, {"path": "c.txt", "status": "A", "additions": 1, "deletions": 0, "binary": false}], "diffs": {"b2.txt": {"hunks": [{"path": "b2.txt", "addi
+[PASS] R-05 commit-summaries：同 workspace 去重后 2 条摘要 HTTP 200 :: {"groups": [{"workspacePath": "D:/code/tmp/mt8srv/repo", "available": true, "commits": [{"sha": "0a8ebb8cf6a7717186904a6d623f3a459847eda0", "shortSha": "0a8ebb8", "author": "张三", "date": "2026-01-06T10:00:00+08:00", "subject": "八期冒烟：改动与新文件", "refs": [], "paren
+[PASS] R-05b 传错字段名不再静默回空 groups → 400 点名 HTTP 400 :: {"error": "links 必填（数组 [{taskId, sha}]）"}
+[PASS] R-06 已有 agent 关联时手动绑定不产生重复行（幂等，来源如实保留 agent）HTTP 200 :: {"ok": true, "link": {"id": "86486ced-d858-43fa-9dbc-06f490a2315b", "taskId": "be60bd2f-0b08-4ed5-ac15-be708c24dd32", "sha": "0a8ebb8cf6a7717186904a6d623f3a459847eda0", "shortSha": "0a8ebb8", "workspacePath": "D:/code/tmp/mt8srv/repo", "source": "agent", "crea
+[PASS] R-06b 非法 SHA → 400 HTTP 400 :: {"error": "非法 commit ID（需 7–40 位十六进制）"}
+[PASS] R-07 手动绑定 source=manual → 解绑成功 HTTP 200/200 :: {"ok": true}
+[PASS] R-08 解绑 AI 回写(agent)的关联 → 409 + 可操作原因 HTTP 409 :: {"error": "提交 177559d 来源为 agent，仅手动绑定（manual）可解绑；AI 回写的关联请在提交侧修正后重新回写"}
+[PASS] R-08b 解绑不存在的关联 → 404 点名 HTTP 404 :: {"error": "该任务没有关联提交 0a8ebb8"}
+[PASS] R-09 GET /git/log 新端点按项目取数 HTTP 200 :: {"ok": true, "projectId": "3177a8ba-c771-40a0-8402-985ac6ed8c0f", "projectName": "八期冒烟a00bc9", "workspacePath": "D:/code/tmp/mt8srv/repo", "commits": [{"sha": "4fc6282f659feb19b6480fbcdbfe213c6d5dc86e", "short": "4fc6282f", "parents": ["0a8ebb8cf6a7717186904a6
+[PASS] R-09b 缺 projectId → 400 点名（不猜项目）HTTP 400 :: {"error": "缺少 projectId"}
+[PASS] R-10 不存在的任务 → 404 HTTP 404 :: {"error": "任务不存在或已归档：ecfd0870-f945-453b-b508-296f7e8bf116"}
+[PASS] N-01 取数全程后 git status 前后一致且干净 :: '' -> ''
+[PASS] N-02 未在仓库内留下任何副产物目录

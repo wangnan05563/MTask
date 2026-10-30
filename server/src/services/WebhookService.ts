@@ -103,7 +103,7 @@ function parseEvents(raw: unknown): WebhookEventType[] {
 
 /** 内网/回环主机识别（仅字面量；DNS 解析结果不在同步校验范围，URL 仍受 HTTPS 约束） */
 function isIntranetHost(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const h = hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
   if (h === 'localhost' || h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.lan')) return true;
   if (isIP(h) === 4) {
     const [a, b] = h.split('.').map(Number);
@@ -221,7 +221,7 @@ export const WebhookService = {
     const row = db.prepare('SELECT * FROM webhooks WHERE id = ?').get(id) as WebhookRow | undefined;
     if (!row) throw new Error('Webhook 不存在');
     const allowIntranet = patch.allowIntranet === undefined ? Boolean(row.allow_intranet) : Boolean(patch.allowIntranet);
-    const url = normalizeUrl(patch.url === undefined ? row.url : patch.url, allowIntranet);
+    const url = normalizeUrl(patch.url ?? row.url, allowIntranet);
     const events = patch.events === undefined ? (JSON.parse(row.events) as WebhookEventType[]) : parseEvents(patch.events);
     const enabled = patch.enabled === undefined ? Boolean(row.enabled) : Boolean(patch.enabled);
     let secretEnc = row.secret_enc;
@@ -381,7 +381,7 @@ export const WebhookService = {
     const db = getDb();
     try {
       const d = db.prepare('SELECT * FROM webhook_deliveries WHERE id = ?').get(deliveryId) as DeliveryRow | undefined;
-      if (!d || d.status !== 'pending') return;
+      if (d?.status !== 'pending') return;
       const hook = db.prepare('SELECT * FROM webhooks WHERE id = ?').get(d.webhook_id) as WebhookRow | undefined;
       if (!hook) return;
       if (!hook.enabled) {
@@ -425,9 +425,12 @@ export const WebhookService = {
           : `目标返回 HTTP ${res.status}`;
       } catch (e) {
         const name = e instanceof Error ? e.name : '';
-        error = name === 'TimeoutError' || name === 'AbortError'
-          ? `请求超时（${RESPONSE_TIMEOUT_MS / 1000} 秒上限）`
-          : `投递失败：${e instanceof Error ? e.message : String(e)}`;
+        if (name === 'TimeoutError' || name === 'AbortError') {
+          error = `请求超时（${RESPONSE_TIMEOUT_MS / 1000} 秒上限）`;
+        } else {
+          const failReason = e instanceof Error ? e.message : String(e);
+          error = `投递失败：${failReason}`;
+        }
       }
       if (attempts >= MAX_ATTEMPTS) {
         this.finish(deliveryId, 'failed', attempts, startedAt, responseStatus, error, null);

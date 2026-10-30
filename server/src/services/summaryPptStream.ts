@@ -27,16 +27,16 @@ import {
   type SummaryBundle,
 } from './summaryPptService';
 import { gatherSummaryDeckData, WORKLOAD_CALIBERS, type SummaryDeckData, type SummaryProjectData, type WorkloadCaliber } from './summaryPptData';
+import { scalarText } from '../util/scalarText';
 import {
   normalizeSummaryMode,
-  SUMMARY_MODES,
   validateSummaryOutline,
   type SummaryMode,
   type SummaryOutlineItem,
 } from './summaryPptOutline';
 
 /** PRD §4：`mode` 只认两档；separate（FR-6.2）在 S7 起交付 */
-export const SUMMARY_STREAM_MODES = SUMMARY_MODES;
+export { SUMMARY_MODES as SUMMARY_STREAM_MODES } from './summaryPptOutline';
 export type SummaryStreamMode = SummaryMode;
 
 export interface SummaryStreamParams {
@@ -116,7 +116,7 @@ function assertMode(raw: unknown): SummaryStreamMode {
 
 function assertCaliber(raw: unknown): WorkloadCaliber | undefined {
   if (raw == null || raw === '') return undefined;
-  const v = String(raw);
+  const v = scalarText(raw);
   if (!(WORKLOAD_CALIBERS as readonly string[]).includes(v)) {
     throw new Error(`工作量口径仅支持 ${WORKLOAD_CALIBERS.join('/')}，当前为「${v}」`);
   }
@@ -182,7 +182,8 @@ export function summaryPptFileName(deck: SummaryDeckData): string {
 function separateDeckName(projectName: string, dataAsOf: string, taken: Set<string>): string {
   const base = downloadSafeName(`阶段性总结-${projectName || '项目'}-${dataAsOf.replaceAll('-', '')}`, '阶段性总结');
   let name = `${base}.pptx`;
-  for (let i = 2; taken.has(name); i++) name = `${base}-${i}.pptx`;
+  let dup = 2;
+  while (taken.has(name)) { name = `${base}-${dup}.pptx`; dup += 1; }
   taken.add(name);
   return name;
 }

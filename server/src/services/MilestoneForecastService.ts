@@ -138,14 +138,14 @@ function buildBasis(f: {
   const tail = f.forecastDate ? `自 ${f.at} 起串行排 ${f.remaining} 个工作日，预测 ${f.forecastDate}` : '无预测日期';
   if (f.plannedEnd === null) return `${head}；${tail}；里程碑未排期，不判提前/延后`;
   if (f.variance === null) return `${head}；${tail}；计划结束 ${f.plannedEnd}`;
-  const v = f.variance === 0 ? '与计划一致' : f.variance > 0 ? `延后 ${f.variance} 个工作日` : `提前 ${-f.variance} 个工作日`;
+  const varianceMove = f.variance > 0 ? `延后 ${f.variance} 个工作日` : `提前 ${-f.variance} 个工作日`;
+  const v = f.variance === 0 ? '与计划一致' : varianceMove;
   return `${head}；${tail}；计划结束 ${f.plannedEnd}，${v}`;
 }
 
 function forecastOne(ms: PlanRow & { project_name: string }, children: PlanRow[], at: string, cal: WorkdayCal): MilestoneForecast {
   const done = ms.status === 'done';
   const doneChildren = children.filter((c) => c.status === 'done');
-  const open = children.filter((c) => c.status !== 'done');
   const childForecasts = children.map((c) => forecastChild(c, cal));
   const missing = childForecasts.filter((c) => c.missing.length > 0 && c.status !== 'done').map((c) => c.title);
   const knownRemaining = childForecasts

@@ -12,13 +12,12 @@ import { lectureSectionLabel, type LectureSectionKey } from '../services/lecture
 import type { GenJobView } from '../services/AiGenJournal';
 import { buildLectureExport, lectureExportFilename, LectureExportError, validateLectureExportBody } from '../services/lectureExport'; // T02874（六期 3.3）：讲稿 md/docx/pptx 导出装配
 import { estimateLectureRun } from '../services/lecturePreflight'; // T02875（六期 3.4）：预检预算估算段
-import { saveReportBuffer } from '../services/ReportService'; // T02874：导出物落盘走既有令牌链路
+import { discardReport, saveReportBuffer } from '../services/ReportService'; // T02874：导出物落盘走既有令牌链路
 import { recordArtifact } from '../services/aiArtifactService'; // T03262（AI-101④）：产物持久副本 → 刷新后找回
 import { buildCardProvenance, chars, latestCardProvenance, provenanceMarkdown, provenanceTextLines, recordCardProvenance, type CardProvenance } from '../services/aiCardProvenance'; // T03262（AI-101①③）：溯源行与导出稿逐字同源
 import { summaryOutline } from '../services/summaryPptOutline'; // T02854（六期 S3）：总结汇报 PPT 大纲段（提示词 + schema 校验）
 import { prepareSummaryPptStream, renderSummaryPptStream } from '../services/summaryPptStream'; // T02856（六期 S5）：总结汇报 PPT 流式装配 + 下载令牌
 import { safeExportName } from '../util/export-name'; // T02104：导出文件名单源（与下载白名单同源）
-import { discardReport } from '../services/ReportService'; // T02144：中止且 done 未送达时当场回收落盘令牌
 import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput, DraftCaseImport, DraftReqImport } from '../services/TestCaseService';
 import { AIService } from '../services/AIService';
 import { MilestoneForecastService } from '../services/MilestoneForecastService'; // T03194（PM-204）：里程碑达成预测
@@ -348,13 +347,14 @@ planApi.post('/code-review-lecture-stream', raw({ type: () => true, limit: '30mb
     });
     // 先记样本再回事件：客户端断开时上面的 early return 会跳过后续发送，但取消仍要进基线口径
     recordJob(result.aborted ? 'aborted' : 'done', result.sections, result.jobId);
+    const budgetPart = result.stats.contextBudget > 0 ? `（预算 ${chars(result.stats.contextBudget)}）` : '';
     // T03262（AI-101①）：溯源行随 done/aborted 一起下发——面板与后续导出稿（原样回传）同源
     const provenance = buildCardProvenance({
       cardKey: LECTURE_CARD_KEY,
       sources: [
         { label: '项目', value: `${result.stats.projects} 个（有改动 ${result.stats.readyProjects}）` },
         { label: '改动文件', value: `${result.stats.files} 个 / ${result.stats.groups} 组` },
-        { label: '上下文', value: `${chars(result.stats.chars)}${result.stats.contextBudget > 0 ? `（预算 ${chars(result.stats.contextBudget)}）` : ''}` },
+        { label: '上下文', value: `${chars(result.stats.chars)}${budgetPart}` },
         { label: '模型调用', value: `${result.stats.calls} 次（${result.sections.length} 节 / ${result.stats.segments} 段）` },
         { label: '引用', value: `${result.stats.anchors} 条` },
         { label: '告警', value: `${result.warnings.length} 条` },

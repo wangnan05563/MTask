@@ -9,7 +9,7 @@
  */
 
 /** 与前端 web/src/ui/promptTemplate.ts 同一条正则；两侧一致性由门（verify-t03247）逐例对拍 */
-const VAR_RE = /\{\{\s*([^{}]*?)\s*\}\}/g;
+const VAR_RE = /\{\{([^{}]*)\}\}/g;
 
 /** 模板里的变量名（按首次出现顺序去重；忽略空名） */
 export function promptTemplateVars(content: string): string[] {
@@ -33,11 +33,12 @@ export interface RenderedPrompt {
  */
 export function renderPromptTemplate(content: string, values: Record<string, unknown>): RenderedPrompt {
   const missing: string[] = [];
-  const text = content.replace(VAR_RE, (raw, name: string) => {
+  const text = content.replaceAll(VAR_RE, (raw, name: string) => {
     const key = name.trim();
     if (!key) return raw;
     const v = values[key];
-    const s = typeof v === 'string' ? v : (typeof v === 'number' && Number.isFinite(v) ? String(v) : '');
+    const numText = typeof v === 'number' && Number.isFinite(v) ? String(v) : '';
+    const s = typeof v === 'string' ? v : numText;
     if (!s.trim()) {
       if (!missing.includes(key)) missing.push(key);
       return raw;

@@ -7,6 +7,7 @@ import { Router } from 'express';
 import { OverdueRateService } from '../services/OverdueRateService';
 import { AiJobStats } from '../services/AiJobStats';
 import { MetricSnapshotService } from '../services/MetricSnapshotService';
+import { scalarText } from '../util/scalarText';
 
 export const metricsApi = Router();
 
@@ -32,14 +33,14 @@ metricsApi.post('/ai-jobs', (req, res) => {
     const pick = (...keys: string[]) => keys.map((k) => b[k]).find((v) => v !== undefined);
     const finishedAt = pick('finishedAt', 'finished_at');
     return AiJobStats.record({
-      jobId: String(pick('jobId', 'job_id') ?? ''),
-      cardKey: String(pick('cardKey', 'card_key') ?? ''),
-      status: String(b.status ?? ''),
-      mode: b.mode == null ? undefined : String(b.mode),
+      jobId: scalarText(pick('jobId', 'job_id') ?? ''),
+      cardKey: scalarText(pick('cardKey', 'card_key') ?? ''),
+      status: scalarText(b.status ?? ''),
+      mode: b.mode == null ? undefined : scalarText(b.mode),
       sectionsTotal: pick('sectionsTotal', 'sections_total'),
       sectionsOk: pick('sectionsOk', 'sections_ok'),
-      startedAt: b.startedAt == null ? undefined : String(b.startedAt),
-      finishedAt: finishedAt == null ? undefined : String(finishedAt),
+      startedAt: b.startedAt == null ? undefined : scalarText(b.startedAt),
+      finishedAt: finishedAt == null ? undefined : scalarText(finishedAt),
     });
   });
 });
@@ -73,6 +74,6 @@ metricsApi.get('/day-snapshots', (req, res) => {
 metricsApi.post('/day-snapshots/capture', (req, res) => {
   wrap(res, () => {
     const at = (req.body ?? {}) as { at?: unknown };
-    return MetricSnapshotService.capture(at.at == null || at.at === '' ? undefined : String(at.at));
+    return MetricSnapshotService.capture(at.at == null || at.at === '' ? undefined : scalarText(at.at));
   });
 });

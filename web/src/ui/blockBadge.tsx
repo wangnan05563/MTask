@@ -11,7 +11,10 @@ import type { Task } from '../api/client';
 export function blockBadgeNode(t: Task) {
   const list = t.blocked_by ?? [];
   if (list.length === 0) return null;
-  const names = list.map((b) => `${b.task_no ? `${b.task_no} ` : ''}「${b.title}」`).join('、');
+  const names = list.map((b) => {
+    const noPrefix = b.task_no ? `${b.task_no} ` : '';
+    return `${noPrefix}「${b.title}」`;
+  }).join('、');
   return (
     <span data-t03229="block-badge" title={`被 ${list.length} 条任务阻塞：${names}`}
       aria-label={`被 ${list.length} 条任务阻塞：${names}`}
@@ -23,5 +26,8 @@ export function blockBadgeNode(t: Task) {
 
 /** 阻塞方点名串（看板卡 aria-label 等处复用，避免同一句文案在两个组件各拼一遍） */
 export function blockBadgeNames(t: Task): string {
-  return (t.blocked_by ?? []).map((b) => `${b.task_no ? `${b.task_no} ` : ''}「${b.title}」`).join('、');
+  return (t.blocked_by ?? []).map((b) => {
+    const noPrefix = b.task_no ? `${b.task_no} ` : '';
+    return `${noPrefix}「${b.title}」`;
+  }).join('、');
 }

@@ -7,6 +7,7 @@
  */
 import type { CSSProperties, ReactNode } from 'react';
 import { useEffect, useRef, useState } from 'react';
+import { FileText } from 'lucide-react';
 import { t, registerDict } from '../i18n';
 import { DRAWER_Z, OVERLAY_MASK } from '../ui/primitives';
 
@@ -152,13 +153,17 @@ registerDict('en', {
   '开始随手记': 'Start quick note', '没有需要关注的任务了': 'Nothing needs attention',
 });
 
-/** 空态统一组件：图标 + 一句话（i18n）+ 可选行动按钮 */
-export function EmptyState({ icon = '📝', message, hint, actionLabel, onAction }: Readonly<{
-  icon?: string; message: string; hint?: string; actionLabel?: string; onAction?: () => void;
+/**
+ * 空态统一组件：图标 + 一句话（i18n）+ 可选行动按钮。
+ * T03655：icon 收 ReactNode（lucide 组件），不再接受 emoji 字符——emoji 随系统字体变样且不可着色，
+ * 与 REQ-027 §3.5「图标统一 lucide」相悖；未传时用 FileText 兜底。
+ */
+export function EmptyState({ icon, message, hint, actionLabel, onAction }: Readonly<{
+  icon?: ReactNode; message: string; hint?: string; actionLabel?: string; onAction?: () => void;
 }>) {
   return (
     <div style={{ textAlign: 'center', padding: '48px 12px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
-      <div style={{ fontSize: 'var(--fs-hero)' }} aria-hidden="true">{icon}</div>
+      <div style={{ color: 'var(--text-muted)' }} aria-hidden="true">{icon ?? <FileText size={32} />}</div>
       <div style={{ fontSize: 'var(--fs-l)', color: 'var(--text-secondary)' }}>{t(message, message)}</div>
       {hint && <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>{hint}</div>}
       {actionLabel && onAction && (

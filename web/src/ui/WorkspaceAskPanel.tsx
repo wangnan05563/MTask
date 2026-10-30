@@ -231,7 +231,7 @@ export function WorkspaceAskPanel({
             style={{ flex: 1, resize: 'vertical', minHeight: 44, maxHeight: 120, padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-m)', fontFamily: 'inherit', boxSizing: 'border-box' }} />
           <button onClick={() => void ask()} disabled={!canAsk}
             data-t03250="ask"
-            title={!toolId ? '请先在「模型管理」页添加并选择整理工具' : '提问 — 只依据工作空间检索片段作答并给出引用'}
+            title={toolId ? '提问 — 只依据工作空间检索片段作答并给出引用' : '请先在「模型管理」页添加并选择整理工具'}
             aria-label="提问"
             style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: canAsk ? 'pointer' : 'not-allowed', opacity: canAsk ? 1 : 0.5, fontSize: 'var(--fs-s)' }}>
             {busy ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Send size={13} />} 提问

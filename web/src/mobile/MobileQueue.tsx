@@ -6,7 +6,7 @@ import { pageStyle as page, tapCardStyle as card, cardStyle as jobCard, Badge, E
 import { useEffect, useRef, useState } from 'react';
 import { api, type Queue, type QueueJob } from '../api/client';
 import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
-import { Copy, ExternalLink } from 'lucide-react';
+import { ClipboardList, Clock, Copy, ExternalLink, FolderOpen, Pause, Play } from 'lucide-react'; // T03655：空态 + 暂停/继续按钮改 lucide，不再用 emoji/字符
 
 interface Props { readonly notify: (msg: string, isErr?: boolean) => void; readonly openDesktop: () => void; }
 
@@ -91,13 +91,13 @@ export function MobileQueue({ notify, openDesktop }: Props) {
       <PullRefresh onRefresh={() => { void (async () => { try { const qs = await api.get<Queue[]>('/queues'); setQueues(qs); saveStaleCache('queues', qs); setStaleAsOf(null); } catch { /* 离线刷新失败保留缓存 */ } })(); }}>
       <div style={body}>
         {staleAsOf && (
-          <div style={{ marginBottom: 8, padding: '5px 10px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>
-            ⏱ 数据截至 {fmtAsOf(staleAsOf)}（离线缓存，联网后自动更新）
+          <div style={{ marginBottom: 8, padding: '5px 10px', borderRadius: 8, background: 'var(--surface-2)', color: 'var(--text-muted)', fontSize: 'var(--fs-s)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Clock size={12} aria-hidden /> 数据截至 {fmtAsOf(staleAsOf)}（离线缓存，联网后自动更新）
           </div>
         )}
         {!active && (
           <>
-            {queues.length === 0 && <EmptyState icon="📋" message="暂无队列" hint="在桌面端创建队列后可在此查看" />}
+            {queues.length === 0 && <EmptyState icon={<ClipboardList size={32} />} message="暂无队列" hint="在桌面端创建队列后可在此查看" />}
             {queues.map((q) => (
               <button key={q.id} onClick={() => void open(q.id)} style={card}>
                 <div style={{ fontWeight: 600 }}>{q.name}</div>
@@ -115,12 +115,12 @@ export function MobileQueue({ notify, openDesktop }: Props) {
                 {!!active.paused && <Badge tone="danger" style={{ marginLeft: 6 }}>已暂停</Badge>}
               </div>
               <button onClick={() => void togglePause()} title={active.paused ? '继续 — 恢复队列发送/提交' : '暂停 — 暂停后发送/提交将被拒绝'}
-                style={{ fontSize: 'var(--fs-s)', padding: '4px 12px', borderRadius: 6, border: '1px solid var(--border-strong)', background: active.paused ? 'var(--accent)' : 'var(--surface-2)', color: active.paused ? 'var(--accent-text)' : 'var(--text)', cursor: 'pointer' }}>
-                {active.paused ? '▶ 继续' : '⏸ 暂停'}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-s)', padding: '4px 12px', borderRadius: 6, border: '1px solid var(--border-strong)', background: active.paused ? 'var(--accent)' : 'var(--surface-2)', color: active.paused ? 'var(--accent-text)' : 'var(--text)', cursor: 'pointer' }}>
+                {active.paused ? <><Play size={11} aria-hidden /> 继续</> : <><Pause size={11} aria-hidden /> 暂停</>}
               </button>
             </div>
             {loading && <div style={{ padding: '8px 0' }}><Skeleton rows={3} card /></div>}
-            {jobs.length === 0 && <EmptyState icon="🗂️" message="该队列暂无 Job" />}
+            {jobs.length === 0 && <EmptyState icon={<FolderOpen size={32} />} message="该队列暂无 Job" />}
             {jobs.map((j) => (
               <div key={j.id} style={jobCard}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>

@@ -120,9 +120,11 @@ function docxParagraphs(raw: string) {
 
 async function buildDocx(input: LectureExportRequest): Promise<Buffer> {
   const { Document: DocxDocument, Packer, Paragraph, TextRun, HeadingLevel } = await import('docx');
+  const ignoredNote = input.ignored ? `　已忽略 ${input.ignored} 条` : '';
+  const generatedTimeText = `生成时间：${input.generatedAt}${ignoredNote}`;
   const children: import('docx').Paragraph[] = [
     new Paragraph({ text: input.title, heading: HeadingLevel.HEADING_1 }),
-    new Paragraph({ children: [new TextRun({ text: `生成时间：${input.generatedAt}${input.ignored ? `　已忽略 ${input.ignored} 条` : ''}`, color: '6B7280', size: 18 })] }),
+    new Paragraph({ children: [new TextRun({ text: generatedTimeText, color: '6B7280', size: 18 })] }),
     new Paragraph(''),
   ];
   for (const section of input.sections) {
@@ -159,8 +161,10 @@ async function buildPptx(input: LectureExportRequest): Promise<Buffer> {
   pptx.layout = 'WIDE';
 
   const cover = pptx.addSlide();
+  const coverIgnoredNote = input.ignored ? `    已忽略 ${input.ignored} 条` : '';
+  const coverGeneratedTime = `生成时间：${input.generatedAt}${coverIgnoredNote}`;
   cover.addText(input.title, { x: 0.5, y: 0.5, w: 9, h: 1.2, fontSize: 28, bold: true, color: '1F2937' });
-  cover.addText(`生成时间：${input.generatedAt}${input.ignored ? `    已忽略 ${input.ignored} 条` : ''}`, {
+  cover.addText(coverGeneratedTime, {
     x: 0.5, y: 1.8, w: 9, h: 0.5, fontSize: 12, color: '6B7280',
   });
 

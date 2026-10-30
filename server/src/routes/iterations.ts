@@ -9,6 +9,7 @@
 import { Router } from 'express';
 import { IterationService } from '../services/IterationService';
 import type { IterationStatus } from '../services/IterationService';
+import { scalarText } from '../util/scalarText';
 
 export const iterationApi = Router();
 
@@ -26,7 +27,7 @@ function body(req: import('express').Request): Record<string, unknown> {
 }
 
 function optStr(v: unknown): string | undefined {
-  return v == null || v === '' ? undefined : String(v);
+  return v == null || v === '' ? undefined : scalarText(v);
 }
 
 /** 计划行 id 数组：只接受字符串数组，其它类型按空处理（避免把对象塞进 SQL 参数位） */
@@ -36,7 +37,7 @@ function idList(v: unknown): string[] {
 }
 
 function str(v: unknown, fallback = ''): string {
-  return v == null ? fallback : String(v);
+  return v == null ? fallback : scalarText(v);
 }
 
 function boolish(v: unknown): boolean {

@@ -35,6 +35,7 @@ import {
   type EstimateListItem, type EstimateParamLog, type EstimateParamLogEffective, type EstimateSnapshot, type EstimateSource, type EstimatesResponse, type EstimatesSettingMeta,
   type RowDrift, type SnapshotDiff, type WhatIfResponse,
 } from '../api/estimates';
+import { ChevronDown, ChevronRight } from 'lucide-react'; // T03654：折叠箭头统一 lucide
 import { saveBlob } from '../utils/download';
 import { fullTime } from '../ui/format';
 import { askConfirm } from '../ui/dialogs';
@@ -1190,7 +1191,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
         style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 2px', width: '100%', textAlign: 'left', font: 'inherit', color: 'inherit', background: 'transparent', border: 'none', borderTop: '1px solid var(--border-strong)', cursor: 'pointer', fontSize: 'var(--fs-s)', fontWeight: 600, height: EST_HEADER_H, boxSizing: 'border-box' }}
         title={collapsed ? '展开该阶段明细' : '收起该阶段明细（与列表/甘特共用折叠态）'}
       >
-        <span style={{ color: 'var(--text-muted)' }}>{collapsed ? '▸' : '▾'}</span>
+        <span style={{ color: 'var(--text-muted)', display: 'inline-flex' }}>{collapsed ? <ChevronRight size={12} aria-hidden /> : <ChevronDown size={12} aria-hidden />}</span>
         <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ms.title}</span>
         {msRow && <span style={{ fontFamily: MONO, color: 'var(--text-muted)', fontWeight: 400 }}>E {num(msRow.expected)}</span>}
         <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 400 }}>不进 Σ</span>

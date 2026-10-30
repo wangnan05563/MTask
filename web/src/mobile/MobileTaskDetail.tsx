@@ -6,6 +6,7 @@
  * 基于 ui.tsx 的 HalfSheet 基元（T01422 组件规范化基础层）。
  */
 import { useState } from 'react';
+import { ChevronRight, Pin } from 'lucide-react'; // T03654：折叠箭头/置顶徽标统一 lucide（.hs-caret 旋转 90° 后即为下箭头）
 import { api, imageUrl, type Task, type TaskCategory } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
 import { ResultDiffPanel } from '../ui/ResultDiff'; // T01698：结果历史 diff/回滚——与桌面抽屉/行内同一组件
@@ -67,7 +68,7 @@ export function MobileTaskDetail({ task, categories, onClose, onChanged, notify 
   }
 
   const labelStyle: React.CSSProperties = { fontSize: 'var(--fs-s)', color: 'var(--text-muted)' };
-  // T01563：可折叠段头（summary 用 flex 布局后 Chromium 会隐藏原生 disclosure marker，故自绘 ▸ 并随 open 旋转）
+  // T01563：可折叠段头（summary 用 flex 布局后 Chromium 会隐藏原生 disclosure marker，故自绘箭头并随 open 旋转）
   const summaryStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, cursor: 'pointer', listStyle: 'none', fontSize: labelStyle.fontSize, color: labelStyle.color, padding: '2px 0' };
   const opBtn: React.CSSProperties = { flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '10px 0', borderRadius: 10, fontSize: 'var(--fs-l)', cursor: busy ? 'wait' : 'pointer', border: '1px solid var(--border-strong)' };
 
@@ -79,12 +80,12 @@ export function MobileTaskDetail({ task, categories, onClose, onChanged, notify 
         <Badge tone={done ? 'success' : 'accent'}>{STATUS_LABEL[task.status] ?? task.status}</Badge>
         <Badge tone={priorityTone(task.priority)}>{priorityBadgeLabel(task.priority)}</Badge>
         {catName && <Badge>{catName}</Badge>}
-        {task.pinned && <Badge tone="accent">📌 置顶</Badge>}
+        {task.pinned && <Badge tone="accent"><Pin size={12} aria-hidden /> 置顶</Badge>}
       </div>
       {/* 描述：可折叠段 + 就地编辑（与桌面 TaskDetailDrawer 对齐；T01563 移动端增强） */}
       <details open style={{ marginTop: 10 }}>
         <summary style={summaryStyle}>
-          <span><span className="hs-caret">▸</span>描述</span>
+          <span><span className="hs-caret"><ChevronRight size={12} aria-hidden /></span>描述</span>
           {editing !== 'desc' && (
             <button onClick={(e) => { e.preventDefault(); setDescDraft(task.description ?? ''); setEditing('desc'); }} disabled={busy || saveBusy}
               style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', background: 'transparent', border: 'none', cursor: 'pointer' }}>编辑</button>
@@ -113,7 +114,7 @@ export function MobileTaskDetail({ task, categories, onClose, onChanged, notify 
       {/* 处理结果：可折叠段 + 就地回传（与桌面 TaskDetailDrawer 对齐；T01563 移动端增强） */}
       <details open style={{ marginTop: 12 }}>
         <summary style={summaryStyle}>
-          <span><span className="hs-caret">▸</span>处理结果</span>
+          <span><span className="hs-caret"><ChevronRight size={12} aria-hidden /></span>处理结果</span>
           {editing !== 'result' && (
             <button onClick={(e) => { e.preventDefault(); setResultDraft(task.handle_result ?? ''); setEditing('result'); }} disabled={busy || saveBusy}
               style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', background: 'transparent', border: 'none', cursor: 'pointer' }}>{task.handle_result ? '编辑' : '回传'}</button>
@@ -159,7 +160,7 @@ export function MobileTaskDetail({ task, categories, onClose, onChanged, notify 
       {task.ai_summary && (
         <details style={{ marginTop: 12 }}>
           <summary style={summaryStyle}>
-            <span><span className="hs-caret">▸</span>AI 摘要</span>
+            <span><span className="hs-caret"><ChevronRight size={12} aria-hidden /></span>AI 摘要</span>
           </summary>
           <div style={{ marginTop: 2 }}><MarkdownContent content={task.ai_summary} /></div>
         </details>

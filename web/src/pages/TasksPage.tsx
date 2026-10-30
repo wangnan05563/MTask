@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { api, imageUrl, fetchImage, imageDataURL, type AITool, type CustomField, type CustomFieldType, type Project, type PromptCategory, type ReqCategory, type Task, type TaskCategory, type TaskImage } from '../api/client';
 import { ResultDiffPanel } from '../ui/ResultDiff'; // T01072-FR1.9：结果历史 diff 与回滚
 import { beautifyStore } from '../stores/beautifyStore';
+import { OPTIMIZE_SCOPE_TASKS, busyScope, optimizeStore, runOptimize, useOptimizeStore } from '../stores/optimizeStore'; // T03684：提示词优化运行态切页保持
 import { askConfirm, askInput } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown';
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
@@ -425,8 +426,6 @@ export function TasksPage() {
   // in-flight 请求完成后回调照常写 store，回切页面即见最新运行指示与待确认草稿
   const beautifySnap = useSyncExternalStore(beautifyStore.subscribe, beautifyStore.getSnapshot);
   const beautifyBusy = beautifySnap.busy;
-  // 「提示词优化」按任务隔离的进行中集合：作用域精准到单任务描述区，支持并行
-  const [optimizingMap, setOptimizingMap] = useState<Record<string, boolean>>({});
   // 批量美化独占标识：批量进行期间不与单条并行，避免相互覆盖
   const batchBusy = beautifySnap.batchBusy;
   // 批量智能分类进行中标识：驱动工具条「批量分类」按钮的忙碌态
@@ -448,12 +447,23 @@ export function TasksPage() {
     }, 1500);
     return () => globalThis.clearInterval(timer);
   }, [classifyBusy, activeProject, taskCats]);
-  // 进行中请求的取消控制器：美化已入 beautifyStore.aborts（模块级，切页存活）；提示词优化仍按页内隔离
-  const optimizeAborts = useRef<Record<string, AbortController>>({});
+  // 进行中请求的取消控制器：美化在 beautifyStore.aborts，提示词优化在 optimizeStore.aborts
+  // （两者都是模块级，切页卸载后「取消」入口与在途请求照样在）
   // 是否有美化类操作进行中（单条或批量）：驱动工具条「取消/批量美化」按钮
   const anyBeautify = batchBusy || Object.values(beautifyBusy).some(Boolean);
   const [drafts, setDrafts] = useState<Record<string, string>>({}); // taskId -> 待确认的梳理结果
-  const [descDrafts, setDescDrafts] = useState<Record<string, string>>({}); // taskId -> 描述编辑草稿
+  // T00535 同口径：描述草稿是用户正在敲的内容，改会话级持久化——切页回来不再清空
+  const [descDrafts, setDescDrafts] = useSessionState<Record<string, string>>('tasks.descDrafts', {}); // taskId -> 描述编辑草稿
+  // T03684：「提示词优化」运行态提升到模块级 store（键域 `tasks:`，与提示词页/需求页互不抢占）。
+  // 此前 busy 标志、取消控制器、结果回填都挂在页面组件里，切一级菜单即整页卸载 →
+  // 呼吸态消失、取消无处可点、AI 回来后 setDescDrafts 打在已卸载组件上被丢弃。
+  // 现在：① busy 来自 store，回切页面继续显示「正在生成优化文案…」；
+  //      ② 结果先 park 在 store，页面回切由 useOptimizeStore 的 drain 落到描述草稿（等价当场回填）。
+  const optimizeSnap = useOptimizeStore(OPTIMIZE_SCOPE_TASKS, (taskId, result) => {
+    setDescDrafts((prev) => ({ ...prev, [taskId]: result.text }));
+    flash(`提示词优化完成（输入来源：${result.source}），可编辑后保存`);
+  });
+  const optimizingMap = useMemo(() => busyScope(optimizeSnap, OPTIMIZE_SCOPE_TASKS), [optimizeSnap]);
   const titleDrafts = beautifySnap.drafts; // taskId -> 标题编辑草稿（美化结果/手动编辑共用，切页保留）
   const [imgDrafts, setImgDrafts] = useState<Record<string, ImageDraft>>({}); // taskId -> 图片增删草稿
   const [previewId, setPreviewId] = useState(''); // 当前放大预览的图片 id
@@ -1269,7 +1279,7 @@ export function TasksPage() {
     // 系统收件箱是移动端随手记默认归属，后端已禁止删除；前端提前拦截给出与后端一致的明确提示
     if (proj.id === 'sys-inbox') return flash('系统收件箱项目不可删除');
     const ok = await askConfirm(
-      `确定要删除项目「${proj.name}」吗？\n\n⚠️ 风险提醒：\n该操作不可恢复，项目及其全部任务、截图将一并删除！\n建议先通过「任务 → 复用」将重要任务复制到其他项目再删除。`,
+      `确定要删除项目「${proj.name}」吗？\n\n【风险提醒】\n该操作不可恢复，项目及其全部任务、截图将一并删除！\n建议先通过「任务 → 复用」将重要任务复制到其他项目再删除。`,
     );
     if (!ok) return;
     try {
@@ -2413,7 +2423,8 @@ export function TasksPage() {
 
   /** 提示词优化：调 AI 把当前描述草稿改写为结构化提示词，结果写回草稿供确认后保存。
    *  输入源判定：描述输入框为空时回退取用标题作为输入，并在反馈中标注本次来源。
-   *  按任务隔离并支持并行；同一任务再次点击视为「取消」。 */
+   *  按任务隔离并支持并行；同一任务再次点击视为「取消」。
+   *  T03684：运行态交给 optimizeStore（busy/取消控制器/结果都在模块级），本函数只负责入参与文案。 */
   async function optimizeDesc(task: Task) {
     if (optimizingMap[task.id]) return cancelOptimize(task.id);
     if (!organizeToolId) return flash(aiBlockedFlash('请先在「模型管理」页添加并选择工具'));
@@ -2423,32 +2434,27 @@ export function TasksPage() {
     const source = text.trim() ? '描述' : '标题';
     if (!text.trim()) text = task.title;
     if (!text.trim()) return flash('请先填写任务描述或标题再优化');
-    const ac = new AbortController();
-    optimizeAborts.current[task.id] = ac;
-    setOptimizingMap((p) => ({ ...p, [task.id]: true }));
-    try {
-      const result = await api.post<{ ok: boolean; content?: string; error?: string }>('/ai/optimize', {
+    // 后端以 ok:false + error 返回业务失败（不抛异常），原文案优先于 store 的兜底文案
+    let serverError = '';
+    const r = await runOptimize(
+      `${OPTIMIZE_SCOPE_TASKS}${task.id}`,
+      (signal) => api.post<{ ok: boolean; content?: string; error?: string }>('/ai/optimize', {
         toolId: organizeToolId, title: task.title, description: text,
-      }, ac.signal);
-      if (!result.ok) return flash(result.error ?? '优化失败');
-      // 大模型常把结果包在 ```markdown ... ``` 代码围栏里，写回草稿前剥离，避免落库/渲染时多出围栏
-      const content = stripCodeFence(result.content ?? '');
-      setDescDrafts((prev) => ({ ...prev, [task.id]: content }));
-      flash(`提示词优化完成（输入来源：${source}），可编辑后保存`);
-    } catch (e) {
-      if ((e as Error).name !== 'AbortError') flash(e instanceof Error ? e.message : String(e), 'error');
-    } finally {
-      setOptimizingMap((p) => { const n = { ...p }; delete n[task.id]; return n; });
-      delete optimizeAborts.current[task.id];
-    }
+      }, signal),
+      (result) => {
+        if (!result.ok) { serverError = result.error ?? '优化失败'; return null; }
+        // 大模型常把结果包在 ```markdown ... ``` 代码围栏里，写回草稿前剥离，避免落库/渲染时多出围栏
+        return { text: stripCodeFence(result.content ?? ''), source };
+      },
+    );
+    if (r.ok) return; // 成功文案由 drain 落地草稿时给出（切页期间完成也能看到）
+    if (serverError) flash(serverError);
+    else if (r.error && r.error !== '已取消优化') flash(r.error, 'error');
   }
 
   /** 取消指定任务的提示词优化：仅中止该任务，不影响其它并行优化 */
   function cancelOptimize(taskId: string) {
-    if (!optimizingMap[taskId]) return;
-    optimizeAborts.current[taskId]?.abort();
-    setOptimizingMap((p) => { const n = { ...p }; delete n[taskId]; return n; });
-    delete optimizeAborts.current[taskId];
+    if (!optimizeStore.cancel(`${OPTIMIZE_SCOPE_TASKS}${taskId}`)) return;
     flash('已取消优化');
   }
 
@@ -3335,8 +3341,8 @@ export function TasksPage() {
                   onClick={() => markImageRemoved(t.id, img.id)}
                   title="删除截图"
                   aria-label="删除该截图"
-                  style={{ position: 'absolute', top: -6, right: -6, fontSize: 'var(--fs-2xs)', lineHeight: '16px', padding: '0 4px', cursor: 'pointer' }}
-                >✕</button>
+                  style={{ position: 'absolute', top: -6, right: -6, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 'var(--fs-2xs)', lineHeight: '16px', padding: '0 4px', cursor: 'pointer' }}
+                ><X size={10} aria-hidden /></button>
               </div>
             ))}
             {imgDraft.added.map((p) => (
@@ -3346,8 +3352,8 @@ export function TasksPage() {
                   onClick={() => removeAddedImage(t.id, p.id)}
                   title="移除截图"
                   aria-label="移除该待上传截图"
-                  style={{ position: 'absolute', top: -6, right: -6, fontSize: 'var(--fs-2xs)', lineHeight: '16px', padding: '0 4px', cursor: 'pointer' }}
-                >✕</button>
+                  style={{ position: 'absolute', top: -6, right: -6, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 'var(--fs-2xs)', lineHeight: '16px', padding: '0 4px', cursor: 'pointer' }}
+                ><X size={10} aria-hidden /></button>
               </div>
             ))}
           </div>

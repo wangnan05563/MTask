@@ -429,10 +429,10 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
                       <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px 4px 18px', borderTop: '1px dashed var(--border)', fontSize: 'var(--fs-s)', opacity: c.alreadyImported ? 0.6 : 1 }}>
                         <input type="checkbox" checked={c.include !== false} disabled={c.alreadyImported}
                           onChange={(e) => updateCase(idx, { include: e.target.checked })} aria-label={`是否导入用例 ${idx + 1}`} />
-                        <input value={c.title} disabled={c.alreadyImported}
+                        <input value={c.title} disabled={c.alreadyImported} aria-label={`用例 ${idx + 1} 标题`}
                           onChange={(e) => updateCase(idx, { title: e.target.value })}
                           style={{ flex: 1, minWidth: 120, fontSize: 'var(--fs-s)', padding: '3px 6px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }} />
-                        <input value={c.module} disabled={c.alreadyImported} placeholder="模块"
+                        <input value={c.module} disabled={c.alreadyImported} aria-label={`用例 ${idx + 1} 模块`} placeholder="模块"
                           onChange={(e) => updateCase(idx, { module: e.target.value })}
                           style={{ width: 88, fontSize: 'var(--fs-xs)', padding: '3px 6px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }} />
                         <select value={c.priority} disabled={c.alreadyImported} onChange={(e) => updateCase(idx, { priority: e.target.value })}

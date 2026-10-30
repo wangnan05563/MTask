@@ -466,7 +466,7 @@ export function DbAdminTab() {
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') { setPage(1); void loadRows(); } }}
-                  placeholder="搜索文本列"
+                  aria-label="搜索文本列" placeholder="搜索文本列"
                   style={{ ...inputStyle, width: 180 }}
                 />
                 <button style={btnStyle(false)} onClick={() => { setPage(1); void loadRows(); }} title="按关键词查询"><Search size={13} /> 查询</button>
@@ -480,6 +480,7 @@ export function DbAdminTab() {
                       <th style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', width: 30 }}>
                         <input
                           type="checkbox"
+                          aria-label="全选当前页所有行"
                           checked={rows.length > 0 && selected.size === rows.length}
                           onChange={(e) => setSelected(e.target.checked ? new Set(rows.map((r) => formatCell(r[pkCol]))) : new Set())}
                         />
@@ -506,6 +507,7 @@ export function DbAdminTab() {
                           <td style={{ padding: '5px 8px' }}>
                             <input
                               type="checkbox"
+                              aria-label={`选择主键为 ${pk} 的行`}
                               checked={selected.has(pk)}
                               onChange={(e) => {
                                 const next = new Set(selected);
@@ -678,13 +680,14 @@ function EditModal(props: {
           const editable = !(mode === 'update' && c.primary_key);
           let control: React.ReactNode;
           if (type === 'checkbox') {
-            control = <input type="checkbox" disabled={!editable} checked={Boolean(values[c.name])} onChange={(e) => setValues((p) => ({ ...p, [c.name]: e.target.checked }))} />;
+            control = <input type="checkbox" aria-label={c.name} disabled={!editable} checked={Boolean(values[c.name])} onChange={(e) => setValues((p) => ({ ...p, [c.name]: e.target.checked }))} />;
           } else if (type === 'textarea') {
-            control = <textarea rows={3} disabled={!editable} value={String(values[c.name])} onChange={(e) => setValues((p) => ({ ...p, [c.name]: e.target.value }))} style={fieldStyle} />;
+            control = <textarea aria-label={c.name} rows={3} disabled={!editable} value={String(values[c.name])} onChange={(e) => setValues((p) => ({ ...p, [c.name]: e.target.value }))} style={fieldStyle} />;
           } else {
             control = (
               <input
                 type={type === 'number' ? 'number' : 'text'}
+                aria-label={c.name}
                 step="any"
                 disabled={!editable}
                 value={String(values[c.name])}

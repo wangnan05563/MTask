@@ -135,6 +135,42 @@ Headers: X-Access-Token: <访问令牌>   # 已配置令牌时必填，否则请
 - **纯计划通道**（不带上述字段）→ `PlanService.createBatch` 只写 `plan_tasks`，供确无可挂需求的日常计划使用；本批 ≥3 条时返回「纯计划通道」孤儿告警。
 - PRD/需求拆解类回写应走关联通道，避免留下无矩阵、无待办的计划孤岛。
 
+### 3.6 Git 提交关联（八期）
+
+| 工具 | 方法语义 | 关键入参 | 返回要点 | 注解 |
+| --- | --- | --- | --- | --- |
+| `mtask_link_git_commit` | 回写任务关联的 Git 提交 | taskNo 或 id（二选一）、`commits`（7–40 位十六进制，单条或数组） | `linked`、`skipped`、`resolved: [{input, sha}]`、`errors: []` | <br /> |
+
+**为什么是独立工具而不是扩展 `mtask_update_task`**（PRD v1.2 Q7' 裁定）：关联不落 `tasks` 表，塞进 `update_task` 的覆盖式 patch 白名单会污染语义，也难把幂等写清单测。
+
+**契约要点**
+
+1. **主通道**：外部 Agent 提交代码后调用本工具，落 `task_git_links(source='agent')`；手动绑定走 UI 的 `POST /tasks/:id/git/links`（`source='manual'`）。
+2. **短 SHA 解析**：服务端按项目**当前** `projects.workspace_path` 用 `git rev-parse` 解析为 40 位；解析不出或仓库不存在 → 该条进 `errors` 逐个点名，不影响同批其它 SHA。
+3. **幂等**：唯一索引 `ux_task_git_links(task_id, sha)`，重复回写同任务同 SHA 只记 `skipped`，不产生重复行。
+4. **不解析提交信息**：关联只由显式写入产生（Q1 否决自动关联）。想「按提交信息找任务」请用 AI 智能关联建议（`services/gitAiLink.ts`，只出建议不写库）。
+5. **错误态**：一条都没写进去（`linked + skipped = 0`）且有 `errors` 时工具返回 `isError`，避免 Agent 把「0 条关联」当成功（T03350）。
+6. **只读红线**：本工具只写 MTask 自己的库，不触碰被采集仓库；Git 侧仅走只读白名单（详见 `docs/概要设计-八期增量-Git徽标与Sonar回写.md` §6）。
+
+**调用样例**
+
+```json
+{
+  "name": "mtask_link_git_commit",
+  "arguments": { "taskNo": "T03436", "commits": ["a1b2c3d", "e4f5g6h7i8j9...40位"] }
+}
+```
+
+返回：
+
+```
+linked=2 skipped=0 resolved=2
+  a1b2c3d -> a1b2c3d4e5f6...（40 位）
+  e4f5...  -> e4f5...（40 位）
+```
+
+> CLI/脚本通道：会话未注册 mtask 工具时用 `python <skills>/mtask/scripts/mcp-direct-call.py raw mtask_link_git_commit '<json>'`。
+
 ***
 
 ## 4. 权限控制方案

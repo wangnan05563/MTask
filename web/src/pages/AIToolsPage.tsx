@@ -526,6 +526,7 @@ function ToolFormDialog(props: ToolFormDialogProps) {
             <label style={labelStyle}>API Key{props.editingId ? '（留空保留原值）' : '（可留空）'}</label>
             <input
               style={fieldStyle}
+              aria-label="API Key"
               type="password"
               autoComplete="new-password"
               value={form.apiKey}

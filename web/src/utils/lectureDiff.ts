@@ -54,7 +54,7 @@ export interface LectureDiffView {
 }
 
 /** 锚点原文形态（与服务端 ANCHOR_RE 同一条正则，含全局标志故每次新建 lastIndex） */
-export const LECTURE_ANCHOR_RE = /\[([^\[\]#\s]+)#L(\d+)(?:-L(\d+))?\]/g;
+export const LECTURE_ANCHOR_RE = /\[([^[\]#\s]+)#L(\d+)(?:-L(\d+))?\]/g;
 
 /** 讲稿内锚点跳转的 href 前缀（`#` 开头 → 由 Markdown 组件拦成应用内事件，不开新窗口） */
 export const LECTURE_ANCHOR_PREFIX = '#lck:';
@@ -73,7 +73,7 @@ export interface LectureAnchorRef {
  */
 export function linkifyLectureAnchors(text: string): string {
   if (!text) return '';
-  return text.replace(LECTURE_ANCHOR_RE, (raw, path: string, from: string, to?: string) => {
+  return text.replaceAll(LECTURE_ANCHOR_RE, (raw, path: string, from: string, to?: string) => {
     const start = Number(from);
     const end = to ? Number(to) : start;
     if (!Number.isFinite(start) || !Number.isFinite(end)) return raw;
@@ -83,7 +83,8 @@ export function linkifyLectureAnchors(text: string): string {
 }
 
 export function encodeAnchorHref(anchor: LectureAnchorRef): string {
-  return `${LECTURE_ANCHOR_PREFIX}${encodeURIComponent(`${anchor.path}|${anchor.start}|${anchor.end}`)}`;
+  const encoded = encodeURIComponent(`${anchor.path}|${anchor.start}|${anchor.end}`);
+  return `${LECTURE_ANCHOR_PREFIX}${encoded}`;
 }
 
 /** href 解析：非 `#lck:` 前缀或编码畸形一律回 null（调用方按「不可定位」处理，不抛错） */
@@ -203,16 +204,24 @@ export function groupFilesByModule(files: readonly LectureDiffFile[]): LectureFi
     else map.set(m, [f]);
   }
   return [...map.entries()]
-    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .sort((a, b) => {
+      if (a[0] < b[0]) return -1;
+      if (a[0] > b[0]) return 1;
+      return 0;
+    })
     .map(([module, list]) => ({
       module,
-      files: [...list].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
+      files: [...list].sort((a, b) => {
+        if (a.path < b.path) return -1;
+        if (a.path > b.path) return 1;
+        return 0;
+      }),
     }));
 }
 
 /** 渲染行在左栏的 DOM 标识（门按同一串查元素，避免依赖样式类名）；行号是 hunk 内的下标，故必须带 hunk 序号 */
 export function diffRowDomId(projectId: string, path: string, hunkIndex: number, rowIndex: number): string {
-  return `lck-${projectId}-${path}-h${hunkIndex}-r${rowIndex}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return `lck-${projectId}-${path}-h${hunkIndex}-r${rowIndex}`.replaceAll(/[^a-zA-Z0-9_-]/g, '_');
 }
 
 /** 锚点在左栏的落点（一个文件、一个 hunk、若干应高亮的行） */
@@ -267,16 +276,18 @@ export function anchorHitRowIds(hit: LectureAnchorHit): { ids: string[]; primary
 
 /** 锚点跳转结果的文案口径：命中给「已定位」，未命中给出路（不静默） */
 export function anchorLocateMessage(anchor: LectureAnchorRef, hit: LectureAnchorHit | null, projects: readonly LectureDiffProject[]): string {
-  const shown = `L${anchor.start}${anchor.end > anchor.start ? `-${anchor.end}` : ''}`;
+  const rangeSuffix = anchor.end > anchor.start ? `-${anchor.end}` : '';
+  const shown = `L${anchor.start}${rangeSuffix}`;
   if (hit?.exact) return `已定位 ${anchor.path} ${shown}（hunk ${hit.hunkIndex + 1}/${hit.rows.length > 1 ? hit.rows.length - 1 : 1} 行）`;
   if (hit) {
     return `已按最近 hunk 定位 ${anchor.path}（记录行号 ${shown} 未被采集区间覆盖，代码可能在生成后变动）`;
   }
   const file = projects.flatMap((p) => p.files).find((f) => f.path === anchor.path);
-  const reason = !file
-    ? '左栏未找到该文件（可能被排除规则或 2MB 预算移出）'
-    : file.binary
-      ? '二进制文件无文本行可定位'
-      : `该文件 ${file.hunks.length} 个 hunk 均不覆盖 ${shown}`;
+  let reason: string;
+  if (file) {
+    reason = file.binary ? '二进制文件无文本行可定位' : `该文件 ${file.hunks.length} 个 hunk 均不覆盖 ${shown}`;
+  } else {
+    reason = '左栏未找到该文件（可能被排除规则或 2MB 预算移出）';
+  }
   return `锚点 ${anchor.path}#${shown} 定位失败：${reason}（代码可能已在生成后变动）`;
 }

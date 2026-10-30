@@ -15,7 +15,7 @@ export function dumpDiagText(prefix: string, text: string): string {
   try {
     const dir = dataDir();
     mkdirSync(dir, { recursive: true });
-    const file = join(dir, `${prefix}-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`);
+    const file = join(dir, `${prefix}-${new Date().toISOString().replaceAll(/[:.]/g, '-')}.txt`);
     writeFileSync(file, text, 'utf8');
     return file;
   } catch {

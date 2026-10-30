@@ -135,12 +135,14 @@ function expandBraces(pattern: string): string[] {
 /** glob → 正则：支持 `**`、`*`、`?`、`{a,b}`、`[abc]`；`*` 不跨 `/`，`**` 跨目录 */
 function globBodyToRegExp(pattern: string): string {
   let out = '';
-  for (let i = 0; i < pattern.length; i += 1) {
+  let i = 0;
+  while (i < pattern.length) {
     const ch = pattern[i];
+    i += 1;
     if (ch === '*') {
-      if (pattern[i + 1] === '*') {
+      if (pattern[i] === '*') {
         i += 1;
-        if (pattern[i + 1] === '/') {
+        if (pattern[i] === '/') {
           i += 1;
           out += '(?:.*/)?';
         } else {
@@ -153,10 +155,10 @@ function globBodyToRegExp(pattern: string): string {
     }
     if (ch === '?') { out += '[^/]'; continue; }
     if (ch === '[') {
-      const end = pattern.indexOf(']', i + 1);
-      if (end > i + 1) {
-        out += `[${pattern.slice(i + 1, end).replaceAll('\\', '\\\\')}]`;
-        i = end;
+      const end = pattern.indexOf(']', i);
+      if (end > i) {
+        out += `[${pattern.slice(i, end).replaceAll('\\', '\\\\')}]`;
+        i = end + 1;
         continue;
       }
     }
@@ -186,7 +188,7 @@ export function normalizeExcludeRules(input: unknown): string[] {
     if (/[\0\r\n]/.test(rule)) throw new LectureScopeError(`排除规则含控制字符：${rule}`);
     if (rule.startsWith('!')) throw new LectureScopeError(`暂不支持否定规则「${rule}」`);
     if (rule.startsWith('/') || /^[A-Za-z]:/.test(rule)) throw new LectureScopeError(`排除规则必须是仓库相对路径：${rule}`);
-    if (rule.split('/').some((seg) => seg === '..')) throw new LectureScopeError(`排除规则不得包含 ..：${rule}`);
+    if (rule.split('/').includes('..')) throw new LectureScopeError(`排除规则不得包含 ..：${rule}`);
     if (seen.has(rule)) return;
     seen.add(rule);
     out.push(rule);
@@ -377,8 +379,12 @@ function summarizeCollection(
   const budget = applyDiffBudget(filtered.kept, GIT_DIFF_TEXT_LIMIT);
   const warnings = [...collected.warnings];
   if (budget.truncated) {
+    const droppedSuffix = budget.dropped.length > DROPPED_NAME_LIMIT ? ' 等' : '';
+    const droppedPart = budget.dropped.length
+      ? `（${budget.dropped.slice(0, DROPPED_NAME_LIMIT).map((e) => e.path).join('、')}${droppedSuffix}）`
+      : '';
     warnings.push(`过滤后 diff 仍超过单仓 ${GIT_DIFF_TEXT_LIMIT / (1024 * 1024)}MB 预算：已丢弃 ${budget.dropped.length} 个文件`
-      + (budget.dropped.length ? `（${budget.dropped.slice(0, DROPPED_NAME_LIMIT).map((e) => e.path).join('、')}${budget.dropped.length > DROPPED_NAME_LIMIT ? ' 等' : ''}）` : ''));
+      + droppedPart);
     if (budget.partial.length > 0) warnings.push(`单文件超出剩余预算，已保头保尾截断：${budget.partial.map((e) => e.path).join('、')}`);
   }
   if (filtered.kept.length === 0 && filtered.excluded.length > 0) warnings.push('区间内所有变更文件都被排除规则过滤，请检查排除规则');
@@ -418,7 +424,7 @@ async function scanProject(
   resolveRevision: boolean,
 ): Promise<LectureCollectedProject> {
   const workspacePath = (project?.workspace_path ?? '').trim();
-  const base = blankPreview(item.projectId, project?.name ?? item.projectId, workspacePath, item.patch !== undefined ? '粘贴 patch' : rangeLabelOf(item.range!));
+  const base = blankPreview(item.projectId, project?.name ?? item.projectId, workspacePath, item.patch === undefined ? rangeLabelOf(item.range!) : '粘贴 patch');
   if (!project) return { ...base, files: [], commits: [], blocked: '项目不存在或已归档（请刷新项目列表）' };
 
   // 粘贴 patch 不依赖工作空间与 git，先于 git 探测处理（FR-1.3 降级通道）

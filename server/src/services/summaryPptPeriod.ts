@@ -51,7 +51,7 @@ export type PeriodCapCheck = { ok: boolean; days: number; error?: string };
  */
 export function checkPeriodCap(startMs: number, endMs: number, capDays = SUMMARY_PPT_MAX_PERIOD_DAYS): PeriodCapCheck {
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
-    return { ok: false, days: NaN, error: '周期起止时间非法（需要可解析的本地日期）' };
+    return { ok: false, days: Number.NaN, error: '周期起止时间非法（需要可解析的本地日期）' };
   }
   if (endMs <= startMs) return { ok: false, days: 0, error: '起始日不得晚于（或等于）结束日' };
   const days = Math.ceil((endMs - startMs) / DAY_MS);
@@ -153,7 +153,7 @@ export function assessEventCoverage(
   const retentionDays = opts.retentionDays ?? readEventRetentionDays();
   // 0 = 关闭清理（EventRetention 的显式语义），任何周期起点都在窗口内，不降级也不该编造一句「仅覆盖 0 天」
   if (retentionDays <= 0) {
-    return { ok: true, degraded: false, retentionDays: Math.max(0, retentionDays), boundaryMs: NaN, coveredFromMs: startMs, footnote: '' };
+    return { ok: true, degraded: false, retentionDays: Math.max(0, retentionDays), boundaryMs: Number.NaN, coveredFromMs: startMs, footnote: '' };
   }
   const boundaryMs = nowMs - retentionDays * DAY_MS;
   const ok = startMs >= boundaryMs;

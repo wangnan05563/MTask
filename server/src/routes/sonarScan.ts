@@ -20,6 +20,7 @@ import {
 } from '../services/sonarScan';
 import type { ScanInput, ScanSeverity } from '../services/sonarScan';
 import { ConsoleJobService } from '../services/ConsoleJobService';
+import { scalarText } from '../util/scalarText';
 
 export const sonarScanApi = Router();
 
@@ -27,17 +28,19 @@ export const sonarScanApi = Router();
 const controllers = new Map<string, AbortController>();
 
 /** 参数校验类 kind：发生在 SSE 之前，按 HTTP 4xx 回（与提取族「切 SSE 前一律 JSON 4xx」同口径） */
-const BAD_REQUEST_KINDS: string[] = ['bad-args', 'bad-severities', 'bad-cap'];
+const BAD_REQUEST_KINDS = new Set<string>(['bad-args', 'bad-severities', 'bad-cap']);
 
 function errorShape(e: unknown): { status: number; body: { error: string; kind: string; hint?: string } } {
   if (e instanceof ScanError) {
-    return { status: BAD_REQUEST_KINDS.includes(e.kind) ? 400 : 200, body: { error: e.message, kind: e.kind, ...(e.hint ? { hint: e.hint } : {}) } };
+    return { status: BAD_REQUEST_KINDS.has(e.kind) ? 400 : 200, body: { error: e.message, kind: e.kind, ...(e.hint ? { hint: e.hint } : {}) } };
   }
   if (e instanceof SonarConfigError) return { status: 400, body: { error: e.message, kind: e.kind } };
   if (e instanceof ExtractError) {
-    const status = e.kind === 'no-tasks' || e.kind === 'no-links' || e.kind === 'empty' ? 400
-      : e.kind === 'task-not-found' ? 404
-        : e.kind === 'too-many-files' || e.kind === 'too-large' ? 413 : 400;
+    let status: number;
+    if (e.kind === 'no-tasks' || e.kind === 'no-links' || e.kind === 'empty') status = 400;
+    else if (e.kind === 'task-not-found') status = 404;
+    else if (e.kind === 'too-many-files' || e.kind === 'too-large') status = 413;
+    else status = 400;
     return { status, body: { error: e.message, kind: e.kind } };
   }
   if (e instanceof GitCollectError) return { status: 200, body: { error: e.message, kind: e.kind } };
@@ -71,7 +74,7 @@ function capOf(raw: unknown): number | undefined {
 /** 面板进页就要知道环境是否可用（不可用时卡片置灰 + 指引，扫描请求根本发不出去） */
 sonarScanApi.get('/sonar/scan/env', async (req, res) => {
   try {
-    const raw = String(req.query.projectIds ?? '');
+    const raw = scalarText(req.query.projectIds ?? '');
     const projectIds = raw ? raw.split(',').map((s) => s.trim()).filter(Boolean) : [];
     const state = await scanEnvState(projectIds);
     res.json({
@@ -99,7 +102,7 @@ sonarScanApi.get('/sonar/scan/running', (_req, res) => {
 
 /** 历史结果回读（只回运行态需要的字段，不回 prompt 明细） */
 sonarScanApi.get('/sonar/scan/job', (req, res) => {
-  const jobId = String(req.query.jobId ?? '').trim();
+  const jobId = scalarText(req.query.jobId ?? '').trim();
   const row = jobId ? ConsoleJobService.get(jobId) : null;
   if (!row) return res.status(404).json({ error: '任务不存在', kind: 'job-not-found' });
   res.json({ jobId: row.id, status: row.status, title: row.title, answer: row.answer ?? '', error: row.error ?? '', createdAt: row.created_at });
@@ -119,7 +122,9 @@ sonarScanApi.post('/sonar/scan', exportGate(SONAR_SCAN_GATE, SCAN_LIMIT_DEFAULT)
     // 环境预检放在 SSE 之前：缺 scanner/Java 时既不该建 job，也不该让前端看到一个空的运行态
     const env = await scanEnvState();
     if (!env.ok) {
-      return res.status(400).json({ error: env.reasons[0], kind: env.scanner.available ? (env.java.available ? 'no-project-key' : 'no-java') : 'no-scanner', hint: env.reasons.join('；') });
+      const noJavaKind = env.java.available ? 'no-project-key' : 'no-java';
+      const kind = env.scanner.available ? noJavaKind : 'no-scanner';
+      return res.status(400).json({ error: env.reasons[0], kind, hint: env.reasons.join('；') });
     }
   } catch (e) {
     const { status, body } = errorShape(e);

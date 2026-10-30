@@ -74,14 +74,14 @@ export function WebhookPanel({ projectId, onClose }: {
   const [deliveries, setDeliveries] = useState<DeliveryView[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
-  const msgTimer = useRef<number | null>(null);
+  const msgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const flash = useCallback((m: string) => {
     setMsg(m);
-    if (msgTimer.current) window.clearTimeout(msgTimer.current);
-    msgTimer.current = window.setTimeout(() => { setMsg(''); msgTimer.current = null; }, 5000);
+    if (msgTimer.current) globalThis.clearTimeout(msgTimer.current);
+    msgTimer.current = globalThis.setTimeout(() => { setMsg(''); msgTimer.current = null; }, 5000);
   }, []);
-  useEffect(() => () => { if (msgTimer.current) window.clearTimeout(msgTimer.current); }, []);
+  useEffect(() => () => { if (msgTimer.current) globalThis.clearTimeout(msgTimer.current); }, []);
 
   const load = useCallback(async () => {
     setHooks(await api.get<HookView[]>(`/webhooks?projectId=${encodeURIComponent(projectId)}`));
@@ -120,7 +120,7 @@ export function WebhookPanel({ projectId, onClose }: {
     setBusy(true);
     try {
       await api.patch(`/webhooks/${h.id}`, { enabled: !h.enabled });
-      flash(!h.enabled ? '已启用' : '已停用，待重试投递已取消');
+      flash(h.enabled ? '已停用，待重试投递已取消' : '已启用');
       await load();
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
@@ -252,10 +252,13 @@ export function WebhookPanel({ projectId, onClose }: {
                     </tr>
                   </thead>
                   <tbody>
-                    {deliveries.map((d) => (
+                    {deliveries.map((d) => {
+                      const mutedOrDanger = d.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
+                      const statusColor = d.status === 'success' ? 'var(--success)' : mutedOrDanger;
+                      return (
                       <tr key={d.id} data-t03196="delivery-row">
                         <td style={{ padding: '3px 4px' }}>{WEBHOOK_EVENT_LABEL[d.eventType] ?? d.eventType}</td>
-                        <td style={{ padding: '3px 4px', color: d.status === 'success' ? 'var(--success)' : d.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)' }}>
+                        <td style={{ padding: '3px 4px', color: statusColor }}>
                           {STATUS_LABEL[d.status] ?? d.status}
                         </td>
                         <td style={{ padding: '3px 4px' }}>{d.attempts}</td>
@@ -265,7 +268,8 @@ export function WebhookPanel({ projectId, onClose }: {
                         </td>
                         <td style={{ padding: '3px 4px', whiteSpace: 'nowrap' }}>{new Date(d.createdAt).toLocaleString()}</td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               )}

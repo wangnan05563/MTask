@@ -9,8 +9,11 @@ import { ProjectListHint, loadProjectList, projectListPlaceholder, useProjectLis
 import { NotOpenButton } from '../ui/notOpen'; // T03185（UX-05⑤）：未开放入口=可见但禁用+范围说明
 import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
+import { FavoriteToggle } from '../ui/FavoriteToggle'; // T03683：收藏切换（与提示词页共用同一组件）
+import { focusSettingsTab } from '../ui/settingsTabs'; // T03685：工具条「归档」直达归档管理页
 import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：通用需求正文 AI 美化
 import { PromptOptimizeButton } from '../ui/PromptOptimizeButton'; // T00842 二轮：正文改写为结构化提示词
+import { OPTIMIZE_SCOPE_REQ, useOptimizeStore } from '../stores/optimizeStore'; // T03684：优化运行态切页保持
 import { relTime } from '../ui/format';
 
 /** 通用需求仓库：按分类管理"通用优秀实现/解决方案"，支持增删改查与一键复制 */
@@ -19,7 +22,9 @@ export function ReqPage() {
   // 当前分类：跨切换会话记忆用户选择，便于切回后继续操作
   const [activeCat, setActiveCat] = useSessionState('req.activeCat', '');
   const [entries, setEntries] = useState<ReqEntry[]>([]);
-  const [search, setSearch] = useState('');
+  // T03684：搜索词/排序条件/显示范围跨页面切换保持——此前是组件级 useState，
+  // App.tsx 切 tab 会卸载整页，回到本页即被重置（用户报「切页面后筛选/排序全丢」）
+  const [search, setSearch] = useSessionState('req.search', '');
   const [notice, setNotice] = useState('');
 
   // T00629：复制到待办任务——目标项目选择弹窗（与提示词页一致）
@@ -36,16 +41,32 @@ export function ReqPage() {
   const projectList = useProjectList(); // T02201：项目列表统一走容错层
   const { projects } = projectList;
   // 排序条件：sortKey 排序字段，sortDir 升降序（默认时间降序，与后端默认一致）
-  const [sortKey, setSortKey] = useState<'updated_at' | 'created_at' | 'title' | 'manual'>('updated_at');
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  // T03684：同 search，升为会话级持久（切菜单回来保持上次的排序选择）
+  const [sortKey, setSortKey] = useSessionState<'updated_at' | 'created_at' | 'title' | 'manual'>('req.sortKey', 'updated_at');
+  const [sortDir, setSortDir] = useSessionState<'asc' | 'desc'>('req.sortDir', 'desc');
+  // T03683：显示范围（'all' 全部显示 | 'fav' 只看收藏），与提示词页同键格式、同语义
+  const [viewScope, setViewScope] = useSessionState<'all' | 'fav'>('req.viewScope', 'all');
   // 新建条目表单：录入状态跨会话持久化，切页后可续写
   const [creating, setCreating] = useSessionState('req.new.creating', false);
   const [newTitle, setNewTitle] = useSessionState('req.new.title', '');
   const [newContent, setNewContent] = useSessionState('req.new.content', '');
   // 编辑草稿：entryId -> 草稿
-  const [drafts, setDrafts] = useState<Record<string, { title: string; content: string; categoryId: string }>>({});
+  // T03684：草稿与展开态升为会话级——切到别的菜单再回来，编辑到一半的正文和展开的行都还在
+  // （此前是组件级 useState，页面卸载即丢；这是用户报「状态保持失效」的主症状）
+  const [drafts, setDrafts] = useSessionState<Record<string, { title: string; content: string; categoryId: string }>>('req.drafts', {});
   // 内容 展开/收起：expandedIds 记录已展开的条目 id，默认全部收起（点击标题切换，降低信息密度）
-  const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
+  const [expandedIds, setExpandedIds] = useSessionState<Record<string, boolean>>('req.expandedIds', {});
+  // T03684：「提示词优化」的运行态与结果提升到模块级 store（键域 `req:`）。
+  // 此前按钮的忙碌态在组件内、结果经 onOptimized 闭包回填：切一级菜单整页卸载后，
+  // 呼吸态消失且 AI 回来时回填打在已卸载组件上被丢弃——用户等了半天「什么都没发生」。
+  // 现在结果先 park 在 store，本页挂载即排入对应条目的编辑草稿（等价当场回填）。
+  useOptimizeStore(OPTIMIZE_SCOPE_REQ, (id, result) => {
+    const draft = drafts[id];
+    // 编辑态已关闭（草稿不在）时不凭空造一条空标题草稿——那会把行渲染成「标题空着」的编辑态
+    if (!draft) { flash('提示词优化已完成，但该条的编辑态已关闭，请重新进入编辑后再优化'); return; }
+    setDrafts((prev) => ({ ...prev, [id]: { ...(prev[id] ?? draft), content: result.text } }));
+    flash('已生成结构化提示词，请核对后保存');
+  });
   // 记录高亮：保存/新增成功后对目标行打标记，flashAt 值变化触发行动画重放
   const [flashAt, setFlashAt] = useState<Record<string, number>>({});
   function dropReorder(targetId: string) {
@@ -285,6 +306,35 @@ export function ReqPage() {
     }
   }
 
+  /** T03683：收藏/取消收藏——乐观改本地行，失败回滚并提示（与提示词页 toggleFavorite 同口径）。
+   *  条目列表是本页自持的 useState（非 useResource），直接 setEntries 即可，无需整表 reload。 */
+  async function toggleFavorite(p: ReqEntry) {
+    const next = !Boolean(p.is_favorited);
+    const withFlag = (favorited: boolean) => entries.map((x) => (x.id === p.id ? { ...x, is_favorited: favorited } : x));
+    setEntries(withFlag(next));
+    try {
+      await api.patch(`/req-entries/${p.id}`, { isFavorited: next });
+      flash(next ? `已收藏「${p.title}」` : `已取消收藏「${p.title}」`);
+    } catch (e) {
+      setEntries(withFlag(!next));
+      flash(`收藏失败，已还原：${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /** T03685：归档条目（删除改归档）——与提示词页 T00525 同语义：列表不再显示、数据保留，
+   *  可在「设置 → 归档 → 归档通用需求」区还原或彻底删除。 */
+  async function archiveEntry(p: ReqEntry) {
+    if (!(await askConfirm(`归档通用需求「${p.title}」？归档后列表不再显示（数据保留），可在「设置 → 归档」还原。`))) return;
+    try {
+      await api.patch(`/req-entries/${p.id}`, { archived: true });
+      flash('已归档');
+      void loadEntries(activeCat, search);
+      void loadCategories(); // 分类计数随归档变化
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   /** 调整分组：切换条目所属分类；目标与当前相同则仅提示不发请求 */
   async function moveEntry(p: ReqEntry, targetId: string) {
     setMoveOpenId('');
@@ -361,6 +411,11 @@ export function ReqPage() {
     return sortDir === 'asc' ? cmp : -cmp;
   });
 
+  /** T03683：显示范围「收藏」= 只看已收藏的行。
+   *  收藏视图下禁用拖拽（draggable 判定见列表行）：拖拽提交的 orderedIds 只覆盖子集，
+   *  重排语义会作用不到未显示的兄弟条目，容易把权重写得与用户所见不符。 */
+  const visibleEntries = viewScope === 'fav' ? sortedEntries.filter((p) => Boolean(p.is_favorited)) : sortedEntries;
+
   return (
     <section>
       {/* 悬浮操作按钮 + 行 hover 高亮 + 记录高亮动画：类名与任务页体验一致 */}
@@ -386,7 +441,7 @@ export function ReqPage() {
       `}</style>
       {/* 工具栏：分类切换与管理 */}
       <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <select value={activeCat} onChange={(e) => setActiveCat(e.target.value)} style={{ padding: 6, fontSize: 'var(--fs-s)', minWidth: 180, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+        <select value={activeCat} aria-label="需求分类筛选" onChange={(e) => setActiveCat(e.target.value)} style={{ padding: 6, fontSize: 'var(--fs-s)', minWidth: 180, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           {categories.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.reqCount ?? 0}）</option>)}
         </select>
         {/* T00510 调整：分类管理三按钮与任务菜单项目按钮组同款——纯图标+边框、同组紧跟下拉、悬浮显示 */}
@@ -439,15 +494,36 @@ export function ReqPage() {
             style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6 }} />
           <NotOpenButton label="AI 简化" scope="summarizeTitle" icon={<Minimize2 size={13} />}
             style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6 }} />
-          <NotOpenButton label="归档" scope="archiveReq" icon={<Archive size={13} />}
-            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6 }} />
+          {/* T03685：工具条「归档」由未开放占位转为真实入口——进入归档管理页（还原/彻底删除都在那里），
+              行内归档按钮负责把条目送进来，两者构成完整闭环 */}
+          <button className="tbtn-anim" data-t03685="archive-hub"
+            onClick={() => focusSettingsTab('archive')}
+            title="归档管理 — 打开「设置 → 归档」查看并还原/彻底删除已归档的通用需求"
+            aria-label="归档管理：打开归档管理页"
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
+            <Archive size={13} />
+          </button>
+        </span>
+        {/* T03683：显示范围（全部显示 / 收藏）——与提示词页同位置同口径的筛选控件 */}
+        <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <select
+            data-t03683="view-scope"
+            value={viewScope}
+            onChange={(e) => setViewScope(e.target.value as 'all' | 'fav')}
+            title="显示范围 — 全部通用需求或只看已收藏"
+            aria-label="显示范围：选择显示全部通用需求还是只看已收藏"
+            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}
+          >
+            <option value="all">全部显示</option>
+            <option value="fav">收藏</option>
+          </select>
         </span>
         <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <select
           value={sortKey}
           onChange={(e) => setSortKey(e.target.value as 'updated_at' | 'created_at' | 'title')}
-          title="排序字段"
+          title="排序字段" aria-label="排序字段"
           style={{ padding: 6, fontSize: 'var(--fs-s)' }}
         >
           <option value="manual">手动排序</option>
@@ -462,7 +538,7 @@ export function ReqPage() {
           <select
           value={sortDir}
           onChange={(e) => setSortDir(e.target.value as 'asc' | 'desc')}
-          title="排序方式"
+          title="排序方式" aria-label="排序方式"
           style={{ padding: 6, fontSize: 'var(--fs-s)' }}
         >
           <option value="desc">降序</option>
@@ -474,7 +550,7 @@ export function ReqPage() {
           className="op-hidden" // T00893：搜索框对齐其它工具栏控件的「默认隐藏、悬浮宿主区显示」约定
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="搜索标题/内容…" data-page-search
+          aria-label="搜索需求（标题或内容）" placeholder="搜索标题/内容…" data-page-search
           style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', marginLeft: 'auto' }}
         />
         {notice && <output className="flash-toast">{notice}</output>}
@@ -485,12 +561,14 @@ export function ReqPage() {
         <div style={{ border: '1px solid var(--border-strong)', borderRadius: 8, padding: 12, marginBottom: 12 }}>
           <input
             value={newTitle}
+            aria-label="新需求的标题"
             onChange={(e) => setNewTitle(e.target.value)}
             placeholder="通用需求标题"
             style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)', boxSizing: 'border-box', marginBottom: 8 }}
           />
           <textarea
             value={newContent}
+            aria-label="新需求的内容"
             onChange={(e) => setNewContent(e.target.value)}
             rows={6}
             placeholder="通用需求内容（描述该优秀实现/解决方案，可用 {占位符} 标记使用时需替换的部分）"
@@ -522,11 +600,18 @@ export function ReqPage() {
       )}
 
       {/* 条目列表 */}
-      {sortedEntries.length === 0 && (
-        <p style={{ color: 'var(--text-muted)' }}>{categories.length === 0 ? '暂无分类，请先新建分类。' : '该分类下暂无通用需求。'}</p>
+      {visibleEntries.length === 0 && (
+        <p style={{ color: 'var(--text-muted)' }}>
+          {categories.length === 0
+            ? '暂无分类，请先新建分类。'
+            : viewScope === 'fav' && sortedEntries.length > 0
+              // T03683：收藏视图空态要说清「不是没数据，是没收藏」，避免被读成数据丢失
+              ? `该分类下有 ${sortedEntries.length} 条通用需求，但都未收藏 —— 点标题左侧星标加入收藏，或把「显示范围」切回「全部显示」。`
+              : '该分类下暂无通用需求。'}
+        </p>
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-        {sortedEntries.map((p) => {
+        {visibleEntries.map((p) => {
           const draft = drafts[p.id];
           const editing = draft !== undefined;
           return (
@@ -534,7 +619,7 @@ export function ReqPage() {
               onPointerDown={(e) => startPress(p.id, e.target)}
               onPointerUp={() => endPress(p.id)}
               onPointerLeave={() => endPressRow(p.id)}
-              draggable={sortKey === 'manual'}
+              draggable={sortKey === 'manual' && viewScope !== 'fav'} // T03683：收藏视图（子集）下禁用拖拽重排
               onDragStart={(e) => dragStartRow(p.id, e)}
               onDragEnd={dragEndRow}
               onDragOver={(e) => dragOverRow(p.id, e)}
@@ -546,11 +631,13 @@ export function ReqPage() {
                   <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                     <input
                       value={draft.title}
+                      aria-label="编辑需求标题"
                       onChange={(e) => setDrafts((prev) => ({ ...prev, [p.id]: { ...draft, title: e.target.value } }))}
                       style={{ flex: 1, padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)' }}
                     />
                     <select
                       value={draft.categoryId}
+                      aria-label="编辑需求分类"
                       onChange={(e) => setDrafts((prev) => ({ ...prev, [p.id]: { ...draft, categoryId: e.target.value } }))}
                       style={{ padding: 6 }}
                     >
@@ -559,6 +646,7 @@ export function ReqPage() {
                   </div>
                   <textarea
                     value={draft.content}
+                    aria-label="编辑需求内容"
                     onChange={(e) => setDrafts((prev) => ({ ...prev, [p.id]: { ...draft, content: e.target.value } }))}
                     rows={6}
                     style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-m)', boxSizing: 'border-box', fontFamily: 'inherit' }}
@@ -571,11 +659,12 @@ export function ReqPage() {
                       flash={flash}
                       title="AI 美化 — 润色这段通用需求正文（保留全部实现要点，仅规范表达），结果回填后请核对再保存"
                     />
-                    {/* T00842 二轮：编辑态详情输入框下方「提示词优化」——把正文改写为结构化提示词，功能对齐任务菜单同名操作 */}
+                    {/* T00842 二轮：编辑态详情输入框下方「提示词优化」——把正文改写为结构化提示词，功能对齐任务菜单同名操作。
+                        T03684：给出 storeKey 后结果由本页挂载时排干落进 drafts，不再经当场回填闭包 */}
                     <PromptOptimizeButton
                       title={draft.title}
                       content={draft.content}
-                      onOptimized={(text) => setDrafts((prev) => ({ ...prev, [p.id]: { ...draft, content: text } }))}
+                      storeKey={p.id}
                       flash={flash}
                     />
                     <button onClick={() => void saveDraft(p)} disabled={!draft.title.trim()} style={{ fontSize: 'var(--fs-s)', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
@@ -601,6 +690,9 @@ export function ReqPage() {
                         （dev React 报 validateDOMNesting，生产构建只是剥掉告警，DOM 依旧非法）。
                         PinToggle 自带 stopPropagation，提到外面后「置顶」与「展开」互不干扰的行为不变，
                         视觉位置仍是标题左侧。 */}
+                    {/* T03683：收藏星标与置顶图标并列标题左侧（同 T02146 约束：button 不能套 button），
+                        星标在前；两者都自带 stopPropagation，与「展开/收起」互不干扰 */}
+                    <FavoriteToggle favorited={Boolean(p.is_favorited)} onToggle={() => void toggleFavorite(p)} />
                     <PinToggle pinned={Boolean(p.pinned)} onToggle={() => void togglePin(p)} />
                     <button
                       onClick={() => setExpandedIds((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
@@ -659,8 +751,13 @@ export function ReqPage() {
                       style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }} />
                     <NotOpenButton className="abtn" label="AI 简化" scope="summarizeTitle" icon={<Minimize2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
                       style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }} />
-                    <NotOpenButton className="abtn" label="归档" scope="archiveReq" icon={<Archive size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
-                      style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }} />
+                    {/* T03685：归档由「未开放」转真实可用——需求侧补齐 archived/archived_at 列后，
+                        与提示词页 T00525 同语义（软删、可在归档管理页还原） */}
+                    <button className="abtn" data-t03685="archive-entry" onClick={() => void archiveEntry(p)}
+                      style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                      title="归档 — 归档这条通用需求（数据保留，列表不再显示，可在「设置 → 归档」还原）" aria-label="归档：归档这条通用需求">
+                      <Archive size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                    </button>
                     <button className="abtn" onClick={() => void removeEntry(p)} style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="删除 — 删除这条通用需求" aria-label="删除：删除这条通用需求">
                       <Trash2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />

@@ -66,7 +66,7 @@ const renderTitleTodoActions = (): ReactNode => (
   <>
     <NotOpenButton className="tbtn-anim" label="AI 美化" scope="polishTitle" icon={<Sparkles size={12} />} style={TODO_BTN_STYLE} />
     <NotOpenButton className="tbtn-anim" label="AI 简化" scope="summarizeTitle" icon={<Minimize2 size={12} />} style={TODO_BTN_STYLE} />
-    <NotOpenButton className="tbtn-anim" label="归档" scope="archiveReq" icon={<Archive size={12} />} style={TODO_BTN_STYLE} />
+    <NotOpenButton className="tbtn-anim" label="归档" scope="archiveMatrixRow" icon={<Archive size={12} />} style={TODO_BTN_STYLE} />
   </>
 );
 

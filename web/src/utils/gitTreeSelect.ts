@@ -80,7 +80,7 @@ export function assignLanes(commits: readonly GitTreeCommit[]): LaneLayout {
       if (free < 0) { lanes.push(null); free = lanes.length - 1; }
       lanes[free] = p;
     }
-    through.push([...lanes.map((l, i) => (l !== null || i === lane ? i : -1)).filter((i) => i >= 0)]);
+    through.push(lanes.map((l, i) => (l !== null || i === lane ? i : -1)).filter((i) => i >= 0));
   }
   return { lanes: out, count: out.length === 0 ? 0 : Math.max(...out) + 1, through };
 }
@@ -177,11 +177,11 @@ export function summarizeSelection(commits: readonly GitTreeCommit[], selected: 
     }
     runs += 1;
   }
-  const dates = chosen.map((c) => c.date).filter(Boolean).sort();
+  const dates = chosen.map((c) => c.date).filter(Boolean).sort((a, b) => a.localeCompare(b));
   return {
     count: selected.length,
     runs,
-    newest: dates[dates.length - 1] ?? '',
+    newest: dates.at(-1) ?? '',
     oldest: dates[0] ?? '',
   };
 }

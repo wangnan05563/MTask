@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Loader2, Wand2 } from 'lucide-react';
 import { api, type AITool } from '../api/client';
 import { aiBlocked, aiBlockedTitle, useAiReadiness } from './aiReadiness';
+import { OPTIMIZE_SCOPE_REQ, runOptimize, useOptimizeStore } from '../stores/optimizeStore'; // T03684：优化运行态切页保持
 
 /**
  * 「提示词优化」按钮（T00842 二轮）：把一段正文改写为结构化提示词。
@@ -40,24 +41,31 @@ function stripCodeFence(text: string): string {
   return m ? m[1] : text;
 }
 
-export function PromptOptimizeButton({ title, content, onClick, onOptimized, disabled, flash }: {
+export function PromptOptimizeButton({ title, content, onClick, onOptimized, disabled, flash, storeKey }: {
   /** 条目/标题，作为优化输入的辅助信息（用于生成结构上下文） */
   readonly title: string;
   /** 待优化的正文（空则按钮禁用） */
   readonly content: string;
   /** 自定义执行钩子；不传时用内置逻辑调 /ai/optimize */
   readonly onClick?: () => void;
-  /** 优化结果回填回调（不自动保存，由调用方确认后落库） */
-  readonly onOptimized: (text: string) => void;
+  /** 优化结果回填回调（不自动保存，由调用方确认后落库）；传了 storeKey 时不需要——结果由页面 drain 落草稿 */
+  readonly onOptimized?: (text: string) => void;
   readonly disabled?: boolean;
   /** 提示回调（页面统一的 flash/toast）；不传时静默 */
   readonly flash?: (msg: string) => void;
+  /** T03684：本页域内的条目 id。给出后运行态与结果走模块级 optimizeStore（键 `req:${id}`）——
+   *  切一级菜单整页卸载时「进行中」呼吸态不丢、AI 回来的结果先 park 在 store，由页面挂载时排入草稿；
+   *  不传则维持组件内本地忙碌态 + onOptimized 当场回填（无切页诉求的调用方零改动）。 */
+  readonly storeKey?: string;
 }) {
-  const [busy, setBusy] = useState(false);
+  const [busyLocal, setBusyLocal] = useState(false);
   const [autoToolId, setAutoToolId] = useState('');
   // T03176（D-14）：可用性以服务端单源为准——不可用时按钮仍可见，置灰并给出原因
   const readiness = useAiReadiness();
   const blocked = aiBlocked(readiness);
+  // 不传 apply：本组件只读忙碌态，结果排干归页面（避免按钮与页面两处抢同一份结果）
+  const storeSnap = useOptimizeStore(OPTIMIZE_SCOPE_REQ);
+  const busy = storeKey ? Boolean(storeSnap.busy[`${OPTIMIZE_SCOPE_REQ}${storeKey}`]) : busyLocal;
 
   useEffect(() => {
     void resolveToolId().then(setAutoToolId);
@@ -70,19 +78,37 @@ export function PromptOptimizeButton({ title, content, onClick, onOptimized, dis
     if (onClick) { onClick(); return; }
     if (!text) { flash?.('请先填写内容，再点击提示词优化'); return; }
     if (!active) { flash?.('请先在「模型管理」页添加并选择 AI 工具'); return; }
-    setBusy(true);
+    if (storeKey) {
+      // 走 store：busy 由 store 记账（切页回来仍在），成功结果 park 后由页面 drain 落草稿
+      let failMsg = '';
+      const r = await runOptimize(
+        `${OPTIMIZE_SCOPE_REQ}${storeKey}`,
+        (signal) => api.post<{ ok: boolean; content?: string; error?: string }>('/ai/optimize', {
+          toolId: active, title, description: text,
+        }, signal),
+        (result) => {
+          if (!result.ok) { failMsg = result.error ?? '提示词优化失败'; return null; }
+          if (!result.content?.trim()) { failMsg = 'AI 未返回优化结果'; return null; }
+          return { text: stripCodeFence(result.content.trim()), source: '内容' };
+        },
+      );
+      // 成功文案由页面 drain 给出（切页期间完成也能看到），这里只报失败
+      if (!r.ok) flash?.(failMsg || r.error || '提示词优化失败');
+      return;
+    }
+    setBusyLocal(true);
     try {
       const r = await api.post<{ ok: boolean; content?: string; error?: string }>('/ai/optimize', {
         toolId: active, title, description: text,
       });
       if (!r.ok) { flash?.(r.error ?? '提示词优化失败'); return; }
       if (!r.content?.trim()) { flash?.('AI 未返回优化结果'); return; }
-      onOptimized(stripCodeFence(r.content.trim()));
+      onOptimized?.(stripCodeFence(r.content.trim()));
       flash?.('已生成结构化提示词，请核对后保存');
     } catch (e) {
       flash?.(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setBusyLocal(false);
     }
   }
 

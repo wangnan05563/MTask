@@ -28,7 +28,7 @@ export function artifactRoot(): string {
 
 /** 卡片键做目录名：只允许安全字符，避免 ai.weekly_report 之外的键带出路径分隔符 */
 function safeKey(cardKey: string): string {
-  return cardKey.replace(/[^A-Za-z0-9._-]/g, '_') || 'unknown';
+  return cardKey.replaceAll(/[^A-Za-z0-9._-]/g, '_') || 'unknown';
 }
 
 export interface AiArtifact {
@@ -45,7 +45,7 @@ export interface AiArtifactView extends AiArtifact {
   /** 文件是否还在盘上（用户手工删除/清理后置 false，界面照实提示而非给死链） */
   exists: boolean;
   /** 解析后的溯源（坏 JSON 时为 null，不因历史脏数据把找回入口拖崩） */
-  provenanceView: unknown | null;
+  provenanceView: unknown;
 }
 
 /** 登记一次成功产物：写持久副本 + 落库 + 按卡裁剪旧份数 */
@@ -92,7 +92,7 @@ export function listArtifacts(cardKey: string, limit = 5): AiArtifactView[] {
 }
 
 /** 溯源 JSON 解析：坏数据返回 null（历史行可能来自旧版本，不因此让找回入口报错） */
-function parseProvenance(raw: string | null | undefined): unknown | null {
+function parseProvenance(raw: string | null | undefined): unknown {
   if (!raw) return null;
   try { return JSON.parse(raw) as unknown; } catch { return null; }
 }

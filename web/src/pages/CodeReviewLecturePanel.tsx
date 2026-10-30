@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FIELD_QUIET, PILL } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
-import { Ban, Download, Eye, GitBranch, ListChecks, RefreshCw, Sparkles, X } from 'lucide-react';
+import { Ban, ChevronDown, ChevronRight, Download, Eye, GitBranch, ListChecks, RefreshCw, Sparkles, X } from 'lucide-react'; // T03654：折叠箭头统一 lucide
 import { api } from '../api/client';
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import type { Project } from '../api/client';
@@ -983,7 +983,7 @@ function LectureSections({ outline, sections, live, streaming, marks, onMark, on
             <button type="button" onClick={() => setOpen((prev) => { const n = new Set(prev); if (n.has(r.key)) n.delete(r.key); else n.add(r.key); return n; })}
               aria-expanded={expanded}
               style={{ width: '100%', display: 'flex', gap: 6, alignItems: 'center', background: 'var(--surface-2)', border: 'none', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-s)', padding: '6px 8px', textAlign: 'left' }}>
-              <span style={{ color: 'var(--text-muted)' }}>{expanded ? '▾' : '▸'}</span>
+              <span style={{ color: 'var(--text-muted)', display: 'inline-flex' }}>{expanded ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}</span>
               <strong>{r.title}</strong>
               {r.pending && !r.text && <span style={{ color: 'var(--text-muted)' }}>等待生成…</span>}
               {r.failed && <span data-lck="section-failed" style={{ color: 'var(--danger)' }}>部分未生成{r.error ? `：${r.error}` : ''}</span>}

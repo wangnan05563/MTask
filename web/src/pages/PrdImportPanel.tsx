@@ -70,9 +70,10 @@ interface PrdPreviewResult {
  * ② reuse 模式下「同标题 + 同内容」的需求行会被复用（T02303 甲），只有内容变化的才新建并顺延编号。
  */
 function logPreviewResult(p: PrdPreviewResult): void {
-  const docPart = p.prdDoc.action === 'reuse'
-    ? `PRD 原文命中存量文档（按${p.prdDoc.by === 'hash' ? '同内容' : '同文件名'}复用并覆盖其正文，不新建）`
-    : p.prdDoc.action === 'create' ? 'PRD 原文将新建一条文档记录' : '本次未带 PRD 正文，不落文档';
+  const byName = p.prdDoc.by === 'hash' ? '同内容' : '同文件名';
+  const reuseDocPart = `PRD 原文命中存量文档（按${byName}复用并覆盖其正文，不新建）`;
+  const newOrNoneDocPart = p.prdDoc.action === 'create' ? 'PRD 原文将新建一条文档记录' : '本次未带 PRD 正文，不落文档';
+  const docPart = p.prdDoc.action === 'reuse' ? reuseDocPart : newOrNoneDocPart;
   aiImportStore.log(
     `预演结果（只读，未改动任何数据）：需求 新建 ${p.willCreateReqs} 条 / 复用同标题同内容存量 ${p.willReuseReqs} 条；`
     + `计划 新建 ${p.willCreatePlans} 条（其中撞名让号 ${p.willRenamePlans} 条）/ 复用同名存量 ${p.willReusePlans} 条；${docPart}`
@@ -90,7 +91,10 @@ function logPreviewResult(p: PrdPreviewResult): void {
   if (p.dupPlanTitles?.length) {
     const renamed = p.dupPlanTitles.filter((x) => x.renamedTo);
     const reused = p.dupPlanTitles.filter((x) => x.reusedPlanId);
-    if (renamed.length) aiImportStore.log(`同名计划让号预告：${renamed.length} 个标题在项目内已存在（${renamed.slice(0, 8).map((x) => `${x.title}→「${x.renamedTo}」`).join('、')}${renamed.length > 8 ? ' 等' : ''}），原行不变、新行带后缀`, 'info');
+    if (renamed.length) {
+      const renamedPairs = renamed.slice(0, 8).map((x) => `${x.title}→「${x.renamedTo}」`).join('、');
+      aiImportStore.log(`同名计划让号预告：${renamed.length} 个标题在项目内已存在（${renamedPairs}${renamed.length > 8 ? ' 等' : ''}），原行不变、新行带后缀`, 'info');
+    }
     if (reused.length) aiImportStore.log(`同名计划复用预告：${reused.length} 个标题命中存量同名行，将补写到原行（status/progress 一字不动）`, 'info');
   }
   if (p.unlinkedReqNos?.length) {
@@ -330,7 +334,8 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       // T03185（UX-07②）：取消即整轮作废——已完成的分片结果只活在局部变量里，这里直接返回，
       // 不 setReqs/setPlans、不 persistParseResult、不递增 parseStamp，因此界面与会话存储都不留半成品，
       // 也不会生成"需求 ↔ 计划"的关联（关联只在确认导入时建立）。
-      aiImportStore.log(`已取消解析${stopName ? `（停在 ${stopName}）` : ''}：本次共 0 条需求 / 0 条计划进入面板，未产生任何半成品关联`, 'error');
+      const stopNote = stopName ? `（停在 ${stopName}）` : '';
+      aiImportStore.log(`已取消解析${stopNote}：本次共 0 条需求 / 0 条计划进入面板，未产生任何半成品关联`, 'error');
       aiImportStore.patch({ error: '解析已取消，未生成任何条目' });
       release();
       aiImportStore.patch({ busy: false });

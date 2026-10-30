@@ -552,6 +552,61 @@ async function collectDiffTracked(
 /** 单页唯一 SHA 上限（§4.4 规模）；超限截断并回 truncated=true */
 export const GIT_SUMMARY_MAX_SHA_PER_PAGE = 200;
 
+/**
+ * T03625：单页上限按「本次取数自己的实测成本」自适应，而不是靠 rev-parse 探针猜。
+ * 探针为什么不行：4 路 `git log -n 200` 负载下 rev-parse 只读到 286ms（起进程很便宜），
+ * 同窗口的 200 SHA 整页却要 2.7–11.7s——它测的是 spawn 速度，不是 git 解析负载，
+ * 于是最该降档的时候反而判成空闲。改成每次整页取数后回填实测 ms/条，下一次据此定上限。
+ */
+export const GIT_SUMMARY_BUDGET_MS = 1_200;
+export const GIT_SUMMARY_MIN_SHA_PER_PAGE = 20;
+export const GIT_SUMMARY_COLD_SHA_PER_PAGE = 60;
+const SUMMARY_COST_TTL_MS = 10 * 60_000;
+
+const summaryCost = new Map<string, { msPerSha: number; at: number }>();
+
+export function clearSummaryCostCache(): void {
+  summaryCost.clear();
+}
+
+/** 整页取数结束后回填实测成本（EWMA；超过 TTL 的旧样本不再参与） */
+export function recordSummaryCost(workspacePath: string, shaCount: number, elapsedMs: number): void {
+  if (!workspacePath || shaCount <= 0) return;
+  const sample = elapsedMs / shaCount;
+  const prev = summaryCost.get(workspacePath);
+  const msPerSha = prev && Date.now() - prev.at < SUMMARY_COST_TTL_MS ? prev.msPerSha * 0.6 + sample * 0.4 : sample;
+  summaryCost.set(workspacePath, { msPerSha, at: Date.now() });
+}
+
+/** 成本 → 上限：按 1.2s 预算反推；冷启动（无历史）先给 60 条兜底，上下夹在 [20, 200] */
+export function summaryCapForCost(msPerSha: number | null): number {
+  if (msPerSha === null || !(msPerSha > 0)) return GIT_SUMMARY_COLD_SHA_PER_PAGE;
+  const fit = Math.floor(GIT_SUMMARY_BUDGET_MS / msPerSha);
+  return Math.max(GIT_SUMMARY_MIN_SHA_PER_PAGE, Math.min(GIT_SUMMARY_MAX_SHA_PER_PAGE, fit));
+}
+
+export function resolveSummaryCapFor(workspacePath: string, shaCount: number): number {
+  const prev = summaryCost.get(workspacePath);
+  const msPerSha = prev && Date.now() - prev.at < SUMMARY_COST_TTL_MS ? prev.msPerSha : null;
+  return Math.max(1, Math.min(shaCount, summaryCapForCost(msPerSha)));
+}
+
+/**
+ * 一页摘要的唯一取数入口：定上限 → 取数 → 回填成本。
+ * 上限只决定「这次解析多少条」，被截掉的部分由调用方计入 missing（前端据此提示未解析）。
+ */
+export async function collectSummaryPage(
+  workspacePath: string,
+  shas: string[],
+  opts: GitCollectOptions = {},
+): Promise<{ commits: CommitSummaryRow[]; missing: string[]; capped: string[] }> {
+  const capped = shas.slice(0, resolveSummaryCapFor(workspacePath, shas.length));
+  const t0 = Date.now();
+  const { commits, missing } = await collectCommitSummaries(workspacePath, capped, opts);
+  recordSummaryCost(workspacePath, capped.length, Date.now() - t0);
+  return { commits, missing, capped };
+}
+
 export interface SummaryGroup {
   workspacePath: string;
   available: boolean;
@@ -588,16 +643,15 @@ export async function buildSummaryGroups(
       groups.push({ workspacePath: '', available: false, kind: 'no-workspace', commits: [], missing: shas, truncated: false });
       continue;
     }
-    const capped = shas.slice(0, GIT_SUMMARY_MAX_SHA_PER_PAGE);
     try {
-      const { commits, missing } = await collectCommitSummaries(ws, capped, opts);
+      const page = await collectSummaryPage(ws, shas, opts);
       groups.push({
         workspacePath: ws,
         available: true,
-        commits,
+        commits: page.commits,
         // 被截断掉的 SHA 不发起解析，直接计入 missing（前端页脚据此提示「本页部分提交摘要未解析」）
-        missing: [...missing, ...shas.slice(capped.length)],
-        truncated: capped.length < shas.length,
+        missing: [...page.missing, ...shas.slice(page.capped.length)],
+        truncated: page.capped.length < shas.length,
         remote: remoteInfoOf(await safeRemoteUrl(ws, opts)),
       });
     } catch (e) {

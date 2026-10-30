@@ -26,8 +26,8 @@ export const AI_WRITEBACK_PREFIX = '【AI回写待审核】';
 export function parseOriginNo(description?: string | null): string | null {
   const first = (description ?? '').split(/\r?\n/).find((l) => l.trim() !== '');
   if (!first) return null;
-  const norm = first.replace(/[*_>#[\s]/g, '').replace(/^-+/, '');
-  const m = /^来源[:：](T\d{1,6})(?![0-9])/.exec(norm);
+  const norm = first.replaceAll(/[*_>#[\s]/g, '').replace(/^-+/, '');
+  const m = /^来源[:：](T\d{1,6})(?!\d)/.exec(norm);
   return m ? m[1] : null;
 }
 

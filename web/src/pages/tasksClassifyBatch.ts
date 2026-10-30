@@ -100,7 +100,7 @@ export async function runClassifyBatch(opts: RunClassifyBatchOptions): Promise<v
         } catch (e) {
           batchFailure = e instanceof Error ? e.message : String(e);
         }
-        if (!resp || !resp.ok) {
+        if (!resp?.ok) {
           const failure = batchFailure || resp?.error || 'AI 调用失败';
           // 整批失败：逐条计失败（收尾口径不变），熔断只看本批一次
           store.fail += slice.length;
@@ -117,7 +117,7 @@ export async function runClassifyBatch(opts: RunClassifyBatchOptions): Promise<v
         for (const t of slice) {
           if (!isActive()) break;
           const r = byId.get(t.id);
-          if (!r || !r.ok) {
+          if (!r?.ok) {
             const failure = r?.error || (r ? 'AI 调用失败' : '批量结果缺少该条');
             store.fail += 1;
             if (!store.lastError) store.lastError = failure;
@@ -152,15 +152,15 @@ export async function runClassifyBatch(opts: RunClassifyBatchOptions): Promise<v
         const r = await post('/tasks/classify', { title: t.title.trim(), toolId, categories });
         if (!r.ok) {
           failure = r.error || 'AI 调用失败';
-        } else if (!r.categoryId) {
-          store.none += 1;
-          consecutiveFailures = 0;
-          continue;
-        } else {
+        } else if (r.categoryId) {
           const patchBody: { categoryId: string; priority?: string } = { categoryId: r.categoryId };
           if (t.priority === 'normal' && r.priority) patchBody.priority = r.priority;
           await patch(`/tasks/${t.id}`, patchBody);
           store.hit += 1;
+          consecutiveFailures = 0;
+          continue;
+        } else {
+          store.none += 1;
           consecutiveFailures = 0;
           continue;
         }
@@ -185,7 +185,8 @@ export function classifySummary(s: ClassifyStoreState, includeHit = true): strin
   const parts: string[] = [];
   if (includeHit && s.hit > 0) parts.push(`成功 ${s.hit} 条`);
   if (s.none > 0) parts.push(`${s.none} 条 AI 判定无合适分类`);
-  if (s.fail > 0) parts.push(`${s.fail} 条调用失败${s.lastError ? `（${s.lastError.slice(0, 120)}）` : ''}`);
+  const failErrorNote = s.lastError ? `（${s.lastError.slice(0, 120)}）` : '';
+  if (s.fail > 0) parts.push(`${s.fail} 条调用失败${failErrorNote}`);
   return parts.join('，');
 }
 
@@ -195,7 +196,8 @@ export function classifyResultMessage(s: ClassifyStoreState, candidateNames: str
     const why = (s.abortReason || s.lastError || '未知错误').slice(0, 120);
     return `批量分类中止：${s.fail} 条厂商调用失败（${why}），已停止后续请求；请确认该厂商账户额度/限流后重试`;
   }
-  if (s.hit > 0) return `批量分类完成 ${s.hit}/${s.total} 条${rest ? `（其余：${rest}）` : ''}`;
+  const restNote = rest ? `（其余：${rest}）` : '';
+  if (s.hit > 0) return `批量分类完成 ${s.hit}/${s.total} 条${restNote}`;
   if (s.fail > 0) return `批量分类未完成：${rest}`;
   return `AI 判定 ${s.total} 条任务均无合适分类（候选：${candidateNames.slice(0, 6).join('、') || '无'}）`;
 }
