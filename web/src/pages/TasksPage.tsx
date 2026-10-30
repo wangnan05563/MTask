@@ -2907,14 +2907,16 @@ export function TasksPage() {
     })();
     return (
       <div className="task-op task-toolbar" style={{ marginLeft: 32, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
-        {/* T00547：完成状态/验证结果控件——与工具栏同行、靠左显示（marginRight auto 分隔左右两组） */}
-        <span style={{ marginRight: 'auto', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+        {/* T00547：完成状态/验证结果控件——与工具栏同行、靠左显示（marginRight auto 分隔左右两组）
+            T03700：验证结果紧贴 Git 徽标右侧（原在状态开关之后，距「切换任务完成状态」过近易误触）；
+            组内间距提到 12px，徽标隐藏（gitOn=false）时两者也保持 ≥12px 的间距 */}
+        <span style={{ marginRight: 'auto', display: 'inline-flex', alignItems: 'center', gap: 12 }}>
           <button className="title-op" title="切换任务完成状态" aria-label="切换任务完成状态" onClick={() => void setStatus(t, t.status === 'todo' ? 'done' : 'todo')} style={{ cursor: 'pointer', fontSize: 'var(--fs-l)', lineHeight: 1 }}>
             {t.status === 'todo' ? '☐' : '☑'}
           </button>
-          {t.status === 'done' && renderVerifyButton(t)}
           {/* 八期 §3.1：提交关联徽标（状态开关之后）——简写/复制/外链/降级/未回写五行状态 */}
           <GitBadge task={t} summaries={gitSummaries} gitOn={gitOn} onOpenGit={(task) => openDetailDrawer(task, 'git')} flash={flash} />
+          {t.status === 'done' && renderVerifyButton(t)}
         </span>
         {/* 优先级四级（T00495：与筛选/录入对齐）：置于 AI 梳理按钮之前，便于优先调整重要度 */}
         <select
