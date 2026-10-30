@@ -1231,6 +1231,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
       <div key={r.planId} style={{ borderBottom: '1px solid var(--border)', padding: '4px 0 4px 4px', fontSize: 'var(--fs-s)', display: 'flex', gap: 6, alignItems: 'center', height: EST_ITEM_H, boxSizing: 'border-box', overflow: 'hidden' }}>
         <input
           type="checkbox"
+          aria-label={`勾选「${r.title}」参与批量填充`}
           checked={selIds.includes(r.planId)}
           disabled={r.kind === 'milestone' || !editable}
           onChange={() => toggleSel(r.planId)}
@@ -1870,7 +1871,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             const picked = cmpIds.includes(sn.id);
             return (
               <div key={sn.id} style={{ display: 'flex', gap: 6, alignItems: 'baseline', fontSize: 'var(--fs-xs)', borderBottom: '1px solid var(--border)', padding: '3px 0' }}>
-                <input type="checkbox" checked={picked} onChange={() => toggleCmp(sn.id)} title="勾选两条可对比（§7 版本差异）" />
+                <input type="checkbox" aria-label={`勾选对比快照 ${(sn.created_at ?? '').slice(0, 16).replace('T', ' ')} ${sn.format.toUpperCase()}`} checked={picked} onChange={() => toggleCmp(sn.id)} title="勾选两条可对比（§7 版本差异）" />
                 <span style={{ fontFamily: MONO }}>{(sn.created_at ?? '').slice(0, 16).replace('T', ' ')}</span>
                 <span style={{ fontFamily: MONO, color: 'var(--text-muted)' }}>{sn.format.toUpperCase()}</span>
                 <span style={{ color: pl?.audience === 'client' ? 'var(--accent)' : 'var(--text-muted)' }}>

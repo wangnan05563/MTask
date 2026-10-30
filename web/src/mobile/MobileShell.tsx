@@ -105,6 +105,7 @@ export function MobileShell() {
             value={tokenInput}
             onChange={(e) => setTokenInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') void submitToken(); }}
+            aria-label="公网访问口令"
             placeholder="粘贴访问口令"
             style={{ width: '100%', padding: 12, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 'var(--fs-xl)', boxSizing: 'border-box' }}
           />

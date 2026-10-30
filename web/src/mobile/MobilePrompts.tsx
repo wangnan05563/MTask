@@ -57,7 +57,7 @@ export function MobilePrompts({ notify }: Props) {
     <div style={page}>
       <header style={hdr}>提示词</header>
       <div style={{ padding: '10px 12px 0' }}>
-        <select value={activeCat} onChange={(e) => setActiveCat(e.target.value)} style={sel}>
+        <select value={activeCat} onChange={(e) => setActiveCat(e.target.value)} aria-label="提示词分类" style={sel}>
           {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         {/* T03683：显示范围切换（全部显示 / 只看收藏） */}

@@ -569,16 +569,19 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
                   <td style={{ padding: '4px 6px', borderBottom: '1px dashed var(--border-strong)' }}>
                     {r.level === 'custom'
                       ? <input value={r.question} onChange={(e) => setRows(rows.map((x) => x.key === r.key ? { ...x, question: e.target.value } : x))}
+                          aria-label={`自定义问题描述（行 ${r.key}）`}
                           placeholder="自定义问题描述" style={{ width: '100%', fontSize: 'var(--fs-s)', padding: '3px 6px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box' }} />
                       : <span title={r.context}>{r.question}</span>}
                   </td>
                   <td style={{ padding: '4px 6px', borderBottom: '1px dashed var(--border-strong)' }}>
                     <textarea value={r.suggestion} onChange={(e) => setRows(rows.map((x) => x.key === r.key ? { ...x, suggestion: e.target.value } : x))}
+                      aria-label={`AI 建议（行 ${r.key}）`}
                       rows={2} placeholder="（无 AI 建议，可手动填写）"
                       style={{ width: '100%', boxSizing: 'border-box', fontSize: 'var(--fs-xs)', padding: '3px 6px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text-secondary)', resize: 'vertical' }} />
                   </td>
                   <td style={{ padding: '4px 6px', borderBottom: '1px dashed var(--border-strong)' }}>
                     <input value={r.answer} onChange={(e) => setRows(rows.map((x) => x.key === r.key ? { ...x, answer: e.target.value } : x))}
+                      aria-label={`结论（行 ${r.key}）`}
                       placeholder="填写结论…"
                       style={{ width: '100%', fontSize: 'var(--fs-s)', padding: '3px 6px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box' }} />
                   </td>

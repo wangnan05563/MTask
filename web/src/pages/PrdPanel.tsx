@@ -522,6 +522,7 @@ export function PrdPanel({ projectId, onClose }: {
           )}
           {mode === 'edit' && (
             <textarea value={editMd} onChange={(e) => setEditMd(e.target.value)} spellCheck={false}
+              aria-label="编辑 PRD 原文（Markdown）"
               placeholder="Markdown 原文（# 标题 / - 列表 / **加粗** …）"
               style={{ width: '100%', minHeight: 260, fontSize: 'var(--fs-s)', lineHeight: 1.6, padding: 8, borderRadius: 6,
                 border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', resize: 'vertical', boxSizing: 'border-box' }} />

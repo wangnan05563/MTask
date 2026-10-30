@@ -296,7 +296,7 @@ function SettingsView({ notify, openDesktop, theme, setTheme, accent, setAccent,
 
       <div style={setRow}>
         <span style={setLabel}>默认记事项目</span>
-        <select value={noteProject} onChange={(e) => void saveNoteProject(e)} style={sel}>
+        <select value={noteProject} onChange={(e) => void saveNoteProject(e)} aria-label="默认记事项目" style={sel}>
           {projectList.projects.length === 0 && <option value="">{projectListPlaceholder(projectList)}</option>}
           {projectList.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>

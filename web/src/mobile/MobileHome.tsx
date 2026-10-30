@@ -290,7 +290,7 @@ export function MobileHome({ onQuickNote, notify, focus }: Props) {
             </button>
           </div>
         </div>
-        <select value={projectId} onChange={(e) => selectProject(e.target.value)} style={projSelect}>
+        <select value={projectId} onChange={(e) => selectProject(e.target.value)} aria-label="切换当前项目" style={projSelect}>
           {projects.length === 0 && (
             <option value={projectId || ''}>
               {projectId ? `上次项目：${lastProjectName || projectId}（列表未加载）` : projectListPlaceholder(projectList)}

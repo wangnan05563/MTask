@@ -214,7 +214,7 @@ export function QueuePage() {
   return (
     <section>
       <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-        <select value={active?.id ?? ''} onChange={(e) => e.target.value && void open(e.target.value)} style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+        <select value={active?.id ?? ''} onChange={(e) => e.target.value && void open(e.target.value)} aria-label="选择队列" style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           <option value="">选择队列…</option>
           {queues.map((q) => <option key={q.id} value={q.id}>{q.name}（{q.status}）</option>)}
         </select>
@@ -340,11 +340,11 @@ export function QueuePage() {
       {active && (
         <>
           <div style={{ display: 'flex', gap: 8, margin: '12px 0' }}>
-            <select value={selectedTask} onChange={(e) => setSelectedTask(e.target.value)} style={{ flex: 1, padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+            <select value={selectedTask} onChange={(e) => setSelectedTask(e.target.value)} aria-label="选择待办任务" style={{ flex: 1, padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
               <option value="">选择待办任务…</option>
               {tasks.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
             </select>
-            <select value={selectedTool} onChange={(e) => setSelectedTool(e.target.value)} style={{ flex: 1, padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+            <select value={selectedTool} onChange={(e) => setSelectedTool(e.target.value)} aria-label="选择 AI 工具" style={{ flex: 1, padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
               <option value="">选择 AI 工具…</option>
               {tools.map((t) => <option key={t.id} value={t.id}>{t.name}（{t.type}）</option>)}
             </select>

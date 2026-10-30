@@ -239,6 +239,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
             if (r.categoryId) setCategoryId(r.categoryId);
           }}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }}
+          aria-label="随手记标题"
           placeholder="记点什么…（标题必填，回车提交）"
           rows={2}
           style={titleInput}
@@ -259,7 +260,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
           <button onClick={() => fileRef.current?.click()} title="贴图 — 添加任务截图" aria-label="添加图片" style={quickChip}>
             <ImagePlus size={15} />贴图{images.length > 0 ? `(${images.length})` : ''}
           </button>
-          <input ref={fileRef} type="file" accept="image/*" capture="environment" multiple style={FILE_INPUT_SR_ONLY} onChange={(e) => { onPickImages(e.target.files); e.target.value = ''; }} />
+          <input ref={fileRef} type="file" accept="image/*" capture="environment" multiple aria-label="选择要贴入任务的截图" style={FILE_INPUT_SR_ONLY} onChange={(e) => { onPickImages(e.target.files); e.target.value = ''; }} />
         </div>
 
         {/* T01426：可选属性行——优先级/分类/项目，默认记忆上次；全部可选，不增必填 */}
@@ -332,6 +333,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
+              aria-label="随手记描述（可选）"
               rows={4}
               placeholder="补充说明（可选）"
               style={{ width: '100%', marginTop: 8, padding: 10, border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 'var(--fs-l)', boxSizing: 'border-box' }}
@@ -357,7 +359,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
         {/* 分类 */}
         <div style={{ marginTop: 14 }}>
           <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 6 }}>分类（可选）</div>
-          <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} style={selectFull}>
+          <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} aria-label="随手记分类（可选）" style={selectFull}>
             <option value="">未分类</option>
             {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
@@ -366,7 +368,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
         {/* 项目归属（默认记事项目，可展开改） */}
         <div style={{ marginTop: 14 }}>
           <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 6 }}>归属项目</div>
-          <select value={projectId} onChange={(e) => { setProjectId(e.target.value); const p = projects.find((x) => x.id === e.target.value); setProjectName(p?.name ?? '收件箱'); }} style={selectFull}>
+          <select value={projectId} onChange={(e) => { setProjectId(e.target.value); const p = projects.find((x) => x.id === e.target.value); setProjectName(p?.name ?? '收件箱'); }} aria-label="随手记归属项目" style={selectFull}>
             {projects.length === 0 && !projectId && <option value="">{projectListPlaceholder(projectList)}</option>}
             {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
