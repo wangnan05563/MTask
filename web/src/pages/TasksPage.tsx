@@ -182,6 +182,18 @@ const CSV_MAP_FIELDS: Array<{ field: 'title' | 'description' | 'priority' | 'sta
 /** T03211（PM-105）：全部项目视图的哨兵值——任务查询不带 projectId，选中集合可跨项目 */
 const ALL_PROJECTS = '__all__';
 
+/**
+ * T03703：「验证通过」= 已完成 + 已验证（与批量验证入口「已完成的标记为已验证」同口径——
+ * verified 只对 done 有意义，单看 verified 会把「退回待办但标记未清」的任务误判为已通过）。
+ * 该态属正常态，行内不得再出现异常类标签；异常事实（ai_state / retry_count / 【验证失败】段）
+ * 仍原样留在数据里供追溯，只在展示层收口。
+ * 异常类标签集合＝指示「处理中断/失败、重试、验证失败」的四处；
+ * running（处理中）与 unread（待查看）是过程态提示，不属异常集合，不受本判据影响。
+ */
+function isVerificationPassed(t: Task): boolean {
+  return t.status === 'done' && t.verified === true;
+}
+
 /** 视图作用域 → 请求参数：全部项目不带 projectId（后端缺省即全量），其余照常传 */
 function scopeParams(projectId: string): URLSearchParams {
   const p = new URLSearchParams();
@@ -2766,13 +2778,14 @@ export function TasksPage() {
             <Loader2 size={13} className="aispin" />
           </span>
         )}
-        {t.ai_state === 'failed' && (
+        {t.ai_state === 'failed' && !isVerificationPassed(t) && (
           <span className="ai-failed-pulse" title="AI 处理中断/失败 — 可重新处理或查看处理结果" aria-label="AI 处理失败" style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--danger)' }}>
             <AlertTriangle size={13} />
           </span>
         )}
-        {/* T01057-FR1.2：失败一键重试——回待办等待 AI 重新领取，历次结果保留；重试过显示次数徽标 */}
-        {t.ai_state === 'failed' && (
+        {/* T01057-FR1.2：失败一键重试——回待办等待 AI 重新领取，历次结果保留；重试过显示次数徽标
+            T03703：验证通过后重试入口与「重试×N」计数徽标一并收口（retry_count 数值不动，历史仍在处理结果里可查） */}
+        {t.ai_state === 'failed' && !isVerificationPassed(t) && (
           <button
             onClick={() => t.task_no && void handleRetryTask(t.task_no)}
             disabled={retryingNo === t.task_no}
@@ -2783,7 +2796,7 @@ export function TasksPage() {
             {retryingNo === t.task_no ? <Loader2 size={11} className="aispin" /> : <RotateCcw size={11} />} 重试
           </button>
         )}
-        {(t.retry_count ?? 0) > 0 && (
+        {(t.retry_count ?? 0) > 0 && !isVerificationPassed(t) && (
           <span title={`该任务已手动重试 ${t.retry_count} 次（历次结果见处理结果）`} aria-label={`已重试 ${t.retry_count} 次`} style={{ display: 'inline-flex', alignItems: 'center', fontSize: 'var(--fs-2xs)', padding: '0 5px', borderRadius: 4, background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
             重试×{t.retry_count}
           </span>
@@ -2805,8 +2818,10 @@ export function TasksPage() {
           </span>
         )}
         {/* T00502/T00521 调整：验证失败徽标——点击展开「验证失败反馈」窗口（聚焦失败段查看/修改）
-            T00623：验证通过（verified=true）后隐藏该标签——历史【验证失败】段仍在 handle_result（供追溯），但不再作为当前状态提示 */}
-        {t.handle_result?.includes('【验证失败') && !t.verified && (
+            T00623：验证通过（verified=true）后隐藏该标签——历史【验证失败】段仍在 handle_result（供追溯），但不再作为当前状态提示
+            T03703：判据从「!verified」收紧为「非验证通过（done+verified）」——退回待办但 verified 残留未清的任务
+                    按约束 5 仍属其他状态，不得移除标签；四处异常标签走同一谓词，避免各自漂移 */}
+        {t.handle_result?.includes('【验证失败') && !isVerificationPassed(t) && (
           <button type="button" title="验证失败 — 点击查看/修改失败反馈" aria-label="验证失败"
             onClick={() => setFailbackOpen((p) => ({ ...p, [t.id]: true }))}
             style={{ fontSize: 'var(--fs-2xs)', color: 'var(--danger)', border: '1px solid var(--danger)', padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'pointer', background: 'transparent', fontFamily: 'inherit' }}>
@@ -3194,8 +3209,9 @@ export function TasksPage() {
             两个面板可分别展开/收起，也可同时展开/收起。收起态用上箭头以区分展开态 */}
         {t.handle_result && renderResultToggleButton(t)}
         {/* T00531 布局调整：验证失败反馈按钮移至「展开处理结果」图标后方（标题行）——点击展开反馈窗口
-            T00623：验证通过（verified=true）后同样隐藏该入口（与失败徽标一致，避免残留入口） */}
-        {t.handle_result?.includes('【验证失败') && !t.verified && renderFailbackToggleButton(t)}
+            T00623：验证通过（verified=true）后同样隐藏该入口（与失败徽标一致，避免残留入口）
+            T03703：与失败徽标共用 isVerificationPassed 谓词 */}
+        {t.handle_result?.includes('【验证失败') && !isVerificationPassed(t) && renderFailbackToggleButton(t)}
       </>
     );
   }
@@ -3887,7 +3903,7 @@ export function TasksPage() {
     return {
       ids: all.map((t) => t.id),
       resultIds: all.filter((t) => t.handle_result).map((t) => t.id),
-      failbackIds: all.filter((t) => t.handle_result?.includes('【验证失败') && !t.verified).map((t) => t.id),
+      failbackIds: all.filter((t) => t.handle_result?.includes('【验证失败') && !isVerificationPassed(t)).map((t) => t.id),
     };
   }
 
