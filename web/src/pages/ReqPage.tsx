@@ -11,6 +11,7 @@ import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { FavoriteToggle } from '../ui/FavoriteToggle'; // T03683：收藏切换（与提示词页共用同一组件）
 import { focusSettingsTab } from '../ui/settingsTabs'; // T03685：工具条「归档」直达归档管理页
+import { applyDeepLink } from '../ui/deepLink'; // T03685：focusSettingsTab 只落页签，切一级菜单要靠 deepLink（与 SonarScanPanel.goSettings 同口径）
 import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：通用需求正文 AI 美化
 import { PromptOptimizeButton } from '../ui/PromptOptimizeButton'; // T00842 二轮：正文改写为结构化提示词
 import { OPTIMIZE_SCOPE_REQ, useOptimizeStore } from '../stores/optimizeStore'; // T03684：优化运行态切页保持
@@ -502,7 +503,7 @@ export function ReqPage() {
           {/* T03685：工具条「归档」由未开放占位转为真实入口——进入归档管理页（还原/彻底删除都在那里），
               行内归档按钮负责把条目送进来，两者构成完整闭环 */}
           <button className="tbtn-anim" data-t03685="archive-hub"
-            onClick={() => focusSettingsTab('archive')}
+            onClick={() => { focusSettingsTab('archive'); applyDeepLink({ projectId: '', tab: 'settings' }); }}
             title="归档管理 — 打开「设置 → 归档」查看并还原/彻底删除已归档的通用需求"
             aria-label="归档管理：打开归档管理页"
             style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
