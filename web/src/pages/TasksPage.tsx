@@ -451,7 +451,11 @@ export function TasksPage() {
   // （两者都是模块级，切页卸载后「取消」入口与在途请求照样在）
   // 是否有美化类操作进行中（单条或批量）：驱动工具条「取消/批量美化」按钮
   const anyBeautify = batchBusy || Object.values(beautifyBusy).some(Boolean);
-  const [drafts, setDrafts] = useState<Record<string, string>>({}); // taskId -> 待确认的梳理结果
+  // T03684（全菜单通查）：本页其余「用户敲进去的内容」草稿一律升到会话级，与 descDrafts 同口径——
+  // 此前它们是裸 useState：切一级菜单整页卸载 → 草稿清空，回来只剩空框（症状与工单标题一致）。
+  // 不升的三类刻意保留组件级：imgDrafts（值里是截图对象，非 JSON 安全，序列化会静默变形）、
+  // failDialog（弹窗态，切页时弹窗本就关掉）、wip/tzDrafts（看板设置浮层内即时提交，无跨页续写场景）。
+  const [drafts, setDrafts] = useSessionState<Record<string, string>>('tasks.organizeDrafts', {}); // taskId -> 待确认的梳理结果
   // T00535 同口径：描述草稿是用户正在敲的内容，改会话级持久化——切页回来不再清空
   const [descDrafts, setDescDrafts] = useSessionState<Record<string, string>>('tasks.descDrafts', {}); // taskId -> 描述编辑草稿
   // T03684：「提示词优化」运行态提升到模块级 store（键域 `tasks:`，与提示词页/需求页互不抢占）。
@@ -472,17 +476,18 @@ export function TasksPage() {
   // 刚完成"复制"的任务 id，用于按钮短暂显示"已复制✓"反馈
   const [copiedId, setCopiedId] = useState('');
   // 描述 展开/收起 状态：descExpanded 记录已展开的 taskId，默认收起不展示摘要，点标题行箭头展开看完整描述
-  const [descExpanded, setDescExpanded] = useState<Record<string, boolean>>({});
+  // T03684：展开轴同样是「看到哪儿」的会话状态，切页回来不该打回原形
+  const [descExpanded, setDescExpanded] = useSessionState<Record<string, boolean>>('tasks.descExpanded', {});
   // T01384：描述动画可见态——收起时保留挂载以播放收起过渡，transitionEnd 后卸载（内容重，避免常驻渲染）
   const [descVis, setDescVis] = useState<Record<string, boolean>>({});
   // AI 梳理摘要 展开/收起：与描述展开同风格（lucide 蓝色箭头），默认收起
-  const [summaryExpanded, setSummaryExpanded] = useState<Record<string, boolean>>({});
+  const [summaryExpanded, setSummaryExpanded] = useSessionState<Record<string, boolean>>('tasks.summaryExpanded', {});
   // 处理结果 草稿/展开状态：resultDrafts 存在即进入编辑态（有值时可点击「编辑」重新编辑）
-  const [resultDrafts, setResultDrafts] = useState<Record<string, string>>({});
+  const [resultDrafts, setResultDrafts] = useSessionState<Record<string, string>>('tasks.resultDrafts', {});
   // 处理结果 展开/收起：随任务行详情一起收起/展开，默认收起（有值也收起，点操作行图标展开）
-  const [resultOpen, setResultOpen] = useState<Record<string, boolean>>({});
+  const [resultOpen, setResultOpen] = useSessionState<Record<string, boolean>>('tasks.resultOpen', {});
   // T00521 调整：验证失败反馈展开态（查看/修改窗口与处理结果同款，展示态聚焦【验证失败】段）
-  const [failbackOpen, setFailbackOpen] = useState<Record<string, boolean>>({});
+  const [failbackOpen, setFailbackOpen] = useSessionState<Record<string, boolean>>('tasks.failbackOpen', {});
 
   // T00610：验证失败反馈录入弹窗（文本 + 截图）与提交忙碌态
   const [failDialog, setFailDialog] = useState<{ taskId: string; title: string; text: string; images: PastedImage[] } | null>(null);
@@ -490,7 +495,7 @@ export function TasksPage() {
   const removeFailImage = (imgId: string) => setFailDialog((d) => (d ? { ...d, images: d.images.filter((x) => x.id !== imgId) } : d));
   const [failBusy, setFailBusy] = useState(false);
   // 验证失败反馈编辑草稿：存在即编辑态，保存写回 handle_result 全文
-  const [fbDrafts, setFbDrafts] = useState<Record<string, string>>({});
+  const [fbDrafts, setFbDrafts] = useSessionState<Record<string, string>>('tasks.fbDrafts', {});
   // 「已完成」栏验证状态过滤：默认仅展示未验证，便于优先处理待核对的完成项；all=全部
   // T03214（UX-02 ②）：此前是裸 useState——切到别的页再回来就回到默认值，与搜索/分类/优先级筛选不一致。
   // 升级为会话级：切页返回保持，重开应用清空。
