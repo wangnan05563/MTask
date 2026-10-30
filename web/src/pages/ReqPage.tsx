@@ -94,10 +94,15 @@ export function ReqPage() {
   // 分组选择器容器引用：用于判断点击是否落在菜单外部（点击外部收起）
   const moveRef = useRef<HTMLDivElement | null>(null);
 
+  // T03683：提示条计时器单例——每次 flash 新建 setTimeout 会让「上一条提示的定时器」提前清掉下一条提示，
+  // 收藏失败回滚那条正好撞上（真机门实测：回滚提示 200ms 内就消失了，等于没有反馈）
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flash = (msg: string) => {
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
     setNotice(msg);
-    setTimeout(() => setNotice(''), 2500);
+    noticeTimer.current = setTimeout(() => setNotice(''), 2500);
   };
+  useEffect(() => () => { if (noticeTimer.current) clearTimeout(noticeTimer.current); }, []);
 
   const loadCategories = useCallback(async () => {
     const cats = await api.get<ReqCategory[]>('/req-categories');

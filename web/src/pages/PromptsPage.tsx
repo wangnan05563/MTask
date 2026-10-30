@@ -398,10 +398,16 @@ export function PromptsPage() {
   // T00873：移动提示词分组弹窗——moveTarget 记录待移动的提示词及弹窗内选好的目标归属（catId=目标分组，reqId=通用需求分类）；null 关闭
   const [moveTarget, setMoveTarget] = useState<{ p: Prompt; catId: string; reqId: string } | null>(null);
 
+  // T03683：提示条计时器要单例——此前每次 flash 都新建一个 setTimeout，
+  // 「乐观成功提示 + 紧随其后的失败回滚提示」会在同一个 2500ms 窗口里被前一次的定时器提前清空，
+  // 真机门实测就是这条竞态让「收藏失败，已还原」一闪即没（用户看不到回滚说明）。
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flash = (msg: string) => {
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
     setNotice(msg);
-    setTimeout(() => setNotice(''), 2500);
+    noticeTimer.current = setTimeout(() => setNotice(''), 2500);
   };
+  useEffect(() => () => { if (noticeTimer.current) clearTimeout(noticeTimer.current); }, []);
 
   // T00636：加载 AI 整理工具（模型菜单默认配置优先）——提示词优化使用
   // T02213：取数改走可见失败态层——此前吞异常后 organizeToolId 保持空，点「优化」只会得到
