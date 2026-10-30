@@ -177,6 +177,7 @@ export interface TaskListOptions {
   shelved?: boolean;
   /** M7-7.1：移动端「需关注」过滤（语义与 MobileHome 告警条完全一致）——
    *  failed = AI 失败 或 验证失败未复核（含旧数据 ai_state 为空但 handle_result 有标记的情况）；
+   *  已「验证通过」（done+verified）的任务不计入（T03707，与前端 isVerificationPassed 同口径）；
    *  unread = AI 处理完成未读。服务端过滤避免全量下发后本地筛。 */
   attention?: 'failed' | 'unread';
   /** 分析范围：只返回「待处理 或 未验证(verified=0)」的任务。与 status 互斥（优先 pending）
@@ -399,7 +400,9 @@ function buildTaskFilter(opts: TaskListOptions): { where: string[]; values: unkn
   else if (opts.status) { where.push('status = ?'); values.push(opts.status); }
   // M7-7.1：需关注过滤（移动端告警条的服务端等价实现；与 attention=unread 互斥使用）
   if (opts.attention === 'failed') {
-    where.push(String.raw`(ai_state = 'failed' OR (handle_result LIKE '%【验证失败%' AND COALESCE(verified,0) = 0))`);
+    // T03707：「验证通过」（done + verified）与前端 isVerificationPassed 同口径，整体排除——
+    // 否则第一分支会把「已完成已验证但 ai_state 残留 failed」的旧任务继续算作待关注。
+    where.push(String.raw`(NOT (status = 'done' AND COALESCE(verified,0) = 1) AND (ai_state = 'failed' OR (handle_result LIKE '%【验证失败%' AND COALESCE(verified,0) = 0)))`);
   } else if (opts.attention === 'unread') {
     where.push("ai_state = 'unread'");
   }
