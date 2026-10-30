@@ -194,19 +194,25 @@ export function reportUrlFor(serverUrl: string, projectKey: string): string {
  * `sonar.inclusions` 单行写全（PRD 决策 #9：走 properties 而不是 CLI 传参，因为 Windows 命令行 32KB 上限）。
  * properties 的行长度没有 OS 限制，所以不需要折行——折行反而要求解析侧支持续行。
  */
+/** Java .properties 的值转义：反斜杠在 Properties.load 里是转义符，Windows 路径直接写进去会被吃掉
+ *  （`D:\tmp` 的 `\t` 变成制表符 → 扫描器抛 InvalidPathException，整条扫描链在 Windows 上必挂）。 */
+export function propertyValue(raw: string): string {
+  return String(raw).replace(/\\/g, '\\\\').replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\t/g, '\\t');
+}
+
 export function buildProperties(input: {
   projectKey: string; projectName: string; serverUrl: string; baseDir: string; inclusions: string[];
 }): string {
   const lines = [
-    `sonar.projectKey=${input.projectKey}`,
-    `sonar.projectName=${input.projectName}`,
-    `sonar.host.url=${normalizeSonarUrl(input.serverUrl)}`,
-    `sonar.projectBaseDir=${input.baseDir}`,
+    `sonar.projectKey=${propertyValue(input.projectKey)}`,
+    `sonar.projectName=${propertyValue(input.projectName)}`,
+    `sonar.host.url=${propertyValue(normalizeSonarUrl(input.serverUrl))}`,
+    `sonar.projectBaseDir=${propertyValue(input.baseDir)}`,
     'sonar.sourceEncoding=UTF-8',
     'sonar.sources=.',
     // 配置自己与扫描器产物不能被自己扫（否则每次扫描都新增一批「问题」）
     'sonar.exclusions=sonar-project.properties,.scannerwork/**',
-    `sonar.inclusions=${input.inclusions.join(',')}`,
+    `sonar.inclusions=${propertyValue(input.inclusions.join(','))}`,
   ];
   // 安全条款：这里绝不出现 Token——properties 会随快照留在磁盘上，而它能被日志/工单带走
   return lines.join('\n') + '\n';
@@ -580,8 +586,13 @@ async function waitForAnalysis(
   onLog: (line: string) => void,
   onStage: (stage: ScanStage, detail?: Record<string, unknown>) => void,
   signal?: AbortSignal,
+  ceTaskId?: string,
 ): Promise<void> {
-  const url = `${normalizeSonarUrl(serverUrl)}/api/ce/component?component=${encodeURIComponent(componentKey)}`;
+  // 有扫描器回显的 CE 任务 id 时走 `ce/task`：该端点对提交者开放，而 `ce/component` 要求项目管理员权限，
+  // 只带「分析 + 浏览」的常规 Token 会被它 403 挡住，整条扫描链在 wait 阶段断掉。
+  const url = ceTaskId
+    ? `${normalizeSonarUrl(serverUrl)}/api/ce/task?id=${encodeURIComponent(ceTaskId)}`
+    : `${normalizeSonarUrl(serverUrl)}/api/ce/component?component=${encodeURIComponent(componentKey)}`;
   const started = Date.now();
   const pollMs = deps.cePollMs ?? CE_POLL_MS;
   const timeoutMs = deps.ceTimeoutMs ?? CE_TIMEOUT_MS;
@@ -589,7 +600,9 @@ async function waitForAnalysis(
   for (;;) {
     if (signal?.aborted) throw new ScanError('aborted', '已中止');
     const { status, json } = await deps.fetchJson(url, token);
-    if (status === 401 || status === 403) throw new ScanError('auth-failed', `等待分析结果被拒绝（HTTP ${status}）`, 'Token 需具备查看该项目的权限。');
+    if (status === 401 || status === 403) throw new ScanError('auth-failed', `等待分析结果被拒绝（HTTP ${status}）`, ceTaskId
+      ? 'Token 需具备查看该项目的权限（`ce/task` 对提交该分析的 Token 开放）。'
+      : 'Token 需具备查看该项目的权限（`ce/component` 还要求项目管理员；扫描器输出里没有 CE 任务 id 时无法改走 `ce/task`）。');
     if (status === 404) throw new ScanError('project-not-found', `项目 ${componentKey} 无分析记录`, '确认 projectKey 与扫描确实提交成功（见上面的扫描器输出）。');
     if (status >= 500) throw new ScanError('unreachable', `SonarQube 返回 HTTP ${status}`);
     const st = String(json?.task?.status ?? json?.component?.status ?? '').toUpperCase();
@@ -801,18 +814,26 @@ export async function runSonarScan(
     if (spec.unsafe) throw new ScanError('no-scanner', '扫描器路径含 cmd.exe 无法安全执行的字符', '在设置页改指向不含 & | ^ % < > " \' ; 反引号 的路径。');
     stage('scan', { scanner: settings.scannerPath || 'sonar-scanner' });
     log(`$ sonar-scanner -Dproject.settings=sonar-project.properties（工作目录 ${dir}）`);
+    // 扫描器成功时会把 CE 任务地址打进日志（`…/api/ce/task?id=<uuid>`）：抓住它，wait 阶段就能用
+    // 对提交者开放的 `ce/task` 轮询，不必依赖要求项目管理员权限的 `ce/component`。
+    let ceTaskId = '';
+    const scanLog = (line: string) => {
+      const hit = /\/api\/ce\/task\?id=([0-9a-f-]{36})/i.exec(line);
+      if (hit) ceTaskId = hit[1];
+      log(line);
+    };
     const run = await spawnScanner(spec, {
       ...process.env as Record<string, string>,
       SONAR_TOKEN: token,
       SONAR_HOST_URL: normalizeSonarUrl(settings.serverUrl),
       SONAR_PROJECT_BASE_DIR: dir,
-    }, log, signal);
+    }, scanLog, signal);
     if (signal?.aborted) throw new ScanError('aborted', '已中止');
     if (run.code !== 0) throw new ScanError('scan-failed', `扫描器退出码 ${run.code}`, '看上面的扫描器输出；常见原因是 projectKey 无权限或服务器不可达。');
 
     // 5 等待
     const fetchDeps = { ...deps, fetchJson: deps.fetchJson ?? sonarGet } as Required<Pick<ScanDeps, 'fetchJson'>> & ScanDeps;
-    await waitForAnalysis(settings.serverUrl, token, projectKey, fetchDeps, log, stage, signal);
+    await waitForAnalysis(settings.serverUrl, token, projectKey, fetchDeps, log, stage, signal, ceTaskId || undefined);
 
     // 6 拉取
     const raw = await fetchAllIssues(settings.serverUrl, token, projectKey, fetchDeps, stage, signal);
