@@ -10,6 +10,7 @@ import { WorkspaceService } from './WorkspaceService'; // T00777：工作空间�
 import type { StreamResult, SubmitResult, PollResult, TokenUsage, JobResult } from '../adapters/types';
 import type { ToolConfig } from '../adapters';
 import { stripThinking } from '../util/thinking'; // T00814：思考块剥离上移共享
+import { isRateLimitError, sleepMs } from '../util/rateLimit'; // T03700：限流识别与退避等待单源
 import { recordUsage } from '../util/aiUsageRecord'; // T03296：写入单源下沉 util，直连适配器的卡可复用同一口径
 import { classifyItems, type BatchCategory, type BatchItem, type BatchPriority, type ClassifyItemsResult } from './classifyBatch'; // T03297：批量分类分批调用与结果合并
 
@@ -564,9 +565,15 @@ export const AIService = {
       signal?: AbortSignal;
       /** T03296（G-2 覆盖率）：调用方显式归属卡片——通用 ask-json 通道无一对一 kind 映射 */
       cardKey?: string;
+      /**
+       * T03700：限流退避（可选，未传保持旧行为）——首轮失败且错误为限流（HTTP 429 / rate limit）时，
+       * 不再「立即原样重试」（对限流注定再撞），先等待该毫秒数再进第二轮；外部中止则不等待不重试。
+       * 供 PRD 解析等长链路调用方按场景开启；监督决策等对时延敏感的通道不传即完全不变。
+       */
+      rateLimitBackoffMs?: number;
     },
   ): Promise<{ ok: boolean; data?: T; error?: string; retried?: boolean; usage?: TokenUsage }> {
-    const { timeoutMs, retrySystem, retrySystemFromError, maxTokens, minMaxTokens, temperature, signal, cardKey } = opts ?? {};
+    const { timeoutMs, retrySystem, retrySystemFromError, maxTokens, minMaxTokens, temperature, signal, cardKey, rateLimitBackoffMs } = opts ?? {};
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     const effective = timeoutMs == null ? config : { ...config, timeoutMs };
@@ -589,6 +596,11 @@ export const AIService = {
         // 监督决策据此在 10s 内降级 ESCALATE（NFR-1），而不是 20s 后才降级。
         // T02141：外部中止同理不重试——调用方已表示不要这一轮结果，重试等于白烧一次配额。
         if (res.timedOut || signal?.aborted) break;
+        // T03700：限流退避——首轮撞 429 且调用方显式开启退避时，先等再重试（未开启保持旧的立即重试）
+        if (attempt === 1 && rateLimitBackoffMs != null && isRateLimitError(acc.lastError)) {
+          await sleepMs(rateLimitBackoffMs, signal);
+          if (signal?.aborted) break;
+        }
         continue;
       }
       try {

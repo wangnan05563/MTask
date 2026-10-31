@@ -25,6 +25,7 @@ import { syncReqStatuses } from './reqStatusSync'; // T02087：需求状态随�
 import { nextPlanTitle } from '../util/planTitle'; // T01875：计划标题撞名让号（与需求编号顺延同构）
 import { touchCompletedAt } from './IterationService'; // T03186（PM-201④）：完成时刻单点维护（燃尽回溯依赖它）
 import { WebhookService } from './WebhookService'; // T03196（PM-401）：计划事件外发
+import { isRateLimitError, sleepMs, rateLimitBackoffMs } from '../util/rateLimit'; // T03700：限流识别与退避单源
 
 /** T01361：需求跟踪矩阵行（prd_requirements 全列 + 联表摘要）——具体化类型替代 Record<string, unknown>（Sonar S6551） */
 export interface RequirementRow {
@@ -120,6 +121,10 @@ const PRD_DIRECT_CHUNK_CHARS = 12_000;
  *  实测总耗时 106~157s（瓶颈是供应商单次尾延迟 28~191s，不是排队）。3 并发实测反被重试拖到 270s 总预算中止，
  *  故取「片数即并发」：再多也没有第 6 片可并行。 */
 const PRD_CHUNK_CONCURRENCY = 5;
+/** T03700：限流自适应——单条分片最多解析轮数（首轮 + 2 次退避重试）；首次撞 429 后波次并发降到该值，
+ *  给免费档供应商的并发/RPM 限制让路（实测：7 片并发 5 + 立即重试，第 6/7 片撞 429 整链作废）。 */
+const PRD_CHUNK_RATE_ROUNDS = 3;
+const PRD_CHUNK_RATE_CONCURRENCY = 2;
 
 /** T02401-C：分片解析的中间结果类型（与 aiParsePrd 返回值同构，供合并去重）。 */
 interface PrdParsePart {
@@ -2458,6 +2463,8 @@ export const PlanService = {
     // Node fetch 的 300s 默认超时；那种失败在前端只剩 `api proxy error: fetch failed`，真实原因被吞。
     // 这里到点即 abort，并把人话错误抛给路由层，保证前端在代理层掐断前收到可执行提示。
     const totalAc = new AbortController();
+    // T03700：预算截止时刻显式下传——分片限流退避用它钳制等待时长，保证退避不把总预算烧穿
+    const deadlineAt = Date.now() + PRD_PARSE_TOTAL_TIMEOUT_MS;
     let totalTimedOut = false;
     const totalTimer = setTimeout(() => {
       totalTimedOut = true;
@@ -2467,7 +2474,7 @@ export const PlanService = {
       // T02270 复议：长文档先跑单轮全模式必然截断（实测 147s 白跑 + 精简 19s），留给分片的预算只剩
       // 104s，5 片跑不完就被总预算中止。这里直接走分片，把总预算全留给有效轮次。
       if (docText.length > PRD_DIRECT_CHUNK_CHARS) {
-        const direct = await this.aiParsePrdChunked(toolId, docText, system, totalAc.signal);
+        const direct = await this.aiParsePrdChunked(toolId, docText, system, totalAc.signal, deadlineAt);
         if (direct) return direct;
         if (totalTimedOut) {
           throw new Error(`PRD 解析超过 ${PRD_PARSE_TOTAL_TIMEOUT_MS / 1000}s 总预算已中止——请拆分文档或更换更快的模型后重试`);
@@ -2475,13 +2482,13 @@ export const PlanService = {
       }
       const ai = await AIService.askJson(toolId, system, `【PRD 文档】\n${docText}`, (content) =>
         parseJsonObjectWithRecovery(content, 'AI 未返回有效的 PRD 解析结果（需 JSON 对象），请检查文档内容或更换模型'),
-        { timeoutMs: PRD_PARSE_TIMEOUT_MS, retrySystem: systemCompact, minMaxTokens: PRD_PARSE_MIN_OUTPUT_TOKENS, signal: totalAc.signal, cardKey: PRD_IMPORT_CARD },
+        { timeoutMs: PRD_PARSE_TIMEOUT_MS, retrySystem: systemCompact, minMaxTokens: PRD_PARSE_MIN_OUTPUT_TOKENS, signal: totalAc.signal, cardKey: PRD_IMPORT_CARD, rateLimitBackoffMs: 15_000 },
       );
       // T02401-G：首轮被截断（askJson 已自动精简重试）或整体失败时，降级为「分片多轮解析」：
       // 按标题边界把文档切成 ≤PRD_CHUNK_MAX 片、逐片提取后合并去重，用多轮小输出换完整明细。
       // 分片只有 1 片（文档本就不长）或分片链路失败 → 回退原单轮结果/报错，小文档行为与旧版完全一致。
       if (!ai.ok || ai.retried) {
-        const chunked = await this.aiParsePrdChunked(toolId, docText, system, totalAc.signal).catch(() => null);
+        const chunked = await this.aiParsePrdChunked(toolId, docText, system, totalAc.signal, deadlineAt).catch(() => null);
         if (chunked) return chunked;
       }
       if (totalTimedOut) {
@@ -2511,10 +2518,14 @@ export const PlanService = {
   /**
    * T02401-H：长 PRD 分片多轮解析——首轮单次输出被截断时，把文档按标题边界切成 ≤PRD_CHUNK_MAX 片，
    * 逐片独立提取（每片输出预算同样托底 PRD_PARSE_MIN_OUTPUT_TOKENS），再合并去重、全局重排编号。
-   * 片数 ≤1（文档不长，分片无意义）返回 null，调用方回退原单轮路径；某片整体失败则抛错由调用方 catch 回退。
+   * 片数 ≤1（文档不长，分片无意义）返回 null，调用方回退原单轮路径。
+   * T03700：片失败不再整链作废——限流（429）片先退避重试（20s/40s，钳制在剩余预算内）；退避后仍失败的片
+   * 记入 failedChunks，与预算中止同样按「有损交付」返回已解析片的合并结果（truncatedNote 显式标注缺失片），
+   * 避免 6/7 片已解析成果被一个限流片全数作废。仅当全部片都解析不出内容时才返回 null 回退单轮。
    * `signal` 由调用方的总预算控制：到点即停止后续分片，并尽量返回已解析完的片，不把请求拖到代理层超时。
+   * `deadlineAt` 为总预算截止时刻：限流退避等待用它钳制时长，退避不会把 270s 预算烧穿。
    */
-  async aiParsePrdChunked(toolId: string, docText: string, system: string, signal?: AbortSignal): Promise<{
+  async aiParsePrdChunked(toolId: string, docText: string, system: string, signal?: AbortSignal, deadlineAt?: number): Promise<{
     requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>;
     drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind; complexity?: number }>;
     coverageWarn?: string;
@@ -2530,6 +2541,11 @@ export const PlanService = {
     // 合并去重的「首见优先」会随网络抖动漂移，同一文档两次解析可能得到不同的编号顺序。
     const slots: Array<PrdParsePart | null> = new Array(n).fill(null);
     let aborted = false;
+    // T03700：限流自适应并发——首次撞 429 后把后续波次并发降到 PRD_CHUNK_RATE_CONCURRENCY（本波内不回改），
+    // 给免费档供应商的并发/RPM 限制让路；未再撞限流则后续片沿用降档值跑完（宁慢勿废）。
+    let waveConcurrency = PRD_CHUNK_CONCURRENCY;
+    /** T03700：退避重试后仍失败的片序号——交外层按有损交付，不再抛错作废整链 */
+    const failedChunks: number[] = [];
     const parseOne = async (i: number): Promise<void> => {
       // T02983：分片内再加一道输出规模上限——单轮耗时几乎全花在生成上（5 片 × 40 需求 + 60 计划），
       // 把每片压到 32/45 后实测总耗时 106s（不改上限 121s）；按 5 片×32=160 的总容量仍覆盖 128 条需求。
@@ -2537,30 +2553,48 @@ export const PlanService = {
         + `\n【分片解析·第 ${i + 1}/${n} 片】本片只是完整文档的一部分：只解析本片出现的需求与计划，不要臆测其它片的内容；`
         + 'requirements 的 reqNo 从 REQ-001 起片内顺序编号（系统合并时会全局去重重排）；plans 的 WBS 编号保留原文写法。'
         + '\n【分片规模控制】本片 requirements 最多 32 条、plans 最多 45 条，保证 JSON 完整闭合优先——宁可少几条也不得输出到被截断。';
-      const ai = await AIService.askJson(toolId, sysI, `【PRD 文档·第 ${i + 1}/${n} 片】\n${chunks[i]}`, (content) =>
-        parseJsonObjectWithRecovery(content, 'AI 未返回有效的 PRD 分片解析结果（需 JSON 对象）'),
-        // T02983：分片较重试一次时改用**更小规模**的提示词——实测单片 JSON 两次不闭合占 130s+101s 后整单失败，
-        // 同规模重试只是白等；压缩到 20/25 条能显著提高闭合率（缺的条目由合并后的覆盖告警暴露，不静默）。
-        { timeoutMs: PRD_PARSE_TIMEOUT_MS, minMaxTokens: PRD_PARSE_MIN_OUTPUT_TOKENS, signal, cardKey: PRD_IMPORT_CARD, retrySystem: sysI
-          + '\n【压缩重试·必须闭合】上次输出无法解析为 JSON：本次 requirements ≤20 条、plans ≤25 条，title ≤20 字、content/description ≤30 字；只输出一个 JSON 对象，禁止解释与代码围栏。' },
-      );
-      if (!ai.ok) {
+      // T03700：片级解析循环——限流错误退避重试同一片（askJson 内部重试也按 rateLimitBackoffMs 先等再试），
+      // 非限流错误保持原语义立即失败；每轮等待前检查剩余预算与中止信号。
+      let lastError = '';
+      for (let round = 1; round <= PRD_CHUNK_RATE_ROUNDS; round += 1) {
+        const ai = await AIService.askJson(toolId, sysI, `【PRD 文档·第 ${i + 1}/${n} 片】\n${chunks[i]}`, (content) =>
+          parseJsonObjectWithRecovery(content, 'AI 未返回有效的 PRD 分片解析结果（需 JSON 对象）'),
+          // T02983：分片较重试一次时改用**更小规模**的提示词——实测单片 JSON 两次不闭合占 130s+101s 后整单失败，
+          // 同规模重试只是白等；压缩到 20/25 条能显著提高闭合率（缺的条目由合并后的覆盖告警暴露，不静默）。
+          { timeoutMs: PRD_PARSE_TIMEOUT_MS, minMaxTokens: PRD_PARSE_MIN_OUTPUT_TOKENS, signal, cardKey: PRD_IMPORT_CARD, rateLimitBackoffMs: 15_000, retrySystem: sysI
+            + '\n【压缩重试·必须闭合】上次输出无法解析为 JSON：本次 requirements ≤20 条、plans ≤25 条，title ≤20 字、content/description ≤30 字；只输出一个 JSON 对象，禁止解释与代码围栏。' },
+        );
+        if (ai.ok) {
+          const obj = ai.data as Record<string, unknown>;
+          slots[i] = {
+            requirements: normalizeRequirements(Array.isArray(obj.requirements) ? obj.requirements : []),
+            drafts: normalizePrdPlans(Array.isArray(obj.plans) ? obj.plans : []),
+          };
+          return;
+        }
+        lastError = ai.error ?? '';
         // 总预算到点导致的停止不该作废已完成的片：标记后由外层收尾，把已解析部分交付给调用方。
-        // 其它错误（截断/解析失败/限流）仍按片失败抛错，避免把半份结果当完整结果返回。
         if (signal?.aborted) { aborted = true; return; }
-        throw new Error(`分片解析第 ${i + 1}/${n} 片失败：${ai.error}`);
+        if (!isRateLimitError(lastError)) break;
+        if (round >= PRD_CHUNK_RATE_ROUNDS) break;
+        // 限流退避：降档后续波次并发 + 指数等待（20s/40s，钳制在剩余预算内）；预算不足以再等则放弃该片
+        waveConcurrency = Math.min(waveConcurrency, PRD_CHUNK_RATE_CONCURRENCY);
+        const wait = rateLimitBackoffMs(round, deadlineAt);
+        if (wait <= 0) break;
+        await sleepMs(wait, signal);
+        if (signal?.aborted) { aborted = true; return; }
       }
-      const obj = ai.data as Record<string, unknown>;
-      slots[i] = {
-        requirements: normalizeRequirements(Array.isArray(obj.requirements) ? obj.requirements : []),
-        drafts: normalizePrdPlans(Array.isArray(obj.plans) ? obj.plans : []),
-      };
+      failedChunks.push(i);
     };
-    // 有界并发：5 片串行会贴近 270s 总预算，2 并发把总时长压到一半；任一非中止错误由 Promise.all 短路抛出。
-    for (let start = 0; start < n && !aborted; start += PRD_CHUNK_CONCURRENCY) {
+    // T02983：有界并发把总时长压到可用预算内；T03700：波次大小改读自适应值——限流降档后下一波自动变小，
+    // 已不抛错短路（片失败交给 failedChunks 有损交付），Promise.all 只等本波全部落定。
+    let start = 0;
+    while (start < n && !aborted) {
+      const size = Math.min(waveConcurrency, n - start);
       const batch: Array<Promise<void>> = [];
-      for (let i = start; i < Math.min(start + PRD_CHUNK_CONCURRENCY, n); i += 1) batch.push(parseOne(i));
+      for (let i = start; i < start + size; i += 1) batch.push(parseOne(i));
       await Promise.all(batch);
+      start += size;
     }
     const parts = slots.filter((p): p is PrdParsePart => p !== null);
     if (parts.length === 0) return null;
@@ -2568,12 +2602,15 @@ export const PlanService = {
     if (merged.requirements.length === 0 && merged.drafts.length === 0) return null;
     const uncoveredReqNos = collectUncoveredReqNos(merged.requirements, merged.drafts);
     const coverageWarn = buildCoverageWarn(merged.drafts.length, merged.requirements.length, uncoveredReqNos);
-    const complete = !aborted && !signal?.aborted;
+    const complete = !aborted && !signal?.aborted && failedChunks.length === 0;
     // T02270 复议：分片跑完是**无损**结果（明细比精简模式完整），走 parseNote 普通日志；
-    // 只有真的没跑完（预算中止）才用 truncatedNote 触发 ⚠——否则用户无法区分「完整分片」与「有损降级」。
-    const truncatedNote = complete
-      ? ''
-      : `文档较长且解析达到 ${PRD_PARSE_TOTAL_TIMEOUT_MS / 1000}s 总预算，已返回前 ${parts.length}/${n} 片合并结果——请拆分文档或更换更快模型以补全剩余内容`;
+    // 只有真的没跑完（预算中止 / 存在失败片）才用 truncatedNote 触发 ⚠——否则用户无法区分「完整分片」与「有损降级」。
+    // T03700：失败片显式列出片号与原因类别，缺失内容不静默。
+    const truncatedNote = failedChunks.length > 0
+      ? `分片解析第 ${failedChunks.map((i) => i + 1).join('、')} 片失败（限流退避重试后仍未成功），已返回其余 ${parts.length}/${n} 片合并结果——缺失片的内容未包含，建议稍后重试该文档或更换模型工具`
+      : complete
+        ? ''
+        : `文档较长且解析达到 ${PRD_PARSE_TOTAL_TIMEOUT_MS / 1000}s 总预算，已返回前 ${parts.length}/${n} 片合并结果——请拆分文档或更换更快模型以补全剩余内容`;
     const parseNote = complete
       ? `文档较长，已自动分 ${n} 片解析并合并去重（需求 ${merged.requirements.length} 条、计划 ${merged.drafts.length} 条）`
       : undefined;
