@@ -3594,6 +3594,8 @@ export function TasksPage() {
   /** 标题区：编辑态输入框 / 展示态文本 + 描述展开按钮（M6-6.1：图标组拆分至上方三个助手） */
   function renderTaskTitle(t: Task, titleEditing: boolean) {
     const markTitleRead = () => { if (t.status === 'done' && !t.handle_result && t.ai_state === 'unread') { void api.patch(`/tasks/${t.id}`, { aiState: '' }).then(() => setTasksStateRead(t.id)); } };
+    // T03666：行内输入件带行标识，读屏时能分清改的是哪条任务（同名输入件光靠 placeholder 无法区分）
+    const titleEditLabel = t.task_no ? `编辑任务标题（${t.task_no}）` : '编辑任务标题';
     // T01384：点标题切换描述展开/收起（与箭头按钮同口径）；markTitleRead 顺路执行
     const descToggleable = Boolean(t.description) && !titleEditing;
     const toggleDesc = () => {
@@ -3610,6 +3612,7 @@ export function TasksPage() {
             onChange={(e) => beautifyStore.setDraft(t.id, e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && void saveTitle(t)}
             placeholder="任务标题"
+            aria-label={titleEditLabel}
             autoFocus
             style={{ flex: 1, padding: '4px 6px', border: '1px solid var(--accent)', borderRadius: 4, fontSize: 'var(--fs-m)', boxSizing: 'border-box' }}
           />
@@ -3765,6 +3768,7 @@ export function TasksPage() {
   function renderTaskDescEditor(t: Task, descDraft: string) {
     const imgDraft = imgDrafts[t.id] ?? { added: [], removed: [] };
     const kept = t.images.filter((i) => !imgDraft.removed.includes(i.id));
+    const descEditLabel = t.task_no ? `编辑任务描述（${t.task_no}）` : '编辑任务描述';
     return (
       <div style={{ marginLeft: 32, marginTop: 6 }}>
         {(kept.length > 0 || imgDraft.added.length > 0) && (
@@ -3799,6 +3803,7 @@ export function TasksPage() {
           onPaste={(e) => readClipboardImages(e, (url) => addPastedImage(t.id, url))}
           rows={3}
           placeholder="任务描述（支持 Markdown 风格纯文本，可在框内 Ctrl+V 粘贴截图）"
+          aria-label={descEditLabel}
           style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', boxSizing: 'border-box' }}
         />
         <div style={{ marginTop: 4, display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -3840,6 +3845,7 @@ export function TasksPage() {
     // 展开区仅在用户点开处理结果图标（或处于编辑态）时渲染，收起时零占位
     if (!resultOpen[t.id] && resultDrafts[t.id] === undefined) return null;
     const editing = resultDrafts[t.id] !== undefined;
+    const resultEditLabel = t.task_no ? `编辑处理结果（${t.task_no}）` : '编辑处理结果';
     return (
       <div style={{ marginLeft: 32, marginTop: 4, border: '1px solid var(--border)', borderRadius: 6 }}>
         {/* 标题栏：左「处理结果」，右编辑/关闭图标（纯图标 + 悬浮提示） */}
@@ -3883,6 +3889,7 @@ export function TasksPage() {
               onChange={(e) => setResultDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
               rows={6}
               placeholder="处理结果：记录根因分析、解决方案或结论（支持 Markdown）"
+              aria-label={resultEditLabel}
               style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', boxSizing: 'border-box' }}
             />
             <div style={{ marginTop: 4, display: 'flex', gap: 4, alignItems: 'center' }}>
@@ -3986,6 +3993,7 @@ export function TasksPage() {
     if (!failbackOpen[t.id] && fbDrafts[t.id] === undefined) return null; // 收起零占位
     const editing = fbDrafts[t.id] !== undefined;
     const fbText = getFailbackText(t);
+    const fbEditLabel = t.task_no ? `编辑处理结果全文（${t.task_no}）` : '编辑处理结果全文';
     return (
       // T01385：修「窗口边缘过窄/内容截断」——右侧留出与左缩进对称的边距、min-width:0 允许收缩、
       // 内容区 overflowX:auto + overflowWrap:anywhere，长代码块/长 URL 横向滚动而非溢出截断
@@ -4029,6 +4037,7 @@ export function TasksPage() {
               onChange={(e) => setFbDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
               rows={6}
               placeholder="处理结果全文（含【验证失败】反馈段，支持 Markdown）"
+              aria-label={fbEditLabel}
               style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', boxSizing: 'border-box' }}
             />
             <div style={{ marginTop: 4, display: 'flex', gap: 4, alignItems: 'center' }}>
@@ -4093,12 +4102,14 @@ export function TasksPage() {
     );
   }
   function renderTaskDraft(t: Task, draft: string) {
+    const draftEditLabel = t.task_no ? `编辑梳理草稿（${t.task_no}）` : '编辑梳理草稿';
     return (
       <div style={{ marginLeft: 32, marginTop: 6 }}>
         <textarea
           value={draft}
           onChange={(e) => setDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
           rows={8}
+          aria-label={draftEditLabel}
           style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', fontFamily: 'monospace', boxSizing: 'border-box' }}
         />
         <div style={{ marginTop: 4, display: 'flex', gap: 8 }}>
@@ -4674,6 +4685,7 @@ export function TasksPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="搜索标题/描述/编号…" data-page-search
+            aria-label="搜索任务（标题/描述/编号）"
             style={{ padding: '6px 8px 6px 26px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)' }}
           />
           {search && (
