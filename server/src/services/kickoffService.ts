@@ -605,6 +605,21 @@ function stripFence(content: string): string {
  * 这里只剥**结构位**的尾逗号（跳过字符串字面量与转义），把「解析器太严」这一类
  * 与数据无关的失败从降级路径里剔出去；真正的语义违规仍由 `wordingFromAi` 硬约束拦下。
  */
+/** JSON 字符串字面量内部的一个字符：转义位与收尾引号只在这里判定 */
+function stepInsideString(c: string, esc: boolean): { text: string; esc: boolean; closed: boolean } {
+  if (esc) return { text: c, esc: false, closed: false };
+  if (c === '\\') return { text: c, esc: true, closed: false };
+  if (c === '"') return { text: c, esc: false, closed: true };
+  return { text: c, esc: false, closed: false };
+}
+
+/** 结构位的逗号：跳过空白后紧跟 `]`/`}` 即尾逗号，应整颗丢弃 */
+function isTrailingComma(raw: string, from: number): boolean {
+  let j = from;
+  while (j < raw.length && /\s/.test(raw[j])) j++;
+  return raw[j] === ']' || raw[j] === '}';
+}
+
 export function stripJsonTrailingCommas(raw: string): string {
   let out = '';
   let inStr = false;
@@ -612,18 +627,14 @@ export function stripJsonTrailingCommas(raw: string): string {
   for (let i = 0; i < raw.length; i++) {
     const c = raw[i];
     if (inStr) {
-      out += c;
-      if (esc) { esc = false; continue; }
-      if (c === '\\') { esc = true; continue; }
-      if (c === '"') inStr = false;
+      const step = stepInsideString(c, esc);
+      out += step.text;
+      esc = step.esc;
+      if (step.closed) inStr = false;
       continue;
     }
     if (c === '"') { inStr = true; out += c; continue; }
-    if (c === ',') {
-      let j = i + 1;
-      while (j < raw.length && /\s/.test(raw[j])) j++;
-      if (raw[j] === ']' || raw[j] === '}') continue;
-    }
+    if (c === ',' && isTrailingComma(raw, i + 1)) continue;
     out += c;
   }
   return out;
@@ -637,54 +648,92 @@ export function stripJsonTrailingCommas(raw: string): string {
  * 顺带补「相邻值之间漏逗号」：模型连写两个引号串时（`["a""b"]`）同样非法，
  * 而合法 JSON 的字符串收尾后只可能跟 `,` `]` `}` `:`，其余一律补分隔符。
  */
-export function repairChineseJsonQuotes(raw: string): { text: string; fixed: number } {
-  const CLOSER: Record<string, string> = { '「': '」', '『': '』', '“': '”' };
-  let out = '';
-  let fixed = 0;
-  let mode: 'out' | 'ascii' | 'corner' = 'out';
-  let closer = '';
-  // 收尾后看下一个非空白字符：只有 `,` `]` `}` `:` 是合法后继，其余补逗号
-  const needComma = (from: number): boolean => {
-    for (let j = from; j < raw.length; j++) {
-      if (/\s/.test(raw[j])) continue;
-      return !',]}:'.includes(raw[j]);
+/** 中文引号修复的状态机：输出缓冲、修复计数与当前所处语境 */
+interface QuoteRepairState {
+  out: string;
+  fixed: number;
+  mode: 'out' | 'ascii' | 'corner';
+  closer: string;
+}
+
+/** 字符串收尾后看下一个非空白字符：只有 `,` `]` `}` `:` 是合法后继，其余补逗号 */
+function needCommaAfter(raw: string, from: number): boolean {
+  for (let j = from; j < raw.length; j++) {
+    if (/\s/.test(raw[j])) continue;
+    return !',]}:'.includes(raw[j]);
+  }
+  return false;
+}
+
+/** 结构位一个字符：开串（ASCII 双引号 / 中文引号）或原样抄出 */
+function consumeOutside(st: QuoteRepairState, c: string, closerOf: Record<string, string>): void {
+  if (c === '"') {
+    st.mode = 'ascii';
+    st.out += c;
+    return;
+  }
+  const cl = closerOf[c];
+  if (cl) {
+    st.mode = 'corner';
+    st.closer = cl;
+    st.out += '"';
+    st.fixed += 1;
+    return;
+  }
+  st.out += c;
+}
+
+/** ASCII 字符串内部：反斜杠成对消费；收尾时按需补逗号（返回消费后的下标） */
+function consumeAsciiString(st: QuoteRepairState, raw: string, i: number, c: string): number {
+  // 反斜杠成对消费，避免把 `\"` 的引号误判成收尾
+  if (c === '\\' && i < raw.length) {
+    st.out += c + raw[i];
+    return i + 1;
+  }
+  st.out += c;
+  if (c === '"') {
+    st.mode = 'out';
+    if (needCommaAfter(raw, i)) {
+      st.out += ',';
+      st.fixed += 1;
     }
-    return false;
-  };
+  }
+  return i;
+}
+
+/** 中文引号串内部：收尾引号改 ASCII；串内 ASCII 双引号是内容，必须转义 */
+function consumeCornerString(st: QuoteRepairState, raw: string, i: number, c: string): void {
+  if (c === st.closer) {
+    st.out += '"';
+    st.mode = 'out';
+    st.fixed += 1;
+    if (needCommaAfter(raw, i)) {
+      st.out += ',';
+      st.fixed += 1;
+    }
+    return;
+  }
+  // 反斜杠交给 relaxIllegalEscapes 统一处置
+  if (c === '"') {
+    st.out += String.raw`\"`;
+    st.fixed += 1;
+    return;
+  }
+  st.out += c;
+}
+
+export function repairChineseJsonQuotes(raw: string): { text: string; fixed: number } {
+  const closerOf: Record<string, string> = { '「': '」', '『': '』', '“': '”' };
+  const st: QuoteRepairState = { out: '', fixed: 0, mode: 'out', closer: '' };
   let i = 0;
   while (i < raw.length) {
     const c = raw[i];
     i += 1;
-    if (mode === 'out') {
-      if (c === '"') { mode = 'ascii'; out += c; continue; }
-      const cl = CLOSER[c];
-      if (cl) { mode = 'corner'; closer = cl; out += '"'; fixed += 1; continue; }
-      out += c;
-      continue;
-    }
-    if (mode === 'ascii') {
-      // 合法 JSON 的字符串内部可能真有「」（如 bullet 正文引用名称），此时只认 ASCII 双引号收尾；
-      // 反斜杠成对消费，避免把 `\"` 的引号误判成收尾
-      if (c === '\\' && i < raw.length) { out += c + raw[i]; i += 1; continue; }
-      out += c;
-      if (c === '"') {
-        mode = 'out';
-        if (needComma(i)) { out += ','; fixed += 1; }
-      }
-      continue;
-    }
-    if (c === closer) {
-      out += '"';
-      mode = 'out';
-      fixed += 1;
-      if (needComma(i)) { out += ','; fixed += 1; }
-      continue;
-    }
-    // 中文引号串内部的 ASCII 双引号是内容，必须转义；反斜杠交给 relaxIllegalEscapes 统一处置
-    if (c === '"') { out += String.raw`\"`; fixed += 1; continue; }
-    out += c;
+    if (st.mode === 'out') consumeOutside(st, c, closerOf);
+    else if (st.mode === 'ascii') i = consumeAsciiString(st, raw, i, c);
+    else consumeCornerString(st, raw, i, c);
   }
-  return { text: out, fixed };
+  return { text: st.out, fixed: st.fixed };
 }
 
 /** 剥围栏 + 修中文引号 + 修尾逗号后的安全解析；三处 askJson parse 回调共用 */

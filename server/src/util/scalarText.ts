@@ -8,7 +8,17 @@
 export function scalarText(value: unknown, fallback = ''): string {
   if (value === null || value === undefined) return fallback;
   if (Array.isArray(value)) return value.map((v) => scalarText(v)).join(',');
-  const t = typeof value;
-  if (t === 'object' || t === 'function') return fallback;
-  return String(value);
+  switch (typeof value) {
+    case 'string':
+      return value;
+    case 'number':
+    case 'bigint':
+    case 'boolean':
+      return `${value}`;
+    case 'symbol':
+      return value.toString();
+    default:
+      // object / function：没有可读文本，给 fallback 而不是 "[object Object]"
+      return fallback;
+  }
 }

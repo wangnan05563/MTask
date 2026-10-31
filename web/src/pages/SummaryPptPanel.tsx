@@ -203,6 +203,100 @@ function PreflightChecklist({ pre, loading, error, projectId, missingItems, open
   );
 }
 
+/** 发起大纲前的守卫提示（空串＝可以发起）——把三段 if 从 genOutline 里挪出来，降低认知复杂度 */
+function outlineStartBlockReason(toolId: string, blocked: boolean, hasPre: boolean): string {
+  if (!toolId) return '请先在右侧控制台选择 AI 模型工具';
+  if (blocked) return '资料不足（S1/S2 硬阻塞），补齐后再生成大纲';
+  if (!hasPre) return '前置校验尚未完成，稍候再试';
+  return '';
+}
+
+/** 大纲段日志里的形态文案（合并版 / 分别独立版 / 单项目） */
+function outlineModeText(isMerged: boolean, effectiveMode: ModeKey, projectCount: number): string {
+  if (effectiveMode === 'separate') return `分别独立版（${projectCount} 个项目各一份完整稿）`;
+  if (isMerged) return `合并版（${projectCount} 个项目）`;
+  return '单项目';
+}
+
+/** 装配段日志里的形态文案（与大纲段同义，分隔用空格） */
+function assembleModeText(isMerged: boolean, effectiveMode: ModeKey, projectCount: number): string {
+  if (effectiveMode === 'separate') return `分别独立版 ${projectCount} 个项目（各一份完整稿，打 zip）`;
+  if (isMerged) return `合并版 ${projectCount} 个项目`;
+  return '单项目';
+}
+
+/** 大纲目标页数文案：分别独立版给「每项目 a~b 页，合计 c~d 页」 */
+function outlineRangeMark(r: OutlineResult, effectiveMode: ModeKey): string {
+  if (effectiveMode !== 'separate') return `${r.pageRange.min}~${r.pageRange.max} 页`;
+  const totalRangeText = r.totalPageRange ? `${r.totalPageRange.min}~${r.totalPageRange.max}` : '';
+  return `每项目 ${r.pageRange.min}~${r.pageRange.max} 页，合计 ${totalRangeText} 页`;
+}
+
+/** 大纲段起始日志：周期 · 项目 · 形态 · 补充说明是否附加 */
+function outlineStartLog(periodLabel: string, projectNames: string[], modeText: string, hasExtraNote: boolean): string {
+  const noteText = hasExtraNote ? '已附加' : '无';
+  return `大纲段：${periodLabel} · ${projectNames.join('、') || '全部项目'} · ${modeText}，补充说明 ${noteText}…`;
+}
+
+/** 大纲就绪日志：页数（目标区间）+ 裁剪与降级标记 */
+function outlineReadyLog(r: OutlineResult, rangeMark: string): string {
+  const truncatedMark = r.truncated ? '（已按预算裁剪）' : '';
+  const warnCount = (r.warnings ?? []).length;
+  const warnMark = warnCount ? `，降级提示 ${warnCount} 条` : '';
+  return `大纲就绪：${r.outline.length} 页（目标 ${rangeMark}）${truncatedMark}${warnMark}`;
+}
+
+/** 大纲请求体（仅自定义周期带 start/end，空补充说明不外发） */
+function outlineRequestBody(period: PeriodKey, projectIds: string[], start: string, end: string, toolId: string, mode: ModeKey, extraNote: string) {
+  return {
+    period,
+    projectIds: projectIds.length ? projectIds : undefined,
+    ...(period === 'custom' ? { start, end } : {}),
+    toolId,
+    mode,
+    extraNote: extraNote || undefined,
+  };
+}
+
+/** 装配请求体（大纲原样回传，服务端按同一套白名单校验；S107：入参收成 options 对象） */
+function summaryStreamBody(opts: {
+  period: PeriodKey; projectIds: string[]; start: string; end: string;
+  outline: SummaryOutlineItem[]; mode: ModeKey; style: StyleKey; jobId: string;
+}) {
+  const { period, projectIds, start, end, outline, mode, style, jobId } = opts;
+  return {
+    period,
+    projectIds: projectIds.length ? projectIds : undefined,
+    ...(period === 'custom' ? { start, end } : {}),
+    outline,
+    mode,
+    style,
+    jobId,
+  };
+}
+
+/** 装配完成后的降级标记 */
+function degradedMark(warnings: string[]): string {
+  return warnings.length ? ` · 降级 ${warnings.length} 条` : '';
+}
+
+/** 成品可下载的提示文案（zip / pptx 两种产物） */
+function downloadReadyFlash(fileName: string): string {
+  if (fileName.endsWith('.zip')) return '已生成 zip，点「下载 .zip」取回（下载即删令牌）';
+  return '已生成，点「下载 .pptx」取回（下载即删令牌）';
+}
+
+/** 生成失败收口文案：并发闸排队不是失败，语气要与其它卡片一致 */
+function generateFailureNotice(msg: string): { finishText: string; flashText: string } {
+  if (msg.includes(GATE_BUSY_MSG)) {
+    return {
+      finishText: `并发闸排队：${msg}`,
+      flashText: `${msg}——前面有周报/启动会稿在装配，稍后重试即可（不是失败）`,
+    };
+  }
+  return { finishText: `生成失败：${msg}`, flashText: msg };
+}
+
 /** ① 周期与范围段（四档周期 + 自定义区间 + 顶部范围/卡片覆盖 + 版式预设） */
 function PeriodScopeSection({ period, onPeriod, start, end, onStart, onEnd, customError, overrideOn, onOverrideOn, overrideIds, onOverrideIds, topIds, projects, scopeText, mode, onMode, style, onStyle, multi }: {
   readonly period: PeriodKey;
@@ -244,12 +338,12 @@ function PeriodScopeSection({ period, onPeriod, start, end, onStart, onEnd, cust
         {period === 'custom' && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
             <label style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
-              起始日
+              起始日{' '}
               <input type="date" value={start} max={end || todayYmd()} onChange={(e) => onStart(e.target.value)}
                 aria-label="自定义周期起始日" style={{ ...cellInput, display: 'block', marginTop: 3 }} />
             </label>
             <label style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
-              结束日（含）
+              结束日（含）{' '}
               <input type="date" value={end} min={start || undefined} max={todayYmd()} onChange={(e) => onEnd(e.target.value)}
                 aria-label="自定义周期结束日" style={{ ...cellInput, display: 'block', marginTop: 3 }} />
             </label>
@@ -264,7 +358,7 @@ function PeriodScopeSection({ period, onPeriod, start, end, onStart, onEnd, cust
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-s)', cursor: 'pointer' }}>
           <input type="checkbox" checked={overrideOn} onChange={(e) => onOverrideOn(e.target.checked)}
             aria-label="本卡片另选项目（仅本次生成生效，不改顶部选区）" style={{ cursor: 'pointer' }} />
-          本卡片另选项目
+          {' '}本卡片另选项目
         </label>
         {overrideOn ? (
           <div style={{ width: 240, maxWidth: '100%' }}>
@@ -641,38 +735,23 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
 
   /** ③ 发起大纲段（1 次 askJson，不合规则服务端自带重试 1 次后 400） */
   async function genOutline(): Promise<void> {
-    if (!toolId) { flash('请先在右侧控制台选择 AI 模型工具'); return; }
-    if (blocked) { flash('资料不足（S1/S2 硬阻塞），补齐后再生成大纲'); return; }
-    if (!activePre) { flash('前置校验尚未完成，稍候再试'); return; }
+    const startBlockReason = outlineStartBlockReason(toolId, blocked, activePre !== null);
+    if (startBlockReason) { flash(startBlockReason); return; }
+    if (!activePre) return;
     if (rows.length > 0 && !(await askConfirm('已有大纲稿，重新生成会覆盖当前编辑内容。继续？'))) return;
     setOutlineBusy(true);
-    const scope = activePre.projectIds.length ? activePre.projectIds : undefined;
-    const mergedModeText = isMerged ? `合并版（${activePre.projectIds.length} 个项目）` : '单项目';
-    const modeText = effectiveMode === 'separate' ? `分别独立版（${activePre.projectIds.length} 个项目各一份完整稿）` : mergedModeText;
-    summaryPptStore.pushLog(`大纲段：${activePre.periodLabel} · ${activePre.projectNames.join('、') || '全部项目'} · ${modeText}，补充说明 ${extraNote ? '已附加' : '无'}…`);
+    const pre = activePre;
+    const modeText = outlineModeText(isMerged, effectiveMode, pre.projectIds.length);
+    summaryPptStore.pushLog(outlineStartLog(pre.periodLabel, pre.projectNames, modeText, !!extraNote));
     try {
-      const r = await api.post<OutlineResult>('/plans/summary-ppt-outline', {
-        period,
-        projectIds: scope,
-        ...(period === 'custom' ? { start, end } : {}),
-        toolId,
-        mode: effectiveMode,
-        extraNote: extraNote || undefined,
-      });
+      const r = await api.post<OutlineResult>('/plans/summary-ppt-outline',
+        outlineRequestBody(period, pre.projectIds, start, end, toolId, effectiveMode, extraNote));
       setRows(r.outline);
       setOutlineWarnings(r.warnings ?? []);
       setOutlineScope(scopeSignature);
       try { sessionStorage.setItem(OUTLINE_SCOPE_SESSION_KEY, scopeSignature); } catch { /* 忽略 */ }
       summaryPptStore.setOutline(r.outline, r.warnings ?? []);
-      const truncatedMark = r.truncated ? '（已按预算裁剪）' : '';
-      const warnCount = (r.warnings ?? []).length;
-      const warnMark = warnCount ? `，降级提示 ${warnCount} 条` : '';
-      const totalRangeText = r.totalPageRange ? `${r.totalPageRange.min}~${r.totalPageRange.max}` : '';
-      const separateRangeText = `每项目 ${r.pageRange.min}~${r.pageRange.max} 页，合计 ${totalRangeText} 页`;
-      const rangeMark = effectiveMode === 'separate'
-        ? separateRangeText
-        : `${r.pageRange.min}~${r.pageRange.max} 页`;
-      summaryPptStore.pushLog(`大纲就绪：${r.outline.length} 页（目标 ${rangeMark}）${truncatedMark}${warnMark}`);
+      summaryPptStore.pushLog(outlineReadyLog(r, outlineRangeMark(r, effectiveMode)));
       flash(`大纲已生成 ${r.outline.length} 页——请确认后开始生成`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -693,24 +772,13 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
     summaryPptStore.setResult(null);
     setPageDone(0);
     setPageTotal(rows.length);
-    const mergedModeText = isMerged ? `合并版 ${activePre.projectIds.length} 个项目` : '单项目';
-    const modeText = effectiveMode === 'separate'
-      ? `分别独立版 ${activePre.projectIds.length} 个项目（各一份完整稿，打 zip）`
-      : mergedModeText;
-    summaryPptStore.pushLog(`总结汇报稿：${activePre.periodLabel}（${rangeText(activePre.periodRange)}）· ${modeText} · ${rows.length} 页大纲，开始装配…`);
+    const pre = activePre;
+    summaryPptStore.pushLog(`总结汇报稿：${pre.periodLabel}（${rangeText(pre.periodRange)}）· ${assembleModeText(isMerged, effectiveMode, pre.projectIds.length)} · ${rows.length} 页大纲，开始装配…`);
     let errMsg = '';
     try {
       await streamEvents(
         '/plans/summary-ppt-stream',
-        {
-          period,
-          projectIds: activePre.projectIds.length ? activePre.projectIds : undefined,
-          ...(period === 'custom' ? { start, end } : {}),
-          outline: rows,
-          mode: effectiveMode,
-          style,
-          jobId: sessionJobId,
-        },
+        summaryStreamBody({ period, projectIds: pre.projectIds, start, end, outline: rows, mode: effectiveMode, style, jobId: sessionJobId }),
         (name, payload) => {
           if (name === 'stage') {
             const msg = (payload as { msg: string }).msg;
@@ -731,18 +799,14 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
       if (done) {
         setPageTotal(done.pageCount);
         setPageDone(done.pageCount);
-        const degradedMark = done.warnings.length ? ` · 降级 ${done.warnings.length} 条` : '';
-        summaryPptStore.pushLog(`装配完成：${done.pageCount} 页 · ${done.fileName}${degradedMark}`);
-        flash(done.fileName.endsWith('.zip')
-          ? '已生成 zip，点「下载 .zip」取回（下载即删令牌）'
-          : '已生成，点「下载 .pptx」取回（下载即删令牌）');
+        summaryPptStore.pushLog(`装配完成：${done.pageCount} 页 · ${done.fileName}${degradedMark(done.warnings)}`);
+        flash(downloadReadyFlash(done.fileName));
       }
     } catch (e) {
       if (ac.signal.aborted) return; // 用户主动「停止」：store 已清空，不再补失败日志
-      const msg = e instanceof Error ? e.message : String(e);
-      const queued = msg.includes(GATE_BUSY_MSG);
-      summaryPptStore.finish(queued ? `并发闸排队：${msg}` : `生成失败：${msg}`);
-      flash(queued ? `${msg}——前面有周报/启动会稿在装配，稍后重试即可（不是失败）` : msg);
+      const notice = generateFailureNotice(e instanceof Error ? e.message : String(e));
+      summaryPptStore.finish(notice.finishText);
+      flash(notice.flashText);
     } finally {
       summaryPptStore.setAbortCtrl(null);
     }

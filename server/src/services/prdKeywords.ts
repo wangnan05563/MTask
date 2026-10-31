@@ -100,45 +100,62 @@ const PHRASE_WINDOW = 6;
  * 从需求文本抽检索词。
  * @param vocab 领域词表（默认空 = 只做拉丁 + 中文短语）
  */
-export function extractNeedles(text: string, vocab: VocabEntry[] = [], limit = NEEDLE_LIMIT): ExtractResult {
-  if (!text) return { needles: [], dropped: [] };
-  const picked = new Map<string, Needle>();
-  const dropped: string[] = [];
-  const push = (raw: string, kind: NeedleKind, weight: number): void => {
-    const key = raw.toLowerCase();
-    if (key.length < 2) return;
-    const prev = picked.get(key);
-    if (!prev) { picked.set(key, { text: raw, kind, weight }); return; }
-    if (weight > prev.weight) picked.set(key, { text: raw, kind, weight });
-  };
+function pushNeedle(picked: Map<string, Needle>, raw: string, kind: NeedleKind, weight: number): void {
+  const key = raw.toLowerCase();
+  if (key.length < 2) return;
+  const prev = picked.get(key);
+  if (!prev) { picked.set(key, { text: raw, kind, weight }); return; }
+  if (weight > prev.weight) picked.set(key, { text: raw, kind, weight });
+}
 
-  // 1) 词表命中优先级最高：中文术语 → 英文标识符
+/** 1) 词表命中优先级最高：中文术语 → 英文标识符 */
+function collectVocabNeedles(text: string, vocab: readonly VocabEntry[], picked: Map<string, Needle>): void {
   for (const entry of vocab) {
     if (!text.includes(entry.term)) continue;
-    for (const alias of entry.aliases) push(alias, 'latin', 3);
+    for (const alias of entry.aliases) pushNeedle(picked, alias, 'latin', 3);
   }
+}
 
-  // 2) 拉丁标识符（沿用 extractKeywords 的正则与过滤口径，但不设「凑够 3 个就停」）
+/** 2) 拉丁标识符（沿用 extractKeywords 的正则与过滤口径，但不设「凑够 3 个就停」） */
+function collectLatinNeedles(text: string, picked: Map<string, Needle>): void {
   for (const m of text.matchAll(/[A-Za-z_]\w{2,}/g)) {
     const w = m[0];
     if (isWordFieldToken(w)) continue;
     if ((w.match(/\d/g)?.length ?? 0) >= Math.ceil(w.length / 2)) continue;
     if (STOP_LATIN.has(w.toLowerCase())) continue;
-    push(w, 'latin', 2);
+    pushNeedle(picked, w, 'latin', 2);
   }
+}
 
-  // 3) 中文短语：按标点/换行切段，段内不切词
+/** 超长中文段按 6 字窗滑切；短段整段保留 */
+function phraseWindows(run: string): string[] {
+  if (run.length <= PHRASE_MAX_LEN) return [run];
+  return Array.from({ length: Math.ceil((run.length - PHRASE_WINDOW) / PHRASE_WINDOW) + 1 }, (_, i) =>
+    run.slice(i * PHRASE_WINDOW, i * PHRASE_WINDOW + PHRASE_WINDOW)).filter((p) => p.length >= 2);
+}
+
+/** 3) 中文短语：按标点/换行切段，段内不切词 */
+function collectPhraseNeedles(text: string, picked: Map<string, Needle>, dropped: string[]): void {
   for (const run of text.split(/[^\u4e00-\u9fa5]+/)) {
     if (run.length < 2) continue;
-    const phrases = run.length <= PHRASE_MAX_LEN
-      ? [run]
-      : Array.from({ length: Math.ceil((run.length - PHRASE_WINDOW) / PHRASE_WINDOW) + 1 }, (_, i) =>
-        run.slice(i * PHRASE_WINDOW, i * PHRASE_WINDOW + PHRASE_WINDOW)).filter((p) => p.length >= 2);
-    for (const p of phrases) {
+    for (const p of phraseWindows(run)) {
       if (isNoisePhrase(p)) { dropped.push(p); continue; }
-      push(p, 'phrase', 1);
+      pushNeedle(picked, p, 'phrase', 1);
     }
   }
+}
+
+/**
+ * 从需求文本抽检索词。
+ * @param vocab 领域词表（默认空 = 只做拉丁 + 中文短语）
+ */
+export function extractNeedles(text: string, vocab: VocabEntry[] = [], limit = NEEDLE_LIMIT): ExtractResult {
+  if (!text) return { needles: [], dropped: [] };
+  const picked = new Map<string, Needle>();
+  const dropped: string[] = [];
+  collectVocabNeedles(text, vocab, picked);
+  collectLatinNeedles(text, picked);
+  collectPhraseNeedles(text, picked, dropped);
 
   const ordered = [...picked.values()].sort((a, b) => b.weight - a.weight);
   const needles = ordered.slice(0, limit);

@@ -17,6 +17,72 @@ import { PromptOptimizeButton } from '../ui/PromptOptimizeButton'; // T00842 二
 import { OPTIMIZE_SCOPE_REQ, useOptimizeStore } from '../stores/optimizeStore'; // T03684：优化运行态切页保持
 import { relTime } from '../ui/format';
 
+type ReqSortKey = 'updated_at' | 'created_at' | 'title' | 'manual';
+
+/** 手动排序：权重升序（0 视为未排过、排在已排序行之后）；权重相同回落更新时间降序 */
+function compareManualWeight(a: ReqEntry, b: ReqEntry): number {
+  const wa = a.sort_weight || 0;
+  const wb = b.sort_weight || 0;
+  if (wa !== wb) {
+    if (wa === 0) return 1;
+    if (wb === 0) return -1;
+    return wa - wb;
+  }
+  return (b.updated_at || '').localeCompare(a.updated_at || '');
+}
+
+/** 依据当前排序条件对条目排序（不改变原始数组）；置顶项始终排在最前 */
+function sortReqEntries(list: ReqEntry[], sortKey: ReqSortKey, sortDir: 'asc' | 'desc'): ReqEntry[] {
+  return [...list].sort((a, b) => {
+    // 置顶优先：置顶项固定在最前，组内再按用户字段/方向排序
+    const pa = Boolean(a.pinned);
+    const pb = Boolean(b.pinned);
+    if (pa !== pb) return pa ? -1 : 1;
+    if (sortKey === 'manual') return compareManualWeight(a, b);
+    // 时间字段为 ISO 字符串可直接比较；名称按中文语言规则比较（数字感知）
+    const cmp = sortKey === 'title'
+      ? a.title.localeCompare(b.title, 'zh-Hans-CN', { numeric: true })
+      : a[sortKey].localeCompare(b[sortKey]);
+    return sortDir === 'asc' ? cmp : -cmp;
+  });
+}
+
+/** 行类名：高亮动画、拖拽态与按压态按当前状态拼装 */
+function reqRowClass(
+  id: string,
+  state: { readonly flashAt: Record<string, number>; readonly dragId: string; readonly overId: string; readonly pressId: string },
+): string {
+  let cls = 'arena-row';
+  if (state.flashAt[id]) cls += ' flush';
+  if (state.dragId === id) cls += ' item-dragging';
+  else if (state.overId === id) cls += ' item-over';
+  if (state.pressId === id) cls += ' item-pressing';
+  return cls;
+}
+
+/** 空态文案：分类为空 / 收藏筛选下无收藏 / 分类下确实没有数据，三种情形分别说清 */
+function reqEmptyHint(categoryCount: number, total: number, viewScope: 'all' | 'fav'): string {
+  if (categoryCount === 0) return '暂无分类，请先新建分类。';
+  if (viewScope === 'fav' && total > 0) {
+    return `该分类下有 ${total} 条通用需求，但都未收藏 —— 点标题左侧星标加入收藏，或把「显示范围」切回「全部显示」。`;
+  }
+  return '该分类下暂无通用需求。';
+}
+
+/** 遮罩点击关闭：把「点空白处关闭」下沉为文档级监听，避免在非交互容器上挂鼠标事件 */
+function useOverlayDismiss(active: boolean, busy: boolean, close: () => void) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!active) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (e.target === ref.current && !busy) close();
+    };
+    document.addEventListener('click', onDocClick);
+    return () => document.removeEventListener('click', onDocClick);
+  }, [active, busy, close]);
+  return ref;
+}
+
 /** 通用需求仓库：按分类管理"通用优秀实现/解决方案"，支持增删改查与一键复制 */
 export function ReqPage() {
   const [categories, setCategories] = useState<ReqCategory[]>([]);
@@ -43,7 +109,7 @@ export function ReqPage() {
   const { projects } = projectList;
   // 排序条件：sortKey 排序字段，sortDir 升降序（默认时间降序，与后端默认一致）
   // T03684：同 search，升为会话级持久（切菜单回来保持上次的排序选择）
-  const [sortKey, setSortKey] = useSessionState<'updated_at' | 'created_at' | 'title' | 'manual'>('req.sortKey', 'updated_at');
+  const [sortKey, setSortKey] = useSessionState<ReqSortKey>('req.sortKey', 'updated_at');
   const [sortDir, setSortDir] = useSessionState<'asc' | 'desc'>('req.sortDir', 'desc');
   // T03683：显示范围（'all' 全部显示 | 'fav' 只看收藏），与提示词页同键格式、同语义
   const [viewScope, setViewScope] = useSessionState<'all' | 'fav'>('req.viewScope', 'all');
@@ -88,8 +154,8 @@ export function ReqPage() {
   const [dragId, setDragId] = useState('');
   // T00489：按住行 200ms 才缩放（快速点击/点行内按钮不触发）
   const [pressId, setPressId] = useState('');
-  const pressTimer = useRef<Record<string, ReturnType<typeof setTimeout>>>({}); // NOSONAR - dragId 供 dropReorder 读取，setDragId 用于拖拽态重渲染
-  const [overId, setOverId] = useState(''); // NOSONAR - overId 供列表行接入拖拽高亮后读取，setOverId 用于拖拽悬停态重渲染
+  const pressTimer = useRef<Record<string, ReturnType<typeof setTimeout>>>({}); // dragId 供 dropReorder 读取，setDragId 用于拖拽态重渲染
+  const [overId, setOverId] = useState(''); // overId 供列表行接入拖拽高亮后读取，setOverId 用于拖拽悬停态重渲染
   // 调整分组：moveOpenId 记录当前展开分组选择器的条目 id（单开），'' 表示全部收起
   const [moveOpenId, setMoveOpenId] = useState('');
   // 分组选择器容器引用：用于判断点击是否落在菜单外部（点击外部收起）
@@ -280,25 +346,13 @@ export function ReqPage() {
     }
   }
 
-  /** 复制到剪贴板（Electron/file:// 下 clipboard API 可能受限，提供 execCommand 兜底） */
+  /** 复制到剪贴板：统一走 Clipboard API，失败时给出可见提示（S1874：不再使用已废弃的 execCommand） */
   async function copyEntry(p: ReqEntry) {
     try {
       await navigator.clipboard.writeText(p.content);
       flash('已复制到剪贴板');
     } catch {
-      const ta = document.createElement('textarea');
-      ta.value = p.content;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      try {
-        document.execCommand('copy'); // NOSONAR - Clipboard API 受限环境（Electron/file://）的降级路径无未废弃替代 API
-        flash('已复制到剪贴板');
-      } catch {
-        flash('复制失败，请手动选择文本复制');
-      }
-      ta.remove();
+      flash('复制失败：当前环境不允许访问剪贴板，请手动选择文本复制');
     }
   }
 
@@ -315,7 +369,7 @@ export function ReqPage() {
   /** T03683：收藏/取消收藏——乐观改本地行，失败回滚并提示（与提示词页 toggleFavorite 同口径）。
    *  条目列表是本页自持的 useState（非 useResource），直接 setEntries 即可，无需整表 reload。 */
   async function toggleFavorite(p: ReqEntry) {
-    const next = !Boolean(p.is_favorited);
+    const next = !p.is_favorited;
     const withFlag = (favorited: boolean) => entries.map((x) => (x.id === p.id ? { ...x, is_favorited: favorited } : x));
     setEntries(withFlag(next));
     try {
@@ -382,45 +436,25 @@ export function ReqPage() {
     clearTimeout(pressTimer.current[id]);
     if (pressId === id) setPressId('');
   };
-  const rowCls = (id: string) => {
-    let cls = 'arena-row';
-    if (flashAt[id]) cls += ' flush';
-    if (dragId === id) cls += ' item-dragging';
-    else if (overId === id) cls += ' item-over';
-    if (pressId === id) cls += ' item-pressing';
-    return cls;
-  };
+  const rowCls = (id: string) => reqRowClass(id, { flashAt, dragId, overId, pressId });
   const dragStartRow = (id: string, e: React.DragEvent) => { setDragId(id); e.dataTransfer.effectAllowed = 'move'; };
   const dragEndRow = () => { setDragId(''); setOverId(''); };
   const dragOverRow = (id: string, e: React.DragEvent) => { e.preventDefault(); if (id !== dragId) setOverId(id); };
 
   /** 依据当前排序条件对条目排序（不改变原始 state）；置顶项始终排在最前 */
-  const sortedEntries = [...entries].sort((a, b) => {
-    // 置顶优先：置顶项固定在最前，组内再按用户字段/方向排序
-    const pa = Boolean(a.pinned);
-    const pb = Boolean(b.pinned);
-    if (pa !== pb) return pa ? -1 : 1;
-    // 时间字段为 ISO 字符串可直接比较；名称按中文语言规则比较（数字感知）
-    if (sortKey === 'manual') {
-      const wa = a.sort_weight || 0;
-      const wb = b.sort_weight || 0;
-      if (wa !== wb) {
-        if (wa === 0) return 1;
-        if (wb === 0) return -1;
-        return wa - wb;
-      }
-      return (b.updated_at || '').localeCompare(a.updated_at || '');
-    }
-    const cmp = sortKey === 'title'
-      ? a.title.localeCompare(b.title, 'zh-Hans-CN', { numeric: true })
-      : a[sortKey].localeCompare(b[sortKey]);
-    return sortDir === 'asc' ? cmp : -cmp;
-  });
+  const sortedEntries = sortReqEntries(entries, sortKey, sortDir);
 
   /** T03683：显示范围「收藏」= 只看已收藏的行。
    *  收藏视图下禁用拖拽（draggable 判定见列表行）：拖拽提交的 orderedIds 只覆盖子集，
    *  重排语义会作用不到未显示的兄弟条目，容易把权重写得与用户所见不符。 */
   const visibleEntries = viewScope === 'fav' ? sortedEntries.filter((p) => Boolean(p.is_favorited)) : sortedEntries;
+
+  /** 全部展开/收起的当前判定：列表非空且每行都已展开才显示「收起」（标题与图标共用同一结果） */
+  const allExpanded = entries.length > 0 && entries.every((x) => expandedIds[x.id]);
+
+  // 遮罩点击关闭：文档级监听替代遮罩容器上的鼠标事件（容器保持非交互语义）
+  const taskCopyOverlayRef = useOverlayDismiss(taskCopyEntry !== null, taskCopyBusy, () => setTaskCopyEntry(null));
+  const planOverlayRef = useOverlayDismiss(planEntry !== null, planBusy, () => setPlanEntry(null));
 
   return (
     <section>
@@ -474,11 +508,10 @@ export function ReqPage() {
         {activeCat && (
             <button className="tbtn-anim op-hidden" onClick={() => { // T00760：默认隐藏悬浮显示
               const ids = entries.map((x) => x.id);
-              const allExpanded = ids.length > 0 && ids.every((id) => expandedIds[id]);
               setExpandedIds(allExpanded ? {} : Object.fromEntries(ids.map((id) => [id, true])));
-            }} title={entries.length > 0 && entries.every((x) => expandedIds[x.id]) ? '全部收起 — 收起全部通用需求内容' : '全部展开 — 展开全部通用需求内容'} aria-label="全部展开或收起通用需求内容"
+            }} title={allExpanded ? '全部收起 — 收起全部通用需求内容' : '全部展开 — 展开全部通用需求内容'} aria-label="全部展开或收起通用需求内容"
               style={{ display: 'inline-flex', alignItems: 'center', padding: '4px 8px', borderRadius: 6 }}>
-              {entries.length > 0 && entries.every((x) => expandedIds[x.id]) ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />}
+              {allExpanded ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />}
             </button>
         )}
         <button
@@ -608,12 +641,7 @@ export function ReqPage() {
       {/* 条目列表 */}
       {visibleEntries.length === 0 && (
         <p style={{ color: 'var(--text-muted)' }}>
-          {categories.length === 0
-            ? '暂无分类，请先新建分类。'
-            : viewScope === 'fav' && sortedEntries.length > 0
-              // T03683：收藏视图空态要说清「不是没数据，是没收藏」，避免被读成数据丢失
-              ? `该分类下有 ${sortedEntries.length} 条通用需求，但都未收藏 —— 点标题左侧星标加入收藏，或把「显示范围」切回「全部显示」。`
-              : '该分类下暂无通用需求。'}
+          {reqEmptyHint(categories.length, sortedEntries.length, viewScope)}
         </p>
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
@@ -795,9 +823,8 @@ export function ReqPage() {
 
       {/* T00629：复制到待办任务——目标项目选择弹窗（与提示词页一致） */}
       {taskCopyEntry && (
-        <div /* NOSONAR - 遮罩点击为鼠标便捷关闭，取消按钮提供键盘可达通路 */
-          style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          onClick={(e) => { if (e.target === e.currentTarget && !taskCopyBusy) setTaskCopyEntry(null); }}>
+        <div ref={taskCopyOverlayRef}
+          style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(420px, 92vw)', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
               <ListTodo size={14} style={{ color: 'var(--accent)' }} /> 复制到待办任务
@@ -839,9 +866,8 @@ export function ReqPage() {
       )}
       {/* T03185（UX-05①②③④）：转计划的目标项目选择弹窗——下拉携带 ID，默认项目合法即可直接提交 */}
       {planEntry && (
-        <div /* NOSONAR - 遮罩点击为鼠标便捷关闭，取消按钮提供键盘可达通路 */
-          style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          onClick={(e) => { if (e.target === e.currentTarget && !planBusy) setPlanEntry(null); }}>
+        <div ref={planOverlayRef}
+          style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(420px, 92vw)', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
               <CalendarRange size={14} style={{ color: 'var(--accent)' }} /> 转计划 — 选择目标项目
@@ -866,9 +892,9 @@ export function ReqPage() {
                 </div>
                 {/* UX-05③：没有可选项目时给出口，而不是让提交按钮静默失败 */}
                 {projectList.phase === 'ready' && projects.length === 0 && (
-                  <div role="status" data-t03185="no-project" style={{ marginTop: 6, color: 'var(--danger)' }}>
+                  <output data-t03185="no-project" style={{ display: 'block', marginTop: 6, color: 'var(--danger)' }}>
                     请选择/创建所属项目 —— 当前没有可用项目，请先到「项目管理」或「任务」菜单新建项目，再回来转计划。
-                  </div>
+                  </output>
                 )}
                 <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
                   同名项目按 ID 区分，不会串单；若该需求已转过，会提示重复而不是再生成一条。

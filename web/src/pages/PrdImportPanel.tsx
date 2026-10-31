@@ -64,19 +64,40 @@ interface PrdPreviewResult {
 
 /**
  * T02300：预演结果播报。放在导入按钮之前，让用户点「导入」**前**就看到连带影响——
- * T01869 的原始症状（重导后两行同名、一行被读成 todo/0）之所以被误判成「原有计划被回档」，
+ * T01869 的原始症状（重导后两行同名、一行被读成待办/0）之所以被误判成「原有计划被回档」，
  * 正是因为导入前的连带影响完全不可见。文案必须写清两条事实（实测口径）：
  * ① 存量矩阵/计划行不会被删除或改写（importPrd 全文零 DELETE）；
  * ② reuse 模式下「同标题 + 同内容」的需求行会被复用（T02303 甲），只有内容变化的才新建并顺延编号。
  */
-function logPreviewResult(p: PrdPreviewResult): void {
+/** T02300：预演——PRD 原文的处置说明（复用 / 新建 / 不落文档） */
+function previewDocPart(p: PrdPreviewResult): string {
   const byName = p.prdDoc.by === 'hash' ? '同内容' : '同文件名';
-  const reuseDocPart = `PRD 原文命中存量文档（按${byName}复用并覆盖其正文，不新建）`;
-  const newOrNoneDocPart = p.prdDoc.action === 'create' ? 'PRD 原文将新建一条文档记录' : '本次未带 PRD 正文，不落文档';
-  const docPart = p.prdDoc.action === 'reuse' ? reuseDocPart : newOrNoneDocPart;
+  if (p.prdDoc.action === 'reuse') return `PRD 原文命中存量文档（按${byName}复用并覆盖其正文，不新建）`;
+  if (p.prdDoc.action === 'create') return 'PRD 原文将新建一条文档记录';
+  return '本次未带 PRD 正文，不落文档';
+}
+
+/** 预演——撞名计划让号/同名复用的预告 */
+function logPreviewDupPlans(list: ReadonlyArray<{ title: string; renamedTo?: string; reusedPlanId?: string }>): void {
+  const renamed = list.filter((x) => x.renamedTo);
+  const reused = list.filter((x) => x.reusedPlanId);
+  if (renamed.length) {
+    const renamedPairs = renamed.slice(0, 8).map((x) => `${x.title}→「${x.renamedTo}」`).join('、');
+    aiImportStore.log(`同名计划让号预告：${renamed.length} 个标题在项目内已存在（${renamedPairs}${renamed.length > 8 ? ' 等' : ''}），原行不变、新行带后缀`, 'info');
+  }
+  if (reused.length) aiImportStore.log(`同名计划复用预告：${reused.length} 个标题命中存量同名行，将补写到原行（status/progress 一字不动）`, 'info');
+}
+
+/** 预演——需求编号让号预告 */
+function logPreviewReqNoMap(list: ReadonlyArray<{ from: string; to: string }>): void {
+  const pairs = list.slice(0, 12).map((x) => `${x.from}→${x.to}`).join('、');
+  aiImportStore.log(`编号让号预告：${list.length} 条需求编号会与矩阵已有编号冲突，将改为项目内顺延号（${pairs}${list.length > 12 ? ' 等' : ''}）`, 'info');
+}
+
+function logPreviewResult(p: PrdPreviewResult): void {
   aiImportStore.log(
     `预演结果（只读，未改动任何数据）：需求 新建 ${p.willCreateReqs} 条 / 复用同标题同内容存量 ${p.willReuseReqs} 条；`
-    + `计划 新建 ${p.willCreatePlans} 条（其中撞名让号 ${p.willRenamePlans} 条）/ 复用同名存量 ${p.willReusePlans} 条；${docPart}`
+    + `计划 新建 ${p.willCreatePlans} 条（其中撞名让号 ${p.willRenamePlans} 条）/ 复用同名存量 ${p.willReusePlans} 条；${previewDocPart(p)}`
     + `${p.createTasks ? '；已勾选同步生成待办（只给新建的计划行派生待办）' : ''}`,
     'info',
   );
@@ -84,19 +105,8 @@ function logPreviewResult(p: PrdPreviewResult): void {
   if (p.willReuseReqs) {
     aiImportStore.log(`需求侧复用：${p.willReuseReqs} 条与存量「同标题且同内容」的需求行命中，将复用原行不新建（内容有一字之差即视为新行）`, 'info');
   }
-  if (p.reqNoMap?.length) {
-    const pairs = p.reqNoMap.slice(0, 12).map((x) => `${x.from}→${x.to}`).join('、');
-    aiImportStore.log(`编号让号预告：${p.reqNoMap.length} 条需求编号会与矩阵已有编号冲突，将改为项目内顺延号（${pairs}${p.reqNoMap.length > 12 ? ' 等' : ''}）`, 'info');
-  }
-  if (p.dupPlanTitles?.length) {
-    const renamed = p.dupPlanTitles.filter((x) => x.renamedTo);
-    const reused = p.dupPlanTitles.filter((x) => x.reusedPlanId);
-    if (renamed.length) {
-      const renamedPairs = renamed.slice(0, 8).map((x) => `${x.title}→「${x.renamedTo}」`).join('、');
-      aiImportStore.log(`同名计划让号预告：${renamed.length} 个标题在项目内已存在（${renamedPairs}${renamed.length > 8 ? ' 等' : ''}），原行不变、新行带后缀`, 'info');
-    }
-    if (reused.length) aiImportStore.log(`同名计划复用预告：${reused.length} 个标题命中存量同名行，将补写到原行（status/progress 一字不动）`, 'info');
-  }
+  if (p.reqNoMap?.length) logPreviewReqNoMap(p.reqNoMap);
+  if (p.dupPlanTitles?.length) logPreviewDupPlans(p.dupPlanTitles);
   if (p.unlinkedReqNos?.length) {
     aiImportStore.log(`预演告警：${p.unlinkedReqNos.length} 个需求编号在本次导入里找不到对应需求行（${p.unlinkedReqNos.join('、')}），其计划/待办关联将被忽略——请核对编号或先补导对应需求`, 'error');
   }
@@ -104,7 +114,9 @@ function logPreviewResult(p: PrdPreviewResult): void {
     aiImportStore.log(`预演告警：${p.ambiguousReqNos.length} 个需求编号在本次 payload 的多个来源里重复（${p.ambiguousReqNos.join('、')}），关联只会挂到其中一行——多来源导入请先全局重排编号`, 'error');
   }
   if (p.orphanRequirements?.length) {
-    aiImportStore.log(`预演提醒：本次要新建的 ${p.orphanRequirements.length} 条需求没有任何计划/待办引用（${p.orphanRequirements.slice(0, 12).map((x) => x.reqNo).join('、')}${p.orphanRequirements.length > 12 ? ' 等' : ''}）`, 'info');
+    const names = p.orphanRequirements.slice(0, 12).map((x) => x.reqNo).join('、');
+    const more = p.orphanRequirements.length > 12 ? ' 等' : '';
+    aiImportStore.log(`预演提醒：本次要新建的 ${p.orphanRequirements.length} 条需求没有任何计划/待办引用（${names}${more}）`, 'info');
   }
 }
 
@@ -151,6 +163,74 @@ function logImportResult(r: ImportPrdResult): void {
   if (r.orphanRequirements?.length) {
     aiImportStore.log(`零关联提醒：本次新建的 ${r.orphanRequirements.length} 条需求没有任何计划/待办关联（${r.orphanRequirements.slice(0, 12).map((x) => x.reqNo).join('、')}${r.orphanRequirements.length > 12 ? ' 等' : ''}）——若为多来源合并导入，请核对是否把关联挂到了别的来源的行上`, 'info');
   }
+}
+
+/** 解析前置校验：目标项目/AI 模型缺失或未选文件时给出可见原因并中止 */
+function canStartParse(projectId: string, toolId: string, fileCount: number): boolean {
+  if (!projectId) { aiImportStore.patch({ error: '请先选择目标项目' }); aiImportStore.log('缺少目标项目，已中止', 'error'); return false; }
+  if (!toolId) { aiImportStore.patch({ error: '请先在控制台选择 AI 模型（顶部模型下拉）' }); aiImportStore.log('缺少 AI 模型（控制台未选择），已中止', 'error'); return false; }
+  return fileCount > 0;
+}
+
+/** 单文件解析：成功后回传解析结果与 PRD 原文（截断/分片/覆盖率提示按原顺序落控制台），失败抛给调用方 */
+async function parseOneFile(file: File, projectId: string, toolId: string, signal: AbortSignal): Promise<PrdParseResult> {
+  const buf = await file.arrayBuffer();
+  const r = await api.postBinary<{ ok: boolean } & PrdParseResult>(
+    `/plans/ai-parse-prd?projectId=${projectId}&toolId=${toolId}&filename=${encodeURIComponent(file.name)}`,
+    buf,
+    { signal },
+  );
+  aiImportStore.log(`✓ ${file.name}：需求 ${r.requirements?.length ?? 0} 条、WBS ${r.drafts?.length ?? 0} 条`, 'ok');
+  if (r.coverageWarn) aiImportStore.log(r.coverageWarn, 'error');
+  // T01156：首轮输出被截断、走了精简重试——需求可能被静默压缩，必须提示用户核对数量
+  if (r.truncatedNote) aiImportStore.log(`⚠ ${r.truncatedNote}`, 'error');
+  // T02270 复议：分片完整跑完是**无损**结果，按普通信息展示——不能混进上面的 ⚠，
+  // 否则用户看到分片提示会误判成「又被砍到 20 条」。
+  if (r.parseNote) aiImportStore.log(r.parseNote);
+  return {
+    requirements: r.requirements ?? [],
+    drafts: r.drafts ?? [],
+    coverageWarn: r.coverageWarn,
+    truncatedNote: r.truncatedNote,
+    textMd: r.textMd,
+  };
+}
+
+/** 逐文件解析的累计结果：解析产物、PRD 原文、首个错误与中断位置 */
+interface ParseAcc {
+  results: PrdParseResult[];
+  sources: { name: string; text: string }[];
+  firstError: string;
+  stopName: string;
+}
+
+/** 逐文件串行解析（避免激增 AI 并发）：单文件失败记录日志并跳过，其余文件继续 */
+async function parseSelectedFiles(
+  files: File[], projectId: string, toolId: string, signal: AbortSignal, onProgress: (done: number) => void,
+): Promise<ParseAcc> {
+  const acc: ParseAcc = { results: [], sources: [], firstError: '', stopName: '' };
+  for (let i = 0; i < files.length; i++) {
+    if (signal.aborted) break; // 取消后剩余文件不再发起，避免"已取消却还在跑"
+    const file = files[i];
+    aiImportStore.log(`提取并解析（${i + 1}/${files.length}）：${file.name}…`);
+    try {
+      const result = await parseOneFile(file, projectId, toolId, signal);
+      acc.results.push(result);
+      // T00908：暂存每份文件的 PRD 全文（供确认导入时落库 PRD 管理视图）
+      if (result.textMd) acc.sources.push({ name: file.name, text: result.textMd });
+    } catch (e) {
+      if (signal.aborted) {
+        // 用户中断不是解析失败，不能记进 firstError 让末尾报「全部文件解析失败」
+        acc.stopName = file.name;
+        break;
+      }
+      const msg = String((e as Error).message ?? e);
+      acc.firstError ||= msg;
+      aiImportStore.log(`✗ ${file.name} 解析失败（已跳过，其余文件继续）：${msg}`, 'error');
+    }
+    onProgress(i + 1);
+  }
+  return acc;
 }
 
 /** T00982：解析结果落盘键（与 useSessionState 同键）——切页恢复靠它们，改键名需同步改面板的读取键 */
@@ -254,8 +334,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       sessionStorage.removeItem('prd-import.docId');
       void autoPullDoc(docId);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [autoPullDoc]);
 
   // T00982：解析完成戳变化 → 重新从会话存储载入结果。
   // 覆盖两类切页时序：① 解析在卸载期间完成（切回来时挂载读取已在存储里）；
@@ -273,15 +352,12 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     } catch {
       /* 脏数据忽略：保留界面现有内容 */
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [parseStamp]);
 
   /** T00824：多文件批量解析——逐文件调用单文件接口（串行避免激增 AI 并发），
    *  单文件失败记录日志并跳过其余继续；合并后统一重编号，供下方交互表格编辑/勾选 */
   const parseAll = useCallback(async (files: File[]) => {
-    if (!projectId) { aiImportStore.patch({ error: '请先选择目标项目' }); aiImportStore.log('缺少目标项目，已中止', 'error'); return; }
-    if (!toolId) { aiImportStore.patch({ error: '请先在控制台选择 AI 模型（顶部模型下拉）' }); aiImportStore.log('缺少 AI 模型（控制台未选择），已中止', 'error'); return; }
-    if (files.length === 0) return;
+    if (!canStartParse(projectId, toolId, files.length)) return;
     aiImportStore.reset('prd');
     setPrdSources([]); // T00908：重新解析即作废上一批暂存的 PRD 全文
     const total = files.length;
@@ -293,43 +369,9 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     aiImportStore.patch({ fileName: total > 1 ? `${total} 个文件` : files[0].name, busy: true });
     aiImportStore.log(`已选择 ${total} 个 PRD 文件：${files.map((f) => f.name).join('、')}`);
     setParseProgress({ done: 0, total });
-    const results: PrdParseResult[] = [];
-    const sources: { name: string; text: string }[] = [];
-    let firstError = '';
-    let stopName = '';
-    for (let i = 0; i < total; i++) {
-      if (ctrl.signal.aborted) break; // 取消后剩余文件不再发起，避免"已取消却还在跑"
-      const file = files[i];
-      aiImportStore.log(`提取并解析（${i + 1}/${total}）：${file.name}…`);
-      try {
-        const buf = await file.arrayBuffer();
-        const r = await api.postBinary<{ ok: boolean } & PrdParseResult>(
-          `/plans/ai-parse-prd?projectId=${projectId}&toolId=${toolId}&filename=${encodeURIComponent(file.name)}`,
-          buf,
-          { signal: ctrl.signal },
-        );
-        results.push({ requirements: r.requirements ?? [], drafts: r.drafts ?? [], coverageWarn: r.coverageWarn, truncatedNote: r.truncatedNote });
-        // T00908：暂存每份文件的 PRD 全文（供确认导入时落库 PRD 管理视图）
-        if (r.textMd) sources.push({ name: file.name, text: r.textMd });
-        aiImportStore.log(`✓ ${file.name}：需求 ${r.requirements?.length ?? 0} 条、WBS ${r.drafts?.length ?? 0} 条`, 'ok');
-        if (r.coverageWarn) aiImportStore.log(r.coverageWarn, 'error');
-        // T01156：首轮输出被截断、走了精简重试——需求可能被静默压缩，必须提示用户核对数量
-        if (r.truncatedNote) aiImportStore.log(`⚠ ${r.truncatedNote}`, 'error');
-        // T02270 复议：分片完整跑完是**无损**结果，按普通信息展示——不能混进上面的 ⚠，
-        // 否则用户看到分片提示会误判成「又被砍到 20 条」。
-        if (r.parseNote) aiImportStore.log(r.parseNote);
-      } catch (e) {
-        if (ctrl.signal.aborted) {
-          // 用户中断不是解析失败，不能记进 firstError 让末尾报「全部文件解析失败」
-          stopName = file.name;
-          break;
-        }
-        const msg = String((e as Error).message ?? e);
-        firstError ||= msg;
-        aiImportStore.log(`✗ ${file.name} 解析失败（已跳过，其余文件继续）：${msg}`, 'error');
-      }
-      setParseProgress({ done: i + 1, total });
-    }
+    const { results, sources, firstError, stopName } = await parseSelectedFiles(
+      files, projectId, toolId, ctrl.signal, (done) => setParseProgress({ done, total }),
+    );
     if (ctrl.signal.aborted) {
       // T03185（UX-07②）：取消即整轮作废——已完成的分片结果只活在局部变量里，这里直接返回，
       // 不 setReqs/setPlans、不 persistParseResult、不递增 parseStamp，因此界面与会话存储都不留半成品，
@@ -507,9 +549,9 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
         {busy && <span className="ai-shimmer" style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, ['--ai-shimmer-color' as never]: 'var(--accent)' }}>处理中…</span>}
         {/* T03185（UX-07②）：解析进度就地可见——此前只有一行「处理中…」，多文件时看不出跑到第几个、还要等多久 */}
         {parseProgress && (
-          <span role="status" data-t03185="parse-progress" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
+          <output data-t03185="parse-progress" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
             解析进度 {parseProgress.done}/{parseProgress.total}
-          </span>
+          </output>
         )}
         {busy && snap.canCancel && (
           <button onClick={() => { if (aiImportStore.cancelByUser()) aiImportStore.log('已请求取消解析：正在中断当前 AI 请求，剩余文件不再发起…'); }}

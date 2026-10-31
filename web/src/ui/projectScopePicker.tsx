@@ -81,17 +81,20 @@ export function ProjectScopePicker({ projects, value, onChange }: {
           border: '1px solid var(--border-strong)', borderRadius: 8, background: 'var(--card-bg)',
           color: 'var(--text)', boxShadow: '0 6px 18px rgba(0,0,0,.14)', padding: 6,
         }}>
-          <div
-            role="button"
-            tabIndex={0}
-            aria-label="清除项目范围筛选（不限范围）— 回车生效"
+          <button
+            type="button"
+            aria-label="清除项目范围筛选（不限范围）"
             onClick={() => onChange([])}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onChange([]); } }}
-            style={{ ...scopeRowStyle, color: value.length === 0 ? 'var(--accent)' : 'var(--text-muted)', fontWeight: value.length === 0 ? 600 : 400 }}
+            style={{
+              ...scopeRowStyle, width: '100%', boxSizing: 'border-box', textAlign: 'left',
+              border: 'none', background: 'transparent', font: 'inherit',
+              color: value.length === 0 ? 'var(--accent)' : 'var(--text-muted)',
+              fontWeight: value.length === 0 ? 600 : 400,
+            }}
           >
             <X size={12} style={{ flexShrink: 0 }} />
             <span>全部项目（不限范围）</span>
-          </div>
+          </button>
           {projects.map((p) => {
             const idx = value.indexOf(p.id);
             const checked = idx >= 0;

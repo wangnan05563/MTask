@@ -13,7 +13,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { ProjectListHint, useProjectList } from '../ui/projectList';
-import { Eye, EyeOff, Plus, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react';
+import { Eye, Plus, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react';
 
 interface ProbeView {
   available: boolean;
@@ -66,6 +66,22 @@ const EMPTY_CFG: ConfigView = {
 const fieldStyle: React.CSSProperties = { width: '100%', padding: '7px 10px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' };
 const labelStyle: React.CSSProperties = { display: 'block', fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 4 };
 const btnStyle: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 12px', fontSize: 'var(--fs-s)', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' };
+
+/** 项目键可达性一行的人话（原为嵌套三元；抽成纯函数让分支一眼可读） */
+function projectKeyDetail(
+  project: TestResult['project'],
+  msgOf: (kind: string) => string,
+): string {
+  if (project?.ok) return `projectKey ${project.projectKey}`;
+  if (project?.projectKey) return msgOf('project-not-found') || msgOf('unreachable');
+  return '未配置 projectKey';
+}
+
+/** 审计行结果文案（成功 / 失败（原因））——原为模板里套三元，抽成纯函数避免嵌套 */
+function auditResultText(row: AuditRow): string {
+  if (row.ok) return '成功';
+  return row.note ? `失败（${row.note}）` : '失败';
+}
 
 export function SonarSettingsTab() {
   const [cfg, setCfg] = useState<ConfigView>(EMPTY_CFG);
@@ -179,7 +195,7 @@ export function SonarSettingsTab() {
         {
           label: '项目键可达性（/api/projects/show）',
           ok: r.project?.ok === true,
-          detail: r.project?.ok ? `projectKey ${r.project.projectKey}` : (r.project?.projectKey ? msgOf('project-not-found') || msgOf('unreachable') : '未配置 projectKey'),
+          detail: projectKeyDetail(r.project, msgOf),
           hint: r.project?.ok ? '' : hintOf('project-not-found') || hintOf('unreachable') || hintOf('no-scanner'),
         },
       ]);
@@ -259,14 +275,14 @@ export function SonarSettingsTab() {
       </div>
 
       <div>
-        <label style={labelStyle}>Java 环境（只读探测）</label>
+        <div style={labelStyle}>Java 环境（只读探测）</div>
         <div data-t03375="java-probe" style={{ fontSize: 'var(--fs-xs)', color: cfg.java.available ? 'var(--text-muted)' : 'var(--warn)' }}>
           {cfg.java.available ? `探测到：${cfg.java.version}` : `未探测到 Java — ${cfg.java.hint}`}
         </div>
       </div>
 
       <div>
-        <label style={labelStyle}>默认 projectKey 映射</label>
+        <div style={labelStyle}>默认 projectKey 映射</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {keys.map((k, i) => (
             <div key={`${k.projectId || 'new'}-${i}`} data-t03375="key-row" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -338,7 +354,7 @@ export function SonarSettingsTab() {
         )}
       </div>
 
-      {notice && <div role="status" data-t03372="notice" style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{notice}</div>}
+      {notice && <output data-t03372="notice" style={{ display: 'block', fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{notice}</output>}
       {error && <div role="alert" data-t03427="error" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)' }}>{error}</div>}
 
       {rows.length > 0 && (
@@ -360,7 +376,7 @@ export function SonarSettingsTab() {
           {audit.length === 0 && <span data-t03373="audit-empty">暂无查看记录（审计只记时间与服务器地址，不记 Token 本身）</span>}
           {audit.slice(0, 5).map((a, i) => (
             <span key={`${a.revealedAt}-${i}`} data-t03373="audit-row">
-              {a.revealedAt.replace('T', ' ').slice(0, 19)} · {a.ok ? '成功' : `失败${a.note ? `（${a.note}）` : ''}`} · {a.serverUrl || '（未配置地址）'}
+              {a.revealedAt.replace('T', ' ').slice(0, 19)} · {auditResultText(a)} · {a.serverUrl || '（未配置地址）'}
             </span>
           ))}
         </div>

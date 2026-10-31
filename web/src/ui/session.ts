@@ -55,23 +55,32 @@ export function clearSessionState(key: string) {
   }
 }
 
+/** 数组缓存校验：结构类型必须同为数组，且空数组（无元素可参照）视为兼容 */
+function isCompatibleArray(parsed: unknown, initial: unknown): boolean {
+  if (!Array.isArray(initial)) return false;
+  return initial.length === 0 || isCompatible((parsed as unknown[])[0], initial[0]);
+}
+
+/** 对象缓存校验：按初始值声明的每个键逐项递归校验（键缺失即不兼容） */
+function isCompatibleObject(parsed: Record<string, unknown>, initial: Record<string, unknown>): boolean {
+  for (const k of Object.keys(initial)) {
+    if (!(k in parsed)) return false;
+    if (!isCompatible(parsed[k], initial[k])) return false;
+  }
+  return true;
+}
+
 /** 递归校验缓存结构与类型是否可用，避免脏数据回填进表单 */
 function isCompatible(parsed: unknown, initial: unknown): boolean {
   // 初始值为 null 表示「没有默认值」：任何已存值都按原样恢复（否则 false/0/'' 这类合法值会被判不兼容而丢失记忆）
   if (initial === null) return true;
   if (typeof parsed !== typeof initial) return false;
   if (parsed === null) return false;
-  if (Array.isArray(parsed)) {
-    return Array.isArray(initial) ? initial.length === 0 || isCompatible(parsed[0], initial[0]) : false;
-  }
+  if (Array.isArray(parsed)) return isCompatibleArray(parsed, initial);
   if (Array.isArray(initial)) return false;
   if (typeof initial === 'object') {
     // typeof 守卫 + 前置 null 排除已将 initial 窄化为 object，无需再断言
-    for (const k of Object.keys(initial)) {
-      if (!(k in (parsed as object))) return false;
-      if (!isCompatible((parsed as Record<string, unknown>)[k], (initial as Record<string, unknown>)[k])) return false;
-    }
-    return true;
+    return isCompatibleObject(parsed as Record<string, unknown>, initial as Record<string, unknown>);
   }
   return true;
 }

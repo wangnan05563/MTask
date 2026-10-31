@@ -411,6 +411,138 @@ export function blocksForKey(key: SummaryDataKey, deck: SummaryDeckData, p?: Sum
 
 // ---------- 版式装配 ----------
 
+interface DataEntry {
+  key: SummaryDataKey;
+  src: Omit<Block, 'box'>;
+}
+
+/** 固定占高：表格先记 0（随后按剩余高度均分），图表用最小可读高，其余按自然高的封顶 0.5 */
+function fixedHeightOf(src: Omit<Block, 'box'>, natural: number): number {
+  if (src.table) return 0;
+  if (src.chart) return CHART_MIN_H;
+  return Math.min(natural, 0.5);
+}
+
+/** 表格按剩余高度收行（frame 内均分），收完重算自然高 */
+function fitTablesInFrame(subset: DataEntry[], heights: number[], tables: number, frame: Box, gaps: number, fixed: number): void {
+  const per = (frame.h - gaps - fixed) / tables;
+  subset.forEach((d, i) => {
+    if (!d.src.table) return;
+    d.src = { ...d.src, table: fitTableToHeight(d.src.table, per, frame.w) };
+    heights[i] = naturalBlockHeight(d.src, frame.w);
+  });
+}
+
+/** 仍超高就压图表，最多压到最小可读高；返回剩余超高量 */
+function shaveCharts(subset: DataEntry[], heights: number[], over: number): number {
+  let rest = over;
+  for (let i = 0; i < subset.length && rest > 1e-9; i++) {
+    if (!subset[i].src.chart) continue;
+    const cut = Math.min(rest, Math.max(0, heights[i] - CHART_MIN_H));
+    heights[i] -= cut;
+    rest -= cut;
+  }
+  return rest;
+}
+
+/** 按给定栏框排一列块：表格按剩余高度收行，图表在剩余高度内压低到最小可读高；放不下的整块省略并留痕 */
+function stackBlocksInto(frame: Box, subset: DataEntry[], placed: Block[], dropped: string[]): void {
+  if (subset.length === 0) return;
+  const heights = subset.map((d) => naturalBlockHeight(d.src, frame.w));
+  const gaps = MIN_GAP * Math.max(0, subset.length - 1);
+  const fixed = subset.reduce((a, d, i) => a + fixedHeightOf(d.src, heights[i]), 0);
+  const tables = subset.filter((d) => d.src.table).length;
+  if (tables > 0) fitTablesInFrame(subset, heights, tables, frame, gaps, fixed);
+  // 压图表（最多压到最小可读高）；剩余超高由下面的越界判定统一计入 dropped
+  shaveCharts(subset, heights, heights.reduce((a, h) => a + h, 0) + gaps - frame.h);
+  const boxes = stackY(frame.y, heights.map((h) => ({ h })), MIN_GAP, frame);
+  const bottom = frame.y + frame.h;
+  subset.forEach((d, i) => {
+    if (boxes[i].y + heights[i] > bottom + 1e-6) {
+      dropped.push(d.key);
+      return;
+    }
+    placed.push({ box: { ...boxes[i], h: heights[i] }, ...d.src });
+  });
+}
+
+/** FR-5.8「表格 + 柱图」同页：左表右图，两块都保自然尺寸 */
+function isSplittableChartPage(item: SummaryOutlineItem, data: DataEntry[]): boolean {
+  if (item.layout !== 'chart') return false;
+  if (data.length === 0) return false;
+  if (!data.every((d) => d.src.table || d.src.chart)) return false;
+  return data.some((d) => d.src.table) && data.some((d) => d.src.chart);
+}
+
+/** FR-6.1「横向对比」：≥2 张柱图且无表格 → 左右并排 */
+function isSideBySideChartPage(item: SummaryOutlineItem, data: DataEntry[], chartRow: DataEntry[]): boolean {
+  if (item.layout !== 'chart') return false;
+  if (chartRow.length < 2) return false;
+  return !data.some((d) => d.src.table);
+}
+
+/** 左表右图 */
+function layoutSplitTableChart(body: Box, data: DataEntry[], placed: Block[], dropped: string[]): void {
+  const leftW = Math.round(body.w * 0.52 * 100) / 100;
+  stackBlocksInto({ ...body, w: leftW }, data.filter((d) => d.src.table), placed, dropped);
+  stackBlocksInto({ x: body.x + leftW + MIN_GAP, y: body.y, w: body.w - leftW - MIN_GAP, h: body.h }, data.filter((d) => d.src.chart), placed, dropped);
+}
+
+/** 柱图左右并排，说明文字排在图下（放不下就省略并留痕） */
+function layoutChartRow(body: Box, chartRow: DataEntry[], data: DataEntry[], placed: Block[], dropped: string[]): void {
+  const others = data.filter((d) => !d.src.chart);
+  const othersH = others.reduce((a, d) => a + Math.min(naturalBlockHeight(d.src, body.w), 0.6), 0);
+  const colW = (body.w - MIN_GAP * (chartRow.length - 1)) / chartRow.length;
+  const room = body.h - (others.length ? othersH + MIN_GAP : 0);
+  const chartH = Math.max(CHART_MIN_H, Math.min(naturalBlockHeight(chartRow[0].src, colW), room));
+  chartRow.forEach((d, i) => {
+    placed.push({ box: { x: body.x + i * (colW + MIN_GAP), y: body.y, w: colW, h: chartH }, ...d.src });
+  });
+  // 图下的说明文字：放不下就省略并留痕（柱图是 FR-6.1 的硬要求，文字让位）
+  let cursorY = body.y + chartH + MIN_GAP;
+  for (const d of others) {
+    const h = Math.min(naturalBlockHeight(d.src, body.w), 0.6);
+    if (cursorY + h > body.y + body.h + 1e-6) {
+      dropped.push(d.key);
+      continue;
+    }
+    placed.push({ box: { x: body.x, y: cursorY, w: body.w, h }, ...d.src });
+    cursorY += h + MIN_GAP;
+  }
+}
+
+/** 单列版式：要点在上（最多占 45%），数据块在下 */
+function layoutSingleColumn(
+  item: SummaryOutlineItem,
+  frames: LayoutFrames,
+  data: DataEntry[],
+  bullets: string[],
+  placed: Block[],
+  dropped: string[],
+): void {
+  let body = frames.body;
+  if (bullets.length) {
+    const natural = naturalBlockHeight({ text: { content: bullets.join('\n'), pt: MIN_BODY_PT } }, body.w);
+    const h = Math.min(natural, body.h * 0.45);
+    placed.push({ box: { ...body, h }, text: { content: bullets.join('\n'), pt: MIN_BODY_PT } });
+    body = { x: body.x, y: body.y + h + MIN_GAP, w: body.w, h: body.h - h - MIN_GAP };
+  }
+  // FR-5.8「表格 + 柱图」同页：5.625" 画布纵向叠放（6 行表 1.9" + 柱图 1.2" + 要点）必然挤掉一块，
+  // 改为左表右图——两块都保自然尺寸，才谈得上「表格/柱图都在」。
+  const chartRow = data.filter((d) => d.src.chart);
+  if (isSplittableChartPage(item, data)) {
+    layoutSplitTableChart(body, data, placed, dropped);
+    return;
+  }
+  // FR-6.1「横向对比」同页要两张柱图（进度 + 工作量）：纵排时两图最小可读高之和
+  // （1.2"×2 + 间距）已超正文区剩余高度，第二张图会被整块省略——改为左右并排。
+  if (isSideBySideChartPage(item, data, chartRow)) {
+    layoutChartRow(body, chartRow, data, placed, dropped);
+    return;
+  }
+  stackBlocksInto(body, data, placed, dropped);
+}
+
 /** 页面主体：先要点、后数据块；表格按剩余高度收行、图表可压到最小可读高，仍放不下的整块省略并留痕 */
 function layoutBody(
   item: SummaryOutlineItem,
@@ -421,104 +553,21 @@ function layoutBody(
 ): { blocks: Block[]; dropped: string[] } {
   const p = projectOf(deck, item.projectId);
   const bullets = item.bullets.filter((b) => b.trim() !== '');
-  const data: Array<{ key: SummaryDataKey; src: Omit<Block, 'box'> }> = [];
+  const data: DataEntry[] = [];
   for (const key of item.dataKeys) {
     for (const src of blocksForKey(key, deck, p)) data.push({ key, src });
   }
   const dropped: string[] = [];
   const placed: Block[] = [];
   const family = layoutFamilyOf(item.layout);
-
-  /** 按给定栏框排一列块：表格按剩余高度收行，图表在剩余高度内压低到最小可读高 */
-  const stackInto = (frame: Box, subset: Array<{ key: SummaryDataKey; src: Omit<Block, 'box'> }>) => {
-    if (subset.length === 0) return;
-    const heights = subset.map((d) => naturalBlockHeight(d.src, frame.w));
-    const gaps = MIN_GAP * Math.max(0, subset.length - 1);
-    const fixed = subset.reduce((a, d, i) => {
-      let h: number;
-      if (d.src.table) h = 0;
-      else if (d.src.chart) h = CHART_MIN_H;
-      else h = Math.min(heights[i], 0.5);
-      return a + h;
-    }, 0);
-    const tables = subset.filter((d) => d.src.table).length;
-    if (tables > 0) {
-      const per = (frame.h - gaps - fixed) / tables;
-      subset.forEach((d, i) => {
-        if (!d.src.table) return;
-        d.src = { ...d.src, table: fitTableToHeight(d.src.table, per, frame.w) };
-        heights[i] = naturalBlockHeight(d.src, frame.w);
-      });
-    }
-    let over = heights.reduce((a, h) => a + h, 0) + gaps - frame.h;
-    for (let i = 0; i < subset.length && over > 1e-9; i++) {
-      if (!subset[i].src.chart) continue;
-      const cut = Math.min(over, Math.max(0, heights[i] - CHART_MIN_H));
-      heights[i] -= cut;
-      over -= cut;
-    }
-    const boxes = stackY(frame.y, heights.map((h) => ({ h })), MIN_GAP, frame);
-    const bottom = frame.y + frame.h;
-    subset.forEach((d, i) => {
-      if (boxes[i].y + heights[i] > bottom + 1e-6) {
-        dropped.push(d.key);
-        return;
-      }
-      placed.push({ box: { ...boxes[i], h: heights[i] }, ...d.src });
-    });
-  };
-
   if (family === 'twoCol' && frames.cols) {
     const [left, right] = frames.cols;
     if (bullets.length) {
       placed.push({ box: left, text: { content: bullets.join('\n'), pt: MIN_BODY_PT } });
     }
-    stackInto(right, data);
+    stackBlocksInto(right, data, placed, dropped);
   } else {
-    let body = frames.body;
-    if (bullets.length) {
-      const natural = naturalBlockHeight({ text: { content: bullets.join('\n'), pt: MIN_BODY_PT } }, body.w);
-      const h = Math.min(natural, body.h * 0.45);
-      placed.push({ box: { ...body, h }, text: { content: bullets.join('\n'), pt: MIN_BODY_PT } });
-      body = { x: body.x, y: body.y + h + MIN_GAP, w: body.w, h: body.h - h - MIN_GAP };
-    }
-    // FR-5.8「表格 + 柱图」同页：5.625" 画布纵向叠放（6 行表 1.9" + 柱图 1.2" + 要点）必然挤掉一块，
-    // 改为左表右图——两块都保自然尺寸，才谈得上「表格/柱图都在」。
-    const splittable = item.layout === 'chart'
-      && data.length > 0 && data.every((d) => d.src.table || d.src.chart)
-      && data.some((d) => d.src.table) && data.some((d) => d.src.chart);
-    // FR-6.1「横向对比」同页要两张柱图（进度 + 工作量）：纵排时两图最小可读高之和
-    // （1.2"×2 + 间距）已超正文区剩余高度，第二张图会被整块省略——改为左右并排。
-    const chartRow = data.filter((d) => d.src.chart);
-    const sideBySideCharts = item.layout === 'chart'
-      && chartRow.length >= 2 && !data.some((d) => d.src.table);
-    if (splittable) {
-      const leftW = Math.round(body.w * 0.52 * 100) / 100;
-      stackInto({ ...body, w: leftW }, data.filter((d) => d.src.table));
-      stackInto({ x: body.x + leftW + MIN_GAP, y: body.y, w: body.w - leftW - MIN_GAP, h: body.h }, data.filter((d) => d.src.chart));
-    } else if (sideBySideCharts) {
-      const others = data.filter((d) => !d.src.chart);
-      const othersH = others.reduce((a, d) => a + Math.min(naturalBlockHeight(d.src, body.w), 0.6), 0);
-      const colW = (body.w - MIN_GAP * (chartRow.length - 1)) / chartRow.length;
-      const room = body.h - (others.length ? othersH + MIN_GAP : 0);
-      const chartH = Math.max(CHART_MIN_H, Math.min(naturalBlockHeight(chartRow[0].src, colW), room));
-      chartRow.forEach((d, i) => {
-        placed.push({ box: { x: body.x + i * (colW + MIN_GAP), y: body.y, w: colW, h: chartH }, ...d.src });
-      });
-      // 图下的说明文字：放不下就省略并留痕（柱图是 FR-6.1 的硬要求，文字让位）
-      let cursorY = body.y + chartH + MIN_GAP;
-      for (const d of others) {
-        const h = Math.min(naturalBlockHeight(d.src, body.w), 0.6);
-        if (cursorY + h > body.y + body.h + 1e-6) {
-          dropped.push(d.key);
-          continue;
-        }
-        placed.push({ box: { x: body.x, y: cursorY, w: body.w, h }, ...d.src });
-        cursorY += h + MIN_GAP;
-      }
-    } else {
-      stackInto(body, data);
-    }
+    layoutSingleColumn(item, frames, data, bullets, placed, dropped);
   }
   if (dropped.length) {
     warnings.push(`第 ${pageNo} 页空间不足，已省略数据块 ${[...new Set(dropped)].join('、')}（内容未丢，可拆分该页）`);
@@ -564,79 +613,130 @@ function pageLabel(deck: SummaryDeckData, item: SummaryOutlineItem): string {
   return deck.projects.map((x) => x.name).join('、') || '全部项目';
 }
 
-/** 标题 + 数据块 + 页脚落成原生对象；越界整页降级并留痕 */
-function appendPage(
-  pptx: { addSlide(opts?: { masterName?: string }): any },
-  deck: SummaryDeckData,
-  item: SummaryOutlineItem,
-  outline: SummaryOutlineItem[],
-  pageNo: number,
-  total: number,
-  sectionNo: number,
-  warnings: string[],
-  degradedPages: number[],
-  /** T02960：本档主色（标题/章节号/页脚）——三档唯一进入产物的差异点 */
-  brandDeep: string,
-): void {
-  const isCover = item.layout === 'cover';
-  const isToc = item.layout === 'toc';
-  const isSection = item.layout === 'section';
-  const isThanks = item.layout === 'thanks';
-  const family = layoutFamilyOf(item.layout);
-  const frames = framesFor(family, item.layout, item.layout === 'twoCol' ? TEXT_SPLIT : undefined);
-  let titlePt: number;
-  if (isCover) titlePt = 32;
-  else if (isToc) titlePt = 22;
-  else if (isSection) titlePt = 28;
-  else titlePt = 22;
-  const centered = isCover || isToc || isSection || isThanks;
+/** 标题字号：封面/目录/章节页各有固定档，其余统一 22pt */
+function titlePointSizeOf(layout: SummaryOutlineItem['layout']): number {
+  if (layout === 'cover') return 32;
+  if (layout === 'toc') return 22;
+  if (layout === 'section') return 28;
+  return 22;
+}
 
-  let blocks: Block[] = [];
-  if (isCover) {
-    const lines = [deck.projects.map((p) => p.name).join('、') || '（未选择项目）', `${deck.periodLabel} · 数据截至 ${deck.dataAsOf}`];
-    blocks = [{ box: frames.body, text: { content: lines.join('\n'), pt: 16, align: 'center' } }];
-  } else if (isToc) {
-    const sections = [...new Set(outline.filter((o) => o.layout !== 'cover' && o.layout !== 'toc').map((o) => o.section).filter(Boolean))];
-    // 目录是本地生成（FR-5.2 不由 AI 写）；14pt 单行 10 条以内，超出折为「更多…」防顶出正文框
-    const shown = sections.slice(0, 10);
-    const lines = shown.map((s, i) => `${String(i + 1).padStart(2, '0')}  ${s}`);
-    if (sections.length > shown.length) lines.push(`…另有 ${sections.length - shown.length} 个章节`);
-    blocks = [{ box: frames.body, text: { content: lines.join('\n'), pt: 14 } }];
-  } else if (isSection) {
-    blocks = [{ box: frames.number!, text: { content: String(sectionNo).padStart(2, '0'), pt: 32, bold: true, align: 'center', color: brandDeep } }];
-  } else if (isThanks) {
-    blocks = [{ box: frames.body, text: { content: `${pageLabel(deck, item)} · ${deck.periodLabel} · 数据截至 ${deck.dataAsOf}`, pt: MIN_BODY_PT, align: 'center' } }];
-  } else {
-    const body = layoutBody(item, deck, frames, warnings, pageNo);
-    blocks = body.blocks;
-    if (blocks.length === 0) {
-      blocks = [{ box: frames.body, text: { content: item.title, pt: MIN_BODY_PT, align: 'center', shrink: true } }];
-      warnings.push(`第 ${pageNo} 页正文无可绘内容，已按「标题 + 章节式留白」承载`);
-    }
-    const textIssues = checkPageText({ title: item.title, bullets: item.bullets }, frames.body.w);
-    if (textIssues.length) warnings.push(`第 ${pageNo} 页文本提示：${textIssues.join('；')}`);
+/** 居中版式：封面/目录/章节页/致谢 */
+const CENTERED_LAYOUTS = new Set<string>(['cover', 'toc', 'section', 'thanks']);
+
+/** 目录页文本：本地生成（FR-5.2 不由 AI 写）；14pt 单行 10 条以内，超出折为「更多…」防顶出正文框 */
+function tocLines(outline: SummaryOutlineItem[]): string[] {
+  const sections = [...new Set(outline.filter((o) => o.layout !== 'cover' && o.layout !== 'toc').map((o) => o.section).filter(Boolean))];
+  const shown = sections.slice(0, 10);
+  const lines = shown.map((s, i) => `${String(i + 1).padStart(2, '0')}  ${s}`);
+  if (sections.length > shown.length) lines.push(`…另有 ${sections.length - shown.length} 个章节`);
+  return lines;
+}
+
+interface SpecialPageInput {
+  item: SummaryOutlineItem;
+  deck: SummaryDeckData;
+  frames: LayoutFrames;
+  outline: SummaryOutlineItem[];
+  sectionNo: number;
+  brandDeep: string;
+}
+
+/** 封面/目录/章节页/致谢页的固定文本块；普通版式返回 null 交给正文版式 */
+function specialPageBlocks(p: SpecialPageInput): Block[] | null {
+  const { item, deck, frames, outline, sectionNo, brandDeep } = p;
+  if (item.layout === 'cover') {
+    const names = deck.projects.map((x) => x.name).join('、') || '（未选择项目）';
+    const lines = [names, `${deck.periodLabel} · 数据截至 ${deck.dataAsOf}`];
+    return [{ box: frames.body, text: { content: lines.join('\n'), pt: 16, align: 'center' } }];
   }
-
-  let titleBox = frames.title;
-  let bodyBlocks = blocks;
-  const issues = pageViolations(frames.title, item.title, blocks, titlePt);
-  if (issues.length) {
-    degradedPages.push(pageNo);
-    warnings.push(`第 ${pageNo} 页版式越界（${issues[0]}），已降级为「标题 + 正文」安全版式`);
-    const safe = safeFrames();
-    titleBox = safe.title;
-    bodyBlocks = degradeSummary(item, blocks, frames.body);
+  if (item.layout === 'toc') {
+    return [{ box: frames.body, text: { content: tocLines(outline).join('\n'), pt: 14 } }];
   }
+  if (item.layout === 'section') {
+    return [{ box: frames.number!, text: { content: String(sectionNo).padStart(2, '0'), pt: 32, bold: true, align: 'center', color: brandDeep } }];
+  }
+  if (item.layout === 'thanks') {
+    return [{ box: frames.body, text: { content: `${pageLabel(deck, item)} · ${deck.periodLabel} · 数据截至 ${deck.dataAsOf}`, pt: MIN_BODY_PT, align: 'center' } }];
+  }
+  return null;
+}
 
-  const slide = pptx.addSlide();
-  for (const block of [{ box: titleBox, text: { content: item.title, pt: titlePt, bold: true, align: centered ? ('center' as const) : ('left' as const), color: brandDeep } }, ...bodyBlocks]) {
+/** 正文页：版式装配 + 无内容兜底 + 文本提示 */
+function bodyPageBlocks(item: SummaryOutlineItem, deck: SummaryDeckData, frames: LayoutFrames, warnings: string[], pageNo: number): Block[] {
+  const body = layoutBody(item, deck, frames, warnings, pageNo);
+  if (body.blocks.length === 0) {
+    warnings.push(`第 ${pageNo} 页正文无可绘内容，已按「标题 + 章节式留白」承载`);
+    return [{ box: frames.body, text: { content: item.title, pt: MIN_BODY_PT, align: 'center', shrink: true } }];
+  }
+  const textIssues = checkPageText({ title: item.title, bullets: item.bullets }, frames.body.w);
+  if (textIssues.length) warnings.push(`第 ${pageNo} 页文本提示：${textIssues.join('；')}`);
+  return body.blocks;
+}
+
+interface FitPageInput {
+  item: SummaryOutlineItem;
+  frames: LayoutFrames;
+  blocks: Block[];
+  titlePt: number;
+  pageNo: number;
+  warnings: string[];
+  degradedPages: number[];
+}
+
+/** 越界就整页降级为「标题 + 正文」安全版式并留痕 */
+function fitPageToFrame(p: FitPageInput): { titleBox: Box; bodyBlocks: Block[] } {
+  const issues = pageViolations(p.frames.title, p.item.title, p.blocks, p.titlePt);
+  if (!issues.length) return { titleBox: p.frames.title, bodyBlocks: p.blocks };
+  p.degradedPages.push(p.pageNo);
+  p.warnings.push(`第 ${p.pageNo} 页版式越界（${issues[0]}），已降级为「标题 + 正文」安全版式`);
+  const safe = safeFrames();
+  return { titleBox: safe.title, bodyBlocks: degradeSummary(p.item, p.blocks, p.frames.body) };
+}
+
+/** 逐块写入；单块失败只记告警，不连坐整页 */
+function drawPageBlocks(slide: any, blocks: Block[], warnings: string[], pageNo: number): void {
+  for (const block of blocks) {
     try {
       drawBlock(slide, block);
     } catch (e) {
       warnings.push(`第 ${pageNo} 页有元素写入失败（${e instanceof Error ? e.message : String(e)}），已跳过`);
     }
   }
-  slide.addText(summaryFooterOf(item, deck, pageLabel(deck, item), pageNo, total), {
+}
+
+interface AppendPageInput {
+  pptx: { addSlide(opts?: { masterName?: string }): any };
+  deck: SummaryDeckData;
+  item: SummaryOutlineItem;
+  outline: SummaryOutlineItem[];
+  /** 1 起页码与总页数 */
+  page: { no: number; total: number };
+  sectionNo: number;
+  warnings: string[];
+  degradedPages: number[];
+  /** T02960：本档主色（标题/章节号/页脚）——三档唯一进入产物的差异点 */
+  brandDeep: string;
+}
+
+/** 标题 + 数据块 + 页脚落成原生对象；越界整页降级并留痕 */
+function appendPage(p: AppendPageInput): void {
+  const { pptx, deck, item, outline, page, sectionNo, warnings, degradedPages, brandDeep } = p;
+  const family = layoutFamilyOf(item.layout);
+  const frames = framesFor(family, item.layout, item.layout === 'twoCol' ? TEXT_SPLIT : undefined);
+  const titlePt = titlePointSizeOf(item.layout);
+  const centered = CENTERED_LAYOUTS.has(item.layout);
+  const blocks = specialPageBlocks({ item, deck, frames, outline, sectionNo, brandDeep })
+    ?? bodyPageBlocks(item, deck, frames, warnings, page.no);
+  const { titleBox, bodyBlocks } = fitPageToFrame({ item, frames, blocks, titlePt, pageNo: page.no, warnings, degradedPages });
+
+  const slide = pptx.addSlide();
+  const titleBlock: Block = {
+    box: titleBox,
+    text: { content: item.title, pt: titlePt, bold: true, align: centered ? ('center' as const) : ('left' as const), color: brandDeep },
+  };
+  drawPageBlocks(slide, [titleBlock, ...bodyBlocks], warnings, page.no);
+  slide.addText(summaryFooterOf(item, deck, pageLabel(deck, item), page.no, page.total), {
     x: 0.5,
     y: SUMMARY_FOOTER_Y,
     w: 9,
@@ -685,7 +785,11 @@ export async function buildSummaryPpt(
     const item = outline[i];
     const pageNo = i + 1;
     if (item.layout === 'section') sectionNo += 1;
-    appendPage(pptx, deck, item, outline, pageNo, outline.length, sectionNo, warnings, degradedPages, preset.brandDeep);
+    appendPage({
+      pptx, deck, item, outline,
+      page: { no: pageNo, total: outline.length },
+      sectionNo, warnings, degradedPages, brandDeep: preset.brandDeep,
+    });
     opts.onPage?.(pageNo, item);
     await yieldToLoop();
   }

@@ -132,37 +132,45 @@ function expandBraces(pattern: string): string[] {
   return m[1].split(',').flatMap((part) => expandBraces(`${head}${part}${tail}`));
 }
 
+/** `*` / `**` 的展开：`**\/` 跨目录，`*` 不跨 `/`；返回替换片段与下一个待读位置 */
+function globStar(pattern: string, at: number): { token: string; next: number } {
+  let i = at + 1;
+  if (pattern[i] !== '*') return { token: '[^/]*', next: i };
+  i += 1;
+  if (pattern[i] !== '/') return { token: '.*', next: i };
+  return { token: '(?:.*/)?', next: i + 1 };
+}
+
+/** `[abc]` 字符类；未闭合时返回 null（按字面量处理） */
+function globClass(pattern: string, at: number): { token: string; next: number } | null {
+  const end = pattern.indexOf(']', at + 1);
+  if (end <= at + 1) return null;
+  return { token: `[${pattern.slice(at + 1, end).replaceAll('\\', '\\\\')}]`, next: end + 1 };
+}
+
 /** glob → 正则：支持 `**`、`*`、`?`、`{a,b}`、`[abc]`；`*` 不跨 `/`，`**` 跨目录 */
 function globBodyToRegExp(pattern: string): string {
   let out = '';
   let i = 0;
   while (i < pattern.length) {
     const ch = pattern[i];
-    i += 1;
     if (ch === '*') {
-      if (pattern[i] === '*') {
-        i += 1;
-        if (pattern[i] === '/') {
-          i += 1;
-          out += '(?:.*/)?';
-        } else {
-          out += '.*';
-        }
-      } else {
-        out += '[^/]*';
-      }
+      const star = globStar(pattern, i);
+      out += star.token;
+      i = star.next;
       continue;
     }
-    if (ch === '?') { out += '[^/]'; continue; }
+    if (ch === '?') { out += '[^/]'; i += 1; continue; }
     if (ch === '[') {
-      const end = pattern.indexOf(']', i);
-      if (end > i) {
-        out += `[${pattern.slice(i, end).replaceAll('\\', '\\\\')}]`;
-        i = end + 1;
+      const cls = globClass(pattern, i);
+      if (cls) {
+        out += cls.token;
+        i = cls.next;
         continue;
       }
     }
     out += escapeRegExp(ch);
+    i += 1;
   }
   return out;
 }
@@ -217,54 +225,77 @@ export function filterChanges(files: readonly GitFileChange[], rules: readonly E
   return { kept, excluded };
 }
 
-function parseRange(raw: unknown, index: number): GitRangeInput {
+const rangeStr = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+
+function parseRangeShape(raw: unknown, index: number): { r: Record<string, unknown>; shape: GitRangeShape } {
   if (!raw || typeof raw !== 'object') throw new LectureScopeError(`projects[${index}].range 必填`);
   const r = raw as Record<string, unknown>;
   const shape = r.shape;
   if (shape !== 'base-head' && shape !== 'first-last' && shape !== 'since' && shape !== 'commits') {
     throw new LectureScopeError(`projects[${index}].range.shape 只支持 base-head/first-last/since/commits`);
   }
-  const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
-  const range: GitRangeInput = { shape: shape as GitRangeShape };
-  // T03302：Git 树点选形态——选择本身就是一份提交清单，不接受 base/head/since，也不再叠提交人过滤
-  if (shape === 'commits') {
-    try {
-      range.commits = normalizeSelectedCommits(r.commits);
-    } catch (e) {
-      throw new LectureScopeError(`projects[${index}].range.commits 非法：${e instanceof Error ? e.message : String(e)}`);
-    }
-    if (str(r.authorFilter)) throw new LectureScopeError(`projects[${index}].range：Git 树点选已按提交为准，不要再叠加提交人过滤（请清空后重试）`);
-    return range;
-  }
+  return { r, shape };
+}
+
+function parseCommitsRange(r: Record<string, unknown>, index: number, range: GitRangeInput): GitRangeInput {
   try {
-    if (shape === 'base-head') {
-      if (!str(r.base)) throw new LectureScopeError(`projects[${index}].range.base 必填（分支/标签/SHA）`);
-      range.base = assertSingleRevision(str(r.base)!);
-      if (str(r.head)) range.head = assertSingleRevision(str(r.head)!);
-    } else if (shape === 'first-last') {
-      if (!str(r.base) || !str(r.head)) throw new LectureScopeError(`projects[${index}].range 首末 SHA 都要填`);
-      range.base = assertSingleRevision(str(r.base)!);
-      range.head = assertSingleRevision(str(r.head)!);
-    } else {
-      if (!str(r.since)) throw new LectureScopeError(`projects[${index}].range.since 必填`);
-      range.since = assertSafeSince(str(r.since)!);
-      // T03590：时间窗可选右端（前端日期范围控件的结束日）；不填时行为与单 since 完全一致
-      if (str(r.until)) range.until = assertSafeSince(str(r.until)!, '时间窗截止');
-      if (str(r.head)) range.head = assertSingleRevision(str(r.head)!);
-    }
+    range.commits = normalizeSelectedCommits(r.commits);
+  } catch (e) {
+    throw new LectureScopeError(`projects[${index}].range.commits 非法：${e instanceof Error ? e.message : String(e)}`);
+  }
+  // T03302：Git 树点选形态——选择本身就是一份提交清单，不接受 base/head/since，也不再叠提交人过滤
+  if (rangeStr(r.authorFilter)) throw new LectureScopeError(`projects[${index}].range：Git 树点选已按提交为准，不要再叠加提交人过滤（请清空后重试）`);
+  return range;
+}
+
+/** 区间两端/时间窗的取值与校验（三种 shape 各自的必填项不同） */
+function fillRangeWindow(r: Record<string, unknown>, index: number, shape: GitRangeShape, range: GitRangeInput): void {
+  if (shape === 'base-head') {
+    if (!rangeStr(r.base)) throw new LectureScopeError(`projects[${index}].range.base 必填（分支/标签/SHA）`);
+    range.base = assertSingleRevision(rangeStr(r.base)!);
+    if (rangeStr(r.head)) range.head = assertSingleRevision(rangeStr(r.head)!);
+    return;
+  }
+  if (shape === 'first-last') {
+    if (!rangeStr(r.base) || !rangeStr(r.head)) throw new LectureScopeError(`projects[${index}].range 首末 SHA 都要填`);
+    range.base = assertSingleRevision(rangeStr(r.base)!);
+    range.head = assertSingleRevision(rangeStr(r.head)!);
+    return;
+  }
+  if (!rangeStr(r.since)) throw new LectureScopeError(`projects[${index}].range.since 必填`);
+  range.since = assertSafeSince(rangeStr(r.since)!);
+  // T03590：时间窗可选右端（前端日期范围控件的结束日）；不填时行为与单 since 完全一致
+  if (rangeStr(r.until)) range.until = assertSafeSince(rangeStr(r.until)!, '时间窗截止');
+  if (rangeStr(r.head)) range.head = assertSingleRevision(rangeStr(r.head)!);
+}
+
+function applyRangeWindow(r: Record<string, unknown>, index: number, shape: GitRangeShape, range: GitRangeInput): void {
+  try {
+    fillRangeWindow(r, index, shape, range);
   } catch (e) {
     if (e instanceof LectureScopeError) throw e;
     throw new LectureScopeError(`projects[${index}].range 非法：${e instanceof Error ? e.message : String(e)}`);
   }
-  // T03303：提交人过滤与区间同属一张单的采集口径，校验放在这里——预检与流式生成共用，不会两处漂移
-  if (str(r.authorFilter)) {
-    try {
-      const parsed = parseAuthorFilter(str(r.authorFilter));
-      if (parsed) range.authorFilter = parsed.normalized;
-    } catch (e) {
-      throw new LectureScopeError(`projects[${index}].range.authorFilter 非法：${e instanceof Error ? e.message : String(e)}`);
-    }
+}
+
+// T03303：提交人过滤与区间同属一张单的采集口径，校验放在这里——预检与流式生成共用，不会两处漂移
+function applyAuthorFilter(r: Record<string, unknown>, index: number, range: GitRangeInput): void {
+  const raw = rangeStr(r.authorFilter);
+  if (!raw) return;
+  try {
+    const parsed = parseAuthorFilter(raw);
+    if (parsed) range.authorFilter = parsed.normalized;
+  } catch (e) {
+    throw new LectureScopeError(`projects[${index}].range.authorFilter 非法：${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+function parseRange(raw: unknown, index: number): GitRangeInput {
+  const { r, shape } = parseRangeShape(raw, index);
+  const range: GitRangeInput = { shape };
+  if (shape === 'commits') return parseCommitsRange(r, index, range);
+  applyRangeWindow(r, index, shape, range);
+  applyAuthorFilter(r, index, range);
   return range;
 }
 
@@ -417,6 +448,60 @@ function summarizeCollection(
   };
 }
 
+/** 粘贴 patch 不依赖工作空间与 git（FR-1.3 降级通道） */
+function scanPatchProject(patch: string, base: LectureProjectPreview, rules: readonly ExcludeRule[]): LectureCollectedProject {
+  const patchBase: LectureProjectPreview = { ...base, mode: 'patch' };
+  try {
+    const collected = collectPatchRange(patch, { diffLimit: Number.MAX_SAFE_INTEGER });
+    const { preview, files } = summarizeCollection(patchBase, collected, rules);
+    return { ...preview, files, commits: [] };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const kind = e instanceof GitCollectError ? `（${e.kind}）` : '';
+    return { ...patchBase, files: [], commits: [], blocked: `粘贴 patch 无法解析${kind}：${msg}` };
+  }
+}
+
+/** revision 要给锚点 blob 复核当坐标，必须是解析后的 commit SHA；解析失败退回符号名而不是整项目 blocked。
+ *  预检只回统计面、不暴露 revision，故不解析——省掉每项目一次 git rev-parse（本机约 0.5s/次） */
+async function resolveHeadRevision(workspacePath: string, head: string, resolve: boolean): Promise<string | undefined> {
+  if (!resolve) return undefined;
+  try {
+    return await resolveRevisionSha(workspacePath, head);
+  } catch {
+    return head; // 保留符号名，锚点复核按当前树尽力而为
+  }
+}
+
+async function scanGitProject(
+  item: LectureProjectScopeInput,
+  base: LectureProjectPreview,
+  workspacePath: string,
+  rules: readonly ExcludeRule[],
+  resolveRevision: boolean,
+): Promise<LectureCollectedProject> {
+  const decision = await resolveCollectionMode(workspacePath);
+  base.git = {
+    available: decision.probe.available,
+    isRepo: decision.probe.isRepo,
+    ...(decision.probe.kind ? { kind: decision.probe.kind } : {}),
+    ...(decision.probe.detail ? { reason: decision.probe.detail } : {}),
+  };
+  if (decision.mode === 'patch') {
+    return { ...base, mode: 'patch', files: [], commits: [], warnings: [decision.reason ?? 'Git 不可用，请改用「粘贴 patch」模式'] };
+  }
+  try {
+    // 先拿全量变更再过滤：若先套 2MB 预算，低优先级文件会被提前丢弃，排除命中数就失真
+    const collected = await collectGitRange(workspacePath, item.range!, { diffLimit: Number.MAX_SAFE_INTEGER });
+    const { preview, files } = summarizeCollection(base, collected, rules);
+    const revision = await resolveHeadRevision(workspacePath, collected.range.head, resolveRevision);
+    return { ...preview, files, commits: collected.commits, ...(revision ? { revision } : {}) };
+  } catch (e) {
+    if (e instanceof GitCollectError) return { ...base, files: [], commits: [], blocked: `${e.message}（${e.kind}）` };
+    throw e;
+  }
+}
+
 async function scanProject(
   item: LectureProjectScopeInput,
   project: ProjectRow | undefined,
@@ -428,45 +513,9 @@ async function scanProject(
   if (!project) return { ...base, files: [], commits: [], blocked: '项目不存在或已归档（请刷新项目列表）' };
 
   // 粘贴 patch 不依赖工作空间与 git，先于 git 探测处理（FR-1.3 降级通道）
-  if (item.patch !== undefined) {
-    const patchBase: LectureProjectPreview = { ...base, mode: 'patch' };
-    try {
-      const collected = collectPatchRange(item.patch, { diffLimit: Number.MAX_SAFE_INTEGER });
-      const { preview, files } = summarizeCollection(patchBase, collected, rules);
-      return { ...preview, files, commits: [] };
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      const kind = e instanceof GitCollectError ? `（${e.kind}）` : '';
-      return { ...patchBase, files: [], commits: [], blocked: `粘贴 patch 无法解析${kind}：${msg}` };
-    }
-  }
-
+  if (item.patch !== undefined) return scanPatchProject(item.patch, base, rules);
   if (!workspacePath) return { ...base, files: [], commits: [], blocked: '未配置工作空间路径（请在项目管理中补配后重试）' };
-
-  const decision = await resolveCollectionMode(workspacePath);
-  base.git = { available: decision.probe.available, isRepo: decision.probe.isRepo, ...(decision.probe.kind ? { kind: decision.probe.kind } : {}), ...(decision.probe.detail ? { reason: decision.probe.detail } : {}) };
-  if (decision.mode === 'patch') {
-    return { ...base, mode: 'patch', files: [], commits: [], warnings: [decision.reason ?? 'Git 不可用，请改用「粘贴 patch」模式'] };
-  }
-
-  try {
-    // 先拿全量变更再过滤：若先套 2MB 预算，低优先级文件会被提前丢弃，排除命中数就失真
-    const collected = await collectGitRange(workspacePath, item.range!, { diffLimit: Number.MAX_SAFE_INTEGER });
-    const { preview, files } = summarizeCollection(base, collected, rules);
-    // revision 要给锚点 blob 复核当坐标，必须是解析后的 commit SHA；解析失败退回符号名而不是整项目 blocked。
-    // 预检只回统计面、不暴露 revision，故不解析——省掉每项目一次 git rev-parse（本机约 0.5s/次）
-    let revision: string | undefined;
-    if (resolveRevision) {
-      revision = collected.range.head;
-      try {
-        revision = await resolveRevisionSha(workspacePath, collected.range.head);
-      } catch { /* 保留符号名，锚点复核按当前树尽力而为 */ }
-    }
-    return { ...preview, files, commits: collected.commits, ...(revision ? { revision } : {}) };
-  } catch (e) {
-    if (e instanceof GitCollectError) return { ...base, files: [], commits: [], blocked: `${e.message}（${e.kind}）` };
-    throw e;
-  }
+  return scanGitProject(item, base, workspacePath, rules, resolveRevision);
 }
 
 const toPreview = (p: LectureCollectedProject): LectureProjectPreview => ({

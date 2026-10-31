@@ -90,7 +90,8 @@ export function useTaskListWindow(count: number, hasMore: boolean, onReachEnd?: 
   const [nonce, setNonce] = useState(0);
   const renderedRef = useRef<TaskWindow>({ start: -1, end: -1, padTop: -1, padBottom: -1 });
   const rafRef = useRef<number | null>(null);
-  const pinTimerRef = useRef<number | null>(null);
+  /** 定位窗口期定时器（globalThis.setTimeout 的返回类型随运行环境而定，故用 ReturnType 而非写死 number） */
+  const pinTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoLoadedAtCountRef = useRef<number>(-1);
   /** 行高累计观测（见 refreshGeometry）；条数回落（换项目/换筛选）时清零重测 */
   const rowAccRef = useRef<{ sum: number; n: number }>({ sum: 0, n: 0 });
@@ -212,7 +213,7 @@ export function useTaskListWindow(count: number, hasMore: boolean, onReachEnd?: 
     setNonce((n) => n + 1);
     if (pinTimerRef.current != null) globalThis.clearTimeout(pinTimerRef.current);
     // 定位窗口期过后交回普通滚动窗口，否则用户往上滚会一直是空的
-    pinTimerRef.current = window.setTimeout(() => setPin(null), 1500);
+    pinTimerRef.current = globalThis.setTimeout(() => setPin(null), 1500);
   }, [count]);
 
   useEffect(() => () => {

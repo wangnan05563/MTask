@@ -160,6 +160,107 @@ const optionString = (v: unknown, name: string): string | undefined => {
   return text || undefined;
 };
 
+/** 八段 key 判定（字符串入参 → 强类型 key 的唯一收口） */
+const isSectionKey = (v: string): v is LectureSectionKey => (LECTURE_SECTION_KEYS as readonly string[]).includes(v);
+
+/** 回传大纲：只覆盖「可讲解项目」，不能拿模型侧覆盖度规则判废服务端自己产出的大纲 */
+function parseOutlineOption(value: unknown, projects: readonly LectureProjectScopeInput[]): LectureOutline | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new LectureStreamError('outline 必须是 JSON 对象');
+  try {
+    // 项目列表是用户选中的全量范围（含被阻塞/无变更的）：覆盖度规则是给模型的，
+    // 拿它判废会让「只出大纲 → 按大纲生成正文」必然 400
+    return parseLectureOutline(value, projects.map((p) => p.projectId), { requireFullCoverage: false });
+  } catch (e) {
+    // 用户回传的修订稿不合规是入参问题，不能让一次编辑错误变成 500
+    throw new LectureStreamError(`outline 校验失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+function parseContextBudgetOption(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return resolveLectureContextBudget(value);
+  } catch (e) {
+    throw new LectureStreamError(e instanceof Error ? e.message : String(e));
+  }
+}
+
+function parseMaxTokensOption(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 256 || n > 32_768) throw new LectureStreamError('maxTokens 必须是 256~32768 的整数');
+  return n;
+}
+
+function parseOutlineOnlyOption(value: unknown): boolean {
+  if (value !== undefined && typeof value !== 'boolean') throw new LectureStreamError('outlineOnly 必须是布尔值');
+  return value === true;
+}
+
+function parseResumeFromOption(value: unknown): string | undefined {
+  const raw = optionString(value, 'resumeFrom');
+  if (raw && !isSectionKey(raw)) {
+    throw new LectureStreamError(`resumeFrom 必须是八段 key 之一（${LECTURE_SECTION_KEYS.join('/')}）`);
+  }
+  return raw;
+}
+
+function parseSectionKeysOption(value: unknown): LectureSectionKey[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) throw new LectureStreamError('sectionKeys 必须是非空数组');
+  const keys = value.map((v) => {
+    if (typeof v !== 'string' || !isSectionKey(v)) throw new LectureStreamError(`sectionKeys 含非八段 key：${String(v)}`);
+    return v;
+  });
+  return [...new Set(keys)];
+}
+
+function parseJobOptions(b: Record<string, unknown>): { jobId?: string; retryFailed: boolean } {
+  // T03245（AI-103②③）：台账重试只认 jobId——按留档入参重建，不再叠选节/续作语义
+  const jobId = optionString(b.jobId, 'jobId');
+  const retryFailed = b.retryFailed === true;
+  if (b.retryFailed !== undefined && typeof b.retryFailed !== 'boolean') throw new LectureStreamError('retryFailed 必须是布尔值');
+  if (retryFailed && !jobId) throw new LectureStreamError('重试失败段需要 jobId（按任务台账补齐未完成段）');
+  return { jobId, retryFailed };
+}
+
+interface ParsedStreamOptions {
+  toolId: string;
+  projects: LectureProjectScopeInput[];
+  excludes: string[];
+  style?: string;
+  extraNote?: string;
+  title?: string;
+  outline?: LectureOutline;
+  outlineOnly: boolean;
+  resumeFrom?: string;
+  sectionKeys?: LectureSectionKey[];
+  jobId?: string;
+  retryFailed: boolean;
+  contextBudget?: number;
+  maxTokens?: number;
+}
+
+function buildStreamRequest(o: ParsedStreamOptions): LectureStreamRequest {
+  return {
+    toolId: o.toolId,
+    projects: o.projects,
+    excludes: o.excludes,
+    ...(o.style ? { style: o.style } : {}),
+    ...(o.extraNote ? { extraNote: o.extraNote } : {}),
+    ...(o.title ? { title: o.title } : {}),
+    ...(o.outline ? { outline: o.outline } : {}),
+    ...(o.outlineOnly ? { outlineOnly: true } : {}),
+    ...(o.resumeFrom ? { resumeFrom: o.resumeFrom as LectureSectionKey } : {}),
+    ...(o.sectionKeys ? { sectionKeys: o.sectionKeys } : {}),
+    ...(o.jobId ? { jobId: o.jobId } : {}),
+    ...(o.retryFailed ? { retryFailed: true } : {}),
+    ...(o.contextBudget ? { contextBudget: o.contextBudget } : {}),
+    ...(o.maxTokens ? { maxTokens: o.maxTokens } : {}),
+  };
+}
+
 /** SSE 之前的同步校验：参数错直接结构化 400，不让前端在流里猜「是参数还是模型」 */
 export function validateLectureStreamBody(body: unknown): LectureStreamRequest {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new LectureStreamError('请求体必须是 JSON 对象');
@@ -170,68 +271,23 @@ export function validateLectureStreamBody(body: unknown): LectureStreamRequest {
   const style = optionString(b.style, 'style');
   const extraNote = optionString(b.extraNote, 'extraNote');
   const title = optionString(b.title, 'title');
-
-  let outline: LectureOutline | undefined;
-  if (b.outline !== undefined) {
-    if (!b.outline || typeof b.outline !== 'object' || Array.isArray(b.outline)) throw new LectureStreamError('outline 必须是 JSON 对象');
-    try {
-      // 回传的大纲只覆盖「可讲解项目」，而这里的项目列表是用户选中的全量范围（含被阻塞/无变更的）：
-      // 覆盖度规则是给模型的，不能拿来判废服务端自己产出的大纲，否则「只出大纲 → 按大纲生成正文」必然 400
-      outline = parseLectureOutline(b.outline, projects.map((p) => p.projectId), { requireFullCoverage: false });
-    } catch (e) {
-      // 用户回传的修订稿不合规是入参问题，不能让一次编辑错误变成 500
-      throw new LectureStreamError(`outline 校验失败：${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-
-  let contextBudget: number | undefined;
-  if (b.contextBudget !== undefined) {
-    try {
-      contextBudget = resolveLectureContextBudget(b.contextBudget);
-    } catch (e) {
-      throw new LectureStreamError(e instanceof Error ? e.message : String(e));
-    }
-  }
-
-  let maxTokens: number | undefined;
-  if (b.maxTokens !== undefined) {
-    const n = Number(b.maxTokens);
-    if (!Number.isInteger(n) || n < 256 || n > 32_768) throw new LectureStreamError('maxTokens 必须是 256~32768 的整数');
-    maxTokens = n;
-  }
-
-  const outlineOnly = b.outlineOnly === true;
-  if (b.outlineOnly !== undefined && typeof b.outlineOnly !== 'boolean') throw new LectureStreamError('outlineOnly 必须是布尔值');
-
+  const outline = parseOutlineOption(b.outline, projects);
+  const contextBudget = parseContextBudgetOption(b.contextBudget);
+  const maxTokens = parseMaxTokensOption(b.maxTokens);
+  const outlineOnly = parseOutlineOnlyOption(b.outlineOnly);
   // 「从第 n 节继续」/「单节重试」只决定跑哪几节，不改采集与上下文口径
-  const rawResume = optionString(b.resumeFrom, 'resumeFrom');
-  if (rawResume && !(LECTURE_SECTION_KEYS as string[]).includes(rawResume)) {
-    throw new LectureStreamError(`resumeFrom 必须是八段 key 之一（${LECTURE_SECTION_KEYS.join('/')}）`);
-  }
-  let sectionKeys: LectureSectionKey[] | undefined;
-  if (b.sectionKeys !== undefined) {
-    if (!Array.isArray(b.sectionKeys) || b.sectionKeys.length === 0) throw new LectureStreamError('sectionKeys 必须是非空数组');
-    const keys = b.sectionKeys.map((v) => {
-      if (typeof v !== 'string' || !(LECTURE_SECTION_KEYS as string[]).includes(v)) {
-        throw new LectureStreamError(`sectionKeys 含非八段 key：${String(v)}`);
-      }
-      return v as LectureSectionKey;
-    });
-    sectionKeys = [...new Set(keys)];
-  }
-  if (rawResume && sectionKeys) throw new LectureStreamError('resumeFrom 与 sectionKeys 不能同时传');
-
-  // T03245（AI-103②③）：台账重试只认 jobId——按留档入参重建，不再叠选节/续作语义
-  const jobId = optionString(b.jobId, 'jobId');
-  const retryFailed = b.retryFailed === true;
-  if (b.retryFailed !== undefined && typeof b.retryFailed !== 'boolean') throw new LectureStreamError('retryFailed 必须是布尔值');
-  if (retryFailed && !jobId) throw new LectureStreamError('重试失败段需要 jobId（按任务台账补齐未完成段）');
+  const resumeFrom = parseResumeFromOption(b.resumeFrom);
+  const sectionKeys = parseSectionKeysOption(b.sectionKeys);
+  if (resumeFrom && sectionKeys) throw new LectureStreamError('resumeFrom 与 sectionKeys 不能同时传');
+  const { jobId, retryFailed } = parseJobOptions(b);
   // T03246（AI-103④）：jobId 可与 resumeFrom/sectionKeys 组合——只借用「已完成段复用」，跑哪几节仍由续作/点名单决定。
   // retryFailed 已是「只补未完成段」的完整语义，再叠选节会让「补哪些段」出现两套口径。
-  if (retryFailed && (rawResume || sectionKeys)) throw new LectureStreamError('retryFailed 与 resumeFrom/sectionKeys 不能同时传');
+  if (retryFailed && (resumeFrom || sectionKeys)) throw new LectureStreamError('retryFailed 与 resumeFrom/sectionKeys 不能同时传');
   if (retryFailed && outlineOnly) throw new LectureStreamError('仅大纲模式没有可重试的段落');
-
-  return { toolId, projects, excludes, ...(style ? { style } : {}), ...(extraNote ? { extraNote } : {}), ...(title ? { title } : {}), ...(outline ? { outline } : {}), ...(outlineOnly ? { outlineOnly } : {}), ...(rawResume ? { resumeFrom: rawResume as LectureSectionKey } : {}), ...(sectionKeys ? { sectionKeys } : {}), ...(jobId ? { jobId } : {}), ...(retryFailed ? { retryFailed } : {}), ...(contextBudget ? { contextBudget } : {}), ...(maxTokens ? { maxTokens } : {}) };
+  return buildStreamRequest({
+    toolId, projects, excludes, style, extraNote, title, outline, outlineOnly,
+    resumeFrom, sectionKeys, jobId, retryFailed, contextBudget, maxTokens,
+  });
 }
 
 /** raw(30mb) 的 Buffer 或全局 express.json 的 object 都接受（与 prd-generate-stream 同构） */
@@ -443,18 +499,343 @@ export function hydrateLectureRetryBody(body: unknown): unknown {
   return { ...saved.request, ...raw, jobId, retryFailed: true };
 }
 
-export async function runLectureStream(body: unknown, hooks: LectureStreamHooks = {}): Promise<LectureStreamResult> {
-  // T03245（AI-103②③）：台账重试只带 jobId——按留档入参重建整份请求（项目/区间/排除/大纲），
-  // 用户刷新后不必重新选范围；入参里有新值则以新值为准。
-  const request = validateLectureStreamBody(hydrateLectureRetryBody(body));
-  const startedAtMs = Date.now();
-  const warnings: string[] = [];
-  const signal = hooks.signal;
-  const stats: LectureStreamStats = {
-    projects: request.projects.length, readyProjects: 0, files: 0, groups: 0, chars: 0,
-    contextBudget: 0, sections: 0, segments: 0, calls: 0, anchors: 0, anchorIssues: 0,
-  };
+type SectionMeta = (typeof LECTURE_SECTIONS)[number];
 
+const segKeyOf = (unit: SectionUnit): string => `${unit.projectId}|${unit.module}`;
+
+/** 由段结果拼成整节（正文按段拼接；部分失败在成稿里留痕，不假装整节完成） */
+function composeSectionResult(meta: SectionMeta, segments: LectureSegmentResult[]): LectureSectionResult {
+  const failed = segments.filter((s) => !s.ok);
+  const kept = segments.filter((s) => s.ok && s.text.trim());
+  const gapDetail = failed.map((s) => `${s.projectName}/${s.module}（${s.error ?? '生成失败'}）`).join('、');
+  const text = kept
+    .map((s) => {
+      const headingBlock = s.heading ? `${s.heading}\n\n` : '';
+      return `${headingBlock}${s.text.trim()}`;
+    })
+    .join('\n\n')
+    // 部分失败要在成稿里留痕：只把成功段拼进去的话，读者无法分辨「这段没变更」与「这段生成失败了」
+    + (failed.length && kept.length ? `\n\n> ⚠️ 本节部分内容未生成：${gapDetail}` : '');
+  return {
+    key: meta.key,
+    label: meta.label,
+    ok: failed.length === 0 && text.length > 0,
+    text,
+    ...(failed.length ? { error: failed.map((s) => `${s.projectName}/${s.module}：${s.error ?? '生成失败'}`).join('；') } : {}),
+    segments,
+  };
+}
+
+function countSegment(stats: LectureStreamStats, segment: LectureSegmentResult): void {
+  stats.segments += 1;
+  stats.anchors += segment.anchors.length;
+  stats.anchorIssues += segment.anchorIssues.length;
+}
+
+function reusedSegment(unit: SectionUnit, prior: GenSegmentView): LectureSegmentResult {
+  return {
+    projectId: unit.projectId, projectName: unit.projectName, module: unit.module, heading: unit.heading,
+    ok: true, text: prior.text, anchors: prior.anchors as LectureAnchor[], anchorIssues: prior.anchorIssues as AnchorIssue[],
+  };
+}
+
+function emitReusedSegment(hooks: LectureStreamHooks, meta: SectionMeta, index: number, unit: SectionUnit, segment: LectureSegmentResult): void {
+  hooks.onStage?.({
+    phase: sectionPhase(index),
+    msg: `复用已完成：${unit.projectName} / ${unit.module}`,
+    progress: sectionStartProgress(index),
+    data: {
+      type: 'segment_done', section: meta.key, projectId: unit.projectId, projectName: unit.projectName,
+      module: unit.module, ok: true, reused: true, anchors: segment.anchors.length, anchorIssues: segment.anchorIssues.length,
+    },
+  });
+}
+
+function emitSegmentDone(hooks: LectureStreamHooks, meta: SectionMeta, index: number, unit: SectionUnit, segment: LectureSegmentResult): void {
+  hooks.onStage?.({
+    phase: sectionPhase(index),
+    msg: `${segment.ok ? '完成' : '失败'}：${unit.projectName} / ${unit.module}`,
+    progress: sectionStartProgress(index),
+    data: {
+      type: 'segment_done', section: meta.key, projectId: unit.projectId, projectName: unit.projectName,
+      module: unit.module, ok: segment.ok, ...(segment.error ? { error: segment.error } : {}),
+      anchors: segment.anchors.length, anchorIssues: segment.anchorIssues.length,
+    },
+  });
+}
+
+/** 单段调用结果 → 段结果（模型未回组时如实标失败，不伪造成成功空段） */
+function segmentFromRun(unit: SectionUnit, run: Awaited<ReturnType<typeof generateLectureSection>>): LectureSegmentResult {
+  const group = run.groups[0];
+  if (!group) {
+    return {
+      projectId: unit.projectId, projectName: unit.projectName, module: unit.module, heading: unit.heading,
+      ok: false, text: '', error: run.aborted ? '已中止' : '未返回结果', anchors: [], anchorIssues: [],
+    };
+  }
+  return {
+    projectId: unit.projectId, projectName: unit.projectName, module: unit.module, heading: unit.heading,
+    ok: group.ok, text: group.text, ...(group.error ? { error: group.error } : {}),
+    anchors: group.anchors, anchorIssues: group.anchorIssues,
+  };
+}
+
+interface SegmentCtx {
+  request: LectureStreamRequest;
+  hooks: LectureStreamHooks;
+  outline: LectureOutline;
+  section: LectureOutlineSection;
+  meta: SectionMeta;
+  index: number;
+  jobId?: string;
+  stats: LectureStreamStats;
+}
+
+/** 单段生成：发 AI 调用 → 台账按段收口（失败段只记错误，其他段正文不受影响） */
+async function generateOneSegment(ctx: SegmentCtx, unit: SectionUnit): Promise<{ segment: LectureSegmentResult; aborted: boolean }> {
+  const segKey = segKeyOf(unit);
+  if (ctx.jobId) beginSegment(ctx.jobId, ctx.meta.key, segKey);
+  ctx.stats.calls += 1;
+  const run = await generateLectureSection({
+    toolId: ctx.request.toolId,
+    section: ctx.section,
+    outline: ctx.outline,
+    groups: [unit],
+    commits: unit.commits,
+    ...(ctx.request.style ? { style: ctx.request.style } : {}),
+    ...(ctx.request.extraNote ? { extraNote: ctx.request.extraNote } : {}),
+  }, {
+    ...(ctx.hooks.signal ? { signal: ctx.hooks.signal } : {}),
+    onDelta: (text) => ctx.hooks.onChunk?.({
+      section: ctx.meta.key, projectId: unit.projectId, projectName: unit.projectName, module: unit.module, text,
+    }),
+  });
+  const segment = segmentFromRun(unit, run);
+  if (ctx.jobId) {
+    finishSegment(ctx.jobId, {
+      sectionKey: ctx.meta.key, segmentKey: segKey, ok: segment.ok, text: segment.text,
+      ...(segment.error ? { error: segment.error } : {}),
+      anchors: segment.anchors, anchorIssues: segment.anchorIssues,
+    });
+  }
+  return { segment, aborted: run.aborted };
+}
+
+interface SectionCtx {
+  request: LectureStreamRequest;
+  hooks: LectureStreamHooks;
+  outline: LectureOutline;
+  reused: Map<string, GenSegmentView>;
+  jobId?: string;
+  stats: LectureStreamStats;
+  unitsFor: (key: LectureSectionKey) => SectionUnit[];
+}
+
+/** 跑一节：逐段复用或生成，收口成整节结果并上报 section_done */
+async function runSectionBody(ctx: SectionCtx, meta: SectionMeta, index: number): Promise<{ section: LectureSectionResult; aborted: boolean }> {
+  const section: LectureOutlineSection = ctx.outline.sections.find((s) => s.key === meta.key) ?? {
+    key: meta.key, title: lectureSectionLabel(meta.key), bullets: [],
+  };
+  const units = ctx.unitsFor(meta.key);
+  ctx.hooks.onStage?.({
+    phase: sectionPhase(index),
+    msg: `装配第 ${index + 1}/${LECTURE_SECTIONS.length} 节「${meta.label}」（${units.length} 段）`,
+    progress: sectionStartProgress(index),
+    data: { type: 'section_start', section: meta.key, label: meta.label, index, total: LECTURE_SECTIONS.length, units: units.length },
+  });
+  const segCtx: SegmentCtx = {
+    request: ctx.request, hooks: ctx.hooks, outline: ctx.outline, section, meta, index, jobId: ctx.jobId, stats: ctx.stats,
+  };
+  const segments: LectureSegmentResult[] = [];
+  let aborted = false;
+  for (const unit of units) {
+    if (ctx.hooks.signal?.aborted) { aborted = true; break; }
+    // T03245（AI-103②）：已完成段直接复用正文——刷新/重试不再为它调用模型
+    const prior = ctx.reused.get(`${meta.key}\u0000${segKeyOf(unit)}`);
+    const outcome = prior
+      ? { segment: reusedSegment(unit, prior), aborted: false }
+      : await generateOneSegment(segCtx, unit);
+    segments.push(outcome.segment);
+    countSegment(ctx.stats, outcome.segment);
+    if (prior) emitReusedSegment(ctx.hooks, meta, index, unit, outcome.segment);
+    else emitSegmentDone(ctx.hooks, meta, index, unit, outcome.segment);
+    if (outcome.aborted) { aborted = true; break; }
+  }
+  const result = composeSectionResult(meta, segments);
+  const failed = segments.filter((s) => !s.ok).length;
+  const sectionStatus = failed ? `部分失败（${failed}/${segments.length}）` : '完成';
+  ctx.hooks.onStage?.({
+    phase: sectionPhase(index),
+    msg: `第 ${index + 1}/${LECTURE_SECTIONS.length} 节「${meta.label}」${sectionStatus}`,
+    progress: sectionDoneProgress(index),
+    data: { type: 'section_done', section: meta.key, ok: failed === 0 && result.text.length > 0, segments: segments.length, failed },
+  });
+  return { section: result, aborted };
+}
+
+interface SectionsRun {
+  sections: LectureSectionResult[];
+  aborted: boolean;
+}
+
+/** 跑节的三口径：续作位次 / 选节 / 台账重试，叠加决定这一节要不要跑 */
+interface SectionFilter {
+  resumeIndex: number;
+  only: Set<LectureSectionKey> | null;
+  retryOnly: Set<LectureSectionKey> | null;
+}
+
+function shouldRunSection(index: number, key: LectureSectionKey, filter: SectionFilter): boolean {
+  if (index < filter.resumeIndex) return false;
+  if (filter.only && !filter.only.has(key)) return false;
+  // T03245（AI-103②）：台账重试只跑「还有未完成段」的节，整节已完成的直接跳过
+  if (filter.retryOnly && !filter.retryOnly.has(key)) return false;
+  return true;
+}
+
+/** 按续作/选节/台账重试的口径跑完需要跑的节；中止即停在当前节（已生成结果保留给前端） */
+async function runAllSections(
+  ctx: SectionCtx,
+  resumeIndex: number,
+  only: Set<LectureSectionKey> | null,
+  retryOnly: Set<LectureSectionKey> | null,
+): Promise<SectionsRun> {
+  const filter: SectionFilter = { resumeIndex, only, retryOnly };
+  const sections: LectureSectionResult[] = [];
+  try {
+    for (const [index, meta] of LECTURE_SECTIONS.entries()) {
+      if (!shouldRunSection(index, meta.key, filter)) continue;
+      if (ctx.hooks.signal?.aborted) return { sections, aborted: true };
+      const outcome = await runSectionBody(ctx, meta, index);
+      sections.push(outcome.section);
+      if (outcome.aborted) return { sections, aborted: true };
+    }
+  } catch (e) {
+    // 致命失败也要给台账留终态，否则恢复入口会永远显示「进行中」
+    if (ctx.jobId) finalizeJob(ctx.jobId, 'error');
+    throw e;
+  }
+  return { sections, aborted: false };
+}
+
+interface JournalSetup {
+  jobId?: string;
+  retryOnly: Set<LectureSectionKey> | null;
+  reused: Map<string, GenSegmentView>;
+}
+
+/** T03245（AI-103①②③）：全量轮新建台账任务并声明八节完整计划；重试轮挂既有任务 */
+function setupJournal(
+  request: LectureStreamRequest,
+  title: string,
+  fullRun: boolean,
+  unitsFor: (key: LectureSectionKey) => SectionUnit[],
+  hooks: LectureStreamHooks,
+): JournalSetup {
+  let jobId = request.jobId;
+  if (!jobId && fullRun) {
+    jobId = openJob({ cardKey: LECTURE_CARD_KEY, toolId: request.toolId, title, request });
+  }
+  const reused = jobId ? reusableSegments(jobId) : new Map<string, GenSegmentView>();
+  let retryOnly: Set<LectureSectionKey> | null = null;
+  if (!jobId) return { jobId, retryOnly, reused };
+  const plan: GenSegmentPlan[] = [];
+  let order = 0;
+  for (const meta of LECTURE_SECTIONS) {
+    for (const unit of unitsFor(meta.key)) {
+      plan.push({
+        sectionKey: meta.key,
+        // 段内稳定标识：同一项目同一模块跨请求一致，重试才能对上已生成正文
+        segmentKey: segKeyOf(unit),
+        label: `${unit.projectName} / ${unit.module}`,
+        projectId: unit.projectId,
+        projectName: unit.projectName,
+        module: unit.module,
+        heading: unit.heading,
+        orderIndex: order,
+      });
+      order += 1;
+    }
+  }
+  declareSegments(jobId, plan, { markStale: request.retryFailed === true });
+  const reuseInPlan = plan.filter((p) => reused.has(`${p.sectionKey}\u0000${p.segmentKey}`)).length;
+  if (request.retryFailed) {
+    retryOnly = new Set(LECTURE_SECTION_KEYS.filter((key) => plan.some((p) => p.sectionKey === key && !reused.has(`${key}\u0000${p.segmentKey}`))));
+  }
+  hooks.onStage?.({
+    phase: 'journal',
+    msg: request.retryFailed
+      ? `按台账补齐未完成段：${plan.length - reuseInPlan} 段待生成（已完成 ${reuseInPlan} 段直接复用，不再调用模型）`
+      : `任务已落库（${plan.length} 段）：单段失败只重试该段，刷新后可继续`,
+    progress: sectionStartProgress(0),
+    data: { type: 'job', jobId, segmentsTotal: plan.length, segmentsDone: reuseInPlan, retry: request.retryFailed === true },
+  });
+  return { jobId, retryOnly, reused };
+}
+
+function emitResumeStage(resumeIndex: number, only: Set<LectureSectionKey> | null, hooks: LectureStreamHooks): void {
+  if (!(resumeIndex > 0 || only)) return;
+  hooks.onStage?.({
+    phase: 'resume',
+    progress: sectionStartProgress(resumeIndex),
+    msg: only
+      ? `单节重试：${[...only].map((k) => lectureSectionLabel(k)).join('、')}`
+      : `从第 ${resumeIndex + 1} 节「${lectureSectionLabel(LECTURE_SECTION_KEYS[resumeIndex])}」继续（前 ${resumeIndex} 节沿用已生成正文）`,
+    data: { type: 'resume', from: resumeIndex, total: LECTURE_SECTIONS.length, ...(only ? { sections: [...only] } : {}) },
+  });
+}
+
+/** T03245（AI-103③）：带台账的续作轮一律交回整份成稿（刷新后前端没有上一轮结果可拼） */
+function rebuildSectionsFromJournal(jobId: string, sections: LectureSectionResult[], stats: LectureStreamStats): void {
+  const saved = jobRequest(jobId);
+  if (!saved) return;
+  const rebuilt = sectionsFromJournal(saved.view);
+  if (rebuilt.length === 0) return;
+  sections.splice(0, sections.length, ...rebuilt);
+  stats.sections = sections.length;
+  stats.segments = sections.reduce((n, s) => n + s.segments.length, 0);
+  stats.anchors = sections.reduce((n, s) => n + s.segments.reduce((m, g) => m + g.anchors.length, 0), 0);
+  stats.anchorIssues = sections.reduce((n, s) => n + s.segments.reduce((m, g) => m + g.anchorIssues.length, 0), 0);
+}
+
+/** 任务终态落库——done/partial/aborted，刷新恢复入口据此判断还要不要补段 */
+function finalizeLectureJob(jobId: string, aborted: boolean): void {
+  const saved = jobRequest(jobId);
+  const failedSegments = saved ? saved.view.progress.segmentsFailed : 0;
+  const missingSegments = saved ? saved.view.progress.segmentsTotal - saved.view.progress.segmentsDone : 0;
+  const journalStatus = failedSegments > 0 || missingSegments > 0 ? 'partial' : 'done';
+  finalizeJob(jobId, aborted ? 'aborted' : journalStatus);
+}
+
+interface CollectedScope {
+  usable: LectureCollectedProject[];
+  context: LectureContextResult;
+  estimate: LecturePreflightEstimate;
+}
+
+function buildContextOrThrow(
+  contextProjects: Array<{ projectId: string; projectName: string; files: GitFileChange[] }>,
+  request: LectureStreamRequest,
+  symbols: ReturnType<typeof expandLectureSymbols>,
+): LectureContextResult {
+  try {
+    return buildLectureContext(contextProjects, {
+      ...(request.contextBudget ? { budget: request.contextBudget } : {}),
+      symbolHints: symbols.hints,
+    });
+  } catch (e) {
+    throw new LectureStreamError(e instanceof Error ? e.message : String(e));
+  }
+}
+
+/** 采集 + 预检 + 上下文装配：范围不可用时直接结构化报错，统计口径只在这一处写入 */
+async function collectAndPrepare(
+  body: unknown,
+  request: LectureStreamRequest,
+  warnings: string[],
+  stats: LectureStreamStats,
+  hooks: LectureStreamHooks,
+): Promise<CollectedScope> {
   hooks.onStage?.({ phase: 'collecting', msg: `采集 ${request.projects.length} 个项目的变更…`, progress: 3 });
   const collection = await collectLectureScope(body);
   const usable = collection.projects.filter((p) => !p.blocked && p.stats.files > 0);
@@ -476,12 +857,7 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
   const contextProjects = usable.map((p) => ({ projectId: p.projectId, projectName: p.projectName, files: p.files }));
   const symbols = expandLectureSymbols(contextProjects);
   warnings.push(...symbols.warnings);
-  let context: LectureContextResult;
-  try {
-    context = buildLectureContext(contextProjects, { ...(request.contextBudget ? { budget: request.contextBudget } : {}), symbolHints: symbols.hints });
-  } catch (e) {
-    throw new LectureStreamError(e instanceof Error ? e.message : String(e));
-  }
+  const context = buildContextOrThrow(contextProjects, request, symbols);
   warnings.push(...context.warnings);
   stats.readyProjects = usable.length;
   stats.files = context.totals.files;
@@ -489,66 +865,139 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
   stats.chars = context.totals.chars;
   stats.contextBudget = context.totals.budget;
   // T03174（AI-102①）：结果随附本次运行所依据的三项预估——与预检面板同源，避免「面板一个数、结果另一个数」
-  const estimate = estimateLectureRun(collection.preview);
+  return { usable, context, estimate: estimateLectureRun(collection.preview) };
+}
 
-  const projectRefs = usable.map((p) => ({ id: p.projectId, name: p.projectName }));
-  const allCommits = usable.flatMap(commitsWithProject);
-  let outline: LectureOutline | undefined;
+interface OutlineStepArgs {
+  request: LectureStreamRequest;
+  context: LectureContextResult;
+  usable: readonly LectureCollectedProject[];
+  warnings: string[];
+  stats: LectureStreamStats;
+  hooks: LectureStreamHooks;
+}
 
+interface OutlineStep {
+  outline?: LectureOutline;
+  /** 中止时直接交回的轮次结果（前端拿它接着跑） */
+  aborted?: LectureStreamResult;
+}
+
+/** 大纲：用户已确认则沿用；否则一次 askJson（中止视为可恢复的局部结果，生成失败才抛） */
+async function resolveOutlineStep(args: OutlineStepArgs): Promise<OutlineStep> {
+  const { request, context, usable, warnings, stats, hooks } = args;
   if (request.outline) {
-    outline = request.outline;
+    const outline = request.outline;
     hooks.onStage?.({
       phase: 'outline', msg: '沿用已确认的大纲，跳过 AI 大纲生成', progress: 20,
       data: { type: 'outline_ready', outline, reused: true },
     });
-  } else {
-    const outlineRun = await outlineLecture(request.toolId, {
-      projects: projectRefs,
-      manifestText: context.manifestText,
-      groups: context.groups.map((g) => ({ projectName: g.projectName, module: g.module, files: g.files.length })),
-      commits: allCommits,
-      ...(request.style ? { style: request.style } : {}),
-      ...(request.extraNote ? { extraNote: request.extraNote } : {}),
-    }, {
-      ...(signal ? { signal } : {}),
-      ...(request.maxTokens ? { maxTokens: request.maxTokens } : {}),
-      onEvent: (event) => hooks.onStage?.({
-        phase: 'outline', msg: `大纲已就绪：${event.outline.sections.length} 节 / ${event.outline.discussion_questions.length} 个讨论问题（可修订后二次提交）`, progress: 20,
-        data: { type: 'outline_ready', outline: event.outline },
-      }),
-    });
-    stats.calls += 1;
-    if (!outlineRun.ok) {
-      if (signal?.aborted) return emptyResult(request.title ?? '代码评审会议讲稿', undefined, warnings, stats);
-      throw new LectureStreamError(`大纲生成失败：${outlineRun.error ?? '未知错误'}`);
-    }
-    outline = outlineRun.outline!;
+    return { outline };
   }
-  if (signal?.aborted) return emptyResult(request.title ?? '代码评审会议讲稿', outline, warnings, stats);
+  const signal = hooks.signal;
+  const projectRefs = usable.map((p) => ({ id: p.projectId, name: p.projectName }));
+  const allCommits = usable.flatMap(commitsWithProject);
+  const outlineRun = await outlineLecture(request.toolId, {
+    projects: projectRefs,
+    manifestText: context.manifestText,
+    groups: context.groups.map((g) => ({ projectName: g.projectName, module: g.module, files: g.files.length })),
+    commits: allCommits,
+    ...(request.style ? { style: request.style } : {}),
+    ...(request.extraNote ? { extraNote: request.extraNote } : {}),
+  }, {
+    ...(signal ? { signal } : {}),
+    ...(request.maxTokens ? { maxTokens: request.maxTokens } : {}),
+    onEvent: (event) => hooks.onStage?.({
+      phase: 'outline', msg: `大纲已就绪：${event.outline.sections.length} 节 / ${event.outline.discussion_questions.length} 个讨论问题（可修订后二次提交）`, progress: 20,
+      data: { type: 'outline_ready', outline: event.outline },
+    }),
+  });
+  stats.calls += 1;
+  if (!outlineRun.ok) {
+    if (signal?.aborted) return { aborted: emptyResult(request.title ?? '代码评审会议讲稿', undefined, warnings, stats) };
+    throw new LectureStreamError(`大纲生成失败：${outlineRun.error ?? '未知错误'}`);
+  }
+  return { outline: outlineRun.outline! };
+}
+
+/** FR-4.1 第一段收口：只交大纲，正文留给用户修订后二次提交 */
+function outlineOnlyResponse(
+  request: LectureStreamRequest,
+  outline: LectureOutline,
+  usable: readonly LectureCollectedProject[],
+  warnings: string[],
+  stats: LectureStreamStats,
+  estimate: LecturePreflightEstimate,
+): LectureStreamResult {
+  return {
+    ok: true,
+    aborted: false,
+    title: request.title ?? `代码评审会议讲稿 · ${usable.map((p) => p.projectName).join('、')}`,
+    markdown: '',
+    outline,
+    sections: [],
+    warnings,
+    stats,
+    anchors: [],
+    estimate,
+  };
+}
+
+/** 整轮 = 既非续作、也非选节、也非台账重试（只有整轮才建台账任务、才比对预估偏差） */
+function isFullRun(request: LectureStreamRequest): boolean {
+  return !request.resumeFrom && !request.sectionKeys && !request.retryFailed;
+}
+
+/** 整轮是否全绿：未中止 + 每节成功 + 整轮必须八节齐全（续作轮只跑了其中几节） */
+function isRunOk(sections: readonly LectureSectionResult[], aborted: boolean, fullRun: boolean): boolean {
+  if (aborted) return false;
+  if (!sections.every((s) => s.ok)) return false;
+  return fullRun ? sections.length === LECTURE_SECTIONS.length : true;
+}
+
+/** T03174（AI-102②③④）：整轮完成（非续作/单节重试、非中止）后复算偏差；
+ *  T03245：复用已完成段的轮次同理不算整轮（实际调用数被有意压低），不参与比对。 */
+function assessRunDeviation(params: {
+  estimate: LecturePreflightEstimate;
+  stats: LectureStreamStats;
+  sections: readonly LectureSectionResult[];
+  aborted: boolean;
+  startedAtMs: number;
+  comparable: boolean;
+}): RunUsageDeviation | undefined {
+  const { estimate, stats, sections, aborted, startedAtMs, comparable } = params;
+  if (!comparable) return undefined;
+  if (aborted) return undefined;
+  return assessAiRunDeviation(estimate, {
+    calls: stats.calls,
+    chars: sections.reduce((n, s) => n + s.text.length, 0),
+    seconds: (Date.now() - startedAtMs) / 1000,
+  });
+}
+
+export async function runLectureStream(body: unknown, hooks: LectureStreamHooks = {}): Promise<LectureStreamResult> {
+  // T03245（AI-103②③）：台账重试只带 jobId——按留档入参重建整份请求（项目/区间/排除/大纲），
+  // 用户刷新后不必重新选范围；入参里有新值则以新值为准。
+  const request = validateLectureStreamBody(hydrateLectureRetryBody(body));
+  const startedAtMs = Date.now();
+  const warnings: string[] = [];
+  const stats: LectureStreamStats = {
+    projects: request.projects.length, readyProjects: 0, files: 0, groups: 0, chars: 0,
+    contextBudget: 0, sections: 0, segments: 0, calls: 0, anchors: 0, anchorIssues: 0,
+  };
+  const titleDefault = '代码评审会议讲稿';
+
+  const scope = await collectAndPrepare(body, request, warnings, stats, hooks);
+  const { usable, context } = scope;
+  const outlineStep = await resolveOutlineStep({ request, context, usable, warnings, stats, hooks });
+  if (outlineStep.aborted) return outlineStep.aborted;
+  if (hooks.signal?.aborted) return emptyResult(request.title ?? titleDefault, outlineStep.outline, warnings, stats);
+  const outline = outlineStep.outline;
   if (!outline) throw new LectureStreamError('大纲生成失败：结果为空');
+  if (request.outlineOnly) return outlineOnlyResponse(request, outline, usable, warnings, stats, scope.estimate);
 
-  // FR-4.1 第一段收口：只交大纲，正文留给用户修订后二次提交（stats 保持在采集/上下文口径上）
-  if (request.outlineOnly) {
-    hooks.onStage?.({
-      phase: 'outline', msg: '仅大纲模式：正文未生成，修订后二次提交即可展开八段', progress: 20,
-      data: { type: 'outline_only', outline },
-    });
-    return {
-      ok: true,
-      aborted: false,
-      title: request.title ?? `代码评审会议讲稿 · ${usable.map((p) => p.projectName).join('、')}`,
-      markdown: '',
-      outline,
-      sections: [],
-      warnings,
-      stats,
-      anchors: [],
-      estimate,
-    };
-  }
-
-  const fullRun = !request.resumeFrom && !request.sectionKeys && !request.retryFailed;
-  const title = request.title ?? `代码评审会议讲稿 · ${usable.map((p) => p.projectName).join('、')}`;
+  const fullRun = isFullRun(request);
+  const title = request.title ?? `${titleDefault} · ${usable.map((p) => p.projectName).join('、')}`;
   // 分段单位只装配一次：台账计划与正文执行共用同一份（截断告警也只会出现一次）
   const unitCache = new Map<LectureSectionKey, SectionUnit[]>();
   const unitsFor = (key: LectureSectionKey): SectionUnit[] => {
@@ -560,211 +1009,20 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
     return units;
   };
 
-  // T03245（AI-103①②③）：全量轮新建台账任务并声明八节完整计划；重试轮挂既有任务。
-  // 已成功段（done 且有正文）直接复用，不再为它们发 AI 调用。
-  let jobId = request.jobId;
-  if (!jobId && fullRun) {
-    jobId = openJob({ cardKey: LECTURE_CARD_KEY, toolId: request.toolId, title, request });
-  }
-  const reused = jobId ? reusableSegments(jobId) : new Map<string, GenSegmentView>();
-  let retryOnly: Set<LectureSectionKey> | null = null;
-  if (jobId) {
-    const plan: GenSegmentPlan[] = [];
-    let order = 0;
-    for (const meta of LECTURE_SECTIONS) {
-      for (const unit of unitsFor(meta.key)) {
-        plan.push({
-          sectionKey: meta.key,
-          // 段内稳定标识：同一项目同一模块跨请求一致，重试才能对上已生成正文
-          segmentKey: `${unit.projectId}|${unit.module}`,
-          label: `${unit.projectName} / ${unit.module}`,
-          projectId: unit.projectId,
-          projectName: unit.projectName,
-          module: unit.module,
-          heading: unit.heading,
-          orderIndex: order,
-        });
-        order += 1;
-      }
-    }
-    declareSegments(jobId, plan, { markStale: request.retryFailed === true });
-    const reuseInPlan = plan.filter((p) => reused.has(`${p.sectionKey}\u0000${p.segmentKey}`)).length;
-    if (request.retryFailed) {
-      retryOnly = new Set(LECTURE_SECTION_KEYS.filter((key) => plan.some((p) => p.sectionKey === key && !reused.has(`${key}\u0000${p.segmentKey}`))));
-    }
-    hooks.onStage?.({
-      phase: 'journal',
-      msg: request.retryFailed
-        ? `按台账补齐未完成段：${plan.length - reuseInPlan} 段待生成（已完成 ${reuseInPlan} 段直接复用，不再调用模型）`
-        : `任务已落库（${plan.length} 段）：单段失败只重试该段，刷新后可继续`,
-      progress: sectionStartProgress(0),
-      data: { type: 'job', jobId, segmentsTotal: plan.length, segmentsDone: reuseInPlan, retry: request.retryFailed === true },
-    });
-  }
-
+  const journal = setupJournal(request, title, fullRun, unitsFor, hooks);
   const resumeIndex = request.resumeFrom ? LECTURE_SECTION_KEYS.indexOf(request.resumeFrom) : 0;
   const only = request.sectionKeys ? new Set<LectureSectionKey>(request.sectionKeys) : null;
-  if (resumeIndex > 0 || only) {
-    hooks.onStage?.({
-      phase: 'resume',
-      progress: sectionStartProgress(resumeIndex),
-      msg: only
-        ? `单节重试：${[...only].map((k) => lectureSectionLabel(k)).join('、')}`
-        : `从第 ${resumeIndex + 1} 节「${lectureSectionLabel(LECTURE_SECTION_KEYS[resumeIndex])}」继续（前 ${resumeIndex} 节沿用已生成正文）`,
-      data: { type: 'resume', from: resumeIndex, total: LECTURE_SECTIONS.length, ...(only ? { sections: [...only] } : {}) },
-    });
-  }
-  const sections: LectureSectionResult[] = [];
-  let aborted = false;
-  try {
-  for (const [index, meta] of LECTURE_SECTIONS.entries()) {
-    if (index < resumeIndex) continue;
-    if (only && !only.has(meta.key)) continue;
-    // T03245（AI-103②）：台账重试只跑「还有未完成段」的节，整节已完成的直接跳过
-    if (retryOnly && !retryOnly.has(meta.key)) continue;
-    if (signal?.aborted) { aborted = true; break; }
-    const section: LectureOutlineSection = outline.sections.find((s) => s.key === meta.key) ?? {
-      key: meta.key, title: lectureSectionLabel(meta.key), bullets: [],
-    };
-    const units = unitsFor(meta.key);
-    hooks.onStage?.({
-      phase: sectionPhase(index),
-      msg: `装配第 ${index + 1}/${LECTURE_SECTIONS.length} 节「${meta.label}」（${units.length} 段）`,
-      progress: sectionStartProgress(index),
-      data: { type: 'section_start', section: meta.key, label: meta.label, index, total: LECTURE_SECTIONS.length, units: units.length },
-    });
-    const segments: LectureSegmentResult[] = [];
-    for (const unit of units) {
-      if (signal?.aborted) { aborted = true; break; }
-      const segKey = `${unit.projectId}|${unit.module}`;
-      const prior = reused.get(`${meta.key}\u0000${segKey}`);
-      if (prior) {
-        // T03245（AI-103②）：已完成段直接复用正文——刷新/重试不再为它调用模型
-        const segment: LectureSegmentResult = {
-          projectId: unit.projectId, projectName: unit.projectName, module: unit.module, heading: unit.heading,
-          ok: true, text: prior.text, anchors: prior.anchors as LectureAnchor[], anchorIssues: prior.anchorIssues as AnchorIssue[],
-        };
-        segments.push(segment);
-        stats.segments += 1;
-        stats.anchors += segment.anchors.length;
-        stats.anchorIssues += segment.anchorIssues.length;
-        hooks.onStage?.({
-          phase: sectionPhase(index),
-          msg: `复用已完成：${unit.projectName} / ${unit.module}`,
-          progress: sectionStartProgress(index),
-          data: {
-            type: 'segment_done', section: meta.key, projectId: unit.projectId, projectName: unit.projectName,
-            module: unit.module, ok: true, reused: true, anchors: segment.anchors.length, anchorIssues: segment.anchorIssues.length,
-          },
-        });
-        continue;
-      }
-      if (jobId) beginSegment(jobId, meta.key, segKey);
-      stats.calls += 1;
-      const run = await generateLectureSection({
-        toolId: request.toolId,
-        section,
-        outline,
-        groups: [unit],
-        commits: unit.commits,
-        ...(request.style ? { style: request.style } : {}),
-        ...(request.extraNote ? { extraNote: request.extraNote } : {}),
-      }, {
-        ...(signal ? { signal } : {}),
-        onDelta: (text) => hooks.onChunk?.({
-          section: meta.key, projectId: unit.projectId, projectName: unit.projectName, module: unit.module, text,
-        }),
-      });
-      const group = run.groups[0];
-      const segment: LectureSegmentResult = group
-        ? {
-          projectId: unit.projectId, projectName: unit.projectName, module: unit.module, heading: unit.heading,
-          ok: group.ok, text: group.text, ...(group.error ? { error: group.error } : {}),
-          anchors: group.anchors, anchorIssues: group.anchorIssues,
-        }
-        : {
-          projectId: unit.projectId, projectName: unit.projectName, module: unit.module, heading: unit.heading,
-          ok: false, text: '', error: run.aborted ? '已中止' : '未返回结果', anchors: [], anchorIssues: [],
-        };
-      // 台账按段收口：失败段只记错误，其他段正文不受影响
-      if (jobId) {
-        finishSegment(jobId, {
-          sectionKey: meta.key, segmentKey: segKey, ok: segment.ok, text: segment.text,
-          ...(segment.error ? { error: segment.error } : {}),
-          anchors: segment.anchors, anchorIssues: segment.anchorIssues,
-        });
-      }
-      segments.push(segment);
-      stats.segments += 1;
-      stats.anchors += segment.anchors.length;
-      stats.anchorIssues += segment.anchorIssues.length;
-      hooks.onStage?.({
-        phase: sectionPhase(index),
-        msg: `${segment.ok ? '完成' : '失败'}：${unit.projectName} / ${unit.module}`,
-        progress: sectionStartProgress(index),
-        data: {
-          type: 'segment_done', section: meta.key, projectId: unit.projectId, projectName: unit.projectName,
-          module: unit.module, ok: segment.ok, ...(segment.error ? { error: segment.error } : {}),
-          anchors: segment.anchors.length, anchorIssues: segment.anchorIssues.length,
-        },
-      });
-      if (run.aborted) { aborted = true; break; }
-    }
-    const failed = segments.filter((s) => !s.ok);
-    const kept = segments.filter((s) => s.ok && s.text.trim());
-    const gapDetail = failed.map((s) => {
-      const segError = s.error ?? '生成失败';
-      return `${s.projectName}/${s.module}（${segError}）`;
-    }).join('、');
-    const text = kept
-      .map((s) => {
-        const headingBlock = s.heading ? `${s.heading}\n\n` : '';
-        return `${headingBlock}${s.text.trim()}`;
-      })
-      .join('\n\n')
-      // 部分失败要在成稿里留痕：只把成功段拼进去的话，读者无法分辨「这段没变更」与「这段生成失败了」
-      + (failed.length && kept.length
-        ? `\n\n> ⚠️ 本节部分内容未生成：${gapDetail}`
-        : '');
-    sections.push({
-      key: meta.key,
-      label: meta.label,
-      ok: failed.length === 0 && text.length > 0,
-      text,
-      ...(failed.length ? { error: failed.map((s) => `${s.projectName}/${s.module}：${s.error ?? '生成失败'}`).join('；') } : {}),
-      segments,
-    });
-    const sectionStatus = failed.length ? `部分失败（${failed.length}/${segments.length}）` : '完成';
-    hooks.onStage?.({
-      phase: sectionPhase(index),
-      msg: `第 ${index + 1}/${LECTURE_SECTIONS.length} 节「${meta.label}」${sectionStatus}`,
-      progress: sectionDoneProgress(index),
-      data: { type: 'section_done', section: meta.key, ok: failed.length === 0 && text.length > 0, segments: segments.length, failed: failed.length },
-    });
-    if (aborted) break;
-  }
-  } catch (e) {
-    // 致命失败也要给台账留终态，否则恢复入口会永远显示「进行中」
-    if (jobId) finalizeJob(jobId, 'error');
-    throw e;
-  }
+  emitResumeStage(resumeIndex, only, hooks);
+
+  const sectionCtx: SectionCtx = { request, hooks, outline, reused: journal.reused, jobId: journal.jobId, stats, unitsFor };
+  const { sections, aborted } = await runAllSections(sectionCtx, resumeIndex, only, journal.retryOnly);
   stats.sections = sections.length;
 
   // T03245（AI-103③）/T03246（AI-103⑤）：挂台账的续作轮一律交回整份成稿——
   // 刷新后前端没有上一轮结果可拼；续作轮本身也只跑了其中几节，八节顺序与结构只能按台账重建。
   // 中止轮除外：前端要拿本轮局部结果接着跑。
-  if (jobId && !aborted && (request.retryFailed || request.resumeFrom || request.sectionKeys)) {
-    const saved = jobRequest(jobId);
-    if (saved) {
-      const rebuilt = sectionsFromJournal(saved.view);
-      if (rebuilt.length > 0) {
-        sections.splice(0, sections.length, ...rebuilt);
-        stats.sections = sections.length;
-        stats.segments = sections.reduce((n, s) => n + s.segments.length, 0);
-        stats.anchors = sections.reduce((n, s) => n + s.segments.reduce((m, g) => m + g.anchors.length, 0), 0);
-        stats.anchorIssues = sections.reduce((n, s) => n + s.segments.reduce((m, g) => m + g.anchorIssues.length, 0), 0);
-      }
-    }
+  if (journal.jobId && !aborted && (request.retryFailed || request.resumeFrom || request.sectionKeys)) {
+    rebuildSectionsFromJournal(journal.jobId, sections, stats);
   }
 
   const projectNames = usable.map((p) => p.projectName);
@@ -776,25 +1034,16 @@ export async function runLectureStream(body: unknown, hooks: LectureStreamHooks 
     sections: sections.map((s) => ({ key: s.key, text: s.text })),
     generatedAt,
   });
-  const ok = !aborted && sections.every((s) => s.ok) && (!fullRun || sections.length === LECTURE_SECTIONS.length);
-  // T03245（AI-103）：任务终态落库——done/partial/aborted，刷新恢复入口据此判断还要不要补段
-  if (jobId) {
-    const saved = jobRequest(jobId);
-    const failedSegments = saved ? saved.view.progress.segmentsFailed : 0;
-    const missingSegments = saved ? saved.view.progress.segmentsTotal - saved.view.progress.segmentsDone : 0;
-    const journalStatus = failedSegments > 0 || missingSegments > 0 ? 'partial' : 'done';
-    finalizeJob(jobId, aborted ? 'aborted' : journalStatus);
-  }
-  // T03174（AI-102②③④）：整轮完成（非续作/单节重试、非中止）后复算偏差——续作轮调用数天然少于整轮预估，硬比会假红；
-  // T03245：复用已完成段的轮次同理不算整轮（实际调用数被有意压低）
-  const deviation = fullRun && reused.size === 0 && !aborted
-    ? assessAiRunDeviation(estimate, {
-      calls: stats.calls,
-      chars: sections.reduce((n, s) => n + s.text.length, 0),
-      seconds: (Date.now() - startedAtMs) / 1000,
-    })
-    : undefined;
-  return { ok, aborted, title, markdown, ...(outline ? { outline } : {}), sections, warnings, stats, anchors, estimate, ...(deviation ? { deviation } : {}), ...(jobId ? { jobId } : {}) };
+  const ok = isRunOk(sections, aborted, fullRun);
+  if (journal.jobId) finalizeLectureJob(journal.jobId, aborted);
+  const deviation = assessRunDeviation({
+    estimate: scope.estimate, stats, sections, aborted, startedAtMs,
+    comparable: fullRun && journal.reused.size === 0,
+  });
+  return {
+    ok, aborted, title, markdown, ...(outline ? { outline } : {}), sections, warnings, stats, anchors, estimate: scope.estimate,
+    ...(deviation ? { deviation } : {}), ...(journal.jobId ? { jobId: journal.jobId } : {}),
+  };
 }
 
 /** 路由层统一的 400 文案：范围/流式参数校验错误都走这里 */

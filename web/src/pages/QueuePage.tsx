@@ -318,9 +318,9 @@ export function QueuePage() {
           </div>
         )}
         {poolError && (
-          <div role="status" style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>
+          <output style={{ display: 'block', marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>
             任务池刷新失败：{poolError}（保留{poolUpdatedAt ? '上次成功数据' : '上次获取结果'}，未清空）
-          </div>
+          </output>
         )}
         <div style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           暂停 = 移出分发池（转搁置，恢复请在任务菜单搁置列表操作）；Agent 侧已开始执行的动作不受影响。

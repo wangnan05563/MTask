@@ -445,6 +445,50 @@ export function buildLectureContext(
   };
 }
 
+interface SymbolLimits {
+  maxDefs: number;
+  maxNames: number;
+  refsPerName: number;
+}
+
+/** 同名符号在其他文件的索引行（深度 1，不递归）；索引异常时这一项留空，不影响定义本身 */
+function refsFor(projectId: string, symbol: string, selfPath: string, refsPerName: number): LectureSymbolRef[] {
+  if (symbol.trim().length < 2) return [];
+  try {
+    return WorkspaceService.querySymbols(projectId, symbol, refsPerName * 3)
+      .filter((r) => r.path !== selfPath)
+      .slice(0, refsPerName)
+      .map((r) => ({ path: r.path, line: r.line, kind: r.kind }));
+  } catch {
+    return [];
+  }
+}
+
+/** 单文件符号提示：定义去重后最多 maxNames 条，每条带最多 refsPerName 条同名索引行 */
+function hintsForFile(
+  project: LectureContextProject,
+  path: string,
+  defs: ReadonlyArray<{ symbol: string; line: number; kind: string }>,
+  limits: SymbolLimits,
+): LectureSymbolHint[] {
+  const list: LectureSymbolHint[] = [];
+  const seen = new Set<string>();
+  for (const def of defs) {
+    if (list.length >= limits.maxNames) break;
+    if (seen.has(def.symbol)) continue;
+    seen.add(def.symbol);
+    list.push({ symbol: def.symbol, kind: def.kind, line: def.line, refs: refsFor(project.projectId, def.symbol, path, limits.refsPerName) });
+  }
+  return list;
+}
+
+/** 每个项目只记一条展开失败告警（逐文件重复会淹没真正原因） */
+function recordSymbolFailure(project: LectureContextProject, err: unknown, failedProjects: Set<string>, warnings: string[]): void {
+  if (failedProjects.has(project.projectId)) return;
+  failedProjects.add(project.projectId);
+  warnings.push(`项目「${project.projectName}」符号展开跳过：${err instanceof Error ? err.message : String(err)}`);
+}
+
 /**
  * 符号展开一层：变更源码文件 → 索引中的定义（所在类/函数）+ 同名符号在其他文件的索引行。
  * 仅作上下文增强，索引缺失/项目无工作空间时跳过并记一条告警，不影响主流程。
@@ -453,9 +497,11 @@ export function expandLectureSymbols(
   projects: readonly LectureContextProject[],
   options: LectureSymbolOptions = {},
 ): LectureSymbolExpansion {
-  const maxDefs = options.maxDefinitions ?? 20;
-  const maxNames = options.maxNames ?? 10;
-  const refsPerName = options.refsPerName ?? 5;
+  const limits: SymbolLimits = {
+    maxDefs: options.maxDefinitions ?? 20,
+    maxNames: options.maxNames ?? 10,
+    refsPerName: options.refsPerName ?? 5,
+  };
   const hints = new Map<string, LectureSymbolHint[]>();
   const warnings: string[] = [];
   const failedProjects = new Set<string>();
@@ -465,34 +511,13 @@ export function expandLectureSymbols(
       if (file.binary || !SOURCE_EXTS.has(extname(file.path).toLowerCase())) continue;
       let defs: Array<{ symbol: string; line: number; kind: string }>;
       try {
-        defs = WorkspaceService.symbolsInFile(project.projectId, file.path, maxDefs);
+        defs = WorkspaceService.symbolsInFile(project.projectId, file.path, limits.maxDefs);
       } catch (e) {
-        if (!failedProjects.has(project.projectId)) {
-          failedProjects.add(project.projectId);
-          warnings.push(`项目「${project.projectName}」符号展开跳过：${e instanceof Error ? e.message : String(e)}`);
-        }
+        recordSymbolFailure(project, e, failedProjects, warnings);
         continue;
       }
       if (defs.length === 0) continue;
-      const list: LectureSymbolHint[] = [];
-      const seen = new Set<string>();
-      for (const def of defs) {
-        if (list.length >= maxNames) break;
-        if (seen.has(def.symbol)) continue;
-        seen.add(def.symbol);
-        let refs: LectureSymbolRef[] = [];
-        if (def.symbol.trim().length >= 2) {
-          try {
-            refs = WorkspaceService.querySymbols(project.projectId, def.symbol, refsPerName * 3)
-              .filter((r) => r.path !== file.path)
-              .slice(0, refsPerName)
-              .map((r) => ({ path: r.path, line: r.line, kind: r.kind }));
-          } catch {
-            refs = [];
-          }
-        }
-        list.push({ symbol: def.symbol, kind: def.kind, line: def.line, refs });
-      }
+      const list = hintsForFile(project, file.path, defs, limits);
       if (list.length > 0) hints.set(symbolKey(project.projectId, file.path), list);
     }
   }

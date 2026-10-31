@@ -1,7 +1,7 @@
 /**
  * T02090（里程碑收口残项）：里程碑**进度聚合**——口径 A（deps child 为唯一父子标记）。
  *
- * 背景（T02042 收口实测）：两本子计划早已 done/100%，里程碑仍是 todo/0%，只能人工 PATCH N 次；
+ * 背景（T02042 收口实测）：两本子计划早已 done/100%，里程碑仍是未开始/0%，只能人工 PATCH N 次；
  * 且人工提前把里程碑标完成会让后续进度失去意义（红线）。本模块把「子计划 done 数/总数」
  * 聚合为里程碑 progress，全部 done 才置 status=done。
  *
@@ -9,7 +9,7 @@
  * - progress = round(done / total × 100)，clamp 0~100；
  * - 全部 done → status='done' + progress=100；
  * - 部分 done → status='doing'（progress 如实反映，红线：子项未动时恒 0，绝不 100%）；
- * - 全未 done → status='todo' + progress=0；
+ * - 全未 done → status 回落到「未开始（待办）」态 + progress=0；
  * - 无子项（total=0）→ **不动**（无聚合依据，保留人工状态）；
  * - 聚合权威：人工 PATCH 里程碑 status/progress 后若仍有子项，以子项聚合值为准
  *   （T02042 红线「先把里程碑标完成会让后续进度失去意义」的守卫）。

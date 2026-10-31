@@ -187,12 +187,12 @@ export function InsightPanel({ projectId, onClose }: {
           </button>
         ))}
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
-          起始
+          <span>起始</span>
           <input type="date" value={from} max={to} data-t03236="from" style={FIELD}
             onChange={(e) => { setPreset(0); setFrom(e.target.value); }} aria-label="统计起始日期" />
         </label>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
-          截止
+          <span>截止</span>
           <input type="date" value={to} min={from} data-t03236="to" style={FIELD}
             onChange={(e) => { setPreset(0); setTo(e.target.value); }} aria-label="统计截止日期" />
         </label>
@@ -202,7 +202,7 @@ export function InsightPanel({ projectId, onClose }: {
         <button onClick={onClose} style={{ ...BTN, color: 'var(--text-muted)' }} title="关闭洞察面板" aria-label="关闭洞察面板">×</button>
       </div>
 
-      {msg && <div role="status" data-t03236="toast" style={{ marginTop: 8, fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{msg}</div>}
+      {msg && <output data-t03236="toast" style={{ display: 'block', marginTop: 8, fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{msg}</output>}
       {err && (
         <div role="alert" data-t03236="error" style={{ marginTop: 8, fontSize: 'var(--fs-s)', color: 'var(--danger)' }}>洞察取数失败：{err}</div>
       )}

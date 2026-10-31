@@ -17,7 +17,8 @@ import { dirname, join } from 'node:path';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const [baseUrl = 'http://127.0.0.1:39877', ...only] = process.argv.slice(2);
 
-/** 套件注册表：name → 脚本文件名（按依赖/历史顺序） */
+/** 套件注册表：name → 脚本文件名（按依赖/历史顺序；套件统一放在 scripts/tests/） */
+const SUITE_DIR = join(HERE, 'tests');
 const SUITES = [
   't00707-prd-matrix-api-test.mjs',
   't00754-holiday-workday-api-test.mjs',
@@ -48,7 +49,7 @@ let failed = 0;
 for (const file of selected) {
   const name = file.replace(/\.mjs$/, '');
   console.log(`\n──────── ${name} ────────`);
-  const r = spawnSync(process.execPath, [join(HERE, file), baseUrl], { stdio: 'inherit' });
+  const r = spawnSync(process.execPath, [join(SUITE_DIR, file), baseUrl], { stdio: 'inherit' });
   if (r.status !== 0) { failed++; console.log(`✗ ${name} 失败（exit=${r.status}）`); }
 }
 console.log(`\n==== API 套件汇总：${selected.length - failed}/${selected.length} 通过 ====`);

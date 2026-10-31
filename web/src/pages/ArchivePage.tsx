@@ -149,19 +149,19 @@ export function ArchivePage() {
   }, []);
 
   // 首屏与「页码 / 每页条数 / 关键词 / 筛选」变化时重取**当前页**（enabled:false 关掉挂载自跑，统一由这里触发）
-  useEffect(() => { tasksView.reload(); }, [page, pageSize, kwQuery, catFilter]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { plansView.reload(); }, [planPage, pageSize, kwQuery, projFilter]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { promptsView.reload(); }, [promptPage, pageSize, kwQuery]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { tasksView.reload(); }, [page, pageSize, kwQuery, catFilter, tasksView.reload]);
+  useEffect(() => { plansView.reload(); }, [planPage, pageSize, kwQuery, projFilter, plansView.reload]);
+  useEffect(() => { promptsView.reload(); }, [promptPage, pageSize, kwQuery, promptsView.reload]);
   // T03685：归档通用需求区随关键词重取（整表取回，本地过滤见 pageReqs）
-  useEffect(() => { reqsView.reload(); }, [kwQuery]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { reqsView.reload(); }, [kwQuery, reqsView.reload]);
 
   // T02258：切换条数后各列表重置到第 1 页
   useEffect(() => { setPage(1); setPlanPage(1); setPromptPage(1); }, [pageSize]);
 
   // T02284：写操作后 total 变化 → 越界页码收敛到最后一页（避免停在空页）
-  useEffect(() => { clampPage(tasksView.data?.total, page, pageSize, setPage); }, [tasksView.data, page, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { clampPage(plansView.data?.total, planPage, pageSize, setPlanPage); }, [plansView.data, planPage, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { clampPage(promptsView.data?.total, promptPage, pageSize, setPromptPage); }, [promptsView.data, promptPage, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { clampPage(tasksView.data?.total, page, pageSize, setPage); }, [tasksView.data, page, pageSize]);
+  useEffect(() => { clampPage(plansView.data?.total, planPage, pageSize, setPlanPage); }, [plansView.data, planPage, pageSize]);
+  useEffect(() => { clampPage(promptsView.data?.total, promptPage, pageSize, setPromptPage); }, [promptsView.data, promptPage, pageSize]);
 
   // ---------- 派生视图数据（T02284：条数/页数由服务端 total 派生，不再本地过滤） ----------
 
@@ -371,13 +371,13 @@ export function ArchivePage() {
           title="下一页" aria-label="下一页"
           style={{ cursor: cur >= total ? 'default' : 'pointer', padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', opacity: cur >= total ? 0.5 : 1 }}>下一页</button>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-          每页
+          <span>每页</span>
           <select value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}
             title={`每页条数（${listLabel}）— 切换后立即生效并回到第 1 页`} aria-label={`每页条数（${listLabel}）`}
             style={{ padding: '2px 4px', fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
             {PAGE_SIZE_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
-          条
+          <span>条</span>
         </label>
       </div>
     );

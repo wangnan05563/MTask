@@ -55,9 +55,9 @@ export function BurndownChart({ points, field, idealField, unit, label }: {
 }): ReactElement {
   if (points.length === 0) {
     return (
-      <div role="status" data-t03186={`burn-empty-${field}`} style={{ padding: '14px 10px', fontSize: 'var(--fs-s)', color: 'var(--text-muted)', border: '1px dashed var(--border-strong)', borderRadius: 6 }}>
+      <output data-t03186={`burn-empty-${field}`} style={{ display: 'block', padding: '14px 10px', fontSize: 'var(--fs-s)', color: 'var(--text-muted)', border: '1px dashed var(--border-strong)', borderRadius: 6 }}>
         {label}：暂无可回溯的业务日（范围尚未开始，或窗口内没有在册计划行）。
-      </div>
+      </output>
     );
   }
   const actual = points.map((p) => p[field]);
@@ -66,9 +66,13 @@ export function BurndownChart({ points, field, idealField, unit, label }: {
   const span = Math.max(1, points.length - 1);
   const first = points[0].day;
   const last = points.at(-1)!.day;
+  const lastActual = actual.at(-1) ?? 0;
+  const lastIdeal = ideal.at(-1) ?? 0;
   return (
-    <svg viewBox={`0 0 480 ${BASE + 30}`} width="100%" role="img" aria-label={`${label}：${points.length} 个业务日，剩余 ${actual[actual.length - 1]} ${unit}，理想 ${ideal[ideal.length - 1]} ${unit}`} /* NOSONAR: 内联 SVG 复合图形，role=img 为 W3C 推荐无障碍写法，无等价原生元素 */
+    <svg viewBox={`0 0 480 ${BASE + 30}`} width="100%" aria-label={`${label}：${points.length} 个业务日，剩余 ${lastActual} ${unit}，理想 ${lastIdeal} ${unit}`}
       style={{ display: 'block', maxWidth: 520 }} data-t03186={`burn-${field}`}>
+      {/* 内联 SVG 复合图形的无障碍名走原生 <title>（SVG 自带的等价写法），不再挂 role="img" */}
+      <title>{`${label}：${points.length} 个业务日，剩余 ${lastActual} ${unit}，理想 ${lastIdeal} ${unit}`}</title>
       {/* 纵轴三档参考线（0 / 半程 / 峰值），只作读数辅助，不做数据 */}
       {[0, 0.5, 1].map((f) => {
         const y = BASE - f * (BASE - TOP);

@@ -119,6 +119,65 @@ function mergeAnswers(prdMd: string, rows: IssueRow[]): string {
 }
 
 /**
+ * T00819：草稿版录入的文件名——同日多份生成时自动加序号，避免 PRD 管理视图出现同名条目难以区分版本；
+ * 命中同名时顺延「（N）」，不做覆盖。
+ */
+async function nextFreeDocName(projectId: string, base: string): Promise<string> {
+  const existing = await api.get<Array<{ filename: string }>>(`/plans/prd-docs?projectId=${projectId}`).catch(() => []);
+  const taken = new Set((existing ?? []).map((d) => d.filename));
+  let docName = `${base}.md`;
+  let seq = 2;
+  while (taken.has(docName)) { docName = `${base}(${seq}).md`; seq += 1; }
+  return docName;
+}
+
+/**
+ * T03159（U20）：确认版文件名——命中同源既有文档（按正文指纹）时先二次确认，展示将被替换的字符数摘要；
+ * 取消则返回 ''（调用方中止、整单零写入：不发 POST、不动原条目，原内容逐字不变）。
+ */
+async function confirmedDocName(projectId: string, base: string, originHash: string, merged: string): Promise<string> {
+  const docName = `${base}.md`;
+  if (!originHash) return docName;
+  const peers = await api.get<Array<{ id: string; filename: string; origin_hash?: string; content_chars?: number }>>(
+    `/plans/prd-docs?projectId=${projectId}`).catch(() => []);
+  const hit = (peers ?? []).find((d) => d.origin_hash === originHash);
+  if (!hit) return docName;
+  const okOverwrite = await askConfirm(
+    `检测到同源条目「${hit.filename}」（现有 ${hit.content_chars ?? 0} 字符）。\n\n` +
+    `本次确认版共 ${merged.length} 字符，将覆盖该条目并替换其待确认问题。\n\n确定覆盖？`);
+  return okOverwrite ? docName : '';
+}
+
+/**
+ * 录入成功后的收尾（S3776 拆分）：提示 + 控制台日志 + 变更事件；确认版再自动切到项目管理并打开 PRD 视图。
+ * 跳转异常只静默吞掉——录入本身已成功，不该因为切页失败而回滚提示。
+ */
+function afterDocSaved(args: {
+  readonly docName: string;
+  readonly status: 'prd' | 'confirmed';
+  readonly rowCount: number;
+  readonly projectId: string;
+  readonly overwrite: boolean;
+  readonly onSaved?: (n: { docs: number; issues: number }) => void;
+  readonly flash: (m: string) => void;
+}): void {
+  const { docName, status, rowCount, projectId, overwrite, onSaved, flash } = args;
+  flash(`已录入 PRD 管理视图：${docName}（${status === 'confirmed' ? '确认版' : 'PRD'}，含问题 ${rowCount} 条）`);
+  prdGenStore.pushLog(`已录入 PRD 管理视图：${docName}（${status === 'confirmed' ? '确认版' : '草稿 PRD'}；问题 ${rowCount} 条同步入库）`);
+  globalThis.dispatchEvent(new CustomEvent('mtask:prdDocsChanged')); // T01557：通知矩阵「关联」候选列表即时同步
+  // T00821：确认版录入成功 → 自动切到「项目管理」并打开当前项目的 PRD 管理视图。
+  // 只在成功返回后执行；写入 PlanPage 的会话态(plan.projectId/plan.showPrd)并触发全局 Tab 切换，异常不阻断已完成的录入。
+  if (overwrite) {
+    try {
+      sessionStorage.setItem('plan.projectId', JSON.stringify(projectId));
+      sessionStorage.setItem('plan.showPrd', JSON.stringify(true));
+      globalThis.dispatchEvent(new CustomEvent('mtaskNavigate', { detail: { tab: 'plan' } }));
+    } catch { /* 跳转异常静默，录入已成功 */ }
+  }
+  onSaved?.({ docs: 1, issues: rowCount });
+}
+
+/**
  * 原始需求生成 PRD 面板（T00769）：上传原始需求（.docx/.xlsx/.csv/.md/.txt；老式 .doc/.xls 引导另存）→
  * 内置技能（原 bemp-generate-prd）+ 项目源码上下文 → SSE 流式生成 → 交互确认表格（AI 问题 + 自定义）→
  * 回写结论并录入「PRD 管理视图」（需求跟踪矩阵上方，T00770）。
@@ -366,25 +425,10 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
       // 覆盖场景用基准文件名（不做加序号去重），命中同源由后端更新同一条；草稿录入保持原「加序号上新」逻辑。
       const overwrite = status === 'confirmed';
       const originHash = overwrite ? hashStr(result.prdMd) : '';
-      let docName = `${base}.md`;
-      if (!overwrite) {
-        const existing = await api.get<Array<{ filename: string }>>(`/plans/prd-docs?projectId=${projectId}`).catch(() => []);
-        const taken = new Set((existing ?? []).map((d) => d.filename));
-        let seq = 2;
-        while (taken.has(docName)) { docName = `${base}(${seq}).md`; seq += 1; }
-      } else if (originHash) {
-        // T03159（U20）：确认版命中同源既有文档时覆盖前二次确认，展示将被替换的字符数摘要；
-        // 取消则整单零写入（不发 POST、不动原条目），原内容逐字不变。
-        const peers = await api.get<Array<{ id: string; filename: string; origin_hash?: string; content_chars?: number }>>(
-          `/plans/prd-docs?projectId=${projectId}`).catch(() => []);
-        const hit = (peers ?? []).find((d) => d.origin_hash === originHash);
-        if (hit) {
-          const okOverwrite = await askConfirm(
-            `检测到同源条目「${hit.filename}」（现有 ${hit.content_chars ?? 0} 字符）。\n\n` +
-            `本次确认版共 ${merged.length} 字符，将覆盖该条目并替换其待确认问题。\n\n确定覆盖？`);
-          if (!okOverwrite) { flash('已取消覆盖录入，既有 PRD 未改动'); return; }
-        }
-      }
+      const docName = overwrite
+        ? await confirmedDocName(projectId, base, originHash, merged)
+        : await nextFreeDocName(projectId, base);
+      if (!docName) { flash('已取消覆盖录入，既有 PRD 未改动'); return; }
       const doc = await api.post<{ id: string }>('/plans/prd-docs', { projectId, filename: docName, contentMd: merged, status, originHash });
       // T00822：结转全部待确认问题（含未填结论的）——后端按 answer 是否非空自动定 status(已确认/待确认)。
       // 此前只结转 answer 非空的（rows.filter(trim)），未填结论的问题被丢弃不进 PRD 管理视图；现已全量提交。
@@ -394,19 +438,7 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
           items: rows.map((r) => ({ question: r.question, answer: r.answer, level: r.level || 'custom', suggestion: r.suggestion })),
         });
       }
-      flash(`已录入 PRD 管理视图：${docName}（${status === 'confirmed' ? '确认版' : 'PRD'}，含问题 ${rows.length} 条）`);
-      prdGenStore.pushLog(`已录入 PRD 管理视图：${docName}（${status === 'confirmed' ? '确认版' : '草稿 PRD'}；问题 ${rows.length} 条同步入库）`);
-      globalThis.dispatchEvent(new CustomEvent('mtask:prdDocsChanged')); // T01557：通知矩阵「关联」候选列表即时同步
-      // T00821：确认版录入成功 → 自动切到「项目管理」并打开当前项目的 PRD 管理视图。
-      // 只在成功返回后执行；写入 PlanPage 的会话态(plan.projectId/plan.showPrd)并触发全局 Tab 切换，异常不阻断已完成的录入。
-      if (overwrite) {
-        try {
-          sessionStorage.setItem('plan.projectId', JSON.stringify(projectId));
-          sessionStorage.setItem('plan.showPrd', JSON.stringify(true));
-          globalThis.dispatchEvent(new CustomEvent('mtaskNavigate', { detail: { tab: 'plan' } }));
-        } catch { /* 跳转异常静默，录入已成功 */ }
-      }
-      onSaved?.({ docs: 1, issues: rows.length });
+      afterDocSaved({ docName, status, rowCount: rows.length, projectId, overwrite, onSaved, flash });
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
     } finally {

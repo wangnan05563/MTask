@@ -262,108 +262,154 @@ function sumPoints(rows: EstimateExportRow[]): Points | null {
  * 其后紧跟 R35 / 四条系数行 / R40 / 空行 / 备注行——**行号一律由本函数算**，
  * 渲染层与断言层共用同一个 `EstimateLayout`，不存在「渲染时再数一遍行」的第二套口径。
  */
+/** 模板阶段顺序：先入口两阶段，再开发明细段，最后出口三阶段 */
+const ENTRY_PHASES: readonly EstimatePhase[] = ['req', 'design'];
+const EXIT_PHASES: readonly EstimatePhase[] = ['impl', 'common', 'onsite'];
+
+/** 只在该行三点齐全时取三点，否则 null（主 sheet 留空而非写 0） */
+function pointsOf(r: EstimateExportRow): Points | null {
+  if (!isPoint(r)) return null;
+  return { optimistic: r.optimistic as number, likely: r.likely as number, pessimistic: r.pessimistic as number };
+}
+
+/** 按阶段归组（dev 由开发明细段单独处理，不在此表） */
+function groupByPhase(kept: readonly EstimateExportRow[], phases: readonly EstimatePhase[]): Map<EstimatePhase, EstimateExportRow[]> {
+  const grouped = new Map<EstimatePhase, EstimateExportRow[]>();
+  for (const p of phases) {
+    if (p === 'dev') continue;
+    grouped.set(p, kept.filter((r) => r.phase === p));
+  }
+  return grouped;
+}
+
+function makePhaseRow(rowNo: number, p: EstimatePhase, list: EstimateExportRow[]): LayoutPhaseRow {
+  return {
+    kind: 'phase', rowNo, phase: p, label: TEMPLATE_PHASE_LABELS[p],
+    points: sumPoints(list), mergedCount: list.length, source: mergeSource(list), ratio: 0,
+  };
+}
+
+function makeDevRow(rowNo: number, r: EstimateExportRow): LayoutDevRow {
+  return { kind: 'dev', rowNo, planId: r.planId, milestone: r.milestone, detail: r.detail, points: pointsOf(r) };
+}
+
+interface BodyRows {
+  phaseRows: LayoutPhaseRow[];
+  devRows: LayoutDevRow[];
+  subtotalRow: LayoutSubtotalRow | null;
+  lastDataRow: number;
+}
+
+/** 数据区落位：入口阶段行 → 开发明细行 → 小计行 → 出口阶段行；行号连续，由本函数独占分配 */
+function buildBodyRows(phases: readonly EstimatePhase[], kept: readonly EstimateExportRow[]): BodyRows {
+  // 开发段：逐条明细行；非 dev 阶段：各聚合为 1 行（模板是阶段行，无明细）
+  const grouped = groupByPhase(kept, phases);
+  const phaseRows: LayoutPhaseRow[] = [];
+  const devRows: LayoutDevRow[] = [];
+  let rowNo = FIRST_DATA_ROW;
+  for (const p of ENTRY_PHASES) {
+    if (!phases.includes(p)) continue;
+    phaseRows.push(makePhaseRow(rowNo++, p, grouped.get(p) ?? []));
+  }
+  let subtotalRow: LayoutSubtotalRow | null = null;
+  if (phases.includes('dev')) {
+    for (const r of kept.filter((row) => row.phase === 'dev')) devRows.push(makeDevRow(rowNo++, r));
+    // 模板形态：明细区末行是「小计：」行（`E31=SUBTOTAL(9,E8:E30)`），不是数据行
+    if (devRows.length > 0) subtotalRow = { kind: 'subtotal', rowNo: rowNo++ };
+  }
+  for (const p of EXIT_PHASES) {
+    if (!phases.includes(p)) continue;
+    phaseRows.push(makePhaseRow(rowNo++, p, grouped.get(p) ?? []));
+  }
+  return { phaseRows, devRows, subtotalRow, lastDataRow: rowNo - 1 };
+}
+
+/** 系数行取值：客户版折叠时四个系数并成 1 行（值取 Σ系数）+ 3 行写 0 ——R40 的 `SUM(X36:X39)` 结果不变，
+ *  报价数一分不差，但内部的分项依据不再出现在交付件里（§6.2 备注第 2 条要求的形态） */
+function coefValues(input: EstimateExportInput, fold: boolean): Array<{ label: string; value: number }> {
+  if (!fold) {
+    // T02084：交付件用模板标签（带「系数」后缀），与面板的引擎短标签是两套口径
+    return ESTIMATE_COEF_KEYS.map((k) => ({ label: TEMPLATE_COEF_LABELS[k], value: input.config.coefs[k] }));
+  }
+  const coefSum = ESTIMATE_COEF_KEYS.reduce((a, k) => a + input.config.coefs[k], 0);
+  return [
+    { label: TEMPLATE_TEXTS.foldedCoef, value: coefSum },
+    { label: '', value: 0 }, { label: '', value: 0 }, { label: '', value: 0 },
+  ];
+}
+
+interface CoefBlock {
+  coefRows: LayoutCoefRow[];
+  actualRow: number;
+  remarkRow: number | null;
+}
+
+function buildCoefBlock(input: EstimateExportInput, totalRow: number): CoefBlock {
+  const fold = input.audience === 'client' && input.config.hideCoefsForClient;
+  const coefRows: LayoutCoefRow[] = [];
+  let rowNo = totalRow + 1;
+  for (const c of coefValues(input, fold)) {
+    coefRows.push({ kind: 'coef', rowNo: rowNo++, label: c.label, value: c.value, expected: c.value, ratio: 0 });
+  }
+  const actualRow = rowNo;
+  return { coefRows, actualRow, remarkRow: input.audience === 'client' ? null : actualRow + 2 };
+}
+
+/** ---- 引擎出数（红线 2：缓存值只来自这里）---- */
+function buildEngineRows(input: EstimateExportInput, body: BodyRows): EstimateEngineRow[] {
+  const engineRows: EstimateEngineRow[] = [];
+  for (const p of body.phaseRows) {
+    engineRows.push({ key: `phase:${p.phase}`, phase: p.phase, points: p.points, role: 'detail' });
+  }
+  for (const d of body.devRows) {
+    engineRows.push({ key: d.planId, phase: 'dev', points: d.points, role: 'detail' });
+  }
+  if (body.subtotalRow) engineRows.push({ key: 'subtotal:dev', phase: 'dev', points: null, role: 'subtotal' });
+  // T02304 口径甲：里程碑行照样喂进引擎并带 `planKind`——buildSummary 先按 planKind 判为结构性
+  // 排除（不进 Σ、图里也被 milestoneIds 滤掉），所以报价数不变，但 §4.4 备注的「里程碑 M 行」
+  // 从导出侧恒 0 变成与面板 excluded.milestone 同值。
+  for (const m of input.rows) {
+    if (m.planKind !== 'milestone') continue;
+    engineRows.push({ key: m.planId, phase: m.phase, points: pointsOf(m), role: 'detail', planKind: 'milestone' });
+  }
+  return engineRows;
+}
+
+function applyRatios(phaseRows: LayoutPhaseRow[], coefRows: LayoutCoefRow[], summary: EstimateSummary): void {
+  const denom = summary.actualManMonths.expected;
+  const phaseRatio = new Map(summary.phases.map((p) => [p.phase, p.ratio]));
+  for (const p of phaseRows) p.ratio = phaseRatio.get(p.phase) ?? 0;
+  for (const c of coefRows) c.ratio = denom === 0 ? 0 : (summary.idealManMonths.expected * c.value) / denom;
+}
+
 export function layoutEstimate(input: EstimateExportInput): EstimateLayout {
   const wanted = input.phases && input.phases.length > 0 ? input.phases : ESTIMATE_PHASES;
   const phases = ESTIMATE_PHASES.filter((p) => wanted.includes(p));
-  const devEnabled = phases.includes('dev');
 
   const pool = input.rows.filter((r) => r.planKind !== 'milestone' && phases.includes(r.phase));
   const milestoneSkipped = input.rows.filter((r) => r.planKind === 'milestone').length;
   const kept = input.scope === 'estimated_only' ? pool.filter(isPoint) : pool;
 
-  const devAll = kept.filter((r) => r.phase === 'dev');
   // 未复核 = 有值且来源非人工（`rule` 与 `default` 都是机器推导值）：§5.2「只看未复核」与 §9 复核率
   // 用的都是 `source !== 'manual'`，件上标注只数 `default` 会让客户版少报一半待复核行。
   const unreviewed = kept.filter((r) => isPoint(r) && (r.source === 'rule' || r.source === 'default')).length;
 
-  // 开发段：逐条明细行；非 dev 阶段：各聚合为 1 行（模板是阶段行，无明细）
-  const before = new Map<EstimatePhase, EstimateExportRow[]>();
-  const after = new Map<EstimatePhase, EstimateExportRow[]>();
-  for (const p of phases) {
-    if (p === 'dev') continue;
-    const list = kept.filter((r) => r.phase === p);
-    (p === 'req' || p === 'design' ? before : after).set(p, list);
-  }
-
-  const phaseRows: LayoutPhaseRow[] = [];
-  const devRows: LayoutDevRow[] = [];
-  let rowNo = FIRST_DATA_ROW;
-  for (const p of ['req', 'design'] as EstimatePhase[]) {
-    if (!phases.includes(p)) continue;
-    const list = before.get(p) ?? [];
-    phaseRows.push({
-      kind: 'phase', rowNo: rowNo++, phase: p, label: TEMPLATE_PHASE_LABELS[p],
-      points: sumPoints(list), mergedCount: list.length, source: mergeSource(list), ratio: 0,
-    });
-  }
-  let subtotalRow: LayoutSubtotalRow | null = null;
-  if (devEnabled) {
-    for (const r of devAll) {
-      devRows.push({
-        kind: 'dev', rowNo: rowNo++, planId: r.planId, milestone: r.milestone,
-        detail: r.detail, points: isPoint(r) ? { optimistic: r.optimistic as number, likely: r.likely as number, pessimistic: r.pessimistic as number } : null,
-      });
-    }
-    // 模板形态：明细区末行是「小计：」行（`E31=SUBTOTAL(9,E8:E30)`），不是数据行
-    if (devRows.length > 0) subtotalRow = { kind: 'subtotal', rowNo: rowNo++ };
-  }
-  for (const p of ['impl', 'common', 'onsite'] as EstimatePhase[]) {
-    if (!phases.includes(p)) continue;
-    const list = after.get(p) ?? [];
-    phaseRows.push({
-      kind: 'phase', rowNo: rowNo++, phase: p, label: TEMPLATE_PHASE_LABELS[p],
-      points: sumPoints(list), mergedCount: list.length, source: mergeSource(list), ratio: 0,
-    });
-  }
-
-  const lastDataRow = rowNo - 1;
-  const totalRow = lastDataRow + 1;
-  const coefRows: LayoutCoefRow[] = [];
-  const fold = input.audience === 'client' && input.config.hideCoefsForClient;
-  const coefSum = ESTIMATE_COEF_KEYS.reduce((a, k) => a + input.config.coefs[k], 0);
-  // 客户版折叠：四个系数并成 1 行（值取 Σ系数）+ 3 行写 0 ——R40 的 `SUM(X36:X39)` 结果不变，
-  // 报价数一分不差，但内部的分项依据不再出现在交付件里（§6.2 备注第 2 条要求的形态）
-  const coefValues: Array<{ label: string; value: number }> = fold
-    ? [{ label: TEMPLATE_TEXTS.foldedCoef, value: coefSum }, { label: '', value: 0 }, { label: '', value: 0 }, { label: '', value: 0 }]
-    : ESTIMATE_COEF_KEYS.map((k) => ({ label: TEMPLATE_COEF_LABELS[k], value: input.config.coefs[k] })); // T02084：交付件用模板标签（带「系数」后缀），与面板的引擎短标签是两套口径
-  let r = totalRow + 1;
-  for (const c of coefValues) {
-    coefRows.push({ kind: 'coef', rowNo: r++, label: c.label, value: c.value, expected: c.value, ratio: 0 });
-  }
-  const actualRow = r;
-  const remarkRow = input.audience === 'client' ? null : actualRow + 2;
-
-  // ---- 引擎出数（红线 2：缓存值只来自这里）----
-  const engineRows: EstimateEngineRow[] = [];
-  for (const p of phaseRows) {
-    engineRows.push({ key: `phase:${p.phase}`, phase: p.phase, points: p.points, role: 'detail' });
-  }
-  for (const d of devRows) {
-    engineRows.push({ key: d.planId, phase: 'dev', points: d.points, role: 'detail' });
-  }
-  if (subtotalRow) engineRows.push({ key: `subtotal:dev`, phase: 'dev', points: null, role: 'subtotal' });
-  // T02304 口径甲：里程碑行照样喂进引擎并带 `planKind`——buildSummary 先按 planKind 判为结构性
-  // 排除（不进 Σ、图里也被 milestoneIds 滤掉），所以报价数不变，但 §4.4 备注的「里程碑 M 行」
-  // 从导出侧恒 0 变成与面板 excluded.milestone 同值。
-  for (const m of input.rows.filter((r) => r.planKind === 'milestone')) {
-    engineRows.push({
-      key: m.planId, phase: m.phase,
-      points: isPoint(m)
-        ? { optimistic: m.optimistic as number, likely: m.likely as number, pessimistic: m.pessimistic as number }
-        : null,
-      role: 'detail', planKind: 'milestone',
-    });
-  }
+  const body = buildBodyRows(phases, kept);
+  const totalRow = body.lastDataRow + 1;
+  const coefs = buildCoefBlock(input, totalRow);
+  const engineRows = buildEngineRows(input, body);
   const summary = buildSummary(engineRows, input.config);
-
-  const denom = summary.actualManMonths.expected;
-  const phaseRatio = new Map(summary.phases.map((p) => [p.phase, p.ratio]));
-  for (const p of phaseRows) p.ratio = phaseRatio.get(p.phase) ?? 0;
-  for (const c of coefRows) c.ratio = denom === 0 ? 0 : (summary.idealManMonths.expected * c.value) / denom;
+  applyRatios(body.phaseRows, coefs.coefRows, summary);
 
   return {
-    input, phaseRows, devRows, subtotalRow, coefRows, lastDataRow, totalRow, actualRow, remarkRow,
-    engineRows, summary, merges: layoutMerges({ phaseRows, devRows, subtotalRow, coefRows, totalRow, actualRow, remarkRow }),
+    input, phaseRows: body.phaseRows, devRows: body.devRows, subtotalRow: body.subtotalRow,
+    coefRows: coefs.coefRows, lastDataRow: body.lastDataRow, totalRow,
+    actualRow: coefs.actualRow, remarkRow: coefs.remarkRow,
+    engineRows, summary,
+    merges: layoutMerges({
+      phaseRows: body.phaseRows, devRows: body.devRows, subtotalRow: body.subtotalRow,
+      coefRows: coefs.coefRows, totalRow, actualRow: coefs.actualRow, remarkRow: coefs.remarkRow,
+    }),
     unreviewed, milestoneSkipped,
   };
 }
@@ -464,26 +510,10 @@ const num = (cell: import('exceljs').Cell, v: number | null): void => {
  * exceljs 的原生 `definedNames.add(loc, name)` 只认区域型地址，常量形态（`=20.83`）无法表达（E0 实测）。
  * 覆盖 getter 只影响写侧出模型，不改 node_modules。
  */
-export async function buildEstimateXlsx(layout: EstimateLayout): Promise<Buffer> {
-  const ExcelJS = await import('exceljs');
-  const wb = new ExcelJS.default.Workbook();
-  const { input } = layout;
-  const std = input.config.manDaysPerManMonth;
+type Ws = import('exceljs').Worksheet;
 
-  // 红线 5：常量命名区域 + 原文注释（注释由 exceljs 之外的写后补丁补，见 attachDefinedNameComment）
-  Object.defineProperty(wb.definedNames, 'model', {
-    configurable: true,
-    get: () => [{ name: NAMED_RANGE_STD, ranges: [String(std)] }],
-  });
-  // 打开即重算：预览类查看器读缓存值，真正的 Excel 会重算并覆盖成同源结果（§12-R8 的加固）
-  wb.calcProperties.fullCalcOnLoad = true;
-
-  const ws = wb.addWorksheet(SHEET_MAIN);
-  TEMPLATE_COLUMN_WIDTHS.forEach((w, i) => {
-    ws.getColumn(i + 1).width = w;
-  });
-
-  // ---- 表头 R1~R5 ----
+/** 表头 R1~R5（§6.1 逐格） */
+function writeSheetHeader(ws: Ws, input: EstimateExportInput): void {
   ws.getCell('B1').value = TEMPLATE_TEXTS.title;
   ws.getCell('B1').font = { bold: true, size: 14 };
   ws.getCell('B1').alignment = { horizontal: 'center', vertical: 'middle' };
@@ -508,63 +538,72 @@ export async function buildEstimateXlsx(layout: EstimateLayout): Promise<Buffer>
     ws.getCell(a).font = { bold: true };
     ws.getCell(a).alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
   }
+}
 
-  const head = (rowNo: number, label: string) => {
-    ws.getCell(`B${rowNo}`).value = label;
-    ws.getCell(`B${rowNo}`).alignment = { wrapText: true, vertical: 'middle' };
-  };
+function writeHead(ws: Ws, rowNo: number, label: string): void {
+  ws.getCell(`B${rowNo}`).value = label;
+  ws.getCell(`B${rowNo}`).alignment = { wrapText: true, vertical: 'middle' };
+}
 
-  // ---- 阶段行（req/design/impl/common/onsite）----
+function writePoints(ws: Ws, rowNo: number, points: Points): void {
+  num(ws.getCell(`E${rowNo}`), points.likely);
+  num(ws.getCell(`F${rowNo}`), points.optimistic);
+  num(ws.getCell(`G${rowNo}`), points.pessimistic);
+}
+
+/** 阶段行（req/design/impl/common/onsite） */
+function writePhaseRows(ws: Ws, layout: EstimateLayout): void {
   for (const p of layout.phaseRows) {
-    head(p.rowNo, p.mergedCount > 1 ? `${p.label}${AGG_NOTE.lead}${p.mergedCount}${AGG_NOTE.mid}` : p.label);
+    writeHead(ws, p.rowNo, p.mergedCount > 1 ? `${p.label}${AGG_NOTE.lead}${p.mergedCount}${AGG_NOTE.mid}` : p.label);
     if (!p.points) continue; // 空数据阶段：E/F/G/H/I 全留空，不写 0
-    num(ws.getCell(`E${p.rowNo}`), p.points.likely);
-    num(ws.getCell(`F${p.rowNo}`), p.points.optimistic);
-    num(ws.getCell(`G${p.rowNo}`), p.points.pessimistic);
+    writePoints(ws, p.rowNo, p.points);
     formulaCell(ws.getCell(`H${p.rowNo}`), { formula: templateHFormula(p.rowNo), result: expected(p.points) });
     formulaCell(ws.getCell(`I${p.rowNo}`), { formula: templateIRowFormula(p.rowNo, layout.actualRow), result: p.ratio });
   }
+}
 
-  // ---- 开发段明细行 ----
-  if (layout.devRows.length > 0) {
-    head(layout.devRows[0].rowNo, TEMPLATE_PHASE_LABELS.dev);
-  }
+/** 开发段明细行 */
+function writeDevRows(ws: Ws, layout: EstimateLayout): void {
+  if (layout.devRows.length === 0) return;
+  writeHead(ws, layout.devRows[0].rowNo, TEMPLATE_PHASE_LABELS.dev);
   for (const d of layout.devRows) {
     ws.getCell(`C${d.rowNo}`).value = d.milestone;
     ws.getCell(`D${d.rowNo}`).value = d.detail;
     ws.getCell(`D${d.rowNo}`).alignment = { wrapText: false, vertical: 'middle' };
     if (!d.points) continue;
-    num(ws.getCell(`E${d.rowNo}`), d.points.likely);
-    num(ws.getCell(`F${d.rowNo}`), d.points.optimistic);
-    num(ws.getCell(`G${d.rowNo}`), d.points.pessimistic);
+    writePoints(ws, d.rowNo, d.points);
     formulaCell(ws.getCell(`H${d.rowNo}`), { formula: templateHFormula(d.rowNo), result: expected(d.points) });
   }
+}
 
-  // ---- 小计行 R31 形态：E..H 各一条 SUBTOTAL，I 列在合并首格写整体比例 ----
-  if (layout.subtotalRow) {
-    const s = layout.subtotalRow.rowNo;
-    const first = layout.devRows[0].rowNo;
-    const last = layout.devRows.at(-1)!.rowNo;
-    ws.getCell(`D${s}`).value = TEMPLATE_TEXTS.subtotal;
-    const dev = layout.summary.phases.find((p) => p.phase === 'dev');
-    const cols: Array<[XlsxSumCol, number]> = [
-      ['E', dev ? dev.likely : 0],
-      ['F', dev ? dev.optimistic : 0],
-      ['G', dev ? dev.pessimistic : 0],
-      ['H', dev ? dev.expected : 0],
-    ];
-    for (const [col, result] of cols) {
-      const cell = ws.getCell(`${col}${s}`);
-      // 小计区间是「明细行自身」（模板 `E31=SUBTOTAL(9,E8:E30)`），不含本行
-      formulaCell(cell, { formula: `SUBTOTAL(9,${col}${first}:${col}${last})`, result });
-    }
-    formulaCell(ws.getCell(`I${first}`), {
-      formula: `IFERROR(H${s}/${NAMED_RANGE_STD}/$H$${layout.actualRow},"")`,
-      result: dev ? dev.ratio : 0,
-    });
+/** 小计行 R31 形态：E..H 各一条 SUBTOTAL，I 列在合并首格写整体比例 */
+function writeSubtotalRow(ws: Ws, layout: EstimateLayout): void {
+  const subtotal = layout.subtotalRow;
+  if (!subtotal) return;
+  const s = subtotal.rowNo;
+  const first = layout.devRows[0].rowNo;
+  const last = layout.devRows.at(-1)!.rowNo;
+  ws.getCell(`D${s}`).value = TEMPLATE_TEXTS.subtotal;
+  const dev = layout.summary.phases.find((p) => p.phase === 'dev');
+  const cols: Array<[XlsxSumCol, number]> = [
+    ['E', dev ? dev.likely : 0],
+    ['F', dev ? dev.optimistic : 0],
+    ['G', dev ? dev.pessimistic : 0],
+    ['H', dev ? dev.expected : 0],
+  ];
+  for (const [col, result] of cols) {
+    const cell = ws.getCell(`${col}${s}`);
+    // 小计区间是「明细行自身」（模板 `E31=SUBTOTAL(9,E8:E30)`），不含本行
+    formulaCell(cell, { formula: `SUBTOTAL(9,${col}${first}:${col}${last})`, result });
   }
+  formulaCell(ws.getCell(`I${first}`), {
+    formula: `IFERROR(H${s}/${NAMED_RANGE_STD}/$H$${layout.actualRow},"")`,
+    result: dev ? dev.ratio : 0,
+  });
+}
 
-  // ---- R35 最理想值 ----
+/** R35 最理想值；返回 I35 的缓存值（R40 自检格复用它） */
+function writeTotalRow(ws: Ws, layout: EstimateLayout): number {
   ws.getCell(`B${layout.totalRow}`).value = TEMPLATE_TEXTS.ideal;
   ws.getCell(`B${layout.totalRow}`).font = { bold: true };
   ws.getCell(`B${layout.totalRow}`).alignment = { wrapText: true, vertical: 'middle' };
@@ -585,8 +624,11 @@ export async function buildEstimateXlsx(layout: EstimateLayout): Promise<Buffer>
     formula: `SUBTOTAL(9,I${FIRST_DATA_ROW}:I${layout.lastDataRow})`,
     result: i35,
   });
+  return i35;
+}
 
-  // ---- 系数行 R36~R39 ----
+/** 系数行 R36~R39 */
+function writeCoefRows(ws: Ws, layout: EstimateLayout): void {
   for (const c of layout.coefRows) {
     if (c.label) {
       ws.getCell(`B${c.rowNo}`).value = c.label;
@@ -600,8 +642,10 @@ export async function buildEstimateXlsx(layout: EstimateLayout): Promise<Buffer>
       result: c.ratio,
     });
   }
+}
 
-  // ---- R40 实际预估值 ----
+/** R40 实际预估值（i35 为 R35 的 I 列缓存值） */
+function writeActualRow(ws: Ws, layout: EstimateLayout, i35: number): void {
   ws.getCell(`B${layout.actualRow}`).value = TEMPLATE_TEXTS.actual;
   ws.getCell(`B${layout.actualRow}`).font = { bold: true };
   ws.getCell(`B${layout.actualRow}`).alignment = { wrapText: true, vertical: 'middle' };
@@ -625,24 +669,59 @@ export async function buildEstimateXlsx(layout: EstimateLayout): Promise<Buffer>
     formula: `SUM(I${layout.totalRow}:I${coefLast})`,
     result: i35 + layout.coefRows.reduce((a, c) => a + c.ratio, 0),
   });
+}
 
-  // ---- 备注（客户版不写，§6.1）----
-  if (layout.remarkRow) {
-    const cell = ws.getCell(`B${layout.remarkRow}`);
-    cell.value = `${TEMPLATE_TEXTS.remarks}\n${TEMPLATE_REMARKS.join('\n')}`;
-    cell.alignment = { wrapText: true, vertical: 'top' };
-    cell.font = { size: 9 };
-  }
+/** 备注（客户版不写，§6.1） */
+function writeRemarkRow(ws: Ws, layout: EstimateLayout): void {
+  if (!layout.remarkRow) return;
+  const cell = ws.getCell(`B${layout.remarkRow}`);
+  cell.value = `${TEMPLATE_TEXTS.remarks}\n${TEMPLATE_REMARKS.join('\n')}`;
+  cell.alignment = { wrapText: true, vertical: 'top' };
+  cell.font = { size: 9 };
+}
 
-  // ---- 合并区 + 边框 ----
-  for (const range of layout.merges) ws.mergeCells(range);
-  for (let rowNo = FIRST_DATA_ROW; rowNo <= layout.actualRow; rowNo++) {
+/** 数据区细边框（B..I，R6 起到实际预估值行） */
+function drawBorders(ws: Ws, lastRow: number): void {
+  for (let rowNo = FIRST_DATA_ROW; rowNo <= lastRow; rowNo++) {
     for (const col of ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'] as const) {
       ws.getCell(`${col}${rowNo}`).border = {
         top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' },
       };
     }
   }
+}
+
+export async function buildEstimateXlsx(layout: EstimateLayout): Promise<Buffer> {
+  const ExcelJS = await import('exceljs');
+  const wb = new ExcelJS.default.Workbook();
+  const { input } = layout;
+  const std = input.config.manDaysPerManMonth;
+
+  // 红线 5：常量命名区域 + 原文注释（注释由 exceljs 之外的写后补丁补，见 attachDefinedNameComment）
+  Object.defineProperty(wb.definedNames, 'model', {
+    configurable: true,
+    get: () => [{ name: NAMED_RANGE_STD, ranges: [String(std)] }],
+  });
+  // 打开即重算：预览类查看器读缓存值，真正的 Excel 会重算并覆盖成同源结果（§12-R8 的加固）
+  wb.calcProperties.fullCalcOnLoad = true;
+
+  const ws = wb.addWorksheet(SHEET_MAIN);
+  TEMPLATE_COLUMN_WIDTHS.forEach((w, i) => {
+    ws.getColumn(i + 1).width = w;
+  });
+
+  writeSheetHeader(ws, input);
+  writePhaseRows(ws, layout);
+  writeDevRows(ws, layout);
+  writeSubtotalRow(ws, layout);
+  const i35 = writeTotalRow(ws, layout);
+  writeCoefRows(ws, layout);
+  writeActualRow(ws, layout, i35);
+  writeRemarkRow(ws, layout);
+
+  // ---- 合并区 + 边框 ----
+  for (const range of layout.merges) ws.mergeCells(range);
+  drawBorders(ws, layout.actualRow);
   ws.getRow(1).height = 24;
   ws.getRow(5).height = 30;
 

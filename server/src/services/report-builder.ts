@@ -44,6 +44,84 @@ function scopeLine(data: ReportData, brief = false): string | undefined {
 }
 
 // ---------- Excel 生成（exceljs） ----------
+/** 标准版式遵循内置 skill xlsx-trae 的规范：浅色表头填充、细浅边框、数据斑马纹、合计加粗强调 */
+const HEAD_FILL = 'EAF2FF';
+const ZEBRA_FILL = 'F7F9FC';
+const THIN_BORDER = { style: 'thin', color: { argb: 'D9DEE7' } } as const;
+
+function xlsxFillCell(c: any, color: string): void {
+  c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: color } };
+}
+
+function xlsxBorderRow(r: any): void {
+  r.eachCell((c: any) => { c.border = { top: THIN_BORDER, left: THIN_BORDER, bottom: THIN_BORDER, right: THIN_BORDER }; });
+}
+
+function xlsxHeaderRow(r: any): void {
+  r.font = { bold: true };
+  r.eachCell((c: any) => xlsxFillCell(c, HEAD_FILL));
+  xlsxBorderRow(r);
+}
+
+/** T03240（AI-101 ③）：溯源段与界面面板同源（reportProvenance 单源），放在表头层级而非隐藏页 */
+function appendProvenanceRows(ws: any, provenance?: ReportProvenance): void {
+  if (!provenance) return;
+  const pb = ws.addRow(['溯源']);
+  pb.font = { bold: true };
+  for (const line of provenanceTextLines(provenance)) ws.addRow([line]);
+}
+
+/** 项目汇总表：合计行加粗 + 细边框 */
+function appendProjectSummaryTable(ws: any, data: ReportData): void {
+  xlsxHeaderRow(ws.addRow(['项目', '任务数', '待办', '已完成', '已验证', '高', '中', '低']));
+  for (const p of data.projects) {
+    const r = ws.addRow([p.name, p.total, p.todo, p.done, p.verified, p.high, p.medium, p.low]);
+    r.font = { bold: true };
+    xlsxBorderRow(r);
+  }
+}
+
+/** 任务明细表：斑马纹 */
+function appendTaskTable(ws: any, data: ReportData): void {
+  xlsxHeaderRow(ws.addRow(['项目', '任务标题', '优先级', '状态', '已验证', '分类', '更新时间']));
+  let zebra = false;
+  for (const t of data.tasks) {
+    const r = ws.addRow([t.project, t.title, t.priority, t.status, t.verified ? '是' : '', t.category, t.updatedAt]);
+    xlsxBorderRow(r);
+    if (zebra) r.eachCell((c: any) => xlsxFillCell(c, ZEBRA_FILL));
+    zebra = !zebra;
+  }
+}
+
+/** T03258（AI-204）：计划预测逾期单列一页；无预测项不建空表 */
+function appendForecastSheet(wb: any, data: ReportData): void {
+  const pf = data.planForecast;
+  if (!pf || pf.items.length === 0) return;
+  const ps = wb.addWorksheet('计划预测逾期');
+  ps.columns = [
+    { header: '项目', key: 'project', width: 18 },
+    { header: '计划标题', key: 'title', width: 36 },
+    { header: '计划结束', key: 'endDate', width: 12 },
+    { header: '预测完成', key: 'forecastDate', width: 12 },
+    { header: '时间已过 / 完成', key: 'ratio', width: 16 },
+    { header: '依据', key: 'basis', width: 60 },
+  ];
+  ps.addRow([titleLine(data)]);
+  ps.addRow([`${pf.note}；${pf.disclaimer}`]);
+  ps.addRow([]);
+  xlsxHeaderRow(ps.addRow(['项目', '计划标题', '计划结束', '预测完成', '时间已过 / 完成', '依据']));
+  let pz = false;
+  for (const it of pf.items) {
+    const r = ps.addRow([
+      it.project, it.title, it.endDate, it.forecastDate,
+      `${Math.round(it.timeElapsedRatio * 1000) / 10}% / ${it.progress}%`, it.basis,
+    ]);
+    xlsxBorderRow(r);
+    if (pz) r.eachCell((c: any) => xlsxFillCell(c, ZEBRA_FILL));
+    pz = !pz;
+  }
+}
+
 export async function buildXlsx(data: ReportData, templateBuf?: Buffer, aiInsight?: string, provenance?: ReportProvenance): Promise<Buffer> {
   // 模板文件开头包含一个占位表头行结构；生产级实现会精确渲染，这里统一标准版式
   const ExcelJS = await import('exceljs');
@@ -52,14 +130,6 @@ export async function buildXlsx(data: ReportData, templateBuf?: Buffer, aiInsigh
     // 用户模板：以模板为基底，保留其原有 sheet，仅新增「报表数据」sheet，满足“参考模板结构生成”
     await wb.xlsx.load(templateBuf as unknown as ArrayBuffer);
   }
-  // 标准版式遵循内置 skill xlsx-trae 的规范：浅色表头填充、细浅边框、数据斑马纹、合计加粗强调
-  const HEAD_FILL = 'EAF2FF';
-  const ZEBRA_FILL = 'F7F9FC';
-  const THIN = { style: 'thin', color: { argb: 'D9DEE7' } } as const;
-  const fillCell = (c: any, color: string) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: color } }; };
-  const borderRow = (r: any) => r.eachCell((c: any) => { c.border = { top: THIN, left: THIN, bottom: THIN, right: THIN }; });
-  const headerRow = (r: any) => { r.font = { bold: true }; r.eachCell((c: any) => fillCell(c, HEAD_FILL)); borderRow(r); };
-
   const ws = wb.addWorksheet('报表数据');
   ws.columns = [
     { header: '项目', key: 'project', width: 18 },
@@ -78,55 +148,12 @@ export async function buildXlsx(data: ReportData, templateBuf?: Buffer, aiInsigh
   ws.addRow([`生成时间：${data.generatedAt}`]);
   // T03268（PRD 4.2）：导出带时区元信息
   ws.addRow([tzLine(data)]);
-  // T03240（AI-101 ③）：溯源段与界面面板同源（reportProvenance 单源），放在表头层级而非隐藏页
-  if (provenance) {
-    const pb = ws.addRow(['溯源']);
-    pb.font = { bold: true };
-    for (const line of provenanceTextLines(provenance)) ws.addRow([line]);
-  }
+  appendProvenanceRows(ws, provenance);
   ws.addRow([]);
-  headerRow(ws.addRow(['项目', '任务数', '待办', '已完成', '已验证', '高', '中', '低']));
-  for (const p of data.projects) {
-    const r = ws.addRow([p.name, p.total, p.todo, p.done, p.verified, p.high, p.medium, p.low]);
-    r.font = { bold: true };
-    borderRow(r);
-  }
+  appendProjectSummaryTable(ws, data);
   ws.addRow([]);
-  headerRow(ws.addRow(['项目', '任务标题', '优先级', '状态', '已验证', '分类', '更新时间']));
-  let zebra = false;
-  for (const t of data.tasks) {
-    const r = ws.addRow([t.project, t.title, t.priority, t.status, t.verified ? '是' : '', t.category, t.updatedAt]);
-    borderRow(r);
-    if (zebra) r.eachCell((c: any) => fillCell(c, ZEBRA_FILL));
-    zebra = !zebra;
-  }
-  // T03258（AI-204）：计划预测逾期单列一页；无预测项不建空表
-  if (data.planForecast && data.planForecast.items.length > 0) {
-    const pf = data.planForecast;
-    const ps = wb.addWorksheet('计划预测逾期');
-    ps.columns = [
-      { header: '项目', key: 'project', width: 18 },
-      { header: '计划标题', key: 'title', width: 36 },
-      { header: '计划结束', key: 'endDate', width: 12 },
-      { header: '预测完成', key: 'forecastDate', width: 12 },
-      { header: '时间已过 / 完成', key: 'ratio', width: 16 },
-      { header: '依据', key: 'basis', width: 60 },
-    ];
-    ps.addRow([titleLine(data)]);
-    ps.addRow([`${pf.note}；${pf.disclaimer}`]);
-    ps.addRow([]);
-    headerRow(ps.addRow(['项目', '计划标题', '计划结束', '预测完成', '时间已过 / 完成', '依据']));
-    let pz = false;
-    for (const it of pf.items) {
-      const r = ps.addRow([
-        it.project, it.title, it.endDate, it.forecastDate,
-        `${Math.round(it.timeElapsedRatio * 1000) / 10}% / ${it.progress}%`, it.basis,
-      ]);
-      borderRow(r);
-      if (pz) r.eachCell((c: any) => fillCell(c, ZEBRA_FILL));
-      pz = !pz;
-    }
-  }
+  appendTaskTable(ws, data);
+  appendForecastSheet(wb, data);
   // AI 周报：追加「AI 周报洞察」工作表，按内置 skill xlsx-trae 版式将洞察 Markdown 渲染为结构化表格
   if (aiInsight) {
     const ai = wb.addWorksheet('AI 周报洞察');

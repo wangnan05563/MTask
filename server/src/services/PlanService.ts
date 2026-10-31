@@ -3,6 +3,7 @@
  * Excel 导入/导出（exceljs）、计划→待办状态联动。设计文档见 docs/PRD-项目计划.md。
  */
 import { getDb } from '../db/connection';
+import type Database from 'better-sqlite3';
 import { createHash } from 'node:crypto'; // T01156-3：PRD 导入内容哈希——同名/同内容覆盖去重
 import { v4 as uuid } from 'uuid';
 import ExcelJS from 'exceljs';
@@ -285,7 +286,8 @@ function cellValueText(v: unknown): string {
   if (v instanceof Date) return fmt(v);
   if (typeof v === 'object' && 'text' in v) return String((v as { text: unknown }).text);
   if (typeof v === 'object') return JSON.stringify(v);
-  return String(v); // NOSONAR - 前置 typeof 已排除 object 分支，此处仅剩 string/number/boolean/bigint
+  // 到这里只剩标量：交给 scalarText 统一转文本（与 HTTP/AI 回包同一口径）
+  return scalarText(v);
 }
 
 /** T00764：日历上下文——holidays=放假日（工作日排除），overtime=加班日（周末/节假日上班，强制算工作日） */
@@ -809,18 +811,36 @@ function normalizePrdPlans(raw: unknown[]): Array<{ title: string; description: 
  *  1) 文档不超 targetChars 直接单片段（调用方据此回退单轮路径）；
  *  2) 按行贪心装箱到 targetChars，优先在 Markdown/中文序号/数字编号标题行断开，保住语义完整性；
  *  3) 片数超 maxChunks 时合并最小相邻对，保证总轮次有上界（AI 调用成本可控）。 */
+/** 切片边界行：Markdown 标题 / 中文序号 / 数字编号标题（在这些行断开语义更完整） */
+function isPrdBoundaryLine(line: string): boolean {
+  return /^\s*#{1,6}\s/.test(line)
+    || /^\s*[一二三四五六七八九十]+\s*[、.]/.test(line)
+    || /^\s*\d+(\.\d+)*\s+\S/.test(line);
+}
+
+/** 片数超上限：合并体量最小的一对相邻片（保证总轮次有上界） */
+function mergeSmallestChunkPair(chunks: string[]): void {
+  let idx = 0;
+  let best = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < chunks.length - 1; i += 1) {
+    const sum = chunks[i].length + chunks[i + 1].length;
+    if (sum < best) {
+      best = sum;
+      idx = i;
+    }
+  }
+  chunks.splice(idx, 2, `${chunks[idx]}\n${chunks[idx + 1]}`);
+}
+
 function splitPrdChunks(docText: string, targetChars: number, maxChunks: number): string[] {
   if (docText.length <= targetChars) return [docText];
   const target = Math.max(targetChars, Math.ceil(docText.length / maxChunks));
-  const isBoundary = (line: string): boolean => /^\s*#{1,6}\s/.test(line)
-    || /^\s*[一二三四五六七八九十]+\s*[、.]/.test(line)
-    || /^\s*\d+(\.\d+)*\s+\S/.test(line);
   const chunks: string[] = [];
   let buf: string[] = [];
   let lastBoundary = -1;
   for (const line of docText.split('\n')) {
     buf.push(line);
-    if (isBoundary(line)) lastBoundary = buf.length - 1;
+    if (isPrdBoundaryLine(line)) lastBoundary = buf.length - 1;
     if (buf.join('\n').length >= target) {
       if (lastBoundary > 0) {
         chunks.push(buf.slice(0, lastBoundary).join('\n'));
@@ -833,60 +853,76 @@ function splitPrdChunks(docText: string, targetChars: number, maxChunks: number)
     }
   }
   if (buf.length) chunks.push(buf.join('\n'));
-  while (chunks.length > maxChunks) {
-    let idx = 0;
-    let best = Number.POSITIVE_INFINITY;
-    for (let i = 0; i < chunks.length - 1; i += 1) {
-      const sum = chunks[i].length + chunks[i + 1].length;
-      if (sum < best) {
-        best = sum;
-        idx = i;
-      }
-    }
-    chunks.splice(idx, 2, `${chunks[idx]}\n${chunks[idx + 1]}`);
-  }
+  while (chunks.length > maxChunks) mergeSmallestChunkPair(chunks);
   return chunks.filter((c) => c.trim().length > 0);
+}
+
+/** 标题归一：去空白 + 小写，作为跨片去重键 */
+function normalizedReqTitle(t: string): string {
+  return t.replaceAll(/\s+/g, '').toLowerCase();
+}
+
+/** 同标题需求合并：保留正文更长者，补齐 sourceRef 与非 normal 优先级 */
+function mergeRequirementInto(
+  kept: PrdParsePart['requirements'][number],
+  r: PrdParsePart['requirements'][number],
+): void {
+  if ((r.content?.length ?? 0) > (kept.content?.length ?? 0)) kept.content = r.content;
+  if (!kept.sourceRef && r.sourceRef) kept.sourceRef = r.sourceRef;
+  if (r.priority && r.priority !== 'normal' && kept.priority === 'normal') kept.priority = r.priority;
+}
+
+/** 跨片需求去重与全局编号的累积状态 */
+interface ChunkMergeState {
+  requirements: PrdParsePart['requirements'];
+  reqNoByKey: Map<string, string>;
+  seq: number;
+}
+
+/** 一片的需求并入全局：重复标题计入原编号，新标题分配全局 REQ-NNN；返回片内编号 → 全局编号映射 */
+function mergePartRequirements(part: PrdParsePart, st: ChunkMergeState): Map<string, string> {
+  const partNoMap = new Map<string, string>();
+  for (const r of part.requirements) {
+    const k = normalizedReqTitle(r.title);
+    const exist = st.reqNoByKey.get(k);
+    if (exist) {
+      const kept = st.requirements.find((x) => x.reqNo === exist);
+      if (kept) mergeRequirementInto(kept, r);
+      partNoMap.set(r.reqNo, exist);
+      continue;
+    }
+    st.seq += 1;
+    const no = `REQ-${String(st.seq).padStart(3, '0')}`;
+    st.requirements.push({ ...r, reqNo: no });
+    st.reqNoByKey.set(k, no);
+    partNoMap.set(r.reqNo, no);
+  }
+  return partNoMap;
+}
+
+/** 一片的计划并入全局：按标题精确去重（首见优先），reqNos 改写为全局编号后取并集 */
+function mergePartDrafts(part: PrdParsePart, partNoMap: Map<string, string>, drafts: PrdParsePart['drafts']): void {
+  for (const d of part.drafts) {
+    const mapped = [...new Set(d.reqNos.map((no) => partNoMap.get(no)).filter((x): x is string => !!x))];
+    const exist = drafts.find((x) => x.title.trim() === d.title.trim());
+    if (exist) {
+      exist.reqNos = [...new Set([...exist.reqNos, ...mapped])];
+      continue;
+    }
+    drafts.push({ ...d, reqNos: mapped });
+  }
 }
 
 /** T02401-E：合并各分片解析结果。
  *  需求：按规范化标题去重，重复条目保留信息量最大者，然后按文档顺序全局重排 REQ-001..N；
  *  计划：按标题精确去重（首见优先，reqNos 并集），reqNos 经片内映射改写为全局编号。 */
 function mergeChunkedPrdParts(parts: PrdParsePart[]): PrdParsePart {
-  const key = (t: string): string => t.replaceAll(/\s+/g, '').toLowerCase();
   const requirements: PrdParsePart['requirements'] = [];
-  const reqNoByKey = new Map<string, string>();
   const drafts: PrdParsePart['drafts'] = [];
-  let seq = 0;
+  const st: ChunkMergeState = { requirements, reqNoByKey: new Map(), seq: 0 };
   for (const part of parts) {
-    const partNoMap = new Map<string, string>();
-    for (const r of part.requirements) {
-      const k = key(r.title);
-      const exist = reqNoByKey.get(k);
-      if (exist) {
-        const kept = requirements.find((x) => x.reqNo === exist);
-        if (kept) {
-          if ((r.content?.length ?? 0) > (kept.content?.length ?? 0)) kept.content = r.content;
-          if (!kept.sourceRef && r.sourceRef) kept.sourceRef = r.sourceRef;
-          if (r.priority && r.priority !== 'normal' && kept.priority === 'normal') kept.priority = r.priority;
-        }
-        partNoMap.set(r.reqNo, exist);
-      } else {
-        seq += 1;
-        const no = `REQ-${String(seq).padStart(3, '0')}`;
-        requirements.push({ ...r, reqNo: no });
-        reqNoByKey.set(k, no);
-        partNoMap.set(r.reqNo, no);
-      }
-    }
-    for (const d of part.drafts) {
-      const mapped = [...new Set(d.reqNos.map((no) => partNoMap.get(no)).filter((x): x is string => !!x))];
-      const exist = drafts.find((x) => x.title.trim() === d.title.trim());
-      if (exist) {
-        exist.reqNos = [...new Set([...exist.reqNos, ...mapped])];
-      } else {
-        drafts.push({ ...d, reqNos: mapped });
-      }
-    }
+    const partNoMap = mergePartRequirements(part, st);
+    mergePartDrafts(part, partNoMap, drafts);
   }
   return { requirements, drafts };
 }
@@ -1050,7 +1086,7 @@ function resolveImportPlanTargets(
  * 删掉其中一行会连带清掉另一行的引用。故落库前按项目现有最大编号顺延，旧编号一律不改。
  * T02303（裁定口径甲）：`onDuplicatePlan:'reuse'` 时需求侧也幂等——同标题且同内容的存量行直接复用其 id，
  * 不再新建。实测原坑：reuse 只让计划侧幂等，需求行整批新建（35→70）、关联边翻倍（57→114），
- * 等于把 T01869 的「同标题双行被读成 todo/0%」从计划侧搬到了需求侧。
+ * 等于把 T01869 的「同标题双行被读成 待办/0%」从计划侧搬到了需求侧。
  * 复用命中时绝不改写存量行（status/编号/标题/内容一律不动，与 T01875 对计划行的保护同构）；
  * 同一「标题+内容」键在存量里命中多行时不复用——宁可新建也不静默合并歧义行。
  */
@@ -1273,6 +1309,316 @@ function createPrdImportTodos(
     created += 1;
   });
   return created;
+}
+
+/**
+ * 按 req_no 定位存量需求行（带会话内缓存）——import 与 preview 共用同一实现，
+ * 避免两边各写一份「三层回落」的第三层后在口径上分叉。
+ */
+function makeExistingReqLookup(db: ReturnType<typeof getDb>, projectId: string): (n: string) => string | null {
+  const cache = new Map<string, string | null>();
+  return (n: string): string | null => {
+    const key = n.trim();
+    if (!key) return null;
+    if (cache.has(key)) return cache.get(key) ?? null;
+    const row = db.prepare('SELECT id FROM prd_requirements WHERE project_id = ? AND req_no = ?').get(projectId, key) as { id: string } | undefined;
+    const id = row?.id ?? null;
+    cache.set(key, id);
+    return id;
+  };
+}
+
+/** 段内锚点：该里程碑之后、下一里程碑之前最后一个非里程碑行的 sort_order（没有后继则取里程碑自身） */
+function reuseMilestoneAnchor(rows: Array<{ kind: string; sort_order: number }>, milestoneSort: number): number {
+  let anchor = milestoneSort;
+  for (const r of rows) {
+    if (r.sort_order <= milestoneSort) continue;
+    if (r.kind === 'milestone') break;
+    anchor = r.sort_order;
+  }
+  return anchor;
+}
+
+/** 按「批内最近的前置里程碑」把新建行归到 reuse 命中的里程碑段下（与 intervalChildEdges 同一区间口径） */
+function groupRowsByReuseMilestone(
+  planKinds: PlanKind[],
+  planTargets: PrdImportPlanTarget[],
+  planIds: Array<string | null>,
+  rows: Array<{ id: string; kind: string; sort_order: number }>,
+): Map<string, { anchor: number; rows: string[] }> {
+  const ownerOf = new Map<number, number>();
+  let lastMs = -1;
+  planKinds.forEach((k, i) => {
+    if (k === 'milestone') { lastMs = i; return; }
+    if (planTargets[i] && !planTargets[i].reuseId) ownerOf.set(i, lastMs);
+  });
+  const groups = new Map<string, { anchor: number; rows: string[] }>();
+  for (const [i, owner] of ownerOf) {
+    if (owner < 0) continue;
+    const reuseId = planTargets[owner]?.reuseId;
+    const rid = planIds[i];
+    if (!reuseId || !rid) continue;
+    const mrow = rows.find((r) => r.id === reuseId);
+    if (!mrow) continue;
+    const g = groups.get(reuseId) ?? { anchor: reuseMilestoneAnchor(rows, mrow.sort_order), rows: [] };
+    g.rows.push(rid);
+    groups.set(reuseId, g);
+  }
+  return groups;
+}
+
+/**
+ * T02881 RC3 第三刀（裁定 a）：reuse 命中里程碑时，其段内新行不得一律追加表尾——
+ * 列表侧 milestoneMeta 按 sort_order 位置切片（PlanPage.tsx），表尾追加会把新明细错挂给
+ * 下一个里程碑。把「批内归属里程碑为 reuse 命中行」的新行插到该里程碑现有分段末尾
+ * （该里程碑与下一里程碑之间非里程碑行的最大 sort_order），其余行整体后移让位。
+ * 只挪 sort_order 不碰 updated_at，T01869 保护的 status/progress 不受影响；
+ * rename/new 模式整批按批次序连排，位置切片天然正确，无需此通道。
+ */
+function repositionReusedMilestoneRows(
+  db: ReturnType<typeof getDb>,
+  projectId: string,
+  planKinds: PlanKind[],
+  planTargets: PrdImportPlanTarget[],
+  planIds: Array<string | null>,
+): void {
+  const rows = db.prepare('SELECT id, kind, sort_order FROM plan_tasks WHERE project_id = ? AND archived = 0 ORDER BY sort_order, created_at')
+    .all(projectId) as Array<{ id: string; kind: string; sort_order: number }>;
+  const groups = groupRowsByReuseMilestone(planKinds, planTargets, planIds, rows);
+  // 从最深的锚点往表头方向插：后面的插入只会整体后移更大 sort_order 的行，
+  // 不会打乱已插段的相对位置（多 reuse 里程碑场景两段互不越界）
+  const updShift = db.prepare('UPDATE plan_tasks SET sort_order = sort_order + ? WHERE project_id = ? AND archived = 0 AND sort_order > ?');
+  const updOrder = db.prepare('UPDATE plan_tasks SET sort_order = ? WHERE id = ?');
+  const ordered = [...groups.values()].sort((a, b) => b.anchor - a.anchor);
+  for (const g of ordered) {
+    if (g.rows.length === 0) continue;
+    updShift.run(g.rows.length, projectId, g.anchor);
+    g.rows.forEach((rid, j) => updOrder.run(g.anchor + 1 + j, rid));
+  }
+}
+
+/** better-sqlite3 预编译语句（拆分辅助函数时显式标注，避免 any） */
+type PlanStatement = Database.Statement;
+
+/**
+ * T01875 reuse：只补差异字段与需求关联——
+ * 需求关联取「并集」（只增不减；覆盖式写入会让原行手工加的关联消失），
+ * 描述/复杂度仅在原值为空时补填；status、progress、起止日期一律不写
+ * （T01869 硬约束：重导不得把已有进度打回 0%／未开始）。
+ */
+function updateReusedPlanRow(
+  db: ReturnType<typeof getDb>,
+  updReuse: PlanStatement,
+  reuseId: string,
+  p: PrdImportPlanItem,
+  ids: string[],
+  t: string,
+): void {
+  const cur = db.prepare('SELECT description, complexity, req_ids FROM plan_tasks WHERE id = ? AND archived = 0')
+    .get(reuseId) as { description: string | null; complexity: number | null; req_ids: string | null } | undefined;
+  if (!cur) return;
+  const description = (cur.description ?? '').trim() ? cur.description : (p.description ?? '');
+  const complexity = cur.complexity ?? (p.complexity ?? null);
+  const curReqIds = parseLinkIds(cur.req_ids);
+  const added = ids.filter((x) => !curReqIds.includes(x));
+  updReuse.run(description ?? '', complexity, added.length > 0 ? JSON.stringify([...curReqIds, ...added]) : null, t, reuseId);
+}
+
+/** 计划行需求关联回写所需的上下文（T00709 / T00712 / T01995 的计数集合一并带入） */
+interface ImportPlanLinkCtx {
+  t: string;
+  planItems: PrdImportPlanItem[];
+  planTargets: PrdImportPlanTarget[];
+  planIds: Array<string | null>;
+  findReqId: (n: string) => string | null;
+  unlinkedReqNos: Set<string>;
+  linkedReqIds: Set<string>;
+}
+
+/**
+ * T00709（D-1 修复）：按 createBatch 返回的 id（与 planItems 同一下标序，两侧 title 过滤口径一致）回写 req_ids，
+ * 废弃按标题 find 匹配——同名计划会命中同一行导致关联互相覆盖丢失。
+ * T00712（D-5）：引用了不存在的需求编号 → 记入 unlinkedReqNos 供调用方提示。
+ */
+function writeBackImportPlanLinks(db: ReturnType<typeof getDb>, ctx: ImportPlanLinkCtx): void {
+  const { t, planItems, planTargets, planIds, findReqId, unlinkedReqNos, linkedReqIds } = ctx;
+  const updPlan = db.prepare('UPDATE plan_tasks SET req_ids = ?, updated_at = ? WHERE id = ?');
+  const updReuse = db.prepare(
+    `UPDATE plan_tasks SET description = ?, complexity = ?, req_ids = COALESCE(?, req_ids), updated_at = ?
+     WHERE id = ? AND archived = 0`,
+  );
+  planTargets.forEach((target, i) => {
+    const p = planItems[i];
+    if (!p) return;
+    const rawNos = p.reqNos ?? [];
+    for (const n of rawNos) if (!findReqId(n)) unlinkedReqNos.add(n);
+    const ids = rawNos.map((n) => findReqId(n)).filter((x): x is string => !!x);
+    for (const rid of ids) linkedReqIds.add(rid); // T01995：零关联清点用
+    if (target.reuseId) {
+      updateReusedPlanRow(db, updReuse, target.reuseId, p, ids, t);
+      return;
+    }
+    const planId = planIds[i];
+    if (planId && ids.length > 0) updPlan.run(JSON.stringify(ids), t, planId);
+  });
+}
+
+/** createBatch 的入参条目（T00561 各行独立日期 / T01688 可带 depsOn） */
+interface PlanBatchItem {
+  title: string;
+  description?: string;
+  startDate?: string;
+  durationDays?: number;
+  assignee?: string;
+  status?: PlanStatus;
+  kind?: PlanKind;
+  complexity?: number;
+  depsOn?: string[];
+  reqNos?: string[];
+}
+
+/** 批量落库的共享上下文（语句与查找器都在事务里建一次） */
+interface BatchInsertCtx {
+  projectId: string;
+  t: string;
+  cal: WorkdayCal;
+  maxOrder: number;
+  clean: PlanBatchItem[];
+  targets: PrdImportPlanTarget[] | null;
+  kindOf: (it: PlanBatchItem) => PlanKind;
+  ids: string[];
+  warnings: string[];
+  ins: PlanStatement;
+  updReqIds: PlanStatement;
+  updReuse: PlanStatement;
+  reqIdOf: (n: string) => string | null;
+}
+
+/**
+ * T01868 防重入：同一份计划拆解经 AI 通道重复落库会留下并排两套计划（四期 E 系列 / [PRD] M 系列事故）。
+ * dupPolicy=block（AI 通道默认）时同名占比过高直接拒写；warn（页面/PRD 导入）只提示不落库行为变更，沿用 T01869 口径。
+ */
+function warnDuplicateTitles(
+  db: ReturnType<typeof getDb>,
+  projectId: string,
+  clean: PlanBatchItem[],
+  opts: { dupPolicy?: 'warn' | 'block' },
+  warnings: string[],
+): void {
+  const titles = new Set(clean.map((it) => it.title.trim()));
+  const countSame = db.prepare('SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0');
+  const dups: string[] = [];
+  for (const title of titles) {
+    if ((countSame.get(projectId, title) as { n: number }).n > 0) dups.push(title);
+  }
+  if (dups.length === 0) return;
+  warnings.push(`本批 ${dups.length}/${titles.size} 个标题与该项目已有计划同名（示例：${dups.slice(0, 3).join('、')}）`);
+  if (opts.dupPolicy === 'block' && dups.length >= 3 && dups.length / titles.size >= 0.6) {
+    throw new Error(`防重入拦截：本批 ${dups.length}/${titles.size} 个标题与项目已有计划同名，判定为同一份拆解重复落库（示例：${dups.slice(0, 5).join('、')}）。确属新增条目请显式传 allowDuplicates`);
+  }
+}
+
+/** reuse 命中：不新建，只补差异字段（描述/复杂度仅在原值为空时补填；需求关联取并集；status/progress/日期不动） */
+function applyReuseBatchRow(
+  db: ReturnType<typeof getDb>,
+  ctx: BatchInsertCtx,
+  reuseId: string,
+  it: PlanBatchItem,
+): void {
+  const cur = db.prepare('SELECT description, complexity, req_ids FROM plan_tasks WHERE id = ? AND archived = 0')
+    .get(reuseId) as { description: string | null; complexity: number | null; req_ids: string | null } | undefined;
+  if (!cur) return;
+  const description = (cur.description ?? '').trim() ? cur.description : (it.description ?? '');
+  const complexity = cur.complexity ?? (it.complexity ?? null);
+  const curReqIds = parseLinkIds(cur.req_ids);
+  const idsHit = (it.reqNos ?? []).map(ctx.reqIdOf).filter((x): x is string => !!x);
+  const added = idsHit.filter((x) => !curReqIds.includes(x));
+  ctx.updReuse.run(description ?? '', complexity, added.length > 0 ? JSON.stringify([...curReqIds, ...added]) : null, ctx.t, reuseId);
+}
+
+/** 单条新建行：算工期/日期/状态后落库并写需求关联；返回是否带上了需求关联 */
+function insertNewBatchRow(ctx: BatchInsertCtx, it: PlanBatchItem, i: number): boolean {
+  const duration = Math.max(1, Math.floor(Number(it.durationDays) || 1));
+  const status = PLAN_STATUSES.has(it.status as PlanStatus) ? (it.status as PlanStatus) : 'todo';
+  // T01001：kind 仅接受里程碑/普通/日常三类，非法值兜底为 normal（不破坏其它批量创建调用）
+  const kind = ctx.kindOf(it);
+  // T00561：各行日期独立——开始日用自己的（空则今天），end 按工作日计算
+  const start = it.startDate && DATE_RE.test(it.startDate) ? it.startDate : fmt(new Date());
+  const end = calcEndDate(start, duration, ctx.cal);
+  const id = uuid();
+  ctx.ids.push(id);
+  // T02122：createBatch 复杂度钳位（此前直写 it.complexity ?? null，外部 Agent/Excel 可把 0/7/3.5 原样落库）
+  ctx.ins.run(id, ctx.projectId, (ctx.targets ? ctx.targets[i].title : it.title).trim(), it.description ?? '', start, end, duration, status, it.assignee ?? '', ctx.maxOrder + 1 + i, kind, clampComplexity(it.complexity), ctx.t, ctx.t);
+  // 需求关联：编号引用不到的进 unlinked 提示；新建行最终零关联计入回执「未关联」数
+  const rawNos = (it.reqNos ?? []).filter((n) => n?.trim());
+  const linked = rawNos.map(ctx.reqIdOf).filter((x): x is string => !!x);
+  for (const n of rawNos) if (!ctx.reqIdOf(n)) ctx.warnings.push(`条目「${it.title}」引用的需求编号「${n}」未找到（未关联）`);
+  if (linked.length > 0) ctx.updReqIds.run(JSON.stringify(linked), ctx.t, id);
+  return linked.length > 0;
+}
+
+/** 批量插行（事务内）：reuse 命中走补写，其余新建；返回三类回执计数 */
+function insertBatchRows(db: ReturnType<typeof getDb>, ctx: BatchInsertCtx): { inserted: number; reused: number; unlinked: number } {
+  let inserted = 0;
+  let reused = 0;
+  let unlinked = 0;
+  ctx.clean.forEach((it, i) => {
+    const reuseId = ctx.targets?.[i]?.reuseId;
+    if (reuseId) {
+      applyReuseBatchRow(db, ctx, reuseId, it);
+      reused += 1;
+      ctx.ids.push(reuseId);
+      return;
+    }
+    const linked = insertNewBatchRow(ctx, it, i);
+    inserted += 1;
+    if (!linked) unlinked += 1;
+  });
+  return { inserted, reused, unlinked };
+}
+
+/**
+ * T01688 项 1：依赖解析与落库（在建行之后：需要全部 id 与标题才能互引）。
+ *  - 引用目标为里程碑（kind=milestone）→ type='child'（归属，里程碑按子任务包络收口）；
+ *  - 其余 → type='serial'（串行前置，触发排期联动）。
+ * 无法解析的引用不静默丢弃：以 warnings 返回，供上层提示「依赖待补」。
+ */
+function linkBatchDeps(
+  db: ReturnType<typeof getDb>,
+  ctx: {
+    projectId: string;
+    clean: PlanBatchItem[];
+    ids: string[];
+    targets: PrdImportPlanTarget[] | null;
+    warnings: string[];
+    update: (id: string, patch: { deps: string }) => unknown;
+  },
+): void {
+  const titleToId = new Map<string, string>();
+  // T03160：reuse 让号后的实际落库标题也可被引用（同批内 depsOn 用基准标题寻址同样命中）
+  ctx.clean.forEach((it, i) => {
+    titleToId.set(it.title.trim(), ctx.ids[i]);
+    const tt = ctx.targets?.[i]?.title?.trim();
+    if (tt) titleToId.set(tt, ctx.ids[i]);
+  });
+  const rowOf = (id: string) => db.prepare('SELECT kind, title FROM plan_tasks WHERE id = ?').get(id) as { kind: string; title: string } | undefined;
+  ctx.clean.forEach((it, i) => {
+    const id = ctx.ids[i];
+    if (!id || !it.depsOn?.length) return;
+    const parsed: Array<{ id: string; type: string }> = [];
+    for (const dep of it.depsOn) {
+      const key = dep.trim();
+      if (!key) continue;
+      let target = titleToId.get(key);
+      if (!target) {
+        const row = db.prepare('SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0').get(ctx.projectId, key) as { id: string } | undefined;
+        target = row?.id;
+      }
+      if (!target) { ctx.warnings.push(`条目「${it.title}」的依赖「${key}」未解析到（依赖待补）`); continue; }
+      parsed.push({ id: target, type: rowOf(target)?.kind === 'milestone' ? 'child' : 'serial' });
+    }
+    if (parsed.length > 0) ctx.update(id, { deps: JSON.stringify(parsed) });
+  });
 }
 
 export const PlanService = {
@@ -2297,16 +2643,7 @@ export const PlanService = {
       // 旧实现只认本次 payload 的编号空间，增量回写（计划挂到既有 REQ-021）会被判 unlinkedReqNos
       // 并静默丢关联，正是四期 K1~K8「计划无矩阵、无待办」那类孤儿的成因之一。
       // 项目内 req_no 唯一（T01872 唯一索引），按号定位是确定性的。
-      const existingReqCache = new Map<string, string | null>();
-      const existingReqId = (n: string): string | null => {
-        const key = n.trim();
-        if (!key) return null;
-        if (existingReqCache.has(key)) return existingReqCache.get(key) ?? null;
-        const row = db.prepare('SELECT id FROM prd_requirements WHERE project_id = ? AND req_no = ?').get(projectId, key) as { id: string } | undefined;
-        const id = row?.id ?? null;
-        existingReqCache.set(key, id);
-        return id;
-      };
+      const existingReqId = makeExistingReqLookup(db, projectId);
       const findReqId = (n: string) => requestedToId.get(n) ?? noToId.get(n) ?? existingReqId(n);
       // T01867 / T01995：需求项落库与两个编号空间登记（口径见 insertPrdRequirementsForImport）
       // T02300：判重+让号摘成纯读函数，落库只消费其结果——preview 与 import 从此共用同一张查找表，
@@ -2339,84 +2676,10 @@ export const PlanService = {
         insertedPlans = created.inserted;
         created.ids.forEach((id, k) => { const i = newIdx[k]; if (i !== undefined) planIds[i] = id; });
       }
-      // T02881 RC3 第三刀（裁定 a）：reuse 命中里程碑时，其段内新行不得一律追加表尾——
-      // 列表侧 milestoneMeta 按 sort_order 位置切片（PlanPage.tsx），表尾追加会把新明细错挂给
-      // 下一个里程碑。把「批内归属里程碑为 reuse 命中行」的新行插到该里程碑现有分段末尾
-      // （该里程碑与下一里程碑之间非里程碑行的最大 sort_order），其余行整体后移让位。
-      // 只挪 sort_order 不碰 updated_at，T01869 保护的 status/progress 不受影响；
-      // rename/new 模式整批按批次序连排，位置切片天然正确，无需此通道。
-      if (reuseMode) {
-        const rows = db.prepare('SELECT id, kind, sort_order FROM plan_tasks WHERE project_id = ? AND archived = 0 ORDER BY sort_order, created_at')
-          .all(projectId) as Array<{ id: string; kind: string; sort_order: number }>;
-        // 批内归属：每个新建非里程碑行往前找最近的批内里程碑（与 intervalChildEdges 同一区间口径）
-        const ownerOf = new Map<number, number>();
-        let lastMs = -1;
-        planKinds.forEach((k, i) => {
-          if (k === 'milestone') { lastMs = i; return; }
-          if (planTargets[i] && !planTargets[i].reuseId) ownerOf.set(i, lastMs);
-        });
-        const groups = new Map<string, { anchor: number; rows: string[] }>();
-        for (const [i, owner] of ownerOf) {
-          if (owner < 0) continue;
-          const reuseId = planTargets[owner]?.reuseId;
-          const rid = planIds[i];
-          if (!reuseId || !rid) continue;
-          const mrow = rows.find((r) => r.id === reuseId);
-          if (!mrow) continue;
-          let anchor = mrow.sort_order;
-          for (const r of rows) {
-            if (r.sort_order <= mrow.sort_order) continue;
-            if (r.kind === 'milestone') break;
-            anchor = r.sort_order;
-          }
-          const g = groups.get(reuseId) ?? { anchor, rows: [] };
-          g.rows.push(rid);
-          groups.set(reuseId, g);
-        }
-        // 从最深的锚点往表头方向插：后面的插入只会整体后移更大 sort_order 的行，
-        // 不会打乱已插段的相对位置（多 reuse 里程碑场景两段互不越界）
-        const updShift = db.prepare('UPDATE plan_tasks SET sort_order = sort_order + ? WHERE project_id = ? AND archived = 0 AND sort_order > ?');
-        const updOrder = db.prepare('UPDATE plan_tasks SET sort_order = ? WHERE id = ?');
-        const ordered = [...groups.values()].sort((a, b) => b.anchor - a.anchor);
-        for (const g of ordered) {
-          if (g.rows.length === 0) continue;
-          updShift.run(g.rows.length, projectId, g.anchor);
-          g.rows.forEach((rid, j) => updOrder.run(g.anchor + 1 + j, rid));
-        }
-      }
-      // T00709（D-1 修复）：按 createBatch 返回的 id（与 planItems 同一下标序，两侧 title 过滤口径一致）回写 req_ids，
-      // 废弃按标题 find 匹配——同名计划会命中同一行导致关联互相覆盖丢失
-      const updPlan = db.prepare('UPDATE plan_tasks SET req_ids = ?, updated_at = ? WHERE id = ?');
-      const updReuse = db.prepare(
-        `UPDATE plan_tasks SET description = ?, complexity = ?, req_ids = COALESCE(?, req_ids), updated_at = ?
-         WHERE id = ? AND archived = 0`,
-      );
-      planTargets.forEach((target, i) => {
-        const p = planItems[i];
-        if (!p) return;
-        const rawNos = p.reqNos ?? [];
-        // T00712（D-5）：引用了不存在的需求编号 → 记入 unlinkedReqNos 供调用方提示
-        for (const n of rawNos) if (!findReqId(n)) unlinkedReqNos.add(n);
-        const ids = rawNos.map((n) => findReqId(n)).filter((x): x is string => !!x);
-        for (const rid of ids) linkedReqIds.add(rid); // T01995：零关联清点用
-        if (target.reuseId) {
-          // T01875 reuse：只补差异字段与需求关联——
-          // 需求关联取「并集」（只增不减；覆盖式写入会让原行手工加的关联消失），
-          // 描述/复杂度仅在原值为空时补填；status、progress、起止日期一律不写
-          // （T01869 硬约束：重导不得把已有进度打回 0%／未开始）。
-          const cur = db.prepare('SELECT description, complexity, req_ids FROM plan_tasks WHERE id = ? AND archived = 0')
-            .get(target.reuseId) as { description: string | null; complexity: number | null; req_ids: string | null } | undefined;
-          if (!cur) return;
-          const description = (cur.description ?? '').trim() ? cur.description : (p.description ?? '');
-          const complexity = cur.complexity ?? (p.complexity ?? null);
-          const curReqIds = parseLinkIds(cur.req_ids);
-          const added = ids.filter((x) => !curReqIds.includes(x));
-          updReuse.run(description ?? '', complexity, added.length > 0 ? JSON.stringify([...curReqIds, ...added]) : null, t, target.reuseId);
-          return;
-        }
-        const planId = planIds[i];
-        if (planId && ids.length > 0) updPlan.run(JSON.stringify(ids), t, planId);
-      });
+      // T02881 RC3 第三刀（裁定 a）：口径与逐段说明见 repositionReusedMilestoneRows。
+      if (reuseMode) repositionReusedMilestoneRows(db, projectId, planKinds, planTargets, planIds);
+      // T00709 / T00712 / T01995：计划行需求关联回写（复用并集、新建覆盖，口径见 writeBackImportPlanLinks）
+      writeBackImportPlanLinks(db, { t, planItems, planTargets, planIds, findReqId, unlinkedReqNos, linkedReqIds });
       // 2.5) T02090 口径 A：补 child 边 + 新建里程碑的包络/进度重算（口径与逐段说明见
       //  applyImportMilestoneChildEdges；⚠ 必须在全部边写完之后统一重算）
       applyImportMilestoneChildEdges(db, { t, planItems, planKinds, planTargets, planIds });
@@ -2500,16 +2763,7 @@ export const PlanService = {
       noToId.set(row.reqNo, row.targetRef);
       if (row.requested) requestedToId.set(row.requested, row.targetRef);
     }
-    const existingReqCache = new Map<string, string | null>();
-    const existingReqId = (n: string): string | null => {
-      const key = n.trim();
-      if (!key) return null;
-      if (existingReqCache.has(key)) return existingReqCache.get(key) ?? null;
-      const row = db.prepare('SELECT id FROM prd_requirements WHERE project_id = ? AND req_no = ?').get(projectId, key) as { id: string } | undefined;
-      const id = row?.id ?? null;
-      existingReqCache.set(key, id);
-      return id;
-    };
+    const existingReqId = makeExistingReqLookup(db, projectId);
     const findReqId = (n: string) => requestedToId.get(n) ?? noToId.get(n) ?? existingReqId(n);
     const unlinkedReqNos = new Set<string>();
     const linkedRefs = new Set<string>();
@@ -3044,7 +3298,7 @@ export const PlanService = {
    *  - 其余 → type='serial'（串行前置，触发排期联动）。
    * 无法解析的引用不静默丢弃：以 warnings 返回，供上层提示「依赖待补」。
    */
-  createBatch(projectId: string, items: Array<{ title: string; description?: string; startDate?: string; durationDays?: number; assignee?: string; status?: PlanStatus; kind?: PlanKind; complexity?: number; depsOn?: string[]; reqNos?: string[] }>, opts: { dupPolicy?: 'warn' | 'block'; onDuplicate?: 'reuse' } = {}): { inserted: number; reused: number; unlinked: number; ids: string[]; warnings?: string[] } {
+  createBatch(projectId: string, items: PlanBatchItem[], opts: { dupPolicy?: 'warn' | 'block'; onDuplicate?: 'reuse' } = {}): { inserted: number; reused: number; unlinked: number; ids: string[]; warnings?: string[] } {
     if (!getDb().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
     const clean = items.filter((it) => it.title?.trim());
     if (clean.length === 0) throw new Error('没有可创建的计划条目');
@@ -3054,122 +3308,46 @@ export const PlanService = {
     const cal = loadCalendar();
     const ids: string[] = [];
     const warnings: string[] = [];
-    let inserted = 0;
-    let reused = 0;
-    let unlinked = 0;
     // T03160（UX-07④⑤）：onDuplicate='reuse'——AI 计划导入通道复用 PRD 导入的同一判重函数
     // resolveImportPlanTargets（kind+标题分键，不另写一套判重）：撞名不新建，命中未归档同名
     // 原行只补写差异字段，原行 status/progress/起止日期一字不动（T01875 口径）；
     // 未命中的正常新建，回执按「新增/跳过重复/未关联」分列。
     const reuseMode = opts.onDuplicate === 'reuse';
-    const kindOf = (it: (typeof clean)[number]): PlanKind => (it.kind === 'milestone' || it.kind === 'daily' ? it.kind : 'normal');
-    let targets: PrdImportPlanTarget[] | null = null;
-    if (reuseMode) {
-      targets = resolveImportPlanTargets(
+    const kindOf = (it: PlanBatchItem): PlanKind => (it.kind === 'milestone' || it.kind === 'daily' ? it.kind : 'normal');
+    const targets: PrdImportPlanTarget[] | null = reuseMode
+      ? resolveImportPlanTargets(
         db, projectId,
         clean.map((it) => ({ title: it.title, description: it.description, durationDays: it.durationDays, startDate: it.startDate, reqNos: it.reqNos, assignee: it.assignee, kind: it.kind, complexity: it.complexity, status: it.status })),
         true, clean.map(kindOf),
-      ).planTargets;
-    }
-    // T01868 防重入：同一份计划拆解经 AI 通道重复落库会留下并排两套计划（四期 E 系列 / [PRD] M 系列事故）。
-    // dupPolicy=block（AI 通道默认）时同名占比过高直接拒写；warn（页面/PRD 导入）只提示不落库行为变更，沿用 T01869 口径。
-    // reuse 模式判重已接管撞名，不再走占比拦截（否则同一份拆解重导会被误拒）。
-    if (!reuseMode) {
-      const titles = new Set(clean.map((it) => it.title.trim()));
-      const countSame = db.prepare('SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0');
-      const dups: string[] = [];
-      for (const title of titles) {
-        if ((countSame.get(projectId, title) as { n: number }).n > 0) dups.push(title);
-      }
-      if (dups.length > 0) {
-        warnings.push(`本批 ${dups.length}/${titles.size} 个标题与该项目已有计划同名（示例：${dups.slice(0, 3).join('、')}）`);
-        if (opts.dupPolicy === 'block' && dups.length >= 3 && dups.length / titles.size >= 0.6) {
-          throw new Error(`防重入拦截：本批 ${dups.length}/${titles.size} 个标题与项目已有计划同名，判定为同一份拆解重复落库（示例：${dups.slice(0, 5).join('、')}）。确属新增条目请显式传 allowDuplicates`);
-        }
-      }
-    }
-    db.transaction(() => {
+      ).planTargets
+      : null;
+    // T01868 防重入：口径见 warnDuplicateTitles；reuse 模式判重已接管撞名，不再走占比拦截（否则同一份拆解重导会被误拒）。
+    if (!reuseMode) warnDuplicateTitles(db, projectId, clean, opts, warnings);
+    const counts = db.transaction(() => {
       const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ? AND archived = 0').get(projectId) as { m: number }).m;
       const ins = db.prepare(
         `INSERT INTO plan_tasks (id, project_id, title, description, start_date, end_date, duration_days,
            progress, status, assignee, sort_order, linked_task_id, kind, complexity, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?, ?, ?)`,
       );
-      // T03160：需求编号 → 矩阵行 id（引用库内既有行；与 importPrd 的既有行回落同口径，按项目内唯一 req_no 定位）
-      const reqIdOf = (no: string): string | null =>
-        (db.prepare('SELECT id FROM prd_requirements WHERE project_id = ? AND req_no = ?').get(projectId, no.trim()) as { id: string } | undefined)?.id ?? null;
-      const updReqIds = db.prepare('UPDATE plan_tasks SET req_ids = ?, updated_at = ? WHERE id = ?');
-      const updReuse = db.prepare(
-        `UPDATE plan_tasks SET description = ?, complexity = ?, req_ids = COALESCE(?, req_ids), updated_at = ?
-         WHERE id = ? AND archived = 0`,
-      );
-      clean.forEach((it, i) => {
-        // reuse 命中：不新建，只补差异字段（描述/复杂度仅在原值为空时补填；需求关联取并集；status/progress/日期不动）
-        const reuseId = targets?.[i]?.reuseId;
-        if (reuseId) {
-          const cur = db.prepare('SELECT description, complexity, req_ids FROM plan_tasks WHERE id = ? AND archived = 0')
-            .get(reuseId) as { description: string | null; complexity: number | null; req_ids: string | null } | undefined;
-          if (cur) {
-            const description = (cur.description ?? '').trim() ? cur.description : (it.description ?? '');
-            const complexity = cur.complexity ?? (it.complexity ?? null);
-            const curReqIds = parseLinkIds(cur.req_ids);
-            const idsHit = (it.reqNos ?? []).map(reqIdOf).filter((x): x is string => !!x);
-            const added = idsHit.filter((x) => !curReqIds.includes(x));
-            updReuse.run(description ?? '', complexity, added.length > 0 ? JSON.stringify([...curReqIds, ...added]) : null, t, reuseId);
-          }
-          reused += 1;
-          ids.push(reuseId);
-          return;
-        }
-        const duration = Math.max(1, Math.floor(Number(it.durationDays) || 1));
-        const status = PLAN_STATUSES.has(it.status as PlanStatus) ? (it.status as PlanStatus) : 'todo';
-        // T01001：kind 仅接受里程碑/普通/日常三类，非法值兜底为 normal（不破坏其它批量创建调用）
-        const kind = kindOf(it);
-        // T00561：各行日期独立——开始日用自己的（空则今天），end 按工作日计算
-        const start = it.startDate && DATE_RE.test(it.startDate) ? it.startDate : fmt(new Date());
-        const end = calcEndDate(start, duration, cal);
-        const id = uuid();
-        ids.push(id);
-        // T02122：createBatch 复杂度钳位（此前直写 it.complexity ?? null，外部 Agent/Excel 可把 0/7/3.5 原样落库）
-        ins.run(id, projectId, (targets ? targets[i].title : it.title).trim(), it.description ?? '', start, end, duration, status, it.assignee ?? '', maxOrder + 1 + i, kind, clampComplexity(it.complexity), t, t);
-        inserted += 1;
-        // 需求关联：编号引用不到的进 unlinked 提示；新建行最终零关联计入回执「未关联」数
-        const rawNos = (it.reqNos ?? []).filter((n) => n?.trim());
-        const linked = rawNos.map(reqIdOf).filter((x): x is string => !!x);
-        for (const n of rawNos) if (!reqIdOf(n)) warnings.push(`条目「${it.title}」引用的需求编号「${n}」未找到（未关联）`);
-        if (linked.length > 0) updReqIds.run(JSON.stringify(linked), t, id);
-        else unlinked += 1;
-      });
+      const ctx: BatchInsertCtx = {
+        projectId, t, cal, maxOrder, clean, targets, kindOf, ids, warnings,
+        ins,
+        updReqIds: db.prepare('UPDATE plan_tasks SET req_ids = ?, updated_at = ? WHERE id = ?'),
+        updReuse: db.prepare(
+          `UPDATE plan_tasks SET description = ?, complexity = ?, req_ids = COALESCE(?, req_ids), updated_at = ?
+           WHERE id = ? AND archived = 0`,
+        ),
+        // T03160：需求编号 → 矩阵行 id（引用库内既有行；与 importPrd 的既有行回落同口径，按项目内唯一 req_no 定位）
+        reqIdOf: makeExistingReqLookup(db, projectId),
+      };
+      return insertBatchRows(db, ctx);
     })();
     // T01688 项 1：依赖解析与落库（在建行之后：需要全部 id 与标题才能互引）
     if (items.some((it) => it.depsOn?.length)) {
-      const titleToId = new Map<string, string>();
-      // T03160：reuse 让号后的实际落库标题也可被引用（同批内 depsOn 用基准标题寻址同样命中）
-      clean.forEach((it, i) => {
-        titleToId.set(it.title.trim(), ids[i]);
-        const tt = targets?.[i]?.title?.trim();
-        if (tt) titleToId.set(tt, ids[i]);
-      });
-      const rowOf = (id: string) => db.prepare('SELECT kind, title FROM plan_tasks WHERE id = ?').get(id) as { kind: string; title: string } | undefined;
-      clean.forEach((it, i) => {
-        const id = ids[i];
-        if (!id || !it.depsOn?.length) return;
-        const parsed: Array<{ id: string; type: string }> = [];
-        for (const dep of it.depsOn) {
-          const key = dep.trim();
-          if (!key) continue;
-          let target = titleToId.get(key);
-          if (!target) {
-            const row = db.prepare('SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0').get(projectId, key) as { id: string } | undefined;
-            target = row?.id;
-          }
-          if (!target) { warnings.push(`条目「${it.title}」的依赖「${key}」未解析到（依赖待补）`); continue; }
-          parsed.push({ id: target, type: rowOf(target)?.kind === 'milestone' ? 'child' : 'serial' });
-        }
-        if (parsed.length > 0) this.update(id, { deps: JSON.stringify(parsed) });
-      });
+      linkBatchDeps(db, { projectId, clean, ids, targets, warnings, update: (id, patch) => this.update(id, patch) });
     }
     notifyChange('plans');
-    return { inserted, reused, unlinked, ids, warnings };
+    return { inserted: counts.inserted, reused: counts.reused, unlinked: counts.unlinked, ids, warnings };
   },
 };

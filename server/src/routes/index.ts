@@ -294,33 +294,60 @@ function applyWorkspacePath(workspacePath: unknown, sets: string[], values: unkn
   return null;
 }
 
+/** T02943：改名是重名行的主要产生通道之一——判据与新建走同一个单源；改成自己的名字不算撞名（excludeId） */
+function projectNamePatch(name: unknown, id: string, sets: string[], values: unknown[]): string | null {
+  if (typeof name !== 'string' || !name.trim()) return 'name 不能为空';
+  const owners = findProjectNameOwners(name, { excludeId: id });
+  if (owners.length > 0) return projectNameConflictError(name, owners);
+  sets.push('name = ?'); values.push(name);
+  return null;
+}
+
+/** T03209（PM-101）：项目级 WIP 软上限——只接受 1~50 的整数，默认 10；超限仅提示、不阻断拖拽 */
+function projectWipPatch(wipLimit: unknown, sets: string[], values: unknown[]): string | null {
+  const n = typeof wipLimit === 'number' ? wipLimit : Number(wipLimit);
+  if (!Number.isInteger(n) || n < 1 || n > 50) return 'WIP 上限须为 1~50 的整数';
+  sets.push('wip_limit = ?'); values.push(n);
+  return null;
+}
+
+/** T03268（PRD 4.2）：项目级时区——空串＝跟随系统；非空必须是运行时 ICU 能识别的 IANA 名 */
+function projectTimezonePatch(timezone: unknown, sets: string[], values: unknown[]): string | null {
+  const tz = typeof timezone === 'string' ? timezone.trim() : '';
+  if (tz && !isValidTimeZone(tz)) return `时区非法：${tz}（需 IANA 时区名，如 Asia/Shanghai）`;
+  sets.push('timezone = ?'); values.push(tz);
+  return null;
+}
+
+/** T00780：工作空间换绑/解绑 → 该项目符号索引立即失效（旧路径符号不再属于本项目）；
+ *  仅在路径实际发生变化（含绑定/解绑）时清理，同值重存跳过。 */
+function clearSymbolsIfWorkspaceChanged(id: string, workspacePath: unknown, prevWorkspace: string): void {
+  if (workspacePath === undefined) return;
+  const nextWs = typeof workspacePath === 'string' ? workspacePath.trim() : '';
+  if (nextWs === prevWorkspace.trim()) return;
+  try { WorkspaceService.clearSymbols(id); } catch { /* 索引清理失败不阻塞绑定 */ }
+}
+
 api.patch('/projects/:id', (req, res) => {
   const { name, description, sortWeight, workspacePath, wipLimit, timezone } = req.body ?? {};
   const db = getDb();
   const sets: string[] = [];
   const values: unknown[] = [];
   if (name !== undefined) {
-    // T02943：改名是重名行的主要产生通道之一——此前这里完全不查重名，任何项目都能被改成
-    // 与别的项目（含归档行/历史快照行）同名，把 T02938「按名解析认现行项目」的兜底
-    // 反复触发成告警。判据与新建走同一个单源；改成自己的名字不算撞名（excludeId）。
-    if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name 不能为空' });
-    const owners = findProjectNameOwners(name, { excludeId: req.params.id });
-    if (owners.length > 0) return res.status(400).json({ error: projectNameConflictError(name, owners) });
-    sets.push('name = ?'); values.push(name);
+    // T02943：改名可与别的项目（含归档行/历史快照行）同名，把 T02938「按名解析认现行项目」
+    // 的兜底反复触发成告警；判据与新建同源，撞名直接 400。
+    const err = projectNamePatch(name, req.params.id, sets, values);
+    if (err) return res.status(400).json({ error: err });
   }
   if (description !== undefined) { sets.push('description = ?'); values.push(description); }
   if (sortWeight !== undefined) { sets.push('sort_weight = ?'); values.push(sortWeight); }
-  // T03209（PM-101）：项目级 WIP 软上限——只接受 1~50 的整数，默认 10；超限仅提示、不阻断拖拽
   if (wipLimit !== undefined) {
-    const n = typeof wipLimit === 'number' ? wipLimit : Number(wipLimit);
-    if (!Number.isInteger(n) || n < 1 || n > 50) return res.status(400).json({ error: 'WIP 上限须为 1~50 的整数' });
-    sets.push('wip_limit = ?'); values.push(n);
+    const err = projectWipPatch(wipLimit, sets, values);
+    if (err) return res.status(400).json({ error: err });
   }
-  // T03268（PRD 4.2）：项目级时区——空串＝跟随系统；非空必须是运行时 ICU 能识别的 IANA 名
   if (timezone !== undefined) {
-    const tz = typeof timezone === 'string' ? timezone.trim() : '';
-    if (tz && !isValidTimeZone(tz)) return res.status(400).json({ error: `时区非法：${tz}（需 IANA 时区名，如 Asia/Shanghai）` });
-    sets.push('timezone = ?'); values.push(tz);
+    const err = projectTimezonePatch(timezone, sets, values);
+    if (err) return res.status(400).json({ error: err });
   }
   // T00771：工作空间绑定——路径必须存在且为文件夹（服务端本机校验），多项目可指向同一路径（仅存引用）
   // 走查修复（H-1）：换绑判定需与旧值比较，旧值必须在 UPDATE 之前读取——
@@ -331,14 +358,7 @@ api.patch('/projects/:id', (req, res) => {
   if (sets.length === 0) return res.status(400).json({ error: '无更新字段' });
   sets.push('updated_at = ?'); values.push(now());
   db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = ?`).run(...values, req.params.id);
-  // T00780：工作空间换绑/解绑 → 该项目符号索引立即失效（旧路径符号不再属于本项目）；
-  // 仅在路径实际发生变化（含绑定/解绑）时清理，同值重存跳过
-  if (workspacePath !== undefined) {
-    const nextWs = typeof workspacePath === 'string' ? workspacePath.trim() : '';
-    if (nextWs !== prevWorkspace.trim()) {
-      try { WorkspaceService.clearSymbols(req.params.id); } catch { /* 索引清理失败不阻塞绑定 */ }
-    }
-  }
+  clearSymbolsIfWorkspaceChanged(req.params.id, workspacePath, prevWorkspace);
   cacheClear('projects'); // 改名/排序影响列表展示
   res.json(db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id));
 });
@@ -879,6 +899,15 @@ api.post('/tasks/by-no/:taskNo/retry', (req, res) => {
   }
 });
 
+/** T00450：父子层级——父任务必须存在且同项目（防跨项目挂接）；未传 parentId 时返回空对象 */
+function resolveParentOrError(parentId: unknown, pid: string): { parent?: { id: string; project_id: string }; error?: string } {
+  if (!parentId || typeof parentId !== 'string') return {};
+  const parent = getDb().prepare('SELECT id, project_id FROM tasks WHERE id = ?').get(parentId) as { id: string; project_id: string } | undefined;
+  if (!parent) return { error: '父任务不存在' };
+  if (parent.project_id !== pid) return { error: '子任务与父任务必须同项目' };
+  return { parent };
+}
+
 api.post('/tasks', (req, res) => {
   const { projectId, title, description, priority, status, categoryId, parentId, derivedFrom } = req.body ?? {};
   if (!title || typeof title !== 'string' || !title.trim()) return res.status(400).json({ error: 'title 必填' });
@@ -891,13 +920,9 @@ api.post('/tasks', (req, res) => {
   if (!getDb().prepare('SELECT 1 FROM projects WHERE id = ?').get(pid)) {
     return res.status(400).json({ error: '归属项目不存在' });
   }
-  // T00450：父子层级——父任务必须存在且同项目（防跨项目挂接）
-  let parent = undefined;
-  if (parentId && typeof parentId === 'string') {
-    parent = getDb().prepare('SELECT id, project_id FROM tasks WHERE id = ?').get(parentId) as { id: string; project_id: string } | undefined;
-    if (!parent) return res.status(400).json({ error: '父任务不存在' });
-    if (parent.project_id !== pid) return res.status(400).json({ error: '子任务与父任务必须同项目' });
-  }
+  const parentResult = resolveParentOrError(parentId, pid);
+  if (parentResult.error) return res.status(400).json({ error: parentResult.error });
+  const parent = parentResult.parent;
   // T02320：REST 建单与 MCP 走同一条溯源判据（单源在 derivedOrigin）——
   // derivedFrom 缺省时按正文首行「来源：Txxxx」回填，认不到母单不猜；
   // 标题带【AI回写待审核】却无溯源时随响应回显 create_warning，不再静默失联。
@@ -1209,7 +1234,7 @@ const PRIORITY_ALIAS: Record<string, string> = {
 };
 const STATUS_ALIAS: Record<string, string> = {
   完成: 'done', 已完成: 'done', 待办: 'todo', 未开始: 'todo', done: 'done', todo: 'todo',
-  // GitHub（open/closed）与 Jira（To Do/In Progress/Done…）：任务只有 todo|done 二元（T02070 裁决），进行中归待办
+  // GitHub（open/closed）与 Jira（To Do/In Progress/Done…）：任务只有待办/已完成二元（T02070 裁决），进行中归待办
   open: 'todo', closed: 'done', reopened: 'todo', resolved: 'done', 'to do': 'todo', 'in progress': 'todo', 'in review': 'todo', backlog: 'todo',
 };
 
@@ -1395,46 +1420,54 @@ api.post('/tasks/import-json/confirm', (req, res) => {
 });
 
 
-/** 单个任务的批量操作分派（T00457）；未知 action 抛错，由路由统一映射 400。
- *  T03211（PM-105）：返回逐条结论而非布尔值——不适用的条目要带上原因进回执，不得静默丢弃。
- *  返回 ok:false 表示该任务不适用本次动作（T02980：验收结果只对已完成任务有意义）。 */
-function applyBatchAction(db: ReturnType<typeof getDb>, id: string, action: string | undefined, value: string | undefined): { ok: boolean; reason?: string } {
-  if (action === 'status') {
+/** 批量动作实现：单条任务的执行体（未知 action 由 applyBatchAction 统一抛错） */
+type BatchActionHandler = (db: ReturnType<typeof getDb>, id: string, value: string | undefined) => { ok: boolean; reason?: string };
+
+const BATCH_ACTIONS: Record<string, BatchActionHandler> = {
+  status: (_db, id, value) => {
     if (value !== 'todo' && value !== 'done') throw new Error('status 值非法');
     TaskService.setStatus(id, value);
     return { ok: true };
-  }
-  if (action === 'category') {
+  },
+  category: (db, id, value) => {
     if (value && !db.prepare('SELECT id FROM task_categories WHERE id = ?').get(value)) throw new Error('分类不存在');
     db.prepare('UPDATE tasks SET category_id = ?, updated_at = ? WHERE id = ?').run(value || null, now(), id);
     return { ok: true };
-  }
+  },
   // T00588：批量优先级 / 字体颜色（与计划页批量能力对齐）
-  if (action === 'priority') {
+  priority: (db, id, value) => {
     if (!value || !['low', 'normal', 'high', 'urgent'].includes(value)) throw new Error('priority 值非法');
     db.prepare('UPDATE tasks SET priority = ?, updated_at = ? WHERE id = ?').run(value, now(), id);
     return { ok: true };
-  }
-  if (action === 'color') {
+  },
+  color: (db, id, value) => {
     db.prepare('UPDATE tasks SET color = ?, updated_at = ? WHERE id = ?').run(value ?? '', now(), id);
     return { ok: true };
-  }
+  },
   // T02980：批量验收结果（与单条「验证结果」同口径，走 TaskService.update 保留 task_events 埋点）。
   // 验收只针对已完成任务——待办任务即使被勾选也不改，原因随回执如实返回。
   // ai_state 同步沿用单条 PATCH 的推导（verified=false→failed），避免批量与单条口径分叉。
-  if (action === 'verified') {
+  verified: (db, id, value) => {
     if (value !== 'true' && value !== 'false') throw new Error('verified 值非法');
     const row = db.prepare('SELECT status FROM tasks WHERE id = ?').get(id) as { status: string } | undefined;
     if (row?.status !== 'done') return { ok: false, reason: '仅已完成任务可设置验收结果' };
     const verified = value === 'true';
     TaskService.update(id, { verified: verified ? 1 : 0, ai_state: computeAutoAiState({ verified }) });
     return { ok: true };
-  }
-  if (action === 'archive') {
+  },
+  archive: (_db, id) => {
     ArchiveService.archive([id]);
     return { ok: true };
-  }
-  throw new Error(`不支持的批量操作：${action}`);
+  },
+};
+
+/** 单个任务的批量操作分派（T00457）；未知 action 抛错，由路由统一映射 400。
+ *  T03211（PM-105）：返回逐条结论而非布尔值——不适用的条目要带上原因进回执，不得静默丢弃。
+ *  返回 ok:false 表示该任务不适用本次动作（T02980：验收结果只对已完成任务有意义）。 */
+function applyBatchAction(db: ReturnType<typeof getDb>, id: string, action: string | undefined, value: string | undefined): { ok: boolean; reason?: string } {
+  const handler = action ? BATCH_ACTIONS[action] : undefined;
+  if (!handler) throw new Error(`不支持的批量操作：${action}`);
+  return handler(db, id, value);
 }
 
 // 批量操作（T00457 / PRD UX-5）：多选后批量改状态/分类/归档——单事务，任一异常整体回滚
@@ -1546,7 +1579,7 @@ api.post('/tasks/:id/ai-summary', async (req, res) => {
 
 // ---------- T02949：派生单裁决（标记待裁决 / 提交裁决 / 预设选项） ----------
 // 裁决只针对派生单（derived_from 非空）——对象就是 AI 派生待办的结论采纳与否；
-// 状态走 ruling_* 独立列，不占用 status 的 todo/done 语义（筛选/计数依赖它）。
+// 状态走 ruling_* 独立列，不占用 status 的待办/已完成语义（筛选/计数依赖它）。
 // 标记「待裁决」（幂等：已标记原样返回；已裁决拒绝）
 api.post('/tasks/:id/ruling-mark', (req, res) => {
   try {
@@ -1997,30 +2030,42 @@ api.post('/report/ai-generate', exportGate(REPORT_GATE), async (req, res) => {
 
 // ---------- AI 周报（SSE 流式）：联动 AI 控制台实时展示生成过程 ----------
 // ---------- T00769：原始需求生成 PRD（AI 控制台卡片，内置技能 prd-generate 驱动，SSE 流式输出） ----------
+/** PRD 生成流的上传体归一 + 前置校验（SSE 建立前快速失败，前端能拿到结构化 400 而非流中 error）：
+ *  对象形态取 contentBase64、Buffer 原样；再校验非空、扩展名白名单与项目存在性。 */
+function resolvePrdUpload(
+  body: Buffer | Record<string, unknown>,
+  filename: string | undefined,
+  projectId: string,
+): { fileBuf: Buffer; fname: string } | { error: string } {
+  // 协议兼容：application/json 时全局 express.json() 已把 body 解析为对象 {contentBase64}（streamEvents 通道）；
+  // 其余 Content-Type 走 raw() Buffer（文件二进制）
+  let fileBuf: Buffer;
+  if (body && !Buffer.isBuffer(body) && typeof (body as { contentBase64?: unknown }).contentBase64 === 'string') {
+    fileBuf = Buffer.from((body as { contentBase64: string }).contentBase64, 'base64');
+  } else {
+    fileBuf = body as Buffer;
+  }
+  if (!fileBuf?.length) return { error: '请求体应为原始需求文件二进制' };
+  const fname = filename || '原始需求.md';
+  // T00769：扩展名与项目存在性前置校验
+  const extMatch = /\.[a-z0-9]+$/.exec(fname.toLowerCase());
+  const ext = extMatch ? extMatch[0] : '';
+  if (!['.doc', '.docx', '.xls', '.xlsx', '.csv', '.md', '.markdown', '.txt'].includes(ext)) {
+    return { error: `不支持的文件格式「${ext || fname}」——支持 .doc/.docx/.xls/.xlsx/.md/.txt` };
+  }
+  if (ext === '.doc') return { error: '老式 .doc 暂不支持，请用 Word 另存为 .docx 后重新上传' };
+  if (ext === '.xls') return { error: '老式 .xls 暂不支持，请用 Excel 另存为 .xlsx 后重新上传' };
+  if (!getDb().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) return { error: '项目不存在' };
+  return { fileBuf, fname };
+}
+
 api.post('/plans/prd-generate-stream', raw({ type: () => true, limit: '30mb' }), async (req, res) => {
   const { projectId, toolId, filename } = req.query as Record<string, string | undefined>;
   if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
   if (!toolId) { res.status(400).json({ error: '请选择 AI 模型' }); return; }
-  let buf = req.body as Buffer | Record<string, unknown>;
-  // 协议兼容：application/json 时全局 express.json() 已把 body 解析为对象 {contentBase64}（streamEvents 通道）；
-  // 其余 Content-Type 走 raw() Buffer（文件二进制）
-  let fileBuf: Buffer;
-  if (buf && !Buffer.isBuffer(buf) && typeof (buf as { contentBase64?: unknown }).contentBase64 === 'string') {
-    fileBuf = Buffer.from((buf as { contentBase64: string }).contentBase64, 'base64');
-  } else {
-    fileBuf = buf as Buffer;
-  }
-  if (!fileBuf?.length) { res.status(400).json({ error: '请求体应为原始需求文件二进制' }); return; }
-  const fname = filename || '原始需求.md';
-  // T00769：扩展名与项目存在性前置校验（SSE 建立前快速失败，前端能拿到结构化 400 而非流中 error）
-  const extMatch = /\.[a-z0-9]+$/.exec(fname.toLowerCase());
-  const ext = extMatch ? extMatch[0] : '';
-  if (!['.doc', '.docx', '.xls', '.xlsx', '.csv', '.md', '.markdown', '.txt'].includes(ext)) {
-    res.status(400).json({ error: `不支持的文件格式「${ext || fname}」——支持 .doc/.docx/.xls/.xlsx/.md/.txt` }); return;
-  }
-  if (ext === '.doc') { res.status(400).json({ error: '老式 .doc 暂不支持，请用 Word 另存为 .docx 后重新上传' }); return; }
-  if (ext === '.xls') { res.status(400).json({ error: '老式 .xls 暂不支持，请用 Excel 另存为 .xlsx 后重新上传' }); return; }
-  if (!getDb().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) { res.status(400).json({ error: '项目不存在' }); return; }
+  const upload = resolvePrdUpload(req.body as Buffer | Record<string, unknown>, filename, projectId);
+  if ('error' in upload) { res.status(400).json({ error: upload.error }); return; }
+  const { fileBuf, fname } = upload;
 
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache');
@@ -2353,6 +2398,40 @@ api.post('/ai/chat', async (req, res) => {
 // 与上面同步问答不同：这里 POST 受理后即返回 {id}，真正执行由后台不 await 的 promise 完成并回写库，
 // 任务运行不依赖前端会话（页面切换/刷新仍继续），前端靠 GET 轮询收敛为完成态。
 const CONSOLE_PERIODS = new Set(['day', 'week', 'month']);
+
+/** T03247（AI-104①②）：模板模式——正文由服务端按 promptId 取模板 + 变量渲染，客户端传的 prompt 不采信；
+ *  必填变量未填在此返回 error（400，点名缺哪几个），既不建任务也不计数。 */
+function resolveConsolePrompt(
+  prompt: unknown,
+  promptId: unknown,
+  variablesRaw: unknown,
+): { error: string; missing?: string[] } | { finalPrompt: string; templateId: string } {
+  if (typeof promptId === 'string' && promptId) {
+    const row = getDb().prepare('SELECT id, content FROM prompts WHERE id = ?').get(promptId) as { id: string; content: string } | undefined;
+    if (!row) return { error: '提示词不存在或已删除' };
+    const vars = (variablesRaw && typeof variablesRaw === 'object' && !Array.isArray(variablesRaw))
+      ? variablesRaw as Record<string, unknown>
+      : {};
+    const rendered = renderPromptTemplate(row.content, vars);
+    if (rendered.missing.length) return { error: `请填写模板变量：${rendered.missing.join('、')}`, missing: rendered.missing };
+    if (!rendered.text.trim()) return { error: '提示词内容为空，无法发起' };
+    return { finalPrompt: rendered.text.trim(), templateId: row.id };
+  }
+  if (!prompt || typeof prompt !== 'string' || !prompt.trim()) return { error: 'prompt 必填' };
+  return { finalPrompt: prompt.trim(), templateId: '' };
+}
+
+function consolePeriod(period: unknown): 'day' | 'week' | 'month' | null {
+  return typeof period === 'string' && CONSOLE_PERIODS.has(period) ? (period as 'day' | 'week' | 'month') : null;
+}
+
+/** T03248（AI-104③）：回带累计次数，前端无需再读一次列表即可刷新「使用 N 次」 */
+function consoleUsageCount(templateId: string): { usageCount?: number } {
+  if (!templateId) return {};
+  const usageCount = (getDb().prepare('SELECT usage_count FROM prompts WHERE id = ?').get(templateId) as { usage_count: number } | undefined)?.usage_count;
+  return usageCount === undefined ? {} : { usageCount };
+}
+
 api.post('/console-jobs', (req, res) => {
   const { title, prompt, category, period, toolId, promptId } = req.body ?? {};
   if (!title || typeof title !== 'string' || !title.trim()) return res.status(400).json({ error: 'title 必填' });
@@ -2362,36 +2441,18 @@ api.post('/console-jobs', (req, res) => {
   const scope = reportScope(req.body);
   if (scope.error) return res.status(400).json({ error: scope.error });
 
-  // T03247（AI-104①②）：模板模式——正文由服务端按 promptId 取模板 + 变量渲染，客户端传的 prompt 不采信；
-  // 必填变量未填在此拒绝（400，点名缺哪几个），既不建任务也不计数
-  let finalPrompt = '';
-  let templateId = '';
-  if (typeof promptId === 'string' && promptId) {
-    const row = getDb().prepare('SELECT id, content FROM prompts WHERE id = ?').get(promptId) as { id: string; content: string } | undefined;
-    if (!row) return res.status(400).json({ error: '提示词不存在或已删除' });
-    const vars = (req.body?.variables && typeof req.body.variables === 'object' && !Array.isArray(req.body.variables))
-      ? req.body.variables as Record<string, unknown>
-      : {};
-    const rendered = renderPromptTemplate(row.content, vars);
-    if (rendered.missing.length) {
-      return res.status(400).json({ error: `请填写模板变量：${rendered.missing.join('、')}`, missing: rendered.missing });
-    }
-    if (!rendered.text.trim()) return res.status(400).json({ error: '提示词内容为空，无法发起' });
-    finalPrompt = rendered.text.trim();
-    templateId = row.id;
-  } else {
-    if (!prompt || typeof prompt !== 'string' || !prompt.trim()) return res.status(400).json({ error: 'prompt 必填' });
-    finalPrompt = prompt.trim();
+  const resolved = resolveConsolePrompt(prompt, promptId, req.body?.variables);
+  if ('error' in resolved) {
+    return res.status(400).json(resolved.missing ? { error: resolved.error, missing: resolved.missing } : { error: resolved.error });
   }
-
-  const p = typeof period === 'string' && CONSOLE_PERIODS.has(period) ? (period as 'day' | 'week' | 'month') : null;
+  const { finalPrompt, templateId } = resolved;
   let job: ReturnType<typeof ConsoleJobService.create>;
   try {
     job = ConsoleJobService.create({
       title: title.trim(),
       prompt: finalPrompt,
       category: typeof category === 'string' && category ? category : 'custom',
-      period: p,
+      period: consolePeriod(period),
       projectIds: scope.ids,
       ...(templateId ? { promptId: templateId } : {}),
     });
@@ -2402,11 +2463,7 @@ api.post('/console-jobs', (req, res) => {
   }
   // 不 await：受理即返回，后台 promise 完成后 markDone/markError 回写库
   void ConsoleJobService.runJob(job.id, toolId);
-  // T03248（AI-104③）：回带累计次数，前端无需再读一次列表即可刷新「使用 N 次」
-  const usageCount = templateId
-    ? (getDb().prepare('SELECT usage_count FROM prompts WHERE id = ?').get(templateId) as { usage_count: number } | undefined)?.usage_count
-    : undefined;
-  res.status(201).json({ id: job.id, ...(usageCount === undefined ? {} : { usageCount }) });
+  res.status(201).json({ id: job.id, ...consoleUsageCount(templateId) });
 });
 
 api.get('/console-jobs', (_req, res) => {
@@ -2945,25 +3002,47 @@ function snapshotPromptGroup(db: ReturnType<typeof getDb>, body: PromptPatchBody
   return db.prepare('SELECT category_id, req_category_id, title FROM prompts WHERE id = ?').get(id) as PromptGroupBefore | undefined;
 }
 
+/** 布尔位统一落库口径（?1:0）：置顶与收藏同为布尔位（T03683），切换走同一个 PATCH 通道 */
+const PROMPT_BOOL_FIELDS: ReadonlyArray<readonly [keyof PromptPatchBody, string]> = [
+  ['pinned', 'pinned'],
+  ['isFavorited', 'is_favorited'],
+];
+
+/** 文本字段 → 列名（T00490 color/req_category_id 要归一，单独走 pushOptionalText） */
+const PROMPT_TEXT_FIELDS: ReadonlyArray<readonly [keyof PromptPatchBody, string]> = [
+  ['title', 'title'],
+  ['content', 'content'],
+  ['categoryId', 'category_id'],
+];
+
+/** 可选文本列：归一后仍为 undefined 视为未提供，不进 SET */
+function pushOptionalText(sets: string[], values: unknown[], column: string, v: unknown): void {
+  const s = primitiveToStr(v);
+  if (s === undefined) return;
+  sets.push(`${column} = ?`);
+  values.push(s);
+}
+
+/** T00525 归档位：同时写 archived_at（还原置空） */
+function pushArchived(sets: string[], values: unknown[], archived: unknown, ts: string): void {
+  if (archived === undefined) return;
+  sets.push('archived = ?', 'archived_at = ?');
+  values.push(archived ? 1 : 0, archived ? ts : null);
+}
+
 /** M6-6.1：拼接 SET 子句；T00525 归档同时写 archived_at（T00872），T00490 color 统一字符串化 */
 function buildPromptPatch(body: PromptPatchBody, ts: string): { sets: string[]; values: unknown[] } {
   const sets: string[] = [];
   const values: unknown[] = [];
-  if (body.title !== undefined) { sets.push('title = ?'); values.push(body.title); }
-  if (body.content !== undefined) { sets.push('content = ?'); values.push(body.content); }
-  if (body.categoryId !== undefined) { sets.push('category_id = ?'); values.push(body.categoryId); }
-  if (body.pinned !== undefined) { sets.push('pinned = ?'); values.push(body.pinned ? 1 : 0); }
-  // T03683：收藏与置顶同为布尔位，落库口径一致（?1:0），切换走同一个 PATCH 通道
-  if (body.isFavorited !== undefined) { sets.push('is_favorited = ?'); values.push(body.isFavorited ? 1 : 0); }
-  // M6-6.4：先归一取值再单层判断（避免双层嵌套把认知复杂度推高，S3776）
-  const colorStr = primitiveToStr(body.color);
-  if (colorStr !== undefined) { sets.push('color = ?'); values.push(colorStr); }
-  if (body.archived !== undefined) {
-    sets.push('archived = ?'); values.push(body.archived ? 1 : 0);
-    sets.push('archived_at = ?'); values.push(body.archived ? ts : null);
+  for (const [field, column] of PROMPT_TEXT_FIELDS) {
+    if (body[field] !== undefined) { sets.push(`${column} = ?`); values.push(body[field]); }
   }
-  const reqCateStr = primitiveToStr(body.reqCategoryId);
-  if (reqCateStr !== undefined) { sets.push('req_category_id = ?'); values.push(reqCateStr); }
+  for (const [field, column] of PROMPT_BOOL_FIELDS) {
+    if (body[field] !== undefined) { sets.push(`${column} = ?`); values.push(body[field] ? 1 : 0); }
+  }
+  pushOptionalText(sets, values, 'color', body.color);
+  pushArchived(sets, values, body.archived, ts);
+  pushOptionalText(sets, values, 'req_category_id', body.reqCategoryId);
   sets.push('updated_at = ?'); values.push(ts);
   return { sets, values };
 }

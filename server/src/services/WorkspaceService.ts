@@ -226,21 +226,38 @@ function buildDirSnapshot(workspace: string, rules: IgnoreRule[]): DirSnapshot |
   while (stack.length > 0) {
     if (dirs.size >= SYMBOL_SNAPSHOT_MAX_DIRS) return null;
     const frame = stack.pop() as { dir: string; rel: string };
-    let entries: Array<{ name: string; isDir: boolean }>;
-    try {
-      entries = readdirSync(frame.dir, { withFileTypes: true }).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
-    } catch { return null; }
-    const sig: string[] = [];
-    for (const e of entries) {
-      const relChild = frame.rel ? `${frame.rel}/${e.name}` : e.name;
-      if (isIgnored(relChild, e.isDir, rules)) continue;
-      sig.push(e.isDir ? `${e.name}/` : e.name);
-      if (e.isDir) stack.push({ dir: join(frame.dir, e.name), rel: relChild });
-    }
-    sig.sort((a, b) => a.localeCompare(b));
-    dirs.set(frame.rel, sig.join('\u0000'));
+    const entries = readDirEntries(frame.dir);
+    if (!entries) return null;
+    dirs.set(frame.rel, dirSignature(frame, entries, rules, stack));
   }
   return dirs;
+}
+
+/** 目录读不动返回 null（交由调用方降级为「快照不可得」） */
+function readDirEntries(dir: string): Array<{ name: string; isDir: boolean }> | null {
+  try {
+    return readdirSync(dir, { withFileTypes: true }).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
+  } catch {
+    return null;
+  }
+}
+
+/** 单目录条目指纹：忽略命中的不入签名，子目录顺带入栈 */
+function dirSignature(
+  frame: { dir: string; rel: string },
+  entries: Array<{ name: string; isDir: boolean }>,
+  rules: IgnoreRule[],
+  stack: Array<{ dir: string; rel: string }>,
+): string {
+  const sig: string[] = [];
+  for (const e of entries) {
+    const relChild = frame.rel ? `${frame.rel}/${e.name}` : e.name;
+    if (isIgnored(relChild, e.isDir, rules)) continue;
+    sig.push(e.isDir ? `${e.name}/` : e.name);
+    if (e.isDir) stack.push({ dir: join(frame.dir, e.name), rel: relChild });
+  }
+  sig.sort((a, b) => a.localeCompare(b));
+  return sig.join('\u0000');
 }
 
 function snapshotEqual(a: DirSnapshot, b: DirSnapshot): boolean {
@@ -512,9 +529,8 @@ function searchVisitEntry(ctx: SearchCtx, dir: string, rel: string, e: { name: s
 
 interface SymbolExtractor { exts: string[]; kind: string; re: RegExp }
 
-/** better-sqlite3 的 Statement 类型（prepare 返回值），此处只用到 run()；用 any 承接重载联合类型 */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyStatement = { run: (...args: any[]) => { changes: number } };
+/** better-sqlite3 的 Statement 类型（prepare 返回值），此处只用到 run() */
+type AnyStatement = { run: (...params: unknown[]) => unknown };
 
 interface SymbolIndexCtx {
   db: ReturnType<typeof getDb>;
@@ -865,6 +881,83 @@ function pickScopedDirs(memo: SearchMemo, needles: readonly string[], hitPaths: 
  * 在指定目录内做行级匹配（递归但受 SCOPED_MAX_FILES / SCOPED_MAX_BYTES 约束）。
  * 返回是否因预算提前结束。
  */
+/** 定向扫描的预算计数（跨目录累计；耗尽即标记 truncated） */
+interface ScanBudget {
+  files: number;
+  bytes: number;
+  truncated: boolean;
+}
+
+function scanBudgetExceeded(budget: ScanBudget, hitCount: number): boolean {
+  return budget.files >= SCOPED_MAX_FILES || budget.bytes >= SCOPED_MAX_BYTES || hitCount >= SEARCH_HIT_LIMIT;
+}
+
+/** 单文件行级匹配：命中写进 acc（行号从 1 起，同路径同行的重复命中去重） */
+function scanFileLines(rel: string, text: string, lower: readonly string[], acc: HitAccumulator): void {
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length && acc.collected.length < SEARCH_HIT_LIMIT; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    const lowerLine = line.toLowerCase();
+    const needle = lower.find((n) => lowerLine.includes(n));
+    if (!needle) continue;
+    const key = `${rel}:${i + 1}`;
+    if (acc.seen.has(key)) continue;
+    acc.seen.add(key);
+    const start = Math.max(0, lowerLine.indexOf(needle) - 60);
+    acc.collected.push({ path: rel, line: i + 1, snippet: line.slice(start, start + SEARCH_SNIPPET_MAX).trim() });
+  }
+}
+
+/** 读文件并记账；读失败或超单文件上限返回 null（不消耗文件额度） */
+function readScannableFile(abs: string, budget: ScanBudget): Buffer | null {
+  let buf: Buffer;
+  try { buf = readFileSync(abs); } catch { return null; }
+  if (buf.length > SEARCH_FILE_MAX_BYTES) return null;
+  budget.files += 1;
+  budget.bytes += buf.length;
+  return buf;
+}
+
+/** 展开一个目录：文件按行匹配，子目录入栈待续 */
+function scanOneDir(
+  workspace: string,
+  relDir: string,
+  rules: IgnoreRule[],
+  lower: readonly string[],
+  acc: HitAccumulator,
+  budget: ScanBudget,
+  stack: string[],
+): void {
+  const entries = readDirEntries(join(workspace, relDir));
+  if (!entries) return;
+  for (const e of entries) {
+    const rel = relDir === '.' ? e.name : `${relDir}/${e.name}`;
+    if (isIgnored(rel, e.isDir, rules)) continue;
+    if (e.isDir) { stack.push(rel); continue; }
+    if (BINARY_EXTS.has(extname(e.name).toLowerCase())) continue;
+    const buf = readScannableFile(join(workspace, rel), budget);
+    if (!buf) continue;
+    scanFileLines(rel, buf.toString('utf8'), lower, acc);
+  }
+}
+
+/** 单目录（含子目录）按预算展开；预算耗尽即标记 truncated 并收手 */
+function scanDirTree(
+  workspace: string,
+  rootDir: string,
+  rules: IgnoreRule[],
+  lower: readonly string[],
+  acc: HitAccumulator,
+  budget: ScanBudget,
+): void {
+  const stack: string[] = [rootDir];
+  while (stack.length > 0) {
+    if (scanBudgetExceeded(budget, acc.collected.length)) { budget.truncated = true; return; }
+    scanOneDir(workspace, stack.pop() as string, rules, lower, acc, budget, stack);
+  }
+}
+
 function scanScopedDirs(
   workspace: string,
   dirs: readonly string[],
@@ -872,50 +965,13 @@ function scanScopedDirs(
   needles: readonly string[],
   acc: HitAccumulator,
 ): { scannedFiles: number; truncated: boolean } {
-  let scannedFiles = 0;
-  let scannedBytes = 0;
-  let truncated = false;
   const lower = needles.map((n) => n.toLowerCase()).filter((n) => n.length >= 2);
+  const budget: ScanBudget = { files: 0, bytes: 0, truncated: false };
   for (const dir of dirs) {
     if (acc.collected.length >= SEARCH_HIT_LIMIT) break;
-    const stack: string[] = [dir];
-    while (stack.length > 0) {
-      if (scannedFiles >= SCOPED_MAX_FILES || scannedBytes >= SCOPED_MAX_BYTES || acc.collected.length >= SEARCH_HIT_LIMIT) {
-        truncated = true;
-        break;
-      }
-      const relDir = stack.pop() as string;
-      let entries: Array<{ name: string; isDir: boolean }>;
-      try {
-        entries = readdirSync(join(workspace, relDir), { withFileTypes: true }).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
-      } catch { continue; }
-      for (const e of entries) {
-        const rel = relDir === '.' ? e.name : `${relDir}/${e.name}`;
-        if (isIgnored(rel, e.isDir, rules)) continue;
-        if (e.isDir) { stack.push(rel); continue; }
-        if (BINARY_EXTS.has(extname(e.name).toLowerCase())) continue;
-        let buf: Buffer;
-        try { buf = readFileSync(join(workspace, rel)); } catch { continue; }
-        if (buf.length > SEARCH_FILE_MAX_BYTES) continue;
-        scannedFiles++;
-        scannedBytes += buf.length;
-        const lines = buf.toString('utf8').split(/\r?\n/);
-        for (let i = 0; i < lines.length && acc.collected.length < SEARCH_HIT_LIMIT; i++) {
-          const text = lines[i];
-          if (!text) continue;
-          const lowerLine = text.toLowerCase();
-          const needle = lower.find((n) => lowerLine.includes(n));
-          if (!needle) continue;
-          const key = `${rel}:${i + 1}`;
-          if (acc.seen.has(key)) continue;
-          acc.seen.add(key);
-          const start = Math.max(0, lowerLine.indexOf(needle) - 60);
-          acc.collected.push({ path: rel, line: i + 1, snippet: text.slice(start, start + SEARCH_SNIPPET_MAX).trim() });
-        }
-      }
-    }
+    scanDirTree(workspace, dir, rules, lower, acc, budget);
   }
-  return { scannedFiles, truncated };
+  return { scannedFiles: budget.files, truncated: budget.truncated };
 }
 
 /**
@@ -1065,8 +1121,8 @@ export const WorkspaceService = {
       limit,
       knownMtime,
       watch: watchState,
-      insStmt: db.prepare('INSERT INTO workspace_symbols (id, project_id, path, symbol, line, kind, file_mtime, workspace) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
-      delStmt: db.prepare('DELETE FROM workspace_symbols WHERE project_id = ? AND path = ?'),
+      insStmt: db.prepare<unknown[]>('INSERT INTO workspace_symbols (id, project_id, path, symbol, line, kind, file_mtime, workspace) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
+      delStmt: db.prepare<unknown[]>('DELETE FROM workspace_symbols WHERE project_id = ? AND path = ?'),
     };
     // T02200：取代仍在续跑的旧任务（显式刷新要看当前文件系统状态，两轮遍历交错会重复删插同一批行）
     const prev = symbolJobs.get(projectId);

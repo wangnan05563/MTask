@@ -281,7 +281,7 @@ export function SprintPanel({ projectId, onClose, onPlansChanged }: {
         <span style={{ flex: 1 }} />
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} aria-label="含已归档迭代" />
-          含已归档
+          <span>含已归档</span>
         </label>
         <button onClick={() => { setDraft(emptyDraft()); setFormOpen((v) => !v); }} className="tbtn-anim" style={BTN}
           title="新建迭代 — 起始终止日期、目标与完成定义" aria-label="新建迭代"><Sparkles size={12} />新建</button>
@@ -289,7 +289,7 @@ export function SprintPanel({ projectId, onClose, onPlansChanged }: {
           className="tbtn-anim" style={BTN} title="刷新" aria-label="刷新迭代数据"><RefreshCw size={12} /></button>
         <button onClick={onClose} style={{ ...BTN, color: 'var(--text-muted)' }} title="关闭迭代面板" aria-label="关闭迭代面板">×</button>
       </div>
-      {msg && <div role="status" data-t03186="toast" style={{ marginTop: 8, fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{msg}</div>}
+      {msg && <output data-t03186="toast" style={{ display: 'block', marginTop: 8, fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{msg}</output>}
 
       {formOpen && <IterationForm draft={draft} setDraft={setDraft} busy={busy} onSubmit={() => void submitDraft()}
         onCancel={() => { setFormOpen(false); setDraft(emptyDraft()); }} />}
@@ -356,9 +356,9 @@ export function SprintPanel({ projectId, onClose, onPlansChanged }: {
                   </div>
                 )}
                 {readOnly && (
-                  <div role="status" data-t03186="readonly" style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--warn, var(--text-muted))' }}>
+                  <output data-t03186="readonly" style={{ display: 'block', marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--warn, var(--text-muted))' }}>
                     该迭代已归档：只读，成员不可变更，统计已退出有效分母。需要继续编辑请点「恢复」。
-                  </div>
+                  </output>
                 )}
               </div>
 

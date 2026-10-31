@@ -1,7 +1,7 @@
 /**
  * T03231（PRD PM-203①②）：项目级自定义字段。
  *
- * 边界（Q-1 裁决）：字段只描述任务，**不参与 tasks.status**——状态仍是 todo|done 二元，
+ * 边界（Q-1 裁决）：字段只描述任务，**不参与 tasks.status**——状态仍是「未完成 / 已完成」二元，
  * 所以这里既不读也不写 status，任何列表/看板/状态门的消费路径都不需要改口径。
  *
  * 存储：字段定义挂项目（project_fields），值挂任务（task_field_values）。
@@ -160,34 +160,90 @@ function valueCount(fieldId: string): number {
  * 按字段类型校验并归一写入值。
  * 返回空串表示「清空」，由调用方删行；抛错即整批回滚（setValues 用事务包裹）。
  */
-function normalizeValue(field: ProjectFieldView, raw: unknown): string {
-  let s: string;
-  if (typeof raw === 'string') s = raw.trim();
-  else if (raw === null || raw === undefined) s = '';
-  else s = scalarText(raw).trim();
-  if (!s) return '';
-  if (field.type === 'text') {
-    if (s.length > TEXT_MAX) throw new Error(`字段「${field.name}」的值不能超过 ${TEXT_MAX} 个字符`);
-    return s;
+function normalizeTextValue(field: ProjectFieldView, s: string): string {
+  if (s.length > TEXT_MAX) throw new Error(`字段「${field.name}」的值不能超过 ${TEXT_MAX} 个字符`);
+  return s;
+}
+
+function normalizeNumberValue(field: ProjectFieldView, s: string): string {
+  const n = Number(s);
+  if (!Number.isFinite(n)) throw new Error(`字段「${field.name}」需要数字，收到「${s}」`);
+  return String(n);
+}
+
+function normalizeDateValue(field: ProjectFieldView, s: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error(`字段「${field.name}」需要 YYYY-MM-DD 日期，收到「${s}」`);
+  const d = new Date(`${s}T00:00:00Z`);
+  // 2026-02-30 会被 Date 顺延成 3 月，必须回读比对才算合法日期
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) {
+    throw new Error(`字段「${field.name}」的日期「${s}」不存在`);
   }
-  if (field.type === 'number') {
-    const n = Number(s);
-    if (!Number.isFinite(n)) throw new Error(`字段「${field.name}」需要数字，收到「${s}」`);
-    return String(n);
-  }
-  if (field.type === 'date') {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error(`字段「${field.name}」需要 YYYY-MM-DD 日期，收到「${s}」`);
-    const d = new Date(`${s}T00:00:00Z`);
-    // 2026-02-30 会被 Date 顺延成 3 月，必须回读比对才算合法日期
-    if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) {
-      throw new Error(`字段「${field.name}」的日期「${s}」不存在`);
-    }
-    return s;
-  }
+  return s;
+}
+
+function normalizeSelectValue(field: ProjectFieldView, s: string): string {
   const opt = field.options.find((o) => o.id === s);
   if (!opt) throw new Error(`字段「${field.name}」没有这个选项：${s}`);
   if (opt.archived) throw new Error(`字段「${field.name}」的选项「${opt.label}」已停用，不能再被选中`);
   return s;
+}
+
+/** 各类型的取值归一表：新增类型只需补一行，主流程不随类型增多而加分支 */
+const VALUE_NORMALIZERS: Record<FieldType, (field: ProjectFieldView, value: string) => string> = {
+  text: normalizeTextValue,
+  number: normalizeNumberValue,
+  date: normalizeDateValue,
+  select: normalizeSelectValue,
+};
+
+function trimRawValue(raw: unknown): string {
+  if (typeof raw === 'string') return raw.trim();
+  if (raw === null || raw === undefined) return '';
+  return scalarText(raw).trim();
+}
+
+function normalizeValue(field: ProjectFieldView, raw: unknown): string {
+  const s = trimRawValue(raw);
+  if (!s) return '';
+  return VALUE_NORMALIZERS[field.type](field, s);
+}
+
+/** 改名：未传则沿用原名；改名时才做唯一性校验 */
+function resolveName(before: ProjectFieldRow, rawName: unknown, fieldId: string): string {
+  const name = rawName === undefined ? before.name : normName(rawName);
+  if (name !== before.name) ensureNameFree(before.project_id, name, fieldId);
+  return name;
+}
+
+/** 改类型：未传则沿用原类型；已有任务填写值时不允许改（会静默改读已落库的值） */
+function resolveType(fieldId: string, view: ProjectFieldView, rawType: unknown): FieldType {
+  const type = rawType === undefined ? view.type : scalarText(rawType);
+  if (!FIELD_TYPES.has(type)) throw new Error('字段类型必须是 text / number / date / select');
+  if (type !== view.type && valueCount(fieldId) > 0) throw new Error('该字段已有任务填写值，不能改类型（请先清空或另建字段）');
+  return type as FieldType;
+}
+
+/** PM-203④：已引用的选项只能停用，不能硬删——静默删会让任务上的值变成指向空气的孤值 */
+function assertOptionsRetained(fieldId: string, prev: FieldOptionView[], next: FieldOptionView[]): void {
+  const kept = new Set(next.map((o) => o.id));
+  const usage = optionUsage(fieldId);
+  for (const o of prev) {
+    const used = usage.get(o.id) ?? 0;
+    if (used > 0 && !kept.has(o.id)) {
+      throw new Error(`选项「${o.label}」已被 ${used} 个任务引用，只能停用不能删除`);
+    }
+  }
+}
+
+/** 单选字段的新选项集：未传 patch.options 时保留原选项（并校验非空） */
+function resolveOptions(fieldId: string, view: ProjectFieldView, patchOptions: unknown): FieldOptionView[] {
+  if (patchOptions !== undefined) {
+    const options = normOptions(patchOptions, view.options);
+    assertOptionsRetained(fieldId, view.options, options);
+    return options;
+  }
+  if (view.options.length === 0) throw new Error('单选字段必须提供至少一个选项');
+  return view.options;
 }
 
 function displayOf(field: ProjectFieldView, value: string): string {
@@ -235,30 +291,9 @@ export const FieldService = {
     const view = toView(before);
     if (before.archived) throw new Error('字段已归档，不能编辑');
 
-    const name = patch.name === undefined ? before.name : normName(patch.name);
-    if (name !== before.name) ensureNameFree(before.project_id, name, fieldId);
-
-    const type = patch.type === undefined ? view.type : scalarText(patch.type);
-    if (!FIELD_TYPES.has(type)) throw new Error('字段类型必须是 text / number / date / select');
-    if (type !== view.type && valueCount(fieldId) > 0) throw new Error('该字段已有任务填写值，不能改类型（请先清空或另建字段）');
-
-    let options: FieldOptionView[] = type === 'select' ? view.options : [];
-    if (type === 'select') {
-      if (patch.options !== undefined) {
-        options = normOptions(patch.options, view.options);
-        // PM-203④：已引用的选项只能停用，不能硬删——静默删会让任务上的值变成指向空气的孤值
-        const kept = new Set(options.map((o) => o.id));
-        const usage = optionUsage(fieldId);
-        for (const o of view.options) {
-          const used = usage.get(o.id) ?? 0;
-          if (used > 0 && !kept.has(o.id)) {
-            throw new Error(`选项「${o.label}」已被 ${used} 个任务引用，只能停用不能删除`);
-          }
-        }
-      } else if (view.options.length === 0) {
-        throw new Error('单选字段必须提供至少一个选项');
-      }
-    }
+    const name = resolveName(before, patch.name, fieldId);
+    const type = resolveType(fieldId, view, patch.type);
+    const options = type === 'select' ? resolveOptions(fieldId, view, patch.options) : [];
 
     db.prepare('UPDATE project_fields SET name = ?, type = ?, options = ?, updated_at = ? WHERE id = ?')
       .run(name, type, JSON.stringify(options), now(), fieldId);

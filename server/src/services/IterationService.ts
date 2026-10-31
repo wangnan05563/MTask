@@ -21,7 +21,7 @@ import {
 } from '../util/workdays';
 import type { WorkdayCal } from '../util/workdays';
 
-/** 迭代状态（详细设计 §3.3）：todo 未开始 / doing 进行中 / done 已结束 */
+/** 迭代状态（详细设计 §3.3）：未开始 / 进行中 / 已结束 */
 export type IterationStatus = 'todo' | 'doing' | 'done';
 const ITER_STATUSES = new Set<string>(['todo', 'doing', 'done']);
 
@@ -125,6 +125,18 @@ function mustGetActiveIteration(id: string): IterationRow {
   return it;
 }
 
+/** 两个 ISO 日期串取较晚者：同格式下字典序即时间序，不能改用 Math.max（字符串会被转成 NaN） */
+function laterIsoDate(a: string, b: string): string {
+  if (a > b) return a;
+  return b;
+}
+
+/** 两个 ISO 日期串取较早者：同格式下字典序即时间序，不能改用 Math.min（字符串会被转成 NaN） */
+function earlierIsoDate(a: string, b: string): string {
+  if (a < b) return a;
+  return b;
+}
+
 /** 写入成员变更事件（PM-201⑤）：加入/移出逐条留痕，燃尽重建据此回溯，绝不回写既有事件 */
 function logMembership(iterationId: string, projectId: string, planTaskId: string, kind: 'attach' | 'detach', detail: string): void {
   getDb().prepare(
@@ -172,7 +184,7 @@ function remainingWorkdaysOn(day: string, items: SeriesItem[], cal: WorkdayCal):
   let sum = 0;
   for (const i of items) {
     if (isDoneBy(i, day)) continue;
-    const from = i.start_date > next ? i.start_date : next; // NOSONAR - 按字典序取较晚者；操作数是 ISO 日期串，Math.max 会转成 NaN，该规则不适用
+    const from = laterIsoDate(i.start_date, next);
     sum += countWorkdaysBetween(from, i.end_date, cal);
   }
   return sum;
@@ -259,6 +271,62 @@ function readWeeklyCard(id: string): WeeklyCard | null {
 /** 结束日是否已跨过 `at` 所在业务日；与 summary 的逾期口径共用 isPastEndDate，避免两套判据 */
 function isIterationPastEnd(it: IterationRow, at: Date): boolean {
   return isPastEndDate(it.end_date, at);
+}
+
+/** 待挂载的计划行（attach 的事务内判定所需字段） */
+interface AttachRow {
+  id: string;
+  project_id: string;
+  title: string;
+  start_date: string;
+  end_date: string;
+  archived: number;
+  iteration_id: string | null;
+}
+
+type AttachOutcome = { attached: string[]; moved: AttachResult['moved']; skipped: AttachResult['skipped']; outsideWindow: AttachResult['outsideWindow'] };
+
+/** replace 模式：本次清单之外的现成员先移出（逐条留痕） */
+function detachReplacedMembers(db: ReturnType<typeof getDb>, it: IterationRow, found: Map<string, AttachRow>): void {
+  const current = db.prepare('SELECT id FROM plan_tasks WHERE iteration_id = ? AND archived = 0').all(it.id) as Array<{ id: string }>;
+  for (const c of current) {
+    if (found.has(c.id)) continue;
+    db.prepare('UPDATE plan_tasks SET iteration_id = NULL, updated_at = ? WHERE id = ?').run(nowIso(), c.id);
+    logMembership(it.id, it.project_id, c.id, 'detach', 'replace 模式移出');
+  }
+}
+
+/** 单行挂载：不可挂载的按原因回 skipped，可挂载的写归属 + 双向留痕，排期越界时回 outsideWindow */
+function attachOneRow(db: ReturnType<typeof getDb>, it: IterationRow, r: AttachRow, out: AttachOutcome): void {
+  if (r.project_id !== it.project_id) { out.skipped.push({ planTaskId: r.id, reason: '禁止跨项目归属：该行属于其它项目' }); return; }
+  if (r.archived) { out.skipped.push({ planTaskId: r.id, reason: '计划行已归档，不参与迭代统计' }); return; }
+  if (r.iteration_id === it.id) return; // 幂等：已在册不重复留痕
+  const movedFrom = r.iteration_id ? fetchIteration(r.iteration_id) : null;
+  if (movedFrom && !movedFrom.archived) {
+    out.moved.push({ planTaskId: r.id, fromIteration: movedFrom.id, fromName: movedFrom.name });
+    // 离开也要在**原迭代**留痕（PM-201⑤）：不记这一条，原迭代的燃尽就只能靠「当前还在册的行」倒推，
+    // 该行被改绑走之后它在原迭代每一天的贡献会凭空消失——等于替原迭代改写了过去。
+    logMembership(movedFrom.id, movedFrom.project_id, r.id, 'detach', `改绑至迭代「${it.name}」`);
+  }
+  db.prepare('UPDATE plan_tasks SET iteration_id = ?, updated_at = ? WHERE id = ?').run(it.id, nowIso(), r.id);
+  logMembership(it.id, it.project_id, r.id, 'attach', out.moved.some((m) => m.planTaskId === r.id) ? '改绑加入' : '加入迭代');
+  out.attached.push(r.id);
+  if (r.end_date < it.start_date || r.start_date > it.end_date) {
+    out.outsideWindow.push({ planTaskId: r.id, reason: `排期 ${r.start_date}~${r.end_date} 超出迭代区间 ${it.start_date}~${it.end_date}` });
+  }
+}
+
+/** 事务体：按模式先移出旧成员，再逐行挂载本次清单 */
+function applyAttach(
+  db: ReturnType<typeof getDb>,
+  it: IterationRow,
+  rows: AttachRow[],
+  found: Map<string, AttachRow>,
+  mode: 'add' | 'replace',
+  out: AttachOutcome,
+): void {
+  if (mode === 'replace') detachReplacedMembers(db, it, found);
+  for (const r of rows) attachOneRow(db, it, r, out);
 }
 
 export const IterationService = {
@@ -369,45 +437,13 @@ export const IterationService = {
     const out: AttachResult = { attached: [], moved: [], skipped: [], outsideWindow: [] };
     const wanted = [...new Set((planTaskIds ?? []).map(String).filter(Boolean))];
     const rows = wanted.length
-      ? (db.prepare(`SELECT id, project_id, title, start_date, end_date, archived, iteration_id FROM plan_tasks WHERE id IN (${wanted.map(() => '?').join(',')})`).all(...wanted) as Array<{
-          id: string; project_id: string; title: string; start_date: string; end_date: string; archived: number; iteration_id: string | null;
-        }>)
+      ? (db.prepare(`SELECT id, project_id, title, start_date, end_date, archived, iteration_id FROM plan_tasks WHERE id IN (${wanted.map(() => '?').join(',')})`).all(...wanted) as AttachRow[])
       : [];
     const found = new Map(rows.map((r) => [r.id, r]));
     for (const wantId of wanted) {
       if (!found.has(wantId)) out.skipped.push({ planTaskId: wantId, reason: '计划行不存在（可能已被彻底删除）' });
     }
-    db.transaction(() => {
-      if (mode === 'replace') {
-        // 替换语义：本次清单之外的现成员先移出（逐条留痕）
-        const current = db.prepare('SELECT id FROM plan_tasks WHERE iteration_id = ? AND archived = 0').all(id) as Array<{ id: string }>;
-        for (const c of current) {
-          if (found.has(c.id)) continue;
-          db.prepare('UPDATE plan_tasks SET iteration_id = NULL, updated_at = ? WHERE id = ?').run(nowIso(), c.id);
-          logMembership(it.id, it.project_id, c.id, 'detach', 'replace 模式移出');
-        }
-      }
-      for (const r of rows) {
-        if (r.project_id !== it.project_id) { out.skipped.push({ planTaskId: r.id, reason: '禁止跨项目归属：该行属于其它项目' }); continue; }
-        if (r.archived) { out.skipped.push({ planTaskId: r.id, reason: '计划行已归档，不参与迭代统计' }); continue; }
-        if (r.iteration_id === it.id) continue; // 幂等：已在册不重复留痕
-        if (r.iteration_id) {
-          const other = fetchIteration(r.iteration_id);
-          if (other && !other.archived) {
-            out.moved.push({ planTaskId: r.id, fromIteration: other.id, fromName: other.name });
-            // 离开也要在**原迭代**留痕（PM-201⑤）：不记这一条，原迭代的燃尽就只能靠「当前还在册的行」倒推，
-            // 该行被改绑走之后它在原迭代每一天的贡献会凭空消失——等于替原迭代改写了过去。
-            logMembership(other.id, other.project_id, r.id, 'detach', `改绑至迭代「${it.name}」`);
-          }
-        }
-        db.prepare('UPDATE plan_tasks SET iteration_id = ?, updated_at = ? WHERE id = ?').run(it.id, nowIso(), r.id);
-        logMembership(it.id, it.project_id, r.id, 'attach', out.moved.some((m) => m.planTaskId === r.id) ? '改绑加入' : '加入迭代');
-        out.attached.push(r.id);
-        if (r.end_date < it.start_date || r.start_date > it.end_date) {
-          out.outsideWindow.push({ planTaskId: r.id, reason: `排期 ${r.start_date}~${r.end_date} 超出迭代区间 ${it.start_date}~${it.end_date}` });
-        }
-      }
-    })();
+    db.transaction(() => applyAttach(db, it, rows, found, mode, out))();
     notifyChange('plans');
     return out;
   },
@@ -578,7 +614,7 @@ function buildBurndown(
   const items = scope.kind === 'iteration' ? iterationItems(scope.id, scope.startDate, db) : projectItems(projectId, scope.startDate, db);
 
   // 采样到「今天」为止：未来日没有实况，画出去就是伪造
-  const sampledTo = scope.endDate > today ? today : scope.endDate; // NOSONAR - 按字典序取较早者；操作数是 ISO 日期串，Math.min 会转成 NaN，该规则不适用
+  const sampledTo = earlierIsoDate(scope.endDate, today);
   const fullSeries = workdaySeries(scope.startDate, scope.endDate, cal);
   const sampled = workdaySeries(scope.startDate, sampledTo, cal);
   if (scope.startDate > today) {

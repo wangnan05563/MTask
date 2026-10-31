@@ -160,6 +160,63 @@ function eventIdOf(projectId: string, date: string): string {
   return `overdue-${projectId}-${date}`;
 }
 
+/** 一次性投递的观察结果（succeeded=已收到 2xx，无需再重试） */
+interface DeliveryOutcome {
+  responseStatus: number | null;
+  error: string | null;
+  succeeded: boolean;
+}
+
+/** 非 2xx 的失败说明：3xx 单独提示（拒绝重定向以免降级到非 HTTPS） */
+function httpFailureMessage(status: number): string {
+  if (status >= 300 && status < 400) return `目标返回重定向（HTTP ${status}），已拒绝以免降级到非 HTTPS`;
+  return `目标返回 HTTP ${status}`;
+}
+
+/** 异常 → 可读原因（超时/中止单独成句） */
+function exceptionMessage(e: unknown): string {
+  const name = e instanceof Error ? e.name : '';
+  if (name === 'TimeoutError' || name === 'AbortError') return `请求超时（${RESPONSE_TIMEOUT_MS / 1000} 秒上限）`;
+  return `投递失败：${e instanceof Error ? e.message : String(e)}`;
+}
+
+/** 发一次 POST：只观察结果，不写库（重试安排由调用方决定） */
+async function sendDelivery(hook: WebhookRow, d: DeliveryRow, secret: string, startedAt: string): Promise<DeliveryOutcome> {
+  try {
+    const res = await fetch(hook.url, {
+      method: 'POST',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(RESPONSE_TIMEOUT_MS),
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'User-Agent': 'MTask-Webhook/1.0',
+        'X-MTask-Event-Id': d.event_id,
+        'X-MTask-Timestamp': startedAt,
+        'X-MTask-Signature': sign(secret, d.payload),
+      },
+      body: d.payload,
+    });
+    if (res.status >= 200 && res.status < 300) return { responseStatus: res.status, error: null, succeeded: true };
+    return { responseStatus: res.status, error: httpFailureMessage(res.status), succeeded: false };
+  } catch (e) {
+    return { responseStatus: null, error: exceptionMessage(e), succeeded: false };
+  }
+}
+
+/** 失败是否还重试：未达上限按 1/5/30 分钟安排下一次，达上限即终态 failed */
+function settleFailure(attempts: number): { status: 'pending' | 'failed'; nextAttemptAt: string | null } {
+  if (attempts >= MAX_ATTEMPTS) return { status: 'failed', nextAttemptAt: null };
+  const waitMin = RETRY_MINUTES[attempts - 1];
+  return { status: 'pending', nextAttemptAt: new Date(Date.now() + waitMin * 60_000).toISOString() };
+}
+
+/** 配置已停用：取消待执行投递（保留原因便于排查） */
+function cancelDisabledDelivery(deliveryId: string): void {
+  getDb().prepare(
+    `UPDATE webhook_deliveries SET status = 'failed', error = '配置已停用，取消待执行投递', next_attempt_at = NULL WHERE id = ?`,
+  ).run(deliveryId);
+}
+
 export const WebhookService = {
   list(projectId: string): WebhookView[] {
     const db = getDb();
@@ -385,9 +442,7 @@ export const WebhookService = {
       const hook = db.prepare('SELECT * FROM webhooks WHERE id = ?').get(d.webhook_id) as WebhookRow | undefined;
       if (!hook) return;
       if (!hook.enabled) {
-        db.prepare(
-          `UPDATE webhook_deliveries SET status = 'failed', error = '配置已停用，取消待执行投递', next_attempt_at = NULL WHERE id = ?`,
-        ).run(deliveryId);
+        cancelDisabledDelivery(deliveryId);
         return;
       }
       const attempts = d.attempts + 1;
@@ -399,46 +454,13 @@ export const WebhookService = {
         this.finish(deliveryId, 'failed', attempts, startedAt, null, '密钥不可读，投递中止', null);
         return;
       }
-      let responseStatus: number | null = null;
-      let error: string | null = null;
-      try {
-        const res = await fetch(hook.url, {
-          method: 'POST',
-          redirect: 'manual',
-          signal: AbortSignal.timeout(RESPONSE_TIMEOUT_MS),
-          headers: {
-            'Content-Type': 'application/json; charset=utf-8',
-            'User-Agent': 'MTask-Webhook/1.0',
-            'X-MTask-Event-Id': d.event_id,
-            'X-MTask-Timestamp': startedAt,
-            'X-MTask-Signature': sign(secret, d.payload),
-          },
-          body: d.payload,
-        });
-        responseStatus = res.status;
-        if (res.status >= 200 && res.status < 300) {
-          this.finish(deliveryId, 'success', attempts, startedAt, res.status, null, null);
-          return;
-        }
-        error = res.status >= 300 && res.status < 400
-          ? `目标返回重定向（HTTP ${res.status}），已拒绝以免降级到非 HTTPS`
-          : `目标返回 HTTP ${res.status}`;
-      } catch (e) {
-        const name = e instanceof Error ? e.name : '';
-        if (name === 'TimeoutError' || name === 'AbortError') {
-          error = `请求超时（${RESPONSE_TIMEOUT_MS / 1000} 秒上限）`;
-        } else {
-          const failReason = e instanceof Error ? e.message : String(e);
-          error = `投递失败：${failReason}`;
-        }
+      const outcome = await sendDelivery(hook, d, secret, startedAt);
+      if (outcome.succeeded) {
+        this.finish(deliveryId, 'success', attempts, startedAt, outcome.responseStatus, null, null);
+        return;
       }
-      if (attempts >= MAX_ATTEMPTS) {
-        this.finish(deliveryId, 'failed', attempts, startedAt, responseStatus, error, null);
-      } else {
-        const waitMin = RETRY_MINUTES[attempts - 1];
-        const next = new Date(Date.now() + waitMin * 60_000).toISOString();
-        this.finish(deliveryId, 'pending', attempts, startedAt, responseStatus, error, next);
-      }
+      const settled = settleFailure(attempts);
+      this.finish(deliveryId, settled.status, attempts, startedAt, outcome.responseStatus, outcome.error, settled.nextAttemptAt);
     } finally {
       inFlight.delete(deliveryId);
     }

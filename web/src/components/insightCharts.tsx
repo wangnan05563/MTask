@@ -181,8 +181,10 @@ function SvgShell({ label, days, svgRef, testId, children }: {
   readonly testId: string; readonly children: React.ReactNode;
 }): ReactElement {
   return (
-    <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label={label}
+    <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%" aria-label={label}
       data-t03236={testId} style={{ display: 'block', background: 'var(--card-bg)', borderRadius: 6 }}>
+      {/* 内联 SVG 复合图形的无障碍名走原生 <title>（SVG 自带的等价写法），不再挂 role="img" */}
+      <title>{label}</title>
       <TraceableMark days={days} />
       {children}
     </svg>
@@ -208,8 +210,9 @@ export function CfdChart({ days, svgRef }: { readonly days: readonly InsightDay[
     <SvgShell days={days} label={`累计流图：${days.length} 天，最新待办 ${days.at(-1)?.todo ?? '缺失'}，已完成 ${days.at(-1)?.done ?? '缺失'}`} svgRef={svgRef} testId="cfd">
       <Axes days={days} max={max} format={(v) => String(Math.round(v))} />
       <GapBands days={days} />
-      {areaBetweenSegments(doneVals, days.map(() => 0), max).map((p, i) => <path key={`d${i}`} /* NOSONAR - 面积段由连续可采样区间切分而来，位置即身份，无稳定业务 id */ d={p} fill={C_DONE} opacity={0.75} />)}
-      {areaBetweenSegments(totalVals, doneVals, max).map((p, i) => <path key={`t${i}`} /* NOSONAR - 面积段由连续可采样区间切分而来，位置即身份，无稳定业务 id */ d={p} fill={C_TODO} opacity={0.6} />)}
+      {/* 段的 d 即其内容身份（同图内各段坐标区间互不相同），用 d 作 key 避免下标 key */}
+      {areaBetweenSegments(doneVals, days.map(() => 0), max).map((p) => <path key={p} d={p} fill={C_DONE} opacity={0.75} />)}
+      {areaBetweenSegments(totalVals, doneVals, max).map((p) => <path key={p} d={p} fill={C_TODO} opacity={0.6} />)}
       {days.map((d, i) => (d.missing ? null : (
         <circle key={d.date} cx={xAt(i, days.length)} cy={yAt((d.todo ?? 0) + (d.done ?? 0), max)} r={2.2} fill={C_TODO}>
           <title>{`${d.date} · 待办 ${d.todo ?? '—'} · 已完成 ${d.done ?? '—'}`}</title>
@@ -230,11 +233,11 @@ export function CycleChart({ days, svgRef }: { readonly days: readonly InsightDa
     <SvgShell days={days} label={`周期时间：${present.length} 个统计日，P50/P90 折线`} svgRef={svgRef} testId="cycle">
       <Axes days={days} max={max} format={fmt} />
       <GapBands days={days} />
-      {lineSegments(days.map((d) => d.cycleP90Hours), max).map((p, i) => (
-        <path key={`p90-${i}`} /* NOSONAR - 折线段按缺失日切分，位置即身份，无稳定业务 id */ d={p} fill="none" stroke={C_P90} strokeWidth={1.6} strokeDasharray="5 4" />
+      {lineSegments(days.map((d) => d.cycleP90Hours), max).map((p) => (
+        <path key={p} d={p} fill="none" stroke={C_P90} strokeWidth={1.6} strokeDasharray="5 4" />
       ))}
-      {lineSegments(days.map((d) => d.cycleP50Hours), max).map((p, i) => (
-        <path key={`p50-${i}`} /* NOSONAR - 折线段按缺失日切分，位置即身份，无稳定业务 id */ d={p} fill="none" stroke={C_P50} strokeWidth={2} />
+      {lineSegments(days.map((d) => d.cycleP50Hours), max).map((p) => (
+        <path key={p} d={p} fill="none" stroke={C_P50} strokeWidth={2} />
       ))}
       {days.map((d, i) => (d.cycleP50Hours === null || d.missing ? null : (
         <circle key={d.date} cx={xAt(i, days.length)} cy={yAt(d.cycleP50Hours, max)} r={2.2} fill={C_P50}>
@@ -271,8 +274,8 @@ export function OverdueTrendChart({ days, svgRef }: { readonly days: readonly In
           </rect>
         );
       })}
-      {lineSegments(rates, 1).map((p, i) => (
-        <path key={`r${i}`} /* NOSONAR - 折线段按缺失日切分，位置即身份，无稳定业务 id */ d={p} fill="none" stroke={C_TODO} strokeWidth={2} />
+      {lineSegments(rates, 1).map((p) => (
+        <path key={p} d={p} fill="none" stroke={C_TODO} strokeWidth={2} />
       ))}
       {rates.map((v, i) => (v === null || days[i].missing ? null : (
         <circle key={days[i].date} cx={xAt(i, n)} cy={yAt(v, 1)} r={2.2} fill={C_TODO}>
@@ -306,8 +309,8 @@ export function ThroughputChart({ days, svgRef }: { readonly days: readonly Insi
           </rect>
         );
       })}
-      {lineSegments(days.map((d) => d.created), max).map((p, i) => (
-        <path key={`c${i}`} /* NOSONAR - 折线段按缺失日切分，位置即身份，无稳定业务 id */ d={p} fill="none" stroke={C_CREATED} strokeWidth={1.8} strokeDasharray="4 3" />
+      {lineSegments(days.map((d) => d.created), max).map((p) => (
+        <path key={p} d={p} fill="none" stroke={C_CREATED} strokeWidth={1.8} strokeDasharray="4 3" />
       ))}
       <text x={L} y={10} fontSize={9} fill="var(--text)">吞吐（柱=完成，虚线=新增）</text>
     </SvgShell>

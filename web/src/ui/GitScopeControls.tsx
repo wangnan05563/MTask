@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, GitBranch, Plus, X } from 'lucide-react';
 import { FIELD_QUIET, PILL, SELECT_POPOVER } from './primitives'; // PM-302 ① 单源
 import {
@@ -78,14 +78,15 @@ export function BranchPicker({ value, onChange, options, placeholder, disabled, 
   /** 首次展开时向上层要候选（懒加载：默认「全部项目」不该在进面板时就逐仓扫） */
   readonly onOpen?: () => void;
 }) {
-  const [open, setOpenState] = useState(false);
+  const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
   const hostRef = useRef<HTMLDivElement>(null);
-  const close = () => { setOpenState(false); setQuery(''); };
+  const menuId = useId();
+  const close = () => { setOpen(false); setQuery(''); };
   useOutsideClose(open, hostRef, close);
-  const setOpen = (next: boolean) => {
-    setOpenState(next);
+  const expand = (next: boolean) => {
+    setOpen(next);
     if (next) onOpen?.();
   };
 
@@ -94,7 +95,7 @@ export function BranchPicker({ value, onChange, options, placeholder, disabled, 
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape') { close(); return; }
-    if (!open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { setOpen(true); return; }
+    if (!open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { expand(true); return; }
     if (!open) return;
     if (e.key === 'ArrowDown') { e.preventDefault(); setActive((i) => Math.min(filtered.length - 1, i + 1)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((i) => Math.max(0, i - 1)); }
@@ -109,13 +110,14 @@ export function BranchPicker({ value, onChange, options, placeholder, disabled, 
           data-lck={testId}
           value={value}
           disabled={disabled}
-          onChange={(e) => { onChange(e.target.value); setOpen(true); }}
-          onFocus={() => setOpen(true)}
+          onChange={(e) => { onChange(e.target.value); expand(true); }}
+          onFocus={() => expand(true)}
           onKeyDown={onKeyDown}
           placeholder={placeholder ?? '分支/标签/SHA'}
           aria-label={ariaLabel}
           role="combobox"
           aria-expanded={open}
+          aria-controls={open ? menuId : undefined}
           aria-autocomplete="list"
           style={INNER_INPUT}
         />
@@ -129,13 +131,13 @@ export function BranchPicker({ value, onChange, options, placeholder, disabled, 
         )}
         <button type="button" data-lck={testId ? `${testId}-toggle` : undefined} aria-label={`展开${ariaLabel}候选`}
           title={`展开${ariaLabel}候选（↑↓ 选择，回车确认）`}
-          onClick={() => setOpen(!open)} disabled={disabled}
+          onClick={() => expand(!open)} disabled={disabled}
           style={{ border: 'none', background: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, display: 'flex' }}>
           <ChevronDown size={12} />
         </button>
       </div>
       {open && (
-        <div data-lck={testId ? `${testId}-menu` : undefined} role="listbox" aria-label={`${ariaLabel}候选`} style={POPOVER}>
+        <div id={menuId} data-lck={testId ? `${testId}-menu` : undefined} style={POPOVER}>
           <input
             data-lck={testId ? `${testId}-filter` : undefined}
             value={query}
@@ -153,8 +155,9 @@ export function BranchPicker({ value, onChange, options, placeholder, disabled, 
           )}
           {filtered.map((option, i) => (
             // 只给标签挂类型：装饰里的分支名与远端名都是 `feature/x` 形态（`--decorate=short` 分不出本地/远端），
-            // 硬贴「分支/远端」会贴错，标签是唯一能确定的类型
-            <button key={`${option.type}:${option.name}`} type="button" role="option" aria-selected={option.name === value}
+            // 硬贴「分支/远端」会贴错，标签是唯一能确定的类型。
+            // 候选项是原生 <button>，已选态用 aria-pressed 表达（不再借用 listbox/option 角色）
+            <button key={`${option.type}:${option.name}`} type="button" aria-pressed={option.name === value}
               data-lck={testId ? `${testId}-option` : undefined} data-ref={option.name} data-ref-type={option.type}
               title={option.type === 'tag' ? `标签 · ${option.name}` : option.name}
               onMouseEnter={() => setActive(i)}
@@ -221,7 +224,7 @@ export function DateRangeField({ start, end, onChange, testId = 'lecture-since',
 
   return (
     <div ref={hostRef} style={{ position: 'relative', width, maxWidth: '100%' }}>
-      <div data-lck={testId} role="group" aria-label="起始时间范围" style={TRIGGER}>
+      <div data-lck={testId} style={TRIGGER}>
         <button type="button" data-lck={`${testId}-toggle`} aria-label="展开日期点选" aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
           title={summary || '选择时间窗（可只设起始，也可起止都设）'}
@@ -271,21 +274,28 @@ export function DateRangeField({ start, end, onChange, testId = 'lecture-since',
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textAlign: 'center', marginBottom: 2 }}>
             {WEEKDAYS.map((w) => <span key={w}>{w}</span>)}
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2 }} onMouseLeave={() => setHover('')}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2 }}>
             {cells.map((c) => {
               const isStart = c.iso === startDay;
               const isEnd = c.iso === endDay;
               const edge = isStart || isEnd;
+              // 目标区间高亮：先定默认值再按条件覆盖，避免嵌套三元
+              let background = 'transparent';
+              if (edge) background = 'var(--accent)';
+              else if (within(c.iso)) background = 'var(--accent-soft)';
+              let color = c.inMonth ? 'var(--text)' : 'var(--text-muted)';
+              if (edge) color = 'var(--accent-text)';
               return (
                 <button key={c.iso} type="button" data-lck={`${testId}-day`} data-day={c.iso}
                   data-in-month={c.inMonth ? '1' : '0'} data-today={c.isToday ? '1' : '0'} data-edge={edge ? '1' : '0'}
                   aria-label={`${c.iso}${c.isToday ? '（今天）' : ''}`} aria-pressed={edge}
                   onMouseEnter={() => setHover(c.iso)}
+                  onMouseLeave={() => setHover('')}
                   onClick={() => { const next = pickDay(startDay ?? '', endDay ?? '', c.iso); applyDays(next.start, next.end); }}
                   style={{
                     padding: '4px 0', border: edge ? '1px solid var(--accent)' : '1px solid transparent', borderRadius: 4,
-                    background: edge ? 'var(--accent)' : within(c.iso) ? 'var(--accent-soft)' : 'transparent',
-                    color: edge ? 'var(--accent-text)' : c.inMonth ? 'var(--text)' : 'var(--text-muted)',
+                    background,
+                    color,
                     outline: c.isToday && !edge ? '1px dashed var(--accent)' : 'none',
                     cursor: 'pointer', fontSize: 'var(--fs-xs)',
                   }}>
@@ -298,13 +308,13 @@ export function DateRangeField({ start, end, onChange, testId = 'lecture-since',
             <span>点第 1 天=起始；再点第 2 天=截止（结束日含当天 23:59:59）</span>
           </div>
           <label style={{ display: 'block', marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
-            起始（可填 14 days ago）
+            起始（可填 14 days ago）{' '}
             <input data-lck={`${testId}-raw-start`} value={start} onChange={(e) => onChange(e.target.value, end)}
               placeholder="2026-10-01 / 14 days ago"
               style={{ ...FIELD_QUIET, width: '100%', boxSizing: 'border-box', marginTop: 2 }} aria-label="起始原始值" />
           </label>
           <label style={{ display: 'block', marginTop: 4, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
-            截止（留空=不限）
+            截止（留空=不限）{' '}
             <input data-lck={`${testId}-raw-end`} value={end} onChange={(e) => onChange(start, e.target.value)}
               placeholder="2026-10-28"
               style={{ ...FIELD_QUIET, width: '100%', boxSizing: 'border-box', marginTop: 2 }} aria-label="截止原始值" />
@@ -333,9 +343,21 @@ export function AuthorMultiSelect({ value, onChange, authors, onRequestAuthors, 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const hostRef = useRef<HTMLDivElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const close = () => { setOpen(false); setQuery(''); };
   useOutsideClose(open, hostRef, close);
+  /*
+   * 点空白处聚焦输入框：容器本身不是控件（真正的控件是里面的 input 与移除按钮），
+   * 所以委托监听挂在 DOM 上，且只在这一下点到的就是容器本身时才转焦点——点标签/按钮不抢焦点。
+   */
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    const onClick = (e: MouseEvent) => { if (e.target === el) inputRef.current?.focus(); };
+    el.addEventListener('click', onClick);
+    return () => el.removeEventListener('click', onClick);
+  }, []);
 
   const groups = useMemo(() => parseAuthorGroups(value), [value]);
   const suggestions = useMemo(() => filterAuthorSuggestions(authors, groups, query), [authors, groups, query]);
@@ -364,9 +386,7 @@ export function AuthorMultiSelect({ value, onChange, authors, onRequestAuthors, 
 
   return (
     <div ref={hostRef} style={{ position: 'relative', width, maxWidth: '100%' }}>
-      <div data-lck={testId} role="group" aria-label="提交人过滤（多选）"
-        onClick={() => inputRef.current?.focus()}
-        style={{ ...TRIGGER, flexWrap: 'wrap', padding: '2px 4px', cursor: 'text', minHeight: 26 }}>
+      <div ref={boxRef} data-lck={testId} style={{ ...TRIGGER, flexWrap: 'wrap', padding: '2px 4px', cursor: 'text', minHeight: 26 }}>
         {groups.map((g, i) => (
           <span key={`${g}-${i}`} style={{ ...PILL, display: 'inline-flex', alignItems: 'center', gap: 2, maxWidth: 150 }}>
             <span title={g} style={{ maxWidth: 118, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g}</span>
@@ -390,14 +410,14 @@ export function AuthorMultiSelect({ value, onChange, authors, onRequestAuthors, 
         )}
       </div>
       {open && (
-        <div data-lck={`${testId}-menu`} style={{ ...POPOVER, width: 250 }} role="listbox" aria-label="提交人候选">
+        <div data-lck={`${testId}-menu`} style={{ ...POPOVER, width: 250 }}>
           {typedIsNew && (
             <button type="button" data-lck={`${testId}-add`} onClick={() => add(query)} style={{ ...ROW, color: 'var(--accent)' }}>
               <Plus size={12} />添加「{typed}」
             </button>
           )}
           {suggestions.map((name) => (
-            <button key={name} type="button" role="option" aria-selected={false}
+            <button key={name} type="button"
               data-lck={`${testId}-option`} data-author={name} title={name}
               onClick={() => add(name)}
               style={ROW}>

@@ -48,11 +48,40 @@ const PRIORITY_ALIASES: Record<string, 'low' | 'normal' | 'high' | 'urgent'> = {
   urgent: 'urgent', '紧急': 'urgent', '最高': 'urgent',
 };
 
-/** 关键词前必须是行首/空白/左括号；`(status:todo` 也要被判为结构化 */
+/** 关键词前必须是行首/空白/左括号；`(status:` 这种紧跟左括号的写法也要被判为结构化 */
 export function looksStructured(raw: string): boolean {
   return /[()]/.test(raw)
     || /(^|[\s(])(and|or)(?=[\s)]|$)/i.test(raw)
     || /(^|[\s(])(status|priority|project)\s*:/i.test(raw);
+}
+
+/** 读一段引号内容：返回引号内文本与闭合引号之后的下标；未闭合即语法错误 */
+function readQuoted(input: string, openAt: number): { text: string; next: number } {
+  const quote = input[openAt];
+  let i = openAt + 1;
+  let inner = '';
+  while (i < input.length && input[i] !== quote) { inner += input[i]; i++; }
+  if (i >= input.length) throw new TaskQuerySyntaxError(`引号未闭合：${input.slice(openAt)}`);
+  return { text: inner, next: i + 1 };
+}
+
+/** 从 start 起读一条词：遇到空白/括号结束；词内引号（`project:"Gamma Box"`）整块并入同一条词 */
+function readWord(input: string, start: number): { text: string; next: number } {
+  let text = '';
+  let i = start;
+  while (i < input.length) {
+    const c = input[i];
+    if (/\s/.test(c) || c === '(' || c === ')') break;
+    if (c === '"' || c === "'") {
+      const quoted = readQuoted(input, i);
+      text += quoted.text;
+      i = quoted.next;
+      continue;
+    }
+    text += c;
+    i++;
+  }
+  return { text, next: i };
 }
 
 function tokenize(input: string): Token[] {
@@ -64,26 +93,10 @@ function tokenize(input: string): Token[] {
     if (ch === '(' || ch === ')') { tokens.push({ kind: ch, text: ch }); i++; continue; }
     // 词内引号：`project:"Gamma Box"` 这类「字段:带空格取值」必须整块成一条词，
     // 否则会在空格处断开，把 Box" 当成另一个查询项
-    let text = '';
-    while (i < input.length) {
-      const c = input[i];
-      if (/\s/.test(c) || c === '(' || c === ')') break;
-      if (c === '"' || c === "'") {
-        const quote = c;
-        const openAt = i;
-        i++;
-        let inner = '';
-        while (i < input.length && input[i] !== quote) { inner += input[i]; i++; }
-        if (i >= input.length) throw new TaskQuerySyntaxError(`引号未闭合：${input.slice(openAt)}`);
-        i++;
-        text += inner;
-        continue;
-      }
-      text += c;
-      i++;
-    }
-    if (!text) throw new TaskQuerySyntaxError('存在空的查询项（引号内没有内容）');
-    tokens.push({ kind: 'word', text });
+    const word = readWord(input, i);
+    if (!word.text) throw new TaskQuerySyntaxError('存在空的查询项（引号内没有内容）');
+    tokens.push({ kind: 'word', text: word.text });
+    i = word.next;
   }
   return tokens;
 }

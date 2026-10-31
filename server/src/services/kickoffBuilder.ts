@@ -1056,45 +1056,182 @@ function bulletBodyText(item: KickoffRenderPage, bullets: string[]): string {
   return bullets.map((s, i) => `${i + 1}. ${s}`).join('\n\n');
 }
 
+interface LayoutBodyResult {
+  blocks: Block[];
+  dropped: string[];
+  notes: string[];
+  violations: string[];
+  tlDrawn: number;
+}
+
+/** 排布出口三件套：块 / 被省略的块 / 说明。排布函数原地追加，多个排布分支共享同一份 */
+interface LayoutSink {
+  out: Block[];
+  dropped: string[];
+  notes: string[];
+}
+
 export function layoutBody(
   item: KickoffRenderPage,
   b: KickoffBundle,
   frames: LayoutFrames,
   bullets: string[]
-): { blocks: Block[]; dropped: string[]; notes: string[]; violations: string[]; tlDrawn: number } {
-  const body = frames.body;
+): LayoutBodyResult {
   const out: Block[] = [];
   const dropped: string[] = [];
   const notes: string[] = [];
-  const bottom = body.y + body.h;
-  const bodyAvail = bottom - body.y;
   // 时间线页：形状版自成一格（只需留 TL_MIN_H），回落列表版才是一张刚性表格
   const tlPage = item.layout === 'timeline' && item.dataKeys.includes('timeline');
   const tlShape = tlPage && timelineDegradeReason(b) === null;
+  const diagram = planDiagram(item, b);
+  const rawBlocks = selectRawBlocks(item, b, tlShape, diagram);
+  if (frames.cols) return layoutTwoColumns(item, frames, bullets, rawBlocks, out, dropped, notes);
+  return layoutSingleColumn({ item, bundle: b, body: frames.body, bullets, rawBlocks, tlShape, diagram }, { out, dropped, notes });
+}
+
+/** flow/chip 页的组件绘制计划：key 为要自绘的数据块，on 表示绘制前提是否满足 */
+interface DiagramPlan {
+  key: KickoffDataKey | null;
+  on: boolean;
+  minH: number;
+}
+
+function planDiagram(item: KickoffRenderPage, b: KickoffBundle): DiagramPlan {
   // T02198：flow/chip 页由组件自己绘制，其数据块（里程碑链 / 人员标签）不进堆叠预算
-  const chipDiagramKey: KickoffDataKey | null = item.layout === 'chip' ? 'assignees' : null;
-  const diagramKey: KickoffDataKey | null =
-    item.layout === 'flow' ? 'milestones' : chipDiagramKey;
-  const diagramOn =
-    diagramKey !== null && (item.layout === 'flow' ? flowDegradeReason(b) === null : b.assignees.length > 0);
-  const diagramMinH = item.layout === 'flow' ? FLOW_MIN_H : CHIP_MIN_H;
-  // 形状版自己绘制时间线块，不让它进刚性表格预算（否则时间线区被算两次，要点被无端压扁）
+  const chipKey: KickoffDataKey | null = item.layout === 'chip' ? 'assignees' : null;
+  const key: KickoffDataKey | null = item.layout === 'flow' ? 'milestones' : chipKey;
+  let on = false;
+  if (key !== null) on = item.layout === 'flow' ? flowDegradeReason(b) === null : b.assignees.length > 0;
+  return { key, on, minH: item.layout === 'flow' ? FLOW_MIN_H : CHIP_MIN_H };
+}
+
+/** 进堆叠预算的数据块：组件自绘的块不进刚性表格预算（否则时间线区被算两次，要点被无端压扁） */
+function selectRawBlocks(item: KickoffRenderPage, b: KickoffBundle, tlShape: boolean, diagram: DiagramPlan): Array<Omit<Block, 'box'>> {
   const baseBlocks = item.dataKeys
-    .filter((k) => !(tlShape && k === 'timeline') && !(diagramOn && k === diagramKey))
+    .filter((k) => !(tlShape && k === 'timeline') && !(diagram.on && k === diagram.key))
     .flatMap((k) => blocksForKey(k, b));
   // T02313：多键同页时降级占位表格（零信息刚性块会把同页真数据挤出版面 → C-03 丢块）；
   // 独占一页时保留「整页占位」形态（t02101 U-07 / t02198 H-06 钉住的既有设计）。
-  const rawBlocks = item.dataKeys.length > 1 ? baseBlocks.filter((d) => !isPlaceholderTable(d)) : baseBlocks;
+  return item.dataKeys.length > 1 ? baseBlocks.filter((d) => !isPlaceholderTable(d)) : baseBlocks;
+}
 
-  if (frames.cols) {
-    const [left, right] = frames.cols;
-    const dataBlocks = fitRigidTables(rawBlocks, right.w, right.h - flexStrip(rawBlocks));
-    if (bullets.length) out.push({ box: left, text: { content: bulletBodyText(item, bullets), pt: MIN_BODY_PT } });
-    const boxes = fitStack(right.y, dataBlocks, right.y + right.h, right.w, right);
-    pushStackedBlocks(out, dropped, dataBlocks, boxes, right.y + right.h);
-    return { blocks: out, dropped, notes, violations: [], tlDrawn: 0 };
+interface BulletsPlan {
+  requested: boolean;
+  content: string;
+  naturalH: number;
+  h: number;
+  reserve: number;
+}
+
+/** 要点预算：挤不进一个最小块就整块让位（留数据不留套话）；挤得进则按实排高度预留，表格再按剩下的预算收行 */
+function planBullets(item: KickoffRenderPage, bullets: string[], body: Box, avail: number): BulletsPlan {
+  if (bullets.length === 0) return { requested: false, content: '', naturalH: 0, h: 0, reserve: 0 };
+  const content = bulletBodyText(item, bullets);
+  const naturalH = textHeight(content, body.w, MIN_BODY_PT);
+  const h = Math.min(naturalH, Math.max(0, avail));
+  return { requested: true, content, naturalH, h, reserve: h >= MIN_BLOCK_H ? h + MIN_GAP : 0 };
+}
+
+/** 落要点块；返回下一个可用纵坐标 */
+function placeBullets(out: Block[], notes: string[], body: Box, plan: BulletsPlan, cursor: number): number {
+  if (!plan.requested) return cursor;
+  if (plan.h < MIN_BLOCK_H) {
+    notes.push(`要点为本页表格让位，未排入版面（剩余 ${Math.max(0, plan.h).toFixed(2)}"，可拆分该页）`);
+    return cursor;
   }
+  out.push({ box: { x: body.x, y: cursor, w: body.w, h: plan.h }, text: { content: plan.content, pt: MIN_BODY_PT } });
+  if (plan.h < plan.naturalH - 1e-6) {
+    notes.push(`要点为表格让位压缩排版（自然高 ${plan.naturalH.toFixed(2)}" → 实排 ${plan.h.toFixed(2)}"，多余部分按 pptxgenjs 截字）`);
+  }
+  return cursor + plan.h + MIN_GAP;
+}
 
+/** 形状版时间线：画得下就直接收口；画不动只留降级说明，交回列表版 */
+function tryTimelineShape(
+  item: KickoffRenderPage,
+  b: KickoffBundle,
+  body: Box,
+  cursor: number,
+  out: Block[],
+  dropped: string[],
+  notes: string[]
+): LayoutBodyResult | null {
+  if (!(item.layout === 'timeline' && item.dataKeys.includes('timeline'))) return null;
+  const pass = timelineShapePass(item, b, body, cursor, out, item.tlWindow ?? {});
+  if (pass.drawn) {
+    notes.push(...pass.notes);
+    dropped.push(...pass.dropped);
+    return { blocks: out, dropped, notes, violations: pass.violations, tlDrawn: pass.rows };
+  }
+  notes.push(pass.note);
+  return null;
+}
+
+/** flow/chip 组件页的绘制框：正文顶边（要点之后）与底边 */
+interface DiagramFrame {
+  body: Box;
+  cursor: number;
+  bottom: number;
+}
+
+/** T02198：flow/chip 组件页——整组自绘后直接收口，不进堆叠预算（同时间线形状版的旁路口径） */
+function tryDiagramPage(
+  item: KickoffRenderPage,
+  b: KickoffBundle,
+  diagram: DiagramPlan,
+  frame: DiagramFrame,
+  sink: LayoutSink
+): LayoutBodyResult | null {
+  if (!(diagram.on && diagram.key)) return null;
+  const { body, cursor, bottom } = frame;
+  const { out, dropped, notes } = sink;
+  const area: Box = { x: body.x, y: cursor, w: body.w, h: bottom - cursor };
+  const pass = item.layout === 'flow' ? flowBlocks(b, area) : chipBlocks(b, area);
+  if (pass.drawn > 0) {
+    out.push(...pass.blocks);
+    notes.push(...pass.notes);
+    return { blocks: out, dropped, notes, violations: pass.violations, tlDrawn: 0 };
+  }
+  notes.push(
+    item.layout === 'flow'
+      ? `阶段链回落表格版：剩余高度 ${area.h.toFixed(2)}" 排不下节点与截止日注`
+      : `人员标签回落表格版：库内无可排的负责人标签`
+  );
+  return null;
+}
+
+function layoutTwoColumns(
+  item: KickoffRenderPage,
+  frames: LayoutFrames,
+  bullets: string[],
+  rawBlocks: Array<Omit<Block, 'box'>>,
+  out: Block[],
+  dropped: string[],
+  notes: string[]
+): LayoutBodyResult {
+  const [left, right] = frames.cols!;
+  const dataBlocks = fitRigidTables(rawBlocks, right.w, right.h - flexStrip(rawBlocks));
+  if (bullets.length) out.push({ box: left, text: { content: bulletBodyText(item, bullets), pt: MIN_BODY_PT } });
+  const boxes = fitStack(right.y, dataBlocks, right.y + right.h, right.w, right);
+  pushStackedBlocks(out, dropped, dataBlocks, boxes, right.y + right.h);
+  return { blocks: out, dropped, notes, violations: [], tlDrawn: 0 };
+}
+
+/** 单栏排布入参：一页要摆的东西（要点、数据块、形状版开关、组件绘制计划、正文框） */
+interface SingleColumnInput {
+  item: KickoffRenderPage;
+  bundle: KickoffBundle;
+  body: Box;
+  bullets: string[];
+  rawBlocks: Array<Omit<Block, 'box'>>;
+  tlShape: boolean;
+  diagram: DiagramPlan;
+}
+
+function layoutSingleColumn(input: SingleColumnInput, sink: LayoutSink): LayoutBodyResult {
+  const { item, bundle: b, body, bullets, rawBlocks, tlShape, diagram } = input;
+  const { out, dropped, notes } = sink;
+  const bottom = body.y + body.h;
   // T02970：要点封顶按**数据块下限合计**算，不再只给要点留 MIN_BLOCK_H(0.45")。
   // 旧口径下要点自然高 0.90" 比预留多出的高度会从同页柔性文本块的 0.45" 地板里抠，
   // 表格+文本+要点同页时 dropped=["文本块"]——与「留数据不留套话」正好相反。
@@ -1102,72 +1239,28 @@ export function layoutBody(
   // 刚性表格的下限按「收到 1 行」的最小形态算，避免要点把表格预算吃成 0 后整块 drop。
   const rigidFloorH = rawBlocks.reduce((s, d) => s + (d.table ? tableMinHeight(d.table, body.w) : 0), 0);
   const dataGaps = MIN_GAP * Math.max(0, rawBlocks.length - 1);
-  const extraRigid = (tlShape ? TL_MIN_H + MIN_GAP : 0) + (diagramOn ? diagramMinH + MIN_GAP : 0);
+  const extraRigid = (tlShape ? TL_MIN_H + MIN_GAP : 0) + (diagram.on ? diagram.minH + MIN_GAP : 0);
   // 要点与首块之间也有一个间隔；要不了位时不计入，否则会被这 0.3" 无端判成「排不下」。
   const bulletsGap = bullets.length ? MIN_GAP : 0;
-  const bulletsContent = bullets.length ? bulletBodyText(item, bullets) : '';
-  const bulletsNaturalH = bulletsContent ? textHeight(bulletsContent, body.w, MIN_BODY_PT) : 0;
-  // 要点同样是柔性块：挤不进一个最小块就整块让位（留数据不留套话）；
-  // 挤得进则按实排高度预留，表格再按剩下的预算收行。
-  const bulletsH = bullets.length
-    ? Math.min(bulletsNaturalH, Math.max(0, bodyAvail - flexFloorH - rigidFloorH - dataGaps - extraRigid - bulletsGap))
-    : 0;
-  const bulletsReserve = bulletsH >= MIN_BLOCK_H ? bulletsH + bulletsGap : 0;
-  const dataBlocks = fitRigidTables(
-    rawBlocks,
-    body.w,
-    bodyAvail - flexFloorH - dataGaps - extraRigid - bulletsReserve
-  );
+  const plan = planBullets(item, bullets, body, body.h - flexFloorH - rigidFloorH - dataGaps - extraRigid - bulletsGap);
+  const dataBlocks = fitRigidTables(rawBlocks, body.w, body.h - flexFloorH - dataGaps - extraRigid - plan.reserve);
+  const cursor = placeBullets(out, notes, body, plan, body.y);
 
-  let cursor = body.y;
-  if (bullets.length) {
-    if (bulletsH >= MIN_BLOCK_H) {
-      out.push({ box: { x: body.x, y: cursor, w: body.w, h: bulletsH }, text: { content: bulletsContent, pt: MIN_BODY_PT } });
-      if (bulletsH < bulletsNaturalH - 1e-6) {
-        notes.push(`要点为表格让位压缩排版（自然高 ${bulletsNaturalH.toFixed(2)}" → 实排 ${bulletsH.toFixed(2)}"，多余部分按 pptxgenjs 截字）`);
-      }
-      cursor += bulletsH + MIN_GAP;
-    } else {
-      notes.push(`要点为本页表格让位，未排入版面（剩余 ${Math.max(0, bulletsH).toFixed(2)}"，可拆分该页）`);
-    }
-  }
-
-  let tlDrawn = 0;
-  if (item.layout === 'timeline' && item.dataKeys.includes('timeline')) {
-    const pass = timelineShapePass(item, b, body, cursor, out, item.tlWindow ?? {});
-    if (pass.drawn) {
-      notes.push(...pass.notes);
-      dropped.push(...pass.dropped);
-      return { blocks: out, dropped, notes, violations: pass.violations, tlDrawn: pass.rows };
-    }
-    notes.push(pass.note);
-  }
-
-  // T02198：flow/chip 组件页——整组自绘后直接收口，不进堆叠预算（同时间线形状版的旁路口径）
-  if (diagramOn && diagramKey) {
-    const frame: Box = { x: body.x, y: cursor, w: body.w, h: bottom - cursor };
-    const pass = item.layout === 'flow' ? flowBlocks(b, frame) : chipBlocks(b, frame);
-    if (pass.drawn > 0) {
-      out.push(...pass.blocks);
-      notes.push(...pass.notes);
-      return { blocks: out, dropped, notes, violations: pass.violations, tlDrawn: 0 };
-    }
-    notes.push(
-      item.layout === 'flow'
-        ? `阶段链回落表格版：剩余高度 ${frame.h.toFixed(2)}" 排不下节点与截止日注`
-        : `人员标签回落表格版：库内无可排的负责人标签`
-    );
-  }
+  const tlResult = tryTimelineShape(item, b, body, cursor, out, dropped, notes);
+  if (tlResult) return tlResult;
+  const diagramResult = tryDiagramPage(item, b, diagram, { body, cursor, bottom }, sink);
+  if (diagramResult) return diagramResult;
 
   // 走到这里 = 时间线只能用列表版：把形状版排除掉的表格块补回来，并按剩余高度再收一次行
-  const diagramReAddKey: KickoffDataKey | null = diagramOn ? diagramKey : null;
-  const reAddKey: KickoffDataKey | null = tlShape ? 'timeline' : diagramReAddKey;
+  let reAddKey: KickoffDataKey | null = null;
+  if (tlShape) reAddKey = 'timeline';
+  else if (diagram.on) reAddKey = diagram.key;
   const stackBlocks = reAddKey
     ? fitRigidTables([...dataBlocks, ...blocksForKey(reAddKey, b)], body.w, bottom - cursor)
     : dataBlocks;
   const boxes = fitStack(cursor, stackBlocks, bottom, body.w, body);
   pushStackedBlocks(out, dropped, stackBlocks, boxes, bottom);
-  return { blocks: out, dropped, notes, violations: [], tlDrawn };
+  return { blocks: out, dropped, notes, violations: [], tlDrawn: 0 };
 }
 
 /**

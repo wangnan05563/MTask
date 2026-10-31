@@ -6,7 +6,7 @@
  * 折叠状态由调用方持有（讲稿面板需要按 projectId+path 门控并支持锚点程序展开），
  * 本组件只负责渲染与回抛展开/折叠事件——这样两端各自的键空间互不干扰。
  */
-import { hunkToRows, type LectureDiffHunk } from '../utils/lectureDiff';
+import { hunkToRows, type LectureDiffHunk, type LectureDiffRowKind } from '../utils/lectureDiff';
 import { ChevronDown, ChevronRight } from 'lucide-react'; // T03393（§3.5 UI）：图标统一 lucide
 
 const FONT_MONO = 'Consolas, Menlo, monospace';
@@ -17,6 +17,13 @@ const ROW_STYLE: Record<'add' | 'del' | 'ctx', { bg: string; text: string; marke
   del: { bg: 'var(--diff-del-bg)', text: 'var(--diff-del-text)', marker: '-' },
   ctx: { bg: 'var(--diff-ctx-bg)', text: 'var(--diff-ctx-text)', marker: ' ' },
 };
+
+/** 行种类 → 三态样式（hunk 头不走该映射，归到上下文样式） */
+function rowStyleOf(kind: LectureDiffRowKind): { bg: string; text: string; marker: string } {
+  if (kind === 'add') return ROW_STYLE.add;
+  if (kind === 'del') return ROW_STYLE.del;
+  return ROW_STYLE.ctx;
+}
 
 export interface DiffFileViewProps {
   readonly path: string;
@@ -90,7 +97,7 @@ export function DiffFileView(props: DiffFileViewProps) {
                 const rowIndex = offset + 1; // rows[0] 是 hunk 头，行号口径与 utils 的展开结果一致
                 const id = rowDomId(hunkIndex, rowIndex);
                 const flashed = flashRowIds?.has(id);
-                const st = ROW_STYLE[r.kind === 'add' ? 'add' : r.kind === 'del' ? 'del' : 'ctx'];
+                const st = rowStyleOf(r.kind);
                 return (
                   <div key={flashed ? `${id}-${flashSeq}` : id} {...{ [rowAttr]: id }}
                     className={flashed ? 'locate-flash' : undefined}

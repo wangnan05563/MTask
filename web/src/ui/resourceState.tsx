@@ -102,7 +102,7 @@ export function ResourceHint({ view, label, showLoading = false, style }: {
   readonly showLoading?: boolean;
   readonly style?: React.CSSProperties;
 }) {
-  const hostRef = useRef<HTMLSpanElement | null>(null);
+  const hostRef = useRef<HTMLOutputElement | null>(null);
   const [nested, setNested] = useState(false);
   useEffect(() => {
     if (!nested && hasInteractiveAncestor(hostRef.current)) {
@@ -113,9 +113,9 @@ export function ResourceHint({ view, label, showLoading = false, style }: {
 
   if (view.phase === 'error') {
     return (
-      <span
+      /* <output> 自带 role="status"（读屏会播报），且允许内嵌重试按钮 */
+      <output
         ref={hostRef}
-        role="status"
         data-t02213="resource-error"
         data-nested={nested ? 'true' : undefined}
         style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-s)', color: 'var(--danger)', ...style }}
@@ -132,14 +132,14 @@ export function ResourceHint({ view, label, showLoading = false, style }: {
             重试
           </button>
         )}
-      </span>
+      </output>
     );
   }
   if (view.phase === 'loading' && showLoading) {
     return (
-      <span role="status" data-t02213="resource-loading" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', ...style }}>
+      <output data-t02213="resource-loading" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', ...style }}>
         {label}加载中…
-      </span>
+      </output>
     );
   }
   return null;

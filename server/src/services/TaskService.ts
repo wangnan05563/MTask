@@ -19,10 +19,10 @@ const PLAN_LOOKUP_BATCH = 200;
 /** T01280：就绪任务排水排序权重——与 SupervisorService.PRIORITY_CASE 同口径，
  *  否则「决策层看到的优先级」与「拉取接口返回的优先级」不一致，高优先级任务可能被低优先级挤掉。 */
 const PRIORITY_CASE = "CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 9 END";
-/** T02070 口径裁决：tasks.status 恒为 **todo|done 二元**（tasks 表无 CHECK 约束，白名单只能在写入口钉）。
- *  第三态不做的原因是消费侧全按二元二分：待办/已完成两页签严格 `status === 'todo' / 'done'`
- *  （TasksPage.tsx 待办/已完成两页签按 `status === 'todo' / 'done'` 严格二分）、AI 待处理与监控队列
- *  SQL 是 `status = 'todo'`（见本文件 markMonitorReady / listMonitorReady）、
+/** T02070 口径裁决：tasks.status 恒为 **待办/已完成二元**（tasks 表无 CHECK 约束，白名单只能在写入口钉）。
+ *  第三态不做的原因是消费侧全按二元二分：待办/已完成两页签严格按 status 二分
+ *  （TasksPage.tsx 待办/已完成两页签按 status 严格二分）、AI 待处理与监控队列
+ *  SQL 只取待办值（见本文件 markMonitorReady / listMonitorReady）、
  *  抽屉与移动端 STATUS_LABEL 只有两键——写进 'doing' 不会报错，而是让任务从两个页签同时消失并
  *  永久脱离队列（比「父任务显示 30% 却仍是待办」这个原症状更严重）。
  *  中间态由 progress（0~100）承载、「AI 在途」由 ai_state（running/unread/failed）承载。
@@ -62,7 +62,7 @@ export interface TaskRow {
   ai_state_at: string;
   /** T00577：派生单溯源——原任务编号（如 T00422）；处理完成后结论自动整合回原任务 */
   derived_from: string | null;
-  /** T02949：派生单裁决状态（'' 无 | '待裁决' | '已裁决'）——独立列，不占用 status 的 todo/done 语义 */
+  /** T02949：派生单裁决状态（'' 无 | '待裁决' | '已裁决'）——独立列，不占用 status 的待办/已完成语义 */
   ruling_state: string;
   /** T02949：裁决内容（预设选项值或自定义文本） */
   ruling_result: string;
@@ -261,14 +261,14 @@ function syncPlanOnStatusChange(id: string, status: string): void {
 }
 
 /** M-5 / T01876：按「未归档子任务」完成比例重算父任务 progress 与 status。
- *  状态口径维持 todo|done 二元：tasks 全链路按二元消费（TasksPage 待办/已完成页签严格二分、
- *  TaskDetailDrawer/MobileTaskDetail 的 STATUS_LABEL 只有这两个键、待处理队列 SQL 是 status='todo'），
+ *  状态口径维持待办/已完成二元：tasks 全链路按二元消费（TasksPage 待办/已完成页签严格二分、
+ *  TaskDetailDrawer/MobileTaskDetail 的 STATUS_LABEL 只有这两个键、待处理队列 SQL 只取待办值），
  *  写 doing 会让「部分完成的父」从两个页签同时消失并进不了 AI 队列——比原症状更严重，故只做进度求真，
- *  第三态支持另立产品单。父的语义是聚合：未完成即 todo，进度按子任务比例如实反映（todo + 50% 不再自相矛盾，
- *  todo 在此读作「未完成」而非「未开始」）。
+ *  第三态支持另立产品单。父的语义是聚合：未完成即待办，进度按子任务比例如实反映（待办 + 50% 不再自相矛盾，
+ *  待办在此读作「未完成」而非「未开始」）。
  *  子任务全部归档（total=0）时不动父：无可依据的比例，保留人工状态。
  *  去掉旧写的 `AND status != 'done'` 守卫：它把 done 父整体冻结（生产实测 T00772：3/3 子全 done，父仍 done/0%），
- *  也正是 T00776「done 父再添 todo 子后进度状态双双失真」的成因。
+ *  也正是 T00776「done 父再添待办子后进度状态双双失真」的成因。
  *  从 syncPlanOnStatusChange 抽出复用——T00776 评审发现新增子任务不重算会导致父进度失真。 */
 function recalcParentProgress(parentId: string): void {
   const db = getDb();
@@ -295,6 +295,50 @@ function liveFieldsOf(projectId: string | undefined): Map<string, ProjectFieldVi
 }
 
 /**
+ * T03232：文本/单选字段的比较片段。值绑定顺序与 SQL 占位符出现顺序一致（field_id 在前、比较值在后）。
+ * 返回 null 表示忽略该条（单选项已停用的值不再参与筛选）。
+ */
+function textOrSelectClause(
+  field: ProjectFieldView,
+  op: string,
+  raw: string,
+  values: unknown[],
+  exists: (inner: string) => string,
+): string | null {
+  if (field.type === 'text') {
+    values.push(field.id);
+    if (op === 'contains') {
+      values.push(`%${raw.replaceAll(/[%_]/g, (m) => '\\' + m)}%`);
+      return exists(String.raw`v.value LIKE ? ESCAPE '\'`);
+    }
+    values.push(raw);
+    return exists('v.value = ?');
+  }
+  // 值存选项 id；已停用选项的存量值仍可筛（停用只挡新填写，不抹历史）
+  if (!field.options.some((o) => o.id === raw)) return null;
+  values.push(field.id, raw);
+  return exists('v.value = ?');
+}
+
+/** T03232：数值/日期字段的范围比较片段；非法取值返回 null 表示忽略该条 */
+function rangeClause(
+  field: ProjectFieldView,
+  op: string,
+  raw: string,
+  values: unknown[],
+  exists: (inner: string) => string,
+): string | null {
+  // number 比较走数值、date 走 ISO 字符串（YYYY-MM-DD 的字典序即时间序）
+  const cmp = { eq: '=', gt: '>', gte: '>=', lt: '<', lte: '<=' }[op];
+  if (!cmp) return null;
+  if (field.type === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  const num = Number(raw);
+  if (field.type === 'number' && !Number.isFinite(num)) return null;
+  values.push(field.id, field.type === 'number' ? num : raw);
+  return exists(`${field.type === 'number' ? 'CAST(v.value AS REAL)' : 'v.value'} ${cmp} ?`);
+}
+
+/**
  * T03232：把一条字段筛选展开成 WHERE 片段，不合法返回 null 表示忽略该条。
  * 值的绑定顺序必须与 SQL 文本中占位符出现顺序一致（field_id 在前、比较值在后）。
  */
@@ -313,30 +357,9 @@ function fieldFilterClause(
   if (!raw) return null;
   const exists = (inner: string) =>
     `EXISTS (SELECT 1 FROM task_field_values v WHERE v.task_id = tasks.id AND v.field_id = ? AND ${inner})`;
-
-  if (field.type === 'text') {
-    values.push(field.id);
-    if (op === 'contains') {
-      values.push(`%${raw.replaceAll(/[%_]/g, (m) => '\\' + m)}%`);
-      return exists(String.raw`v.value LIKE ? ESCAPE '\'`);
-    }
-    values.push(raw);
-    return exists('v.value = ?');
-  }
-  if (field.type === 'select') {
-    // 值存选项 id；已停用选项的存量值仍可筛（停用只挡新填写，不抹历史）
-    if (!field.options.some((o) => o.id === raw)) return null;
-    values.push(field.id, raw);
-    return exists('v.value = ?');
-  }
-  // number 比较走数值、date 走 ISO 字符串（YYYY-MM-DD 的字典序即时间序）
-  const cmp = { eq: '=', gt: '>', gte: '>=', lt: '<', lte: '<=' }[op];
-  if (!cmp) return null;
-  if (field.type === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
-  const num = Number(raw);
-  if (field.type === 'number' && !Number.isFinite(num)) return null;
-  values.push(field.id, field.type === 'number' ? num : raw);
-  return exists(`${field.type === 'number' ? 'CAST(v.value AS REAL)' : 'v.value'} ${cmp} ?`);
+  return field.type === 'text' || field.type === 'select'
+    ? textOrSelectClause(field, op, raw, values, exists)
+    : rangeClause(field, op, raw, values, exists);
 }
 
 /**
@@ -363,6 +386,49 @@ function fieldSortClause(
   return { sql: `${nullLast}, ${lhs} ${dir}, created_at DESC`, values: [field.id, field.id] };
 }
 
+/** 关键词模糊搜索（标题/描述/编号）：LIKE 通配符转义后按字面匹配 */
+function pushKeywordFilter(opts: TaskListOptions, where: string[], values: unknown[]): void {
+  if (!opts.keyword) return;
+  // 转义 LIKE 通配符（%/_），让搜索词按字面匹配而非被误当通配
+  const kw = `%${opts.keyword.replaceAll(/[%_]/g, (m) => '\\' + m)}%`;
+  // T01568：编号也纳入模糊搜索——外部跳转（通知/就绪条）以 task_no 作搜索词定位，
+  // 只搜标题/描述时「按编号搜索」会把目标行整条筛掉（列表 0 行 → 定位与抽屉直达都落空）。
+  where.push(String.raw`(title LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\' OR task_no LIKE ? ESCAPE '\')`);
+  values.push(kw, kw, kw);
+}
+
+/** 状态/范围筛选：MCP/AI 拉指定范围时在服务端过滤，避免全量下发再本地筛，省 Token。
+ *  pending 优先于 status：返回「待处理 或 未验证」任务的并集。 */
+function pushStatusFilter(opts: TaskListOptions, where: string[], values: unknown[]): void {
+  if (opts.pending) {
+    where.push('(status = ? OR verified = 0)');
+    values.push('todo');
+    return;
+  }
+  if (opts.status) { where.push('status = ?'); values.push(opts.status); }
+}
+
+/** M7-7.1：需关注过滤（移动端告警条的服务端等价实现；与 attention=unread 互斥使用） */
+function pushAttentionFilter(opts: TaskListOptions, where: string[]): void {
+  if (opts.attention === 'failed') {
+    // T03707：「验证通过」（done + verified）与前端 isVerificationPassed 同口径，整体排除——
+    // 否则第一分支会把「已完成已验证但 ai_state 残留 failed」的旧任务继续算作待关注。
+    where.push(String.raw`(NOT (status = 'done' AND COALESCE(verified,0) = 1) AND (ai_state = 'failed' OR (handle_result LIKE '%【验证失败%' AND COALESCE(verified,0) = 0)))`);
+  } else if (opts.attention === 'unread') {
+    where.push("ai_state = 'unread'");
+  }
+}
+
+/** T03232：字段筛选——字段挂项目，未指定项目时既不校验也不生效（全部项目视图由前端禁用该控件） */
+function pushFieldFilters(opts: TaskListOptions, where: string[], values: unknown[]): void {
+  if (!opts.fieldFilters?.length || !opts.projectId) return;
+  const fields = liveFieldsOf(opts.projectId);
+  for (const f of opts.fieldFilters) {
+    const clause = fieldFilterClause(f, fields, values);
+    if (clause) where.push(clause);
+  }
+}
+
 function buildTaskFilter(opts: TaskListOptions): { where: string[]; values: unknown[] } {
   const where: string[] = [];
   const values: unknown[] = [];
@@ -375,14 +441,7 @@ function buildTaskFilter(opts: TaskListOptions): { where: string[]; values: unkn
   if (opts.shelved) where.push('shelved = 1');
   else if (!opts.archived) where.push('COALESCE(shelved, 0) = 0');
   if (opts.projectId) { where.push('project_id = ?'); values.push(opts.projectId); }
-  if (opts.keyword) {
-    // 转义 LIKE 通配符（%/_），让搜索词按字面匹配而非被误当通配
-    const kw = `%${opts.keyword.replaceAll(/[%_]/g, (m) => '\\' + m)}%`;
-    // T01568：编号也纳入模糊搜索——外部跳转（通知/就绪条）以 task_no 作搜索词定位，
-    // 只搜标题/描述时「按编号搜索」会把目标行整条筛掉（列表 0 行 → 定位与抽屉直达都落空）。
-    where.push(String.raw`(title LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\' OR task_no LIKE ? ESCAPE '\')`);
-    values.push(kw, kw, kw);
-  }
+  pushKeywordFilter(opts, where, values);
   // T03184：结构化查询整体作为一个条件并入，内部 AND/OR 语义由编译产物自带括号保证
   if (opts.queryFilter) {
     where.push(`(${opts.queryFilter.where})`);
@@ -394,26 +453,9 @@ function buildTaskFilter(opts: TaskListOptions): { where: string[]; values: unkn
   if (opts.priority && ['urgent', 'high', 'normal', 'low'].includes(opts.priority)) {
     where.push('priority = ?'); values.push(opts.priority);
   }
-  // 状态/范围筛选：MCP/AI 拉指定范围时在服务端过滤，避免全量下发再本地筛，省 Token。
-  // pending 优先于 status：返回「待处理 或 未验证」任务的并集。
-  if (opts.pending) { where.push('(status = ? OR verified = 0)'); values.push('todo'); }
-  else if (opts.status) { where.push('status = ?'); values.push(opts.status); }
-  // M7-7.1：需关注过滤（移动端告警条的服务端等价实现；与 attention=unread 互斥使用）
-  if (opts.attention === 'failed') {
-    // T03707：「验证通过」（done + verified）与前端 isVerificationPassed 同口径，整体排除——
-    // 否则第一分支会把「已完成已验证但 ai_state 残留 failed」的旧任务继续算作待关注。
-    where.push(String.raw`(NOT (status = 'done' AND COALESCE(verified,0) = 1) AND (ai_state = 'failed' OR (handle_result LIKE '%【验证失败%' AND COALESCE(verified,0) = 0)))`);
-  } else if (opts.attention === 'unread') {
-    where.push("ai_state = 'unread'");
-  }
-  // T03232：字段筛选——字段挂项目，未指定项目时既不校验也不生效（全部项目视图由前端禁用该控件）
-  if (opts.fieldFilters?.length && opts.projectId) {
-    const fields = liveFieldsOf(opts.projectId);
-    for (const f of opts.fieldFilters) {
-      const clause = fieldFilterClause(f, fields, values);
-      if (clause) where.push(clause);
-    }
-  }
+  pushStatusFilter(opts, where, values);
+  pushAttentionFilter(opts, where);
+  pushFieldFilters(opts, where, values);
   return { where, values };
 }
 
@@ -546,6 +588,8 @@ function decorateRows(db: ReturnType<typeof getDb>, rows: TaskRow[]): TaskView[]
 /** M6-6.1：事件埋点相关类型与助手（自 update 提取，降低认知复杂度） */
 type UpdateEventPatch = Partial<Pick<TaskRow, 'status' | 'verified' | 'ai_state' | 'handle_result'>>;
 type UpdateEventBefore = { status: string; verified: number; ai_state: string; handle_result: string | null };
+/** PATCH 可写字段白名单（update 与联动副作用共用同一形状） */
+type TaskPatch = Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state' | 'ai_state_at' | 'derived_from' | 'shelved' | 'archived'>>;
 
 /** T01072-FR1.9：旧结果留档（diff/回滚数据源）——每任务保留最近 10 条 */
 function recordResultHistory(db: ReturnType<typeof getDb>, taskId: string, prevResult: string | null): void {
@@ -574,6 +618,26 @@ function collectUpdateEvents(patch: UpdateEventPatch, before: UpdateEventBefore,
     recordResultHistory(db, id, before.handle_result ?? '');
   }
   return ev;
+}
+
+/**
+ * update() 之后的联动副作用：裁决重判、计划状态回写、阻塞解除、派生单补归档、父进度重算。
+ * 全部挂在 update() 一处即覆盖 REST PATCH、MCP 写入、看板标记完成等所有写入口；
+ * 每一项都只在对应字段出现在 patch 里时触发，重复 PATCH 同一值不会重复产生历史。
+ */
+function applyUpdateSideEffects(id: string, patch: TaskPatch, before: UpdateEventBefore | undefined): void {
+  // T02949 方案 A：结论/标题/描述/溯源一变更就重判「是否需要裁决」
+  if (patch.handle_result !== undefined || patch.title !== undefined
+    || patch.description !== undefined || patch.derived_from !== undefined) TaskService.autoRuling(id);
+  // 反向计划联动（T00436）：待办被项目计划关联时，状态变更同步回计划任务（已完成↔已完成，待办→进行中）
+  if (patch.status !== undefined) syncPlanOnStatusChange(id, patch.status);
+  // T03230（PM-202③）：阻塞方「迁入 done 的那一次跃迁」触发自动解除；
+  // 只认跃迁（before.status !== 'done'），重复 PATCH done 不该把同一批解除历史再刷一遍。
+  if (patch.status === 'done' && before && before.status !== 'done') TaskService.releaseBlockersByCompletion(id);
+  // T03637：派生单完成即补归档（归并早于 done 由结果通道完成；同样只认 done 这一次跃迁）
+  if (patch.status === 'done' && before && before.status !== 'done') TaskService.archiveDerivedIfClosed(id);
+  // T01876：归档态变更同样要重算父进度（REST/MCP 单条归档走本方法，批量归档见 ArchiveService）
+  if (patch.archived !== undefined) TaskService.recalcParentsOfChildren([id]);
 }
 
   /**
@@ -965,7 +1029,7 @@ export const TaskService = {
     }
   },
 
-  update(id: string, patch: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state' | 'ai_state_at' | 'derived_from' | 'shelved' | 'archived'>>): TaskView {
+  update(id: string, patch: TaskPatch): TaskView {
     const db = getDb();
     // better-sqlite3 不支持 boolean 绑定且 SQLite 无布尔型，布尔列先归一整型 0/1 再落库
     normalizeBoolPatch(patch as Record<string, unknown>);
@@ -992,20 +1056,7 @@ export const TaskService = {
     if (before) {
       for (const [kind, detail] of collectUpdateEvents(patch as UpdateEventPatch, before, db, id)) logEvent(db, id, kind, detail);
     }
-    // T02949 方案 A：结论一变更就重判「是否需要裁决」。挂在这里而不是各写入口各做一次——
-    // REST PATCH、MCP update_task_result、派生单归并母单全都经过 update()，一处挂即全链覆盖。
-    if (patch.handle_result !== undefined || patch.title !== undefined
-      || patch.description !== undefined || patch.derived_from !== undefined) this.autoRuling(id);
-    // 反向计划联动（T00436）：待办被项目计划关联时，状态变更同步回计划任务（已完成↔已完成，待办→进行中）
-    if (patch.status !== undefined) syncPlanOnStatusChange(id, patch.status);
-    // T03230（PM-202③）：阻塞方「迁入 done 的那一次跃迁」触发自动解除。
-    // 挂在 update() 而不是各写入口——REST 单条 PATCH、批量 status、MCP write_task_status、看板键盘标记完成全都经过这里。
-    // 只认跃迁（before.status !== 'done'）：重复 PATCH done 不该把同一批解除历史再刷一遍。
-    if (patch.status === 'done' && before && before.status !== 'done') this.releaseBlockersByCompletion(id);
-    // T03637：派生单完成即补归档（归并早于 done 由结果通道完成；只认 done 这一次跃迁，重复 PATCH 不重复触发）
-    if (patch.status === 'done' && before && before.status !== 'done') this.archiveDerivedIfClosed(id);
-    // T01876：归档态变更同样要重算父进度（REST/MCP 单条归档走本方法，批量归档见 ArchiveService）
-    if (patch.archived !== undefined) this.recalcParentsOfChildren([id]);
+    applyUpdateSideEffects(id, patch, before);
     notifyChange('tasks');
     return this.getById(id)!;
   },
@@ -1126,7 +1177,7 @@ export const TaskService = {
    * 走 removeBlocker 同一条封口通道（写 released_at/released_reason + 双向 unblock 事件），
    * 不另写第二套解除逻辑——否则「手动解除」与「自动解除」会留下两种形状的历史。
    *
-   * 反向不成立：阻塞方从 done 退回 todo 时**不自动恢复**这些关系。
+   * 反向不成立：阻塞方从 done 退回待办时**不自动恢复**这些关系。
    * 「已完成 ⇒ 挡住的东西已让路」是用户当时据以标记完成的语义，重新打开后把阻塞悄悄钉回去，
    * 会让徽标在用户没做任何操作的情况下自己变红；要恢复就回到阻塞面板重新建立一次（历史行带着原因可对照）。
    */

@@ -36,7 +36,7 @@ import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00771：工作空�
 import { WorkspaceSearchPanel } from '../ui/WorkspaceSearchPanel'; // T00786：工作空间全文检索面板（partial 提示）
 import { WorkspaceAskPanel } from '../ui/WorkspaceAskPanel'; // T03250：工作空间只读问答（引用可跳转）
 import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：正文 AI 美化（反馈/处理结果共用）
-import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用入口可见但禁用 + 原因/修复动作
+import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness, type AiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用入口可见但禁用 + 原因/修复动作
 import { classifyResultMessage, createClassifyStore, runClassifyBatch, type ClassifyResponse, type ClassifyStoreState } from './tasksClassifyBatch'; // T02307：批量分类三态分流 + 账户级门禁/连续失败熔断
 
 /** 顶部 tab 三态：待办 / 已完成 / 搁置（S4323：具名类型别名替代内联联合类型） */
@@ -78,6 +78,12 @@ interface Paged<T> {
 /** T01568：详情抽屉合法标签页（会话键 focusDrawerTab 的白名单校验口径，与 TaskDetailDrawer 标签页一致） */
 const DRAWER_TABS: readonly TaskDetailTab[] = ['desc', 'result', 'summary', 'timeline', 'plans', 'git', 'blocks'];
 
+/** T01568：会话键里的抽屉标签页 → 合法标签页（白名单外回落 desc；空值不落任何页） */
+function resolveDrawerTab(raw: string): TaskDetailTab | null {
+  if (!raw) return null;
+  return (DRAWER_TABS as string[]).includes(raw) ? (raw as TaskDetailTab) : 'desc';
+}
+
 // ---------- T00552：批量分类运行态模块级化——切页后循环继续、返回不卡死 ----------
 // T02365：补「没命中」的原因分桶——AI 判定无匹配、调用失败、分类候选为空要分得开，
 // 否则一律显示「未能为这些任务匹配到合适分类」，用户既不知道是配置问题还是模型没选中。
@@ -116,7 +122,9 @@ interface ImageDraft {
  *  用于多选模式标题旁的「全选框」：全选=checked、部分选中=indeterminate、未选=空。 */
 /** T01064-FR1.5：任务事件时间线——状态流转/回传/验证历史（/api/events/by-task/:id，正序；无事件不渲染） */
 /** T01065-FR1.6：批量操作动作的中文名（撤销按钮提示用） */
-const ACTION_LABEL: Record<'status' | 'category' | 'priority' | 'color' | 'archive' | 'verified', string> = {
+/** T01065-FR1.6：批量操作动作（中文名见 ACTION_LABEL） */
+type BatchAction = 'status' | 'category' | 'priority' | 'color' | 'archive' | 'verified';
+const ACTION_LABEL: Record<BatchAction, string> = {
   status: '批量改状态', category: '批量设分类', priority: '批量设优先级', color: '批量字体颜色', archive: '批量归档',
   verified: '批量验收结果',
 };
@@ -161,6 +169,55 @@ interface BatchReceipt {
   skipped?: Array<{ ref: string; reason: string }>;
   at: string;
 }
+/** T03211（PM-105）：批量接口的逐条结果项 */
+interface BatchResultItem {
+  id: string;
+  title?: string;
+  ok: boolean;
+  reason?: string;
+}
+
+/** 撤销栈标签的动作后缀：验收结果用可读文案，其余直接带目标值 */
+function batchValueSuffix(action: BatchAction, value?: string): string {
+  if (action === 'verified') return value === 'true' ? '（验证通过）' : '（未验证）';
+  return value ? `（${value}）` : '';
+}
+
+/** 批量操作一条都没改成功时的提示——验收动作单独说明「没有已完成任务」的原因 */
+function batchNoopMessage(action: BatchAction): string {
+  return action === 'verified' ? '选中任务中没有已完成任务，验收状态未变更（原因见回执）' : '没有可更新的任务（原因见回执）';
+}
+
+/** 批量操作成功提示：有失败项时补一句「原因见回执」，避免长句嵌套模板 */
+function batchDoneMessage(affected: number, failedCount: number): string {
+  return failedCount > 0
+    ? `批量操作完成：成功 ${affected} 条，失败 ${failedCount} 条（原因见回执）`
+    : `批量操作完成：成功 ${affected} 条`;
+}
+
+/** 服务端逐条回执 → 常驻回执的失败项（缺省原因统一兜底文案） */
+function batchFailedItems(results: BatchResultItem[]): Array<{ id: string; title: string; reason: string }> {
+  return results
+    .filter((x) => !x.ok)
+    .map((x) => ({ id: x.id, title: x.title ?? '', reason: x.reason ?? '未说明原因' }));
+}
+
+/**
+ * T01065 后续：构造撤销快照条目——只收真正成功的条目（失败项没有改动，回填会制造无意义的「还原」）。
+ * T02980：验收结果只回填 verified；待办任务服务端本就不改，不入栈。
+ */
+function buildUndoEntries(action: BatchAction, ids: string[], results: BatchResultItem[], all: Task[]): Array<{ id: string; patch: BatchUndoPatch }> {
+  const okIds = new Set(results.filter((x) => x.ok).map((x) => x.id));
+  return ids
+    .filter((id) => okIds.has(id))
+    .map((id): { id: string; patch: BatchUndoPatch } | null => {
+      const t = all.find((x) => x.id === id);
+      if (!t) return null;
+      if (action === 'verified') return t.status === 'done' ? { id, patch: { verified: t.verified } } : null;
+      return { id, patch: { status: t.status, priority: t.priority, category_id: t.category_id, color: t.color || '' } };
+    })
+    .filter((x): x is { id: string; patch: BatchUndoPatch } => x !== null);
+}
 /** 撤销栈上限：再深的历史用户基本不会翻，且每条快照都占内存（含逐条旧值） */
 const MAX_UNDO_STEPS = 10;
 
@@ -201,6 +258,17 @@ function scopeParams(projectId: string): URLSearchParams {
   return p;
 }
 
+/** T03209（PM-101）：项目待办/已完成计数乐观增减——项目列表缓存 60s，状态流转/新建后看板列头需即时反映 */
+function bumpProjectCounts(projectId: string, deltaTodo: number, deltaDone: number) {
+  if (!projectId) return;
+  const cur = getProjectListSnapshot().find((p) => p.id === projectId);
+  if (!cur) return;
+  patchProject(projectId, {
+    todo_count: Math.max(0, (cur.todo_count ?? 0) + deltaTodo),
+    done_count: Math.max(0, (cur.done_count ?? 0) + deltaDone),
+  });
+}
+
 /**
  * T03232（PM-203③）：字段类型 → 可选筛选算子。
  * 与服务端 TaskService.FIELD_OPS 对齐——前端只负责不给用户端出无效算子，服务端仍按字段定义再校验一次。
@@ -223,6 +291,396 @@ const FIELD_OP_NEEDS_VALUE = new Set(['eq', 'contains', 'gt', 'gte', 'lt', 'lte'
 
 function defaultFieldOp(type: CustomFieldType): string {
   return type === 'text' ? 'contains' : 'eq';
+}
+
+/** T03232：字段筛选是否处于「生效中」——算子缺省或为 empty/notEmpty 都属于无需填值的有效状态 */
+function needsFieldValue(op: string): boolean {
+  return !!op && FIELD_OP_NEEDS_VALUE.has(op);
+}
+
+/** §3.1.5：单项目视图（全部项目/未选项目时不支持批量补录 Git 关联，需逐行操作） */
+function isSingleProjectScope(projectId: string): boolean {
+  return Boolean(projectId) && projectId !== ALL_PROJECTS;
+}
+
+/** T03215：窗口化只对列表视图生效，看板视图不参与 */
+function listWindowLength(viewMode: 'list' | 'board', len: number): number {
+  return viewMode === 'list' ? len : 0;
+}
+
+/** 搁置列表全量拉取（不分页），触底续页只对待办/已完成生效 */
+function listWindowHasMore(hasMore: boolean, viewMode: 'list' | 'board', tab: ActiveTab): boolean {
+  return hasMore && viewMode === 'list' && tab !== 'shelved';
+}
+
+/** 主列表查询条件（均经服务端过滤，保证分页前后口径一致） */
+interface TaskListFilters {
+  search: string;
+  catFilter: string;
+  priorityFilter: string;
+  fieldFilterField: string;
+  fieldFilterOp: string;
+  fieldFilterValue: string;
+  fieldSort: string;
+}
+
+/**
+ * T03211/T03232：组装主列表请求参数。
+ * 「需要填值」的算子没填值时不下发（等同于未启用），避免用户刚选中字段就把列表筛空；
+ * 自定义字段筛选/排序仅单项目视图生效（跨项目字段定义不同，无法统一谓词）。
+ */
+function buildTaskListParams(projectId: string, offset: number, limit: number, f: TaskListFilters): URLSearchParams {
+  const p = scopeParams(projectId);
+  p.set('limit', String(limit));
+  if (offset > 0) p.set('offset', String(offset));
+  const kw = f.search.trim();
+  if (kw) p.set('keyword', kw);
+  if (f.catFilter === 'none') p.set('categoryId', 'none');
+  else if (f.catFilter) p.set('categoryId', f.catFilter);
+  if (f.priorityFilter) p.set('priority', f.priorityFilter);
+  const fieldFilterOn = Boolean(f.fieldFilterField) && Boolean(f.fieldFilterOp)
+    && (!FIELD_OP_NEEDS_VALUE.has(f.fieldFilterOp) || Boolean(f.fieldFilterValue.trim()));
+  if (projectId !== ALL_PROJECTS && fieldFilterOn) {
+    p.set('fieldFilters', JSON.stringify([{ fieldId: f.fieldFilterField, op: f.fieldFilterOp, value: f.fieldFilterValue }]));
+  }
+  if (projectId !== ALL_PROJECTS && f.fieldSort) {
+    const [fid, dir] = f.fieldSort.split('|');
+    if (fid) p.set('fieldSort', JSON.stringify({ fieldId: fid, dir: dir === 'desc' ? 'desc' : 'asc' }));
+  }
+  return p;
+}
+
+/**
+ * T01700：抽屉镜像合并——把新快照里同 id 的任务换给抽屉，快照 updated_at 更旧时跳过，
+ * 杜绝「外部 PATCH→立即保存/回滚→被旧快照打回」的丢更新竞态。
+ */
+function newerDrawerTask(cur: Task | null, find: (id: string) => Task | undefined): Task | null {
+  if (!cur) return cur;
+  const next = find(cur.id);
+  if (!next) return cur;
+  if ((next.updated_at ?? '') < (cur.updated_at ?? '')) return cur;
+  return next;
+}
+
+/** 在多份任务快照里按 id 找第一条命中（首份命中即返回，语义同 ?? 串联的 find） */
+function findTaskInLists(lists: Task[][], id: string): Task | undefined {
+  for (const list of lists) {
+    const hit = list.find((x) => x.id === id);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+/** 工具条小按钮：展开/选中态配色 */
+const TOGGLE_STYLE_ACTIVE: CSSProperties = { background: 'var(--accent-soft)', color: 'var(--accent-ink)' };
+/** 工具条小按钮：收起/未选中态配色 */
+const TOGGLE_STYLE_IDLE: CSSProperties = { background: 'transparent', color: 'var(--text)' };
+
+/** Git 徽标开关：显示态配色 */
+const GIT_TOGGLE_ACTIVE: CSSProperties = { background: 'var(--accent-soft)', color: 'var(--accent-ink)' };
+/** Git 徽标开关：隐藏态用卡片底，与首排常驻按钮一致 */
+const GIT_TOGGLE_IDLE: CSSProperties = { background: 'var(--card-bg)', color: 'var(--text-muted)' };
+
+/** 项目下拉行：选中底色 */
+const ROW_BG_SELECTED = 'var(--accent-soft)';
+/** 项目下拉行：未选中（透明） */
+const ROW_BG_IDLE = 'transparent';
+
+/** 导入入口提示：上一批操作进行中 */
+const IMPORT_TITLE_BUSY = '导入数据 — 上一批操作进行中，完成后恢复可选';
+/** 导入入口提示：可用（CSV/JSON 两格式说明） */
+const IMPORT_TITLE_READY = '导入数据 — CSV/JSON（JSON 支持 Trello 导出与 JSON 数组），预览确认后入库';
+
+/** 手动关联按钮提示：单项目视图可用 */
+const MANUAL_LINK_TITLE_SINGLE = '手动关联 — 逐条打开提交选取弹窗补录（跨项目视图请逐行操作）';
+/** 手动关联按钮提示：跨项目视图逐行操作 */
+const MANUAL_LINK_TITLE_CROSS = '跨项目视图请逐行手动关联（点击任务行提交徽标进抽屉）';
+
+/** 项目切换按钮上的当前项目名 */
+function activeProjectLabel(activeProject: string, projects: Project[]): string {
+  if (activeProject === ALL_PROJECTS) return '全部项目';
+  return projects.find((p) => p.id === activeProject)?.name ?? '选择项目';
+}
+
+/** 工作空间全文检索按钮提示 */
+function wsSearchTitle(activeProject: string): string {
+  const base = activeProject
+    ? '工作空间全文检索 — 在绑定工作空间内检索关键词，结果可能不完整的 partial 状态会提示'
+    : '请先选择项目再检索工作空间';
+  return `${base}（默认隐藏，悬浮工具栏显示）`;
+}
+
+/** Git 徽标开关提示：已显示态（点一下隐藏） */
+const GIT_TOGGLE_TITLE_ON = 'Git 徽标（已显示）— 点击隐藏任务行的提交关联徽标；会话内保持（默认隐藏，悬浮工具栏显示）';
+/** Git 徽标开关提示：已隐藏态（点一下显示） */
+const GIT_TOGGLE_TITLE_OFF = 'Git 徽标（已隐藏）— 点击显示任务行的提交关联徽标；会话内保持（默认隐藏，悬浮工具栏显示）';
+
+/** 「更多」按钮提示：已展开态 */
+const MORE_TITLE_OPEN = '更多（已展开）— 再次点击或点击空白处收起第二排功能';
+
+/** 「更多」按钮提示：收起态，生效筛选数单独拼装，避免嵌套模板字符串 */
+function moreTitleCollapsed(activeCount: number): string {
+  const badge = activeCount > 0 ? `（当前 ${activeCount} 项筛选生效）` : '';
+  return `更多 — 展开导出项目 / 分类筛选 / 优先级筛选 / 自定义字段筛选与排序${badge}`;
+}
+
+/** 项目导出下拉提示 */
+function exportProjectTitle(activeProject: string): string {
+  return activeProject === ALL_PROJECTS
+    ? '导出项目 — 请先选择具体项目'
+    : '导出项目 — 任务/计划导出为 Markdown 或 JSON（含层级/状态/优先级）';
+}
+
+/** 自定义字段筛选下拉提示：可用态 */
+const FIELD_FILTER_TITLE_READY = '自定义字段筛选 — 在服务端按字段值筛选（翻页后条件仍生效）';
+/** 自定义字段排序下拉提示：可用态 */
+const FIELD_SORT_TITLE_READY = '自定义字段排序 — 未填值的任务排在最后';
+/** 自定义字段下拉的禁用原因：项目还没有任何字段 */
+const FIELD_PICKER_TITLE_NO_FIELDS = '当前项目还没有自定义字段——可到「设置 → 自定义字段」创建';
+/** 自定义字段下拉的禁用原因：跨项目/未选项目（字段定义按项目） */
+const FIELD_PICKER_TITLE_NO_PROJECT = '自定义字段按项目定义，请先在项目下拉里选择具体项目';
+
+/** 自定义字段筛选/排序下拉的禁用原因（禁用时按「有无字段」分别说明） */
+function fieldPickerDisabledTitle(fieldCount: number, activeProject: string): string {
+  return fieldCount === 0 && activeProject !== ALL_PROJECTS
+    ? FIELD_PICKER_TITLE_NO_FIELDS
+    : FIELD_PICKER_TITLE_NO_PROJECT;
+}
+
+/** 字段值输入框占位文案（按字段类型） */
+function fieldValuePlaceholder(type: CustomFieldType): string {
+  if (type === 'number') return '输入数字';
+  if (type === 'date') return 'YYYY-MM-DD';
+  return '输入筛选文本';
+}
+
+/** 列表空态：尚未配置任何 AI 模型 */
+function NoToolsHint() {
+  return <>先到「模型」页添加 AI 模型，即可使用 AI 梳理 / 美化 / 分类等能力。</>;
+}
+
+/** 列表空态：AI 能力已可用 */
+function ToolsReadyHint() {
+  return <>也可使用上方 AI 梳理、美化、批量分类等能力。</>;
+}
+
+/** 取数阶段（主列表 / 搁置列表共用） */
+type FetchPhase = 'loading' | 'ready' | 'error';
+
+/** 主列表是否处于「失败但旧数据仍在位」的过期态 */
+function tasksAreStale(phase: FetchPhase, todoLen: number, doneLen: number): boolean {
+  return phase === 'error' && (todoLen > 0 || doneLen > 0);
+}
+
+/** 导入预览标题的类型名 */
+function importKindLabel(kind: 'csv' | 'json'): string {
+  return kind === 'json' ? 'JSON' : 'CSV';
+}
+
+/** 已裁决徽标的日期后缀：无裁决时间时返回空串（先取日子再拼，避免模板字符串嵌套） */
+function rulingAtSuffix(rulingAt: string | null | undefined): string {
+  if (!rulingAt) return '';
+  const day = rulingAt.slice(0, 10);
+  return `（${day}）`;
+}
+
+/** AI 智能关联按钮提示：单项目视图文案 */
+const AI_LINK_TITLE_SINGLE = 'AI 智能关联 — 让 AI 比对已完成未回写任务与仓库近期提交，给出候选后由你勾选确认（不自动落库）';
+/** AI 智能关联按钮提示：跨项目视图只能逐行操作 */
+const AI_LINK_TITLE_CROSS = '跨项目视图请逐行手动关联（点击任务行提交徽标进抽屉）';
+/** AI 智能关联按钮提示：AI 不可用时以单项目文案为底补原因，可用时用当前视图范围文案 */
+function aiLinkButtonTitle(scopeTitle: string, readiness: AiReadiness | null): string {
+  return aiBlocked(readiness)
+    ? aiBlockedTitle(readiness, 'AI 智能关联 — 比对已完成未回写任务与仓库近期提交，给出候选后由你勾选确认（不自动落库）')
+    : scopeTitle;
+}
+
+/** 集合内勾选：加入 */
+function withInSet(prev: Set<string>, key: string): Set<string> {
+  const next = new Set(prev);
+  next.add(key);
+  return next;
+}
+
+/** 集合内勾选：移除 */
+function withoutInSet(prev: Set<string>, key: string): Set<string> {
+  const next = new Set(prev);
+  next.delete(key);
+  return next;
+}
+
+/** T03621：AI 关联弹窗的范围/错误说明（平铺拼装，避免嵌套模板与嵌套三元） */
+function aiLinkScopeText(r: AiLinkResult): string {
+  if (!r.ok) return r.error ?? r.message ?? 'AI 智能关联暂不可用';
+  const base = `比对范围：${r.candidates?.tasks ?? 0} 条未回写任务 × ${r.candidates?.commits ?? 0} 个近期提交`;
+  const dropped = r.dropped ? ` · 已排除 ${r.dropped} 条不合格配对` : '';
+  return `${base}${dropped}`;
+}
+
+/** T03621：单条建议里的一个待勾选提交 */
+function AiLinkCommitRow({ taskId, commit, selected, onToggle }: {
+  readonly taskId: string;
+  readonly commit: AiLinkSuggestion['commits'][number];
+  readonly selected: boolean;
+  readonly onToggle: (key: string, checked: boolean) => void;
+}) {
+  const key = `${taskId}|${commit.sha}`;
+  return (
+    <label style={{ display: 'flex', alignItems: 'flex-start', gap: 6, padding: '3px 0', fontSize: 'var(--fs-xs)', cursor: 'pointer' }}>
+      <input type="checkbox" checked={selected} data-t03621="ai-pick"
+        onChange={(e) => onToggle(key, e.target.checked)} />
+      <span style={{ fontFamily: 'var(--font-mono, monospace)' }}>{commit.short}</span>
+      <span style={{ color: 'var(--text-secondary)', flex: 1 }}>{commit.subject}</span>
+      <span style={{ color: 'var(--text-muted)' }}>{commit.date.slice(0, 10)}</span>
+    </label>
+  );
+}
+
+/** 弹窗遮罩的「点空白关闭」承载：用原生 button（Enter/Space 与点按同效，不再是给容器挂鼠标事件），
+ *  tabIndex=-1 不进 Tab 序；需点按关闭的弹窗把面板放它上层（面板 position:relative + zIndex:1）。 */
+function ModalBackdrop({ label, disabled, onClose }: {
+  readonly label: string;
+  readonly disabled?: boolean;
+  readonly onClose: () => void;
+}) {
+  return (
+    <button type="button" className="tbtn-anim" tabIndex={-1} aria-label={label}
+      disabled={disabled}
+      onClick={onClose}
+      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', padding: 0, border: 'none', background: 'transparent', cursor: 'default' }} />
+  );
+}
+
+/** T03621：AI 智能关联建议弹窗——逐提交勾选，确认后才写 task_git_links（source=manual）；取消不产生任何写入 */
+function AiLinkDialog({ result, sel, applying, onToggle, onClose, onConfirm }: {
+  readonly result: AiLinkResult;
+  readonly sel: Set<string>;
+  readonly applying: boolean;
+  readonly onToggle: (key: string, checked: boolean) => void;
+  readonly onClose: () => void;
+  readonly onConfirm: () => void;
+}) {
+  return (
+    <dialog open aria-label="AI 智能关联建议"
+      style={{ ...OVERLAY_MASK, position: 'fixed', zIndex: 60, margin: 0, padding: 0, border: 'none', width: '100%', height: '100%', maxWidth: 'none', maxHeight: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text)' }}>
+      <ModalBackdrop label="关闭 AI 智能关联建议（点按空白处）" disabled={applying} onClose={onClose} />
+      <div data-t03621="ai-panel" style={{ position: 'relative', zIndex: 1, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 10px 28px rgba(0,0,0,.22)', width: 620, maxWidth: '94vw', maxHeight: '84vh', display: 'flex', flexDirection: 'column', padding: 14, color: 'var(--text)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+          <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600 }}>AI 智能关联建议</div>
+          <button type="button" onClick={onClose} disabled={applying}
+            title="关闭" aria-label="关闭 AI 智能关联建议"
+            style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: applying ? 'not-allowed' : 'pointer', padding: 2 }}>
+            <X size={14} />
+          </button>
+        </div>
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
+          {aiLinkScopeText(result)}
+        </div>
+        <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
+          {result.suggestions.length === 0 && (
+            <div data-t03621="ai-empty" style={{ padding: '16px 8px', fontSize: 'var(--fs-s)', color: 'var(--text-muted)', textAlign: 'center' }}>
+              {result.message ?? '没有可确认的建议——可改用「手动关联」逐条补录'}
+            </div>
+          )}
+          {result.suggestions.map((s) => (
+            <div key={s.taskId} data-t03621="ai-suggestion" style={{ border: '1px solid var(--border-strong)', borderRadius: 8, padding: 8, marginBottom: 8 }}>
+              <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600 }}>
+                {s.taskNo ?? '(无编号)'} · {s.taskTitle}
+                <span style={{ marginLeft: 8, fontWeight: 400, fontSize: 'var(--fs-xs)', color: 'var(--accent)' }}>置信度 {Math.round(s.confidence * 100)}%</span>
+              </div>
+              {s.reason && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', margin: '2px 0 6px' }}>{s.reason}</div>}
+              {s.commits.map((c) => (
+                <AiLinkCommitRow key={c.sha} taskId={s.taskId} commit={c} selected={sel.has(`${s.taskId}|${c.sha}`)} onToggle={onToggle} />
+              ))}
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+          <button type="button" onClick={onClose} disabled={applying}
+            style={{ fontSize: 'var(--fs-s)', padding: '6px 12px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: applying ? 'not-allowed' : 'pointer' }}>取消</button>
+          <button type="button" data-t03621="ai-confirm" disabled={applying || sel.size === 0} onClick={onConfirm}
+            style={{ fontSize: 'var(--fs-s)', padding: '6px 14px', border: 'none', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: applying || sel.size === 0 ? 'not-allowed' : 'pointer', opacity: applying || sel.size === 0 ? 0.5 : 1 }}>
+            {applying ? '关联中…' : `确认关联 ${sel.size} 个提交`}
+          </button>
+        </div>
+      </div>
+    </dialog>
+  );
+}
+
+/** 项目计数徽标（待办红 / 未验证蓝）——工具栏与下拉行共用同一外观 */
+const BADGE_TODO_STYLE: CSSProperties = {
+  flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px',
+  background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)',
+};
+const BADGE_UNV_STYLE: CSSProperties = {
+  flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px',
+  background: 'var(--accent-soft)', color: 'var(--accent)',
+};
+function ProjectBadges({ todo, unverified, allScope }: {
+  readonly todo: number;
+  readonly unverified: number;
+  readonly allScope?: boolean;
+}) {
+  const scope = allScope ? '全部项目' : '';
+  const sum = allScope ? '合计' : '';
+  return (
+    <>
+      <span title={`${scope}待办${sum} ${todo} 条`} style={BADGE_TODO_STYLE}>{todo}</span>
+      <span title={`${scope}未验证${sum} ${unverified} 条`} style={BADGE_UNV_STYLE}>{unverified}</span>
+    </>
+  );
+}
+
+/** 项目切换按钮上的徽标：全部项目视图取合计，具体项目取该项目计数（未选中时不出徽标） */
+function ProjectButtonBadges({ activeProject, curProj, allTodo, allUnv }: {
+  readonly activeProject: string;
+  readonly curProj: Project | undefined;
+  readonly allTodo: number;
+  readonly allUnv: number;
+}) {
+  if (activeProject === ALL_PROJECTS) return <ProjectBadges todo={allTodo} unverified={allUnv} allScope />;
+  if (!curProj) return null;
+  return <ProjectBadges todo={curProj.todo_count ?? 0} unverified={curProj.unverified_count ?? 0} />;
+}
+
+/** 导出下拉是否不可用：导出必须落到具体项目，全部项目/未选项目与导出在途都禁用 */
+function exportDisabled(busy: boolean, projectId: string): boolean {
+  return busy || !isSingleProjectScope(projectId);
+}
+
+/** 自定义字段筛选值编辑器：select 类型给选项下拉，其余给文本输入 */
+function FieldValueEditor({ field, value, onChange }: {
+  readonly field: CustomField;
+  readonly value: string;
+  readonly onChange: (v: string) => void;
+}) {
+  if (field.type === 'select') {
+    return (
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        data-t03232="field-value"
+        title="筛选值 — 选择要匹配的选项"
+        aria-label="自定义字段筛选值：选择要匹配的选项"
+        style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
+      >
+        <option value="">选择选项…</option>
+        {field.options.map((o) => <option key={o.id} value={o.id}>{o.archived ? `${o.label}（已停用）` : o.label}</option>)}
+      </select>
+    );
+  }
+  return (
+    <input
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      data-t03232="field-value"
+      placeholder={fieldValuePlaceholder(field.type)}
+      title="筛选值 — 文本按包含/等于匹配，数字与日期按大小比较；留空表示暂不筛选"
+      aria-label="自定义字段筛选值：填写筛选值"
+      style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, width: 120 }}
+    />
+  );
 }
 
 function TriCheckbox({ checked, indeterminate, onChange, title, label, style }: {
@@ -254,6 +712,17 @@ function newPastedImageId(): string {
   return `paste-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** 逐个把图片文件读成 dataURL 后回调。提到组件外：读文件 → onload → setState 三层内联箭头会触发 S2004 */
+function readImageFiles(files: Iterable<File>, onImages: (url: string) => void): void {
+  for (const file of files) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') onImages(reader.result);
+    };
+    reader.readAsDataURL(file);
+  }
+}
+
 /** 从剪贴板读取图片；有图片时阻止默认粘贴并回调 dataURL，无图片则放行文本粘贴（纯函数，提到组件外避免闭包重创建） */
 function readClipboardImages(e: ClipboardEvent<HTMLTextAreaElement>, onImages: (url: string) => void): boolean {
   const files = Array.from(e.clipboardData.items)
@@ -262,13 +731,7 @@ function readClipboardImages(e: ClipboardEvent<HTMLTextAreaElement>, onImages: (
     .filter((f): f is File => f !== null);
   if (files.length === 0) return false;
   e.preventDefault();
-  for (const file of files) {
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') onImages(reader.result);
-    };
-    reader.readAsDataURL(file);
-  }
+  readImageFiles(files, onImages);
   return true;
 }
 
@@ -387,15 +850,15 @@ export function TasksPage() {
   // 任务分类：分类列表 + 顶部筛选（会话级）+ 新建任务所选分类（会话级）
   const [taskCats, setTaskCats] = useState<TaskCategory[]>([]);
   const [catFilter, setCatFilter] = useSessionState('tasks.catFilter', '');
-  // T02283：主列表取数的显式状态。分页装载结构（todo/done/hasMore）保持不变，只把失败显式化，
+  // T02283：主列表取数的显式状态。分页装载结构（待办/已完成/hasMore）保持不变，只把失败显式化，
   // 形态与 T02213 的 ResourceHintView 同构（loading|ready|error + reload），可直接喂 ResourceHint。
-  const [tasksPhase, setTasksPhase] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [tasksPhase, setTasksPhase] = useState<FetchPhase>('loading');
   const [tasksError, setTasksError] = useState('');
   // T02291：筛选命中的服务端总条数（走 `total=1` 通道；null=本会话还没成功取过数，页脚不猜数）
   const [serverTotal, setServerTotal] = useState<number | null>(null);
   // T02290：搁置列表此前是裸吞 catch——失败后 shelvedTasks 保持旧值/空数组，页面既无失败态也无重试入口，
   // 「暂无搁置任务」空态会把取数故障冒充成「本来就没数据」。补一份与主列表同形的显式状态喂 ResourceHint。
-  const [shelvedPhase, setShelvedPhase] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [shelvedPhase, setShelvedPhase] = useState<FetchPhase>('loading');
   const [shelvedError, setShelvedError] = useState('');
   // T00474：优先级筛选（urgent/high/normal/low，会话级保持；空=全部）
   const [priorityFilter, setPriorityFilter] = useSessionState('tasks.priorityFilter', '');
@@ -409,7 +872,7 @@ export function TasksPage() {
   const [fieldSort, setFieldSort] = usePersistentState('tasks.fieldSort', '');
   const activeField = projectFields.find((f) => f.id === fieldFilterField);
   const fieldsDisabled = !activeProject || activeProject === ALL_PROJECTS || projectFields.length === 0;
-  const fieldFilterNeedsValue = !!fieldFilterOp && FIELD_OP_NEEDS_VALUE.has(fieldFilterOp);
+  const fieldFilterNeedsValue = needsFieldValue(fieldFilterOp);
   const onFieldFilterField = (id: string) => {
     // 换字段时把算子重置成该类型的默认值（文本→包含、其余→等于），旧值清空——跨类型沿用旧算子会立刻变成无效参数
     setFieldFilterField(id);
@@ -542,7 +1005,7 @@ export function TasksPage() {
   // T03623：工具栏「更多」折叠——导出项目 / 分类筛选 / 优先级筛选 / 自定义字段筛选与排序默认收起，点开为第二排
   const [moreOpen, setMoreOpen] = useState(false);
   const moreBtnRef = useRef<HTMLButtonElement | null>(null);
-  const morePanelRef = useRef<HTMLDivElement | null>(null);
+  const morePanelRef = useRef<HTMLFieldSetElement | null>(null);
   const sortedProjects = useMemo(() => sortProjects(projects, projSortMode), [projects, projSortMode]); // T00663：排序逻辑复用共享模块
 
   /** T00655：置顶/取消置顶——置顶写入较大 sort_weight（默认序下排最前），取消归零 */
@@ -589,25 +1052,9 @@ export function TasksPage() {
    */
   const fetchTasks = useCallback(async (projectId: string, offset: number, replace: boolean) => {
     if (!projectId) return;
-    // T03211：全部项目视图不带 projectId，拿跨项目任务集
-    const p = scopeParams(projectId);
-    p.set('limit', String(PAGE_SIZE));
-    if (offset > 0) p.set('offset', String(offset));
-    const kw = search.trim();
-    if (kw) p.set('keyword', kw);
-    if (catFilter === 'none') p.set('categoryId', 'none');
-    else if (catFilter) p.set('categoryId', catFilter);
-    if (priorityFilter) p.set('priority', priorityFilter);
-    // T03232（PM-203③）：自定义字段筛选/排序——服务端执行，翻页后仍是同一套谓词与序。
-    // 「需要填值」的算子没填值时不下发（等同于未启用），避免用户刚选中字段就把列表筛空。
-    if (projectId !== ALL_PROJECTS && fieldFilterField && fieldFilterOp
-      && (!FIELD_OP_NEEDS_VALUE.has(fieldFilterOp) || fieldFilterValue.trim())) {
-      p.set('fieldFilters', JSON.stringify([{ fieldId: fieldFilterField, op: fieldFilterOp, value: fieldFilterValue }]));
-    }
-    if (projectId !== ALL_PROJECTS && fieldSort) {
-      const [fid, dir] = fieldSort.split('|');
-      if (fid) p.set('fieldSort', JSON.stringify({ fieldId: fid, dir: dir === 'desc' ? 'desc' : 'asc' }));
-    }
+    const p = buildTaskListParams(projectId, offset, PAGE_SIZE, {
+      search, catFilter, priorityFilter, fieldFilterField, fieldFilterOp, fieldFilterValue, fieldSort,
+    });
     // T02283：主列表拉取失败此前一路冒泡——`void loadTasks(activeProject)`（约 30 处调用点）不接拒绝，
     // 断供时既刷出 unhandled rejection，界面又停在「暂无待办任务」空态冒充正常。
     // 改为就地收下：失败只置 error 态，绝不覆盖上次成功数据（与 T02213 同口径）。
@@ -641,17 +1088,11 @@ export function TasksPage() {
     // T01570：两套查看态共用同一份数据快照——整表刷新后把抽屉持有的任务对象换成新快照，
     // 否则行内编辑保存 / MCP 回传后，已开着的抽屉仍是打开那一刻的旧对象（要关开才更新），
     // 用户在旧文本上再保存就会覆盖掉刚写入的新内容（丢更新）。
-    // T01700：版本守卫——快照 updated_at 比抽屉当前值旧（applyTaskPatch 定点补丁已把时间戳抬为本地写入时刻）
-    // 说明本次 fetch 在本地 PATCH 落库前发出、内容不含最新写入，覆盖即回退 → 跳过，等下一次新鲜快照。
     // 编辑态不在这里跳过：抽屉自身 useEffect（editing 非空时不同步草稿）已保护草稿，
     // 而取消编辑后要「展示最新」恰恰依赖新快照继续流入 task prop——跳过反而会卡在旧值（探针 S6c 实证）。
-    setDrawerTask((cur) => {
-      if (!cur) return cur;
-      const next = nextTodo.find((x) => x.id === cur.id) ?? nextDone.find((x) => x.id === cur.id);
-      if (!next) return cur;
-      if ((next.updated_at ?? '') < (cur.updated_at ?? '')) return cur;
-      return next;
-    });
+    // 查找函数先落到具名常量：setDrawerTask 内只保留一层回调，避免多层内联箭头（S2004）
+    const findInSnapshot = (id: string) => findTaskInLists([nextTodo, nextDone], id);
+    setDrawerTask((cur) => newerDrawerTask(cur, findInSnapshot));
     // T00719：搁置列表随同一套查询条件（关键词/分类/优先级）刷新；搁置量通常较少，直接全量拉取（无 offset）
     try {
       const ps = new URLSearchParams(p);
@@ -661,13 +1102,8 @@ export function TasksPage() {
       setShelvedTasks(nextShelved);
       setShelvedPhase('ready');
       setShelvedError('');
-      setDrawerTask((cur) => {
-        if (!cur) return cur;
-        const next = nextShelved.find((x) => x.id === cur.id);
-        if (!next) return cur;
-        if ((next.updated_at ?? '') < (cur.updated_at ?? '')) return cur;
-        return next;
-      });
+      const findShelved = (id: string) => findTaskInLists([nextShelved], id);
+      setDrawerTask((cur) => newerDrawerTask(cur, findShelved));
     } catch (e) {
       // T02290：保留「搁置拉取失败不打断主列表」的既有取舍，只是不再无声——置 error 让搁置 tab 给出原因与重试，
       // 旧数据仍在 shelvedTasks 里，由 ResourceHint 的 stale 语义标成「上次成功的数据，可能过期」。
@@ -707,8 +1143,8 @@ export function TasksPage() {
   const doneIds = useMemo(() => visibleDone.map((t) => t.id), [visibleDone]);
   const shelvedIds = useMemo(() => visibleShelved.map((t) => t.id), [visibleShelved]);
   // 一次只挂载一个 tab 的列表，故整块共用一个窗口实例（看板视图不参与窗口化）
-  const activeVisible = activeTab === 'done' ? visibleDone : activeTab === 'shelved' ? visibleShelved : visibleTodo;
-  const activeVisibleIds = activeTab === 'done' ? doneIds : activeTab === 'shelved' ? shelvedIds : todoIds;
+  const activeVisible = { done: visibleDone, shelved: visibleShelved, todo: visibleTodo }[activeTab];
+  const activeVisibleIds = { done: doneIds, shelved: shelvedIds, todo: todoIds }[activeTab];
   // ===== 八期 §3.1：任务 ↔ Git 提交徽标 =====
   // 摘要取数必须在组件级一次算好（本页唯一 SHA 集合 → 一次批量请求）：逐行请求等于让 200 行页面
   // 触发 200 次 git 子进程，且窗口化滚动会反复回收行、造成同一提交被反复解析（§3.1.6 红线）。
@@ -727,7 +1163,7 @@ export function TasksPage() {
     () => (gitOn ? done.filter((t) => (t.gitLinks?.length ?? 0) === 0) : []),
     [gitOn, done],
   );
-  const singleProjectForGit = Boolean(activeProject) && activeProject !== ALL_PROJECTS;
+  const singleProjectForGit = isSingleProjectScope(activeProject);
   // 「手动关联」是逐条补录队列：一次只弹一个任务的取数窗，补完一条推进下一条
   const [gitLinkQueue, setGitLinkQueue] = useState<Task[]>([]);
   const [gitLinkBusy, setGitLinkBusy] = useState(false);
@@ -839,8 +1275,8 @@ export function TasksPage() {
 
   // 搁置列表是全量拉取（不分页），触底续取只对带分页的待办/已完成生效，否则会在看不见的列表上白取一页
   const listWin = useTaskListWindow(
-    viewMode === 'list' ? activeVisible.length : 0,
-    hasMore && viewMode === 'list' && activeTab !== 'shelved',
+    listWindowLength(viewMode, activeVisible.length),
+    listWindowHasMore(hasMore, viewMode, activeTab),
     loadMore,
     !loadingMore,
   );
@@ -1009,7 +1445,11 @@ export function TasksPage() {
   };
 
   useEffect(() => {
-    if (!focusTaskId) { if (focusDeadline) setFocusDeadline(0); return; }
+    if (!focusTaskId) {
+      // 无定位意图：撤掉收口定时器后直接返回（花括号显式成块，避免后续语句被误读为条件执行）
+      if (focusDeadline) { setFocusDeadline(0); }
+      return;
+    }
     // 上一节清空过滤后列表重载完成、projectId 无实际目标，进入正式定位流程
     if (focusProjectId === '__fetch_filter__') setFocusProjectId('');
     if (runFocusPreCheck(focusTaskId)) return;
@@ -1052,7 +1492,7 @@ export function TasksPage() {
       ? document.querySelector<HTMLElement>(`[data-ttask-id="${badgeLocate.id}"]`)
       : findRowElByNo(badgeLocate.taskNo);
     if (el instanceof HTMLElement) {
-      const flashId = el.getAttribute('data-ttask-id') ?? '';
+      const flashId = el.dataset.ttaskId ?? '';
       setBadgeLocate(null);
       try { el.scrollIntoView({ block: 'center' }); } catch { /* 忽略滚动异常 */ }
       if (flashId) {
@@ -1096,9 +1536,7 @@ export function TasksPage() {
   useEffect(() => {
     if (!focusDrawerId) return;
     const t = [...todo, ...done, ...shelvedTasks].find((x) => x.id === focusDrawerId);
-    const tab: TaskDetailTab | null = (DRAWER_TABS as string[]).includes(focusDrawerTab)
-      ? (focusDrawerTab as TaskDetailTab)
-      : (focusDrawerTab ? 'desc' : null);
+    const tab: TaskDetailTab | null = resolveDrawerTab(focusDrawerTab);
     if (t) {
       setDrawerTask(t);
       setDrawerTab(tab);
@@ -1119,7 +1557,7 @@ export function TasksPage() {
   useEffect(() => {
     const onFocusIntent = (e: Event) => {
       const d = (e as CustomEvent<FocusTaskIntent | undefined>).detail;
-      if (!d || !d.taskNo) return;
+      if (!d?.taskNo) return;
       setSearch(d.taskNo);
       if (!d.id) return; // 解析失败：仅带编号搜索词落到任务页，由用户自行检索
       setFocusTaskId(d.id);
@@ -1176,7 +1614,7 @@ export function TasksPage() {
     // fetchTasks 的版本守卫（见下）据此跳过旧快照，杜绝「外部 PATCH→立即保存/回滚→被旧快照打回」的丢更新竞态。
     // 列表行不抬时间戳：其自愈由轮询签名（updated_at 入 sig）触发整表重载兜底，无需在客户端伪造。
     const stamp = new Date().toISOString();
-    setDrawerTask((cur) => (cur && cur.id === taskId ? { ...cur, ...patch, updated_at: stamp } : cur));
+    setDrawerTask((cur) => (cur?.id === taskId ? { ...cur, ...patch, updated_at: stamp } : cur));
   };
 
   // T00433：MCP 回传 / 队列执行 / 其他窗口改任务状态时，前端无感知——轻量轮询对比签名，有变化才刷新。
@@ -1414,17 +1852,6 @@ export function TasksPage() {
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e), 'error');
     }
-  }
-
-  /** T03209（PM-101）：项目待办/已完成计数乐观增减——项目列表缓存 60s，状态流转/新建后看板列头需即时反映 */
-  function bumpProjectCounts(projectId: string, deltaTodo: number, deltaDone: number) {
-    if (!projectId) return;
-    const cur = getProjectListSnapshot().find((p) => p.id === projectId);
-    if (!cur) return;
-    patchProject(projectId, {
-      todo_count: Math.max(0, (cur.todo_count ?? 0) + deltaTodo),
-      done_count: Math.max(0, (cur.done_count ?? 0) + deltaDone),
-    });
   }
 
   async function setStatus(task: Task, status: 'todo' | 'done') {
@@ -1903,7 +2330,7 @@ export function TasksPage() {
     } finally { setBatchOpBusy(false); }
   }
 
-  async function batchApply(action: 'status' | 'category' | 'priority' | 'color' | 'archive' | 'verified', value?: string) {
+  async function batchApply(action: BatchAction, value?: string) {
     const ids = [...selectedIds];
     if (ids.length === 0) return flash('请先勾选任务');
     setBatchOpBusy(true);
@@ -1911,21 +2338,18 @@ export function TasksPage() {
       // T03211（PM-105）：服务端逐条回执——失败项带原因，前端常驻展示且保留其选中便于重试
       const r = await api.post<{
         ok: boolean; affected: number; failed?: number; skipped?: number;
-        results?: Array<{ id: string; title?: string; ok: boolean; reason?: string }>;
+        results?: BatchResultItem[];
       }>('/tasks/batch', { ids, action, value });
-      const results: Array<{ id: string; title?: string; ok: boolean; reason?: string }> =
-        r.results ?? ids.map((id) => ({ id, ok: true }));
-      const failedItems = results
-        .filter((x) => !x.ok)
-        .map((x) => ({ id: x.id, title: x.title ?? '', reason: x.reason ?? '未说明原因' }));
+      const results: BatchResultItem[] = r.results ?? ids.map((id) => ({ id, ok: true }));
+      const failedItems = batchFailedItems(results);
       setBatchReceipt({ label: ACTION_LABEL[action], okCount: r.affected, failed: failedItems, at: new Date().toISOString() });
       if (r.affected === 0) {
-        flash(action === 'verified' ? '选中任务中没有已完成任务，验收状态未变更（原因见回执）' : '没有可更新的任务（原因见回执）');
+        flash(batchNoopMessage(action));
         setSelectedIds(new Set(failedItems.map((f) => f.id)));
         void loadTasks(activeProject);
         return;
       }
-      flash(`批量操作完成：成功 ${r.affected} 条${failedItems.length > 0 ? `，失败 ${failedItems.length} 条（原因见回执）` : ''}`);
+      flash(batchDoneMessage(r.affected, failedItems.length));
       // T00623 同口径：批量验证通过后收起这些任务的「验证失败反馈」展开区（徽标与入口随 verified 隐藏）
       if (action === 'verified' && value === 'true') {
         setFailbackOpen((prev) => {
@@ -1943,25 +2367,11 @@ export function TasksPage() {
       // 工具栏出现「撤销」按钮逐条还原；归档类不入栈（归档页可恢复）
       // T01065 后续：改为入栈（最多 MAX_UNDO_STEPS 级），连续多次批量操作可逐级回退
       if (action !== 'archive') {
-        const all = [...todo, ...done, ...shelvedTasks];
-        // T03211：只有真正成功的条目入撤销栈——失败项没有改动，回填会制造无意义的「还原」
-        const okIds = new Set(results.filter((x) => x.ok).map((x) => x.id));
-        const entries = ids
-          .filter((id) => okIds.has(id))
-          .map((id) => {
-            const t = all.find((x) => x.id === id);
-            if (!t) return null;
-            // T02980：验收结果只回填 verified；待办任务服务端本就不改，不入栈
-            if (action === 'verified') return t.status === 'done' ? { id, patch: { verified: t.verified } } : null;
-            return { id, patch: { status: t.status, priority: t.priority, category_id: t.category_id, color: t.color || '' } };
-          })
-          .filter((x): x is NonNullable<typeof x> => x !== null);
-        const valueSuffix = action === 'verified'
-          ? `（${value === 'true' ? '验证通过' : '未验证'}）`
-          : value ? `（${value}）` : '';
+        const entries = buildUndoEntries(action, ids, results, [...todo, ...done, ...shelvedTasks]);
         if (entries.length > 0) {
           // 超出上限时丢最旧的一步：撤销栈是「最近操作的后悔药」，最旧的一步价值最低
-          setBatchStack((prev) => [...prev, { entries, label: `${ACTION_LABEL[action]}${valueSuffix}`, at: new Date().toISOString() }].slice(-MAX_UNDO_STEPS));
+          const label = `${ACTION_LABEL[action]}${batchValueSuffix(action, value)}`;
+          setBatchStack((prev) => [...prev, { entries, label, at: new Date().toISOString() }].slice(-MAX_UNDO_STEPS));
         }
       }
       // T03211：失败项保留选中，用户可修正/重试；全部成功则同既有行为清空选中
@@ -2033,32 +2443,36 @@ export function TasksPage() {
 
   /** 看板卡片：可拖拽流转状态（提取为具名函数，降低 JSX 内函数嵌套层级，渲染结果不变）。
    *  T03222（PM-303④）：拖拽是 HTML5 专属交互、键盘无法触发，故同一动作补一份 Enter/Space 键盘等价——
-   *  卡片本身即状态切换控件（在待办列按回车=标记完成，在已完成列按回车=转回待办），不改观感。 */
+   *  卡片本身即状态切换控件（在待办列按回车=标记完成，在已完成列按回车=转回待办），不改观感。
+   *  S6819：卡片改用原生 <button>（draggable 对任意元素生效，拖拽链路不变），角色与键盘语义由元素本身承担。 */
   function renderBoardCard(t: Task) {
     const cat = taskCats.find((c) => c.id === t.category_id);
     const target: 'todo' | 'done' = t.status === 'done' ? 'todo' : 'done';
-    // T03229（PM-202②）：卡面徽标之外的可访问名补充——卡片本身是 role=button，
+    // T03229（PM-202②）：卡面徽标之外的可访问名补充——卡片本身是按钮，
     // 内层 span 的 aria-label 不参与按钮命名，故把阻塞读数并进卡片自身的 aria-label。
     const blockedN = (t.blocked_by ?? []).length;
+    // 阻塞读数与动作文案先落成变量，避免模板字符串里再嵌模板字符串（S4624）
+    const blockedPart = blockedN > 0 ? `，被 ${blockedN} 条任务阻塞：${blockBadgeNames(t)}` : '';
+    const actionPart = t.status === 'done' ? '转回待办' : '标记为已完成';
     return (
-      <div key={t.id} /* NOSONAR - HTML5 draggable 卡片：拖拽流转状态无原生等价元素，改 button 会破坏原生拖拽 */
+      <button key={t.id} type="button"
         draggable
         onDragStart={() => setDragTaskId(t.id)}
         onDragEnd={() => { setDragTaskId(''); setOverTaskId(''); }}
         className={dragTaskId === t.id ? 'plan-dragging' : undefined}
-        role="button"
-        tabIndex={0}
-        aria-label={`${t.title}（${priorityLabel(t.priority)}）${blockedN > 0 ? `，被 ${blockedN} 条任务阻塞：${blockBadgeNames(t)}` : ''}— 回车或空格${t.status === 'done' ? '转回待办' : '标记为已完成'}`}
+        aria-label={`${t.title}（${priorityLabel(t.priority)}）${blockedPart}— 回车或空格${actionPart}`}
         onKeyDown={(e) => {
           if (e.key !== 'Enter' && e.key !== ' ') return;
           e.preventDefault();
           void setStatus(t, target);
         }}
         /* 八期 §3.1.1 / 评审 #3：卡内只放纯文本徽标（不做链接与按钮），查看提交详情走「点击卡片 → 抽屉 Git 页」 */
-        onClick={() => { if (!dragTaskId) openDetailDrawer(t, 'git'); }}
+        onClick={() => { if (!dragTaskId) { openDetailDrawer(t, 'git'); } }}
         style={{
           border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', background: 'var(--card-bg)', cursor: 'grab',
           borderLeft: `3px solid ${priorityBorderColor(t.priority)}`,
+          // 重置原生按钮外观，观感与原 div 卡片一致
+          width: '100%', boxSizing: 'border-box', font: 'inherit', textAlign: 'left', color: 'inherit',
         }}
         title={`${t.title}（${priorityLabel(t.priority)}）——拖到另一列，或聚焦后按回车流转状态`}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -2071,7 +2485,7 @@ export function TasksPage() {
         {cat && (
           <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: 2 }}>{cat.name}</div>
         )}
-      </div>
+      </button>
     );
   }
 
@@ -2158,7 +2572,7 @@ export function TasksPage() {
           </button>
           {curProj && (
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--text-secondary)' }}>
-              WIP 上限
+              WIP 上限{' '}
               <input type="number" min={1} max={50} step={1} value={wipDraftVal} disabled={wipBusy}
                 aria-label="项目 WIP 上限"
                 title="项目级 WIP 软上限（1~50，默认 10）——仅统计未完成卡片，超限只做橙色提示、不阻断拖入"
@@ -2170,7 +2584,7 @@ export function TasksPage() {
           )}
           {curProj && (
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--text-secondary)' }}>
-              时区
+              时区{' '}
               <input list="mtask-tz-options" value={tzDraftVal} disabled={tzBusy}
                 aria-label="项目时区"
                 placeholder="跟随系统"
@@ -2184,14 +2598,12 @@ export function TasksPage() {
             </label>
           )}
           {wipOver > 0 && (
-            <span role="status" style={{ color: 'var(--warn)', fontWeight: 600 }}>超出建议上限 {wipOver}</span>
+            <output style={{ color: 'var(--warn)', fontWeight: 600 }}>超出建议上限 {wipOver}</output>
           )}
         </div>
         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
           {boardCols.map((col) => (
-            <div key={col.key} /* NOSONAR - 看板列作为 HTML5 拖拽放置区：无原生等价元素，button 不接收 drop */
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={() => onDropTo(col.key)}
+            <div key={col.key} /* 看板列：外层只承载列外观，拖放区落在列表容器（ul 自带 list 角色） */
               style={{ flex: 1, minWidth: 280, background: 'var(--surface)', borderRadius: 8, padding: 10, minHeight: 200, border: overTaskId === col.key ? '2px dashed var(--accent)' : '1px solid var(--border-strong)', transition: 'border .15s ease' }}>
               <h4 style={{ fontSize: 'var(--fs-m)', margin: '0 0 8px', color: col.key === 'todo' && wipOver > 0 ? 'var(--warn)' : 'var(--text-secondary)' }}>
                 {col.label}
@@ -2199,10 +2611,14 @@ export function TasksPage() {
                   <span style={{ marginLeft: 6, fontWeight: 400, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>WIP 建议 ≤ {wipLimit}</span>
                 )}
               </h4>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <ul
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={() => onDropTo(col.key)}
+                aria-label={`${col.label}列，可拖放任务卡片`}
+                style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6, minHeight: 160 }}>
                 {col.items.map((t) => renderBoardCard(t))}
-                {col.items.length === 0 && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textAlign: 'center', padding: 12 }}>拖任务卡片到此列</div>}
-              </div>
+                {col.items.length === 0 && <li style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textAlign: 'center', padding: 12 }}>拖任务卡片到此列</li>}
+              </ul>
             </div>
           ))}
         </div>
@@ -2259,7 +2675,7 @@ export function TasksPage() {
     // T03214（UX-02 ④）：跳过列（导入预览的问题行等）与失败列分列，各自带原因
     const skipped = batchReceipt.skipped ?? [];
     return (
-      <div role="status" aria-label="批量操作回执"
+      <output aria-label="批量操作回执"
         style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: `1px solid ${failed.length > 0 || skipped.length > 0 ? 'var(--warn)' : 'var(--border-strong)'}`, fontSize: 'var(--fs-s)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <strong style={{ color: 'var(--text)' }}>{label}回执：成功 {okCount} 条</strong>
@@ -2288,7 +2704,7 @@ export function TasksPage() {
             ))}
           </ul>
         )}
-      </div>
+      </output>
     );
   }
 
@@ -2299,12 +2715,14 @@ export function TasksPage() {
    * 用户刚做完操作就找不到撤销入口（等于多级撤销白做）。
    */
   function renderUndoBar() {
-    const undoTop: BatchSnapshot | undefined = batchStack[batchStack.length - 1];
+    const undoTop: BatchSnapshot | undefined = batchStack.at(-1);
     if (!undoTop) return null;
+    // 多步提示先落成变量，避免在 title 模板里再嵌一层模板字符串（S4624）
+    const multiStepHint = batchStack.length > 1 ? `（共 ${batchStack.length} 步可逐级回退）` : '';
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '6px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--accent-soft)', border: '1px solid var(--accent)', fontSize: 'var(--fs-s)' }}>
         <button onClick={() => void undoLastBatch(1)} disabled={batchOpBusy} className="tbtn-anim"
-          title={`撤销最近一次批量操作 — ${undoTop.label}，${undoTop.entries.length} 条将还原为操作前的状态${batchStack.length > 1 ? `（共 ${batchStack.length} 步可逐级回退）` : ''}`}
+          title={`撤销最近一次批量操作 — ${undoTop.label}，${undoTop.entries.length} 条将还原为操作前的状态${multiStepHint}`}
           aria-label={`撤销最近一次批量操作（${undoTop.entries.length} 条）`}
           style={{ cursor: 'pointer', padding: '2px 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-s)', border: '1px solid var(--accent)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--accent)' }}>
           <RotateCcw size={13} /> 撤销批量（{undoTop.entries.length}）{batchStack.length > 1 ? ` · 共 ${batchStack.length} 步` : ''}
@@ -2596,20 +3014,14 @@ export function TasksPage() {
       await navigator.clipboard.writeText(text);
       ok();
     } catch {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
+      // 富文本/纯文本写入都可能因权限或浏览器策略失败：先补一次纯文本写入（无图路径的失败常属此类），
+      // 仍失败则给出用户可见的降级提示（不再走已废弃的同步复制命令）
       try {
-        // Clipboard API 不可用时的降级复制：execCommand 虽已废弃，但仍是浏览器仅存的同步复制手段
-        document.execCommand('copy'); // NOSONAR - 降级路径无未废弃替代 API
+        await navigator.clipboard.writeText(text);
         ok();
       } catch {
-        flash('复制失败，请手动选择文本复制');
+        flash('复制失败：浏览器未授权访问剪贴板，请手动选中文本复制', 'error');
       }
-      ta.remove();
     }
   }
 
@@ -2806,16 +3218,17 @@ export function TasksPage() {
             <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)', display: 'inline-block' }} />
           </span>
         )}
-        {/* 任务编号徽标：全局唯一，供 AI Agent 通过 MCP 按编号定位任务（titletip 说明可复制） */}
+        {/* 任务编号徽标：全局唯一，供 AI Agent 通过 MCP 按编号定位任务（titletip 说明可复制）。
+            S6819/S6847：双击复制是交互行为，改由原生 button 承载（外观按原 span 重置），不再给 span 挂事件 */}
         {t.task_no && (
-          <span /* NOSONAR - 任务编号徽标「双击复制」为便捷操作，文本可选中复制，无需拉链为可聚焦交互控件 */
+          <button type="button"
             title={`任务编号 ${t.task_no} — 供 MCP 按编号定位任务；双击复制`}
-            aria-label={`任务编号 ${t.task_no}`}
+            aria-label={`任务编号 ${t.task_no}：双击复制`}
             onDoubleClick={() => void navigator.clipboard.writeText(t.task_no!).then(() => flash(`已复制任务编号 ${t.task_no}`))}
-            style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', background: 'var(--accent-soft)', padding: '0 5px', borderRadius: 4, lineHeight: '18px', whiteSpace: 'nowrap', cursor: 'default', userSelect: 'text' }}
+            style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', background: 'var(--accent-soft)', padding: '0 5px', borderRadius: 4, lineHeight: '18px', whiteSpace: 'nowrap', cursor: 'default', userSelect: 'text', border: 'none', fontFamily: 'inherit' }}
           >
             {t.task_no}
-          </span>
+          </button>
         )}
         {/* T00502/T00521 调整：验证失败徽标——点击展开「验证失败反馈」窗口（聚焦失败段查看/修改）
             T00623：验证通过（verified=true）后隐藏该标签——历史【验证失败】段仍在 handle_result（供追溯），但不再作为当前状态提示
@@ -2871,7 +3284,7 @@ export function TasksPage() {
           </button>
         )}
         {t.derived_from && t.ruling_state === '已裁决' && (
-          <span title={`已裁决：${t.ruling_result ?? ''}${t.ruling_at ? `（${t.ruling_at.slice(0, 10)}）` : ''}`}
+          <span title={`已裁决：${t.ruling_result ?? ''}${rulingAtSuffix(t.ruling_at)}`}
             style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0 }}>
             已裁决
           </span>
@@ -3058,7 +3471,7 @@ export function TasksPage() {
           onClick={(e) => {
             const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
             // T00565：接近视口底部时向上弹出，避免最后一个任务处截断（面板约 110px 高）
-            const up = r.bottom + 130 > window.innerHeight;
+            const up = r.bottom + 130 > globalThis.innerHeight;
             setVerifyMenuPos({ top: up ? Math.max(8, r.top - 114) : r.bottom + 4, left: r.left });
             setVerifyMenuId(open ? '' : t.id);
           }}
@@ -3156,18 +3569,17 @@ export function TasksPage() {
       // T00918：已完成且无处理结果反馈的任务，其标题行常无「描述/处理结果」展开入口可点，
       // 未读红点无处置除；故点击标题本身即视为「已查看」，清除该任务未读状态（仅覆盖此场景，不影响已填反馈任务）
       // T01384：有描述时点击标题即展开/收起描述（键盘 Enter/Space 同效），aria-expanded 同步可展开状态
-      // T01533：button → span[role=button]——Chromium 不允许鼠标框选 button 内文字，且全局
-      //   `button:hover` 倾斜规则（App.tsx）让悬浮时文字位移、更难选中复制；改 span 后倾斜随之消失，
-      //   userSelect 显式放开可正常框选；点击展开/键盘操作语义原样保留（选中文字松手不误触折叠）。
-      <span
-        role="button"
-        tabIndex={0}
+      // S6819/S6845：改回原生 <button>（角色与键盘激活由元素本身承担，不再给 span 挂 role/tabIndex）；
+      //   `row-title-btn` 类在 App.tsx 里被排除在全局 button:hover 倾斜规则外，悬浮时不位移、便于选中复制，
+      //   userSelect 仍显式放开；点标题展开/键盘操作语义不变。
+      <button
+        type="button"
+        className="row-title-btn"
         onClick={(e) => {
-          const sel = window.getSelection();
+          const sel = globalThis.getSelection();
           if (sel && !sel.isCollapsed && e.currentTarget.contains(sel.anchorNode)) return; // 正在框选复制，不触发折叠
-          if (descToggleable) toggleDesc(); else markTitleRead();
+          if (descToggleable) { toggleDesc(); } else { markTitleRead(); }
         }}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (descToggleable) toggleDesc(); else markTitleRead(); } }}
         onMouseDown={() => setTitleSelId(t.id)}
         aria-expanded={descToggleable ? descExpanded[t.id] ?? false : undefined}
         aria-controls={descToggleable ? `task-desc-${t.id}` : undefined}
@@ -3175,7 +3587,7 @@ export function TasksPage() {
         style={{ flex: 1, background: 'none', border: 'none', padding: 0, font: 'inherit', textAlign: 'left', textDecoration: t.status === 'done' ? 'line-through' : 'none', color: t.color || 'var(--text)', cursor: descToggleable || unreadDone ? 'pointer' : 'default', userSelect: 'text', WebkitUserSelect: 'text' }}
       >
         {t.title}
-      </span>
+      </button>
     );
   }
 
@@ -3764,12 +4176,12 @@ export function TasksPage() {
         className={buildTaskItemClass(t, titleEditing, descEditing, dragCls)}
         onPointerDown={(e) => {
           // T00489：交互元素上按下不触发行缩放；非交互区按住 200ms 才缩放（快速点击不缩放）
-          // T01533：标题 span[role=button] 属交互元素，纳入排除
+          // T01533：标题已是原生 button，纳入排除（选区守卫见 renderTitleDisplayButton）
           if ((e.target as HTMLElement).closest('button, input, select, a, textarea, label, [role="button"]')) return;
           pressTimer.current[t.id] = globalThis.setTimeout(() => setPressId(t.id), 200);
         }}
-        onPointerUp={() => { clearTimeout(pressTimer.current[t.id]); if (pressId) setPressId(''); setTitleSelId(''); }}
-        onPointerLeave={() => { clearTimeout(pressTimer.current[t.id]); if (pressId === t.id) setPressId(''); setTitleSelId(''); }}
+        onPointerUp={() => { clearTimeout(pressTimer.current[t.id]); if (pressId) { setPressId(''); } setTitleSelId(''); }}
+        onPointerLeave={() => { clearTimeout(pressTimer.current[t.id]); if (pressId === t.id) { setPressId(''); } setTitleSelId(''); }}
         draggable={sortMode === 'manual' && titleSelId !== t.id}
         onDragStart={() => setDragTaskId(t.id)}
         onDragEnd={() => { setDragTaskId(''); setOverTaskId(''); }}
@@ -3795,12 +4207,17 @@ export function TasksPage() {
 
   /** 工具条 AI 美化按钮：进行中变为「取消」，否则批量美化全部待办 */
   function renderBeautifyToolbarButton() {
+    // 提示文案平铺成 if/else（取消 > AI 不可用 > 正常），消除嵌套三元（S3358）
+    let titleAttr: string;
+    if (anyBeautify) titleAttr = '取消 — 停止当前批量美化';
+    else if (aiDown) titleAttr = aiBlockedTitle(readiness, 'AI 美化全部待办 — 批量润色所有待办任务标题');
+    else titleAttr = 'AI 美化全部待办 — 批量润色所有待办任务标题';
     return (
       <>
         <button
           onClick={handleBeautifyToggle}
           disabled={!anyBeautify && (todo.length === 0 || aiDown)}
-          title={aiDown && !anyBeautify ? aiBlockedTitle(readiness, 'AI 美化全部待办 — 批量润色所有待办任务标题') : (anyBeautify ? '取消 — 停止当前批量美化' : 'AI 美化全部待办 — 批量润色所有待办任务标题')}
+          title={titleAttr}
           aria-label={anyBeautify ? '取消批量美化' : 'AI 美化全部待办'}
           className={anyBeautify ? 'task-breathe' : 'op-hidden'} // T00759：默认隐藏悬浮显示；批量进行中保持可见
           style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: anyBeautify ? 'var(--accent)' : 'transparent', color: anyBeautify ? 'var(--accent-text)' : 'var(--text)' }}
@@ -3854,12 +4271,17 @@ export function TasksPage() {
   function renderClassifyButton() {
     // T01618：数量显示对齐「AI 美化全部待办」范式——本按钮作用域是未分类任务（含已完成），展示其条数
     const unclassified = [...todo, ...done].filter((t) => !t.category_id).length;
+    // 提示文案平铺成 if/else（进行中 > AI 不可用 > 正常），消除嵌套三元（S3358）
+    let titleAttr: string;
+    if (classifyBusy) titleAttr = '批量分类进行中…';
+    else if (aiDown) titleAttr = aiBlockedTitle(readiness, 'AI 批量分类 — 对未分类任务（含已完成）智能识别自动分到已有分类');
+    else titleAttr = 'AI 批量分类 — 对未分类任务（含已完成）智能识别自动分到已有分类';
     return (
       <button
         onClick={() => void batchClassify()}
         disabled={classifyBusy || aiDown || (todo.length === 0 && done.length === 0)}
         className={`tbtn-anim op-hidden${classifyBusy ? ' task-breathe' : ''}`} // T00759：默认隐藏悬浮显示；批量进行中保持可见
-        title={aiDown && !classifyBusy ? aiBlockedTitle(readiness, 'AI 批量分类 — 对未分类任务（含已完成）智能识别自动分到已有分类') : (classifyBusy ? '批量分类进行中…' : 'AI 批量分类 — 对未分类任务（含已完成）智能识别自动分到已有分类')}
+        title={titleAttr}
         aria-label={classifyBusy ? '批量分类进行中' : 'AI 批量分类：对未分类任务（含已完成）自动分类'}
         style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: classifyBusy ? 'var(--accent)' : 'transparent', color: classifyBusy ? 'var(--accent-text)' : 'var(--text)' }}
       >
@@ -3914,11 +4336,151 @@ export function TasksPage() {
     return foldScope().ids.some((id) => descExpanded[id] || summaryExpanded[id] || resultOpen[id] || failbackOpen[id]);
   }
 
+  /** 工作空间只读问答入口——禁用原因按「未绑定 > 未选项目 > AI 不可用 > 正常」平铺 */
+  function renderWsAskButton() {
+    const proj = activeProject && activeProject !== ALL_PROJECTS ? projects.find((p) => p.id === activeProject) : undefined;
+    const noWs = !!proj && !proj.workspace_path;
+    const off = !activeProject || aiDown || noWs;
+    // 提示原因按「未绑定 > 未选项目 > AI 不可用 > 正常」平铺成 if/else，消除嵌套三元与取反条件（S3358/S7735）
+    let reason: string;
+    if (activeProject && noWs) reason = '该项目尚未绑定工作空间 — 先在工作空间下拉条里绑定仓库目录再提问';
+    else if (activeProject && aiDown) reason = aiBlockedTitle(readiness, '工作空间只读问答 — 依据代码片段作答并给出 file:line 引用（只读）');
+    else if (activeProject) reason = '工作空间只读问答 — 依据代码片段作答并给出可跳转的 file:line 引用（只读，不改任何文件）';
+    else reason = '请先选择项目再就工作空间提问';
+    return (
+      <button
+        onClick={() => {
+          if (activeProject === ALL_PROJECTS) { flash('全部项目视图下请先选择具体项目再提问'); return; }
+          setWsAskOpen(true);
+        }}
+        className="op-hidden tbtn-anim"
+        disabled={off}
+        data-t03250="ask-entry"
+        title={`${reason}（默认隐藏，悬浮工具栏显示）`}
+        aria-label="工作空间只读问答"
+        style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: off ? 'not-allowed' : 'pointer' }}
+      >
+        <MessageSquareText size={13} style={{ flexShrink: 0 }} />
+      </button>
+    );
+  }
+
+  /** 「更多」面板：导出与筛选（折叠入口在工具条尾部，展开时独占一行） */
+  function renderMorePanel() {
+    return (
+<fieldset ref={morePanelRef} data-t03623="more-panel" aria-label="更多功能：导出与筛选"
+        /* order:9 + flexBasis:100%：仍排在 DOM 中「更多」按钮之后（键盘顺序不变），视觉上独占工具条最后一行 */
+        style={{ order: 9, flexBasis: '100%', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', margin: 0, minWidth: 0, padding: '8px 10px', border: '1px solid var(--border-strong)', borderRadius: 8, background: 'var(--surface)' }}>
+        {/* T03267（PM-402）：项目级导出——任务/计划 × Markdown/JSON；全部项目视图下不可用（导出必须落到具体项目） */}
+        <select value="" disabled={exportDisabled(exportBusy, activeProject)}
+          data-t03267="project-export" aria-label="导出项目任务或计划"
+          title={exportProjectTitle(activeProject)}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (v === 'tasks:md') void exportProject('tasks', 'md');
+            else if (v === 'tasks:json') void exportProject('tasks', 'json');
+            else if (v === 'plans:md') void exportProject('plans', 'md');
+            else if (v === 'plans:json') void exportProject('plans', 'json');
+            e.target.value = '';
+          }}
+          style={{ fontSize: 'var(--fs-s)', padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', opacity: exportDisabled(exportBusy, activeProject) ? 0.55 : 1 }}>
+          <option value="">{exportBusy ? '导出中…' : '导出项目…'}</option>
+          <option value="tasks:md">任务 Markdown</option>
+          <option value="tasks:json">任务 JSON</option>
+          <option value="plans:md">计划 Markdown</option>
+          <option value="plans:json">计划 JSON</option>
+        </select>
+        <select
+          value={catFilter}
+          onChange={(e) => setCatFilter(e.target.value)}
+          title="分类筛选 — 按任务分类筛选列表"
+          aria-label="分类筛选：按任务分类筛选列表"
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
+        >
+          <option value="">全部分类</option>
+          <option value="none">未分类</option>
+          {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <select
+          value={priorityFilter}
+          onChange={(e) => setPriorityFilter(e.target.value)}
+          title="优先级筛选 — 按任务优先级筛选列表"
+          aria-label="优先级筛选：按任务优先级筛选列表"
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
+        >
+          <option value="">全部优先级</option>
+          <option value="urgent">极高</option>
+          <option value="high">高</option>
+          <option value="normal">普通</option>
+          <option value="low">低</option>
+        </select>
+        {/* T03232（PM-203③）：自定义字段筛选/排序——由服务端在整表上执行（EXISTS / ORDER BY），
+            不是「先取一页再本地筛」，所以翻页后的结果集与顺序都与第一页一致。
+            字段挂项目：全部项目视图或项目尚无字段时禁用，并把原因写进 title。 */}
+        <select
+          value={fieldFilterField}
+          onChange={(e) => onFieldFilterField(e.target.value)}
+          disabled={fieldsDisabled}
+          data-t03232="field-filter"
+          title={fieldsDisabled ? fieldPickerDisabledTitle(projectFields.length, activeProject) : FIELD_FILTER_TITLE_READY}
+          aria-label="自定义字段筛选：选择要筛选的自定义字段"
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, opacity: fieldsDisabled ? 0.55 : 1, cursor: fieldsDisabled ? 'not-allowed' : 'pointer' }}
+        >
+          <option value="">自定义字段筛选</option>
+          {projectFields.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+        </select>
+        {activeField && (
+          <>
+            <select
+              value={fieldFilterOp}
+              onChange={(e) => setFieldFilterOp(e.target.value)}
+              data-t03232="field-op"
+              title="筛选条件 — 按字段类型可选的比较方式"
+              aria-label="自定义字段筛选条件：选择比较方式"
+              style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
+            >
+              {FIELD_FILTER_OPS[activeField.type].map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+            {fieldFilterNeedsValue && <FieldValueEditor field={activeField} value={fieldFilterValue} onChange={setFieldFilterValue} />}
+            <button
+              type="button"
+              onClick={clearFieldFilter}
+              data-t03232="field-clear"
+              title="清除自定义字段筛选 — 回到未按字段筛选的列表"
+              aria-label="清除自定义字段筛选"
+              style={{ fontSize: 'var(--fs-s)', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}
+            >
+              <X size={12} /><span>清除字段筛选</span>
+            </button>
+          </>
+        )}
+        <select
+          value={fieldSort}
+          onChange={(e) => setFieldSort(e.target.value)}
+          disabled={fieldsDisabled}
+          data-t03232="field-sort"
+          title={fieldsDisabled ? fieldPickerDisabledTitle(projectFields.length, activeProject) : FIELD_SORT_TITLE_READY}
+          aria-label="自定义字段排序：按自定义字段排序列表"
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, opacity: fieldsDisabled ? 0.55 : 1, cursor: fieldsDisabled ? 'not-allowed' : 'pointer' }}
+        >
+          <option value="">自定义字段排序</option>
+          {projectFields.map((f) => (
+            <Fragment key={f.id}>
+              <option value={`${f.id}|asc`}>{`按「${f.name}」升序`}</option>
+              <option value={`${f.id}|desc`}>{`按「${f.name}」降序`}</option>
+            </Fragment>
+          ))}
+        </select>
+      </fieldset>
+    );
+  }
+
   /** 顶部工具条：项目切换、工具选择、批量美化、分类筛选、搜索（T00522 修正：顶层补 op-host 宿主，筛选/搜索默认隐藏悬浮显示才生效） */
   function renderToolbar() {
     // T03211：全部项目视图的合计徽标（各项目计数之和）；具体项目视图仍用单项目计数
     const allTodo = projects.reduce((s, p) => s + (p.todo_count ?? 0), 0);
     const allUnv = projects.reduce((s, p) => s + (p.unverified_count ?? 0), 0);
+    const curProj = projects.find((p) => p.id === activeProject);
     // T03623：第二排收起后筛选态不可见——按钮上用计数徽标提示「当前有几项筛选在生效」
     const moreActiveCount = [catFilter !== '', priorityFilter !== '', fieldFilterField !== '', fieldSort !== ''].filter(Boolean).length;
     return (
@@ -3938,19 +4500,9 @@ export function TasksPage() {
                 二轮：按钮/容器不再 minWidth:0——它会让弹性压缩把按钮压到低于「徽标+箭头」的
                 min-content（约 88px），徽标照样越出边框；去掉后 min-width:auto 以 min-content 兜底。 */}
             <span style={{ flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {activeProject === ALL_PROJECTS ? '全部项目' : projects.find((p) => p.id === activeProject)?.name ?? '选择项目'}
+              {activeProjectLabel(activeProject, projects)}
             </span>
-            {activeProject === ALL_PROJECTS ? (
-              <>
-                <span title={`全部项目待办合计 ${allTodo} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{allTodo}</span>
-                <span title={`全部项目未验证合计 ${allUnv} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{allUnv}</span>
-              </>
-            ) : (() => { const cur = projects.find((p) => p.id === activeProject); return cur ? (
-              <>
-                <span title={`待办 ${cur.todo_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{cur.todo_count ?? 0}</span>
-                <span title={`未验证 ${cur.unverified_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{cur.unverified_count ?? 0}</span>
-              </>
-            ) : null; })()}
+            <ProjectButtonBadges activeProject={activeProject} curProj={curProj} allTodo={allTodo} allUnv={allUnv} />
             <ChevronDown size={12} style={{ flexShrink: 0 }} />
           </button>
           {projOpen && (
@@ -3962,33 +4514,21 @@ export function TasksPage() {
                 <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border)' }}><ProjectListHint view={projectList} /></div>
               )}
               {/* T03211（PM-105）：全部项目混合视图——跨项目任务集，可在同一多选集内跨项目勾选后批量操作 */}
-              <div role="button" tabIndex={0} className="card-btn" aria-pressed={activeProject === ALL_PROJECTS} aria-label="全部项目" /* NOSONAR: S6819 豁免——与项目行同构，键盘支持在 onKeyDown 保留 */
+              <button type="button" className="card-btn" aria-pressed={activeProject === ALL_PROJECTS} aria-label="全部项目"
                 onClick={() => { setActiveProject(ALL_PROJECTS); setProjOpen(false); }}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActiveProject(ALL_PROJECTS); setProjOpen(false); } }}
                 title={`全部项目 — 跨项目混合视图（待办合计 ${allTodo} 条，未验证合计 ${allUnv} 条）；可跨项目多选后批量操作`}
-                style={{ display: 'flex', width: '100%', boxSizing: 'border-box', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 'var(--fs-s)', background: activeProject === ALL_PROJECTS ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer', borderBottom: '1px solid var(--border)' }}>
+                style={{ display: 'flex', width: '100%', boxSizing: 'border-box', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 'var(--fs-s)', background: activeProject === ALL_PROJECTS ? ROW_BG_SELECTED : ROW_BG_IDLE, color: 'var(--text)', border: 'none', cursor: 'pointer', borderBottom: '1px solid var(--border)' }}>
                 <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>全部项目</span>
-                <span title={`待办合计 ${allTodo} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{allTodo}</span>
-                <span title={`未验证合计 ${allUnv} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{allUnv}</span>
-              </div>
+                <ProjectBadges todo={allTodo} unverified={allUnv} allScope />
+              </button>
               {sortedProjects.map((p) => (
-                // T02146：行容器由原生 button 改 div role=button——行内的置顶图标本身是 button，
-                // HTML 不允许按钮套按钮（fdc6090 的 a11y 批修把「div→button」规则套到了含交互子元素的
-                // 容器上，同 T02143 根因）。手感靠 .card-btn 补回（T02143 已在 App.tsx 落该类）。
-                <div key={p.id} role="button" tabIndex={0} className="card-btn" aria-pressed={p.id === activeProject} aria-label={`切换到项目 ${p.name}`} /* NOSONAR: S6819 豁免——T02146：行内含原生置顶button，HTML禁止按钮套按钮；键盘支持已在onKeyDown保留 */
-                  onClick={() => { setActiveProject(p.id); setProjOpen(false); }}
-                  onKeyDown={(e) => {
-                    // 只认行容器自身的按键：角标按钮的 Enter/Space 会冒泡到这里，不判 target 会
-                    // 「切置顶」与「选项目」一次按两下（T02143 实测踩到）
-                    if (e.target !== e.currentTarget) return;
-                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActiveProject(p.id); setProjOpen(false); }
-                  }}
-                  title={`${p.name}：待办 ${p.todo_count ?? 0} 条，未验证 ${p.unverified_count ?? 0} 条`}
-                  style={{ display: 'flex', width: '100%', boxSizing: 'border-box', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 'var(--fs-s)', background: p.id === activeProject ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer' }}>
+                // T02146：行容器拆成「置顶按钮 + 行按钮」两个原生 button 兄弟——HTML 不允许按钮套按钮；
+                // 拆开后行按钮是原生控件（键盘 Enter/Space 由浏览器提供），置顶按钮也无需 stopPropagation 阻断冒泡。
+                <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: p.id === activeProject ? ROW_BG_SELECTED : ROW_BG_IDLE }}>
                   {/* T00655：置顶图标——位于项目名称之前，点击切换置顶（已置顶=实心 accent + 弹入动画） */}
                   <button
                     type="button"
-                    onClick={(e) => { e.stopPropagation(); void toggleProjectPin(p); }}
+                    onClick={() => void toggleProjectPin(p)}
                     title={isProjectPinned(p) ? `已置顶「${p.name}」— 点击取消置顶` : `置顶「${p.name}」— 点击后在默认排序下排最前`}
                     aria-label={isProjectPinned(p) ? `取消置顶 ${p.name}` : `置顶 ${p.name}`}
                     className={isProjectPinned(p) ? 'pin-pop tbtn-anim' : 'tbtn-anim'}
@@ -3998,9 +4538,13 @@ export function TasksPage() {
                   </button>
                   {/* T02167：flex:1 不足以收缩——裸 flex 项 min-width:auto 会卡在 nowrap 文本的
                       min-content（整行名称宽）上，长名把右侧徽标顶出面板边框；minWidth:0 才真正让名称省略 */}
-                  <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
-                  <span title={`待办 ${p.todo_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)' }}>{p.todo_count ?? 0}</span>
-                  <span title={`未验证 ${p.unverified_count ?? 0} 条`} style={{ flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.unverified_count ?? 0}</span>
+                  <button type="button" className="card-btn" aria-pressed={p.id === activeProject} aria-label={`切换到项目 ${p.name}`}
+                    onClick={() => { setActiveProject(p.id); setProjOpen(false); }}
+                    title={`${p.name}：待办 ${p.todo_count ?? 0} 条，未验证 ${p.unverified_count ?? 0} 条`}
+                    style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left' }}>
+                    <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+                    <ProjectBadges todo={p.todo_count ?? 0} unverified={p.unverified_count ?? 0} />
+                  </button>
                 </div>
               ))}
             </div>
@@ -4024,39 +4568,14 @@ export function TasksPage() {
           }}
           className="op-hidden tbtn-anim"
           disabled={!activeProject}
-          title={`${activeProject ? '工作空间全文检索 — 在绑定工作空间内检索关键词，结果可能不完整的 partial 状态会提示' : '请先选择项目再检索工作空间'}（默认隐藏，悬浮工具栏显示）`}
+          title={wsSearchTitle(activeProject)}
           aria-label="工作空间全文检索"
           style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed' }}
         >
           <ScanSearch size={13} style={{ flexShrink: 0 }} />
         </button>
         {/* T03250：工作空间只读问答入口——紧跟全文检索；T03251 起「未绑定工作空间」也置灰并给原因 */}
-        {(() => {
-          const proj = activeProject && activeProject !== ALL_PROJECTS ? projects.find((p) => p.id === activeProject) : undefined;
-          const noWs = !!proj && !proj.workspace_path;
-          const off = !activeProject || aiDown || noWs;
-          return (
-            <button
-              onClick={() => {
-                if (activeProject === ALL_PROJECTS) { flash('全部项目视图下请先选择具体项目再提问'); return; }
-                setWsAskOpen(true);
-              }}
-              className="op-hidden tbtn-anim"
-              disabled={off}
-              data-t03250="ask-entry"
-              title={`${
-                noWs ? '该项目尚未绑定工作空间 — 先在工作空间下拉条里绑定仓库目录再提问'
-                    : !activeProject ? '请先选择项目再就工作空间提问'
-                      : aiDown ? aiBlockedTitle(readiness, '工作空间只读问答 — 依据代码片段作答并给出 file:line 引用（只读）')
-                        : '工作空间只读问答 — 依据代码片段作答并给出可跳转的 file:line 引用（只读，不改任何文件）'
-              }（默认隐藏，悬浮工具栏显示）`}
-              aria-label="工作空间只读问答"
-              style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: off ? 'not-allowed' : 'pointer' }}
-            >
-              <MessageSquareText size={13} style={{ flexShrink: 0 }} />
-            </button>
-          );
-        })()}
+                {renderWsAskButton()}
         {/* T00655：项目排序图标——位于项目选择框之后、新建项目图标之前（悬浮/点击交互动画由 tbtn-anim 提供） */}
         <span ref={projSortRef} style={{ position: 'relative', display: 'inline-flex' }}>
           <button
@@ -4064,7 +4583,7 @@ export function TasksPage() {
             className="op-hidden tbtn-anim"
             title={`项目排序 — 当前：${PROJ_SORT_LABEL(projSortMode)}（默认隐藏，悬浮工具栏显示）`}
             aria-label="项目排序" aria-haspopup="menu" aria-expanded={projSortOpen}
-            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: projSortOpen ? 'var(--accent)' : 'transparent', color: projSortOpen ? 'var(--accent-text)' : 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', ...(projSortOpen ? TOGGLE_STYLE_ACTIVE : TOGGLE_STYLE_IDLE), border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}
           >
             <ArrowUpDown size={13} />
           </button>
@@ -4121,10 +4640,10 @@ export function TasksPage() {
         {/* T02283：主列表断供时给出原因与重试入口；失败态下不再渲染「暂无待办任务」空态。
             T03203（U01 回归）：资源提示含「重试」按钮，必须与折叠按钮同级——放进按钮内会形成 button 嵌套（validateDOMNesting）。 */}
         <ResourceHint
-          view={{ phase: tasksPhase, error: tasksError, stale: tasksPhase === 'error' && (todo.length > 0 || done.length > 0), reload: () => void loadTasks(activeProject) }}
+          view={{ phase: tasksPhase, error: tasksError, stale: tasksAreStale(tasksPhase, todo.length, done.length), reload: () => void loadTasks(activeProject) }}
           label="任务列表"
         />
-        <label className="task-op" title={batchOpBusy ? '导入数据 — 上一批操作进行中，完成后恢复可选' : '导入数据 — CSV/JSON（JSON 支持 Trello 导出与 JSON 数组），预览确认后入库'}
+        <label className="task-op" title={batchOpBusy ? IMPORT_TITLE_BUSY : IMPORT_TITLE_READY}
           aria-disabled={batchOpBusy || undefined}
           style={{ fontSize: 'var(--fs-s)', padding: '5px 8px', borderRadius: 6, cursor: batchOpBusy ? 'not-allowed' : 'pointer', border: '1px solid var(--border-strong)', display: 'inline-block', opacity: batchOpBusy ? 0.55 : 1 }}>
           <span>导入数据</span>
@@ -4136,9 +4655,9 @@ export function TasksPage() {
         {/* 八期 §3.1.1：Git 徽标显隐开关（会话级）——关闭时列表/看板行内徽标整体不渲染，也不再发起摘要批量请求；
             T03645：与其它低频入口同级改为「默认隐藏、悬浮工具栏显示」 */}
         <button type="button" data-t03343="git-toggle" aria-pressed={gitOn} aria-label="显示 Git 提交徽标"
-          title={`${gitOn ? 'Git 徽标（已显示）— 点击隐藏任务行的提交关联徽标；会话内保持' : 'Git 徽标（已隐藏）— 点击显示任务行的提交关联徽标；会话内保持'}（默认隐藏，悬浮工具栏显示）`}
+          title={gitOn ? GIT_TOGGLE_TITLE_ON : GIT_TOGGLE_TITLE_OFF}
           onClick={() => setGitOn((v) => !v)} className="op-hidden tbtn-anim"
-          style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: gitOn ? 'var(--accent-soft)' : 'var(--card-bg)', color: gitOn ? 'var(--accent-ink)' : 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>
+          style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', ...(gitOn ? GIT_TOGGLE_ACTIVE : GIT_TOGGLE_IDLE) }}>
           <GitBranch size={13} />Git
         </button>
         {/* T02952：搜索框 + 框内左侧清空按钮（有内容才显示；悬浮倾斜 5°~10° 由 .ws-clear-btn 提供；点击清空且光标留框内）
@@ -4176,148 +4695,15 @@ export function TasksPage() {
         <button type="button" ref={moreBtnRef} onClick={() => setMoreOpen((v) => !v)}
           className="tbtn-anim" data-t03623="more-trigger"
           aria-haspopup="true" aria-expanded={moreOpen} aria-label="更多：导出与筛选"
-          title={moreOpen
-            ? '更多（已展开）— 再次点击或点击空白处收起第二排功能'
-            : `更多 — 展开导出项目 / 分类筛选 / 优先级筛选 / 自定义字段筛选与排序${moreActiveCount > 0 ? `（当前 ${moreActiveCount} 项筛选生效）` : ''}`}
-          style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: moreOpen ? 'var(--accent-soft)' : 'transparent', color: moreOpen ? 'var(--accent-ink)' : 'var(--text)', fontSize: 'var(--fs-s)' }}>
+          title={moreOpen ? MORE_TITLE_OPEN : moreTitleCollapsed(moreActiveCount)}
+          style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', ...(moreOpen ? TOGGLE_STYLE_ACTIVE : TOGGLE_STYLE_IDLE) }}>
           <MoreHorizontal size={14} />
           {moreActiveCount > 0 && (
             <span data-t03623="more-badge" title={`${moreActiveCount} 项筛选生效`}
               style={{ position: 'absolute', top: -2, right: -2, minWidth: 12, height: 12, padding: '0 2px', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-2xs)', lineHeight: '12px', textAlign: 'center' }}>{moreActiveCount}</span>
           )}
         </button>
-        {moreOpen && (
-        <div ref={morePanelRef} data-t03623="more-panel" role="group" aria-label="更多功能：导出与筛选"
-          /* order:9 + flexBasis:100%：仍排在 DOM 中「更多」按钮之后（键盘顺序不变），视觉上独占工具条最后一行 */
-          style={{ order: 9, flexBasis: '100%', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '8px 10px', border: '1px solid var(--border-strong)', borderRadius: 8, background: 'var(--surface)' }}>
-          {/* T03267（PM-402）：项目级导出——任务/计划 × Markdown/JSON；全部项目视图下不可用（导出必须落到具体项目） */}
-          <select value="" disabled={exportBusy || !activeProject || activeProject === ALL_PROJECTS}
-            data-t03267="project-export" aria-label="导出项目任务或计划"
-            title={activeProject === ALL_PROJECTS ? '导出项目 — 请先选择具体项目' : '导出项目 — 任务/计划导出为 Markdown 或 JSON（含层级/状态/优先级）'}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v === 'tasks:md') void exportProject('tasks', 'md');
-              else if (v === 'tasks:json') void exportProject('tasks', 'json');
-              else if (v === 'plans:md') void exportProject('plans', 'md');
-              else if (v === 'plans:json') void exportProject('plans', 'json');
-              e.target.value = '';
-            }}
-            style={{ fontSize: 'var(--fs-s)', padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', opacity: exportBusy || !activeProject || activeProject === ALL_PROJECTS ? 0.55 : 1 }}>
-            <option value="">{exportBusy ? '导出中…' : '导出项目…'}</option>
-            <option value="tasks:md">任务 Markdown</option>
-            <option value="tasks:json">任务 JSON</option>
-            <option value="plans:md">计划 Markdown</option>
-            <option value="plans:json">计划 JSON</option>
-          </select>
-          <select
-            value={catFilter}
-            onChange={(e) => setCatFilter(e.target.value)}
-            title="分类筛选 — 按任务分类筛选列表"
-            aria-label="分类筛选：按任务分类筛选列表"
-            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
-          >
-            <option value="">全部分类</option>
-            <option value="none">未分类</option>
-            {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-          <select
-            value={priorityFilter}
-            onChange={(e) => setPriorityFilter(e.target.value)}
-            title="优先级筛选 — 按任务优先级筛选列表"
-            aria-label="优先级筛选：按任务优先级筛选列表"
-            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
-          >
-            <option value="">全部优先级</option>
-            <option value="urgent">极高</option>
-            <option value="high">高</option>
-            <option value="normal">普通</option>
-            <option value="low">低</option>
-          </select>
-          {/* T03232（PM-203③）：自定义字段筛选/排序——由服务端在整表上执行（EXISTS / ORDER BY），
-              不是「先取一页再本地筛」，所以翻页后的结果集与顺序都与第一页一致。
-              字段挂项目：全部项目视图或项目尚无字段时禁用，并把原因写进 title。 */}
-          <select
-            value={fieldFilterField}
-            onChange={(e) => onFieldFilterField(e.target.value)}
-            disabled={fieldsDisabled}
-            data-t03232="field-filter"
-            title={fieldsDisabled
-              ? (projectFields.length === 0 && activeProject !== ALL_PROJECTS ? '当前项目还没有自定义字段——可到「设置 → 自定义字段」创建' : '自定义字段按项目定义，请先在项目下拉里选择具体项目')
-              : '自定义字段筛选 — 在服务端按字段值筛选（翻页后条件仍生效）'}
-            aria-label="自定义字段筛选：选择要筛选的自定义字段"
-            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, opacity: fieldsDisabled ? 0.55 : 1, cursor: fieldsDisabled ? 'not-allowed' : 'pointer' }}
-          >
-            <option value="">自定义字段筛选</option>
-            {projectFields.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-          </select>
-          {activeField && (
-            <>
-              <select
-                value={fieldFilterOp}
-                onChange={(e) => setFieldFilterOp(e.target.value)}
-                data-t03232="field-op"
-                title="筛选条件 — 按字段类型可选的比较方式"
-                aria-label="自定义字段筛选条件：选择比较方式"
-                style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
-              >
-                {FIELD_FILTER_OPS[activeField.type].map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
-              {fieldFilterNeedsValue && (activeField.type === 'select' ? (
-                <select
-                  value={fieldFilterValue}
-                  onChange={(e) => setFieldFilterValue(e.target.value)}
-                  data-t03232="field-value"
-                  title="筛选值 — 选择要匹配的选项"
-                  aria-label="自定义字段筛选值：选择要匹配的选项"
-                  style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
-                >
-                  <option value="">选择选项…</option>
-                  {activeField.options.map((o) => <option key={o.id} value={o.id}>{o.archived ? `${o.label}（已停用）` : o.label}</option>)}
-                </select>
-              ) : (
-                <input
-                  value={fieldFilterValue}
-                  onChange={(e) => setFieldFilterValue(e.target.value)}
-                  data-t03232="field-value"
-                  placeholder={activeField.type === 'number' ? '输入数字' : activeField.type === 'date' ? 'YYYY-MM-DD' : '输入筛选文本'}
-                  title="筛选值 — 文本按包含/等于匹配，数字与日期按大小比较；留空表示暂不筛选"
-                  aria-label="自定义字段筛选值：填写筛选值"
-                  style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, width: 120 }}
-                />
-              ))}
-              <button
-                type="button"
-                onClick={clearFieldFilter}
-                data-t03232="field-clear"
-                title="清除自定义字段筛选 — 回到未按字段筛选的列表"
-                aria-label="清除自定义字段筛选"
-                style={{ fontSize: 'var(--fs-s)', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}
-              >
-                <X size={12} /><span>清除字段筛选</span>
-              </button>
-            </>
-          )}
-          <select
-            value={fieldSort}
-            onChange={(e) => setFieldSort(e.target.value)}
-            disabled={fieldsDisabled}
-            data-t03232="field-sort"
-            title={fieldsDisabled
-              ? (projectFields.length === 0 && activeProject !== ALL_PROJECTS ? '当前项目还没有自定义字段——可到「设置 → 自定义字段」创建' : '自定义字段按项目定义，请先在项目下拉里选择具体项目')
-              : '自定义字段排序 — 未填值的任务排在最后'}
-            aria-label="自定义字段排序：按自定义字段排序列表"
-            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, opacity: fieldsDisabled ? 0.55 : 1, cursor: fieldsDisabled ? 'not-allowed' : 'pointer' }}
-          >
-            <option value="">自定义字段排序</option>
-            {projectFields.map((f) => (
-              <Fragment key={f.id}>
-                <option value={`${f.id}|asc`}>{`按「${f.name}」升序`}</option>
-                <option value={`${f.id}|desc`}>{`按「${f.name}」降序`}</option>
-              </Fragment>
-            ))}
-          </select>
-        </div>
-        )}
+                {moreOpen && renderMorePanel()}
         <NoticeToast notice={notice} onDismiss={dismissNotice} />
       </div>
     );
@@ -4326,7 +4712,7 @@ export function TasksPage() {
   /** T03255（AI-203①）：建议条——新建与行内共用同一视觉；只展示，采纳动作由调用方决定 */
   function renderSuggestionStrip(s: TaskSuggestion, scope: 'create' | 'row', onAdopt: () => void, onDismiss: () => void) {
     return (
-      <div data-t03255={scope === 'create' ? 'create-suggest' : 'row-suggest'} role="status"
+      <output data-t03255={scope === 'create' ? 'create-suggest' : 'row-suggest'}
         style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', margin: '4px 0 8px', padding: '6px 8px', border: '1px dashed var(--accent)', borderRadius: 6, background: 'var(--accent-soft)', fontSize: 'var(--fs-s)' }}>
         <Sparkles size={13} style={{ color: 'var(--accent)', flexShrink: 0 }} />
         <strong>{s.categoryName ?? '未分类'}</strong>
@@ -4336,7 +4722,7 @@ export function TasksPage() {
           style={{ fontSize: 'var(--fs-s)', padding: '2px 8px', cursor: 'pointer' }}>采纳</button>
         <button onClick={onDismiss} title="不用 — 关闭本条建议，任务数据不变" aria-label="不采纳建议"
           style={{ fontSize: 'var(--fs-s)', padding: '2px 8px', cursor: 'pointer' }}>不用</button>
-      </div>
+      </output>
     );
   }
 
@@ -4520,7 +4906,7 @@ export function TasksPage() {
             {/* M6-6.3：遮罩即原生 button（S6848/S1082——div onClick 触发规则），菜单为兄弟层置于其上，无需阻断冒泡 */}
             <button type="button" aria-label="关闭导出菜单" onClick={() => setExportMenu(null)}
               style={{ position: 'absolute', inset: 0, background: 'transparent', border: 'none', cursor: 'default' }} />
-            <div style={{ position: 'absolute', left: Math.min(exportMenu.x, window.innerWidth - 190), top: Math.min(exportMenu.y, window.innerHeight - 150), background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 8, boxShadow: '0 6px 18px rgba(0,0,0,.18)', padding: 4, minWidth: 170 }}>
+            <div style={{ position: 'absolute', left: Math.min(exportMenu.x, globalThis.innerWidth - 190), top: Math.min(exportMenu.y, globalThis.innerHeight - 150), background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 8, boxShadow: '0 6px 18px rgba(0,0,0,.18)', padding: 4, minWidth: 170 }}>
               <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', padding: '4px 8px' }}>导出为…</div>
               {EXPORT_ITEMS.map((it) => (
                 <button key={it.fmt} onClick={() => void exportTasks([exportMenu.taskId], it.fmt)} disabled={exportBusy}
@@ -4622,10 +5008,8 @@ export function TasksPage() {
             连 activeProject 都拿不到时同理） */}
         {visibleTodo.length === 0 && !multiSelect && tasksPhase !== 'error' && projectList.phase !== 'error' && (
           <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)', border: '1px dashed var(--border-strong)', borderRadius: 8, margin: '8px 0', lineHeight: 1.8 }}>
-            当前项目暂无待办任务——在上方输入框输入标题回车即可创建；
-            {tools.length === 0
-              ? <>先到「模型」页添加 AI 模型，即可使用 AI 梳理 / 美化 / 分类等能力。</>
-              : <>也可使用上方 AI 梳理、美化、批量分类等能力。</>}
+            当前项目暂无待办任务——在上方输入框输入标题回车即可创建；{' '}
+            {tools.length === 0 ? <NoToolsHint /> : <ToolsReadyHint />}
           </div>
         )}
         </>)}
@@ -4633,7 +5017,7 @@ export function TasksPage() {
         {activeTab === 'done' && (<>
         {/* 八期 §3.1.5（Q8'）：未回写补齐提示条——只统计本页已加载范围，翻页后计数随之更新 */}
         {gitOn && unlinkedDone.length > 0 && (
-          <div data-t03360="unlinked-bar" role="status" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', margin: '8px 0', padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--surface)', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+          <output data-t03360="unlinked-bar" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', margin: '8px 0', padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--surface)', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
             <span>本页已加载 {done.length} 条已完成任务中，{unlinkedDone.length} 条未回写提交 ID</span>
             {/* T03621：三按钮统一为「无文字、无过渡动画」的图标按钮——语义交给 title/aria-label（悬浮可见） */}
             <button type="button" data-t03360="copy-instruction" data-t03621="copy"
@@ -4644,24 +5028,20 @@ export function TasksPage() {
             </button>
             <button type="button" data-t03360="manual-link" data-t03621="manual" disabled={gitLinkBusy}
               onClick={startManualGitLink}
-              title={singleProjectForGit ? '手动关联 — 逐条打开提交选取弹窗补录（跨项目视图请逐行操作）' : '跨项目视图请逐行手动关联（点击任务行提交徽标进抽屉）'}
+              title={singleProjectForGit ? MANUAL_LINK_TITLE_SINGLE : MANUAL_LINK_TITLE_CROSS}
               aria-label="手动关联：逐条打开提交选取弹窗补录关联"
               style={{ ...iconOnlyBtn, cursor: gitLinkBusy ? 'not-allowed' : 'pointer', opacity: gitLinkBusy ? 0.6 : 1 }}>
               <GitBranch size={13} />
             </button>
             <button type="button" data-t03621="ai" disabled={aiLinkBusy || gitLinkBusy}
               onClick={() => void startAiGitLink()}
-              title={aiDown
-                ? aiBlockedTitle(readiness, 'AI 智能关联 — 比对已完成未回写任务与仓库近期提交，给出候选后由你勾选确认（不自动落库）')
-                : singleProjectForGit
-                  ? 'AI 智能关联 — 让 AI 比对已完成未回写任务与仓库近期提交，给出候选后由你勾选确认（不自动落库）'
-                  : '跨项目视图请逐行手动关联（点击任务行提交徽标进抽屉）'}
+              title={aiLinkButtonTitle(singleProjectForGit ? AI_LINK_TITLE_SINGLE : AI_LINK_TITLE_CROSS, readiness)}
               aria-label="AI 智能关联：比对已完成未回写任务与仓库提交，给出候选供确认"
               style={{ ...iconOnlyBtn, color: 'var(--accent)', borderColor: 'var(--accent)', cursor: aiLinkBusy || gitLinkBusy ? 'not-allowed' : 'pointer', opacity: aiLinkBusy || gitLinkBusy ? 0.6 : 1 }}>
               {aiLinkBusy ? <Loader2 size={13} className="aispin" /> : <Sparkles size={13} />}
             </button>
             <span style={{ color: 'var(--text-muted)' }}>已完成任务归档删除后无法补齐</span>
-          </div>
+          </output>
         )}
         {/* T03620：已完成排序 + 验证状态过滤已上移到 tab 行，此处只保留多选全选 */}
         {multiSelect && (
@@ -4697,7 +5077,7 @@ export function TasksPage() {
         {/* T02290：搁置列表取数失败此前无任何出口——挂共享失败态层，给出原因/重试，并在旧数据在位时标「可能过期」 */}
         <div style={{ margin: '4px 0' }}>
           <ResourceHint
-            view={{ phase: shelvedPhase, error: shelvedError, stale: shelvedPhase === 'error' && visibleShelved.length > 0, reload: () => void loadTasks(activeProject) }}
+            view={{ phase: shelvedPhase, error: shelvedError, stale: tasksAreStale(shelvedPhase, visibleShelved.length, 0), reload: () => void loadTasks(activeProject) }}
             label="搁置列表"
           />
         </div>
@@ -4734,11 +5114,11 @@ export function TasksPage() {
           <span data-t03214="task-remaining" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>剩余 {pageStatus.remaining} 条</span>
         )}
         {pageStatus?.allLoaded && (
-          <span data-t03214="all-loaded" role="status" style={{ fontSize: 'var(--fs-s)', color: 'var(--success)' }}>已加载全部</span>
+          <output data-t03214="all-loaded" style={{ fontSize: 'var(--fs-s)', color: 'var(--success)' }}>已加载全部</output>
         )}
         {/* 八期 §3.1.6：单页唯一提交超过上限时服务端截断，此处与「剩余条数」同语言如实告知（不静默少展） */}
         {gitTruncatedNote(gitSummaries) && (
-          <span data-t03343="git-truncated" role="status" style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)' }}>{gitTruncatedNote(gitSummaries)}</span>
+          <output data-t03343="git-truncated" style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)' }}>{gitTruncatedNote(gitSummaries)}</output>
         )}
       </div>
     );
@@ -4899,6 +5279,192 @@ export function TasksPage() {
   // T03215（PM-304）：sortOptions / SortKey / sortTasks 上提为 ../utils/taskListQuery 的模块级导出——
   // 可见列表要用 useMemo 缓存，缓存依赖的函数标识必须稳定，留在渲染体里每帧都是新函数。
 
+  /**
+   * T02949：派生单裁决面板——Trae/WorkBuddy 气泡选项样式（候选胶囊按钮 + 自定义输入）；
+   * 候选由服务端按该单结论动态抽取（T02949 方案 A），不是固定四枚；
+   * 提交由服务端把结果追加到任务详情末尾（不覆盖），本面板只负责收集与展示。
+   */
+  function renderRulingDialog() {
+    if (!rulingTask) return null;
+    const closeRuling = () => { setRulingTask(null); setRulingDraft(''); };
+    const canSubmit = Boolean(rulingDraft.trim()) && !rulingBusy;
+    return (
+      <dialog open aria-label="裁决派生单"
+        style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: 0, padding: 0, border: 'none', width: '100%', height: '100%', maxWidth: 'none', maxHeight: 'none', color: 'var(--text)' }}>
+        <ModalBackdrop label="关闭裁决面板（点按空白处）" onClose={closeRuling} />
+        <div style={{ position: 'relative', zIndex: 1, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 10px 28px rgba(0,0,0,.22)', width: 380, maxWidth: '92vw', padding: 14, color: 'var(--text)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600 }}>裁决派生单 {rulingTask.task_no ?? rulingTask.id}</div>
+            <button type="button" className="tbtn-anim" onClick={closeRuling} aria-label="关闭裁决面板"
+              style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 2 }}>
+              <X size={14} />
+            </button>
+          </div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>{rulingTask.title}</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+            {rulingOptions.map((o) => (
+              <button key={o} type="button" className="tbtn-anim" disabled={rulingBusy}
+                onClick={() => setRulingDraft(o)}
+                style={{ fontSize: 'var(--fs-s)', padding: '5px 10px', borderRadius: 999, cursor: rulingBusy ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
+                  border: `1px solid ${rulingDraft === o ? 'var(--accent)' : 'var(--border-strong)'}`,
+                  background: rulingDraft === o ? 'var(--accent-soft)' : 'transparent',
+                  color: rulingDraft === o ? 'var(--accent)' : 'var(--text)' }}>
+                {o}
+              </button>
+            ))}
+          </div>
+          {rulingOptions.length === 0 && (
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>本条结论未抽到候选选项，可直接输入裁决结果</div>
+          )}
+          <textarea value={rulingDraft} onChange={(e) => setRulingDraft(e.target.value)} rows={3}
+            placeholder="自定义裁决结果（或点选上方候选选项）" aria-label="裁决结果"
+            style={{ width: '100%', boxSizing: 'border-box', fontSize: 'var(--fs-s)', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--input-bg, transparent)', color: 'var(--text)', resize: 'vertical' }} />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+            <button type="button" onClick={closeRuling}
+              style={{ fontSize: 'var(--fs-s)', padding: '6px 12px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer' }}>取消</button>
+            <button type="button" className="tbtn-anim" disabled={!canSubmit} onClick={() => void submitRuling()}
+              style={{ fontSize: 'var(--fs-s)', padding: '6px 14px', border: 'none', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: canSubmit ? 'pointer' : 'not-allowed', opacity: canSubmit ? 1 : 0.5 }}>
+              {rulingBusy ? '提交中…' : '提交裁决'}
+            </button>
+          </div>
+        </div>
+      </dialog>
+    );
+  }
+
+  /** 追加一张截图到验证失败反馈（弹窗已关闭则原样返回）；回调提到具名函数，避免粘贴/选文件链路里再嵌一层内联箭头 */
+  function appendFailImage(url: string): void {
+    setFailDialog((d) => (d ? { ...d, images: [...d.images, { id: newPastedImageId(), url }] } : d));
+  }
+
+  /** T00610：验证失败反馈录入弹窗——支持截图（粘贴/选择文件），截图随反馈落库供 MCP 读取识别 */
+  function renderFailDialog() {
+    if (!failDialog) return null;
+    return (
+      <dialog open aria-label="验证失败反馈"
+        style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: 0, padding: 0, border: 'none', width: '100%', height: '100%', maxWidth: 'none', maxHeight: 'none', color: 'var(--text)' }}>
+        {/* 点按遮罩空白处关闭由原生 button 承载（Esc 仍由弹窗自身的关闭按钮/键盘通路覆盖） */}
+        <ModalBackdrop label="关闭验证失败反馈弹窗（点按空白处）" disabled={failBusy} onClose={() => setFailDialog(null)} />
+        <div style={{ position: 'relative', zIndex: 1, background: 'var(--card-bg)', borderRadius: 8, width: 'min(560px, 94vw)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
+            <AlertTriangle size={14} style={{ color: 'var(--danger)' }} /> 验证失败反馈{' '}
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 300 }}>{failDialog.title}</span>
+            <span style={{ flex: 1 }} />
+            <button onClick={() => setFailDialog(null)} disabled={failBusy} title="关闭" aria-label="关闭验证失败反馈弹窗"
+              style={{ display: 'inline-flex', alignItems: 'center', cursor: failBusy ? 'default' : 'pointer', background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 'var(--fs-l)' }}>×</button>
+          </div>
+          <div style={{ padding: 14, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--fs-s)' }}>
+            <div style={{ color: 'var(--text-muted)' }}>
+              请描述验证失败的原因（可粘贴或选择截图辅助说明）；提交后任务将回退待办，截图可由 AI 通过 MCP 读取识别。
+            </div>
+            <textarea
+              autoFocus
+              value={failDialog.text}
+              onChange={(e) => setFailDialog((d) => (d ? { ...d, text: e.target.value } : d))}
+              onPaste={(e) => readClipboardImages(e, appendFailImage)}
+              placeholder="请描述验证失败的原因…（可直接 Ctrl+V 粘贴截图）"
+              aria-label="验证失败反馈内容"
+              rows={5}
+              style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', resize: 'vertical' }}
+            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <label className="tbtn-anim" title="选择截图文件（可多选）"
+                style={{ cursor: failBusy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', color: 'var(--text)' }}>
+                <ImagePlus size={13} /> 选择截图{' '}
+                <input type="file" accept="image/*" multiple style={FILE_INPUT_SR_ONLY}
+                  onChange={(e) => {
+                    readImageFiles(Array.from(e.target.files ?? []), appendFailImage);
+                    e.target.value = '';
+                  }} />
+              </label>
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>已附 {failDialog.images.length} 张截图</span>
+              <span style={{ flex: 1 }} />
+              {/* T00796 二轮：改用公共 AiPolishButton（与处理结果/通用需求同一组件），
+                  仅作用于反馈正文，回填输入框后仍需用户确认提交 */}
+              <AiPolishButton
+                value={failDialog.text}
+                onPolished={(t) => setFailDialog((d) => (d ? { ...d, text: t } : d))}
+                toolId={organizeToolId}
+                disabled={failBusy}
+                flash={flash}
+                title="AI 美化 — 润色这段失败反馈（保留全部事实要素，仅规范表达），结果回填后请核对再提交"
+              />
+            </div>
+            {failDialog.images.length > 0 && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {failDialog.images.map((img) => (
+                  <span key={img.id} style={{ position: 'relative', display: 'inline-flex' }}>
+                    <img src={img.url} alt="待上传截图预览" style={{ height: 64, borderRadius: 4, border: '1px solid var(--border)' }} />
+                    <button onClick={() => removeFailImage(img.id)}
+                      title="移除该截图" aria-label="移除该截图"
+                      style={{ position: 'absolute', top: -6, right: -6, width: 16, height: 16, borderRadius: '50%', border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 'var(--fs-xs)', lineHeight: '16px', cursor: 'pointer', padding: 0 }}>×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
+            <button onClick={() => setFailDialog(null)} disabled={failBusy} className="tbtn-anim"
+              style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>取消</button>
+            <button onClick={() => void submitVerifyFailed()} disabled={failBusy} className="tbtn-anim"
+              title="提交反馈并回退待办" aria-label="提交验证失败反馈"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: failBusy ? 'default' : 'pointer', border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 'var(--fs-s)' }}>
+              {failBusy ? <><Loader2 size={12} className="aispin" />提交中…</> : '提交并回退待办'}
+            </button>
+          </div>
+        </div>
+      </dialog>
+    );
+  }
+
+  /** T00771：新建项目后的工作空间绑定弹窗——内嵌同款选择面板（历史/新建/打开本地文件夹），可跳过 */
+  function renderWsPickDialog() {
+    if (!wsPickForNew) return null;
+    return (
+      <dialog open
+        aria-label="绑定工作空间"
+        style={{ position: 'fixed', inset: 0, zIndex: 900, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '18vh' }}>
+        <div
+          style={{ width: 300, background: 'var(--card-bg)', color: 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 12px 40px rgba(0,0,0,.25)', padding: 12 }}>
+          <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, marginBottom: 2 }}>为「{wsPickForNew.name}」选择工作空间</div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>工作空间是项目的上下文根路径，AI 功能将以此路径加载上下文；可跳过稍后在任务菜单绑定。</div>
+          <div style={{ position: 'relative' }}>
+            <WorkspaceSelect
+              variant="bare"
+              project={wsPickForNew}
+              onBind={async (path) => { await bindWorkspace(wsPickForNew.id, path); setWsPickForNew(null); }}
+              flash={flash}
+            />
+          </div>
+          <button onClick={() => setWsPickForNew(null)}
+            style={{ marginTop: 8, width: '100%', fontSize: 'var(--fs-s)', padding: '5px 0', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}>
+            跳过，稍后绑定
+          </button>
+        </div>
+      </dialog>
+    );
+  }
+
+  /** 八期 §3.1.5：未回写「手动关联」逐条补录队列——一次只弹一个任务的取数窗，确认即写入 task_git_links(source='manual') */
+  function renderManualGitLinkQueue() {
+    if (gitLinkQueue.length === 0) return null;
+    return (
+      <GitTreePickerModal
+        projects={projects.filter((p) => p.id === activeProject)}
+        activeProjectId={activeProject}
+        selectedByProject={{}}
+        onConfirm={(projectId, shas) => void confirmManualGitLink(projectId, shas)}
+        onClose={() => {
+          const left = gitLinkQueue.length - 1;
+          setGitLinkQueue([]);
+          if (left > 0) flash(`已中止批量补录（剩余 ${left} 条未处理），可在提示条重新开始`);
+          gitSummaries.refresh();
+          void loadTasks(activeProject);
+        }}
+      />
+    );
+  }
+
   return (
     <section>
       {/* 验证状态图标切换弹出的局部动画（key 重挂载时播放）；任务行悬停显隐操作区与背景灰显 */}
@@ -4967,118 +5533,14 @@ export function TasksPage() {
         }
       `}</style>
       {renderToolbar()}
-      {/* T00771：新建项目后的工作空间绑定弹窗——内嵌同款选择面板（历史/新建/打开本地文件夹），可跳过 */}
-      {wsPickForNew && (
-        <dialog open
-          aria-label="绑定工作空间"
-          style={{ position: 'fixed', inset: 0, zIndex: 900, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '18vh' }}>
-          <div
-            style={{ width: 300, background: 'var(--card-bg)', color: 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 12px 40px rgba(0,0,0,.25)', padding: 12 }}>
-            <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, marginBottom: 2 }}>为「{wsPickForNew.name}」选择工作空间</div>
-            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>工作空间是项目的上下文根路径，AI 功能将以此路径加载上下文；可跳过稍后在任务菜单绑定。</div>
-            <div style={{ position: 'relative' }}>
-              <WorkspaceSelect
-                variant="bare"
-                project={wsPickForNew}
-                onBind={async (path) => { await bindWorkspace(wsPickForNew.id, path); setWsPickForNew(null); }}
-                flash={flash}
-              />
-            </div>
-            <button onClick={() => setWsPickForNew(null)}
-              style={{ marginTop: 8, width: '100%', fontSize: 'var(--fs-s)', padding: '5px 0', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}>
-              跳过，稍后绑定
-            </button>
-          </div>
-        </dialog>
-      )}
+      {/* T00771：新建项目后的工作空间绑定弹窗——见 renderWsPickDialog */}
+      {renderWsPickDialog()}
       {renderNewTaskForm()}
       {renderTaskLists()}
       {renderLoadMore()}
       {reuseOpen && renderReuseDialog()}
-      {/* T00610：验证失败反馈录入弹窗——支持截图（粘贴/选择文件），截图随反馈落库供 MCP 读取识别 */}
-      {failDialog && (
-        <div /* NOSONAR - 弹窗遮罩为鼠标便捷关闭，Esc/取消按钮提供键盘可达通路 */
-          style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          onClick={(e) => { if (e.target === e.currentTarget && !failBusy) setFailDialog(null); }}>
-          <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(560px, 94vw)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
-              <AlertTriangle size={14} style={{ color: 'var(--danger)' }} /> 验证失败反馈
-              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 300 }}>{failDialog.title}</span>
-              <span style={{ flex: 1 }} />
-              <button onClick={() => setFailDialog(null)} disabled={failBusy} title="关闭" aria-label="关闭验证失败反馈弹窗"
-                style={{ display: 'inline-flex', alignItems: 'center', cursor: failBusy ? 'default' : 'pointer', background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 'var(--fs-l)' }}>×</button>
-            </div>
-            <div style={{ padding: 14, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--fs-s)' }}>
-              <div style={{ color: 'var(--text-muted)' }}>
-                请描述验证失败的原因（可粘贴或选择截图辅助说明）；提交后任务将回退待办，截图可由 AI 通过 MCP 读取识别。
-              </div>
-              <textarea
-                autoFocus
-                value={failDialog.text}
-                onChange={(e) => setFailDialog((d) => (d ? { ...d, text: e.target.value } : d))}
-                onPaste={(e) => readClipboardImages(e, (url) => setFailDialog((d) => (d ? { ...d, images: [...d.images, { id: newPastedImageId(), url }] } : d)))}
-                placeholder="请描述验证失败的原因…（可直接 Ctrl+V 粘贴截图）"
-                aria-label="验证失败反馈内容"
-                rows={5}
-                style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', resize: 'vertical' }}
-              />
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <label className="tbtn-anim" title="选择截图文件（可多选）"
-                  style={{ cursor: failBusy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', color: 'var(--text)' }}>
-                  <ImagePlus size={13} /> 选择截图
-                  <input type="file" accept="image/*" multiple style={FILE_INPUT_SR_ONLY}
-                    onChange={(e) => {
-                      const fs = [...(e.target.files ?? [])];
-                      for (const f of fs) {
-                        const reader = new FileReader();
-                        reader.onload = () => {
-                          if (typeof reader.result === 'string') {
-                            setFailDialog((d) => (d ? { ...d, images: [...d.images, { id: newPastedImageId(), url: reader.result as string }] } : d));
-                          }
-                        };
-                        reader.readAsDataURL(f);
-                      }
-                      e.target.value = '';
-                    }} />
-                </label>
-                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>已附 {failDialog.images.length} 张截图</span>
-                <span style={{ flex: 1 }} />
-                {/* T00796 二轮：改用公共 AiPolishButton（与处理结果/通用需求同一组件），
-                    仅作用于反馈正文，回填输入框后仍需用户确认提交 */}
-                <AiPolishButton
-                  value={failDialog.text}
-                  onPolished={(t) => setFailDialog((d) => (d ? { ...d, text: t } : d))}
-                  toolId={organizeToolId}
-                  disabled={failBusy}
-                  flash={flash}
-                  title="AI 美化 — 润色这段失败反馈（保留全部事实要素，仅规范表达），结果回填后请核对再提交"
-                />
-              </div>
-              {failDialog.images.length > 0 && (
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {failDialog.images.map((img) => (
-                    <span key={img.id} style={{ position: 'relative', display: 'inline-flex' }}>
-                      <img src={img.url} alt="待上传截图预览" style={{ height: 64, borderRadius: 4, border: '1px solid var(--border)' }} />
-                      <button onClick={() => removeFailImage(img.id)}
-                        title="移除该截图" aria-label="移除该截图"
-                        style={{ position: 'absolute', top: -6, right: -6, width: 16, height: 16, borderRadius: '50%', border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 'var(--fs-xs)', lineHeight: '16px', cursor: 'pointer', padding: 0 }}>×</button>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
-              <button onClick={() => setFailDialog(null)} disabled={failBusy} className="tbtn-anim"
-                style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>取消</button>
-              <button onClick={() => void submitVerifyFailed()} disabled={failBusy} className="tbtn-anim"
-                title="提交反馈并回退待办" aria-label="提交验证失败反馈"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: failBusy ? 'default' : 'pointer', border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 'var(--fs-s)' }}>
-                {failBusy ? <><Loader2 size={12} className="aispin" />提交中…</> : '提交并回退待办'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* T00610：验证失败反馈录入弹窗——见 renderFailDialog */}
+      {renderFailDialog()}
 
       {/* T00786：工作空间全文检索面板（挂载于页面级，随主 section 渲染；floating overlay 关闭即卸载） */}
       {wsSearchOpen && (
@@ -5118,127 +5580,23 @@ export function TasksPage() {
         />
       )}
 
-      {/* 八期 §3.1.5：未回写「手动关联」逐条补录队列——一次只弹一个任务的取数窗，确认即写入 task_git_links(source='manual') */}
-      {gitLinkQueue.length > 0 && (
-        <GitTreePickerModal
-          projects={projects.filter((p) => p.id === activeProject)}
-          activeProjectId={activeProject}
-          selectedByProject={{}}
-          onConfirm={(projectId, shas) => void confirmManualGitLink(projectId, shas)}
-          onClose={() => {
-            const left = gitLinkQueue.length - 1;
-            setGitLinkQueue([]);
-            if (left > 0) flash(`已中止批量补录（剩余 ${left} 条未处理），可在提示条重新开始`);
-            gitSummaries.refresh();
-            void loadTasks(activeProject);
-          }}
-        />
-      )}
+      {/* 八期 §3.1.5：未回写「手动关联」逐条补录队列——见 renderManualGitLinkQueue */}
+      {renderManualGitLinkQueue()}
 
-      {/* T03621：AI 智能关联建议——逐提交勾选，确认后才写 task_git_links（source=manual）；取消不产生任何写入 */}
+      {/* T03621：AI 智能关联建议——逐提交勾选，确认后才写 task_git_links（source=manual）；取消不产生任何写入。
+          弹窗结构单源在 AiLinkDialog，此处只接状态与回调（不再内联重复一份）。 */}
       {aiLinkResult && (
-        <div role="dialog" aria-label="AI 智能关联建议"
-          onMouseDown={(e) => { if (e.target === e.currentTarget && !aiLinkApplying) { setAiLinkResult(null); setAiLinkSel(new Set()); } }}
-          style={{ ...OVERLAY_MASK, position: 'fixed', zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div data-t03621="ai-panel" style={{ background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 10px 28px rgba(0,0,0,.22)', width: 620, maxWidth: '94vw', maxHeight: '84vh', display: 'flex', flexDirection: 'column', padding: 14, color: 'var(--text)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-              <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600 }}>AI 智能关联建议</div>
-              <button type="button" onClick={() => { setAiLinkResult(null); setAiLinkSel(new Set()); }} disabled={aiLinkApplying}
-                title="关闭" aria-label="关闭 AI 智能关联建议"
-                style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: aiLinkApplying ? 'not-allowed' : 'pointer', padding: 2 }}>
-                <X size={14} />
-              </button>
-            </div>
-            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
-              {aiLinkResult.ok
-                ? `比对范围：${aiLinkResult.candidates?.tasks ?? 0} 条未回写任务 × ${aiLinkResult.candidates?.commits ?? 0} 个近期提交${aiLinkResult.dropped ? ` · 已排除 ${aiLinkResult.dropped} 条不合格配对` : ''}`
-                : (aiLinkResult.error ?? aiLinkResult.message ?? 'AI 智能关联暂不可用')}
-            </div>
-            <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
-              {aiLinkResult.suggestions.length === 0 && (
-                <div data-t03621="ai-empty" style={{ padding: '16px 8px', fontSize: 'var(--fs-s)', color: 'var(--text-muted)', textAlign: 'center' }}>
-                  {aiLinkResult.message ?? '没有可确认的建议——可改用「手动关联」逐条补录'}
-                </div>
-              )}
-              {aiLinkResult.suggestions.map((s) => (
-                <div key={s.taskId} data-t03621="ai-suggestion" style={{ border: '1px solid var(--border-strong)', borderRadius: 8, padding: 8, marginBottom: 8 }}>
-                  <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600 }}>
-                    {s.taskNo ?? '(无编号)'} · {s.taskTitle}
-                    <span style={{ marginLeft: 8, fontWeight: 400, fontSize: 'var(--fs-xs)', color: 'var(--accent)' }}>置信度 {Math.round(s.confidence * 100)}%</span>
-                  </div>
-                  {s.reason && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', margin: '2px 0 6px' }}>{s.reason}</div>}
-                  {s.commits.map((c) => {
-                    const key = `${s.taskId}|${c.sha}`;
-                    return (
-                      <label key={c.sha} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, padding: '3px 0', fontSize: 'var(--fs-xs)', cursor: 'pointer' }}>
-                        <input type="checkbox" checked={aiLinkSel.has(key)} data-t03621="ai-pick"
-                          onChange={(e) => setAiLinkSel((prev) => { const next = new Set(prev); if (e.target.checked) next.add(key); else next.delete(key); return next; })} />
-                        <span style={{ fontFamily: 'var(--font-mono, monospace)' }}>{c.short}</span>
-                        <span style={{ color: 'var(--text-secondary)', flex: 1 }}>{c.subject}</span>
-                        <span style={{ color: 'var(--text-muted)' }}>{c.date.slice(0, 10)}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
-              <button type="button" onClick={() => { setAiLinkResult(null); setAiLinkSel(new Set()); }} disabled={aiLinkApplying}
-                style={{ fontSize: 'var(--fs-s)', padding: '6px 12px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: aiLinkApplying ? 'not-allowed' : 'pointer' }}>取消</button>
-              <button type="button" data-t03621="ai-confirm" disabled={aiLinkApplying || aiLinkSel.size === 0} onClick={() => void applyAiGitLink()}
-                style={{ fontSize: 'var(--fs-s)', padding: '6px 14px', border: 'none', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: aiLinkApplying || aiLinkSel.size === 0 ? 'not-allowed' : 'pointer', opacity: aiLinkApplying || aiLinkSel.size === 0 ? 0.5 : 1 }}>
-                {aiLinkApplying ? '关联中…' : `确认关联 ${aiLinkSel.size} 个提交`}
-              </button>
-            </div>
-          </div>
-        </div>
+        <AiLinkDialog result={aiLinkResult} sel={aiLinkSel} applying={aiLinkApplying}
+          onToggle={(key, checked) => setAiLinkSel((prev) => (checked ? withInSet(prev, key) : withoutInSet(prev, key)))}
+          onClose={() => { setAiLinkResult(null); setAiLinkSel(new Set()); }}
+          onConfirm={() => void applyAiGitLink()} />
       )}
 
       {/* T02949：派生单裁决面板——Trae/WorkBuddy 气泡选项样式（候选胶囊按钮 + 自定义输入）；
           候选由服务端按该单结论动态抽取（T02949 方案 A），不是固定四枚；
           提交由服务端把结果追加到任务详情末尾（不覆盖），本面板只负责收集与展示 */}
-      {rulingTask && (
-        <div role="dialog" aria-label="裁决派生单"
-          onMouseDown={(e) => { if (e.target === e.currentTarget) { setRulingTask(null); setRulingDraft(''); } }}
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 10px 28px rgba(0,0,0,.22)', width: 380, maxWidth: '92vw', padding: 14, color: 'var(--text)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600 }}>裁决派生单 {rulingTask.task_no ?? rulingTask.id}</div>
-              <button type="button" className="tbtn-anim" onClick={() => { setRulingTask(null); setRulingDraft(''); }} aria-label="关闭裁决面板"
-                style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 2 }}>
-                <X size={14} />
-              </button>
-            </div>
-            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>{rulingTask.title}</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
-              {rulingOptions.map((o) => (
-                <button key={o} type="button" className="tbtn-anim" disabled={rulingBusy}
-                  onClick={() => setRulingDraft(o)}
-                  style={{ fontSize: 'var(--fs-s)', padding: '5px 10px', borderRadius: 999, cursor: rulingBusy ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-                    border: `1px solid ${rulingDraft === o ? 'var(--accent)' : 'var(--border-strong)'}`,
-                    background: rulingDraft === o ? 'var(--accent-soft)' : 'transparent',
-                    color: rulingDraft === o ? 'var(--accent)' : 'var(--text)' }}>
-                  {o}
-                </button>
-              ))}
-            </div>
-            {rulingOptions.length === 0 && (
-              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>本条结论未抽到候选选项，可直接输入裁决结果</div>
-            )}
-            <textarea value={rulingDraft} onChange={(e) => setRulingDraft(e.target.value)} rows={3}
-              placeholder="自定义裁决结果（或点选上方候选选项）" aria-label="裁决结果"
-              style={{ width: '100%', boxSizing: 'border-box', fontSize: 'var(--fs-s)', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--input-bg, transparent)', color: 'var(--text)', resize: 'vertical' }} />
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
-              <button type="button" onClick={() => { setRulingTask(null); setRulingDraft(''); }}
-                style={{ fontSize: 'var(--fs-s)', padding: '6px 12px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer' }}>取消</button>
-              <button type="button" className="tbtn-anim" disabled={!rulingDraft.trim() || rulingBusy} onClick={() => void submitRuling()}
-                style={{ fontSize: 'var(--fs-s)', padding: '6px 14px', border: 'none', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: rulingDraft.trim() && !rulingBusy ? 'pointer' : 'not-allowed', opacity: rulingDraft.trim() && !rulingBusy ? 1 : 0.5 }}>
-                {rulingBusy ? '提交中…' : '提交裁决'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* T02949：派生单裁决面板——见 renderRulingDialog（具名函数承载，复杂度与主渲染体解耦） */}
+      {renderRulingDialog()}
     </section>
   );
 }

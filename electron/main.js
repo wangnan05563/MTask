@@ -905,6 +905,89 @@ function ownerWin() {
   return mainWin && !mainWin.isDestroyed() ? mainWin : undefined;
 }
 
+/** 检查更新失败的文案：来源行 + 可处置提示（手动地址 / 内置地址各一句） */
+function updateCheckFailureText(e) {
+  const message = e instanceof Error ? e.message : String(e);
+  let src = '';
+  if (e?.source === 'manual') src = '手动配置地址' + (e.repo ? ` ${e.repo}` : '');
+  else if (e?.repo) src = `内置地址 ${e.repo}`;
+  const srcLine = src ? `下载来源：${src}\n` : '';
+  const hint = e?.source === 'manual'
+    ? '可在「设置 → 版本更新」修正手动仓库地址，或清空后回退内置地址'
+    : '可在「设置 → 版本更新」填写手动仓库地址覆盖内置地址';
+  return { message, detail: `${srcLine}${hint}` };
+}
+
+async function showUpdateCheckFailure(e) {
+  const { message, detail } = updateCheckFailureText(e);
+  await dialog.showMessageBox(ownerWin(), { type: 'error', title: '检查更新失败', message, detail, buttons: ['知道了'] });
+}
+
+/** 有新版本：确认是否下载 */
+async function confirmUpdateDownload(info) {
+  const releaseNameLine = info.releaseName ? `Release：${info.releaseName}\n` : '';
+  const publishedAtLine = info.publishedAt ? `发布时间：${info.publishedAt.slice(0, 10)}\n` : '';
+  const want = await dialog.showMessageBox(ownerWin(), {
+    type: 'info',
+    title: '发现新版本',
+    message: `发现新版本 v${info.version}（当前 v${info.currentVersion}）`,
+    detail: `${releaseNameLine}${publishedAtLine}下载来源：${updateSourceText(info)}`,
+    buttons: ['立即下载', '稍后再说'],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  return want.response === 0;
+}
+
+/** 主通道下载；取消/失败统一收口为 null（失败已推进度并弹框） */
+async function downloadUpdateForMenu(info) {
+  try {
+    // 与设置页同一条下载通道：进度照常推 update:progress，Range 续传/取消语义一致
+    // T02976：带 origin='menu'，渲染进程据此在主界面显示全局进度条（菜单通道没有自己的进度卡片）
+    const dl = await downloadUpdatePackage(info.downloadUrl, 'menu');
+    // 用户可能在全局进度条上点了「取消」：下载会以 cancelled 正常收口（不抛错），
+    // 这里必须静默返回——否则会继续往下弹「下载完成」并拿 undefined 当安装包去安装。
+    return dl.status === 'cancelled' ? null : dl;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    // 失败也必须推一条：否则全局进度条会停在最后一个百分比上，看起来像卡死
+    sendUpdateProgress({ status: 'failed', received: 0, total: 0, origin: 'menu', message });
+    await dialog.showMessageBox(ownerWin(), {
+      type: 'error',
+      title: '下载失败',
+      message: `更新包下载失败：${message}`,
+      detail: '网络类失败已自动续传重试；仍失败时可稍后通过「帮助 → 检查在线更新」重试——已下载的半截包会保留，下次从断点继续，不必重下整包',
+      buttons: ['知道了'],
+    });
+    return null;
+  }
+}
+
+/** 下载完成：确认是否立即安装（选「稍后」时给出安装包位置提示） */
+async function confirmUpdateInstall(info, dl) {
+  const wantInstall = await dialog.showMessageBox(ownerWin(), {
+    type: 'info',
+    title: '下载完成',
+    message: `v${info.version} 安装包已就绪`,
+    detail: `${dl.filePath}\n安装将执行静默安装器；安装器会先结束本应用，按机器安装（如 Program Files）时 Windows 会弹一次授权确认，装完自动以新版本启动。`,
+    buttons: ['立即安装', '稍后安装'],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (wantInstall.response === 0) return true;
+  await dialog.showMessageBox(ownerWin(), { type: 'info', title: '稍后安装', message: '安装包已存放在系统下载目录，随时双击安装，或稍后经本菜单再次走在线更新', buttons: ['好的'] });
+  return false;
+}
+
+/** 安装结果回执：pending 与失败各弹一条（成功侧由调用方静默退出） */
+async function reportUpdateInstallResult(res) {
+  if (res.status === 'pending') {
+    await dialog.showMessageBox(ownerWin(), { type: 'warning', title: '安装结果待对账', message: res.message, detail: '下次启动将自动对账给出结果（失败会弹系统通知）', buttons: ['知道了'] });
+    return;
+  }
+  await dialog.showMessageBox(ownerWin(), { type: 'error', title: '安装失败', message: res.message, detail: '应用保持存活，可稍后通过「帮助 → 检查在线更新」重试', buttons: ['知道了'] });
+}
+
 /** 在线更新完整链路：检查 →（有新版本）确认下载 → 主通道下载 → 确认安装 → 静默安装。
  *  auto=true 为开机自动检测：无新版本/检查失败一律静默，只有真的新版本才弹框——自动检测不打扰。
  *  失败提示全部走 dialog（Electron 无 window.prompt/confirm，原生弹框是唯一可靠通道）。 */
@@ -916,29 +999,7 @@ async function runOnlineUpdateFlow({ auto = false } = {}) {
     try {
       info = await checkOnlineUpdate();
     } catch (e) {
-      if (!auto) {
-        const message = e instanceof Error ? e.message : String(e);
-        let src;
-        if (e?.source === 'manual') {
-          const manualRepo = e.repo ? ` ${e.repo}` : '';
-          src = `手动配置地址${manualRepo}`;
-        } else if (e?.repo) {
-          src = `内置地址 ${e.repo}`;
-        } else {
-          src = '';
-        }
-        const srcLine = src ? `下载来源：${src}\n` : '';
-        const hint = e?.source === 'manual'
-          ? '可在「设置 → 版本更新」修正手动仓库地址，或清空后回退内置地址'
-          : '可在「设置 → 版本更新」填写手动仓库地址覆盖内置地址';
-        await dialog.showMessageBox(ownerWin(), {
-          type: 'error',
-          title: '检查更新失败',
-          message,
-          detail: `${srcLine}${hint}`,
-          buttons: ['知道了'],
-        });
-      }
+      if (!auto) await showUpdateCheckFailure(e);
       return;
     }
     if (!info.hasUpdate) {
@@ -947,59 +1008,13 @@ async function runOnlineUpdateFlow({ auto = false } = {}) {
       }
       return;
     }
-    const releaseNameLine = info.releaseName ? `Release：${info.releaseName}\n` : '';
-    const publishedAtLine = info.publishedAt ? `发布时间：${info.publishedAt.slice(0, 10)}\n` : '';
-    const want = await dialog.showMessageBox(ownerWin(), {
-      type: 'info',
-      title: '发现新版本',
-      message: `发现新版本 v${info.version}（当前 v${info.currentVersion}）`,
-      detail: `${releaseNameLine}${publishedAtLine}下载来源：${updateSourceText(info)}`,
-      buttons: ['立即下载', '稍后再说'],
-      defaultId: 0,
-      cancelId: 1,
-    });
-    if (want.response !== 0) return;
-    let dl;
-    try {
-      // 与设置页同一条下载通道：进度照常推 update:progress，Range 续传/取消语义一致
-      // T02976：带 origin='menu'，渲染进程据此在主界面显示全局进度条（菜单通道没有自己的进度卡片）
-      dl = await downloadUpdatePackage(info.downloadUrl, 'menu');
-      // 用户可能在全局进度条上点了「取消」：下载会以 cancelled 正常收口（不抛错），
-      // 这里必须静默返回——否则会继续往下弹「下载完成」并拿 undefined 当安装包去安装。
-      if (dl.status === 'cancelled') return;
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      // 失败也必须推一条：否则全局进度条会停在最后一个百分比上，看起来像卡死
-      sendUpdateProgress({ status: 'failed', received: 0, total: 0, origin: 'menu', message });
-      await dialog.showMessageBox(ownerWin(), {
-        type: 'error',
-        title: '下载失败',
-        message: `更新包下载失败：${message}`,
-        detail: '网络类失败已自动续传重试；仍失败时可稍后通过「帮助 → 检查在线更新」重试——已下载的半截包会保留，下次从断点继续，不必重下整包',
-        buttons: ['知道了'],
-      });
-      return;
-    }
-    const wantInstall = await dialog.showMessageBox(ownerWin(), {
-      type: 'info',
-      title: '下载完成',
-      message: `v${info.version} 安装包已就绪`,
-      detail: `${dl.filePath}\n安装将执行静默安装器；安装器会先结束本应用，按机器安装（如 Program Files）时 Windows 会弹一次授权确认，装完自动以新版本启动。`,
-      buttons: ['立即安装', '稍后安装'],
-      defaultId: 0,
-      cancelId: 1,
-    });
-    if (wantInstall.response !== 0) {
-      await dialog.showMessageBox(ownerWin(), { type: 'info', title: '稍后安装', message: '安装包已存放在系统下载目录，随时双击安装，或稍后经本菜单再次走在线更新', buttons: ['好的'] });
-      return;
-    }
+    if (!(await confirmUpdateDownload(info))) return;
+    const dl = await downloadUpdateForMenu(info);
+    if (!dl) return;
+    if (!(await confirmUpdateInstall(info, dl))) return;
     const res = await installUpdatePackage(dl.filePath, info.version);
     if (res.status === 'installed') return; // 成功即退出应用，无需弹框
-    if (res.status === 'pending') {
-      await dialog.showMessageBox(ownerWin(), { type: 'warning', title: '安装结果待对账', message: res.message, detail: '下次启动将自动对账给出结果（失败会弹系统通知）', buttons: ['知道了'] });
-      return;
-    }
-    await dialog.showMessageBox(ownerWin(), { type: 'error', title: '安装失败', message: res.message, detail: '应用保持存活，可稍后通过「帮助 → 检查在线更新」重试', buttons: ['知道了'] });
+    await reportUpdateInstallResult(res);
   } finally {
     onlineUpdateBusy = false;
   }
@@ -1225,8 +1240,8 @@ function maybeFinishSplash() {
 }
 
 // 主进程为 CommonJS 入口（electron/package.json 未启用 "type":"module"），顶层 await 语法非法；
-// 改 ESM 需把全部 require 重写为 import 并调整打包入口，风险远大于收益，维持 promise 链是 CJS 主进程的标准写法
-app.whenReady().then(async () => { // NOSONAR - S7785 顶层 await 在 CommonJS 中不可用，原因见上
+// 改 ESM 需把全部 require 重写为 import 并调整打包入口，风险远大于收益，故用命名 async 函数等 whenReady。
+async function bootstrapApp() {
   setupApiProxy();
   setupWebProtocol();
   // T02740：应用菜单带「帮助 → 检查在线更新」（T02977：内置地址兜底 + 手动地址覆盖）
@@ -1303,7 +1318,8 @@ app.whenReady().then(async () => { // NOSONAR - S7785 顶层 await 在 CommonJS 
   } else {
     await mainWin.loadURL('app://ui/index.html');
   }
-});
+}
+app.on('ready', () => { void bootstrapApp(); });
 
 app.on('window-all-closed', () => {
   // 是否退出交由 before-quit 统一裁决：自拉后端先可靠终止，复用外部服务则直接退出

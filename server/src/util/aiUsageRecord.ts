@@ -17,19 +17,25 @@ function toolNameOf(toolId: string): string {
   } catch { return toolId; }
 }
 
+/** 一条用量记录：字段与 ai_usage 列一一对应，调用方按名字给值（避免长位置参数错位）。 */
+export interface UsageRecordInput {
+  /** 调用种类：organize / summary / optimize / beautify / polish / simplify / ask / ask-json / stream / classify / plan-evaluate */
+  kind: string;
+  toolId: string;
+  model?: string;
+  ok: boolean;
+  /** 调用发起时刻（Date.now()），时长由本函数计算 */
+  startedAt: number;
+  contentChars?: number;
+  error?: string;
+  cardKey?: string;
+}
+
 /** AI 用量记录（T00448 / PRD AI-1）：每次模型调用落一行，供「模型」页用量面板聚合展示。
  *  T03172（G-2/AI-301）：card_key 随行走——显式传卡优先，否则按 kind→卡一对一映射，
  *  通用通道（ask/ask-json/stream）无卡可归时落 unknown（历史默认值同口径，不冒充卡片维度）。 */
-export function recordUsage(
-  kind: string,
-  toolId: string,
-  model: string | undefined,
-  ok: boolean,
-  startedAt: number,
-  contentChars = 0,
-  error?: string,
-  cardKey?: string,
-): void {
+export function recordUsage(entry: UsageRecordInput): void {
+  const { kind, toolId, model, ok, startedAt, contentChars = 0, error, cardKey } = entry;
   const resolvedCard = cardKey ?? KIND_TO_CARD[kind] ?? 'unknown';
   try {
     getDb().prepare(

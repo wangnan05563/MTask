@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FIELD_QUIET, PILL } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 import { Ban, ChevronDown, ChevronRight, Download, Eye, GitBranch, ListChecks, RefreshCw, Sparkles, X } from 'lucide-react'; // T03654：折叠箭头统一 lucide
 import { api } from '../api/client';
@@ -16,6 +16,8 @@ import {
   codeReviewLectureStore,
   useCodeReviewLecture,
   type LectureOutline,
+  type LectureDeviationDimension,
+  type LectureRunUsageDeviation,
   type LectureSectionResult,
   type LectureStreamResult,
 } from '../stores/codeReviewLectureStore';
@@ -28,6 +30,7 @@ import {
   locateAnchor,
   parseAnchorHref,
   type LectureAnchorHit,
+  type LectureDiffFile,
   type LectureDiffProject,
   type LectureDiffView,
 } from '../utils/lectureDiff';
@@ -64,6 +67,8 @@ const RANGE_SHAPES = [
   { key: 'since', label: '时间窗（--since）' },
 ] as const;
 type RangeShape = (typeof RANGE_SHAPES)[number]['key'];
+/** 导出格式（S4323：union 收成类型别名，状态与子组件入参共用同一口径） */
+type ExportFormat = 'md' | 'docx' | 'pptx';
 
 const fieldStyle: React.CSSProperties = FIELD_QUIET; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 const chipStyle: React.CSSProperties = PILL; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
@@ -172,10 +177,191 @@ function mergeLectureRun(
     }
   }
   next.sections.forEach((s) => prior.set(s.key, s));
-  const sections = outline.sections.map((s) => prior.get(s.key)).filter((s): s is LectureSectionResult => Boolean(s));
+  const sections = outline.sections.map((s) => prior.get(s.key)).filter((s): s is LectureSectionResult => s !== undefined);
   const ok = sections.length === outline.sections.length && sections.every((s) => s.ok);
   return { ...next, outline, sections, ok };
 }
+
+/** Set 成员切换（diff 文件展开 / hunk 折叠 / 手风琴节共用），始终返回新 Set 以触发重渲染 */
+function toggleInSet(prev: ReadonlySet<string>, key: string): Set<string> {
+  const next = new Set(prev);
+  if (next.has(key)) { next.delete(key); } else { next.add(key); }
+  return next;
+}
+
+/** 采集入参（区间/作者过滤/patch/Git 树点选）——纯函数入参，便于单测与 S3776 下沉 */
+interface ScopeInput {
+  readonly patchMode: boolean;
+  readonly selectedIds: readonly string[];
+  readonly patchText: string;
+  readonly shape: RangeShape;
+  readonly since: string;
+  readonly until: string;
+  readonly base: string;
+  readonly head: string;
+  readonly authorFilter: string;
+  readonly selectedCommits: Readonly<Record<string, string[]>>;
+}
+
+/** patch 模式（E-1 降级通道）：一次只支持单项目 */
+function buildPatchBody(input: ScopeInput): { body?: Record<string, unknown>; error?: string } {
+  if (input.selectedIds.length !== 1) return { error: '粘贴 patch 模式一次只支持 1 个项目，请在顶部报表范围里只选一个' };
+  if (!input.patchText.trim()) return { error: '请粘贴 unified diff 全文（git diff / git format-patch 输出均可）' };
+  return { body: { projects: [{ projectId: input.selectedIds[0], patch: input.patchText }] } };
+}
+
+/** T03590：时间窗形态——日期范围控件产出起止两个原始值；单起始时与原 `since` 取值逐字一致 */
+function fillSinceRange(input: ScopeInput, range: Record<string, string>): string | null {
+  const win = buildSinceWindow(input.since, input.until);
+  if (win.error) return win.error;
+  if (!win.since) return '时间窗形态需要起始时间（如 2026-10-01 或 "14 days ago"）';
+  range.since = win.since;
+  if (win.until) range.until = win.until;
+  return null;
+}
+
+/** base..head / 首末 SHA 形态 */
+function fillRefRange(input: ScopeInput, range: Record<string, string>): string | null {
+  if (!input.base.trim()) return '需要填写 base（分支/标签/SHA），或在 Git 树里点选提交';
+  range.base = input.base.trim();
+  if (input.shape === 'first-last' && !input.head.trim()) return '首末 SHA 形态需要同时填写两个 SHA';
+  if (input.head.trim()) range.head = input.head.trim();
+  return null;
+}
+
+function buildRange(input: ScopeInput): { range?: Record<string, string>; error?: string } {
+  const range: Record<string, string> = { shape: input.shape };
+  const error = input.shape === 'since' ? fillSinceRange(input, range) : fillRefRange(input, range);
+  if (error) return { error };
+  if (input.authorFilter.trim()) range.authorFilter = input.authorFilter.trim();
+  return { range };
+}
+
+/** 采集入参：一次评审共用一份区间；patch 模式单项目（E-1 降级通道） */
+function buildScopeBody(input: ScopeInput): { body?: Record<string, unknown>; error?: string } {
+  if (input.patchMode) return buildPatchBody(input);
+  // T03302：Git 树点过提交的项目按 `shape='commits'` 采集（点选本身就是清单，不再叠作者过滤）；
+  // 没点过的项目继续用下面的手填区间——两者可以在同一次评审里按项目混用。
+  const needsRange = input.selectedIds.some((projectId) => (input.selectedCommits[projectId] ?? []).length === 0);
+  // 区间校验只对「仍要走区间」的项目有意义：全部项目都点过提交时，不该再逼用户填 base
+  const built: { range?: Record<string, string>; error?: string } = needsRange ? buildRange(input) : {};
+  if (built.error) return { error: built.error };
+  const projects = input.selectedIds.map((projectId) => {
+    const picked = input.selectedCommits[projectId] ?? [];
+    return picked.length > 0 ? { projectId, range: { shape: 'commits', commits: picked } } : { projectId, range: built.range };
+  });
+  return { body: { projects } };
+}
+
+/** 一轮生成的入参规划结果（流式调用的 body + 续作/重试落点） */
+interface RunPlan {
+  readonly retryJob: boolean;
+  readonly body: Record<string, unknown>;
+  readonly resumeFrom?: string;
+  readonly retryKeys?: string[];
+  readonly error?: string;
+}
+
+function planRun(extra: Record<string, unknown>, ctx: {
+  readonly scopeError?: string;
+  readonly scopeBody?: Record<string, unknown>;
+  readonly toolId: string;
+}): RunPlan {
+  const retryJob = typeof extra.jobId === 'string' && extra.retryFailed === true;
+  // T03245（AI-103②③）：台账重试按服务端留档入参重建，不看当前面板范围（刷新后范围 UI 可能已变）
+  if (!retryJob && ctx.scopeError) return { retryJob, body: {}, error: ctx.scopeError };
+  // 台账重试用服务端留档的 toolId，刷新后新会话没选工具也能恢复
+  if (!retryJob && !ctx.toolId) return { retryJob, body: {}, error: '请先在右侧控制台选择 AI 工具' };
+  const resumeFrom = typeof extra.resumeFrom === 'string' ? extra.resumeFrom : undefined;
+  const retryKeys = Array.isArray(extra.sectionKeys) ? (extra.sectionKeys as string[]) : undefined;
+  const body = retryJob
+    ? { jobId: extra.jobId, retryFailed: true, ...(ctx.toolId ? { toolId: ctx.toolId } : {}) }
+    : { ...ctx.scopeBody, toolId: ctx.toolId, ...extra };
+  return { retryJob, body, resumeFrom, retryKeys };
+}
+
+/** SSE `stage` 帧的数据面（服务端 lectureStream 镜像） */
+interface StageFramePayload {
+  phase: string;
+  msg: string;
+  progress: number;
+  data?: { type?: string; outline?: LectureOutline; section?: string; ok?: boolean; jobId?: string };
+}
+
+/** 一轮生成的可变上下文：流式帧回调需要跨帧累计大纲 / 错误 / 任务 id */
+interface StreamRunCtx {
+  outline: LectureOutline | undefined;
+  errMsg: string;
+  /** 任务 id 落点（写回 `jobIdRef.current`，续作/单节重试都靠它复用已完成段） */
+  readonly setJobId: (id: string) => void;
+  readonly before: {
+    outline: LectureOutline | null;
+    result: LectureStreamResult | null;
+    live: Record<string, string>;
+    sectionOk: Record<string, boolean>;
+  };
+  readonly resumeFrom?: string;
+  readonly retryKeys?: string[];
+  readonly flash: (m: string) => void;
+}
+
+function applyStageFrame(payload: unknown, ctx: StreamRunCtx): void {
+  const s = payload as StageFramePayload;
+  codeReviewLectureStore.setStage({ phase: s.phase, msg: s.msg, progress: s.progress });
+  const data = s.data;
+  if (!data) return;
+  // T03246：任务一落库就记住 id——停止时收不到 aborted 帧，续作只能靠这里留下的 id 复用已完成段
+  if (data.type === 'job' && typeof data.jobId === 'string') ctx.setJobId(data.jobId);
+  if (data.type === 'outline_ready' || data.type === 'outline_only') {
+    if (data.outline) { ctx.outline = data.outline; codeReviewLectureStore.setOutline(data.outline); }
+    return;
+  }
+  if (data.type === 'section_done' && data.section) codeReviewLectureStore.setSectionOk(data.section, data.ok === true);
+}
+
+function applyDoneFrame(payload: unknown, ctx: StreamRunCtx): void {
+  const d = payload as LectureStreamResult;
+  if (d?.outline) { ctx.outline = d.outline; codeReviewLectureStore.setOutline(d.outline); }
+  if (d?.jobId) ctx.setJobId(d.jobId);
+  codeReviewLectureStore.setResult(mergeLectureRun(ctx.before, d ?? null, ctx.resumeFrom ?? ctx.retryKeys?.[0]));
+}
+
+function applyAbortedFrame(payload: unknown, ctx: StreamRunCtx): void {
+  // 用户主动「停止」：服务端把已完成的节次交回，保留下来供「从第 n 节继续」
+  const d = payload as LectureStreamResult;
+  if (d?.outline) codeReviewLectureStore.setOutline(d.outline);
+  if (d?.jobId) ctx.setJobId(d.jobId);
+  codeReviewLectureStore.setResult(d ?? null);
+  const kept = d?.sections?.length ?? 0;
+  // T03301：停止是关键节点，控制台要有一行收口日志（此前只在面板 toast 里提示，控制台看不出发生过什么）
+  codeReviewLectureStore.pushLog(`已停止——已生成 ${kept} 节已保留，可「从第 n 节继续」`);
+  codeReviewLectureStore.finish();
+  ctx.flash(`已停止——已生成 ${kept} 节已保留，可「从第 n 节继续」`);
+}
+
+/** 单帧分派：按事件名落到对应处理，避免把整条 if/else 链堆在组件内联回调里 */
+function handleStreamFrame(name: string, payload: unknown, ctx: StreamRunCtx): void {
+  if (name === 'stage') { applyStageFrame(payload, ctx); return; }
+  if (name === 'chunk') {
+    const c = payload as { section: string; text: string };
+    codeReviewLectureStore.appendLive(c.section, c.text);
+    return;
+  }
+  if (name === 'done') { applyDoneFrame(payload, ctx); return; }
+  if (name === 'aborted') { applyAbortedFrame(payload, ctx); return; }
+  if (name === 'error') ctx.errMsg = (payload as { error: string }).error ?? '生成失败';
+}
+
+/** T03301：完成是关键节点——写一行带产出量的收口日志（节数/锚点/降级），控制台据此判断这轮到底产出了什么 */
+function logRunFinished(): void {
+  const done = codeReviewLectureStore.get().result;
+  if (!done) return;
+  const okCount = done.sections.filter((s) => s.ok).length;
+  const degradePart = done.warnings.length > 0 ? ` · 降级 ${done.warnings.length} 处` : '';
+  codeReviewLectureStore.pushLog(`生成完成：${okCount}/${done.sections.length} 节 · 锚点 ${done.stats.anchors} 个${degradePart}`);
+}
+
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, projects, toolId, onClose }: {
   readonly projectIds: string[];
@@ -204,7 +390,7 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   const [gitTreeOpen, setGitTreeOpen] = useState(false);
   const [patchMode, setPatchMode] = useSessionState('lecture.patchMode', false);
   const [patchText, setPatchText] = useState('');
-  const [exportFormat, setExportFormat] = useSessionState<'md' | 'docx' | 'pptx'>('lecture.exportFormat', 'md');
+  const [exportFormat, setExportFormat] = useSessionState<ExportFormat>('lecture.exportFormat', 'md');
   const [exporting, setExporting] = useState(false);
   /** T02875：预检覆盖层 + 「裁剪继续」要接着跑的意图 */
   const [preflight, setPreflight] = useState<LecturePreflight | null>(null);
@@ -224,11 +410,11 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
    */
   const jobIdRef = useRef<string | null>(null);
   const leftRef = useRef<HTMLDivElement>(null);
-  const flashTimer = useRef<number | null>(null);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const flash = (m: string) => {
     setNotice(m);
-    window.setTimeout(() => setNotice(''), 3600);
+    globalThis.setTimeout(() => setNotice(''), 3600);
   };
 
   const selectedIds = projectIds.length > 0 ? projectIds : projects.map((p) => p.id);
@@ -291,43 +477,13 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   });
 
   /** 采集入参：一次评审共用一份区间；patch 模式单项目（E-1 降级通道） */
-  const scopeBody = useMemo((): { body?: Record<string, unknown>; error?: string } => {
-    if (patchMode) {
-      if (selectedIds.length !== 1) return { error: '粘贴 patch 模式一次只支持 1 个项目，请在顶部报表范围里只选一个' };
-      if (!patchText.trim()) return { error: '请粘贴 unified diff 全文（git diff / git format-patch 输出均可）' };
-      return { body: { projects: [{ projectId: selectedIds[0], patch: patchText }] } };
-    }
-    // T03302：Git 树点过提交的项目按 `shape='commits'` 采集（点选本身就是清单，不再叠作者过滤）；
-    // 没点过的项目继续用下面的手填区间——两者可以在同一次评审里按项目混用。
-    const pickedOf = (projectId: string) => selectedCommits[projectId] ?? [];
-    // 区间校验只对「仍要走区间」的项目有意义：全部项目都点过提交时，不该再逼用户填 base
-    const needsRange = selectedIds.some((projectId) => pickedOf(projectId).length === 0);
-    const range: Record<string, string> = { shape };
-    if (needsRange) {
-      if (shape === 'since') {
-        // T03590：日期范围控件产出起止两个原始值；单起始时与原 `since` 取值逐字一致
-        const win = buildSinceWindow(since, until);
-        if (win.error) return { error: win.error };
-        if (!win.since) return { error: '时间窗形态需要起始时间（如 2026-10-01 或 "14 days ago"）' };
-        range.since = win.since;
-        if (win.until) range.until = win.until;
-      } else {
-        if (!base.trim()) return { error: '需要填写 base（分支/标签/SHA），或在 Git 树里点选提交' };
-        range.base = base.trim();
-        if (shape === 'first-last' && !head.trim()) return { error: '首末 SHA 形态需要同时填写两个 SHA' };
-        if (head.trim()) range.head = head.trim();
-      }
-      if (authorFilter.trim()) range.authorFilter = authorFilter.trim();
-    }
-    const projects = selectedIds.map((projectId) => {
-      const picked = pickedOf(projectId);
-      return picked.length > 0 ? { projectId, range: { shape: 'commits', commits: picked } } : { projectId, range };
-    });
-    return { body: { projects } };
-  }, [patchMode, patchText, selectedIds, shape, since, until, base, head, authorFilter, selectedCommits]);
+  const scopeBody = useMemo(
+    () => buildScopeBody({ patchMode, selectedIds, patchText, shape, since, until, base, head, authorFilter, selectedCommits }),
+    [patchMode, patchText, selectedIds, shape, since, until, base, head, authorFilter, selectedCommits],
+  );
 
   useEffect(() => () => {
-    if (flashTimer.current) window.clearTimeout(flashTimer.current);
+    if (flashTimer.current) globalThis.clearTimeout(flashTimer.current);
     codeReviewLectureStore.setAbortCtrl(null);
   }, []);
 
@@ -338,12 +494,12 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
    * 立刻回读会拿到 running 旧快照（横幅写「上次运行中断 / 继续生成未完成段」）——
    * 读到 running 就短暂轮询，等终态落地再展示。
    */
-  async function refreshJournal() {
+  const refreshJournal = useCallback(async () => {
     for (let i = 0; i < 12; i += 1) {
       try {
         const view = await api.get<LectureJournalView | null>('/plans/code-review-lecture/jobs/latest');
         if (view?.status === 'running' && i < 11) {
-          await new Promise((r) => { window.setTimeout(r, 300); });
+          await new Promise((r) => { globalThis.setTimeout(r, 300); });
           continue;
         }
         setJournal(view && view.status !== 'done' && view.progress.segmentsTotal > 0 ? view : null);
@@ -353,9 +509,9 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
         return;
       }
     }
-  }
+  }, []);
 
-  useEffect(() => { void refreshJournal(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void refreshJournal(); }, [refreshJournal]);
 
   // ---- 左栏：diff 视图 ----
   async function loadDiff() {
@@ -378,80 +534,42 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
 
   // ---- 两段式生成（含中止续作 / 单节重试 / 台账重试失败段） ----
   async function runStream(extra: Record<string, unknown>, stageLabel: string) {
-    const retryJob = typeof extra.jobId === 'string' && extra.retryFailed === true;
-    // T03245（AI-103②③）：台账重试按服务端留档入参重建，不看当前面板范围（刷新后范围 UI 可能已变）
-    if (!retryJob && scopeBody.error) return flash(scopeBody.error);
-    // 台账重试用服务端留档的 toolId，刷新后新会话没选工具也能恢复
-    if (!toolId && !retryJob) return flash('请先在右侧控制台选择 AI 工具');
-    const resumeFrom = typeof extra.resumeFrom === 'string' ? extra.resumeFrom : undefined;
-    const retryKeys = Array.isArray(extra.sectionKeys) ? (extra.sectionKeys as string[]) : undefined;
+    const plan = planRun(extra, { scopeError: scopeBody.error, scopeBody: scopeBody.body, toolId });
+    if (plan.error) return flash(plan.error);
     // T03246（AI-103④）：续作沿用同一任务；全新一轮先清空，等 stage job 事件写回新 id
     // ——采集阶段就被停止时不能错挂上一轮任务（会把旧段当成本轮已完成段复用）
-    if (retryJob) jobIdRef.current = String(extra.jobId);
-    else if (!resumeFrom && !retryKeys) jobIdRef.current = null;
-    const before = codeReviewLectureStore.get();
+    if (plan.retryJob) jobIdRef.current = String(extra.jobId);
+    else if (!plan.resumeFrom && !plan.retryKeys) jobIdRef.current = null;
     const ac = new AbortController();
     codeReviewLectureStore.setAbortCtrl(ac);
     // 续作/重试保留已有三态标记；全新一轮才清空
-    codeReviewLectureStore.begin(Boolean(resumeFrom || retryKeys));
+    codeReviewLectureStore.begin(Boolean(plan.resumeFrom || plan.retryKeys));
     codeReviewLectureStore.pushLog(`${stageLabel}：开始采集与上下文装配`);
-    const body = retryJob
-      ? { jobId: extra.jobId, retryFailed: true, ...(toolId ? { toolId } : {}) }
-      : { ...scopeBody.body, toolId, ...extra };
-    let outline: LectureOutline | undefined = before.outline ?? undefined;
-    let errMsg = '';
+    const ctx: StreamRunCtx = {
+      outline: codeReviewLectureStore.get().outline ?? undefined,
+      errMsg: '',
+      setJobId: (id: string) => { jobIdRef.current = id; },
+      before: codeReviewLectureStore.get(),
+      resumeFrom: plan.resumeFrom,
+      retryKeys: plan.retryKeys,
+      flash,
+    };
     try {
-      await streamEvents('/plans/code-review-lecture-stream', body, (name, payload) => {
-        if (name === 'stage') {
-          const s = payload as { phase: string; msg: string; progress: number; data?: { type?: string; outline?: LectureOutline; section?: string; ok?: boolean; jobId?: string } };
-          codeReviewLectureStore.setStage({ phase: s.phase, msg: s.msg, progress: s.progress });
-          // T03246：任务一落库就记住 id——停止时收不到 aborted 帧，续作只能靠这里留下的 id 复用已完成段
-          if (s.data?.type === 'job' && typeof s.data.jobId === 'string') jobIdRef.current = s.data.jobId;
-          if (s.data?.type === 'outline_ready' || s.data?.type === 'outline_only') {
-            if (s.data.outline) { outline = s.data.outline; codeReviewLectureStore.setOutline(s.data.outline); }
-          } else if (s.data?.type === 'section_done' && s.data.section) {
-            codeReviewLectureStore.setSectionOk(s.data.section, s.data.ok === true);
-          }
-        } else if (name === 'chunk') {
-          const c = payload as { section: string; text: string };
-          codeReviewLectureStore.appendLive(c.section, c.text);
-        } else if (name === 'done') {
-          const d = payload as LectureStreamResult;
-          if (d?.outline) { outline = d.outline; codeReviewLectureStore.setOutline(d.outline); }
-          if (d?.jobId) jobIdRef.current = d.jobId;
-          codeReviewLectureStore.setResult(mergeLectureRun(before, d ?? null, resumeFrom ?? (retryKeys ? retryKeys[0] : undefined)));
-        } else if (name === 'aborted') {
-          // 用户主动「停止」：服务端把已完成的节次交回，保留下来供「从第 n 节继续」
-          const d = payload as LectureStreamResult;
-          if (d?.outline) codeReviewLectureStore.setOutline(d.outline);
-          if (d?.jobId) jobIdRef.current = d.jobId;
-          codeReviewLectureStore.setResult(d ?? null);
-          // T03301：停止是关键节点，控制台要有一行收口日志（此前只在面板 toast 里提示，控制台看不出发生过什么）
-          codeReviewLectureStore.pushLog(`已停止——已生成 ${d?.sections?.length ?? 0} 节已保留，可「从第 n 节继续」`);
-          codeReviewLectureStore.finish();
-          flash(`已停止——已生成 ${d?.sections?.length ?? 0} 节已保留，可「从第 n 节继续」`);
-          void refreshJournal();
-          return;
-        } else if (name === 'error') {
-          errMsg = (payload as { error: string }).error ?? '生成失败';
-        }
+      await streamEvents('/plans/code-review-lecture-stream', plan.body, (name, payload) => {
+        handleStreamFrame(name, payload, ctx);
+        if (name === 'aborted') void refreshJournal();
       }, ac.signal);
-      if (errMsg) {
-        codeReviewLectureStore.finish(errMsg);
+      if (ctx.errMsg) {
+        codeReviewLectureStore.finish(ctx.errMsg);
         void refreshJournal();
-        return flash(errMsg);
+        return flash(ctx.errMsg);
       }
-      if (extra.outlineOnly && outline) codeReviewLectureStore.pushLog('大纲已就绪——右栏确认结构后点「按大纲生成正文」');
-      // T03301：完成是关键节点——写一行带产出量的收口日志（节数/锚点/降级），控制台据此判断这轮到底产出了什么
-      const done = codeReviewLectureStore.get().result;
-      if (done) {
-        const okCount = done.sections.filter((s) => s.ok).length;
-        codeReviewLectureStore.pushLog(`生成完成：${okCount}/${done.sections.length} 节 · 锚点 ${done.stats.anchors} 个${done.warnings.length > 0 ? ` · 降级 ${done.warnings.length} 处` : ''}`);
-      }
+      if (extra.outlineOnly && ctx.outline) codeReviewLectureStore.pushLog('大纲已就绪——右栏确认结构后点「按大纲生成正文」');
+      logRunFinished();
       codeReviewLectureStore.finish();
       void refreshJournal();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errText(e);
       // 用户主动「停止」不是故障：保留已生成章节，不写错误态
       codeReviewLectureStore.finish(ac.signal.aborted ? undefined : msg);
       if (!ac.signal.aborted) flash(msg.includes(GATE_BUSY_MSG) ? `${msg}——请稍后重试` : msg);
@@ -512,10 +630,10 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
     codeReviewLectureStore.pushLog(anchorLocateMessage(anchor, hit, projects));
     if (!ids) return flash(anchorLocateMessage(anchor, null, projects));
     setFlashRows((prev) => ({ ids: new Set(ids.ids), seq: (prev?.seq ?? 0) + 1 }));
-    if (flashTimer.current) window.clearTimeout(flashTimer.current);
-    flashTimer.current = window.setTimeout(() => setFlashRows(null), 1600);
+    if (flashTimer.current) globalThis.clearTimeout(flashTimer.current);
+    flashTimer.current = globalThis.setTimeout(() => setFlashRows(null), 1600);
     // 展开目标文件要等这一帧落地，否则查不到刚渲染出的行
-    window.setTimeout(() => {
+    globalThis.setTimeout(() => {
       leftRef.current?.querySelector(`[data-lck-row="${ids.primary}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }, 80);
   }
@@ -600,115 +718,23 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
 
       {/* T03245（AI-103③）：刷新/重进后按服务端台账恢复——进度照实显示，只补未完成段 */}
       {journal && (
-        <section data-t03245="journal-restore" aria-label="未完成的生成任务"
-          style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', border: '1px solid var(--warn)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
-          <RefreshCw size={14} style={{ color: 'var(--warn)' }} aria-hidden="true" />
-          <strong style={{ fontSize: 'var(--fs-s)' }}>上次生成未完成</strong>
-          <span data-t03245="journal-progress" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
-            {JOURNAL_STATUS_LABEL[journal.status]}：已生成 {journal.progress.segmentsDone}/{journal.progress.segmentsTotal} 段
-            {journal.progress.segmentsFailed > 0 ? `，${journal.progress.segmentsFailed} 段失败` : ''}
-            （{journal.progress.sectionsDone}/{journal.progress.sectionsTotal} 节完成）
-          </span>
-          <span style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {journal.sections.map((s) => (
-              <span key={s.key} data-t03245="journal-section"
-                title={`${s.label}：${s.done}/${s.total} 段已完成${s.failed ? `，${s.failed} 段失败` : ''}`}
-                style={{ ...PILL, color: s.failed > 0 ? 'var(--warn)' : 'var(--text-muted)' }}>
-                {s.label} {s.done}/{s.total}{s.failed > 0 ? `（失败 ${s.failed}）` : ''}
-              </span>
-            ))}
-          </span>
-          <FlowButton data-t03245="retry-failed"
-            onClick={() => void runStream({ jobId: journal.id, retryFailed: true },
-              journal.progress.segmentsFailed > 0 ? `重试失败段（${journal.progress.segmentsFailed}）` : '继续生成未完成段')}
-            disabled={snap.streaming}
-            title="只为未完成/失败的段发 AI 调用：已完成段直接复用正文，不重复生成">
-            <RefreshCw size={13} style={{ marginRight: 4 }} />
-            {journal.progress.segmentsFailed > 0 ? `重试失败段（${journal.progress.segmentsFailed}）` : '继续生成未完成段'}
-          </FlowButton>
-          <button type="button" data-t03245="journal-dismiss" onClick={() => setJournal(null)}
-            style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 'var(--fs-xs)' }}>
-            忽略
-          </button>
-        </section>
+        <JournalRestoreBanner journal={journal} streaming={snap.streaming}
+          onRetry={(label) => void runStream({ jobId: journal.id, retryFailed: true }, label)}
+          onDismiss={() => setJournal(null)} />
       )}
 
-      <section aria-label="采集范围" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
-        {/* T03311：不再只读——改选直接写回顶部「报表范围」（空数组=全部项目），两处始终同一份数据 */}
-        <div data-lck="scope-picker" style={{ width: 240, maxWidth: '100%' }}>
-          <ProjectScopePicker projects={projects} value={projectIds} onChange={onProjectIdsChange} />
-        </div>
-        <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
-          已选 {selectedIds.length} 个{projectIds.length === 0 ? '（全部项目）' : ''}，与顶部「报表范围」联动
-        </span>
-        {!patchMode && (
-          <>
-            <select value={shape} onChange={(e) => setShape(e.target.value as RangeShape)} style={fieldStyle} aria-label="Git 区间形态">
-              {RANGE_SHAPES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-            </select>
-            {/* T03590：文本框升级为可展开下拉（模糊过滤 + 选中回填 + 清除）；仍可直接手输，SHA/标签不受限 */}
-            {shape !== 'since' && (
-              <BranchPicker value={base} onChange={setBase} options={branchOptions} testId="lecture-base"
-                onOpen={() => void loadBranchOptions()}
-                placeholder={shape === 'base-head' ? 'base（如 main）' : '首个 SHA'} ariaLabel="区间起点" />
-            )}
-            {shape === 'since' ? (
-              <DateRangeField start={since} end={until} onChange={(s, e) => { setSince(s); setUntil(e); }}
-                testId="lecture-since" />
-            ) : (
-              <BranchPicker value={head} onChange={setHead} options={branchOptions} testId="lecture-head"
-                onOpen={() => void loadBranchOptions()}
-                placeholder={shape === 'first-last' ? '末个 SHA' : 'head（留空=HEAD）'} ariaLabel="区间终点" />
-            )}
-            <AuthorMultiSelect value={authorFilter} onChange={setAuthorFilter} authors={authorOptions}
-              onRequestAuthors={() => void loadAuthorOptions()} testId="lecture-author-filter" />
-            {/* T03302：IDEA 风格 Git 树选范围——区间是「一对版本号」，点选是「一组提交」，两者互补 */}
-            <FlowButton data-lck="git-tree-btn" onClick={() => setGitTreeOpen(true)} disabled={snap.streaming}
-              title="打开 Git 树挑提交：单击=勾选/取消（可连点多条）、Shift+单击=框选一段；确认后按选中提交采集">
-              <GitBranch size={13} style={{ marginRight: 4 }} />从 Git 树选范围
-            </FlowButton>
-            {pickedProjects.length > 0 && (
-              <span data-lck="git-tree-picked" style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', width: '100%' }}>
-                {pickedProjects.map((p) => (
-                  <span key={p.projectId} style={chipStyle}>
-                    {p.projectName}：Git 树已选 {p.shas.length} 个提交
-                    <button type="button" onClick={() => clearPicked(p.projectId)} aria-label={`清除 ${p.projectName} 的 Git 树选择`}
-                      title="清除后该项目回到上面的手填区间"
-                      style={{ marginLeft: 4, background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, fontSize: 'var(--fs-xs)' }}>×</button>
-                  </span>
-                ))}
-                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>点选优先于手填区间；未点选的项目仍按区间采集</span>
-              </span>
-            )}
-          </>
-        )}
-        <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-s)' }}>
-          <input type="checkbox" checked={patchMode} onChange={(e) => setPatchMode(e.target.checked)} />
-          粘贴 patch（无 git 时的降级通道）
-        </label>
-        <FlowButton onClick={() => void loadDiff()} disabled={snap.streaming} loading={snap.diffLoading} loadingText="采集中"
-          title="按当前范围采集 diff 并渲染到左栏">
-          <RefreshCw size={13} style={{ marginRight: 4 }} />加载 diff
-        </FlowButton>
-        <FlowButton data-lck="preflight-btn" onClick={() => void openPreflight(outline ? { outline } : { outlineOnly: true }, '预检后继续')}
-          disabled={snap.streaming} loading={preflightLoading} loadingText="预检中"
-          title="先统计后放行：项目/commit/文件/+−行/排除命中/预算估算/git 可用性">
-          <ListChecks size={13} style={{ marginRight: 4 }} />预检
-        </FlowButton>
-        <FlowButton onClick={() => void openPreflight({ outlineOnly: true }, '只出大纲')} disabled={snap.streaming}
-          title="只出八段骨架大纲（1 次模型调用），确认后再展开正文">
-          <Eye size={13} style={{ marginRight: 4 }} />只出大纲
-        </FlowButton>
-        <FlowButton onClick={() => void openPreflight(outline ? { outline } : {}, '生成讲稿正文')} disabled={snap.streaming}
-          title={outline ? '按已确认大纲生成八段正文（跳过大纲调用）' : '直接生成八段正文（含一次大纲调用）'}>
-          <Sparkles size={13} style={{ marginRight: 4 }} />{outline ? '按大纲生成正文' : '开始生成'}
-        </FlowButton>
-        {patchMode && (
-          <textarea value={patchText} onChange={(e) => setPatchText(e.target.value)} rows={5}
-            placeholder="粘贴 unified diff（git diff base..head 或 format-patch 全文）"
-            style={{ ...fieldStyle, width: '100%', fontFamily: FONT_MONO, resize: 'vertical' }} aria-label="粘贴 patch 全文" />
-        )}
-      </section>
+      <LectureScopeSection projects={projects} projectIds={projectIds} onProjectIdsChange={onProjectIdsChange}
+        selectedIds={selectedIds} shape={shape} setShape={setShape}
+        base={base} setBase={setBase} head={head} setHead={setHead}
+        since={since} until={until} setSince={setSince} setUntil={setUntil}
+        authorFilter={authorFilter} setAuthorFilter={setAuthorFilter}
+        branchOptions={branchOptions} authorOptions={authorOptions}
+        loadBranchOptions={loadBranchOptions} loadAuthorOptions={loadAuthorOptions}
+        pickedProjects={pickedProjects} clearPicked={clearPicked}
+        patchMode={patchMode} setPatchMode={setPatchMode} patchText={patchText} setPatchText={setPatchText}
+        streaming={snap.streaming} diffLoading={snap.diffLoading} preflightLoading={preflightLoading}
+        onLoadDiff={() => void loadDiff()} onPreflight={openPreflight} onOpenGitTree={() => setGitTreeOpen(true)}
+        outline={outline} onOpenOutline={() => void openPreflight({ outlineOnly: true }, '只出大纲')} />
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'stretch', minHeight: 320 }}>
         <aside data-lck="diff-pane" ref={leftRef} aria-label="变更 diff 面板"
@@ -716,10 +742,10 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
           {snap.diffError && <p data-lck="diff-error" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '4px 0' }}>diff 加载失败：{snap.diffError}</p>}
           <LectureDiffPane projects={snap.diff} openFiles={openFiles} foldedHunks={foldedHunks}
             flashRows={flashRows} hoverRows={hoverRows}
-            onToggleFile={(k) => setOpenFiles((prev) => { const n = new Set(prev); if (n.has(k)) n.delete(k); else n.add(k); return n; })}
-            onToggleHunk={(k) => setFoldedHunks((prev) => { const n = new Set(prev); if (n.has(k)) n.delete(k); else n.add(k); return n; })} />
+            onToggleFile={(k) => setOpenFiles((prev) => toggleInSet(prev, k))}
+            onToggleHunk={(k) => setFoldedHunks((prev) => toggleInSet(prev, k))} />
         </aside>
-        <main data-lck="lecture-pane" aria-label="讲稿面板" onMouseOver={(e) => hoverFromEvent(e.target)} onMouseLeave={() => setHoverRows(new Set())}
+        <main data-lck="lecture-pane" aria-label="讲稿面板" onMouseOver={(e) => hoverFromEvent(e.target)} onFocus={(e) => hoverFromEvent(e.target)} onMouseLeave={() => setHoverRows(new Set())}
           style={{ flex: '1 1 54%', minWidth: 0, maxHeight: 460, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: 8, background: 'var(--surface)' }}>
           <LectureSections outline={outline} sections={sections} live={snap.live} streaming={snap.streaming}
             marks={snap.marks}
@@ -737,56 +763,17 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
         </main>
       </div>
 
-      <footer data-lck="status-bar" style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
-        <span data-lck="stage" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', minWidth: 0, flex: '1 1 auto' }}>
-          {snap.stage?.msg ?? (snap.streaming ? '准备中…' : '未开始（可先「加载 diff」或「只出大纲」）')}
-        </span>
-        <div style={{ width: 150 }}>
-          <FlowProgress value={snap.stage?.progress ?? 0} aria-label="讲稿生成进度" />
-        </div>
-        <span data-lck="anchor-count" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>锚点 {snap.result?.stats.anchors ?? 0}</span>
-        {snap.result?.deviation && (
-          <span data-lck={snap.result.deviation.noticeRequired ? 'usage-deviation-notice' : 'usage-deviation-ok'}
-            style={{ fontSize: 'var(--fs-s)', color: snap.result.deviation.noticeRequired ? 'var(--warn)' : 'var(--text-muted)', fontWeight: snap.result.deviation.noticeRequired ? 600 : 400 }}
-            title="预估偏差仅明示、不阻断（AI-102③）；实际值可在 AI 用量记录回看（④）">
-            {snap.result.deviation.noticeRequired ? '⚠ 实测与预估偏差>50%：' : '用量偏差在阈值内：'}
-            {([['字符量', snap.result.deviation.chars], ['耗时', snap.result.deviation.seconds]] as const)
-              .filter(([, d]) => d.expected > 0)
-              .map(([n, d]) => `${n} ${d.overThreshold ? '偏' : '≈'}${d.deviation === null ? '—' : `${Math.round(d.deviation * 100)}%`}`)
-              .join(' / ')}
-            {' '}（实际 {snap.result.deviation.actualCalls} 次调用）
-          </span>
+      <LectureStatusFooter stage={snap.stage} streaming={snap.streaming} result={snap.result}
+        followupCount={followupCount} ignoredCount={ignoredCount}
+        onStop={() => { codeReviewLectureStore.stop(); flash('已停止——右栏已生成的章节保留'); }}
+        canResume={canResume} resumeIndex={resumeIndex}
+        onResume={() => void runStream(
+          { outline: outline ?? snap.outline, resumeFrom: resumeKey, ...(jobIdRef.current ? { jobId: jobIdRef.current } : {}) },
+          `从第 ${resumeIndex} 节继续`,
         )}
-        <span data-lck="mark-count" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>跟进 {followupCount} · 忽略 {ignoredCount}</span>
-        <FlowButton onClick={() => { codeReviewLectureStore.stop(); flash('已停止——右栏已生成的章节保留'); }} disabled={!snap.streaming}
-          title="中止当前生成（已生成的节次保留）">
-          <Ban size={13} style={{ marginRight: 4 }} />停止
-        </FlowButton>
-        {canResume && (
-          <FlowButton data-lck="resume-btn" onClick={() => void runStream(
-            { outline: outline ?? snap.outline, resumeFrom: resumeKey, ...(jobIdRef.current ? { jobId: jobIdRef.current } : {}) },
-            `从第 ${resumeIndex} 节继续`,
-          )}
-            disabled={snap.streaming}
-            title={`跳过已生成的前 ${resumeIndex - 1} 节，从第 ${resumeIndex} 节开始补生成`}>
-            <RefreshCw size={13} style={{ marginRight: 4 }} />从第 {resumeIndex} 节继续
-          </FlowButton>
-        )}
-        {!snap.streaming && (
-          <AiProvenanceSection cardKey="ai.code_review_lecture"
-            projectId={selectedIds.length === 1 ? selectedIds[0] : null} refreshKey={snap.result?.title ?? ''} />
-        )}
-        <select data-lck="export-format" value={exportFormat} onChange={(e) => setExportFormat(e.target.value as 'md' | 'docx' | 'pptx')}
-          style={fieldStyle} aria-label="导出格式" disabled={exporting}>
-          <option value="md">md 讲稿</option>
-          <option value="docx">docx 文稿</option>
-          <option value="pptx">pptx 投屏（一页一节 + 讲者备注）</option>
-        </select>
-        <FlowButton data-lck="export-btn" onClick={() => void exportLecture()} disabled={snap.streaming || !snap.result || sections.length === 0}
-          loading={exporting} loadingText="导出中" title="按当前标记过滤后导出（忽略项不出现在稿中，会后跟进另列清单）">
-          <Download size={13} style={{ marginRight: 4 }} />导出
-        </FlowButton>
-      </footer>
+        provenanceProjectId={selectedIds.length === 1 ? selectedIds[0] : null}
+        exportFormat={exportFormat} setExportFormat={setExportFormat} exporting={exporting}
+        onExport={() => void exportLecture()} canExport={!snap.streaming && Boolean(snap.result) && sections.length > 0} />
 
       {gitTreeOpen && (
         <GitTreePickerModal projects={projects.filter((p) => selectedIds.includes(p.id))} activeProjectId={selectedIds[0] ?? ''}
@@ -800,91 +787,388 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
       )}
 
       {preflight && (
-        <div data-lck="preflight" role="dialog" aria-modal="true" aria-label="生成前预检"
-          style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(15,23,42,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-          <div style={{ width: 'min(920px, 96vw)', maxHeight: '84vh', overflow: 'auto', background: 'var(--card-bg)', border: '1px solid var(--accent)', borderRadius: 10, padding: 14 }}>
-            <header style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <ListChecks size={16} style={{ color: 'var(--accent)' }} />
-              <strong style={{ fontSize: 'var(--fs-l)' }}>生成前预检</strong>
-              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>先统计后放行——超限可「裁剪继续」或「中止收窄范围」</span>
-              <button type="button" onClick={cancelPreflight} aria-label="关闭预检"
-                style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
-                <X size={15} />
-              </button>
-            </header>
-
-            <div data-lck="preflight-totals" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '10px 0' }}>
-              <span style={chipStyle}>项目 {preflight.totals.ready}/{preflight.totals.projects} 可采集</span>
-              <span style={chipStyle}>{preflight.totals.commits} commits</span>
-              <span style={chipStyle}>{preflight.totals.files} 文件</span>
-              <span style={chipStyle}><span style={{ color: 'var(--success)' }}>+{preflight.totals.additions}</span> / <span style={{ color: 'var(--danger)' }}>-{preflight.totals.deletions}</span></span>
-              <span style={chipStyle}>排除命中 {preflight.totals.excluded}</span>
-              <span style={chipStyle}>预算内 {preflight.totals.keptFiles} 文件 / {preflight.totals.keptChars} 字符（上限 {preflight.estimate.contextBudget}）</span>
-              <span data-lck="preflight-estimate" style={chipStyle}>
-                {preflight.estimate.groups} 个分段组 → 预估 {preflight.estimate.calls} 次调用 /{' '}
-                {preflight.estimate.secondsLow !== undefined && preflight.estimate.secondsHigh !== undefined
-                  ? `${fmtSeconds(preflight.estimate.secondsLow)}~${fmtSeconds(preflight.estimate.secondsHigh)}`
-                  : fmtSeconds(preflight.estimate.seconds)}
-                {' '}/ {preflight.estimate.contextChars} 字符
-                {preflight.estimate.modelVersion ? ` · 模型 ${preflight.estimate.modelVersion}` : ''}
-              </span>
-              <span data-lck="preflight-notice" style={{ ...chipStyle, color: 'var(--text-muted)' }}>{PROXY_METRIC_NOTICE}</span>
-            </div>
-
-            {!preflight.ok && (
-              <p data-lck="preflight-blocked" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '4px 0' }}>
-                没有可采集的项目：请补配工作空间路径、调整区间，或改用「粘贴 patch」后重新预检。
-              </p>
-            )}
-            {preflight.warnings.map((w, i) => <p key={`pw${i}`} style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
-
-            <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
-              {preflight.projects.map((p) => (
-                <section key={p.projectId} data-lck={`preflight-project-${p.projectId}`}
-                  style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 8, background: 'var(--surface)' }}>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
-                    <strong style={{ fontSize: 'var(--fs-m)' }}>{p.projectName}</strong>
-                    <span style={chipStyle}>{p.mode === 'patch' ? '粘贴 patch' : p.rangeLabel}</span>
-                    <span data-lck={`preflight-git-${p.projectId}`} style={{ ...chipStyle, color: p.git.available && p.git.isRepo ? 'var(--success)' : 'var(--danger)' }}>
-                      {p.mode === 'patch' ? '无需 git' : p.git.available ? (p.git.isRepo ? 'git 可用' : '非 git 仓库') : '未检测到 git'}
-                    </span>
-                    <span style={chipStyle}>{p.stats.commits} commits · {p.stats.files} 文件 · +{p.stats.additions}/-{p.stats.deletions}</span>
-                    <span style={chipStyle}>排除 {p.excluded.count}</span>
-                    <span style={chipStyle}>保留 {p.kept.files} 文件 / {p.kept.chars} 字符</span>
-                  </div>
-                  {p.blocked && <p style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '4px 0' }}>{p.blocked}</p>}
-                  {p.budget.dropped > 0 && (
-                    <p data-lck="preflight-dropped" style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', margin: '4px 0' }}>
-                      超预算已按优先级丢弃 {p.budget.dropped} 个文件：{p.budget.droppedNames.join('、')}
-                      {p.budget.truncated ? '（列表已截断）' : ''}
-                    </p>
-                  )}
-                  {p.warnings.map((w, i) => <p key={`w${i}`} style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
-                </section>
-              ))}
-            </div>
-
-            <footer style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
-              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flex: '1 1 auto' }}>
-                「裁剪继续」＝按预算内保留文件生成；被丢弃的文件已点名，不会静默缺稿。
-              </span>
-              <FlowButton data-lck="preflight-cancel" onClick={cancelPreflight}
-                style={{ backgroundColor: 'var(--surface-2)', color: 'var(--text)' }} title="不动代码：回面板调整项目/区间/排除规则">
-                中止收窄范围
-              </FlowButton>
-              <FlowButton data-lck="preflight-continue" onClick={continueFromPreflight} disabled={!preflight.ok}
-                title={preflight.ok ? '按当前统计面继续（超预算文件按优先级丢弃）' : '没有可采集的项目，无法继续'}>
-                裁剪继续 · {pendingRun.current?.label ?? '生成'}
-              </FlowButton>
-            </footer>
-          </div>
-        </div>
+        <PreflightOverlay preflight={preflight} continueLabel={pendingRun.current?.label ?? '生成'}
+          onCancel={cancelPreflight} onContinue={continueFromPreflight} />
       )}
     </div>
   );
 }
 
+// ---- 采集范围 / 台账恢复 / 状态条 / 预检覆盖层：条件块下沉为模块级子组件（S3776） ----
+
+/** T03245（AI-103③）：刷新/重进后按服务端台账恢复——进度照实显示，只补未完成段 */
+function JournalRestoreBanner({ journal, streaming, onRetry, onDismiss }: {
+  readonly journal: LectureJournalView;
+  readonly streaming: boolean;
+  readonly onRetry: (label: string) => void;
+  readonly onDismiss: () => void;
+}) {
+  const failed = journal.progress.segmentsFailed;
+  const retryLabel = failed > 0 ? `重试失败段（${failed}）` : '继续生成未完成段';
+  return (
+    <section data-t03245="journal-restore" aria-label="未完成的生成任务"
+      style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', border: '1px solid var(--warn)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
+      <RefreshCw size={14} style={{ color: 'var(--warn)' }} aria-hidden="true" />
+      <strong style={{ fontSize: 'var(--fs-s)' }}>上次生成未完成</strong>
+      <span data-t03245="journal-progress" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+        {JOURNAL_STATUS_LABEL[journal.status]}：已生成 {journal.progress.segmentsDone}/{journal.progress.segmentsTotal} 段
+        {failed > 0 ? `，${failed} 段失败` : ''}
+        （{journal.progress.sectionsDone}/{journal.progress.sectionsTotal} 节完成）
+      </span>
+      <span style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {journal.sections.map((s) => {
+          const failedPart = s.failed ? `，${s.failed} 段失败` : '';
+          return (
+            <span key={s.key} data-t03245="journal-section"
+              title={`${s.label}：${s.done}/${s.total} 段已完成${failedPart}`}
+              style={{ ...PILL, color: s.failed > 0 ? 'var(--warn)' : 'var(--text-muted)' }}>
+              {s.label} {s.done}/{s.total}{s.failed > 0 ? `（失败 ${s.failed}）` : ''}
+            </span>
+          );
+        })}
+      </span>
+      <FlowButton data-t03245="retry-failed" onClick={() => onRetry(retryLabel)} disabled={streaming}
+        title="只为未完成/失败的段发 AI 调用：已完成段直接复用正文，不重复生成">
+        <RefreshCw size={13} style={{ marginRight: 4 }} />
+        {retryLabel}
+      </FlowButton>
+      <button type="button" data-t03245="journal-dismiss" onClick={onDismiss}
+        style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 'var(--fs-xs)' }}>
+        忽略
+      </button>
+    </section>
+  );
+}
+
+interface ScopeSectionProps {
+  readonly projects: Project[];
+  readonly projectIds: string[];
+  readonly onProjectIdsChange: (ids: string[]) => void;
+  readonly selectedIds: string[];
+  readonly shape: RangeShape;
+  readonly setShape: (s: RangeShape) => void;
+  readonly base: string;
+  readonly setBase: (v: string) => void;
+  readonly head: string;
+  readonly setHead: (v: string) => void;
+  readonly since: string;
+  readonly until: string;
+  readonly setSince: (v: string) => void;
+  readonly setUntil: (v: string) => void;
+  readonly authorFilter: string;
+  readonly setAuthorFilter: (v: string) => void;
+  readonly branchOptions: BranchOption[];
+  readonly authorOptions: string[];
+  readonly loadBranchOptions: () => Promise<void>;
+  readonly loadAuthorOptions: () => Promise<void>;
+  readonly pickedProjects: ReadonlyArray<{ readonly projectId: string; readonly projectName: string; readonly shas: string[] }>;
+  readonly clearPicked: (projectId: string) => void;
+  readonly patchMode: boolean;
+  readonly setPatchMode: (v: boolean) => void;
+  readonly patchText: string;
+  readonly setPatchText: (v: string) => void;
+  readonly streaming: boolean;
+  readonly diffLoading: boolean;
+  readonly preflightLoading: boolean;
+  readonly onLoadDiff: () => void;
+  readonly onPreflight: (extra: Record<string, unknown>, label: string) => void;
+  readonly onOpenGitTree: () => void;
+  readonly onOpenOutline: () => void;
+  readonly outline?: LectureOutline;
+}
+
+/** 采集范围区：项目范围 + 区间形态 + 提交人 + Git 树点选摘要 + patch 降级通道 + 采集/预检入口 */
+function LectureScopeSection(props: ScopeSectionProps) {
+  const {
+    projects, projectIds, onProjectIdsChange, selectedIds, shape, setShape, base, setBase, head, setHead,
+    since, until, setSince, setUntil, authorFilter, setAuthorFilter, branchOptions, authorOptions,
+    loadBranchOptions, loadAuthorOptions, pickedProjects, clearPicked, patchMode, setPatchMode, patchText,
+    setPatchText, streaming, diffLoading, preflightLoading, onLoadDiff, onPreflight, onOpenGitTree, onOpenOutline, outline,
+  } = props;
+  return (
+    <section aria-label="采集范围" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
+      {/* T03311：不再只读——改选直接写回顶部「报表范围」（空数组=全部项目），两处始终同一份数据 */}
+      <div data-lck="scope-picker" style={{ width: 240, maxWidth: '100%' }}>
+        <ProjectScopePicker projects={projects} value={projectIds} onChange={onProjectIdsChange} />
+      </div>
+      <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
+        已选 {selectedIds.length} 个{projectIds.length === 0 ? '（全部项目）' : ''}，与顶部「报表范围」联动
+      </span>
+      {!patchMode && (
+        <>
+          <select value={shape} onChange={(e) => setShape(e.target.value as RangeShape)} style={fieldStyle} aria-label="Git 区间形态">
+            {RANGE_SHAPES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+          </select>
+          {/* T03590：文本框升级为可展开下拉（模糊过滤 + 选中回填 + 清除）；仍可直接手输，SHA/标签不受限 */}
+          {shape !== 'since' && (
+            <BranchPicker value={base} onChange={setBase} options={branchOptions} testId="lecture-base"
+              onOpen={() => void loadBranchOptions()}
+              placeholder={shape === 'base-head' ? 'base（如 main）' : '首个 SHA'} ariaLabel="区间起点" />
+          )}
+          {shape === 'since' ? (
+            <DateRangeField start={since} end={until} onChange={(s, e) => { setSince(s); setUntil(e); }}
+              testId="lecture-since" />
+          ) : (
+            <BranchPicker value={head} onChange={setHead} options={branchOptions} testId="lecture-head"
+              onOpen={() => void loadBranchOptions()}
+              placeholder={shape === 'first-last' ? '末个 SHA' : 'head（留空=HEAD）'} ariaLabel="区间终点" />
+          )}
+          <AuthorMultiSelect value={authorFilter} onChange={setAuthorFilter} authors={authorOptions}
+            onRequestAuthors={() => void loadAuthorOptions()} testId="lecture-author-filter" />
+          {/* T03302：IDEA 风格 Git 树选范围——区间是「一对版本号」，点选是「一组提交」，两者互补 */}
+          <FlowButton data-lck="git-tree-btn" onClick={onOpenGitTree} disabled={streaming}
+            title="打开 Git 树挑提交：单击=勾选/取消（可连点多条）、Shift+单击=框选一段；确认后按选中提交采集">
+            <GitBranch size={13} style={{ marginRight: 4 }} />从 Git 树选范围
+          </FlowButton>
+          {pickedProjects.length > 0 && (
+            <span data-lck="git-tree-picked" style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', width: '100%' }}>
+              {pickedProjects.map((p) => (
+                <span key={p.projectId} style={chipStyle}>
+                  {p.projectName}：Git 树已选 {p.shas.length} 个提交
+                  <button type="button" onClick={() => clearPicked(p.projectId)} aria-label={`清除 ${p.projectName} 的 Git 树选择`}
+                    title="清除后该项目回到上面的手填区间"
+                    style={{ marginLeft: 4, background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, fontSize: 'var(--fs-xs)' }}>×</button>
+                </span>
+              ))}
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>点选优先于手填区间；未点选的项目仍按区间采集</span>
+            </span>
+          )}
+        </>
+      )}
+      <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-s)' }}>
+        <input type="checkbox" checked={patchMode} onChange={(e) => setPatchMode(e.target.checked)} />
+        <span>粘贴 patch（无 git 时的降级通道）</span>
+      </label>
+      <FlowButton onClick={onLoadDiff} disabled={streaming} loading={diffLoading} loadingText="采集中"
+        title="按当前范围采集 diff 并渲染到左栏">
+        <RefreshCw size={13} style={{ marginRight: 4 }} />加载 diff
+      </FlowButton>
+      <FlowButton data-lck="preflight-btn" onClick={() => onPreflight(outline ? { outline } : { outlineOnly: true }, '预检后继续')}
+        disabled={streaming} loading={preflightLoading} loadingText="预检中"
+        title="先统计后放行：项目/commit/文件/+−行/排除命中/预算估算/git 可用性">
+        <ListChecks size={13} style={{ marginRight: 4 }} />预检
+      </FlowButton>
+      <FlowButton onClick={onOpenOutline} disabled={streaming}
+        title="只出八段骨架大纲（1 次模型调用），确认后再展开正文">
+        <Eye size={13} style={{ marginRight: 4 }} />只出大纲
+      </FlowButton>
+      <FlowButton onClick={() => onPreflight(outline ? { outline } : {}, '生成讲稿正文')} disabled={streaming}
+        title={outline ? '按已确认大纲生成八段正文（跳过大纲调用）' : '直接生成八段正文（含一次大纲调用）'}>
+        <Sparkles size={13} style={{ marginRight: 4 }} />{outline ? '按大纲生成正文' : '开始生成'}
+      </FlowButton>
+      {patchMode && (
+        <textarea value={patchText} onChange={(e) => setPatchText(e.target.value)} rows={5}
+          placeholder="粘贴 unified diff（git diff base..head 或 format-patch 全文）"
+          style={{ ...fieldStyle, width: '100%', fontFamily: FONT_MONO, resize: 'vertical' }} aria-label="粘贴 patch 全文" />
+      )}
+    </section>
+  );
+}
+
+/** 单维偏差文案：偏/≈ + 百分比（无可比基数时给「—」） */
+function deviationPart(name: string, d: LectureDeviationDimension): string {
+  const dir = d.overThreshold ? '偏' : '≈';
+  const pct = d.deviation === null ? '—' : `${Math.round(d.deviation * 100)}%`;
+  return `${name} ${dir}${pct}`;
+}
+
+/** T03243（AI-102②③）：实测与预估的偏差明示——只提示不阻断 */
+function DeviationNotice({ deviation }: { readonly deviation: LectureRunUsageDeviation }) {
+  const notice = deviation.noticeRequired;
+  const dims = [['字符量', deviation.chars], ['耗时', deviation.seconds]] as const;
+  const parts = dims.filter(([, d]) => d.expected > 0).map(([n, d]) => deviationPart(n, d)).join(' / ');
+  return (
+    <span data-lck={notice ? 'usage-deviation-notice' : 'usage-deviation-ok'}
+      style={{ fontSize: 'var(--fs-s)', color: notice ? 'var(--warn)' : 'var(--text-muted)', fontWeight: notice ? 600 : 400 }}
+      title="预估偏差仅明示、不阻断（AI-102③）；实际值可在 AI 用量记录回看（④）">
+      {notice ? '⚠ 实测与预估偏差>50%：' : '用量偏差在阈值内：'}
+      {parts}
+      {' '}（实际 {deviation.actualCalls} 次调用）
+    </span>
+  );
+}
+
+/** 底部状态条：阶段文案 + 进度 + 计数 + 停止/续作 + 溯源 + 导出 */
+function LectureStatusFooter({ stage, streaming, result, followupCount, ignoredCount, onStop, canResume, resumeIndex, onResume, provenanceProjectId, exportFormat, setExportFormat, exporting, onExport, canExport }: {
+  readonly stage: { msg: string; progress: number } | null;
+  readonly streaming: boolean;
+  readonly result: LectureStreamResult | null;
+  readonly followupCount: number;
+  readonly ignoredCount: number;
+  readonly onStop: () => void;
+  readonly canResume: boolean;
+  readonly resumeIndex: number;
+  readonly onResume: () => void;
+  readonly provenanceProjectId: string | null;
+  readonly exportFormat: ExportFormat;
+  readonly setExportFormat: (v: ExportFormat) => void;
+  readonly exporting: boolean;
+  readonly onExport: () => void;
+  readonly canExport: boolean;
+}) {
+  const stageText = stage?.msg ?? (streaming ? '准备中…' : '未开始（可先「加载 diff」或「只出大纲」）');
+  return (
+    <footer data-lck="status-bar" style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+      <span data-lck="stage" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', minWidth: 0, flex: '1 1 auto' }}>{stageText}</span>
+      <div style={{ width: 150 }}>
+        <FlowProgress value={stage?.progress ?? 0} aria-label="讲稿生成进度" />
+      </div>
+      <span data-lck="anchor-count" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>锚点 {result?.stats.anchors ?? 0}</span>
+      {result?.deviation && <DeviationNotice deviation={result.deviation} />}
+      <span data-lck="mark-count" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>跟进 {followupCount} · 忽略 {ignoredCount}</span>
+      <FlowButton onClick={onStop} disabled={!streaming} title="中止当前生成（已生成的节次保留）">
+        <Ban size={13} style={{ marginRight: 4 }} />停止
+      </FlowButton>
+      {canResume && (
+        <FlowButton data-lck="resume-btn" onClick={onResume} disabled={streaming}
+          title={`跳过已生成的前 ${resumeIndex - 1} 节，从第 ${resumeIndex} 节开始补生成`}>
+          <RefreshCw size={13} style={{ marginRight: 4 }} />从第 {resumeIndex} 节继续
+        </FlowButton>
+      )}
+      {!streaming && (
+        <AiProvenanceSection cardKey="ai.code_review_lecture" projectId={provenanceProjectId} refreshKey={result?.title ?? ''} />
+      )}
+      <select data-lck="export-format" value={exportFormat} onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
+        style={fieldStyle} aria-label="导出格式" disabled={exporting}>
+        <option value="md">md 讲稿</option>
+        <option value="docx">docx 文稿</option>
+        <option value="pptx">pptx 投屏（一页一节 + 讲者备注）</option>
+      </select>
+      <FlowButton data-lck="export-btn" onClick={onExport} disabled={!canExport}
+        loading={exporting} loadingText="导出中" title="按当前标记过滤后导出（忽略项不出现在稿中，会后跟进另列清单）">
+        <Download size={13} style={{ marginRight: 4 }} />导出
+      </FlowButton>
+    </footer>
+  );
+}
+
+/** git 面文案：patch 模式、未装 git、非仓库、可用四态 */
+function gitStatusText(p: LecturePreflightProject): string {
+  if (p.mode === 'patch') return '无需 git';
+  if (!p.git.available) return '未检测到 git';
+  return p.git.isRepo ? 'git 可用' : '非 git 仓库';
+}
+
+/** 预估耗时文案：有区间给「下限~上限」，否则给点值 */
+function estimateText(est: LecturePreflight['estimate']): string {
+  const { secondsLow, secondsHigh } = est;
+  const secs = secondsLow !== undefined && secondsHigh !== undefined
+    ? `${fmtSeconds(secondsLow)}~${fmtSeconds(secondsHigh)}`
+    : fmtSeconds(est.seconds);
+  const modelPart = est.modelVersion ? ` · 模型 ${est.modelVersion}` : '';
+  return `${est.groups} 个分段组 → 预估 ${est.calls} 次调用 / ${secs} / ${est.contextChars} 字符${modelPart}`;
+}
+
+/** T02875：预检覆盖层（FR-7.1 统计面 + FR-7.2 超限两条路）——原生 <dialog> 承载，显隐仍由上方条件控制 */
+function PreflightOverlay({ preflight, continueLabel, onCancel, onContinue }: {
+  readonly preflight: LecturePreflight;
+  readonly continueLabel: string;
+  readonly onCancel: () => void;
+  readonly onContinue: () => void;
+}) {
+  return (
+    <dialog open data-lck="preflight" aria-modal="true" aria-label="生成前预检"
+      style={{ position: 'fixed', inset: 0, zIndex: 1000, width: '100%', height: '100%', maxWidth: 'none', maxHeight: 'none', margin: 0, padding: 16, border: 'none', boxSizing: 'border-box', background: 'rgba(15,23,42,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ width: 'min(920px, 96vw)', maxHeight: '84vh', overflow: 'auto', background: 'var(--card-bg)', border: '1px solid var(--accent)', borderRadius: 10, padding: 14 }}>
+        <header style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <ListChecks size={16} style={{ color: 'var(--accent)' }} />
+          <strong style={{ fontSize: 'var(--fs-l)' }}>生成前预检</strong>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>先统计后放行——超限可「裁剪继续」或「中止收窄范围」</span>
+          <button type="button" onClick={onCancel} aria-label="关闭预检"
+            style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
+            <X size={15} />
+          </button>
+        </header>
+
+        <div data-lck="preflight-totals" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '10px 0' }}>
+          <span style={chipStyle}>项目 {preflight.totals.ready}/{preflight.totals.projects} 可采集</span>
+          <span style={chipStyle}>{preflight.totals.commits} commits</span>
+          <span style={chipStyle}>{preflight.totals.files} 文件</span>
+          <span style={chipStyle}><span style={{ color: 'var(--success)' }}>+{preflight.totals.additions}</span> / <span style={{ color: 'var(--danger)' }}>-{preflight.totals.deletions}</span></span>
+          <span style={chipStyle}>排除命中 {preflight.totals.excluded}</span>
+          <span style={chipStyle}>预算内 {preflight.totals.keptFiles} 文件 / {preflight.totals.keptChars} 字符（上限 {preflight.estimate.contextBudget}）</span>
+          <span data-lck="preflight-estimate" style={chipStyle}>{estimateText(preflight.estimate)}</span>
+          <span data-lck="preflight-notice" style={{ ...chipStyle, color: 'var(--text-muted)' }}>{PROXY_METRIC_NOTICE}</span>
+        </div>
+
+        {!preflight.ok && (
+          <p data-lck="preflight-blocked" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '4px 0' }}>
+            没有可采集的项目：请补配工作空间路径、调整区间，或改用「粘贴 patch」后重新预检。
+          </p>
+        )}
+        {preflight.warnings.map((w) => <p key={w} style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
+
+        <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+          {preflight.projects.map((p) => (
+            <section key={p.projectId} data-lck={`preflight-project-${p.projectId}`}
+              style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 8, background: 'var(--surface)' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                <strong style={{ fontSize: 'var(--fs-m)' }}>{p.projectName}</strong>
+                <span style={chipStyle}>{p.mode === 'patch' ? '粘贴 patch' : p.rangeLabel}</span>
+                <span data-lck={`preflight-git-${p.projectId}`} style={{ ...chipStyle, color: p.git.available && p.git.isRepo ? 'var(--success)' : 'var(--danger)' }}>
+                  {gitStatusText(p)}
+                </span>
+                <span style={chipStyle}>{p.stats.commits} commits · {p.stats.files} 文件 · +{p.stats.additions}/-{p.stats.deletions}</span>
+                <span style={chipStyle}>排除 {p.excluded.count}</span>
+                <span style={chipStyle}>保留 {p.kept.files} 文件 / {p.kept.chars} 字符</span>
+              </div>
+              {p.blocked && <p style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '4px 0' }}>{p.blocked}</p>}
+              {p.budget.dropped > 0 && (
+                <p data-lck="preflight-dropped" style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', margin: '4px 0' }}>
+                  超预算已按优先级丢弃 {p.budget.dropped} 个文件：{p.budget.droppedNames.join('、')}
+                  {p.budget.truncated ? '（列表已截断）' : ''}
+                </p>
+              )}
+              {p.warnings.map((w) => <p key={w} style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
+            </section>
+          ))}
+        </div>
+
+        <footer style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flex: '1 1 auto' }}>
+            「裁剪继续」＝按预算内保留文件生成；被丢弃的文件已点名，不会静默缺稿。
+          </span>
+          <FlowButton data-lck="preflight-cancel" onClick={onCancel}
+            style={{ backgroundColor: 'var(--surface-2)', color: 'var(--text)' }} title="不动代码：回面板调整项目/区间/排除规则">
+            中止收窄范围
+          </FlowButton>
+          <FlowButton data-lck="preflight-continue" onClick={onContinue} disabled={!preflight.ok}
+            title={preflight.ok ? '按当前统计面继续（超预算文件按优先级丢弃）' : '没有可采集的项目，无法继续'}>
+            裁剪继续 · {continueLabel}
+          </FlowButton>
+        </footer>
+      </div>
+    </dialog>
+  );
+}
+
 // ---- 左栏渲染 ----
+/**
+ * 单个文件的 diff 行：八期 评审 #8 起复用共享 DiffFileView（与任务抽屉 Git 页同一口径），
+ * 锚点/高亮入参逐字保留。抽成模块级组件，避免在父组件里三层嵌套渲染。
+ */
+function DiffFileRow({ projectId, file, openFiles, onToggleFile, foldedHunks, onToggleHunk, flashRows, hoverRows }: {
+  readonly projectId: string;
+  readonly file: LectureDiffFile;
+  readonly openFiles: ReadonlySet<string>;
+  readonly onToggleFile: (key: string) => void;
+  readonly foldedHunks: ReadonlySet<string>;
+  readonly onToggleHunk: (key: string) => void;
+  readonly flashRows: { ids: Set<string>; seq: number } | null;
+  readonly hoverRows: ReadonlySet<string>;
+}) {
+  const fk = fileKey(projectId, file.path);
+  return (
+    <DiffFileView key={file.path} path={file.path} oldPath={file.oldPath} binary={file.binary}
+      additions={file.additions} deletions={file.deletions} hunks={file.hunks}
+      open={openFiles.has(fk)} onToggleFile={() => onToggleFile(fk)}
+      foldedHunks={foldedHunks} onToggleHunk={onToggleHunk} hunkKeyPrefix={fk}
+      rowDomId={(hunkIndex, rowIndex) => diffRowDomId(projectId, file.path, hunkIndex, rowIndex)}
+      fileAttrValue={`file-${file.path}`}
+      flashRowIds={flashRows?.ids} flashSeq={flashRows?.seq} hoverRowIds={hoverRows} />
+  );
+}
+
 function LectureDiffPane({ projects, openFiles, foldedHunks, flashRows, hoverRows, onToggleFile, onToggleHunk }: {
   readonly projects: readonly LectureDiffProject[];
   readonly openFiles: ReadonlySet<string>;
@@ -909,7 +1193,7 @@ function LectureDiffPane({ projects, openFiles, foldedHunks, flashRows, hoverRow
             {p.budget.dropped > 0 && <span data-lck="budget-dropped" style={chipStyle}>预算丢弃 {p.budget.dropped}</span>}
           </div>
           {p.blocked && <p data-lck="blocked" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '4px 0' }}>{p.blocked}</p>}
-          {p.warnings.map((w, i) => <p key={`w${i}`} style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
+          {p.warnings.map((w) => <p key={w} style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
           {p.budget.droppedNames.length > 0 && (
             <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', margin: '2px 0' }}>超预算未进讲稿：{p.budget.droppedNames.join('、')}</p>
           )}
@@ -919,19 +1203,12 @@ function LectureDiffPane({ projects, openFiles, foldedHunks, flashRows, hoverRow
           {groupFilesByModule(p.files).map((group) => (
             <div key={group.module} style={{ marginTop: 6 }}>
               <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontFamily: FONT_MONO }}>{group.module}/</div>
-              {group.files.map((f) => {
-                const fk = fileKey(p.projectId, f.path);
-                // 八期 评审 #8：diff 行渲染抽成共享 DiffFileView（与任务抽屉 Git 页同一口径），锚点/高亮入参逐字保留
-                return (
-                  <DiffFileView key={f.path} path={f.path} oldPath={f.oldPath} binary={f.binary}
-                    additions={f.additions} deletions={f.deletions} hunks={f.hunks}
-                    open={openFiles.has(fk)} onToggleFile={() => onToggleFile(fk)}
-                    foldedHunks={foldedHunks} onToggleHunk={onToggleHunk} hunkKeyPrefix={fk}
-                    rowDomId={(hunkIndex, rowIndex) => diffRowDomId(p.projectId, f.path, hunkIndex, rowIndex)}
-                    fileAttrValue={`file-${f.path}`}
-                    flashRowIds={flashRows?.ids} flashSeq={flashRows?.seq} hoverRowIds={hoverRows} />
-                );
-              })}
+              {group.files.map((f) => (
+                <DiffFileRow key={f.path} projectId={p.projectId} file={f}
+                  openFiles={openFiles} onToggleFile={onToggleFile}
+                  foldedHunks={foldedHunks} onToggleHunk={onToggleHunk}
+                  flashRows={flashRows} hoverRows={hoverRows} />
+              ))}
             </div>
           ))}
         </section>
@@ -953,6 +1230,35 @@ interface SectionRow {
 /** 三态标记只作用于「风险清单」「改进建议」两节里的列表条目（PRD §6.2） */
 const MARKABLE_SECTIONS = new Set(['risks', 'improvements']);
 
+/** 行数据来源优先级：已完成结果 > 大纲占位 > 流式片段（口径与改前一致） */
+function sectionRows(sections: readonly LectureSectionResult[], outline: LectureOutline | undefined,
+  live: Readonly<Record<string, string>>, streaming: boolean): SectionRow[] {
+  if (sections.length > 0) {
+    return sections.map((s) => ({ key: s.key, title: s.label, text: s.text, pending: false, failed: !s.ok, ...(s.error ? { error: s.error } : {}) }));
+  }
+  if (outline) {
+    return outline.sections.map((s) => ({ key: s.key, title: s.title, text: live[s.key] ?? '', pending: streaming, failed: false }));
+  }
+  return Object.entries(live).map(([key, text]) => ({ key, title: key, text, pending: streaming, failed: false }));
+}
+
+/** 段落正文三态：有条目化渲染 / 普通 Markdown / 占位文案 */
+function SectionBody({ row, markable, marks, onMark, onAnchorClick }: {
+  readonly row: SectionRow;
+  readonly markable: boolean;
+  readonly marks: Readonly<Record<string, LectureMark>>;
+  readonly onMark: (key: string, mark: LectureMark) => void;
+  readonly onAnchorClick: (href: string) => void;
+}) {
+  if (!row.text) {
+    return <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', margin: 0 }}>{row.pending ? '（本节尚未流出）' : '（本节无内容）'}</p>;
+  }
+  if (markable) {
+    return <MarkedLectureBody sectionKey={row.key} text={row.text} marks={marks} onMark={onMark} onAnchorClick={onAnchorClick} />;
+  }
+  return <Markdown content={linkifyLectureAnchors(row.text)} onAnchorClick={onAnchorClick} />;
+}
+
 function LectureSections({ outline, sections, live, streaming, marks, onMark, onAnchorClick, onRetrySection }: {
   readonly outline?: LectureOutline;
   readonly sections: readonly LectureSectionResult[];
@@ -964,11 +1270,7 @@ function LectureSections({ outline, sections, live, streaming, marks, onMark, on
   readonly onRetrySection?: (key: string, label: string) => void;
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set(['opening']));
-  const rows: SectionRow[] = sections.length > 0
-    ? sections.map((s) => ({ key: s.key, title: s.label, text: s.text, pending: false, failed: !s.ok, ...(s.error ? { error: s.error } : {}) }))
-    : outline
-      ? outline.sections.map((s) => ({ key: s.key, title: s.title, text: live[s.key] ?? '', pending: streaming, failed: false }))
-      : Object.entries(live).map(([key, text]) => ({ key, title: key, text, pending: streaming, failed: false }));
+  const rows = sectionRows(sections, outline, live, streaming);
 
   if (rows.length === 0) {
     return <p data-lck="lecture-empty" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', margin: 6 }}>讲稿为空：先「只出大纲」确认结构，或直接「开始生成」。</p>;
@@ -980,27 +1282,23 @@ function LectureSections({ outline, sections, live, streaming, marks, onMark, on
         const markable = MARKABLE_SECTIONS.has(r.key) && r.text.trim().length > 0;
         return (
           <div key={r.key} data-lck={`section-${r.key}`} style={{ marginBottom: 6, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-            <button type="button" onClick={() => setOpen((prev) => { const n = new Set(prev); if (n.has(r.key)) n.delete(r.key); else n.add(r.key); return n; })}
-              aria-expanded={expanded}
-              style={{ width: '100%', display: 'flex', gap: 6, alignItems: 'center', background: 'var(--surface-2)', border: 'none', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-s)', padding: '6px 8px', textAlign: 'left' }}>
-              <span style={{ color: 'var(--text-muted)', display: 'inline-flex' }}>{expanded ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}</span>
-              <strong>{r.title}</strong>
-              {r.pending && !r.text && <span style={{ color: 'var(--text-muted)' }}>等待生成…</span>}
-              {r.failed && <span data-lck="section-failed" style={{ color: 'var(--danger)' }}>部分未生成{r.error ? `：${r.error}` : ''}</span>}
+            <div style={{ display: 'flex', alignItems: 'center', background: 'var(--surface-2)' }}>
+              <button type="button" onClick={() => setOpen((prev) => toggleInSet(prev, r.key))}
+                aria-expanded={expanded}
+                style={{ flex: '1 1 auto', display: 'flex', gap: 6, alignItems: 'center', background: 'none', border: 'none', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-s)', padding: '6px 8px', textAlign: 'left' }}>
+                <span style={{ color: 'var(--text-muted)', display: 'inline-flex' }}>{expanded ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}</span>
+                <strong>{r.title}</strong>
+                {r.pending && !r.text && <span style={{ color: 'var(--text-muted)' }}>等待生成…</span>}
+                {r.failed && <span data-lck="section-failed" style={{ color: 'var(--danger)' }}>部分未生成{r.error ? `：${r.error}` : ''}</span>}
+              </button>
               {r.failed && onRetrySection && !streaming && (
-                <span role="button" tabIndex={0} data-lck={`retry-${r.key}`}
-                  onClick={(e) => { e.stopPropagation(); onRetrySection(r.key, r.title); }}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onRetrySection(r.key, r.title); } }}
-                  style={{ marginLeft: 'auto', fontSize: 'var(--fs-xs)', color: 'var(--accent)', textDecoration: 'underline', cursor: 'pointer' }}>重试本节</span>
+                <button type="button" data-lck={`retry-${r.key}`} onClick={() => onRetrySection(r.key, r.title)}
+                  style={{ flexShrink: 0, background: 'none', border: 'none', padding: '6px 8px', fontSize: 'var(--fs-xs)', color: 'var(--accent)', textDecoration: 'underline', cursor: 'pointer' }}>重试本节</button>
               )}
-            </button>
+            </div>
             {expanded && (
               <div style={{ padding: '6px 8px' }}>
-                {r.text
-                  ? markable
-                    ? <MarkedLectureBody sectionKey={r.key} text={r.text} marks={marks} onMark={onMark} onAnchorClick={onAnchorClick} />
-                    : <Markdown content={linkifyLectureAnchors(r.text)} onAnchorClick={onAnchorClick} />
-                  : <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', margin: 0 }}>{r.pending ? '（本节尚未流出）' : '（本节无内容）'}</p>}
+                <SectionBody row={r} markable={markable} marks={marks} onMark={onMark} onAnchorClick={onAnchorClick} />
               </div>
             )}
           </div>

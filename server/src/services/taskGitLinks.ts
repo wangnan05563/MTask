@@ -18,7 +18,6 @@ import {
   collectCommitFiles,
   collectCommitFilesBatch,
   collectCommitSummaries,
-  collectDiff,
   collectRemoteUrl,
   parseUnifiedDiff,
   runGitReadonly,
@@ -33,6 +32,7 @@ import {
   type GitHunk,
 } from './gitCollect';
 import { shortShaOf, stripUrlCredentials, commitBaseOf, buildCommitLink, type GitPlatform } from '../util/gitRemote';
+import { scalarText } from '../util/scalarText';
 
 /** §3.1.3 外链信息：服务端算好前缀再下发，凭据剥离不交给渲染层（token 进了 DOM 就等于泄露） */
 export interface GitRemoteInfo {
@@ -84,7 +84,9 @@ export interface TaskRef {
 
 /** 7–40 位十六进制；服务端负责把短 SHA resolve 成 40 位 */
 export function normalizeShaInput(raw: unknown): string | null {
-  const s = String(raw ?? '').trim().toLowerCase();
+  // scalarText 而不是 String()：标量（如数字入参）仍按原语义转成文本再做形状校验，
+  // 对象/函数则给空串（形状校验必然不通过 → null），不会拼出 "[object Object]" 去 resolve
+  const s = scalarText(raw).trim().toLowerCase();
   if (!/^[0-9a-f]{7,40}$/.test(s)) return null;
   return s;
 }
@@ -339,8 +341,8 @@ export async function buildTaskGitView(taskRef: { taskNo?: string; id?: string }
 }
 
 /** 首屏整体失败的三种归因：仓库根本取不了数，逐条重试也一样，直接向上转 degraded */
-const FATAL_BATCH_KINDS: GitErrorKind[] = ['no-git', 'not-a-repo', 'timeout'];
-const isFatalKind = (e: unknown) => e instanceof GitCollectError && FATAL_BATCH_KINDS.includes(e.kind);
+const FATAL_BATCH_KINDS = new Set<GitErrorKind>(['no-git', 'not-a-repo', 'timeout']);
+const isFatalKind = (e: unknown) => e instanceof GitCollectError && FATAL_BATCH_KINDS.has(e.kind);
 
 /**
  * 抽屉首屏的文件统计取数（T03650）：**一次** `git log --no-walk -m --first-parent --raw --numstat`
@@ -493,6 +495,39 @@ export interface GitFilesResult {
   degraded?: { kind: GitErrorKind | 'no-workspace'; message: string };
 }
 
+/** 单个文件的 diff hunk；取不到就留空（个别路径的 diff 会失败，但清单本身仍要下发） */
+async function diffHunksFor(
+  cwd: string,
+  range: string[],
+  relPath: string,
+  opts: GitCollectOptions,
+): Promise<{ hunks: GitHunk[]; truncated: boolean }> {
+  try {
+    const raw = await collectDiffTracked(cwd, range, relPath, opts);
+    // 结构化 hunk 下发（行首保留 diff 前缀），渲染口径与讲稿面板一致
+    return { hunks: parseUnifiedDiff(raw.text).flatMap((c) => c.hunks), truncated: raw.truncated };
+  } catch {
+    return { hunks: [], truncated: false };
+  }
+}
+
+/** 逐文件取结构化 hunk；基线取第一父提交，根提交用空树（§3.2.1） */
+async function buildFileDiffs(
+  cwd: string,
+  full: string,
+  files: readonly CommitFileEntry[],
+  parents: readonly string[],
+  opts: GitCollectOptions,
+): Promise<Record<string, { hunks: GitHunk[]; truncated: boolean }>> {
+  const base = parents.length ? parents[0] : GIT_EMPTY_TREE_SHA1;
+  const out: Record<string, { hunks: GitHunk[]; truncated: boolean }> = {};
+  for (const f of files) {
+    if (f.binary) continue;
+    out[f.path] = await diffHunksFor(cwd, [base, full], f.path, opts);
+  }
+  return out;
+}
+
 /** 文件清单 / 差异懒加载（§4.2）：一次请求只解析一个提交 */
 export async function buildTaskGitFiles(
   taskRef: { taskNo?: string; id?: string },
@@ -512,24 +547,10 @@ export async function buildTaskGitFiles(
   try {
     const { commits } = await collectCommitSummaries(task.workspacePath, [full], opts);
     const head = commits[0];
-    const files = await collectCommitFilesCached(task.workspacePath, full, head?.parents ?? [], opts);
+    const parents = head?.parents ?? [];
+    const files = await collectCommitFilesCached(task.workspacePath, full, parents, opts);
     const out: GitFilesResult = { files };
-    if (withDiff) {
-      out.diffs = {};
-      for (const f of files) {
-        if (f.binary) continue;
-        // 首提交没有父提交：基线取空树，diff 才能给出「全量新增」而不是报错（§3.2.1）
-        const base = head?.parents?.length ? head.parents[0] : GIT_EMPTY_TREE_SHA1;
-        try {
-          const raw = await collectDiffTracked(task.workspacePath, [base, full], f.path, opts);
-          // 结构化 hunk 下发（行首保留 diff 前缀），渲染口径与讲稿面板一致
-          const hunks = parseUnifiedDiff(raw.text).flatMap((c) => c.hunks);
-          out.diffs[f.path] = { hunks, truncated: raw.truncated };
-        } catch {
-          out.diffs[f.path] = { hunks: [], truncated: false };
-        }
-      }
-    }
+    if (withDiff) out.diffs = await buildFileDiffs(task.workspacePath, full, files, parents, opts);
     return out;
   } catch (e) {
     if (e instanceof GitCollectError) return { files: [], degraded: { kind: e.kind, message: e.message } };
@@ -580,7 +601,8 @@ export function recordSummaryCost(workspacePath: string, shaCount: number, elaps
 
 /** 成本 → 上限：按 1.2s 预算反推；冷启动（无历史）先给 60 条兜底，上下夹在 [20, 200] */
 export function summaryCapForCost(msPerSha: number | null): number {
-  if (msPerSha === null || !(msPerSha > 0)) return GIT_SUMMARY_COLD_SHA_PER_PAGE;
+  // NaN 单独判：`NaN <= 0` 为 false，但「非正数」口径下它同样该走冷启动兜底
+  if (msPerSha === null || Number.isNaN(msPerSha) || msPerSha <= 0) return GIT_SUMMARY_COLD_SHA_PER_PAGE;
   const fit = Math.floor(GIT_SUMMARY_BUDGET_MS / msPerSha);
   return Math.max(GIT_SUMMARY_MIN_SHA_PER_PAGE, Math.min(GIT_SUMMARY_MAX_SHA_PER_PAGE, fit));
 }
@@ -619,14 +641,8 @@ export interface SummaryGroup {
   remote?: GitRemoteInfo;
 }
 
-/**
- * 本页提交摘要批量解析（§3.1.6）：按 workspace 分组，每组**一次** `git log --no-walk`。
- * 前端传「本页唯一 SHA 集合」，这里保证页内零逐行请求。
- */
-export async function buildSummaryGroups(
-  links: { taskId?: string; sha: string }[],
-  opts: GitCollectOptions = {},
-): Promise<{ groups: SummaryGroup[] }> {
+/** 按项目当前工作空间分组（未绑定归到空串组），组内 SHA 去重保序 */
+function groupShasByWorkspace(links: readonly { taskId?: string; sha: string }[]): Map<string, string[]> {
   const byWorkspace = new Map<string, string[]>();
   for (const l of links) {
     const sha = normalizeShaInput(l.sha);
@@ -637,29 +653,42 @@ export async function buildSummaryGroups(
     if (!arr.includes(sha)) arr.push(sha);
     byWorkspace.set(ws, arr);
   }
-  const groups: SummaryGroup[] = [];
-  for (const [ws, shas] of byWorkspace) {
-    if (!ws) {
-      groups.push({ workspacePath: '', available: false, kind: 'no-workspace', commits: [], missing: shas, truncated: false });
-      continue;
-    }
-    try {
-      const page = await collectSummaryPage(ws, shas, opts);
-      groups.push({
-        workspacePath: ws,
-        available: true,
-        commits: page.commits,
-        // 被截断掉的 SHA 不发起解析，直接计入 missing（前端页脚据此提示「本页部分提交摘要未解析」）
-        missing: [...page.missing, ...shas.slice(page.capped.length)],
-        truncated: page.capped.length < shas.length,
-        remote: remoteInfoOf(await safeRemoteUrl(ws, opts)),
-      });
-    } catch (e) {
-      const kind = e instanceof GitCollectError ? e.kind : 'failed';
-      const message = e instanceof GitCollectError ? e.message : String(e);
-      groups.push({ workspacePath: ws, available: false, kind, message, commits: [], missing: shas, truncated: false });
-    }
+  return byWorkspace;
+}
+
+/** 单个 workspace 的摘要组：未绑定直接标 no-workspace，取数失败也降级成该组不可用，不牵连同页其它组 */
+async function buildSummaryGroup(ws: string, shas: string[], opts: GitCollectOptions): Promise<SummaryGroup> {
+  if (!ws) {
+    return { workspacePath: '', available: false, kind: 'no-workspace', commits: [], missing: shas, truncated: false };
   }
+  try {
+    const page = await collectSummaryPage(ws, shas, opts);
+    return {
+      workspacePath: ws,
+      available: true,
+      commits: page.commits,
+      // 被截断掉的 SHA 不发起解析，直接计入 missing（前端页脚据此提示「本页部分提交摘要未解析」）
+      missing: [...page.missing, ...shas.slice(page.capped.length)],
+      truncated: page.capped.length < shas.length,
+      remote: remoteInfoOf(await safeRemoteUrl(ws, opts)),
+    };
+  } catch (e) {
+    const kind = e instanceof GitCollectError ? e.kind : 'failed';
+    const message = e instanceof GitCollectError ? e.message : String(e);
+    return { workspacePath: ws, available: false, kind, message, commits: [], missing: shas, truncated: false };
+  }
+}
+
+/**
+ * 本页提交摘要批量解析（§3.1.6）：按 workspace 分组，每组**一次** `git log --no-walk`。
+ * 前端传「本页唯一 SHA 集合」，这里保证页内零逐行请求。
+ */
+export async function buildSummaryGroups(
+  links: { taskId?: string; sha: string }[],
+  opts: GitCollectOptions = {},
+): Promise<{ groups: SummaryGroup[] }> {
+  const groups: SummaryGroup[] = [];
+  for (const [ws, shas] of groupShasByWorkspace(links)) groups.push(await buildSummaryGroup(ws, shas, opts));
   return { groups };
 }
 

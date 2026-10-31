@@ -133,7 +133,8 @@ export function GitCommitTab({ task, projectId, projects, onBindChange, onBindWo
     }
     setPickerOpen(false);
     if (ok) {
-      flash(`已关联 ${ok} 条提交${failed.length ? `，${failed.length} 条失败` : ''}`);
+      const failNote = failed.length ? `，${failed.length} 条失败` : '';
+      flash(`已关联 ${ok} 条提交${failNote}`);
       onBindChange();
       await load();
     }
@@ -320,7 +321,18 @@ export function GitCommitTab({ task, projectId, projects, onBindChange, onBindWo
   }
 }
 
-/** 提交卡五层（§3.2.1）：作者·时间 / 主题 / 变更统计 / 分支标签胶囊 / SHA+复制+外链 */
+/** 提交来源的中文名；未知来源原样回显服务端值（不臆造文案） */
+function sourceLabelOf(source: string): string {
+  if (source === 'agent') return 'AI 回写';
+  if (source === 'manual') return '手动绑定';
+  return source;
+}
+
+/**
+ * 提交卡五层（§3.2.1）：作者·时间 / 主题 / 变更统计 / 分支标签胶囊 / SHA+复制+外链。
+ * 卡身是原生 <button>（点选当前提交，Enter/Space 同效）；尾部操作行与卡身**平级**——
+ * 复制/外链/解绑这些自身可交互的控件不嵌进 button，也不再靠 stopPropagation 拦截冒泡。
+ */
 function CommitCard({ card, primary, platformLabel, selected, onSelect, onUnlink }: {
   readonly card: GitCommitCard;
   readonly primary: boolean;
@@ -330,46 +342,47 @@ function CommitCard({ card, primary, platformLabel, selected, onSelect, onUnlink
   readonly onUnlink: () => void;
 }) {
   const href = safeHref(card.commitUrl);
-  const sourceLabel = card.source === 'agent' ? 'AI 回写' : card.source === 'manual' ? '手动绑定' : card.source;
+  const sourceLabel = sourceLabelOf(card.source);
   return (
-    <div data-t03362="commit-card" data-sha={card.sha} role="button" tabIndex={0} onClick={onSelect}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(); } }}
-      aria-label={`提交 ${card.sha}，作者 ${card.author}，${card.subject}`}
-      aria-pressed={selected}
+    <div data-t03362="commit-card" data-sha={card.sha}
       style={{
         border: '1px solid var(--border-strong)', borderLeft: `3px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
-        borderRadius: 6, padding: '8px 10px', marginBottom: 8, cursor: 'pointer', background: 'var(--card-bg)',
+        borderRadius: 6, padding: '8px 10px', marginBottom: 8, background: 'var(--card-bg)',
       }}>
-      {/* 角标行：主提交 / 来源 / 初始提交 / 新鲜度提示 */}
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 4 }}>
-        {primary && <span data-t03362="primary" style={{ ...PILL, background: 'var(--accent-soft)', color: 'var(--accent-ink)' }}>主提交</span>}
-        <span data-t03362={`source-${card.source}`} style={PILL}>{sourceLabel}</span>
-        {card.isInitial && <span data-t03362="initial" style={PILL}>初始提交</span>}
-        {card.laterThanTask && <span data-t03362="later" style={{ ...PILL, color: 'var(--warn)' }} title="提交时间晚于任务更新时间——任务可能尚未记录本次改动">提交晚于任务更新时间</span>}
-        {card.workspaceDrift && <span data-t03362="drift" style={{ ...PILL, color: 'var(--warn)' }} title="关联记录的工作空间与项目当前绑定不一致（换绑）">工作空间已换绑</span>}
-      </div>
-      {/* 1 作者 · 相对时间（绝对时间） */}
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
-        <User size={12} />
-        <span title={fullTime(card.date)}>{card.author || '作者未知'} · {relTime(card.date)}（{fullTime(card.date)}）</span>
-      </div>
-      {/* 2 提交主题（单行截断，title 全文） */}
-      <div data-t03362="subject" title={card.subject} style={{ fontSize: 'var(--fs-s)', color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}>
-        {card.subject || '（无提交主题）'}
-      </div>
-      {/* 3 变更统计（首提交标「初始提交」，§3.2.1） */}
-      <div data-t03362="stats" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>
-        {card.isInitial ? '初始提交：' : ''}已更改 {card.stats.files} 个文件, <span style={{ color: 'var(--success)' }}>{card.stats.additions ?? 0} 行插入(+)</span>
-        {' / '}<span style={{ color: 'var(--danger)' }}>{card.stats.deletions ?? 0} 行删除(-)</span>
-      </div>
-      {/* 4 分支/标签胶囊（未知则省略） */}
-      {card.refs.length > 0 && (
-        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
-          {card.refs.map((r) => <span key={r} data-t03362="ref" style={{ ...PILL, background: 'var(--accent-soft)', color: 'var(--accent-ink)' }}>{r}</span>)}
-        </div>
-      )}
-      {/* 5 等宽简写 + 复制 + 外链（Gitee 无官方图标 → GitBranch + 文字） */}
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6 }} onClick={(e) => e.stopPropagation()}>
+      <button type="button" onClick={onSelect} aria-pressed={selected}
+        aria-label={`提交 ${card.sha}，作者 ${card.author}，${card.subject}`}
+        style={{ display: 'block', width: '100%', margin: 0, padding: 0, border: 'none', background: 'none', font: 'inherit', color: 'inherit', textAlign: 'left', cursor: 'pointer' }}>
+        {/* 角标行：主提交 / 来源 / 初始提交 / 新鲜度提示 */}
+        <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 4 }}>
+          {primary && <span data-t03362="primary" style={{ ...PILL, background: 'var(--accent-soft)', color: 'var(--accent-ink)' }}>主提交</span>}
+          <span data-t03362={`source-${card.source}`} style={PILL}>{sourceLabel}</span>
+          {card.isInitial && <span data-t03362="initial" style={PILL}>初始提交</span>}
+          {card.laterThanTask && <span data-t03362="later" style={{ ...PILL, color: 'var(--warn)' }} title="提交时间晚于任务更新时间——任务可能尚未记录本次改动">提交晚于任务更新时间</span>}
+          {card.workspaceDrift && <span data-t03362="drift" style={{ ...PILL, color: 'var(--warn)' }} title="关联记录的工作空间与项目当前绑定不一致（换绑）">工作空间已换绑</span>}
+        </span>
+        {/* 1 作者 · 相对时间（绝对时间） */}
+        <span style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+          <User size={12} />
+          <span title={fullTime(card.date)}>{card.author || '作者未知'} · {relTime(card.date)}（{fullTime(card.date)}）</span>
+        </span>
+        {/* 2 提交主题（单行截断，title 全文） */}
+        <span data-t03362="subject" title={card.subject} style={{ display: 'block', fontSize: 'var(--fs-s)', color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}>
+          {card.subject || '（无提交主题）'}
+        </span>
+        {/* 3 变更统计（首提交标「初始提交」，§3.2.1） */}
+        <span data-t03362="stats" style={{ display: 'block', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>
+          {card.isInitial ? '初始提交：' : ''}已更改 {card.stats.files} 个文件, <span style={{ color: 'var(--success)' }}>{card.stats.additions ?? 0} 行插入(+)</span>
+          {' / '}<span style={{ color: 'var(--danger)' }}>{card.stats.deletions ?? 0} 行删除(-)</span>
+        </span>
+        {/* 4 分支/标签胶囊（未知则省略） */}
+        {card.refs.length > 0 && (
+          <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
+            {card.refs.map((r) => <span key={r} data-t03362="ref" style={{ ...PILL, background: 'var(--accent-soft)', color: 'var(--accent-ink)' }}>{r}</span>)}
+          </span>
+        )}
+      </button>
+      {/* 5 等宽简写 + 复制 + 外链（Gitee 无官方图标 → GitBranch + 文字）；操作行不触发卡身选中 */}
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6 }}>
         <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', color: 'var(--accent-ink)' }}>{card.shortSha}</span>
         <CopyButton getText={() => card.sha} size={13} title="复制完整提交 ID（40 位）" ariaLabel={`复制提交 ${card.sha} 完整 ID`} />
         {href ? (

@@ -41,7 +41,7 @@ export function MobilePrompts({ notify }: Props) {
 
   /** T03683：收藏切换——与桌面端同口径的乐观更新，失败回滚并 Toast */
   async function toggleFavorite(p: Prompt) {
-    const next = !Boolean(p.is_favorited);
+    const next = !p.is_favorited;
     const withFlag = (favorited: boolean) => prompts.map((x) => (x.id === p.id ? { ...x, is_favorited: favorited } : x));
     setPrompts(withFlag(next));
     try { await api.patch(`/prompts/${p.id}`, { isFavorited: next }); }

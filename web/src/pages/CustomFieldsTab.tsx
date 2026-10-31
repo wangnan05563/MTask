@@ -20,6 +20,12 @@ type FormDraft = { id: string; name: string; type: CustomFieldType; opts: OptDra
 
 const EMPTY_FORM: FormDraft = { id: '', name: '', type: 'text', opts: [] };
 
+/** 保留当前选中的项目（不存在则回退第一个）——提到模块级，避免 effect 里再嵌回调（S2004） */
+function resolveProjectId(ps: Project[], cur: string): string {
+  const keep = ps.some((p) => p.id === cur);
+  return keep ? cur : (ps[0]?.id ?? '');
+}
+
 export function CustomFieldsTab() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState(() => { try { return localStorage.getItem(PROJECT_KEY) ?? ''; } catch { return ''; } });
@@ -34,7 +40,7 @@ export function CustomFieldsTab() {
     api.get<Project[]>('/projects')
       .then((ps) => {
         setProjects(ps);
-        setProjectId((cur) => (ps.some((p) => p.id === cur) ? cur : (ps[0]?.id ?? '')));
+        setProjectId((cur) => resolveProjectId(ps, cur));
       })
       .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)));
   }, []);
@@ -123,7 +129,7 @@ export function CustomFieldsTab() {
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
-          项目
+          项目{' '}
           <select aria-label="选择项目" value={projectId} onChange={(e) => { setProjectId(e.target.value); setForm(null); }} style={{ ...SELECT, minWidth: 160 }}>
             {projects.length === 0 && <option value="">（暂无项目）</option>}
             {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -131,7 +137,7 @@ export function CustomFieldsTab() {
         </label>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           <input type="checkbox" checked={includeArchived} onChange={(e) => setIncludeArchived(e.target.checked)} />
-          含已归档
+          {' '}含已归档
         </label>
       </div>
 
@@ -141,12 +147,12 @@ export function CustomFieldsTab() {
         <div data-t03231="field-form" style={{ border: '1px solid var(--accent)', borderRadius: 8, padding: 12, marginBottom: 14, background: 'var(--card-bg)', display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ fontWeight: 600, fontSize: 'var(--fs-m)' }}>{form.id ? '编辑字段' : '新建字段'}</div>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
-            字段名称
+            字段名称{' '}
             <input aria-label="字段名称" value={form.name} disabled={busy} maxLength={40}
               onChange={(e) => setForm({ ...form, name: e.target.value })} style={FIELD_SM} />
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
-            字段类型
+            字段类型{' '}
             <select aria-label="字段类型" value={form.type} disabled={busy}
               onChange={(e) => {
                 const type = e.target.value as CustomFieldType;

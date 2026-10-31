@@ -53,10 +53,64 @@ interface ToolActionsCellProps {
   readonly flash: (msg: string) => void;
 }
 
-/** 操作列（S3776 拆分）：集中放置悬停显现按钮与测试/模型结果，独立成组件后行组件与页面组件复杂度均降至阈值内 */
-function ToolActionsCell({ tool, testing, probing, fetchingModels, testResult, probeResult, modelsResult, onOpenEdit, onTest, onProbe, onFetchRowModels, onSetDefault, onRemove, flash }: ToolActionsCellProps) {
+/** 模型名复制按钮（S3776 拆分）：点击复制 + 1.5s 对勾反馈，样式与操作列其余按钮一致 */
+function ModelCopyButton({ model, flash }: { readonly model: string | null; readonly flash: (msg: string) => void }) {
   // T00587：复制反馈——点击后图标切换为对勾并弹入，1.5s 复原（与其他复制交互一致）
   const [copied, setCopied] = useState(false);
+  const copy = () => {
+    if (!model) return;
+    void navigator.clipboard.writeText(model).then(() => {
+      flash(`已复制模型：${model}`);
+      setCopied(true);
+      globalThis.setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <button
+      className="abtn" onClick={copy}
+      disabled={!model}
+      title={model ? `复制模型 — 复制当前选择的模型名称（${model}）` : '复制模型 — 当前未选择模型'}
+      aria-label={copied ? '已复制模型名称' : '复制模型名称'}
+      style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', cursor: model ? 'pointer' : 'not-allowed', opacity: model ? 1 : 0.4, color: copied ? 'var(--success, var(--accent))' : undefined }}
+    >
+      {copied
+        ? <Check size={13} className="copy-pop" style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+        : <Copy size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
+    </button>
+  );
+}
+
+/** 操作列的测试/探测/模型结果行（S3776 拆分）：三块结果各自只在有值时才出现 */
+function ToolResultLines({ testResult, probeResult, modelsResult }: {
+  readonly testResult: { ok: boolean; msg: string } | undefined;
+  readonly probeResult: { ok: boolean; msg: string } | undefined;
+  readonly modelsResult: readonly string[] | undefined;
+}) {
+  return (
+    <>
+      {testResult && (
+        <div style={{ fontSize: 'var(--fs-xs)', color: testResult.ok ? 'var(--success)' : 'var(--danger)', marginTop: 4, whiteSpace: 'normal', maxWidth: 200 }}>
+          {/* T02208：连接测试只做目录型探测，「成功」不再由前端断言——文案口径交给服务端给出 */}
+          {testResult.ok ? '✓ ' : '✗ '}{testResult.msg}
+        </div>
+      )}
+      {probeResult && (
+        <div style={{ fontSize: 'var(--fs-xs)', color: probeResult.ok ? 'var(--success)' : 'var(--danger)', marginTop: 4, whiteSpace: 'normal', maxWidth: 200 }}>
+          {probeResult.ok ? '✓ ' : '✗ '}{probeResult.msg}
+        </div>
+      )}
+      {modelsResult && (
+        // T00532：可滚动查看全部模型，超出 160px 内部滚动不再截断
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginTop: 4, whiteSpace: 'normal', maxWidth: 220, maxHeight: 160, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 4, padding: 4 }}>
+          可用模型（{modelsResult.length} 个）：{modelsResult.join('、')}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** 操作列（S3776 拆分）：集中放置悬停显现按钮与测试/模型结果，独立成组件后行组件与页面组件复杂度均降至阈值内 */
+function ToolActionsCell({ tool, testing, probing, fetchingModels, testResult, probeResult, modelsResult, onOpenEdit, onTest, onProbe, onFetchRowModels, onSetDefault, onRemove, flash }: ToolActionsCellProps) {
   return (
     <td style={{ ...cellStyle, whiteSpace: 'nowrap' }}>
       {tool.console_url ? (
@@ -124,24 +178,7 @@ function ToolActionsCell({ tool, testing, probing, fetchingModels, testResult, p
         </button>
       )}
       {/* T00587：模型复制按钮——与其他操作列按钮样式对齐（abtn），点击后图标切换为对勾（弹入动画）1.5s 复原 */}
-      <button
-        className="abtn" onClick={() => {
-          if (!tool.model) return;
-          void navigator.clipboard.writeText(tool.model).then(() => {
-            flash(`已复制模型：${tool.model}`);
-            setCopied(true);
-            globalThis.setTimeout(() => setCopied(false), 1500);
-          });
-        }}
-        disabled={!tool.model}
-        title={tool.model ? `复制模型 — 复制当前选择的模型名称（${tool.model}）` : '复制模型 — 当前未选择模型'}
-        aria-label={copied ? '已复制模型名称' : '复制模型名称'}
-        style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', cursor: tool.model ? 'pointer' : 'not-allowed', opacity: tool.model ? 1 : 0.4, color: copied ? 'var(--success, var(--accent))' : undefined }}
-      >
-        {copied
-          ? <Check size={13} className="copy-pop" style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-          : <Copy size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
-      </button>
+      <ModelCopyButton model={tool.model} flash={flash} />
       {/* T00587：删除改为归档——软删保留记录，列表默认隐藏 */}
       <button
         className="abtn" onClick={() => onRemove(tool)}
@@ -151,23 +188,7 @@ function ToolActionsCell({ tool, testing, probing, fetchingModels, testResult, p
       >
         <Archive size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
       </button>
-      {testResult && (
-        <div style={{ fontSize: 'var(--fs-xs)', color: testResult.ok ? 'var(--success)' : 'var(--danger)', marginTop: 4, whiteSpace: 'normal', maxWidth: 200 }}>
-          {/* T02208：连接测试只做目录型探测，「成功」不再由前端断言——文案口径交给服务端给出 */}
-          {testResult.ok ? '✓ ' : '✗ '}{testResult.msg}
-        </div>
-      )}
-      {probeResult && (
-        <div style={{ fontSize: 'var(--fs-xs)', color: probeResult.ok ? 'var(--success)' : 'var(--danger)', marginTop: 4, whiteSpace: 'normal', maxWidth: 200 }}>
-          {probeResult.ok ? '✓ ' : '✗ '}{probeResult.msg}
-        </div>
-      )}
-      {modelsResult && (
-        // T00532：可滚动查看全部模型，超出 160px 内部滚动不再截断
-        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginTop: 4, whiteSpace: 'normal', maxWidth: 220, maxHeight: 160, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 4, padding: 4 }}>
-          可用模型（{modelsResult.length} 个）：{modelsResult.join('、')}
-        </div>
-      )}
+      <ToolResultLines testResult={testResult} probeResult={probeResult} modelsResult={modelsResult} />
     </td>
   );
 }
@@ -991,8 +1012,9 @@ export function AIToolsPage() {
       </div>
 
       {/* 列表：九列在窄窗口靠横向滚动保读，不靠压缩列宽把 Endpoint/备注挤成竖排（UX-03③）。
-          滚动容器自身可聚焦（tabIndex=0 + role/可访问名），纯键盘也能用方向键滚看被挡住的列。 */}
-      <div role="region" aria-label="配置记录表格（可横向滚动）" tabIndex={0} style={{ overflowX: 'auto' }}>
+          滚动容器用原生 section + 可访问名，不再自造 region 角色，也不抢占 Tab 序；
+          键盘用户 Tab 到行内按钮时浏览器会自动把该列滚动到可见区。 */}
+      <section aria-label="配置记录表格（可横向滚动）" style={{ overflowX: 'auto' }}>
       <table style={{ width: '100%', minWidth: 1000, borderCollapse: 'collapse', fontSize: 'var(--fs-l)' }}>
         <thead>
           <tr style={{ textAlign: 'left', color: 'var(--text-secondary)' }}>
@@ -1060,7 +1082,7 @@ export function AIToolsPage() {
           )}
         </tbody>
       </table>
-      </div>
+      </section>
 
       {/* 新增/编辑弹窗：渲染与遮罩关闭逻辑封装在 ToolFormDialog 内 */}
       {form && (

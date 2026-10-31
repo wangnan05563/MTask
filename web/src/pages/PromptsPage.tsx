@@ -170,10 +170,10 @@ function PromptLaunchModal({ p, title, onTitle, values, onValue, tools, toolId, 
   const vars = parsePromptVars(p.content);
   const missing = missingPromptVars(p.content, values);
   const blocked = missing.length > 0 || !toolId || !title.trim() || busy;
+  const overlayRef = useOverlayDismiss(true, busy, onCancel);
   return (
-    <div data-t03247="launch-modal" /* NOSONAR - 遮罩点击为鼠标便捷关闭，取消按钮提供键盘可达通路 */
-      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100 }}
-      onClick={(e) => { if (e.target === e.currentTarget && !busy) onCancel(); }}>
+    <div data-t03247="launch-modal" ref={overlayRef}
+      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100 }}>
       <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(520px, 94vw)', maxHeight: '86vh', overflow: 'auto', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
           <Rocket size={14} style={{ color: 'var(--accent)' }} /> 发起提示词
@@ -243,10 +243,10 @@ function TaskCopyModal({ taskCopyPrompt, taskCopyBusy, setTaskCopyPrompt, taskCo
   readonly taskCopyProjectId: string; readonly setTaskCopyProjectId: React.Dispatch<React.SetStateAction<string>>;
   readonly projects: Project[]; readonly view: ProjectListView; readonly confirmCopyToTask: () => Promise<void> | void;
 }) {
+  const overlayRef = useOverlayDismiss(true, taskCopyBusy, () => setTaskCopyPrompt(null));
   return (
-    <div /* NOSONAR - 遮罩点击为鼠标便捷关闭，取消按钮提供键盘可达通路 */
-      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-      onClick={(e) => { if (e.target === e.currentTarget && !taskCopyBusy) setTaskCopyPrompt(null); }}>
+    <div ref={overlayRef}
+      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(420px, 92vw)', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
           <ListTodo size={14} style={{ color: 'var(--accent)' }} /> 复制到待办任务
@@ -307,6 +307,62 @@ function describeMove(t: { p: Prompt }, movedCat?: string, movedReq?: string): s
   if (movedReq) return `已将「${t.p.title}」归入通用需求分类「${movedReq}」（提示词分组保持不变）`;
   if (movedCat) return `已移动至「${movedCat}」分组`;
   return '已更新该提示词的归属';
+}
+
+/** 遮罩点击关闭：把「点空白处关闭」下沉为文档级监听，避免在非交互容器上挂鼠标事件 */
+function useOverlayDismiss(active: boolean, busy: boolean, close: () => void) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!active) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (e.target === ref.current && !busy) close();
+    };
+    document.addEventListener('click', onDocClick);
+    return () => document.removeEventListener('click', onDocClick);
+  }, [active, busy, close]);
+  return ref;
+}
+
+/** T00873 四轮：按「通用需求分类」过滤——让「归入通用需求分类」有可检索的落点（'' = 全部，'__none__' = 未归属） */
+function scopeByReqCategory(list: Prompt[], reqFilter: string): Prompt[] {
+  if (reqFilter === '') return list;
+  if (reqFilter === '__none__') return list.filter((p) => !p.req_category_id);
+  return list.filter((p) => p.req_category_id === reqFilter);
+}
+
+/** T02283：取数失败时绝不把「加载失败」降格成「暂无分类/暂无提示词」空态（那是用户还没用过的口吻） */
+function describeEmptyList(args: {
+  readonly categoryCount: number;
+  readonly search: string;
+  readonly reqFilter: string;
+  readonly viewScope: 'all' | 'fav';
+}): string {
+  const keyword = args.search.trim();
+  if (args.categoryCount === 0) return '暂无分类，请先用上方常驻的「新建分类」建一个分类。';
+  // UX-04⑤：搜索无结果 ≠ 分类里没东西——两者文案必须能分辨，否则用户会以为数据丢了
+  if (keyword && args.reqFilter === '') return `没有匹配「${keyword}」的提示词 —— 换个关键词或清空搜索框。`;
+  if (keyword) return `没有匹配「${keyword}」的提示词 —— 当前还叠加了「通用需求分类」筛选，可一并清掉。`;
+  if (args.viewScope === 'fav') {
+    // T03683：收藏视图空态要说清「不是没数据，是没收藏」，否则用户会以为提示词丢了
+    return args.reqFilter === ''
+      ? '该分类下暂无收藏 —— 点标题左侧的星标把提示词加入收藏，或把「显示范围」切回「全部显示」。'
+      : '当前筛选条件下没有已收藏的提示词 —— 可清掉「通用需求分类」筛选，或把「显示范围」切回「全部显示」。';
+  }
+  if (args.reqFilter === '') return '该分类下暂无提示词。';
+  return '当前筛选条件下没有提示词 —— 可把「通用需求分类」筛选切回「全部通用需求分类」。';
+}
+
+/** 行类名：高亮动画、拖拽态与按压态按当前状态拼装 */
+function promptRowClass(
+  id: string,
+  state: { readonly flashAt: Record<string, number>; readonly dragId: string; readonly overId: string; readonly pressId: string },
+): string {
+  let cls = 'arena-row';
+  if (state.flashAt[id]) cls += ' flush';
+  if (state.dragId === id) cls += ' item-dragging';
+  else if (state.overId === id) cls += ' item-over';
+  if (state.pressId === id) cls += ' item-pressing';
+  return cls;
 }
 
 /** 提示词仓库：按分类管理提示词，支持增删改查与一键复制 */
@@ -393,8 +449,8 @@ export function PromptsPage() {
   const [dragId, setDragId] = useState('');
   // T00489：按住行 200ms 才缩放（快速点击/点行内按钮不触发）
   const [pressId, setPressId] = useState('');
-  const pressTimer = useRef<Record<string, ReturnType<typeof setTimeout>>>({}); // NOSONAR - dragId 供 dropReorder 读取，setDragId 用于拖拽态重渲染
-  const [overId, setOverId] = useState(''); // NOSONAR - overId 供列表行接入拖拽高亮后读取，setOverId 用于拖拽悬停态重渲染
+  const pressTimer = useRef<Record<string, ReturnType<typeof setTimeout>>>({}); // dragId 供 dropReorder 读取，setDragId 用于拖拽态重渲染
+  const [overId, setOverId] = useState(''); // overId 供列表行接入拖拽高亮后读取，setOverId 用于拖拽悬停态重渲染
   // T00873：移动提示词分组弹窗——moveTarget 记录待移动的提示词及弹窗内选好的目标归属（catId=目标分组，reqId=通用需求分类）；null 关闭
   const [moveTarget, setMoveTarget] = useState<{ p: Prompt; catId: string; reqId: string } | null>(null);
 
@@ -537,7 +593,7 @@ export function PromptsPage() {
     promptsView.reload();
   }, [promptsView.reload]);
 
-  useEffect(() => { promptsView.reload(); }, [activeCat, debouncedSearch]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { promptsView.reload(); }, [activeCat, debouncedSearch, promptsView.reload]);
   useEffect(() => { void loadReqCats(); }, [loadReqCats]);
 
   // T03184（PM-102）：命令面板点选提示词后「定位 + 高亮」，不再只把用户丢到提示词页。
@@ -569,7 +625,7 @@ export function PromptsPage() {
       }
     } catch { /* 键损坏/存储不可用：忽略 */ }
     return () => globalThis.removeEventListener('mtaskPromptFocus', onFocus);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   // ---------- 分类管理 ----------
   async function addCategory() {
@@ -690,25 +746,13 @@ export function PromptsPage() {
     }
   }
 
-  /** 复制到剪贴板（Electron/file:// 下 clipboard API 可能受限，提供 execCommand 兜底） */
+  /** 复制到剪贴板：统一走 Clipboard API，失败时给出可见提示（S1874：不再使用已废弃的 execCommand） */
   async function copyPrompt(p: Prompt) {
     try {
       await navigator.clipboard.writeText(p.content);
       flash('已复制到剪贴板');
     } catch {
-      const ta = document.createElement('textarea');
-      ta.value = p.content;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      try {
-        document.execCommand('copy'); // NOSONAR - Clipboard API 受限环境（Electron/file://）的降级路径无未废弃替代 API
-        flash('已复制到剪贴板');
-      } catch {
-        flash('复制失败，请手动选择文本复制');
-      }
-      ta.remove();
+      flash('复制失败：当前环境不允许访问剪贴板，请手动选择文本复制');
     }
   }
 
@@ -730,7 +774,7 @@ export function PromptsPage() {
   async function toggleFavorite(p: Prompt) {
     const snapshot = promptsView.data ?? [];
     const withFlag = (favorited: boolean) => snapshot.map((x) => (x.id === p.id ? { ...x, is_favorited: favorited } : x));
-    const next = !Boolean(p.is_favorited);
+    const next = !p.is_favorited;
     promptsView.setData(withFlag(next));
     try {
       await api.patch(`/prompts/${p.id}`, { isFavorited: next });
@@ -807,14 +851,7 @@ export function PromptsPage() {
     clearTimeout(pressTimer.current[id]);
     if (pressId === id) setPressId('');
   };
-  const rowCls = (id: string) => {
-    let cls = 'arena-row';
-    if (flashAt[id]) cls += ' flush';
-    if (dragId === id) cls += ' item-dragging';
-    else if (overId === id) cls += ' item-over';
-    if (pressId === id) cls += ' item-pressing';
-    return cls;
-  };
+  const rowCls = (id: string) => promptRowClass(id, { flashAt, dragId, overId, pressId });
   /** 全部展开/收起（T00760 按钮回调下沉） */
   const allRowsExpanded = prompts.length > 0 && prompts.every((x) => expandedIds[x.id]);
   const toggleAllRows = () => setExpandedIds(allRowsExpanded ? {} : Object.fromEntries(prompts.map((x) => [x.id, true])));
@@ -844,37 +881,14 @@ export function PromptsPage() {
    * 依据当前排序条件对提示词排序（不改变原始 state）；置顶项始终排在最前。
    * T00873 四轮：先按「通用需求分类」过滤——让「归入通用需求分类」有可检索的落点。
    */
-  let reqScopedPrompts: typeof prompts;
-  if (reqFilter === '') {
-    reqScopedPrompts = prompts;
-  } else if (reqFilter === '__none__') {
-    reqScopedPrompts = prompts.filter((p) => !p.req_category_id);
-  } else {
-    reqScopedPrompts = prompts.filter((p) => p.req_category_id === reqFilter);
-  }
+  const reqScopedPrompts = scopeByReqCategory(prompts, reqFilter);
   // T03683：「显示范围=收藏」在通用需求分类筛选之后叠加——两轴是 AND 关系（归属 × 收藏）
   const scopePrompts = viewScope === 'fav' ? reqScopedPrompts.filter((p) => Boolean(p.is_favorited)) : reqScopedPrompts;
   const sortedPrompts = [...scopePrompts].sort((a, b) => comparePrompts(a, b, sortKey, sortDir));
-  // T02283：取数失败时绝不把「加载失败」降格成「暂无分类/暂无提示词」空态（那是用户还没用过的口吻）
   const listFailed = categoriesView.phase === 'error' || promptsView.phase === 'error';
-  let emptyListHint: string;
-  if (categories.length === 0) {
-    emptyListHint = '暂无分类，请先用上方常驻的「新建分类」建一个分类。';
-  } else if (search.trim() && reqFilter === '') {
-    // UX-04⑤：搜索无结果 ≠ 分类里没东西——两者文案必须能分辨，否则用户会以为数据丢了
-    emptyListHint = `没有匹配「${search.trim()}」的提示词 —— 换个关键词或清空搜索框。`;
-  } else if (search.trim()) {
-    emptyListHint = `没有匹配「${search.trim()}」的提示词 —— 当前还叠加了「通用需求分类」筛选，可一并清掉。`;
-  } else if (viewScope === 'fav') {
-    // T03683：收藏视图空态要说清「不是没数据，是没收藏」，否则用户会以为提示词丢了
-    emptyListHint = reqFilter === ''
-      ? '该分类下暂无收藏 —— 点标题左侧的星标把提示词加入收藏，或把「显示范围」切回「全部显示」。'
-      : '当前筛选条件下没有已收藏的提示词 —— 可清掉「通用需求分类」筛选，或把「显示范围」切回「全部显示」。';
-  } else if (reqFilter === '') {
-    emptyListHint = '该分类下暂无提示词。';
-  } else {
-    emptyListHint = '当前筛选条件下没有提示词 —— 可把「通用需求分类」筛选切回「全部通用需求分类」。';
-  }
+  const emptyListHint = describeEmptyList({
+    categoryCount: categories.length, search, reqFilter, viewScope,
+  });
   return (
     <section>
       {/* 悬浮操作按钮 + 行 hover 高亮 + 记录高亮动画：类名与任务页体验一致 */}

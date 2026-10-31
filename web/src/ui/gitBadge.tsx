@@ -60,15 +60,20 @@ interface GitInlineSubject {
 }
 
 /** 「+N」浮层：一条任务的**全部**关联提交（列表内联只带最新一条，故此处按需拉取）。经 Portal 挂 body，见下方注释 */
-function GitLinksPopover({ task, anchor, onClose }: {
+function GitLinksPopover({ task, anchor, onClose, onError }: {
   readonly task: Task;
   /** 触发元素的位置（浮层贴着它显示） */
   readonly anchor: { top: number; left: number };
   readonly onClose: () => void;
+  /** 取数失败时给宿主一个提示通道（行内仍保留原因文案） */
+  readonly onError?: (message: string) => void;
 }) {
   const [rows, setRows] = useState<{ sha: string; shortSha: string; source: GitLinkSource; createdAt: string }[]>([]);
   const [err, setErr] = useState('');
-  const ref = useRef<HTMLDivElement>(null);
+  const ref = useRef<HTMLDialogElement>(null);
+  // 回调不参与取数：放进 ref，避免父层每次渲染换了函数引用就把请求重跑一遍
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
 
   useEffect(() => {
     const ac = new AbortController();
@@ -80,11 +85,13 @@ function GitLinksPopover({ task, anchor, onClose }: {
         setRows(res.links ?? []);
       } catch (e) {
         if (ac.signal.aborted) return;
-        setErr(e instanceof Error ? e.message : String(e));
+        const message = e instanceof Error ? e.message : String(e);
+        setErr(message);
+        onErrorRef.current?.(`任务 ${task.task_no ?? ''} 的关联提交清单加载失败：${message}`);
       }
     })();
     return () => ac.abort();
-  }, [task.id]);
+  }, [task.id, task.task_no]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -92,10 +99,25 @@ function GitLinksPopover({ task, anchor, onClose }: {
     return () => globalThis.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  // 点遮罩关闭：外层只是遮罩，不是控件（关闭入口是标题栏按钮与 Esc），所以委托监听挂在 DOM 上
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onClick = (e: MouseEvent) => {
+      e.stopPropagation();
+      if (e.target === el) onClose();
+    };
+    el.addEventListener('click', onClick);
+    return () => el.removeEventListener('click', onClick);
+  }, [onClose]);
+
   return createPortal(
-    <div ref={ref} role="dialog" aria-label={`任务 ${task.task_no ?? ''} 的全部关联提交`}
-      style={{ position: 'fixed', zIndex: 1200, inset: 0, background: 'transparent' }}
-      onClick={(e) => { e.stopPropagation(); if (e.target === ref.current) onClose(); }}>
+    <dialog ref={ref} open aria-label={`任务 ${task.task_no ?? ''} 的全部关联提交`}
+      style={{
+        position: 'fixed', zIndex: 1200, inset: 0, margin: 0, padding: 0, border: 'none',
+        width: 'auto', height: 'auto', maxWidth: 'none', maxHeight: 'none',
+        background: 'transparent', color: 'inherit', overflow: 'visible',
+      }}>
       <div style={{
         position: 'absolute', top: anchor.top + 4, left: Math.max(8, Math.min(anchor.left, (globalThis.innerWidth ?? 800) - 440)),
         maxWidth: 420, maxHeight: '60vh', overflow: 'auto',
@@ -114,13 +136,12 @@ function GitLinksPopover({ task, anchor, onClose }: {
             <span style={{ fontFamily: 'Consolas, Menlo, monospace', color: 'var(--accent-ink)' }}>{r.shortSha}</span>
             <span style={{ color: 'var(--text-muted)' }}>{SOURCE_LABEL[r.source] ?? r.source}</span>
             <span style={{ color: 'var(--text-muted)' }}>{relTime(r.createdAt)}</span>
-            <span onClick={(e) => e.stopPropagation()}>
-              <CopyButton getText={() => r.sha} size={12} title="复制完整提交 ID" ariaLabel={`复制提交 ${r.sha} 完整 ID`} />
-            </span>
+            {/* 复制按钮的点击由遮罩层的委托监听统一拦下（不再逐层包 stopPropagation 的 <span>） */}
+            <CopyButton getText={() => r.sha} size={12} title="复制完整提交 ID" ariaLabel={`复制提交 ${r.sha} 完整 ID`} />
           </div>
         ))}
       </div>
-    </div>,
+    </dialog>,
     // 与 HoverCard 同一理由：任务行 `.cv-auto` 会把 fixed 后代按行裁掉（T01299 踩过），浮层必须挂 body
     globalThis.document.body,
   );
@@ -211,8 +232,21 @@ export interface GitBadgeProps {
 }
 
 /** 元信息行徽标（§3.1.1 展示规则五行） */
-export function GitBadge({ task, summaries, gitOn, onOpenGit }: GitBadgeProps) {
+export function GitBadge({ task, summaries, gitOn, onOpenGit, flash }: GitBadgeProps) {
   const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
+  const badgeRef = useRef<HTMLSpanElement>(null);
+  /*
+   * 徽标整块吞掉点击：里面的外链 / 复制 / 展开清单各有自己的行为，
+   * 不能再连带触发任务行的「打开抽屉」。拦截挂在 DOM 上——徽标本身不是控件，真正的控件是里面的 `<a>` / `<button>`。
+   * 不写依赖数组：徽标会随「未回写 / 降级 / 解析中 / 就绪」四态切换节点，每次渲染都按当前节点重新挂一次。
+   */
+  useEffect(() => {
+    const el = badgeRef.current;
+    if (!el) return;
+    const stop = (e: MouseEvent) => e.stopPropagation();
+    el.addEventListener('click', stop);
+    return () => el.removeEventListener('click', stop);
+  });
   if (!gitOn) return null;
 
   const link = (task.gitLinks ?? [])[0];
@@ -267,8 +301,7 @@ export function GitBadge({ task, summaries, gitOn, onOpenGit }: GitBadgeProps) {
   const aria = `${summary.author} ${relTime(summary.date)}：${summary.subject}；来源${SOURCE_LABEL[link.source] ?? link.source}；提交 ${link.sha}`;
 
   return (
-    <span data-t03343="git-badge" data-ttask-git-sha={link.sha} style={{ display: 'inline-flex', alignItems: 'center', gap: 2, flexShrink: 0 }}
-      onClick={(e) => e.stopPropagation()}>
+    <span ref={badgeRef} data-t03343="git-badge" data-ttask-git-sha={link.sha} style={{ display: 'inline-flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
       {/* Q14（REQ-071）：列表内的悬浮详情从多行 title 升级成 HoverCard——原生提示放不下外链与整 SHA。
           title 因此摘掉（同一元素上两套提示会互相打架），读屏通道仍走 aria-label。 */}
       <HoverCard ariaLabel={`提交 ${link.sha} 摘要`} cardW={360} cardH={176}
@@ -303,13 +336,13 @@ export function GitBadge({ task, summaries, gitOn, onOpenGit }: GitBadgeProps) {
           </button>
         </HoverCard>
       )}
-      {anchor && <GitLinksPopover task={task} anchor={anchor} onClose={() => setAnchor(null)} />}
+      {anchor && <GitLinksPopover task={task} anchor={anchor} onClose={() => setAnchor(null)} onError={flash} />}
     </span>
   );
 }
 
 /** 看板卡徽标：纯文本简写（卡内不得有链接/按钮），点击卡片由父级跳抽屉 Git 页 */
-export function GitBoardBadge({ task, summaries, gitOn }: Omit<GitBadgeProps, 'onOpenGit'>) {
+export function GitBoardBadge({ task, summaries, gitOn }: Readonly<Omit<GitBadgeProps, 'onOpenGit'>>) {
   if (!gitOn) return null;
   const link = (task.gitLinks ?? [])[0];
   if (!link) {
@@ -323,11 +356,13 @@ export function GitBoardBadge({ task, summaries, gitOn }: Omit<GitBadgeProps, 'o
   const degraded = summaries.degradedOfTask(task.id);
   const summary = summaries.summaryOf(link.sha);
   const text = degraded ? '不可用' : link.shortSha;
-  const title = degraded
-    ? gitDegradedText(degraded.kind, degraded.message)
-    : summary
-      ? `${gitSummaryTitle({ author: summary.author, date: summary.date, subject: summary.subject, source: link.source }, link.sha)}\n点击卡片查看 Git 详情`
-      : `提交 ${link.shortSha} — 摘要解析中`;
+  // 标题分三档：降级原因 > 完整四要素 + 下钻提示 > 解析中；用分支赋值，避免嵌套三元
+  let title = `提交 ${link.shortSha} — 摘要解析中`;
+  if (degraded) {
+    title = gitDegradedText(degraded.kind, degraded.message);
+  } else if (summary) {
+    title = `${gitSummaryTitle({ author: summary.author, date: summary.date, subject: summary.subject, source: link.source }, link.sha)}\n点击卡片查看 Git 详情`;
+  }
   return (
     <span data-t03343="board-git-badge" title={title} aria-label={`关联提交 ${link.sha}`}
       style={{ fontFamily: 'Consolas, Menlo, monospace', fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', flexShrink: 0, whiteSpace: 'nowrap' }}>

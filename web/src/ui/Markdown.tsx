@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import MarkdownIt from 'markdown-it';
 import { Check, Code, Copy, Eye } from 'lucide-react';
 
@@ -60,21 +60,32 @@ export function Markdown({
   readonly onAnchorClick?: (href: string) => void;
 }) {
   const html = useMemo(() => md.render(content || ''), [content]);
+  const hostRef = useRef<HTMLDivElement>(null);
+  /*
+   * 锚点事件委托：真正可点的是正文里渲染出的原生 <a>（自带键盘可达），容器只承担委托，
+   * 所以监听挂在 DOM 上而不是容器的 on* 属性上——非交互容器上挂 on* 会被判成「伪控件」。
+   */
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host || !onAnchorClick) return;
+    const onClick = (e: MouseEvent) => {
+      const target = e.target;
+      if (!(target instanceof Element)) return;
+      const link = target.closest('a');
+      if (!link) return;
+      const href = link.getAttribute('href') ?? '';
+      if (!href.startsWith('#')) return;
+      e.preventDefault();
+      onAnchorClick(href);
+    };
+    host.addEventListener('click', onClick);
+    return () => host.removeEventListener('click', onClick);
+  }, [onAnchorClick]);
   return (
     <div
-      /* NOSONAR - 锚点事件委托：点击目标是正文里渲染出的原生 <a>（自带键盘可达），容器本身不是交互控件 */
+      ref={hostRef}
       className={className ? `mdv ${className}` : 'mdv'}
       style={style}
-      onClick={onAnchorClick
-        ? (e) => {
-          const link = (e.target as HTMLElement).closest?.('a');
-          if (!link) return;
-          const href = link.getAttribute('href') ?? '';
-          if (!href.startsWith('#')) return;
-          e.preventDefault();
-          onAnchorClick(href);
-        }
-        : undefined}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );
@@ -83,23 +94,8 @@ export function Markdown({
 Markdown.displayName = 'Markdown';
 export const MarkdownStyles = () => <style>{scopedCss}</style>;
 
-/** 无环境限制的文本复制：优先 Clipboard API，Electron/低版本 Chromium 无权限时降级到隐藏 textarea + execCommand */
-function copyText(text: string): boolean {
-  try {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    // 移出可视区避免滚动条跳动，select() 需要元素可见属性但不要求视觉呈现
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand('copy'); // NOSONAR - Clipboard API 受限环境（Electron/file://）的降级路径无未废弃替代 API
-    ta.remove();
-    return ok;
-  } catch {
-    return false;
-  }
-}
+/** 复制失败的可见提示文案（S1874：不再保留已废弃的 execCommand 兜底） */
+const COPY_FAILED_TEXT = '复制失败：当前环境不允许访问剪贴板，请手动选择文本复制';
 
 // 右上角切换按钮：active 态用蓝色底反向色，与全局主色一致且便于区分当前视图
 const switchBtnStyle = (active: boolean): React.CSSProperties => ({
@@ -151,21 +147,20 @@ export function MarkdownContent({
 }) {
   const [view, setView] = useState<'preview' | 'source'>('preview');
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
 
   const copySource = async () => {
     const text = content;
     // 无内容直接返回，避免"复制成功"但剪贴板为空造成误导
     if (!text) return;
-    const done = () => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
-    };
-    // 优先 Clipboard API，权限/环境受限时降级到 textarea+execCommand；两者都失败则保持静默
+    setCopyError(false);
     try {
       await navigator.clipboard.writeText(text);
-      done();
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
     } catch {
-      if (copyText(text)) done();
+      // 权限/环境受限：给出可见降级提示，由用户手动选择文本
+      setCopyError(true);
     }
   };
 
@@ -202,6 +197,18 @@ export function MarkdownContent({
           </button>
         )}
       </div>
+
+      {copyError && (
+        <output
+          style={{
+            position: 'absolute', top: 28, right: 0, zIndex: 2, padding: '3px 8px', borderRadius: 6,
+            background: 'var(--card-bg)', border: '1px solid var(--danger, #dc2626)',
+            color: 'var(--danger, #dc2626)', fontSize: 'var(--fs-xs)', maxWidth: 320,
+          }}
+        >
+          {COPY_FAILED_TEXT}
+        </output>
+      )}
 
       {view === 'preview' ? (
         // paddingTop 让出右上角按钮，避免首行标题被遮挡

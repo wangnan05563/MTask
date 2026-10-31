@@ -167,63 +167,71 @@ function normalizeBullets(raw: unknown, at: string, opts: ParseOutlineOptions, w
   return out;
 }
 
-export function parseLectureOutline(
-  raw: unknown,
-  projectIds: readonly string[],
-  opts: ParseOutlineOptions = {},
-  warnings: string[] = [],
-): LectureOutline {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('大纲必须是 JSON 对象');
-  const o = raw as Record<string, unknown>;
-  if (!Array.isArray(o.sections)) throw new Error('大纲缺少 sections 数组');
-  const seen = new Set<string>();
-  const sections: LectureOutlineSection[] = [];
-  o.sections.forEach((v, i) => {
-    const at = `第 ${i + 1} 段`;
-    if (!v || typeof v !== 'object') throw new Error(`${at} 不是对象`);
-    const s = v as Record<string, unknown>;
-    const key = asText(s.key);
-    if (!(LECTURE_SECTION_KEYS as string[]).includes(key)) throw new Error(`${at} key「${key || '空'}」不在八段骨架（${LECTURE_SECTION_KEYS.join(' / ')}）`);
-    if (seen.has(key)) throw new Error(`${at} key「${key}」重复`);
-    seen.add(key);
-    const rawTitle = asText(s.title);
-    if (!rawTitle) throw new Error(`${at}（${lectureSectionLabel(key as LectureSectionKey)}）缺少标题`);
-    const title = [...rawTitle].length > OUTLINE_TITLE_MAX ? [...rawTitle].slice(0, OUTLINE_TITLE_MAX).join('') : rawTitle;
-    if (title !== rawTitle) {
-      if (!opts.lenient) throw new Error(`${at} 标题超出 ${OUTLINE_TITLE_MAX} 字`);
-      warnings.push(`${at} 标题超长，已截断`);
-    }
-    const bullets = normalizeBullets(s.bullets, at, opts, warnings);
-    let ids: string[] | undefined;
-    if (s.projectIds !== undefined) {
-      if (!Array.isArray(s.projectIds)) throw new Error(`${at} projectIds 不是数组`);
-      ids = [...new Set(s.projectIds.map(asText).filter(Boolean))];
-      const unknown = ids.filter((id) => !projectIds.includes(id));
-      if (unknown.length) throw new Error(`${at} projectIds 含未知项目：${unknown.join('、')}`);
-    }
-    sections.push({ key: key as LectureSectionKey, title, bullets, ...(ids ? { projectIds: ids } : {}) });
-  });
+/** 单段 projectIds（可选）：去重后校验都在请求范围内 */
+function parseSectionProjectIds(raw: unknown, at: string, projectIds: readonly string[]): string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) throw new Error(`${at} projectIds 不是数组`);
+  const ids = [...new Set(raw.map(asText).filter(Boolean))];
+  const unknown = ids.filter((id) => !projectIds.includes(id));
+  if (unknown.length) throw new Error(`${at} projectIds 含未知项目：${unknown.join('、')}`);
+  return ids;
+}
 
+function parseOutlineSection(
+  v: unknown,
+  i: number,
+  projectIds: readonly string[],
+  opts: ParseOutlineOptions,
+  warnings: string[],
+  seen: Set<string>,
+): LectureOutlineSection {
+  const at = `第 ${i + 1} 段`;
+  if (!v || typeof v !== 'object') throw new Error(`${at} 不是对象`);
+  const s = v as Record<string, unknown>;
+  const key = asText(s.key);
+  if (!(LECTURE_SECTION_KEYS as string[]).includes(key)) throw new Error(`${at} key「${key || '空'}」不在八段骨架（${LECTURE_SECTION_KEYS.join(' / ')}）`);
+  if (seen.has(key)) throw new Error(`${at} key「${key}」重复`);
+  seen.add(key);
+  const rawTitle = asText(s.title);
+  if (!rawTitle) throw new Error(`${at}（${lectureSectionLabel(key as LectureSectionKey)}）缺少标题`);
+  const title = [...rawTitle].length > OUTLINE_TITLE_MAX ? [...rawTitle].slice(0, OUTLINE_TITLE_MAX).join('') : rawTitle;
+  if (title !== rawTitle) {
+    if (!opts.lenient) throw new Error(`${at} 标题超出 ${OUTLINE_TITLE_MAX} 字`);
+    warnings.push(`${at} 标题超长，已截断`);
+  }
+  const bullets = normalizeBullets(s.bullets, at, opts, warnings);
+  const ids = parseSectionProjectIds(s.projectIds, at, projectIds);
+  return { key: key as LectureSectionKey, title, bullets, ...(ids ? { projectIds: ids } : {}) };
+}
+
+/** 八段顺序是硬约束：缺段/乱序都判废，避免成稿结构漂移 */
+function ensureSectionOrder(sections: LectureOutlineSection[]): void {
   const orderOk = sections.length === LECTURE_SECTION_KEYS.length
     && sections.every((s, i) => s.key === LECTURE_SECTION_KEYS[i]);
-  if (!orderOk) {
-    throw new Error(`sections 必须恰好 ${LECTURE_SECTION_KEYS.length} 段且按 ${LECTURE_SECTION_KEYS.join(' → ')} 排列（当前 ${sections.map((s) => s.key).join(' → ') || '空'}）`);
-  }
+  if (orderOk) return;
+  throw new Error(`sections 必须恰好 ${LECTURE_SECTION_KEYS.length} 段且按 ${LECTURE_SECTION_KEYS.join(' → ')} 排列（当前 ${sections.map((s) => s.key).join(' → ') || '空'}）`);
+}
 
-  if (projectIds.length > 1 && opts.requireFullCoverage !== false) {
-    const walk = sections.find((s) => s.key === 'walkthrough')!;
-    const covered = new Set(walk.projectIds ?? []);
-    const missing = projectIds.filter((id) => !covered.has(id));
-    if (missing.length) {
-      if (!opts.lenient) throw new Error(`多项目大纲的「逐项目-逐模块讲解」未覆盖项目：${missing.join('、')}`);
-      walk.projectIds = [...projectIds];
-      warnings.push('多项目大纲未覆盖全部项目，已按请求范围补齐 projectIds');
-    }
-  }
+/** 多项目时必须覆盖全部项目；宽松模式下按请求范围补齐并告警 */
+function ensureWalkthroughCoverage(
+  sections: LectureOutlineSection[],
+  projectIds: readonly string[],
+  opts: ParseOutlineOptions,
+  warnings: string[],
+): void {
+  if (!(projectIds.length > 1 && opts.requireFullCoverage !== false)) return;
+  const walk = sections.find((s) => s.key === 'walkthrough')!;
+  const covered = new Set(walk.projectIds ?? []);
+  const missing = projectIds.filter((id) => !covered.has(id));
+  if (missing.length === 0) return;
+  if (!opts.lenient) throw new Error(`多项目大纲的「逐项目-逐模块讲解」未覆盖项目：${missing.join('、')}`);
+  walk.projectIds = [...projectIds];
+  warnings.push('多项目大纲未覆盖全部项目，已按请求范围补齐 projectIds');
+}
 
-  const rawQ = o.discussion_questions;
-  if (!Array.isArray(rawQ)) throw new Error('大纲缺少 discussion_questions 数组');
-  const questions = [...new Set(rawQ.map(asText).filter(Boolean))];
+function normalizeQuestions(raw: unknown, opts: ParseOutlineOptions, warnings: string[]): string[] {
+  if (!Array.isArray(raw)) throw new Error('大纲缺少 discussion_questions 数组');
+  const questions = [...new Set(raw.map(asText).filter(Boolean))];
   if (questions.length < OUTLINE_QUESTION_MIN) throw new Error(`discussion_questions 至少 ${OUTLINE_QUESTION_MIN} 条`);
   if (questions.length > OUTLINE_QUESTION_MAX) {
     if (!opts.lenient) throw new Error(`discussion_questions 超出 ${OUTLINE_QUESTION_MAX} 条`);
@@ -236,8 +244,23 @@ export function parseLectureOutline(
     questions[i] = `${[...questions[i]].slice(0, OUTLINE_QUESTION_CHARS - 1).join('')}…`;
     warnings.push(`第 ${i + 1} 条讨论问题超长，已截断`);
   }
+  return questions;
+}
 
-  return { sections, discussion_questions: questions };
+export function parseLectureOutline(
+  raw: unknown,
+  projectIds: readonly string[],
+  opts: ParseOutlineOptions = {},
+  warnings: string[] = [],
+): LectureOutline {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('大纲必须是 JSON 对象');
+  const o = raw as Record<string, unknown>;
+  if (!Array.isArray(o.sections)) throw new Error('大纲缺少 sections 数组');
+  const seen = new Set<string>();
+  const sections = o.sections.map((v, i) => parseOutlineSection(v, i, projectIds, opts, warnings, seen));
+  ensureSectionOrder(sections);
+  ensureWalkthroughCoverage(sections, projectIds, opts, warnings);
+  return { sections, discussion_questions: normalizeQuestions(o.discussion_questions, opts, warnings) };
 }
 
 export type LectureOutlineEvent = { type: 'outline_ready'; outline: LectureOutline };
@@ -402,14 +425,18 @@ export function extractLectureAnchors(text: string): LectureAnchor[] {
   return out;
 }
 
-/** 锚点落点校验：文件必须在本次变更里，行号非空且与某个新增行区间重叠 */
-export function validateLectureAnchors(text: string, files: readonly GitFileChange[]): { anchors: LectureAnchor[]; issues: AnchorIssue[] } {
-  const anchors = extractLectureAnchors(text);
+/** 路径 → 变更文件（旧路径也登记，重命名前的锚点仍能命中） */
+function changedFileIndex(files: readonly GitFileChange[]): Map<string, GitFileChange> {
   const byPath = new Map<string, GitFileChange>();
   for (const f of files) {
     byPath.set(f.path, f);
     if (f.oldPath) byPath.set(f.oldPath, f);
   }
+  return byPath;
+}
+
+/** 文件 → 新增行区间列表（只认 newLines>0 的 hunk） */
+function newLineRanges(files: readonly GitFileChange[]): Map<string, Array<[number, number]>> {
   const ranges = new Map<string, Array<[number, number]>>();
   for (const f of files) {
     const list: Array<[number, number]> = [];
@@ -418,19 +445,35 @@ export function validateLectureAnchors(text: string, files: readonly GitFileChan
     }
     ranges.set(f.path, list);
   }
+  return ranges;
+}
+
+/** 单条锚点的落点校验：合法返回 null，否则返回原因 */
+function anchorIssueReason(
+  a: LectureAnchor,
+  byPath: Map<string, GitFileChange>,
+  ranges: Map<string, Array<[number, number]>>,
+): string | null {
+  const f = byPath.get(a.file);
+  if (!f) return `文件不在本次变更：${a.file}`;
+  if (!Number.isInteger(a.startLine) || !Number.isInteger(a.endLine) || a.startLine < 1 || a.endLine < a.startLine) {
+    return `行号区间非法：L${a.startLine}-L${a.endLine}`;
+  }
+  if (a.endLine - a.startLine + 1 > ANCHOR_SPAN_MAX) return `锚点跨度过大（>${ANCHOR_SPAN_MAX} 行）`;
+  const changed = ranges.get(f.path) ?? [];
+  const hit = changed.some(([s, e]) => a.startLine <= e && a.endLine >= s);
+  return hit ? null : '锚点未落在该文件的新增行区间';
+}
+
+/** 锚点落点校验：文件必须在本次变更里，行号非空且与某个新增行区间重叠 */
+export function validateLectureAnchors(text: string, files: readonly GitFileChange[]): { anchors: LectureAnchor[]; issues: AnchorIssue[] } {
+  const anchors = extractLectureAnchors(text);
+  const byPath = changedFileIndex(files);
+  const ranges = newLineRanges(files);
   const issues: AnchorIssue[] = [];
   for (const a of anchors) {
-    const f = byPath.get(a.file);
-    if (!f) { issues.push({ anchor: a, reason: `文件不在本次变更：${a.file}` }); continue; }
-    if (!Number.isInteger(a.startLine) || !Number.isInteger(a.endLine) || a.startLine < 1 || a.endLine < a.startLine) {
-      issues.push({ anchor: a, reason: `行号区间非法：L${a.startLine}-L${a.endLine}` }); continue;
-    }
-    if (a.endLine - a.startLine + 1 > ANCHOR_SPAN_MAX) {
-      issues.push({ anchor: a, reason: `锚点跨度过大（>${ANCHOR_SPAN_MAX} 行）` }); continue;
-    }
-    const changed = ranges.get(f.path) ?? [];
-    const hit = changed.some(([s, e]) => a.startLine <= e && a.endLine >= s);
-    if (!hit) issues.push({ anchor: a, reason: '锚点未落在该文件的新增行区间' });
+    const reason = anchorIssueReason(a, byPath, ranges);
+    if (reason) issues.push({ anchor: a, reason });
   }
   return { anchors, issues };
 }
@@ -446,6 +489,27 @@ export interface AnchorBlobResult {
   warnings: string[];
 }
 
+/** 单文件 blob SHA 取一次并缓存（读不到记 null + 告警，同文件后续锚点不再重试） */
+async function blobShaFor(
+  file: string,
+  workspacePath: string,
+  revision: string,
+  cache: Map<string, string | null>,
+  warnings: string[],
+): Promise<string | null> {
+  const cached = cache.get(file);
+  if (cached !== undefined) return cached;
+  try {
+    const sha = hashGitBlob(await collectFileAtRevision(workspacePath, revision, file));
+    cache.set(file, sha);
+    return sha;
+  } catch (e) {
+    cache.set(file, null);
+    warnings.push(`锚点文件读取失败（${file}）：${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+}
+
 /** 给锚点补 blob SHA/base commit（生成时点快照）；读不到的文件只告警不阻断 */
 export async function attachLectureAnchorBlobs(
   workspacePath: string,
@@ -456,15 +520,7 @@ export async function attachLectureAnchorBlobs(
   const warnings: string[] = [];
   const out: LectureAnchor[] = [];
   for (const a of anchors) {
-    if (!hashes.has(a.file)) {
-      try {
-        hashes.set(a.file, hashGitBlob(await collectFileAtRevision(workspacePath, revision, a.file)));
-      } catch (e) {
-        hashes.set(a.file, null);
-        warnings.push(`锚点文件读取失败（${a.file}）：${e instanceof Error ? e.message : String(e)}`);
-      }
-    }
-    const sha = hashes.get(a.file);
+    const sha = await blobShaFor(a.file, workspacePath, revision, hashes, warnings);
     out.push({ ...a, ...(sha ? { blobSha: sha } : {}), baseCommit: revision });
   }
   return { anchors: out, warnings };

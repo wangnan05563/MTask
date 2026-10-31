@@ -71,6 +71,14 @@ function mdLabel(iso: string): string {
   return iso.slice(5, 10);
 }
 
+/** 甘特条颜色：按计划状态取主题令牌（待开始走边框灰） */
+function planBarColor(s: PlanRow['status']): string {
+  if (s === 'done') return 'var(--success)';
+  if (s === 'doing') return 'var(--accent)';
+  if (s === 'blocked') return 'var(--danger)';
+  return 'var(--border-strong)';
+}
+
 export function MobilePlans({ notify }: Props) {
   const list = useProjectList();
   const [projectId, setProjectId] = useState('');
@@ -133,16 +141,16 @@ export function MobilePlans({ notify }: Props) {
       </div>
       <ProjectListHint view={list} style={{ ...wideHintStyle, padding: '0 0 8px' }} />
 
-      <div style={segWrap} role="group" aria-label="需求或计划">
+      <fieldset style={segGroup} aria-label="需求或计划">
         <button type="button" onClick={() => setTab('plans')} aria-pressed={tab === 'plans'} style={seg(tab === 'plans')}>计划（{plans?.length ?? 0}）</button>
         <button type="button" onClick={() => setTab('reqs')} aria-pressed={tab === 'reqs'} style={seg(tab === 'reqs')}>需求（{reqs?.length ?? 0}）</button>
-      </div>
+      </fieldset>
 
       {tab === 'plans' && (
-        <div style={segWrap} role="group" aria-label="计划视图">
+        <fieldset style={segGroup} aria-label="计划视图">
           <button type="button" onClick={() => setView('list')} aria-pressed={view === 'list'} style={seg(view === 'list')}>列表</button>
           <button type="button" onClick={() => setView('gantt')} aria-pressed={view === 'gantt'} style={seg(view === 'gantt')}>甘特图</button>
-        </div>
+        </fieldset>
       )}
 
       <div style={{ ...mutedStyle, padding: '2px 2px 10px' }}>
@@ -217,7 +225,6 @@ function PlanGantt({ plans }: Readonly<{ plans: PlanRow[] }>) {
   const today = todayIndex();
   const todayPct = (today - range.min + 0.5) / range.span * 100;
   const rows = [...plans].sort((a, b) => a.start_date.localeCompare(b.start_date) || a.title.localeCompare(b.title));
-  const colorOf = (s: PlanRow['status']) => (s === 'done' ? 'var(--success)' : s === 'doing' ? 'var(--accent)' : s === 'blocked' ? 'var(--danger)' : 'var(--border-strong)');
 
   return (
     <div style={cardStyle}>
@@ -246,7 +253,7 @@ function PlanGantt({ plans }: Readonly<{ plans: PlanRow[] }>) {
                   title={`${p.title} ${p.start_date} ~ ${p.end_date} 进度 ${p.progress}%`}
                   style={{
                     position: 'absolute', left: `${left}%`, width: `${width}%`, top: milestone ? 4 : 0, height: milestone ? 8 : 16,
-                    background: colorOf(p.status), borderRadius: 4, opacity: 0.9, overflow: 'hidden',
+                    background: planBarColor(p.status), borderRadius: 4, opacity: 0.9, overflow: 'hidden',
                   }}
                 >
                   {!milestone && <div style={{ width: `${Math.max(0, Math.min(100, p.progress))}%`, height: '100%', background: 'var(--bar-sheen)' }} />}
@@ -263,7 +270,8 @@ function PlanGantt({ plans }: Readonly<{ plans: PlanRow[] }>) {
   );
 }
 
-const segWrap: React.CSSProperties = { display: 'flex', gap: 6, marginBottom: 8 };
+/** 分段按钮组容器：用原生 <fieldset> 承载分组语义（去掉默认边框/内外边距，保持原布局） */
+const segGroup: React.CSSProperties = { display: 'flex', gap: 6, margin: 0, marginBottom: 8, padding: 0, border: 'none', minWidth: 0 };
 const seg = (active: boolean): React.CSSProperties => ({
   flex: 1, padding: '8px 10px', borderRadius: 8, fontSize: 'var(--fs-m)', cursor: 'pointer',
   border: `1px solid ${active ? 'var(--accent)' : 'var(--border-strong)'}`,

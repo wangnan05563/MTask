@@ -48,6 +48,41 @@ function now(): string {
   return new Date().toISOString();
 }
 
+/** 条目 PATCH 入参（未传的字段不动） */
+interface ReqEntryUpdate {
+  title?: string;
+  content?: string;
+  categoryId?: string;
+  pinned?: boolean;
+  color?: string;
+  isFavorited?: boolean;
+  archived?: boolean;
+}
+
+/** 一条列赋值（column 由本模块白名单产出，不接受外部传列名） */
+interface EntryAssignment { column: string; value: unknown }
+
+/** PATCH 入参 → 列赋值清单：只翻译显式传入的字段，避免覆盖未提及的列 */
+function entryAssignments(input: ReqEntryUpdate): EntryAssignment[] {
+  const out: EntryAssignment[] = [];
+  if (input.title !== undefined) out.push({ column: 'title', value: input.title });
+  if (input.content !== undefined) out.push({ column: 'content', value: input.content });
+  if (input.categoryId !== undefined) out.push({ column: 'category_id', value: input.categoryId });
+  // 布尔位在 DB 里存 0/1：Number(true/1) === 1、Number(false) === 0，与旧 bit() 同值
+  if (input.pinned !== undefined) out.push({ column: 'pinned', value: Number(input.pinned) });
+  if (input.color !== undefined) out.push({ column: 'color', value: input.color }); // T00490
+  // T03683：收藏位与置顶同口径（布尔→0/1），切换走同一 PATCH 通道
+  if (input.isFavorited !== undefined) out.push({ column: 'is_favorited', value: Number(input.isFavorited) });
+  // T03685：归档同时写 archived_at（还原置空），与 prompts / plan_tasks 的软删留痕一致
+  if (input.archived !== undefined) {
+    out.push(
+      { column: 'archived', value: Number(input.archived) },
+      { column: 'archived_at', value: input.archived ? now() : null },
+    );
+  }
+  return out;
+}
+
 export const ReqCategoryService = {
   /** 分类列表：按排序权重/创建时间，附带各分类条目计数 */
   list(): ReqCategoryRow[] {
@@ -121,26 +156,14 @@ export const ReqEntryService = {
     return !!getDb().prepare('SELECT id FROM req_entries WHERE fingerprint = ?').get(fingerprint);
   },
 
-  update(id: string, input: { title?: string; content?: string; categoryId?: string; pinned?: boolean; color?: string; isFavorited?: boolean; archived?: boolean }): ReqEntryRow | null {
+  update(id: string, input: ReqEntryUpdate): ReqEntryRow | null {
     const db = getDb();
     if (!db.prepare('SELECT id FROM req_entries WHERE id = ?').get(id)) return null;
-    const sets: string[] = [];
-    const values: unknown[] = [];
-    if (input.title !== undefined) { sets.push('title = ?'); values.push(input.title); }
-    if (input.content !== undefined) { sets.push('content = ?'); values.push(input.content); }
-    if (input.categoryId !== undefined) { sets.push('category_id = ?'); values.push(input.categoryId); }
-    if (input.pinned !== undefined) { sets.push('pinned = ?'); values.push(input.pinned ? 1 : 0); }
-    if (input.color !== undefined) { sets.push('color = ?'); values.push(input.color); } // T00490
-    // T03683：收藏位与置顶同口径（布尔→0/1），切换走同一 PATCH 通道
-    if (input.isFavorited !== undefined) { sets.push('is_favorited = ?'); values.push(input.isFavorited ? 1 : 0); }
-    // T03685：归档同时写 archived_at（还原置空），与 prompts / plan_tasks 的软删留痕一致
-    if (input.archived !== undefined) {
-      sets.push('archived = ?'); values.push(input.archived ? 1 : 0);
-      sets.push('archived_at = ?'); values.push(input.archived ? now() : null);
-    }
-    if (sets.length > 0) {
-      sets.push('updated_at = ?'); values.push(now());
-      db.prepare(`UPDATE req_entries SET ${sets.join(', ')} WHERE id = ?`).run(...values, id);
+    const assignments = entryAssignments(input);
+    if (assignments.length > 0) {
+      assignments.push({ column: 'updated_at', value: now() });
+      const sets = assignments.map((a) => `${a.column} = ?`).join(', ');
+      db.prepare(`UPDATE req_entries SET ${sets} WHERE id = ?`).run(...assignments.map((a) => a.value), id);
     }
     return db.prepare('SELECT * FROM req_entries WHERE id = ?').get(id) as ReqEntryRow;
   },

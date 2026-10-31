@@ -43,6 +43,13 @@ function eventIcon(it: MobileEventItem): React.ReactNode {
   return (KIND_META[it.kind] ?? { icon: <FileText size={15} /> }).icon;
 }
 
+/** 图标色：系统告警/失败优先，其次验证（成功），其余走强调色 */
+function eventColor(system: boolean, failed: boolean, kind: string): string {
+  if (system || failed) return 'var(--danger)';
+  if (kind === 'verified') return 'var(--success)';
+  return 'var(--accent)';
+}
+
 export function MobileNotifications({ notify, onOpenTask }: Readonly<{
   notify: (msg: string, isErr?: boolean) => void;
   onOpenTask: (taskNo: string) => void;
@@ -76,7 +83,7 @@ export function MobileNotifications({ notify, onOpenTask }: Readonly<{
         const system = !it.task_no || it.task_id === SYSTEM_TASK_ID;
         const meta = KIND_META[it.kind];
         const failed = it.detail.includes('失败');
-        const color = system || failed ? 'var(--danger)' : it.kind === 'verified' ? 'var(--success)' : 'var(--accent)';
+        const color = eventColor(system, failed, it.kind);
         const content = (
           <>
             <span style={{ ...iconWrap, color }}>{eventIcon(it)}</span>

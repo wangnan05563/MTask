@@ -141,6 +141,90 @@ export function parseSuggestions(raw: string): unknown[] {
   return arr;
 }
 
+type ClaimMap = Map<string, { taskIdx: number; confidence: number }>;
+
+interface TaskSuggestionEntry {
+  confidence: number;
+  reason: string;
+  commits: AiLinkCommitRef[];
+}
+
+/** 置信度归一：非数字一律 0，其余夹到 [0,1] */
+function normalizeConfidence(v: unknown): number {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(1, v));
+}
+
+/** 短 SHA/前缀 → 提交；前缀歧义或查无此提交返回 null（宁可漏不可错） */
+function makeShaResolver(commits: readonly AiLinkCommitRef[]): (v: unknown) => AiLinkCommitRef | null {
+  const bySha = new Map<string, AiLinkCommitRef>();
+  for (const c of commits) bySha.set(c.sha, c);
+  return (v: unknown): AiLinkCommitRef | null => {
+    const p = scalarText(v ?? '').trim().toLowerCase();
+    if (!/^[0-9a-f]{7,40}$/.test(p)) return null;
+    const exact = bySha.get(p);
+    if (exact) return exact;
+    const hits = commits.filter((c) => c.sha.startsWith(p));
+    return hits.length === 1 ? hits[0] : null;
+  };
+}
+
+/**
+ * 认领一个提交：同一提交被多条任务认领时只保留置信度更高的那条（平手保留先出现的）。
+ * 返回 null = 本次未被认领；0 = 首次认领；1 = 顶替了别人的认领（按丢弃计一条）。
+ */
+function claimCommit(
+  sha: string,
+  taskIdx: number,
+  confidence: number,
+  claimed: ClaimMap,
+  perTask: Map<number, TaskSuggestionEntry>,
+): number | null {
+  const prev = claimed.get(sha);
+  if (prev) {
+    if (prev.confidence >= confidence) return null;
+    const prevEntry = perTask.get(prev.taskIdx);
+    if (prevEntry) prevEntry.commits = prevEntry.commits.filter((x) => x.sha !== sha);
+    claimed.set(sha, { taskIdx, confidence });
+    return 1;
+  }
+  claimed.set(sha, { taskIdx, confidence });
+  return 0;
+}
+
+/** 处理模型输出的一条候选，返回被丢弃的条数 */
+function applyCandidate(
+  item: unknown,
+  taskCount: number,
+  resolveSha: (v: unknown) => AiLinkCommitRef | null,
+  claimed: ClaimMap,
+  perTask: Map<number, TaskSuggestionEntry>,
+): number {
+  const rec = (item ?? {}) as { task?: unknown; commits?: unknown; confidence?: unknown; reason?: unknown };
+  const idx = typeof rec.task === 'number' ? Math.trunc(rec.task) : Number.NaN;
+  if (!Number.isInteger(idx) || idx < 1 || idx > taskCount) return 1;
+  const confidence = normalizeConfidence(rec.confidence);
+  if (confidence < MIN_CONFIDENCE) return 1;
+  const shas = Array.isArray(rec.commits) ? rec.commits : [];
+  let dropped = 0;
+  const resolved: AiLinkCommitRef[] = [];
+  for (const s of shas) {
+    const c = resolveSha(s);
+    const claim = c ? claimCommit(c.sha, idx, confidence, claimed, perTask) : null;
+    if (!c || claim === null) { dropped++; continue; }
+    dropped += claim;
+    resolved.push(c);
+  }
+  if (!resolved.length) return dropped;
+  const entry = perTask.get(idx) ?? { confidence, reason: '', commits: [] };
+  entry.confidence = Math.max(entry.confidence, confidence);
+  const reason = scalarText(rec.reason ?? '').trim().slice(0, 60);
+  if (reason) entry.reason = reason;
+  entry.commits = [...entry.commits, ...resolved.filter((r) => !entry.commits.some((x) => x.sha === r.sha))];
+  perTask.set(idx, entry);
+  return dropped;
+}
+
 /**
  * 服务端二次校验：模型给的只是「候选」，能落地的才留。
  * 纯函数（无 DB/无 git），门脚本可直接喂合成数据跑边界：非法 sha、前缀歧义、低置信度、越界序号、一提交多单认领。
@@ -150,50 +234,11 @@ export function materializeSuggestions(
   commits: readonly AiLinkCommitRef[],
   raw: readonly unknown[],
 ): { suggestions: AiLinkSuggestion[]; dropped: number } {
-  const bySha = new Map<string, AiLinkCommitRef>();
-  for (const c of commits) bySha.set(c.sha, c);
-  const resolveSha = (v: unknown): AiLinkCommitRef | null => {
-    const p = scalarText(v ?? '').trim().toLowerCase();
-    if (!/^[0-9a-f]{7,40}$/.test(p)) return null;
-    const exact = bySha.get(p);
-    if (exact) return exact;
-    const hits = commits.filter((c) => c.sha.startsWith(p));
-    return hits.length === 1 ? hits[0] : null; // 前缀歧义/查无此提交 → 丢
-  };
-
-  const claimed = new Map<string, { taskIdx: number; confidence: number }>();
+  const resolveSha = makeShaResolver(commits);
+  const claimed: ClaimMap = new Map();
+  const perTask = new Map<number, TaskSuggestionEntry>();
   let dropped = 0;
-  const perTask = new Map<number, { confidence: number; reason: string; commits: AiLinkCommitRef[] }>();
-  for (const item of raw) {
-    const rec = (item ?? {}) as { task?: unknown; commits?: unknown; confidence?: unknown; reason?: unknown };
-    const idx = typeof rec.task === 'number' ? Math.trunc(rec.task) : Number.NaN;
-    if (!Number.isInteger(idx) || idx < 1 || idx > tasks.length) { dropped++; continue; }
-    const confidence = typeof rec.confidence === 'number' && Number.isFinite(rec.confidence) ? Math.max(0, Math.min(1, rec.confidence)) : 0;
-    if (confidence < MIN_CONFIDENCE) { dropped++; continue; }
-    const shas = Array.isArray(rec.commits) ? rec.commits : [];
-    const resolved: AiLinkCommitRef[] = [];
-    for (const s of shas) {
-      const c = resolveSha(s);
-      if (!c) { dropped++; continue; }
-      const prev = claimed.get(c.sha);
-      if (prev) {
-        // 同一提交被多条任务认领：只保留置信度更高的那条，平手时保留先出现的
-        if (prev.confidence >= confidence) { dropped++; continue; }
-        const prevEntry = perTask.get(prev.taskIdx);
-        if (prevEntry) prevEntry.commits = prevEntry.commits.filter((x) => x.sha !== c.sha);
-        dropped++;
-      }
-      claimed.set(c.sha, { taskIdx: idx, confidence });
-      resolved.push(c);
-    }
-    if (!resolved.length) continue;
-    const entry = perTask.get(idx) ?? { confidence, reason: '', commits: [] };
-    entry.confidence = Math.max(entry.confidence, confidence);
-    const reason = scalarText(rec.reason ?? '').trim().slice(0, 60);
-    if (reason) entry.reason = reason;
-    entry.commits = [...entry.commits, ...resolved.filter((r) => !entry.commits.some((x) => x.sha === r.sha))];
-    perTask.set(idx, entry);
-  }
+  for (const item of raw) dropped += applyCandidate(item, tasks.length, resolveSha, claimed, perTask);
 
   const suggestions: AiLinkSuggestion[] = [...perTask.entries()]
     .sort((a, b) => b[1].confidence - a[1].confidence)

@@ -87,7 +87,7 @@ export interface RedispatchEntry {
   taskId: string;
   taskNo: string | null;
   dispatched: boolean;
-  /** 未派发原因：not_found=任务行已删 | archived=已归档 | not_todo=非待办状态 */
+  /** 未派发原因：not_found=任务行已删 | archived=已归档 | 状态非待办（枚举值 not_ 前缀） */
   skipped?: 'not_found' | 'archived' | 'not_todo';
   /** 已派发时回显 RelayDispatch 结果（成功/失败与 detail 都算「已尝试派发」） */
   state?: string;

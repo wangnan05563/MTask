@@ -60,48 +60,66 @@ export async function extractSourceText(filename: string, buffer: Buffer): Promi
  */
 const WS_TREE_SLICE_MS = 25;
 
-export async function loadWorkspaceContext(workspacePath: string): Promise<string> {
-  if (!workspacePath) return '';
+interface TreeFrame {
+  dir: string;
+  rel: string;
+  depth: number;
+  entries: Array<{ name: string; isDir: boolean; relChild: string }>;
+  i: number;
+}
+
+/** 列目录（忽略构建/依赖目录与隐藏项）；读失败返回 null 表示跳过该目录 */
+function listTreeEntries(dir: string, rel: string, rules: ReturnType<typeof loadIgnoreRules>): TreeFrame['entries'] | null {
   try {
-    statSync(workspacePath);
+    return readdirSync(dir, { withFileTypes: true })
+      .map((e) => ({ name: e.name, isDir: e.isDirectory(), relChild: rel ? `${rel}/${e.name}` : e.name }))
+      .filter((e) => !isIgnored(e.relChild, e.isDir, rules) && !e.name.startsWith('.'))
+      .sort((a, b) => Number(b.isDir) - Number(a.isDir));
   } catch {
-    return '';
+    return null;
   }
+}
+
+/** 入栈一个待展开目录；深度或总量超限时不再展开 */
+function pushTreeDir(stack: TreeFrame[], treeLen: number, dir: string, rel: string, depth: number, rules: ReturnType<typeof loadIgnoreRules>): void {
+  if (depth > 3 || treeLen >= TREE_LIMIT) return;
+  const entries = listTreeEntries(dir, rel, rules);
+  if (!entries) return;
+  stack.push({ dir, rel, depth, entries, i: 0 });
+}
+
+/** 展开当前栈顶目录的一项；返回 true 表示整体采样结束（命中上限或栈已空） */
+function expandTreeItem(tree: string[], stack: TreeFrame[], rules: ReturnType<typeof loadIgnoreRules>): boolean {
+  // 采样上限命中：注明截断并整体终止（原实现在每层递归各补一次说明，内容等价，此处只留一条）
+  if (tree.length >= TREE_LIMIT) { tree.push('…（超出采样上限，已截断）'); stack.length = 0; return true; }
+  const frame = stack.at(-1);
+  if (!frame) return true;
+  if (frame.i >= frame.entries.length) { stack.pop(); return false; }
+  const e = frame.entries[frame.i++];
+  tree.push(`${'  '.repeat(frame.depth)}${e.isDir ? '[目录] ' : ''}${e.name}`);
+  if (e.isDir) pushTreeDir(stack, tree.length, join(frame.dir, e.name), e.relChild, frame.depth + 1, rules);
+  return false;
+}
+
+/** 显式栈 + 切片让路的目录树采样（深度 3、最多 TREE_LIMIT 项） */
+async function collectTree(workspacePath: string, rules: ReturnType<typeof loadIgnoreRules>): Promise<string[]> {
   const tree: string[] = [];
-  const rules = loadIgnoreRules(workspacePath); // M-4：与文件搜索共用同一忽略规则源（含 .mtaskignore），消除双轨
-  type TreeFrame = { dir: string; rel: string; depth: number; entries: Array<{ name: string; isDir: boolean; relChild: string }>; i: number };
   const stack: TreeFrame[] = [];
-  const pushDir = (dir: string, rel: string, depth: number): void => {
-    if (depth > 3 || tree.length >= TREE_LIMIT) return;
-    let entries: TreeFrame['entries'];
-    try {
-      entries = readdirSync(dir, { withFileTypes: true })
-        .map((e) => ({ name: e.name, isDir: e.isDirectory(), relChild: rel ? `${rel}/${e.name}` : e.name }))
-        .filter((e) => !isIgnored(e.relChild, e.isDir, rules) && !e.name.startsWith('.'))
-        .sort((a, b) => Number(b.isDir) - Number(a.isDir));
-    } catch {
-      return;
-    }
-    stack.push({ dir, rel, depth, entries, i: 0 });
-  };
-  pushDir(workspacePath, '', 0);
+  pushTreeDir(stack, 0, workspacePath, '', 0, rules);
   let done = false;
   while (!done) {
     const until = Date.now() + WS_TREE_SLICE_MS;
     while (!done && Date.now() < until) {
-      // 采样上限命中：注明截断并整体终止（原实现在每层递归各补一次说明，内容等价，此处只留一条）
-      if (tree.length >= TREE_LIMIT) { tree.push('…（超出采样上限，已截断）'); stack.length = 0; done = true; break; }
-      const frame = stack.at(-1);
-      if (!frame) { done = true; break; }
-      if (frame.i >= frame.entries.length) { stack.pop(); continue; }
-      const e = frame.entries[frame.i++];
-      tree.push(`${'  '.repeat(frame.depth)}${e.isDir ? '[目录] ' : ''}${e.name}`);
-      if (e.isDir) pushDir(join(frame.dir, e.name), e.relChild, frame.depth + 1);
+      done = expandTreeItem(tree, stack, rules);
     }
     if (!done) await yieldToEventLoop();
   }
-  const parts = [`项目目录树（深度 3，最多 ${TREE_LIMIT} 项）：\n${tree.join('\n')}`];
-  await yieldToEventLoop(); // T02200：说明文件片段读取同样给只读接口让路
+  return tree;
+}
+
+/** 说明文件片段：README / package.json 命中一个即可，控制上下文体积 */
+function readDocSnippets(workspacePath: string): string[] {
+  const parts: string[] = [];
   for (const f of ['README.md', 'readme.md', 'package.json']) {
     try {
       const p = join(workspacePath, f);
@@ -109,9 +127,24 @@ export async function loadWorkspaceContext(workspacePath: string): Promise<strin
       // T00776：片段截断走统一 ContextBudget（替换原 FILE_SNIPPET_LIMIT 硬编码）
       const text = ContextBudget.headTail(readFileSync(p, 'utf8'), ContextBudget.fileSnippetChars, `${f} `);
       parts.push(`【${f} 片段】\n${text}`);
-      break; // 命中一个说明性文件即可，控制上下文体积
+      break;
     } catch { /* 无该文件继续 */ }
   }
+  return parts;
+}
+
+export async function loadWorkspaceContext(workspacePath: string): Promise<string> {
+  if (!workspacePath) return '';
+  try {
+    statSync(workspacePath);
+  } catch {
+    return '';
+  }
+  const rules = loadIgnoreRules(workspacePath); // M-4：与文件搜索共用同一忽略规则源（含 .mtaskignore），消除双轨
+  const tree = await collectTree(workspacePath, rules);
+  const parts = [`项目目录树（深度 3，最多 ${TREE_LIMIT} 项）：\n${tree.join('\n')}`];
+  await yieldToEventLoop(); // T02200：说明文件片段读取同样给只读接口让路
+  parts.push(...readDocSnippets(workspacePath));
   return ContextBudget.headTail(parts.join('\n\n'), ContextBudget.treeChars + ContextBudget.fileSnippetChars, '项目上下文 ');
 }
 
@@ -374,16 +407,18 @@ function workspaceStage(path: string | null | undefined): { ok: boolean; msg: st
  * 主流程未解析出任何待确认问题时，基于已生成的 PRD 发起一次轻量提问，只求 JSON 问题清单；
  * 失败或仍为空则放弃（保持原「AI 未生成待确认问题」提示，用户可手动补自定义问题）。
  */
-async function fallbackIssues(
-  project: { name: string },
-  prdMd: string,
-  source: string,
-  adapter: AIAdapter,
-  config: ToolConfig,
-  toolId: string,
-  onStage: (msg: string) => void,
-  signal?: AbortSignal, // T00838：补问同样可被外部中止
-): Promise<PrdGenIssue[]> {
+async function fallbackIssues(args: {
+  project: { name: string };
+  prdMd: string;
+  source: string;
+  adapter: AIAdapter;
+  config: ToolConfig;
+  toolId: string;
+  onStage: (msg: string) => void;
+  /** T00838：补问同样可被外部中止 */
+  signal?: AbortSignal;
+}): Promise<PrdGenIssue[]> {
+  const { project, prdMd, source, adapter, config, toolId, onStage, signal } = args;
   onStage('未解析到待确认问题 —— 发起一次补充提问（基于已生成 PRD 反推待确认项）…');
   const system = '你是资深需求分析师。只输出 JSON 数组，不要任何解释、不要 Markdown 代码块。';
   const user = [
@@ -399,7 +434,7 @@ async function fallbackIssues(
   try {
     const startedAt = Date.now();
     const r = await adapter.chat(system, user, config, signal);
-    recordUsage('ask', toolId, config.model, r.ok, startedAt, r.content?.length ?? 0, r.error, PRD_GEN_CARD); // T03296：补问同属 PRD 生成卡
+    recordUsage({ kind: 'ask', toolId, model: config.model, ok: r.ok, startedAt, contentChars: r.content?.length ?? 0, error: r.error, cardKey: PRD_GEN_CARD }); // T03296：补问同属 PRD 生成卡
     if (!r.ok || !r.content) { onStage('补充提问失败，本次未产出待确认问题（可手动新增自定义问题）'); return []; }
     const issues = parseIssuesJson(r.content);
     onStage(issues.length > 0 ? `补充提问完成：新增 ${issues.length} 条待确认问题` : '补充提问未产出问题清单（可手动新增自定义问题）');
@@ -408,6 +443,138 @@ async function fallbackIssues(
     onStage('补充提问异常，本次未产出待确认问题（可手动新增自定义问题）');
     return [];
   }
+}
+
+/** 内置技能资产：SKILL.md 正文 + 三角色审查规则库 */
+function loadSkillAssets(dir: string): { skill: string; rules: string } {
+  const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8');
+  const rules = (['bill-business-rules', 'compliance-rules', 'ux-rules'] as const)
+    .map((n) => {
+      const file = `${n}.md`;
+      return `\n<!-- references/${file} -->\n${readFileSync(join(dir, 'references', file), 'utf8')}`;
+    })
+    .join('\n');
+  return { skill, rules };
+}
+
+/** T03442：领域词表（人可改的 references/domain-vocab.md；缺失或解析为空时用内置兜底，不影响生成） */
+function loadDomainVocab(dir: string): VocabEntry[] {
+  try {
+    const parsed = parseDomainVocab(readFileSync(join(dir, 'references', 'domain-vocab.md'), 'utf8'));
+    if (parsed.length > 0) return parsed;
+  } catch { /* 词表缺失走兜底 */ }
+  return FALLBACK_VOCAB;
+}
+
+/** T00769 验证失败修复：把「必须输出待确认问题清单」写成硬约束，避免无上下文时模型只写正文不产问题 */
+const ISSUE_RULE = [
+  '【输出硬性要求（务必遵守）】',
+  '1. 先输出完整 PRD 正文；',
+  '2. 正文结束后另起一行输出分隔符 <<<ISSUES>>>，其后紧跟 JSON 数组，列出 5~10 条待确认问题；',
+  '3. 每条格式：{"level":"blocker|suggested|info","question":"…","context":"…","suggestion":"…"}；',
+  // T00817：为每条待确认问题生成可落地的建议选项，形成「问题 + AI建议」配套，辅助产品快速决策。
+  // suggestion 组织形式：用「选项A：xxx / 选项B：xxx / 选项C：xxx」分隔，给出 2~4 个有区分度的可行选项
+  '4. suggestion 为该问题的 AI 建议：给出 2~4 个可落地的建议选项，用「选项A：… / 选项B：… / 选项C：…」分隔；必须基于问题与项目上下文推导，不得虚构无依据的内容；',
+  '5. 即使项目源码上下文缺失，也必须基于原始需求本身列出阻塞落地的关键未知项，不得省略该 JSON 段。',
+  // T00814：长文档实测会在 8K 输出上限处被截断，导致整份 PRD 作废；这里给出篇幅边界，
+  // 把预算花在变更点/字段/验收标准上，而不是无节制铺陈
+  '6. 篇幅控制：PRD 正文不超过 6000 字，聚焦「变更点、字段清单、业务规则、验收标准、影响面」；不要复述原始需求全文，不要输出目录。',
+].join('\n');
+
+/** 上下文各段（缺失段落整段略去，避免空标题占位） */
+interface PrdPromptParts {
+  source: string;
+  git: string;
+  retrieve: string;
+  coverage: string;
+}
+
+/** 组装生成用 user prompt */
+function buildPrdUserPrompt(projectName: string, filename: string, parts: PrdPromptParts, requirement: string): string {
+  return [
+    `【目标项目】${projectName}`,
+    parts.source ? `【项目源码上下文】\n${parts.source}` : '【项目源码上下文】未提供（未配置工作空间）',
+    parts.git ? `【Git 脉络与命中文件改动（只读 git log）】\n${parts.git}` : '',
+    parts.retrieve ? `【工作空间检索片段（T00777 自动检索）】\n${parts.retrieve}` : '',
+    parts.coverage ? `【检索覆盖度】${parts.coverage}` : '',
+    `【原始需求文件】${filename}`,
+    `【原始需求全文】\n${requirement}`,
+    ISSUE_RULE,
+  ].filter(Boolean).join('\n\n');
+}
+
+/** 流式结果的成功字符数（成功取正文，失败取已生成残段） */
+function genChars(res: { ok: boolean; content?: string; partial?: string }): number {
+  return (res.ok ? res.content?.length : res.partial?.length) ?? 0;
+}
+
+/** 流式生成一次；提供方拒绝抬高后的预算（错误确指 max_tokens）时回退到 8K 重试一次 */
+async function streamPrd(
+  adapter: AIAdapter,
+  system: string,
+  user: string,
+  genConfig: ToolConfig,
+  input: { toolId: string; onDelta: (text: string) => void; onStage: (msg: string) => void; signal?: AbortSignal },
+): Promise<{ ok: boolean; content?: string; partial?: string; error?: string }> {
+  const startedAt = Date.now();
+  let result = await adapter.chatStream(system, user, genConfig, input.onDelta, input.signal);
+  recordUsage({ kind: 'stream', toolId: input.toolId, model: genConfig.model, ok: result.ok, startedAt, contentChars: genChars(result), error: result.error, cardKey: PRD_GEN_CARD });
+  // T00814：个别提供商不接受 16K 输出上限（请求直接 400）——此时回退到 8K 重试一次，
+  // 避免"提高了预算反而整个功能不可用"。仅在错误文本确指 max_tokens 时回退，其余错误照旧抛出。
+  if (result.ok || !/max_tokens|max_completion_tokens|too large|invalid/i.test(result.error ?? '')) return result;
+  input.onStage(`模型未接受 ${genConfig.maxTokens} tokens 输出上限，回退 ${PRD_FALLBACK_OUTPUT_TOKENS} 重试…`);
+  const retryStartedAt = Date.now();
+  result = await adapter.chatStream(system, user, { ...genConfig, maxTokens: PRD_FALLBACK_OUTPUT_TOKENS }, input.onDelta, input.signal);
+  recordUsage({ kind: 'stream', toolId: input.toolId, model: genConfig.model, ok: result.ok, startedAt: retryStartedAt, contentChars: genChars(result), error: result.error, cardKey: PRD_GEN_CARD });
+  return result;
+}
+
+/** 结果 → 正文：整份失败抛错；触顶截断时保留已生成部分并显式告警（问题清单随后由补问兜底） */
+function resolveGeneratedText(
+  result: { ok: boolean; content?: string; partial?: string; error?: string },
+  onStage: (msg: string) => void,
+): { text: string; truncated: boolean } {
+  if (result.ok) return { text: result.content ?? '', truncated: false };
+  if (result.partial && /超长被截断/.test(result.error ?? '')) {
+    onStage(`⚠ AI 输出触及上限，已保留当前 ${result.partial.length} 字符继续 —— PRD 末尾可能不完整，请在交互表格中核对内容；待确认问题将由补充提问补齐`);
+    return { text: result.partial, truncated: true };
+  }
+  throw new Error(result.error ?? 'AI 生成失败');
+}
+
+/** T03262（AI-101①）：溯源行。上下文预算被裁过、需求被保头保尾压过、输出被截断过——
+ * 三件事都会让「PRD 看起来完整但少了一段」，必须进面板而不是只留在 stage 日志里。 */
+function buildPrdProvenance(args: {
+  input: { filename: string; content: string };
+  ws: string;
+  gitParts: string;
+  retrieve: { block: string; coverage: string };
+  requirement: string;
+  prdMd: string;
+  issues: PrdGenIssue[];
+  parts: ContextParts & { clipped: string[] };
+  outputTruncated: boolean;
+  model?: string;
+}): CardProvenance {
+  const { input, ws, gitParts, retrieve, requirement, prdMd, issues, parts, outputTruncated, model } = args;
+  const retrieveCoverageNote = retrieve.coverage ? `（${retrieve.coverage}）` : '';
+  const retrieveValue = retrieve.block.length > 0 ? `${chars(retrieve.block.length)}${retrieveCoverageNote}` : '未命中';
+  return buildCardProvenance({
+    cardKey: 'ai.prd_gen',
+    sources: [
+      { label: '原始需求', value: `${chars(input.content.length)}（${input.filename}）` },
+      { label: '项目源码上下文', value: ws ? chars(ws.length) : '未配置工作空间（未使用）' },
+      { label: 'Git 脉络', value: gitParts.length > 0 ? chars(gitParts.length) : '未使用' },
+      { label: '检索片段', value: retrieveValue },
+      { label: '产出', value: `${chars(prdMd.length)}PRD、${issues.length} 条待确认问题` },
+    ],
+    truncations: [
+      ...(requirement.length === input.content.length ? [] : [`原始需求超长，已保头保尾压缩为 ${chars(requirement.length)}`]),
+      ...(parts.clipped.length > 0 ? [`上下文超总量预算，按优先级裁剪：${parts.clipped.join(' → ')}`] : []),
+      ...(outputTruncated ? ['AI 输出触及上限，PRD 末尾可能不完整'] : []),
+    ],
+    model: model ?? null,
+  });
 }
 
 export async function generatePrdStream(input: {
@@ -437,20 +604,8 @@ export async function generatePrdStream(input: {
 
   input.onStage('加载内置技能「prd-generate」（原 bemp-generate-prd 已转内置）…');
   const SKILL_DIR = skillDir();
-  const skill = readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8');
-  const rules = (['bill-business-rules', 'compliance-rules', 'ux-rules'] as const)
-    .map((n) => {
-      const refMd = `${n}.md`;
-      return `\n<!-- references/${n}.md -->\n${readFileSync(join(SKILL_DIR, 'references', refMd), 'utf8')}`;
-    })
-    .join('\n');
-
-  // T03442：领域词表（人可改的 references/domain-vocab.md；缺失或解析为空时用内置兜底，不影响生成）
-  let vocab: VocabEntry[] = FALLBACK_VOCAB;
-  try {
-    const parsed = parseDomainVocab(readFileSync(join(SKILL_DIR, 'references', 'domain-vocab.md'), 'utf8'));
-    if (parsed.length > 0) vocab = parsed;
-  } catch { /* 词表缺失走兜底 */ }
+  const { skill, rules } = loadSkillAssets(SKILL_DIR);
+  const vocab = loadDomainVocab(SKILL_DIR);
 
   // T00769 验证失败修复：工作空间状态显式检测 + 友好提示（未绑定/不可读都能在控制台看到可操作指引）
   const wsStatus = workspaceStage(project.workspace_path);
@@ -482,21 +637,6 @@ export async function generatePrdStream(input: {
 
   input.onStage(`原始需求文本提取完成：${input.filename}（${input.content.length} 字符），开始 AI 生成…`);
 
-  // T00769 验证失败修复：把「必须输出待确认问题清单」写成硬约束，避免无上下文时模型只写正文不产问题
-  const ISSUE_RULE = [
-    '【输出硬性要求（务必遵守）】',
-    '1. 先输出完整 PRD 正文；',
-    '2. 正文结束后另起一行输出分隔符 <<<ISSUES>>>，其后紧跟 JSON 数组，列出 5~10 条待确认问题；',
-    '3. 每条格式：{"level":"blocker|suggested|info","question":"…","context":"…","suggestion":"…"}；',
-    // T00817：为每条待确认问题生成可落地的建议选项，形成「问题 + AI建议」配套，辅助产品快速决策。
-    // suggestion 组织形式：用「选项A：xxx / 选项B：xxx / 选项C：xxx」分隔，给出 2~4 个有区分度的可行选项
-    '4. suggestion 为该问题的 AI 建议：给出 2~4 个可落地的建议选项，用「选项A：… / 选项B：… / 选项C：…」分隔；必须基于问题与项目上下文推导，不得虚构无依据的内容；',
-    '5. 即使项目源码上下文缺失，也必须基于原始需求本身列出阻塞落地的关键未知项，不得省略该 JSON 段。',
-    // T00814：长文档实测会在 8K 输出上限处被截断，导致整份 PRD 作废；这里给出篇幅边界，
-    // 把预算花在变更点/字段/验收标准上，而不是无节制铺陈
-    '6. 篇幅控制：PRD 正文不超过 6000 字，聚焦「变更点、字段清单、业务规则、验收标准、影响面」；不要复述原始需求全文，不要输出目录。',
-  ].join('\n');
-
   const system = `${skill}\n\n# 三角色审查规则库（审查时逐条对照）\n${rules}`;
   // T03442：总量闸——此前只有需求侧单段上限，各段相加仍可能把上下文撑到几十万字符
   const gitParts = [git.block, fileGit.block].filter(Boolean).join('\n\n');
@@ -504,16 +644,12 @@ export async function generatePrdStream(input: {
   if (parts.clipped.length > 0) {
     input.onStage(`上下文超出总量预算（${CONTEXT_TOTAL_LIMIT} 字符），已按优先级裁剪：${parts.clipped.join(' → ')}`);
   }
-  const user = [
-    `【目标项目】${project.name}`,
-    parts.source ? `【项目源码上下文】\n${parts.source}` : '【项目源码上下文】未提供（未配置工作空间）',
-    parts.git ? `【Git 脉络与命中文件改动（只读 git log）】\n${parts.git}` : '',
-    parts.retrieve ? `【工作空间检索片段（T00777 自动检索）】\n${parts.retrieve}` : '',
-    retrieve.coverage ? `【检索覆盖度】${retrieve.coverage}` : '',
-    `【原始需求文件】${input.filename}`,
-    `【原始需求全文】\n${parts.requirement}`,
-    ISSUE_RULE,
-  ].filter(Boolean).join('\n\n');
+  const user = buildPrdUserPrompt(project.name, input.filename, {
+    source: parts.source,
+    git: parts.git,
+    retrieve: parts.retrieve,
+    coverage: retrieve.coverage,
+  }, parts.requirement);
 
   // T03441：此前只打需求字符数，看不到各段占比——预算被谁吃掉无从判断
   input.onStage(formatContextOverview([
@@ -524,32 +660,8 @@ export async function generatePrdStream(input: {
     ['需求', parts.requirement.length],
   ]));
 
-  const genStartedAt = Date.now();
-  const genChars = (res: { ok: boolean; content?: string; partial?: string }): number => (res.ok ? res.content?.length : res.partial?.length) ?? 0;
-  let result = await adapter.chatStream(system, user, genConfig, input.onDelta, input.signal);
-  recordUsage('stream', input.toolId, genConfig.model, result.ok, genStartedAt, genChars(result), result.error, PRD_GEN_CARD);
-  // T00814：个别提供商不接受 16K 输出上限（请求直接 400）——此时回退到 8K 重试一次，
-  // 避免"提高了预算反而整个功能不可用"。仅在错误文本确指 max_tokens 时回退，其余错误照旧抛出。
-  if (!result.ok && /max_tokens|max_completion_tokens|too large|invalid/i.test(result.error ?? '')) {
-    input.onStage(`模型未接受 ${genConfig.maxTokens} tokens 输出上限，回退 ${PRD_FALLBACK_OUTPUT_TOKENS} 重试…`);
-    const retryStartedAt = Date.now();
-    result = await adapter.chatStream(system, user, { ...genConfig, maxTokens: PRD_FALLBACK_OUTPUT_TOKENS }, input.onDelta, input.signal);
-    recordUsage('stream', input.toolId, genConfig.model, result.ok, retryStartedAt, genChars(result), result.error, PRD_GEN_CARD);
-  }
-  // T00814：长文档实测即使预算给到 16K/32K，部分思考型模型仍会在自身上限处截断
-  // （流出的正文 9~10K 字符即 finish_reason=length）。此时整份作废太浪费 ——
-  // 改为「保留已生成部分 + 显式告警」，问题清单随后由补问兜底；其它失败仍原样抛出。
-  let text = '';
-  let outputTruncated = false;
-  if (result.ok) {
-    text = result.content ?? '';
-  } else if (result.partial && /超长被截断/.test(result.error ?? '')) {
-    text = result.partial;
-    outputTruncated = true;
-    input.onStage(`⚠ AI 输出触及上限，已保留当前 ${text.length} 字符继续 —— PRD 末尾可能不完整，请在交互表格中核对内容；待确认问题将由补充提问补齐`);
-  } else {
-    throw new Error(result.error ?? 'AI 生成失败');
-  }
+  const result = await streamPrd(adapter, system, user, genConfig, input);
+  const { text, truncated: outputTruncated } = resolveGeneratedText(result, input.onStage);
 
   input.onStage('AI 生成完成，解析待确认问题清单…');
   // T00814：标记识别放宽（`<<<ISSUES>>>` / `<ISSUES>` / 带空格变体），避免模型写了别的写法时
@@ -558,7 +670,9 @@ export async function generatePrdStream(input: {
   let issues = parsePrdIssues(text, prdMd, input.onStage);
   // 兜底补问：主流程未产出任何问题时，基于已生成 PRD 反推一份问题清单（失败不影响主流程）
   if (issues.length === 0) {
-    issues = await fallbackIssues(project, prdMd, input.content, adapter, genConfig, input.toolId, input.onStage, input.signal);
+    issues = await fallbackIssues({
+      project, prdMd, source: input.content, adapter, config: genConfig, toolId: input.toolId, onStage: input.onStage, signal: input.signal,
+    });
   }
   // T00818：把拆分出的问题清单内联回 PRD 正文「待确认问题汇总」章——分区 JSON 已被 splitPrdBody 剥离，
   // 正文该章原只有标题+审查说明占位，若不下沉，前端预览末章即「提示后内容为空」。仅在有清单时改写。
@@ -567,25 +681,8 @@ export async function generatePrdStream(input: {
   input.onStage(`解析完成：PRD ${finalPrdMd.length} 字符、待确认问题 ${issues.length} 条（🔴 阻塞 ${issues.filter((i) => i.level === 'blocker').length} / 🟡 建议 ${issues.filter((i) => i.level === 'suggested').length} / 🟢 提示 ${issues.filter((i) => i.level === 'info').length}）`);
   // T00783-L3：startedAt 此前只 void 掉（死代码）——真实记录耗时，便于排查长耗时生成
   logService.log('INFO', 'ai', `[PRD生成] project=${input.projectId} file=${input.filename} prd=${finalPrdMd.length}ch issues=${issues.length} 耗时=${Date.now() - startedAt}ms`);
-  const retrieveCoverageNote = retrieve.coverage ? `（${retrieve.coverage}）` : '';
-  const retrieveValue = retrieve.block.length > 0 ? `${chars(retrieve.block.length)}${retrieveCoverageNote}` : '未命中';
-  // T03262（AI-101①）：溯源行。上下文预算被裁过、需求被保头保尾压过、输出被截断过——
-  // 三件事都会让「PRD 看起来完整但少了一段」，必须进面板而不是只留在 stage 日志里。
-  const provenance = buildCardProvenance({
-    cardKey: 'ai.prd_gen',
-    sources: [
-      { label: '原始需求', value: `${chars(input.content.length)}（${input.filename}）` },
-      { label: '项目源码上下文', value: ws ? chars(ws.length) : '未配置工作空间（未使用）' },
-      { label: 'Git 脉络', value: gitParts.length > 0 ? chars(gitParts.length) : '未使用' },
-      { label: '检索片段', value: retrieveValue },
-      { label: '产出', value: `${chars(finalPrdMd.length)}PRD、${issues.length} 条待确认问题` },
-    ],
-    truncations: [
-      ...(requirement.length === input.content.length ? [] : [`原始需求超长，已保头保尾压缩为 ${chars(requirement.length)}`]),
-      ...(parts.clipped.length > 0 ? [`上下文超总量预算，按优先级裁剪：${parts.clipped.join(' → ')}`] : []),
-      ...(outputTruncated ? ['AI 输出触及上限，PRD 末尾可能不完整'] : []),
-    ],
-    model: genConfig.model ?? null,
+  const provenance = buildPrdProvenance({
+    input, ws, gitParts, retrieve, requirement, prdMd: finalPrdMd, issues, parts, outputTruncated, model: genConfig.model,
   });
   recordCardProvenance(provenance, input.projectId);
   return { prdMd: finalPrdMd, issues, provenance };

@@ -728,7 +728,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_due ON webhook_deliveries(status, next_attempt_at);
   `);
   // T03229（PRD PM-202①）：任务级阻塞关系——多对多 blocked-by。
-  // 与 plan_tasks.deps（计划侧 JSON）分开建模：待办状态恒为 todo|done 二元（T02070 裁决），
+  // 与 plan_tasks.deps（计划侧 JSON）分开建模：待办状态恒为待办/已完成二元（T02070 裁决），
   // 阻塞只能是一条条可增删、可留痕的关系，不能塞进 tasks 的某个 JSON 列（那样既无法索引也无法写事件）。
   // released_at 空=在途：解除/自动解除只封口不删行（PM-202④ 要求历史仍可查），
   // 因此「同一对任务最多一条在途关系」用部分唯一索引而非表级 UNIQUE 表达（同 iteration_events 的周报卡做法）。
@@ -858,7 +858,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // T00577：派生待办溯源——记录原任务编号（如 T00422），AI 处理完成后自动把派生单结论整合回原任务
   ensureColumn('tasks', 'derived_from', 'derived_from TEXT');
   // T02949：派生单裁决——ruling_state('' 无 | '待裁决' | '已裁决') / ruling_result(裁决内容：选项值或自定义文本)
-  // / ruling_at(ISO 时刻)。走独立列而非塞 status：status 是 todo/done 语义，被列表筛选/计数/看板依赖，塞了破坏既有业务逻辑
+  // / ruling_at(ISO 时刻)。走独立列而非塞 status：status 只有待办/已完成两态，被列表筛选/计数/看板依赖，塞了破坏既有业务逻辑
   ensureColumn('tasks', 'ruling_state', "ruling_state TEXT DEFAULT ''");
   ensureColumn('tasks', 'ruling_result', "ruling_result TEXT DEFAULT ''");
   ensureColumn('tasks', 'ruling_at', 'ruling_at TEXT');

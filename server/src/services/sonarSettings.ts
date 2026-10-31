@@ -141,7 +141,7 @@ function writeProjectKeys(input: unknown): Record<string, string> {
 
 function readScanLimit(): number {
   const raw = getSetting(SCAN_LIMIT_KEY);
-  const n = raw === null ? NaN : Number(raw);
+  const n = raw === null ? Number.NaN : Number(raw);
   return Number.isInteger(n) && n >= SCAN_LIMIT_MIN && n <= SCAN_LIMIT_MAX ? n : SCAN_LIMIT_DEFAULT;
 }
 
@@ -205,7 +205,7 @@ const CMD_UNSAFE_CHARS = /[&|^%<>"'`;]|\r|\n/;
 /** Java 缺失的统一文案：探测失败与「根本没探测到」共用一句，避免两处各写一遍后指引不同 */
 const JAVA_MISSING_HINT = '未探测到 Java（PATH 与 JAVA_HOME/bin 里都没有 java）。SonarScanner CLI 依赖 JDK 11+，请安装后点「重新探测」；本工具不提供安装。';
 
-const firstLine = (s: string) => s.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)[0] ?? '';
+const firstLine = (s: string) => s.split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0) ?? '';
 
 function execVersion(bin: string, args: string[]): Promise<ExecResult> {
   const spec = planScannerSpawn(bin, args);
@@ -324,7 +324,7 @@ export async function getSonarConfigView(): Promise<SonarConfigView> {
   const plain = tokenPlain();
   const scanLimit = readScanLimit();
   const gateRaw = getSetting(`exportGateLimit.${SONAR_SCAN_GATE}`);
-  const gateParsed = gateRaw === null ? NaN : Number(gateRaw);
+  const gateParsed = gateRaw === null ? Number.NaN : Number(gateRaw);
   return {
     serverUrl: getSetting(SERVER_URL_KEY) ?? '',
     tokenConfigured: Boolean(plain),
@@ -461,6 +461,76 @@ async function checkServerStatus(serverUrl: string, token: string | null): Promi
   }
 }
 
+/** 服务器项：未填地址直接记错；否则匿名优先探测，失败按 kind 回填。 */
+async function testServerPart(
+  serverUrl: string,
+  token: string | null,
+  errors: SonarTestResult['errors'],
+): Promise<SonarTestResult['server']> {
+  if (!serverUrl) {
+    errors.push({ kind: 'unreachable', message: '未填写服务器地址', hint: '填写 http/https 地址后重试。' });
+    return { ok: false };
+  }
+  const server = await checkServerStatus(serverUrl, token);
+  if (!server.ok) errors.push({ kind: server.kind ?? 'unreachable', message: server.message ?? '', hint: server.hint ?? '' });
+  return server.ok ? { ok: true, version: server.version, edition: server.edition, status: server.status } : { ok: false };
+}
+
+/** 扫描器项（连带 Java 项）：scanner 起不来时 Java 才是首要原因，只在失败分支补探一次。 */
+async function testScannerPart(errors: SonarTestResult['errors']): Promise<Pick<SonarTestResult, 'scanner' | 'java'>> {
+  const scanner = await probeScanner();
+  if (scanner.available) return { scanner: { ok: true, version: scanner.version } };
+  errors.push({ kind: 'no-scanner', message: scanner.resolved && scanner.version ? '扫描器执行失败' : '未找到可用的 sonar-scanner', hint: scanner.hint });
+  // 正常环境不多起一个进程：只有 scanner 探不到时才需要追查 Java
+  const java = await probeJava();
+  if (!java.available) errors.push({ kind: 'no-java', message: '未探测到 Java 环境', hint: java.hint });
+  return { scanner: { ok: false }, java: { ok: java.available } };
+}
+
+/** projects/show 取数：匿名优先，被拒（401/403）且带 Token 时才重试一次。 */
+async function fetchProjectShow(showUrl: string, token: string | null): Promise<{ res: Response; json: unknown }> {
+  const first = await getJson(showUrl, null);
+  if (token && (first.res.status === 401 || first.res.status === 403)) return getJson(showUrl, token);
+  return first;
+}
+
+/** 项目项：服务器不通或未配 projectKey 时直接给结论；否则按 HTTP 状态分别归因。 */
+async function testProjectPart(
+  serverUrl: string,
+  projectKey: string,
+  token: string | null,
+  serverOk: boolean,
+  errors: SonarTestResult['errors'],
+): Promise<SonarTestResult['project']> {
+  if (!serverOk) return { ok: false, projectKey };
+  if (!projectKey) {
+    errors.push({ kind: 'project-not-found', message: '未配置 projectKey，无法验证项目可达性', hint: '在「默认 projectKey 映射」里为任一项目配置 projectKey 后重试。' });
+    return { ok: false, projectKey: '' };
+  }
+  try {
+    // 与状态项同一口径：匿名优先，被拒才带 Token 重试——否则等于对可读实例无谓地送出凭据。
+    // 重试用的 Token 也取「草稿优先，退回已存」：只填了草稿就能测通三项，不然服务器行绿、
+    // 项目行永远 401（真机驱动 UI-24 抓到的就是这个不对称）。
+    // PRD 原文写 `?keys=`；SonarQube 的 projects/show 实际参数是 `projectKey`（单键），按真实接口取
+    const showUrl = `${serverUrl}/api/projects/show?projectKey=${encodeURIComponent(projectKey)}`;
+    const { res, json } = await fetchProjectShow(showUrl, token);
+    if (res.ok) return { ok: true, projectKey };
+    if (res.status === 404) {
+      errors.push({ kind: 'project-not-found', message: `项目键不存在：${projectKey}`, hint: '到 SonarQube「项目」页核对 project key（不是项目显示名），或先在页面上创建项目。' });
+    } else if (res.status === 401 || res.status === 403) {
+      errors.push({ kind: 'auth-failed', message: `项目校验被拒绝（HTTP ${res.status}）`, hint: '该 Token 无权查看此项目：换有权限的 Token，或在 SonarQube 里给项目授权。' });
+    } else {
+      const msg = (json as { errors?: Array<{ msg: string }> } | null)?.errors?.[0]?.msg ?? '';
+      const suffix = msg ? `（${msg}）` : '';
+      errors.push({ kind: 'unreachable', message: `项目校验返回 HTTP ${res.status}${suffix}`, hint: '确认该 Token 有查看此项目的权限。' });
+    }
+    return { ok: false, projectKey };
+  } catch (e) {
+    errors.push({ kind: 'unreachable', message: `项目校验失败：${(e as Error)?.message ?? String(e)}`, hint: '确认服务地址可达后重试。' });
+    return { ok: false, projectKey };
+  }
+}
+
 /** 三项连接测试，结果分别回显（PRD §3.4.1）；每类失败各给 kind 与可操作指引。 */
 export async function testSonarConnection(input?: { serverUrl?: string; token?: string; projectKey?: string }): Promise<SonarTestResult> {
   const errors: SonarTestResult['errors'] = [];
@@ -469,60 +539,13 @@ export async function testSonarConnection(input?: { serverUrl?: string; token?: 
   const draftToken = (input?.token ?? '').trim();
   const savedToken = tokenPlain();
   const projectKey = (input?.projectKey ?? '').trim() || Object.values(readProjectKeys())[0] || '';
+  const retryToken = draftToken || savedToken;
 
-  if (!serverUrl) {
-    out.server = { ok: false };
-    errors.push({ kind: 'unreachable', message: '未填写服务器地址', hint: '填写 http/https 地址后重试。' });
-  } else {
-    const server = await checkServerStatus(serverUrl, draftToken || savedToken);
-    out.server = server.ok ? { ok: true, version: server.version, edition: server.edition, status: server.status } : { ok: false };
-    if (!server.ok) errors.push({ kind: server.kind ?? 'unreachable', message: server.message ?? '', hint: server.hint ?? '' });
-  }
-
-  const scanner = await probeScanner();
-  out.scanner = scanner.available ? { ok: true, version: scanner.version } : { ok: false };
-  if (!scanner.available) {
-    errors.push({ kind: 'no-scanner', message: scanner.resolved && scanner.version ? '扫描器执行失败' : '未找到可用的 sonar-scanner', hint: scanner.hint });
-    // scanner 起不来时 Java 才是首要原因——只在 no-scanner 分支补报，正常环境不多起一个进程
-    const java = await probeJava();
-    out.java = { ok: java.available };
-    if (!java.available) errors.push({ kind: 'no-java', message: '未探测到 Java 环境', hint: java.hint });
-  }
-
-  if (!out.server?.ok) {
-    out.project = { ok: false, projectKey };
-  } else if (!projectKey) {
-    out.project = { ok: false, projectKey: '' };
-    errors.push({ kind: 'project-not-found', message: '未配置 projectKey，无法验证项目可达性', hint: '在「默认 projectKey 映射」里为任一项目配置 projectKey 后重试。' });
-  } else {
-    try {
-      // 与状态项同一口径：匿名优先，被拒才带 Token 重试——否则等于对可读实例无谓地送出凭据。
-      // 重试用的 Token 也取「草稿优先，退回已存」：只填了草稿就能测通三项，不然服务器行绿、
-      // 项目行永远 401（真机驱动 UI-24 抓到的就是这个不对称）。
-      // PRD 原文写 `?keys=`；SonarQube 的 projects/show 实际参数是 `projectKey`（单键），按真实接口取
-      const showUrl = `${serverUrl}/api/projects/show?projectKey=${encodeURIComponent(projectKey)}`;
-      const retryToken = draftToken || savedToken;
-      let { res, json } = await getJson(showUrl, null);
-      if (retryToken && (res.status === 401 || res.status === 403)) {
-        ({ res, json } = await getJson(showUrl, retryToken));
-      }
-      if (res.ok) out.project = { ok: true, projectKey };
-      else if (res.status === 404) {
-        out.project = { ok: false, projectKey };
-        errors.push({ kind: 'project-not-found', message: `项目键不存在：${projectKey}`, hint: '到 SonarQube「项目」页核对 project key（不是项目显示名），或先在页面上创建项目。' });
-      } else if (res.status === 401 || res.status === 403) {
-        out.project = { ok: false, projectKey };
-        errors.push({ kind: 'auth-failed', message: `项目校验被拒绝（HTTP ${res.status}）`, hint: '该 Token 无权查看此项目：换有权限的 Token，或在 SonarQube 里给项目授权。' });
-      } else {
-        out.project = { ok: false, projectKey };
-        const msg = (json as { errors?: Array<{ msg: string }> } | null)?.errors?.[0]?.msg ?? '';
-        errors.push({ kind: 'unreachable', message: `项目校验返回 HTTP ${res.status}${msg ? `（${msg}）` : ''}`, hint: '确认该 Token 有查看此项目的权限。' });
-      }
-    } catch (e) {
-      out.project = { ok: false, projectKey };
-      errors.push({ kind: 'unreachable', message: `项目校验失败：${(e as Error)?.message ?? String(e)}`, hint: '确认服务地址可达后重试。' });
-    }
-  }
+  out.server = await testServerPart(serverUrl, retryToken, errors);
+  const scannerPart = await testScannerPart(errors);
+  out.scanner = scannerPart.scanner;
+  if (scannerPart.java) out.java = scannerPart.java;
+  out.project = await testProjectPart(serverUrl, projectKey, retryToken, out.server?.ok === true, errors);
   return out;
 }
 

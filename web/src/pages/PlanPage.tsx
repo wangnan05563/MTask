@@ -155,6 +155,21 @@ function todayStr(): string {
 const inputStyle: React.CSSProperties = FIELD_ROW; // PM-302 ① 单源 ui/primitives.ts（原引用的 --bg 是未定义令牌，收编为 --card-bg）
 const btnStyle: React.CSSProperties = BTN_SECONDARY; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 
+/** 面板开关按钮外观（开启=强调色实底）——用 if/else 代替成串三元，降低 PlanPanelToggles 的认知复杂度 */
+function panelToggleStyle(active: boolean): React.CSSProperties {
+  if (active) return { ...btnStyle, background: 'var(--accent)', color: 'var(--accent-text)', borderColor: 'var(--accent)' };
+  return { ...btnStyle, background: 'transparent', color: 'var(--text)', borderColor: 'var(--border-strong)' };
+}
+
+/** 甘特条鼠标命中判定：左右各 6px 为伸缩手柄（右端优先，与原先两个手柄的层叠顺序一致），其余为平移 */
+function ganttDragModeAt(e: React.MouseEvent<HTMLElement>): GanttDragMode {
+  const rect = e.currentTarget.getBoundingClientRect();
+  const offset = e.clientX - rect.left;
+  if (offset >= rect.width - 6) return 'resize-r';
+  if (offset <= 6) return 'resize-l';
+  return 'move';
+}
+
 /** T00471：计划行「默认只读展示 + 悬浮编辑」交互——CSS 驱动不改数据流：
  *  默认 input 边框透明呈文本观感，行 hover/focus-within 时显示编辑框边框背景；
  *  行操作按钮（关联/插入/归档等 task-op）默认隐藏，悬浮或键盘聚焦时显示（保键盘可访问）。 */
@@ -280,40 +295,40 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
         <div style={{ position: 'fixed', top: projDropPos.top, left: projDropPos.left, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 60, minWidth: 240, maxWidth: `min(360px, calc(100vw - ${projDropPos.left + 12}px))`, overflowX: 'hidden', maxHeight: `calc(100vh - ${projDropPos.top + 12}px)`, overflowY: 'auto' }}>
           {/* T00663：项目下拉项——置顶图标在名称前；默认序下支持拖拽排序（持久化到服务端） */}
           {sortedProjects.map((p) => (
-            // T02146：行容器由原生 button 改 div role=button——行内的置顶图标本身是 button，
-            // HTML 不允许按钮套按钮（同 T02143 根因：a11y 批修把规则套到了含交互子元素的容器上）。
-            // 拖拽属性在 div 上等价可用；手感靠 .card-btn 补回（App.tsx 已落该类）。
-            <div key={p.id} role="button" tabIndex={0} className="card-btn" aria-pressed={p.id === projectId} aria-label={`切换到项目 ${p.name}`} /* NOSONAR: S6819 豁免——T02146：行内含原生置顶button，HTML禁止按钮套按钮；键盘支持已在onKeyDown保留 */
-              draggable={projSortMode === 'default'}
-              onDragStart={() => setDragProjId(p.id)}
-              onDragOver={(e) => { if (projSortMode === 'default' && dragProjId) { e.preventDefault(); setOverProjId(p.id); } }}
-              onDragLeave={() => setOverProjId((curId) => (curId === p.id ? '' : curId))}
-              onDrop={(e) => { e.preventDefault(); runAsync(dropReorder(p.id)); }}
-              onDragEnd={() => { setDragProjId(''); setOverProjId(''); }}
-              onClick={() => { setProjectId(p.id); setProjOpen(false); }}
-              onKeyDown={(e) => {
-                // 只认行容器自身的按键：角标按钮 Enter 冒泡会「切置顶 + 选项目」一并触发（T02143 实测口径）
-                if (e.target !== e.currentTarget) return;
-                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setProjectId(p.id); setProjOpen(false); }
-              }}
-              title={projSortMode === 'default'
-                ? `${p.name}：已完成 ${p.plan_done ?? 0}，进行中 ${p.plan_doing ?? 0}，待开始 ${p.plan_open ?? 0}（可拖拽调整顺序）`
-                : `${p.name}：已完成 ${p.plan_done ?? 0}，进行中 ${p.plan_doing ?? 0}，待开始 ${p.plan_open ?? 0}（拖拽排序请切换到「默认（置顶优先）」）`}
-              style={{ display: 'flex', width: '100%', boxSizing: 'border-box', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 'var(--fs-s)', opacity: dragProjId === p.id ? 0.5 : 1, borderTop: overProjId === p.id ? '2px solid var(--accent)' : '2px solid transparent', background: p.id === projectId ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)', cursor: projSortMode === 'default' ? 'grab' : 'pointer' }}>
+            // T02146：行容器拆成「置顶按钮 + 行按钮」两个原生 button 兄弟——HTML 不允许按钮套按钮；
+            // 拆开后行按钮是原生控件（键盘 Enter/Space 由浏览器提供），也不再有 div role=button。
+            <div key={p.id} style={{ display: 'flex', width: '100%', boxSizing: 'border-box', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 'var(--fs-s)', opacity: dragProjId === p.id ? 0.5 : 1, borderTop: overProjId === p.id ? '2px solid var(--accent)' : '2px solid transparent', background: p.id === projectId ? 'var(--accent-soft)' : 'transparent' }}>
               <button
                 type="button"
-                onClick={(e) => { e.stopPropagation(); runAsync(togglePin(p)); }}
+                onClick={() => { runAsync(togglePin(p)); }}
                 title={isProjectPinned(p) ? `已置顶「${p.name}」— 点击取消置顶` : `置顶「${p.name}」— 点击后在默认排序下排最前`}
                 aria-label={isProjectPinned(p) ? `取消置顶 ${p.name}` : `置顶 ${p.name}`}
                 style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0, color: isProjectPinned(p) ? 'var(--accent)' : 'var(--text-muted)', cursor: 'pointer', border: 'none', background: 'transparent', padding: 0 }}
               >
                 <Pin size={12} style={{ transform: isProjectPinned(p) ? 'rotate(-45deg)' : 'none', transition: 'transform .18s ease, color .18s ease', fill: isProjectPinned(p) ? 'currentColor' : 'none' }} />
               </button>
-              {/* T02167：同任务页——名称 flex:1 + minWidth:0 才能收缩省略，三枚计划徽标 flexShrink:0 不让步 */}
-              <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
-              <span title={`已完成 ${p.plan_done ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success)' }}>{p.plan_done ?? 0}</span>
-              <span title={`进行中 ${p.plan_doing ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.plan_doing ?? 0}</span>
-              <span title={`待开始 ${p.plan_open ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>{p.plan_open ?? 0}</span>
+              <button
+                type="button"
+                className="card-btn"
+                aria-pressed={p.id === projectId}
+                aria-label={`切换到项目 ${p.name}`}
+                draggable={projSortMode === 'default'}
+                onDragStart={() => setDragProjId(p.id)}
+                onDragOver={(e) => { if (projSortMode === 'default' && dragProjId) { e.preventDefault(); setOverProjId(p.id); } }}
+                onDragLeave={() => setOverProjId((curId) => (curId === p.id ? '' : curId))}
+                onDrop={(e) => { e.preventDefault(); runAsync(dropReorder(p.id)); }}
+                onDragEnd={() => { setDragProjId(''); setOverProjId(''); }}
+                onClick={() => { setProjectId(p.id); setProjOpen(false); }}
+                title={projSortMode === 'default'
+                  ? `${p.name}：已完成 ${p.plan_done ?? 0}，进行中 ${p.plan_doing ?? 0}，待开始 ${p.plan_open ?? 0}（可拖拽调整顺序）`
+                  : `${p.name}：已完成 ${p.plan_done ?? 0}，进行中 ${p.plan_doing ?? 0}，待开始 ${p.plan_open ?? 0}（拖拽排序请切换到「默认（置顶优先）」）`}
+                style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, padding: 0, border: 'none', background: 'transparent', color: 'var(--text)', textAlign: 'left', cursor: projSortMode === 'default' ? 'grab' : 'pointer' }}>
+                {/* T02167：同任务页——名称 flex:1 + minWidth:0 才能收缩省略，三枚计划徽标 flexShrink:0 不让步 */}
+                <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+                <span title={`已完成 ${p.plan_done ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success)' }}>{p.plan_done ?? 0}</span>
+                <span title={`进行中 ${p.plan_doing ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.plan_doing ?? 0}</span>
+                <span title={`待开始 ${p.plan_open ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>{p.plan_open ?? 0}</span>
+              </button>
             </div>
           ))}
         </div>
@@ -450,10 +465,12 @@ function ShareSnapshotButton({ projectId, projectName }: {
         <Share2 size={13} />
       </button>
       {open && (
-        <div role="dialog" aria-modal="true" aria-label="脱敏分享快照" data-t03197="dialog"
-          onClick={(e) => { if (e.target === e.currentTarget) close(); }}
-          style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,.32)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ width: 'min(460px, calc(100vw - 32px))', padding: 18, borderRadius: 10, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', boxShadow: '0 16px 48px rgba(0,0,0,.24)' }}>
+        <dialog open aria-modal="true" aria-label="脱敏分享快照" data-t03197="dialog"
+          style={{ position: 'fixed', inset: 0, margin: 0, padding: 0, border: 'none', background: 'transparent', width: '100vw', height: '100vh', maxWidth: 'none', maxHeight: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}>
+          {/* 遮罩改用原生 button：点空白处关闭仍是鼠标侧便捷通路，Esc 与「取消」提供键盘通路 */}
+          <button type="button" onClick={close} disabled={busy} tabIndex={-1} aria-label="关闭脱敏分享快照"
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', padding: 0, border: 'none', background: 'rgba(0,0,0,.32)', cursor: busy ? 'default' : 'pointer' }} />
+          <div style={{ position: 'relative', width: 'min(460px, calc(100vw - 32px))', padding: 18, borderRadius: 10, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', boxShadow: '0 16px 48px rgba(0,0,0,.24)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
               <Share2 size={15} style={{ color: 'var(--accent)' }} />
               <strong style={{ fontSize: 'var(--fs-m)' }}>脱敏分享快照</strong>
@@ -483,7 +500,7 @@ function ShareSnapshotButton({ projectId, projectName }: {
               </button>
             </div>
           </div>
-        </div>
+        </dialog>
       )}
     </>
   );
@@ -573,7 +590,7 @@ function PlanTimelineGranularityToggle({ granularity, setGranularity }: {
     { k: 'quarter', label: '季', tip: '按季刻度：轴上最疏，适合跨季度总览' },
   ];
   return (
-    <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} role="group" aria-label="时间线粒度">
+    <fieldset style={{ display: 'inline-flex', margin: 0, padding: 0, minWidth: 0, border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} aria-label="时间线粒度">
       {granules.map((g, i) => (
         <button
           key={g.k}
@@ -583,7 +600,7 @@ function PlanTimelineGranularityToggle({ granularity, setGranularity }: {
           style={{ padding: '4px 10px', fontSize: 'var(--fs-s)', border: 'none', borderLeft: i > 0 ? '1px solid var(--border-strong)' : 'none', cursor: 'pointer', background: granularity === g.k ? 'var(--accent)' : 'transparent', color: granularity === g.k ? 'var(--accent-text)' : 'var(--text)' }}
         >{g.label}</button>
       ))}
-    </div>
+    </fieldset>
   );
 }
 
@@ -598,7 +615,7 @@ function PlanTimelineSpacingToggle({ spacing, setSpacing }: {
     { k: 'proportional', label: '按比例', tip: '按比例排布：节点纵向距离 ∝ 起始日期差（按自然日；甘特/工期为工作日口径，两者不可直接对照），跨月空档会真实拉开（超长空档压缩绘制并标注「空档 N 天」）' },
   ];
   return (
-    <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} role="group" aria-label="时间线间距模式">
+    <fieldset style={{ display: 'inline-flex', margin: 0, padding: 0, minWidth: 0, border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }} aria-label="时间线间距模式">
       {modes.map((m, i) => (
         <button
           key={m.k}
@@ -610,7 +627,7 @@ function PlanTimelineSpacingToggle({ spacing, setSpacing }: {
           style={{ padding: '4px 10px', fontSize: 'var(--fs-s)', border: 'none', borderLeft: i > 0 ? '1px solid var(--border-strong)' : 'none', cursor: 'pointer', background: spacing === m.k ? 'var(--accent)' : 'transparent', color: spacing === m.k ? 'var(--accent-text)' : 'var(--text)' }}
         >{m.label}</button>
       ))}
-    </div>
+    </fieldset>
   );
 }
 
@@ -708,42 +725,42 @@ function PlanPanelToggles({ showPrd, setShowPrd, showMatrix, setShowMatrix, show
       <button onClick={() => setShowPrd((v) => !v)} className="tbtn-anim prd-ico-anim"
         title="PRD 管理 — 文档导入/新建/编辑/查看/删除、PRD↔确认版状态流转、待确认问题与结论回写"
         aria-label="PRD 管理" aria-expanded={showPrd}
-        style={{ ...btnStyle, background: showPrd ? 'var(--accent)' : 'transparent', color: showPrd ? 'var(--accent-text)' : 'var(--text)', borderColor: showPrd ? 'var(--accent)' : 'var(--border-strong)' }}>
+        style={panelToggleStyle(showPrd)}>
         <FilePenLine size={13} />
       </button>
       {/* T00662：需求跟踪矩阵入口——位于甘特图按钮旁；T00705：去中文名称，仅图标简洁显示（悬浮 title 与无障碍标签保留完整语义） */}
       <button onClick={() => setShowMatrix((v) => !v)} className="tbtn-anim"
         title="需求跟踪矩阵 — 展示 PRD 需求与计划/待办的关联及状态，支持增删改与关联调整"
         aria-label="需求跟踪矩阵" aria-expanded={showMatrix}
-        style={{ ...btnStyle, background: showMatrix ? 'var(--accent)' : 'transparent', color: showMatrix ? 'var(--accent-text)' : 'var(--text)', borderColor: showMatrix ? 'var(--accent)' : 'var(--border-strong)' }}>
+        style={panelToggleStyle(showMatrix)}>
         <Table2 size={13} />
       </button>
       {/* T01485：测试用例入口——紧随需求跟踪矩阵（PRD §4.1：矩阵是用例的上游，顺序即操作动线）；图标-only，样式与相邻两个入口完全一致 */}
       <button onClick={() => setShowTestCases((v) => !v)} className="tbtn-anim"
         title="测试用例 — 用例增删改查、步骤行内编辑、批量维护、覆盖度与导出"
         aria-label="测试用例" aria-expanded={showTestCases}
-        style={{ ...btnStyle, background: showTestCases ? 'var(--accent)' : 'transparent', color: showTestCases ? 'var(--accent-text)' : 'var(--text)', borderColor: showTestCases ? 'var(--accent)' : 'var(--border-strong)' }}>
+        style={panelToggleStyle(showTestCases)}>
         <TestTubes size={13} />
       </button>
       {/* T03186（PRD PM-201）：迭代与燃尽入口——用例之后（动线：需求 → 计划 → 迭代 → 燃尽，概要设计 §7.1）；样式与相邻入口一致 */}
       <button onClick={() => setShowSprint((v) => !v)} className="tbtn-anim" data-t03186="toggle"
         title="迭代与燃尽 — 迭代增删改档、计划行挂载、按业务日的燃尽双口径与结束小结"
         aria-label="迭代与燃尽" aria-expanded={showSprint}
-        style={{ ...btnStyle, background: showSprint ? 'var(--accent)' : 'transparent', color: showSprint ? 'var(--accent-text)' : 'var(--text)', borderColor: showSprint ? 'var(--accent)' : 'var(--border-strong)' }}>
+        style={panelToggleStyle(showSprint)}>
         <Layers size={13} />
       </button>
       {/* T03236（PRD PM-205）：项目洞察入口——迭代之后（动线收尾：看迭代燃尽 → 看项目趋势）；图标-only，样式与相邻入口一致 */}
       <button onClick={() => setShowInsight((v) => !v)} className="tbtn-anim" data-t03236="toggle"
         title="项目洞察 — 累计流/周期时间/逾期趋势/吞吐四图，按项目与时间范围渲染并支持 PNG 导出"
         aria-label="项目洞察" aria-expanded={showInsight}
-        style={{ ...btnStyle, background: showInsight ? 'var(--accent)' : 'transparent', color: showInsight ? 'var(--accent-text)' : 'var(--text)', borderColor: showInsight ? 'var(--accent)' : 'var(--border-strong)' }}>
+        style={panelToggleStyle(showInsight)}>
         <LineChart size={13} />
       </button>
       {/* T03196（PRD PM-401）：Webhook 入口——项目级出站订阅（洞察之后，都是项目级配置/观察入口） */}
       <button onClick={() => setShowWebhook((v) => !v)} className="tbtn-anim" data-t03196="toggle"
         title="Webhook 订阅 — 任务/计划事件外发、HMAC 签名、1/5/30 分钟重试与投递日志"
         aria-label="Webhook 订阅" aria-expanded={showWebhook}
-        style={{ ...btnStyle, background: showWebhook ? 'var(--accent)' : 'transparent', color: showWebhook ? 'var(--accent-text)' : 'var(--text)', borderColor: showWebhook ? 'var(--accent)' : 'var(--border-strong)' }}>
+        style={panelToggleStyle(showWebhook)}>
         <Webhook size={13} />
       </button>
     </>
@@ -1022,10 +1039,12 @@ function PlanActionsCell({ p, depMenuId, depMenuRef, depMenuPos, evalBusy, busy,
 function MilestoneForecastPanel({ forecast, onClose }: { readonly forecast: MilestoneForecast; readonly onClose: () => void }) {
   const v = FORECAST_VERDICT[forecast.verdict];
   return (
-    <div role="dialog" aria-label="里程碑预测明细" data-t03234="forecast-panel"
-      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
-      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 8, padding: 16, width: 560, maxWidth: '92vw', maxHeight: '80vh', overflow: 'auto', fontSize: 'var(--fs-m)' }}>
+    <dialog open aria-modal="true" aria-label="里程碑预测明细" data-t03234="forecast-panel"
+      style={{ position: 'fixed', inset: 0, margin: 0, padding: 0, border: 'none', background: 'transparent', width: '100vw', height: '100vh', maxWidth: 'none', maxHeight: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+      {/* 遮罩改用原生 button：点空白处关闭仍是鼠标侧便捷通路，右上角关闭按钮提供键盘通路 */}
+      <button type="button" onClick={onClose} tabIndex={-1} aria-label="关闭里程碑预测明细"
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', padding: 0, border: 'none', background: 'var(--overlay)', cursor: 'pointer' }} />
+      <div style={{ position: 'relative', background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 8, padding: 16, width: 560, maxWidth: '92vw', maxHeight: '80vh', overflow: 'auto', fontSize: 'var(--fs-m)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <b style={{ flex: 1 }}>{forecast.title} — 达成预测</b>
           <button onClick={onClose} aria-label="关闭" className="task-op" style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)' }}><X size={14} /></button>
@@ -1066,7 +1085,7 @@ function MilestoneForecastPanel({ forecast, onClose }: { readonly forecast: Mile
         </table>
         <div style={{ marginTop: 10, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>预测值，非承诺：按子项剩余工作日串行排期推算，不替代人工判断。</div>
       </div>
-    </div>
+    </dialog>
   );
 }
 
@@ -1303,10 +1322,12 @@ function HolidayModal({ holiBusy, setHoliOpen, holiTab, setHoliTab, holiNewKind,
   readonly renderMonthGrid: (year: number, month: number) => React.ReactNode;
 }) {
   return (
-    <div /* NOSONAR - 弹窗外层全屏遮罩需保持 div 布局；点击遮罩仅为鼠标便捷操作，弹窗内原生关闭按钮提供键盘可达通路 */
-      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-      onClick={(e) => { if (e.target === e.currentTarget && !holiBusy) setHoliOpen(false); }}>
-      <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(760px, 94vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
+    <dialog open aria-modal="true" aria-label="节假日管理"
+      style={{ position: 'fixed', inset: 0, margin: 0, padding: 0, border: 'none', background: 'transparent', width: '100vw', height: '100vh', maxWidth: 'none', maxHeight: 'none', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {/* 遮罩改用原生 button：点空白处关闭仍是鼠标侧便捷通路，标题栏关闭按钮提供键盘通路 */}
+      <button type="button" onClick={() => { if (!holiBusy) setHoliOpen(false); }} disabled={holiBusy} tabIndex={-1} aria-label="关闭节假日管理"
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', padding: 0, border: 'none', background: 'var(--overlay)', cursor: holiBusy ? 'default' : 'pointer' }} />
+      <div style={{ position: 'relative', background: 'var(--card-bg)', borderRadius: 8, width: 'min(760px, 94vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
           <span>节假日管理</span>
           <span style={{ flex: 1 }} />
@@ -1374,7 +1395,7 @@ function HolidayModal({ holiBusy, setHoliOpen, holiTab, setHoliTab, holiNewKind,
           )}
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }
 
@@ -1624,6 +1645,8 @@ export function PlanPage() {
   // 并沿显式 deps 传播）。这样一次拖动只发一个请求，也不会在拖动过程中被 reload 打断。
   const [ganttDrag, setGanttDrag] = useState<GanttDragState | null>(null);
   const ganttDragRef = useRef<GanttDragState | null>(null);
+  // 松手落库的回调放进 ref：全局监听依赖只需「哪条·哪种」，不必随预览态重建（也无失效闭包）
+  const commitGanttDragRef = useRef<() => void>(() => {});
   // 与服务端同口径的工作日历上下文（放假日/加班日）
   const workdayCtx = useMemo(() => buildWorkdayCtx(holidays), [holidays]);
   // T03161（U22）：删除页内同源向导的首访自动弹出——全局 PageGuide（App.tsx + guides.tsx plan 条目）
@@ -2356,6 +2379,7 @@ export function PlanPage() {
     void updatePlan(p, { start_date: cur.nextStart, duration_days: cur.nextDur });
     flash(`${what}：${p.title} → ${cur.nextStart} ~ ${cur.nextEnd}（${cur.nextDur} 工作日）`);
   }
+  commitGanttDragRef.current = commitGanttDrag;
 
   // T01059 后续：拖动期间的全局鼠标监听。依赖只取「哪条·哪种」——每次 mousemove 都重建监听既浪费也会丢事件。
   const ganttDragKey = ganttDrag ? `${ganttDrag.id}:${ganttDrag.mode}` : '';
@@ -2370,14 +2394,13 @@ export function PlanPage() {
       ganttDragRef.current = st;
       setGanttDrag(st);
     };
-    const onUp = (): void => { commitGanttDrag(); };
+    const onUp = (): void => { commitGanttDragRef.current(); };
     globalThis.addEventListener('mousemove', onMove);
     globalThis.addEventListener('mouseup', onUp);
     return () => {
       globalThis.removeEventListener('mousemove', onMove);
       globalThis.removeEventListener('mouseup', onUp);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 拖动的原点数据都在 ref 里，回调无需随预览态重建
   }, [ganttDragKey]);
 
   /** T01564 / T01565：时间线视图——纵向里程碑脉络，与甘特互补（非替代）。
@@ -2545,7 +2568,7 @@ export function PlanPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-s)' }}>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', color: 'var(--text)' }}>
             <input type="checkbox" checked={showGanttEstimate} onChange={toggleGanttEstimate} aria-label="甘特估算区间叠加开关" />
-            估算区间叠加
+            {' '}估算区间叠加
           </label>
           <span style={{ color: 'var(--text-muted)' }}>
             {ganttEstimateHint}
@@ -2585,25 +2608,27 @@ export function PlanPage() {
                     })}
                     {renderTodayLine()}
                     {/* 任务条（T01059-FR2.3：关键路径红色描边；T01059 后续：拖条体平移、拖两端改工期） */}
-                    <div title={`${p.title}
+                    <button type="button"
+                      aria-label={`${p.title} 甘特条（拖动条体平移，拖左右两端伸缩工期）`}
+                      title={`${p.title}
 ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.progress}% · ${p.assignee || '未分配'}${criticalNodes.has(p.id) ? ' · ★ 关键路径' : ''}
 拖动条体=平移排期；拖左右两端=伸缩工期（松手保存）`}
-                      onMouseDown={(e) => startGanttDrag(e, p, 'move')}
+                      onMouseDown={(e) => startGanttDrag(e, p, ganttDragModeAt(e))}
                       style={{
-                        position: 'absolute', left, width, top: 5, height: 18, borderRadius: 4,
+                        position: 'absolute', left, width, top: 5, height: 18, borderRadius: 4, padding: 0, border: 'none',
                         background: STATUS_BAR[p.status], opacity: drag ? 1 : 0.85, cursor: drag ? 'grabbing' : 'grab',
                         outline: criticalNodes.has(p.id) ? '2px solid var(--danger)' : undefined, outlineOffset: -1,
                       }}>
-                      <div style={{ position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', borderRadius: 4, overflow: 'hidden' }}>
-                        <div style={{ width: `${p.progress}%`, height: '100%', background: 'var(--bar-sheen)' }} />
-                      </div>
-                      {/* 左/右 resize 手柄：6px 命中区，stopPropagation 避免触发条体平移 */}
-                      <span onMouseDown={(e) => startGanttDrag(e, p, 'resize-l')} title="拖动改开始日（工期随之变化）"
+                      <span style={{ position: 'absolute', left: 0, top: 0, display: 'block', width: '100%', height: '100%', borderRadius: 4, overflow: 'hidden' }}>
+                        <span style={{ display: 'block', width: `${p.progress}%`, height: '100%', background: 'var(--bar-sheen)' }} />
+                      </span>
+                      {/* 左/右 resize 手柄：6px 视觉区（命中判定在条体 onMouseDown 里按坐标算，无需各自挂监听） */}
+                      <span title="拖动改开始日（工期随之变化）"
                         style={{ position: 'absolute', left: 0, top: 0, width: 6, height: '100%', cursor: 'ew-resize', background: 'var(--bar-grip)', borderRadius: '4px 0 0 4px' }} />
-                      <span onMouseDown={(e) => startGanttDrag(e, p, 'resize-r')} title="拖动改结束日（工期随之变化）"
+                      <span title="拖动改结束日（工期随之变化）"
                         style={{ position: 'absolute', right: 0, top: 0, width: 6, height: '100%', cursor: 'ew-resize', background: 'var(--bar-grip)', borderRadius: '0 4px 4px 0' }} />
                       {drag ? renderDragBadge(drag) : null}
-                    </div>
+                    </button>
                   </div>
                 </div>
               );
@@ -2820,13 +2845,12 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
     );
   }
 
-  // T00460：滚动位置保活（离开页时保存，切回恢复）
+  // T00460：滚动位置保活（离开页时保存，切回恢复；仅挂载时恢复一次）
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollSaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => {
     const saved = sessionStorage.getItem('plan.scrollY');
     if (saved && scrollRef.current) scrollRef.current.scrollTop = Number(saved);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅挂载时恢复一次
   }, []);
   const onScrollSave = () => {
     if (scrollSaveTimer.current) return;

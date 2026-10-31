@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type Dispatch, type SetStateAction } from 'react';
 import { TasksPage } from './pages/TasksPage';
 import { AIToolsPage } from './pages/AIToolsPage';
 import { QueuePage } from './pages/QueuePage';
@@ -32,6 +32,76 @@ import { applyDeepLink, buildDeepLink, readDeepLinkFromLocation } from './ui/dee
 // 免得两处各自漏态——此前「无总量」「刚点击」两态在卡片侧就是纯空白）
 import { isInFlightStatus, updateProgressView } from './ui/updateProgress';
 
+/** T02976：菜单通道下载进度提示条的状态（retrying 额外带主进程给的续传原因文案） */
+type DlToastState = {
+  status: 'starting' | 'downloading' | 'resuming' | 'retrying' | 'downloaded' | 'failed';
+  received: number;
+  total: number;
+  message?: string;
+} | null;
+
+/** T02976：主进程下载进度事件（与 preload 的 onUpdateProgress 契约同形） */
+interface MenuUpdateProgress {
+  status: string;
+  received?: number;
+  total?: number;
+  origin?: string;
+  message?: string;
+}
+
+/**
+ * T02976：把菜单通道的进度事件落到全局提示条。
+ * 只消费 origin='menu'（设置页卡片自带进度，不重复显示）；完成态留 3 秒完成回执后由定时器收起。
+ */
+function applyMenuProgress(
+  d: MenuUpdateProgress,
+  setDlToast: Dispatch<SetStateAction<DlToastState>>,
+  timer: { current: ReturnType<typeof setTimeout> | undefined },
+): void {
+  if (d.origin !== 'menu') return;
+  const received = d.received ?? 0;
+  const total = d.total ?? 0;
+  if (d.status === 'starting' || d.status === 'downloading' || d.status === 'resuming') {
+    globalThis.clearTimeout(timer.current);
+    setDlToast({ status: d.status, received, total });
+  } else if (d.status === 'retrying') {
+    // 更新下载续传：主进程正在自动续传重试——保留进度条与取消入口，只把文案换成可读原因，
+    // 否则用户看到进度归零/停滞会误判成下载失败
+    globalThis.clearTimeout(timer.current);
+    setDlToast({ status: 'retrying', received, total, message: d.message });
+  } else if (d.status === 'downloaded') {
+    setDlToast({ status: 'downloaded', received, total });
+    // 主进程随后弹「立即安装 / 稍后安装」对话框；进度条只留 3 秒做完成回执即收起
+    timer.current = globalThis.setTimeout(() => setDlToast((cur) => (cur?.status === 'downloaded' ? null : cur)), 3000);
+  } else if (d.status === 'failed') {
+    setDlToast({ status: 'failed', received: 0, total: 0, message: d.message ?? '下载失败' });
+  } else {
+    setDlToast(null); // cancelled 等终态：菜单通道没有「继续下载」入口，直接收起
+  }
+}
+
+/** T03170：撤销 op-force 显形（op-hidden 控件只在聚焦期间可见） */
+function releaseSearchHost(host: Element | null): void {
+  if (host) host.classList.remove('op-force');
+}
+
+/**
+ * T03170：聚焦页内搜索框。op-hidden 控件默认 visibility:hidden，程序 focus() 无效——
+ * 先经宿主 op-force 显形再聚焦，失焦即撤销；返回是否真的拿到了焦点。
+ */
+function focusPageSearch(el: HTMLInputElement | HTMLTextAreaElement): boolean {
+  const host = el.closest('.op-host');
+  if (host) host.classList.add('op-force');
+  el.focus();
+  el.select();
+  if (document.activeElement !== el) {
+    releaseSearchHost(host);
+    return false;
+  }
+  el.addEventListener('blur', () => releaseSearchHost(host), { once: true });
+  return true;
+}
+
 /** 应用外壳：导航 + 主题变量容器。颜色取自 CSS 变量，主题切换即时全局生效 */
 function Shell() {
   const [tab, setTab] = useState<Tab>('tasks');
@@ -43,7 +113,7 @@ function Shell() {
   // 更新下载续传：retrying = 网络中断后的自动续传重试中——进度保持不变，但要让用户知道「没卡死、在自愈」
   // T02977 复验补：starting = 主进程已发起请求但还没收到任何字节（连 DNS/TLS 都算在内）；
   // 没有这一帧，点击后那段空窗在界面上等于「什么都没发生」。
-  const [dlToast, setDlToast] = useState<{ status: 'starting' | 'downloading' | 'resuming' | 'retrying' | 'downloaded' | 'failed'; received: number; total: number; message?: string } | null>(null);
+  const [dlToast, setDlToast] = useState<DlToastState>(null);
   // T00443 / PRD UX-4：全局命令面板（T03170 / D-07：Ctrl+K 打开；Ctrl+F 优先页内搜索）
   const [paletteOpen, setPaletteOpen] = useState(false);
   // T00706：全菜单使用向导——当前菜单首次进入自动弹出，导航右侧常驻「向导」按钮随时唤起
@@ -109,23 +179,9 @@ function Shell() {
         setPaletteOpen(true);
       } else if (k === 'f') {
         const cands = Array.from(document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input[data-page-search], textarea[data-page-search]'));
-        const tryFocus = (el: HTMLInputElement | HTMLTextAreaElement): boolean => {
-          // op-hidden 控件默认 visibility:hidden，程序 focus() 无效——先经宿主 op-force 显形再聚焦，失焦撤销
-          const host = el.closest('.op-host');
-          if (host) host.classList.add('op-force');
-          el.focus();
-          el.select();
-          if (document.activeElement !== el) {
-            if (host) host.classList.remove('op-force');
-            return false;
-          }
-          const undo = () => { if (host) host.classList.remove('op-force'); };
-          el.addEventListener('blur', undo, { once: true });
-          return true;
-        };
         const target = cands.find((el) => el.offsetParent !== null && !el.disabled);
         e.preventDefault();
-        if (target && tryFocus(target)) {
+        if (target && focusPageSearch(target)) {
           setPaletteOpen(false);
         } else {
           setPaletteOpen(true);
@@ -177,30 +233,9 @@ function Shell() {
   useEffect(() => {
     const desk = desktopApi();
     if (!desk?.onUpdateProgress) return;
-    let hideTimer: ReturnType<typeof setTimeout> | undefined;
-    const off = desk.onUpdateProgress((d) => {
-      if (d.origin !== 'menu') return;
-      const received = d.received ?? 0;
-      const total = d.total ?? 0;
-      if (d.status === 'downloading' || d.status === 'resuming' || d.status === 'starting') {
-        globalThis.clearTimeout(hideTimer);
-        setDlToast({ status: d.status, received, total });
-      } else if (d.status === 'retrying') {
-        // 更新下载续传：主进程正在自动续传重试——保留进度条与取消入口，只把文案换成可读原因，
-        // 否则用户看到进度归零/停滞会误判成下载失败
-        globalThis.clearTimeout(hideTimer);
-        setDlToast({ status: 'retrying', received, total, message: d.message });
-      } else if (d.status === 'downloaded') {
-        setDlToast({ status: 'downloaded', received, total });
-        // 主进程随后弹「立即安装 / 稍后安装」对话框；进度条只留 3 秒做完成回执即收起
-        hideTimer = globalThis.setTimeout(() => setDlToast((cur) => (cur?.status === 'downloaded' ? null : cur)), 3000);
-      } else if (d.status === 'failed') {
-        setDlToast({ status: 'failed', received: 0, total: 0, message: d.message ?? '下载失败' });
-      } else {
-        setDlToast(null); // cancelled 等终态：菜单通道没有「继续下载」入口，直接收起
-      }
-    });
-    return () => { globalThis.clearTimeout(hideTimer); off(); };
+    const timer: { current: ReturnType<typeof setTimeout> | undefined } = { current: undefined };
+    const off = desk.onUpdateProgress((d) => applyMenuProgress(d, setDlToast, timer));
+    return () => { globalThis.clearTimeout(timer.current); off(); };
   }, []);
 
   // 启动时同步访问令牌：若后端已配置（或重置过）令牌，更新本地，避免带旧令牌触发 401

@@ -49,6 +49,36 @@ export interface LaneLayout {
   through: number[][];
 }
 
+/** 取一条空闲车道（没有就新开一条），返回其下标 */
+function takeFreeLane(lanes: (string | null)[]): number {
+  const free = lanes.indexOf(null);
+  if (free >= 0) return free;
+  lanes.push(null);
+  return lanes.length - 1;
+}
+
+/** 本行需要画线的车道：本行自己的车道 + 仍被等待的车道 */
+function throughOf(lanes: readonly (string | null)[], lane: number): number[] {
+  return lanes.map((l, i) => (l !== null || i === lane ? i : -1)).filter((i) => i >= 0);
+}
+
+/**
+ * 单行接线：第一父沿用本行车道，其余父各开一条空闲车道；
+ * 已被别的车道等待的父不重复开线（分叉汇合点）。
+ */
+function linkParents(lanes: (string | null)[], lane: number, parents: readonly string[]): void {
+  let firstParentPlaced = false;
+  for (const p of parents) {
+    if (lanes.includes(p)) continue;
+    if (!firstParentPlaced && parents[0] === p) {
+      lanes[lane] = p;
+      firstParentPlaced = true;
+      continue;
+    }
+    lanes[takeFreeLane(lanes)] = p;
+  }
+}
+
 /**
  * 车道分配：一条车道「等」某个 SHA 出现，出现即接线；第一父沿用车道，其余父另开道，
  * 已被别的车道等的父不再重复开线（分叉汇合点）。
@@ -61,26 +91,12 @@ export function assignLanes(commits: readonly GitTreeCommit[]): LaneLayout {
   const out: number[] = [];
   const through: number[][] = [];
   for (const c of commits) {
-    let lane = lanes.indexOf(c.sha);
-    if (lane < 0) {
-      lane = lanes.indexOf(null);
-      if (lane < 0) { lanes.push(null); lane = lanes.length - 1; }
-    }
+    const found = lanes.indexOf(c.sha);
+    const lane = found >= 0 ? found : takeFreeLane(lanes);
     out.push(lane);
     lanes[lane] = null;
-    let firstParentPlaced = false;
-    for (const p of c.parents) {
-      if (lanes.includes(p)) continue;
-      if (!firstParentPlaced && c.parents[0] === p) {
-        lanes[lane] = p;
-        firstParentPlaced = true;
-        continue;
-      }
-      let free = lanes.indexOf(null);
-      if (free < 0) { lanes.push(null); free = lanes.length - 1; }
-      lanes[free] = p;
-    }
-    through.push(lanes.map((l, i) => (l !== null || i === lane ? i : -1)).filter((i) => i >= 0));
+    linkParents(lanes, lane, c.parents);
+    through.push(throughOf(lanes, lane));
   }
   return { lanes: out, count: out.length === 0 ? 0 : Math.max(...out) + 1, through };
 }

@@ -237,6 +237,44 @@ function patchSingleCase(caseId: string, patch: CasePatch): CallToolResult {
   return ok(JSON.stringify(row), { ...row });
 }
 
+/** 响应正文里的告警段；无告警返回空串，保持原响应逐字不变 */
+function warningNote(label: string, text: string | undefined): string {
+  return text ? `\n\n⚠ ${label}：${text}` : '';
+}
+
+/**
+ * T00482/T02938：建单的项目归属路由——projectId 优先；其次 projectName 按名解析（精确 → 大小写不敏感）；
+ * 都未提供才缺省「默认记事项目」（用户设置优先，否则收件箱），并打日志警告便于排查误入收件箱。
+ * 按名解析走单源：同名「归档 + 现行」多行时不再取库序首行，解析到非现行/歧义行时回 warning。
+ */
+function routeCreateProject(
+  projectId: string | undefined,
+  projectName: string | undefined,
+  title: string | undefined,
+): { pid: string; warning: string } | { error: string } {
+  let pid = projectId?.trim() || '';
+  let projectWarning = '';
+  if (!pid && projectName?.trim()) {
+    const r = resolveProjectByName(projectName.trim());
+    if (r.error) return { error: r.error };
+    pid = r.id ?? '';
+    projectWarning = r.warning ?? '';
+    if (projectWarning) console.warn(`[mtask-mcp] mtask_create_task 项目路由告警（${projectName.trim()}）：${projectWarning}`);
+  }
+  if (!pid) {
+    pid = getDefaultNoteProjectId();
+    console.warn(`[mtask-mcp] mtask_create_task 缺少项目归属（projectId/projectName 均未提供），任务「${title?.trim()}」落入默认记事项目 ${pid}`);
+  }
+  return { pid, warning: projectWarning };
+}
+
+/** T00445 查重：同项目同标题（规范化在 JS 侧统一做——SQLite 无 regexp，比对「去所有空白」后的标题，避免空格差异漏配） */
+function findDuplicateTask(pid: string, title: string): Record<string, unknown> | undefined {
+  const rows = getDb().prepare('SELECT * FROM tasks WHERE project_id = ?').all(pid) as Array<Record<string, unknown>>;
+  const normTitle = title.replaceAll(/\s+/g, '');
+  return rows.find((r) => (typeof r.title === 'string' ? r.title : '').replaceAll(/\s+/g, '') === normTitle);
+}
+
 /** 创建 MCP server 并注册全部工具 */
 export async function createMCPServer(): Promise<McpServer> {
   const server = new McpServer({ name: 'mtask', version: '1.0.0' });
@@ -271,43 +309,24 @@ export async function createMCPServer(): Promise<McpServer> {
     try {
       // 可选链：title 为空时 ?. 短路返回 undefined，与原「判空 || trim 判空」逻辑等价
       if (!a.title?.trim()) return err('title 必填');
-      // T00482：项目归属路由——projectId 优先；其次 projectName 按名解析（精确 → 大小写不敏感）；
-      // 都未提供才缺省「默认记事项目」（用户设置优先，否则收件箱），并打日志警告便于排查误入收件箱
-      let pid = a.projectId?.trim() || '';
-      // T02938：按名解析必须走单源——同名「归档 + 现行」多行时旧 SQL 取库序首行，
-      // 单子静默落进归档项目（建成功却在待办列表消失）。解析到非现行/歧义行时回警告，不再静默。
-      let projectWarning = '';
-      if (!pid && a.projectName?.trim()) {
-        const r = resolveProjectByName(a.projectName.trim());
-        if (r.error) return err(r.error);
-        pid = r.id ?? '';
-        projectWarning = r.warning ?? '';
-        if (projectWarning) console.warn(`[mtask-mcp] mtask_create_task 项目路由告警（${a.projectName.trim()}）：${projectWarning}`);
-      }
-      if (!pid) {
-        pid = getDefaultNoteProjectId();
-        console.warn(`[mtask-mcp] mtask_create_task 缺少项目归属（projectId/projectName 均未提供），任务「${a.title?.trim()}」落入默认记事项目 ${pid}`);
-      }
+      const routed = routeCreateProject(a.projectId, a.projectName, a.title);
+      if ('error' in routed) return err(routed.error);
+      const { pid, warning: projectWarning } = routed;
       if (!getDb().prepare('SELECT 1 FROM projects WHERE id = ?').get(pid)) {
         return err(`归属项目不存在：${pid}`);
       }
       // 查重（T00445 教训：MCP 回传/计划镜像/手动创建多渠道并存，无查重会产生重复待办）
-      // 规范化在 JS 侧统一做（SQLite 无 regexp）：比对「去所有空白」后的标题，避免空格差异漏配
-      const dedupe = a.dedupe !== false;
-      const normTitle = a.title.replaceAll(/\s+/g, '');
-      if (dedupe) {
-        const rows = getDb().prepare('SELECT * FROM tasks WHERE project_id = ?').all(pid) as Array<Record<string, unknown>>;
-        const exist = rows.find((r) => (typeof r.title === 'string' ? r.title : '').replaceAll(/\s+/g, '') === normTitle);
+      if (a.dedupe !== false) {
+        const exist = findDuplicateTask(pid, a.title);
         // T02938：查重命中同样要回显项目路由告警——「复用到归档项目里的既有单」与「新建落错项目」是同一种事故
         if (exist) {
-          return ok(json({ reused: true, task: exist })
-            + (projectWarning ? `\n\n⚠ 项目路由告警：${projectWarning}` : ''), {
+          return ok(json({ reused: true, task: exist }) + warningNote('项目路由告警', projectWarning), {
             reused: true, task: exist, ...(projectWarning ? { project_warning: projectWarning } : {}),
           });
         }
       }
       // T00450：父子层级——父任务校验（存在且同项目）
-      let parentId = a.parentId?.trim() || undefined;
+      const parentId = a.parentId?.trim() || undefined;
       const perr = validateParent(parentId, pid);
       if (perr) return err(perr);
       // T02320：溯源兜底——derivedFrom 缺省时按正文首行「来源：Txxxx」回填（只在母单真实存在时认），
@@ -325,12 +344,8 @@ export async function createMCPServer(): Promise<McpServer> {
       });
       // T00713：AI 建单（含回写派生单）后置 unread 未读圆点——否则派生单在列表中与手工单无异，
       // 用户无从感知「AI 产生了新单待处理」（T00620 显式驱动后不再有读取自动置 running 的兜底表现）
-      let fresh = task;
-      if ((task.status ?? 'todo') === 'todo') {
-        fresh = TaskService.setAiState(task.id, 'unread') ?? task;
-      }
-      return ok(json(fresh) + (origin.warning ? `\n\n⚠ 溯源告警：${origin.warning}` : '')
-        + (projectWarning ? `\n\n⚠ 项目路由告警：${projectWarning}` : ''), {
+      const fresh = (task.status ?? 'todo') === 'todo' ? TaskService.setAiState(task.id, 'unread') ?? task : task;
+      return ok(json(fresh) + warningNote('溯源告警', origin.warning) + warningNote('项目路由告警', projectWarning), {
         task: fresh, ...(origin.warning ? { create_warning: origin.warning } : {}),
         ...(projectWarning ? { project_warning: projectWarning } : {}),
       });

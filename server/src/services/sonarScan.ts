@@ -197,7 +197,12 @@ export function reportUrlFor(serverUrl: string, projectKey: string): string {
 /** Java .properties 的值转义：反斜杠在 Properties.load 里是转义符，Windows 路径直接写进去会被吃掉
  *  （`D:\tmp` 的 `\t` 变成制表符 → 扫描器抛 InvalidPathException，整条扫描链在 Windows 上必挂）。 */
 export function propertyValue(raw: string): string {
-  return String(raw).replace(/\\/g, '\\\\').replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\t/g, '\\t');
+  // 顺序不能变：先转义反斜杠本身，再逐个替换控制字符（否则新生成的反斜杠会被二次转义）
+  return String(raw)
+    .replaceAll('\\', String.raw`\\`)
+    .replaceAll('\r', String.raw`\r`)
+    .replaceAll('\n', String.raw`\n`)
+    .replaceAll('\t', String.raw`\t`);
 }
 
 export function buildProperties(input: {
@@ -485,11 +490,86 @@ export function issueDescription(issue: ScanIssue, ctx: WriteBackContext, extraN
   return lines.join('\n');
 }
 
-export function writeBack(
-  issues: ScanIssue[],
-  opts: { severities: ScanSeverity[]; cap: number; projectIds: string[] },
+/** 回写口径（阈值/上限/兜底项目） */
+type WriteBackOpts = { severities: ScanSeverity[]; cap: number; projectIds: string[] };
+
+/** 单条问题回写：归属任务 → 项目 → 指纹去重 → 建单；失败只计入收据，不中断整批 */
+function writeBackOneIssue(issue: ScanIssue, ctx: WriteBackContext, opts: WriteBackOpts, receipts: WriteBackReceipts): void {
+  if (!issue.taskId) { receipts.unattributed += 1; return; }
+  if (isFpFresh(issue.fingerprint)) { receipts.skippedDuplicate += 1; return; }
+  const parent = resolveWriteBackParent(issue.taskId);
+  const projectId = parent.projectId ?? opts.projectIds[0] ?? '';
+  if (!projectId) { receipts.failed += 1; receipts.failedNames.push(`${issue.rule} ${issue.path}:${issue.line}（找不到项目）`); return; }
+  const title = `[Sonar] ${issue.rule} ${issue.path}:${issue.line}`;
+  try {
+    const view = TaskService.create({
+      projectId,
+      title,
+      description: issueDescription(issue, ctx, parent.note),
+      priority: priorityOf(issue.severity),
+      parentId: parent.parentId,
+      status: 'todo',
+    });
+    rememberFp(issue.fingerprint, projectId, view.id, issue.severity);
+    receipts.created += 1;
+  } catch (e) {
+    receipts.failed += 1;
+    receipts.failedNames.push(`${title}（${(e as Error).message}）`);
+  }
+}
+
+/** 超过单次上限的部分：合并成一张汇总单（Q10 甲裁定，防洪泛淹没待办池） */
+function writeBackOverflow(
+  overflow: ScanIssue[],
+  head: ScanIssue[],
   ctx: WriteBackContext,
-): WriteBackReceipts {
+  opts: WriteBackOpts,
+  receipts: WriteBackReceipts,
+): void {
+  if (!overflow.length) return;
+  // 溢出段里 7 天内已回写过的指纹同样跳过：否则同一批问题第二次扫描会再造一张汇总单，
+  // 待办池被同一批问题反复灌满（汇总单本身不是指纹主体，只能按成员逐条判）
+  const freshOverflow = overflow.filter((i) => isFpFresh(i.fingerprint));
+  const pool = overflow.filter((i) => !isFpFresh(i.fingerprint));
+  receipts.skippedDuplicate += freshOverflow.length;
+  receipts.summaryFor = pool.length;
+  if (!pool.length) return;
+  const firstOwner = pool.find((i) => i.taskId)?.taskId ?? head.find((i) => i.taskId)?.taskId ?? '';
+  const parent = firstOwner ? resolveWriteBackParent(firstOwner) : { parentId: null, projectId: opts.projectIds[0] ?? null, note: '' };
+  const projectId = parent.projectId ?? opts.projectIds[0] ?? '';
+  if (!projectId) {
+    receipts.failed += pool.length;
+    return;
+  }
+  try {
+    const list = pool.slice(0, 200).map((i) => `- ${SEVERITY_LABEL[i.severity]} ${i.rule} ${i.path}:${i.line} ${i.message}`).join('\n');
+    const view = TaskService.create({
+      projectId,
+      title: `[Sonar] 本次扫描另有 ${pool.length} 个问题`,
+      description: [
+        `本次扫描超过单次回写上限 ${opts.cap} 条，其余 ${pool.length} 条合并为一单（Q10 甲裁定，防洪泛淹没待办池）。`,
+        `报告：${reportUrlFor(ctx.serverUrl, ctx.projectKey)}`,
+        `快照 SHA：${ctx.snapshotHeadSha}`,
+        '',
+        list,
+        pool.length > 200 ? `\n（清单截断到前 200 条，完整列表见上面的报告链接）` : '',
+        parent.note,
+      ].filter(Boolean).join('\n'),
+      priority: 'normal',
+      parentId: parent.parentId,
+      status: 'todo',
+    });
+    // 汇总单本身不是指纹主体，但被它兜住的每条问题都要记指纹，
+    // 否则下一次扫描会把同一批问题再算成「超上限」并再建一张汇总单
+    for (const i of pool) rememberFp(i.fingerprint, projectId, view.id, i.severity);
+    receipts.summaryTaskNo = view.task_no ?? null;
+    receipts.created += 1;
+  } catch {
+    receipts.failed += 1;
+  }
+}
+
+export function writeBack(issues: ScanIssue[], opts: WriteBackOpts, ctx: WriteBackContext): WriteBackReceipts {
   const receipts: WriteBackReceipts = {
     created: 0, skippedDuplicate: 0, belowThreshold: 0, failed: 0, unattributed: 0,
     failedNames: [], summaryTaskNo: null, summaryFor: 0,
@@ -504,95 +584,53 @@ export function writeBack(
     picked.push(i);
   }
   const head = picked.slice(0, opts.cap);
-  const overflow = picked.slice(opts.cap);
-
-  for (const issue of head) {
-    if (!issue.taskId) { receipts.unattributed += 1; continue; }
-    if (isFpFresh(issue.fingerprint)) { receipts.skippedDuplicate += 1; continue; }
-    const parent = resolveWriteBackParent(issue.taskId);
-    const projectId = parent.projectId ?? opts.projectIds[0] ?? '';
-    if (!projectId) { receipts.failed += 1; receipts.failedNames.push(`${issue.rule} ${issue.path}:${issue.line}（找不到项目）`); continue; }
-    const title = `[Sonar] ${issue.rule} ${issue.path}:${issue.line}`;
-    try {
-      const view = TaskService.create({
-        projectId,
-        title,
-        description: issueDescription(issue, ctx, parent.note),
-        priority: priorityOf(issue.severity),
-        parentId: parent.parentId,
-        status: 'todo',
-      });
-      rememberFp(issue.fingerprint, projectId, view.id, issue.severity);
-      receipts.created += 1;
-    } catch (e) {
-      receipts.failed += 1;
-      receipts.failedNames.push(`${title}（${(e as Error).message}）`);
-    }
-  }
-
-  if (overflow.length) {
-    // 溢出段里 7 天内已回写过的指纹同样跳过：否则同一批问题第二次扫描会再造一张汇总单，
-    // 待办池被同一批问题反复灌满（汇总单本身不是指纹主体，只能按成员逐条判）
-    const freshOverflow = overflow.filter((i) => isFpFresh(i.fingerprint));
-    const pool = overflow.filter((i) => !isFpFresh(i.fingerprint));
-    receipts.skippedDuplicate += freshOverflow.length;
-    receipts.summaryFor = pool.length;
-    if (pool.length) {
-      const firstOwner = pool.find((i) => i.taskId)?.taskId ?? head.find((i) => i.taskId)?.taskId ?? '';
-      const parent = firstOwner ? resolveWriteBackParent(firstOwner) : { parentId: null, projectId: opts.projectIds[0] ?? null, note: '' };
-      const projectId = parent.projectId ?? opts.projectIds[0] ?? '';
-      if (projectId) {
-        try {
-          const list = pool.slice(0, 200).map((i) => `- ${SEVERITY_LABEL[i.severity]} ${i.rule} ${i.path}:${i.line} ${i.message}`).join('\n');
-          const view = TaskService.create({
-            projectId,
-            title: `[Sonar] 本次扫描另有 ${pool.length} 个问题`,
-            description: [
-              `本次扫描超过单次回写上限 ${opts.cap} 条，其余 ${pool.length} 条合并为一单（Q10 甲裁定，防洪泛淹没待办池）。`,
-              `报告：${reportUrlFor(ctx.serverUrl, ctx.projectKey)}`,
-              `快照 SHA：${ctx.snapshotHeadSha}`,
-              '',
-              list,
-              pool.length > 200 ? `\n（清单截断到前 200 条，完整列表见上面的报告链接）` : '',
-              parent.note,
-            ].filter(Boolean).join('\n'),
-            priority: 'normal',
-            parentId: parent.parentId,
-            status: 'todo',
-          });
-          // 汇总单本身不是指纹主体，但被它兜住的每条问题都要记指纹，
-          // 否则下一次扫描会把同一批问题再算成「超上限」并再建一张汇总单
-          for (const i of pool) rememberFp(i.fingerprint, projectId, view.id, i.severity);
-          receipts.summaryTaskNo = view.task_no ?? null;
-          receipts.created += 1;
-        } catch {
-          receipts.failed += 1;
-        }
-      } else {
-        receipts.failed += pool.length;
-      }
-    }
-  }
+  for (const issue of head) writeBackOneIssue(issue, ctx, opts, receipts);
+  writeBackOverflow(picked.slice(opts.cap), head, ctx, opts, receipts);
   return receipts;
 }
 
 /* ------------------------- 阶段 5/6 ------------------------- */
 
-async function waitForAnalysis(
-  serverUrl: string,
-  token: string,
-  componentKey: string,
-  deps: Required<Pick<ScanDeps, 'fetchJson'>> & ScanDeps,
-  onLog: (line: string) => void,
-  onStage: (stage: ScanStage, detail?: Record<string, unknown>) => void,
-  signal?: AbortSignal,
-  ceTaskId?: string,
-): Promise<void> {
+/** 分析状态轮询地址：有 CE 任务 id 走 `ce/task`（提交者即可读），否则退回要求管理员权限的 `ce/component` */
+function analysisPollUrl(serverUrl: string, componentKey: string, ceTaskId?: string): string {
+  const base = normalizeSonarUrl(serverUrl);
+  return ceTaskId
+    ? `${base}/api/ce/task?id=${encodeURIComponent(ceTaskId)}`
+    : `${base}/api/ce/component?component=${encodeURIComponent(componentKey)}`;
+}
+
+/** 轮询的 HTTP 状态归因：401/403 的指引按可用端点区分；其余 4xx/5xx 直接抛 */
+function assertAnalysisHttp(status: number, componentKey: string, ceTaskId?: string): void {
+  if (status === 401 || status === 403) throw new ScanError('auth-failed', `等待分析结果被拒绝（HTTP ${status}）`, ceTaskId
+    ? 'Token 需具备查看该项目的权限（`ce/task` 对提交该分析的 Token 开放）。'
+    : 'Token 需具备查看该项目的权限（`ce/component` 还要求项目管理员；扫描器输出里没有 CE 任务 id 时无法改走 `ce/task`）。');
+  if (status === 404) throw new ScanError('project-not-found', `项目 ${componentKey} 无分析记录`, '确认 projectKey 与扫描确实提交成功（见上面的扫描器输出）。');
+  if (status >= 500) throw new ScanError('unreachable', `SonarQube 返回 HTTP ${status}`);
+}
+
+/** 失败/取消终态直接抛；其余状态返回由调用方继续轮询 */
+function assertAnalysisTerminal(state: string, json: any): void {
+  if (state !== 'FAILED' && state !== 'CANCELED') return;
+  const reason = String(json?.analysis?.errors?.[0] ?? json?.task?.reason ?? '') || '无原因字段';
+  throw new ScanError('scan-failed', `SonarQube 分析${state === 'FAILED' ? '失败' : '被取消'}：${reason}`, '到 SonarQube 看该项目的分析日志。');
+}
+
+interface WaitForAnalysisInput {
+  serverUrl: string;
+  token: string;
+  componentKey: string;
+  deps: Required<Pick<ScanDeps, 'fetchJson'>> & ScanDeps;
+  onLog: (line: string) => void;
+  onStage: (stage: ScanStage, detail?: Record<string, unknown>) => void;
+  signal?: AbortSignal;
+  ceTaskId?: string;
+}
+
+async function waitForAnalysis(input: WaitForAnalysisInput): Promise<void> {
+  const { serverUrl, token, componentKey, deps, onLog, onStage, signal, ceTaskId } = input;
   // 有扫描器回显的 CE 任务 id 时走 `ce/task`：该端点对提交者开放，而 `ce/component` 要求项目管理员权限，
   // 只带「分析 + 浏览」的常规 Token 会被它 403 挡住，整条扫描链在 wait 阶段断掉。
-  const url = ceTaskId
-    ? `${normalizeSonarUrl(serverUrl)}/api/ce/task?id=${encodeURIComponent(ceTaskId)}`
-    : `${normalizeSonarUrl(serverUrl)}/api/ce/component?component=${encodeURIComponent(componentKey)}`;
+  const url = analysisPollUrl(serverUrl, componentKey, ceTaskId);
   const started = Date.now();
   const pollMs = deps.cePollMs ?? CE_POLL_MS;
   const timeoutMs = deps.ceTimeoutMs ?? CE_TIMEOUT_MS;
@@ -600,20 +638,13 @@ async function waitForAnalysis(
   for (;;) {
     if (signal?.aborted) throw new ScanError('aborted', '已中止');
     const { status, json } = await deps.fetchJson(url, token);
-    if (status === 401 || status === 403) throw new ScanError('auth-failed', `等待分析结果被拒绝（HTTP ${status}）`, ceTaskId
-      ? 'Token 需具备查看该项目的权限（`ce/task` 对提交该分析的 Token 开放）。'
-      : 'Token 需具备查看该项目的权限（`ce/component` 还要求项目管理员；扫描器输出里没有 CE 任务 id 时无法改走 `ce/task`）。');
-    if (status === 404) throw new ScanError('project-not-found', `项目 ${componentKey} 无分析记录`, '确认 projectKey 与扫描确实提交成功（见上面的扫描器输出）。');
-    if (status >= 500) throw new ScanError('unreachable', `SonarQube 返回 HTTP ${status}`);
+    assertAnalysisHttp(status, componentKey, ceTaskId);
     const st = String(json?.task?.status ?? json?.component?.status ?? '').toUpperCase();
     if (st === 'SUCCESS') {
       onStage('wait', { status: st, waitedMs: Date.now() - started });
       return;
     }
-    if (st === 'FAILED' || st === 'CANCELED') {
-      const reason = String(json?.analysis?.errors?.[0] ?? json?.task?.reason ?? '') || '无原因字段';
-      throw new ScanError('scan-failed', `SonarQube 分析${st === 'FAILED' ? '失败' : '被取消'}：${reason}`, '到 SonarQube 看该项目的分析日志。');
-    }
+    assertAnalysisTerminal(st, json);
     const waitedMin = Math.floor((Date.now() - started) / 60_000);
     if (waitedMin > lastQueueMinute) {
       lastQueueMinute = waitedMin;
@@ -636,6 +667,24 @@ function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** 拉取清单的单页状态归因：401/403 是认证，其余 4xx/5xx 归为不可达（带上服务端原因） */
+function assertIssuePageStatus(status: number, json: any): void {
+  if (status === 401 || status === 403) throw new ScanError('auth-failed', `拉取问题清单被拒绝（HTTP ${status}）`);
+  if (status < 400) return;
+  const serverMsg = json?.errors?.[0]?.msg ? `：${json.errors[0].msg}` : '';
+  throw new ScanError('unreachable', `拉取问题清单失败（HTTP ${status}）${serverMsg}`);
+}
+
+/** 合并一页并按 key 去重：分页期间服务端可能插入新问题，同一问题不能计两次 */
+function mergeIssuePage(page: any[], all: any[], seen: Set<string>): void {
+  for (const i of page) {
+    const k = String(i?.issue?.key ?? i?.key ?? '');
+    if (k && seen.has(k)) continue;
+    if (k) seen.add(k);
+    all.push(i);
+  }
+}
+
 async function fetchAllIssues(
   serverUrl: string,
   token: string,
@@ -650,19 +699,9 @@ async function fetchAllIssues(
   for (let p = 1; p <= 100; p += 1) {
     if (signal?.aborted) throw new ScanError('aborted', '已中止');
     const { status, json } = await deps.fetchJson(`${base}&p=${p}`, token);
-    if (status === 401 || status === 403) throw new ScanError('auth-failed', `拉取问题清单被拒绝（HTTP ${status}）`);
-    if (status >= 400) {
-      const serverMsg = json?.errors?.[0]?.msg ? `：${json.errors[0].msg}` : '';
-      throw new ScanError('unreachable', `拉取问题清单失败（HTTP ${status}）${serverMsg}`);
-    }
+    assertIssuePageStatus(status, json);
     const page: any[] = Array.isArray(json?.issues) ? json.issues : [];
-    // 分页期间服务端可能插入新问题，用 key 去重防止同一问题被计两次
-    for (const i of page) {
-      const k = String(i?.issue?.key ?? i?.key ?? '');
-      if (k && seen.has(k)) continue;
-      if (k) seen.add(k);
-      all.push(i);
-    }
+    mergeIssuePage(page, all, seen);
     const total = Number(json?.total ?? all.length);
     onStage('fetch', { page: p, fetched: all.length, total });
     if (page.length < ISSUE_PAGE_SIZE || all.length >= total) break;
@@ -736,6 +775,174 @@ export function listRunningScans(): Array<{ jobId: string; title: string; stage:
   }));
 }
 
+/** Sonar `/api/issues/search` 原始行 → 扫描结果条目（归属取快照提交的 owner 索引） */
+function toScanIssue(i: any, projectKey: string, reportBase: string, owners: Map<string, Ownership>): ScanIssue {
+  const sev = normalizeSeverity(i);
+  const path = pathOfComponent(i?.component, projectKey);
+  const line = Number(i?.line ?? 0);
+  const rule = String(i?.rule ?? 'unknown-rule');
+  const message = String(i?.message ?? '');
+  const key = String(i?.key ?? '');
+  const owner = owners.get(path) ?? { taskId: null, taskNo: null, taskTitle: null, shared: false };
+  return {
+    key, rule, severity: sev, path, line, message,
+    url: key ? `${reportBase}/issue/${encodeURIComponent(key)}` : reportBase,
+    fingerprint: fingerprintOf(rule, path, line, message),
+    ...owner,
+  };
+}
+
+/** 时效声明取数：快照 SHA 与当前 HEAD 的关系；取不到不影响扫描结果本身（留空由回执省略） */
+async function resolveHeadLag(
+  workspacePath: string,
+  snapshotSha: string,
+  signal?: AbortSignal,
+): Promise<{ currentHeadSha: string; headLag: number }> {
+  try {
+    const currentHeadSha = await resolveRevisionSha(workspacePath, 'HEAD');
+    if (currentHeadSha && snapshotSha && currentHeadSha !== snapshotSha) {
+      return { currentHeadSha, headLag: (await collectCommitLog(workspacePath, [`${snapshotSha}..HEAD`], { signal })).length };
+    }
+    return { currentHeadSha, headLag: 0 };
+  } catch {
+    return { currentHeadSha: '', headLag: 0 };
+  }
+}
+
+type StageEmit = (stage: ScanStage, detail?: Record<string, unknown>) => void;
+
+interface ScanEmit {
+  stage?: StageEmit;
+  log?: (line: string) => void;
+  /** jobId 要尽早回给前端（中止按钮按它掐进程），所以在建 console_job 的当场就报 */
+  job?: (jobId: string) => void;
+}
+
+interface ScanConsole {
+  stage: StageEmit;
+  log: (line: string) => void;
+  logLines: string[];
+  /** 扫描器输出里带 `…/api/ce/task?id=<uuid>` 时记下 CE 任务 id（wait 阶段优先走 ce/task） */
+  consumeScanLine: (line: string) => void;
+  ceTaskId: () => string;
+}
+
+/** 控制台出口：阶段徽标 + 脱敏日志 + CE 任务 id 捕获（抽出来，主流程只按阶段推进） */
+function createScanConsole(jobId: string, token: string, emit: ScanEmit): ScanConsole {
+  const logLines: string[] = [];
+  const stage: StageEmit = (s, detail) => {
+    runningStages.set(jobId, { stage: s, at: Date.now() });
+    emit.stage?.(s, detail);
+  };
+  const log = (line: string) => {
+    if (logLines.length < MAX_LOG_LINES) logLines.push(redact(line, token));
+    emit.log?.(redact(line, token));
+  };
+  let ceTaskId = '';
+  const consumeScanLine = (line: string) => {
+    const hit = /\/api\/ce\/task\?id=([0-9a-f-]{36})/i.exec(line);
+    if (hit) ceTaskId = hit[1];
+    log(line);
+  };
+  return { stage, log, logLines, consumeScanLine, ceTaskId: () => ceTaskId };
+}
+
+function normalizeTaskIds(taskIds?: string[]): string[] {
+  return [...new Set((taskIds ?? []).map((s) => String(s ?? '').trim()).filter(Boolean))];
+}
+
+/** projectKey 口径：入参 > 首个项目的映射 > 映射表第一个；都没有则报可操作的错 */
+function resolveScanProjectKey(input: ScanInput, plan: ExtractPlan, projectIds: string[]): string {
+  const projectKey = String(input.projectKey ?? '').trim()
+    || projectKeyFor(projectIds[0] ?? '')
+    || Object.values(readProjectKeyCount())[0]
+    || '';
+  if (projectKey) return projectKey;
+  const name = plan.projects[0]?.name ?? projectIds[0] ?? '';
+  throw new ScanError('no-project-key', `项目「${name}」未配置 projectKey`, '到「设置 → SonarQube → 默认 projectKey 映射」配置后重试。');
+}
+
+/** 阶段 4：装配置、起扫描器、把退出码/中止翻成 ScanError */
+async function runScannerPhase(params: {
+  settings: { serverUrl: string; scannerPath: string };
+  token: string;
+  dir: string;
+  deps: ScanDeps;
+  console: ScanConsole;
+  signal?: AbortSignal;
+}): Promise<void> {
+  const { settings, token, dir, deps, console, signal } = params;
+  const spawnScanner = deps.spawnScanner ?? defaultSpawnScanner;
+  const spec = planScannerSpawn(settings.scannerPath || 'sonar-scanner', ['-Dproject.settings=sonar-project.properties']);
+  if (spec.unsafe) throw new ScanError('no-scanner', '扫描器路径含 cmd.exe 无法安全执行的字符', '在设置页改指向不含 & | ^ % < > " \' ; 反引号 的路径。');
+  console.stage('scan', { scanner: settings.scannerPath || 'sonar-scanner' });
+  console.log(`$ sonar-scanner -Dproject.settings=sonar-project.properties（工作目录 ${dir}）`);
+  const run = await spawnScanner(spec, {
+    ...process.env as Record<string, string>,
+    SONAR_TOKEN: token,
+    SONAR_HOST_URL: normalizeSonarUrl(settings.serverUrl),
+    SONAR_PROJECT_BASE_DIR: dir,
+  }, console.consumeScanLine, signal);
+  if (signal?.aborted) throw new ScanError('aborted', '已中止');
+  if (run.code === 0) return;
+  throw new ScanError('scan-failed', `扫描器退出码 ${run.code}`, '看上面的扫描器输出；常见原因是 projectKey 无权限或服务器不可达。');
+}
+
+/** 阶段 7：阈值/上限过滤后回写；面板关掉自动回写时返回 null */
+function performWriteBack(params: {
+  input: ScanInput;
+  issues: ScanIssue[];
+  projectIds: string[];
+  ctx: WriteBackContext;
+  stage: StageEmit;
+}): WriteBackReceipts | null {
+  const { input, issues, projectIds, ctx, stage } = params;
+  if (input.autoWriteBack === false) return null;
+  const severities = (input.severities ?? DEFAULT_SEVERITIES).filter((s) => SEVERITY_ORDER.includes(s));
+  const requestedCap = Number(input.cap);
+  const cap = Number.isInteger(requestedCap) && requestedCap > 0 ? requestedCap : WRITEBACK_CAP;
+  stage('writeback', { severities, cap });
+  const receipts = writeBack(issues, { severities, cap, projectIds }, ctx);
+  stage('writeback', receipts as unknown as Record<string, unknown>);
+  return receipts;
+}
+
+function writeBackLineOf(receipts: WriteBackReceipts | null): string {
+  if (!receipts) return '回写：已关闭（面板上的自动回写开关）';
+  const summaryTaskText = receipts.summaryTaskNo ? ` / 汇总单 ${receipts.summaryTaskNo}` : '';
+  return `回写：新建 ${receipts.created} / 已存在跳过 ${receipts.skippedDuplicate} / 低于阈值 ${receipts.belowThreshold} / 无法归属 ${receipts.unattributed} / 失败 ${receipts.failed}${summaryTaskText}`;
+}
+
+interface ScanAnswerInput {
+  projectKey: string;
+  serverUrl: string;
+  snap: { files: number; bytes: number; snapshotHeadSha: string };
+  currentHeadSha: string;
+  headLag: number;
+  issues: ScanIssue[];
+  grouped: Record<ScanSeverity, ScanIssue[]>;
+  receipts: WriteBackReceipts | null;
+  logLines: string[];
+}
+
+/** 回答正文（证据链）：主流程只管推进阶段，拼装口径集中在这里 */
+function buildScanAnswer(input: ScanAnswerInput): string {
+  const severityBreakdown = SEVERITY_ORDER.map((s) => `${SEVERITY_LABEL[s]} ${input.grouped[s].length}`).join(' / ');
+  const headLabel = input.currentHeadSha ? input.currentHeadSha.slice(0, 12) : '未知';
+  const lagText = input.headLag ? `，相差 ${input.headLag} 个提交` : '';
+  return [
+    `projectKey：${input.projectKey}`,
+    `快照：${input.snap.files} 个文件 / ${input.snap.bytes} 字节，SHA ${input.snap.snapshotHeadSha.slice(0, 12)}`,
+    `时效：当前 HEAD ${headLabel}${lagText}`,
+    `问题：共 ${input.issues.length} 条（${severityBreakdown}）`,
+    writeBackLineOf(input.receipts),
+    `报告：${reportUrlFor(input.serverUrl, input.projectKey)}`,
+    '',
+    '--- 扫描器输出 ---',
+    ...input.logLines,
+  ].join('\n');
+}
+
 /**
  * 执行一次扫描。
  *
@@ -744,28 +951,19 @@ export function listRunningScans(): Array<{ jobId: string; title: string; stage:
  */
 export async function runSonarScan(
   input: ScanInput,
-  emit: {
-    stage?: (stage: ScanStage, detail?: Record<string, unknown>) => void;
-    log?: (line: string) => void;
-    /** jobId 要尽早回给前端（中止按钮按它掐进程），所以在建 console_job 的当场就报 */
-    job?: (jobId: string) => void;
-  },
+  emit: ScanEmit,
   deps: ScanDeps = {},
   signal?: AbortSignal,
 ): Promise<ScanResult> {
   const settings = readScanSettings();
-  const taskIds = [...new Set((input.taskIds ?? []).map((s) => String(s ?? '').trim()).filter(Boolean))];
+  const taskIds = normalizeTaskIds(input.taskIds);
   if (!taskIds.length) throw new ScanError('no-tasks', '未勾选任何任务');
   if (!settings.serverUrl) throw new ScanError('no-server', '未配置 SonarQube 服务器地址', '到「设置 → SonarQube」填写地址并保存。');
 
   // 1 汇总（复用 §3.3 取数口径）
   const plan = await planExtract(taskIds);
   const projectIds = plan.projects.map((p) => p.projectId);
-  const projectKey = String(input.projectKey ?? '').trim()
-    || projectKeyFor(projectIds[0] ?? '')
-    || Object.values(readProjectKeyCount())[0]
-    || '';
-  if (!projectKey) throw new ScanError('no-project-key', `项目「${plan.projects[0]?.name ?? projectIds[0] ?? ''}」未配置 projectKey`, '到「设置 → SonarQube → 默认 projectKey 映射」配置后重试。');
+  const projectKey = resolveScanProjectKey(input, plan, projectIds);
 
   const job = ConsoleJobService.create({
     title: `[Sonar] 质量扫描 ${projectKey} · ${plan.tasks.length} 个任务`,
@@ -777,23 +975,15 @@ export async function runSonarScan(
   const jobId = job.id;
   emit.job?.(jobId);
   const dir = sonarJobDir(jobId);
-  const stage: NonNullable<typeof emit.stage> = (s, detail) => {
-    runningStages.set(jobId, { stage: s, at: Date.now() });
-    emit.stage?.(s, detail);
-  };
-  const logLines: string[] = [];
   const token = settings.token;
-  const log: NonNullable<typeof emit.log> = (line) => {
-    if (logLines.length < MAX_LOG_LINES) logLines.push(redact(line, token));
-    emit.log?.(redact(line, token));
-  };
+  const console = createScanConsole(jobId, token, emit);
 
   try {
-    stage('collect', { files: plan.uniquePaths, commits: plan.commits.length, tasks: plan.tasks.length, projects: plan.projects.length });
+    console.stage('collect', { files: plan.uniquePaths, commits: plan.commits.length, tasks: plan.tasks.length, projects: plan.projects.length });
 
     // 2 快照
-    const snap = await exportSnapshot(plan, dir, stage, signal);
-    stage('snapshot', { files: snap.files, bytes: snap.bytes, snapshotHeadSha: snap.snapshotHeadSha });
+    const snap = await exportSnapshot(plan, dir, console.stage, signal);
+    console.stage('snapshot', { files: snap.files, bytes: snap.bytes, snapshotHeadSha: snap.snapshotHeadSha });
 
     // 3 配置（Token 不进这里）
     const owners = buildOwnerIndex(plan);
@@ -806,96 +996,54 @@ export async function runSonarScan(
       baseDir: dir,
       inclusions,
     }), 'utf8');
-    stage('config', { propsFile, inclusions: inclusions.length });
+    console.stage('config', { propsFile, inclusions: inclusions.length });
 
     // 4 扫描
-    const spawnScanner = deps.spawnScanner ?? defaultSpawnScanner;
-    const spec = planScannerSpawn(settings.scannerPath || 'sonar-scanner', ['-Dproject.settings=sonar-project.properties']);
-    if (spec.unsafe) throw new ScanError('no-scanner', '扫描器路径含 cmd.exe 无法安全执行的字符', '在设置页改指向不含 & | ^ % < > " \' ; 反引号 的路径。');
-    stage('scan', { scanner: settings.scannerPath || 'sonar-scanner' });
-    log(`$ sonar-scanner -Dproject.settings=sonar-project.properties（工作目录 ${dir}）`);
-    // 扫描器成功时会把 CE 任务地址打进日志（`…/api/ce/task?id=<uuid>`）：抓住它，wait 阶段就能用
-    // 对提交者开放的 `ce/task` 轮询，不必依赖要求项目管理员权限的 `ce/component`。
-    let ceTaskId = '';
-    const scanLog = (line: string) => {
-      const hit = /\/api\/ce\/task\?id=([0-9a-f-]{36})/i.exec(line);
-      if (hit) ceTaskId = hit[1];
-      log(line);
-    };
-    const run = await spawnScanner(spec, {
-      ...process.env as Record<string, string>,
-      SONAR_TOKEN: token,
-      SONAR_HOST_URL: normalizeSonarUrl(settings.serverUrl),
-      SONAR_PROJECT_BASE_DIR: dir,
-    }, scanLog, signal);
-    if (signal?.aborted) throw new ScanError('aborted', '已中止');
-    if (run.code !== 0) throw new ScanError('scan-failed', `扫描器退出码 ${run.code}`, '看上面的扫描器输出；常见原因是 projectKey 无权限或服务器不可达。');
+    await runScannerPhase({ settings, token, dir, deps, console, signal });
 
     // 5 等待
     const fetchDeps = { ...deps, fetchJson: deps.fetchJson ?? sonarGet } as Required<Pick<ScanDeps, 'fetchJson'>> & ScanDeps;
-    await waitForAnalysis(settings.serverUrl, token, projectKey, fetchDeps, log, stage, signal, ceTaskId || undefined);
+    await waitForAnalysis({
+      serverUrl: settings.serverUrl,
+      token,
+      componentKey: projectKey,
+      deps: fetchDeps,
+      onLog: console.log,
+      onStage: console.stage,
+      signal,
+      ceTaskId: console.ceTaskId() || undefined,
+    });
 
     // 6 拉取
-    const raw = await fetchAllIssues(settings.serverUrl, token, projectKey, fetchDeps, stage, signal);
+    const raw = await fetchAllIssues(settings.serverUrl, token, projectKey, fetchDeps, console.stage, signal);
     const reportBase = normalizeSonarUrl(settings.serverUrl);
-    const issues: ScanIssue[] = raw.map((i) => {
-      const sev = normalizeSeverity(i);
-      const path = pathOfComponent(i?.component, projectKey);
-      const line = Number(i?.line ?? 0);
-      const rule = String(i?.rule ?? 'unknown-rule');
-      const message = String(i?.message ?? '');
-      const key = String(i?.key ?? '');
-      const owner = owners.get(path) ?? { taskId: null, taskNo: null, taskTitle: null, shared: false };
-      return {
-        key, rule, severity: sev, path, line, message,
-        url: key ? `${reportBase}/issue/${encodeURIComponent(key)}` : reportBase,
-        fingerprint: fingerprintOf(rule, path, line, message),
-        ...owner,
-      };
-    });
-    stage('fetch', { total: issues.length });
+    const issues: ScanIssue[] = raw.map((i) => toScanIssue(i, projectKey, reportBase, owners));
+    console.stage('fetch', { total: issues.length });
     const grouped = Object.fromEntries(SEVERITY_ORDER.map((s) => [s, issues.filter((i) => i.severity === s)])) as Record<ScanSeverity, ScanIssue[]>;
 
     // 时效声明：快照基于 SHA x，当前 HEAD 为 y，相差 n 个提交
-    let currentHeadSha = '';
-    let headLag = 0;
-    try {
-      currentHeadSha = await resolveRevisionSha(plan.workspacePath, 'HEAD');
-      if (currentHeadSha && snap.snapshotHeadSha && currentHeadSha !== snap.snapshotHeadSha) {
-        headLag = (await collectCommitLog(plan.workspacePath, [`${snap.snapshotHeadSha}..HEAD`], { signal })).length;
-      }
-    } catch { /* 时效信息取不到不影响扫描结果本身，留空由回执省略 */ }
+    const { currentHeadSha, headLag } = await resolveHeadLag(plan.workspacePath, snap.snapshotHeadSha, signal);
 
     // 7 回写（可关闭）
-    let receipts: WriteBackReceipts | null = null;
-    if (input.autoWriteBack !== false) {
-      const severities = (input.severities ?? DEFAULT_SEVERITIES).filter((s) => SEVERITY_ORDER.includes(s));
-      const cap = Number.isInteger(input.cap) && (input.cap as number) > 0 ? (input.cap as number) : WRITEBACK_CAP;
-      stage('writeback', { severities, cap });
-      receipts = writeBack(issues, { severities, cap, projectIds }, {
-        projectKey, serverUrl: settings.serverUrl, snapshotHeadSha: snap.snapshotHeadSha,
-      });
-      stage('writeback', receipts as unknown as Record<string, unknown>);
-    }
+    const receipts = performWriteBack({
+      input,
+      issues,
+      projectIds,
+      ctx: { projectKey, serverUrl: settings.serverUrl, snapshotHeadSha: snap.snapshotHeadSha },
+      stage: console.stage,
+    });
 
-    const headLabel = currentHeadSha ? currentHeadSha.slice(0, 12) : '未知';
-    const lagText = headLag ? `，相差 ${headLag} 个提交` : '';
-    const severityBreakdown = SEVERITY_ORDER.map((s) => `${SEVERITY_LABEL[s]} ${grouped[s].length}`).join(' / ');
-    const summaryTaskText = receipts?.summaryTaskNo ? ` / 汇总单 ${receipts.summaryTaskNo}` : '';
-    const writeBackLine = receipts
-      ? `回写：新建 ${receipts.created} / 已存在跳过 ${receipts.skippedDuplicate} / 低于阈值 ${receipts.belowThreshold} / 无法归属 ${receipts.unattributed} / 失败 ${receipts.failed}${summaryTaskText}`
-      : '回写：已关闭（面板上的自动回写开关）';
-    const answer = [
-      `projectKey：${projectKey}`,
-      `快照：${snap.files} 个文件 / ${snap.bytes} 字节，SHA ${snap.snapshotHeadSha.slice(0, 12)}`,
-      `时效：当前 HEAD ${headLabel}${lagText}`,
-      `问题：共 ${issues.length} 条（${severityBreakdown}）`,
-      writeBackLine,
-      `报告：${reportUrlFor(settings.serverUrl, projectKey)}`,
-      '',
-      '--- 扫描器输出 ---',
-      ...logLines,
-    ].join('\n');
+    const answer = buildScanAnswer({
+      projectKey,
+      serverUrl: settings.serverUrl,
+      snap,
+      currentHeadSha,
+      headLag,
+      issues,
+      grouped,
+      receipts,
+      logLines: console.logLines,
+    });
     ConsoleJobService.markDone(jobId, answer);
     return {
       jobId, projectKey, serverUrl: settings.serverUrl,

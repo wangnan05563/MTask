@@ -538,7 +538,7 @@ export function PrdPanel({ projectId, onClose }: {
             title="全选 / 取消全选（作用于当前列表全部条目）">
             <input ref={headCbRef} type="checkbox" checked={allSelected} disabled={issues.length === 0}
               onChange={toggleAll} aria-label="全选待确认问题" style={{ accentColor: 'var(--accent)', cursor: issues.length ? 'pointer' : 'default', margin: 0 }} />
-            全选
+            <span>全选</span>
           </label>
           <strong style={{ fontSize: 'var(--fs-s)' }}>待确认问题</strong>
           <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>确认后可把结论回写到对应 PRD</span>
@@ -613,9 +613,7 @@ export function PrdPanel({ projectId, onClose }: {
           <div style={{ marginTop: 8, border: '1px solid var(--border-strong)', borderRadius: 6, padding: '6px 10px', fontSize: 'var(--fs-s)' }}
             data-t02218="batch-result">
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <span>{batchResult.kind === 'writeback' ? '批量回写' : '批量删除'}完成：成功
-                <strong style={{ color: 'var(--success)' }}> {batchResult.ok} </strong>条，失败
-                <strong style={{ color: batchResult.failed.length ? 'var(--danger)' : 'var(--text-muted)' }}> {batchResult.failed.length} </strong>条</span>
+              <span>{batchResult.kind === 'writeback' ? '批量回写' : '批量删除'}完成：成功<strong style={{ color: 'var(--success)' }}> {batchResult.ok} </strong>条，失败<strong style={{ color: batchResult.failed.length ? 'var(--danger)' : 'var(--text-muted)' }}> {batchResult.failed.length} </strong>条</span>
               {batchResult.failed.length === 0 && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>全部处理成功</span>}
               <span style={{ flex: 1 }} />
               <button onClick={() => setBatchResult(null)} className="tbtn-anim" title="关闭结果" aria-label="关闭批量结果" style={{ ...opBtn, padding: '1px 5px' }}><X size={11} /></button>

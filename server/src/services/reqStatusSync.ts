@@ -4,14 +4,14 @@
  * 背景：任务完成的状态同步链原本有三层——任务→计划（TaskService.syncPlanOnStatusChange）、
  * 计划→需求维度待办（T01266 syncReqLinkedTasks）、启动对账（T00470 reconcileLinkedPlanStatuses），
  * 唯独需求自身的 `status` 字段从不派生：矩阵里 308 条需求的关联计划/待办全部 done，
- * status 却停留在 todo（用户报「外部 AI 执行关联任务完成后，计划状态更新了，需求状态未更新」）。
+ * status 却停留在待办（用户报「外部 AI 执行关联任务完成后，计划状态更新了，需求状态未更新」）。
  *
  * 派生口径（关联项 = 未归档计划 ∪ 未归档待办，经 req_ids 关联，与 PlanService.listRequirements 同一口径）：
  *  - 无关联项 → 不动（没有执行信号，保留人工状态，不猜）；
  *  - 当前为 `changed` → 不动（需求变更属业务判断，不被执行进度覆盖）；
  *  - 全部 done → `done`；
- *  - 任一 doing、或 done/todo 混合 → `doing`；
- *  - 全 todo → `todo`（与计划↔待办同步同为「可回退」语义）。
+ *  - 任一 doing、或已完成与待办混合 → `doing`；
+ *  - 全部待办 → status 回落为待办值（与计划↔待办同步同为「可回退」语义）。
  *
  * 本模块只依赖 getDb，不 import PlanService/TaskService——两个服务都要调用它，
  * 放任何一侧都会形成循环导入（PlanService 已 import TaskService 的 nextTaskNo）。
@@ -95,7 +95,7 @@ export function syncReqStatuses(db: Db, projectId: string, reqIds: readonly stri
 /**
  * T00470 对账家族的需求侧成员：启动时把**全部**有关联的需求按派生口径对齐
  * （AI/脚本直写 sqlite 绕过钩子、或旧版本从未派生过的存量，都在这里兜底）。
- * 生产库首跑预计把 308 条「关联项全 done 但 status=todo」的需求归位。
+ * 生产库首跑预计把 308 条「关联项全 done 但 status 仍是待办」的需求归位。
  */
 export function reconcileReqStatuses(): number {
   const db = getDb();

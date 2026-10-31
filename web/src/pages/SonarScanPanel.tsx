@@ -143,6 +143,56 @@ function describeError(e: ErrorPayload): string {
   return e.hint && !base.includes(e.hint.slice(0, 8)) ? `${base} — ${e.hint}` : base;
 }
 
+/** SSE 负载字段转文本：只接受原始值，对象/数组按空串（避免 `[object Object]` 混进日志与状态） */
+function textOf(v: unknown): string {
+  // S6551：按原始类型显式分支，杜绝 unknown 走 Object 默认字符串化
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return String(v);
+  if (typeof v === 'symbol') return v.toString();
+  return '';
+}
+
+/** 勾选/取消某个严重度（纯函数：事件回调里不再嵌一层 setState 更新函数，S2004） */
+function toggleSevKey(list: SevKey[], key: SevKey): SevKey[] {
+  return list.includes(key) ? list.filter((x) => x !== key) : [...list, key];
+}
+
+/** 阶段徽标颜色（已过/当前/未到） */
+function stageColor(i: number, stageIdx: number): string {
+  if (i < stageIdx) return 'var(--text-muted)';
+  if (i === stageIdx) return 'var(--accent)';
+  return 'var(--border-strong)';
+}
+
+/** 阶段徽标符号：✓ / … / · */
+function stageMark(i: number, stageIdx: number): string {
+  if (i < stageIdx) return '✓';
+  if (i === stageIdx) return '…';
+  return '·';
+}
+
+/** 开始按钮的悬浮说明：环境未就绪优先，其次范围为空 */
+function startButtonTitle(envDown: boolean, taskCount: number): string {
+  if (envDown) return '环境未就绪：请先在设置页补全 SonarQube 配置';
+  if (taskCount === 0) return '请先勾选已回写 commit id 的任务';
+  return '按当前范围开始扫描';
+}
+
+/** 缺配置时的出口：先落页签再定位子页——顺序反了设置页会按上次页签挂载、错过事件（模块级，S7721） */
+function goSonarSettings(): void {
+  focusSettingsTab('sonar');
+  applyDeepLink({ projectId: '', tab: 'settings' });
+}
+
+/** 扫描器输出行：id 为插入序号（稳定 key），text 为原始输出 */
+interface LogLine { id: number; text: string }
+
+let logSeq = 0;
+function nextLogId(): number {
+  logSeq += 1;
+  return logSeq;
+}
+
 export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvState, flash }: {
   readonly projects: Project[];
   /** 与 Git 卡同一份会话级范围（`git.scope`）：卡片徽标和面板必须读同一份，组件内再存一份就会漂移 */
@@ -162,7 +212,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
   const [running, setRunning] = useState(false);
   const [stageIdx, setStageIdx] = useState(-1);
   const [jobId, setJobId] = useState('');
-  const [lines, setLines] = useState<string[]>([]);
+  const [lines, setLines] = useState<LogLine[]>([]);
   const [result, setResult] = useState<ScanView | null>(null);
   const [runError, setRunError] = useState('');
   const [errorKind, setErrorKind] = useState('');
@@ -211,8 +261,8 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
         setRunning(true);
         setJobId(job.jobId);
         const idx = STAGES.findIndex((s) => s.key === job.stage);
-        setStageIdx(idx >= 0 ? idx : 0);
-        setLines([`检测到仍在运行的扫描任务（${job.jobId.slice(0, 8)}）——刷新后进度可回读，但实时输出需重新发起扫描。`]);
+        setStageIdx(Math.max(idx, 0));
+        setLines([{ id: nextLogId(), text: `检测到仍在运行的扫描任务（${job.jobId.slice(0, 8)}）——刷新后进度可回读，但实时输出需重新发起扫描。` }]);
       } catch { /* 回读失败只是少了个徽标，不影响本面板可用 */ }
     })();
     return () => { cancelled = true; };
@@ -233,12 +283,12 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
     controllerRef.current = controller;
     const onEvent = (name: string, payload: unknown) => {
       const p = (payload ?? {}) as Record<string, unknown>;
-      if (name === 'job') setJobId(String(p.jobId ?? ''));
+      if (name === 'job') setJobId(textOf(p.jobId));
       else if (name === 'stage') {
         const idx = STAGES.findIndex((s) => s.key === p.stage);
         if (idx >= 0) setStageIdx(idx);
       } else if (name === 'log') {
-        setLines((prev) => [...prev, String((p as { line?: unknown }).line ?? '')].slice(-LOG_TAIL));
+        setLines((prev) => [...prev, { id: nextLogId(), text: textOf((p as { line?: unknown }).line) }].slice(-LOG_TAIL));
       } else if (name === 'done') {
         const v = p as unknown as ScanView;
         setResult(v);
@@ -249,7 +299,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
       } else if (name === 'aborted') setAborted(true);
       else if (name === 'error') {
         setRunError(describeError(p as ErrorPayload));
-        setErrorKind(String(p.kind ?? ''));
+        setErrorKind(textOf(p.kind));
       }
     };
     try {
@@ -277,12 +327,6 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
       try { await api.post('/sonar/scan/stop', { jobId }); } catch { /* 中止指令送不到也不影响收口：断开连接同样触发服务端回收 */ }
     }
     setAborted(true);
-  }
-
-  /** 缺配置时的出口：先落页签再定位子页——顺序反了设置页会按上次页签挂载、错过事件 */
-  function goSettings() {
-    focusSettingsTab('sonar');
-    applyDeepLink({ projectId: '', tab: 'settings' });
   }
 
   const r = result?.receipts;
@@ -315,7 +359,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
         </div>
         {keyOptions.length > 0 && (
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
-            SonarQube 项目（projectKey）
+            SonarQube 项目（projectKey）{' '}
             <select value={projectKey} onChange={(e) => setProjectKey(e.target.value)} aria-label="选择 projectKey" data-t03377="project-key" style={{ ...FIELD_QUIET, width: 'auto', maxWidth: 220 }}>
               <option value="">按所选项目自动</option>
               {keyOptions.map((k) => {
@@ -328,7 +372,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
         {missingKeys.length > 0 && (
           <div data-t03377="missing-keys" style={{ fontSize: 'var(--fs-xs)', color: 'var(--warn)', marginTop: 4 }}>
             以下已选项目还没有 projectKey：{missingKeys.map((id) => projects.find((p) => p.id === id)?.name ?? id).join('、')}
-            <button type="button" data-t03377="go-key-settings" onClick={goSettings}
+            <button type="button" data-t03377="go-key-settings" onClick={goSonarSettings}
               style={{ ...PILL, cursor: 'pointer', color: 'var(--accent)', marginLeft: 6 }} title="打开设置页 SonarQube 子页">去设置页配置</button>
           </div>
         )}
@@ -351,7 +395,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
                 <label key={s.key} data-t03382={`sev-${s.key}`}
                   style={{ ...PILL, cursor: 'pointer', border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, color: on ? 'var(--accent)' : 'var(--text-muted)' }}>
                   <input type="checkbox" checked={on} style={{ flexShrink: 0, marginRight: 4 }}
-                    onChange={() => setThreshold((prev) => (prev.includes(s.key) ? prev.filter((x) => x !== s.key) : [...prev, s.key]))}
+                    onChange={() => setThreshold(toggleSevKey(threshold, s.key))}
                     aria-label={`回写${s.label}级问题`} />
                   {s.label}
                 </label>
@@ -378,7 +422,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
                 : `扫描环境未就绪：${(env?.reasons ?? ['环境探测中…']).join(' ')}`}
             </span>
             {!ws.conflict && (
-              <button type="button" data-t03432="go-settings" onClick={goSettings}
+              <button type="button" data-t03432="go-settings" onClick={goSonarSettings}
                 style={{ ...PILL, cursor: 'pointer', color: 'var(--accent)' }} title="打开设置页 SonarQube 子页">
                 去设置页配置
               </button>
@@ -402,7 +446,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
             loading={running}
             loadingText="扫描中…"
             disabled={envDown || taskIds.length === 0}
-            title={envDown ? '环境未就绪：请先在设置页补全 SonarQube 配置' : (taskIds.length ? '按当前范围开始扫描' : '请先勾选已回写 commit id 的任务')}
+            title={startButtonTitle(envDown, taskIds.length)}
             aria-label="开始扫描"
             data-t03428="start"
             onClick={() => void start()}
@@ -430,8 +474,8 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 6, fontSize: 'var(--fs-xs)' }}>
               {STAGES.map((s, i) => (
                 <span key={s.key} data-t03428={`stage-${s.key}`} aria-label={`阶段 ${s.label}`}
-                  style={{ color: i < stageIdx ? 'var(--text-muted)' : i === stageIdx ? 'var(--accent)' : 'var(--border-strong)', fontWeight: i === stageIdx ? 600 : 400 }}>
-                  {i < stageIdx ? '✓' : i === stageIdx ? '…' : '·'} {s.label}
+                  style={{ color: stageColor(i, stageIdx), fontWeight: i === stageIdx ? 600 : 400 }}>
+                  {stageMark(i, stageIdx)} {s.label}
                 </span>
               ))}
             </div>
@@ -441,7 +485,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
         {lines.length > 0 && (
           <div data-t03428="console" ref={logRef} role="log" aria-label="扫描器输出"
             style={{ marginTop: 8, maxHeight: 180, overflowY: 'auto', background: 'var(--bg, rgba(0,0,0,.04))', border: '1px solid var(--border)', borderRadius: 6, padding: 6, fontFamily: 'Consolas, Menlo, monospace', fontSize: 'var(--fs-xs)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-            {lines.map((l, i) => <div key={i} data-t03428="console-line">{l || ' '}</div>)}
+            {lines.map((l) => <div key={l.id} data-t03428="console-line">{l.text || ' '}</div>)}
           </div>
         )}
 
@@ -480,7 +524,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
                   const open = openGroups.includes(s.key);
                   return (
                     <div key={s.key} data-t03381={`group-${s.key}`} style={{ borderTop: '1px solid var(--border)', paddingTop: 4, marginTop: 4 }}>
-                      <button type="button" onClick={() => setOpenGroups((prev) => (prev.includes(s.key) ? prev.filter((x) => x !== s.key) : [...prev, s.key]))}
+                      <button type="button" onClick={() => setOpenGroups(toggleSevKey(openGroups, s.key))}
                         aria-expanded={open} data-t03381={`toggle-${s.key}`}
                         style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', cursor: 'pointer', fontSize: 'var(--fs-s)', color: 'var(--text)' }}>
                         <span aria-hidden="true" style={{ display: 'inline-flex' }}>{open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}</span>

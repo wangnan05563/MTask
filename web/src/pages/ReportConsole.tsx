@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { parseCleanGroups, type CleanRow } from '../utils/cleanGroups'; // T00751：清洗分组解析抽为可测模块
 import { cleanPrdStreamText } from '../utils/prdFence'; // T00815：控制台 PRD 实时正文去标记/解围栏
 import { api, type AITool, type ReqCategory } from '../api/client';
 import { MarkdownContent } from '../ui/Markdown';
 import { useSessionState } from '../ui/session';
-import { RunStatusBadge } from '../ui/runStatus'; // T01038：统一运行状态徽标（动画图标 + 实时秒数 + 最终耗时）
+import { RunStatusBadge, type RunStatus } from '../ui/runStatus'; // T01038：统一运行状态徽标（动画图标 + 实时秒数 + 最终耗时）
 import { Terminal, Sparkles, Plus, X, Loader2, CheckCircle2, AlertTriangle, RotateCw, RefreshCw, FileText, Download, Eye, ChevronDown, FolderInput, GitCompare, FileUp, FilePlus2, Maximize, PanelLeftOpen, OctagonX, ListChecks, Presentation, FileChartColumn, ScrollText } from 'lucide-react';
 import { aiImportStore } from '../stores/aiImportStore';
 import { prdGenStore } from '../stores/prdGenStore'; // T00769 二轮：原始需求生成 PRD 的过程输出
@@ -81,6 +81,54 @@ interface CompareJob {
 
 /** 内置「AI 周报」tab 固定 id：始终存在，内容由父级传入的 SSE 流式状态驱动 */
 const REPORT_TAB = '__report__';
+
+/** 任务标题：自定义输入取前 18 字，预设分类取分类名（找不到分类时退回 key） */
+function analysisTitle(category: AnalysisTask['category'], customText: string): string {
+  if (category === 'custom') return `自定义：${customText.slice(0, 18)}`;
+  return CATEGORIES.find((c) => c.key === category)?.label ?? category;
+}
+
+/** 周期口径：自定义问答与数据清洗不附带周期（后端按全量已完成任务取数） */
+function periodForCategory(category: AnalysisTask['category'], period?: ReportPeriod): ReportPeriod | undefined {
+  if (category === 'custom' || category === 'clean') return undefined;
+  return period;
+}
+
+/** 组装创建 job 的请求体：周期类预设附带周期与项目范围，工具总是按当前选择附带 */
+function buildJobBody(p: {
+  readonly title: string;
+  readonly prompt: string;
+  readonly category: AnalysisTask['category'];
+  readonly period?: ReportPeriod;
+  readonly projectIds: readonly string[];
+  readonly toolId: string;
+}): Record<string, unknown> {
+  const body: Record<string, unknown> = { title: p.title, prompt: p.prompt, category: p.category };
+  // 周期类预设（非自定义）附带当前周期，后端据此聚合真实任务数据注入；自定义问答不附带以保持纯对话
+  if (p.period) body.period = p.period;
+  // T02165：周期类分析附带项目范围（空数组=全部项目，与改造前一致）。范围由后端写入 job 行，
+  // 「重新分析」沿用同一范围，不必担心切页后前端状态丢失导致复跑口径变化
+  if (p.period && p.projectIds.length > 0) body.projectIds = p.projectIds;
+  if (p.toolId) body.toolId = p.toolId;
+  return body;
+}
+
+/** 勾选的对比模型 → 一个同 prompt 的对比任务；跳过当前工具与已不存在的工具 */
+function compareJobFor(toolIdOfCompare: string, ctx: {
+  readonly title: string;
+  readonly body: Record<string, unknown>;
+  readonly prompt: string;
+  readonly category: AnalysisTask['category'];
+  readonly period?: ReportPeriod;
+  readonly tools: readonly AITool[];
+  readonly toolId: string;
+}): CompareJob | null {
+  if (toolIdOfCompare === ctx.toolId) return null;
+  const ctool = ctx.tools.find((x) => x.id === toolIdOfCompare);
+  if (!ctool) return null;
+  const jobTitle = `${ctx.title}【对比·${ctool.name}】`;
+  return { title: jobTitle, body: { ...ctx.body, title: jobTitle, toolId: toolIdOfCompare }, prompt: ctx.prompt, category: ctx.category, period: ctx.period };
+}
 
 /** T00569 三轮：内置「AI 项目计划导入」tab 固定 id——导入执行日志统一在此滚动输出（与周报/分析并列） */
 const AI_IMPORT_TAB = '__aiimport__';
@@ -214,12 +262,13 @@ function CleanModal({
   const picked = rows.filter((r) => r.include);
   const archiveCount = picked.reduce((n, r) => n + r.merge.length, 0);
   return (
-    <div /* NOSONAR - 遮罩点击空白关闭为便捷辅助，正式关闭入口为弹窗内原生按钮 */
-      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-      onClick={() => { if (!cleaning) onClose(); }}>
-      <div /* NOSONAR - 阻断点击冒泡属事件传递逻辑而非独立交互控件，可访问关闭入口仍为原生按钮 */
-        onClick={(e) => e.stopPropagation()}
-        style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(680px, 92vw)', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
+    <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {/* 遮罩层由原生 button 承担「点空白关闭」（清洗中禁用），弹窗内的关闭按钮仍是主要入口；
+          面板是它的后续兄弟且 relative 定位，天然叠在遮罩之上，无需再阻断事件冒泡 */}
+      <button type="button" aria-label="关闭清洗弹窗" disabled={cleaning} onClick={onClose}
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', margin: 0, padding: 0, border: 'none', background: 'transparent' }} />
+      <div
+        style={{ position: 'relative', background: 'var(--card-bg)', borderRadius: 8, width: 'min(680px, 92vw)', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
           <Sparkles size={14} style={{ color: 'var(--accent)' }} /> 数据清洗 — 合并重复任务
           <span style={{ flex: 1 }} />
@@ -405,6 +454,40 @@ function unselectedTabTone(): { background: string; color: string } {
   return { background: 'var(--card-bg)', color: 'var(--text)' };
 }
 
+/**
+ * 控制台 tab 按钮（模块级展示组件）：六个内置 tab 的样式、选中态与状态徽标只在这里写一遍，
+ * 各 tab 只负责「何时出现 + 文案」（S3776：tab 栏不再堆叠条件与内联标记）。
+ */
+function ConsoleTabButton({ onClick, title, ariaLabel, active, maxWidth, icon, label, status, startedAt, finalElapsed }: {
+  readonly onClick: () => void;
+  readonly title: string;
+  readonly ariaLabel: string;
+  readonly active: boolean;
+  readonly maxWidth: number;
+  readonly icon: ReactNode;
+  readonly label: ReactNode;
+  readonly status: RunStatus;
+  readonly startedAt?: number;
+  readonly finalElapsed?: number;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-label={ariaLabel}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+        border: '1px solid var(--border-strong)', ...(active ? selectedTabTone() : unselectedTabTone()), maxWidth,
+      }}
+    >
+      {icon}
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+      {/* T01038：运行中显示统一动画图标 + 实时秒数；结束后保留最终耗时 */}
+      <RunStatusBadge status={status} startedAt={startedAt} finalElapsed={finalElapsed} size={10} showLabel={false} />
+    </button>
+  );
+}
+
 /** T00839：轮询重建快照时保留上一次的本地发起时间（startAt），使耗时全程连续、不随刷新重置 */
 function mergeJobSnapshots(prev: AnalysisTask[], jobs: Parameters<typeof rowToTask>[0][]): AnalysisTask[] {
   return jobs.map((rj) => {
@@ -496,11 +579,12 @@ function SaveReqModal({
   readonly onClose: () => void;
 }) {
   return (
-    <div /* NOSONAR - 遮罩点击空白关闭为便捷辅助，正式关闭入口为弹窗内原生按钮，无需对背景遮罩聚焦键盘 */
-      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-      onClick={() => { if (!saving) onClose(); }}>
-      <div /* NOSONAR - 阻断点击冒泡属事件传递逻辑而非独立交互控件，可访问关闭入口仍为原生按钮 */
-        onClick={(e) => e.stopPropagation()} style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(640px, 92vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
+    <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {/* 遮罩层由原生 button 承担「点空白关闭」（保存中禁用），键盘聚焦同样可关；面板叠在其上，无需阻断冒泡 */}
+      <button type="button" aria-label="关闭转存弹窗" disabled={saving} onClick={onClose}
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', margin: 0, padding: 0, border: 'none', background: 'transparent' }} />
+      <div
+        style={{ position: 'relative', background: 'var(--card-bg)', borderRadius: 8, width: 'min(640px, 92vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
           <FolderInput size={14} style={{ color: 'var(--accent)' }} /> 转存到通用需求
           <span style={{ flex: 1 }} />
@@ -850,16 +934,9 @@ export function ReportConsole({
     const user = category === 'custom' ? custom.trim() : presetPrompt(category, periodLabel);
     const cat = category;
     // T00652：数据清洗不依赖报表周期，后端改按「全量已完成任务」注入数据，故不附带 period
-    const per = cat === 'custom' || cat === 'clean' ? undefined : period;
-    const title = cat === 'custom' ? `自定义：${user.slice(0, 18)}` : (CATEGORIES.find((c) => c.key === cat)?.label ?? cat);
-    const body: Record<string, unknown> = { title, prompt: user, category: cat };
-    // 周期类预设（非自定义）附带当前周期，后端据此聚合真实任务数据注入；自定义问答不附带以保持纯对话；
-    // T00652 数据清洗同理不附带周期（改用全量已完成任务数据）
-    if (cat !== 'custom' && cat !== 'clean' && per) body.period = per;
-    // T02165：周期类分析附带项目范围（空数组=全部项目，与改造前一致）。范围由后端写入 job 行，
-    // 「重新分析」沿用同一范围，不必担心切页后前端状态丢失导致复跑口径变化
-    if (cat !== 'custom' && cat !== 'clean' && projectIds.length > 0) body.projectIds = projectIds;
-    if (toolId) body.toolId = toolId;
+    const per = periodForCategory(cat, period);
+    const title = analysisTitle(cat, user);
+    const body = buildJobBody({ title, prompt: user, category: cat, period: per, projectIds, toolId });
     try {
       // 后端受理即创建 busy job 并后台异步运行；本地仅持有其 id 作为展示快照
       const r = await api.post<{ id: string }>('/console-jobs', body);
@@ -868,11 +945,8 @@ export function ReportConsole({
       setActiveId(r.id);
       // T00443 / PRD AI-6：对比模式——为每个勾选的对比模型创建同 prompt 任务并行运行（结果 tab 并列对比）
       for (const ct of compareIds) {
-        if (ct === toolId) continue;
-        const ctool = tools.find((x) => x.id === ct);
-        if (!ctool) continue;
-        const jobTitle = `${title}【对比·${ctool.name}】`;
-        void createCompareJob({ title: jobTitle, body: { ...body, title: jobTitle, toolId: ct }, prompt: user, category: cat, period: per });
+        const job = compareJobFor(ct, { title, body, prompt: user, category: cat, period: per, tools, toolId });
+        if (job) void createCompareJob(job);
       }
     } catch (e) {
       // 创建失败（如后端未就绪）：不写入本地视图，避免出现无后端实体的假任务，等待用户重试
@@ -955,7 +1029,8 @@ export function ReportConsole({
     const name = onReportTab ? aiReportLabel.replaceAll(/\s/g, '') : (activeTask?.title || 'analysis');
     const a = document.createElement('a');
     a.href = url;
-    a.download = `mtask-ai-${name.replace(/[\\/:*?"<>|]/g, '_')}.md`; // NOSONAR - 需按非法文件名字符集合替换，replaceAll 只能替换字面字符串无法表达集合
+    // 非法文件名字符按字符集合逐个替换为下划线（replaceAll 支持全局正则，等价于原 replace 写法）
+    a.download = `mtask-ai-${name.replaceAll(/[\\/:*?"<>|]/g, '_')}.md`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -1463,144 +1538,129 @@ export function ReportConsole({
   };
 
   // 渲染辅助：将整组件 return 内的密集 JSX 拆成独立函数，各自单独计认知复杂度，避免单一函数超 S3776 阈值
+  /** AI 报表 tab（常驻） */
+  const renderReportTab = () => (
+    <ConsoleTabButton
+      onClick={() => setActiveId(REPORT_TAB)}
+      title={report.streaming ? `${aiReportLabel}生成中 · 已运行 ${startedElapsedText(report.startedAt)} · 已输出 ${streamText.length} 字符（切换卡片不中断，返回即恢复）` : `${aiReportLabel} — 左侧生成触发的流式过程在此展示`}
+      ariaLabel={`${aiReportLabel} tab`}
+      active={onReportTab}
+      maxWidth={120}
+      icon={<Sparkles size={11} />}
+      label={aiReportLabel}
+      status={runStatus(report.streaming, report.finalElapsed)}
+      startedAt={report.startedAt}
+      finalElapsed={report.finalElapsed}
+    />
+  );
+
+  /** T00569 三轮：AI 项目计划导入 tab——有执行记录或进行中时显示 */
+  const renderAiImportTab = () => {
+    if (!(aiSnap.logs.length > 0 || aiSnap.busy)) return null;
+    return (
+      <ConsoleTabButton
+        onClick={() => setActiveId(AI_IMPORT_TAB)}
+        title={aiSnap.busy ? `AI 项目计划导入执行中 · 已运行 ${startedElapsedText(aiSnap.startedAt)}（切换卡片不中断，返回即恢复）` : 'AI 项目计划导入 — 导入执行日志在此滚动输出'}
+        ariaLabel="AI 项目计划导入 tab"
+        active={onAiImportTab}
+        maxWidth={150}
+        icon={<FileUp size={11} />}
+        label={aiImportStore.label()}
+        status={runStatus(aiSnap.busy, aiSnap.finalElapsed)}
+        startedAt={aiSnap.startedAt}
+        finalElapsed={aiSnap.finalElapsed}
+      />
+    );
+  };
+
+  /** T00769 二轮：原始需求生成 PRD tab——有日志或生成中时显示，流式正文与阶段日志在此滚动 */
+  const renderPrdGenTab = () => {
+    if (!(prdSnap.logs.length > 0 || prdSnap.streaming)) return null;
+    return (
+      <ConsoleTabButton
+        onClick={() => setActiveId(PRD_GEN_TAB)}
+        title={prdSnap.streaming ? `生成 PRD 中 · 已运行 ${startedElapsedText(prdSnap.startedAt)} · 已输出 ${prdSnap.streamText.length} 字符（切换卡片不中断，返回即恢复）` : '原始需求生成 PRD — 生成过程与正文增量在此实时滚动输出'}
+        ariaLabel="原始需求生成 PRD tab"
+        active={onPrdGenTab}
+        maxWidth={150}
+        icon={<FilePlus2 size={11} />}
+        label="原始需求生成 PRD"
+        status={runStatus(prdSnap.streaming, prdSnap.finalElapsed)}
+        startedAt={prdSnap.startedAt}
+        finalElapsed={prdSnap.finalElapsed}
+      />
+    );
+  };
+
+  /** T01491：从 PRD 生成测试用例 tab——有日志或生成中时显示，阶段日志与协议正文增量在此实时滚动 */
+  const renderTestCaseGenTab = () => {
+    if (!(tcSnap.logs.length > 0 || tcSnap.streaming)) return null;
+    return (
+      <ConsoleTabButton
+        onClick={() => setActiveId(TEST_CASE_GEN_TAB)}
+        title={tcSnap.streaming ? `生成测试用例中 · 已运行 ${startedElapsedText(tcSnap.startedAt)} · 已输出 ${tcSnap.streamText.length} 字符（切换卡片不中断，返回即恢复）` : '从 PRD 生成测试用例 — 生成过程与协议正文增量在此实时滚动输出'}
+        ariaLabel="从 PRD 生成测试用例 tab"
+        active={onTestCaseGenTab}
+        maxWidth={150}
+        icon={<ListChecks size={11} />}
+        label="生成测试用例"
+        status={runStatus(tcSnap.streaming, tcSnap.finalElapsed)}
+        startedAt={tcSnap.startedAt}
+        finalElapsed={tcSnap.finalElapsed}
+      />
+    );
+  };
+
+  /** T02109（PRD FR-1.4）：项目启动会 PPT tab——逐页装配 stage 与产物摘要在此实时滚动 */
+  const renderKickoffPptTab = () => {
+    if (!(kfSnap.logs.length > 0 || kfSnap.streaming)) return null;
+    return (
+      <ConsoleTabButton
+        onClick={() => setActiveId(KICKOFF_PPT_TAB)}
+        title={kfSnap.streaming
+          ? `启动会 PPT 生成中 · 已运行 ${startedElapsedText(kfSnap.startedAt)} · 大纲 ${kfSnap.outline.length} 页（切换卡片不中断，返回即恢复）`
+          : '启动会 PPT 生成 — 逐页装配过程与产物摘要在此实时滚动输出'}
+        ariaLabel="启动会 PPT 生成 tab"
+        active={onKickoffPptTab}
+        maxWidth={150}
+        icon={<Presentation size={11} />}
+        label="启动会 PPT"
+        status={runStatus(kfSnap.streaming, kfSnap.finalElapsed)}
+        startedAt={kfSnap.startedAt}
+        finalElapsed={kfSnap.finalElapsed}
+      />
+    );
+  };
+
+  /** T02857（PRD FR-1.4）：阶段性总结汇报 PPT tab——逐页装配 stage 与产物摘要在此实时滚动 */
+  const renderSummaryPptTab = () => {
+    if (!(sumSnap.logs.length > 0 || sumSnap.streaming)) return null;
+    return (
+      <ConsoleTabButton
+        onClick={() => setActiveId(SUMMARY_PPT_TAB)}
+        title={sumSnap.streaming
+          ? `总结汇报 PPT 生成中 · 已运行 ${startedElapsedText(sumSnap.startedAt)} · 大纲 ${sumSnap.outline.length} 页（切换卡片不中断，返回即恢复）`
+          : '阶段总结 PPT 生成 — 逐页装配过程与产物摘要在此实时滚动输出'}
+        ariaLabel="阶段总结 PPT 生成 tab"
+        active={onSummaryPptTab}
+        maxWidth={150}
+        icon={<FileChartColumn size={11} />}
+        label="总结汇报 PPT"
+        status={runStatus(sumSnap.streaming, sumSnap.finalElapsed)}
+        startedAt={sumSnap.startedAt}
+        finalElapsed={sumSnap.finalElapsed}
+      />
+    );
+  };
+
   const renderTabBar = () => (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-      <button
-        onClick={() => setActiveId(REPORT_TAB)}
-        title={report.streaming ? `${aiReportLabel}生成中 · 已运行 ${startedElapsedText(report.startedAt)} · 已输出 ${streamText.length} 字符（切换卡片不中断，返回即恢复）` : `${aiReportLabel} — 左侧生成触发的流式过程在此展示`}
-        aria-label={`${aiReportLabel} tab`}
-        style={{
-          display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
-          border: '1px solid var(--border-strong)', ...(onReportTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 120,
-        }}
-      >
-        <Sparkles size={11} />
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{aiReportLabel}</span>
-        {/* T01038：运行中显示统一动画图标 + 实时秒数；结束后保留最终耗时 */}
-        <RunStatusBadge
-          status={runStatus(report.streaming, report.finalElapsed)}
-          startedAt={report.startedAt}
-          finalElapsed={report.finalElapsed}
-          size={10}
-          showLabel={false}
-        />
-      </button>
-      {/* T00569 三轮：AI 项目计划导入 tab——有执行记录或进行中时显示 */}
-      {(aiSnap.logs.length > 0 || aiSnap.busy) && (
-        <button
-          onClick={() => setActiveId(AI_IMPORT_TAB)}
-          title={aiSnap.busy ? `AI 项目计划导入执行中 · 已运行 ${startedElapsedText(aiSnap.startedAt)}（切换卡片不中断，返回即恢复）` : 'AI 项目计划导入 — 导入执行日志在此滚动输出'}
-          aria-label="AI 项目计划导入 tab"
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
-            border: '1px solid var(--border-strong)', ...(onAiImportTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
-          }}
-        >
-          <FileUp size={11} />
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{aiImportStore.label()}</span>
-          {/* T01038：统一运行状态徽标 */}
-          <RunStatusBadge
-            status={runStatus(aiSnap.busy, aiSnap.finalElapsed)}
-            startedAt={aiSnap.startedAt}
-            finalElapsed={aiSnap.finalElapsed}
-            size={10}
-            showLabel={false}
-          />
-        </button>
-      )}
-      {/* T00769 二轮：原始需求生成 PRD tab——有日志或生成中时显示，流式正文与阶段日志在此滚动 */}
-      {(prdSnap.logs.length > 0 || prdSnap.streaming) && (
-        <button
-          onClick={() => setActiveId(PRD_GEN_TAB)}
-          title={prdSnap.streaming ? `生成 PRD 中 · 已运行 ${startedElapsedText(prdSnap.startedAt)} · 已输出 ${prdSnap.streamText.length} 字符（切换卡片不中断，返回即恢复）` : '原始需求生成 PRD — 生成过程与正文增量在此实时滚动输出'}
-          aria-label="原始需求生成 PRD tab"
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
-            border: '1px solid var(--border-strong)', ...(onPrdGenTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
-          }}
-        >
-          <FilePlus2 size={11} />
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>原始需求生成 PRD</span>
-          {/* T01038：统一运行状态徽标 */}
-          <RunStatusBadge
-            status={runStatus(prdSnap.streaming, prdSnap.finalElapsed)}
-            startedAt={prdSnap.startedAt}
-            finalElapsed={prdSnap.finalElapsed}
-            size={10}
-            showLabel={false}
-          />
-        </button>
-      )}
-      {/* T01491：从 PRD 生成测试用例 tab——有日志或生成中时显示，阶段日志与协议正文增量在此实时滚动 */}
-      {(tcSnap.logs.length > 0 || tcSnap.streaming) && (
-        <button
-          onClick={() => setActiveId(TEST_CASE_GEN_TAB)}
-          title={tcSnap.streaming ? `生成测试用例中 · 已运行 ${startedElapsedText(tcSnap.startedAt)} · 已输出 ${tcSnap.streamText.length} 字符（切换卡片不中断，返回即恢复）` : '从 PRD 生成测试用例 — 生成过程与协议正文增量在此实时滚动输出'}
-          aria-label="从 PRD 生成测试用例 tab"
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
-            border: '1px solid var(--border-strong)', ...(onTestCaseGenTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
-          }}
-        >
-          <ListChecks size={11} />
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>生成测试用例</span>
-          <RunStatusBadge
-            status={runStatus(tcSnap.streaming, tcSnap.finalElapsed)}
-            startedAt={tcSnap.startedAt}
-            finalElapsed={tcSnap.finalElapsed}
-            size={10}
-            showLabel={false}
-          />
-        </button>
-      )}
-      {/* T02109（PRD FR-1.4）：项目启动会 PPT tab——逐页装配 stage 与产物摘要在此实时滚动 */}
-      {(kfSnap.logs.length > 0 || kfSnap.streaming) && (
-        <button
-          onClick={() => setActiveId(KICKOFF_PPT_TAB)}
-          title={kfSnap.streaming
-            ? `启动会 PPT 生成中 · 已运行 ${startedElapsedText(kfSnap.startedAt)} · 大纲 ${kfSnap.outline.length} 页（切换卡片不中断，返回即恢复）`
-            : '启动会 PPT 生成 — 逐页装配过程与产物摘要在此实时滚动输出'}
-          aria-label="启动会 PPT 生成 tab"
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
-            border: '1px solid var(--border-strong)', ...(onKickoffPptTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
-          }}
-        >
-          <Presentation size={11} />
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>启动会 PPT</span>
-          <RunStatusBadge
-            status={runStatus(kfSnap.streaming, kfSnap.finalElapsed)}
-            startedAt={kfSnap.startedAt}
-            finalElapsed={kfSnap.finalElapsed}
-            size={10}
-            showLabel={false}
-          />
-        </button>
-      )}
-      {/* T02857（PRD FR-1.4）：阶段性总结汇报 PPT tab——逐页装配 stage 与产物摘要在此实时滚动 */}
-      {(sumSnap.logs.length > 0 || sumSnap.streaming) && (
-        <button
-          onClick={() => setActiveId(SUMMARY_PPT_TAB)}
-          title={sumSnap.streaming
-            ? `总结汇报 PPT 生成中 · 已运行 ${startedElapsedText(sumSnap.startedAt)} · 大纲 ${sumSnap.outline.length} 页（切换卡片不中断，返回即恢复）`
-            : '阶段总结 PPT 生成 — 逐页装配过程与产物摘要在此实时滚动输出'}
-          aria-label="阶段总结 PPT 生成 tab"
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
-            border: '1px solid var(--border-strong)', ...(onSummaryPptTab ? selectedTabTone() : unselectedTabTone()), maxWidth: 150,
-          }}
-        >
-          <FileChartColumn size={11} />
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>总结汇报 PPT</span>
-          <RunStatusBadge
-            status={runStatus(sumSnap.streaming, sumSnap.finalElapsed)}
-            startedAt={sumSnap.startedAt}
-            finalElapsed={sumSnap.finalElapsed}
-            size={10}
-            showLabel={false}
-          />
-        </button>
-      )}
+      {renderReportTab()}
+      {renderAiImportTab()}
+      {renderPrdGenTab()}
+      {renderTestCaseGenTab()}
+      {renderKickoffPptTab()}
+      {renderSummaryPptTab()}
       {renderReviewLectureTabButton()}
       {tasks.map((t) => (
         <div
@@ -1642,7 +1702,7 @@ export function ReportConsole({
       <span style={{ color: 'var(--accent)', opacity: notice ? 1 : 0, transition: 'opacity .2s', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 180 }}>{notice}</span>
       {/* T02213：对比任务创建失败点名到模型并给重试入口，不再只剩「tab 少一个」 */}
       {compareFailed.length > 0 && (
-        <span role="status" data-t02213="compare-error" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', color: 'var(--danger)' }}>
+        <output data-t02213="compare-error" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', color: 'var(--danger)' }}>
           对比任务创建失败：{compareFailed.map((x) => x.title).join('、')} · {compareFailed[0].reason ?? '请求失败'}
           <button
             onClick={retryFailedCompares}
@@ -1652,7 +1712,7 @@ export function ReportConsole({
           >
             重试
           </button>
-        </span>
+        </output>
       )}
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
         {/* T00838：停止按钮——任一任务运行中即可用，点击中止对应后端 AI 请求并清理产物（幂等） */}
@@ -1722,13 +1782,13 @@ export function ReportConsole({
     <>
       {/* 预览遮罩：渲染当前任务 Markdown 结论 */}
       {previewOpen && (
-        <div /* NOSONAR - 遮罩点击空白关闭为便捷辅助，正式关闭入口为原生 X 按钮，无需对背景遮罩聚焦键盘 */
-          style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          onClick={() => setPreviewOpen(false)}
+        <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
         >
-          <div /* NOSONAR - 阻断点击冒泡属事件传递逻辑而非独立交互控件，可访问关闭入口仍为原生 X 按钮 */
-            onClick={(e) => e.stopPropagation()}
-            style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(800px, 90vw)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}
+          {/* 遮罩层由原生 button 承担「点空白关闭」，原生 X 按钮仍是主要入口；面板叠在其上，无需阻断冒泡 */}
+          <button type="button" aria-label="关闭预览" onClick={() => setPreviewOpen(false)}
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', margin: 0, padding: 0, border: 'none', background: 'transparent' }} />
+          <div
+            style={{ position: 'relative', background: 'var(--card-bg)', borderRadius: 8, width: 'min(800px, 90vw)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
               <FileText size={14} /> AI 分析预览

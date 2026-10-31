@@ -264,22 +264,24 @@ export async function buildCaseDocx(input: CaseExportInput): Promise<Buffer> {
   return await Packer.toBuffer(doc);
 }
 
+/** 单条用例的 Markdown 行：标题 → 字段列表 → 步骤表（无步骤给占位） */
+function caseMdLines(c: TestCaseWithSteps): string[] {
+  const lines = [`### ${c.case_no} ${oneLine(c.title)}`, ''];
+  for (const col of CASE_FIELD_COLUMNS) lines.push(`- **${col.header}**：${mdCell(col.get(c))}`);
+  lines.push('', '**测试步骤**', '');
+  if (c.steps.length === 0) return [...lines, '（未填写步骤）', ''];
+  lines.push('| 序号 | 操作 | 预期结果 |', '| --- | --- | --- |');
+  for (const s of c.steps) lines.push(`| ${s.step_no} | ${mdCell(s.action)} | ${mdCell(s.expected)} |`);
+  lines.push('');
+  return lines;
+}
+
 /** Markdown（.md）：`# 项目` → `## REQ` → `### TC` → 字段列表 → 步骤表格（§10.3；层级严格按规范，不插模块层） */
 export function buildCaseMd(input: CaseExportInput): Buffer {
   const out: string[] = [`# 测试用例 - ${oneLine(input.projectName)}`, '', `> ${summaryLine(input)}`, ''];
   for (const g of groupByReq(input.cases)) {
     out.push(`## ${oneLine(g.label)}`, '');
-    for (const c of g.cases) {
-      out.push(`### ${c.case_no} ${oneLine(c.title)}`, '');
-      for (const col of CASE_FIELD_COLUMNS) out.push(`- **${col.header}**：${mdCell(col.get(c))}`);
-      out.push('', '**测试步骤**', '');
-      if (c.steps.length === 0) out.push('（未填写步骤）', '');
-      else {
-        out.push('| 序号 | 操作 | 预期结果 |', '| --- | --- | --- |');
-        for (const s of c.steps) out.push(`| ${s.step_no} | ${mdCell(s.action)} | ${mdCell(s.expected)} |`);
-        out.push('');
-      }
-    }
+    for (const c of g.cases) out.push(...caseMdLines(c));
   }
   out.push('## 需求覆盖率汇总', '', '| 需求编号 | 需求标题 | 用例数 | 是否覆盖 |', '| --- | --- | --- | --- |');
   for (const r of coverageRows(input.coverage)) {

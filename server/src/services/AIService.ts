@@ -7,7 +7,7 @@ import { logService } from './LogService';
 import { getAdapter } from '../adapters';
 import { resolvePrdContext, type PrdContext } from '../util/prdContext'; // T00763：任务关联 PRD → AI 上下文自动注入（util 独立避免循环依赖）
 import { WorkspaceService } from './WorkspaceService'; // T00777：工作空间检索增强
-import type { StreamResult, SubmitResult, PollResult, TokenUsage } from '../adapters/types';
+import type { StreamResult, SubmitResult, PollResult, TokenUsage, JobResult } from '../adapters/types';
 import type { ToolConfig } from '../adapters';
 import { stripThinking } from '../util/thinking'; // T00814：思考块剥离上移共享
 import { recordUsage } from '../util/aiUsageRecord'; // T03296：写入单源下沉 util，直连适配器的卡可复用同一口径
@@ -97,7 +97,7 @@ async function organizeOne(
     config,
   );
   if (result.ok && result.content) results[taskId] = result.content;
-  recordUsage('organize', toolId, config.model, result.ok, startedAt, result.content?.length ?? 0, result.error);
+  recordUsage({ kind: 'organize', toolId, model: config.model, ok: result.ok, startedAt, contentChars: result.content?.length ?? 0, error: result.error });
 }
 
 /** T02164：摘要提示词的关联区块取数上限——长任务的时间线可达数百条事件，
@@ -239,6 +239,65 @@ function attemptSystem(attempt: number, system: string, retrySystem?: string): s
   return attempt === 1 || !retrySystem ? system : retrySystem;
 }
 
+/** askJson 单次尝试的上下文：本轮不变量打包传递，避免逐参数穿透 */
+interface AskJsonAttemptCtx {
+  adapter: ReturnType<typeof getAdapter>;
+  user: string;
+  base: ToolConfig;
+  toolId: string;
+  /** 与工具配置同源（未配置时为空，recordUsage 按可选处理） */
+  model?: string;
+  cardKey?: string;
+  minMaxTokens?: number;
+  signal?: AbortSignal;
+}
+
+/** T02275：首轮输出预算——maxTokens 硬覆盖优先，否则按下限语义托底（minMaxTokens 与工具配置取大者） */
+function resolveOutputBudget(configMax: number | undefined, maxTokens?: number, minMaxTokens?: number): number | undefined {
+  if (maxTokens != null) return maxTokens;
+  if (minMaxTokens == null) return undefined;
+  return Math.max(configMax ?? 4096, minMaxTokens);
+}
+
+/** T02275：预算被模型拒收（错误直指 max_tokens）且高于下限值时可同轮回退重打 */
+function budgetRejected(res: JobResult, minMaxTokens?: number, budgetMax?: number): boolean {
+  if (res.ok || minMaxTokens == null || budgetMax == null) return false;
+  return budgetMax > minMaxTokens && /max_tokens|max_completion_tokens|too large|invalid/i.test(res.error ?? '');
+}
+
+/**
+ * 调一轮对话；预算被拒时**同轮内**回退到下限值重打一次，不占用「截断精简重试」轮次
+ * （先例 PrdGenService：只在错误确指预算时回退，其余照旧）。返回结果与最终生效预算。
+ */
+async function chatForAttempt(
+  ctx: AskJsonAttemptCtx,
+  sys: string,
+  attempt: number,
+  budgetMax: number | undefined,
+  startedAt: number,
+): Promise<{ res: JobResult; budgetMax: number | undefined }> {
+  const res = await ctx.adapter.chat(sys, ctx.user, attemptConfig(ctx.base, attempt, budgetMax), ctx.signal);
+  if (!budgetRejected(res, ctx.minMaxTokens, budgetMax)) return { res, budgetMax };
+  recordUsage({
+    kind: 'ask-json', toolId: ctx.toolId, model: ctx.model, ok: false, startedAt, contentChars: 0, cardKey: ctx.cardKey,
+    error: `预算 ${budgetMax} 被拒，回退 ${ctx.minMaxTokens} 重试：${res.error ?? ''}`,
+  });
+  const fallbackBudget = ctx.minMaxTokens;
+  const retried = await ctx.adapter.chat(sys, ctx.user, attemptConfig(ctx.base, attempt, fallbackBudget), ctx.signal);
+  return { res: retried, budgetMax: fallbackBudget };
+}
+
+/** T02314：第二轮优先用「首轮具体失败原因」定制的重试提示词；无首轮错误或无钩子时回退静态 retrySystem */
+function retrySystemFor(
+  attempt: number,
+  lastError: string,
+  retrySystem?: string,
+  fromError?: (lastError: string) => string,
+): string | undefined {
+  if (attempt === 2 && lastError && fromError) return fromError(lastError);
+  return retrySystem;
+}
+
 /**
  * M6-6.1：累计**全部**尝试的用量（原 addUsage 闭包）——重试意味着真实多花了一次调用，
  * 只记最后一次会让预算护栏系统性低估成本（护栏漏拦比误拦更危险）。
@@ -308,7 +367,7 @@ export const AIService = {
     const startedAt = Date.now();
     logService.log('INFO', 'ai', `[任务总结摘要] task=${task.task_no ?? taskId} tool=${tool} type=${type} model=${config.model ?? ''}`);
     const result = await adapter.chat(SUMMARY_SYSTEM, user, config);
-    recordUsage('summary', tool, config.model, result.ok, startedAt, result.content?.length ?? 0, result.error);
+    recordUsage({ kind: 'summary', toolId: tool, model: config.model, ok: result.ok, startedAt, contentChars: result.content?.length ?? 0, error: result.error });
     const content = result.content?.trim();
     if (!result.ok || !content) throw new Error(result.error ?? '模型未返回摘要内容，请稍后重试');
     return TaskService.saveAiSummary(taskId, content);
@@ -345,7 +404,7 @@ export const AIService = {
     const cost = Date.now() - startedAt;
     if (res.ok) logService.log('INFO', 'ai', `[提示词优化] 成功 耗时=${cost}ms`);
     else logService.log('ERROR', 'ai', `[提示词优化] 失败 耗时=${cost}ms ${res.error ?? ''}`);
-    recordUsage('optimize', toolId, config.model, res.ok, startedAt, res.content?.length ?? 0, res.error);
+    recordUsage({ kind: 'optimize', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error });
     return res;
   },
 
@@ -372,7 +431,7 @@ export const AIService = {
     // 先剥离思考过程（部分思考型模型会附带内心推理），再折叠空白为单行干净标题，
     // 确保回填标题输入框时不会污染（双保险，不依赖模型是否遵守“只输出标题”约束）
     if (res.ok && res.content) res.content = stripThinking(res.content).replaceAll(/\s+/g, ' ').trim();
-    recordUsage('beautify', toolId, config.model, res.ok, startedAt, res.content?.length ?? 0, res.error);
+    recordUsage({ kind: 'beautify', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error });
     return res;
   },
 
@@ -410,7 +469,7 @@ export const AIService = {
     const res = await adapter.chat(system, `【原文】\n${text}`, polishConfig);
     // 与标题美化同款双保险：剥离思考过程并去掉首尾空白，避免思考型模型的推理内容回填进输入框
     if (res.ok && res.content) res.content = stripThinking(res.content).trim();
-    recordUsage('polish', toolId, config.model, res.ok, startedAt, res.content?.length ?? 0, res.error);
+    recordUsage({ kind: 'polish', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error });
     return res;
   },
 
@@ -438,7 +497,7 @@ export const AIService = {
       // 双保险：模型未严格遵守 40 字约束时强制截断到 40 字（不截断则在半个词处收尾）
       if (res.content.length > 40) res.content = res.content.slice(0, 40).trim();
     }
-    recordUsage('simplify', toolId, config.model, res.ok, startedAt, res.content?.length ?? 0, res.error);
+    recordUsage({ kind: 'simplify', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error });
     return res;
   },
 
@@ -460,7 +519,7 @@ export const AIService = {
     const effective = timeoutMs == null ? config : { ...config, timeoutMs };
     const startedAt = Date.now();
     const res = await adapter.chat(system, user, effective, signal);
-    recordUsage('ask', toolId, config.model, res.ok, startedAt, res.content?.length ?? 0, res.error, cardKey);
+    recordUsage({ kind: 'ask', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error, cardKey });
     return res;
   },
 
@@ -513,30 +572,19 @@ export const AIService = {
     const effective = timeoutMs == null ? config : { ...config, timeoutMs };
     const base = temperature == null ? effective : { ...effective, temperature };
     // T02275：下限语义在此收敛为一个具体选值——工具配得更高时保留更高值，更低时托底到 minMaxTokens。
-    let budgetMax = maxTokens ?? (minMaxTokens == null ? undefined : Math.max(config.maxTokens ?? 4096, minMaxTokens));
+    let budgetMax = resolveOutputBudget(config.maxTokens, maxTokens, minMaxTokens);
+    const ctx: AskJsonAttemptCtx = { adapter, user, base, toolId, model: config.model, cardKey, minMaxTokens, signal };
     const acc: { usage?: TokenUsage; lastError: string; attempts: number } = { lastError: '', attempts: 0 };
     for (let attempt = 1; attempt <= 2; attempt++) {
       acc.attempts = attempt;
       const startedAt = Date.now();
-      // T02314：第二轮优先用「首轮具体失败原因」定制的重试提示词——模型缺哪页、哪条超长，
-      // 原样说给它听；无首轮错误或调用方没提供钩子时回退静态 retrySystem。
-      const retrySys = attempt === 2 && acc.lastError && retrySystemFromError
-        ? retrySystemFromError(acc.lastError)
-        : retrySystem;
-      const sys = attemptSystem(attempt, system, retrySys);
-      let res = await adapter.chat(sys, user, attemptConfig(base, attempt, budgetMax), signal);
-      // T02275：抬高的预算被模型拒收（请求 400 直指 max_tokens）→ **同轮内**回退到下限值重打一次，
-      // 不占用「截断精简重试」轮次（先例 PrdGenService.ts:278-281：只在错误确指预算时回退，其余照旧）。
-      if (!res.ok && minMaxTokens != null && budgetMax != null && budgetMax > minMaxTokens
-        && /max_tokens|max_completion_tokens|too large|invalid/i.test(res.error ?? '')) {
-        recordUsage('ask-json', toolId, config.model, false, startedAt, 0, `预算 ${budgetMax} 被拒，回退 ${minMaxTokens} 重试：${res.error ?? ''}`, cardKey);
-        budgetMax = minMaxTokens;
-        res = await adapter.chat(sys, user, attemptConfig(base, attempt, budgetMax), signal);
-      }
+      const sys = attemptSystem(attempt, system, retrySystemFor(attempt, acc.lastError, retrySystem, retrySystemFromError));
+      const { res, budgetMax: nextBudget } = await chatForAttempt(ctx, sys, attempt, budgetMax, startedAt);
+      budgetMax = nextBudget;
       acc.usage = mergeUsage(acc.usage, res.usage);
       if (!res.ok || !res.content) {
         acc.lastError = res.error ?? 'AI 返回内容为空';
-        recordUsage('ask-json', toolId, config.model, false, startedAt, 0, acc.lastError, cardKey);
+        recordUsage({ kind: 'ask-json', toolId, model: config.model, ok: false, startedAt, contentChars: 0, error: acc.lastError, cardKey });
         // T01289：超时不重试——本轮已耗尽整个超时窗口，再试一次只会把等待时间翻倍；
         // 监督决策据此在 10s 内降级 ESCALATE（NFR-1），而不是 20s 后才降级。
         // T02141：外部中止同理不重试——调用方已表示不要这一轮结果，重试等于白烧一次配额。
@@ -545,11 +593,14 @@ export const AIService = {
       }
       try {
         const data = parse(res.content);
-        recordUsage('ask-json', toolId, config.model, true, startedAt, res.content.length, undefined, cardKey);
+        recordUsage({ kind: 'ask-json', toolId, model: config.model, ok: true, startedAt, contentChars: res.content.length, cardKey });
         return { ok: true, data, retried: attempt > 1, usage: acc.usage };
       } catch (e) {
         acc.lastError = e instanceof Error ? e.message : String(e);
-        recordUsage('ask-json', toolId, config.model, false, startedAt, res.content.length, `JSON 解析失败：${acc.lastError.slice(0, 200)}`, cardKey);
+        recordUsage({
+          kind: 'ask-json', toolId, model: config.model, ok: false, startedAt, cardKey,
+          contentChars: res.content.length, error: `JSON 解析失败：${acc.lastError.slice(0, 200)}`,
+        });
       }
     }
     return { ok: false, error: `${acc.lastError}${acc.attempts > 1 ? '（已自动重试 1 次）' : ''}`, usage: acc.usage };
@@ -577,7 +628,7 @@ export const AIService = {
     const wrapped = (text: string) => { chars += text.length; onDelta(text); };
     const res = await adapter.chatStream(system, user, effective, wrapped, signal);
     const durationMs = Date.now() - startedAt;
-    recordUsage('stream', toolId, config.model, res.ok, startedAt, chars, res.error, cardKey);
+    recordUsage({ kind: 'stream', toolId, model: config.model, ok: res.ok, startedAt, contentChars: chars, error: res.error, cardKey });
     // 与 ai_usage 同一份实际值（流式增量子符数 / 墙钟耗时），供 AI-102② 偏差复算直接取用
     return { ...res, chars, durationMs };
   },
@@ -599,7 +650,7 @@ export const AIService = {
       '你是任务智能分类助手。给定一个任务标题和一组候选分类名，选出与标题主题最贴切的一个分类名作为该任务的类型，并按紧急重要程度给出优先级标注（U=极高、H=高、N=普通、L=低）。只输出一行：分类名|优先级字母（如：开发|H），不加任何解释；若分类都不合适，只输出 NONE|N。';
     const user = `候选分类：${categories.map((c) => c.name).join('、')}\n任务标题：${title}`;
     const res = await adapter.chat(system, user, config);
-    if (!res.ok) { recordUsage('classify', toolId, config.model, false, startedAt, 0, res.error); return { ok: false, error: res.error }; }
+    if (!res.ok) { recordUsage({ kind: 'classify', toolId, model: config.model, ok: false, startedAt, contentChars: 0, error: res.error }); return { ok: false, error: res.error }; }
     const raw = (res.content ?? '').trim();
     // T00473：解析「分类名|优先级」；无 | 时兼容旧格式（仅分类名，优先级为 null 不写回）
     const sep = raw.lastIndexOf('|');
@@ -611,7 +662,7 @@ export const AIService = {
     const hit =
       categories.find((c) => c.name.trim() === out) ??
       [...categories].sort((a, b) => b.name.length - a.name.length).find((c) => out.includes(c.name));
-    recordUsage('classify', toolId, config.model, true, startedAt, res.content?.length ?? 0);
+    recordUsage({ kind: 'classify', toolId, model: config.model, ok: true, startedAt, contentChars: res.content?.length ?? 0 });
     return { ok: true, content: res.content, categoryId: hit ? hit.id : null, priority };
   },
 
@@ -637,7 +688,7 @@ export const AIService = {
       chat: async (system, user) => {
         const startedAt = Date.now();
         const res = await adapter.chat(system, user, config);
-        recordUsage('classify', toolId, config.model, res.ok, startedAt, res.content?.length ?? 0, res.error);
+        recordUsage({ kind: 'classify', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error });
         return res;
       },
     });
@@ -678,11 +729,11 @@ export const AIService = {
     ].filter(Boolean).join('\n');
     const res = await adapter.chat(system, user, config);
     if (!res.ok) {
-      recordUsage('classify', toolId, config.model, false, startedAt, 0, res.error);
+      recordUsage({ kind: 'classify', toolId, model: config.model, ok: false, startedAt, contentChars: 0, error: res.error });
       return { ok: false, error: res.error };
     }
     const raw = (res.content ?? '').trim();
-    recordUsage('classify', toolId, config.model, true, startedAt, raw.length);
+    recordUsage({ kind: 'classify', toolId, model: config.model, ok: true, startedAt, contentChars: raw.length });
     // 理由里可能出现「|」，从第三个字段起整体归为理由
     const parts = raw.split('|');
     const nameOut = (parts[0] ?? '').trim();
@@ -719,8 +770,8 @@ export const AIService = {
 进度：${plan.progress}%
 负责人：${plan.assignee || '未指派'}${prdSuffix}`;
     const res = await adapter.chat(system, user, config);
-    if (!res.ok) { recordUsage('plan-evaluate', toolId, config.model, false, startedAt, 0, res.error); return { ok: false, error: res.error }; }
-    recordUsage('plan-evaluate', toolId, config.model, true, startedAt, res.content?.length ?? 0);
+    if (!res.ok) { recordUsage({ kind: 'plan-evaluate', toolId, model: config.model, ok: false, startedAt, contentChars: 0, error: res.error }); return { ok: false, error: res.error }; }
+    recordUsage({ kind: 'plan-evaluate', toolId, model: config.model, ok: true, startedAt, contentChars: res.content?.length ?? 0 });
     return { ok: true, evaluation: (res.content ?? '').trim() };
   },
 

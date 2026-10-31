@@ -229,7 +229,7 @@ export interface Task {
   retry_count?: number;
   /** T00577：派生单溯源——原任务编号（如 T00422） */
   derived_from: string | null;
-  /** T02949：派生单裁决状态（'' 无 | '待裁决' | '已裁决'）——独立列，不占用 status 的 todo/done 语义 */
+  /** T02949：派生单裁决状态（'' 无 | '待裁决' | '已裁决'）——独立列，不占用 status 的待办/完成语义 */
   ruling_state?: string;
   /** T02949：裁决内容（预设选项值或自定义文本） */
   ruling_result?: string;

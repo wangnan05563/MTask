@@ -45,7 +45,7 @@ export function SlideOver({ open, title, onClose, children, width = 480 }: {
   readonly children: ReactNode;
   readonly width?: number;
 }) {
-  const panelRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDialogElement>(null);
   const prevFocus = useRef<HTMLElement | null>(null);
   // T03274（UX-14①）：自适应 + 拖拽调宽——宽度按上次拖拽结果恢复，超出当前视口时夹回 92%
   const [vw, setVw] = useState(() => globalThis.innerWidth || 1280);
@@ -106,44 +106,50 @@ export function SlideOver({ open, title, onClose, children, width = 480 }: {
       aria-hidden={!open}
     >
       {/* 遮罩：走 `--overlay` 令牌（PM-302 ① 抽屉单源）点按关闭，淡入 200ms。
-          键盘可达由组件自身的全局 Escape 监听（见上方 onKey）与面板右上角原生关闭按钮负责；
-          此处另补 Enter/Space 激活，使鼠标便捷路径与键盘路径同效。 */}
-      <div /* NOSONAR: S6848 豁免——同项目遮罩统一口径（PlanPage:1029/TasksPage:3598 等）：点空白关闭是便捷辅助，正式关闭入口为 Esc 与原生关闭按钮；改原生 button 会被 App.tsx:207 全局 `button:hover…{transform:rotate(-1.5deg)}` 命中，整屏遮罩悬停即倾斜；补 role="button" 则复现 S6819 */
+          用原生 <button> 承载「点空白关闭」——Enter/Space 与鼠标点按同效，且不额外挂 role；
+          正式关闭入口仍是组件自身的全局 Escape 监听与面板右上角关闭按钮。
+          tabIndex=-1：不进 Tab 序（避免整屏遮罩成为键盘首站），只承接指针/键盘激活。
+          tbtn-anim：避开全局 button 悬浮倾斜规则——整屏遮罩不该有手感动画。 */}
+      <button
+        type="button"
+        className="tbtn-anim"
         tabIndex={-1}
+        aria-label="关闭抽屉（点按空白处）"
         onClick={close}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') close(); }}
         style={{
-          position: 'absolute', inset: 0, background: 'var(--overlay)', // PM-302 ①：遮罩单源走 --overlay 令牌（原硬编码 .32，暗色下压不住亮底）
+          position: 'absolute', inset: 0, border: 'none', padding: 0,
+          background: 'var(--overlay)', // PM-302 ①：遮罩单源走 --overlay 令牌（原硬编码 .32，暗色下压不住亮底）
           opacity: open ? 1 : 0, transition: 'opacity 200ms ease',
         }}
       />
-      {/* 抽屉面板：右进右出 translateX(100%)→0 300ms */}
-      <div /* NOSONAR: S6819 豁免——面板常驻挂载、以transform/visibility/pointer-events动画；原生<dialog>不调showModal()不渲染且位于顶层，切换将重写开合动画模型 */
+      {/* 抽屉面板：右进右出 translateX(100%)→0 300ms。用原生 <dialog open>（隐式 role=dialog）：
+          常驻挂载、显隐仍由父级 transform/visibility/pointer-events 驱动，不调 showModal() 以免进入顶层打乱滑入动画。 */}
+      <dialog
         ref={panelRef}
-        role="dialog"
+        open
         aria-modal="true"
         aria-labelledby={title ? titleId : undefined}
         aria-label={title ? undefined : '抽屉'}
-        tabIndex={-1}
         style={{
-          position: 'absolute', top: 0, right: 0, height: '100%',
+          position: 'absolute', inset: 'auto', top: 0, right: 0, height: '100%',
+          margin: 0, padding: 0, border: 'none', borderLeft: '1px solid var(--border)',
+          maxWidth: 'none', maxHeight: 'none', color: 'var(--text)',
           width: fullscreen ? '100vw' : `${clampDrawerWidth(w, vw)}px`, background: 'var(--card-bg)',
-          boxShadow: '-8px 0 24px rgba(0,0,0,.18)', borderLeft: '1px solid var(--border)',
+          boxShadow: '-8px 0 24px rgba(0,0,0,.18)',
           display: 'flex', flexDirection: 'column',
           transform: open ? 'translateX(0)' : 'translateX(100%)',
           transition: 'transform 300ms cubic-bezier(.22,1,.36,1)',
         }}
       >
-        {/* T03274（UX-14①）：左缘拖拽调宽；键盘 ←/→ 以 16px 步进（Shift 64px），宽度记在本地 */}
+        {/* T03274（UX-14①）：左缘拖拽调宽；键盘 ←/→ 以 16px 步进（Shift 64px），宽度记在本地。
+            用原生 <button> 作调宽手柄：可聚焦、←/→ 可调、指针可拖，角色即「可操作控件」，
+            不再借 separator 角色（该角色本身不可交互，挂事件与 tabIndex 都不合规）。 */}
         {!fullscreen && (
-          <div
-            role="separator"
-            aria-orientation="vertical"
+          <button
+            type="button"
+            className="tbtn-anim"
             aria-label="调整抽屉宽度（←/→ 键，Shift 加大步长）"
-            aria-valuemin={DRAWER_MIN_W}
-            aria-valuemax={Math.max(DRAWER_MIN_W, Math.floor(vw * DRAWER_MAX_RATIO))}
-            aria-valuenow={clampDrawerWidth(w, vw)}
-            tabIndex={0}
+            title="拖动或按 ←/→ 调整抽屉宽度（Shift 加大步长）"
             data-drawer-resize="1"
             onPointerDown={(e) => {
               dragRef.current = { startX: e.clientX, startW: clampDrawerWidth(w, vw) };
@@ -170,7 +176,7 @@ export function SlideOver({ open, title, onClose, children, width = 480 }: {
             }}
             style={{
               position: 'absolute', left: 0, top: 0, bottom: 0, width: 6, cursor: 'col-resize',
-              background: 'transparent', touchAction: 'none', zIndex: 1,
+              background: 'transparent', border: 'none', padding: 0, touchAction: 'none', zIndex: 1,
             }}
           />
         )}
@@ -187,7 +193,7 @@ export function SlideOver({ open, title, onClose, children, width = 480 }: {
           </button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>{children}</div>
-      </div>
+      </dialog>
     </div>,
     document.body,
   );

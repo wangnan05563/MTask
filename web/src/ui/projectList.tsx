@@ -185,8 +185,7 @@ export function ProjectListHint({ view, showLoading = true, style }: {
 }) {
   if (view.phase === 'error') {
     return (
-      <span
-        role="status"
+      <output
         data-t02201="project-list-error"
         style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-s)', color: 'var(--danger)', ...style }}
       >
@@ -200,18 +199,17 @@ export function ProjectListHint({ view, showLoading = true, style }: {
         >
           重试
         </button>
-      </span>
+      </output>
     );
   }
   if (view.phase === 'loading' && showLoading && view.unusable) {
     return (
-      <span
-        role="status"
+      <output
         data-t02201="project-list-loading"
         style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', ...style }}
       >
         项目列表加载中…
-      </span>
+      </output>
     );
   }
   return null;

@@ -16,6 +16,7 @@ import {
   toggleVisible,
   type GitRefName,
   type GitTreeCommit,
+  type LaneLayout,
 } from '../utils/gitTreeSelect';
 
 /**
@@ -59,6 +60,25 @@ const boxStyle: React.CSSProperties = {
 const chipStyle: React.CSSProperties = PILL; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 const FONT_MONO = 'Consolas, Menlo, monospace';
 
+/** 组装 `GET /git/log` 的查询串（抽出来单放：条件拼装不占 `load` 的认知复杂度） */
+function buildLogQuery(projectId: string, head: string, allBranches: boolean, search: string, skip: number): string {
+  const qs = new URLSearchParams({ projectId, skip: String(skip), limit: String(GIT_TREE_PAGE_SIZE) });
+  const trimmedHead = head.trim();
+  if (!allBranches && trimmedHead) qs.set('head', trimmedHead);
+  if (allBranches) qs.set('all', '1');
+  const trimmedSearch = search.trim();
+  if (trimmedSearch) qs.set('search', trimmedSearch);
+  return qs.toString();
+}
+
+/** 车道图的一格：本行自己的车道画 ●、贯穿本行的车道画 │、其余留白 */
+function laneCell(lanes: LaneLayout, row: number, lane: number) {
+  const color = LANE_COLORS[lane % LANE_COLORS.length];
+  if (lanes.lanes[row] === lane) return <span key={lane} style={{ color }}>●</span>;
+  if (lanes.through[row]?.includes(lane)) return <span key={lane} style={{ color }}>│</span>;
+  return <span key={lane}> </span>;
+}
+
 export function GitTreePickerModal({ projects, activeProjectId, selectedByProject, onConfirm, onClose, zIndex = 1000 }: {
   readonly projects: Project[];
   readonly activeProjectId: string;
@@ -75,7 +95,6 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   const [search, setSearch] = useState('');
   const [commits, setCommits] = useState<GitTreeCommit[]>([]);
   const [refs, setRefs] = useState<GitRefName[]>([]);
-  const [skip, setSkip] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [scanTruncated, setScanTruncated] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -90,6 +109,11 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   const lanes = useMemo(() => assignLanes(commits), [commits]);
   const visibleRefs = useMemo(() => groupByRef(commits), [commits]);
   const summary = useMemo(() => summarizeSelection(commits, selected), [commits, selected]);
+  /** 首屏/切条件取数用的最新闭包（要读当时的 commits/search），经 ref 交给 effect，避免整函数进依赖 */
+  const loadRef = useRef<(append: boolean) => Promise<void>>(async () => undefined);
+  /** 切项目时读的是「父层此刻的已选」，同样只取最新一份，不因父层重渲染而重置选择 */
+  const selectedByProjectRef = useRef(selectedByProject);
+  selectedByProjectRef.current = selectedByProject;
 
   // Esc = 取消（不丢已选：确认后才会写回卡片，取消保持原样）
   useEffect(() => {
@@ -100,12 +124,12 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
 
   // 切项目 = 换一份已选与可视集，否则「在 A 项目选的提交」会串到 B 项目的范围里
   useEffect(() => {
-    setSelected(selectedByProject[projectId] ?? []);
+    setSelected(selectedByProjectRef.current[projectId] ?? []);
     setAnchor(null);
     setExpanded(new Set());
-  }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [projectId]);
 
-  useEffect(() => { void load(false); }, [projectId, head, allBranches]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void loadRef.current(false); }, [projectId, head, allBranches]);
 
   async function load(append: boolean) {
     if (!projectId) return;
@@ -115,11 +139,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
     try {
       // Q11 裁定：Git 树取数端点上提为 `GET /git/log`——任务侧与讲稿侧共用同一取数逻辑，
       // 不再让任务抽屉依赖讲稿命名空间（旧 POST 路径仍在服务端保留转发）。
-      const qs = new URLSearchParams({ projectId, skip: String(nextSkip), limit: String(GIT_TREE_PAGE_SIZE) });
-      if (!allBranches && head.trim()) qs.set('head', head.trim());
-      if (allBranches) qs.set('all', '1');
-      if (search.trim()) qs.set('search', search.trim());
-      const r = await api.get<GitLogResponse>(`/git/log?${qs.toString()}`);
+      const qs = buildLogQuery(projectId, head, allBranches, search, nextSkip);
+      const r = await api.get<GitLogResponse>(`/git/log?${qs}`);
       if (!r.ok) {
         setError(r.error?.message ?? 'Git 取数失败');
         setCommits(append ? commits : []);
@@ -129,7 +150,6 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
       // 翻页追加按 SHA 去重：换分支/搜索窗口重叠时不能出现两行同样的提交
       const merged = append ? dedupe([...commits, ...r.commits]) : r.commits;
       setCommits(merged);
-      setSkip(r.skip);
       setHasMore(r.hasMore);
       setScanTruncated(r.scanTruncated);
       if (r.refs) setRefs(r.refs);
@@ -145,6 +165,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
       listRef.current?.focus();
     }
   }
+  loadRef.current = load;
 
   function onRowClick(index: number, e: React.MouseEvent) {
     const res = selectAt({ commits, selected, index, anchor, mods: { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey } });
@@ -169,8 +190,14 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   const canConfirm = selected.length > 0 && !loading && !error;
 
   return (
-    <div data-lck="git-tree-modal" role="dialog" aria-modal="true" aria-label="从 Git 树选择评审范围"
-      style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(15,23,42,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+    /* 原生 <dialog open>：显隐仍由本组件挂载/卸载控制（父层只在需要时渲染），Esc 仍由上面的监听负责 */
+    <dialog open data-lck="git-tree-modal" aria-modal="true" aria-label="从 Git 树选择评审范围"
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000, margin: 0, padding: 16, border: 'none',
+        width: 'auto', height: 'auto', maxWidth: 'none', maxHeight: 'none',
+        background: 'rgba(15,23,42,0.45)', color: 'inherit',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
       <div style={{ width: 'min(1080px, 96vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', background: 'var(--card-bg)', border: '1px solid var(--accent)', borderRadius: 10, padding: 14 }}>
         <header style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <GitBranch size={16} style={{ color: 'var(--accent)' }} />
@@ -198,7 +225,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
             placeholder="起点分支/标签/SHA（留空=HEAD）" ariaLabel="起点版本" disabled={allBranches} />
           <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-s)' }}>
             <input data-lck="git-tree-all" type="checkbox" checked={allBranches} onChange={(e) => setAllBranches(e.target.checked)} />
-            全部分支
+            {' '}全部分支
           </label>
           <input data-lck="git-tree-search" value={search} onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') void load(false); }}
@@ -232,7 +259,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
 
         {error && <p data-lck="git-tree-error" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '2px 0 8px' }}>{error}</p>}
 
-        <div ref={listRef} tabIndex={-1} data-lck="git-tree-rows" role="grid" aria-label="提交列表"
+        <div ref={listRef} tabIndex={-1} data-lck="git-tree-rows"
           style={{ flex: '1 1 auto', minHeight: 180, maxHeight: '48vh', overflow: 'auto', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
           {!loading && commits.length === 0 && !error && (
             <p data-lck="git-tree-empty" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 12, margin: 0 }}>
@@ -243,20 +270,29 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
             const checked = selected.includes(c.sha);
             const open = expanded.has(c.sha);
             return (
-              <div key={c.sha} data-lck="git-tree-row" data-sha={c.sha} data-selected={checked ? '1' : '0'} role="row" aria-selected={checked}
-                onClick={(e) => onRowClick(i, e)}
-                style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '3px 8px', cursor: 'pointer', borderBottom: '1px solid var(--border)', background: checked ? 'var(--surface-2)' : 'transparent' }}>
-                <input type="checkbox" checked={checked} readOnly tabIndex={-1} aria-label={`选择提交 ${c.short}`} style={{ pointerEvents: 'none' }} />
-                <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'pre', minWidth: lanes.count * 10 }}>
-                  {Array.from({ length: lanes.count }, (_, l) => (lanes.lanes[i] === l
-                    ? <span key={l} style={{ color: LANE_COLORS[l % LANE_COLORS.length] }}>●</span>
-                    : (lanes.through[i]?.includes(l) ? <span key={l} style={{ color: LANE_COLORS[l % LANE_COLORS.length] }}>│</span> : <span key="s"> </span>)))}
-                </span>
-                <code style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{c.short}</code>
-                <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.subject}>{c.subject}</span>
-                {c.refs.map((r) => <span key={`${r.type}:${r.name}`} style={chipStyle}>{r.name}</span>)}
-                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 90 }} title={fullTime(c.date)}>{relTime(c.date)}</span>
-                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 64 }} title={c.author}>{c.author}</span>
+              /* 行本身只是布局容器；「点选这一条」落到行内的原生 <button> 上（Shift/Ctrl 框选语义不变） */
+              <div key={c.sha} data-lck="git-tree-row" data-sha={c.sha} data-selected={checked ? '1' : '0'}
+                style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '3px 8px', borderBottom: '1px solid var(--border)', background: checked ? 'var(--surface-2)' : 'transparent' }}>
+                {/* 复选框只是勾选态的视觉镜像（真正的控件是右侧按钮）；点它同样落到同一段点选逻辑上 */}
+                <input type="checkbox" checked={checked} readOnly tabIndex={-1} aria-label={`选择提交 ${c.short}`}
+                  onClick={(e) => onRowClick(i, e)} style={{ cursor: 'pointer' }} />
+                <button type="button" data-lck="git-tree-select" aria-pressed={checked}
+                  aria-label={`${checked ? '取消选择' : '选择'}提交 ${c.short}：${c.subject}`}
+                  onClick={(e) => onRowClick(i, e)}
+                  style={{
+                    display: 'flex', gap: 6, alignItems: 'center', flex: '1 1 auto', minWidth: 0,
+                    padding: 0, border: 'none', background: 'transparent', color: 'inherit',
+                    font: 'inherit', textAlign: 'left', cursor: 'pointer',
+                  }}>
+                  <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'pre', minWidth: lanes.count * 10 }}>
+                    {Array.from({ length: lanes.count }, (_, l) => laneCell(lanes, i, l))}
+                  </span>
+                  <code style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{c.short}</code>
+                  <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.subject}>{c.subject}</span>
+                  {c.refs.map((r) => <span key={`${r.type}:${r.name}`} style={chipStyle}>{r.name}</span>)}
+                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 90 }} title={fullTime(c.date)}>{relTime(c.date)}</span>
+                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 64 }} title={c.author}>{c.author}</span>
+                </button>
                 <button type="button" onClick={(e) => { e.stopPropagation(); toggleRowExpand(c.sha); }} aria-label={open ? '收起提交详情' : '展开提交详情'}
                   aria-expanded={open} data-lck="git-tree-expand"
                   style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', height: 16 }}>
@@ -293,7 +329,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
           <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-xs)', marginLeft: 'auto' }}>
             <input type="checkbox" checked={commits.length > 0 && selected.length === commits.length}
               onChange={(e) => setSelected(toggleVisible(commits, selected, e.target.checked))} />
-            全选本页
+            {' '}全选本页
           </label>
           <button type="button" data-lck="git-tree-cancel" onClick={onClose} style={boxStyle}>取消</button>
           <button type="button" data-lck="git-tree-confirm" onClick={confirm} disabled={!canConfirm}
@@ -302,7 +338,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
           </button>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }
 

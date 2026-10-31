@@ -55,6 +55,54 @@ function fmtSummaryTime(iso: string): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+/** T03231：字段类型 → 原生 input 的 type（单选走 select，不在此列） */
+function fieldInputType(kind: string): 'text' | 'number' | 'date' {
+  if (kind === 'number') return 'number';
+  if (kind === 'date') return 'date';
+  return 'text';
+}
+
+/**
+ * T03231（PM-203①②）：自定义字段行——控件外面包 <label> 让读屏拿到字段名（与看板复选框同一套可访问名口径）；
+ * 已归档的选项不出现在候选里，但当前值若指向它仍按原 label 显示（不静默清空用户数据）。
+ * 抽成模块级组件：字段行本来只是「一处取值一处回调」，放在抽屉体内会让内联回调层层嵌套（S2004）。
+ */
+function FieldRow({ field, value, busy, onChange }: {
+  readonly field: CustomField;
+  readonly value: string;
+  readonly busy: boolean;
+  readonly onChange: (fieldId: string, value: string) => void;
+}) {
+  const staleOption = field.type === 'select' && value && !field.options.some((o) => o.id === value && !o.archived)
+    ? field.options.find((o) => o.id === value) : undefined;
+  return (
+    <label data-t03231="field-row" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+        {field.name}<span style={{ color: 'var(--text-muted)' }}>（{FIELD_TYPE_LABEL[field.type] ?? field.type}）</span>
+      </span>
+      {field.type === 'select' ? (
+        <select aria-label={`字段 ${field.name}`} value={value} disabled={busy}
+          onChange={(e) => onChange(field.id, e.target.value)}
+          style={SELECT_BLOCK}>
+          <option value="">（未填）</option>
+          {field.options.filter((o) => !o.archived).map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+          {staleOption && <option value={staleOption.id} disabled>{staleOption.label}（已停用）</option>}
+        </select>
+      ) : (
+        <input
+          aria-label={`字段 ${field.name}`}
+          type={fieldInputType(field.type)}
+          step={field.type === 'number' ? 'any' : undefined}
+          value={value}
+          disabled={busy}
+          onChange={(e) => onChange(field.id, e.target.value)}
+          style={FIELD_SM_BLOCK}
+        />
+      )}
+    </label>
+  );
+}
+
 export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChanged, projects, onBindWorkspace, onGitLinksChanged, flash }: {
   readonly task: Task;
   readonly projectId: string;
@@ -187,6 +235,12 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
       setFieldBusy(false);
     }
   }
+
+  /** T03231：字段值就地合并进草稿并撤掉「已保存」回执（下次保存成功再亮） */
+  const setFieldValue = useCallback((fieldId: string, value: string) => {
+    setFieldVals((prev) => ({ ...prev, [fieldId]: value }));
+    setFieldSaved(false);
+  }, []);
 
   // 候选池：同项目的待办任务（已完成/已归档/搁置的不进候选——服务端在写入口也会拒，
   // 但把选择器与拒收口径对齐，用户不会先选后碰壁）。自身排除在外。
@@ -447,7 +501,7 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
             添加阻塞
           </button>
           <label style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
-            <input type="checkbox" checked={showReleased} onChange={(e) => setShowReleased(e.target.checked)} />
+            <input type="checkbox" checked={showReleased} onChange={(e) => setShowReleased(e.target.checked)} />{' '}
             含已解除
           </label>
         </div>
@@ -500,58 +554,35 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
    * T03231（PM-203①②）：自定义字段正文——每个字段一个原生控件（文本/数字/日期/单选），
    * 控件外面包 <label> 让读屏拿到字段名（与看板复选框同一套可访问名口径）；
    * 已归档的选项不出现在候选里，但当前值若指向它仍按原 label 显示（不静默清空用户数据）。
+   * 「加载中 → 空态 → 列表」用显式分支赋值，不写嵌套三元（S3358）。
    */
   function renderFieldsTab() {
+    let body: React.ReactNode;
+    if (fieldsLoading) {
+      body = <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-m)' }}>加载自定义字段…</div>;
+    } else if (fields.length === 0) {
+      body = <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-m)' }}>（该项目还没有自定义字段——可在「设置 → 自定义字段」创建）</div>;
+    } else {
+      body = (
+        <>
+          {fields.map((f) => (
+            <FieldRow key={f.id} field={f} value={fieldVals[f.id] ?? ''} busy={fieldBusy} onChange={setFieldValue} />
+          ))}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button type="button" data-t03231="field-save" onClick={() => { void saveFieldValues(); }} disabled={fieldBusy}
+              aria-label="保存自定义字段值" title="保存本任务的自定义字段值（留空=清除该项）"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 12px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)', cursor: fieldBusy ? 'default' : 'pointer' }}>
+              {fieldBusy ? <Loader2 size={12} className="aispin" /> : <Save size={12} />} 保存字段值
+            </button>
+            {fieldSaved && <output style={{ fontSize: 'var(--fs-xs)', color: 'var(--success)' }}>已保存</output>}
+          </div>
+        </>
+      );
+    }
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {fieldErr && <div data-t03231="fields-err" style={{ color: 'var(--danger)', fontSize: 'var(--fs-xs)' }}>{fieldErr}</div>}
-        {fieldsLoading ? (
-          <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-m)' }}>加载自定义字段…</div>
-        ) : fields.length === 0 ? (
-          <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-m)' }}>（该项目还没有自定义字段——可在「设置 → 自定义字段」创建）</div>
-        ) : (
-          <>
-            {fields.map((f) => {
-              const v = fieldVals[f.id] ?? '';
-              const staleOption = f.type === 'select' && v && !f.options.some((o) => o.id === v && !o.archived)
-                ? f.options.find((o) => o.id === v) : undefined;
-              return (
-                <label key={f.id} data-t03231="field-row" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
-                    {f.name}<span style={{ color: 'var(--text-muted)' }}>（{FIELD_TYPE_LABEL[f.type] ?? f.type}）</span>
-                  </span>
-                  {f.type === 'select' ? (
-                    <select aria-label={`字段 ${f.name}`} value={v} disabled={fieldBusy}
-                      onChange={(e) => { setFieldVals((prev) => ({ ...prev, [f.id]: e.target.value })); setFieldSaved(false); }}
-                      style={SELECT_BLOCK}>
-                      <option value="">（未填）</option>
-                      {f.options.filter((o) => !o.archived).map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-                      {staleOption && <option value={staleOption.id} disabled>{staleOption.label}（已停用）</option>}
-                    </select>
-                  ) : (
-                    <input
-                      aria-label={`字段 ${f.name}`}
-                      type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}
-                      step={f.type === 'number' ? 'any' : undefined}
-                      value={v}
-                      disabled={fieldBusy}
-                      onChange={(e) => { setFieldVals((prev) => ({ ...prev, [f.id]: e.target.value })); setFieldSaved(false); }}
-                      style={FIELD_SM_BLOCK}
-                    />
-                  )}
-                </label>
-              );
-            })}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <button type="button" data-t03231="field-save" onClick={() => { void saveFieldValues(); }} disabled={fieldBusy}
-                aria-label="保存自定义字段值" title="保存本任务的自定义字段值（留空=清除该项）"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 12px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)', cursor: fieldBusy ? 'default' : 'pointer' }}>
-                {fieldBusy ? <Loader2 size={12} className="aispin" /> : <Save size={12} />} 保存字段值
-              </button>
-              {fieldSaved && <span role="status" style={{ fontSize: 'var(--fs-xs)', color: 'var(--success)' }}>已保存</span>}
-            </div>
-          </>
-        )}
+        {body}
       </div>
     );
   }

@@ -108,24 +108,35 @@ sonarScanApi.get('/sonar/scan/job', (req, res) => {
   res.json({ jobId: row.id, status: row.status, title: row.title, answer: row.answer ?? '', error: row.error ?? '', createdAt: row.created_at });
 });
 
+/** 请求体 → ScanInput；非法值由 idsOf/severitiesOf/capOf 抛 ScanError（切 SSE 之前按 4xx 回） */
+function scanInputOf(body: Record<string, unknown>): ScanInput {
+  return {
+    taskIds: idsOf(body.taskIds),
+    // scalarText：projectKey 只可能是文本，非字符串（如对象）按未配置处理而不是拼成 "[object Object]"
+    projectKey: body.projectKey ? (scalarText(body.projectKey).trim() || undefined) : undefined,
+    autoWriteBack: body.autoWriteBack === undefined ? true : body.autoWriteBack === true,
+    severities: severitiesOf(body.severities),
+    cap: capOf(body.cap),
+  };
+}
+
+/** 环境预检（SSE 之前）：缺 scanner/Java/projectKey 时返回 400 体，可用时返回 null */
+async function scanEnvRejection(): Promise<{ error: string; kind: string; hint: string } | null> {
+  // 缺 scanner/Java 时既不该建 job，也不该让前端看到一个空的运行态
+  const env = await scanEnvState();
+  if (env.ok) return null;
+  const noJavaKind = env.java.available ? 'no-project-key' : 'no-java';
+  const kind = env.scanner.available ? noJavaKind : 'no-scanner';
+  return { error: env.reasons[0], kind, hint: env.reasons.join('；') };
+}
+
 /** 发起扫描（SSE） */
 sonarScanApi.post('/sonar/scan', exportGate(SONAR_SCAN_GATE, SCAN_LIMIT_DEFAULT), async (req, res) => {
   let input: ScanInput;
   try {
-    input = {
-      taskIds: idsOf(req.body?.taskIds),
-      projectKey: req.body?.projectKey ? String(req.body.projectKey).trim() : undefined,
-      autoWriteBack: req.body?.autoWriteBack === undefined ? true : req.body.autoWriteBack === true,
-      severities: severitiesOf(req.body?.severities),
-      cap: capOf(req.body?.cap),
-    };
-    // 环境预检放在 SSE 之前：缺 scanner/Java 时既不该建 job，也不该让前端看到一个空的运行态
-    const env = await scanEnvState();
-    if (!env.ok) {
-      const noJavaKind = env.java.available ? 'no-project-key' : 'no-java';
-      const kind = env.scanner.available ? noJavaKind : 'no-scanner';
-      return res.status(400).json({ error: env.reasons[0], kind, hint: env.reasons.join('；') });
-    }
+    input = scanInputOf((req.body ?? {}) as Record<string, unknown>);
+    const rejection = await scanEnvRejection();
+    if (rejection) return res.status(400).json(rejection);
   } catch (e) {
     const { status, body } = errorShape(e);
     return res.status(status).json(body);

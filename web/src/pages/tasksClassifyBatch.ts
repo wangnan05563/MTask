@@ -78,102 +78,151 @@ export interface RunClassifyBatchOptions {
 /** T03297：前端每次批量请求携带的条数上限（服务端再按批切分，二者互不耦合） */
 export const BATCH_REQUEST_CHUNK = 200;
 
+/** 批量分类的运行上下文（把 options 摊平，供下面各步共用；consecutiveFailures 为跨步累计的连续失败数） */
+interface ClassifyRun {
+  readonly toolId: string;
+  readonly categories: ClassifyCategory[];
+  readonly store: ClassifyStoreState;
+  readonly post: (path: string, body: unknown) => Promise<ClassifyResponse>;
+  readonly patch: (path: string, body: unknown) => Promise<unknown>;
+  readonly isActive: () => boolean;
+  readonly enableBreaker: boolean;
+  consecutiveFailures: number;
+}
+
+/** 熔断判定：账户级门禁首次命中，或连续失败达到上限（负对照通道 enableBreaker=false 时永不熔断） */
+function isTripped(run: ClassifyRun, failure: string): boolean {
+  if (!run.enableBreaker) return false;
+  if (isAccountGateError(failure)) return true;
+  return run.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES;
+}
+
+/** 记一次厂商侧失败（count 条）：回填首个原因、累加连续计量，返回是否应熔断 */
+function noteFailures(run: ClassifyRun, count: number, failure: string): boolean {
+  run.store.fail += count;
+  if (!run.store.lastError) run.store.lastError = failure;
+  run.consecutiveFailures += 1;
+  return isTripped(run, failure);
+}
+
+/** 标记中止并记下原因（熔断与厂商门禁共用） */
+function abortRun(run: ClassifyRun, reason: string): void {
+  run.store.aborted = true;
+  run.store.abortReason = reason;
+}
+
+/** 命中落库：优先级只在「原优先级为普通」时跟随 AI 建议（与逐条通道同一口径），成功后计一条 */
+async function applyHit(run: ClassifyRun, taskId: string, priority: string, r: ClassifyResponse): Promise<void> {
+  if (!r.categoryId) return;
+  const patchBody: { categoryId: string; priority?: string } = { categoryId: r.categoryId };
+  if (priority === 'normal' && r.priority) patchBody.priority = r.priority;
+  await run.patch(`/tasks/${taskId}`, patchBody);
+  run.store.hit += 1;
+}
+
+/** 批量接口的单条结果落地；返回 false 表示已熔断，外层应停止 */
+async function applyBatchItem(run: ClassifyRun, t: ClassifyTarget, r: ClassifyBatchItemResult | undefined): Promise<boolean> {
+  if (!r?.ok) {
+    const failure = r?.error || (r ? 'AI 调用失败' : '批量结果缺少该条');
+    if (!noteFailures(run, 1, failure)) return true;
+    abortRun(run, failure);
+    return false;
+  }
+  run.consecutiveFailures = 0;
+  if (!r.categoryId) { run.store.none += 1; return true; }
+  await applyHit(run, t.id, t.priority, r);
+  return true;
+}
+
+/** 一批内逐条落地；返回 false 表示已熔断/被外部取消，外层应停止 */
+async function applyChunk(run: ClassifyRun, slice: ClassifyTarget[], resp: ClassifyBatchResponse): Promise<boolean> {
+  const byId = new Map((resp.results ?? []).map((r) => [r.id, r]));
+  for (const t of slice) {
+    if (!run.isActive()) return false;
+    if (!(await applyBatchItem(run, t, byId.get(t.id)))) return false;
+  }
+  return true;
+}
+
+/** 发一批请求；网络/接口异常收成失败原因（resp=null），不把异常抛到批量循环外 */
+async function postChunk(run: ClassifyRun, slice: ClassifyTarget[]): Promise<{ resp: ClassifyBatchResponse | null; failure: string }> {
+  try {
+    const resp = await run.post('/tasks/classify-batch', {
+      toolId: run.toolId, categories: run.categories, items: slice.map((t) => ({ id: t.id, title: t.title.trim() })),
+    }) as ClassifyBatchResponse;
+    return { resp, failure: '' };
+  } catch (e) {
+    return { resp: null, failure: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** T03297：批量通道——一批一次往返，服务端内部再分批调用模型 */
+async function runBatchChannel(run: ClassifyRun, target: ClassifyTarget[]): Promise<void> {
+  for (let start = 0; start < target.length; start += BATCH_REQUEST_CHUNK) {
+    if (!run.isActive()) return;
+    const slice = target.slice(start, start + BATCH_REQUEST_CHUNK);
+    const { resp, failure: callFailure } = await postChunk(run, slice);
+    if (!resp?.ok) {
+      // 整批失败：逐条计失败（收尾口径不变），熔断只看本批一次
+      const failure = callFailure || resp?.error || 'AI 调用失败';
+      if (!noteFailures(run, slice.length, failure)) continue;
+      abortRun(run, failure);
+      return;
+    }
+    if (!(await applyChunk(run, slice, resp))) return;
+    if (resp.gated) {
+      abortRun(run, resp.error || run.store.lastError || '厂商额度/限流');
+      return;
+    }
+    if (run.store.aborted) return;
+  }
+}
+
+/** 逐条通道的单条处理；返回 false 表示应中止整个循环 */
+async function classifyOne(run: ClassifyRun, t: ClassifyTarget): Promise<boolean> {
+  let failure = '';
+  try {
+    const r = await run.post('/tasks/classify', { title: t.title.trim(), toolId: run.toolId, categories: run.categories });
+    if (r.ok) {
+      if (r.categoryId) {
+        await applyHit(run, t.id, t.priority, r);
+      } else {
+        run.store.none += 1;
+      }
+      run.consecutiveFailures = 0;
+      return true;
+    }
+    failure = r.error || 'AI 调用失败';
+  } catch (e) {
+    failure = e instanceof Error ? e.message : String(e);
+  }
+  if (!noteFailures(run, 1, failure)) return true;
+  abortRun(run, failure);
+  return false;
+}
+
 export async function runClassifyBatch(opts: RunClassifyBatchOptions): Promise<void> {
-  const { target, toolId, categories, store, post, patch, isActive } = opts;
-  const enableBreaker = opts.enableBreaker !== false;
+  const { target, store, isActive } = opts;
+  const run: ClassifyRun = {
+    toolId: opts.toolId,
+    categories: opts.categories,
+    store,
+    post: opts.post,
+    patch: opts.patch,
+    isActive,
+    enableBreaker: opts.enableBreaker !== false,
+    consecutiveFailures: 0,
+  };
   store.hit = 0; store.total = target.length; store.done = false;
   store.none = 0; store.fail = 0; store.lastError = '';
   store.aborted = false; store.abortReason = '';
-  let consecutiveFailures = 0;
   try {
     if (opts.batch) {
-      // T03297：大批量走批量接口——一批一次往返，服务端内部再分批调用模型
-      for (let start = 0; start < target.length; start += BATCH_REQUEST_CHUNK) {
+      await runBatchChannel(run, target);
+    } else {
+      for (const t of target) {
         if (!isActive()) break;
-        const slice = target.slice(start, start + BATCH_REQUEST_CHUNK);
-        let resp: ClassifyBatchResponse | null = null;
-        let batchFailure = '';
-        try {
-          resp = await post('/tasks/classify-batch', {
-            toolId, categories, items: slice.map((t) => ({ id: t.id, title: t.title.trim() })),
-          }) as ClassifyBatchResponse;
-        } catch (e) {
-          batchFailure = e instanceof Error ? e.message : String(e);
-        }
-        if (!resp?.ok) {
-          const failure = batchFailure || resp?.error || 'AI 调用失败';
-          // 整批失败：逐条计失败（收尾口径不变），熔断只看本批一次
-          store.fail += slice.length;
-          if (!store.lastError) store.lastError = failure;
-          consecutiveFailures += 1;
-          if (enableBreaker && (isAccountGateError(failure) || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES)) {
-            store.aborted = true;
-            store.abortReason = failure;
-            break;
-          }
-          continue;
-        }
-        const byId = new Map((resp.results ?? []).map((r) => [r.id, r]));
-        for (const t of slice) {
-          if (!isActive()) break;
-          const r = byId.get(t.id);
-          if (!r?.ok) {
-            const failure = r?.error || (r ? 'AI 调用失败' : '批量结果缺少该条');
-            store.fail += 1;
-            if (!store.lastError) store.lastError = failure;
-            consecutiveFailures += 1;
-            if (enableBreaker && (isAccountGateError(failure) || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES)) {
-              store.aborted = true;
-              store.abortReason = failure;
-              break;
-            }
-            continue;
-          }
-          consecutiveFailures = 0;
-          if (!r.categoryId) { store.none += 1; continue; }
-          const patchBody: { categoryId: string; priority?: string } = { categoryId: r.categoryId };
-          if (t.priority === 'normal' && r.priority) patchBody.priority = r.priority;
-          await patch(`/tasks/${t.id}`, patchBody);
-          store.hit += 1;
-        }
-        if (resp.gated) {
-          store.aborted = true;
-          store.abortReason = resp.error || store.lastError || '厂商额度/限流';
-          break;
-        }
-        if (store.aborted) break;
-      }
-      return;
-    }
-    for (const t of target) {
-      if (!isActive()) break;
-      let failure = '';
-      try {
-        const r = await post('/tasks/classify', { title: t.title.trim(), toolId, categories });
-        if (!r.ok) {
-          failure = r.error || 'AI 调用失败';
-        } else if (r.categoryId) {
-          const patchBody: { categoryId: string; priority?: string } = { categoryId: r.categoryId };
-          if (t.priority === 'normal' && r.priority) patchBody.priority = r.priority;
-          await patch(`/tasks/${t.id}`, patchBody);
-          store.hit += 1;
-          consecutiveFailures = 0;
-          continue;
-        } else {
-          store.none += 1;
-          consecutiveFailures = 0;
-          continue;
-        }
-      } catch (e) {
-        failure = e instanceof Error ? e.message : String(e);
-      }
-      store.fail += 1;
-      if (!store.lastError) store.lastError = failure;
-      consecutiveFailures += 1;
-      if (enableBreaker && (isAccountGateError(failure) || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES)) {
-        store.aborted = true;
-        store.abortReason = failure;
-        break;
+        if (!(await classifyOne(run, t))) break;
       }
     }
   } finally {

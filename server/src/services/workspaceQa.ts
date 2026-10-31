@@ -60,61 +60,100 @@ interface ProjectRow {
 
 const normPath = (p: string): string => p.replaceAll('\\', '/').replace(/^\.\//, '').replace(/^\/+/, '');
 
+/** 裸写锚点 `path.ext:line` 认的扩展名。枚举从正则里挪到集合里：语义不变，正则复杂度降到规则线内 */
+const BARE_ANCHOR_EXTS = new Set([
+  'ts', 'tsx', 'js', 'jsx', 'py', 'java', 'kt', 'go', 'rs', 'cs', 'cpp', 'c', 'h', 'sql', 'md', 'json', 'yml', 'yaml',
+]);
+
+/**
+ * 裸写锚点：`(?:^|空白/括号) + 路径 + .扩展名 + :行号`。
+ * 扩展名不再写进正则——`\w+` 取到冒号前的最后一段，再由 BARE_ANCHOR_EXTS 判定，
+ * 与原「扩展名枚举交替」逐用例等价（两边都要求扩展名紧贴 `:行号`）。
+ */
+const BARE_ANCHOR_RE = /(?:^|[\s(（])([\w./-]+)\.(\w+):(\d{1,6})\b/g;
+
+/** 证据收集器：按 `path:line` 去重，条数封顶（超出上限的命中直接丢弃） */
+function createEvidencePicker(): { push: (e: QaEvidence) => void; picked: QaEvidence[] } {
+  const picked: QaEvidence[] = [];
+  const seen = new Set<string>();
+  const push = (e: QaEvidence): void => {
+    const key = `${normPath(e.path)}:${e.line}`;
+    if (seen.has(key) || picked.length >= QA_EVIDENCE_LIMIT) return;
+    seen.add(key);
+    picked.push({ ...e, path: normPath(e.path) });
+  };
+  return { push, picked };
+}
+
+/** 符号命中（密度高、定位准） */
+function pushSymbolHits(projectId: string, keywords: string[], push: (e: QaEvidence) => void): void {
+  for (const hit of WorkspaceService.symbolMatches(projectId, keywords, 6)) {
+    push({ path: hit.path, line: hit.line, text: '', symbol: hit.symbol });
+  }
+}
+
+/** 全文检索最多打前 3 个关键词：每个词条数太多会把符号命中挤掉。返回是否发生截断 */
+function pushKeywordHits(projectId: string, keywords: string[], push: (e: QaEvidence) => void): boolean {
+  let truncated = false;
+  for (const kw of keywords.slice(0, 3)) {
+    try {
+      const hits = WorkspaceService.search(projectId, kw);
+      if (hits.partial === true) truncated = true;
+      for (const h of hits.slice(0, 5)) {
+        if (h.line <= 0) continue; // 文件名命中没有行号，做不了可跳转引用
+        push({ path: h.path, line: h.line, text: h.snippet });
+      }
+    } catch { /* 关键词太短/非法：跳过该词，不影响其它证据 */ }
+  }
+  return truncated;
+}
+
+/** 回读一行真实文本；文件已删/读不到返回 null（该片段丢弃） */
+function readEvidenceLine(projectId: string, e: QaEvidence): string | null {
+  try {
+    const f = WorkspaceService.readFile(projectId, e.path, Math.max(0, e.line - 1), 1);
+    return f.lines[0]?.text ?? '';
+  } catch {
+    return null;
+  }
+}
+
+/** 回读真实行文本并压预算：符号命中只有位置，检索 snippet 可能被截断；超出预算即停 */
+function resolveEvidenceRows(projectId: string, picked: QaEvidence[]): { resolved: QaEvidence[]; truncated: boolean; used: number } {
+  const resolved: QaEvidence[] = [];
+  let used = 0;
+  let truncated = false;
+  for (const e of picked) {
+    const text = e.text.trim() ? e.text : readEvidenceLine(projectId, e);
+    if (text === null) continue;
+    const full = text.trim();
+    if (full.length > QA_ROW_LIMIT) truncated = true;
+    const rowText = full.slice(0, QA_ROW_LIMIT);
+    const row = `${e.path}:${e.line}: ${rowText}`;
+    if (used + row.length > QA_CONTEXT_LIMIT) {
+      truncated = true;
+      break;
+    }
+    used += row.length + 1;
+    resolved.push({ ...e, text: rowText });
+  }
+  return { resolved, truncated, used };
+}
+
 /**
  * 取证据：先符号（密度高、定位准），再全文（补注释/字符串里的说法），按 `path:line` 去重，
  * 每个片段从文件里回读一行真实文本（检索片段可能是整行截断，符号只有位置）。
  */
 export function collectEvidence(projectId: string, question: string): { evidence: QaEvidence[]; keywords: string[]; truncated: boolean; contextChars: number } {
   const keywords = WorkspaceService.extractKeywords(question).slice(0, 8);
-  const picked: QaEvidence[] = [];
-  const seen = new Set<string>();
-  const push = (e: QaEvidence) => {
-    const key = `${normPath(e.path)}:${e.line}`;
-    if (seen.has(key) || picked.length >= QA_EVIDENCE_LIMIT) return;
-    seen.add(key);
-    picked.push({ ...e, path: normPath(e.path) });
-  };
-
+  const picker = createEvidencePicker();
   let truncated = false;
-
   if (keywords.length > 0) {
-    for (const hit of WorkspaceService.symbolMatches(projectId, keywords, 6)) {
-      push({ path: hit.path, line: hit.line, text: '', symbol: hit.symbol });
-    }
-    // 全文检索最多打前 3 个关键词：每个词条数太多会把符号命中挤掉
-    for (const kw of keywords.slice(0, 3)) {
-      try {
-        const hits = WorkspaceService.search(projectId, kw);
-        if (hits.partial === true) truncated = true;
-        for (const h of hits.slice(0, 5)) {
-          if (h.line <= 0) continue; // 文件名命中没有行号，做不了可跳转引用
-          push({ path: h.path, line: h.line, text: h.snippet });
-        }
-      } catch { /* 关键词太短/非法：跳过该词，不影响其它证据 */ }
-    }
+    pushSymbolHits(projectId, keywords, picker.push);
+    if (pushKeywordHits(projectId, keywords, picker.push)) truncated = true;
   }
-
-  // 回读真实行文本：符号命中只有位置，检索 snippet 可能被截断；回读失败（文件已删）就丢弃该片段
-  const resolved: QaEvidence[] = [];
-  let used = 0;
-  for (const e of picked) {
-    let text = e.text;
-    if (!text.trim()) {
-      try {
-        const f = WorkspaceService.readFile(projectId, e.path, Math.max(0, e.line - 1), 1);
-        text = f.lines[0]?.text ?? '';
-      } catch { continue; }
-    }
-    const full = text.trim();
-    if (full.length > QA_ROW_LIMIT) truncated = true;
-    const rowText = full.slice(0, QA_ROW_LIMIT);
-    const row = `${e.path}:${e.line}: ${rowText}`;
-    if (used + row.length > QA_CONTEXT_LIMIT) { truncated = true; break; }
-    used += row.length + 1;
-    resolved.push({ ...e, text: rowText });
-  }
-
-  return { evidence: resolved, keywords, truncated, contextChars: used };
+  const rows = resolveEvidenceRows(projectId, picker.picked);
+  return { evidence: rows.resolved, keywords, truncated: truncated || rows.truncated, contextChars: rows.used };
 }
 
 export function buildSystemPrompt(): string {
@@ -238,7 +277,10 @@ export function parseCitations(answer: string, evidence: readonly QaEvidence[]):
     out.push({ path: p, line, ...(ev?.symbol ? { symbol: ev.symbol } : {}) });
   };
   forEachAnchor(answer, add);
-  for (const m of answer.matchAll(/(?:^|[\s(（])([\w./-]+\.(?:ts|tsx|js|jsx|py|java|kt|go|rs|cs|cpp|c|h|sql|md|json|yml|yaml)):(\d{1,6})\b/g)) add(m[1], m[2]);
+  for (const m of answer.matchAll(BARE_ANCHOR_RE)) {
+    if (!BARE_ANCHOR_EXTS.has(m[2])) continue;
+    add(`${m[1]}.${m[2]}`, m[3]);
+  }
   return out;
 }
 

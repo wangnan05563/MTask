@@ -52,6 +52,18 @@ export const HOVER_SCROLL_SETTLE_MS = 120;
 /** 单调时钟：`performance.now()` 在浏览器与 Node（门里 SSR）都可用，取不到才退回 `Date.now()` */
 const now = (): number => globalThis.performance?.now?.() ?? Date.now();
 
+/**
+ * Esc 收起处理器：触发元素与卡片各挂一份监听，行为完全一致（S4144：共用同一实现）。
+ * 卡片是 Portal 出去的独立 DOM 子树，DOM 事件不会冒泡回触发元素，所以两处都必须挂。
+ */
+function escapeDismissHandler(dismiss: () => void): (e: KeyboardEvent) => void {
+  return (e) => {
+    if (e.key !== 'Escape') return;
+    e.stopPropagation();
+    dismiss();
+  };
+}
+
 export interface AnchorBox {
   readonly top: number;
   readonly left: number;
@@ -91,7 +103,7 @@ export interface HoverCardProps {
   readonly cardH?: number;
   readonly openDelay?: number;
   readonly closeDelay?: number;
-  /** 读屏用：卡片 `role="dialog"` 的名称，同时也是「这是什么」的兜底说明 */
+  /** 读屏用：卡片 `<dialog>` 的名称，同时也是「这是什么」的兜底说明 */
   readonly ariaLabel: string;
   readonly testId?: string;
 }
@@ -102,15 +114,15 @@ export function HoverCard({
 }: HoverCardProps) {
   const [pos, setPos] = useState<HoverPlacement | null>(null);
   const triggerRef = useRef<HTMLSpanElement>(null);
-  const cardRef = useRef<HTMLSpanElement>(null);
-  const openTimer = useRef<number | null>(null);
-  const closeTimer = useRef<number | null>(null);
+  const cardRef = useRef<HTMLDialogElement>(null);
+  const openTimer = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
+  const closeTimer = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
   const descId = useId();
   const isOpen = pos !== null;
 
   const clearTimers = useCallback(() => {
-    if (openTimer.current != null) window.clearTimeout(openTimer.current);
-    if (closeTimer.current != null) window.clearTimeout(closeTimer.current);
+    if (openTimer.current != null) globalThis.clearTimeout(openTimer.current);
+    if (closeTimer.current != null) globalThis.clearTimeout(closeTimer.current);
     openTimer.current = null;
     closeTimer.current = null;
   }, []);
@@ -119,7 +131,7 @@ export function HoverCard({
   const openedAtRef = useRef(0);
   const wasOpenRef = useRef(false);
   /**
-   * Esc 收起时要把焦点还给触发控件，而那一下 `focus()` 会同步触发 `onFocus` → 又立刻把卡片打开，
+   * Esc 收起时要把焦点还给触发控件，而那一下 `focus()` 会同步触发 focusin → 又立刻把卡片打开，
    * 结果是「按 Esc 关不掉」（焦点已在触发控件上时不重发 focus 事件，所以这条只在焦点原本在卡片里时暴露——
    * 真机探针实测：Esc 后 `aria-expanded` 回到 true）。这里给这一跳 focus 一个「不要因此重开」的口令。
    */
@@ -189,12 +201,79 @@ export function HoverCard({
       try {
         (inner ?? triggerRef.current)?.focus?.();
       } finally {
-        // `focus()` 派发 focusin 是同步的，React 的 onFocus 已在这一步里读过口令；
+        // `focus()` 派发 focusin 是同步的，focusin 监听已在这一步里读过口令；
         // 元素本来就有焦点时不会重发事件，口令留到 finally 一律作废，不会吞掉用户下一次真聚焦
         suppressFocusOpenRef.current = false;
       }
     }
   }, [close, isInside]);
+
+  /*
+   * 触发元素与卡片本身都不是控件（真正的控件是它们包着的 `<a>` / `<button>`），
+   * 这里挂的只是「悬停 / 聚焦即开合浮层」的装配逻辑，因此用 DOM 监听而不是 JSX 的 `on*`：
+   * 给非交互元素挂 `on*` 会被无障碍规则判成「伪控件」，而这些语义本来就由内部原生控件承担。
+   * `focusin` / `focusout` 对应 React 的 onFocus / onBlur（同样会从子元素冒上来）。
+   */
+  useEffect(() => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const onEnter = () => {
+      if (card == null) return;
+      if (closeTimer.current != null) { globalThis.clearTimeout(closeTimer.current); closeTimer.current = null; }
+      openTimer.current ??= globalThis.setTimeout(open, openDelay);
+    };
+    const onLeave = () => {
+      if (openTimer.current != null) { globalThis.clearTimeout(openTimer.current); openTimer.current = null; }
+      // 还没弹出的时候不需要缓冲：开定时器会盖掉下一次悬停的判定
+      if (wasOpenRef.current) closeTimer.current = globalThis.setTimeout(close, closeDelay);
+    };
+    const onFocusIn = () => {
+      if (suppressFocusOpenRef.current) return;
+      if (card != null) open();
+    };
+    const onFocusOut = (e: FocusEvent) => { if (!isInside(e.relatedTarget)) close(); };
+    const onKeyDown = escapeDismissHandler(dismissWithFocusRestore);
+    el.addEventListener('mouseenter', onEnter);
+    el.addEventListener('mouseleave', onLeave);
+    el.addEventListener('focusin', onFocusIn);
+    el.addEventListener('focusout', onFocusOut);
+    el.addEventListener('keydown', onKeyDown);
+    return () => {
+      el.removeEventListener('mouseenter', onEnter);
+      el.removeEventListener('mouseleave', onLeave);
+      el.removeEventListener('focusin', onFocusIn);
+      el.removeEventListener('focusout', onFocusOut);
+      el.removeEventListener('keydown', onKeyDown);
+    };
+  }, [card, openDelay, closeDelay, open, close, isInside, dismissWithFocusRestore]);
+
+  /*
+   * 卡片同理：可悬停（移入取消关闭定时器）、失焦即收、点击不穿透到任务行。
+   * Esc 也必须放在卡片自身上——卡片是 Portal 到 body 的独立 DOM 子树，
+   * 焦点在卡片里按 Esc 不会冒泡回触发元素（React 树能冒泡，DOM 不能）。
+   */
+  useEffect(() => {
+    if (!isOpen) return;
+    const el = cardRef.current;
+    if (!el) return;
+    const onEnter = () => { if (closeTimer.current != null) { globalThis.clearTimeout(closeTimer.current); closeTimer.current = null; } };
+    const onLeave = () => { closeTimer.current = globalThis.setTimeout(close, closeDelay); };
+    const onFocusOut = (e: FocusEvent) => { if (!isInside(e.relatedTarget)) close(); };
+    const onClick = (e: MouseEvent) => e.stopPropagation();
+    const onKeyDown = escapeDismissHandler(dismissWithFocusRestore);
+    el.addEventListener('mouseenter', onEnter);
+    el.addEventListener('mouseleave', onLeave);
+    el.addEventListener('focusout', onFocusOut);
+    el.addEventListener('click', onClick);
+    el.addEventListener('keydown', onKeyDown);
+    return () => {
+      el.removeEventListener('mouseenter', onEnter);
+      el.removeEventListener('mouseleave', onLeave);
+      el.removeEventListener('focusout', onFocusOut);
+      el.removeEventListener('click', onClick);
+      el.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isOpen, close, closeDelay, isInside, dismissWithFocusRestore]);
 
   return (
     <span
@@ -204,46 +283,25 @@ export function HoverCard({
       aria-haspopup={card == null ? undefined : 'dialog'}
       aria-expanded={isOpen}
       aria-describedby={isOpen ? descId : undefined}
-      onMouseEnter={() => {
-        if (card == null) return;
-        if (closeTimer.current != null) { window.clearTimeout(closeTimer.current); closeTimer.current = null; }
-        if (openTimer.current == null) openTimer.current = window.setTimeout(open, openDelay);
-      }}
-      onMouseLeave={() => {
-        if (openTimer.current != null) { window.clearTimeout(openTimer.current); openTimer.current = null; }
-        // 还没弹出的时候不需要缓冲：开定时器会盖掉下一次悬停的判定
-        if (pos != null) closeTimer.current = window.setTimeout(close, closeDelay);
-      }}
-      onFocus={() => {
-        if (suppressFocusOpenRef.current) return;
-        if (card != null) open();
-      }}
-      onBlur={(e) => { if (!isInside(e.relatedTarget)) close(); }}
-      // 卡片是 Portal，但 React 事件沿组件树冒泡，所以 Esc 落在卡片里也会走到这里
-      onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); dismissWithFocusRestore(); } }}
     >
       {children}
       {pos && createPortal(
-        <span
+        <dialog
           ref={cardRef}
+          open
           id={descId}
-          role="dialog"
           aria-label={ariaLabel}
           data-t03394={testId ?? 'hover-card'}
-          onMouseEnter={() => { if (closeTimer.current != null) { window.clearTimeout(closeTimer.current); closeTimer.current = null; } }}
-          onMouseLeave={() => { closeTimer.current = window.setTimeout(close, closeDelay); }}
-          onBlur={(e) => { if (!isInside(e.relatedTarget)) close(); }}
-          onClick={(e) => e.stopPropagation()}
           style={{
-            position: 'fixed', top: pos.top, left: pos.left, zIndex: HOVER_Z,
-            width: cardW, boxSizing: 'border-box',
+            position: 'fixed', top: pos.top, left: pos.left, right: 'auto', bottom: 'auto', margin: 0, zIndex: HOVER_Z,
+            width: cardW, maxWidth: 'none', maxHeight: 'none', boxSizing: 'border-box',
             background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6,
             padding: '8px 10px', boxShadow: '0 8px 24px var(--overlay)',
             fontSize: 'var(--fs-xs)', color: 'var(--text)', textAlign: 'left',
           }}
         >
           {card}
-        </span>,
+        </dialog>,
         globalThis.document.body,
       )}
     </span>

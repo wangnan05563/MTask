@@ -153,11 +153,7 @@ export async function planExtract(taskIds: string[]): Promise<ExtractPlan> {
   // 「最终内容」只能靠 sha 兜底——可复现但反直觉。在 plan 阶段显式拒绝比默默产出一个说不清来源的包更负责。
   const ambiguous = findOrderAmbiguities(commitsAsc, filesByCommit);
   if (ambiguous.length) {
-    const head = ambiguous.slice(0, 3).map((x) =>
-      `${x.a} 与 ${x.b}（${x.paths.slice(0, 3).join('、')}${x.paths.length > 3 ? ` 等 ${x.paths.length} 个文件` : ''}）`);
-    throw new ExtractError('ambiguous-order',
-      `提交顺序不确定，无法判定最终内容：${head.join('；')}${ambiguous.length > 3 ? `；共 ${ambiguous.length} 对` : ''}。` +
-      '这些提交同一秒且没有父子关系，请拆分勾选后分两次导出');
+    throw new ExtractError('ambiguous-order', ambiguityMessage(ambiguous) + '这些提交同一秒且没有父子关系，请拆分勾选后分两次导出');
   }
   const finalPath = finalPathMap(filesByCommit);
   assertWithinLimits(finalPath.size, 0);
@@ -173,6 +169,19 @@ export async function planExtract(taskIds: string[]): Promise<ExtractPlan> {
     missingShas: summaries.missing,
     filesByCommit,
   };
+}
+
+/** 一对歧义提交的点名文案：只列前 3 个相交路径，其余给总数 */
+function describeAmbiguity(x: { a: string; b: string; paths: string[] }): string {
+  const moreFiles = x.paths.length > 3 ? ` 等 ${x.paths.length} 个文件` : '';
+  return `${x.a} 与 ${x.b}（${x.paths.slice(0, 3).join('、')}${moreFiles}）`;
+}
+
+/** 歧义提交对的整体文案：最多点名 3 对，其余只给对数 */
+function ambiguityMessage(pairs: readonly { a: string; b: string; paths: string[] }[]): string {
+  const head = pairs.slice(0, 3).map(describeAmbiguity).join('；');
+  const more = pairs.length > 3 ? `；共 ${pairs.length} 对` : '';
+  return `提交顺序不确定，无法判定最终内容：${head}${more}。`;
 }
 
 /**
@@ -213,7 +222,7 @@ export function findOrderAmbiguities(
       if (secOf.get(A.sha) !== secOf.get(B.sha)) continue;
       if (ancestorsOf(A.sha).has(B.sha) || ancestorsOf(B.sha).has(A.sha)) continue;
       const pb = pathsOf.get(B.sha);
-      const common = [...(pathsOf.get(A.sha) ?? [])].filter((p) => pb?.has(p)).sort();
+      const common = [...(pathsOf.get(A.sha) ?? [])].filter((p) => pb?.has(p)).sort((x, y) => x.localeCompare(y));
       if (common.length) out.push({ a: A.shortSha, b: B.shortSha, paths: common });
     }
   }
@@ -234,8 +243,12 @@ function topoOrderCommits(commits: CommitSummaryRow[]): CommitSummaryRow[] {
     pendingParents.set(c.sha, inside.length);
     for (const p of inside) childShas.set(p, [...(childShas.get(p) ?? []), c.sha]);
   }
-  const byDateThenSha = (a: string, b: string) =>
-    Date.parse(rowBySha.get(a)!.date) - Date.parse(rowBySha.get(b)!.date) || (a < b ? -1 : a > b ? 1 : 0);
+  const byDateThenSha = (a: string, b: string) => {
+    const byDate = Date.parse(rowBySha.get(a)!.date) - Date.parse(rowBySha.get(b)!.date);
+    if (byDate !== 0) return byDate;
+    if (a === b) return 0;
+    return a < b ? -1 : 1;
+  };
   const ready = [...pendingParents.keys()].filter((sha) => pendingParents.get(sha) === 0).sort(byDateThenSha);
   const out: CommitSummaryRow[] = [];
   while (ready.length) {
@@ -365,8 +378,11 @@ export async function runExtract(
       inner.abort();
     };
     if (signal) {
-      if (!signal.aborted) signal.addEventListener('abort', () => { abortHit ??= new ExtractError('aborted', '已中止'); inner.abort(); }, { once: true });
-      else inner.abort();
+      if (signal.aborted) {
+        inner.abort();
+      } else {
+        signal.addEventListener('abort', () => { abortHit ??= new ExtractError('aborted', '已中止'); inner.abort(); }, { once: true });
+      }
     }
     try {
       await catFileBatch(plan.workspacePath, specs, (o: BatchObject) => {
@@ -454,6 +470,13 @@ function buildManifest(plan: ExtractPlan, binarySizes: Map<string, number>): Man
   return rows;
 }
 
+/** 回执说明：无文件行时区分「已不在仓库」与「未回写」；有文件行时点名解析不到的提交 */
+function receiptNote(files: number, gone: readonly string[]): string {
+  if (files === 0) return gone.length ? '关联提交已不在当前仓库' : '未回写 commit id';
+  if (gone.length) return `部分提交解析不到：${gone.map((s) => s.slice(0, 7)).join('、')}`;
+  return '';
+}
+
 function buildReceipts(plan: ExtractPlan, manifest: ManifestRow[]): TaskReceipt[] {
   const shortToSha = new Map(plan.commits.map((c) => [c.shortSha, c.sha]));
   return plan.tasks.map((t) => {
@@ -465,9 +488,7 @@ function buildReceipts(plan: ExtractPlan, manifest: ManifestRow[]): TaskReceipt[
       title: t.title,
       ok: files > 0 && gone.length === 0,
       files,
-      note: files === 0
-        ? (gone.length ? '关联提交已不在当前仓库' : '未回写 commit id')
-        : gone.length ? `部分提交解析不到：${gone.map((s) => s.slice(0, 7)).join('、')}` : '',
+      note: receiptNote(files, gone),
     };
   });
 }
@@ -495,14 +516,14 @@ async function packZipVolumes(
   total: number,
 ): Promise<ExtractVolume[]> {
   const volumes: ExtractVolume[] = [];
-  const paths = [...finalPath.values()].map((v) => v.path).sort();
+  const paths = [...finalPath.values()].map((v) => v.path).sort((a, b) => a.localeCompare(b));
   if (paths.length !== total) throw new ExtractError('bad-state', `落盘文件数与规格数不一致（${paths.length}/${total}）`);
   let zip = new PizZip();
   let curBytes = 0;
   let curFiles = 0;
   const flush = async () => {
     if (curFiles === 0) return;
-    const buf = zip.generate({ type: 'nodebuffer', compression: 'STORE' }) as Buffer;
+    const buf = zip.generate({ type: 'nodebuffer', compression: 'STORE' });
     const fileName = `git-extract-${jobId.slice(0, 8)}-part${volumes.length + 1}.zip`;
     volumes.push({ token: saveReportBuffer(buf), fileName, bytes: buf.length, files: curFiles });
     zip = new PizZip();
@@ -512,7 +533,7 @@ async function packZipVolumes(
   for (const rel of paths) {
     const buf = await readFile(safeJoin(dir, rel));
     if (shouldSealVolume(curBytes, buf.length)) await flush();
-    zip.file(rel.replace(/\\/g, '/'), buf, { compression: 'STORE' });
+    zip.file(rel.replaceAll('\\', '/'), buf, { compression: 'STORE' });
     curBytes += buf.length;
     curFiles += 1;
   }
@@ -555,13 +576,16 @@ async function packManifestFile(
     buf = Buffer.from(wrote as unknown as ArrayBuffer);
     fileName = `git-extract-${jobId.slice(0, 8)}.xlsx`;
   } else {
-    const esc = (s: string) => s.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+    const esc = (s: string) => s.replaceAll('|', String.raw`\|`).replaceAll(/\r?\n/g, ' ');
     const lines = ['# Git 增量资产清单', '', '## 提交摘要', '', '| 提交 | 主题 | 作者 | 时间 |', '|---|---|---|---|'];
     for (const c of commits) lines.push(`| \`${c.shortSha}\` | ${esc(c.subject)} | ${esc(c.author)} | ${c.date} |`);
     lines.push('', '## 文件清单', '', `| ${MANIFEST_COLUMNS.join(' | ')} |`, `|${MANIFEST_COLUMNS.map(() => '---').join('|')}|`);
     for (const r of rows) {
-      lines.push(`| \`${r.commit}\` | ${esc(r.path)} | ${r.binary ? `二进制（${r.binarySize ?? 0} 字节）` : r.status} | `
-        + `${r.binary ? '-' : (r.additions ?? 0)} | ${r.binary ? '-' : (r.deletions ?? 0)} | ${r.taskNo ?? ''} | ${esc(r.taskTitle)} | ${esc(r.author)} | ${r.date} |`);
+      const statusText = r.binary ? `二进制（${r.binarySize ?? 0} 字节）` : r.status;
+      const additions = r.binary ? '-' : (r.additions ?? 0);
+      const deletions = r.binary ? '-' : (r.deletions ?? 0);
+      lines.push(`| \`${r.commit}\` | ${esc(r.path)} | ${statusText} | `
+        + `${additions} | ${deletions} | ${r.taskNo ?? ''} | ${esc(r.taskTitle)} | ${esc(r.author)} | ${r.date} |`);
     }
     buf = Buffer.from(`${lines.join('\n')}\n`, 'utf8');
     fileName = `git-extract-${jobId.slice(0, 8)}.md`;

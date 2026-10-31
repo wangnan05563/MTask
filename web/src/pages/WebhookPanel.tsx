@@ -173,7 +173,7 @@ export function WebhookPanel({ projectId, onClose }: {
           title="刷新订阅与统计" aria-label="刷新 Webhook"><RefreshCw size={12} /></button>
         <button onClick={onClose} style={{ ...BTN, color: 'var(--text-muted)' }} title="关闭 Webhook 面板" aria-label="关闭 Webhook 面板">×</button>
       </div>
-      {msg && <div role="status" data-t03196="toast" style={{ marginTop: 8, fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{msg}</div>}
+      {msg && <output data-t03196="toast" style={{ display: 'block', marginTop: 8, fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{msg}</output>}
 
       {formOpen && (
         <div data-t03196="form" style={{ ...CARD, marginTop: 10, borderColor: 'var(--accent)' }}>
@@ -192,7 +192,7 @@ export function WebhookPanel({ projectId, onClose }: {
           </div>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-s)' }}>
             <input type="checkbox" checked={draft.allowIntranet} onChange={(e) => setDraft({ ...draft, allowIntranet: e.target.checked })} data-t03196="allow-intranet" />
-            允许内网/回环地址（需显式确认）
+            <span>允许内网/回环地址（需显式确认）</span>
           </label>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button onClick={() => { setFormOpen(false); setDraft(emptyDraft()); }} disabled={busy} style={BTN}>取消</button>

@@ -277,6 +277,57 @@ function lectureJournalView(view: GenJobView | null): unknown {
 
 planApi.get('/code-review-lecture/jobs/latest', (_req, res) => wrap(res, () => lectureJournalView(latestJob(LECTURE_CARD_KEY))));
 
+/**
+ * T03192（G-3）/T03316：讲稿 job 级成功率样本。只上报「完整一轮」的终态——仅大纲是中间交付，不进分母。
+ * 续作/片段重试不是独立 job：成功收口时用同一 jobId 终态覆盖为累计节次（T03246 续作轮的
+ * result.sections 已按台账重建为整份），失败/中止不覆盖既有终态，避免把已成功的 job 回写成失败。
+ */
+function lectureJobRecorder(
+  request: ReturnType<typeof validateLectureStreamBody>,
+  isContinuation: boolean,
+  startedAt: string,
+): (status: 'done' | 'aborted' | 'error', sections: ReadonlyArray<{ ok: boolean }>, jobId?: string) => void {
+  return (status, sections, jobId) => {
+    if (request.outlineOnly) return;
+    if (isContinuation && status !== 'done') return;
+    // 续作轮沿用台账首轮创建时间，job 起点不随最后一轮漂移
+    const jobStart = isContinuation && request.jobId ? jobRequest(request.jobId)?.view.createdAt : startedAt;
+    reportAiJob({
+      jobId: request.jobId ?? jobId,
+      cardKey: 'ai.code_review_lecture',
+      status,
+      mode: 'ai',
+      sectionsTotal: sections.length,
+      sectionsOk: sections.filter((s) => s.ok).length,
+      startedAt: jobStart,
+    });
+  };
+}
+
+/** T03262（AI-101①）：讲稿结果 → 溯源行——面板与后续导出稿（原样回传）同源 */
+function lectureProvenance(result: Awaited<ReturnType<typeof runLectureStream>>): CardProvenance {
+  const budgetPart = result.stats.contextBudget > 0 ? `（预算 ${chars(result.stats.contextBudget)}）` : '';
+  return buildCardProvenance({
+    cardKey: LECTURE_CARD_KEY,
+    sources: [
+      { label: '项目', value: `${result.stats.projects} 个（有改动 ${result.stats.readyProjects}）` },
+      { label: '改动文件', value: `${result.stats.files} 个 / ${result.stats.groups} 组` },
+      { label: '上下文', value: `${chars(result.stats.chars)}${budgetPart}` },
+      { label: '模型调用', value: `${result.stats.calls} 次（${result.sections.length} 节 / ${result.stats.segments} 段）` },
+      { label: '引用', value: `${result.stats.anchors} 条` },
+      { label: '告警', value: `${result.warnings.length} 条` },
+    ],
+    truncations: [
+      ...(result.stats.contextBudget > 0 && result.stats.chars > result.stats.contextBudget
+        ? [`上下文 ${chars(result.stats.chars)} 超出预算 ${chars(result.stats.contextBudget)}`]
+        : []),
+      ...result.warnings.filter((w) => /截断|跳过|降级|上限/.test(w)),
+    ],
+    // 讲稿结果对象不携带模型名（预估值里的是预估模型版本，不是 LLM），照实写「未记录」
+    model: null,
+  });
+}
+
 /** T03245：按 id 取台账（重试时前端可先精确回读，再决定补哪些段） */
 planApi.get('/code-review-lecture/jobs/:id', (req, res) => {
   const found = jobRequest(toStr(req.params.id));
@@ -302,26 +353,10 @@ planApi.post('/code-review-lecture-stream', raw({ type: () => true, limit: '30mb
     return res.status(lectureStreamErrorStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });
   }
 
-  // T03192（G-3）/T03316：job 级成功率样本。只上报「完整一轮」的终态——仅大纲是中间交付，不进分母。
-  // 续作/片段重试不是独立 job：成功收口时用同一 jobId 终态覆盖为累计节次（T03246 续作轮的
-  // result.sections 已按台账重建为整份），失败/中止不覆盖既有终态，避免把已成功的 job 回写成失败。
+  // T03192（G-3）/T03316：job 级成功率样本记账器（口径见 lectureJobRecorder）
   const startedAt = new Date().toISOString();
   const isContinuation = Boolean(request.jobId || request.resumeFrom || request.sectionKeys || request.retryFailed);
-  const recordJob = (status: 'done' | 'aborted' | 'error', sections: ReadonlyArray<{ ok: boolean }>, jobId?: string) => {
-    if (request.outlineOnly) return;
-    if (isContinuation && status !== 'done') return;
-    // 续作轮沿用台账首轮创建时间，job 起点不随最后一轮漂移
-    const jobStart = isContinuation && request.jobId ? jobRequest(request.jobId)?.view.createdAt : startedAt;
-    reportAiJob({
-      jobId: request.jobId ?? jobId,
-      cardKey: 'ai.code_review_lecture',
-      status,
-      mode: 'ai',
-      sectionsTotal: sections.length,
-      sectionsOk: sections.filter((s) => s.ok).length,
-      startedAt: jobStart,
-    });
-  };
+  const recordJob = lectureJobRecorder(request, isContinuation, startedAt);
 
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache');
@@ -347,58 +382,27 @@ planApi.post('/code-review-lecture-stream', raw({ type: () => true, limit: '30mb
     });
     // 先记样本再回事件：客户端断开时上面的 early return 会跳过后续发送，但取消仍要进基线口径
     recordJob(result.aborted ? 'aborted' : 'done', result.sections, result.jobId);
-    const budgetPart = result.stats.contextBudget > 0 ? `（预算 ${chars(result.stats.contextBudget)}）` : '';
     // T03262（AI-101①）：溯源行随 done/aborted 一起下发——面板与后续导出稿（原样回传）同源
-    const provenance = buildCardProvenance({
-      cardKey: LECTURE_CARD_KEY,
-      sources: [
-        { label: '项目', value: `${result.stats.projects} 个（有改动 ${result.stats.readyProjects}）` },
-        { label: '改动文件', value: `${result.stats.files} 个 / ${result.stats.groups} 组` },
-        { label: '上下文', value: `${chars(result.stats.chars)}${budgetPart}` },
-        { label: '模型调用', value: `${result.stats.calls} 次（${result.sections.length} 节 / ${result.stats.segments} 段）` },
-        { label: '引用', value: `${result.stats.anchors} 条` },
-        { label: '告警', value: `${result.warnings.length} 条` },
-      ],
-      truncations: [
-        ...(result.stats.contextBudget > 0 && result.stats.chars > result.stats.contextBudget
-          ? [`上下文 ${chars(result.stats.chars)} 超出预算 ${chars(result.stats.contextBudget)}`]
-          : []),
-        ...result.warnings.filter((w) => /截断|跳过|降级|上限/.test(w)),
-      ],
-      // 讲稿结果对象不携带模型名（预估值里的是预估模型版本，不是 LLM），照实写「未记录」
-      model: null,
-    });
+    const provenance = lectureProvenance(result);
     // 讲稿可跨项目，项目维度留 null；面板按 cardKey 取最近一次
     recordCardProvenance(provenance, null);
     if (closed || res.writableEnded) return;
+    const payload = {
+      title: result.title,
+      markdown: result.markdown,
+      outline: result.outline,
+      sections: result.sections,
+      warnings: result.warnings,
+      stats: result.stats,
+      anchors: result.anchors,
+      provenance,
+      ...(result.jobId ? { jobId: result.jobId } : {}),
+    };
     if (result.aborted) {
       // PRD §6.2「已生成节保留」：中止也把已完成的节次交回前端，供「从第 n 节继续」拼接
-      send('aborted', {
-        ok: false,
-        aborted: true,
-        title: result.title,
-        markdown: result.markdown,
-        outline: result.outline,
-        sections: result.sections,
-        warnings: result.warnings,
-        stats: result.stats,
-        anchors: result.anchors,
-        provenance,
-        ...(result.jobId ? { jobId: result.jobId } : {}),
-      });
+      send('aborted', { ok: false, aborted: true, ...payload });
     } else {
-      send('done', {
-        ok: result.ok,
-        title: result.title,
-        markdown: result.markdown,
-        outline: result.outline,
-        sections: result.sections,
-        warnings: result.warnings,
-        stats: result.stats,
-        anchors: result.anchors,
-        provenance,
-        ...(result.jobId ? { jobId: result.jobId } : {}),
-      });
+      send('done', { ok: result.ok, ...payload });
     }
   } catch (e) {
     // 走到这里是采集/模型层面的真失败（用户中止由 runLectureStream 返回 aborted，不抛）
@@ -788,7 +792,7 @@ planApi.post('/import-prd', (req, res) => {
 
 /**
  * T02300：PRD 导入**预演**（只读，零写库）。同一份 payload 先投这里，用户在点「导入」之前就能看到
- * 本次将新建/复用/让号多少行——T01869 的「重导后两行同名、一行被读成 todo/0」之所以被误判成
+ * 本次将新建/复用/让号多少行——T01869 的「重导后两行同名、一行被读成待办/0」之所以被误判成
  * 「原有计划被回档」，就是因为导入前连带影响完全不可见。
  */
 planApi.post('/import-prd/preview', (req, res) => {

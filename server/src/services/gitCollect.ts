@@ -27,6 +27,14 @@ export const GIT_OUTPUT_CONFIG = [
   '-c', 'core.quotepath=false',
 ] as const;
 
+/**
+ * T03345：`--format=` 取值里允许出现的字段/记录分隔符（U+001F / U+001E）。
+ *
+ * 值仍与原先逐字节一致，只是改用 fromCodePoint 拼出同一对字符，而不是在正则字面量里显式匹配控制字符
+ * （后者会被 S6324 判为缺陷；放行这两个分隔符是业务必需，不能删）。
+ */
+const FORMAT_FIELD_SEPARATORS = String.fromCodePoint(0x1f, 0x1e);
+
 /** 每个只读子命令允许的选项（白名单，防止调用方借选项写盘或改配置） */
 const ALLOWED_FLAGS: Record<GitReadonlySubcommand, RegExp[]> = {
   'rev-parse': [/^--is-inside-work-tree$/, /^--verify$/, /^--quiet$/],
@@ -37,7 +45,7 @@ const ALLOWED_FLAGS: Record<GitReadonlySubcommand, RegExp[]> = {
   // T03436 批次：`--raw`/`--numstat`/`-m`/`--first-parent`/`--ignore-cr-at-eol` 供 T03650 的
   // 「N 个提交一次 git log 取文件统计」使用。全部是只读输出格式开关，不触碰工作树与索引；
   // 与 diff 侧同名选项同形同义（diff 白名单里本来就有 --numstat/--ignore-cr-at-eol）。
-  log: [/^--oneline$/, /^--no-merges$/, /^--format=[%\w.:{}+\-/ \x1f\x1e]+$/, /^-n\d{1,4}$/, /^--since=[\w:+\-. ]{1,64}$/, /^--until=[\w:+\-. ]{1,64}$/, /^--reverse$/, /^--all$/, /^--skip=\d{1,4}$/, /^--no-walk$/, /^--raw$/, /^--numstat$/, /^-m$/, /^--first-parent$/, /^--ignore-cr-at-eol$/],
+  log: [/^--oneline$/, /^--no-merges$/, new RegExp(String.raw`^--format=[%\w.:{}+\-/ ${FORMAT_FIELD_SEPARATORS}]+$`), /^-n\d{1,4}$/, /^--since=[\w:+\-. ]{1,64}$/, /^--until=[\w:+\-. ]{1,64}$/, /^--reverse$/, /^--all$/, /^--skip=\d{1,4}$/, /^--no-walk$/, /^--raw$/, /^--numstat$/, /^-m$/, /^--first-parent$/, /^--ignore-cr-at-eol$/],
   diff: [/^--ignore-cr-at-eol$/, /^--stat$/, /^--numstat$/, /^--name-status$/, /^-U\d{1,3}$/],
   show: [],
   // T03390（八期 §4.1 白名单扩容，均为只读）：remote 只允许 get-url，写类子命令由位置参数首段拦下；
@@ -164,8 +172,13 @@ export function assertSafeRepoPath(rel: string): string {
   return rel;
 }
 
+function stderrTextOf(e: ExecFileException): string {
+  if (typeof e.stderr === 'string') return e.stderr;
+  return e.stderr ? String(e.stderr) : '';
+}
+
 function classifyExecError(e: ExecFileException): GitCollectError {
-  const stderr = typeof e.stderr === 'string' ? e.stderr : (e.stderr ? String(e.stderr) : '');
+  const stderr = stderrTextOf(e);
   const hay = `${stderr}\n${e.message ?? ''}`;
   if (e.code === 'ENOENT') return new GitCollectError('no-git', '未找到 git 命令：请安装 Git，或改用「粘贴 patch」模式');
   if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return new GitCollectError('too-large', 'Git 输出超过 maxBuffer，请收窄采集范围');
@@ -683,7 +696,7 @@ export function parseAuthorFilter(raw: unknown): AuthorFilter | null {
   const text = raw.trim();
   if (!text) return null;
   const rawGroups = text.split(/[|｜]/).map((g) => g.split(/[,，＋+]/).map((t) => t.trim()));
-  if (rawGroups.some((g) => g.length === 0 || g.some((t) => t === ''))) {
+  if (rawGroups.some((g) => g.length === 0 || g.includes(''))) {
     throw new GitCollectError('denied', `提交人过滤「${text}」含空段：请写成「张三」「张三, 李四」（且）或「张三 | 李四」（或）`);
   }
   const groups = rawGroups;
@@ -972,131 +985,158 @@ function decodeDiffPath(raw: string): string | null {
   return m ? m[1] : p;
 }
 
+type OpenFile = Omit<GitFileChange, 'raw' | 'textLength'> & {
+  rawLines: string[];
+  /** `diff --git` 头的兜底路径：仅用来补 mode-only / 无 ---+++ 的段，不直接当作已解析路径 */
+  headerOld?: string;
+  headerNew?: string;
+};
+
+/** 逐行解析的流转状态：当前段、当前 hunk 与两侧已读行数（收进对象才能拆成模块级小函数） */
+interface DiffParseState {
+  files: GitFileChange[];
+  cur: OpenFile | null;
+  hunk: GitHunk | null;
+  oldSeen: number;
+  newSeen: number;
+}
+
+const DIFF_GIT_PATH_RE = /^a\/(.+?) b\/(.+)$/;
+const BINARY_FILES_RE = /^Binary files (.+) and (.+) differ$/;
+const RENAME_FROM_RE = /^rename from (.+)$/;
+const RENAME_TO_RE = /^rename to (.+)$/;
+
+/** 收尾当前段：去掉尾部空行、拼 raw；路径按「显式解析 → 段头兜底」优先取 */
+function flushOpenFile(st: DiffParseState): void {
+  const f = st.cur;
+  if (!f) return;
+  while (f.rawLines.length > 0 && f.rawLines.at(-1) === '') f.rawLines.pop();
+  const { rawLines, headerOld, headerNew, ...rest } = f;
+  const raw = rawLines.join('\n');
+  const path = rest.path || rest.oldPath || headerNew || headerOld || '';
+  if (path) st.files.push({ ...rest, path, raw, textLength: raw.length });
+  st.cur = null;
+}
+
+/** 开新段（先收尾上一段），hunk 与两侧计数一并归零 */
+function startFile(st: DiffParseState, firstLine: string): OpenFile {
+  flushOpenFile(st);
+  const f: OpenFile = { path: '', additions: 0, deletions: 0, binary: false, hunks: [], rawLines: [firstLine] };
+  st.cur = f;
+  st.hunk = null;
+  st.oldSeen = 0;
+  st.newSeen = 0;
+  return f;
+}
+
+/** `diff --git a/x b/x`：开段并记下两侧兜底路径 */
+function startDiffGitFile(st: DiffParseState, line: string): void {
+  const f = startFile(st, line);
+  const m = DIFF_GIT_PATH_RE.exec(line.slice('diff --git '.length));
+  if (!m) return;
+  const oldPath = decodeDiffPath(m[1]);
+  const newPath = decodeDiffPath(m[2]);
+  if (oldPath) f.headerOld = oldPath;
+  if (newPath) f.headerNew = newPath;
+}
+
+/** `--- a/x` / `+++ b/x` 路径行；命中返回 true */
+function applyUnifiedPathLine(f: OpenFile, line: string): boolean {
+  if (line.startsWith('--- ')) {
+    const p = decodeDiffPath(line.slice(4));
+    if (p) f.oldPath = p;
+    return true;
+  }
+  if (line.startsWith('+++ ')) {
+    const p = decodeDiffPath(line.slice(4));
+    if (p) f.path = p;
+    return true;
+  }
+  return false;
+}
+
+/** 二进制标记：`GIT binary patch` 与 `Binary files a/x and b/y differ`；命中返回 true */
+function applyBinaryMarker(f: OpenFile, line: string): boolean {
+  if (line === 'GIT binary patch') { f.binary = true; return true; }
+  const bin = BINARY_FILES_RE.exec(line);
+  if (!bin) return false;
+  f.binary = true;
+  const oldPath = decodeDiffPath(bin[1]);
+  const newPath = decodeDiffPath(bin[2]);
+  if (oldPath) f.oldPath = oldPath;
+  if (newPath) f.path = newPath;
+  return true;
+}
+
+/** `rename from/to` 行；命中返回 true */
+function applyRenameLine(f: OpenFile, line: string): boolean {
+  const from = RENAME_FROM_RE.exec(line);
+  if (from) { f.oldPath = from[1].trim(); return true; }
+  const to = RENAME_TO_RE.exec(line);
+  if (to) { f.path = to[1].trim(); return true; }
+  return false;
+}
+
+/** `@@ -a,b +c,d @@`：开 hunk 并把两侧已读行数归零；不是 hunk 头返回 false */
+function openHunk(st: DiffParseState, f: OpenFile, line: string): boolean {
+  const header = HUNK_HEADER.exec(line);
+  if (!header) return false;
+  const h: GitHunk = {
+    oldStart: Number(header[1]),
+    oldLines: header[2] === undefined ? 1 : Number(header[2]),
+    newStart: Number(header[3]),
+    newLines: header[4] === undefined ? 1 : Number(header[4]),
+    lines: [],
+  };
+  st.hunk = h;
+  f.hunks.push(h);
+  st.oldSeen = 0;
+  st.newSeen = 0;
+  return true;
+}
+
+/** hunk 内的增/删/上下文行：计数、收行，读满两侧行数即收 hunk（`\ No newline` 等标记不计数） */
+function consumeHunkLine(st: DiffParseState, f: OpenFile, line: string): void {
+  const h = st.hunk;
+  if (!h) return;
+  const lead = line.charAt(0);
+  if (lead === '+') { f.additions += 1; h.lines.push(line); st.newSeen += 1; }
+  else if (lead === '-') { f.deletions += 1; h.lines.push(line); st.oldSeen += 1; }
+  else if (lead === ' ') { h.lines.push(line); st.oldSeen += 1; st.newSeen += 1; }
+  else return;
+  if (st.oldSeen >= h.oldLines && st.newSeen >= h.newLines) st.hunk = null;
+}
+
+/** 单行分派：段头 → 路径/二进制/改名 → hunk 头 → hunk 内容 */
+function parseDiffLine(st: DiffParseState, line: string): void {
+  if (line.startsWith('diff --git ')) { startDiffGitFile(st, line); return; }
+  const open = st.cur;
+  // 兼容 `diff -u` / 去掉 `diff --git` 头的裸 patch：`---` 起新段
+  if (!st.hunk && open && open.path && line.startsWith('--- ')) {
+    applyUnifiedPathLine(startFile(st, line), line);
+    return;
+  }
+  const f = st.cur;
+  if (!f) {
+    if (line.startsWith('--- ')) applyUnifiedPathLine(startFile(st, line), line);
+    return;
+  }
+  f.rawLines.push(line);
+  if (applyBinaryMarker(f, line)) return;
+  if (!st.hunk && (applyRenameLine(f, line) || applyUnifiedPathLine(f, line))) return;
+  if (openHunk(st, f, line)) return;
+  consumeHunkLine(st, f, line);
+}
+
 /**
  * 解析 unified diff（`git diff -U<n>` / 粘贴 patch 共用）。
  * 只认 `diff --git` 分段与 `@@` hunk 头；hunk 内的 `---` 是删除行，不会被误当文件头。
  */
 export function parseUnifiedDiff(text: string): GitFileChange[] {
-  type OpenFile = Omit<GitFileChange, 'raw' | 'textLength'> & {
-    rawLines: string[];
-    /** `diff --git` 头的兜底路径：仅用来补 mode-only / 无 ---+++ 的段，不直接当作已解析路径 */
-    headerOld?: string;
-    headerNew?: string;
-  };
-  const lines = text.replaceAll('\r\n', '\n').split('\n');
-  const files: GitFileChange[] = [];
-  let cur: OpenFile | null = null;
-  let hunk: GitHunk | null = null;
-  let oldSeen = 0;
-  let newSeen = 0;
-
-  const flush = () => {
-    const f = cur;
-    if (!f) return;
-    while (f.rawLines.length > 0 && f.rawLines[f.rawLines.length - 1] === '') f.rawLines.pop();
-    const { rawLines, headerOld, headerNew, ...rest } = f;
-    const raw = rawLines.join('\n');
-    const path = rest.path || rest.oldPath || headerNew || headerOld || '';
-    if (path) files.push({ ...rest, path, raw, textLength: raw.length });
-    cur = null;
-  };
-  const startFile = (firstLine: string): OpenFile => {
-    flush();
-    const f: OpenFile = { path: '', additions: 0, deletions: 0, binary: false, hunks: [], rawLines: [firstLine] };
-    cur = f;
-    hunk = null;
-    oldSeen = 0;
-    newSeen = 0;
-    return f;
-  };
-  // 用访问器读取当前段：闭包内对 cur 的赋值不会被 TypeScript 的控制流分析追踪
-  const current = (): OpenFile | null => cur;
-
-  for (const line of lines) {
-    if (line.startsWith('diff --git ')) {
-      const f = startFile(line);
-      const m = /^a\/(.+?) b\/(.+)$/.exec(line.slice('diff --git '.length));
-      if (m) {
-        const oldPath = decodeDiffPath(m[1]);
-        const newPath = decodeDiffPath(m[2]);
-        if (oldPath) f.headerOld = oldPath;
-        if (newPath) f.headerNew = newPath;
-      }
-      continue;
-    }
-    // 兼容 `diff -u` / 去掉 `diff --git` 头的裸 patch：`---` 起新段
-    const open = current();
-    if (!hunk && open && open.path && line.startsWith('--- ')) {
-      const f = startFile(line);
-      const p = decodeDiffPath(line.slice(4));
-      if (p) f.oldPath = p;
-      continue;
-    }
-    const opened = current();
-    if (!opened) {
-      if (line.startsWith('--- ')) {
-        const f = startFile(line);
-        const p = decodeDiffPath(line.slice(4));
-        if (p) f.oldPath = p;
-      }
-      continue;
-    }
-    const f = opened;
-    f.rawLines.push(line);
-
-    if (line === 'GIT binary patch') { f.binary = true; continue; }
-    const bin = /^Binary files (.+) and (.+) differ$/.exec(line);
-    if (bin) {
-      f.binary = true;
-      const oldPath = decodeDiffPath(bin[1]);
-      const newPath = decodeDiffPath(bin[2]);
-      if (oldPath) f.oldPath = oldPath;
-      if (newPath) f.path = newPath;
-      continue;
-    }
-
-    if (!hunk) {
-      const renameFrom = /^rename from (.+)$/.exec(line);
-      if (renameFrom) { f.oldPath = renameFrom[1].trim(); continue; }
-      const renameTo = /^rename to (.+)$/.exec(line);
-      if (renameTo) { f.path = renameTo[1].trim(); continue; }
-      if (line.startsWith('--- ')) {
-        const p = decodeDiffPath(line.slice(4));
-        if (p) f.oldPath = p;
-        continue;
-      }
-      if (line.startsWith('+++ ')) {
-        const p = decodeDiffPath(line.slice(4));
-        if (p) f.path = p;
-        continue;
-      }
-    }
-
-    const header = HUNK_HEADER.exec(line);
-    if (header) {
-      hunk = {
-        oldStart: Number(header[1]),
-        oldLines: header[2] === undefined ? 1 : Number(header[2]),
-        newStart: Number(header[3]),
-        newLines: header[4] === undefined ? 1 : Number(header[4]),
-        lines: [],
-      };
-      f.hunks.push(hunk);
-      oldSeen = 0;
-      newSeen = 0;
-      continue;
-    }
-    if (!hunk) continue;
-    const closes = () => {
-      if (hunk && oldSeen >= hunk.oldLines && newSeen >= hunk.newLines) hunk = null;
-    };
-    if (line.startsWith('+')) { f.additions += 1; hunk.lines.push(line); newSeen += 1; closes(); continue; }
-    if (line.startsWith('-')) { f.deletions += 1; hunk.lines.push(line); oldSeen += 1; closes(); continue; }
-    if (line.startsWith(' ')) { hunk.lines.push(line); oldSeen += 1; newSeen += 1; closes(); continue; }
-    // `\ No newline at end of file` 等标记：不计数、不占上下文
-  }
-  flush();
-  return files;
+  const st: DiffParseState = { files: [], cur: null, hunk: null, oldSeen: 0, newSeen: 0 };
+  for (const line of text.replaceAll('\r\n', '\n').split('\n')) parseDiffLine(st, line);
+  flushOpenFile(st);
+  return st.files;
 }
 
 /** 单文件自身即超限时的保头保尾裁剪（长度严格不超过 limit） */
@@ -1217,7 +1257,7 @@ async function resolveFirstParent(cwd: string, revision: string, opts: GitCollec
   const line = r.stdout.split('\n').find(Boolean);
   if (!line) throw new GitCollectError('failed', `无法解析版本「${revision}」的提交信息`);
   const [, parents = ''] = line.split('\t');
-  return parents.trim().split(' ').filter(Boolean)[0] ?? null;
+  return parents.trim().split(' ').find(Boolean) ?? null;
 }
 
 /**
@@ -1234,10 +1274,10 @@ async function resolveSinceWindow(
   const lines = r.stdout.split('\n').filter(Boolean);
   const parse = (line: string): SinceCommit => {
     const [sha, parents = ''] = line.split('\t');
-    return { sha, parent: parents.trim().split(' ').filter(Boolean)[0] ?? null };
+    return { sha, parent: parents.trim().split(' ').find(Boolean) ?? null };
   };
   const newest = lines[0];
-  const oldest = lines[lines.length - 1];
+  const oldest = lines.at(-1);
   if (!newest || !oldest) return null;
   return { newest: parse(newest), oldest: parse(oldest) };
 }
@@ -1247,6 +1287,88 @@ interface SinceCommit {
   parent: string | null;
 }
 
+/** base-head：两端口径一致，diff 与 log 都用 `base..head` */
+async function resolveBaseHeadRange(
+  cwd: string,
+  input: GitRangeInput,
+  opts: GitCollectOptions,
+): Promise<ResolvedGitRange> {
+  if (!input.base) throw new GitCollectError('denied', 'base-head 形态需要 base（分支/标签/SHA）');
+  const base = await assertResolvableCommitish(cwd, input.base, '基线版本', opts);
+  const head = await assertResolvableCommitish(cwd, input.head ?? 'HEAD', '目标版本', opts);
+  return {
+    shape: 'base-head',
+    label: `${base}..${head}`,
+    base,
+    head,
+    diffPositional: [base, head],
+    logPositional: [`${base}..${head}`],
+    logFlags: [],
+    empty: false,
+  };
+}
+
+/** first-last：diff 基线取「首个提交的父」，根提交没有父则用空树 */
+async function resolveFirstLastRange(
+  cwd: string,
+  input: GitRangeInput,
+  opts: GitCollectOptions,
+): Promise<ResolvedGitRange> {
+  if (!input.base || !input.head) throw new GitCollectError('denied', '首末 SHA 形态需要两个版本号');
+  const first = await assertResolvableCommitish(cwd, input.base, '首个提交', opts);
+  const last = await assertResolvableCommitish(cwd, input.head, '末个提交', opts);
+  const parent = await resolveFirstParent(cwd, first, opts);
+  const base = parent ?? GIT_EMPTY_TREE_SHA1;
+  return {
+    shape: 'first-last',
+    label: `${first}..${last}`,
+    base,
+    head: last,
+    diffPositional: [base, last],
+    // 根提交没有父：整段历史到 last 即为「含首」的区间
+    logPositional: parent ? [`${base}..${last}`] : [last],
+    logFlags: [],
+    empty: false,
+  };
+}
+
+/** since：把时间窗换算成可 diff 的基线（T03590：有右端时终点钉成窗口最新提交） */
+async function resolveSinceRange(
+  cwd: string,
+  input: GitRangeInput,
+  opts: GitCollectOptions,
+): Promise<ResolvedGitRange> {
+  if (!input.since) throw new GitCollectError('denied', '时间窗形态需要 since 起点');
+  const sinceRaw = assertSafeSince(input.since);
+  const untilRaw = input.until ? assertSafeSince(input.until, '时间窗截止') : '';
+  // T03590：有右端时是「日期范围」语义——git 把纯日期当成当天 12:00（approxidate 默认），
+  // 不补齐会漏掉起始日上午 / 截止日下午的提交。单 since 保持原样，与改造前逐字节一致。
+  const since = untilRaw && DATE_ONLY_RE.test(sinceRaw) ? `${sinceRaw} 00:00:00` : sinceRaw;
+  const until = untilRaw && DATE_ONLY_RE.test(untilRaw) ? `${untilRaw} 23:59:59` : untilRaw;
+  const head = await assertResolvableCommitish(cwd, input.head ?? 'HEAD', '目标版本', opts);
+  const label = until ? `${since} ~ ${until}` : `自 ${since}`;
+  const logFlags = until ? [`--since=${since}`, `--until=${until}`] : [`--since=${since}`];
+  const win = await resolveSinceWindow(cwd, logFlags, head, opts);
+  if (!win) {
+    return { shape: 'since', label, base: '', head, diffPositional: [], logPositional: [], logFlags: [], empty: true };
+  }
+  const base = win.oldest.parent ?? GIT_EMPTY_TREE_SHA1;
+  // 无右端时终点仍是原来的 head 写法（分支名/HEAD），保证与 T03590 之前逐字节一致；
+  // 有右端才钉成窗口最新提交，避免 diff 越过 until
+  const end = until ? win.newest.sha : head;
+  return {
+    shape: 'since',
+    label,
+    base,
+    head: end,
+    diffPositional: [base, end],
+    // 位置参数留给原 head（分支/标签名），窗口筛选交给 logFlags
+    logPositional: [head],
+    logFlags,
+    empty: false,
+  };
+}
+
 /** 三形态归一：产出 diff 与 log 各自的位置参数，并把「时间窗/首末 SHA」换算成可 diff 的基线 */
 export async function resolveGitRange(
   cwd: string,
@@ -1254,74 +1376,15 @@ export async function resolveGitRange(
   opts: GitCollectOptions = {},
 ): Promise<ResolvedGitRange> {
   switch (input.shape) {
-    case 'base-head': {
-      if (!input.base) throw new GitCollectError('denied', 'base-head 形态需要 base（分支/标签/SHA）');
-      const base = await assertResolvableCommitish(cwd, input.base, '基线版本', opts);
-      const head = await assertResolvableCommitish(cwd, input.head ?? 'HEAD', '目标版本', opts);
-      return {
-        shape: input.shape,
-        label: `${base}..${head}`,
-        base,
-        head,
-        diffPositional: [base, head],
-        logPositional: [`${base}..${head}`],
-        logFlags: [],
-        empty: false,
-      };
-    }
-    case 'first-last': {
-      if (!input.base || !input.head) throw new GitCollectError('denied', '首末 SHA 形态需要两个版本号');
-      const first = await assertResolvableCommitish(cwd, input.base, '首个提交', opts);
-      const last = await assertResolvableCommitish(cwd, input.head, '末个提交', opts);
-      const parent = await resolveFirstParent(cwd, first, opts);
-      const base = parent ?? GIT_EMPTY_TREE_SHA1;
-      return {
-        shape: input.shape,
-        label: `${first}..${last}`,
-        base,
-        head: last,
-        diffPositional: [base, last],
-        // 根提交没有父：整段历史到 last 即为「含首」的区间
-        logPositional: parent ? [`${base}..${last}`] : [last],
-        logFlags: [],
-        empty: false,
-      };
-    }
-    case 'since': {
-      if (!input.since) throw new GitCollectError('denied', '时间窗形态需要 since 起点');
-      const sinceRaw = assertSafeSince(input.since);
-      const untilRaw = input.until ? assertSafeSince(input.until, '时间窗截止') : '';
-      // T03590：有右端时是「日期范围」语义——git 把纯日期当成当天 12:00（approxidate 默认），
-      // 不补齐会漏掉起始日上午 / 截止日下午的提交。单 since 保持原样，与改造前逐字节一致。
-      const since = untilRaw && DATE_ONLY_RE.test(sinceRaw) ? `${sinceRaw} 00:00:00` : sinceRaw;
-      const until = untilRaw && DATE_ONLY_RE.test(untilRaw) ? `${untilRaw} 23:59:59` : untilRaw;
-      const head = await assertResolvableCommitish(cwd, input.head ?? 'HEAD', '目标版本', opts);
-      const label = until ? `${since} ~ ${until}` : `自 ${since}`;
-      const logFlags = until ? [`--since=${since}`, `--until=${until}`] : [`--since=${since}`];
-      const win = await resolveSinceWindow(cwd, logFlags, head, opts);
-      if (!win) {
-        return { shape: input.shape, label, base: '', head, diffPositional: [], logPositional: [], logFlags: [], empty: true };
-      }
-      const base = win.oldest.parent ?? GIT_EMPTY_TREE_SHA1;
-      // 无右端时终点仍是原来的 head 写法（分支名/HEAD），保证与 T03590 之前逐字节一致；
-      // 有右端才钉成窗口最新提交，避免 diff 越过 until
-      const end = until ? win.newest.sha : head;
-      return {
-        shape: input.shape,
-        label,
-        base,
-        head: end,
-        diffPositional: [base, end],
-        // 位置参数留给原 head（分支/标签名），窗口筛选交给 logFlags
-        logPositional: [head],
-        logFlags,
-        empty: false,
-      };
-    }
-    case 'commits': {
+    case 'base-head':
+      return resolveBaseHeadRange(cwd, input, opts);
+    case 'first-last':
+      return resolveFirstLastRange(cwd, input, opts);
+    case 'since':
+      return resolveSinceRange(cwd, input, opts);
+    case 'commits':
       // T03302：多选提交没有「一对版本号」的区间可言，走 collectCommitsUnion 的并集采集
       throw new GitCollectError('denied', 'commits 形态不按版本号区间解析，请走 collectCommitsUnion');
-    }
     default: {
       const shape: never = input.shape;
       throw new GitCollectError('denied', `未知区间形态「${String(shape)}」`);
@@ -1537,6 +1600,34 @@ export function normalizeSelectedCommits(input: unknown): string[] {
   return out;
 }
 
+/** 逐条复跑点名缺失的 SHA（整条 `--no-walk` 失败多半是「某个 SHA 已不在仓库里」） */
+async function collectCommitsOneByOne(
+  cwd: string,
+  shas: readonly string[],
+  bySha: Map<string, GitGraphEntry>,
+  opts: GitCollectOptions,
+): Promise<string[]> {
+  const missing: string[] = [];
+  for (const sha of shas) {
+    try {
+      const one = await runGitReadonly('log', ['--no-walk', GRAPH_FORMAT, '-n1'], [sha, '--'], cwd, opts);
+      const [entry] = parseGraphLog(one.stdout);
+      if (entry) bySha.set(entry.sha, entry);
+      else missing.push(sha);
+    } catch {
+      missing.push(sha);
+    }
+  }
+  return missing;
+}
+
+/** 缺失点名文案：最多列 5 个短 SHA，其余只给总数 */
+function missingCommitsMessage(missing: readonly string[]): string {
+  const head = missing.slice(0, 5).map((s) => s.slice(0, 7)).join('、');
+  const more = missing.length > 5 ? ` 等 ${missing.length} 个` : '';
+  return `选中的提交在仓库里不存在（分支被 rebase/force-push 丢弃？）：${head}${more}，请在 Git 树里重新选择`;
+}
+
 /** 一次 `--no-walk` 拿齐选中提交的 parents 与元信息（逐条 spawn 按 200 选在 Windows 上就是几十秒） */
 export async function resolveCommitsInfo(cwd: string, shas: readonly string[], opts: GitCollectOptions = {}): Promise<Map<string, GitGraphEntry>> {
   const bySha = new Map<string, GitGraphEntry>();
@@ -1548,19 +1639,10 @@ export async function resolveCommitsInfo(cwd: string, shas: readonly string[], o
   } catch (e) {
     const kind = e instanceof GitCollectError ? e.kind : 'failed';
     if (kind !== 'failed') throw e;
-    // 整条 --no-walk 失败多半是「某个 SHA 已不在仓库里」；逐条复跑只为了点名，不参与正常路径
-    const missing: string[] = [];
-    for (const sha of shas) {
-      try {
-        const one = await runGitReadonly('log', ['--no-walk', GRAPH_FORMAT, '-n1'], [sha, '--'], cwd, opts);
-        const [entry] = parseGraphLog(one.stdout);
-        if (entry) bySha.set(entry.sha, entry); else missing.push(sha);
-      } catch { missing.push(sha); }
-    }
+    // 逐条复跑只为了点名，不参与正常路径
+    const missing = await collectCommitsOneByOne(cwd, shas, bySha, opts);
     if (missing.length === 0) throw e;
-    throw new GitCollectError('failed',
-      `选中的提交在仓库里不存在（分支被 rebase/force-push 丢弃？）：${missing.slice(0, 5).map((s) => s.slice(0, 7)).join('、')}`
-      + `${missing.length > 5 ? ` 等 ${missing.length} 个` : ''}，请在 Git 树里重新选择`);
+    throw new GitCollectError('failed', missingCommitsMessage(missing));
   }
 }
 

@@ -90,9 +90,8 @@ export function AiUnavailableHint({ r, style, compact }: {
 }) {
   if (!r || r.ready) return null;
   return (
-    <div
+    <output
       data-lck="ai-unavailable-hint"
-      role="status"
       style={{
         display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
         padding: compact ? '4px 8px' : '6px 10px', borderRadius: 8,
@@ -116,6 +115,6 @@ export function AiUnavailableHint({ r, style, compact }: {
           {r.fix.label}<ArrowRight size={11} />
         </button>
       )}
-    </div>
+    </output>
   );
 }

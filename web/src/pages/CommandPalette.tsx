@@ -30,6 +30,77 @@ function setSessionState(key: string, value: unknown): void {
 const NO_TASKS: Task[] = [];
 const NO_PROMPTS: Prompt[] = [];
 
+interface Item { group: string; label: string; hint: string; action: () => void }
+
+/** T03184：页面直达 = 导航单源——名称与顶部菜单逐字一致，九个一级页面（含「执行会话」）全部可搜 */
+function buildPageItems(kwLower: string, onNavigate: (tab: Tab) => void): Item[] {
+  const out: Item[] = [];
+  for (const t of TABS) {
+    if (!kwLower || t.label.toLowerCase().includes(kwLower)) {
+      out.push({ group: '页面', label: t.label, hint: `跳转到「${t.label}」`, action: () => onNavigate(t.key) });
+    }
+  }
+  return out;
+}
+
+/** T03271（UX-09②）：设置页签直达——名称取自同一份 settingsTabs 单源，与导航逐字一致；
+ *  仅在输入关键词时出现，避免空查询时把 15 个设置项堆在默认列表里。 */
+function buildSettingsItems(kwLower: string, onNavigate: (tab: Tab) => void): Item[] {
+  if (!kwLower) return [];
+  const out: Item[] = [];
+  for (const t of SETTINGS_TABS) {
+    if (matchesSettingsTab(t, kwLower)) {
+      out.push({
+        group: '设置', label: t.label, hint: `跳转到「设置 → ${t.label}」`,
+        action: () => { focusSettingsTab(t.key); onNavigate('settings'); },
+      });
+    }
+  }
+  return out;
+}
+
+/** T00560：项目搜索——跳任务页并写入搜索词（任务页按名称过滤展示） */
+function buildProjectItems(kwLower: string, projects: ReadonlyArray<{ id: string; name: string }>, onNavigate: (tab: Tab) => void): Item[] {
+  const out: Item[] = [];
+  for (const pr of projects) {
+    if (!kwLower || pr.name.toLowerCase().includes(kwLower)) {
+      out.push({
+        group: '项目', label: pr.name, hint: '跳任务页并按项目名过滤',
+        action: () => { setSessionState('tasks.search', pr.name); onNavigate('tasks'); },
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * 任务（跨项目，结构化/模糊均由后端过滤）
+ * T00836：点击任务除写入搜索词外，还下发 focusId/focusTab，任务页据此滚动定位 + 高亮 + 展开该记录
+ * T02162：改为复用通知中心同款 focusTaskByNo——它不仅写齐全部会话键，还派发 mtaskFocusTask 事件。
+ * 旧逻辑只写过次键 + onNavigate('tasks')=setTab：当用户本就停在任务页时 setTab 同值不触发重挂载，
+ * useSessionState 只在挂载时读一次键，于是「点击无反应 / 定位到上一条」（T01568 同一个坑，此前只修了通知中心）。
+ * focusTaskByNo 的事件路径让已挂载的任务页直接吃到定位意图；'notice' 同时按任务实际状态自动弹出详情抽屉。
+ */
+function buildTaskItems(tasks: readonly Task[]): Item[] {
+  return tasks.map((t) => ({
+    group: '任务',
+    label: `${t.task_no ?? 'T?????'} ${t.title}（${t.status === 'done' ? '已完成' : '待办'}）`,
+    hint: '跳任务页并定位该任务（搜索编号）',
+    action: () => { void focusTaskByNo(t.task_no ?? t.title, 'notice'); },
+  }));
+}
+
+/** 提示词（列表量级小，仍走一次取数后本地过滤） */
+function buildPromptItems(kwLower: string, prompts: readonly Prompt[], onNavigate: (tab: Tab) => void): Item[] {
+  const out: Item[] = [];
+  for (const p of prompts) {
+    if (!kwLower || p.title.toLowerCase().includes(kwLower)) {
+      out.push({ group: '提示词', label: p.title, hint: '跳提示词页并定位高亮', action: () => { focusPrompt(p); onNavigate('prompts'); } });
+    }
+  }
+  return out;
+}
+
 /** T03184：提示词命中——写会话键（供目标页挂载时读取）+ 派发事件（供已挂载页面即时定位） */
 function focusPrompt(prompt: Prompt): void {
   setSessionState('prompts.search', '');
@@ -83,61 +154,17 @@ export function CommandPalette({ open, onClose, onNavigate }: {
     if (!open) return;
     const timer = setTimeout(() => searchView.reload(), kw.trim() ? 180 : 0);
     return () => clearTimeout(timer);
-  }, [open, kw]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, kw, searchView.reload]);
 
-  interface Item { group: string; label: string; hint: string; action: () => void }
   const kwLower = kw.trim().toLowerCase();
 
-  const items = useMemo<Item[]>(() => {
-    const out: Item[] = [];
-    // T03184：页面直达 = 导航单源——名称与顶部菜单逐字一致，九个一级页面（含「执行会话」）全部可搜
-    for (const t of TABS) {
-      if (!kwLower || t.label.toLowerCase().includes(kwLower)) {
-        out.push({ group: '页面', label: t.label, hint: `跳转到「${t.label}」`, action: () => onNavigate(t.key) });
-      }
-    }
-    // T03271（UX-09②）：设置页签直达——名称取自同一份 settingsTabs 单源，与导航逐字一致；
-    // 仅在输入关键词时出现，避免空查询时把 15 个设置项堆在默认列表里。
-    if (kwLower) {
-      for (const t of SETTINGS_TABS) {
-        if (matchesSettingsTab(t, kwLower)) {
-          out.push({
-            group: '设置', label: t.label, hint: `跳转到「设置 → ${t.label}」`,
-            action: () => { focusSettingsTab(t.key); onNavigate('settings'); },
-          });
-        }
-      }
-    }
-    // T00560：项目搜索——跳任务页并写入搜索词（任务页按名称过滤展示）
-    for (const pr of projects) {
-      if (!kwLower || pr.name.toLowerCase().includes(kwLower)) {
-        out.push({
-          group: '项目', label: pr.name, hint: '跳任务页并按项目名过滤',
-          action: () => { setSessionState('tasks.search', pr.name); onNavigate('tasks'); },
-        });
-      }
-    }
-    // 任务（跨项目，结构化/模糊均由后端过滤）
-    // T00836：点击任务除写入搜索词外，还下发 focusId/focusTab，任务页据此滚动定位 + 高亮 + 展开该记录
-    // T02162：改为复用通知中心同款 focusTaskByNo——它不仅写齐全部会话键，还派发 mtaskFocusTask 事件。
-    // 旧逻辑只写过次键 + onNavigate('tasks')=setTab：当用户本就停在任务页时 setTab 同值不触发重挂载，
-    // useSessionState 只在挂载时读一次键，于是「点击无反应 / 定位到上一条」（T01568 同一个坑，此前只修了通知中心）。
-    // focusTaskByNo 的事件路径让已挂载的任务页直接吃到定位意图；'notice' 同时按任务实际状态自动弹出详情抽屉。
-    for (const t of tasks) {
-      const label = `${t.task_no ?? 'T?????'} ${t.title}（${t.status === 'done' ? '已完成' : '待办'}）`;
-      out.push({
-        group: '任务', label, hint: '跳任务页并定位该任务（搜索编号）',
-        action: () => { void focusTaskByNo(t.task_no ?? t.title, 'notice'); },
-      });
-    }
-    // 提示词（列表量级小，仍走一次取数后本地过滤）
-    for (const p of prompts) {
-      if (!kwLower || p.title.toLowerCase().includes(kwLower)) {
-        out.push({ group: '提示词', label: p.title, hint: '跳提示词页并定位高亮', action: () => { focusPrompt(p); onNavigate('prompts'); } });
-      }
-    }
-    return out;
-  }, [kwLower, tasks, prompts, projects, onNavigate]);
+  const items = useMemo<Item[]>(() => [
+    ...buildPageItems(kwLower, onNavigate),
+    ...buildSettingsItems(kwLower, onNavigate),
+    ...buildProjectItems(kwLower, projects, onNavigate),
+    ...buildTaskItems(tasks),
+    ...buildPromptItems(kwLower, prompts, onNavigate),
+  ], [kwLower, tasks, prompts, projects, onNavigate]);
 
   const execute = useCallback((i: number) => {
     const it = items[i];
@@ -151,17 +178,24 @@ export function CommandPalette({ open, onClose, onNavigate }: {
     else if (e.key === 'Escape') { e.preventDefault(); onClose(); }
   }, [items.length, active, execute, onClose]);
 
+  // 遮罩点击关闭：文档级监听替代遮罩容器上的鼠标事件（容器保持非交互语义）；
+  // 卡片内部点击的 target 不是遮罩本身，因此不再需要额外的冒泡阻断。
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => { if (e.target === overlayRef.current) onClose(); };
+    document.addEventListener('click', onDocClick);
+    return () => document.removeEventListener('click', onDocClick);
+  }, [open, onClose]);
+
   if (!open) return null;
   const result = searchView.data;
   const searchFailed = searchView.phase === 'error';
   const showNoMatch = items.length === 0 && !searchFailed && searchView.phase !== 'loading';
   return createPortal(
-    <div /* NOSONAR - 遮罩点击空白关闭为便捷辅助，正式关闭入口为 Esc（输入框 onKeyDown 处理），无需对背景遮罩聚焦键盘 */
-      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1200, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '12vh' }}
-      onClick={onClose}>
-      <div /* NOSONAR - 阻断点击冒泡属事件传递逻辑而非独立交互控件，可访问关闭入口为 Esc 与输入框键盘处理 */
-        onClick={(e) => e.stopPropagation()}
-        style={{ background: 'var(--card-bg)', borderRadius: 10, width: 'min(560px, 92vw)', boxShadow: '0 12px 40px rgba(0,0,0,.25)', overflow: 'hidden' }}>
+    <div ref={overlayRef}
+      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1200, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '12vh' }}>
+      <div style={{ background: 'var(--card-bg)', borderRadius: 10, width: 'min(560px, 92vw)', boxShadow: '0 12px 40px rgba(0,0,0,.25)', overflow: 'hidden' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
           <Search size={15} style={{ color: 'var(--text-muted)' }} />
           <input ref={inputRef} value={kw} onChange={(e) => { setKw(e.target.value); setActive(0); }} onKeyDown={onKeyDown}
@@ -172,26 +206,26 @@ export function CommandPalette({ open, onClose, onNavigate }: {
         <div style={{ maxHeight: '46vh', overflowY: 'auto' }}>
           {showNoMatch && <div style={{ padding: 16, fontSize: 'var(--fs-s)', color: 'var(--text-muted)', textAlign: 'center' }}>无匹配结果</div>}
           {searchView.phase === 'loading' && items.length === 0 && (
-            <div role="status" style={{ padding: 16, fontSize: 'var(--fs-s)', color: 'var(--text-muted)', textAlign: 'center' }}>搜索中…</div>
+            <output style={{ display: 'block', padding: 16, fontSize: 'var(--fs-s)', color: 'var(--text-muted)', textAlign: 'center' }}>搜索中…</output>
           )}
           {items.map((it, i) => (
-            <div /* NOSONAR - 列表项点击/悬停属鼠标便捷操作，键盘导航由搜索框统一处理（↑↓ 选择、Enter 执行） */
+            <button type="button"
               key={`${it.group}-${it.label}-${i}`} onClick={() => execute(i)}
               onMouseEnter={() => setActive(i)}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', cursor: 'pointer', background: i === active ? 'var(--surface-2)' : 'transparent' }}>
+              style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 8, padding: '8px 14px', cursor: 'pointer', textAlign: 'left', border: 'none', background: i === active ? 'var(--surface-2)' : 'transparent' }}>
               <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 4, padding: '0 4px', flexShrink: 0 }}>{it.group}</span>
               <span style={{ flex: 1, fontSize: 'var(--fs-m)', color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</span>
               <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>{i === active ? <CornerDownLeft size={11} /> : it.hint}</span>
-            </div>
+            </button>
           ))}
         </div>
         <div style={{ padding: '6px 14px', borderTop: '1px solid var(--border)', fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
           ↑↓ 选择 · Enter 执行 · Esc 关闭 —— 选中任务/项目/提示词会跳转对应页面并自动定位
           {/* T03184：搜索结果的状态行——命中总数、截断提示（仅显示前 500 条）与语法降级原因都显式给出 */}
           {result && (
-            <span role="status" data-palette-hint style={{ color: result.degraded ? 'var(--danger)' : 'var(--text-muted)' }}>
+            <output data-palette-hint style={{ color: result.degraded ? 'var(--danger)' : 'var(--text-muted)' }}>
               任务命中 {result.total} 条{result.mode === 'structured' ? '（结构化）' : ''}{result.hint ? ` · ${result.hint}` : ''}
-            </span>
+            </output>
           )}
           {/* T02201：项目取数失败时显式给出原因与重试入口，不再只剩「无匹配结果」 */}
           <ProjectListHint view={projectList} />

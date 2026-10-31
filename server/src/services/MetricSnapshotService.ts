@@ -10,7 +10,7 @@
  *
  * 口径：
  * - 统计日/时区遵循 D-12：系统时区下 `ymdInTimezone` 的日历日；每行落 `stat_date + tz`；
- * - 累计列（todo/done）只数未归档任务；当日新增/完成同样只数未归档——归档是「隐藏」，
+ * - 累计列（未完成 / 已完成）只数未归档任务；当日新增/完成同样只数未归档——归档是「隐藏」，
  *   但历史快照已冻结，之后归档不会改写过去的行；
  * - 完成时刻优先取当日 `task_events` 中最后一次 `→ done`（重开再完成以最后一次为准），
  *   无事件时仅对「当天创建且当天完成」的任务回落到 `updated_at`，避免把老任务今天的编辑当成完成；
@@ -178,6 +178,176 @@ function emptyAcc(): Acc {
   return { todo: 0, done: 0, created: 0, completed: 0, dueTotal: 0, overdue: 0, samples: [] };
 }
 
+/** 两个 ISO 日期串取较晚者：同格式下字典序即时间序，不能改用 Math.max（字符串会转成 NaN） */
+function laterIsoDate(a: string, b: string): string {
+  if (a > b) return a;
+  return b;
+}
+
+interface DoneTaskRow {
+  id: string;
+  project_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 各项目的日读数累加器：先按项目建骨架，再灌入累计列/新增/逾期读数 */
+function seedAccumulators(
+  projects: Array<{ id: string }>,
+  counts: Array<{ project_id: string; done_count: number; todo_count: number }>,
+  createdRows: Array<{ project_id: string; n: number }>,
+  due: ReturnType<typeof OverdueRateService.report>,
+): Map<string, Acc> {
+  const byProject = new Map<string, Acc>();
+  for (const p of projects) byProject.set(p.id, emptyAcc());
+  const accOf = (projectId: string): Acc => {
+    const a = byProject.get(projectId) ?? emptyAcc();
+    byProject.set(projectId, a);
+    return a;
+  };
+  for (const r of counts) {
+    const a = accOf(r.project_id);
+    a.done = r.done_count ?? 0;
+    a.todo = r.todo_count ?? 0;
+  }
+  for (const r of createdRows) accOf(r.project_id).created = r.n ?? 0;
+  for (const r of due.projects) {
+    const a = accOf(r.projectId);
+    a.dueTotal = r.dueTotal;
+    a.overdue = r.overdue;
+  }
+  return byProject;
+}
+
+/** 当日最后一条「→ done」事件时刻（任务重开再完成以最后一次为准） */
+function lastDoneEventAt(statusEvents: Array<{ task_id: string; created_at: string }>): Map<string, string> {
+  const doneEventAt = new Map<string, string>();
+  for (const e of statusEvents) doneEventAt.set(e.task_id, e.created_at);
+  return doneEventAt;
+}
+
+/** 单个已完成任务的周期时长（小时，4 位小数）；完成时刻不明或时长异常 → null */
+function cycleHoursOf(
+  task: DoneTaskRow,
+  doneEventAt: Map<string, string>,
+  startIso: string,
+  endIso: string,
+): number | null {
+  const createdMs = Date.parse(task.created_at);
+  let completedAt = doneEventAt.get(task.id) ?? '';
+  if (!completedAt) {
+    const createdInDay = task.created_at >= startIso && task.created_at < endIso;
+    const updatedInDay = task.updated_at >= startIso && task.updated_at < endIso;
+    if (createdInDay && updatedInDay) completedAt = task.updated_at;
+  }
+  if (!completedAt) return null;
+  const hours = (Date.parse(completedAt) - createdMs) / 3_600_000;
+  if (!Number.isFinite(hours) || hours < 0 || hours > 24 * 365 * 5) return null;
+  return Math.round(hours * 10000) / 10000;
+}
+
+/** 把当日完成的任务累加进各项目（完成数 + 周期样本） */
+function accrueCompletedCycles(
+  byProject: Map<string, Acc>,
+  doneTasks: DoneTaskRow[],
+  doneEventAt: Map<string, string>,
+  startIso: string,
+  endIso: string,
+): void {
+  for (const t of doneTasks) {
+    const hours = cycleHoursOf(t, doneEventAt, startIso, endIso);
+    if (hours === null) continue;
+    const a = byProject.get(t.project_id);
+    if (!a) continue;
+    a.completed += 1;
+    a.samples.push({ taskId: t.id, hours });
+  }
+}
+
+/** 落库：每个项目一行日快照 + 当日周期样本（先清后写，任务重开/取消完成后不残留样本）；返回写入样本数 */
+function persistDailySnapshot(
+  db: ReturnType<typeof getDb>,
+  byProject: Map<string, Acc>,
+  meta: { statDate: string; tz: string; nowIso: string },
+): number {
+  let cycleSamples = 0;
+  for (const [projectId, a] of byProject) {
+    db.prepare(
+      `INSERT INTO metric_day_snapshots
+         (id, project_id, stat_date, tz, todo_count, done_count, created_count, completed_count,
+          due_total, overdue_count, captured_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(project_id, stat_date) DO UPDATE SET
+         tz = excluded.tz, todo_count = excluded.todo_count, done_count = excluded.done_count,
+         created_count = excluded.created_count, completed_count = excluded.completed_count,
+         due_total = excluded.due_total, overdue_count = excluded.overdue_count,
+         captured_at = excluded.captured_at`,
+    ).run(randomUUID(), projectId, meta.statDate, meta.tz, a.todo, a.done, a.created, a.completed,
+      a.dueTotal, a.overdue, meta.nowIso, meta.nowIso);
+    // 当天重采先清后写：任务被重开/取消完成后，样本不能残留
+    db.prepare('DELETE FROM metric_day_cycle_samples WHERE project_id = ? AND stat_date = ?')
+      .run(projectId, meta.statDate);
+    const ins = db.prepare(
+      'INSERT INTO metric_day_cycle_samples (project_id, stat_date, task_id, cycle_hours) VALUES (?, ?, ?, ?)',
+    );
+    for (const s of a.samples) {
+      ins.run(projectId, meta.statDate, s.taskId, s.hours);
+      cycleSamples += 1;
+    }
+  }
+  return cycleSamples;
+}
+
+/** 采集日校验：只允许当天，且必须是真实存在的日历日（不静默造历史） */
+function assertCaptureDate(statDate: string, today: string): void {
+  if (!isRealYmd(statDate)) throw new Error(`at 需为有效的 YYYY-MM-DD，收到：${statDate}`);
+  if (statDate !== today) {
+    throw new Error(`仅允许采集当天快照（历史不从事件表回填，缺失区间显示「${ACCUMULATING_NOTE}」）；今天为 ${today}`);
+  }
+}
+
+/** 窗口最后一个统计日的逾期读数（分母 0 时不给比率） */
+function buildOverdueSummary(latest: SnapshotDay | null): InsightSummary['overdue'] {
+  if (!latest) return { at: null, count: null, valid: null, rate: null, label: ACCUMULATING_NOTE };
+  const valid = latest.dueTotal;
+  const count = latest.overdue;
+  const rate = valid !== null && valid > 0 && count !== null
+    ? Math.round((count / valid) * 10000) / 10000
+    : null;
+  const rateLabel = valid === 0 ? '暂无可比计划' : `${Math.round((rate as number) * 1000) / 10}%`;
+  return {
+    at: latest.date,
+    count,
+    valid,
+    rate,
+    label: valid === null ? ACCUMULATING_NOTE : rateLabel,
+  };
+}
+
+/** 聚合摘要的口径提示：缺失日、无可比计划、样本量不足、AI 用量为全局口径 */
+function buildInsightNotes(
+  base: SnapshotRangeReport,
+  latest: SnapshotDay | null,
+  sampleSize: number,
+): string[] {
+  const notes: string[] = [];
+  if (!base.traceableFrom) {
+    notes.push(`尚未积累日快照：洞察数据从首次采集日开始，缺失区间显示「${ACCUMULATING_NOTE}」`);
+  } else if (base.missingDates.length > 0) {
+    notes.push(`窗口内有 ${base.missingDates.length} 天没有快照，图上以空档呈现（不插值、不补零），即「${ACCUMULATING_NOTE}」`);
+  }
+  if (latest?.dueTotal === 0) {
+    notes.push(`${latest.date} 已到期有效计划数为 0：暂无可比计划，逾期率不给值`);
+  }
+  if (sampleSize === 0) {
+    notes.push('窗口内没有可回溯的统计日：样本量与周吞吐均不给值');
+  } else if (sampleSize < 30) {
+    notes.push(`窗口内仅 ${sampleSize} 个统计日（<30），趋势与比率仅供参考`);
+  }
+  notes.push('AI 用量为全局口径（ai_usage 无项目字段），与项目内四图不同源');
+  return notes;
+}
+
 export class MetricSnapshotService {
   /**
    * 采集当天快照（幂等：同项目同日重复采集以最新读数为准）。
@@ -188,10 +358,7 @@ export class MetricSnapshotService {
     const tz = systemTz();
     const today = ymdInTimezone(new Date(), tz);
     const statDate = at ? String(at) : today;
-    if (!isRealYmd(statDate)) throw new Error(`at 需为有效的 YYYY-MM-DD，收到：${statDate}`);
-    if (statDate !== today) {
-      throw new Error(`仅允许采集当天快照（历史不从事件表回填，缺失区间显示「${ACCUMULATING_NOTE}」）；今天为 ${today}`);
-    }
+    assertCaptureDate(statDate, today);
 
     const [startIso, endIso] = dayBounds(statDate);
     const nowIso = new Date().toISOString();
@@ -212,77 +379,18 @@ export class MetricSnapshotService {
         WHERE kind = 'status' AND detail LIKE '%→ done' AND created_at >= ? AND created_at < ?
         ORDER BY created_at`,
     ).all(startIso, endIso) as Array<{ task_id: string; created_at: string }>;
-    const doneEventAt = new Map<string, string>();
-    for (const e of statusEvents) doneEventAt.set(e.task_id, e.created_at);
+    const doneEventAt = lastDoneEventAt(statusEvents);
     const doneTasks = db.prepare(
       'SELECT id, project_id, created_at, updated_at FROM tasks WHERE archived = 0 AND status = \'done\'',
-    ).all() as Array<{ id: string; project_id: string; created_at: string; updated_at: string }>;
+    ).all() as DoneTaskRow[];
 
     const due = OverdueRateService.report({ at: statDate });
 
-    const byProject = new Map<string, Acc>();
-    for (const p of projects) byProject.set(p.id, emptyAcc());
-    const accOf = (projectId: string): Acc => {
-      const a = byProject.get(projectId) ?? emptyAcc();
-      byProject.set(projectId, a);
-      return a;
-    };
-    for (const r of counts) {
-      const a = accOf(r.project_id);
-      a.done = r.done_count ?? 0;
-      a.todo = r.todo_count ?? 0;
-    }
-    for (const r of createdRows) accOf(r.project_id).created = r.n ?? 0;
-    for (const r of due.projects) {
-      const a = accOf(r.projectId);
-      a.dueTotal = r.dueTotal;
-      a.overdue = r.overdue;
-    }
+    const byProject = seedAccumulators(projects, counts, createdRows, due);
+    accrueCompletedCycles(byProject, doneTasks, doneEventAt, startIso, endIso);
 
-    for (const t of doneTasks) {
-      const createdMs = Date.parse(t.created_at);
-      let completedAt = doneEventAt.get(t.id) ?? '';
-      if (!completedAt) {
-        const createdInDay = t.created_at >= startIso && t.created_at < endIso;
-        const updatedInDay = t.updated_at >= startIso && t.updated_at < endIso;
-        if (createdInDay && updatedInDay) completedAt = t.updated_at;
-      }
-      if (!completedAt) continue;
-      const hours = (Date.parse(completedAt) - createdMs) / 3_600_000;
-      if (!Number.isFinite(hours) || hours < 0 || hours > 24 * 365 * 5) continue;
-      const a = accOf(t.project_id);
-      a.completed += 1;
-      a.samples.push({ taskId: t.id, hours: Math.round(hours * 10000) / 10000 });
-    }
-
-    let cycleSamples = 0;
-    const write = db.transaction(() => {
-      for (const [projectId, a] of byProject) {
-        db.prepare(
-          `INSERT INTO metric_day_snapshots
-             (id, project_id, stat_date, tz, todo_count, done_count, created_count, completed_count,
-              due_total, overdue_count, captured_at, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(project_id, stat_date) DO UPDATE SET
-             tz = excluded.tz, todo_count = excluded.todo_count, done_count = excluded.done_count,
-             created_count = excluded.created_count, completed_count = excluded.completed_count,
-             due_total = excluded.due_total, overdue_count = excluded.overdue_count,
-             captured_at = excluded.captured_at`,
-        ).run(randomUUID(), projectId, statDate, tz, a.todo, a.done, a.created, a.completed,
-          a.dueTotal, a.overdue, nowIso, nowIso);
-        // 当天重采先清后写：任务被重开/取消完成后，样本不能残留
-        db.prepare('DELETE FROM metric_day_cycle_samples WHERE project_id = ? AND stat_date = ?')
-          .run(projectId, statDate);
-        const ins = db.prepare(
-          'INSERT INTO metric_day_cycle_samples (project_id, stat_date, task_id, cycle_hours) VALUES (?, ?, ?, ?)',
-        );
-        for (const s of a.samples) {
-          ins.run(projectId, statDate, s.taskId, s.hours);
-          cycleSamples += 1;
-        }
-      }
-    });
-    write();
+    const write = db.transaction(() => persistDailySnapshot(db, byProject, { statDate, tz, nowIso }));
+    const cycleSamples = write();
 
     return { at: statDate, tz, projects: projects.length, cycleSamples, capturedAt: nowIso };
   }
@@ -386,25 +494,7 @@ export class MetricSnapshotService {
 
     const present = base.days.filter((d) => !d.missing);
     const latest = present.at(-1) ?? null;
-
-    let overdue: InsightSummary['overdue'];
-    if (latest) {
-      const valid = latest.dueTotal;
-      const count = latest.overdue;
-      const rate = valid !== null && valid > 0 && count !== null
-        ? Math.round((count / valid) * 10000) / 10000
-        : null;
-      const rateLabel = valid === 0 ? '暂无可比计划' : `${Math.round((rate as number) * 1000) / 10}%`;
-      overdue = {
-        at: latest.date,
-        count,
-        valid,
-        rate,
-        label: valid === null ? ACCUMULATING_NOTE : rateLabel,
-      };
-    } else {
-      overdue = { at: null, count: null, valid: null, rate: null, label: ACCUMULATING_NOTE };
-    }
+    const overdue = buildOverdueSummary(latest);
 
     const completed = present.reduce((s, d) => s + (d.completed ?? 0), 0);
     const perWeek = present.length === 0 ? null : Math.round((completed / (base.days.length / 7)) * 10) / 10;
@@ -416,21 +506,7 @@ export class MetricSnapshotService {
          FROM ai_usage WHERE created_at >= ? AND created_at < ?`,
     ).get(startIso, endIso) as { calls: number; cards: number };
 
-    const notes: string[] = [];
-    if (!base.traceableFrom) {
-      notes.push(`尚未积累日快照：洞察数据从首次采集日开始，缺失区间显示「${ACCUMULATING_NOTE}」`);
-    } else if (base.missingDates.length > 0) {
-      notes.push(`窗口内有 ${base.missingDates.length} 天没有快照，图上以空档呈现（不插值、不补零），即「${ACCUMULATING_NOTE}」`);
-    }
-    if (latest?.dueTotal === 0) {
-      notes.push(`${latest.date} 已到期有效计划数为 0：暂无可比计划，逾期率不给值`);
-    }
-    if (present.length === 0) {
-      notes.push('窗口内没有可回溯的统计日：样本量与周吞吐均不给值');
-    } else if (present.length < 30) {
-      notes.push(`窗口内仅 ${present.length} 个统计日（<30），趋势与比率仅供参考`);
-    }
-    notes.push('AI 用量为全局口径（ai_usage 无项目字段），与项目内四图不同源');
+    const notes = buildInsightNotes(base, latest, present.length);
 
     return {
       projectId,
@@ -467,7 +543,7 @@ export class MetricSnapshotService {
       const traceableFrom = stat.first_date;
       let missingDates: string[] = [];
       if (traceableFrom) {
-        const from = traceableFrom > windowFrom ? traceableFrom : windowFrom; // NOSONAR - 按字典序取较晚者；操作数是 ISO 日期串，Math.max 会转成 NaN，该规则不适用
+        const from = laterIsoDate(traceableFrom, windowFrom);
         const present = new Set(
           (db.prepare(
             'SELECT stat_date FROM metric_day_snapshots WHERE project_id = ? AND stat_date >= ? AND stat_date <= ?',

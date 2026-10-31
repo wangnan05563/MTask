@@ -6,7 +6,7 @@ import { FONT_OPTIONS, FONT_SIZE_OPTIONS, useSettings, type ImportMode } from '.
 import { Ban, Download, ExternalLink, FileUp, FolderPlus, Info, MonitorCog, Moon, Pencil, RefreshCw, RotateCcw, Save, Settings, ShieldCheck, Sun, Trash2 } from 'lucide-react';
 import { getLang, setLang, onLangChange, type Lang } from '../i18n'; // T01071-FR5.4：i18n 底座
 import { usePersistentState } from '../ui/session'; // T03271（UX-09③）：Tab 选中态跨页面/跨会话保持（沿用 T02977 口径）
-import { SETTINGS_TAB_LABELS, filterSettingsGroups, normalizeSettingsTab, type SettingsTabKey } from '../ui/settingsTabs'; // T03271（UX-09①②）：页签与分组单源
+import { SETTINGS_TAB_LABELS, filterSettingsGroups, normalizeSettingsTab } from '../ui/settingsTabs'; // T03271（UX-09①②）：页签与分组单源
 import { updateCardStore, shownProgressOf, type UpdateCheckInfo } from '../stores/updateCardStore';
 
 /** T01060-FR4.1：强调色预设色板（与主题内置 accent 同源的六色系） */
@@ -22,7 +22,7 @@ const THEME_PRESETS: Array<{ label: string; theme: 'light' | 'dark' | 'auto'; ac
   { label: '玫瑰', theme: 'light', accent: '#e11d48' },
 ];
 import { desktopApi } from '../ui/desktop'; // T00878：Electron 壳内一键下载并静默安装更新包
-import { isInFlightStatus, updateProgressView } from '../ui/updateProgress'; // T02977 复验补：下载进度文案单源
+import { isInFlightStatus, updateProgressView, type UpdateProgressView } from '../ui/updateProgress'; // T02977 复验补：下载进度文案单源
 import { TunnelPanel } from './TunnelPanel';
 import { HistoryPage } from './HistoryPage'; // T00756：历史资产嵌入设置
 import { HelpTab } from './HelpTab';
@@ -72,8 +72,8 @@ export function SettingsPage() {
       </div>
       <nav aria-label="设置分组" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
         {groups.map((g) => (
-          <div key={g.key} role="group" aria-label={g.label} data-t03271="group" data-group={g.key}
-            style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4 }}>
+          <fieldset key={g.key} aria-label={g.label} data-t03271="group" data-group={g.key}
+            style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, border: 'none', margin: 0, padding: 0, minWidth: 0 }}>
             <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 72 }}>{g.label}</span>
             {g.tabs.map((t) => {
               const on = active === t.key;
@@ -98,12 +98,12 @@ export function SettingsPage() {
                 </button>
               );
             })}
-          </div>
+          </fieldset>
         ))}
         {groups.length === 0 && (
-          <div role="status" data-t03271="empty" style={{ padding: '8px 0', fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
+          <output data-t03271="empty" style={{ display: 'block', padding: '8px 0', fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
             无匹配设置项
-          </div>
+          </output>
         )}
       </nav>
 
@@ -574,6 +574,240 @@ interface UpdateConfigView {
   tokenMasked: string;
 }
 
+/** 版本更新模块在途操作的类型（与 updateCardStore.busy 同口径） */
+type UpdateBusy = 'save' | 'test' | 'check' | 'download' | 'install' | null;
+
+const UPDATE_INPUT_STYLE: React.CSSProperties = {
+  flex: 1, minWidth: 0, fontSize: 'var(--fs-m)', padding: '6px 10px',
+  border: '1px solid var(--border-strong)', borderRadius: 6,
+  background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box',
+};
+
+/** 更新区按钮外观：主/次两种（模块级，避免组件内再挂一层闭包） */
+function updateBtnStyle(primary: boolean): React.CSSProperties {
+  return {
+    fontSize: 'var(--fs-m)', padding: '6px 14px', borderRadius: 6, cursor: 'pointer',
+    whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4,
+    background: primary ? 'var(--accent)' : 'var(--card-bg)',
+    color: primary ? 'var(--accent-text)' : 'var(--text)',
+    border: primary ? 'none' : '1px solid var(--border-strong)',
+  };
+}
+
+/** 更新按钮文案：在途阶段优先，其后才是半截包（«继续下载»）与默认态 */
+function updateButtonLabel(busy: UpdateBusy, cancelledPart: number | null, pct: number | null | undefined, inFlight: boolean): string {
+  const downloading = pct == null ? '下载中…' : `下载中 ${pct}%`;
+  if (busy === 'download') return downloading;
+  if (busy === 'install') return '正在安装…';
+  if (inFlight) return downloading;
+  if (cancelledPart === null) return '立即更新';
+  return '继续下载';
+}
+
+/** 检查结果卡片外观：有更新时用成功色描边 + 浅底 */
+function resultCardStyle(hasUpdate: boolean): React.CSSProperties {
+  if (hasUpdate) {
+    return {
+      marginTop: 12, padding: 12, borderRadius: 6, fontSize: 'var(--fs-m)',
+      border: '1px solid var(--success, #2e7d32)', background: 'rgba(46, 125, 50, 0.06)',
+    };
+  }
+  return { marginTop: 12, padding: 12, borderRadius: 6, fontSize: 'var(--fs-m)', border: '1px solid var(--border)', background: 'transparent' };
+}
+
+/** 「下载来源」一行文案（手动地址 / 内置地址 + 可选仓库名） */
+function downloadSourceText(source: 'manual' | 'builtin', repo: string): string {
+  const label = source === 'manual' ? '手动配置地址' : '内置地址';
+  return repo ? `下载来源：${label} ${repo}` : `下载来源：${label}`;
+}
+
+/** 上次安装回执对账：成功给提示，失败落成可重试的回执条（无 Electron API 时自然跳过） */
+async function reconcilePendingInstall(): Promise<void> {
+  const desk = desktopApi();
+  if (!desk?.getUpdatePendingResult) return;
+  try {
+    const r = await desk.getUpdatePendingResult();
+    if (!r) return;
+    if (r.status === 'installed') {
+      const versionSuffix = r.targetVersion ? `（v${r.targetVersion}）` : '';
+      updateCardStore.flash(`上次更新已安装完成${versionSuffix}，重启后即为新版本`);
+      return;
+    }
+    updateCardStore.patch({ installError: { message: r.reason ?? '上次安装未生效', filePath: r.filePath ?? '', targetVersion: r.targetVersion ?? '' } });
+  } catch { /* 无待回执时静默，不影响页面 */ }
+}
+
+/** 仓库地址/令牌表单与三个动作按钮（S3776 抽取，主组件只装配结果区） */
+function UpdateConfigForm({ cfg, repoDraft, tokenDraft, busy, onRepoDraft, onTokenDraft, onSave, onTest, onCheck }: {
+  readonly cfg: UpdateConfigView;
+  readonly repoDraft: string;
+  readonly tokenDraft: string;
+  readonly busy: UpdateBusy;
+  readonly onRepoDraft: (v: string) => void;
+  readonly onTokenDraft: (v: string) => void;
+  readonly onSave: () => void;
+  readonly onTest: () => void;
+  readonly onCheck: () => void;
+}) {
+  return (
+    <>
+      {/* 仓库地址 */}
+      <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <label style={{ fontSize: 'var(--fs-m)', whiteSpace: 'nowrap' }} htmlFor="update-repo">仓库地址</label>
+        <input
+          id="update-repo"
+          value={repoDraft}
+          onChange={(e) => onRepoDraft(e.target.value)}
+          placeholder={cfg.builtinRepo ? `留空使用内置地址 ${cfg.builtinRepo}` : 'owner/repo 或 https://github.com/owner/repo'}
+          style={UPDATE_INPUT_STYLE}
+        />
+      </div>
+      <div style={{ marginTop: 4, marginLeft: 64, fontSize: 'var(--fs-s, 12px)', color: 'var(--text-secondary)' }}>
+        当前生效：{cfg.source === 'manual' ? `手动地址 ${cfg.repo}` : `内置地址 ${cfg.builtinRepo || '—'}`}
+      </div>
+      {/* 认证凭据（可选）：password 型避免旁观泄露；已配置时 placeholder 展示掩码 */}
+      <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <label style={{ fontSize: 'var(--fs-m)', whiteSpace: 'nowrap' }} htmlFor="update-token">访问令牌</label>
+        <input
+          id="update-token"
+          type="password"
+          value={tokenDraft}
+          onChange={(e) => onTokenDraft(e.target.value)}
+          placeholder={cfg.tokenConfigured ? `已配置（${cfg.tokenMasked}），留空表示不修改` : '可选：私有仓库填 GitHub Token（公开仓库留空）'}
+          style={UPDATE_INPUT_STYLE}
+          autoComplete="new-password"
+        />
+      </div>
+
+      <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button onClick={onSave} disabled={busy !== null} title="保存配置 — 仓库地址留空表示回退内置地址" aria-label="保存更新配置" style={updateBtnStyle(true)}>
+          <Save size={13} /> {busy === 'save' ? '保存中…' : '保存配置'}
+        </button>
+        <button onClick={onTest} disabled={busy !== null} title="测试连接 — 验证地址可达并读取最新 Release 版本号；留空测试内置地址" aria-label="测试 GitHub 连接" style={updateBtnStyle(false)}>
+          <ShieldCheck size={13} /> {busy === 'test' ? '测试中…' : '测试连接'}
+        </button>
+        <button onClick={onCheck} disabled={busy !== null} title="检查更新 — 拉取当前生效地址的最新 Release 并与当前版本比较" aria-label="检查更新" style={updateBtnStyle(false)}>
+          <RefreshCw size={13} /> {busy === 'check' ? '检查中…' : '检查更新'}
+        </button>
+      </div>
+    </>
+  );
+}
+
+/** 下载进度：有总量的画真实百分比，无总量的画整条弱色（S3776 抽取，卡片侧只做装配） */
+function UpdateProgressBlock({ view }: { readonly view: UpdateProgressView }) {
+  let bar: React.ReactNode;
+  if (view.showBar) {
+    bar = <div style={{ height: '100%', width: `${view.pct}%`, background: 'var(--accent)', transition: 'width .2s' }} />;
+  } else {
+    // 总量未知：不画假百分比，用整条弱色表示「确实在跑」
+    bar = <div style={{ height: '100%', width: '100%', background: 'var(--accent-soft, var(--border))', opacity: .45 }} />;
+  }
+  return (
+    <div style={{ marginTop: 10 }} data-update-progress>
+      <div style={{ height: 6, borderRadius: 3, background: 'var(--border-strong)', overflow: 'hidden' }}>
+        {bar}
+      </div>
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginTop: 4 }}>
+        {view.text}
+      </div>
+    </div>
+  );
+}
+
+/** 检查结果卡片（发现更新 / 已是最新两态 + 下载与取消入口） */
+function UpdateResultCard({ result, busy, downloadInFlight, cancelledPart, updateBtnLabel: label, progressView, onDownload, onCancelDownload, onOpenRelease }: {
+  readonly result: UpdateCheckInfo;
+  readonly busy: UpdateBusy;
+  readonly downloadInFlight: boolean;
+  readonly cancelledPart: number | null;
+  readonly updateBtnLabel: string;
+  readonly progressView: UpdateProgressView | null;
+  readonly onDownload: () => void;
+  readonly onCancelDownload: () => void;
+  readonly onOpenRelease: () => void;
+}) {
+  return (
+    <div style={resultCardStyle(result.hasUpdate)}>
+      {result.hasUpdate ? (
+        <>
+          <div style={{ fontWeight: 600 }}>
+            发现新版本：v{result.latestVersion}（当前 v{result.currentVersion}）
+          </div>
+          {result.publishedAt && (
+            <div style={{ color: 'var(--text-secondary)', marginTop: 4 }}>
+              发布时间：{result.publishedAt.slice(0, 10)}
+            </div>
+          )}
+          <div style={{ color: 'var(--text-secondary)', marginTop: 4 }}>
+            {downloadSourceText(result.source, result.repo)}
+          </div>
+          {result.changelog && (
+            <div style={{ marginTop: 8, whiteSpace: 'pre-wrap', color: 'var(--text-secondary)', maxHeight: 220, overflowY: 'auto', lineHeight: 1.6 }}>
+              {result.changelog}
+            </div>
+          )}
+          <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <button onClick={onDownload} disabled={downloadInFlight || busy === 'install'} title={cancelledPart === null ? '下载新版本 — 应用内下载安装包并静默安装重启' : '继续下载 — 从上次取消的断点续传'} aria-label="下载并静默安装新版本" style={updateBtnStyle(true)}>
+              <Download size={13} />
+              {/* T00878：按当前阶段给按钮友好文案 */}
+              {label}
+            </button>
+            {/* T02071 缺口 1：下载中给出取消入口（取消保留 .part，可继续）；
+                T02976 补：菜单发起的下载同样可在这里取消，不必回去找菜单 */}
+            {downloadInFlight && (
+              <button onClick={onCancelDownload} title="取消下载 — 中断本次下载并保留已下载部分，稍后可从断点继续" aria-label="取消当前下载" style={updateBtnStyle(false)}>
+                <Ban size={13} /> 取消下载
+              </button>
+            )}
+            <button onClick={onOpenRelease} title="查看 Release 页 — 浏览完整更新说明与历史版本" aria-label="查看 Release 页面" style={updateBtnStyle(false)}>
+              <ExternalLink size={13} /> 查看发布页
+            </button>
+          </div>
+          {/* T00878：下载进度——Electron 壳内下载时展示 received/total；
+              T02976 补：菜单通道的下载同样在此显示（shownProgress 已按来源选好）；
+              T02977 复验补：只要有下载在途就必有可见进度行（起步/无总量也不例外），
+              否则「点了下载却什么都没提示」又回来了 */}
+          {progressView && <UpdateProgressBlock view={progressView} />}
+        </>
+      ) : (
+        <>
+          <div>当前已是最新版本：v{result.currentVersion}（远端最新 v{result.latestVersion}）</div>
+          <div style={{ color: 'var(--text-secondary)', marginTop: 4 }}>
+            {downloadSourceText(result.source, result.repo)}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** 安装失败回执条：「重试安装」复用已下载的安装包（不重新下载） */
+function UpdateInstallErrorCard({ error, busy, onRetry, onDismiss }: {
+  readonly error: { message: string; filePath: string; targetVersion: string };
+  readonly busy: UpdateBusy;
+  readonly onRetry: () => void;
+  readonly onDismiss: () => void;
+}) {
+  return (
+    <div style={{
+      marginTop: 12, padding: 12, borderRadius: 6, fontSize: 'var(--fs-m)',
+      border: '1px solid var(--danger, #c62828)', background: 'rgba(198, 40, 40, 0.06)',
+    }}>
+      <div style={{ fontWeight: 600 }}>安装失败：{error.message}</div>
+      <div style={{ color: 'var(--text-secondary)', marginTop: 4 }}>
+        当前版本未改变，应用仍在运行。安装包已保留{error.filePath ? `（${error.filePath}）` : ''}，可直接重试。
+      </div>
+      <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button onClick={onRetry} disabled={busy !== null || !error.filePath} title="重试安装 — 用已下载的安装包重新静默安装" aria-label="重试安装新版本" style={updateBtnStyle(true)}>
+          <RotateCcw size={13} /> 重试安装
+        </button>
+        <button onClick={onDismiss} title="关闭提示" aria-label="关闭安装失败提示" style={updateBtnStyle(false)}>关闭</button>
+      </div>
+    </div>
+  );
+}
+
 /** 版本更新模块：仓库地址 + 可选 Token 配置（加密存储、不回显明文），一键检测 GitHub 最新 Release。
  *  T02977：手动仓库地址会覆盖菜单内置下载地址；留空＝回退内置地址。
  *  T02977 复验补：在途下载/检查结果/失败回执一律取自 updateCardStore——切页回来现场还在，
@@ -603,18 +837,7 @@ function UpdateSection() {
 
   // T02071：安装成功时应用被安装器接管退出，当场收不到回执——下次启动向主进程对账取回，
   // 成功给一条提示，失败直接进入可重试的回执条（浏览器环境无该 API，自然跳过）
-  useEffect(() => {
-    void (async () => {
-      const desk = desktopApi();
-      if (!desk?.getUpdatePendingResult) return;
-      try {
-        const r = await desk.getUpdatePendingResult();
-        if (!r) return;
-        if (r.status === 'installed') flash(`上次更新已安装完成${r.targetVersion ? `（v${r.targetVersion}）` : ''}，重启后即为新版本`);
-        else updateCardStore.patch({ installError: { message: r.reason ?? '上次安装未生效', filePath: r.filePath ?? '', targetVersion: r.targetVersion ?? '' } });
-      } catch { /* 无待回执时静默，不影响页面 */ }
-    })();
-  }, []);
+  useEffect(() => { void reconcilePendingInstall(); }, []);
 
   useEffect(() => {
     void (async () => {
@@ -647,12 +870,12 @@ function UpdateSection() {
   /** 连通性测试：用当前表单草稿验证仓库可达（不落库）；留空则测试内置地址 */
   async function doTest() {
     const targetRepo = repoDraft.trim() || cfg.builtinRepo;
-    const isBuiltin = !repoDraft.trim();
+    const sourceLabel = repoDraft.trim() ? '手动地址' : '内置地址';
     try {
       setBusy('test');
       const r = await api.post<{ ok: boolean; latestVersion?: string; error?: string }>('/update/test', { repo: targetRepo, token: tokenDraft || undefined });
       flash(r.ok
-        ? `连接成功（${isBuiltin ? '内置地址' : '手动地址'} ${targetRepo}），最新 Release 版本：v${r.latestVersion}`
+        ? `连接成功（${sourceLabel} ${targetRepo}），最新 Release 版本：v${r.latestVersion}`
         : `连接失败：${r.error ?? '未知错误'}`);
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
@@ -695,19 +918,6 @@ function UpdateSection() {
     await updateCardStore.install(filePath, targetVersion);
   }
 
-  const inputStyle: React.CSSProperties = {
-    flex: 1, minWidth: 0, fontSize: 'var(--fs-m)', padding: '6px 10px',
-    border: '1px solid var(--border-strong)', borderRadius: 6,
-    background: 'var(--card-bg)', color: 'var(--text)', boxSizing: 'border-box',
-  };
-  const btnStyle = (primary: boolean): React.CSSProperties => ({
-    fontSize: 'var(--fs-m)', padding: '6px 14px', borderRadius: 6, cursor: 'pointer',
-    whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4,
-    background: primary ? 'var(--accent)' : 'var(--card-bg)',
-    color: primary ? 'var(--accent-text)' : 'var(--text)',
-    border: primary ? 'none' : '1px solid var(--border-strong)',
-  });
-
   // T00878：按当前阶段给更新按钮友好文案（T02071 增加「继续下载」与取消入口）
   // T02976 补：菜单发起的下载也走同一套按钮/进度呈现，文案上标明来源
   const shownProgress = shownProgressOf(card);
@@ -715,10 +925,7 @@ function UpdateSection() {
   const progressView = shownProgress ? updateProgressView(shownProgress) : null;
   // 下载在途（含刚点下去、主进程还没回第一帧）——这一段此前界面只有按钮文案，容易被当成「没反应」
   const downloadInFlight = busy === 'download' || (card.externalDl !== null && isInFlightStatus(card.externalDl.status));
-  let updateBtnLabel = cancelledPart !== null ? '继续下载' : '立即更新';
-  if (busy === 'download') updateBtnLabel = progressView?.pct != null ? `下载中 ${progressView.pct}%` : '下载中…';
-  else if (busy === 'install') updateBtnLabel = '正在安装…';
-  else if (card.externalDl && isInFlightStatus(card.externalDl.status)) updateBtnLabel = progressView?.pct != null ? `下载中 ${progressView.pct}%` : '下载中…';
+  const updateBtnLabel = updateButtonLabel(busy, cancelledPart, progressView?.pct, downloadInFlight);
 
   return (
     <div style={{ marginTop: 14, padding: 16, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)' }}>
@@ -728,137 +935,24 @@ function UpdateSection() {
         {cfg.builtinRepo ? `（内置：${cfg.builtinRepo}）` : ''}。公开仓库无需认证；私有仓库请配置具有读取权限的 Token（加密存储，不会回显明文）。
       </div>
 
-      {/* 仓库地址 */}
-      <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
-        <label style={{ fontSize: 'var(--fs-m)', whiteSpace: 'nowrap' }} htmlFor="update-repo">仓库地址</label>
-        <input
-          id="update-repo"
-          value={repoDraft}
-          onChange={(e) => setRepoDraft(e.target.value)}
-          placeholder={cfg.builtinRepo ? `留空使用内置地址 ${cfg.builtinRepo}` : 'owner/repo 或 https://github.com/owner/repo'}
-          style={inputStyle}
-        />
-      </div>
-      <div style={{ marginTop: 4, marginLeft: 64, fontSize: 'var(--fs-s, 12px)', color: 'var(--text-secondary)' }}>
-        当前生效：{cfg.source === 'manual' ? `手动地址 ${cfg.repo}` : `内置地址 ${cfg.builtinRepo || '—'}`}
-      </div>
-      {/* 认证凭据（可选）：password 型避免旁观泄露；已配置时 placeholder 展示掩码 */}
-      <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
-        <label style={{ fontSize: 'var(--fs-m)', whiteSpace: 'nowrap' }} htmlFor="update-token">访问令牌</label>
-        <input
-          id="update-token"
-          type="password"
-          value={tokenDraft}
-          onChange={(e) => setTokenDraft(e.target.value)}
-          placeholder={cfg.tokenConfigured ? `已配置（${cfg.tokenMasked}），留空表示不修改` : '可选：私有仓库填 GitHub Token（公开仓库留空）'}
-          style={inputStyle}
-          autoComplete="new-password"
-        />
-      </div>
-
-      <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <button onClick={() => void doSave()} disabled={busy !== null} title="保存配置 — 仓库地址留空表示回退内置地址" aria-label="保存更新配置" style={btnStyle(true)}>
-          <Save size={13} /> {busy === 'save' ? '保存中…' : '保存配置'}
-        </button>
-        <button onClick={() => void doTest()} disabled={busy !== null} title="测试连接 — 验证地址可达并读取最新 Release 版本号；留空测试内置地址" aria-label="测试 GitHub 连接" style={btnStyle(false)}>
-          <ShieldCheck size={13} /> {busy === 'test' ? '测试中…' : '测试连接'}
-        </button>
-        <button onClick={() => void doCheck()} disabled={busy !== null} title="检查更新 — 拉取当前生效地址的最新 Release 并与当前版本比较" aria-label="检查更新" style={btnStyle(false)}>
-          <RefreshCw size={13} /> {busy === 'check' ? '检查中…' : '检查更新'}
-        </button>
-      </div>
+      <UpdateConfigForm cfg={cfg} repoDraft={repoDraft} tokenDraft={tokenDraft} busy={busy}
+        onRepoDraft={setRepoDraft} onTokenDraft={setTokenDraft}
+        onSave={() => void doSave()} onTest={() => void doTest()} onCheck={() => void doCheck()} />
 
       {/* 检查结果卡片 */}
       {result && (
-        <div style={{
-          marginTop: 12, padding: 12, borderRadius: 6, fontSize: 'var(--fs-m)',
-          border: `1px solid ${result.hasUpdate ? 'var(--success, #2e7d32)' : 'var(--border)'}`,
-          background: result.hasUpdate ? 'rgba(46, 125, 50, 0.06)' : 'transparent',
-        }}>
-          {result.hasUpdate ? (
-            <>
-              <div style={{ fontWeight: 600 }}>
-                发现新版本：v{result.latestVersion}（当前 v{result.currentVersion}）
-              </div>
-              {result.publishedAt && (
-                <div style={{ color: 'var(--text-secondary)', marginTop: 4 }}>
-                  发布时间：{result.publishedAt.slice(0, 10)}
-                </div>
-              )}
-              <div style={{ color: 'var(--text-secondary)', marginTop: 4 }}>
-                下载来源：{result.source === 'manual' ? '手动配置地址' : '内置地址'}{result.repo ? ` ${result.repo}` : ''}
-              </div>
-              {result.changelog && (
-                <div style={{ marginTop: 8, whiteSpace: 'pre-wrap', color: 'var(--text-secondary)', maxHeight: 220, overflowY: 'auto', lineHeight: 1.6 }}>
-                  {result.changelog}
-                </div>
-              )}
-              <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                <button onClick={() => void doDownload()} disabled={downloadInFlight || busy === 'install'} title={cancelledPart !== null ? '继续下载 — 从上次取消的断点续传' : '下载新版本 — 应用内下载安装包并静默安装重启'} aria-label="下载并静默安装新版本" style={btnStyle(true)}>
-                  <Download size={13} />
-                  {/* T00878：按当前阶段给按钮友好文案 */}
-                  {updateBtnLabel}
-                </button>
-                {/* T02071 缺口 1：下载中给出取消入口（取消保留 .part，可继续）；
-                    T02976 补：菜单发起的下载同样可在这里取消，不必回去找菜单 */}
-                {downloadInFlight && (
-                  <button onClick={() => void doCancelDownload()} title="取消下载 — 中断本次下载并保留已下载部分，稍后可从断点继续" aria-label="取消当前下载" style={btnStyle(false)}>
-                    <Ban size={13} /> 取消下载
-                  </button>
-                )}
-                <button onClick={() => window.open(result.releaseUrl, '_blank')} title="查看 Release 页 — 浏览完整更新说明与历史版本" aria-label="查看 Release 页面" style={btnStyle(false)}>
-                  <ExternalLink size={13} /> 查看发布页
-                </button>
-              </div>
-              {/* T00878：下载进度——Electron 壳内下载时展示 received/total；
-                  T02976 补：菜单通道的下载同样在此显示（shownProgress 已按来源选好）；
-                  T02977 复验补：只要有下载在途就必有可见进度行（起步/无总量也不例外），
-                  否则「点了下载却什么都没提示」又回来了 */}
-              {progressView && (
-                <div style={{ marginTop: 10 }} data-update-progress>
-                  <div style={{ height: 6, borderRadius: 3, background: 'var(--border-strong)', overflow: 'hidden' }}>
-                    {progressView.showBar ? (
-                      <div style={{ height: '100%', width: `${progressView.pct}%`, background: 'var(--accent)', transition: 'width .2s' }} />
-                    ) : (
-                      // 总量未知：不画假百分比，用整条弱色表示「确实在跑」
-                      <div style={{ height: '100%', width: '100%', background: 'var(--accent-soft, var(--border))', opacity: .45 }} />
-                    )}
-                  </div>
-                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginTop: 4 }}>
-                    {progressView.text}
-                  </div>
-                </div>
-              )}
-            </>
-          ) : (
-            <>
-              <div>当前已是最新版本：v{result.currentVersion}（远端最新 v{result.latestVersion}）</div>
-              <div style={{ color: 'var(--text-secondary)', marginTop: 4 }}>
-                下载来源：{result.source === 'manual' ? '手动配置地址' : '内置地址'}{result.repo ? ` ${result.repo}` : ''}
-              </div>
-            </>
-          )}
-        </div>
+        <UpdateResultCard result={result} busy={busy} downloadInFlight={downloadInFlight} cancelledPart={cancelledPart}
+          updateBtnLabel={updateBtnLabel} progressView={progressView}
+          onDownload={() => void doDownload()} onCancelDownload={() => void doCancelDownload()}
+          onOpenRelease={() => window.open(result.releaseUrl, '_blank')} />
       )}
 
       {/* T02071 缺口 2：安装失败回执条——当场失败或下次启动对账为失败都会出现在这里，
           应用保持存活，「重试安装」复用已下载的安装包（不重新下载） */}
       {installError && (
-        <div style={{
-          marginTop: 12, padding: 12, borderRadius: 6, fontSize: 'var(--fs-m)',
-          border: '1px solid var(--danger, #c62828)', background: 'rgba(198, 40, 40, 0.06)',
-        }}>
-          <div style={{ fontWeight: 600 }}>安装失败：{installError.message}</div>
-          <div style={{ color: 'var(--text-secondary)', marginTop: 4 }}>
-            当前版本未改变，应用仍在运行。安装包已保留{installError.filePath ? `（${installError.filePath}）` : ''}，可直接重试。
-          </div>
-          <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button onClick={() => void runInstall(installError.filePath, installError.targetVersion)} disabled={busy !== null || !installError.filePath} title="重试安装 — 用已下载的安装包重新静默安装" aria-label="重试安装新版本" style={btnStyle(true)}>
-              <RotateCcw size={13} /> 重试安装
-            </button>
-            <button onClick={() => updateCardStore.patch({ installError: null })} title="关闭提示" aria-label="关闭安装失败提示" style={btnStyle(false)}>关闭</button>
-          </div>
-        </div>
+        <UpdateInstallErrorCard error={installError} busy={busy}
+          onRetry={() => void runInstall(installError.filePath, installError.targetVersion)}
+          onDismiss={() => updateCardStore.patch({ installError: null })} />
       )}
 
       {notice && <div style={{ marginTop: 8, fontSize: 'var(--fs-m)', color: 'var(--accent)' }}>{notice}</div>}

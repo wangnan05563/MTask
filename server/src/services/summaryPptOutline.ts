@@ -320,33 +320,27 @@ export interface ValidateContext {
   lenient?: boolean;
 }
 
-/** 逐页校验与规范化（拆出来压低认知复杂度） */
-function validatePage(v: unknown, index: number, ctx: ValidateContext, warnings: string[]): SummaryOutlineItem {
-  const at = `第 ${index + 1} 页`;
-  if (!v || typeof v !== 'object') throw new Error(`${at} 不是对象`);
-  const o = v as Record<string, unknown>;
-  const layout = asText(o.layout);
-  if (!(SUMMARY_LAYOUTS as readonly string[]).includes(layout)) {
-    throw new Error(`${at} layout「${layout || '空'}」不在枚举（可用 ${SUMMARY_LAYOUTS.join(' / ')}）`);
-  }
+/** 结构页（cover/toc/section/thanks）不承载数据块：直接清空并告警，不让 AI 的堆块把整稿打死 */
+function normalizeDataKeys(layout: SummaryLayout, o: Record<string, unknown>, at: string, ctx: ValidateContext, warnings: string[]): SummaryDataKey[] {
   const dataKeys = dedupeKeys(Array.isArray(o.dataKeys) ? o.dataKeys : [], at);
-  // 结构页（cover/toc/section/thanks）是纯版式页，不承载数据块：直接清空并告警，
-  // 不让「AI 在 toc 上堆 9 个数据块」这类输出把整稿打死（同 kickoff T02156）。
   if (STRUCTURAL_LAYOUTS.has(layout) && dataKeys.length > 0) {
     warnings.push(`${at} layout=${layout} 为结构页，不应挂 dataKeys，已清空（原 ${dataKeys.length} 个：${dataKeys.join('/')}）`);
-    dataKeys.length = 0;
-  } else if (dataKeys.length > DATA_KEYS_MAX) {
-    // 严格轮（首轮）抛错走自带重试；重试轮（lenient）截断为前 DATA_KEYS_MAX 个并告警，软着陆
-    // （同 kickoff lenientDataKeys）。否则 temperature=0 下模型确定性复现同一结构，retry 永远过不了 → 整稿判废。
-    if (!ctx.lenient) {
-      throw new Error(`${at} dataKeys ${dataKeys.length} 个超出 ${DATA_KEYS_MAX} 个上限（${dataKeys.join('/')}）`);
-    }
-    const kept = dataKeys.slice(0, DATA_KEYS_MAX);
-    const dropped = dataKeys.slice(DATA_KEYS_MAX);
-    warnings.push(`${at} dataKeys ${dataKeys.length} 个超出 ${DATA_KEYS_MAX} 个上限，重试后仍超限，已截断为 ${kept.join('/')}（去掉：${dropped.join('/')}）`);
-    dataKeys.length = 0;
-    dataKeys.push(...kept);
+    return [];
   }
+  if (dataKeys.length <= DATA_KEYS_MAX) return dataKeys;
+  // 严格轮（首轮）抛错走自带重试；重试轮（lenient）截断为前 DATA_KEYS_MAX 个并告警，软着陆
+  // （同 kickoff lenientDataKeys）。否则 temperature=0 下模型确定性复现同一结构，retry 永远过不了 → 整稿判废。
+  if (!ctx.lenient) {
+    throw new Error(`${at} dataKeys ${dataKeys.length} 个超出 ${DATA_KEYS_MAX} 个上限（${dataKeys.join('/')}）`);
+  }
+  const kept = dataKeys.slice(0, DATA_KEYS_MAX);
+  const dropped = dataKeys.slice(DATA_KEYS_MAX);
+  warnings.push(`${at} dataKeys ${dataKeys.length} 个超出 ${DATA_KEYS_MAX} 个上限，重试后仍超限，已截断为 ${kept.join('/')}（去掉：${dropped.join('/')}）`);
+  return kept;
+}
+
+/** bullets 规范化：超长严格轮抛错 / lenient 裁剪，超条数截断 */
+function normalizeBullets(o: Record<string, unknown>, at: string, ctx: ValidateContext, warnings: string[]): string[] {
   const bullets = (Array.isArray(o.bullets) ? o.bullets : [])
     .map((b) => String(b ?? '').trim())
     .filter((b) => b.length > 0);
@@ -361,28 +355,108 @@ function validatePage(v: unknown, index: number, ctx: ValidateContext, warnings:
     warnings.push(`${at} bullet ${bullets.length} 条超出 ${BULLET_MAX_LINES} 条，已截断`);
     bullets.length = BULLET_MAX_LINES;
   }
+  return bullets;
+}
+
+/** 标题必填 + 超长截断（按字符数，不按 UTF-16 长度） */
+function normalizeTitle(o: Record<string, unknown>, at: string, warnings: string[]): string {
   const rawTitle = asText(o.title);
   if (!rawTitle) throw new Error(`${at} 缺少标题`);
-  const title = [...rawTitle].length > TITLE_MAX ? `${[...rawTitle].slice(0, TITLE_MAX).join('')}` : rawTitle;
-  if (title !== rawTitle) warnings.push(`${at} 标题超 ${TITLE_MAX} 字，已截断`);
+  const chars = [...rawTitle];
+  if (chars.length <= TITLE_MAX) return rawTitle;
+  warnings.push(`${at} 标题超 ${TITLE_MAX} 字，已截断`);
+  return chars.slice(0, TITLE_MAX).join('');
+}
+
+/** projectId 绑定校验：合并版只有「项目小结页」强制绑定；分别独立版每页都必须带 */
+function assertProjectBinding(pid: string, dataKeys: SummaryDataKey[], ctx: ValidateContext, at: string): void {
+  if (ctx.projectIds.length <= 1) {
+    if (pid && !ctx.projectIds.includes(pid)) {
+      throw new Error(`${at} projectId「${pid}」不在请求范围（本次只有 ${ctx.projectIds.join(' / ') || '空'}）`);
+    }
+    return;
+  }
+  // 封面/目录/跨项目对比/总结/附录是全项目共享页，标了反而会把结构页算进某项目 4 页配额。
+  const needsPid = ctx.mode === 'separate' || dataKeys.some((k) => PER_PROJECT_KEYS.includes(k));
+  if (needsPid && !pid) {
+    throw new Error(`${at} 合并版的项目小结页（dataKeys 含 ${PER_PROJECT_KEYS.join('/')}）必须带 projectId（取值：${ctx.projectIds.join(' / ')}）`);
+  }
+  if (pid && !ctx.projectIds.includes(pid)) {
+    throw new Error(`${at} projectId「${pid}」不在请求范围（取值：${ctx.projectIds.join(' / ')}）`);
+  }
+}
+
+/** 逐页校验与规范化（拆出来压低认知复杂度） */
+function validatePage(v: unknown, index: number, ctx: ValidateContext, warnings: string[]): SummaryOutlineItem {
+  const at = `第 ${index + 1} 页`;
+  if (!v || typeof v !== 'object') throw new Error(`${at} 不是对象`);
+  const o = v as Record<string, unknown>;
+  const layout = asText(o.layout);
+  if (!(SUMMARY_LAYOUTS as readonly string[]).includes(layout)) {
+    throw new Error(`${at} layout「${layout || '空'}」不在枚举（可用 ${SUMMARY_LAYOUTS.join(' / ')}）`);
+  }
+  const dataKeys = normalizeDataKeys(layout as SummaryLayout, o, at, ctx, warnings);
+  const bullets = normalizeBullets(o, at, ctx, warnings);
+  const title = normalizeTitle(o, at, warnings);
   const section = asText(o.section) || '正文';
   if (!(SUMMARY_SECTIONS as readonly string[]).includes(section)) warnings.push(`${at} 章节「${section}」不在标准清单，保留原值`);
   const pid = asText(o.projectId);
-  if (ctx.projectIds.length > 1) {
-    // 合并版只有「项目小结页」（带 kpi/milestones/risks/nextSteps）强制绑定 projectId；
-    // 封面/目录/跨项目对比/总结/附录是全项目共享页，标了反而会把结构页算进某项目 4 页配额。
-    // 分别独立版每页都属于某一个项目的完整稿，故每页都必须带 projectId。
-    const needsPid = ctx.mode === 'separate' || dataKeys.some((k) => PER_PROJECT_KEYS.includes(k));
-    if (needsPid && !pid) {
-      throw new Error(`${at} 合并版的项目小结页（dataKeys 含 ${PER_PROJECT_KEYS.join('/')}）必须带 projectId（取值：${ctx.projectIds.join(' / ')}）`);
-    }
-    if (pid && !ctx.projectIds.includes(pid)) throw new Error(`${at} projectId「${pid}」不在请求范围（取值：${ctx.projectIds.join(' / ')}）`);
-  } else if (pid && !ctx.projectIds.includes(pid)) {
-    throw new Error(`${at} projectId「${pid}」不在请求范围（本次只有 ${ctx.projectIds.join(' / ') || '空'}）`);
-  }
+  assertProjectBinding(pid, dataKeys, ctx, at);
   const item: SummaryOutlineItem = { section, title, bullets, dataKeys, layout: layout as SummaryLayout };
   if (pid) item.projectId = pid;
   return item;
+}
+
+/** 整稿页数区间校验（分别独立版按单份区间、合并版按 N 项合计区间） */
+function assertTotalPageCount(count: number, mode: SummaryMode, n: number): void {
+  const range = mode === 'separate' ? expectedSeparateTotalRange(n) : expectedPageRange(n);
+  if (count >= range.min && count <= range.max) return;
+  const mergedScope = n > 1 ? `合并版 ${n} 个项目` : '单项目';
+  const scope = mode === 'separate'
+    ? `分别独立版 ${n} 个项目，共 ${range.min}~${range.max} 页`
+    : mergedScope;
+  throw new Error(`页数 ${count} 不在 ${rangeText(range)} 页（${scope}）`);
+}
+
+/** 一份稿里每个 dataKey 必须至少有一页承载 */
+function assertDraftKeys(pages: SummaryOutlineItem[], keys: readonly SummaryDataKey[], label: string): void {
+  for (const key of keys) {
+    if (!pages.some((p) => p.dataKeys.includes(key))) {
+      throw new Error(`${label}缺少「${key}」页（须有一页 dataKeys 含 '${key}'）`);
+    }
+  }
+}
+
+/** FR-6.2 分别独立版：每项目一份完整稿——页数 12~16、cover/toc 起始、9 个数据块齐全 */
+function assertSeparateDraft(pid: string, mine: SummaryOutlineItem[]): void {
+  if (mine.length < SUMMARY_PAGE_MIN || mine.length > SUMMARY_PAGE_MAX) {
+    throw new Error(`项目 ${pid} 的独立稿页数 ${mine.length} 不在 ${SUMMARY_PAGE_MIN}~${SUMMARY_PAGE_MAX} 区间`);
+  }
+  if (mine[0].layout !== 'cover') throw new Error(`项目 ${pid} 的第 1 页 layout 必须是 cover`);
+  if (mine[1]?.layout !== 'toc') throw new Error(`项目 ${pid} 的第 2 页 layout 必须是 toc`);
+  assertDraftKeys(mine, REQUIRED_DATA_KEYS, `项目 ${pid} 的独立稿`);
+}
+
+/** 合并版共享页：compare 与 horizontal 各须至少一页 */
+function assertMergedSharedPages(outline: SummaryOutlineItem[]): void {
+  for (const key of ['compare', 'horizontal'] as SummaryDataKey[]) {
+    if (!outline.some((p) => p.dataKeys.includes(key))) {
+      throw new Error(`合并版大纲缺少「${key}」页（须有一页 dataKeys 含 '${key}'）`);
+    }
+  }
+}
+
+/** 合并版项目小结：恰好 4 页且 kpi/milestones/risks/nextSteps 齐全 */
+function assertMergedProjectPages(pid: string, outline: SummaryOutlineItem[]): void {
+  const mine = outline.filter((p) => p.projectId === pid);
+  if (mine.length !== SUMMARY_MERGED_PER_PROJECT) {
+    throw new Error(`项目 ${pid} 的小结页必须恰好 ${SUMMARY_MERGED_PER_PROJECT} 页，实际 ${mine.length} 页`);
+  }
+  for (const key of ['kpi', 'milestones', 'risks', 'nextSteps'] as SummaryDataKey[]) {
+    if (!mine.some((p) => p.dataKeys.includes(key))) {
+      throw new Error(`项目 ${pid} 的 ${SUMMARY_MERGED_PER_PROJECT} 页中缺少 dataKeys 含 '${key}' 的一页`);
+    }
+  }
 }
 
 /**
@@ -393,58 +467,22 @@ export function validateSummaryOutline(raw: unknown, ctx: ValidateContext): { ou
   if (!Array.isArray(raw)) throw new Error('大纲必须是 JSON 数组');
   const n = Math.max(1, ctx.projectIds.length);
   const mode = ctx.mode ?? DEFAULT_SUMMARY_MODE;
-  const range = mode === 'separate' ? expectedSeparateTotalRange(n) : expectedPageRange(n);
-  if (raw.length < range.min || raw.length > range.max) {
-    const mergedScope = n > 1 ? `合并版 ${n} 个项目` : '单项目';
-    const scope = mode === 'separate'
-      ? `分别独立版 ${n} 个项目，共 ${range.min}~${range.max} 页`
-      : mergedScope;
-    throw new Error(`页数 ${raw.length} 不在 ${rangeText(range)} 页（${scope}）`);
-  }
+  assertTotalPageCount(raw.length, mode, n);
   const warnings: string[] = [];
   const outline = raw.map((v, i) => validatePage(v, i, ctx, warnings));
   if (mode === 'separate') {
-    // FR-6.2：每项目一份完整稿——逐项目校验 cover/toc 与 9 个数据块，页数各 12~16
     for (const pid of ctx.projectIds) {
-      const mine = n > 1 ? outline.filter((p) => p.projectId === pid) : outline;
-      if (mine.length < SUMMARY_PAGE_MIN || mine.length > SUMMARY_PAGE_MAX) {
-        throw new Error(`项目 ${pid} 的独立稿页数 ${mine.length} 不在 ${SUMMARY_PAGE_MIN}~${SUMMARY_PAGE_MAX} 区间`);
-      }
-      if (mine[0].layout !== 'cover') throw new Error(`项目 ${pid} 的第 1 页 layout 必须是 cover`);
-      if (mine[1]?.layout !== 'toc') throw new Error(`项目 ${pid} 的第 2 页 layout 必须是 toc`);
-      for (const key of REQUIRED_DATA_KEYS) {
-        if (!mine.some((p) => p.dataKeys.includes(key))) {
-          throw new Error(`项目 ${pid} 的独立稿缺少「${key}」页（须有一页 dataKeys 含 '${key}'）`);
-        }
-      }
+      assertSeparateDraft(pid, n > 1 ? outline.filter((p) => p.projectId === pid) : outline);
     }
     return { outline, warnings };
   }
   if (outline[0].layout !== 'cover') throw new Error('第 1 页 layout 必须是 cover');
   if (outline[1].layout !== 'toc') throw new Error('第 2 页 layout 必须是 toc');
   if (n > 1) {
-    for (const key of ['compare', 'horizontal'] as SummaryDataKey[]) {
-      if (!outline.some((p) => p.dataKeys.includes(key))) {
-        throw new Error(`合并版大纲缺少「${key}」页（须有一页 dataKeys 含 '${key}'）`);
-      }
-    }
-    for (const pid of ctx.projectIds) {
-      const mine = outline.filter((p) => p.projectId === pid);
-      if (mine.length !== SUMMARY_MERGED_PER_PROJECT) {
-        throw new Error(`项目 ${pid} 的小结页必须恰好 ${SUMMARY_MERGED_PER_PROJECT} 页，实际 ${mine.length} 页`);
-      }
-      for (const key of ['kpi', 'milestones', 'risks', 'nextSteps'] as SummaryDataKey[]) {
-        if (!mine.some((p) => p.dataKeys.includes(key))) {
-          throw new Error(`项目 ${pid} 的 ${SUMMARY_MERGED_PER_PROJECT} 页中缺少 dataKeys 含 '${key}' 的一页`);
-        }
-      }
-    }
+    assertMergedSharedPages(outline);
+    for (const pid of ctx.projectIds) assertMergedProjectPages(pid, outline);
   } else {
-    for (const key of REQUIRED_DATA_KEYS) {
-      if (!outline.some((p) => p.dataKeys.includes(key))) {
-        throw new Error(`大纲缺少「${key}」页（须有一页 dataKeys 含 '${key}'）`);
-      }
-    }
+    assertDraftKeys(outline, REQUIRED_DATA_KEYS, '大纲');
   }
   return { outline, warnings };
 }
