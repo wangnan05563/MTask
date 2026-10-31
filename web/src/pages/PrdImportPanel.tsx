@@ -187,6 +187,8 @@ async function parseOneFile(file: File, projectId: string, toolId: string, signa
   // T02270 复议：分片完整跑完是**无损**结果，按普通信息展示——不能混进上面的 ⚠，
   // 否则用户看到分片提示会误判成「又被砍到 20 条」。
   if (r.parseNote) aiImportStore.log(r.parseNote);
+  // T03730：HTML 里被跳过的片段（内嵌页/图表/无 alt 图片）与层级丢失提示——按警示级透出，避免静默丢内容
+  for (const w of r.parseWarnings ?? []) aiImportStore.log(`⚠ ${w}`, 'error');
   return {
     requirements: r.requirements ?? [],
     drafts: r.drafts ?? [],
@@ -527,10 +529,10 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <ProjectListHint view={projectList} />
-        <label className="tbtn-anim" title="选择 PRD 文件（可多选 .docx/.md/.markdown/.txt/.xlsx/.csv/.pdf，将合并分析为单一需求矩阵与项目计划）"
+        <label className="tbtn-anim" title="选择 PRD 文件（可多选 .docx/.md/.markdown/.txt/.xlsx/.csv/.pdf/.html/.htm，将合并分析为单一需求矩阵与项目计划；HTML 支持 Confluence 导出与网页另存）"
           style={{ cursor: busy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--accent)', color: 'var(--accent)', fontSize: 'var(--fs-s)' }}>
           <Upload size={13} /> 选择 PRD 文件{pickedFiles.length > 0 ? `（已选 ${pickedFiles.length}）` : ''}
-          <input type="file" multiple accept=".docx,.md,.markdown,.txt,.xlsx,.csv,.pdf" style={FILE_INPUT_SR_ONLY}
+          <input type="file" multiple accept=".docx,.md,.markdown,.txt,.xlsx,.csv,.pdf,.html,.htm" style={FILE_INPUT_SR_ONLY}
             onChange={(e) => {
               const fs = e.target.files ? Array.from(e.target.files) : [];
               e.target.value = '';

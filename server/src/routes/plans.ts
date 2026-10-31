@@ -746,11 +746,12 @@ planApi.post('/ai-parse-prd', raw({ type: () => true, limit: '30mb' }), (req, re
   // T03316（G-3）：PRD 需求梳理（单轮或分片）是完整一轮 → 记 ai.prd_import 终态
   const jobStartedAt = new Date().toISOString();
   const jobId = req.query.jobId;
-  PlanService.extractPrdText(req.body, filename)
-    .then(async (text) => {
+  PlanService.extractPrdTextDetailed(req.body, filename)
+    .then(async ({ text, warnings }) => {
       // T00908：随解析一并返回提取后的 PRD 全文 textMd——供前端确认导入时作 prdMd 落库到 PRD 管理视图
       const r = await PlanService.aiParsePrd(toolId, text);
-      return { ok: true, ...r, textMd: text };
+      // T03730：HTML 里无法转成正文的片段（内嵌页/图表/无 alt 图片等）随响应透出，由界面显式提示
+      return { ok: true, ...r, textMd: text, parseWarnings: warnings };
     })
     .then((r) => {
       reportAiJob({ jobId, cardKey: 'ai.prd_import', status: 'done', mode: 'ai', sectionsTotal: 1, sectionsOk: 1, startedAt: jobStartedAt });

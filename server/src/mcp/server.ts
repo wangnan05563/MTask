@@ -793,7 +793,7 @@ export async function createMCPServer(): Promise<McpServer> {
       if (!loc.id) return err(loc.error ?? '项目未指定');
       const buf = Buffer.from(a.fileBase64, 'base64');
       if (buf.length === 0) return err('fileBase64 解析为空');
-      const text = await PlanService.extractPrdText(buf, a.filename);
+      const { text, warnings: parseWarnings } = await PlanService.extractPrdTextDetailed(buf, a.filename);
       const parsed = await PlanService.aiParsePrd(a.toolId, text);
       // T02967 回补（T02354）：预演走与页面「导入预览」同源的纯读通道，落库路径一行不动。
       // 预演也必须跑同一份解析结果，否则「预告的计数」与「实导的计数」不同源（M-02 对账必红）。
@@ -802,7 +802,8 @@ export async function createMCPServer(): Promise<McpServer> {
           requirements: parsed.requirements, plans: parsed.drafts,
           createTasks: a.createTasks === true, prdMd: text, prdFilename: a.filename, onDuplicatePlan: a.onDuplicatePlan,
         });
-        const dry = { projectId: loc.id, dryRun: true, readOnly: true, preview, coverageWarn: parsed.coverageWarn || undefined, uncoveredReqNos: parsed.uncoveredReqNos ?? [] };
+        // T03730：HTML 输入被跳过的片段随回执透出（Agent 可据此提示人补文或换格式）
+        const dry = { projectId: loc.id, dryRun: true, readOnly: true, preview, coverageWarn: parsed.coverageWarn || undefined, uncoveredReqNos: parsed.uncoveredReqNos ?? [], parseWarnings: parseWarnings.length ? parseWarnings : undefined };
         return ok(JSON.stringify(dry), dry);
       }
       // T00763：PRD 原文（提取后的 Markdown）随导入完整落库，需求行回填 prd_id
@@ -816,6 +817,7 @@ export async function createMCPServer(): Promise<McpServer> {
         coverageWarn: parsed.coverageWarn || undefined,
         uncoveredReqNos: parsed.uncoveredReqNos ?? [],
         truncatedNote: parsed.truncatedNote || undefined,
+        parseWarnings: parseWarnings.length ? parseWarnings : undefined,
       };
       return ok(JSON.stringify(summary), summary);
     } catch (e) { return err((e as Error).message); }

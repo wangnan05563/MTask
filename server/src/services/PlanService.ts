@@ -26,6 +26,7 @@ import { nextPlanTitle } from '../util/planTitle'; // T01875：计划标题撞�
 import { touchCompletedAt } from './IterationService'; // T03186（PM-201④）：完成时刻单点维护（燃尽回溯依赖它）
 import { WebhookService } from './WebhookService'; // T03196（PM-401）：计划事件外发
 import { isRateLimitError, sleepMs, rateLimitBackoffMs } from '../util/rateLimit'; // T03700：限流识别与退避单源
+import { htmlToMarkdown, decodeHtmlBuffer } from './htmlDoc'; // T03730：HTML 版 PRD → 层级文本（零新依赖）
 
 /** T01361：需求跟踪矩阵行（prd_requirements 全列 + 联表摘要）——具体化类型替代 Record<string, unknown>（Sonar S6551） */
 export interface RequirementRow {
@@ -2384,12 +2385,27 @@ export const PlanService = {
 
   // ---------- T00662：从 PRD 导入（AI 拆 WBS + 需求跟踪矩阵） ----------
 
-  /** T00662：PRD 文档 → 文本（多格式分派）。老式 .doc/.xls 与不可解析 PDF 给出可操作的友好提示。 */
+  /**
+   * T00662：PRD 文档 → 文本（多格式分派）。老式 .doc/.xls 与不可解析 PDF 给出可操作的友好提示。
+   * T03730：新增 .html/.htm（Confluence 导出 / Wiki / 网页另存）——与既有分支并列，非 HTML 流程零改动。
+   */
   async extractPrdText(buffer: Buffer, filename: string): Promise<string> {
+    return (await this.extractPrdTextDetailed(buffer, filename)).text;
+  },
+
+  /**
+   * T03730：与 extractPrdText 同一分派，额外带回 HTML 的「跳过片段」提示。
+   * 提示必须透出到导入界面——无法识别的内容宁可显式告知，也不静默丢弃（T03730 约束⑤）。
+   */
+  async extractPrdTextDetailed(buffer: Buffer, filename: string): Promise<{ text: string; warnings: string[] }> {
     const lower = filename.toLowerCase();
-    if (lower.endsWith('.md') || lower.endsWith('.markdown') || lower.endsWith('.txt')) return buffer.toString('utf-8');
-    if (lower.endsWith('.docx')) return this.docxToMarkdown(buffer);
-    if (lower.endsWith('.xlsx') || lower.endsWith('.csv')) return this.tableToTextAsync(buffer, filename);
+    if (lower.endsWith('.html') || lower.endsWith('.htm') || lower.endsWith('.xhtml')) {
+      const r = htmlToMarkdown(decodeHtmlBuffer(buffer));
+      return { text: r.markdown, warnings: r.warnings };
+    }
+    if (lower.endsWith('.md') || lower.endsWith('.markdown') || lower.endsWith('.txt')) return { text: buffer.toString('utf-8'), warnings: [] };
+    if (lower.endsWith('.docx')) return { text: this.docxToMarkdown(buffer), warnings: [] };
+    if (lower.endsWith('.xlsx') || lower.endsWith('.csv')) return { text: await this.tableToTextAsync(buffer, filename), warnings: [] };
     if (lower.endsWith('.pdf')) {
       try {
         // 动态导入（编译为 CJS 时保留原生动态 import）：pdf-parse 为纯 JS 解析库，无原生依赖
@@ -2398,14 +2414,14 @@ export const PlanService = {
         const r = await parse(buffer);
         const text = String(r?.text ?? '').trim();
         if (!text) throw new Error('未提取到可读文本（可能是扫描件/图片型 PDF）');
-        return text;
+        return { text, warnings: [] };
       } catch (e) {
         throw new Error(`PDF 解析失败：${e instanceof Error ? e.message : String(e)}。可将 PDF 另存为 .docx 或 .md 后重试`);
       }
     }
     if (lower.endsWith('.doc')) throw new Error('老式 .doc 暂不支持，请用 Word 另存为 .docx 后导入');
     if (lower.endsWith('.xls')) throw new Error('老式 .xls 暂不支持，请用 Excel 另存为 .xlsx 后导入');
-    throw new Error('不支持的文件格式（支持 .docx / .md / .markdown / .txt / .xlsx / .csv / .pdf）');
+    throw new Error('不支持的文件格式（支持 .docx / .md / .markdown / .txt / .xlsx / .csv / .pdf / .html / .htm）');
   },
 
   /** PRD 解析：原始计划条目 → 归一化计划草稿数组（reqNos 字符串过滤，durationDays≥1，status 固定为待办初始态）——实现见模块底部 normalizePrdPlans */

@@ -17,6 +17,8 @@ export interface PrdParseResult {
   truncatedNote?: string;
   /** T02270 复议：长文档已分片解析并完整合并——信息性提示，不是有损警示（与 truncatedNote 互斥） */
   parseNote?: string;
+  /** T03730：HTML 输入中被跳过、无法转为正文的片段（内嵌页/图表/无 alt 图片等）——必须显式提示用户 */
+  parseWarnings?: string[];
 }
 
 /**
