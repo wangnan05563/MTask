@@ -50,6 +50,8 @@ const SEVERITIES: ReadonlyArray<{ key: SevKey; label: string }> = [
 ];
 
 const DEFAULT_THRESHOLD: SevKey[] = ['blocker', 'critical'];
+/** 等服务器回 aborted 帧的窗口：帧到才算「快照已回收」，超时就断开并如实说明（T03708） */
+const STOP_CONFIRM_TIMEOUT_MS = 15_000;
 
 interface ScanIssue {
   key: string;
@@ -217,9 +219,17 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
   const [runError, setRunError] = useState('');
   const [errorKind, setErrorKind] = useState('');
   const [aborted, setAborted] = useState(false);
+  /** 中止指令已发出、尚未收到服务端 aborted 帧：此刻快照还没确定回收，不能回「已回收」 */
+  const [stopping, setStopping] = useState(false);
   const [openGroups, setOpenGroups] = useState<SevKey[]>(['blocker', 'critical']);
   const controllerRef = useRef<AbortController | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
+  const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stopTimedOutRef = useRef(false);
+
+  const clearStopTimer = () => {
+    if (stopTimerRef.current) { clearTimeout(stopTimerRef.current); stopTimerRef.current = null; }
+  };
 
   const taskIds = useMemo(() => [...new Set(scope.taskIds)], [scope.taskIds]);
   const projectIdsKey = scope.projectIds.join(',');
@@ -278,6 +288,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
     if (!taskIds.length) { flash?.('请先勾选至少一个已回写 commit id 的任务'); return; }
     setRunning(true);
     setResult(null); setRunError(''); setErrorKind(''); setAborted(false);
+    setStopping(false); stopTimedOutRef.current = false; clearStopTimer();
     setStageIdx(-1); setJobId(''); setLines([]);
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -296,7 +307,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
         // 分组默认展开：有阻断/严重才展开这两组，否则展开第一组非空——全空时不铺七个空壳
         setOpenGroups(SEVERITIES.filter((s) => (v.grouped?.[s.key]?.length ?? 0) > 0)
           .slice(0, 2).map((s) => s.key));
-      } else if (name === 'aborted') setAborted(true);
+      } else if (name === 'aborted') { clearStopTimer(); setStopping(false); setAborted(true); }
       else if (name === 'error') {
         setRunError(describeError(p as ErrorPayload));
         setErrorKind(textOf(p.kind));
@@ -311,22 +322,46 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
       }, onEvent, controller.signal);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (controller.signal.aborted) setAborted(true);
+      if (controller.signal.aborted) {
+        // 本地断流只说明前端不再收帧；服务端是否停干净由 aborted 帧判定，这里只在超时兜底时如实说明
+        if (stopTimedOutRef.current) {
+          setRunError(`已发出中止指令，但 ${STOP_CONFIRM_TIMEOUT_MS / 1000} 秒内没有收到服务端确认；连接已断开，请刷新核对扫描是否仍在运行。`);
+        }
+      }
       // 被闸拒不算「扫描失败」：并发超限不排队（T03410），语气与提取卡一致
       else if (msg.includes(GATE_BUSY_MSG)) setRunError(`已有扫描在跑（并发上限 ${env?.scanLimit ?? 1}），请稍后重试——超限不排队，避免两个扫描器同时打满服务器分析队列`);
       else setRunError(msg);
     } finally {
+      clearStopTimer();
+      setStopping(false);
       setRunning(false);
       controllerRef.current = null;
     }
   }
 
   async function stop() {
-    controllerRef.current?.abort();
-    if (jobId) {
-      try { await api.post('/sonar/scan/stop', { jobId }); } catch { /* 中止指令送不到也不影响收口：断开连接同样触发服务端回收 */ }
+    if (stopping) return;
+    if (!jobId) {
+      // 服务端还没分配 jobId，没有可掐的任务，只能断开本端连接
+      controllerRef.current?.abort();
+      return;
     }
-    setAborted(true);
+    setStopping(true);
+    stopTimedOutRef.current = false;
+    try {
+      await api.post('/sonar/scan/stop', { jobId });
+    } catch {
+      // 指令没送到就只能断流兜底；此时无法收到确认帧，别把「已回收」当事实回显
+      stopTimedOutRef.current = true;
+      controllerRef.current?.abort();
+      return;
+    }
+    // 故意不立刻 abort：留着 SSE 等服务器把进程与快照收干净再回 aborted 帧
+    clearStopTimer();
+    stopTimerRef.current = setTimeout(() => {
+      stopTimedOutRef.current = true;
+      controllerRef.current?.abort();
+    }, STOP_CONFIRM_TIMEOUT_MS);
   }
 
   const r = result?.receipts;
@@ -435,8 +470,13 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
             {errorKind && <span style={{ color: 'var(--text-muted)' }}>（kind: {errorKind}）</span>}
           </div>
         )}
+        {stopping && !runError && (
+          <div data-t03428="stopping" role="status" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 8 }}>
+            正在中止，等待服务端停掉扫描器并回收快照…
+          </div>
+        )}
         {aborted && !running && (
-          <div data-t03428="aborted" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 8 }}>
+          <div data-t03428="aborted" role="status" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 8 }}>
             本次扫描已中止，快照目录与临时配置已回收。
           </div>
         )}
@@ -454,10 +494,10 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
             <ScanLine size={13} aria-hidden="true" /> 开始扫描
           </FlowButton>
           {running && (
-            <button type="button" onClick={() => void stop()} data-t03428="stop"
-              style={{ ...PILL, color: 'var(--warn)', cursor: 'pointer', border: '1px solid var(--warn)' }}
-              title="中止本次扫描（中止即回收快照目录）" aria-label="中止扫描">
-              <StopCircle size={12} aria-hidden="true" /> 中止
+            <button type="button" onClick={() => void stop()} data-t03428="stop" disabled={stopping}
+              style={{ ...PILL, color: 'var(--warn)', cursor: stopping ? 'default' : 'pointer', border: '1px solid var(--warn)' }}
+              title={stopping ? '正在等待服务端回收快照' : '中止本次扫描（中止即回收快照目录）'} aria-label="中止扫描">
+              <StopCircle size={12} aria-hidden="true" /> {stopping ? '中止中…' : '中止'}
             </button>
           )}
           {runError && !running && (

@@ -23,7 +23,8 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve as resolvePath, sep } from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { getDb } from '../db/connection';
 import { catFileBatch, collectCommitLog, resolveRevisionSha } from './gitCollect';
 import type { BatchObject } from './gitCollect';
@@ -296,6 +297,29 @@ async function sonarGet(url: string, token: string): Promise<{ status: number; j
 
 /* ------------------------- 扫描器进程 ------------------------- */
 
+/**
+ * 中止后等 close 的兜底窗口。`close` 要等 stdio 全关，而 JVM 孙进程握着管道时它不会来——
+ * 一旦 `close` 缺席，abort → catch/finally 整条链都不执行，`console_jobs` 停在 busy、
+ * 快照目录留在盘上（T03708 实测）。兜底窗口到期就主动断流并按「已中止」结算。
+ */
+const KILL_SETTLE_MS = 3_000;
+
+/**
+ * 按进程树终止扫描器。Windows 上 `.bat` 走 `shell: true`，Node 直接持有的是 cmd.exe，
+ * `child.kill()` 只终止包装器、JVM 孙进程照跑——必须 taskkill /T 连孙进程一起收。
+ */
+function killProcessTree(child: ChildProcess, onLine?: (line: string) => void): void {
+  if (process.platform === 'win32' && child.pid) {
+    execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }, (err) => {
+      // 只有 /T 能收掉 java 孙进程；它失败时退回 kill 至少别把 cmd 包装器留着
+      if (err && onLine) onLine(`[mtask] taskkill 未能终止扫描器进程树（${err.message}），已回退为直接终止包装进程`);
+      child.kill();
+    });
+    return;
+  }
+  child.kill('SIGTERM');
+}
+
 async function defaultSpawnScanner(
   spec: { command: string; args: string[]; shell: boolean },
   env: Record<string, string>,
@@ -312,6 +336,7 @@ async function defaultSpawnScanner(
     let buffer = '';
     let stderrBuffer = '';
     let settled = false;
+    let settleTimer: NodeJS.Timeout | null = null;
     const emit = (chunk: string, toStderr = false) => {
       buffer += chunk;
       const lines = buffer.split(/\r?\n/);
@@ -323,23 +348,40 @@ async function defaultSpawnScanner(
     };
     child.stdout?.on('data', (b: Buffer) => emit(b.toString('utf8')));
     child.stderr?.on('data', (b: Buffer) => emit(b.toString('utf8'), true));
-    if (signal) {
-      if (signal.aborted) { child.kill(); }
-      else signal.addEventListener('abort', () => { child.kill(); }, { once: true });
-    }
-    child.on('error', (e: Error) => {
+    const release = () => {
+      if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const settle = (code: number | null) => {
       if (settled) return;
       settled = true;
-      reject(new ScanError('scan-failed', `扫描器启动失败：${e.message}`, '在设置页核对「扫描器路径」，或留空按 PATH 探测。'));
-    });
-    child.on('close', (code) => {
-      if (settled) return;
-      settled = true;
+      release();
       // 收尾残留半行，别把最后一行吞掉（用户要能在控制台看到失败原因）
       const tail = (buffer + stderrBuffer).trim();
       if (tail) onLine(tail);
       resolve({ code });
+    };
+    const onAbort = () => {
+      killProcessTree(child, onLine);
+      if (settleTimer) return;
+      settleTimer = setTimeout(() => {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        child.stdin?.destroy();
+        settle(null);
+      }, KILL_SETTLE_MS);
+    };
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
+    child.on('error', (e: Error) => {
+      if (settled) return;
+      settled = true;
+      release();
+      reject(new ScanError('scan-failed', `扫描器启动失败：${e.message}`, '在设置页核对「扫描器路径」，或留空按 PATH 探测。'));
     });
+    child.on('close', (code) => settle(code));
   });
 }
 
@@ -888,6 +930,22 @@ async function runScannerPhase(params: {
   throw new ScanError('scan-failed', `扫描器退出码 ${run.code}`, '看上面的扫描器输出；常见原因是 projectKey 无权限或服务器不可达。');
 }
 
+/**
+ * 删扫描快照目录。Windows 上刚被 taskkill 的 JVM 释放 `.scannerwork` 句柄有延迟（T03708 实测：
+ * 快照目录在中止后仍留在盘上），`force` 也不代表能删。先短重试；仍失败就转后台每秒再试——
+ * 既不能为了删目录把 aborted 帧拖住，也不能留半个快照。彻底删不掉时留给下次扫描的 sweepSonarTmp。
+ */
+function removeScanDir(dir: string): void {
+  const attempt = (retries: number) => { rmSync(dir, { recursive: true, force: true, maxRetries: retries, retryDelay: 200 }); };
+  try { attempt(4); return; } catch { /* 句柄未释放，转后台重试 */ }
+  let tries = 0;
+  const timer = setInterval(() => {
+    tries += 1;
+    try { attempt(1); clearInterval(timer); } catch { if (tries >= 10) clearInterval(timer); }
+  }, 1_000);
+  timer.unref?.();
+}
+
 /** 阶段 7：阈值/上限过滤后回写；面板关掉自动回写时返回 null */
 function performWriteBack(params: {
   input: ScanInput;
@@ -1061,6 +1119,6 @@ export async function runSonarScan(
   } finally {
     runningStages.delete(jobId);
     // 中止/失败都立刻回收快照目录（同 discardReport 语义：不留半个快照在磁盘上）
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* 目录本来就不存在时不必再报一次 */ }
+    removeScanDir(dir);
   }
 }
