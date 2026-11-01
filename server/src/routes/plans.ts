@@ -26,6 +26,7 @@ import { backfillComplexity, listInvalid as listInvalidComplexity, listMissing a
 import { resolvePrdContext } from '../util/prdContext'; // T00763：计划关联 PRD → 评估上下文
 import { parseLimit, parseOffset, wantsTotal } from '../util/list-page'; // T02284：列表分页参数统一口径（limit/offset/total=1）
 import { exportGate, REPORT_GATE } from '../util/export-gate'; // T00789：导出类并发闸；T02105：启动会稿与周报共用 REPORT_GATE
+import { startSseKeepalive } from './sseKeepalive'; // T03959：SSE 静默期保活帧（防长耗时模型调用期间链路被掐）
 
 /**
  * 项目计划路由（T00431，菜单位于周报前）。
@@ -362,6 +363,7 @@ planApi.post('/code-review-lecture-stream', raw({ type: () => true, limit: '30mb
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
+  startSseKeepalive(res);
   let closed = false;
   const send = (event: string, payload: unknown) => {
     if (closed || res.writableEnded) return;
@@ -469,6 +471,7 @@ planApi.post('/summary-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
+  startSseKeepalive(res);
   let closed = false;
   const send = (event: string, payload: unknown) => {
     if (closed || res.writableEnded) return;
@@ -558,6 +561,7 @@ planApi.post('/kickoff-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
+  startSseKeepalive(res);
   let closed = false;
   const send = (event: string, payload: unknown) => {
     if (closed || res.writableEnded) return;

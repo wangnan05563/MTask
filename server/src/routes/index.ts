@@ -66,6 +66,7 @@ import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
 import { exportGate, REPORT_GATE } from '../util/export-gate'; // T00789：导出类并发闸；T02105：周报与启动会稿共用同一闸名
 import { parseLimit, parseOffset, wantsTotal } from '../util/list-page'; // T02284：列表分页参数统一口径（limit/offset/total=1）
 import { listDirectories } from '../services/FsBrowseService'; // T00771 二轮：服务端目录枚举（工作空间降级选择）
+import { startSseKeepalive } from './sseKeepalive'; // T03959：SSE 静默期保活帧（防长耗时模型调用期间链路被掐）
 
 /** 低频集合列表 TTL（5s）：读多写少，写端点会主动 cacheClear 保持一致性 */
 const LIST_TTL_MS = 5000;
@@ -2071,6 +2072,7 @@ api.post('/plans/prd-generate-stream', raw({ type: () => true, limit: '30mb' }),
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
+  startSseKeepalive(res);
   let closed = false;
   const send = (event: string, payload: unknown) => {
     if (closed || res.writableEnded) return;
@@ -2214,6 +2216,7 @@ api.post('/plans/testcase-generate-stream', raw({ type: () => true, limit: '30mb
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
+  startSseKeepalive(res);
   let closed = false;
   const send = (event: string, evPayload: unknown) => {
     if (closed || res.writableEnded) return;
@@ -2268,6 +2271,7 @@ api.post('/report/ai-generate-stream', exportGate(REPORT_GATE), async (req, res)
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
+  startSseKeepalive(res);
 
   // 客户端断开后停止继续写流，避免向已关闭的 socket 写入抛错。
   // 必须监听 res 的 close（响应真正关闭才代表客户端断开/响应结束），不能监听 req.on('close')：

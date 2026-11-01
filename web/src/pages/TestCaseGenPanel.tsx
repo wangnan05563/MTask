@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api } from '../api/client';
 import { streamEvents } from '../api/sse';
+import { describeStreamFailure } from '../api/streamError'; // T03959：传输层断连不再只透出「network error」
 import { useSessionState } from '../ui/session';
 import { ProjectListHint, projectListPlaceholder, useProjectList } from '../ui/projectList';
 import {
@@ -209,7 +210,8 @@ export function TestCaseGenPanel({ toolId, onClose, onImported }: {
       testCaseGenStore.pushLog('生成完成：请在草稿视图勾选 / 编辑后确认导入');
     } catch (e) {
       if (ac.signal.aborted) return; // 用户主动「停止」：store 已清空，不再补失败日志
-      const msg = e instanceof Error ? e.message : String(e);
+      // T03959：链路被掐（network error / terminated）时补可操作说明，不再只丢一句裸文案
+      const msg = describeStreamFailure(e instanceof Error ? e.message : String(e));
       testCaseGenStore.finish(`生成失败：${msg}`);
       flash(`生成失败：${msg}`); // 面板内也要可见：此前只落右侧控制台，卡片区一片空白、像「点了没反应」
     } finally {
