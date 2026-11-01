@@ -210,13 +210,39 @@ function CategoriesTab() {
   );
 }
 
+/**
+ * T03776：桌面壳关闭交互偏好的形状（与 electron/close-prefs.js 的落盘字段一一对应）。
+ * rememberChoice=false 时每次关闭都弹窗；true 时按 closeAction 直接执行。
+ */
+interface ClosePrefs {
+  closeAction: 'minimize_to_tray' | 'exit_app';
+  rememberChoice: boolean;
+}
+
 /** 通用设置：主题 / 字体 / 字号，改动即时生效并持久化 */
 function GeneralTab() {
   const { prefs, update } = useSettings();
   // T01057-FR1.1：任务通知开关——AI 任务完成/失败时弹系统通知（仅 Electron 桌面壳环境提供）
-  const desktop = (globalThis as unknown as { mtaskDesktop?: { getNotifyEnabled?: () => Promise<boolean>; setNotifyEnabled?: (v: boolean) => Promise<boolean> } }).mtaskDesktop;
+  const desktop = (globalThis as unknown as {
+    mtaskDesktop?: {
+      getNotifyEnabled?: () => Promise<boolean>;
+      setNotifyEnabled?: (v: boolean) => Promise<boolean>;
+      /** T03776：关闭交互偏好（主进程 userData/close-prefs.json） */
+      getClosePrefs?: () => Promise<ClosePrefs>;
+      setClosePrefs?: (patch: Partial<ClosePrefs>) => Promise<ClosePrefs>;
+    };
+  }).mtaskDesktop;
   const [notifyOn, setNotifyOn] = useState<boolean | null>(null);
   useEffect(() => { desktop?.getNotifyEnabled?.().then(setNotifyOn); }, [desktop]);
+  // T03776：点关闭按钮是「最小化到托盘」还是「直接关闭」，以及是否还弹窗询问
+  const [closePrefs, setClosePrefsState] = useState<ClosePrefs | null>(null);
+  useEffect(() => { desktop?.getClosePrefs?.().then(setClosePrefsState); }, [desktop]);
+  const patchClosePrefs = async (patch: Partial<ClosePrefs>) => {
+    try {
+      const next = await desktop?.setClosePrefs?.(patch);
+      if (next) setClosePrefsState(next);
+    } catch { /* 写入失败保持原态，避免界面显示与主进程配置不一致 */ }
+  };
   // T03256（AI-203③）：任务分类建议总开关 + 采纳率（分母为已展示数；无展示时显示「暂无数据」而非 0%）
   const [suggestState, setSuggestState] = useState<{ enabled: boolean; shown: number; accepted: number; adoptionRate: number | null } | null>(null);
   useEffect(() => {
@@ -346,6 +372,41 @@ function GeneralTab() {
           >
             {notifyOn ? '已开启（点击关闭）' : '已关闭（点击开启）'}
           </button>
+        </div>
+      )}
+
+      {closePrefs && desktop?.setClosePrefs && (
+        <div style={{ marginBottom: 18 }} data-t03776="close-prefs">
+          {field('关闭窗口行为', '点标题栏关闭按钮时：最小化到托盘＝应用继续运行（正在跑的 AI 任务不打断，托盘图标可唤回窗口）；直接关闭＝退出应用。切换即保存并视为「已记住」，下次不再弹窗；选「每次询问」恢复关闭时的选择弹窗。')}
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button
+              onClick={() => void patchClosePrefs({ closeAction: 'minimize_to_tray' })}
+              title="关闭主窗口时最小化到系统托盘"
+              aria-label="关闭窗口行为：最小化到托盘"
+              aria-pressed={closePrefs.rememberChoice && closePrefs.closeAction === 'minimize_to_tray'}
+              style={segButton(closePrefs.rememberChoice && closePrefs.closeAction === 'minimize_to_tray')}
+            >
+              最小化到托盘
+            </button>
+            <button
+              onClick={() => void patchClosePrefs({ closeAction: 'exit_app' })}
+              title="关闭主窗口时直接退出应用"
+              aria-label="关闭窗口行为：直接关闭应用"
+              aria-pressed={closePrefs.rememberChoice && closePrefs.closeAction === 'exit_app'}
+              style={segButton(closePrefs.rememberChoice && closePrefs.closeAction === 'exit_app')}
+            >
+              直接关闭
+            </button>
+            <button
+              onClick={() => void patchClosePrefs({ rememberChoice: false })}
+              title="关闭主窗口时弹窗询问，并可选是否记住"
+              aria-label="关闭窗口行为：每次询问"
+              aria-pressed={!closePrefs.rememberChoice}
+              style={segButton(!closePrefs.rememberChoice)}
+            >
+              每次询问
+            </button>
+          </div>
         </div>
       )}
 

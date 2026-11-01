@@ -12,7 +12,7 @@
  * 运行前提：server/ 与 web/ 依赖已安装、web 已构建（scripts\构建打包.bat）。
  */
 
-const { app, BrowserWindow, Menu, protocol, shell, dialog, ipcMain, Notification } = require('electron');
+const { app, BrowserWindow, Menu, protocol, shell, dialog, ipcMain, Notification, Tray, nativeImage } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const http = require('node:http');
@@ -21,6 +21,8 @@ const fs = require('node:fs');
 // T02071：更新的取消/续传/安装回执决策内核（纯函数，可脱离 electron 单测）
 // T02740：在线更新 latest-release 判定并入同一内核（新文件需入 build.files 白名单，package.json 正被并发会话占用）
 const { resumePlan, writePending, readPending, clearPending, reconcilePending, installOutcome } = require('./update-state');
+// T03776：关闭交互（最小化到托盘/直接关闭 + 记住选择）的决策内核（纯函数，可脱离 electron 单测）
+const { readClosePrefs, writeClosePrefs, decideOnClose, outcomeAfterDialog, prefsFromSettings } = require('./close-prefs');
 
 const DEV = process.env.MTask_DEV === '1';
 const VITE_PORT = 5175;
@@ -37,6 +39,8 @@ const SERVER_HOST = '127.0.0.1';
 if (app.requestSingleInstanceLock()) {
   app.on('second-instance', () => {
     if (mainWin) {
+      // T03776：托盘隐藏态下再启动应用要把窗口唤回来（restore/focus 对隐藏窗口无效）
+      if (!mainWin.isVisible()) mainWin.show();
       if (mainWin.isMinimized()) mainWin.restore();
       mainWin.focus();
     }
@@ -230,41 +234,171 @@ function cleanupRunningTasks() {
   return runInRenderer('typeof window.__mtaskCleanupRunning === "function" ? window.__mtaskCleanupRunning() : undefined');
 }
 
+/**
+ * T00840 退出前的运行任务确认：无任务或用户选「强制关闭」（并清理）→ true 放行；
+ * 用户取消 → false（窗口保持开启）。
+ */
+async function confirmExitWithRunningTasks(win) {
+  const tasks = await queryRunningTasks();
+  // 无运行任务：直接放行关闭（走正常退出通道）
+  if (!tasks.length) return true;
+
+  // 有运行任务：列出名称，提供「取消关闭」/「强制关闭」两选项
+  const list = tasks.length > 6
+    ? tasks.slice(0, 6).map((t) => `· ${t.name}`).join('\n') + `\n…等 ${tasks.length} 个`
+    : tasks.map((t) => `· ${t.name}`).join('\n');
+  const choice = await dialog.showMessageBox(win, {
+    type: 'warning',
+    title: '确认关闭',
+    message: `检测到有 ${tasks.length} 个任务正在运行`,
+    detail: `关闭可能导致这些任务中断：\n${list}\n\n是否仍要关闭应用？`,
+    buttons: ['取消关闭', '强制关闭'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  });
+  if (choice.response !== 1) return false;
+  // 强制关闭：先清理遗留 busy/在途记录，避免下次启动看到永远挂起的任务，再放行退出
+  await cleanupRunningTasks();
+  return true;
+}
+
+// ================= T03776：关闭交互（最小化到托盘 / 直接关闭 / 记住选择） =================
+// 关闭按钮不再等价于退出：未记住选择时先问「最小化到托盘」还是「直接关闭」，
+// 记住过后按配置直接执行。行为与「是否记住」落在 userData/close-prefs.json（原子写）。
+// 与 T00840 的分工：本段决定「关窗后进程去哪」，T00840 决定「退出前是否要拦一下」——
+// 最小化不打断任何任务，因此只有 exit_app 分支才过运行任务守卫。
+const closePrefsFile = () => path.join(app.getPath('userData'), 'close-prefs.json');
+let closePrefs = readClosePrefs(closePrefsFile());
+let tray = null;
+let trayExitRequested = false; // 托盘「退出 MTask」发起：跳过行为询问，但仍过运行任务守卫
+
+/**
+ * 托盘图标：icon.png 打进 asar 后 nativeImage.createFromPath 读不到（该 API 不支持 asar 归档），
+ * 统一用 fs 读字节转 dataURL（fs 认 asar 路径）。缩到 16px 避免 Windows 通知区按原图渲染成糊块。
+ */
+function trayImage() {
+  try {
+    const buf = fs.readFileSync(path.join(__dirname, 'icon.png'));
+    const img = nativeImage.createFromDataURL(`data:image/png;base64,${buf.toString('base64')}`);
+    return img.isEmpty() ? img : img.resize({ width: 16, height: 16 });
+  } catch {
+    return nativeImage.createEmpty();
+  }
+}
+
+/** 懒建托盘：只有真的走了「最小化到托盘」才占用通知区；创建失败不致命（后续仍可直接退出） */
+function ensureTray() {
+  if (tray && !tray.isDestroyed()) return tray;
+  try {
+    tray = new Tray(trayImage());
+    tray.setToolTip('MTask 任务管理');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: '显示主窗口', click: () => showMainWindow() },
+      { type: 'separator' },
+      { label: '退出 MTask', click: () => { void quitFromTray(); } },
+    ]));
+    tray.on('click', () => toggleMainWindow());
+  } catch (e) {
+    console.warn('[mtask] 系统托盘创建失败（关闭行为退化为直接退出）:', e?.message ?? e);
+    tray = null;
+  }
+  return tray;
+}
+
+/** 从托盘恢复窗口：隐藏态先 show 再 focus（focus 对隐藏窗口无效） */
+function showMainWindow() {
+  if (!mainWin || mainWin.isDestroyed()) return;
+  if (mainWin.isMinimized()) mainWin.restore();
+  if (!mainWin.isVisible()) mainWin.show();
+  mainWin.focus();
+}
+
+function toggleMainWindow() {
+  if (!mainWin || mainWin.isDestroyed()) return;
+  if (mainWin.isVisible() && !mainWin.isMinimized()) mainWin.hide();
+  else showMainWindow();
+}
+
+/** 最小化到托盘：隐藏主窗 + 确保托盘在场，进程与后端服务照常存活（AI 任务继续跑） */
+function minimizeToTray(win) {
+  // 托盘创建失败时绝不隐藏窗口：藏了就再无入口（进程活着但用户找不到界面），保持窗口可用作降级
+  if (!ensureTray()) return;
+  win.hide();
+}
+
+/** 关闭行为询问框：两个主选项 + 「记住此选择」复选框；返回 null 表示用户取消（窗口保持） */
+async function askCloseChoice(win) {
+  const { response, checkboxChecked } = await dialog.showMessageBox(win, {
+    type: 'question',
+    title: '关闭窗口',
+    message: '要最小化到托盘，还是直接关闭应用？',
+    detail: '最小化到托盘时应用继续运行，正在处理的 AI 任务不会被打断；再次关闭窗口或点托盘图标即可回到主界面。',
+    buttons: ['最小化到托盘', '直接关闭', '取消'],
+    defaultId: 0,
+    cancelId: 2,
+    noLink: true,
+    checkboxLabel: '记住此选择，下次不再提示',
+    checkboxChecked: false,
+  });
+  if (response === 2) return null;
+  return { action: response === 1 ? 'exit_app' : 'minimize_to_tray', rememberChecked: checkboxChecked };
+}
+
+/** 托盘「退出 MTask」：先把窗口恢复出来（运行任务确认框要有可见父窗），再走统一关闭通道 */
+function quitFromTray() {
+  if (!mainWin || mainWin.isDestroyed()) { requestQuit(); return; }
+  showMainWindow();
+  trayExitRequested = true;
+  mainWin.close();
+}
+
+/** 设置页写入（IPC）：切换行为即视为记住了选择，判定见 close-prefs.js 的 prefsFromSettings */
+function applyClosePrefsFromSettings(patch) {
+  closePrefs = prefsFromSettings(closePrefs, patch);
+  try {
+    closePrefs = writeClosePrefs(closePrefsFile(), closePrefs);
+  } catch (e) {
+    console.warn('[mtask] 关闭偏好写入失败（内存态仍生效，下次启动回退旧配置）:', e?.message ?? e);
+  }
+  return closePrefs;
+}
+
 async function handleCloseRequest(win) {
   if (closing) return;
   closing = true;
   try {
-    const tasks = await queryRunningTasks();
-    // 无运行任务：直接放行关闭（走正常退出通道）
-    if (!tasks.length) { closeApproved = true; win.close(); return; }
-
-    // 有运行任务：列出名称，提供「取消关闭」/「强制关闭」两选项
-    const list = tasks.length > 6
-      ? tasks.slice(0, 6).map((t) => `· ${t.name}`).join('\n') + `\n…等 ${tasks.length} 个`
-      : tasks.map((t) => `· ${t.name}`).join('\n');
-    const choice = await dialog.showMessageBox(win, {
-      type: 'warning',
-      title: '确认关闭',
-      message: `检测到有 ${tasks.length} 个任务正在运行`,
-      detail: `关闭可能导致这些任务中断：\n${list}\n\n是否仍要关闭应用？`,
-      buttons: ['取消关闭', '强制关闭'],
-      defaultId: 0,
-      cancelId: 0,
-      noLink: true,
-    });
-    if (choice.response === 1) {
-      // 强制关闭：先清理遗留 busy/在途记录，避免下次启动看到永远挂起的任务，再放行退出
-      await cleanupRunningTasks();
+    // 托盘退出是明确指令：不再询问行为，但退出前仍拦一次运行任务
+    const decision = trayExitRequested
+      ? { ask: false, action: 'exit_app' }
+      : decideOnClose(closePrefs);
+    let action = decision.action;
+    if (decision.ask) {
+      const picked = await askCloseChoice(win);
+      if (!picked) return; // 取消：窗口保持开启
+      const outcome = outcomeAfterDialog(closePrefs, picked);
+      // 只有勾选「记住」才落盘；未勾选则本次照做、配置原样（下次仍询问）
+      if (outcome.persist) {
+        try {
+          closePrefs = writeClosePrefs(closePrefsFile(), outcome.prefs);
+        } catch (e) {
+          console.warn('[mtask] 关闭偏好写入失败（本次选择仍生效）:', e?.message ?? e);
+        }
+      }
+      action = outcome.action;
+    }
+    if (action === 'minimize_to_tray') { minimizeToTray(win); return; }
+    if (await confirmExitWithRunningTasks(win)) {
       closeApproved = true;
       win.close();
     }
-    // 选「取消关闭」：什么都不做，窗口保持开启
   } finally {
+    trayExitRequested = false;
     closing = false;
   }
 }
 
-/** 主窗口关闭拦截：不直接关，先查运行任务；无任务或已确认则放行由正常退出通道收尾 */
+/** 主窗口关闭拦截：不直接关，先按偏好决定「询问/最小化/退出」；放行时由正常退出通道收尾 */
 function setupCloseGuard(win) {
   win.on('close', (e) => {
     // 已获准本次关闭，或在退出流程中（before-quit 已接管），不再拦截
@@ -439,6 +573,10 @@ ipcMain.handle('notify:set-enabled', (_evt, enabled) => {
   }
   return notifyEnabled;
 });
+
+// T03776：关闭交互偏好——设置页读取当前行为/是否记住，切换即落盘（判定与原子写见 close-prefs.js）
+ipcMain.handle('close:get-prefs', () => closePrefs);
+ipcMain.handle('close:set-prefs', (_evt, patch) => applyClosePrefsFromSettings(patch));
 
 /**
  * T00771 修复：系统「选择文件夹」对话框。
