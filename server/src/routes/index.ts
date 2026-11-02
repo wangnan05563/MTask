@@ -24,6 +24,7 @@ import { renderPromptTemplate } from '../services/PromptTemplate'; // T03247（A
 import { QueueService } from '../services/QueueService';
 import { AIService } from '../services/AIService';
 import { cardCoverage, currentMonthStr } from '../services/AiCardStats'; // T03172：G-2 卡片覆盖率出数（/ai/coverage）
+import { usageJobBreakdown } from '../services/AiUsageStats'; // T04085：ai_usage 的 job/段维度回看
 import { reportAiJob } from '../services/aiJobReport'; // T03316（G-3）：job 终态上报统一入口
 import { latestJob } from '../services/AiGenJournal'; // T03316：测试用例分块台账（累计块数取真实值）
 import { checkAiReadiness } from '../services/AiReadinessService'; // T03176（D-14）：AI 可用性单源诊断
@@ -2834,16 +2835,18 @@ api.get('/ai/usage', (req, res) => {
   const perTool = Math.min(20, Math.max(1, Number(req.query.perTool) || 5));
   const recent = db.prepare(
     `WITH ranked AS (
-       SELECT tool_name, model, kind, card_key, ok, duration_ms, content_chars, error, created_at,
+       SELECT tool_name, model, kind, card_key, ok, duration_ms, content_chars, error, created_at, stage, job_id,
               ROW_NUMBER() OVER (PARTITION BY tool_name ORDER BY created_at DESC) AS rn
        FROM ai_usage WHERE created_at >= ?${cardWhere}
      )
-     SELECT tool_name, model, kind, card_key, ok, duration_ms, content_chars, error, created_at
+     SELECT tool_name, model, kind, card_key, ok, duration_ms, content_chars, error, created_at, stage, job_id
      FROM ranked WHERE rn <= ?
      ORDER BY CASE WHEN rn = 1 THEN 0 ELSE 1 END, created_at DESC
      LIMIT ?`,
   ).all(since, ...cardArgs, perTool, limit);
-  res.json({ days, limit, perTool, cardKey: cardKey || null, summary, byTool, recent });
+  // T04085：job/段维度与上方聚合是同一窗口同一卡过滤；历史空归属行单独汇总，不进段统计
+  const { jobs, unassigned, jobLimit } = usageJobBreakdown({ since, cardKey, jobLimit: req.query.jobs });
+  res.json({ days, limit, perTool, jobLimit, cardKey: cardKey || null, summary, byTool, recent, jobs, unassigned });
 });
 
 /** T03172（G-2 / AI-301 验收⑤）：AI 可用卡片月采用覆盖率——card_key 精确统计直接出数（?month=YYYY-MM，默认当月） */
