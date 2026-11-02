@@ -624,11 +624,18 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('ai_tools', 'console_url', "console_url TEXT DEFAULT ''");
   // T03164（PRD AI-301 / D-05）：老库幂等补 ai_usage.card_key，历史行随默认值标 unknown
   ensureColumn('ai_usage', 'card_key', "card_key TEXT NOT NULL DEFAULT 'unknown'");
+  // T04003：一次 job 往往有多次模型调用（需求拆分段 + 逐块用例段），只按 kind/card_key 聚合看不出
+  // 「哪一段慢/哪一段在失败」——补 stage（= 台账 segmentKey，人读标签仍由 ai_gen_journal 单源给）
+  // 与 job_id（= openJob 返回的台账标识），历史行随默认值落空串，不冒充有段归属。
+  ensureColumn('ai_usage', 'stage', "stage TEXT NOT NULL DEFAULT ''");
+  ensureColumn('ai_usage', 'job_id', "job_id TEXT NOT NULL DEFAULT ''");
   // T03268（PRD 4.2 时区功能）：项目级时区，空串＝跟随系统时区（D-12）
   ensureColumn('projects', 'timezone', "timezone TEXT NOT NULL DEFAULT ''");
   // 该索引依赖上面补的列：必须放在 ensureColumn 之后。放进上方 DDL 块会在老库上先于补列执行，
   // 整个 db.exec 抛 "no such column: card_key"，后端启动即崩（安装版 0.1.102-5.210 实测）。
   db.exec("CREATE INDEX IF NOT EXISTS idx_ai_usage_card ON ai_usage(card_key, created_at)");
+  // T04003：按 job 取回本任务全部模型调用（排障看分段耗时/失败分布）——同样必须在补列之后
+  db.exec("CREATE INDEX IF NOT EXISTS idx_ai_usage_job ON ai_usage(job_id, created_at)");
   // T03189（PRD G-1）：汇报材料准备时长样本——「打开卡片 → 成品下载」一次一条。
   // 不挂 FK：卡片/项目删了，历史样本仍要参与 P50/P90 基线（同 iteration_events 的口径）。
   db.exec(`

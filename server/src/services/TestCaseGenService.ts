@@ -7,6 +7,8 @@ import { recordUsage } from '../util/aiUsageRecord'; // T03296（G-2）：直连
 
 /** T03296（G-2 覆盖率）：测试用例生成卡的稳定 key（注册表 server/src/util/aiCards.ts） */
 const TESTCASE_CARD = 'ai.test_case_gen';
+/** 需求拆分段的段键：台账 segmentKey 与 ai_usage.stage 共用同一标识（T04003，避免两处各写各的） */
+const SPLIT_SEG = 'split';
 import { ConfigService } from './ConfigService';
 import { PlanService } from './PlanService';
 import { logService } from './LogService';
@@ -135,16 +137,23 @@ interface CallOnceArgs {
   onStage: (msg: string) => void;
   toolId: string;
   signal?: AbortSignal;
+  /** T04003：本笔调用属于哪个 job（台账标识）与哪一段（台账 segmentKey），用量才可按段还原 */
+  jobId: string;
+  stage: string;
 }
 
 /** 单次流式调用：抬预算 → max_tokens 被拒则回退重试 → 触顶返回 partial（truncated=true）。 */
 async function callOnce(args: CallOnceArgs): Promise<{ text: string; truncated: boolean }> {
-  const { chat, system, user, genConfig, onDelta, onStage, toolId, signal } = args;
-  // T03296（G-2 覆盖率）：本服务直连适配器，每次真实调用显式记一笔 card_key 用量
+  const { chat, system, user, genConfig, onDelta, onStage, toolId, signal, jobId, stage } = args;
+  // T03296（G-2 覆盖率）：本服务直连适配器，每次真实调用显式记一笔 card_key 用量。
+  // T04003：同一笔调用自带段归属（job_id + stage）；失败/断流时按「本次已流出的增量字符」记账，
+  // 不再落成 0——否则一次长跑断流后，用量表只剩 duration_ms 而产出量凭空消失。
   const attempt = async (cfg: ToolConfig) => {
     const startedAt = Date.now();
-    const r = await chat(system, user, cfg, onDelta, signal);
-    recordUsage({ kind: 'stream', toolId, model: cfg.model, ok: r.ok, startedAt, contentChars: (r.ok ? r.content?.length : r.partial?.length) ?? 0, error: r.error, cardKey: TESTCASE_CARD });
+    let streamedChars = 0;
+    const r = await chat(system, user, cfg, (text) => { streamedChars += text.length; onDelta(text); }, signal);
+    const chars = (r.ok ? r.content?.length : r.partial?.length) ?? streamedChars;
+    recordUsage({ kind: 'stream', toolId, model: cfg.model, ok: r.ok, startedAt, contentChars: chars, error: r.error, cardKey: TESTCASE_CARD, jobId, stage });
     return r;
   };
   let res = await attempt(genConfig);
@@ -227,8 +236,8 @@ function buildCaseUserPrompt(contextBlock: string, scopeList: string, reqCount: 
   ].join('\n\n');
 }
 
-/** 拆分段的依赖（含缓存段与既有需求复用判据） */
-interface SplitDeps extends Omit<CallOnceArgs, 'user'> {
+/** 拆分段的依赖（含缓存段与既有需求复用判据）；stage 属「每次调用」而非「阶段共享」，故在此剥掉 */
+interface SplitDeps extends Omit<CallOnceArgs, 'user' | 'stage'> {
   contextBlock: string;
   existingReqs: ReturnType<typeof PlanService.listRequirements>;
   existingReqNos: Set<string>;
@@ -277,7 +286,7 @@ async function splitByModel(deps: SplitDeps): Promise<DraftRequirement[]> {
     '【本轮任务】仅拆分/补充需求，用例段输出空数组。',
     '按输出协议，只填充 <<<REQUIREMENTS>>> 段（<<<CASES>>> 输出 []）；每条需求原子、可独立验证、带 sourceRef 指向原文定位。',
   ].join('\n\n');
-  const splitRes = await callOnce({ ...deps, user: splitUser });
+  const splitRes = await callOnce({ ...deps, user: splitUser, stage: SPLIT_SEG });
   const splitReqs = dedupeRequirements(extractArray(splitRes.text, REQ_MARKER, CASE_MARKER, isRequirementObj), deps.existingReqNos);
   deps.notes.push(...parseNotes(splitRes.text));
   if (splitReqs.length === 0) return fallbackExistingRequirements(deps);
@@ -309,8 +318,8 @@ async function resolveRequirementsStep(deps: SplitDeps): Promise<DraftRequiremen
   return splitByModel(deps);
 }
 
-/** 分块阶段的共享上下文（genChunk / runChunk 递归复用；同时满足 callOnce 的入参形状） */
-interface TcGenCtx extends Omit<CallOnceArgs, 'user'> {
+/** 分块阶段的共享上下文（genChunk / runChunk 递归复用；同时满足 callOnce 的入参形状，stage 由每次调用现给） */
+interface TcGenCtx extends Omit<CallOnceArgs, 'user' | 'stage'> {
   contextBlock: string;
   prefLine: string;
   reqByNo: Map<string, DraftRequirement>;
@@ -360,7 +369,9 @@ async function genChunk(ctx: TcGenCtx, state: TcGenState, reqNos: string[], shri
   if (ctx.signal?.aborted) throw new Error('生成已中止');
   const scopeList = chunkScopeList(reqNos, ctx.reqByNo);
   const caseUser = buildCaseUserPrompt(ctx.contextBlock, scopeList, reqNos.length, ctx.prefLine);
-  const res = await callOnce({ ...ctx, user: caseUser });
+  // stage 用「本次实际作用范围」的块键：对半拆块重试时 scope 变小，段键随之变化，
+  // 用量表就能区分「整块一次过」和「触顶后拆细重跑」这两种真实调用形态（T04003）
+  const res = await callOnce({ ...ctx, user: caseUser, stage: ctx.chunkKey(reqNos) });
   const cases = extractArray(res.text, CASE_MARKER, NOTE_MARKER, isCaseObj)
     .map((o) => normCase(o, ctx.existingKeys))
     .filter((c): c is DraftCase => !!c);
@@ -596,8 +607,7 @@ export async function generateTestCasesStream(input: TcGenStreamInput): Promise<
   const existingReqNos = new Set(existingReqs.map((r) => str(r.req_no)).filter(Boolean));
   const notes: string[] = [];
 
-  // T03263：需求拆分段——同指纹已拆过就直接复用清单，不再调用模型
-  const SPLIT_SEG = 'split';
+  // T03263：需求拆分段——同指纹已拆过就直接复用清单，不再调用模型（段键 SPLIT_SEG 已提到模块作用域，供用量记账复用）
   declareSegments(jobId, [{ sectionKey, segmentKey: SPLIT_SEG, label: '需求拆分', orderIndex: 0 }]);
   // 显式勾选「重新拆分」时不复用拆分段——用户要的就是重新拆一遍，缓存会把它变成「没反应」
   const splitCached = input.resplitRequirements ? undefined : segOf(SPLIT_SEG);

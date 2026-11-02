@@ -29,18 +29,22 @@ export interface UsageRecordInput {
   contentChars?: number;
   error?: string;
   cardKey?: string;
+  /** T04003：同一 job 内的段标识（建议直接用台账 segmentKey，人读标签交给 ai_gen_journal 单源） */
+  stage?: string;
+  /** T04003：所属 AI 生成 job（AiGenJournal.openJob 返回的标识），无台账通道留空串 */
+  jobId?: string;
 }
 
 /** AI 用量记录（T00448 / PRD AI-1）：每次模型调用落一行，供「模型」页用量面板聚合展示。
  *  T03172（G-2/AI-301）：card_key 随行走——显式传卡优先，否则按 kind→卡一对一映射，
  *  通用通道（ask/ask-json/stream）无卡可归时落 unknown（历史默认值同口径，不冒充卡片维度）。 */
 export function recordUsage(entry: UsageRecordInput): void {
-  const { kind, toolId, model, ok, startedAt, contentChars = 0, error, cardKey } = entry;
+  const { kind, toolId, model, ok, startedAt, contentChars = 0, error, cardKey, stage = '', jobId = '' } = entry;
   const resolvedCard = cardKey ?? KIND_TO_CARD[kind] ?? 'unknown';
   try {
     getDb().prepare(
-      `INSERT INTO ai_usage (id, tool_id, tool_name, model, kind, ok, duration_ms, content_chars, error, created_at, card_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(uuid(), toolId, toolNameOf(toolId), model ?? '', kind, ok ? 1 : 0, Date.now() - startedAt, contentChars, (error ?? '').slice(0, 300) || null, new Date().toISOString(), resolvedCard);
+      `INSERT INTO ai_usage (id, tool_id, tool_name, model, kind, ok, duration_ms, content_chars, error, created_at, card_key, stage, job_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(uuid(), toolId, toolNameOf(toolId), model ?? '', kind, ok ? 1 : 0, Date.now() - startedAt, contentChars, (error ?? '').slice(0, 300) || null, new Date().toISOString(), resolvedCard, stage, jobId);
   } catch { /* 用量记录失败不影响主流程 */ }
 }
