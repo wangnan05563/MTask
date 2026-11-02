@@ -127,6 +127,23 @@ const PRD_CHUNK_CONCURRENCY = 5;
 const PRD_CHUNK_RATE_ROUNDS = 3;
 const PRD_CHUNK_RATE_CONCURRENCY = 2;
 
+/**
+ * T03700+：缺失分片诊断——片号、原因类别与**该片原文**。
+ * 只回一句「第 8 片失败」时用户无从补处理；把原文带回前端，界面就能展示/复制/另存并支持单片补解析。
+ */
+export interface PrdFailedChunk {
+  /** 1-based 片号（与提示文案同口径） */
+  index: number;
+  total: number;
+  /** rate-limit=限流退避后仍失败；error=其它解析错误；aborted=总预算中止；not-run=中止后未发起 */
+  reason: 'rate-limit' | 'error' | 'aborted' | 'not-run';
+  /** 最近一次失败原因（截断 300 字） */
+  message?: string;
+  chars: number;
+  /** 该片原文，供查看/复制/单独补解析 */
+  text: string;
+}
+
 /** T02401-C：分片解析的中间结果类型（与 aiParsePrd 返回值同构，供合并去重）。 */
 interface PrdParsePart {
   requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>;
@@ -641,18 +658,69 @@ function collectUncoveredReqNos(
   requirements: Array<{ reqNo: string }>,
   drafts: Array<{ reqNos: string[] }>,
 ): string[] {
+  // T03700+：两侧都按归一化编号比对——写法差异（REQ-1 / REQ-001 / 需求1）不再算作「未关联」
   const referenced = new Set<string>();
-  for (const d of drafts) for (const n of d.reqNos) referenced.add(n);
-  return requirements.map((r) => r.reqNo).filter((no) => !referenced.has(no));
+  for (const d of drafts) for (const n of d.reqNos) referenced.add(normalizedReqNoKey(n));
+  return requirements.map((r) => r.reqNo).filter((no) => !referenced.has(normalizedReqNoKey(no)));
 }
 
-/** M6-6.1：可追溯性缺口 → 人话告警（全未关联 / 部分未关联两种情况文案不同） */
-function buildCoverageWarn(draftCount: number, reqCount: number, uncovered: string[]): string {
-  if (draftCount === 0 || reqCount === 0) return '';
+/** M6-6.1：可追溯性缺口 → 人话告警（全未关联 / 部分未关联两种情况文案不同）
+ *  T03700+：只报编号会让用户无法跨次比对（编号每次解析都按出现顺序重排，缺口集合看起来「每次都不一样」），
+ *  因此带出需求标题，并明确说明编号会重排。 */
+function buildCoverageWarn(draftCount: number, requirements: Array<{ reqNo: string; title: string }>, uncovered: string[]): string {
+  if (draftCount === 0 || requirements.length === 0) return '';
   if (uncovered.length === 0) return '';
-  if (uncovered.length === reqCount) return '本次解析的计划节点未关联到任何需求编号——可在矩阵面板中手动建立关联';
-  const more = uncovered.length > 10 ? '…' : '';
-  return `有 ${uncovered.length} 条需求未被任何 WBS 计划关联（${uncovered.slice(0, 10).join('、')}${more}）——这些需求当前不可追溯，建议补计划或在矩阵面板手动关联`;
+  if (uncovered.length === requirements.length) return '本次解析的计划节点未关联到任何需求编号——可在矩阵面板中手动建立关联';
+  const titleOf = new Map(requirements.map((r) => [r.reqNo, r.title]));
+  const list = uncovered.slice(0, 8).map((no) => `${no}《${(titleOf.get(no) ?? '').slice(0, 16)}》`).join('、');
+  const more = uncovered.length > 8 ? '…' : '';
+  return `有 ${uncovered.length} 条需求未被任何 WBS 计划关联（${list}${more}）——这些需求当前不可追溯，建议补计划或在矩阵面板手动关联；`
+    + '编号每次解析会按出现顺序重排，跨次比对请以需求标题为准';
+}
+
+/** 自动补齐行的标记文案——前端据此识别并播报，用户可在计划表改标题或取消勾选 */
+const AUTO_GAP_FILL_DESC = '自动补齐：该需求在 AI 拆解的 WBS 中没有对应节点（可改标题或取消勾选后再导入）';
+
+type PrdPlanDraft = {
+  title: string;
+  description: string;
+  durationDays: number;
+  startDate: string;
+  reqNos: string[];
+  status: PlanStatus;
+  kind: PlanKind;
+  complexity?: number;
+};
+
+/**
+ * T03700+：缺口需求确定性补齐——提示词虽要求模型为无人认领的需求在 plans 末尾补一条 normal 任务，
+ * 但分片规模上限（32 需求/45 计划，压缩重试 20/25）会让补偿行最先被裁掉，模型也未必遵守，
+ * 表现为同一文档每轮「不可追溯」集合都不一样。这里在返回前由系统兜底：每条仍无计划关联的需求各追加一行，
+ * 关联指向自身；无标题的需求无法生成可读任务，留给告警继续提示。
+ */
+function applyAutoGapFill(
+  requirements: Array<{ reqNo: string; title: string }>,
+  drafts: Array<PrdPlanDraft>,
+): { drafts: Array<PrdPlanDraft>; filledReqNos: string[] } {
+  const uncovered = collectUncoveredReqNos(requirements, drafts);
+  if (uncovered.length === 0) return { drafts, filledReqNos: [] };
+  const byNo = new Map(requirements.map((r) => [r.reqNo, r]));
+  const rows: PrdPlanDraft[] = [];
+  for (const no of uncovered) {
+    const req = byNo.get(no);
+    if (!req?.title.trim()) continue;
+    rows.push({
+      title: `${req.reqNo} ${req.title.slice(0, 24)} 实现/验证`,
+      description: AUTO_GAP_FILL_DESC,
+      durationDays: 1,
+      startDate: '',
+      reqNos: [req.reqNo],
+      status: 'todo' as PlanStatus,
+      kind: 'normal' as PlanKind,
+      complexity: 1,
+    });
+  }
+  return { drafts: [...drafts, ...rows], filledReqNos: rows.map((r) => r.reqNos[0]) };
 }
 
 /** M6-6.1：导出 Markdown 的单元格转义（管道符转义 + 换行压平，避免撑坏表格） */
@@ -718,6 +786,29 @@ function syncTaskCoveredDone(db: ReturnType<typeof getDb>, projectId: string, ta
   db.prepare("UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ?").run(now(), taskId);
 }
 
+/**
+ * T03700+：需求编号归一化——只用于**匹配**，不改变文档语义。
+ * 模型对同一编号的写法会漂移（REQ-1 / REQ-001 / 需求1 / 001），按字符串精确匹配会让计划
+ * 的 reqNos 关联整条落空，进而把「已覆盖」误报成「不可追溯」（实测同一份覆盖关系仅因写法
+ * 不补零就产生 24/24 条假缺口）。无法识别的写法（如 NFR-001、REQ-001-2）原样保留。
+ */
+function normalizedReqNoKey(raw: string): string {
+  const s = raw.trim().replaceAll(/\s+/g, '').replaceAll(/[０-９]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 0xFEE0)).replaceAll('－', '-');
+  if (!s) return '';
+  const m = /^(?:REQ(?:UIREMENT)?|R|需求(?:编号)?|要求)?[-_:：]?0*(\d+)$/i.exec(s);
+  if (!m) return s.toUpperCase();
+  return `REQ-${String(Number(m[1])).padStart(3, '0')}`;
+}
+
+/** T03700+：模型常把多个编号塞进一个字符串（"REQ-001、REQ-002" / "REQ-001 REQ-002"），先拆后归一 */
+function splitReqNoRefs(raw: string): string[] {
+  return raw.split(/[,，、;；/|]+/).map((x) => x.trim()).filter(Boolean).flatMap((part) => {
+    // 空白分隔仅在**每一段都像编号**时才拆，避免把 "REQ-001 实现" 里的说明文字当成编号
+    const segs = part.split(/\s+/);
+    return segs.length > 1 && segs.every((s) => /^(?:REQ(?:UIREMENT)?|R|需求(?:编号)?|要求)?[-_:：]?\d+$/i.test(s)) ? segs : [part];
+  });
+}
+
 /** PRD 解析：单条原始需求 → 归一化需求（reqNo 查重去重 + priority 枚举兜底；标题缺失返回 null） */
 function normalizeRequirement(
   r: unknown,
@@ -729,6 +820,8 @@ function normalizeRequirement(
   const title = typeof o.title === 'string' ? o.title.trim() : '';
   if (!title) return;
   let reqNo = typeof o.reqNo === 'string' && o.reqNo.trim() ? o.reqNo.trim() : `REQ-${String(requirements.length + 1).padStart(3, '0')}`;
+  // T03700+：编号统一为 REQ-### 形式再查重——REQ-1 与 REQ-001 是同一个编号，不能各占一行
+  reqNo = normalizedReqNoKey(reqNo) || reqNo;
   if (seenNo.has(reqNo)) reqNo = `${reqNo}-${requirements.length + 1}`;
   seenNo.add(reqNo);
   const pr = typeof o.priority === 'string' && ['low', 'normal', 'high', 'urgent'].includes(o.priority) ? o.priority : 'normal';
@@ -795,7 +888,10 @@ function normalizePrdPlans(raw: unknown[]): Array<{ title: string; description: 
     const o = r as Record<string, unknown>;
     const title = typeof o.title === 'string' ? o.title.trim() : '';
     if (!title) continue;
-    const reqNos = Array.isArray(o.reqNos) ? o.reqNos.filter((x): x is string => typeof x === 'string') : [];
+    const rawReqNos = Array.isArray(o.reqNos) ? o.reqNos.filter((x): x is string => typeof x === 'string') : [];
+    // T03700+：编号写法漂移必须在落库前摊平——"REQ-001、REQ-002" 拆成两条、"REQ-1" 补零为 REQ-001，
+    // 否则分片合并按字符串精确匹配会整条丢掉关联（表现为随机的「需求不可追溯」）
+    const reqNos = [...new Set(rawReqNos.flatMap(splitReqNoRefs).map(normalizedReqNoKey).filter(Boolean))];
     // T01058-FR2.1 / T02122：AI 复杂度评级（1~5；非法/缺失为 undefined），钳位走单源函数
     const cClamped = clampComplexity(o.complexity);
     const complexity = cClamped ?? undefined;
@@ -888,20 +984,27 @@ interface ChunkMergeState {
 /** 一片的需求并入全局：重复标题计入原编号，新标题分配全局 REQ-NNN；返回片内编号 → 全局编号映射 */
 function mergePartRequirements(part: PrdParsePart, st: ChunkMergeState): Map<string, string> {
   const partNoMap = new Map<string, string>();
+  // T03700+：片内同一编号被多条需求重复使用时（模型常见写法），关联归**首条**——旧实现后写覆盖先写，
+  // 会让先出现那条需求凭空变成「无关联」，且随模型输出顺序漂移。
+  const setRef = (ref: string, no: string): void => {
+    if (!partNoMap.has(ref)) partNoMap.set(ref, no);
+    const key = normalizedReqNoKey(ref);
+    if (key && !partNoMap.has(key)) partNoMap.set(key, no);
+  };
   for (const r of part.requirements) {
     const k = normalizedReqTitle(r.title);
     const exist = st.reqNoByKey.get(k);
     if (exist) {
       const kept = st.requirements.find((x) => x.reqNo === exist);
       if (kept) mergeRequirementInto(kept, r);
-      partNoMap.set(r.reqNo, exist);
+      setRef(r.reqNo, exist);
       continue;
     }
     st.seq += 1;
     const no = `REQ-${String(st.seq).padStart(3, '0')}`;
     st.requirements.push({ ...r, reqNo: no });
     st.reqNoByKey.set(k, no);
-    partNoMap.set(r.reqNo, no);
+    setRef(r.reqNo, no);
   }
   return partNoMap;
 }
@@ -909,7 +1012,8 @@ function mergePartRequirements(part: PrdParsePart, st: ChunkMergeState): Map<str
 /** 一片的计划并入全局：按标题精确去重（首见优先），reqNos 改写为全局编号后取并集 */
 function mergePartDrafts(part: PrdParsePart, partNoMap: Map<string, string>, drafts: PrdParsePart['drafts']): void {
   for (const d of part.drafts) {
-    const mapped = [...new Set(d.reqNos.map((no) => partNoMap.get(no)).filter((x): x is string => !!x))];
+    // T03700+：除精确命中外再按归一化编号兜底——旧编号写法（REQ-1 / 需求1）不再被静默丢弃
+    const mapped = [...new Set(d.reqNos.map((no) => partNoMap.get(no) ?? partNoMap.get(normalizedReqNoKey(no))).filter((x): x is string => !!x))];
     const exist = drafts.find((x) => x.title.trim() === d.title.trim());
     if (exist) {
       exist.reqNos = [...new Set([...exist.reqNos, ...mapped])];
@@ -2438,6 +2542,10 @@ export const PlanService = {
     /** T02270 复议：分片解析成功的**信息性**提示（结果完整，不应作为警示展示）——与 truncatedNote 分开，
      *  否则前端把「已分片并完整合并」也渲染成 ⚠，用户无从区分「有损」与「无损」。 */
     parseNote?: string;
+    /** T03700+：有损交付时缺失的分片（含原文），前端据此展示并提供单片补解析 */
+    failedChunks?: PrdFailedChunk[];
+    /** T03700+：系统自动补齐的计划行对应的需求编号（原缺口需求）——前端播报「已自动补齐 N 条」 */
+    autoFilledReqNos?: string[];
   }> {
     const system = [
       '你是 MTask 的 PRD 解析助手：既要拆分 WBS 计划，也要**逐条提取可跟踪需求**（用于生成需求跟踪矩阵）。',
@@ -2519,13 +2627,15 @@ export const PlanService = {
       const rawReqs = Array.isArray(obj.requirements) ? obj.requirements : [];
       const requirements = normalizeRequirements(rawReqs);
       const rawPlans = Array.isArray(obj.plans) ? obj.plans : [];
-      const drafts = normalizePrdPlans(rawPlans);
-      if (requirements.length === 0 && drafts.length === 0) throw new Error('AI 未能从 PRD 中解析出需求或计划，请确认文档内容或更换模型');
+      const drafts0 = normalizePrdPlans(rawPlans);
+      if (requirements.length === 0 && drafts0.length === 0) throw new Error('AI 未能从 PRD 中解析出需求或计划，请确认文档内容或更换模型');
+      // T03700+：先由系统为缺口需求确定性补行，再按补齐后的结果算剩余告警（剩余缺口只可能是无标题等无法补齐的极端情况）
+      const { drafts, filledReqNos } = applyAutoGapFill(requirements, drafts0);
       // T01156：反向覆盖检查（collectUncoveredReqNos / buildCoverageWarn）——需求清单中存在、
       // 但未被任何 WBS 计划 reqNos 关联的需求编号即可追溯性缺口。
       const uncoveredReqNos = collectUncoveredReqNos(requirements, drafts);
-      const coverageWarn = buildCoverageWarn(drafts.length, requirements.length, uncoveredReqNos);
-      return { requirements, drafts, coverageWarn, uncoveredReqNos, truncatedNote };
+      const coverageWarn = buildCoverageWarn(drafts.length, requirements, uncoveredReqNos);
+      return { requirements, drafts, coverageWarn, uncoveredReqNos, truncatedNote, autoFilledReqNos: filledReqNos.length > 0 ? filledReqNos : undefined };
     } finally {
       clearTimeout(totalTimer);
     }
@@ -2549,6 +2659,10 @@ export const PlanService = {
     truncatedNote?: string;
     /** T02270 复议：分片完整跑完时的信息性提示（见 aiParsePrd 同名字段口径） */
     parseNote?: string;
+    /** T03700+：缺失分片（含原文）——有损交付时随响应透出，前端展示并提供单片补解析 */
+    failedChunks?: PrdFailedChunk[];
+    /** T03700+：系统自动补齐的计划行对应的需求编号（原缺口需求） */
+    autoFilledReqNos?: string[];
   } | null> {
     const chunks = splitPrdChunks(docText, PRD_CHUNK_CHARS, PRD_CHUNK_MAX);
     if (chunks.length <= 1) return null;
@@ -2561,7 +2675,9 @@ export const PlanService = {
     // 给免费档供应商的并发/RPM 限制让路；未再撞限流则后续片沿用降档值跑完（宁慢勿废）。
     let waveConcurrency = PRD_CHUNK_CONCURRENCY;
     /** T03700：退避重试后仍失败的片序号——交外层按有损交付，不再抛错作废整链 */
-    const failedChunks: number[] = [];
+    const failedChunkIdx: number[] = [];
+    /** T03700+：失败片的归因（限流/解析错误），用于界面上区分「稍后重试」与「换模型/拆文档」 */
+    const failInfo = new Map<number, { reason: PrdFailedChunk['reason']; message?: string }>();
     const parseOne = async (i: number): Promise<void> => {
       // T02983：分片内再加一道输出规模上限——单轮耗时几乎全花在生成上（5 片 × 40 需求 + 60 计划），
       // 把每片压到 32/45 后实测总耗时 106s（不改上限 121s）；按 5 片×32=160 的总容量仍覆盖 128 条需求。
@@ -2591,7 +2707,10 @@ export const PlanService = {
         lastError = ai.error ?? '';
         // 总预算到点导致的停止不该作废已完成的片：标记后由外层收尾，把已解析部分交付给调用方。
         if (signal?.aborted) { aborted = true; return; }
-        if (!isRateLimitError(lastError)) break;
+        if (!isRateLimitError(lastError)) {
+          failInfo.set(i, { reason: 'error', message: lastError.slice(0, 300) });
+          break;
+        }
         if (round >= PRD_CHUNK_RATE_ROUNDS) break;
         // 限流退避：降档后续波次并发 + 指数等待（20s/40s，钳制在剩余预算内）；预算不足以再等则放弃该片
         waveConcurrency = Math.min(waveConcurrency, PRD_CHUNK_RATE_CONCURRENCY);
@@ -2600,7 +2719,13 @@ export const PlanService = {
         await sleepMs(wait, signal);
         if (signal?.aborted) { aborted = true; return; }
       }
-      failedChunks.push(i);
+      // T03700+：走到这里说明该片最终失败。限流轮次耗尽与「预算不足以再退避」都归类为 rate-limit，
+      // 但把原因写进 message，界面可据此提示「稍后重试」还是「换模型/拆文档」。
+      failInfo.set(i, {
+        reason: isRateLimitError(lastError) ? 'rate-limit' : 'error',
+        message: (lastError || '分片解析未成功').slice(0, 300),
+      });
+      failedChunkIdx.push(i);
     };
     // T02983：有界并发把总时长压到可用预算内；T03700：波次大小改读自适应值——限流降档后下一波自动变小，
     // 已不抛错短路（片失败交给 failedChunks 有损交付），Promise.all 只等本波全部落定。
@@ -2616,21 +2741,48 @@ export const PlanService = {
     if (parts.length === 0) return null;
     const merged = mergeChunkedPrdParts(parts);
     if (merged.requirements.length === 0 && merged.drafts.length === 0) return null;
-    const uncoveredReqNos = collectUncoveredReqNos(merged.requirements, merged.drafts);
-    const coverageWarn = buildCoverageWarn(merged.drafts.length, merged.requirements.length, uncoveredReqNos);
+    // T03700+：合并后系统兜底补齐——模型漏挂的横切/非功能需求在此落行，缺口集合不再随每轮解析漂移
+    const { drafts, filledReqNos } = applyAutoGapFill(merged.requirements, merged.drafts);
+    const uncoveredReqNos = collectUncoveredReqNos(merged.requirements, drafts);
+    const coverageWarn = buildCoverageWarn(drafts.length, merged.requirements, uncoveredReqNos);
+    // T03700+：缺失片统一收集（失败 + 因预算中止而未跑的），并带上原文——前端据此展示/复制/单独补解析。
+    const failedChunks: PrdFailedChunk[] = [];
+    for (let i = 0; i < n; i += 1) {
+      if (slots[i]) continue;
+      const info = failInfo.get(i);
+      failedChunks.push({
+        index: i + 1,
+        total: n,
+        reason: info?.reason ?? (aborted || signal?.aborted ? 'aborted' : 'not-run'),
+        message: info?.message,
+        chars: chunks[i].length,
+        text: chunks[i],
+      });
+    }
     const complete = !aborted && !signal?.aborted && failedChunks.length === 0;
     // T02270 复议：分片跑完是**无损**结果（明细比精简模式完整），走 parseNote 普通日志；
     // 只有真的没跑完（预算中止 / 存在失败片）才用 truncatedNote 触发 ⚠——否则用户无法区分「完整分片」与「有损降级」。
     // T03700：失败片显式列出片号与原因类别，缺失内容不静默。
-    const truncatedNote = failedChunks.length > 0
-      ? `分片解析第 ${failedChunks.map((i) => i + 1).join('、')} 片失败（限流退避重试后仍未成功），已返回其余 ${parts.length}/${n} 片合并结果——缺失片的内容未包含，建议稍后重试该文档或更换模型工具`
+    const failIdx = failedChunks.filter((f) => f.reason === 'rate-limit' || f.reason === 'error').map((f) => f.index);
+    const hasError = failedChunks.some((f) => f.reason === 'error');
+    const truncatedNote = failIdx.length > 0
+      ? `分片解析第 ${failIdx.join('、')} 片失败（${hasError ? '限流重试/解析错误，重试后仍未成功' : '限流退避重试后仍未成功'}），已返回其余 ${parts.length}/${n} 片合并结果——缺失片的内容未包含，可在下方「缺失分片」查看原文并单独补解析（或稍后重试该文档 / 更换模型工具）`
       : complete
         ? ''
-        : `文档较长且解析达到 ${PRD_PARSE_TOTAL_TIMEOUT_MS / 1000}s 总预算，已返回前 ${parts.length}/${n} 片合并结果——请拆分文档或更换更快模型以补全剩余内容`;
+        : `文档较长且解析达到 ${PRD_PARSE_TOTAL_TIMEOUT_MS / 1000}s 总预算，已返回前 ${parts.length}/${n} 片合并结果——未解析的片已在下方「缺失分片」列出，可单独补解析或拆分文档后重试`;
     const parseNote = complete
-      ? `文档较长，已自动分 ${n} 片解析并合并去重（需求 ${merged.requirements.length} 条、计划 ${merged.drafts.length} 条）`
+      ? `文档较长，已自动分 ${n} 片解析并合并去重（需求 ${merged.requirements.length} 条、计划 ${drafts.length} 条${filledReqNos.length > 0 ? `，其中自动补齐 ${filledReqNos.length} 条缺口需求` : ''}）`
       : undefined;
-    return { requirements: merged.requirements, drafts: merged.drafts, coverageWarn, uncoveredReqNos, truncatedNote, parseNote };
+    return {
+      requirements: merged.requirements,
+      drafts,
+      coverageWarn,
+      uncoveredReqNos,
+      truncatedNote,
+      parseNote,
+      failedChunks: failedChunks.length > 0 ? failedChunks : undefined,
+      autoFilledReqNos: filledReqNos.length > 0 ? filledReqNos : undefined,
+    };
   },
 
   /** T00763：导入 PRD 解析结果——事务创建需求项 + 计划（含 req_ids 关联）+ 可选同步生成待办任务。 */

@@ -4,6 +4,8 @@ import { api } from '../api/client';
 import { Eye, FileUp, Save, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import { useSessionState } from '../ui/session';
 import { ProjectListHint, projectListPlaceholder, useProjectList } from '../ui/projectList';
+import { CopyButton } from '../ui/CopyButton';
+import { EXPORT_MIME, saveBlob } from '../utils/download';
 import { aiImportStore } from '../stores/aiImportStore';
 
 /** T00662：PRD 解析结果（需求项 + WBS 计划草稿） */
@@ -165,6 +167,35 @@ function logImportResult(r: ImportPrdResult): void {
   }
 }
 
+/**
+ * T03700+：覆盖缺口播报——基于合并重排后的最终编号，且必须带标题：编号是位置号，
+ * 同一份文档每次解析都会重排，只报编号会让用户误以为「每次缺的都不一样」。
+ */
+function logUncoveredReqs(list: ReadonlyArray<{ reqNo: string; title: string }>): void {
+  if (list.length === 0) return;
+  const names = list.slice(0, 8).map((r) => `${r.reqNo}《${r.title.slice(0, 16)}》`).join('、');
+  const more = list.length > 8 ? ' 等' : '';
+  aiImportStore.log(
+    `⚠ 有 ${list.length} 条需求暂未被任何 WBS 计划关联（${names}${more}）——这些需求当前不可追溯；`
+    + '可在面板「未被任何计划关联」处点「补齐计划」自动生成一行，或在矩阵面板手动关联（编号每次解析会按出现顺序重排，跨次比对请以标题为准）',
+    'error',
+  );
+}
+
+/**
+ * T03700+：系统自动补齐播报——服务端会为未被任何计划关联的需求各生成一行 normal 任务
+ * （description 以「自动补齐：」开头），必须让用户知道这些行不是 AI 拆出来的，可改标题或取消勾选。
+ */
+function logAutoFilled(rows: ReadonlyArray<{ title: string; description?: string }>): void {
+  const auto = rows.filter((p) => (p.description ?? '').startsWith('自动补齐：'));
+  if (auto.length === 0) return;
+  const names = auto.slice(0, 8).map((p) => `「${p.title.slice(0, 24)}」`).join('、') + (auto.length > 8 ? ' 等' : '');
+  aiImportStore.log(
+    `已自动补齐 ${auto.length} 条未被任何 WBS 计划关联的需求（${names}）——系统按最终编号各生成一行 normal 任务；可在计划表改标题或取消勾选，无需追溯时也可直接不导入该行`,
+    'ok',
+  );
+}
+
 /** 解析前置校验：目标项目/AI 模型缺失或未选文件时给出可见原因并中止 */
 function canStartParse(projectId: string, toolId: string, fileCount: number): boolean {
   if (!projectId) { aiImportStore.patch({ error: '请先选择目标项目' }); aiImportStore.log('缺少目标项目，已中止', 'error'); return false; }
@@ -181,7 +212,8 @@ async function parseOneFile(file: File, projectId: string, toolId: string, signa
     { signal },
   );
   aiImportStore.log(`✓ ${file.name}：需求 ${r.requirements?.length ?? 0} 条、WBS ${r.drafts?.length ?? 0} 条`, 'ok');
-  if (r.coverageWarn) aiImportStore.log(r.coverageWarn, 'error');
+  // T03700+：覆盖告警不再在这里播报——后端按本文件编号算，多文件合并重排后会和面板行号对不上，
+  // 统一改由 parseAll 用合并后的最终结果计算（见 logUncoveredReqs）。
   // T01156：首轮输出被截断、走了精简重试——需求可能被静默压缩，必须提示用户核对数量
   if (r.truncatedNote) aiImportStore.log(`⚠ ${r.truncatedNote}`, 'error');
   // T02270 复议：分片完整跑完是**无损**结果，按普通信息展示——不能混进上面的 ⚠，
@@ -195,13 +227,15 @@ async function parseOneFile(file: File, projectId: string, toolId: string, signa
     coverageWarn: r.coverageWarn,
     truncatedNote: r.truncatedNote,
     textMd: r.textMd,
+    failedChunks: r.failedChunks,
   };
 }
 
-/** 逐文件解析的累计结果：解析产物、PRD 原文、首个错误与中断位置 */
+/** 逐文件解析的累计结果：解析产物、PRD 原文、缺失分片、首个错误与中断位置 */
 interface ParseAcc {
   results: PrdParseResult[];
   sources: { name: string; text: string }[];
+  failed: FailedShardRow[];
   firstError: string;
   stopName: string;
 }
@@ -210,7 +244,7 @@ interface ParseAcc {
 async function parseSelectedFiles(
   files: File[], projectId: string, toolId: string, signal: AbortSignal, onProgress: (done: number) => void,
 ): Promise<ParseAcc> {
-  const acc: ParseAcc = { results: [], sources: [], firstError: '', stopName: '' };
+  const acc: ParseAcc = { results: [], sources: [], failed: [], firstError: '', stopName: '' };
   for (let i = 0; i < files.length; i++) {
     if (signal.aborted) break; // 取消后剩余文件不再发起，避免"已取消却还在跑"
     const file = files[i];
@@ -220,6 +254,10 @@ async function parseSelectedFiles(
       acc.results.push(result);
       // T00908：暂存每份文件的 PRD 全文（供确认导入时落库 PRD 管理视图）
       if (result.textMd) acc.sources.push({ name: file.name, text: result.textMd });
+      // T03700+：失败/中止分片带文件名留档，面板可展示原文并单独补解析
+      for (const fc of result.failedChunks ?? []) {
+        acc.failed.push({ ...fc, file: file.name, uid: `${file.name}::${fc.index}::${Date.now()}-${acc.failed.length}` });
+      }
     } catch (e) {
       if (signal.aborted) {
         // 用户中断不是解析失败，不能记进 firstError 让末尾报「全部文件解析失败」
@@ -240,6 +278,7 @@ const PERSIST_KEYS = {
   reqs: 'prd-import.reqs',
   plans: 'prd-import.plans',
   sources: 'prd-import.sources',
+  failed: 'prd-import.failedChunks',
 } as const;
 
 /**
@@ -267,7 +306,18 @@ function persistParseResult(
  * 缺陷本身在旧版 mergePrdResults：old→new 重编号表跨文件共用一张，后份文档的 REQ-001 覆盖前份的同名旧号，
  * 前份的 WBS 草稿因此整体偏移到后份的需求行上（实测 mtask四期 一次导 2 份 PRD，前 20 行零关联）。
  */
-import { mergePrdResults, type PrdParseResult } from './prdMerge';
+import { buildGapFillDrafts, findUncoveredReqs, mergePrdResults, type PrdFailedChunk, type PrdParseResult } from './prdMerge';
+
+/** T03700+：缺失分片（带来源文件名，便于点名与补解析） */
+type FailedShardRow = PrdFailedChunk & { file: string; uid: string };
+
+/** 缺失原因 → 人话（决定用户该「稍后重试」还是「换模型/拆文档」） */
+const FAIL_REASON_LABEL: Record<PrdFailedChunk['reason'], string> = {
+  'rate-limit': '限流退避后仍失败',
+  error: 'AI 解析失败',
+  aborted: '总预算中止，未解析',
+  'not-run': '预算中止后未发起',
+};
 
 /**
  * 从 PRD 导入项目计划面板（T00662）：上传 PRD → AI 拆 WBS + 逐条提取需求 →
@@ -317,6 +367,8 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   // T00908：各源文件的 PRD 全文（解析时从 textMd 暂存）——确认导入时拼为 prdMd 落库 PRD 管理视图并关联需求矩阵
   // T00982：改会话级持久化——切页后回来仍要带着源文入库，否则会导入成"无 PRD 关联"的需求
   const [prdSources, setPrdSources] = useSessionState<{ name: string; text: string }[]>(PERSIST_KEYS.sources, []);
+  // T03700+：缺失分片（含原文）——会话级保留，切页后仍可补解析
+  const [failedShards, setFailedShards] = useSessionState<FailedShardRow[]>(PERSIST_KEYS.failed, []);
 
   // S2004：行字段更新回调下沉为组件级函数，避免 JSX 深层嵌套箭头
   const patchReq = (i: number, patch: Partial<PrdReq>) => setReqs((p) => p.map((x, j) => (j === i ? { ...x, ...patch } : x)));
@@ -348,9 +400,11 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       const r: unknown = JSON.parse(sessionStorage.getItem(PERSIST_KEYS.reqs) ?? '[]');
       const p: unknown = JSON.parse(sessionStorage.getItem(PERSIST_KEYS.plans) ?? '[]');
       const s: unknown = JSON.parse(sessionStorage.getItem(PERSIST_KEYS.sources) ?? '[]');
+      const f: unknown = JSON.parse(sessionStorage.getItem(PERSIST_KEYS.failed) ?? '[]');
       if (Array.isArray(r) && r.length > 0) setReqs(r as PrdReq[]);
       if (Array.isArray(p) && p.length > 0) setPlans(p as PrdPlan[]);
       if (Array.isArray(s) && s.length > 0) setPrdSources(s as { name: string; text: string }[]);
+      if (Array.isArray(f) && f.length > 0) setFailedShards(f as FailedShardRow[]);
     } catch {
       /* 脏数据忽略：保留界面现有内容 */
     }
@@ -362,6 +416,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     if (!canStartParse(projectId, toolId, files.length)) return;
     aiImportStore.reset('prd');
     setPrdSources([]); // T00908：重新解析即作废上一批暂存的 PRD 全文
+    setFailedShards([]); // T03700+：上一轮的缺失分片随重新解析作废
     const total = files.length;
     // T03185（UX-07②）：本轮解析的取消闸门。句柄登记在模块级 store，切页卸载后仍能中断；
     // 控制台「停止」与本面板「取消解析」共用这一句柄，保证中断的是真实请求而不是只清前端日志。
@@ -371,7 +426,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     aiImportStore.patch({ fileName: total > 1 ? `${total} 个文件` : files[0].name, busy: true });
     aiImportStore.log(`已选择 ${total} 个 PRD 文件：${files.map((f) => f.name).join('、')}`);
     setParseProgress({ done: 0, total });
-    const { results, sources, firstError, stopName } = await parseSelectedFiles(
+    const { results, sources, failed, firstError, stopName } = await parseSelectedFiles(
       files, projectId, toolId, ctrl.signal, (done) => setParseProgress({ done, total }),
     );
     if (ctrl.signal.aborted) {
@@ -393,7 +448,12 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       return;
     }
     if (sources.length > 0) setPrdSources(sources);
+    setFailedShards(failed);
     const { requirements, drafts } = mergePrdResults(results);
+    // T03700+：服务端已为缺口需求自动补行——先播报补齐情况，再播报合并后仍未覆盖的残留（正常应为 0 条）
+    logAutoFilled(drafts);
+    // T03700+：覆盖缺口按合并后的最终编号播报（后端告警是单文件编号，多文件重排后会对不上）
+    logUncoveredReqs(findUncoveredReqs(requirements, drafts));
     const stamp = Date.now();
     const reqRows = requirements.map((x, i) => ({ ...x, include: true, key: `pr-${stamp}-${i}` }));
     // T01001 二轮：解析出来就先汇总一次里程碑工期（AI 给的里程碑工期与其明细合计常不相等）
@@ -487,7 +547,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       logImportResult(r);
       // T00982：导入成功即清空完成戳，避免后续再按旧戳把已导入的结果拉回界面
       aiImportStore.patch({ lastSaved: r.plans, parseStamp: 0 });
-      setReqs([]); setPlans([]); setPrdSources([]);
+      setReqs([]); setPlans([]); setPrdSources([]); setFailedShards([]);
       onSaved?.(r);
     } catch (e) {
       const msg = String((e as Error).message ?? e);
@@ -503,6 +563,79 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   // T03185（UX-07③）：与 composeImportPayload 同口径的可提交需求数（勾选且标题非空）——
   // 按钮门槛若只看 include，会把「勾了但标题为空」的行算成可提交，点了仍被拦，等于禁用项不给真原因。
   const submittableReqs = useMemo(() => reqs.filter((x) => x.include && x.title.trim()).length, [reqs]);
+  // T03700+：按「本次实际会导入的勾选集」算未关联需求——未勾选的计划不参与导入，其覆盖不应算数
+  const uncoveredReqs = useMemo(
+    () => findUncoveredReqs(reqs.filter((x) => x.include), plans.filter((x) => x.include)),
+    [reqs, plans],
+  );
+
+  /**
+   * T03700+：为未关联需求**确定性**补计划。此前靠提示词要求模型自行补「REQ-xxx 相关实现/验证」，
+   * 但分片有 45 条计划上限，补偿行最先被裁掉，缺口集合因此随每次解析漂移；这里改为用户点一下就落行，
+   * 不再比拼模型是否记得补（行可再编辑或取消勾选）。
+   */
+  /** T03700+：下载缺失片原文为 .md，便于人工补录或用其它工具单独解析 */
+  function downloadShard(row: FailedShardRow): void {
+    const stem = row.file.replace(/\.[^.]+$/, '') || 'PRD';
+    saveBlob(new Blob([row.text], { type: EXPORT_MIME.md }), `${stem}-第${row.index}片.md`);
+  }
+
+  /**
+   * T03700+：单片补解析——把缺失片原文当一份独立 PRD 再解析，结果**并入**当前结果（不覆盖已解析部分），
+   * 合并时按「现有结果 + 补解析结果」两个来源重排全局编号，已勾选状态按行序保留。
+   */
+  async function retryShard(row: FailedShardRow) {
+    if (busy || !projectId || !toolId) return;
+    const ctrl = new AbortController();
+    const release = () => aiImportStore.setAbort(null);
+    aiImportStore.setAbort(() => ctrl.abort());
+    aiImportStore.patch({ busy: true, error: '' });
+    aiImportStore.log(`补解析缺失片：${row.file} 第 ${row.index}/${row.total} 片（${row.chars} 字）…`);
+    try {
+      const stem = row.file.replace(/\.[^.]+$/, '') || 'PRD';
+      const file = new File([row.text], `${stem}-第${row.index}片.md`, { type: 'text/markdown' });
+      const retried = await parseOneFile(file, projectId, toolId, ctrl.signal);
+      if (retried.requirements.length === 0 && retried.drafts.length === 0) {
+        aiImportStore.log(`第 ${row.index} 片补解析未得到任何条目（可能仍被限流），已保留在缺失分片列表中`, 'error');
+        return;
+      }
+      const base: PrdParseResult = {
+        requirements: reqs.map(({ include: _inc, key: _key, ...rest }) => rest),
+        drafts: plans.map(({ include: _inc, key: _key, ...rest }) => rest),
+      };
+      const merged = mergePrdResults([base, retried]);
+      // T03700+：服务端对该片同样做了缺口补齐——只统计本次补解析新增的补齐行，避免把已有行重复播报
+      const autoCount = retried.drafts.filter((d) => (d.description ?? '').startsWith('自动补齐：')).length;
+      const stamp = Date.now();
+      const reqRows = merged.requirements.map((x, i) => ({ ...x, include: i < reqs.length ? reqs[i].include : true, key: `pr-${stamp}-${i}` }));
+      const planRows = recalcMilestoneDurations(merged.drafts.map((x, i) => ({ ...x, include: i < plans.length ? plans[i].include : true, key: `pp-${stamp}-${i}` })));
+      setReqs(reqRows); setPlans(planRows);
+      const remain = failedShards.filter((x) => x.uid !== row.uid);
+      setFailedShards(remain);
+      persistParseResult(reqRows, planRows, prdSources);
+      try { sessionStorage.setItem(PERSIST_KEYS.failed, JSON.stringify(remain)); } catch { /* 配额等写入失败忽略 */ }
+      aiImportStore.log(`✓ 第 ${row.index}/${row.total} 片补解析完成：新增需求 ${merged.requirements.length - reqs.length} 条、计划 ${merged.drafts.length - plans.length} 条${autoCount ? `（其中自动补齐 ${autoCount} 条缺口需求，可在计划表取消勾选）` : ''}，已并入并全局重排编号`, 'ok');
+      logUncoveredReqs(findUncoveredReqs(reqRows.filter((x) => x.include), planRows.filter((x) => x.include)));
+    } catch (e) {
+      const msg = String((e as Error).message ?? e);
+      aiImportStore.patch({ error: msg });
+      aiImportStore.log(`第 ${row.index} 片补解析失败：${msg}（原文仍在缺失分片列表中，可再次重试或复制另存）`, 'error');
+    } finally {
+      release();
+      aiImportStore.patch({ busy: false });
+    }
+  }
+
+  function fillUncoveredPlans() {
+    if (uncoveredReqs.length === 0) return;
+    const stamp = Date.now();
+    const rows: PrdPlan[] = buildGapFillDrafts(uncoveredReqs).map((d, i) => ({ ...d, include: true, key: `pp-${stamp}-gap-${i}` }));
+    setPlans((prev) => recalcMilestoneDurations([...prev, ...rows]));
+    aiImportStore.log(
+      `已补齐 ${rows.length} 行计划（每条未关联需求一行「REQ-xxx … 实现/验证」，工期 1 天）——请核对标题，或取消勾选不需要追溯的需求`,
+      'ok',
+    );
+  }
 
   return (
     <div style={{ marginTop: 12, border: '1px solid var(--accent)', borderRadius: 10, background: 'var(--card-bg)', padding: 14 }}>
@@ -570,6 +703,64 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       </div>
 
       {error && <div style={{ color: 'var(--danger)', fontSize: 'var(--fs-s)', marginBottom: 8 }}>{error}</div>}
+
+      {/* T03700+：缺失分片就地可见——原文可展开/复制/下载，并支持只补解析这一片后并入结果 */}
+      {failedShards.length > 0 && (
+        <div data-t03700="failed-shards" style={{ marginBottom: 10, border: '1px solid var(--danger)', borderRadius: 8, padding: '8px 10px', background: 'var(--card-bg)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <strong style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)' }}>缺失分片（{failedShards.length}）</strong>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
+              以下分片解析失败或未解析，其需求/计划不在下方清单中；可展开查看原文、复制/下载另存，或「补解析此片」把内容并入当前结果
+            </span>
+          </div>
+          {failedShards.map((row) => (
+            <div key={row.uid} style={{ borderTop: '1px solid var(--border)', marginTop: 6, paddingTop: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text)' }}>
+                  {row.file} · 第 {row.index}/{row.total} 片 · {FAIL_REASON_LABEL[row.reason]} · {row.chars} 字
+                </span>
+                <CopyButton getText={() => row.text} title="复制该片原文" ariaLabel={`复制第 ${row.index} 片原文`} />
+                <button onClick={() => downloadShard(row)} className="tbtn-anim" title="下载该片原文为 .md（可人工补录或换工具解析）" aria-label={`下载第 ${row.index} 片原文`}
+                  style={{ fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer', padding: '2px 8px' }}>
+                  下载原文
+                </button>
+                <button onClick={() => void retryShard(row)} disabled={busy || !projectId || !toolId} className="tbtn-anim"
+                  title="只把该片原文再解析一次，并并入当前结果（不覆盖已解析部分）"
+                  aria-label={`补解析第 ${row.index} 片`}
+                  style={{ fontSize: 'var(--fs-xs)', border: '1px solid var(--danger)', borderRadius: 6, background: 'transparent', color: 'var(--danger)', cursor: (busy || !projectId || !toolId) ? 'default' : 'pointer', padding: '2px 8px' }}>
+                  补解析此片
+                </button>
+              </div>
+              {row.message && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>失败原因：{row.message}</div>}
+              <details style={{ marginTop: 4 }}>
+                <summary style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', cursor: 'pointer' }}>查看该片原文</summary>
+                <pre style={{ maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 'var(--fs-xs)', background: 'var(--border-weak, rgba(0,0,0,.03))', padding: 8, borderRadius: 6 }}>{row.text}</pre>
+              </details>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* T03700+：覆盖缺口就地可见并给确定性补齐入口——只报编号不够（编号每次都重排），必须带标题 */}
+      {uncoveredReqs.length > 0 && (
+        <div role="status" data-t03700="uncovered" style={{ marginBottom: 10, border: '1px solid var(--danger)', borderRadius: 8, padding: '8px 10px', background: 'var(--card-bg)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <strong style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)' }}>⚠ {uncoveredReqs.length} 条需求未被任何计划关联</strong>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
+              {uncoveredReqs.slice(0, 6).map((r) => `${r.reqNo}《${r.title.slice(0, 16)}》`).join('、')}
+              {uncoveredReqs.length > 6 ? ` 等 ${uncoveredReqs.length} 条` : ''}
+              （编号每次解析会重排，跨次比对请以标题为准）
+            </span>
+            <span style={{ flex: 1 }} />
+            <button onClick={fillUncoveredPlans} disabled={busy} className="tbtn-anim"
+              title="为每条未关联需求追加一行「REQ-xxx … 实现/验证」任务（工期 1 天）——确定性补齐，不依赖模型是否记得补计划；生成后可编辑或取消勾选"
+              aria-label="为未关联需求补齐计划"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--danger)', background: 'transparent', color: 'var(--danger)', fontSize: 'var(--fs-xs)', cursor: busy ? 'default' : 'pointer' }}>
+              补齐计划（{uncoveredReqs.length}）
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* T00841：已选文件列表——选择仅入列表不解析，用户点「确认」才触发 parseAll；确认前可增删 */}
       {pickedFiles.length > 0 && (
