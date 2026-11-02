@@ -114,7 +114,7 @@ function Shell() {
   // T02977 复验补：starting = 主进程已发起请求但还没收到任何字节（连 DNS/TLS 都算在内）；
   // 没有这一帧，点击后那段空窗在界面上等于「什么都没发生」。
   const [dlToast, setDlToast] = useState<DlToastState>(null);
-  // T00443 / PRD UX-4：全局命令面板（T03170 / D-07：Ctrl+K 打开；Ctrl+F 优先页内搜索）
+  // T00443 / PRD UX-4：全局命令面板（T03170 / D-07：Ctrl+K 打开；T03983：Shift+F 亦可；Ctrl+F 只走页内搜索）
   const [paletteOpen, setPaletteOpen] = useState(false);
   // T00706：全菜单使用向导——当前菜单首次进入自动弹出，导航右侧常驻「向导」按钮随时唤起
   const guide = GUIDES[tab];
@@ -170,21 +170,35 @@ function Shell() {
   // T03170（PRD D-07）：Ctrl+K 固定打开命令面板；Ctrl+F 优先聚焦当前页搜索框
   // （带 data-page-search 标记、可见且未禁用），无页内搜索时才打开命令面板。
   // 旧实现（T00560）把 Ctrl+F 整个让给面板并 preventDefault——按 D-07 统一裁决回退。
+  // T03983：面板的第二个唤起键由 Ctrl+F 改为 **Shift+F**。Ctrl+F 与各业务页内嵌搜索框长期抢键
+  // （页内搜索吃掉后，「面板打不开」被用户读成搜索功能坏了），而 Shift+F 不与浏览器查找/系统级组合冲突。
+  // 因此 Ctrl+F 只保留「聚焦页内搜索」这一件事，找不到页内搜索就把键交回浏览器（不再兜底开面板、不再 preventDefault）；
+  // 开面板统一走 Ctrl+K 或 Shift+F。⚠ macOS 下 Shift+F 无系统占用，但 Windows 部分输入法把 Shift+字母当候选键，
+  // 故 e.isComposing 必须先判（与数字键直达同一套守卫）。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() === 'f' && !e.ctrlKey && !e.metaKey && e.shiftKey && !e.altKey) {
+        if (e.isComposing) return;
+        const anchor = e.target instanceof Element ? e.target : null;
+        if (anchor?.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]')) return;
+        if (document.querySelector('dialog[open], [role="dialog"], [aria-modal="true"]')) return;
+        e.preventDefault();
+        setPaletteOpen(true);
+        return;
+      }
       if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
       if (k === 'k') {
         e.preventDefault();
         setPaletteOpen(true);
       } else if (k === 'f') {
+        // T03983：仅在真的聚焦到页内搜索时才 preventDefault——否则把浏览器原生查找也一起吞掉，
+        // 而面板已另有 Shift+F/Ctrl+K 两个入口，这里没有替它兜底的义务。
         const cands = Array.from(document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input[data-page-search], textarea[data-page-search]'));
         const target = cands.find((el) => el.offsetParent !== null && !el.disabled);
-        e.preventDefault();
         if (target && focusPageSearch(target)) {
+          e.preventDefault();
           setPaletteOpen(false);
-        } else {
-          setPaletteOpen(true);
         }
       }
     };

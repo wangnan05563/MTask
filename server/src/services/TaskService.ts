@@ -195,6 +195,9 @@ export interface TaskListOptions {
   /** T03232（PM-203③）：按自定义字段排序——未填值的任务固定排最后（与「空值不参与比较」的直觉一致）。
    *  只替换排序主键，创建时间仍作同值时的次序；pinned 不再前置（用户显式选了排序键）。 */
   fieldSort?: { fieldId?: string; dir?: 'asc' | 'desc' };
+  /** T03983：可见范围之外计数——只取「已归档 ∪ 历史资产 ∪ 搁置」的行，整段取代默认那三行排除。
+   *  供命令面板给出「同关键词另有 N 条不在当前视图」的实数据提示；置 true 时 archived/shelved 一律忽略。 */
+  outOfSight?: boolean;
 }
 
 /** T03232：各字段类型支持的筛选算子。text 用包含/等于；number/date 可比较；select 只能按选项等于。 */
@@ -432,14 +435,20 @@ function pushFieldFilters(opts: TaskListOptions, where: string[], values: unknow
 function buildTaskFilter(opts: TaskListOptions): { where: string[]; values: unknown[] } {
   const where: string[] = [];
   const values: unknown[] = [];
-  where.push('archived = ?');
-  values.push(opts.archived ? 1 : 0);
-  // T00589：活跃列表排除已入历史资产的内容（历史资产为独立沉淀区，不与活跃/归档混排）
-  if (!opts.archived) where.push("COALESCE(history_at, '') = ''");
-  // T00719：搁置隔离——默认活跃列表（含 MCP pending/status 查询）一律排除搁置任务；
-  // 搁置列表（shelved=true）只返回搁置任务；归档列表不过滤（先搁置后归档的任务仍可在归档区找到）
-  if (opts.shelved) where.push('shelved = 1');
-  else if (!opts.archived) where.push('COALESCE(shelved, 0) = 0');
+  if (opts.outOfSight) {
+    // T03983：「可见范围之外」计数——归档 ∪ 历史资产 ∪ 搁置三态取并集。这里必须整段替换默认的
+    // 「archived=? + history_at 空 + shelved 空」三行排除，否则三者互相抵消，计数恒为 0。
+    where.push("(archived = 1 OR COALESCE(history_at, '') <> '' OR COALESCE(shelved, 0) = 1)");
+  } else {
+    where.push('archived = ?');
+    values.push(opts.archived ? 1 : 0);
+    // T00589：活跃列表排除已入历史资产的内容（历史资产为独立沉淀区，不与活跃/归档混排）
+    if (!opts.archived) where.push("COALESCE(history_at, '') = ''");
+    // T00719：搁置隔离——默认活跃列表（含 MCP pending/status 查询）一律排除搁置任务；
+    // 搁置列表（shelved=true）只返回搁置任务；归档列表不过滤（先搁置后归档的任务仍可在归档区找到）
+    if (opts.shelved) where.push('shelved = 1');
+    else if (!opts.archived) where.push('COALESCE(shelved, 0) = 0');
+  }
   if (opts.projectId) { where.push('project_id = ?'); values.push(opts.projectId); }
   pushKeywordFilter(opts, where, values);
   // T03184：结构化查询整体作为一个条件并入，内部 AND/OR 语义由编译产物自带括号保证
@@ -963,6 +972,24 @@ export const TaskService = {
     const row = cachedPrepare(db, `SELECT COUNT(*) AS n FROM tasks WHERE ${where.join(' AND ')}`)
       .get(...values) as { n: number };
     return row.n;
+  },
+
+  /**
+   * T03983：与 count 同一套关键词/结构化条件，但把可见性反转成「只看得见范围之外」——
+   * 归档 ∪ 历史资产 ∪ 搁置。命令面板据此提示「另有 N 条不在当前视图」并给出分桶跳转。
+   * 分桶用一条聚合查询出全部数字：逐桶 COUNT(*) 会让每次按键打出四次同样的全表 LIKE 扫描。
+   * ⚠ 桶之间可重叠（先搁置后归档、进历史再归档），故各桶之和可能大于 total——展示按桶，不做相加校验。
+   */
+  countOutOfSight(opts: TaskListOptions = {}): { total: number; archived: number; history: number; shelved: number } {
+    const db = getDb();
+    const { where, values } = buildTaskFilter({ ...opts, outOfSight: true, limit: undefined, offset: undefined });
+    const row = cachedPrepare(db, `SELECT COUNT(*) AS total,
+        SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END) AS archived,
+        SUM(CASE WHEN COALESCE(history_at, '') <> '' THEN 1 ELSE 0 END) AS history,
+        SUM(CASE WHEN COALESCE(shelved, 0) = 1 THEN 1 ELSE 0 END) AS shelved
+        FROM tasks WHERE ${where.join(' AND ')}`).get(...values) as
+      { total: number; archived: number | null; history: number | null; shelved: number | null };
+    return { total: row.total, archived: row.archived ?? 0, history: row.history ?? 0, shelved: row.shelved ?? 0 };
   },
 
   /**

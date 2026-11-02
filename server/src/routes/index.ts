@@ -847,6 +847,9 @@ api.get('/tasks', (req, res) => {
  * 返回信封带 total/truncated/degraded/hint：面板据此显示「仅显示前 500 条」或语法降级原因。
  * 独立端点而不动 /tasks 的裸数组契约：目前只有面板需要计数与截断提示。
  * 非法语法不报错——降级为对原文的全文搜索，并把原因回传（PRD ②）。
+ * T03983：带非空关键词时额外回 `outOfSight`（归档/历史资产/搁置的分桶计数）。默认列表把这三态
+ * 整片排除（T00589/T00719），故「搜不到」多为「不在当前可见区」而非「不存在」——把差集计数
+ * 如实回传，面板才有实数据可提示；空查询不统计（默认列表本就没有"空态"，白扫全表无意义）。
  */
 api.get('/tasks/search', (req, res) => {
   const q = scalarText(req.query.q ?? '').trim();
@@ -873,7 +876,10 @@ api.get('/tasks/search', (req, res) => {
   let hint = '';
   if (degraded) hint = `查询语法有误（${degradeReason}），已按全文搜索「${q}」处理`;
   else if (truncated) hint = `仅显示前 ${limit} 条，请细化关键词`;
-  res.json({ items, total, limit, offset, mode, degraded, truncated, hint });
+  const outOfSight = q
+    ? TaskService.countOutOfSight(listOpts)
+    : { total: 0, archived: 0, history: 0, shelved: 0 };
+  res.json({ items, total, limit, offset, mode, degraded, truncated, hint, outOfSight });
 });
 
 // 按任务编号查询单个任务：AI Agent / 前端凭 task_no 定位（编号全局唯一）

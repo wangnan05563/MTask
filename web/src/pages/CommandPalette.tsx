@@ -6,8 +6,17 @@ import { focusTaskByNo } from '../ui/focusTask'; // T02162：对齐通知中心�
 import { loadProjectList, ProjectListHint, useProjectList } from '../ui/projectList'; // T02201：项目取数走统一容错层
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：任务/提示词取数改走可见失败态层
 import { TABS, type Tab } from '../ui/tabs'; // T03184（PM-102）：页面列表从导航单源生成
-import { SETTINGS_TABS, focusSettingsTab, matchesSettingsTab } from '../ui/settingsTabs'; // T03271（UX-09②）：设置页签单源 + 直达写入 // T03271（UX-09②）：设置页签与导航同名，可直达具体页签
+import { SETTINGS_TABS, focusSettingsTab, matchesSettingsTab, type SettingsTabKey } from '../ui/settingsTabs'; // T03271（UX-09②）：设置页签单源 + 直达写入 // T03271（UX-09②）：设置页签与导航同名，可直达具体页签
 
+
+/** T03983：后端回传的「可见范围之外」计数——归档 ∪ 历史资产 ∪ 搁置。桶间可重叠（先搁置后归档），
+ *  所以各桶之和可以大于 total，前端只按桶逐条给入口，绝不做相加校验。 */
+interface OutOfSight {
+  readonly total: number;
+  readonly archived: number;
+  readonly history: number;
+  readonly shelved: number;
+}
 
 /** T03184：后端 `/tasks/search` 信封——total/truncated/degraded 是面板提示语的唯一依据 */
 interface TaskSearchResult {
@@ -19,6 +28,8 @@ interface TaskSearchResult {
   readonly degraded: boolean;
   readonly truncated: boolean;
   readonly hint: string;
+  /** T03983：老后端没这个字段——可选 + 使用时兜零，不让面板因缺字段整块报错 */
+  readonly outOfSight?: OutOfSight;
 }
 
 /** 与 useSessionState 同格式写入会话存储（JSON）——供目标页 useSessionState 读取初始搜索词 */
@@ -90,6 +101,34 @@ function buildTaskItems(tasks: readonly Task[]): Item[] {
   }));
 }
 
+/**
+ * T03983：任务命中为 0 时的「范围外」可跳转条目。
+ * 默认列表把「已归档 / 历史资产 / 搁置」三态整片排除（T00589/T00719），所以面板里「搜不到」
+ * 大多是「不在当前可见区」而不是「不存在」——后端把这部分差集按桶计数回传，这里只如实成条。
+ * 计数为 0 的桶一条都不生成：把用户引向一个必然为空的页面，比不给入口更糟。
+ * 搁置没有独立菜单（在任务页的搁置 tab），故写 tasks.search + tasks.activeTab 两个会话键过去。
+ */
+function buildOutOfSightItems(kw: string, outOfSight: OutOfSight | undefined, tasks: readonly Task[], onNavigate: (tab: Tab) => void): Item[] {
+  if (!kw || tasks.length > 0 || !outOfSight || outOfSight.total === 0) return [];
+  const toSettings = (key: SettingsTabKey, label: string, count: number): Item => ({
+    group: '范围外',
+    label: `${label}中另有 ${count} 条「${kw}」`,
+    hint: `跳转到「设置 → ${label}」`,
+    action: () => { focusSettingsTab(key); onNavigate('settings'); },
+  });
+  const out: Item[] = [];
+  if (outOfSight.history > 0) out.push(toSettings('history', '历史资产', outOfSight.history));
+  if (outOfSight.archived > 0) out.push(toSettings('archive', '归档', outOfSight.archived));
+  if (outOfSight.shelved > 0) {
+    out.push({
+      group: '范围外', label: `搁置中另有 ${outOfSight.shelved} 条「${kw}」`,
+      hint: '跳任务页并切到搁置列表（带当前关键词）',
+      action: () => { setSessionState('tasks.search', kw); setSessionState('tasks.activeTab', 'shelved'); onNavigate('tasks'); },
+    });
+  }
+  return out;
+}
+
 /** 提示词（列表量级小，仍走一次取数后本地过滤） */
 function buildPromptItems(kwLower: string, prompts: readonly Prompt[], onNavigate: (tab: Tab) => void): Item[] {
   const out: Item[] = [];
@@ -112,7 +151,8 @@ function focusPrompt(prompt: Prompt): void {
 }
 
 /**
- * 全局命令面板（T00443 / PRD UX-4，P2）：Ctrl+K 唤起（T03170 / D-07：页内无搜索时 Ctrl+F 亦达），
+ * 全局命令面板（T00443 / PRD UX-4，P2）：Ctrl+K 唤起（T03170 / D-07：T03983 起第二个唤起键为 Shift+F，
+ * 不再占用 Ctrl+F——Ctrl+F 留给页内搜索与浏览器原生查找），
  * 跨实体搜索（任务/提示词/页面直达），↑↓ 选择、Enter 执行、Esc 关闭。
  *
  * T03184（PM-102）：任务搜索改走后端 `/tasks/search`——结构化语法（status:/priority:/project: +
@@ -156,15 +196,19 @@ export function CommandPalette({ open, onClose, onNavigate }: {
     return () => clearTimeout(timer);
   }, [open, kw, searchView.reload]);
 
-  const kwLower = kw.trim().toLowerCase();
+  const kwTrim = kw.trim();
+  const kwLower = kwTrim.toLowerCase();
+  // T03983：空态指引的取数与本轮结果同源（useResource 的轮次令牌保证不会吃到迟到的上一轮计数）
+  const outOfSight = searchView.data?.outOfSight;
 
   const items = useMemo<Item[]>(() => [
     ...buildPageItems(kwLower, onNavigate),
     ...buildSettingsItems(kwLower, onNavigate),
     ...buildProjectItems(kwLower, projects, onNavigate),
     ...buildTaskItems(tasks),
+    ...buildOutOfSightItems(kwTrim, outOfSight, tasks, onNavigate),
     ...buildPromptItems(kwLower, prompts, onNavigate),
-  ], [kwLower, tasks, prompts, projects, onNavigate]);
+  ], [kwLower, kwTrim, outOfSight, tasks, prompts, projects, onNavigate]);
 
   const execute = useCallback((i: number) => {
     const it = items[i];
@@ -204,9 +248,27 @@ export function CommandPalette({ open, onClose, onNavigate }: {
             style={{ flex: 1, border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-l)' }} />
         </div>
         <div style={{ maxHeight: '46vh', overflowY: 'auto' }}>
-          {showNoMatch && <div style={{ padding: 16, fontSize: 'var(--fs-s)', color: 'var(--text-muted)', textAlign: 'center' }}>无匹配结果</div>}
+          {/* T03983：空态不再只是一行「无匹配结果」——默认视图把归档/历史资产/搁置整片排除（T00589/T00719），
+              用户搜不到时首先要说清「这不是不存在，而是不在本面板范围」，再按真实计数给跳转（见上方「范围外」条目）。 */}
+          {showNoMatch && (
+            <div style={{ padding: 16, fontSize: 'var(--fs-s)', color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.7 }}>
+              <div>{kwTrim ? '未找到当前状态下的任务' : '无匹配结果'}</div>
+              {kwTrim && (
+                <div data-palette-scope-note style={{ marginTop: 4 }}>
+                  相关任务可能已归档至历史资产或处于搁置状态——本面板只搜当前可见区
+                  {result ? '（这些范围内也没有同关键词的命中）' : ''}
+                </div>
+              )}
+            </div>
+          )}
           {searchView.phase === 'loading' && items.length === 0 && (
             <output style={{ display: 'block', padding: 16, fontSize: 'var(--fs-s)', color: 'var(--text-muted)', textAlign: 'center' }}>搜索中…</output>
+          )}
+          {/* T03983：任务命中为 0、但范围外有命中时，先把「为什么这里是空的」说清楚，再列可跳转的条目 */}
+          {!showNoMatch && !!kwTrim && !!result && result.items.length === 0 && (result.outOfSight?.total ?? 0) > 0 && (
+            <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
+              当前可见区没有匹配任务——同关键词在归档 / 历史资产 / 搁置中另有 {result.outOfSight?.total} 条：
+            </div>
           )}
           {items.map((it, i) => (
             <button type="button"
