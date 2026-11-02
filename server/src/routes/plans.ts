@@ -781,6 +781,15 @@ function normalizePrdImportBody(b: Record<string, unknown>) {
       createTasks: b.createTasks === true,
       prdMd: typeof b.prdMd === 'string' ? b.prdMd : undefined, // T00763：PRD Markdown 原文完整落库
       prdFilename: typeof b.prdFilename === 'string' ? b.prdFilename : undefined,
+      // T04064：多文件导入逐份保留原名与原文；每份落一条 prd_docs，需求经 sourceIndex 归属各自文档
+      prdDocs: Array.isArray(b.prdDocs)
+        ? (b.prdDocs as Array<Record<string, unknown>>)
+          .filter((d) => d && typeof d === 'object')
+          .map((d) => ({
+            filename: typeof d.filename === 'string' ? d.filename : '',
+            contentMd: typeof d.contentMd === 'string' ? d.contentMd : '',
+          }))
+        : undefined,
       // T01875：撞名计划处置口径——'reuse' 走幂等补写，其余（含缺省）保持新建并给新行加「（N）」区分后缀
       onDuplicatePlan: b.onDuplicatePlan === 'reuse' ? 'reuse' as const : undefined,
     },

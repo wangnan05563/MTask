@@ -18,7 +18,8 @@ export interface PrdFailedChunk {
 
 /** T00662：单文件解析响应（/plans/ai-parse-prd） */
 export interface PrdParseResult {
-  requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>;
+  /** T04064：sourceIndex = 该需求来自第几个来源文件（与 import payload 的 prdDocs 下标对齐） */
+  requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string; sourceIndex?: number }>;
   drafts: Array<{ title: string; description: string; durationDays: number; reqNos: string[]; kind?: 'milestone' | 'normal' | 'daily' }>;
   coverageWarn?: string;
   /** T00908：后端随解析返回的 PRD 提取全文，供确认导入时落库到 PRD 管理视图 */
@@ -82,7 +83,7 @@ export function mergePrdResults(list: PrdParseResult[]): {
     for (const x of r.requirements) {
       const nn = `REQ-${String(n++).padStart(3, '0')}`;
       maps[fileIdx].set(x.reqNo, nn);
-      requirements.push({ ...x, reqNo: nn });
+      requirements.push({ ...x, reqNo: nn, sourceIndex: fileIdx });
     }
   });
   const drafts: PrdParseResult['drafts'] = [];

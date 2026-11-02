@@ -9,7 +9,7 @@ import { EXPORT_MIME, saveBlob } from '../utils/download';
 import { aiImportStore } from '../stores/aiImportStore';
 
 /** T00662：PRD 解析结果（需求项 + WBS 计划草稿） */
-interface PrdReq { reqNo: string; title: string; content: string; sourceRef: string; priority: string; include: boolean; key: string; }
+interface PrdReq { reqNo: string; title: string; content: string; sourceRef: string; priority: string; include: boolean; key: string; /** T04064：来源文件下标（= prdDocs 下标），导入时据此回填 prd_id */ sourceIndex?: number; }
 /** T01001：kind 可选——AI 解析出的里程碑/普通任务类型（后端可能未返回时缺省），编辑也是普通任务 */
 interface PrdPlan { title: string; description: string; durationDays: number; reqNos: string[]; kind?: 'milestone' | 'normal' | 'daily'; include: boolean; key: string; }
 
@@ -484,17 +484,21 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     // 勾选过滤：仅提交勾选项；reqNos 需与提交的需求编号保持一致（未勾选需求的引用自动丢弃）
     const keptNos = new Set(rq.map((x) => x.reqNo));
     const droppedReqNos = [...new Set(pl.flatMap((p) => p.reqNos.filter((n) => !keptNos.has(n))))];
-    // T00908：把暂存的源文件 PRD 全文拼为 prdMd 一并入库——后端落库 prd_docs（PRD 管理视图）并为需求行回填 prd_id 建立关联
+    // T00908：暂存的源文件 PRD 全文随导入落库（PRD 管理视图），需求行回填 prd_id 建立关联
+    // T04064：多文件不再拼接成一条「N 个来源文件」——逐份传 prdDocs，后端每份落一条文档，
+    // 需求按 sourceIndex 归属各自文档；单文件仍保留 prdMd/prdFilename 旧字段，兼容未升级的服务端。
     const prdMd = prdSources.map((s) => `# 来源：${s.name}\n\n${s.text}`).join('\n\n---\n\n');
     const prdFilename = prdSources.length > 1 ? `${prdSources.length} 个来源文件` : prdSources[0]?.name;
+    const singleSource = prdSources.length === 1;
     return {
       payload: {
         projectId,
         createTasks,
         requirements: rq.map(({ include: _inc, key: _key, ...rest }) => rest),
         plans: pl.map(({ include: _inc, key: _key, ...rest }) => ({ ...rest, reqNos: rest.reqNos.filter((n) => keptNos.has(n)) })),
-        prdMd: prdMd || undefined,
-        prdFilename: prdFilename || undefined,
+        prdDocs: prdSources.map((s) => ({ filename: s.name, contentMd: s.text })),
+        prdMd: singleSource ? prdMd || undefined : undefined,
+        prdFilename: singleSource ? prdFilename || undefined : undefined,
         // T02076：同名计划处置——'reuse' 走幂等补写，缺省新建让号
         onDuplicatePlan: onDuplicatePlan === 'reuse' ? 'reuse' : undefined,
       },

@@ -1080,7 +1080,10 @@ function countLiveReqLinks(db: ReturnType<typeof getDb>, reqIdsJson: string | nu
 type PrdImportPlanItem = { title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string; kind?: PlanKind; complexity?: number; status?: PlanStatus };
 
 /** importPrd 的 requirements 入参行（与该方法内联签名同构） */
-type PrdImportReqItem = { reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string };
+type PrdImportReqItem = { reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string; sourceIndex?: number };
+
+/** T04064：批量导入时每个来源文件各自落一条 prd_docs；filename 保留原名，同名批内加序号 */
+type PrdImportDocItem = { filename?: string; contentMd?: string };
 
 /** importPrd 的 planTargets 元素：实际落库标题 + 复用的原行 id（null=新建） */
 interface PrdImportPlanTarget { title: string; reuseId: string | null }
@@ -1135,6 +1138,62 @@ function persistPrdDocForImport(
     `INSERT INTO prd_docs (id, project_id, filename, content_md, origin_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(createdId, projectId, filename, prdMd, contentHash, t, t);
   return createdId;
+}
+
+/**
+ * T04064：多 PRD 导入的文件名规划——每份来源保留原名；同一批内重名按 ` (2)`、` (3)` 区分，
+ * 以满足「同名文档也必须各自独立展示」的约束。import 与 preview 共用本函数，两边落点才不会分叉。
+ */
+function planPrdDocNames(docs: PrdImportDocItem[]): Array<{ filename: string; contentMd: string }> {
+  const seen = new Map<string, number>();
+  return docs.map((d) => {
+    const base = (d.filename ?? '').trim() || '未命名 PRD.md';
+    const n = (seen.get(base) ?? 0) + 1;
+    seen.set(base, n);
+    if (n === 1) return { filename: base, contentMd: d.contentMd ?? '' };
+    const dot = base.lastIndexOf('.');
+    const filename = dot > 0 ? `${base.slice(0, dot)} (${n})${base.slice(dot)}` : `${base} (${n})`;
+    return { filename, contentMd: d.contentMd ?? '' };
+  });
+}
+
+/**
+ * T04064：来源文件 → prd_docs 行。多文件时逐份落库并返回与 docs 下标对齐的 id；
+ * 未带 prdDocs（旧调用方）时退回单文档口径，行为与 T00763 完全一致。
+ */
+function persistPrdDocsForImport(
+  db: ReturnType<typeof getDb>, projectId: string, input: { prdDocs?: PrdImportDocItem[]; prdMd?: string; prdFilename?: string }, t: string,
+): { docIds: string[]; legacyPrdId: string | undefined } {
+  if (Array.isArray(input.prdDocs) && input.prdDocs.length > 0) {
+    const docIds = planPrdDocNames(input.prdDocs)
+      .map((d) => persistPrdDocForImport(db, projectId, d.contentMd, d.filename, t))
+      .filter((id): id is string => !!id);
+    return { docIds, legacyPrdId: undefined };
+  }
+  return { docIds: [], legacyPrdId: persistPrdDocForImport(db, projectId, input.prdMd, input.prdFilename, t) };
+}
+
+/** T04064：预演文档落点的输出形状——与 previewPrdImport 声明的 prdDocs 字段对齐（判重动作摊平成可选字段） */
+type PrdDocPreviewItem = { filename: string; action: 'none' | 'reuse' | 'create'; id?: string; by?: 'hash' | 'name' };
+
+/** T04064：预演侧的文档落点（只读），与 persistPrdDocsForImport 共用同一套文件名规则与判重口径 */
+function previewPrdDocs(
+  db: ReturnType<typeof getDb>, projectId: string, input: { prdDocs?: PrdImportDocItem[]; prdMd?: string; prdFilename?: string },
+): PrdDocPreviewItem[] {
+  const toItem = (target: PrdDocTarget, filename: string): PrdDocPreviewItem =>
+    target.action === 'reuse'
+      ? { filename, action: 'reuse', id: target.id, by: target.by }
+      : { filename, action: target.action };
+  if (Array.isArray(input.prdDocs) && input.prdDocs.length > 0) {
+    return planPrdDocNames(input.prdDocs)
+      .map((d) => {
+        const { target, filename } = resolvePrdDocTarget(db, projectId, d.contentMd, d.filename);
+        return target.action === 'none' ? null : toItem(target, filename);
+      })
+      .filter((x): x is PrdDocPreviewItem => !!x);
+  }
+  const { target, filename } = resolvePrdDocTarget(db, projectId, input.prdMd, input.prdFilename);
+  return target.action === 'none' ? [] : [toItem(target, filename)];
 }
 
 /**
@@ -1284,7 +1343,10 @@ function resolveImportReqPlan(
 function insertPrdRequirementsForImport(
   db: ReturnType<typeof getDb>, projectId: string, plan: { rows: PrdImportReqPlanRow[] }, ctx: {
     t: string;
-    prdId: string | undefined;
+    /** T04064：与 import prdDocs 下标对齐的文档 id；行内 sourceIndex 命中则取对应文档 */
+    prdIds: string[];
+    /** 单文档（旧口径）或行未带 sourceIndex 时的归属 */
+    fallbackPrdId: string | undefined;
     noToId: Map<string, string>;
     requestedToId: Map<string, string>;
     ambiguousReqNos: Set<string>;
@@ -1292,7 +1354,12 @@ function insertPrdRequirementsForImport(
     reusedReqs: Array<{ id: string; reqNo: string; title: string }>;
   },
 ): void {
-  const { t, prdId, noToId, requestedToId, ambiguousReqNos, newReqs, reusedReqs } = ctx;
+  const { t, prdIds, fallbackPrdId, noToId, requestedToId, ambiguousReqNos, newReqs, reusedReqs } = ctx;
+  const prdIdFor = (src: PrdImportReqItem): string | null => {
+    const i = src.sourceIndex;
+    if (typeof i === 'number' && Number.isInteger(i) && i >= 0 && i < prdIds.length) return prdIds[i];
+    return fallbackPrdId ?? null;
+  };
   const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM prd_requirements WHERE project_id = ?').get(projectId) as { m: number }).m;
   let order = maxOrder;
   const insReq = db.prepare(
@@ -1312,7 +1379,7 @@ function insertPrdRequirementsForImport(
     const id = uuid();
     order += 1;
     const r = row.src;
-    insReq.run(id, projectId, row.reqNo, row.title, r.content ?? '', r.sourceRef ?? '', r.priority ?? 'normal', order, prdId ?? null, t, t);
+    insReq.run(id, projectId, row.reqNo, row.title, r.content ?? '', r.sourceRef ?? '', r.priority ?? 'normal', order, prdIdFor(r), t, t);
     noToId.set(row.reqNo, id);
     // 计划条目仍按 PRD 里的原编号引用：把「请求编号 → 本行 id」登记到原编号空间（顺延后关联不断链，T01921）
     if (row.requested) {
@@ -2795,14 +2862,16 @@ export const PlanService = {
    * 显式 `'reuse'`：幂等重跑，按标题命中未归档同名原行补差异与需求关联，**绝不改原行 status/progress**。
    */
   importPrd(projectId: string, input: {
-    requirements?: Array<{ reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string }>;
+    requirements?: Array<{ reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string; sourceIndex?: number }>;
     // T01001：plans 行支持 kind（milestone=里程碑 / normal=普通任务），导入时据此区分，不再全部转成普通任务
     plans?: Array<{ title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string; kind?: PlanKind; complexity?: number; status?: PlanStatus }>;
     createTasks?: boolean;
     prdMd?: string;
     prdFilename?: string;
+    /** T04064：多文件导入时逐份保留原文与原名，每份一条 prd_docs */
+    prdDocs?: Array<{ filename?: string; contentMd?: string }>;
     onDuplicatePlan?: 'new' | 'reuse';
-  }): { requirements: number; requirementsCreated: number; reusedRequirements: number; plans: number; tasks: number; unlinkedReqNos: string[]; prdId?: string; reqNoMap: Array<{ from: string; to: string }>; dupPlanTitles: Array<{ title: string; existing: number; renamedTo?: string; reusedPlanId?: string }>; reusedPlans: number; ambiguousReqNos: string[]; orphanRequirements: Array<{ reqNo: string; title: string }>; planRowIds: Array<string | null> } {
+  }): { requirements: number; requirementsCreated: number; reusedRequirements: number; plans: number; tasks: number; unlinkedReqNos: string[]; prdId?: string; prdIds: string[]; reqNoMap: Array<{ from: string; to: string }>; dupPlanTitles: Array<{ title: string; existing: number; renamedTo?: string; reusedPlanId?: string }>; reusedPlans: number; ambiguousReqNos: string[]; orphanRequirements: Array<{ reqNo: string; title: string }>; planRowIds: Array<string | null> } {
     const db = getDb();
     if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
     const reqs = (input.requirements ?? []).filter((r) => r?.title?.trim());
@@ -2827,7 +2896,9 @@ export const PlanService = {
     const reusedReqs: Array<{ id: string; reqNo: string; title: string }> = [];
     const linkedReqIds = new Set<string>();
     // T00763 / T01156-3：PRD 原文落库与同名/同内容覆盖复用（口径与逐段说明见 persistPrdDocForImport）
-    const prdId = persistPrdDocForImport(db, projectId, input.prdMd, input.prdFilename, t);
+    // T04064：多来源文件逐份落库，需求行按 sourceIndex 回填各自文档；单文档口径保持不变
+    const { docIds, legacyPrdId } = persistPrdDocsForImport(db, projectId, input, t);
+    const prdId = docIds[0] ?? legacyPrdId;
     // T01869 / T01875：同名计划的处置口径与 planTargets/dupPlanTitles 生成见 resolveImportPlanTargets。
     const reuseMode = input.onDuplicatePlan === 'reuse';
     const { planTargets, dupPlanTitles } = resolveImportPlanTargets(db, projectId, planItems, reuseMode, planKinds);
@@ -2855,7 +2926,7 @@ export const PlanService = {
       // 「预演报的数」与「实落库的数」不可能分叉（分叉正是 T01869 那类误判的温床）。
       const reqPlan = resolveImportReqPlan(db, projectId, reqs, reuseMode, reqNoMap);
       insertPrdRequirementsForImport(db, projectId, reqPlan, {
-        t, prdId, noToId, requestedToId, ambiguousReqNos, newReqs, reusedReqs,
+        t, prdIds: docIds, fallbackPrdId: legacyPrdId, noToId, requestedToId, ambiguousReqNos, newReqs, reusedReqs,
       });
       // 2) 计划（含 req_ids 关联）
       // T01875：planIds 与 planItems 下标对齐，元素是该条目实际落库的计划 id——
@@ -2915,6 +2986,7 @@ export const PlanService = {
       tasks: taskCount,
       unlinkedReqNos: [...unlinkedReqNos],
       prdId,
+      prdIds: docIds,
       reqNoMap,
       dupPlanTitles,
       reusedPlans,
@@ -2932,11 +3004,13 @@ export const PlanService = {
    * 全是 `importPrd` 自己在用的那几个函数；本方法不重复实现任何一条判定（另写一套判重即分叉，本单明令禁止）。
    */
   previewPrdImport(projectId: string, input: {
-    requirements?: Array<{ reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string }>;
+    requirements?: Array<{ reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string; sourceIndex?: number }>;
     plans?: Array<{ title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string; kind?: PlanKind; complexity?: number; status?: PlanStatus }>;
     createTasks?: boolean;
     prdMd?: string;
     prdFilename?: string;
+    /** T04064：多文件导入的逐份文档（只读预演同样逐份比对是否新建/复用） */
+    prdDocs?: Array<{ filename?: string; contentMd?: string }>;
     onDuplicatePlan?: 'new' | 'reuse';
   }): {
     willCreatePlans: number; willReusePlans: number; willRenamePlans: number;
@@ -2946,6 +3020,7 @@ export const PlanService = {
     ambiguousReqNos: string[]; unlinkedReqNos: string[];
     orphanRequirements: Array<{ reqNo: string; title: string }>;
     prdDoc: { action: 'none' | 'reuse' | 'create'; id?: string; by?: 'hash' | 'name' };
+    prdDocs: Array<{ filename: string; action: 'none' | 'reuse' | 'create'; id?: string; by?: 'hash' | 'name' }>;
     planRowsPreview: Array<{ title: string; reuseId: string | null }>;
     createTasks: boolean;
     readOnly: true;
@@ -2960,7 +3035,11 @@ export const PlanService = {
     const planKinds = planItems.map((p) => (p.kind ?? resolvePrdKind(p.title, p.kind)));
     const { planTargets, dupPlanTitles } = resolveImportPlanTargets(db, projectId, planItems, reuseMode, planKinds);
     const reqPlan = resolveImportReqPlan(db, projectId, reqs, reuseMode, reqNoMap);
-    const { target: prdDoc } = resolvePrdDocTarget(db, projectId, input.prdMd, input.prdFilename);
+    const prdDocsPreview = previewPrdDocs(db, projectId, input);
+    const firstDoc = prdDocsPreview[0];
+    const prdDoc = firstDoc
+      ? { action: firstDoc.action, id: firstDoc.id, by: firstDoc.by }
+      : { action: 'none' as const };
     // 与 importPrd 的 findReqId 同三层口径：本次原编号空间 → 本次落库编号 → 存量按号定位（T02131 回落）
     const requestedToId = new Map<string, string>();
     const noToId = new Map<string, string>();
@@ -2997,6 +3076,7 @@ export const PlanService = {
       unlinkedReqNos: [...unlinkedReqNos],
       orphanRequirements,
       prdDoc,
+      prdDocs: prdDocsPreview,
       planRowsPreview: planTargets.map((x) => ({ title: x.title, reuseId: x.reuseId })),
       createTasks: input.createTasks === true,
       readOnly: true,

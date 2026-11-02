@@ -72,6 +72,8 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
   // T01873：ids 为该组命中行（矩阵顺序，ids[0] 是最靠前的一行），供行内标记与「点提示直达」使用
   const [dupGroups, setDupGroups] = useState<Array<{ reqNo: string; count: number; variants: string[]; ids: string[] }>>([]);
   const [dupCursor, setDupCursor] = useState(0); // T01873：同一 banner 反复点击时按组轮换定位
+  // T04064：按来源 PRD 筛选——多文档导入后，矩阵里要能只看某一份文档带来的需求
+  const [prdFilter, setPrdFilter] = useState('');
   // 消退定时器与「已消费过哪个跳转意图」都走 ref：既不参与渲染，也不会被 effect 重跑干扰
   const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const locatedRef = useRef('');
@@ -340,11 +342,15 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   }
 
-  const covered = rows.filter((r) => r.linkedPlans.length > 0 || r.linkedTasks.length > 0).length;
-  // T00773：全选框半选态（部分选中时显示短横线）
+  // T04064：来源筛选项取自已加载行（只列真正带需求的文档）；筛选值失效时自动回落「全部来源」，不留空表
+  const prdDocOptions = [...new Map(rows.flatMap((r) => (r.prdDoc ? [[r.prdDoc.id, r.prdDoc.filename || '未命名 PRD'] as [string, string]] : []))).entries()];
+  const activePrdFilter = prdDocOptions.some(([id]) => id === prdFilter) ? prdFilter : '';
+  const visibleRows = activePrdFilter ? rows.filter((r) => r.prdDoc?.id === activePrdFilter) : rows;
+  const covered = visibleRows.filter((r) => r.linkedPlans.length > 0 || r.linkedTasks.length > 0).length;
+  // T00773：全选框半选态（部分选中时显示短横线）；T04064：口径跟随来源筛选后的可见行
   useEffect(() => {
-    if (allRef.current) allRef.current.indeterminate = selIds.length > 0 && selIds.length < rows.length;
-  }, [selIds, rows]);
+    if (allRef.current) allRef.current.indeterminate = selIds.length > 0 && selIds.length < visibleRows.length;
+  }, [selIds, visibleRows.length]);
 
   // 渲染辅助：将整组件 return 内的密集 JSX 拆成独立函数，各自单独计认知复杂度，避免单一函数超 S3776 阈值
   const renderToolbar = () => (
@@ -352,7 +358,9 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
       <Table2 size={15} style={{ color: 'var(--accent)' }} />
       <strong style={{ fontSize: 'var(--fs-l)' }}>需求跟踪矩阵</strong>
       <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
-        共 {rows.length} 条需求，已关联计划/待办 {covered} 条；可增删改与调整关联
+        {visibleRows.length === rows.length
+          ? `共 ${rows.length} 条需求，已关联计划/待办 ${covered} 条；可增删改与调整关联`
+          : `共 ${visibleRows.length}/${rows.length} 条需求（已按来源筛选），其中已关联计划/待办 ${covered} 条`}
       </span>
       {/* T01867：重复编号会让「按编号定位需求」（矩阵导出、用例导入复用）命中不确定行——只提示历史脏数据，不阻断操作
           T01921：一组内可能同时有 REQ-01 / REQ-001 两种写法，展平 variants 才看得出是同一编号混写而非两个号
@@ -365,6 +373,15 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
           ⚠ 重复需求编号 {dupGroups.length} 组：{dupGroups.slice(0, 3).map((g) => `${g.variants.join('/')}×${g.count}`).join('、')}{dupGroups.length > 3 ? ` 等 ${dupGroups.length} 组` : ''}
         </button>
       )}
+      {/* T04064：多文档导入后按来源 PRD 收窄矩阵；单来源或无来源时不显示控件 */}
+      {prdDocOptions.length > 1 && (
+        <select value={activePrdFilter} onChange={(e) => { setPrdFilter(e.target.value); setSelIds([]); }}
+          data-t04064="prd-filter" title="按来源 PRD 筛选需求" aria-label="按来源 PRD 筛选"
+          style={{ fontSize: 'var(--fs-xs)', padding: 2, border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          <option value="">全部来源（{rows.length} 条）</option>
+          {prdDocOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+        </select>
+      )}
       <span style={{ flex: 1 }} />
       {/* T00773：多选模式开关（参考项目计划 T00564）——勾选需求后批量改状态/删除 */}
       <button onClick={() => { setMulti((m) => !m); setSelIds([]); }} className="tbtn-anim"
@@ -375,9 +392,9 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
       {multi && selIds.length > 0 && (
         <span className="op-host" style={{ display: 'inline-flex', gap: 6, alignItems: 'center', border: '1px solid var(--accent)', borderRadius: 6, padding: '2px 8px', background: 'var(--card-bg)' }}>
           <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)' }}>已选 {selIds.length}</span>
-          <button onClick={() => setSelIds(selIds.length === rows.length ? [] : rows.map((r) => r.id))} className="task-op"
-            title={selIds.length === rows.length ? '取消全选' : '全选当前需求'} style={{ fontSize: 'var(--fs-xs)', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)' }}>
-            {selIds.length === rows.length ? '取消全选' : '全选'}
+          <button onClick={() => setSelIds(selIds.length === visibleRows.length ? [] : visibleRows.map((r) => r.id))} className="task-op"
+            title={selIds.length === visibleRows.length ? '取消全选' : '全选当前需求'} style={{ fontSize: 'var(--fs-xs)', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text)' }}>
+            {selIds.length === visibleRows.length ? '取消全选' : '全选'}
           </button>
           <select value="" onChange={(e) => { const v = e.target.value; if (v) void batchSetStatus(v); }}
             title="批量设置状态" aria-label="批量设置需求状态"
@@ -434,7 +451,11 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
 
   /** T01486：表格主体已拆到 `MatrixTable`（纯搬迁 + 新增「用例」下钻列），这里只组装它需要的状态与动作 */
   const tableProps = {
-    rows, multi, selIds, caseCounts, queryId, linkFor,
+    rows: visibleRows, // T04064：来源筛选后的可见行（导出仍走服务端全量，不受此处影响）
+    emptyHint: activePrdFilter
+      ? `该来源下暂无需求——「${prdDocOptions.find(([id]) => id === activePrdFilter)?.[1] ?? '已选 PRD'}」没有关联需求，切回「全部来源」可查看其它需求。`
+      : undefined,
+    multi, selIds, caseCounts, queryId, linkFor,
     locateReqId: flashReqId, allRef,
     dupInfo, // T01873：重复编号行内的标红与悬浮说明（无重复时为空对象，渲染零变化）
     setSelIds, setQueryId,

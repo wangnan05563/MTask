@@ -18,6 +18,8 @@ import { STATUS_OPTIONS } from './ReqMatrixPanel';
 /** 表格渲染所需的全部状态与动作（由父组件持有，本组件不碰任何数据源） */
 export interface MatrixTableProps {
   readonly rows: MatrixReq[];
+  /** 行集为空时的说明文案（T04064：来源筛选后为 0 条时不能复用「该项目暂无需求」） */
+  readonly emptyHint?: string;
   readonly multi: boolean;
   readonly selIds: string[];
   readonly caseCounts: Record<string, number>;
@@ -76,7 +78,7 @@ export function MatrixTable({ p }: { readonly p: MatrixTableProps }) {
   const { rows, multi, selIds, caseCounts, queryId, linkFor, allRef } = p;
 
   if (rows.length === 0) {
-    return <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>该项目暂无需求记录——可用「从 PRD 导入项目计划」生成，或在上方手动新增。</div>;
+    return <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>{p.emptyHint ?? '该项目暂无需求记录——可用「从 PRD 导入项目计划」生成，或在上方手动新增。'}</div>;
   }
 
   /** 多选模式的行内勾选单元格（M6-6.4：提取以消除 S2004 深嵌套） */
