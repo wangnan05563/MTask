@@ -1489,19 +1489,26 @@ function createPrdImportTodos(
 }
 
 /**
- * 按 req_no 定位存量需求行（带会话内缓存）——import 与 preview 共用同一实现，
+ * 按 req_no 定位存量需求行——import 与 preview 共用同一实现，
  * 避免两边各写一份「三层回落」的第三层后在口径上分叉。
+ *
+ * T04009：查重键走 `normalizedReqNoKey`，与计划侧 `splitReqNoRefs` 同一口径。此前按字面
+ * `req_no = ?` 精确匹配，存量行若写作 REQ-001 而新导入写 REQ-1（或反之），第三层回落整条
+ * 落空——关联被丢进 unlinkedReqNos，反复导入还会再建一行同义需求。这里只改「怎么找到既有行」，
+ * 不合并、不改写存量数据；同键多行（历史双写法）按 sort_order、created_at 取首行，与列表顺序一致。
  */
 function makeExistingReqLookup(db: ReturnType<typeof getDb>, projectId: string): (n: string) => string | null {
-  const cache = new Map<string, string | null>();
+  const byKey = new Map<string, string>();
+  const rows = db.prepare(
+    'SELECT id, req_no FROM prd_requirements WHERE project_id = ? ORDER BY sort_order, created_at',
+  ).all(projectId) as Array<{ id: string; req_no: string }>;
+  for (const row of rows) {
+    const key = normalizedReqNoKey(row.req_no);
+    if (key && !byKey.has(key)) byKey.set(key, row.id);
+  }
   return (n: string): string | null => {
-    const key = n.trim();
-    if (!key) return null;
-    if (cache.has(key)) return cache.get(key) ?? null;
-    const row = db.prepare('SELECT id FROM prd_requirements WHERE project_id = ? AND req_no = ?').get(projectId, key) as { id: string } | undefined;
-    const id = row?.id ?? null;
-    cache.set(key, id);
-    return id;
+    const key = normalizedReqNoKey(n);
+    return key ? byKey.get(key) ?? null : null;
   };
 }
 
