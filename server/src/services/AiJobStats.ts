@@ -85,8 +85,11 @@ export class AiJobStats {
     const sectionsOk = nonNegativeInt(input.sectionsOk, 'sectionsOk');
     if (sectionsOk > sectionsTotal) throw new Error('sectionsOk 不能大于 sectionsTotal');
     const now = new Date().toISOString();
-    const startedAt = isoOr(input.startedAt, 'startedAt', now);
     const finishedAt = isoOr(input.finishedAt, 'finishedAt', now);
+    // T04087：没给起点就以终点为起点（时长计 0），不再各取一次 now——
+    // 调用方（reportAiJob）先取 finishedAt 再进来时两次取时可能跨毫秒，
+    // 兜底的 startedAt 会晚于已传入的 finishedAt，被下方守卫拒收并整轮静默丢行。
+    const startedAt = isoOr(input.startedAt, 'startedAt', finishedAt);
     if (startedAt > finishedAt) throw new Error('startedAt 不能晚于 finishedAt');
 
     getDb().prepare(
