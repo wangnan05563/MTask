@@ -3,6 +3,7 @@ import { FIELD_QUIET, PILL } from '../ui/primitives'; // PM-302 ① 单源 ui/pr
 import { Ban, ChevronDown, ChevronRight, Download, Eye, GitBranch, ListChecks, RefreshCw, Sparkles, X } from 'lucide-react'; // T03654：折叠箭头统一 lucide
 import { api } from '../api/client';
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
+import { describeStreamFailure } from '../api/streamError'; // T03999：传输层断连补可操作说明
 import type { Project } from '../api/client';
 import { ProjectScopePicker } from '../ui/projectScopePicker';
 import { GitTreePickerModal } from '../ui/GitTreePickerModal';
@@ -569,7 +570,7 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
       codeReviewLectureStore.finish();
       void refreshJournal();
     } catch (e) {
-      const msg = errText(e);
+      const msg = describeStreamFailure(errText(e), { resumable: true }); // T03999：讲稿流有分段台账，断流提示要指到「重试失败段」
       // 用户主动「停止」不是故障：保留已生成章节，不写错误态
       codeReviewLectureStore.finish(ac.signal.aborted ? undefined : msg);
       if (!ac.signal.aborted) flash(msg.includes(GATE_BUSY_MSG) ? `${msg}——请稍后重试` : msg);

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api, type Project } from '../api/client';
 import { streamEvents } from '../api/sse';
+import { describeStreamFailure } from '../api/streamError'; // T03999：链路被掐时不再只透出裸文案
 import { useSessionState } from '../ui/session';
 import { ProjectListHint, patchProject, projectListPlaceholder, useProjectList } from '../ui/projectList';
 import { MarkdownContent } from '../ui/Markdown';
@@ -329,7 +330,7 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
     } catch (e) {
       // 用户「停止」主动中止：状态已由 prdGenStore.abort() 清空，不再追加失败日志
       if (ac.signal.aborted) return null;
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = describeStreamFailure(e instanceof Error ? e.message : String(e));
       recordGenerateOutcome(null, batchCtx, msg);
       return null;
     } finally {

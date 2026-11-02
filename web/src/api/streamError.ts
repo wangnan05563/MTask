@@ -27,9 +27,19 @@ export function isTransportBreak(msg: string): boolean {
   return TRANSPORT_MARKERS.some((m) => t.includes(m));
 }
 
+/** 失败文案的续作能力声明：只有真有分段台账（AiGenJournal）的流才允许承诺「重试即续作」 */
+export interface StreamFailureOptions {
+  resumable?: boolean;
+}
+
+const TRANSPORT_HEAD = '—— 连接中断（不是模型报错）：本轮在长耗时调用期间链路静默被掐。';
+/** 有台账：重试从断点续作（测试用例生成、代码评审讲稿两条流） */
+const TRANSPORT_TAIL_RESUMABLE = '已完成的分段有台账，直接对同一文档重试即从断点续作，不会重复调用模型';
+/** 无台账：不得谎称能续作，否则用户以为"再点一次会接着上次的走"，实际整篇重跑 */
+const TRANSPORT_TAIL_RERUN = '这条流没有分段台账，重试会从头重新调用模型（链路中断与内容无关，可直接重试）';
+
 /** 失败文案收口：传输层断连补可操作说明，其它原因原样返回 */
-export function describeStreamFailure(raw: string): string {
+export function describeStreamFailure(raw: string, opts?: StreamFailureOptions): string {
   if (!raw || !isTransportBreak(raw)) return raw;
-  return `${raw} —— 连接中断（不是模型报错）：本轮在长耗时调用期间链路静默被掐。`
-    + '已完成的分段有台账，直接对同一文档重试即从断点续作，不会重复调用模型';
+  return `${raw} ${TRANSPORT_HEAD}${opts?.resumable ? TRANSPORT_TAIL_RESUMABLE : TRANSPORT_TAIL_RERUN}`;
 }

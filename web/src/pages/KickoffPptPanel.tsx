@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
+import { describeStreamFailure } from '../api/streamError'; // T03999：传输层断连不再只透出裸文案
 import { kickoffPptStore, useKickoffPpt, type KickoffOutlineItem, type KickoffStreamResult } from '../stores/kickoffPptStore';
 import { sessionJobId } from '../util/jobId'; // T03316（G-3）：会话稳定 jobId，重试合到同一 job
 import { FlowProgress } from '../ui/FlowProgress';
@@ -475,8 +476,10 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
       if (ac.signal.aborted) return; // 用户主动「停止」：store 已清空，不再补失败日志
       const msg = e instanceof Error ? e.message : String(e);
       const queued = msg.includes(GATE_BUSY_MSG);
-      kickoffPptStore.finish(queued ? `并发闸排队：${msg}` : `生成失败：${msg}`);
-      flash(queued ? `${msg}——前面有周报/启动会稿在装配，稍后重试即可（不是失败）` : msg);
+      // T03999：排队态与断连态各走各的文案——断连补可操作说明，排队仍保留「稍后重试即可（不是失败）」语气
+      const text = describeStreamFailure(msg);
+      kickoffPptStore.finish(queued ? `并发闸排队：${msg}` : `生成失败：${text}`);
+      flash(queued ? `${msg}——前面有周报/启动会稿在装配，稍后重试即可（不是失败）` : text);
     } finally {
       kickoffPptStore.setAbortCtrl(null);
     }

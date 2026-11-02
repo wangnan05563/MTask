@@ -7,6 +7,7 @@ import { ProjectScopePicker, scopeSummary } from '../ui/projectScopePicker'; // 
 import { NoticeToast, useNotice } from '../ui/notice';
 import { ResourceHint, useResource, type ResourceHintView } from '../ui/resourceState'; // T02213：开关状态取数改走可见失败态层
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
+import { describeStreamFailure } from '../api/streamError'; // T03999：传输层断连不再只透出裸文案
 import { reportStream, useReportStream, type ReportProvenanceView, type ReportArtifactView, type AiRunUsageView, type AiRunDeviationView } from '../reportStream';
 import { ReportConsole } from './ReportConsole';
 import { AiPlanImportPanel } from './AiPlanImportPanel';
@@ -756,8 +757,10 @@ function classifyReportFailure(e: unknown, aborted: boolean): ReportFailure {
   if (aborted) return { aborted: true, queued: false, raw: '', flashText: '' };
   const raw = e instanceof Error ? e.message : String(e);
   const queued = raw.includes(GATE_BUSY_MSG);
-  const flashText = queued ? `${raw}——前面有周报/启动会稿在装配，稍后重试即可（不是失败）` : raw;
-  return { aborted: false, queued, raw, flashText };
+  // T03999：传输层断连补可操作说明；排队态不含断连特征串，归一函数会原样返回，两条路互不干扰
+  const text = describeStreamFailure(raw);
+  const flashText = queued ? `${text}——前面有周报/启动会稿在装配，稍后重试即可（不是失败）` : text;
+  return { aborted: false, queued, raw: text, flashText };
 }
 
 interface ReportFrameCtx {

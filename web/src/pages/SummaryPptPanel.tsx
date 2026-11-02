@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type Project } from '../api/client';
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
+import { describeStreamFailure } from '../api/streamError'; // T03999：传输层断连不再只透出裸文案
 import { summaryPptStore, useSummaryPpt, type SummaryOutlineItem, type SummaryStreamResult } from '../stores/summaryPptStore';
 import { sessionJobId } from '../util/jobId'; // T03316（G-3）：会话稳定 jobId，重试合到同一 job
 import { ProjectScopePicker, scopeSummary } from '../ui/projectScopePicker';
@@ -286,7 +287,7 @@ function downloadReadyFlash(fileName: string): string {
   return '已生成，点「下载 .pptx」取回（下载即删令牌）';
 }
 
-/** 生成失败收口文案：并发闸排队不是失败，语气要与其它卡片一致 */
+/** 生成失败收口文案：并发闸排队不是失败，语气要与其它卡片一致；传输层断连补可操作说明（T03999） */
 function generateFailureNotice(msg: string): { finishText: string; flashText: string } {
   if (msg.includes(GATE_BUSY_MSG)) {
     return {
@@ -294,7 +295,8 @@ function generateFailureNotice(msg: string): { finishText: string; flashText: st
       flashText: `${msg}——前面有周报/启动会稿在装配，稍后重试即可（不是失败）`,
     };
   }
-  return { finishText: `生成失败：${msg}`, flashText: msg };
+  const text = describeStreamFailure(msg);
+  return { finishText: `生成失败：${text}`, flashText: text };
 }
 
 /** ① 周期与范围段（四档周期 + 自定义区间 + 顶部范围/卡片覆盖 + 版式预设） */
