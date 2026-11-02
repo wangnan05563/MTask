@@ -16,6 +16,35 @@ export interface PrdFailedChunk {
   text: string;
 }
 
+/** T04010：面板里的缺失片行——带来源文件名、行唯一键与服务端失败片 id（补解析成功后按它删服务端索引） */
+export type FailedShardRow = PrdFailedChunk & { file: string; uid: string; serverId?: string };
+
+/** T04010：服务端恢复的缺失片——原文由后端按 prd_docs.content_md + 落库区间现切，库里不存第二份正文 */
+export interface RestoredFailedChunk extends PrdFailedChunk {
+  id: string;
+  file: string;
+  prdId: string;
+  createdAt: string;
+}
+
+/**
+ * T04010：关窗/重启后把服务端恢复行并入本地列表——保持「并入而非覆盖」：
+ * 同 serverId 或同「来源文件 + 片号」的已在列表中则不重复加，本地已有行（可能刚补解析出新内容）不被覆盖。
+ */
+export function mergeRestoredFailures(
+  local: ReadonlyArray<FailedShardRow>,
+  restored: ReadonlyArray<RestoredFailedChunk>,
+): FailedShardRow[] {
+  const seenIds = new Set(local.map((r) => r.serverId).filter((x): x is string => !!x));
+  const seenChunks = new Set(local.map((r) => `${r.file}\u0000${r.index}`));
+  const out = [...local];
+  for (const r of restored) {
+    if (seenIds.has(r.id) || seenChunks.has(`${r.file}\u0000${r.index}`)) continue;
+    out.push({ ...r, uid: `srv:${r.id}`, serverId: r.id });
+  }
+  return out;
+}
+
 /** T00662：单文件解析响应（/plans/ai-parse-prd） */
 export interface PrdParseResult {
   /** T04064：sourceIndex = 该需求来自第几个来源文件（与 import payload 的 prdDocs 下标对齐） */
@@ -32,6 +61,8 @@ export interface PrdParseResult {
   parseWarnings?: string[];
   /** T03700+：分片失败/中止时缺失的片（含原文），面板据此提供查看、复制与单片补解析 */
   failedChunks?: PrdFailedChunk[];
+  /** T04010：服务端失败片索引 id（与 failedChunks 同序）——用于补解析成功后删除对应索引 */
+  failedChunkIds?: string[];
   /** T03700+：服务端自动补齐的计划行对应的需求编号（原缺口需求） */
   autoFilledReqNos?: string[];
 }

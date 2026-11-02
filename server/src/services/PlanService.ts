@@ -140,6 +140,9 @@ export interface PrdFailedChunk {
   /** 最近一次失败原因（截断 300 字） */
   message?: string;
   chars: number;
+  /** T04010：该片在 PRD 全文中的字符区间（左闭右开）——落库只存区间，原文按 prd_docs.content_md 现切 */
+  start: number;
+  end: number;
   /** 该片原文，供查看/复制/单独补解析 */
   text: string;
 }
@@ -798,6 +801,11 @@ function normalizedReqNoKey(raw: string): string {
   const m = /^(?:REQ(?:UIREMENT)?|R|需求(?:编号)?|要求)?[-_:：]?0*(\d+)$/i.exec(s);
   if (!m) return s.toUpperCase();
   return `REQ-${String(Number(m[1])).padStart(3, '0')}`;
+}
+
+/** T04010：PRD 正文内容哈希——失败片索引与 prd_docs 正文按同一哈希对齐，正文改过则不拿旧区间硬切 */
+function prdDocHash(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
 /** T03700+：模型常把多个编号塞进一个字符串（"REQ-001、REQ-002" / "REQ-001 REQ-002"），先拆后归一 */
@@ -2740,6 +2748,18 @@ export const PlanService = {
   } | null> {
     const chunks = splitPrdChunks(docText, PRD_CHUNK_CHARS, PRD_CHUNK_MAX);
     if (chunks.length <= 1) return null;
+    // T04010：记录每片在全文中的字符区间——失败片索引入库只存区间，原文按 prd_docs.content_md 现切，
+    // 不再为「关窗后还能补解析」另存一份正文（会与 PRD 管理视图的正文双轨）。
+    const chunkSpans: Array<{ start: number; end: number }> = [];
+    {
+      let cursor = 0;
+      for (const text of chunks) {
+        const at = docText.indexOf(text, cursor);
+        const start = at >= 0 ? at : cursor;
+        chunkSpans.push({ start, end: start + text.length });
+        cursor = start + text.length;
+      }
+    }
     const n = chunks.length;
     // T02270 复议：槽位按原片序号对齐——并发完成顺序是乱的，若按完成顺序收集，
     // 合并去重的「首见优先」会随网络抖动漂移，同一文档两次解析可能得到不同的编号顺序。
@@ -2830,6 +2850,8 @@ export const PlanService = {
         reason: info?.reason ?? (aborted || signal?.aborted ? 'aborted' : 'not-run'),
         message: info?.message,
         chars: chunks[i].length,
+        start: chunkSpans[i].start,
+        end: chunkSpans[i].end,
         text: chunks[i],
       });
     }
@@ -3495,6 +3517,89 @@ export const PlanService = {
     // T01873：取 id 并按矩阵顺序返回——面板的行内标记与「点提示直达第一组」都依赖 id 与顺序
     const rows = db.prepare('SELECT id, req_no FROM prd_requirements WHERE project_id = ? ORDER BY sort_order, created_at').all(projectId) as Array<{ id: string; req_no: string | null }>;
     return groupDuplicateReqNos(rows);
+  },
+
+  /**
+   * T04010：失败片索引落库——只存片号/总数/归因/字符区间/文件名，正文不入库；
+   * 同项目同一份内容（doc_hash 相同）重新解析时整组替换，传空数组即清空（本次解析无损）。
+   * 原文恢复以 prd_docs.content_md + 区间现切，避免与 PRD 管理视图的正文双轨。
+   */
+  persistParseFailures(projectId: string, filename: string, docText: string, failedChunks: ReadonlyArray<PrdFailedChunk>): string[] {
+    const db = getDb();
+    const hash = prdDocHash(docText);
+    const t = now();
+    return db.transaction(() => {
+      db.prepare('DELETE FROM prd_parse_failures WHERE project_id = ? AND doc_hash = ?').run(projectId, hash);
+      const ins = db.prepare(
+        `INSERT INTO prd_parse_failures
+           (id, project_id, doc_hash, filename, chunk_index, chunk_total, chunk_start, chunk_end, reason, message, chars, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      const ids: string[] = [];
+      for (const f of failedChunks) {
+        const id = uuid();
+        ins.run(id, projectId, hash, filename, f.index, f.total, f.start, f.end, f.reason, f.message ?? '', f.chars, t, t);
+        ids.push(id);
+      }
+      return ids;
+    })();
+  },
+
+  /**
+   * T04010：恢复失败片——按 doc_hash 找到项目内同内容的 prd_docs 行，用落库区间现切原文。
+   * 找不到对应文档（尚未导入）或区间越界/失效的行不返回：宁可少一条，不切出别的段落冒充该片。
+   */
+  listParseFailures(projectId: string): Array<{
+    id: string; file: string; prdId: string; index: number; total: number;
+    reason: PrdFailedChunk['reason']; message?: string; chars: number; text: string; createdAt: string;
+  }> {
+    const db = getDb();
+    const rows = db.prepare(
+      'SELECT id, doc_hash, filename, chunk_index, chunk_total, chunk_start, chunk_end, reason, message, chars, created_at FROM prd_parse_failures WHERE project_id = ? ORDER BY filename, chunk_index',
+    ).all(projectId) as Array<{
+      id: string; doc_hash: string; filename: string; chunk_index: number; chunk_total: number;
+      chunk_start: number; chunk_end: number; reason: string; message: string; chars: number; created_at: string;
+    }>;
+    if (rows.length === 0) return [];
+    // 同内容可能有多份文档（重复导入同一 PRD）；取最近更新的一份，区间按该正文现切
+    const docs = db.prepare('SELECT id, filename, content_md FROM prd_docs WHERE project_id = ? ORDER BY updated_at DESC').all(projectId) as Array<{
+      id: string; filename: string | null; content_md: string;
+    }>;
+    const byHash = new Map<string, { id: string; filename: string | null; content_md: string }>();
+    for (const d of docs) {
+      const h = prdDocHash(d.content_md);
+      if (!byHash.has(h)) byHash.set(h, d);
+    }
+    const out: Array<{
+      id: string; file: string; prdId: string; index: number; total: number;
+      reason: PrdFailedChunk['reason']; message?: string; chars: number; text: string; createdAt: string;
+    }> = [];
+    for (const r of rows) {
+      const doc = byHash.get(r.doc_hash);
+      if (!doc) continue;
+      if (r.chunk_start < 0 || r.chunk_end <= r.chunk_start || r.chunk_end > doc.content_md.length) continue;
+      out.push({
+        id: r.id,
+        file: r.filename || doc.filename || '',
+        prdId: doc.id,
+        index: r.chunk_index,
+        total: r.chunk_total,
+        reason: r.reason as PrdFailedChunk['reason'],
+        message: r.message || undefined,
+        chars: r.chars,
+        text: doc.content_md.slice(r.chunk_start, r.chunk_end),
+        createdAt: r.created_at,
+      });
+    }
+    return out;
+  },
+
+  /** T04010：补解析成功后按 id 删除服务端失败片（与前端 sessionStorage 列表同步收口） */
+  deleteParseFailures(projectId: string, ids: ReadonlyArray<string>): number {
+    if (ids.length === 0) return 0;
+    const db = getDb();
+    const del = db.prepare('DELETE FROM prd_parse_failures WHERE id = ? AND project_id = ?');
+    return db.transaction(() => ids.reduce((n, id) => n + del.run(id, projectId).changes, 0))();
   },
 
   /** 关联调整：把需求关联到计划/待办（或解除）——矩阵面板的「关联调整」编辑入口 */

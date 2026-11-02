@@ -737,6 +737,21 @@ planApi.post('/ai-parse-doc', raw({ type: () => true, limit: '30mb' }), (req, re
     });
 });
 
+// ---------- T04010：PRD 解析失败片索引（跨会话恢复「补解析第 N 片」） ----------
+
+/**
+ * 恢复上次未解析成功的分片：只返回能复原的行——同项目内存在同内容 prd_docs（doc_hash 对齐）且区间有效。
+ * 原文从 prd_docs.content_md 现切，库里不存第二份正文。
+ */
+planApi.get('/prd-parse-failures', (req, res) => wrap(res, () => ({ items: PlanService.listParseFailures(pid(req)) })));
+
+/** 单片补解析成功后按 id 删除服务端失败片索引（projectId 参与校验，防跨项目误删） */
+planApi.delete('/prd-parse-failures', (req, res) => wrap(res, () => {
+  const rawIds: unknown = (req.body as { ids?: unknown } | undefined)?.ids;
+  const ids = Array.isArray(rawIds) ? rawIds.filter((x): x is string => typeof x === 'string') : [];
+  return { deleted: PlanService.deleteParseFailures(pid(req), ids) };
+}));
+
 // ---------- T00662：从 PRD 导入（AI 拆 WBS + 需求跟踪矩阵） ----------
 
 /** PRD 解析：上传文件 → 提取文本（多格式）→ AI 输出 {requirements, plans}（未落库，供预览确认） */
@@ -754,8 +769,15 @@ planApi.post('/ai-parse-prd', raw({ type: () => true, limit: '30mb' }), (req, re
     .then(async ({ text, warnings }) => {
       // T00908：随解析一并返回提取后的 PRD 全文 textMd——供前端确认导入时作 prdMd 落库到 PRD 管理视图
       const r = await PlanService.aiParsePrd(toolId, text);
+      // T04010：失败片索引 best-effort 落库——只存片号/字符区间，正文不复制（恢复按 prd_docs.content_md 现切）。
+      // 落库失败不得影响解析结果返回；空数组同样执行（本次无损时清掉该文档的历史失败片）。
+      // `persist=0`：补解析单片时的正文是整篇切片，哈希在 prd_docs 里对不上，落库只会留死行——调用方显式跳过。
+      let failedChunkIds: string[] = [];
+      if (req.query.persist !== '0') {
+        try { failedChunkIds = PlanService.persistParseFailures(projectId, filename, text, r.failedChunks ?? []); } catch { /* 旁路留档失败不影响解析 */ }
+      }
       // T03730：HTML 里无法转成正文的片段（内嵌页/图表/无 alt 图片等）随响应透出，由界面显式提示
-      return { ok: true, ...r, textMd: text, parseWarnings: warnings };
+      return { ok: true, ...r, textMd: text, parseWarnings: warnings, failedChunkIds };
     })
     .then((r) => {
       reportAiJob({ jobId, cardKey: 'ai.prd_import', status: 'done', mode: 'ai', sectionsTotal: 1, sectionsOk: 1, startedAt: jobStartedAt });

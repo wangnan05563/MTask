@@ -386,6 +386,26 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     );
     CREATE INDEX IF NOT EXISTS idx_prd_docs_project ON prd_docs(project_id);
 
+    -- T04010：PRD 分片解析的失败片索引——只存「哪一片失败 + 在原文中的字符区间」，
+    -- 正文不复制（原文以 prd_docs.content_md 为准，读取时按区间现切）；doc_hash 用于确认
+    -- 文档内容未变，避免区间错位切出别的段落。同项目同一内容重新解析时整组替换。
+    CREATE TABLE IF NOT EXISTS prd_parse_failures (
+      id          TEXT PRIMARY KEY,
+      project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      doc_hash    TEXT NOT NULL,
+      filename    TEXT NOT NULL DEFAULT '',
+      chunk_index INTEGER NOT NULL,
+      chunk_total INTEGER NOT NULL,
+      chunk_start INTEGER NOT NULL,
+      chunk_end   INTEGER NOT NULL,
+      reason      TEXT NOT NULL DEFAULT '',
+      message     TEXT NOT NULL DEFAULT '',
+      chars       INTEGER NOT NULL DEFAULT 0,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_prd_parse_failures_project ON prd_parse_failures(project_id, doc_hash);
+
     -- T00770：PRD 待确认问题——挂在某份 PRD 文档下（prd_id 可空=项目级泛问题），
     -- 确认（status=resolved 且填了 answer）后可回写到对应 PRD 文档的「待确认问题结论」节
     CREATE TABLE IF NOT EXISTS prd_issues (

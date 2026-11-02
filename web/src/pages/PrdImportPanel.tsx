@@ -204,10 +204,15 @@ function canStartParse(projectId: string, toolId: string, fileCount: number): bo
 }
 
 /** 单文件解析：成功后回传解析结果与 PRD 原文（截断/分片/覆盖率提示按原顺序落控制台），失败抛给调用方 */
-async function parseOneFile(file: File, projectId: string, toolId: string, signal: AbortSignal): Promise<PrdParseResult> {
+async function parseOneFile(
+  file: File, projectId: string, toolId: string, signal: AbortSignal, opts?: { persistFailures?: boolean },
+): Promise<PrdParseResult> {
   const buf = await file.arrayBuffer();
+  // T04010：补解析单片的正文是整篇 PRD 的切片，服务端按它算出的哈希在 prd_docs 里找不到对应正文——
+  // 落索引只会留下永远恢复不出来的死行，且原失败片索引本身仍在，故补解析调用显式不落库。
+  const persist = opts?.persistFailures === false ? '&persist=0' : '';
   const r = await api.postBinary<{ ok: boolean } & PrdParseResult>(
-    `/plans/ai-parse-prd?projectId=${projectId}&toolId=${toolId}&filename=${encodeURIComponent(file.name)}`,
+    `/plans/ai-parse-prd?projectId=${projectId}&toolId=${toolId}&filename=${encodeURIComponent(file.name)}${persist}`,
     buf,
     { signal },
   );
@@ -228,6 +233,7 @@ async function parseOneFile(file: File, projectId: string, toolId: string, signa
     truncatedNote: r.truncatedNote,
     textMd: r.textMd,
     failedChunks: r.failedChunks,
+    failedChunkIds: r.failedChunkIds,
   };
 }
 
@@ -255,8 +261,14 @@ async function parseSelectedFiles(
       // T00908：暂存每份文件的 PRD 全文（供确认导入时落库 PRD 管理视图）
       if (result.textMd) acc.sources.push({ name: file.name, text: result.textMd });
       // T03700+：失败/中止分片带文件名留档，面板可展示原文并单独补解析
-      for (const fc of result.failedChunks ?? []) {
-        acc.failed.push({ ...fc, file: file.name, uid: `${file.name}::${fc.index}::${Date.now()}-${acc.failed.length}` });
+      // T04010：附服务端失败片索引 id（与 failedChunks 同序），补解析成功后据此删除
+      for (const [k, fc] of (result.failedChunks ?? []).entries()) {
+        acc.failed.push({
+          ...fc,
+          file: file.name,
+          uid: `${file.name}::${fc.index}::${Date.now()}-${acc.failed.length}`,
+          serverId: result.failedChunkIds?.[k],
+        });
       }
     } catch (e) {
       if (signal.aborted) {
@@ -306,10 +318,7 @@ function persistParseResult(
  * 缺陷本身在旧版 mergePrdResults：old→new 重编号表跨文件共用一张，后份文档的 REQ-001 覆盖前份的同名旧号，
  * 前份的 WBS 草稿因此整体偏移到后份的需求行上（实测 mtask四期 一次导 2 份 PRD，前 20 行零关联）。
  */
-import { buildGapFillDrafts, findUncoveredReqs, mergePrdResults, type PrdFailedChunk, type PrdParseResult } from './prdMerge';
-
-/** T03700+：缺失分片（带来源文件名，便于点名与补解析） */
-type FailedShardRow = PrdFailedChunk & { file: string; uid: string };
+import { buildGapFillDrafts, findUncoveredReqs, mergePrdResults, mergeRestoredFailures, type FailedShardRow, type PrdFailedChunk, type PrdParseResult, type RestoredFailedChunk } from './prdMerge';
 
 /** 缺失原因 → 人话（决定用户该「稍后重试」还是「换模型/拆文档」） */
 const FAIL_REASON_LABEL: Record<PrdFailedChunk['reason'], string> = {
@@ -409,6 +418,31 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       /* 脏数据忽略：保留界面现有内容 */
     }
   }, [parseStamp]);
+
+  /**
+   * T04010：关窗/重启后恢复缺失片——服务端只存片号与字符区间，原文按同内容 prd_docs 正文现切，
+   * 因此恢复出来的是「来源文件 + 片号 + 原文」完整行，补解析入口照旧可用。
+   * 并入本地列表（不覆盖）：本会话解析响应已带 serverId 的行、或同文件同片号的行不重复加。
+   */
+  const failedRef = useRef(failedShards);
+  failedRef.current = failedShards;
+  useEffect(() => {
+    if (!projectId) return;
+    let alive = true;
+    void api.get<{ items: RestoredFailedChunk[] }>(`/plans/prd-parse-failures?projectId=${encodeURIComponent(projectId)}`)
+      .then((r) => {
+        if (!alive) return;
+        const items = Array.isArray(r.items) ? r.items : [];
+        if (items.length === 0) return;
+        const prev = failedRef.current;
+        const merged = mergeRestoredFailures(prev, items);
+        if (merged.length === prev.length) return;
+        setFailedShards(merged);
+        aiImportStore.log(`已恢复 ${merged.length - prev.length} 条上次未解析成功的分片（原文按本机 PRD 正文切出，可直接补解析，不必整篇重跑）`, 'ok');
+      })
+      .catch(() => { /* 恢复失败不阻塞面板：本会话既有缺失片列表照常可用 */ });
+    return () => { alive = false; };
+  }, [projectId, setFailedShards]);
 
   /** T00824：多文件批量解析——逐文件调用单文件接口（串行避免激增 AI 并发），
    *  单文件失败记录日志并跳过其余继续；合并后统一重编号，供下方交互表格编辑/勾选 */
@@ -598,7 +632,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     try {
       const stem = row.file.replace(/\.[^.]+$/, '') || 'PRD';
       const file = new File([row.text], `${stem}-第${row.index}片.md`, { type: 'text/markdown' });
-      const retried = await parseOneFile(file, projectId, toolId, ctrl.signal);
+      const retried = await parseOneFile(file, projectId, toolId, ctrl.signal, { persistFailures: false });
       if (retried.requirements.length === 0 && retried.drafts.length === 0) {
         aiImportStore.log(`第 ${row.index} 片补解析未得到任何条目（可能仍被限流），已保留在缺失分片列表中`, 'error');
         return;
@@ -618,6 +652,11 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       setFailedShards(remain);
       persistParseResult(reqRows, planRows, prdSources);
       try { sessionStorage.setItem(PERSIST_KEYS.failed, JSON.stringify(remain)); } catch { /* 配额等写入失败忽略 */ }
+      // T04010：该片已解析成功，删掉服务端失败片索引——否则下次打开面板会把它当「上次未成功」再恢复出来
+      if (row.serverId) {
+        void api.del<{ deleted: number }>(`/plans/prd-parse-failures?projectId=${encodeURIComponent(projectId)}`, { ids: [row.serverId] })
+          .catch(() => { /* 删除失败只留脏索引，不影响本会话结果 */ });
+      }
       aiImportStore.log(`✓ 第 ${row.index}/${row.total} 片补解析完成：新增需求 ${merged.requirements.length - reqs.length} 条、计划 ${merged.drafts.length - plans.length} 条${autoCount ? `（其中自动补齐 ${autoCount} 条缺口需求，可在计划表取消勾选）` : ''}，已并入并全局重排编号`, 'ok');
       logUncoveredReqs(findUncoveredReqs(reqRows.filter((x) => x.include), planRows.filter((x) => x.include)));
     } catch (e) {
