@@ -434,7 +434,7 @@ async function fallbackIssues(args: {
   try {
     const startedAt = Date.now();
     const r = await adapter.chat(system, user, config, signal);
-    recordUsage({ kind: 'ask', toolId, model: config.model, ok: r.ok, startedAt, contentChars: r.content?.length ?? 0, error: r.error, cardKey: PRD_GEN_CARD }); // T03296：补问同属 PRD 生成卡
+    recordUsage({ kind: 'ask', toolId, model: config.model, ok: r.ok, startedAt, contentChars: r.content?.length ?? 0, error: r.error, cardKey: PRD_GEN_CARD, usage: r.usage }); // T03296：补问同属 PRD 生成卡
     if (!r.ok || !r.content) { onStage('补充提问失败，本次未产出待确认问题（可手动新增自定义问题）'); return []; }
     const issues = parseIssuesJson(r.content);
     onStage(issues.length > 0 ? `补充提问完成：新增 ${issues.length} 条待确认问题` : '补充提问未产出问题清单（可手动新增自定义问题）');
@@ -518,14 +518,14 @@ async function streamPrd(
 ): Promise<{ ok: boolean; content?: string; partial?: string; error?: string }> {
   const startedAt = Date.now();
   let result = await adapter.chatStream(system, user, genConfig, input.onDelta, input.signal);
-  recordUsage({ kind: 'stream', toolId: input.toolId, model: genConfig.model, ok: result.ok, startedAt, contentChars: genChars(result), error: result.error, cardKey: PRD_GEN_CARD });
+  recordUsage({ kind: 'stream', toolId: input.toolId, model: genConfig.model, ok: result.ok, startedAt, contentChars: genChars(result), error: result.error, cardKey: PRD_GEN_CARD, usage: result.usage });
   // T00814：个别提供商不接受 16K 输出上限（请求直接 400）——此时回退到 8K 重试一次，
   // 避免"提高了预算反而整个功能不可用"。仅在错误文本确指 max_tokens 时回退，其余错误照旧抛出。
   if (result.ok || !/max_tokens|max_completion_tokens|too large|invalid/i.test(result.error ?? '')) return result;
   input.onStage(`模型未接受 ${genConfig.maxTokens} tokens 输出上限，回退 ${PRD_FALLBACK_OUTPUT_TOKENS} 重试…`);
   const retryStartedAt = Date.now();
   result = await adapter.chatStream(system, user, { ...genConfig, maxTokens: PRD_FALLBACK_OUTPUT_TOKENS }, input.onDelta, input.signal);
-  recordUsage({ kind: 'stream', toolId: input.toolId, model: genConfig.model, ok: result.ok, startedAt: retryStartedAt, contentChars: genChars(result), error: result.error, cardKey: PRD_GEN_CARD });
+  recordUsage({ kind: 'stream', toolId: input.toolId, model: genConfig.model, ok: result.ok, startedAt: retryStartedAt, contentChars: genChars(result), error: result.error, cardKey: PRD_GEN_CARD, usage: result.usage });
   return result;
 }
 

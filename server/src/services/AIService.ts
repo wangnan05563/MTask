@@ -98,7 +98,7 @@ async function organizeOne(
     config,
   );
   if (result.ok && result.content) results[taskId] = result.content;
-  recordUsage({ kind: 'organize', toolId, model: config.model, ok: result.ok, startedAt, contentChars: result.content?.length ?? 0, error: result.error });
+  recordUsage({ kind: 'organize', toolId, model: config.model, ok: result.ok, startedAt, contentChars: result.content?.length ?? 0, error: result.error, usage: result.usage });
 }
 
 /** T02164：摘要提示词的关联区块取数上限——长任务的时间线可达数百条事件，
@@ -280,7 +280,7 @@ async function chatForAttempt(
   const res = await ctx.adapter.chat(sys, ctx.user, attemptConfig(ctx.base, attempt, budgetMax), ctx.signal);
   if (!budgetRejected(res, ctx.minMaxTokens, budgetMax)) return { res, budgetMax };
   recordUsage({
-    kind: 'ask-json', toolId: ctx.toolId, model: ctx.model, ok: false, startedAt, contentChars: 0, cardKey: ctx.cardKey,
+    kind: 'ask-json', toolId: ctx.toolId, model: ctx.model, ok: false, startedAt, contentChars: 0, cardKey: ctx.cardKey, usage: res.usage,
     error: `预算 ${budgetMax} 被拒，回退 ${ctx.minMaxTokens} 重试：${res.error ?? ''}`,
   });
   const fallbackBudget = ctx.minMaxTokens;
@@ -368,7 +368,7 @@ export const AIService = {
     const startedAt = Date.now();
     logService.log('INFO', 'ai', `[任务总结摘要] task=${task.task_no ?? taskId} tool=${tool} type=${type} model=${config.model ?? ''}`);
     const result = await adapter.chat(SUMMARY_SYSTEM, user, config);
-    recordUsage({ kind: 'summary', toolId: tool, model: config.model, ok: result.ok, startedAt, contentChars: result.content?.length ?? 0, error: result.error });
+    recordUsage({ kind: 'summary', toolId: tool, model: config.model, ok: result.ok, startedAt, contentChars: result.content?.length ?? 0, error: result.error, usage: result.usage });
     const content = result.content?.trim();
     if (!result.ok || !content) throw new Error(result.error ?? '模型未返回摘要内容，请稍后重试');
     return TaskService.saveAiSummary(taskId, content);
@@ -405,7 +405,7 @@ export const AIService = {
     const cost = Date.now() - startedAt;
     if (res.ok) logService.log('INFO', 'ai', `[提示词优化] 成功 耗时=${cost}ms`);
     else logService.log('ERROR', 'ai', `[提示词优化] 失败 耗时=${cost}ms ${res.error ?? ''}`);
-    recordUsage({ kind: 'optimize', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error });
+    recordUsage({ kind: 'optimize', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error, usage: res.usage });
     return res;
   },
 
@@ -432,7 +432,7 @@ export const AIService = {
     // 先剥离思考过程（部分思考型模型会附带内心推理），再折叠空白为单行干净标题，
     // 确保回填标题输入框时不会污染（双保险，不依赖模型是否遵守“只输出标题”约束）
     if (res.ok && res.content) res.content = stripThinking(res.content).replaceAll(/\s+/g, ' ').trim();
-    recordUsage({ kind: 'beautify', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error });
+    recordUsage({ kind: 'beautify', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error, usage: res.usage });
     return res;
   },
 
@@ -470,7 +470,7 @@ export const AIService = {
     const res = await adapter.chat(system, `【原文】\n${text}`, polishConfig);
     // 与标题美化同款双保险：剥离思考过程并去掉首尾空白，避免思考型模型的推理内容回填进输入框
     if (res.ok && res.content) res.content = stripThinking(res.content).trim();
-    recordUsage({ kind: 'polish', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error });
+    recordUsage({ kind: 'polish', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error, usage: res.usage });
     return res;
   },
 
@@ -498,7 +498,7 @@ export const AIService = {
       // 双保险：模型未严格遵守 40 字约束时强制截断到 40 字（不截断则在半个词处收尾）
       if (res.content.length > 40) res.content = res.content.slice(0, 40).trim();
     }
-    recordUsage({ kind: 'simplify', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error });
+    recordUsage({ kind: 'simplify', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error, usage: res.usage });
     return res;
   },
 
@@ -520,7 +520,7 @@ export const AIService = {
     const effective = timeoutMs == null ? config : { ...config, timeoutMs };
     const startedAt = Date.now();
     const res = await adapter.chat(system, user, effective, signal);
-    recordUsage({ kind: 'ask', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error, cardKey });
+    recordUsage({ kind: 'ask', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error, cardKey, usage: res.usage });
     return res;
   },
 
@@ -591,7 +591,7 @@ export const AIService = {
       acc.usage = mergeUsage(acc.usage, res.usage);
       if (!res.ok || !res.content) {
         acc.lastError = res.error ?? 'AI 返回内容为空';
-        recordUsage({ kind: 'ask-json', toolId, model: config.model, ok: false, startedAt, contentChars: 0, error: acc.lastError, cardKey });
+        recordUsage({ kind: 'ask-json', toolId, model: config.model, ok: false, startedAt, contentChars: 0, error: acc.lastError, cardKey, usage: res.usage });
         // T01289：超时不重试——本轮已耗尽整个超时窗口，再试一次只会把等待时间翻倍；
         // 监督决策据此在 10s 内降级 ESCALATE（NFR-1），而不是 20s 后才降级。
         // T02141：外部中止同理不重试——调用方已表示不要这一轮结果，重试等于白烧一次配额。
@@ -605,12 +605,12 @@ export const AIService = {
       }
       try {
         const data = parse(res.content);
-        recordUsage({ kind: 'ask-json', toolId, model: config.model, ok: true, startedAt, contentChars: res.content.length, cardKey });
+        recordUsage({ kind: 'ask-json', toolId, model: config.model, ok: true, startedAt, contentChars: res.content.length, cardKey, usage: acc.usage });
         return { ok: true, data, retried: attempt > 1, usage: acc.usage };
       } catch (e) {
         acc.lastError = e instanceof Error ? e.message : String(e);
         recordUsage({
-          kind: 'ask-json', toolId, model: config.model, ok: false, startedAt, cardKey,
+          kind: 'ask-json', toolId, model: config.model, ok: false, startedAt, cardKey, usage: res.usage,
           contentChars: res.content.length, error: `JSON 解析失败：${acc.lastError.slice(0, 200)}`,
         });
       }
@@ -640,7 +640,7 @@ export const AIService = {
     const wrapped = (text: string) => { chars += text.length; onDelta(text); };
     const res = await adapter.chatStream(system, user, effective, wrapped, signal);
     const durationMs = Date.now() - startedAt;
-    recordUsage({ kind: 'stream', toolId, model: config.model, ok: res.ok, startedAt, contentChars: chars, error: res.error, cardKey });
+    recordUsage({ kind: 'stream', toolId, model: config.model, ok: res.ok, startedAt, contentChars: chars, error: res.error, cardKey, usage: res.usage });
     // 与 ai_usage 同一份实际值（流式增量子符数 / 墙钟耗时），供 AI-102② 偏差复算直接取用
     return { ...res, chars, durationMs };
   },
@@ -662,7 +662,7 @@ export const AIService = {
       '你是任务智能分类助手。给定一个任务标题和一组候选分类名，选出与标题主题最贴切的一个分类名作为该任务的类型，并按紧急重要程度给出优先级标注（U=极高、H=高、N=普通、L=低）。只输出一行：分类名|优先级字母（如：开发|H），不加任何解释；若分类都不合适，只输出 NONE|N。';
     const user = `候选分类：${categories.map((c) => c.name).join('、')}\n任务标题：${title}`;
     const res = await adapter.chat(system, user, config);
-    if (!res.ok) { recordUsage({ kind: 'classify', toolId, model: config.model, ok: false, startedAt, contentChars: 0, error: res.error }); return { ok: false, error: res.error }; }
+    if (!res.ok) { recordUsage({ kind: 'classify', toolId, model: config.model, ok: false, startedAt, contentChars: 0, error: res.error, usage: res.usage }); return { ok: false, error: res.error }; }
     const raw = (res.content ?? '').trim();
     // T00473：解析「分类名|优先级」；无 | 时兼容旧格式（仅分类名，优先级为 null 不写回）
     const sep = raw.lastIndexOf('|');
@@ -674,7 +674,7 @@ export const AIService = {
     const hit =
       categories.find((c) => c.name.trim() === out) ??
       [...categories].sort((a, b) => b.name.length - a.name.length).find((c) => out.includes(c.name));
-    recordUsage({ kind: 'classify', toolId, model: config.model, ok: true, startedAt, contentChars: res.content?.length ?? 0 });
+    recordUsage({ kind: 'classify', toolId, model: config.model, ok: true, startedAt, contentChars: res.content?.length ?? 0, usage: res.usage });
     return { ok: true, content: res.content, categoryId: hit ? hit.id : null, priority };
   },
 
@@ -700,7 +700,7 @@ export const AIService = {
       chat: async (system, user) => {
         const startedAt = Date.now();
         const res = await adapter.chat(system, user, config);
-        recordUsage({ kind: 'classify', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error });
+        recordUsage({ kind: 'classify', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error, usage: res.usage });
         return res;
       },
     });
@@ -741,11 +741,11 @@ export const AIService = {
     ].filter(Boolean).join('\n');
     const res = await adapter.chat(system, user, config);
     if (!res.ok) {
-      recordUsage({ kind: 'classify', toolId, model: config.model, ok: false, startedAt, contentChars: 0, error: res.error });
+      recordUsage({ kind: 'classify', toolId, model: config.model, ok: false, startedAt, contentChars: 0, error: res.error, usage: res.usage });
       return { ok: false, error: res.error };
     }
     const raw = (res.content ?? '').trim();
-    recordUsage({ kind: 'classify', toolId, model: config.model, ok: true, startedAt, contentChars: raw.length });
+    recordUsage({ kind: 'classify', toolId, model: config.model, ok: true, startedAt, contentChars: raw.length, usage: res.usage });
     // 理由里可能出现「|」，从第三个字段起整体归为理由
     const parts = raw.split('|');
     const nameOut = (parts[0] ?? '').trim();
@@ -782,8 +782,8 @@ export const AIService = {
 进度：${plan.progress}%
 负责人：${plan.assignee || '未指派'}${prdSuffix}`;
     const res = await adapter.chat(system, user, config);
-    if (!res.ok) { recordUsage({ kind: 'plan-evaluate', toolId, model: config.model, ok: false, startedAt, contentChars: 0, error: res.error }); return { ok: false, error: res.error }; }
-    recordUsage({ kind: 'plan-evaluate', toolId, model: config.model, ok: true, startedAt, contentChars: res.content?.length ?? 0 });
+    if (!res.ok) { recordUsage({ kind: 'plan-evaluate', toolId, model: config.model, ok: false, startedAt, contentChars: 0, error: res.error, usage: res.usage }); return { ok: false, error: res.error }; }
+    recordUsage({ kind: 'plan-evaluate', toolId, model: config.model, ok: true, startedAt, contentChars: res.content?.length ?? 0, usage: res.usage });
     return { ok: true, evaluation: (res.content ?? '').trim() };
   },
 

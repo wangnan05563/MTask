@@ -88,6 +88,12 @@ export interface StreamResult {
    * 只有明确"用户会逐条复核"的长文生成（当前仅 PRD 生成）才可选择性采纳，并必须显式告警。
    */
   partial?: string;
+  /**
+   * T04086：流式调用的 token 用量（OpenAI 兼容通道开启 stream_options.include_usage 后
+   * 由末尾 usage 块归一而来）。非 OpenAI 兼容协议不回传，缺省即「无从计量」——
+   * 调用方据此写 null，不按字符数臆造。
+   */
+  usage?: TokenUsage;
 }
 
 export interface AIAdapter {

@@ -3,6 +3,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { getDb } from '../db/connection';
 import { getAdapter, type AIAdapter, type ToolConfig } from '../adapters';
+import type { StreamResult } from '../adapters/types';
 import { recordUsage } from '../util/aiUsageRecord'; // T03296（G-2）：直连适配器的卡由本服务补记 card_key 用量
 
 /** T03296（G-2 覆盖率）：测试用例生成卡的稳定 key（注册表 server/src/util/aiCards.ts） */
@@ -125,7 +126,7 @@ type ChatFn = (
   config: ToolConfig,
   onDelta: (text: string) => void,
   signal?: AbortSignal,
-) => Promise<{ ok: boolean; content?: string; partial?: string; error?: string }>;
+) => Promise<StreamResult>;
 
 /** 单次流式调用入参：S107——8 参收成对象 */
 interface CallOnceArgs {
@@ -153,7 +154,7 @@ async function callOnce(args: CallOnceArgs): Promise<{ text: string; truncated: 
     let streamedChars = 0;
     const r = await chat(system, user, cfg, (text) => { streamedChars += text.length; onDelta(text); }, signal);
     const chars = (r.ok ? r.content?.length : r.partial?.length) ?? streamedChars;
-    recordUsage({ kind: 'stream', toolId, model: cfg.model, ok: r.ok, startedAt, contentChars: chars, error: r.error, cardKey: TESTCASE_CARD, jobId, stage });
+    recordUsage({ kind: 'stream', toolId, model: cfg.model, ok: r.ok, startedAt, contentChars: chars, error: r.error, cardKey: TESTCASE_CARD, jobId, stage, usage: r.usage });
     return r;
   };
   let res = await attempt(genConfig);

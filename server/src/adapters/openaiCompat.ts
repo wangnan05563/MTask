@@ -9,10 +9,11 @@ interface ChatCompletionResp {
   error?: { message?: string };
 }
 
-/** 流式行收集器的累积态：文本与最后一个 finish_reason */
+/** 流式行收集器的累积态：文本、最后一个 finish_reason 与末尾 usage 块 */
 interface StreamAcc {
   text: string;
   finish: string;
+  usage?: TokenUsage;
 }
 
 /**
@@ -93,8 +94,16 @@ function openaiLineCollector(onDelta: (text: string) => void): { acc: StreamAcc;
     const payload = trimmed.slice(5).trim();
     if (!payload || payload === '[DONE]') return;
     try {
-      const json = JSON.parse(payload) as { choices?: { delta?: { content?: string }; finish_reason?: string | null }[]; error?: { message?: string } };
+      const json = JSON.parse(payload) as {
+        choices?: { delta?: { content?: string }; finish_reason?: string | null }[];
+        usage?: ChatCompletionResp['usage'];
+        error?: { message?: string };
+      };
       if (json.error?.message) throw new Error(json.error.message);
+      // T04086：开启 include_usage 后末尾会追加一个 choices 为空、只带 usage 的块；
+      // 取最后一个完整 usage（网关偶发分块回传时以最后一次为准）
+      const usage = readUsage(json.usage);
+      if (usage) acc.usage = usage;
       // T00779：记录最后一个 finish_reason——触顶截断（length）时流里已有大量内容，
       // 若只看 text 非空会误判成功，导致半截结果被上层当完整结果入库
       const fr = json.choices?.[0]?.finish_reason;
@@ -109,6 +118,15 @@ function openaiLineCollector(onDelta: (text: string) => void): { acc: StreamAcc;
     }
   };
   return { acc, collect };
+}
+
+/**
+ * T04086：网关不认 `stream_options` 时的降级判据——只在「明确指向该字段」的 4xx 上重发一次，
+ * 避免把鉴权/路径/模型名等真错误也重打一遍（重打对这类错误毫无意义，只会多花一次配额）。
+ */
+function rejectsStreamOptions(status: number, errText: string): boolean {
+  if (status !== 400 && status !== 422) return false;
+  return /stream_options|include_usage|unsupported|unknown (?:parameter|field|argument)|invalid (?:parameter|field)/i.test(errText);
 }
 
 /**
@@ -263,37 +281,53 @@ export class OpenAICompatAdapter implements AIAdapter {
     if (signal) signal.addEventListener('abort', () => ctrl.abort());
     try {
       const url = `${this.baseUrl(config.endpoint)}/chat/completions`;
-      const res = await fetch(url, {
+      const buildBody = (includeUsage: boolean) => JSON.stringify({
+        model: config.model ?? 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        temperature: config.temperature ?? 0.2,
+        max_tokens: config.maxTokens ?? 4096,
+        // 请求流式，逐 delta 返回增量文本
+        stream: true,
+        // T04086：OpenAI 兼容流默认不回传 usage，需显式开启；不认该字段的网关见下方降级
+        ...(includeUsage ? { stream_options: { include_usage: true } } : {}),
+      });
+      const post = (includeUsage: boolean) => fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
         },
-        body: JSON.stringify({
-          model: config.model ?? 'gpt-4o-mini',
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: user },
-          ],
-          temperature: config.temperature ?? 0.2,
-          max_tokens: config.maxTokens ?? 4096,
-          // 请求流式，逐 delta 返回增量文本
-          stream: true,
-        }),
+        body: buildBody(includeUsage),
         signal: ctrl.signal,
         dispatcher: modelDispatcher(tms),
       });
-      if (!res.ok || !res.body) {
-        return { ok: false, error: res.ok ? 'AI 未返回流式内容' : formatHttpError(res.status, await res.text().catch(() => '')) };
+      let res = await post(true);
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        // T04086：网关不认 stream_options 时去掉该字段重发一次（仍是同一条流，不降级为字符数计量）；
+        // 其它错误原样报出，不重打。
+        if (!rejectsStreamOptions(res.status, errText)) {
+          return { ok: false, error: formatHttpError(res.status, errText) };
+        }
+        res = await post(false);
+        if (!res.ok) {
+          return { ok: false, error: formatHttpError(res.status, await res.text().catch(() => '')) };
+        }
+      }
+      if (!res.body) {
+        return { ok: false, error: 'AI 未返回流式内容' };
       }
       const { acc, collect } = openaiLineCollector(onDelta);
       await readStreamLines(res, collect);
-      const { text, finish } = acc;
-      if (!text) return { ok: false, error: 'AI 返回内容为空' };
+      const { text, finish, usage } = acc;
+      if (!text) return { ok: false, error: 'AI 返回内容为空', usage };
       // T00779：触顶截断仍按失败处理（防半截结果入库）；T00814 起额外携带 partial，
       // 供"用户会逐条复核"的长文场景（当前仅 PRD 生成）选择性采纳
       const stopped = streamVerdict(text, finish);
-      return stopped ?? { ok: true, content: text };
+      return stopped ? { ...stopped, usage } : { ok: true, content: text, usage };
     } catch (e) {
       // T00838：区分「外部主动停止」与「超时」——stop 场景不再误报为连接超时
       if (signal?.aborted) return { ok: false, error: '任务已停止' };

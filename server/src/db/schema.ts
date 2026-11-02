@@ -458,6 +458,11 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       error         TEXT,
       -- T03164（PRD AI-301 / D-05）：卡片维度标识，供 G-2 精确统计；历史未知值标 unknown，不回填伪造数据
       card_key      TEXT NOT NULL DEFAULT 'unknown',
+      -- T04086：服务商回传的 token 用量（OpenAI 兼容通道）。三列同时为 NULL 表示该通道未提供，
+      -- 不与 content_chars 混用：字符数只是兜底近似，不能反推 token
+      prompt_tokens     INTEGER,
+      completion_tokens INTEGER,
+      total_tokens      INTEGER,
       created_at    TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage(created_at);
@@ -629,6 +634,11 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // 与 job_id（= openJob 返回的台账标识），历史行随默认值落空串，不冒充有段归属。
   ensureColumn('ai_usage', 'stage', "stage TEXT NOT NULL DEFAULT ''");
   ensureColumn('ai_usage', 'job_id', "job_id TEXT NOT NULL DEFAULT ''");
+  // T04086：token 用量三列。可空＝该通道未回传（历史行与 Claude/Ollama/WorkBuddy 均留 NULL），
+  // 不做 0 填充，避免把「没有计量」混成「用量为零」。
+  ensureColumn('ai_usage', 'prompt_tokens', 'prompt_tokens INTEGER');
+  ensureColumn('ai_usage', 'completion_tokens', 'completion_tokens INTEGER');
+  ensureColumn('ai_usage', 'total_tokens', 'total_tokens INTEGER');
   // T03268（PRD 4.2 时区功能）：项目级时区，空串＝跟随系统时区（D-12）
   ensureColumn('projects', 'timezone', "timezone TEXT NOT NULL DEFAULT ''");
   // 该索引依赖上面补的列：必须放在 ensureColumn 之后。放进上方 DDL 块会在老库上先于补列执行，
@@ -914,6 +924,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // T00589 二轮：**项目级快照**——projects.history_at 非空即整个项目已沉淀为历史资产快照
   // （该项目在任务/计划菜单的项目列表中不再出现，内容随项目快照整体恢复或归档）
   ensureColumn('projects', 'history_at', 'history_at TEXT');
+  // 历史资产列表按 history_at 倒序、且只取已沉淀行：部分索引让「列表/统计」不再全表扫 projects。
+  // 判据统一写成 `history_at IS NOT NULL AND history_at <> ''`（COALESCE 形态不走索引）
+  db.exec("CREATE INDEX IF NOT EXISTS idx_projects_history_at ON projects(history_at) WHERE history_at IS NOT NULL AND history_at <> ''");
   ensureColumn('projects', 'archived', 'archived INTEGER NOT NULL DEFAULT 0');
   // T03209（PM-101）：看板 WIP 软上限——项目级配置，默认 10、可配 1~50；仅用于橙色提示，不阻断拖拽
   ensureColumn('projects', 'wip_limit', 'wip_limit INTEGER NOT NULL DEFAULT 10');
