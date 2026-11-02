@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, type Prompt, type PromptCategory, type ReqCategory, type ReqEntry, type Task, type TaskCategory } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { Check, ListChecks, Search, Trash2, Undo2, X } from 'lucide-react';
 import { relTime } from '../ui/format';
 import { useSessionState, usePersistentState } from '../ui/session';
+import { SETTINGS_SEARCH_EVENT, peekSettingsSearchIntent, takeSettingsSearchIntent, type SettingsSearchIntentEventDetail } from '../ui/settingsSearch'; // T04099：命令面板跳转带关键词
 import { ProjectListHint, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02284：分页列表取数走同一可见失败态层
 
@@ -94,6 +95,37 @@ export function ArchivePage() {
   const [page, setPage] = useState(1);
   const [planPage, setPlanPage] = useState(1);
   const [promptPage, setPromptPage] = useState(1); // T00872：归档提示词分页页脚
+
+  // T04099：命令面板「归档中另有 N 条」带过来的关键词——挂载时消费一次（读到即删）。
+  // 意图只做一次性覆盖（searchKw），不写回 `archive.kw`：否则下次不经面板进入页面还会看到上次的关键词。
+  // 初始化器只读（StrictMode 双跑，不能在这里删键）；真正的消费与聚焦放在 effect 里
+  const [intentKw, setIntentKw] = useState<string | null>(() => peekSettingsSearchIntent('archive') || null);
+  const searchKw = intentKw ?? kw;
+  const setSearchKw = (v: string) => { setIntentKw(null); setKw(v); };
+  const searchRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!intentKw) return;
+    takeSettingsSearchIntent('archive');
+    setPage(1);
+    setPlanPage(1);
+    setPromptPage(1);
+    searchRef.current?.focus();
+  }, [intentKw]);
+  // 面板点击时本页可能已挂载：只写会话键不会重渲染，事件路径即时覆盖；同样消费意图键，避免下次直接进入残留
+  useEffect(() => {
+    const onSearch = (e: Event) => {
+      const detail = (e as CustomEvent<SettingsSearchIntentEventDetail>).detail;
+      if (detail?.key !== 'archive') return;
+      takeSettingsSearchIntent('archive');
+      setIntentKw(detail.kw);
+      setPage(1);
+      setPlanPage(1);
+      setPromptPage(1);
+      searchRef.current?.focus();
+    };
+    globalThis.addEventListener(SETTINGS_SEARCH_EVENT, onSearch);
+    return () => globalThis.removeEventListener(SETTINGS_SEARCH_EVENT, onSearch);
+  }, []);
   // T02258：每页条数——三个列表区共用一值；localStorage 持久化，刷新后保持上次选择。
   // 存储值做档位白名单收敛：localStorage 被手工改脏（如 999）时回退默认档，不出现异常页长
   const [pageSizeStored, setPageSize] = usePersistentState<number>('archive.pageSize', DEFAULT_PAGE_SIZE);
@@ -102,13 +134,13 @@ export function ArchivePage() {
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
 
   // T02284：筛选/关键词下推服务端后不再逐字符打接口——300ms 防抖（与移动端归档视图 T01442 同口径）
-  const [kwQuery, setKwQuery] = useState(() => kw.trim());
+  const [kwQuery, setKwQuery] = useState(() => searchKw.trim());
   useEffect(() => {
-    const next = kw.trim();
+    const next = searchKw.trim();
     if (next === kwQuery) return;
     const t = setTimeout(() => setKwQuery(next), 300);
     return () => clearTimeout(t);
-  }, [kw, kwQuery]);
+  }, [searchKw, kwQuery]);
 
   // T02284：三个归档列表切**服务端分页**——limit/offset + 关键词/分类/项目全部走查询参数，
   // 不再一次拉 500 条本地过滤。取数复用 T02213 的 useResource：请求令牌防竞态（迟到的上一轮响应
@@ -409,10 +441,10 @@ export function ArchivePage() {
         {/* 搜索（标题/编号/项目名） */}
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', borderRadius: 6, padding: '3px 8px', background: 'var(--card-bg)' }}>
           <Search size={13} style={{ color: 'var(--text-muted)' }} />
-          <input value={kw} onChange={(e) => { setKw(e.target.value); setPage(1); setPlanPage(1); setPromptPage(1); }}
+          <input ref={searchRef} value={searchKw} onChange={(e) => { setSearchKw(e.target.value); setPage(1); setPlanPage(1); setPromptPage(1); }}
             placeholder="搜索归档标题…" aria-label="搜索归档内容" data-page-search
             style={{ border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', width: 150 }} />
-          {kw && <button onClick={() => setKw('')} title="清除搜索" aria-label="清除搜索" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}><X size={12} /></button>}
+          {searchKw && <button onClick={() => setSearchKw('')} title="清除搜索" aria-label="清除搜索" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}><X size={12} /></button>}
         </span>
       </div>
 

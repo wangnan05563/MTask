@@ -6,7 +6,8 @@ import { focusTaskByNo } from '../ui/focusTask'; // T02162：对齐通知中心�
 import { loadProjectList, ProjectListHint, useProjectList } from '../ui/projectList'; // T02201：项目取数走统一容错层
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：任务/提示词取数改走可见失败态层
 import { TABS, type Tab } from '../ui/tabs'; // T03184（PM-102）：页面列表从导航单源生成
-import { SETTINGS_TABS, focusSettingsTab, matchesSettingsTab, type SettingsTabKey } from '../ui/settingsTabs'; // T03271（UX-09②）：设置页签单源 + 直达写入 // T03271（UX-09②）：设置页签与导航同名，可直达具体页签
+import { SETTINGS_TABS, focusSettingsTab, matchesSettingsTab } from '../ui/settingsTabs'; // T03271（UX-09②）：设置页签单源 + 直达写入 // T03271（UX-09②）：设置页签与导航同名，可直达具体页签
+import { focusSettingsSearch, type SettingsSearchIntentTab } from '../ui/settingsSearch'; // T04099：范围外跳转把关键词带到历史资产/归档页
 
 
 /** T03983：后端回传的「可见范围之外」计数——归档 ∪ 历史资产 ∪ 搁置。桶间可重叠（先搁置后归档），
@@ -106,15 +107,16 @@ function buildTaskItems(tasks: readonly Task[]): Item[] {
  * 默认列表把「已归档 / 历史资产 / 搁置」三态整片排除（T00589/T00719），所以面板里「搜不到」
  * 大多是「不在当前可见区」而不是「不存在」——后端把这部分差集按桶计数回传，这里只如实成条。
  * 计数为 0 的桶一条都不生成：把用户引向一个必然为空的页面，比不给入口更糟。
- * 搁置没有独立菜单（在任务页的搁置 tab），故写 tasks.search + tasks.activeTab 两个会话键过去。
+ * 搁置没有独立菜单（在任务页的搁置 tab），故写 tasks.search + tasks.activeTab 两个会话键过去；
+ * 历史资产/归档同理带关键词（T04099），否则用户进页后得把同一个词重打一遍。
  */
 function buildOutOfSightItems(kw: string, outOfSight: OutOfSight | undefined, tasks: readonly Task[], onNavigate: (tab: Tab) => void): Item[] {
   if (!kw || tasks.length > 0 || !outOfSight || outOfSight.total === 0) return [];
-  const toSettings = (key: SettingsTabKey, label: string, count: number): Item => ({
+  const toSettings = (key: SettingsSearchIntentTab, label: string, count: number): Item => ({
     group: '范围外',
     label: `${label}中另有 ${count} 条「${kw}」`,
-    hint: `跳转到「设置 → ${label}」`,
-    action: () => { focusSettingsTab(key); onNavigate('settings'); },
+    hint: `跳转到「设置 → ${label}」（带当前关键词）`,
+    action: () => { focusSettingsSearch(key, kw); onNavigate('settings'); },
   });
   const out: Item[] = [];
   if (outOfSight.history > 0) out.push(toSettings('history', '历史资产', outOfSight.history));

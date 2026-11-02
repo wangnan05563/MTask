@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { Archive, ChevronDown, ChevronUp, FolderInput, History, RotateCcw, Search, X } from 'lucide-react';
 import { relTime } from '../ui/format';
 import { useSessionState } from '../ui/session';
+import { SETTINGS_SEARCH_EVENT, peekSettingsSearchIntent, takeSettingsSearchIntent, type SettingsSearchIntentEventDetail } from '../ui/settingsSearch'; // T04099：命令面板跳转带关键词
 import { ProjectListHint, projectListPlaceholder, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 
 /** 快照内任务（只读） */
@@ -70,6 +71,33 @@ export function HistoryPage() {
   const [openIds, setOpenIds] = useSessionState<string[]>('history.openSnaps', []);
   const [page, setPage] = useState(1);
 
+  // T04099：命令面板「历史资产中另有 N 条」带过来的关键词——挂载时消费一次（读到即删）。
+  // 意图只做一次性覆盖（searchKw），不写回 `history.kw`：否则下次不经面板进入页面还会看到上次的关键词。
+  // 初始化器只读（StrictMode 双跑，不能在这里删键）；真正的消费与聚焦放在 effect 里
+  const [intentKw, setIntentKw] = useState<string | null>(() => peekSettingsSearchIntent('history') || null);
+  const searchKw = intentKw ?? kw;
+  const setSearchKw = (v: string) => { setIntentKw(null); setKw(v); };
+  const searchRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!intentKw) return;
+    takeSettingsSearchIntent('history');
+    setPage(1);
+    searchRef.current?.focus();
+  }, [intentKw]);
+  // 面板点击时本页可能已挂载：只写会话键不会重渲染，事件路径即时覆盖；同样消费意图键，避免下次直接进入残留
+  useEffect(() => {
+    const onSearch = (e: Event) => {
+      const detail = (e as CustomEvent<SettingsSearchIntentEventDetail>).detail;
+      if (detail?.key !== 'history') return;
+      takeSettingsSearchIntent('history');
+      setIntentKw(detail.kw);
+      setPage(1);
+      searchRef.current?.focus();
+    };
+    globalThis.addEventListener(SETTINGS_SEARCH_EVENT, onSearch);
+    return () => globalThis.removeEventListener(SETTINGS_SEARCH_EVENT, onSearch);
+  }, []);
+
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3200); };
 
   const load = useCallback(async () => {
@@ -90,9 +118,9 @@ export function HistoryPage() {
   useEffect(() => { void load(); }, [load]);
 
   const filtered = useMemo(() => {
-    const k = kw.trim().toLowerCase();
+    const k = searchKw.trim().toLowerCase();
     return snapshots.filter((s) => !k || `${s.name} ${s.description ?? ''}`.toLowerCase().includes(k));
-  }, [snapshots, kw]);
+  }, [snapshots, searchKw]);
 
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const cur = Math.min(page, pages);
@@ -193,10 +221,10 @@ export function HistoryPage() {
         <span style={{ flex: 1 }} />
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', borderRadius: 6, padding: '3px 8px' }}>
           <Search size={13} style={{ color: 'var(--text-muted)' }} />
-          <input value={kw} onChange={(e) => { setKw(e.target.value); setPage(1); }}
+          <input ref={searchRef} value={searchKw} onChange={(e) => { setSearchKw(e.target.value); setPage(1); }}
             placeholder="搜索快照项目…" aria-label="搜索历史快照" data-page-search
             style={{ border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', width: 160 }} />
-          {kw && <button onClick={() => setKw('')} title="清除搜索" aria-label="清除搜索" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}><X size={12} /></button>}
+          {searchKw && <button onClick={() => setSearchKw('')} title="清除搜索" aria-label="清除搜索" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}><X size={12} /></button>}
         </span>
       </div>
 
