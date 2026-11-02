@@ -1,5 +1,5 @@
 import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult } from './types';
-import { withTimeout, formatHttpError, normalizeModels, readStreamLines, probeOkMessage } from './netutil';
+import { withTimeout, formatHttpError, normalizeModels, readStreamLines, probeOkMessage, modelDispatcher } from './netutil';
 import { streamTruncatedError } from './types'; // T00779：流式截断统一错误文案
 
 interface ChatResp {
@@ -19,7 +19,8 @@ export class OllamaAdapter implements AIAdapter {
   async testConnection(config: ToolConfig) {
     try {
       const url = `${this.baseUrl(config.endpoint)}/api/tags`;
-      const res = await withTimeout(fetch(url), config.timeoutMs ?? 10000);
+      const tms = config.timeoutMs ?? 10000;
+      const res = await withTimeout(fetch(url, { dispatcher: modelDispatcher(tms) }), tms);
       return res.ok
         ? { ok: true, message: probeOkMessage('本地服务可达，模型目录可读') }
         : { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
@@ -32,7 +33,8 @@ export class OllamaAdapter implements AIAdapter {
   async listModels(config: ToolConfig): Promise<ModelsResult> {
     try {
       const url = `${this.baseUrl(config.endpoint)}/api/tags`;
-      const res = await withTimeout(fetch(url), config.timeoutMs ?? 15000);
+      const tms = config.timeoutMs ?? 15000;
+      const res = await withTimeout(fetch(url, { dispatcher: modelDispatcher(tms) }), tms);
       if (!res.ok) return { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
       const models = normalizeModels(await res.json().catch(() => null));
       if (models.length === 0) return { ok: false, message: 'Ollama 未返回模型列表（可能尚未拉取任何模型）' };
@@ -61,6 +63,7 @@ export class OllamaAdapter implements AIAdapter {
     // T00838：为外部取消信号生成内部 AbortController，随 fetch 透传
     const ctrl = signal ? new AbortController() : undefined;
     if (signal && ctrl) signal.addEventListener('abort', () => ctrl.abort());
+    const tms = config.timeoutMs ?? 60000;
     try {
       const url = `${this.baseUrl(config.endpoint)}/api/chat`;
       const prompt = system ? `${system}\n\n${user}` : user;
@@ -76,8 +79,9 @@ export class OllamaAdapter implements AIAdapter {
             options: { temperature: config.temperature ?? 0.2 },
           }),
           ...(ctrl ? { signal: ctrl.signal } : {}),
+          dispatcher: modelDispatcher(tms),
         }),
-        config.timeoutMs ?? 60000,
+        tms,
       );
 
       const data = (await res.json()) as ChatResp;
@@ -99,7 +103,8 @@ export class OllamaAdapter implements AIAdapter {
   async chatStream(system: string, user: string, config: ToolConfig, onDelta: (text: string) => void, signal?: AbortSignal): Promise<StreamResult> {
     const ctrl = new AbortController();
     // 流式期间受超时约束：超时即中断，避免长耗时任务无限挂起
-    const timer = setTimeout(() => ctrl.abort(), config.timeoutMs ?? 60000);
+    const tms = config.timeoutMs ?? 60000;
+    const timer = setTimeout(() => ctrl.abort(), tms);
     // T00838：外部取消信号（用户点「停止」）同样 abort 底层流请求
     if (signal) signal.addEventListener('abort', () => ctrl.abort());
     try {
@@ -116,6 +121,7 @@ export class OllamaAdapter implements AIAdapter {
           options: { temperature: config.temperature ?? 0.2 },
         }),
         signal: ctrl.signal,
+        dispatcher: modelDispatcher(tms),
       });
       if (!res.ok || !res.body) {
         return { ok: false, error: res.ok ? 'AI 未返回流式内容' : formatHttpError(res.status, await res.text().catch(() => '')) };

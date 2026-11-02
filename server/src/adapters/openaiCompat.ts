@@ -1,5 +1,5 @@
 import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult, TokenUsage } from './types';
-import { withTimeout, formatHttpError, normalizeModels, readStreamLines, TIMEOUT_CODE, extractVendorError, statusHint, probeOkMessage } from './netutil';
+import { withTimeout, formatHttpError, normalizeModels, readStreamLines, TIMEOUT_CODE, extractVendorError, statusHint, probeOkMessage, modelDispatcher } from './netutil';
 import { streamTruncatedError, outputStoppedError, describeError } from './types'; // T00779：流式截断统一错误文案
 
 interface ChatCompletionResp {
@@ -143,9 +143,11 @@ export class OpenAICompatAdapter implements AIAdapter {
   async testConnection(config: ToolConfig) {
     try {
       const url = `${this.baseUrl(config.endpoint)}/models`;
+      const tms = config.timeoutMs ?? 10000;
       const res = await withTimeout(fetch(url, {
         headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {},
-      }), config.timeoutMs ?? 10000);
+        dispatcher: modelDispatcher(tms),
+      }), tms);
       if (!res.ok) return { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
       // T02208：不再报「连接成功」。这里把目录体读出来，一是给出「目录确实可读」的证据（模型条数），
       // 二是如实标明本次请求是否真带了密钥——不带密钥也能通过，正说明该接口不校验鉴权。
@@ -163,9 +165,11 @@ export class OpenAICompatAdapter implements AIAdapter {
   async listModels(config: ToolConfig): Promise<ModelsResult> {
     try {
       const url = `${this.baseUrl(config.endpoint)}/models`;
+      const tms = config.timeoutMs ?? 15000;
       const res = await withTimeout(fetch(url, {
         headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {},
-      }), config.timeoutMs ?? 15000);
+        dispatcher: modelDispatcher(tms),
+      }), tms);
       if (!res.ok) return { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
       const models = normalizeModels(await res.json().catch(() => null));
       if (models.length === 0) return { ok: false, message: '服务商未返回模型列表（可能不支持 /models 接口）' };
@@ -201,6 +205,7 @@ export class OpenAICompatAdapter implements AIAdapter {
     // T00838：把外部取消信号与内部超时信号合并，避免两者竞争覆盖同一个 ctrl.abort
     const ctrl = signal ? new AbortController() : undefined;
     if (signal && ctrl) signal.addEventListener('abort', () => ctrl.abort());
+    const tms = config.timeoutMs ?? 60000;
     try {
       const url = `${this.baseUrl(config.endpoint)}/chat/completions`;
       const res = await withTimeout(
@@ -220,8 +225,9 @@ export class OpenAICompatAdapter implements AIAdapter {
             max_tokens: config.maxTokens ?? 4096,
           }),
           ...(ctrl ? { signal: ctrl.signal } : {}),
+          dispatcher: modelDispatcher(tms),
         }),
-        config.timeoutMs ?? 60000,
+        tms,
       );
 
       // T02207：先取文本再试解析。原先直接 `res.json()`，厂商返回非 JSON 错误体（网关 HTML/纯文本）时
@@ -251,7 +257,8 @@ export class OpenAICompatAdapter implements AIAdapter {
   async chatStream(system: string, user: string, config: ToolConfig, onDelta: (text: string) => void, signal?: AbortSignal): Promise<StreamResult> {
     const ctrl = new AbortController();
     // 流式期间同样受超时约束：超时则中断流，避免长耗时任务无限挂起
-    const timer = setTimeout(() => ctrl.abort(), config.timeoutMs ?? 60000);
+    const tms = config.timeoutMs ?? 60000;
+    const timer = setTimeout(() => ctrl.abort(), tms);
     // T00838：外部取消信号（用户点「停止」）同样 abort 底层流请求，与超时共用 ctrl
     if (signal) signal.addEventListener('abort', () => ctrl.abort());
     try {
@@ -274,6 +281,7 @@ export class OpenAICompatAdapter implements AIAdapter {
           stream: true,
         }),
         signal: ctrl.signal,
+        dispatcher: modelDispatcher(tms),
       });
       if (!res.ok || !res.body) {
         return { ok: false, error: res.ok ? 'AI 未返回流式内容' : formatHttpError(res.status, await res.text().catch(() => '')) };

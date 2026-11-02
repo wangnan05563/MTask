@@ -2,6 +2,48 @@
  * 适配器共享工具：超时控制、HTTP 错误解析、模型列表归一化。
  * 参考 19_Karpathy 项目 ai.ts 的 normalizeModels / formatHttpError 实现。
  */
+import { Agent } from 'undici';
+
+/**
+ * T04000：把工具的 timeoutMs 真正接到 undici 的解析器计时器上。
+ *
+ * Node 全局 fetch 走内置 undici，其 headersTimeout/bodyTimeout 默认≈300s——实测静默 314~330s
+ * 即 `TypeError: terminated` + cause `UND_ERR_BODY_TIMEOUT`。而适配器里的 timeoutMs 只驱动
+ * `withTimeout` 竞速与流式的 AbortController，**够不到 undici 自己的计时器**，于是
+ * 「把 timeoutMs 配到 600s，仍在 300s 断」——思考型模型（只回 reasoning、长时间一个字节都不发）
+ * 的 PRD 解析 / 测试用例生成长流必踩。
+ *
+ * 这里按 timeoutMs 显式给一个 dispatcher，两个计时器都抬到 `timeoutMs + 余量`：
+ * 上限改由配置决定，且永远晚于 JS 侧的超时/中断，用户看到的仍是「连接超时（超过 Xms）」
+ * 而不是裸的 undici 断流错。
+ */
+const UNDICI_MARGIN_MS = 5_000;
+const agentByCeiling = new Map<number, Agent>();
+
+// 运行时（Node/undici）支持 fetch init 上的 dispatcher，但本仓 tsconfig 解析到的 RequestInit 未声明该字段，
+// 在此集中补一次声明；不逐个调用点 cast，避免「cast 掉的那一行也cast掉了真正的拼写错误」。
+declare global {
+  interface RequestInit {
+    /** undici 的调度器；用于把 headersTimeout/bodyTimeout 抬到 timeoutMs 之上（T04000） */
+    dispatcher?: unknown;
+  }
+}
+
+/** timeoutMs 对应的 undici 计时器上限（含余量）；抽成函数供判据直接断言「配置值真能生效」 */
+export function undiciCeilingMs(timeoutMs: number): number {
+  return Math.max(0, Math.round(timeoutMs)) + UNDICI_MARGIN_MS;
+}
+
+/** 按 timeoutMs 复用 undici Agent（连接池按上限分桶，同值不重复建池） */
+export function modelDispatcher(timeoutMs: number): Agent {
+  const ceiling = undiciCeilingMs(timeoutMs);
+  let agent = agentByCeiling.get(ceiling);
+  if (!agent) {
+    agent = new Agent({ headersTimeout: ceiling, bodyTimeout: ceiling });
+    agentByCeiling.set(ceiling, agent);
+  }
+  return agent;
+}
 
 /**
  * T01289：超时错误的机器可读标记。上层据此把「超时」与其它网络失败区分开——

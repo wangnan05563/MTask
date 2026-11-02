@@ -1,5 +1,5 @@
 import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult, SubmitResult, PollResult } from './types';
-import { withTimeout, formatHttpError, probeOkMessage } from './netutil';
+import { withTimeout, formatHttpError, probeOkMessage, modelDispatcher } from './netutil';
 import { describeError } from './types';
 
 /**
@@ -23,14 +23,16 @@ export class WorkBuddyAdapter implements AIAdapter {
   }
 
   async testConnection(config: ToolConfig) {
+    const tms = config.timeoutMs ?? 10000;
     try {
       const res = await withTimeout(
         fetch(this.endpoint(config.endpoint), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'ping' }),
+          dispatcher: modelDispatcher(tms),
         }),
-        config.timeoutMs ?? 10000,
+        tms,
       );
       if (!res.ok) return { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
       const data = (await res.json()) as { ok?: boolean; message?: string };
@@ -113,14 +115,16 @@ export class WorkBuddyAdapter implements AIAdapter {
 
   /** 统一请求：返回响应对象与解析后的 JSON（可能为 null）、原始文本，供 post/submit/poll 各自解释 */
   private async request(body: Record<string, unknown>, config: ToolConfig, signal?: AbortSignal): Promise<{ res: Response; data: unknown; text: string }> {
+    const tms = config.timeoutMs ?? 60000;
     const res = await withTimeout(
       fetch(this.endpoint(config.endpoint), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
         ...(signal ? { signal } : {}),
+        dispatcher: modelDispatcher(tms),
       }),
-      config.timeoutMs ?? 60000,
+      tms,
     );
     const text = await res.text().catch(() => '');
     let data: unknown = null;

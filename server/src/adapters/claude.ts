@@ -1,5 +1,5 @@
 import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult } from './types';
-import { withTimeout, formatHttpError, normalizeModels, readStreamLines } from './netutil';
+import { withTimeout, formatHttpError, normalizeModels, readStreamLines, modelDispatcher } from './netutil';
 import { streamTruncatedError, outputStoppedError } from './types'; // T00779：流式截断统一错误文案
 
 interface MessagesResp {
@@ -66,6 +66,7 @@ export class ClaudeAdapter implements AIAdapter {
     if (!config.apiKey) return { ok: false, message: '缺少 API Key' };
     try {
       const url = `${this.baseUrl(config.endpoint)}/v1/messages`;
+      const tms = config.timeoutMs ?? 10000;
       const res = await withTimeout(
         fetch(url, {
           method: 'POST',
@@ -75,8 +76,9 @@ export class ClaudeAdapter implements AIAdapter {
             'anthropic-version': ANTHROPIC_VERSION,
           },
           body: JSON.stringify({ model: config.model ?? 'claude-3-5-sonnet-latest', max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] }),
+          dispatcher: modelDispatcher(tms),
         }),
-        config.timeoutMs ?? 10000,
+        tms,
       );
       // T02208：本通道与其他适配器不同——testConnection 走的是最小实调（POST /v1/messages），
       // 因此「连接成功」在这里确实是「可调用」的证据，文案把这一点讲明，避免与目录型探测混淆
@@ -93,14 +95,16 @@ export class ClaudeAdapter implements AIAdapter {
     if (!config.apiKey) return { ok: false, message: '缺少 API Key' };
     try {
       const url = `${this.baseUrl(config.endpoint)}/v1/models`;
+      const tms = config.timeoutMs ?? 15000;
       const res = await withTimeout(
         fetch(url, {
           headers: {
             'x-api-key': config.apiKey,
             'anthropic-version': ANTHROPIC_VERSION,
           },
+          dispatcher: modelDispatcher(tms),
         }),
-        config.timeoutMs ?? 15000,
+        tms,
       );
       if (!res.ok) return { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
       const models = normalizeModels(await res.json().catch(() => null));
@@ -133,6 +137,7 @@ export class ClaudeAdapter implements AIAdapter {
     // T00838：为外部取消信号生成内部 AbortController，随 fetch 透传
     const ctrl = signal ? new AbortController() : undefined;
     if (signal && ctrl) signal.addEventListener('abort', () => ctrl.abort());
+    const tms = config.timeoutMs ?? 60000;
     try {
       const url = `${this.baseUrl(config.endpoint)}/v1/messages`;
       const res = await withTimeout(
@@ -151,8 +156,9 @@ export class ClaudeAdapter implements AIAdapter {
             messages: [{ role: 'user', content: user }],
           }),
           ...(ctrl ? { signal: ctrl.signal } : {}),
+          dispatcher: modelDispatcher(tms),
         }),
-        config.timeoutMs ?? 60000,
+        tms,
       );
 
       const data = (await res.json()) as MessagesResp;
@@ -178,7 +184,8 @@ export class ClaudeAdapter implements AIAdapter {
     if (!config.apiKey) return { ok: false, error: '缺少 API Key' };
     const ctrl = new AbortController();
     // 流式期间受超时约束：超时即中断，避免长耗时任务无限挂起
-    const timer = setTimeout(() => ctrl.abort(), config.timeoutMs ?? 60000);
+    const tms = config.timeoutMs ?? 60000;
+    const timer = setTimeout(() => ctrl.abort(), tms);
     // T00838：外部取消信号（用户点「停止」）同样 abort 底层流请求
     if (signal) signal.addEventListener('abort', () => ctrl.abort());
     try {
@@ -200,6 +207,7 @@ export class ClaudeAdapter implements AIAdapter {
           stream: true,
         }),
         signal: ctrl.signal,
+        dispatcher: modelDispatcher(tms),
       });
       if (!res.ok || !res.body) {
         return { ok: false, error: res.ok ? 'AI 未返回流式内容' : formatHttpError(res.status, await res.text().catch(() => '')) };
