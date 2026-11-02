@@ -75,6 +75,9 @@ export interface SessionTaskBrief {
   id: string;
   task_no: string | null;
   title: string;
+  /** T04065：任务所属项目——多项目并行时让会话卡的任务 chip 一眼可辨 */
+  project_id: string;
+  project_name: string | null;
 }
 
 /** T01271（FR-1.4）：面板视图 = 会话行 + 关联任务摘要 */
@@ -378,7 +381,9 @@ export const ExecSessionService = {
       const chunk = all.slice(i, i + 200);
       const placeholders = chunk.map(() => '?').join(',');
       const found = db.prepare(
-        `SELECT id, task_no, title FROM tasks WHERE id IN (${placeholders})`,
+        `SELECT t.id, t.task_no, t.title, t.project_id, p.name AS project_name
+           FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+          WHERE t.id IN (${placeholders})`,
       ).all(...chunk) as SessionTaskBrief[];
       for (const t of found) taskMap.set(t.id, t);
     }

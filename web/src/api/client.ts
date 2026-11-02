@@ -476,6 +476,9 @@ export interface ExecSessionTaskBrief {
   id: string;
   task_no: string | null;
   title: string;
+  /** T04065：所属项目（多项目并行时用于识别归属） */
+  project_id: string;
+  project_name: string | null;
 }
 
 /** T01271-FR1.4：外部平台执行会话（「执行会话」面板数据源） */

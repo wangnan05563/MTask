@@ -66,6 +66,23 @@ const chip: CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
+/** T04065：任务 chip 内的项目标签——轻量中性色，超长截断，完整名走 title 提示 */
+const projectBadge: CSSProperties = {
+  display: 'inline-block',
+  flexShrink: 0,
+  maxWidth: 108,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  fontSize: 'var(--fs-xs)',
+  lineHeight: '16px',
+  color: 'var(--text-muted)',
+  background: 'var(--card-bg)',
+  border: '1px solid var(--border)',
+  borderRadius: 4,
+  padding: '0 5px',
+};
+
 export function ExecSessionsPage() {
   const [rows, setRows] = useState<ExecSession[]>([]);
   const [loading, setLoading] = useState(true);
@@ -256,10 +273,18 @@ function SessionCard({ s }: { readonly s: ExecSession }) {
               key={t.id}
               data-lck="task-chip"
               onClick={() => void focusTaskByNo(t.task_no, 'notice')}
-              title={`${t.task_no ?? ''} ${t.title}——点击直达任务`}
-              style={{ ...chip, border: '1px solid var(--border)', cursor: 'pointer', background: 'var(--surface-2)', textAlign: 'left', font: 'inherit' }}
+              title={`${t.project_name ?? '未分配项目'}｜${t.task_no ?? ''} ${t.title}——点击直达任务`}
+              style={{
+                ...chip, display: 'inline-flex', alignItems: 'center', gap: 6,
+                border: '1px solid var(--border)', cursor: 'pointer', background: 'var(--surface-2)', textAlign: 'left', font: 'inherit',
+              }}
             >
-              {t.task_no ? `${t.task_no} · ` : ''}{t.title}
+              <span data-lck="task-project-badge" title={t.project_name ?? '未分配项目'} style={projectBadge}>
+                {t.project_name ?? '未分配'}
+              </span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {t.task_no ? `${t.task_no} · ` : ''}{t.title}
+              </span>
             </button>
           ))}
         </div>

@@ -256,6 +256,7 @@ const EXEC_SESSIONS_STEPS: GuideStep[] = [
     points: [
       '顶部三个统计（存活 / 停滞 / 已完成）直接反映当前会话规模',
       '每条会话展示平台、阶段、进度、最近心跳与关联任务',
+      '关联任务旁标注项目标签；项目名过长时截断，悬停可看全名（无项目归属显示「未分配」）',
       '当前阶段面板为只读观测，不含任何会触发外部平台动作的入口',
     ],
     visual: <Chips items={[chip(<Activity size={13} />, '会话观测'), chip(<RefreshCw size={13} />, '15s 自动刷新'), chip(<ListTodo size={13} />, '关联任务')]} />,
