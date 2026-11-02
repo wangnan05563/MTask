@@ -99,6 +99,10 @@ run(NODE, [path.join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc'), '--noEmi
 // [5] server build
 log('server build…');
 run(NODE, [path.join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc'), '-p', path.join(ROOT, 'server', 'tsconfig.json')]);
+// 运行时资产：server/src/skills 下的内置技能 Markdown 不被 tsc 拷贝（server 的 build 脚本另行 cp），
+// 这里直接调 tsc 会绕过它，asar 内缺 skills → 打包版用例/PRD 生成读 SKILL.md 直接 ENOENT。
+fs.rmSync(path.join(ROOT, 'server', 'dist', 'skills'), { recursive: true, force: true });
+fs.cpSync(path.join(ROOT, 'server', 'src', 'skills'), path.join(ROOT, 'server', 'dist', 'skills'), { recursive: true });
 
 // [6] web build
 // T00749 补充：vite 清空 dist 产物目录的 rmSync 同样可能触发安全删除守卫——子进程统一带逃生开关
