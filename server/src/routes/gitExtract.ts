@@ -23,6 +23,7 @@ import { isReportToken, readAndDeleteReport } from '../services/ReportService';
 import { DOWNLOAD_NAME_RE } from '../util/export-name';
 import { exportGate } from '../util/export-gate';
 import { scalarText } from '../util/scalarText';
+import { startSseKeepalive } from './sseKeepalive'; // T04001：非模型长流同样怕静默被掐（大仓 cat-file 汇总可 >300s）
 
 export const gitExtractApi = Router();
 
@@ -94,6 +95,7 @@ gitExtractApi.post('/git-extract', exportGate('git-extract'), async (req, res) =
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
+  startSseKeepalive(res);
   const send = (event: string, payload: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
   const controller = new AbortController();
   controllers.set(plan.jobId, controller);

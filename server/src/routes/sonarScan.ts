@@ -21,6 +21,7 @@ import {
 import type { ScanInput, ScanSeverity } from '../services/sonarScan';
 import { ConsoleJobService } from '../services/ConsoleJobService';
 import { scalarText } from '../util/scalarText';
+import { startSseKeepalive } from './sseKeepalive'; // T04001：非模型长流同样怕静默被掐（JVM 扫描单阶段可 >300s）
 
 export const sonarScanApi = Router();
 
@@ -145,6 +146,7 @@ sonarScanApi.post('/sonar/scan', exportGate(SONAR_SCAN_GATE, SCAN_LIMIT_DEFAULT)
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
+  startSseKeepalive(res);
   const send = (event: string, payload: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
   const controller = new AbortController();
   // 服务内部建 console_job 之后才知道 jobId：登记要发生在建号的那一刻，
