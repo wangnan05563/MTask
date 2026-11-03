@@ -52,6 +52,25 @@ const SEVERITIES: ReadonlyArray<{ key: SevKey; label: string }> = [
 const DEFAULT_THRESHOLD: SevKey[] = ['blocker', 'critical'];
 /** 等服务器回 aborted 帧的窗口：帧到才算「快照已回收」，超时就断开并如实说明（T03708） */
 const STOP_CONFIRM_TIMEOUT_MS = 15_000;
+/** T04075：找回态挂载没有 SSE 帧来源，中止确认改按 `/sonar/scan/running` 轮询，间隔 1 秒 */
+const STOP_POLL_INTERVAL_MS = 1_000;
+
+/** `GET /sonar/scan/running` 回包（只用到收口判定需要的 jobId） */
+interface RunningJobsView {
+  jobs?: Array<{ jobId?: string; stage?: string | null }>;
+}
+
+/** 中止是否已被服务端确认（纯函数）：目标 jobId 从运行态消失即等价于收到 aborted 帧。
+ *  按 jobId 精确判定而不是「列表为空」——期间另起的扫描不该被算作本单收口（T04075）。 */
+function isStopConfirmed(jobs: RunningJobsView['jobs'], targetJobId: string): boolean {
+  if (!targetJobId) return false;
+  return !(jobs ?? []).some((j) => j.jobId === targetJobId);
+}
+
+/** 未确认中止的统一文案：断流 catch、15s 兜底、指令送不达三条出口共用一套措辞，避免「已回收」被谎报（T04075） */
+function stopUnconfirmedText(): string {
+  return `已发出中止指令，但 ${STOP_CONFIRM_TIMEOUT_MS / 1000} 秒内未获服务端确认；本次中止状态未知，请刷新核对扫描是否仍在运行。`;
+}
 
 interface ScanIssue {
   key: string;
@@ -225,10 +244,16 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
   const controllerRef = useRef<AbortController | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
   const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stopPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const stopTimedOutRef = useRef(false);
+  /** 本次挂载是否已按「错误」定性：轮询确认不得把它翻成「已中止…已回收」（T04075） */
+  const sawErrorRef = useRef(false);
 
   const clearStopTimer = () => {
     if (stopTimerRef.current) { clearTimeout(stopTimerRef.current); stopTimerRef.current = null; }
+  };
+  const clearStopPoll = () => {
+    if (stopPollRef.current) { clearInterval(stopPollRef.current); stopPollRef.current = null; }
   };
 
   const taskIds = useMemo(() => [...new Set(scope.taskIds)], [scope.taskIds]);
@@ -254,7 +279,12 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
   }, [refreshEnv]);
 
   // 卸载（切页/收起卡片）即掐流：服务端 res.close 会 abort 扫描器并回收快照目录
-  useEffect(() => () => controllerRef.current?.abort(), []);
+  // T04075：中止确认轮询也必须随卸载停掉——留着定时器会在组件销毁后每秒打一次 `/sonar/scan/running`
+  useEffect(() => () => {
+    clearStopTimer();
+    clearStopPoll();
+    controllerRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     onEnvState?.(envDown);
@@ -265,14 +295,15 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
     let cancelled = false;
     void (async () => {
       try {
-        const r = await api.get<{ jobs: Array<{ jobId: string; stage: string | null }> }>('/sonar/scan/running');
-        if (cancelled || !r.jobs.length) return;
-        const job = r.jobs[0];
+        const r = await api.get<RunningJobsView>('/sonar/scan/running');
+        const jobs = r.jobs ?? [];
+        if (cancelled || !jobs.length) return;
+        const job = jobs[0];
         setRunning(true);
-        setJobId(job.jobId);
+        setJobId(job.jobId ?? '');
         const idx = STAGES.findIndex((s) => s.key === job.stage);
         setStageIdx(Math.max(idx, 0));
-        setLines([{ id: nextLogId(), text: `检测到仍在运行的扫描任务（${job.jobId.slice(0, 8)}）——刷新后进度可回读，但实时输出需重新发起扫描。` }]);
+        setLines([{ id: nextLogId(), text: `检测到仍在运行的扫描任务（${(job.jobId ?? '').slice(0, 8)}）——刷新后进度可回读，但实时输出需重新发起扫描。` }]);
       } catch { /* 回读失败只是少了个徽标，不影响本面板可用 */ }
     })();
     return () => { cancelled = true; };
@@ -284,11 +315,47 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
     if (el) el.scrollTop = el.scrollHeight;
   }, [lines]);
 
+  /** 中止确认到手（SSE `aborted` 帧或轮询见 jobId 消失）：归位运行态并点亮「已回收」 */
+  function settleAborted() {
+    clearStopTimer();
+    clearStopPoll();
+    setStopping(false);
+    setRunning(false);
+    setAborted(true);
+  }
+
+  /** 未获确认（超时/指令送不达）：按「未知」收口——既不谎报已回收，也不再停在「正在中止…」出不来 */
+  function settleUnconfirmed() {
+    clearStopTimer();
+    clearStopPoll();
+    sawErrorRef.current = true;
+    setStopping(false);
+    setRunning(false);
+    setRunError(stopUnconfirmedText());
+  }
+
+  /** 一次运行态轮询：目标 jobId 消失即与收到 aborted 帧等价（服务端先 markError 再同步回收快照目录） */
+  async function pollStopConfirmation(targetJobId: string) {
+    try {
+      const r = await api.get<RunningJobsView>('/sonar/scan/running');
+      if (!isStopConfirmed(r.jobs, targetJobId)) return;
+      // 已经按错误定性的挂载：jobId 消失是那次失败造成的，不能改口说「已中止并回收」
+      if (sawErrorRef.current) { clearStopPoll(); return; }
+      settleAborted();
+    } catch { /* 轮询本身失败不打断收口：15s 兜底会按「未确认」如实说明 */ }
+  }
+
+  function onStopTimeout() {
+    stopTimedOutRef.current = true;
+    controllerRef.current?.abort();
+    settleUnconfirmed();
+  }
+
   async function start() {
     if (!taskIds.length) { flash?.('请先勾选至少一个已回写 commit id 的任务'); return; }
     setRunning(true);
     setResult(null); setRunError(''); setErrorKind(''); setAborted(false);
-    setStopping(false); stopTimedOutRef.current = false; clearStopTimer();
+    setStopping(false); stopTimedOutRef.current = false; sawErrorRef.current = false; clearStopTimer(); clearStopPoll();
     setStageIdx(-1); setJobId(''); setLines([]);
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -307,8 +374,9 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
         // 分组默认展开：有阻断/严重才展开这两组，否则展开第一组非空——全空时不铺七个空壳
         setOpenGroups(SEVERITIES.filter((s) => (v.grouped?.[s.key]?.length ?? 0) > 0)
           .slice(0, 2).map((s) => s.key));
-      } else if (name === 'aborted') { clearStopTimer(); setStopping(false); setAborted(true); }
+      } else if (name === 'aborted') settleAborted();
       else if (name === 'error') {
+        sawErrorRef.current = true;
         setRunError(describeError(p as ErrorPayload));
         setErrorKind(textOf(p.kind));
       }
@@ -325,7 +393,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
       if (controller.signal.aborted) {
         // 本地断流只说明前端不再收帧；服务端是否停干净由 aborted 帧判定，这里只在超时兜底时如实说明
         if (stopTimedOutRef.current) {
-          setRunError(`已发出中止指令，但 ${STOP_CONFIRM_TIMEOUT_MS / 1000} 秒内没有收到服务端确认；连接已断开，请刷新核对扫描是否仍在运行。`);
+          setRunError(stopUnconfirmedText());
         }
       }
       // 被闸拒不算「扫描失败」：并发超限不排队（T03410），语气与提取卡一致
@@ -333,6 +401,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
       else setRunError(msg);
     } finally {
       clearStopTimer();
+      clearStopPoll();
       setStopping(false);
       setRunning(false);
       controllerRef.current = null;
@@ -346,22 +415,25 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
       controllerRef.current?.abort();
       return;
     }
+    const hasStream = controllerRef.current != null;
     setStopping(true);
     stopTimedOutRef.current = false;
+    clearStopTimer(); clearStopPoll();
     try {
       await api.post('/sonar/scan/stop', { jobId });
     } catch {
       // 指令没送到就只能断流兜底；此时无法收到确认帧，别把「已回收」当事实回显
       stopTimedOutRef.current = true;
       controllerRef.current?.abort();
+      // 找回态挂载根本没有流可断（T04075）：不在此收口的话「正在中止…」会一直挂着
+      if (!hasStream) settleUnconfirmed();
       return;
     }
     // 故意不立刻 abort：留着 SSE 等服务器把进程与快照收干净再回 aborted 帧
-    clearStopTimer();
-    stopTimerRef.current = setTimeout(() => {
-      stopTimedOutRef.current = true;
-      controllerRef.current?.abort();
-    }, STOP_CONFIRM_TIMEOUT_MS);
+    // T04075：找回态（刷新/切页后按 /running 点亮的挂载）一条 SSE 都没接，aborted 帧永远不会到——
+    // 并行按 jobId 轮询运行态，消失即等价确认；SSE 挂载同一条通道也只做兜底，帧先到则轮询会被一并清掉。
+    stopPollRef.current = setInterval(() => { void pollStopConfirmation(jobId); }, STOP_POLL_INTERVAL_MS);
+    stopTimerRef.current = setTimeout(onStopTimeout, STOP_CONFIRM_TIMEOUT_MS);
   }
 
   const r = result?.receipts;
