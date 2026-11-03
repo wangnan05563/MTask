@@ -943,7 +943,9 @@ export const TaskService = {
       // T00446：手动排序（拖拽结果）——pinned 优先，user_sort 空值排最后
       manual: "pinned DESC, CASE WHEN user_sort IS NULL THEN 1 ELSE 0 END, user_sort, created_at DESC",
     };
-    let orderSql = orderBy[opts.sort ?? 'pinned'];
+    // T04181（甲・静默回落）：Record 只约束静态字面量键，运行时 opts.sort 来自 query 的裸断言，
+    // 任意非白名单值（含空串——?? 'pinned' 兜不住）查表 miss 会得到 undefined 并被拼成 ORDER BY undefined ⇒ 500。
+    let orderSql = orderBy[opts.sort ?? 'pinned'] ?? orderBy.pinned;
     // T03232：字段排序接管排序主键（显式选择的排序意图优先于 pinned），参数追加在 WHERE 之后
     if (opts.fieldSort?.fieldId && opts.projectId) {
       const byField = fieldSortClause(opts.fieldSort, liveFieldsOf(opts.projectId));
