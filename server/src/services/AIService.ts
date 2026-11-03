@@ -377,8 +377,16 @@ export const AIService = {
   /**
    * 提示词优化：将任务的标题与描述改写为一则清晰、结构化的任务提示词。
    * 使用通用单轮对话 chat，不经过 FR2 的固定整理指令。
+   * T04121：可选注入「所属项目 / 任务分类」两条确定性事实——只给归属语义，
+   * 故意不注入工作空间检索片段：本能力是纯文案改写（硬约束「不虚构不删改事实」），
+   * 代码片段会诱导模型把实现细节写成任务事实；且产物在下游梳理/分发时会再检索注入一次。
    */
-  async optimizeText(title: string, description: string, toolId: string): Promise<{ ok: boolean; content?: string; error?: string }> {
+  async optimizeText(
+    title: string,
+    description: string,
+    toolId: string,
+    scope?: { projectName?: string; categoryName?: string },
+  ): Promise<{ ok: boolean; content?: string; error?: string }> {
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     // 记录 AI 使用日志（供日志菜单按 source=ai 筛选排错）：记录工具/模型/启始，便于对应用时与结果
@@ -394,8 +402,12 @@ export const AIService = {
       '4. 无论输入是繁体还是简体，最终输出必须统一使用简体中文（简体字），严禁出现任何繁体字',
       '5. 只输出优化后的提示词文本，不要任何前置说明或寒暄',
       '6. 不要输出“任务提示词 / 任务描述 / 任务标题”这类文档级标题作为开头，直接从具体内容小节开始（如“目标”“步骤”“约束”），避免被误识别为提示词优化任务',
+      // 归属信息只用于贴合语境，显式禁止扩写，避免模型把项目/分类当成任务内容的一部分
+      '7. 【所属项目】【任务分类】仅用于贴合项目语境与用词，不是任务内容，不得据此虚构需求或扩写范围',
     ].join('\n');
     const user = [
+      scope?.projectName ? `【所属项目】${scope.projectName}` : '',
+      scope?.categoryName ? `【任务分类】${scope.categoryName}` : '',
       title ? `【任务标题】${title}` : '',
       description ? `【任务描述】${description}` : '',
     ].filter(Boolean).join('\n');

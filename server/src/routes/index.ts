@@ -2577,10 +2577,11 @@ api.post('/tasks/classify-batch', async (req, res) => {
 
 // ---------- 提示词优化 ----------
 api.post('/ai/optimize', async (req, res) => {
-  const { toolId, title, description } = req.body ?? {};
+  const { toolId, title, description, projectName, categoryName } = req.body ?? {};
   if (!toolId) return res.status(400).json({ error: 'toolId 必填' });
   try {
-    res.json(await AIService.optimizeText(title ?? '', description ?? '', toolId));
+    // T04121：可选归属上下文由调用方按需给（任务菜单给项目名+分类；提示词/需求页两处不传）
+    res.json(await AIService.optimizeText(title ?? '', description ?? '', toolId, { projectName, categoryName }));
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }

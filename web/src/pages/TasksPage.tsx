@@ -2871,10 +2871,14 @@ export function TasksPage() {
     if (!text.trim()) return flash('请先填写任务描述或标题再优化');
     // 后端以 ok:false + error 返回业务失败（不抛异常），原文案优先于 store 的兜底文案
     let serverError = '';
+    // T04121：给模型两条确定性归属事实（项目名/分类名），只贴合语境、不注入代码片段；
+    // 任务可能属于非当前打开的项目，故按 task.project_id 反查，缺失时才退回当前项目
+    const projectName = projects.find((p) => p.id === (task.project_id || activeProject))?.name ?? '';
+    const categoryName = taskCats.find((c) => c.id === task.category_id)?.name ?? '';
     const r = await runOptimize(
       `${OPTIMIZE_SCOPE_TASKS}${task.id}`,
       (signal) => api.post<{ ok: boolean; content?: string; error?: string }>('/ai/optimize', {
-        toolId: organizeToolId, title: task.title, description: text,
+        toolId: organizeToolId, title: task.title, description: text, projectName, categoryName,
       }, signal),
       (result) => {
         if (!result.ok) { serverError = result.error ?? '优化失败'; return null; }
