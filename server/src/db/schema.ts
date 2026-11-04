@@ -662,6 +662,12 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       created_at       TEXT NOT NULL,
       updated_at       TEXT NOT NULL
     );
+    -- T04129（PRD MEM-103）：四索引承载强制作用域查询。
+    -- v1.2·F12 的 idx_memories_product_project 专为 MEM-301「产品级共享 OR 本期特有」合并查询而建。
+    CREATE INDEX IF NOT EXISTS idx_memories_product ON memories(product_key);
+    CREATE INDEX IF NOT EXISTS idx_memories_product_type ON memories(product_key, type);
+    CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);
+    CREATE INDEX IF NOT EXISTS idx_memories_product_project ON memories(product_key, project_id);
   `);
 
   // 迁移兜底：老库缺列时补列（CREATE TABLE IF NOT EXISTS 对已存在表不生效）
