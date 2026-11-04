@@ -48,11 +48,14 @@ interface ExportBundle {
 }
 
 /** 覆盖模式清表顺序：子表先删，避免外键约束阻塞 */
-const DELETE_ORDER = ['queue_jobs', 'task_images', 'prompts', 'task_categories', 'app_settings', 'tasks', 'queues', 'ai_tools', 'prompt_categories', 'projects'];
-const INSERT_ORDER = ['projects', 'prompt_categories', 'ai_tools', 'queues', 'task_categories', 'app_settings', 'tasks', 'prompts', 'task_images', 'queue_jobs'];
+// T04130（PRD MEM-104）：memories 必须同时进三张顺序表——漏 EXPORT_TABLES 导出不含记忆、
+// 漏 INSERT_ORDER overwrite 清空后不恢复（记忆丢失）、漏 DELETE_ORDER 旧记忆残留+新记忆再插（记忆翻倍）。
+// 无外键 ⇒ 表内位置任意，统一放末尾。
+const DELETE_ORDER = ['queue_jobs', 'task_images', 'prompts', 'task_categories', 'app_settings', 'tasks', 'queues', 'ai_tools', 'prompt_categories', 'projects', 'memories'];
+const INSERT_ORDER = ['projects', 'prompt_categories', 'ai_tools', 'queues', 'task_categories', 'app_settings', 'tasks', 'prompts', 'task_images', 'queue_jobs', 'memories'];
 
 const EXPORT_TABLES: (keyof ExportBundle['data'])[] = [
-  'projects', 'prompt_categories', 'ai_tools', 'queues', 'task_categories', 'app_settings', 'tasks', 'prompts', 'task_images', 'queue_jobs',
+  'projects', 'prompt_categories', 'ai_tools', 'queues', 'task_categories', 'app_settings', 'tasks', 'prompts', 'task_images', 'queue_jobs', 'memories',
 ];
 
 /** ai_tools 导出行：api_key_enc(密文) → apiKey(明文)，供跨机后用目标机密钥重新加密 */
@@ -109,6 +112,8 @@ export function isExportTable(name: string): boolean {
 
 /** 结构校验：仅对 bundle 大纲做防御性检查，避免导入任意/损坏文件破坏库 */
 /** 核心表：导入时必须存在；其余表（如新版本的 task_categories）缺失时按空处理，兼容旧备份文件 */
+// T04130（PRD MEM-104 / v1.2·F7 硬约束）：memories 刻意**不**进 CORE_TABLES——
+// 旧备份文件没有该 key，误加会让 validateBundle 直接拒绝历史备份。新增表只进上面三张顺序表。
 const CORE_TABLES = ['projects', 'tasks', 'ai_tools', 'prompts', 'prompt_categories', 'queues', 'queue_jobs', 'task_images'];
 
 function validateBundle(b: unknown): b is ExportBundle {
