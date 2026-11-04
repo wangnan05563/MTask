@@ -6,6 +6,7 @@ import { WorkspaceService } from '../services/WorkspaceService'; // T00776：工
 import { askWorkspace } from '../services/workspaceQa';
 import { qaStats, recordCitationClick, recordFeedback } from '../services/workspaceQaTelemetry'; // T03250（PRD 5.1）：工作空间只读问答（带 file:line 引用）
 import { isValidTimeZone } from '../services/ProjectTimeZone'; // T03268：项目级时区校验（IANA，运行时 ICU）
+import { parseProductKeyInput } from '../util/productKey'; // T04132：产品标签归一化单源（PRD MEM-101②）
 import { getDb } from '../db/connection';
 import { TaskService, nextTaskNo, TASK_STATUSES, type TaskInput, type TaskListOptions } from '../services/TaskService';
 import { compileTaskQuery, parseTaskQuery } from '../util/taskQuery'; // T03184（PM-102）：命令面板结构化搜索语法
@@ -162,8 +163,13 @@ api.get('/projects', (req, res) => {
 });
 
 api.post('/projects', (req, res) => {
-  const { name, description = '', timezone = '' } = req.body ?? {};
+  const body = req.body ?? {};
+  const { name, description = '', timezone = '' } = body;
   if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name 必填' });
+  // T04132（PRD MEM-101②）：产品标签写入闭环——接受 product_key（PRD 字面）与 productKey（前端 camelCase 别名），
+  // 归一化后落库；非字符串类型直接 400，避免静默转换把隔离边界写成 '[object Object]'。
+  const pk = parseProductKeyInput('product_key' in body ? body.product_key : body.productKey);
+  if (!pk.ok) return res.status(400).json({ error: pk.error });
   // T03268（PRD 4.2）：项目级时区可配——空串＝跟随系统
   const tz = typeof timezone === 'string' ? timezone.trim() : '';
   if (tz && !isValidTimeZone(tz)) return res.status(400).json({ error: `时区非法：${tz}（需 IANA 时区名，如 Asia/Shanghai）` });
@@ -174,8 +180,8 @@ api.post('/projects', (req, res) => {
   const owners = findProjectNameOwners(name);
   if (owners.length > 0) return res.status(400).json({ error: projectNameConflictError(name, owners) });
   const id = uuid();
-  getDb().prepare('INSERT INTO projects (id, name, description, timezone, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(id, name, description, tz, now(), now());
+  getDb().prepare('INSERT INTO projects (id, name, description, timezone, product_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(id, name, description, tz, pk.value, now(), now());
   cacheClear('projects'); // 新建项目后列表缓存失效，立即可见
   res.status(201).json(getDb().prepare('SELECT * FROM projects WHERE id = ?').get(id));
 });
@@ -331,7 +337,8 @@ function clearSymbolsIfWorkspaceChanged(id: string, workspacePath: unknown, prev
 }
 
 api.patch('/projects/:id', (req, res) => {
-  const { name, description, sortWeight, workspacePath, wipLimit, timezone } = req.body ?? {};
+  const body = req.body ?? {};
+  const { name, description, sortWeight, workspacePath, wipLimit, timezone } = body;
   const db = getDb();
   const sets: string[] = [];
   const values: unknown[] = [];
@@ -350,6 +357,12 @@ api.patch('/projects/:id', (req, res) => {
   if (timezone !== undefined) {
     const err = projectTimezonePatch(timezone, sets, values);
     if (err) return res.status(400).json({ error: err });
+  }
+  // T04132（PRD MEM-101②）：补绑/清空产品标签；null 归一化为 ''（未绑定产品，走 MEM-302 空集语义）
+  if ('product_key' in body || 'productKey' in body) {
+    const pk = parseProductKeyInput('product_key' in body ? body.product_key : body.productKey);
+    if (!pk.ok) return res.status(400).json({ error: pk.error });
+    sets.push('product_key = ?'); values.push(pk.value);
   }
   // T00771：工作空间绑定——路径必须存在且为文件夹（服务端本机校验），多项目可指向同一路径（仅存引用）
   // 走查修复（H-1）：换绑判定需与旧值比较，旧值必须在 UPDATE 之前读取——
