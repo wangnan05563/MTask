@@ -744,6 +744,7 @@ export function TasksPage() {
   // 新建任务表单字段：跨切换会话持久化，录入一半切页后可续写
   const [newTitle, setNewTitle] = useSessionState('tasks.new.title', '');
   const [wsPickForNew, setWsPickForNew] = useState<Project | null>(null); // T00771：新建项目后的工作空间绑定弹窗（可跳过）
+  const [pkDraft, setPkDraft] = useState(''); // T04133：弹窗内的产品标签草稿（回显 + 保存）
   const [newPriority, setNewPriority] = useSessionState<string>('tasks.new.priority', 'normal');
   const [newDescOpen, setNewDescOpen] = useSessionState('tasks.new.descOpen', false);
   const [newDesc, setNewDesc] = useSessionState('tasks.new.desc', '');
@@ -751,6 +752,11 @@ export function TasksPage() {
   // T02201：项目列表取数交统一容错层（加载中/失败可见 + 重试，失败不缓存冒充正常数据）
   const projectList = useProjectList();
   const { projects } = projectList;
+  // T04133（PRD §3.1）：无字典表——已有产品标签候选由项目列表现算去重，供弹窗下拉选择
+  const productKeyOptions = useMemo(
+    () => Array.from(new Set(projects.map((p) => (p.product_key ?? '').trim()).filter(Boolean))).sort(),
+    [projects],
+  );
   // 复用（复制）任务弹窗状态：reuseOpen 存待复制任务 id（null 关闭）；projectId 为选中的目标项目
   const [reuseOpen, setReuseOpen] = useState<string | null>(null);
   const reusePanelRef = useRef<HTMLDivElement>(null);
@@ -1698,7 +1704,10 @@ export function TasksPage() {
     setActiveProject('');
     void loadProjects();
     // T00771：新建项目后顺带弹出工作空间绑定（可跳过）——建立项目名与工作空间路径的绑定关系
-    if (created?.id) setWsPickForNew(created);
+    if (created?.id) {
+      setPkDraft(created.product_key ?? ''); // T04133：弹窗回显当前产品标签
+      setWsPickForNew(created);
+    }
   }
 
   /** T00771：绑定工作空间到项目（PATCH + 本地状态同步，项目切换时下拉条自动联动回显） */
@@ -1706,6 +1715,32 @@ export function TasksPage() {
     const updated = await api.patch<Project>(`/projects/${projectId}`, { workspacePath: path });
     patchProject(projectId, { workspace_path: updated?.workspace_path ?? path });
     flash(`已绑定工作空间：${path}`);
+  }
+
+  /** T04133（PRD MEM-101③ / MEM-501）：保存产品标签——PATCH 后同步本地项目列表，保证下拉/弹窗回显 */
+  async function saveProductKey(projectId: string, raw: string): Promise<void> {
+    try {
+      const updated = await api.patch<Project>(`/projects/${projectId}`, { productKey: raw });
+      const value = updated?.product_key ?? raw.trim().toLowerCase();
+      patchProject(projectId, { product_key: value });
+      setPkDraft(value);
+      flash(value ? `产品标签已设为 ${value}` : '已清空产品标签');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    }
+  }
+
+  /** T04133：存量项目补绑入口（项目操作按钮组）——预填当前值实现回显，留空即清空绑定 */
+  async function editProductKey() {
+    if (!activeProject || activeProject === ALL_PROJECTS) return flash('请先选择具体项目');
+    const cur = projects.find((p) => p.id === activeProject);
+    const value = await askInput({
+      title: `设置「${cur?.name ?? ''}」的产品标签`,
+      placeholder: `留空＝未绑定产品；已有：${productKeyOptions.join(' / ') || '暂无'}`,
+      defaultValue: cur?.product_key ?? '',
+    });
+    if (value === null) return; // 取消；空串是有效的「清空绑定」
+    await saveProductKey(activeProject, value);
   }
 
   /** 修改当前项目名称：弹输入框预填当前名称，确认后 PATCH 更新并刷新列表。
@@ -4268,6 +4303,16 @@ export function TasksPage() {
         >
           <SquarePen size={13} />
         </button>
+        {/* T04133（PRD MEM-101③）：存量项目补绑产品标签——预填当前值，留空即清空 */}
+        <button
+          onClick={() => void editProductKey()}
+          disabled={!activeProject}
+          title="产品标签 — 设置当前项目所属产品（留空＝未绑定）"
+          aria-label="设置产品标签：补绑当前项目所属产品"
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed', opacity: activeProject ? 1 : 0.5 }}
+        >
+          <Tags size={13} />
+        </button>
         {/* 删除当前项目：风险操作，点击后弹确认框，确认才执行；危险色标示 */}
         <button
           onClick={() => void deleteProject()}
@@ -5448,9 +5493,34 @@ export function TasksPage() {
             <WorkspaceSelect
               variant="bare"
               project={wsPickForNew}
-              onBind={async (path) => { await bindWorkspace(wsPickForNew.id, path); setWsPickForNew(null); }}
+              onBind={async (path) => {
+                await bindWorkspace(wsPickForNew.id, path);
+                // T04133：绑定工作空间时一并保存产品标签草稿，避免输入随弹窗关闭丢失
+                if (pkDraft.trim().toLowerCase() !== (wsPickForNew.product_key ?? '')) await saveProductKey(wsPickForNew.id, pkDraft);
+                setWsPickForNew(null);
+              }}
               flash={flash}
             />
+          </div>
+          {/* T04133（PRD MEM-101③ / MEM-501）：产品标签栏——下拉选已有或输入新建，保存后回显 */}
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border-strong)' }}>
+            <label htmlFor="new-project-product-key" style={{ display: 'block', fontSize: 'var(--fs-s)', marginBottom: 4 }}>产品标签（可选，留空＝未绑定产品）</label>
+            <input
+              id="new-project-product-key"
+              list="product-key-options"
+              value={pkDraft}
+              onChange={(e) => setPkDraft(e.target.value)}
+              placeholder="如：wiki / mtask"
+              aria-label="产品标签"
+              style={{ width: '100%', boxSizing: 'border-box', fontSize: 'var(--fs-s)', padding: '4px 6px', background: 'var(--card-bg)', color: 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
+            />
+            <datalist id="product-key-options">
+              {productKeyOptions.map((k) => <option key={k} value={k} />)}
+            </datalist>
+            <button onClick={() => void saveProductKey(wsPickForNew.id, pkDraft)}
+              style={{ marginTop: 6, width: '100%', fontSize: 'var(--fs-s)', padding: '5px 0', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer' }}>
+              <Save size={12} style={{ verticalAlign: -2, marginRight: 4 }} />保存产品标签
+            </button>
           </div>
           <button onClick={() => setWsPickForNew(null)}
             style={{ marginTop: 8, width: '100%', fontSize: 'var(--fs-s)', padding: '5px 0', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}>

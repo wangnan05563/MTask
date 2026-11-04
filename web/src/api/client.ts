@@ -171,6 +171,8 @@ export interface Project {
   wip_limit?: number;
   /** T03268（PRD 4.2 时区）：项目时区（IANA 名，空串＝跟随系统时区） */
   timezone?: string;
+  /** T04133（PRD MEM-101③）：产品标签（后端归一化，''＝未绑定产品）——产品维度记忆的唯一隔离边界 */
+  product_key?: string;
 }
 
 export interface TaskImage {
