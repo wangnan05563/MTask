@@ -661,6 +661,11 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('ai_usage', 'total_tokens', 'total_tokens INTEGER');
   // T03268（PRD 4.2 时区功能）：项目级时区，空串＝跟随系统时区（D-12）
   ensureColumn('projects', 'timezone', "timezone TEXT NOT NULL DEFAULT ''");
+  // T04127（PRD MEM-101①）：产品维度长期记忆的两个项目级字段。
+  // product_key = 归一化文本标签（trim + 小写），''＝未绑定产品；memory_auto_extract = 自动抽取开关。
+  // 均不带 REFERENCES（PRD 选型：全表无外键），老库启动由 ensureColumn 幂等补列，存量项目读出 '' / 1。
+  ensureColumn('projects', 'product_key', "product_key TEXT DEFAULT ''");
+  ensureColumn('projects', 'memory_auto_extract', 'memory_auto_extract INTEGER NOT NULL DEFAULT 1');
   // 该索引依赖上面补的列：必须放在 ensureColumn 之后。放进上方 DDL 块会在老库上先于补列执行，
   // 整个 db.exec 抛 "no such column: card_key"，后端启动即崩（安装版 0.1.102-5.210 实测）。
   db.exec("CREATE INDEX IF NOT EXISTS idx_ai_usage_card ON ai_usage(card_key, created_at)");
