@@ -639,6 +639,29 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_estimate_param_logs_project ON estimate_param_logs(project_id, created_at);
+
+    -- T04128（PRD MEM-102 / §5）：产品维度长期记忆主表。
+    -- 无外键（PRD §5 选型：老库补列与导入导出都不受 FK 顺序约束）；
+    -- type / source_kind 用 CHECK 兜住非法枚举，tags 以 JSON 数组文本存储（MEM-502 / F13）。
+    CREATE TABLE IF NOT EXISTS memories (
+      id               TEXT PRIMARY KEY,
+      product_key      TEXT NOT NULL,
+      project_id       TEXT,
+      type             TEXT NOT NULL CHECK(type IN ('user','feedback','project','reference')),
+      title            TEXT NOT NULL,
+      content          TEXT NOT NULL,
+      tags             TEXT,
+      source_task_id   TEXT,
+      source_kind      TEXT NOT NULL DEFAULT 'auto'
+                         CHECK(source_kind IN ('auto','manual','user_said','tool_output','inferred')),
+      confidence       REAL,
+      access_count     INTEGER NOT NULL DEFAULT 0,
+      last_accessed_at TEXT,
+      invalidated_at   TEXT,
+      superseded_by    TEXT,
+      created_at       TEXT NOT NULL,
+      updated_at       TEXT NOT NULL
+    );
   `);
 
   // 迁移兜底：老库缺列时补列（CREATE TABLE IF NOT EXISTS 对已存在表不生效）
