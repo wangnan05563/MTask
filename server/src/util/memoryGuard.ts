@@ -1,5 +1,7 @@
 import { getDb } from '../db/connection';
 import { normalizeProductKey } from './productKey';
+import type { MemoryType } from './memoryTypes'; // T04140：四型分类单源，不再就地重复定义
+export type { MemoryType } from './memoryTypes';
 
 /**
  * T04137（PRD MEM-109 / MEM-209 / §5，v1.2·F1）：PII 敏感候选拦截与待确认队列。
@@ -10,7 +12,6 @@ import { normalizeProductKey } from './productKey';
  */
 
 export type PiiKind = 'id' | 'phone' | 'bank' | 'address';
-export type MemoryType = 'user' | 'feedback' | 'project' | 'reference';
 export type MemorySourceKind = 'auto' | 'manual' | 'user_said' | 'tool_output' | 'inferred';
 
 // 顺序敏感：18 位身份证须先于银行卡（16~19 位）判定，否则会被误归为 bank
