@@ -668,6 +668,24 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     CREATE INDEX IF NOT EXISTS idx_memories_product_type ON memories(product_key, type);
     CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);
     CREATE INDEX IF NOT EXISTS idx_memories_product_project ON memories(product_key, project_id);
+
+    -- T04137（PRD MEM-109 / §5）：PII 待确认队列。疑似敏感候选**不入库 memories、不静默丢弃**，
+    -- 先写本表待人工确认；确认后转 memories 并删本行，驳回直接删本行。同样无外键。
+    CREATE TABLE IF NOT EXISTS memory_review_queue (
+      id             TEXT PRIMARY KEY,
+      product_key    TEXT NOT NULL,
+      project_id     TEXT,
+      title          TEXT NOT NULL,
+      content        TEXT NOT NULL,
+      type           TEXT NOT NULL CHECK(type IN ('user','feedback','project','reference')),
+      pii_kind       TEXT,
+      source_task_id TEXT,
+      source_kind    TEXT NOT NULL DEFAULT 'auto'
+                       CHECK(source_kind IN ('auto','manual','user_said','tool_output','inferred')),
+      confidence     REAL,
+      created_at     TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_review_queue_product ON memory_review_queue(product_key);
   `);
 
   // 迁移兜底：老库缺列时补列（CREATE TABLE IF NOT EXISTS 对已存在表不生效）
