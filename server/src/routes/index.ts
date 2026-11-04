@@ -7,6 +7,7 @@ import { askWorkspace } from '../services/workspaceQa';
 import { qaStats, recordCitationClick, recordFeedback } from '../services/workspaceQaTelemetry'; // T03250（PRD 5.1）：工作空间只读问答（带 file:line 引用）
 import { isValidTimeZone } from '../services/ProjectTimeZone'; // T03268：项目级时区校验（IANA，运行时 ICU）
 import { parseProductKeyInput } from '../util/productKey'; // T04132：产品标签归一化单源（PRD MEM-101②）
+import { detachMemoriesFromProject } from '../util/memoryProjectRef'; // T04136：删项目前记忆降级为产品级共享（PRD MEM-105）
 import { getDb } from '../db/connection';
 import { TaskService, nextTaskNo, TASK_STATUSES, type TaskInput, type TaskListOptions } from '../services/TaskService';
 import { compileTaskQuery, parseTaskQuery } from '../util/taskQuery'; // T03184（PM-102）：命令面板结构化搜索语法
@@ -523,6 +524,9 @@ api.delete('/projects/:id', (req, res) => {
   if (req.params.id === INBOX_PROJECT_ID) {
     return res.status(400).json({ error: '系统收件箱项目不可删除' });
   }
+  // T04136（PRD MEM-105）：删项目前把其特有记忆降级为产品级共享（project_id=NULL），
+  // 应用层补回无 FK 时的 SET NULL 语义；记忆绝不物理删除，同产品其它期仍可召回。
+  detachMemoriesFromProject(req.params.id);
   getDb().prepare('DELETE FROM projects WHERE id = ?').run(req.params.id); // 级联删任务
   // T02210：符号索引的监视器/结构快照是按 projectId 存活的内存态——项目删除后
   //   既不会再被引用，也仍握着目录句柄（递归 fs.watch），必须随项目一起收掉
