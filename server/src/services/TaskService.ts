@@ -13,6 +13,7 @@ import { detectRuling, isRulingSubject, RULING_DEFAULT_OPTIONS } from '../util/r
 import { WebhookService } from './WebhookService'; // T03196（PM-401）：任务事件外发
 import { alreadyMerged } from './derivedOrigin'; // T03637：派生单闭环判据（与 MCP/脚本归并共用一份标记口径）
 import { FieldService, type ProjectFieldView, type TaskFieldValueView } from './FieldService'; // T03231（PM-203②）：列表行带出项目自定义字段值；T03232 起筛选/排序共用字段定义
+import { scheduleMemoryExtract } from './MemoryService'; // T04143：结论变更异步触发记忆抽取（PRD MEM-201）
 
 /** 批量 IN 查询的每批 id 数：SQLite 变量上限 999，留足余量并与图片批量查询（≤200）同量级 */
 const PLAN_LOOKUP_BATCH = 200;
@@ -635,6 +636,12 @@ function collectUpdateEvents(patch: UpdateEventPatch, before: UpdateEventBefore,
  * 每一项都只在对应字段出现在 patch 里时触发，重复 PATCH 同一值不会重复产生历史。
  */
 function applyUpdateSideEffects(id: string, patch: TaskPatch, before: UpdateEventBefore | undefined): void {
+  // T04143（PRD MEM-201，v1.2·F3）：结论变更 → 异步 fire-and-forget 触发记忆抽取。
+  // 挂在本函数（update() 唯一副作用出口）即天然覆盖 MCP update_task_result 与 Web PATCH 等全部写入口；
+  // scheduleMemoryExtract 内部自读开关/绑定/幂等并吞掉一切异常（失败仅记遥测），主链路零等待零风险。
+  if (patch.handle_result && before && patch.handle_result !== before.handle_result) {
+    scheduleMemoryExtract(id, patch.handle_result);
+  }
   // T02949 方案 A：结论/标题/描述/溯源一变更就重判「是否需要裁决」
   if (patch.handle_result !== undefined || patch.title !== undefined
     || patch.description !== undefined || patch.derived_from !== undefined) TaskService.autoRuling(id);
