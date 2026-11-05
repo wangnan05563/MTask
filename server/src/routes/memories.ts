@@ -5,7 +5,7 @@ import { resolvePendingMemory } from '../util/memoryGuard';
 import {
   deleteOrphanTagMemories, listOrphanProductTags, reattachOrphanTag, renameProductTag,
 } from '../services/ProductTagService'; // T04154（PRD MEM-505/107/108）：标签重命名与孤儿清理入口
-import { appendReviewLog, listReviewLog, ruleRejectStats } from '../services/MemoryReviewLogService'; // T04158（MEM-604/F8）：抽样评审记录
+import { appendReviewLog, listReviewLog, ruleRejectStats, sampleMemoriesForReview } from '../services/MemoryReviewLogService'; // T04158/T04164（MEM-604/F8）：评审记录与抽样
 import {
   deleteMemory, listMemories, listPendingMemories, listProductTags,
   queryForContext, queryMemories, saveMemory, updateMemory,
@@ -73,6 +73,18 @@ memoriesApi.get('/review-log', (req, res) => {
 
 memoriesApi.get('/review-log/stats', (_req, res) => {
   res.json({ ok: true, stats: ruleRejectStats() });
+});
+
+// T04164（MEM-604）：开一批随机抽样评审（只读，判定另行 POST /review-log 落库）
+memoriesApi.get('/review-sample', (req, res) => {
+  const scope = scopeOf({
+    productKey: req.query.productKey,
+    projectId: typeof req.query.projectId === 'string' ? req.query.projectId : undefined,
+  });
+  if (scope.kind === 'error') return fail(res, scope.error);
+  if (scope.kind === 'empty') return res.json({ ok: true, batchId: '', memories: [], hint: scope.hint });
+  const sample = sampleMemoriesForReview(scope.productKey, Number(req.query.batchSize) || undefined);
+  res.json({ ok: true, ...sample });
 });
 
 // ---------- 产品标签重命名 / 孤儿清理（MEM-505/107/108；DELETE 必须早于 /:id 注册） ----------

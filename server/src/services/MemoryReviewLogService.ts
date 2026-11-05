@@ -70,6 +70,27 @@ export interface RuleRejectStat {
   rejectRate: number;
 }
 
+export interface ReviewSample {
+  batchId: string;
+  memories: { id: string; type: string; title: string; content: string; source_kind: string; updated_at: string }[];
+}
+
+/**
+ * T04164（MEM-604 / 规范 §10.2）：开一批抽样评审。
+ * 必须**随机**抽取（ORDER BY RANDOM），不能取 TOP——只看"看起来好的"测不出精度；
+ * 抽样只读不写，判定由评审人逐条通过 appendReviewLog 落库（reject 必须带判据编号）。
+ * 单批固定 20 条，硬上限 50（防止一次拉全量失去抽样意义）。
+ */
+export function sampleMemoriesForReview(productKey: string, batchSize = REVIEW_BATCH_SIZE): ReviewSample {
+  const size = Math.min(Math.max(1, Math.floor(batchSize)), 50);
+  const pk = (productKey ?? '').trim().toLowerCase();
+  const batchId = `rev-${new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14)}`;
+  const rows = getDb().prepare(`SELECT id, type, title, content, source_kind, updated_at
+    FROM memories WHERE product_key = ? AND invalidated_at IS NULL
+    ORDER BY RANDOM() LIMIT ?`).all(pk, size) as ReviewSample['memories'];
+  return { batchId, memories: rows };
+}
+
 /** 按判据编号汇总拒杀率——连续两批同判据 >40% 时应重写规则（统计供人判断，不自动改规则） */
 export function ruleRejectStats(): RuleRejectStat[] {
   const rows = getDb().prepare(`SELECT COALESCE(NULLIF(hit_rule,''),'(未标注)') AS rule,
