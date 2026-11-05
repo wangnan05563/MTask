@@ -7,6 +7,7 @@ import { ConfigService } from './ConfigService';
 import { EXTRACTION_SYSTEM_PROMPT, runRulesExtraction, type ExtractCandidate, type RulesOutput } from './MemoryRulesService';
 import { buildMemoryScopeWhere, type ActiveMemoryScope } from '../util/memoryScope';
 import { isMemoryType, type MemoryType } from '../util/memoryTypes';
+import { enforceCapacity } from './MemoryMaintenanceService'; // T04150（MEM-306/F9）：容量评估
 
 /**
  * T04143（PRD MEM-201 / MEM-204 / MEM-207，v1.2·F3）：记忆抽取的触发与隔离。
@@ -103,6 +104,8 @@ async function runExtract(taskId: string, resultText: string): Promise<void> {
         },
       });
       telemetry(taskId, `rules_ok:stored=${r.stored},queued=${r.queued},updated=${r.updated},invalidated=${r.invalidated},dropped=${r.dropped.length},rewrites=${r.rewrites}`);
+      // T04150（MEM-306）：写入后立即做容量评估，避免超限记忆在两次整理之间被召回
+      try { enforceCapacity(productKey); } catch { /* 淘汰失败不影响已落库结果 */ }
     } finally {
       runningKeys.delete(productKey);
     }
@@ -205,6 +208,10 @@ export function queryMemories(
     clauses.push("tags LIKE ? ESCAPE '\\'");
     params.push(`%"${escapeLike(tag)}"%`);
   }
+
+  // T04150（MEM-306/F9）：容量评估也在查询触发点计算；超限时先软失效最旧/最少访问的行，
+  // 再走下面的查询——否则淘汰永远要等下一次写入或月度整理才发生。
+  try { enforceCapacity(scope.productKey); } catch { /* 淘汰失败时继续查询，不影响只读语义 */ }
 
   const db = getDb();
   // MEM-305：project 型保留期 180 天，到期只标记「需复核」不删除；标记在查询时惰性计算（F9），

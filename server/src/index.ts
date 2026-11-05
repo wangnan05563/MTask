@@ -1,4 +1,5 @@
 import express from 'express';
+import zlib from 'node:zlib';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { initSchema } from './db/schema';
@@ -25,6 +26,7 @@ import { startEventRetentionTimer } from './services/EventRetention'; // T01064 
 import { startReportTmpSweeper } from './services/ReportService'; // T02144：导出令牌临时文件回收
 import { MetricSnapshotService } from './services/MetricSnapshotService'; // T03237：PM-205 日快照（长历史唯一来源）
 import { WebhookService } from './services/WebhookService'; // T03196：PM-401 Webhook 投递/重试定时器
+import { maybeOrganizeMemories } from './services/MemoryMaintenanceService'; // T04150（MEM-307/F9）：记忆月度整理
 
 const PORT = Number(process.env.MTask_PORT ?? 39876);
 const HOST = '127.0.0.1';
@@ -42,6 +44,40 @@ app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Access-Token,mcp-session-id');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
+/**
+ * H5（压测优化）：JSON 响应 gzip。列表/详情接口的 JSON 压缩比通常 5–10×，是最便宜的网络侧收益。
+ * 只压「一次性收尾的 200 JSON」：SSE、文件下载、流式 ndjson 一旦写过块就不再介入，
+ * 否则会在已发出的原始字节后面追加压缩字节，损坏响应。
+ */
+const GZIP_MIN_BYTES = 1024;
+app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (!/\bgzip\b/i.test(String(req.headers['accept-encoding'] ?? ''))) return next();
+  const rawEnd = res.end.bind(res);
+  const rawWrite = res.write.bind(res);
+  let streamed = false;
+  res.write = ((chunk: unknown, ...rest: unknown[]) => {
+    streamed = true;
+    return (rawWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
+  }) as typeof res.write;
+  res.end = ((body?: unknown, ...rest: unknown[]) => {
+    const type = String(res.getHeader('Content-Type') ?? '');
+    const buf = typeof body === 'string' ? Buffer.from(body) : Buffer.isBuffer(body) ? body : null;
+    if (!streamed && !res.getHeader('Content-Encoding') && res.statusCode === 200
+      && buf && buf.length >= GZIP_MIN_BYTES && /^application\/json\b/i.test(type)) {
+      try {
+        const gz = zlib.gzipSync(buf);
+        res.setHeader('Content-Encoding', 'gzip');
+        res.setHeader('Content-Length', String(gz.length));
+        // 同一 URL 因 Accept-Encoding 有两种表示，显式声明，避免中间缓存串味
+        res.setHeader('Vary', 'Accept-Encoding');
+        return (rawEnd as (...a: unknown[]) => unknown)(gz, ...rest);
+      } catch { /* 压缩失败按原文发出 */ }
+    }
+    return (rawEnd as (...a: unknown[]) => unknown)(body, ...rest);
+  }) as typeof res.end;
   next();
 });
 
@@ -171,9 +207,20 @@ const webDist = process.env.MTASK_STATIC_DIR
   ? path.resolve(process.env.MTASK_STATIC_DIR)
   : path.resolve(__dirname, '..', '..', 'web', 'dist');
 if (existsSync(path.join(webDist, 'index.html'))) {
-  app.use(express.static(webDist));
+  // H5（压测优化）：Vite 产物带内容哈希，assets/ 可长缓存；入口文档与 Service Worker 必须每次回源自检更新。
+  // 只影响浏览器/隧道访问；Electron 壳走 file:// 读同一份 dist，不受响应头影响。
+  app.use(express.static(webDist, {
+    setHeaders(res, filePath) {
+      const posix = filePath.replace(/\\/g, '/');
+      if (/\/assets\//.test(posix)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      else if (/\/(index\.html|sw\.js)$/.test(posix)) res.setHeader('Cache-Control', 'no-cache');
+    },
+  }));
   // SPA 兜底：非 /api、未命中静态文件的 GET 一律回显 index.html
-  app.get(/^\/(?!api(?:\/|$)).*/, (_req, res) => res.sendFile(path.join(webDist, 'index.html')));
+  app.get(/^\/(?!api(?:\/|$)).*/, (_req, res) => {
+    res.setHeader('Cache-Control', 'no-cache');
+    res.sendFile(path.join(webDist, 'index.html'));
+  });
   console.log(`[mtask] web 静态已伺服: ${webDist}`);
 } else {
   console.log(`[mtask] 未找到 web/dist，跳过 Web 界面伺服（仅 API）`);
@@ -234,7 +281,12 @@ app.listen(PORT, HOST, () => {
   startDailyBackupTimer();
   // T01073-FR5.5：循环任务到期生成（启动即跑一轮 + 每小时检查）
   try { RecurringService.tick(); } catch (e) { console.error('[recurring] 启动 tick 失败:', e); }
-  setInterval(() => { try { RecurringService.tick(); } catch { /* 单轮失败不中断定时 */ } }, 3600000);
+  // T04150（PRD MEM-307/F9）：记忆月度整理复用同一调度点，内部按 30 天节流，幂等可重跑。
+  try { maybeOrganizeMemories(); } catch (e) { console.error('[memory] 启动整理失败:', e); }
+  setInterval(() => {
+    try { RecurringService.tick(); } catch { /* 单轮失败不中断定时 */ }
+    try { maybeOrganizeMemories(); } catch (e) { console.error('[memory] 定期整理失败:', e); }
+  }, 3600000);
   // T03227（PM-201⑥）：迭代结束日在本次运行之前被跨过、且还没有周报卡的迭代，启动时各补一张。
   //  判据自带幂等（候选=「无 weekly_card 事件」），故只在此跑一轮、不挂小时定时器：
   //  挂着跑会让「今天才结束」的迭代提前拿到卡，与本条要求的「关闭期间跨过」不是同一件事。
