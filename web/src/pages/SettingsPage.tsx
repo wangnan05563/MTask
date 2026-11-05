@@ -34,6 +34,7 @@ import { SupervisorPanel } from './SupervisorPanel'; // T01286：监督状态与
 import { DashboardPage } from './DashboardPage'; // T01154：仪表盘迁入设置页
 import { CustomFieldsTab } from './CustomFieldsTab'; // T03231（PM-203）：项目级自定义字段
 import { SonarSettingsTab } from './SonarSettingsTab'; // T03371（八期 §3.4.1）：SonarQube 环境配置子页
+import { MemoryTab } from './MemoryTab'; // T04152（PRD MEM-502）：产品维度长期记忆管理
 
 /** 应用信息（与根 package.json 保持一致） */
 const APP_NAME = 'MTask';
@@ -121,6 +122,7 @@ export function SettingsPage() {
       {/* T00441：日志/归档入口从顶部菜单迁入设置页（内网穿透下方） */}
       {active === 'logs' && <LogsPage />}
       {active === 'archive' && <ArchivePage />}
+      {active === 'memory' && <MemoryTab />} {/* T04152（PRD MEM-502）：记忆管理页签 */}
       {active === 'history' && <HistoryPage />} {/* T00756：历史资产（项目快照）嵌入设置页 */}
       {active === 'help' && <HelpTab />}
       {active === 'about' && <AboutTab />}

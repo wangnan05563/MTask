@@ -8,7 +8,7 @@
  */
 export type SettingsTabKey =
   | 'general' | 'help' | 'about'
-  | 'dashboard' | 'categories' | 'fields' | 'recurring' | 'history' | 'archive' | 'migration' | 'dbadmin' | 'apitokens' | 'sonar'
+  | 'dashboard' | 'categories' | 'fields' | 'recurring' | 'history' | 'archive' | 'memory' | 'migration' | 'dbadmin' | 'apitokens' | 'sonar'
   | 'supervisor' | 'tunnel' | 'logs';
 
 export interface SettingsTab {
@@ -42,6 +42,8 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
       { key: 'recurring', label: '循环任务', keywords: ['周期', '自动生成'] },
       { key: 'history', label: '历史资产', keywords: ['快照', '历史', '版本'] },
       { key: 'archive', label: '归档', keywords: ['归档', '已归档'] },
+      // T04152（PRD MEM-502）：产品维度长期记忆的浏览/编辑/待确认入口
+      { key: 'memory', label: '记忆管理', keywords: ['记忆', 'memory', '产品标签', '待确认', '长期记忆'] },
       { key: 'migration', label: '数据迁移', keywords: ['导入', '导出', '迁移', '备份'] },
       { key: 'dbadmin', label: '数据维护', keywords: ['数据库', '清理', '维护', '备份'] },
       { key: 'apitokens', label: 'API Token', keywords: ['令牌', '凭据', '接口', 'token'] },
