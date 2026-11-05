@@ -1,6 +1,6 @@
 import { getDb } from '../db/connection';
 import { recordUsage } from '../util/aiUsageRecord';
-import { normalizeProductKey } from '../util/productKey';
+import { decideExtraction, type ExtractProjectState } from '../util/memoryExtractPolicy'; // T04146：开关/绑定/幂等/归档解耦判定单源
 import { checkAiReadiness } from './AiReadinessService';
 import { AIService } from './AIService'; // T04144：规则引擎的真实 askJson 通道
 import { ConfigService } from './ConfigService';
@@ -42,21 +42,26 @@ async function runExtract(taskId: string, resultText: string): Promise<void> {
     const task = db.prepare('SELECT project_id, handle_result FROM tasks WHERE id = ?').get(taskId) as
       | { project_id: string; handle_result: string | null }
       | undefined;
-    if (!task?.project_id) return; // 无归属任务（系统临时单等）无可绑产品，静默跳过
-    // MEM-207：同一 source_task_id 已产生过记忆则跳过重抽（规范 §4.1 第 0 步）
-    if (db.prepare('SELECT 1 FROM memories WHERE source_task_id = ? LIMIT 1').get(taskId)) {
-      telemetry(taskId, 'idempotent');
+    // T04146：前置判定收口到 decideExtraction（纯函数、可逐项断言）。
+    // SQL 刻意带出 archived / history_at 但**不加 archived=0 过滤**——MEM-205 归档解耦：
+    // 归档/沉淀项目的结论仍可抽取，记忆可见性只看 product_key。
+    const proj = task?.project_id
+      ? db.prepare('SELECT product_key, memory_auto_extract, archived, history_at FROM projects WHERE id = ?')
+        .get(task.project_id) as ExtractProjectState | undefined
+      : undefined;
+    const decision = decideExtraction({
+      taskExists: !!task?.project_id,
+      project: proj,
+      alreadyExtracted: !!db.prepare('SELECT 1 FROM memories WHERE source_task_id = ? LIMIT 1').get(taskId),
+    });
+    if (decision.kind === 'skip') {
+      // MEM-204：开关关闭/未绑产品/幂等均计遥测不静默；无归属任务与无项目仍静默（无可归属对象）
+      if (decision.reason !== 'no_task' && decision.reason !== 'no_project') telemetry(taskId, decision.reason);
       return;
     }
-    const proj = db.prepare('SELECT product_key, memory_auto_extract FROM projects WHERE id = ?').get(task.project_id) as
-      | { product_key: string | null; memory_auto_extract: number }
-      | undefined;
-    if (!proj) return;
-    // MEM-204：开关关闭计遥测，不静默
-    if (!proj.memory_auto_extract) { telemetry(taskId, 'switch_off'); return; }
-    // MEM-204：未绑产品不启用自动抽取，计遥测（不静默失败）
-    const productKey = normalizeProductKey(proj.product_key ?? '');
-    if (!productKey) { telemetry(taskId, 'unbound_product'); return; }
+    const productKey = decision.productKey;
+    // 类型收窄：decideExtraction 已按 no_task 跳过，此处 task 必存在（编译器无法从纯函数结果推断）
+    if (!task?.project_id) return;
     // AI 未实配时抽取必然失败，提前跳过并留痕（配置就绪后此分支自然消失）
     if (!checkAiReadiness().ready) { telemetry(taskId, 'ai_not_ready'); return; }
     // 与就绪判据同源取一个可用工具（启用 + 已填模型），供 askJson 指定 toolId
