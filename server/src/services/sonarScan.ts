@@ -34,7 +34,7 @@ import { ConsoleJobService } from './ConsoleJobService';
 import { TaskService } from './TaskService';
 import {
   normalizeSonarUrl, planScannerSpawn, probeJava, probeScanner,
-  projectKeyFor, readScanSettings,
+  projectKeyFor, readScanSettings, resolveScannerBin,
 } from './sonarSettings';
 import type { SonarProbe } from './sonarSettings';
 import { scalarText } from '../util/scalarText';
@@ -379,6 +379,15 @@ async function defaultSpawnScanner(
       if (settled) return;
       settled = true;
       release();
+      // ENOENT 说明解析到的文件在 spawn 时已不存在（或指向目录）：给可操作指引，而不是把系统错误原文贴给用户
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        reject(new ScanError(
+          'scan-failed',
+          '扫描器启动失败：未找到 sonar-scanner。',
+          '请在设置页配置「扫描器路径」，或将 sonar-scanner 加入系统 PATH 环境变量。',
+        ));
+        return;
+      }
       reject(new ScanError('scan-failed', `扫描器启动失败：${e.message}`, '在设置页核对「扫描器路径」，或留空按 PATH 探测。'));
     });
     child.on('close', (code) => settle(code));
@@ -915,10 +924,20 @@ async function runScannerPhase(params: {
 }): Promise<void> {
   const { settings, token, dir, deps, console, signal } = params;
   const spawnScanner = deps.spawnScanner ?? defaultSpawnScanner;
-  const spec = planScannerSpawn(settings.scannerPath || 'sonar-scanner', ['-Dproject.settings=sonar-project.properties']);
+  // 路径解析必须与设置页探测同一口径（T04501）：此处原先直接用 `settings.scannerPath || 'sonar-scanner'`，
+  // 配置为空且 PATH 未命中时只能等到运行期抛一句 spawn ENOENT，用户拿不到可执行的修复指引。
+  const resolution = resolveScannerBin(settings.scannerPath || undefined);
+  if (!resolution.bin) {
+    throw new ScanError(
+      'no-scanner',
+      '扫描器启动失败：未找到 sonar-scanner。',
+      '请在设置页配置「扫描器路径」，或将 sonar-scanner 加入系统 PATH 环境变量。',
+    );
+  }
+  const spec = planScannerSpawn(resolution.bin, ['-Dproject.settings=sonar-project.properties']);
   if (spec.unsafe) throw new ScanError('no-scanner', '扫描器路径含 cmd.exe 无法安全执行的字符', '在设置页改指向不含 & | ^ % < > " \' ; 反引号 的路径。');
-  console.stage('scan', { scanner: settings.scannerPath || 'sonar-scanner' });
-  console.log(`$ sonar-scanner -Dproject.settings=sonar-project.properties（工作目录 ${dir}）`);
+  console.stage('scan', { scanner: resolution.bin });
+  console.log(`$ ${resolution.bin} -Dproject.settings=sonar-project.properties（工作目录 ${dir}）`);
   const run = await spawnScanner(spec, {
     ...process.env as Record<string, string>,
     SONAR_TOKEN: token,

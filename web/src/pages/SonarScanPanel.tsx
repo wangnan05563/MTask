@@ -113,6 +113,24 @@ interface ScanView {
   receipts: Receipts | null;
 }
 
+/**
+ * 跨卡片切换保留的最近一次扫描终态（T04501）。
+ * 面板随卡片互斥收起会被卸载，运行态留在 useState 里必然蒸发——失败/成功提示要落会话存储，
+ * 重新展开时才能复原「上一状态」。运行中间态不落盘：回来时若把旧进度当现状，比空白更误导。
+ */
+interface ScanOutcome {
+  /** 失败 kind（scan-failed / no-scanner …）；成功或中止为空 */
+  kind: string;
+  /** 失败原文；成功或中止为空 */
+  message: string;
+  /** 终态时间（ISO），渲染时用来交代「这是哪一轮的结果」 */
+  at: string;
+  aborted: boolean;
+  result: ScanView | null;
+}
+
+const NO_SCAN_OUTCOME: ScanOutcome = { kind: '', message: '', at: '', aborted: false, result: null };
+
 /** `GET /sonar/scan/env`（服务端 `scanEnvState`，面板不可用态的单源判据） */
 interface EnvView {
   ok: boolean;
@@ -145,6 +163,13 @@ function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** 终态时间的展示口径：解析失败回空串，不让一行 Invalid Date 混进状态区 */
+function fmtScanAt(iso: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('zh-CN', { hour12: false });
 }
 
 /** 外链仅允许 http/https（与 `GitCommitTab.safeHref` 同口径的渲染层二次校验） */
@@ -231,13 +256,15 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
   const [env, setEnv] = useState<EnvView | null>(null);
   const [envBusy, setEnvBusy] = useState(false);
   const [running, setRunning] = useState(false);
-  const [stageIdx, setStageIdx] = useState(-1);
+  /** T04501：成功/失败/中止的终态存会话级，卡片收起（组件卸载）后再展开仍能显示上一状态 */
+  const [outcome, setOutcome] = useSessionState<ScanOutcome>('sonar.scan.outcome', NO_SCAN_OUTCOME);
+  const [stageIdx, setStageIdx] = useState(outcome.result ? STAGES.length - 1 : -1);
   const [jobId, setJobId] = useState('');
   const [lines, setLines] = useState<LogLine[]>([]);
-  const [result, setResult] = useState<ScanView | null>(null);
-  const [runError, setRunError] = useState('');
-  const [errorKind, setErrorKind] = useState('');
-  const [aborted, setAborted] = useState(false);
+  const [result, setResult] = useState<ScanView | null>(outcome.result);
+  const [runError, setRunError] = useState(outcome.message);
+  const [errorKind, setErrorKind] = useState(outcome.kind);
+  const [aborted, setAborted] = useState(outcome.aborted);
   /** 中止指令已发出、尚未收到服务端 aborted 帧：此刻快照还没确定回收，不能回「已回收」 */
   const [stopping, setStopping] = useState(false);
   const [openGroups, setOpenGroups] = useState<SevKey[]>(['blocker', 'critical']);
@@ -255,6 +282,11 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
   const clearStopPoll = () => {
     if (stopPollRef.current) { clearInterval(stopPollRef.current); stopPollRef.current = null; }
   };
+
+  /** 终态落会话存储（带时间戳）：切走卡片再展开时按这份数据复原，不必留下一个空白面板 */
+  function rememberOutcome(next: Omit<ScanOutcome, 'at'>) {
+    setOutcome({ ...next, at: new Date().toISOString() });
+  }
 
   const taskIds = useMemo(() => [...new Set(scope.taskIds)], [scope.taskIds]);
   const projectIdsKey = scope.projectIds.join(',');
@@ -303,6 +335,9 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
         setJobId(job.jobId ?? '');
         const idx = STAGES.findIndex((s) => s.key === job.stage);
         setStageIdx(Math.max(idx, 0));
+        // 运行态优先：上一轮的成功/失败结论不该和正在跑的这轮并列显示
+        setResult(null); setRunError(''); setErrorKind(''); setAborted(false);
+        setOutcome(NO_SCAN_OUTCOME);
         setLines([{ id: nextLogId(), text: `检测到仍在运行的扫描任务（${(job.jobId ?? '').slice(0, 8)}）——刷新后进度可回读，但实时输出需重新发起扫描。` }]);
       } catch { /* 回读失败只是少了个徽标，不影响本面板可用 */ }
     })();
@@ -322,6 +357,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
     setStopping(false);
     setRunning(false);
     setAborted(true);
+    rememberOutcome({ kind: '', message: '', aborted: true, result: null });
   }
 
   /** 未获确认（超时/指令送不达）：按「未知」收口——既不谎报已回收，也不再停在「正在中止…」出不来 */
@@ -332,6 +368,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
     setStopping(false);
     setRunning(false);
     setRunError(stopUnconfirmedText());
+    rememberOutcome({ kind: '', message: stopUnconfirmedText(), aborted: false, result: null });
   }
 
   /** 一次运行态轮询：目标 jobId 消失即与收到 aborted 帧等价（服务端先 markError 再同步回收快照目录） */
@@ -355,6 +392,8 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
     if (!taskIds.length) { flash?.('请先勾选至少一个已回写 commit id 的任务'); return; }
     setRunning(true);
     setResult(null); setRunError(''); setErrorKind(''); setAborted(false);
+    // 新一轮开始就清掉上一轮终态：中途切走再回来时不至于把旧结论误当本轮结果
+    setOutcome(NO_SCAN_OUTCOME);
     setStopping(false); stopTimedOutRef.current = false; sawErrorRef.current = false; clearStopTimer(); clearStopPoll();
     setStageIdx(-1); setJobId(''); setLines([]);
     const controller = new AbortController();
@@ -371,14 +410,17 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
         const v = p as unknown as ScanView;
         setResult(v);
         setStageIdx(STAGES.length - 1);
+        rememberOutcome({ kind: '', message: '', aborted: false, result: v });
         // 分组默认展开：有阻断/严重才展开这两组，否则展开第一组非空——全空时不铺七个空壳
         setOpenGroups(SEVERITIES.filter((s) => (v.grouped?.[s.key]?.length ?? 0) > 0)
           .slice(0, 2).map((s) => s.key));
       } else if (name === 'aborted') settleAborted();
       else if (name === 'error') {
         sawErrorRef.current = true;
-        setRunError(describeError(p as ErrorPayload));
+        const message = describeError(p as ErrorPayload);
+        setRunError(message);
         setErrorKind(textOf(p.kind));
+        rememberOutcome({ kind: textOf(p.kind), message, aborted: false, result: null });
       }
     };
     try {
@@ -390,15 +432,18 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
       }, onEvent, controller.signal);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      let shown = '';
       if (controller.signal.aborted) {
         // 本地断流只说明前端不再收帧；服务端是否停干净由 aborted 帧判定，这里只在超时兜底时如实说明
-        if (stopTimedOutRef.current) {
-          setRunError(stopUnconfirmedText());
-        }
+        if (stopTimedOutRef.current) shown = stopUnconfirmedText();
       }
       // 被闸拒不算「扫描失败」：并发超限不排队（T03410），语气与提取卡一致
-      else if (msg.includes(GATE_BUSY_MSG)) setRunError(`已有扫描在跑（并发上限 ${env?.scanLimit ?? 1}），请稍后重试——超限不排队，避免两个扫描器同时打满服务器分析队列`);
-      else setRunError(msg);
+      else if (msg.includes(GATE_BUSY_MSG)) shown = `已有扫描在跑（并发上限 ${env?.scanLimit ?? 1}），请稍后重试——超限不排队，避免两个扫描器同时打满服务器分析队列`;
+      else shown = msg;
+      if (shown) {
+        setRunError(shown);
+        rememberOutcome({ kind: '', message: shown, aborted: false, result: null });
+      }
     } finally {
       clearStopTimer();
       clearStopPoll();
@@ -540,6 +585,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
           <div data-t03428="run-error" role="alert" style={{ border: '1px solid var(--warn)', borderRadius: 8, padding: 8, marginBottom: 8, fontSize: 'var(--fs-s)', color: 'var(--warn)' }}>
             {runError}
             {errorKind && <span style={{ color: 'var(--text-muted)' }}>（kind: {errorKind}）</span>}
+            {fmtScanAt(outcome.at) && <span style={{ color: 'var(--text-muted)' }}> · {fmtScanAt(outcome.at)}</span>}
           </div>
         )}
         {stopping && !runError && (
@@ -550,6 +596,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
         {aborted && !running && (
           <div data-t03428="aborted" role="status" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 8 }}>
             本次扫描已中止，快照目录与临时配置已回收。
+            {fmtScanAt(outcome.at) && <span>（{fmtScanAt(outcome.at)}）</span>}
           </div>
         )}
 
@@ -605,6 +652,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
           <div style={{ marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
             <div data-t03428="result-summary" style={{ fontSize: 'var(--fs-s)', marginBottom: 4 }}>
               扫描完成：{result.total} 个问题 · {result.files} 个文件 / {fmtBytes(result.bytes)} · {result.commits} 个提交 · {result.tasks} 个任务 · projectKey {result.projectKey}
+              {fmtScanAt(outcome.at) && <span style={{ color: 'var(--text-muted)' }}> · 完成于 {fmtScanAt(outcome.at)}</span>}
             </div>
             <div data-t03428="snapshot-declaration" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 6 }}>
               快照基于 SHA {result.snapshotHeadSha.slice(0, 8)}，当前 HEAD 为 {(result.currentHeadSha || '—').slice(0, 8)}，相差 {result.headLag} 个提交
