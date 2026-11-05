@@ -38,6 +38,11 @@ import {
 } from '../services/ReportService';
 import { exportBundle, importBundle, type ImportMode } from '../services/SettingsService';
 import * as TaskGit from '../services/taskGitLinks'; // 八期 T03349：AI 回写提交 ID 主通道（与 REST 手动绑定同一实现，仅 source 不同）
+import {
+  deleteMemory, listMemories, listPendingMemories, listProductTags,
+  queryForContext, queryMemories, saveMemory, updateMemory,
+} from '../services/MemoryService'; // T04151（PRD MEM-401/402/403）：记忆七件工具复用服务层
+import { resolveMemoryScope } from '../util/memoryScope'; // T04151：作用域解析与 REST 同源（C4 / MEM-302）
 
 /** MCP 工具统一返回结构：文本供 LLM 阅读，structuredContent 供程序消费 */
 function ok(text: string, data?: Record<string, unknown>): CallToolResult {
@@ -1781,6 +1786,174 @@ ${a.result}`;
           actualManMonths: r3(su.actualManMonths.expected),
         },
       );
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // ---------------- T04151（PRD MEM-401/402/403）：长期记忆七件工具 ----------------
+  /** 记忆作用域解析：productKey 直传 / projectId / projectName 三种入口，产品标签走归一化 */
+  const memoryScopeOf = (a: { productKey?: string; projectId?: string; projectName?: string }) => {
+    let projectId = a.projectId?.trim();
+    if (!projectId && a.projectName?.trim()) {
+      const loc = resolveProjectIdOf(undefined, a.projectName);
+      if (!loc.id) return { kind: 'error' as const, error: loc.error ?? '项目解析失败' };
+      projectId = loc.id;
+    }
+    return resolveMemoryScope({
+      productKey: a.productKey,
+      projectId,
+      lookupProductKey: (pid) => {
+        const row = getDb().prepare('SELECT product_key FROM projects WHERE id = ?').get(pid) as
+          | { product_key: string | null }
+          | undefined;
+        return row ? (row.product_key ?? '') : null;
+      },
+    });
+  };
+
+  const MEMORY_TYPE_Z = z.enum(['user', 'feedback', 'project', 'reference'])
+    .describe('记忆类型：user 用户偏好 / feedback 反馈纠正 / project 项目事实 / reference 外部参考');
+  const MEMORY_SCOPE_SCHEMA = {
+    productKey: z.string().optional().describe('产品标签（作用域必填之一；空串＝该项目未绑产品，返回空集+hint）'),
+    projectId: z.string().optional().describe('项目 id（未传 productKey 时按其 product_key 解析作用域）'),
+    projectName: z.string().optional().describe('项目名称（按名解析出项目后取其 product_key）'),
+  };
+
+  server.registerTool('mtask_save_memory', {
+    title: '保存一条长期记忆',
+    description: '把一条结论写入产品维度的长期记忆（人工/显式写入，source_kind 默认 manual）。必须能解析出产品作用域。疑似个人敏感内容（身份证/手机号/银行卡/住址）不会入库，而是转入待确认队列并返回 queued=true。',
+    inputSchema: {
+      ...MEMORY_SCOPE_SCHEMA,
+      type: MEMORY_TYPE_Z,
+      title: z.string().describe('记忆标题（一句话结论）'),
+      content: z.string().describe('记忆内容（声明式事实，≤400 字）'),
+      tags: z.array(z.string()).optional().describe('关键词标签（≤5 个）'),
+      sourceKind: z.enum(['auto', 'manual', 'user_said', 'tool_output', 'inferred']).optional()
+        .describe('溯源标记（默认 manual；用户明确要求记住用 user_said）'),
+      sourceTaskId: z.string().optional().describe('来源任务编号（如 T04148）'),
+    },
+  }, async (a) => {
+    try {
+      const scope = memoryScopeOf(a);
+      if (scope.kind === 'error') return err(scope.error);
+      if (scope.kind === 'empty') return ok(JSON.stringify({ ok: false, hint: scope.hint }), { ok: false, hint: scope.hint });
+      const r = saveMemory({ scope, type: a.type, title: a.title, content: a.content, tags: a.tags, sourceKind: a.sourceKind, sourceTaskId: a.sourceTaskId });
+      if (r.kind === 'error') return err(r.error);
+      const payload = { ok: true, id: r.id, queued: r.kind === 'queued', piiKind: r.kind === 'queued' ? r.piiKind : undefined };
+      return ok(json(payload), payload);
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_query_memories', {
+    title: '查询长期记忆',
+    description: '按产品作用域召回记忆（产品级共享 + 本期特有），默认排除已失效行；排序=类型权重→溯源权重→访问衰减→最近访问。context=true 时返回可直接注入提示词的 <memory-context> 参考块（≤2k token）。**完全缺省作用域会报错**；项目未绑产品时返回空集 + hint（不报错）。',
+    inputSchema: {
+      ...MEMORY_SCOPE_SCHEMA,
+      type: MEMORY_TYPE_Z.optional(),
+      query: z.string().optional().describe('标题/内容关键词模糊匹配'),
+      tag: z.string().optional().describe('单个标签精确匹配'),
+      limit: z.number().int().min(1).max(20).optional().describe('条数（默认 10，硬上限 20）'),
+      context: z.boolean().optional().describe('true=返回 <memory-context> 注入块而非原始行'),
+    },
+  }, async (a) => {
+    try {
+      const scope = memoryScopeOf(a);
+      if (scope.kind === 'error') return err(scope.error);
+      if (scope.kind === 'empty') return ok(JSON.stringify({ ok: true, memories: [], hint: scope.hint }), { ok: true, memories: [], hint: scope.hint });
+      const opts = { type: a.type, query: a.query, tags: a.tag ? [a.tag] : undefined, limit: a.limit };
+      if (a.context) {
+        const ctx = queryForContext(scope, opts);
+        return ok(json(ctx) + (ctx.block ? '' : '\n（本产品暂无记忆）'), ctx as unknown as Record<string, unknown>);
+      }
+      const rows = queryMemories(scope, opts);
+      return ok(json(rows), { ok: true, memories: rows });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_list_memories', {
+    title: '管理页：列出记忆',
+    description: '分页列出某产品的全部记忆（含失效行与访问计数），按更新时间倒序；用于管理/审核。召回请用 mtask_query_memories。',
+    inputSchema: {
+      ...MEMORY_SCOPE_SCHEMA,
+      type: MEMORY_TYPE_Z.optional(),
+      query: z.string().optional(),
+      includeInvalidated: z.boolean().optional().describe('true=包含已软失效行（带 invalidated_at/superseded_by）'),
+      limit: z.number().int().min(1).max(200).optional().describe('默认 50，上限 200'),
+      offset: z.number().int().min(0).optional(),
+    },
+  }, async (a) => {
+    try {
+      const scope = memoryScopeOf(a);
+      if (scope.kind === 'error') return err(scope.error);
+      if (scope.kind === 'empty') return ok(JSON.stringify({ ok: true, total: 0, memories: [], hint: scope.hint }), { ok: true, total: 0, memories: [], hint: scope.hint });
+      const r = listMemories(scope, { type: a.type, query: a.query, includeInvalidated: a.includeInvalidated, limit: a.limit, offset: a.offset });
+      return ok(json(r), { ok: true, total: r.total, memories: r.rows });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_update_memory', {
+    title: '编辑记忆',
+    description: '按 id 修改记忆的内容字段（type/title/content/tags）。必须带同一产品作用域，跨产品改会被拒绝；溯源字段 source_kind/source_task_id 不可改。',
+    inputSchema: {
+      ...MEMORY_SCOPE_SCHEMA,
+      id: z.string().describe('记忆 id'),
+      type: MEMORY_TYPE_Z.optional(),
+      title: z.string().optional(),
+      content: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+    },
+  }, async (a) => {
+    try {
+      const scope = memoryScopeOf(a);
+      if (scope.kind === 'error') return err(scope.error);
+      if (scope.kind === 'empty') return err(scope.hint);
+      const r = updateMemory(a.id, scope, { type: a.type, title: a.title, content: a.content, tags: a.tags });
+      if (!r.ok) return err(r.error);
+      return ok(json({ ok: true, id: r.id }), { ok: true, id: r.id });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_delete_memory', {
+    title: '删除记忆',
+    description: '物理删除一条记忆（仅管理页/显式调用提供；自动流程只做软失效）。必须带同一产品作用域，跨产品删除会被拒绝。',
+    inputSchema: {
+      ...MEMORY_SCOPE_SCHEMA,
+      id: z.string().describe('记忆 id'),
+    },
+  }, async (a) => {
+    try {
+      const scope = memoryScopeOf(a);
+      if (scope.kind === 'error') return err(scope.error);
+      if (scope.kind === 'empty') return err(scope.hint);
+      const r = deleteMemory(a.id, scope);
+      if (!r.ok) return err(r.error);
+      return ok(json({ ok: true, id: r.id }), { ok: true, id: r.id });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_list_product_tags', {
+    title: '列出产品标签',
+    description: '返回全部产品标签及其项目数/有效记忆数（新建项目绑定弹窗与管理页筛选的数据源）。',
+  }, async () => {
+    try {
+      const tags = listProductTags();
+      return ok(json(tags), { ok: true, tags });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_list_pending_memories', {
+    title: '列出待确认记忆',
+    description: '返回疑似个人敏感、尚未入库的待确认候选（memory_review_queue）。确认/驳回由管理页处理；本工具只读。必须带产品作用域。',
+    inputSchema: {
+      ...MEMORY_SCOPE_SCHEMA,
+      limit: z.number().int().min(1).max(200).optional().describe('默认 50'),
+    },
+  }, async (a) => {
+    try {
+      const scope = memoryScopeOf(a);
+      if (scope.kind === 'error') return err(scope.error);
+      if (scope.kind === 'empty') return ok(JSON.stringify({ ok: true, memories: [], hint: scope.hint }), { ok: true, memories: [], hint: scope.hint });
+      const rows = listPendingMemories(scope.productKey, a.limit);
+      return ok(json(rows), { ok: true, memories: rows });
     } catch (e) { return err((e as Error).message); }
   });
 

@@ -35,12 +35,16 @@ import { TaskImageService } from '../services/TaskImageService';
 import { TaskCategoryService } from '../services/TaskCategoryService';
 import { FieldService } from '../services/FieldService'; // T03231（PM-203）：项目级自定义字段
 import { ReqCategoryService, ReqEntryService } from '../services/ReqService';
-import { exportBundle, importBundle, isExportTable } from '../services/SettingsService';
+import { Readable } from 'node:stream'; // M2-a：导出逐行流式写出
+import { pipeline } from 'node:stream/promises';
+import { createGzip } from 'node:zlib';
+import { exportBundleChunks, importBundle, isExportTable } from '../services/SettingsService';
 import { createMigrationSnapshot } from '../services/MigrationSnapshot'; // T03274（UX-14③④）：覆盖导入前的可恢复快照
 import { getDefaultNoteProjectId, getSetting, INBOX_PROJECT_ID, setSetting } from '../services/AppSettings';
 import { getConfig as getUpdateConfig, saveConfig as saveUpdateConfig, testConfig as testUpdateConfig, checkUpdate, currentVersion as currentAppVersion } from '../services/UpdateService';
 import { logService } from '../services/LogService';
 import { dbAdminApi } from './dbadmin';
+import { memoriesApi } from './memories'; // T04151（PRD MEM-402）：长期记忆 REST 出口
 import { planApi } from './plans';
 import { iterationApi } from './iterations'; // T03186（PM-201）：迭代与燃尽，路径自带 /projects|/iterations 前缀故整体挂载
 import { materialTimingApi } from './materialTiming'; // T03189（G-1）：汇报材料耗时采样，路径自带 /report 前缀
@@ -66,7 +70,7 @@ import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { notifyChange } from '../services/ChangeBus';
 import { v4 as uuid } from 'uuid';
 import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
-import { exportGate, REPORT_GATE } from '../util/export-gate'; // T00789：导出类并发闸；T02105：周报与启动会稿共用同一闸名
+import { exportGate, REPORT_GATE, EXPORT_QUEUE_WAIT_SLOW_EXPORT } from '../util/export-gate'; // T00789：导出类并发闸；T02105：周报与启动会稿共用同一闸名；M2-b：settings/export 开有界排队（慢导出档预算）
 import { parseLimit, parseOffset, wantsTotal } from '../util/list-page'; // T02284：列表分页参数统一口径（limit/offset/total=1）
 import { listDirectories } from '../services/FsBrowseService'; // T00771 二轮：服务端目录枚举（工作空间降级选择）
 import { startSseKeepalive } from './sseKeepalive'; // T03959：SSE 静默期保活帧（防长耗时模型调用期间链路被掐）
@@ -418,8 +422,8 @@ api.get('/workspace/search', (req, res) => {
   // T00786：search 返回的数组上挂有 partial / scannedFiles 元信息，JSON 序列化会丢弃
   // 非索引属性，故这里显式以 { items, partial, scannedFiles } 形式回传；
   // 同时保留 items 为原数组结构，前端兼容无改动。
-  wsWrap(res, () => {
-    const hits = WorkspaceService.search(projectId, q ?? '', glob);
+  wsWrapAsync(res, async () => {
+    const hits = await WorkspaceService.searchAsync(projectId, q ?? '', glob);
     return {
       items: hits,
       count: hits.length,
@@ -543,15 +547,24 @@ api.get('/stats/dashboard', (req, res) => {
   const days = Math.min(365, Math.max(7, Number(req.query.days) || 30));
   const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 19).replace('T', ' ');
   const today = new Date().toISOString().slice(0, 10);
+  // T04119：吞吐按「日历天」窗口，含今天共 days 个自然日（原实现把 today 当窗口起点传进查询，
+  // 于是 7/30/90 三档恒只返回当天完成数，周期切换失去意义）。
+  const sinceDate = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
   const projWhere = projectId ? 'AND project_id = ?' : '';
   const projArgs: string[] = projectId ? [projectId] : [];
   const db = getDb();
   // 吞吐：近 N 天每日完成（done）任务数——updated_at 变更即统计口径（完成时刻）
-  const throughput = db.prepare(
+  const doneByDate = db.prepare(
     `SELECT substr(updated_at, 1, 10) AS date, COUNT(*) AS count FROM tasks
-      WHERE status = 'done' AND archived = 0 AND substr(updated_at, 1, 10) >= ? ${projWhere}
+      WHERE status = 'done' AND archived = 0 AND substr(updated_at, 1, 10) BETWEEN ? AND ? ${projWhere}
       GROUP BY substr(updated_at, 1, 10) ORDER BY date`,
-  ).all(today, ...projArgs) as Array<{ date: string; count: number }>;
+  ).all(sinceDate, today, ...projArgs) as Array<{ date: string; count: number }>;
+  // 零填充：窗口内每个自然日一条，无完成也补 0，柱数与所选周期一致
+  const countByDate = new Map(doneByDate.map((r) => [r.date, r.count]));
+  const throughput = Array.from({ length: days }, (_, i) => {
+    const date = new Date(Date.now() - (days - 1 - i) * 86400000).toISOString().slice(0, 10);
+    return { date, count: countByDate.get(date) ?? 0 };
+  });
   // AI 成功率/平均耗时（近 N 天 ai_usage）
   const ai = db.prepare(
     `SELECT COUNT(*) AS total, SUM(ok) AS okCount, AVG(duration_ms) AS avgMs FROM ai_usage WHERE created_at >= ?`,
@@ -808,8 +821,13 @@ function parseJsonQuery<T>(raw: unknown, ok: (v: unknown) => boolean): T | undef
   } catch { return undefined; }
 }
 
-api.get('/tasks', (req, res) => {
-  const { projectId, archived, limit, offset, keyword, categoryId, priority, sort, shelved, status, attention, total, fieldFilters, fieldSort } = req.query;
+/**
+ * M4-b：`GET /tasks` 的 query → `TaskListOptions` 映射单源在此。抽出来不是因为 /tasks 需要重构，
+ * 而是 `/tasks/change-sig` 必须与它**逐参数同语义**——签名轮的集合若和列表页取到的集合差一行，
+ * 就会「外部明明改了但签名不变」或反之。两处各写一份映射迟早漂移，所以两个端点共用这一份。
+ */
+function taskListOptionsFromQuery(q: Record<string, unknown>): { opts: TaskListOptions; total: unknown } {
+  const { projectId, archived, limit, offset, keyword, categoryId, priority, sort, shelved, status, attention, total, fieldFilters, fieldSort } = q;
   // M7-7.2：默认分页上限——未带 limit 或非法 limit 一律按 DEFAULT 截断（原「非法忽略=全量」语义废止）。
   // 全量语义保留给 MCP（mtask_list_tasks 走 TaskService.list，不经本路由）；已盘点 HTTP 消费方：
   // 桌面 TasksPage 200/页、移动端 100/页（7.1 改造）、CommandPalette/QueuePage/ArchivePage 显式 500。
@@ -825,7 +843,7 @@ api.get('/tasks', (req, res) => {
   } else {
     limitN = DEFAULT;
   }
-  const listOpts: TaskListOptions = {
+  const opts: TaskListOptions = {
     projectId: projectId as string | undefined,
     archived: archived === '1' || archived === 'true',
     priority: priority as string | undefined,
@@ -849,15 +867,36 @@ api.get('/tasks', (req, res) => {
       fieldSort, (v) => !!v && typeof v === 'object' && !Array.isArray(v),
     ),
   };
-  const items = TaskService.list(listOpts);
+  return { opts, total };
+}
+
+api.get('/tasks', (req, res) => {
+  const { opts, total } = taskListOptionsFromQuery(req.query);
+  const items = TaskService.list(opts);
   // T03361（八期 §3.1.6）：行内加性字段 gitLinks（各任务最新一条）+ gitLinkCount（「+N」角标的数据源）。
   // 一次查询覆盖本页，零逐行 SQL；裸数组契约与分页信封不变。
   const withLinks = attachGitLinks(items);
   // T02284：`total=1` 加性通道——带该参数时响应体换成 `{items,total}` 信封（归档页服务端分页要「共 N 条」）。
   // 不带时逐字返回裸数组：/tasks 的既有契约（桌面任务页、移动端、CommandPalette、QueuePage、
   // scripts/verify-*.mjs 与 perf jmx 直取数组）不受任何影响，故本端点不改参数、不把裸数组变成对象。
-  if (wantsTotal(total)) return res.json({ items: withLinks, total: TaskService.count(listOpts) });
+  if (wantsTotal(total)) return res.json({ items: withLinks, total: TaskService.count(opts) });
   res.json(withLinks);
+});
+
+/**
+ * M4-b：外部变更签名——与 `GET /tasks` 同一套过滤与分页，只回 `{sig, rows}`。
+ * `sig` 是那批任务的「id:status:verified:updated_at:category_id:priority」六列单元格（按单元格排序后）
+ * 拼串的 SHA256；与前端原先自己拉整行列表再拼串相比是**集合等价**（并列行的返回次序不参与判定，理由见
+ * `TaskService.listChangeSig` 的注释）。
+ * 立项目的：TasksPage 每 10s 轮询一次整行列表（limit=500 命中 500 行 = 402,501B，服务端单次 9–21ms），
+ * 只为读出六个标量列判断「有没有人改过任务」；本端点把这次请求的成本降到 0.4–2.0ms / ~100B，
+ * 列表内容变化时的整行重取（loadTasks）保持原样。
+ * 未签名变化的判定盲区与旧实现完全一致：decorateRows 带出的图片/阻塞项/字段值本就不进签名，
+ * 它们变了而六列没变时旧实现同样不刷新——所以这不是新缺口，是原有语义。
+ */
+api.get('/tasks/change-sig', (req, res) => {
+  const { opts } = taskListOptionsFromQuery(req.query);
+  res.json(TaskService.listChangeSig(opts));
 });
 
 /**
@@ -3222,18 +3261,44 @@ api.post('/settings/ai-summary-inbox', (req, res) => {
 // T00789：exportBundle() 曾为纯同步重活（4.4MB 全量序列化，实测 122ms/次），同步期间无法接受后续请求、
 // 闸门计数到不了上限（实测 10 路并发 0×429、线性叠加至 946ms）。现在 exportBundle 已建议②分表让出
 // （每导一表 await setImmediate），但 defer 仍保留兜底，保证闸门在最坏情况（首表即大表）下依然可见。
-api.get('/settings/export', exportGate('settings-export', undefined, { defer: true }), async (req, res) => {
-  try {
-    // 可选 ?tables=a,b,c 子集导出（默认全量）。未知表名直接 400，避免静默产出空包。
-    const raw = typeof req.query.tables === 'string' ? req.query.tables.trim() : '';
-    if (raw) {
-      const names = raw.split(',').map((s) => s.trim()).filter(Boolean);
-      const bad = names.filter((n) => !isExportTable(n));
-      if (bad.length) return res.status(400).json({ error: `未知导出表：${bad.join(', ')}` });
-      return res.json(await exportBundle(names));
+// M2-a：本端点改走 exportBundleChunks 逐行流式（每 200 行一片 + 写背压），响应体逐字节不变，
+// 但不再一次性物化整包——实测库（200MB / 24,507 行 / 52.7MB bundle）冷堆峰值 +175MB → +1MB 级。
+// 表名校验必须先于第一片：流一旦开写就回不去 400 了。
+// M2-b：排队预算用慢导出档（8s）而非普通导出档（3s）——实测单发 3.0~4.3s，3s 预算比单次耗时还短，
+// 排队者只是白等一趟再被拒，交付数不变；阶梯证据见 EXPORT_QUEUE_WAIT_SLOW_EXPORT 注释。
+api.get('/settings/export', exportGate('settings-export', undefined, { defer: true, queueMs: EXPORT_QUEUE_WAIT_SLOW_EXPORT }), async (req, res) => {
+  // 可选 ?tables=a,b,c 子集导出（默认全量）。未知表名直接 400，避免静默产出空包。
+  const raw = typeof req.query.tables === 'string' ? req.query.tables.trim() : '';
+  let names: string[] | undefined;
+  if (raw) {
+    const list = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    const bad = list.filter((n) => !isExportTable(n));
+    if (bad.length) {
+      res.status(400).json({ error: `未知导出表：${bad.join(', ')}` });
+      return;
     }
-    res.json(await exportBundle());
+    names = list;
+  }
+  // H5 的 gzip 中间件刻意不介入「已分块写出」的响应（否则会在原始字节后追加压缩字节），
+  // 所以流式路径必须自己做压缩——用 createGzip 串进 pipeline：既保住 H5 的体积收益，
+  // 又不再像中间件那样对整包做 gzipSync（实测 64MB 明文一次压，同步阻塞 3s 级，正是本轮要消掉的东西）。
+  const wantGzip = /\bgzip\b/i.test(String(req.headers['accept-encoding'] ?? ''));
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  if (wantGzip) {
+    res.setHeader('Content-Encoding', 'gzip');
+    // 同一 URL 因 Accept-Encoding 有两种表示，显式声明，与 H5 中间件同口径
+    res.setHeader('Vary', 'Accept-Encoding');
+  }
+  const src = Readable.from(exportBundleChunks(names));
+  try {
+    // pipeline 负责背压与出错时的统一销毁；手写 res.write + 等 drain 容易漏掉中途失败的清理
+    await (wantGzip ? pipeline(src, createGzip(), res) : pipeline(src, res));
   } catch (e) {
+    // 首片已出则无法再改成 4xx/5xx，只能断连——让调用方拿到截断响应而不是一个能骗过 JSON 解析的半包
+    if (res.headersSent) {
+      res.destroy(e instanceof Error ? e : new Error(String(e)));
+      return;
+    }
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
@@ -3328,3 +3393,6 @@ api.use(sonarScanApi); // 八期 §3.4.2：/sonar/scan*（完整路径声明，�
 
 // ---------- 监督器（T01286）：状态看板 / 审计视图 / 熔断与中继配置 ----------
 api.use('/supervisor', supervisorApi);
+
+// ---------- T04151（PRD MEM-402）：长期记忆 REST（CRUD + 待确认队列 + 产品标签） ----------
+api.use('/memories', memoriesApi);

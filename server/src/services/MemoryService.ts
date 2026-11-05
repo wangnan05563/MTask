@@ -5,9 +5,11 @@ import { checkAiReadiness } from './AiReadinessService';
 import { AIService } from './AIService'; // T04144：规则引擎的真实 askJson 通道
 import { ConfigService } from './ConfigService';
 import { EXTRACTION_SYSTEM_PROMPT, runRulesExtraction, type ExtractCandidate, type RulesOutput } from './MemoryRulesService';
+import { v4 as uuid } from 'uuid';
 import { buildMemoryScopeWhere, type ActiveMemoryScope } from '../util/memoryScope';
 import { isMemoryType, type MemoryType } from '../util/memoryTypes';
 import { enforceCapacity } from './MemoryMaintenanceService'; // T04150（MEM-306/F9）：容量评估
+import { guardMemoryCandidate, type MemorySourceKind } from '../util/memoryGuard'; // T04151：手动保存的 PII 守卫
 
 /**
  * T04143（PRD MEM-201 / MEM-204 / MEM-207，v1.2·F3）：记忆抽取的触发与隔离。
@@ -160,6 +162,9 @@ export interface MemoryRow {
   rank_score: number;
   /** MEM-305：project 型超 180 天未更新 → 需复核（仍可召回，仅标记并降权） */
   need_review: boolean;
+  /** 软失效标记（管理页看到「已失效/被哪条替代」，召回路径默认查不到） */
+  invalidated_at?: string | null;
+  superseded_by?: string | null;
 }
 
 export interface QueryMemoriesOptions {
@@ -168,6 +173,8 @@ export interface QueryMemoriesOptions {
   query?: string;
   tags?: string[];
   limit?: number;
+  /** 管理页需要看到失效行（带 invalidated_at/superseded_by）；召回路径一律默认 false */
+  includeInvalidated?: boolean;
 }
 
 /** LIKE 参数转义：标签/关键字里的 % _ \ 不能当通配符，否则 '100%' 会误配全部 */
@@ -188,7 +195,7 @@ export function queryMemories(
     Math.max(1, Math.floor(opts.limit ?? MEMORY_QUERY_DEFAULT_LIMIT)),
     MEMORY_QUERY_MAX_LIMIT,
   );
-  const where = buildMemoryScopeWhere(scope);
+  const where = buildMemoryScopeWhere(scope, { includeInvalidated: opts.includeInvalidated });
   const clauses = [where.sql];
   const params: unknown[] = [...where.params];
 
@@ -218,6 +225,7 @@ export function queryMemories(
   // 时间锚用 updated_at 绝对日期，不依赖调度。排序侧已由 MEMORY_RANK_SQL 的 180 天衰减降权。
   const sql = `SELECT id, product_key, project_id, type, title, content, tags, source_task_id,
       source_kind, confidence, access_count, last_accessed_at, created_at, updated_at,
+      invalidated_at, superseded_by,
       ${MEMORY_RANK_SQL} AS rank_score,
       CASE WHEN type = 'project' AND julianday('now') - julianday(updated_at) > 180 THEN 1 ELSE 0 END AS need_review
     FROM memories
@@ -286,4 +294,193 @@ export function queryForContext(
     count += 1;
   }
   return { block: `${head}\n${body}${tail}`, count, truncated };
+}
+
+/* ================= T04151（PRD MEM-401/402/403）：管理类 CRUD（MCP/REST 共用） ================= */
+
+const MEMORY_SOURCE_KINDS: readonly MemorySourceKind[] = ['auto', 'manual', 'user_said', 'tool_output', 'inferred'];
+
+export interface SaveMemoryInput {
+  scope: ActiveMemoryScope;
+  type: string;
+  title: string;
+  content: string;
+  tags?: string[];
+  sourceKind?: string;
+  sourceTaskId?: string;
+}
+
+export type SaveMemoryResult =
+  | { kind: 'stored'; id: string }
+  | { kind: 'queued'; id: string; piiKind: string }
+  | { kind: 'error'; error: string };
+
+/**
+ * MEM-401：手动保存（管理页新增 / mtask_save_memory）。
+ * 与自动抽取共用同一守卫：PII → 待确认队列（不静默入库也不丢弃），其余直接落库。
+ * 手动录入不受 C2「单次 ≤5 条」限制（C2 约束的是抽取，人工显式写入不设限）。
+ */
+export function saveMemory(input: SaveMemoryInput): SaveMemoryResult {
+  const title = (input.title ?? '').trim();
+  const content = (input.content ?? '').trim();
+  if (!title || !content) return { kind: 'error', error: 'title/content 必填' };
+  if (!isMemoryType(input.type)) return { kind: 'error', error: 'type 必须是 user/feedback/project/reference' };
+  const sourceKind = (MEMORY_SOURCE_KINDS as readonly string[]).includes(String(input.sourceKind))
+    ? input.sourceKind as MemorySourceKind
+    : 'manual';
+  const id = `mem-${uuid()}`;
+  const tags = Array.isArray(input.tags) && input.tags.length
+    ? JSON.stringify(input.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 5))
+    : null;
+  const guarded = guardMemoryCandidate({
+    id, productKey: input.scope.productKey, projectId: input.scope.projectId ?? null,
+    title, content, type: input.type, sourceTaskId: input.sourceTaskId ?? null,
+    sourceKind, confidence: 1,
+  });
+  if (guarded.action === 'queue') return { kind: 'queued', id, piiKind: guarded.piiKind };
+  const now = new Date().toISOString();
+  getDb().prepare(`INSERT INTO memories
+    (id,product_key,project_id,type,title,content,tags,source_task_id,source_kind,confidence,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    id, input.scope.productKey, input.scope.projectId ?? null, input.type, title, content, tags,
+    input.sourceTaskId ?? null, sourceKind, 1, now, now,
+  );
+  return { kind: 'stored', id };
+}
+
+/** 作用域内的行存在性校验（MEM-403：管理操作不得跨产品改/删） */
+function findScopedMemory(id: string, scope: ActiveMemoryScope): { id: string } | undefined {
+  return getDb().prepare('SELECT id FROM memories WHERE id = ? AND product_key = ?')
+    .get(id, scope.productKey) as { id: string } | undefined;
+}
+
+export type MemoryMutationResult = { ok: true; id: string } | { ok: false; error: string };
+
+/** 人工编辑：只允许内容字段，source_kind/source_task_id 属溯源信息不可改写 */
+export function updateMemory(
+  id: string,
+  scope: ActiveMemoryScope,
+  patch: { type?: string; title?: string; content?: string; tags?: string[] | null },
+): MemoryMutationResult {
+  if (!findScopedMemory(id, scope)) return { ok: false, error: '记忆不存在或不属于该产品' };
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  if (patch.type !== undefined) {
+    if (!isMemoryType(patch.type)) return { ok: false, error: 'type 非法枚举' };
+    sets.push('type = ?');
+    params.push(patch.type);
+  }
+  if (patch.title !== undefined) {
+    const title = String(patch.title).trim();
+    if (!title) return { ok: false, error: 'title 不能为空' };
+    sets.push('title = ?');
+    params.push(title);
+  }
+  if (patch.content !== undefined) {
+    const content = String(patch.content).trim();
+    if (!content) return { ok: false, error: 'content 不能为空' };
+    sets.push('content = ?');
+    params.push(content);
+  }
+  if (patch.tags !== undefined) {
+    sets.push('tags = ?');
+    params.push(patch.tags === null ? null
+      : JSON.stringify(patch.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 5)));
+  }
+  if (!sets.length) return { ok: false, error: '没有可更新字段' };
+  sets.push('updated_at = ?');
+  params.push(new Date().toISOString());
+  getDb().prepare(`UPDATE memories SET ${sets.join(', ')} WHERE id = ? AND product_key = ?`)
+    .run(...params, id, scope.productKey);
+  return { ok: true, id };
+}
+
+/** MEM-403：物理删除只由管理页/显式 MCP 提供；自动流程一律 INVALIDATE */
+export function deleteMemory(id: string, scope: ActiveMemoryScope): MemoryMutationResult {
+  if (!findScopedMemory(id, scope)) return { ok: false, error: '记忆不存在或不属于该产品' };
+  getDb().prepare('DELETE FROM memories WHERE id = ? AND product_key = ?').run(id, scope.productKey);
+  return { ok: true, id };
+}
+
+export interface ListMemoriesOptions {
+  type?: string;
+  query?: string;
+  tags?: string[];
+  includeInvalidated?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * 管理页列表（分页 + 总数）：与召回查询分开——召回有 20 条硬上限与权重排序，
+ * 管理页需要看到全量（含失效行）并按更新时间倒序。
+ */
+export function listMemories(
+  scope: ActiveMemoryScope,
+  opts: ListMemoriesOptions = {},
+): { total: number; rows: MemoryRow[] } {
+  const limit = Math.min(Math.max(1, Math.floor(opts.limit ?? 50)), 200);
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+  const where = buildMemoryScopeWhere(scope, { includeInvalidated: opts.includeInvalidated });
+  const clauses = [where.sql];
+  const params: unknown[] = [...where.params];
+  if (opts.type !== undefined) {
+    if (!isMemoryType(opts.type)) return { total: 0, rows: [] };
+    clauses.push('type = ?');
+    params.push(opts.type);
+  }
+  const kw = (opts.query ?? '').trim();
+  if (kw) {
+    clauses.push("(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')");
+    params.push(`%${escapeLike(kw)}%`, `%${escapeLike(kw)}%`);
+  }
+  for (const tag of (opts.tags ?? []).map((t) => t.trim()).filter(Boolean)) {
+    clauses.push("tags LIKE ? ESCAPE '\\'");
+    params.push(`%"${escapeLike(tag)}"%`);
+  }
+  const db = getDb();
+  const whereSql = clauses.join(' AND ');
+  const total = (db.prepare(`SELECT COUNT(*) AS c FROM memories WHERE ${whereSql}`)
+    .get(...params) as { c: number }).c;
+  const raw = db.prepare(`SELECT id, product_key, project_id, type, title, content, tags, source_task_id,
+      source_kind, confidence, access_count, last_accessed_at, created_at, updated_at,
+      invalidated_at, superseded_by,
+      ${MEMORY_RANK_SQL} AS rank_score,
+      CASE WHEN type = 'project' AND julianday('now') - julianday(updated_at) > 180 THEN 1 ELSE 0 END AS need_review
+    FROM memories WHERE ${whereSql}
+    ORDER BY updated_at DESC LIMIT ? OFFSET ?`)
+    .all(...params, limit, offset) as (Omit<MemoryRow, 'need_review'> & { need_review: number })[];
+  return { total, rows: raw.map((r) => ({ ...r, need_review: !!r.need_review })) };
+}
+
+/** MEM-402：待确认队列（疑似敏感，尚未入库） */
+export function listPendingMemories(productKey: string, limit = 50): Record<string, unknown>[] {
+  return getDb().prepare('SELECT * FROM memory_review_queue WHERE product_key = ? ORDER BY created_at DESC LIMIT ?')
+    .all(normalizePk(productKey), Math.min(Math.max(1, Math.floor(limit)), 200)) as Record<string, unknown>[];
+}
+
+function normalizePk(value: string): string {
+  return (value ?? '').trim().toLowerCase();
+}
+
+/**
+ * MEM-401：产品标签清单（新建/绑定弹窗的数据源）。
+ * 取 projects 与 memories 的并集：只被记忆引用、暂时没有项目绑定的历史标签也要能被选回。
+ */
+export function listProductTags(): { productKey: string; projectCount: number; memoryCount: number }[] {
+  const db = getDb();
+  const projects = db.prepare(`SELECT product_key AS pk, COUNT(*) AS c FROM projects
+    WHERE product_key <> '' GROUP BY product_key`).all() as { pk: string; c: number }[];
+  const memories = db.prepare(`SELECT product_key AS pk, COUNT(*) AS c FROM memories
+    WHERE invalidated_at IS NULL GROUP BY product_key`).all() as { pk: string; c: number }[];
+  const merged = new Map<string, { productKey: string; projectCount: number; memoryCount: number }>();
+  for (const r of projects) {
+    merged.set(r.pk, { productKey: r.pk, projectCount: r.c, memoryCount: 0 });
+  }
+  for (const r of memories) {
+    const hit = merged.get(r.pk);
+    if (hit) hit.memoryCount = r.c;
+    else merged.set(r.pk, { productKey: r.pk, projectCount: 0, memoryCount: r.c });
+  }
+  return [...merged.values()].sort((a, b) => a.productKey.localeCompare(b.productKey));
 }
