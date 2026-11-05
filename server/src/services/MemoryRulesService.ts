@@ -2,6 +2,7 @@ import { getDb } from '../db/connection';
 import { isMemoryType, type MemoryType } from '../util/memoryTypes';
 import { normalizeProductKey } from '../util/productKey';
 import { detectPiiKind, guardMemoryCandidate, type MemorySourceKind } from '../util/memoryGuard';
+import { applyRewriteBudget } from '../util/memoryRewrite'; // T04145：W1-W8 重写限次
 
 /**
  * T04144（PRD MEM-202 / MEM-203 / MEM-206；规范 §3.3 / §6 / §8 / §9）：六段流程的规则引擎。
@@ -106,6 +107,8 @@ export interface RulesRunResult {
   dropped: { title: string; reason: string }[];
   skippedSections: string[];
   noExtractableSection: boolean;
+  /** T04145：本轮写法校验实际触发的重写次数（0 或 1） */
+  rewrites: number;
 }
 
 const SOURCE_KINDS: readonly string[] = ['auto', 'manual', 'user_said', 'tool_output', 'inferred'];
@@ -118,6 +121,9 @@ export async function runRulesExtraction(args: {
   projectId?: string;
   askJson: AskJsonFn;
   now?: string;
+  /** T04145（MEM-208）：写法违规时的重写通道，最多调用 1 次；不传则跳过写法校验（兼容既有调用） */
+  rewrite?: (violations: { index: number; item: ExtractCandidate; rules: string[] }[]) =>
+    Promise<{ index: number; item: ExtractCandidate }[]>;
 }): Promise<RulesRunResult> {
   const db = getDb();
   const pk = normalizeProductKey(args.productKey);
@@ -125,7 +131,7 @@ export async function runRulesExtraction(args: {
   const { sections, skipped } = splitResultSections(args.resultText);
   const base: RulesRunResult = {
     stored: 0, queued: 0, updated: 0, invalidated: 0, dropped: [], skippedSections: skipped,
-    noExtractableSection: sections.length === 0,
+    noExtractableSection: sections.length === 0, rewrites: 0,
   };
   // 段缺失时跳过而非报错（MEM-206）；也顺带保证幂等（同 source_task_id 已有记忆不重抽）
   if (base.noExtractableSection) return base;
@@ -145,7 +151,18 @@ export async function runRulesExtraction(args: {
   for (const extra of candidates.slice(MAX_MEMORIES_PER_RESULT)) {
     dropped.push({ title: extra?.title ?? '', reason: 'C2 单任务上限 5 条' });
   }
-  for (const [i, c] of candidates.slice(0, MAX_MEMORIES_PER_RESULT).entries()) {
+  // T04145：写法校验 + 最多 1 次重写（不传 rewrite 时保持既有行为，T04144 的门断言不受影响）
+  let loopItems = candidates.slice(0, MAX_MEMORIES_PER_RESULT).map((c, i) => ({ c, i }));
+  if (args.rewrite) {
+    const rb = await applyRewriteBudget(
+      candidates.slice(0, MAX_MEMORIES_PER_RESULT),
+      args.rewrite,
+    );
+    base.rewrites = rb.rewrites;
+    for (const d of rb.dropped) dropped.push(d);
+    loopItems = rb.accepted.map((a) => ({ c: a.item, i: a.index }));
+  }
+  for (const { c, i } of loopItems) {
     const title = String(c?.title ?? '').trim();
     const content = String(c?.content ?? '').trim();
     if (!title || !content) { dropped.push({ title, reason: '空标题/空内容' }); continue; }

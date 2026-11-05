@@ -4,7 +4,7 @@ import { normalizeProductKey } from '../util/productKey';
 import { checkAiReadiness } from './AiReadinessService';
 import { AIService } from './AIService'; // T04144：规则引擎的真实 askJson 通道
 import { ConfigService } from './ConfigService';
-import { runRulesExtraction, type RulesOutput } from './MemoryRulesService';
+import { EXTRACTION_SYSTEM_PROMPT, runRulesExtraction, type ExtractCandidate, type RulesOutput } from './MemoryRulesService';
 
 /**
  * T04143（PRD MEM-201 / MEM-204 / MEM-207，v1.2·F3）：记忆抽取的触发与隔离。
@@ -78,8 +78,24 @@ async function runExtract(taskId: string, resultText: string): Promise<void> {
           if (!ai.ok || !ai.data) throw new Error(ai.error ?? 'askJson 无有效输出');
           return ai.data;
         },
+        // T04145（MEM-208）：写法违规最多重写 1 次，由 applyRewriteBudget 保证不会进入第二轮
+        rewrite: async (violations) => {
+          const sys = `${EXTRACTION_SYSTEM_PROMPT}\n# 重写任务\n仅修正下列候选的写法违规（W1/W2/W4/W5/W8），保持事实、专名与数字不变，不得编造；输出严格 JSON 的 memories 数组，顺序与输入一致。`;
+          const user = JSON.stringify(violations.map((v) => ({
+            index: v.index, title: v.item.title, content: v.item.content, fix: v.rules,
+          })));
+          const ai = await AIService.askJson<RulesOutput>(
+            tool.id, sys, user,
+            (content) => JSON.parse(content) as RulesOutput,
+            { cardKey: 'memory_extract' },
+          );
+          if (!ai.ok || !ai.data) return [];
+          return (ai.data.memories ?? []).map((m, i) => ({
+            index: violations[i]?.index ?? -1, item: m as ExtractCandidate,
+          }));
+        },
       });
-      telemetry(taskId, `rules_ok:stored=${r.stored},queued=${r.queued},updated=${r.updated},invalidated=${r.invalidated},dropped=${r.dropped.length}`);
+      telemetry(taskId, `rules_ok:stored=${r.stored},queued=${r.queued},updated=${r.updated},invalidated=${r.invalidated},dropped=${r.dropped.length},rewrites=${r.rewrites}`);
     } finally {
       runningKeys.delete(productKey);
     }
