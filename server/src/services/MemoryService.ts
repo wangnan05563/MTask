@@ -5,6 +5,8 @@ import { checkAiReadiness } from './AiReadinessService';
 import { AIService } from './AIService'; // T04144：规则引擎的真实 askJson 通道
 import { ConfigService } from './ConfigService';
 import { EXTRACTION_SYSTEM_PROMPT, runRulesExtraction, type ExtractCandidate, type RulesOutput } from './MemoryRulesService';
+import { buildMemoryScopeWhere, type ActiveMemoryScope } from '../util/memoryScope';
+import { isMemoryType, type MemoryType } from '../util/memoryTypes';
 
 /**
  * T04143（PRD MEM-201 / MEM-204 / MEM-207，v1.2·F3）：记忆抽取的触发与隔离。
@@ -112,4 +114,112 @@ async function runExtract(taskId: string, resultText: string): Promise<void> {
 /** 唯一对外入口：fire-and-forget，同步返回不阻塞主任务链路 */
 export function scheduleMemoryExtract(taskId: string, resultText: string): void {
   void runExtract(taskId, resultText).catch(() => { /* runExtract 已全量捕获，此处双保险 */ });
+}
+
+/* ================= T04148（PRD MEM-301 / MEM-303 / F6 / F13）：记忆查询与排序 ================= */
+
+/** MEM-301：默认 10 条、硬上限 20 条；超上限按上限截断而非报错（查询是高频只读路径） */
+export const MEMORY_QUERY_DEFAULT_LIMIT = 10;
+export const MEMORY_QUERY_MAX_LIMIT = 20;
+
+/**
+ * MEM-303 排序级联：类型权重 → 溯源权重 → 访问衰减 → 最近访问/更新时间。
+ * 类型顺序按「约束强度」定：反馈纠正（用户明确说这样做不对）> 用户偏好 > 项目事实 > 外部参考。
+ * 溯源权重按规范 §6.3 防线二：user_said 与 manual 同档（人工明确写入不弱于用户陈述，F6 修订）。
+ * 衰减按规范 §7.2：30 天内访问过 ×1.5、超 180 天未访问 ×0.3（陈旧但可召回，不删除）。
+ */
+const MEMORY_RANK_SQL = `(
+  CASE type WHEN 'feedback' THEN 4 WHEN 'user' THEN 3 WHEN 'project' THEN 2 ELSE 1 END *
+  CASE source_kind WHEN 'user_said' THEN 3 WHEN 'manual' THEN 3 WHEN 'auto' THEN 2 WHEN 'inferred' THEN 1 ELSE 0.5 END *
+  CASE
+    WHEN julianday('now') - julianday(COALESCE(last_accessed_at, updated_at)) <= 30 THEN 1.5
+    WHEN julianday('now') - julianday(COALESCE(last_accessed_at, updated_at)) > 180 THEN 0.3
+    ELSE 1.0
+  END
+)`;
+
+export interface MemoryRow {
+  id: string;
+  product_key: string;
+  project_id: string | null;
+  type: MemoryType;
+  title: string;
+  content: string;
+  tags: string | null;
+  source_task_id: string | null;
+  source_kind: string;
+  confidence: number | null;
+  access_count: number;
+  last_accessed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  /** 本次排序得分（调试/断言用；不落库） */
+  rank_score: number;
+}
+
+export interface QueryMemoriesOptions {
+  type?: string;
+  /** 标题/内容模糊匹配（F13：tags 用 JSON 文本 LIKE，不走全文索引） */
+  query?: string;
+  tags?: string[];
+  limit?: number;
+}
+
+/** LIKE 参数转义：标签/关键字里的 % _ \ 不能当通配符，否则 '100%' 会误配全部 */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => '\\' + ch);
+}
+
+/**
+ * MEM-301：所有查询必须经 buildMemoryScopeWhere（product_key 恒在场），
+ * 有项目子作用域时合并「产品级共享 + 本期特有」，失效行默认排除。
+ * 召回即访问：批量回写 access_count/last_accessed_at，供 §7.2 衰减下一次生效。
+ */
+export function queryMemories(
+  scope: ActiveMemoryScope,
+  opts: QueryMemoriesOptions = {},
+): MemoryRow[] {
+  const limit = Math.min(
+    Math.max(1, Math.floor(opts.limit ?? MEMORY_QUERY_DEFAULT_LIMIT)),
+    MEMORY_QUERY_MAX_LIMIT,
+  );
+  const where = buildMemoryScopeWhere(scope);
+  const clauses = [where.sql];
+  const params: unknown[] = [...where.params];
+
+  const rows: MemoryRow[] = [];
+  if (opts.type !== undefined) {
+    // 非法 type 直接返回空集：查询侧不做静默纠正，避免「查 user 却拿到 project」的错觉
+    if (!isMemoryType(opts.type)) return rows;
+    clauses.push('type = ?');
+    params.push(opts.type);
+  }
+  const kw = (opts.query ?? '').trim();
+  if (kw) {
+    clauses.push("(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')");
+    params.push(`%${escapeLike(kw)}%`, `%${escapeLike(kw)}%`);
+  }
+  for (const tag of (opts.tags ?? []).map((t) => t.trim()).filter(Boolean)) {
+    clauses.push("tags LIKE ? ESCAPE '\\'");
+    params.push(`%"${escapeLike(tag)}"%`);
+  }
+
+  const db = getDb();
+  const sql = `SELECT id, product_key, project_id, type, title, content, tags, source_task_id,
+      source_kind, confidence, access_count, last_accessed_at, created_at, updated_at,
+      ${MEMORY_RANK_SQL} AS rank_score
+    FROM memories
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY rank_score DESC, COALESCE(last_accessed_at, updated_at) DESC, updated_at DESC
+    LIMIT ?`;
+  const list = db.prepare(sql).all(...params, limit) as MemoryRow[];
+  if (list.length) {
+    const now = new Date().toISOString();
+    const mark = db.prepare(
+      `UPDATE memories SET access_count = access_count + 1, last_accessed_at = ?
+       WHERE id IN (${list.map(() => '?').join(',')})`,
+    );
+    mark.run(now, ...list.map((r) => r.id));
+  }
+  return list;
 }
