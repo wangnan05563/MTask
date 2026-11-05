@@ -17,6 +17,11 @@ const TYPE_LABELS: Record<MemoryType, string> = {
 };
 
 interface ProductTag { productKey: string; projectCount: number; memoryCount: number }
+interface ProductProject { id: string; name: string; memory_auto_extract: number }
+interface PendingRow {
+  id: string; title: string; content: string; type: MemoryType;
+  pii_kind: string | null; created_at: string;
+}
 interface MemoryRow {
   id: string;
   product_key: string;
@@ -70,6 +75,10 @@ export function MemoryTab() {
   const [total, setTotal] = useState(0);
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
+  // MEM-503/504：本产品下的项目（自动抽取开关）与待确认队列
+  const [projects, setProjects] = useState<ProductProject[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [pending, setPending] = useState<PendingRow[]>([]);
   // 新增表单
   const [newTitle, setNewTitle] = useState('');
   const [newContent, setNewContent] = useState('');
@@ -104,8 +113,49 @@ export function MemoryTab() {
     } finally { setLoading(false); }
   }, [productKey, type, keyword, includeInvalidated]);
 
+  // MEM-503/504：只列本产品标签下的项目——跨产品项目不出现在下拉里，从入口上杜绝越权操作
+  const loadProjects = useCallback(async () => {
+    if (!productKey) { setProjects([]); setSelectedProjectId(''); return; }
+    try {
+      const r = await api.get<{ projects: ProductProject[] }>(`/memories/projects?productKey=${encodeURIComponent(productKey)}`);
+      const list = r.projects ?? [];
+      setProjects(list);
+      setSelectedProjectId((cur) => (list.some((p) => p.id === cur) ? cur : (list[0]?.id ?? '')));
+    } catch { /* 项目清单失败不影响记忆列表 */ }
+  }, [productKey]);
+
+  const loadPending = useCallback(async () => {
+    if (!productKey) { setPending([]); return; }
+    try {
+      const r = await api.get<{ memories: PendingRow[] }>(`/memories/pending?productKey=${encodeURIComponent(productKey)}`);
+      setPending(r.memories ?? []);
+    } catch { /* 待确认队列失败不阻塞页面 */ }
+  }, [productKey]);
+
   useEffect(() => { void loadTags(); }, [loadTags]);
   useEffect(() => { void loadRows(); }, [loadRows]);
+  useEffect(() => { void loadProjects(); }, [loadProjects]);
+  useEffect(() => { void loadPending(); }, [loadPending]);
+
+  /** MEM-504：项目级自动抽取开关（跨产品由后端 403 兜底，前端只列本产品项目） */
+  async function toggleAutoExtract(proj: ProductProject) {
+    try {
+      const r = await api.patch<{ enabled: boolean }>(`/memories/projects/${proj.id}`, {
+        productKey, enabled: proj.memory_auto_extract === 0,
+      });
+      setProjects((list) => list.map((p) => (p.id === proj.id ? { ...p, memory_auto_extract: r.enabled ? 1 : 0 } : p)));
+      flash(`「${proj.name}」自动抽取已${r.enabled ? '开启' : '关闭'}`);
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
+  }
+
+  /** MEM-209/504：待确认候选的确认/驳回（确认才写 memories） */
+  async function resolvePending(id: string, action: 'confirm' | 'reject') {
+    try {
+      await api.post(`/memories/pending/${id}/${action}`, { productKey });
+      flash(action === 'confirm' ? '已确认入库' : '已驳回并删除候选');
+      await Promise.all([loadPending(), loadRows(), loadTags()]);
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
+  }
 
   async function createMemory() {
     if (!productKey) return flash('请先选择产品标签');
@@ -175,6 +225,55 @@ export function MemoryTab() {
         <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{loading ? '加载中…' : `共 ${total} 条`}</span>
       </div>
       {notice && <div style={{ marginBottom: 10, fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{notice}</div>}
+
+      {/* MEM-504：项目级自动抽取开关（只列本产品项目，跨产品入口不存在） */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', fontSize: 'var(--fs-s)' }}>
+        <span style={{ color: 'var(--text-secondary)' }}>自动抽取（项目级）：</span>
+        {projects.length === 0 ? (
+          <span style={{ color: 'var(--text-muted)' }}>本产品暂无绑定项目</span>
+        ) : (
+          <>
+            <select aria-label="自动抽取项目" value={selectedProjectId}
+              onChange={(e) => setSelectedProjectId(e.target.value)} style={inputStyle}>
+              {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            {(() => {
+              const cur = projects.find((p) => p.id === selectedProjectId);
+              return (
+                <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <input type="checkbox" checked={cur?.memory_auto_extract === 1} disabled={!cur}
+                    onChange={() => { if (cur) void toggleAutoExtract(cur); }} />
+                  {cur?.memory_auto_extract === 1 ? '自动抽取已开启' : '自动抽取已关闭'}
+                </label>
+              );
+            })()}
+          </>
+        )}
+      </div>
+
+      {/* MEM-209/504：待确认队列——疑似个人敏感内容，确认后才入库 */}
+      {pending.length > 0 && (
+        <div style={{ border: '1px solid var(--accent)', borderRadius: 8, padding: 12, marginBottom: 14, background: 'var(--accent-soft)' }}>
+          <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 8 }}>
+            待确认（{pending.length} 条疑似个人敏感内容，不会自动入库）
+          </div>
+          {pending.map((p) => (
+            <div key={p.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', padding: '6px 0', borderTop: '1px solid var(--surface-2)' }}>
+              <div style={{ flex: 1, fontSize: 'var(--fs-s)' }}>
+                <b>{p.title}</b>
+                <span style={{ marginLeft: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+                  {TYPE_LABELS[p.type] ?? p.type} · {p.pii_kind ?? '敏感'}
+                </span>
+                <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{brief(p.content, 90)}</div>
+              </div>
+              <button style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }}
+                onClick={() => void resolvePending(p.id, 'confirm')}>确认入库</button>
+              <button style={{ ...btnStyle, color: 'var(--danger)' }}
+                onClick={() => void resolvePending(p.id, 'reject')}>驳回</button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* 新增 */}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14, alignItems: 'flex-start' }}>

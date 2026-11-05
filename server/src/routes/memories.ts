@@ -44,6 +44,36 @@ memoriesApi.get('/product-tags', (_req, res) => {
   res.json(listProductTags());
 });
 
+// ---------- 产品下的项目与自动抽取开关（MEM-504；PATCH 必须早于 /:id 注册） ----------
+memoriesApi.get('/projects', (req, res) => {
+  const scope = scopeOf({
+    productKey: req.query.productKey,
+    projectId: typeof req.query.projectId === 'string' ? req.query.projectId : undefined,
+  });
+  if (scope.kind === 'error') return fail(res, scope.error);
+  if (scope.kind === 'empty') return res.json({ ok: true, projects: [], hint: scope.hint });
+  const rows = getDb().prepare(
+    'SELECT id, name, memory_auto_extract FROM projects WHERE product_key = ? ORDER BY name',
+  ).all(scope.productKey);
+  res.json({ ok: true, projects: rows });
+});
+
+memoriesApi.patch('/projects/:id', (req, res) => {
+  const scope = scopeOf({ productKey: req.body?.productKey, projectId: req.body?.projectId });
+  if (scope.kind === 'error') return fail(res, scope.error);
+  if (scope.kind === 'empty') return fail(res, scope.hint);
+  const proj = getDb().prepare('SELECT product_key FROM projects WHERE id = ?').get(req.params.id) as
+    | { product_key: string | null }
+    | undefined;
+  if (!proj) return res.status(404).json({ error: '项目不存在' });
+  // MEM-503/403：开关是产品内配置，跨产品改项目开关等同越权
+  if ((proj.product_key ?? '') !== scope.productKey) return res.status(403).json({ error: '项目不属于该产品，禁止跨产品修改' });
+  if (typeof req.body?.enabled !== 'boolean') return fail(res, 'enabled 必须是布尔值');
+  getDb().prepare('UPDATE projects SET memory_auto_extract = ?, updated_at = ? WHERE id = ?')
+    .run(req.body.enabled ? 1 : 0, new Date().toISOString(), req.params.id);
+  res.json({ ok: true, id: req.params.id, enabled: req.body.enabled });
+});
+
 // ---------- 待确认队列（MEM-209/402；必须早于 /:id 注册） ----------
 memoriesApi.get('/pending', (req, res) => {
   const scope = scopeOf({
