@@ -24,6 +24,22 @@ import { notifyChange } from './ChangeBus'; // T04171（F11）：记忆写操作
 /** 遥测卡 key（MEM-601）：抽取数/跳过原因/失败全部落 ai_usage，供拒杀率与未归属统计 */
 const EXTRACT_CARD = 'memory_extract';
 
+/**
+ * T04498 真实链路实测缺陷：多数模型把 JSON 包在 ```json 围栏里（甚至前后带解释文字），
+ * 直接 JSON.parse 会让整轮抽取 0 条并只留一条 error 遥测。这里先去围栏、再兜底截取
+ * 首个 `{`/`[` 到末个 `}`/`]`——解析失败才抛错（错误仍由上层记遥测，不静默）。
+ */
+export function parseAiJson<T>(content: string): T {
+  let text = String(content ?? '').trim();
+  const fence = text.match(/^```(?:json)?\s*([\s\S]*?)```$/i);
+  if (fence) text = fence[1].trim();
+  try { return JSON.parse(text) as T; } catch { /* 落到截取兜底 */ }
+  const start = text.search(/[{[]/);
+  const end = Math.max(text.lastIndexOf('}'), text.lastIndexOf(']'));
+  if (start >= 0 && end > start) text = text.slice(start, end + 1);
+  return JSON.parse(text) as T;
+}
+
 /** MEM-605：同产品抽取串行（进程内锁），避免并发抽取挤占 AI 配额；T04144 的真实抽取复用 */
 const runningKeys = new Set<string>();
 
@@ -83,7 +99,7 @@ async function runExtract(taskId: string, resultText: string): Promise<void> {
         askJson: async (system, user) => {
           const ai = await AIService.askJson<RulesOutput>(
             tool.id, system, user,
-            (content) => JSON.parse(content) as RulesOutput,
+            (content) => parseAiJson<RulesOutput>(content),
             { cardKey: 'memory_extract' },
           );
           if (!ai.ok || !ai.data) throw new Error(ai.error ?? 'askJson 无有效输出');
@@ -97,7 +113,7 @@ async function runExtract(taskId: string, resultText: string): Promise<void> {
           })));
           const ai = await AIService.askJson<RulesOutput>(
             tool.id, sys, user,
-            (content) => JSON.parse(content) as RulesOutput,
+            (content) => parseAiJson<RulesOutput>(content),
             { cardKey: 'memory_extract' },
           );
           if (!ai.ok || !ai.data) return [];
@@ -106,7 +122,10 @@ async function runExtract(taskId: string, resultText: string): Promise<void> {
           }));
         },
       });
-      telemetry(taskId, `rules_ok:stored=${r.stored},queued=${r.queued},updated=${r.updated},invalidated=${r.invalidated},dropped=${r.dropped.length},rewrites=${r.rewrites}`);
+      // T04498：stage 带上前几条 dropped 原因——否则「stored=0」无法判断是模型判 NOOP、
+      // 置信度不足还是写法违规（T04157 的逐条原因结构化弱项在此先补最小可读摘要）。
+      const droppedBrief = r.dropped.slice(0, 3).map((d) => `${d.title}:${d.reason}`).join(' | ').slice(0, 240);
+      telemetry(taskId, `rules_ok:stored=${r.stored},queued=${r.queued},updated=${r.updated},invalidated=${r.invalidated},dropped=${r.dropped.length},rewrites=${r.rewrites}${droppedBrief ? `,why=${droppedBrief}` : ''}`);
       // T04150（MEM-306）：写入后立即做容量评估，避免超限记忆在两次整理之间被召回
       try { enforceCapacity(productKey); } catch { /* 淘汰失败不影响已落库结果 */ }
       notifyChange('memories'); // T04171（F11）：抽取落库后管理页实时刷新

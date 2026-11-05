@@ -23,8 +23,10 @@ export function validateWriting(c: WritingItem): string[] {
   if (/(约\s*\d|大概|几个|左右|差不多|可能是\d)/.test(content)) rules.push('W5');
   // W8 长度有界：中文 30–120 字（按字符数近似）
   if (content.length < 30 || content.length > 120) rules.push('W8');
-  // W1 一事一条：多个句末标点通常是多条事实拼在一起
-  if ((content.match(/[。；]/g) ?? []).length > 1) rules.push('W1');
+  // W1 一事一条：**允许 1 个句末标点**（同一事实的「做法 + 效果/边界」常需两句），
+  // 第 2 个句号/分号起才视为多事拼条。旧口径 >1 等于禁止两句，实测真实模型几乎全部命中
+  // （T04498 真实链路：连续 3 次抽取均因该口径全量丢弃），与规范「一事一条」也不等价。
+  if ((content.match(/[。；]/g) ?? []).length > 2) rules.push('W1');
   return rules;
 }
 
