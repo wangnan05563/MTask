@@ -51,13 +51,14 @@ interface ExportBundle {
 // T04130（PRD MEM-104）：memories 必须同时进三张顺序表——漏 EXPORT_TABLES 导出不含记忆、
 // 漏 INSERT_ORDER overwrite 清空后不恢复（记忆丢失）、漏 DELETE_ORDER 旧记忆残留+新记忆再插（记忆翻倍）。
 // 无外键 ⇒ 表内位置任意，统一放末尾。
-const DELETE_ORDER = ['queue_jobs', 'task_images', 'prompts', 'task_categories', 'app_settings', 'tasks', 'queues', 'ai_tools', 'prompt_categories', 'projects', 'memories', 'memory_review_log'];
-const INSERT_ORDER = ['projects', 'prompt_categories', 'ai_tools', 'queues', 'task_categories', 'app_settings', 'tasks', 'prompts', 'task_images', 'queue_jobs', 'memories', 'memory_review_log'];
+const DELETE_ORDER = ['queue_jobs', 'task_images', 'prompts', 'task_categories', 'app_settings', 'tasks', 'queues', 'ai_tools', 'prompt_categories', 'projects', 'memories', 'memory_review_log', 'memory_review_queue'];
+const INSERT_ORDER = ['projects', 'prompt_categories', 'ai_tools', 'queues', 'task_categories', 'app_settings', 'tasks', 'prompts', 'task_images', 'queue_jobs', 'memories', 'memory_review_log', 'memory_review_queue'];
 
 // T04158（MEM-604/F8）：评审记录随包往返——抽样评审是 Phase 1 发布判据的回归基线，换机不能丢。
-// memory_review_queue 的同类缺口由 T04485 跟踪，本表不与它混签。
+// T04485：待确认队列同样纳入——漏表会导致「导出不含 → overwrite 清空后不恢复 → 覆盖导入丢候选」。
+// 两表都无外键（顺序任意），且都**不得**进 CORE_TABLES（旧备份无这两个 key，否则 validateBundle 拒绝）。
 const EXPORT_TABLES: (keyof ExportBundle['data'])[] = [
-  'projects', 'prompt_categories', 'ai_tools', 'queues', 'task_categories', 'app_settings', 'tasks', 'prompts', 'task_images', 'queue_jobs', 'memories', 'memory_review_log',
+  'projects', 'prompt_categories', 'ai_tools', 'queues', 'task_categories', 'app_settings', 'tasks', 'prompts', 'task_images', 'queue_jobs', 'memories', 'memory_review_log', 'memory_review_queue',
 ];
 
 /** ai_tools 导出行：api_key_enc(密文) → apiKey(明文)，供跨机后用目标机密钥重新加密 */
