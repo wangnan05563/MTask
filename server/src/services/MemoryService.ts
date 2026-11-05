@@ -2,6 +2,9 @@ import { getDb } from '../db/connection';
 import { recordUsage } from '../util/aiUsageRecord';
 import { normalizeProductKey } from '../util/productKey';
 import { checkAiReadiness } from './AiReadinessService';
+import { AIService } from './AIService'; // T04144：规则引擎的真实 askJson 通道
+import { ConfigService } from './ConfigService';
+import { runRulesExtraction, type RulesOutput } from './MemoryRulesService';
 
 /**
  * T04143（PRD MEM-201 / MEM-204 / MEM-207，v1.2·F3）：记忆抽取的触发与隔离。
@@ -56,13 +59,27 @@ async function runExtract(taskId: string, resultText: string): Promise<void> {
     if (!productKey) { telemetry(taskId, 'unbound_product'); return; }
     // AI 未实配时抽取必然失败，提前跳过并留痕（配置就绪后此分支自然消失）
     if (!checkAiReadiness().ready) { telemetry(taskId, 'ai_not_ready'); return; }
+    // 与就绪判据同源取一个可用工具（启用 + 已填模型），供 askJson 指定 toolId
+    const tool = ConfigService.list().find((t) => t.enabled && (t.model ?? '').trim());
+    if (!tool) { telemetry(taskId, 'ai_not_ready'); return; }
     if (runningKeys.has(productKey)) { telemetry(taskId, 'busy_serial'); return; }
     runningKeys.add(productKey);
     try {
-      // T04144 在此接入六段流程抽取（askJson + 准入 Q1-Q7 / 写法 W1-W8 / 分区映射 + 落库）。
-      // 规则引擎接入前不落任何记忆，显式遥测避免「触发了却什么都没发生」的静默态。
-      telemetry(taskId, 'rules_pending');
-      void resultText;
+      // T04144：六段流程规则引擎（分区映射 + C1/C2/C3 代码兜底 + 四动作 + PII 队列 + dropped[]）。
+      // askJson 在此注入真实实现；规则引擎本身可注入 mock，因此无 AI 实配也能端到端验证。
+      const r = await runRulesExtraction({
+        taskId, resultText, productKey, projectId: task.project_id,
+        askJson: async (system, user) => {
+          const ai = await AIService.askJson<RulesOutput>(
+            tool.id, system, user,
+            (content) => JSON.parse(content) as RulesOutput,
+            { cardKey: 'memory_extract' },
+          );
+          if (!ai.ok || !ai.data) throw new Error(ai.error ?? 'askJson 无有效输出');
+          return ai.data;
+        },
+      });
+      telemetry(taskId, `rules_ok:stored=${r.stored},queued=${r.queued},updated=${r.updated},invalidated=${r.invalidated},dropped=${r.dropped.length}`);
     } finally {
       runningKeys.delete(productKey);
     }
