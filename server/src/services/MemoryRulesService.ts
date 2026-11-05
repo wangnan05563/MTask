@@ -55,8 +55,11 @@ export function splitResultSections(text: string): { sections: ResultSection[]; 
 
 /** C1：正则 + 字段名黑名单，返回命中类别（用于 dropped 原因），未命中返回 null。 */
 const NEVER_STORE_PATTERNS: { tag: string; re: RegExp }[] = [
-  { tag: 'credential', re: /(?:api[_-]?key|token|password|passwd|secret|cookie|authorization|bearer)\s*[:=]\s*\S+/i },
-  { tag: 'credential', re: /\b(?:sk-|ghp_|AKIA)[A-Za-z0-9]{16,}\b/ },
+  { tag: 'credential', re: /(?:api[_-]?key|token|password|passwd|secret|cookie|authorization)\s*[:=]\s*\S+/i },
+  // T04159（规范 §10.3 断言①）：`Bearer ` 是独立敏感形态（HTTP 头里不带冒号/等号），
+  // 旧规则把它绑在 `[:=]` 后，实测 `Bearer eyJ...` 全部漏拦。sk- 前缀同理放宽到 6 位以上（含 -/_）。
+  { tag: 'credential', re: /\bbearer\s+[A-Za-z0-9\-._~+/]{6,}/i },
+  { tag: 'credential', re: /\b(?:sk-|ghp_|AKIA)[A-Za-z0-9_-]{6,}\b/ },
   { tag: 'connection_string', re: /(?:postgres|mysql|redis|mongodb|amqp):\/\/[^\s:]+:[^\s@]+@/i },
   { tag: 'private_key', re: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/ },
 ];
