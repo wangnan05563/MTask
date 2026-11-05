@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Activity, Loader2, RefreshCw, RotateCcw } from 'lucide-react';
 import { api, type ExecSession } from '../api/client';
 import { EmptyState } from '../ui/EmptyState';
@@ -87,6 +87,8 @@ export function ExecSessionsPage() {
   const [rows, setRows] = useState<ExecSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  /** L3 丁档：最近一次摘要指纹——相同就跳过整行重取 */
+  const sigRef = useRef('');
 
   const load = useCallback(async () => {
     try {
@@ -99,21 +101,36 @@ export function ExecSessionsPage() {
     }
   }, []);
 
+  // L3 丁档：2s 轮询只拉 `{sig}`（~100B），指纹变了才整行重取；
+  // 原实现每 2s 拉 51,346B 的整行列表，重绘时机与本形态等价。
+  const poll = useCallback(async () => {
+    try {
+      const d = await api.get<{ sig: string }>('/exec-sessions/digest');
+      if (d.sig !== sigRef.current) {
+        sigRef.current = d.sig;
+        await load();
+      }
+    } catch {
+      // 摘要端点不可用时不静默：退回整行拉取，保留原有的错误呈现
+      await load();
+    }
+  }, [load]);
+
   // AI-402④：可见时 2 秒心跳级刷新，切到后台降频 15 秒；回到前台立即拉一次并恢复快档
   useEffect(() => {
-    void load();
-    let timer = setInterval(() => void load(), document.hidden ? HIDDEN_POLL_MS : ACTIVE_POLL_MS);
+    void poll();
+    let timer = setInterval(() => void poll(), document.hidden ? HIDDEN_POLL_MS : ACTIVE_POLL_MS);
     const reschedule = () => {
       clearInterval(timer);
-      timer = setInterval(() => void load(), document.hidden ? HIDDEN_POLL_MS : ACTIVE_POLL_MS);
-      if (!document.hidden) void load();
+      timer = setInterval(() => void poll(), document.hidden ? HIDDEN_POLL_MS : ACTIVE_POLL_MS);
+      if (!document.hidden) void poll();
     };
     document.addEventListener('visibilitychange', reschedule);
     return () => {
       clearInterval(timer);
       document.removeEventListener('visibilitychange', reschedule);
     };
-  }, [load]);
+  }, [poll]);
 
   const alive = rows.filter((r) => r.status === 'active').length;
   const stalled = rows.filter((r) => r.status === 'stalled').length;

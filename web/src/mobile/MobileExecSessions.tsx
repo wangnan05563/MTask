@@ -3,7 +3,7 @@
  * 会话列表徽标 + 心跳相对时间 + phase 摘要 + 进度条；10s 轮询；
  * failed 会话一键重派（复用任务 retry API，回待办等待重新领取）。
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { fmtAsOf, loadStaleCache, saveStaleCache } from './offline';
 import { Badge, bodyStyle, cardStyle, EmptyState, type BadgeTone } from './ui';
@@ -41,6 +41,8 @@ export function MobileExecSessions({ notify }: { readonly notify: (msg: string, 
   const [sessions, setSessions] = useState<ExecSessionView[]>([]);
   const [staleAsOf, setStaleAsOf] = useState<string | null>(null);
   const [busyId, setBusyId] = useState('');
+  /** L3 丁档：最近一次摘要指纹——相同就跳过整行重取 */
+  const sigRef = useRef('');
 
   const load = useCallback(async () => {
     try {
@@ -55,19 +57,32 @@ export function MobileExecSessions({ notify }: { readonly notify: (msg: string, 
     }
   }, []);
 
+  // L3 丁档：10s 轮询只拉摘要，指纹变了才整行重取（与桌面面板同一形态）
+  const poll = useCallback(async () => {
+    try {
+      const d = await api.get<{ sig: string }>('/exec-sessions/digest');
+      if (d.sig !== sigRef.current) {
+        sigRef.current = d.sig;
+        await load();
+      }
+    } catch {
+      await load();
+    }
+  }, [load]);
+
   useEffect(() => {
     const cached = loadStaleCache<ExecSessionView[]>('exec.sessions');
     if (cached) { setSessions(cached.data); setStaleAsOf(cached.asOf); }
-    void load();
+    void poll();
     // 评审修复：页面不可见时暂停轮询（省电省流量），恢复可见立即刷新
     let timer: ReturnType<typeof setInterval> | null = null;
-    const start = () => { timer ??= setInterval(() => void load(), 10000); void load(); };
+    const start = () => { timer ??= setInterval(() => void poll(), 10000); void poll(); };
     const stop = () => { if (timer) { clearInterval(timer); timer = null; } };
     start();
     const onVis = () => (document.hidden ? stop() : start());
     document.addEventListener('visibilitychange', onVis);
     return () => { stop(); document.removeEventListener('visibilitychange', onVis); };
-  }, [load]);
+  }, [poll]);
 
   async function redispatch(s: ExecSessionView) {
     const target = s.tasks.find((t) => t.task_no);

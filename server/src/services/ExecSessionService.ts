@@ -7,7 +7,7 @@
  *
  * 数据模型见 PRD §5.1（exec_sessions）；本服务只负责观测写入，不做自动动作（P0 仅观测）。
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { getDb } from '../db/connection';
 import { getSetting } from './AppSettings'; // T01270：停滞阈值读 app_settings（supervisor.sessionStaleMs）
 import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化（会话按平台唯一，防大小写分裂）
@@ -394,6 +394,30 @@ export const ExecSessionService = {
         .map((id) => taskMap.get(id))
         .filter((t): t is SessionTaskBrief => !!t),
     }));
+  },
+
+  /**
+   * L3 丁档（2026-11-06 裁定「丁」）：执行会话轮询摘要——面板每 2s 拉整行列表（实测 51,346B，
+   * 含内嵌 tasks）只为判断「有没有变化、要不要重绘」。本方法回同一批会话的指纹，响应 ~100B，
+   * 形状与 /tasks/change-sig 同量级。
+   * 口径必须与 listSessions 一致：先做停滞判定，否则摘要说 active、整行列表说 stalled。
+   * 指纹按拼串排序后取集合等价，不照搬 SQL 的返回次序——last_heartbeat 并列时两次查询可能给出
+   * 不同顺序，顺序敏感会把每次轮询都判成「变了」（M4-b 实测过的坑）。
+   */
+  digest(limit = 100): { sig: string; rows: number } {
+    this.expireStaleSessions();
+    const rows = getDb().prepare(
+      'SELECT id, status, progress, phase, last_heartbeat, finished_at, task_ids FROM exec_sessions ORDER BY last_heartbeat DESC LIMIT ?',
+    ).all(Math.min(500, Math.max(1, limit))) as Array<{
+      id: string; status: string; progress: number; phase: string; last_heartbeat: string; finished_at: string | null; task_ids: string;
+    }>;
+    const sig = createHash('sha256')
+      .update(rows
+        .map((r) => `${r.id}\u0001${r.status}\u0001${r.progress}\u0001${r.phase}\u0001${r.last_heartbeat}\u0001${r.finished_at ?? ''}\u0001${r.task_ids}`)
+        .sort()
+        .join('\u0002'))
+      .digest('hex');
+    return { sig, rows: rows.length };
   },
 
   /**

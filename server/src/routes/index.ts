@@ -639,6 +639,18 @@ api.get('/events/recent', (req, res) => {
   res.json(TaskService.listEvents({ projectId, since, limit: Number.isFinite(limit) ? limit : undefined }));
 });
 
+/**
+ * L3 丁档（2026-11-06 裁定「丁」）：通知铃铛未读数——铃铛每 30s 拉 30 行整行事件（12,643B）
+ * 只为算一个数，本端点回 `{count}`（~11B）。口径与前端原实现一致：最近 `limit` 条中
+ * created_at > since 的条数（先截断再计数），不是全库未读。
+ * 面板展开时仍走 /events/recent 取整行列表——摘要端点只替代轮询，不改打开态的取数。
+ */
+api.get('/events/unread', (req, res) => {
+  const since = typeof req.query.since === 'string' ? req.query.since : '';
+  const limit = Number(req.query.limit);
+  res.json({ count: TaskService.countUnreadEvents({ since, limit: Number.isFinite(limit) ? limit : undefined }) });
+});
+
 // T01064-FR1.5：单任务事件时间线（状态流转/回传/验证历史）
 api.get('/events/by-task/:taskId', (req, res) => {
   res.json(TaskService.listTaskEvents(req.params.taskId));
@@ -732,6 +744,13 @@ api.delete('/recurring/:id', (req, res) => {
 // T01271-FR1.4：执行会话面板数据源——外部平台执行会话列表（存活/进度/阶段/停滞）。
 // 读取路径内部惰性判定停滞，面板打开即见正确状态（不依赖 60s 定时器恰好跑到）。
 api.get('/exec-sessions', (_req, res) => res.json(ExecSessionService.listSessions()));
+
+/**
+ * L3 丁档（2026-11-06 裁定「丁」）：执行会话轮询摘要——面板原每 2s 拉整行列表
+ * （实测 51,346B，含内嵌 tasks）只为判断要不要重绘；本端点回 `{sig, rows}`（~100B）。
+ * 前端比对 sig：变了才整行重取，实时性与原 2s 全量轮询等价。
+ */
+api.get('/exec-sessions/digest', (_req, res) => res.json(ExecSessionService.digest()));
 
 // T03175（AI-402②③）：停滞/失败会话一键重派——派发经既有 RelayDispatch，校验与归位在 service 单源。
 api.post('/exec-sessions/:id/redispatch', async (req, res) => {
@@ -870,12 +889,26 @@ function taskListOptionsFromQuery(q: Record<string, unknown>): { opts: TaskListO
   return { opts, total };
 }
 
+/**
+ * M4 乙档（2026-11-06 裁定「乙」）：列表载荷裁掉 web 零读的 4 个内部调度列。
+ * 取证见 05 §「M4 剩余」：这 4 列在 web/src 零读，MCP 侧仅 monitor_* 作为就绪池过滤条件被读（不是载荷），
+ * 裁掉后轻数据窗口省 3.7%～11.1%。刻意保留 req_ids：任务侧 req_ids 经 mtask_list_tasks 整行透传给
+ * 外部 Agent，裁它等于改对外契约。
+ * 只在 HTTP 列表响应上裁；findByNo / MCP / 监督器仍拿全量，详情与派发依赖这些列。
+ */
+const LIST_OMIT_COLUMNS = ['exec_session_id', 'monitor_preferred_platform', 'monitor_ready', 'monitor_retry'] as const;
+function omitListColumns<T extends object>(row: T): T {
+  const copy = { ...row };
+  for (const k of LIST_OMIT_COLUMNS) delete (copy as Record<string, unknown>)[k];
+  return copy;
+}
+
 api.get('/tasks', (req, res) => {
   const { opts, total } = taskListOptionsFromQuery(req.query);
   const items = TaskService.list(opts);
   // T03361（八期 §3.1.6）：行内加性字段 gitLinks（各任务最新一条）+ gitLinkCount（「+N」角标的数据源）。
   // 一次查询覆盖本页，零逐行 SQL；裸数组契约与分页信封不变。
-  const withLinks = attachGitLinks(items);
+  const withLinks = attachGitLinks(items).map(omitListColumns);
   // T02284：`total=1` 加性通道——带该参数时响应体换成 `{items,total}` 信封（归档页服务端分页要「共 N 条」）。
   // 不带时逐字返回裸数组：/tasks 的既有契约（桌面任务页、移动端、CommandPalette、QueuePage、
   // scripts/verify-*.mjs 与 perf jmx 直取数组）不受任何影响，故本端点不改参数、不把裸数组变成对象。

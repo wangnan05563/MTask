@@ -50,6 +50,7 @@ export function NotifyBell() {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<EventItem[]>([]);
   const [lastSeen, setLastSeen] = useState(readLastSeen);
+  const [unreadCount, setUnreadCount] = useState(0);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -59,13 +60,21 @@ export function NotifyBell() {
     } catch { /* 服务未就绪等：保留上次数据 */ }
   }, []);
 
+  // L3 丁档：轮询只取未读数（~11B），整行 30 条列表只在挂载与展开面板时取。
+  // 口径由服务端按「最近 30 条中 created_at > lastSeen」计数，与原前端 filter 逐字一致。
+  const refreshUnread = useCallback(async () => {
+    try {
+      const r = await api.get<{ count: number }>(`/events/unread?since=${encodeURIComponent(readLastSeen())}&limit=30`);
+      setUnreadCount(Number(r?.count) || 0);
+    } catch { /* 服务未就绪等：保留上次读数 */ }
+  }, []);
+
   useEffect(() => {
     void refresh();
-    timer.current = setInterval(() => void refresh(), 30000);
+    void refreshUnread();
+    timer.current = setInterval(() => void refreshUnread(), 30000);
     return () => { if (timer.current) clearInterval(timer.current); };
-  }, [refresh]);
-
-  const unreadCount = items.filter((it) => it.created_at > lastSeen).length;
+  }, [refresh, refreshUnread]);
 
   function toggle() {
     const next = !open;
@@ -76,6 +85,7 @@ export function NotifyBell() {
       const nowIso = new Date().toISOString();
       try { localStorage.setItem(LAST_SEEN_KEY, nowIso); } catch { /* 忽略 */ }
       setLastSeen(nowIso);
+      setUnreadCount(0);
     }
   }
 
